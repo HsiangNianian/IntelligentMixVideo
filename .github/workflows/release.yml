@@ -1,0 +1,119 @@
+name: Release client
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+# Serialize releases so changelog commits cannot race each other.
+concurrency:
+  group: client-release
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    outputs:
+      previous-ref: ${{ steps.range.outputs.previous-ref }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: client/package.json
+      - name: Validate release tag and version preparation
+        run: |
+          bun test ./.github/scripts/validate-release.test.mjs
+          bun .github/scripts/validate-release.mjs --tag-only
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+      - name: Resolve changelog range
+        id: range
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          # Explicit range also supports rerunning an older tag.
+          previous=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$RELEASE_TAG^" 2>/dev/null || true)
+          if [ -z "$previous" ]; then
+            # The first release includes changes after the repository bootstrap commit.
+            previous=$(git rev-list --max-parents=0 "$RELEASE_TAG" | head -n 1)
+          fi
+          echo "previous-ref=$previous" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build release installers
+    needs: validate
+    uses: ./.github/workflows/client-build.yml
+    with:
+      release-tag: ${{ github.ref_name }}
+
+  publish:
+    name: Publish release and changelog
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # Only the changelog is committed to this branch. Installers were built
+      # from the triggering tag by the reusable workflow.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Check whether changelog already contains this version
+        id: existing
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if [ -f CHANGELOG.md ] && grep -Fq "## [$RELEASE_TAG] - " CHANGELOG.md; then
+            echo "write=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "write=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate changelog from Conventional Commits
+        id: changelog
+        uses: requarks/changelog-action@v1
+        with:
+          token: ${{ github.token }}
+          fromTag: ${{ github.ref_name }}
+          toTag: ${{ needs.validate.outputs.previous-ref }}
+          includeInvalidCommits: true
+          excludeTypes: ""
+          changelogFilePath: CHANGELOG.md
+          writeToFile: ${{ steps.existing.outputs.write }}
+          useGitmojis: false
+
+      - name: Download all platform installers
+        uses: actions/download-artifact@v4
+        with:
+          pattern: intelligent-mix-video-*
+          path: release-assets
+
+      - name: Publish GitHub Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body: ${{ steps.changelog.outputs.changes }}
+          artifacts: "release-assets/**/*.deb,release-assets/**/*.AppImage,release-assets/**/*.exe,release-assets/**/*.msi,release-assets/**/*.dmg,CHANGELOG.md"
+          artifactErrorsFailBuild: true
+          allowUpdates: true
+          immutableCreate: true
+          draft: false
+          prerelease: false
+          makeLatest: legacy
+          token: ${{ github.token }}
+
+      - name: Commit changelog to the default branch
+        uses: stefanzweifel/git-auto-commit-action@v7
+        with:
+          branch: ${{ github.event.repository.default_branch }}
+          commit_message: "docs: update CHANGELOG.md for ${{ github.ref_name }} [skip ci]"
+          file_pattern: CHANGELOG.md

@@ -1,0 +1,3 @@
+[run]
+# Run Vite, TypeScript and the Tauri CLI with Bun on every platform.
+bun = true
