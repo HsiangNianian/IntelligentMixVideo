@@ -52,6 +52,28 @@ bun run tauri build
 从 Actions 对应运行的 Artifacts 下载产物，保留 14 天。CI 使用依赖锁文件，不需要额外配置发布密钥。
 当前安装包未配置代码签名或 macOS 公证；正式分发时需另行配置。
 
+`.github/workflows/validation.yml` 在相关 push / PR 中检查全部工作流、运行发布脚本及失败恢复测试，
+并在临时副本中验证版本注入、Bun 冻结安装和 Cargo 锁文件。它也通过 `uv build --project server`
+验证 Python 包骨架可构建；后端仍不包含业务 API。
+
+提交前检查
+----------
+
+根目录的 `.pre-commit-config.yaml` 为 pre-commit.ci 提供基础检查：空白和文件末尾、
+YAML / JSON / TOML 与 Python 语法、合并冲突、文件名大小写冲突和私钥检测。
+TypeScript 配置允许注释，由客户端 CI 中的 TypeScript 检查验证。
+机器人修复和依赖更新的提交信息遵循 Conventional Commits。
+
+本地安装 [uv](https://docs.astral.sh/uv/) 后，在仓库根目录执行：
+
+```sh
+uvx pre-commit run --all-files
+# 可选：安装本地 Git 提交钩子
+uvx pre-commit install
+```
+
+Bun / Rust 构建和发布脚本验证仍由 GitHub Actions 执行。
+
 Tag 发版
 --------
 
@@ -81,6 +103,9 @@ git push origin v0.2.0
 
 无需额外发布密钥，使用内置 `GITHUB_TOKEN`；仓库策略必须允许该 job 的 `contents: write`
 权限及机器人向默认分支提交。若默认分支保护规则禁止此类提交，需允许机器人写入后重跑失败的 job。
-失败时可在 Actions 中重跑；已有 Release 会更新附件及正文，已存在的日志版本不会重复插入。
+发布先创建或更新草稿，校验六个安装包与 `CHANGELOG.md` 全部上传完成后才公开。
+失败时可在 Actions 中重跑；草稿可继续上传，已公开 Release 的附件和正文保持不变，日志回写可单独补齐。
+不同 tag 独立运行，避免互相取消等待中的发布。日志回写每次获取最新默认分支，
+仅合并当前版本条目，按版本号降序排列；遇到并发提交最多尝试五次，不强制推送，也不重复插入已有版本。
 目前只接受正式版本（不含 `-beta` / `-rc`），且版本须满足 Windows MSI 的数值限制。
 正式构建仍使用上述未签名安装包配置，代码签名和 macOS 公证需另行接入。

@@ -34,10 +34,17 @@ bun run tauri build
 
 ```sh
 cargo fmt --manifest-path client/src-tauri/Cargo.toml --check
-bun test ./.github/scripts/validate-release.test.mjs
-actionlint .github/workflows/client-build.yml .github/workflows/release.yml
+bun test ./.github/scripts
+bun .github/scripts/release-smoke.mjs
+actionlint .github/workflows/client-build.yml .github/workflows/release.yml .github/workflows/validation.yml
+uv build --project server --out-dir server/dist
 git diff --check
 ```
+
+根目录 `.pre-commit-config.yaml` 供 pre-commit.ci 和本地检查共用。
+修改其配置时执行 `uvx pre-commit validate-config` 和 `uvx pre-commit run --all-files`。
+保持机器人提交信息符合 Conventional Commits。基础 hooks 不依赖本机 Bun / Rust；
+构建及发布脚本验证由 GitHub Actions 承担。带注释的 tsconfig JSON 由 TypeScript 验证。
 
 开发环境需要 Bun（版本以 client/package.json 的 packageManager 字段为准）、Rust stable 和对应平台的 Tauri 2 依赖。
 CI 使用 `oven-sh/setup-bun` 读取同一版本。`client/bunfig.toml` 的 `run.bun = true` 让 Vite、TypeScript 和 Tauri CLI 使用 Bun 运行。
@@ -60,6 +67,10 @@ Windows 需要 MSVC C++ 构建工具、Windows SDK 和 WebView2；ARM64 主机�
 
 普通构建的 Actions artifacts 保留 14 天。发版应复用这一构建工作流，避免维护两套不一致的平台构建逻辑。
 构建产物来自被触发的提交；正式发布时必须来自对应 tag 的源码。
+
+`.github/workflows/validation.yml` 在相关 push / PR 中检查全部工作流、运行发布脚本与失败恢复测试，
+并通过临时副本中的真实配置验证版本注入、Bun 冻结安装和 Cargo 锁文件不变。
+该工作流同时构建 Python 包骨架；`server/pyproject.toml` 的 uv 构建模块名显式设为 `server`，对应 `src/server/`。
 
 ## 正式版本与 tag 发版
 
@@ -92,8 +103,10 @@ git push origin v0.2.0
 - 四个平台 / 架构的构建全部成功后，再发布 GitHub Release。安装包及 `CHANGELOG.md` 作为附件上传。
 - 使用 `requarks/changelog-action`，按 Conventional Commits 分类生成变更记录；Release 正文使用其输出。
 - 显式指定前一个祖先版本 tag 到当前 tag 的比较范围。首次发版使用仓库最初提交作为基线，不包含该引导提交，避免 action 默认要求已有两个 tag 的限制。
-- 使用 `ncipollo/release-action` 发布，保留失败后重跑与已有 Release 更新能力，避免重复插入同一版本的 changelog。
-- 发布后通过 `stefanzweifel/git-auto-commit-action` 仅将 `CHANGELOG.md` 提交到仓库默认分支，不能假定默认分支永远是 main。
+- 使用 `ncipollo/release-action` 上传到草稿，随后通过 `release-assets.mjs` 校验六个安装包及 `CHANGELOG.md` 的文件名、大小和上传状态，全部通过后才公开。上传失败必须保持草稿状态。
+- 重跑可修复草稿或补齐日志回写；已公开 Release 的附件与正文不再修改。
+- 发布并发组按 tag 隔离，避免不同版本互相替换等待中的运行。
+- 发布后通过 `commit-changelog.mjs` 在单独的默认分支 checkout 中仅合并当前版本日志，按版本号降序排列。每次获取最新分支，并发冲突最多尝试五次，不强制推送、不重复插入已有条目，不能假定默认分支永远是 main。
 - 自动提交格式为 `docs: update CHANGELOG.md for vX.Y.Z [skip ci]`。
 - 不以手工维护正式版本条目的方式替代自动 changelog 流程。
 - 使用内置 `GITHUB_TOKEN`；构建 job 使用读权限，发布 job 需要 `contents: write`。默认分支规则必须允许对应的机器人写入。
