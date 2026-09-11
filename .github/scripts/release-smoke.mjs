@@ -29,9 +29,12 @@ try {
   run(process.execPath, ["install", "--frozen-lockfile", "--ignore-scripts"], join(dir, "client"));
   assert.equal(readFileSync(join(dir, "client/bun.lock"), "utf8"), lockBefore);
   const cargoBefore = readFileSync(join(dir, "client/src-tauri/Cargo.lock"), "utf8");
-  const metadata = JSON.parse(run("cargo", [
-    "metadata", "--manifest-path", "client/src-tauri/Cargo.toml", "--locked", "--no-deps", "--format-version", "1",
-  ], dir));
+  // Exercise the actual release-only workflow command from its working directory.
+  const workflow = Bun.YAML.parse(readFileSync(join(source, ".github/workflows/client-build.yml"), "utf8"));
+  const job = workflow.jobs.build;
+  const step = job.steps.find((step) => step.name === "Verify Cargo lockfile");
+  const [exe, ...args] = step.run.split(" > ")[0].split(/\s+/);
+  const metadata = JSON.parse(run(exe, args, join(dir, step["working-directory"] ?? job.defaults.run["working-directory"])));
   assert.equal(metadata.packages.find((pkg) => pkg.name === "client").version, "254.254.65534");
   assert.equal(readFileSync(join(dir, "client/src-tauri/Cargo.lock"), "utf8"), cargoBefore);
   console.log("Version injection, frozen Bun install and Cargo lockfile checks passed");
