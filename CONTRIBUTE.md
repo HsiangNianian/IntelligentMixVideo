@@ -50,9 +50,18 @@ Run checks appropriate to the files you change and report their actual results.
 | Frontend | `bun run build` | `client/` |
 | Rust formatting | `cargo fmt --manifest-path client/src-tauri/Cargo.toml --check` | Repository root |
 | Desktop compilation and packaging | `bun run tauri build` | `client/` |
-| Release scripts | `bun test ./.github/scripts/validate-release.test.mjs` | Repository root |
-| GitHub workflows | `actionlint .github/workflows/client-build.yml .github/workflows/release.yml` | Repository root |
+| Release scripts and recovery | `bun test ./.github/scripts` | Repository root |
+| Release version injection | `bun .github/scripts/release-smoke.mjs` | Repository root |
+| GitHub workflows | `actionlint .github/workflows/client-build.yml .github/workflows/release.yml .github/workflows/validation.yml` | Repository root |
+| Python packaging | `uv build --project server --out-dir server/dist` | Repository root |
+| Repository hygiene | `uvx pre-commit run --all-files` | Repository root |
 | All changes | `git diff --check` | Repository root |
+
+Install [uv](https://docs.astral.sh/uv/) for Python packaging and local pre-commit
+checks. `.pre-commit-config.yaml` is shared with pre-commit.ci; run
+`uvx pre-commit validate-config` when changing it. Optionally run
+`uvx pre-commit install` to enable local Git hooks. These hooks check file hygiene
+and syntax; application builds and release validation run separately in Actions.
 
 For desktop changes, also launch the app and check affected behavior. A frontend
 build does not validate the native application or other platforms. State checks
