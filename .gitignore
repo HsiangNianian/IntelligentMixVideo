@@ -1,0 +1,7 @@
+.git/
+__pycache__/
+.python-version
+target/
+.vscode/
+dist/
+node_modules/

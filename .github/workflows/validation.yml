@@ -1,0 +1,42 @@
+name: Validate project
+
+on:
+  push:
+    branches: ["**"]
+    paths: [".github/**", "client/**", "server/**"]
+  pull_request:
+    paths: [".github/**", "client/**", "server/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-checks:
+    name: Release preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Lint all workflows
+        uses: docker://rhysd/actionlint:1.7.12
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: client/package.json
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test release scripts and failure recovery
+        run: bun test ./.github/scripts
+      - name: Verify version injection with real project files
+        run: bun .github/scripts/release-smoke.mjs
+
+  server:
+    name: Build Python package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+      - name: Build server distributions
+        run: uv build --project server --out-dir server/dist

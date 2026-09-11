@@ -1,0 +1,23 @@
+minimum_pre_commit_version: "3.2.0"
+
+ci:
+  autofix_commit_msg: "style: apply pre-commit fixes"
+  autoupdate_commit_msg: "ci: update pre-commit hooks"
+  autoupdate_schedule: monthly
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+        # TypeScript configs support comments; tsc validates them in client CI.
+        exclude: (^|/)tsconfig[^/]*\.json$
+      - id: check-toml
+      - id: check-ast
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: detect-private-key

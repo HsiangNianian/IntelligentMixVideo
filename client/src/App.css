@@ -1,0 +1,15 @@
+:root {
+  font-family: Inter, "Segoe UI", system-ui, sans-serif;
+  color: #202124;
+  background: #fafafa;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body { margin: 0; min-width: 320px; }
+.home { min-height: 100vh; display: grid; place-items: center; }
+.clock { padding: 24px; text-align: center; }
+.clock h1 { margin: 0 0 16px; font-size: 18px; font-weight: 500; color: #666; }
+.clock time { font-size: clamp(20px, 5vw, 40px); font-variant-numeric: tabular-nums; }
