@@ -36,8 +36,11 @@ export function collectAssets(root = "release-assets", changelog = "CHANGELOG.md
   return assets;
 }
 
-export async function publishDraft(github, repo, tag, expected = JSON.parse(readFileSync("release-assets.json", "utf8"))) {
-  const { data: release } = await github.rest.repos.getReleaseByTag({ ...repo, tag });
+export async function publishDraft(github, repo, tag, releaseId, expected = JSON.parse(readFileSync("release-assets.json", "utf8"))) {
+  assert(Number.isSafeInteger(releaseId) && releaseId > 0, "Missing draft release ID");
+  // The tag lookup endpoint does not return unpublished drafts.
+  const { data: release } = await github.rest.repos.getRelease({ ...repo, release_id: releaseId });
+  assert.equal(release.tag_name, tag, "Release ID does not match the requested tag");
   // Never demote or overwrite an already published release on retry.
   if (!release.draft) return;
   const assets = await github.paginate(github.rest.repos.listReleaseAssets, {

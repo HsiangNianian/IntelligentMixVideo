@@ -131,6 +131,7 @@ jobs:
       # Always keep new/existing drafts private while replacing assets.
       # A successful published release is never changed by a retry.
       - name: Upload assets to draft release
+        id: upload
         if: steps.published.outputs.exists != 'true'
         uses: ncipollo/release-action@v1
         with:
@@ -150,12 +151,14 @@ jobs:
       - name: Verify uploaded assets and publish
         if: steps.published.outputs.exists != 'true'
         uses: actions/github-script@v8
+        env:
+          RELEASE_ID: ${{ steps.upload.outputs.id }}
         with:
           script: |
             const { publishDraft } = await import(
               `file://${process.env.GITHUB_WORKSPACE}/.github/scripts/release-assets.mjs`
             );
-            await publishDraft(github, context.repo, context.ref.replace('refs/tags/', ''));
+            await publishDraft(github, context.repo, context.ref.replace('refs/tags/', ''), Number(process.env.RELEASE_ID));
 
       - name: Commit changelog to the default branch
         run: bun .github/scripts/commit-changelog.mjs

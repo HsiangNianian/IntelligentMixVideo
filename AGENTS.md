@@ -105,6 +105,7 @@ git push origin v0.2.0
 - 显式指定前一个祖先版本 tag 到当前 tag 的比较范围。首次发版使用仓库最初提交作为基线，不包含该引导提交，避免 action 默认要求已有两个 tag 的限制。
 - 使用 `ncipollo/release-action` 上传到草稿，随后通过 `release-assets.mjs` 校验六个安装包及 `CHANGELOG.md` 的文件名、大小和上传状态，全部通过后才公开。上传失败必须保持草稿状态。
 - 重跑可修复草稿或补齐日志回写；已公开 Release 的附件与正文不再修改。
+- 草稿校验使用上传 action 返回的 Release ID 查询，并确认其 tag 匹配；不要通过按 tag 查询接口查找未公开草稿。
 - 发布并发组按 tag 隔离，避免不同版本互相替换等待中的运行。
 - 发布后通过 `commit-changelog.mjs` 在单独的默认分支 checkout 中仅合并当前版本日志，按版本号降序排列。每次获取最新分支，并发冲突最多尝试五次，不强制推送、不重复插入已有条目，不能假定默认分支永远是 main。
 - 自动提交格式为 `docs: update CHANGELOG.md for vX.Y.Z [skip ci]`。

@@ -43,20 +43,26 @@ test("partial uploads stay private; retry publishes only after verification", as
   let uploaded = [{ name: "installer", size: 1, state: "starter" }];
   const github = {
     rest: { repos: {
-      async getReleaseByTag() { return { data: { id: 1, draft: !published } }; },
+      async getReleaseByTag() { throw new Error("Drafts cannot be looked up by tag"); },
+      async getRelease(input) {
+        assert.equal(input.release_id, 1);
+        return { data: { id: 1, tag_name: "v0.2.0", draft: !published } };
+      },
       listReleaseAssets() {},
       async updateRelease(input) { assert.equal(input.draft, false); published = true; },
     } },
     async paginate() { return uploaded; },
   };
   const expected = [{ name: "installer", size: 2 }];
-  await assert.rejects(publishDraft(github, {}, "v0.2.0", expected), /incomplete/);
+  await assert.rejects(publishDraft(github, {}, "v0.2.0", 1, expected), /incomplete/);
   assert.equal(published, false);
   uploaded = [{ name: "installer", size: 2, state: "uploaded" }];
-  await publishDraft(github, {}, "v0.2.0", expected);
+  await publishDraft(github, {}, "v0.2.0", 1, expected);
   assert.equal(published, true);
   github.paginate = () => { throw new Error("Published release must be left unchanged"); };
-  await publishDraft(github, {}, "v0.2.0", expected);
+  await publishDraft(github, {}, "v0.2.0", 1, expected);
+  await assert.rejects(publishDraft(github, {}, "v0.3.0", 1, expected), /does not match/);
+  await assert.rejects(publishDraft(github, {}, "v0.2.0", NaN, expected), /Missing draft release ID/);
 });
 
 const generated = "# Changelog\n\n## [v0.2.0] - 2026-09-11\n### Features\n- new feature\n\n[v0.2.0]: https://example.test/compare\n";
@@ -129,5 +135,8 @@ test("workflow keeps draft uploads separate from publication and isolates tags",
   const upload = steps.find((step) => step.uses === "ncipollo/release-action@v1");
   assert.equal(upload.with.draft, true);
   assert.equal(upload.with.skipIfReleaseExists, true);
+  assert.equal(upload.id, "upload");
+  const publish = steps.find((step) => step.name === "Verify uploaded assets and publish");
+  assert.equal(publish.env.RELEASE_ID, "${{ steps.upload.outputs.id }}");
   assert(steps.findIndex((step) => step.name === "Verify uploaded assets and publish") > steps.indexOf(upload));
 });
