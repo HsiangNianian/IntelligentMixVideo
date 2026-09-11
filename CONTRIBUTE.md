@@ -55,7 +55,7 @@ Run checks appropriate to the files you change and report their actual results.
 | GitHub workflows | `actionlint .github/workflows/client-build.yml .github/workflows/release.yml .github/workflows/validation.yml` | Repository root |
 | Python packaging | `uv build --project server --out-dir server/dist` | Repository root |
 | Repository hygiene | `uvx pre-commit run --all-files` | Repository root |
-| All changes | `git diff --check` | Repository root |
+| All changes | `git diff --check HEAD` | Repository root |
 
 Install [uv](https://docs.astral.sh/uv/) for Python packaging and local pre-commit
 checks. `.pre-commit-config.yaml` is shared with pre-commit.ci; run
