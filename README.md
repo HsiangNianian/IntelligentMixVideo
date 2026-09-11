@@ -3,6 +3,17 @@ IntelligentMixVideo
 
 > 基于阿里 IMS 云剪辑的智能混剪 Agent 系统，支持自定义模板、服务端文本切片、素材召回、Agent 自动编写编排与自动编写 Remotion 特效等功能。
 
+## Contributing
+
+Read [CONTRIBUTE.md](CONTRIBUTE.md) for development setup, validation commands,
+Conventional Commit messages, and pull request requirements. Use English for
+commit messages and pull requests.
+
+## License
+
+IntelligentMixVideo is licensed under the GNU Affero General Public License,
+version 3 only (`AGPL-3.0-only`). See [LICENSE.md](LICENSE.md) for the full terms.
+
 Structure
 ---------
 
