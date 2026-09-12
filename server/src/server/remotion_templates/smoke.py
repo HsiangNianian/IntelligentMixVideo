@@ -1,4 +1,4 @@
-"""Explicit live acceptance script: python -m server.templates.smoke --live; artifacts stay under templates/.data/."""
+"""Explicit live acceptance script: python -m server.remotion_templates.smoke --live; artifacts stay under remotion_templates/.data/."""
 
 import argparse
 import asyncio

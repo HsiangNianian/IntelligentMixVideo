@@ -13,4 +13,4 @@ node_modules/
 !.env.example
 server/.venv/
 server/.data/
-server/src/server/templates/.data/
+server/src/server/remotion_templates/.data/

@@ -1,13 +1,13 @@
-"""Pixel-evidence regressions with synthetic transparent frames: uv run --locked pytest tests/test_template_probes.py."""
+"""Pixel-evidence regressions with synthetic transparent frames: uv run --locked pytest tests/test_remotion_template_probes.py."""
 
 from PIL import Image, ImageDraw
-from server.templates.models import (
+from server.remotion_templates.models import (
     CompositionConfig,
     MotionSegment,
     TemplateSpec,
     TextLayer,
 )
-from server.templates.probes import pixel_checks
+from server.remotion_templates.probes import pixel_checks
 
 
 def rectangle(path, *, box=(20, 20, 40, 40), color="#FFFFFF", background=(0, 0, 0, 0)):
@@ -129,8 +129,8 @@ def test_full_duration_hold_requires_static_frames(tmp_path):
 
 def test_font_size_probe_changes_boundary_values_with_matching_direction(tmp_path):
     """Legal small font sizes still get distinct experiments, and larger output must count as growth."""
-    from server.templates.models import TemplateCandidate
-    from server.templates.probes import parameter_probes
+    from server.remotion_templates.models import TemplateCandidate
+    from server.remotion_templates.probes import parameter_probes
 
     for size in (0.5, 1, 20, 600):
         spec = target()

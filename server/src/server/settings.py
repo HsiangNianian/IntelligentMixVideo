@@ -49,5 +49,5 @@ def load_settings() -> Settings:
     root = Path(__file__).resolve().parents[2]
     settings = Settings(_env_file=root / ".env")
     if not settings.data_dir.is_absolute():
-        settings.data_dir = Path(__file__).parent / "templates" / settings.data_dir
+        settings.data_dir = Path(__file__).parent / "remotion_templates" / settings.data_dir
     return settings

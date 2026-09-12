@@ -18,7 +18,7 @@ from .database import close_database, initialize_database
 from .sub_api.router import router
 from .sub_api.segmentation import router as segmentation_router
 from .template.router import router as template_router
-from .templates.api import app as templates_app
+from .remotion_templates.api import app as remotion_templates_app
 
 
 @asynccontextmanager
@@ -44,7 +44,7 @@ app.add_middleware(
 app.include_router(router)
 app.include_router(template_router)
 app.include_router(segmentation_router)
-app.mount("/api/templates", templates_app)
+app.mount("/api/templates", remotion_templates_app)
 
 
 @app.exception_handler(SQLAlchemyError)

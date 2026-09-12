@@ -1,4 +1,4 @@
-"""Offline sliding-window and provider protocol regressions: uv run --locked pytest tests/test_template_context.py."""
+"""Offline sliding-window and provider protocol regressions: uv run --locked pytest tests/test_remotion_template_context.py."""
 
 import asyncio
 import json
@@ -8,9 +8,9 @@ import httpx
 import pytest
 from pydantic import SecretStr
 from server.settings import Settings
-from server.templates.context import AssistantMessage, Conversation
-from server.templates.models import AnalysisResult
-from server.templates.provider import Budget, Provider
+from server.remotion_templates.context import AssistantMessage, Conversation
+from server.remotion_templates.models import AnalysisResult
+from server.remotion_templates.provider import Budget, Provider
 
 
 def exchange(identifier, content="checked"):
@@ -132,7 +132,7 @@ def test_provider_sends_real_tool_history_and_accounts_usage():
     assert budget.calls == 1 and budget.tokens == 40
     assert "index" not in result.wire()["tool_calls"][0]
     # Non-assistant responses are rejected at the transport boundary, before dispatch.
-    from server.templates.provider import ModelFailure
+    from server.remotion_templates.provider import ModelFailure
 
     with pytest.raises(ModelFailure):
         asyncio.run(

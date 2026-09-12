@@ -1,4 +1,4 @@
-"""Exercise contracts, evidence, persistence and agent behavior offline: uv run --locked pytest tests/test_templates.py."""
+"""Exercise contracts, evidence, persistence and agent behavior offline: uv run --locked pytest tests/test_remotion_templates.py."""
 
 import asyncio
 import json
@@ -17,12 +17,12 @@ from fastapi.testclient import TestClient
 from PIL import Image
 from pydantic import SecretStr, ValidationError
 from server.settings import Settings
-from server.templates.api import create_template_app
-from server.templates.context import AssistantMessage, Conversation
-from server.templates.evidence import seal_artifacts
-from server.templates.harness import CodeOutput, Harness, controls
-from server.templates.media import save_image
-from server.templates.models import (
+from server.remotion_templates.api import create_template_app
+from server.remotion_templates.context import AssistantMessage, Conversation
+from server.remotion_templates.evidence import seal_artifacts
+from server.remotion_templates.harness import CodeOutput, Harness, controls
+from server.remotion_templates.media import save_image
+from server.remotion_templates.models import (
     AnalysisResult,
     Check,
     CompositionConfig,
@@ -38,12 +38,12 @@ from server.templates.models import (
     VisualReview,
     validation_fingerprint,
 )
-from server.templates.parameters import patch_parameters, validate_candidate
-from server.templates.provider import Budget, ModelFailure, Provider, model_image
-from server.templates.renderer import Renderer
-from server.templates.runtime import Runtime
-from server.templates.store import Conflict, NotFound, Store
-from server.templates.trajectory import Trajectory
+from server.remotion_templates.parameters import patch_parameters, validate_candidate
+from server.remotion_templates.provider import Budget, ModelFailure, Provider, model_image
+from server.remotion_templates.renderer import Renderer
+from server.remotion_templates.runtime import Runtime
+from server.remotion_templates.store import Conflict, NotFound, Store
+from server.remotion_templates.trajectory import Trajectory
 
 # A maintained reference component demonstrates direct props and deterministic transparent text.
 SAMPLE_CODE = """/** Static editable text reference; the preview host loads managed fonts. */
@@ -1077,7 +1077,7 @@ def test_tampered_files_cannot_complete_or_publish(store, spec, candidate, tmp_p
 
 def test_invalid_actor_and_visual_contracts_are_repaired_internally(spec, tmp_path):
     """Malformed model output becomes bounded host steer or unknown evidence, never a successful claim."""
-    from server.templates.provider import ModelContractFailure
+    from server.remotion_templates.provider import ModelContractFailure
 
     class MalformedProvider(ScriptedProvider):
         """Fail each model role once, then permit a successful repair through real host checks."""
@@ -1204,7 +1204,7 @@ def test_task_message_binding_and_private_failures(settings, spec):
 
 def test_render_evidence_environment_revision_cannot_be_reused(settings, tmp_path):
     """Changes to managed fonts or executables invalidate the host completion receipt."""
-    from server.templates.evidence import digest
+    from server.remotion_templates.evidence import digest
 
     renderer = Renderer(settings)
     settings.font_regular = settings.font_bold = tmp_path / "font"
@@ -1226,7 +1226,7 @@ def test_render_evidence_environment_revision_cannot_be_reused(settings, tmp_pat
 
 def test_model_derived_target_is_repaired_before_freezing(spec):
     """A contradictory static/enter plan cannot become the fixed goal merely because analysis returned valid JSON."""
-    from server.templates.models import MotionSegment
+    from server.remotion_templates.models import MotionSegment
 
     class ContradictoryPlanner(ScriptedProvider):
         """First propose static visibility as an enter effect, then repair after independent rejection."""
