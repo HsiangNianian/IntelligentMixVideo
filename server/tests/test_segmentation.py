@@ -13,18 +13,19 @@ from server.segmentation import segment, segmentation
 
 
 def payload(script, transcript=None, step=200):
-    """构造每字符一个词的单调时间轴，避免大型静态 ASR 样本。"""
+    """按单音轨 fun-asr 结构构造单调时间轴；默认每字符一个词，也可传入词列表。"""
     return {
         "script": script,
         "asr_result": {
-            "sentences": [
-                {
+            "transcripts": [{
+                "channel_id": 0,
+                "sentences": [{
                     "words": [
-                        {"text": c, "begin_time_ms": i * step, "end_time_ms": (i + 1) * step}
+                        {"text": c, "begin_time": i * step, "end_time": (i + 1) * step}
                         for i, c in enumerate(script if transcript is None else transcript)
                     ]
-                }
-            ]
+                }],
+            }]
         },
     }
 
@@ -122,15 +123,15 @@ def test_all_ignored_asr_words_return_validation_error(model, client, text):
 @pytest.mark.parametrize(
     "word_index,change",
     [
-        (0, {"begin_time_ms": -1}),
-        (0, {"end_time_ms": 0}),
-        (1, {"begin_time_ms": 100}),
+        (0, {"begin_time": -1}),
+        (0, {"end_time": 0}),
+        (1, {"begin_time": 100}),
     ],
 )
 def test_ignored_asr_words_still_validate_timestamps(model, client, word_index, change):
     """空内容词的非法时间和后续词与其重叠均被拒绝，不因忽略文本跳过校验。"""
     data = payload("甲乙丙丁", [" ，\t", "甲乙丙丁"])
-    data["asr_result"]["sentences"][0]["words"][word_index].update(change)
+    data["asr_result"]["transcripts"][0]["sentences"][0]["words"][word_index].update(change)
     with pytest.raises(ValueError, match="ASR 时间必须"):
         segment(data)
     response = client.post("/segmentations", json=data)
@@ -179,9 +180,9 @@ def test_long_similar_text_and_budget(model, monkeypatch):
         lambda p: p.update(asr_result={}),
         lambda p: p.update(extra=True),
         lambda p: p.update(script="完全无关文本"),
-        lambda p: p["asr_result"]["sentences"][0]["words"][1].update(begin_time_ms=-1),
-        lambda p: p["asr_result"]["sentences"][0]["words"][1].update(end_time_ms=True),
-        lambda p: p["asr_result"]["sentences"][0]["words"][1].update(end_time_ms=10**400),
+        lambda p: p["asr_result"]["transcripts"][0]["sentences"][0]["words"][1].update(begin_time=-1),
+        lambda p: p["asr_result"]["transcripts"][0]["sentences"][0]["words"][1].update(end_time=True),
+        lambda p: p["asr_result"]["transcripts"][0]["sentences"][0]["words"][1].update(end_time=10**400),
     ],
 )
 def test_invalid_input_never_calls_model(model, client, change):
@@ -218,19 +219,99 @@ def test_model_failures_close_client(model, client, failure, status):
     assert model[1].chat.completions.create.call_count == 2
 
 
-def test_api_aliases_and_missing_config(model, client, monkeypatch):
-    """路由正确注册，兼容 fun-asr 外层与时间字段别名，缺少模型配置返回 502。"""
+def test_api_missing_config(model, client, monkeypatch):
+    """真实输入结构可通过路由；缺少模型配置返回 502。"""
     data = payload("甲乙丙丁")
-    asr = data["asr_result"]
-    for word in asr["sentences"][0]["words"]:
-        word["begin_time"] = word.pop("begin_time_ms")
-        word["end_time"] = word.pop("end_time_ms")
-    data["asr_result"] = {"transcripts": [asr]}
     response = client.post("/segmentations", json=data)
     assert response.status_code == 200
     assert response.json()["segments"][0]["text"] == data["script"]
     monkeypatch.delenv("IMV_LLM_API_KEY")
     assert client.post("/segmentations", json=data).status_code == 502
+
+
+@pytest.mark.parametrize("asr", [
+    None, {}, {"sentences": [{"words": []}]},
+    {"transcripts": None}, {"transcripts": {}}, {"transcripts": []},
+    {"transcripts": [None]}, {"transcripts": [{}]},
+    {"transcripts": [{"sentences": []}]},
+    {"transcripts": [{"sentences": [{"words": []}]}] * 2},
+])
+def test_invalid_fun_asr_structure(model, client, asr):
+    """拒绝旧外层、非法或空音轨及多音轨；直接调用与 HTTP 均在模型前失败。"""
+    data = {"script": "甲乙丙丁", "asr_result": asr}
+    with pytest.raises(ValueError) as error:
+        segment(data)
+    response = client.post("/segmentations", json=data)
+    assert response.status_code == 422
+    assert response.json() == {"error": {"message": str(error.value)}}
+    model[0].assert_not_called()
+
+
+@pytest.mark.parametrize("fields", [("begin_time",), ("end_time",), ("begin_time", "end_time")])
+def test_legacy_asr_time_fields_rejected(model, client, fields):
+    """任一真实时间字段缺失时不回退到旧 _ms 别名，返回 422 且不调用模型。"""
+    data = payload("甲乙丙丁")
+    word = data["asr_result"]["transcripts"][0]["sentences"][0]["words"][0]
+    for field in fields:
+        word[field + "_ms"] = word.pop(field)
+    with pytest.raises(ValueError, match="ASR 时间必须"):
+        segment(data)
+    response = client.post("/segmentations", json=data)
+    assert response.status_code == 422
+    assert "ASR 时间必须" in response.json()["error"]["message"]
+    model[0].assert_not_called()
+
+
+def test_real_fun_asr_excerpt(model, client):
+    """使用用户转写的前两句，验证真实词时间、空格、独立标点及跨句停顿；不访问音频。"""
+    # 保留样本原始词边界和毫秒值；无关元数据不参与对齐，原文标点来自 script。
+    sentences = [
+        {
+            "begin_time": 160, "end_time": 2400, "sentence_id": 1,
+            "text": "刚才我家人还问我，家里不是还有鸡蛋吗？",
+            "words": [
+                {"begin_time": a, "end_time": b, "text": text, "punctuation": punctuation}
+                for a, b, text, punctuation in [
+                    (160, 360, "刚才", ""), (360, 480, "我", ""),
+                    (480, 720, "家人", ""), (720, 840, "还", ""),
+                    (840, 1080, "问我", "，"), (1280, 1520, "家里", ""),
+                    (1520, 1720, "不是", ""), (1720, 1960, "还有", ""),
+                    (1960, 2280, "鸡蛋", ""), (2280, 2400, "吗", "？"),
+                ]
+            ],
+        },
+        {
+            "begin_time": 2520, "end_time": 3440, "sentence_id": 2,
+            "text": " 怎么又买一箱？",
+            "words": [
+                {"begin_time": a, "end_time": b, "text": text, "punctuation": punctuation}
+                for a, b, text, punctuation in [
+                    (2520, 2640, " 怎", ""), (2640, 2800, "么", ""),
+                    (2800, 2960, "又", ""), (2960, 3120, "买", ""),
+                    (3120, 3240, "一", ""), (3240, 3440, "箱", "？"),
+                ]
+            ],
+        },
+    ]
+    data = {
+        "script": "刚才我家人还问我，家里不是还有鸡蛋吗？怎么又买一箱？",
+        "asr_result": {
+            "properties": {"channels": [0], "original_sampling_rate": 24000},
+            "transcripts": [{"channel_id": 0, "sentences": sentences}],
+        },
+    }
+    original = json.dumps(data, ensure_ascii=False)
+    response = client.post("/segmentations", json=data)
+    assert response.status_code == 200
+    result = response.json()
+    assert result == segment(data)
+    assert json.dumps(data, ensure_ascii=False) == original
+    assert len(result["segments"]) == 1
+    assert result["segments"][0]["text"] == data["script"]
+    assert result["segments"][0]["start_time_ms"] == 160
+    assert result["segments"][0]["end_time_ms"] == 3440
+    assert result["trace"]["edit_cost"] == 0
+    assert result["warnings"] == []
 
 
 def test_model_cuts_keywords_and_protected_runs(model):
@@ -418,7 +499,9 @@ def test_api_response_contract(model, client):
     ]
     data = {
         "script": "你好世界。",
-        "asr_result": {"sentences": [{"words": [{"text": "你好世界", "begin_time_ms": 0, "end_time_ms": 2000}]}]},
+        "asr_result": {"transcripts": [{"sentences": [
+            {"words": [{"text": "你好世界", "begin_time": 0, "end_time": 2000}]}
+        ]}]},
     }
     response = client.post("/segmentations", json=data)
     assert response.status_code == 200
