@@ -47,7 +47,7 @@ uv sync --locked --default-index https://pypi.org/simple
 
 ## ASR 音频转写
 
-ASR 是独立的 Python 函数和命令行入口，尚未接入 FastAPI 路由。在 `server/` 下准备配置：
+ASR 提供独立的 Python 异步函数和命令行入口，尚未接入 FastAPI 路由。在 `server/` 下准备配置：
 
 ```sh
 cp .env.example .env
@@ -65,12 +65,14 @@ uv run --locked python -m server.asr "https://example.com/audio.wav"
 ```
 
 替换为可被云服务访问的 HTTPS 音频直链。结果写入当前目录的 `asr_result.json`，
-覆盖同名文件；保留原始 JSON 和字词时间戳，不额外分词。也可以在代码中调用：
+覆盖同名文件；保留原始 JSON 和字词时间戳，不额外分词。在异步函数中使用 `await` 调用：
 
 ```python
 from server.asr import transcribe
 
-result = transcribe("https://example.com/audio.wav", wait_seconds=1800)
+result = await transcribe("https://example.com/audio.wav", wait_seconds=1800)
 ```
 
-等待预算必须是有限正数。超时不会取消已提交的云端任务；函数不自动重试提交。
+同步脚本入口可使用 `asyncio.run(transcribe(audio_url))`；已有事件循环中使用 `await`。
+HTTP 请求与轮询等待均为异步，不阻塞事件循环。等待预算必须是有限正数。
+超时或取消本地协程不会取消已提交的云端任务；函数不自动重试提交。
