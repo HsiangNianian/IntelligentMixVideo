@@ -85,4 +85,22 @@ src/
 SDK 调整时同步核对前端动画目录与服务端白名单。预览时间线每次修改回到开头，快速修改合并后串行应用。
 
 shadcn/ui 按实际需要引入并保留第三方声明，许可位于 `public/THIRD_PARTY_NOTICES.txt`。
-本次未新增自动化测试文件；后续测试按 [AGENTS.md](../AGENTS.md) 约定补齐。
+
+## 核心测试
+
+在 `client/` 执行：
+
+```sh
+bun install --frozen-lockfile
+bun run test
+bun run build
+```
+
+使用 Bun 自带运行器、Happy DOM 和 React Testing Library，测试位于 `tests/`，每个用例上方都有中文场景注释。
+`templates.test.ts` 检查草稿隔离、效果去重与预览时间线；`api.test.ts` 检查请求契约、保存前校验和错误提示；
+`workspace.test.tsx` 检查创建更新、未保存切换、保存失败重试、另存为和确认删除。
+`bun run build` 同时检查源码和测试的 TypeScript 类型，CI 在前端构建前执行这些测试。
+
+测试固定 API 与示例视频地址并拦截 fetch，不需要启动后端、MySQL 或下载 SDK。
+工作区测试使用真实表单、Radix 选择器和弹窗，以轻量组件代替 SDK 播放器；不验证实际视频播放、字体排版或 Tauri 原生能力。
+Happy DOM 的小数 step 校验与浏览器不同，保存流程直接触发表单提交；浏览器原生表单约束仍需浏览器验证。

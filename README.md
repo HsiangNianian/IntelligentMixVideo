@@ -59,6 +59,8 @@ bun run tauri dev
 最小改动与源码注释要求见 [AGENTS.md](AGENTS.md)。
 
 ```sh
+# 运行客户端核心测试（不需要后端或 SDK）
+bun run test
 # 编译前端（包含 TypeScript 检查）
 bun run build
 # 编译桌面程序和安装包
@@ -76,7 +78,7 @@ push / PR 统一由 `validation.yml` 按改动范围调度，避免每次提交�
 | 事件 | 检查与构建 |
 | --- | --- |
 | 开发分支 push | 按改动检查；同一提交已有 PR 时跳过重复任务 |
-| PR | 前端构建、服务端 pytest / 包构建按需执行；涉及 Rust/Tauri、客户端依赖或 CI 时做四平台原生编译检查，不打包 |
+| PR | 前端核心测试与构建、服务端 pytest / 包构建按需执行；涉及 Rust/Tauri、客户端依赖或 CI 时做四平台原生编译检查，不打包 |
 | 默认分支 push | 按需验证集成结果；客户端或 CI 改动生成四平台安装包 |
 | 正式 tag | 完整四平台打包、附件校验及 Release 发布 |
 | 手动运行 | Validate project 执行全部检查；Build client 生成全部安装包 |
