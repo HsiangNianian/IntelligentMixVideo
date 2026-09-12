@@ -62,8 +62,16 @@ test("模板 API 等待或失败时仍能编辑预览并保护新建草稿", asy
   fireEvent.change(name, { target: { value: "本地草稿" } });
   fireEvent.change(screen.getByLabelText("示例文字"), { target: { value: "等待 API 时编辑" } });
   expect(screen.getByLabelText("预览标题").textContent).toBe("等待 API 时编辑");
+  // 提交表单也不能绕过加载保护；新建弹窗的保存入口遵守相同限制。
+  fireEvent.submit(name.closest("form")!);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
   fireEvent.click(screen.getByRole("button", { name: "新建模板" }));
-  fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "取消" }));
+  const dialog = await screen.findByRole("dialog");
+  const saveAndSwitch = within(dialog).getByRole<HTMLButtonElement>("button", { name: "保存并切换" });
+  expect(saveAndSwitch.disabled).toBe(true);
+  fireEvent.click(saveAndSwitch);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
   expect(name.value).toBe("本地草稿");
   fireEvent.click(screen.getByRole("button", { name: "新建模板" }));
   fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "放弃修改" }));

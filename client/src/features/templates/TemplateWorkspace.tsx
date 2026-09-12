@@ -227,9 +227,6 @@ export function TemplateWorkspace() {
           <form
             onSubmit={(event) => {
               event.preventDefault();
-              void perform(() => persist());
-            onSubmit={(event) => {
-              event.preventDefault();
               if (loading) return;
               void perform(() => persist());
             }}
@@ -378,8 +375,9 @@ export function TemplateWorkspace() {
                   </Button>
                   <Button
                     type="button"
-                    disabled={busy}
+                    disabled={busy || loading}
                     onClick={() => {
+                      if (loading) return;
                       void perform(async () => {
                         await persist();
                         await switchTo(action.target);
