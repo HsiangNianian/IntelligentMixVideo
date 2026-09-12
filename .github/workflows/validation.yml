@@ -91,6 +91,7 @@ jobs:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-${{ runner.arch }}-bun-${{ hashFiles('client/bun.lock', 'client/package.json') }}
       - run: bun install --frozen-lockfile
+      - run: bun run test
       - run: bun run build
 
   server:

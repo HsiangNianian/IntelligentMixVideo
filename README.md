@@ -18,12 +18,12 @@ Structure
 ---------
 
 - `client/`：Rust + Tauri 2 + React + TypeScript 桌面客户端，使用 Tailwind CSS 4 和 shadcn/ui。
-- `server/`：Python + FastAPI 服务端，提供首页和用户路由示例。
+- `server/`：Python + FastAPI + MySQL 服务端，提供模板持久化 API、文案切片接口，以及首页和用户路由示例。
 
 服务端运行
 ----------
 
-安装 Python 3.12+ 和 uv，然后执行：
+安装 Python 3.12+、uv 和 MySQL，启动 MySQL 并按 [服务端说明](server/README.md) 填写 `server/.env`，然后执行以下命令；后端启动时会自动创建缺失的数据库：
 
 ```sh
 cd server
@@ -31,8 +31,12 @@ uv run server
 ```
 
 默认监听 http://127.0.0.1:8000，API 文档位于 http://127.0.0.1:8000/docs。
-仓库根目录使用 `uv run --project server server`。路由仍返回示例数据，详情见 [server/README.md](server/README.md)。
+仓库根目录使用 `uv run --project server server`。模板 API 统一使用 `/template` 前缀，POST 通过可选 `template_id` 区分创建和完整更新；详情见 [server/README.md](server/README.md)。
 服务端在项目配置中将官方 PyPI 设为默认依赖索引，与 `server/uv.lock` 的来源保持一致，避免本机默认镜像同步滞后导致版本无法解析。
+
+`POST /segmentations` 将文案与单音轨 Fun-ASR 原始结果切为带时间和关键词的片段；输入必须恰好包含一个 `transcripts` 元素，词时间使用 `begin_time/end_time` 毫秒，不接受顶层 `sentences` 或仅有旧 `*_ms` 时间字段的输入。模型配置使用 `server/.env.example` 中的 `IMV_` 变量；从仓库根目录启动且需要该配置时使用 `uv run --project server --env-file server/.env server`。请求与处理约束见 [server/README.md](server/README.md#文案切片)。
+
+ASR 转写另提供独立 Python 函数与命令行入口，读取北京地域的 `DASHSCOPE_API_KEY`，尚未注册 HTTP 路由；用法见 [ASR 音频转写](server/README.md#asr-音频转写)。
 
 客户端运行
 ----------
@@ -51,11 +55,17 @@ bun install --frozen-lockfile
 bun run tauri dev
 ```
 
-首页显示本机当前日期和时间，每秒更新，组件位于 `client/src/components/CurrentTime.tsx`。
+首页提供模板创建、选择、完整编辑、保存、重命名、另存为和删除，切换前保护未保存修改。
+模板功能本次以 `bun run dev` 启动后在 `http://localhost:1420` 使用，预览沿用阿里云 SDK 5.2.2。
+示例视频可在 `client/.env` 中通过 `VITE_PREVIEW_VIDEO_URL` 配置，修改后重启前端；详见 [客户端说明](client/README.md#示例视频配置)。
+客户端 API 地址通过 `client/.env` 中的 `VITE_API_URL` 配置，未配置或留空时默认 `http://localhost:8000`。
+端口冲突时可按服务端说明改为 8010，并同步设置 `VITE_API_URL=http://localhost:8010`。模板库共享，不迁移旧项目数据。
 客户端按页面、业务组件、基础 UI 和共享工具分层；结构见 [client/README.md](client/README.md)，
 最小改动与源码注释要求见 [AGENTS.md](AGENTS.md)。
 
 ```sh
+# 运行客户端核心测试（不需要后端或 SDK）
+bun run test
 # 编译前端（包含 TypeScript 检查）
 bun run build
 # 编译桌面程序和安装包
@@ -73,7 +83,7 @@ push / PR 统一由 `validation.yml` 按改动范围调度，避免每次提交�
 | 事件 | 检查与构建 |
 | --- | --- |
 | 开发分支 push | 按改动检查；同一提交已有 PR 时跳过重复任务 |
-| PR | 前端构建、服务端 pytest / 包构建按需执行；涉及 Rust/Tauri、客户端依赖或 CI 时做四平台原生编译检查，不打包 |
+| PR | 前端核心测试与构建、服务端 pytest / 包构建按需执行；涉及 Rust/Tauri、客户端依赖或 CI 时做四平台原生编译检查，不打包 |
 | 默认分支 push | 按需验证集成结果；客户端或 CI 改动生成四平台安装包 |
 | 正式 tag | 完整四平台打包、附件校验及 Release 发布 |
 | 手动运行 | Validate project 执行全部检查；Build client 生成全部安装包 |
