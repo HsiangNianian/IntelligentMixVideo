@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import ts from "typescript";
 import prettier from "prettier";
 import { bundle } from "@remotion/bundler";
+import { exportTemplate, buildPresentation } from "./presentation.mjs";
 import {
   openBrowser,
   selectComposition,
@@ -176,7 +177,7 @@ function sourcePolicy(code) {
 /** Typecheck candidate and the actual default-props call site against installed declarations. */
 function typecheck() {
   const program = ts.createProgram(
-    [`${root}/Template.tsx`, `${root}/contract.tsx`],
+    [`${root}/Template.tsx`, `${root}/Export.tsx`, `${root}/contract.tsx`],
     {
       strict: true,
       noEmit: true,
@@ -208,13 +209,14 @@ function entrypoint() {
 import React from 'react';
 import {Composition, registerRoot, delayRender, continueRender, cancelRender, staticFile} from 'remotion';
 import Template from './Template';
+import Export from './Export';
 const handle = delayRender('managed fonts');
 Promise.all([400,700].map(async weight => {
   const face = new FontFace('Noto Sans CJK SC', 'url(' + staticFile('font-' + weight + '.ttc') + ')', {weight:String(weight)});
   document.fonts.add(await face.load());
 })).then(() => continueRender(handle)).catch(cancelRender);
 /** Compose the transparent candidate at its declared dimensions and frame rate. */
-const Root = () => <Composition id="Template" component={Template} defaultProps={${config}} width={${composition.width}} height={${composition.height}} fps={${composition.fps}} durationInFrames={${composition.duration_in_frames}} />;
+const Root = () => <><Composition id="Template" component={Template} defaultProps={${config}} width={${composition.width}} height={${composition.height}} fps={${composition.fps}} durationInFrames={${composition.duration_in_frames}} /><Composition id="Export" component={Export} defaultProps={{}} width={${composition.width}} height={${composition.height}} fps={${composition.fps}} durationInFrames={${composition.duration_in_frames}} /></>;
 registerRoot(Root);
 `;
 }
@@ -228,13 +230,24 @@ async function main() {
       return prettier.format(request.code, { parser: "typescript" });
     });
     await fs.writeFile(`${root}/Template.tsx`, code);
+    await check("export_source", async () => {
+      const exported = await exportTemplate(
+        code,
+        request.config,
+        request.composition,
+      );
+      await fs.writeFile(`${root}/Export.tsx`, exported);
+    });
     await fs.symlink("/renderer/node_modules", `${root}/node_modules`);
     await fs.writeFile(
       `${root}/contract.tsx`,
-      `/** Verify actual component props. */\nimport React from 'react';\nimport Template from './Template';\nconst props = ${JSON.stringify(request.config)};\nconst element = <Template {...props} />;\n`,
+      `/** Verify source props and default export call sites. */\nimport React from 'react';\nimport Template from './Template';\nimport Export from './Export';\nconst props = ${JSON.stringify(request.config)};\nconst element = <Template {...props} />;\nconst exported = <Export />;\n`,
     );
     await fs.writeFile(`${root}/entry.tsx`, entrypoint());
     await check("typescript", async () => typecheck());
+    await check("interactive_bundle", () =>
+      buildPresentation(root, request.config, request.composition),
+    );
     const serveUrl = await check("bundle", () =>
       bundle({
         entryPoint: `${root}/entry.tsx`,
@@ -306,6 +319,30 @@ async function main() {
         crypto.createHash("sha256").update(second).digest("hex")
       )
         throw new Error("Repeated frame changed after out-of-order rendering.");
+    });
+    await check("export_defaults", async () => {
+      const exportedComposition = await selectComposition({
+        serveUrl,
+        id: "Export",
+        inputProps: {},
+        puppeteerInstance: browser,
+      });
+      await renderStill({
+        ...options,
+        composition: exportedComposition,
+        inputProps: {},
+        frame: request.frames[0],
+        imageFormat: "png",
+        output: `${root}/export-default.png`,
+      });
+      const original = await fs.readFile(
+        `${root}/frame-${request.frames[0]}.png`,
+      );
+      const exported = await fs.readFile(`${root}/export-default.png`);
+      if (!original.equals(exported))
+        throw new Error(
+          "Export defaults differ from accepted parameter rendering.",
+        );
     });
   } catch (error) {
     if (!checks.some((item) => item.status === "fail"))

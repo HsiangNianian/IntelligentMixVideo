@@ -23,6 +23,16 @@ def seal_artifacts(
 ) -> None:
     """Capture only actual output bytes, after the renderer has stopped all child processes."""
     names = ["Template.tsx", "candidate.json", "spec.json"]
+    for check_name, artifacts in (
+        ("interactive_bundle", ["interactive.js"]),
+        ("export_source", ["Export.tsx"]),
+        ("export_defaults", ["export-default.png"]),
+    ):
+        if any(
+            check.name == check_name and check.status == "pass"
+            for check in report.checks
+        ):
+            names += artifacts
     if any(
         check.name == "render" and check.status == "pass" for check in report.checks
     ):
@@ -50,6 +60,16 @@ def verify_artifacts(
 ) -> None:
     """Bracket model review and completion with current byte checks; no self-reported evidence is accepted."""
     required = {"Template.tsx", "candidate.json", "spec.json"}
+    for check_name, artifact in (
+        ("interactive_bundle", "interactive.js"),
+        ("export_source", "Export.tsx"),
+        ("export_defaults", "export-default.png"),
+    ):
+        if any(
+            check.name == check_name and check.status == "pass"
+            for check in report.checks
+        ):
+            required.add(artifact)
     if any(
         check.name == "render" and check.status == "pass" for check in report.checks
     ):

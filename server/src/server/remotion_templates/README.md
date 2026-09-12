@@ -20,7 +20,7 @@ PNG/JPEG/WebP，默认最多 10 MiB、两千万像素，去除元数据并缩放
 生成与渲染目前要求 Linux、Node 24、Bun 1.4.2、bubblewrap、util-linux 的 prlimit、
 Chrome/Chromium、FFmpeg 的 `ffprobe`，以及 Noto Sans CJK 的常规/粗体 TTC 字体。根据本机调整
 `IMV_BROWSER_EXECUTABLE`、`IMV_FONT_REGULAR` 和 `IMV_FONT_BOLD`；默认路径对应开发主机。
-只有受管 `Noto Sans CJK SC` 400/700 两种字重，不提供字体上传或下载 API。
+只有受管 `Noto Sans CJK SC` 400/700 两种字重，不提供字体上传；预览端点仅提供与成功版本指纹匹配的受管字体。
 
 在 `server/` 执行：
 
@@ -61,6 +61,8 @@ Provider 不打印密钥或原始错误响应。部署时可通过环境变量�
 | 增量事件轮询 | `GET /jobs/{id}/events?after=0`，使用返回的 `next_cursor` |
 | 取消、重试 | `POST /jobs/{id}/cancel`、`/retry` |
 | 可用结果下载链接，无结果时为空列表 | `GET /jobs/{id}/artifacts` |
+| 隔离 Player 页面 | `GET /versions/{id}/preview` |
+| 对应版本的受管字体 | `GET /versions/{id}/fonts/{weight}`，仅 400/700 |
 | 下载已验收代码、PNG 或 MP4 | `GET /versions/{id}/artifacts/{filename}` |
 
 ```json
@@ -95,6 +97,18 @@ Provider 不打印密钥或原始错误响应。部署时可通过环境变量�
 `x-imv-target` 将控件绑定到 `TemplateSpec` 的标量路径。参数修改同时更新默认值和验收目标，
 保留 TSX 字节不变，再次渲染验收。结构和时间轴修改需要重新生成代码。
 旧 XLS 模板的配置结构与此不同，不承诺可以直接运行旧模板。
+
+客户端复制使用 `Export.tsx`：保留原组件，增加可选 props 包装及当前成功参数的默认值，
+并导出画布、帧率和时长常量。消费方需安装 React/Remotion 并加载受管字体；不包含背景视频。
+每次验收同时编译导出并以空 props 渲染一帧，与原参数渲染的 PNG 字节比较，防止复制时丢失默认值。
+`Template.tsx` 仍保留原始扁平 props 契约，参数修改不会改写它。
+
+`presentation.mjs` 将 `preview-host.tsx`、当前组件和参数打成 `interactive.js`；
+新版本把交互包、导出及导出首帧加入 SHA-256 清单，两个新增宿主源码也加入运行时指纹。
+`/preview` 验证清单后嵌入该包，使用 CSP sandbox，不允许同源权限或任意 fetch；字体及媒体可加载。
+父页面通过 URL fragment 通道发送参数、背景 URL 和请求编号，Player 在字体及媒体就绪并绘制首帧后确认对应编号。
+正常播放不重复触发加载锁。字体文件变更、产物缺失或被修改时返回 404。
+旧版本缺少交互包或 Export 时也返回 404，重新生成后才提供新的预览能力。
 
 `context.py` 保留单模板任务内最近 8 组完整 user/assistant/tool 交互，总 UTF-8 大小不超过
 240,000 字节，超限时按组裁剪，不拆散 tool calls 与对应结果，不截断代码。

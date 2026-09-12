@@ -39,7 +39,12 @@ from server.remotion_templates.models import (
     validation_fingerprint,
 )
 from server.remotion_templates.parameters import patch_parameters, validate_candidate
-from server.remotion_templates.provider import Budget, ModelFailure, Provider, model_image
+from server.remotion_templates.provider import (
+    Budget,
+    ModelFailure,
+    Provider,
+    model_image,
+)
 from server.remotion_templates.renderer import Renderer
 from server.remotion_templates.runtime import Runtime
 from server.remotion_templates.store import Conflict, NotFound, Store
@@ -305,6 +310,13 @@ def publish_fixture(store, job_id, candidate, spec, report):
     (directory / "candidate.json").write_text(candidate.model_dump_json())
     (directory / "spec.json").write_text(spec.model_dump_json())
     (directory / "preview.mp4").write_bytes(b"offline media fixture")
+    if any(check.name == "interactive_bundle" for check in report.checks):
+        (directory / "interactive.js").write_text(
+            'const title = "</script><script>bad</script>";'
+        )
+        (directory / "Export.tsx").write_text(
+            candidate.tsx_code + "\n// Export fixture"
+        )
     for frame in report.frames:
         Image.new("RGBA", (64, 64), "white").save(directory / f"frame-{frame}.png")
     seal_artifacts(candidate, spec, report, directory)
@@ -522,7 +534,14 @@ def test_renderer_timeout_and_cancellation_reap_process(
     """Use a real harmless subprocess to prove deadlines and cancellation stop execution without browser dependencies."""
     inputs = tmp_path / "renderer-inputs"
     inputs.mkdir()
-    for name in ("worker.mjs", "bun.lock", "font", "browser"):
+    for name in (
+        "worker.mjs",
+        "presentation.mjs",
+        "preview-host.tsx",
+        "bun.lock",
+        "font",
+        "browser",
+    ):
         (inputs / name).write_text("offline test fixture")
     settings.renderer_dir = inputs
     settings.font_regular = settings.font_bold = inputs / "font"
@@ -862,6 +881,11 @@ def test_real_isolated_renderer(settings, candidate, spec, tmp_path):
             "motion_evidence",
         } <= {check.name for check in report.checks}
         assert (tmp_path / "first" / "preview.mp4").stat().st_size > 1000
+        assert {"interactive_bundle", "export_source", "export_defaults"} <= {
+            check.name for check in report.checks
+        }
+        assert (tmp_path / "first" / "interactive.js").stat().st_size > 1000
+        assert "IMVExportDefaults" in (tmp_path / "first" / "Export.tsx").read_text()
         with Image.open(tmp_path / "first" / "frame-2.png") as frame:
             assert frame.size == (320, 240)
             assert frame.convert("RGBA").getchannel("A").getbbox() is not None
@@ -1367,3 +1391,58 @@ def test_task_windows_are_isolated_and_replace_old_storage(tmp_path):
     assert store.conversation(first.id).messages()[-1]["content"] == "latest"
     with store.connection() as db:
         assert db.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] == 1
+
+
+def test_interactive_preview_and_export_are_sealed(settings, spec, candidate, tmp_path):
+    """交互预览、导出和字体均绑定成功版本；脚本闭合标签、篡改和越权路径不可绕过校验。"""
+    from server.remotion_templates.evidence import digest
+
+    application = create_app(
+        settings, provider=ScriptedProvider(spec), renderer=ScriptedRenderer()
+    )
+    with TestClient(application) as client:
+        assert client.get("/api/templates/capabilities").status_code == 200
+        service = application.state.template_app.state.runtime
+        work, job = service.store.create(
+            GenerateTemplateRequest(description="preview fixture")
+        )
+        service.store.claim()
+        settings.font_regular = settings.font_bold = tmp_path / "font.ttc"
+        settings.font_regular.write_bytes(b"isolated font fixture")
+        report = evidence(candidate, spec)
+        report.checks += [
+            Check(name=name, status="pass", detail="Offline fixture")
+            for name in ("interactive_bundle", "export_source")
+        ]
+        report.runtime = {
+            "font_400": digest(settings.font_regular),
+            "font_700": digest(settings.font_bold),
+        }
+        report.fingerprint = validation_fingerprint(candidate, spec, report.runtime)
+        accepted = publish_fixture(service.store, job.id, candidate, spec, report)
+        base = f"/api/templates/versions/{accepted.id}"
+        response = client.get(base + "/preview")
+        assert response.status_code == 200
+        assert "sandbox allow-scripts" in response.headers["content-security-policy"]
+        assert "allow-same-origin" not in response.headers["content-security-policy"]
+        assert "connect-src 'none'" in response.headers["content-security-policy"]
+        assert "</script><script>bad" not in response.text
+        assert "<\\/script>" in response.text
+        exported = client.get(base + "/artifacts/Export.tsx")
+        assert exported.status_code == 200 and "// Export fixture" in exported.text
+        font = client.get(base + "/fonts/400")
+        assert font.status_code == 200 and font.content == b"isolated font fixture"
+        assert font.headers["access-control-allow-origin"] == "*"
+        assert client.get(base + "/fonts/900").status_code == 404
+        settings.font_regular.write_bytes(b"changed")
+        assert client.get(base + "/fonts/400").status_code == 404
+        assert client.get(base + "/artifacts/candidate.json").status_code == 404
+        (
+            service.store.root / "accepted" / str(accepted.id) / "interactive.js"
+        ).write_text("changed")
+        assert client.get(base + "/preview").status_code == 404
+        assert client.get(base + "/artifacts/Export.tsx").status_code == 404
+        assert service.store.project(work.id).current_version_id == accepted.id
+        assert (
+            client.get(f"/api/templates/versions/{uuid4()}/preview").status_code == 404
+        )

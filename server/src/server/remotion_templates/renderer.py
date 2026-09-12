@@ -55,6 +55,8 @@ class Renderer:
             "font_400": self.settings.font_regular,
             "font_700": self.settings.font_bold,
             "worker": self.settings.renderer_dir / "worker.mjs",
+            "presentation": self.settings.renderer_dir / "presentation.mjs",
+            "preview_host": self.settings.renderer_dir / "preview-host.tsx",
             "dependencies": self.settings.renderer_dir / "bun.lock",
             "browser": self.settings.browser_executable,
             "node_binary": Path(shutil.which("node") or "/usr/bin/node").resolve(),
@@ -217,6 +219,12 @@ class Renderer:
             report.runtime["worker"] = hashlib.sha256(
                 (settings.renderer_dir / "worker.mjs").read_bytes()
             ).hexdigest()
+            report.runtime["presentation"] = digest(
+                settings.renderer_dir / "presentation.mjs"
+            )
+            report.runtime["preview_host"] = digest(
+                settings.renderer_dir / "preview-host.tsx"
+            )
             report.runtime["dependencies"] = hashlib.sha256(
                 (settings.renderer_dir / "bun.lock").read_bytes()
             ).hexdigest()

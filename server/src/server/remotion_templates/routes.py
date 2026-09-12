@@ -6,9 +6,9 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 
-from .evidence import verify_artifacts
+from .evidence import digest, verify_artifacts
 from .media import save_image
 from .models import (
     Asset,
@@ -249,7 +249,10 @@ async def retry(job_id: UUID, service: Service) -> PublicJob:
 def artifact_path(service: Runtime, version_id: UUID, filename: str) -> Path:
     """Resolve only sealed accepted output; failed attempts have no public download route."""
     version = service.store.version(version_id)
-    if not re.fullmatch(r"Template\.tsx|preview\.mp4|frame-\d+\.png", filename):
+    if not re.fullmatch(
+        r"Template\.tsx|Export\.tsx|interactive\.js|preview\.mp4|frame-\d+\.png",
+        filename,
+    ):
         raise NotFound("artifact not found")
     directory = service.store.root / "accepted" / str(version.id)
     try:
@@ -273,7 +276,9 @@ def artifacts(job_id: UUID, service: Service) -> list[dict]:
     version = service.store.version(job.result_version_id)
     result = []
     for name in version.validation.artifacts:
-        if not re.fullmatch(r"Template\.tsx|preview\.mp4|frame-\d+\.png", name):
+        if not re.fullmatch(
+            r"Template\.tsx|Export\.tsx|preview\.mp4|frame-\d+\.png", name
+        ):
             continue
         artifact_path(service, version.id, name)
         result.append(
@@ -291,8 +296,60 @@ def artifacts(job_id: UUID, service: Service) -> list[dict]:
     summary="下载可用模板代码或预览",
 )
 def download(version_id: UUID, filename: str, service: Service) -> FileResponse:
-    """下载已验收版本的 Template.tsx、preview.mp4 或 frame-N.png。
+    """下载已验收版本的 Template.tsx、带默认参数的 Export.tsx、preview.mp4 或 frame-N.png。
 
     下载内容与验收时的文件一致；不存在、被修改或属于内部诊断的文件返回 404。
     """
     return FileResponse(artifact_path(service, version_id, filename), filename=filename)
+
+
+@router.get(
+    "/versions/{version_id}/preview",
+    response_class=HTMLResponse,
+    tags=["生成产物"],
+    summary="打开交互预览",
+)
+def preview(version_id: UUID, service: Service) -> HTMLResponse:
+    """返回成功版本的隔离播放器，支持背景视频与实时参数；旧版本缺少预览包时返回 404。
+
+    父页面以 iframe 加载，使用 URL fragment 作为消息通道标识；只交换参数、背景链接及就绪通知。
+    """
+    script = (
+        artifact_path(service, version_id, "interactive.js")
+        .read_text()
+        .replace("</", "<\\/")
+    )
+    return HTMLResponse(
+        '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width">'
+        "<title>Remotion 字效预览</title><style>html,body,#root{margin:0;width:100%;height:100%;overflow:hidden}"
+        "body{color:#fff;background-color:#25252b;background-image:conic-gradient(#35353d 25%,transparent 0 50%,#35353d 0 75%,transparent 0);background-size:24px 24px;font-family:sans-serif}</style>"
+        '<body><div id="root"></div><script>' + script + "</script></body></html>",
+        headers={
+            "Content-Security-Policy": "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src http: https:; media-src http: https: data:; connect-src 'none'; base-uri 'none'; form-action 'none'",
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+        },
+    )
+
+
+@router.get(
+    "/versions/{version_id}/fonts/{weight}", tags=["生成产物"], summary="读取预览字体"
+)
+def preview_font(version_id: UUID, weight: int, service: Service) -> FileResponse:
+    """仅提供与该成功版本渲染时指纹相同的受管字体；字体变更或字重不支持时返回 404。"""
+    version = service.store.version(version_id)
+    if weight not in {400, 700}:
+        raise NotFound("font not found")
+    font = (
+        service.settings.font_regular if weight == 400 else service.settings.font_bold
+    )
+    try:
+        if digest(font) != version.validation.runtime.get(f"font_{weight}"):
+            raise ValueError("font changed")
+    except (OSError, ValueError) as exc:
+        raise NotFound("accepted font unavailable") from exc
+    return FileResponse(
+        font,
+        media_type="font/collection",
+        headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"},
+    )
