@@ -32,6 +32,7 @@ uv run server
 
 默认监听 http://127.0.0.1:8000，API 文档位于 http://127.0.0.1:8000/docs。
 仓库根目录使用 `uv run --project server server`。路由仍返回示例数据，详情见 [server/README.md](server/README.md)。
+服务端在项目配置中将官方 PyPI 设为默认依赖索引，与 `server/uv.lock` 的来源保持一致，避免本机默认镜像同步滞后导致版本无法解析。
 
 服务端另提供 `POST /segmentations`，将文案与已有 ASR 词级时间轴切为带时间和关键词的片段，配置及请求示例见 [server/README.md](server/README.md)。
 

@@ -10,6 +10,7 @@
 - `server/` 使用 Python + FastAPI，当前提供首页、用户路由示例与 `POST /segmentations` 文案切片接口，尚未接入用户存储。包内导入使用相对路径，向应用注册 `APIRouter` 实例。
 - 文案切片集中在 `server/src/server/sub_api/segmentation.py` 的单个 `segment` 函数，按本次需求不拆分类或辅助模块。输入正确文案与已有 ASR 词级时间轴，波前对齐、时间投射、时长与关键词校验由代码完成，模型只给切点和候选词；不调用 TTS/ASR，不降级模型失败。配置读取当前目录 `.env` 与优先级更高的 `IMV_` 环境变量；测试使用合成时间轴和模型替身。
 - 在 `server/` 下执行 `uv run server` 启动 Uvicorn，默认监听 `127.0.0.1:8000`；仓库根目录使用 `uv run --project server server`。维护 `server/uv.lock`，CI 使用 `--locked` 验证依赖。
+- `server/pyproject.toml` 显式将官方 PyPI 设为 uv 默认索引，与锁文件来源保持一致。遇到依赖版本不可用时先检查索引覆盖配置和镜像同步情况，不要仅为绕过镜像缺失而降低依赖版本或删除锁文件。
 - 当前客户端保持最小可运行结构。`App.tsx` 挂载 `pages/HomePage.tsx`，首页引用独立的 `components/CurrentTime.tsx`，按本机时区显示日期和时间，每秒刷新。
 - 时间组件需在卸载时清理定时器。新增界面功能时遵循组件化结构，不把所有逻辑堆到 App 首页。
 - 项目长期方向见 README；其中提到的云剪辑、Agent、素材召回等功能不代表已经实现，也不构成自动扩展当前任务范围的要求。
