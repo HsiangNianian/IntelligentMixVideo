@@ -9,6 +9,7 @@
 - `client/src/` 存放 React 前端；`client/src-tauri/` 存放 Rust 桌面入口、Tauri 配置和图标。
 - `server/` 使用 Python + FastAPI + MySQL，提供模板持久化 API 与 `POST /segmentations` 文案切片接口，首页与用户路由仍为示例、尚未接入用户存储。包内导入使用相对路径，向应用注册 `APIRouter` 实例。
 - 模板模块位于 `server/src/server/template/`，与用户示例目录 `sub_api/` 平级；路由、配置校验、数据库存储与效果目录均放在该模块内。
+- `server/src/server/asr/` 提供独立的 `transcribe` 函数与 `python -m server.asr` 命令行入口，尚未注册 HTTP 路由；通过北京地域 Fun-ASR 接收 HTTPS 音频直链并返回原始转写 JSON。`DASHSCOPE_API_KEY` 在模块加载时读取一次，优先源码 `server/.env`，不存在时回退工作目录 `.env`，进程环境变量优先；测试隔离文件、密钥、HTTP 和轮询等待。
 - 文案切片集中在 `server/src/server/segmentation/segmentation.py` 的单个 `segment` 函数，由包入口导出；`sub_api/segmentation.py` 只负责 HTTP 路由及错误转换。输入正确文案与已有 ASR 词级时间轴，波前对齐、时间投射、时长与关键词校验由代码完成，模型只给切点和候选词；不调用 TTS/ASR，不降级模型失败。配置由 `segmentation/settings.py` 的 Pydantic Settings 自动读取当前目录 `.env` 与优先级更高的 `IMV_` 环境变量，校验类型和范围且不缓存；测试使用合成时间轴和模型替身。
 - 提示词保持简短，优先保留独立信息点的已有分句切点，避免按主题合并；6～8字为节奏偏好，不保证10字上限。关键词全篇优先3～4个且须逐项匹配所属片段，保留空数组位置；不改变既有时长约束、毫秒单位及响应结构。
 - 在 `server/` 下执行 `uv run server` 启动 Uvicorn，默认监听 `127.0.0.1:8000`；仓库根目录使用 `uv run --project server server`。维护 `server/uv.lock`，CI 使用 `--locked` 验证依赖。
@@ -44,7 +45,7 @@
 
 - 模板库共享，不包含登录、用户隔离或旧数据迁移。配置存入 MySQL，使用 SQLAlchemy 和 PyMySQL。
 - 数据库配置由 `database.py` 的 `DatabaseSettings`（`pydantic-settings`）自动读取固定的 `server/.env`，字段为 `DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD`、`DB_NAME`，进程环境变量优先；端口校验 1～65535，库名校验 1～64 字符。启动初始化时加载，修改后重启服务。真实环境文件不得入库，维护无密码示例 `.env.example`。
-- 数据库与切片模型配置共用 `server/.env.example`；从 `server/` 启动可读取两组配置，根目录启动且需要切片模型配置时使用 `uv run --project server --env-file server/.env server`，因为切片设置按当前目录查找 `.env`。
+- 数据库、ASR 与切片模型配置共用 `server/.env.example`；从 `server/` 启动可读取全部配置，根目录启动且需要切片模型配置时使用 `uv run --project server --env-file server/.env server`，因为切片设置按当前目录查找 `.env`。
 - FastAPI lifespan 启动时连接目标库，仅在 MySQL 返回 1049（库不存在）时通过临时无库连接执行 `CREATE DATABASE IF NOT EXISTS`，使用 `utf8mb4` / `utf8mb4_bin` 并正确引用库名；已有库直接复用。配置无效、连接或建库失败时停止启动，建库账号须具备对应权限。首次模板请求自动创建缺失表；运行中的数据库失败返回可重试的 503。启动失败和退出时释放连接池，临时建库连接始终关闭。
 - 四个路由为 `GET /template`、`POST /template`、`GET /template/{template_id}`、`DELETE /template/{template_id}`。POST 无 ID 创建（201），有 ID 完整更新（200）；不存在的 ID 返回 404，不做 upsert。
 - 名称去除首尾空白后不能为空，MySQL 唯一约束拒绝重名（409）；保存校验数值范围、效果目录与动画互斥关系（422）。服务端生成 ID、UTC 时间和效果参数快照，不接受客户端渲染参数。
@@ -60,7 +61,7 @@
 - 客户端核心测试在 `client/tests/`，使用 Bun 自带运行器、Happy DOM 和 React Testing Library；在 `client/` 执行 `bun run test`，每个用例上方写中文场景注释。测试隔离 HTTP 与 SDK，不连接真实服务；只覆盖必要业务行为，不把模拟 DOM 验证等同于真实视频播放、浏览器原生表单校验或 Tauri 验证。`bun run build` 同时检查测试类型。
 - 根据功能适用范围覆盖正常流程、异常输入、边界值、空数据、失败恢复、资源清理，以及涉及的权限、并发与幂等行为。不存在的能力不为凑覆盖率编写空测试；提交说明列出已覆盖场景与实际限制。
 - API 用例应检查状态码、响应契约和副作用。测试隔离外部服务、密钥和持久化数据，使用 fixture、monkeypatch 或临时目录；不得访问生产系统、依赖执行顺序或使用无界等待。
-- 共享服务端夹具保留临时 SQLite 数据库隔离，同时自动清除外部 `IMV_` 环境变量并切换临时目录，避免读取本机模型配置；配置用例显式注入，不访问真实 MySQL 或模型服务。
+- 共享服务端夹具保留临时 SQLite 数据库隔离，同时自动清除外部 `IMV_`、`DASHSCOPE_API_KEY` 与旧 `ASR_BASE_URL` 环境变量并切换临时目录，避免读取本机模型配置；ASR 首次导入屏蔽 `.env`，请求使用内存传输。配置用例显式注入，不访问真实 MySQL、ASR 或模型服务。
 - 文件头说明测试范围与执行方式，测试函数/夹具的 docstring 说明场景和期望。每次功能改动运行相关用例，交付前运行所属模块的完整测试；CI 使用锁定依赖运行服务端 pytest，测试失败必须修复。
 - 服务端目录执行 `uv run --locked pytest -v`；仓库根目录执行 `uv run --locked --project server pytest server/tests -v`。pytest 仅作为开发依赖维护在 `server/pyproject.toml` 和 `server/uv.lock`。
 

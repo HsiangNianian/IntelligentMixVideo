@@ -36,6 +36,8 @@ uv run server
 
 `POST /segmentations` 将文案与已有 ASR 词级时间轴切为带时间和关键词的片段。模型配置使用 `server/.env.example` 中的 `IMV_` 变量；从仓库根目录启动且需要该配置时使用 `uv run --project server --env-file server/.env server`。请求与处理约束见 [server/README.md](server/README.md#文案切片)。
 
+ASR 转写另提供独立 Python 函数与命令行入口，读取北京地域的 `DASHSCOPE_API_KEY`，尚未注册 HTTP 路由；用法见 [ASR 音频转写](server/README.md#asr-音频转写)。
+
 客户端运行
 ----------
 
