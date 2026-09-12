@@ -2,6 +2,7 @@
 
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
+from importlib.metadata import version
 from math import isfinite
 
 from fastapi import FastAPI, Request
@@ -28,7 +29,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 # 允许本地 Vite 与 Tauri 客户端访问 API；Windows 正式客户端使用动态 localhost 端口。
-app = FastAPI(title="IntelligentMixVideo API", lifespan=lifespan)
+# 文档版本直接读取已安装的服务端包元数据，与发布清单保持一致。
+app = FastAPI(title="IntelligentMixVideo API", version=version("imv-server"), lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[

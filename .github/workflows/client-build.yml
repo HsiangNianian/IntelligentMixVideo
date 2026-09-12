@@ -11,7 +11,7 @@ on:
         type: string
         default: package
       release-tag:
-        description: "Release tag used to set the client version in this build only"
+        description: "Release tag that must match committed client and server versions"
         required: false
         type: string
         default: ""
@@ -87,16 +87,13 @@ jobs:
           workspaces: client/src-tauri -> target
           key: ${{ matrix.target }}
           shared-key: ${{ inputs.build-mode || 'package' }}
-      - name: Set release version from tag
-        if: inputs.release-tag != ''
+      - name: Verify committed project versions
         working-directory: .
         env:
           RELEASE_TAG: ${{ inputs.release-tag }}
-        run: |
-          bun .github/scripts/validate-release.mjs --write
-          bun .github/scripts/validate-release.mjs
+        run: bun .github/scripts/validate-release.mjs
       - name: Install frontend dependencies
-        # Also checks that tag version injection preserves the dependency lock.
+        # Version preparation must preserve the dependency lock.
         run: bun install --frozen-lockfile
       - name: Verify Cargo lockfile
         if: inputs.release-tag != ''

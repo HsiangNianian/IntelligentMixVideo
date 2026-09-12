@@ -2,6 +2,7 @@
 
 基于 Tauri 2、React、TypeScript、Tailwind CSS 4 和 shadcn/ui。
 模板预览继续使用阿里云 AliyunTimelinePlayer 5.2.2；Windows 安装包通过内置回环 HTTP 服务加载页面，使 SDK 识别到 `localhost`。
+客户端与服务端使用同一项目版本；发版前统一更新并提交清单和锁文件，操作见[根目录发版说明](../README.md#tag-发版)。
 
 ## 开发运行
 

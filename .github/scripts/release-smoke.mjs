@@ -1,4 +1,4 @@
-/** 在临时副本注入边界版本，执行冻结安装和工作流中的 Cargo 校验，最后清理副本。 */
+/** 在临时副本同步两端边界版本，验证 Bun 冻结安装及 Cargo、uv 锁文件，最后清理副本。 */
 
 import assert from "node:assert/strict";
 import { cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
@@ -21,6 +21,7 @@ try {
     "client/package.json", "client/bun.lock", "client/bunfig.toml",
     "client/src-tauri/Cargo.toml", "client/src-tauri/Cargo.lock",
     "client/src-tauri/tauri.conf.json", "client/src-tauri/build.rs", "client/src-tauri/src",
+    "server/pyproject.toml", "server/uv.lock", "server/README.md", "server/src",
   ]) {
     mkdirSync(dirname(join(dir, path)), { recursive: true });
     cpSync(path, join(dir, path), { recursive: true });
@@ -40,7 +41,11 @@ try {
   const metadata = JSON.parse(run(exe, args, join(dir, step["working-directory"] ?? job.defaults.run["working-directory"])));
   assert.equal(metadata.packages.find((pkg) => pkg.name === "client").version, "254.254.65534");
   assert.equal(readFileSync(join(dir, "client/src-tauri/Cargo.lock"), "utf8"), cargoBefore);
-  console.log("Version injection, frozen Bun install and Cargo lockfile checks passed");
+  const serverLockBefore = readFileSync(join(dir, "server/uv.lock"), "utf8");
+  // 空缓存、离线校验确保版本准备不依赖本机已下载的第三方包元数据。
+  run("uv", ["lock", "--check", "--offline", "--cache-dir", join(dir, "uv-cache"), "--project", "server"], dir);
+  assert.equal(readFileSync(join(dir, "server/uv.lock"), "utf8"), serverLockBefore);
+  console.log("Client/server version sync, frozen Bun install and Cargo/uv lockfile checks passed");
 } finally {
   assert.equal(dirname(resolve(dir)), resolve(tmpdir()));
   assert(dir.includes("imv-release-smoke-"));

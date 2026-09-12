@@ -135,35 +135,38 @@ Windows 需要 MSVC C++ 构建工具、Windows SDK 和 WebView2；ARM64 主机�
 普通构建的 Actions artifacts 保留 14 天。发版应复用这一构建工作流，避免维护两套不一致的平台构建逻辑。
 构建产物来自被触发的提交；正式发布时必须来自对应 tag 的源码。
 
-涉及 CI、原生代码或客户端依赖清单时，Release preflight 检查全部工作流、运行调度与发布脚本测试，
-并通过临时副本验证版本注入、Bun 冻结安装和 Cargo 锁文件不变。
+涉及 CI、原生代码或两端版本清单/锁文件时，Release preflight 检查全部工作流、运行调度与发布脚本测试，
+校验两端源码版本一致，并通过临时副本验证版本同步、Bun 冻结安装、Cargo 和 uv 锁文件。
 服务端 job 使用 Python 3.12 和 uv 缓存；`server/pyproject.toml` 的 uv 构建模块名显式设为 `server`，对应 `src/server/`。
 在 Validate project 上手动运行会执行全部检查（原生检查模式）；需要安装包时手动运行 Build client。
 
 ## 正式版本与 tag 发版
 
-**正式发布版本以 tag 为唯一来源，不要求手动同步多个版本文件。**
+**client 与 server 使用同一版本；发版前用一个命令同步并提交源码，正式 tag 必须与全部版本一致。**
 
 - `.github/workflows/release.yml` 在推送 `v*` tag 时触发，校验后仅接受 `vX.Y.Z` 正式版本，不接受 `-beta`、`-rc` 或构建元数据。
 - 版本须符合 Windows MSI 限制：major、minor 不超过 255，patch 不超过 65535。
 - 发布工作流通过 `release-tag` 输入把 tag 传给复用的客户端构建工作流。
-- 各平台在 CI 构建工作区中执行版本注入，例如 `v0.2.0` 转为 `0.2.0`。
-- 自动同步 `client/package.json`、`client/src-tauri/tauri.conf.json`、`client/src-tauri/Cargo.toml` 及 `client/src-tauri/Cargo.lock` 的客户端包版本。`client/bun.lock` 不记录根项目版本，发版时保持其内容不变，并通过 `bun install --frozen-lockfile` 验证。
-- 只修改项目自身版本，保留所有已锁定的第三方依赖版本及校验信息；不得借版本注入更新依赖。
-- Tauri 应用版本当前由 `tauri.conf.json` 的 `version` 提供，正式构建时该值由 tag 注入。
-- 版本修改只用于当前构建，不提交回源码、不移动 tag。普通开发构建继续使用仓库中的开发版本。
+- 发版前通过脚本将 `v0.3.0` 同步为 `0.3.0`，提交到 dev，经 PR 合入 main 后再在该提交打 tag。不能只在 CI 临时改版而让源码长期停留旧版本。
+- 自动同步 `client/package.json`、`client/src-tauri/tauri.conf.json`、`client/src-tauri/Cargo.toml` 与 `Cargo.lock` 的客户端包版本，以及 `server/pyproject.toml` 与 `server/uv.lock` 的 `imv-server` 包版本。`client/bun.lock` 不记录根项目版本，保持原样并用冻结安装验证。
+- 只修改项目自身版本，保留所有已锁定的第三方依赖版本及校验信息；不得借版本同步更新依赖。
+- Tauri 应用版本由 `tauri.conf.json` 的 `version` 提供；FastAPI/OpenAPI 版本读取已安装的 `imv-server` 包元数据，不增加另一处硬编码版本。
+- 普通 CI 检查源码两端版本一致；tag CI 只校验源码与 tag 一致后构建，不自动修正不匹配版本、不移动 tag。
 
 版本脚本为 `.github/scripts/validate-release.mjs`，通过环境变量 `RELEASE_TAG` 接收 tag：
 
-- `--tag-only`：只校验 tag 格式及版本范围，不要求源码中的开发版本与 tag 一致。
-- `--write`：将 tag 版本写入当前工作区的配置和锁文件。只在 CI 或临时副本中验证此模式，避免意外改动本地开发版本。
-- 不带参数：验证配置和锁文件的客户端版本均与 tag 一致，用于注入后校验。
+- `--tag-only`：只校验显式 tag 的格式及版本范围，不能替代发版前的完整版本校验。
+- `--write`：必须显式设置 `RELEASE_TAG`，一次更新上述六处项目版本；检查 diff 并提交这些变更。回归测试只在临时副本使用此模式。
+- 不带参数：有 `RELEASE_TAG` 时检查两端全部版本与 tag 一致；未设置时以 `client/package.json` 为基准检查版本一致性。
 
-发版操作示例（先提交源码，确保该提交包含发布工作流）：
+发版操作示例（在仓库根目录同步版本，提交并合并后再打 tag）：
 
 ```sh
-git tag -a v0.2.0 -m "Release v0.2.0"
-git push origin v0.2.0
+RELEASE_TAG=v0.3.0 bun .github/scripts/validate-release.mjs --write
+bun .github/scripts/validate-release.mjs
+# 将版本变更提交并合入 main 后：
+git tag -a v0.3.0 -m "Release v0.3.0"
+git push origin v0.3.0
 ```
 
 ## GitHub Release 与 CHANGELOG

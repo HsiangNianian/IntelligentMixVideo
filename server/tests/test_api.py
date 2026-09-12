@@ -1,5 +1,7 @@
 """验证 ASGI 路由、边界和文档；在 server/ 执行 uv run --locked pytest tests/test_api.py。"""
 
+from importlib.metadata import version
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -100,6 +102,7 @@ def test_api_documentation(client: TestClient) -> None:
     response = client.get("/openapi.json")
     assert response.status_code == 200
     schema = response.json()
+    assert schema["info"]["version"] == version("imv-server")
     assert set(schema["paths"]) == {
         "/", "/users/", "/users/{user_id}", "/template", "/template/{template_id}", "/segmentations",
     }
