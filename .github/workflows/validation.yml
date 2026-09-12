@@ -39,6 +39,6 @@ jobs:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
       - name: Test API routes
-        run: uv run --locked --project server python -m unittest discover -s server/tests -v
+        run: uv run --locked --project server pytest server/tests -v
       - name: Build server distributions
         run: uv build --project server --out-dir server/dist

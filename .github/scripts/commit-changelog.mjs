@@ -1,9 +1,12 @@
+/** 合并单个版本日志；在独立 checkout 中获取最新分支并重试并发推送，避免覆盖其他提交。 */
+
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 
+/** 提取目标版本及链接，按数值版本降序插入，已有条目保持不变。 */
 export function mergeChangelog(current, generated, tag) {
   const heading = `## [${tag}] - `;
   if (current.split("\n").some((line) => line.startsWith(heading))) return current;
@@ -15,6 +18,7 @@ export function mergeChangelog(current, generated, tag) {
   const entry = lines.slice(start, end).join("\n").trimEnd();
   const link = lines.find((line) => line.startsWith(`[${tag}]:`));
   const existing = current.replaceAll("\r", "").trimEnd();
+  // 逐段比较数字，防止 v0.10.0 被字符串排序放到 v0.2.0 之后。
   const compare = (a, b) => {
     const left = a.slice(1).split(".").map(Number);
     const right = b.slice(1).split(".").map(Number);
@@ -30,7 +34,9 @@ export function mergeChangelog(current, generated, tag) {
   return [header || "# Changelog", entry, tail, link].filter(Boolean).join("\n\n") + "\n";
 }
 
+/** 在干净的专用副本中仅提交日志；分支前进时重新合并，权限错误立即失败。 */
 export function commitChangelog({ repo, branch, tag, generated, attempts = 5, beforePush = () => {} }) {
+  /** 执行 Git 参数数组；推送可返回失败结果供并发重试判断。 */
   function git(args, allowFailure = false) {
     const result = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
     if (!allowFailure && result.status !== 0) throw new Error(result.stderr || String(result.error));

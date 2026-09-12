@@ -17,7 +17,7 @@ version 3 only (`AGPL-3.0-only`). See [LICENSE.md](LICENSE.md) for the full term
 Structure
 ---------
 
-- `client/`：Rust + Tauri 2 + React + TypeScript 桌面客户端。
+- `client/`：Rust + Tauri 2 + React + TypeScript 桌面客户端，使用 Tailwind CSS 4 和 shadcn/ui。
 - `server/`：Python + FastAPI 服务端，提供首页和用户路由示例。
 
 服务端运行
@@ -51,6 +51,8 @@ bun run tauri dev
 ```
 
 首页显示本机当前日期和时间，每秒更新，组件位于 `client/src/components/CurrentTime.tsx`。
+客户端按页面、业务组件、基础 UI 和共享工具分层；结构见 [client/README.md](client/README.md)，
+最小改动与源码注释要求见 [AGENTS.md](AGENTS.md)。
 
 ```sh
 # 编译前端（包含 TypeScript 检查）

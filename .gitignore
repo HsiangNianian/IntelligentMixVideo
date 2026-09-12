@@ -1,5 +1,6 @@
 .git/
 __pycache__/
+.pytest_cache/
 .python-version
 target/
 .vscode/

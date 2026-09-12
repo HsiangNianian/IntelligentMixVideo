@@ -1,3 +1,5 @@
+/** 通过附件夹具、GitHub API 替身和本地 Git 远端验证发布失败恢复及日志并发合并。 */
+
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
@@ -7,6 +9,7 @@ import { spawnSync } from "node:child_process";
 import { collectAssets, publishDraft } from "./release-assets.mjs";
 import { commitChangelog, mergeChangelog } from "./commit-changelog.mjs";
 
+/** 在受控临时目录运行同步测试，完成后校验路径并清理。 */
 function temp(callback) {
   const dir = mkdtempSync(join(tmpdir(), "imv-recovery-test-"));
   try { return callback(dir); } finally {
@@ -41,6 +44,7 @@ test("release manifest requires all six installers and a nonempty changelog", ()
 test("partial uploads stay private; retry publishes only after verification", async () => {
   let published = false;
   let uploaded = [{ name: "installer", size: 1, state: "starter" }];
+  // 最小 API 替身模拟草稿、部分上传、公开后重跑；不会访问 GitHub。
   const github = {
     rest: { repos: {
       async getReleaseByTag() { throw new Error("Drafts cannot be looked up by tag"); },
@@ -83,6 +87,7 @@ test("out-of-order tag completion keeps changelog versions sorted", () => {
   assert(merged.includes("[v0.1.0]: old-link"));
 });
 
+/** 在测试仓库执行 Git 并将非零退出作为断言失败。 */
 function git(repo, ...args) {
   const result = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);

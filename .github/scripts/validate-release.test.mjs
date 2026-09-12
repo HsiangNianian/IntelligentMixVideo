@@ -1,3 +1,5 @@
+/** 用临时清单验证 tag 格式、版本注入的幂等性，以及失败时不修改依赖锁文件。 */
+
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
@@ -8,10 +10,12 @@ import { spawnSync } from "node:child_process";
 
 const validator = fileURLToPath(new URL("./validate-release.mjs", import.meta.url));
 
+/** 创建最小项目夹具，运行独立脚本并对比执行前后快照，最后清理。 */
 function validate(tag, mutate = () => {}, args = []) {
   const dir = mkdtempSync(join(tmpdir(), "imv-release-test-"));
   try {
     mkdirSync(join(dir, "client/src-tauri"), { recursive: true });
+    // 同版本第三方包用于捕获误替换；校验信息用于捕获意外更新依赖。
     const fixtures = {
       "client/package.json": '{"version":"0.1.0"}',
       "client/bun.lock": '{"lockfileVersion":1,"workspaces":{"":{"name":"client"}},"packages":{"example":["example@0.1.0","","keep-me"]}}',
@@ -23,6 +27,7 @@ function validate(tag, mutate = () => {}, args = []) {
       writeFileSync(join(dir, path), content);
     }
     mutate(dir);
+    /** 读取所有测试清单，供失败无副作用与重复执行检查使用。 */
     const snapshot = () => Object.fromEntries(
       Object.keys(fixtures).map((path) => [path, readFileSync(join(dir, path), "utf8")]),
     );

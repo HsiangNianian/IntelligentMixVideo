@@ -37,6 +37,12 @@ bun run tauri dev
 `client/src/components/`; Rust and Tauri configuration live in `client/src-tauri/`.
 Keep components focused and clean up timers and subscriptions on unmount.
 Follow existing formatting and keep TypeScript strict checks passing.
+Use Tailwind CSS 4 and shadcn/ui for frontend styling and shared UI. Follow the
+page/component/UI boundaries in [AGENTS.md](AGENTS.md). Keep changes minimal:
+no unused code, empty scaffolding, or speculative abstractions. Maintained source
+files require a header explaining their contents and execution flow; document
+modules, classes, components, functions, meaningful objects, and complex logic
+with concise comments or docstrings that stay aligned with the implementation.
 
 Maintain `client/bun.lock` and `client/src-tauri/Cargo.lock`. Do not introduce other
 JavaScript package manager lockfiles, commit secrets, or include generated
@@ -55,7 +61,7 @@ Run checks appropriate to the files you change and report their actual results.
 | Release version injection | `bun .github/scripts/release-smoke.mjs` | Repository root |
 | GitHub workflows | `actionlint .github/workflows/client-build.yml .github/workflows/release.yml .github/workflows/validation.yml` | Repository root |
 | Python packaging | `uv build --project server --out-dir server/dist` | Repository root |
-| API routes | `uv run --locked --project server python -m unittest discover -s server/tests -v` | Repository root |
+| Server features | `uv run --locked --project server pytest server/tests -v` | Repository root |
 | Repository hygiene | `uvx pre-commit run --all-files` | Repository root |
 | All changes | `git diff --check HEAD` | Repository root |
 
@@ -70,9 +76,12 @@ build does not validate the native application or other platforms. State checks
 you could not run and why. Documentation-only changes need content, link, and diff
 checks, without a full application build.
 
-There is no configured frontend test runner or coverage threshold. Add meaningful
-regression coverage for behavior changes where an appropriate test seam exists;
-document any new test runner and its invocation.
+Every new feature must include detailed, comprehensive behavior tests covering
+success, failures, applicable boundaries, and side effects. Bug fixes require a
+regression test. Keep server tests in `server/tests/` and use pytest fixtures and
+parametrization. Tests must be isolated from production services and reproducible.
+There is no configured frontend test runner or coverage threshold; choose a
+suitable frontend runner when adding a feature and document its invocation.
 
 ## Commit Message Format
 

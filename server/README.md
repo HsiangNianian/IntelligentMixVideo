@@ -25,8 +25,12 @@ uv run uvicorn server.app:app --host 127.0.0.1 --port 8001 --reload --reload-dir
 验证命令（在本目录执行）：
 
 ```sh
-uv run --locked python -m unittest discover -s tests -v
+uv run --locked pytest -v
 uv build --out-dir dist
 ```
 
 维护 `uv.lock`，CI 使用 `--locked` 检查依赖与配置一致。
+
+测试统一放在 `tests/`，使用 pytest；`conftest.py` 管理客户端夹具，
+`test_api.py` 覆盖路由契约、边界和错误请求，`test_entrypoint.py` 覆盖两种启动入口。
+每个新 feature 都必须补齐正常、异常及适用边界的测试脚本，详细规则见根目录 AGENTS.md。
