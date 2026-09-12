@@ -1,0 +1,17 @@
+{
+  "name": "imv-template-renderer",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.4.2",
+  "dependencies": {
+    "@remotion/bundler": "4.0.523",
+    "@remotion/renderer": "4.0.523",
+    "@types/react": "19.1.8",
+    "@types/react-dom": "19.1.6",
+    "prettier": "3.9.6",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "remotion": "4.0.523",
+    "typescript": "6.0.3"
+  }
+}
