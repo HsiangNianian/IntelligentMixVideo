@@ -6,13 +6,13 @@
 
 import logging
 
-from server.core.errors import (
+from ...core.errors import (
     AsrTimelineMissingError,
     RequestInvalidError,
     ScriptAlignmentError,
     SegmentInvariantError,
 )
-from server.sub_api.segmentation.aligner import (
+from .aligner import (
     DEFAULT_MAX_ALIGNMENT_WORK,
     align,
     build_asr_chars,
@@ -21,10 +21,10 @@ from server.sub_api.segmentation.aligner import (
     script_unmatched_lower_bound,
     summarize,
 )
-from server.sub_api.segmentation.builder import build_spans, offsets_to_cuts, split_clauses
-from server.sub_api.segmentation.keywords import validate_keywords
-from server.sub_api.segmentation.planner import SegmentPlanner
-from server.sub_api.segmentation.schemas import (
+from .builder import build_spans, offsets_to_cuts, split_clauses
+from .keywords import validate_keywords
+from .planner import SegmentPlanner
+from .schemas import (
     AsrResult,
     Segment,
     SegmentBuildResult,
@@ -93,7 +93,9 @@ class SegmentService:
         stats = summarize(ops)
         match_ratio = stats.matched_chars / len(script_chars)
         if match_ratio < MIN_ALIGNMENT_MATCH_RATIO:
-            raise ScriptAlignmentError("文案与 ASR 文本差异过大，请确认两者是否为同一段音频。")
+            raise ScriptAlignmentError(
+                "文案与 ASR 文本差异过大，请确认两者是否为同一段音频。"
+            )
 
         warnings: list[SegmentWarning] = []
         if match_ratio < 0.9:
@@ -159,7 +161,10 @@ class SegmentService:
                     SegmentWarning(
                         code="segment_duration_out_of_range",
                         message="片段时长超出配置范围，已尽力合并或切分。",
-                        detail={"segment_id": segment.segment_id, "duration_ms": duration},
+                        detail={
+                            "segment_id": segment.segment_id,
+                            "duration_ms": duration,
+                        },
                     )
                 )
 
@@ -208,7 +213,9 @@ class SegmentService:
         """
         budget = int(len(script_chars) * (1 - MIN_ALIGNMENT_MATCH_RATIO))
         if script_unmatched_lower_bound(script_chars, asr_chars) > budget:
-            raise ScriptAlignmentError("文案与 ASR 文本差异过大，请确认两者是否为同一段音频。")
+            raise ScriptAlignmentError(
+                "文案与 ASR 文本差异过大，请确认两者是否为同一段音频。"
+            )
 
     def _resolve_cuts(
         self,
@@ -226,7 +233,9 @@ class SegmentService:
         clause_ids = self.planner.plan_boundaries(clauses)
         offsets = [clauses[item - 1].end_offset for item in clause_ids]
         return _shift_out_of_blocks(
-            offsets_to_cuts(offsets, script_chars, len(script)), repair_block_ranges, script_chars
+            offsets_to_cuts(offsets, script_chars, len(script)),
+            repair_block_ranges,
+            script_chars,
         )
 
 

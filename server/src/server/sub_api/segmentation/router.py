@@ -1,18 +1,22 @@
+"""注册文案切片接口，按配置组装模型与业务服务并返回切片结果。"""
+
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
 
-from server.core.config import Settings, get_settings
-from server.core.errors import LLMProviderError
-from server.llm.client import OpenAIChatClient
-from server.sub_api.segmentation.planner import SegmentPlanner
-from server.sub_api.segmentation.schemas import SegmentBuildRequest, SegmentBuildResult
-from server.sub_api.segmentation.service import SegmentService
+from ...core.config import Settings, get_settings
+from ...core.errors import LLMProviderError
+from ...llm.client import OpenAIChatClient
+from .planner import SegmentPlanner
+from .schemas import SegmentBuildRequest, SegmentBuildResult
+from .service import SegmentService
 
 router = APIRouter(prefix="/segmentations", tags=["文案切片"])
 
 
-def get_segment_service(settings: Annotated[Settings, Depends(get_settings)]) -> SegmentService:
+def get_segment_service(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> SegmentService:
     """组装片段构建服务。
 
     作用与效果：依据模型配置创建规划器与工程约束参数，供路由与测试覆盖复用。

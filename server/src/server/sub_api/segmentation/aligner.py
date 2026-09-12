@@ -7,9 +7,9 @@
 from collections import Counter
 from dataclasses import dataclass
 
-from server.core.errors import AlignmentInputTooLargeError, AsrTranscriptTooLongError
-from server.sub_api.segmentation.normalizer import is_alignable, normalize_char
-from server.sub_api.segmentation.schemas import AsrResult
+from ...core.errors import AlignmentInputTooLargeError, AsrTranscriptTooLongError
+from .normalizer import is_alignable, normalize_char
+from .schemas import AsrResult
 
 DEFAULT_MAX_ALIGNMENT_WORK = 250_000
 
@@ -141,6 +141,8 @@ def script_unmatched_lower_bound(
 
 @dataclass
 class _AlignmentBudget:
+    """累计对齐工作消耗，预算不足时立即中断搜索。"""
+
     remaining: int
 
     def spend(self, amount: int = 1) -> None:
@@ -188,7 +190,9 @@ def align(
         [AlignmentOp(MATCH, i, i) for i in range(prefix)]
         + middle
         + [
-            AlignmentOp(MATCH, len(script_chars) - suffix + i, len(asr_chars) - suffix + i)
+            AlignmentOp(
+                MATCH, len(script_chars) - suffix + i, len(asr_chars) - suffix + i
+            )
             for i in range(suffix)
         ]
     )
@@ -261,7 +265,9 @@ def _backtrack(
         for i in range(end - 1, start - 1, -1):
             ops.append(AlignmentOp(MATCH, offset + i, offset + i - diagonal))
         if kind == SUBSTITUTION:
-            ops.append(AlignmentOp(kind, offset + start - 1, offset + start - diagonal - 1))
+            ops.append(
+                AlignmentOp(kind, offset + start - 1, offset + start - diagonal - 1)
+            )
         elif kind == SCRIPT_EXTRA:
             ops.append(AlignmentOp(kind, offset + start - 1, None))
             diagonal -= 1
@@ -349,7 +355,8 @@ def project_times(
         target.is_word_start = source.is_word_start
 
     average = (
-        sum(char.end_time_ms - char.begin_time_ms for char in asr_chars) / len(asr_chars)
+        sum(char.end_time_ms - char.begin_time_ms for char in asr_chars)
+        / len(asr_chars)
         if asr_chars
         else 0.0
     )
@@ -371,7 +378,9 @@ def project_times(
             window_begin = asr_chars[min(asr_indices)].begin_time_ms
             window_end = asr_chars[max(asr_indices)].end_time_ms
         else:
-            previous = script_chars[script_indices[0] - 1] if script_indices[0] > 0 else None
+            previous = (
+                script_chars[script_indices[0] - 1] if script_indices[0] > 0 else None
+            )
             window_begin = previous.end_time_ms if previous is not None else 0.0
             window_end = window_begin + average * len(script_indices)
         step = (window_end - window_begin) / len(script_indices)

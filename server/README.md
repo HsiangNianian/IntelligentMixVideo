@@ -130,7 +130,11 @@ uv build --out-dir dist
 
 维护 `uv.lock`，CI 使用 `--locked` 检查依赖与配置一致。
 
-测试统一放在 `tests/`，使用 pytest；`conftest.py` 管理客户端夹具，
+测试统一放在 `tests/`，使用 pytest 原生函数、assert、raises、参数化和 fixture；
+模拟依赖继续使用标准库 `unittest.mock`，不需要 pytest-mock。`conftest.py` 管理客户端夹具，隔离外部 `IMV_` 环境变量、默认 `.env` 和配置缓存。
+连接失败与超时使用真实 SDK 加本地 HTTP 替身验证 502/504，不访问外部模型。
+`httpx` 仅用于测试，和 pytest 一起维护为开发依赖；运行期 `.env` 解析保留 `python-dotenv`。
+
 `test_api.py` 覆盖路由契约、边界和错误请求，`test_entrypoint.py` 覆盖两种启动入口。
 每个新 feature 都必须补齐正常、异常及适用边界的测试脚本，详细规则见根目录 AGENTS.md。
 

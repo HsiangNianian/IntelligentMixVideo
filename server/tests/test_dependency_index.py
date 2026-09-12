@@ -1,4 +1,7 @@
-"""Verify uv keeps the project lock usable despite a user-level mirror override."""
+"""Verify uv keeps the project lock usable despite a user-level mirror override.
+
+在 server/ 执行 uv run --locked pytest -v；使用离线样本与替身。
+"""
 
 import os
 from pathlib import Path

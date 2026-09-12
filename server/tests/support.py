@@ -1,4 +1,7 @@
-"""切片测试共用的样本与替身。"""
+"""切片测试共用的样本与替身。
+
+在 server/ 执行 uv run --locked pytest -v；使用离线样本与替身。
+"""
 
 import json
 from collections.abc import Sequence
@@ -17,7 +20,15 @@ from server.sub_api.segmentation.normalizer import is_alignable, normalize_char
 from server.sub_api.segmentation.schemas import AsrResult
 
 FIXTURE = Path(__file__).parent / "fixtures" / "fun_asr_egg_sample.json"
-KEYWORD_VOCABULARY = ("土鸡蛋", "鸡蛋", "蛋黄", "五谷杂粮", "小孩子", "农家散养", "散养")
+KEYWORD_VOCABULARY = (
+    "土鸡蛋",
+    "鸡蛋",
+    "蛋黄",
+    "五谷杂粮",
+    "小孩子",
+    "农家散养",
+    "散养",
+)
 
 
 def load_asr_payload() -> dict[str, Any]:
@@ -44,17 +55,26 @@ class StubPlanner:
     """按句尾切分，并按固定词表提取关键词。"""
 
     def __init__(self, clause_ids: list[int] | None = None) -> None:
+        """保存指定切点，并初始化用于验证关键词输入的记录。"""
         self.clause_ids = clause_ids
         self.keyword_texts: list[str] = []
 
     def plan_boundaries(self, clauses: Sequence[Clause]) -> list[int]:
+        """返回指定切点；未指定时按句末标点生成切点编号。"""
         if self.clause_ids is not None:
             return self.clause_ids
-        return [item.number for item in clauses if item.text.rstrip().endswith(("。", "？", "！"))]
+        return [
+            item.number
+            for item in clauses
+            if item.text.rstrip().endswith(("。", "？", "！"))
+        ]
 
     def plan_keywords(self, texts: Sequence[str]) -> list[list[str]]:
+        """记录片段文本，按固定词表生成离线关键词候选。"""
         self.keyword_texts = list(texts)
-        return [[word for word in KEYWORD_VOCABULARY if word in text][:5] for text in texts]
+        return [
+            [word for word in KEYWORD_VOCABULARY if word in text][:5] for text in texts
+        ]
 
 
 def aligned_sample():
@@ -71,7 +91,9 @@ def aligned_sample():
 def sample_cuts(script: str, script_chars) -> list[int]:
     """以全部分句结尾作为候选切点。"""
     clauses = split_clauses(script)
-    return offsets_to_cuts([clause.end_offset for clause in clauses], script_chars, len(script))
+    return offsets_to_cuts(
+        [clause.end_offset for clause in clauses], script_chars, len(script)
+    )
 
 
 def colon_cuts(script: str, script_chars) -> list[int]:

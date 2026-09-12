@@ -7,13 +7,14 @@
 import logging
 from dataclasses import dataclass
 
-from server.sub_api.segmentation.aligner import AlignedChar
+from .aligner import AlignedChar
 
 logger = logging.getLogger(__name__)
 
 PAUSE_THRESHOLD_MS = 120
 CLAUSE_PUNCTUATION = "，。！？；：、…"
 PROTECTED_TRAILING_CHARS = frozenset("%.-")
+
 
 @dataclass
 class SegmentSpan:
@@ -28,6 +29,7 @@ class SegmentSpan:
 
     @property
     def duration_ms(self) -> int:
+        """返回片段结束时间与开始时间之差，单位为毫秒。"""
         return self.end_time_ms - self.start_time_ms
 
 
@@ -98,7 +100,9 @@ def _snap_cut(cut: int, chars: list[AlignedChar]) -> int:
     输入：字符序号切点与文案字符列表。
     输出：调整后的切点。
     """
-    while 0 < cut < len(chars) and _is_protected_pair(chars[cut - 1].char, chars[cut].char):
+    while 0 < cut < len(chars) and _is_protected_pair(
+        chars[cut - 1].char, chars[cut].char
+    ):
         cut += 1
     return cut
 
@@ -185,7 +189,11 @@ def build_spans(
 
     while len(spans) > 1:
         shortest = min(
-            (index for index, span in enumerate(spans) if span.duration_ms < min_duration_ms),
+            (
+                index
+                for index, span in enumerate(spans)
+                if span.duration_ms < min_duration_ms
+            ),
             key=lambda index: spans[index].duration_ms,
             default=None,
         )
@@ -198,8 +206,10 @@ def build_spans(
             if side == "right" and shortest == len(spans) - 1:
                 continue
             _, merged = _merge(spans, shortest, side)
-            score = (0 if merged.duration_ms <= max_duration_ms else 1,
-                     abs(merged.duration_ms - ideal))
+            score = (
+                0 if merged.duration_ms <= max_duration_ms else 1,
+                abs(merged.duration_ms - ideal),
+            )
             options.append((score, side))
         if not options:
             break
@@ -209,7 +219,11 @@ def build_spans(
 
     while True:
         longest = max(
-            (index for index, span in enumerate(spans) if span.duration_ms > max_duration_ms),
+            (
+                index
+                for index, span in enumerate(spans)
+                if span.duration_ms > max_duration_ms
+            ),
             key=lambda index: spans[index].duration_ms,
             default=None,
         )
@@ -222,8 +236,12 @@ def build_spans(
         for cut in range(span.start_char + 1, span.end_char):
             if _is_protected_pair(chars[cut - 1].char, chars[cut].char):
                 continue
-            left_duration = chars[cut - 1].end_time_ms - chars[span.start_char].begin_time_ms
-            right_duration = chars[span.end_char - 1].end_time_ms - chars[cut].begin_time_ms
+            left_duration = (
+                chars[cut - 1].end_time_ms - chars[span.start_char].begin_time_ms
+            )
+            right_duration = (
+                chars[span.end_char - 1].end_time_ms - chars[cut].begin_time_ms
+            )
             violation = 1 if min(left_duration, right_duration) < min_duration_ms else 0
             score = (
                 violation,
@@ -292,5 +310,7 @@ def split_clauses(script: str) -> list[Clause]:
             )
             start = index + 1
     if start < len(script):
-        clauses.append(Clause(number=len(clauses) + 1, text=script[start:], end_offset=len(script)))
+        clauses.append(
+            Clause(number=len(clauses) + 1, text=script[start:], end_offset=len(script))
+        )
     return clauses

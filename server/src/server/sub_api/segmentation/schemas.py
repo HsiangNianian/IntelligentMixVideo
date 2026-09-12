@@ -1,3 +1,5 @@
+"""声明文案、ASR 和片段响应的数据契约，兼容词级 ASR 外层结构。"""
+
 from typing import Any
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
@@ -9,7 +11,9 @@ class AsrWord(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     text: str
-    begin_time_ms: int = Field(validation_alias=AliasChoices("begin_time_ms", "begin_time"))
+    begin_time_ms: int = Field(
+        validation_alias=AliasChoices("begin_time_ms", "begin_time")
+    )
     end_time_ms: int = Field(validation_alias=AliasChoices("end_time_ms", "end_time"))
     punctuation: str = ""
     confidence: float | None = None
@@ -72,7 +76,12 @@ class AsrResult(BaseModel):
         输入：无。
         输出：按音频时间排序的词列表。
         """
-        return [word for sentence in self.sentences for word in sentence.words if word.text.strip()]
+        return [
+            word
+            for sentence in self.sentences
+            for word in sentence.words
+            if word.text.strip()
+        ]
 
 
 class SegmentKeyword(BaseModel):

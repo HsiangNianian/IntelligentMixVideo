@@ -7,7 +7,7 @@ import logging
 
 from openai import APIError, APITimeoutError, OpenAI
 
-from server.core.errors import LLMProviderError, LLMTimeoutError
+from ..core.errors import LLMProviderError, LLMTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,9 @@ class OpenAIChatClient:
         except APITimeoutError as exc:
             raise LLMTimeoutError() from exc
         except APIError as exc:
-            logger.warning("llm_request_failed", extra={"status_code": exc.status_code})
+            logger.warning(
+                "llm_request_failed",
+                extra={"status_code": getattr(exc, "status_code", None)},
+            )
             raise LLMProviderError(str(exc)) from exc
         return response.choices[0].message.content or ""

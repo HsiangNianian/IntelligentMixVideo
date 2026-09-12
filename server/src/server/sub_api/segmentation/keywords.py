@@ -6,7 +6,7 @@
 
 from collections.abc import Sequence
 
-from server.sub_api.segmentation.schemas import SegmentKeyword
+from .schemas import SegmentKeyword
 
 
 def validate_keywords(
@@ -39,13 +39,16 @@ def validate_keywords(
             rejected += 1
             continue
         seen.add(keyword)
-        accepted.append(SegmentKeyword(text=keyword, start=start, end=start + len(keyword)))
+        accepted.append(
+            SegmentKeyword(text=keyword, start=start, end=start + len(keyword))
+        )
 
     accepted = [
         keyword
         for keyword in accepted
         if not any(
-            keyword.text != other.text and keyword.text in other.text for other in accepted
+            keyword.text != other.text and keyword.text in other.text
+            for other in accepted
         )
     ]
     accepted.sort(key=lambda keyword: (keyword.start, keyword.end))

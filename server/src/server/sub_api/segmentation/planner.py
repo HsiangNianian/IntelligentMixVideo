@@ -9,9 +9,9 @@ import logging
 from collections.abc import Sequence
 from typing import Any
 
-from server.core.errors import LLMError, LLMOutputInvalidError
-from server.llm.client import OpenAIChatClient
-from server.sub_api.segmentation.builder import Clause
+from ...core.errors import LLMError, LLMOutputInvalidError
+from ...llm.client import OpenAIChatClient
+from .builder import Clause
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,6 @@ KEYWORD_PROMPT = """你是短视频素材检索的关键词提取器。
 数组长度必须与片段数量一致，按下标顺序对应每个片段。"""
 
 
-
 class SegmentPlanner:
     """把语义判断委托给模型，并校验其输出结构。"""
 
@@ -72,14 +71,18 @@ class SegmentPlanner:
             "clauses": listing,
             "reminder": "只返回 boundaries_after 数组，元素范围 1 到 clause_count-1。",
         }
-        content = self._complete_json(BOUNDARY_PROMPT, payload, stage="segment_boundary")
+        content = self._complete_json(
+            BOUNDARY_PROMPT, payload, stage="segment_boundary"
+        )
         raw = content.get("boundaries_after")
         if not isinstance(raw, list):
             raise LLMOutputInvalidError("模型未返回 boundaries_after 数组。")
         ids = [
             item
             for item in raw
-            if isinstance(item, int) and not isinstance(item, bool) and 1 <= item < len(clauses)
+            if isinstance(item, int)
+            and not isinstance(item, bool)
+            and 1 <= item < len(clauses)
         ]
         return sorted(set(ids))
 
@@ -92,7 +95,9 @@ class SegmentPlanner:
         """
         payload = {
             "segment_count": len(texts),
-            "segments": [{"index": index, "text": text} for index, text in enumerate(texts)],
+            "segments": [
+                {"index": index, "text": text} for index, text in enumerate(texts)
+            ],
         }
         content = self._complete_json(KEYWORD_PROMPT, payload, stage="segment_keyword")
         raw = content.get("keywords")
@@ -103,7 +108,9 @@ class SegmentPlanner:
             if not isinstance(group, list):
                 groups.append([])
                 continue
-            groups.append([item for item in group if isinstance(item, str) and item.strip()])
+            groups.append(
+                [item for item in group if isinstance(item, str) and item.strip()]
+            )
         groups.extend([] for _ in range(len(texts) - len(groups)))
         return groups
 

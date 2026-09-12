@@ -1,3 +1,5 @@
+"""从 IMV_ 环境变量及当前目录 .env 加载配置，校验约束并缓存配置实例。"""
+
 from functools import lru_cache
 from urllib.parse import urlparse
 
@@ -40,7 +42,9 @@ class Settings(BaseSettings):
         输出：校验后的同一配置实例；区间非法时抛出 `ValueError`。
         """
         if self.segment_min_duration_ms >= self.segment_max_duration_ms:
-            raise ValueError("IMV_SEGMENT_MIN_DURATION_MS 必须小于 IMV_SEGMENT_MAX_DURATION_MS")
+            raise ValueError(
+                "IMV_SEGMENT_MIN_DURATION_MS 必须小于 IMV_SEGMENT_MAX_DURATION_MS"
+            )
         return self
 
     @model_validator(mode="after")
@@ -61,7 +65,9 @@ class Settings(BaseSettings):
         local_hosts = {"127.0.0.1", "localhost", "::1"}
         is_remote_http = parsed.scheme == "http" and parsed.hostname not in local_hosts
         if is_remote_http and not self.allow_insecure_llm_http:
-            raise ValueError("远程 HTTP 模型地址需要显式设置 IMV_ALLOW_INSECURE_LLM_HTTP=true")
+            raise ValueError(
+                "远程 HTTP 模型地址需要显式设置 IMV_ALLOW_INSECURE_LLM_HTTP=true"
+            )
         return self
 
 
