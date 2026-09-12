@@ -4,13 +4,14 @@ import bisect
 from collections import Counter
 import json
 import math
-import os
 import re
 import unicodedata
 from urllib.parse import urlparse
 
-from dotenv import dotenv_values
+from pydantic import ValidationError
 from openai import OpenAI
+
+from .settings import Settings
 
 
 def segment(payload: dict) -> dict:
@@ -69,6 +70,7 @@ def segment(payload: dict) -> dict:
             previous_end = end
             # ponytail: 词内字符均分词时长，并非真实字级强制对齐；精度不足时需上游提供更细时间轴。
             content = [c for c in word["text"] if not c.isspace() and c not in punctuation]
+            # 空内容不进入循环或执行除法；该词的时间仍参与上面的单调性校验。
             for i, char in enumerate(content):
                 timeline.append(
                     (
@@ -83,34 +85,14 @@ def segment(payload: dict) -> dict:
     if (Counter(c[1] for c in chars) - Counter(c[0] for c in timeline)).total() > len(chars) // 2:
         raise ValueError("文案与 ASR 差异过大。")
 
-    # 仅保留当前功能使用的配置；不新增配置类或缓存，避免请求间共享状态。
-    config = {k.upper(): v for k, v in {**dotenv_values(".env"), **os.environ}.items()}
-    defaults = {
-        "MIN_DURATION_MS": 1200,
-        "MAX_DURATION_MS": 6000,
-        "MAX_KEYWORDS": 5,
-        "KEYWORD_MAX_LENGTH": 12,
-        "MAX_ALIGNMENT_WORK": 250000,
-    }
+    # 每次调用自动读取配置；配置错误仍归为模型错误，不向 HTTP 暴露配置值。
     try:
-        limits = {k: int(config.get("IMV_SEGMENT_" + k, v)) for k, v in defaults.items()}
-        retries = int(config.get("IMV_LLM_MAX_RETRIES", 1))
-        timeout = float(config.get("IMV_LLM_TIMEOUT_SECONDS", 120))
-    except (ValueError, TypeError):
-        raise RuntimeError("模型或切片配置必须使用合法数值。") from None
-    minimum, maximum = limits["MIN_DURATION_MS"], limits["MAX_DURATION_MS"]
-    if not (
-        200 <= minimum < maximum <= 30000
-        and 0 <= limits["MAX_KEYWORDS"] <= 20
-        and 2 <= limits["KEYWORD_MAX_LENGTH"] <= 30
-        and limits["MAX_ALIGNMENT_WORK"] > 0
-        and 0 <= retries <= 3
-        and math.isfinite(timeout)
-        and timeout > 0
-    ):
-        raise RuntimeError("模型或切片配置超出允许范围。")
+        config = Settings()
+    except ValidationError:
+        raise RuntimeError("模型或切片配置缺失或不合法，请检查 IMV_ 配置。") from None
+    minimum, maximum = config.segment_min_duration_ms, config.segment_max_duration_ms
     # 先剥离相同前后缀；比较、候选状态与单侧字符都计入同一工作预算。
-    budget = limits["MAX_ALIGNMENT_WORK"]
+    budget = config.segment_max_alignment_work
     prefix = suffix = 0
     limit = min(len(chars), len(timeline))
     for backwards in (False, True):
@@ -241,9 +223,7 @@ def segment(payload: dict) -> dict:
     # ponytail: MVP 仅向模型提供中文标点分句；无此类标点时仅靠后续时长拆分，需多语言时再扩展候选。
     clauses = list(re.finditer(r"[^，。！？；：、…]*[，。！？；：、…]+|[^，。！？；：、…]+$", script))
     listing = [{"id": i + 1, "text": m.group()} for i, m in enumerate(clauses)]
-    base_url, key, model = (config.get("IMV_LLM_" + k) for k in ("BASE_URL", "API_KEY", "MODEL"))
-    if not all(isinstance(v, str) and v.strip() for v in (base_url, key, model)):
-        raise RuntimeError("请配置 IMV_LLM_BASE_URL、IMV_LLM_API_KEY 和 IMV_LLM_MODEL。")
+    base_url, key, model = config.llm_base_url, config.llm_api_key, config.llm_model
     try:
         address = urlparse(base_url)
         address.port  # 验证可选端口，非法地址不进入 SDK。
@@ -255,30 +235,33 @@ def segment(payload: dict) -> dict:
         or (
             address.scheme == "http"
             and address.hostname not in ("localhost", "127.0.0.1", "::1")
-            and (config.get("IMV_ALLOW_INSECURE_LLM_HTTP") or "false").lower() != "true"
+            and not config.allow_insecure_llm_http
         )
     ):
         raise RuntimeError("模型地址必须有效，远程 HTTP 需要显式授权。")
     segments, merge_count, split_count, rejected = [], 0, 0, 0
     # 两次调用有先后依赖：语义切点经时长调整后，再让模型标注最终片段；重试仅由 SDK 负责。
-    with OpenAI(base_url=base_url, api_key=key, timeout=timeout, max_retries=retries) as client:
+    with OpenAI(base_url=base_url, api_key=key, timeout=config.llm_timeout_seconds, max_retries=config.llm_max_retries) as client:
         for stage in ("boundaries", "keywords"):
             if stage == "boundaries":
                 prompt = (
-                    '按语义选择分句之后的画面切点，只返回 JSON：{"boundaries_after":[1,3]}。'
+                    '将口播文案切成短句画面，不做主题分组；只返回 JSON：{"boundaries_after":[1,3]}。'
                     "编号从1开始，不含最后一句，不生成任何时间或新文本。"
                     "以输入的正确文案为准，按口播停顿、语法结构和信息点划分，保留条件、动作、对象与结果的完整含义。"
-                    "以6～8字短句为节奏参考，允许3～5字强调；只在已有分句边界选择，不为凑字数割裂语义。"
+                    "默认在每个语义完整的分句后切开；仅当前句无法独立理解且合并后不超过10字时，才与相邻句合并。"
+                    "以6～8字为主，允许3～5字强调；已有单句超过10字也应保留其前后切点，不再与其他句合并。"
+                    "只能选已有分句边界；同一话题、同一产品或连续卖点不是合并理由，时间约束由程序处理。"
                     "不改写、概括或删字；只输出纯JSON，不加Markdown或解释。"
                 )
                 content = listing
             else:
                 prompt = (
                     '为每段文案提取逐字存在的关键词，只返回 JSON：{"keywords":[["词"],[]]}。'
-                    f"数组与片段一一对应，每段最多{limits['MAX_KEYWORDS']}个词，"
-                    f"每词最多{limits['KEYWORD_MAX_LENGTH']}字，保留有意义的单字，避免虚词。"
+                    f"数组与片段一一对应，每段最多{config.segment_max_keywords}个词，"
+                    f"每词最多{config.segment_keyword_max_length}字，保留有意义的单字，避免虚词。"
                     "从全篇优先选3～4个核心词，关注痛点、优势、动作、收益、保障或行动引导；不足时可少选，不凑数。"
                     "每个核心词只标在一个对应片段，其余片段返回空数组；不要求每段都有词。"
+                    "第i个关键词数组只对应输入第i段；输出前逐项确认每个词在该段内连续出现，不能借用其他段的词或省略空数组。"
                     "以输入的正确文案为准，保留原词的大小写和全半角，不改写或概括；只输出纯JSON，不加Markdown或解释。"
                 )
                 content = [s["text"] for s in segments]
@@ -379,13 +362,13 @@ def segment(payload: dict) -> dict:
                     for candidate in candidates:
                         word = candidate.strip()
                         start = item["text"].find(word)
-                        if not word or word in accepted or len(word) > limits["KEYWORD_MAX_LENGTH"] or start < 0:
+                        if not word or word in accepted or len(word) > config.segment_keyword_max_length or start < 0:
                             rejected += 1
                         else:
                             accepted[word] = start
                     keywords = sorted(accepted, key=accepted.get)
-                    rejected += len(accepted) - min(len(keywords), limits["MAX_KEYWORDS"])
-                    item["keywords"] = [{"text": k} for k in keywords[: limits["MAX_KEYWORDS"]]]
+                    rejected += len(accepted) - min(len(keywords), config.segment_max_keywords)
+                    item["keywords"] = [{"text": k} for k in keywords[: config.segment_max_keywords]]
 
     # 吸收允许范围内的停顿，再检查输出硬约束；时长软约束只产生告警。
     for previous, current in zip(segments, segments[1:]):

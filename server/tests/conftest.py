@@ -7,16 +7,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from server.app import app
-from server.segmentation import segmentation
 
 
 @pytest.fixture(autouse=True)
-def isolate_config(monkeypatch):
+def isolate_config(monkeypatch, tmp_path):
     """清除外部 IMV_ 配置并禁用本机 .env；配置专项测试须显式注入，无配置缓存。"""
     for key in list(os.environ):
         if key.upper().startswith("IMV_"):
             monkeypatch.delenv(key)
-    monkeypatch.setattr(segmentation, "dotenv_values", lambda _: {})
+    monkeypatch.chdir(tmp_path)
 
 
 @pytest.fixture

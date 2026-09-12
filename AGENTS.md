@@ -8,7 +8,8 @@
 - `client/` 是 Rust + Tauri 2 + React + TypeScript 桌面客户端，前端使用 Vite，包管理器与脚本运行时使用 Bun。
 - `client/src/` 存放 React 前端；`client/src-tauri/` 存放 Rust 桌面入口、Tauri 配置和图标。
 - `server/` 使用 Python + FastAPI，当前提供首页、用户路由示例与 `POST /segmentations` 文案切片接口，尚未接入用户存储。包内导入使用相对路径，向应用注册 `APIRouter` 实例。
-- 文案切片集中在 `server/src/server/sub_api/segmentation.py` 的单个 `segment` 函数，按本次需求不拆分类或辅助模块。输入正确文案与已有 ASR 词级时间轴，波前对齐、时间投射、时长与关键词校验由代码完成，模型只给切点和候选词；不调用 TTS/ASR，不降级模型失败。配置读取当前目录 `.env` 与优先级更高的 `IMV_` 环境变量；测试使用合成时间轴和模型替身。
+- 文案切片集中在 `server/src/server/segmentation/segmentation.py` 的单个 `segment` 函数，由包入口导出；`sub_api/segmentation.py` 只负责 HTTP 路由及错误转换。输入正确文案与已有 ASR 词级时间轴，波前对齐、时间投射、时长与关键词校验由代码完成，模型只给切点和候选词；不调用 TTS/ASR，不降级模型失败。配置由 `segmentation/settings.py` 的 Pydantic Settings 自动读取当前目录 `.env` 与优先级更高的 `IMV_` 环境变量，校验类型和范围且不缓存；测试使用合成时间轴和模型替身。
+- 提示词保持简短，优先保留独立信息点的已有分句切点，避免按主题合并；6～8字为节奏偏好，不保证10字上限。关键词全篇优先3～4个且须逐项匹配所属片段，保留空数组位置；不改变既有时长约束、毫秒单位及响应结构。
 - 在 `server/` 下执行 `uv run server` 启动 Uvicorn，默认监听 `127.0.0.1:8000`；仓库根目录使用 `uv run --project server server`。维护 `server/uv.lock`，CI 使用 `--locked` 验证依赖。
 - `server/pyproject.toml` 显式将官方 PyPI 设为 uv 默认索引，与锁文件来源保持一致。遇到依赖版本不可用时先检查索引覆盖配置和镜像同步情况，不要仅为绕过镜像缺失而降低依赖版本或删除锁文件。
 - 当前客户端保持最小可运行结构。`App.tsx` 挂载 `pages/HomePage.tsx`，首页引用独立的 `components/CurrentTime.tsx`，按本机时区显示日期和时间，每秒刷新。
