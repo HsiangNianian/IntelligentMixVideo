@@ -133,7 +133,13 @@ on unmount`. Fill in the [pull request template](.github/pull_request_template.m
 
 Keep each PR focused and use a draft PR for unfinished work. Update relevant
 documentation and respond to review feedback. Applicable CI checks must pass before
-merge; disclose checks skipped by path filters. If a maintainer squashes the PR,
+merge; disclose checks skipped by path filters. The PR gate is `CI result`, with
+pre-commit.ci providing file hygiene checks.
+Development pushes with an open PR at the same commit defer to the PR run.
+Native checks run only for Rust/Tauri, dependency, or CI changes; complete
+installers are built on relevant default-branch pushes, release tags, or manual
+Build client runs. A successful `cargo check` does not prove installer creation.
+If a maintainer squashes the PR,
 the final commit message should retain its Conventional Commit format and any
 breaking-change footer.
 

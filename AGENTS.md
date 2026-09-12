@@ -89,9 +89,19 @@ Windows 需要 MSVC C++ 构建工具、Windows SDK 和 WebView2；ARM64 主机�
 
 ## 客户端构建 CI
 
-`.github/workflows/client-build.yml` 负责客户端跨平台构建，支持分支 push、PR、手动触发和 `workflow_call` 复用。
-路径过滤覆盖客户端、该工作流及 `.github/scripts/`。
-保留平台矩阵、Linux 系统依赖安装、Bun / Rust 缓存和构建产物上传。
+`.github/workflows/validation.yml` 是 push / PR 检查的唯一 Actions 入口，不在工作流级使用 paths 过滤，以确保每个 PR 都有最终检查结果。
+`.github/scripts/ci-scope.mjs` 根据 Git 差异调度：PR 比较目标分支与合并结果，push 比较前后提交；新分支检查全部文件，缺失比较基线时保守运行全部检查。
+
+- 非默认分支 push：若同一仓库的同一提交已有打开的 PR，跳过重复任务；否则按变更范围检查。默认分支始终验证集成结果，不参与去重。
+- PR：前端改动运行冻结安装与生产构建；服务端改动运行 pytest 与包构建；Rust/Tauri 或客户端依赖清单改动运行四平台 `cargo check --all-targets --locked`，不生成安装包。CI 工作流或脚本改动触发所有相关检查。
+- 默认分支 push：涉及客户端代码、资源或 CI 时生成四平台安装包。默认分支名称从事件读取，不硬编码 main。纯服务端改动不构建客户端，纯 Markdown 客户端文档不触发编译。
+- pre-commit.ci 负责 PR 的文件检查；Actions 仅在未去重的 push 或手动检查中运行 pre-commit，避免重复执行。
+- PR 汇总检查名为 `CI result`，push 使用 `Push result`，避免重复 push 的成功结果冒充 PR 验证。汇总必须在依赖失败/取消后执行，意外跳过必需任务不得报告成功。
+- 分支保护建议要求 `CI result` 和 pre-commit.ci 的检查；不要要求按路径跳过的矩阵 job。修改工作流不会自动修改仓库保护规则。
+- 同一事件/分支的新运行取消旧运行；push 与 PR 的并发组分开，不互相取消。去重查询失败必须报告错误，不能静默放行。
+
+`.github/workflows/client-build.yml` 仅提供手动触发和 `workflow_call`，复用同一平台矩阵、Linux 系统依赖和 Bun / Rust 缓存。
+`build-mode=check` 做原生编译检查，`package` 生成并上传安装包；默认 `package`，正式 tag 必须使用打包模式。检查模式不能保证最终链接或安装器成功，完整打包由默认分支、tag 和手动构建验证。
 
 | 平台 | 架构 | 安装包 |
 | --- | --- | --- |
@@ -102,9 +112,10 @@ Windows 需要 MSVC C++ 构建工具、Windows SDK 和 WebView2；ARM64 主机�
 普通构建的 Actions artifacts 保留 14 天。发版应复用这一构建工作流，避免维护两套不一致的平台构建逻辑。
 构建产物来自被触发的提交；正式发布时必须来自对应 tag 的源码。
 
-`.github/workflows/validation.yml` 在相关 push / PR 中检查全部工作流、运行发布脚本与失败恢复测试，
-并通过临时副本中的真实配置验证版本注入、Bun 冻结安装和 Cargo 锁文件不变。
-该工作流同时测试 API 路由并构建 Python 包；`server/pyproject.toml` 的 uv 构建模块名显式设为 `server`，对应 `src/server/`。
+涉及 CI、原生代码或客户端依赖清单时，Release preflight 检查全部工作流、运行调度与发布脚本测试，
+并通过临时副本验证版本注入、Bun 冻结安装和 Cargo 锁文件不变。
+服务端 job 使用 Python 3.12 和 uv 缓存；`server/pyproject.toml` 的 uv 构建模块名显式设为 `server`，对应 `src/server/`。
+在 Validate project 上手动运行会执行全部检查（原生检查模式）；需要安装包时手动运行 Build client。
 
 ## 正式版本与 tag 发版
 
