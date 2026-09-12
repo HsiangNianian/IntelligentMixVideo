@@ -34,7 +34,7 @@ uv run server
 仓库根目录使用 `uv run --project server server`。模板 API 统一使用 `/template` 前缀，POST 通过可选 `template_id` 区分创建和完整更新；详情见 [server/README.md](server/README.md)。
 服务端在项目配置中将官方 PyPI 设为默认依赖索引，与 `server/uv.lock` 的来源保持一致，避免本机默认镜像同步滞后导致版本无法解析。
 
-`POST /segmentations` 将文案与已有 ASR 词级时间轴切为带时间和关键词的片段。模型配置使用 `server/.env.example` 中的 `IMV_` 变量；从仓库根目录启动且需要该配置时使用 `uv run --project server --env-file server/.env server`。请求与处理约束见 [server/README.md](server/README.md#文案切片)。
+`POST /segmentations` 将文案与单音轨 Fun-ASR 原始结果切为带时间和关键词的片段；输入必须恰好包含一个 `transcripts` 元素，词时间使用 `begin_time/end_time` 毫秒，不接受顶层 `sentences` 或仅有旧 `*_ms` 时间字段的输入。模型配置使用 `server/.env.example` 中的 `IMV_` 变量；从仓库根目录启动且需要该配置时使用 `uv run --project server --env-file server/.env server`。请求与处理约束见 [server/README.md](server/README.md#文案切片)。
 
 ASR 转写另提供独立 Python 函数与命令行入口，读取北京地域的 `DASHSCOPE_API_KEY`，尚未注册 HTTP 路由；用法见 [ASR 音频转写](server/README.md#asr-音频转写)。
 
