@@ -1,7 +1,6 @@
 import unittest
 
 from fastapi.testclient import TestClient
-
 from server.app import app
 
 
@@ -28,7 +27,9 @@ class ApiTests(unittest.TestCase):
     def test_api_documentation(self) -> None:
         self.assertEqual(self.client.get("/docs").status_code, 200)
         schema = self.client.get("/openapi.json").json()
-        self.assertEqual(set(schema["paths"]), {"/", "/users/", "/users/{user_id}"})
+        self.assertEqual(
+            set(schema["paths"]), {"/", "/users/", "/users/{user_id}", "/segmentations"}
+        )
 
 
 if __name__ == "__main__":

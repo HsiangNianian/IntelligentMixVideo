@@ -18,7 +18,7 @@ Structure
 ---------
 
 - `client/`：Rust + Tauri 2 + React + TypeScript 桌面客户端。
-- `server/`：Python + FastAPI 服务端，提供首页和用户路由示例。
+- `server/`：Python + FastAPI 服务端，提供文案切片接口与示例路由。
 
 服务端运行
 ----------
@@ -31,7 +31,7 @@ uv run server
 ```
 
 默认监听 http://127.0.0.1:8000，API 文档位于 http://127.0.0.1:8000/docs。
-仓库根目录使用 `uv run --project server server`。路由仍返回示例数据，详情见 [server/README.md](server/README.md)。
+仓库根目录使用 `uv run --project server server`。文案切片接口需要配置模型服务，示例路由仍返回示例数据，详情见 [server/README.md](server/README.md)。
 
 客户端运行
 ----------

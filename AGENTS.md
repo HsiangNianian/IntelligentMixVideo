@@ -7,8 +7,10 @@
 - 这是一个 monorepo，目录名使用小写的 `client/` 和 `server/`。
 - `client/` 是 Rust + Tauri 2 + React + TypeScript 桌面客户端，前端使用 Vite，包管理器与脚本运行时使用 Bun。
 - `client/src/` 存放 React 前端；`client/src-tauri/` 存放 Rust 桌面入口、Tauri 配置和图标。
-- `server/` 使用 Python + FastAPI，当前提供首页与用户路由示例，尚未接入用户存储。包内导入使用相对路径，向应用注册 `APIRouter` 实例。
+- `server/` 使用 Python + FastAPI，当前提供首页、用户路由示例与 `POST /segmentations` 文案切片接口，尚未接入用户存储。包内导入使用相对路径，向应用注册 `APIRouter` 实例；业务实现放在 `sub_api/<域>/` 下，模型调用统一走 `llm/client.py`。
 - 在 `server/` 下执行 `uv run server` 启动 Uvicorn，默认监听 `127.0.0.1:8000`；仓库根目录使用 `uv run --project server server`。维护 `server/uv.lock`，CI 使用 `--locked` 验证依赖。
+- 服务端配置使用 `IMV_` 前缀，从 `server/.env` 读取；`.env` 不入库，样例见 `server/.env.example`。
+- 模型负责语义切点与关键词候选，对齐、时间投射、时长约束与关键词校验全部由确定性代码完成；不实现模型失败的兜底路径。
 - 当前客户端保持最小可运行结构。首页 `client/src/App.tsx` 引用独立的 `client/src/components/CurrentTime.tsx` 组件，按本机时区显示日期和时间，每秒刷新。
 - 时间组件需在卸载时清理定时器。新增界面功能时遵循组件化结构，不把所有逻辑堆到 App 首页。
 - 项目长期方向见 README；其中提到的云剪辑、Agent、素材召回等功能不代表已经实现，也不构成自动扩展当前任务范围的要求。
