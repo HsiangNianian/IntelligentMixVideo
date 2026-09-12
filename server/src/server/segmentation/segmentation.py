@@ -17,7 +17,7 @@ from .settings import Settings
 def segment(payload: dict) -> dict:
     """用正确文案和 ASR 词级时间生成片段；不调用 TTS/ASR，不降级模型失败。
 
-    请求为 {script, asr_result}，ASR 支持 sentences 或 fun-asr transcripts[0]。
+    请求为 {script, asr_result}，ASR 仅接受单音轨 fun-asr transcripts，词时间为 begin_time/end_time 毫秒。
     替换/增删代价均为 1；波前搜索保留最远位置，平局依次优先替换、文案多字、
     ASR 多字。模型只返回分句切点和关键词，时间投射和关键词校验由代码完成。
     配置来自当前目录 .env 及优先级更高的 IMV_ 环境变量；SDK 连接在返回前关闭。
@@ -39,10 +39,11 @@ def segment(payload: dict) -> dict:
     if len(chars) < 2:
         raise ValueError("文案有效内容过短。")
     asr = payload["asr_result"]
-    if isinstance(asr, dict) and "sentences" not in asr:
-        transcripts = asr.get("transcripts")
-        asr = transcripts[0] if isinstance(transcripts, list) and transcripts else None
-    sentences = asr.get("sentences") if isinstance(asr, dict) else None
+    transcripts = asr.get("transcripts") if isinstance(asr, dict) else None
+    if not isinstance(transcripts, list) or len(transcripts) != 1:
+        raise ValueError("ASR 必须提供仅含一个音轨的 transcripts 数组。")
+    transcript = transcripts[0]
+    sentences = transcript.get("sentences") if isinstance(transcript, dict) else None
     if not isinstance(sentences, list) or not 1 <= len(sentences) <= 20000:
         raise ValueError("ASR 需要有界的 sentences 词级时间轴。")
     timeline, word_count, text_count = [], 0, 0
@@ -60,8 +61,8 @@ def segment(payload: dict) -> dict:
             text_count += len(word["text"])
             if text_count > 20000:
                 raise ValueError("ASR 文本超出 20000 字符上限。")
-            begin = word.get("begin_time_ms", word.get("begin_time"))
-            end = word.get("end_time_ms", word.get("end_time"))
+            begin = word.get("begin_time")
+            end = word.get("end_time")
             if (
                 any(type(t) not in (int, float) or not 0 <= t <= 1e12 for t in (begin, end))
                 or not 0 <= previous_end <= begin < end
@@ -246,24 +247,23 @@ def segment(payload: dict) -> dict:
         for stage in ("boundaries", "keywords"):
             if stage == "boundaries":
                 prompt = (
-                    '将口播文案切成短句画面，不做主题分组；只返回 JSON：{"boundaries_after":[1,3]}。'
-                    "编号从1开始，不含最后一句，不生成任何时间或新文本。"
-                    "以输入的正确文案为准，按口播停顿、语法结构和信息点划分，保留条件、动作、对象与结果的完整含义。"
-                    "默认在每个语义完整的分句后切开；仅当前句无法独立理解且合并后不超过10字时，才与相邻句合并。"
-                    "以6～8字为主，允许3～5字强调；已有单句超过10字也应保留其前后切点，不再与其他句合并。"
-                    "只能选已有分句边界；同一话题、同一产品或连续卖点不是合并理由，时间约束由程序处理。"
-                    "不改写、概括或删字；只输出纯JSON，不加Markdown或解释。"
+                    '将口播文案切成短句画面，只返回 JSON：{"boundaries_after":[1,3]}。'
+                    "数组须列全所有选中的分句编号，升序、不重复，从1开始且不含最后一句；不是只选几个代表性切点。"
+                    "逐个检查相邻分句，默认切开独立信息点；仅语法不完整、必须依赖相邻句且合并后不超过10字时才合并。"
+                    "以6～8字为节奏参考，3～5字可独立强调；已有超长分句保留前后边界，不再合并。"
+                    "同一话题、产品或连续卖点仍分别切开；只用已有分句边界，时长交给程序处理。"
+                    "以输入原文为准，不改写、不删字、不生成时间；只输出纯JSON，无Markdown或解释。"
                 )
                 content = listing
             else:
                 prompt = (
-                    '为每段文案提取逐字存在的关键词，只返回 JSON：{"keywords":[["词"],[]]}。'
-                    f"数组与片段一一对应，每段最多{config.segment_max_keywords}个词，"
-                    f"每词最多{config.segment_keyword_max_length}字，保留有意义的单字，避免虚词。"
-                    "从全篇优先选3～4个核心词，关注痛点、优势、动作、收益、保障或行动引导；不足时可少选，不凑数。"
-                    "每个核心词只标在一个对应片段，其余片段返回空数组；不要求每段都有词。"
-                    "第i个关键词数组只对应输入第i段；输出前逐项确认每个词在该段内连续出现，不能借用其他段的词或省略空数组。"
-                    "以输入的正确文案为准，保留原词的大小写和全半角，不改写或概括；只输出纯JSON，不加Markdown或解释。"
+                    '从全篇挑选3～4个最核心关键词，只返回 JSON：{"keywords":[[],["词"],[]]}。'
+                    "所有内层数组的词数总和不得超过4，不是每段3～4个；不足可少选，不凑数。"
+                    f"每段最多{min(1, config.segment_max_keywords)}个词，每词最多{config.segment_keyword_max_length}字；"
+                    "先全篇筛选痛点、优势、收益或行动引导，再将每词放入一个对应片段，其余留空。"
+                    "输出数组长度必须等于输入片段数，第i项只对应第i段，空数组不能省略。"
+                    "逐项确认词在该段内连续出现，保留大小写和全半角，不改写或借用其他段的词。"
+                    "提交前数一遍全篇词数，超过4就删除次要词；只输出纯JSON，无Markdown或解释。"
                 )
                 content = [s["text"] for s in segments]
             response = client.chat.completions.create(
