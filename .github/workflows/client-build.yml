@@ -113,6 +113,9 @@ jobs:
         run: |
           bun run build
           cargo check --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --all-targets --locked
+      - name: Test Windows resource server
+        if: runner.os == 'Windows' && inputs.build-mode == 'check'
+        run: cargo test --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --lib --locked
       - name: Upload installers
         if: inputs.build-mode != 'check'
         uses: actions/upload-artifact@v4

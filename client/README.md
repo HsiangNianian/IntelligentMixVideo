@@ -1,11 +1,11 @@
 # IntelligentMixVideo Client
 
 基于 Tauri 2、React、TypeScript、Tailwind CSS 4 和 shadcn/ui。
-模板功能本次以 `localhost` 浏览器运行，SDK 使用阿里云 AliyunTimelinePlayer 5.2.2。
+模板预览继续使用阿里云 AliyunTimelinePlayer 5.2.2；Windows 安装包通过内置回环 HTTP 服务加载页面，使 SDK 识别到 `localhost`。
 
 ## 开发运行
 
-先按 [服务端说明](../server/README.md) 启动 MySQL 与 API，再在本目录执行：
+本地草稿编辑和预览不要求启动 API；共享模板读写需按 [服务端说明](../server/README.md) 启动 MySQL 与 API。在本目录执行：
 
 ```sh
 bun install --frozen-lockfile
@@ -29,8 +29,9 @@ bun run tauri dev
 bun run tauri build
 ```
 
-前端构建不代表桌面打包或跨平台预览验证通过。本次未验证 Tauri 打包后的 SDK 运行环境。
-预览需要联网下载 SDK、字体和公开视频，使用支持硬件加速的 Chrome / Edge；本次按 localhost 运行，不配置 License。
+Windows 安装包仅在本机回环地址绑定系统分配的空闲端口，窗口访问 `http://localhost:<端口>`；退出程序后释放，无需额外启动 Python 或 Vite。API 允许该 localhost 来源的动态端口。
+开发模式仍使用 Vite，macOS / Linux 保留原有 Tauri 加载方式。预览仍需要联网下载 SDK、字体和公开视频；空 License 的 localhost 预览保留 SDK 水印。
+前端构建不代表桌面打包或跨平台预览验证通过；各平台仍须检查真实 WebView、首帧和播放。
 
 ## 示例视频配置
 
@@ -59,6 +60,7 @@ VITE_PREVIEW_VIDEO_URL=https://your-domain.example/preview.mp4
 - 切换前提供保存并切换、放弃修改、取消；失败保留草稿。刷新列表不会覆盖正在编辑的内容。
 - 效果目录由 SDK 提供，动画来自静态 `motions.json`；服务端独立校验可信效果 ID。至少选择一个效果才能保存。
 - 浏览器关闭或刷新时对未保存修改发出提示；不提供崩溃恢复或自动保存。
+- 模板列表加载或失败不锁住本地新建与文字编辑；保存等待首次列表请求结束，避免晚到结果覆盖保存后的列表。
 
 ## 开发结构
 
@@ -104,3 +106,4 @@ bun run build
 测试固定 API 与示例视频地址并拦截 fetch，不需要启动后端、MySQL 或下载 SDK。
 工作区测试使用真实表单、Radix 选择器和弹窗，以轻量组件代替 SDK 播放器；不验证实际视频播放、字体排版或 Tauri 原生能力。
 Happy DOM 的小数 step 校验与浏览器不同，保存流程直接触发表单提交；浏览器原生表单约束仍需浏览器验证。
+Windows 原生资源服务的回归测试位于 `src-tauri/src/localhost.rs`，执行 `cargo test --manifest-path src-tauri/Cargo.toml --lib --locked`，覆盖真实 HTTP 资源响应、查询参数、HEAD、错误主机与方法；原生检查 CI 同步执行。

@@ -53,9 +53,10 @@ def test_unknown_route(client: TestClient) -> None:
     assert client.get("/not-found").status_code == 404
 
 
-# 测试本地 Vite 与 Tauri 正式客户端来源均能进行模板 JSON 请求的 CORS 预检。
+# 测试 Vite、现有 Tauri 来源和 Windows 客户端动态端口均能通过模板请求预检。
 @pytest.mark.parametrize("origin", [
     "http://localhost:1420", "http://localhost:4173", "tauri://localhost", "http://tauri.localhost",
+    "http://localhost:49152", "http://localhost:65535",
 ])
 @pytest.mark.parametrize("method", ["GET", "POST", "DELETE"])
 def test_local_client_cors(client: TestClient, origin: str, method: str) -> None:
@@ -72,14 +73,22 @@ def test_local_client_cors(client: TestClient, origin: str, method: str) -> None
 
 
 # 测试不受信任的网页来源仍无法通过跨域预检。
-def test_external_origin_cors_is_rejected(client: TestClient) -> None:
+@pytest.mark.parametrize("origin", [
+    "https://example.com", "http://example.com:49152", "https://localhost:49152",
+    "http://localhost.example.com:49152", "http://localhost:49152.example.com",
+    "http://localhost:49152/path", "http://localhost:49152/", "http://localhost:49152?x=1",
+    "http://localhost@evil.example:49152", "http://127.0.0.1:49152", "http://[::1]:49152",
+    "http://localhost:not-a-port", "null",
+])
+def test_external_origin_cors_is_rejected(client: TestClient, origin: str) -> None:
     """补齐本地桌面来源不能扩大为允许任意网页访问 API。"""
     response = client.options("/template", headers={
-        "Origin": "https://example.com", "Access-Control-Request-Method": "POST",
+        "Origin": origin, "Access-Control-Request-Method": "POST",
         "Access-Control-Request-Headers": "Content-Type",
     })
     assert response.status_code == 400
     assert "access-control-allow-origin" not in response.headers
+    assert "access-control-allow-origin" not in client.get("/template", headers={"Origin": origin}).headers
 
 
 # 测试文档包含首页、用户、模板和切片全部路由，且用户 ID 参数定义正确。
