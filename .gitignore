@@ -6,3 +6,9 @@ target/
 .vscode/
 dist/
 node_modules/
+server/.venv/
+server/.env
+server/.env.*
+!server/.env.example
+server/.data/
+server/src/server/templates/.data/
