@@ -19,8 +19,11 @@ const { default: HomePage } = await import("@/pages/HomePage");
 
 // 回归：模板首页同时保留标题区时钟与可编辑工作区，避免替换页面时再次丢失时钟。
 test("首页标题区显示时钟并保留模板工作区", async () => {
-  fetchMock.mockResolvedValueOnce(Response.json([]));
+  fetchMock.mockResolvedValueOnce(Response.json({models_configured: true}));
   render(<HomePage />);
+  expect(screen.getByRole("region", {name: "字效聊天"})).toBeTruthy();
+  fetchMock.mockResolvedValueOnce(Response.json([]));
+  fireEvent.mouseDown(screen.getByRole('tab', {name: '模板库'}), {button: 0});
   await screen.findByText("共享模板库 · 0 个模板");
   const clock = screen.getByRole("region", { name: "当前时间" });
   expect(clock.closest("header")).not.toBeNull();

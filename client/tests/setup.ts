@@ -2,7 +2,8 @@
 import { afterEach, beforeEach, mock, spyOn } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
-GlobalRegistrator.register({ url: "http://localhost:1420" });
+// 禁止测试 iframe 导航访问真实服务，仍保留 contentWindow 供消息协议用例使用。
+GlobalRegistrator.register({ url: "http://localhost:1420", settings: {navigation: {disableChildFrameNavigation: true}} });
 process.env.VITE_API_URL = "http://api.test:8000/";
 process.env.VITE_PREVIEW_VIDEO_URL = "/sample.mp4";
 
