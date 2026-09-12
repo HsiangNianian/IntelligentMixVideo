@@ -1,4 +1,7 @@
-"""Verify uv keeps the project lock usable despite a user-level mirror override."""
+"""离线验证项目索引与锁文件来源兼容；在 server/ 执行 uv run --locked pytest -v。
+
+空缓存下仅检查锁文件，不下载依赖，也不验证真实 PyPI 的可用性。
+"""
 
 import os
 from pathlib import Path
@@ -8,7 +11,7 @@ import sys
 
 
 def test_locked_dependencies_override_user_default_mirror(tmp_path: Path) -> None:
-    """Check the real lock offline with an empty cache and a conflicting default index."""
+    """项目 PyPI 覆盖用户默认镜像；删除该覆盖会使锁中的来源失效，离线检查失败。"""
     project = tmp_path / "project"
     project.mkdir()
     server = Path(__file__).resolve().parents[1]

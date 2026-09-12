@@ -11,7 +11,7 @@ import httpx
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# 源码运行优先使用 server/.env；安装后的包在工作目录查找 .env。
+# 仅仓库的 server/src/server/asr 布局使用源码配置；安装包不读取包目录的祖先 .env。
 _SOURCE_ENV_FILE = Path(__file__).resolve().parents[3] / ".env"
 
 
@@ -20,7 +20,8 @@ class ASRSettings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_file=_SOURCE_ENV_FILE
-        if _SOURCE_ENV_FILE.is_file()
+        if Path(__file__).resolve().parts[-5:] == ("server", "src", "server", "asr", "asr.py")
+        and _SOURCE_ENV_FILE.is_file()
         else Path.cwd() / ".env",
         env_file_encoding="utf-8",
         extra="ignore",
@@ -33,9 +34,9 @@ settings = ASRSettings()
 
 
 def _require_https_url(url):
-    """拒绝非 HTTPS、缺少主机或携带用户名的地址，防止凭证经明文请求发送。"""
+    """拒绝非 HTTPS、缺少主机或任何用户信息，避免 URL 凭证被提交或隐式发送。"""
     parsed = urlparse(url)
-    if parsed.scheme != "https" or not parsed.hostname or parsed.username:
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username is not None:
         raise ValueError("请提供有效的 HTTPS URL")
 
 
@@ -93,5 +94,9 @@ async def transcribe(audio_url, wait_seconds=1800):
             return await request_json(result_url)
         if status not in ("PENDING", "RUNNING"):
             raise RuntimeError(f"任务失败：{output}")
-        await asyncio.sleep(2)
+        # HTTP 可能耗尽预算；休眠不再额外超过剩余等待时间。
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            break
+        await asyncio.sleep(min(2, remaining))
     raise TimeoutError(f"等待超时，任务可能仍在执行，可用 task_id={task_id} 继续查询")
