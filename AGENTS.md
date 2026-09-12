@@ -7,13 +7,14 @@
 - 这是一个 monorepo，目录名使用小写的 `client/` 和 `server/`。
 - `client/` 是 Rust + Tauri 2 + React + TypeScript 桌面客户端，前端使用 Vite，包管理器与脚本运行时使用 Bun。
 - `client/src/` 存放 React 前端；`client/src-tauri/` 存放 Rust 桌面入口、Tauri 配置和图标。
-- `server/` 使用 Python + FastAPI，当前提供首页、用户路由示例与 `POST /segmentations` 文案切片接口，尚未接入用户存储。包内导入使用相对路径，向应用注册 `APIRouter` 实例。
+- `server/` 使用 Python + FastAPI + MySQL，提供模板持久化 API 与 `POST /segmentations` 文案切片接口，首页与用户路由仍为示例、尚未接入用户存储。包内导入使用相对路径，向应用注册 `APIRouter` 实例。
+- 模板模块位于 `server/src/server/template/`，与用户示例目录 `sub_api/` 平级；路由、配置校验、数据库存储与效果目录均放在该模块内。
 - 文案切片集中在 `server/src/server/segmentation/segmentation.py` 的单个 `segment` 函数，由包入口导出；`sub_api/segmentation.py` 只负责 HTTP 路由及错误转换。输入正确文案与已有 ASR 词级时间轴，波前对齐、时间投射、时长与关键词校验由代码完成，模型只给切点和候选词；不调用 TTS/ASR，不降级模型失败。配置由 `segmentation/settings.py` 的 Pydantic Settings 自动读取当前目录 `.env` 与优先级更高的 `IMV_` 环境变量，校验类型和范围且不缓存；测试使用合成时间轴和模型替身。
 - 提示词保持简短，优先保留独立信息点的已有分句切点，避免按主题合并；6～8字为节奏偏好，不保证10字上限。关键词全篇优先3～4个且须逐项匹配所属片段，保留空数组位置；不改变既有时长约束、毫秒单位及响应结构。
 - 在 `server/` 下执行 `uv run server` 启动 Uvicorn，默认监听 `127.0.0.1:8000`；仓库根目录使用 `uv run --project server server`。维护 `server/uv.lock`，CI 使用 `--locked` 验证依赖。
 - `server/pyproject.toml` 显式将官方 PyPI 设为 uv 默认索引，与锁文件来源保持一致。遇到依赖版本不可用时先检查索引覆盖配置和镜像同步情况，不要仅为绕过镜像缺失而降低依赖版本或删除锁文件。
-- 当前客户端保持最小可运行结构。`App.tsx` 挂载 `pages/HomePage.tsx`，首页引用独立的 `components/CurrentTime.tsx`，按本机时区显示日期和时间，每秒刷新。
-- 时间组件需在卸载时清理定时器。新增界面功能时遵循组件化结构，不把所有逻辑堆到 App 首页。
+- `App.tsx` 挂载 `pages/HomePage.tsx`，首页组合 `features/templates/` 模板工作区；效果编辑、SDK 预览、API 请求、数据契约与时间线转换按职责分离。
+- 组件卸载时清理定时器、订阅和播放器。新增界面功能遵循组件化结构，不把所有逻辑堆到 App 首页。
 - 项目长期方向见 README；其中提到的云剪辑、Agent、素材召回等功能不代表已经实现，也不构成自动扩展当前任务范围的要求。
 
 ## 最小改动与源码说明（强制）
@@ -30,21 +31,36 @@
 
 - 技术栈固定为 React + TypeScript strict + Vite + Tailwind CSS 4 + shadcn/ui，使用 Bun 管理依赖。Tailwind 使用 `@tailwindcss/vite`；不混用 Tailwind 3 配置或另加样式框架。
 - `src/main.tsx` 只挂载应用和全局样式；`src/App.tsx` 只组合页面与确有需求的全局 provider；`src/pages/` 负责页面布局和组件组合。
-- `src/components/` 放当前业务组件，例如 `CurrentTime.tsx`；`src/components/ui/` 放 shadcn/ui 基础组件，只负责可组合的 UI，不导入页面、不请求 API、不调用 Tauri command。
+- `src/features/templates/` 放模板业务组件与通信逻辑；其他业务组件可放 `src/components/`；`src/components/ui/` 放 shadcn/ui 基础组件，只负责可组合的 UI，不导入页面、不请求 API、不调用 Tauri command。
 - `src/lib/` 放实际共享的工具，当前只有合并类名的 `cn`。真实复用后再增加 `hooks/`；业务增长时才按功能提取 `features/<功能>/`，不提前创建空层。
 - 依赖方向为页面 → 业务组件 → 基础 UI / 工具。跨层导入使用 `@/`（指向 `src/`）；文件内或同目录的相对导入可保留。组件命名保持现有 PascalCase，shadcn/ui 文件遵循上游小写命名。
 - 有交互和无障碍语义的基础控件优先使用 shadcn/ui；在 `client/` 执行 `bunx --bun shadcn@latest add <组件>` 按需添加，随后审阅生成代码、依赖和主题令牌，只保留有调用方的导出。不要预装整个组件库。
 - `client/components.json` 维护 shadcn/ui 路径与别名；`src/styles/globals.css` 是全局样式入口，只放 Tailwind 导入、主题令牌和基础样式。组件布局使用工具类，颜色使用语义令牌，条件类名通过 `cn` 合并。
 - 主题令牌按使用需求补齐，不预先创建暗色切换、动画、路由或状态管理设施。局部状态优先留在组件；effect 必须清理定时器、订阅及监听器。重复渲染组件的关联 ID 用 `useId`，保留语义 HTML 和无障碍属性。
-- 当前时间只需本机时钟，不增加服务端请求。后续实际出现 API/Tauri 通信时再集中到对应功能模块，避免在纯展示组件中散落请求与错误处理。
+- 模板 API 请求集中在 `features/templates/api.ts`，SDK 加载与预览在独立模块，避免在纯展示组件中散落请求与错误处理。
 - 前端改动运行冻结依赖安装和 `bun run build`，并检查浏览器/桌面中的相关行为。新增 feature 必须提供行为测试；测试方案按实际运行环境选择，不用 Python 强行测试 React。纯样式调整验证渲染与响应式，不写重复实现的断言。
+
+## 模板功能约定
+
+- 模板库共享，不包含登录、用户隔离或旧数据迁移。配置存入 MySQL，使用 SQLAlchemy 和 PyMySQL。
+- 数据库配置由 `database.py` 的 `DatabaseSettings`（`pydantic-settings`）自动读取固定的 `server/.env`，字段为 `DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD`、`DB_NAME`，进程环境变量优先；端口校验 1～65535，库名校验 1～64 字符。启动初始化时加载，修改后重启服务。真实环境文件不得入库，维护无密码示例 `.env.example`。
+- 数据库与切片模型配置共用 `server/.env.example`；从 `server/` 启动可读取两组配置，根目录启动且需要切片模型配置时使用 `uv run --project server --env-file server/.env server`，因为切片设置按当前目录查找 `.env`。
+- FastAPI lifespan 启动时连接目标库，仅在 MySQL 返回 1049（库不存在）时通过临时无库连接执行 `CREATE DATABASE IF NOT EXISTS`，使用 `utf8mb4` / `utf8mb4_bin` 并正确引用库名；已有库直接复用。配置无效、连接或建库失败时停止启动，建库账号须具备对应权限。首次模板请求自动创建缺失表；运行中的数据库失败返回可重试的 503。启动失败和退出时释放连接池，临时建库连接始终关闭。
+- 四个路由为 `GET /template`、`POST /template`、`GET /template/{template_id}`、`DELETE /template/{template_id}`。POST 无 ID 创建（201），有 ID 完整更新（200）；不存在的 ID 返回 404，不做 upsert。
+- 名称去除首尾空白后不能为空，MySQL 唯一约束拒绝重名（409）；保存校验数值范围、效果目录与动画互斥关系（422）。服务端生成 ID、UTC 时间和效果参数快照，不接受客户端渲染参数。
+- 重命名和另存为复用 POST；另存为不携带 ID。未保存切换须提供保存并切换、放弃修改、取消，失败保留草稿。删除前确认。
+- 前端使用 SDK 5.2.2 的效果目录和静态动画 JSON，服务端维护同版本白名单；不提供 `/template/effects`。升级 SDK 时同步核对目录。保留用户已有 proto 文件，本次 API 使用 JSON。
+- 示例视频地址通过 `client/.env` 中的 `VITE_PREVIEW_VIDEO_URL` 配置，支持 HTTP(S) 直链与 public 资源路径；空值回退内置示例。修改后重启 Vite，生产使用需重新构建；当前固定片段要求源视频至少 14 秒。
+- 预览本次面向 localhost 浏览器运行；API 地址读取 `client/.env` 的 `VITE_API_URL`，未配置或留空时默认 `http://localhost:8000`，请求直接访问该地址。修改后重启 Vite，生产使用需重新构建；避免 `.env.local` 中同名配置覆盖。预览不发起云端合成，不将浏览器验证等同于桌面安装包验证。
 
 ## Feature 测试约束（强制）
 
 - 每次新增 feature 必须同时提交详细、覆盖全面且可重复执行的测试脚本；修复 bug 必须增加能够复现问题的回归用例。不能只测成功路径，也不能只断言函数被调用或复制实现来凑测试数量。
 - 服务端测试统一放在 `server/tests/`，使用 pytest 的 `test_*.py`、fixture 和参数化用例；共享夹具放 `conftest.py`，不再新增 unittest 风格测试。按功能组织文件，规模增大后再分目录。
+- 客户端核心测试在 `client/tests/`，使用 Bun 自带运行器、Happy DOM 和 React Testing Library；在 `client/` 执行 `bun run test`，每个用例上方写中文场景注释。测试隔离 HTTP 与 SDK，不连接真实服务；只覆盖必要业务行为，不把模拟 DOM 验证等同于真实视频播放、浏览器原生表单校验或 Tauri 验证。`bun run build` 同时检查测试类型。
 - 根据功能适用范围覆盖正常流程、异常输入、边界值、空数据、失败恢复、资源清理，以及涉及的权限、并发与幂等行为。不存在的能力不为凑覆盖率编写空测试；提交说明列出已覆盖场景与实际限制。
 - API 用例应检查状态码、响应契约和副作用。测试隔离外部服务、密钥和持久化数据，使用 fixture、monkeypatch 或临时目录；不得访问生产系统、依赖执行顺序或使用无界等待。
+- 共享服务端夹具保留临时 SQLite 数据库隔离，同时自动清除外部 `IMV_` 环境变量并切换临时目录，避免读取本机模型配置；配置用例显式注入，不访问真实 MySQL 或模型服务。
 - 文件头说明测试范围与执行方式，测试函数/夹具的 docstring 说明场景和期望。每次功能改动运行相关用例，交付前运行所属模块的完整测试；CI 使用锁定依赖运行服务端 pytest，测试失败必须修复。
 - 服务端目录执行 `uv run --locked pytest -v`；仓库根目录执行 `uv run --locked --project server pytest server/tests -v`。pytest 仅作为开发依赖维护在 `server/pyproject.toml` 和 `server/uv.lock`。
 
@@ -54,6 +70,7 @@
 
 ```sh
 bun install --frozen-lockfile
+bun run test
 bun run tauri dev
 bun run build
 bun run tauri build
@@ -96,7 +113,7 @@ Windows 需要 MSVC C++ 构建工具、Windows SDK 和 WebView2；ARM64 主机�
 `.github/scripts/ci-scope.mjs` 根据 Git 差异调度：PR 比较目标分支与合并结果，push 比较前后提交；新分支检查全部文件，缺失比较基线时保守运行全部检查。
 
 - 非默认分支 push：若同一仓库的同一提交已有打开的 PR，跳过重复任务；否则按变更范围检查。默认分支始终验证集成结果，不参与去重。
-- PR：前端改动运行冻结安装与生产构建；服务端改动运行 pytest 与包构建；Rust/Tauri 或客户端依赖清单改动运行四平台 `cargo check --all-targets --locked`，不生成安装包。CI 工作流或脚本改动触发所有相关检查。
+- PR：前端改动运行冻结安装、核心测试与生产构建；服务端改动运行 pytest 与包构建；Rust/Tauri 或客户端依赖清单改动运行四平台 `cargo check --all-targets --locked`，不生成安装包。CI 工作流或脚本改动触发所有相关检查。
 - 默认分支 push：涉及客户端代码、资源或 CI 时生成四平台安装包。默认分支名称从事件读取，不硬编码 main。纯服务端改动不构建客户端，纯 Markdown 客户端文档不触发编译。
 - pre-commit.ci 负责 PR 的文件检查；Actions 仅在未去重的 push 或手动检查中运行 pre-commit，避免重复执行。
 - PR 汇总检查名为 `CI result`，push 使用 `Push result`，避免重复 push 的成功结果冒充 PR 验证。汇总必须在依赖失败/取消后执行，意外跳过必需任务不得报告成功。

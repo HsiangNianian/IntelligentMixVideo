@@ -131,3 +131,32 @@ test("确认后才删除模板", async () => {
   expect(screen.getByLabelText<HTMLInputElement>("模板名称").value).toBe("");
   expect(screen.getByText("共享模板库 · 0 个模板")).toBeTruthy();
 });
+
+// 测试取消动画或清除本页效果时修复无效时长，避免禁用输入留下 null、阻止保存。
+test.each([
+  ["无效果", "", 0.5],
+  ["清除本页效果", "", 0.5],
+  ["无效果", "0", 0.5],
+  ["清除本页效果", "4", 0.5],
+  ["无效果", "2", 2],
+  ["清除本页效果", "2", 2],
+] as const)("取消动画后修复无效时长并保留有效设置：%s / %s", async (operation, duration, expected) => {
+  const saved = savedTemplate();
+  saved.editor.subtitleIn = "in/fade_in";
+  fetchMock.mockResolvedValueOnce(Response.json([saved]));
+  render(<TemplateWorkspace />);
+  await screen.findByText("共享模板库 · 1 个模板");
+  fetchMock.mockResolvedValueOnce(Response.json(saved));
+  await choose("打开模板", saved.name);
+  await screen.findByDisplayValue(saved.name);
+  fireEvent.change(screen.getAllByLabelText("时长 / 秒")[0], { target: { value: duration } });
+  if (operation === "无效果") await choose("入场动画", "无效果");
+  else fireEvent.click(screen.getByRole("button", { name: operation }));
+  fetchMock.mockResolvedValueOnce(Response.json(saved));
+  fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
+  await screen.findByText(`模板「${saved.name}」已保存`);
+  const body = JSON.parse(String(fetchMock.mock.calls[2][1]?.body));
+  expect(body.editor.titleIn).toBe("");
+  expect(body.editor.titleInDuration).toBe(expected);
+  expect(body.editor.subtitleIn).toBe("in/fade_in");
+});

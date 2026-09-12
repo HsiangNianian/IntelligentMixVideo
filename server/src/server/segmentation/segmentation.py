@@ -173,7 +173,8 @@ def segment(payload: dict) -> dict:
     ops = [("match", i, i) for i in range(prefix)] + middle
     ops += [("match", len(chars) - suffix + i, len(timeline) - suffix + i) for i in range(suffix)]
     counts = Counter(kind for kind, _, _ in ops)
-    ratio = counts["match"] / len(chars)
+    # 分母覆盖两侧文本，避免 ASR 大量多字仍被视为文案完全匹配。
+    ratio = counts["match"] / max(len(chars), len(timeline))
     if ratio < 0.5:
         raise ValueError("文案与 ASR 差异过大。")
     warnings = []

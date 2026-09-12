@@ -1,3 +1,4 @@
+// 模板配置的预留 protobuf 描述；当前 HTTP API 使用 JSON，业务层负责校验和默认值。
 syntax = "proto3";
 
 package mix_video.v1;
@@ -5,7 +6,7 @@ package mix_video.v1;
 import "google/protobuf/timestamp.proto";
 
 // 创建或完整更新模板的请求。
-// 更新时，模板 ID 通过接口路径传递。
+// 当前 JSON API 使用 POST /template，请求体携带 template_id 时完整更新。
 // 字段必填、取值范围和组合规则由业务层校验。
 message EffectTemplateCreate {
   // 模板名称，用于列表展示和查找。
@@ -17,19 +18,22 @@ message EffectTemplateCreate {
   string description = 2;
 
   // 编辑配置，控制标题、字幕、气泡的样式、位置及动画。
-  // 可不提供；缺失时按项目的旧版模板规则处理。
+  // 必须提供；对象内缺失字段由业务层补齐默认值，不兼容缺少 editor 的旧模板。
   EffectTemplateEditor editor = 3;
 
   // 所选特效的目录 ID 列表，必须包含分类前缀。
   // 例如 flower/CS0001-000001，而不是 CS0001-000001。
   // 必须包含 1～20 个不同 ID，顺序会保留。
-  // 提供 editor 时，必须与其中选中的特效去重后的集合一致。
+  // 必须与 editor 中选中的特效去重后的集合一致。
   repeated string effect_ids = 4;
 
   // 相邻镜头之间的转场时长，单位为秒。
   // 范围 0.1～3，未提供时由业务层使用默认值 0.5。
   // 选用转场效果时生效。
   optional double transition_duration_seconds = 5;
+
+  // 不提供时创建；提供 UUID 时完整更新对应模板，不存在的 ID 返回 404。
+  optional string template_id = 6;
 }
 
 // 服务端返回的完整模板。
@@ -41,7 +45,7 @@ message EffectTemplate {
   // 保存后的模板说明；未填写时为空字符串。
   string description = 2;
 
-  // 保存后的编辑配置；旧版模板可能没有该字段。
+  // 保存后的完整编辑配置，包含业务层补齐的默认值。
   EffectTemplateEditor editor = 3;
 
   // 保存的特效目录 ID 列表，包含分类前缀并保留选择顺序。
@@ -204,7 +208,7 @@ message EffectTemplateEditor {
 message EffectAsset {
   // 特效目录唯一 ID，由分类和官方特效标识组成。
   // 例如 flower/CS0001-000001；
-  // 用于模板选择、目录查找和预览接口。
+  // 用于模板选择和本地预览目录查找；当前没有效果目录或预览 HTTP 接口。
   string id = 1;
 
   // 特效分类，用于判断效果用途和校验组合。
@@ -228,12 +232,9 @@ message EffectAsset {
   // 可能为空；不是模板合成视频的地址。
   string preview_url = 6;
 
-  // 预览图片相对于特效素材根目录的路径。
-  // 由服务端定位本地预览资源使用；可能不存在。
-  optional string preview_path = 7;
 }
 
-// 模板列表查询结果。
+// 预留的列表包装消息；当前 JSON API 直接返回模板数组。
 message EffectTemplateList {
   // 查询返回的完整模板集合；没有模板时为空列表。
   // 当前业务按更新时间倒序返回。

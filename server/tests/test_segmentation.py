@@ -91,6 +91,29 @@ def test_direct_call_requires_dict(model):
     model[0].assert_not_called()
 
 
+@pytest.mark.parametrize("script,transcript", [("甲乙", "甲丙丁戊己庚辛壬癸乙"), ("甲丙丁戊己庚辛壬癸乙", "甲乙")])
+def test_excessive_extra_characters_are_rejected(model, client, script, transcript):
+    """任一侧大量多字均低于匹配阈值，不将无关时间轴拉伸到短文案或调用模型。"""
+    data = payload(script, transcript, step=500)
+    with pytest.raises(ValueError, match="差异过大"):
+        segment(data)
+    response = client.post("/segmentations", json=data)
+    assert response.status_code == 422
+    assert response.json() == {"error": {"message": "文案与 ASR 差异过大。"}}
+    model[0].assert_not_called()
+
+
+@pytest.mark.parametrize("transcript", ["甲乙额外丙丁", "甲乙额外多字丙丁"])
+def test_asr_extra_characters_warn_at_accepted_match_ratios(model, transcript):
+    """ASR 多字计入匹配率；含恰好 50% 匹配的可接受输入保留文本、时间并告警。"""
+    result = segment(payload("甲乙丙丁", transcript, step=500))
+    assert [item["text"] for item in result["segments"]] == ["甲乙丙丁"]
+    assert result["segments"][0]["start_time_ms"] == 0
+    assert result["segments"][0]["end_time_ms"] == len(transcript) * 500
+    assert result["trace"]["asr_extra_chars"] == len(transcript) - 4
+    assert any(warning["code"] == "low_alignment_match_ratio" for warning in result["warnings"])
+
+
 @pytest.mark.parametrize("text", ["", " \t\n\u3000", "，。!?", " ，\t。 "])
 def test_ignored_asr_words_preserve_timing(model, client, text):
     """首尾及中间的空内容词被忽略，直接调用和 HTTP 均保留有效词的时间。"""

@@ -6,6 +6,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+import json
 from threading import Barrier
 from uuid import UUID, uuid4
 
@@ -455,6 +456,37 @@ def test_invalid_numeric_value(
     assert response.status_code == 422
     expected_location = ["body", field] if target is template_payload else ["body", "editor", field]
     assert any(error["loc"] == expected_location for error in response.json()["detail"])
+    assert client.get("/template").json() == []
+
+
+# 测试 JSON 数字溢出及非标准非有限常量仍返回可解析的 422，不因错误输入回显变成 500。
+@pytest.mark.parametrize("field", ["titleX", "titleSize", "transition_duration_seconds"])
+@pytest.mark.parametrize("token", ["1e309", "-1e309", "NaN", "Infinity", "-Infinity"])
+def test_non_finite_json_number_returns_validation_error(
+    client: TestClient, template_payload: dict, field: str, token: str,
+) -> None:
+    """发送原始 JSON 绕过客户端序列化限制，检查错误位置、数值回显和无写入副作用。"""
+    target = template_payload if field == "transition_duration_seconds" else template_payload["editor"]
+    target[field] = "NON_FINITE"
+    body = json.dumps(template_payload).replace('"NON_FINITE"', token)
+    response = client.post("/template", content=body, headers={"Content-Type": "application/json"})
+    assert response.status_code == 422
+    location = ["body", field] if target is template_payload else ["body", "editor", field]
+    error = next(error for error in response.json()["detail"] if error["loc"] == location)
+    assert error["input"] in ("inf", "-inf", "nan")
+    assert client.get("/template").json() == []
+
+
+# 测试未知字段的嵌套输入包含非有限数时，错误响应同样可以序列化。
+def test_nested_non_finite_error_input(client: TestClient, template_payload: dict) -> None:
+    """保留嵌套错误输入的结构与正常数值，只将非法 JSON 数值转换为文字。"""
+    template_payload["unknown"] = {"values": [1.5, "NON_FINITE"]}
+    body = json.dumps(template_payload).replace('"NON_FINITE"', "1e309")
+    response = client.post("/template", content=body, headers={"Content-Type": "application/json"})
+    assert response.status_code == 422
+    error = response.json()["detail"][0]
+    assert error["loc"] == ["body", "unknown"]
+    assert error["input"] == {"values": [1.5, "inf"]}
     assert client.get("/template").json() == []
 
 

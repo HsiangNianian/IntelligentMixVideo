@@ -12,6 +12,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import {
+  defaultEditor,
   effectGroups,
   textRoles,
   type Draft,
@@ -135,6 +136,19 @@ export function EffectEditor({
   const editor = draft.editor;
   const update = <K extends keyof Editor>(key: K, value: Editor[K]) =>
     onChange({ ...draft, editor: { ...editor, [key]: value } });
+  /** 取消动画时修复其无效时长，避免禁用的输入留下无法保存的草稿；有效设置继续保留。 */
+  const changeEffects = (values: Partial<Record<EffectKey, string>>) => {
+    const next = { ...editor, ...values };
+    for (const field of Object.keys(values) as EffectKey[]) {
+      if (values[field] || !(field.endsWith("In") || field.endsWith("Out")))
+        continue;
+      const durationKey = `${field}Duration` as `${TextRole}${"In" | "Out"}Duration`;
+      const duration = next[durationKey];
+      if (!Number.isFinite(duration) || duration < 0.1 || duration > 3)
+        next[durationKey] = defaultEditor[durationKey];
+    }
+    onChange({ ...draft, editor: next });
+  };
   const selector = (field: EffectKey, label: string, disabled = false) => (
     <EffectSelect
       key={field}
@@ -143,17 +157,11 @@ export function EffectEditor({
       editor={editor}
       catalog={catalog}
       disabled={disabled}
-      onChange={(value) => update(field, value)}
+      onChange={(value) => changeEffects({ [field]: value })}
     />
   );
   const clear = (fields: EffectKey[]) =>
-    onChange({
-      ...draft,
-      editor: {
-        ...editor,
-        ...Object.fromEntries(fields.map((field) => [field, ""])),
-      },
-    });
+    changeEffects(Object.fromEntries(fields.map((field) => [field, ""])));
 
   return (
     <Tabs defaultValue="title" className="gap-5">
