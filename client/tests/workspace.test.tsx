@@ -15,6 +15,19 @@ mock.module("@/features/templates/TemplatePreview", () => ({
   },
 }));
 const { TemplateWorkspace } = await import("@/features/templates/TemplateWorkspace");
+const { default: HomePage } = await import("@/pages/HomePage");
+
+// 回归：模板首页同时保留标题区时钟与可编辑工作区，避免替换页面时再次丢失时钟。
+test("首页标题区显示时钟并保留模板工作区", async () => {
+  fetchMock.mockResolvedValueOnce(Response.json([]));
+  render(<HomePage />);
+  await screen.findByText("共享模板库 · 0 个模板");
+  const clock = screen.getByRole("region", { name: "当前时间" });
+  expect(clock.closest("header")).not.toBeNull();
+  expect(within(clock).getByRole("time").getAttribute("datetime")).toBeTruthy();
+  expect(screen.getByRole("heading", { level: 1, name: "特效模板" })).toBeTruthy();
+  expect(screen.getByLabelText("模板名称")).toBeTruthy();
+});
 
 /** 通过真实 Radix 控件的键盘交互选择选项，不替换基础 UI 组件。 */
 async function choose(label: string, option: string) {
