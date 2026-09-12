@@ -18,7 +18,20 @@ Structure
 ---------
 
 - `client/`：Rust + Tauri 2 + React + TypeScript 桌面客户端。
-- `server/`：Python 业务 API 预留目录，暂不实现业务。
+- `server/`：Python + FastAPI 服务端，提供首页和用户路由示例。
+
+服务端运行
+----------
+
+安装 Python 3.12+ 和 uv，然后执行：
+
+```sh
+cd server
+uv run server
+```
+
+默认监听 http://127.0.0.1:8000，API 文档位于 http://127.0.0.1:8000/docs。
+仓库根目录使用 `uv run --project server server`。路由仍返回示例数据，详情见 [server/README.md](server/README.md)。
 
 客户端运行
 ----------
@@ -65,7 +78,7 @@ bun run tauri build
 
 `.github/workflows/validation.yml` 在相关 push / PR 中检查全部工作流、运行发布脚本及失败恢复测试，
 并在临时副本中验证版本注入、Bun 冻结安装和 Cargo 锁文件。它也通过 `uv build --project server`
-验证 Python 包骨架可构建；后端仍不包含业务 API。
+验证 Python 包可构建，并运行 API 路由测试。
 
 提交前检查
 ----------

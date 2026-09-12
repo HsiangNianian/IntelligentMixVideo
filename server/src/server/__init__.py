@@ -1,2 +1,1 @@
-def main() -> None:
-    print("Hello from server!")
+"""IntelligentMixVideo API server."""

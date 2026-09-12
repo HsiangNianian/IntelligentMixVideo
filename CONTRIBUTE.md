@@ -13,7 +13,8 @@ in an issue before implementing them.
 
 The current application is a minimal desktop client displaying local date and time.
 The long-term roadmap does not imply that cloud editing or agent features already
-exist. The Python server remains a package skeleton until backend work is agreed.
+exist. The Python server provides a minimal FastAPI application with example user
+routes and no user storage. Run `uv run server` from `server/` to start the API.
 
 ## Development Setup
 
@@ -54,6 +55,7 @@ Run checks appropriate to the files you change and report their actual results.
 | Release version injection | `bun .github/scripts/release-smoke.mjs` | Repository root |
 | GitHub workflows | `actionlint .github/workflows/client-build.yml .github/workflows/release.yml .github/workflows/validation.yml` | Repository root |
 | Python packaging | `uv build --project server --out-dir server/dist` | Repository root |
+| API routes | `uv run --locked --project server python -m unittest discover -s server/tests -v` | Repository root |
 | Repository hygiene | `uvx pre-commit run --all-files` | Repository root |
 | All changes | `git diff --check HEAD` | Repository root |
 

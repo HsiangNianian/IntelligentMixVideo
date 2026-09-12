@@ -7,7 +7,8 @@
 - 这是一个 monorepo，目录名使用小写的 `client/` 和 `server/`。
 - `client/` 是 Rust + Tauri 2 + React + TypeScript 桌面客户端，前端使用 Vite，包管理器与脚本运行时使用 Bun。
 - `client/src/` 存放 React 前端；`client/src-tauri/` 存放 Rust 桌面入口、Tauri 配置和图标。
-- `server/` 预留给 Python 业务 API。目前仅保留已有的 Python 包骨架，在收到后端需求前不添加业务 API 或服务框架。
+- `server/` 使用 Python + FastAPI，当前提供首页与用户路由示例，尚未接入用户存储。包内导入使用相对路径，向应用注册 `APIRouter` 实例。
+- 在 `server/` 下执行 `uv run server` 启动 Uvicorn，默认监听 `127.0.0.1:8000`；仓库根目录使用 `uv run --project server server`。维护 `server/uv.lock`，CI 使用 `--locked` 验证依赖。
 - 当前客户端保持最小可运行结构。首页 `client/src/App.tsx` 引用独立的 `client/src/components/CurrentTime.tsx` 组件，按本机时区显示日期和时间，每秒刷新。
 - 时间组件需在卸载时清理定时器。新增界面功能时遵循组件化结构，不把所有逻辑堆到 App 首页。
 - 项目长期方向见 README；其中提到的云剪辑、Agent、素材召回等功能不代表已经实现，也不构成自动扩展当前任务范围的要求。
@@ -38,6 +39,7 @@ bun test ./.github/scripts
 bun .github/scripts/release-smoke.mjs
 actionlint .github/workflows/client-build.yml .github/workflows/release.yml .github/workflows/validation.yml
 uv build --project server --out-dir server/dist
+uv run --locked --project server python -m unittest discover -s server/tests -v
 git diff --check
 ```
 
@@ -70,7 +72,7 @@ Windows 需要 MSVC C++ 构建工具、Windows SDK 和 WebView2；ARM64 主机�
 
 `.github/workflows/validation.yml` 在相关 push / PR 中检查全部工作流、运行发布脚本与失败恢复测试，
 并通过临时副本中的真实配置验证版本注入、Bun 冻结安装和 Cargo 锁文件不变。
-该工作流同时构建 Python 包骨架；`server/pyproject.toml` 的 uv 构建模块名显式设为 `server`，对应 `src/server/`。
+该工作流同时测试 API 路由并构建 Python 包；`server/pyproject.toml` 的 uv 构建模块名显式设为 `server`，对应 `src/server/`。
 
 ## 正式版本与 tag 发版
 
