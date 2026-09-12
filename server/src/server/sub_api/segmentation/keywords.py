@@ -6,7 +6,6 @@
 
 from collections.abc import Sequence
 
-from server.sub_api.segmentation.normalizer import NormalizedText
 from server.sub_api.segmentation.schemas import SegmentKeyword
 
 
@@ -24,7 +23,6 @@ def validate_keywords(
     输入：片段文本、候选关键词、数量上限与长度上限。
     输出：通过校验的关键词列表与被丢弃的数量。
     """
-    normalized = NormalizedText(text)
     accepted: list[SegmentKeyword] = []
     seen: set[str] = set()
     rejected = 0
@@ -36,12 +34,12 @@ def validate_keywords(
         if len(keyword) > max_length:
             rejected += 1
             continue
-        span = normalized.find(keyword)
-        if span is None:
+        start = text.find(keyword)
+        if start < 0:
             rejected += 1
             continue
         seen.add(keyword)
-        accepted.append(SegmentKeyword(text=keyword, start=span[0], end=span[1]))
+        accepted.append(SegmentKeyword(text=keyword, start=start, end=start + len(keyword)))
 
     accepted = [
         keyword

@@ -1,6 +1,7 @@
 """文案切片接口测试。"""
 
 import unittest
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from server.app import app
@@ -120,6 +121,24 @@ class SegmentationApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 422)
         self.assertEqual(response.json()["error"]["code"], "script_asr_alignment_failed")
+
+    def test_configured_work_budget_returns_422_before_model_call(self) -> None:
+        with patch.dict("os.environ", {"IMV_SEGMENT_MAX_ALIGNMENT_WORK": "1"}):
+            settings = Settings(
+                _env_file=None,
+                llm_base_url="https://example.com/v1",
+                llm_api_key="test-key",
+                llm_model="test-model",
+            )
+        with patch("server.sub_api.segmentation.router.OpenAIChatClient") as model:
+            service = get_segment_service(settings)
+            self.assertEqual(service.max_alignment_work, 1)
+            app.dependency_overrides[get_segment_service] = lambda: service
+            payload = load_asr_payload()
+            response = self.post(payload["transcripts"][0]["text"], payload)
+            self.assertEqual(response.status_code, 422)
+            self.assertEqual(response.json()["error"]["code"], "alignment_input_too_large")
+            self.assertFalse(model.return_value.mock_calls)
 
     def test_requires_model_configuration(self) -> None:
         app.dependency_overrides.pop(get_segment_service)

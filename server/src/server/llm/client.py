@@ -4,7 +4,6 @@
 """
 
 import logging
-from abc import ABC, abstractmethod
 
 from openai import APIError, APITimeoutError, OpenAI
 
@@ -13,21 +12,7 @@ from server.core.errors import LLMProviderError, LLMTimeoutError
 logger = logging.getLogger(__name__)
 
 
-class LLMClient(ABC):
-    """模型客户端接口。"""
-
-    @abstractmethod
-    def complete_json(self, *, system_prompt: str, user_prompt: str) -> str:
-        """请求模型返回 JSON 文本。
-
-        作用与效果：具体实现负责发送提示词并返回正文，不负责解析。
-        输入：系统提示与用户提示。
-        输出：模型返回的正文文本。
-        """
-        raise NotImplementedError
-
-
-class OpenAIChatClient(LLMClient):
+class OpenAIChatClient:
     """基于官方 openai SDK 的 OpenAI 兼容实现。"""
 
     def __init__(
@@ -37,15 +22,18 @@ class OpenAIChatClient(LLMClient):
         api_key: str,
         model: str,
         timeout: float = 120.0,
+        max_retries: int = 1,
     ) -> None:
         """初始化模型客户端。
 
         作用与效果：保存连接配置，并按超时创建同步 SDK 客户端。
-        输入：基础地址、密钥、模型名与超时秒数。
+        输入：基础地址、密钥、模型名、超时秒数与 SDK 重试次数。
         输出：无。
         """
         self.model = model
-        self._client = OpenAI(base_url=base_url, api_key=api_key, timeout=timeout)
+        self._client = OpenAI(
+            base_url=base_url, api_key=api_key, timeout=timeout, max_retries=max_retries
+        )
 
     def complete_json(self, *, system_prompt: str, user_prompt: str) -> str:
         """请求模型生成 JSON 正文。

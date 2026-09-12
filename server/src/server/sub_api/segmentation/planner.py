@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from server.core.errors import LLMError, LLMOutputInvalidError
-from server.llm.client import LLMClient
+from server.llm.client import OpenAIChatClient
 from server.sub_api.segmentation.builder import Clause
 
 logger = logging.getLogger(__name__)
@@ -50,15 +50,14 @@ KEYWORD_PROMPT = """你是短视频素材检索的关键词提取器。
 class SegmentPlanner:
     """把语义判断委托给模型，并校验其输出结构。"""
 
-    def __init__(self, client: LLMClient, *, max_provider_retries: int = 1) -> None:
+    def __init__(self, client: OpenAIChatClient) -> None:
         """初始化分片规划器。
 
-        作用与效果：绑定模型客户端与重试次数，供切点与关键词两次调用复用。
-        输入：模型客户端与可重试次数。
+        作用与效果：绑定模型客户端，供切点与关键词两次调用复用。
+        输入：模型客户端。
         输出：无。
         """
         self.client = client
-        self.max_provider_retries = max_provider_retries
 
     def plan_boundaries(self, clauses: Sequence[Clause]) -> list[int]:
         """请求模型给出分片切点。
@@ -115,34 +114,24 @@ class SegmentPlanner:
         *,
         stage: str,
     ) -> dict[str, Any]:
-        """调用模型 JSON 接口并对可重试错误退避。
-
-        作用与效果：记录安全诊断，达到重试上限或遇不可重试错误时向上传播。
-        输入：系统提示、用户载荷与阶段名。
-        输出：解析后的 JSON 对象。
-        """
-        retry_count = 0
-        while True:
-            try:
-                content = self.client.complete_json(
-                    system_prompt=system_prompt,
-                    user_prompt=json.dumps(payload, ensure_ascii=False),
-                )
-                return _extract_json(content)
-            except LLMError as exc:
-                logger.warning(
-                    "segment_plan_llm_attempt_failed",
-                    extra={
-                        "planner": "segment",
-                        "planner_stage": stage,
-                        "attempt": retry_count + 1,
-                        "error_code": exc.code,
-                        "retryable": exc.retryable,
-                    },
-                )
-                if not exc.retryable or retry_count >= self.max_provider_retries:
-                    raise
-                retry_count += 1
+        """调用模型并解析 JSON，记录失败阶段；传输重试由 SDK 负责。"""
+        try:
+            content = self.client.complete_json(
+                system_prompt=system_prompt,
+                user_prompt=json.dumps(payload, ensure_ascii=False),
+            )
+            return _extract_json(content)
+        except LLMError as exc:
+            logger.warning(
+                "segment_plan_llm_attempt_failed",
+                extra={
+                    "planner": "segment",
+                    "planner_stage": stage,
+                    "error_code": exc.code,
+                    "retryable": exc.retryable,
+                },
+            )
+            raise
 
 
 def _extract_json(content: str) -> dict[str, Any]:

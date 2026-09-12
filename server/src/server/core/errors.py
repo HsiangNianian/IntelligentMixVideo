@@ -46,7 +46,7 @@ class AsrTranscriptTooLongError(RequestInvalidError):
 
 class AlignmentInputTooLargeError(RequestInvalidError):
     code = "alignment_input_too_large"
-    default_message = "文案与 ASR 文本的组合规模超出可对齐上限。"
+    default_message = "文案与 ASR 文本的对齐计算超出工作预算。"
 
 
 class ScriptAlignmentError(AppError):
@@ -66,23 +66,6 @@ class LLMError(AppError):
     status_code = 502
     default_message = "模型服务调用失败。"
 
-    def __init__(
-        self,
-        message: str | None = None,
-        *,
-        details: Sequence[dict[str, Any]] | None = None,
-        retryable: bool | None = None,
-        diagnostic: dict[str, Any] | None = None,
-    ) -> None:
-        """构造带内部诊断数据的模型服务异常。
-
-        作用与效果：复制诊断字典以隔离外部修改，并沿用统一应用错误属性。
-        输入：可选消息、公开详情、重试标志及仅供日志使用的诊断信息。
-        输出：无；异常实例保存独立的诊断副本。
-        """
-        self.diagnostic = dict(diagnostic or {})
-        super().__init__(message, details=details, retryable=retryable)
-
 
 class LLMTimeoutError(LLMError):
     code = "llm_timeout"
@@ -101,17 +84,3 @@ class LLMOutputInvalidError(LLMError):
     code = "llm_output_invalid"
     status_code = 502
     default_message = "模型输出无法通过结构校验。"
-
-    def __init__(
-        self,
-        message: str | None = None,
-        *,
-        details: Sequence[dict[str, Any]] | None = None,
-    ) -> None:
-        """构造不可重试的模型输出校验异常。
-
-        作用与效果：固定 `retryable=False`，避免对确定性的结构错误执行无意义重试。
-        输入：可选错误消息和结构化校验详情。
-        输出：无；异常实例被标记为不可重试。
-        """
-        super().__init__(message, details=details, retryable=False)

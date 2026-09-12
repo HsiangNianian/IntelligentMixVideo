@@ -7,16 +7,14 @@
 import logging
 
 from server.core.errors import (
-    AlignmentInputTooLargeError,
     AsrTimelineMissingError,
     RequestInvalidError,
     ScriptAlignmentError,
     SegmentInvariantError,
 )
 from server.sub_api.segmentation.aligner import (
-    AlignmentOp,
+    DEFAULT_MAX_ALIGNMENT_WORK,
     align,
-    alignment_span,
     build_asr_chars,
     build_script_chars,
     project_times,
@@ -50,7 +48,7 @@ class SegmentService:
         max_duration_ms: int = 6000,
         max_keywords: int = 5,
         keyword_max_length: int = 12,
-        max_alignment_cells: int = 4_000_000,
+        max_alignment_work: int = DEFAULT_MAX_ALIGNMENT_WORK,
         max_asr_chars: int = 20_000,
         max_asr_words: int = 20_000,
     ) -> None:
@@ -65,7 +63,7 @@ class SegmentService:
         self.max_duration_ms = max_duration_ms
         self.max_keywords = max_keywords
         self.keyword_max_length = keyword_max_length
-        self.max_alignment_cells = max_alignment_cells
+        self.max_alignment_work = max_alignment_work
         self.max_asr_chars = max_asr_chars
         self.max_asr_words = max_asr_words
 
@@ -89,8 +87,9 @@ class SegmentService:
         )
         if not asr_chars:
             raise AsrTimelineMissingError()
-        self._guard_alignment_scale(script_chars, asr_chars)
-        ops, repair_block_ranges = _align_and_project(script_chars, asr_chars)
+        self._guard_alignment_similarity(script_chars, asr_chars)
+        ops = align(script_chars, asr_chars, max_work=self.max_alignment_work)
+        repair_block_ranges = project_times(script_chars, asr_chars, ops)
         stats = summarize(ops)
         match_ratio = stats.matched_chars / len(script_chars)
         if match_ratio < MIN_ALIGNMENT_MATCH_RATIO:
@@ -196,24 +195,20 @@ class SegmentService:
         )
         return result
 
-    def _guard_alignment_scale(
+    def _guard_alignment_similarity(
         self,
         script_chars: list,
         asr_chars: list,
     ) -> None:
-        """在建模前拦下差异或规模超限的输入。
+        """在对齐前拦下差异过大的输入。
 
-        作用与效果：先用 O(n+m) 的命中下界拒掉差异过大的输入，再用剥离公共前后缀后的
-        实际对齐规模拒掉超出算力预算的输入，避免构造超大动态规划矩阵。
+        作用与效果：用 O(n+m) 的未命中字数下界拒掉差异过大的输入；计算预算由对齐核心执行。
         输入：文案字符列表与 ASR 字符列表。
         输出：无；超出上限时抛出 `AppError` 子类。
         """
         budget = int(len(script_chars) * (1 - MIN_ALIGNMENT_MATCH_RATIO))
         if script_unmatched_lower_bound(script_chars, asr_chars) > budget:
             raise ScriptAlignmentError("文案与 ASR 文本差异过大，请确认两者是否为同一段音频。")
-        rows, columns = alignment_span(script_chars, asr_chars)
-        if rows * columns > self.max_alignment_cells:
-            raise AlignmentInputTooLargeError()
 
     def _resolve_cuts(
         self,
@@ -233,20 +228,6 @@ class SegmentService:
         return _shift_out_of_blocks(
             offsets_to_cuts(offsets, script_chars, len(script)), repair_block_ranges, script_chars
         )
-
-
-def _align_and_project(
-    script_chars: list,
-    asr_chars: list,
-) -> tuple[list[AlignmentOp], list[tuple[int, int]]]:
-    """执行对齐与时间投射。
-
-    作用与效果：把纯计算的动态规划与时间投射合并为一次调用，产出一致的诊断结果。
-    输入：文案字符列表与 ASR 字符列表。
-    输出：对齐操作列表与修复块字符区间列表。
-    """
-    ops = align(script_chars, asr_chars)
-    return ops, project_times(script_chars, asr_chars, ops)
 
 
 def _shift_out_of_blocks(

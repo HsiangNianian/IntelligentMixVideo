@@ -4,17 +4,15 @@
 模型不参与任何时间数字的生成。
 """
 
-import logging
-from array import array
+from collections import Counter
 from dataclasses import dataclass
 
-from server.core.errors import AsrTranscriptTooLongError
+from server.core.errors import AlignmentInputTooLargeError, AsrTranscriptTooLongError
 from server.sub_api.segmentation.normalizer import is_alignable, normalize_char
 from server.sub_api.segmentation.schemas import AsrResult
 
-logger = logging.getLogger(__name__)
+DEFAULT_MAX_ALIGNMENT_WORK = 250_000
 
-MATCH_COST = 0
 SUBSTITUTION_COST = 1
 GAP_COST = 1
 
@@ -33,8 +31,6 @@ class AlignedChar:
     normalized: str
     begin_time_ms: float = 0.0
     end_time_ms: float = 0.0
-    asr_text: str | None = None
-    confidence: float | None = None
     is_word_start: bool = False
 
 
@@ -42,12 +38,9 @@ class AlignedChar:
 class AsrChar:
     """展开到字符粒度的 ASR 单元，继承所属词的时间区间。"""
 
-    char: str
     normalized: str
     begin_time_ms: float
     end_time_ms: float
-    word_text: str
-    confidence: float | None
     is_word_start: bool
 
 
@@ -121,32 +114,13 @@ def build_asr_chars(
                 end = word.begin_time_ms + span * (order + 1) / len(content)
                 chars.append(
                     AsrChar(
-                        char=char,
                         normalized=normalize_char(char),
                         begin_time_ms=begin,
                         end_time_ms=end,
-                        word_text=word.text.strip(),
-                        confidence=word.confidence,
                         is_word_start=order == 0,
                     )
                 )
     return chars
-
-
-def alignment_span(
-    script_chars: list[AlignedChar],
-    asr_chars: list[AsrChar],
-) -> tuple[int, int]:
-    """计算真正需要建表与迭代的中间段长度。
-
-    作用与效果：公共前后缀必定出现在最优对齐中，可先按命中处理；剥掉后剩下的
-    中间段长度才是真实计算规模，供调用方在任何矩阵分配之前做规模闸门。
-    输入：文案字符列表与 ASR 字符列表。
-    输出：`(中间段文案字数, 中间段 ASR 字数)`。
-    """
-    prefix = _common_prefix(script_chars, asr_chars)
-    suffix = _common_suffix(script_chars, asr_chars, prefix)
-    return len(script_chars) - prefix - suffix, len(asr_chars) - prefix - suffix
 
 
 def script_unmatched_lower_bound(
@@ -160,41 +134,64 @@ def script_unmatched_lower_bound(
     输入：文案字符列表与 ASR 字符列表。
     输出：非负整数下界，恒不大于 `substitution_chars + script_extra_chars`。
     """
-    counts: dict[str, int] = {}
-    for char in script_chars:
-        counts[char.normalized] = counts.get(char.normalized, 0) + 1
-    for char in asr_chars:
-        counts[char.normalized] = counts.get(char.normalized, 0) - 1
-    return sum(value for value in counts.values() if value > 0)
+    script_counts = Counter(char.normalized for char in script_chars)
+    asr_counts = Counter(char.normalized for char in asr_chars)
+    return (script_counts - asr_counts).total()
 
 
-def align(script_chars: list[AlignedChar], asr_chars: list[AsrChar]) -> list[AlignmentOp]:
-    """用编辑距离对齐文案与 ASR 字符序列。
+@dataclass
+class _AlignmentBudget:
+    remaining: int
 
-    作用与效果：先剥离公共前后缀并按命中输出，只对剩余中间段执行 Needleman-Wunsch
-    动态规划；回溯时优先对角，保证替换优先于删增组合；返回的操作序列按原文下标单调
-    递增，可直接用于时间投射。
-    输入：文案字符列表与 ASR 字符列表。
-    输出：对齐操作列表。
+    def spend(self, amount: int = 1) -> None:
+        """每个候选状态、字符比较或单侧字符消耗一个工作单位。"""
+        if amount > self.remaining:
+            raise AlignmentInputTooLargeError()
+        self.remaining -= amount
+
+
+def align(
+    script_chars: list[AlignedChar],
+    asr_chars: list[AsrChar],
+    *,
+    max_work: int = DEFAULT_MAX_ALIGNMENT_WORK,
+) -> list[AlignmentOp]:
+    """裁剪公共前后缀后，用单位代价波前对齐；预算覆盖裁剪和核心搜索。
+
+    替换、文案多字、ASR 多字均计一次编辑。最优代价不变，但重复文本的
+    等价路径可能与完整 DP 不同。输出仍为两侧下标单调的 AlignmentOp。
     """
-    prefix = _common_prefix(script_chars, asr_chars)
-    suffix = _common_suffix(script_chars, asr_chars, prefix)
+    if max_work <= 0:
+        raise ValueError("max_work must be positive")
+    budget = _AlignmentBudget(max_work)
+    prefix = suffix = 0
+    limit = min(len(script_chars), len(asr_chars))
+    while prefix < limit:
+        budget.spend()
+        if script_chars[prefix].normalized != asr_chars[prefix].normalized:
+            break
+        prefix += 1
+    while suffix < limit - prefix:
+        budget.spend()
+        if script_chars[-1 - suffix].normalized != asr_chars[-1 - suffix].normalized:
+            break
+        suffix += 1
     rows = len(script_chars) - prefix - suffix
     columns = len(asr_chars) - prefix - suffix
-
-    ops: list[AlignmentOp] = [AlignmentOp(MATCH, index, index) for index in range(prefix)]
-    ops.extend(
-        _align_core(
-            script_chars[prefix : prefix + rows],
-            asr_chars[prefix : prefix + columns],
-            offset=prefix,
-        )
+    middle = _align_core(
+        script_chars[prefix : prefix + rows],
+        asr_chars[prefix : prefix + columns],
+        offset=prefix,
+        budget=budget,
     )
-    ops.extend(
-        AlignmentOp(MATCH, len(script_chars) - suffix + order, len(asr_chars) - suffix + order)
-        for order in range(suffix)
+    return (
+        [AlignmentOp(MATCH, i, i) for i in range(prefix)]
+        + middle
+        + [
+            AlignmentOp(MATCH, len(script_chars) - suffix + i, len(asr_chars) - suffix + i)
+            for i in range(suffix)
+        ]
     )
-    return ops
 
 
 def _align_core(
@@ -202,83 +199,77 @@ def _align_core(
     asr_chars: list[AsrChar],
     *,
     offset: int,
+    budget: _AlignmentBudget,
 ) -> list[AlignmentOp]:
-    """对剥离公共前后缀后的中间段执行动态规划对齐与回溯。
+    """按编辑代价逐层扩展，每条对角线 k=i-j 只保留最远文案位置。
 
-    作用与效果：中间段内按编辑距离填表并回溯，产出的下标统一加 `offset` 还原为全序列下标。
-    输入：中间段文案字符、中间段 ASR 字符与公共前缀长度。
-    输出：上下文区间内的对齐操作列表。
+    状态记录 (连续匹配终点, 连续匹配起点, 前驱操作)，供确定性回溯。
+    到达位置相同时优先替换，其次文案多字、ASR 多字。
     """
-    rows = len(script_chars)
-    columns = len(asr_chars)
-    table = [array("i", bytes(4 * (columns + 1))) for _ in range(rows + 1)]
-    for i in range(1, rows + 1):
-        table[i][0] = i * GAP_COST
-    for j in range(1, columns + 1):
-        table[0][j] = j * GAP_COST
-    for i in range(1, rows + 1):
-        current = table[i]
-        previous = table[i - 1]
-        script_char = script_chars[i - 1].normalized
-        for j in range(1, columns + 1):
-            cost = MATCH_COST if script_char == asr_chars[j - 1].normalized else SUBSTITUTION_COST
-            current[j] = min(
-                previous[j - 1] + cost,
-                previous[j] + GAP_COST,
-                current[j - 1] + GAP_COST,
-            )
+    rows, columns = len(script_chars), len(asr_chars)
+    if not rows or not columns:
+        budget.spend(rows + columns)
+        return [AlignmentOp(SCRIPT_EXTRA, offset + i, None) for i in range(rows)] + [
+            AlignmentOp(ASR_EXTRA, None, offset + j) for j in range(columns)
+        ]
 
+    # ponytail: 保留 O(D²) 回溯状态并受工作预算约束；大差异成为常态时改线性空间回溯。
+    history: list[dict[int, tuple[int, int, str]]] = []
+    previous: dict[int, tuple[int, int, str]] = {}
+    for distance in range(max(rows, columns) + 1):
+        current: dict[int, tuple[int, int, str]] = {}
+        for diagonal in range(max(-distance, -columns), min(distance, rows) + 1):
+            budget.spend()
+            start, kind = (0, MATCH) if distance == 0 else (-1, MATCH)
+            # 固定优先级；只用严格更远的候选替换已有候选。
+            for operation, prior_diagonal, step in (
+                (SUBSTITUTION, diagonal, 1),
+                (SCRIPT_EXTRA, diagonal - 1, 1),
+                (ASR_EXTRA, diagonal + 1, 0),
+            ):
+                prior = previous.get(prior_diagonal)
+                if prior is None:
+                    continue
+                candidate = prior[0] + step
+                j = candidate - diagonal
+                if candidate <= rows and 0 <= j <= columns and candidate > start:
+                    start, kind = candidate, operation
+            if start < 0:
+                continue
+            i, j = start, start - diagonal
+            while i < rows and j < columns:
+                budget.spend()
+                if script_chars[i].normalized != asr_chars[j].normalized:
+                    break
+                i, j = i + 1, j + 1
+            current[diagonal] = (i, start, kind)
+            if i == rows and j == columns:
+                history.append(current)
+                return _backtrack(history, diagonal, offset)
+        history.append(current)
+        previous = current
+    raise AssertionError("wavefront did not reach the endpoint")
+
+
+def _backtrack(
+    history: list[dict[int, tuple[int, int, str]]], diagonal: int, offset: int
+) -> list[AlignmentOp]:
+    """沿已保存的前驱回溯，恢复编辑操作和连续匹配。"""
     ops: list[AlignmentOp] = []
-    i, j = rows, columns
-    while i and j:
-        cost = (
-            MATCH_COST
-            if script_chars[i - 1].normalized == asr_chars[j - 1].normalized
-            else SUBSTITUTION_COST
-        )
-        if table[i][j] == table[i - 1][j - 1] + cost:
-            kind = MATCH if cost == MATCH_COST else SUBSTITUTION
-            ops.append(AlignmentOp(kind, offset + i - 1, offset + j - 1))
-            i, j = i - 1, j - 1
-        elif table[i][j] == table[i - 1][j] + GAP_COST:
-            ops.append(AlignmentOp(SCRIPT_EXTRA, offset + i - 1, None))
-            i -= 1
-        else:
-            ops.append(AlignmentOp(ASR_EXTRA, None, offset + j - 1))
-            j -= 1
-    while i:
-        ops.append(AlignmentOp(SCRIPT_EXTRA, offset + i - 1, None))
-        i -= 1
-    while j:
-        ops.append(AlignmentOp(ASR_EXTRA, None, offset + j - 1))
-        j -= 1
+    for layer in reversed(history):
+        end, start, kind = layer[diagonal]
+        for i in range(end - 1, start - 1, -1):
+            ops.append(AlignmentOp(MATCH, offset + i, offset + i - diagonal))
+        if kind == SUBSTITUTION:
+            ops.append(AlignmentOp(kind, offset + start - 1, offset + start - diagonal - 1))
+        elif kind == SCRIPT_EXTRA:
+            ops.append(AlignmentOp(kind, offset + start - 1, None))
+            diagonal -= 1
+        elif kind == ASR_EXTRA:
+            ops.append(AlignmentOp(kind, None, offset + start - diagonal - 1))
+            diagonal += 1
     ops.reverse()
     return ops
-
-
-def _common_prefix(script_chars: list[AlignedChar], asr_chars: list[AsrChar]) -> int:
-    """返回两个字符序列的公共前缀长度。"""
-    limit = min(len(script_chars), len(asr_chars))
-    length = 0
-    while length < limit and script_chars[length].normalized == asr_chars[length].normalized:
-        length += 1
-    return length
-
-
-def _common_suffix(
-    script_chars: list[AlignedChar],
-    asr_chars: list[AsrChar],
-    prefix: int,
-) -> int:
-    """返回两个字符序列的公共后缀长度，且不越过已命中的公共前缀。"""
-    limit = min(len(script_chars), len(asr_chars)) - prefix
-    length = 0
-    while (
-        length < limit
-        and script_chars[-1 - length].normalized == asr_chars[-1 - length].normalized
-    ):
-        length += 1
-    return length
 
 
 def summarize(ops: list[AlignmentOp]) -> AlignmentStats:
@@ -355,8 +346,6 @@ def project_times(
         target = script_chars[op.script_index]
         target.begin_time_ms = source.begin_time_ms
         target.end_time_ms = source.end_time_ms
-        target.asr_text = source.word_text
-        target.confidence = source.confidence
         target.is_word_start = source.is_word_start
 
     average = (

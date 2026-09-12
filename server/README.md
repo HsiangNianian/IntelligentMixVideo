@@ -62,15 +62,22 @@ uv run uvicorn server.app:app --host 127.0.0.1 --port 8001 --reload --reload-dir
 ```
 
 `keywords[].start/end` 是片段文本内的字符下标，满足 `text[start:end] == keyword.text`。
+关键词按原文精确查找，区分大小写与全角、半角。
 
 职责边界：模型只给出分句切点编号与关键词候选，不产出任何时间数字；
 逐字对齐、时间继承与插值、时长约束和关键词校验全部由确定性代码完成。
-对齐采用字符级编辑距离：先剥离公共前后缀并按命中输出，只对中间段建表，
-一致部分保留 ASR 时间，一对一错字直接替换，差异与相邻字合并为「修复块」
-并在块内按文案字数均分时间。
+对齐采用支持替换的字符级波前算法：先剥离公共前后缀，再按编辑次数扩展搜索，
+每条对角线只保留最远位置，连续相同字符直接向前扫描。替换、插入、删除的代价均为 1。
+一致部分与替换字继承 ASR 时间，插入、删除与相邻字合并为「修复块」，
+在块内按文案字数均分时间。重复文本可能选择与旧 DP 不同的最优路径；
+候选到达位置相同时依次优先替换、文案多字、ASR 多字。
+
+不再按文本长度乘积拒绝输入。工作预算覆盖公共前后缀字符比较、核心候选状态、
+核心字符比较及纯单侧剩余字符，每项计一个单位，超限立即终止，不切换备用算法。
+回溯保留 O(D²) 状态（D 为最小编辑次数），也受工作预算限制；输出操作另占线性空间。
 
 错误码：`asr_timeline_missing`（缺词级时间戳）、`asr_transcript_too_long`（转写超长）、
-`alignment_input_too_large`（对齐规模超限）、`script_asr_alignment_failed`（文案与音频不匹配），
+`alignment_input_too_large`（对齐工作预算超限）、`script_asr_alignment_failed`（文案与音频不匹配），
 以上均为 422；未配置模型为 502 `llm_provider_error`。
 
 ## 配置
@@ -81,13 +88,19 @@ uv run uvicorn server.app:app --host 127.0.0.1 --port 8001 --reload --reload-dir
 | --- | --- | --- |
 | `IMV_LLM_BASE_URL` / `IMV_LLM_MODEL` / `IMV_LLM_API_KEY` | 空 | OpenAI 兼容模型服务，三项缺一不可 |
 | `IMV_ALLOW_INSECURE_LLM_HTTP` | `false` | 远程 HTTP 模型地址需显式开启 |
-| `IMV_LLM_TIMEOUT_SECONDS` / `IMV_LLM_MAX_RETRIES` | `120` / `1` | 单次调用超时与可重试次数 |
+| `IMV_LLM_TIMEOUT_SECONDS` / `IMV_LLM_MAX_RETRIES` | `120` / `1` | 单次调用超时与 SDK 重试次数；设为 0 禁用重试 |
 | `IMV_SEGMENT_MIN_DURATION_MS` / `IMV_SEGMENT_MAX_DURATION_MS` | `1200` / `6000` | 片段时长上下限（毫秒），代码据此合并与切分 |
 | `IMV_SEGMENT_MAX_KEYWORDS` | `5` | 每段关键词数量上限 |
 | `IMV_SEGMENT_KEYWORD_MAX_LENGTH` | `12` | 单个关键词字数上限，不设下限 |
-| `IMV_SEGMENT_MAX_ALIGNMENT_CELLS` / `IMV_SEGMENT_MAX_ASR_CHARS` / `IMV_SEGMENT_MAX_ASR_WORDS` | `4000000` / `20000` / `20000` | 对齐矩阵与 ASR 转写文本规模上限，超限返回 422 |
+| `IMV_SEGMENT_MAX_ALIGNMENT_WORK` | `250000` | 对齐工作预算，超限返回 422 |
+| `IMV_SEGMENT_MAX_ASR_CHARS` / `IMV_SEGMENT_MAX_ASR_WORDS` | `20000` / `20000` | ASR 字符与词数上限，超限返回 422 |
+
+旧配置 `IMV_SEGMENT_MAX_ALIGNMENT_CELLS` 已移除且不再生效；请改用
+`IMV_SEGMENT_MAX_ALIGNMENT_WORK`。新旧预算单位不同，不能直接换名沿用数值。
 
 未配置模型时 `/segmentations` 返回 502 `llm_provider_error`，不静默降级。
+传输重试统一由 OpenAI SDK 执行（连接错误、超时、408/409/429 与 5xx），
+规划器不再叠加重试；默认每次模型调用最多尝试两次，JSON 解析失败不重试。
 
 ## 验证
 
@@ -97,6 +110,6 @@ uv build --out-dir dist
 ```
 
 `tests/fixtures/fun_asr_egg_sample.json` 是真实 fun-asr 返回的固定样本，
-全部测试基于它离线运行，不访问外部服务。
+测试使用该样本、合成输入及本地 HTTP 替身离线运行，不访问外部服务。
 
 维护 `uv.lock`，CI 使用 `--locked` 检查依赖与配置一致。

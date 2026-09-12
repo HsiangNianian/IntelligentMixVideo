@@ -32,6 +32,8 @@ uv run server
 
 默认监听 http://127.0.0.1:8000，API 文档位于 http://127.0.0.1:8000/docs。
 仓库根目录使用 `uv run --project server server`。文案切片接口需要配置模型服务，示例路由仍返回示例数据，详情见 [server/README.md](server/README.md)。
+文案与 TTS → ASR 文本使用支持替换的字符级波前对齐；`IMV_SEGMENT_MAX_ALIGNMENT_WORK` 默认 250000，按实际工作量限流，替代旧的矩阵面积配置。
+模型传输重试统一由 SDK 执行，`IMV_LLM_MAX_RETRIES` 默认 1，设为 0 禁用；关键词按原文逐字匹配。
 
 客户端运行
 ----------

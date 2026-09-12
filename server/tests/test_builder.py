@@ -2,26 +2,11 @@
 
 import unittest
 
-from server.sub_api.segmentation.aligner import (
-    align,
-    build_asr_chars,
-    build_script_chars,
-    project_times,
-)
 from server.sub_api.segmentation.builder import build_spans, split_clauses
-from support import colon_cuts, load_asr_result, sample_cuts, synthetic_chars
+from support import aligned_sample, colon_cuts, sample_cuts, synthetic_chars
 
 MIN_MS = 1200
 MAX_MS = 6000
-
-
-def aligned_sample():
-    script = load_asr_result().text or ""
-    script_chars = build_script_chars(script)
-    asr_chars = build_asr_chars(load_asr_result())
-    ops = align(script_chars, asr_chars)
-    project_times(script_chars, asr_chars, ops)
-    return script, script_chars
 
 
 class ClauseTests(unittest.TestCase):

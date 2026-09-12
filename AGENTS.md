@@ -11,6 +11,8 @@
 - 在 `server/` 下执行 `uv run server` 启动 Uvicorn，默认监听 `127.0.0.1:8000`；仓库根目录使用 `uv run --project server server`。维护 `server/uv.lock`，CI 使用 `--locked` 验证依赖。
 - 服务端配置使用 `IMV_` 前缀，从 `server/.env` 读取；`.env` 不入库，样例见 `server/.env.example`。
 - 模型负责语义切点与关键词候选，对齐、时间投射、时长约束与关键词校验全部由确定性代码完成；不实现模型失败的兜底路径。
+- 文案与 TTS → ASR 文本使用字符级波前对齐，替换、插入、删除均为单位代价；等价最优路径不要求复现旧 DP，但须验证时间投射。`IMV_SEGMENT_MAX_ALIGNMENT_WORK` 默认 250000，限制候选状态、字符比较及单侧字符工作量，替代已移除的 `IMV_SEGMENT_MAX_ALIGNMENT_CELLS`；保留文本长度与差异下界检查，超预算返回 422，不切换备用算法。
+- 模型传输重试统一由 OpenAI SDK 执行，`IMV_LLM_MAX_RETRIES` 默认 1，设为 0 禁用；规划器不叠加重试，JSON 解析失败不重试。关键词按原文逐字匹配，区分大小写与全角、半角。
 - 当前客户端保持最小可运行结构。首页 `client/src/App.tsx` 引用独立的 `client/src/components/CurrentTime.tsx` 组件，按本机时区显示日期和时间，每秒刷新。
 - 时间组件需在卸载时清理定时器。新增界面功能时遵循组件化结构，不把所有逻辑堆到 App 首页。
 - 项目长期方向见 README；其中提到的云剪辑、Agent、素材召回等功能不代表已经实现，也不构成自动扩展当前任务范围的要求。

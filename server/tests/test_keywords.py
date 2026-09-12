@@ -23,11 +23,16 @@ class KeywordValidatorTests(unittest.TestCase):
             [item.start for item in keywords], sorted(item.start for item in keywords)
         )
 
-    def test_search_ignores_case_and_fullwidth(self) -> None:
-        keywords, _ = validate_keywords(TEXT, ["qq"], max_count=5, max_length=12)
+    def test_search_requires_exact_case_and_width(self) -> None:
+        text = "QQ，ＡＢ，AB"
+        keywords, rejected = validate_keywords(
+            text, ["qq", "ｑｑ", "QQ", "ＡＢ", "AB"], max_count=5, max_length=12
+        )
 
-        self.assertEqual(len(keywords), 1)
-        self.assertEqual(TEXT[keywords[0].start : keywords[0].end], "QQ")
+        self.assertEqual([item.text for item in keywords], ["QQ", "ＡＢ", "AB"])
+        self.assertEqual(rejected, 2)
+        for keyword in keywords:
+            self.assertEqual(text[keyword.start : keyword.end], keyword.text)
 
     def test_length_and_count_limits(self) -> None:
         keywords, rejected = validate_keywords(

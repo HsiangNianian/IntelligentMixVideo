@@ -1,22 +1,18 @@
 """对齐与时间投射测试：文案定文本，ASR 定时间。"""
 
+import itertools
 import random
 import unittest
 
-from server.core.errors import AsrTranscriptTooLongError
+from server.core.errors import AlignmentInputTooLargeError, AsrTranscriptTooLongError
 from server.sub_api.segmentation.aligner import (
     ASR_EXTRA,
-    GAP_COST,
     MATCH,
-    MATCH_COST,
     SCRIPT_EXTRA,
     SUBSTITUTION,
-    SUBSTITUTION_COST,
     AlignedChar,
-    AlignmentOp,
     AsrChar,
     align,
-    alignment_span,
     build_asr_chars,
     build_script_chars,
     project_times,
@@ -36,12 +32,9 @@ def synthetic_pair(script_text: str, asr_text: str) -> tuple[list[AlignedChar], 
     ]
     asr_chars = [
         AsrChar(
-            char=char,
             normalized=char,
             begin_time_ms=float(index),
             end_time_ms=float(index + 1),
-            word_text=char,
-            confidence=None,
             is_word_start=False,
         )
         for index, char in enumerate(asr_text)
@@ -49,53 +42,21 @@ def synthetic_pair(script_text: str, asr_text: str) -> tuple[list[AlignedChar], 
     return script_chars, asr_chars
 
 
-def reference_align(
-    script_chars: list[AlignedChar], asr_chars: list[AsrChar]
-) -> list[AlignmentOp]:
-    """未做任何裁剪的完整矩阵版本，用于校验前后缀裁剪不改变最优解。"""
-    rows, columns = len(script_chars), len(asr_chars)
-    table = [[0] * (columns + 1) for _ in range(rows + 1)]
-    for i in range(1, rows + 1):
-        table[i][0] = i * GAP_COST
-    for j in range(1, columns + 1):
-        table[0][j] = j * GAP_COST
-    for i in range(1, rows + 1):
-        for j in range(1, columns + 1):
-            cost = (
-                MATCH_COST
-                if script_chars[i - 1].normalized == asr_chars[j - 1].normalized
-                else SUBSTITUTION_COST
-            )
+def reference_cost(script: str, asr: str) -> int:
+    """完整 Levenshtein DP，独立验证最小编辑代价。"""
+    table = [[0] * (len(asr) + 1) for _ in range(len(script) + 1)]
+    for i in range(len(script) + 1):
+        table[i][0] = i
+    for j in range(len(asr) + 1):
+        table[0][j] = j
+    for i, left in enumerate(script, 1):
+        for j, right in enumerate(asr, 1):
             table[i][j] = min(
-                table[i - 1][j - 1] + cost,
-                table[i - 1][j] + GAP_COST,
-                table[i][j - 1] + GAP_COST,
+                table[i - 1][j - 1] + (left != right),
+                table[i - 1][j] + 1,
+                table[i][j - 1] + 1,
             )
-    ops: list[AlignmentOp] = []
-    i, j = rows, columns
-    while i and j:
-        cost = (
-            MATCH_COST
-            if script_chars[i - 1].normalized == asr_chars[j - 1].normalized
-            else SUBSTITUTION_COST
-        )
-        if table[i][j] == table[i - 1][j - 1] + cost:
-            ops.append(AlignmentOp(MATCH if cost == MATCH_COST else SUBSTITUTION, i - 1, j - 1))
-            i, j = i - 1, j - 1
-        elif table[i][j] == table[i - 1][j] + GAP_COST:
-            ops.append(AlignmentOp(SCRIPT_EXTRA, i - 1, None))
-            i -= 1
-        else:
-            ops.append(AlignmentOp(ASR_EXTRA, None, j - 1))
-            j -= 1
-    while i:
-        ops.append(AlignmentOp(SCRIPT_EXTRA, i - 1, None))
-        i -= 1
-    while j:
-        ops.append(AlignmentOp(ASR_EXTRA, None, j - 1))
-        j -= 1
-    ops.reverse()
-    return ops
+    return table[-1][-1]
 
 
 def run_alignment(script: str):
@@ -213,34 +174,91 @@ class ScriptAlignerTests(unittest.TestCase):
             )
 
 
-class AlignmentScaleTests(unittest.TestCase):
-    """公共前后缀裁剪与规模闸门。"""
+class WavefrontTests(unittest.TestCase):
+    """最优代价、完整回溯与按工作量限流。"""
 
-    def test_alignment_span_excludes_matching_affixes(self) -> None:
-        script_chars, asr_chars = synthetic_pair("甲乙丙丁戊", "甲乙丙丁戊")
-        self.assertEqual(alignment_span(script_chars, asr_chars), (0, 0))
+    def check_pair(self, script: str, asr: str) -> None:
+        chars, timeline = synthetic_pair(script, asr)
+        ops = align(chars, timeline)
+        self.assertEqual(summarize(ops).edit_cost, reference_cost(script, asr))
+        self.assertEqual(
+            [op.script_index for op in ops if op.script_index is not None],
+            list(range(len(script))),
+        )
+        self.assertEqual(
+            [op.asr_index for op in ops if op.asr_index is not None],
+            list(range(len(asr))),
+        )
+        for op in ops:
+            if op.kind in (MATCH, SUBSTITUTION):
+                self.assertEqual(script[op.script_index] == asr[op.asr_index], op.kind == MATCH)
+            elif op.kind == SCRIPT_EXTRA:
+                self.assertIsNone(op.asr_index)
+            else:
+                self.assertEqual(op.kind, ASR_EXTRA)
+                self.assertIsNone(op.script_index)
 
-        script_chars, asr_chars = synthetic_pair("头甲乙丙尾", "头甲错丙尾")
-        self.assertEqual(alignment_span(script_chars, asr_chars), (1, 1))
-
-    def test_affix_trimming_preserves_optimal_alignment_stats(self) -> None:
+    def test_exhaustive_short_pairs_and_random_longer_pairs(self) -> None:
+        texts = [
+            "".join(chars)
+            for length in range(5)
+            for chars in itertools.product("甲乙", repeat=length)
+        ]
+        for script, asr in itertools.product(texts, repeat=2):
+            with self.subTest(script=script, asr=asr):
+                self.check_pair(script, asr)
         rng = random.Random(20260912)
-        for _ in range(200):
-            script_text = "".join(rng.choice("甲乙丙丁") for _ in range(rng.randint(0, 12)))
-            asr_text = "".join(rng.choice("甲乙丙丁") for _ in range(rng.randint(0, 12)))
-            script_chars, asr_chars = synthetic_pair(script_text, asr_text)
-
-            ops = align(script_chars, asr_chars)
-
-            self.assertEqual(summarize(ops), summarize(reference_align(script_chars, asr_chars)))
-            self.assertEqual(
-                [op.script_index for op in ops if op.script_index is not None],
-                list(range(len(script_chars))),
+        for _ in range(500):
+            self.check_pair(
+                "".join(rng.choices("甲乙丙丁", k=rng.randrange(40))),
+                "".join(rng.choices("甲乙丙丁", k=rng.randrange(40))),
             )
-            self.assertEqual(
-                [op.asr_index for op in ops if op.asr_index is not None],
-                list(range(len(asr_chars))),
-            )
+
+    def test_work_budget_boundary_including_affixes_and_empty_sides(self) -> None:
+        for script, asr, work in [
+            ("甲乙", "甲乙", 2), ("", "甲乙", 2), ("甲乙", "", 2),
+            ("甲", "乙", 6), ("乙甲甲", "丙甲甲", 8),
+        ]:
+            with self.subTest(script=script, asr=asr):
+                chars, timeline = synthetic_pair(script, asr)
+                align(chars, timeline, max_work=work)
+                with self.assertRaises(AlignmentInputTooLargeError):
+                    align(chars, timeline, max_work=work - 1)
+        self.assertEqual(align([], [], max_work=1), [])
+        with self.assertRaises(ValueError):
+            align([], [], max_work=0)
+
+    def test_long_text_with_spread_errors_fits_linear_work_budget(self) -> None:
+        script = "甲乙丙丁" * 5000
+        changed = list(script)
+        for index in (10, 10000, 19990):
+            changed[index] = "错"
+        chars, timeline = synthetic_pair(script, "".join(changed))
+        stats = summarize(align(chars, timeline, max_work=4 * len(script)))
+        self.assertEqual(stats.edit_cost, 3)
+        self.assertEqual(stats.substitution_chars, 3)
+
+    def test_reordered_text_exhausts_budget(self) -> None:
+        chars, timeline = synthetic_pair("甲" * 500 + "乙" * 500, "乙" * 500 + "甲" * 500)
+        with self.assertRaises(AlignmentInputTooLargeError):
+            align(chars, timeline, max_work=1000)
+
+    def test_repeated_text_has_stable_gap_and_time_mapping(self) -> None:
+        for script, asr, expected in [
+            ("甲甲乙", "甲乙", [MATCH, SCRIPT_EXTRA, MATCH]),
+            ("甲乙", "甲甲乙", [MATCH, ASR_EXTRA, MATCH]),
+            ("甲乙", "乙甲", [SUBSTITUTION, SUBSTITUTION]),
+        ]:
+            chars, timeline = synthetic_pair(script, asr)
+            ops = align(chars, timeline)
+            self.assertEqual([op.kind for op in ops], expected)
+            self.assertEqual(ops, align(chars, timeline))
+            project_times(chars, timeline, ops)
+            self.assertEqual(chars[0].begin_time_ms, 0)
+            self.assertEqual(chars[-1].end_time_ms, len(asr))
+            for previous, current in zip(chars, chars[1:]):
+                self.assertLessEqual(previous.end_time_ms, current.begin_time_ms)
+                self.assertLess(current.begin_time_ms, current.end_time_ms)
 
     def test_unmatched_lower_bound_never_exceeds_actual_unmatched_chars(self) -> None:
         rng = random.Random(20260913)
