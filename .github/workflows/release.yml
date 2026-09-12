@@ -26,10 +26,10 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: client/package.json
-      - name: Validate release tag and version preparation
+      - name: Validate release tag and committed project versions
         run: |
           bun test ./.github/scripts
-          bun .github/scripts/validate-release.mjs --tag-only
+          bun .github/scripts/validate-release.mjs
         env:
           RELEASE_TAG: ${{ github.ref_name }}
       - name: Resolve changelog range

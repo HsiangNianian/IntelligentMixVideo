@@ -185,7 +185,7 @@ export function TemplateWorkspace() {
             </div>
             <Button
               variant="outline"
-              disabled={busy || loading}
+              disabled={busy}
               onClick={() => requestSwitch(null)}
             >
               新建模板
@@ -227,11 +227,12 @@ export function TemplateWorkspace() {
           <form
             onSubmit={(event) => {
               event.preventDefault();
+              if (loading) return;
               void perform(() => persist());
             }}
           >
             <fieldset
-              disabled={busy || loading}
+              disabled={busy}
               className="min-w-0 space-y-5 disabled:opacity-60"
             >
               <div className="space-y-2">
@@ -265,7 +266,10 @@ export function TemplateWorkspace() {
                 onChange={setDraft}
               />
               <div className="flex flex-wrap gap-2 border-t pt-5">
-                <Button type="submit">{busy ? "正在处理…" : "保存模板"}</Button>
+                {/* 本地编辑不等待模板库；保存等待初次读取，避免晚到列表覆盖保存结果。 */}
+                <Button type="submit" disabled={loading}>
+                  {busy ? "正在处理…" : "保存模板"}
+                </Button>
                 {current &&
                   (
                     [
@@ -371,8 +375,9 @@ export function TemplateWorkspace() {
                   </Button>
                   <Button
                     type="button"
-                    disabled={busy}
+                    disabled={busy || loading}
                     onClick={() => {
+                      if (loading) return;
                       void perform(async () => {
                         await persist();
                         await switchTo(action.target);

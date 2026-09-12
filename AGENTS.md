@@ -52,7 +52,8 @@
 - 重命名和另存为复用 POST；另存为不携带 ID。未保存切换须提供保存并切换、放弃修改、取消，失败保留草稿。删除前确认。
 - 前端使用 SDK 5.2.2 的效果目录和静态动画 JSON，服务端维护同版本白名单；不提供 `/template/effects`。升级 SDK 时同步核对目录。保留用户已有 proto 文件，本次 API 使用 JSON。
 - 示例视频地址通过 `client/.env` 中的 `VITE_PREVIEW_VIDEO_URL` 配置，支持 HTTP(S) 直链与 public 资源路径；空值回退内置示例。修改后重启 Vite，生产使用需重新构建；当前固定片段要求源视频至少 14 秒。
-- 预览本次面向 localhost 浏览器运行；API 地址读取 `client/.env` 的 `VITE_API_URL`，未配置或留空时默认 `http://localhost:8000`，请求直接访问该地址。修改后重启 Vite，生产使用需重新构建；避免 `.env.local` 中同名配置覆盖。预览不发起云端合成，不将浏览器验证等同于桌面安装包验证。
+- 预览保留阿里云 SDK 5.2.2；Windows 生产页面通过 `src-tauri/src/localhost.rs` 在 `127.0.0.1` 的系统分配端口提供打包资源，窗口使用 `http://localhost:<端口>`，避免 `tauri.localhost` 不满足空 License 的 localhost 预览条件。仅允许对应 Host 的 GET/HEAD，不暴露任意磁盘文件；开发模式与 macOS / Linux 保持原加载方式，不扩大 Tauri IPC 权限。
+- API 地址读取 `client/.env` 的 `VITE_API_URL`，未配置或留空时默认 `http://localhost:8000`；CORS 允许精确 localhost 主机的动态 HTTP 端口。修改配置后重启 Vite，生产需重新构建；避免 `.env.local` 同名配置覆盖。模板列表加载不阻塞本地编辑，但保存须防止晚到列表覆盖结果。预览仍需联网获取 SDK、字体和媒体，不发起云端合成，不将浏览器验证等同于桌面安装包验证。
 
 ## Feature 测试约束（强制）
 
@@ -115,6 +116,7 @@ Windows 需要 MSVC C++ 构建工具、Windows SDK 和 WebView2；ARM64 主机�
 
 - 非默认分支 push：若同一仓库的同一提交已有打开的 PR，跳过重复任务；否则按变更范围检查。默认分支始终验证集成结果，不参与去重。
 - PR：前端改动运行冻结安装、核心测试与生产构建；服务端改动运行 pytest 与包构建；Rust/Tauri 或客户端依赖清单改动运行四平台 `cargo check --all-targets --locked`，不生成安装包。CI 工作流或脚本改动触发所有相关检查。
+- Windows 原生检查同时运行 `cargo test --lib --locked`，验证回环静态资源服务的 HTTP 行为；桌面真实预览仍需单独验证。
 - 默认分支 push：涉及客户端代码、资源或 CI 时生成四平台安装包。默认分支名称从事件读取，不硬编码 main。纯服务端改动不构建客户端，纯 Markdown 客户端文档不触发编译。
 - pre-commit.ci 负责 PR 的文件检查；Actions 仅在未去重的 push 或手动检查中运行 pre-commit，避免重复执行。
 - PR 汇总检查名为 `CI result`，push 使用 `Push result`，避免重复 push 的成功结果冒充 PR 验证。汇总必须在依赖失败/取消后执行，意外跳过必需任务不得报告成功。
@@ -133,35 +135,38 @@ Windows 需要 MSVC C++ 构建工具、Windows SDK 和 WebView2；ARM64 主机�
 普通构建的 Actions artifacts 保留 14 天。发版应复用这一构建工作流，避免维护两套不一致的平台构建逻辑。
 构建产物来自被触发的提交；正式发布时必须来自对应 tag 的源码。
 
-涉及 CI、原生代码或客户端依赖清单时，Release preflight 检查全部工作流、运行调度与发布脚本测试，
-并通过临时副本验证版本注入、Bun 冻结安装和 Cargo 锁文件不变。
+涉及 CI、原生代码或两端版本清单/锁文件时，Release preflight 检查全部工作流、运行调度与发布脚本测试，
+校验两端源码版本一致，并通过临时副本验证版本同步、Bun 冻结安装、Cargo 和 uv 锁文件。
 服务端 job 使用 Python 3.12 和 uv 缓存；`server/pyproject.toml` 的 uv 构建模块名显式设为 `server`，对应 `src/server/`。
 在 Validate project 上手动运行会执行全部检查（原生检查模式）；需要安装包时手动运行 Build client。
 
 ## 正式版本与 tag 发版
 
-**正式发布版本以 tag 为唯一来源，不要求手动同步多个版本文件。**
+**client 与 server 使用同一版本；发版前用一个命令同步并提交源码，正式 tag 必须与全部版本一致。**
 
 - `.github/workflows/release.yml` 在推送 `v*` tag 时触发，校验后仅接受 `vX.Y.Z` 正式版本，不接受 `-beta`、`-rc` 或构建元数据。
 - 版本须符合 Windows MSI 限制：major、minor 不超过 255，patch 不超过 65535。
 - 发布工作流通过 `release-tag` 输入把 tag 传给复用的客户端构建工作流。
-- 各平台在 CI 构建工作区中执行版本注入，例如 `v0.2.0` 转为 `0.2.0`。
-- 自动同步 `client/package.json`、`client/src-tauri/tauri.conf.json`、`client/src-tauri/Cargo.toml` 及 `client/src-tauri/Cargo.lock` 的客户端包版本。`client/bun.lock` 不记录根项目版本，发版时保持其内容不变，并通过 `bun install --frozen-lockfile` 验证。
-- 只修改项目自身版本，保留所有已锁定的第三方依赖版本及校验信息；不得借版本注入更新依赖。
-- Tauri 应用版本当前由 `tauri.conf.json` 的 `version` 提供，正式构建时该值由 tag 注入。
-- 版本修改只用于当前构建，不提交回源码、不移动 tag。普通开发构建继续使用仓库中的开发版本。
+- 发版前通过脚本将 `v0.3.0` 同步为 `0.3.0`，提交到 dev，经 PR 合入 main 后再在该提交打 tag。不能只在 CI 临时改版而让源码长期停留旧版本。
+- 自动同步 `client/package.json`、`client/src-tauri/tauri.conf.json`、`client/src-tauri/Cargo.toml` 与 `Cargo.lock` 的客户端包版本，以及 `server/pyproject.toml` 与 `server/uv.lock` 的 `imv-server` 包版本。`client/bun.lock` 不记录根项目版本，保持原样并用冻结安装验证。
+- 只修改项目自身版本，保留所有已锁定的第三方依赖版本及校验信息；不得借版本同步更新依赖。
+- Tauri 应用版本由 `tauri.conf.json` 的 `version` 提供；FastAPI/OpenAPI 版本读取已安装的 `imv-server` 包元数据，不增加另一处硬编码版本。
+- 普通 CI 检查源码两端版本一致；tag CI 只校验源码与 tag 一致后构建，不自动修正不匹配版本、不移动 tag。
 
 版本脚本为 `.github/scripts/validate-release.mjs`，通过环境变量 `RELEASE_TAG` 接收 tag：
 
-- `--tag-only`：只校验 tag 格式及版本范围，不要求源码中的开发版本与 tag 一致。
-- `--write`：将 tag 版本写入当前工作区的配置和锁文件。只在 CI 或临时副本中验证此模式，避免意外改动本地开发版本。
-- 不带参数：验证配置和锁文件的客户端版本均与 tag 一致，用于注入后校验。
+- `--tag-only`：只校验显式 tag 的格式及版本范围，不能替代发版前的完整版本校验。
+- `--write`：必须显式设置 `RELEASE_TAG`，一次更新上述六处项目版本；检查 diff 并提交这些变更。回归测试只在临时副本使用此模式。
+- 不带参数：有 `RELEASE_TAG` 时检查两端全部版本与 tag 一致；未设置时以 `client/package.json` 为基准检查版本一致性。
 
-发版操作示例（先提交源码，确保该提交包含发布工作流）：
+发版操作示例（在仓库根目录同步版本，提交并合并后再打 tag）：
 
 ```sh
-git tag -a v0.2.0 -m "Release v0.2.0"
-git push origin v0.2.0
+RELEASE_TAG=v0.3.0 bun .github/scripts/validate-release.mjs --write
+bun .github/scripts/validate-release.mjs
+# 将版本变更提交并合入 main 后：
+git tag -a v0.3.0 -m "Release v0.3.0"
+git push origin v0.3.0
 ```
 
 ## GitHub Release 与 CHANGELOG

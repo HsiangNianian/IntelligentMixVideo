@@ -11,7 +11,7 @@ export function classifyChanges(files) {
     client: client || ci,
     native: native || ci,
     server: files.some((path) => path.startsWith("server/")) || ci,
-    tooling: ci || native,
+    tooling: ci || native || files.some((path) => ["server/pyproject.toml", "server/uv.lock"].includes(path)),
   };
 }
 

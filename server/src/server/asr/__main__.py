@@ -1,6 +1,7 @@
-"""通过 python -m server.asr 接收音频 URL，将原始转写 JSON 写入当前目录。"""
+"""通过 python -m server.asr 异步转写音频 URL，完成后将原始 JSON 写入当前目录。"""
 
 import argparse
+import asyncio
 import json
 from pathlib import Path
 
@@ -12,7 +13,7 @@ if __name__ == "__main__":
     parser.add_argument("audio_url", help="可被云服务访问的 HTTPS 音频直链")
     args = parser.parse_args()
     # 保留完整结果和可读中文，覆盖当前目录的同名输出文件。
-    result = transcribe(args.audio_url)
+    result = asyncio.run(transcribe(args.audio_url))
     Path("asr_result.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
     )

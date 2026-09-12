@@ -67,6 +67,12 @@ jobs:
         with:
           bun-version-file: client/package.json
       - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: '3.12'
+          enable-cache: false
+      - name: Check synchronized project versions
+        run: bun .github/scripts/validate-release.mjs
       - name: Test release scripts and failure recovery
         run: bun test ./.github/scripts
       - name: Verify version injection with real project files
