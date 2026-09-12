@@ -39,6 +39,16 @@ class AsrTimelineMissingError(RequestInvalidError):
     default_message = "ASR 结果缺少词级时间戳，无法建立时间轴。"
 
 
+class AsrTranscriptTooLongError(RequestInvalidError):
+    code = "asr_transcript_too_long"
+    default_message = "ASR 转写文本超出可对齐长度上限。"
+
+
+class AlignmentInputTooLargeError(RequestInvalidError):
+    code = "alignment_input_too_large"
+    default_message = "文案与 ASR 文本的组合规模超出可对齐上限。"
+
+
 class ScriptAlignmentError(AppError):
     code = "script_asr_alignment_failed"
     status_code = 422

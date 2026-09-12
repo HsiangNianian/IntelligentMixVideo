@@ -8,6 +8,7 @@ import logging
 from array import array
 from dataclasses import dataclass
 
+from server.core.errors import AsrTranscriptTooLongError
 from server.sub_api.segmentation.normalizer import is_alignable, normalize_char
 from server.sub_api.segmentation.schemas import AsrResult
 
@@ -84,43 +85,129 @@ def build_script_chars(script: str) -> list[AlignedChar]:
     ]
 
 
-def build_asr_chars(asr_result: AsrResult) -> list[AsrChar]:
+def build_asr_chars(
+    asr_result: AsrResult,
+    *,
+    max_chars: int | None = None,
+    max_words: int | None = None,
+) -> list[AsrChar]:
     """把 ASR 词级结果展开为字符级时间轴。
 
-    作用与效果：过滤可发音字符后，将所属词的时间区间按字符数均分，避免同词多字共用区间。
-    输入：`asr_result` 为带词级时间戳的转写结果。
+    作用与效果：过滤可发音字符后，将所属词的时间区间按字符数均分，避免同词多字共用区间；
+    展开过程中按上限提前中断，防止超大转写文本在计入对齐规模前就把内存撑满。
+    输入：`asr_result` 为带词级时间戳的转写结果，`max_chars` 与 `max_words` 为可选上限。
     输出：按时间顺序排列的字符列表；缺少词级时间戳时返回空列表。
     """
     chars: list[AsrChar] = []
-    for word in asr_result.iter_words():
-        content = [char for char in word.text if is_alignable(char)]
-        if not content:
-            continue
-        span = word.end_time_ms - word.begin_time_ms
-        for order, char in enumerate(content):
-            begin = word.begin_time_ms + span * order / len(content)
-            end = word.begin_time_ms + span * (order + 1) / len(content)
-            chars.append(
-                AsrChar(
-                    char=char,
-                    normalized=normalize_char(char),
-                    begin_time_ms=begin,
-                    end_time_ms=end,
-                    word_text=word.text.strip(),
-                    confidence=word.confidence,
-                    is_word_start=order == 0,
+    scanned_words = 0
+    for sentence in asr_result.sentences:
+        for word in sentence.words:
+            text = word.text
+            if not text.strip():
+                continue
+            scanned_words += 1
+            if max_words is not None and scanned_words > max_words:
+                raise AsrTranscriptTooLongError()
+            if max_chars is not None and len(text) > max_chars:
+                raise AsrTranscriptTooLongError()
+            content = [char for char in text if is_alignable(char)]
+            if not content:
+                continue
+            if max_chars is not None and len(chars) + len(content) > max_chars:
+                raise AsrTranscriptTooLongError()
+            span = word.end_time_ms - word.begin_time_ms
+            for order, char in enumerate(content):
+                begin = word.begin_time_ms + span * order / len(content)
+                end = word.begin_time_ms + span * (order + 1) / len(content)
+                chars.append(
+                    AsrChar(
+                        char=char,
+                        normalized=normalize_char(char),
+                        begin_time_ms=begin,
+                        end_time_ms=end,
+                        word_text=word.text.strip(),
+                        confidence=word.confidence,
+                        is_word_start=order == 0,
+                    )
                 )
-            )
     return chars
+
+
+def alignment_span(
+    script_chars: list[AlignedChar],
+    asr_chars: list[AsrChar],
+) -> tuple[int, int]:
+    """计算真正需要建表与迭代的中间段长度。
+
+    作用与效果：公共前后缀必定出现在最优对齐中，可先按命中处理；剥掉后剩下的
+    中间段长度才是真实计算规模，供调用方在任何矩阵分配之前做规模闸门。
+    输入：文案字符列表与 ASR 字符列表。
+    输出：`(中间段文案字数, 中间段 ASR 字数)`。
+    """
+    prefix = _common_prefix(script_chars, asr_chars)
+    suffix = _common_suffix(script_chars, asr_chars, prefix)
+    return len(script_chars) - prefix - suffix, len(asr_chars) - prefix - suffix
+
+
+def script_unmatched_lower_bound(
+    script_chars: list[AlignedChar],
+    asr_chars: list[AsrChar],
+) -> int:
+    """给出文案未命中字数的 O(n+m) 下界。
+
+    作用与效果：每个命中最多消化一个字符在两侧的较小计数，因此未命中字数至少是各字符
+    正差额之和；调用方可用它在不建表的前提下拒掉差异过大的输入。
+    输入：文案字符列表与 ASR 字符列表。
+    输出：非负整数下界，恒不大于 `substitution_chars + script_extra_chars`。
+    """
+    counts: dict[str, int] = {}
+    for char in script_chars:
+        counts[char.normalized] = counts.get(char.normalized, 0) + 1
+    for char in asr_chars:
+        counts[char.normalized] = counts.get(char.normalized, 0) - 1
+    return sum(value for value in counts.values() if value > 0)
 
 
 def align(script_chars: list[AlignedChar], asr_chars: list[AsrChar]) -> list[AlignmentOp]:
     """用编辑距离对齐文案与 ASR 字符序列。
 
-    作用与效果：执行 Needleman-Wunsch 动态规划，回溯时优先对角，保证替换优先于删增组合；
-    返回的操作序列单调递增，可直接用于时间投射。
+    作用与效果：先剥离公共前后缀并按命中输出，只对剩余中间段执行 Needleman-Wunsch
+    动态规划；回溯时优先对角，保证替换优先于删增组合；返回的操作序列按原文下标单调
+    递增，可直接用于时间投射。
     输入：文案字符列表与 ASR 字符列表。
     输出：对齐操作列表。
+    """
+    prefix = _common_prefix(script_chars, asr_chars)
+    suffix = _common_suffix(script_chars, asr_chars, prefix)
+    rows = len(script_chars) - prefix - suffix
+    columns = len(asr_chars) - prefix - suffix
+
+    ops: list[AlignmentOp] = [AlignmentOp(MATCH, index, index) for index in range(prefix)]
+    ops.extend(
+        _align_core(
+            script_chars[prefix : prefix + rows],
+            asr_chars[prefix : prefix + columns],
+            offset=prefix,
+        )
+    )
+    ops.extend(
+        AlignmentOp(MATCH, len(script_chars) - suffix + order, len(asr_chars) - suffix + order)
+        for order in range(suffix)
+    )
+    return ops
+
+
+def _align_core(
+    script_chars: list[AlignedChar],
+    asr_chars: list[AsrChar],
+    *,
+    offset: int,
+) -> list[AlignmentOp]:
+    """对剥离公共前后缀后的中间段执行动态规划对齐与回溯。
+
+    作用与效果：中间段内按编辑距离填表并回溯，产出的下标统一加 `offset` 还原为全序列下标。
+    输入：中间段文案字符、中间段 ASR 字符与公共前缀长度。
+    输出：上下文区间内的对齐操作列表。
     """
     rows = len(script_chars)
     columns = len(asr_chars)
@@ -151,22 +238,47 @@ def align(script_chars: list[AlignedChar], asr_chars: list[AsrChar]) -> list[Ali
         )
         if table[i][j] == table[i - 1][j - 1] + cost:
             kind = MATCH if cost == MATCH_COST else SUBSTITUTION
-            ops.append(AlignmentOp(kind, i - 1, j - 1))
+            ops.append(AlignmentOp(kind, offset + i - 1, offset + j - 1))
             i, j = i - 1, j - 1
         elif table[i][j] == table[i - 1][j] + GAP_COST:
-            ops.append(AlignmentOp(SCRIPT_EXTRA, i - 1, None))
+            ops.append(AlignmentOp(SCRIPT_EXTRA, offset + i - 1, None))
             i -= 1
         else:
-            ops.append(AlignmentOp(ASR_EXTRA, None, j - 1))
+            ops.append(AlignmentOp(ASR_EXTRA, None, offset + j - 1))
             j -= 1
     while i:
-        ops.append(AlignmentOp(SCRIPT_EXTRA, i - 1, None))
+        ops.append(AlignmentOp(SCRIPT_EXTRA, offset + i - 1, None))
         i -= 1
     while j:
-        ops.append(AlignmentOp(ASR_EXTRA, None, j - 1))
+        ops.append(AlignmentOp(ASR_EXTRA, None, offset + j - 1))
         j -= 1
     ops.reverse()
     return ops
+
+
+def _common_prefix(script_chars: list[AlignedChar], asr_chars: list[AsrChar]) -> int:
+    """返回两个字符序列的公共前缀长度。"""
+    limit = min(len(script_chars), len(asr_chars))
+    length = 0
+    while length < limit and script_chars[length].normalized == asr_chars[length].normalized:
+        length += 1
+    return length
+
+
+def _common_suffix(
+    script_chars: list[AlignedChar],
+    asr_chars: list[AsrChar],
+    prefix: int,
+) -> int:
+    """返回两个字符序列的公共后缀长度，且不越过已命中的公共前缀。"""
+    limit = min(len(script_chars), len(asr_chars)) - prefix
+    length = 0
+    while (
+        length < limit
+        and script_chars[-1 - length].normalized == asr_chars[-1 - length].normalized
+    ):
+        length += 1
+    return length
 
 
 def summarize(ops: list[AlignmentOp]) -> AlignmentStats:

@@ -65,8 +65,13 @@ uv run uvicorn server.app:app --host 127.0.0.1 --port 8001 --reload --reload-dir
 
 职责边界：模型只给出分句切点编号与关键词候选，不产出任何时间数字；
 逐字对齐、时间继承与插值、时长约束和关键词校验全部由确定性代码完成。
-对齐采用字符级编辑距离，一致部分保留 ASR 时间，一对一错字直接替换，
-差异与相邻字合并为「修复块」并在块内按文案字数均分时间。
+对齐采用字符级编辑距离：先剥离公共前后缀并按命中输出，只对中间段建表，
+一致部分保留 ASR 时间，一对一错字直接替换，差异与相邻字合并为「修复块」
+并在块内按文案字数均分时间。
+
+错误码：`asr_timeline_missing`（缺词级时间戳）、`asr_transcript_too_long`（转写超长）、
+`alignment_input_too_large`（对齐规模超限）、`script_asr_alignment_failed`（文案与音频不匹配），
+以上均为 422；未配置模型为 502 `llm_provider_error`。
 
 ## 配置
 
@@ -80,6 +85,7 @@ uv run uvicorn server.app:app --host 127.0.0.1 --port 8001 --reload --reload-dir
 | `IMV_SEGMENT_MIN_DURATION_MS` / `IMV_SEGMENT_MAX_DURATION_MS` | `1200` / `6000` | 片段时长上下限（毫秒），代码据此合并与切分 |
 | `IMV_SEGMENT_MAX_KEYWORDS` | `5` | 每段关键词数量上限 |
 | `IMV_SEGMENT_KEYWORD_MAX_LENGTH` | `12` | 单个关键词字数上限，不设下限 |
+| `IMV_SEGMENT_MAX_ALIGNMENT_CELLS` / `IMV_SEGMENT_MAX_ASR_CHARS` / `IMV_SEGMENT_MAX_ASR_WORDS` | `4000000` / `20000` / `20000` | 对齐矩阵与 ASR 转写文本规模上限，超限返回 422 |
 
 未配置模型时 `/segmentations` 返回 502 `llm_provider_error`，不静默降级。
 

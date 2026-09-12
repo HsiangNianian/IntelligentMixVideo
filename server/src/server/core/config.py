@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     segment_max_keywords: int = Field(default=5, ge=0, le=20)
     segment_keyword_max_length: int = Field(default=12, ge=2, le=30)
 
+    segment_max_alignment_cells: int = Field(default=4_000_000, gt=0)
+    segment_max_asr_chars: int = Field(default=20_000, gt=0)
+    segment_max_asr_words: int = Field(default=20_000, gt=0)
+
     @model_validator(mode="after")
     def validate_segment_durations(self) -> "Settings":
         """校验片段时长区间。

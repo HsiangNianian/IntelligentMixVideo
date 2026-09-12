@@ -36,6 +36,9 @@ def get_segment_service(settings: Annotated[Settings, Depends(get_settings)]) ->
         max_duration_ms=settings.segment_max_duration_ms,
         max_keywords=settings.segment_max_keywords,
         keyword_max_length=settings.segment_keyword_max_length,
+        max_alignment_cells=settings.segment_max_alignment_cells,
+        max_asr_chars=settings.segment_max_asr_chars,
+        max_asr_words=settings.segment_max_asr_words,
     )
 
 

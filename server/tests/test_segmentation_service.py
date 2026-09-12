@@ -1,7 +1,13 @@
-"""片段构建服务测试：编排、约束与降级行为。"""
+"""片段构建服务测试：编排、约束与输入规模闸门。"""
 
 import unittest
 
+from server.core.errors import (
+    AlignmentInputTooLargeError,
+    AsrTranscriptTooLongError,
+    ScriptAlignmentError,
+)
+from server.sub_api.segmentation.schemas import AsrResult, AsrSentence, AsrWord
 from server.sub_api.segmentation.service import SegmentService
 from support import StubPlanner, broken_script, load_asr_result
 
@@ -104,6 +110,68 @@ class SegmentServiceTests(unittest.TestCase):
                 script="今天讲解 Python 异步编程与协程调度。",
                 asr_result=self.asr_result,
             )
+
+
+class AlignmentScaleTests(unittest.TestCase):
+    """对齐规模闸门：先拒差异，再拒规模，避免构造超大矩阵。"""
+
+    def setUp(self) -> None:
+        self.asr_result = load_asr_result()
+        self.planner = StubPlanner(clause_ids=[])
+
+    @staticmethod
+    def asr_from(text: str) -> AsrResult:
+        return AsrResult(
+            sentences=[
+                AsrSentence(
+                    words=[
+                        AsrWord(
+                            text=char,
+                            begin_time_ms=index * 10,
+                            end_time_ms=index * 10 + 10,
+                        )
+                        for index, char in enumerate(text)
+                    ]
+                )
+            ]
+        )
+
+    def test_rejects_alignment_above_scale_cap(self) -> None:
+        # 相同字符、相反顺序：命中下界为 0，但中间段规模 100×100 超过上限
+        service = SegmentService(self.planner, max_alignment_cells=1_000)
+        script = "甲" * 50 + "乙" * 50
+
+        with self.assertRaises(AlignmentInputTooLargeError):
+            service.build(script=script, asr_result=self.asr_from("乙" * 50 + "甲" * 50))
+
+    def test_scale_cap_boundary_uses_trimmed_alignment_span(self) -> None:
+        # 公共前缀已命中，真正需要建表的是 30×30；上限恰好 900 时必须放行
+        script = "甲" * 30 + "乙" * 30
+        asr_payload = self.asr_from("甲" * 30 + "丙" * 30)
+
+        accepted = SegmentService(self.planner, max_alignment_cells=900).build(
+            script=script, asr_result=asr_payload
+        )
+        self.assertEqual("".join(segment.text for segment in accepted.segments), script)
+
+        with self.assertRaises(AlignmentInputTooLargeError):
+            SegmentService(self.planner, max_alignment_cells=899).build(
+                script=script, asr_result=asr_payload
+            )
+
+    def test_rejects_oversized_asr_transcript(self) -> None:
+        service = SegmentService(self.planner, max_asr_chars=3)
+
+        with self.assertRaises(AsrTranscriptTooLongError):
+            service.build(script=self.asr_result.text or "", asr_result=self.asr_result)
+
+    def test_rejects_dissimilar_script_before_building_matrix(self) -> None:
+        # 与 ASR 完全无共同字符：命中下界 300 超过 50% 预算，不应进入动态规划
+        script = "甲乙丙丁戊己庚辛壬癸" * 30
+        service = SegmentService(self.planner)
+
+        with self.assertRaises(ScriptAlignmentError):
+            service.build(script=script, asr_result=self.asr_result)
 
 
 if __name__ == "__main__":
