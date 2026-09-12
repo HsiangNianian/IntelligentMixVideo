@@ -70,6 +70,7 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: '3.12'
+          enable-cache: false
       - name: Check synchronized project versions
         run: bun .github/scripts/validate-release.mjs
       - name: Test release scripts and failure recovery
