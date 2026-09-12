@@ -68,6 +68,9 @@ def test_returns_original_json_and_does_not_send_key_to_download(
         "https://",
         "http://audio.example/tts.wav",
         "https://user:password@audio.example/tts.wav",
+        "https://:password@audio.example/tts.wav",
+        "https://@audio.example/tts.wav",
+        "https://:@audio.example/tts.wav",
     ],
 )
 def test_invalid_url_fails_before_network(asr, asr_env, asr_http, url):
@@ -108,18 +111,21 @@ def test_absent_api_key_fails_before_network(asr, asr_http, monkeypatch):
 
 
 @pytest.mark.parametrize("environment_override", [False, True])
+@pytest.mark.parametrize("source_env_present", [False, True])
 def test_config_is_loaded_automatically_once(
-    asr, asr_http, asr_responses, tmp_path, monkeypatch, environment_override
+    asr, asr_http, asr_responses, tmp_path, monkeypatch, environment_override,
+    source_env_present,
 ):
-    """密钥自动加载一次且环境优先，旧地址配置不能覆盖固定北京端点。"""
+    """源码配置缺失时回退 cwd；密钥只加载一次且环境优先，端点始终为北京。"""
     script = tmp_path / "server/src/server/asr/asr.py"
     script.parent.mkdir(parents=True)
     script.write_text(Path(asr.__file__).read_text(encoding="utf-8"), encoding="utf-8")
     env_file = tmp_path / "server/.env"
-    env_file.write_text(
-        'DASHSCOPE_API_KEY=file-key\nASR_BASE_URL="https://file.example/api/v1/"\n',
-        encoding="utf-8",
-    )
+    if source_env_present:
+        env_file.write_text(
+            'DASHSCOPE_API_KEY=file-key\nASR_BASE_URL="https://file.example/api/v1/"\n',
+            encoding="utf-8",
+        )
     (tmp_path / "server/src/.env").write_text(
         "DASHSCOPE_API_KEY=cwd-key\nASR_BASE_URL=https://cwd.example/api/v1\n",
         encoding="utf-8",
@@ -138,7 +144,7 @@ def test_config_is_loaded_automatically_once(
     respond(asr_http, *asr_responses)
     assert module["transcribe"]("https://audio.example/tts.wav") == asr_responses[-1]
     request = asr_http.call_args_list[0].args[0]
-    source = "environment" if environment_override else "file"
+    source = "environment" if environment_override else "file" if source_env_present else "cwd"
     assert str(request.url) == (
         "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription"
     )
@@ -146,13 +152,20 @@ def test_config_is_loaded_automatically_once(
 
 
 @pytest.mark.parametrize("environment_override", [False, True])
+@pytest.mark.parametrize(
+    "package_directory", ["venv/Lib/site-packages", "venv/lib/python3.12/site-packages"]
+)
 def test_installed_package_loads_dotenv_from_working_directory(
-    asr, asr_http, asr_responses, tmp_path, monkeypatch, environment_override
+    asr, asr_http, asr_responses, tmp_path, monkeypatch, environment_override,
+    package_directory,
 ):
-    """安装后从工作目录加载密钥，环境优先且遗留地址配置不影响北京端点。"""
-    script = tmp_path / "venv/lib/python3.12/site-packages/server/asr/asr.py"
+    """两平台安装布局忽略包祖先目录中的 .env，工作目录密钥仍可被环境覆盖。"""
+    script = tmp_path / package_directory / "server/asr/asr.py"
     script.parent.mkdir(parents=True)
     script.write_text(Path(asr.__file__).read_text(encoding="utf-8"), encoding="utf-8")
+    (script.parents[3] / ".env").write_text(
+        "DASHSCOPE_API_KEY=unrelated-package-key\n", encoding="utf-8"
+    )
     working_directory = tmp_path / "deployment"
     working_directory.mkdir()
     (working_directory / ".env").write_text(
@@ -213,7 +226,15 @@ def test_missing_result_url(asr, asr_env, asr_http, asr_responses):
 
 
 @pytest.mark.parametrize(
-    "result_url", ["http://results.example/result.json", "https://"]
+    "result_url",
+    [
+        "http://results.example/result.json",
+        "https://",
+        "https://user:password@results.example/result.json",
+        "https://:password@results.example/result.json",
+        "https://@results.example/result.json",
+        "https://:@results.example/result.json",
+    ],
 )
 def test_invalid_result_url_is_not_downloaded(
     asr, asr_env, asr_http, asr_responses, result_url
@@ -233,6 +254,22 @@ def test_timeout_keeps_task_id(asr, asr_env, asr_http, asr_responses, mocker):
     with pytest.raises(TimeoutError, match="task-123"):
         asr.transcribe("https://audio.example/tts.wav")
     assert asr_http.call_count == 2
+
+
+@pytest.mark.parametrize("remaining", [0.1, 0, -0.1])
+def test_poll_sleep_respects_remaining_budget(
+    asr, asr_env, asr_http, asr_responses, mocker, remaining
+):
+    """轮询只休眠剩余预算；请求耗尽或超过预算时立即停止，保留任务 ID。"""
+    respond(asr_http, asr_responses[0], {"output": {"task_status": "RUNNING"}})
+    mocker.patch.object(asr.time, "monotonic", side_effect=[0, 0, 1 - remaining, 1])
+    with pytest.raises(TimeoutError, match="task-123"):
+        asr.transcribe("https://audio.example/tts.wav", wait_seconds=1)
+    assert asr_http.call_count == 2
+    if remaining > 0:
+        asr.time.sleep.assert_called_once_with(pytest.approx(remaining))
+    else:
+        asr.time.sleep.assert_not_called()
 
 
 @pytest.mark.parametrize("status", [401, 429, 500])
@@ -292,3 +329,18 @@ def test_main_writes_json(
     assert json.loads(content) == asr_responses[-1]
     assert "你好，世界。" in content
     assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize("arguments, status", [([], 2), (["--help"], 0)])
+def test_main_usage_does_not_transcribe(
+    asr_env, asr_http, monkeypatch, capsys, arguments, status
+):
+    """缺少音频参数时显示用法并失败，--help 正常退出；两者均不发请求或写结果。"""
+    monkeypatch.setattr(sys, "argv", ["server.asr", *arguments])
+    with pytest.raises(SystemExit) as caught:
+        runpy.run_module("server.asr", run_name="__main__")
+    assert caught.value.code == status
+    captured = capsys.readouterr()
+    assert "audio_url" in (captured.err if status else captured.out)
+    asr_http.assert_not_called()
+    assert not Path("asr_result.json").exists()

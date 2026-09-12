@@ -160,7 +160,8 @@ cp .env.example .env
 填写北京地域的 `DASHSCOPE_API_KEY`；服务地址在 ASR 模块中固定为
 `https://dashscope.aliyuncs.com/api/v1`。真实 `.env` 已被 Git 忽略。
 模块加载时自动读取一次配置，优先使用源码目录的 `server/.env`；该文件不存在时
-回退到当前工作目录的 `.env`，支持安装后的包。环境变量优先于文件，修改配置后需重启进程。
+回退到当前工作目录的 `.env`。安装后的包只查找工作目录，不读取虚拟环境祖先目录的配置。
+环境变量优先于文件，修改配置后需重启进程。
 
 在 `server/` 下运行：
 
@@ -168,7 +169,8 @@ cp .env.example .env
 uv run --locked python -m server.asr "https://example.com/audio.wav"
 ```
 
-替换为可被云服务访问的 HTTPS 音频直链。结果写入当前目录的 `asr_result.json`，
+替换为可被云服务访问且不含用户名或密码的 HTTPS 音频直链；结果下载地址也遵守这一限制。
+省略地址时显示用法并退出，使用 `--help` 查看帮助。结果写入当前目录的 `asr_result.json`，
 覆盖同名文件；保留原始 JSON 和字词时间戳，不额外分词。也可以在代码中调用：
 
 ```python
@@ -178,3 +180,4 @@ result = transcribe("https://example.com/audio.wav", wait_seconds=1800)
 ```
 
 等待预算必须是有限正数。超时不会取消已提交的云端任务；函数不自动重试提交。
+轮询休眠不超过剩余预算，但单次 HTTP 请求可能使实际等待超出预算。
