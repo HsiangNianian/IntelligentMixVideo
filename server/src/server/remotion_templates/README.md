@@ -44,7 +44,7 @@ uv run --locked server
 使用兼容 Chat Completions 的 function tools、JSON 输出与图片输入；`deepseek-flash` 可同时承担两种角色。
 Provider 不打印密钥或原始错误响应。部署时可通过环境变量提供配置。
 `IMV_DATA_DIR` 可指定可写的绝对路径；默认直接保存到模板模块内的
-`src/server/templates/.data/`，包含 SQLite、上传图片、代码和预览，已被 Git 与构建产物排除。
+`src/server/remotion_templates/.data/`，包含 SQLite、上传图片、代码和预览，已被 Git 与构建产物排除。
 相对路径也以模板模块目录为基准。默认仅监听本机，MVP 没有多租户或鉴权系统。
 
 ### HTTP 流程
@@ -149,7 +149,7 @@ Worker 在无网络的 bubblewrap 中执行，仅暴露系统库、渲染依赖�
 
 ```sh
 uv run --locked pytest -v
-IMV_TEST_RENDERER=1 uv run --locked pytest tests/test_templates.py -k 'real_' -v
+IMV_TEST_RENDERER=1 uv run --locked pytest tests/test_remotion_templates.py -k 'real_' -v
 ```
 
 普通 CI 的服务端 pytest 覆盖契约、错误、恢复、版本、轨迹和 API 兼容行为。
@@ -159,7 +159,7 @@ IMV_TEST_RENDERER=1 uv run --locked pytest tests/test_templates.py -k 'real_' -v
 
 ```sh
 # 在 server/ 执行；验证文本生成、参数修改、自然语言修改和纯图片生成。
-uv run --locked python -m server.templates.smoke --live
+uv run --locked python -m server.remotion_templates.smoke --live
 ```
 
 每次验收使用模板目录内独立的 `.data/smoke-<id>/`，保留所有尝试与输出；
