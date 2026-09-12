@@ -1,14 +1,15 @@
+# 复用平台矩阵：审查时只检查原生编译，集成/发版/手动运行时生成安装包。
 name: Build client
 
 on:
-  push:
-    branches: ["**"]
-    paths: ["client/**", ".github/workflows/client-build.yml", ".github/scripts/**"]
-  pull_request:
-    paths: ["client/**", ".github/workflows/client-build.yml", ".github/scripts/**"]
   workflow_dispatch:
   workflow_call:
     inputs:
+      build-mode:
+        description: "check validates native code; package produces all installers"
+        required: false
+        type: string
+        default: package
       release-tag:
         description: "Release tag used to set the client version in this build only"
         required: false
@@ -19,12 +20,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: client-build-${{ github.workflow }}-${{ github.ref }}
+  group: client-build-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: Build ${{ matrix.name }}
+    name: ${{ inputs.build-mode == 'check' && 'Check' || 'Build' }} ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -53,6 +54,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+      - name: Validate build mode
+        shell: bash
+        env:
+          BUILD_MODE: ${{ inputs.build-mode || 'package' }}
+          RELEASE_TAG: ${{ inputs.release-tag }}
+        run: |
+          case "$BUILD_MODE" in check|package) ;; *) exit 1 ;; esac
+          if [ -n "$RELEASE_TAG" ] && [ "$BUILD_MODE" != package ]; then exit 1; fi
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -77,6 +86,7 @@ jobs:
         with:
           workspaces: client/src-tauri -> target
           key: ${{ matrix.target }}
+          shared-key: ${{ inputs.build-mode || 'package' }}
       - name: Set release version from tag
         if: inputs.release-tag != ''
         working-directory: .
@@ -94,10 +104,17 @@ jobs:
       - name: Check Rust formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
       - name: Build desktop installers
+        if: inputs.build-mode != 'check'
         run: bun run tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --ci -- --locked
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Check native targets
+        if: inputs.build-mode == 'check'
+        run: |
+          bun run build
+          cargo check --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --all-targets --locked
       - name: Upload installers
+        if: inputs.build-mode != 'check'
         uses: actions/upload-artifact@v4
         with:
           name: intelligent-mix-video-${{ matrix.name }}-${{ github.sha }}

@@ -3,7 +3,7 @@
 import unittest
 
 from server.sub_api.segmentation.builder import build_spans, split_clauses
-from support import aligned_sample, colon_cuts, load_asr_result, sample_cuts, synthetic_chars
+from .support import aligned_sample, colon_cuts, load_asr_result, sample_cuts, synthetic_chars
 
 MIN_MS = 1200
 MAX_MS = 6000

@@ -1,0 +1,34 @@
+/* 全局样式入口：加载 Tailwind，将语义化主题变量映射到工具类，再设置页面基础样式。 */
+@import "tailwindcss";
+
+/* 当前页面实际使用的主题令牌；新增组件时按需补充。 */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --radius-xl: var(--radius);
+}
+
+/* 浅色主题集中定义颜色，组件通过语义类名使用。 */
+:root {
+  --background: oklch(0.985 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --border: oklch(0.922 0 0);
+  --radius: 0.75rem;
+}
+
+/* 仅在全局层处理字体、背景和边框默认值，页面布局使用 Tailwind。 */
+@layer base {
+  * { @apply border-border; }
+  body {
+    @apply bg-background text-foreground antialiased;
+    min-width: 320px;
+    font-family: Inter, "Segoe UI", system-ui, sans-serif;
+  }
+}

@@ -15,7 +15,7 @@ from server.sub_api.segmentation.aligner import (
 from server.sub_api.segmentation.router import get_segment_service
 from server.sub_api.segmentation.schemas import AsrResult
 from server.sub_api.segmentation.service import SegmentService
-from support import StubPlanner, broken_script, load_asr_payload
+from .support import StubPlanner, broken_script, load_asr_payload
 
 MIN_MS = 1200
 MAX_MS = 6000

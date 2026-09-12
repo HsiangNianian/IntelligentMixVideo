@@ -9,7 +9,7 @@ from server.core.errors import (
 )
 from server.sub_api.segmentation.schemas import AsrResult, AsrSentence, AsrWord
 from server.sub_api.segmentation.service import SegmentService
-from support import StubPlanner, load_asr_result
+from .support import StubPlanner, load_asr_result
 
 
 class SegmentServiceTests(unittest.TestCase):

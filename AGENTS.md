@@ -14,9 +14,42 @@
 - 切片接口接收正确文案与已有 ASR 词级时间轴，不生成 TTS 音频或调用 ASR。两侧文本使用字符级波前对齐，替换、插入、删除均为单位代价；等价最优路径不要求复现旧 DP，但须验证时间投射。`IMV_SEGMENT_MAX_ALIGNMENT_WORK` 默认 250000，限制候选状态、字符比较及单侧字符工作量，替代已移除的 `IMV_SEGMENT_MAX_ALIGNMENT_CELLS`；保留文本长度与差异下界检查，超预算返回 422，不切换备用算法。
 - 模型传输重试统一由 OpenAI SDK 执行，`IMV_LLM_MAX_RETRIES` 默认 1，设为 0 禁用；规划器不叠加重试，JSON 解析失败不重试。关键词按原文逐字匹配，区分大小写与全角、半角。
 - 片段文本须完整覆盖输入文案，时间区间合法且不重叠，关键词须能按下标回溯原文。时长上下限由合并、切分尽力满足；无法满足时返回告警，不承诺所有输入均能满足时长范围。
-- 当前客户端保持最小可运行结构。首页 `client/src/App.tsx` 引用独立的 `client/src/components/CurrentTime.tsx` 组件，按本机时区显示日期和时间，每秒刷新。
+- `server/pyproject.toml` 显式将官方 PyPI 设为 uv 默认索引，与锁文件来源保持一致。遇到依赖版本不可用时先检查索引覆盖配置和镜像同步情况，不要仅为绕过镜像缺失而降低依赖版本或删除锁文件。
+- 当前客户端保持最小可运行结构。`App.tsx` 挂载 `pages/HomePage.tsx`，首页引用独立的 `components/CurrentTime.tsx`，按本机时区显示日期和时间，每秒刷新。
 - 时间组件需在卸载时清理定时器。新增界面功能时遵循组件化结构，不把所有逻辑堆到 App 首页。
 - 项目长期方向见 README；其中提到的云剪辑、Agent、素材召回等功能不代表已经实现，也不构成自动扩展当前任务范围的要求。
+
+## 最小改动与源码说明（强制）
+
+- 所有代码改动必须 minimal：只实现当前需求所必需的行为，优先直接、可读的实现。不得加入未使用的代码、无意义包装、空占位文件、推测未来需求的抽象或依赖。
+- 不为了形式统一机械拆分文件；只有职责独立或真实复用需要时才提取模块、hook、工具函数。新增依赖、组件、配置项必须有实际使用方。
+- 仓库内维护的所有代码文件都必须有文件头注释，简要说明文件包含什么、职责边界和主要执行或数据流。覆盖 TS/TSX、JS/JSX/MJS、CSS、Rust、Python，以及后续新增语言；测试和构建/发布脚本也适用。
+- 每个模块、类、组件、函数/hook、具备独立职责的对象和复杂算法都必须有 docstring 或注释，说明用途、逻辑及必要的输入输出、副作用、清理和边界条件。匿名回调或简单字面量由所在逻辑块说明即可，不逐行复述语法；具名测试的描述可作为测试逻辑说明。
+- TS/JS 使用 JSDoc 或紧邻声明的注释；Python 使用模块、类、函数 docstring；Rust 使用 `//!` 模块文档与 `///` 项目文档；CSS 用注释说明主题令牌、基础层和复杂选择器。注释简短、具体，并随代码同步维护。
+- shebang、编码声明、编译器指令等有位置要求时保留必要顺序。JSON 等不支持注释的配置不要强塞注释，在相邻文档说明；锁文件、生成代码及第三方原样文件不手工加头注释。纳入项目维护的 shadcn/ui 源码需补齐注释，并保留第三方许可证。
+- 评审检查实际调用、注释与实现一致、无死代码及无无关依赖升级；不能用注释数量替代可读性和有效验证。
+
+## 客户端前端开发范式（强制）
+
+- 技术栈固定为 React + TypeScript strict + Vite + Tailwind CSS 4 + shadcn/ui，使用 Bun 管理依赖。Tailwind 使用 `@tailwindcss/vite`；不混用 Tailwind 3 配置或另加样式框架。
+- `src/main.tsx` 只挂载应用和全局样式；`src/App.tsx` 只组合页面与确有需求的全局 provider；`src/pages/` 负责页面布局和组件组合。
+- `src/components/` 放当前业务组件，例如 `CurrentTime.tsx`；`src/components/ui/` 放 shadcn/ui 基础组件，只负责可组合的 UI，不导入页面、不请求 API、不调用 Tauri command。
+- `src/lib/` 放实际共享的工具，当前只有合并类名的 `cn`。真实复用后再增加 `hooks/`；业务增长时才按功能提取 `features/<功能>/`，不提前创建空层。
+- 依赖方向为页面 → 业务组件 → 基础 UI / 工具。跨层导入使用 `@/`（指向 `src/`）；文件内或同目录的相对导入可保留。组件命名保持现有 PascalCase，shadcn/ui 文件遵循上游小写命名。
+- 有交互和无障碍语义的基础控件优先使用 shadcn/ui；在 `client/` 执行 `bunx --bun shadcn@latest add <组件>` 按需添加，随后审阅生成代码、依赖和主题令牌，只保留有调用方的导出。不要预装整个组件库。
+- `client/components.json` 维护 shadcn/ui 路径与别名；`src/styles/globals.css` 是全局样式入口，只放 Tailwind 导入、主题令牌和基础样式。组件布局使用工具类，颜色使用语义令牌，条件类名通过 `cn` 合并。
+- 主题令牌按使用需求补齐，不预先创建暗色切换、动画、路由或状态管理设施。局部状态优先留在组件；effect 必须清理定时器、订阅及监听器。重复渲染组件的关联 ID 用 `useId`，保留语义 HTML 和无障碍属性。
+- 当前时间只需本机时钟，不增加服务端请求。后续实际出现 API/Tauri 通信时再集中到对应功能模块，避免在纯展示组件中散落请求与错误处理。
+- 前端改动运行冻结依赖安装和 `bun run build`，并检查浏览器/桌面中的相关行为。新增 feature 必须提供行为测试；测试方案按实际运行环境选择，不用 Python 强行测试 React。纯样式调整验证渲染与响应式，不写重复实现的断言。
+
+## Feature 测试约束（强制）
+
+- 每次新增 feature 必须同时提交详细、覆盖全面且可重复执行的测试脚本；修复 bug 必须增加能够复现问题的回归用例。不能只测成功路径，也不能只断言函数被调用或复制实现来凑测试数量。
+- 服务端测试统一放在 `server/tests/`，使用 pytest 的 `test_*.py`、fixture 和参数化用例；共享夹具放 `conftest.py`，不再新增 unittest 风格测试。按功能组织文件，规模增大后再分目录。
+- 根据功能适用范围覆盖正常流程、异常输入、边界值、空数据、失败恢复、资源清理，以及涉及的权限、并发与幂等行为。不存在的能力不为凑覆盖率编写空测试；提交说明列出已覆盖场景与实际限制。
+- API 用例应检查状态码、响应契约和副作用。测试隔离外部服务、密钥和持久化数据，使用 fixture、monkeypatch 或临时目录；不得访问生产系统、依赖执行顺序或使用无界等待。
+- 文件头说明测试范围与执行方式，测试函数/夹具的 docstring 说明场景和期望。每次功能改动运行相关用例，交付前运行所属模块的完整测试；CI 使用锁定依赖运行服务端 pytest，测试失败必须修复。
+- 服务端目录执行 `uv run --locked pytest -v`；仓库根目录执行 `uv run --locked --project server pytest server/tests -v`。pytest 仅作为开发依赖维护在 `server/pyproject.toml` 和 `server/uv.lock`。
 
 ## 开发与验证
 
@@ -33,7 +66,7 @@ bun run tauri build
 - `bun run build` 包含 TypeScript 检查和前端生产构建，不等同于桌面程序构建成功。
 - 本地桌面安装包默认输出到 `client/src-tauri/target/release/bundle/`；指定 target 时位于对应 target 子目录。
 - 保留并维护 `client/bun.lock` 和 `client/src-tauri/Cargo.lock`。CI 使用 `bun install --frozen-lockfile` 和 Cargo `--locked`。
-- 根据改动范围验证：前端改动运行前端构建；Rust 改动检查格式并验证相关编译；服务端改动运行 Python 单元测试，包结构或依赖变更另验证 Python 包构建；发布脚本改动运行其测试；工作流改动使用 actionlint 检查。
+- 根据改动范围验证：前端改动运行前端构建；Rust 改动检查格式并验证相关编译；服务端改动运行 pytest，包结构或依赖变更另验证 Python 包构建；发布脚本改动运行其测试；工作流改动使用 actionlint 检查。新增 feature 还必须满足上面的测试约束。
 - 服务端自动测试使用固定样本、合成输入和模型替身，不访问真实模型服务；真实 LLM 验证单独执行，不能将离线测试通过描述为真实模型联调通过。密钥不得写入源码、测试或报告。
 - 纯文档改动检查内容与实现一致及 diff 格式，无需重跑全部构建。
 
@@ -45,7 +78,7 @@ bun test ./.github/scripts
 bun .github/scripts/release-smoke.mjs
 actionlint .github/workflows/client-build.yml .github/workflows/release.yml .github/workflows/validation.yml
 uv build --project server --out-dir server/dist
-uv run --locked --project server python -m unittest discover -s server/tests -v
+uv run --locked --project server pytest server/tests -v
 git diff --check
 ```
 
@@ -63,9 +96,19 @@ Windows 需要 MSVC C++ 构建工具、Windows SDK 和 WebView2；ARM64 主机�
 
 ## 客户端构建 CI
 
-`.github/workflows/client-build.yml` 负责客户端跨平台构建，支持分支 push、PR、手动触发和 `workflow_call` 复用。
-路径过滤覆盖客户端、该工作流及 `.github/scripts/`。
-保留平台矩阵、Linux 系统依赖安装、Bun / Rust 缓存和构建产物上传。
+`.github/workflows/validation.yml` 是 push / PR 检查的唯一 Actions 入口，不在工作流级使用 paths 过滤，以确保每个 PR 都有最终检查结果。
+`.github/scripts/ci-scope.mjs` 根据 Git 差异调度：PR 比较目标分支与合并结果，push 比较前后提交；新分支检查全部文件，缺失比较基线时保守运行全部检查。
+
+- 非默认分支 push：若同一仓库的同一提交已有打开的 PR，跳过重复任务；否则按变更范围检查。默认分支始终验证集成结果，不参与去重。
+- PR：前端改动运行冻结安装与生产构建；服务端改动运行 pytest 与包构建；Rust/Tauri 或客户端依赖清单改动运行四平台 `cargo check --all-targets --locked`，不生成安装包。CI 工作流或脚本改动触发所有相关检查。
+- 默认分支 push：涉及客户端代码、资源或 CI 时生成四平台安装包。默认分支名称从事件读取，不硬编码 main。纯服务端改动不构建客户端，纯 Markdown 客户端文档不触发编译。
+- pre-commit.ci 负责 PR 的文件检查；Actions 仅在未去重的 push 或手动检查中运行 pre-commit，避免重复执行。
+- PR 汇总检查名为 `CI result`，push 使用 `Push result`，避免重复 push 的成功结果冒充 PR 验证。汇总必须在依赖失败/取消后执行，意外跳过必需任务不得报告成功。
+- 分支保护建议要求 `CI result` 和 pre-commit.ci 的检查；不要要求按路径跳过的矩阵 job。修改工作流不会自动修改仓库保护规则。
+- 同一事件/分支的新运行取消旧运行；push 与 PR 的并发组分开，不互相取消。去重查询失败必须报告错误，不能静默放行。
+
+`.github/workflows/client-build.yml` 仅提供手动触发和 `workflow_call`，复用同一平台矩阵、Linux 系统依赖和 Bun / Rust 缓存。
+`build-mode=check` 做原生编译检查，`package` 生成并上传安装包；默认 `package`，正式 tag 必须使用打包模式。检查模式不能保证最终链接或安装器成功，完整打包由默认分支、tag 和手动构建验证。
 
 | 平台 | 架构 | 安装包 |
 | --- | --- | --- |
@@ -76,9 +119,10 @@ Windows 需要 MSVC C++ 构建工具、Windows SDK 和 WebView2；ARM64 主机�
 普通构建的 Actions artifacts 保留 14 天。发版应复用这一构建工作流，避免维护两套不一致的平台构建逻辑。
 构建产物来自被触发的提交；正式发布时必须来自对应 tag 的源码。
 
-`.github/workflows/validation.yml` 在相关 push / PR 中检查全部工作流、运行发布脚本与失败恢复测试，
-并通过临时副本中的真实配置验证版本注入、Bun 冻结安装和 Cargo 锁文件不变。
-该工作流同时测试 API 路由并构建 Python 包；`server/pyproject.toml` 的 uv 构建模块名显式设为 `server`，对应 `src/server/`。
+涉及 CI、原生代码或客户端依赖清单时，Release preflight 检查全部工作流、运行调度与发布脚本测试，
+并通过临时副本验证版本注入、Bun 冻结安装和 Cargo 锁文件不变。
+服务端 job 使用 Python 3.12 和 uv 缓存；`server/pyproject.toml` 的 uv 构建模块名显式设为 `server`，对应 `src/server/`。
+在 Validate project 上手动运行会执行全部检查（原生检查模式）；需要安装包时手动运行 Build client。
 
 ## 正式版本与 tag 发版
 

@@ -21,7 +21,7 @@ from server.sub_api.segmentation.aligner import (
     summarize,
 )
 from server.sub_api.segmentation.schemas import AsrResult, AsrSentence, AsrWord
-from support import load_asr_result
+from .support import load_asr_result
 
 
 def synthetic_pair(script_text: str, asr_text: str) -> tuple[list[AlignedChar], list[AsrChar]]:

@@ -1,3 +1,5 @@
+/** 在临时副本注入边界版本，执行冻结安装和工作流中的 Cargo 校验，最后清理副本。 */
+
 import assert from "node:assert/strict";
 import { cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -6,6 +8,7 @@ import { spawnSync } from "node:child_process";
 
 const dir = mkdtempSync(join(tmpdir(), "imv-release-smoke-"));
 const source = process.cwd();
+/** 在指定目录执行真实命令，使用固定测试 tag 并让失败中断验证。 */
 function run(exe, args, cwd) {
   const result = spawnSync(exe, args, {
     cwd, env: { ...process.env, RELEASE_TAG: "v254.254.65534" }, encoding: "utf8",
