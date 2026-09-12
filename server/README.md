@@ -88,3 +88,33 @@ MVP 只提供中文标点分句供模型选择；无此类标点的长文主要�
 共享夹具自动隔离外部 `IMV_` 环境变量与 `.env`；测试使用小型合成 ASR 和 SDK 替身，不访问真实模型。
 覆盖对齐代价与时间、模型切点及异常、英文/数字保护、关键词过滤、时长告警、资源关闭和 HTTP 响应契约。
 离线测试通过不代表真实 TTS/ASR/LLM 联调通过。
+
+## ASR 音频转写
+
+ASR 是独立的 Python 函数和命令行入口，尚未接入 FastAPI 路由。在 `server/` 下准备配置：
+
+```sh
+cp .env.example .env
+```
+
+填写北京地域的 `DASHSCOPE_API_KEY`；服务地址在 ASR 模块中固定为
+`https://dashscope.aliyuncs.com/api/v1`。真实 `.env` 已被 Git 忽略。
+模块加载时自动读取一次配置，优先使用源码目录的 `server/.env`；该文件不存在时
+回退到当前工作目录的 `.env`，支持安装后的包。环境变量优先于文件，修改配置后需重启进程。
+
+在 `server/` 下运行：
+
+```sh
+uv run --locked python -m server.asr "https://example.com/audio.wav"
+```
+
+替换为可被云服务访问的 HTTPS 音频直链。结果写入当前目录的 `asr_result.json`，
+覆盖同名文件；保留原始 JSON 和字词时间戳，不额外分词。也可以在代码中调用：
+
+```python
+from server.asr import transcribe
+
+result = transcribe("https://example.com/audio.wav", wait_seconds=1800)
+```
+
+等待预算必须是有限正数。超时不会取消已提交的云端任务；函数不自动重试提交。
