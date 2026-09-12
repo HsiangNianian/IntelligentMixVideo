@@ -3,6 +3,19 @@
 
 /* 当前页面实际使用的主题令牌；新增组件时按需补充。 */
 @theme inline {
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-destructive: var(--destructive);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -14,6 +27,19 @@
 
 /* 浅色主题集中定义颜色，组件通过语义类名使用。 */
 :root {
+  --primary: oklch(0.48 0.16 260);
+  --primary-foreground: oklch(0.99 0 0);
+  --secondary: oklch(0.96 0 0);
+  --secondary-foreground: oklch(0.2 0 0);
+  --muted: oklch(0.96 0 0);
+  --accent: oklch(0.95 0.02 260);
+  --accent-foreground: oklch(0.25 0.06 260);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --destructive: oklch(0.57 0.22 27);
+  --input: oklch(0.89 0 0);
+  --ring: oklch(0.6 0.13 260);
+
   --background: oklch(0.985 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
@@ -25,7 +51,9 @@
 
 /* 仅在全局层处理字体、背景和边框默认值，页面布局使用 Tailwind。 */
 @layer base {
-  * { @apply border-border; }
+  * {
+    @apply border-border;
+  }
   body {
     @apply bg-background text-foreground antialiased;
     min-width: 320px;

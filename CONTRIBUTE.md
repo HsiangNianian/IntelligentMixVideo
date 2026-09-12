@@ -11,10 +11,13 @@ steps, expected behavior, actual behavior, and relevant logs. Remove credentials
 and personal data from logs. Discuss substantial features or architectural changes
 in an issue before implementing them.
 
-The current application is a minimal desktop client displaying local date and time.
+The current client provides a modular template editor with a localhost SDK preview.
 The long-term roadmap does not imply that cloud editing or agent features already
-exist. The Python server provides a minimal FastAPI application with example user
-routes and no user storage. Run `uv run server` from `server/` to start the API.
+exist. The Python server provides MySQL-backed template APIs and example user
+routes with no user storage. Start MySQL and configure `server/.env` as described
+in `server/README.md`, then run `uv run server` from `server/`. Startup creates
+the configured database if it is missing; the database account needs permission
+to create it.
 
 ## Development Setup
 
@@ -54,7 +57,7 @@ Run checks appropriate to the files you change and report their actual results.
 
 | Change | Command | Working directory |
 | --- | --- | --- |
-| Frontend | `bun run build` | `client/` |
+| Frontend | `bun run test` and `bun run build` | `client/` |
 | Rust formatting | `cargo fmt --manifest-path client/src-tauri/Cargo.toml --check` | Repository root |
 | Desktop compilation and packaging | `bun run tauri build` | `client/` |
 | Release scripts and recovery | `bun test ./.github/scripts` | Repository root |
@@ -80,8 +83,10 @@ Every new feature must include detailed, comprehensive behavior tests covering
 success, failures, applicable boundaries, and side effects. Bug fixes require a
 regression test. Keep server tests in `server/tests/` and use pytest fixtures and
 parametrization. Tests must be isolated from production services and reproducible.
-There is no configured frontend test runner or coverage threshold; choose a
-suitable frontend runner when adding a feature and document its invocation.
+Frontend core tests use Bun, Happy DOM and React Testing Library in `client/tests/`.
+Add a Chinese scenario comment above each test and run `bun run test` from `client/`.
+HTTP and SDK dependencies are isolated; these tests do not verify real video
+playback or Tauri native behavior. There is no enforced coverage percentage.
 
 ## Commit Message Format
 
