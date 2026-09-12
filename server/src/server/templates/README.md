@@ -24,6 +24,10 @@ Chrome/Chromium、FFmpeg 的 `ffprobe`，以及 Noto Sans CJK 的常规/粗体 T
 
 在 `server/` 执行：
 
+共享服务启动时会初始化上游模板库的 MySQL 连接；先启动 MySQL，并按
+[`server/README.md`](../../../README.md) 配置 `.env` 中的 `DB_*` 字段。
+该模板库使用 `/template`，本生成服务使用 `/api/templates`，生成任务仍保存在本模块的 SQLite 中。
+
 ```sh
 uv sync --locked
 # 没有现有 .env 时复制示例，再填入自己的模型密钥。

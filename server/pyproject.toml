@@ -15,10 +15,12 @@ dependencies = [
     "openai>=3.13.0",
     "pillow>=12.3.0",
     "pydantic>=2.13.5",
-    "pydantic-settings>=2.15.0",
+    "pydantic-settings>=2.15.0,<3",
     "python-dotenv>=1.2.3",
     "python-multipart>=0.0.32",
     "uvicorn>=0.52.4",
+    "sqlalchemy>=2.0,<3",
+    "pymysql[rsa]>=1.1,<2",
 ]
 
 [project.scripts]
@@ -40,6 +42,7 @@ addopts = "--import-mode=importlib --strict-markers"
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "pytest-mock>=3.14,<4",
 ]
 
 [[tool.uv.index]]

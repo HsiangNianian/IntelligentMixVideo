@@ -1,3 +1,8 @@
 [run]
 # Run Vite, TypeScript and the Tauri CLI with Bun on every platform.
 bun = true
+
+[test]
+# 仅扫描客户端测试；预加载 DOM 与外部请求隔离，避免访问实际 API/SDK。
+root = "./tests"
+preload = ["./tests/setup.ts"]
