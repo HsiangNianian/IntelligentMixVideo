@@ -1,3 +1,5 @@
+/** 校验正式 tag 与 MSI 范围；按模式检查或注入项目版本，保留第三方依赖锁定信息。 */
+
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 
@@ -12,6 +14,7 @@ if (process.argv.includes("--tag-only")) {
   process.exit(0);
 }
 
+/** 读取 UTF-8 JSON 清单，解析失败时直接终止发版准备。 */
 const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
 const packageJson = readJson("client/package.json");
 // bun.lock omits the root package version and must stay byte-for-byte unchanged.
@@ -32,8 +35,10 @@ if (process.argv.includes("--write")) {
   assert(cargoName && cargoVersion && cargoLockVersion, "Cannot find the client package in Cargo manifests");
   packageJson.version = version;
   tauri.version = version;
+  // 只替换已定位的客户端包段中的版本，避免改动同版本的第三方依赖。
   const replaceVersion = (section) =>
     section.replace(/^(version\s*=\s*)"[^"]+"/m, `$1"${version}"`);
+  // 校验完成后构造全部文件内容，再统一落盘。
   const updates = {
     "client/package.json": JSON.stringify(packageJson, null, 2) + "\n",
     "client/src-tauri/tauri.conf.json": JSON.stringify(tauri, null, 2) + "\n",

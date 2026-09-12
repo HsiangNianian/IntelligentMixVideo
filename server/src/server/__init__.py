@@ -1,2 +1,1 @@
-def main() -> None:
-    print("Hello from server!")
+"""API 包边界；应用由 app 模块组装，命令行启动由 __main__ 负责。"""
