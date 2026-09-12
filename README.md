@@ -56,7 +56,8 @@ bun run tauri dev
 ```
 
 首页提供模板创建、选择、完整编辑、保存、重命名、另存为和删除，切换前保护未保存修改。
-模板功能本次以 `bun run dev` 启动后在 `http://localhost:1420` 使用，预览沿用阿里云 SDK 5.2.2。
+浏览器开发使用 `bun run dev` 后打开 `http://localhost:1420`；Windows 安装包内置回环静态服务，以 `http://localhost:<动态端口>` 加载页面，预览沿用阿里云 SDK 5.2.2。macOS / Linux 保留原有 Tauri 加载方式。
+本地草稿编辑与预览不依赖 Python API；共享模板读写需要服务端，SDK、字体与示例媒体仍需联网。
 示例视频可在 `client/.env` 中通过 `VITE_PREVIEW_VIDEO_URL` 配置，修改后重启前端；详见 [客户端说明](client/README.md#示例视频配置)。
 客户端 API 地址通过 `client/.env` 中的 `VITE_API_URL` 配置，未配置或留空时默认 `http://localhost:8000`。
 端口冲突时可按服务端说明改为 8010，并同步设置 `VITE_API_URL=http://localhost:8010`。模板库共享，不迁移旧项目数据。

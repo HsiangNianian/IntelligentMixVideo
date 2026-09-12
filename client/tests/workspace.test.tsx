@@ -47,6 +47,71 @@ async function openExistingTemplate() {
   return saved;
 }
 
+// 回归：初次列表请求未完成时仍可编辑和新建，失败及刷新都不丢失本地草稿。
+test("模板 API 等待或失败时仍能编辑预览并保护新建草稿", async () => {
+  let rejectList!: (error: Error) => void;
+  fetchMock.mockReturnValueOnce(new Promise<Response>((_resolve, reject) => {
+    rejectList = reject;
+  }));
+  render(<TemplateWorkspace />);
+  const name = screen.getByLabelText<HTMLInputElement>("模板名称");
+  // Happy DOM 不会把 fieldset 的禁用状态计入 input.disabled，直接检查原生禁用容器。
+  expect(name.closest("fieldset")?.disabled).toBe(false);
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "新建模板" }).disabled).toBe(false);
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "保存模板" }).disabled).toBe(true);
+  fireEvent.change(name, { target: { value: "本地草稿" } });
+  fireEvent.change(screen.getByLabelText("示例文字"), { target: { value: "等待 API 时编辑" } });
+  expect(screen.getByLabelText("预览标题").textContent).toBe("等待 API 时编辑");
+  // 提交表单也不能绕过加载保护；新建弹窗的保存入口遵守相同限制。
+  fireEvent.submit(name.closest("form")!);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole("button", { name: "新建模板" }));
+  const dialog = await screen.findByRole("dialog");
+  const saveAndSwitch = within(dialog).getByRole<HTMLButtonElement>("button", { name: "保存并切换" });
+  expect(saveAndSwitch.disabled).toBe(true);
+  fireEvent.click(saveAndSwitch);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+  expect(name.value).toBe("本地草稿");
+  fireEvent.click(screen.getByRole("button", { name: "新建模板" }));
+  fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "放弃修改" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(name.value).toBe("");
+  expect(screen.queryByText(/有未保存的修改/)).toBeNull();
+  fireEvent.change(name, { target: { value: "重新编辑" } });
+  fireEvent.change(screen.getByLabelText("示例文字"), { target: { value: "请求失败也保留" } });
+  await act(async () => rejectList(new TypeError("Failed to fetch")));
+  await screen.findByRole("alert");
+  expect(screen.getByRole("alert").textContent).toBe("无法连接服务端，请确认 API 已启动后重试。");
+  expect(name.value).toBe("重新编辑");
+  expect(screen.getByLabelText("预览标题").textContent).toBe("请求失败也保留");
+  fireEvent.change(screen.getByLabelText("示例文字"), { target: { value: "离线继续编辑" } });
+  fetchMock.mockResolvedValueOnce(Response.json([savedTemplate()]));
+  fireEvent.click(screen.getByRole("button", { name: "刷新列表" }));
+  await screen.findByText("模板列表已刷新，当前编辑内容已保留");
+  expect(name.value).toBe("重新编辑");
+  expect(screen.getByLabelText("预览标题").textContent).toBe("离线继续编辑");
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "保存模板" }).disabled).toBe(false);
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+});
+
+// 回归：允许初始请求期间编辑后，晚到的远端列表只更新列表，不覆盖草稿或清除脏状态。
+test("初始模板列表晚到时保留已编辑的本地草稿", async () => {
+  let resolveList!: (response: Response) => void;
+  fetchMock.mockReturnValueOnce(new Promise<Response>((resolve) => {
+    resolveList = resolve;
+  }));
+  render(<TemplateWorkspace />);
+  fireEvent.change(screen.getByLabelText("模板名称"), { target: { value: "等待中创建" } });
+  fireEvent.change(screen.getByLabelText("示例文字"), { target: { value: "已经开始预览" } });
+  await act(async () => resolveList(Response.json([savedTemplate()])));
+  await screen.findByText("共享模板库 · 1 个模板 · 有未保存的修改");
+  expect(screen.getByLabelText<HTMLInputElement>("模板名称").value).toBe("等待中创建");
+  expect(screen.getByLabelText("预览标题").textContent).toBe("已经开始预览");
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "保存模板" }).disabled).toBe(false);
+});
+
 // 测试新建时选择效果、编辑内容传给预览，保存成功清除脏状态，再保存时更新同一 ID。
 test("创建、预览草稿与更新模板", async () => {
   fetchMock.mockResolvedValueOnce(Response.json([]));
