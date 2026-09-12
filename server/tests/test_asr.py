@@ -35,6 +35,9 @@ def test_returns_original_json_and_does_not_send_key_to_download(
     calls = asr_http.call_args_list
     request = calls[0].args[0]
     assert request.method == "POST"
+    assert str(request.url) == (
+        "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription"
+    )
     assert json.loads(request.content) == {
         "model": "fun-asr",
         "input": {"file_urls": ["https://audio.example/tts.wav"]},
@@ -86,25 +89,20 @@ def test_invalid_wait_seconds_fails_before_network(
     asr_http.assert_not_called()
 
 
-@pytest.mark.parametrize("field", ["dashscope_api_key", "asr_base_url"])
 @pytest.mark.parametrize("value", ["", " "])
-def test_missing_config_fails_before_network(asr, asr_env, asr_http, field, value):
-    """空值和全空格配置明确报错，不提交任务。"""
-    setattr(asr_env, field, SecretStr(value) if field == "dashscope_api_key" else value)
-    with pytest.raises(ValueError, match=field.upper()):
+def test_empty_api_key_fails_before_network(asr, asr_env, asr_http, value):
+    """空值和全空格密钥明确报错，不提交任务。"""
+    asr_env.dashscope_api_key = SecretStr(value)
+    with pytest.raises(ValueError, match="DASHSCOPE_API_KEY"):
         asr.transcribe("https://audio.example/tts.wav")
     asr_http.assert_not_called()
 
 
-@pytest.mark.parametrize("field", ["dashscope_api_key", "asr_base_url"])
-def test_absent_config_fails_before_network(asr, asr_http, monkeypatch, field):
-    """缺失配置使用空默认值，并在调用时明确提示所需环境变量。"""
-    monkeypatch.delenv("ASR_BASE_URL", raising=False)
+def test_absent_api_key_fails_before_network(asr, asr_http, monkeypatch):
+    """缺失密钥使用空默认值，并在调用时明确提示所需环境变量。"""
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
-    values = {"asr_base_url": "https://example.com/api/v1", "dashscope_api_key": "key"}
-    values.pop(field)
-    monkeypatch.setattr(asr, "settings", asr.ASRSettings(_env_file=None, **values))
-    with pytest.raises(ValueError, match=field.upper()):
+    monkeypatch.setattr(asr, "settings", asr.ASRSettings(_env_file=None))
+    with pytest.raises(ValueError, match="DASHSCOPE_API_KEY"):
         asr.transcribe("https://audio.example/tts.wav")
     asr_http.assert_not_called()
 
@@ -113,7 +111,7 @@ def test_absent_config_fails_before_network(asr, asr_http, monkeypatch, field):
 def test_config_is_loaded_automatically_once(
     asr, asr_http, asr_responses, tmp_path, monkeypatch, environment_override
 ):
-    """优先自动读取源码 server/.env，环境覆盖文件且加载后不受文件修改影响。"""
+    """密钥自动加载一次且环境优先，旧地址配置不能覆盖固定北京端点。"""
     script = tmp_path / "server/src/server/asr/asr.py"
     script.parent.mkdir(parents=True)
     script.write_text(Path(asr.__file__).read_text(encoding="utf-8"), encoding="utf-8")
@@ -136,14 +134,13 @@ def test_config_is_loaded_automatically_once(
             monkeypatch.delenv(field, raising=False)
     monkeypatch.chdir(tmp_path / "server/src")
     module = runpy.run_path(str(script))
-    env_file.write_text("ASR_BASE_URL=https://changed.example\n", encoding="utf-8")
+    env_file.write_text("DASHSCOPE_API_KEY=changed-key\n", encoding="utf-8")
     respond(asr_http, *asr_responses)
     assert module["transcribe"]("https://audio.example/tts.wav") == asr_responses[-1]
     request = asr_http.call_args_list[0].args[0]
     source = "environment" if environment_override else "file"
-    assert (
-        str(request.url)
-        == f"https://{source}.example/api/v1/services/audio/asr/transcription"
+    assert str(request.url) == (
+        "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription"
     )
     assert request.headers["Authorization"] == f"Bearer {source}-key"
 
@@ -152,7 +149,7 @@ def test_config_is_loaded_automatically_once(
 def test_installed_package_loads_dotenv_from_working_directory(
     asr, asr_http, asr_responses, tmp_path, monkeypatch, environment_override
 ):
-    """安装目录没有源码 .env 时自动读取工作目录配置，并保持环境变量优先。"""
+    """安装后从工作目录加载密钥，环境优先且遗留地址配置不影响北京端点。"""
     script = tmp_path / "venv/lib/python3.12/site-packages/server/asr/asr.py"
     script.parent.mkdir(parents=True)
     script.write_text(Path(asr.__file__).read_text(encoding="utf-8"), encoding="utf-8")
@@ -176,22 +173,10 @@ def test_installed_package_loads_dotenv_from_working_directory(
     assert module["transcribe"]("https://audio.example/tts.wav") == asr_responses[-1]
     request = asr_http.call_args_list[0].args[0]
     source = "environment" if environment_override else "cwd"
-    assert (
-        str(request.url)
-        == f"https://{source}.example/api/v1/services/audio/asr/transcription"
+    assert str(request.url) == (
+        "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription"
     )
     assert request.headers["Authorization"] == f"Bearer {source}-key"
-
-
-@pytest.mark.parametrize(
-    "base", ["http://example.com/api/v1", "https://", "https://user@example.com/api/v1"]
-)
-def test_invalid_base_url_fails_before_network(asr, asr_env, asr_http, base):
-    """拒绝向明文、缺少主机或包含用户信息的服务地址发送密钥。"""
-    asr_env.asr_base_url = base
-    with pytest.raises(ValueError, match="HTTPS"):
-        asr.transcribe("https://audio.example/tts.wav")
-    asr_http.assert_not_called()
 
 
 @pytest.mark.parametrize("status", ["FAILED", "CANCELED", "UNKNOWN"])

@@ -53,7 +53,8 @@ ASR 是独立的 Python 函数和命令行入口，尚未接入 FastAPI 路由�
 cp .env.example .env
 ```
 
-填写 `DASHSCOPE_API_KEY` 和 `ASR_BASE_URL`，地域需一致。真实 `.env` 已被 Git 忽略。
+填写北京地域的 `DASHSCOPE_API_KEY`；服务地址在 ASR 模块中固定为
+`https://dashscope.aliyuncs.com/api/v1`。真实 `.env` 已被 Git 忽略。
 模块加载时自动读取一次配置，优先使用源码目录的 `server/.env`；该文件不存在时
 回退到当前工作目录的 `.env`，支持安装后的包。环境变量优先于文件，修改配置后需重启进程。
 

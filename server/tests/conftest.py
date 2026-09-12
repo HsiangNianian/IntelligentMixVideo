@@ -31,11 +31,7 @@ def asr(mocker):
 @pytest.fixture
 def asr_env(asr, monkeypatch):
     """为每个用例注入假配置，禁止从文件读取真实凭证。"""
-    settings = asr.ASRSettings(
-        _env_file=None,
-        asr_base_url="https://dashscope.aliyuncs.com/api/v1",
-        dashscope_api_key="test-key",
-    )
+    settings = asr.ASRSettings(_env_file=None, dashscope_api_key="test-key")
     monkeypatch.setattr(asr, "settings", settings)
     return settings
 

@@ -24,7 +24,6 @@ class ASRSettings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
-    asr_base_url: str = ""
     dashscope_api_key: SecretStr = SecretStr("")
 
 
@@ -69,9 +68,8 @@ def transcribe(audio_url, wait_seconds=1800):
     api_key = settings.dashscope_api_key.get_secret_value().strip()
     if not api_key:
         raise ValueError("请在 .env 或环境变量中设置 DASHSCOPE_API_KEY")
-    base = settings.asr_base_url.strip().rstrip("/")
-    if not base:
-        raise ValueError("请在 .env 或环境变量中设置 ASR_BASE_URL")
+    # 固定使用北京地域的 Fun-ASR 服务。
+    base = "https://dashscope.aliyuncs.com/api/v1"
     auth = {"Authorization": f"Bearer {api_key}"}
     submitted = request_json(
         f"{base}/services/audio/asr/transcription",
