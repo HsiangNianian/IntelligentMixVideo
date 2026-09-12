@@ -18,12 +18,12 @@ Structure
 ---------
 
 - `client/`：Rust + Tauri 2 + React + TypeScript 桌面客户端，使用 Tailwind CSS 4 和 shadcn/ui。
-- `server/`：Python + FastAPI 服务端，提供首页和用户路由示例。
+- `server/`：Python + FastAPI + MySQL 服务端，提供模板持久化 API，以及首页和用户路由示例。
 
 服务端运行
 ----------
 
-安装 Python 3.12+ 和 uv，然后执行：
+安装 Python 3.12+、uv 和 MySQL，启动 MySQL 并按 [服务端说明](server/README.md) 填写 `server/.env`，然后执行以下命令；后端启动时会自动创建缺失的数据库：
 
 ```sh
 cd server
@@ -31,8 +31,7 @@ uv run server
 ```
 
 默认监听 http://127.0.0.1:8000，API 文档位于 http://127.0.0.1:8000/docs。
-仓库根目录使用 `uv run --project server server`。路由仍返回示例数据，详情见 [server/README.md](server/README.md)。
-服务端在项目配置中将官方 PyPI 设为默认依赖索引，与 `server/uv.lock` 的来源保持一致，避免本机默认镜像同步滞后导致版本无法解析。
+仓库根目录使用 `uv run --project server server`。模板 API 统一使用 `/template` 前缀，POST 通过可选 `template_id` 区分创建和完整更新；详情见 [server/README.md](server/README.md)。
 
 客户端运行
 ----------
@@ -51,7 +50,11 @@ bun install --frozen-lockfile
 bun run tauri dev
 ```
 
-首页显示本机当前日期和时间，每秒更新，组件位于 `client/src/components/CurrentTime.tsx`。
+首页提供模板创建、选择、完整编辑、保存、重命名、另存为和删除，切换前保护未保存修改。
+模板功能本次以 `bun run dev` 启动后在 `http://localhost:1420` 使用，预览沿用阿里云 SDK 5.2.2。
+示例视频可在 `client/.env` 中通过 `VITE_PREVIEW_VIDEO_URL` 配置，修改后重启前端；详见 [客户端说明](client/README.md#示例视频配置)。
+客户端 API 地址通过 `client/.env` 中的 `VITE_API_URL` 配置，未配置或留空时默认 `http://localhost:8000`。
+端口冲突时可按服务端说明改为 8010，并同步设置 `VITE_API_URL=http://localhost:8010`。模板库共享，不迁移旧项目数据。
 客户端按页面、业务组件、基础 UI 和共享工具分层；结构见 [client/README.md](client/README.md)，
 最小改动与源码注释要求见 [AGENTS.md](AGENTS.md)。
 

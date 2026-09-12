@@ -11,10 +11,13 @@ steps, expected behavior, actual behavior, and relevant logs. Remove credentials
 and personal data from logs. Discuss substantial features or architectural changes
 in an issue before implementing them.
 
-The current application is a minimal desktop client displaying local date and time.
+The current client provides a modular template editor with a localhost SDK preview.
 The long-term roadmap does not imply that cloud editing or agent features already
-exist. The Python server provides a minimal FastAPI application with example user
-routes and no user storage. Run `uv run server` from `server/` to start the API.
+exist. The Python server provides MySQL-backed template APIs and example user
+routes with no user storage. Start MySQL and configure `server/.env` as described
+in `server/README.md`, then run `uv run server` from `server/`. Startup creates
+the configured database if it is missing; the database account needs permission
+to create it.
 
 ## Development Setup
 

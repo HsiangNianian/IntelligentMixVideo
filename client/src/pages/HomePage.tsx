@@ -1,11 +1,20 @@
-/** 首页布局将当前时间组件居中；页面不持有计时器或基础 UI 样式逻辑。 */
-import CurrentTime from "@/components/CurrentTime";
+/** 首页提供模板工作区布局；模板状态、通信和预览分别由功能模块管理。 */
+import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
 
-/** 用响应式留白承载首页当前唯一的业务组件。 */
+/** 模板管理入口使用响应式布局，小屏幕将编辑与预览上下排列。 */
 export default function HomePage() {
   return (
-    <main className="grid min-h-svh place-items-center p-6">
-      <CurrentTime />
+    <main className="mx-auto max-w-7xl space-y-7 px-4 py-8 sm:px-6">
+      <header className="space-y-2">
+        <p className="text-xs font-medium tracking-widest text-muted-foreground">
+          INTELLIGENT MIX VIDEO
+        </p>
+        <h1 className="text-3xl font-semibold tracking-tight">特效模板</h1>
+        <p className="text-sm text-muted-foreground">
+          组合文字与画面效果，保存为可重复使用的模板。
+        </p>
+      </header>
+      <TemplateWorkspace />
     </main>
   );
 }
