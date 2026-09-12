@@ -1,24 +1,64 @@
+# 按变更范围调度检查；PR 负责审查提交，默认分支负责集成后的完整打包。
 name: Validate project
 
 on:
   push:
     branches: ["**"]
-    paths: [".github/**", "client/**", "server/**"]
   pull_request:
-    paths: [".github/**", "client/**", "server/**"]
   workflow_dispatch:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
-  group: validation-${{ github.workflow }}-${{ github.ref }}
+  group: validation-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  release-checks:
-    name: Release preflight
+  scope:
+    name: Plan checks
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.plan.outputs.run }}
+      hygiene: ${{ steps.plan.outputs.hygiene }}
+      client: ${{ steps.plan.outputs.client }}
+      native: ${{ steps.plan.outputs.native }}
+      server: ${{ steps.plan.outputs.server }}
+      tooling: ${{ steps.plan.outputs.tooling }}
+      mode: ${{ steps.plan.outputs.mode }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/github-script@v8
+        id: plan
+        with:
+          script: |
+            const { planCi } = await import(`${process.env.GITHUB_WORKSPACE}/.github/scripts/ci-scope.mjs`);
+            const plan = await planCi(github, context);
+            for (const [key, value] of Object.entries(plan)) core.setOutput(key, value);
+            await core.summary.addHeading('CI plan').addCodeBlock(JSON.stringify(plan, null, 2), 'json').write();
+
+  hygiene:
+    name: Repository checks
+    needs: scope
+    if: needs.scope.outputs.hygiene == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+      # PR 的同类检查由 pre-commit.ci 承担，避免再运行一遍。
+      - run: uvx pre-commit run --all-files
+
+  tooling:
+    name: Release preflight
+    needs: scope
+    if: needs.scope.outputs.tooling == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
       - name: Lint all workflows
@@ -32,13 +72,68 @@ jobs:
       - name: Verify version injection with real project files
         run: bun .github/scripts/release-smoke.mjs
 
+  client:
+    name: Frontend checks
+    needs: scope
+    if: needs.scope.outputs.client == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: client/package.json
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-${{ hashFiles('client/bun.lock', 'client/package.json') }}
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+
   server:
     name: Build Python package
+    needs: scope
+    if: needs.scope.outputs.server == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: '3.12'
+          enable-cache: true
+          cache-dependency-glob: server/uv.lock
       - name: Test API routes
-        run: uv run --locked --project server python -m unittest discover -s server/tests -v
+        run: uv run --locked --project server pytest server/tests -v
       - name: Build server distributions
         run: uv build --project server --out-dir server/dist
+
+  desktop:
+    name: Desktop
+    needs: [scope, client, tooling]
+    if: >-
+      !cancelled() && needs.scope.outputs.native == 'true' &&
+      needs.client.result == 'success' &&
+      (needs.tooling.result == 'success' || needs.tooling.result == 'skipped')
+    uses: ./.github/workflows/client-build.yml
+    with:
+      build-mode: ${{ needs.scope.outputs.mode }}
+
+  result:
+    name: ${{ github.event_name == 'pull_request' && 'CI result' || 'Push result' }}
+    needs: [scope, hygiene, tooling, client, server, desktop]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/github-script@v8
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        with:
+          script: |
+            const { assertCiResults } = await import(`${process.env.GITHUB_WORKSPACE}/.github/scripts/ci-scope.mjs`);
+            assertCiResults(JSON.parse(process.env.NEEDS));

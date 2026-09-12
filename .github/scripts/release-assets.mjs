@@ -1,9 +1,13 @@
+/** 生成七个发布附件的清单，并按 Release ID 校验远端上传完整性后公开草稿。 */
+
 import assert from "node:assert/strict";
 import { readdirSync, statSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
+/** 要求每个平台的安装包唯一且非空，返回名称和大小供上传后核对。 */
 export function collectAssets(root = "release-assets", changelog = "CHANGELOG.md") {
+  // 平台与必需安装包的映射须与构建矩阵一致。
   const platforms = {
     "linux-x64": [".deb", ".AppImage"],
     "windows-x64": [".exe", ".msi"],
@@ -11,6 +15,7 @@ export function collectAssets(root = "release-assets", changelog = "CHANGELOG.md
     "macos-x64": [".dmg"],
   };
   const files = [];
+  /** 递归收集普通文件；不跟随符号链接。 */
   function walk(dir) {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name);
@@ -36,6 +41,7 @@ export function collectAssets(root = "release-assets", changelog = "CHANGELOG.md
   return assets;
 }
 
+/** 校验草稿归属和全部附件；已公开版本直接返回，缺失附件时禁止公开。 */
 export async function publishDraft(github, repo, tag, releaseId, expected = JSON.parse(readFileSync("release-assets.json", "utf8"))) {
   assert(Number.isSafeInteger(releaseId) && releaseId > 0, "Missing draft release ID");
   // The tag lookup endpoint does not return unpublished drafts.

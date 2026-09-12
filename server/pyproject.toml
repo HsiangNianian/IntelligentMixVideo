@@ -26,3 +26,18 @@ build-backend = "uv_build"
 
 [tool.uv.build-backend]
 module-name = "server"
+
+# 在项目根目录运行 pytest 时，仅发现服务端测试；包由 uv 安装，不修改 sys.path。
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--import-mode=importlib --strict-markers"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true

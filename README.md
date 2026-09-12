@@ -17,7 +17,7 @@ version 3 only (`AGPL-3.0-only`). See [LICENSE.md](LICENSE.md) for the full term
 Structure
 ---------
 
-- `client/`：Rust + Tauri 2 + React + TypeScript 桌面客户端。
+- `client/`：Rust + Tauri 2 + React + TypeScript 桌面客户端，使用 Tailwind CSS 4 和 shadcn/ui。
 - `server/`：Python + FastAPI 服务端，提供首页和用户路由示例。
 
 服务端运行
@@ -32,6 +32,7 @@ uv run server
 
 默认监听 http://127.0.0.1:8000，API 文档位于 http://127.0.0.1:8000/docs。
 仓库根目录使用 `uv run --project server server`。路由仍返回示例数据，详情见 [server/README.md](server/README.md)。
+服务端在项目配置中将官方 PyPI 设为默认依赖索引，与 `server/uv.lock` 的来源保持一致，避免本机默认镜像同步滞后导致版本无法解析。
 
 客户端运行
 ----------
@@ -51,6 +52,8 @@ bun run tauri dev
 ```
 
 首页显示本机当前日期和时间，每秒更新，组件位于 `client/src/components/CurrentTime.tsx`。
+客户端按页面、业务组件、基础 UI 和共享工具分层；结构见 [client/README.md](client/README.md)，
+最小改动与源码注释要求见 [AGENTS.md](AGENTS.md)。
 
 ```sh
 # 编译前端（包含 TypeScript 检查）
@@ -65,7 +68,19 @@ bun run tauri build
 ---------
 
 `.github/workflows/client-build.yml` 参考 [DropOut 的平台矩阵、缓存及产物上传配置](https://github.com/HydroRoll-Team/DropOut/blob/main/.github/workflows/test.yml)。
-修改客户端或该工作流的 push / PR 会自动构建，也可在 Actions 页面手动触发。
+push / PR 统一由 `validation.yml` 按改动范围调度，避免每次提交重复生成安装包。
+
+| 事件 | 检查与构建 |
+| --- | --- |
+| 开发分支 push | 按改动检查；同一提交已有 PR 时跳过重复任务 |
+| PR | 前端构建、服务端 pytest / 包构建按需执行；涉及 Rust/Tauri、客户端依赖或 CI 时做四平台原生编译检查，不打包 |
+| 默认分支 push | 按需验证集成结果；客户端或 CI 改动生成四平台安装包 |
+| 正式 tag | 完整四平台打包、附件校验及 Release 发布 |
+| 手动运行 | Validate project 执行全部检查；Build client 生成全部安装包 |
+
+纯前端改动不跑 Rust 矩阵，纯服务端改动不构建客户端，纯文档 PR 由 pre-commit.ci 检查。
+PR 的统一结果是 `CI result`，分支保护建议同时要求该检查和 pre-commit.ci；不建议要求会按路径跳过的单个平台 job。
+`cargo check` 验证原生代码与依赖的编译，不替代完整链接、安装器构建和安装验证。
 
 | 平台 | 架构 | 安装包 |
 | --- | --- | --- |
@@ -76,9 +91,9 @@ bun run tauri build
 从 Actions 对应运行的 Artifacts 下载产物，保留 14 天。CI 使用依赖锁文件，不需要额外配置发布密钥。
 当前安装包未配置代码签名或 macOS 公证；正式分发时需另行配置。
 
-`.github/workflows/validation.yml` 在相关 push / PR 中检查全部工作流、运行发布脚本及失败恢复测试，
-并在临时副本中验证版本注入、Bun 冻结安装和 Cargo 锁文件。它也通过 `uv build --project server`
-验证 Python 包可构建，并运行 API 路由测试。
+涉及 CI、原生代码或客户端依赖时，验证流程运行 actionlint、CI 调度与发布回归测试，
+并在临时副本中验证版本注入和锁文件。服务端改动运行 pytest 和 `uv build --project server`。
+同一分支的新提交会取消旧检查；PR 与 push 使用独立并发组，避免相互取消。
 
 提交前检查
 ----------
