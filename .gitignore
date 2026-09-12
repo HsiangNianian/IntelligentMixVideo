@@ -7,7 +7,5 @@ target/
 dist/
 node_modules/
 
-# 本地数据库凭据与环境配置不入库，示例配置除外。
+# 本地模型密钥
 .env
-.env.*
-!.env.example
