@@ -1,9 +1,7 @@
 IntelligentMixVideo
 ===================
 
-> 面向智能混剪的桌面客户端与服务端。目前已实现客户端本机时间展示、服务端文案切片接口及示例路由。
-
-长期规划包括阿里 IMS 云剪辑、自定义模板、素材召回、Agent 编排与 Remotion 特效生成；这些功能尚未实现。
+> 基于阿里 IMS 云剪辑的智能混剪 Agent 系统，支持自定义模板、服务端文本切片、素材召回、Agent 自动编写编排与自动编写 Remotion 特效等功能。
 
 ## Contributing
 
@@ -20,7 +18,7 @@ Structure
 ---------
 
 - `client/`：Rust + Tauri 2 + React + TypeScript 桌面客户端，使用 Tailwind CSS 4 和 shadcn/ui。
-- `server/`：Python + FastAPI 服务端，提供文案切片接口与示例路由。
+- `server/`：Python + FastAPI 服务端，提供首页和用户路由示例。
 
 服务端运行
 ----------
@@ -33,13 +31,9 @@ uv run server
 ```
 
 默认监听 http://127.0.0.1:8000，API 文档位于 http://127.0.0.1:8000/docs。
-仓库根目录使用 `uv run --project server server`。文案切片接口需要配置模型服务，示例路由仍返回示例数据，详情见 [server/README.md](server/README.md)。
-使用模型前，将 `server/.env.example` 复制为 `server/.env` 并填写模型地址、模型名和密钥。
-从仓库根目录加载该配置时，使用 `uv run --project server --env-file server/.env server`；`--project` 本身不切换工作目录。
-`POST /segmentations` 接收正确文案和已有的 ASR 词级时间轴，返回带关键词与时间区间的片段；服务端不负责生成 TTS 音频或调用 ASR。
-对齐使用支持替换的字符级波前算法；`IMV_SEGMENT_MAX_ALIGNMENT_WORK` 默认 250000，限制单次对齐计算工作量，替代旧的矩阵面积配置。
-模型传输重试统一由 SDK 执行，`IMV_LLM_MAX_RETRIES` 默认 1，设为 0 禁用；关键词按原文逐字匹配。
-服务端在项目配置中将官方 PyPI 设为默认依赖索引，与 `server/uv.lock` 的来源保持一致，避免本机默认镜像同步滞后导致版本无法解析。
+仓库根目录使用 `uv run --project server server`。路由仍返回示例数据，详情见 [server/README.md](server/README.md)。
+
+服务端另提供 `POST /segmentations`，将文案与已有 ASR 词级时间轴切为带时间和关键词的片段，配置及请求示例见 [server/README.md](server/README.md)。
 
 客户端运行
 ----------
@@ -119,16 +113,6 @@ uvx pre-commit install
 ```
 
 Bun / Rust 构建和发布脚本验证仍由 GitHub Actions 执行。
-服务端改动在仓库根目录运行：
-
-```sh
-uv run --locked --project server pytest server/tests -v
-uv build --project server --out-dir server/dist
-git diff --check
-```
-
-自动测试使用固定样本、合成输入和模型替身，不访问真实模型服务。真实 LLM 验证需单独执行。
-纯文档修改仅检查内容与实现一致及 diff 格式，无需重跑构建。
 
 Tag 发版
 --------

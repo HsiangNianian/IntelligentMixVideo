@@ -6,4 +6,6 @@ target/
 .vscode/
 dist/
 node_modules/
+
+# 本地模型密钥
 .env

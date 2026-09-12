@@ -8,10 +8,11 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "aiohttp>=3.14.3",
     "fastapi>=0.141.1",
+    "httpx>=0.28.1",
     "openai>=3.13.0",
     "pydantic>=2.13.5",
-    "pydantic-settings>=2.10,<3",
     "python-dotenv>=1.2.3",
     "uvicorn>=0.52.4",
 ]
@@ -33,11 +34,5 @@ addopts = "--import-mode=importlib --strict-markers"
 
 [dependency-groups]
 dev = [
-    "httpx>=0.28.1",
     "pytest>=9.1.1",
 ]
-
-[[tool.uv.index]]
-name = "pypi"
-url = "https://pypi.org/simple"
-default = true

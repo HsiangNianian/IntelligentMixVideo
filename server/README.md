@@ -1,6 +1,6 @@
 # IntelligentMixVideo API
 
-需要 Python 3.12+ 和 uv。在本目录执行即可同步依赖并启动 API（严格验证锁文件时添加 `--locked`）：
+需要 Python 3.12+ 和 uv。在本目录执行即可安装锁定依赖并启动 API：
 
 ```sh
 uv run server
@@ -10,140 +10,53 @@ uv run server
 按 Ctrl+C 停止服务。仓库根目录可执行 `uv run --project server server`。
 也支持 `uv run python -m server`。
 
+现有接口为示例数据，尚未接入用户存储：
+
+- `GET /`：首页消息。
+- `GET /users/`：用户列表示例。
+- `GET /users/{user_id}`：返回整数 ID，非整数返回 422。
+
 需要修改监听地址、端口或启用开发热重载时：
 
 ```sh
 uv run uvicorn server.app:app --host 127.0.0.1 --port 8001 --reload --reload-dir src
 ```
 
-## 接口
-
-- `GET /`：首页消息。
-- `GET /users/`、`GET /users/{user_id}`：用户路由示例，尚未接入用户存储。
-- `POST /segmentations`：文案切片，需要先配置模型服务。
-
-### 文案切片
-
-把**正确口播文案**与 **ASR 词级时间轴**对齐，切分为可用于素材召回的片段。
-
-请求示例（时间戳为演示数据）：
-
-```json
-{
-  "script": "刚才我家人还问我，家里不是还有鸡蛋吗？",
-  "asr_result": {
-    "sentences": [{
-      "words": [
-        { "text": "刚才我家人还问我", "begin_time": 160, "end_time": 1200 },
-        { "text": "家里不是还有鸡蛋吗", "begin_time": 1200, "end_time": 2400 }
-      ]
-    }]
-  }
-}
-```
-
-`asr_result` 兼容阿里云 fun-asr 的原始响应结构（`properties` + `transcripts[0]`），
-也可直接传精简结构 `{"sentences": [{"words": [...]}]}`。
-
-响应示例（关键词由模型生成，实际结果可能不同）：
-
-```json
-{
-  "segments": [
-    {
-      "segment_id": "seg_001",
-      "text": "刚才我家人还问我，家里不是还有鸡蛋吗？",
-      "start_time_ms": 160,
-      "end_time_ms": 2400,
-      "keywords": [{ "text": "鸡蛋", "start": 15, "end": 17 }]
-    }
-  ],
-  "warnings": [],
-  "trace": {
-    "matched_chars": 17, "substitution_chars": 0,
-    "script_extra_chars": 0, "asr_extra_chars": 0, "edit_cost": 0,
-    "repair_block_count": 0, "merge_count": 0, "split_count": 0,
-    "segment_count": 1, "keyword_rejected_count": 0
-  }
-}
-```
-
-`keywords[].start/end` 是片段文本内的字符下标，满足 `text[start:end] == keyword.text`。
-关键词按原文精确查找，区分大小写与全角、半角。
-片段文本拼接后须等于输入文案，时间区间合法且不重叠。时长上下限由合并、切分尽力满足；
-无法满足时返回 `segment_duration_out_of_range` 告警，过长停顿无法并入时返回 `segment_gap_preserved` 告警。
-本接口消费已有的 ASR 结果，不生成 TTS 音频或调用 ASR。
-
-职责边界：模型只给出分句切点编号与关键词候选，不产出任何时间数字；
-逐字对齐、时间继承与插值、时长约束和关键词校验全部由确定性代码完成。
-对齐采用支持替换的字符级波前算法：先剥离公共前后缀，再按编辑次数扩展搜索，
-每条对角线只保留最远位置，连续相同字符直接向前扫描。替换、插入、删除的代价均为 1。
-一致部分与替换字继承 ASR 时间，插入、删除与相邻字合并为「修复块」，
-在块内按文案字数均分时间。重复文本可能选择与旧 DP 不同的最优路径；
-候选到达位置相同时依次优先替换、文案多字、ASR 多字。
-
-不再按文本长度乘积拒绝输入。工作预算覆盖公共前后缀字符比较、核心候选状态、
-核心字符比较及纯单侧剩余字符，每项计一个单位，超限立即终止，不切换备用算法。
-回溯保留 O(D²) 状态（D 为最小编辑次数），也受工作预算限制；输出操作另占线性空间。
-
-错误码：`asr_timeline_missing`（缺词级时间戳）、`asr_transcript_too_long`（转写超长）、
-`alignment_input_too_large`（对齐工作预算超限）、`script_asr_alignment_failed`（文案与音频不匹配），
-以上均为 422；未配置模型为 502 `llm_provider_error`。
-
-## 配置
-
-将 `.env.example` 复制为 `.env` 并填写模型配置，变量使用 `IMV_` 前缀。
-配置按当前工作目录读取 `.env`；在本目录启动时读取 `server/.env`。
-`uv run --project server server` 不切换工作目录；若从仓库根目录加载该文件，执行：
-
-```sh
-uv run --project server --env-file server/.env server
-```
-
-| 环境变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `IMV_LLM_BASE_URL` / `IMV_LLM_MODEL` / `IMV_LLM_API_KEY` | 空 | OpenAI 兼容模型服务，三项缺一不可 |
-| `IMV_ALLOW_INSECURE_LLM_HTTP` | `false` | 远程 HTTP 模型地址需显式开启 |
-| `IMV_LLM_TIMEOUT_SECONDS` / `IMV_LLM_MAX_RETRIES` | `120` / `1` | 单次调用超时与 SDK 重试次数；设为 0 禁用重试 |
-| `IMV_SEGMENT_MIN_DURATION_MS` / `IMV_SEGMENT_MAX_DURATION_MS` | `1200` / `6000` | 片段时长上下限（毫秒），代码据此合并与切分 |
-| `IMV_SEGMENT_MAX_KEYWORDS` | `5` | 每段关键词数量上限 |
-| `IMV_SEGMENT_KEYWORD_MAX_LENGTH` | `12` | 单个关键词字数上限，不设下限 |
-| `IMV_SEGMENT_MAX_ALIGNMENT_WORK` | `250000` | 对齐工作预算，超限返回 422 |
-| `IMV_SEGMENT_MAX_ASR_CHARS` / `IMV_SEGMENT_MAX_ASR_WORDS` | `20000` / `20000` | ASR 字符与词数上限，超限返回 422 |
-
-旧配置 `IMV_SEGMENT_MAX_ALIGNMENT_CELLS` 已移除且不再生效；请改用
-`IMV_SEGMENT_MAX_ALIGNMENT_WORK`。新旧预算单位不同，不能直接换名沿用数值。
-
-未配置模型时 `/segmentations` 返回 502 `llm_provider_error`，不静默降级。
-传输重试统一由 OpenAI SDK 执行（连接错误、超时、408/409/429 与 5xx），
-规划器不再叠加重试；默认每次模型调用最多尝试两次，JSON 解析失败不重试。
-
-## 验证
+验证命令（在本目录执行）：
 
 ```sh
 uv run --locked pytest -v
 uv build --out-dir dist
 ```
 
-`tests/fixtures/fun_asr_egg_sample.json` 是真实 fun-asr 返回的固定样本，
-测试使用该样本、合成输入及本地 HTTP 替身离线运行，不访问外部服务。
-
 维护 `uv.lock`，CI 使用 `--locked` 检查依赖与配置一致。
 
-测试统一放在 `tests/`，使用 pytest 原生函数、assert、raises、参数化和 fixture；
-模拟依赖继续使用标准库 `unittest.mock`，不需要 pytest-mock。`conftest.py` 管理客户端夹具，隔离外部 `IMV_` 环境变量、默认 `.env` 和配置缓存。
-连接失败与超时使用真实 SDK 加本地 HTTP 替身验证 502/504，不访问外部模型。
-`httpx` 仅用于测试，和 pytest 一起维护为开发依赖；运行期 `.env` 解析保留 `python-dotenv`。
-
+测试统一放在 `tests/`，使用 pytest；`conftest.py` 管理客户端夹具，
 `test_api.py` 覆盖路由契约、边界和错误请求，`test_entrypoint.py` 覆盖两种启动入口。
 每个新 feature 都必须补齐正常、异常及适用边界的测试脚本，详细规则见根目录 AGENTS.md。
 
-项目在 `pyproject.toml` 中将官方 PyPI 设为默认索引，与锁文件来源保持一致。
-第三方镜像可能尚未同步所需版本，导致 `uv sync` 和 `uv sync --locked` 报
-“No solution found”。本机如另有索引覆盖配置，可用以下命令验证：
 
-```sh
-uv sync --locked --default-index https://pypi.org/simple
+## 文案切片
+
+`POST /segmentations` 的实现集中在 `sub_api/segmentation.py` 的单个函数。
+输入正确文案与已有 ASR 词级时间轴（也支持 `transcripts[0]` 外层和 `begin_time/end_time` 字段）：
+
+```json
+{"script":"你好世界。","asr_result":{"sentences":[{"words":[{"text":"你好世界","begin_time_ms":0,"end_time_ms":2000}]}]}}
 ```
 
-先检查实际使用的索引及镜像同步情况，不要仅为绕过镜像缺失而降低依赖版本或删除锁文件。
+返回 `segments`（文本、起止毫秒、带下标的关键词）、`warnings` 和 `trace`。
+字符级波前对齐保留替换代价 1，增删在局部修复块中插值；模型只返回语义切点和关键词。
+文本完整覆盖、时间不重叠、关键词精确回溯是硬约束；时长无法满足时告警。
+模型失败直接报告，不调用 TTS/ASR，也不提供备用算法。
+输入文案、ASR 原始字符、词数及句数分别限制为 20000；词时间必须有限、非负、递增且不重叠。
+无效输入/超预算返回 422，模型失败或配置无效返回 502，超时返回 504，错误消息位于 `error.message`。
+
+复制 `.env.example` 到 `.env` 并填写模型配置；从 `server/` 启动以读取该文件。
+进程环境变量优先于当前工作目录 `.env`，代码不修改全局环境、不缓存配置。
+模型地址、Key、模型名必填；默认超时 120 秒、SDK 重试一次；远程 HTTP 默认禁止。
+默认片段时长 1200～6000 ms，关键词最多 5 个、每个最多 12 字，工作预算 250000。
+其余变量见样例。SDK 客户端在成功或异常返回前关闭。
+
+切片回归测试：`uv run --locked pytest tests/test_segmentation.py -v`。
+测试使用小型合成 ASR 和 SDK 替身，不访问真实模型；不提交大型样本或测试专用依赖。

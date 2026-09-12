@@ -14,12 +14,7 @@ in an issue before implementing them.
 The current application is a minimal desktop client displaying local date and time.
 The long-term roadmap does not imply that cloud editing or agent features already
 exist. The Python server provides a minimal FastAPI application with example user
-routes, a `POST /segmentations` API, and no user storage. Segmentation aligns a
-script with an existing ASR word timeline and uses an LLM for semantic boundaries
-and keyword candidates. Run `uv run server` from `server/` to start the API.
-Copy `server/.env.example` to `server/.env` and fill in the model configuration
-before using segmentation. From the repository root, load that file explicitly
-with `uv run --project server --env-file server/.env server`.
+routes and no user storage. Run `uv run server` from `server/` to start the API.
 
 ## Development Setup
 
