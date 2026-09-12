@@ -9,10 +9,11 @@
 - `client/src/` 存放 React 前端；`client/src-tauri/` 存放 Rust 桌面入口、Tauri 配置和图标。
 - `server/` 使用 Python + FastAPI，当前提供首页、用户路由示例与 `POST /segmentations` 文案切片接口，尚未接入用户存储。包内导入使用相对路径，向应用注册 `APIRouter` 实例；业务实现放在 `sub_api/<域>/` 下，模型调用统一走 `llm/client.py`。
 - 在 `server/` 下执行 `uv run server` 启动 Uvicorn，默认监听 `127.0.0.1:8000`；仓库根目录使用 `uv run --project server server`。维护 `server/uv.lock`，CI 使用 `--locked` 验证依赖。
-- 服务端配置使用 `IMV_` 前缀，从 `server/.env` 读取；`.env` 不入库，样例见 `server/.env.example`。
+- 服务端配置使用 `IMV_` 前缀，`Settings` 按当前工作目录读取 `.env`；在 `server/` 启动时读取 `server/.env`。仓库根目录需使用 `uv run --project server --env-file server/.env server` 显式加载该文件，`--project` 不切换工作目录。`.env` 不入库，样例见 `server/.env.example`。
 - 模型负责语义切点与关键词候选，对齐、时间投射、时长约束与关键词校验全部由确定性代码完成；不实现模型失败的兜底路径。
-- 文案与 TTS → ASR 文本使用字符级波前对齐，替换、插入、删除均为单位代价；等价最优路径不要求复现旧 DP，但须验证时间投射。`IMV_SEGMENT_MAX_ALIGNMENT_WORK` 默认 250000，限制候选状态、字符比较及单侧字符工作量，替代已移除的 `IMV_SEGMENT_MAX_ALIGNMENT_CELLS`；保留文本长度与差异下界检查，超预算返回 422，不切换备用算法。
+- 切片接口接收正确文案与已有 ASR 词级时间轴，不生成 TTS 音频或调用 ASR。两侧文本使用字符级波前对齐，替换、插入、删除均为单位代价；等价最优路径不要求复现旧 DP，但须验证时间投射。`IMV_SEGMENT_MAX_ALIGNMENT_WORK` 默认 250000，限制候选状态、字符比较及单侧字符工作量，替代已移除的 `IMV_SEGMENT_MAX_ALIGNMENT_CELLS`；保留文本长度与差异下界检查，超预算返回 422，不切换备用算法。
 - 模型传输重试统一由 OpenAI SDK 执行，`IMV_LLM_MAX_RETRIES` 默认 1，设为 0 禁用；规划器不叠加重试，JSON 解析失败不重试。关键词按原文逐字匹配，区分大小写与全角、半角。
+- 片段文本须完整覆盖输入文案，时间区间合法且不重叠，关键词须能按下标回溯原文。时长上下限由合并、切分尽力满足；无法满足时返回告警，不承诺所有输入均能满足时长范围。
 - 当前客户端保持最小可运行结构。首页 `client/src/App.tsx` 引用独立的 `client/src/components/CurrentTime.tsx` 组件，按本机时区显示日期和时间，每秒刷新。
 - 时间组件需在卸载时清理定时器。新增界面功能时遵循组件化结构，不把所有逻辑堆到 App 首页。
 - 项目长期方向见 README；其中提到的云剪辑、Agent、素材召回等功能不代表已经实现，也不构成自动扩展当前任务范围的要求。
@@ -32,7 +33,8 @@ bun run tauri build
 - `bun run build` 包含 TypeScript 检查和前端生产构建，不等同于桌面程序构建成功。
 - 本地桌面安装包默认输出到 `client/src-tauri/target/release/bundle/`；指定 target 时位于对应 target 子目录。
 - 保留并维护 `client/bun.lock` 和 `client/src-tauri/Cargo.lock`。CI 使用 `bun install --frozen-lockfile` 和 Cargo `--locked`。
-- 根据改动范围验证：前端改动运行前端构建；Rust 改动检查格式并验证相关编译；发布脚本改动运行其测试；工作流改动使用 actionlint 检查。
+- 根据改动范围验证：前端改动运行前端构建；Rust 改动检查格式并验证相关编译；服务端改动运行 Python 单元测试，包结构或依赖变更另验证 Python 包构建；发布脚本改动运行其测试；工作流改动使用 actionlint 检查。
+- 服务端自动测试使用固定样本、合成输入和模型替身，不访问真实模型服务；真实 LLM 验证单独执行，不能将离线测试通过描述为真实模型联调通过。密钥不得写入源码、测试或报告。
 - 纯文档改动检查内容与实现一致及 diff 格式，无需重跑全部构建。
 
 以下命令在仓库根目录执行：

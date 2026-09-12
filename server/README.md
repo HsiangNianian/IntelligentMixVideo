@@ -1,6 +1,6 @@
 # IntelligentMixVideo API
 
-需要 Python 3.12+ 和 uv。在本目录执行即可安装锁定依赖并启动 API：
+需要 Python 3.12+ 和 uv。在本目录执行即可同步依赖并启动 API（严格验证锁文件时添加 `--locked`）：
 
 ```sh
 uv run server
@@ -26,19 +26,26 @@ uv run uvicorn server.app:app --host 127.0.0.1 --port 8001 --reload --reload-dir
 
 把**正确口播文案**与 **ASR 词级时间轴**对齐，切分为可用于素材召回的片段。
 
-请求：
+请求示例（时间戳为演示数据）：
 
 ```json
 {
-  "script": "正确口播文案",
-  "asr_result": { "...": "ASR 原始返回，需含词级 begin_time / end_time" }
+  "script": "刚才我家人还问我，家里不是还有鸡蛋吗？",
+  "asr_result": {
+    "sentences": [{
+      "words": [
+        { "text": "刚才我家人还问我", "begin_time": 160, "end_time": 1200 },
+        { "text": "家里不是还有鸡蛋吗", "begin_time": 1200, "end_time": 2400 }
+      ]
+    }]
+  }
 }
 ```
 
 `asr_result` 兼容阿里云 fun-asr 的原始响应结构（`properties` + `transcripts[0]`），
 也可直接传精简结构 `{"sentences": [{"words": [...]}]}`。
 
-响应：
+响应示例（关键词由模型生成，实际结果可能不同）：
 
 ```json
 {
@@ -48,21 +55,24 @@ uv run uvicorn server.app:app --host 127.0.0.1 --port 8001 --reload --reload-dir
       "text": "刚才我家人还问我，家里不是还有鸡蛋吗？",
       "start_time_ms": 160,
       "end_time_ms": 2400,
-      "keywords": [{ "text": "鸡蛋", "start": 13, "end": 15 }]
+      "keywords": [{ "text": "鸡蛋", "start": 15, "end": 17 }]
     }
   ],
   "warnings": [],
   "trace": {
-    "matched_chars": 214, "substitution_chars": 0,
+    "matched_chars": 17, "substitution_chars": 0,
     "script_extra_chars": 0, "asr_extra_chars": 0, "edit_cost": 0,
-    "repair_block_count": 0, "merge_count": 0, "split_count": 4,
-    "segment_count": 9, "keyword_rejected_count": 0
+    "repair_block_count": 0, "merge_count": 0, "split_count": 0,
+    "segment_count": 1, "keyword_rejected_count": 0
   }
 }
 ```
 
 `keywords[].start/end` 是片段文本内的字符下标，满足 `text[start:end] == keyword.text`。
 关键词按原文精确查找，区分大小写与全角、半角。
+片段文本拼接后须等于输入文案，时间区间合法且不重叠。时长上下限由合并、切分尽力满足；
+无法满足时返回 `segment_duration_out_of_range` 告警，过长停顿无法并入时返回 `segment_gap_preserved` 告警。
+本接口消费已有的 ASR 结果，不生成 TTS 音频或调用 ASR。
 
 职责边界：模型只给出分句切点编号与关键词候选，不产出任何时间数字；
 逐字对齐、时间继承与插值、时长约束和关键词校验全部由确定性代码完成。
@@ -82,7 +92,13 @@ uv run uvicorn server.app:app --host 127.0.0.1 --port 8001 --reload --reload-dir
 
 ## 配置
 
-配置从 `server/.env` 读取，变量使用 `IMV_` 前缀，样例见 `.env.example`。
+将 `.env.example` 复制为 `.env` 并填写模型配置，变量使用 `IMV_` 前缀。
+配置按当前工作目录读取 `.env`；在本目录启动时读取 `server/.env`。
+`uv run --project server server` 不切换工作目录；若从仓库根目录加载该文件，执行：
+
+```sh
+uv run --project server --env-file server/.env server
+```
 
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |

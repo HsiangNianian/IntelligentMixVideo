@@ -86,12 +86,18 @@ class SegmentationApiTests(unittest.TestCase):
         payload = load_asr_payload()
         script = broken_script(payload["transcripts"][0]["text"])
         script_chars = build_script_chars(script)
-        blocks = repair_blocks(
-            align(script_chars, build_asr_chars(AsrResult.model_validate(payload)))
+        ops = align(script_chars, build_asr_chars(AsrResult.model_validate(payload)))
+        block_chars = [
+            [op.script_index for op in ops[begin:end] if op.script_index is not None]
+            for begin, end in repair_blocks(ops)
+        ]
+        self.assertEqual(
+            ["".join(script_chars[i].char for i in indices) for indices in block_chars],
+            ["料吃", "家散养土"],
         )
         block_offsets = [
-            (script_chars[begin].index, script_chars[end - 1].index + 1)
-            for begin, end in blocks
+            (script_chars[indices[0]].index, script_chars[indices[-1]].index + 1)
+            for indices in block_chars
         ]
 
         response = self.post(script, payload)

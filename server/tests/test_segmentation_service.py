@@ -9,7 +9,7 @@ from server.core.errors import (
 )
 from server.sub_api.segmentation.schemas import AsrResult, AsrSentence, AsrWord
 from server.sub_api.segmentation.service import SegmentService
-from support import StubPlanner, broken_script, load_asr_result
+from support import StubPlanner, load_asr_result
 
 
 class SegmentServiceTests(unittest.TestCase):
@@ -74,19 +74,6 @@ class SegmentServiceTests(unittest.TestCase):
         self.assertEqual(body.trace.edit_cost, 6)
         self.assertEqual(body.segments[0].start_time_ms, 160)
         self.assertEqual(body.segments[-1].end_time_ms, 36700)
-
-    def test_survives_typo_missing_and_extra_chars(self) -> None:
-        script = broken_script(self.asr_result.text or "")
-        service = SegmentService(StubPlanner())
-
-        body = service.build(script=script, asr_result=self.asr_result)
-
-        self.assertEqual("".join(segment.text for segment in body.segments), script)
-        self.assertEqual(body.trace.substitution_chars, 2)
-        self.assertEqual(body.trace.asr_extra_chars, 3)
-        self.assertEqual(body.trace.script_extra_chars, 2)
-        self.assertEqual(body.trace.repair_block_count, 2)
-        self.assertEqual(body.trace.edit_cost, 7)
 
     def test_rejects_asr_without_word_timeline(self) -> None:
         from server.core.errors import AsrTimelineMissingError

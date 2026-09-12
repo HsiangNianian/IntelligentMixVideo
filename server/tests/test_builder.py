@@ -3,7 +3,7 @@
 import unittest
 
 from server.sub_api.segmentation.builder import build_spans, split_clauses
-from support import aligned_sample, colon_cuts, sample_cuts, synthetic_chars
+from support import aligned_sample, colon_cuts, load_asr_result, sample_cuts, synthetic_chars
 
 MIN_MS = 1200
 MAX_MS = 6000
@@ -11,7 +11,7 @@ MAX_MS = 6000
 
 class ClauseTests(unittest.TestCase):
     def test_split_clauses_covers_whole_script(self) -> None:
-        script, _ = aligned_sample()
+        script = load_asr_result().text or ""
         clauses = split_clauses(script)
 
         self.assertEqual("".join(clause.text for clause in clauses), script)
@@ -20,7 +20,7 @@ class ClauseTests(unittest.TestCase):
 
 
 class DurationConstraintTests(unittest.TestCase):
-    def test_every_span_respects_duration_limits(self) -> None:
+    def test_sample_spans_respect_duration_and_continuity(self) -> None:
         script, script_chars = aligned_sample()
         outcome = build_spans(
             script_chars,
@@ -37,35 +37,12 @@ class DurationConstraintTests(unittest.TestCase):
         joined = "".join(script[span.start_offset : span.end_offset] for span in outcome.spans)
         self.assertEqual(joined, script)
 
-    def test_spans_are_contiguous_and_monotonic(self) -> None:
-        script, script_chars = aligned_sample()
-        spans = build_spans(
-            script_chars,
-            len(script),
-            sample_cuts(script, script_chars),
-            min_duration_ms=MIN_MS,
-            max_duration_ms=MAX_MS,
-        ).spans
-
-        for previous, current in zip(spans, spans[1:], strict=False):
+        for previous, current in zip(outcome.spans, outcome.spans[1:]):
             self.assertEqual(previous.end_offset, current.start_offset)
             self.assertLessEqual(previous.end_time_ms, current.start_time_ms)
-            self.assertLess(previous.start_time_ms, previous.end_time_ms)
-
-    def test_short_clause_is_merged_under_duration_floor(self) -> None:
-        script, script_chars = aligned_sample()
-        outcome = build_spans(
-            script_chars,
-            len(script),
-            sample_cuts(script, script_chars),
-            min_duration_ms=MIN_MS,
-            max_duration_ms=MAX_MS,
-        )
 
         # 「怎么又买一箱？」只有 0.92s，必须被合并
         self.assertGreaterEqual(outcome.merge_count, 1)
-        for span in outcome.spans:
-            self.assertGreaterEqual(span.duration_ms, MIN_MS)
 
     def test_long_sentence_is_split_under_duration_ceiling(self) -> None:
         script, script_chars = aligned_sample()

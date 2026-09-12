@@ -57,9 +57,9 @@ class StubPlanner:
         return [[word for word in KEYWORD_VOCABULARY if word in text][:5] for text in texts]
 
 
-def aligned_sample(asr_result: AsrResult | None = None):
+def aligned_sample():
     """返回样本文案及其对齐后的字符时间轴。"""
-    result = asr_result or load_asr_result()
+    result = load_asr_result()
     script = result.text or ""
     script_chars = build_script_chars(script)
     asr_chars = build_asr_chars(result)
