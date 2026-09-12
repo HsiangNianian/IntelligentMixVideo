@@ -1,3 +1,5 @@
+"""提交音频 URL 到 Fun-ASR，轮询后返回原始 JSON；命令行入口将结果写入当前目录。"""
+
 import json
 import os
 import sys
@@ -10,6 +12,7 @@ from dotenv import dotenv_values
 
 
 def request_json(url, headers=None, body=None):
+    """用 GET 或携带 JSON 的 POST 请求解析结果，60 秒请求超时，退出时关闭响应。"""
     data = None if body is None else json.dumps(body).encode("utf-8")
     request = Request(url, data=data, headers=headers or {})
     with urlopen(request, timeout=60) as response:
@@ -17,7 +20,12 @@ def request_json(url, headers=None, body=None):
 
 
 def transcribe(audio_url, wait_seconds=1800, *, env_file=None):
-    """默认从仓库根目录 .env 读取地址和密钥"""
+    """从根目录 .env 读取配置（环境变量优先），返回单个音频的原始转写结果。
+
+    输出任务 ID 到 stderr；wait_seconds 是提交后的轮询预算，超时不会取消云端任务。
+    单次 HTTP 请求可能使实际等待超过轮询预算。
+    配置错误、任务失败和请求异常直接抛出，不重试提交，也不提取字词。
+    """
     parsed = urlparse(audio_url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         raise ValueError("请提供可访问的 HTTP/HTTPS 音频 URL")
@@ -58,6 +66,7 @@ def transcribe(audio_url, wait_seconds=1800, *, env_file=None):
 
 
 if __name__ == "__main__":
+    # 命令行接收音频 URL，将完整结果写为 UTF-8 JSON，覆盖当前目录的同名文件。
     result = transcribe(sys.argv[1])
     Path("asr_result.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
