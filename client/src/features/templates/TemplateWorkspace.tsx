@@ -228,6 +228,10 @@ export function TemplateWorkspace() {
             onSubmit={(event) => {
               event.preventDefault();
               void perform(() => persist());
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (loading) return;
+              void perform(() => persist());
             }}
           >
             <fieldset
