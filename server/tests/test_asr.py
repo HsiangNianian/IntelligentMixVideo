@@ -1,113 +1,201 @@
-"""验证 ASR 请求、失败边界、配置与 JSON 输出，隔离真实密钥和云服务。
+"""验证 ASR 请求、HTTPS 边界、自动配置与 JSON 输出，隔离真实密钥和云服务。
 
 仓库根目录运行：uv run --locked --project server pytest server/tests/test_asr.py -v
 """
 
-import io
 import json
 import runpy
 import sys
 from pathlib import Path
-from urllib.error import HTTPError
 
-import dotenv
+import httpx
 import pytest
-
-from server import asr
+from pydantic import SecretStr
 
 
 def respond(http, *documents):
-    """依次配置 JSON 响应，并返回流供资源关闭检查。"""
-    streams = [io.BytesIO(json.dumps(document).encode()) for document in documents]
-    http.side_effect = streams
-    return streams
+    """依次配置未读取的 JSON 响应，返回响应供资源关闭检查。"""
+    responses = [
+        httpx.Response(200, stream=httpx.ByteStream(json.dumps(document).encode()))
+        for document in documents
+    ]
+    http.side_effect = responses
+    return responses
 
 
 def test_returns_original_json_and_does_not_send_key_to_download(
-    asr_env, asr_http, asr_responses, capsys
+    asr, asr_env, asr_http, asr_responses, capsys
 ):
-    """等待 RUNNING 后返回原始结果；只向 ASR 发密钥，并关闭所有响应流。"""
+    """等待 RUNNING 后返回原始结果；只向 ASR 发密钥，并关闭所有响应。"""
     submitted, done, document = asr_responses
-    streams = respond(
+    responses = respond(
         asr_http, submitted, {"output": {"task_status": "RUNNING"}}, done, document
     )
     assert asr.transcribe("https://audio.example/tts.wav") == document
     calls = asr_http.call_args_list
     request = calls[0].args[0]
-    assert request.get_method() == "POST"
-    assert json.loads(request.data) == {
+    assert request.method == "POST"
+    assert json.loads(request.content) == {
         "model": "fun-asr",
         "input": {"file_urls": ["https://audio.example/tts.wav"]},
         "parameters": {},
     }
-    assert request.get_header("X-dashscope-async") == "enable"
-    assert request.get_header("Content-type") == "application/json"
+    assert request.headers["X-DashScope-Async"] == "enable"
+    assert request.headers["Content-Type"] == "application/json"
     assert all(
-        call.args[0].get_header("Authorization") == "Bearer test-key"
+        call.args[0].headers["Authorization"] == "Bearer test-key"
         for call in calls[:-1]
     )
-    assert (
-        calls[1].args[0].full_url
-        == "https://dashscope.aliyuncs.com/api/v1/tasks/task-123"
+    assert str(calls[1].args[0].url) == (
+        "https://dashscope.aliyuncs.com/api/v1/tasks/task-123"
     )
-    assert calls[-1].args[0].get_header("Authorization") is None
-    assert all(stream.closed for stream in streams)
+    assert "Authorization" not in calls[-1].args[0].headers
+    assert all(response.is_closed for response in responses)
     asr.time.sleep.assert_called_once_with(2)
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "task-123" in captured.err
 
 
-@pytest.mark.parametrize("url", ["file:///tmp/audio.wav", "invalid", "https://"])
-def test_invalid_url_fails_before_network(asr_env, asr_http, url):
-    """非 HTTP(S) 或缺少主机的地址在提交前失败。"""
-    with pytest.raises(ValueError, match="音频 URL"):
+@pytest.mark.parametrize(
+    "url",
+    [
+        "file:///tmp/audio.wav",
+        "invalid",
+        "https://",
+        "http://audio.example/tts.wav",
+        "https://user:password@audio.example/tts.wav",
+    ],
+)
+def test_invalid_url_fails_before_network(asr, asr_env, asr_http, url):
+    """非 HTTPS、缺少主机或包含凭证的音频地址在提交前失败。"""
+    with pytest.raises(ValueError, match="HTTPS"):
         asr.transcribe(url)
     asr_http.assert_not_called()
 
 
-@pytest.mark.parametrize("field", ["DASHSCOPE_API_KEY", "ASR_BASE_URL"])
-@pytest.mark.parametrize("value", [None, "", " "])
-def test_missing_config_fails_before_network(
-    asr_env, asr_http, monkeypatch, field, value
+@pytest.mark.parametrize(
+    "wait_seconds", [0, -1, float("nan"), float("inf"), -float("inf")]
+)
+def test_invalid_wait_seconds_fails_before_network(
+    asr, asr_env, asr_http, wait_seconds
 ):
-    """缺失、空值和全空格配置明确报错，不提交任务。"""
-    if value is None:
-        monkeypatch.delenv(field)
-    else:
-        monkeypatch.setenv(field, value)
-    with pytest.raises(ValueError, match=field):
+    """非正数或非有限等待时间在提交前报错，避免无效调用产生云端任务。"""
+    with pytest.raises(ValueError, match="wait_seconds"):
+        asr.transcribe("https://audio.example/tts.wav", wait_seconds=wait_seconds)
+    asr_http.assert_not_called()
+
+
+@pytest.mark.parametrize("field", ["dashscope_api_key", "asr_base_url"])
+@pytest.mark.parametrize("value", ["", " "])
+def test_missing_config_fails_before_network(asr, asr_env, asr_http, field, value):
+    """空值和全空格配置明确报错，不提交任务。"""
+    setattr(asr_env, field, SecretStr(value) if field == "dashscope_api_key" else value)
+    with pytest.raises(ValueError, match=field.upper()):
         asr.transcribe("https://audio.example/tts.wav")
     asr_http.assert_not_called()
 
 
-@pytest.mark.parametrize("mode", ["default", "explicit", "environment"])
-def test_config_source(asr_env, asr_http, asr_responses, monkeypatch, mode):
-    """从根目录或显式文件读配置，进程环境变量优先于文件。"""
-    config_file = asr_env if mode != "explicit" else asr_env.with_name("custom.env")
-    config_file.write_text(
+@pytest.mark.parametrize("field", ["dashscope_api_key", "asr_base_url"])
+def test_absent_config_fails_before_network(asr, asr_http, monkeypatch, field):
+    """缺失配置使用空默认值，并在调用时明确提示所需环境变量。"""
+    monkeypatch.delenv("ASR_BASE_URL", raising=False)
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    values = {"asr_base_url": "https://example.com/api/v1", "dashscope_api_key": "key"}
+    values.pop(field)
+    monkeypatch.setattr(asr, "settings", asr.ASRSettings(_env_file=None, **values))
+    with pytest.raises(ValueError, match=field.upper()):
+        asr.transcribe("https://audio.example/tts.wav")
+    asr_http.assert_not_called()
+
+
+@pytest.mark.parametrize("environment_override", [False, True])
+def test_config_is_loaded_automatically_once(
+    asr, asr_http, asr_responses, tmp_path, monkeypatch, environment_override
+):
+    """优先自动读取源码 server/.env，环境覆盖文件且加载后不受文件修改影响。"""
+    script = tmp_path / "server/src/server/asr/asr.py"
+    script.parent.mkdir(parents=True)
+    script.write_text(Path(asr.__file__).read_text(encoding="utf-8"), encoding="utf-8")
+    env_file = tmp_path / "server/.env"
+    env_file.write_text(
         'DASHSCOPE_API_KEY=file-key\nASR_BASE_URL="https://file.example/api/v1/"\n',
         encoding="utf-8",
     )
-    if mode != "environment":
-        monkeypatch.delenv("DASHSCOPE_API_KEY")
-        monkeypatch.delenv("ASR_BASE_URL")
-    respond(asr_http, *asr_responses)
-    kwargs = {"env_file": config_file} if mode == "explicit" else {}
-    asr.transcribe("https://audio.example/tts.wav", **kwargs)
-    request = asr_http.call_args_list[0].args[0]
-    expected_base = (
-        "https://dashscope.aliyuncs.com/api/v1"
-        if mode == "environment"
-        else "https://file.example/api/v1"
+    (tmp_path / "server/src/.env").write_text(
+        "DASHSCOPE_API_KEY=cwd-key\nASR_BASE_URL=https://cwd.example/api/v1\n",
+        encoding="utf-8",
     )
-    expected_key = "test-key" if mode == "environment" else "file-key"
-    assert request.full_url == f"{expected_base}/services/audio/asr/transcription"
-    assert request.get_header("Authorization") == f"Bearer {expected_key}"
+    for field, value in {
+        "ASR_BASE_URL": "https://environment.example/api/v1",
+        "DASHSCOPE_API_KEY": "environment-key",
+    }.items():
+        if environment_override:
+            monkeypatch.setenv(field, value)
+        else:
+            monkeypatch.delenv(field, raising=False)
+    monkeypatch.chdir(tmp_path / "server/src")
+    module = runpy.run_path(str(script))
+    env_file.write_text("ASR_BASE_URL=https://changed.example\n", encoding="utf-8")
+    respond(asr_http, *asr_responses)
+    assert module["transcribe"]("https://audio.example/tts.wav") == asr_responses[-1]
+    request = asr_http.call_args_list[0].args[0]
+    source = "environment" if environment_override else "file"
+    assert (
+        str(request.url)
+        == f"https://{source}.example/api/v1/services/audio/asr/transcription"
+    )
+    assert request.headers["Authorization"] == f"Bearer {source}-key"
+
+
+@pytest.mark.parametrize("environment_override", [False, True])
+def test_installed_package_loads_dotenv_from_working_directory(
+    asr, asr_http, asr_responses, tmp_path, monkeypatch, environment_override
+):
+    """安装目录没有源码 .env 时自动读取工作目录配置，并保持环境变量优先。"""
+    script = tmp_path / "venv/lib/python3.12/site-packages/server/asr/asr.py"
+    script.parent.mkdir(parents=True)
+    script.write_text(Path(asr.__file__).read_text(encoding="utf-8"), encoding="utf-8")
+    working_directory = tmp_path / "deployment"
+    working_directory.mkdir()
+    (working_directory / ".env").write_text(
+        "DASHSCOPE_API_KEY=cwd-key\nASR_BASE_URL=https://cwd.example/api/v1\n",
+        encoding="utf-8",
+    )
+    for field, value in {
+        "ASR_BASE_URL": "https://environment.example/api/v1",
+        "DASHSCOPE_API_KEY": "environment-key",
+    }.items():
+        if environment_override:
+            monkeypatch.setenv(field, value)
+        else:
+            monkeypatch.delenv(field, raising=False)
+    monkeypatch.chdir(working_directory)
+    module = runpy.run_path(str(script))
+    respond(asr_http, *asr_responses)
+    assert module["transcribe"]("https://audio.example/tts.wav") == asr_responses[-1]
+    request = asr_http.call_args_list[0].args[0]
+    source = "environment" if environment_override else "cwd"
+    assert (
+        str(request.url)
+        == f"https://{source}.example/api/v1/services/audio/asr/transcription"
+    )
+    assert request.headers["Authorization"] == f"Bearer {source}-key"
+
+
+@pytest.mark.parametrize(
+    "base", ["http://example.com/api/v1", "https://", "https://user@example.com/api/v1"]
+)
+def test_invalid_base_url_fails_before_network(asr, asr_env, asr_http, base):
+    """拒绝向明文、缺少主机或包含用户信息的服务地址发送密钥。"""
+    asr_env.asr_base_url = base
+    with pytest.raises(ValueError, match="HTTPS"):
+        asr.transcribe("https://audio.example/tts.wav")
+    asr_http.assert_not_called()
 
 
 @pytest.mark.parametrize("status", ["FAILED", "CANCELED", "UNKNOWN"])
-def test_terminal_failure(asr_env, asr_http, asr_responses, status):
+def test_terminal_failure(asr, asr_env, asr_http, asr_responses, status):
     """非成功终态立即报错，不继续轮询或重复提交。"""
     respond(asr_http, asr_responses[0], {"output": {"task_status": status}})
     with pytest.raises(RuntimeError, match=status):
@@ -118,7 +206,7 @@ def test_terminal_failure(asr_env, asr_http, asr_responses, status):
 @pytest.mark.parametrize(
     "results", [[], [{"subtask_status": "FAILED", "code": "FILE_DOWNLOAD_FAILED"}]]
 )
-def test_failed_or_missing_subtask(asr_env, asr_http, asr_responses, results):
+def test_failed_or_missing_subtask(asr, asr_env, asr_http, asr_responses, results):
     """任务成功但子任务失败或缺失时，不能误报转写成功。"""
     respond(
         asr_http,
@@ -130,7 +218,7 @@ def test_failed_or_missing_subtask(asr_env, asr_http, asr_responses, results):
     assert asr_http.call_count == 2
 
 
-def test_missing_result_url(asr_env, asr_http, asr_responses):
+def test_missing_result_url(asr, asr_env, asr_http, asr_responses):
     """成功子任务缺少结果地址时，报错而不发起下载。"""
     asr_responses[1]["output"]["results"][0].pop("transcription_url")
     respond(asr_http, *asr_responses)
@@ -139,76 +227,83 @@ def test_missing_result_url(asr_env, asr_http, asr_responses):
     assert asr_http.call_count == 2
 
 
-def test_timeout_keeps_task_id(asr_env, asr_http, asr_responses, monkeypatch):
+@pytest.mark.parametrize(
+    "result_url", ["http://results.example/result.json", "https://"]
+)
+def test_invalid_result_url_is_not_downloaded(
+    asr, asr_env, asr_http, asr_responses, result_url
+):
+    """云端返回不安全或不完整的地址时，不尝试下载转写结果。"""
+    asr_responses[1]["output"]["results"][0]["transcription_url"] = result_url
+    respond(asr_http, *asr_responses)
+    with pytest.raises(ValueError, match="HTTPS"):
+        asr.transcribe("https://audio.example/tts.wav")
+    assert asr_http.call_count == 2
+
+
+def test_timeout_keeps_task_id(asr, asr_env, asr_http, asr_responses, mocker):
     """模拟时钟越过预算后停止等待，异常保留任务 ID。"""
     respond(asr_http, asr_responses[0], {"output": {"task_status": "RUNNING"}})
-    ticks = iter([0, 0, 1801])
-    monkeypatch.setattr(asr.time, "monotonic", lambda: next(ticks))
+    mocker.patch.object(asr.time, "monotonic", side_effect=[0, 0, 1801])
     with pytest.raises(TimeoutError, match="task-123"):
         asr.transcribe("https://audio.example/tts.wav")
     assert asr_http.call_count == 2
 
 
-def test_http_error_propagates_without_resubmitting(asr_env, asr_http):
-    """HTTP 错误向调用方传播，不重复提交可能计费的任务。"""
-    asr_http.side_effect = HTTPError(
-        "https://example.com", 401, "Unauthorized", {}, None
-    )
-    with pytest.raises(HTTPError) as caught:
+@pytest.mark.parametrize("status", [401, 429, 500])
+def test_http_error_closes_response_without_resubmitting(
+    asr, asr_env, asr_http, status
+):
+    """HTTP 错误关闭响应后传播，不重复提交可能计费的任务。"""
+    response = httpx.Response(status, stream=httpx.ByteStream(b'{"code":"error"}'))
+    asr_http.side_effect = [response]
+    with pytest.raises(httpx.HTTPStatusError) as caught:
         asr.transcribe("https://audio.example/tts.wav")
-    assert caught.value.code == 401
+    assert caught.value.response.status_code == status
+    assert response.is_closed
     assert asr_http.call_count == 1
 
 
-def test_invalid_json_closes_response(asr_env, asr_http):
+def test_redirect_is_not_followed(asr, asr_env, asr_http):
+    """HTTPS 响应重定向到 HTTP 时停止，防止绕过 URL 校验。"""
+    response = httpx.Response(
+        302,
+        headers={"Location": "http://example.com/unsafe"},
+        stream=httpx.ByteStream(b""),
+    )
+    asr_http.side_effect = [response]
+    with pytest.raises(httpx.HTTPStatusError):
+        asr.transcribe("https://audio.example/tts.wav")
+    assert response.is_closed
+    assert asr_http.call_count == 1
+
+
+def test_invalid_json_closes_response(asr, asr_env, asr_http):
     """无效 JSON 解析失败时也关闭响应，保留原解析异常。"""
-    response = io.BytesIO(b"not-json")
+    response = httpx.Response(200, stream=httpx.ByteStream(b"not-json"))
     asr_http.side_effect = [response]
     with pytest.raises(json.JSONDecodeError):
         asr.transcribe("https://audio.example/tts.wav")
-    assert response.closed
+    assert response.is_closed
 
 
-def test_empty_transcripts_are_returned(asr_env, asr_http, asr_responses):
+def test_empty_transcripts_are_returned(asr, asr_env, asr_http, asr_responses):
     """无语音时保留服务返回的空结果，不制造文字或时间戳。"""
     asr_responses[-1] = {"transcripts": []}
     respond(asr_http, *asr_responses)
     assert asr.transcribe("https://audio.example/tts.wav") == {"transcripts": []}
 
 
-def test_main_writes_json(tmp_path, monkeypatch, capsys):
-    """命令行在临时目录生成中文可读的 JSON，stdout 不打印结果。"""
-    script = Path(asr.__file__).resolve()
+def test_main_writes_json(
+    asr_env, asr_http, asr_responses, tmp_path, monkeypatch, capsys
+):
+    """包的命令行入口在临时目录生成中文可读的 JSON，stdout 不打印结果。"""
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(sys, "argv", [str(script), "https://audio.example/tts.wav"])
-    monkeypatch.setenv("ASR_BASE_URL", "https://example.com/api/v1")
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
-    # runpy 独立加载模块，用假配置读取器隔离仓库中的真实 .env。
-    monkeypatch.setattr(dotenv, "dotenv_values", lambda _: {})
-    document = {"transcripts": [{"text": "你好，世界。"}]}
-    responses = iter(
-        [
-            {"output": {"task_id": "task-123"}},
-            {
-                "output": {
-                    "task_status": "SUCCEEDED",
-                    "results": [
-                        {
-                            "subtask_status": "SUCCEEDED",
-                            "transcription_url": "https://example.com/result.json",
-                        }
-                    ],
-                }
-            },
-            document,
-        ]
-    )
-    monkeypatch.setattr(
-        "urllib.request.urlopen",
-        lambda *args, **kwargs: io.BytesIO(json.dumps(next(responses)).encode()),
-    )
-    runpy.run_path(str(script), run_name="__main__")
+    monkeypatch.setattr(sys, "argv", ["server.asr", "https://audio.example/tts.wav"])
+    asr_responses[-1] = {"transcripts": [{"text": "你好，世界。"}]}
+    respond(asr_http, *asr_responses)
+    runpy.run_module("server.asr", run_name="__main__")
     content = (tmp_path / "asr_result.json").read_text(encoding="utf-8")
-    assert json.loads(content) == document
+    assert json.loads(content) == asr_responses[-1]
     assert "你好，世界。" in content
     assert capsys.readouterr().out == ""

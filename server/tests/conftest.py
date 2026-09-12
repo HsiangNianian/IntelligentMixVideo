@@ -1,13 +1,11 @@
 """共享 pytest 夹具管理应用生命周期并隔离 ASR 请求；在 server/ 执行 uv run --locked pytest -v。"""
 
 from collections.abc import Iterator
-from unittest.mock import Mock
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from server.app import app
-
-from server import asr
 
 
 @pytest.fixture
@@ -18,21 +16,38 @@ def client() -> Iterator[TestClient]:
 
 
 @pytest.fixture
-def asr_env(monkeypatch, tmp_path):
-    """用临时仓库路径和假凭证隔离真实 .env，结束后自动恢复环境。"""
-    monkeypatch.setattr(asr, "__file__", str(tmp_path / "server/src/server/asr.py"))
-    monkeypatch.setenv("ASR_BASE_URL", "https://dashscope.aliyuncs.com/api/v1")
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
-    return tmp_path / ".env"
+def asr(mocker):
+    """首次导入时屏蔽真实 .env 读取；返回 ASR 实现供各用例替换配置。"""
+    env_reader = mocker.patch(
+        "pydantic_settings.sources.DotEnvSettingsSource._read_env_files",
+        return_value={},
+    )
+    from server.asr import asr
+
+    mocker.stop(env_reader)
+    return asr
 
 
 @pytest.fixture
-def asr_http(monkeypatch):
-    """替换网络和轮询等待；未配置响应的请求立即失败，不访问云服务。"""
-    http = Mock(side_effect=AssertionError("测试未配置 HTTP 响应"))
-    monkeypatch.setattr(asr, "urlopen", http)
-    monkeypatch.setattr(asr.time, "sleep", Mock())
-    return http
+def asr_env(asr, monkeypatch):
+    """为每个用例注入假配置，禁止从文件读取真实凭证。"""
+    settings = asr.ASRSettings(
+        _env_file=None,
+        asr_base_url="https://dashscope.aliyuncs.com/api/v1",
+        dashscope_api_key="test-key",
+    )
+    monkeypatch.setattr(asr, "settings", settings)
+    return settings
+
+
+@pytest.fixture
+def asr_http(asr, mocker):
+    """用内存传输替换网络并保留真实响应生命周期，不执行轮询等待。"""
+    http = mocker.Mock(side_effect=AssertionError("测试未配置 HTTP 响应"))
+    mocker.patch.object(asr.time, "sleep")
+    with httpx.Client(transport=httpx.MockTransport(http)) as http_client:
+        mocker.patch.object(asr.httpx, "stream", side_effect=http_client.stream)
+        yield http
 
 
 @pytest.fixture

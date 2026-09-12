@@ -44,3 +44,32 @@ uv sync --locked --default-index https://pypi.org/simple
 ```
 
 先检查实际使用的索引及镜像同步情况，不要仅为绕过镜像缺失而降低依赖版本或删除锁文件。
+
+## ASR 音频转写
+
+ASR 是独立的 Python 函数和命令行入口，尚未接入 FastAPI 路由。在 `server/` 下准备配置：
+
+```sh
+cp .env.example .env
+```
+
+填写 `DASHSCOPE_API_KEY` 和 `ASR_BASE_URL`，地域需一致。真实 `.env` 已被 Git 忽略。
+模块加载时自动读取一次配置，优先使用源码目录的 `server/.env`；该文件不存在时
+回退到当前工作目录的 `.env`，支持安装后的包。环境变量优先于文件，修改配置后需重启进程。
+
+在 `server/` 下运行：
+
+```sh
+uv run --locked python -m server.asr "https://example.com/audio.wav"
+```
+
+替换为可被云服务访问的 HTTPS 音频直链。结果写入当前目录的 `asr_result.json`，
+覆盖同名文件；保留原始 JSON 和字词时间戳，不额外分词。也可以在代码中调用：
+
+```python
+from server.asr import transcribe
+
+result = transcribe("https://example.com/audio.wav", wait_seconds=1800)
+```
+
+等待预算必须是有限正数。超时不会取消已提交的云端任务；函数不自动重试提交。
