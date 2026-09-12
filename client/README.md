@@ -29,7 +29,9 @@ bun run tauri dev
 bun run tauri build
 ```
 
-前端构建不代表桌面打包或跨平台预览验证通过。本次未验证 Tauri 打包后的 SDK 运行环境。
+Windows、macOS、Linux 安装包统一使用官方 `tauri-plugin-localhost`，从 `http://localhost:9527` 加载随包前端；端口 9527 须空闲，同一机器请只运行一个安装包实例。无需用户启动 Vite 或 Python 来提供页面；开发模式继续使用 Vite。模板 API 依赖不变。
+服务端需同步更新并重启，使 CORS 白名单接受 `http://localhost:9527`；不开放任意端口或域名。
+前端构建不代表桌面打包或跨平台预览验证通过；各平台安装包实际播放仍需分别验证。localhost 技术兼容不代表已取得 SDK 正式分发授权。
 预览需要联网下载 SDK、字体和公开视频，使用支持硬件加速的 Chrome / Edge；本次按 localhost 运行，不配置 License。
 
 ## 示例视频配置
@@ -103,4 +105,5 @@ bun run build
 
 测试固定 API 与示例视频地址并拦截 fetch，不需要启动后端、MySQL 或下载 SDK。
 工作区测试使用真实表单、Radix 选择器和弹窗，以轻量组件代替 SDK 播放器；不验证实际视频播放、字体排版或 Tauri 原生能力。
+执行 `cargo test --locked --manifest-path src-tauri/Cargo.toml --lib` 检查实际安装包配置切换到 localhost:9527，并保留窗口尺寸及标题。实际插件服务和 SDK 播放需在各平台安装包中验证。
 Happy DOM 的小数 step 校验与浏览器不同，保存流程直接触发表单提交；浏览器原生表单约束仍需浏览器验证。

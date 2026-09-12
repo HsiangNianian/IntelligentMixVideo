@@ -27,13 +27,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         close_database()
 
 
-# 允许本地 Vite 与 Tauri 客户端直接跨域访问 API，保留明确的来源白名单。
+# 允许 Vite 与各平台 localhost 安装包访问 API，保留明确的来源白名单。
 app = FastAPI(title="IntelligentMixVideo API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:1420", "http://localhost:4173",
-        "tauri://localhost", "http://tauri.localhost",
+        "tauri://localhost", "http://tauri.localhost", "http://localhost:9527",
     ],
     allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type"],
 )

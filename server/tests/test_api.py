@@ -56,6 +56,7 @@ def test_unknown_route(client: TestClient) -> None:
 # 测试本地 Vite 与 Tauri 正式客户端来源均能进行模板 JSON 请求的 CORS 预检。
 @pytest.mark.parametrize("origin", [
     "http://localhost:1420", "http://localhost:4173", "tauri://localhost", "http://tauri.localhost",
+    "http://localhost:9527",
 ])
 @pytest.mark.parametrize("method", ["GET", "POST", "DELETE"])
 def test_local_client_cors(client: TestClient, origin: str, method: str) -> None:
@@ -72,10 +73,14 @@ def test_local_client_cors(client: TestClient, origin: str, method: str) -> None
 
 
 # 测试不受信任的网页来源仍无法通过跨域预检。
-def test_external_origin_cors_is_rejected(client: TestClient) -> None:
+@pytest.mark.parametrize("origin", [
+    "https://example.com", "http://localhost:51172", "http://localhost.evil.example:9527",
+    "http://evil.localhost:9527", "http://localhost:9527.evil.example",
+])
+def test_external_origin_cors_is_rejected(client: TestClient, origin: str) -> None:
     """补齐本地桌面来源不能扩大为允许任意网页访问 API。"""
     response = client.options("/template", headers={
-        "Origin": "https://example.com", "Access-Control-Request-Method": "POST",
+        "Origin": origin, "Access-Control-Request-Method": "POST",
         "Access-Control-Request-Headers": "Content-Type",
     })
     assert response.status_code == 400
