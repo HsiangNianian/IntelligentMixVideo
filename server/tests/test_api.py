@@ -58,7 +58,7 @@ def test_unknown_route(client: TestClient) -> None:
 # 测试 Vite、现有 Tauri 来源和 Windows 客户端动态端口均能通过模板请求预检。
 @pytest.mark.parametrize("origin", [
     "http://localhost:1420", "http://localhost:4173", "tauri://localhost", "http://tauri.localhost",
-    "http://localhost:49152", "http://localhost:65535",
+    "http://localhost:1", "http://localhost:49152", "http://localhost:65535",
 ])
 @pytest.mark.parametrize("method", ["GET", "POST", "DELETE"])
 def test_local_client_cors(client: TestClient, origin: str, method: str) -> None:
@@ -74,16 +74,17 @@ def test_local_client_cors(client: TestClient, origin: str, method: str) -> None
     assert client.get("/template", headers={"Origin": origin}).headers["access-control-allow-origin"] == origin
 
 
-# 测试不受信任的网页来源仍无法通过跨域预检。
+# 测试不受信任的网页来源和无效 localhost 端口都无法通过跨域预检。
 @pytest.mark.parametrize("origin", [
     "https://example.com", "http://example.com:49152", "https://localhost:49152",
     "http://localhost.example.com:49152", "http://localhost:49152.example.com",
     "http://localhost:49152/path", "http://localhost:49152/", "http://localhost:49152?x=1",
     "http://localhost@evil.example:49152", "http://127.0.0.1:49152", "http://[::1]:49152",
-    "http://localhost:not-a-port", "null",
+    "http://localhost:not-a-port", "http://localhost:0", "http://localhost:65536",
+    "http://localhost:999999", "null",
 ])
-def test_external_origin_cors_is_rejected(client: TestClient, origin: str) -> None:
-    """补齐本地桌面来源不能扩大为允许任意网页访问 API。"""
+def test_disallowed_origin_cors_is_rejected(client: TestClient, origin: str) -> None:
+    """不受信网页及无效 localhost 端口不能获得跨域访问权限。"""
     response = client.options("/template", headers={
         "Origin": origin, "Access-Control-Request-Method": "POST",
         "Access-Control-Request-Headers": "Content-Type",
