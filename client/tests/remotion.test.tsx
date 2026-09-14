@@ -6,6 +6,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { StrictMode } from "react";
 import { RemotionWorkspace } from "@/features/remotion_templates/RemotionWorkspace";
@@ -14,38 +15,8 @@ import type { Job, Values } from "@/features/remotion_templates/model";
 import { fetchMock } from "./setup";
 import { remotionJob, remotionVersion } from "./remotion-fixtures";
 
-/** 脚本化 API 保留实际请求路径和参数；未配置的路径立即失败。 */
-function server(
-  overrides: (
-    path: string,
-    options?: RequestInit,
-  ) => Response | Promise<Response> | undefined = () => undefined,
-) {
-  fetchMock.mockImplementation(
-    Object.assign(
-      async (input: RequestInfo | URL, options?: RequestInit) => {
-        const path = new URL(String(input)).pathname.replace(
-          "/api/templates",
-          "",
-        );
-        const custom = overrides(path, options);
-        if (custom) return custom;
-        if (path === "/capabilities")
-          return Response.json({ models_configured: true });
-        if (path === "/works")
-          return Response.json({ work: { id: "work-1" }, job: remotionJob() });
-        if (path === "/versions/version-1")
-          return Response.json(remotionVersion());
-        if (path.endsWith("/artifacts/Export.tsx"))
-          return new Response(
-            'export default function Template() { return "今日灵感"; }',
-          );
-        throw new Error(`未配置请求：${path}`);
-      },
-      { preconnect: () => {} },
-    ),
-  );
-}
+import { remotionServer as server } from "./remotion-server";
+
 /** 从输入表单发起首次生成，并等待成功版本的代码进入浮板。 */
 async function generate(ready = true) {
   fireEvent.change(screen.getByRole("textbox", { name: "字效描述" }), {
@@ -109,7 +80,9 @@ test("生成、复制并新增独立会话", async () => {
     target: { value: "https://media.test/video.mp4" },
   });
   fireEvent.click(screen.getByRole("button", { name: "新增" }));
-  expect(screen.queryByText("制作今日灵感标题")).toBeNull();
+  expect(
+    within(screen.getByRole("log")).queryByText("制作今日灵感标题") === null,
+  ).toBe(true);
   expect(screen.queryByTitle("Remotion 字效播放器")).toBeNull();
   expect(screen.getByLabelText<HTMLInputElement>("背景视频直链").value).toBe(
     "",
@@ -205,12 +178,14 @@ test("参数验收失败恢复原值并保留成功代码", async () => {
   await generate();
   fireEvent.change(screen.getByLabelText("字号"), { target: { value: "90" } });
   fireEvent.blur(screen.getByLabelText("字号"));
-  await screen.findByText(
+  await screen.findAllByText(
     "本次未能完成模板，请重试；已有结果仍可使用。",
     {},
     { timeout: 2000 },
   );
-  expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("64");
+  await waitFor(() =>
+    expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("64"),
+  );
   expect(screen.getByLabelText("模板 TSX 代码").textContent).toContain(
     "今日灵感",
   );
@@ -219,8 +194,8 @@ test("参数验收失败恢复原值并保留成功代码", async () => {
   ).toBe(false);
 });
 
-// 创建请求尚未返回就切换会话，返回的旧 job 仍被取消，旧结果不能回填新聊天。
-test("新增隔离迟到的创建响应并取消旧任务", async () => {
+// 创建请求尚未返回就新增，旧任务留在历史但迟到结果不能回填新聊天。
+test("新增隔离迟到的创建响应并保留旧任务", async () => {
   let resolve: ((response: Response) => void) | undefined;
   server((path) => {
     if (path === "/works")
@@ -244,13 +219,14 @@ test("新增隔离迟到的创建响应并取消旧任务", async () => {
       Response.json({ work: { id: "work-1" }, job: remotionJob("running") }),
     ),
   );
-  await waitFor(() =>
-    expect(
-      fetchMock.mock.calls.some((call) => String(call[0]).endsWith("/cancel")),
-    ).toBe(true),
+  await screen.findByRole("button", { name: /旧会话/ });
+  expect(
+    fetchMock.mock.calls.some((call) => String(call[0]).endsWith("/cancel")),
+  ).toBe(false);
+  expect(screen.queryByTitle("Remotion 字效播放器") === null).toBe(true);
+  expect(within(screen.getByRole("log")).queryByText("旧会话") === null).toBe(
+    true,
   );
-  expect(screen.queryByTitle("Remotion 字效播放器")).toBeNull();
-  expect(screen.queryByText("旧会话")).toBeNull();
 });
 
 // 预览只信任当前 iframe 的通道；修改背景链接不创建新生成任务。
@@ -327,10 +303,10 @@ test("参数与背景链接的边界校验", () => {
   expect(backgroundUrl("")).toBe("");
 });
 
-// 正在轮询时卸载会取消已知任务，并清理未触发的计时器。
-test("卸载停止任务并清理轮询", async () => {
+// 卸载清理 SSE 和计时器，但不能取消服务端任务。
+test("卸载清理订阅并保留任务", async () => {
   const job: Job = remotionJob("running");
-  server((path) => {
+  const fake = server((path) => {
     if (path === "/works")
       return Response.json({ work: { id: "work-1" }, job });
     if (path.endsWith("/cancel"))
@@ -345,24 +321,25 @@ test("卸载停止任务并清理轮询", async () => {
     screen.getByRole("button", { name: "发送" }).closest("form")!,
   );
   await screen.findByRole("button", { name: "停止" });
+  await waitFor(() => expect(fake.streams.size).toBe(1));
   view.unmount();
   await waitFor(() =>
     expect(
       fetchMock.mock.calls.some((call) => String(call[0]).endsWith("/cancel")),
-    ).toBe(true),
+    ).toBe(false),
   );
+  await waitFor(() => expect(fake.streams.size).toBe(0));
   expect(clear).toHaveBeenCalled();
 });
 
-// React 开发模式会重复挂载 effect，清理后的 AbortController 不能取消下一次合法轮询。
-test("StrictMode 下仍能轮询到成功结果", async () => {
-  server((path) => {
+// StrictMode 重复挂载后仍能建立 SSE，成功事件可更新预览。
+test("StrictMode 下仍能通过 SSE 收到成功结果", async () => {
+  const fake = server((path) => {
     if (path === "/works")
       return Response.json({
         work: { id: "work-1" },
         job: remotionJob("running"),
       });
-    if (path === "/jobs/job-1") return Response.json(remotionJob());
   });
   render(
     <StrictMode>
@@ -375,6 +352,8 @@ test("StrictMode 下仍能轮询到成功结果", async () => {
   fireEvent.submit(
     screen.getByRole("button", { name: "发送" }).closest("form")!,
   );
+  await waitFor(() => expect(fake.streams.size).toBe(1));
+  await act(async () => fake.advance(remotionJob()));
   await waitFor(
     () =>
       expect(
@@ -548,9 +527,15 @@ test("参数提交网络失败恢复可编辑状态", async () => {
   fireEvent.change(screen.getByLabelText("字号"), { target: { value: "90" } });
   fireEvent.blur(screen.getByLabelText("字号"));
   await screen.findByText(
-    "无法连接服务端，请确认服务已启动。",
+    /无法连接服务端，请确认服务已启动。/,
     {},
     { timeout: 2000 },
+  );
+  fireEvent.click(screen.getByRole("button", { name: "刷新任务" }));
+  await waitFor(() =>
+    expect(screen.queryByRole("button", { name: "刷新任务" }) === null).toBe(
+      true,
+    ),
   );
   const iframe = screen.getByTitle<HTMLIFrameElement>("Remotion 字效播放器");
   const channel = new URL(iframe.src).hash.slice(1);
@@ -572,18 +557,18 @@ test("参数提交网络失败恢复可编辑状态", async () => {
   ).toHaveLength(1);
 });
 
-// 已知 job 的轮询网络失败允许手动恢复读取，不重新提交生成请求。
-test("刷新任务恢复轮询而不重复生成", async () => {
+// 会话快照读取失败允许手动恢复，不重新提交生成请求。
+test("刷新会话恢复读取而不重复生成", async () => {
   let reads = 0;
-  server((path) => {
+  const fake = server((path) => {
     if (path === "/works")
       return Response.json({
         work: { id: "work-1" },
         job: remotionJob("running"),
       });
-    if (path === "/jobs/job-1") {
+    if (path === "/works/work-1/session") {
       if (++reads === 1) throw new TypeError("offline");
-      return Response.json(remotionJob());
+      return undefined;
     }
   });
   render(<RemotionWorkspace />);
@@ -595,6 +580,7 @@ test("刷新任务恢复轮询而不重复生成", async () => {
   expect(
     screen.getByRole("button", { name: "发送" }).hasAttribute("disabled"),
   ).toBe(true);
+  fake.advance(remotionJob());
   fireEvent.click(screen.getByRole("button", { name: "刷新任务" }));
   await waitFor(() =>
     expect(

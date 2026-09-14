@@ -4,7 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowUp, ImagePlus, Square, Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import type { ChatMessage } from "./model";
+import { apiUrl } from "./api";
+import { TaskStatus } from "./TaskStatus";
+import type { ChatMessage, Job, SessionJob } from "./model";
 
 /** 本地图片预览不上传到第三方，替换文件和清空会话时清理 object URL。 */
 function ReferenceImage({ file }: { file: File }) {
@@ -32,6 +34,10 @@ interface Props {
   first: boolean;
   onSend: (text: string, image?: File) => void;
   onStop: () => void;
+  job?: Job | SessionJob | null;
+  hasOlder?: boolean;
+  olderLoading?: boolean;
+  onOlder?: () => void;
 }
 /** 只渲染公开消息；输入支持中文组合输入，Shift+Enter 换行，Enter 发送。 */
 export function ChatPanel({
@@ -42,6 +48,10 @@ export function ChatPanel({
   first,
   onSend,
   onStop,
+  job,
+  hasOlder,
+  olderLoading,
+  onOlder,
 }: Props) {
   const [text, setText] = useState("");
   const [image, setImage] = useState<File>();
@@ -70,12 +80,23 @@ export function ChatPanel({
           当前会话
         </span>
       </div>
+      {job && "created_at" in job && <TaskStatus job={job} />}
       <div
         role="log"
         aria-label="聊天消息"
         aria-live="polite"
         className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5"
       >
+        {hasOlder && (
+          <Button
+            variant="ghost"
+            className="w-full"
+            disabled={olderLoading}
+            onClick={onOlder}
+          >
+            {olderLoading ? "正在加载…" : "加载更早消息"}
+          </Button>
+        )}
         {!messages.length && (
           <div className="flex min-h-52 flex-col justify-center gap-3 text-sm">
             <div className="flex size-10 items-center justify-center rounded-xl bg-primary/10">
@@ -115,6 +136,24 @@ export function ChatPanel({
               )}
             >
               {message.image && <ReferenceImage file={message.image} />}
+              {message.image_asset_id && (
+                <img
+                  src={apiUrl(
+                    `/assets/${encodeURIComponent(message.image_asset_id)}`,
+                  )}
+                  alt="历史参考图片"
+                  className="max-h-32 max-w-full rounded-lg object-contain"
+                />
+              )}
+              {message.created_at && (
+                <time
+                  dateTime={message.created_at}
+                  className="block text-xs opacity-70"
+                >
+                  {new Date(message.created_at).toLocaleString("zh-CN")}
+                  {message.reconstructed ? " · 历史恢复" : ""}
+                </time>
+              )}
               <p className="whitespace-pre-wrap break-words">
                 {message.text || "请参考这张图片制作字效。"}
               </p>

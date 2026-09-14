@@ -144,8 +144,3 @@ export function session(
     { signal },
   );
 }
-
-/** 兼容旧版会话协调器的任务读取；SSE 工作区使用会话快照。 */
-export function job(id: string, signal?: AbortSignal): Promise<Job> {
-  return request(`/jobs/${encodeURIComponent(id)}`, { signal });
-}

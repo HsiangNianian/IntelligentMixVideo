@@ -4,7 +4,8 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { useTemplateSession } from "@/features/remotion_templates/useTemplateSession";
 import type { Values } from "@/features/remotion_templates/model";
 import { fetchMock } from "./setup";
-import { remotionJob, remotionVersion } from "./remotion-fixtures";
+import { remotionServer } from "./remotion-server";
+import { remotionJob } from "./remotion-fixtures";
 
 /** 仅提供核心请求需要的响应；记录实际 HTTP 载荷并阻止真实网络。 */
 function responses(
@@ -13,25 +14,10 @@ function responses(
     base_version_id: string;
   }) => Response | Promise<Response>,
 ) {
-  fetchMock.mockImplementation(
-    Object.assign(
-      async (input: RequestInfo | URL, init?: RequestInit) => {
-        const path = new URL(String(input)).pathname;
-        if (path.endsWith("/works"))
-          return Response.json({ work: { id: "work-1" }, job: remotionJob() });
-        if (path.endsWith("/versions/version-1"))
-          return Response.json(remotionVersion());
-        if (path.endsWith("/Export.tsx"))
-          return new Response(
-            "export default function Template() { return null; }",
-          );
-        if (path.endsWith("/messages"))
-          return edit(JSON.parse(String(init?.body)));
-        throw new Error(`未配置请求：${path}`);
-      },
-      { preconnect: () => {} },
-    ),
-  );
+  return remotionServer((path, options) => {
+    if (path.endsWith("/messages"))
+      return edit(JSON.parse(String(options?.body)));
+  });
 }
 
 // 同一事件批次重复修改不能绕过 UI 锁，失败后恢复成功参数且代码保持不变。
@@ -45,7 +31,7 @@ test("会话核心拒绝渲染期间的第二次修改", async () => {
       finish = resolve;
     });
   });
-  const { result } = renderHook(useTemplateSession);
+  const { result } = renderHook(() => useTemplateSession(() => {}));
   act(() => result.current.send("静态标题"));
   await waitFor(() => expect(result.current.version?.id).toBe("version-1"));
   const code = result.current.code;
@@ -58,12 +44,13 @@ test("会话核心拒绝渲染期间的第二次修改", async () => {
   await waitFor(() => expect(edits).toHaveLength(1), { timeout: 2000 });
   expect(edits[0].size).toBe(80);
   await act(async () => finish!(Response.json(remotionJob("failed"))));
+  await waitFor(() => expect(result.current.busy).toBeNull());
   expect(result.current.values.size).toBe(64);
   expect(result.current.code).toBe(code);
   expect(result.current.dirty).toBe(false);
   expect(
     result.current.messages.filter((message) => message.role === "user"),
-  ).toHaveLength(1);
+  ).toHaveLength(2);
 });
 
 // 新会话清空成功结果和上下文引用，下一次发送创建全新作品而不是修改旧版本。
@@ -71,7 +58,7 @@ test("核心新增清空状态并重新创建作品", async () => {
   responses(() => {
     throw new Error("不应修改旧作品");
   });
-  const { result } = renderHook(useTemplateSession);
+  const { result } = renderHook(() => useTemplateSession(() => {}));
   act(() => result.current.send("第一个标题"));
   await waitFor(() => expect(result.current.version).not.toBeNull());
   act(() => result.current.reset());

@@ -8,11 +8,14 @@ import { ChatPanel } from "./ChatPanel";
 import { CodePanel } from "./CodePanel";
 import { ParametersPanel } from "./ParametersPanel";
 import { PreviewPanel } from "./PreviewPanel";
+import { useWorkHistory } from "./useWorkHistory";
+import { HistorySidebar } from "./HistorySidebar";
 import { useTemplateSession } from "./useTemplateSession";
 
 /** 宽屏左右分栏，小屏切换聊天和预览但保留会话与播放器实例。 */
 export function RemotionWorkspace() {
-  const session = useTemplateSession();
+  const history = useWorkHistory();
+  const session = useTemplateSession(history.refresh);
   const [previewBusy, setPreviewBusy] = useState(false);
   const [mobile, setMobile] = useState("chat");
   const [serviceError, setServiceError] = useState("");
@@ -38,7 +41,12 @@ export function RemotionWorkspace() {
   }, [check]);
   const unresolved =
     !!session.job && ["queued", "running"].includes(session.job.status);
-  const pending = !!session.busy || session.dirty || unresolved;
+  const pending =
+    session.loading ||
+    !!session.busy ||
+    session.dirty ||
+    unresolved ||
+    session.retryMode === "read";
   const locked = pending || previewBusy;
   return (
     <div className="space-y-4">
@@ -72,10 +80,19 @@ export function RemotionWorkspace() {
               disabled={!!session.busy}
               onClick={session.retry}
             >
-              {session.retryMode === "poll" ? "刷新任务" : "重试任务"}
+              {session.retryMode === "read" ? "刷新任务" : "重试任务"}
             </Button>
           )}
         </div>
+      )}
+      {session.connection && (
+        <p role="status" className="text-xs text-muted-foreground">
+          {session.connection === "live"
+            ? "会话已连接"
+            : session.connection === "reconnecting"
+              ? "连接中断，正在恢复更新；后台任务继续运行。"
+              : "正在恢复会话…"}
+        </p>
       )}
       <Tabs value={mobile} onValueChange={setMobile} className="lg:hidden">
         <TabsList aria-label="工作区面板">
@@ -83,16 +100,30 @@ export function RemotionWorkspace() {
           <TabsTrigger value="preview">预览与参数</TabsTrigger>
         </TabsList>
       </Tabs>
-      <div className="grid h-[640px] min-h-0 gap-4 lg:h-[calc(100dvh-370px)] lg:min-h-[480px] lg:grid-cols-[minmax(320px,2fr)_minmax(0,3fr)]">
+      <div className="grid lg:h-[640px] min-h-0 gap-4 lg:h-[calc(100dvh-370px)] lg:min-h-[480px] lg:grid-cols-[210px_minmax(280px,2fr)_minmax(0,3fr)]">
+        <HistorySidebar
+          items={history.items}
+          selected={session.workId}
+          loading={history.loading}
+          error={history.error}
+          hasMore={!!history.next_cursor}
+          onSelect={session.select}
+          onRefresh={history.refresh}
+          onMore={history.more}
+        />
         <div
           className={cn(
-            "min-h-0 lg:block",
+            "h-[640px] min-h-0 lg:block lg:h-auto",
             mobile === "chat" ? "block" : "hidden",
           )}
         >
           <ChatPanel
             key={`chat-${session.key}`}
             messages={session.messages}
+            job={session.job}
+            hasOlder={!!session.nextBefore}
+            olderLoading={session.olderLoading}
+            onOlder={() => void session.older()}
             busy={!!session.busy}
             disabled={locked || !!serviceError}
             canStop={unresolved}
@@ -105,7 +136,7 @@ export function RemotionWorkspace() {
         </div>
         <div
           className={cn(
-            "min-h-0 grid-rows-[minmax(280px,3fr)_minmax(180px,2fr)] gap-4 lg:grid",
+            "h-[640px] min-h-0 lg:h-auto grid-rows-[minmax(280px,3fr)_minmax(180px,2fr)] gap-4 lg:grid",
             mobile === "preview" ? "grid" : "hidden",
           )}
         >
@@ -122,7 +153,7 @@ export function RemotionWorkspace() {
             disabled={
               locked ||
               session.job?.status === "needs_input" ||
-              session.retryMode === "poll"
+              session.retryMode === "read"
             }
             pending={locked}
             onChange={(key, value) => {

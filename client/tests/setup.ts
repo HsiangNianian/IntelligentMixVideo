@@ -14,6 +14,7 @@ const { cleanup } = await import("@testing-library/react");
 export let fetchMock: ReturnType<typeof spyOn<typeof globalThis, "fetch">>;
 
 beforeEach(() => {
+  localStorage.clear();
   fetchMock = spyOn(globalThis, "fetch");
   fetchMock.mockRejectedValue(new Error("测试未配置此网络请求"));
 });

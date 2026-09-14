@@ -1,196 +1,286 @@
-/** 协调单会话请求、轮询和参数验收；会话切换隔离迟到响应，卸载清理计时器与任务。 */
+/** 会话协调器：恢复公开快照、消费 SSE、提交用户操作；只接受成功版本，切换不取消后台任务。 */
 import { useEffect, useRef, useState } from "react";
 import * as api from "./api";
+import { events, StreamReset } from "./events";
 import {
   sameValues,
   type ChatMessage,
   type Job,
   type Scalar,
+  type SessionJob,
   type Values,
   type Version,
 } from "./model";
 
-/** 会话保留成功结果与一份待验收参数，任务终态决定何时替换。 */
+/** 当前视图状态与服务端历史分离，临时参数只在验收成功后成为可复制默认值。 */
 interface Session {
   key: number;
-  messages: ChatMessage[];
   workId: string | null;
-  job: Job | null;
+  messages: ChatMessage[];
+  job: Job | SessionJob | null;
   version: Version | null;
   values: Values;
   code: string;
   busy: "chat" | "parameters" | null;
+  loading: boolean;
+  olderLoading: boolean;
+  nextBefore: number | null;
+  connection: "connecting" | "live" | "reconnecting" | null;
   error: string;
-  retryMode: "poll" | "job" | null;
+  retryMode: "read" | "job" | null;
 }
-/** 每个空白会话拥有独立草稿；首次发送前不创建服务端作品。 */
+/** 新增只建立本地空白页，首次发送才创建持久会话。 */
 function blank(key: number): Session {
   return {
     key,
-    messages: [],
     workId: null,
+    messages: [],
     job: null,
     version: null,
     values: {},
     code: "",
     busy: null,
+    loading: false,
+    olderLoading: false,
+    nextBefore: null,
+    connection: null,
     error: "",
     retryMode: null,
   };
 }
-/** 单个轮询间隔可被取消，避免卸载后的遗留定时器。 */
-function delay(signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const timer = window.setTimeout(() => {
-      signal.removeEventListener("abort", abort);
-      resolve();
-    }, 1000);
-    // 解除监听并拒绝等待，让轮询及时结束。
-    function abort() {
+/** 本地仅记录当前服务最后选中的 ID；浏览器禁用存储时仍可使用历史列表。 */
+const selectedKey = `imv.remotion.selected:${api.apiUrl("")}`;
+/** 合并有稳定 ID 的服务端消息，按持久序号排序；临时消息不参与历史恢复。 */
+function mergeMessages(previous: ChatMessage[], incoming: ChatMessage[]) {
+  return [
+    ...new Map(
+      [
+        ...previous.filter((message) => message.sequence !== undefined),
+        ...incoming,
+      ].map((message) => [message.id, message]),
+    ).values(),
+  ].sort((left, right) => (left.sequence ?? 0) - (right.sequence ?? 0));
+}
+/** 可中断的重连退避，组件退出时不遗留定时器或监听器。 */
+function reconnectDelay(signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(done, 2000);
+    /** 到时和中断共用清理，避免旧会话继续尝试重连。 */
+    function done() {
       window.clearTimeout(timer);
-      signal.removeEventListener("abort", abort);
-      reject(new DOMException("Aborted", "AbortError"));
+      signal.removeEventListener("abort", done);
+      resolve();
     }
-    if (signal.aborted) abort();
-    else signal.addEventListener("abort", abort, { once: true });
+    signal.addEventListener("abort", done, { once: true });
+    if (signal.aborted) done();
   });
 }
 
-/** 保留成功版本与临时参数两个快照；自然语言修改只在参数验收完成后发送。 */
-export function useTemplateSession() {
+/** 一条当前会话订阅支持多个任务；只在明确点击停止时调用取消 API。 */
+export function useTemplateSession(onHistoryChange: () => void) {
   const [state, setState] = useState<Session>(() => blank(0));
   const latest = useRef(state);
   const alive = useRef(true);
   const scope = useRef(new AbortController());
   const timer = useRef<number | undefined>(undefined);
-  const lastKind = useRef<"chat" | "parameters">("chat");
-  const flush = useRef<() => void>(() => {});
+  const changed = useRef(onHistoryChange);
+  changed.current = onHistoryChange;
 
-  /** 同步更新事件读取的快照，避免连续事件使用旧 React state。 */
+  /** 同步推进快照，避免连续 SSE 事件读取上一轮 React state。 */
   function publish(patch: Partial<Session>) {
     latest.current = { ...latest.current, ...patch };
     if (alive.current) setState(latest.current);
   }
-  /** 会话切换或卸载后拒绝迟到响应。 */
-  function current(key: number) {
-    return alive.current && latest.current.key === key;
+  /** 所有读取与写入回执均受会话代号约束，迟到结果不能污染另一会话。 */
+  function current(key: number, signal?: AbortSignal) {
+    return alive.current && latest.current.key === key && !signal?.aborted;
   }
-  /** 仅追加公开聊天消息，不展示内部候选或修复轨迹。 */
-  function append(role: ChatMessage["role"], text: string, image?: File) {
-    publish({
-      messages: [
-        ...latest.current.messages,
-        { id: crypto.randomUUID(), role, text, image },
-      ],
-    });
-  }
-  /** 尚未验收的参数使发送和复制保持锁定。 */
-  function dirty() {
-    const s = latest.current;
-    return (
-      !!s.version && !sameValues(s.values, s.version.candidate.default_config)
-    );
-  }
-  /** 短延迟提交当前参数，在切换会话时清理计时器。 */
-  function schedule() {
-    window.clearTimeout(timer.current);
-    timer.current = window.setTimeout(() => flush.current(), 650);
-  }
-
-  /** 一次执行仅消费所属会话的结果；新会话不接收旧模板或旧错误。 */
-  async function observe(initial: Job, key: number) {
-    let job = initial;
-    while (current(key)) {
-      publish({ job });
-      if (job.status === "queued" || job.status === "running") {
-        await delay(scope.current.signal);
-        job = await api.job(job.id, scope.current.signal);
-        continue;
-      }
-      if (job.status === "succeeded" && job.result_version_id) {
-        const [version, code] = await Promise.all([
-          api.version(job.result_version_id, scope.current.signal),
-          api.exported(job.result_version_id, scope.current.signal),
-        ]);
-        if (!current(key)) return;
-        publish({
-          version,
-          code,
-          values: { ...version.candidate.default_config },
-          error: "",
-          retryMode: null,
-        });
-        if (latest.current.busy === "chat")
-          append(
-            "assistant",
-            "模板已就绪。可以在右侧调整参数，或继续描述你想修改的效果。",
-          );
-      } else if (job.status === "needs_input") {
-        append("assistant", job.questions.join("\n"));
-      } else {
-        publish({
-          values: { ...latest.current.version?.candidate.default_config },
-          error:
-            job.status === "cancelled"
-              ? "已停止本次制作。"
-              : job.message || "本次未能完成，已有模板仍可使用。",
-          retryMode: "job",
-        });
-      }
-      return;
+  /** 仅缓存选择位置，不缓存作为事实来源的聊天内容或代码。 */
+  function remember(id: string | null) {
+    try {
+      if (id) localStorage.setItem(selectedKey, id);
+      else localStorage.removeItem(selectedKey);
+    } catch {
+      /* 存储不可用不影响服务端历史。 */
     }
   }
-
-  /** 写入只发送一次；即使中途新增会话，收到旧任务 ID 后仍会取消该任务。 */
+  /** 版本、导出和默认参数一起替换；读取失败仍保留上一成功结果。 */
+  async function accept(id: string, key: number, signal: AbortSignal) {
+    if (latest.current.version?.id === id) return;
+    const [version, code] = await Promise.all([
+      api.version(id, signal),
+      api.exported(id, signal),
+    ]);
+    if (!current(key, signal)) return;
+    if (version.project_id !== latest.current.workId)
+      throw new Error("版本不属于当前会话。");
+    publish({ version, code, values: { ...version.candidate.default_config } });
+  }
+  /** 公开任务决定加载锁和失败恢复；成功任务等待对应版本读取完成才解锁。 */
+  function applyJob(job: Job | SessionJob) {
+    const active = job.status === "queued" || job.status === "running";
+    const waitingVersion =
+      job.status === "succeeded" &&
+      job.result_version_id !== latest.current.version?.id;
+    const failed = ["failed", "interrupted", "cancelled"].includes(job.status);
+    publish({
+      job,
+      busy:
+        active || waitingVersion
+          ? "parameters" in job && job.parameters
+            ? "parameters"
+            : "chat"
+          : null,
+      ...(active &&
+      "parameters" in job &&
+      job.parameters &&
+      latest.current.version
+        ? {
+            values: {
+              ...latest.current.version.candidate.default_config,
+              ...job.parameters,
+            },
+          }
+        : {}),
+      ...(failed
+        ? {
+            values: { ...latest.current.version?.candidate.default_config },
+            error: job.message ?? "本次制作已停止，已有结果仍可使用。",
+            retryMode: "job" as const,
+          }
+        : { error: "", retryMode: null }),
+    });
+  }
+  /** 读取事务快照并恢复最近消息分页，游标只在快照全部应用后推进。 */
+  async function hydrate(work: string, key: number, signal: AbortSignal) {
+    const snapshot = await api.session(work, signal);
+    if (!current(key, signal)) return snapshot.cursor;
+    publish({ messages: snapshot.messages, nextBefore: snapshot.next_before });
+    if (snapshot.work.current_version_id)
+      await accept(snapshot.work.current_version_id, key, signal);
+    if (current(key, signal)) applyJob(snapshot.job);
+    return snapshot.cursor;
+  }
+  /** 断线从最后已应用的 ID 续传；游标失效才重新取快照，永不重发 POST。 */
+  async function watch(
+    work: string,
+    key: number,
+    signal: AbortSignal,
+    cursor: number,
+  ) {
+    while (current(key, signal)) {
+      try {
+        for await (const event of events(work, cursor, signal, () => {
+          if (current(key, signal)) publish({ connection: "live" });
+        })) {
+          if (!current(key, signal)) return;
+          if (event.id <= cursor) continue;
+          if (event.type === "message.created")
+            publish({
+              messages: mergeMessages(latest.current.messages, [event.data]),
+            });
+          else if (event.type === "job.updated") applyJob(event.data);
+          else {
+            await accept(event.data.version_id, key, signal);
+            if (!current(key, signal)) return;
+            if (latest.current.job) applyJob(latest.current.job);
+          }
+          cursor = event.id;
+          if (event.type !== "message.created")
+            if (alive.current) changed.current();
+        }
+      } catch (error) {
+        if (!current(key, signal)) return;
+        publish({ connection: "reconnecting" });
+        if (error instanceof StreamReset) {
+          try {
+            cursor = await hydrate(work, key, signal);
+          } catch {
+            /* 下一次连接仍以原游标触发快照恢复。 */
+          }
+        }
+        await reconnectDelay(signal);
+      }
+    }
+  }
+  /** 重新读取当前会话时替换旧订阅，保持同一聊天输入框和播放器实例。 */
+  async function attach(work: string, key: number) {
+    scope.current.abort();
+    const controller = new AbortController();
+    scope.current = controller;
+    publish({
+      workId: work,
+      loading: true,
+      connection: "connecting",
+      error: "",
+      retryMode: null,
+    });
+    remember(work);
+    try {
+      const cursor = await hydrate(work, key, controller.signal);
+      if (!current(key, controller.signal)) return;
+      publish({ loading: false });
+      void watch(work, key, controller.signal, cursor);
+    } catch (error) {
+      if (current(key, controller.signal))
+        publish({
+          loading: false,
+          busy: null,
+          connection: null,
+          error: error instanceof Error ? error.message : "会话恢复失败。",
+          retryMode: "read",
+        });
+    }
+  }
+  /** 切换、新增和卸载只清理本地读取；任务继续写入其所属历史。 */
+  function select(work: string | null) {
+    scope.current.abort();
+    window.clearTimeout(timer.current);
+    const next = blank(latest.current.key + 1);
+    latest.current = next;
+    setState(next);
+    remember(work);
+    if (work) void attach(work, next.key);
+    if (alive.current) changed.current();
+  }
+  /** 用户操作仅提交一次；响应未知时提示检查历史，不以重试读取变相重做任务。 */
   async function execute(
     kind: "chat" | "parameters",
     start: () => Promise<Job>,
-    resume = false,
   ) {
-    if (latest.current.busy) return;
+    if (latest.current.busy || latest.current.loading) return;
     const key = latest.current.key;
-    lastKind.current = kind;
-    let acknowledged = resume;
     publish({ busy: kind, error: "", retryMode: null });
     try {
       const job = await start();
       if (!current(key)) {
-        await api.cancel(job.id);
+        if (alive.current) changed.current();
         return;
       }
-      acknowledged = true;
       publish({ workId: job.project_id, job });
-      await observe(job, key);
+      if (alive.current) changed.current();
+      await attach(job.project_id, key);
     } catch (error) {
       if (current(key))
         publish({
-          error:
-            error instanceof Error ? error.message : "请求未完成，请重试。",
-          retryMode: acknowledged ? "poll" : null,
-          ...(!acknowledged && kind === "parameters"
-            ? {
-                values: { ...latest.current.version?.candidate.default_config },
-              }
-            : {}),
+          busy: null,
+          values: { ...latest.current.version?.candidate.default_config },
+          error: `${error instanceof Error ? error.message : "请求未完成。"} 请先检查历史会话，确认任务是否已创建。`,
+          retryMode: latest.current.workId ? "read" : null,
         });
-    } finally {
-      if (current(key)) {
-        publish({ busy: null });
-        if (
-          dirty() &&
-          !latest.current.error &&
-          latest.current.job?.status !== "needs_input"
-        )
-          schedule();
-      }
+      if (alive.current) changed.current();
     }
   }
-
-  /** 首轮可带参考图片；后续聊天只能修改或回答当前任务的问题。 */
+  /** 首轮图片可上传；后续输入绑定最近成功版本，澄清明确绑定提问任务。 */
   function send(text: string, image?: File) {
     const s = latest.current;
-    if (s.busy || dirty() || (!text.trim() && !image)) return;
-    append("user", text.trim(), image);
+    if (s.busy || s.loading || dirty() || (!text.trim() && !image)) return;
+    publish({
+      messages: [
+        ...s.messages,
+        { id: crypto.randomUUID(), role: "user", text: text.trim(), image },
+      ],
+    });
     void execute("chat", async () => {
       if (!s.workId) {
         const asset = image ? await api.upload(image) : undefined;
@@ -205,99 +295,94 @@ export function useTemplateSession() {
       });
     });
   }
-
-  /** 参数先更新预览并立即锁定，随后提交验收；运行中不接收第二份草稿。 */
-  function change(key: string, value: Scalar) {
-    const s = latest.current;
-    if (
-      !s.version ||
-      s.busy ||
-      dirty() ||
-      s.retryMode === "poll" ||
-      ["queued", "running", "needs_input"].includes(s.job?.status ?? "")
-    )
-      return;
-    publish({
-      values: { ...s.values, [key]: value },
-      error: "",
-      retryMode: null,
-    });
-    schedule();
+  /** 尚未验收的参数与成功默认值不同，提交和复制维持锁定。 */
+  function dirty() {
+    return (
+      !!latest.current.version &&
+      !sameValues(
+        latest.current.values,
+        latest.current.version.candidate.default_config,
+      )
+    );
   }
-  flush.current = () => {
+  /** 参数先供隔离预览使用，短延迟后验收；切换时丢弃未提交的本地参数草稿。 */
+  function change(name: string, value: Scalar) {
     const s = latest.current;
     if (
       !s.version ||
       !s.workId ||
       s.busy ||
-      !dirty() ||
-      s.error ||
+      s.loading ||
+      dirty() ||
+      s.retryMode === "read" ||
       s.job?.status === "needs_input"
     )
       return;
-    const values = { ...s.values };
-    void execute("parameters", () =>
-      api.message(s.workId!, {
-        parameters: values,
-        base_version_id: s.version!.id,
-      }),
-    );
-  };
-
-  /** 主动停止服务端任务；轮询读取终态后统一恢复最后成功参数。 */
+    const values = { ...s.values, [name]: value };
+    publish({ values, error: "", retryMode: null });
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => {
+      if (current(s.key))
+        void execute("parameters", () =>
+          api.message(s.workId!, {
+            parameters: values,
+            base_version_id: s.version!.id,
+          }),
+        );
+    }, 650);
+  }
+  /** 停止是唯一取消服务端任务的入口；回执后恢复快照以覆盖连接暂时中断。 */
   async function stop() {
     const s = latest.current;
-    if (!s.job || !["queued", "running"].includes(s.job.status)) return;
+    if (!s.job || !s.workId || !["queued", "running"].includes(s.job.status))
+      return;
     try {
       await api.cancel(s.job.id);
+      if (current(s.key)) await attach(s.workId, s.key);
+      if (alive.current) changed.current();
     } catch {
       if (current(s.key)) publish({ error: "停止请求未完成，请重试。" });
     }
   }
-
-  /** 明确恢复读取或重新执行，网络失败不会自动重复提交。 */
+  /** 刷新只读取，重试任务才创建执行；两种行为在按钮文字中明确区分。 */
   function retry() {
     const s = latest.current;
-    if (!s.job || s.busy) return;
-    void execute(
-      lastKind.current,
-      () =>
-        s.retryMode === "poll"
-          ? api.job(s.job!.id, scope.current.signal)
-          : api.retry(s.job!.id),
-      s.retryMode === "poll",
-    );
+    if (s.retryMode === "read" && s.workId) void attach(s.workId, s.key);
+    else if (s.job) void execute("chat", () => api.retry(s.job!.id));
   }
-
-  /** 新增不删除历史作品；取消已知旧任务，隔离仍在传输中的响应。 */
-  function reset() {
-    const old = latest.current;
-    scope.current.abort();
-    scope.current = new AbortController();
-    window.clearTimeout(timer.current);
-    latest.current = blank(old.key + 1);
-    setState(latest.current);
-    if (old.job && ["queued", "running"].includes(old.job.status)) {
-      void api.cancel(old.job.id).catch(() => {
-        if (current(old.key + 1))
-          publish({
-            error: "新会话已打开，但旧任务停止失败。请检查服务端任务状态。",
-          });
-      });
+  /** 较早消息分页只合并消息，不用旧分页响应覆盖正在推进的任务或版本。 */
+  async function older() {
+    const s = latest.current;
+    if (!s.workId || !s.nextBefore || s.olderLoading) return;
+    const signal = scope.current.signal;
+    publish({ olderLoading: true });
+    try {
+      const page = await api.session(s.workId, signal, s.nextBefore);
+      if (current(s.key, signal))
+        publish({
+          messages: mergeMessages(page.messages, latest.current.messages),
+          nextBefore: page.next_before,
+        });
+    } catch {
+      if (current(s.key, signal))
+        publish({ error: "更早消息加载失败，请重试。" });
+    } finally {
+      if (current(s.key, signal)) publish({ olderLoading: false });
     }
   }
-
   useEffect(() => {
     alive.current = true;
-    // StrictMode 会先清理再挂载 effect；新的一轮读取必须使用未中断的 controller。
-    if (scope.current.signal.aborted) scope.current = new AbortController();
+    let selected: string | null = null;
+    try {
+      selected = localStorage.getItem(selectedKey);
+    } catch {
+      /* 使用侧栏手动恢复。 */
+    }
+    if (selected) select(selected);
     return () => {
       alive.current = false;
       scope.current.abort();
       window.clearTimeout(timer.current);
-      const job = latest.current.job;
-      if (job && ["queued", "running"].includes(job.status))
-        void api.cancel(job.id).catch(() => {});
     };
   }, []);
   return {
@@ -309,6 +394,8 @@ export function useTemplateSession() {
     change,
     stop,
     retry,
-    reset,
+    select,
+    reset: () => select(null),
+    older,
   };
 }

@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { Check, ChevronDown, Code2, Copy, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-/** 展开操作保留紧凑布局，新建会话由父级统一取消任务并清空状态。 */
+/** 展开操作保留紧凑布局，新增由父级打开空白会话，后台任务保留在历史中。 */
 export function CodePanel({
   code,
   pending,
