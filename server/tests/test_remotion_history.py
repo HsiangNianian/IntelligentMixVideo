@@ -407,3 +407,38 @@ def _data_lines(lines, count):
             if found == count:
                 return
     raise AssertionError("SSE connection closed before the expected events")
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://localhost:1420",
+        "http://localhost:4173",
+        "tauri://localhost",
+        "http://tauri.localhost",
+    ],
+)
+def test_mounted_stream_allows_replay_header(client, origin):
+    """The actual host CORS policy permits fetch-based SSE replay from existing browser and Tauri origins."""
+    response = client.options(
+        f"/api/templates/works/{uuid4()}/stream",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "last-event-id",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == origin
+    assert "last-event-id" in response.headers["access-control-allow-headers"].lower()
+    assert (
+        client.options(
+            f"/api/templates/works/{uuid4()}/stream",
+            headers={
+                "Origin": "https://untrusted.example",
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "last-event-id",
+            },
+        ).status_code
+        == 400
+    )

@@ -39,7 +39,7 @@ app.add_middleware(
         "http://localhost:1420", "http://localhost:4173",
         "tauri://localhost", "http://tauri.localhost",
     ],
-    allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type"],
+    allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type", "Last-Event-ID"],
 )
 app.include_router(router)
 app.include_router(template_router)
