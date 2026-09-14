@@ -1,5 +1,6 @@
 /** 加载固定版本阿里云预览 SDK 并读取目录；播放器实例的创建与销毁由预览组件负责。 */
 import motions from "./motions.json";
+import bundledCatalog from "../../../../server/src/server/template/sdk_catalog.json";
 import type { Category, EffectAsset } from "./model";
 
 /** SDK 返回的原始目录项；不同目录分别使用 key 或 subType。 */
@@ -93,8 +94,8 @@ export function loadSDK(): Promise<PreviewSDK> {
   return loading;
 }
 
-/** 合并 SDK 五类目录和静态动画目录；保留官方效果 ID 与预览图片。 */
-export function readCatalog(sdk: PreviewSDK): EffectAsset[] {
+/** 合并效果与动画目录；SDK 未加载时使用同版本随包白名单，让离线编辑不依赖网络。 */
+export function readCatalog(sdk?: PreviewSDK): EffectAsset[] {
   const result: EffectAsset[] = motions.map((item) => ({
     ...item,
     category: item.category as Category,
@@ -105,11 +106,11 @@ export function readCatalog(sdk: PreviewSDK): EffectAsset[] {
     ),
   }));
   const lists: [Category, CatalogItem[], string][] = [
-    ["flower", sdk.getSubtitleEffectColorStyles(), "EffectColorStyle"],
-    ["bubble", sdk.getSubtitleBubbles(), "BubbleStyleId"],
-    ["filter", sdk.getVideoFilters(), "SubType"],
-    ["vfx/normal", sdk.getVideoEffects(), "SubType"],
-    ["transition/normal", sdk.getVideoTransitions(), "SubType"],
+    ["flower", sdk?.getSubtitleEffectColorStyles() || bundledCatalog.categories.flower.map((key) => ({ key })), "EffectColorStyle"],
+    ["bubble", sdk?.getSubtitleBubbles() || bundledCatalog.categories.bubble.map((key) => ({ key })), "BubbleStyleId"],
+    ["filter", sdk?.getVideoFilters() || bundledCatalog.categories.filter.map((key) => ({ key })), "SubType"],
+    ["vfx/normal", sdk?.getVideoEffects() || bundledCatalog.categories["vfx/normal"].map((key) => ({ key })), "SubType"],
+    ["transition/normal", sdk?.getVideoTransitions() || bundledCatalog.categories["transition/normal"].map((key) => ({ key })), "SubType"],
   ];
   for (const [category, items, parameter] of lists)
     for (const item of items) {

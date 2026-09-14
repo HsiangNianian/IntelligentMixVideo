@@ -21,6 +21,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import * as api from "./api";
+import { readCatalog } from "./sdk";
 import {
   newDraft,
   toDraft,
@@ -33,17 +34,18 @@ import { TemplatePreview } from "./TemplatePreview";
 
 /** 对话框只保存当前操作所需状态；null target 表示切换到新建。 */
 type Action =
-  | { type: "switch"; target: string | null }
+  | { type: "switch"; target: string | null; environment: api.Environment }
   | { type: "rename" | "copy" | "delete" };
 
 /** 使用独立草稿，只有成功保存或明确放弃才替换；所有写入串行，防止双击提交。 */
 export function TemplateWorkspace() {
   const id = useId();
+  const [environment, setEnvironment] = useState<api.Environment>("cloud");
   const [templates, setTemplates] = useState<Template[]>([]);
   const [current, setCurrent] = useState<Template | null>(null);
   const [draft, setDraft] = useState<Draft>(newDraft);
   const [baseline, setBaseline] = useState(() => JSON.stringify(newDraft()));
-  const [catalog, setCatalog] = useState<EffectAsset[]>([]);
+  const [catalog, setCatalog] = useState<EffectAsset[]>(() => readCatalog());
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -56,8 +58,8 @@ export function TemplateWorkspace() {
   useEffect(() => {
     const controller = new AbortController();
     void api
-      .listTemplates(controller.signal)
-      .then(setTemplates)
+      .listTemplates(controller.signal, environment)
+      .then((items) => { if (!controller.signal.aborted) setTemplates(items); })
       .catch((error) => {
         if (!controller.signal.aborted)
           setError(error instanceof Error ? error.message : "模板列表加载失败");
@@ -104,8 +106,8 @@ export function TemplateWorkspace() {
   }
 
   /** 保存成功后直接回填响应，避免额外刷新失败被误认为保存失败。 */
-  async function persist(value = draft, templateId = current?.template_id) {
-    const saved = await api.saveTemplate(value, templateId);
+  async function persist(value = draft, templateId: string | null = current?.template_id ?? null) {
+    const saved = await api.saveTemplate(value, templateId ?? undefined, environment);
     setTemplates((items) => [
       saved,
       ...items.filter((item) => item.template_id !== saved.template_id),
@@ -114,43 +116,43 @@ export function TemplateWorkspace() {
     setNotice(`模板「${saved.name}」已保存`);
   }
 
-  /** 先获取目标详情再替换，加载失败仍停留在原模板。 */
-  async function switchTo(target: string | null) {
-    adopt(target ? await api.getTemplate(target) : null);
+  /** 先读取目标库或模板再替换草稿；环境切换失败保留原库，保存仍在原环境完成。 */
+  async function switchTo(target: string | null, nextEnvironment = environment) {
+    if (nextEnvironment !== environment) {
+      const items = await api.listTemplates(undefined, nextEnvironment);
+      setTemplates(items);
+      setEnvironment(nextEnvironment);
+      setNotice("");
+    }
+    adopt(target ? await api.getTemplate(target, nextEnvironment) : null);
     setAction(null);
   }
 
-  /** 脏状态必须经用户选择，干净状态直接加载目标。 */
-  function requestSwitch(target: string | null) {
-    if (target && target === current?.template_id) return;
+  /** 模板和环境切换共用未保存保护；环境切换总是打开新建草稿。 */
+  function requestSwitch(target: string | null, nextEnvironment = environment) {
+    if (target && target === current?.template_id && nextEnvironment === environment) return;
     if (dirty) {
       setError("");
-      setAction({ type: "switch", target });
-    } else void perform(() => switchTo(target));
+      setAction({ type: "switch", target, environment: nextEnvironment });
+    } else void perform(() => switchTo(target, nextEnvironment));
   }
 
   /** 重命名和另存为包含当前草稿；删除只针对已保存 ID。 */
   async function confirmAction() {
     if (!action) return;
     if (action.type === "delete" && current) {
-      await api.deleteTemplate(current.template_id);
+      await api.deleteTemplate(current.template_id, environment);
       setTemplates((items) =>
         items.filter((item) => item.template_id !== current.template_id),
       );
       adopt(null);
       setNotice("模板已删除");
     } else if (action.type === "copy" || action.type === "rename") {
-      // 另存为显式无 ID，不能落入 persist 的当前模板默认参数。
-      const saved = await api.saveTemplate(
+      // null 明确表示另存为，不采用当前模板 ID 的默认参数。
+      await persist(
         { ...draft, name: newName },
-        action.type === "copy" ? undefined : current?.template_id,
+        action.type === "copy" ? null : current?.template_id ?? null,
       );
-      setTemplates((items) => [
-        saved,
-        ...items.filter((item) => item.template_id !== saved.template_id),
-      ]);
-      adopt(saved);
-      setNotice(`模板「${saved.name}」已保存`);
     }
     setAction(null);
   }
@@ -160,6 +162,21 @@ export function TemplateWorkspace() {
       {/* 左侧集中模板选择与编辑，右侧预览始终从工作区顶部开始。 */}
       <section aria-label="模板配置" className="min-w-0 space-y-5">
         <Card className="gap-4 p-5">
+          <div className="space-y-2">
+            <Label htmlFor={`${id}-environment`}>当前环境</Label>
+            <Select value={environment} onValueChange={(value) => requestSwitch(null, value as api.Environment)} disabled={busy || loading}>
+              <SelectTrigger id={`${id}-environment`} className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="local">本地</SelectItem>
+                <SelectItem value="cloud">云端</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              {environment === "local" ? "保存到本机应用数据目录 data/template，无需 Python 服务。" : "保存到云端数据库。"}
+            </p>
+          </div>
           <div className="flex flex-wrap items-end gap-3">
             <div className="min-w-48 flex-1 space-y-2">
               <Label htmlFor={`${id}-picker`}>打开模板</Label>
@@ -195,7 +212,7 @@ export function TemplateWorkspace() {
               disabled={busy || loading}
               onClick={() =>
                 void perform(async () => {
-                  setTemplates(await api.listTemplates());
+                  setTemplates(await api.listTemplates(undefined, environment));
                   setNotice("模板列表已刷新，当前编辑内容已保留");
                 })
               }
@@ -206,7 +223,7 @@ export function TemplateWorkspace() {
           <p className="text-xs text-muted-foreground">
             {loading
               ? "正在读取模板库…"
-              : `共享模板库 · ${templates.length} 个模板`}
+              : `${environment === "local" ? "本地模板库" : "共享模板库"} · ${templates.length} 个模板`}
             {dirty ? " · 有未保存的修改" : ""}
           </p>
         </Card>
@@ -365,7 +382,7 @@ export function TemplateWorkspace() {
                     type="button"
                     variant="outline"
                     disabled={busy}
-                    onClick={() => void perform(() => switchTo(action.target))}
+                    onClick={() => void perform(() => switchTo(action.target, action.environment))}
                   >
                     放弃修改
                   </Button>
@@ -375,7 +392,7 @@ export function TemplateWorkspace() {
                     onClick={() => {
                       void perform(async () => {
                         await persist();
-                        await switchTo(action.target);
+                        await switchTo(action.target, action.environment);
                       });
                     }}
                   >

@@ -89,7 +89,7 @@ test("保存失败保留草稿，重试后切换", async () => {
   await act(async () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "保存并切换" }));
   });
-  await within(dialog).findByText("数据库暂不可用");
+  await within(dialog).findByText(/数据库暂不可用/);
   expect(screen.getByDisplayValue("修改后")).toBeTruthy();
   expect(screen.queryByText("模板「修改后」已保存")).toBeNull();
   fetchMock.mockResolvedValueOnce(Response.json({ ...saved, name: "修改后" }));
@@ -159,4 +159,88 @@ test.each([
   expect(body.editor.titleIn).toBe("");
   expect(body.editor.titleInDuration).toBe(expected);
   expect(body.editor.subtitleIn).toBe("in/fade_in");
+});
+
+// 测试桌面默认云端，主动切换本地后使用 IPC；未保存切换保护不变，两个库不混合。
+test("本地保存并切换云端，取消时保留草稿", async () => {
+  const saved = savedTemplate();
+  const invoke = mock(async (_command: string, args: Record<string, unknown>): Promise<unknown> => {
+    if (args.operation === "list") return [saved];
+    return { ...saved, ...args.draft as object };
+  });
+  window.__TAURI__ = { core: { invoke: invoke as NonNullable<Window["__TAURI__"]>["core"]["invoke"] } };
+  try {
+    fetchMock.mockResolvedValueOnce(Response.json([]));
+    render(<TemplateWorkspace />);
+    await screen.findByText("共享模板库 · 0 个模板");
+    expect(screen.getByLabelText("当前环境").textContent).toBe("云端");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(invoke).not.toHaveBeenCalled();
+    await choose("当前环境", "本地");
+    await screen.findByText("本地模板库 · 1 个模板");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await choose("打开模板", saved.name);
+    await screen.findByDisplayValue(saved.name);
+    fireEvent.change(screen.getByLabelText("模板名称"), { target: { value: "本地修改" } });
+    await choose("当前环境", "云端");
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "取消" }));
+    expect(screen.getByDisplayValue("本地修改")).toBeTruthy();
+    await choose("当前环境", "云端");
+    invoke.mockRejectedValueOnce("磁盘不可写");
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "保存并切换" }));
+    await within(await screen.findByRole("dialog")).findByText("磁盘不可写");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByDisplayValue("本地修改")).toBeTruthy();
+    fetchMock.mockResolvedValueOnce(Response.json([]));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "保存并切换" }));
+    await screen.findByText("共享模板库 · 0 个模板");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByLabelText<HTMLInputElement>("模板名称").value).toBe("");
+    expect(invoke.mock.calls.at(-1)?.[1]).toMatchObject({ operation: "save", id: saved.template_id, draft: { name: "本地修改" } });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  } finally {
+    delete window.__TAURI__;
+  }
+});
+
+// 测试启动时断网或服务不可用仍留在云端，提示后由用户切换本地并清除错误。
+test.each(["network", "503"])("云端不可用时提示手动切换本地：%s", async (failure) => {
+  const invoke = mock(async (): Promise<unknown> => []);
+  window.__TAURI__ = { core: { invoke: invoke as NonNullable<Window["__TAURI__"]>["core"]["invoke"] } };
+  try {
+    if (failure === "network") fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    else fetchMock.mockResolvedValueOnce(Response.json({ detail: "数据库暂不可用" }, { status: 503 }));
+    render(<TemplateWorkspace />);
+    expect((await screen.findByRole("alert")).textContent).toContain("可在「当前环境」中切换到本地环境");
+    expect(screen.getByLabelText("当前环境").textContent).toBe("云端");
+    expect(invoke).not.toHaveBeenCalled();
+    await choose("当前环境", "本地");
+    await screen.findByText("本地模板库 · 0 个模板");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  } finally {
+    delete window.__TAURI__;
+  }
+});
+
+// 测试目标库加载失败时不更换环境或草稿，重试放弃修改成功后只展示目标库。
+test("切换环境读取失败后可重试", async () => {
+  await openExistingTemplate();
+  fireEvent.change(screen.getByLabelText("模板名称"), { target: { value: "云端草稿" } });
+  const invoke = mock(async (): Promise<unknown> => []);
+  window.__TAURI__ = { core: { invoke: invoke as NonNullable<Window["__TAURI__"]>["core"]["invoke"] } };
+  try {
+    await choose("当前环境", "本地");
+    invoke.mockRejectedValueOnce("文件读取失败");
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "放弃修改" }));
+    await within(await screen.findByRole("dialog")).findByText("文件读取失败");
+    expect(screen.getByLabelText("当前环境").textContent).toBe("云端");
+    expect(screen.getByDisplayValue("云端草稿")).toBeTruthy();
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "放弃修改" }));
+    await screen.findByText("本地模板库 · 0 个模板");
+    expect(screen.getByLabelText<HTMLInputElement>("模板名称").value).toBe("");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  } finally {
+    delete window.__TAURI__;
+  }
 });

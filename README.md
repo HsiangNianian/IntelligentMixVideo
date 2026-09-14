@@ -55,7 +55,7 @@ bun install --frozen-lockfile
 bun run tauri dev
 ```
 
-首页提供模板创建、选择、完整编辑、保存、重命名、另存为和删除，切换前保护未保存修改。
+首页提供模板创建、选择、完整编辑、保存、重命名、另存为和删除，切换前保护未保存修改。页面可选择本地或云端环境：桌面和浏览器均默认云端，沿用现有 MySQL API；连接失败、超时或服务端 5xx 时提示手动切换本地。本地在客户端应用数据目录的 `data/template/templates.json` 保存，无需 Python 服务；浏览器使用本地保存需打开桌面客户端。两套模板库独立，切换环境同样保护未保存修改。
 模板功能本次以 `bun run dev` 启动后在 `http://localhost:1420` 使用，预览沿用阿里云 SDK 5.2.2。
 示例视频可在 `client/.env` 中通过 `VITE_PREVIEW_VIDEO_URL` 配置，修改后重启前端；详见 [客户端说明](client/README.md#示例视频配置)。
 客户端 API 地址通过 `client/.env` 中的 `VITE_API_URL` 配置，未配置或留空时默认 `http://localhost:8000`。
