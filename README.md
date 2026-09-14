@@ -100,6 +100,8 @@ PR 的统一结果是 `CI result`，分支保护建议同时要求该检查和 p
 | macOS | Apple Silicon、Intel | dmg |
 
 从 Actions 对应运行的 Artifacts 下载产物，保留 14 天。CI 使用依赖锁文件，不需要额外配置发布密钥。
+Linux AppImage 随包携带 GStreamer base/good/bad/libav 插件及依赖；安装宿主机插件不能补齐包内缺失的插件。
+上传前在构建机运行 `bash .github/scripts/appimage-media-smoke.sh <AppImage路径>`，隔离插件路径与缓存，验证包内 H.264/AAC 解码和 WebVTT 支持；该检查不替代桌面真实预览验证。
 当前安装包未配置代码签名或 macOS 公证；正式分发时需另行配置。
 
 涉及 CI、原生代码或两端版本清单/锁文件时，验证流程运行 actionlint、CI 调度与发布回归测试，

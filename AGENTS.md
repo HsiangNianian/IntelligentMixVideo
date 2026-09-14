@@ -131,6 +131,7 @@ Windows 需要 MSVC C++ 构建工具、Windows SDK 和 WebView2；ARM64 主机�
 | macOS | Apple Silicon、Intel | dmg |
 
 普通构建的 Actions artifacts 保留 14 天。发版应复用这一构建工作流，避免维护两套不一致的平台构建逻辑。
+Linux 构建安装 GStreamer base/good/bad/libav 插件供 AppImage 收集；上传前在构建机运行 `.github/scripts/appimage-media-smoke.sh <AppImage路径>`，隔离插件路径和缓存，检查包内插件来源及 H.264/AAC 解码、WebVTT 支持。宿主机插件检测不能代替产物验证；此无界面检查不代表真实 SDK 或桌面预览通过。
 构建产物来自被触发的提交；正式发布时必须来自对应 tag 的源码。
 
 涉及 CI、原生代码或两端版本清单/锁文件时，Release preflight 检查全部工作流、运行调度与发布脚本测试，
