@@ -153,7 +153,7 @@ def record_input(
     *,
     reconstructed: bool = False,
 ) -> None:
-    """Use explicit inputs; old retries get a factual notice rather than invented assistant prose."""
+    """Record persisted input; reconstructed messages never quote the private model context."""
     first = db.execute(
         "SELECT id FROM jobs WHERE project_id=? ORDER BY rowid LIMIT 1",
         (str(job.project_id),),
@@ -171,7 +171,7 @@ def record_input(
             answer = json.loads(inputs.clarifications[-1])
             text = answer["answer"]
         elif inputs.parameters is not None:
-            text = "调整参数：" + json.dumps(inputs.parameters, ensure_ascii=False)
+            text = "调整模板参数。"
         else:
             text = inputs.instruction or "重试本次制作。"
     append_message(db, job, "user", text, image=image, reconstructed=reconstructed)

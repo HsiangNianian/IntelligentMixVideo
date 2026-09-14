@@ -1466,7 +1466,7 @@ def test_public_history_only_publishes_accepted_versions(store, candidate, spec)
     edit = store.enqueue(work.id, inputs, version.id)
     pending = store.session(work.id)
     assert pending.job.parameters == {"0_text": "修改文字"}
-    assert pending.messages[-1].text == '调整参数：{"0_text": "修改文字"}'
+    assert pending.messages[-1].text == "调整模板参数。"
     cursor = pending.cursor
     store.update(edit.id, status="failed")
     failed = store.session(work.id)

@@ -142,9 +142,7 @@ export function remotionServer(
         "user",
         input.description ||
           input.instruction ||
-          (input.parameters
-            ? `调整参数：${JSON.stringify(input.parameters)}`
-            : "请参考这张图片制作字效。"),
+          (input.parameters ? "调整模板参数。" : "请参考这张图片制作字效。"),
         input.image?.asset_id,
       );
     advance(job);
