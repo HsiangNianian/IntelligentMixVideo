@@ -10,6 +10,7 @@ from pathlib import Path
 
 from ..settings import Settings
 from .evidence import digest
+from .image_comparison import consistency_checks
 from .models import (
     Check,
     TemplateCandidate,
@@ -55,6 +56,8 @@ class Renderer:
             "font_400": self.settings.font_regular,
             "font_700": self.settings.font_bold,
             "worker": self.settings.renderer_dir / "worker.mjs",
+            "image_comparison": Path(__file__).with_name("image_comparison.py"),
+            "probes": Path(__file__).with_name("probes.py"),
             "presentation": self.settings.renderer_dir / "presentation.mjs",
             "preview_host": self.settings.renderer_dir / "preview-host.tsx",
             "dependencies": self.settings.renderer_dir / "bun.lock",
@@ -181,6 +184,7 @@ class Renderer:
         directory: Path,
         *,
         preserve_code: bool = False,
+        extra_frames: list[int] | None = None,
     ) -> tuple[TemplateCandidate, ValidationReport]:
         """Preserve failed artifacts; cancellation/timeout kills and reaps the entire sandbox process group."""
         directory.mkdir(parents=True, exist_ok=False)
@@ -190,6 +194,16 @@ class Renderer:
         (directory / "spec.json").write_text(spec.model_dump_json(), encoding="utf-8")
         (directory / "Template.tsx").write_text(candidate.tsx_code, encoding="utf-8")
         report = ValidationReport(fingerprint="", frames=keyframes(spec))
+        if extra_frames:
+            if any(
+                type(frame) is not int
+                or not 0 <= frame < spec.composition.duration_in_frames
+                for frame in extra_frames
+            ):
+                raise ValueError(
+                    "Supplemental frames must be valid composition frame numbers"
+                )
+            report.frames = sorted(set(report.frames) | set(extra_frames))
         try:
             validate_candidate(candidate, spec)
             report.checks.append(
@@ -219,6 +233,10 @@ class Renderer:
             report.runtime["worker"] = hashlib.sha256(
                 (settings.renderer_dir / "worker.mjs").read_bytes()
             ).hexdigest()
+            report.runtime["image_comparison"] = digest(
+                Path(__file__).with_name("image_comparison.py")
+            )
+            report.runtime["probes"] = digest(Path(__file__).with_name("probes.py"))
             report.runtime["presentation"] = digest(
                 settings.renderer_dir / "presentation.mjs"
             )
@@ -286,6 +304,7 @@ class Renderer:
                 )
             candidate = candidate.model_copy(update={"tsx_code": formatted})
             if all(check.status == "pass" for check in report.checks):
+                report.checks.extend(consistency_checks(directory, spec, report.frames))
                 report.checks.append(await self.media_metadata(directory, spec))
                 report.checks.extend(
                     pixel_checks(directory, spec, report.frames, probes)

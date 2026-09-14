@@ -1,7 +1,6 @@
 /** Isolated renderer: format and check one TSX candidate, then render evidence into /work. */
 import fs from "node:fs/promises";
 import path from "node:path";
-import crypto from "node:crypto";
 import ts from "typescript";
 import prettier from "prettier";
 import { bundle } from "@remotion/bundler";
@@ -304,7 +303,8 @@ async function main() {
         });
       }
     });
-    await check("determinism", async () => {
+    // Capture evidence only; the host compares visible pixels with bounded raster tolerance.
+    await check("repeat_render", async () => {
       const frame = request.frames[Math.floor(request.frames.length / 2)];
       await renderStill({
         ...options,
@@ -312,15 +312,8 @@ async function main() {
         imageFormat: "png",
         output: `${root}/repeat.png`,
       });
-      const first = await fs.readFile(`${root}/frame-${frame}.png`);
-      const second = await fs.readFile(`${root}/repeat.png`);
-      if (
-        crypto.createHash("sha256").update(first).digest("hex") !==
-        crypto.createHash("sha256").update(second).digest("hex")
-      )
-        throw new Error("Repeated frame changed after out-of-order rendering.");
     });
-    await check("export_defaults", async () => {
+    await check("export_default_render", async () => {
       const exportedComposition = await selectComposition({
         serveUrl,
         id: "Export",
@@ -335,14 +328,6 @@ async function main() {
         imageFormat: "png",
         output: `${root}/export-default.png`,
       });
-      const original = await fs.readFile(
-        `${root}/frame-${request.frames[0]}.png`,
-      );
-      const exported = await fs.readFile(`${root}/export-default.png`);
-      if (!original.equals(exported))
-        throw new Error(
-          "Export defaults differ from accepted parameter rendering.",
-        );
     });
   } catch (error) {
     if (!checks.some((item) => item.status === "fail"))

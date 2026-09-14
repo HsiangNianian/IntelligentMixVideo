@@ -4,6 +4,7 @@ from pathlib import Path
 
 from PIL import Image, ImageChops
 
+from .image_comparison import MAX_CHANNEL_DELTA, compare_images
 from .models import Check, TemplateCandidate, TemplateSpec
 
 
@@ -26,8 +27,9 @@ def parameter_probes(candidate: TemplateCandidate, spec: TemplateSpec) -> list[d
             "style_font_size": 2
             if layer.style.font_size <= 1
             else layer.style.font_size * 0.7,
-            "layout_x": layer.layout.x + (0.1 if layer.layout.x <= 0.8 else -0.1),
-            "layout_y": layer.layout.y + (0.1 if layer.layout.y <= 0.8 else -0.1),
+            # Prefer movement toward the center so an experiment does not introduce edge clipping.
+            "layout_x": layer.layout.x + (0.1 if layer.layout.x <= 0.5 else -0.1),
+            "layout_y": layer.layout.y + (0.1 if layer.layout.y <= 0.5 else -0.1),
         }
         for suffix, value in values.items():
             key = f"{index}_{suffix}"
@@ -62,6 +64,20 @@ def alpha_mass(image: Image.Image) -> int:
     )
 
 
+def color_mass(image: Image.Image, rgb: tuple[int, ...]) -> int:
+    """Measure alpha-weighted target-color coverage, allowing bounded RGB rounding without hue substitution."""
+    difference = ImageChops.difference(
+        image.convert("RGB"), Image.new("RGB", image.size, rgb)
+    )
+    red, green, blue = difference.split()
+    maximum = ImageChops.lighter(ImageChops.lighter(red, green), blue)
+    mask = maximum.point(
+        [255 if value <= MAX_CHANNEL_DELTA else 0 for value in range(256)]
+    )
+    alpha = ImageChops.multiply(mask, image.getchannel("A"))
+    return sum(value * count for value, count in enumerate(alpha.histogram()))
+
+
 def pixel_checks(
     directory: Path, spec: TemplateSpec, frames: list[int], probes: list[dict]
 ) -> list[Check]:
@@ -69,6 +85,8 @@ def pixel_checks(
     checks = []
     originals = {}
     try:
+        if not frames:
+            raise ValueError("No sampled frames to verify")
         for frame in frames:
             with Image.open(directory / f"frame-{frame}.png") as image:
                 if image.size != (spec.composition.width, spec.composition.height):
@@ -92,29 +110,52 @@ def pixel_checks(
             if motion.phase != "hold"
         ]
         missing = []
+        insufficient = []
         for motion in changing:
+            sample_start, sample_end = motion.start_frame, motion.end_frame
+            if sample_end - sample_start == 1:
+                # A one-frame cut has no internal pair; inspect its available adjacent boundaries.
+                sample_start -= 1
+                sample_end += 1
             samples = [
-                image.tobytes()
+                image
                 for frame, image in originals.items()
-                if motion.start_frame <= frame < motion.end_frame
+                if sample_start <= frame < sample_end
             ]
-            if len(set(samples)) < 2:
+            if len(samples) < 2:
+                insufficient.append(
+                    f"{motion.phase}:{motion.start_frame}-{motion.end_frame}: "
+                    "fewer than two available frames; temporal change cannot be verified. "
+                    "Obtain boundary samples or clarify the timing; do not claim success from one still"
+                )
+            elif all(
+                compare_images(samples[0], sample).equivalent for sample in samples[1:]
+            ):
                 missing.append(
-                    f"{motion.phase}:{motion.start_frame}-{motion.end_frame}"
+                    f"{motion.phase}:{motion.start_frame}-{motion.end_frame}: "
+                    "no visible change beyond raster tolerance; implement the declared frame-driven motion"
                 )
         static = not changing and all(
             layer.start_frame == 0
             and layer.end_frame == spec.composition.duration_in_frames
             for layer in spec.text_layers
         )
-        if static and len({image.tobytes() for image in originals.values()}) != 1:
-            missing.append("static target changed across frames")
+        if static:
+            first_frame = frames[0]
+            for frame in frames[1:]:
+                difference = compare_images(originals[first_frame], originals[frame])
+                if not difference.equivalent:
+                    missing.append(
+                        f"static target changed across frames {first_frame}->{frame}: "
+                        f"{difference.detail} Keep this full-duration static target unchanged; "
+                        "remove unrequested frame/time-dependent changes, preserving its styling"
+                    )
         checks.append(
             Check(
                 name="motion_evidence",
-                status="fail" if missing else "pass",
-                detail="No observed change for declared interval: " + ", ".join(missing)
-                if missing
+                status="fail" if missing else "unknown" if insufficient else "pass",
+                detail="Motion evidence mismatch: " + "; ".join(missing + insufficient)
+                if missing or insufficient
                 else "Sampled frames agree with declared static/change requirements; semantic timing is reviewed separately.",
             )
         )
@@ -123,10 +164,12 @@ def pixel_checks(
             with Image.open(directory / f"probe-{index}.png") as image:
                 changed = image.convert("RGBA")
             baseline = originals[probe["frame"]]
-            # getbbox on RGBA alone ignores RGB changes when the alpha difference is zero.
-            difference = ImageChops.difference(baseline, changed)
-            if not any(channel.getbbox() for channel in difference.split()):
-                failures.append(f"{probe['key']}: rendered pixels did not change")
+            difference = compare_images(baseline, changed)
+            if difference.equivalent:
+                failures.append(
+                    f"{probe['key']}: no visible response beyond raster tolerance. "
+                    f"{difference.detail} Connect this prop to the rendered content/style."
+                )
             elif probe["kind"] in {"layout_x", "layout_y"}:
                 axis = 0 if probe["kind"] == "layout_x" else 1
                 observed = alpha_centroid(changed, axis) - alpha_centroid(
@@ -144,18 +187,14 @@ def pixel_checks(
                     )
             elif probe["kind"] == "style_color":
                 rgb = tuple(bytes.fromhex(probe["value"][1:]))
-                before = sum(
-                    1
-                    for pixel in baseline.get_flattened_data()
-                    if pixel[:3] == rgb and pixel[3] > 0
-                )
-                after = sum(
-                    1
-                    for pixel in changed.get_flattened_data()
-                    if pixel[:3] == rgb and pixel[3] > 0
-                )
+                before = color_mass(baseline, rgb)
+                after = color_mass(changed, rgb)
                 if after <= before:
-                    failures.append(f"{probe['key']}: requested color did not appear")
+                    failures.append(
+                        f"{probe['key']}: requested color {probe['value']} coverage did not increase "
+                        f"(alpha-weighted mass {before}->{after}, RGB tolerance {MAX_CHANNEL_DELTA}/255). "
+                        "Check color prop forwarding; occlusion or color blending can make this experiment inconclusive."
+                    )
         checks.append(
             Check(
                 name="parameter_behavior",
