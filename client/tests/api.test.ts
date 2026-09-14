@@ -1,9 +1,9 @@
 /** 模板 HTTP 核心测试：请求契约、必要校验与错误展示；fetch 由 setup.ts 隔离。 */
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { deleteTemplate, getTemplate, listTemplates, saveTemplate } from "@/features/templates/api";
 import { newDraft, toDraft } from "@/features/templates/model";
 import { savedTemplate } from "./fixtures";
-import { fetchMock } from "./setup";
+import { fetchMock, mockDesktop } from "./setup";
 
 // 测试创建和更新都使用 POST /template，只有更新带 ID，名称说明被修剪且效果去重。
 test.each([undefined, "existing-id"])("保存请求正确区分创建与更新：%s", async (id) => {
@@ -58,4 +58,67 @@ test("服务端与网络错误转换为用户提示", async () => {
   fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
   await expect(listTemplates()).rejects.toThrow("无法连接服务端");
   expect(fetchMock).toHaveBeenCalledTimes(3);
+});
+
+// 测试仅服务不可用时建议本地环境，普通业务错误保持原文；浏览器提示桌面限制。
+test.each([400, 404, 409, 422, 500, 502, 503, 504])("按 HTTP 状态提示本地环境：%s", async (status) => {
+  fetchMock.mockResolvedValueOnce(Response.json({ detail: "服务端提示" }, { status }));
+  await expect(listTemplates()).rejects.toThrow(new Error(
+    status >= 500 ? "服务端提示 可使用桌面客户端切换到本地环境。" : "服务端提示",
+  ));
+});
+
+// 测试超时保留保存结果不确定的提醒，主动取消不误报服务不可用。
+test.each([false, true])("超时与主动取消区分处理：%s", async (cancelled) => {
+  const timer = spyOn(window, "setTimeout");
+  const response = Promise.withResolvers<Response>();
+  fetchMock.mockReturnValueOnce(response.promise);
+  const controller = new AbortController();
+  const pending = listTemplates(controller.signal);
+  fetchMock.mock.calls[0][1]?.signal?.addEventListener("abort", () => response.reject(new DOMException("已取消", "AbortError")), { once: true });
+  if (cancelled) controller.abort();
+  else {
+    const timeout = timer.mock.calls[0][0];
+    expect(typeof timeout).toBe("function");
+    if (typeof timeout === "function") timeout();
+  }
+  await expect(pending).rejects.toThrow(cancelled
+    ? "已取消"
+    : "请求超时，草稿已保留。保存结果可能已写入，请刷新列表确认后再重试。可使用桌面客户端切换到本地环境。");
+});
+
+// 回归：没有全局 __TAURI__ 时本地增删改查仍走官方 IPC，云端走 HTTP；IPC 失败保留原因。
+test("本地和云端存储严格分流", async () => {
+  const { mock } = await import("bun:test");
+  const saved = savedTemplate();
+  const invoke = mock(async (_command: string, args: Record<string, unknown>): Promise<unknown> => {
+    if (args.operation === "list") return [saved];
+    if (args.operation === "delete") return null;
+    return saved;
+  });
+  const restoreDesktop = mockDesktop(invoke);
+  try {
+    expect(window).not.toHaveProperty("__TAURI__");
+    expect(await listTemplates(undefined, "local")).toEqual([saved]);
+    expect(await getTemplate(saved.template_id, "local")).toEqual(saved);
+    expect(await saveTemplate(toDraft(saved), undefined, "local")).toEqual(saved);
+    await deleteTemplate(saved.template_id, "local");
+    expect(invoke.mock.calls.every(([command]) => command === "local_templates")).toBe(true);
+    expect(invoke.mock.calls.map(([, args]) => args.operation)).toEqual(["list", "get", "save", "delete"]);
+    expect(invoke.mock.calls[2][1]).toEqual({ operation: "save", id: undefined, draft: toDraft(saved) });
+    expect(fetchMock).not.toHaveBeenCalled();
+    invoke.mockRejectedValueOnce("磁盘空间不足");
+    await expect(saveTemplate(toDraft(saved), undefined, "local")).rejects.toThrow("磁盘空间不足");
+    fetchMock.mockResolvedValueOnce(Response.json([]));
+    expect(await listTemplates(undefined, "cloud")).toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  } finally {
+    restoreDesktop();
+  }
+});
+
+// 测试普通浏览器选择本地时明确提示使用桌面，不偷偷写入云端或浏览器缓存。
+test("浏览器无法调用本地文件存储", async () => {
+  await expect(listTemplates(undefined, "local")).rejects.toThrow("桌面客户端");
+  expect(fetchMock).not.toHaveBeenCalled();
 });

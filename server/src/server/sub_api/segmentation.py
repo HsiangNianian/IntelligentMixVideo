@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from openai import APIError, APITimeoutError
+from pydantic import BaseModel
 
 from ..segmentation import segment
 
@@ -10,11 +11,18 @@ from ..segmentation import segment
 router = APIRouter()
 
 
+class SegmentationRequest(BaseModel):
+    """校验 HTTP 必填字段与类型；ASR 内部结构由上游提供，额外字段忽略。"""
+
+    script: str
+    asr_result: dict
+
+
 @router.post("/segmentations", response_model=None)
-def create_segmentation(payload: dict) -> dict | JSONResponse:
+def create_segmentation(payload: SegmentationRequest) -> dict | JSONResponse:
     """调用切片函数；输入错误返回 422，内部约束错误 500，模型错误 502，超时 504。"""
     try:
-        return segment(payload)
+        return segment(payload.model_dump())
     except APITimeoutError:
         return JSONResponse({"error": {"message": "模型请求超时。"}}, status_code=504)
     except APIError:

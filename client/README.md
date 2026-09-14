@@ -6,7 +6,7 @@
 
 ## 开发运行
 
-本地草稿编辑和预览不要求启动 API；共享模板读写需按 [服务端说明](../server/README.md) 启动 MySQL 与 API。在本目录执行：
+云端模式先按 [服务端说明](../server/README.md) 启动 MySQL 与 API；仅使用桌面本地模式可跳过服务端。在本目录执行：
 
 ```sh
 bun install --frozen-lockfile
@@ -55,6 +55,9 @@ VITE_PREVIEW_VIDEO_URL=https://your-domain.example/preview.mp4
 中等及以上窗口采用左右布局：左侧选择和配置模板，右侧预览效果并随滚动保持可见；窄屏自动改为上下排列。
 
 - 新建、选择已有模板、完整保存、重命名、另存为和确认删除。
+- 当前环境可选择本地 / 云端。桌面和浏览器均默认云端，连接失败、超时或服务端 5xx 时提示手动切换本地；本地无需 Python 或 MySQL，但需使用桌面客户端。切换前可保存到原环境、放弃修改或取消，读取目标失败保留原草稿，两库不自动同步。
+- 本地文件位于 Tauri 应用数据目录下的 `data/template/templates.json`。macOS 为 `~/Library/Application Support/com.intelligentmixvideo.client/data/template/`，Windows 为 `%APPDATA%/com.intelligentmixvideo.client/data/template/`，Linux 为 `${XDG_DATA_HOME:-~/.local/share}/com.intelligentmixvideo.client/data/template/`。本地目录随首次读取自动创建，JSON 损坏时明确报错，不能当成空库覆盖。
+- 离线仍可从内置目录选择效果并保存；SDK、字体与示例视频预览仍需联网。
 - 标题、字幕、气泡独立设置文字、字号、位置、样式、入场/出场/循环动画及动画时长。
 - 画面滤镜、特效、转场和转场时长可选；预览不提交云端合成任务。
 - 保存覆盖当前模板，另存为保留原模板；重命名和另存为包含当前编辑配置。
