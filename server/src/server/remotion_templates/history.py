@@ -7,7 +7,10 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID, uuid4
 
+from pydantic import Field
+
 from .models import Contract, GenerationJob, JobInput, PublicJob, TemplateProject
+from .progress import ProgressStep, finish_steps, read_steps
 
 
 class ChatMessage(Contract):
@@ -29,6 +32,7 @@ class SessionJob(PublicJob):
     created_at: datetime
     updated_at: datetime
     parameters: dict | None = None
+    progress: list[ProgressStep] = Field(default_factory=list)
 
 
 class WorkEvent(Contract):
@@ -49,6 +53,7 @@ class SessionSnapshot(Contract):
     messages: list[ChatMessage]
     next_before: int | None
     cursor: int
+    jobs: list[SessionJob] = Field(default_factory=list)
 
 
 class WorkSummary(Contract):
@@ -82,6 +87,9 @@ def initialize(db: sqlite3.Connection) -> None:
             type TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS events_by_work ON work_events(work_id, id);
+        CREATE TABLE IF NOT EXISTS job_progress (
+            job_id TEXT PRIMARY KEY REFERENCES jobs(id), data TEXT NOT NULL
+        );
     """)
     # Only jobs missing their user message need backfilling. Never expose conversations/tool records.
     rows = db.execute("""SELECT j.data, j.input_data FROM jobs j
@@ -188,6 +196,7 @@ def public_job(db: sqlite3.Connection, job: GenerationJob) -> SessionJob:
         created_at=job.created_at,
         updated_at=job.updated_at,
         parameters=inputs.parameters,
+        progress=read_steps(db, job),
     )
 
 
@@ -195,6 +204,7 @@ def record_job(
     db: sqlite3.Connection, job: GenerationJob, *, reconstructed: bool = False
 ) -> None:
     """Suppress internal-only updates and atomically attach terminal messages and success pointers."""
+    finish_steps(db, job)
     state = public_job(db, job).model_dump(mode="json")
     previous = db.execute(
         "SELECT data FROM work_events WHERE work_id=? AND type='job.updated' ORDER BY id DESC LIMIT 1",
@@ -210,6 +220,8 @@ def record_job(
     text = None
     if job.status == "needs_input":
         text = "\n".join(job.questions)
+    elif job.status == "answered":
+        text = job.answer
     elif job.status == "succeeded":
         text = "模板已就绪。可以调整参数，或继续描述你想修改的效果。"
         if job.result_version_id is not None:
@@ -254,6 +266,18 @@ def snapshot(
         messages=messages,
         next_before=messages[0].sequence if len(rows) > limit else None,
         cursor=cursor,
+        jobs=[
+            public_job(
+                db,
+                GenerationJob.model_validate_json(
+                    db.execute(
+                        "SELECT data FROM jobs WHERE id=? AND project_id=?",
+                        (str(identifier), str(work_id)),
+                    ).fetchone()[0]
+                ),
+            )
+            for identifier in dict.fromkeys(message.job_id for message in messages)
+        ],
     )
 
 

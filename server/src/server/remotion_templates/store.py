@@ -170,6 +170,21 @@ class Store:
         """Keep candidate files separate from both uploaded assets and source code."""
         return self.root / "jobs" / str(identifier)
 
+    def progress(self, identifier: UUID, phase: str) -> None:
+        """Atomically publish whitelisted host phase transitions through the existing work stream."""
+        from .progress import start_step
+
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT data FROM jobs WHERE id=?", (str(identifier),)
+            ).fetchone()
+            if row is None:
+                raise NotFound("job not found")
+            job = GenerationJob.model_validate_json(row[0])
+            if start_step(db, job, phase, now()):
+                self._save_job(db, job)
+
     def create(
         self, request: GenerateTemplateRequest
     ) -> tuple[TemplateProject, GenerationJob]:

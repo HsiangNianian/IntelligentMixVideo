@@ -9,7 +9,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from PIL import Image
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 from server.remotion_templates import history
 from server.remotion_templates.models import GenerateTemplateRequest, JobError, JobInput
 from server.remotion_templates.routes import router
@@ -111,6 +111,98 @@ def test_history_and_state_rollback_together(history_store, monkeypatch):
     assert history_store.job(job.id).status == "queued"
 
 
+def test_progress_is_atomic_replayable_and_private(history_store, monkeypatch):
+    """公开阶段同事务持久化，重复阶段不发事件，原始诊断不会进入阶段载荷。"""
+    store = history_store
+    work, job = store.create(GenerateTemplateRequest(description="标题"))
+    store.claim()
+    cursor = store.session(work.id).cursor
+    store.progress(job.id, "understanding")
+    first = store.session(work.id)
+    assert [step.phase for step in first.job.progress] == ["understanding"]
+    assert first.jobs[0].progress == first.job.progress
+    store.progress(job.id, "understanding")
+    assert store.session(work.id).cursor == first.cursor
+    with pytest.raises(ValidationError):
+        store.progress(job.id, "private_model_steer")
+    before = store.session(work.id)
+    original = history.append_event
+
+    def fail_write(*args, **kwargs):
+        """模拟进度事件写盘失败，阶段和任务必须一起回滚。"""
+        original(*args, **kwargs)
+        raise OSError("disk full")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(history, "append_event", fail_write)
+        with pytest.raises(OSError):
+            store.progress(job.id, "generating")
+    assert store.session(work.id) == before
+    store.progress(job.id, "generating")
+    events = store.work_events(work.id, cursor)
+    assert [event.type for event in events] == ["job.updated", "job.updated"]
+    assert events[-1].data["progress"][0]["status"] == "done"
+    assert (
+        events[-1].data["progress"][0]["ended_at"]
+        == events[-1].data["progress"][1]["started_at"]
+    )
+    public = json.dumps([event.model_dump(mode="json") for event in events])
+    assert all(
+        secret not in public
+        for secret in ("private_model_steer", "tsx_code", "usage", "checks")
+    )
+    reopened = Store(store.root)
+    reopened.initialize()
+    assert reopened.session(work.id) == store.session(work.id)
+
+
+@pytest.mark.parametrize(
+    "status", ["answered", "needs_input", "failed", "cancelled", "interrupted"]
+)
+def test_terminal_progress_closes_without_late_updates(history_store, status):
+    """完成、提问、失败、停止和服务中断都封闭最后区间，迟到阶段不能改变历史。"""
+    store = history_store
+    work, job = store.create(GenerateTemplateRequest(description="任务"))
+    store.claim()
+    store.progress(job.id, "understanding")
+    extra = (
+        {"answer": "你好"}
+        if status == "answered"
+        else {"questions": ["文字是什么？"]}
+        if status == "needs_input"
+        else {}
+    )
+    store.update(job.id, status=status, **extra)
+    snap = store.session(work.id)
+    step = snap.job.progress[-1]
+    assert step.status == (
+        "done" if status in {"answered", "needs_input"} else "stopped"
+    )
+    assert step.ended_at == snap.job.updated_at
+    store.progress(job.id, "rendering")
+    assert store.session(work.id) == snap
+
+
+def test_progress_pages_follow_message_jobs_and_legacy_stays_empty(history_store):
+    """消息分页只带该页任务链路，旧任务不补造阶段，不混入其他作品。"""
+    store = history_store
+    work, old = store.create(GenerateTemplateRequest(description="旧任务"))
+    store.update(old.id, status="failed")
+    newer = store.enqueue(work.id, JobInput(instruction="重新做"), None)
+    store.claim()
+    store.progress(newer.id, "understanding")
+    store.update(newer.id, status="failed")
+    other, foreign = store.create(GenerateTemplateRequest(description="其他作品"))
+    store.claim()
+    store.progress(foreign.id, "generating")
+    recent = store.session(work.id, limit=2)
+    older = store.session(work.id, before=recent.next_before, limit=2)
+    assert [job.id for job in recent.jobs] == [newer.id]
+    assert [job.id for job in older.jobs] == [old.id]
+    assert older.jobs[0].progress == []
+    assert foreign.id not in {job.id for job in recent.jobs + older.jobs}
+
+
 def test_legacy_backfill_is_factual_and_idempotent(history_store):
     """Reopen an old schema twice without losing works or exposing the bounded model context."""
     store = history_store
@@ -131,6 +223,57 @@ def test_legacy_backfill_is_factual_and_idempotent(history_store):
     store.initialize()
     assert store.session(work.id) == restored
     assert store.project(work.id).request.description == "旧作品"
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"status": "answered"},
+        {"status": "answered", "answer": " "},
+        {"status": "answered", "answer": "回答", "result_version_id": str(uuid4())},
+        {"status": "answered", "answer": "回答", "questions": ["继续追问"]},
+        {"status": "running", "answer": "提前发布"},
+    ],
+)
+def test_invalid_answer_state_rolls_back(history_store, changes):
+    """缺正文、混入版本或追问、未结束就发布回答均不能落盘。"""
+    work, job = history_store.create(GenerateTemplateRequest(description="你好"))
+    history_store.claim()
+    before = history_store.session(work.id)
+    with pytest.raises(ValidationError):
+        history_store.update(job.id, **changes)
+    assert history_store.session(work.id) == before
+
+
+def test_answer_history_is_atomic_replayable_and_terminal(history_store, monkeypatch):
+    """回答状态与正文同事务提交；失败回滚、重复更新和重启不会遗漏或重复回答。"""
+    store = history_store
+    work, job = store.create(GenerateTemplateRequest(description="你能做什么？"))
+    store.claim()
+    before = store.session(work.id)
+    original = history.append_message
+
+    def fail_answer(*args, **kwargs):
+        """模拟回答消息落盘失败，要求先写入的任务状态和事件一并回滚。"""
+        original(*args, **kwargs)
+        raise OSError("disk full")
+
+    monkeypatch.setattr(history, "append_message", fail_answer)
+    with pytest.raises(OSError):
+        store.update(
+            job.id, status="answered", stage="finished", answer="可以制作字效。"
+        )
+    assert store.session(work.id) == before
+    monkeypatch.setattr(history, "append_message", original)
+    store.update(job.id, status="answered", stage="finished", answer="可以制作字效。")
+    events = store.work_events(work.id, before.cursor)
+    assert [e.type for e in events] == ["job.updated", "message.created"]
+    assert events[0].data["message"] == events[1].data["text"] == "可以制作字效。"
+    saved = store.session(work.id)
+    store.update(job.id, status="answered", answer="重复回答")
+    store.initialize()
+    assert store.session(work.id) == saved
+    assert saved.job.result_version_id is None and saved.work.current_version_id is None
 
 
 def test_snapshot_watermark_uses_one_read_transaction(history_store, monkeypatch):
@@ -366,6 +509,11 @@ def test_sse_http_reconnect_and_followup_job(history_app, history_store):
             event = json.loads(data)
             assert event["type"] == "job.updated"
             assert event["data"]["status"] == "running"
+            history_store.progress(job.id, "understanding")
+            event = json.loads(
+                next(line[6:] for line in lines if line.startswith("data: "))
+            )
+            assert event["data"]["progress"][-1]["phase"] == "understanding"
             cursor = event["id"]
         assert history_store.job(job.id).status == "running"
         history_store.update(job.id, status="cancelled")
@@ -383,6 +531,7 @@ def test_sse_http_reconnect_and_followup_job(history_app, history_store):
                 "job.updated",
                 "message.created",
             ]
+            assert events[0]["data"]["progress"][-1]["status"] == "stopped"
             followup = history_store.enqueue(
                 work.id, JobInput(mode="edit", instruction="继续"), None
             )

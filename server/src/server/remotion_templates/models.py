@@ -398,6 +398,7 @@ class GenerationJob(Contract):
         "queued",
         "running",
         "succeeded",
+        "answered",
         "failed",
         "cancelled",
         "interrupted",
@@ -410,10 +411,27 @@ class GenerationJob(Contract):
     result_version_id: UUID | None = None
     attempts: int = 0
     questions: list[str] = Field(default_factory=list)
+    answer: Text | None = None
     error: JobError | None = None
     usage: dict[str, int] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
+
+    @model_validator(mode="after")
+    def answer_is_terminal_without_version(self) -> Self:
+        """A public answer has no render result or outstanding questions; other states cannot publish it."""
+        if self.status == "answered":
+            if (
+                self.answer is None
+                or self.result_version_id is not None
+                or self.questions
+            ):
+                raise ValueError(
+                    "answered requires an answer without a version or questions"
+                )
+        elif self.answer is not None:
+            raise ValueError("only answered jobs may contain an answer")
+        return self
 
 
 class JobInput(Contract):
@@ -437,7 +455,7 @@ class PublicJob(Contract):
 
     @classmethod
     def from_job(cls, job: GenerationJob):
-        """Expose an actionable terminal notice without leaking unsuccessful source or model prose."""
+        """Expose reviewed answers and terminal notices while keeping candidate diagnostics private."""
         return cls(
             id=job.id,
             project_id=job.project_id,
@@ -446,6 +464,8 @@ class PublicJob(Contract):
             questions=job.questions,
             message="本次未能完成模板，请重试；已有结果仍可使用。"
             if job.status in {"failed", "interrupted"}
+            else job.answer
+            if job.status == "answered"
             else None,
         )
 
