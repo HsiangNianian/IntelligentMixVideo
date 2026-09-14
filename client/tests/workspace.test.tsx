@@ -4,7 +4,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { useEffect } from "react";
 import type { Draft, EffectAsset } from "@/features/templates/model";
 import { catalog, savedTemplate } from "./fixtures";
-import { fetchMock } from "./setup";
+import { fetchMock, mockDesktop } from "./setup";
 import { remotionServer } from "./remotion-server";
 import { remotionJob } from "./remotion-fixtures";
 
@@ -50,6 +50,71 @@ async function openExistingTemplate() {
   await screen.findByDisplayValue(saved.name);
   return saved;
 }
+
+// 回归：初次列表请求未完成时仍可编辑和新建，失败及刷新都不丢失本地草稿。
+test("模板 API 等待或失败时仍能编辑预览并保护新建草稿", async () => {
+  let rejectList!: (error: Error) => void;
+  fetchMock.mockReturnValueOnce(new Promise<Response>((_resolve, reject) => {
+    rejectList = reject;
+  }));
+  render(<TemplateWorkspace />);
+  const name = screen.getByLabelText<HTMLInputElement>("模板名称");
+  // Happy DOM 不会把 fieldset 的禁用状态计入 input.disabled，直接检查原生禁用容器。
+  expect(name.closest("fieldset")?.disabled).toBe(false);
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "新建模板" }).disabled).toBe(false);
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "保存模板" }).disabled).toBe(true);
+  fireEvent.change(name, { target: { value: "本地草稿" } });
+  fireEvent.change(screen.getByLabelText("示例文字"), { target: { value: "等待 API 时编辑" } });
+  expect(screen.getByLabelText("预览标题").textContent).toBe("等待 API 时编辑");
+  // 提交表单也不能绕过加载保护；新建弹窗的保存入口遵守相同限制。
+  fireEvent.submit(name.closest("form")!);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole("button", { name: "新建模板" }));
+  const dialog = await screen.findByRole("dialog");
+  const saveAndSwitch = within(dialog).getByRole<HTMLButtonElement>("button", { name: "保存并切换" });
+  expect(saveAndSwitch.disabled).toBe(true);
+  fireEvent.click(saveAndSwitch);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+  expect(name.value).toBe("本地草稿");
+  fireEvent.click(screen.getByRole("button", { name: "新建模板" }));
+  fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "放弃修改" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(name.value).toBe("");
+  expect(screen.queryByText(/有未保存的修改/)).toBeNull();
+  fireEvent.change(name, { target: { value: "重新编辑" } });
+  fireEvent.change(screen.getByLabelText("示例文字"), { target: { value: "请求失败也保留" } });
+  await act(async () => rejectList(new TypeError("Failed to fetch")));
+  await screen.findByRole("alert");
+  expect(screen.getByRole("alert").textContent).toBe("无法连接服务端，请确认 API 已启动后重试。可使用桌面客户端切换到本地环境。");
+  expect(name.value).toBe("重新编辑");
+  expect(screen.getByLabelText("预览标题").textContent).toBe("请求失败也保留");
+  fireEvent.change(screen.getByLabelText("示例文字"), { target: { value: "离线继续编辑" } });
+  fetchMock.mockResolvedValueOnce(Response.json([savedTemplate()]));
+  fireEvent.click(screen.getByRole("button", { name: "刷新列表" }));
+  await screen.findByText("模板列表已刷新，当前编辑内容已保留");
+  expect(name.value).toBe("重新编辑");
+  expect(screen.getByLabelText("预览标题").textContent).toBe("离线继续编辑");
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "保存模板" }).disabled).toBe(false);
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+});
+
+// 回归：允许初始请求期间编辑后，晚到的远端列表只更新列表，不覆盖草稿或清除脏状态。
+test("初始模板列表晚到时保留已编辑的本地草稿", async () => {
+  let resolveList!: (response: Response) => void;
+  fetchMock.mockReturnValueOnce(new Promise<Response>((resolve) => {
+    resolveList = resolve;
+  }));
+  render(<TemplateWorkspace />);
+  fireEvent.change(screen.getByLabelText("模板名称"), { target: { value: "等待中创建" } });
+  fireEvent.change(screen.getByLabelText("示例文字"), { target: { value: "已经开始预览" } });
+  await act(async () => resolveList(Response.json([savedTemplate()])));
+  await screen.findByText("共享模板库 · 1 个模板 · 有未保存的修改");
+  expect(screen.getByLabelText<HTMLInputElement>("模板名称").value).toBe("等待中创建");
+  expect(screen.getByLabelText("预览标题").textContent).toBe("已经开始预览");
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "保存模板" }).disabled).toBe(false);
+});
 
 // 测试新建时选择效果、编辑内容传给预览，保存成功清除脏状态，再保存时更新同一 ID。
 test("创建、预览草稿与更新模板", async () => {
@@ -106,7 +171,7 @@ test("保存失败保留草稿，重试后切换", async () => {
   await act(async () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "保存并切换" }));
   });
-  await within(dialog).findByText("数据库暂不可用");
+  await within(dialog).findByText(/数据库暂不可用/);
   expect(screen.getByDisplayValue("修改后")).toBeTruthy();
   expect(screen.queryByText("模板「修改后」已保存")).toBeNull();
   fetchMock.mockResolvedValueOnce(Response.json({ ...saved, name: "修改后" }));
@@ -179,35 +244,131 @@ test.each([
 });
 
 // 顶层功能页签切换不能清空聊天或取消后台任务，返回后应继续读取同一个 job。
-test("切换模板库后保留字效会话并继续接收 SSE", async () => {
-  const fake = remotionServer((path) => {
-    if (path === "/template") return Response.json([]);
-    if (path === "/works") return Response.json({work: {id: "work-1"}, job: remotionJob("running")});
+test.each(["云端", "本地"])("切换%s模板库后保留字效会话并继续接收 SSE", async (environment) => {
+  const invoke = mock(async (_command: string): Promise<unknown> => []);
+  const restoreDesktop = mockDesktop(invoke);
+  try {
+    const fake = remotionServer((path) => {
+      if (path === "/template") return Response.json([]);
+      if (path === "/works") return Response.json({work: {id: "work-1"}, job: remotionJob("running")});
+    });
+    render(<HomePage />);
+    fireEvent.change(screen.getByLabelText("字效描述"), {target: {value: "保留这个任务"}});
+    fireEvent.click(screen.getByRole("button", {name: "发送"}));
+    await screen.findByRole("button", {name: "停止"});
+    fireEvent.change(screen.getByLabelText("字效描述"), {target: {value: "未发送草稿"}});
+    fireEvent.mouseDown(screen.getByRole("tab", {name: "模板库"}), {button: 0});
+    expect(screen.getByRole("tab", {name: "模板库"}).getAttribute("aria-selected")).toBe("true");
+    await screen.findByText("共享模板库 · 0 个模板");
+    if (environment === "本地") {
+      await choose("当前环境", "本地");
+      await screen.findByText("本地模板库 · 0 个模板");
+      expect(invoke.mock.calls.at(-1)?.[0]).toBe("local_templates");
+    }
+    // 隐藏期间通过原订阅完成同一任务；切回不重新创建或重复建立连接。
+    await waitFor(() => expect(fake.streams.size).toBe(1));
+    await act(async () => fake.advance(remotionJob()));
+    await waitFor(()=>expect(screen.getByLabelText("模板 TSX 代码").textContent).toContain("export default"), {timeout:2500});
+    fireEvent.mouseDown(screen.getByRole("tab", {name: "Remotion 字效"}), {button: 0});
+    expect(within(screen.getByRole("log")).queryByText("保留这个任务") !== null).toBe(true);
+    expect(screen.getByLabelText<HTMLTextAreaElement>("字效描述").value).toBe("未发送草稿");
+    expect(fetchMock.mock.calls.filter(call=>String(call[0]).endsWith("/cancel"))).toHaveLength(0);
+    await waitFor(()=>expect(screen.getByRole("button",{name:"复制代码"}).hasAttribute("disabled")).toBe(false), {timeout:2500});
+    expect(fetchMock.mock.calls.filter(call=>String(call[0]).endsWith("/works"))).toHaveLength(1);
+    const frame = screen.getByTitle<HTMLIFrameElement>("Remotion 字效播放器");
+    const source = frame.src;
+    fireEvent.change(screen.getByLabelText("背景视频直链"), {target:{value:"https://media.test/background.mp4"}});
+    fireEvent.mouseDown(screen.getByRole("tab",{name:"模板库"}),{button:0});
+    fireEvent.mouseDown(screen.getByRole("tab",{name:"Remotion 字效"}),{button:0});
+    expect(screen.getByTitle("Remotion 字效播放器")).toBe(frame);
+    expect(frame.src).toBe(source);
+    expect(screen.getByLabelText<HTMLInputElement>("背景视频直链").value).toBe("https://media.test/background.mp4");
+    expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("64");
+  } finally {
+    restoreDesktop();
+  }
+});
+
+// 测试桌面默认云端，主动切换本地后使用 IPC；未保存切换保护不变，两个库不混合。
+test("本地保存并切换云端，取消时保留草稿", async () => {
+  const saved = savedTemplate();
+  const invoke = mock(async (_command: string, args: Record<string, unknown>): Promise<unknown> => {
+    if (args.operation === "list") return [saved];
+    return { ...saved, ...args.draft as object };
   });
-  render(<HomePage />);
-  fireEvent.change(screen.getByLabelText("字效描述"), {target: {value: "保留这个任务"}});
-  fireEvent.click(screen.getByRole("button", {name: "发送"}));
-  await screen.findByRole("button", {name: "停止"});
-  fireEvent.change(screen.getByLabelText("字效描述"), {target: {value: "未发送草稿"}});
-  fireEvent.mouseDown(screen.getByRole("tab", {name: "模板库"}), {button: 0});
-  expect(screen.getByRole("tab", {name: "模板库"}).getAttribute("aria-selected")).toBe("true");
-  // 隐藏期间通过原订阅完成同一任务；切回不重新创建或重复建立连接。
-  await waitFor(() => expect(fake.streams.size).toBe(1));
-  await act(async () => fake.advance(remotionJob()));
-  await waitFor(()=>expect(screen.getByLabelText("模板 TSX 代码").textContent).toContain("export default"), {timeout:2500});
-  fireEvent.mouseDown(screen.getByRole("tab", {name: "Remotion 字效"}), {button: 0});
-  expect(within(screen.getByRole("log")).queryByText("保留这个任务") !== null).toBe(true);
-  expect(screen.getByLabelText<HTMLTextAreaElement>("字效描述").value).toBe("未发送草稿");
-  expect(fetchMock.mock.calls.filter(call=>String(call[0]).endsWith("/cancel"))).toHaveLength(0);
-  await waitFor(()=>expect(screen.getByRole("button",{name:"复制代码"}).hasAttribute("disabled")).toBe(false), {timeout:2500});
-  expect(fetchMock.mock.calls.filter(call=>String(call[0]).endsWith("/works"))).toHaveLength(1);
-  const frame = screen.getByTitle<HTMLIFrameElement>("Remotion 字效播放器");
-  const source = frame.src;
-  fireEvent.change(screen.getByLabelText("背景视频直链"), {target:{value:"https://media.test/background.mp4"}});
-  fireEvent.mouseDown(screen.getByRole("tab",{name:"模板库"}),{button:0});
-  fireEvent.mouseDown(screen.getByRole("tab",{name:"Remotion 字效"}),{button:0});
-  expect(screen.getByTitle("Remotion 字效播放器")).toBe(frame);
-  expect(frame.src).toBe(source);
-  expect(screen.getByLabelText<HTMLInputElement>("背景视频直链").value).toBe("https://media.test/background.mp4");
-  expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("64");
+  const restoreDesktop = mockDesktop(invoke);
+  try {
+    fetchMock.mockResolvedValueOnce(Response.json([]));
+    render(<TemplateWorkspace />);
+    await screen.findByText("共享模板库 · 0 个模板");
+    expect(screen.getByLabelText("当前环境").textContent).toBe("云端");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(invoke).not.toHaveBeenCalled();
+    await choose("当前环境", "本地");
+    await screen.findByText("本地模板库 · 1 个模板");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await choose("打开模板", saved.name);
+    await screen.findByDisplayValue(saved.name);
+    fireEvent.change(screen.getByLabelText("模板名称"), { target: { value: "本地修改" } });
+    await choose("当前环境", "云端");
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "取消" }));
+    expect(screen.getByDisplayValue("本地修改")).toBeTruthy();
+    await choose("当前环境", "云端");
+    invoke.mockRejectedValueOnce("磁盘不可写");
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "保存并切换" }));
+    await within(await screen.findByRole("dialog")).findByText("磁盘不可写");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByDisplayValue("本地修改")).toBeTruthy();
+    fetchMock.mockResolvedValueOnce(Response.json([]));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "保存并切换" }));
+    await screen.findByText("共享模板库 · 0 个模板");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByLabelText<HTMLInputElement>("模板名称").value).toBe("");
+    expect(invoke.mock.calls.at(-1)?.[1]).toMatchObject({ operation: "save", id: saved.template_id, draft: { name: "本地修改" } });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  } finally {
+    restoreDesktop();
+  }
+});
+
+// 测试启动时断网或服务不可用仍留在云端，提示后由用户切换本地并清除错误。
+test.each(["network", "503"])("云端不可用时提示手动切换本地：%s", async (failure) => {
+  const invoke = mock(async (): Promise<unknown> => []);
+  const restoreDesktop = mockDesktop(invoke);
+  try {
+    if (failure === "network") fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    else fetchMock.mockResolvedValueOnce(Response.json({ detail: "数据库暂不可用" }, { status: 503 }));
+    render(<TemplateWorkspace />);
+    expect((await screen.findByRole("alert")).textContent).toContain("可在「当前环境」中切换到本地环境");
+    expect(screen.getByLabelText("当前环境").textContent).toBe("云端");
+    expect(invoke).not.toHaveBeenCalled();
+    await choose("当前环境", "本地");
+    await screen.findByText("本地模板库 · 0 个模板");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  } finally {
+    restoreDesktop();
+  }
+});
+
+// 测试目标库加载失败时不更换环境或草稿，重试放弃修改成功后只展示目标库。
+test("切换环境读取失败后可重试", async () => {
+  await openExistingTemplate();
+  fireEvent.change(screen.getByLabelText("模板名称"), { target: { value: "云端草稿" } });
+  const invoke = mock(async (): Promise<unknown> => []);
+  const restoreDesktop = mockDesktop(invoke);
+  try {
+    await choose("当前环境", "本地");
+    invoke.mockRejectedValueOnce("文件读取失败");
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "放弃修改" }));
+    await within(await screen.findByRole("dialog")).findByText("文件读取失败");
+    expect(screen.getByLabelText("当前环境").textContent).toBe("云端");
+    expect(screen.getByDisplayValue("云端草稿")).toBeTruthy();
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "放弃修改" }));
+    await screen.findByText("本地模板库 · 0 个模板");
+    expect(screen.getByLabelText<HTMLInputElement>("模板名称").value).toBe("");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  } finally {
+    restoreDesktop();
+  }
 });

@@ -3,10 +3,11 @@
 路由仍调用真实 schema/store；仅适配排序规则和唯一约束错误码，不模拟 MySQL 行锁或建库。
 """
 
-from collections.abc import Iterator
 import os
-from pathlib import Path
 import sqlite3
+from collections.abc import Iterator
+from functools import partial
+from pathlib import Path
 
 import httpx
 import pytest
@@ -111,13 +112,22 @@ def asr_env(asr, monkeypatch):
 
 
 @pytest.fixture
+def anyio_backend():
+    """使用已有 AnyIO 插件在 asyncio 上运行异步用例，不额外引入测试依赖。"""
+    return "asyncio"
+
+
+@pytest.fixture
 def asr_http(asr, mocker):
-    """用内存传输替换网络并保留真实响应生命周期，不执行轮询等待。"""
+    """用内存传输替换异步客户端网络，保留资源生命周期并跳过轮询等待。"""
     http = mocker.Mock(side_effect=AssertionError("测试未配置 HTTP 响应"))
-    mocker.patch.object(asr.time, "sleep")
-    with httpx.Client(transport=httpx.MockTransport(http)) as http_client:
-        mocker.patch.object(asr.httpx, "stream", side_effect=http_client.stream)
-        yield http
+    mocker.patch.object(asr.asyncio, "sleep")
+    mocker.patch.object(
+        asr.httpx,
+        "AsyncClient",
+        side_effect=partial(httpx.AsyncClient, transport=httpx.MockTransport(http)),
+    )
+    return http
 
 
 @pytest.fixture

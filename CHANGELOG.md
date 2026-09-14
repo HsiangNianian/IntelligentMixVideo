@@ -3,6 +3,101 @@
 本项目的版本变更由发布工作流根据 Conventional Commits 自动生成。
 推送正式版本 tag 后，成功发布的版本记录会自动写入此文件。
 
+## [v0.3.2] - 2026-09-14
+### Bug Fixes
+- [`a01745e`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/a01745e7d35205b60f366a04d0b28d4525cd2193) - **ci**: bundle AppImage media codecs and verify decoding *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+
+### Tests
+- [`b14e3da`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/b14e3dae85c3d8449277ee1d9c55dada755dac01) - **ci**: require decoded AppImage media output *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+
+### Documentation Changes
+- [`4848fb2`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/4848fb2649f7e85a55c34a40e5007a931c1120fb) - update CHANGELOG.md for v0.3.1 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
+
+### Chores
+- [`79d8173`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/79d8173402e286663482f066418bdd86e6de5928) - keep documentation unchanged in codec fix *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+- [`a30b04a`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/a30b04acd27773b30a67a7f1aec01cc18ef9c906) - **ci**: remove AppImage media smoke test *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+- [`c01e316`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/c01e3169c73bd6920f8388f522ccd3f7038bec87) - bump version into v0.3.2 *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+
+### Other Changes
+- [`e7fd460`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/e7fd4605c144f1d30ae1e1779ea339deafe44e0d) - Merge pull request [#33](https://github.com/HsiangNianian/IntelligentMixVideo/pull/33) from muyuzhong/fix/appimage-media-codecs-dev
+
+fix(ci): include missing AppImage media codecs *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`a609bee`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/a609bee025a1033095c81ac67449ae9169a718a4) - Merge pull request [#34](https://github.com/HsiangNianian/IntelligentMixVideo/pull/34) from HsiangNianian/dev
+
+fix(ci): bundle AppImage media codecs and verify decoding *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+
+## [v0.3.1] - 2026-09-14
+### BREAKING CHANGES
+- due to [`885f654`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/885f6541fc777a251c90b7e227d409aee864f3f4) - simplify MVP segmentation pipeline *(commit by [@muyuzhong](https://github.com/muyuzhong))*:
+
+  remove segmentation tuning settings and merge/split trace counters; HTTP field validation now returns FastAPI detail errors.
+
+
+### New Features
+- [`b207213`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/b2072134adcf6c440a56159093c0e2f9a0fb4b51) - 新增本地环境 *(commit by [@left0ver](https://github.com/left0ver))*
+- [`96ead7b`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/96ead7b0007b8200fd81acc092424bc1053540b0) - **server**: regroup segmentation response fields *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+
+### Bug Fixes
+- [`dc29816`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/dc29816a75b0bd9f00c75cc69ed232272e622226) - **server**: restrict localhost CORS port range *(commit by [@tingfeng347](https://github.com/tingfeng347))*
+- [`8b08a35`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/8b08a35c055b2ba9f020b8839e634e2dbc8f1d54) - **server**: enable HTTP model endpoints by default *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+
+### Refactors
+- [`3ff6c6d`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/3ff6c6df180d8c037213b5a87ed806dddf4eb4d0) - **client**: replace global Tauri API with module imports *(commit by [@left0ver](https://github.com/left0ver))*
+- [`885f654`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/885f6541fc777a251c90b7e227d409aee864f3f4) - **server**: simplify MVP segmentation pipeline *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+
+### Documentation Changes
+- [`80d9ee2`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/80d9ee23716c0a53705d56168651cd75d10ce998) - update CHANGELOG.md for v0.3.0 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
+
+### Chores
+- [`a702159`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/a702159ceb7b7ce109cbe9d71a89e71553248dd4) - bump version into v0.3.1 *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+
+### Other Changes
+- [`9dd49ca`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/9dd49ca636c320ac15fb2824aa235ac3a348f151) - Merge pull request [#25](https://github.com/HsiangNianian/IntelligentMixVideo/pull/25) from tingfeng347/fix/cors-port-range
+
+fix(server): restrict localhost CORS port range *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`89716fb`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/89716fbd1a2ab2bdd0b5558f85753d1b82798089) - Merge pull request [#28](https://github.com/HsiangNianian/IntelligentMixVideo/pull/28) from left0ver/feature/add_local_environment
+
+feat(client): 新增本地模板存储与环境切换 *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`5c98ac0`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/5c98ac0e43b6e847549904ae92dd2a4a62ec7b12) - Merge pull request [#26](https://github.com/HsiangNianian/IntelligentMixVideo/pull/26) from muyuzhong/feat/segmentation-response-fields
+
+feat(server): regroup segmentation response fields *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`4762609`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/4762609b3c17b9a5048de02e22ad4382750bce21) - Merge pull request [#30](https://github.com/HsiangNianian/IntelligentMixVideo/pull/30) from muyuzhong/refactor/segmentation-mvp
+
+refactor(server)!: simplify MVP segmentation pipeline *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`50c6e12`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/50c6e120466f998fd88ee9040e5904e439abf637) - Merge pull request [#29](https://github.com/HsiangNianian/IntelligentMixVideo/pull/29) from HsiangNianian/dev
+
+feat(client): 新增本地模板存储与环境切换 *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`ef92304`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/ef923040a41db8a60d0272da0c3d5333e2472a4e) - Merge pull request [#31](https://github.com/HsiangNianian/IntelligentMixVideo/pull/31) from HsiangNianian/dev
+
+chore: bump version into v0.3.1 *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+
+## [v0.3.0] - 2026-09-12
+### Bug Fixes
+- [`9cd4c47`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/9cd4c47ecf3b92d00e77522b419c7fb4814ddfcd) - **server**: reconcile async ASR with upstream fixes *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`a55a2b4`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/a55a2b4c576ecaba90d87bca70136d3f6a17731c) - **client**: bundle GStreamer plugins in AppImage *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+- [`0dbbe54`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/0dbbe54c281e49b1257924d87db94b811effe9bc) - **client**: restore Windows preview and unblock local editing *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+
+### Build System
+- [`8de7ec6`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/8de7ec6730862805d2ae559db454bc85bfd4797d) - disable unused uv cache in release preflight *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+
+### Documentation Changes
+- [`7f6405b`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/7f6405b62ddf1f9606f2d9e131245901c3424730) - update CHANGELOG.md for v0.2.0 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
+
+### Chores
+- [`663231a`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/663231a79da46894918c72ec4116ed131bdeb936) - **release**: synchronize client and server versions at 0.3.0 *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`b362e6c`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/b362e6cd90e7740ed89a6629e247cb852cdf038a) - **release**: prepare v0.3.0 *(PR [#24](https://github.com/HsiangNianian/IntelligentMixVideo/pull/24) by [@HsiangNianian](https://github.com/HsiangNianian))*
+
+### Other Changes
+- [`b134d57`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/b134d5787597b7eae53b62fbdbc53645425a3a8c) - fix(server)：将asr改为异步
+- [`2d3c8ce`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/2d3c8ce1d4b272c93b6a31482e7c9632237af9f3) - Merge branch 'dev' of https://github.com/HsiangNianian/IntelligentMixVideo into dev
+- [`ce6cadc`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/ce6cadcad740581082fa4ac1a27596068f83bf30) - Merge branch 'dev' of https://github.com/HsiangNianian/IntelligentMixVideo into dev
+- [`2e07b61`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/2e07b61add3e5bf382f004a4f11b8854e3d1bedd) - Merge pull request [#19](https://github.com/HsiangNianian/IntelligentMixVideo/pull/19) from IT-coder-Yy/dev
+
+fix(server)!: 将 ASR 转写改为异步并支持取消清理 *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`1e5fcdb`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/1e5fcdbbaf375476755cd5f3e7307bd51b940aea) - Merge pull request [#21](https://github.com/HsiangNianian/IntelligentMixVideo/pull/21) from muyuzhong/dev
+
+fix(client): bundle GStreamer plugins in AppImage *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+
 ## [v0.2.0] - 2026-09-12
 ### BREAKING CHANGES
 - due to [`a88216b`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/a88216bf82399199b7d4669bd5f314c764dac49f) - replace matrix alignment with bounded wavefront search *(commit by [@muyuzhong](https://github.com/muyuzhong))*:
@@ -105,3 +200,9 @@ feat(client): 在模板工作区页头添加时钟 *(commit by [@HsiangNianian](
 [v0.1.1]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.1.0...v0.1.1
 
 [v0.2.0]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.1.1...v0.2.0
+
+[v0.3.0]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.2.0...v0.3.0
+
+[v0.3.1]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.3.0...v0.3.1
+
+[v0.3.2]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.3.1...v0.3.2

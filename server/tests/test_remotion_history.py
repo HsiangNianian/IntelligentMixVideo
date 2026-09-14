@@ -563,12 +563,15 @@ def _data_lines(lines, count):
     [
         "http://localhost:1420",
         "http://localhost:4173",
+        "http://localhost:1",
+        "http://localhost:49152",
+        "http://localhost:65535",
         "tauri://localhost",
         "http://tauri.localhost",
     ],
 )
 def test_mounted_stream_allows_replay_header(client, origin):
-    """The actual host CORS policy permits fetch-based SSE replay from existing browser and Tauri origins."""
+    """实际主应用允许浏览器、Tauri 及 Windows 动态 localhost 端口携带 SSE 续传请求头。"""
     response = client.options(
         f"/api/templates/works/{uuid4()}/stream",
         headers={

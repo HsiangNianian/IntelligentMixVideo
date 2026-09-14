@@ -55,8 +55,9 @@ bun install --frozen-lockfile
 bun run tauri dev
 ```
 
-首页提供模板创建、选择、完整编辑、保存、重命名、另存为和删除，切换前保护未保存修改。
-模板功能本次以 `bun run dev` 启动后在 `http://localhost:1420` 使用，预览沿用阿里云 SDK 5.2.2。
+首页提供模板创建、选择、完整编辑、保存、重命名、另存为和删除，切换前保护未保存修改。页面可选择本地或云端环境：桌面和浏览器均默认云端，沿用现有 MySQL API；连接失败、超时或服务端 5xx 时提示手动切换本地。本地在客户端应用数据目录的 `data/template/templates.json` 保存，无需 Python 服务；浏览器使用本地保存需打开桌面客户端。两套模板库独立，切换环境同样保护未保存修改。桌面本地操作通过官方 `@tauri-apps/api/core` 模块调用，使用 `isTauri()` 判断环境，无需开启全局 Tauri API。
+浏览器开发使用 `bun run dev` 后打开 `http://localhost:1420`；Windows 安装包内置回环静态服务，以 `http://localhost:<动态端口>` 加载页面，预览沿用阿里云 SDK 5.2.2。macOS / Linux 保留原有 Tauri 加载方式。
+本地草稿编辑与预览不依赖 Python API；共享模板读写需要服务端，SDK、字体与示例媒体仍需联网。
 示例视频可在 `client/.env` 中通过 `VITE_PREVIEW_VIDEO_URL` 配置，修改后重启前端；详见 [客户端说明](client/README.md#示例视频配置)。
 客户端 API 地址通过 `client/.env` 中的 `VITE_API_URL` 配置，未配置或留空时默认 `http://localhost:8000`。
 端口冲突时可按服务端说明改为 8010，并同步设置 `VITE_API_URL=http://localhost:8010`。模板库共享，不迁移旧项目数据。
@@ -101,8 +102,8 @@ PR 的统一结果是 `CI result`，分支保护建议同时要求该检查和 p
 从 Actions 对应运行的 Artifacts 下载产物，保留 14 天。CI 使用依赖锁文件，不需要额外配置发布密钥。
 当前安装包未配置代码签名或 macOS 公证；正式分发时需另行配置。
 
-涉及 CI、原生代码或客户端依赖时，验证流程运行 actionlint、CI 调度与发布回归测试，
-并在临时副本中验证版本注入和锁文件。服务端改动运行 pytest 和 `uv build --project server`。
+涉及 CI、原生代码或两端版本清单/锁文件时，验证流程运行 actionlint、CI 调度与发布回归测试，
+检查两端版本一致，并在临时副本中验证版本同步及 Bun、Cargo、uv 锁文件。服务端改动运行 pytest 和 `uv build --project server`。
 同一分支的新提交会取消旧检查；PR 与 push 使用独立并发组，避免相互取消。
 
 提交前检查
@@ -127,22 +128,27 @@ Tag 发版
 --------
 
 `.github/workflows/release.yml` 在推送 `vX.Y.Z` 格式的正式版本 tag 时触发。
-流程会先校验 tag 格式，再复用客户端 CI 构建 Windows x64、Linux x64、
+流程会先校验 tag 格式及两端源码版本，再复用客户端 CI 构建 Windows x64、Linux x64、
 macOS ARM64 / Intel 安装包；所有构建成功后才创建 GitHub Release。
 安装包和 `CHANGELOG.md` 都会作为 Release 附件上传，Release 正文使用自动生成的变更记录。
 
-**正式版本由 tag 唯一决定，无需手动修改版本文件。** 各平台 CI 会将 `v0.2.0`
-解析为 `0.2.0`，自动写入构建工作区中的 `package.json`、`tauri.conf.json`、
-`Cargo.toml` 及 `Cargo.lock` 的客户端包版本，保留已锁定的依赖版本，然后校验并构建。
-`bun.lock` 不记录根项目版本，发布时保持不变，并通过冻结锁文件安装验证。
-这些版本修改不提交回仓库；本地开发继续使用源码中的开发版本，只有 CHANGELOG 会回写。
+**client 与 server 版本统一，源码版本必须与正式 tag 一致。** 发版前执行一次脚本，
+同步客户端 `package.json`、`tauri.conf.json`、`Cargo.toml`、`Cargo.lock`，以及服务端
+`pyproject.toml`、`uv.lock` 的项目自身版本，并将这些变更提交、合并。第三方依赖版本与
+`bun.lock` 保持不变。Tauri 和 FastAPI 文档分别读取应用配置与已安装的服务端包版本。
+CI 会拒绝版本不一致；正式构建直接使用 tag 对应源码，不再临时改版。
 
-例如发布 `0.2.0`（先提交源码，并确保发布工作流已包含在该提交中）：
+例如在仓库根目录准备 `0.3.0`：
 
 ```sh
-git tag -a v0.2.0 -m "Release v0.2.0"
-git push origin v0.2.0
+RELEASE_TAG=v0.3.0 bun .github/scripts/validate-release.mjs --write
+bun .github/scripts/validate-release.mjs
+# 将版本变更提交并合入 main 后：
+git tag -a v0.3.0 -m "Release v0.3.0"
+git push origin v0.3.0
 ```
+
+PowerShell 先执行 `$env:RELEASE_TAG = "v0.3.0"`，再运行同一条 `bun ... --write` 命令。
 
 日志使用与 [HydroRoll 示例](https://github.com/HydroRoll-Team/HydroRoll/blob/main/.github/workflows/changelog.yml)
 相同的 `requarks/changelog-action`，按 Conventional Commits 分类生成。

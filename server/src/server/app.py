@@ -5,6 +5,7 @@
 
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
+from importlib.metadata import version
 from math import isfinite
 
 from fastapi import FastAPI, Request
@@ -31,14 +32,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         close_database()
 
 
-# 允许本地 Vite 与 Tauri 客户端直接跨域访问 API，保留明确的来源白名单。
-app = FastAPI(title="IntelligentMixVideo API", lifespan=lifespan)
+# 允许本地 Vite 与 Tauri 客户端访问 API；Windows 正式客户端使用动态 localhost 端口。
+# 文档版本直接读取已安装的服务端包元数据，与发布清单保持一致。
+app = FastAPI(title="IntelligentMixVideo API", version=version("imv-server"), lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:1420", "http://localhost:4173",
         "tauri://localhost", "http://tauri.localhost",
     ],
+    # 动态来源仅接受系统可分配的十进制端口 1～65535。
+    allow_origin_regex=(
+        r"^http://localhost:(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|"
+        r"6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$"
+    ),
     allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type", "Last-Event-ID"],
 )
 app.include_router(router)

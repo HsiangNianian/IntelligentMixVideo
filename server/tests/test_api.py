@@ -1,5 +1,7 @@
 """验证 ASGI 路由、边界和文档；在 server/ 执行 uv run --locked pytest tests/test_api.py。"""
 
+from importlib.metadata import version
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -53,9 +55,10 @@ def test_unknown_route(client: TestClient) -> None:
     assert client.get("/not-found").status_code == 404
 
 
-# 测试本地 Vite 与 Tauri 正式客户端来源均能进行模板 JSON 请求的 CORS 预检。
+# 测试 Vite、现有 Tauri 来源和 Windows 客户端动态端口均能通过模板请求预检。
 @pytest.mark.parametrize("origin", [
     "http://localhost:1420", "http://localhost:4173", "tauri://localhost", "http://tauri.localhost",
+    "http://localhost:1", "http://localhost:49152", "http://localhost:65535",
 ])
 @pytest.mark.parametrize("method", ["GET", "POST", "DELETE"])
 def test_local_client_cors(client: TestClient, origin: str, method: str) -> None:
@@ -71,15 +74,24 @@ def test_local_client_cors(client: TestClient, origin: str, method: str) -> None
     assert client.get("/template", headers={"Origin": origin}).headers["access-control-allow-origin"] == origin
 
 
-# 测试不受信任的网页来源仍无法通过跨域预检。
-def test_external_origin_cors_is_rejected(client: TestClient) -> None:
-    """补齐本地桌面来源不能扩大为允许任意网页访问 API。"""
+# 测试不受信任的网页来源和无效 localhost 端口都无法通过跨域预检。
+@pytest.mark.parametrize("origin", [
+    "https://example.com", "http://example.com:49152", "https://localhost:49152",
+    "http://localhost.example.com:49152", "http://localhost:49152.example.com",
+    "http://localhost:49152/path", "http://localhost:49152/", "http://localhost:49152?x=1",
+    "http://localhost@evil.example:49152", "http://127.0.0.1:49152", "http://[::1]:49152",
+    "http://localhost:not-a-port", "http://localhost:0", "http://localhost:65536",
+    "http://localhost:999999", "null",
+])
+def test_disallowed_origin_cors_is_rejected(client: TestClient, origin: str) -> None:
+    """不受信网页及无效 localhost 端口不能获得跨域访问权限。"""
     response = client.options("/template", headers={
-        "Origin": "https://example.com", "Access-Control-Request-Method": "POST",
+        "Origin": origin, "Access-Control-Request-Method": "POST",
         "Access-Control-Request-Headers": "Content-Type",
     })
     assert response.status_code == 400
     assert "access-control-allow-origin" not in response.headers
+    assert "access-control-allow-origin" not in client.get("/template", headers={"Origin": origin}).headers
 
 
 # 测试文档包含首页、用户、模板和切片全部路由，且用户 ID 参数定义正确。
@@ -91,6 +103,7 @@ def test_api_documentation(client: TestClient) -> None:
     response = client.get("/openapi.json")
     assert response.status_code == 200
     schema = response.json()
+    assert schema["info"]["version"] == version("imv-server")
     assert set(schema["paths"]) == {
         "/", "/users/", "/users/{user_id}", "/template", "/template/{template_id}", "/segmentations",
     }

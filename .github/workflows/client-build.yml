@@ -11,7 +11,7 @@ on:
         type: string
         default: package
       release-tag:
-        description: "Release tag used to set the client version in this build only"
+        description: "Release tag that must match committed client and server versions"
         required: false
         type: string
         default: ""
@@ -66,7 +66,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 libxdo-dev patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 libxdo-dev patchelf gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -87,16 +87,13 @@ jobs:
           workspaces: client/src-tauri -> target
           key: ${{ matrix.target }}
           shared-key: ${{ inputs.build-mode || 'package' }}
-      - name: Set release version from tag
-        if: inputs.release-tag != ''
+      - name: Verify committed project versions
         working-directory: .
         env:
           RELEASE_TAG: ${{ inputs.release-tag }}
-        run: |
-          bun .github/scripts/validate-release.mjs --write
-          bun .github/scripts/validate-release.mjs
+        run: bun .github/scripts/validate-release.mjs
       - name: Install frontend dependencies
-        # Also checks that tag version injection preserves the dependency lock.
+        # Version preparation must preserve the dependency lock.
         run: bun install --frozen-lockfile
       - name: Verify Cargo lockfile
         if: inputs.release-tag != ''
@@ -113,6 +110,9 @@ jobs:
         run: |
           bun run build
           cargo check --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --all-targets --locked
+      - name: Test Windows resource server
+        if: runner.os == 'Windows' && inputs.build-mode == 'check'
+        run: cargo test --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --lib --locked
       - name: Upload installers
         if: inputs.build-mode != 'check'
         uses: actions/upload-artifact@v4

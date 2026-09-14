@@ -1,11 +1,12 @@
 # IntelligentMixVideo Client
 
 基于 Tauri 2、React、TypeScript、Tailwind CSS 4 和 shadcn/ui。
-模板功能本次以 `localhost` 浏览器运行，SDK 使用阿里云 AliyunTimelinePlayer 5.2.2。
+模板预览继续使用阿里云 AliyunTimelinePlayer 5.2.2；Windows 安装包通过内置回环 HTTP 服务加载页面，使 SDK 识别到 `localhost`。
+客户端与服务端使用同一项目版本；发版前统一更新并提交清单和锁文件，操作见[根目录发版说明](../README.md#tag-发版)。
 
 ## 开发运行
 
-先按 [服务端说明](../server/README.md) 启动 MySQL 与 API，再在本目录执行：
+云端模式先按 [服务端说明](../server/README.md) 启动 MySQL 与 API；仅使用桌面本地模式可跳过服务端。在本目录执行：
 
 ```sh
 bun install --frozen-lockfile
@@ -29,8 +30,9 @@ bun run tauri dev
 bun run tauri build
 ```
 
-前端构建不代表桌面打包或跨平台预览验证通过。本次未验证 Tauri 打包后的 SDK 运行环境。
-预览需要联网下载 SDK、字体和公开视频，使用支持硬件加速的 Chrome / Edge；本次按 localhost 运行，不配置 License。
+Windows 安装包仅在本机回环地址绑定系统分配的空闲端口，窗口访问 `http://localhost:<端口>`；退出程序后释放，无需额外启动 Python 或 Vite。API 允许该 localhost 来源的动态端口。
+开发模式仍使用 Vite，macOS / Linux 保留原有 Tauri 加载方式。预览仍需要联网下载 SDK、字体和公开视频；空 License 的 localhost 预览保留 SDK 水印。
+前端构建不代表桌面打包或跨平台预览验证通过；各平台仍须检查真实 WebView、首帧和播放。
 
 ## 示例视频配置
 
@@ -53,12 +55,16 @@ VITE_PREVIEW_VIDEO_URL=https://your-domain.example/preview.mp4
 中等及以上窗口采用左右布局：左侧选择和配置模板，右侧预览效果并随滚动保持可见；窄屏自动改为上下排列。
 
 - 新建、选择已有模板、完整保存、重命名、另存为和确认删除。
+- 当前环境可选择本地 / 云端。桌面和浏览器均默认云端，连接失败、超时或服务端 5xx 时提示手动切换本地；本地无需 Python 或 MySQL，但需使用桌面客户端。切换前可保存到原环境、放弃修改或取消，读取目标失败保留原草稿，两库不自动同步。
+- 本地文件位于 Tauri 应用数据目录下的 `data/template/templates.json`。macOS 为 `~/Library/Application Support/com.intelligentmixvideo.client/data/template/`，Windows 为 `%APPDATA%/com.intelligentmixvideo.client/data/template/`，Linux 为 `${XDG_DATA_HOME:-~/.local/share}/com.intelligentmixvideo.client/data/template/`。本地目录随首次读取自动创建，JSON 损坏时明确报错，不能当成空库覆盖。
+- 离线仍可从内置目录选择效果并保存；SDK、字体与示例视频预览仍需联网。
 - 标题、字幕、气泡独立设置文字、字号、位置、样式、入场/出场/循环动画及动画时长。
 - 画面滤镜、特效、转场和转场时长可选；预览不提交云端合成任务。
 - 保存覆盖当前模板，另存为保留原模板；重命名和另存为包含当前编辑配置。
 - 切换前提供保存并切换、放弃修改、取消；失败保留草稿。刷新列表不会覆盖正在编辑的内容。
 - 效果目录由 SDK 提供，动画来自静态 `motions.json`；服务端独立校验可信效果 ID。至少选择一个效果才能保存。
 - 浏览器关闭或刷新时对未保存修改发出提示；不提供崩溃恢复或自动保存。
+- 模板列表加载或失败不锁住本地新建与文字编辑；保存等待首次列表请求结束，避免晚到结果覆盖保存后的列表。
 
 ## 开发结构
 
@@ -104,3 +110,4 @@ bun run build
 测试固定 API 与示例视频地址并拦截 fetch，不需要启动后端、MySQL 或下载 SDK。
 工作区测试使用真实表单、Radix 选择器和弹窗，以轻量组件代替 SDK 播放器；不验证实际视频播放、字体排版或 Tauri 原生能力。
 Happy DOM 的小数 step 校验与浏览器不同，保存流程直接触发表单提交；浏览器原生表单约束仍需浏览器验证。
+Windows 原生资源服务的回归测试位于 `src-tauri/src/localhost.rs`，执行 `cargo test --manifest-path src-tauri/Cargo.toml --lib --locked`，覆盖真实 HTTP 资源响应、查询参数、HEAD、错误主机与方法；原生检查 CI 同步执行。

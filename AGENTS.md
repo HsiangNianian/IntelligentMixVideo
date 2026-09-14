@@ -17,8 +17,6 @@
 - Remotion 颜色探针允许最多 2/255 的 RGB 取整误差并比较 alpha 加权覆盖，边缘位置探针优先向内移动；一帧转场核验相邻边界，缺少时序证据仍为 unknown。视觉请求提供图片序号与实际帧号映射，不把无效帧引用自动解释为图片序号。
 - Remotion 模型预算由 `server/.env` 的 `IMV_MAX_OUTPUT_TOKENS`（32000）、`IMV_MAX_TOKENS`（200000）、`IMV_MAX_MODEL_CALLS`（32）和 `IMV_MODEL_TIMEOUT_SECONDS`（240）配置；单次输出还受剩余总预算限制，所有模型角色共用任务预算。任务与渲染超时独立配置为 600 / 180 秒；默认值与 `.env.example` 同步，修改后重启服务。
 - `server/src/server/asr/` 提供独立的 `transcribe` 函数与 `python -m server.asr` 命令行入口，尚未注册 HTTP 路由；通过北京地域 Fun-ASR 接收 HTTPS 音频直链并返回原始转写 JSON。`DASHSCOPE_API_KEY` 在模块加载时读取一次，优先源码 `server/.env`，不存在时回退工作目录 `.env`，进程环境变量优先；测试隔离文件、密钥、HTTP 和轮询等待。
-- 文案切片集中在 `server/src/server/segmentation/segmentation.py` 的单个 `segment` 函数，由包入口导出；`sub_api/segmentation.py` 只负责 HTTP 路由及错误转换。输入正确文案与单音轨 Fun-ASR 原始结果，仅接受恰好一个 `transcripts` 元素，词时间使用 `begin_time/end_time` 毫秒；不接受顶层 `sentences` 或仅有旧 `*_ms` 时间字段的输入。波前对齐、时间投射、时长与关键词校验由代码完成，模型只给切点和候选词；不调用 TTS/ASR，不降级模型失败。配置由 `segmentation/settings.py` 的 Pydantic Settings 自动读取当前目录 `.env` 与优先级更高的 `IMV_` 环境变量，校验类型和范围且不缓存；测试使用合成时间轴和模型替身。
-- 提示词逐个判断独立信息点并优先保留已有切点；仅语法不完整、依赖相邻句且合并后不超过10字时建议合并，6～8字为节奏偏好，不保证最终10字上限。关键词提示词要求全篇优先3～4个、总数最多4个、每段最多1个，配置为0时不选，并逐项匹配所属片段、保留空数组位置；数量仍由既有配置上限校验，代码不强制提示词中的全篇4个或每段1个，不改变时长约束、毫秒单位及响应结构。
 - 在 `server/` 下执行 `uv run server` 启动 Uvicorn，默认监听 `127.0.0.1:8000`；仓库根目录使用 `uv run --project server server`。维护 `server/uv.lock`，CI 使用 `--locked` 验证依赖。
 - `server/pyproject.toml` 显式将官方 PyPI 设为 uv 默认索引，与锁文件来源保持一致。遇到依赖版本不可用时先检查索引覆盖配置和镜像同步情况，不要仅为绕过镜像缺失而降低依赖版本或删除锁文件。
 - `App.tsx` 挂载 `pages/HomePage.tsx`，首页以标签组合 `features/remotion_templates/` 字效生成工作区与原 `features/templates/` 模板库；聊天、任务编排、隔离 Player、参数编辑和 API 请求按职责分离。
@@ -50,7 +48,7 @@
 
 ## 模板功能约定
 
-- 模板库共享，不包含登录、用户隔离或旧数据迁移。配置存入 MySQL，使用 SQLAlchemy 和 PyMySQL。
+- 云端模板库共享，不包含登录、用户隔离或旧数据迁移，配置存入 MySQL，使用 SQLAlchemy 和 PyMySQL。页面提供本地 / 云端下拉框；默认为云端环境，连接失败、超时或服务端 5xx 时提示用户手动切换本地。桌面通过 `@tauri-apps/api/core` 的 `invoke` 调用 Tauri `local_templates` 命令，使用 `isTauri()` 判断桌面环境，不开启 `withGlobalTauri`；命令读写应用数据目录的 `data/template/templates.json`，不请求 Python 服务；浏览器本地模式明确报错。两库独立，切换复用未保存保护，目标读取失败保留原环境和草稿。本地 JSON 通过文件锁和临时文件原子替换保护；本地校验及效果快照使用随包 SDK 目录，预览仍需联网。Rust 存储测试使用临时目录，在 `client/` 执行 `cargo test --locked --manifest-path src-tauri/Cargo.toml`。
 - 数据库配置由 `database.py` 的 `DatabaseSettings`（`pydantic-settings`）自动读取固定的 `server/.env`，字段为 `DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD`、`DB_NAME`，进程环境变量优先；端口校验 1～65535，库名校验 1～64 字符。启动初始化时加载，修改后重启服务。真实环境文件不得入库，维护无密码示例 `.env.example`。
 - 数据库、ASR 与切片模型配置共用 `server/.env.example`；从 `server/` 启动可读取全部配置，根目录启动且需要切片模型配置时使用 `uv run --project server --env-file server/.env server`，因为切片设置按当前目录查找 `.env`。
 - FastAPI lifespan 启动时连接目标库，仅在 MySQL 返回 1049（库不存在）时通过临时无库连接执行 `CREATE DATABASE IF NOT EXISTS`，使用 `utf8mb4` / `utf8mb4_bin` 并正确引用库名；已有库直接复用。配置无效、连接或建库失败时停止启动，建库账号须具备对应权限。首次模板请求自动创建缺失表；运行中的数据库失败返回可重试的 503。启动失败和退出时释放连接池，临时建库连接始终关闭。
@@ -59,7 +57,8 @@
 - 重命名和另存为复用 POST；另存为不携带 ID。未保存切换须提供保存并切换、放弃修改、取消，失败保留草稿。删除前确认。
 - 前端使用 SDK 5.2.2 的效果目录和静态动画 JSON，服务端维护同版本白名单；不提供 `/template/effects`。升级 SDK 时同步核对目录。保留用户已有 proto 文件，本次 API 使用 JSON。
 - 示例视频地址通过 `client/.env` 中的 `VITE_PREVIEW_VIDEO_URL` 配置，支持 HTTP(S) 直链与 public 资源路径；空值回退内置示例。修改后重启 Vite，生产使用需重新构建；当前固定片段要求源视频至少 14 秒。
-- 预览本次面向 localhost 浏览器运行；API 地址读取 `client/.env` 的 `VITE_API_URL`，未配置或留空时默认 `http://localhost:8000`，请求直接访问该地址。修改后重启 Vite，生产使用需重新构建；避免 `.env.local` 中同名配置覆盖。预览不发起云端合成，不将浏览器验证等同于桌面安装包验证。
+- 预览保留阿里云 SDK 5.2.2；Windows 生产页面通过 `src-tauri/src/localhost.rs` 在 `127.0.0.1` 的系统分配端口提供打包资源，窗口使用 `http://localhost:<端口>`，避免 `tauri.localhost` 不满足空 License 的 localhost 预览条件。仅允许对应 Host 的 GET/HEAD，不暴露任意磁盘文件；开发模式与 macOS / Linux 保持原加载方式，不扩大 Tauri IPC 权限。
+- API 地址读取 `client/.env` 的 `VITE_API_URL`，未配置或留空时默认 `http://localhost:8000`；CORS 允许精确 localhost 主机的动态 HTTP 端口。修改配置后重启 Vite，生产需重新构建；避免 `.env.local` 同名配置覆盖。模板列表加载不阻塞本地编辑，但保存须防止晚到列表覆盖结果。预览仍需联网获取 SDK、字体和媒体，不发起云端合成，不将浏览器验证等同于桌面安装包验证。
 
 ## Remotion 字效客户端约定
 
@@ -134,6 +133,7 @@ Windows 需要 MSVC C++ 构建工具、Windows SDK 和 WebView2；ARM64 主机�
 
 - 非默认分支 push：若同一仓库的同一提交已有打开的 PR，跳过重复任务；否则按变更范围检查。默认分支始终验证集成结果，不参与去重。
 - PR：前端改动运行冻结安装、核心测试与生产构建；服务端改动运行 pytest 与包构建；Rust/Tauri 或客户端依赖清单改动运行四平台 `cargo check --all-targets --locked`，不生成安装包。CI 工作流或脚本改动触发所有相关检查。
+- Windows 原生检查同时运行 `cargo test --lib --locked`，验证回环静态资源服务的 HTTP 行为；桌面真实预览仍需单独验证。
 - 默认分支 push：涉及客户端代码、资源或 CI 时生成四平台安装包。默认分支名称从事件读取，不硬编码 main。纯服务端改动不构建客户端，纯 Markdown 客户端文档不触发编译。
 - pre-commit.ci 负责 PR 的文件检查；Actions 仅在未去重的 push 或手动检查中运行 pre-commit，避免重复执行。
 - PR 汇总检查名为 `CI result`，push 使用 `Push result`，避免重复 push 的成功结果冒充 PR 验证。汇总必须在依赖失败/取消后执行，意外跳过必需任务不得报告成功。
@@ -152,35 +152,38 @@ Windows 需要 MSVC C++ 构建工具、Windows SDK 和 WebView2；ARM64 主机�
 普通构建的 Actions artifacts 保留 14 天。发版应复用这一构建工作流，避免维护两套不一致的平台构建逻辑。
 构建产物来自被触发的提交；正式发布时必须来自对应 tag 的源码。
 
-涉及 CI、原生代码或客户端依赖清单时，Release preflight 检查全部工作流、运行调度与发布脚本测试，
-并通过临时副本验证版本注入、Bun 冻结安装和 Cargo 锁文件不变。
+涉及 CI、原生代码或两端版本清单/锁文件时，Release preflight 检查全部工作流、运行调度与发布脚本测试，
+校验两端源码版本一致，并通过临时副本验证版本同步、Bun 冻结安装、Cargo 和 uv 锁文件。
 服务端 job 使用 Python 3.12 和 uv 缓存；`server/pyproject.toml` 的 uv 构建模块名显式设为 `server`，对应 `src/server/`。
 在 Validate project 上手动运行会执行全部检查（原生检查模式）；需要安装包时手动运行 Build client。
 
 ## 正式版本与 tag 发版
 
-**正式发布版本以 tag 为唯一来源，不要求手动同步多个版本文件。**
+**client 与 server 使用同一版本；发版前用一个命令同步并提交源码，正式 tag 必须与全部版本一致。**
 
 - `.github/workflows/release.yml` 在推送 `v*` tag 时触发，校验后仅接受 `vX.Y.Z` 正式版本，不接受 `-beta`、`-rc` 或构建元数据。
 - 版本须符合 Windows MSI 限制：major、minor 不超过 255，patch 不超过 65535。
 - 发布工作流通过 `release-tag` 输入把 tag 传给复用的客户端构建工作流。
-- 各平台在 CI 构建工作区中执行版本注入，例如 `v0.2.0` 转为 `0.2.0`。
-- 自动同步 `client/package.json`、`client/src-tauri/tauri.conf.json`、`client/src-tauri/Cargo.toml` 及 `client/src-tauri/Cargo.lock` 的客户端包版本。`client/bun.lock` 不记录根项目版本，发版时保持其内容不变，并通过 `bun install --frozen-lockfile` 验证。
-- 只修改项目自身版本，保留所有已锁定的第三方依赖版本及校验信息；不得借版本注入更新依赖。
-- Tauri 应用版本当前由 `tauri.conf.json` 的 `version` 提供，正式构建时该值由 tag 注入。
-- 版本修改只用于当前构建，不提交回源码、不移动 tag。普通开发构建继续使用仓库中的开发版本。
+- 发版前通过脚本将 `v0.3.0` 同步为 `0.3.0`，提交到 dev，经 PR 合入 main 后再在该提交打 tag。不能只在 CI 临时改版而让源码长期停留旧版本。
+- 自动同步 `client/package.json`、`client/src-tauri/tauri.conf.json`、`client/src-tauri/Cargo.toml` 与 `Cargo.lock` 的客户端包版本，以及 `server/pyproject.toml` 与 `server/uv.lock` 的 `imv-server` 包版本。`client/bun.lock` 不记录根项目版本，保持原样并用冻结安装验证。
+- 只修改项目自身版本，保留所有已锁定的第三方依赖版本及校验信息；不得借版本同步更新依赖。
+- Tauri 应用版本由 `tauri.conf.json` 的 `version` 提供；FastAPI/OpenAPI 版本读取已安装的 `imv-server` 包元数据，不增加另一处硬编码版本。
+- 普通 CI 检查源码两端版本一致；tag CI 只校验源码与 tag 一致后构建，不自动修正不匹配版本、不移动 tag。
 
 版本脚本为 `.github/scripts/validate-release.mjs`，通过环境变量 `RELEASE_TAG` 接收 tag：
 
-- `--tag-only`：只校验 tag 格式及版本范围，不要求源码中的开发版本与 tag 一致。
-- `--write`：将 tag 版本写入当前工作区的配置和锁文件。只在 CI 或临时副本中验证此模式，避免意外改动本地开发版本。
-- 不带参数：验证配置和锁文件的客户端版本均与 tag 一致，用于注入后校验。
+- `--tag-only`：只校验显式 tag 的格式及版本范围，不能替代发版前的完整版本校验。
+- `--write`：必须显式设置 `RELEASE_TAG`，一次更新上述六处项目版本；检查 diff 并提交这些变更。回归测试只在临时副本使用此模式。
+- 不带参数：有 `RELEASE_TAG` 时检查两端全部版本与 tag 一致；未设置时以 `client/package.json` 为基准检查版本一致性。
 
-发版操作示例（先提交源码，确保该提交包含发布工作流）：
+发版操作示例（在仓库根目录同步版本，提交并合并后再打 tag）：
 
 ```sh
-git tag -a v0.2.0 -m "Release v0.2.0"
-git push origin v0.2.0
+RELEASE_TAG=v0.3.0 bun .github/scripts/validate-release.mjs --write
+bun .github/scripts/validate-release.mjs
+# 将版本变更提交并合入 main 后：
+git tag -a v0.3.0 -m "Release v0.3.0"
+git push origin v0.3.0
 ```
 
 ## GitHub Release 与 CHANGELOG

@@ -66,3 +66,11 @@ test("预览拒绝必要的非法配置", () => {
   draft.editor.titleLoop = "loop/normal_display";
   expect(() => buildTimeline(draft, catalog)).toThrow("循环动画不能与入场、出场同时使用");
 });
+
+// 测试断网时内置目录仍覆盖所有效果分类，静态动画具有可用的参数快照。
+test("离线目录不依赖 SDK 下载", async () => {
+  const { readCatalog } = await import("@/features/templates/sdk");
+  const items = readCatalog();
+  expect(new Set(items.map((item) => item.category))).toEqual(new Set(["flower", "bubble", "filter", "vfx/normal", "transition/normal", "in", "out", "loop"]));
+  expect(items.find((item) => item.id === "in/fade_in")?.parameters).toEqual({ AaiMotionInEffect: "fade_in" });
+});
