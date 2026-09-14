@@ -21,7 +21,8 @@ def segment(payload: dict) -> dict:
     替换/增删代价均为 1；波前搜索保留最远位置，平局依次优先替换、文案多字、
     ASR 多字。模型只返回分句切点和关键词，时间投射和关键词校验由代码完成。
     配置来自当前目录 .env 及优先级更高的 IMV_ 环境变量；SDK 连接在返回前关闭。
-    返回 segments/warnings/trace；输入或预算错误抛 ValueError，配置或模型输出错误抛
+    返回 segments（整型 segment_id、秒制 start_time/end_time、group_id、字符串 keyword、level）、
+    warnings 和 trace；输入或预算错误抛 ValueError，配置或模型输出错误抛
     RuntimeError，内部约束错误抛 AssertionError，SDK 异常原样传播。
     """
     # 输入有界且不修改调用方数据；标点不参与对齐，原始下标仍用于完整切片。
@@ -46,9 +47,10 @@ def segment(payload: dict) -> dict:
     sentences = transcript.get("sentences") if isinstance(transcript, dict) else None
     if not isinstance(sentences, list) or not 1 <= len(sentences) <= 20000:
         raise ValueError("ASR 需要有界的 sentences 词级时间轴。")
-    timeline, word_count, text_count = [], 0, 0
+    # timeline_sentences 与 timeline 下标一一对应，记录每个字符所属的 ASR 句序号。
+    timeline, timeline_sentences, word_count, text_count = [], [], 0, 0
     previous_end = 0
-    for sentence in sentences:
+    for sentence_index, sentence in enumerate(sentences):
         words = sentence.get("words") if isinstance(sentence, dict) else None
         if not isinstance(words, list):
             raise ValueError("ASR 缺少 words 词级时间轴。")
@@ -81,6 +83,7 @@ def segment(payload: dict) -> dict:
                         i == 0,
                     )
                 )
+                timeline_sentences.append(sentence_index)
     if not timeline:
         raise ValueError("ASR 缺少有效发音字符。")
     if (Counter(c[1] for c in chars) - Counter(c[0] for c in timeline)).total() > len(chars) // 2:
@@ -337,16 +340,34 @@ def segment(payload: dict) -> dict:
                     )
                     pending.extend([(cut, b), (a, cut)])
                     split_count += 1
+                # 段落按其首字归属 ASR 句：句内序号从 1 递增，total 为该句的最终段数。
+                # 跨句片段整体计入起始句，使同句编号连续且不因归属再切分文本。
+                sentence_of_char = [None] * len(chars)
+                for _, i, j in ops:
+                    if i is not None and j is not None:
+                        sentence_of_char[i] = timeline_sentences[j]
+                attribution, fallback_sentence = [], None
+                for value in sentence_of_char:
+                    fallback_sentence = value if value is not None else fallback_sentence
+                    attribution.append(fallback_sentence)
+                first_sentence = next((s for s in attribution if s is not None), 0)
+                attribution = [first_sentence if s is None else s for s in attribution]
+                span_groups = [attribution[a] for a, _ in spans]
+                group_totals, group_seen = Counter(span_groups), Counter()
                 for index, (a, b) in enumerate(spans, 1):
                     begin = 0 if a == 0 else offsets[a]
                     end = len(script) if b == len(chars) else offsets[b]
+                    group = span_groups[index - 1]
+                    group_seen[group] += 1
                     segments.append(
                         {
-                            "segment_id": f"seg_{index:03d}",
+                            "segment_id": index,
+                            "group_id": [group_seen[group], group_totals[group]],
                             "text": script[begin:end],
                             "start_time_ms": round(starts[a]),
                             "end_time_ms": round(ends[b - 1]),
-                            "keywords": [],
+                            "keyword": "",
+                            "level": 1,
                         }
                     )
             else:
@@ -357,7 +378,10 @@ def segment(payload: dict) -> dict:
                     or any(not isinstance(g, list) or any(not isinstance(w, str) for w in g) for g in groups)
                 ):
                     raise RuntimeError("模型关键词数组必须与片段一一对应且元素为字符串。")
-                # 只校验逐字存在、去重和长度/数量；包含关系不代表无效，保留模型选择的长短关键词。
+                # 输出字段是单个字符串，因此每段只保留原文中最靠前的一个有效词；
+                # 配置为 0 时不选词，被丢弃的其他候选同样计入 keyword_rejected_count。
+                limit = min(1, config.segment_max_keywords)
+                # 只校验逐字存在、去重和长度/数量；包含关系不代表无效，长短词都可能是有效选择。
                 for item, candidates in zip(segments, groups):
                     accepted = {}
                     for candidate in candidates:
@@ -368,8 +392,12 @@ def segment(payload: dict) -> dict:
                         else:
                             accepted[word] = start
                     keywords = sorted(accepted, key=accepted.get)
-                    rejected += len(accepted) - min(len(keywords), config.segment_max_keywords)
-                    item["keywords"] = [{"text": k} for k in keywords[: config.segment_max_keywords]]
+                    rejected += len(keywords) - min(len(keywords), limit)
+                    item["keyword"] = keywords[0] if limit and keywords else ""
+                # level 只由代码判定：有关键词即重点句 2，其余保持普通句 1；CTA 需语义判断，不标注。
+                for item in segments:
+                    if item["keyword"]:
+                        item["level"] = 2
 
     # 吸收允许范围内的停顿，再检查输出硬约束；时长软约束只产生告警。
     for previous, current in zip(segments, segments[1:]):
@@ -393,6 +421,10 @@ def segment(payload: dict) -> dict:
                     "detail": {"segment_id": item["segment_id"]},
                 }
             )
+    # 输出约定使用秒制起止时间；上面的时长约束、停顿吸收和告警判断仍以毫秒为准。
+    for item in segments:
+        item["start_time"] = item.pop("start_time_ms") / 1000
+        item["end_time"] = item.pop("end_time_ms") / 1000
     return {
         "segments": segments,
         "warnings": warnings,
