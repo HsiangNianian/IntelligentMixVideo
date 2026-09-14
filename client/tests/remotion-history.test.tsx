@@ -1,5 +1,5 @@
 /** 公开聊天历史及 SSE 会话恢复测试；隔离 HTTP、存储和 iframe，执行 bun run test。 */
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import {
   act,
   fireEvent,
@@ -9,6 +9,8 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+import { ChatPanel } from "@/features/remotion_templates/ChatPanel";
+import type { ChatMessage } from "@/features/remotion_templates/model";
 import { RemotionWorkspace } from "@/features/remotion_templates/RemotionWorkspace";
 import { useTemplateSession } from "@/features/remotion_templates/useTemplateSession";
 import { useWorkHistory } from "@/features/remotion_templates/useWorkHistory";
@@ -315,4 +317,57 @@ test("失效会话 ID 可通过新增恢复", async () => {
   expect(screen.queryByRole("button", { name: "刷新任务" }) === null).toBe(
     true,
   );
+});
+
+// 加载更早消息时保留阅读位置；模拟滚动原语的位移，新增末尾消息仍滚动到最新处。
+test("加载更早消息不会把阅读位置拉回底部", () => {
+  const original = HTMLElement.prototype.scrollIntoView;
+  if (!original) HTMLElement.prototype.scrollIntoView = () => {};
+  const scroll = spyOn(
+    HTMLElement.prototype,
+    "scrollIntoView",
+  ).mockImplementation(function (this: HTMLElement) {
+    const log = this.closest<HTMLElement>('[role="log"]');
+    if (log) log.scrollTop = 1000;
+  });
+  const messages: ChatMessage[] = [
+    { id: "recent", sequence: 20, role: "user", text: "当前消息" },
+  ];
+  const props = {
+    busy: false,
+    disabled: false,
+    canStop: false,
+    first: false,
+    onSend: () => {},
+    onStop: () => {},
+  };
+  try {
+    const view = render(<ChatPanel {...props} messages={messages} />);
+    const log = screen.getByRole("log");
+    log.scrollTop = 125;
+    const older: ChatMessage = {
+      id: "older",
+      sequence: 1,
+      role: "user",
+      text: "更早消息",
+    };
+    view.rerender(<ChatPanel {...props} messages={[older, ...messages]} />);
+    expect(log.scrollTop).toBe(125);
+    expect(within(log).getByText("更早消息").textContent).toBe("更早消息");
+    view.rerender(
+      <ChatPanel
+        {...props}
+        messages={[
+          older,
+          ...messages,
+          { id: "latest", sequence: 21, role: "assistant", text: "新回复" },
+        ]}
+      />,
+    );
+    expect(log.scrollTop).toBe(1000);
+  } finally {
+    scroll.mockRestore();
+    if (!original)
+      Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
+  }
 });

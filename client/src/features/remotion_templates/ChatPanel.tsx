@@ -58,9 +58,10 @@ export function ChatPanel({
   const [error, setError] = useState("");
   const end = useRef<HTMLDivElement>(null);
   const picker = useRef<HTMLInputElement>(null);
+  // 历史分页只在头部插入消息；末尾新增回复才跟随到底部。
   useEffect(() => {
     end.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
-  }, [messages.length, busy]);
+  }, [messages.at(-1)?.id, busy]);
   /** 按钮与 Enter 共用防重复入口；等待期间保留文字草稿。 */
   function send() {
     if (disabled || (!text.trim() && !image)) return;
