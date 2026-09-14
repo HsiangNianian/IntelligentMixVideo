@@ -160,7 +160,7 @@ def work(work_id: UUID, service: Service) -> TemplateProject:
     response_model=PublicJob,
     status_code=202,
     tags=["模板作品"],
-    summary="修改模板或回答澄清问题",
+    summary="提问、修改模板或回答澄清问题",
 )
 async def edit(work_id: UUID, request: TaskMessage, service: Service) -> PublicJob:
     """通过参数补丁 `parameters` 或自然语言 `instruction` 修改模板，两者必须二选一。
@@ -168,6 +168,8 @@ async def edit(work_id: UUID, request: TaskMessage, service: Service) -> PublicJ
     默认基于当前成功版本，也可用 `base_version_id` 指定历史成功版本。
     回答问题时用 instruction 提交答案，并用 reply_to_job_id 绑定提出问题的任务。
     参数修改保留 TSX 并重新验收；问题已过期或已有运行任务时返回 409。
+    纯问答或明确保持现状时返回 answered 终态，回答通过 message 和会话历史提供，不产生新版本。
+    尚无成功版本的会话也可继续提问或描述生成需求；参数修改仍须已有成功版本。
     """
     try:
         return PublicJob.from_job(service.message(work_id, request))
@@ -215,6 +217,7 @@ def job(job_id: UUID, service: Service) -> PublicJob:
     """查询任务是否排队、处理中、需要补充信息或已有可用结果。内部修复过程不对外展示。
 
     成功时返回 `result_version_id`；状态为 `needs_input` 时，通过 `questions` 查看待补充的问题。
+    `answered` 表示已直接回答，正文在 `message`，`result_version_id` 为 null，不代表生成了模板。
     """
     return PublicJob.from_job(service.store.job(job_id))
 

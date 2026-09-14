@@ -16,20 +16,18 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 from PIL import Image
 from pydantic import SecretStr, ValidationError
-from server.settings import Settings
 from server.remotion_templates.api import create_template_app
 from server.remotion_templates.context import AssistantMessage, Conversation
 from server.remotion_templates.evidence import seal_artifacts
 from server.remotion_templates.harness import CodeOutput, Harness, controls
 from server.remotion_templates.media import save_image
 from server.remotion_templates.models import (
-    AnalysisResult,
+    AnswerReview,
     Check,
     CompositionConfig,
-    EditDecision,
+    DialogueOutput,
     GenerateTemplateRequest,
     JobInput,
-    TargetReview,
     TemplateCandidate,
     TemplateSpec,
     TextLayer,
@@ -49,6 +47,7 @@ from server.remotion_templates.renderer import Renderer
 from server.remotion_templates.runtime import Runtime
 from server.remotion_templates.store import Conflict, NotFound, Store
 from server.remotion_templates.trajectory import Trajectory
+from server.settings import Settings
 
 # A maintained reference component demonstrates direct props and deterministic transparent text.
 SAMPLE_CODE = """/** Static editable text reference; the preview host loads managed fonts. */
@@ -59,6 +58,22 @@ export default function Template(p: Record<string, string | number>) {
   return <AbsoluteFill><div style={{position: "absolute", left: Number(p["0_layout_x"])*100+"%", top: Number(p["0_layout_y"])*100+"%", width: Number(p["0_layout_width"])*100+"%", transform: `translate(-50%, -50%) rotate(${p["0_layout_rotation"]}deg)`, textAlign: String(p["0_layout_align"]) as React.CSSProperties["textAlign"], fontFamily: String(p["0_style_font_family"]), fontSize: Number(p["0_style_font_size"]), fontWeight: Number(p["0_style_font_weight"]), lineHeight: Number(p["0_style_line_height"]), letterSpacing: Number(p["0_style_letter_spacing"]), color: String(p["0_style_color"]), whiteSpace: "pre-wrap"}}>{p["0_text"]}</div></AbsoluteFill>;
 }
 """
+
+
+def actor_tool(name, args):
+    """生成一个带唯一 ID 的离线 Actor 工具响应，走真实工具参数校验与反馈路径。"""
+    return AssistantMessage.model_validate(
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": str(uuid4()),
+                    "type": "function",
+                    "function": {"name": name, "arguments": json.dumps(args)},
+                }
+            ],
+        }
+    )
 
 
 def create_app(settings, *, provider=None, renderer=None):
@@ -181,18 +196,6 @@ def test_composition_bounds(patch):
         CompositionConfig(**patch)
 
 
-def test_analysis_and_edit_exclusive_outcomes(spec):
-    """Ambiguity cannot coexist with a supposedly actionable specification or patch."""
-    assert AnalysisResult(spec=spec).spec == spec
-    assert AnalysisResult(questions=["哪段文字？"]).questions
-    for payload in ({}, {"spec": spec, "questions": ["Which?"]}):
-        with pytest.raises(ValidationError):
-            AnalysisResult(**payload)
-    for payload in ({}, {"parameters": {}}, {"parameters": {"x": 1}, "spec": spec}):
-        with pytest.raises(ValidationError):
-            EditDecision(**payload)
-
-
 def test_parameters_preserve_source_and_update_goal(candidate, spec):
     """Scalar edits change both defaults and target while preserving exact source bytes."""
     updated, target = patch_parameters(
@@ -250,10 +253,10 @@ def test_no_remote_schema(candidate, spec):
 
 
 def test_trajectory_regression_cycle_stale_and_drift(candidate, spec):
-    """Host facts distinguish regression, A-B-A cycles, stale reports and changed goals."""
-    monitor = Trajectory(spec)
+    """宿主区分退步、循环和过期证据；修正估算值并重新验收后可完成。"""
+    monitor = Trajectory()
     first = evidence(candidate, spec, visual_style="fail")
-    assert monitor.observe(candidate, spec, first).verdict == "goal_drift"
+    assert monitor.observe(candidate, spec, first).verdict == "repair"
     changed = candidate.model_copy(update={"tsx_code": candidate.tsx_code + "\n"})
     second = evidence(changed, spec, visual_style="fail", typescript="fail")
     assert monitor.observe(changed, spec, second).verdict == "regression"
@@ -262,7 +265,7 @@ def test_trajectory_regression_cycle_stale_and_drift(candidate, spec):
     drift = spec.model_copy(update={"name": "different goal"})
     assert (
         monitor.observe(candidate, drift, evidence(candidate, drift)).verdict
-        == "goal_drift"
+        == "complete"
     )
     assert monitor.observe(
         candidate, spec, evidence(candidate, spec)
@@ -272,13 +275,51 @@ def test_trajectory_regression_cycle_stale_and_drift(candidate, spec):
 def test_unknown_missing_and_duplicate_checks_never_complete(candidate, spec):
     """No amount of actor confidence can substitute for complete, unambiguous current evidence."""
     report = evidence(candidate, spec, visual_scope="unknown")
-    assert not Trajectory(spec).observe(candidate, spec, report).completion_allowed
+    assert not Trajectory().observe(candidate, spec, report).completion_allowed
     report = evidence(candidate, spec)
     report.checks.pop()
     assert not report.passed
     report = evidence(candidate, spec)
     report.checks.append(report.checks[0])
-    assert not Trajectory(spec).observe(candidate, spec, report).completion_allowed
+    assert not Trajectory().observe(candidate, spec, report).completion_allowed
+
+
+@pytest.mark.parametrize("delta, allowed", [(1, True), (255, False)])
+def test_consistency_measurements_reach_trajectory_steer(
+    candidate, spec, tmp_path, delta, allowed
+):
+    """稀疏噪声不触发修复；真实重复帧差异阻止完成并原样传递测量值及修复建议。"""
+    from server.remotion_templates.image_comparison import consistency_checks
+
+    image = Image.new(
+        "RGBA", (spec.composition.width, spec.composition.height), "white"
+    )
+    for name in ("frame-0.png", "frame-2.png", "export-default.png"):
+        image.save(tmp_path / name)
+    image.putpixel((20, 20), (255 - delta, 255, 255, 255))
+    image.save(tmp_path / "repeat.png")
+    measured = consistency_checks(tmp_path, spec, [0, 2, 5])
+    report = evidence(candidate, spec)
+    report.checks = [
+        check for check in report.checks if check.name != "determinism"
+    ] + measured
+    assessment = Trajectory().observe(candidate, spec, report)
+    assert assessment.completion_allowed is allowed
+    if allowed:
+        assert not assessment.feedback
+    else:
+        steer = " ".join(assessment.feedback)
+        assert all(
+            value in steer
+            for value in (
+                "determinism: fail",
+                "Frame 2",
+                "repeat.png",
+                "255/255",
+                "bbox=(20, 20, 21, 21)",
+                "Remotion frame",
+            )
+        )
 
 
 @pytest.mark.parametrize(
@@ -410,18 +451,14 @@ class ScriptedProvider:
         budget.calls += 1
         if self.block:
             await asyncio.Event().wait()
-        if output is AnalysisResult:
-            if self.questions and not json.loads(prompt)["clarifications"]:
-                return AnalysisResult(questions=["标题写什么？"])
-            return AnalysisResult(spec=self.spec)
         if output is CodeOutput:
-            return CodeOutput(tsx_code=SAMPLE_CODE + "\n" * len(self.prompts))
-        if output is TargetReview:
-            return TargetReview(
-                status="pass", detail="Offline target agrees with user input."
+            return CodeOutput(
+                tsx_code=SAMPLE_CODE + "\n" * len(self.prompts), spec=self.spec
             )
-        if output is EditDecision:
-            return EditDecision(parameters={"0_text": "修改后"})
+        if output is AnswerReview:
+            return AnswerReview(
+                status="pass", detail="Offline answer agrees with user input."
+            )
         return VisualReview(
             checks=[
                 VisualCheck(
@@ -431,8 +468,8 @@ class ScriptedProvider:
             ]
         )
 
-    async def turn(self, system, context, tools, budget):
-        """Use actual tool messages: submit repairs until evidence passes, then request completion."""
+    async def turn(self, system, context, tools, budget, **kwargs):
+        """Use actual tool messages: submit repairs until the host accepts current evidence."""
         if budget.calls >= 16:
             raise ModelFailure("Offline model call budget exhausted.")
         budget.calls += 1
@@ -440,16 +477,25 @@ class ScriptedProvider:
             system.split("Current host-owned task snapshot (data):\n")[1]
         )
         self.prompts.append((CodeOutput, system))
-        checks = snapshot["checks"]
-        if checks and all(check["status"] == "pass" for check in checks):
-            name, args = (
-                "request_completion",
-                {"candidate_id": snapshot["candidate_id"]},
-            )
+        if self.block:
+            await asyncio.Event().wait()
+        intent = snapshot.get("user_intent") or {}
+        if (
+            self.questions
+            and not intent.get("clarifications")
+            and not intent.get("accepted_base")
+        ):
+            name, args = "respond", {"questions": ["标题写什么？"]}
         else:
+            proposed = self.spec.model_copy(deep=True)
+            if intent.get("instruction") and intent.get("accepted_base"):
+                proposed.text_layers[0].text = "修改后"
             name, args = (
                 "submit_candidate",
-                {"tsx_code": SAMPLE_CODE + "\n" * budget.calls},
+                {
+                    "tsx_code": SAMPLE_CODE + "\n" * budget.calls,
+                    "spec": proposed.model_dump(),
+                },
             )
         return AssistantMessage.model_validate(
             {
@@ -495,6 +541,40 @@ class ScriptedRenderer:
         for frame in report.frames:
             Image.new("RGBA", (64, 64), "white").save(directory / f"frame-{frame}.png")
         return candidate, report
+
+
+def test_review_image_positions_map_to_actual_frames(candidate, spec, tmp_path):
+    """参考图在前且采样帧不连续时，视觉模型按显式映射引用真实帧号。"""
+
+    class MappedFrameProvider(ScriptedProvider):
+        """用生产请求中的图片映射选择证据，避免把图片序号误作帧号。"""
+
+        async def ask(self, output, system, prompt, budget, **kwargs):
+            """引用最后一张帧图并核对参考图偏移和实际传图数量。"""
+            result = await super().ask(output, system, prompt, budget, **kwargs)
+            if output is VisualReview:
+                request = json.loads(prompt)
+                assert request["frame_images"] == [
+                    {"image_position": 3, "frame": 0},
+                    {"image_position": 4, "frame": 2},
+                    {"image_position": 5, "frame": 5},
+                ]
+                assert len(kwargs["images"]) == 5
+                for check in result.checks:
+                    check.frame = request["frame_images"][-1]["frame"]
+            return result
+
+    references = [tmp_path / "reference-1.png", tmp_path / "reference-2.png"]
+    for path in references:
+        Image.new("RGB", (64, 64), "white").save(path)
+    harness = Harness(MappedFrameProvider(spec), ScriptedRenderer())
+    _, report, _ = asyncio.run(
+        harness.inspect(candidate, spec, tmp_path / "attempt", references, Budget())
+    )
+    assert report.passed
+    assert all(
+        check.frame == 5 for check in report.checks if check.source == "visual_model"
+    )
 
 
 def test_unsupplied_frame_cannot_approve_candidate(spec, tmp_path):
@@ -650,7 +730,7 @@ def test_api_generation_edit_artifacts_and_events(settings, spec):
         )
         assert review_prompt["user_intent"]["original_request"] is None
         assert (
-            review_prompt["user_intent"]["accepted_target"]["text_layers"][0]["text"]
+            review_prompt["user_intent"]["accepted_base"]["text_layers"][0]["text"]
             == "新标题"
         )
 
@@ -691,6 +771,73 @@ def test_api_clarification_failure_and_retry(settings, spec):
         retry = client.post(f"/api/templates/jobs/{result['id']}/retry")
         assert retry.status_code == 202 and retry.json()["id"] != result["id"]
         assert client.get(f"/api/templates/jobs/{result['id']}/artifacts").json() == []
+
+
+@pytest.mark.parametrize("mode", ["generate", "repair", "answer"])
+def test_runtime_publishes_actual_phase_chain(settings, spec, mode):
+    """真实 Runtime/Harness 把生成、布局修复及问答分支写成公开阶段，模型原文留在私有审计。"""
+
+    class ProgressProvider(ScriptedProvider):
+        """控制独立视觉失败或纯回答，不直接生成公开事件。"""
+
+        reviews = 0
+
+        async def turn(self, system, context, tools, budget, **kwargs):
+            """纯提问直接由 Actor 回复，不生成候选。"""
+            if mode == "answer":
+                budget.calls += 1
+                return actor_tool("respond", {"answer": "可以帮你制作字效。"})
+            return await super().turn(system, context, tools, budget, **kwargs)
+
+        async def ask(self, output, system, prompt, budget, **kwargs):
+            """先布局失败再通过；问答绕过所有候选与渲染。"""
+            result = await super().ask(output, system, prompt, budget, **kwargs)
+            if output is VisualReview:
+                self.reviews += 1
+                if mode == "repair" and self.reviews == 1:
+                    result.checks[1].status = "fail"
+                    result.checks[1].detail = "private layout diagnosis"
+            return result
+
+    renderer = ScriptedRenderer()
+    with TestClient(
+        create_app(settings, provider=ProgressProvider(spec), renderer=renderer)
+    ) as client:
+        created = client.post(
+            "/api/templates/works",
+            json={"description": "标题", "composition": spec.composition.model_dump()},
+        ).json()
+        result = wait_job(client, created["job"]["id"])
+        assert result["status"] == ("answered" if mode == "answer" else "succeeded")
+        snap = client.get(
+            f"/api/templates/works/{created['work']['id']}/session"
+        ).json()
+        steps = snap["job"]["progress"]
+        expected = (
+            ["understanding", "answering"]
+            if mode == "answer"
+            else [
+                "understanding",
+                "rendering",
+                "reviewing",
+            ]
+        )
+        if mode == "repair":
+            expected += ["adjusting_layout", "rendering", "reviewing"]
+        if mode != "answer":
+            expected += ["preparing"]
+        assert [step["phase"] for step in steps] == expected
+        assert all(step["status"] == "done" and step["ended_at"] for step in steps)
+        assert renderer.calls == {"generate": 1, "repair": 2, "answer": 0}[mode]
+        assert "private layout diagnosis" not in json.dumps(snap)
+        assert snap["jobs"][0]["progress"] == steps
+        service = client.app.state.template_app.state.runtime
+        private_job = service.store.job(result["id"])
+        assert "planner_calls" not in private_job.usage
+        assert private_job.usage["actor_calls"] >= 1
+        window = service.store.conversation(created["work"]["id"]).messages()
+        assert sum(message["role"] == "user" for message in window) == 1
+        assert "image_url" not in json.dumps(window)
 
 
 def test_api_cancel_conflict_and_shutdown(settings, spec):
@@ -772,12 +919,12 @@ def test_provider_contract_and_sanitized_errors(settings, case):
     budget = Budget(calls=settings.max_model_calls if case == "budget" else 0)
     if case == "ok":
         result = asyncio.run(
-            provider.ask(AnalysisResult, "Return JSON", "title", budget)
+            provider.ask(DialogueOutput, "Return JSON", "title", budget)
         )
         assert result.questions == ["Which title?"] and budget.tokens == 100
     else:
         with pytest.raises(ModelFailure) as caught:
-            asyncio.run(provider.ask(AnalysisResult, "Return JSON", "title", budget))
+            asyncio.run(provider.ask(DialogueOutput, "Return JSON", "title", budget))
         assert "test-private-token" not in str(caught.value)
 
 
@@ -864,7 +1011,9 @@ def test_real_isolated_renderer(settings, candidate, spec, tmp_path):
     async def scenario():
         """Exercise worker subprocesses with no model calls or network access inside the sandbox."""
         renderer = Renderer(settings)
-        output, report = await renderer.validate(candidate, spec, tmp_path / "first")
+        output, report = await renderer.validate(
+            candidate, spec, tmp_path / "first", extra_frames=[1, 3]
+        )
         assert all(check.status == "pass" for check in report.checks), (
             report.model_dump()
         )
@@ -881,6 +1030,9 @@ def test_real_isolated_renderer(settings, candidate, spec, tmp_path):
             "motion_evidence",
         } <= {check.name for check in report.checks}
         assert (tmp_path / "first" / "preview.mp4").stat().st_size > 1000
+        seal_artifacts(output, spec, report, tmp_path / "first")
+        assert {1, 3} <= set(report.frames)
+        assert {"frame-1.png", "frame-3.png"} <= report.artifacts.keys()
         assert {"interactive_bundle", "export_source", "export_defaults"} <= {
             check.name for check in report.checks
         }
@@ -989,7 +1141,7 @@ class ActionProvider(ScriptedProvider):
         self.windows = []
         self.snapshots = []
 
-    async def turn(self, system, context, tools, budget):
+    async def turn(self, system, context, tools, budget, **kwargs):
         """A missing next action terminates the fixture without unbounded waits or production calls."""
         budget.calls += 1
         self.windows.append(context.messages())
@@ -1017,8 +1169,286 @@ class ActionProvider(ScriptedProvider):
         )
 
 
-def test_false_promises_stale_receipts_and_cycles_are_steered(spec, tmp_path):
-    """Prose, missing evidence, repeated failures and an old candidate ID cannot bypass current checks."""
+@pytest.mark.parametrize("outcome", ["success", "cancelled", "environment"])
+def test_host_finalizes_without_another_actor_call(
+    store, settings, spec, candidate, monkeypatch, outcome
+):
+    """复现验收通过后预算已用完：无需模型确认即可发布，取消和环境变化仍保留旧版本。"""
+    project, first = store.create(GenerateTemplateRequest(description="标题"))
+    store.claim()
+    accepted = publish_fixture(
+        store, first.id, candidate, spec, evidence(candidate, spec)
+    )
+    job = store.enqueue(
+        project.id, JobInput(mode="edit", instruction="拉开文字间距"), accepted.id
+    )
+    store.claim()
+    revised = spec.model_copy(deep=True)
+    revised.text_layers[0].layout.y = 0.65
+
+    class LastCallProvider(ActionProvider):
+        """候选提交用满 Actor token 额度，额外确认调用必然失败。"""
+
+        async def turn(self, system, context, tools, budget, **kwargs):
+            """只允许候选调用，退休的完成工具不再提供给模型。"""
+            assert {tool["function"]["name"] for tool in tools} == {
+                "read_current_template",
+                "submit_candidate",
+                "respond",
+            }
+            result = await super().turn(system, context, tools, budget, **kwargs)
+            budget.tokens += settings.max_actor_tokens
+            return result
+
+    provider = LastCallProvider(
+        spec,
+        [("submit_candidate", {"spec": revised.model_dump(), "tsx_code": SAMPLE_CODE})],
+    )
+    provider.settings = settings
+    renderer = ScriptedRenderer()
+    progress = store.progress
+
+    def prepare(job_id, phase):
+        """真实进度进入收尾后注入取消或环境变更，不修改验收结论。"""
+        progress(job_id, phase)
+        if phase == "preparing" and outcome == "cancelled":
+            store.update(job_id, status="cancelled", stage="finished")
+        if phase == "preparing" and outcome == "environment":
+            monkeypatch.setattr(renderer, "verify_environment", reject_environment)
+
+    def reject_environment(report):
+        """模拟已验收的运行环境指纹发生变化。"""
+        raise ValueError("render environment changed")
+
+    monkeypatch.setattr(store, "progress", prepare)
+    asyncio.run(Runtime(store, Harness(provider, renderer), settings)._execute(job.id))
+    actual = store.job(job.id)
+    assert (
+        actual.status
+        == {"success": "succeeded", "cancelled": "cancelled", "environment": "failed"}[
+            outcome
+        ]
+    )
+    assert actual.usage["actor_calls"] == 1
+    assert actual.usage["actor_tokens"] == settings.max_actor_tokens
+    assert len(provider.prompts) == 1
+    if outcome != "cancelled":
+        assert actual.usage["judge_calls"] == 1
+    assert len(provider.windows) == 1
+    messages = store.conversation(project.id).messages()
+    assert messages[-1]["role"] == "tool"
+    assert json.loads(messages[-1]["content"])["eligible"] is True
+    if outcome == "success":
+        assert store.project(project.id).current_version_id == actual.result_version_id
+        assert store.version(actual.result_version_id).spec == revised
+        assert len(store.versions(project.id)) == 2
+        assert store.session(project.id).job.progress[-1].phase == "preparing"
+        assert store.session(project.id).job.progress[-1].status == "done"
+    else:
+        assert actual.result_version_id is None
+        assert store.project(project.id).current_version_id == accepted.id
+        assert len(store.versions(project.id)) == 1
+
+
+def test_batch_uses_latest_candidate_evidence(spec, tmp_path):
+    """同一工具批次先通过、后失败时不得发布前一个候选，必须修复最新候选。"""
+
+    class BatchProvider(ActionProvider):
+        """第一轮返回两次提交，第二轮才能修复被替换的候选。"""
+
+        async def turn(self, system, context, tools, budget, **kwargs):
+            """保留真实双工具回执，在下一轮检查失败反馈。"""
+            response = await super().turn(system, context, tools, budget, **kwargs)
+            if len(self.windows) == 1:
+                response.tool_calls.extend(
+                    actor_tool(
+                        "submit_candidate", {"tsx_code": SAMPLE_CODE + "\n"}
+                    ).tool_calls
+                )
+            return response
+
+    class SecondFails(ScriptedRenderer):
+        """仅第二次渲染失败，检验当前候选而不是历史通过状态。"""
+
+        async def validate(self, *args, **kwargs):
+            """第一次和修复后的第三次通过。"""
+            self.failures = 2 if self.calls == 1 else 0
+            return await super().validate(*args, **kwargs)
+
+    provider = BatchProvider(
+        spec,
+        [
+            ("submit_candidate", {"tsx_code": SAMPLE_CODE}),
+            ("submit_candidate", {"tsx_code": SAMPLE_CODE + "\n\n"}),
+        ],
+    )
+    context = Conversation()
+    _, _, report, directory = asyncio.run(
+        Harness(provider, SecondFails()).generate(
+            spec, Budget(), tmp_path, [], lambda *_: None, context=context
+        )
+    )
+    assert report.passed and directory.name == "attempt-3"
+    assert len(provider.windows) == 2
+    assert "typescript: fail" in " ".join(provider.snapshots[1]["steer"])
+    receipts = [
+        json.loads(m["content"]) for m in context.messages() if m["role"] == "tool"
+    ]
+    assert [r["eligible"] for r in receipts] == [True, False, True]
+
+
+def test_actor_repairs_estimated_layout_without_planner(spec, tmp_path):
+    """Actor 根据实际失败修订估算布局，宿主验收新方案后直接完成。"""
+    revised = spec.model_copy(deep=True)
+    revised.text_layers[0].layout.y = 0.65
+    revised.text_layers[0].style.font_size = 42
+    provider = ActionProvider(
+        spec,
+        [
+            ("submit_candidate", {"spec": spec.model_dump(), "tsx_code": SAMPLE_CODE}),
+            (
+                "submit_candidate",
+                {"spec": revised.model_dump(), "tsx_code": SAMPLE_CODE},
+            ),
+        ],
+    )
+    renderer = ScriptedRenderer(failures=1)
+    _, actual, report, _ = asyncio.run(
+        Harness(provider, renderer).generate(
+            None,
+            Budget(),
+            tmp_path,
+            [],
+            lambda *_: None,
+            intent={
+                "original_request": {
+                    "description": "清晰可读的标题",
+                    "composition": spec.composition.model_dump(),
+                }
+            },
+        )
+    )
+    assert actual == revised and report.passed and renderer.calls == 2
+    assert all(output is VisualReview for output, _ in provider.prompts)
+    assert len(provider.snapshots) == 2
+    assert "typescript: fail" in " ".join(provider.snapshots[-1]["steer"])
+
+
+def test_estimated_static_plan_cannot_hide_user_requested_animation(
+    candidate, spec, tmp_path
+):
+    """Actor 的空 motion 只能描述实现，不能把用户明确要求的动画改判为无需动画。"""
+
+    class MissingAnimation(ScriptedProvider):
+        """基于用户要求报告缺少动画，其他维度通过。"""
+
+        async def ask(self, output, system, prompt, budget, **kwargs):
+            """结果 Judge 返回有效负面结论，宿主不能用模型 spec 覆盖它。"""
+            result = await super().ask(output, system, prompt, budget, **kwargs)
+            result.checks[3].status = "fail"
+            result.checks[
+                3
+            ].detail = "User requested a fade but actual frames are static."
+            return result
+
+    _, report, _ = asyncio.run(
+        Harness(MissingAnimation(spec), ScriptedRenderer()).inspect(
+            candidate,
+            spec,
+            tmp_path / "candidate",
+            [],
+            Budget(),
+            intent={"original_request": {"description": "标题淡入淡出"}},
+        )
+    )
+    assert not report.passed
+    assert next(c for c in report.checks if c.name == "visual_motion").status == "fail"
+
+
+def test_actor_cannot_change_explicit_composition(spec, tmp_path):
+    """估算布局允许修正，但结构化的用户画布尺寸仍由宿主严格保护。"""
+    invalid = spec.model_copy(deep=True)
+    invalid.composition.width = 640
+    provider = ActionProvider(
+        spec,
+        [
+            (
+                "submit_candidate",
+                {"spec": invalid.model_dump(), "tsx_code": SAMPLE_CODE},
+            ),
+            ("submit_candidate", {"spec": spec.model_dump(), "tsx_code": SAMPLE_CODE}),
+        ],
+    )
+    renderer = ScriptedRenderer()
+    _, actual, _, _ = asyncio.run(
+        Harness(provider, renderer).generate(
+            None,
+            Budget(),
+            tmp_path,
+            [],
+            lambda *_: None,
+            intent={"original_request": {"composition": spec.composition.model_dump()}},
+        )
+    )
+    assert actual.composition == spec.composition and renderer.calls == 1
+    assert "user-specified composition" in " ".join(provider.snapshots[1]["steer"])
+
+
+@pytest.mark.skipif(
+    os.environ.get("IMV_TEST_RENDERER") != "1",
+    reason="Requires isolated Chromium renderer.",
+)
+def test_real_actor_revises_layout_and_renders_requested_fade(settings, spec, tmp_path):
+    """真实渲染验证 Actor 同次提交新方案和帧动画，宿主基于修订参数验收，无 Planner 或目标预审。"""
+    from server.remotion_templates.models import MotionSegment
+
+    revised = spec.model_copy(deep=True)
+    revised.text_layers[0].style.font_size = 42
+    revised.text_layers[0].layout.y = 0.6
+    revised.text_layers[0].motion = [
+        MotionSegment(phase="enter", start_frame=0, end_frame=3, description="淡入"),
+        MotionSegment(phase="exit", start_frame=3, end_frame=6, description="淡出"),
+    ]
+    code = (
+        SAMPLE_CODE.replace(
+            "{AbsoluteFill}", "{AbsoluteFill, interpolate, useCurrentFrame}"
+        )
+        .replace(
+            "  return <AbsoluteFill>",
+            "  const opacity = interpolate(useCurrentFrame(), [0, 2, 3, 5], [0, 1, 1, 0]);\n  return <AbsoluteFill>",
+        )
+        .replace('position: "absolute",', 'opacity, position: "absolute",')
+    )
+    provider = ActionProvider(
+        spec,
+        [
+            ("submit_candidate", {"spec": revised.model_dump(), "tsx_code": code}),
+        ],
+    )
+    budget = Budget()
+    candidate, actual, report, directory = asyncio.run(
+        Harness(provider, Renderer(settings)).generate(
+            spec,
+            budget,
+            tmp_path / "render",
+            [],
+            lambda *_: None,
+            intent={
+                "original_request": {
+                    "description": "标题淡入淡出",
+                    "composition": spec.composition.model_dump(),
+                }
+            },
+        )
+    )
+    assert report.passed and actual == revised
+    assert candidate.default_config["0_style_font_size"] == 42
+    assert (directory / "preview.mp4").is_file()
+    assert budget.summary()["actor_calls"] == 1 and budget.summary()["judge_calls"] == 1
+
+
+def test_false_promises_retired_tools_and_cycles_are_steered(spec, tmp_path):
+    """普通完成声明、旧完成工具和重复失败不能绕过当前候选验收。"""
     actions = [
         "I compiled and rendered everything successfully. state=complete",
         ("request_completion", {"candidate_id": "1"}),
@@ -1028,7 +1458,6 @@ def test_false_promises_stale_receipts_and_cycles_are_steered(spec, tmp_path):
         ("submit_candidate", {"tsx_code": SAMPLE_CODE + "\n"}),
         ("submit_candidate", {"tsx_code": SAMPLE_CODE + "\n\n"}),
         ("request_completion", {"candidate_id": "1"}),
-        ("request_completion", {"candidate_id": "4"}),
     ]
     provider, renderer, context = (
         ActionProvider(spec, actions),
@@ -1047,48 +1476,43 @@ def test_false_promises_stale_receipts_and_cycles_are_steered(spec, tmp_path):
         for message in context.messages()
         if message["role"] == "tool"
     ]
-    assert any("No current evidence" in result.get("error", "") for result in results)
+    assert any("Unknown tool" in result.get("error", "") for result in results)
     assert any(
         "already observed" in str(snapshot["steer"]) for snapshot in provider.snapshots
     )
     assert any(
         "prose promise" in str(snapshot["steer"]) for snapshot in provider.snapshots
     )
-    assert results[-1]["state"] == "complete"
+    assert results[-1]["eligible"] is True
     assert any(
         "typescript: fail" in str(snapshot["steer"]) for snapshot in provider.snapshots
     )
 
 
 def test_tampered_files_cannot_complete_or_publish(store, spec, candidate, tmp_path):
-    """A good verdict becomes unusable when actual code bytes change before the completion request."""
+    """验收后进入自动收尾时文件被篡改，Harness 和 Store 都必须拒绝发布。"""
 
-    class TamperingProvider(ActionProvider):
-        """Mutate evidence after rendering, simulating an intervening writer rather than model evidence."""
+    def tamper(phase):
+        """验收结束进入宿主收尾时模拟文件被外部改写。"""
+        if phase == "preparing":
+            (tmp_path / "run" / "attempt-1" / "Template.tsx").write_text(
+                "changed after verification"
+            )
 
-        async def turn(self, system, context, tools, budget):
-            """Tamper just before claiming the previously validated artifact is complete."""
-            if self.windows:
-                (tmp_path / "run" / "attempt-1" / "Template.tsx").write_text(
-                    "changed after verification"
-                )
-            return await super().turn(system, context, tools, budget)
-
-    provider = TamperingProvider(
-        spec,
-        [
-            ("submit_candidate", {"tsx_code": SAMPLE_CODE}),
-            ("request_completion", {"candidate_id": "1"}),
-        ],
-    )
+    provider = ActionProvider(spec, [("submit_candidate", {"tsx_code": SAMPLE_CODE})])
     context = Conversation()
-    with pytest.raises(ModelFailure):
+    with pytest.raises(ValueError, match="changed"):
         asyncio.run(
             Harness(provider, ScriptedRenderer()).generate(
-                spec, Budget(), tmp_path / "run", [], lambda *_: None, context=context
+                spec,
+                Budget(on_progress=tamper),
+                tmp_path / "run",
+                [],
+                lambda *_: None,
+                context=context,
             )
         )
-    assert "changed" in context.messages()[-1]["content"]
+    assert context.messages()[-1]["role"] == "tool"
     report = ValidationReport.model_validate_json(
         (tmp_path / "run" / "attempt-1" / "validation.json").read_text()
     )
@@ -1111,7 +1535,7 @@ def test_invalid_actor_and_visual_contracts_are_repaired_internally(spec, tmp_pa
             super().__init__(spec)
             self.actor_invalid = self.review_invalid = True
 
-        async def turn(self, system, context, tools, budget):
+        async def turn(self, system, context, tools, budget, **kwargs):
             """Reject an invalid call before permitting normal actor tool actions."""
             if self.actor_invalid:
                 self.actor_invalid = False
@@ -1120,7 +1544,7 @@ def test_invalid_actor_and_visual_contracts_are_repaired_internally(spec, tmp_pa
             return await super().turn(system, context, tools, budget)
 
         async def ask(self, output, system, prompt, budget, **kwargs):
-            """A malformed reviewer response must leave unknown evidence for the next repair."""
+            """A malformed reviewer response is corrected against the same rendered candidate."""
             if output is VisualReview and self.review_invalid:
                 self.review_invalid = False
                 budget.calls += 1
@@ -1133,15 +1557,323 @@ def test_invalid_actor_and_visual_contracts_are_repaired_internally(spec, tmp_pa
             spec, Budget(), tmp_path, [], lambda *_: None
         )
     )
-    assert report.passed and directory.name == "attempt-2"
+    assert report.passed and directory.name == "attempt-1"
     first = ValidationReport.model_validate_json(
         (tmp_path / "attempt-1" / "validation.json").read_text()
     )
     assert all(
-        check.status == "unknown"
+        check.status == "pass"
         for check in first.checks
         if check.name.startswith("visual_")
     )
+
+
+def test_contradictory_review_is_corrected_without_rewriting_candidate(spec, tmp_path):
+    """复现 58fa 任务：静态误判与 scope 状态矛盾只纠正评审，不能要求重写已验证代码。"""
+
+    class ContradictoryProvider(ScriptedProvider):
+        """第一次评审返回实际故障形态，第二次根据同一份证据纠正 scope。"""
+
+        reviews = 0
+
+        async def ask(self, output, system, prompt, budget, **kwargs):
+            """静态检查由宿主负责；矛盾纠错不丢失原始用户目标和帧引用。"""
+            result = await super().ask(output, system, prompt, budget, **kwargs)
+            if output is VisualReview:
+                self.reviews += 1
+                if self.reviews == 1:
+                    result.checks[3].status = "fail"
+                    result.checks[
+                        3
+                    ].detail = "Frames are identical, correct for a static hold. Empty motion does not prove authored intent. Status is unknown."
+                    result.checks[4].status = "fail"
+                    result.checks[
+                        4
+                    ].detail = "Only text decorations are present, so scope is within typography-only bounds. Status is pass."
+                else:
+                    assert "correction" in json.loads(prompt)
+            return result
+
+    provider, renderer = ContradictoryProvider(spec), ScriptedRenderer()
+    _, _, report, directory = asyncio.run(
+        Harness(provider, renderer).generate(
+            spec,
+            Budget(),
+            tmp_path,
+            [],
+            lambda *_: None,
+        )
+    )
+    assert report.passed and provider.reviews == 2
+    assert renderer.calls == 1 and directory.name == "attempt-1"
+
+
+def test_idle_actor_stops_with_audit_before_global_budget(spec, tmp_path):
+    """复现 58fa 最后八轮等待：无新证据时有限 steer 后停止，保留逐轮原因与成本。"""
+    from server.remotion_templates.provider import ExecutionFailure
+
+    provider = ActionProvider(spec, ["Waiting."] * 20)
+    budget = Budget()
+    harness = Harness(provider, ScriptedRenderer())
+    with pytest.raises(ExecutionFailure) as exc:
+        asyncio.run(harness.generate(spec, budget, tmp_path, [], lambda *_: None))
+    assert exc.value.code == "no_progress"
+    assert budget.calls == harness.settings.max_no_progress_turns
+    assert budget.summary()["actor_calls"] == budget.calls
+    events = [
+        json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()
+    ]
+    assert (
+        len([event for event in events if event["event"] == "actor_response"])
+        == budget.calls
+    )
+    assert events[-1]["event"] == "run_stalled"
+    assert any("No user input is pending" in str(event) for event in events)
+
+
+def test_changed_source_without_new_evidence_is_not_progress(spec, tmp_path):
+    """修改注释或空白、重复相同失败不会重置无进展计数。"""
+    from server.remotion_templates.provider import ExecutionFailure
+
+    actions = [
+        ("submit_candidate", {"tsx_code": SAMPLE_CODE + "\n" * i}) for i in range(20)
+    ]
+    provider, renderer = ActionProvider(spec, actions), ScriptedRenderer(failures=100)
+    harness = Harness(provider, renderer)
+    with pytest.raises(ExecutionFailure, match="no new action evidence"):
+        asyncio.run(harness.generate(spec, Budget(), tmp_path, [], lambda *_: None))
+    assert renderer.calls == 1 + harness.settings.max_no_progress_turns
+
+
+def test_real_negative_review_is_not_retried_into_pass(candidate, spec, tmp_path):
+    """合法文字错误原样交给 Actor；不能因为不满意负面结果反复询问 Judge。"""
+
+    class NegativeProvider(ScriptedProvider):
+        """返回有证据的合法负面结论。"""
+
+        async def ask(self, output, system, prompt, budget, **kwargs):
+            """只修改文字维度，其他维度保留正常结果。"""
+            result = await super().ask(output, system, prompt, budget, **kwargs)
+            if output is VisualReview:
+                result.checks[0].status = "fail"
+                result.checks[0].detail = "Frame 0 displays the wrong title wording."
+                result.checks[0].frame = 0
+            return result
+
+    provider = NegativeProvider(spec)
+    _, report, _ = asyncio.run(
+        Harness(provider, ScriptedRenderer()).inspect(
+            candidate, spec, tmp_path / "attempt", [], Budget()
+        )
+    )
+    assert not report.passed
+    assert len(provider.prompts) == 1
+    assert next(c for c in report.checks if c.name == "visual_text").status == "fail"
+
+
+def test_valid_failure_survives_correction_of_other_dimension(
+    candidate, spec, tmp_path
+):
+    """scope 协议纠错时保留此前合法文字失败，不允许整批重审把它洗成通过。"""
+
+    class MixedProvider(ScriptedProvider):
+        """第一批有一个真实错误和一个矛盾；第二批试图把两者都改为通过。"""
+
+        async def ask(self, output, system, prompt, budget, **kwargs):
+            """使用请求次数决定两次评审结果。"""
+            result = await super().ask(output, system, prompt, budget, **kwargs)
+            if len(self.prompts) == 1:
+                result.checks[0].status = "fail"
+                result.checks[0].detail = "Frame 0 shows incorrect wording."
+                result.checks[4].status = "fail"
+                result.checks[4].detail = "Typography-only scope. Status is pass."
+            return result
+
+    provider = MixedProvider(spec)
+    _, report, _ = asyncio.run(
+        Harness(provider, ScriptedRenderer()).inspect(
+            candidate, spec, tmp_path / "attempt", [], Budget()
+        )
+    )
+    assert len(provider.prompts) == 2
+    assert next(c for c in report.checks if c.name == "visual_text").status == "fail"
+    assert next(c for c in report.checks if c.name == "visual_scope").status == "pass"
+
+
+def test_missing_visual_evidence_is_captured_without_actor_rewrite(
+    candidate, spec, tmp_path
+):
+    """Judge 缺少指定帧时由宿主补采样，复核相同代码并返回真实证据目录。"""
+
+    class SupplementalRenderer(ScriptedRenderer):
+        """生成请求中的补充帧，模拟隔离渲染边界。"""
+
+        async def validate(self, candidate, spec, directory, **kwargs):
+            """保留源码并把新增帧纳入当前报告和后续清单。"""
+            output, report = await super().validate(
+                candidate, spec, directory, **kwargs
+            )
+            for frame in kwargs.get("extra_frames", []):
+                report.frames.append(frame)
+                Image.new("RGBA", (64, 64), "white").save(
+                    directory / f"frame-{frame}.png"
+                )
+            report.frames = sorted(set(report.frames))
+            return output, report
+
+    class EvidenceProvider(ScriptedProvider):
+        """只有收到真实补充帧才给出已知结论。"""
+
+        async def ask(self, output, system, prompt, budget, **kwargs):
+            """首次缺帧，后续从实际模型输入核对帧号及图片路径。"""
+            result = await super().ask(output, system, prompt, budget, **kwargs)
+            frames = json.loads(prompt)["frames"]
+            if 1 not in frames:
+                result.checks[1].status = "unknown"
+                result.checks[1].missing_evidence = ["Need frame 1 to inspect layout."]
+                result.checks[1].requested_frames = [1]
+            else:
+                assert any(path.name == "frame-1.png" for path in kwargs["images"])
+            return result
+
+    renderer = SupplementalRenderer()
+    output, report, path = asyncio.run(
+        Harness(EvidenceProvider(spec), renderer).inspect(
+            candidate, spec, tmp_path / "attempt", [], Budget()
+        )
+    )
+    assert report.passed and renderer.calls == 2
+    assert output.tsx_code == candidate.tsx_code
+    assert path == tmp_path / "attempt" / "evidence-1"
+    assert "frame-1.png" in report.artifacts
+
+
+def test_renderer_failure_never_asks_actor_to_rewrite(candidate, spec, tmp_path):
+    """环境失败保留具体分类与报告，不把环境问题交给模型修改 TSX。"""
+    from server.remotion_templates.provider import ExecutionFailure
+
+    class UnavailableRenderer(ScriptedRenderer):
+        """模拟已完成报告中的环境失败。"""
+
+        async def validate(self, candidate, spec, directory, **kwargs):
+            """使宿主环境不可用，避免真实系统调用。"""
+            output, report = await super().validate(
+                candidate, spec, directory, **kwargs
+            )
+            report.checks.append(
+                Check(
+                    name="renderer_environment", status="fail", detail="browser missing"
+                )
+            )
+            return output, report
+
+    provider = ScriptedProvider(spec)
+    with pytest.raises(ExecutionFailure) as exc:
+        asyncio.run(
+            Harness(provider, UnavailableRenderer()).inspect(
+                candidate, spec, tmp_path / "attempt", [], Budget()
+            )
+        )
+    assert exc.value.code == "renderer_unavailable" and not provider.prompts
+
+
+@pytest.mark.parametrize("failure", ["protocol", "unknown", "missing_artifact"])
+def test_unavailable_review_or_evidence_never_rewrites_candidate(
+    spec, settings, failure
+):
+    """持续评审故障、补采样仍未知或产物缺失均有限停止，API 保留空成功指针与私有诊断。"""
+    from server.remotion_templates.provider import ModelContractFailure
+
+    class UnavailableProvider(ScriptedProvider):
+        """控制评审失败，其他模型动作使用正常生成路径。"""
+
+        reviews = 0
+
+        async def ask(self, output, system, prompt, budget, **kwargs):
+            """未知结果不能被猜成通过，协议失败不能被送给 Actor 重写。"""
+            result = await super().ask(output, system, prompt, budget, **kwargs)
+            if output is VisualReview:
+                self.reviews += 1
+                if failure == "protocol":
+                    raise ModelContractFailure("invalid visual JSON")
+                result.checks[1].status = "unknown"
+                result.checks[1].missing_evidence = ["Cannot determine placement"]
+            return result
+
+    class EvidenceRenderer(ScriptedRenderer):
+        """真实记录渲染次数并按需丢失宿主证据。"""
+
+        async def validate(self, candidate, spec, directory, **kwargs):
+            """补采样仍保持原源码；丢帧模拟宿主证据丢失。"""
+            output, report = await super().validate(
+                candidate, spec, directory, **kwargs
+            )
+            for frame in kwargs.get("extra_frames", []):
+                report.frames.append(frame)
+                Image.new("RGBA", (64, 64), "white").save(
+                    directory / f"frame-{frame}.png"
+                )
+            report.frames = sorted(set(report.frames))
+            if failure == "missing_artifact":
+                (directory / f"frame-{report.frames[0]}.png").unlink()
+            return output, report
+
+    provider, renderer = UnavailableProvider(spec), EvidenceRenderer()
+    application = create_app(settings, provider=provider, renderer=renderer)
+    with TestClient(application) as client:
+        created = client.post(
+            "/api/templates/works",
+            json={"description": "标题", "composition": spec.composition.model_dump()},
+        ).json()
+        result = wait_job(client, created["job"]["id"])
+        assert result["status"] == "failed" and result["result_version_id"] is None
+        store = application.state.template_app.state.runtime.store
+        job = store.job(result["id"])
+        assert job.error.code == (
+            "review_unavailable" if failure == "protocol" else "evidence_unavailable"
+        )
+        assert renderer.calls == (2 if failure == "unknown" else 1)
+        assert (
+            provider.reviews
+            == {"protocol": 3, "unknown": 2, "missing_artifact": 0}[failure]
+        )
+        assert (
+            client.get(f"/api/templates/works/{created['work']['id']}").json()[
+                "current_version_id"
+            ]
+            is None
+        )
+        assert client.get(f"/api/templates/jobs/{job.id}/artifacts").json() == []
+        audit = [
+            json.loads(line)
+            for line in (store.job_dir(job.id) / "audit.jsonl").read_text().splitlines()
+        ]
+        assert audit[-1]["event"] == "run_finished"
+        assert audit[-1]["error"]["code"] == job.error.code
+        assert (
+            len([entry for entry in audit if entry["event"] == "actor_response"]) == 1
+        )
+
+
+def test_progress_ignores_review_wording_and_repeated_reads(candidate, spec):
+    """评审换措辞、通过项数值噪声或反复读当前候选不算新进展；新的通过结果才重置。"""
+    from server.remotion_templates.trajectory import DecisionProgress
+
+    progress = DecisionProgress()
+    report = evidence(candidate, spec, visual_text="fail")
+    for check in report.checks:
+        if check.name.startswith("visual_"):
+            check.source = "visual_model"
+    assert progress.observe(report, read_current=True)
+    for index in range(4):
+        for check in report.checks:
+            check.detail = f"Varying observation {index}"
+        assert not progress.observe(report, read_current=True)
+    assert progress.stalled_turns == 4
+    next(
+        check for check in report.checks if check.name == "visual_text"
+    ).status = "pass"
+    assert progress.observe(report) and progress.stalled_turns == 0
 
 
 def test_task_message_binding_and_private_failures(settings, spec):
@@ -1248,92 +1980,240 @@ def test_render_evidence_environment_revision_cannot_be_reused(settings, tmp_pat
         renderer.verify_environment(report)
 
 
-def test_model_derived_target_is_repaired_before_freezing(spec):
-    """A contradictory static/enter plan cannot become the fixed goal merely because analysis returned valid JSON."""
-    from server.remotion_templates.models import MotionSegment
+def test_answer_outcome_is_nonempty_and_exclusive(spec):
+    """纯回答必须非空且不能同时宣称生成、参数修改或追问。"""
+    output = DialogueOutput
+    assert output(answer="当前使用托管字体。").answer == "当前使用托管字体。"
+    for payload in (
+        {"answer": " "},
+        {"answer": "回答", "spec": spec},
+        {"answer": "回答", "questions": ["问题"]},
+        {"answer": "回答", "parameters": {"0_text": "修改"}},
+    ):
+        with pytest.raises(ValidationError):
+            output(**payload)
 
-    class ContradictoryPlanner(ScriptedProvider):
-        """First propose static visibility as an enter effect, then repair after independent rejection."""
 
-        def __init__(self):
-            """Track separate planning and verification calls and retain host feedback."""
-            super().__init__(spec)
-            self.plans = 0
-            self.steers = []
+@pytest.mark.parametrize("initial", [True, False])
+def test_api_answer_preserves_versions_and_allows_next_request(settings, spec, initial):
+    """首轮或成功模板后的问答持久化为终态，不渲染、不产生版本事件，随后可继续制作。"""
+
+    class AnswerProvider(ScriptedProvider):
+        """在指定轮次只回答，后续恢复正常生成与修改。"""
+
+        answering = initial
+
+        async def turn(self, system, context, tools, budget, **kwargs):
+            """Actor 直接看原图并回答；不会再调用 Planner。"""
+            if self.answering:
+                assert len(kwargs["images"]) == 1
+                with Image.open(kwargs["images"][0]) as reference:
+                    assert reference.size == (16, 16)
+                budget.calls += 1
+                return actor_tool(
+                    "respond", {"answer": "当前支持托管字体 Noto Sans CJK SC。"}
+                )
+            return await super().turn(system, context, tools, budget, **kwargs)
 
         async def ask(self, output, system, prompt, budget, **kwargs):
-            """The independent review rejects the contradictory first interpretation."""
-            budget.calls += 1
-            if output is AnalysisResult:
-                self.plans += 1
-                self.steers.append(system)
-                proposed = spec.model_copy(deep=True)
-                if self.plans == 1:
-                    proposed.text_layers[0].motion = [
-                        MotionSegment(
-                            phase="enter",
-                            start_frame=0,
-                            end_frame=6,
-                            description="全程静态，无进入动画",
-                        )
-                    ]
-                return AnalysisResult(spec=proposed)
-            assert output is TargetReview
-            target = json.loads(prompt)["proposed_target"]
-            if target["text_layers"][0]["motion"]:
-                return TargetReview(
-                    status="fail",
-                    detail="Static visibility cannot be an enter animation; use an empty motion list.",
+            """回答 Judge 独立读取原始事实和图片。"""
+            if output is AnswerReview:
+                assert kwargs.get("context") is None
+                assert len(kwargs["images"]) == 1
+            return await super().ask(output, system, prompt, budget, **kwargs)
+
+    provider, renderer = AnswerProvider(spec), ScriptedRenderer()
+    with TestClient(
+        create_app(settings, provider=provider, renderer=renderer)
+    ) as client:
+        reference = BytesIO()
+        Image.new("RGB", (16, 16), "white").save(reference, "PNG")
+        asset = client.post(
+            "/api/templates/assets",
+            files={"file": ("reference.png", reference.getvalue(), "image/png")},
+        )
+        assert asset.status_code == 201
+        created = client.post(
+            "/api/templates/works",
+            json={
+                "description": "支持什么字体？" if initial else "标题",
+                "composition": spec.composition.model_dump(),
+                "image": {"asset_id": asset.json()["id"]},
+            },
+        ).json()
+        work = created["work"]["id"]
+        result = wait_job(client, created["job"]["id"])
+        previous = result["result_version_id"]
+        if not initial:
+            assert result["status"] == "succeeded"
+            provider.answering = True
+            response = client.post(
+                f"/api/templates/works/{work}/messages",
+                json={"instruction": "支持什么字体？"},
+            )
+            assert response.status_code == 202
+            result = wait_job(client, response.json()["id"])
+        assert result["status"] == "answered", result
+        assert result["result_version_id"] is None and result["questions"] == []
+        assert result["message"] == "当前支持托管字体 Noto Sans CJK SC。"
+        assert renderer.calls == (0 if initial else 1)
+        snapshot = client.get(f"/api/templates/works/{work}/session").json()
+        assert snapshot["work"]["current_version_id"] == previous
+        assert snapshot["messages"][-1]["text"] == result["message"]
+        assert snapshot["job"]["status"] == "answered"
+        service = client.app.state.template_app.state.runtime
+        answer_events = [
+            e
+            for e in service.store.work_events(created["work"]["id"], 0)
+            if str(e.data.get("job_id", e.data.get("id"))) == result["id"]
+        ]
+        assert not any(e.type == "version.ready" for e in answer_events)
+        assert service.store.job(result["id"]).attempts == 0
+        assert client.get(f"/api/templates/jobs/{result['id']}/artifacts").json() == []
+        assert (
+            client.post(f"/api/templates/jobs/{result['id']}/cancel").json()["status"]
+            == "answered"
+        )
+        assert (
+            client.post(f"/api/templates/jobs/{result['id']}/retry").status_code == 409
+        )
+        provider.answering = False
+        next_response = client.post(
+            f"/api/templates/works/{work}/messages",
+            json={"instruction": "把文字改成修改后"},
+        )
+        assert next_response.status_code == 202
+        assert wait_job(client, next_response.json()["id"])["status"] == "succeeded"
+
+
+@pytest.mark.parametrize("verdict", ["fail", "unknown"])
+def test_answer_cannot_bypass_independent_review(spec, verdict):
+    """虚假完成承诺或缺少证据的回答被 steer，不能以问答绕过真实修改。"""
+
+    class AnswerActor(ActionProvider):
+        """先错误宣称完成，再按拒绝反馈真正生成候选。"""
+
+        async def ask(self, output, system, prompt, budget, **kwargs):
+            """回答未通过时只返回真实判断，不继承 Actor 的自述上下文。"""
+            if output is AnswerReview:
+                assert kwargs.get("context") is None
+                budget.calls += 1
+                return AnswerReview(
+                    status=verdict,
+                    detail="No edit was executed; generate the requested template.",
                 )
-            return TargetReview(
-                status="pass", detail="Target now agrees with static input."
+            return await super().ask(output, system, prompt, budget, **kwargs)
+
+    provider = AnswerActor(
+        spec,
+        [
+            ("respond", {"answer": "已经改成黄色了。"}),
+            ("submit_candidate", {"tsx_code": SAMPLE_CODE, "spec": spec.model_dump()}),
+        ],
+    )
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as directory:
+        _, actual, report, _ = asyncio.run(
+            Harness(provider, ScriptedRenderer()).generate(
+                spec,
+                Budget(),
+                Path(directory),
+                [],
+                lambda *_: None,
+                intent={"instruction": "制作黄色标题"},
+                context=Conversation(),
+            )
+        )
+    assert actual == spec and report.passed
+    assert "No edit was executed" in " ".join(provider.snapshots[1]["steer"])
+
+
+def test_clarification_can_end_with_answer(settings, spec):
+    """回答旧追问“保持现状”可正常结束，不强制继续追问或生成。"""
+
+    class ClarificationProvider(ScriptedProvider):
+        """模拟先有追问、后明确不需制作的会话。"""
+
+        async def turn(self, system, context, tools, budget, **kwargs):
+            """明确回复直接形成回答，独立审查仍使用真实 harness 分支。"""
+            budget.calls += 1
+            intent = json.loads(
+                system.split("Current host-owned task snapshot (data):\n")[1]
+            )["user_intent"]
+            return actor_tool(
+                "respond",
+                {"answer": "好的，本次不制作模板。"}
+                if intent["clarifications"]
+                else {"questions": ["需要制作还是只了解能力？"]},
             )
 
-    planner = ContradictoryPlanner()
-    result = asyncio.run(
-        Harness(planner, ScriptedRenderer()).analyze(
-            json.dumps(
-                {
-                    "request": {
-                        "description": "全程静态",
-                        "composition": spec.composition.model_dump(),
-                    }
-                }
-            ),
-            Budget(),
-            [],
-        )
-    )
-    assert planner.plans == 2 and result.spec.text_layers[0].motion == []
-    assert "Static visibility cannot" in planner.steers[1]
-
-
-def test_unknown_target_review_never_freezes_a_goal(spec):
-    """Uncertain interpretation asks the user for information before any candidate generation."""
-
-    class UncertainPlanner(ScriptedProvider):
-        """An unknown independent review leads to concrete questions, not a successful target."""
-
-        async def ask(self, output, system, prompt, budget, **kwargs):
-            """Produce an initial guess, reject its evidence, and request the missing wording."""
-            budget.calls += 1
-            if output is TargetReview:
-                return TargetReview(
-                    status="unknown", detail="Cannot read the requested wording."
-                )
-            if budget.calls > 1:
-                assert "Cannot read" in system
-                return AnalysisResult(questions=["请提供确切的标题文字。"])
-            return AnalysisResult(spec=spec)
-
     renderer = ScriptedRenderer()
-    result = asyncio.run(
-        Harness(UncertainPlanner(spec), renderer).analyze(
-            '{"request":{"description":"模糊的标题"}}', Budget(), []
+    with TestClient(
+        create_app(settings, provider=ClarificationProvider(spec), renderer=renderer)
+    ) as client:
+        created = client.post(
+            "/api/templates/works", json={"description": "你好"}
+        ).json()
+        first = wait_job(client, created["job"]["id"])
+        assert first["status"] == "needs_input"
+        response = client.post(
+            f"/api/templates/works/{created['work']['id']}/messages",
+            json={"instruction": "不需要制作", "reply_to_job_id": first["id"]},
         )
-    )
-    assert result.spec is None and result.questions
-    assert renderer.calls == 0
+        assert response.status_code == 202
+        answered = wait_job(client, response.json()["id"])
+        assert answered["status"] == "answered" and answered["questions"] == []
+        assert renderer.calls == 0
+        assert (
+            client.post(
+                f"/api/templates/works/{created['work']['id']}/messages",
+                json={"instruction": "迟到回复", "reply_to_job_id": first["id"]},
+            ).status_code
+            == 409
+        )
+
+
+@pytest.mark.parametrize("cancel", [True, False])
+def test_answer_cancellation_and_model_failure_preserve_history(
+    store, settings, spec, cancel
+):
+    """取消后迟到回答不能写入历史；模型失败也不能发布成功回答。"""
+
+    async def scenario():
+        """用事件握手控制返回时机，所有等待有界且不连接真实模型。"""
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        class LateProvider(ScriptedProvider):
+            """规划等待测试控制，取消路径仍返回回答以模拟迟到结果。"""
+
+            async def turn(self, system, context, tools, budget, **kwargs):
+                """控制 Actor 回答时机，验证终态和迟到结果隔离。"""
+                entered.set()
+                await release.wait()
+                if not cancel:
+                    raise ModelFailure("private test provider failure")
+                return actor_tool("respond", {"answer": "迟到回答"})
+
+        work, job = store.create(GenerateTemplateRequest(description="你好"))
+        store.claim()
+        renderer = ScriptedRenderer()
+        runtime = Runtime(store, Harness(LateProvider(spec), renderer), settings)
+        async with asyncio.timeout(2):
+            task = asyncio.create_task(runtime._execute(job.id))
+            await entered.wait()
+            if cancel:
+                store.update(job.id, status="cancelled", stage="finished")
+            release.set()
+            await task
+        snap = store.session(work.id)
+        assert snap.job.status == ("cancelled" if cancel else "failed")
+        assert snap.work.current_version_id is None and renderer.calls == 0
+        assert all(m.text != "迟到回答" for m in snap.messages)
+        assert "private test provider failure" not in snap.model_dump_json()
+
+    asyncio.run(scenario())
 
 
 def test_publication_rollback_removes_copied_output(
@@ -1361,7 +2241,7 @@ def test_publication_rollback_removes_copied_output(
 
 def test_trajectory_keeps_passing_checkpoint_for_later_regressions(candidate, spec):
     """An eligible candidate is still a checkpoint if the actor submits another revision before completing."""
-    trajectory = Trajectory(spec)
+    trajectory = Trajectory()
     assert trajectory.observe(
         candidate, spec, evidence(candidate, spec)
     ).completion_allowed

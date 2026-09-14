@@ -88,7 +88,7 @@ class EditTemplateRequest(Contract):
 
 
 class TaskMessage(EditTemplateRequest):
-    """One task input: edit current accepted output or answer a specific outstanding job's questions."""
+    """One conversation input: ask, request a change, or answer a specific outstanding question."""
 
     reply_to_job_id: UUID | None = None
 
@@ -171,7 +171,7 @@ class TextLayer(Contract):
 
 
 class TemplateSpec(Contract):
-    """Fixed acceptance target for one execution, shared by generation and review."""
+    """Revisable candidate implementation plan; estimates never override user requirements."""
 
     schema_version: Literal["1"] = "1"
     name: Text
@@ -225,60 +225,12 @@ class AnswerReview(Contract):
     detail: str = Field(min_length=1, max_length=3000)
 
 
-
-class AnalysisResult(Contract):
-    """Either an actionable template specification or concrete questions for the user."""
-
-    spec: TemplateSpec | None = None
-    questions: list[Text] = Field(default_factory=list, max_length=5)
-
-    @model_validator(mode="after")
-    def one_outcome(self) -> Self:
-        """Do not mix uncertain copy with a supposedly ready specification."""
-        if (self.spec is None) == (not self.questions):
-            raise ValueError("return either spec or nonempty questions")
-        return self
-
-
-class TargetReview(Contract):
-    """Independent semantic assessment of a model-derived target against authoritative user input."""
-
-    status: Literal["pass", "fail", "unknown"]
-    detail: str = Field(min_length=1, max_length=3000)
-
-
 class TemplateCandidate(Contract):
     """Untrusted model output; schema and rendering checks are performed separately."""
 
     tsx_code: str = Field(min_length=1, max_length=100_000)
     config_schema: dict[str, JsonValue]
     default_config: dict[str, JsonValue]
-
-
-class EditDecision(Contract):
-    """Resolve a natural-language edit to a parameter patch or a new acceptance target."""
-
-    parameters: dict[str, JsonValue] | None = None
-    spec: TemplateSpec | None = None
-    questions: list[Text] = Field(default_factory=list, max_length=5)
-
-    @model_validator(mode="after")
-    def one_action(self) -> Self:
-        """Choose one action; code edits and parameter edits cannot run concurrently."""
-        if (
-            sum(
-                (
-                    self.parameters is not None,
-                    self.spec is not None,
-                    bool(self.questions),
-                )
-            )
-            != 1
-        ):
-            raise ValueError("choose parameters, spec, or questions")
-        if self.parameters == {}:
-            raise ValueError("parameter patch must not be empty")
-        return self
 
 
 class Check(Contract):
@@ -288,13 +240,21 @@ class Check(Contract):
     source: Literal["host", "visual_model"] = "host"
     status: Literal["pass", "fail", "unknown"]
     detail: str
-    frame: int | None = None
+    frame: int | None = Field(
+        default=None,
+        description="Actual Remotion frame number from supplied frames, not an image position or list index.",
+    )
 
 
 class VisualCheck(Check):
     """Expose allowed review dimensions in JSON Schema so a model cannot invent check names."""
 
     name: Literal["text", "layout", "style", "motion", "scope"]
+    status: Literal["pass", "fail", "unknown", "conflict"]
+    missing_evidence: list[str] = Field(default_factory=list, max_length=8)
+    requested_frames: list[Annotated[int, Field(ge=0, strict=True)]] = Field(
+        default_factory=list, max_length=8
+    )
 
 
 class VisualReview(Contract):

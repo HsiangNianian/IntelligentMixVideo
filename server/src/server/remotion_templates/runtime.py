@@ -7,8 +7,8 @@ from uuid import UUID
 
 from ..settings import Settings
 from .harness import Harness
-from .models import EditTemplateRequest, JobError, JobInput, TaskMessage
-from .provider import Budget, ModelFailure
+from .models import DialogueOutput, EditTemplateRequest, JobError, JobInput, TaskMessage
+from .provider import Budget, ExecutionFailure, ModelFailure
 from .store import Conflict, Store
 
 
@@ -69,7 +69,7 @@ class Runtime:
         return job
 
     def message(self, project_id: UUID, request: TaskMessage):
-        """Route task input to an accepted-version edit or the exact outstanding question set."""
+        """Route conversation input to planning, an accepted-base decision, or outstanding questions."""
         latest = self.store.latest_job(project_id)
         if request.reply_to_job_id:
             if latest.id != request.reply_to_job_id or latest.status != "needs_input":
@@ -77,6 +77,20 @@ class Runtime:
             return self.retry(latest.id, request.instruction)
         if latest.status == "needs_input":
             raise Conflict("Answer the outstanding questions using reply_to_job_id.")
+        project = self.store.project(project_id)
+        if (
+            project.current_version_id is None
+            and request.base_version_id is None
+            and request.instruction is not None
+        ):
+            # A conversation can start with questions before its first accepted template exists.
+            job = self.store.enqueue(
+                project_id,
+                JobInput(mode="generate", instruction=request.instruction),
+                None,
+            )
+            self.notify()
+            return job
         return self.edit(
             project_id,
             EditTemplateRequest.model_validate(
@@ -139,7 +153,10 @@ class Runtime:
 
     async def _execute(self, job_id: UUID) -> None:
         """Resolve intent, run a bounded harness and atomically publish only accepted evidence."""
-        budget = Budget()
+        budget = Budget(
+            audit_path=self.store.job_dir(job_id) / "audit.jsonl",
+            on_progress=lambda phase: self.store.progress(job_id, phase),
+        )
         job = self.store.job(job_id)
         context = self.store.conversation(job.project_id)
         try:
@@ -157,74 +174,25 @@ class Runtime:
                     if job.base_version_id
                     else None
                 )
+                spec = base.spec if base else None
                 patch = inputs.parameters
-                questions = []
-                if inputs.mode == "generate":
-                    analysis = await self.harness.analyze(
-                        json.dumps(
-                            {
-                                "request": project.request.model_dump(mode="json"),
-                                "clarifications": inputs.clarifications,
-                            },
-                            ensure_ascii=False,
-                        ),
-                        budget,
-                        images,
-                        context=context,
-                    )
-                    spec, questions = analysis.spec, analysis.questions
-                    if spec and spec.composition != project.request.composition:
-                        raise ValueError(
-                            "Analysis changed the requested composition dimensions or timing."
-                        )
-                elif inputs.mode == "edit":
-                    if base is None:
-                        raise ValueError("Edit requires an accepted version.")
-                    decision = await self.harness.edit(
-                        json.dumps(
-                            {
-                                "instruction": inputs.instruction,
-                                "base_spec": base.spec.model_dump(),
-                                "config_schema": base.candidate.config_schema,
-                                "default_config": base.candidate.default_config,
-                                "clarifications": inputs.clarifications,
-                            },
-                            ensure_ascii=False,
-                        ),
-                        budget,
-                        context=context,
-                        base=base,
-                    )
-                    spec, patch, questions = (
-                        decision.spec or base.spec,
-                        decision.parameters,
-                        decision.questions,
-                    )
-                else:
-                    if base is None:
-                        raise ValueError("Parameter edit requires an accepted version.")
-                    spec = base.spec
-                    context.append(
-                        [
-                            {
-                                "role": "user",
-                                "content": json.dumps(
-                                    {"parameters": patch}, ensure_ascii=False
-                                ),
-                            }
-                        ]
-                    )
-                if questions:
-                    self.store.update(
-                        job_id,
-                        status="needs_input",
-                        stage="finished",
-                        questions=questions,
-                        usage=budget.summary(),
-                    )
-                    return
-                if spec is None:
-                    raise ValueError("No actionable specification was produced.")
+                intent = {
+                    "original_request": project.request.model_dump(mode="json")
+                    if base is None
+                    else None,
+                    "instruction": inputs.instruction,
+                    "parameters": patch,
+                    "clarifications": inputs.clarifications,
+                    "accepted_base": base.spec.model_dump() if base else None,
+                }
+                context.append(
+                    [
+                        {
+                            "role": "user",
+                            "content": json.dumps(intent, ensure_ascii=False),
+                        }
+                    ]
+                )
                 directory = self.store.job_dir(job_id)
                 directory.mkdir(parents=True, exist_ok=True)
 
@@ -234,7 +202,7 @@ class Runtime:
                         job_id, stage=name, attempts=attempt, usage=budget.summary()
                     )
 
-                candidate, spec, report, attempt_dir = await self.harness.generate(
+                result = await self.harness.generate(
                     spec,
                     budget,
                     directory,
@@ -243,17 +211,23 @@ class Runtime:
                     base=base.candidate if base else None,
                     parameter_patch=patch,
                     context=context,
-                    intent={
-                        "original_request": project.request.model_dump(mode="json")
-                        if base is None
-                        else None,
-                        "instruction": inputs.instruction,
-                        "parameters": patch,
-                        "clarifications": inputs.clarifications,
-                        "accepted_target": base.spec.model_dump() if base else None,
-                    },
+                    intent=intent,
                 )
+                if isinstance(result, DialogueOutput):
+                    self.store.update(
+                        job_id,
+                        status="answered"
+                        if result.answer is not None
+                        else "needs_input",
+                        stage="finished",
+                        answer=result.answer,
+                        questions=result.questions,
+                        usage=budget.summary(),
+                    )
+                    return
+                candidate, spec, report, attempt_dir = result
                 self.store.update(job_id, usage=budget.summary())
+                budget.progress("preparing")
                 self.store.publish(job_id, candidate, spec, report, attempt_dir)
         except asyncio.CancelledError:
             self.store.update(
@@ -267,7 +241,9 @@ class Runtime:
                 stage="finished",
                 usage=budget.summary(),
                 error=JobError(
-                    code="timeout"
+                    code=exc.code
+                    if isinstance(exc, ExecutionFailure)
+                    else "timeout"
                     if isinstance(exc, TimeoutError)
                     else "execution_failed",
                     message=str(exc)[:1000] or "Job deadline exceeded.",
@@ -287,3 +263,10 @@ class Runtime:
             )
         finally:
             self.store.save_conversation(job.project_id, context)
+            final = self.store.job(job_id)
+            budget.record(
+                "run_finished",
+                status=final.status,
+                error=final.error.model_dump() if final.error else None,
+                usage=budget.summary(),
+            )

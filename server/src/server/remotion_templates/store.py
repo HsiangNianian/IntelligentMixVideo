@@ -339,7 +339,7 @@ class Store:
     ) -> TemplateVersion:
         """Publish only current accepted evidence; cancellation wins over a late result."""
         verify_artifacts(candidate, spec, report, directory)
-        assessment = Trajectory(spec).observe(candidate, spec, report)
+        assessment = Trajectory().observe(candidate, spec, report)
         if not assessment.completion_allowed:
             raise Conflict(
                 "candidate cannot be published: " + "; ".join(assessment.feedback)

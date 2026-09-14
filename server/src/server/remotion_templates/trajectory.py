@@ -1,4 +1,4 @@
-"""Compare host-observed checkpoints against a fixed goal and feed repairs concrete evidence."""
+"""Compare host-observed checkpoints against current evidence and feed repairs concrete evidence."""
 
 import hashlib
 from dataclasses import dataclass
@@ -11,6 +11,38 @@ from .models import (
 )
 
 
+class DecisionProgress:
+    """Bound decisions without new host observations; source-only changes and prose do not prove progress."""
+
+    def __init__(self):
+        """Retain compact observation identities for this run, outside the conversation window."""
+        self.seen: set[str] = set()
+        self.stalled_turns = 0
+
+    def observe(self, report, *, read_current=False) -> bool:
+        """Reset only for a new check outcome/diagnostic or the first read of a current candidate."""
+        observations = []
+        if report is not None:
+            observations = [
+                repr(
+                    (
+                        check.name,
+                        check.status,
+                        check.detail
+                        if check.source == "host" and check.status != "pass"
+                        else None,
+                    )
+                )
+                for check in report.checks
+            ]
+        if read_current:
+            observations.append("current_template_observed")
+        fresh = set(observations) - self.seen
+        self.seen.update(observations)
+        self.stalled_turns = 0 if fresh else self.stalled_turns + 1
+        return bool(fresh)
+
+
 @dataclass(frozen=True)
 class Assessment:
     """A host decision, separate from model prose, with feedback for the next action."""
@@ -21,24 +53,17 @@ class Assessment:
 
 
 class Trajectory:
-    """Track one bounded generation run; changed goals or stale evidence never count as progress."""
+    """Track one bounded generation run; revisable estimates never substitute for current artifact evidence."""
 
-    def __init__(self, spec: TemplateSpec) -> None:
-        """Freeze the requested target before the actor starts writing or repairing code."""
-        self.goal = spec.model_dump_json()
+    def __init__(self) -> None:
+        """Track observations without freezing model-estimated layout values."""
         self.previous: dict[str, str] | None = None
         self.observed: set[str] = set()
 
     def observe(
         self, candidate: TemplateCandidate, spec: TemplateSpec, report: ValidationReport
     ) -> Assessment:
-        """Detect goal drift, regressions and exact cycles without treating unknown as success."""
-        if spec.model_dump_json() != self.goal:
-            return Assessment(
-                "goal_drift",
-                False,
-                ("Restore the agreed TemplateSpec; do not weaken the goal to pass.",),
-            )
+        """Detect stale evidence, regressions and exact cycles without freezing estimated plan values."""
         if report.fingerprint != validation_fingerprint(
             candidate, spec, report.runtime
         ):
@@ -63,7 +88,7 @@ class Trajectory:
             if check.status != "pass"
         )
         if report.passed:
-            # Eligibility does not stop the actor from submitting another candidate before completion.
+            # A later submission in the same tool batch must pass its own checks.
             self.previous = current
             return Assessment("complete", True, ())
         regressed = sorted(
@@ -95,7 +120,7 @@ class Trajectory:
                 "visual_scope",
             )
         ):
-            verdict = "goal_drift"
+            verdict = "repair"
         elif self.previous and any(
             status == "pass" and self.previous.get(name) != "pass"
             for name, status in current.items()
