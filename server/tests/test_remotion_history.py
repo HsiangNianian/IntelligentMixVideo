@@ -1,0 +1,246 @@
+"""Verify durable public histories and compatible APIs offline: uv run --locked pytest tests/test_remotion_history.py."""
+
+import json
+from io import BytesIO
+from types import SimpleNamespace
+from uuid import uuid4
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from PIL import Image
+from pydantic import SecretStr
+from server.remotion_templates import history
+from server.remotion_templates.models import GenerateTemplateRequest, JobError, JobInput
+from server.remotion_templates.routes import router
+from server.remotion_templates.runtime import Runtime
+from server.remotion_templates.store import Conflict, Store
+from server.settings import Settings
+
+
+@pytest.fixture
+def history_store(tmp_path):
+    """Use a fresh local database, never the user's saved templates or model configuration."""
+    store = Store(tmp_path / "history")
+    store.initialize()
+    return store
+
+
+@pytest.fixture
+def history_app(history_store):
+    """Exercise actual routes with a queue that stays idle and no external model calls."""
+    app = FastAPI()
+    app.include_router(router)
+    app.state.runtime = SimpleNamespace(
+        store=history_store,
+        settings=Settings(
+            _env_file=None,
+            actor_api_key=SecretStr("test-only"),
+            actor_model="offline",
+            vision_model="offline",
+        ),
+        notify=lambda: None,
+    )
+    return app
+
+
+def test_public_history_tracks_inputs_and_hides_repairs(history_store):
+    """Persist input, question and answer exactly once while keeping steer and provider diagnostics private."""
+    store = history_store
+    work, job = store.create(GenerateTemplateRequest(description="居中标题"))
+    initial = store.session(work.id)
+    assert [m.text for m in initial.messages] == ["居中标题"]
+    assert initial.job.created_at == job.created_at
+    store.claim()
+    cursor = store.session(work.id).cursor
+    store.update(job.id, attempts=3, stage="repairing")
+    assert store.work_events(work.id, cursor) == []
+    store.update(job.id, status="needs_input", questions=["标题写什么？"])
+    runtime = Runtime(store, None, None)
+    runtime.notify = lambda: None
+    answer_job = runtime.retry(job.id, "春日快乐")
+    store.update(
+        answer_job.id,
+        status="failed",
+        error=JobError(code="model_error", message="private provider secret"),
+    )
+    retry_job = runtime.retry(answer_job.id)
+    snapshot = store.session(work.id)
+    assert [m.text for m in snapshot.messages if m.role == "user"] == [
+        "居中标题",
+        "春日快乐",
+        "重试本次制作。",
+    ]
+    assert snapshot.job.id == retry_job.id
+    public = snapshot.model_dump_json() + json.dumps(
+        [e.model_dump(mode="json") for e in store.work_events(work.id, 0)]
+    )
+    for secret in [
+        "private provider secret",
+        "attempts",
+        "repairing",
+        "usage",
+        "steer",
+    ]:
+        assert secret not in public
+    assert len({m.id for m in snapshot.messages}) == len(snapshot.messages)
+
+
+def test_history_and_state_rollback_together(history_store, monkeypatch):
+    """An event write failure cannot leave a job, message or work committed without its matching records."""
+    original = history.append_event
+
+    def fail_after_write(*args, **kwargs):
+        """Simulate a failure after SQLite has accepted an event but before transaction commit."""
+        original(*args, **kwargs)
+        raise OSError("disk full")
+
+    monkeypatch.setattr(history, "append_event", fail_after_write)
+    with pytest.raises(OSError):
+        history_store.create(GenerateTemplateRequest(description="事务测试"))
+    with history_store.connection() as db:
+        for table in ["projects", "jobs", "events", "chat_messages", "work_events"]:
+            assert db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    monkeypatch.setattr(history, "append_event", original)
+    work, job = history_store.create(GenerateTemplateRequest(description="恢复写入"))
+    before = history_store.session(work.id)
+    monkeypatch.setattr(history, "append_event", fail_after_write)
+    with pytest.raises(OSError):
+        history_store.update(job.id, status="cancelled")
+    assert history_store.session(work.id) == before
+    assert history_store.job(job.id).status == "queued"
+
+
+def test_legacy_backfill_is_factual_and_idempotent(history_store):
+    """Reopen an old schema twice without losing works or exposing the bounded model context."""
+    store = history_store
+    work, job = store.create(GenerateTemplateRequest(description="旧作品"))
+    store.update(job.id, status="needs_input", questions=["旧问题"])
+    with store.connection() as db:
+        db.execute(
+            "INSERT INTO conversations VALUES (?, ?)",
+            (str(work.id), '"private tool context"'),
+        )
+        db.execute("DROP TABLE chat_messages")
+        db.execute("DROP TABLE work_events")
+    store.initialize()
+    restored = store.session(work.id)
+    assert [m.text for m in restored.messages] == ["旧作品", "旧问题"]
+    assert all(m.reconstructed for m in restored.messages)
+    assert "private tool context" not in restored.model_dump_json()
+    store.initialize()
+    assert store.session(work.id) == restored
+    assert store.project(work.id).request.description == "旧作品"
+
+
+def test_snapshot_watermark_uses_one_read_transaction(history_store, monkeypatch):
+    """A writer racing the snapshot is seen entirely through subsequent replay, never partly in history."""
+    work, job = history_store.create(GenerateTemplateRequest(description="并发快照"))
+    original = history.snapshot
+
+    def concurrent_snapshot(db, *args):
+        """Pin the read snapshot, then commit a concurrent terminal state on another connection."""
+        db.execute("SELECT COUNT(*) FROM work_events").fetchone()
+        history_store.update(job.id, status="cancelled")
+        return original(db, *args)
+
+    monkeypatch.setattr(history, "snapshot", concurrent_snapshot)
+    snap = history_store.session(work.id)
+    assert snap.job.status == "queued"
+    assert len(snap.messages) == 1
+    events = history_store.work_events(work.id, snap.cursor)
+    assert [e.type for e in events] == ["job.updated", "message.created"]
+    assert events[0].data["status"] == "cancelled"
+
+
+def test_history_pagination_and_work_isolation(history_store):
+    """Page recent works and older messages without duplicates, private records or cross-work leakage."""
+    store = history_store
+    works = [
+        store.create(GenerateTemplateRequest(description=f"作品 {i}")) for i in range(3)
+    ]
+    work, job = works[0]
+    store.update(job.id, status="cancelled")
+    for i in range(5):
+        job = store.enqueue(
+            work.id, JobInput(mode="edit", instruction=f"修改 {i}"), None
+        )
+        store.update(job.id, status="cancelled")
+    first = store.work_history(limit=2)
+    second = store.work_history(first.next_cursor, limit=2)
+    assert first.items[0].id == work.id
+    assert len({w.id for w in first.items + second.items}) == 3
+    assert second.next_cursor is None
+    messages = []
+    before = None
+    while True:
+        page = store.session(work.id, before, limit=3)
+        messages = page.messages + messages
+        if page.next_before is None:
+            break
+        before = page.next_before
+    assert len(messages) == 12
+    assert len({m.id for m in messages}) == 12
+    assert [m.sequence for m in messages] == sorted(m.sequence for m in messages)
+    assert messages[0].text == "作品 0"
+    foreign = store.session(works[1][0].id).cursor
+    with pytest.raises(Conflict):
+        store.validate_cursor(work.id, foreign)
+    assert all(e.work_id == work.id for e in store.work_events(work.id, 0))
+
+
+def test_history_api_contracts_and_legacy_list(history_app):
+    """History opt-in preserves the old list shape; malformed cursors and nonexistent works fail explicitly."""
+    with TestClient(history_app) as client:
+        assert client.get("/works?history=true").json() == {
+            "items": [],
+            "next_cursor": None,
+        }
+        created = client.post("/works", json={"description": "API 标题"})
+        assert created.status_code == 202
+        work_id = created.json()["work"]["id"]
+        assert isinstance(client.get("/works").json(), list)
+        page = client.get("/works?history=true&limit=1")
+        assert page.status_code == 200
+        assert page.json()["items"][0]["title"] == "API 标题"
+        snap = client.get(f"/works/{work_id}/session")
+        assert snap.status_code == 200
+        assert snap.json()["messages"][0]["text"] == "API 标题"
+        assert snap.json()["cursor"] > 0
+        for query in ["limit=0", "limit=101", "cursor=%%%", "cursor=e30="]:
+            assert client.get(f"/works?history=true&{query}").status_code == 422
+        assert client.get(f"/works/{work_id}/session?before=0").status_code == 422
+        assert client.get(f"/works/{uuid4()}/session").status_code == 404
+        old = client.get(f"/jobs/{created.json()['job']['id']}/events").json()
+        assert old["events"][0]["job"]["status"] == "queued"
+
+
+def test_history_images_remain_readable_and_integrity_checked(
+    history_app, history_store
+):
+    """Restore a normalized reference by ID, report missing/corrupt bytes, and never accept arbitrary paths."""
+    buffer = BytesIO()
+    Image.new("RGB", (8, 8), "red").save(buffer, format="PNG")
+    with TestClient(history_app) as client:
+        uploaded = client.post(
+            "/assets", files={"file": ("reference.png", buffer.getvalue(), "image/png")}
+        )
+        assert uploaded.status_code == 201
+        asset_id = uploaded.json()["id"]
+        work = client.post("/works", json={"image": {"asset_id": asset_id}}).json()[
+            "work"
+        ]["id"]
+        assert (
+            client.get(f"/works/{work}/session").json()["messages"][0]["image_asset_id"]
+            == asset_id
+        )
+        image = client.get(f"/assets/{asset_id}")
+        assert image.status_code == 200
+        assert image.headers["content-type"] == "image/png"
+        path = history_store.root / "assets" / f"{asset_id}.png"
+        path.write_bytes(b"corrupted")
+        assert client.get(f"/assets/{asset_id}").status_code == 409
+        path.unlink()
+        assert client.get(f"/assets/{asset_id}").status_code == 404
+        assert client.get(f"/assets/{uuid4()}").status_code == 404
+        assert client.get("/assets/not-a-uuid").status_code == 422

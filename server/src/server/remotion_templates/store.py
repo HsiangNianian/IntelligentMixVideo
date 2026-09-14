@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 
 from fastapi import HTTPException
 
+from . import history
 from .context import Conversation
 from .evidence import verify_artifacts
 from .models import (
@@ -83,6 +84,7 @@ class Store:
                     job_id TEXT NOT NULL REFERENCES jobs(id), data TEXT NOT NULL
                 );
             """)
+            history.initialize(db)
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
@@ -199,7 +201,11 @@ class Store:
         )
 
     def _insert_job(
-        self, db: sqlite3.Connection, job: GenerationJob, inputs: JobInput
+        self,
+        db: sqlite3.Connection,
+        job: GenerationJob,
+        inputs: JobInput,
+        message_text: str | None = None,
     ) -> None:
         """Insert a queued job and the first replayable progress event."""
         db.execute(
@@ -213,10 +219,16 @@ class Store:
                 inputs.model_dump_json(),
             ),
         )
+        history.record_input(db, job, inputs, message_text)
         self._event(db, job)
 
     def enqueue(
-        self, project_id: UUID, inputs: JobInput, base: UUID | None
+        self,
+        project_id: UUID,
+        inputs: JobInput,
+        base: UUID | None,
+        *,
+        message_text: str | None = None,
     ) -> GenerationJob:
         """Reject concurrent edits and foreign version IDs before enqueueing any work."""
         self.project(project_id)
@@ -225,7 +237,7 @@ class Store:
         job = self._new_job(project_id, base)
         try:
             with self.connection() as db:
-                self._insert_job(db, job, inputs)
+                self._insert_job(db, job, inputs, message_text)
         except sqlite3.IntegrityError as exc:
             raise Conflict("this work already has a queued or running job") from exc
         return job
@@ -246,6 +258,7 @@ class Store:
             "INSERT INTO events(job_id, data) VALUES (?, ?)",
             (str(job.id), job.model_dump_json()),
         )
+        history.record_job(db, job)
 
     def _save_job(self, db: sqlite3.Connection, job: GenerationJob) -> None:
         """Update indexed status and serialized state together."""
@@ -408,3 +421,41 @@ class Store:
                 (str(job_id), after),
             ).fetchall()
         return [(row["id"], row["data"]) for row in rows]
+
+    def session(
+        self, work_id: UUID, before: int | None = None, limit: int = 50
+    ) -> history.SessionSnapshot:
+        """Bind public messages, accepted pointer and event watermark to one SQLite snapshot."""
+        with self.connection() as db:
+            db.execute("BEGIN")
+            result = history.snapshot(db, work_id, before, limit)
+        if result is None:
+            raise NotFound("work not found")
+        return result
+
+    def work_history(
+        self, cursor: str | None = None, limit: int = 30
+    ) -> history.WorkPage:
+        """Return a bounded public sidebar page ordered by recent activity."""
+        with self.connection() as db:
+            db.execute("BEGIN")
+            return history.work_page(db, cursor, limit)
+
+    def work_events(self, work_id: UUID, after: int) -> list[history.WorkEvent]:
+        """Read committed public events without retaining a connection during stream waits."""
+        with self.connection() as db:
+            return history.events(db, work_id, after)
+
+    def validate_cursor(self, work_id: UUID, after: int) -> None:
+        """Reject foreign or stale database cursors before opening SSE; zero requests full replay."""
+        self.project(work_id)
+        if after == 0:
+            return
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT work_id FROM work_events WHERE id=?", (after,)
+            ).fetchone()
+        if row is None or row[0] != str(work_id):
+            raise Conflict(
+                "Event cursor is unavailable for this work; reload its session."
+            )

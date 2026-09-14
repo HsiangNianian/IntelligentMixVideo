@@ -1,14 +1,24 @@
 """HTTP contracts for local template works, durable job events, uploads and bounded artifacts."""
 
+import hashlib
 import re
 from pathlib import Path
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
+from fastapi.responses import FileResponse, HTMLResponse, Response
 
 from .evidence import digest, verify_artifacts
+from .history import SessionSnapshot, WorkPage
 from .media import save_image
 from .models import (
     Asset,
@@ -106,15 +116,26 @@ async def create(
 
 @router.get(
     "/works",
-    response_model=list[TemplateProject],
+    response_model=list[TemplateProject] | WorkPage,
     tags=["模板作品"],
     summary="查询作品列表",
 )
-def works(service: Service) -> list[TemplateProject]:
-    """按创建顺序从新到旧返回最近 100 个作品。
+def works(
+    service: Service,
+    history: bool = False,
+    cursor: Annotated[str | None, Query(max_length=512)] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 30,
+) -> list[TemplateProject] | WorkPage:
+    """默认兼容原作品列表；`history=true` 返回按最近活动排序的聊天会话分页。
 
-    列表包含作品信息和当前成功版本 ID，完整代码需通过版本详情接口获取。
+    历史分页包含标题、最新任务时间与成功版本 ID，用 `next_cursor` 加载下一页。
+    不包含内部执行记录或候选代码。
     """
+    if history:
+        try:
+            return service.store.work_history(cursor, limit)
+        except ValueError as exc:
+            raise HTTPException(422, "Invalid history cursor.") from exc
     return service.store.projects()
 
 
@@ -353,3 +374,40 @@ def preview_font(version_id: UUID, weight: int, service: Service) -> FileRespons
         media_type="font/collection",
         headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"},
     )
+
+
+@router.get("/assets/{asset_id}", tags=["参考素材"], summary="读取历史参考图片")
+def asset_image(asset_id: UUID, service: Service) -> Response:
+    """读取已登记、去除元数据的 PNG，供历史聊天显示；缺失返回 404，损坏返回 409。"""
+    asset = service.store.asset(asset_id)
+    try:
+        payload = service.store.asset_path(asset_id).read_bytes()
+    except FileNotFoundError as exc:
+        raise NotFound("asset file not found") from exc
+    if hashlib.sha256(payload).hexdigest() != asset.sha256:
+        raise HTTPException(409, "Stored asset failed integrity verification.")
+    return Response(
+        payload,
+        media_type="image/png",
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
+
+
+@router.get(
+    "/works/{work_id}/session",
+    response_model=SessionSnapshot,
+    tags=["聊天会话"],
+    summary="恢复聊天会话",
+)
+def session(
+    work_id: UUID,
+    service: Service,
+    before: Annotated[int | None, Query(ge=1)] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> SessionSnapshot:
+    """在一致的数据快照中读取公开消息、最新任务、成功版本指针和 SSE 游标。
+
+    消息按时间正序返回，`next_before` 用于加载更早消息。首次恢复后以 `cursor`
+    订阅事件，避免读取历史和建立连接之间漏掉更新；旧消息的 `reconstructed` 表示事实恢复。
+    """
+    return service.store.session(work_id, before, limit)

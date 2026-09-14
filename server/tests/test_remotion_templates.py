@@ -1446,3 +1446,34 @@ def test_interactive_preview_and_export_are_sealed(settings, spec, candidate, tm
         assert (
             client.get(f"/api/templates/versions/{uuid4()}/preview").status_code == 404
         )
+
+
+def test_public_history_only_publishes_accepted_versions(store, candidate, spec):
+    """Success events identify sealed versions; later failed edits retain the accepted pointer and defaults."""
+    work, job = store.create(GenerateTemplateRequest(description="公开历史"))
+    store.claim()
+    before = store.session(work.id).cursor
+    version = publish_fixture(store, job.id, candidate, spec, evidence(candidate, spec))
+    events = store.work_events(work.id, before)
+    assert [event.type for event in events] == [
+        "job.updated",
+        "version.ready",
+        "message.created",
+    ]
+    assert events[1].data["version_id"] == str(version.id)
+    assert store.session(work.id).work.current_version_id == version.id
+    inputs = JobInput(mode="parameters", parameters={"0_text": "修改文字"})
+    edit = store.enqueue(work.id, inputs, version.id)
+    pending = store.session(work.id)
+    assert pending.job.parameters == {"0_text": "修改文字"}
+    assert pending.messages[-1].text == '调整参数：{"0_text": "修改文字"}'
+    cursor = pending.cursor
+    store.update(edit.id, status="failed")
+    failed = store.session(work.id)
+    assert failed.work.current_version_id == version.id
+    assert all(
+        event.type != "version.ready" for event in store.work_events(work.id, cursor)
+    )
+    assert (
+        store.version(version.id).candidate.default_config == candidate.default_config
+    )

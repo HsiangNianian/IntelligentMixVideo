@@ -103,7 +103,12 @@ class Runtime:
                     {"questions": job.questions, "answer": answer}, ensure_ascii=False
                 )
             ]
-        result = self.store.enqueue(job.project_id, inputs, job.base_version_id)
+        result = self.store.enqueue(
+            job.project_id,
+            inputs,
+            job.base_version_id,
+            message_text=answer if answer is not None else "重试本次制作。",
+        )
         self.notify()
         return result
 
