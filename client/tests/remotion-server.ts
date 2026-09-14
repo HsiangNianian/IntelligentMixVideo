@@ -40,8 +40,14 @@ export function remotionServer(
     const snap = snapshots.get(work)!;
     snap.cursor = event.id;
     if (event.type === "message.created") snap.messages.push(event.data);
-    else if (event.type === "job.updated") snap.job = event.data;
-    else snap.work.current_version_id = event.data.version_id;
+    else if (event.type === "job.updated") {
+      snap.job = event.data;
+      snap.jobs = [
+        ...new Map(
+          [...(snap.jobs ?? []), event.data].map((job) => [job.id, job]),
+        ).values(),
+      ];
+    } else snap.work.current_version_id = event.data.version_id;
     for (const stream of streams)
       if (stream.work === work) stream.controller.enqueue(encode(event));
   }
@@ -75,6 +81,19 @@ export function remotionServer(
       created_at: "2026-09-14T08:00:00Z",
       updated_at: "2026-09-14T08:01:08Z",
       parameters: null,
+      progress: (snapshots.get(work)?.job.progress ?? []).map((step) =>
+        step.status === "active" && !["running", "queued"].includes(job.status)
+          ? {
+              ...step,
+              status: ["succeeded", "answered", "needs_input"].includes(
+                job.status,
+              )
+                ? "done"
+                : "stopped",
+              ended_at: "2026-09-14T08:01:08Z",
+            }
+          : step,
+      ),
     };
     emit(work, { type: "job.updated", data: state });
     const summary = summaries.get(work);
@@ -91,7 +110,9 @@ export function remotionServer(
         "assistant",
         "模板已就绪。可以调整参数，或继续描述你想修改的效果。",
       );
-    } else if (job.status === "needs_input")
+    } else if (job.status === "answered")
+      message(work, job, "assistant", job.message!);
+    else if (job.status === "needs_input")
       message(work, job, "assistant", job.questions.join("\n"));
     else if (["failed", "cancelled", "interrupted"].includes(job.status))
       message(

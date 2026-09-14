@@ -39,6 +39,110 @@ test("消息等待不冒充预览渲染", async () => {
   ).toBe(true);
 });
 
+// 纯问答的运行和 SSE 终态保持原播放器、代码与参数，恢复会话后仍能继续修改。
+test("纯问答保留成功预览并恢复历史", async () => {
+  const fake = server((path) =>
+    path.endsWith("/messages")
+      ? Response.json({ ...remotionJob("running"), id: "question-1" })
+      : undefined,
+  );
+  const view = render(<RemotionWorkspace />);
+  await generate();
+  const iframe = screen.getByTitle<HTMLIFrameElement>("Remotion 字效播放器");
+  const src = iframe.src;
+  const post = spyOn(iframe.contentWindow!, "postMessage");
+  fireEvent.change(screen.getByRole("textbox", { name: "字效描述" }), {
+    target: { value: "当前字号是多少？" },
+  });
+  fireEvent.submit(
+    screen.getByRole("button", { name: "发送" }).closest("form")!,
+  );
+  await waitFor(() =>
+    expect(fake.snapshots.get("work-1")?.job.id).toBe("question-1"),
+  );
+  await waitFor(() => expect(fake.streams.size).toBe(1));
+  expect(screen.queryByText("正在渲染预览…") !== null).toBe(false);
+  expect(screen.getByTitle("Remotion 字效播放器")).toBe(iframe);
+  expect(iframe.src).toBe(src);
+  expect(post.mock.calls).toHaveLength(0);
+  fireEvent.change(screen.getByRole("textbox", { name: "字效描述" }), {
+    target: { value: "把字号改大" },
+  });
+  await act(async () =>
+    fake.advance({
+      ...remotionJob("answered"),
+      id: "question-1",
+      message: "当前字号是 64px。",
+    }),
+  );
+  await screen.findByText("当前字号是 64px。");
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: "发送" }).hasAttribute("disabled"),
+    ).toBe(false),
+  );
+  expect(screen.getByLabelText("字号").hasAttribute("disabled")).toBe(false);
+  expect(iframe.src).toBe(src);
+  expect(
+    screen.getByRole("button", { name: "复制代码" }).hasAttribute("disabled"),
+  ).toBe(false);
+  view.unmount();
+  render(<RemotionWorkspace />);
+  await screen.findByText("当前字号是 64px。");
+  await previewReady();
+  fireEvent.change(screen.getByRole("textbox", { name: "字效描述" }), {
+    target: { value: "把字号改大" },
+  });
+  expect(
+    screen.getByRole("button", { name: "发送" }).hasAttribute("disabled"),
+  ).toBe(false);
+  expect(
+    screen.getByTitle<HTMLIFrameElement>("Remotion 字效播放器").src,
+  ).toContain("version-1");
+});
+
+// 首轮问答没有成功版本也能结束并继续发送，不永久等待一个不存在的播放器。
+test("首次问答结束后可继续生成", async () => {
+  const fake = server((path) =>
+    path === "/works"
+      ? Response.json({ work: { id: "work-1" }, job: remotionJob("running") })
+      : path.endsWith("/messages")
+        ? Response.json({ ...remotionJob(), id: "generation-1" })
+        : undefined,
+  );
+  render(<RemotionWorkspace />);
+  fireEvent.change(screen.getByRole("textbox", { name: "字效描述" }), {
+    target: { value: "你能做什么？" },
+  });
+  fireEvent.submit(
+    screen.getByRole("button", { name: "发送" }).closest("form")!,
+  );
+  await waitFor(() => expect(fake.streams.size).toBe(1));
+  await act(async () =>
+    fake.advance({ ...remotionJob("answered"), message: "可以制作字效。" }),
+  );
+  await screen.findByText("可以制作字效。");
+  expect(screen.queryByTitle("Remotion 字效播放器")).toBeNull();
+  expect(screen.queryByText("正在渲染预览…") !== null).toBe(false);
+  expect(
+    screen.getByRole("button", { name: "复制代码" }).hasAttribute("disabled"),
+  ).toBe(true);
+  fireEvent.change(screen.getByRole("textbox", { name: "字效描述" }), {
+    target: { value: "制作一个标题" },
+  });
+  expect(
+    screen.getByRole("button", { name: "发送" }).hasAttribute("disabled"),
+  ).toBe(false);
+  fireEvent.submit(
+    screen.getByRole("button", { name: "发送" }).closest("form")!,
+  );
+  await screen.findByTitle("Remotion 字效播放器");
+  await previewReady();
+  expect(
+    screen.getByRole("button", { name: "复制代码" }).hasAttribute("disabled"),
+  ).toBe(false);
+});
+
 /** 从输入表单发起首次生成，并等待成功版本的代码进入浮板。 */
 async function generate(ready = true) {
   fireEvent.change(screen.getByRole("textbox", { name: "字效描述" }), {
@@ -58,6 +162,7 @@ async function generate(ready = true) {
 /** 模拟隔离播放器首帧确认；Happy DOM 不加载真实 iframe。 */
 async function previewReady() {
   const iframe = screen.getByTitle<HTMLIFrameElement>("Remotion 字效播放器");
+  await waitFor(() => expect(iframe.src.includes("#")).toBe(true));
   const channel = new URL(iframe.src).hash.slice(1);
   const post = spyOn(iframe.contentWindow!, "postMessage");
   await act(async () => {

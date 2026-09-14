@@ -121,6 +121,7 @@ export function RemotionWorkspace() {
             key={`chat-${session.key}`}
             messages={session.messages}
             job={session.job}
+            jobs={session.jobs}
             hasOlder={!!session.nextBefore}
             olderLoading={session.olderLoading}
             onOlder={() => void session.older()}

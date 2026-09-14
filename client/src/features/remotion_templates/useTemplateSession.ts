@@ -18,6 +18,7 @@ interface Session {
   workId: string | null;
   messages: ChatMessage[];
   job: Job | SessionJob | null;
+  jobs: Record<string, SessionJob>;
   version: Version | null;
   values: Values;
   code: string;
@@ -36,6 +37,7 @@ function blank(key: number): Session {
     workId: null,
     messages: [],
     job: null,
+    jobs: {},
     version: null,
     values: {},
     code: "",
@@ -125,6 +127,9 @@ export function useTemplateSession(onHistoryChange: () => void) {
     const failed = ["failed", "interrupted", "cancelled"].includes(job.status);
     publish({
       job,
+      ...("created_at" in job
+        ? { jobs: { ...latest.current.jobs, [job.id]: job } }
+        : {}),
       busy:
         active || waitingVersion
           ? "parameters" in job && job.parameters
@@ -155,7 +160,13 @@ export function useTemplateSession(onHistoryChange: () => void) {
   async function hydrate(work: string, key: number, signal: AbortSignal) {
     const snapshot = await api.session(work, signal);
     if (!current(key, signal)) return snapshot.cursor;
-    publish({ messages: snapshot.messages, nextBefore: snapshot.next_before });
+    publish({
+      messages: snapshot.messages,
+      nextBefore: snapshot.next_before,
+      jobs: Object.fromEntries(
+        (snapshot.jobs ?? []).map((job) => [job.id, job]),
+      ),
+    });
     if (snapshot.work.current_version_id)
       await accept(snapshot.work.current_version_id, key, signal);
     if (current(key, signal)) applyJob(snapshot.job);
@@ -361,6 +372,12 @@ export function useTemplateSession(onHistoryChange: () => void) {
       if (current(s.key, signal))
         publish({
           messages: mergeMessages(page.messages, latest.current.messages),
+          jobs: {
+            ...Object.fromEntries(
+              (page.jobs ?? []).map((job) => [job.id, job]),
+            ),
+            ...latest.current.jobs,
+          },
           nextBefore: page.next_before,
         });
     } catch {

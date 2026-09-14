@@ -43,6 +43,7 @@ export interface Job {
     | "queued"
     | "running"
     | "succeeded"
+    | "answered"
     | "needs_input"
     | "failed"
     | "cancelled"
@@ -184,6 +185,26 @@ export interface SessionJob extends Job {
   created_at: string;
   updated_at: string;
   parameters: Values | null;
+  progress?: ProgressStep[];
+}
+/** 宿主公开的阶段摘要；只含白名单阶段与时间，不含候选代码或内部评审。 */
+export interface ProgressStep {
+  phase:
+    | "understanding"
+    | "target_review"
+    | "answering"
+    | "generating"
+    | "rendering"
+    | "reviewing"
+    | "sampling"
+    | "adjusting"
+    | "adjusting_layout"
+    | "adjusting_style"
+    | "adjusting_text"
+    | "preparing";
+  started_at: string;
+  ended_at: string | null;
+  status: "active" | "done" | "stopped";
 }
 /** 历史列表只加载标题、活动时间和当前任务，不加载代码。 */
 export interface WorkSummary {
@@ -205,6 +226,7 @@ export interface SessionSnapshot {
   messages: ChatMessage[];
   next_before: number | null;
   cursor: number;
+  jobs?: SessionJob[];
 }
 /** 事件载荷按公开类型区分；内部候选、steer 与工具轨迹不进入客户端。 */
 export type WorkEvent = { id: number; work_id: string; created_at: string } & (
@@ -217,8 +239,9 @@ export type WorkEvent = { id: number; work_id: string; created_at: string } & (
 export function jobLabel(status: Job["status"]): string {
   return {
     queued: "排队中",
-    running: "制作中",
+    running: "正在处理",
     succeeded: "已完成",
+    answered: "已回答",
     needs_input: "等待补充",
     failed: "待重试",
     cancelled: "已停止",
