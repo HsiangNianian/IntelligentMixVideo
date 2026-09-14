@@ -10,12 +10,13 @@ from fastapi import (
     APIRouter,
     Depends,
     File,
+    Header,
     HTTPException,
     Query,
     Request,
     UploadFile,
 )
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 
 from .evidence import digest, verify_artifacts
 from .history import SessionSnapshot, WorkPage
@@ -31,6 +32,7 @@ from .models import (
 )
 from .runtime import Runtime
 from .store import NotFound
+from .stream import event_stream
 
 # 按接口职责设置标签，供模板服务的 Swagger 分组展示。
 router = APIRouter()
@@ -402,7 +404,7 @@ def asset_image(asset_id: UUID, service: Service) -> Response:
 def session(
     work_id: UUID,
     service: Service,
-    before: Annotated[int | None, Query(ge=1)] = None,
+    before: Annotated[int | None, Query(ge=1, le=9223372036854775807)] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> SessionSnapshot:
     """在一致的数据快照中读取公开消息、最新任务、成功版本指针和 SSE 游标。
@@ -411,3 +413,36 @@ def session(
     订阅事件，避免读取历史和建立连接之间漏掉更新；旧消息的 `reconstructed` 表示事实恢复。
     """
     return service.store.session(work_id, before, limit)
+
+
+@router.get(
+    "/works/{work_id}/stream",
+    tags=["聊天会话"],
+    summary="订阅聊天事件",
+    response_class=StreamingResponse,
+    responses={200: {"content": {"text/event-stream": {"schema": {"type": "string"}}}}},
+)
+def stream(
+    work_id: UUID,
+    service: Service,
+    after: Annotated[int, Query(ge=0)] = 0,
+    last_event_id: Annotated[str | None, Header(max_length=32)] = None,
+) -> StreamingResponse:
+    """通过 SSE 推送公开消息、任务状态和成功版本指针，连接关闭不会停止任务。
+
+    新连接使用 `after`；重连优先使用 `Last-Event-ID`，仅重放该编号之后的事件。
+    每条事件具有稳定 ID，客户端按 ID 去重；空闲时每 15 秒发送心跳注释。
+    无效或不属于此会话的游标返回 409，客户端应重新读取会话快照。
+    """
+    if last_event_id is not None:
+        if not last_event_id.isascii() or not last_event_id.isdecimal():
+            raise HTTPException(422, "Invalid Last-Event-ID.")
+        after = int(last_event_id)
+    if after > 9223372036854775807:
+        raise HTTPException(422, "Event cursor is out of range.")
+    service.store.validate_cursor(work_id, after)
+    return StreamingResponse(
+        event_stream(service.store, work_id, after),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

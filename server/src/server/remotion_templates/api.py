@@ -34,7 +34,7 @@ def create_template_app(
             },
             {
                 "name": "聊天会话",
-                "description": "恢复作品的公开聊天历史。",
+                "description": "恢复公开聊天历史并通过 SSE 订阅会话更新。",
             },
             {"name": "生成产物", "description": "查看并下载已验收的代码和预览。"},
         ],

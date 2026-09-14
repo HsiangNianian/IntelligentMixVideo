@@ -244,3 +244,166 @@ def test_history_images_remain_readable_and_integrity_checked(
         assert client.get(f"/assets/{asset_id}").status_code == 404
         assert client.get(f"/assets/{uuid4()}").status_code == 404
         assert client.get("/assets/not-a-uuid").status_code == 422
+
+
+def test_sse_replays_all_pages_and_cleans_idle_wait(history_store):
+    """Replay more than 100 committed events, preserve work isolation and cancel idle waits without cancelling work."""
+    import asyncio
+
+    from server.remotion_templates.stream import event_stream
+
+    store = history_store
+    work, job = store.create(GenerateTemplateRequest(description="长历史"))
+    for _ in range(40):
+        store.update(job.id, status="cancelled")
+        job = store.enqueue(work.id, JobInput(), None)
+    foreign, _ = store.create(GenerateTemplateRequest(description="其他会话"))
+    expected = store.session(work.id).cursor
+
+    async def scenario():
+        """Bound all generator reads; a stream never owns the queued job lifecycle."""
+        stream = event_stream(store, work.id, 0)
+        assert "connected" in await anext(stream)
+        identifiers = []
+        async with asyncio.timeout(3):
+            while not identifiers or identifiers[-1] != expected:
+                frame = await anext(stream)
+                data = json.loads(frame.split("data: ", 1)[1])
+                assert data["work_id"] == str(work.id)
+                assert str(foreign.id) not in frame
+                identifiers.append(data["id"])
+        assert len(identifiers) > 100
+        assert identifiers == sorted(set(identifiers))
+        wait = asyncio.create_task(anext(stream))
+        await asyncio.sleep(0.02)
+        wait.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await wait
+        await stream.aclose()
+        assert store.job(job.id).status == "queued"
+
+    asyncio.run(scenario())
+
+
+def test_sse_heartbeat_without_public_activity(history_store, monkeypatch):
+    """Idle connections send comments rather than fake message events or unbounded busy loops."""
+    import asyncio
+
+    from server.remotion_templates import stream as streaming
+
+    work, _ = history_store.create(GenerateTemplateRequest(description="心跳"))
+    ticks = iter([0.0, 16.0, 16.0])
+    monkeypatch.setattr(streaming, "monotonic", lambda: next(ticks))
+
+    async def scenario():
+        """Consume only the welcome and first heartbeat and close immediately."""
+        stream = streaming.event_stream(
+            history_store, work.id, history_store.session(work.id).cursor
+        )
+        await anext(stream)
+        assert await asyncio.wait_for(anext(stream), 1) == ": heartbeat\n\n"
+        await stream.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_sse_rejects_invalid_cursors_before_streaming(history_app, history_store):
+    """Invalid, foreign and unavailable cursors return ordinary HTTP errors before SSE headers are sent."""
+    work, _ = history_store.create(GenerateTemplateRequest(description="游标"))
+    other, _ = history_store.create(GenerateTemplateRequest(description="其他"))
+    with TestClient(history_app) as client:
+        path = f"/works/{work.id}/stream"
+        assert client.get(path + "?after=-1").status_code == 422
+        assert client.get(path + "?after=999999999").status_code == 409
+        assert client.get(path + "?after=" + "9" * 50).status_code == 422
+        assert client.get(path, headers={"Last-Event-ID": "invalid"}).status_code == 422
+        assert client.get(path, headers={"Last-Event-ID": "-1"}).status_code == 422
+        assert (
+            client.get(
+                path,
+                headers={"Last-Event-ID": str(history_store.session(other.id).cursor)},
+            ).status_code
+            == 409
+        )
+        assert client.get(f"/works/{uuid4()}/stream").status_code == 404
+
+
+def test_sse_http_reconnect_and_followup_job(history_app, history_store):
+    """A real HTTP client receives frames promptly, resumes from Last-Event-ID and sees another job on the same connection."""
+    import socket
+    import threading
+    import time
+
+    import httpx
+    import uvicorn
+
+    work, job = history_store.create(GenerateTemplateRequest(description="真实 HTTP"))
+    cursor = history_store.session(work.id).cursor
+    socket_ = socket.socket()
+    socket_.bind(("127.0.0.1", 0))
+    port = socket_.getsockname()[1]
+    server = uvicorn.Server(
+        uvicorn.Config(history_app, log_level="error", lifespan="off")
+    )
+    thread = threading.Thread(
+        target=server.run, kwargs={"sockets": [socket_]}, daemon=True
+    )
+    thread.start()
+    deadline = time.monotonic() + 5
+    try:
+        while not server.started and thread.is_alive() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert server.started
+        url = f"http://127.0.0.1:{port}/works/{work.id}/stream"
+        with httpx.stream("GET", url, params={"after": cursor}, timeout=3) as response:
+            assert response.status_code == 200
+            assert response.headers["content-type"].startswith("text/event-stream")
+            assert response.headers["x-accel-buffering"] == "no"
+            lines = response.iter_lines()
+            assert next(lines) == "retry: 2000"
+            history_store.claim()
+            data = next(line[6:] for line in lines if line.startswith("data: "))
+            event = json.loads(data)
+            assert event["type"] == "job.updated"
+            assert event["data"]["status"] == "running"
+            cursor = event["id"]
+        assert history_store.job(job.id).status == "running"
+        history_store.update(job.id, status="cancelled")
+        with httpx.stream(
+            "GET",
+            url,
+            params={"after": 0},
+            headers={"Last-Event-ID": str(cursor)},
+            timeout=3,
+        ) as response:
+            lines = response.iter_lines()
+            events = [json.loads(line[6:]) for line in _data_lines(lines, 2)]
+            assert all(event["id"] > cursor for event in events)
+            assert [event["type"] for event in events] == [
+                "job.updated",
+                "message.created",
+            ]
+            followup = history_store.enqueue(
+                work.id, JobInput(mode="edit", instruction="继续"), None
+            )
+            events = [json.loads(line[6:]) for line in _data_lines(lines, 2)]
+            assert events[0]["data"]["text"] == "继续"
+            assert events[1]["data"]["id"] == str(followup.id)
+        assert history_store.job(followup.id).status == "queued"
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+        socket_.close()
+        assert not thread.is_alive()
+
+
+def _data_lines(lines, count):
+    """Take a fixed number of SSE data lines; the HTTP read timeout bounds absence of progress."""
+    found = 0
+    for line in lines:
+        if line.startswith("data: "):
+            yield line
+            found += 1
+            if found == count:
+                return
+    raise AssertionError("SSE connection closed before the expected events")
