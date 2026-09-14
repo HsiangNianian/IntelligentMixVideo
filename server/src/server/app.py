@@ -37,7 +37,11 @@ app.add_middleware(
         "http://localhost:1420", "http://localhost:4173",
         "tauri://localhost", "http://tauri.localhost",
     ],
-    allow_origin_regex=r"^http://localhost:[0-9]+$",
+    # 动态来源仅接受系统可分配的十进制端口 1～65535。
+    allow_origin_regex=(
+        r"^http://localhost:(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|"
+        r"6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$"
+    ),
     allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type"],
 )
 app.include_router(router)
