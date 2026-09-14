@@ -17,6 +17,28 @@ import { remotionJob, remotionVersion } from "./remotion-fixtures";
 
 import { remotionServer as server } from "./remotion-server";
 
+// 首次消息请求尚未返回、没有播放器时，只锁定操作，不显示预览渲染遮罩。
+test("消息等待不冒充预览渲染", async () => {
+  server((path) =>
+    path === "/works" ? new Promise<Response>(() => {}) : undefined,
+  );
+  await act(async () => {
+    render(<RemotionWorkspace />);
+  });
+  fireEvent.change(screen.getByRole("textbox", { name: "字效描述" }), {
+    target: { value: "你能做什么？" },
+  });
+  fireEvent.submit(
+    screen.getByRole("button", { name: "发送" }).closest("form")!,
+  );
+  expect(screen.queryByTitle("Remotion 字效播放器")).toBeNull();
+  expect(screen.queryByText("正在渲染预览…") !== null).toBe(false);
+  expect(screen.getByText("正在处理…")).toBeTruthy();
+  expect(
+    screen.getByRole("button", { name: "发送" }).hasAttribute("disabled"),
+  ).toBe(true);
+});
+
 /** 从输入表单发起首次生成，并等待成功版本的代码进入浮板。 */
 async function generate(ready = true) {
   fireEvent.change(screen.getByRole("textbox", { name: "字效描述" }), {

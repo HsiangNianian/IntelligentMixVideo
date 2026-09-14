@@ -172,7 +172,7 @@ export function PreviewPanel({
             </p>
           </div>
         )}
-        {(pending || rendering) && !error && (
+        {rendering && !error && (
           <div
             role="status"
             className="absolute inset-0 flex items-center justify-center bg-muted text-sm text-muted-foreground"

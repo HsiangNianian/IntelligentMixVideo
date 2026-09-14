@@ -164,7 +164,7 @@ export function ChatPanel({
         {busy && (
           <p className="flex items-center gap-2 text-xs text-muted-foreground">
             <span className="size-2 animate-pulse rounded-full bg-primary" />
-            正在制作模板…
+            正在处理…
           </p>
         )}
         <div ref={end} />
