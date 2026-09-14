@@ -31,7 +31,9 @@ done
 # 生成有限长度的测试媒体再解码，无网络、音频设备或显示服务器依赖。
 timeout 30 gst-launch-1.0 -q videotestsrc num-buffers=3 \
   ! video/x-raw,format=I420,width=64,height=64,framerate=10/1 \
-  ! openh264enc ! h264parse ! avdec_h264 ! fakesink
+  ! openh264enc ! h264parse ! avdec_h264 ! filesink location="$scratch/video.raw"
+test "$(wc -c < "$scratch/video.raw")" -eq $((3 * 64 * 64 * 3 / 2))
 timeout 30 gst-launch-1.0 -q audiotestsrc num-buffers=4 \
-  ! audioconvert ! avenc_aac ! avdec_aac ! fakesink
+  ! audioconvert ! avenc_aac ! avdec_aac ! filesink location="$scratch/audio.raw"
+test -s "$scratch/audio.raw"
 echo "AppImage bundled H.264/AAC decoding and WebVTT checks passed"
