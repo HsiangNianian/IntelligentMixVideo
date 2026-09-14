@@ -2,7 +2,10 @@
 
 import base64
 import json
-from dataclasses import dataclass
+from collections.abc import Callable
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
 from typing import TypeVar
@@ -36,12 +39,97 @@ class ModelContractFailure(ModelFailure):
     """A recoverable model protocol error; the harness may steer another turn within the same budget."""
 
 
+class ExecutionFailure(ModelFailure):
+    """A domain recovery boundary stopped execution with a specific, public-safe reason."""
+
+    def __init__(self, code: str, message: str):
+        """Keep recovery classification separate from provider transport errors."""
+        super().__init__(message)
+        self.code = code
+
+
 @dataclass
 class Budget:
     """One run shares accounting across analysis, actor generation, repairs and visual review."""
 
     calls: int = 0
     tokens: int = 0
+    phases: dict[str, dict[str, int]] = field(default_factory=dict)
+    audit_path: Path | None = None
+    on_progress: Callable[[str], None] | None = None
+    active_phase: str | None = None
+    _start: tuple[int, int] = (0, 0)
+
+    def progress(self, phase: str) -> None:
+        """Send host-selected phase codes to this run's persistence boundary, never model prose."""
+        if self.on_progress is not None:
+            self.on_progress(phase)
+
+    def record(self, event: str, **data) -> None:
+        """Append private execution facts independently of the bounded model conversation."""
+        if self.audit_path is not None:
+            self.audit_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.audit_path.open("a", encoding="utf-8") as stream:
+                stream.write(
+                    json.dumps(
+                        {"time": datetime.now(UTC).isoformat(), "event": event, **data},
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+
+    def summary(self) -> dict[str, int]:
+        """Expose flat integer counters compatible with the stored job usage contract."""
+        result = {"calls": self.calls, "tokens": self.tokens}
+        for name, usage in self.phases.items():
+            result.update({f"{name}_{key}": value for key, value in usage.items()})
+        return result
+
+    @contextmanager
+    def phase(self, name: str):
+        """Account one model invocation, including malformed outputs, failures and cancellation."""
+        if self.active_phase is not None:
+            raise RuntimeError("Model accounting phases cannot overlap")
+        self.active_phase, self._start = name, (self.calls, self.tokens)
+        outcome = "returned"
+        try:
+            yield
+        except BaseException as exc:
+            outcome = type(exc).__name__
+            raise
+        finally:
+            usage = self.phases.setdefault(name, {"calls": 0, "tokens": 0})
+            calls, tokens = self.calls - self._start[0], self.tokens - self._start[1]
+            usage["calls"] += calls
+            usage["tokens"] += tokens
+            self.active_phase = None
+            self.record(
+                "model_call",
+                phase=name,
+                calls=calls,
+                tokens=tokens,
+                outcome=outcome,
+                usage=self.summary(),
+            )
+
+    def remaining(self, settings: Settings) -> int:
+        """Check global and role limits before dispatch and while accounting the in-flight reply."""
+        if self.calls >= settings.max_model_calls or self.tokens >= settings.max_tokens:
+            raise ModelFailure("Model call or token budget exhausted.")
+        remaining = settings.max_tokens - self.tokens
+        if self.active_phase:
+            name = self.active_phase
+            usage = self.phases.get(name, {"calls": 0, "tokens": 0})
+            calls = usage["calls"] + self.calls - self._start[0]
+            tokens = usage["tokens"] + self.tokens - self._start[1]
+            if calls >= getattr(settings, f"max_{name}_calls") or tokens >= getattr(
+                settings, f"max_{name}_tokens"
+            ):
+                raise ExecutionFailure(
+                    "phase_budget_exhausted", f"{name} model budget exhausted."
+                )
+            remaining = min(remaining, getattr(settings, f"max_{name}_tokens") - tokens)
+        return remaining
 
 
 class Provider:
@@ -117,7 +205,13 @@ class Provider:
         return result
 
     async def turn(
-        self, system: str, context: Conversation, tools: list[dict], budget: Budget
+        self,
+        system: str,
+        context: Conversation,
+        tools: list[dict],
+        budget: Budget,
+        *,
+        images: list[Path] | None = None,
     ) -> AssistantMessage:
         """Request real function calls with bounded recent conversation; never accept model tool results."""
         body = {
@@ -129,6 +223,32 @@ class Provider:
             raise ModelFailure(
                 "Actor task snapshot and window exceed the context budget."
             )
+        if images:
+            content = [
+                {
+                    "type": "text",
+                    "text": "Images follow the host snapshot mapping: original user references first, then current candidate frames. Candidate frames are observations, not new user requirements. Interpret typography only, not application chrome or scenery.",
+                }
+            ]
+            size = 0
+            for path in images:
+                data = model_image(path)
+                size += len(data)
+                if size > 24 * 1024 * 1024:
+                    raise ModelFailure(
+                        "Reference images exceed the bounded model request size."
+                    )
+                content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/png;base64,"
+                            + base64.b64encode(data).decode(),
+                            "detail": "high",
+                        },
+                    }
+                )
+            body["messages"].append({"role": "user", "content": content})
         message = await self._request(body, budget, tools=True)
         try:
             # DeepSeek includes a streaming-style index even in non-streaming tool responses.
@@ -156,11 +276,7 @@ class Provider:
     ) -> dict:
         """Share transport limits and token accounting across structured review and actor turns."""
         settings = self.settings
-        if (
-            budget.calls >= settings.max_model_calls
-            or budget.tokens >= settings.max_tokens
-        ):
-            raise ModelFailure("Model call or token budget exhausted.")
+        remaining = budget.remaining(settings)
         base = (
             (settings.vision_base_url or settings.actor_base_url)
             if vision
@@ -179,7 +295,7 @@ class Provider:
         body = dict(
             body,
             model=model,
-            max_tokens=min(16000, settings.max_tokens - budget.tokens),
+            max_tokens=min(settings.max_output_tokens, remaining),
         )
         if len(json.dumps(body, ensure_ascii=False).encode()) > 36_000_000:
             raise ModelFailure("Model request exceeds the context size limit.")
@@ -218,6 +334,18 @@ class Provider:
             budget.tokens += usage
             if budget.tokens > settings.max_tokens:
                 raise ModelFailure("Model token budget exhausted.")
+            if budget.active_phase:
+                name = budget.active_phase
+                used = (
+                    budget.phases.get(name, {"tokens": 0})["tokens"]
+                    + budget.tokens
+                    - budget._start[1]
+                )
+                if used > getattr(settings, f"max_{name}_tokens"):
+                    raise ExecutionFailure(
+                        "phase_budget_exhausted",
+                        f"{name} model token budget exhausted.",
+                    )
             choice = payload["choices"][0]
             if choice.get("finish_reason") not in (
                 {"stop", "tool_calls"} if tools else {"stop"}

@@ -43,6 +43,26 @@ uv run --locked server
 `IMV_VISION_BASE_URL`、`IMV_VISION_API_KEY` 省略时继承 Actor 配置。
 使用兼容 Chat Completions 的 function tools、JSON 输出与图片输入；`deepseek-flash` 可同时承担两种角色。
 Provider 不打印密钥或原始错误响应。部署时可通过环境变量提供配置。
+模型预算统一在 `server/.env` 配置，示例文件和代码默认值一致；修改后重启服务生效。
+
+| 配置 | 默认值 | 含义 |
+| --- | --- | --- |
+| `IMV_MAX_OUTPUT_TOKENS` | 32000 | 单次输出上限，实际取此值、任务剩余预算与当前角色剩余预算的最小值 |
+| `IMV_MAX_TOKENS` | 200000 | 单任务所有模型调用累计的输入、输出 token 预算 |
+| `IMV_MAX_MODEL_CALLS` | 32 | 单任务理解、审查、生成、修复共用的调用次数上限 |
+| `IMV_MAX_JUDGE_CALLS` / `IMV_MAX_JUDGE_TOKENS` | 12 / 60000 | 回答与视觉结果审查的分类上限，包含评审纠错 |
+| `IMV_MAX_ACTOR_CALLS` / `IMV_MAX_ACTOR_TOKENS` | 24 / 160000 | 理解需求、制定方案、工具选择与 TSX 生成/修复共用的分类上限 |
+| `IMV_MAX_REVIEW_RETRIES` | 2 | 每份回答或候选证据的无效评审最多纠错两次，共三次请求 |
+| `IMV_MAX_EVIDENCE_RETRIES` | 1 | 单个候选最多追加一次隔离采样，之后仍未知则停止 |
+| `IMV_MAX_NO_PROGRESS_TURNS` | 4 | Actor 连续四轮没有新观察时停止；修改估算值、普通文字和重复失败不算完成证据 |
+| `IMV_MODEL_TIMEOUT_SECONDS` | 240 | 模型 HTTP 连接、读写等超时秒数，不是整次请求的总计时 |
+| `IMV_JOB_TIMEOUT_SECONDS` | 600 | 单任务开始执行后的总超时秒数，不包含排队 |
+| `IMV_RENDER_TIMEOUT_SECONDS` | 180 | 单次隔离渲染超时秒数 |
+
+输出截断、无有效 token 用量和预算耗尽仍会结束本次执行，不自动续写或估算用量。
+分类预算同时受总预算约束，不相加扩充总额；格式错误、评审纠错和取消前已发出的调用也计数。
+token 按供应方有效用量记账；缺失用量时保留实际调用次数并停止，不伪造 token 数。
+
 `IMV_DATA_DIR` 可指定可写的绝对路径；默认直接保存到模板模块内的
 `src/server/remotion_templates/.data/`，包含 SQLite、上传图片、代码和预览，已被 Git 与构建产物排除。
 相对路径也以模板模块目录为基准。默认仅监听本机，MVP 没有多租户或鉴权系统。

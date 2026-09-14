@@ -204,6 +204,28 @@ class TemplateSpec(Contract):
         return self
 
 
+class DialogueOutput(Contract):
+    """A user-facing answer or necessary clarification, separate from generated candidates."""
+
+    answer: Text | None = None
+    questions: list[Text] = Field(default_factory=list, max_length=5)
+
+    @model_validator(mode="after")
+    def one_outcome(self) -> Self:
+        """Require exactly one reply kind; a reply cannot claim to contain a candidate."""
+        if (self.answer is not None) == bool(self.questions):
+            raise ValueError("choose answer or nonempty questions")
+        return self
+
+
+class AnswerReview(Contract):
+    """Independent assessment of a proposed answer against user input and accepted facts."""
+
+    status: Literal["pass", "fail", "unknown"]
+    detail: str = Field(min_length=1, max_length=3000)
+
+
+
 class AnalysisResult(Contract):
     """Either an actionable template specification or concrete questions for the user."""
 

@@ -7,10 +7,10 @@ from uuid import uuid4
 import httpx
 import pytest
 from pydantic import SecretStr
-from server.settings import Settings
 from server.remotion_templates.context import AssistantMessage, Conversation
-from server.remotion_templates.models import AnalysisResult
+from server.remotion_templates.models import DialogueOutput
 from server.remotion_templates.provider import Budget, Provider
+from server.settings import Settings
 
 
 def exchange(identifier, content="checked"):
@@ -171,9 +171,9 @@ def test_structured_planning_reuses_window_but_reviewer_does_not():
 
     provider = Provider(settings, transport=httpx.MockTransport(respond))
     asyncio.run(
-        provider.ask(AnalysisResult, "plan", "title", Budget(), context=context)
+        provider.ask(DialogueOutput, "plan", "title", Budget(), context=context)
     )
-    asyncio.run(provider.ask(AnalysisResult, "independent", "inspect", Budget()))
+    asyncio.run(provider.ask(DialogueOutput, "independent", "inspect", Budget()))
     assert any(message["role"] == "tool" for message in bodies[0]["messages"])
     assert len(bodies[1]["messages"]) == 2
     assert context.messages()[-2] == {"role": "user", "content": "title"}
@@ -185,3 +185,47 @@ def test_duplicate_calls_never_execute():
     call = exchange(str(uuid4()))[0]["tool_calls"][0]
     with pytest.raises(ValueError):
         AssistantMessage(tool_calls=[call, call])
+
+
+def test_actor_receives_reference_images_outside_persistent_window(
+    monkeypatch, tmp_path
+):
+    """Actor 可直接读取超过文本窗口大小的参考图，但图片不写入持久窗口，文本上限仍单独生效。"""
+    from server.remotion_templates import provider as provider_module
+
+    monkeypatch.setattr(provider_module, "model_image", lambda path: b"image" * 110_000)
+    settings = Settings(
+        _env_file=None, actor_model="offline", actor_api_key=SecretStr("fixture")
+    )
+    context = Conversation([exchange("previous")])
+    original = context.serialize()
+
+    def respond(request):
+        """检查真实 HTTP 消息，返回工具调用，不连接外部模型。"""
+        body = json.loads(request.content)
+        assert body["messages"][-2]["tool_call_id"] == "previous"
+        assert body["messages"][-1]["content"][1]["image_url"]["url"].startswith(
+            "data:image/png;base64,"
+        )
+        return httpx.Response(
+            200,
+            json={
+                "usage": {"total_tokens": 10},
+                "choices": [
+                    {"finish_reason": "tool_calls", "message": exchange("new")[0]}
+                ],
+            },
+        )
+
+    provider = Provider(settings, transport=httpx.MockTransport(respond))
+    result = asyncio.run(
+        provider.turn(
+            "host",
+            context,
+            [{"type": "function"}],
+            Budget(),
+            images=[tmp_path / "reference.png"],
+        )
+    )
+    assert result.tool_calls[0].id == "new"
+    assert context.serialize() == original and "image_url" not in original

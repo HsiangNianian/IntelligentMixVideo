@@ -21,11 +21,19 @@ class Settings(BaseSettings):
     vision_model: str = ""
     vision_api_key: SecretStr | None = None
     disable_thinking: bool = False
-    model_timeout_seconds: int = Field(default=120, ge=1, le=600)
+    model_timeout_seconds: int = Field(default=240, ge=1, le=600)
     job_timeout_seconds: int = Field(default=600, ge=1, le=3600)
     render_timeout_seconds: int = Field(default=180, ge=1, le=600)
-    max_model_calls: int = Field(default=16, ge=1, le=50)
-    max_tokens: int = Field(default=100_000, ge=1000, le=1_000_000)
+    max_model_calls: int = Field(default=32, ge=1, le=50)
+    max_tokens: int = Field(default=200_000, ge=1000, le=1_000_000)
+    max_output_tokens: int = Field(default=32_000, ge=1, le=1_000_000)
+    max_review_retries: int = Field(default=2, ge=0, le=5)
+    max_evidence_retries: int = Field(default=1, ge=0, le=3)
+    max_no_progress_turns: int = Field(default=4, ge=2, le=20)
+    max_judge_calls: int = Field(default=12, ge=1, le=50)
+    max_judge_tokens: int = Field(default=60_000, ge=1000, le=1_000_000)
+    max_actor_calls: int = Field(default=24, ge=1, le=50)
+    max_actor_tokens: int = Field(default=160_000, ge=1000, le=1_000_000)
     max_upload_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
     max_image_pixels: int = Field(default=20_000_000, gt=0)
     renderer_dir: Path = Path(__file__).parent / "remotion"
@@ -49,5 +57,7 @@ def load_settings() -> Settings:
     root = Path(__file__).resolve().parents[2]
     settings = Settings(_env_file=root / ".env")
     if not settings.data_dir.is_absolute():
-        settings.data_dir = Path(__file__).parent / "remotion_templates" / settings.data_dir
+        settings.data_dir = (
+            Path(__file__).parent / "remotion_templates" / settings.data_dir
+        )
     return settings

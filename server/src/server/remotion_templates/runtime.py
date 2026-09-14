@@ -220,7 +220,7 @@ class Runtime:
                         status="needs_input",
                         stage="finished",
                         questions=questions,
-                        usage=vars(budget),
+                        usage=budget.summary(),
                     )
                     return
                 if spec is None:
@@ -231,7 +231,7 @@ class Runtime:
                 def stage(name: str, attempt: int) -> None:
                     """Record private stage progress and current budget at each decision boundary."""
                     self.store.update(
-                        job_id, stage=name, attempts=attempt, usage=vars(budget)
+                        job_id, stage=name, attempts=attempt, usage=budget.summary()
                     )
 
                 candidate, spec, report, attempt_dir = await self.harness.generate(
@@ -253,11 +253,11 @@ class Runtime:
                         "accepted_target": base.spec.model_dump() if base else None,
                     },
                 )
-                self.store.update(job_id, usage=vars(budget))
+                self.store.update(job_id, usage=budget.summary())
                 self.store.publish(job_id, candidate, spec, report, attempt_dir)
         except asyncio.CancelledError:
             self.store.update(
-                job_id, status="interrupted", stage="finished", usage=vars(budget)
+                job_id, status="interrupted", stage="finished", usage=budget.summary()
             )
             raise
         except (ModelFailure, TimeoutError, ValueError, Conflict) as exc:
@@ -265,7 +265,7 @@ class Runtime:
                 job_id,
                 status="failed",
                 stage="finished",
-                usage=vars(budget),
+                usage=budget.summary(),
                 error=JobError(
                     code="timeout"
                     if isinstance(exc, TimeoutError)
@@ -279,7 +279,7 @@ class Runtime:
                 job_id,
                 status="failed",
                 stage="finished",
-                usage=vars(budget),
+                usage=budget.summary(),
                 error=JobError(
                     code="internal_error",
                     message="Execution failed unexpectedly; inspect server diagnostics.",
