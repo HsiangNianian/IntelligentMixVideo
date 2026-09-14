@@ -324,8 +324,6 @@ class Harness:
                     "parameters": CodeOutput.model_json_schema(),
                 },
             },
-        ]
-        tools.append(
             {
                 "type": "function",
                 "function": {
@@ -333,8 +331,8 @@ class Harness:
                     "description": "Answer a factual/no-change question or ask necessary clarification. Never replace a requested edit with a completion claim.",
                     "parameters": DialogueOutput.model_json_schema(),
                 },
-            }
-        )
+            },
+        ]
         if preserve_code:
             # Existing successful code needs no actor rewrite; validation uses the same completion gate.
             attempt = 1
@@ -348,6 +346,14 @@ class Harness:
                 budget,
                 preserve_code=True,
                 intent=intent,
+            )
+            assessment = trajectory.observe(candidate, spec, report)
+            if assessment.completion_allowed:
+                self.renderer.verify_environment(report)
+                verify_artifacts(candidate, spec, report, attempt_dir)
+                return candidate, spec, report, attempt_dir
+            raise ModelFailure(
+                "Parameter edit did not pass acceptance; the previous result is unchanged."
             )
         while True:
             turn += 1
@@ -366,15 +372,6 @@ class Harness:
             if turn > 50:
                 raise ModelFailure(
                     "Agent turn budget exhausted without verified completion."
-                )
-            if preserve_code:
-                assessment = trajectory.observe(candidate, spec, report)
-                if assessment.completion_allowed:
-                    self.renderer.verify_environment(report)
-                    verify_artifacts(candidate, spec, report, attempt_dir)
-                    return candidate, spec, report, attempt_dir
-                raise ModelFailure(
-                    "Parameter edit did not pass acceptance; the previous result is unchanged."
                 )
             # References and existing rendered frames are ephemeral observations, never new user instructions.
             observed_frames = (
@@ -466,7 +463,7 @@ class Harness:
                 continue
             exchange = [actor.wire()]
             reply = None
-            read_fingerprint = None
+            read_current = False
             if not actor.tool_calls:
                 feedback = [
                     "A prose promise is not completion. No user input is pending in this run. "
@@ -486,7 +483,7 @@ class Harness:
                         result = {
                             "candidate": candidate.model_dump() if candidate else None
                         }
-                        read_fingerprint = report.fingerprint if report else "base"
+                        read_current = True
                     elif name == "submit_candidate":
                         code = CodeOutput.model_validate(args)
                         proposed = code.spec or spec
@@ -581,9 +578,7 @@ class Harness:
                 budget.progress("preparing")
                 self.renderer.verify_environment(report)
                 verify_artifacts(candidate, spec, report, attempt_dir)
-            advanced = progress.observe(
-                report, read_current=read_fingerprint is not None
-            )
+            advanced = progress.observe(report, read_current=read_current)
             budget.record(
                 "checkpoint",
                 turn=turn,

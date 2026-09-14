@@ -1,6 +1,7 @@
 """Offline sliding-window and provider protocol regressions: uv run --locked pytest tests/test_remotion_template_context.py."""
 
 import asyncio
+import base64
 import json
 from uuid import uuid4
 
@@ -8,8 +9,8 @@ import httpx
 import pytest
 from pydantic import SecretStr
 from server.remotion_templates.context import AssistantMessage, Conversation
-from server.remotion_templates.models import DialogueOutput
-from server.remotion_templates.provider import Budget, Provider
+from server.remotion_templates.models import AnswerReview
+from server.remotion_templates.provider import Budget, ModelFailure, Provider
 from server.settings import Settings
 
 
@@ -142,27 +143,32 @@ def test_provider_sends_real_tool_history_and_accounts_usage():
     assert context.messages()[-1]["tool_call_id"] == "previous"
 
 
-def test_structured_planning_reuses_window_but_reviewer_does_not():
-    """Planning appends recent user/assistant turns, while independent visual review has no actor history."""
+def test_structured_review_is_independent_of_actor_window():
+    """Actor 继续携带工具窗口，Judge 连续两次评审均只读取当前请求，不持久化评审到窗口。"""
     settings = Settings(
         _env_file=None, actor_model="offline", actor_api_key=SecretStr("fixture")
     )
     context = Conversation([exchange("prior")])
+    original = context.serialize()
     bodies = []
 
     def respond(request):
-        """Return a well-formed clarification using the typed provider API."""
-        bodies.append(json.loads(request.content))
+        """通过同一个离线 HTTP 传输分别返回工具响应和结构化评审。"""
+        body = json.loads(request.content)
+        bodies.append(body)
+        actor = "tools" in body
         return httpx.Response(
             200,
             json={
                 "usage": {"total_tokens": 5},
                 "choices": [
                     {
-                        "finish_reason": "stop",
-                        "message": {
+                        "finish_reason": "tool_calls" if actor else "stop",
+                        "message": exchange("next")[0]
+                        if actor
+                        else {
                             "role": "assistant",
-                            "content": '{"questions":["文字是什么？"]}',
+                            "content": '{"status":"pass","detail":"Matches the request."}',
                         },
                     }
                 ],
@@ -170,14 +176,97 @@ def test_structured_planning_reuses_window_but_reviewer_does_not():
         )
 
     provider = Provider(settings, transport=httpx.MockTransport(respond))
-    asyncio.run(
-        provider.ask(DialogueOutput, "plan", "title", Budget(), context=context)
-    )
-    asyncio.run(provider.ask(DialogueOutput, "independent", "inspect", Budget()))
+    asyncio.run(provider.turn("actor", context, [], Budget()))
+    for prompt in ("first review", "second review"):
+        result = asyncio.run(
+            provider.ask(AnswerReview, "independent", prompt, Budget())
+        )
+        assert result.status == "pass"
     assert any(message["role"] == "tool" for message in bodies[0]["messages"])
-    assert len(bodies[1]["messages"]) == 2
-    assert context.messages()[-2] == {"role": "user", "content": "title"}
-    assert context.messages()[-1]["role"] == "assistant"
+    assert all(len(body["messages"]) == 2 for body in bodies[1:])
+    assert bodies[2]["messages"][1]["content"] == [
+        {"type": "text", "text": "second review"}
+    ]
+    assert context.serialize() == original
+
+
+@pytest.mark.parametrize("actor", [True, False])
+@pytest.mark.parametrize(
+    "sizes",
+    [[], [3, 5], [12 * 1024 * 1024] * 2, [12 * 1024 * 1024, 12 * 1024 * 1024 + 1]],
+)
+def test_model_images_preserve_order_and_request_limits(
+    actor, sizes, monkeypatch, tmp_path
+):
+    """图片组装去重后，两类请求保留顺序、空图语义和累计 24 MiB 边界，超限不发 HTTP。"""
+    from server.remotion_templates import provider as provider_module
+
+    paths = [tmp_path / str(i) for i in range(len(sizes))]
+    data = {
+        path: bytes([index + 1]) * size
+        for index, (path, size) in enumerate(zip(paths, sizes))
+    }
+    monkeypatch.setattr(provider_module, "model_image", data.__getitem__)
+    settings = Settings(
+        _env_file=None, actor_model="offline", actor_api_key=SecretStr("fixture")
+    )
+    requests = []
+    context = Conversation([exchange("prior")])
+    original = context.serialize()
+    budget = Budget()
+
+    def respond(request):
+        """检查真正发出的模型 HTTP 载荷，不连接外部服务。"""
+        body = json.loads(request.content)
+        requests.append(True)
+        messages = body["messages"]
+        if not actor or paths:
+            content = messages[-1]["content"]
+            assert content[0]["type"] == "text"
+            images = content[1:]
+            assert len(images) == len(paths)
+            for item, path in zip(images, paths):
+                assert item["image_url"]["detail"] == "high"
+                assert (
+                    base64.b64decode(item["image_url"]["url"].split(",", 1)[1])
+                    == data[path]
+                )
+        else:
+            assert messages[-1]["tool_call_id"] == "prior"
+        return httpx.Response(
+            200,
+            json={
+                "usage": {"total_tokens": 5},
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls" if actor else "stop",
+                        "message": exchange("next")[0]
+                        if actor
+                        else {
+                            "role": "assistant",
+                            "content": '{"status":"pass","detail":"Verified."}',
+                        },
+                    }
+                ],
+            },
+        )
+
+    provider = Provider(settings, transport=httpx.MockTransport(respond))
+    call = (
+        provider.turn("actor", context, [], budget, images=paths)
+        if actor
+        else provider.ask(AnswerReview, "review", "inspect", budget, images=paths)
+    )
+    if sum(sizes) > 24 * 1024 * 1024:
+        with pytest.raises(
+            ModelFailure, match=("Reference" if actor else "Review") + " images exceed"
+        ):
+            asyncio.run(call)
+        assert requests == [] and budget.calls == 0
+    else:
+        asyncio.run(call)
+        assert requests == [True] and budget.calls == 1
+    assert context.serialize() == original
 
 
 def test_duplicate_calls_never_execute():

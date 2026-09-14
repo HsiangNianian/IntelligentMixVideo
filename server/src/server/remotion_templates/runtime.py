@@ -69,7 +69,7 @@ class Runtime:
         return job
 
     def message(self, project_id: UUID, request: TaskMessage):
-        """Route conversation input to planning, an accepted-base decision, or outstanding questions."""
+        """Route conversation input to generation, accepted-base edits, or outstanding questions."""
         latest = self.store.latest_job(project_id)
         if request.reply_to_job_id:
             if latest.id != request.reply_to_job_id or latest.status != "needs_input":

@@ -31,6 +31,27 @@ def model_image(path: Path) -> bytes:
         return buffer.getvalue()
 
 
+def _image_content(paths: list[Path], *, label: str) -> list[dict]:
+    """Encode ephemeral model images in order, enforcing the shared 24 MiB raw-image limit."""
+    content = []
+    size = 0
+    for path in paths:
+        data = model_image(path)
+        size += len(data)
+        if size > 24 * 1024 * 1024:
+            raise ModelFailure(f"{label} images exceed the bounded model request size.")
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": "data:image/png;base64," + base64.b64encode(data).decode(),
+                    "detail": "high",
+                },
+            }
+        )
+    return content
+
+
 class ModelFailure(RuntimeError):
     """A sanitized provider, budget or output-contract failure safe to expose to API clients."""
 
@@ -151,28 +172,12 @@ class Provider:
         *,
         images: list[Path] | None = None,
         vision: bool = False,
-        context: Conversation | None = None,
     ) -> Output:
-        """Request JSON and validate locally; omitted usage and truncated output fail closed."""
-        content = [{"type": "text", "text": prompt}]
-        image_bytes = 0
-        for image in images or []:
-            data = model_image(image)
-            image_bytes += len(data)
-            if image_bytes > 24 * 1024 * 1024:
-                raise ModelFailure(
-                    "Review images exceed the bounded model request size."
-                )
-            content.append(
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": "data:image/png;base64,"
-                        + base64.b64encode(data).decode(),
-                        "detail": "high",
-                    },
-                }
-            )
+        """Review one independent JSON request without reading or mutating actor history."""
+        content = [
+            {"type": "text", "text": prompt},
+            *_image_content(images or [], label="Review"),
+        ]
         body = {
             "messages": [
                 {
@@ -182,7 +187,6 @@ class Provider:
                     + "\nReturn one JSON object matching this JSON Schema, without Markdown:\n"
                     + json.dumps(output.model_json_schema(), ensure_ascii=False),
                 },
-                *(context.messages() if context else []),
                 {"role": "user", "content": content},
             ],
             "response_format": {"type": "json_object"},
@@ -194,14 +198,6 @@ class Provider:
             raise ModelContractFailure(
                 "Model response violated the requested output contract."
             ) from exc
-        if context is not None:
-            # Image bytes are supplied for this observation only; task snapshots retain asset identity.
-            context.append(
-                [
-                    {"role": "user", "content": prompt},
-                    {"role": "assistant", "content": result.model_dump_json()},
-                ]
-            )
         return result
 
     async def turn(
@@ -230,24 +226,7 @@ class Provider:
                     "text": "Images follow the host snapshot mapping: original user references first, then current candidate frames. Candidate frames are observations, not new user requirements. Interpret typography only, not application chrome or scenery.",
                 }
             ]
-            size = 0
-            for path in images:
-                data = model_image(path)
-                size += len(data)
-                if size > 24 * 1024 * 1024:
-                    raise ModelFailure(
-                        "Reference images exceed the bounded model request size."
-                    )
-                content.append(
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": "data:image/png;base64,"
-                            + base64.b64encode(data).decode(),
-                            "detail": "high",
-                        },
-                    }
-                )
+            content.extend(_image_content(images, label="Reference"))
             body["messages"].append({"role": "user", "content": content})
         message = await self._request(body, budget, tools=True)
         try:
