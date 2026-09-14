@@ -3,6 +3,8 @@
 #[cfg(windows)]
 mod localhost;
 
+mod templates;
+
 /// 启动主窗口与事件循环；初始化失败时报告错误。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -17,6 +19,7 @@ pub fn run() {
         context
     };
     tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![templates::local_templates])
         .setup(|app| {
             #[cfg(windows)]
             if !tauri::is_dev() {
