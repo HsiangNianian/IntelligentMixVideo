@@ -51,12 +51,17 @@ export interface Job {
   questions: string[];
   message: string | null;
 }
-/** 仅维护当前会话中用户可见的消息和本地参考图片。 */
+/** 公开历史消息；提交中的图片暂用 File，持久消息使用服务端素材 ID。 */
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   text: string;
   image?: File;
+  sequence?: number;
+  job_id?: string;
+  image_asset_id?: string | null;
+  created_at?: string;
+  reconstructed?: boolean;
 }
 
 /** 稳定比较完整参数快照，避免依赖对象属性插入顺序。 */
@@ -172,4 +177,51 @@ export function backgroundUrl(value: string): string {
   )
     throw new Error("视频直链仅支持不含账号密码的 HTTP(S) 地址");
   return url.href;
+}
+
+/** 会话快照和 SSE 公开任务附带稳定时间与待验收参数。 */
+export interface SessionJob extends Job {
+  created_at: string;
+  updated_at: string;
+  parameters: Values | null;
+}
+/** 历史列表只加载标题、活动时间和当前任务，不加载代码。 */
+export interface WorkSummary {
+  id: string;
+  title: string;
+  updated_at: string;
+  current_version_id: string | null;
+  job: SessionJob;
+}
+/** 最近活动分页使用服务端游标，避免偏移分页重复记录。 */
+export interface WorkPage {
+  items: WorkSummary[];
+  next_cursor: string | null;
+}
+/** 单一读取快照提供消息分页、成功版本指针及后续订阅起点。 */
+export interface SessionSnapshot {
+  work: { id: string; current_version_id: string | null };
+  job: SessionJob;
+  messages: ChatMessage[];
+  next_before: number | null;
+  cursor: number;
+}
+/** 事件载荷按公开类型区分；内部候选、steer 与工具轨迹不进入客户端。 */
+export type WorkEvent = { id: number; work_id: string; created_at: string } & (
+  | { type: "message.created"; data: ChatMessage }
+  | { type: "job.updated"; data: SessionJob }
+  | { type: "version.ready"; data: { version_id: string; job_id: string } }
+);
+
+/** 任务状态使用用户可操作的说明，不暴露内部版本验收阶段。 */
+export function jobLabel(status: Job["status"]): string {
+  return {
+    queued: "排队中",
+    running: "制作中",
+    succeeded: "已完成",
+    needs_input: "等待补充",
+    failed: "待重试",
+    cancelled: "已停止",
+    interrupted: "待恢复",
+  }[status];
 }

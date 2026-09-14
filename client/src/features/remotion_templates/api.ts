@@ -1,5 +1,5 @@
 /** Remotion HTTP 客户端；请求有超时，写入不自动重试，服务密钥始终留在服务端。 */
-import type { Job, Values, Version } from "./model";
+import type { Job, SessionSnapshot, Values, Version, WorkPage } from "./model";
 
 const base =
   (import.meta.env.VITE_API_URL?.trim() || "http://localhost:8000").replace(
@@ -102,10 +102,6 @@ export function message(
     body: JSON.stringify(body),
   });
 }
-/** 有界读取最新任务，轮询由会话协调且在卸载时取消。 */
-export function job(id: string, signal?: AbortSignal): Promise<Job> {
-  return request(`/jobs/${encodeURIComponent(id)}`, { signal });
-}
 /** 只读取已验收版本。 */
 export function version(id: string, signal?: AbortSignal): Promise<Version> {
   return request(`/versions/${encodeURIComponent(id)}`, { signal });
@@ -125,4 +121,31 @@ export function cancel(id: string): Promise<Job> {
 /** 由用户明确重试已结束任务，避免网络故障产生重复生成。 */
 export function retry(id: string): Promise<Job> {
   return request(`/jobs/${encodeURIComponent(id)}/retry`, { method: "POST" });
+}
+
+/** 获取历史列表；每页只含轻量会话元数据。 */
+export function history(
+  cursor?: string,
+  signal?: AbortSignal,
+): Promise<WorkPage> {
+  return request(
+    `/works?history=true${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+    { signal },
+  );
+}
+/** 恢复公开历史及订阅游标；before 仅用于加载更早消息。 */
+export function session(
+  id: string,
+  signal?: AbortSignal,
+  before?: number,
+): Promise<SessionSnapshot> {
+  return request(
+    `/works/${encodeURIComponent(id)}/session${before ? `?before=${before}` : ""}`,
+    { signal },
+  );
+}
+
+/** 兼容旧版会话协调器的任务读取；SSE 工作区使用会话快照。 */
+export function job(id: string, signal?: AbortSignal): Promise<Job> {
+  return request(`/jobs/${encodeURIComponent(id)}`, { signal });
 }
