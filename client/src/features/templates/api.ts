@@ -1,21 +1,15 @@
 /** 模板存储边界：云端沿用 HTTP，本地通过 Tauri 写入客户端 data/template。 */
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { selectedEffects, type Draft, type Template } from "./model";
 
 /** 当前模板库的存储位置，每次操作显式传递，避免切换后写入错误环境。 */
 export type Environment = "local" | "cloud";
 
-declare global {
-  interface Window {
-    __TAURI__?: { core: { invoke<T>(command: string, args: Record<string, unknown>): Promise<T> } };
-  }
-}
-
 /** 本地操作仅在桌面中可用；IPC 字符串错误统一转成 Error 供现有弹窗显示。 */
-// 如果浏览器打开是操作不了本地的文件
 async function local<T>(operation: string, id?: string, draft?: Draft): Promise<T> {
-  if (!window.__TAURI__) throw new Error("本地模式需要在桌面客户端中使用");
+  if (!isTauri()) throw new Error("本地模式需要在桌面客户端中使用");
   try {
-    return await window.__TAURI__.core.invoke<T>("local_templates", { operation, id, draft });
+    return await invoke<T>("local_templates", { operation, id, draft });
   } catch (error) {
     throw error instanceof Error ? error : new Error(String(error));
   }
@@ -29,7 +23,7 @@ const base = (
 /** 有界请求，卸载可中断读取；写入失败不自动重试，防止重复创建。 */
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   // 仅服务不可用时建议本地存储；浏览器需先使用桌面客户端。
-  const localHint = window.__TAURI__
+  const localHint = isTauri()
     ? "可在「当前环境」中切换到本地环境。"
     : "可使用桌面客户端切换到本地环境。";
   const controller = new AbortController();

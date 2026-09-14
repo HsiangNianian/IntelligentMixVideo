@@ -3,7 +3,7 @@ import { expect, spyOn, test } from "bun:test";
 import { deleteTemplate, getTemplate, listTemplates, saveTemplate } from "@/features/templates/api";
 import { newDraft, toDraft } from "@/features/templates/model";
 import { savedTemplate } from "./fixtures";
-import { fetchMock } from "./setup";
+import { fetchMock, mockDesktop } from "./setup";
 
 // 测试创建和更新都使用 POST /template，只有更新带 ID，名称说明被修剪且效果去重。
 test.each([undefined, "existing-id"])("保存请求正确区分创建与更新：%s", async (id) => {
@@ -87,7 +87,7 @@ test.each([false, true])("超时与主动取消区分处理：%s", async (cancel
     : "请求超时，草稿已保留。保存结果可能已写入，请刷新列表确认后再重试。可使用桌面客户端切换到本地环境。");
 });
 
-// 测试本地四种操作仅调用桌面 IPC，云端仍使用原 HTTP；IPC 失败保留错误原因。
+// 回归：没有全局 __TAURI__ 时本地增删改查仍走官方 IPC，云端走 HTTP；IPC 失败保留原因。
 test("本地和云端存储严格分流", async () => {
   const { mock } = await import("bun:test");
   const saved = savedTemplate();
@@ -96,12 +96,14 @@ test("本地和云端存储严格分流", async () => {
     if (args.operation === "delete") return null;
     return saved;
   });
-  window.__TAURI__ = { core: { invoke: invoke as NonNullable<Window["__TAURI__"]>["core"]["invoke"] } };
+  const restoreDesktop = mockDesktop(invoke);
   try {
+    expect(window).not.toHaveProperty("__TAURI__");
     expect(await listTemplates(undefined, "local")).toEqual([saved]);
     expect(await getTemplate(saved.template_id, "local")).toEqual(saved);
     expect(await saveTemplate(toDraft(saved), undefined, "local")).toEqual(saved);
     await deleteTemplate(saved.template_id, "local");
+    expect(invoke.mock.calls.every(([command]) => command === "local_templates")).toBe(true);
     expect(invoke.mock.calls.map(([, args]) => args.operation)).toEqual(["list", "get", "save", "delete"]);
     expect(invoke.mock.calls[2][1]).toEqual({ operation: "save", id: undefined, draft: toDraft(saved) });
     expect(fetchMock).not.toHaveBeenCalled();
@@ -111,7 +113,7 @@ test("本地和云端存储严格分流", async () => {
     expect(await listTemplates(undefined, "cloud")).toEqual([]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   } finally {
-    delete window.__TAURI__;
+    restoreDesktop();
   }
 });
 

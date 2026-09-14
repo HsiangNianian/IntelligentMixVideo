@@ -4,7 +4,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { useEffect } from "react";
 import type { Draft, EffectAsset } from "@/features/templates/model";
 import { catalog, savedTemplate } from "./fixtures";
-import { fetchMock } from "./setup";
+import { fetchMock, mockDesktop } from "./setup";
 
 // SDK 依赖视频、字体和硬件加速；本组只验证目录回传和最新草稿传给预览的行为。
 mock.module("@/features/templates/TemplatePreview", () => ({
@@ -246,7 +246,7 @@ test("本地保存并切换云端，取消时保留草稿", async () => {
     if (args.operation === "list") return [saved];
     return { ...saved, ...args.draft as object };
   });
-  window.__TAURI__ = { core: { invoke: invoke as NonNullable<Window["__TAURI__"]>["core"]["invoke"] } };
+  const restoreDesktop = mockDesktop(invoke);
   try {
     fetchMock.mockResolvedValueOnce(Response.json([]));
     render(<TemplateWorkspace />);
@@ -277,14 +277,14 @@ test("本地保存并切换云端，取消时保留草稿", async () => {
     expect(invoke.mock.calls.at(-1)?.[1]).toMatchObject({ operation: "save", id: saved.template_id, draft: { name: "本地修改" } });
     expect(fetchMock).toHaveBeenCalledTimes(2);
   } finally {
-    delete window.__TAURI__;
+    restoreDesktop();
   }
 });
 
 // 测试启动时断网或服务不可用仍留在云端，提示后由用户切换本地并清除错误。
 test.each(["network", "503"])("云端不可用时提示手动切换本地：%s", async (failure) => {
   const invoke = mock(async (): Promise<unknown> => []);
-  window.__TAURI__ = { core: { invoke: invoke as NonNullable<Window["__TAURI__"]>["core"]["invoke"] } };
+  const restoreDesktop = mockDesktop(invoke);
   try {
     if (failure === "network") fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
     else fetchMock.mockResolvedValueOnce(Response.json({ detail: "数据库暂不可用" }, { status: 503 }));
@@ -297,7 +297,7 @@ test.each(["network", "503"])("云端不可用时提示手动切换本地：%s",
     expect(screen.queryByRole("alert")).toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(1);
   } finally {
-    delete window.__TAURI__;
+    restoreDesktop();
   }
 });
 
@@ -306,7 +306,7 @@ test("切换环境读取失败后可重试", async () => {
   await openExistingTemplate();
   fireEvent.change(screen.getByLabelText("模板名称"), { target: { value: "云端草稿" } });
   const invoke = mock(async (): Promise<unknown> => []);
-  window.__TAURI__ = { core: { invoke: invoke as NonNullable<Window["__TAURI__"]>["core"]["invoke"] } };
+  const restoreDesktop = mockDesktop(invoke);
   try {
     await choose("当前环境", "本地");
     invoke.mockRejectedValueOnce("文件读取失败");
@@ -319,6 +319,6 @@ test("切换环境读取失败后可重试", async () => {
     expect(screen.getByLabelText<HTMLInputElement>("模板名称").value).toBe("");
     expect(fetchMock).toHaveBeenCalledTimes(2);
   } finally {
-    delete window.__TAURI__;
+    restoreDesktop();
   }
 });
