@@ -3,6 +3,29 @@
 本项目的版本变更由发布工作流根据 Conventional Commits 自动生成。
 推送正式版本 tag 后，成功发布的版本记录会自动写入此文件。
 
+## [v0.3.2] - 2026-09-14
+### Bug Fixes
+- [`a01745e`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/a01745e7d35205b60f366a04d0b28d4525cd2193) - **ci**: bundle AppImage media codecs and verify decoding *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+
+### Tests
+- [`b14e3da`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/b14e3dae85c3d8449277ee1d9c55dada755dac01) - **ci**: require decoded AppImage media output *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+
+### Documentation Changes
+- [`4848fb2`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/4848fb2649f7e85a55c34a40e5007a931c1120fb) - update CHANGELOG.md for v0.3.1 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
+
+### Chores
+- [`79d8173`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/79d8173402e286663482f066418bdd86e6de5928) - keep documentation unchanged in codec fix *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+- [`a30b04a`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/a30b04acd27773b30a67a7f1aec01cc18ef9c906) - **ci**: remove AppImage media smoke test *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+- [`c01e316`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/c01e3169c73bd6920f8388f522ccd3f7038bec87) - bump version into v0.3.2 *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+
+### Other Changes
+- [`e7fd460`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/e7fd4605c144f1d30ae1e1779ea339deafe44e0d) - Merge pull request [#33](https://github.com/HsiangNianian/IntelligentMixVideo/pull/33) from muyuzhong/fix/appimage-media-codecs-dev
+
+fix(ci): include missing AppImage media codecs *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`a609bee`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/a609bee025a1033095c81ac67449ae9169a718a4) - Merge pull request [#34](https://github.com/HsiangNianian/IntelligentMixVideo/pull/34) from HsiangNianian/dev
+
+fix(ci): bundle AppImage media codecs and verify decoding *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+
 ## [v0.3.1] - 2026-09-14
 ### BREAKING CHANGES
 - due to [`885f654`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/885f6541fc777a251c90b7e227d409aee864f3f4) - simplify MVP segmentation pipeline *(commit by [@muyuzhong](https://github.com/muyuzhong))*:
@@ -181,3 +204,5 @@ feat(client): 在模板工作区页头添加时钟 *(commit by [@HsiangNianian](
 [v0.3.0]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.2.0...v0.3.0
 
 [v0.3.1]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.3.0...v0.3.1
+
+[v0.3.2]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.3.1...v0.3.2
