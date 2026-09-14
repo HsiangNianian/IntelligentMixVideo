@@ -17,4 +17,4 @@ class Settings(BaseSettings):
     llm_model: str = Field(pattern=r"\S")
     llm_timeout_seconds: float = Field(default=120, gt=0, allow_inf_nan=False)
     llm_max_retries: int = Field(default=1, ge=0, le=3)
-    allow_insecure_llm_http: bool = False
+    allow_insecure_llm_http: bool = True

@@ -312,12 +312,11 @@ def test_timeline_outside_repair(model):
 @pytest.mark.parametrize(
     "key,value",
     [
-        ("IMV_LLM_BASE_URL", "http://remote.test/v1"),
         ("IMV_LLM_BASE_URL", "https://["),
     ],
 )
 def test_invalid_configuration(model, monkeypatch, key, value):
-    """配置错误与未授权的远程明文传输在创建 SDK 前被拒绝。"""
+    """非法模型地址在创建 SDK 前被拒绝。"""
     monkeypatch.setenv(key, value)
     with pytest.raises(RuntimeError):
         segment(payload("甲乙丙丁"))
@@ -363,11 +362,12 @@ def test_settings_validation_returns_safe_error(model, client, monkeypatch, key,
     model[0].assert_not_called()
 
 
-@pytest.mark.parametrize("value,allowed", [("true", True), ("false", False)])
+@pytest.mark.parametrize("value,allowed", [(None, True), ("false", False)])
 def test_settings_boolean_http_authorization(model, client, monkeypatch, value, allowed):
-    """Pydantic 解析布尔配置；仅显式启用时允许远程 HTTP 模型地址。"""
+    """代码默认允许远程 HTTP；显式配置 false 时仍可禁用。"""
     monkeypatch.setenv("IMV_LLM_BASE_URL", "http://remote.test/v1")
-    monkeypatch.setenv("IMV_ALLOW_INSECURE_LLM_HTTP", value)
+    if value is not None:
+        monkeypatch.setenv("IMV_ALLOW_INSECURE_LLM_HTTP", value)
     response = client.post("/segmentations", json=payload("甲乙丙丁"))
     assert response.status_code == (200 if allowed else 502)
     if not allowed:
