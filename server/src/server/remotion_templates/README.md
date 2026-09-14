@@ -53,12 +53,16 @@ Provider 不打印密钥或原始错误响应。部署时可通过环境变量�
 | --- | --- |
 | 支持的输入、字体和配置就绪状态 | `GET /capabilities` |
 | 上传图片，得到 asset ID | `POST /assets`，multipart 字段 `file` |
+| 历史参考图片 | `GET /assets/{id}`，校验登记文件的完整性 |
 | 创建作品并排队 | `POST /works` |
+| 历史会话分页 | `GET /works?history=true&limit=30`，返回 `next_cursor` |
+| 会话快照及更早消息 | `GET /works/{id}/session?limit=50`，以 `next_before` 请求更早消息 |
+| SSE 会话订阅 | `GET /works/{id}/stream?after=0`，支持 `Last-Event-ID` |
 | 列表、作品与成功版本 | `GET /works`、`GET /works/{id}`、`GET /works/{id}/versions` |
 | 可用版本及代码/配置 | `GET /versions/{id}` |
 | 参数、自然语言修改或回答澄清 | `POST /works/{id}/messages` |
 | 运行状态、简短提示和追问 | `GET /jobs/{id}` |
-| 增量事件轮询 | `GET /jobs/{id}/events?after=0`，使用返回的 `next_cursor` |
+| 兼容的 JSON 事件查询 | `GET /jobs/{id}/events?after=0`，使用返回的 `next_cursor` |
 | 取消、重试 | `POST /jobs/{id}/cancel`、`/retry` |
 | 可用结果下载链接，无结果时为空列表 | `GET /jobs/{id}/artifacts` |
 | 隔离 Player 页面 | `GET /versions/{id}/preview` |
@@ -70,7 +74,7 @@ Provider 不打印密钥或原始错误响应。部署时可通过环境变量�
 ```
 
 图片请求用 `"image":{"asset_id":"上传返回的 UUID"}`，可以与 `description` 合用。
-创建返回 HTTP 202 和 `work`、`job`；轮询任务直到终态。成功后版本包含 `candidate.tsx_code`、
+创建返回 HTTP 202 和 `work`、`job`；读取会话快照后从其游标订阅 SSE。成功后版本包含 `candidate.tsx_code`、
 `candidate.config_schema`、`candidate.default_config` 和 `spec`，产物列表可下载 `.tsx`、PNG 和 MP4。
 公开任务只有状态、问题、结果 ID 和简短提示，不包含修复次数、阶段、模型用量或内部诊断。
 失败候选与报告保留在本地，HTTP 不提供下载入口；尚未运行的检查不能算成功。
@@ -88,6 +92,34 @@ Provider 不打印密钥或原始错误响应。部署时可通过环境变量�
 本次接口调整移除了 `/works/{id}/edits`、`/jobs/{id}/clarify` 与按 attempt 下载的地址。
 调用方改用 `/messages` 和产物列表提供的成功版本链接。旧本地版本没有新的证据清单，
 仍可读取数据库中的代码；需要新的预览下载时应重新生成并通过当前验收。
+
+### 公开聊天历史与 SSE
+
+一个作品是一段历史会话，包含其后续澄清、修改和重试任务。公开消息保存在 `chat_messages`，
+可重放事件保存在 `work_events`；模型的 `conversations` 仍只维护既有滑动窗口。
+初始化增量创建表，按旧任务中可确认的输入、问题和结果恢复公开记录，标记 `reconstructed`，
+重复启动不重复恢复；不迁移或公开内部工具上下文。
+
+用户消息、任务状态、终态消息和成功版本事件在对应 SQLite 事务内写入；SSE 只读取已提交记录。
+`/session` 在同一读取事务中返回消息、最新任务、成功版本指针及事件水位 `cursor`。
+消息按正序返回，`next_before` 非空时可以继续读取更早页；列表使用活动时间与作品 ID 的游标分页。
+
+SSE 类型为 `message.created`、`job.updated`、`version.ready`，`data` 为包含
+`id`、`work_id`、`type`、`data`、`created_at` 的 JSON。公开任务额外包含创建/更新时间和提交的参数补丁，
+内部修复次数与阶段不产生公开进度事件；只有成功版本产生 `version.ready`。
+首次连接使用快照游标，重连优先采用 `Last-Event-ID`；0 表示重放全部公开记录。
+事件按 ID 顺序分批读完，再等待新记录；跨作品的编号间隙正常，客户端应按 ID 去重。
+游标不属于此作品或已不可用返回 409，客户端应重新取快照。
+
+空闲时每 15 秒发送心跳注释，响应为 `text/event-stream`、`Cache-Control: no-cache` 和
+`X-Accel-Buffering: no`。服务端每次有界读取后释放数据库连接，空闲等待可中断；
+关闭订阅与运行时任务相互独立。客户端切换、新增或退出不会取消旧任务，取消只由显式 `/cancel` 发起。
+部署反向代理时关闭事件缓冲，并使读取超时长于心跳间隔。
+原 `/works` 默认列表、任务查询与 `/jobs/{id}/events` JSON 接口保持兼容。
+
+历史与流协议的离线回归见 `server/tests/test_remotion_history.py`，覆盖事务回滚、旧记录恢复、
+快照并发、分页、素材校验、100 条以上事件重放、心跳、真实 HTTP 重连及主应用跨域预检；
+成功版本与后续参数失败的关系由 `test_remotion_templates.py` 验证。
 
 ### 代码契约与执行边界
 

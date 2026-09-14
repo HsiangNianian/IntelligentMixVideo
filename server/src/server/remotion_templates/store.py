@@ -253,7 +253,7 @@ class Store:
         return JobInput.model_validate_json(row["input_data"])
 
     def _event(self, db: sqlite3.Connection, job: GenerationJob) -> None:
-        """Persist internal execution progress in the same transaction as its state change."""
+        """Persist private snapshots and public state events in the same transaction as the job."""
         db.execute(
             "INSERT INTO events(job_id, data) VALUES (?, ?)",
             (str(job.id), job.model_dump_json()),
