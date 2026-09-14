@@ -107,51 +107,30 @@ uv sync --locked --default-index https://pypi.org/simple
 
 ## 文案切片
 
-切片业务集中在 `segmentation/segmentation.py` 的单个 `segment` 函数，
-可通过 `from server.segmentation import segment` 导入，调用 `segment(payload)` 返回结果字典。
-业务不依赖 FastAPI，失败抛出异常；`sub_api/segmentation.py` 负责 `POST /segmentations` 路由和 HTTP 错误转换。
-输入正确文案与单音轨 fun-asr 原始转写结果；必须包含恰好一个 `transcripts` 元素，词时间使用 `begin_time/end_time`（毫秒）。不再接受顶层 `sentences` 或仅有 `begin_time_ms/end_time_ms` 的旧输入：
+提供 `POST /segmentations` 接口和独立的 `segment` 函数，使用正确文案与已有 ASR 结果生成带时间和关键词的片段。
 
-```json
-{"script":"你好世界。","asr_result":{"transcripts":[{"channel_id":0,"sentences":[{"words":[{"text":"你好世界","begin_time":0,"end_time":2000}]}]}]}}
+在 `server/.env` 填写 `IMV_LLM_BASE_URL`、`IMV_LLM_API_KEY` 和 `IMV_LLM_MODEL`，其余配置见 [.env.example](.env.example)。
+配置读取当前目录的 `.env`，环境变量优先；从仓库根目录启动时使用：
+
+```sh
+uv run --locked --project server --env-file server/.env server
 ```
 
-返回 `segments`、`warnings` 和 `trace`；每段含 `segment_id`、`group_id`、`text`、`keyword`、`level` 和起止时间。
-`segment_id` 为从 1 递增的整数，`start_time`/`end_time` 为秒（内部时长约束仍以毫秒计算，仅输出换算）。
-每段的 `keyword` 为字符串：无关键词时是空字符串 `""`，否则是段内原文中按出现位置保留的一个关键词。
-`group_id` 为 `[current, total]`：`current` 是该段在其所属 ASR 句内的序号（从 1 开始），`total` 是该句最终切出的段数，未切分的句子为 `[1, 1]`；跨句片段整体计入其首字所在句。
-`level` 只由代码判定：含关键词为重点句 `2`，其余为普通句 `1`；CTA 属模型语义判断，当前不标注。
+HTTP 请求体包含 `script`（正确文案字符串）和 `asr_result`（Fun-ASR 原始结果对象），由 Pydantic 校验必填字段与类型。也可在代码中读取 ASR 输出文件并调用：
 
-### 处理约束与配置
+```python
+import json
+from pathlib import Path
+from server.segmentation import segment
 
-处理流程为：校验文案与 ASR → 字符对齐并投射时间 → LLM 选择语义切点 → 代码调整时长 → LLM 标注最终片段关键词 → 校验输出。
-两次模型调用有先后依赖；最终切点可能因保护词串、合并短段或拆分长段而调整，并非完全由 LLM 决定。
-字符级波前对齐的替换、插入和删除代价均为 1，忽略所列标点与空白，并逐字符做 NFKC 和小写归一化。
-匹配率按匹配字符数除以文案与 ASR 两者中较长的有效字符数计算，低于 50% 拒绝、低于 90% 告警；这只能检查文本差异，无法判断差异来自 TTS 还是 ASR。
-词内时间均分，增删在局部修复块中插值；时间来自已有 ASR，不读取音频，也不保证真实字级发音边界。
-MVP 只提供中文标点分句供模型选择；无此类标点的长文主要由时长规则拆分。
-提示词要求逐一判断并列全独立信息点的切点，以6～8字为节奏参考；仅语法不完整、依赖相邻句且合并后不超过10字时建议合并。已有超长分句只能保留边界，不保证最终10字上限。关键词先全篇筛选3～4个，总数不得超过4、每段最多1个（配置为0时不选），不足不凑数，再逐项核对所属片段、保留空数组位置。以上仍是提示词要求，时长后处理可能调整切点，代码不强制全篇4个；响应每段只保留原文最靠前的一个有效词，`IMV_SEGMENT_MAX_KEYWORDS=0` 时不选词。模型请求仍按段位置返回空数组 `{"keywords":[[],["词"],[]]}`，由代码投影为 `keyword` 字符串。
-关键词由模型选择，代码只做逐字匹配、去重、长度过滤和原文顺序排列，并只保留最靠前的一个；区分大小写、全半角，被过滤或多余的候选计入 `trace.keyword_rejected_count`。
-文本完整覆盖、时间不重叠、关键词精确回溯是硬约束；时长无法满足时告警。
-模型失败或返回非法切点直接报告，不调用 TTS/ASR，也不提供备用算法。
-输入文案、ASR 原始字符、词数及句数分别限制为 20000；词时间必须有限、非负、递增且不重叠。
-业务错误返回 `{"error":{"message":"错误说明"}}`：输入错误 422、内部约束错误 500、模型错误 502、超时 504。
-缺少请求体、非对象 JSON 或 JSON 语法错误由 FastAPI 返回 422 和 `detail` 数组。
+result = segment({
+    "script": "你好世界。",
+    "asr_result": json.loads(Path("asr_result.json").read_text(encoding="utf-8")),
+})
+```
 
-复制 `.env.example` 到 `.env` 并填写模型配置；从 `server/` 启动以读取该文件。
-在仓库根目录使用 `uv run --project server --env-file server/.env server` 显式加载；`--project` 不切换当前目录。
-配置由 `segmentation/settings.py` 的 Pydantic Settings 自动读取并校验类型、范围和时长关系。
-`IMV_` 进程环境变量优先于当前工作目录 `.env`，再使用默认值；变量名不区分大小写，忽略无关字段，不修改全局环境、不缓存配置。
-布尔配置接受 Pydantic 的标准布尔值（如 `true/false`、`1/0`）；非法值或缺少必填配置返回结构化 502，不暴露配置值。
-模型地址、Key、模型名必填；默认超时 120 秒、SDK 重试一次；远程 HTTP 默认禁止。
-默认片段时长 1200～6000 ms，关键词每段最多保留 1 个（`IMV_SEGMENT_MAX_KEYWORDS` 为 0 时关闭选择）、每个最多 12 字，工作预算 250000。
-其余变量见样例。SDK 客户端在成功或异常返回前关闭。
-
-切片回归测试：`uv run --locked pytest tests/test_segmentation.py -v`。
-共享夹具自动隔离外部 `IMV_` 环境变量与 `.env`；测试使用 fun-asr 结构的合成 ASR、用户真实转写的前两句摘录和 SDK 替身，不访问音频或真实模型。
-输入契约用例覆盖旧结构、旧时间字段、空或非法音轨及多音轨拒绝，真实摘录覆盖多字词、前导空格、独立标点和跨句停顿。
-覆盖对齐代价与时间、模型切点及异常、英文/数字保护、关键词过滤、时长告警、资源关闭和 HTTP 响应契约。
-离线测试通过不代表真实 TTS/ASR/LLM 联调通过。
+使用 ASR 第一音轨的词级时间，输入时间为毫秒。返回 `segments`、提示 `warnings` 和诊断信息 `trace`；
+片段包含原文、秒制起止时间、分组和关键词。切片本身不调用 ASR。
 
 ## ASR 音频转写
 

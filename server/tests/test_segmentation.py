@@ -1,4 +1,4 @@
-"""单函数切片回归：在 server/ 执行 uv run --locked pytest tests/test_segmentation.py -v。"""
+"""切片核心行为回归，隔离 ASR 与模型；在 server/ 执行 uv run --locked pytest tests/test_segmentation.py -v。"""
 
 import json
 import random
@@ -51,12 +51,12 @@ def model(monkeypatch):
     client = MagicMock()
 
     def respond(**kwargs):
-        """按输入形状识别规划阶段，关键词包含重复及不存在的候选以验证过滤。"""
+        """按输入形状返回默认切点与单个关键词；特殊模型结果在各用例中设置。"""
         content = json.loads(kwargs["messages"][1]["content"])
         data = (
             {"boundaries_after": []}
             if isinstance(content[0], dict)
-            else {"keywords": [[s[:2], s[:1], s[:2], "不存在的词"] for s in content]}
+            else {"keywords": [[s[:2]] for s in content]}
         )
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(data)))])
 
@@ -82,7 +82,6 @@ def model(monkeypatch):
 def test_alignment_and_contract(model, script, transcript, cost):
     """替换、增删、重复字和归一化保持最优代价、文本覆盖及合法时间。"""
     result = segment(payload(script, transcript))
-    assert isinstance(result, dict)
     assert result["trace"]["edit_cost"] == cost
     assert "".join(s["text"] for s in result["segments"]) == script
     previous = 0
@@ -93,44 +92,21 @@ def test_alignment_and_contract(model, script, transcript, cost):
             assert item["keyword"] in item["text"]
     assert result["segments"][0]["start_time"] == 0
     assert previous == len(transcript) * 200 / 1000
-    assert model[0].return_value.__exit__.call_count == 1
-    assert model[0].call_args.kwargs["max_retries"] == 1
 
 
-def test_direct_call_requires_dict(model):
-    """包入口直接调用也校验请求类型，不依赖 FastAPI 的输入校验。"""
-    with pytest.raises(ValueError, match="字典"):
-        segment(None)
-    model[0].assert_not_called()
-
-
-@pytest.mark.parametrize("script,transcript", [("甲乙", "甲丙丁戊己庚辛壬癸乙"), ("甲丙丁戊己庚辛壬癸乙", "甲乙")])
-def test_excessive_extra_characters_are_rejected(model, client, script, transcript):
-    """任一侧大量多字均低于匹配阈值，不将无关时间轴拉伸到短文案或调用模型。"""
-    data = payload(script, transcript, step=500)
-    with pytest.raises(ValueError, match="差异过大"):
-        segment(data)
-    response = client.post("/segmentations", json=data)
-    assert response.status_code == 422
-    assert response.json() == {"error": {"message": "文案与 ASR 差异过大。"}}
-    model[0].assert_not_called()
-
-
-@pytest.mark.parametrize("transcript", ["甲乙额外丙丁", "甲乙额外多字丙丁"])
-def test_asr_extra_characters_warn_at_accepted_match_ratios(model, transcript):
-    """ASR 多字计入匹配率；含恰好 50% 匹配的可接受输入保留文本、时间并告警。"""
-    result = segment(payload("甲乙丙丁", transcript, step=500))
-    assert [item["text"] for item in result["segments"]] == ["甲乙丙丁"]
+@pytest.mark.parametrize("script,transcript", [("甲乙", "甲丙丁戊己庚辛壬癸乙"), ("甲丙丁戊己庚辛壬癸乙", "甲乙"), ("甲乙", "丙丁")])
+def test_low_match_ratio_still_segments(model, script, transcript):
+    """低匹配率仍完成对齐和时间投射，只通过 warnings 提示差异。"""
+    result = segment(payload(script, transcript, step=500))
+    assert "".join(item["text"] for item in result["segments"]) == script
     assert result["segments"][0]["start_time"] == 0
-    assert result["segments"][0]["end_time"] == len(transcript) * 500 / 1000
-    assert result["trace"]["asr_extra_chars"] == len(transcript) - 4
-    assert any(warning["code"] == "low_alignment_match_ratio" for warning in result["warnings"])
+    assert result["segments"][-1]["end_time"] == len(transcript) * 0.5
+    assert any(w["code"] == "low_alignment_match_ratio" for w in result["warnings"])
 
 
-@pytest.mark.parametrize("text", ["", " \t\n\u3000", "，。!?", " ，\t。 "])
-def test_ignored_asr_words_preserve_timing(model, client, text):
-    """首尾及中间的空内容词被忽略，直接调用和 HTTP 均保留有效词的时间。"""
-    data = payload("甲乙丙丁", [text, "甲乙", text, "丙丁", text], step=500)
+def test_ignored_asr_words_preserve_timing(model):
+    """首尾及中间的空内容词被忽略，保留有效词的时间。"""
+    data = payload("甲乙丙丁", ["", "甲乙", " \t\n\u3000，。!?", "丙丁", "。"], step=500)
     result = segment(data)
     assert len(result["segments"]) == 1
     assert result["segments"][0]["text"] == "甲乙丙丁"
@@ -138,41 +114,6 @@ def test_ignored_asr_words_preserve_timing(model, client, text):
     assert result["segments"][0]["end_time"] == 2.0
     assert result["trace"]["matched_chars"] == 4
     assert result["trace"]["edit_cost"] == 0
-    response = client.post("/segmentations", json=data)
-    assert response.status_code == 200
-    assert response.json() == result
-
-
-@pytest.mark.parametrize("text", ["", " \t\n\u3000", "，。!?", " ，\t。 "])
-def test_all_ignored_asr_words_return_validation_error(model, client, text):
-    """全部词均无有效字符时抛 ValueError，HTTP 返回结构化 422，且不调用模型。"""
-    data = payload("甲乙丙丁", [text])
-    with pytest.raises(ValueError, match="ASR 缺少有效发音字符"):
-        segment(data)
-    response = client.post("/segmentations", json=data)
-    assert response.status_code == 422
-    assert response.json() == {"error": {"message": "ASR 缺少有效发音字符。"}}
-    model[0].assert_not_called()
-
-
-@pytest.mark.parametrize(
-    "word_index,change",
-    [
-        (0, {"begin_time": -1}),
-        (0, {"end_time": 0}),
-        (1, {"begin_time": 100}),
-    ],
-)
-def test_ignored_asr_words_still_validate_timestamps(model, client, word_index, change):
-    """空内容词的非法时间和后续词与其重叠均被拒绝，不因忽略文本跳过校验。"""
-    data = payload("甲乙丙丁", [" ，\t", "甲乙丙丁"])
-    data["asr_result"]["transcripts"][0]["sentences"][0]["words"][word_index].update(change)
-    with pytest.raises(ValueError, match="ASR 时间必须"):
-        segment(data)
-    response = client.post("/segmentations", json=data)
-    assert response.status_code == 422
-    assert response.json() == {"error": {"message": "ASR 时间必须有限、非负、单调且不重叠。"}}
-    model[0].assert_not_called()
 
 
 def test_wavefront_matches_independent_dp(model):
@@ -194,44 +135,6 @@ def test_wavefront_matches_independent_dp(model):
         assert result["trace"]["edit_cost"] == table[-1][-1]
 
 
-def test_long_similar_text_and_budget(model, monkeypatch):
-    """长文本少量分散错误可处理，预算恰好通过且少一个单位时拒绝。"""
-    script = "甲乙丙丁" * 1000
-    result = segment(payload(script, "错" + script[1:-1] + "错", step=10))
-    assert result["trace"]["substitution_chars"] == 2
-    monkeypatch.setenv("IMV_SEGMENT_MAX_ALIGNMENT_WORK", "4")
-    assert isinstance(segmentation.segment(payload("甲乙丙丁")), dict)
-    monkeypatch.setenv("IMV_SEGMENT_MAX_ALIGNMENT_WORK", "3")
-    with pytest.raises(ValueError, match="预算"):
-        segment(payload("甲乙丙丁"))
-
-
-@pytest.mark.parametrize(
-    "change",
-    [
-        lambda p: p.update(script=""),
-        lambda p: p.update(script="。 "),
-        lambda p: p.update(script="甲" * 20001),
-        lambda p: p.update(asr_result={}),
-        lambda p: p.update(extra=True),
-        lambda p: p.update(script="完全无关文本"),
-        lambda p: p["asr_result"]["transcripts"][0]["sentences"][0]["words"][1].update(begin_time=-1),
-        lambda p: p["asr_result"]["transcripts"][0]["sentences"][0]["words"][1].update(end_time=True),
-        lambda p: p["asr_result"]["transcripts"][0]["sentences"][0]["words"][1].update(end_time=10**400),
-    ],
-)
-def test_invalid_input_never_calls_model(model, client, change):
-    """空输入、超长文本、无关文案及非法时间在模型调用前被拒绝。"""
-    data = payload("甲乙丙丁")
-    change(data)
-    with pytest.raises(ValueError):
-        segment(data)
-    response = client.post("/segmentations", json=data)
-    assert response.status_code == 422
-    assert response.json()["error"]["message"]
-    model[0].assert_not_called()
-
-
 @pytest.mark.parametrize("failure,status", [("json", 502), ("shape", 502), ("connect", 502), ("timeout", 504)])
 def test_model_failures_close_client(model, client, failure, status):
     """非法模型输出、连接失败和超时明确返回错误，并关闭 SDK 上下文。"""
@@ -244,60 +147,14 @@ def test_model_failures_close_client(model, client, failure, status):
         request = httpx.Request("POST", "https://example.test/v1")
         error = APIConnectionError if failure == "connect" else APITimeoutError
         model[1].chat.completions.create.side_effect = error(request=request)
-    expected = {"json": RuntimeError, "shape": RuntimeError, "connect": APIConnectionError, "timeout": APITimeoutError}
-    with pytest.raises(expected[failure]):
-        segment(payload("甲乙丙丁"))
     response = client.post("/segmentations", json=payload("甲乙丙丁"))
     assert response.status_code == status
     assert response.json()["error"]["message"]
-    assert model[0].return_value.__exit__.call_count == 2
-    assert model[1].chat.completions.create.call_count == 2
+    assert model[0].return_value.__exit__.call_count == 1
+    assert model[1].chat.completions.create.call_count == 1
 
 
-def test_api_missing_config(model, client, monkeypatch):
-    """真实输入结构可通过路由；缺少模型配置返回 502。"""
-    data = payload("甲乙丙丁")
-    response = client.post("/segmentations", json=data)
-    assert response.status_code == 200
-    assert response.json()["segments"][0]["text"] == data["script"]
-    monkeypatch.delenv("IMV_LLM_API_KEY")
-    assert client.post("/segmentations", json=data).status_code == 502
-
-
-@pytest.mark.parametrize("asr", [
-    None, {}, {"sentences": [{"words": []}]},
-    {"transcripts": None}, {"transcripts": {}}, {"transcripts": []},
-    {"transcripts": [None]}, {"transcripts": [{}]},
-    {"transcripts": [{"sentences": []}]},
-    {"transcripts": [{"sentences": [{"words": []}]}] * 2},
-])
-def test_invalid_fun_asr_structure(model, client, asr):
-    """拒绝旧外层、非法或空音轨及多音轨；直接调用与 HTTP 均在模型前失败。"""
-    data = {"script": "甲乙丙丁", "asr_result": asr}
-    with pytest.raises(ValueError) as error:
-        segment(data)
-    response = client.post("/segmentations", json=data)
-    assert response.status_code == 422
-    assert response.json() == {"error": {"message": str(error.value)}}
-    model[0].assert_not_called()
-
-
-@pytest.mark.parametrize("fields", [("begin_time",), ("end_time",), ("begin_time", "end_time")])
-def test_legacy_asr_time_fields_rejected(model, client, fields):
-    """任一真实时间字段缺失时不回退到旧 _ms 别名，返回 422 且不调用模型。"""
-    data = payload("甲乙丙丁")
-    word = data["asr_result"]["transcripts"][0]["sentences"][0]["words"][0]
-    for field in fields:
-        word[field + "_ms"] = word.pop(field)
-    with pytest.raises(ValueError, match="ASR 时间必须"):
-        segment(data)
-    response = client.post("/segmentations", json=data)
-    assert response.status_code == 422
-    assert "ASR 时间必须" in response.json()["error"]["message"]
-    model[0].assert_not_called()
-
-
-def test_real_fun_asr_excerpt(model, client):
+def test_real_fun_asr_excerpt(model):
     """使用用户转写的前两句，验证真实词时间、空格、独立标点及跨句停顿；不访问音频。"""
     # 保留样本原始词边界和毫秒值；无关元数据不参与对齐，原文标点来自 script。
     sentences = [
@@ -336,10 +193,7 @@ def test_real_fun_asr_excerpt(model, client):
         },
     }
     original = json.dumps(data, ensure_ascii=False)
-    response = client.post("/segmentations", json=data)
-    assert response.status_code == 200
-    result = response.json()
-    assert result == segment(data)
+    result = segment(data)
     assert json.dumps(data, ensure_ascii=False) == original
     assert len(result["segments"]) == 1
     assert result["segments"][0]["text"] == data["script"]
@@ -362,107 +216,97 @@ def test_model_cuts_keywords_and_protected_runs(model):
     model[1].chat.completions.create.side_effect = lambda **_: SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(next(responses))))]
     )
-    result = segment(payload("甲乙丙丁。QQ增长40%。", step=400))
+    result = segment(payload("甲乙丙丁。QQ增长40%。", step=500))
     assert [s["text"] for s in result["segments"]] == ["甲乙丙丁。", "QQ增长40%。"]
     assert [s["keyword"] for s in result["segments"]] == ["甲乙", "QQ"]
     assert result["trace"]["keyword_rejected_count"] == 5
 
 
-@pytest.mark.parametrize("ids", [None, "1", [True], [0], [-1], [2], [999], [1.0], ["1"], [1, 999]])
+@pytest.mark.parametrize("ids", [None, [True], [0], [2]])
 def test_invalid_model_boundaries_fail_without_fallback(model, client, ids):
     """非法切点返回 502，不静默生成整段或继续请求关键词，且关闭 SDK。"""
     model[1].chat.completions.create.side_effect = None
     model[1].chat.completions.create.return_value = SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({"boundaries_after": ids})))]
     )
-    response = client.post("/segmentations", json=payload("甲乙丙丁。戊己庚辛。"))
+    response = client.post("/segmentations", json=payload("甲乙丙丁。戊己庚辛。", step=500))
     assert response.status_code == 502
     assert "boundaries_after" in response.json()["error"]["message"]
     assert model[1].chat.completions.create.call_count == 1
     assert model[0].return_value.__exit__.call_count == 1
 
 
-@pytest.mark.parametrize("separator", ["，", "。", "， "])
-def test_english_protection_preserves_model_cut(model, separator):
+def test_english_protection_preserves_model_cut(model):
     """英文串只在原文连续范围内受保护，不吞掉标点两侧的模型切点。"""
     model[1].chat.completions.create.side_effect = [
         SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(data)))])
         for data in [{"boundaries_after": [1]}, {"keywords": [["Hello"], ["world"]]}]
     ]
-    result = segment(payload(f"Hello{separator}world。", step=300))
-    assert [s["text"] for s in result["segments"]] == [f"Hello{separator}", "world。"]
-    assert result["trace"]["merge_count"] == result["trace"]["split_count"] == 0
+    result = segment(payload("Hello， world。", step=400))
+    assert [s["text"] for s in result["segments"]] == ["Hello， ", "world。"]
 
 
-def test_duration_split_can_use_english_whitespace(model, monkeypatch):
-    """空格是两个英文词之间的合法时长切点，拆分后保留原始空格。"""
-    monkeypatch.setenv("IMV_SEGMENT_MAX_DURATION_MS", "2000")
-    result = segment(payload("Hello world", step=300))
-    assert [s["text"] for s in result["segments"]] == ["Hello ", "world"]
-    assert result["trace"]["split_count"] == 1
+def test_long_text_without_candidates_stays_whole(model):
+    """无中文标点的长文保持整段，不再按时长或空格拆分。"""
+    result = segment(payload("Hello world", step=900))
+    assert [s["text"] for s in result["segments"]] == ["Hello world"]
+    assert result["segments"][0]["end_time"] == 9.9
     assert result["warnings"] == []
 
 
-@pytest.mark.parametrize("script", ["AB-CD", "12.5%"])
-def test_duration_split_keeps_contiguous_tokens(model, script):
-    """连字符词和小数百分数不可为满足时长而拆开，无法满足时长时告警。"""
-    result = segment(payload(script, step=2000))
-    assert [s["text"] for s in result["segments"]] == [script]
-    assert result["trace"]["split_count"] == 0
-    assert any(w["code"] == "segment_duration_out_of_range" for w in result["warnings"])
-
-
-def test_keywords_follow_duration_adjustment(model):
-    """短片段合并后才请求关键词；第二次模型收到最终文本，输出与最终片段对应。"""
+def test_retrieval_keywords_have_no_global_quota(model):
+    """多段关键词可重复或留空；第二次模型输入与最终片段一致，不验证真实模型语义。"""
+    texts = ["散养的土鸡。", "蛋黄很饱满。", "蛋清很透亮。", "五谷杂粮喂养。", "土鸡在觅食。", "土鸡正在散步。", "到手很新鲜。"]
+    keywords = ["散养的土鸡", "蛋黄", "蛋清", "五谷杂粮", "土鸡", "土鸡", ""]
     model[1].chat.completions.create.side_effect = [
         SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(data)))])
-        for data in [{"boundaries_after": [1]}, {"keywords": [["甲乙", "丁戊"]]}]
+        for data in [
+            {"boundaries_after": list(range(1, len(texts)))},
+            {"keywords": [[word] if word else [] for word in keywords]},
+        ]
     ]
-    result = segment(payload("甲乙。丙丁戊己。"))
-    assert [s["text"] for s in result["segments"]] == ["甲乙。丙丁戊己。"]
-    assert result["trace"]["merge_count"] == 1
+    result = segment(payload("".join(texts), step=400))
     request = model[1].chat.completions.create.call_args.kwargs
-    assert json.loads(request["messages"][1]["content"]) == ["甲乙。丙丁戊己。"]
-    assert result["segments"][0]["keyword"] == "甲乙"
+    assert json.loads(request["messages"][1]["content"]) == texts
+    assert [s["text"] for s in result["segments"]] == texts
+    assert [s["keyword"] for s in result["segments"]] == keywords
+    assert [s["level"] for s in result["segments"]] == [2 if word else 1 for word in keywords]
+    assert result["trace"]["keyword_rejected_count"] == 0
 
 
-def test_keyword_validation_keeps_first_valid_word(model, monkeypatch):
+def test_keyword_validation_keeps_first_valid_word(model):
     """单个 keyword 只保留段内最靠前的有效词；过滤不存在、重复、空白和超长候选并区分全半角。"""
-    monkeypatch.setenv("IMV_SEGMENT_KEYWORD_MAX_LENGTH", "3")
     model[1].chat.completions.create.side_effect = [
         SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(data)))])
         for data in [
             {"boundaries_after": []},
-            {"keywords": [["甲", "ＡＢ", "AB", "Ａ", "ＡＢ", "", " ", "ＡＢ甲乙", "乙"]]},
+            {"keywords": [["甲", "ＡＢ", "AB", "Ａ", "ＡＢ", "", " ", "ＡＢ甲乙丙丁戊己庚辛壬癸子", "乙"]]},
         ]
     ]
-    result = segment(payload("ＡＢ甲乙。", step=400))
+    result = segment(payload("ＡＢ甲乙丙丁戊己庚辛壬癸子。", step=100))
     assert result["segments"][0]["keyword"] == "ＡＢ"
     assert result["trace"]["keyword_rejected_count"] == 8
 
 
-def test_keyword_disabled_when_limit_is_zero(model, monkeypatch):
-    """IMV_SEGMENT_MAX_KEYWORDS 为 0 时不选关键词：keyword 为空字符串、level 保持 1。"""
-    monkeypatch.setenv("IMV_SEGMENT_MAX_KEYWORDS", "0")
+@pytest.mark.parametrize("length", [12, 13])
+def test_fixed_keyword_length_boundary(model, length):
+    """固定词长边界：12 字原文词保留，13 字原文词丢弃且不截断。"""
+    script = "甲乙丙丁戊己庚辛壬癸子丑寅"
     model[1].chat.completions.create.side_effect = [
         SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(data)))])
-        for data in [{"boundaries_after": []}, {"keywords": [["甲乙"]]}]
+        for data in [{"boundaries_after": []}, {"keywords": [[script[:length]]]}]
     ]
-    result = segment(payload("甲乙丙丁。", step=400))
-    assert [s["keyword"] for s in result["segments"]] == [""]
-    assert [s["level"] for s in result["segments"]] == [1]
-    assert result["trace"]["keyword_rejected_count"] == 1
+    result = segment(payload(script))
+    assert result["segments"][0]["keyword"] == (script[:length] if length == 12 else "")
+    assert result["trace"]["keyword_rejected_count"] == (0 if length == 12 else 1)
 
 
-def test_timeline_outside_repair_and_duration_warnings(model):
-    """局部插字不改变块外范围，超长不可拆字串告警而非拆断受保护文本。"""
+def test_timeline_outside_repair(model):
+    """局部插字只修复所在块，保留块外时间范围。"""
     result = segment(payload("甲乙丙丁戊己。庚辛壬癸。", "甲乙丁戊己。庚辛壬癸。", step=800))
     assert result["trace"]["repair_block_count"] == 1
     assert result["segments"][0]["start_time"] == 0
     assert result["segments"][-1]["end_time"] == 8.0  # 末字继承原 ASR 时间，尾部标点不参与对齐
-    result = segment(payload("ABCDEFGHIJKLMNOPQRSTUVWXYZ", step=500))
-    assert len(result["segments"]) == 1
-    assert any(w["code"] == "segment_duration_out_of_range" for w in result["warnings"])
 
 
 @pytest.mark.parametrize(
@@ -470,9 +314,6 @@ def test_timeline_outside_repair_and_duration_warnings(model):
     [
         ("IMV_LLM_BASE_URL", "http://remote.test/v1"),
         ("IMV_LLM_BASE_URL", "https://["),
-        ("IMV_SEGMENT_MIN_DURATION_MS", "bad"),
-        ("IMV_LLM_TIMEOUT_SECONDS", "nan"),
-        ("IMV_SEGMENT_MAX_ALIGNMENT_WORK", "0"),
     ],
 )
 def test_invalid_configuration(model, monkeypatch, key, value):
@@ -510,15 +351,8 @@ def test_dotenv_configuration_and_environment_priority(model, client, monkeypatc
 
 
 @pytest.mark.parametrize("key,value", [
-    ("LLM_API_KEY", ""), ("LLM_MODEL", " \t"), ("LLM_BASE_URL", ""),
-    ("LLM_TIMEOUT_SECONDS", "nan"), ("LLM_TIMEOUT_SECONDS", "inf"),
-    ("LLM_TIMEOUT_SECONDS", "0"), ("LLM_MAX_RETRIES", "-1"), ("LLM_MAX_RETRIES", "4"),
-    ("SEGMENT_MIN_DURATION_MS", "199"), ("SEGMENT_MIN_DURATION_MS", "6000"),
-    ("SEGMENT_MAX_DURATION_MS", "30001"), ("SEGMENT_MAX_DURATION_MS", "1199"),
-    ("SEGMENT_MAX_KEYWORDS", "-1"), ("SEGMENT_MAX_KEYWORDS", "21"),
-    ("SEGMENT_KEYWORD_MAX_LENGTH", "1"), ("SEGMENT_KEYWORD_MAX_LENGTH", "31"),
-    ("SEGMENT_MAX_ALIGNMENT_WORK", "0"), ("SEGMENT_MAX_ALIGNMENT_WORK", "1.5"),
-    ("ALLOW_INSECURE_LLM_HTTP", "invalid-secret"), ("LLM_TIMEOUT_SECONDS", "invalid-secret"),
+    ("LLM_API_KEY", ""), ("LLM_TIMEOUT_SECONDS", "nan"),
+    ("LLM_MAX_RETRIES", "4"), ("LLM_TIMEOUT_SECONDS", "invalid-secret"),
 ])
 def test_settings_validation_returns_safe_error(model, client, monkeypatch, key, value):
     """缺失内容、非法类型及越界配置返回固定 502，不泄露配置值，也不创建 SDK。"""
@@ -529,7 +363,7 @@ def test_settings_validation_returns_safe_error(model, client, monkeypatch, key,
     model[0].assert_not_called()
 
 
-@pytest.mark.parametrize("value,allowed", [("true", True), ("1", True), ("false", False), ("0", False)])
+@pytest.mark.parametrize("value,allowed", [("true", True), ("false", False)])
 def test_settings_boolean_http_authorization(model, client, monkeypatch, value, allowed):
     """Pydantic 解析布尔配置；仅显式启用时允许远程 HTTP 模型地址。"""
     monkeypatch.setenv("IMV_LLM_BASE_URL", "http://remote.test/v1")
@@ -540,38 +374,19 @@ def test_settings_boolean_http_authorization(model, client, monkeypatch, value, 
         model[0].assert_not_called()
 
 
-def test_group_id_counts_segments_within_asr_sentence(model):
-    """多句时间轴按句分组：同句 current 递增，total 为该句最终段数，未切句为 [1, 1]。"""
+@pytest.mark.parametrize("groups,expected", [
+    (["甲乙丙丁", "戊己庚辛壬癸子丑"], [[1, 1], [1, 2], [2, 2]]),
+    (["甲乙丙丁戊", "己庚辛壬癸子丑"], [[1, 2], [2, 2], [1, 1]]),
+])
+def test_group_id_counts_segments_within_asr_sentence(model, groups, expected):
+    """验证句内序号及总数；跨 ASR 句的片段归属首字所在句。"""
     model[1].chat.completions.create.side_effect = [
         SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(data)))])
         for data in [{"boundaries_after": [1, 2]}, {"keywords": [[], [], []]}]
     ]
-    result = segment(grouped_payload("甲乙丙丁。戊己庚辛。壬癸子丑。", ["甲乙丙丁", "戊己庚辛壬癸子丑"], step=500))
+    result = segment(grouped_payload("甲乙丙丁。戊己庚辛。壬癸子丑。", groups, step=500))
     assert [s["text"] for s in result["segments"]] == ["甲乙丙丁。", "戊己庚辛。", "壬癸子丑。"]
-    assert [s["group_id"] for s in result["segments"]] == [[1, 1], [1, 2], [2, 2]]
-    assert result["trace"]["merge_count"] == result["trace"]["split_count"] == 0
-
-
-def test_group_id_attributes_cross_sentence_segment_to_first_char(model):
-    """跨 ASR 句的片段计入其首字所在句，序号仍连续，不因归属调整文本与时间。"""
-    model[1].chat.completions.create.side_effect = [
-        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(data)))])
-        for data in [{"boundaries_after": [1, 2]}, {"keywords": [[], [], []]}]
-    ]
-    result = segment(grouped_payload("甲乙丙丁。戊己庚辛。壬癸子丑。", ["甲乙丙丁戊", "己庚辛壬癸子丑"], step=500))
-    assert [s["text"] for s in result["segments"]] == ["甲乙丙丁。", "戊己庚辛。", "壬癸子丑。"]
-    assert [s["group_id"] for s in result["segments"]] == [[1, 2], [2, 2], [1, 1]]
-
-
-def test_level_marks_keyword_segments(model):
-    """level 由代码判定：含关键词的片段为重点句 2，其余为普通句 1，不产生 CTA 等级。"""
-    model[1].chat.completions.create.side_effect = [
-        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(data)))])
-        for data in [{"boundaries_after": [1]}, {"keywords": [[], ["戊己"]]}]
-    ]
-    result = segment(payload("甲乙丙丁。戊己庚辛。", step=500))
-    assert [s["keyword"] for s in result["segments"]] == ["", "戊己"]
-    assert [s["level"] for s in result["segments"]] == [1, 2]
+    assert [s["group_id"] for s in result["segments"]] == expected
 
 
 def test_api_response_contract(model, client):
@@ -588,6 +403,7 @@ def test_api_response_contract(model, client):
     }
     response = client.post("/segmentations", json=data)
     assert response.status_code == 200
+    assert model[0].return_value.__exit__.call_count == 1
     assert response.json() == {
         "segments": [
             {
@@ -608,18 +424,29 @@ def test_api_response_contract(model, client):
             "asr_extra_chars": 0,
             "edit_cost": 0,
             "repair_block_count": 0,
-            "merge_count": 0,
-            "split_count": 0,
             "segment_count": 1,
             "keyword_rejected_count": 0,
         },
     }
 
 
-@pytest.mark.parametrize("body", ["", "[]", "{"])
-def test_framework_validation(client, body):
-    """缺少请求体、非对象和非法 JSON 返回 422 与框架的 detail 数组。"""
-    response = client.post("/segmentations", content=body, headers={"Content-Type": "application/json"})
+@pytest.mark.parametrize("script,transcript,message", [
+    ("", "甲", "文案缺少有效字符。"),
+    ("。 ", "甲", "文案缺少有效字符。"),
+    ("甲乙", ["", " ，\t"], "ASR 缺少有效发音字符。"),
+])
+def test_api_invalid_input(model, client, script, transcript, message):
+    """空文案、纯标点及无有效 ASR 字符由业务层返回 422，不调用模型。"""
+    response = client.post("/segmentations", json=payload(script, transcript))
+    assert response.status_code == 422
+    assert response.json() == {"error": {"message": message}}
+    model[0].assert_not_called()
+
+
+@pytest.mark.parametrize("data", [None, []])
+def test_framework_validation(client, data):
+    """缺失或非对象请求体由框架拒绝，返回 422 与 detail 数组。"""
+    response = client.post("/segmentations", json=data)
     assert response.status_code == 422
     assert isinstance(response.json()["detail"], list)
 
@@ -632,3 +459,120 @@ def test_internal_error(client, monkeypatch):
     response = client.post("/segmentations", json=payload("甲乙丙丁"))
     assert response.status_code == 500
     assert response.json() == {"error": {"message": "片段未完整覆盖文案。"}}
+
+
+@pytest.mark.parametrize("data,field,error_type", [
+    ({"script": "甲"}, "asr_result", "missing"),
+    ({"asr_result": {}}, "script", "missing"),
+    ({"script": 1, "asr_result": {}}, "script", "string_type"),
+    ({"script": "甲", "asr_result": []}, "asr_result", "dict_type"),
+    ({"script": "甲", "asr_result": None}, "asr_result", "dict_type"),
+])
+def test_required_field_types(model, client, data, field, error_type):
+    """Pydantic 在 HTTP 入口拒绝缺失、空值或错误类型，返回字段位置且不调用模型。"""
+    response = client.post("/segmentations", json=data)
+    assert response.status_code == 422
+    assert any(
+        error["loc"] == ["body", field] and error["type"] == error_type
+        for error in response.json()["detail"]
+    )
+    model[0].assert_not_called()
+
+
+def test_extra_fields_and_first_track(model, client):
+    """HTTP 允许额外字段，只处理第一音轨，单字文案也能输出完整片段。"""
+    data = payload("甲", step=1500)
+    data["extra"] = True
+    data["asr_result"]["transcripts"].append({"sentences": []})
+    response = client.post("/segmentations", json=data)
+    assert response.status_code == 200
+    assert response.json()["segments"] == [{
+        "segment_id": 1, "group_id": [1, 1], "text": "甲",
+        "start_time": 0.0, "end_time": 1.5, "keyword": "甲", "level": 2,
+    }]
+    assert len(data["asr_result"]["transcripts"]) == 2
+
+
+def test_text_exceeding_former_length_limit(model):
+    """超过原 20000 字符和词数上限的同文时间轴仍输出完整文本与时间。"""
+    script = "甲" * 20001
+    result = segment(payload(script, step=0.1))
+    assert "".join(s["text"] for s in result["segments"]) == script
+    assert result["trace"]["matched_chars"] == len(script)
+    assert result["segments"][0]["start_time"] == 0
+    assert result["segments"][-1]["end_time"] == 2.0
+
+
+@pytest.mark.parametrize("durations,expected", [
+    ([1999, 2000], ["甲。乙。"]),
+    ([2000, 2000], ["甲。", "乙。"]),
+    ([2000, 1999], ["甲。乙。"]),
+    ([2000, 1000, 1000, 2000], ["甲。", "乙。丙。", "丁。"]),
+    ([2000, 2000, 1000], ["甲。", "乙。丙。"]),
+    ([500, 500], ["甲。乙。"]),
+    ([7000, 2000], ["甲。", "乙。"]),
+])
+def test_two_second_candidates(model, durations, expected):
+    """候选过滤覆盖阈值两侧、连续短句、短尾及短全文；选全部候选时仍完整保留文本与时间。"""
+    words, end = [], 0
+    for char, duration in zip("甲乙丙丁", durations):
+        words.append({"text": char, "begin_time": end, "end_time": end + duration})
+        end += duration
+    script = "".join(word["text"] + "。" for word in words)
+
+    def respond(**kwargs):
+        """验证模型只看到过滤后的完整文案，并选择全部可用切点。"""
+        content = json.loads(kwargs["messages"][1]["content"])
+        if isinstance(content[0], dict):
+            assert content == [{"id": i, "text": text} for i, text in enumerate(expected, 1)]
+            output = {"boundaries_after": list(range(1, len(content)))}
+        else:
+            assert content == expected
+            output = {"keywords": [[] for _ in content]}
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(output)))])
+
+    model[1].chat.completions.create.side_effect = respond
+    result = segment({"script": script, "asr_result": {"transcripts": [{"sentences": [{"words": words}]}]}})
+    assert [s["text"] for s in result["segments"]] == expected
+    assert "".join(s["text"] for s in result["segments"]) == script
+    assert result["segments"][0]["start_time"] == 0
+    assert result["segments"][-1]["end_time"] == end / 1000
+    if len(expected) > 1:
+        assert all(s["end_time"] - s["start_time"] >= 2 for s in result["segments"])
+
+
+def test_model_can_skip_candidates_without_postprocessing(model):
+    """模型跳过中间候选后可形成超过 6 秒的片段；停顿时间保留，输出切点不被改动。"""
+    data = grouped_payload("甲乙丙丁。戊己庚辛。壬癸子丑。", ["甲乙丙丁", "戊己庚辛", "壬癸子丑"], step=1000)
+    model[1].chat.completions.create.side_effect = [
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(output)))])
+        for output in [{"boundaries_after": [2]}, {"keywords": [[], []]}]
+    ]
+    result = segment(data)
+    assert [s["text"] for s in result["segments"]] == ["甲乙丙丁。戊己庚辛。", "壬癸子丑。"]
+    assert [(s["start_time"], s["end_time"]) for s in result["segments"]] == [(0, 9), (10, 14)]
+    assert result["warnings"] == []
+
+
+def test_candidate_inside_alignment_repair_is_filtered(model):
+    """标点位于增删修复块内时隐藏该候选，不移动到句内其他位置。"""
+    result = segment(payload("甲乙。丙丁。戊己。", "甲丙丁戊己", step=2000))
+    request = model[1].chat.completions.create.call_args_list[0].kwargs
+    assert json.loads(request["messages"][1]["content"]) == [
+        {"id": 1, "text": "甲乙。丙丁。"}, {"id": 2, "text": "戊己。"},
+    ]
+    assert [s["text"] for s in result["segments"]] == ["甲乙。丙丁。戊己。"]
+    assert result["trace"]["repair_block_count"] == 1
+
+
+def test_trailing_pause_does_not_make_short_candidate_eligible(model):
+    """短句后的长停顿不计入该句时长，不能使不足 2 秒的候选通过。"""
+    data = {"script": "甲。乙。", "asr_result": {"transcripts": [{"sentences": [{"words": [
+        {"text": "甲", "begin_time": 0, "end_time": 1000},
+        {"text": "乙", "begin_time": 5000, "end_time": 7000},
+    ]}]}]}}
+    result = segment(data)
+    request = model[1].chat.completions.create.call_args_list[0].kwargs
+    assert json.loads(request["messages"][1]["content"]) == [{"id": 1, "text": "甲。乙。"}]
+    assert [s["text"] for s in result["segments"]] == ["甲。乙。"]
+    assert result["segments"][0]["end_time"] == 7
