@@ -30,6 +30,19 @@ def payload(script, transcript=None, step=200):
     }
 
 
+def grouped_payload(script, groups, step=200):
+    """按 groups 把语料切成多个 ASR 句构造单调时间轴，句间留一个 step 的停顿。"""
+    sentences, begin = [], 0
+    for group in groups:
+        words = []
+        for char in group:
+            words.append({"text": char, "begin_time": begin, "end_time": begin + step})
+            begin += step
+        begin += step
+        sentences.append({"words": words})
+    return {"script": script, "asr_result": {"transcripts": [{"sentences": sentences}]}}
+
+
 @pytest.fixture
 def model(monkeypatch):
     """显式设置测试配置，用 SDK 上下文替身返回切点与可回溯关键词。"""
@@ -74,13 +87,12 @@ def test_alignment_and_contract(model, script, transcript, cost):
     assert "".join(s["text"] for s in result["segments"]) == script
     previous = 0
     for item in result["segments"]:
-        assert previous <= item["start_time_ms"] < item["end_time_ms"]
-        previous = item["end_time_ms"]
-        for word in item["keywords"]:
-            assert set(word) == {"text"}
-            assert word["text"] in item["text"]
-    assert result["segments"][0]["start_time_ms"] == 0
-    assert previous == len(transcript) * 200
+        assert previous <= item["start_time"] < item["end_time"]
+        previous = item["end_time"]
+        if item["keyword"]:
+            assert item["keyword"] in item["text"]
+    assert result["segments"][0]["start_time"] == 0
+    assert previous == len(transcript) * 200 / 1000
     assert model[0].return_value.__exit__.call_count == 1
     assert model[0].call_args.kwargs["max_retries"] == 1
 
@@ -109,8 +121,8 @@ def test_asr_extra_characters_warn_at_accepted_match_ratios(model, transcript):
     """ASR 多字计入匹配率；含恰好 50% 匹配的可接受输入保留文本、时间并告警。"""
     result = segment(payload("甲乙丙丁", transcript, step=500))
     assert [item["text"] for item in result["segments"]] == ["甲乙丙丁"]
-    assert result["segments"][0]["start_time_ms"] == 0
-    assert result["segments"][0]["end_time_ms"] == len(transcript) * 500
+    assert result["segments"][0]["start_time"] == 0
+    assert result["segments"][0]["end_time"] == len(transcript) * 500 / 1000
     assert result["trace"]["asr_extra_chars"] == len(transcript) - 4
     assert any(warning["code"] == "low_alignment_match_ratio" for warning in result["warnings"])
 
@@ -122,8 +134,8 @@ def test_ignored_asr_words_preserve_timing(model, client, text):
     result = segment(data)
     assert len(result["segments"]) == 1
     assert result["segments"][0]["text"] == "甲乙丙丁"
-    assert result["segments"][0]["start_time_ms"] == 500
-    assert result["segments"][0]["end_time_ms"] == 2000
+    assert result["segments"][0]["start_time"] == 0.5
+    assert result["segments"][0]["end_time"] == 2.0
     assert result["trace"]["matched_chars"] == 4
     assert result["trace"]["edit_cost"] == 0
     response = client.post("/segmentations", json=data)
@@ -331,14 +343,16 @@ def test_real_fun_asr_excerpt(model, client):
     assert json.dumps(data, ensure_ascii=False) == original
     assert len(result["segments"]) == 1
     assert result["segments"][0]["text"] == data["script"]
-    assert result["segments"][0]["start_time_ms"] == 160
-    assert result["segments"][0]["end_time_ms"] == 3440
+    assert result["segments"][0]["start_time"] == 0.16
+    assert result["segments"][0]["end_time"] == 3.44
     assert result["trace"]["edit_cost"] == 0
     assert result["warnings"] == []
+    # 单段横跨两个 ASR 句时按首字归属，仍报第一句且不因此切分文本。
+    assert result["segments"][0]["group_id"] == [1, 1]
 
 
 def test_model_cuts_keywords_and_protected_runs(model):
-    """模型切点去重后用于分段；保留有效长短关键词，过滤不存在及重复候选。"""
+    """模型切点去重后用于分段；每段只保留原文最靠前的有效词，过滤不存在及重复候选。"""
     responses = iter(
         [
             {"boundaries_after": [1, 1]},
@@ -350,8 +364,8 @@ def test_model_cuts_keywords_and_protected_runs(model):
     )
     result = segment(payload("甲乙丙丁。QQ增长40%。", step=400))
     assert [s["text"] for s in result["segments"]] == ["甲乙丙丁。", "QQ增长40%。"]
-    assert [[k["text"] for k in s["keywords"]] for s in result["segments"]] == [["甲乙", "甲"], ["QQ", "40%"]]
-    assert result["trace"]["keyword_rejected_count"] == 3
+    assert [s["keyword"] for s in result["segments"]] == ["甲乙", "QQ"]
+    assert result["trace"]["keyword_rejected_count"] == 5
 
 
 @pytest.mark.parametrize("ids", [None, "1", [True], [0], [-1], [2], [999], [1.0], ["1"], [1, 999]])
@@ -409,12 +423,11 @@ def test_keywords_follow_duration_adjustment(model):
     assert result["trace"]["merge_count"] == 1
     request = model[1].chat.completions.create.call_args.kwargs
     assert json.loads(request["messages"][1]["content"]) == ["甲乙。丙丁戊己。"]
-    assert result["segments"][0]["keywords"] == [{"text": "甲乙"}, {"text": "丁戊"}]
+    assert result["segments"][0]["keyword"] == "甲乙"
 
 
-def test_keyword_validation_preserves_exact_text_and_limits(model, monkeypatch):
-    """关键词保留有效包含词和单字，按原文排序，并检查全半角、长度、去重及数量上限。"""
-    monkeypatch.setenv("IMV_SEGMENT_MAX_KEYWORDS", "3")
+def test_keyword_validation_keeps_first_valid_word(model, monkeypatch):
+    """单个 keyword 只保留段内最靠前的有效词；过滤不存在、重复、空白和超长候选并区分全半角。"""
     monkeypatch.setenv("IMV_SEGMENT_KEYWORD_MAX_LENGTH", "3")
     model[1].chat.completions.create.side_effect = [
         SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(data)))])
@@ -424,16 +437,29 @@ def test_keyword_validation_preserves_exact_text_and_limits(model, monkeypatch):
         ]
     ]
     result = segment(payload("ＡＢ甲乙。", step=400))
-    assert result["segments"][0]["keywords"] == [{"text": "ＡＢ"}, {"text": "Ａ"}, {"text": "甲"}]
-    assert result["trace"]["keyword_rejected_count"] == 6
+    assert result["segments"][0]["keyword"] == "ＡＢ"
+    assert result["trace"]["keyword_rejected_count"] == 8
+
+
+def test_keyword_disabled_when_limit_is_zero(model, monkeypatch):
+    """IMV_SEGMENT_MAX_KEYWORDS 为 0 时不选关键词：keyword 为空字符串、level 保持 1。"""
+    monkeypatch.setenv("IMV_SEGMENT_MAX_KEYWORDS", "0")
+    model[1].chat.completions.create.side_effect = [
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(data)))])
+        for data in [{"boundaries_after": []}, {"keywords": [["甲乙"]]}]
+    ]
+    result = segment(payload("甲乙丙丁。", step=400))
+    assert [s["keyword"] for s in result["segments"]] == [""]
+    assert [s["level"] for s in result["segments"]] == [1]
+    assert result["trace"]["keyword_rejected_count"] == 1
 
 
 def test_timeline_outside_repair_and_duration_warnings(model):
     """局部插字不改变块外范围，超长不可拆字串告警而非拆断受保护文本。"""
     result = segment(payload("甲乙丙丁戊己。庚辛壬癸。", "甲乙丁戊己。庚辛壬癸。", step=800))
     assert result["trace"]["repair_block_count"] == 1
-    assert result["segments"][0]["start_time_ms"] == 0
-    assert result["segments"][-1]["end_time_ms"] == 8000  # 末字继承原 ASR 时间，尾部标点不参与对齐
+    assert result["segments"][0]["start_time"] == 0
+    assert result["segments"][-1]["end_time"] == 8.0  # 末字继承原 ASR 时间，尾部标点不参与对齐
     result = segment(payload("ABCDEFGHIJKLMNOPQRSTUVWXYZ", step=500))
     assert len(result["segments"]) == 1
     assert any(w["code"] == "segment_duration_out_of_range" for w in result["warnings"])
@@ -514,8 +540,42 @@ def test_settings_boolean_http_authorization(model, client, monkeypatch, value, 
         model[0].assert_not_called()
 
 
+def test_group_id_counts_segments_within_asr_sentence(model):
+    """多句时间轴按句分组：同句 current 递增，total 为该句最终段数，未切句为 [1, 1]。"""
+    model[1].chat.completions.create.side_effect = [
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(data)))])
+        for data in [{"boundaries_after": [1, 2]}, {"keywords": [[], [], []]}]
+    ]
+    result = segment(grouped_payload("甲乙丙丁。戊己庚辛。壬癸子丑。", ["甲乙丙丁", "戊己庚辛壬癸子丑"], step=500))
+    assert [s["text"] for s in result["segments"]] == ["甲乙丙丁。", "戊己庚辛。", "壬癸子丑。"]
+    assert [s["group_id"] for s in result["segments"]] == [[1, 1], [1, 2], [2, 2]]
+    assert result["trace"]["merge_count"] == result["trace"]["split_count"] == 0
+
+
+def test_group_id_attributes_cross_sentence_segment_to_first_char(model):
+    """跨 ASR 句的片段计入其首字所在句，序号仍连续，不因归属调整文本与时间。"""
+    model[1].chat.completions.create.side_effect = [
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(data)))])
+        for data in [{"boundaries_after": [1, 2]}, {"keywords": [[], [], []]}]
+    ]
+    result = segment(grouped_payload("甲乙丙丁。戊己庚辛。壬癸子丑。", ["甲乙丙丁戊", "己庚辛壬癸子丑"], step=500))
+    assert [s["text"] for s in result["segments"]] == ["甲乙丙丁。", "戊己庚辛。", "壬癸子丑。"]
+    assert [s["group_id"] for s in result["segments"]] == [[1, 2], [2, 2], [1, 1]]
+
+
+def test_level_marks_keyword_segments(model):
+    """level 由代码判定：含关键词的片段为重点句 2，其余为普通句 1，不产生 CTA 等级。"""
+    model[1].chat.completions.create.side_effect = [
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(data)))])
+        for data in [{"boundaries_after": [1]}, {"keywords": [[], ["戊己"]]}]
+    ]
+    result = segment(payload("甲乙丙丁。戊己庚辛。", step=500))
+    assert [s["keyword"] for s in result["segments"]] == ["", "戊己"]
+    assert [s["level"] for s in result["segments"]] == [1, 2]
+
+
 def test_api_response_contract(model, client):
-    """词级时间轴经 HTTP 返回完整片段、毫秒时间、无偏移关键词及诊断计数。"""
+    """词级时间轴经 HTTP 返回完整片段、秒制时间、字符串关键词及诊断计数。"""
     model[1].chat.completions.create.side_effect = [
         SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(data)))])
         for data in [{"boundaries_after": []}, {"keywords": [["世界"]]}]
@@ -531,11 +591,13 @@ def test_api_response_contract(model, client):
     assert response.json() == {
         "segments": [
             {
-                "segment_id": "seg_001",
+                "segment_id": 1,
+                "group_id": [1, 1],
                 "text": "你好世界。",
-                "start_time_ms": 0,
-                "end_time_ms": 2000,
-                "keywords": [{"text": "世界"}],
+                "start_time": 0.0,
+                "end_time": 2.0,
+                "keyword": "世界",
+                "level": 2,
             }
         ],
         "warnings": [],
