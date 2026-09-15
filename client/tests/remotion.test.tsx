@@ -783,3 +783,46 @@ test.each([404, 503])("新版 Export 持续 %s 时保留结果并继续会话", 
   view.unmount();
   expect(fake.streams.size).toBe(0);
 });
+
+// Enter 或点击恢复前的失焦先排队参数提交，读取恢复必须等该操作结束才可执行。
+test.each(["Enter", "blur"])("参数%s提交期间不能读取恢复旧基线", async (trigger) => {
+  let available = false;
+  let finish: ((response: Response) => void) | undefined;
+  const submitted: {base_version_id: string; parameters: Values}[] = [];
+  const fake = server((path, options) => {
+    if (path === "/versions/version-2")
+      return Response.json(remotionVersion("version-2", {text: "新标题", size: 72}));
+    if (path === "/versions/version-2/artifacts/Export.tsx")
+      return available ? new Response('export const title = "新标题";') : new Response(null, {status: 404});
+    if (path.endsWith("/messages")) {
+      submitted.push(JSON.parse(String(options?.body)));
+      return new Promise(resolve => { finish = resolve; });
+    }
+  });
+  render(<RemotionWorkspace />);
+  await generate();
+  await waitFor(() => expect(fake.streams.size).toBe(1));
+  await act(async () => fake.advance({...remotionJob("succeeded", "version-2"), id: "edit-2"}));
+  const retry = await screen.findByRole<HTMLButtonElement>("button", {name: "重新读取结果"});
+  const snapshots = fetchMock.mock.calls.filter(call => String(call[0]).endsWith("/session")).length;
+  available = true;
+  const size = screen.getByLabelText("字号");
+  fireEvent.change(size, {target: {value: "80"}});
+  if (trigger === "Enter") fireEvent.keyDown(size, {key: "Enter"});
+  else fireEvent.blur(size);
+  fireEvent.click(retry);
+  expect(retry.disabled).toBe(true);
+  expect(fetchMock.mock.calls.filter(call => String(call[0]).endsWith("/session"))).toHaveLength(snapshots);
+  await waitFor(() => expect(submitted).toHaveLength(1), {timeout: 2000});
+  expect(retry.disabled).toBe(true);
+  expect(submitted[0].base_version_id).toBe("version-1");
+  expect(submitted[0].parameters).toMatchObject({size: 80, text: "今日灵感"});
+  // 该操作结束后的快照恢复才接收 v2；延迟任务不得再次覆盖新标题。
+  await act(async () => finish!(Response.json({...remotionJob("answered"), id: "edit-3", message: "保留现状"})));
+  await waitFor(() => expect(screen.getByLabelText("模板 TSX 代码").textContent).toContain("新标题"));
+  await previewReady();
+  await act(async () => new Promise(resolve => setTimeout(resolve, 700)));
+  expect(screen.getByLabelText<HTMLInputElement>("文字").value).toBe("新标题");
+  expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("72");
+  expect(submitted).toHaveLength(1);
+});

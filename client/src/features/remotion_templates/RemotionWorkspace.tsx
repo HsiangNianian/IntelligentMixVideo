@@ -77,7 +77,7 @@ export function RemotionWorkspace() {
             <Button
               variant="outline"
               size="sm"
-              disabled={!!session.busy}
+              disabled={!!session.busy || session.loading || session.dirty}
               onClick={session.retry}
             >
               {session.retryMode === "read"

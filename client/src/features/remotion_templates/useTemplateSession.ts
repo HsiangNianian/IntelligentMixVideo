@@ -355,7 +355,8 @@ export function useTemplateSession(onHistoryChange: () => void) {
     publish({ values, error: "", retryMode: null });
     window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => {
-      if (current(s.key))
+      // SSE 若已接受新版本，丢弃基于旧版本的延迟参数，避免覆盖新结果。
+      if (current(s.key) && latest.current.version?.id === s.version?.id)
         void execute("parameters", () =>
           api.message(s.workId!, {
             parameters: values,
@@ -380,6 +381,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
   /** 会话和产物恢复只读取；重试失败任务才创建执行，按钮明确区分。 */
   function retry() {
     const s = latest.current;
+    if (s.busy || s.loading || dirty()) return;
     if (
       (s.retryMode === "read" || (!s.retryMode && s.versionFailure)) &&
       s.workId

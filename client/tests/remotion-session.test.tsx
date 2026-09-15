@@ -110,3 +110,49 @@ test("快照产物失败不阻塞 SSE 与断线续传", async () => {
   unmount();
   expect(fake.streams.size).toBe(0);
 });
+
+// 同一轮直接调用 hook 也必须阻止恢复与待提交参数竞争，不能只依赖按钮 disabled。
+test("hook 在参数待提交及读取期间拒绝重复恢复", async () => {
+  let release: ((response: Response) => void) | undefined;
+  let holdRead = false;
+  const fake = remotionServer((path) => {
+    if (holdRead && path.endsWith("/session"))
+      return new Promise(resolve => { release = resolve; });
+    if (path.endsWith("/messages")) return new Response(null, {status: 503});
+    if (path.includes("version-2") && path.endsWith("/artifacts/Export.tsx"))
+      return new Response(null, {status: 404});
+  });
+  const {result} = renderHook(() => useTemplateSession(() => {}));
+  act(() => result.current.send("初始标题"));
+  await waitFor(() => expect(result.current.version?.id).toBe("version-1"));
+  await waitFor(() => expect(fake.streams.size).toBe(1));
+  await act(async () => fake.advance(remotionJob("succeeded", "version-2")));
+  await waitFor(() => expect(result.current.retryMode).toBe("version"));
+  const reads = () => fetchMock.mock.calls.filter(call => String(call[0]).endsWith("/session")).length;
+  const before = reads();
+  act(() => { result.current.change("size", 80); result.current.retry(); });
+  expect(reads()).toBe(before);
+  await waitFor(() => expect(result.current.retryMode).toBe("read"), {timeout: 2000});
+  holdRead = true;
+  act(() => { result.current.retry(); result.current.retry(); result.current.change("size", 96); });
+  expect(reads()).toBe(before + 1);
+  expect(result.current.loading).toBe(true);
+  expect(result.current.values.size).toBe(64);
+  await act(async () => release!(Response.json(fake.snapshots.get("work-1"))));
+  await waitFor(() => expect(result.current.loading).toBe(false));
+});
+
+// SSE 在延迟窗口内接收了更新版本时，旧定时器不能再提交捕获的版本与全量参数。
+test("参数延迟提交前核对当前成功版本", async () => {
+  const fake = remotionServer();
+  const {result} = renderHook(() => useTemplateSession(() => {}));
+  act(() => result.current.send("初始标题"));
+  await waitFor(() => expect(result.current.version?.id).toBe("version-1"));
+  await waitFor(() => expect(fake.streams.size).toBe(1));
+  act(() => result.current.change("size", 80));
+  await act(async () => fake.advance(remotionJob("succeeded", "version-2")));
+  await waitFor(() => expect(result.current.version?.id).toBe("version-2"));
+  await act(async () => new Promise(resolve => setTimeout(resolve, 700)));
+  expect(fetchMock.mock.calls.filter(call => String(call[0]).endsWith("/messages"))).toHaveLength(0);
+  expect(result.current.values.size).toBe(64);
+});
