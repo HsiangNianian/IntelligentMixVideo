@@ -621,11 +621,18 @@ def test_renderer_timeout_and_cancellation_reap_process(
         "bun.lock",
         "font",
         "browser",
+        "node",
+        "ffprobe",
     ):
         (inputs / name).write_text("offline test fixture")
     settings.renderer_dir = inputs
     settings.font_regular = settings.font_bold = inputs / "font"
     settings.browser_executable = inputs / "browser"
+    # Fingerprinting uses fixture files; only the harmless Python child executes.
+    monkeypatch.setattr(
+        "server.remotion_templates.renderer.shutil.which",
+        lambda name: str(inputs / name),
+    )
     settings.render_timeout_seconds = 1
     renderer = Renderer(settings)
     pid_path = tmp_path / "worker.pid"
@@ -642,20 +649,29 @@ def test_renderer_timeout_and_cancellation_reap_process(
         task = asyncio.create_task(
             renderer.validate(candidate, spec, tmp_path / "attempt")
         )
-        async with asyncio.timeout(3):
-            while not pid_path.exists():
-                await asyncio.sleep(0.01)
-            if cancel:
+        try:
+            async with asyncio.timeout(3):
+                while not pid_path.exists():
+                    if task.done():
+                        _, report = await task
+                        pytest.fail(f"Child did not start: {report.model_dump_json()}")
+                    await asyncio.sleep(0.01)
+                if cancel:
+                    task.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await task
+                else:
+                    _, report = await task
+                    assert not report.passed
+                    assert any(
+                        check.name == "renderer_environment" and check.status == "fail"
+                        for check in report.checks
+                    )
+        finally:
+            # A failed handshake must not leave a task or child running past the test.
+            if not task.done():
                 task.cancel()
-                with pytest.raises(asyncio.CancelledError):
-                    await task
-            else:
-                _, report = await task
-                assert not report.passed
-                assert any(
-                    check.name == "renderer_environment" and check.status == "fail"
-                    for check in report.checks
-                )
+                await asyncio.gather(task, return_exceptions=True)
         with pytest.raises(ProcessLookupError):
             os.kill(int(pid_path.read_text()), 0)
 
