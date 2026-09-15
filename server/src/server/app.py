@@ -1,6 +1,6 @@
-"""组装模板库、切片与示例 API，并挂载独立的 Remotion 模板生成服务。
+"""组装模板库、切片、异步合成与示例 API，挂载独立 Remotion 服务。
 
-主应用保留数据库启动检查、连接清理及统一校验与数据库错误处理。
+退出先收束合成任务，再释放数据库连接；保留主应用校验和数据库错误处理。
 """
 
 from contextlib import asynccontextmanager
@@ -16,20 +16,28 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
 from .database import close_database, initialize_database
+from .segmentation.router import router as segmentation_router
 from .sub_api.router import router
-from .sub_api.segmentation import router as segmentation_router
 from .template.router import router as template_router
 from .remotion_templates.api import app as remotion_templates_app
+from .video_composition.router import router as composition_router
+from .video_composition.service import Runtime
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """启动前检查并创建缺失数据库；初始化失败或正常退出时都释放连接池。"""
+    """初始化数据库后恢复合成任务；启动失败和退出均先收束后台工作再关闭连接池。"""
+    runtime = Runtime()
+    app.state.video_composition = runtime
     try:
         initialize_database()
+        await runtime.start()
         yield
     finally:
-        close_database()
+        try:
+            await runtime.close()
+        finally:
+            close_database()
 
 
 # 允许本地 Vite 与 Tauri 客户端访问 API；Windows 正式客户端使用动态 localhost 端口。
@@ -52,6 +60,7 @@ app.include_router(router)
 app.include_router(template_router)
 app.include_router(segmentation_router)
 app.mount("/api/templates", remotion_templates_app)
+app.include_router(composition_router)
 
 
 @app.exception_handler(SQLAlchemyError)
@@ -71,7 +80,7 @@ async def validation_error(request: Request, exc: RequestValidationError) -> JSO
     return JSONResponse(status_code=422, content={"detail": errors})
 
 
-@app.get("/")
+@app.get("/", tags=["首页"])
 def root() -> dict[str, str]:
     """返回首页消息，供本地启动后确认应用可访问。"""
     return {"msg": "首页"}

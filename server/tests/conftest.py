@@ -3,8 +3,10 @@
 路由仍调用真实 schema/store；仅适配排序规则和唯一约束错误码，不模拟 MySQL 行锁或建库。
 """
 
+import json
 import os
 import sqlite3
+from datetime import datetime
 from collections.abc import Iterator
 from functools import partial
 from pathlib import Path
@@ -25,7 +27,7 @@ from server.template import store
 def isolate_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """清除外部切片与 ASR 配置并切换临时目录；配置专项测试须显式注入。"""
     for key in list(os.environ):
-        if key.upper().startswith("IMV_") or key.upper() in ("DASHSCOPE_API_KEY", "ASR_BASE_URL"):
+        if key.upper().startswith(("IMV_", "COMPOSITION_", "SEGMENT_MATCH_", "IMS_", "MIX_VIDEO_ALIYUN_IMS_", "ALIBABA_CLOUD_")) or key.upper() in ("DASHSCOPE_API_KEY", "ASR_BASE_URL"):
             monkeypatch.delenv(key)
     monkeypatch.chdir(tmp_path)
 
@@ -36,6 +38,7 @@ def template_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Eng
     engine = create_engine(
         f"sqlite:///{tmp_path / 'templates.sqlite3'}",
         connect_args={"check_same_thread": False},
+        json_serializer=lambda value: json.dumps(value, ensure_ascii=False),
     )
 
     @event.listens_for(engine, "connect")
@@ -161,3 +164,106 @@ def asr_responses():
             ]
         },
     ]
+
+
+@pytest.fixture
+def composition_settings(monkeypatch, asr_env):
+    """显式提供合成假配置，所有上游请求仍须各用例替换，禁止使用真实 .env。"""
+    from server.video_composition.settings import Settings
+
+    for key, value in {
+        "SEGMENT_MATCH_BASE_URL": "https://matching.example.test/deployment",
+        "SEGMENT_MATCH_AUTHORIZATION": "Bearer test-only",
+        "ALIBABA_CLOUD_ACCESS_KEY_ID": "test-id",
+        "ALIBABA_CLOUD_ACCESS_KEY_SECRET": "test-secret",
+        "COMPOSITION_POLL_SECONDS": "0.01",
+        "COMPOSITION_HTTP_TIMEOUT_SECONDS": "1",
+        "COMPOSITION_MATCH_WAIT_SECONDS": "0.1",
+        "IMV_LLM_BASE_URL": "https://llm.example.test/v1",
+        "IMV_LLM_API_KEY": "test-key",
+        "IMV_LLM_MODEL": "test-model",
+    }.items():
+        monkeypatch.setenv(key, value)
+    return Settings()
+
+
+@pytest.fixture
+def composition_case(template_db, template_payload):
+    """真实模板存储生成快照，搭配有前后静音和片段空隙的脱敏业务数据。"""
+    from server.template.schema import TemplateSave
+
+    template = store.save_template(TemplateSave.model_validate(template_payload))
+    segments = [
+        {"segment_id": 1, "text": "甲乙丙丁。", "start_time": 1, "end_time": 3,
+         "keyword": "甲乙", "level": 2, "group_id": [1, 2]},
+        {"segment_id": 2, "text": "戊己庚辛。", "start_time": 4, "end_time": 6,
+         "keyword": "", "level": 1, "group_id": [2, 2]},
+    ]
+    return {
+        "request": {"text": "甲乙丙丁。戊己庚辛。", "title": "业务标题\n保留换行",
+                    "videoUrl": "https://media.example.test/avatar.mp4?token=a%2Fb&x=1",
+                    "audioUrl": "https://media.example.test/tts.wav?token=c%2Bd",
+                    "styleId": str(template.template_id)},
+        "template": template.model_dump(mode="json", by_alias=True),
+        "segments": segments,
+        "matches": [
+            {"segment_id": item["segment_id"], "text": item["text"], "start_time": item["start_time"],
+             "end_time": item["end_time"], "matched_candidate_url": None}
+            for item in segments
+        ],
+        "duration_ms": 8000, "width": 1080, "height": 1920, "fps": 30,
+    }
+
+
+@pytest.fixture
+async def composition_runtime(composition_settings, template_db):
+    """复用手动推进用的调度器；断言失败也先收束线程，再释放隔离数据库，不启动后台扫描。"""
+    from server.video_composition.service import Runtime
+
+    runtime = Runtime()
+    runtime.settings = composition_settings
+    try:
+        yield runtime
+    finally:
+        await runtime.close()
+
+
+@pytest.fixture
+def composition_logs(template_db):
+    """读取真实聚合行；默认展平阶段事件供已有全链路断言复用，raw=True 检查物理结构。"""
+    from sqlalchemy import select
+    from server.video_composition.store import execution_logs
+
+    def read(task_id=None, *, raw=False):
+        """按 sequence 还原事件顺序，任务最终时间来自聚合行，事件时间来自 detail。"""
+        statement = select(execution_logs).order_by(execution_logs.c.id)
+        if task_id is not None:
+            statement = statement.where(execution_logs.c.task_id == task_id)
+        with template_db.connect() as connection:
+            rows = [dict(row) for row in connection.execute(statement).mappings()]
+        if raw:
+            return rows
+        events = []
+        for row in rows:
+            for section in row["detail"]["阶段记录"].values():
+                entries = [entry for entry in section["执行日志"] + section["错误日志"] if "事件" in entry]
+                inputs = {item["序号"]: item["内容"] for item in section["输入"] if "序号" in item}
+                outputs = {item["序号"]: item["内容"] for item in section["输出"] if "序号" in item}
+                for entry in entries:
+                    details = dict(entry["详情"])
+                    if entry["序号"] in inputs:
+                        details["input"] = inputs[entry["序号"]]
+                    if entry["序号"] in outputs:
+                        details["output"] = outputs[entry["序号"]]
+                    events.append({
+                        "sequence": entry["序号"], "task_id": row["task_id"], "event": entry["事件"],
+                        "stage": entry["任务阶段"], "status": entry["任务状态"],
+                        "created_at": datetime.fromisoformat(entry["时间"]).replace(tzinfo=None),
+                        "task_created_at": row["task_created_at"],
+                        "task_finished_at": row["task_finished_at"] if entry["任务状态"] in ("succeeded", "failed") else None,
+                        "details": details,
+                    })
+        events.sort(key=lambda item: (item["task_created_at"], item["sequence"]))
+        return events
+
+    return read
