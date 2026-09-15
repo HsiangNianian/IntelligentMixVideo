@@ -20,7 +20,7 @@
 
 1. 在 `server/` 配置并启动服务。生成器的依赖、字体和模型配置见
    [服务说明](../../../../server/src/server/remotion_templates/README.md)。
-2. `client/.env` 中的 `VITE_API_URL` 指定服务地址，留空默认 `http://localhost:8000`。
+2. `client/.env` 中的 `VITE_API_URL` 指定服务地址，留空默认 `http://localhost:20070`。
    修改后重启 Vite；构建产物需要重新构建。客户端不保存模型密钥。
 3. 在 `client/` 执行 `bun install --frozen-lockfile`，随后 `bun run dev` 或 `bun run tauri dev`。
 4. 输入描述或上传 PNG/JPEG/WebP 参考图片，至少一种；图片最多 10 MiB，首轮可同时提供文字。

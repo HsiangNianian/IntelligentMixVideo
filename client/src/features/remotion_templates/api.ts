@@ -2,7 +2,7 @@
 import type { Job, SessionSnapshot, Values, Version, WorkPage } from "./model";
 
 const base =
-  (import.meta.env.VITE_API_URL?.trim() || "http://localhost:8000").replace(
+  (import.meta.env.VITE_API_URL?.trim() || "http://localhost:20070").replace(
     /\/+$/,
     "",
   ) + "/api/templates";
