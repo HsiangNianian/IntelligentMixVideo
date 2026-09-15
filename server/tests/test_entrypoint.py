@@ -39,4 +39,4 @@ def test_startup_entry(entry: str, monkeypatch: pytest.MonkeyPatch, mocker) -> N
     application, options = calls[0]
     module, name = application.split(":")
     assert getattr(import_module(module), name) is app
-    assert options == {"host": "127.0.0.1", "port": 20070}
+    assert options == {"host": "0.0.0.0", "port": 20070}
