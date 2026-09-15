@@ -453,7 +453,7 @@ def test_framework_validation(client, data):
 
 def test_internal_error(client, monkeypatch):
     """内部约束异常由路由转换为 500 与 error.message。"""
-    from server.sub_api import segmentation as route
+    from server.segmentation import router as route
 
     monkeypatch.setattr(route, "segment", MagicMock(side_effect=AssertionError("片段未完整覆盖文案。")))
     response = client.post("/segmentations", json=payload("甲乙丙丁"))

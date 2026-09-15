@@ -1,5 +1,6 @@
 """通过 pydantic-settings 读取 MySQL 配置；启动时确保数据库存在，退出时释放连接池。"""
 
+import json
 from pathlib import Path
 from threading import Lock
 
@@ -49,6 +50,7 @@ def get_engine() -> Engine:
             )
             _engine = create_engine(
                 url, pool_pre_ping=True, pool_recycle=1800,
+                json_serializer=lambda value: json.dumps(value, ensure_ascii=False),
                 connect_args=_connection_timeouts,
             )
         return _engine

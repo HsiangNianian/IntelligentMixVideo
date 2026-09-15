@@ -12,8 +12,11 @@ from server.app import app
 
 
 @pytest.mark.parametrize("entry", ["console", "module"])
-def test_startup_entry(entry: str, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_startup_entry(entry: str, monkeypatch: pytest.MonkeyPatch, mocker) -> None:
     """替换阻塞的事件循环，检查真实入口的应用路径可导入且监听设置正确。"""
+    # 隔离本机 .env 与端口配置，避免开发环境影响入口断言。
+    mocker.patch("pydantic_settings.sources.DotEnvSettingsSource._read_env_files", return_value={})
+    monkeypatch.setenv("PORT", "20070")
     calls = []
 
     def capture_startup(application: str, **options: object) -> None:
@@ -36,4 +39,4 @@ def test_startup_entry(entry: str, monkeypatch: pytest.MonkeyPatch) -> None:
     application, options = calls[0]
     module, name = application.split(":")
     assert getattr(import_module(module), name) is app
-    assert options == {"host": "127.0.0.1", "port": 8000}
+    assert options == {"host": "0.0.0.0", "port": 20070}
