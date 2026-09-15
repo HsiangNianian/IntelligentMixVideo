@@ -25,7 +25,7 @@ test("所选效果去重并忽略非效果字段", () => {
   expect(selectedEffects(draft.editor)).toEqual(["in/fade_in"]);
 });
 
-// 测试示例地址进入两个片段、静音生效、空文字不生成字幕且时间线长度为十秒。
+// 回归 #35：无转场时只创建一个十秒视频素材，避免 SDK 同时上传两份视频纹理。
 test("基础预览时间线使用配置的视频并过滤空字幕", () => {
   const draft = newDraft();
   draft.editor.title = "";
@@ -33,7 +33,7 @@ test("基础预览时间线使用配置的视频并过滤空字幕", () => {
   const timeline = buildTimeline(draft, []);
   const clips = timeline.VideoTracks[0].VideoTrackClips;
   expect(clips.map(({ MediaURL, TimelineIn, TimelineOut }) => [MediaURL, TimelineIn, TimelineOut]))
-    .toEqual([["http://localhost:1420/sample.mp4", 0, 5], ["http://localhost:1420/sample.mp4", 5, 10]]);
+    .toEqual([["http://localhost:1420/sample.mp4", 0, 10]]);
   expect(clips[0].Effects).toEqual([{ Type: "Volume", Gain: 0 }]);
   expect(timeline.SubtitleTracks[0].SubtitleTrackClips.map((clip) => clip.Content)).toEqual(["字幕"]);
 });
