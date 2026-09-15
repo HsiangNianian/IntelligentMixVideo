@@ -66,6 +66,7 @@ def segment(payload: dict) -> dict:
     # 先剥离相同前后缀，仅对中间差异搜索并回溯。
     prefix = suffix = 0
     limit = min(len(chars), len(timeline))
+    # 两轮分别统计开头与结尾的连续相同字符，缩小编辑距离的搜索范围。
     for backwards in (False, True):
         while prefix + suffix < limit:
             index = -1 - suffix if backwards else prefix
@@ -85,10 +86,13 @@ def segment(payload: dict) -> dict:
     else:
         # ponytail: 不设工作预算，O(D²) 回溯状态随差异增大；内存成为瓶颈时再改线性空间回溯。
         history, previous, reached = [], {}, False
+        # 按编辑代价逐层推进；每层每个对角线上只保留能到达的最远位置，供回溯使用。
         for distance in range(max(rows, columns) + 1):
             current = {}
+            # diagonal = i - j，即文案与 ASR 下标之差；步数越界时收窄取值范围。
             for diagonal in range(max(-distance, -columns), min(distance, rows) + 1):
                 start, kind = (0, "match") if distance == 0 else (-1, "match")
+                # 从上一层的相邻对角线转移；平局时先到的操作优先（替换 > 文案多字 > ASR 多字）。
                 for operation, prior_diagonal, step in (
                     ("substitution", diagonal, 1),
                     ("script_extra", diagonal - 1, 1),
@@ -102,6 +106,7 @@ def segment(payload: dict) -> dict:
                 if start < 0:
                     continue
                 i, j = start, start - diagonal
+                # 代价不增加时尽量贪心吞掉相同的字符。
                 while i < rows and j < columns:
                     if left[i][1] != right[j][0]:
                         break
@@ -116,10 +121,11 @@ def segment(payload: dict) -> dict:
                 break
         if not reached:
             raise AssertionError("对齐未到达终点。")
-        # 每层保存最远位置及其操作，从终点回溯得到逐字符对应关系。
+        # 每层保存最远位置及其操作，从终点回溯得到逐字符对应关系；None 表示该侧无对应字符。
         for layer in reversed(history):
             end, start, kind = layer[diagonal]
             middle.extend(("match", prefix + i, prefix + i - diagonal) for i in range(end - 1, start - 1, -1))
+            # 追加转移操作后，把 diagonal 调回来源对角线，继续向上一层回溯。
             if kind == "substitution":
                 middle.append((kind, prefix + start - 1, prefix + start - diagonal - 1))
             elif kind == "script_extra":
@@ -129,6 +135,7 @@ def segment(payload: dict) -> dict:
                 middle.append((kind, None, prefix + start - diagonal - 1))
                 diagonal += 1
         middle.reverse()
+    # 相同前后缀直接一一匹配，与中间差异结果拼成完整对齐。
     ops = [("match", i, i) for i in range(prefix)] + middle
     ops += [("match", len(chars) - suffix + i, len(timeline) - suffix + i) for i in range(suffix)]
     counts = Counter(kind for kind, _, _ in ops)
@@ -141,6 +148,7 @@ def segment(payload: dict) -> dict:
     # 替换直接继承时间；增删连续段向两侧扩一字，合并后仅在块内均分时间。
     starts, ends = [0.0] * len(chars), [0.0] * len(chars)
     blocks, run = [], None
+    # 末尾哨兵 match 用于收尾最后一段连续增删。
     for position, (kind, i, j) in enumerate([*ops, ("match", None, None)]):
         if i is not None and j is not None:
             starts[i], ends[i] = timeline[j][1:]
@@ -148,12 +156,14 @@ def segment(payload: dict) -> dict:
             if run is None:
                 run = position
         elif run is not None:
+            # 向两侧各扩一字作时间锚点；与上一块重叠时合并。
             begin, end = max(0, run - 1), min(len(ops), position + 1)
             if blocks and begin <= blocks[-1][1]:
                 blocks[-1] = (blocks[-1][0], end)
             else:
                 blocks.append((begin, end))
             run = None
+    # indices 为块内需要时间的文案字，sources 为两侧锚点对应的 ASR 字；时间在块内均分。
     repair_ranges = []
     for begin, end in blocks:
         indices = [i for _, i, _ in ops[begin:end] if i is not None]
@@ -272,6 +282,7 @@ def segment(payload: dict) -> dict:
                 for _, i, j in ops:
                     if i is not None and j is not None:
                         sentence_of_char[i] = timeline_sentences[j]
+                # 无 ASR 对应的增删字按前一字所属句前向填充，开头缺口用首个已知句补齐。
                 attribution, fallback_sentence = [], None
                 for value in sentence_of_char:
                     fallback_sentence = value if value is not None else fallback_sentence
