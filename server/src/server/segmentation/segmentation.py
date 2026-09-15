@@ -24,6 +24,7 @@ def segment(payload: dict) -> dict:
     warnings 和 trace；空内容或输出时间错误抛 ValueError，配置或模型输出错误抛
     RuntimeError，内部约束错误抛 AssertionError；ASR 嵌套读取和 SDK 异常原样传播。
     """
+    # ===== 步骤 1：文案转成可对齐字符序列（去标点/空白 + NFKC 归一化）=====
     # 直接调用须提供约定字段；HTTP 类型校验由路由负责。标点不参与对齐，保留原始下标。
     script = payload["script"]
     punctuation = set("，。！？、；：“”‘’（）《》〈〉【】〔〕…—～·,.!?;:\"'()<>[]{}~`")
@@ -34,6 +35,7 @@ def segment(payload: dict) -> dict:
     ]
     if not chars:
         raise ValueError("文案缺少有效字符。")
+    # ===== 步骤 2：ASR 词时间轴展开为逐字时间（词内均分）=====
     # ponytail: MVP 信任上游 Fun-ASR 结构与词时间，只取第一音轨；接入其他来源时再扩展校验。
     sentences = payload["asr_result"]["transcripts"][0]["sentences"]
     # timeline_sentences 与 timeline 下标一一对应，记录每个字符所属的 ASR 句序号。
@@ -56,6 +58,7 @@ def segment(payload: dict) -> dict:
     if not timeline:
         raise ValueError("ASR 缺少有效发音字符。")
 
+    # ===== 步骤 3：读取模型配置（环境变量优先，每次调用重读）=====
     # 每次调用自动读取配置；配置错误仍归为模型错误，不向 HTTP 暴露配置值。
     try:
         config = Settings()
@@ -63,6 +66,7 @@ def segment(payload: dict) -> dict:
         raise RuntimeError("模型或切片配置缺失或不合法，请检查 IMV_ 配置。") from None
     # 固定业务规则：候选片段至少 2 秒，每段最多一个关键词，词长最多 12 字。
     minimum, keyword_max_length = 2000, 12
+    # ===== 步骤 4：文案与 ASR 逐字对齐（编辑距离），得到每字对应关系 =====
     # 先剥离相同前后缀，仅对中间差异搜索并回溯。
     prefix = suffix = 0
     limit = min(len(chars), len(timeline))
@@ -138,6 +142,7 @@ def segment(payload: dict) -> dict:
     # 相同前后缀直接一一匹配，与中间差异结果拼成完整对齐。
     ops = [("match", i, i) for i in range(prefix)] + middle
     ops += [("match", len(chars) - suffix + i, len(timeline) - suffix + i) for i in range(suffix)]
+    # ===== 步骤 5：统计匹配率，差异过大时仅给出警告 =====
     counts = Counter(kind for kind, _, _ in ops)
     # 分母覆盖两侧文本，避免 ASR 大量多字仍被视为文案完全匹配。
     ratio = counts["match"] / max(len(chars), len(timeline))
@@ -145,6 +150,7 @@ def segment(payload: dict) -> dict:
     if ratio < 0.9:
         warnings.append({"code": "low_alignment_match_ratio", "message": "文案与 ASR 存在较多差异。"})
 
+    # ===== 步骤 6：把对齐结果投射成每个文案字的起止时间 =====
     # 替换直接继承时间；增删连续段向两侧扩一字，合并后仅在块内均分时间。
     starts, ends = [0.0] * len(chars), [0.0] * len(chars)
     blocks, run = [], None
@@ -178,6 +184,7 @@ def segment(payload: dict) -> dict:
             starts[i], ends[i] = begin_time + step * order, begin_time + step * (order + 1)
         repair_ranges.append((indices[0], indices[-1] + 1))
 
+    # ===== 步骤 7：过滤候选切点，生成带编号的分句清单交给模型 =====
     # 仅保护原文连续的英文、数字串（含小数、连字符和百分号），不跨空格或中文标点保护。
     offsets = [c[0] for c in chars]
     forbidden = set()
@@ -204,6 +211,7 @@ def segment(payload: dict) -> dict:
         {"id": i, "text": script[a:b]}
         for i, (a, b) in enumerate(zip(text_edges, text_edges[1:]), 1)
     ]
+    # ===== 步骤 8：校验模型地址合法性 =====
     base_url, key, model = config.llm_base_url, config.llm_api_key, config.llm_model
     try:
         address = urlparse(base_url)
@@ -219,6 +227,7 @@ def segment(payload: dict) -> dict:
         )
     ):
         raise RuntimeError("模型地址必须有效，远程 HTTP 需要显式授权。")
+    # ===== 步骤 9：两次调用模型：先选切点切段，再为每段标关键词 =====
     segments, rejected = [], 0
     # 两次调用有先后依赖：模型选择候选切点后，再标注最终片段；重试仅由 SDK 负责。
     with OpenAI(base_url=base_url, api_key=key, timeout=config.llm_timeout_seconds, max_retries=config.llm_max_retries) as client:
@@ -270,6 +279,7 @@ def segment(payload: dict) -> dict:
                 raise RuntimeError("模型返回非法 JSON。") from None
             if not isinstance(output, dict):
                 raise RuntimeError("模型必须返回 JSON 对象。")
+            # boundaries 阶段：按模型选中的切点切分段落并计算 group_id。
             if stage == "boundaries":
                 ids = output.get("boundaries_after")
                 if not isinstance(ids, list) or any(type(n) is not int or not 1 <= n < len(listing) for n in ids):
@@ -308,6 +318,7 @@ def segment(payload: dict) -> dict:
                         }
                     )
             else:
+                # keywords 阶段：为每段挑选合法关键词并定 level。
                 groups = output.get("keywords")
                 if (
                     not isinstance(groups, list)
@@ -328,6 +339,7 @@ def segment(payload: dict) -> dict:
                     # 有关键词即重点句 2，否则为普通句 1；CTA 需语义判断，不标注。
                     item["level"] = 2 if item["keyword"] else 1
 
+    # ===== 步骤 10：校验文本覆盖与时间合法性，转秒制后返回 =====
     # 保留原始停顿，检查文本覆盖和输出时间。
     if "".join(s["text"] for s in segments) != script:
         raise AssertionError("片段未完整覆盖文案。")
