@@ -5,9 +5,10 @@ import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
 import { RemotionWorkspace } from "@/features/remotion_templates/RemotionWorkspace";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-/** 字效页签隐藏时保留会话与 SSE 订阅；离开首页时才清理整个工作区。 */
+/** 工作区首次打开后仅隐藏，保留草稿与订阅；离开首页时统一清理。 */
 export default function HomePage() {
   const [workspace, setWorkspace] = useState("remotion");
+  const [libraryOpened, setLibraryOpened] = useState(false);
   return (
     <main className="mx-auto max-w-[1600px] space-y-5 px-4 py-5 sm:px-6">
       <header className="flex flex-wrap items-end justify-between gap-4">
@@ -19,13 +20,17 @@ export default function HomePage() {
         </div>
         <CurrentTime />
       </header>
-      <Tabs value={workspace} onValueChange={setWorkspace}>
+      <Tabs value={workspace} onValueChange={(value) => {
+        // 模板库首次访问才加载 SDK；之后切换不卸载未保存的编辑状态。
+        if (value === "library") setLibraryOpened(true);
+        setWorkspace(value);
+      }}>
         <TabsList aria-label="模板工作区">
           <TabsTrigger value="library">模板库</TabsTrigger>
           <TabsTrigger value="remotion">Remotion 字效</TabsTrigger>
         </TabsList>
-        <TabsContent value="library">
-          <TemplateWorkspace />
+        <TabsContent value="library" forceMount hidden={workspace !== "library"}>
+          {libraryOpened && <TemplateWorkspace />}
         </TabsContent>
         <TabsContent
           value="remotion"

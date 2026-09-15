@@ -283,7 +283,7 @@ test.each(["云端", "本地"])("切换%s模板库后保留字效会话并继续
     expect(screen.getByTitle("Remotion 字效播放器")).toBe(frame);
     expect(frame.src).toBe(source);
     expect(screen.getByLabelText<HTMLInputElement>("背景视频直链").value).toBe("https://media.test/background.mp4");
-    expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("64");
+    expect(within(screen.getByRole("tabpanel", {name: "Remotion 字效"})).getByLabelText<HTMLInputElement>("字号").value).toBe("64");
   } finally {
     restoreDesktop();
   }
@@ -370,5 +370,40 @@ test("切换环境读取失败后可重试", async () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   } finally {
     restoreDesktop();
+  }
+});
+
+// 本地与云端草稿切到字效再返回仍保留，原有新建保护继续生效；离开首页才卸载。
+test.each(["云端", "本地"])("页签切换保留%s模板草稿及未保存保护", async (environment) => {
+  const restore = mockDesktop(async () => []);
+  try {
+    remotionServer((path) => path === "/template" ? Response.json([]) : undefined);
+    const view = render(<HomePage />);
+    expect(fetchMock.mock.calls.some(call => String(call[0]).endsWith("/template"))).toBe(false);
+    fireEvent.mouseDown(screen.getByRole("tab", {name: "模板库"}), {button: 0});
+    await screen.findByText("共享模板库 · 0 个模板");
+    if (environment === "本地") {
+      await choose("当前环境", "本地");
+      await screen.findByText("本地模板库 · 0 个模板");
+    }
+    const name = screen.getByLabelText<HTMLInputElement>("模板名称");
+    fireEvent.change(name, {target: {value: "保留草稿名称"}});
+    fireEvent.change(screen.getByLabelText("示例文字"), {target: {value: "保留示例文字"}});
+    const reads = fetchMock.mock.calls.filter(call => String(call[0]).endsWith("/template")).length;
+    fireEvent.mouseDown(screen.getByRole("tab", {name: "Remotion 字效"}), {button: 0});
+    expect(screen.queryByRole("textbox", {name: "模板名称"})).toBeNull();
+    fireEvent.mouseDown(screen.getByRole("tab", {name: "模板库"}), {button: 0});
+    expect(screen.getByLabelText("模板名称") === name).toBe(true);
+    expect(name.value).toBe("保留草稿名称");
+    expect(screen.getByLabelText<HTMLInputElement>("示例文字").value).toBe("保留示例文字");
+    expect(screen.getByLabelText("当前环境").textContent).toBe(environment);
+    expect(fetchMock.mock.calls.filter(call => String(call[0]).endsWith("/template"))).toHaveLength(reads);
+    fireEvent.click(screen.getByRole("button", {name: "新建模板"}));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", {name: "取消"}));
+    expect(name.value).toBe("保留草稿名称");
+    view.unmount();
+    expect(name.isConnected).toBe(false);
+  } finally {
+    restore();
   }
 });
