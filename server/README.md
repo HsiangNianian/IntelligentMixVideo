@@ -77,7 +77,7 @@ MySQL 单独列保存唯一名称、ID 和时间，JSON 保存完整编辑配置
 - `src/server/template/router.py`：四个模板接口，向 `app.py` 注册 APIRouter。
 - `src/server/template/schema.py`：请求、响应、数值范围与效果组合校验。
 - `src/server/template/store.py`：建表、查询和事务写入。
-- `src/server/segmentation/`：独立切片函数与 `IMV_` 模型配置；`sub_api/segmentation.py` 注册切片路由。
+- `src/server/segmentation/`：独立切片函数、`IMV_` 模型配置与 `router.py` 切片路由。
 - `sdk_catalog.json`、`motions.json`：来自参考项目的固定 5.2.2 效果白名单；升级 SDK 时同步核对。没有效果目录 API。
 
 首页 `GET /` 和 `GET /users/`、`GET /users/{user_id}` 仍保留示例响应，尚未接入用户存储。
