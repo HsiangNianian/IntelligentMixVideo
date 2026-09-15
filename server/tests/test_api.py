@@ -106,6 +106,8 @@ def test_api_documentation(client: TestClient) -> None:
     assert schema["info"]["version"] == version("imv-server")
     assert set(schema["paths"]) == {
         "/", "/users/", "/users/{user_id}", "/template", "/template/{template_id}", "/segmentations",
+        "/api/v1/video-compositions", "/api/v1/video-compositions/{task_id}",
+        "/api/v1/video-compositions/{task_id}/segment-match-callback",
     }
     parameter = schema["paths"]["/users/{user_id}"]["get"]["parameters"][0]
     assert parameter["name"] == "user_id"

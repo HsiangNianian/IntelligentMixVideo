@@ -213,3 +213,57 @@ def composition_case(template_db, template_payload):
         ],
         "duration_ms": 8000, "width": 1080, "height": 1920, "fps": 30,
     }
+
+
+@pytest.fixture
+async def composition_runtime(composition_settings, template_db):
+    """复用手动推进用的调度器；断言失败也先收束线程，再释放隔离数据库，不启动后台扫描。"""
+    from server.video_composition.service import Runtime
+
+    runtime = Runtime()
+    runtime.settings = composition_settings
+    try:
+        yield runtime
+    finally:
+        await runtime.close()
+
+
+@pytest.fixture
+def composition_logs(template_db):
+    """读取真实聚合行；默认展平阶段事件供已有全链路断言复用，raw=True 检查物理结构。"""
+    from sqlalchemy import select
+    from server.video_composition.store import execution_logs
+
+    def read(task_id=None, *, raw=False):
+        """按 sequence 还原事件顺序，任务最终时间来自聚合行，事件时间来自 detail。"""
+        statement = select(execution_logs).order_by(execution_logs.c.id)
+        if task_id is not None:
+            statement = statement.where(execution_logs.c.task_id == task_id)
+        with template_db.connect() as connection:
+            rows = [dict(row) for row in connection.execute(statement).mappings()]
+        if raw:
+            return rows
+        events = []
+        for row in rows:
+            for section in row["detail"]["阶段记录"].values():
+                entries = [entry for entry in section["执行日志"] + section["错误日志"] if "事件" in entry]
+                inputs = {item["序号"]: item["内容"] for item in section["输入"] if "序号" in item}
+                outputs = {item["序号"]: item["内容"] for item in section["输出"] if "序号" in item}
+                for entry in entries:
+                    details = dict(entry["详情"])
+                    if entry["序号"] in inputs:
+                        details["input"] = inputs[entry["序号"]]
+                    if entry["序号"] in outputs:
+                        details["output"] = outputs[entry["序号"]]
+                    events.append({
+                        "sequence": entry["序号"], "task_id": row["task_id"], "event": entry["事件"],
+                        "stage": entry["任务阶段"], "status": entry["任务状态"],
+                        "created_at": datetime.fromisoformat(entry["时间"]).replace(tzinfo=None),
+                        "task_created_at": row["task_created_at"],
+                        "task_finished_at": row["task_finished_at"] if entry["任务状态"] in ("succeeded", "failed") else None,
+                        "details": details,
+                    })
+        events.sort(key=lambda item: (item["task_created_at"], item["sequence"]))
+        return events
+
+    return read
