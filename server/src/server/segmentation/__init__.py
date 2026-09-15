@@ -1,4 +1,4 @@
-"""导出独立文案切片函数；算法、配置和模型调用由 segmentation 模块负责。"""
+"""切片功能包：`segmentation.py` 提供业务函数，`router.py` 注册 HTTP 路由，`settings.py` 读取模型配置。"""
 
 from .segmentation import segment
 

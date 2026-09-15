@@ -13,8 +13,8 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
 from .database import close_database, initialize_database
+from .segmentation.router import router as segmentation_router
 from .sub_api.router import router
-from .sub_api.segmentation import router as segmentation_router
 from .template.router import router as template_router
 
 

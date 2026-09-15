@@ -1,11 +1,11 @@
-"""切片 HTTP 入口：调用独立业务函数，将输入、模型及内部错误转换为响应。"""
+"""切片 HTTP 入口：调用同包业务函数，将输入、模型及内部错误转换为响应。"""
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from openai import APIError, APITimeoutError
 from pydantic import BaseModel
 
-from ..segmentation import segment
+from .segmentation import segment
 
 # 应用只注册此路由；业务函数也可由非 HTTP 调用方直接使用。
 router = APIRouter()
