@@ -1,0 +1,3 @@
+# 使用宿主机 Wayland 库，避免旧库缺少新 Mesa 所需符号而触发 EGL_BAD_ALLOC。
+# appimagetool 从 Tauri 工作目录读取本文件；路径相对于最终 AppDir。
+usr/lib/libwayland-*.so*
