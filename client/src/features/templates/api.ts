@@ -17,7 +17,7 @@ async function local<T>(operation: string, id?: string, draft?: Draft): Promise<
 
 /** client/.env 可覆盖 API 地址；未配置或留空时连接本机默认端口。 */
 const base = (
-  import.meta.env.VITE_API_URL?.trim() || "http://localhost:8000"
+  import.meta.env.VITE_API_URL?.trim() || "http://localhost:20070"
 ).replace(/\/+$/, "");
 
 /** 有界请求，卸载可中断读取；写入失败不自动重试，防止重复创建。 */
