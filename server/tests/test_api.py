@@ -94,9 +94,9 @@ def test_disallowed_origin_cors_is_rejected(client: TestClient, origin: str) -> 
     assert "access-control-allow-origin" not in client.get("/template", headers={"Origin": origin}).headers
 
 
-# 测试文档包含首页、用户、模板和切片全部路由，且用户 ID 参数定义正确。
+# 测试文档包含首页、用户、模板和切片全部路由、分组标签及必填整数路径参数。
 def test_api_documentation(client: TestClient) -> None:
-    """文档可访问，OpenAPI 声明实际路由及必填整数路径参数。"""
+    """文档可访问；OpenAPI 声明实际路由、显式分组标签及参数定义。"""
     docs = client.get("/docs")
     assert docs.status_code == 200
     assert "text/html" in docs.headers["content-type"]
@@ -107,6 +107,12 @@ def test_api_documentation(client: TestClient) -> None:
     assert set(schema["paths"]) == {
         "/", "/users/", "/users/{user_id}", "/template", "/template/{template_id}", "/segmentations",
     }
+    # 每个接口都必须显式声明文档分组，否则 Swagger UI 会把它归入未命名的 default 分组。
+    for path, operations in schema["paths"].items():
+        for method, operation in operations.items():
+            assert operation.get("tags"), f"{method.upper()} {path} 缺少文档分组标签"
+    assert schema["paths"]["/"]["get"]["tags"] == ["首页"]
+    assert schema["paths"]["/segmentations"]["post"]["tags"] == ["文案切片"]
     parameter = schema["paths"]["/users/{user_id}"]["get"]["parameters"][0]
     assert parameter["name"] == "user_id"
     assert parameter["required"] is True

@@ -8,7 +8,8 @@ from pydantic import BaseModel
 from .segmentation import segment
 
 # 应用只注册此路由；业务函数也可由非 HTTP 调用方直接使用。
-router = APIRouter()
+# 显式声明文档分组，避免未打标签的接口被 Swagger UI 归入默认分组。
+router = APIRouter(tags=["文案切片"])
 
 
 class SegmentationRequest(BaseModel):

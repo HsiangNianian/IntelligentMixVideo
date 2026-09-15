@@ -66,7 +66,7 @@ async def validation_error(request: Request, exc: RequestValidationError) -> JSO
     return JSONResponse(status_code=422, content={"detail": errors})
 
 
-@app.get("/")
+@app.get("/", tags=["首页"])
 def root() -> dict[str, str]:
     """返回首页消息，供本地启动后确认应用可访问。"""
     return {"msg": "首页"}
