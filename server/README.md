@@ -77,7 +77,7 @@ MySQL 单独列保存唯一名称、ID 和时间，JSON 保存完整编辑配置
 - `src/server/template/router.py`：四个模板接口，向 `app.py` 注册 APIRouter。
 - `src/server/template/schema.py`：请求、响应、数值范围与效果组合校验。
 - `src/server/template/store.py`：建表、查询和事务写入。
-- `src/server/segmentation/`：独立切片函数、`IMV_` 模型配置、`schema.py` 请求模型与响应示例，以及 `router.py` 切片路由。
+- `src/server/segmentation/`：独立切片函数、`IMV_` 模型配置、`schema.py` 请求模型、`examples.py` 接口示例，以及 `router.py` 切片路由。
 - `sdk_catalog.json`、`motions.json`：来自参考项目的固定 5.2.2 效果白名单；升级 SDK 时同步核对。没有效果目录 API。
 
 首页 `GET /` 和 `GET /users/`、`GET /users/{user_id}` 仍保留示例响应，尚未接入用户存储。
@@ -108,6 +108,8 @@ uv sync --locked --default-index https://pypi.org/simple
 ## 文案切片
 
 提供 `POST /segmentations` 接口和独立的 `segment` 函数，使用正确文案与已有 ASR 结果生成带时间和关键词的片段。
+
+切片模块的 `schema.py` 只定义请求模型，`examples.py` 存放接口示例；`router.py` 使用 `Body(openapi_examples=...)` 声明请求示例，使用 `responses` 声明响应示例。示例不代替响应模型或运行时校验。
 
 在 `server/.env` 填写 `IMV_LLM_BASE_URL`、`IMV_LLM_API_KEY` 和 `IMV_LLM_MODEL`，其余配置见 [.env.example](.env.example)。
 配置读取当前目录的 `.env`，环境变量优先；从仓库根目录启动时使用：
