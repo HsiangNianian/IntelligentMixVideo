@@ -10,6 +10,7 @@ from openai import APIConnectionError, APITimeoutError
 import pytest
 
 from server.segmentation import segment, segmentation
+from server.segmentation.schema import SegmentationRequest
 
 
 def payload(script, transcript=None, step=200):
@@ -449,6 +450,44 @@ def test_framework_validation(client, data):
     response = client.post("/segmentations", json=data)
     assert response.status_code == 422
     assert isinstance(response.json()["detail"], list)
+
+
+def test_openapi_request_example(client):
+    """文档提供可直接尝试的切片请求示例，且示例满足入口模型与词时间约束。"""
+    schema = client.get("/openapi.json").json()
+    body = schema["paths"]["/segmentations"]["post"]["requestBody"]["content"]["application/json"]
+    model_name = body["schema"]["$ref"].rsplit("/", 1)[-1]
+    examples = schema["components"]["schemas"][model_name]["examples"]
+    assert len(examples) == 1
+    request = SegmentationRequest.model_validate(examples[0])
+    times = [
+        (word["begin_time"], word["end_time"])
+        for sentence in request.asr_result["transcripts"][0]["sentences"]
+        for word in sentence["words"]
+    ]
+    # 示例以 Try it out 直接提交，词时间必须合法且整体单调，否则用户照抄即报错。
+    assert times and all(begin < end for begin, end in times)
+    assert times == sorted(times)
+
+
+def test_openapi_response_example(client):
+    """文档为切片接口提供成功响应示例，字段与业务函数返回结构保持一致。"""
+    schema = client.get("/openapi.json").json()
+    responses = schema["paths"]["/segmentations"]["post"]["responses"]
+    example = responses["200"]["content"]["application/json"]["example"]
+    assert example["warnings"] == []
+    assert set(example["trace"]) == {
+        "matched_chars", "substitution_chars", "script_extra_chars", "asr_extra_chars",
+        "edit_cost", "repair_block_count", "segment_count", "keyword_rejected_count",
+    }
+    # 示例需自洽：统计的段数与列表长度一致，且每段时间合法、编号连续。
+    assert example["trace"]["segment_count"] == len(example["segments"])
+    for index, segment in enumerate(example["segments"], 1):
+        assert set(segment) == {
+            "segment_id", "group_id", "text", "start_time", "end_time", "keyword", "level",
+        }
+        assert segment["segment_id"] == index
+        assert segment["start_time"] < segment["end_time"]
 
 
 def test_internal_error(client, monkeypatch):

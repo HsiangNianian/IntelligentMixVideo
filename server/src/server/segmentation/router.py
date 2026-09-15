@@ -3,8 +3,8 @@
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from openai import APIError, APITimeoutError
-from pydantic import BaseModel
 
+from .schema import SEGMENTATION_RESPONSE_EXAMPLE, SegmentationRequest
 from .segmentation import segment
 
 # 应用只注册此路由；业务函数也可由非 HTTP 调用方直接使用。
@@ -12,14 +12,11 @@ from .segmentation import segment
 router = APIRouter(tags=["文案切片"])
 
 
-class SegmentationRequest(BaseModel):
-    """校验 HTTP 必填字段与类型；ASR 内部结构由上游提供，额外字段忽略。"""
-
-    script: str
-    asr_result: dict
-
-
-@router.post("/segmentations", response_model=None)
+@router.post(
+    "/segmentations",
+    response_model=None,
+    responses={200: {"content": {"application/json": {"example": SEGMENTATION_RESPONSE_EXAMPLE}}}},
+)
 def create_segmentation(payload: SegmentationRequest) -> dict | JSONResponse:
     """调用切片函数；输入错误返回 422，内部约束错误 500，模型错误 502，超时 504。"""
     try:
