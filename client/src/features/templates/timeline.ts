@@ -96,7 +96,7 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[]) {
   const overlap = config.transition
     ? number(draft.transition_duration_seconds, 0.1, 3, "转场时长")
     : 0;
-  // 片段一在第 5 秒后延伸 overlap 秒，片段二从第 5 秒开始，形成真实重叠。
+  // 仅转场需要两个视频元素；普通预览复用单一素材，降低逐帧纹理上传开销。
   const clip = (start: number, end: number, timelineIn: number) => ({
     Type: "Video",
     MediaURL: video,
@@ -109,17 +109,23 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[]) {
     AdaptMode: "Cover",
     Effects: [...effects],
   });
-  const first = clip(0, 5 + overlap, 0);
-  if (config.transition)
+  let clips;
+  if (config.transition) {
+    // 片段一在第 5 秒后延伸 overlap 秒，片段二从第 5 秒开始，形成真实重叠。
+    const first = clip(0, 5 + overlap, 0);
     first.Effects.push({
       Type: "Transition",
       Duration: overlap,
       ...effect("transition"),
     });
+    clips = [first, clip(8, 13, 5)];
+  } else {
+    clips = [clip(0, 10, 0)];
+  }
   const texts = [text("title"), text("subtitle")];
   if (config.bubble) texts.push(text("bubble"));
   return {
-    VideoTracks: [{ VideoTrackClips: [first, clip(8, 13, 5)] }],
+    VideoTracks: [{ VideoTrackClips: clips }],
     SubtitleTracks: [
       { SubtitleTrackClips: texts.filter((item) => item.Content.trim()) },
     ],
