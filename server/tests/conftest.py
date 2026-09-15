@@ -3,9 +3,10 @@
 路由仍调用真实 schema/store；仅适配排序规则和唯一约束错误码，不模拟 MySQL 行锁或建库。
 """
 
-from collections.abc import Iterator
+import json
 import os
 import sqlite3
+from datetime import datetime
 from collections.abc import Iterator
 from functools import partial
 from pathlib import Path
@@ -26,7 +27,7 @@ from server.template import store
 def isolate_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """清除外部切片与 ASR 配置并切换临时目录；配置专项测试须显式注入。"""
     for key in list(os.environ):
-        if key.upper().startswith("IMV_") or key.upper() in ("DASHSCOPE_API_KEY", "ASR_BASE_URL"):
+        if key.upper().startswith(("IMV_", "COMPOSITION_", "SEGMENT_MATCH_", "IMS_", "MIX_VIDEO_ALIYUN_IMS_", "ALIBABA_CLOUD_")) or key.upper() in ("DASHSCOPE_API_KEY", "ASR_BASE_URL"):
             monkeypatch.delenv(key)
     monkeypatch.chdir(tmp_path)
 
@@ -37,6 +38,7 @@ def template_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Eng
     engine = create_engine(
         f"sqlite:///{tmp_path / 'templates.sqlite3'}",
         connect_args={"check_same_thread": False},
+        json_serializer=lambda value: json.dumps(value, ensure_ascii=False),
     )
 
     @event.listens_for(engine, "connect")
@@ -162,3 +164,52 @@ def asr_responses():
             ]
         },
     ]
+
+
+@pytest.fixture
+def composition_settings(monkeypatch, asr_env):
+    """显式提供合成假配置，所有上游请求仍须各用例替换，禁止使用真实 .env。"""
+    from server.video_composition.settings import Settings
+
+    for key, value in {
+        "SEGMENT_MATCH_BASE_URL": "https://matching.example.test/deployment",
+        "SEGMENT_MATCH_AUTHORIZATION": "Bearer test-only",
+        "ALIBABA_CLOUD_ACCESS_KEY_ID": "test-id",
+        "ALIBABA_CLOUD_ACCESS_KEY_SECRET": "test-secret",
+        "COMPOSITION_POLL_SECONDS": "0.01",
+        "COMPOSITION_HTTP_TIMEOUT_SECONDS": "1",
+        "COMPOSITION_MATCH_WAIT_SECONDS": "0.1",
+        "IMV_LLM_BASE_URL": "https://llm.example.test/v1",
+        "IMV_LLM_API_KEY": "test-key",
+        "IMV_LLM_MODEL": "test-model",
+    }.items():
+        monkeypatch.setenv(key, value)
+    return Settings()
+
+
+@pytest.fixture
+def composition_case(template_db, template_payload):
+    """真实模板存储生成快照，搭配有前后静音和片段空隙的脱敏业务数据。"""
+    from server.template.schema import TemplateSave
+
+    template = store.save_template(TemplateSave.model_validate(template_payload))
+    segments = [
+        {"segment_id": 1, "text": "甲乙丙丁。", "start_time": 1, "end_time": 3,
+         "keyword": "甲乙", "level": 2, "group_id": [1, 2]},
+        {"segment_id": 2, "text": "戊己庚辛。", "start_time": 4, "end_time": 6,
+         "keyword": "", "level": 1, "group_id": [2, 2]},
+    ]
+    return {
+        "request": {"text": "甲乙丙丁。戊己庚辛。", "title": "业务标题\n保留换行",
+                    "videoUrl": "https://media.example.test/avatar.mp4?token=a%2Fb&x=1",
+                    "audioUrl": "https://media.example.test/tts.wav?token=c%2Bd",
+                    "styleId": str(template.template_id)},
+        "template": template.model_dump(mode="json", by_alias=True),
+        "segments": segments,
+        "matches": [
+            {"segment_id": item["segment_id"], "text": item["text"], "start_time": item["start_time"],
+             "end_time": item["end_time"], "matched_candidate_url": None}
+            for item in segments
+        ],
+        "duration_ms": 8000, "width": 1080, "height": 1920, "fps": 30,
+    }
