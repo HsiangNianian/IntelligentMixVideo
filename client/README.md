@@ -13,11 +13,11 @@ bun install --frozen-lockfile
 bun run dev
 ```
 
-打开 `http://localhost:1420`。API 地址通过 `client/.env` 中的 `VITE_API_URL` 配置，未配置或留空时默认 `http://localhost:8000`。
+打开 `http://localhost:1420`。API 地址通过 `client/.env` 中的 `VITE_API_URL` 配置，未配置或留空时默认 `http://localhost:20070`。
 若尚无 `.env`，可复制 `.env.example` 创建；已有文件直接修改，保留示例视频配置。
 
 ```dotenv
-VITE_API_URL=http://localhost:8000
+VITE_API_URL=http://localhost:20070
 ```
 
 API 使用其他端口时同步修改此地址，不包含 `/template` 后缀。

@@ -22,14 +22,16 @@ uv sync --locked
 uv run --locked server
 ```
 
-默认监听 `http://127.0.0.1:8000`，交互文档为 `http://127.0.0.1:8000/docs`。
+默认监听 `0.0.0.0:20070`（所有 IPv4 接口），本机交互文档为 `http://127.0.0.1:20070/docs`。
+远程访问使用 `http://<服务器 IP 或域名>:20070`，服务器防火墙或云安全组需允许对应端口；客户端 `VITE_API_URL` 配置为实际服务地址。
 仓库根目录可执行 `uv run --locked --project server server`。首次模板请求自动创建缺失的 `templates` 表，不执行旧数据迁移。
 应用启动后数据库暂时不可用时，模板接口返回 503，恢复后可重试；首页和用户示例接口本身不查询数据库。
 
-端口冲突时可以单独指定端口，并同步修改客户端 `client/.env` 中的 `VITE_API_URL`：
+`uv run server` 与 `uv run python -m server` 均读取固定的 `server/.env` 中的 `PORT`，进程环境变量优先。未设置时默认 `20070`；端口须为 1～65535 的整数，空值、非整数或越界值会阻止启动。修改后重启服务。
+客户端 API 地址同样默认 `http://localhost:20070`；若 `client/.env` 已配置其他 `VITE_API_URL`，需同步修改并重启前端（生产环境重新构建）。
 
 ```sh
-uv run --locked uvicorn server.app:app --host 127.0.0.1 --port 8010
+PORT=8010 uv run --locked server
 ```
 
 本机 Python 包镜像若落后于锁定版本，可以在 uv 命令中添加 `--default-index https://pypi.org/simple`，无需降级项目依赖。

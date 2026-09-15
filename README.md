@@ -30,7 +30,8 @@ cd server
 uv run server
 ```
 
-默认监听 http://127.0.0.1:8000，API 文档位于 http://127.0.0.1:8000/docs。
+默认监听 `0.0.0.0:20070`（所有 IPv4 接口），本机 API 文档位于 http://127.0.0.1:20070/docs；远程访问使用服务器 IP 或域名。
+通过 `server/.env` 中的 `PORT` 或进程环境变量设置端口（环境变量优先，范围 1～65535）；修改后重启服务。
 仓库根目录使用 `uv run --project server server`。模板 API 统一使用 `/template` 前缀，POST 通过可选 `template_id` 区分创建和完整更新；详情见 [server/README.md](server/README.md)。
 服务端在项目配置中将官方 PyPI 设为默认依赖索引，与 `server/uv.lock` 的来源保持一致，避免本机默认镜像同步滞后导致版本无法解析。
 
@@ -61,8 +62,8 @@ bun run tauri dev
 浏览器开发使用 `bun run dev` 后打开 `http://localhost:1420`；Windows 安装包内置回环静态服务，以 `http://localhost:<动态端口>` 加载页面，预览沿用阿里云 SDK 5.2.2。macOS / Linux 保留原有 Tauri 加载方式。
 本地草稿编辑与预览不依赖 Python API；共享模板读写需要服务端，SDK、字体与示例媒体仍需联网。
 示例视频可在 `client/.env` 中通过 `VITE_PREVIEW_VIDEO_URL` 配置，修改后重启前端；详见 [客户端说明](client/README.md#示例视频配置)。
-客户端 API 地址通过 `client/.env` 中的 `VITE_API_URL` 配置，未配置或留空时默认 `http://localhost:8000`。
-端口冲突时可按服务端说明改为 8010，并同步设置 `VITE_API_URL=http://localhost:8010`。模板库共享，不迁移旧项目数据。
+客户端 API 地址通过 `client/.env` 中的 `VITE_API_URL` 配置，未配置或留空时默认 `http://localhost:20070`。
+
 客户端按页面、业务组件、基础 UI 和共享工具分层；结构见 [client/README.md](client/README.md)，
 最小改动与源码注释要求见 [AGENTS.md](AGENTS.md)。
 
