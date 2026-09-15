@@ -74,3 +74,39 @@ test("核心新增清空状态并重新创建作品", async () => {
   ).toHaveLength(2);
   expect(result.current.messages[0].text).toBe("第二个标题");
 });
+
+// 首次快照产物不可用仍订阅后续消息；断线从已消费游标续传，不反复下载失败产物。
+test("快照产物失败不阻塞 SSE 与断线续传", async () => {
+  let downloads = 0;
+  const fake = remotionServer((path) => {
+    if (path.endsWith("/artifacts/Export.tsx")) {
+      downloads++;
+      return new Response(null, {status: 404});
+    }
+  });
+  const { result, unmount } = renderHook(() => useTemplateSession(() => {}));
+  act(() => result.current.send("首次模板"));
+  await waitFor(() => expect(result.current.error).toContain("新版本读取失败"));
+  expect(result.current.loading).toBe(false);
+  expect(result.current.busy).toBeNull();
+  expect(result.current.version).toBeNull();
+  expect(result.current.code).toBe("");
+  expect(result.current.retryMode).toBe("version");
+  await waitFor(() => expect(fake.streams.size).toBe(1));
+  await act(async () => fake.advance({...remotionJob("answered"), id: "answer-2", message: "后续事件已到达"}));
+  await waitFor(() => expect(result.current.messages.some(m => m.text === "后续事件已到达")).toBe(true));
+  const cursor = fake.records.at(-1)!.id;
+  await act(async () => {
+    for (const stream of fake.streams) stream.controller.error(new TypeError("offline"));
+    fake.streams.clear();
+  });
+  await waitFor(() => expect(result.current.connection).toBe("live"), {timeout: 3000});
+  const streamUrl = fetchMock.mock.calls.filter(call => String(call[0]).includes("/stream?")).at(-1)![0];
+  expect(new URL(String(streamUrl)).searchParams.get("after")).toBe(String(cursor));
+  expect(downloads).toBe(1);
+  expect(result.current.error).toContain("新版本读取失败");
+  expect(result.current.busy).toBeNull();
+  expect(fetchMock.mock.calls.filter(call => call[1]?.method === "POST")).toHaveLength(1);
+  unmount();
+  expect(fake.streams.size).toBe(0);
+});

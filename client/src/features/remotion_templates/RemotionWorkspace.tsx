@@ -80,7 +80,11 @@ export function RemotionWorkspace() {
               disabled={!!session.busy}
               onClick={session.retry}
             >
-              {session.retryMode === "read" ? "刷新任务" : "重试任务"}
+              {session.retryMode === "read"
+                ? "刷新任务"
+                : session.retryMode === "version"
+                  ? "重新读取结果"
+                  : "重试任务"}
             </Button>
           )}
         </div>

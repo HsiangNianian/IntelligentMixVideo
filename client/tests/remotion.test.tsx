@@ -745,3 +745,41 @@ test("参数文字允许连续编辑并在 Enter 后提交", async () => {
     timeout: 2000,
   });
 });
+
+// 持续 404/503 不能堵塞后续 SSE；保留旧代码可复制，读取重试不重复提交生成。
+test.each([404, 503])("新版 Export 持续 %s 时保留结果并继续会话", async (status) => {
+  let available = false;
+  const fake = server((path) => {
+    if (path === "/versions/version-2") return Response.json(remotionVersion("version-2", {size: 72}));
+    if (path === "/versions/version-2/artifacts/Export.tsx")
+      return available ? new Response("export const size = 72;") : new Response(null, {status});
+  });
+  const view = render(<RemotionWorkspace />);
+  await generate();
+  const frame = screen.getByTitle<HTMLIFrameElement>("Remotion 字效播放器");
+  const src = frame.src;
+  const oldCode = screen.getByLabelText("模板 TSX 代码").textContent;
+  await waitFor(() => expect(fake.streams.size).toBe(1));
+  await act(async () => fake.advance({...remotionJob("succeeded", "version-2"), id: "edit-2"}));
+  await screen.findByText(/新版本读取失败/);
+  expect(screen.getByRole("button", {name: "复制代码"}).hasAttribute("disabled")).toBe(false);
+  expect(screen.getByLabelText("模板 TSX 代码").textContent).toBe(oldCode);
+  expect(frame.src).toBe(src);
+  expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("64");
+  await act(async () => fake.advance({...remotionJob("answered"), id: "answer-3", message: "产物失败之后的回答"}));
+  await screen.findByText("产物失败之后的回答");
+  fireEvent.change(screen.getByLabelText("字效描述"), {target: {value: "继续制作"}});
+  expect(screen.getByRole("button", {name: "发送"}).hasAttribute("disabled")).toBe(false);
+  fireEvent.click(screen.getByRole("button", {name: "重新读取结果"}));
+  await screen.findByText(/新版本读取失败/);
+  await waitFor(() => expect(screen.getByRole("button", {name: "复制代码"}).hasAttribute("disabled")).toBe(false));
+  available = true;
+  fireEvent.click(screen.getByRole("button", {name: "重新读取结果"}));
+  await waitFor(() => expect(screen.getByLabelText("模板 TSX 代码").textContent).toContain("size = 72"));
+  await previewReady();
+  expect(screen.queryByText(/新版本读取失败/)).toBeNull();
+  expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("72");
+  expect(fetchMock.mock.calls.filter(call => call[1]?.method === "POST")).toHaveLength(1);
+  view.unmount();
+  expect(fake.streams.size).toBe(0);
+});

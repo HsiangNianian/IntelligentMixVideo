@@ -160,7 +160,7 @@ test("游标失效重新读取快照并恢复订阅", async () => {
 });
 
 // 切换时仍在传输的旧成功版本不能回填新会话；任务不因读取中断被取消。
-test("切换隔离迟到的版本下载", async () => {
+test.each([200, 404])("切换隔离迟到的版本下载：%s", async (status) => {
   let release: ((response: Response) => void) | undefined;
   const fake = remotionServer((path) =>
     path === "/versions/version-1/artifacts/Export.tsx"
@@ -176,9 +176,10 @@ test("切换隔离迟到的版本下载", async () => {
   await waitFor(() => expect(release).toBeDefined());
   act(() => result.current.select("work-2"));
   await waitFor(() => expect(result.current.version?.id).toBe("version-2"));
-  await act(async () => release!(new Response("old code")));
+  await act(async () => release!(new Response("old code", {status})));
   expect(result.current.workId).toBe("work-2");
   expect(result.current.code).not.toContain("old code");
+  expect(result.current.error).toBe("");
   expect(fake.snapshots.has("work-1")).toBe(true);
   expect(
     fetchMock.mock.calls.some((call) => String(call[0]).endsWith("/cancel")),

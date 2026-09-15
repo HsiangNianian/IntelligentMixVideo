@@ -20,6 +20,7 @@ interface Session {
   job: Job | SessionJob | null;
   jobs: Record<string, SessionJob>;
   version: Version | null;
+  versionFailure: { id: string; message: string } | null;
   values: Values;
   code: string;
   busy: "chat" | "parameters" | null;
@@ -39,6 +40,7 @@ function blank(key: number): Session {
     job: null,
     jobs: {},
     version: null,
+    versionFailure: null,
     values: {},
     code: "",
     busy: null,
@@ -106,24 +108,44 @@ export function useTemplateSession(onHistoryChange: () => void) {
       /* 存储不可用不影响服务端历史。 */
     }
   }
-  /** 版本、导出和默认参数一起替换；读取失败仍保留上一成功结果。 */
+  /** 版本、导出和参数原子替换；产物失败独立记录，不阻塞公开事件游标。 */
   async function accept(id: string, key: number, signal: AbortSignal) {
     if (latest.current.version?.id === id) return;
-    const [version, code] = await Promise.all([
-      api.version(id, signal),
-      api.exported(id, signal),
-    ]);
-    if (!current(key, signal)) return;
-    if (version.project_id !== latest.current.workId)
-      throw new Error("版本不属于当前会话。");
-    publish({ version, code, values: { ...version.candidate.default_config } });
+    try {
+      const [version, code] = await Promise.all([
+        api.version(id, signal),
+        api.exported(id, signal),
+      ]);
+      if (!current(key, signal)) return;
+      if (version.project_id !== latest.current.workId)
+        throw new Error("版本不属于当前会话。");
+      publish({
+        version,
+        code,
+        values: { ...version.candidate.default_config },
+        versionFailure: null,
+      });
+    } catch (error) {
+      if (!current(key, signal)) return;
+      publish({
+        versionFailure: {
+          id,
+          message: `新版本读取失败：${error instanceof Error ? error.message : "无法读取版本产物。"} 可重新读取结果。${latest.current.version ? "已有代码仍可使用。" : "暂未取得可用代码。"}`,
+        },
+        // 未改动参数时保留引用，避免产物失败引起旧播放器无意义地重绘加锁。
+        ...(dirty()
+          ? { values: { ...latest.current.version?.candidate.default_config } }
+          : {}),
+      });
+    }
   }
-  /** 公开任务决定加载锁和失败恢复；成功任务等待对应版本读取完成才解锁。 */
+  /** 公开任务决定操作锁；成功版本读取完成或明确读取失败后解锁。 */
   function applyJob(job: Job | SessionJob) {
     const active = job.status === "queued" || job.status === "running";
     const waitingVersion =
       job.status === "succeeded" &&
-      job.result_version_id !== latest.current.version?.id;
+      job.result_version_id !== latest.current.version?.id &&
+      job.result_version_id !== latest.current.versionFailure?.id;
     const failed = ["failed", "interrupted", "cancelled"].includes(job.status);
     publish({
       job,
@@ -156,7 +178,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
         : { error: "", retryMode: null }),
     });
   }
-  /** 读取事务快照并恢复最近消息分页，游标只在快照全部应用后推进。 */
+  /** 先恢复公开快照再推进游标，产物失败独立保留为可重试状态。 */
   async function hydrate(work: string, key: number, signal: AbortSignal) {
     const snapshot = await api.session(work, signal);
     if (!current(key, signal)) return snapshot.cursor;
@@ -355,10 +377,14 @@ export function useTemplateSession(onHistoryChange: () => void) {
       if (current(s.key)) publish({ error: "停止请求未完成，请重试。" });
     }
   }
-  /** 刷新只读取，重试任务才创建执行；两种行为在按钮文字中明确区分。 */
+  /** 会话和产物恢复只读取；重试失败任务才创建执行，按钮明确区分。 */
   function retry() {
     const s = latest.current;
-    if (s.retryMode === "read" && s.workId) void attach(s.workId, s.key);
+    if (
+      (s.retryMode === "read" || (!s.retryMode && s.versionFailure)) &&
+      s.workId
+    )
+      void attach(s.workId, s.key);
     else if (s.job) void execute("chat", () => api.retry(s.job!.id));
   }
   /** 较早消息分页只合并消息，不用旧分页响应覆盖正在推进的任务或版本。 */
@@ -404,6 +430,9 @@ export function useTemplateSession(onHistoryChange: () => void) {
   }, []);
   return {
     ...state,
+    error: state.error || state.versionFailure?.message || "",
+    retryMode:
+      state.retryMode ?? (state.versionFailure ? "version" as const : null),
     dirty:
       !!state.version &&
       !sameValues(state.values, state.version.candidate.default_config),
