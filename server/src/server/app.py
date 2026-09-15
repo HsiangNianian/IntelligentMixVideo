@@ -1,4 +1,7 @@
-"""组装模板、切片、异步合成与示例 API；退出先收束合成任务，再释放数据库连接。"""
+"""组装模板库、切片、异步合成与示例 API，挂载独立 Remotion 服务。
+
+退出先收束合成任务，再释放数据库连接；保留主应用校验和数据库错误处理。
+"""
 
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
@@ -16,6 +19,7 @@ from .database import close_database, initialize_database
 from .segmentation.router import router as segmentation_router
 from .sub_api.router import router
 from .template.router import router as template_router
+from .remotion_templates.api import app as remotion_templates_app
 from .video_composition.router import router as composition_router
 from .video_composition.service import Runtime
 
@@ -50,11 +54,12 @@ app.add_middleware(
         r"^http://localhost:(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|"
         r"6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$"
     ),
-    allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type"],
+    allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type", "Last-Event-ID"],
 )
 app.include_router(router)
 app.include_router(template_router)
 app.include_router(segmentation_router)
+app.mount("/api/templates", remotion_templates_app)
 app.include_router(composition_router)
 
 

@@ -11,10 +11,13 @@ dependencies = [
     "aiohttp>=3.14.3",
     "fastapi>=0.141.1",
     "httpx>=0.28.1",
+    "jsonschema>=4.26.0",
     "openai>=3.13.0",
+    "pillow>=12.3.0",
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0,<3",
     "python-dotenv>=1.2.3",
+    "python-multipart>=0.0.32",
     "uvicorn>=0.52.4",
     "sqlalchemy>=2.0,<3",
     "pymysql[rsa]>=1.1,<2",
@@ -32,6 +35,7 @@ build-backend = "uv_build"
 
 [tool.uv.build-backend]
 module-name = "server"
+source-exclude = ["node_modules", ".cache", "__pycache__", ".data"]
 
 # 在项目根目录运行 pytest 时，仅发现服务端测试；包由 uv 安装，不修改 sys.path。
 [tool.pytest.ini_options]

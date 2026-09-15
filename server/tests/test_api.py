@@ -113,3 +113,26 @@ def test_api_documentation(client: TestClient) -> None:
     assert parameter["name"] == "user_id"
     assert parameter["required"] is True
     assert parameter["schema"]["type"] == "integer"
+
+
+def test_template_agent_mount_preserves_shared_routes(
+    client: TestClient, template_payload: dict,
+) -> None:
+    """合并后生成服务保留独立文档，模板库持久化与切片路由仍使用原有契约。"""
+    created = client.post("/template", json=template_payload)
+    assert created.status_code == 201
+    saved = created.json()
+
+    docs = client.get("/api/templates/docs")
+    assert docs.status_code == 200
+    assert "/api/templates/openapi.json" in docs.text
+    response = client.get("/api/templates/openapi.json")
+    assert response.status_code == 200
+    schema = response.json()
+    assert {"/works", "/assets", "/jobs/{job_id}"} <= set(schema["paths"])
+    assert "/template" not in schema["paths"]
+
+    restored = client.get(f"/template/{saved['template_id']}")
+    assert restored.status_code == 200
+    assert restored.json() == saved
+    assert client.post("/segmentations", json={}).status_code == 422
