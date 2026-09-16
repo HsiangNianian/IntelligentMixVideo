@@ -920,8 +920,10 @@ def test_runtime_exclusive_directory(settings, spec):
     "case",
     ["ok", "unauthorized", "invalid_json", "missing_usage", "truncated", "budget"],
 )
-def test_provider_contract_and_sanitized_errors(settings, case):
-    """Verify wire credentials, JSON parsing, usage accounting and safe error responses offline."""
+@pytest.mark.parametrize("enforced", [False, True])
+def test_provider_contract_and_sanitized_errors(settings, case, enforced):
+    """预算开关只影响额度和用量缺失；鉴权、JSON、截断检查及错误脱敏始终生效。"""
+    settings.enforce_model_budget = enforced
 
     def respond(request):
         """Capture the actual request and return a controlled compatible provider response."""
@@ -949,11 +951,12 @@ def test_provider_contract_and_sanitized_errors(settings, case):
 
     provider = Provider(settings, transport=httpx.MockTransport(respond))
     budget = Budget(calls=settings.max_model_calls if case == "budget" else 0)
-    if case == "ok":
+    if case == "ok" or (not enforced and case in {"missing_usage", "budget"}):
         result = asyncio.run(
             provider.ask(DialogueOutput, "Return JSON", "title", budget)
         )
-        assert result.questions == ["Which title?"] and budget.tokens == 100
+        assert result.questions == ["Which title?"]
+        assert budget.tokens == (0 if case == "missing_usage" else 100)
     else:
         with pytest.raises(ModelFailure) as caught:
             asyncio.run(provider.ask(DialogueOutput, "Return JSON", "title", budget))
@@ -2526,3 +2529,84 @@ def test_model_receipts_compact_passes_without_losing_private_evidence(spec, tmp
     full = next(e["result"] for e in events if e["event"] == "tool_result")
     assert any(c["status"] == "pass" and c["detail"] for c in full["checks"])
     assert any(c["status"] == "fail" for c in full["checks"])
+
+
+def test_judge_correction_continues_past_disabled_quotas(candidate, spec, tmp_path):
+    """超过旧配额后无效 Judge 仍可在相同证据上纠错；不重渲染、不改候选或放行无效结论。"""
+    requests = []
+
+    def respond(request):
+        """先返回无效要求引用，再纠正评审；验证两次请求的图片与候选一致。"""
+        body = json.loads(request.content)
+        requests.append(body)
+        payload = json.loads(body["messages"][1]["content"][0]["text"])
+        checks = [
+            VisualCheck(name=name, status="pass", detail="Observed requested content")
+            for name in ["text", "layout", "style", "motion", "scope"]
+        ]
+        if len(requests) == 1:
+            checks[2] = VisualCheck(
+                name="style",
+                status="fail",
+                detail="Unverified styling claim",
+                requirement_source="/user_intent/original_request/image",
+                requirement_quote="yellow bar",
+                target=spec.text_layers[0].id,
+                observed="bar width",
+                mismatch="too wide",
+            )
+        else:
+            assert len(requests) == 2 and payload["correction"]["errors"]
+            original = json.loads(requests[0]["messages"][1]["content"][0]["text"])
+            assert payload["candidate_plan"] == original["candidate_plan"]
+            assert (
+                body["messages"][1]["content"][1:]
+                == requests[0]["messages"][1]["content"][1:]
+            )
+        assert body["max_tokens"] == 32000
+        return httpx.Response(
+            200,
+            json={
+                "usage": {"total_tokens": 19573},
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "role": "assistant",
+                            "content": VisualReview(checks=checks).model_dump_json(),
+                        },
+                    }
+                ],
+            },
+        )
+
+    provider = Provider(
+        Settings(
+            _env_file=None,
+            actor_api_key=SecretStr("fixture"),
+            vision_model="offline",
+        ),
+        transport=httpx.MockTransport(respond),
+    )
+    renderer = ScriptedRenderer()
+    budget = Budget(
+        calls=50, tokens=200000, phases={"judge": {"calls": 12, "tokens": 60000}}
+    )
+    output, report, directory = asyncio.run(
+        Harness(provider, renderer).inspect(
+            candidate,
+            spec,
+            tmp_path / "attempt",
+            [],
+            budget,
+            intent={"instruction": "标题"},
+        )
+    )
+    assert report.passed and renderer.calls == 1 and len(requests) == 2
+    assert output.tsx_code == candidate.tsx_code
+    assert budget.summary()["judge_calls"] == 14 and budget.tokens == 239146
+    reviews = [
+        json.loads(line)
+        for line in (directory / "reviews.jsonl").read_text().splitlines()
+    ]
+    assert reviews[0]["errors"] and not reviews[1]["errors"]
