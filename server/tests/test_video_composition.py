@@ -578,9 +578,22 @@ def test_template_changes_do_not_change_running_snapshot(upstreams, client, comp
     assert "fade_in" in upstreams["submits"][0]["timeline"] and "blur_in" not in upstreams["submits"][0]["timeline"]
 
 
-def test_duplicate_post_creates_distinct_tasks_with_bounded_concurrency(upstreams, client, composition_case, monkeypatch):
-    """重复 POST 创建独立 ID；配置并发为一时后续任务留在数据库排队。"""
+@pytest.mark.parametrize("storage_delay", [0, 0.2])
+def test_duplicate_post_creates_distinct_tasks_with_bounded_concurrency(upstreams, client, composition_case, monkeypatch, storage_delay):
+    """重复 POST 独立排队并成功；第二项落库较慢也不应被无关的短匹配预算打断。"""
     monkeypatch.setenv("COMPOSITION_CONCURRENCY", "1")
+    # 本用例验证并发而非超时；避免共享夹具的 100ms 预算依赖 CI 磁盘/调度速度。
+    monkeypatch.setenv("COMPOSITION_MATCH_WAIT_SECONDS", "10")
+    advance = store.advance
+
+    def delayed_advance(record, stage, **data):
+        """保留真实事务，仅模拟第二项保存匹配截止时间后数据库返回稍慢。"""
+        updated = advance(record, stage, **data)
+        if stage == "matching" and "match_request" in data and upstreams["asr_calls"] == 2:
+            sleep(storage_delay)
+        return updated
+
+    monkeypatch.setattr(store, "advance", delayed_advance)
     upstreams["release"].clear()
     try:
         first = client.post(BASE, json=composition_case["request"]).json()["taskId"]
@@ -591,8 +604,10 @@ def test_duplicate_post_creates_distinct_tasks_with_bounded_concurrency(upstream
         assert upstreams["asr_calls"] == 1
     finally:
         upstreams["release"].set()
-    assert finished(client, first)["status"] == finished(client, second)["status"] == "succeeded"
-    assert len(upstreams["submits"]) == 2
+    for task_id in (first, second):
+        result = finished(client, task_id)
+        assert result["status"] == "succeeded", result
+    assert upstreams["asr_calls"] == len(upstreams["posts"]) == len(upstreams["submits"]) == 2
 
 
 @pytest.mark.anyio
