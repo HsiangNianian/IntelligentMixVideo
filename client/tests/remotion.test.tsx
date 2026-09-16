@@ -621,7 +621,15 @@ test("纯图片生成使用上传 ID，背景链接留在客户端", async () =>
     ).toBe(false),
   );
   expect(uploaded).toBe(true);
-  expect(created).toEqual({ image: { asset_id: "image-1" } });
+  expect(created).toEqual({
+    image: { asset_id: "image-1" },
+    composition: {
+      width: 1080,
+      height: 1920,
+      fps: 30,
+      duration_in_frames: 150,
+    },
+  });
 });
 
 // 超限图片立即拒绝，剪贴板拒绝访问时保留代码供手动复制。

@@ -1,5 +1,12 @@
 /** Remotion HTTP 客户端；请求有超时，写入不自动重试，服务密钥始终留在服务端。 */
-import type { Job, SessionSnapshot, Values, Version, WorkPage } from "./model";
+import type {
+  Composition,
+  Job,
+  SessionSnapshot,
+  Values,
+  Version,
+  WorkPage,
+} from "./model";
 
 const base =
   (import.meta.env.VITE_API_URL?.trim() || "http://localhost:20070").replace(
@@ -78,12 +85,14 @@ export function upload(
 export function create(
   description: string,
   asset?: string,
+  composition?: Composition,
 ): Promise<{ work: { id: string }; job: Job }> {
   return request("/works", {
     method: "POST",
     body: JSON.stringify({
       ...(description.trim() ? { description: description.trim() } : {}),
       ...(asset ? { image: { asset_id: asset } } : {}),
+      ...(composition ? { composition } : {}),
     }),
   });
 }
