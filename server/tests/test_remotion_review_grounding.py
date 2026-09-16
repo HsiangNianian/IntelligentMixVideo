@@ -99,6 +99,23 @@ def test_unknown_requires_specific_missing_evidence():
     assert review_errors(review, [10], 20, intent=intent(), targets={"title"})
 
 
+@pytest.mark.parametrize("status", ["unknown", "conflict"])
+@pytest.mark.parametrize("missing", [[], [""], [" \n\t"], ["需要退出帧", " "]])
+@pytest.mark.parametrize("requested", [[], [15]])
+def test_unexplained_uncertainty_requires_protocol_correction(
+    status, missing, requested
+):
+    """未知或冲突必须列出非空缺失证据；仅提供帧号不能消耗宿主补采样次数。"""
+    errors = review_errors(
+        assessment(status=status, missing_evidence=missing, requested_frames=requested),
+        [10],
+        20,
+        intent=intent(),
+        targets={"title"},
+    )
+    assert any("missing_evidence" in error for error in errors)
+
+
 def test_failure_without_basis_remains_parseable_for_dimension_correction():
     """缺依据只使该维度无效，保留同批其他合法失败所需的结构化响应。"""
     review = assessment(requirement_source=None)

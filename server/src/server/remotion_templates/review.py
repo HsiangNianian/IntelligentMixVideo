@@ -155,6 +155,13 @@ def review_errors(
             errors.append(
                 f"{item.name}: a known judgment cannot also require missing evidence"
             )
+        if item.status in {"unknown", "conflict"} and (
+            not item.missing_evidence
+            or any(not reason.strip() for reason in item.missing_evidence)
+        ):
+            errors.append(
+                f"{item.name}: unknown/conflict requires non-blank missing_evidence explaining what is unresolved; requested_frames alone is insufficient"
+            )
         if any(
             type(frame) is not int or not 0 <= frame < duration
             for frame in item.requested_frames
