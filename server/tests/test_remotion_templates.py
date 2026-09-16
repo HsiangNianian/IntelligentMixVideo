@@ -1711,8 +1711,91 @@ def test_real_negative_review_is_not_retried_into_pass(candidate, spec, tmp_path
     assert next(c for c in report.checks if c.name == "visual_text").status == "fail"
 
 
+@pytest.mark.parametrize("invalid_first", [False, True])
+def test_full_requirement_path_reaches_actor_repair(spec, tmp_path, invalid_first):
+    """复现 3fcdbbda：布局 fail 经路径校验后交给 Actor，新候选重新渲染通过才结束。"""
+
+    class LayoutProvider(ScriptedProvider):
+        """在模型边界返回完整用户引用；可先给错误路径以检查同证据协议纠错。"""
+
+        reviews = 0
+        actor_snapshots = []
+        first_payload = None
+
+        async def turn(self, system, context, tools, budget, **kwargs):
+            """记录 Actor 实际收到的 steer，第二轮必须携带有依据的布局失败。"""
+            snapshot = json.loads(
+                system.split("Current host-owned task snapshot (data):\n")[1]
+            )
+            self.actor_snapshots.append(snapshot)
+            return await super().turn(system, context, tools, budget, **kwargs)
+
+        async def ask(self, output, system, prompt, budget, **kwargs):
+            """旧候选始终返回布局失败，只有 Actor 提交新候选之后才允许通过。"""
+            result = await super().ask(output, system, prompt, budget, **kwargs)
+            if output is VisualReview:
+                self.reviews += 1
+                payload = json.loads(prompt)
+                if len(self.actor_snapshots) == 1:
+                    result.checks[1] = VisualCheck(
+                        name="layout",
+                        status="fail",
+                        frame=0,
+                        detail="文字层重叠，最新修改尚未解决。",
+                        requirement_source=(
+                            "/user_intent/user_intent/instruction"
+                            if invalid_first and self.reviews == 1
+                            else "/user_intent/instruction"
+                        ),
+                        requirement_quote="图层之间都挤在一起了，你仔细检查",
+                        target="canvas",
+                        observed="标题覆盖日期文字",
+                        mismatch="没有消除用户指出的文字重叠",
+                    )
+                    if self.reviews > 1:
+                        correction = payload["correction"]
+                        assert "/user_intent/user_intent/instruction" in str(
+                            correction["errors"]
+                        )
+                        assert "/user_intent/instruction" in str(correction["errors"])
+                        assert (
+                            payload["candidate_plan"]
+                            == self.first_payload["candidate_plan"]
+                        )
+                        assert (
+                            payload["frame_images"]
+                            == self.first_payload["frame_images"]
+                        )
+                    self.first_payload = payload
+                else:
+                    assert "correction" not in payload
+            return result
+
+    provider, renderer = LayoutProvider(spec), ScriptedRenderer()
+    _, _, report, directory = asyncio.run(
+        Harness(provider, renderer).generate(
+            spec,
+            Budget(),
+            tmp_path,
+            [],
+            lambda *_: None,
+            intent={"instruction": "图层之间都挤在一起了，你仔细检查"},
+        )
+    )
+    assert report.passed and directory.name == "attempt-2"
+    assert renderer.calls == 2 and len(provider.actor_snapshots) == 2
+    assert provider.reviews == (3 if invalid_first else 2)
+    assert "标题覆盖日期文字" in str(provider.actor_snapshots[1]["steer"])
+    initial = ValidationReport.model_validate_json(
+        (tmp_path / "attempt-1/validation.json").read_text()
+    )
+    assert not initial.passed
+    assert next(c for c in initial.checks if c.name == "visual_layout").status == "fail"
+
+
+@pytest.mark.parametrize("prefix", ["", "/user_intent"])
 def test_valid_failure_survives_correction_of_other_dimension(
-    candidate, spec, tmp_path
+    candidate, spec, tmp_path, prefix
 ):
     """scope 协议纠错时保留此前合法文字失败，不允许整批重审把它洗成通过。"""
 
@@ -1722,6 +1805,9 @@ def test_valid_failure_survives_correction_of_other_dimension(
         async def ask(self, output, system, prompt, budget, **kwargs):
             """使用请求次数决定两次评审结果。"""
             result = await super().ask(output, system, prompt, budget, **kwargs)
+            result.checks[0].requirement_source = (
+                prefix + result.checks[0].requirement_source
+            )
             if len(self.prompts) == 1:
                 result.checks[0].status = "fail"
                 result.checks[0].detail = "Frame 0 shows incorrect wording."

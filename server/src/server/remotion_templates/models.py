@@ -254,7 +254,7 @@ class VisualCheck(Check):
     requirement_source: str | None = Field(
         default=None,
         max_length=300,
-        description="JSON pointer into user_intent, or /reference_images/N (zero-based). Never candidate_plan.",
+        description="Full JSON pointer such as /user_intent/instruction or /user_intent/original_request/description, or /reference_images/N (zero-based). Never candidate_plan.",
     )
     requirement_quote: str | None = Field(
         default=None,
