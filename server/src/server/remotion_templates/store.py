@@ -25,7 +25,9 @@ from .models import (
     TemplateSpec,
     TemplateVersion,
     ValidationReport,
+    validation_fingerprint,
 )
+from .parameters import patch_parameters
 from .trajectory import Trajectory
 
 
@@ -337,26 +339,55 @@ class Store:
         report: ValidationReport,
         directory: Path,
     ) -> TemplateVersion:
-        """Publish only current accepted evidence; cancellation wins over a late result."""
+        """Publish generated or user-edited results with distinct gates; cancellation wins over either."""
         verify_artifacts(candidate, spec, report, directory)
-        assessment = Trajectory().observe(candidate, spec, report)
-        if not assessment.completion_allowed:
-            raise Conflict(
-                "candidate cannot be published: " + "; ".join(assessment.feedback)
-            )
         accepted = None
         created = False
         try:
             with self.connection() as db:
                 db.execute("BEGIN IMMEDIATE")
                 row = db.execute(
-                    "SELECT data FROM jobs WHERE id=?", (str(job_id),)
+                    "SELECT data, input_data FROM jobs WHERE id=?", (str(job_id),)
                 ).fetchone()
                 if row is None:
                     raise NotFound("job not found")
                 job = GenerationJob.model_validate_json(row["data"])
                 if job.status != "running":
                     raise Conflict("only a running job may publish a version")
+                inputs = JobInput.model_validate_json(row["input_data"])
+                source, agent_base_id = "agent", None
+                if inputs.mode == "parameters":
+                    if job.base_version_id is None or inputs.parameters is None:
+                        raise Conflict(
+                            "parameter revision requires a saved base and parameters"
+                        )
+                    base = self.version(job.base_version_id)
+                    expected_candidate, expected_spec = patch_parameters(
+                        base.candidate, base.spec, inputs.parameters
+                    )
+                    if (
+                        candidate != expected_candidate
+                        or spec != expected_spec
+                        or report.fingerprint
+                        != validation_fingerprint(candidate, spec, report.runtime)
+                        or not report.render_passed
+                    ):
+                        raise Conflict(
+                            "parameter revision differs from user input or lacks current render evidence"
+                        )
+                    source = "user_parameters"
+                    agent_base_id = (
+                        base.agent_base_version_id
+                        if base.source == "user_parameters"
+                        else base.id
+                    )
+                else:
+                    assessment = Trajectory().observe(candidate, spec, report)
+                    if not assessment.completion_allowed:
+                        raise Conflict(
+                            "candidate cannot be published: "
+                            + "; ".join(assessment.feedback)
+                        )
                 row = db.execute(
                     "SELECT data FROM projects WHERE id=?", (str(job.project_id),)
                 ).fetchone()
@@ -371,6 +402,8 @@ class Store:
                     job_id=job.id,
                     number=number,
                     base_version_id=job.base_version_id,
+                    source=source,
+                    agent_base_version_id=agent_base_id,
                     candidate=candidate,
                     spec=spec,
                     validation=report,

@@ -306,6 +306,30 @@ class ValidationReport(Contract):
     runtime: dict[str, str] = Field(default_factory=dict)
 
     @property
+    def render_passed(self) -> bool:
+        """User parameter revisions need fresh runnable artifacts, not model approval of their appearance."""
+        required = {
+            "configuration",
+            "source_policy",
+            "typescript",
+            "bundle",
+            "render",
+            "interactive_bundle",
+            "export_source",
+            "export_default_render",
+            "repeat_render",
+            "determinism",
+            "export_defaults",
+            "media_metadata",
+        }
+        return (
+            len({check.name for check in self.checks}) == len(self.checks)
+            and required
+            <= {check.name for check in self.checks if check.source == "host"}
+            and all(check.status == "pass" for check in self.checks)
+        )
+
+    @property
     def passed(self) -> bool:
         """Unknown or missing required evidence cannot approve a candidate."""
         required = {
@@ -358,7 +382,7 @@ class Asset(Contract):
 
 
 class TemplateProject(Contract):
-    """One isolated template task; its current pointer advances only after full acceptance."""
+    """One template task pointing to a verified generation or runnable user parameter revision."""
 
     id: UUID
     request: GenerateTemplateRequest
@@ -368,13 +392,15 @@ class TemplateProject(Contract):
 
 
 class TemplateVersion(Contract):
-    """An immutable accepted revision; historical sources do not create new branches."""
+    """Immutable result with explicit provenance; user revisions retain their last agent baseline."""
 
     id: UUID
     project_id: UUID
     job_id: UUID
     number: int
     base_version_id: UUID | None
+    source: Literal["agent", "user_parameters"] = "agent"
+    agent_base_version_id: UUID | None = None
     candidate: TemplateCandidate
     spec: TemplateSpec
     validation: ValidationReport
@@ -475,6 +501,7 @@ class PublicVersion(Contract):
     id: UUID
     project_id: UUID
     number: int
+    source: Literal["agent", "user_parameters"] = "agent"
     candidate: TemplateCandidate
     spec: TemplateSpec
     created_at: datetime

@@ -8,6 +8,7 @@ from uuid import UUID
 from ..settings import Settings
 from .harness import Harness
 from .models import DialogueOutput, EditTemplateRequest, JobError, JobInput, TaskMessage
+from .parameters import parameter_changes
 from .provider import Budget, ExecutionFailure, ModelFailure
 from .store import Conflict, Store
 
@@ -183,14 +184,26 @@ class Runtime:
                     "clarifications": inputs.clarifications,
                     "accepted_base": base.spec.model_dump() if base else None,
                 }
-                context.append(
-                    [
-                        {
-                            "role": "user",
-                            "content": json.dumps(intent, ensure_ascii=False),
-                        }
-                    ]
-                )
+                if patch is None and base and base.source == "user_parameters":
+                    baseline = self.store.version(base.agent_base_version_id)
+                    intent["user_parameter_changes"] = {
+                        "source": "user_parameter_edit",
+                        "baseline_version_id": str(baseline.id),
+                        "current_version_id": str(base.id),
+                        "changes": parameter_changes(
+                            baseline.candidate, base.candidate
+                        ),
+                    }
+                # Manual edits are already durable job inputs; only model tasks enter its sliding window.
+                if patch is None:
+                    context.append(
+                        [
+                            {
+                                "role": "user",
+                                "content": json.dumps(intent, ensure_ascii=False),
+                            }
+                        ]
+                    )
                 directory = self.store.job_dir(job_id)
                 directory.mkdir(parents=True, exist_ok=True)
 

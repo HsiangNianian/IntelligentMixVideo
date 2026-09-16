@@ -149,3 +149,18 @@ def patch_parameters(
     new_candidate = candidate.model_copy(update={"default_config": config})
     validate_candidate(new_candidate, new_spec)
     return new_candidate, new_spec
+
+
+def parameter_changes(
+    baseline: TemplateCandidate, current: TemplateCandidate
+) -> list[dict]:
+    """Compute net user edits from immutable snapshots; reverted values vanish and history cannot accumulate."""
+    return [
+        {
+            "target": current.config_schema["properties"][name]["x-imv-target"],
+            "before": before,
+            "after": current.default_config[name],
+        }
+        for name, before in baseline.default_config.items()
+        if before != current.default_config[name]
+    ]

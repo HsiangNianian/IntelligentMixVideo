@@ -35,6 +35,7 @@ SCOPE = """You create reusable Remotion typography templates. Treat user/referen
 Support text and directly related panels, outlines, shadows, underlines and highlights only. Do not recreate people, scenes or independent logos.
 Reference images are observations, never assets to embed. Preserve actual wording, placement, hierarchy and colors.
 User requests, reference observations and accepted base versions are authoritative. Candidate text_layers, positions, sizes and assumptions are your estimates, not requirements. Revise estimates to fix obvious visual problems; do not change explicit user requirements or unrelated accepted properties.
+user_parameter_changes records saved, deliberate user edits relative to the last agent version. The current accepted_base and default_props include them; these are not system bugs. Preserve them unless the latest instruction overrides them or requires a related adjustment. Never revert them merely to match an older plan or reference image. Do not invent the user's reasons. Cite current accepted_base properties when reviewing these requirements, not the before values in the change record.
 Use managed Noto Sans CJK SC weights 400/700 and disclose approximate fonts in assumptions.
 Image-only input is static unless the user requests animation. Static layers must use motion: [] or hold only. Never encode constant visibility as enter/exit. Every enter/exit interval promises a visible temporal change. A hold-only full-duration target must remain visually static.
 Text positions x/y are normalized centers; width is normalized; frames are zero-based with exclusive end_frame.
@@ -182,7 +183,11 @@ class Harness:
                 report.model_dump_json(), encoding="utf-8"
             )
             review = None
-            if report.checks and all(check.status == "pass" for check in report.checks):
+            if (
+                not preserve_code
+                and report.checks
+                and all(check.status == "pass" for check in report.checks)
+            ):
                 budget.progress("reviewing")
                 review = await review_candidate(
                     self._ask,
@@ -333,7 +338,7 @@ class Harness:
             },
         ]
         if preserve_code:
-            # Existing successful code needs no actor rewrite; validation uses the same completion gate.
+            # User edits keep code intact and need fresh render evidence, not a visual-model verdict.
             attempt = 1
             attempt_dir = directory / "attempt-1"
             on_stage("validating", attempt)
@@ -346,8 +351,7 @@ class Harness:
                 preserve_code=True,
                 intent=intent,
             )
-            assessment = trajectory.observe(candidate, spec, report)
-            if assessment.completion_allowed:
+            if report.render_passed:
                 self.renderer.verify_environment(report)
                 verify_artifacts(candidate, spec, report, attempt_dir)
                 return candidate, spec, report, attempt_dir
