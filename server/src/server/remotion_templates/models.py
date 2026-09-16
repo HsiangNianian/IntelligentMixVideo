@@ -251,6 +251,23 @@ class VisualCheck(Check):
 
     name: Literal["text", "layout", "style", "motion", "scope"]
     status: Literal["pass", "fail", "unknown", "conflict"]
+    requirement_source: str | None = Field(
+        default=None,
+        max_length=300,
+        description="JSON pointer into user_intent, or /reference_images/N (zero-based). Never candidate_plan.",
+    )
+    requirement_quote: str | None = Field(
+        default=None,
+        max_length=1500,
+        description="Exact requirement excerpt, or a specific observation from the referenced original image.",
+    )
+    target: str | None = Field(
+        default=None,
+        max_length=200,
+        description="Affected text layer id, or canvas for an explicitly composition-wide requirement.",
+    )
+    observed: str | None = Field(default=None, max_length=2000)
+    mismatch: str | None = Field(default=None, max_length=2000)
     missing_evidence: list[str] = Field(default_factory=list, max_length=8)
     requested_frames: list[Annotated[int, Field(ge=0, strict=True)]] = Field(
         default_factory=list, max_length=8
