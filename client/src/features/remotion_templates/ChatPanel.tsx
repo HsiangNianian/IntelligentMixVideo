@@ -1,6 +1,6 @@
 /** 当前会话的聊天展示与输入；图片只作为生成参考，预览 URL 随组件卸载释放。 */
 import { cn } from "@/lib/utils";
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowUp, ImagePlus, Square, Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -39,6 +39,7 @@ interface Props {
   hasOlder?: boolean;
   olderLoading?: boolean;
   onOlder?: () => void;
+  configuration?: ReactNode;
 }
 /** 只渲染公开消息；输入支持中文组合输入，Shift+Enter 换行，Enter 发送。 */
 export function ChatPanel({
@@ -54,6 +55,7 @@ export function ChatPanel({
   hasOlder,
   olderLoading,
   onOlder,
+  configuration,
 }: Props) {
   const [text, setText] = useState("");
   const [image, setImage] = useState<File>();
@@ -136,6 +138,7 @@ export function ChatPanel({
             </button>
           </div>
         )}
+        {configuration}
         {messages.map((message, index) => (
           <Fragment key={message.id}>
             <div

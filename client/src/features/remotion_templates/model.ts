@@ -3,6 +3,13 @@
 export type Scalar = string | number | boolean;
 /** 完整参数快照使用服务端生成的扁平键。 */
 export type Values = Record<string, Scalar>;
+/** 宿主控制的画布与整帧时长，同时用于生成请求和成功版本展示。 */
+export interface Composition {
+  width: number;
+  height: number;
+  fps: number;
+  duration_in_frames: number;
+}
 /** 已验收的扁平标量控件，路径绑定服务端目标规格。 */
 export interface Control {
   type: "string" | "number" | "integer" | "boolean";
@@ -26,12 +33,7 @@ export interface Version {
   };
   spec: {
     name: string;
-    composition: {
-      width: number;
-      height: number;
-      fps: number;
-      duration_in_frames: number;
-    };
+    composition: Composition;
     text_layers: { id: string; text: string }[];
   };
 }

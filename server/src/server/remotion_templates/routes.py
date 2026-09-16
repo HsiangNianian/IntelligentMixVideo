@@ -167,7 +167,8 @@ async def edit(work_id: UUID, request: TaskMessage, service: Service) -> PublicJ
 
     默认基于当前成功版本，也可用 `base_version_id` 指定历史成功版本。
     回答问题时用 instruction 提交答案，并用 reply_to_job_id 绑定提出问题的任务。
-    参数修改保留 TSX 并重新验收；问题已过期或已有运行任务时返回 409。
+    参数修改保留 TSX，经参数合法性与渲染可用性检查后保存，不调用 Actor 或 Judge。
+    手动修订成为后续自然语言修改的基线；问题已过期或已有运行任务时返回 409。
     纯问答或明确保持现状时返回 answered 终态，回答通过 message 和会话历史提供，不产生新版本。
     尚无成功版本的会话也可继续提问或描述生成需求；参数修改仍须已有成功版本。
     """
@@ -184,9 +185,10 @@ async def edit(work_id: UUID, request: TaskMessage, service: Service) -> PublicJ
     summary="查询作品版本列表",
 )
 def versions(work_id: UUID, service: Service) -> list[PublicVersion]:
-    """按版本号升序返回作品所有通过验收的版本，包含各版本代码和配置。
+    """按版本号升序返回可用版本，包含各版本代码、配置及来源 source。
 
-    候选修复过程与验收报告仅供服务内部使用，公开接口只返回可用结果。
+    agent 为通过生成验收的版本，user_parameters 为通过渲染检查的用户修订。
+    候选修复过程与验收报告仅供服务内部使用。
     """
     return [
         PublicVersion.from_version(item) for item in service.store.versions(work_id)

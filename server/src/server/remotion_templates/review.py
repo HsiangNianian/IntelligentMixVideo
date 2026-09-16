@@ -43,7 +43,7 @@ class ReviewResult:
 
 
 def grounding_error(item, intent, targets, reference_count):
-    """Validate factual references and structural scope; natural-language entailment remains the judge's responsibility."""
+    """校验需求引用与结构化作用域；完整路径仅移除一层 user_intent，兼容旧相对路径。"""
     if not all(
         isinstance(value, str) and value.strip()
         for value in (
@@ -69,14 +69,24 @@ def grounding_error(item, intent, targets, reference_count):
         ):
             return "reference_images must cite an existing original reference, never inspection images or their background"
         return None
-    if parts[0] not in {
+    # Judge 读取的请求包含 user_intent 外层；只处理这一明确前缀，不猜测或改写其他路径。
+    if parts[0] == "user_intent":
+        parts = parts[1:]
+    if not parts or parts[0] not in {
         "instruction",
         "original_request",
         "clarifications",
         "parameters",
         "accepted_base",
     }:
-        return "requirements must come from user_intent or original references, never candidate estimates"
+        return (
+            "requirements must come from user_intent or original references, never candidate estimates. "
+            "Use /user_intent/instruction for the latest instruction, "
+            "/user_intent/original_request/description for the original request, "
+            "a specific value under /user_intent/clarifications, /user_intent/parameters or "
+            "/user_intent/accepted_base, or /reference_images/N for an original image. "
+            "Legacy paths such as /instruction are also accepted; do not repeat user_intent."
+        )
     if parts[0] == "original_request" and (
         len(parts) < 2 or parts[1] not in {"description", "composition"}
     ):
@@ -144,7 +154,9 @@ def review_errors(
                 item, intent or {}, targets or set(), reference_count
             )
             if error:
-                errors.append(f"{item.name}: {error}")
+                errors.append(
+                    f"{item.name}: requirement_source={item.requirement_source!r}: {error}"
+                )
         if item.frame is not None and item.frame not in frames:
             errors.append(
                 f"{item.name}: frame {item.frame} is not in supplied frames {frames}; use frame_images, not image ordinals"
@@ -230,7 +242,7 @@ Return exactly five checks: text, layout, style, motion, scope. Cite actual Remo
 Only frames lists images supplied in this review. available_frames lists all host samples, not all visible observations; request missing frames via requested_frames instead of assuming their contents.
 Check readable wording, clipping, placement, styling, requested temporal behavior and typography-only scope. Do not demand background reconstruction. host_motion=verified_static reports observed static output only; it does NOT authorize ignoring a user request for animation. Check requested behavior against user_intent even if candidate_plan claims motion: []. When static behavior is requested, trust host noise-tolerant temporal checks; do not require explicit hold or invent animation requirements.
 Unknown evidence stays unknown. A valid failure must identify an actual mismatch against an existing requirement. Status and detail must agree. Correction requests concern the assessment, not permission to relax the target or accept an artifact.
-For every fail, provide requirement_source (JSON pointer into user_intent or /reference_images/N, zero-based), requirement_quote (verbatim source excerpt, or a specific original-reference observation), target (text layer id or canvas), observed and mismatch. Cite a specific property of accepted_base, never its inferred description/assumptions. User intent takes precedence: latest instruction/parameters override the corresponding original request and accepted properties, while unrelated accepted behavior remains protected. Candidate descriptions and assumptions explain implementation but cannot create acceptance requirements. Bind each requirement to its actual object: a local text/background/layout request must not expand to the whole composition. If scope is ambiguous, use unknown and describe the ambiguity instead of inventing a failure. Inspection backgrounds and other presentation aids are not authored template content.
+For every fail, provide requirement_source (full JSON pointer such as /user_intent/instruction, /user_intent/original_request/description, /user_intent/accepted_base/text_layers/0/text, or /reference_images/N for a zero-based original image), requirement_quote (verbatim source excerpt, or a specific original-reference observation), target (text layer id or canvas), observed and mismatch. Cite a specific property of accepted_base, never its inferred description/assumptions. User intent takes precedence: latest instruction/parameters override the corresponding original request and accepted properties, while unrelated accepted behavior remains protected. Candidate descriptions and assumptions explain implementation but cannot create acceptance requirements. Bind each requirement to its actual object: a local text/background/layout request must not expand to the whole composition. If scope is ambiguous, use unknown and describe the ambiguity instead of inventing a failure. Inspection backgrounds and other presentation aids are not authored template content.
 Use conflict for inconsistent evidence and unknown for missing evidence. State missing_evidence explicitly; requested_frames can ask for up to eight valid additional frame numbers. A known pass/fail cannot require missing evidence. The host may capture requested frames within its budget; do not invent their contents.
 """
     )

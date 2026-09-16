@@ -122,18 +122,19 @@ def test_failure_without_basis_remains_parseable_for_dimension_correction():
     assert review_errors(review, [10], 20, intent=intent(), targets={"title"})
 
 
-def test_latest_parameter_overrides_old_accepted_requirement():
+@pytest.mark.parametrize("prefix", ["", "/user_intent"])
+def test_latest_parameter_overrides_old_accepted_requirement(prefix):
     """明确参数更新后不能用旧成功值否决新结果，但可以引用本次参数约束。"""
     current = intent() | {"parameters": {"0_style_color": "#000000"}}
     old = assessment(
-        requirement_source="/accepted_base/text_layers/0/style/color",
+        requirement_source=prefix + "/accepted_base/text_layers/0/style/color",
         requirement_quote="#FFFFFF",
     )
     assert "superseded" in str(
         review_errors(old, [10], 20, intent=current, targets={"title"})
     )
     latest = assessment(
-        requirement_source="/parameters/0_style_color", requirement_quote="#000000"
+        requirement_source=prefix + "/parameters/0_style_color", requirement_quote="#000000"
     )
     assert review_errors(latest, [10], 20, intent=current, targets={"title"}) == []
 
@@ -145,16 +146,62 @@ def test_latest_parameter_overrides_old_accepted_requirement():
         ("/original_request/composition/width", "1080", "title"),
     ],
 )
-def test_structured_requirement_target_cannot_change_scope(source, quote, target):
+@pytest.mark.parametrize("prefix", ["", "/user_intent"])
+def test_structured_requirement_target_cannot_change_scope(source, quote, target, prefix):
     """结构化的画布要求和层参数分别绑定各自对象，不能任意交换作用范围。"""
     current = intent() | {
         "parameters": {"0_style_color": "#000000"},
         "original_request": {"composition": {"width": 1080}},
     }
     assert review_errors(
-        assessment(requirement_source=source, requirement_quote=quote, target=target),
+        assessment(requirement_source=prefix + source, requirement_quote=quote, target=target),
         [10],
         20,
         intent=current,
         targets={"title"},
     )
+
+
+@pytest.mark.parametrize("prefix", ["", "/user_intent"])
+@pytest.mark.parametrize("path,quote,target", [
+    ("/instruction", "标题加底条", "title"),
+    ("/original_request/description", "淡入淡出", "title"),
+    ("/original_request/composition/width", "1080", "canvas"),
+    ("/clarifications/0", "保留正文", "title"),
+    ("/parameters/0_style_color", "#000000", "title"),
+    ("/accepted_base/text_layers/0/text", "标题", "title"),
+])
+def test_full_and_legacy_requirement_paths_preserve_negative_verdict(prefix, path, quote, target):
+    """完整路径与旧相对路径均解析同一事实；保留 fail 与原始路径，不修改审计内容。"""
+    current = intent() | {
+        "original_request": {"description": "淡入淡出", "composition": {"width": 1080}},
+        "clarifications": ["保留正文"],
+        "parameters": {"0_style_color": "#000000"},
+    }
+    review = assessment(requirement_source=prefix + path, requirement_quote=quote, target=target)
+    original = review.model_dump()
+    assert review_errors(review, [10], 20, intent=current, targets={"title"}) == []
+    assert review.model_dump() == original
+    assert review.checks[2].status == "fail"
+
+
+@pytest.mark.parametrize("path,quote,target,reason", [
+    ("/user_intent/instruction", "伪造要求", "title", "requirement_quote"),
+    ("/user_intent/accepted_base/text_layers/9/text", "标题", "title", "does not exist"),
+    ("/user_intent/instruction", "标题加底条", "missing", "target"),
+    ("/user_intent/accepted_base/text_layers/0/style/color", "#FFFFFF", "canvas", "another layer"),
+    ("/user_intent/original_request/missing", "标题", "title", "original description"),
+    ("/user_intent", "标题", "title", "/user_intent/instruction"),
+    ("/user_intent/user_intent/instruction", "标题加底条", "title", "/user_intent/instruction"),
+    ("/user_intent/candidate_plan/description", "标题", "title", "/user_intent/instruction"),
+    ("/candidate_plan/description", "标题", "title", "/user_intent/instruction"),
+    ("/user_intent/reference_images/0", "标题", "title", "/reference_images/N"),
+])
+def test_full_paths_cannot_bypass_grounding_and_errors_identify_source(path, quote, target, reason):
+    """只兼容一层明确前缀；伪造事实、扩大作用域和候选要求仍被拒绝并提供具体纠错原因。"""
+    errors = review_errors(
+        assessment(requirement_source=path, requirement_quote=quote, target=target),
+        [10], 20, intent=intent(), targets={"title"}, reference_count=1,
+    )
+    assert len(errors) == 1 and errors[0].startswith("style:")
+    assert path in errors[0] and reason in errors[0]

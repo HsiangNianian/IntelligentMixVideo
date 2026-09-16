@@ -3,8 +3,18 @@ import { cn } from "@/lib/utils";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { capabilities } from "./api";
 import { ChatPanel } from "./ChatPanel";
+import { CompositionSettings } from "./CompositionSettings";
+import { compositionSummary, resolveComposition } from "./composition";
 import { CodePanel } from "./CodePanel";
 import { ParametersPanel } from "./ParametersPanel";
 import { PreviewPanel } from "./PreviewPanel";
@@ -44,16 +54,17 @@ export function RemotionWorkspace() {
   const pending =
     session.loading ||
     !!session.busy ||
-    session.dirty ||
     unresolved ||
     session.retryMode === "read";
   const locked = pending || previewBusy;
+  const configurationError =
+    !session.workId && resolveComposition(session.compositionDraft).error;
   return (
     <div className="space-y-4">
       <CodePanel
         key={`code-${session.key}`}
         code={session.code}
-        pending={pending}
+        pending={pending || session.dirty}
         onNew={session.reset}
       />
       {serviceError && (
@@ -77,7 +88,7 @@ export function RemotionWorkspace() {
             <Button
               variant="outline"
               size="sm"
-              disabled={!!session.busy || session.loading || session.dirty}
+              disabled={!session.canRecover}
               onClick={session.retry}
             >
               {session.retryMode === "read"
@@ -130,11 +141,31 @@ export function RemotionWorkspace() {
             olderLoading={session.olderLoading}
             onOlder={() => void session.older()}
             busy={!!session.busy}
-            disabled={locked || !!serviceError}
+            disabled={
+              locked || session.dirty || !!serviceError || !!configurationError
+            }
             canStop={unresolved}
             first={!session.workId}
+            configuration={
+              !session.workId ? (
+                <CompositionSettings
+                  value={session.compositionDraft}
+                  disabled={locked}
+                  onChange={(value) => {
+                    if (!locked) session.configure(value);
+                  }}
+                />
+              ) : session.version ? (
+                <p
+                  className="text-xs text-muted-foreground"
+                  aria-label="成功版本配置"
+                >
+                  {compositionSummary(session.version.spec.composition)}
+                </p>
+              ) : undefined
+            }
             onSend={(text, image) => {
-              if (!locked) session.send(text, image);
+              if (!locked && !session.dirty) session.send(text, image);
             }}
             onStop={() => void session.stop()}
           />
@@ -161,12 +192,62 @@ export function RemotionWorkspace() {
               session.retryMode === "read"
             }
             pending={locked}
+            dirty={session.dirty}
+            saving={session.busy === "parameters"}
+            onSave={() => {
+              if (!locked) session.saveParameters();
+            }}
+            onDiscard={() => {
+              if (!locked) session.discardParameters();
+            }}
             onChange={(key, value) => {
               if (!locked) session.change(key, value);
             }}
           />
         </div>
       </div>
+      <Dialog
+        open={!!session.navigation}
+        onOpenChange={(open) => {
+          if (!open) session.resolveNavigation("cancel");
+        }}
+      >
+        <DialogContent showCloseButton={!session.busy && !session.loading}>
+          <DialogHeader>
+            <DialogTitle>参数尚未保存</DialogTitle>
+            <DialogDescription>
+              保存配置后切换，或放弃本地修改。取消将继续编辑当前会话。
+            </DialogDescription>
+          </DialogHeader>
+          {session.error && (
+            <p role="alert" className="text-sm text-destructive">
+              {session.error}
+            </p>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              disabled={!!session.busy || session.loading}
+              onClick={() => session.resolveNavigation("cancel")}
+            >
+              取消
+            </Button>
+            <Button
+              variant="outline"
+              disabled={!!session.busy || session.loading}
+              onClick={() => session.resolveNavigation("discard")}
+            >
+              放弃修改并切换
+            </Button>
+            <Button
+              disabled={locked || session.retryMode === "read"}
+              onClick={() => session.resolveNavigation("save")}
+            >
+              {session.navigation?.saving ? "正在保存…" : "保存并切换"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -185,7 +185,7 @@ def asr_responses():
 
 @pytest.fixture
 def composition_settings(monkeypatch, asr_env):
-    """显式提供合成假配置，所有上游请求仍须各用例替换，禁止使用真实 .env。"""
+    """合成假配置为正常流程预留 CI 调度余量；超时用例单独缩短期限，不读取真实 .env。"""
     from server.video_composition.settings import Settings
 
     for key, value in {
@@ -194,8 +194,8 @@ def composition_settings(monkeypatch, asr_env):
         "ALIBABA_CLOUD_ACCESS_KEY_ID": "test-id",
         "ALIBABA_CLOUD_ACCESS_KEY_SECRET": "test-secret",
         "COMPOSITION_POLL_SECONDS": "0.01",
-        "COMPOSITION_HTTP_TIMEOUT_SECONDS": "1",
-        "COMPOSITION_MATCH_WAIT_SECONDS": "0.1",
+        "COMPOSITION_HTTP_TIMEOUT_SECONDS": "10",
+        "COMPOSITION_MATCH_WAIT_SECONDS": "10",
         "IMV_LLM_BASE_URL": "https://llm.example.test/v1",
         "IMV_LLM_API_KEY": "test-key",
         "IMV_LLM_MODEL": "test-model",

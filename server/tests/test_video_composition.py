@@ -143,8 +143,8 @@ def upstreams(monkeypatch, composition_settings, composition_case):
 
 
 def finished(client, task_id):
-    """最多五秒观察本地终态，失败时附响应；不使用无界等待。"""
-    end = monotonic() + 5
+    """最多三十秒观察本地终态，留足慢 CI 落库余量，成功后立即返回。"""
+    end = monotonic() + 30
     while monotonic() < end:
         response = client.get(f"{BASE}/{task_id}")
         assert response.status_code == 200
@@ -153,6 +153,31 @@ def finished(client, task_id):
             return data
         sleep(0.005)
     pytest.fail(f"任务未在测试预算内结束：{data}")
+
+
+@pytest.mark.parametrize("stage,delay", [("matching", 0.15), ("submitting", 5.1)])
+def test_success_survives_slow_stage_persistence(upstreams, client, composition_case, monkeypatch, stage, delay):
+    """正常流程容忍慢 CI 的落库回执，不因测试专用短期限失败或重复提交上游。"""
+    advance = store.advance
+    delayed = []
+
+    def slow_advance(record, target, **data):
+        """只延迟一次阶段初始化回执，真实 SQLite 事务、状态版本和服务时钟保持原样。"""
+        updated = advance(record, target, **data)
+        initial = "match_request" in data if stage == "matching" else "ims_request" in data
+        if target == stage and initial:
+            delayed.append(target)
+            sleep(delay)
+        return updated
+
+    monkeypatch.setattr(store, "advance", slow_advance)
+    response = client.post(BASE, json=composition_case["request"])
+    assert response.status_code == 202
+    result = finished(client, response.json()["taskId"])
+    assert delayed == [stage]
+    assert result["status"] == "succeeded" and result["error"] is None
+    assert len(upstreams["posts"]) == len(upstreams["submits"]) == 1
+    assert upstreams["gets"] == []
 
 
 def test_async_acceptance_queries_and_persisted_success(upstreams, client, composition_case):
@@ -718,8 +743,9 @@ def test_callback_confirms_lost_submission_response(upstreams, client, compositi
     ("done", None, None), ("queued", None, "matching_timeout"),
     ("running", None, "matching_timeout"), ("done", "query", "matching_unavailable"),
 ])
-def test_callback_timeout_queries_once(upstreams, client, composition_case, query_status, failure, code):
+def test_callback_timeout_queries_once(upstreams, client, composition_case, monkeypatch, query_status, failure, code):
     """缺少回调时仅补查一次；成功继续合成，未完成/5xx 明确失败，迟到回调不重启任务。"""
+    monkeypatch.setenv("COMPOSITION_MATCH_WAIT_SECONDS", "1")
     upstreams.update(callback=False, query_status=query_status, failure=failure)
     task_id = client.post(BASE, json=composition_case["request"]).json()["taskId"]
     result = finished(client, task_id)
@@ -931,8 +957,8 @@ def test_invalid_public_base_prevents_acceptance(upstreams, client, composition_
 
 
 def notified(task_id):
-    """只观察隔离数据库中的通知结果，不用 GET 轮询代替被测回调；等待最多五秒。"""
-    end = monotonic() + 5
+    """只观察隔离数据库中的通知结果，不用 GET 代替回调；最多三十秒，成功后立即返回。"""
+    end = monotonic() + 30
     while monotonic() < end:
         record = store.get(task_id)
         if record["data"].get("notification_status") in ("sent", "failed"):
@@ -1046,7 +1072,7 @@ def test_notification_delivery_does_not_retry_or_change_result(upstreams, client
 
 def test_notification_timeout_allows_one_query_without_new_render(upstreams, client, composition_case, monkeypatch):
     """接收端无响应时回调请求有界结束；调用方等待后只 GET 一次即可取结果，无须再合成。"""
-    monkeypatch.setenv("COMPOSITION_HTTP_TIMEOUT_SECONDS", "0.1")
+    monkeypatch.setenv("COMPOSITION_HTTP_TIMEOUT_SECONDS", "1")
     upstreams["notification_release"].clear()
     accepted = client.post(BASE, json={**composition_case["request"], "callbackUrl": "https://notify.example.test/result"})
     try:

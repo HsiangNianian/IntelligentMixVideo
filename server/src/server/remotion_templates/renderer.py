@@ -255,7 +255,8 @@ class Renderer:
             report.runtime["ffprobe"] = digest(
                 Path(shutil.which("ffprobe") or "/usr/bin/ffprobe").resolve()
             )
-            probes = parameter_probes(candidate, spec)
+            # User edits authorize their own appearance; do not re-audit parameter/motion semantics.
+            probes = [] if preserve_code else parameter_probes(candidate, spec)
             report.frames = sorted(
                 set(report.frames) | {probe["frame"] for probe in probes}
             )
@@ -306,9 +307,10 @@ class Renderer:
             if all(check.status == "pass" for check in report.checks):
                 report.checks.extend(consistency_checks(directory, spec, report.frames))
                 report.checks.append(await self.media_metadata(directory, spec))
-                report.checks.extend(
-                    pixel_checks(directory, spec, report.frames, probes)
-                )
+                if not preserve_code:
+                    report.checks.extend(
+                        pixel_checks(directory, spec, report.frames, probes)
+                    )
                 self.verify_environment(report)
         except (
             OSError,

@@ -11,7 +11,8 @@ from server.video_composition.settings import Settings
 @pytest.mark.anyio
 async def test_official_sdk_async_request_and_response(composition_settings, monkeypatch):
     """通过真实 SDK 模型核对 API 动作、token、Timeline、输出规格和实际返回层级。"""
-    provider = IMS(composition_settings)
+    # SDK 毫秒换算使用显式输入，不依赖集成测试为慢 CI 配置的等待余量。
+    provider = IMS(composition_settings.model_copy(update={"composition_http_timeout_seconds": 1}))
     calls = []
 
     async def call(params, request, runtime):

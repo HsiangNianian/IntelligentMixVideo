@@ -1,6 +1,7 @@
 """Compare host-observed checkpoints against current evidence and feed repairs concrete evidence."""
 
 import hashlib
+import re
 from dataclasses import dataclass
 
 from .models import (
@@ -20,21 +21,23 @@ class DecisionProgress:
         self.stalled_turns = 0
 
     def observe(self, report, *, read_current=False) -> bool:
-        """Reset only for a new check outcome/diagnostic or the first read of a current candidate."""
+        """Ignore compiler line/column shifts; retain new outcomes, diagnostics and the first read."""
         observations = []
         if report is not None:
-            observations = [
-                repr(
-                    (
-                        check.name,
-                        check.status,
-                        check.detail
-                        if check.source == "host" and check.status != "pass"
-                        else None,
-                    )
+            for check in report.checks:
+                detail = (
+                    check.detail
+                    if check.source == "host" and check.status != "pass"
+                    else None
                 )
-                for check in report.checks
-            ]
+                if check.name == "typescript" and detail is not None:
+                    # Normalize only diagnostic locations; keep original evidence and steer intact.
+                    detail = re.sub(
+                        r"(?m)^([^\r\n]+?\.[cm]?tsx?)\(\d+,\d+\)(?=: error TS\d+:)",
+                        r"\1",
+                        detail,
+                    )
+                observations.append(repr((check.name, check.status, detail)))
         if read_current:
             observations.append("current_template_observed")
         fresh = set(observations) - self.seen
@@ -87,6 +90,13 @@ class Trajectory:
             for check in report.checks
             if check.status != "pass"
         )
+        if current.get("typescript") == "fail":
+            feedback = (
+                "Compilation failed. config_schema/default_props define the parameters supplied by the host. "
+                "A missing-property error may mean your component requires a property the host does not supply; "
+                "it does not mean the host must add it. Check the current contract, correct both "
+                "type declarations and property reads, then resubmit the candidate.",
+            ) + feedback
         if report.passed:
             # A later submission in the same tool batch must pass its own checks.
             self.previous = current
