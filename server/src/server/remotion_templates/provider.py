@@ -69,6 +69,26 @@ class ExecutionFailure(ModelFailure):
         self.code = code
 
 
+def request_cost(body: dict) -> tuple[int, int, int]:
+    """Estimate input with UTF-8 bytes/2 and 2048 tokens per image; provider-independent heuristic, not billing."""
+    images = 0
+
+    def without_images(value):
+        """Count image blocks without treating their base64 transport bytes as text tokens."""
+        nonlocal images
+        if isinstance(value, dict):
+            if value.get("type") == "image_url":
+                images += 1
+                return {"type": "image_url"}
+            return {key: without_images(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [without_images(item) for item in value]
+        return value
+
+    size = len(json.dumps(without_images(body), ensure_ascii=False).encode())
+    return (size + 1) // 2 + images * 2048, images, size
+
+
 @dataclass
 class Budget:
     """One run shares accounting across analysis, actor generation, repairs and visual review."""
@@ -228,6 +248,20 @@ class Provider:
             ]
             content.extend(_image_content(images, label="Reference"))
             body["messages"].append({"role": "user", "content": content})
+        # Trim whole old exchanges only in this request, preserving the latest exchange and image mapping.
+        groups = context.groups
+        dropped = 0
+        reserve = min(512, self.settings.max_output_tokens)
+        while (
+            request_cost(body)[0] + reserve > budget.remaining(self.settings)
+            and dropped < len(groups) - 1
+        ):
+            del body["messages"][1 : 1 + len(groups[dropped])]
+            dropped += 1
+        if dropped:
+            budget.record(
+                "context_trimmed", phase=budget.active_phase, dropped_groups=dropped
+            )
         message = await self._request(body, budget, tools=True)
         try:
             # DeepSeek includes a streaming-style index even in non-streaming tool responses.
@@ -274,8 +308,24 @@ class Provider:
         body = dict(
             body,
             model=model,
-            max_tokens=min(settings.max_output_tokens, remaining),
         )
+        estimated, image_count, text_bytes = request_cost(body)
+        output_limit = min(settings.max_output_tokens, remaining - estimated)
+        budget.record(
+            "model_request",
+            phase=budget.active_phase,
+            estimated_input_tokens=estimated,
+            image_count=image_count,
+            text_bytes=text_bytes,
+            remaining_tokens=remaining,
+            max_output_tokens=max(0, output_limit),
+        )
+        if output_limit < min(512, settings.max_output_tokens):
+            raise ExecutionFailure(
+                "input_budget_exhausted",
+                "Insufficient model budget for estimated input and a useful response; no request sent.",
+            )
+        body["max_tokens"] = output_limit
         if len(json.dumps(body, ensure_ascii=False).encode()) > 36_000_000:
             raise ModelFailure("Model request exceeds the context size limit.")
         if settings.disable_thinking:
@@ -311,6 +361,22 @@ class Provider:
                     "Model endpoint omitted valid token usage; budget cannot be verified."
                 )
             budget.tokens += usage
+            token_detail = payload.get("usage", {})
+
+            def valid_usage(name):
+                """Optional provider breakdown improves diagnostics without inventing missing input/output counts."""
+                value = token_detail.get(name)
+                return value if type(value) is int and value >= 0 else None
+
+            budget.record(
+                "model_usage",
+                phase=budget.active_phase,
+                total_tokens=usage,
+                input_tokens=valid_usage("prompt_tokens"),
+                output_tokens=valid_usage("completion_tokens"),
+                estimated_input_tokens=estimated,
+                image_count=image_count,
+            )
             if budget.tokens > settings.max_tokens:
                 raise ModelFailure("Model token budget exhausted.")
             if budget.active_phase:
