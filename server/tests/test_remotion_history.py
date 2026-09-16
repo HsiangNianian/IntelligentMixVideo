@@ -44,6 +44,42 @@ def history_app(history_store):
     return app
 
 
+@pytest.mark.parametrize("composition", [
+    {"width": 1920, "height": 1080, "fps": 24, "duration_in_frames": 77},
+    {"width": 3840, "height": 2160, "fps": 60, "duration_in_frames": 1800},
+    {"width": 1080, "height": 1080, "fps": 25, "duration_in_frames": 125},
+])
+def test_creation_preserves_selected_composition(history_app, history_store, composition):
+    """客户端选择的画布与整帧时长持久化到作品，后续读取保留实际生成配置。"""
+    with TestClient(history_app) as client:
+        response = client.post("/works", json={
+            "description": "按所选配置生成标题", "composition": composition,
+        })
+        assert response.status_code == 202
+        work_id = response.json()["work"]["id"]
+        assert history_store.project(work_id).request.composition.model_dump() == composition
+        snapshot = client.get(f"/works/{work_id}/session")
+        assert snapshot.status_code == 200
+        assert snapshot.json()["job"]["status"] == "queued"
+        assert len(snapshot.json()["messages"]) == 1
+
+
+@pytest.mark.parametrize("patch", [
+    {"width": 1081}, {"height": 0}, {"fps": 0},
+    {"duration_in_frames": 0}, {"duration_in_frames": 901},
+    {"width": 3840, "height": 3840},
+])
+def test_invalid_creation_configuration_has_no_side_effects(history_app, history_store, patch):
+    """绕过客户端校验时仍返回 422，且不留下作品、任务或聊天消息。"""
+    composition = {"width": 1080, "height": 1920, "fps": 30, "duration_in_frames": 150} | patch
+    with TestClient(history_app) as client:
+        response = client.post("/works", json={"description": "标题", "composition": composition})
+        assert response.status_code == 422
+    with history_store.connection() as db:
+        for table in ("projects", "jobs", "chat_messages"):
+            assert db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+
+
 def test_public_history_tracks_inputs_and_hides_repairs(history_store):
     """Persist input, question and answer exactly once while keeping steer and provider diagnostics private."""
     store = history_store

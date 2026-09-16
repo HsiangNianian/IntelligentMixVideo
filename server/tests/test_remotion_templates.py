@@ -554,6 +554,31 @@ class ScriptedRenderer:
         report.checks = [
             check for check in report.checks if not check.name.startswith("visual_")
         ]
+        if kwargs.get("preserve_code"):
+            # User revisions expose runnable/exportable artifacts without fabricated visual judgments.
+            report.checks = [
+                check
+                for check in report.checks
+                if check.name
+                not in {"transparency", "parameter_behavior", "motion_evidence"}
+            ]
+            report.checks.extend(
+                Check(name=name, status="pass", detail="Offline renderer output.")
+                for name in (
+                    "interactive_bundle",
+                    "export_source",
+                    "export_defaults",
+                    "export_default_render",
+                    "repeat_render",
+                )
+            )
+            (directory / "interactive.js").write_text("// Offline player bundle")
+            (directory / "Export.tsx").write_text(
+                candidate.tsx_code
+                + "\n// Defaults: "
+                + json.dumps(candidate.default_config, ensure_ascii=False)
+            )
+            Image.new("RGBA", (64, 64), "white").save(directory / "export-default.png")
         for frame in report.frames:
             Image.new("RGBA", (64, 64), "white").save(directory / f"frame-{frame}.png")
         return candidate, report
@@ -770,6 +795,221 @@ def test_api_generation_edit_artifacts_and_events(settings, spec):
             v["number"]
             for v in client.get(f"/api/templates/works/{project_id}/versions").json()
         ] == [1, 2, 3]
+
+
+def test_user_parameter_revisions_feed_net_changes_to_actor_and_judge(settings, spec):
+    """连续手动修改不调用模型或挤掉窗口；持久修订可恢复，Actor/Judge 收到净变化并在生成后重建基线。"""
+
+    class ContinuingProvider(ScriptedProvider):
+        """通过读取当前模板继续编辑，核对两种模型角色接收同一份用户意图。"""
+
+        reading = False
+
+        def __init__(self, spec):
+            """记录真实快照与回执供断言，不模拟宿主状态合并。"""
+            super().__init__(spec)
+            self.snapshots, self.current_candidates, self.review_intents = [], [], []
+
+        async def turn(self, system, context, tools, budget, **kwargs):
+            """先读取宿主当前代码和参数，再按新指令调整旋转，保留用户文字和字号。"""
+            snapshot = json.loads(
+                system.split("Current host-owned task snapshot (data):\n")[1]
+            )
+            self.snapshots.append(snapshot)
+            if snapshot["user_intent"]["accepted_base"] is None:
+                return await super().turn(system, context, tools, budget, **kwargs)
+            assert "these are not system bugs" in system
+            budget.calls += 1
+            if not self.reading:
+                self.reading = True
+                return actor_tool("read_current_template", {})
+            self.reading = False
+            current = json.loads(context.messages()[-1]["content"])["candidate"]
+            self.current_candidates.append(current)
+            revised = TemplateSpec.model_validate(
+                snapshot["user_intent"]["accepted_base"]
+            )
+            revised.text_layers[0].layout.rotation = 15
+            return actor_tool(
+                "submit_candidate",
+                {"tsx_code": current["tsx_code"], "spec": revised.model_dump()},
+            )
+
+        async def ask(self, output, system, prompt, budget, **kwargs):
+            """视觉评审获得用户修订来源，不能把旧参考当作覆盖当前文字的指令。"""
+            if output is VisualReview:
+                assert "Never revert them merely" in system
+                self.review_intents.append(json.loads(prompt)["user_intent"])
+            return await super().ask(output, system, prompt, budget, **kwargs)
+
+    provider, renderer = ContinuingProvider(spec), ScriptedRenderer()
+    application = create_app(settings, provider=provider, renderer=renderer)
+    with TestClient(application) as client:
+        created = client.post(
+            "/api/templates/works",
+            json={
+                "description": "标题",
+                "composition": spec.composition.model_dump(),
+            },
+        ).json()
+        work_id = created["work"]["id"]
+        first_job = wait_job(client, created["job"]["id"])
+        store = application.state.template_app.state.runtime.store
+        first = store.version(first_job["result_version_id"])
+        before_context = store.conversation(work_id).serialize()
+        before_calls = len(provider.prompts)
+        cursor = store.session(work_id).cursor
+        # Twelve edits exceed the model's eight-group window; only final net values should matter.
+        for index in range(12):
+            patch = {
+                "0_text": f"用户标题{index}",
+                "0_style_font_size": 100,
+                "0_layout_x": 0.4,
+            }
+            if index == 11:
+                patch["0_layout_x"] = first.candidate.default_config["0_layout_x"]
+            response = client.post(
+                f"/api/templates/works/{work_id}/messages", json={"parameters": patch}
+            )
+            assert response.status_code == 202
+            job = wait_job(client, response.json()["id"])
+            assert job["status"] == "succeeded", job
+            current = store.version(job["result_version_id"])
+            assert (
+                current.source == "user_parameters"
+                and current.agent_base_version_id == first.id
+            )
+            assert current.validation.render_passed and not current.validation.passed
+            assert not any(
+                c.name.startswith("visual_") for c in current.validation.checks
+            )
+            assert store.job(job["id"]).usage == {"calls": 0, "tokens": 0}
+        assert len(provider.prompts) == before_calls
+        assert store.conversation(work_id).serialize() == before_context
+        restored = Store(store.root).version(current.id)
+        assert (
+            restored == current
+            and current.candidate.tsx_code == first.candidate.tsx_code
+        )
+        assert store.session(work_id).work.current_version_id == current.id
+        events = store.work_events(work_id, cursor)
+        assert sum(e.type == "version.ready" for e in events) == 12
+        public = client.get(f"/api/templates/versions/{current.id}").json()
+        assert public["source"] == "user_parameters" and "validation" not in public
+        exported = client.get(
+            f"/api/templates/versions/{current.id}/artifacts/Export.tsx"
+        )
+        assert exported.status_code == 200 and "用户标题11" in exported.text
+        invalid = client.post(
+            f"/api/templates/works/{work_id}/messages",
+            json={"parameters": {"0_text": ""}},
+        )
+        assert invalid.status_code == 422
+        renderer.failures = renderer.calls + 1
+        failed_edit = client.post(
+            f"/api/templates/works/{work_id}/messages",
+            json={"parameters": {"0_text": "不应保存"}},
+        )
+        failed_job = wait_job(client, failed_edit.json()["id"])
+        assert failed_job["status"] == "failed"
+        assert store.project(work_id).current_version_id == current.id
+        assert store.conversation(work_id).serialize() == before_context
+        assert len(provider.prompts) == before_calls
+        followup = client.post(
+            f"/api/templates/works/{work_id}/messages", json={"instruction": "旋转15度"}
+        )
+        result = wait_job(client, followup.json()["id"])
+        assert result["status"] == "succeeded", result
+        intent = provider.snapshots[-1]["user_intent"]
+        changes = intent["user_parameter_changes"]
+        assert changes["source"] == "user_parameter_edit"
+        assert changes["changes"] == [
+            {"target": "/text_layers/0/text", "before": "你好", "after": "用户标题11"},
+            {"target": "/text_layers/0/style/font_size", "before": 80, "after": 100},
+        ]
+        assert provider.review_intents[-1] == intent
+        assert provider.current_candidates[-1] == current.candidate.model_dump()
+        generated = store.version(result["result_version_id"])
+        assert generated.source == "agent" and generated.agent_base_version_id is None
+        assert generated.candidate.default_config["0_text"] == "用户标题11"
+        # Subsequent manual edits are relative to this new generation, not the first-ever template.
+        edited = client.post(
+            f"/api/templates/works/{work_id}/messages",
+            json={"parameters": {"0_style_font_size": 90}},
+        )
+        revised_job = wait_job(client, edited.json()["id"])
+        assert (
+            store.version(revised_job["result_version_id"]).agent_base_version_id
+            == generated.id
+        )
+
+
+def test_parameter_change_summary_drops_reverts(candidate, spec):
+    """完整参数提交和恢复原值只保留净变化；合并不修改基线或候选。"""
+    from server.remotion_templates.parameters import parameter_changes
+
+    changed, revised = patch_parameters(
+        candidate, spec, {"0_text": "新标题", "0_style_color": "#000000"}
+    )
+    before = candidate.model_dump()
+    assert len(parameter_changes(candidate, changed)) == 2
+    reverted, _ = patch_parameters(changed, revised, candidate.default_config)
+    assert parameter_changes(candidate, reverted) == []
+    assert candidate.model_dump() == before
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "render",
+        "missing_export",
+        "cancelled",
+        "code",
+        "parameters",
+        "fingerprint",
+        "generation",
+    ],
+)
+def test_parameter_publication_keeps_strict_execution_boundary(
+    store, candidate, spec, failure
+):
+    """用户修订仍拒绝渲染失败、缺失证据、取消、偷改源码/参数与旧指纹；生成不能借用轻量门禁。"""
+    project, first_job = store.create(GenerateTemplateRequest(description="标题"))
+    store.claim()
+    first = publish_fixture(
+        store, first_job.id, candidate, spec, evidence(candidate, spec)
+    )
+    mode = "edit" if failure == "generation" else "parameters"
+    job = store.enqueue(
+        project.id, JobInput(mode=mode, parameters={"0_text": "用户修改"}), first.id
+    )
+    store.claim()
+    changed, revised = patch_parameters(candidate, spec, {"0_text": "用户修改"})
+    if failure == "code":
+        changed = changed.model_copy(
+            update={"tsx_code": SAMPLE_CODE + "\n// unrequested change"}
+        )
+    if failure == "parameters":
+        changed, revised = patch_parameters(
+            changed, revised, {"0_style_font_size": 100}
+        )
+    directory = store.job_dir(job.id) / "attempt-1"
+    changed, report = asyncio.run(
+        ScriptedRenderer().validate(changed, revised, directory, preserve_code=True)
+    )
+    if failure == "render":
+        next(c for c in report.checks if c.name == "render").status = "fail"
+    elif failure == "missing_export":
+        report.checks = [c for c in report.checks if c.name != "export_defaults"]
+    elif failure == "cancelled":
+        store.update(job.id, status="cancelled", stage="finished")
+    elif failure == "fingerprint":
+        report.fingerprint = first.validation.fingerprint
+    seal_artifacts(changed, revised, report, directory)
+    with pytest.raises(Conflict):
+        store.publish(job.id, changed, revised, report, directory)
+    assert store.project(project.id).current_version_id == first.id
+    assert len(store.versions(project.id)) == 1
 
 
 def test_api_clarification_failure_and_retry(settings, spec):
@@ -1081,6 +1321,14 @@ def test_real_isolated_renderer(settings, candidate, spec, tmp_path):
             updated, target, tmp_path / "second", preserve_code=True
         )
         assert revised.tsx_code == output.tsx_code
+        assert validation.render_passed and not validation.passed
+        assert (
+            json.loads((tmp_path / "second" / "request.json").read_text())["probes"]
+            == []
+        )
+        assert not {"parameter_behavior", "motion_evidence", "transparency"} & {
+            check.name for check in validation.checks
+        }
         assert all(check.status == "pass" for check in validation.checks), (
             validation.model_dump()
         )
