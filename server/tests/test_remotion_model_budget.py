@@ -44,7 +44,7 @@ def test_invalid_output_budget_rejected(value):
 
 @pytest.mark.parametrize("vision", [False, True])
 @pytest.mark.parametrize(
-    "cap,used,expected", [(32000, 0, 32000), (40000, 0, 40000), (32000, 199999, 1)]
+    "cap,used,expected", [(32000, 0, 32000), (40000, 0, 40000), (32000, 199999, None)]
 )
 def test_provider_uses_configured_cap_and_remaining_budget(cap, used, expected, vision):
     """Actor 与 Vision 请求采用配置的输出上限，并按剩余总预算缩小；HTTP 超时实际传入传输层。"""
@@ -80,6 +80,13 @@ def test_provider_uses_configured_cap_and_remaining_budget(cap, used, expected, 
 
     budget = Budget(tokens=used)
     provider = Provider(settings, transport=httpx.MockTransport(respond))
+    if expected is None:
+        with pytest.raises(ModelFailure, match="estimated input"):
+            asyncio.run(
+                provider.ask(DialogueOutput, "system", "user", budget, vision=vision)
+            )
+        assert budget.calls == 0 and budget.tokens == used
+        return
     result = asyncio.run(
         provider.ask(DialogueOutput, "system", "user", budget, vision=vision)
     )
@@ -112,6 +119,7 @@ def test_phase_limit_preserves_other_roles_and_global_cap(tmp_path):
         max_judge_calls=1,
         max_actor_tokens=1000,
         max_tokens=3000,
+        max_output_tokens=64,
     )
     usage = 600
 
@@ -136,13 +144,13 @@ def test_phase_limit_preserves_other_roles_and_global_cap(tmp_path):
     provider = Provider(settings, transport=httpx.MockTransport(respond))
     budget = Budget(audit_path=tmp_path / "audit.jsonl")
     with budget.phase("judge"):
-        asyncio.run(provider.ask(DialogueOutput, "s", "u", budget))
+        asyncio.run(provider._request({"messages": []}, budget))
     with pytest.raises(ExecutionFailure, match="judge"), budget.phase("judge"):
-        asyncio.run(provider.ask(DialogueOutput, "s", "u", budget))
+        asyncio.run(provider._request({"messages": []}, budget))
     with budget.phase("actor"):
-        asyncio.run(provider.ask(DialogueOutput, "s", "u", budget))
+        asyncio.run(provider._request({"messages": []}, budget))
     with pytest.raises(ExecutionFailure, match="actor"), budget.phase("actor"):
-        asyncio.run(provider.ask(DialogueOutput, "s", "u", budget))
+        asyncio.run(provider._request({"messages": []}, budget))
     assert budget.summary() == {
         "calls": 3,
         "tokens": 1800,
@@ -157,7 +165,7 @@ def test_phase_limit_preserves_other_roles_and_global_cap(tmp_path):
         pytest.raises(ModelFailure, match="Model token budget exhausted"),
         budget.phase("actor"),
     ):
-        asyncio.run(provider.ask(DialogueOutput, "s", "u", budget))
+        asyncio.run(provider._request({"messages": []}, budget))
     assert budget.summary()["actor_tokens"] == 2500
     assert budget.tokens == 3100
     assert budget.active_phase is None
@@ -218,3 +226,130 @@ def test_recovery_settings_read_environment(tmp_path):
         settings.max_judge_calls,
         settings.max_judge_tokens,
     ) == (1, 2, 3, 5, 12000)
+
+
+def test_input_budget_stops_before_http_and_records_reason(tmp_path):
+    """大输入超过剩余额度时不发请求，不扣调用次数，并保留无密钥的预检诊断。"""
+    settings = Settings(
+        _env_file=None,
+        actor_model="offline",
+        actor_api_key=SecretStr("hidden-key"),
+        max_tokens=1000,
+    )
+    provider = Provider(
+        settings, transport=httpx.MockTransport(lambda _: pytest.fail("must not send"))
+    )
+    budget = Budget(audit_path=tmp_path / "audit.jsonl")
+    with pytest.raises(ModelFailure, match="estimated input"):
+        asyncio.run(provider.ask(DialogueOutput, "system", "用户要求" * 1000, budget))
+    assert budget.calls == 0 and budget.tokens == 0
+    audit = budget.audit_path.read_text()
+    assert '"estimated_input_tokens"' in audit and "hidden-key" not in audit
+
+
+def test_usage_breakdown_and_output_reservation(tmp_path):
+    """输入预算预留后输出额度小于剩余总量，真实回执仍按总量记账并记录输入输出明细。"""
+    requests = []
+
+    def respond(request):
+        """固定返回有明细的响应，避免依赖真实分词器与模型。"""
+        body = json.loads(request.content)
+        requests.append(body)
+        assert 512 <= body["max_tokens"] < 2000
+        return httpx.Response(
+            200,
+            json={
+                "usage": {
+                    "total_tokens": 900,
+                    "prompt_tokens": 800,
+                    "completion_tokens": 100,
+                },
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "role": "assistant",
+                            "content": '{"answer":"完成"}',
+                        },
+                    }
+                ],
+            },
+        )
+
+    settings = Settings(
+        _env_file=None,
+        actor_model="offline",
+        actor_api_key=SecretStr("fixture"),
+        max_tokens=2000,
+    )
+    provider = Provider(settings, transport=httpx.MockTransport(respond))
+    budget = Budget(audit_path=tmp_path / "audit.jsonl")
+    assert asyncio.run(provider.ask(DialogueOutput, "s", "u", budget)).answer == "完成"
+    assert budget.tokens == 900
+    events = [json.loads(line) for line in budget.audit_path.read_text().splitlines()]
+    usage = next(e for e in events if e["event"] == "model_usage")
+    assert (usage["input_tokens"], usage["output_tokens"], usage["image_count"]) == (
+        800,
+        100,
+        0,
+    )
+
+
+def test_actor_budget_trims_whole_exchanges_without_mutating_history(tmp_path):
+    """紧张预算只移除请求中的完整旧工具组，当前交易、持久窗口和图片映射保持不变。"""
+    from server.remotion_templates.context import Conversation
+
+    def exchange(identifier, content="checked"):
+        """一组必须同时保留或移除的调用及回执。"""
+        return [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": identifier,
+                        "type": "function",
+                        "function": {
+                            "name": "read_current_template",
+                            "arguments": "{}",
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": identifier, "content": content},
+        ]
+
+    context = Conversation([exchange("old", "long" * 5000), exchange("current")])
+    before = context.serialize()
+
+    def respond(request):
+        """验证 HTTP 中没有孤立工具回执，且最新候选交互仍在。"""
+        body = json.loads(request.content)
+        assert [
+            m.get("tool_call_id") for m in body["messages"] if m["role"] == "tool"
+        ] == ["current"]
+        return httpx.Response(
+            200,
+            json={
+                "usage": {"total_tokens": 200},
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "继续"},
+                    }
+                ],
+            },
+        )
+
+    provider = Provider(
+        Settings(
+            _env_file=None,
+            actor_model="offline",
+            actor_api_key=SecretStr("fixture"),
+            max_tokens=2000,
+        ),
+        transport=httpx.MockTransport(respond),
+    )
+    budget = Budget(audit_path=tmp_path / "audit.jsonl")
+    asyncio.run(provider.turn("snapshot", context, [], budget))
+    assert context.serialize() == before
+    assert '"dropped_groups": 1' in budget.audit_path.read_text()
