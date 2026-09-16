@@ -177,9 +177,7 @@ class Runtime:
                 spec = base.spec if base else None
                 patch = inputs.parameters
                 intent = {
-                    "original_request": project.request.model_dump(mode="json")
-                    if base is None
-                    else None,
+                    "original_request": project.request.model_dump(mode="json"),
                     "instruction": inputs.instruction,
                     "parameters": patch,
                     "clarifications": inputs.clarifications,

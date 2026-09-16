@@ -459,10 +459,26 @@ class ScriptedProvider:
             return AnswerReview(
                 status="pass", detail="Offline answer agrees with user input."
             )
+        intent = json.loads(prompt).get("user_intent") or {}
+        source = (
+            "/original_request/description"
+            if (intent.get("original_request") or {}).get("description")
+            else "/instruction"
+        )
+        quote = (intent.get("original_request") or {}).get("description") or intent.get(
+            "instruction"
+        )
         return VisualReview(
             checks=[
                 VisualCheck(
-                    name=name, status="pass", detail="Offline visual observation."
+                    name=name,
+                    status="pass",
+                    detail="Offline visual observation.",
+                    requirement_source=source,
+                    requirement_quote=quote,
+                    target=self.spec.text_layers[0].id,
+                    observed="Observed fixture mismatch",
+                    mismatch="Explicit requested property differs",
                 )
                 for name in ["text", "layout", "style", "motion", "scope"]
             ]
@@ -744,7 +760,7 @@ def test_api_generation_edit_artifacts_and_events(settings, spec):
                 -1
             ]
         )
-        assert review_prompt["user_intent"]["original_request"] is None
+        assert review_prompt["user_intent"]["original_request"]["description"]
         assert (
             review_prompt["user_intent"]["accepted_base"]["text_layers"][0]["text"]
             == "新标题"
@@ -1679,7 +1695,12 @@ def test_real_negative_review_is_not_retried_into_pass(candidate, spec, tmp_path
     provider = NegativeProvider(spec)
     _, report, _ = asyncio.run(
         Harness(provider, ScriptedRenderer()).inspect(
-            candidate, spec, tmp_path / "attempt", [], Budget()
+            candidate,
+            spec,
+            tmp_path / "attempt",
+            [],
+            Budget(),
+            intent={"instruction": "标题"},
         )
     )
     assert not report.passed
@@ -1708,7 +1729,12 @@ def test_valid_failure_survives_correction_of_other_dimension(
     provider = MixedProvider(spec)
     _, report, _ = asyncio.run(
         Harness(provider, ScriptedRenderer()).inspect(
-            candidate, spec, tmp_path / "attempt", [], Budget()
+            candidate,
+            spec,
+            tmp_path / "attempt",
+            [],
+            Budget(),
+            intent={"instruction": "标题"},
         )
     )
     assert len(provider.prompts) == 2
@@ -2373,3 +2399,130 @@ def test_public_history_only_publishes_accepted_versions(store, candidate, spec)
     assert (
         store.version(version.id).candidate.default_config == candidate.default_config
     )
+
+
+def test_judge_gets_complete_plan_and_repairs_ungrounded_verdict(
+    candidate, spec, tmp_path
+):
+    """完整方案仅解释实现；伪造要求导致 Judge 纠错，候选与渲染证据不变。"""
+    spec.assumptions = ["底条属于标题局部装饰"]
+
+    class ScopedProvider(ScriptedProvider):
+        """第一次扩大局部要求，第二次在同一证据上撤回无依据的否决。"""
+
+        async def ask(self, output, system, prompt, budget, **kwargs):
+            """检查新方案全部字段及评审纠错输入，禁止将方案估计作为新要求。"""
+            data = json.loads(prompt)
+            assert data["candidate_plan"] == spec.model_dump()
+            assert data["user_intent"]["instruction"] == "标题加底条"
+            result = await super().ask(output, system, prompt, budget, **kwargs)
+            if len(self.prompts) == 1:
+                result.checks[2].status = "fail"
+                result.checks[2].requirement_quote = "整个画布必须有底色"
+                result.checks[2].target = "canvas"
+            else:
+                assert "not present" in str(data["correction"]["errors"])
+            return result
+
+    provider, renderer = ScopedProvider(spec), ScriptedRenderer()
+    output, report, _ = asyncio.run(
+        Harness(provider, renderer).inspect(
+            candidate,
+            spec,
+            tmp_path / "attempt",
+            [],
+            Budget(),
+            intent={"instruction": "标题加底条"},
+        )
+    )
+    assert report.passed and renderer.calls == 1 and len(provider.prompts) == 2
+    assert output.tsx_code == candidate.tsx_code
+
+
+def test_judge_requested_existing_but_unseen_frame_is_supplied(
+    candidate, spec, tmp_path
+):
+    """代表帧未覆盖的已有帧也能被请求，补证据不能因文件已存在而跳过或仍不发送。"""
+    spec.composition.duration_in_frames = 60
+    spec.text_layers[0].end_frame = 60
+
+    class ManyFrames(ScriptedRenderer):
+        """保存完整帧集合，模型只接收其代表子集。"""
+
+        async def validate(self, candidate, spec, directory, **kwargs):
+            """物化全部受控图像，保留清单校验和渲染次数。"""
+            output, report = await super().validate(
+                candidate, spec, directory, **kwargs
+            )
+            report.frames = list(range(60))
+            for frame in report.frames:
+                Image.new("RGBA", (64, 64), "white").save(
+                    directory / f"frame-{frame}.png"
+                )
+            return output, report
+
+    class MissingView(ScriptedProvider):
+        """明确请求一个尚未展示的现有帧，收到后才通过。"""
+
+        requested = None
+
+        async def ask(self, output, system, prompt, budget, **kwargs):
+            """核对图片路径、序号映射及补采样，避免元数据声称发送但实际缺图。"""
+            data = json.loads(prompt)
+            result = await super().ask(output, system, prompt, budget, **kwargs)
+            assert [p.name for p in kwargs["images"]] == [
+                f"frame-{frame}.png" for frame in data["frames"]
+            ]
+            if self.requested is None:
+                assert len(data["frames"]) <= 12 and len(data["available_frames"]) == 60
+                self.requested = next(
+                    frame
+                    for frame in data["available_frames"]
+                    if frame not in data["frames"]
+                )
+                result.checks[1].status = "unknown"
+                result.checks[1].missing_evidence = ["需要观察具体时刻"]
+                result.checks[1].requested_frames = [self.requested]
+            else:
+                assert self.requested in data["frames"]
+            return result
+
+    renderer = ManyFrames()
+    _, report, _ = asyncio.run(
+        Harness(MissingView(spec), renderer).inspect(
+            candidate,
+            spec,
+            tmp_path / "attempt",
+            [],
+            Budget(),
+            intent={"instruction": "标题"},
+        )
+    )
+    assert report.passed and len(report.frames) == 60 and renderer.calls == 2
+
+
+def test_model_receipts_compact_passes_without_losing_private_evidence(spec, tmp_path):
+    """Actor 只读取失败详情与通过项名称，完整检查报告仍保存于审计和候选文件。"""
+    provider = ActionProvider(
+        spec, [("submit_candidate", {"tsx_code": SAMPLE_CODE})] * 2
+    )
+    context = Conversation()
+    _, _, report, directory = asyncio.run(
+        Harness(provider, ScriptedRenderer(failures=1)).generate(
+            spec, Budget(), tmp_path / "run", [], lambda *_: None, context=context
+        )
+    )
+    assert report.passed and directory.name == "attempt-2"
+    receipt = json.loads(
+        next(m["content"] for m in provider.windows[1] if m["role"] == "tool")
+    )
+    assert receipt["checks"] and all(c["status"] != "pass" for c in receipt["checks"])
+    assert "configuration" in receipt["passed_checks"]
+    assert "configuration" in provider.snapshots[1]["passed_checks"]
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "run/audit.jsonl").read_text().splitlines()
+    ]
+    full = next(e["result"] for e in events if e["event"] == "tool_result")
+    assert any(c["status"] == "pass" and c["detail"] for c in full["checks"])
+    assert any(c["status"] == "fail" for c in full["checks"])
