@@ -1,4 +1,4 @@
-/** 验证真实 AppImage 不携带冲突的 Wayland 库；执行：bun .github/scripts/appimage-smoke.mjs <AppImage>。 */
+/** 验证 AppImage 媒体依赖并排除冲突的宿主库；执行：bun .github/scripts/appimage-smoke.mjs <AppImage>。 */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
@@ -12,14 +12,16 @@ export function verifyAppDir(root) {
     "usr/lib/gstreamer-1.0/libgstautodetect.so",
     "usr/lib/gstreamer-1.0/libgstisomp4.so",
     "usr/lib/gstreamer-1.0/libgstlibav.so",
+    "usr/lib/gstreamer-1.0/libgstopengl.so",
+    "usr/lib/gstreamer-1.0/libgstplayback.so",
     "usr/lib/gstreamer1.0/gstreamer-1.0/gst-plugin-scanner",
   ]) {
     assert(existsSync(join(root, path)), `Missing required AppImage file: ${path}`);
   }
   // 检查实际产物，而非复制排除规则；也能捕获库目录变化后规则失效。
   const bundled = readdirSync(join(root, "usr"), { recursive: true })
-    .filter((path) => /(^|\/)libwayland-[^/]+\.so(?:\.|$)/.test(path));
-  assert.deepEqual(bundled, [], "AppImage must use host Wayland libraries to avoid EGL crashes");
+    .filter((path) => /(^|\/)lib(?:wayland-[^/]+|pulse[^/]*)\.so(?:\.|$)/.test(path));
+  assert.deepEqual(bundled, [], "AppImage must use host Wayland and PulseAudio libraries");
 }
 
 if (import.meta.main) {
@@ -32,7 +34,7 @@ if (import.meta.main) {
       cwd: dir, stdio: ["ignore", "ignore", "pipe"], timeout: 60_000,
     });
     verifyAppDir(join(dir, "squashfs-root"));
-    console.log("AppImage keeps client/WebKit/media plugins and excludes bundled Wayland libraries");
+    console.log("AppImage keeps client/WebKit/media plugins and excludes bundled Wayland/PulseAudio libraries");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
