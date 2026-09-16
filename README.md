@@ -33,9 +33,11 @@ uv run server
 默认监听 `0.0.0.0:20070`（所有 IPv4 接口），本机 API 文档位于 http://127.0.0.1:20070/docs；远程访问使用服务器 IP 或域名。
 通过 `server/.env` 中的 `PORT` 或进程环境变量设置端口（环境变量优先，范围 1～65535）；修改后重启服务。
 仓库根目录使用 `uv run --project server server`。模板 API 统一使用 `/template` 前缀，POST 通过可选 `template_id` 区分创建和完整更新；详情见 [server/README.md](server/README.md)。
+服务端各配置类共用 `config_base.py` 的读取规则，源码运行固定读取 `server/.env`，不随启动目录变化；构造参数、进程环境变量、文件、字段默认值依次优先。修改后重启服务。
+
 服务端在项目配置中将官方 PyPI 设为默认依赖索引，与 `server/uv.lock` 的来源保持一致，避免本机默认镜像同步滞后导致版本无法解析。
 
-`POST /segmentations` 将文案与单音轨 Fun-ASR 原始结果切为带整数 `segment_id`、秒制 `start_time/end_time`、字符串 `keyword` 及 `level/group_id` 的片段；输入必须恰好包含一个 `transcripts` 元素，词时间使用 `begin_time/end_time` 毫秒，不接受顶层 `sentences` 或仅有旧 `*_ms` 时间字段的输入。模型配置使用 `server/.env.example` 中的 `IMV_` 变量；从仓库根目录启动且需要该配置时使用 `uv run --project server --env-file server/.env server`。请求与处理约束见 [server/README.md](server/README.md#文案切片)。
+`POST /segmentations` 将文案与单音轨 Fun-ASR 原始结果切为带整数 `segment_id`、秒制 `start_time/end_time`、字符串 `keyword` 及 `level/group_id` 的片段；输入必须恰好包含一个 `transcripts` 元素，词时间使用 `begin_time/end_time` 毫秒，不接受顶层 `sentences` 或仅有旧 `*_ms` 时间字段的输入。模型配置使用 `server/.env.example` 中的 `IMV_` 变量；从仓库根目录启动且需要该配置时使用 `uv run --project server server`。请求与处理约束见 [server/README.md](server/README.md#文案切片)。
 
 ASR 转写另提供独立 Python 函数与命令行入口，读取北京地域的 `DASHSCOPE_API_KEY`，尚未注册 HTTP 路由；用法见 [ASR 音频转写](server/README.md#asr-音频转写)。
 

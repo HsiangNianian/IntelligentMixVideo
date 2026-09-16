@@ -3,29 +3,18 @@
 import asyncio
 import math
 import sys
-from pathlib import Path
 from time import monotonic
 from urllib.parse import urlparse
 
 import httpx
 from pydantic import SecretStr
-from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# 仅仓库的 server/src/server/asr 布局使用源码配置；安装包不读取包目录的祖先 .env。
-_SOURCE_ENV_FILE = Path(__file__).resolve().parents[3] / ".env"
+from ..config_base import CommonSettings
 
 
-class ASRSettings(BaseSettings):
-    """从源码的 server/.env 或工作目录 .env 自动读取配置，环境变量优先。"""
+class ASRSettings(CommonSettings):
+    """从固定的 server/.env 自动读取配置，环境变量优先。"""
 
-    model_config = SettingsConfigDict(
-        env_file=_SOURCE_ENV_FILE
-        if Path(__file__).resolve().parts[-5:] == ("server", "src", "server", "asr", "asr.py")
-        and _SOURCE_ENV_FILE.is_file()
-        else Path.cwd() / ".env",
-        env_file_encoding="utf-8",
-        extra="ignore",
-    )
     dashscope_api_key: SecretStr = SecretStr("")
 
 

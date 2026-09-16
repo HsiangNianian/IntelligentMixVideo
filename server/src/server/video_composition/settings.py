@@ -1,20 +1,18 @@
-"""合成配置读取当前目录 .env 和优先级更高的环境变量，不保存云端凭证到任务。"""
+"""合成配置读取固定的 server/.env 和优先级更高的环境变量，不保存云端凭证到任务。"""
 
 from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import SettingsConfigDict
 
+from ..config_base import CommonSettings
 from .schema import MediaURL, media_url
 
 
-class Settings(BaseSettings):
+class Settings(CommonSettings):
     """受理前验证必要配置；竖屏和运行参数均有默认值，IMS 地域与 Endpoint 从环境读取。"""
 
-    model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", extra="ignore", hide_input_in_errors=True,
-        populate_by_name=True,
-    )
+    model_config = SettingsConfigDict(populate_by_name=True)
 
     match_base_url: MediaURL = Field(validation_alias="SEGMENT_MATCH_BASE_URL")
     match_authorization: SecretStr = Field(default=SecretStr(""), validation_alias="SEGMENT_MATCH_AUTHORIZATION")

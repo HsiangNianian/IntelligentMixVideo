@@ -327,7 +327,7 @@ def test_dotenv_configuration_and_environment_priority(model, client, monkeypatc
     """真实 .env 提供模型配置，环境覆盖文件；每次调用重读文件且不修改进程环境。"""
     for key in ("BASE_URL", "API_KEY", "MODEL"):
         monkeypatch.delenv("IMV_LLM_" + key)
-    env_file = tmp_path / ".env"
+    env_file = tmp_path / "server/.env"
     content = (
         "imv_llm_base_url=https://example.test/v1\n"
         "IMV_LLM_API_KEY=file-secret\nIMV_LLM_MODEL=文件模型\n"

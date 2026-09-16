@@ -3,15 +3,15 @@
 from pathlib import Path
 
 from pydantic import Field, SecretStr
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import SettingsConfigDict
+
+from .config_base import CommonSettings
 
 
-class Settings(BaseSettings):
+class Settings(CommonSettings):
     """One local server instance; requests cannot override credentials or executables."""
 
-    model_config = SettingsConfigDict(
-        env_prefix="IMV_", env_file=".env", extra="ignore"
-    )
+    model_config = SettingsConfigDict(env_prefix="IMV_")
 
     data_dir: Path = Path(".data")
     actor_base_url: str = "https://api.openai.com/v1"
@@ -54,8 +54,7 @@ class Settings(BaseSettings):
 
 def load_settings() -> Settings:
     """Read server/.env and save relative data paths directly beneath the template module."""
-    root = Path(__file__).resolve().parents[2]
-    settings = Settings(_env_file=root / ".env")
+    settings = Settings()
     if not settings.data_dir.is_absolute():
         settings.data_dir = (
             Path(__file__).parent / "remotion_templates" / settings.data_dir

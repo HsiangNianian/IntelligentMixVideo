@@ -1,16 +1,15 @@
-"""切片模型连接配置：按环境变量、当前目录 .env、默认值的优先级读取并校验，不缓存。"""
+"""切片模型连接配置：按环境变量、固定的 server/.env、默认值的优先级读取并校验，不缓存。"""
 
 from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import SettingsConfigDict
+
+from ..config_base import CommonSettings
 
 
-class Settings(BaseSettings):
+class Settings(CommonSettings):
     """自动解析 IMV_ 配置；忽略 .env 中无关字段，实例化时校验类型与范围。"""
 
-    model_config = SettingsConfigDict(
-        env_prefix="IMV_", env_file=".env", env_file_encoding="utf-8", extra="ignore",
-        hide_input_in_errors=True,
-    )
+    model_config = SettingsConfigDict(env_prefix="IMV_")
 
     llm_base_url: str = Field(pattern=r"\S")
     llm_api_key: str = Field(pattern=r"\S", repr=False)

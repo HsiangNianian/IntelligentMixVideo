@@ -1,22 +1,20 @@
 """通过 pydantic-settings 读取 MySQL 配置；启动时确保数据库存在，退出时释放连接池。"""
 
 import json
-from pathlib import Path
 from threading import Lock
 
 from pydantic import Field, SecretStr, ValidationError
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import SettingsConfigDict
 from sqlalchemy import URL, Engine, create_engine
 from sqlalchemy.exc import ArgumentError, OperationalError
 
+from .config_base import CommonSettings
 
-class DatabaseSettings(BaseSettings):
+
+class DatabaseSettings(CommonSettings):
     """自动读取 DB_* 环境变量及固定的 server/.env，环境变量优先，不修改进程环境。"""
 
-    model_config = SettingsConfigDict(
-        env_file=Path(__file__).resolve().parents[2] / ".env",
-        env_file_encoding="utf-8", env_prefix="DB_", extra="ignore",
-    )
+    model_config = SettingsConfigDict(env_prefix="DB_")
 
     host: str = "127.0.0.1"
     port: int = Field(default=3306, ge=1, le=65535)
