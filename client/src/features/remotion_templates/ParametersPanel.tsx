@@ -56,8 +56,9 @@ function Parameter({
     const next = numeric ? Number(text) / scale : text;
     const valid = text !== "" && validValue(control, next);
     setInvalid(!valid);
+    if (valid && next !== value) onChange(next);
   }
-  /** Enter、失焦或滑块释放时提交完整值；输入过程中允许连续编辑。 */
+  /** 失焦或 Enter 只处理非法中间输入；合法值已实时进入本地预览。 */
   function commit(text = draft) {
     if (disabled) return;
     const next = numeric ? Number(text) / scale : text;
@@ -187,28 +188,66 @@ export function ParametersPanel({
   values,
   disabled,
   pending,
+  dirty,
+  saving,
   onChange,
+  onSave,
+  onDiscard,
 }: {
   version: Version | null;
   values: Values;
   disabled: boolean;
   pending: boolean;
+  dirty: boolean;
+  saving: boolean;
   onChange: (key: string, value: Scalar) => void;
+  onSave: () => void;
+  onDiscard: () => void;
 }) {
   return (
     <section
       aria-label="模板参数"
       className="min-h-0 overflow-y-auto rounded-2xl border bg-card p-5 shadow-sm"
     >
-      <div className="sticky -top-5 z-10 -mx-5 -mt-5 mb-2 flex items-center gap-2 border-b bg-card px-5 py-4 text-sm font-medium">
-        <SlidersHorizontal className="size-4" />
-        模板参数
-        <span
-          role="status"
-          className="ml-auto text-xs font-normal text-muted-foreground"
-        >
-          {pending ? "正在渲染 · 暂不可修改" : version ? "已确认" : ""}
-        </span>
+      <div className="sticky -top-5 z-10 -mx-5 -mt-5 mb-2 space-y-3 border-b bg-card px-5 py-4">
+        <div className="flex items-center gap-2 text-sm font-medium">
+          <SlidersHorizontal className="size-4" />
+          模板参数
+          <span
+            role="status"
+            className="ml-auto text-xs font-normal text-muted-foreground"
+          >
+            {saving
+              ? "正在保存并检查…"
+              : pending
+                ? "正在加载 · 暂不可修改"
+                : dirty
+                  ? "有未保存修改"
+                  : version
+                    ? "已保存"
+                    : ""}
+          </span>
+        </div>
+        {version && (
+          <div className="flex flex-wrap items-center gap-2">
+            <Button size="sm" disabled={disabled || !dirty} onClick={onSave}>
+              保存配置
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={disabled || !dirty}
+              onClick={onDiscard}
+            >
+              撤销修改
+            </Button>
+            {dirty && (
+              <p className="text-xs text-muted-foreground">
+                预览为本地草稿，保存或撤销后可继续对话和复制。
+              </p>
+            )}
+          </div>
+        )}
       </div>
       {!version ? (
         <p className="py-7 text-center text-sm text-muted-foreground">

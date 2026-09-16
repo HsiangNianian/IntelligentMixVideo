@@ -28,20 +28,27 @@ export function PreviewPanel({
   const channel = useRef("");
   const requestId = useRef(0);
   const timer = useRef<number | undefined>(undefined);
+  const blocking = useRef(false);
+  const rendered = useRef(false);
+  const readyChannel = useRef("");
+  const previousBackground = useRef("");
   /** 每次加载都有超时出口；播放本身不触发锁定。 */
-  function begin() {
+  function begin(lock = true) {
     window.clearTimeout(timer.current);
-    setRendering(true);
-    onBusyChange(true);
+    blocking.current = lock;
+    setRendering(lock);
+    onBusyChange(lock);
     timer.current = window.setTimeout(() => {
       setError("预览加载超时，请检查服务连接后重试。");
       setRendering(false);
+      blocking.current = false;
       onBusyChange(false);
     }, 20_000);
   }
   /** 完成或失败都释放操作锁，旧请求的完成消息由调用处过滤。 */
   function finish() {
     window.clearTimeout(timer.current);
+    blocking.current = false;
     setRendering(false);
     onBusyChange(false);
   }
@@ -52,6 +59,8 @@ export function PreviewPanel({
     }
     const token = crypto.randomUUID();
     channel.current = token;
+    rendered.current = false;
+    readyChannel.current = "";
     setReady(false);
     setError("");
     begin();
@@ -62,12 +71,14 @@ export function PreviewPanel({
       )
         return;
       if (event.data.type === "imv-preview-ready") {
+        readyChannel.current = token;
         setReady(true);
         setError("");
       } else if (
         event.data.type === "imv-preview-rendered" &&
         event.data.requestId === requestId.current
       ) {
+        rendered.current = true;
         finish();
       } else if (
         event.data.type === "imv-preview-error" &&
@@ -95,8 +106,15 @@ export function PreviewPanel({
     };
   }, [version?.id, reload, onBusyChange]);
   useEffect(() => {
-    if (ready) {
-      begin();
+    if (ready && readyChannel.current === channel.current) {
+      // 参数草稿更新不遮挡画面或锁控件；首帧与背景加载仍保持原有互斥。
+      begin(
+        blocking.current ||
+          !rendered.current ||
+          background !== previousBackground.current,
+      );
+      previousBackground.current = background;
+      setError("");
       frame.current?.contentWindow?.postMessage(
         {
           type: "imv-preview-update",

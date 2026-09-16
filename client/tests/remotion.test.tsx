@@ -246,8 +246,8 @@ test("澄清问题绑定当前任务，回答后生成成功模板", async () =>
   expect(body).not.toHaveProperty("parameters");
 });
 
-// 参数修改立即锁定控件，只提交首个合法值；验收完成后展示新代码。
-test("参数调整锁定控件，成功后才能复制新代码", async () => {
+// 连续参数修改只预览，点击保存后一次提交最终值，检查成功后展示新代码。
+test("参数连续预览，保存成功后才能复制新代码", async () => {
   let submitted: Values = {};
   let resolve: ((response: Response) => void) | undefined;
   server((path, options) => {
@@ -260,7 +260,7 @@ test("参数调整锁定控件，成功后才能复制新代码", async () => {
     if (path === "/versions/version-2")
       return Response.json(remotionVersion("version-2", submitted));
     if (path === "/versions/version-2/artifacts/Export.tsx")
-      return new Response("export const size = 72;");
+      return new Response("export const size = 88;");
   });
   render(<RemotionWorkspace />);
   await generate();
@@ -271,11 +271,13 @@ test("参数调整锁定控件，成功后才能复制新代码", async () => {
   fireEvent.change(screen.getByLabelText("字号滑块"), {
     target: { value: "88" },
   });
-  expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("72");
+  expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("88");
   expect(
     screen.getByRole("button", { name: "复制代码" }).hasAttribute("disabled"),
   ).toBe(true);
-  await waitFor(() => expect(submitted.size).toBe(72), { timeout: 2000 });
+  expect(submitted).toEqual({});
+  fireEvent.click(screen.getByRole("button", { name: "保存配置" }));
+  await waitFor(() => expect(submitted.size).toBe(88), { timeout: 2000 });
   expect(
     fetchMock.mock.calls.filter((call) =>
       String(call[0]).endsWith("/messages"),
@@ -290,12 +292,94 @@ test("参数调整锁定控件，成功后才能复制新代码", async () => {
     ).toBe(false),
   );
   expect(screen.getByLabelText("模板 TSX 代码").textContent).toContain(
-    "size = 72",
+    "size = 88",
   );
 });
 
-// 参数不通过时恢复成功版本，失败候选和待验收参数不能覆盖可复制代码。
-test("参数验收失败恢复原值并保留成功代码", async () => {
+// 参数未保存时连续更新隔离播放器且不锁控件；旧请求错误不覆盖最新画面，也不自动发起保存。
+test("多项参数实时预览，过期回执被忽略", async () => {
+  server();
+  render(<RemotionWorkspace />);
+  await generate();
+  const iframe = screen.getByTitle<HTMLIFrameElement>("Remotion 字效播放器");
+  const channel = new URL(iframe.src).hash.slice(1);
+  const post = spyOn(iframe.contentWindow!, "postMessage");
+  fireEvent.change(screen.getByLabelText("字号滑块"), {
+    target: { value: "72" },
+  });
+  const first = post.mock.calls.at(-1)![0];
+  fireEvent.change(screen.getByLabelText("字号滑块"), {
+    target: { value: "88" },
+  });
+  fireEvent.change(screen.getByLabelText("文字"), {
+    target: { value: "本地新标题" },
+  });
+  const last = post.mock.calls.at(-1)![0];
+  expect(last.values).toMatchObject({ size: 88, text: "本地新标题" });
+  expect(last.requestId).toBeGreaterThan(first.requestId);
+  expect(screen.getByLabelText("字号").hasAttribute("disabled")).toBe(false);
+  expect(screen.queryByText("正在渲染预览…")).toBeNull();
+  expect(
+    screen.getByRole("button", { name: "保存配置" }).hasAttribute("disabled"),
+  ).toBe(false);
+  expect(
+    screen.getByRole("button", { name: "复制代码" }).hasAttribute("disabled"),
+  ).toBe(true);
+  await act(async () =>
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        source: iframe.contentWindow,
+        data: {
+          type: "imv-preview-error",
+          channel,
+          requestId: first.requestId,
+          message: "过期错误",
+        },
+      }),
+    ),
+  );
+  expect(screen.queryByText("过期错误")).toBeNull();
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 700)));
+  expect(
+    fetchMock.mock.calls.filter((call) =>
+      String(call[0]).endsWith("/messages"),
+    ),
+  ).toHaveLength(0);
+  fireEvent.click(screen.getByRole("button", { name: "撤销修改" }));
+  expect(post.mock.calls.at(-1)![0].values).toMatchObject({
+    size: 64,
+    text: "今日灵感",
+  });
+  expect(
+    screen.getByRole("button", { name: "保存配置" }).hasAttribute("disabled"),
+  ).toBe(true);
+});
+
+// 新增前提供有焦点管理的保存/放弃/取消对话框；取消继续编辑，放弃只清空本地视图。
+test("新增会话提示未保存参数，取消或放弃", async () => {
+  server();
+  render(<RemotionWorkspace />);
+  await generate();
+  fireEvent.change(screen.getByLabelText("字号"), { target: { value: "80" } });
+  fireEvent.click(screen.getByRole("button", { name: "新增" }));
+  const dialog = await screen.findByRole("dialog", { name: "参数尚未保存" });
+  expect(
+    within(dialog).getByRole("button", { name: "保存并切换" }),
+  ).toBeDefined();
+  fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+  expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("80");
+  fireEvent.click(screen.getByRole("button", { name: "新增" }));
+  fireEvent.click(screen.getByRole("button", { name: "放弃修改并切换" }));
+  expect(screen.queryByTitle("Remotion 字效播放器")).toBeNull();
+  expect(
+    fetchMock.mock.calls.filter((call) =>
+      String(call[0]).endsWith("/messages"),
+    ),
+  ).toHaveLength(0);
+});
+
+// 保存失败保留可继续编辑的本地草稿，撤销后才恢复已保存值和复制能力。
+test("参数保存失败保留草稿，撤销后恢复原值", async () => {
   server((path) =>
     path.endsWith("/messages")
       ? Response.json(remotionJob("failed"))
@@ -305,17 +389,24 @@ test("参数验收失败恢复原值并保留成功代码", async () => {
   await generate();
   fireEvent.change(screen.getByLabelText("字号"), { target: { value: "90" } });
   fireEvent.blur(screen.getByLabelText("字号"));
+  fireEvent.click(screen.getByRole("button", { name: "保存配置" }));
   await screen.findAllByText(
     "本次未能完成模板，请重试；已有结果仍可使用。",
     {},
     { timeout: 2000 },
   );
   await waitFor(() =>
-    expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("64"),
+    expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("90"),
   );
   expect(screen.getByLabelText("模板 TSX 代码").textContent).toContain(
     "今日灵感",
   );
+  expect(
+    screen.getByRole("button", { name: "复制代码" }).hasAttribute("disabled"),
+  ).toBe(true);
+  expect(screen.getByLabelText("字号").hasAttribute("disabled")).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "撤销修改" }));
+  expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("64");
   expect(
     screen.getByRole("button", { name: "复制代码" }).hasAttribute("disabled"),
   ).toBe(false);
@@ -510,6 +601,7 @@ test("渲染期间锁定所有输入操作，完成后恢复", async () => {
   await generate();
   fireEvent.change(screen.getByLabelText("字号"), { target: { value: "72" } });
   fireEvent.blur(screen.getByLabelText("字号"));
+  fireEvent.click(screen.getByRole("button", { name: "保存配置" }));
   await waitFor(() => expect(finish).toBeDefined(), { timeout: 2000 });
   expect(screen.getByLabelText("字号").hasAttribute("disabled")).toBe(true);
   expect(screen.getByLabelText("上传参考图片").hasAttribute("disabled")).toBe(
@@ -652,8 +744,8 @@ test("图片限制与剪贴板失败反馈", async () => {
   await screen.findByText("复制失败，请展开代码后手动选择复制。");
 });
 
-// 参数写入未获确认时不自动重发，恢复上个成功值，避免失败后永久锁定表单。
-test("参数提交网络失败恢复可编辑状态", async () => {
+// 参数写入结果未知时保留草稿，先只读恢复确认任务，不自动重发。
+test("参数提交网络失败保留草稿，读取恢复后可继续编辑", async () => {
   server((path) => {
     if (path.endsWith("/messages")) throw new TypeError("offline");
   });
@@ -661,6 +753,7 @@ test("参数提交网络失败恢复可编辑状态", async () => {
   await generate();
   fireEvent.change(screen.getByLabelText("字号"), { target: { value: "90" } });
   fireEvent.blur(screen.getByLabelText("字号"));
+  fireEvent.click(screen.getByRole("button", { name: "保存配置" }));
   await screen.findByText(
     /无法连接服务端，请确认服务已启动。/,
     {},
@@ -674,7 +767,7 @@ test("参数提交网络失败恢复可编辑状态", async () => {
   );
   const iframe = screen.getByTitle<HTMLIFrameElement>("Remotion 字效播放器");
   const channel = new URL(iframe.src).hash.slice(1);
-  // 本地参数回退也需要绘制确认；显式模拟失败出口，释放该次预览锁。
+  // 预览失败不丢弃参数草稿，也不发起重复保存。
   await act(async () => {
     window.dispatchEvent(
       new MessageEvent("message", {
@@ -683,7 +776,7 @@ test("参数提交网络失败恢复可编辑状态", async () => {
       }),
     );
   });
-  expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("64");
+  expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("90");
   expect(screen.getByLabelText("字号").hasAttribute("disabled")).toBe(false);
   expect(
     fetchMock.mock.calls.filter((call) =>
@@ -728,7 +821,7 @@ test("刷新会话恢复读取而不重复生成", async () => {
 });
 
 // 输入完整文字和数字后再提交，避免首个字符立即触发渲染并锁住后续输入。
-test("参数文字允许连续编辑并在 Enter 后提交", async () => {
+test("参数文字实时预览，Enter 不自动保存", async () => {
   let submitted: Values = {};
   server((path, options) => {
     if (path.endsWith("/messages")) {
@@ -748,89 +841,158 @@ test("参数文字允许连续编辑并在 Enter 后提交", async () => {
     ),
   ).toHaveLength(0);
   fireEvent.keyDown(text, { key: "Enter" });
-  expect(text.hasAttribute("disabled")).toBe(true);
+  expect(text.hasAttribute("disabled")).toBe(false);
+  expect(submitted).toEqual({});
+  fireEvent.click(screen.getByRole("button", { name: "保存配置" }));
   await waitFor(() => expect(submitted.text).toBe("新的标题"), {
     timeout: 2000,
   });
 });
 
 // 持续 404/503 不能堵塞后续 SSE；保留旧代码可复制，读取重试不重复提交生成。
-test.each([404, 503])("新版 Export 持续 %s 时保留结果并继续会话", async (status) => {
-  let available = false;
-  const fake = server((path) => {
-    if (path === "/versions/version-2") return Response.json(remotionVersion("version-2", {size: 72}));
-    if (path === "/versions/version-2/artifacts/Export.tsx")
-      return available ? new Response("export const size = 72;") : new Response(null, {status});
-  });
-  const view = render(<RemotionWorkspace />);
-  await generate();
-  const frame = screen.getByTitle<HTMLIFrameElement>("Remotion 字效播放器");
-  const src = frame.src;
-  const oldCode = screen.getByLabelText("模板 TSX 代码").textContent;
-  await waitFor(() => expect(fake.streams.size).toBe(1));
-  await act(async () => fake.advance({...remotionJob("succeeded", "version-2"), id: "edit-2"}));
-  await screen.findByText(/新版本读取失败/);
-  expect(screen.getByRole("button", {name: "复制代码"}).hasAttribute("disabled")).toBe(false);
-  expect(screen.getByLabelText("模板 TSX 代码").textContent).toBe(oldCode);
-  expect(frame.src).toBe(src);
-  expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("64");
-  await act(async () => fake.advance({...remotionJob("answered"), id: "answer-3", message: "产物失败之后的回答"}));
-  await screen.findByText("产物失败之后的回答");
-  fireEvent.change(screen.getByLabelText("字效描述"), {target: {value: "继续制作"}});
-  expect(screen.getByRole("button", {name: "发送"}).hasAttribute("disabled")).toBe(false);
-  fireEvent.click(screen.getByRole("button", {name: "重新读取结果"}));
-  await screen.findByText(/新版本读取失败/);
-  await waitFor(() => expect(screen.getByRole("button", {name: "复制代码"}).hasAttribute("disabled")).toBe(false));
-  available = true;
-  fireEvent.click(screen.getByRole("button", {name: "重新读取结果"}));
-  await waitFor(() => expect(screen.getByLabelText("模板 TSX 代码").textContent).toContain("size = 72"));
-  await previewReady();
-  expect(screen.queryByText(/新版本读取失败/)).toBeNull();
-  expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("72");
-  expect(fetchMock.mock.calls.filter(call => call[1]?.method === "POST")).toHaveLength(1);
-  view.unmount();
-  expect(fake.streams.size).toBe(0);
-});
+test.each([404, 503])(
+  "新版 Export 持续 %s 时保留结果并继续会话",
+  async (status) => {
+    let available = false;
+    const fake = server((path) => {
+      if (path === "/versions/version-2")
+        return Response.json(remotionVersion("version-2", { size: 72 }));
+      if (path === "/versions/version-2/artifacts/Export.tsx")
+        return available
+          ? new Response("export const size = 72;")
+          : new Response(null, { status });
+    });
+    const view = render(<RemotionWorkspace />);
+    await generate();
+    const frame = screen.getByTitle<HTMLIFrameElement>("Remotion 字效播放器");
+    const src = frame.src;
+    const oldCode = screen.getByLabelText("模板 TSX 代码").textContent;
+    await waitFor(() => expect(fake.streams.size).toBe(1));
+    await act(async () =>
+      fake.advance({ ...remotionJob("succeeded", "version-2"), id: "edit-2" }),
+    );
+    await screen.findByText(/新版本读取失败/);
+    expect(
+      screen.getByRole("button", { name: "复制代码" }).hasAttribute("disabled"),
+    ).toBe(false);
+    expect(screen.getByLabelText("模板 TSX 代码").textContent).toBe(oldCode);
+    expect(frame.src).toBe(src);
+    expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("64");
+    await act(async () =>
+      fake.advance({
+        ...remotionJob("answered"),
+        id: "answer-3",
+        message: "产物失败之后的回答",
+      }),
+    );
+    await screen.findByText("产物失败之后的回答");
+    fireEvent.change(screen.getByLabelText("字效描述"), {
+      target: { value: "继续制作" },
+    });
+    expect(
+      screen.getByRole("button", { name: "发送" }).hasAttribute("disabled"),
+    ).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "重新读取结果" }));
+    await screen.findByText(/新版本读取失败/);
+    await waitFor(() =>
+      expect(
+        screen
+          .getByRole("button", { name: "复制代码" })
+          .hasAttribute("disabled"),
+      ).toBe(false),
+    );
+    available = true;
+    fireEvent.click(screen.getByRole("button", { name: "重新读取结果" }));
+    await waitFor(() =>
+      expect(screen.getByLabelText("模板 TSX 代码").textContent).toContain(
+        "size = 72",
+      ),
+    );
+    await previewReady();
+    expect(screen.queryByText(/新版本读取失败/)).toBeNull();
+    expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("72");
+    expect(
+      fetchMock.mock.calls.filter((call) => call[1]?.method === "POST"),
+    ).toHaveLength(1);
+    view.unmount();
+    expect(fake.streams.size).toBe(0);
+  },
+);
 
-// Enter 或点击恢复前的失焦先排队参数提交，读取恢复必须等该操作结束才可执行。
-test.each(["Enter", "blur"])("参数%s提交期间不能读取恢复旧基线", async (trigger) => {
-  let available = false;
-  let finish: ((response: Response) => void) | undefined;
-  const submitted: {base_version_id: string; parameters: Values}[] = [];
-  const fake = server((path, options) => {
-    if (path === "/versions/version-2")
-      return Response.json(remotionVersion("version-2", {text: "新标题", size: 72}));
-    if (path === "/versions/version-2/artifacts/Export.tsx")
-      return available ? new Response('export const title = "新标题";') : new Response(null, {status: 404});
-    if (path.endsWith("/messages")) {
-      submitted.push(JSON.parse(String(options?.body)));
-      return new Promise(resolve => { finish = resolve; });
-    }
-  });
-  render(<RemotionWorkspace />);
-  await generate();
-  await waitFor(() => expect(fake.streams.size).toBe(1));
-  await act(async () => fake.advance({...remotionJob("succeeded", "version-2"), id: "edit-2"}));
-  const retry = await screen.findByRole<HTMLButtonElement>("button", {name: "重新读取结果"});
-  const snapshots = fetchMock.mock.calls.filter(call => String(call[0]).endsWith("/session")).length;
-  available = true;
-  const size = screen.getByLabelText("字号");
-  fireEvent.change(size, {target: {value: "80"}});
-  if (trigger === "Enter") fireEvent.keyDown(size, {key: "Enter"});
-  else fireEvent.blur(size);
-  fireEvent.click(retry);
-  expect(retry.disabled).toBe(true);
-  expect(fetchMock.mock.calls.filter(call => String(call[0]).endsWith("/session"))).toHaveLength(snapshots);
-  await waitFor(() => expect(submitted).toHaveLength(1), {timeout: 2000});
-  expect(retry.disabled).toBe(true);
-  expect(submitted[0].base_version_id).toBe("version-1");
-  expect(submitted[0].parameters).toMatchObject({size: 80, text: "今日灵感"});
-  // 该操作结束后的快照恢复才接收 v2；延迟任务不得再次覆盖新标题。
-  await act(async () => finish!(Response.json({...remotionJob("answered"), id: "edit-3", message: "保留现状"})));
-  await waitFor(() => expect(screen.getByLabelText("模板 TSX 代码").textContent).toContain("新标题"));
-  await previewReady();
-  await act(async () => new Promise(resolve => setTimeout(resolve, 700)));
-  expect(screen.getByLabelText<HTMLInputElement>("文字").value).toBe("新标题");
-  expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("72");
-  expect(submitted).toHaveLength(1);
-});
+// Enter 或失焦只更新草稿，读取恢复不得覆盖草稿；显式保存后才进入任务。
+test.each(["Enter", "blur"])(
+  "参数%s编辑期间不能读取恢复旧基线",
+  async (trigger) => {
+    let available = false;
+    let finish: ((response: Response) => void) | undefined;
+    const submitted: { base_version_id: string; parameters: Values }[] = [];
+    const fake = server((path, options) => {
+      if (path === "/versions/version-2")
+        return Response.json(
+          remotionVersion("version-2", { text: "新标题", size: 72 }),
+        );
+      if (path === "/versions/version-2/artifacts/Export.tsx")
+        return available
+          ? new Response('export const title = "新标题";')
+          : new Response(null, { status: 404 });
+      if (path.endsWith("/messages")) {
+        submitted.push(JSON.parse(String(options?.body)));
+        return new Promise((resolve) => {
+          finish = resolve;
+        });
+      }
+    });
+    render(<RemotionWorkspace />);
+    await generate();
+    await waitFor(() => expect(fake.streams.size).toBe(1));
+    await act(async () =>
+      fake.advance({ ...remotionJob("succeeded", "version-2"), id: "edit-2" }),
+    );
+    const retry = await screen.findByRole<HTMLButtonElement>("button", {
+      name: "重新读取结果",
+    });
+    const snapshots = fetchMock.mock.calls.filter((call) =>
+      String(call[0]).endsWith("/session"),
+    ).length;
+    available = true;
+    const size = screen.getByLabelText("字号");
+    fireEvent.change(size, { target: { value: "80" } });
+    if (trigger === "Enter") fireEvent.keyDown(size, { key: "Enter" });
+    else fireEvent.blur(size);
+    fireEvent.click(retry);
+    expect(retry.disabled).toBe(true);
+    expect(
+      fetchMock.mock.calls.filter((call) =>
+        String(call[0]).endsWith("/session"),
+      ),
+    ).toHaveLength(snapshots);
+    expect(submitted).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "保存配置" }));
+    await waitFor(() => expect(submitted).toHaveLength(1), { timeout: 2000 });
+    expect(retry.disabled).toBe(true);
+    expect(submitted[0].base_version_id).toBe("version-1");
+    expect(submitted[0].parameters).toEqual({ size: 80 });
+    // 该操作结束后的快照恢复才接收 v2；延迟任务不得再次覆盖新标题。
+    await act(async () =>
+      finish!(
+        Response.json({
+          ...remotionJob("answered"),
+          id: "edit-3",
+          message: "保留现状",
+        }),
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByLabelText("模板 TSX 代码").textContent).toContain(
+        "新标题",
+      ),
+    );
+    await previewReady();
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 700)));
+    expect(screen.getByLabelText<HTMLInputElement>("文字").value).toBe(
+      "新标题",
+    );
+    expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("72");
+    expect(submitted).toHaveLength(1);
+  },
+);
