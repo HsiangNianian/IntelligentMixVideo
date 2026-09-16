@@ -3,6 +3,11 @@ import { useEffect, useRef, useState } from "react";
 import * as api from "./api";
 import { events, StreamReset } from "./events";
 import {
+  defaultComposition,
+  resolveComposition,
+  type CompositionDraft,
+} from "./composition";
+import {
   sameValues,
   type ChatMessage,
   type Job,
@@ -15,6 +20,7 @@ import {
 /** 当前视图状态与服务端历史分离，临时参数只在验收成功后成为可复制默认值。 */
 interface Session {
   key: number;
+  compositionDraft: CompositionDraft;
   workId: string | null;
   messages: ChatMessage[];
   job: Job | SessionJob | null;
@@ -35,6 +41,7 @@ interface Session {
 function blank(key: number): Session {
   return {
     key,
+    compositionDraft: defaultComposition(),
     workId: null,
     messages: [],
     job: null,
@@ -308,7 +315,9 @@ export function useTemplateSession(onHistoryChange: () => void) {
   function send(text: string, image?: File) {
     const s = latest.current;
     if (s.busy || s.loading || dirty() || (!text.trim() && !image)) return;
-    publish({
+    const configuration = resolveComposition(s.compositionDraft);
+    if (!s.workId && configuration.error) {
+      publish({
       messages: [
         ...s.messages,
         { id: crypto.randomUUID(), role: "user", text: text.trim(), image },
@@ -318,7 +327,8 @@ export function useTemplateSession(onHistoryChange: () => void) {
       if (!s.workId) {
         const asset = image ? await api.upload(image) : undefined;
         if (!current(s.key)) throw new DOMException("Aborted", "AbortError");
-        return (await api.create(text, asset?.id)).job;
+        return (await api.create(text, asset?.id, configuration.composition!))
+          .job;
       }
       return api.message(s.workId, {
         instruction: text.trim(),
@@ -327,6 +337,12 @@ export function useTemplateSession(onHistoryChange: () => void) {
           : { base_version_id: s.version?.id }),
       });
     });
+  }
+  /** 配置只影响尚未创建的会话；同步守卫阻止上传中或切换历史时的迟到修改。 */
+  function configure(compositionDraft: CompositionDraft) {
+    const s = latest.current;
+    if (s.workId || s.busy || s.loading) return;
+    publish({ compositionDraft });
   }
   /** 尚未验收的参数与成功默认值不同，提交和复制维持锁定。 */
   function dirty() {
@@ -439,6 +455,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
       !!state.version &&
       !sameValues(state.values, state.version.candidate.default_config),
     send,
+    configure,
     change,
     stop,
     retry,

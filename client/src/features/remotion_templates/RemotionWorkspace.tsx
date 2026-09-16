@@ -5,6 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { capabilities } from "./api";
 import { ChatPanel } from "./ChatPanel";
+import { CompositionSettings } from "./CompositionSettings";
+import { compositionSummary, resolveComposition } from "./composition";
 import { CodePanel } from "./CodePanel";
 import { ParametersPanel } from "./ParametersPanel";
 import { PreviewPanel } from "./PreviewPanel";
@@ -48,6 +50,8 @@ export function RemotionWorkspace() {
     unresolved ||
     session.retryMode === "read";
   const locked = pending || previewBusy;
+  const configurationError =
+    !session.workId && resolveComposition(session.compositionDraft).error;
   return (
     <div className="space-y-4">
       <CodePanel
@@ -130,9 +134,27 @@ export function RemotionWorkspace() {
             olderLoading={session.olderLoading}
             onOlder={() => void session.older()}
             busy={!!session.busy}
-            disabled={locked || !!serviceError}
+            disabled={locked || !!serviceError || !!configurationError}
             canStop={unresolved}
             first={!session.workId}
+            configuration={
+              !session.workId ? (
+                <CompositionSettings
+                  value={session.compositionDraft}
+                  disabled={locked}
+                  onChange={(value) => {
+                    if (!locked) session.configure(value);
+                  }}
+                />
+              ) : session.version ? (
+                <p
+                  className="text-xs text-muted-foreground"
+                  aria-label="成功版本配置"
+                >
+                  {compositionSummary(session.version.spec.composition)}
+                </p>
+              ) : undefined
+            }
             onSend={(text, image) => {
               if (!locked) session.send(text, image);
             }}
