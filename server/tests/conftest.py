@@ -25,11 +25,28 @@ from server.template import store
 
 @pytest.fixture(autouse=True)
 def isolate_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """清除外部切片与 ASR 配置并切换临时目录；配置专项测试须显式注入。"""
+    """清除外部配置并将各配置类指向临时 server/.env，避免读取本机文件。"""
     for key in list(os.environ):
-        if key.upper().startswith(("IMV_", "COMPOSITION_", "SEGMENT_MATCH_", "IMS_", "MIX_VIDEO_ALIYUN_IMS_", "ALIBABA_CLOUD_")) or key.upper() in ("DASHSCOPE_API_KEY", "ASR_BASE_URL"):
+        if key.upper().startswith(("DB_", "IMV_", "COMPOSITION_", "SEGMENT_MATCH_", "IMS_", "MIX_VIDEO_ALIYUN_IMS_", "ALIBABA_CLOUD_")) or key.upper() in ("PORT", "DASHSCOPE_API_KEY", "ASR_BASE_URL"):
             monkeypatch.delenv(key)
     monkeypatch.chdir(tmp_path)
+
+    from server.config_base import CommonSettings
+    from server.__main__ import ServerSettings
+    from server.settings import Settings as RemotionSettings
+    from server.segmentation.settings import Settings as SegmentationSettings
+    from server.video_composition.settings import Settings as CompositionSettings
+
+    env_file = tmp_path / "server/.env"
+    env_file.parent.mkdir()
+    for settings_class in (
+        CommonSettings, ServerSettings, database.DatabaseSettings,
+        RemotionSettings, SegmentationSettings, CompositionSettings,
+    ):
+        monkeypatch.setitem(settings_class.model_config, "env_file", env_file)
+    # 首次导入仍读取一次，但此时基类已指向隔离文件；后续用例覆盖已创建的子类。
+    from server.asr.asr import ASRSettings
+    monkeypatch.setitem(ASRSettings.model_config, "env_file", env_file)
 
 
 @pytest.fixture

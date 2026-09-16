@@ -119,7 +119,7 @@ async def test_config_is_loaded_automatically_once(
     asr, asr_http, asr_responses, tmp_path, monkeypatch, environment_override,
     source_env_present,
 ):
-    """源码配置缺失时回退 cwd；密钥只加载一次且环境优先，端点始终为北京。"""
+    """源码配置缺失时不回退 cwd；密钥只加载一次且环境优先，端点始终为北京。"""
     script = tmp_path / "server/src/server/asr/asr.py"
     script.parent.mkdir(parents=True)
     script.write_text(Path(asr.__file__).read_text(encoding="utf-8"), encoding="utf-8")
@@ -142,57 +142,19 @@ async def test_config_is_loaded_automatically_once(
         else:
             monkeypatch.delenv(field, raising=False)
     monkeypatch.chdir(tmp_path / "server/src")
-    module = runpy.run_path(str(script))
+    module = runpy.run_path(str(script), run_name="server.asr._config_test")
     env_file.write_text("DASHSCOPE_API_KEY=changed-key\n", encoding="utf-8")
+    if not source_env_present and not environment_override:
+        with pytest.raises(ValueError, match="DASHSCOPE_API_KEY"):
+            await module["transcribe"]("https://audio.example/tts.wav")
+        asr_http.assert_not_called()
+        return
     respond(asr_http, *asr_responses)
     assert (
         await module["transcribe"]("https://audio.example/tts.wav") == asr_responses[-1]
     )
     request = asr_http.call_args_list[0].args[0]
-    source = "environment" if environment_override else "file" if source_env_present else "cwd"
-    assert str(request.url) == (
-        "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription"
-    )
-    assert request.headers["Authorization"] == f"Bearer {source}-key"
-
-
-@pytest.mark.parametrize("environment_override", [False, True])
-@pytest.mark.parametrize(
-    "package_directory", ["venv/Lib/site-packages", "venv/lib/python3.12/site-packages"]
-)
-async def test_installed_package_loads_dotenv_from_working_directory(
-    asr, asr_http, asr_responses, tmp_path, monkeypatch, environment_override,
-    package_directory,
-):
-    """两平台安装布局忽略包祖先目录中的 .env，工作目录密钥仍可被环境覆盖。"""
-    script = tmp_path / package_directory / "server/asr/asr.py"
-    script.parent.mkdir(parents=True)
-    script.write_text(Path(asr.__file__).read_text(encoding="utf-8"), encoding="utf-8")
-    (script.parents[3] / ".env").write_text(
-        "DASHSCOPE_API_KEY=unrelated-package-key\n", encoding="utf-8"
-    )
-    working_directory = tmp_path / "deployment"
-    working_directory.mkdir()
-    (working_directory / ".env").write_text(
-        "DASHSCOPE_API_KEY=cwd-key\nASR_BASE_URL=https://cwd.example/api/v1\n",
-        encoding="utf-8",
-    )
-    for field, value in {
-        "ASR_BASE_URL": "https://environment.example/api/v1",
-        "DASHSCOPE_API_KEY": "environment-key",
-    }.items():
-        if environment_override:
-            monkeypatch.setenv(field, value)
-        else:
-            monkeypatch.delenv(field, raising=False)
-    monkeypatch.chdir(working_directory)
-    module = runpy.run_path(str(script))
-    respond(asr_http, *asr_responses)
-    assert (
-        await module["transcribe"]("https://audio.example/tts.wav") == asr_responses[-1]
-    )
-    request = asr_http.call_args_list[0].args[0]
-    source = "environment" if environment_override else "cwd"
+    source = "environment" if environment_override else "file"
     assert str(request.url) == (
         "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription"
     )

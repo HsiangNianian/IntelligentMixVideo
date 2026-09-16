@@ -8,12 +8,17 @@ Python 3.12+、FastAPI 和 MySQL。模板库在连接此服务的客户端之间
 
 先启动 MySQL，再复制 `.env.example` 为 `server/.env`，填写 `DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD` 和 `DB_NAME`。
 `pydantic-settings` 自动读取并校验配置，进程环境变量优先于 `.env`，缺省项使用代码默认值。
-数据库配置文件固定为 `server/.env`，切换工作目录不改变读取位置；`DB_PORT` 自动转换为整数，范围为 1～65535。
+各模块通过 `config_base.CommonSettings` 共用读取规则，配置文件固定为 `server/.env`，切换工作目录不改变读取位置；`DB_PORT` 自动转换为整数，范围为 1～65535。
 `DB_NAME` 为 1～64 字符，默认 `intelligent_mix_video`。修改配置后重启服务。
 启动时检查目标数据库，不存在则自动创建，使用 `utf8mb4` 字符集与 `utf8mb4_bin` 排序规则。
 建库需要配置的账号具备对应 `CREATE` 权限；已有数据库直接连接，不执行建库或修改已有数据。
 配置无效、MySQL 不可达、鉴权或建库权限不足时，应用报错并停止启动；修正后重新启动。
 真实 `.env` 已被 Git 忽略，不要把密码写进示例文件或客户端配置。
+
+公共基类只统一读取规则，各模块保留原配置类、字段、校验和实例化时机。
+优先级为构造参数 > 进程环境变量 > `server/.env` > 字段默认值；保留 `_env_file` 显式覆盖与 `None` 禁用文件。
+固定路径按当前源码布局计算，不自动适配任意安装位置；非源码部署请显式提供配置文件或使用进程环境变量。
+不提供热更新或统一配置快照；运行期间不要修改 `.env`，修改后重启服务。
 
 在本目录执行：
 
@@ -112,10 +117,10 @@ uv sync --locked --default-index https://pypi.org/simple
 提供 `POST /segmentations` 接口和独立的 `segment` 函数，使用正确文案与已有 ASR 结果生成带时间和关键词的片段。
 
 在 `server/.env` 填写 `IMV_LLM_BASE_URL`、`IMV_LLM_API_KEY` 和 `IMV_LLM_MODEL`，其余配置见 [.env.example](.env.example)。
-配置读取当前目录的 `.env`，环境变量优先；从仓库根目录启动时使用：
+配置读取固定的 `server/.env`，环境变量优先；从仓库根目录启动时使用：
 
 ```sh
-uv run --locked --project server --env-file server/.env server
+uv run --locked --project server server
 ```
 
 HTTP 请求体包含 `script`（正确文案字符串）和 `asr_result`（Fun-ASR 原始结果对象），由 Pydantic 校验必填字段与类型。也可在代码中读取 ASR 输出文件并调用：
@@ -144,8 +149,7 @@ cp .env.example .env
 
 填写北京地域的 `DASHSCOPE_API_KEY`；服务地址在 ASR 模块中固定为
 `https://dashscope.aliyuncs.com/api/v1`。真实 `.env` 已被 Git 忽略。
-模块加载时自动读取一次配置，优先使用源码目录的 `server/.env`；该文件不存在时
-回退到当前工作目录的 `.env`。安装后的包只查找工作目录，不读取虚拟环境祖先目录的配置。
+模块加载时自动读取一次固定的 `server/.env`，文件不存在时不回退到工作目录。
 环境变量优先于文件，修改配置后需重启进程。
 
 在 `server/` 下运行：
