@@ -5,6 +5,8 @@ import { useEffect } from "react";
 import type { Draft, EffectAsset } from "@/features/templates/model";
 import { catalog, savedTemplate } from "./fixtures";
 import { fetchMock, mockDesktop } from "./setup";
+import { remotionServer } from "./remotion-server";
+import { remotionJob } from "./remotion-fixtures";
 
 // SDK 依赖视频、字体和硬件加速；本组只验证目录回传和最新草稿传给预览的行为。
 mock.module("@/features/templates/TemplatePreview", () => ({
@@ -19,8 +21,10 @@ const { default: HomePage } = await import("@/pages/HomePage");
 
 // 回归：模板首页同时保留标题区时钟与可编辑工作区，避免替换页面时再次丢失时钟。
 test("首页标题区显示时钟并保留模板工作区", async () => {
-  fetchMock.mockResolvedValueOnce(Response.json([]));
+  remotionServer((path) => path === "/template" ? Response.json([]) : undefined);
   render(<HomePage />);
+  expect(screen.getByRole("region", {name: "字效聊天"})).toBeTruthy();
+  fireEvent.mouseDown(screen.getByRole('tab', {name: '模板库'}), {button: 0});
   await screen.findByText("共享模板库 · 0 个模板");
   const clock = screen.getByRole("region", { name: "当前时间" });
   expect(clock.closest("header")).not.toBeNull();
@@ -239,6 +243,52 @@ test.each([
   expect(body.editor.subtitleIn).toBe("in/fade_in");
 });
 
+// 顶层功能页签切换不能清空聊天或取消后台任务，返回后应继续读取同一个 job。
+test.each(["云端", "本地"])("切换%s模板库后保留字效会话并继续接收 SSE", async (environment) => {
+  const invoke = mock(async (_command: string): Promise<unknown> => []);
+  const restoreDesktop = mockDesktop(invoke);
+  try {
+    const fake = remotionServer((path) => {
+      if (path === "/template") return Response.json([]);
+      if (path === "/works") return Response.json({work: {id: "work-1"}, job: remotionJob("running")});
+    });
+    render(<HomePage />);
+    fireEvent.change(screen.getByLabelText("字效描述"), {target: {value: "保留这个任务"}});
+    fireEvent.click(screen.getByRole("button", {name: "发送"}));
+    await screen.findByRole("button", {name: "停止"});
+    fireEvent.change(screen.getByLabelText("字效描述"), {target: {value: "未发送草稿"}});
+    fireEvent.mouseDown(screen.getByRole("tab", {name: "模板库"}), {button: 0});
+    expect(screen.getByRole("tab", {name: "模板库"}).getAttribute("aria-selected")).toBe("true");
+    await screen.findByText("共享模板库 · 0 个模板");
+    if (environment === "本地") {
+      await choose("当前环境", "本地");
+      await screen.findByText("本地模板库 · 0 个模板");
+      expect(invoke.mock.calls.at(-1)?.[0]).toBe("local_templates");
+    }
+    // 隐藏期间通过原订阅完成同一任务；切回不重新创建或重复建立连接。
+    await waitFor(() => expect(fake.streams.size).toBe(1));
+    await act(async () => fake.advance(remotionJob()));
+    await waitFor(()=>expect(screen.getByLabelText("模板 TSX 代码").textContent).toContain("export default"), {timeout:2500});
+    fireEvent.mouseDown(screen.getByRole("tab", {name: "Remotion 字效"}), {button: 0});
+    expect(within(screen.getByRole("log")).queryByText("保留这个任务") !== null).toBe(true);
+    expect(screen.getByLabelText<HTMLTextAreaElement>("字效描述").value).toBe("未发送草稿");
+    expect(fetchMock.mock.calls.filter(call=>String(call[0]).endsWith("/cancel"))).toHaveLength(0);
+    await waitFor(()=>expect(screen.getByRole("button",{name:"复制代码"}).hasAttribute("disabled")).toBe(false), {timeout:2500});
+    expect(fetchMock.mock.calls.filter(call=>String(call[0]).endsWith("/works"))).toHaveLength(1);
+    const frame = screen.getByTitle<HTMLIFrameElement>("Remotion 字效播放器");
+    const source = frame.src;
+    fireEvent.change(screen.getByLabelText("背景视频直链"), {target:{value:"https://media.test/background.mp4"}});
+    fireEvent.mouseDown(screen.getByRole("tab",{name:"模板库"}),{button:0});
+    fireEvent.mouseDown(screen.getByRole("tab",{name:"Remotion 字效"}),{button:0});
+    expect(screen.getByTitle("Remotion 字效播放器")).toBe(frame);
+    expect(frame.src).toBe(source);
+    expect(screen.getByLabelText<HTMLInputElement>("背景视频直链").value).toBe("https://media.test/background.mp4");
+    expect(within(screen.getByRole("tabpanel", {name: "Remotion 字效"})).getByLabelText<HTMLInputElement>("字号").value).toBe("64");
+  } finally {
+    restoreDesktop();
+  }
+});
+
 // 测试桌面默认云端，主动切换本地后使用 IPC；未保存切换保护不变，两个库不混合。
 test("本地保存并切换云端，取消时保留草稿", async () => {
   const saved = savedTemplate();
@@ -320,5 +370,40 @@ test("切换环境读取失败后可重试", async () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   } finally {
     restoreDesktop();
+  }
+});
+
+// 本地与云端草稿切到字效再返回仍保留，原有新建保护继续生效；离开首页才卸载。
+test.each(["云端", "本地"])("页签切换保留%s模板草稿及未保存保护", async (environment) => {
+  const restore = mockDesktop(async () => []);
+  try {
+    remotionServer((path) => path === "/template" ? Response.json([]) : undefined);
+    const view = render(<HomePage />);
+    expect(fetchMock.mock.calls.some(call => String(call[0]).endsWith("/template"))).toBe(false);
+    fireEvent.mouseDown(screen.getByRole("tab", {name: "模板库"}), {button: 0});
+    await screen.findByText("共享模板库 · 0 个模板");
+    if (environment === "本地") {
+      await choose("当前环境", "本地");
+      await screen.findByText("本地模板库 · 0 个模板");
+    }
+    const name = screen.getByLabelText<HTMLInputElement>("模板名称");
+    fireEvent.change(name, {target: {value: "保留草稿名称"}});
+    fireEvent.change(screen.getByLabelText("示例文字"), {target: {value: "保留示例文字"}});
+    const reads = fetchMock.mock.calls.filter(call => String(call[0]).endsWith("/template")).length;
+    fireEvent.mouseDown(screen.getByRole("tab", {name: "Remotion 字效"}), {button: 0});
+    expect(screen.queryByRole("textbox", {name: "模板名称"})).toBeNull();
+    fireEvent.mouseDown(screen.getByRole("tab", {name: "模板库"}), {button: 0});
+    expect(screen.getByLabelText("模板名称") === name).toBe(true);
+    expect(name.value).toBe("保留草稿名称");
+    expect(screen.getByLabelText<HTMLInputElement>("示例文字").value).toBe("保留示例文字");
+    expect(screen.getByLabelText("当前环境").textContent).toBe(environment);
+    expect(fetchMock.mock.calls.filter(call => String(call[0]).endsWith("/template"))).toHaveLength(reads);
+    fireEvent.click(screen.getByRole("button", {name: "新建模板"}));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", {name: "取消"}));
+    expect(name.value).toBe("保留草稿名称");
+    view.unmount();
+    expect(name.isConnected).toBe(false);
+  } finally {
+    restore();
   }
 });
