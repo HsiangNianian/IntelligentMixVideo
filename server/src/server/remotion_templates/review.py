@@ -192,13 +192,13 @@ async def review_candidate(
     intent,
     required_frames=(),
 ):
-    """Retry malformed/citation/conflicting output within the judge budget; valid failures return immediately."""
+    """Bound protocol corrections on unchanged evidence; valid failures return immediately."""
     static = static_motion_verified(spec, report)
     frames = select_frames(
         spec,
         report.frames,
         preferred=required_frames,
-        limit=max(3, min(12, budget.remaining(settings) // 6000)),
+        limit=12,
     )
     targets = {layer.id for layer in spec.text_layers}
     accepted = (intent or {}).get("accepted_base") or {}

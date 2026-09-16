@@ -368,7 +368,7 @@ class Harness:
                     "Agent produced no new action evidence after bounded steering.",
                 )
             # Bound even an injected provider that fails to enforce its own usage accounting.
-            if turn > 50:
+            if self.settings.enforce_model_budget and turn > 50:
                 raise ModelFailure(
                     "Agent turn budget exhausted without verified completion."
                 )
@@ -386,7 +386,7 @@ class Harness:
                         for check in report.checks
                         if check.status != "pass" and check.frame is not None
                     ],
-                    limit=max(3, min(6, budget.remaining(self.settings) // 6000)),
+                    limit=6,
                 )
                 if report is not None
                 else []

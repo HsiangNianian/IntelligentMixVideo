@@ -24,6 +24,8 @@ class Settings(CommonSettings):
     model_timeout_seconds: int = Field(default=240, ge=1, le=600)
     job_timeout_seconds: int = Field(default=600, ge=1, le=3600)
     render_timeout_seconds: int = Field(default=180, ge=1, le=600)
+    # Keep usage accounting while temporarily disabling cumulative model quota enforcement.
+    enforce_model_budget: bool = False
     max_model_calls: int = Field(default=32, ge=1, le=50)
     max_tokens: int = Field(default=200_000, ge=1000, le=1_000_000)
     max_output_tokens: int = Field(default=32_000, ge=1, le=1_000_000)

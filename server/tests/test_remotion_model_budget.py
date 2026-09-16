@@ -14,6 +14,7 @@ from server.settings import Settings
 def test_model_budget_defaults_and_env_precedence(tmp_path, monkeypatch):
     """翻倍默认值可由文件覆盖，进程环境优先；任务和渲染时限保持原值。"""
     defaults = Settings(_env_file=None)
+    assert defaults.enforce_model_budget is False
     assert defaults.model_timeout_seconds == 240
     assert defaults.max_model_calls == 32
     assert defaults.max_tokens == 200_000
@@ -22,9 +23,12 @@ def test_model_budget_defaults_and_env_precedence(tmp_path, monkeypatch):
     assert defaults.render_timeout_seconds == 180
     env = tmp_path / ".env"
     env.write_text(
-        "IMV_MAX_OUTPUT_TOKENS=24000\nIMV_MAX_TOKENS=150000\nIMV_MAX_MODEL_CALLS=24\nIMV_MODEL_TIMEOUT_SECONDS=180\n"
+        "IMV_ENFORCE_MODEL_BUDGET=true\nIMV_MAX_OUTPUT_TOKENS=24000\nIMV_MAX_TOKENS=150000\nIMV_MAX_MODEL_CALLS=24\nIMV_MODEL_TIMEOUT_SECONDS=180\n"
     )
     configured = Settings(_env_file=env)
+    assert configured.enforce_model_budget is True
+    monkeypatch.setenv("IMV_ENFORCE_MODEL_BUDGET", "false")
+    assert Settings(_env_file=env).enforce_model_budget is False
     assert (
         configured.max_output_tokens,
         configured.max_tokens,
@@ -50,6 +54,7 @@ def test_provider_uses_configured_cap_and_remaining_budget(cap, used, expected, 
     """Actor 与 Vision 请求采用配置的输出上限，并按剩余总预算缩小；HTTP 超时实际传入传输层。"""
     settings = Settings(
         _env_file=None,
+        enforce_model_budget=True,
         actor_model="offline",
         vision_model="offline-vision",
         actor_api_key=SecretStr("test"),
@@ -102,7 +107,8 @@ def test_exhausted_budget_never_sends_request(budget):
         pytest.fail("exhausted budget sent a request")
 
     provider = Provider(
-        Settings(_env_file=None), transport=httpx.MockTransport(unexpected_request)
+        Settings(_env_file=None, enforce_model_budget=True),
+        transport=httpx.MockTransport(unexpected_request),
     )
     with pytest.raises(ModelFailure, match="budget exhausted"):
         asyncio.run(provider.ask(DialogueOutput, "system", "user", budget))
@@ -114,6 +120,7 @@ def test_phase_limit_preserves_other_roles_and_global_cap(tmp_path):
 
     settings = Settings(
         _env_file=None,
+        enforce_model_budget=True,
         actor_model="offline",
         actor_api_key=SecretStr("test"),
         max_judge_calls=1,
@@ -232,6 +239,7 @@ def test_input_budget_stops_before_http_and_records_reason(tmp_path):
     """大输入超过剩余额度时不发请求，不扣调用次数，并保留无密钥的预检诊断。"""
     settings = Settings(
         _env_file=None,
+        enforce_model_budget=True,
         actor_model="offline",
         actor_api_key=SecretStr("hidden-key"),
         max_tokens=1000,
@@ -278,6 +286,7 @@ def test_usage_breakdown_and_output_reservation(tmp_path):
 
     settings = Settings(
         _env_file=None,
+        enforce_model_budget=True,
         actor_model="offline",
         actor_api_key=SecretStr("fixture"),
         max_tokens=2000,
@@ -295,8 +304,11 @@ def test_usage_breakdown_and_output_reservation(tmp_path):
     )
 
 
-def test_actor_budget_trims_whole_exchanges_without_mutating_history(tmp_path):
-    """紧张预算只移除请求中的完整旧工具组，当前交易、持久窗口和图片映射保持不变。"""
+@pytest.mark.parametrize("enforced", [False, True])
+def test_actor_budget_trims_whole_exchanges_without_mutating_history(
+    tmp_path, enforced
+):
+    """关闭配额保留完整请求，开启后只裁剪旧工具组；两者都不修改持久历史。"""
     from server.remotion_templates.context import Conversation
 
     def exchange(identifier, content="checked"):
@@ -326,7 +338,7 @@ def test_actor_budget_trims_whole_exchanges_without_mutating_history(tmp_path):
         body = json.loads(request.content)
         assert [
             m.get("tool_call_id") for m in body["messages"] if m["role"] == "tool"
-        ] == ["current"]
+        ] == (["current"] if enforced else ["old", "current"])
         return httpx.Response(
             200,
             json={
@@ -343,6 +355,7 @@ def test_actor_budget_trims_whole_exchanges_without_mutating_history(tmp_path):
     provider = Provider(
         Settings(
             _env_file=None,
+            enforce_model_budget=enforced,
             actor_model="offline",
             actor_api_key=SecretStr("fixture"),
             max_tokens=2000,
@@ -352,4 +365,124 @@ def test_actor_budget_trims_whole_exchanges_without_mutating_history(tmp_path):
     budget = Budget(audit_path=tmp_path / "audit.jsonl")
     asyncio.run(provider.turn("snapshot", context, [], budget))
     assert context.serialize() == before
-    assert '"dropped_groups": 1' in budget.audit_path.read_text()
+    assert ('"dropped_groups": 1' in budget.audit_path.read_text()) is enforced
+
+
+@pytest.mark.parametrize("phase", ["actor", "judge"])
+def test_disabled_quotas_allow_over_limit_requests_and_responses(tmp_path, phase):
+    """达到全局和角色上限仍发送大输入并接受超额响应；调用和 token 继续如实累计。"""
+    settings = Settings(
+        _env_file=None,
+        actor_model="offline",
+        vision_model="offline-vision",
+        actor_api_key=SecretStr("fixture"),
+        max_model_calls=1,
+        max_tokens=1000,
+        max_actor_calls=1,
+        max_judge_calls=1,
+        max_actor_tokens=1000,
+        max_judge_tokens=1000,
+    )
+    budget = Budget(
+        calls=50,
+        tokens=200_000,
+        phases={phase: {"calls": 50, "tokens": 200_000}},
+        audit_path=tmp_path / "audit.jsonl",
+    )
+
+    def respond(request):
+        """模拟大输入的合法回复，输出上限不因已用额度缩小。"""
+        body = json.loads(request.content)
+        assert body["max_tokens"] == 32000
+        return httpx.Response(
+            200,
+            json={
+                "usage": {"total_tokens": 50000},
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "role": "assistant",
+                            "content": '{"answer":"继续执行"}',
+                        },
+                    }
+                ],
+            },
+        )
+
+    provider = Provider(settings, transport=httpx.MockTransport(respond))
+    for _ in range(2):
+        with budget.phase(phase):
+            result = asyncio.run(
+                provider.ask(
+                    DialogueOutput,
+                    "rules",
+                    "需求" * 20000,
+                    budget,
+                    vision=phase == "judge",
+                )
+            )
+        assert result.answer == "继续执行"
+    assert budget.summary() == {
+        "calls": 52,
+        "tokens": 300000,
+        f"{phase}_calls": 52,
+        f"{phase}_tokens": 300000,
+    }
+    events = [json.loads(line) for line in budget.audit_path.read_text().splitlines()]
+    requests = [e for e in events if e["event"] == "model_request"]
+    assert len(requests) == 2
+    assert all(
+        e["remaining_tokens"] is None and e["estimated_input_tokens"] > 1000
+        for e in requests
+    )
+
+
+@pytest.mark.parametrize("enforced", [False, True])
+@pytest.mark.parametrize(
+    "usage", [None, {}, {"total_tokens": -1}, {"total_tokens": True}]
+)
+def test_missing_usage_is_unknown_without_quotas(tmp_path, enforced, usage):
+    """关闭配额时缺失/非法用量只记未知；恢复配额后仍拒绝不可核算的响应。"""
+
+    def respond(request):
+        """提供合法回答但不提供可信 token 总量。"""
+        return httpx.Response(
+            200,
+            json={
+                "usage": usage,
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "role": "assistant",
+                            "content": '{"answer":"完成"}',
+                        },
+                    }
+                ],
+            },
+        )
+
+    provider = Provider(
+        Settings(
+            _env_file=None,
+            enforce_model_budget=enforced,
+            actor_model="offline",
+            actor_api_key=SecretStr("fixture"),
+        ),
+        transport=httpx.MockTransport(respond),
+    )
+    budget = Budget(tokens=100, audit_path=tmp_path / "audit.jsonl")
+    if enforced:
+        with pytest.raises(ModelFailure, match="valid token usage"):
+            asyncio.run(provider.ask(DialogueOutput, "s", "u", budget))
+    else:
+        assert (
+            asyncio.run(provider.ask(DialogueOutput, "s", "u", budget)).answer == "完成"
+        )
+        events = [
+            json.loads(line) for line in budget.audit_path.read_text().splitlines()
+        ]
+        event = next(e for e in events if e["event"] == "model_usage")
+        assert event["total_tokens"] is None
+    assert budget.calls == 1 and budget.tokens == 100
