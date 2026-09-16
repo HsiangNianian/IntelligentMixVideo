@@ -251,6 +251,7 @@ Judge 对照原始用户要求、参考图和实际渲染结果，只阻止明�
 均使用离线模型与隔离数据；这些测试不能证明真实模型永不误判。
 
 `review.py` 负责候选评审恢复：格式错误、无效帧引用、已知结论却要求缺失证据，
+unknown/conflict 未提供非空 `missing_evidence`（仅列帧号也不够），
 或失败项缺少有效 `requirement_source`、`requirement_quote`、`target`、`observed`、`mismatch`，
 以及 detail 中显式 `Status is pass/fail/unknown/conflict` 与结构化状态冲突时，
 要求 Judge 根据同一目标、源码和帧纠正评审。已有合法维度结论保留，有效负面结论不会被反复询问成通过。

@@ -2610,3 +2610,39 @@ def test_judge_correction_continues_past_disabled_quotas(candidate, spec, tmp_pa
         for line in (directory / "reviews.jsonl").read_text().splitlines()
     ]
     assert reviews[0]["errors"] and not reviews[1]["errors"]
+
+
+def test_unexplained_unknown_is_corrected_before_sampling(candidate, spec, tmp_path):
+    """缺少证据说明先纠正 Judge，同一候选不触发重渲染或 Actor 修复。"""
+
+    class UnexplainedProvider(ScriptedProvider):
+        """首轮只请求帧号但不解释缺什么，第二轮纠正该无效评审。"""
+
+        async def ask(self, output, system, prompt, budget, **kwargs):
+            """确认协议纠错沿用相同帧集合与方案。"""
+            result = await super().ask(output, system, prompt, budget, **kwargs)
+            payload = json.loads(prompt)
+            if len(self.prompts) == 1:
+                result.checks[1].status = "unknown"
+                result.checks[1].requested_frames = [1]
+            else:
+                assert "missing_evidence" in str(payload["correction"]["errors"])
+                original = json.loads(self.prompts[0][1])
+                assert payload["frames"] == original["frames"]
+                assert payload["candidate_plan"] == original["candidate_plan"]
+            return result
+
+    provider, renderer = UnexplainedProvider(spec), ScriptedRenderer()
+    output, report, directory = asyncio.run(
+        Harness(provider, renderer).inspect(
+            candidate,
+            spec,
+            tmp_path / "attempt",
+            [],
+            Budget(),
+            intent={"instruction": "标题"},
+        )
+    )
+    assert report.passed and output.tsx_code == candidate.tsx_code
+    assert len(provider.prompts) == 2 and renderer.calls == 1
+    assert not list(directory.glob("evidence-*"))
