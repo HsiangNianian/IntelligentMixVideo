@@ -549,6 +549,12 @@ class Harness:
                             )
                         proposed_reply = DialogueOutput.model_validate(args)
                         if proposed_reply.answer is not None:
+                            # Once generation starts, an answer review cannot replace candidate acceptance.
+                            if attempt > 0:
+                                raise ValueError(
+                                    "Template generation has started; an ordinary answer cannot replace an accepted result. "
+                                    "Repair the current failed checks and resubmit the candidate."
+                                )
                             budget.progress("answering")
                             judgment = await self._review_answer(
                                 proposed_reply, intent, images, budget
