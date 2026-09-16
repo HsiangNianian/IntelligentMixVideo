@@ -1666,18 +1666,63 @@ def test_idle_actor_stops_with_audit_before_global_budget(spec, tmp_path):
     assert any("No user input is pending" in str(event) for event in events)
 
 
-def test_changed_source_without_new_evidence_is_not_progress(spec, tmp_path):
-    """修改注释或空白、重复相同失败不会重置无进展计数。"""
+@pytest.mark.parametrize("moving_location", [False, True])
+def test_changed_source_without_new_evidence_is_not_progress(
+    spec, tmp_path, moving_location
+):
+    """修改注释、空白或编译错误行列号不会重置无进展计数。"""
     from server.remotion_templates.provider import ExecutionFailure
+
+    class CompilerRenderer(ScriptedRenderer):
+        """模拟源码移动后同一个编译错误出现在不同位置。"""
+
+        async def validate(self, candidate, spec, directory, **kwargs):
+            """保留真实检查结果，只改变 TypeScript 诊断的位置。"""
+            output, report = await super().validate(
+                candidate, spec, directory, **kwargs
+            )
+            if moving_location:
+                next(
+                    c for c in report.checks if c.name == "typescript"
+                ).detail = f"Export.tsx({self.calls},11): error TS2740: missing property 'title'."
+            return output, report
 
     actions = [
         ("submit_candidate", {"tsx_code": SAMPLE_CODE + "\n" * i}) for i in range(20)
     ]
-    provider, renderer = ActionProvider(spec, actions), ScriptedRenderer(failures=100)
+    provider, renderer = ActionProvider(spec, actions), CompilerRenderer(failures=100)
     harness = Harness(provider, renderer)
     with pytest.raises(ExecutionFailure, match="no new action evidence"):
         asyncio.run(harness.generate(spec, Budget(), tmp_path, [], lambda *_: None))
     assert renderer.calls == 1 + harness.settings.max_no_progress_turns
+
+
+def test_compiler_steer_preserves_diagnostics_and_explains_contract(spec, tmp_path):
+    """编译失败回执和下一轮快照说明契约权威，保留原始诊断，修复通过后才交付。"""
+    provider, renderer = ScriptedProvider(spec), ScriptedRenderer(failures=1)
+    _, _, report, _ = asyncio.run(
+        Harness(provider, renderer).generate(
+            spec, Budget(), tmp_path, [], lambda *_: None
+        )
+    )
+    assert report.passed and renderer.calls == 2
+    snapshots = [
+        json.loads(prompt.split("Current host-owned task snapshot (data):\n")[1])
+        for output, prompt in provider.prompts
+        if output is CodeOutput
+    ]
+    failed = snapshots[1]
+    original = next(c["detail"] for c in failed["checks"] if c["name"] == "typescript")
+    assert original in " ".join(failed["steer"])
+    assert "config_schema/default_props" in failed["steer"][0]
+    assert "declarations and property reads" in failed["steer"][0]
+    assert (failed["config_schema"], failed["default_props"]) == controls(spec)
+    events = [
+        json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()
+    ]
+    receipts = [e["result"] for e in events if e["event"] == "tool_result"]
+    assert receipts[0]["steer"] == failed["steer"]
+    assert receipts[-1]["steer"] == []
 
 
 def test_real_negative_review_is_not_retried_into_pass(candidate, spec, tmp_path):
@@ -2007,6 +2052,33 @@ def test_progress_ignores_review_wording_and_repeated_reads(candidate, spec):
     assert progress.observe(report) and progress.stalled_turns == 0
 
 
+@pytest.mark.parametrize(
+    "changed_detail",
+    [
+        "Export.tsx(99,7): error TS2322: missing property 'title'.",
+        "Export.tsx(99,7): error TS2740: missing property 'color'.",
+        "contract.tsx(99,7): error TS2740: missing property 'title'.",
+    ],
+)
+def test_compiler_progress_ignores_only_locations(candidate, spec, changed_detail):
+    """编译行列号不算进展，但错误码、字段或文件变化仍保留为新诊断；原报告不变。"""
+    from server.remotion_templates.trajectory import DecisionProgress
+
+    progress = DecisionProgress()
+    report = evidence(candidate, spec, typescript="fail")
+    check = next(c for c in report.checks if c.name == "typescript")
+    check.detail = "Export.tsx(1,2): error TS2740: missing property 'title'."
+    assert progress.observe(report)
+    check.detail = "Export.tsx(99,7): error TS2740: missing property 'title'."
+    before = report.model_dump()
+    assert not progress.observe(report)
+    assert progress.stalled_turns == 1 and report.model_dump() == before
+    check.detail = changed_detail
+    assert progress.observe(report) and progress.stalled_turns == 0
+    check.status = "pass"
+    assert progress.observe(report)
+
+
 def test_task_message_binding_and_private_failures(settings, spec):
     """Question replies bind to one task and cannot be replayed; public data never contains internal diagnostics."""
     provider, renderer = ScriptedProvider(spec, questions=True), ScriptedRenderer()
@@ -2259,6 +2331,50 @@ def test_answer_cannot_bypass_independent_review(spec, verdict):
         )
     assert actual == spec and report.passed
     assert "No edit was executed" in " ".join(provider.snapshots[1]["steer"])
+
+
+@pytest.mark.parametrize("clarify", [False, True])
+def test_failed_candidate_cannot_finish_as_answer(settings, spec, clarify):
+    """失败候选后拒绝普通回答，即使 Judge 会放行；仍允许必要澄清或修复后发布。"""
+    submission = (
+        "submit_candidate",
+        {"tsx_code": SAMPLE_CODE, "spec": spec.model_dump()},
+    )
+    provider = ActionProvider(
+        spec,
+        [
+            submission,
+            ("respond", {"answer": "已提交候选，下面是修改说明。"}),
+            ("respond", {"questions": ["标题具体使用哪一句？"]})
+            if clarify
+            else submission,
+        ],
+    )
+    renderer = ScriptedRenderer(failures=1)
+    application = create_app(settings, provider=provider, renderer=renderer)
+    with TestClient(application) as client:
+        created = client.post(
+            "/api/templates/works",
+            json={
+                "description": "生成标题",
+                "composition": spec.composition.model_dump(),
+            },
+        ).json()
+        result = wait_job(client, created["job"]["id"])
+        assert result["status"] == ("needs_input" if clarify else "succeeded")
+        assert bool(result["result_version_id"]) is not clarify
+        assert renderer.calls == (1 if clarify else 2)
+        assert not any(output is AnswerReview for output, _ in provider.prompts)
+        assert "ordinary answer" in " ".join(provider.snapshots[2]["steer"])
+        receipt = json.loads(provider.windows[2][-1]["content"])
+        assert receipt["error"] == provider.snapshots[2]["steer"][0]
+        snapshot = client.get(
+            f"/api/templates/works/{created['work']['id']}/session"
+        ).json()
+        assert snapshot["work"]["current_version_id"] == result["result_version_id"]
+        assert all(
+            m["text"] != "已提交候选，下面是修改说明。" for m in snapshot["messages"]
+        )
 
 
 def test_clarification_can_end_with_answer(settings, spec):
