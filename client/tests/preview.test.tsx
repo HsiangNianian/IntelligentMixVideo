@@ -15,6 +15,7 @@ function installSDK() {
   const destroy = mock(() => {});
   let instance: Player | undefined;
 
+  /** 以可控事件替代 SDK 播放器，记录时间线提交与资源释放。 */
   class FakePlayer implements Player {
     currentTime = 0;
     event$ = {
@@ -69,6 +70,7 @@ test("预览进度限制 React 更新频率并清理播放器", async () => {
   const sdk = installSDK();
   const originalFontFace = globalThis.FontFace;
   const originalFonts = document.fonts;
+  /** 避免测试解析真实字体内容，同时保留异步加载契约。 */
   class FakeFontFace {
     /** 字体测试替身直接完成加载，不解析空响应内容。 */
     async load() {
