@@ -10,6 +10,11 @@ def select_frames(spec, frames, *, preferred=(), limit=12):
     capacity = max(limit, len(selected))
     points = [point for frame in preferred for point in (frame - 1, frame + 1)]
     points.extend((available[0], available[-1]))
+    # Phase pairs and visibility boundaries precede interior samples.
+    for layer in spec.text_layers:
+        for part in layer.motion:
+            if part.phase != "hold":
+                points.extend((part.start_frame, part.end_frame - 1))
     for layer in spec.text_layers:
         hold = next((part for part in layer.motion if part.phase == "hold"), None)
         start, end = (
@@ -17,12 +22,15 @@ def select_frames(spec, frames, *, preferred=(), limit=12):
             if hold
             else (layer.start_frame, layer.end_frame)
         )
-        points.append((start + end - 1) // 2)
-    # Phase pairs precede extra interior samples so a still cannot stand in for an animation.
-    for layer in spec.text_layers:
-        for part in layer.motion:
-            if part.phase != "hold":
-                points.extend((part.start_frame, part.end_frame - 1))
+        points.extend(
+            (
+                layer.start_frame,
+                start,
+                (start + end - 1) // 2,
+                end - 1,
+                layer.end_frame - 1,
+            )
+        )
     for point in points:
         if len(selected) >= capacity:
             break
