@@ -139,6 +139,11 @@ class Renderer:
             elif Path(source).exists():
                 command.extend(("--ro-bind", source, source))
         command.extend(("--ro-bind", str(node), "/runtime-node"))
+        prlimit = Path(shutil.which("prlimit") or "/usr/bin/prlimit").resolve()
+        command.extend(("--ro-bind", str(prlimit), "/runtime-prlimit"))
+        if settings.runtime_lib_dir is not None:
+            libraries = str(settings.runtime_lib_dir.resolve())
+            command.extend(("--ro-bind", libraries, "/runtime-lib"))
         browser = settings.browser_executable.resolve()
         command.extend(("--ro-bind", str(browser.parent), str(browser.parent)))
         command.extend(
@@ -165,7 +170,7 @@ class Renderer:
                 "TMPDIR",
                 "/tmp",
                 "--",
-                "/usr/bin/prlimit",
+                "/runtime-prlimit",
                 "--fsize=536870912",
                 "--nofile=1024",
                 "--cpu=300",
@@ -175,6 +180,10 @@ class Renderer:
                 "/renderer/worker.mjs",
             )
         )
+        if settings.runtime_lib_dir is not None:
+            # 只暴露随包共享库，仍清空密钥环境、隔离网络及用户目录。
+            boundary = command.index("--clearenv") + 1
+            command[boundary:boundary] = ["--setenv", "LD_LIBRARY_PATH", "/runtime-lib"]
         return command
 
     async def validate(

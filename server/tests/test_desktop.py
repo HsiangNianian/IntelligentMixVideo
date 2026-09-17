@@ -57,6 +57,7 @@ def test_desktop_config_preserves_credentials_and_uses_private_paths(tmp_path, m
     settings = Settings()
     assert settings.actor_api_key.get_secret_value() == "user-config"
     assert settings.data_dir == data / "remotion"
+    assert settings.runtime_lib_dir == runtime / "lib"
     assert database.DatabaseSettings().socket == str(tmp_path / "mysql.sock")
 
 
@@ -73,6 +74,14 @@ def test_socket_survives_database_bootstrap(monkeypatch, tmp_path):
         database.close_database()
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux bubblewrap mount contract")
+def test_renderer_only_mounts_private_libraries(tmp_path):
+    """随包库进入只读 sandbox，仍清空宿主环境且关闭网络。"""
+    command = Renderer(Settings(_env_file=None, runtime_lib_dir=tmp_path / "lib")).command(tmp_path)
+    assert command[command.index("--clearenv") + 1:][:3] == ["--setenv", "LD_LIBRARY_PATH", "/runtime-lib"]
+    assert "--unshare-all" in command
+    assert "/runtime-prlimit" in command
+    assert str(tmp_path / "lib") in command
 
 
 def test_failed_mysql_and_child_cleanup():
