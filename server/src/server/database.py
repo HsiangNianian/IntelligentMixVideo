@@ -21,6 +21,7 @@ class DatabaseSettings(CommonSettings):
     user: str = "root"
     password: SecretStr = SecretStr("")
     name: str = Field(default="intelligent_mix_video", min_length=1, max_length=64)
+    socket: str | None = None
 
 
 # 连接池与配置在首次使用时一起初始化；退出后可重新读取配置。
@@ -44,7 +45,10 @@ def get_engine() -> Engine:
                 "mysql+pymysql", username=settings.user,
                 password=settings.password.get_secret_value(),
                 host=settings.host, port=settings.port, database=settings.name,
-                query={"charset": "utf8mb4"},
+                query={
+                    "charset": "utf8mb4",
+                    **({"unix_socket": settings.socket} if settings.socket else {}),
+                },
             )
             _engine = create_engine(
                 url, pool_pre_ping=True, pool_recycle=1800,
