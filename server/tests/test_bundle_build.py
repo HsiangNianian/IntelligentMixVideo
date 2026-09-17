@@ -12,6 +12,52 @@ BUILD = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(BUILD)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows test accounts may lack symlink privileges")
+@pytest.mark.parametrize("native_test_fails", [False, True])
+def test_macos_smoke_resolves_temporary_symlinks(tmp_path, monkeypatch, native_test_fails):
+    """模拟 /var 到 /private/var：传给桌面的路径不含软链接，验收失败也必须卸载 DMG。"""
+    from contextlib import nullcontext
+
+    spec = importlib.util.spec_from_file_location("native_smoke", Path(__file__).resolve().parents[2] / ".github/scripts/native-bundle-smoke.py")
+    smoke = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(smoke)
+    work = tmp_path / "private var"
+    work.mkdir()
+    alias = tmp_path / "var"
+    alias.symlink_to(work, target_is_directory=True)
+    installers = tmp_path / "bundle/dmg"
+    installers.mkdir(parents=True)
+    (installers / "client.dmg").touch()
+    monkeypatch.setattr(smoke.sys, "platform", "darwin")
+    monkeypatch.setattr(smoke.sys, "argv", ["native-bundle-smoke.py", str(installers.parent)])
+    monkeypatch.setattr(smoke.tempfile, "TemporaryDirectory", lambda **_: nullcontext(str(alias)))
+    calls = []
+
+    def run(command, **kwargs):
+        """只模拟 macOS 外部工具；实际文件和软链接用于复现 Tauri 的路径限制。"""
+        calls.append(command)
+        if command[:2] == ["hdiutil", "attach"]:
+            contents = Path(command[-1]) / "Client.app/Contents"
+            (contents / "MacOS").mkdir(parents=True)
+            (contents / "Resources").mkdir()
+            (contents / "MacOS/client").touch()
+            (contents / "Resources/backend.tar").touch()
+        elif command[0] == "uv":
+            executable = Path(kwargs["env"]["IMV_TEST_DESKTOP_EXECUTABLE"])
+            assert executable.is_file()
+            assert not any(path.is_symlink() for path in (executable, *executable.parents))
+            assert (executable.parent.parent / "Resources/backend.tar").is_file()
+            if native_test_fails:
+                raise subprocess.CalledProcessError(1, command)
+
+    monkeypatch.setattr(smoke.subprocess, "run", run)
+    if native_test_fails:
+        with pytest.raises(subprocess.CalledProcessError):
+            smoke.main()
+    else:
+        smoke.main()
+    assert any(command[0] == "uv" for command in calls)
+    assert calls[-1] == ["hdiutil", "detach", str(work.resolve() / "installer")]
 
 
 def test_latest_stable_ffmpeg_preserves_commit():

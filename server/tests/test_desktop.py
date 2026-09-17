@@ -131,16 +131,146 @@ def test_readiness_protocol_excludes_http_logs(monkeypatch):
     assert "GET /template HTTP/1.1" in diagnostics.getvalue()
 
 
+@pytest.fixture
+def bundle(tmp_path):
+    """明确开启时才用随包 Python；HTTP、数据库、配置和日志均限定临时目录。"""
+    if not BUNDLE:
+        pytest.skip("Set IMV_TEST_BUNDLE to the extracted backend runtime")
+    runtime = Path(BUNDLE).resolve()
+    env = {"PATH": str(runtime / "bin") + os.pathsep + os.defpath, "HOME": str(tmp_path), "LANG": "C.UTF-8", "PYTHONUTF8": "1"}
+    if sys.platform == "win32":
+        env.update({key: os.environ[key] for key in ("SystemRoot", "ComSpec") if key in os.environ})
+        env.update(TEMP=str(tmp_path), TMP=str(tmp_path), USERPROFILE=str(tmp_path))
+    return runtime, tmp_path / "data", env
 
 
+def launch_bundle(runtime, data, env, log):
+    """等真实就绪回执，超时回收进程并保留诊断，不借用开发环境 Python。"""
+    process = subprocess.Popen(
+        [str(runtime / PYTHON), "-I", "-X", "utf8", "-m", "server.desktop", str(runtime), str(data)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, env=env,
+    )
+    try:
+        lines = queue.Queue()
+        threading.Thread(target=lambda: lines.put(process.stdout.readline()), daemon=True).start()
+        response = json.loads(lines.get(timeout=240))
+        return process, response["url"]
+    except Exception as error:
+        process.stdin.close()
+        process.wait(timeout=45)
+        log.flush()
+        raise AssertionError(f"{error}\n{Path(log.name).read_text()}") from error
 
 
+def close_bundle(process):
+    """模拟桌面正常退出或崩溃造成的管道关闭，必须完成数据库落盘后退出。"""
+    process.stdin.close()
+    assert process.wait(timeout=45) == 0
 
 
+def test_bundle_start_restart_and_cleanup(bundle, tmp_path, template_payload):
+    """解包运行时首次可读写模板，无模型密钥可启动；重启保留数据，重复实例拒绝抢库。"""
+    runtime, data, env = bundle
+    with (tmp_path / "server.log").open("wb") as log:
+        process, url = launch_bundle(runtime, data, env, log)
+        try:
+            with httpx.Client(base_url=url, timeout=10, trust_env=False) as client:
+                assert client.get("/api/templates/capabilities").json()["models_configured"] is False
+                response = client.post("/template", json=template_payload)
+                assert response.status_code == 201, response.text
+                identifier = response.json()["template_id"]
+                duplicate = subprocess.run(
+                    [str(runtime / PYTHON), "-I", "-X", "utf8", "-m", "server.desktop", str(runtime), str(data)],
+                    env=env, input=b"", capture_output=True, timeout=20,
+                )
+                assert duplicate.returncode != 0
+                assert "已有测试客户端" in duplicate.stderr.decode()
+        finally:
+            close_bundle(process)
+        process, restarted = launch_bundle(runtime, data, env, log)
+        try:
+            with httpx.Client(base_url=restarted, timeout=10, trust_env=False) as client:
+                assert client.get(f"/template/{identifier}").status_code == 200
+                assert client.delete(f"/template/{identifier}").status_code == 204
+        finally:
+            close_bundle(process)
+        # 第二次启动成功也验证 MySQL 已停止、数据锁释放，API 端口在退出后不可连接。
+        with pytest.raises((httpx.ConnectError, httpx.ConnectTimeout)):
+            httpx.get(restarted, timeout=2, trust_env=False)
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Native render sandbox adaptation is validated separately")
+def test_bundle_real_renderer(bundle, tmp_path):
+    """使用随包 Node/Chrome/FFprobe/font 和共享库真实渲染，不调用模型或宿主工具链。"""
+    runtime, data, env = bundle
+    data.mkdir()
+    script = '''
+import asyncio, sys
+from pathlib import Path
+from server.desktop import configure
+from server.settings import load_settings
+from server.remotion_templates.renderer import Renderer
+from server.remotion_templates.models import TemplateCandidate, TemplateSpec, CompositionConfig, TextLayer
+from server.remotion_templates.harness import controls
+runtime, data = map(Path, sys.argv[1:3])
+configure(runtime, data, data / "unused.sock")
+spec = TemplateSpec(name="标题", description="白色文字", composition=CompositionConfig(width=320, height=240, duration_in_frames=6), text_layers=[TextLayer(id="title", text="你好", end_frame=6)])
+schema, defaults = controls(spec)
+code = """/** Offline bundle smoke composition. */
+import React from "react";
+import {AbsoluteFill} from "remotion";
+/** Render props directly for deterministic parameter probes. */
+export default function Template(p: Record<string, string | number>) {
+return <AbsoluteFill><div style={{position: "absolute", left: Number(p["0_layout_x"])*100+"%", top: Number(p["0_layout_y"])*100+"%", width: Number(p["0_layout_width"])*100+"%", transform: `translate(-50%, -50%) rotate(${p["0_layout_rotation"]}deg)`, textAlign: String(p["0_layout_align"]) as React.CSSProperties["textAlign"], fontFamily: String(p["0_style_font_family"]), fontSize: Number(p["0_style_font_size"]), fontWeight: Number(p["0_style_font_weight"]), lineHeight: Number(p["0_style_line_height"]), letterSpacing: Number(p["0_style_letter_spacing"]), color: String(p["0_style_color"]), whiteSpace: "pre-wrap"}}>{p["0_text"]}</div></AbsoluteFill>;
+}
+"""
+candidate = TemplateCandidate(tsx_code=code, config_schema=schema, default_config=defaults)
+_, report = asyncio.run(Renderer(load_settings()).validate(candidate, spec, data / "render"))
+assert all(check.status == "pass" for check in report.checks), report.model_dump()
+assert (data / "render/preview.mp4").stat().st_size > 1000
+'''
+    result = subprocess.run(
+        [str(runtime / PYTHON), "-I", "-X", "utf8", "-c", script, str(runtime), str(data)],
+        env=env, capture_output=True, text=True, timeout=240,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr + (
+        (data / "render/worker.log").read_text() if (data / "render/worker.log").exists() else ""
+    )
 
 
+def test_bundle_desktop_starts_api_before_home(tmp_path):
+    """在 Xvfb 中启动实际 AppRun；首页成功读取历史才算桌面完成内置服务接入。"""
+    if not APPDIR:
+        pytest.skip("Set IMV_TEST_APPDIR to the extracted AppImage")
+    data = tmp_path / "data"
+    env = {
+        "PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "LANG": "C.UTF-8",
+        "APPDIR": APPDIR, "XDG_DATA_HOME": str(data),
+        "XDG_CACHE_HOME": str(tmp_path / "cache"),
+    }
+    server_log = data / "com.intelligentmixvideo.client/backend/server.log"
+    output = tmp_path / "desktop.log"
+    with output.open("wb") as log:
+        process = subprocess.Popen(
+            ["xvfb-run", "-a", str(Path(APPDIR) / "AppRun")],
+            env=env, stdout=log, stderr=log, start_new_session=True,
+        )
+        try:
+            deadline = time.monotonic() + 180
+            while process.poll() is None and time.monotonic() < deadline:
+                if server_log.exists():
+                    content = server_log.read_text()
+                    if 'GET /api/templates/works?history=true HTTP/1.1" 200' in content:
+                        return
+                time.sleep(0.5)
+            log.flush()
+            pytest.fail(output.read_text() + (server_log.read_text() if server_log.exists() else "\nNo bundled API log"))
+        finally:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            process.wait(timeout=30)
 
 
 def test_exclusive_file_lock_releases_after_close(tmp_path):
@@ -169,8 +299,93 @@ def test_windows_mysql_uses_password_and_loopback(tmp_path, monkeypatch):
     assert not any("private-secret" in arg for arg in command)
 
 
+def test_bundle_tools_run_without_development_path(bundle):
+    """实际运行归档里的各工具，验证平台架构、动态库与 Python 原生模块可加载。"""
+    runtime, data, env = bundle
+    suffix = ".exe" if sys.platform == "win32" else ""
+    for name, flag in [("node", "--version"), ("bun", "--version"), ("uv", "--version"),
+                       ("ffmpeg", "-version"), ("ffprobe", "-version"), ("mysqld", "--version")]:
+        result = subprocess.run([str(runtime / "bin" / (name + suffix)), flag], env=env, capture_output=True, timeout=30)
+        assert result.returncode == 0, (name, result.stderr)
+    provenance = json.loads((runtime / "licenses/ffmpeg/source.json").read_text())
+    for name in ("ffmpeg", "ffprobe"):
+        version = subprocess.check_output([str(runtime / "bin" / (name + suffix)), "-version"], env=env, text=True)
+        assert version.startswith(name + " version " + provenance["tag"].removeprefix("n") + " ")
+    result = subprocess.run([str(runtime / PYTHON), "-I", "-X", "utf8", "-c", "import server.app, PIL._imaging, cryptography.hazmat.bindings._rust"], env=env, capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    video = data.parent / "tool-test.mp4"
+    subprocess.run([str(runtime / "bin" / ("ffmpeg" + suffix)), "-v", "error", "-f", "lavfi", "-i", "color=c=blue:s=64x64", "-frames:v", "1", "-c:v", "mpeg4", str(video)], env=env, check=True, timeout=30)
+    metadata = subprocess.check_output([str(runtime / "bin" / ("ffprobe" + suffix)), "-v", "error", "-show_entries", "stream=width,height", "-of", "json", str(video)], env=env, timeout=30)
+    assert json.loads(metadata)["streams"] == [{"width": 64, "height": 64}]
 
 
+@pytest.mark.skipif(sys.platform == "linux", reason="Linux Chromium is tested by the real sandbox rendering pipeline")
+def test_bundle_native_browser(bundle):
+    """Windows/macOS 尚无生成沙箱，先独立验证随包 Remotion 与 Chrome；Linux 使用完整渲染验收。"""
+    runtime, _, env = bundle
+    suffix = ".exe" if sys.platform == "win32" else ""
+    manifest = runtime / "runtime.json"
+    browser = runtime / (json.loads(manifest.read_text())["browser"] if manifest.exists() else "chrome/chrome")
+    # 使用 worker.mjs 同一浏览器入口和图形后端；只执行固定 DOM 探针，不运行生成代码。
+    script = '''
+import {openBrowser} from "@remotion/renderer";
+const browser = await openBrowser("chrome", {
+  browserExecutable: process.argv[1], logLevel: "error", chromiumOptions: {gl: "swangle"},
+});
+try {
+  const page = await browser.newPage({
+    context: () => null, logLevel: "error", indent: false, pageIndex: 0,
+    onBrowserLog: null, onLog: ({previewString}) => console.error(previewString),
+  });
+  if (await page.evaluate(() => document.documentElement.tagName) !== "HTML") {
+    throw new Error("Bundled Chromium did not load a document");
+  }
+} finally {
+  await browser.close({silent: true});
+}
+'''
+    page = subprocess.run([str(runtime / "bin" / ("node" + suffix)), "--input-type=module", "-e", script, str(browser)], cwd=runtime / "renderer", env=env, capture_output=True, timeout=45)
+    if page.returncode:
+        pytest.fail(page.stderr.decode("utf-8", errors="replace"))
 
 
+def test_bundle_native_desktop_starts_api_before_home(tmp_path):
+    """在干净的原生 CI 账户启动解包客户端；前端真正读取历史才算启动成功。"""
+    if not DESKTOP:
+        pytest.skip("Set IMV_TEST_DESKTOP_EXECUTABLE on an isolated native CI runner")
+    parent = Path(os.environ["APPDATA"]) if sys.platform == "win32" else Path.home() / "Library/Application Support"
+    app_data = parent / "com.intelligentmixvideo.client"
+    assert not app_data.exists(), "Desktop smoke requires a clean CI account; existing user data must be preserved"
+    server_log = app_data / "backend/server.log"
+    output = tmp_path / "desktop.log"
+    with output.open("wb") as log:
+        process = subprocess.Popen([DESKTOP], stdout=log, stderr=log)
+        try:
+            deadline = time.monotonic() + 240
+            while process.poll() is None and time.monotonic() < deadline:
+                if server_log.exists() and 'GET /api/templates/works?history=true HTTP/1.1" 200' in server_log.read_text(encoding="utf-8", errors="replace"):
+                    return
+                time.sleep(0.5)
+            log.flush()
+            diagnostics = Path(os.environ.get("RUNNER_TEMP", str(tmp_path))) / "imv-desktop-diagnostics"
+            diagnostics.mkdir(exist_ok=True)
+            shutil.copy2(output, diagnostics / "desktop.log")
+            if server_log.exists():
+                shutil.copy2(server_log, diagnostics / "server.log")
+            if sys.platform == "darwin":
+                subprocess.run(["/usr/sbin/screencapture", "-x", str(diagnostics / "desktop.png")], timeout=15, check=False)
+            pytest.fail(output.read_text(errors="replace") + (server_log.read_text(errors="replace") if server_log.exists() else "\nNo bundled API log"))
+        finally:
+            if sys.platform == "win32":
+                subprocess.run(["taskkill", "/PID", str(process.pid)], capture_output=True, timeout=15)
+            else:
+                process.terminate()
+            try:
+                process.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                if sys.platform == "win32":
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)], capture_output=True, timeout=15)
+                else:
+                    process.kill()
+                process.wait(timeout=10)
             # 父进程退出后 Python 异步关闭数据库；这里不删除正在使用的数据。
