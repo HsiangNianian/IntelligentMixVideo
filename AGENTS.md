@@ -24,7 +24,7 @@
 - `server/src/server/asr/` 提供独立的 `transcribe` 函数与 `python -m server.asr` 命令行入口，尚未注册 HTTP 路由；通过北京地域 Fun-ASR 接收 HTTPS 音频直链并返回原始转写 JSON。`DASHSCOPE_API_KEY` 在模块加载时读取一次，固定读取源码 `server/.env`，不存在时不回退工作目录，进程环境变量优先；测试隔离文件、密钥、HTTP 和轮询等待。
 - 在 `server/` 下执行 `uv run server` 启动 Uvicorn，默认监听 `0.0.0.0:20070`（所有 IPv4 接口，供服务器部署后远程访问）；`__main__.py` 的 `ServerSettings` 在每次启动时读取固定的 `server/.env` 中的 `PORT`，进程环境变量优先，范围为 1～65535，空值或非法值阻止启动；仓库根目录使用 `uv run --project server server`。维护 `server/uv.lock`，CI 使用 `--locked` 验证依赖。
 - `server/pyproject.toml` 显式将官方 PyPI 设为 uv 默认索引，与锁文件来源保持一致。遇到依赖版本不可用时先检查索引覆盖配置和镜像同步情况，不要仅为绕过镜像缺失而降低依赖版本或删除锁文件。
-- `App.tsx` 挂载 `pages/HomePage.tsx`，首页以标签组合 `features/remotion_templates/` 字效生成工作区与原 `features/templates/` 模板库；聊天、任务编排、隔离 Player、参数编辑和 API 请求按职责分离。
+- `App.tsx` 挂载 `pages/HomePage.tsx`，首页以左侧导航组合 `features/remotion_templates/` 字效生成工作区与原 `features/templates/` 模板库，底部设置入口只读展示运行环境与字效接口地址；窄屏使用带无障碍名称的图标栏，切换设置同样保留工作区。聊天、任务编排、隔离 Player、参数编辑和 API 请求按职责分离。
 - 组件卸载时清理定时器、订阅和播放器。新增界面功能遵循组件化结构，不把所有逻辑堆到 App 首页。
 - 项目长期方向见 README；其中提到的云剪辑、Agent、素材召回等功能不代表已经实现，也不构成自动扩展当前任务范围的要求。
 

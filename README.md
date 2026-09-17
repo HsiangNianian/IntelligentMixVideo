@@ -60,6 +60,8 @@ bun install --frozen-lockfile
 bun run tauri dev
 ```
 
+首页左侧提供「模板库」「Remotion 字效」和底部「设置」导航，窄屏收为图标栏；设置展示运行环境与字效服务地址，只读不修改配置。切换页面保留工作区草稿和订阅。
+
 首页提供模板创建、选择、完整编辑、保存、重命名、另存为和删除，切换前保护未保存修改。页面可选择本地或云端环境：桌面和浏览器均默认云端，沿用现有 MySQL API；连接失败、超时或服务端 5xx 时提示手动切换本地。本地在客户端应用数据目录的 `data/template/templates.json` 保存，无需 Python 服务；浏览器使用本地保存需打开桌面客户端。两套模板库独立，切换环境同样保护未保存修改。桌面本地操作通过官方 `@tauri-apps/api/core` 模块调用，使用 `isTauri()` 判断环境，无需开启全局 Tauri API。
 浏览器开发使用 `bun run dev` 后打开 `http://localhost:1420`；Windows 安装包内置回环静态服务，以 `http://localhost:<动态端口>` 加载页面，预览沿用阿里云 SDK 5.2.2。macOS / Linux 保留原有 Tauri 加载方式。
 本地草稿编辑与预览不依赖 Python API；共享模板读写需要服务端，SDK、字体与示例媒体仍需联网。

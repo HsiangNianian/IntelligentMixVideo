@@ -407,3 +407,30 @@ test.each(["云端", "本地"])("页签切换保留%s模板草稿及未保存保
     restore();
   }
 });
+
+// 侧栏设置可键盘访问；切换设置不提前加载模板库、不丢失两种工作区草稿。
+test("侧边导航打开只读设置并保留工作区草稿", async () => {
+  remotionServer((path) => path === "/template" ? Response.json([]) : undefined);
+  render(<HomePage />);
+  const navigation = screen.getByRole("tablist", { name: "模板工作区" });
+  expect(navigation.getAttribute("aria-orientation")).toBe("vertical");
+  expect(within(navigation).getAllByRole("tab")).toHaveLength(3);
+  fireEvent.change(screen.getByLabelText("字效描述"), { target: { value: "保留聊天草稿" } });
+  const settings = within(navigation).getByRole("tab", { name: "设置" });
+  fireEvent.keyDown(settings, { key: "Enter" });
+  expect(settings.getAttribute("aria-selected")).toBe("true");
+  expect(screen.getByRole("region", { name: "环境与连接" })).toBeTruthy();
+  expect(screen.getByText("浏览器预览")).toBeTruthy();
+  expect(screen.getByText("http://api.test:8000/api/templates")).toBeTruthy();
+  expect(screen.queryByRole("region", { name: "字效聊天" })).toBeNull();
+  expect(fetchMock.mock.calls.filter(call => String(call[0]).endsWith("/template"))).toHaveLength(0);
+  fireEvent.mouseDown(within(navigation).getByRole("tab", { name: "模板库" }), { button: 0 });
+  await screen.findByText("共享模板库 · 0 个模板");
+  fireEvent.change(screen.getByLabelText("模板名称"), { target: { value: "保留模板草稿" } });
+  fireEvent.mouseDown(settings, { button: 0 });
+  expect(screen.queryByRole("textbox", { name: "模板名称" })).toBeNull();
+  fireEvent.mouseDown(within(navigation).getByRole("tab", { name: "模板库" }), { button: 0 });
+  expect(screen.getByLabelText<HTMLInputElement>("模板名称").value).toBe("保留模板草稿");
+  fireEvent.mouseDown(within(navigation).getByRole("tab", { name: "Remotion 字效" }), { button: 0 });
+  expect(screen.getByLabelText<HTMLTextAreaElement>("字效描述").value).toBe("保留聊天草稿");
+});
