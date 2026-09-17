@@ -1,6 +1,6 @@
 /** 历史会话列表和小屏抽屉复用同一内容，业务数据与分页请求由工作区提供。 */
 import { useState } from "react";
-import { History, RefreshCw } from "lucide-react";
+import { History, MessageSquare, Plus, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -21,6 +21,7 @@ interface Props {
   onSelect: (id: string) => void;
   onRefresh: () => void;
   onMore: () => void;
+  onNew: () => void;
 }
 /** 桌面常驻列表，小屏用带焦点管理和 Escape 关闭能力的抽屉。 */
 export function HistorySidebar(props: Props) {
@@ -54,6 +55,10 @@ export function HistorySidebar(props: Props) {
             <div className="min-h-0 flex-1">
               <HistoryList
                 {...props}
+                onNew={() => {
+                  props.onNew();
+                  setOpen(false);
+                }}
                 onSelect={(id) => {
                   props.onSelect(id);
                   setOpen(false);
@@ -76,10 +81,11 @@ function HistoryList({
   onSelect,
   onRefresh,
   onMore,
+  onNew,
 }: Props) {
   return (
-    <section className="flex h-full min-h-0 flex-col rounded-2xl border bg-card">
-      <div className="flex items-center justify-between border-b px-3 py-3">
+    <section className="flex h-full min-h-0 flex-col rounded-xl border bg-muted/35">
+      <div className="flex h-14 shrink-0 items-center justify-between px-4">
         <h2 className="text-sm font-medium">聊天历史</h2>
         <Button
           variant="ghost"
@@ -89,6 +95,15 @@ function HistoryList({
           onClick={onRefresh}
         >
           <RefreshCw className={cn("size-4", loading && "animate-spin")} />
+        </Button>
+      </div>
+      <div className="px-3 pb-3">
+        <Button
+          className="w-full justify-start gap-2 shadow-none"
+          onClick={onNew}
+        >
+          <Plus className="size-4" />
+          新增聊天
         </Button>
       </div>
       <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
@@ -110,11 +125,22 @@ function HistoryList({
             title={work.id}
             onClick={() => onSelect(work.id)}
             className={cn(
-              "w-full space-y-2 rounded-lg p-3 text-left text-sm hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring",
-              selected === work.id && "bg-muted",
+              "w-full space-y-2 rounded-lg border border-transparent p-3 text-left text-sm transition-colors hover:bg-background/80 focus-visible:outline-2 focus-visible:outline-ring",
+              selected === work.id &&
+                "border-primary/15 bg-background shadow-sm",
             )}
           >
-            <span className="block truncate font-medium">{work.title}</span>
+            <span className="flex items-center gap-2 font-medium">
+              <MessageSquare
+                className={cn(
+                  "size-3.5 shrink-0",
+                  selected === work.id
+                    ? "text-primary"
+                    : "text-muted-foreground",
+                )}
+              />
+              <span className="truncate">{work.title}</span>
+            </span>
             <span className="flex flex-wrap justify-between gap-1 text-xs text-muted-foreground">
               <span>{jobLabel(work.job.status)}</span>
               <time dateTime={work.updated_at}>

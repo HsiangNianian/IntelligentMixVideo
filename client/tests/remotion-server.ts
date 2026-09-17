@@ -201,6 +201,14 @@ export function remotionServer(
           return Response.json(snapshots.get(path.split("/")[2]!) ?? {}, {
             status: snapshots.has(path.split("/")[2]!) ? 200 : 404,
           });
+        if (/^\/works\/[^/]+\/versions$/.test(path)) {
+          const work = path.split("/")[2]!;
+          return Response.json(
+            [...versions]
+              .filter(([, owner]) => owner === work)
+              .map(([id]) => ({ ...remotionVersion(id), project_id: work })),
+          );
+        }
         if (path.endsWith("/stream")) {
           const work = path.split("/")[2]!;
           const after = Number(url.searchParams.get("after"));

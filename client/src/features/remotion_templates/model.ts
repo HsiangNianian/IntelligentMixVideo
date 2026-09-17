@@ -26,6 +26,9 @@ export interface Control {
 export interface Version {
   id: string;
   project_id: string;
+  number: number;
+  source: "agent" | "user_parameters";
+  created_at: string;
   candidate: {
     tsx_code: string;
     default_config: Values;
