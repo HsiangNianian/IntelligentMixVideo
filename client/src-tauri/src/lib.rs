@@ -1,9 +1,20 @@
-//! 桌面入口：Windows 打包页面通过 localhost 加载；Linux 按 WebKit 版本隔离网页数据。
+//! 桌面入口：Windows 页面使用 localhost，Linux 隔离网页缓存，测试包按需监督内置服务。
 
 #[cfg(windows)]
 mod localhost;
 
+mod backend;
 mod templates;
+
+/// Windows 只为当前窗口的准确资源 URL 授权，其他 localhost 端口和远程域名均不匹配。
+#[cfg(any(windows, test))]
+fn localhost_capability(url: &tauri::Url, label: &str) -> tauri::ipc::CapabilityBuilder {
+    tauri::ipc::CapabilityBuilder::new("windows-local-page")
+        .local(false)
+        .window(label)
+        .remote(url.to_string())
+        .permission("desktop-commands")
+}
 
 /// 启动主窗口与事件循环；初始化失败时报告错误。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -26,12 +37,20 @@ pub fn run() {
         context
     };
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![templates::local_templates])
+        .manage(backend::Backend::default())
+        .invoke_handler(tauri::generate_handler![
+            templates::local_templates,
+            backend::start_backend
+        ])
         .setup(|app| {
             #[cfg(windows)]
             if !tauri::is_dev() {
+                use tauri::Manager;
                 let mut window = app.config().app.windows[0].clone();
-                window.url = tauri::WebviewUrl::External(localhost::start(app.asset_resolver())?);
+                let url = localhost::start(app.asset_resolver())?;
+                // 只授权本次绑定的精确 localhost 端口，不向其他本地或远程页面开放 IPC。
+                app.add_capability(localhost_capability(&url, &window.label))?;
+                window.url = tauri::WebviewUrl::External(url);
                 tauri::WebviewWindowBuilder::from_config(app, &window)?.build()?;
             }
             #[cfg(target_os = "linux")]
@@ -51,6 +70,64 @@ pub fn run() {
             let _ = app;
             Ok(())
         })
-        .run(context)
-        .expect("error while running IntelligentMixVideo");
+        .build(context)
+        .expect("error while running IntelligentMixVideo")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                backend::shutdown(app);
+            }
+        });
+}
+
+#[cfg(test)]
+mod tests {
+    use tauri::Manager;
+
+    /// 隔离真实数据库启动，只检查 Tauri 在调用命令前执行的来源权限。
+    #[tauri::command]
+    fn start_backend() -> bool {
+        true
+    }
+
+    /// 用真实权限清单验证准确 URL 可调用，其他端口、域名和窗口均被拒绝。
+    #[test]
+    fn localhost_ipc_is_limited_to_the_bound_page() {
+        let mut context = tauri::generate_context!();
+        context.config_mut().app.windows.clear();
+        let app = tauri::test::mock_builder()
+            .invoke_handler(tauri::generate_handler![start_backend])
+            .build(context)
+            .unwrap();
+        let url = "http://localhost:23456/".parse().unwrap();
+        app.add_capability(super::localhost_capability(&url, "main"))
+            .unwrap();
+        for label in ["main", "other"] {
+            let view = tauri::WebviewWindowBuilder::new(&app, label, Default::default())
+                .build()
+                .unwrap();
+            for origin in [
+                "http://localhost:23456/",
+                "http://localhost:23457/",
+                "https://example.com/",
+            ] {
+                let result = tauri::test::get_ipc_response(
+                    &view,
+                    tauri::webview::InvokeRequest {
+                        cmd: "start_backend".into(),
+                        callback: tauri::ipc::CallbackFn(0),
+                        error: tauri::ipc::CallbackFn(1),
+                        url: origin.parse().unwrap(),
+                        body: tauri::ipc::InvokeBody::default(),
+                        headers: Default::default(),
+                        invoke_key: tauri::test::INVOKE_KEY.into(),
+                    },
+                );
+                assert_eq!(
+                    result.is_ok(),
+                    label == "main" && origin == url.as_str(),
+                    "{label}: {origin}"
+                );
+            }
+        }
+    }
 }

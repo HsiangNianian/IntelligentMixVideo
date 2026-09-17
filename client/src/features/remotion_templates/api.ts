@@ -7,16 +7,11 @@ import type {
   Version,
   WorkPage,
 } from "./model";
-
-const base =
-  (import.meta.env.VITE_API_URL?.trim() || "http://localhost:20070").replace(
-    /\/+$/,
-    "",
-  ) + "/api/templates";
+import { apiBase } from "@/lib/api-base";
 
 /** 拼接当前服务内的已知路径，避免将下载请求发送到响应提供的其他来源。 */
 export function apiUrl(path: string): string {
-  return base + path;
+  return apiBase() + "/api/templates" + path;
 }
 
 /** 读取 JSON 或代码文本；中断与网络失败保留由调用方维护的草稿。 */
