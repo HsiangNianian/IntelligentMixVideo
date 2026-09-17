@@ -3,6 +3,7 @@
 #[cfg(windows)]
 mod localhost;
 
+mod settings;
 mod templates;
 
 /// 启动主窗口与事件循环；初始化失败时报告错误。
@@ -26,7 +27,10 @@ pub fn run() {
         context
     };
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![templates::local_templates])
+        .invoke_handler(tauri::generate_handler![
+            templates::local_templates,
+            settings::local_settings
+        ])
         .setup(|app| {
             #[cfg(windows)]
             if !tauri::is_dev() {

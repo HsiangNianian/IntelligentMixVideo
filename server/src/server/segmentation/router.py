@@ -32,7 +32,7 @@ def create_segmentation(
 ) -> dict | JSONResponse:
     """调用切片函数；输入错误返回 422，内部约束错误 500，模型错误 502，超时 504。"""
     try:
-        return segment(payload.model_dump())
+        return segment(payload.model_dump(exclude={"config"}), config=payload.config)
     except APITimeoutError:
         return JSONResponse({"error": {"message": "模型请求超时。"}}, status_code=504)
     except APIError:

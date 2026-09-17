@@ -10,6 +10,7 @@ from openai import APIConnectionError, APITimeoutError
 import pytest
 
 from server.segmentation import segment, segmentation
+from server.segmentation.settings import ClientSettings
 
 
 def payload(script, transcript=None, step=200):
@@ -576,3 +577,98 @@ def test_trailing_pause_does_not_make_short_candidate_eligible(model):
     assert json.loads(request["messages"][1]["content"]) == [{"id": 1, "text": "甲。乙。"}]
     assert [s["text"] for s in result["segments"]] == ["甲。乙。"]
     assert result["segments"][0]["end_time"] == 7
+
+
+def test_client_configuration_is_request_scoped(model, client, monkeypatch):
+    """客户端完整配置只作用于本次请求，后续旧请求仍使用服务端值。"""
+    config = dict(llm_base_url="https://client.test/v1", llm_api_key="client-secret", llm_model="client-model",
+                  llm_timeout_seconds=8.5, llm_max_retries=0)
+    response = client.post("/segmentations", json={**payload("甲乙丙丁"), "config": config})
+    assert response.status_code == 200
+    assert "client-secret" not in response.text
+    assert model[0].call_args.kwargs == dict(base_url=config["llm_base_url"], api_key="client-secret", timeout=8.5, max_retries=0)
+    assert all(call.kwargs["model"] == "client-model" for call in model[1].chat.completions.create.call_args_list)
+    assert client.post("/segmentations", json=payload("甲乙丙丁")).status_code == 200
+    assert model[0].call_args.kwargs["api_key"] == "test"
+    assert model[1].chat.completions.create.call_args.kwargs["model"] == "test"
+    # 客户端配置完整时不要求服务端也配置模型密钥。
+    for key in ("BASE_URL", "API_KEY", "MODEL"):
+        monkeypatch.delenv("IMV_LLM_" + key)
+    assert client.post("/segmentations", json={**payload("甲乙丙丁"), "config": config}).status_code == 200
+
+
+@pytest.mark.parametrize("change", [
+    {"llm_api_key": None}, {"llm_base_url": ""}, {"llm_model": " "},
+    {"llm_max_retries": 4}, {"llm_timeout_seconds": 0}, {"allow_insecure_llm_http": True},
+])
+def test_invalid_client_configuration_never_falls_back(model, client, change):
+    """非法客户端配置返回脱敏 422，不回退到已配置的服务端密钥，也不创建 SDK。"""
+    config = dict(llm_base_url="https://client.test/v1", llm_api_key="client-secret", llm_model="client-model")
+    config.update(change)
+    if config["llm_api_key"] is None:
+        del config["llm_api_key"]
+    response = client.post("/segmentations", json={**payload("甲乙丙丁"), "config": config})
+    assert response.status_code == 422
+    assert "client-secret" not in response.text
+    model[0].assert_not_called()
+
+
+def test_client_credentials_are_not_echoed_in_top_level_errors(model, client):
+    """缺少 script 时框架的完整请求 input 不能把密钥回显出去。"""
+    response = client.post("/segmentations", json={"config": {
+        "llm_base_url": "https://client.test/v1", "llm_api_key": "client-secret", "llm_model": "client-model",
+    }})
+    assert response.status_code == 422
+    assert "client-secret" not in response.text
+    assert all("input" not in error for error in response.json()["detail"])
+
+
+def test_client_config_keeps_server_http_policy(model, client, monkeypatch):
+    """客户端模型参数不能绕过服务端已关闭的远程 HTTP 策略。"""
+    monkeypatch.setenv("IMV_ALLOW_INSECURE_LLM_HTTP", "false")
+    response = client.post("/segmentations", json={**payload("甲乙丙丁"), "config": {
+        "llm_base_url": "http://client.test/v1", "llm_api_key": "client-secret", "llm_model": "client-model",
+    }})
+    assert response.status_code == 502
+    model[0].assert_not_called()
+
+
+def test_concurrent_calls_keep_independent_model_connections(monkeypatch):
+    """两个交错执行的切片调用分别使用自己的模型与密钥，并关闭各自连接。"""
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import contextmanager
+    from threading import Barrier
+
+    barrier = Barrier(2)
+    calls, closed = [], []
+
+    @contextmanager
+    def connection(**kwargs):
+        """连接同时建立后才返回响应，记录每个连接内两阶段实际使用的模型。"""
+        barrier.wait(timeout=5)
+
+        def respond(**request):
+            """返回合法单片段计划，并记录配置匹配关系。"""
+            calls.append((kwargs["api_key"], request["model"], kwargs["base_url"]))
+            content = json.loads(request["messages"][1]["content"])
+            result = {"boundaries_after": []} if isinstance(content[0], dict) else {"keywords": [[]]}
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(result)))])
+
+        try:
+            yield SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=respond)))
+        finally:
+            closed.append(kwargs["api_key"])
+
+    monkeypatch.setattr(segmentation, "OpenAI", connection)
+
+    def run(name):
+        """每个调用构造独立客户端参数。"""
+        return segment(payload("甲乙丙丁"), config=ClientSettings(
+            llm_base_url=f"https://{name}.test/v1", llm_api_key=name, llm_model=name,
+        ))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(run, ("first", "second")))
+    assert all(result["segments"][0]["text"] == "甲乙丙丁" for result in results)
+    assert sorted(calls) == [(name, name, f"https://{name}.test/v1") for name in ("first", "first", "second", "second")]
+    assert sorted(closed) == ["first", "second"]

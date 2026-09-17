@@ -139,6 +139,10 @@ result = segment({
 使用 ASR 第一音轨的词级时间，输入时间为毫秒。返回 `segments`、提示 `warnings` 和诊断信息 `trace`；
 片段包含原文、秒制起止时间、分组和关键词。切片本身不调用 ASR。
 
+请求可另带 `config` 对象：`llm_base_url`、`llm_api_key`、`llm_model` 必填，`llm_timeout_seconds` 默认 120，`llm_max_retries` 默认 1（0～3）。客户端参数仅用于该次切片，完整连接参数不与服务端密钥混用；省略 `config` 仍使用原服务端配置。独立 Python 调用可传 `segment(payload, config=ClientSettings(...))`，模型定义位于 `server.segmentation.settings`。`allow_insecure_llm_http` 仍由服务端决定，不接受客户端覆盖；错误响应不回显请求输入。
+
+`GET /api/settings/plugins` 只返回已注册模块的表单描述与代码默认值，不读写服务端配置。模块在自己的 settings 中声明描述，再加入 `settings_plugins.py` 的 `plugins` 字典；客户端重新进入设置页即可反映插拔。默认仅切片；测试用真实 `ASRSettings` 生成第二个描述验证插拔，不改变 ASR 单例。这里不包含新代码的运行时加载，也不把客户端配置接入异步视频合成。
+
 ## ASR 音频转写
 
 ASR 提供独立的 Python 异步函数和命令行入口，尚未接入 FastAPI 路由。在 `server/` 下准备配置；已有 `.env` 时直接补充 `DASHSCOPE_API_KEY`，保留数据库与切片配置：
