@@ -217,9 +217,10 @@ jobs:
       - name: Test Windows resource server
         if: runner.os == 'Windows' && inputs.build-mode == 'check'
         run: cargo test --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --lib --locked
-      - name: Test Linux video environment
+      - name: Test Linux desktop behavior
         if: runner.os == 'Linux'
-        run: cargo test --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --bin client --locked
+        # 进程测试与文件锁测试串行，避免 fork/exec 期间继承的锁干扰其他用例。
+        run: cargo test --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --lib --bin client --locked -- --test-threads=1
       - name: Verify AppImage library compatibility
         if: runner.os == 'Linux' && inputs.build-mode != 'check'
         run: bun ../.github/scripts/appimage-smoke.mjs src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage

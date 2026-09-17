@@ -20,7 +20,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def run(*args: str | Path) -> str:
     """执行构建工具并拒绝失败，输出仅用于解析路径与依赖。"""
-    return subprocess.check_output([str(arg) for arg in args], text=True).strip()
+    # 调用方限定为本文件的 CI 构建工具；参数独立传递，不接受用户请求或 shell 命令。
+    return subprocess.check_output([str(arg) for arg in args], text=True, shell=False).strip()  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
 
 
 def elf(path: Path) -> bool:
@@ -39,13 +40,18 @@ def shared_libraries(runtime: Path) -> None:
     packages = {"mysql-server-core-8.0", "bubblewrap", "util-linux", "fonts-noto-cjk"}
     missing = []
     for path in paths:
+        # 静态 ELF 没有动态段；不把 ldd 对静态工具的拒绝误判为缺库。
+        dynamic = run("readelf", "-d", path)
+        if "(NEEDED)" not in dynamic:
+            continue
         result = subprocess.run(
             ["ldd", str(path)], text=True, capture_output=True,
             env={**os.environ, "LD_LIBRARY_PATH": f"{path.parent}:{runtime / 'python/lib'}"},
         )
-        if "not found" in result.stdout:
-            missing.append(f"{path}: {result.stdout}")
+        if result.returncode or "not found" in result.stdout + result.stderr:
+            missing.append(f"{path}: {result.stdout}{result.stderr}")
             continue
+        # ldd 已返回完整传递依赖树；无需对复制的同一批库重新递归扫描。
         for name in re.findall(r"(?:=>\s+|^\s*)(/[^\s]+)", result.stdout, re.M):
             dependency = Path(name)
             # glibc 必须与宿主动态加载器一致，最低系统基线为 Ubuntu 22.04/glibc 2.35。

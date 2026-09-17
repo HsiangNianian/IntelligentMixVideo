@@ -35,7 +35,11 @@ def configure(runtime: Path, data: Path, mysql_socket: Path) -> None:
     if not config.exists():
         config.write_bytes((runtime / ".env.example").read_bytes())
         config.chmod(0o600)
-    load_dotenv(config, override=False)
+    # 内置服务仅采用用户数据目录的配置，清除桌面进程继承的宿主应用配置。
+    for key in list(os.environ):
+        if key.upper().startswith(("IMV_", "DB_", "COMPOSITION_", "SEGMENT_MATCH_", "IMS_", "MIX_VIDEO_ALIYUN_IMS_", "ALIBABA_CLOUD_")) or key.upper() in ("PORT", "DASHSCOPE_API_KEY", "ASR_BASE_URL", "PYTHON_DOTENV_DISABLED"):
+            del os.environ[key]
+    load_dotenv(config, override=True)
     manifest = runtime / "runtime.json"
     browser = json.loads(manifest.read_text())["browser"] if manifest.exists() else "chrome/chrome"
     os.environ.update({
@@ -48,7 +52,7 @@ def configure(runtime: Path, data: Path, mysql_socket: Path) -> None:
         "IMV_FONT_REGULAR": str(runtime / "fonts" / "NotoSansCJK-Regular.ttc"),
         "IMV_FONT_BOLD": str(runtime / "fonts" / "NotoSansCJK-Bold.ttc"),
         "IMV_RUNTIME_LIB_DIR": str(runtime / "lib"),
-        "PATH": os.pathsep.join([str(runtime / "bin"), str(Path(os.environ.get("SystemRoot", "C:/Windows")) / "System32")])
+        "PATH": os.pathsep.join([str(runtime / "bin"), str(windows_system_directory())])
         if WINDOWS else str(runtime / "bin") + ":/usr/bin:/bin",
     })
     if WINDOWS:
@@ -58,6 +62,17 @@ def configure(runtime: Path, data: Path, mysql_socket: Path) -> None:
             port = listener.getsockname()[1]
         os.environ.update(DB_HOST="127.0.0.1", DB_PORT=str(port), DB_SOCKET="", DB_PASSWORD=secrets.token_hex(32))
     os.chdir(data)
+
+
+def windows_system_directory() -> Path:
+    """从 Windows API 读取系统工具目录，不允许继承的 SystemRoot 替换 whoami/icacls。"""
+    import ctypes
+
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = ctypes.windll.kernel32.GetSystemDirectoryW(buffer, len(buffer))
+    if not 0 < length < len(buffer):
+        raise OSError("无法确定 Windows 系统目录")
+    return Path(buffer.value)
 
 
 def stop(process: subprocess.Popen) -> None:
@@ -150,10 +165,12 @@ def main() -> None:
     data.chmod(0o700)
     if WINDOWS:
         # chmod 不设置 Windows ACL；配置和数据库仅允许当前账户与 SYSTEM 读取。
-        system = Path(os.environ["SystemRoot"]) / "System32"
-        identity = subprocess.check_output([str(system / "whoami.exe"), "/user", "/fo", "csv", "/nh"], creationflags=CREATION_FLAGS)
+        system = windows_system_directory()
+        # 系统 API 返回的固定 exe，以 argv 调用；没有 shell 字符串解释。
+        identity = subprocess.check_output([str(system / "whoami.exe"), "/user", "/fo", "csv", "/nh"], shell=False, creationflags=CREATION_FLAGS)  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
         sid = re.search(rb"S-1-5-[0-9-]+", identity).group().decode("ascii")
-        subprocess.run([str(system / "icacls.exe"), str(data), "/inheritance:r", "/grant:r", f"*{sid}:(OI)(CI)F", "*S-1-5-18:(OI)(CI)F"], stdout=sys.stderr, stderr=sys.stderr, check=True, creationflags=CREATION_FLAGS)
+        # data 是 Tauri 传入的绝对目录，SID 经正则限制；各项是独立参数，不拼接命令。
+        subprocess.run([str(system / "icacls.exe"), str(data), "/inheritance:r", "/grant:r", f"*{sid}:(OI)(CI)F", "*S-1-5-18:(OI)(CI)F"], shell=False, stdout=sys.stderr, stderr=sys.stderr, check=True, creationflags=CREATION_FLAGS)  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit, python.lang.security.audit.dangerous-subprocess-use-tainted-env-args
     with (data / "desktop.lock").open("a") as lock:
         try:
             lock_exclusive(lock)
@@ -176,9 +193,10 @@ def main() -> None:
             if not directory.exists():
                 # 仅完整初始化的目录才能发布；中断重试不覆盖已存在的数据库。
                 with tempfile.TemporaryDirectory(prefix="mysql-init-", dir=data) as initial:
-                    process = subprocess.Popen(
+                    # 仅启动 Tauri 随包目录的 mysqld；路径作为 argv，禁止 shell 解释。
+                    process = subprocess.Popen(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
                         [*mysql_command(runtime, Path(initial), mysql_socket), "--skip-networking", "--initialize-insecure"],
-                        stdout=sys.stderr, stderr=sys.stderr, creationflags=CREATION_FLAGS,
+                        shell=False, stdout=sys.stderr, stderr=sys.stderr, creationflags=CREATION_FLAGS,
                     )
                     try:
                         deadline = time.monotonic() + 120
@@ -198,7 +216,8 @@ def main() -> None:
                 initialization = data / "mysql-init.sql"
                 initialization.write_text(f"ALTER USER 'root'@'localhost' IDENTIFIED BY '{os.environ['DB_PASSWORD']}';\n", encoding="utf-8")
                 command.append(f"--init-file={initialization}")
-            mysql = subprocess.Popen(command, stdout=sys.stderr, stderr=sys.stderr, creationflags=CREATION_FLAGS)
+            # mysql_command 固定随包 mysqld 和选项；不接收 HTTP 请求或模型生成的命令。
+            mysql = subprocess.Popen(command, shell=False, stdout=sys.stderr, stderr=sys.stderr, creationflags=CREATION_FLAGS)  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
             try:
                 wait_mysql(mysql, mysql_socket, stopped)
                 if WINDOWS:

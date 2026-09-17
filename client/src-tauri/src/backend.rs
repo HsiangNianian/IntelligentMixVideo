@@ -110,31 +110,79 @@ fn launch(app: &tauri::AppHandle, state: &Backend) -> Result<String, String> {
         let process = process.spawn()?;
         Ok((process, data))
     };
-    let (mut process, data) = run().map_err(|error| format!("内置服务启动失败：{error}"))?;
-    let stdout = process.stdout.take().ok_or("缺少服务就绪管道")?;
+    let (process, data) = run().map_err(|error| format!("内置服务启动失败：{error}"))?;
+    finish_start(process, &data, state)
+}
+
+/// 接收就绪回执；任何读取或校验失败都关闭管道并回收监督进程。
+fn finish_start(
+    mut process: Child,
+    data: &std::path::Path,
+    state: &Backend,
+) -> Result<String, String> {
+    let stdout = process.stdout.take();
     {
-        let mut child = state.child.lock().map_err(|error| error.to_string())?;
-        if state.stopping.load(Ordering::SeqCst) {
-            drop(process.stdin.take());
-            return Err("客户端已退出".into());
-        }
+        let mut child = state
+            .child
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         *child = Some(process);
     }
-    let mut line = String::new();
-    BufReader::new(stdout)
-        .read_line(&mut line)
-        .map_err(|error| error.to_string())?;
-    let response: serde_json::Value = serde_json::from_str(&line).map_err(|_| {
-        format!(
-            "内置服务启动失败，请查看 {}",
-            data.join("server.log").display()
-        )
-    })?;
-    response["url"]
-        .as_str()
-        .filter(|url| url.starts_with("http://127.0.0.1:"))
-        .map(str::to_owned)
+    let result = (|| {
+        if state.stopping.load(Ordering::SeqCst) {
+            return Err("客户端已退出".into());
+        }
+        let stdout = stdout.ok_or("缺少服务就绪管道")?;
+        let mut line = String::new();
+        BufReader::new(stdout)
+            .read_line(&mut line)
+            .map_err(|error| error.to_string())?;
+        let response: serde_json::Value = serde_json::from_str(&line).map_err(|_| {
+            format!(
+                "内置服务启动失败，请查看 {}",
+                data.join("server.log").display()
+            )
+        })?;
+        let url = response["url"]
+            .as_str()
+            .and_then(|value| tauri::Url::parse(value).ok());
+        url.filter(|url| {
+            url.scheme() == "http"
+                && url.host_str() == Some("127.0.0.1")
+                && url.port().is_some_and(|port| port > 0)
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.path() == "/"
+                && url.query().is_none()
+                && url.fragment().is_none()
+        })
+        .map(|url| url.as_str().trim_end_matches('/').to_owned())
         .ok_or_else(|| "内置 API 没有返回回环地址".to_owned())
+    })();
+    if result.is_err() {
+        stop_child(state);
+    }
+    result
+}
+
+/// 给 API/MySQL 正常关闭留出有界时间，随后回收仍未退出的监督进程。
+fn stop_child(state: &Backend) {
+    let child = state
+        .child
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .take();
+    if let Some(mut child) = child {
+        drop(child.stdin.take());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
+        while matches!(child.try_wait(), Ok(None)) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        if !matches!(child.try_wait(), Ok(Some(_))) {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 /// 关闭 stdin 让 Python 先停止 API 再关闭 MySQL；不删除持久化数据。
@@ -161,4 +209,36 @@ fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     #[cfg(not(windows))]
     let _ = &mut command;
     command
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    /// 坏 JSON、伪装地址和 EOF 会回收进程；合法回执则让服务持续运行。
+    #[test]
+    fn readiness_controls_child_lifetime() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir(&dir).unwrap();
+        for (reply, success) in [
+            ("invalid", false),
+            ("EOF", false),
+            (r#"{"url":"http://127.0.0.1:1234@evil.test"}"#, false),
+            (r#"{"url":"http://127.0.0.1:0"}"#, false),
+            (r#"{"url":"http://127.0.0.1:23456"}"#, true),
+        ] {
+            let marker = dir.join("stopped");
+            let child = super::command("sh")
+                .args(["-c", "if [ \"$1\" = EOF ]; then exec 1>&-; else printf '%s\\n' \"$1\"; fi; cat >/dev/null; printf done >\"$2\"", "test", reply])
+                .arg(&marker).stdin(super::Stdio::piped()).stdout(super::Stdio::piped()).spawn().unwrap();
+            let state = super::Backend::default();
+            let result = super::finish_start(child, &dir, &state);
+            let reaped = state.child.lock().unwrap().is_none() && marker.exists();
+            // 即使用例失败也先清理进程，避免测试泄漏。
+            super::stop_child(&state);
+            assert_eq!(result.is_ok(), success);
+            assert_eq!(reaped, !success);
+            assert_eq!(std::fs::read_to_string(&marker).unwrap(), "done");
+            std::fs::remove_file(marker).unwrap();
+        }
+        std::fs::remove_dir(dir).unwrap();
+    }
 }

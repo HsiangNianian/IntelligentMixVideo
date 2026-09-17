@@ -61,6 +61,43 @@ def test_desktop_config_preserves_credentials_and_uses_private_paths(tmp_path, m
     assert database.DatabaseSettings().socket == str(tmp_path / "mysql.sock")
 
 
+@pytest.mark.parametrize("key", ["IMV_VISION_API_KEY", "DASHSCOPE_API_KEY", "COMPOSITION_PUBLIC_BASE_URL", "SEGMENT_MATCH_AUTHORIZATION", "ALIBABA_CLOUD_ACCESS_KEY_SECRET", "PORT", "imv_llm_api_key"])
+def test_desktop_discards_host_configuration(tmp_path, monkeypatch, key):
+    """宿主模型凭据不覆盖用户文件，文件中未配置的宿主配置也不能残留。"""
+    monkeypatch.setattr(os, "environ", os.environ.copy())
+    monkeypatch.setenv(key, "host-secret")
+    monkeypatch.setenv("IMV_ACTOR_API_KEY", "host-actor-secret")
+    monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
+    runtime, data = tmp_path / "runtime", tmp_path / "data"
+    runtime.mkdir()
+    data.mkdir()
+    (data / ".env").write_text("IMV_ACTOR_API_KEY=user-config\n")
+    monkeypatch.chdir(tmp_path)
+    desktop.configure(runtime, data, tmp_path / "mysql.sock")
+    assert key not in os.environ
+    assert "PYTHON_DOTENV_DISABLED" not in os.environ
+    assert Settings().actor_api_key.get_secret_value() == "user-config"
+    assert (data / ".env").read_text() == "IMV_ACTOR_API_KEY=user-config\n"
+
+
+def test_windows_tool_directory_comes_from_system_api(monkeypatch):
+    """即使宿主伪造 SystemRoot，ACL 工具目录仍由 Windows API 决定；失败则停止。"""
+    import ctypes
+
+    def directory(buffer, size):
+        """模拟系统 API 写入缓冲区，不启动 Windows 子进程。"""
+        buffer.value = "C:/Windows/System32"
+        return len(buffer.value)
+
+    monkeypatch.setenv("SystemRoot", "C:/untrusted")
+    api = SimpleNamespace(GetSystemDirectoryW=directory)
+    monkeypatch.setattr(ctypes, "windll", SimpleNamespace(kernel32=api), raising=False)
+    assert desktop.windows_system_directory() == Path("C:/Windows/System32")
+    api.GetSystemDirectoryW = lambda *args: 0
+    with pytest.raises(OSError):
+        desktop.windows_system_directory()
+
+
 def test_socket_survives_database_bootstrap(monkeypatch, tmp_path):
     """带 socket 的连接 URL 在去掉库名后仍走同一私有 MySQL，不回退宿主 3306。"""
     monkeypatch.setattr(database, "_engine", None)

@@ -12,6 +12,60 @@ BUILD = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(BUILD)
 
 
+@pytest.mark.parametrize("script", ["bundle-backend.py", "bundle_native.py"])
+def test_build_arguments_are_not_shell_commands(tmp_path, script):
+    """真实子进程原样接收空格和 shell 元字符，不能执行参数中的第二条命令。"""
+    spec = importlib.util.spec_from_file_location("bundle_arguments", SPEC.origin.replace("build-ffmpeg.py", script))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    marker = tmp_path / "injected"
+    payload = f"space ; touch {marker} $(touch {marker})"
+    assert module.run(sys.executable, "-c", "import sys; print(sys.argv[1])", payload) == payload
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("dynamic,status,stdout,stderr", [
+    (True, 1, "", "unsupported loader"),
+    (True, 0, "", "libtest.so => not found"),
+    (False, 0, "", ""),
+    (True, 0, "", ""),
+])
+def test_linux_dependency_inspection_rejects_failures(tmp_path, monkeypatch, dynamic, status, stdout, stderr):
+    """动态检查失败必须报错，静态工具跳过 ldd；完整依赖输出中的间接库也会复制。"""
+    spec = importlib.util.spec_from_file_location("bundle_elf", SPEC.origin.replace("build-ffmpeg.py", "bundle-backend.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    (runtime / "tool").write_bytes(b"\x7fELF")
+    libraries = [tmp_path / "libdirect.so", tmp_path / "libindirect.so"]
+    for library in libraries:
+        library.write_bytes(library.name.encode())
+    calls = []
+
+    def run(command, **kwargs):
+        """模拟平台检查输出，文件扫描与依赖复制仍使用真实实现。"""
+        calls.append(command)
+        if command[0] == "readelf":
+            return subprocess.CompletedProcess(command, 0, "(NEEDED)" if dynamic else "")
+        if command[0] == "ldd":
+            output = stdout or "\n".join(f"{library.name} => {library} (0x00)" for library in libraries)
+            return subprocess.CompletedProcess(command, status, output, stderr)
+        return subprocess.CompletedProcess(command, 1 if command[0] == "patchelf" else 0, "", "")
+
+    # check_output 经 Popen 调用；在模块封装处只替换需要读取文本的构建工具。
+    monkeypatch.setattr(module, "run", lambda *args: run(list(args)).stdout)
+    monkeypatch.setattr(module.subprocess, "run", run)
+    if status or "not found" in stdout + stderr:
+        with pytest.raises(RuntimeError, match=stderr):
+            module.shared_libraries(runtime)
+    else:
+        module.shared_libraries(runtime)
+        assert any(call[0] == "ldd" for call in calls) == dynamic
+        for library in libraries:
+            assert (runtime / "lib" / library.name).exists() == dynamic
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows test accounts may lack symlink privileges")
 @pytest.mark.parametrize("native_test_fails", [False, True])
 def test_macos_smoke_resolves_temporary_symlinks(tmp_path, monkeypatch, native_test_fails):

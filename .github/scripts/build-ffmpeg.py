@@ -56,7 +56,8 @@ def main() -> None:
     configure = [shutil.which("bash") or "bash", "./configure", f"--prefix={prefix}", "--disable-doc", "--disable-debug", "--disable-autodetect", "--disable-ffplay", "--disable-shared", "--enable-static"]
     if sys.platform == "win32":
         configure.extend(["--target-os=mingw32", "--extra-ldflags=-static"])
-    subprocess.run(configure, cwd=source, check=True)
+    # CI 工具链执行官方 configure 脚本；prefix 是独立参数，不经 bash -c 解释。
+    subprocess.run(configure, cwd=source, check=True, shell=False)  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit, python.lang.security.audit.dangerous-subprocess-use-tainted-env-args
     subprocess.run(["make", f"-j{os.cpu_count() or 2}"], cwd=source, check=True)
     subprocess.run(["make", "install"], cwd=source, check=True)
     # 源码 tag 归档没有 VERSION 文件；记录 tag、commit、URL 和二进制实际版本。
@@ -65,7 +66,8 @@ def main() -> None:
     for license in source.glob("COPYING*"):
         shutil.copy2(license, notices / license.name)
     suffix = ".exe" if sys.platform == "win32" else ""
-    version = subprocess.check_output([str(destination / "bin" / ("ffmpeg" + suffix)), "-version"], text=True)
+    # 只运行本次 CI 编译出的固定 ffmpeg 文件；RUNNER_TEMP 是构建机提供的目录。
+    version = subprocess.check_output([str(destination / "bin" / ("ffmpeg" + suffix)), "-version"], text=True, shell=False)  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit, python.lang.security.audit.dangerous-subprocess-use-tainted-env-args
     (notices / "source.json").write_text(json.dumps({"tag": latest["name"], "commit": latest["commit"]["sha"], "url": url, "version": version}, indent=2))
     print(f"Built official FFmpeg {latest['name']} ({latest['commit']['sha']})")
 

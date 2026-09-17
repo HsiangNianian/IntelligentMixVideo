@@ -15,7 +15,8 @@ import zipfile
 
 def run(*args: str | Path) -> str:
     """运行原生工具，失败阻止产生不完整安装包。"""
-    return subprocess.check_output([str(arg) for arg in args], text=True).strip()
+    # 仅供本模块调用系统构建工具；参数列表不经过 shell，也不接收外部请求。
+    return subprocess.check_output([str(arg) for arg in args], text=True, shell=False).strip()  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
 
 
 def download(url: str, destination: Path) -> None:
