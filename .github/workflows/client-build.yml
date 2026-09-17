@@ -66,7 +66,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 libxdo-dev patchelf gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 libxdo-dev patchelf gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-gl
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -113,6 +113,9 @@ jobs:
       - name: Test Windows resource server
         if: runner.os == 'Windows' && inputs.build-mode == 'check'
         run: cargo test --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --lib --locked
+      - name: Verify AppImage library compatibility
+        if: runner.os == 'Linux' && inputs.build-mode != 'check'
+        run: bun ../.github/scripts/appimage-smoke.mjs src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
       - name: Upload installers
         if: inputs.build-mode != 'check'
         uses: actions/upload-artifact@v4

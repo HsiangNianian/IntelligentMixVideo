@@ -1,4 +1,4 @@
-//! 桌面入口：Windows 打包页面通过 localhost 加载，其他环境沿用 Tauri 默认窗口。
+//! 桌面入口：Windows 打包页面通过 localhost 加载；Linux 按 WebKit 版本隔离网页数据。
 
 #[cfg(windows)]
 mod localhost;
@@ -9,6 +9,13 @@ mod templates;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let context = tauri::generate_context!();
+    #[cfg(target_os = "linux")]
+    let context = {
+        let mut context = context;
+        // 先确定 WebKit 数据目录再建窗口，避免打开其他版本写入的 IndexedDB。
+        context.config_mut().app.windows[0].create = false;
+        context
+    };
     #[cfg(windows)]
     let context = {
         let mut context = context;
@@ -27,7 +34,20 @@ pub fn run() {
                 window.url = tauri::WebviewUrl::External(localhost::start(app.asset_resolver())?);
                 tauri::WebviewWindowBuilder::from_config(app, &window)?.build()?;
             }
-            #[cfg(not(windows))]
+            #[cfg(target_os = "linux")]
+            {
+                use tauri::Manager;
+                // 网页缓存按运行时版本隔离；本地模板仍保存在原 app_data_dir。
+                let data_directory = app
+                    .path()
+                    .app_data_dir()?
+                    .join("webview")
+                    .join(tauri::webview_version()?);
+                tauri::WebviewWindowBuilder::from_config(app, &app.config().app.windows[0])?
+                    .data_directory(data_directory)
+                    .build()?;
+            }
+            #[cfg(not(any(windows, target_os = "linux")))]
             let _ = app;
             Ok(())
         })
