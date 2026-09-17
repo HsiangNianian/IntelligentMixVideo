@@ -62,7 +62,7 @@
 - 重命名和另存为复用 POST；另存为不携带 ID。未保存切换须提供保存并切换、放弃修改、取消，失败保留草稿。删除前确认。
 - 前端使用 SDK 5.2.2 的效果目录和静态动画 JSON，服务端维护同版本白名单；不提供 `/template/effects`。升级 SDK 时同步核对目录。保留用户已有 proto 文件，本次 API 使用 JSON。
 - 示例视频地址通过 `client/.env` 中的 `VITE_PREVIEW_VIDEO_URL` 配置，支持 HTTP(S) 直链与 public 资源路径；空值回退内置示例。修改后重启 Vite，生产使用需重新构建；当前固定片段要求源视频至少 14 秒。
-- 预览保留阿里云 SDK 5.2.2；Windows 生产页面通过 `src-tauri/src/localhost.rs` 在 `127.0.0.1` 的系统分配端口提供打包资源，窗口使用 `http://localhost:<端口>`，避免 `tauri.localhost` 不满足空 License 的 localhost 预览条件。仅允许对应 Host 的 GET/HEAD，不暴露任意磁盘文件；开发模式与 macOS / Linux 保持原加载方式，不扩大 Tauri IPC 权限。
+- 预览保留阿里云 SDK 5.2.2；Windows 生产页面通过 `src-tauri/src/localhost.rs` 在 `127.0.0.1` 的系统分配端口提供打包资源，窗口使用 `http://localhost:<端口>`，避免 `tauri.localhost` 不满足空 License 的 localhost 预览条件。仅允许对应 Host 的 GET/HEAD，不暴露任意磁盘文件；开发模式与 macOS / Linux 保持原加载方式，只向本次绑定的精确 localhost URL 开放已有模板存储和内置后端启动命令，不授权其他端口或域名。
 - API 地址读取 `client/.env` 的 `VITE_API_URL`，未配置或留空时默认 `http://localhost:20070`；CORS 允许精确 localhost 主机的动态 HTTP 端口。修改配置后重启 Vite，生产需重新构建；避免 `.env.local` 同名配置覆盖。模板列表加载不阻塞本地编辑，但保存须防止晚到列表覆盖结果。预览仍需联网获取 SDK、字体和媒体，不发起云端合成，不将浏览器验证等同于桌面安装包验证。
 
 ## Remotion 字效客户端约定
@@ -115,7 +115,7 @@ bun run tauri build
 cargo fmt --manifest-path client/src-tauri/Cargo.toml --check
 bun test ./.github/scripts
 bun .github/scripts/release-smoke.mjs
-actionlint .github/workflows/client-build.yml .github/workflows/release.yml .github/workflows/validation.yml
+actionlint .github/workflows/*.yml
 uv build --project server --out-dir server/dist
 uv run --locked --project server pytest server/tests -v
 git diff --check
@@ -135,7 +135,7 @@ Windows 需要 MSVC C++ 构建工具、Windows SDK 和 WebView2；ARM64 主机�
 
 ## 客户端构建 CI
 
-`.github/workflows/validation.yml` 是 push / PR 检查的唯一 Actions 入口，不在工作流级使用 paths 过滤，以确保每个 PR 都有最终检查结果。
+`.github/workflows/validation.yml` 是常规 push / PR 验证的统一 Actions 入口，不在工作流级使用 paths 过滤，以确保每个 PR 都有最终检查结果。
 `.github/scripts/ci-scope.mjs` 根据 Git 差异调度：PR 比较目标分支与合并结果，push 比较前后提交；新分支检查全部文件，缺失比较基线时保守运行全部检查。
 
 - 非默认分支 push：若同一仓库的同一提交已有打开的 PR，跳过重复任务；否则按变更范围检查。默认分支始终验证集成结果，不参与去重。
@@ -163,6 +163,12 @@ Windows 需要 MSVC C++ 构建工具、Windows SDK 和 WebView2；ARM64 主机�
 校验两端源码版本一致，并通过临时副本验证版本同步、Bun 冻结安装、Cargo 和 uv 锁文件。
 服务端 job 使用 Python 3.12 和 uv 缓存；`server/pyproject.toml` 的 uv 构建模块名显式设为 `server`，对应 `src/server/`。
 在 Validate project 上手动运行会执行全部检查（原生检查模式）；需要安装包时手动运行 Build client。
+
+- Validate project 的 `workflow_dispatch` 支持 `integration-tests`（默认 true）、`build-installers`（默认 false）与 `api-url`。手动集成通过 `backend-integration.yml` 复用工作流运行；普通 push/PR 不开启重型测试，最终汇总必须检查其结果。勾选打包仍使用 release 优化，API 地址仅在构建时注入。
+- 集成环境使用 Python 3.12、uv、临时 MySQL 8.4、Node 24、Bun、服务端 Remotion 锁定依赖、Chrome、FFmpeg/ffprobe、Noto CJK、bubblewrap 和 prlimit。真实 MySQL 测试须显式设置 `IMV_TEST_MYSQL=1` 和回环数据库连接，每例随机建库并清理；既有 SQLite 夹具不变。真实渲染通过 `IMV_TEST_RENDERER=1` 启用，只捕获浏览器及字体路径，不读取真实密钥。
+- `.github/workflows/client-debug.yml`（Debug client）在 `main` / `dev` push 或 `workflow_dispatch` 时运行，不监听 PR；复用 `client-build.yml` 并传入 `build-mode: package`、`debug-backend: true`。共享构建的 `debug-backend` 为布尔输入，默认 false，仅由此输入设置 `IMV_DEBUG`，不绑定分支名；普通构建和正式发布默认不携带后端。Debug artifact 名称为 `intelligent-mix-video-debug-<平台>-<提交 SHA>`。手动入口要求工作流存在于默认分支，分支 push 触发不绕过此限制。各平台打包时由 `.github/scripts/bundle-backend.py` 生成 `backend.tar`、`backend.id` 和临时 Tauri 资源配置，均不入库。随包完整服务、Python 3.12、MySQL（Linux 8.0，其余 8.4.8）、Node 24、Bun/Remotion、Chrome、FFmpeg/ffprobe及字体，Linux 另带 bubblewrap/prlimit 隔离工具。普通非 debug 构建不启动内置服务。客户端 `start_backend` 等实际就绪回执再挂载页面，两个 API 模块共享动态回环地址，不改变业务接口。
+- `server.desktop` 监督私有 MySQL 与完整 FastAPI；`DB_SOCKET` 仅用于本地 Unix socket，去库建库连接也必须保留 socket。数据和无密钥初始 `.env` 保存 app_data_dir/backend，运行时按归档摘要缓存于 app_cache_dir/backend；保留用户配置和数据库。父进程管道关闭时先停 API 再停 MySQL。Unix 内置数据库不开放 TCP；Windows 使用随机密码和动态回环 TCP，初始化时不监听网络，通过 SQL SHUTDOWN 落盘退出。均不读取宿主配置；密钥不得打包。随包库只提供给后端和渲染沙箱，禁止暴露用户目录、凭据或网络。AppImage/MSI/DMG 上传前启用 `IMV_TEST_BUNDLE` 验证真实启动、重启持久化、重复实例、关闭与桌面连接；FFmpeg/ffprobe 在 CI 从官方 `FFmpeg/FFmpeg` 最新稳定 tag 固定提交下载源码并原生编译，归档包含版本、提交与许可证；不使用 nightly 或第三方 Release 二进制。真实 Remotion 渲染目前仅 Linux 支持，Windows/macOS 不得绕过沙箱执行生成代码。macOS 使用 macos-15 / macos-15-intel 原生构建依赖，dylib 转为相对加载路径；Windows 使用 app-local VC 运行库，打包无特权符号链接依赖；常规 pytest 跳过这些真实集成用例。
+- Linux AppImage 排除随包 Wayland/PulseAudio 库，上传前检查 WebKit、GStreamer OpenGL/播放/解码插件。Linux 在 GTK 初始化前默认设置 `WEBKIT_GST_DMABUF_SINK_DISABLED=1` 和 `WEBKIT_GST_USE_PLAYBIN3=1`，保留显式环境配置；网页缓存按 WebKit 版本隔离，本地模板目录不变。`IMV_GDK_BACKEND=wayland|x11` 保留为显示后端对比入口，不将打包检查描述为真实播放与性能验证。
 
 ## 正式版本与 tag 发版
 

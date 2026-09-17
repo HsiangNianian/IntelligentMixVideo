@@ -6,6 +6,9 @@ target/
 .vscode/
 dist/
 node_modules/
+client/src-tauri/backend.tar
+client/src-tauri/backend.id
+client/src-tauri/tauri.debug.conf.json
 
 # 本地数据库凭据、模型密钥与环境配置不入库，示例配置除外。
 .env

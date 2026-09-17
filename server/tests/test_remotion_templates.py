@@ -49,6 +49,17 @@ from server.remotion_templates.store import Conflict, NotFound, Store
 from server.remotion_templates.trajectory import Trajectory
 from server.settings import Settings
 
+# 仅显式真实渲染时捕获三个运行路径；自动夹具随后清除 IMV_*，仍不读取 .env 或模型密钥。
+_renderer_paths = {
+    field: os.environ[variable]
+    for field, variable in (
+        ("browser_executable", "IMV_BROWSER_EXECUTABLE"),
+        ("font_regular", "IMV_FONT_REGULAR"),
+        ("font_bold", "IMV_FONT_BOLD"),
+    )
+    if os.environ.get("IMV_TEST_RENDERER") == "1" and variable in os.environ
+}
+
 # A maintained reference component demonstrates direct props and deterministic transparent text.
 SAMPLE_CODE = """/** Static editable text reference; the preview host loads managed fonts. */
 import React from "react";
@@ -115,6 +126,7 @@ def settings(tmp_path) -> Settings:
         actor_model="offline",
         vision_model="offline",
         actor_api_key=SecretStr("test-private-token"),
+        **_renderer_paths,
     )
 
 

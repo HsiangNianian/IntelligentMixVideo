@@ -39,6 +39,7 @@ class Settings(CommonSettings):
     max_upload_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
     max_image_pixels: int = Field(default=20_000_000, gt=0)
     renderer_dir: Path = Path(__file__).parent / "remotion"
+    runtime_lib_dir: Path | None = None
     browser_executable: Path = Path("/opt/google/chrome/chrome")
     font_regular: Path = Path("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc")
     font_bold: Path = Path("/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc")

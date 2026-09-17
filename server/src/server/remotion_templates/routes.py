@@ -48,7 +48,7 @@ async def runtime(request: Request) -> Runtime:
         except (OSError, ImportError) as exc:
             raise HTTPException(
                 503,
-                "Template runtime requires Linux and a writable local data folder owned by one process.",
+                "Template runtime requires a writable local data folder owned by one process.",
             ) from exc
         state.runtime = service
     return state.runtime

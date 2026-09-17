@@ -25,6 +25,9 @@ uuid = { version = "1", features = ["v4"] }
 [target.'cfg(windows)'.dependencies]
 tiny_http = "0.12"
 
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }
+
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
