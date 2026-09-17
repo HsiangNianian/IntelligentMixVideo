@@ -27,6 +27,9 @@ interface Session {
   job: Job | SessionJob | null;
   jobs: Record<string, SessionJob>;
   version: Version | null;
+  previewVersion: Version | null;
+  previewLoading: boolean;
+  previewError: string;
   versionFailure: { id: string; message: string } | null;
   values: Values;
   code: string;
@@ -37,7 +40,9 @@ interface Session {
   connection: "connecting" | "live" | "reconnecting" | null;
   error: string;
   retryMode: "read" | "job" | null;
-  navigation: { work: string | null; saving: boolean } | null;
+  navigation:
+    | (({ work: string | null } | { version: string }) & { saving: boolean })
+    | null;
 }
 /** 新增只建立本地空白页，首次发送才创建持久会话。 */
 function blank(key: number): Session {
@@ -49,6 +54,9 @@ function blank(key: number): Session {
     job: null,
     jobs: {},
     version: null,
+    previewVersion: null,
+    previewLoading: false,
+    previewError: "",
     versionFailure: null,
     values: {},
     code: "",
@@ -97,6 +105,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
   const alive = useRef(true);
   const scope = useRef(new AbortController());
   const parameterSave = useRef(false);
+  const previewRequest = useRef<AbortController | null>(null);
   const changed = useRef(onHistoryChange);
   changed.current = onHistoryChange;
 
@@ -197,7 +206,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
       !waitingVersion &&
       !dirty()
     )
-      switchWork(navigation.work);
+      completeNavigation(navigation);
   }
   /** 先恢复公开快照再推进游标，产物失败独立保留为可重试状态。 */
   async function hydrate(work: string, key: number, signal: AbortSignal) {
@@ -289,6 +298,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
   /** 切换、新增和卸载只清理本地读取；任务继续写入其所属历史。 */
   function switchWork(work: string | null) {
     scope.current.abort();
+    previewRequest.current?.abort();
     parameterSave.current = false;
     const next = blank(latest.current.key + 1);
     latest.current = next;
@@ -303,12 +313,66 @@ export function useTemplateSession(onHistoryChange: () => void) {
     if (dirty()) publish({ navigation: { work, saving: false } });
     else switchWork(work);
   }
+  /** 历史预览只读取成功版本；独立请求代号确保快速切换时最后一次选择生效。 */
+  async function viewVersion(id: string) {
+    previewRequest.current?.abort();
+    const controller = new AbortController();
+    previewRequest.current = controller;
+    const key = latest.current.key;
+    publish({ navigation: null, previewError: "", previewLoading: false });
+    if (id === latest.current.version?.id) {
+      publish({ previewVersion: null });
+      return;
+    }
+    publish({ previewLoading: true });
+    try {
+      const version = await api.version(id, controller.signal);
+      if (!current(key, controller.signal)) return;
+      if (version.id !== id || version.project_id !== latest.current.workId)
+        throw new Error("返回版本与当前选择不匹配。");
+      publish({
+        previewVersion:
+          version.id === latest.current.version?.id ? null : version,
+      });
+    } catch (error) {
+      if (current(key, controller.signal))
+        publish({
+          previewError:
+            error instanceof Error
+              ? error.message
+              : "历史版本读取失败，请重试。",
+        });
+    } finally {
+      if (current(key, controller.signal)) publish({ previewLoading: false });
+    }
+  }
+  /** 选择版本不改变编辑基线；未保存参数沿用同一套保存、放弃、取消保护。 */
+  function selectVersion(id: string) {
+    const s = latest.current;
+    if (s.busy || s.loading || s.retryMode === "read") return;
+    if (
+      !s.previewLoading &&
+      !s.previewError &&
+      id === (s.previewVersion ?? s.version)?.id
+    )
+      return;
+    if (dirty()) publish({ navigation: { version: id, saving: false } });
+    else void viewVersion(id);
+  }
+  /** 导航目标可为作品或只读版本；保存成功后才执行，失败保持原界面。 */
+  function completeNavigation(navigation: NonNullable<Session["navigation"]>) {
+    if ("work" in navigation) switchWork(navigation.work);
+    else {
+      discardParameters();
+      void viewVersion(navigation.version);
+    }
+  }
   /** 保存后等待成功版本到达再切换；失败留在原会话，取消只关闭对话框。 */
   function resolveNavigation(choice: "save" | "discard" | "cancel") {
     const navigation = latest.current.navigation;
     if (!navigation || latest.current.busy || latest.current.loading) return;
     if (choice === "cancel") publish({ navigation: null });
-    else if (choice === "discard") switchWork(navigation.work);
+    else if (choice === "discard") completeNavigation(navigation);
     else {
       publish({ navigation: { ...navigation, saving: true } });
       if (!saveParameters())
@@ -348,7 +412,15 @@ export function useTemplateSession(onHistoryChange: () => void) {
   /** 首轮图片可上传；后续输入绑定最近成功版本，澄清明确绑定提问任务。 */
   function send(text: string, image?: File) {
     const s = latest.current;
-    if (s.busy || s.loading || dirty() || (!text.trim() && !image)) return;
+    if (
+      s.busy ||
+      s.loading ||
+      s.previewLoading ||
+      s.previewVersion ||
+      dirty() ||
+      (!text.trim() && !image)
+    )
+      return;
     const configuration = resolveComposition(s.compositionDraft);
     if (!s.workId && configuration.error) {
       publish({ error: configuration.error });
@@ -397,6 +469,8 @@ export function useTemplateSession(onHistoryChange: () => void) {
     if (
       !s.version ||
       !s.workId ||
+      s.previewVersion ||
+      s.previewLoading ||
       s.busy ||
       s.loading ||
       s.retryMode === "read" ||
@@ -415,6 +489,8 @@ export function useTemplateSession(onHistoryChange: () => void) {
     if (
       !s.version ||
       !s.workId ||
+      s.previewVersion ||
+      s.previewLoading ||
       !dirty() ||
       s.busy ||
       s.loading ||
@@ -519,6 +595,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
     return () => {
       alive.current = false;
       scope.current.abort();
+      previewRequest.current?.abort();
     };
   }, []);
   return {
@@ -544,6 +621,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
     stop,
     retry,
     select,
+    selectVersion,
     reset: () => select(null),
     older,
   };

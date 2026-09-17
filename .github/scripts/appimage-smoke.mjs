@@ -1,9 +1,10 @@
 /** 验证 AppImage 媒体依赖并排除冲突的宿主库；执行：bun .github/scripts/appimage-smoke.mjs <AppImage>。 */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 /** 检查解包产物的必需文件与冲突库，包含 usr 下不同架构的库目录及符号链接。 */
 export function verifyAppDir(root) {
@@ -34,6 +35,21 @@ if (import.meta.main) {
       cwd: dir, stdio: ["ignore", "ignore", "pipe"], timeout: 60_000,
     });
     verifyAppDir(join(dir, "squashfs-root"));
+    if (process.env.IMV_DEBUG === "true") {
+      // 验证最终安装包内的归档，不借用 CI 中待打包的 runtime 目录。
+      const root = join(dir, "squashfs-root");
+      const archive = readdirSync(root, { recursive: true }).find((path) => path.endsWith("/backend.tar"));
+      assert(archive, "IMV_DEBUG AppImage must contain backend.tar");
+      const runtime = join(dir, "runtime");
+      mkdirSync(runtime);
+      execFileSync("tar", ["-xf", join(root, archive), "-C", runtime], { timeout: 120_000 });
+      const repository = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+      execFileSync("uv", ["run", "--locked", "--project", "server", "pytest", "server/tests/test_desktop.py", "-k", "bundle", "-v"], {
+        cwd: repository,
+        env: { ...process.env, IMV_TEST_BUNDLE: runtime, IMV_TEST_APPDIR: root },
+        stdio: "inherit", timeout: 720_000,
+      });
+    }
     console.log("AppImage keeps client/WebKit/media plugins and excludes bundled Wayland/PulseAudio libraries");
   } finally {
     rmSync(dir, { recursive: true, force: true });

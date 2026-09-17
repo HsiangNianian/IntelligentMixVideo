@@ -1,0 +1,17 @@
+# main/dev 推送或手动运行时，复用四平台构建并携带自动启动的本地后端。
+name: Debug client
+
+on:
+  push:
+    branches: [main, dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/client-build.yml
+    with:
+      build-mode: package
+      debug-backend: true

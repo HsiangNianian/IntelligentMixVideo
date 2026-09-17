@@ -15,6 +15,7 @@ import type { Job, Values } from "@/features/remotion_templates/model";
 import { fetchMock } from "./setup";
 import { remotionJob, remotionVersion } from "./remotion-fixtures";
 
+import { latestCopy, latestCode } from "./remotion-version-helpers";
 import { remotionServer as server } from "./remotion-server";
 
 // 首次消息请求尚未返回、没有播放器时，只锁定操作，不显示预览渲染遮罩。
@@ -83,9 +84,7 @@ test("纯问答保留成功预览并恢复历史", async () => {
   );
   expect(screen.getByLabelText("字号").hasAttribute("disabled")).toBe(false);
   expect(iframe.src).toBe(src);
-  expect(
-    screen.getByRole("button", { name: "复制代码" }).hasAttribute("disabled"),
-  ).toBe(false);
+  expect(latestCopy().hasAttribute("disabled")).toBe(false);
   view.unmount();
   render(<RemotionWorkspace />);
   await screen.findByText("当前字号是 64px。");
@@ -124,9 +123,7 @@ test("首次问答结束后可继续生成", async () => {
   await screen.findByText("可以制作字效。");
   expect(screen.queryByTitle("Remotion 字效播放器")).toBeNull();
   expect(screen.queryByText("正在渲染预览…") !== null).toBe(false);
-  expect(
-    screen.getByRole("button", { name: "复制代码" }).hasAttribute("disabled"),
-  ).toBe(true);
+  expect(screen.queryByRole("button", { name: "复制代码" })).toBeNull();
   fireEvent.change(screen.getByRole("textbox", { name: "字效描述" }), {
     target: { value: "制作一个标题" },
   });
@@ -138,12 +135,10 @@ test("首次问答结束后可继续生成", async () => {
   );
   await screen.findByTitle("Remotion 字效播放器");
   await previewReady();
-  expect(
-    screen.getByRole("button", { name: "复制代码" }).hasAttribute("disabled"),
-  ).toBe(false);
+  expect(latestCopy().hasAttribute("disabled")).toBe(false);
 });
 
-/** 从输入表单发起首次生成，并等待成功版本的代码进入浮板。 */
+/** 从输入表单发起首次生成，并等待成功版本的代码进入聊天卡片。 */
 async function generate(ready = true) {
   fireEvent.change(screen.getByRole("textbox", { name: "字效描述" }), {
     target: { value: "制作今日灵感标题" },
@@ -152,9 +147,7 @@ async function generate(ready = true) {
     screen.getByRole("button", { name: "发送" }).closest("form")!,
   );
   await waitFor(() =>
-    expect(
-      screen.getByRole("button", { name: "复制代码" }).hasAttribute("disabled"),
-    ).toBe(false),
+    expect(latestCopy().hasAttribute("disabled")).toBe(false),
   );
   if (ready) await previewReady();
 }
@@ -190,9 +183,7 @@ test("生成、复制并新增独立会话", async () => {
   server();
   const clipboard = spyOn(navigator.clipboard, "writeText").mockResolvedValue();
   render(<RemotionWorkspace />);
-  expect(
-    screen.getByRole("button", { name: "复制代码" }).hasAttribute("disabled"),
-  ).toBe(true);
+  expect(screen.queryByRole("button", { name: "复制代码" })).toBeNull();
   await generate();
   expect(screen.getByLabelText<HTMLInputElement>("文字").value).toBe(
     "今日灵感",
@@ -200,13 +191,13 @@ test("生成、复制并新增独立会话", async () => {
   expect(screen.getByTitle("Remotion 字效播放器").getAttribute("sandbox")).toBe(
     "allow-scripts",
   );
-  fireEvent.click(screen.getByRole("button", { name: "复制代码" }));
+  fireEvent.click(latestCopy());
   await screen.findByText("已复制");
   expect(clipboard.mock.calls[0][0]).toContain('return "今日灵感"');
   fireEvent.change(screen.getByRole("textbox", { name: "背景视频直链" }), {
     target: { value: "https://media.test/video.mp4" },
   });
-  fireEvent.click(screen.getByRole("button", { name: "新增" }));
+  fireEvent.click(screen.getByRole("button", { name: "新增聊天" }));
   expect(
     within(screen.getByRole("log")).queryByText("制作今日灵感标题") === null,
   ).toBe(true);
@@ -214,9 +205,7 @@ test("生成、复制并新增独立会话", async () => {
   expect(screen.getByLabelText<HTMLInputElement>("背景视频直链").value).toBe(
     "",
   );
-  expect(
-    screen.getByRole("button", { name: "复制代码" }).hasAttribute("disabled"),
-  ).toBe(true);
+  expect(screen.queryByRole("button", { name: "复制代码" })).toBeNull();
 });
 
 // 澄清答案通过统一 messages 接口绑定提出问题的 job，普通修改不会伪装成答案。
@@ -272,9 +261,7 @@ test("参数连续预览，保存成功后才能复制新代码", async () => {
     target: { value: "88" },
   });
   expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("88");
-  expect(
-    screen.getByRole("button", { name: "复制代码" }).hasAttribute("disabled"),
-  ).toBe(true);
+  expect(latestCopy().hasAttribute("disabled")).toBe(true);
   expect(submitted).toEqual({});
   fireEvent.click(screen.getByRole("button", { name: "保存配置" }));
   await waitFor(() => expect(submitted.size).toBe(88), { timeout: 2000 });
@@ -287,13 +274,9 @@ test("参数连续预览，保存成功后才能复制新代码", async () => {
     resolve!(Response.json(remotionJob("succeeded", "version-2"))),
   );
   await waitFor(() =>
-    expect(
-      screen.getByRole("button", { name: "复制代码" }).hasAttribute("disabled"),
-    ).toBe(false),
+    expect(latestCopy().hasAttribute("disabled")).toBe(false),
   );
-  expect(screen.getByLabelText("模板 TSX 代码").textContent).toContain(
-    "size = 88",
-  );
+  expect(latestCode().textContent).toContain("size = 88");
 });
 
 // 参数未保存时连续更新隔离播放器且不锁控件；旧请求错误不覆盖最新画面，也不自动发起保存。
@@ -322,9 +305,7 @@ test("多项参数实时预览，过期回执被忽略", async () => {
   expect(
     screen.getByRole("button", { name: "保存配置" }).hasAttribute("disabled"),
   ).toBe(false);
-  expect(
-    screen.getByRole("button", { name: "复制代码" }).hasAttribute("disabled"),
-  ).toBe(true);
+  expect(latestCopy().hasAttribute("disabled")).toBe(true);
   await act(async () =>
     window.dispatchEvent(
       new MessageEvent("message", {
@@ -361,14 +342,14 @@ test("新增会话提示未保存参数，取消或放弃", async () => {
   render(<RemotionWorkspace />);
   await generate();
   fireEvent.change(screen.getByLabelText("字号"), { target: { value: "80" } });
-  fireEvent.click(screen.getByRole("button", { name: "新增" }));
+  fireEvent.click(screen.getByRole("button", { name: "新增聊天" }));
   const dialog = await screen.findByRole("dialog", { name: "参数尚未保存" });
   expect(
     within(dialog).getByRole("button", { name: "保存并切换" }),
   ).toBeDefined();
   fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
   expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("80");
-  fireEvent.click(screen.getByRole("button", { name: "新增" }));
+  fireEvent.click(screen.getByRole("button", { name: "新增聊天" }));
   fireEvent.click(screen.getByRole("button", { name: "放弃修改并切换" }));
   expect(screen.queryByTitle("Remotion 字效播放器")).toBeNull();
   expect(
@@ -398,18 +379,12 @@ test("参数保存失败保留草稿，撤销后恢复原值", async () => {
   await waitFor(() =>
     expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("90"),
   );
-  expect(screen.getByLabelText("模板 TSX 代码").textContent).toContain(
-    "今日灵感",
-  );
-  expect(
-    screen.getByRole("button", { name: "复制代码" }).hasAttribute("disabled"),
-  ).toBe(true);
+  expect(latestCode().textContent).toContain("今日灵感");
+  expect(latestCopy().hasAttribute("disabled")).toBe(true);
   expect(screen.getByLabelText("字号").hasAttribute("disabled")).toBe(false);
   fireEvent.click(screen.getByRole("button", { name: "撤销修改" }));
   expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("64");
-  expect(
-    screen.getByRole("button", { name: "复制代码" }).hasAttribute("disabled"),
-  ).toBe(false);
+  expect(latestCopy().hasAttribute("disabled")).toBe(false);
 });
 
 // 创建请求尚未返回就新增，旧任务留在历史但迟到结果不能回填新聊天。
@@ -431,7 +406,7 @@ test("新增隔离迟到的创建响应并保留旧任务", async () => {
     screen.getByRole("button", { name: "发送" }).closest("form")!,
   );
   await waitFor(() => expect(resolve).toBeDefined());
-  fireEvent.click(screen.getByRole("button", { name: "新增" }));
+  fireEvent.click(screen.getByRole("button", { name: "新增聊天" }));
   await act(async () =>
     resolve!(
       Response.json({ work: { id: "work-1" }, job: remotionJob("running") }),
@@ -573,12 +548,7 @@ test("StrictMode 下仍能通过 SSE 收到成功结果", async () => {
   await waitFor(() => expect(fake.streams.size).toBe(1));
   await act(async () => fake.advance(remotionJob()));
   await waitFor(
-    () =>
-      expect(
-        screen
-          .getByRole("button", { name: "复制代码" })
-          .hasAttribute("disabled"),
-      ).toBe(false),
+    () => expect(latestCopy().hasAttribute("disabled")).toBe(false),
     { timeout: 2500 },
   );
 });
@@ -708,9 +678,7 @@ test("纯图片生成使用上传 ID，背景链接留在客户端", async () =>
     screen.getByRole("button", { name: "发送" }).closest("form")!,
   );
   await waitFor(() =>
-    expect(
-      screen.getByRole("button", { name: "复制代码" }).hasAttribute("disabled"),
-    ).toBe(false),
+    expect(latestCopy().hasAttribute("disabled")).toBe(false),
   );
   expect(uploaded).toBe(true);
   expect(created).toEqual({
@@ -740,7 +708,7 @@ test("图片限制与剪贴板失败反馈", async () => {
   spyOn(navigator.clipboard, "writeText").mockRejectedValue(
     new Error("denied"),
   );
-  fireEvent.click(screen.getByRole("button", { name: "复制代码" }));
+  fireEvent.click(latestCopy());
   await screen.findByText("复制失败，请展开代码后手动选择复制。");
 });
 
@@ -811,9 +779,7 @@ test("刷新会话恢复读取而不重复生成", async () => {
   fake.advance(remotionJob());
   fireEvent.click(screen.getByRole("button", { name: "刷新任务" }));
   await waitFor(() =>
-    expect(
-      screen.getByRole("button", { name: "复制代码" }).hasAttribute("disabled"),
-    ).toBe(false),
+    expect(latestCopy().hasAttribute("disabled")).toBe(false),
   );
   expect(
     fetchMock.mock.calls.filter((call) => String(call[0]).endsWith("/works")),
@@ -866,16 +832,14 @@ test.each([404, 503])(
     await generate();
     const frame = screen.getByTitle<HTMLIFrameElement>("Remotion 字效播放器");
     const src = frame.src;
-    const oldCode = screen.getByLabelText("模板 TSX 代码").textContent;
+    const oldCode = latestCode().textContent;
     await waitFor(() => expect(fake.streams.size).toBe(1));
     await act(async () =>
       fake.advance({ ...remotionJob("succeeded", "version-2"), id: "edit-2" }),
     );
     await screen.findByText(/新版本读取失败/);
-    expect(
-      screen.getByRole("button", { name: "复制代码" }).hasAttribute("disabled"),
-    ).toBe(false);
-    expect(screen.getByLabelText("模板 TSX 代码").textContent).toBe(oldCode);
+    expect(latestCopy().hasAttribute("disabled")).toBe(false);
+    expect(latestCode().textContent).toBe(oldCode);
     expect(frame.src).toBe(src);
     expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("64");
     await act(async () =>
@@ -895,18 +859,12 @@ test.each([404, 503])(
     fireEvent.click(screen.getByRole("button", { name: "重新读取结果" }));
     await screen.findByText(/新版本读取失败/);
     await waitFor(() =>
-      expect(
-        screen
-          .getByRole("button", { name: "复制代码" })
-          .hasAttribute("disabled"),
-      ).toBe(false),
+      expect(latestCopy().hasAttribute("disabled")).toBe(false),
     );
     available = true;
     fireEvent.click(screen.getByRole("button", { name: "重新读取结果" }));
     await waitFor(() =>
-      expect(screen.getByLabelText("模板 TSX 代码").textContent).toContain(
-        "size = 72",
-      ),
+      expect(latestCode().textContent).toContain("size = 72"),
     );
     await previewReady();
     expect(screen.queryByText(/新版本读取失败/)).toBeNull();
@@ -982,11 +940,7 @@ test.each(["Enter", "blur"])(
         }),
       ),
     );
-    await waitFor(() =>
-      expect(screen.getByLabelText("模板 TSX 代码").textContent).toContain(
-        "新标题",
-      ),
-    );
+    await waitFor(() => expect(latestCode().textContent).toContain("新标题"));
     await previewReady();
     await act(async () => new Promise((resolve) => setTimeout(resolve, 700)));
     expect(screen.getByLabelText<HTMLInputElement>("文字").value).toBe(

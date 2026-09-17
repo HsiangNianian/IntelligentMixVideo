@@ -16,6 +16,7 @@ import { useTemplateSession } from "@/features/remotion_templates/useTemplateSes
 import { useWorkHistory } from "@/features/remotion_templates/useWorkHistory";
 import * as api from "@/features/remotion_templates/api";
 import { remotionJob } from "./remotion-fixtures";
+import { latestCopy } from "./remotion-version-helpers";
 import { remotionServer } from "./remotion-server";
 import { fetchMock } from "./setup";
 
@@ -47,7 +48,7 @@ test("历史侧栏切换、任务耗时和新增独立视图", async () => {
   expect(within(screen.getByRole("log")).queryByText("夏日标题") !== null).toBe(
     true,
   );
-  fireEvent.click(screen.getByRole("button", { name: "新增" }));
+  fireEvent.click(screen.getByRole("button", { name: "新增聊天" }));
   await waitFor(() => expect(fake.streams.size).toBe(0));
   expect(within(screen.getByRole("log")).queryByText("夏日标题") === null).toBe(
     true,
@@ -75,9 +76,7 @@ test("刷新恢复历史图片、成功版本和服务端时间", async () => {
   await waitFor(() => expect(fake.streams.size).toBe(0));
   render(<RemotionWorkspace />);
   await waitFor(() =>
-    expect(
-      screen.getByRole("button", { name: "复制代码" }).hasAttribute("disabled"),
-    ).toBe(false),
+    expect(latestCopy().hasAttribute("disabled")).toBe(false),
   );
   expect(screen.getByText(/耗时 68 秒/).textContent).toContain("已完成");
   expect(localStorage.length).toBe(1);
@@ -176,7 +175,7 @@ test.each([200, 404])("切换隔离迟到的版本下载：%s", async (status) =
   await waitFor(() => expect(release).toBeDefined());
   act(() => result.current.select("work-2"));
   await waitFor(() => expect(result.current.version?.id).toBe("version-2"));
-  await act(async () => release!(new Response("old code", {status})));
+  await act(async () => release!(new Response("old code", { status })));
   expect(result.current.workId).toBe("work-2");
   expect(result.current.code).not.toContain("old code");
   expect(result.current.error).toBe("");
@@ -307,7 +306,7 @@ test("失效会话 ID 可通过新增恢复", async () => {
   expect(
     screen.getByRole("button", { name: "发送" }).hasAttribute("disabled"),
   ).toBe(true);
-  fireEvent.click(screen.getByRole("button", { name: "新增" }));
+  fireEvent.click(screen.getByRole("button", { name: "新增聊天" }));
   fireEvent.change(screen.getByLabelText("字效描述"), {
     target: { value: "新的任务" },
   });

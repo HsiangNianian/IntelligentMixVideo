@@ -63,20 +63,20 @@
 - 重命名和另存为复用 POST；另存为不携带 ID。未保存切换须提供保存并切换、放弃修改、取消，失败保留草稿。删除前确认。
 - 前端使用 SDK 5.2.2 的效果目录和静态动画 JSON，服务端维护同版本白名单；不提供 `/template/effects`。升级 SDK 时同步核对目录。保留用户已有 proto 文件，本次 API 使用 JSON。
 - 示例视频地址通过 `client/.env` 中的 `VITE_PREVIEW_VIDEO_URL` 配置，支持 HTTP(S) 直链与 public 资源路径；空值回退内置示例。修改后重启 Vite，生产使用需重新构建；当前固定片段要求源视频至少 14 秒。
-- 预览保留阿里云 SDK 5.2.2；Windows 生产页面通过 `src-tauri/src/localhost.rs` 在 `127.0.0.1` 的系统分配端口提供打包资源，窗口使用 `http://localhost:<端口>`，避免 `tauri.localhost` 不满足空 License 的 localhost 预览条件。仅允许对应 Host 的 GET/HEAD，不暴露任意磁盘文件；开发模式与 macOS / Linux 保持原加载方式，不扩大 Tauri IPC 权限。
+- 预览保留阿里云 SDK 5.2.2；Windows 生产页面通过 `src-tauri/src/localhost.rs` 在 `127.0.0.1` 的系统分配端口提供打包资源，窗口使用 `http://localhost:<端口>`，避免 `tauri.localhost` 不满足空 License 的 localhost 预览条件。仅允许对应 Host 的 GET/HEAD，不暴露任意磁盘文件；开发模式与 macOS / Linux 保持原加载方式，只向本次绑定的精确 localhost URL 开放模板、设置存储和内置后端启动命令，不授权其他端口或域名。
 - API 地址读取 `client/.env` 的 `VITE_API_URL`，未配置或留空时默认 `http://localhost:20070`；CORS 允许精确 localhost 主机的动态 HTTP 端口。修改配置后重启 Vite，生产需重新构建；避免 `.env.local` 同名配置覆盖。模板列表加载不阻塞本地编辑，但保存须防止晚到列表覆盖结果。预览仍需联网获取 SDK、字体和媒体，不发起云端合成，不将浏览器验证等同于桌面安装包验证。
 
 ## Remotion 字效客户端约定
 
 - 字效客户端位于 `client/src/features/remotion_templates/`，说明维护在该目录 README；复用 `VITE_API_URL`，请求前缀为 `/api/templates`，保留原模板库入口。
 - 字效新会话支持生成前选择画布、时长及高级宽高/帧率，默认 1080×1920、30 FPS、5 秒；秒数四舍五入到整帧，至少一帧且不超过 30 秒，尺寸遵循服务端边界。首次请求显式携带 composition，非法草稿禁止发送，上传与生成期间锁定；创建后不修改该会话配置，新增恢复默认，历史展示成功版本实际配置，不宣称代码已支持任意规格适配。
-- 顶部代码浮板提供新增和复制，最左侧是历史会话列表、中间聊天，右侧上方预览、下方参数；窄屏使用历史抽屉，仅成功版本替换可复制代码。
+- 最左侧历史会话列表顶部提供“新增聊天”，中间聊天，右侧上方预览、下方参数。桌面三栏可拖拽或键盘调宽，本地保存尺寸并提供恢复布局；窄屏使用历史抽屉与聊天/预览切换。成功版本在对应聊天结果下显示默认折叠的代码卡片，可独立复制 Export.tsx、单击预览；参数修订标注来源，失败候选与纯问答不产生版本卡片。历史预览只读，不回滚服务端或改变编辑基线；返回最新才能调参与发送，SSE 新成功版本不抢走明确选中的历史预览，切换旧版本沿用未保存参数的保存/放弃/取消保护。
 - 视频直链仅用于背景，不发送模型、不嵌入字效导出。生成、参数保存检查、预览首帧和背景加载期间，禁用发送、图片变更与参数控件；聊天文字可保留草稿，正常播放不锁定。本地参数草稿实时预览不锁控件、不自动提交；显式保存批量提交净变化，撤销恢复上次成功默认值。未保存时禁止发送、图片变更及复制代码。
 - Player 包和带默认 props 的 `Export.tsx` 在服务端隔离构建并纳入产物清单。预览使用无同源权限的 sandbox iframe，消息检查来源、通道和请求编号；完成、失败、超时及卸载均清理加载锁和资源。
 - 两个工作区切换时只隐藏面板，保留模板库未保存草稿及字效会话、播放器和 SSE 订阅；模板库首次访问才加载，离开首页才卸载清理。任务提交使用 POST，公开消息、任务状态与成功版本指针通过作品级 SSE 更新，禁止恢复客户端任务轮询。
 - 新增打开空白会话，历史切换、新增、断线和卸载均不取消后台任务；只有明确停止才取消。新增或切换历史遇到未保存参数时，提供保存并切换、放弃修改并切换、取消；保存并取得成功版本后才切换，失败留在原会话。迟到结果不得跨会话回填，网络错误不自动重复写入。参数保存失败保留此前成功代码与本地草稿，显式撤销才恢复默认参数。新版本产物读取失败独立提示并提供只读重试，保留旧结果可用性，不能阻塞后续 SSE 或反复重放同一个失败事件。
 - 参数未保存、提交中或读取中禁止普通恢复操作，UI 与会话 hook 同时守卫；本次保存响应未知或产物读取失败时允许只读恢复，不自动重发写入。保存绑定当前成功版本，只提交净变化；同一会话重复选择不清空草稿，StrictMode 重建订阅仍须恢复历史。
-- 公开聊天与可重放事件独立保存于 Remotion 本地 SQLite，不使用模型滑动窗口作为历史。快照绑定消息、最新任务、成功版本指针和游标；SSE 按 ID 去重、断线续传，游标失效时重取快照。浏览器只保存上次选择的会话 ID，旧会话仅恢复有持久事实支持的公开内容。
+- 公开聊天与可重放事件独立保存于 Remotion 本地 SQLite，不使用模型滑动窗口作为历史。快照绑定消息、最新任务、成功版本指针和游标；SSE 按 ID 去重、断线续传，游标失效时重取快照。浏览器仅保存上次选择的会话 ID 与桌面栏宽偏好，不保存聊天/代码；旧会话仅恢复有持久事实支持的公开内容。
 - 聊天任务等待与播放器加载分别显示，只有播放器实际加载才显示预览渲染遮罩；原有操作互斥规则保留。纯提问、问候或保持现状经独立审查后以 `answered` 终态结束，回答持久化并通过 SSE 展示，不生成候选、不发布新版本或重载播放器；首次会话和已有模板都支持问答，回答后可继续制作。
 - 任务消息下显示可折叠处理时间线：宿主实际进入阶段才记录，阶段名称为白名单，不从模型普通文本推断，不提供虚构百分比或未来步骤。运行中默认展开，成功/回答后收起，失败或停止保留最后阶段；计时器在终态与卸载时清理。公开进度保存在 SQLite `job_progress`，与 `job.updated` 在同一事务发布；会话快照 `jobs` 携带当前消息页对应的任务链路，支持历史分页、刷新和 SSE 重连，旧任务没有记录则不补造阶段。
 
@@ -116,7 +116,7 @@ bun run tauri build
 cargo fmt --manifest-path client/src-tauri/Cargo.toml --check
 bun test ./.github/scripts
 bun .github/scripts/release-smoke.mjs
-actionlint .github/workflows/client-build.yml .github/workflows/release.yml .github/workflows/validation.yml
+actionlint .github/workflows/*.yml
 uv build --project server --out-dir server/dist
 uv run --locked --project server pytest server/tests -v
 git diff --check
@@ -136,7 +136,7 @@ Windows 需要 MSVC C++ 构建工具、Windows SDK 和 WebView2；ARM64 主机�
 
 ## 客户端构建 CI
 
-`.github/workflows/validation.yml` 是 push / PR 检查的唯一 Actions 入口，不在工作流级使用 paths 过滤，以确保每个 PR 都有最终检查结果。
+`.github/workflows/validation.yml` 是常规 push / PR 验证的统一 Actions 入口，不在工作流级使用 paths 过滤，以确保每个 PR 都有最终检查结果。
 `.github/scripts/ci-scope.mjs` 根据 Git 差异调度：PR 比较目标分支与合并结果，push 比较前后提交；新分支检查全部文件，缺失比较基线时保守运行全部检查。
 
 - 非默认分支 push：若同一仓库的同一提交已有打开的 PR，跳过重复任务；否则按变更范围检查。默认分支始终验证集成结果，不参与去重。
@@ -164,6 +164,12 @@ Windows 需要 MSVC C++ 构建工具、Windows SDK 和 WebView2；ARM64 主机�
 校验两端源码版本一致，并通过临时副本验证版本同步、Bun 冻结安装、Cargo 和 uv 锁文件。
 服务端 job 使用 Python 3.12 和 uv 缓存；`server/pyproject.toml` 的 uv 构建模块名显式设为 `server`，对应 `src/server/`。
 在 Validate project 上手动运行会执行全部检查（原生检查模式）；需要安装包时手动运行 Build client。
+
+- Validate project 的 `workflow_dispatch` 支持 `integration-tests`（默认 true）、`build-installers`（默认 false）与 `api-url`。手动集成通过 `backend-integration.yml` 复用工作流运行；普通 push/PR 不开启重型测试，最终汇总必须检查其结果。勾选打包仍使用 release 优化，API 地址仅在构建时注入。
+- 集成环境使用 Python 3.12、uv、临时 MySQL 8.4、Node 24、Bun、服务端 Remotion 锁定依赖、Chrome、FFmpeg/ffprobe、Noto CJK、bubblewrap 和 prlimit。真实 MySQL 测试须显式设置 `IMV_TEST_MYSQL=1` 和回环数据库连接，每例随机建库并清理；既有 SQLite 夹具不变。真实渲染通过 `IMV_TEST_RENDERER=1` 启用，只捕获浏览器及字体路径，不读取真实密钥。
+- `.github/workflows/client-debug.yml`（Debug client）在 `main` / `dev` push 或 `workflow_dispatch` 时运行，不监听 PR；复用 `client-build.yml` 并传入 `build-mode: package`、`debug-backend: true`。共享构建的 `debug-backend` 为布尔输入，默认 false，仅由此输入设置 `IMV_DEBUG`，不绑定分支名；普通构建和正式发布默认不携带后端。Debug artifact 名称为 `intelligent-mix-video-debug-<平台>-<提交 SHA>`。手动入口要求工作流存在于默认分支，分支 push 触发不绕过此限制。各平台打包时由 `.github/scripts/bundle-backend.py` 生成 `backend.tar`、`backend.id` 和临时 Tauri 资源配置，均不入库。随包完整服务、Python 3.12、MySQL（Linux 8.0，其余 8.4.8）、Node 24、Bun/Remotion、Chrome、FFmpeg/ffprobe及字体，Linux 另带 bubblewrap/prlimit 隔离工具。普通非 debug 构建不启动内置服务。客户端 `start_backend` 等实际就绪回执再挂载页面，模板、字效与设置 API 模块共享动态回环地址，不改变业务接口。
+- `server.desktop` 监督私有 MySQL 与完整 FastAPI；`DB_SOCKET` 仅用于本地 Unix socket，去库建库连接也必须保留 socket。数据和无密钥初始 `.env` 保存 app_data_dir/backend，运行时按归档摘要缓存于 app_cache_dir/backend；保留用户配置和数据库。父进程管道关闭时先停 API 再停 MySQL。Unix 内置数据库不开放 TCP；Windows 使用随机密码和动态回环 TCP，初始化时不监听网络，通过 SQL SHUTDOWN 落盘退出。均不读取宿主配置；密钥不得打包。随包库只提供给后端和渲染沙箱，禁止暴露用户目录、凭据或网络。AppImage/MSI/DMG 上传前启用 `IMV_TEST_BUNDLE` 验证真实启动、重启持久化、重复实例、关闭与桌面连接；FFmpeg/ffprobe 在 CI 从官方 `FFmpeg/FFmpeg` 最新稳定 tag 固定提交下载源码并原生编译，归档包含版本、提交与许可证；不使用 nightly 或第三方 Release 二进制。真实 Remotion 渲染目前仅 Linux 支持，Windows/macOS 不得绕过沙箱执行生成代码。macOS 使用 macos-15 / macos-15-intel 原生构建依赖，dylib 转为相对加载路径；Windows 使用 app-local VC 运行库，打包无特权符号链接依赖；常规 pytest 跳过这些真实集成用例。
+- Linux AppImage 排除随包 Wayland/PulseAudio 库，上传前检查 WebKit、GStreamer OpenGL/播放/解码插件。Linux 在 GTK 初始化前默认设置 `WEBKIT_GST_DMABUF_SINK_DISABLED=1` 和 `WEBKIT_GST_USE_PLAYBIN3=1`，保留显式环境配置；网页缓存按 WebKit 版本隔离，本地模板目录不变。`IMV_GDK_BACKEND=wayland|x11` 保留为显示后端对比入口，不将打包检查描述为真实播放与性能验证。
 
 ## 正式版本与 tag 发版
 

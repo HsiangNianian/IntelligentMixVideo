@@ -56,12 +56,12 @@ export default function HomePage() {
           ))}
         </TabsList>
       </aside>
-      <main className="min-w-0 flex-1 px-3 py-5 sm:px-6 lg:px-8">
-        <div className="mx-auto max-w-[1600px] space-y-6">
-          <header className="flex flex-wrap items-center justify-between gap-4 border-b pb-5">
+      <main className="min-w-0 flex-1 px-3 py-3 sm:px-5">
+        <div className="mx-auto max-w-[1920px] space-y-3">
+          <header className="flex flex-wrap items-center justify-between gap-3 border-b pb-3">
             <div className="space-y-1.5">
               <p className="text-xs font-medium tracking-widest text-muted-foreground">INTELLIGENT MIX VIDEO</p>
-              <h1 className="text-2xl font-semibold tracking-tight">{workspace === "settings" ? "设置" : "特效模板"}</h1>
+              <h1 className="text-xl font-semibold tracking-tight">{workspace === "settings" ? "设置" : "特效模板"}</h1>
             </div>
             <CurrentTime />
           </header>

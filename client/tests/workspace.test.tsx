@@ -268,7 +268,7 @@ test.each(["云端", "本地"])("切换%s模板库后保留字效会话并继续
     // 隐藏期间通过原订阅完成同一任务；切回不重新创建或重复建立连接。
     await waitFor(() => expect(fake.streams.size).toBe(1));
     await act(async () => fake.advance(remotionJob()));
-    await waitFor(()=>expect(screen.getByLabelText("模板 TSX 代码").textContent).toContain("export default"), {timeout:2500});
+    await waitFor(()=>expect(screen.getByLabelText("成功版本 V1")).toBeTruthy(), {timeout:2500});
     fireEvent.mouseDown(screen.getByRole("tab", {name: "Remotion 字效"}), {button: 0});
     expect(within(screen.getByRole("log")).queryByText("保留这个任务") !== null).toBe(true);
     expect(screen.getByLabelText<HTMLTextAreaElement>("字效描述").value).toBe("未发送草稿");

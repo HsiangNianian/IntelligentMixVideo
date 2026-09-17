@@ -4,7 +4,7 @@ import { isTauri } from "@tauri-apps/api/core";
 import { apiUrl } from "@/features/remotion_templates/api";
 import { PluginSettings } from "@/features/settings/PluginSettings";
 
-/** 服务地址仍由构建环境决定；模块字段从后端目录生成。 */
+/** 展示当前运行时服务地址；模块字段从后端目录生成。 */
 export function SettingsPanel() {
   const titleId = useId();
   return (

@@ -3,6 +3,11 @@ name: Build client
 
 on:
   workflow_dispatch:
+    inputs:
+      api-url:
+        description: "API URL embedded in test installers (empty uses localhost:20070)"
+        type: string
+        default: ""
   workflow_call:
     inputs:
       build-mode:
@@ -10,8 +15,18 @@ on:
         required: false
         type: string
         default: package
+      debug-backend:
+        description: "Bundle and automatically start the local debug backend"
+        required: false
+        type: boolean
+        default: false
       release-tag:
         description: "Release tag that must match committed client and server versions"
+        required: false
+        type: string
+        default: ""
+      api-url:
+        description: "API URL for manually built test installers"
         required: false
         type: string
         default: ""
@@ -28,6 +43,9 @@ jobs:
     name: ${{ inputs.build-mode == 'check' && 'Check' || 'Build' }} ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    env:
+      # 编译进客户端；用户双击不需要设置环境变量，各平台测试包携带本机后端。
+      IMV_DEBUG: ${{ inputs.debug-backend && 'true' || 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -41,11 +59,11 @@ jobs:
             target: x86_64-pc-windows-msvc
             bundles: nsis,msi
           - name: macos-arm64
-            os: macos-latest
+            os: macos-15
             target: aarch64-apple-darwin
             bundles: dmg
           - name: macos-x64
-            os: macos-latest
+            os: macos-15-intel
             target: x86_64-apple-darwin
             bundles: dmg
     defaults:
@@ -85,6 +103,7 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: client/src-tauri -> target
+          cache-on-failure: true
           key: ${{ matrix.target }}
           shared-key: ${{ inputs.build-mode || 'package' }}
       - name: Verify committed project versions
@@ -95,6 +114,84 @@ jobs:
       - name: Install frontend dependencies
         # Version preparation must preserve the dependency lock.
         run: bun install --frozen-lockfile
+      - name: Set up backend Python
+        if: env.IMV_DEBUG == 'true' && inputs.build-mode != 'check'
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: '3.12'
+          enable-cache: true
+          cache-dependency-glob: server/uv.lock
+      - name: Set up backend Node
+        if: env.IMV_DEBUG == 'true' && inputs.build-mode != 'check'
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Set up backend Chromium
+        if: env.IMV_DEBUG == 'true' && inputs.build-mode != 'check'
+        id: chrome
+        uses: browser-actions/setup-chrome@v2
+        with:
+          chrome-version: stable
+          install-dependencies: true
+      - name: Resolve official FFmpeg release
+        if: env.IMV_DEBUG == 'true' && inputs.build-mode != 'check'
+        id: ffmpeg-release
+        working-directory: .
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: uv run --no-project --python 3.12 python .github/scripts/build-ffmpeg.py --resolve
+      - name: Restore compiled FFmpeg
+        if: env.IMV_DEBUG == 'true' && inputs.build-mode != 'check'
+        id: ffmpeg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/imv-ffmpeg/install
+          key: ffmpeg-${{ matrix.os }}-${{ runner.arch }}-${{ steps.ffmpeg-release.outputs.commit }}-${{ hashFiles('.github/scripts/build-ffmpeg.py') }}
+      - name: Install backend system tools (Linux)
+        if: runner.os == 'Linux' && env.IMV_DEBUG == 'true' && inputs.build-mode != 'check'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mysql-server-core-8.0 fonts-noto-cjk bubblewrap util-linux xvfb xauth nasm
+      - name: Install FFmpeg assembler (macOS)
+        if: runner.os == 'macOS' && env.IMV_DEBUG == 'true' && inputs.build-mode != 'check'
+        run: brew install nasm
+      - name: Set up FFmpeg build tools (Windows)
+        if: runner.os == 'Windows' && env.IMV_DEBUG == 'true' && inputs.build-mode != 'check'
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          install: make diffutils mingw-w64-ucrt-x86_64-nasm mingw-w64-ucrt-x86_64-gcc
+      - name: Build official FFmpeg release
+        if: env.IMV_DEBUG == 'true' && inputs.build-mode != 'check' && steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        working-directory: .
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            MSYS2_LOCATION="$(cygpath -u "$MSYS2_LOCATION")"
+            export PATH="$MSYS2_LOCATION/ucrt64/bin:$MSYS2_LOCATION/usr/bin:$PATH"
+            export MSYSTEM=UCRT64
+          fi
+          uv run --no-project --python 3.12 python .github/scripts/build-ffmpeg.py
+      - name: Cache compiled FFmpeg
+        if: env.IMV_DEBUG == 'true' && inputs.build-mode != 'check' && steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/imv-ffmpeg/install
+          key: ${{ steps.ffmpeg-cache.outputs.cache-primary-key }}
+      - name: Bundle local backend runtime
+        if: env.IMV_DEBUG == 'true' && inputs.build-mode != 'check'
+        working-directory: .
+        shell: bash
+        env:
+          CHROME_PATH: ${{ steps.chrome.outputs.chrome-path }}
+        run: |
+          bun install --cwd server/src/server/remotion --frozen-lockfile
+          uv run --no-project --python 3.12 python .github/scripts/bundle-backend.py "$CHROME_PATH"
       - name: Verify Cargo lockfile
         if: inputs.release-tag != ''
         run: cargo metadata --manifest-path src-tauri/Cargo.toml --locked --no-deps --format-version 1 > cargo-metadata.json
@@ -102,9 +199,16 @@ jobs:
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
       - name: Build desktop installers
         if: inputs.build-mode != 'check'
-        run: bun run tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --ci -- --locked
+        shell: bash
+        run: |
+          config=()
+          if [ "$IMV_DEBUG" = true ]; then
+            config=(--config src-tauri/tauri.debug.conf.json)
+          fi
+          bun run tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --ci "${config[@]}" -- --locked
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VITE_API_URL: ${{ inputs.api-url }}
       - name: Check native targets
         if: inputs.build-mode == 'check'
         run: |
@@ -113,14 +217,22 @@ jobs:
       - name: Test Windows resource server
         if: runner.os == 'Windows' && inputs.build-mode == 'check'
         run: cargo test --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --lib --locked
+      - name: Test Linux desktop behavior
+        if: runner.os == 'Linux'
+        # 进程测试与文件锁测试串行，避免 fork/exec 期间继承的锁干扰其他用例。
+        run: cargo test --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --lib --bin client --locked -- --test-threads=1
       - name: Verify AppImage library compatibility
         if: runner.os == 'Linux' && inputs.build-mode != 'check'
         run: bun ../.github/scripts/appimage-smoke.mjs src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+      - name: Verify bundled native backend
+        if: runner.os != 'Linux' && env.IMV_DEBUG == 'true' && inputs.build-mode != 'check'
+        working-directory: .
+        run: uv run --no-project --python 3.12 python .github/scripts/native-bundle-smoke.py client/src-tauri/target/${{ matrix.target }}/release/bundle
       - name: Upload installers
         if: inputs.build-mode != 'check'
         uses: actions/upload-artifact@v4
         with:
-          name: intelligent-mix-video-${{ matrix.name }}-${{ github.sha }}
+          name: intelligent-mix-video-${{ inputs.debug-backend && 'debug-' || '' }}${{ matrix.name }}-${{ github.sha }}
           path: |
             client/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
             client/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
@@ -128,4 +240,12 @@ jobs:
             client/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
             client/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
           if-no-files-found: error
+          retention-days: 14
+      - name: Upload native startup diagnostics
+        if: failure() && runner.os != 'Linux' && env.IMV_DEBUG == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-startup-debug-${{ matrix.name }}-${{ github.sha }}
+          path: ${{ runner.temp }}/imv-desktop-diagnostics/
+          if-no-files-found: ignore
           retention-days: 14

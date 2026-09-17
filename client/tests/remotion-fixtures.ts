@@ -6,6 +6,9 @@ export function remotionVersion(id = "version-1", patch: Values = {}): Version {
   return {
     id,
     project_id: "work-1",
+    number: Number(id.match(/\d+$/)?.[0] ?? 1),
+    source: "agent",
+    created_at: "2026-09-14T08:01:08Z",
     candidate: {
       tsx_code: "source code",
       default_config: {

@@ -2,7 +2,8 @@
 import { expect, test } from "bun:test";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { PluginSettings } from "@/features/settings/PluginSettings";
-import { readSettings, requestSegmentation, saveSettings, type Plugin, type Values } from "@/features/settings/api";
+import { listPlugins, readSettings, requestSegmentation, saveSettings, type Plugin, type Values } from "@/features/settings/api";
+import { apiBase, setApiBase } from "@/lib/api-base";
 import { fetchMock, mockDesktop } from "./setup";
 
 /** 与后端目录协议一致，字段由描述控制；API 的真实模型生成在 pytest 中覆盖。 */
@@ -24,6 +25,24 @@ const asr: Plugin = {
     properties: { dashscope_api_key: { type: "string", title: "Dashscope Api Key", format: "password", default: "" } },
   },
 };
+
+// 场景：桌面启动后设置目录与切片请求使用实际端口，不缓存模块加载时的地址。
+test("设置和切片跟随内置后端运行时地址", async () => {
+  const original = apiBase();
+  const restore = mockDesktop(async () => ({}));
+  try {
+    setApiBase("http://127.0.0.1:43213/");
+    fetchMock.mockResolvedValueOnce(Response.json([segmentation]));
+    expect(await listPlugins()).toEqual([segmentation]);
+    expect(fetchMock.mock.calls.at(-1)?.[0]).toBe("http://127.0.0.1:43213/api/settings/plugins");
+    fetchMock.mockResolvedValueOnce(Response.json({ segments: [] }));
+    expect(await requestSegmentation({ script: "测试", asr_result: {} })).toEqual({ segments: [] });
+    expect(fetchMock.mock.calls.at(-1)?.[0]).toBe("http://127.0.0.1:43213/segmentations");
+  } finally {
+    setApiBase(original);
+    restore();
+  }
+});
 
 // 场景：真实表单保存后卸载重开恢复值，切片请求读取已保存快照且不改变本地配置。
 test("保存切片设置并携带本地配置请求切片", async () => {

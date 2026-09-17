@@ -236,7 +236,7 @@ test.each([null, "work-2"])(
     });
     expect(result.current.navigation).toBeNull();
     act(() => result.current.select(target));
-    expect(result.current.navigation?.work).toBe(target);
+    expect(result.current.navigation).toEqual({ work: target, saving: false });
     expect(result.current.workId).toBe("work-1");
     act(() => result.current.resolveNavigation("cancel"));
     expect(result.current.values.size).toBe(80);

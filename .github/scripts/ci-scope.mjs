@@ -34,13 +34,15 @@ export async function planCi(github, context, readChanges = changedFiles) {
       ...repo, state: "open", head: `${repo.owner}:${ref.replace("refs/heads/", "")}`, per_page: 100,
     });
     if (pulls.some((pr) => pr.head.sha === sha && pr.head.repo?.full_name === `${repo.owner}/${repo.repo}`)) {
-      return { run: false, hygiene: false, client: false, native: false, server: false, tooling: false, mode: "check" };
+      return { run: false, hygiene: false, client: false, native: false, server: false, tooling: false, integration: false, mode: "check" };
     }
   }
   const files = readChanges(eventName, payload);
   const scope = files === null ? { client: true, native: true, server: true, tooling: true } : classifyChanges(files);
-  const mode = defaultPush ? "package" : "check";
-  return { run: true, hygiene: eventName !== "pull_request", ...scope, native: defaultPush ? scope.client : scope.native, mode };
+  const manual = eventName === "workflow_dispatch";
+  const integration = manual && String(payload.inputs?.["integration-tests"] ?? true) === "true";
+  const mode = defaultPush || (manual && String(payload.inputs?.["build-installers"]) === "true") ? "package" : "check";
+  return { run: true, hygiene: eventName !== "pull_request", ...scope, integration, native: defaultPush ? scope.client : scope.native, mode };
 }
 
 /** 汇总仅接受成功或按计划跳过；意外跳过、失败和取消均禁止报告通过。 */

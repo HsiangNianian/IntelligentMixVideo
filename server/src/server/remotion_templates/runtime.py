@@ -6,6 +6,7 @@ from contextlib import suppress
 from uuid import UUID
 
 from ..settings import Settings
+from ..file_lock import lock_exclusive
 from .harness import Harness
 from .models import DialogueOutput, EditTemplateRequest, JobError, JobInput, TaskMessage
 from .parameters import parameter_changes
@@ -26,12 +27,10 @@ class Runtime:
 
     def initialize(self) -> None:
         """Lock the state directory before recovery so a second server cannot interrupt live jobs."""
-        import fcntl
-
         self.store.root.mkdir(parents=True, exist_ok=True)
         self.lock = (self.store.root / "runtime.lock").open("a")
         try:
-            fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock_exclusive(self.lock)
             self.store.initialize()
             self.store.interrupt_unfinished()
         except BaseException:

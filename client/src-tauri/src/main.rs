@@ -16,6 +16,13 @@ fn configure_video_environment() {
 
 /// 调用共享入口启动桌面客户端。
 fn main() {
+    // 保留 debug_CI 的显式显示后端对比入口，覆盖 AppImage hook 强制的 x11。
+    #[cfg(target_os = "linux")]
+    if let Ok(backend) = std::env::var("IMV_GDK_BACKEND") {
+        if matches!(backend.as_str(), "wayland" | "x11") {
+            std::env::set_var("GDK_BACKEND", backend);
+        }
+    }
     #[cfg(target_os = "linux")]
     configure_video_environment();
 
