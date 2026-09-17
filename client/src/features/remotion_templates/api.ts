@@ -115,13 +115,20 @@ export function message(
 export function version(id: string, signal?: AbortSignal): Promise<Version> {
   return request(`/versions/${encodeURIComponent(id)}`, { signal });
 }
-/** 复制与代码浮板使用同一份带默认参数的服务端导出。 */
+/** 聊天版本卡片复制对应成功版本的完整默认参数导出。 */
 export function exported(id: string, signal?: AbortSignal): Promise<string> {
   return request(
     `/versions/${encodeURIComponent(id)}/artifacts/Export.tsx`,
     { signal },
     true,
   );
+}
+/** 恢复当前作品的全部成功版本；内部候选不会进入该接口。 */
+export function versions(
+  work: string,
+  signal?: AbortSignal,
+): Promise<Version[]> {
+  return request(`/works/${encodeURIComponent(work)}/versions`, { signal });
 }
 /** 取消可重复调用；不删除之前的成功版本。 */
 export function cancel(id: string): Promise<Job> {

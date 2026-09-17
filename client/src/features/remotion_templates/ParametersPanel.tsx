@@ -190,6 +190,7 @@ export function ParametersPanel({
   pending,
   dirty,
   saving,
+  readOnly = false,
   onChange,
   onSave,
   onDiscard,
@@ -200,6 +201,7 @@ export function ParametersPanel({
   pending: boolean;
   dirty: boolean;
   saving: boolean;
+  readOnly?: boolean;
   onChange: (key: string, value: Scalar) => void;
   onSave: () => void;
   onDiscard: () => void;
@@ -207,9 +209,9 @@ export function ParametersPanel({
   return (
     <section
       aria-label="模板参数"
-      className="min-h-0 overflow-y-auto rounded-2xl border bg-card p-5 shadow-sm"
+      className="@container min-h-0 overflow-y-auto rounded-xl border bg-card p-4"
     >
-      <div className="sticky -top-5 z-10 -mx-5 -mt-5 mb-2 space-y-3 border-b bg-card px-5 py-4">
+      <div className="sticky -top-4 z-10 -mx-4 -mt-4 mb-2 space-y-3 border-b bg-card px-4 py-3">
         <div className="flex items-center gap-2 text-sm font-medium">
           <SlidersHorizontal className="size-4" />
           模板参数
@@ -217,18 +219,20 @@ export function ParametersPanel({
             role="status"
             className="ml-auto text-xs font-normal text-muted-foreground"
           >
-            {saving
-              ? "正在保存并检查…"
-              : pending
-                ? "正在加载 · 暂不可修改"
-                : dirty
-                  ? "有未保存修改"
-                  : version
-                    ? "已保存"
-                    : ""}
+            {readOnly
+              ? "历史版本 · 只读"
+              : saving
+                ? "正在保存并检查…"
+                : pending
+                  ? "正在加载 · 暂不可修改"
+                  : dirty
+                    ? "有未保存修改"
+                    : version
+                      ? "已保存"
+                      : ""}
           </span>
         </div>
-        {version && (
+        {version && !readOnly && (
           <div className="flex flex-wrap items-center gap-2">
             <Button size="sm" disabled={disabled || !dirty} onClick={onSave}>
               保存配置
@@ -263,7 +267,7 @@ export function ParametersPanel({
             <summary className="cursor-pointer py-3 text-sm font-medium">
               文字图层 · {layer.id}
             </summary>
-            <div className="grid gap-5 pt-3 sm:grid-cols-2">
+            <div className="grid gap-4 pt-2 @min-[420px]:grid-cols-2">
               {Object.entries(version.candidate.config_schema.properties)
                 .filter(([, control]) =>
                   control["x-imv-target"].startsWith(`/text_layers/${index}/`),
@@ -273,7 +277,7 @@ export function ParametersPanel({
                     key={key}
                     className={cn(
                       control["x-imv-target"].endsWith("/text") &&
-                        "sm:col-span-2",
+                        "@min-[420px]:col-span-2",
                     )}
                   >
                     <Parameter
