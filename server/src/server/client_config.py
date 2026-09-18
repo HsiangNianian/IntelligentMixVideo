@@ -11,8 +11,6 @@ def parse_config[T: BaseModel](value: str | None, model: type[T]) -> T | None:
     if value is None:
         return None
     try:
-        if len(value) > 16384:
-            raise ValueError("配置过长")
         return model.model_validate_json(unquote(value, errors="strict"))
     except ValueError:
         raise HTTPException(422, "客户端服务配置无效，请检查设置") from None

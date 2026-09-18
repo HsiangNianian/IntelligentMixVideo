@@ -11,9 +11,9 @@ from ..config_base import CommonSettings
 class ClientSettings(BaseModel):
     """客户端可携带的模型参数；运行目录、渲染及任务资源限制仍由服务端维护。"""
 
-    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+    model_config = ConfigDict(hide_input_in_errors=True)
 
-    actor_base_url: str = Field(default="https://api.openai.com/v1", title="Actor API 地址", pattern=r"^https?://\S+$")
+    actor_base_url: str = Field(default="https://api.openai.com/v1", title="Actor API 地址")
     actor_model: str = Field(default="", title="Actor 模型")
     actor_api_key: SecretStr = Field(default=SecretStr(""), title="Actor API Key")
     vision_base_url: str = Field(default="", title="视觉 API 地址（留空复用 Actor）")

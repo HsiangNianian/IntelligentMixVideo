@@ -1292,6 +1292,7 @@ def test_client_ims_credentials_drive_submit_and_playback(upstreams, client, com
 
     def provider(settings, **kwargs):
         """保留完整模拟 SDK 流程，记录实际构造 SDK 的配置边界。"""
+        assert settings.composition_concurrency != 99
         seen.append((settings.ims_access_key_id.get_secret_value(), settings.ims_access_key_secret.get_secret_value()))
         return original(settings, **kwargs)
 
@@ -1302,7 +1303,7 @@ def test_client_ims_credentials_drive_submit_and_playback(upstreams, client, com
     upstreams["release"].clear()
     requests = []
     for name in ("client-a", "client-b"):
-        header = {"X-IMS-Config": quote(json.dumps({"ims_access_key_id": name, "ims_access_key_secret": name + "-private"}))}
+        header = {"X-IMS-Config": quote(json.dumps({"ims_access_key_id": name, "ims_access_key_secret": name + "-private", "composition_concurrency": 99}))}
         payload = composition_case["request"] | ({"callbackUrl": "https://notify.example.test/result"} if callback else {})
         response = client.post(BASE, json=payload, headers=header)
         assert response.status_code == 202
@@ -1317,9 +1318,9 @@ def test_client_ims_credentials_drive_submit_and_playback(upstreams, client, com
         assert client.get(f"{BASE}/{task_id}").status_code == 503
     assert set(seen) == {("client-a", "client-a-private"), ("client-b", "client-b-private")}
     assert len(upstreams["notifications"]) == (2 if callback else 0)
-    before = len(seen)
-    assert client.get(f"{BASE}/{requests[0][0]}", headers=requests[1][1]).status_code == 503
-    assert len(seen) == before
+    # 不再检查提交账号指纹；查询直接使用本次提供的凭据，访问权限交给 IMS。
+    assert client.get(f"{BASE}/{requests[0][0]}", headers=requests[1][1]).status_code == 200
+    assert seen[-1] == ("client-b", "client-b-private")
     from server.database import get_engine
     with get_engine().connect() as connection:
         logs = connection.execute(select(store.execution_logs.c.detail)).scalars().all()
@@ -1331,10 +1332,9 @@ def test_client_ims_credentials_drive_submit_and_playback(upstreams, client, com
 @pytest.mark.parametrize("config", [
     {"ims_access_key_secret": "private"},
     {"ims_access_key_id": "id", "ims_access_key_secret": "private", "ims_endpoint": "evil.test"},
-    {"ims_access_key_id": "id", "ims_access_key_secret": "private", "composition_concurrency": 99},
 ])
 def test_client_ims_validation_is_private(upstreams, client, composition_case, config):
-    """缺凭据、非官方主机和客户端策略覆盖均拒绝，输入不进入日志或响应。"""
+    """复用原有凭据必填与官方主机校验，输入不进入日志或响应。"""
     from urllib.parse import quote
     response = client.post(BASE, json=composition_case["request"], headers={"X-IMS-Config": quote(json.dumps(config))})
     assert response.status_code == 422
@@ -1344,12 +1344,12 @@ def test_client_ims_validation_is_private(upstreams, client, composition_case, c
 
 
 def test_client_ims_restart_does_not_fall_back_to_server(composition_settings, composition_case):
-    """重启丢失客户端凭据时明确失败，不使用服务端另一个账号恢复成本调用。"""
+    """缺任务快照沿用已有阶段失败处理，不切换到服务端另一个账号。"""
     store.initialize_schema()
-    record = store.create(composition_case["request"], composition_settings.output() | {"client_ims_id": "lost"}, "https://callback.test")
+    record = store.create(composition_case["request"], composition_settings.output() | {"client_config": True}, "https://callback.test")
     runtime = service.Runtime()
     asyncio.run(runtime._execute(record))
     result = store.get(record["task_id"])
     assert result["status"] == "failed"
-    assert result["data"]["error"]["code"] == "client_config_lost"
+    assert result["data"]["error"]["code"] == "stage_error"
     assert not runtime.client_configs and not runtime.active

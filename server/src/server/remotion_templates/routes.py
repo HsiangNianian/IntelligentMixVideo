@@ -67,13 +67,6 @@ def client_config(value: Annotated[str | None, Header(alias="X-Remotion-Config")
 Config = Annotated[ClientSettings | None, Depends(client_config)]
 
 
-def require_models(service: Runtime, config: ClientSettings | None) -> None:
-    """客户端完整模型参数优先；配置不全时拒绝任务，不回退到另一客户端或服务器凭据。"""
-    settings = service.settings.model_copy(update=config.model_dump()) if config is not None else service.settings
-    if not settings.models_configured:
-        raise HTTPException(503, "请配置 Actor 和视觉模型及密钥")
-
-
 @router.get("/capabilities", tags=["服务能力"], summary="查询服务能力")
 def capabilities(service: Service, config: Config) -> dict:
     """查询支持的输入类型、可用字体及模型配置是否就绪。
@@ -122,7 +115,9 @@ async def create(
     `description` 与 `image` 至少提供一种；可通过 `composition` 设置画布和时长。
     返回 202 及 `work`、`job`，随后使用任务 ID 查询进度；模型未配置时返回 503。
     """
-    require_models(service, config)
+    settings = service.settings.model_copy(update=config.model_dump()) if config is not None else service.settings
+    if not settings.models_configured:
+        raise HTTPException(503, "请配置 Actor 和视觉模型及密钥")
     if request.image:
         service.store.asset(request.image.asset_id)
     project, job = service.store.create(request)
@@ -186,8 +181,6 @@ async def edit(work_id: UUID, request: TaskMessage, service: Service, config: Co
     纯问答或明确保持现状时返回 answered 终态，回答通过 message 和会话历史提供，不产生新版本。
     尚无成功版本的会话也可继续提问或描述生成需求；参数修改仍须已有成功版本。
     """
-    if request.parameters is None:
-        require_models(service, config)
     try:
         return PublicJob.from_job(service.message(work_id, request, config))
     except ValueError as exc:
@@ -287,7 +280,6 @@ async def retry(job_id: UUID, service: Service, config: Config) -> PublicJob:
 
     保留原任务记录及产物，不从中断位置续跑；不符合重试条件时返回 409。
     """
-    require_models(service, config)
     return PublicJob.from_job(service.retry(job_id, config=config))
 
 

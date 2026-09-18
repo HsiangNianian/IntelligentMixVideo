@@ -22,7 +22,7 @@ export function createComposition(payload: Record<string, unknown>) {
   return request("", payload);
 }
 
-/** 查询成片时重新提供同一 IMS 账号，服务端可刷新该账号的播放地址。 */
+/** 查询成片时提供当前保存的凭据，由 IMS 判断播放资源的访问权限。 */
 export function getComposition(taskId: string) {
   return request(`/${encodeURIComponent(taskId)}`);
 }

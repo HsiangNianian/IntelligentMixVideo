@@ -1,6 +1,5 @@
 """合成配置读取固定的 server/.env 和优先级更高的环境变量，不保存云端凭证到任务。"""
 
-from hashlib import sha256
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
@@ -13,17 +12,13 @@ from .schema import MediaURL, media_url
 class ClientSettings(BaseModel):
     """上海 IMS 凭据与官方地域配置；别名继续兼容原服务端环境变量。"""
 
-    model_config = ConfigDict(populate_by_name=True, extra="forbid", hide_input_in_errors=True)
+    model_config = ConfigDict(populate_by_name=True, hide_input_in_errors=True)
 
     ims_access_key_id: SecretStr = Field(title="Access Key ID", validation_alias="ALIBABA_CLOUD_ACCESS_KEY_ID")
     ims_access_key_secret: SecretStr = Field(title="Access Key Secret", validation_alias="ALIBABA_CLOUD_ACCESS_KEY_SECRET")
     ims_security_token: SecretStr = Field(title="Security Token（可选）", default=SecretStr(""), validation_alias="ALIBABA_CLOUD_SECURITY_TOKEN")
     ims_region_id: str = Field(title="地域", default="cn-shanghai", pattern=r"^[a-z][a-z0-9-]+$", validation_alias="MIX_VIDEO_ALIYUN_IMS_REGION_ID")
     ims_endpoint: str = Field(title="IMS Endpoint", default="ice.cn-shanghai.aliyuncs.com", validation_alias="MIX_VIDEO_ALIYUN_IMS_ENDPOINT")
-
-    def credential_id(self) -> str:
-        """只持久化账号与地域指纹，查询不得混用其他客户端或服务端账号。"""
-        return sha256(f"{self.ims_access_key_id.get_secret_value()}:{self.ims_region_id}".encode()).hexdigest()
 
     @model_validator(mode="after")
     def regional_endpoint(self) -> "ClientSettings":

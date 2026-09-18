@@ -110,7 +110,7 @@ class Runtime:
         task_id = str(uuid4())
         output = settings.output()
         if config is not None:
-            output["client_ims_id"] = config.credential_id()
+            output["client_config"] = True
             self.client_configs[task_id] = config
         try:
             record = await self.sync(store.create, request.model_dump(mode="json", by_alias=True), output, callback_base_url, raw_request, **({"task_id": task_id} if config is not None else {}))
@@ -162,9 +162,8 @@ class Runtime:
             try:
                 if source == "notification":
                     config = self.client_configs.get(record["task_id"])
-                expected = record["data"]["output"].get("client_ims_id")
-                if expected and (config is None or config.credential_id() != expected):
-                    raise ValueError("请使用提交任务的 IMS 账号查询")
+                if record["data"]["output"].get("client_config") and config is None:
+                    raise ValueError("需要客户端 IMS 配置")
                 settings = await self.sync(lambda: Settings(**config.model_dump()) if config is not None else Settings())
                 provider = ims.IMS(settings, region_id=record["data"]["output"]["region_id"])
                 async with asyncio.timeout(settings.composition_http_timeout_seconds):
@@ -222,7 +221,7 @@ class Runtime:
                 capacity = (self.settings.composition_concurrency if self.settings else 2) - len(self.active)
                 if capacity > 0:
                     records = await self.sync(store.pending, list(self.active), capacity)
-                    if records and self.settings is None and any(not item["data"]["output"].get("client_ims_id") for item in records):
+                    if records and self.settings is None and any(not item["data"]["output"].get("client_config") for item in records):
                         settings = await self.sync(Settings)
                         self.settings = settings.model_copy(update={key: SecretStr("") for key in ("ims_access_key_id", "ims_access_key_secret", "ims_security_token")})
                         records = records[:self.settings.composition_concurrency]
@@ -243,9 +242,8 @@ class Runtime:
             if record["status"] in ("succeeded", "failed"):
                 await self._notify(record)
                 return
-            config = self.client_configs.get(record["task_id"])
-            if record["data"]["output"].get("client_ims_id") and config is None:
-                raise CompositionError("client_config_lost", "服务重启后客户端凭据已清除，请重新提交任务", record["stage"])
+            # 客户端任务直接取本任务快照；缺失走已有阶段失败处理，不改用服务器账号。
+            config = self.client_configs[record["task_id"]] if record["data"]["output"].get("client_config") else None
             job.settings = await self.sync(lambda: Settings(**config.model_dump()) if config is not None else Settings())
             if self.settings is None:
                 self.settings = job.settings.model_copy(update={key: SecretStr("") for key in ("ims_access_key_id", "ims_access_key_secret", "ims_security_token")})

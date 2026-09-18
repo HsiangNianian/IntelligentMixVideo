@@ -3127,6 +3127,7 @@ def test_client_models_are_task_scoped_and_not_persisted(settings, monkeypatch):
     application = create_app(settings)
     headers = lambda name: {"X-Remotion-Config": quote(json.dumps({
         "actor_model": name, "actor_api_key": name + "-private", "vision_model": name,
+        "data_dir": "/ignored-client-directory",
     }))}
     with TestClient(application) as client:
         assert client.get("/api/templates/capabilities").json()["models_configured"] is False
@@ -3149,6 +3150,14 @@ def test_client_models_are_task_scoped_and_not_persisted(settings, monkeypatch):
         assert retried.status_code == 202
         assert wait_job(client, retried.json()["id"])["status"] == "answered"
         assert seen[-1] == ("丁", "丁-private")
+        # 消息与重试沿用原入口，不新增模型就绪拦截；未知字段不会覆盖服务器目录。
+        empty = {"X-Remotion-Config": "{}"}
+        response = client.post(f"/api/templates/works/{jobs[1]['work']['id']}/messages", json={"instruction": "继续"}, headers=empty)
+        assert response.status_code == 202
+        assert wait_job(client, response.json()["id"])["status"] == "answered"
+        # 过期任务仍返回原有 409，而非新增的模型未就绪 503。
+        assert client.post(f"/api/templates/jobs/{message.json()['id']}/retry", headers=empty).status_code == 409
+        assert runtime.settings.data_dir == settings.data_dir
         assert not runtime.client_configs
         assert settings.actor_api_key.get_secret_value() == ""
         assert "private" not in client.get(f"/api/templates/works/{work_id}/session").text
@@ -3159,9 +3168,9 @@ def test_client_models_are_task_scoped_and_not_persisted(settings, monkeypatch):
         assert client.post("/api/templates/works", json={"description": "默认配置仍未就绪"}).status_code == 503
 
 
-@pytest.mark.parametrize("value", ["not-json-private", '{"actor_api_key":"private","data_dir":"/tmp"}', '{"actor_api_key":123}'])
+@pytest.mark.parametrize("value", ["not-json-private", '{"actor_api_key":123}'])
 def test_invalid_client_model_header_does_not_echo_secret(settings, value):
-    """坏配置与越权字段拒绝受理，响应不包含请求头里的输入。"""
+    """保留 JSON 与字段类型解析，响应不包含请求头里的输入。"""
     with TestClient(create_app(settings)) as client:
         response = client.post("/api/templates/works", json={"description": "你好"}, headers={"X-Remotion-Config": value})
         assert response.status_code == 422
