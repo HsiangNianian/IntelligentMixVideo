@@ -1,12 +1,39 @@
 /** 动态配置表单、本地存储与切片请求联调；隔离 HTTP/桌面 IPC，执行 bun run test。 */
-import { expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, test } from "bun:test";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { requestSegmentation } from "@/features/segmentation/api";
 import { PluginSettings } from "@/features/settings/PluginSettings";
+import { SettingsDialog } from "@/features/settings/SettingsDialog";
 import { listPlugins, readSettings, saveSettings, type Plugin, type Values } from "@/features/settings/api";
 import { apiBase, setApiBase } from "@/lib/api-base";
 import { fetchMock, mockDesktop } from "./setup";
 import { normalizeValues, schemaError } from "@/features/settings/schema";
+
+// 现有插件用例验证 Debug 路径；普通模式用例显式覆盖，公共夹具逐例重置开关。
+beforeEach(() => { process.env.IMV_DEBUG = "true"; });
+
+// 场景：普通模式无需后端或本地配置即可打开；旧值保留但不进入业务请求。
+test.each([undefined, "false", "TRUE"])("普通模式隔离模块配置：%s", async (mode) => {
+  if (mode === undefined) delete process.env.IMV_DEBUG;
+  else process.env.IMV_DEBUG = mode;
+  const stored = { segmentation: { llm_model: "old-model", llm_api_key: "test-key" } };
+  const invoke = mock(async () => structuredClone(stored));
+  mockDesktop(invoke);
+  render(<SettingsDialog open onOpenChange={() => {}} />);
+  const dialog = await screen.findByRole("dialog", { name: "设置" });
+  expect(within(dialog).getAllByRole("tab")).toHaveLength(1);
+  expect(within(dialog).getByRole("region", { name: "环境与连接" })).toBeTruthy();
+  expect(within(dialog).queryByRole("form")).toBeNull();
+  expect(within(dialog).getByText("当前仅展示客户端设置，服务端配置由服务端环境管理。")).toBeTruthy();
+  expect(fetchMock).not.toHaveBeenCalled();
+  expect(invoke).not.toHaveBeenCalled();
+  fetchMock.mockResolvedValueOnce(Response.json({ segments: [] }));
+  await requestSegmentation({ script: "测试", asr_result: {} });
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ script: "测试", asr_result: {} });
+  expect(invoke).not.toHaveBeenCalled();
+  expect(await readSettings()).toEqual(stored);
+});
 
 /** 与后端目录协议一致，字段由描述控制；API 的真实模型生成在 pytest 中覆盖。 */
 const segmentation: Plugin = {

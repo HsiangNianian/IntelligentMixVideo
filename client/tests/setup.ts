@@ -25,6 +25,7 @@ export function mockDesktop(invoke: (command: string, args: Record<string, unkno
 }
 
 beforeEach(() => {
+  process.env.IMV_DEBUG = "false";
   localStorage.clear();
   fetchMock = spyOn(globalThis, "fetch");
   fetchMock.mockRejectedValue(new Error("测试未配置此网络请求"));

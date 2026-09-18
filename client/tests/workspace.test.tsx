@@ -410,6 +410,7 @@ test.each(["云端", "本地"])("页签切换保留%s模板草稿及未保存保
 
 // 设置弹窗接入首页后保留工作区草稿和懒加载，关闭时丢弃未保存设置，重开读取目录。
 test("侧边按钮打开设置对话框并保留工作区草稿", async () => {
+  process.env.IMV_DEBUG = "true";
   remotionServer((path) => {
     if (path === "/template") return Response.json([]);
     if (path === "/api/settings/plugins") return Response.json([

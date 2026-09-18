@@ -1,5 +1,7 @@
 # 客户端模块设置
 
+仅显式 `IMV_DEBUG=true` 开启服务端模块设置，沿用桌面打包开关；Vite 开发模式不自动开启。普通模式只展示客户端通用面板，不请求插件目录、不读取旧模块配置，切片请求不携带 `config`，服务端继续使用环境配置。旧值保留，切回 Debug 可继续使用。以下插件表单与请求覆盖说明均适用于 Debug。
+
 `SettingsDialog.tsx` 承载现有设置弹窗，`PluginSettings.tsx` 按后端目录生成纵向模块导航，默认显示通用环境与后端地址。切换模块隐藏表单并保留草稿；关闭后丢弃未保存输入，重新打开读取最新目录和本地值。模块列表只来自 `GET /api/settings/plugins`，不会从本地存储的键生成。目录依赖后端服务，读取失败显示提示。
 
 `schema.ts` 在渲染前检查扁平字段子集，在保存前校验并规范化当前字段。支持字符串（含密码、JavaScript Unicode 正则 `pattern`、`minLength/maxLength`）、数字/整数（包含及排除上下界）、布尔值、默认值和必填。空的可选数字从保存对象省略，必填数字为空、小数整数、非有限值或越界均拒绝保存；布尔 `false` 有效。对象、数组、联合类型、枚举、引用以及其他尚未支持的约束明确报错，该模块不生成可保存的表单。这里不是完整 JSON Schema 验证器，后端业务入口仍须校验。
@@ -15,7 +17,7 @@
 1. 在模块自己的 `settings.py` 定义客户端可编辑模型，字段只维护一份。
 2. 在该模块目录新增 `settings_plugin.py`，导出 `SETTINGS_PLUGIN = {"id": "稳定唯一 ID", "name": "显示名称", "schema": ClientSettings.model_json_schema()}`。不要实例化 Settings 或导出实际配置值；入口及父包导入不能连接外部服务、启动任务或依赖已填写的凭据。
 3. 公共 `server/settings_plugins.py` 在导入时按目录名排序扫描一级模块的入口，检查基本结构和重复 ID。无需修改公共名单；坏描述和导入错误直接失败，不吞异常。
-4. 模块的客户端业务 API 在执行时调用 `readSettings()` 读取自身 ID 的配置，随请求传给后端；后端仅对该次调用使用配置，不能修改共享实例。公共设置层不分发业务请求。
+4. 模块的客户端业务 API 仅在 `IMV_DEBUG=true` 时调用 `readSettings()` 读取自身 ID 的配置，随请求传给后端；后端仅对该次调用使用配置，不能修改共享实例。公共设置层不分发业务请求。
 
 增删入口文件后需重启后端，再重新打开设置。移除入口只移除设置项，本地旧值保留；同一 ID 再接入可恢复旧值。扫描仅面向普通文件系统包，不递归发现、不监听目录、不热卸载 Python 代码。删除整个业务目录仍需处理应用路由和模块依赖，本改造不提供业务插件框架。
 
@@ -23,7 +25,7 @@
 
 ## 开发联调
 
-启动后端和 Vite，打开设置填写切片 API 地址、Key 和模型，点击保存。Vite 开发页面的控制台可以使用以下入口（会真实调用模型，传入自己的 ASR 对象）：
+启动后端，并在 `client/` 下用 `IMV_DEBUG=true bun run dev` 启动 Vite，打开设置填写切片 API 地址、Key 和模型，点击保存。Vite 开发页面的控制台可以使用以下入口（会真实调用模型，传入自己的 ASR 对象）：
 
 ```js
 const { requestSegmentation } = await import('/src/features/segmentation/api.ts');
@@ -39,7 +41,7 @@ cargo test --locked --manifest-path client/src-tauri/Cargo.toml --lib settings
 # client/ 下
 bun run test settings.test.tsx workspace.test.tsx
 bun run build
-# 另启动 Vite 后执行原生数字输入回归（可用 IMV_CHROME_PATH 指定 Chromium）
+# 另以 IMV_DEBUG=true 启动 Vite 后执行原生数字输入回归（可用 IMV_CHROME_PATH 指定 Chromium）
 IMV_BROWSER_URL=http://localhost:1420 bun tests/settings.browser.mjs
 ```
 

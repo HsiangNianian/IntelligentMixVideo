@@ -117,6 +117,11 @@ export function PluginSettings() {
   const [error, setError] = useState("");
   const [active, setActive] = useState(GENERAL_TAB);
   useEffect(() => {
+    // 普通模式只显示客户端通用面板，不读取目录或遗留的服务端模块配置。
+    if (import.meta.env.IMV_DEBUG !== "true") {
+      setData({ plugins: [], values: {} });
+      return;
+    }
     const controller = new AbortController();
     Promise.all([listPlugins(controller.signal), readSettings()]).then(([plugins, values]) => {
       if (!controller.signal.aborted) setData({ plugins, values });
