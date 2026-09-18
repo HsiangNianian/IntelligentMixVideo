@@ -1,5 +1,5 @@
-# 桌面页面仅可访问已有模板存储和内置服务启动命令；Windows 的 URL 在绑定端口后精确授权。
+# 桌面页面可访问模板、设置存储和内置服务启动命令；Windows 的 URL 在绑定端口后精确授权。
 [[permission]]
 identifier = "desktop-commands"
-description = "Use local templates and start the bundled debug backend"
-commands.allow = ["local_templates", "start_backend"]
+description = "Use local templates, settings and start the bundled debug backend"
+commands.allow = ["local_templates", "local_settings", "start_backend"]

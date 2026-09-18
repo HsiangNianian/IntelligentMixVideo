@@ -4,6 +4,7 @@
 mod localhost;
 
 mod backend;
+mod settings;
 mod templates;
 
 /// Windows 只为当前窗口的准确资源 URL 授权，其他 localhost 端口和远程域名均不匹配。
@@ -40,6 +41,7 @@ pub fn run() {
         .manage(backend::Backend::default())
         .invoke_handler(tauri::generate_handler![
             templates::local_templates,
+            settings::local_settings,
             backend::start_backend
         ])
         .setup(|app| {
@@ -89,13 +91,19 @@ mod tests {
         true
     }
 
+    /// 隔离真实设置文件读写，仅检查命令来源权限。
+    #[tauri::command]
+    fn local_settings() -> bool {
+        true
+    }
+
     /// 用真实权限清单验证准确 URL 可调用，其他端口、域名和窗口均被拒绝。
     #[test]
     fn localhost_ipc_is_limited_to_the_bound_page() {
         let mut context = tauri::generate_context!();
         context.config_mut().app.windows.clear();
         let app = tauri::test::mock_builder()
-            .invoke_handler(tauri::generate_handler![start_backend])
+            .invoke_handler(tauri::generate_handler![start_backend, local_settings])
             .build(context)
             .unwrap();
         let url = "http://localhost:23456/".parse().unwrap();
@@ -110,23 +118,25 @@ mod tests {
                 "http://localhost:23457/",
                 "https://example.com/",
             ] {
-                let result = tauri::test::get_ipc_response(
-                    &view,
-                    tauri::webview::InvokeRequest {
-                        cmd: "start_backend".into(),
-                        callback: tauri::ipc::CallbackFn(0),
-                        error: tauri::ipc::CallbackFn(1),
-                        url: origin.parse().unwrap(),
-                        body: tauri::ipc::InvokeBody::default(),
-                        headers: Default::default(),
-                        invoke_key: tauri::test::INVOKE_KEY.into(),
-                    },
-                );
-                assert_eq!(
-                    result.is_ok(),
-                    label == "main" && origin == url.as_str(),
-                    "{label}: {origin}"
-                );
+                for command in ["start_backend", "local_settings"] {
+                    let result = tauri::test::get_ipc_response(
+                        &view,
+                        tauri::webview::InvokeRequest {
+                            cmd: command.into(),
+                            callback: tauri::ipc::CallbackFn(0),
+                            error: tauri::ipc::CallbackFn(1),
+                            url: origin.parse().unwrap(),
+                            body: tauri::ipc::InvokeBody::default(),
+                            headers: Default::default(),
+                            invoke_key: tauri::test::INVOKE_KEY.into(),
+                        },
+                    );
+                    assert_eq!(
+                        result.is_ok(),
+                        label == "main" && origin == url.as_str(),
+                        "{command}: {label}: {origin}"
+                    );
+                }
             }
         }
     }

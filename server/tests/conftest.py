@@ -33,7 +33,7 @@ def isolate_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 
     from server.config_base import CommonSettings
     from server.__main__ import ServerSettings
-    from server.settings import Settings as RemotionSettings
+    from server.remotion_templates.settings import Settings as RemotionSettings
     from server.segmentation.settings import Settings as SegmentationSettings
     from server.video_composition.settings import Settings as CompositionSettings
 
@@ -44,8 +44,8 @@ def isolate_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         RemotionSettings, SegmentationSettings, CompositionSettings,
     ):
         monkeypatch.setitem(settings_class.model_config, "env_file", env_file)
-    # 首次导入仍读取一次，但此时基类已指向隔离文件；后续用例覆盖已创建的子类。
-    from server.asr.asr import ASRSettings
+    # 只导入字段声明；业务首次加载时使用本例隔离文件。
+    from server.asr.settings import ASRSettings
     monkeypatch.setitem(ASRSettings.model_config, "env_file", env_file)
 
 

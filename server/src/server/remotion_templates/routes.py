@@ -18,6 +18,8 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 
+from ..client_config import parse_config
+from .settings import ClientSettings
 from .evidence import digest, verify_artifacts
 from .history import SessionSnapshot, WorkPage
 from .media import save_image
@@ -57,8 +59,16 @@ async def runtime(request: Request) -> Runtime:
 Service = Annotated[Runtime, Depends(runtime)]
 
 
+def client_config(value: Annotated[str | None, Header(alias="X-Remotion-Config")] = None) -> ClientSettings | None:
+    """模型配置只来自当前请求头，不进入作品、聊天或任务输入持久化。"""
+    return parse_config(value, ClientSettings)
+
+
+Config = Annotated[ClientSettings | None, Depends(client_config)]
+
+
 @router.get("/capabilities", tags=["服务能力"], summary="查询服务能力")
-def capabilities(service: Service) -> dict:
+def capabilities(service: Service, config: Config) -> dict:
     """查询支持的输入类型、可用字体及模型配置是否就绪。
 
     当前支持文字描述和图片，不支持视频；响应不包含模型密钥。
@@ -66,7 +76,7 @@ def capabilities(service: Service) -> dict:
     return {
         "inputs": ["description", "image"],
         "video_supported": False,
-        "models_configured": service.settings.models_configured,
+        "models_configured": (service.settings.model_copy(update=config.model_dump()) if config is not None else service.settings).models_configured,
         "fonts": [{"family": "Noto Sans CJK SC", "weights": [400, 700]}],
     }
 
@@ -98,21 +108,20 @@ async def upload(service: Service, file: Annotated[UploadFile, File()]) -> Asset
 
 @router.post("/works", status_code=202, tags=["模板作品"], summary="创建作品并生成模板")
 async def create(
-    request: GenerateTemplateRequest, service: Service
+    request: GenerateTemplateRequest, service: Service, config: Config
 ) -> dict[str, TemplateProject | PublicJob]:
     """根据文字描述和／或参考图片创建作品，并提交异步生成任务。
 
     `description` 与 `image` 至少提供一种；可通过 `composition` 设置画布和时长。
     返回 202 及 `work`、`job`，随后使用任务 ID 查询进度；模型未配置时返回 503。
     """
-    if not service.settings.models_configured:
-        raise HTTPException(
-            503, "Configure actor and vision models in the server environment."
-        )
+    settings = service.settings.model_copy(update=config.model_dump()) if config is not None else service.settings
+    if not settings.models_configured:
+        raise HTTPException(503, "请配置 Actor 和视觉模型及密钥")
     if request.image:
         service.store.asset(request.image.asset_id)
     project, job = service.store.create(request)
-    service.notify()
+    service.notify(job.id, config)
     return {"work": project, "job": PublicJob.from_job(job)}
 
 
@@ -162,7 +171,7 @@ def work(work_id: UUID, service: Service) -> TemplateProject:
     tags=["模板作品"],
     summary="提问、修改模板或回答澄清问题",
 )
-async def edit(work_id: UUID, request: TaskMessage, service: Service) -> PublicJob:
+async def edit(work_id: UUID, request: TaskMessage, service: Service, config: Config) -> PublicJob:
     """通过参数补丁 `parameters` 或自然语言 `instruction` 修改模板，两者必须二选一。
 
     默认基于当前成功版本，也可用 `base_version_id` 指定历史成功版本。
@@ -173,7 +182,7 @@ async def edit(work_id: UUID, request: TaskMessage, service: Service) -> PublicJ
     尚无成功版本的会话也可继续提问或描述生成需求；参数修改仍须已有成功版本。
     """
     try:
-        return PublicJob.from_job(service.message(work_id, request))
+        return PublicJob.from_job(service.message(work_id, request, config))
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 
@@ -266,12 +275,12 @@ async def cancel(job_id: UUID, service: Service) -> PublicJob:
     tags=["生成任务"],
     summary="重试生成任务",
 )
-async def retry(job_id: UUID, service: Service) -> PublicJob:
+async def retry(job_id: UUID, service: Service, config: Config) -> PublicJob:
     """为失败、已取消或中断的任务创建一次新的执行，返回新的任务 ID。
 
     保留原任务记录及产物，不从中断位置续跑；不符合重试条件时返回 409。
     """
-    return PublicJob.from_job(service.retry(job_id))
+    return PublicJob.from_job(service.retry(job_id, config=config))
 
 
 def artifact_path(service: Runtime, version_id: UUID, filename: str) -> Path:

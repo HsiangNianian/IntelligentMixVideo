@@ -25,7 +25,7 @@ from fastapi import FastAPI
 
 from server import database, desktop
 from server.remotion_templates.renderer import Renderer
-from server.settings import Settings
+from server.remotion_templates.settings import Settings
 
 BUNDLE = os.environ.get("IMV_TEST_BUNDLE")
 APPDIR = os.environ.get("IMV_TEST_APPDIR")
@@ -48,7 +48,7 @@ def test_desktop_config_preserves_credentials_and_uses_private_paths(tmp_path, m
         if key == "IMV_ACTOR_API_KEY":
             monkeypatch.delenv(key)
     monkeypatch.chdir(tmp_path)
-    desktop.configure(runtime, data, tmp_path / "mysql.sock")
+    assert desktop.configure(runtime, data, tmp_path / "mysql.sock") == 0
     assert os.environ["IMV_ACTOR_API_KEY"] == "user-config"
     assert os.environ["DB_HOST"] == "localhost"
     assert os.environ["IMV_DATA_DIR"] == str(data / "remotion")
@@ -59,6 +59,50 @@ def test_desktop_config_preserves_credentials_and_uses_private_paths(tmp_path, m
     assert settings.data_dir == data / "remotion"
     assert settings.runtime_lib_dir == runtime / "lib"
     assert database.DatabaseSettings().socket == str(tmp_path / "mysql.sock")
+
+
+def test_debug_local_settings_are_loaded_before_business(tmp_path, monkeypatch):
+    """本地配置覆盖内置默认值供实际配置类读取；路径/端口生效，数据库和原文件不变。"""
+    from server.asr.settings import ASRSettings
+    from server.segmentation.settings import Settings as SegmentationSettings
+    from server.video_composition.settings import Settings as CompositionSettings
+
+    monkeypatch.setattr(os, "environ", os.environ.copy())
+    monkeypatch.chdir(tmp_path)
+    runtime, data = tmp_path / "runtime", tmp_path / "backend"
+    runtime.mkdir()
+    data.mkdir()
+    (data / ".env").write_text("IMV_ACTOR_MODEL=server-default\n")
+    saved = {
+        "startup": {"port": 23456, "DB_HOST": "ignored.test"},
+        "remotion_agent": {"actor_model": "client-model", "max_tokens": 45000, "job_timeout_seconds": 90,
+                           "data_dir": "custom-data", "runtime_lib_dir": "", "enforce_model_budget": False},
+        "asr": {"dashscope_api_key": "client-asr"},
+        "segmentation": {"llm_base_url": "https://model.test", "llm_api_key": "client-key", "llm_model": "client-model", "allow_insecure_llm_http": False},
+        "ims": {"ims_access_key_id": "client-id", "ims_access_key_secret": "client-secret",
+                "match_base_url": "https://match.test", "match_authorization": "client-match", "composition_width": 640},
+        "database": {"host": "ignored.test"},
+    }
+    path = tmp_path / "data/settings/settings.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(saved))
+    assert desktop.configure(runtime, data, tmp_path / "mysql.sock") == 23456
+    models = Settings()
+    assert (models.actor_model, models.max_tokens, models.job_timeout_seconds) == ("client-model", 45000, 90)
+    assert models.data_dir == data / "custom-data" and models.runtime_lib_dir == runtime / "lib"
+    assert not models.enforce_model_budget and not SegmentationSettings().allow_insecure_llm_http
+    assert ASRSettings().dashscope_api_key.get_secret_value() == "client-asr"
+    composition = CompositionSettings()
+    assert composition.composition_width == 640 and composition.match_base_url == "https://match.test"
+    assert composition.ims_access_key_secret.get_secret_value() == "client-secret"
+    assert composition.match_authorization.get_secret_value() == "client-match"
+    assert database.DatabaseSettings().host == "localhost"
+    assert (data / ".env").read_text() == "IMV_ACTOR_MODEL=server-default\n"
+    assert json.loads(path.read_text()) == saved
+    saved["startup"]["port"] = 0
+    path.write_text(json.dumps(saved))
+    with pytest.raises(ValueError):
+        desktop.configure(runtime, data, tmp_path / "mysql.sock")
 
 
 @pytest.mark.parametrize("key", ["IMV_VISION_API_KEY", "DASHSCOPE_API_KEY", "COMPOSITION_PUBLIC_BASE_URL", "SEGMENT_MATCH_AUTHORIZATION", "ALIBABA_CLOUD_ACCESS_KEY_SECRET", "PORT", "imv_llm_api_key"])
@@ -245,7 +289,7 @@ def test_bundle_real_renderer(bundle, tmp_path):
 import asyncio, sys
 from pathlib import Path
 from server.desktop import configure
-from server.settings import load_settings
+from server.remotion_templates.settings import load_settings
 from server.remotion_templates.renderer import Renderer
 from server.remotion_templates.models import TemplateCandidate, TemplateSpec, CompositionConfig, TextLayer
 from server.remotion_templates.harness import controls

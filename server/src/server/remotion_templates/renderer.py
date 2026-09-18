@@ -8,7 +8,7 @@ import shutil
 import signal
 from pathlib import Path
 
-from ..settings import Settings
+from .settings import Settings
 from .evidence import digest
 from .image_comparison import consistency_checks
 from .models import (

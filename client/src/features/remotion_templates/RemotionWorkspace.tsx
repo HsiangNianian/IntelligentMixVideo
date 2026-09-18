@@ -41,7 +41,7 @@ export function RemotionWorkspace() {
           setServiceError(
             result.models_configured
               ? ""
-              : "字效服务尚未配置模型，请先完成服务端配置。",
+              : "字效模型尚未就绪，请在设置中填写 Remotion Agent 配置后点击重新连接。",
           );
       })
       .catch((error) => {
