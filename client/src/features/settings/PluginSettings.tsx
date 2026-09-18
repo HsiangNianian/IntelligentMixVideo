@@ -45,32 +45,30 @@ function PluginForm({ plugin, saved }: { plugin: Plugin; saved?: Values }) {
     Object.entries(plugin.schema.properties).map(([key, field]) => [key, saved?.[key] ?? field.default ?? (field.type === "boolean" ? false : "")]),
   ));
   const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState("");
-  const [error, setError] = useState("");
+  const [feedback, setFeedback] = useState<{ text: string; role: "status" | "alert" }>();
   return (
     <form noValidate aria-labelledby={id} className="flex h-full min-h-0 flex-col" onSubmit={async (event) => {
       event.preventDefault();
       if (saving) return;
-      setMessage("");
-      setError("");
+      setFeedback(undefined);
       // 浏览器可能把未完成的数字（如 1e）暴露为空字符串，不能当成用户清空可选值。
       if (Array.from(event.currentTarget.querySelectorAll<HTMLInputElement>('input[type="number"]')).some(input => input.validity.badInput)) {
-        setError("请输入有效数字");
+        setFeedback({ text: "请输入有效数字", role: "alert" });
         return;
       }
       let normalized: Values;
       try {
         normalized = normalizeValues(plugin, values);
       } catch (reason) {
-        setError((reason as Error).message);
+        setFeedback({ text: (reason as Error).message, role: "alert" });
         return;
       }
       setSaving(true);
       try {
         await saveSettings(plugin.id, normalized);
-        setMessage(isTauri() ? "已保存到当前客户端" : "已保存到当前页面，刷新后丢失");
+        setFeedback({ text: isTauri() ? "已保存到当前客户端" : "已保存到当前页面，刷新后丢失", role: "status" });
       } catch {
-        setError("保存设置失败");
+        setFeedback({ text: "保存设置失败", role: "alert" });
       } finally {
         setSaving(false);
       }
@@ -93,11 +91,9 @@ function PluginForm({ plugin, saved }: { plugin: Plugin; saved?: Values }) {
               step={field.type === "integer" ? 1 : "any"}
               autoComplete="off"
               onChange={(event) => {
-                const text = event.target.value;
-                const value = field.type === "boolean" ? event.target.checked : text;
+                const value = field.type === "boolean" ? event.target.checked : event.target.value;
                 setValues((current) => ({ ...current, [key]: value }));
-                setMessage("");
-                setError("");
+                setFeedback(undefined);
               }}
             />
           </div>
@@ -106,8 +102,9 @@ function PluginForm({ plugin, saved }: { plugin: Plugin; saved?: Values }) {
       </div>
       {/* 操作区独立于字段滚动，长表单仍可随时保存并查看反馈。 */}
       <div className="flex shrink-0 flex-wrap items-center justify-end gap-3 border-t bg-background px-5 py-4 sm:px-8">
-        {message && <p role="status" className="min-w-0 flex-1 text-xs leading-5 text-muted-foreground">{message}</p>}
-        {error && <p role="alert" className="min-w-0 flex-1 text-sm text-destructive">{error}</p>}
+        {feedback && <p role={feedback.role} className={feedback.role === "alert"
+          ? "min-w-0 flex-1 text-sm text-destructive"
+          : "min-w-0 flex-1 text-xs leading-5 text-muted-foreground"}>{feedback.text}</p>}
         <Button type="submit" disabled={saving} className="h-9 min-w-20 rounded-md px-5">{saving ? "保存中…" : "保存"}</Button>
       </div>
     </form>
@@ -118,7 +115,7 @@ function PluginForm({ plugin, saved }: { plugin: Plugin; saved?: Values }) {
 export function PluginSettings() {
   const [data, setData] = useState<{ plugins: Plugin[]; values: Record<string, Values> }>();
   const [error, setError] = useState("");
-  const [selected, setSelected] = useState<string>();
+  const [active, setActive] = useState(GENERAL_TAB);
   useEffect(() => {
     const controller = new AbortController();
     Promise.all([listPlugins(controller.signal), readSettings()]).then(([plugins, values]) => {
@@ -128,12 +125,11 @@ export function PluginSettings() {
     });
     return () => controller.abort();
   }, []);
-  const active = selected ?? GENERAL_TAB;
   return (
     <section aria-label="模块设置" className="flex min-h-0 min-w-0 flex-1 flex-col">
       {error ? <p role="alert" className="p-4 sm:p-6">{error}</p> : !data ? <p role="status" className="p-4 sm:p-6">正在读取设置…</p>
         : (
-          <Tabs orientation="vertical" value={active} onValueChange={setSelected} className="min-h-0 flex-1 gap-0">
+          <Tabs orientation="vertical" value={active} onValueChange={setActive} className="min-h-0 flex-1 gap-0">
             <div className="w-14 shrink-0 overflow-y-auto border-r bg-muted/40 p-2 sm:w-52 sm:p-3">
               <TabsList aria-label="设置模块" className="w-full gap-1 rounded-none bg-transparent p-0">
                 <TabsTrigger value={GENERAL_TAB} title="通用" className={navTriggerClass}>

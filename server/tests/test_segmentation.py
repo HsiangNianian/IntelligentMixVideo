@@ -672,3 +672,15 @@ def test_concurrent_calls_keep_independent_model_connections(monkeypatch):
     assert all(result["segments"][0]["text"] == "甲乙丙丁" for result in results)
     assert sorted(calls) == [(name, name, f"https://{name}.test/v1") for name in ("first", "first", "second", "second")]
     assert sorted(closed) == ["first", "second"]
+
+
+def test_settings_plugin_schema():
+    """切片公开连接字段、密码输入和超时默认值，允许扩展其他字段。"""
+    from server.segmentation.settings_plugin import SETTINGS_PLUGIN
+
+    assert SETTINGS_PLUGIN["id"] == "segmentation"
+    schema = SETTINGS_PLUGIN["schema"]
+    assert {"llm_base_url", "llm_api_key", "llm_model", "llm_timeout_seconds", "llm_max_retries"} <= schema["properties"].keys()
+    assert schema["properties"]["llm_api_key"]["format"] == "password"
+    assert schema["properties"]["llm_timeout_seconds"]["default"] == 120
+    assert {"llm_base_url", "llm_api_key", "llm_model"} <= set(schema["required"])

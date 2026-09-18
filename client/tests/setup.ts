@@ -14,7 +14,7 @@ const { cleanup } = await import("@testing-library/react");
 /** 默认拒绝未声明的请求，各测试只配置自己需要的响应，不连接实际服务。 */
 export let fetchMock: ReturnType<typeof spyOn<typeof globalThis, "fetch">>;
 
-/** 模拟桌面标记和 IPC，不注入全局 API；返回清理函数恢复普通浏览器环境。 */
+/** 模拟桌面标记和 IPC，不注入全局 API；用例结束自动清理，也可用返回函数提前恢复浏览器环境。 */
 export function mockDesktop(invoke: (command: string, args: Record<string, unknown>) => Promise<unknown>) {
   Reflect.set(globalThis, "isTauri", true);
   mockIPC((command, args) => invoke(command, args as Record<string, unknown>));
@@ -32,5 +32,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  clearMocks();
+  Reflect.deleteProperty(globalThis, "isTauri");
   mock.restore();
 });

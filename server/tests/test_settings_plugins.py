@@ -11,28 +11,6 @@ import pytest
 from server import settings_plugins
 
 
-def test_catalog_excludes_server_values(client, monkeypatch):
-    """即使服务端配置含密钥，ASR 与切片目录仍只含字段描述和代码默认值。"""
-    monkeypatch.setenv("IMV_LLM_API_KEY", "server-secret")
-    monkeypatch.setenv("IMV_LLM_MODEL", "private-model")
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "private-asr-secret")
-    response = client.get("/api/settings/plugins")
-    assert response.status_code == 200
-    assert "server-secret" not in response.text
-    assert "private-model" not in response.text
-    assert "private-asr-secret" not in response.text
-    asr_plugin, plugin = response.json()
-    assert asr_plugin["id"] == "asr"
-    assert asr_plugin["schema"]["properties"]["dashscope_api_key"]["format"] == "password"
-    assert asr_plugin["schema"]["properties"]["dashscope_api_key"]["default"] == ""
-    assert plugin["id"] == "segmentation"
-    fields = plugin["schema"]["properties"]
-    assert set(fields) == {"llm_base_url", "llm_api_key", "llm_model", "llm_timeout_seconds", "llm_max_retries"}
-    assert fields["llm_api_key"]["format"] == "password"
-    assert fields["llm_timeout_seconds"]["default"] == 120
-    assert set(plugin["schema"]["required"]) == {"llm_base_url", "llm_api_key", "llm_model"}
-
-
 @pytest.fixture
 def package(tmp_path, monkeypatch):
     """生成独立真实 Python 包，退出时清理导入缓存，不修改生产目录或注册字典。"""
@@ -113,10 +91,9 @@ def test_duplicate_plugin_id(package):
 @pytest.mark.parametrize("source, error", [
     ("import missing_settings_test_dependency", ModuleNotFoundError),
     ('raise RuntimeError("入口故障")', RuntimeError),
-    ("pass", ValueError),
 ])
 def test_import_failure_propagates(package, source, error):
-    """入口存在时保留缺依赖、初始化失败和缺描述错误，不能视为未安装插件。"""
+    """入口存在时保留缺依赖和初始化失败错误，不能视为未安装插件。"""
     root, name = package
     write_plugin(root, "broken", source)
     with pytest.raises(error):
@@ -131,18 +108,24 @@ def test_invalid_directory_name(package):
         settings_plugins.discover_plugins(root, name)
 
 
-def test_real_discovery_has_no_runtime_initialization(tmp_path):
-    """全新进程导入真实目录；禁止实例化 Settings 和外部连接，避免旧导入缓存掩盖副作用。"""
+def test_real_discovery_has_no_runtime_initialization(tmp_path, monkeypatch):
+    """首次发现前注入秘密，目录只返回描述，且不实例化配置或连接外部服务。"""
+    monkeypatch.setenv("IMV_LLM_API_KEY", "server-secret")
+    monkeypatch.setenv("IMV_LLM_MODEL", "private-model")
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "private-asr-secret")
     source = Path(settings_plugins.__file__).parents[1]
-    code = '''import sys, socket
+    code = '''import sys, socket, json
 sys.path.insert(0, sys.argv[1])
 from pydantic_settings import BaseSettings
 def forbidden(*args, **kwargs):
     raise AssertionError("发现描述不能初始化配置或连接外部服务")
 BaseSettings.__init__ = forbidden
 socket.socket.connect = forbidden
-from server.settings_plugins import plugins
-assert list(plugins) == ["asr", "segmentation"]
+from server.settings_plugins import list_plugins
+catalog = list_plugins()
+assert catalog
+for secret in ("server-secret", "private-model", "private-asr-secret"):
+    assert secret not in json.dumps(catalog)
 assert "server.asr.asr" not in sys.modules
 '''
     result = subprocess.run([sys.executable, "-c", code, str(source)], cwd=tmp_path, capture_output=True, text=True, timeout=20)

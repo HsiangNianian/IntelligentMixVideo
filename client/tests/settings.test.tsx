@@ -1,12 +1,12 @@
 /** 动态配置表单、本地存储与切片请求联调；隔离 HTTP/桌面 IPC，执行 bun run test。 */
-import { expect, test } from "bun:test";
+import { expect, mock, test } from "bun:test";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { requestSegmentation } from "@/features/segmentation/api";
 import { PluginSettings } from "@/features/settings/PluginSettings";
 import { listPlugins, readSettings, saveSettings, type Plugin, type Values } from "@/features/settings/api";
 import { apiBase, setApiBase } from "@/lib/api-base";
 import { fetchMock, mockDesktop } from "./setup";
-import { normalizeValues } from "@/features/settings/schema";
+import { normalizeValues, schemaError } from "@/features/settings/schema";
 
 /** 与后端目录协议一致，字段由描述控制；API 的真实模型生成在 pytest 中覆盖。 */
 const segmentation: Plugin = {
@@ -36,7 +36,7 @@ async function openModule(name: string) {
 // 场景：桌面启动后设置目录与切片请求使用实际端口，不缓存模块加载时的地址。
 test("设置和切片跟随内置后端运行时地址", async () => {
   const original = apiBase();
-  const restore = mockDesktop(async () => ({}));
+  mockDesktop(async () => ({}));
   try {
     setApiBase("http://127.0.0.1:43213/");
     fetchMock.mockResolvedValueOnce(Response.json([segmentation]));
@@ -47,107 +47,103 @@ test("设置和切片跟随内置后端运行时地址", async () => {
     expect(fetchMock.mock.calls.at(-1)?.[0]).toBe("http://127.0.0.1:43213/segmentations");
   } finally {
     setApiBase(original);
-    restore();
   }
 });
 
-// 场景：真实表单保存后卸载重开恢复值，切片请求读取已保存快照且不改变本地配置。
+// 场景：非法值阻止写入，修正后保存规范化值；重开恢复配置，切片请求只读已保存快照。
 test("保存切片设置并携带本地配置请求切片", async () => {
   let stored: Record<string, Values> = {};
-  const restore = mockDesktop(async (command, args) => {
+  const invoke = mock(async (command: string, args: Record<string, unknown>) => {
     expect(command).toBe("local_settings");
     if (args?.id) stored = { ...stored, [String(args.id)]: structuredClone(args.values as Values) };
     return structuredClone(stored);
   });
-  try {
-    fetchMock.mockResolvedValue(Response.json([segmentation]));
-    const view = render(<PluginSettings />);
-    await openModule("文案切片");
-    await screen.findByRole("heading", { name: "文案切片" });
-    expect(String(fetchMock.mock.calls[0][0])).toBe("http://api.test:8000/api/settings/plugins");
-    expect(screen.getByLabelText<HTMLInputElement>("请求超时（秒）").value).toBe("120");
-    expect(screen.getByLabelText<HTMLInputElement>("API Key").type).toBe("password");
-    fireEvent.change(screen.getByLabelText("模型 API 地址"), { target: { value: "https://client.test/v1" } });
-    fireEvent.change(screen.getByLabelText("API Key"), { target: { value: "client-test-key" } });
-    fireEvent.change(screen.getByLabelText("模型名称"), { target: { value: "client-model" } });
-    fireEvent.change(screen.getByLabelText("请求超时（秒）"), { target: { value: "8.5" } });
-    fireEvent.submit(screen.getByRole("form", { name: "文案切片" }));
-    await screen.findByText("已保存到当前客户端");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    view.unmount();
-    fetchMock.mockResolvedValue(Response.json([segmentation]));
-    render(<PluginSettings />);
-    await openModule("文案切片");
-    await screen.findByDisplayValue("client-model");
-    const saved = structuredClone(stored);
-    // 草稿修改不应提前进入请求使用的已保存配置。
-    fireEvent.change(screen.getByLabelText("模型名称"), { target: { value: "unsaved-model" } });
-    fetchMock.mockResolvedValueOnce(Response.json({ segments: [{ text: "甲乙" }] }));
-    expect(await requestSegmentation({ script: "甲乙", asr_result: {} })).toEqual({ segments: [{ text: "甲乙" }] });
-    const [url, options] = fetchMock.mock.calls.at(-1)!;
-    expect(String(url)).toBe("http://api.test:8000/segmentations");
-    expect(JSON.parse(String(options?.body))).toEqual({ script: "甲乙", asr_result: {}, config: saved.segmentation });
-    expect(stored).toEqual(saved);
-  } finally { restore(); }
+  mockDesktop(invoke);
+  fetchMock.mockResolvedValueOnce(Response.json([segmentation]));
+  const view = render(<PluginSettings />);
+  await openModule("文案切片");
+  expect(screen.getByLabelText<HTMLInputElement>("请求超时（秒）").value).toBe("120");
+  expect(screen.getByLabelText<HTMLInputElement>("API Key").type).toBe("password");
+  fireEvent.change(screen.getByLabelText("模型 API 地址"), { target: { value: "https://client.test/v1" } });
+  fireEvent.change(screen.getByLabelText("API Key"), { target: { value: "client-test-key" } });
+  fireEvent.change(screen.getByLabelText("模型名称"), { target: { value: "client-model" } });
+  invoke.mockClear();
+  fireEvent.change(screen.getByLabelText("请求超时（秒）"), { target: { value: "0" } });
+  fireEvent.submit(screen.getByRole("form", { name: "文案切片" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("必须大于");
+  expect(invoke).not.toHaveBeenCalled();
+  fireEvent.change(screen.getByLabelText("请求超时（秒）"), { target: { value: "8.5" } });
+  fireEvent.submit(screen.getByRole("form", { name: "文案切片" }));
+  await screen.findByText("已保存到当前客户端");
+  expect(invoke).toHaveBeenCalledTimes(1);
+  expect(invoke).toHaveBeenCalledWith("local_settings", { id: "segmentation", values: {
+    llm_base_url: "https://client.test/v1", llm_api_key: "client-test-key", llm_model: "client-model",
+    llm_timeout_seconds: 8.5, llm_max_retries: 1,
+  } });
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  view.unmount();
+  fetchMock.mockResolvedValueOnce(Response.json([segmentation]));
+  render(<PluginSettings />);
+  await openModule("文案切片");
+  await screen.findByDisplayValue("client-model");
+  const saved = structuredClone(stored);
+  // 草稿修改不应提前进入请求使用的已保存配置。
+  fireEvent.change(screen.getByLabelText("模型名称"), { target: { value: "unsaved-model" } });
+  fetchMock.mockResolvedValueOnce(Response.json({ segments: [{ text: "甲乙" }] }));
+  expect(await requestSegmentation({ script: "甲乙", asr_result: {} })).toEqual({ segments: [{ text: "甲乙" }] });
+  const [, options] = fetchMock.mock.calls.at(-1)!;
+  expect(JSON.parse(String(options?.body))).toEqual({ script: "甲乙", asr_result: {}, config: saved.segmentation });
+  expect(stored).toEqual(saved);
 });
 
-// 场景：ASR 插入和拔出后重新打开设置反映目录变化，移除不删除本地配置；默认选中通用面板。
-test("第二个模块按目录插拔且保留已保存值", async () => {
+// 场景：目录变化反映到导航，切换保留草稿；移除模块不发起任何设置写入。
+test("模块目录变化不改写已保存配置", async () => {
   const stored = { asr: { dashscope_api_key: "asr-test-key" } };
-  const restore = mockDesktop(async () => structuredClone(stored));
-  try {
-    fetchMock.mockResolvedValueOnce(Response.json([segmentation, asr]));
-    const first = render(<PluginSettings />);
-    const navigation = await screen.findByRole("tablist", { name: "设置模块" });
-    expect(navigation.getAttribute("aria-orientation")).toBe("vertical");
-    expect(within(navigation).getAllByRole("tab")).toHaveLength(3);
-    expect(screen.getByRole("tab", { name: "通用" }).getAttribute("aria-selected")).toBe("true");
-    expect(screen.getByRole("region", { name: "环境与连接" })).toBeTruthy();
-    expect(screen.queryByRole("form")).toBeNull();
-    await openModule("文案切片");
-    fireEvent.change(screen.getByLabelText("模型名称"), { target: { value: "未保存模型" } });
-    fireEvent.mouseDown(screen.getByRole("tab", { name: "语音识别" }), { button: 0 });
-    await screen.findByRole("heading", { name: "语音识别" });
-    expect(screen.queryByRole("form", { name: "文案切片" })).toBeNull();
-    expect(screen.getByLabelText<HTMLInputElement>("Dashscope Api Key").value).toBe("asr-test-key");
-    expect(within(screen.getByRole("form", { name: "语音识别" })).getByRole("button", { name: "保存" })).toBeTruthy();
-    fireEvent.keyDown(screen.getByRole("tab", { name: "语音识别" }), { key: "ArrowUp" });
-    await waitFor(() => expect(screen.getByRole("tab", { name: "文案切片" }).getAttribute("aria-selected")).toBe("true"));
-    expect(within(screen.getByRole("form", { name: "文案切片" })).getByDisplayValue("未保存模型")).toBeTruthy();
-    first.unmount();
-    fetchMock.mockResolvedValueOnce(Response.json([segmentation]));
-    const second = render(<PluginSettings />);
-    await openModule("文案切片");
-    await screen.findByRole("heading", { name: "文案切片" });
-    expect(screen.queryByRole("heading", { name: "语音识别" })).toBeNull();
-    expect(screen.queryByRole("tab", { name: "语音识别" })).toBeNull();
-    expect(screen.getAllByRole("tab")).toHaveLength(2);
-    expect(await readSettings()).toEqual(stored);
-    second.unmount();
-    fetchMock.mockResolvedValueOnce(Response.json([asr]));
-    render(<PluginSettings />);
-    await openModule("语音识别");
-    await screen.findByDisplayValue("asr-test-key");
-  } finally { restore(); }
+  const invoke = mock(async (_command: string, _args: Record<string, unknown>) => structuredClone(stored));
+  mockDesktop(invoke);
+  fetchMock.mockResolvedValueOnce(Response.json([segmentation, asr]));
+  const first = render(<PluginSettings />);
+  const navigation = await screen.findByRole("tablist", { name: "设置模块" });
+  expect(navigation.getAttribute("aria-orientation")).toBe("vertical");
+  expect(within(navigation).getAllByRole("tab")).toHaveLength(3);
+  expect(screen.getByRole("tab", { name: "通用" }).getAttribute("aria-selected")).toBe("true");
+  expect(screen.getByRole("region", { name: "环境与连接" })).toBeTruthy();
+  expect(screen.queryByRole("form")).toBeNull();
+  await openModule("文案切片");
+  fireEvent.change(screen.getByLabelText("模型名称"), { target: { value: "未保存模型" } });
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "语音识别" }), { button: 0 });
+  expect(screen.queryByRole("form", { name: "文案切片" })).toBeNull();
+  expect(screen.getByLabelText<HTMLInputElement>("Dashscope Api Key").value).toBe("asr-test-key");
+  fireEvent.keyDown(screen.getByRole("tab", { name: "语音识别" }), { key: "ArrowUp" });
+  await waitFor(() => expect(screen.getByRole("tab", { name: "文案切片" }).getAttribute("aria-selected")).toBe("true"));
+  expect(within(screen.getByRole("form", { name: "文案切片" })).getByDisplayValue("未保存模型")).toBeTruthy();
+  first.unmount();
+  fetchMock.mockResolvedValueOnce(Response.json([segmentation]));
+  render(<PluginSettings />);
+  await openModule("文案切片");
+  expect(screen.queryByRole("tab", { name: "语音识别" })).toBeNull();
+  expect(invoke).toHaveBeenCalledTimes(2);
+  expect(invoke.mock.calls.every(([command, args]) => command === "local_settings" && args?.id === undefined && args?.values === undefined)).toBe(true);
 });
 
-// 场景：IPC 保存失败可见，界面不假报成功；不覆盖现有配置。
+// 场景：IPC 保存失败可见，界面不假报成功，保留输入并允许修正。
 test("保存失败显示错误", async () => {
-  const restore = mockDesktop(async (_command, args) => {
+  mockDesktop(async (_command, args) => {
     if (args?.id) throw new Error("write failed");
     return { asr: { dashscope_api_key: "old-key" } };
   });
-  try {
-    fetchMock.mockResolvedValueOnce(Response.json([asr]));
-    render(<PluginSettings />);
-    await openModule("语音识别");
-    await screen.findByDisplayValue("old-key");
-    fireEvent.change(screen.getByLabelText("Dashscope Api Key"), { target: { value: "new-key" } });
-    fireEvent.submit(screen.getByRole("form", { name: "语音识别" }));
-    await screen.findByText("保存设置失败");
-    expect(screen.queryByText("已保存到当前客户端")).toBeNull();
-    expect(await readSettings()).toEqual({ asr: { dashscope_api_key: "old-key" } });
-  } finally { restore(); }
+  fetchMock.mockResolvedValueOnce(Response.json([asr]));
+  render(<PluginSettings />);
+  await openModule("语音识别");
+  await screen.findByDisplayValue("old-key");
+  fireEvent.change(screen.getByLabelText("Dashscope Api Key"), { target: { value: "new-key" } });
+  fireEvent.submit(screen.getByRole("form", { name: "语音识别" }));
+  await screen.findByText("保存设置失败");
+  expect(screen.queryByText("已保存到当前客户端")).toBeNull();
+  expect(screen.getByLabelText<HTMLInputElement>("Dashscope Api Key").value).toBe("new-key");
+  fireEvent.change(screen.getByLabelText("Dashscope Api Key"), { target: { value: "corrected-key" } });
+  expect(screen.getByLabelText<HTMLInputElement>("Dashscope Api Key").value).toBe("corrected-key");
+  expect(screen.queryByRole("alert")).toBeNull();
 });
 
 // 场景：浏览器只保存内存副本，页面内重新读取可用，不写 localStorage。
@@ -164,13 +160,11 @@ test("浏览器配置仅保存在内存中", async () => {
 
 // 场景：未配置的旧客户端发送原请求；网络失败不重复提交。
 test("无本地配置保持旧请求且失败不自动重试", async () => {
-  const restore = mockDesktop(async () => ({}));
-  try {
-    fetchMock.mockResolvedValueOnce(Response.json({}, { status: 502 }));
-    await expect(requestSegmentation({ script: "甲乙", asr_result: {} })).rejects.toThrow("502");
-    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ script: "甲乙", asr_result: {} });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  } finally { restore(); }
+  mockDesktop(async () => ({}));
+  fetchMock.mockResolvedValueOnce(Response.json({}, { status: 502 }));
+  await expect(requestSegmentation({ script: "甲乙", asr_result: {} })).rejects.toThrow("502");
+  expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ script: "甲乙", asr_result: {} });
+  expect(fetchMock).toHaveBeenCalledTimes(1);
 });
 
 // 场景：空插件目录仍显示通用面板，接口失败有可见状态；卸载中断目录请求。
@@ -181,6 +175,8 @@ test("目录为空、读取失败及卸载清理", async () => {
   expect(within(navigation).getAllByRole("tab")).toHaveLength(1);
   expect(screen.getByRole("tab", { name: "通用" }).getAttribute("aria-selected")).toBe("true");
   expect(screen.getByRole("region", { name: "环境与连接" })).toBeTruthy();
+  expect(screen.getByText("浏览器预览")).toBeTruthy();
+  expect(screen.getByText("http://api.test:8000")).toBeTruthy();
   first.unmount();
   fetchMock.mockResolvedValueOnce(Response.json({}, { status: 503 }));
   const second = render(<PluginSettings />);
@@ -195,7 +191,7 @@ test("目录为空、读取失败及卸载清理", async () => {
   await waitFor(() => expect(signal?.aborted).toBe(true));
 });
 
-// 场景：新增任意模块字段自动渲染，通用数值与字符串约束阻止保存且允许修正后提交。
+// 场景：逐条验证数值和字符串边界，以及合法输入的类型转换，无需挂载表单。
 test.each([
   [{ type: "number" }, "", "2", "必填"],
   [{ type: "integer" }, "1.5", "2", "整数"],
@@ -206,32 +202,12 @@ test.each([
   [{ type: "string", pattern: "\\S" }, "   ", "有效", "格式"],
   [{ type: "string", minLength: 2 }, "甲", "甲乙", "至少"],
   [{ type: "string", maxLength: 2 }, "甲乙丙", "甲乙", "最多"],
-] as const)("通用字段规则 %j", async (field, invalid, valid, error) => {
+] as const)("通用字段规则 %j", (field, invalid, valid, error) => {
   const plugin: Plugin = { id: "new-module", name: "新模块", schema: {
     properties: { value: { ...field, title: "新增字段" } }, required: ["value"],
   } };
-  let stored: Record<string, Values> = {};
-  let writes = 0;
-  const restore = mockDesktop(async (_command, args) => {
-    if (args?.id) { writes++; stored[String(args.id)] = args.values as Values; }
-    return structuredClone(stored);
-  });
-  try {
-    fetchMock.mockResolvedValueOnce(Response.json([plugin]));
-    render(<PluginSettings />);
-    await openModule("新模块");
-    const input = screen.getByLabelText<HTMLInputElement>("新增字段");
-    fireEvent.change(input, { target: { value: invalid } });
-    fireEvent.submit(screen.getByRole("form", { name: "新模块" }));
-    expect((await screen.findByRole("alert")).textContent).toContain(error);
-    expect(writes).toBe(0);
-    expect(input.value).toBe(invalid);
-    fireEvent.change(input, { target: { value: valid } });
-    fireEvent.submit(screen.getByRole("form", { name: "新模块" }));
-    await screen.findByText("已保存到当前客户端");
-    expect(writes).toBe(1);
-    expect(stored[plugin.id]).toEqual({ value: field.type === "string" ? valid : Number(valid) });
-  } finally { restore(); }
+  expect(() => normalizeValues(plugin, { value: invalid })).toThrow(error);
+  expect(normalizeValues(plugin, { value: valid })).toEqual({ value: field.type === "string" ? valid : Number(valid) });
 });
 
 // 场景：可选数字清空会从旧值中移除；必填布尔 false 可保存，general ID 不冲突也不显示孤立存储。
@@ -241,29 +217,22 @@ test("规范化空数字并保留 false，插件 ID 与通用导航隔离", asyn
     required: ["enabled"],
   } };
   let stored: Record<string, Values> = { general: { optional: 8, enabled: false }, removed_module: { enabled: true } };
-  const restore = mockDesktop(async (_command, args) => {
+  mockDesktop(async (_command, args) => {
     if (args?.id) stored[String(args.id)] = args.values as Values;
     return structuredClone(stored);
   });
-  try {
-    fetchMock.mockResolvedValueOnce(Response.json([plugin]));
-    const view = render(<PluginSettings />);
-    await openModule("普通插件");
-    expect(screen.getAllByRole("tab")).toHaveLength(2);
-    expect(screen.getByRole("tab", { name: "通用" }).getAttribute("aria-selected")).toBe("false");
-    fireEvent.change(screen.getByLabelText("可选数值"), { target: { value: "" } });
-    fireEvent.submit(screen.getByRole("form", { name: "普通插件" }));
-    await screen.findByText("已保存到当前客户端");
-    expect(stored).toEqual({ general: { enabled: false }, removed_module: { enabled: true } });
-    view.unmount();
-    fetchMock.mockResolvedValueOnce(Response.json([plugin]));
-    render(<PluginSettings />);
-    await openModule("普通插件");
-    expect(screen.getByLabelText<HTMLInputElement>("可选数值").value).toBe("60");
-  } finally { restore(); }
+  fetchMock.mockResolvedValueOnce(Response.json([plugin]));
+  render(<PluginSettings />);
+  await openModule("普通插件");
+  expect(screen.getAllByRole("tab")).toHaveLength(2);
+  expect(screen.getByRole("tab", { name: "通用" }).getAttribute("aria-selected")).toBe("false");
+  fireEvent.change(screen.getByLabelText("可选数值"), { target: { value: "" } });
+  fireEvent.submit(screen.getByRole("form", { name: "普通插件" }));
+  await screen.findByText("已保存到当前客户端");
+  expect(stored).toEqual({ general: { enabled: false }, removed_module: { enabled: true } });
 });
 
-// 场景：不支持的字段与根结构必须显示错误而不是降级成普通输入，不妨碍其他模块表单。
+// 场景：逐条拒绝不支持的字段与根结构，不降级为可保存的普通输入。
 test.each([
   { properties: { bad: { type: "object", properties: {} } } },
   { properties: { bad: { type: "array", items: { type: "string" } } } },
@@ -275,8 +244,13 @@ test.each([
   { properties: { bad: { type: ["string", "null"] } } },
   { properties: null },
   { properties: {}, allOf: [] },
-])("不支持的 Schema %j", async schema => {
-  const bad = { id: "unsupported", name: "不支持模块", schema };
+])("不支持的 Schema %j", schema => {
+  expect(schemaError({ id: "unsupported", name: "不支持模块", schema } as unknown as Plugin)).toContain("不支持");
+});
+
+// 场景：坏模块显示错误且没有保存入口，仍可切换到正常模块。
+test("不支持的模块不影响其他模块表单", async () => {
+  const bad = { id: "unsupported", name: "不支持模块", schema: { properties: { bad: { type: "object" } } } };
   fetchMock.mockResolvedValueOnce(Response.json([bad, asr]));
   render(<PluginSettings />);
   await openModule("不支持模块");

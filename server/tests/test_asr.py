@@ -371,3 +371,13 @@ def test_main_usage_does_not_transcribe(
     assert "audio_url" in (captured.err if status else captured.out)
     asr_http.assert_not_called()
     assert not Path("asr_result.json").exists()
+
+
+def test_settings_plugin_schema():
+    """ASR 公开密钥字段使用密码输入，默认不携带凭据。"""
+    from server.asr.settings_plugin import SETTINGS_PLUGIN
+
+    assert SETTINGS_PLUGIN["id"] == "asr"
+    field = SETTINGS_PLUGIN["schema"]["properties"]["dashscope_api_key"]
+    assert field["format"] == "password"
+    assert field["default"] == ""
