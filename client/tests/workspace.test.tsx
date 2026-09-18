@@ -408,8 +408,8 @@ test.each(["云端", "本地"])("页签切换保留%s模板草稿及未保存保
   }
 });
 
-// 设置内横向模块导航独立于首页侧栏；切换设置不提前加载模板库、不丢失工作区草稿。
-test("侧边导航打开设置并保留工作区草稿", async () => {
+// 设置改为对话框：侧栏按钮打开，纵向模块导航独立于首页侧栏；开关弹窗不提前加载模板库、不丢失工作区草稿，弹窗未保存草稿关闭后丢弃。
+test("侧边按钮打开设置对话框并保留工作区草稿", async () => {
   remotionServer((path) => {
     if (path === "/template") return Response.json([]);
     if (path === "/api/settings/plugins") return Response.json([
@@ -420,30 +420,54 @@ test("侧边导航打开设置并保留工作区草稿", async () => {
   render(<HomePage />);
   const navigation = screen.getByRole("tablist", { name: "模板工作区" });
   expect(navigation.getAttribute("aria-orientation")).toBe("vertical");
-  expect(within(navigation).getAllByRole("tab")).toHaveLength(3);
+  expect(within(navigation).getAllByRole("tab")).toHaveLength(2);
   fireEvent.change(screen.getByLabelText("字效描述"), { target: { value: "保留聊天草稿" } });
-  const settings = within(navigation).getByRole("tab", { name: "设置" });
-  fireEvent.keyDown(settings, { key: "Enter" });
-  expect(settings.getAttribute("aria-selected")).toBe("true");
-  expect(screen.getByRole("region", { name: "环境与连接" })).toBeTruthy();
-  expect(screen.getByText("浏览器预览")).toBeTruthy();
-  expect(screen.getByText("http://api.test:8000/api/templates")).toBeTruthy();
-  expect(screen.queryByRole("region", { name: "字效聊天" })).toBeNull();
-  const modules = await screen.findByRole("tablist", { name: "设置模块" });
+  const remotionTab = within(navigation).getByRole("tab", { name: "Remotion 字效" });
+  const chatInput = screen.getByLabelText("字效描述");
+  fireEvent.click(screen.getByRole("button", { name: "设置" }));
+  const dialog = await screen.findByRole("dialog", { name: "设置" });
+  // 弹窗隐藏背景输入，工作区 tab 保持选中；Radix 允许 live region 继续通告。
+  // 直接核对背景隐藏语义，避免模拟 DOM 在整棵隐藏树中计算无障碍名称。
+  expect(chatInput.closest('[aria-hidden="true"]')).not.toBeNull();
+  expect(remotionTab.getAttribute("aria-selected")).toBe("true");
+  // 默认选中通用，展示环境与连接。
+  const modules = await within(dialog).findByRole("tablist", { name: "设置模块" });
+  expect(modules.getAttribute("aria-orientation")).toBe("vertical");
+  expect(within(modules).getAllByRole("tab")).toHaveLength(3);
+  expect(within(modules).getByRole("tab", { name: "通用" }).getAttribute("aria-selected")).toBe("true");
+  expect(within(dialog).getByRole("region", { name: "环境与连接" })).toBeTruthy();
+  expect(within(dialog).getByText("浏览器预览")).toBeTruthy();
+  expect(within(dialog).getByText("http://api.test:8000")).toBeTruthy();
   fireEvent.mouseDown(within(modules).getByRole("tab", { name: "ASR 测试" }), { button: 0 });
-  expect(screen.getByRole("form", { name: "ASR 测试" })).toBeTruthy();
-  expect(settings.getAttribute("aria-selected")).toBe("true");
+  expect(within(dialog).getByRole("form", { name: "ASR 测试" })).toBeTruthy();
   fireEvent.mouseDown(within(modules).getByRole("tab", { name: "文案切片" }), { button: 0 });
-  expect(screen.getByRole("form", { name: "文案切片" })).toBeTruthy();
-  expect(settings.getAttribute("aria-selected")).toBe("true");
+  expect(within(dialog).getByRole("form", { name: "文案切片" })).toBeTruthy();
   expect(fetchMock.mock.calls.filter(call => String(call[0]).endsWith("/template"))).toHaveLength(0);
+  // 弹窗内未保存的草稿关闭后丢弃，重新打开重新读取目录。
+  fireEvent.change(within(dialog).getByLabelText("切片模型"), { target: { value: "未保存草稿" } });
+  const readsBefore = fetchMock.mock.calls.filter(call => String(call[0]).endsWith("/api/settings/plugins")).length;
+  fireEvent.click(within(dialog).getByRole("button", { name: "关闭" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  fireEvent.click(screen.getByRole("button", { name: "设置" }));
+  const reopened = await screen.findByRole("dialog", { name: "设置" });
+  await within(reopened).findByRole("tablist", { name: "设置模块" });
+  expect(fetchMock.mock.calls.filter(call => String(call[0]).endsWith("/api/settings/plugins"))).toHaveLength(readsBefore + 1);
+  fireEvent.mouseDown(within(reopened).getByRole("tab", { name: "文案切片" }), { button: 0 });
+  expect(within(reopened).getByLabelText<HTMLInputElement>("切片模型").value).toBe("");
+  fireEvent.click(within(reopened).getByRole("button", { name: "关闭" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  // 关闭弹窗后工作区草稿保留，模板库仍按需加载。
+  expect(screen.getByLabelText<HTMLTextAreaElement>("字效描述").value).toBe("保留聊天草稿");
   fireEvent.mouseDown(within(navigation).getByRole("tab", { name: "模板库" }), { button: 0 });
   await screen.findByText("共享模板库 · 0 个模板");
-  fireEvent.change(screen.getByLabelText("模板名称"), { target: { value: "保留模板草稿" } });
-  fireEvent.mouseDown(settings, { button: 0 });
-  expect(screen.queryByRole("textbox", { name: "模板名称" })).toBeNull();
-  fireEvent.mouseDown(within(navigation).getByRole("tab", { name: "模板库" }), { button: 0 });
+  const templateName = screen.getByLabelText("模板名称");
+  fireEvent.change(templateName, { target: { value: "保留模板草稿" } });
+  fireEvent.click(screen.getByRole("button", { name: "设置" }));
+  await screen.findByRole("dialog", { name: "设置" });
+  expect(templateName.closest('[aria-hidden="true"]')).not.toBeNull();
+  fireEvent.click(within(screen.getByRole("dialog", { name: "设置" })).getByRole("button", { name: "关闭" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(screen.getByLabelText<HTMLInputElement>("模板名称").value).toBe("保留模板草稿");
   fireEvent.mouseDown(within(navigation).getByRole("tab", { name: "Remotion 字效" }), { button: 0 });
   expect(screen.getByLabelText<HTMLTextAreaElement>("字效描述").value).toBe("保留聊天草稿");
-});
+}, 30000);

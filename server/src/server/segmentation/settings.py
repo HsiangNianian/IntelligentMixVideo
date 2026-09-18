@@ -1,4 +1,4 @@
-"""切片客户端配置契约与插件描述；服务端 Settings 继续读取 IMV_ 配置并保留 HTTP 策略。"""
+"""切片客户端配置契约；服务端 Settings 继续读取 IMV_ 配置并保留 HTTP 策略。"""
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import SettingsConfigDict
@@ -27,7 +27,3 @@ class Settings(ClientSettings, CommonSettings):
     model_config = SettingsConfigDict(env_prefix="IMV_", extra="ignore")
 
     allow_insecure_llm_http: bool = True
-
-
-# 只导出类型与代码默认值，不实例化 Settings 或读取后端配置值。
-SETTINGS_PLUGIN = {"id": "segmentation", "name": "文案切片", "schema": ClientSettings.model_json_schema()}

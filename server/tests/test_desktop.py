@@ -25,7 +25,7 @@ from fastapi import FastAPI
 
 from server import database, desktop
 from server.remotion_templates.renderer import Renderer
-from server.settings import Settings
+from server.remotion_templates.settings import Settings
 
 BUNDLE = os.environ.get("IMV_TEST_BUNDLE")
 APPDIR = os.environ.get("IMV_TEST_APPDIR")
@@ -245,7 +245,7 @@ def test_bundle_real_renderer(bundle, tmp_path):
 import asyncio, sys
 from pathlib import Path
 from server.desktop import configure
-from server.settings import load_settings
+from server.remotion_templates.settings import load_settings
 from server.remotion_templates.renderer import Renderer
 from server.remotion_templates.models import TemplateCandidate, TemplateSpec, CompositionConfig, TextLayer
 from server.remotion_templates.harness import controls

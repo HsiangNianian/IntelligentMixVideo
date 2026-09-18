@@ -45,9 +45,9 @@ def test_startup_entry(entry: str, monkeypatch: pytest.MonkeyPatch, mocker) -> N
 @pytest.mark.parametrize("module,class_name,field,key", [
     ("server.__main__", "ServerSettings", "port", "PORT"),
     ("server.database", "DatabaseSettings", "port", "DB_PORT"),
-    ("server.asr.asr", "ASRSettings", "dashscope_api_key", "DASHSCOPE_API_KEY"),
+    ("server.asr.settings", "ASRSettings", "dashscope_api_key", "DASHSCOPE_API_KEY"),
     ("server.segmentation.settings", "Settings", "llm_model", "IMV_LLM_MODEL"),
-    ("server.settings", "Settings", "actor_model", "IMV_ACTOR_MODEL"),
+    ("server.remotion_templates.settings", "Settings", "actor_model", "IMV_ACTOR_MODEL"),
     ("server.video_composition.settings", "Settings", "composition_width", "COMPOSITION_WIDTH"),
 ])
 def test_shared_config_path(tmp_path, monkeypatch, module, class_name, field, key):
@@ -69,12 +69,19 @@ def test_shared_config_path(tmp_path, monkeypatch, module, class_name, field, ke
         assert str(value) == "21001"
 
 
-def test_remotion_data_directory_keeps_existing_base(tmp_path):
-    """读取公共配置后，相对数据目录仍归模板模块，不随工作目录改变。"""
+@pytest.mark.parametrize("directory", [None, "custom-data", "absolute"])
+def test_remotion_data_directory_keeps_existing_base(tmp_path, directory):
+    """配置归入字效模块后，默认/相对/绝对数据目录及默认渲染资源路径保持不变。"""
     from pathlib import Path
-    from server import settings
+    import server
+    from server.remotion_templates import settings
 
-    (tmp_path / "server/.env").write_text("IMV_DATA_DIR=custom-data\n", encoding="utf-8")
-    assert settings.load_settings().data_dir == (
-        Path(settings.__file__).parent / "remotion_templates/custom-data"
+    package_dir = Path(server.__file__).parent
+    value = str(tmp_path / "absolute-data") if directory == "absolute" else directory
+    (tmp_path / "server/.env").write_text(
+        f"IMV_DATA_DIR={value}\n" if value is not None else "", encoding="utf-8",
     )
+    config = settings.load_settings()
+    expected = Path(value) if directory == "absolute" else package_dir / "remotion_templates" / (value or ".data")
+    assert config.data_dir == expected
+    assert config.renderer_dir == package_dir / "remotion"

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from pydantic import Field
 
-from ..settings import Settings
+from .settings import Settings
 from .context import Conversation
 from .evidence import seal_artifacts, verify_artifacts
 from .models import (

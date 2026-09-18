@@ -5,7 +5,7 @@ import json
 from contextlib import suppress
 from uuid import UUID
 
-from ..settings import Settings
+from .settings import Settings
 from ..file_lock import lock_exclusive
 from .harness import Harness
 from .models import DialogueOutput, EditTemplateRequest, JobError, JobInput, TaskMessage

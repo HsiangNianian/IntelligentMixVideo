@@ -47,7 +47,7 @@ from server.remotion_templates.renderer import Renderer
 from server.remotion_templates.runtime import Runtime
 from server.remotion_templates.store import Conflict, NotFound, Store
 from server.remotion_templates.trajectory import Trajectory
-from server.settings import Settings
+from server.remotion_templates.settings import Settings
 
 # 仅显式真实渲染时捕获三个运行路径；自动夹具随后清除 IMV_*，仍不读取 .env 或模型密钥。
 _renderer_paths = {

@@ -16,6 +16,16 @@ from pydantic import SecretStr
 pytestmark = pytest.mark.anyio
 
 
+def test_public_transcribe_import(asr):
+    """延迟导入保留公开转写函数本身，未知包属性仍明确报错。"""
+    import server.asr as package
+    from server.asr import transcribe
+
+    assert transcribe is asr.transcribe
+    with pytest.raises(AttributeError):
+        getattr(package, "missing_attribute")
+
+
 def respond(http, *documents):
     """依次配置未读取的 JSON 响应，返回响应供资源关闭检查。"""
     responses = [

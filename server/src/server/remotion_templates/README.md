@@ -19,6 +19,8 @@ PNG/JPEG/WebP，默认最多 10 MiB、两千万像素，去除元数据并缩放
 
 ### 本地配置
 
+配置类与加载入口位于本模块的 `settings.py`（`server.remotion_templates.settings`）。仍读取统一的 `server/.env`；相对数据目录以本模块为基准，默认渲染资源目录仍为 `server/src/server/remotion/`。
+
 生成与渲染目前要求 Linux、Node 24、Bun 1.4.2、bubblewrap、util-linux 的 prlimit、
 Chrome/Chromium、FFmpeg 的 `ffprobe`，以及 Noto Sans CJK 的常规/粗体 TTC 字体。根据本机调整
 `IMV_BROWSER_EXECUTABLE`、`IMV_FONT_REGULAR` 和 `IMV_FONT_BOLD`；默认路径对应开发主机。

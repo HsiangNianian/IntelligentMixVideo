@@ -7,15 +7,7 @@ from time import monotonic
 from urllib.parse import urlparse
 
 import httpx
-from pydantic import SecretStr
-
-from ..config_base import CommonSettings
-
-
-class ASRSettings(CommonSettings):
-    """从固定的 server/.env 自动读取配置，环境变量优先。"""
-
-    dashscope_api_key: SecretStr = SecretStr("")
+from .settings import ASRSettings
 
 
 # 模块加载时读取一次配置；transcribe 复用配置，不反复读取 .env。

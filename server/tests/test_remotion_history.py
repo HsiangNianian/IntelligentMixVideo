@@ -15,7 +15,7 @@ from server.remotion_templates.models import GenerateTemplateRequest, JobError, 
 from server.remotion_templates.routes import router
 from server.remotion_templates.runtime import Runtime
 from server.remotion_templates.store import Conflict, Store
-from server.settings import Settings
+from server.remotion_templates.settings import Settings
 
 
 @pytest.fixture

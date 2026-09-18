@@ -10,6 +10,7 @@
 - `server/` 使用 Python + FastAPI + MySQL，提供模板持久化 API 与 `POST /segmentations` 文案切片接口，首页与用户路由仍为示例、尚未接入用户存储。包内导入使用相对路径，向应用注册 `APIRouter` 实例。
 - 模板模块位于 `server/src/server/template/`，与用户示例目录 `sub_api/` 平级；路由、配置校验、数据库存储与效果目录均放在该模块内。
 - Remotion 文字模板生成服务位于 `server/src/server/remotion_templates/`，Python 包名为 `server.remotion_templates`，挂载 `/api/templates`；本地数据默认保存在该模块的 `.data/`，使用说明维护在模块内 README。
+- Remotion 配置类与加载函数位于 `remotion_templates/settings.py`，通过 `server.remotion_templates.settings` 导入；继续复用 `config_base.CommonSettings` 读取 `server/.env`，相对数据目录和默认 `server/remotion/` 渲染资源位置保持不变。
 - Remotion Harness 区分代码失败、评审协议故障、证据不足与渲染环境故障：有效代码失败才交给 Actor 修复；无效 Judge 结果对同一候选/证据有限纠错，合法负面结论不得重试成通过。纯未知证据由宿主有限补采样并保存独立清单，仍未知或环境不可用则停止，Agent 生成只有全部验收通过的版本可发布；用户手动参数修订使用独立渲染可用性门禁。整批工具回执保存后，宿主复核最新候选的证据、产物与环境，直接完成，不再要求模型调用完成工具；发布事务仍检查取消状态。合法空 motion 不强制补 hold；宿主观察到静态不代表用户允许静态，不能覆盖 Judge 对缺少所要求动画的有效失败。
 - Judge 接收原始请求、最新修改、成功基线与完整候选方案；方案只解释实现。失败项须引用实际要求并声明作用对象、观察与不匹配，宿主校验引用和结构化作用域，不能把无依据否决交给 Actor，也不能声称字符串检查能证明语义正确。unknown/conflict 必须提供非空 missing_evidence，缺少说明先纠正评审，不直接补采样。检查灰底不属于模板内容。
 - Judge 需求引用使用 `/user_intent/instruction` 等完整路径，宿主只移除一层明确的 `user_intent` 前缀并兼容旧相对路径；原参考图保持 `/reference_images/N`。规范化后仍校验原文、来源和作用域，重复前缀或候选路径不得放行；协议 steer 指出错误路径与原因，合法负面结论交给 Actor 修复。
@@ -21,11 +22,12 @@
 - Remotion 编译失败的 steer 保留原始诊断，并明确以当前 `config_schema/default_props` 为宿主参数契约，同步修正类型声明和属性读取。无进展判断忽略 TypeScript 报错行列号变化，保留文件、错误码、字段与类型差异。本次执行已提交候选后，宿主拒绝用普通回答结束生成；正常问答与必要澄清仍可用。
 - Remotion 颜色探针允许最多 2/255 的 RGB 取整误差并比较 alpha 加权覆盖，边缘位置探针优先向内移动；一帧转场核验相邻边界，缺少时序证据仍为 unknown。视觉请求提供图片序号与实际帧号映射，不把无效帧引用自动解释为图片序号。
 - Remotion 模型预算由 `server/.env` 的 `IMV_MAX_OUTPUT_TOKENS`（32000）、`IMV_MAX_TOKENS`（200000）、`IMV_MAX_MODEL_CALLS`（32）和 `IMV_MODEL_TIMEOUT_SECONDS`（240）配置；单次输出上限始终生效，仅开启预算时按剩余额度缩小，所有模型角色共用任务预算。任务与渲染超时独立配置为 600 / 180 秒；默认值与 `.env.example` 同步，修改后重启服务。
-- `server/src/server/asr/` 提供独立的 `transcribe` 函数与 `python -m server.asr` 命令行入口，尚未注册 HTTP 路由；通过北京地域 Fun-ASR 接收 HTTPS 音频直链并返回原始转写 JSON。`DASHSCOPE_API_KEY` 在模块加载时读取一次，固定读取源码 `server/.env`，不存在时不回退工作目录，进程环境变量优先；测试隔离文件、密钥、HTTP 和轮询等待。
+- `server/src/server/asr/` 提供独立的 `transcribe` 函数与 `python -m server.asr` 命令行入口，尚未注册 HTTP 路由；通过北京地域 Fun-ASR 接收 HTTPS 音频直链并返回原始转写 JSON。字段声明位于 `asr/settings.py`，公开转写函数通过包入口按需导入；设置发现不加载业务，`DASHSCOPE_API_KEY` 在 `asr/asr.py` 业务模块加载时读取一次，固定读取源码 `server/.env`，不存在时不回退工作目录，进程环境变量优先；测试隔离文件、密钥、HTTP 和轮询等待。
 - 在 `server/` 下执行 `uv run server` 启动 Uvicorn，默认监听 `0.0.0.0:20070`（所有 IPv4 接口，供服务器部署后远程访问）；`__main__.py` 的 `ServerSettings` 在每次启动时读取固定的 `server/.env` 中的 `PORT`，进程环境变量优先，范围为 1～65535，空值或非法值阻止启动；仓库根目录使用 `uv run --project server server`。维护 `server/uv.lock`，CI 使用 `--locked` 验证依赖。
 - `server/pyproject.toml` 显式将官方 PyPI 设为 uv 默认索引，与锁文件来源保持一致。遇到依赖版本不可用时先检查索引覆盖配置和镜像同步情况，不要仅为绕过镜像缺失而降低依赖版本或删除锁文件。
 - `App.tsx` 挂载 `pages/HomePage.tsx`，首页以左侧导航组合 `features/remotion_templates/` 字效生成工作区与原 `features/templates/` 模板库，底部设置入口组合环境信息与 `features/settings/` 动态插件表单；窄屏使用带无障碍名称的图标栏，切换设置同样保留工作区。聊天、任务编排、隔离 Player、参数编辑和 API 请求按职责分离。
-- 客户端设置插件通过 `GET /api/settings/plugins` 读取后端显式注册的字段描述，只提供类型与代码默认值，不返回服务端配置值。首期只注册切片，ASR 用于测试注册/移除；设置页内按模块生成横向导航按钮，默认显示首个模块，点击或方向键切换对应表单并保留输入，窄屏横向滚动。重新进入设置页刷新目录，不做 SSE 或代码热卸载。桌面 `local_settings` 命令按插件 ID 保存到应用数据目录 `data/settings/settings.json`，包括 API Key 的明文值；浏览器仅进程内保存。`POST /segmentations` 可选 `config` 使用完整客户端模型参数，只用于本次调用、不修改后端 `.env` 或全局状态，省略时兼容原路径；HTTP 策略仍归服务端，校验错误不回显请求输入。当前无切片业务页面，客户端请求函数由联调用例覆盖，视频合成不接入客户端配置；说明维护在 `client/src/features/settings/README.md`。
+- 客户端设置目录通过 `GET /api/settings/plugins` 返回。一级业务模块的 `settings_plugin.py` 导出 `SETTINGS_PLUGIN`，字段由模块配置类生成；公共层按目录排序自动发现一次，不维护业务名单，不返回配置实例值。重复 ID、坏描述或导入失败直接报错；增删入口后重启后端并重新打开设置。入口及父包不得初始化配置或外部任务；无入口的模块不导入。删除设置入口不等同于删除整个业务模块，路由与业务依赖仍显式维护。当前切片与 ASR 提供入口，ASR 仅展示和本地保存，尚未接入客户端转写或视频合成；测试用临时真实包验证发现。
+- 设置沿用弹窗与纵向模块导航，通用面板展示环境和共享后端地址，模块列表只取后端目录，本地值不产生导航；模块导航值与通用面板隔离，切换保留草稿，关闭丢弃未保存值。公共层支持扁平标量 Schema，保存前统一校验类型、必填、数值上下界及字符串长度/模式；空可选数字省略，false 有效，不支持的结构明确报错，不伪装成可保存表单。桌面 `local_settings` 按模块 ID 保存到 `data/settings/settings.json`，包括明文密钥；浏览器仅页面内存保存，移除入口保留旧值。切片请求位于 `features/segmentation/api.ts`，执行时读取本模块配置并携带至 `POST /segmentations`，只影响本次调用；省略时兼容旧路径，HTTP 策略归服务端，错误不回显输入。公共设置层不执行业务，视频合成和 Remotion 尚未接入客户端配置。详见 `client/src/features/settings/README.md`。
 - 组件卸载时清理定时器、订阅和播放器。新增界面功能遵循组件化结构，不把所有逻辑堆到 App 首页。
 - 项目长期方向见 README；其中提到的云剪辑、Agent、素材召回等功能不代表已经实现，也不构成自动扩展当前任务范围的要求。
 

@@ -141,11 +141,11 @@ result = segment({
 
 请求可另带 `config` 对象：`llm_base_url`、`llm_api_key`、`llm_model` 必填，`llm_timeout_seconds` 默认 120，`llm_max_retries` 默认 1（0～3）。客户端参数仅用于该次切片，完整连接参数不与服务端密钥混用；省略 `config` 仍使用原服务端配置。独立 Python 调用可传 `segment(payload, config=ClientSettings(...))`，模型定义位于 `server.segmentation.settings`。`allow_insecure_llm_http` 仍由服务端决定，不接受客户端覆盖；错误响应不回显请求输入。
 
-`GET /api/settings/plugins` 只返回已注册模块的表单描述与代码默认值，不读写服务端配置。模块在自己的 settings 中声明描述，再加入 `settings_plugins.py` 的 `plugins` 字典；客户端重新进入设置页即可反映插拔。默认仅切片；测试用真实 `ASRSettings` 生成第二个描述验证插拔，不改变 ASR 单例。这里不包含新代码的运行时加载，也不把客户端配置接入异步视频合成。
+`GET /api/settings/plugins` 只返回自动发现的公开描述与代码默认值，不读写服务端配置。一级模块通过 `settings_plugin.py` 导出 `SETTINGS_PLUGIN`，Schema 由自己的配置模型生成；公共层导入时扫描一次，无人工注册名单，重复 ID、坏描述和依赖导入失败直接报错。增删入口后重启后端并重新打开客户端设置；移除入口不删除客户端旧值。当前包含切片与 ASR 设置入口，测试使用临时包文件验证发现与移除。此机制不自动注册业务路由，也不支持删除整个业务目录后免处理依赖；各模块仍须自行接入请求配置消费。
 
 ## ASR 音频转写
 
-ASR 提供独立的 Python 异步函数和命令行入口，尚未接入 FastAPI 路由。在 `server/` 下准备配置；已有 `.env` 时直接补充 `DASHSCOPE_API_KEY`，保留数据库与切片配置：
+ASR 提供独立的 Python 异步函数和命令行入口，尚未接入 FastAPI 路由。客户端 ASR 设置目前仅展示和本地保存，尚不影响转写或视频合成请求。在 `server/` 下准备配置；已有 `.env` 时直接补充 `DASHSCOPE_API_KEY`，保留数据库与切片配置：
 
 ```sh
 cp .env.example .env
@@ -153,7 +153,7 @@ cp .env.example .env
 
 填写北京地域的 `DASHSCOPE_API_KEY`；服务地址在 ASR 模块中固定为
 `https://dashscope.aliyuncs.com/api/v1`。真实 `.env` 已被 Git 忽略。
-模块加载时自动读取一次固定的 `server/.env`，文件不存在时不回退到工作目录。
+字段声明位于 `asr/settings.py`，设置发现只生成 Schema；`asr/asr.py` 业务模块加载时自动读取一次固定的 `server/.env`，文件不存在时不回退到工作目录。
 环境变量优先于文件，修改配置后需重启进程。
 
 在 `server/` 下运行：

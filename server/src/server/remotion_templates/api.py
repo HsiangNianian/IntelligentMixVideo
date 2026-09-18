@@ -2,7 +2,7 @@
 
 from fastapi import FastAPI
 
-from ..settings import Settings, load_settings
+from .settings import Settings, load_settings
 from .harness import Harness
 from .provider import Provider
 from .renderer import Renderer

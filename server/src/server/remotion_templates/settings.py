@@ -1,11 +1,11 @@
-"""Load server-owned model credentials and bounded local worker settings."""
+"""Remotion 字效配置：读取服务端模型与执行参数，保持数据目录和渲染资源路径稳定。"""
 
 from pathlib import Path
 
 from pydantic import Field, SecretStr
 from pydantic_settings import SettingsConfigDict
 
-from .config_base import CommonSettings
+from ..config_base import CommonSettings
 
 
 class Settings(CommonSettings):
@@ -38,7 +38,7 @@ class Settings(CommonSettings):
     max_actor_tokens: int = Field(default=160_000, ge=1000, le=1_000_000)
     max_upload_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
     max_image_pixels: int = Field(default=20_000_000, gt=0)
-    renderer_dir: Path = Path(__file__).parent / "remotion"
+    renderer_dir: Path = Path(__file__).parent.parent / "remotion"
     runtime_lib_dir: Path | None = None
     browser_executable: Path = Path("/opt/google/chrome/chrome")
     font_regular: Path = Path("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc")
@@ -59,7 +59,5 @@ def load_settings() -> Settings:
     """Read server/.env and save relative data paths directly beneath the template module."""
     settings = Settings()
     if not settings.data_dir.is_absolute():
-        settings.data_dir = (
-            Path(__file__).parent / "remotion_templates" / settings.data_dir
-        )
+        settings.data_dir = Path(__file__).parent / settings.data_dir
     return settings
