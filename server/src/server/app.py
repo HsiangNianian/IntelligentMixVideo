@@ -17,6 +17,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .database import close_database, initialize_database
 from .segmentation.router import router as segmentation_router
+from .settings_plugins import router as settings_router
 from .sub_api.router import router
 from .template.router import router as template_router
 from .remotion_templates.api import app as remotion_templates_app
@@ -54,11 +55,12 @@ app.add_middleware(
         r"^http://localhost:(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|"
         r"6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$"
     ),
-    allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type", "Last-Event-ID"],
+    allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type", "Last-Event-ID", "X-Remotion-Config", "X-IMS-Config"],
 )
 app.include_router(router)
 app.include_router(template_router)
 app.include_router(segmentation_router)
+app.include_router(settings_router)
 app.mount("/api/templates", remotion_templates_app)
 app.include_router(composition_router)
 
@@ -77,6 +79,9 @@ async def validation_error(request: Request, exc: RequestValidationError) -> JSO
     errors = jsonable_encoder(
         exc.errors(), custom_encoder={float: lambda value: value if isfinite(value) else str(value)},
     )
+    # 切片请求可携带客户端密钥；缺少顶层字段时 Pydantic input 也可能包含完整请求。
+    if request.url.path == "/segmentations":
+        errors = [{"loc": error["loc"], "type": error["type"], "msg": error["msg"]} for error in errors]
     return JSONResponse(status_code=422, content={"detail": errors})
 
 

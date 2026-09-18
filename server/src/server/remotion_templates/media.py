@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from ..settings import Settings
+from .settings import Settings
 from .models import Asset
 from .store import Store, now
 

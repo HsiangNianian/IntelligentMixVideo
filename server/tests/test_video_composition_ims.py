@@ -11,7 +11,8 @@ from server.video_composition.settings import Settings
 @pytest.mark.anyio
 async def test_official_sdk_async_request_and_response(composition_settings, monkeypatch):
     """通过真实 SDK 模型核对 API 动作、token、Timeline、输出规格和实际返回层级。"""
-    provider = IMS(composition_settings)
+    # SDK 毫秒换算使用显式输入，不依赖集成测试为慢 CI 配置的等待余量。
+    provider = IMS(composition_settings.model_copy(update={"composition_http_timeout_seconds": 1}))
     calls = []
 
     async def call(params, request, runtime):
@@ -64,8 +65,8 @@ def test_settings_reject_invalid_configuration(composition_settings, monkeypatch
 
 
 def test_settings_env_priority_and_default_output(composition_settings, monkeypatch, tmp_path):
-    """当前目录 .env 与环境变量复用切片启动方式，输出可覆盖且快照不含鉴权。"""
-    (tmp_path / ".env").write_text("COMPOSITION_WIDTH=720\nCOMPOSITION_HEIGHT=1280\n", encoding="utf-8")
+    """固定的 server/.env 与环境变量复用切片启动方式，输出可覆盖且快照不含鉴权。"""
+    (tmp_path / "server/.env").write_text("COMPOSITION_WIDTH=720\nCOMPOSITION_HEIGHT=1280\n", encoding="utf-8")
     monkeypatch.setenv("COMPOSITION_WIDTH", "1080")
     settings = Settings()
     assert settings.output() == {"width": 1080, "height": 1280, "fps": 30, "region_id": "cn-shanghai"}
@@ -198,8 +199,8 @@ def test_public_base_rejects_invalid_urls(composition_settings, monkeypatch, val
 
 
 def test_public_base_environment_overrides_dotenv(composition_settings, monkeypatch, tmp_path):
-    """从当前目录 .env 加载公网地址，进程环境可覆盖或显式留空恢复请求地址。"""
-    (tmp_path / '.env').write_text('COMPOSITION_PUBLIC_BASE_URL=https://from-file.example.test/prefix/\n')
+    """从固定的 server/.env 加载公网地址，进程环境可覆盖或显式留空恢复请求地址。"""
+    (tmp_path / 'server/.env').write_text('COMPOSITION_PUBLIC_BASE_URL=https://from-file.example.test/prefix/\n')
     assert Settings().composition_public_base_url == 'https://from-file.example.test/prefix'
     monkeypatch.setenv('COMPOSITION_PUBLIC_BASE_URL', 'https://from-env.example.test/')
     assert Settings().composition_public_base_url == 'https://from-env.example.test'

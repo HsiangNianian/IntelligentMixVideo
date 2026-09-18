@@ -1,12 +1,13 @@
 /** 当前会话的聊天展示与输入；图片只作为生成参考，预览 URL 随组件卸载释放。 */
 import { cn } from "@/lib/utils";
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowUp, ImagePlus, Square, Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { apiUrl } from "./api";
 import { TaskStatus } from "./TaskStatus";
-import type { ChatMessage, Job, SessionJob } from "./model";
+import { VersionCard } from "./VersionCard";
+import type { ChatMessage, Job, SessionJob, Version } from "./model";
 
 /** 本地图片预览不上传到第三方，替换文件和清空会话时清理 object URL。 */
 function ReferenceImage({ file }: { file: File }) {
@@ -39,6 +40,15 @@ interface Props {
   hasOlder?: boolean;
   olderLoading?: boolean;
   onOlder?: () => void;
+  configuration?: ReactNode;
+  versions?: Version[];
+  latestVersionId?: string;
+  previewVersionId?: string;
+  code?: string;
+  versionDisabled?: boolean;
+  previewDisabled?: boolean;
+  onPreviewVersion?: (id: string) => void;
+  versionNotice?: ReactNode;
 }
 /** 只渲染公开消息；输入支持中文组合输入，Shift+Enter 换行，Enter 发送。 */
 export function ChatPanel({
@@ -54,6 +64,15 @@ export function ChatPanel({
   hasOlder,
   olderLoading,
   onOlder,
+  configuration,
+  versions = [],
+  latestVersionId,
+  previewVersionId,
+  code,
+  versionDisabled = false,
+  previewDisabled = false,
+  onPreviewVersion,
+  versionNotice,
 }: Props) {
   const [text, setText] = useState("");
   const [image, setImage] = useState<File>();
@@ -61,16 +80,39 @@ export function ChatPanel({
   const end = useRef<HTMLDivElement>(null);
   const following = useRef(true);
   const picker = useRef<HTMLInputElement>(null);
+  // 成功任务通过稳定结果 ID 绑定卡片；旧消息缺少任务链路时仍在末尾保留版本入口。
+  const anchors = new Map<string, string>();
+  for (const message of messages) {
+    const versionId = message.job_id
+      ? jobs[message.job_id]?.result_version_id
+      : null;
+    if (versionId && (message.role === "assistant" || !anchors.has(versionId)))
+      anchors.set(versionId, message.id);
+  }
+  /** 代码、预览与选择各自绑定版本，不能从当前草稿推导历史内容。 */
+  function resultCard(version: Version) {
+    return (
+      <VersionCard
+        key={version.id}
+        version={version}
+        code={version.id === latestVersionId ? code : undefined}
+        selected={version.id === previewVersionId}
+        latest={version.id === latestVersionId}
+        disabled={versionDisabled}
+        previewDisabled={previewDisabled}
+        onPreview={() => onPreviewVersion?.(version.id)}
+      />
+    );
+  }
   // 历史分页只在头部插入消息；末尾新增回复才跟随到底部。
   useEffect(() => {
-    end.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+    end.current?.scrollIntoView?.({ block: "nearest" });
   }, [messages.at(-1)?.id, busy]);
-  // 只在用户仍跟随底部时滚动新阶段，避免打断较早消息的阅读。
+  // 阶段和版本目录可能晚于消息到达；仅跟随底部时补滚动，避免打断历史阅读。
   const phaseCount = job && "progress" in job ? job.progress?.length : 0;
   useEffect(() => {
-    if (following.current)
-      end.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
-  }, [phaseCount]);
+    if (following.current) end.current?.scrollIntoView?.({ block: "nearest" });
+  }, [job?.id, phaseCount, versions.at(-1)?.id, versions.length]);
   /** 按钮与 Enter 共用防重复入口；等待期间保留文字草稿。 */
   function send() {
     if (disabled || (!text.trim() && !image)) return;
@@ -82,9 +124,9 @@ export function ChatPanel({
   return (
     <section
       aria-label="字效聊天"
-      className="flex h-full min-h-0 flex-col rounded-2xl border bg-card shadow-sm"
+      className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border bg-card"
     >
-      <div className="flex items-center gap-2 border-b px-5 py-4 text-sm font-medium">
+      <div className="flex h-14 shrink-0 items-center gap-2 border-b px-5 text-sm font-medium">
         <Sparkles className="size-4 text-primary" /> 字效助手{" "}
         <span className="ml-auto text-xs font-normal text-muted-foreground">
           当前会话
@@ -97,7 +139,7 @@ export function ChatPanel({
         role="log"
         aria-label="聊天消息"
         aria-live="polite"
-        className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5"
+        className="min-h-0 flex-1 space-y-5 overflow-x-hidden overflow-y-auto p-4 xl:p-5"
         onScroll={(event) => {
           const log = event.currentTarget;
           following.current =
@@ -136,6 +178,8 @@ export function ChatPanel({
             </button>
           </div>
         )}
+        {configuration}
+        {versionNotice}
         {messages.map((message, index) => (
           <Fragment key={message.id}>
             <div
@@ -183,8 +227,12 @@ export function ChatPanel({
               index ? (
               <TaskStatus job={jobs[message.job_id]} />
             ) : null}
+            {versions
+              .filter((version) => anchors.get(version.id) === message.id)
+              .map(resultCard)}
           </Fragment>
         ))}
+        {versions.filter((version) => !anchors.has(version.id)).map(resultCard)}
         {job &&
           "created_at" in job &&
           !!job.progress?.length &&

@@ -24,6 +24,8 @@ API 使用其他端口时同步修改此地址，不包含 `/template` 后缀。
 客户端配置保存 API 与示例视频地址，数据库连接和密码只放服务端。修改后重启 Vite 并刷新页面；生产使用需重新构建。
 避免在 `.env.local` 中重复设置 `VITE_API_URL`，否则会覆盖 `.env` 中的值。
 
+首页「设置」在两种模式均提供 Remotion Agent 与上海 IMS 凭据配置并接通实际请求；`IMV_DEBUG=true` 额外显示切片、ASR。字段来自后端插件目录，值保存在当前客户端，和构建环境变量分开；桌面本地 JSON 包含明文密钥，浏览器仅当前页面内存保存。未保存时兼容服务端环境默认值，ASR 仍仅展示/保存。协议、范围与联调步骤见 [模块设置说明](src/features/settings/README.md)。
+
 ```sh
 bun run build
 bun run tauri dev
@@ -47,7 +49,7 @@ VITE_PREVIEW_VIDEO_URL=https://your-domain.example/preview.mp4
 修改后重启 `bun run dev`；生产构建需要重新执行 `bun run build`。
 若 `.env.local` 或对应模式的环境文件设置了同名变量，会按 Vite 的优先级覆盖 `.env`。
 
-当前时间线截取源视频的前段和第 8～13 秒，生成十秒预览，SDK 的预览素材窗口仍按 14 秒处理；
+无转场时截取源视频 0～10 秒；有转场时使用前段和第 8～13 秒生成十秒预览。SDK 的预览素材窗口仍按 14 秒处理；
 请使用至少 14 秒的视频，短视频需要另外调整时间线。远程直链须允许浏览器跨域读取。
 
 ## 模板行为

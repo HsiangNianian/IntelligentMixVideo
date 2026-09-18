@@ -6,6 +6,19 @@ on:
     branches: ["**"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      integration-tests:
+        description: "Run real MySQL, Chromium rendering and sandbox tests on Linux"
+        type: boolean
+        default: true
+      build-installers:
+        description: "Build optimized test installers after validation"
+        type: boolean
+        default: false
+      api-url:
+        description: "API URL embedded in test installers (empty uses localhost:20070)"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -26,6 +39,7 @@ jobs:
       client: ${{ steps.plan.outputs.client }}
       native: ${{ steps.plan.outputs.native }}
       server: ${{ steps.plan.outputs.server }}
+      integration: ${{ steps.plan.outputs.integration }}
       tooling: ${{ steps.plan.outputs.tooling }}
       mode: ${{ steps.plan.outputs.mode }}
     steps:
@@ -128,10 +142,17 @@ jobs:
     uses: ./.github/workflows/client-build.yml
     with:
       build-mode: ${{ needs.scope.outputs.mode }}
+      api-url: ${{ inputs.api-url || '' }}
+
+  integration:
+    name: Backend integration
+    needs: scope
+    if: needs.scope.outputs.integration == 'true'
+    uses: ./.github/workflows/backend-integration.yml
 
   result:
     name: ${{ github.event_name == 'pull_request' && 'CI result' || 'Push result' }}
-    needs: [scope, hygiene, tooling, client, server, desktop]
+    needs: [scope, hygiene, tooling, client, server, desktop, integration]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

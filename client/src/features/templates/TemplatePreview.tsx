@@ -38,6 +38,7 @@ export function TemplatePreview({ draft, onCatalog }: Props) {
     let subscription: { unsubscribe(): void } | undefined;
     let seekTarget: number | null = null;
     let transitionEnd = 0;
+    let displayedDecisecond = 0;
     let playTimer: ReturnType<typeof setTimeout> | undefined;
     setReady(false);
     setFailed(false);
@@ -64,6 +65,8 @@ export function TemplatePreview({ draft, onCatalog }: Props) {
         } while (!disposed && applied !== revision);
         if (!disposed) {
           instance.currentTime = 0;
+          displayedDecisecond = 0;
+          setTime(0);
           setReady(true);
           setStatus("预览已就绪，点击播放查看效果");
         }
@@ -102,7 +105,15 @@ export function TemplatePreview({ draft, onCatalog }: Props) {
         subscription = instance.event$.subscribe((event) => {
           if (disposed || !instance || event.type !== "render") return;
           const current = instance.currentTime;
-          setTime(current);
+          // SDK 仍逐帧驱动播放控制，界面时间最多每 0.1 秒渲染一次。
+          const nextDecisecond = Math.min(
+            100,
+            Math.max(0, Math.round(current * 10)),
+          );
+          if (nextDecisecond !== displayedDecisecond) {
+            displayedDecisecond = nextDecisecond;
+            setTime(nextDecisecond / 10);
+          }
           if (seekTarget !== null && Math.abs(current - seekTarget) < 0.15) {
             seekTarget = null;
             // 等定位结束，避免 SDK 的异步暂停覆盖紧接着的播放调用。

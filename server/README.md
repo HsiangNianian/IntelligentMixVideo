@@ -8,12 +8,17 @@ Python 3.12+、FastAPI 和 MySQL。模板库在连接此服务的客户端之间
 
 先启动 MySQL，再复制 `.env.example` 为 `server/.env`，填写 `DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD` 和 `DB_NAME`。
 `pydantic-settings` 自动读取并校验配置，进程环境变量优先于 `.env`，缺省项使用代码默认值。
-数据库配置文件固定为 `server/.env`，切换工作目录不改变读取位置；`DB_PORT` 自动转换为整数，范围为 1～65535。
+各模块通过 `config_base.CommonSettings` 共用读取规则，配置文件固定为 `server/.env`，切换工作目录不改变读取位置；`DB_PORT` 自动转换为整数，范围为 1～65535。
 `DB_NAME` 为 1～64 字符，默认 `intelligent_mix_video`。修改配置后重启服务。
 启动时检查目标数据库，不存在则自动创建，使用 `utf8mb4` 字符集与 `utf8mb4_bin` 排序规则。
 建库需要配置的账号具备对应 `CREATE` 权限；已有数据库直接连接，不执行建库或修改已有数据。
 配置无效、MySQL 不可达、鉴权或建库权限不足时，应用报错并停止启动；修正后重新启动。
 真实 `.env` 已被 Git 忽略，不要把密码写进示例文件或客户端配置。
+
+公共基类只统一读取规则，各模块保留原配置类、字段、校验和实例化时机。
+优先级为构造参数 > 进程环境变量 > `server/.env` > 字段默认值；保留 `_env_file` 显式覆盖与 `None` 禁用文件。
+固定路径按当前源码布局计算，不自动适配任意安装位置；非源码部署请显式提供配置文件或使用进程环境变量。
+不提供热更新或统一配置快照；运行期间不要修改 `.env`，修改后重启服务。
 
 在本目录执行：
 
@@ -112,10 +117,10 @@ uv sync --locked --default-index https://pypi.org/simple
 提供 `POST /segmentations` 接口和独立的 `segment` 函数，使用正确文案与已有 ASR 结果生成带时间和关键词的片段。
 
 在 `server/.env` 填写 `IMV_LLM_BASE_URL`、`IMV_LLM_API_KEY` 和 `IMV_LLM_MODEL`，其余配置见 [.env.example](.env.example)。
-配置读取当前目录的 `.env`，环境变量优先；从仓库根目录启动时使用：
+配置读取固定的 `server/.env`，环境变量优先；从仓库根目录启动时使用：
 
 ```sh
-uv run --locked --project server --env-file server/.env server
+uv run --locked --project server server
 ```
 
 HTTP 请求体包含 `script`（正确文案字符串）和 `asr_result`（Fun-ASR 原始结果对象），由 Pydantic 校验必填字段与类型。也可在代码中读取 ASR 输出文件并调用：
@@ -134,9 +139,13 @@ result = segment({
 使用 ASR 第一音轨的词级时间，输入时间为毫秒。返回 `segments`、提示 `warnings` 和诊断信息 `trace`；
 片段包含原文、秒制起止时间、分组和关键词。切片本身不调用 ASR。
 
+请求可另带 `config` 对象：`llm_base_url`、`llm_api_key`、`llm_model` 必填，`llm_timeout_seconds` 默认 120，`llm_max_retries` 默认 1（0～3）。客户端参数仅用于该次切片，完整连接参数不与服务端密钥混用；省略 `config` 仍使用原服务端配置。独立 Python 调用可传 `segment(payload, config=ClientSettings(...))`，模型定义位于 `server.segmentation.settings`。`allow_insecure_llm_http` 仍由服务端决定，不接受客户端覆盖；错误响应不回显请求输入。
+
+`GET /api/settings/plugins` 只返回自动发现的公开描述与代码默认值，不读写服务端配置。一级模块通过 `settings_plugin.py` 导出 `SETTINGS_PLUGIN`，Schema 由自己的配置模型生成；公共层导入时扫描一次，无人工注册名单，重复 ID、坏描述和依赖导入失败直接报错。增删入口后重启后端并重新打开客户端设置；移除入口不删除客户端旧值。当前包含 Remotion Agent、上海 IMS/视频合成、切片、ASR 和服务启动入口；完整目录从入口的 `settings` 模型类生成 Debug Schema；`client_only=true` 只返回标记 `scope: "client"` 的 Agent 与 IMS，测试使用临时包文件验证发现与移除。此机制不自动注册业务路由，也不支持删除整个业务目录后免处理依赖；各模块仍须自行接入请求配置消费。
+
 ## ASR 音频转写
 
-ASR 提供独立的 Python 异步函数和命令行入口，尚未接入 FastAPI 路由。在 `server/` 下准备配置；已有 `.env` 时直接补充 `DASHSCOPE_API_KEY`，保留数据库与切片配置：
+ASR 提供独立的 Python 异步函数和命令行入口，尚未接入 FastAPI 路由。Debug 内置后端启动时加载客户端保存的 ASR 密钥，供转写与视频合成使用；独立或远程后端仍用自身环境配置。在 `server/` 下准备配置；已有 `.env` 时直接补充 `DASHSCOPE_API_KEY`，保留数据库与切片配置：
 
 ```sh
 cp .env.example .env
@@ -144,8 +153,7 @@ cp .env.example .env
 
 填写北京地域的 `DASHSCOPE_API_KEY`；服务地址在 ASR 模块中固定为
 `https://dashscope.aliyuncs.com/api/v1`。真实 `.env` 已被 Git 忽略。
-模块加载时自动读取一次配置，优先使用源码目录的 `server/.env`；该文件不存在时
-回退到当前工作目录的 `.env`。安装后的包只查找工作目录，不读取虚拟环境祖先目录的配置。
+字段声明位于 `asr/settings.py`，设置发现只生成 Schema；`asr/asr.py` 业务模块加载时自动读取一次固定的 `server/.env`，文件不存在时不回退到工作目录。
 环境变量优先于文件，修改配置后需重启进程。
 
 在 `server/` 下运行：
@@ -168,3 +176,10 @@ result = await transcribe("https://example.com/audio.wav", wait_seconds=1800)
 HTTP 请求与轮询等待均为异步，不阻塞事件循环。等待预算必须是有限正数。
 超时或取消本地协程不会取消已提交的云端任务；函数不自动重试提交。
 轮询休眠不超过剩余预算，但单次 HTTP 请求可能使实际等待超出预算。
+
+
+### 客户端 Agent / IMS 凭据
+
+普通与 Debug 客户端均可保存独立模型与 IMS 参数。Remotion 模型操作使用 `X-Remotion-Config`，合成 POST 和成片 GET 使用 `X-IMS-Config`；值为 URI 编码 JSON，字段分别来自模块 `ClientSettings`。省略请求头沿用 `.env`，提供时按任务覆盖全部可编辑字段；未知字段忽略，服务端策略不可覆盖，字段解析错误不回显输入。两种请求头已纳入本地客户端 CORS。
+
+凭据仅留任务内存，不保存到作品、任务正文、数据库或日志。IMS 任务只保存是否使用客户端配置的标记；GET 使用本次凭据刷新成片地址，访问权限交给云服务；后台通知使用提交时的快照，任务及通知结束后清理。服务重启后未完成的客户端 IMS 任务缺少快照，沿用已有阶段失败处理并需要重新提交；已完成任务仍可带有访问权限的凭据查询。Remotion 重启中断后重试重新携带当前配置。ASR、切片、素材匹配及执行环境读取启动配置。Debug 内置服务在业务导入前从本客户端 `data/settings/settings.json` 加载各入口声明的字段，覆盖进程环境；高级配置保存后重启客户端生效，不修改 `.env`，数据库不参与。启动端口定义位于 `startup/settings.py`，内置服务未保存端口时仍自动分配；路径留空使用随包默认，相对路径以应用 `backend/` 为基准。手动启动及远程后端不会加载客户端文件。详见 [客户端设置说明](../client/src/features/settings/README.md)。

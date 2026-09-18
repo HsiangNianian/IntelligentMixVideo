@@ -1,11 +1,21 @@
 /** Remotion 工作区组合聊天、代码、预览和参数；服务状态与当前会话独立，页面卸载时清理。 */
-import { cn } from "@/lib/utils";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { capabilities } from "./api";
 import { ChatPanel } from "./ChatPanel";
-import { CodePanel } from "./CodePanel";
+import { CompositionSettings } from "./CompositionSettings";
+import { compositionSummary, resolveComposition } from "./composition";
+import { WorkspacePanels } from "./WorkspacePanels";
+import { useTemplateVersions } from "./useTemplateVersions";
 import { ParametersPanel } from "./ParametersPanel";
 import { PreviewPanel } from "./PreviewPanel";
 import { useWorkHistory } from "./useWorkHistory";
@@ -16,6 +26,9 @@ import { useTemplateSession } from "./useTemplateSession";
 export function RemotionWorkspace() {
   const history = useWorkHistory();
   const session = useTemplateSession(history.refresh);
+  const catalog = useTemplateVersions(session.workId, session.version);
+  const viewed = session.previewVersion ?? session.version;
+  const historical = !!session.previewVersion;
   const [previewBusy, setPreviewBusy] = useState(false);
   const [mobile, setMobile] = useState("chat");
   const [serviceError, setServiceError] = useState("");
@@ -28,7 +41,7 @@ export function RemotionWorkspace() {
           setServiceError(
             result.models_configured
               ? ""
-              : "字效服务尚未配置模型，请先完成服务端配置。",
+              : "字效模型尚未就绪，请在设置中填写 Remotion Agent 配置后点击重新连接。",
           );
       })
       .catch((error) => {
@@ -44,18 +57,13 @@ export function RemotionWorkspace() {
   const pending =
     session.loading ||
     !!session.busy ||
-    session.dirty ||
     unresolved ||
     session.retryMode === "read";
-  const locked = pending || previewBusy;
+  const locked = pending || previewBusy || session.previewLoading;
+  const configurationError =
+    !session.workId && resolveComposition(session.compositionDraft).error;
   return (
-    <div className="space-y-4">
-      <CodePanel
-        key={`code-${session.key}`}
-        code={session.code}
-        pending={pending}
-        onNew={session.reset}
-      />
+    <div className="space-y-2">
       {serviceError && (
         <div
           role="alert"
@@ -77,7 +85,7 @@ export function RemotionWorkspace() {
             <Button
               variant="outline"
               size="sm"
-              disabled={!!session.busy || session.loading || session.dirty}
+              disabled={!session.canRecover}
               onClick={session.retry}
             >
               {session.retryMode === "read"
@@ -89,84 +97,199 @@ export function RemotionWorkspace() {
           )}
         </div>
       )}
-      {session.connection && (
-        <p role="status" className="text-xs text-muted-foreground">
-          {session.connection === "live"
-            ? "会话已连接"
-            : session.connection === "reconnecting"
-              ? "连接中断，正在恢复更新；后台任务继续运行。"
-              : "正在恢复会话…"}
-        </p>
-      )}
       <Tabs value={mobile} onValueChange={setMobile} className="lg:hidden">
         <TabsList aria-label="工作区面板">
           <TabsTrigger value="chat">聊天</TabsTrigger>
           <TabsTrigger value="preview">预览与参数</TabsTrigger>
         </TabsList>
       </Tabs>
-      <div className="grid lg:h-[640px] min-h-0 gap-4 lg:h-[calc(100dvh-370px)] lg:min-h-[480px] lg:grid-cols-[210px_minmax(280px,2fr)_minmax(0,3fr)]">
-        <HistorySidebar
-          items={history.items}
-          selected={session.workId}
-          loading={history.loading}
-          error={history.error}
-          hasMore={!!history.next_cursor}
-          onSelect={session.select}
-          onRefresh={history.refresh}
-          onMore={history.more}
-        />
-        <div
-          className={cn(
-            "h-[640px] min-h-0 lg:block lg:h-auto",
-            mobile === "chat" ? "block" : "hidden",
-          )}
-        >
+      <WorkspacePanels
+        mobile={mobile}
+        status={
+          <span role="status">
+            {session.connection === "reconnecting"
+              ? "连接中断，正在恢复更新；后台任务继续运行。"
+              : session.connection === "connecting"
+                ? "正在恢复会话…"
+                : "描述想法，预览字效，保留每一次灵感。"}
+          </span>
+        }
+        history={
+          <HistorySidebar
+            items={history.items}
+            selected={session.workId}
+            loading={history.loading}
+            error={history.error}
+            hasMore={!!history.next_cursor}
+            onSelect={session.select}
+            onRefresh={history.refresh}
+            onMore={history.more}
+            onNew={session.reset}
+          />
+        }
+        chat={
           <ChatPanel
             key={`chat-${session.key}`}
             messages={session.messages}
             job={session.job}
             jobs={session.jobs}
+            versions={catalog.versions}
+            latestVersionId={session.version?.id}
+            previewVersionId={viewed?.id}
+            code={session.code}
+            versionDisabled={pending || session.dirty}
+            previewDisabled={pending}
+            onPreviewVersion={session.selectVersion}
+            versionNotice={
+              catalog.error ? (
+                <div role="alert" className="text-xs text-destructive">
+                  {catalog.error}
+                  <Button variant="ghost" size="sm" onClick={catalog.retry}>
+                    重试历史版本
+                  </Button>
+                </div>
+              ) : undefined
+            }
             hasOlder={!!session.nextBefore}
             olderLoading={session.olderLoading}
             onOlder={() => void session.older()}
             busy={!!session.busy}
-            disabled={locked || !!serviceError}
+            disabled={
+              locked ||
+              historical ||
+              session.dirty ||
+              !!serviceError ||
+              !!configurationError
+            }
             canStop={unresolved}
             first={!session.workId}
+            configuration={
+              !session.workId ? (
+                <CompositionSettings
+                  value={session.compositionDraft}
+                  disabled={locked}
+                  onChange={(value) => {
+                    if (!locked) session.configure(value);
+                  }}
+                />
+              ) : session.version ? (
+                <p
+                  className="text-xs text-muted-foreground"
+                  aria-label="成功版本配置"
+                >
+                  {compositionSummary(session.version.spec.composition)}
+                </p>
+              ) : undefined
+            }
             onSend={(text, image) => {
-              if (!locked) session.send(text, image);
+              if (!locked && !session.dirty) session.send(text, image);
             }}
             onStop={() => void session.stop()}
           />
-        </div>
-        <div
-          className={cn(
-            "h-[640px] min-h-0 lg:h-auto grid-rows-[minmax(280px,3fr)_minmax(180px,2fr)] gap-4 lg:grid",
-            mobile === "preview" ? "grid" : "hidden",
+        }
+        preview={
+          <div className="flex h-full min-h-0 flex-col gap-3">
+            {(historical || session.previewLoading || session.previewError) && (
+              <div className="flex shrink-0 flex-wrap items-center gap-2 rounded-lg border border-primary/15 bg-accent/50 px-3 py-2 text-xs">
+                <span className="flex-1" role="status">
+                  {session.previewLoading
+                    ? "正在读取版本…"
+                    : session.previewError ||
+                      `正在查看 V${viewed?.number} · 历史版本只读`}
+                </span>
+                {session.version && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={pending}
+                    onClick={() => session.selectVersion(session.version!.id)}
+                  >
+                    返回最新版本
+                  </Button>
+                )}
+              </div>
+            )}
+            <div className="grid min-h-0 flex-1 grid-rows-[minmax(280px,3fr)_minmax(180px,2fr)] gap-3">
+              <PreviewPanel
+                key={`preview-${session.key}`}
+                version={viewed}
+                values={
+                  historical ? viewed!.candidate.default_config : session.values
+                }
+                pending={pending || session.previewLoading}
+                onBusyChange={setPreviewBusy}
+              />
+              <ParametersPanel
+                version={viewed}
+                values={
+                  historical ? viewed!.candidate.default_config : session.values
+                }
+                disabled={
+                  locked ||
+                  historical ||
+                  session.job?.status === "needs_input" ||
+                  session.retryMode === "read"
+                }
+                pending={locked}
+                dirty={!historical && session.dirty}
+                readOnly={historical}
+                saving={session.busy === "parameters"}
+                onSave={() => {
+                  if (!locked) session.saveParameters();
+                }}
+                onDiscard={() => {
+                  if (!locked) session.discardParameters();
+                }}
+                onChange={(key, value) => {
+                  if (!locked) session.change(key, value);
+                }}
+              />
+            </div>
+          </div>
+        }
+      />
+      <Dialog
+        open={!!session.navigation}
+        onOpenChange={(open) => {
+          if (!open) session.resolveNavigation("cancel");
+        }}
+      >
+        <DialogContent showCloseButton={!session.busy && !session.loading}>
+          <DialogHeader>
+            <DialogTitle>参数尚未保存</DialogTitle>
+            <DialogDescription>
+              保存配置后切换，或放弃本地修改。取消将继续编辑当前视图。
+            </DialogDescription>
+          </DialogHeader>
+          {session.error && (
+            <p role="alert" className="text-sm text-destructive">
+              {session.error}
+            </p>
           )}
-        >
-          <PreviewPanel
-            key={`preview-${session.key}`}
-            version={session.version}
-            values={session.values}
-            pending={pending}
-            onBusyChange={setPreviewBusy}
-          />
-          <ParametersPanel
-            version={session.version}
-            values={session.values}
-            disabled={
-              locked ||
-              session.job?.status === "needs_input" ||
-              session.retryMode === "read"
-            }
-            pending={locked}
-            onChange={(key, value) => {
-              if (!locked) session.change(key, value);
-            }}
-          />
-        </div>
-      </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              disabled={!!session.busy || session.loading}
+              onClick={() => session.resolveNavigation("cancel")}
+            >
+              取消
+            </Button>
+            <Button
+              variant="outline"
+              disabled={!!session.busy || session.loading}
+              onClick={() => session.resolveNavigation("discard")}
+            >
+              放弃修改并切换
+            </Button>
+            <Button
+              disabled={locked || session.retryMode === "read"}
+              onClick={() => session.resolveNavigation("save")}
+            >
+              {session.navigation?.saving ? "正在保存…" : "保存并切换"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

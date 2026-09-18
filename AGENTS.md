@@ -10,16 +10,24 @@
 - `server/` 使用 Python + FastAPI + MySQL，提供模板持久化 API 与 `POST /segmentations` 文案切片接口，首页与用户路由仍为示例、尚未接入用户存储。包内导入使用相对路径，向应用注册 `APIRouter` 实例。
 - 模板模块位于 `server/src/server/template/`，与用户示例目录 `sub_api/` 平级；路由、配置校验、数据库存储与效果目录均放在该模块内。
 - Remotion 文字模板生成服务位于 `server/src/server/remotion_templates/`，Python 包名为 `server.remotion_templates`，挂载 `/api/templates`；本地数据默认保存在该模块的 `.data/`，使用说明维护在模块内 README。
-- Remotion Harness 区分代码失败、评审协议故障、证据不足与渲染环境故障：有效代码失败才交给 Actor 修复；无效 Judge 结果对同一候选/证据有限纠错，合法负面结论不得重试成通过。纯未知证据由宿主有限补采样并保存独立清单，仍未知或环境不可用则停止，只有全部验收通过的版本可发布。整批工具回执保存后，宿主复核最新候选的证据、产物与环境，直接完成，不再要求模型调用完成工具；发布事务仍检查取消状态。合法空 motion 不强制补 hold；宿主观察到静态不代表用户允许静态，不能覆盖 Judge 对缺少所要求动画的有效失败。
-- Actor、Judge 的分类调用/token 预算共用任务总上限，恢复次数与连续无进展阈值通过 `server/.env` 配置并同步 `.env.example`。每轮检查实际观察，纯等待、重复读取或相同失败不得无限循环；私有任务 `audit.jsonl` 和候选 `reviews.jsonl` 保留诊断，独立于模型八组滑动窗口及公开 SQLite 聊天。允许公开宿主筛选的阶段名称与时间，不公开失败候选、原始评审、steer 或工具参数。
-- Remotion 使用统一 Actor 理解需求、制定方案、写代码和修复，不设置独立 Planner、目标预审或重规划工具。`submit_candidate` 首次提供 `spec` 与 TSX，后续可修订方案；模型估算的字号、位置、行高不是冻结目标。Judge 对照用户要求、参考与实际帧，只拒绝明显文字错误、不可读遮挡/裁切、缺少要求效果及未授权修改，允许合理字体近似和轻微布局差异。宿主保护显式画布约束、当前参数契约和成功版本证据，旧候选回执不能用于新方案。Runtime 每次执行只记一次用户请求，Actor 工具交互保持八组滑动窗口；连续无进展受既有阈值与总预算限制。整组旋转按共同中心和像素坐标计算后归一化。
+- Remotion 配置类与加载函数位于 `remotion_templates/settings.py`，通过 `server.remotion_templates.settings` 导入；继续复用 `config_base.CommonSettings` 读取 `server/.env`，相对数据目录和默认 `server/remotion/` 渲染资源位置保持不变。
+- Remotion Harness 区分代码失败、评审协议故障、证据不足与渲染环境故障：有效代码失败才交给 Actor 修复；无效 Judge 结果对同一候选/证据有限纠错，合法负面结论不得重试成通过。纯未知证据由宿主有限补采样并保存独立清单，仍未知或环境不可用则停止，Agent 生成只有全部验收通过的版本可发布；用户手动参数修订使用独立渲染可用性门禁。整批工具回执保存后，宿主复核最新候选的证据、产物与环境，直接完成，不再要求模型调用完成工具；发布事务仍检查取消状态。合法空 motion 不强制补 hold；宿主观察到静态不代表用户允许静态，不能覆盖 Judge 对缺少所要求动画的有效失败。
+- Judge 接收原始请求、最新修改、成功基线与完整候选方案；方案只解释实现。失败项须引用实际要求并声明作用对象、观察与不匹配，宿主校验引用和结构化作用域，不能把无依据否决交给 Actor，也不能声称字符串检查能证明语义正确。unknown/conflict 必须提供非空 missing_evidence，缺少说明先纠正评审，不直接补采样。检查灰底不属于模板内容。
+- Judge 需求引用使用 `/user_intent/instruction` 等完整路径，宿主只移除一层明确的 `user_intent` 前缀并兼容旧相对路径；原参考图保持 `/reference_images/N`。规范化后仍校验原文、来源和作用域，重复前缀或候选路径不得放行；协议 steer 指出错误路径与原因，合法负面结论交给 Actor 修复。
+- 模型读取代表帧，宿主保留全部 frame/probe 校验；Judge/Actor 通常最多接收 12/6 帧，不按剩余预算缩减，明确要求的补充帧与失败引用帧优先保留。模型帧号映射只对应实际发送图片，未展示的已有帧也可请求。输入估算默认仅用于诊断；只有开启预算时才预留输出并按完整旧工具组裁剪本次 Actor 请求，不修改持久窗口。有效 token 回执继续记账，缺失用量在私有审计记为 null。私有审计记录图片数、输入估算和可用的 token 明细。
+- `IMV_ENFORCE_MODEL_BUDGET` 默认 false，暂不执行累计调用/token 配额、输入预算拦截、预算裁剪及 50 轮上限；设为 true 才恢复。开启时 Actor、Judge 的分类调用/token 预算共用任务总上限，恢复次数与连续无进展阈值通过 `server/.env` 配置并同步 `.env.example`。每轮检查实际观察，超时、取消、有限纠错/补证据和无进展保护始终保留，纯等待、重复读取或相同失败不得无限循环；私有任务 `audit.jsonl` 和候选 `reviews.jsonl` 保留诊断，独立于模型八组滑动窗口及公开 SQLite 聊天。允许公开宿主筛选的阶段名称与时间，不公开失败候选、原始评审、steer 或工具参数。
+- Remotion 使用统一 Actor 理解需求、制定方案、写代码和修复，不设置独立 Planner、目标预审或重规划工具。`submit_candidate` 首次提供 `spec` 与 TSX，后续可修订方案；模型估算的字号、位置、行高不是冻结目标。Judge 对照用户要求、参考与实际帧，只拒绝明显文字错误、不可读遮挡/裁切、缺少要求效果及未授权修改，允许合理字体近似和轻微布局差异。宿主保护显式画布约束、当前参数契约和成功版本证据，旧候选回执不能用于新方案。Runtime 每次执行只记一次用户请求，Actor 工具交互保持八组滑动窗口；连续无进展受既有阈值限制，总预算只在开关启用时限制。整组旋转按共同中心和像素坐标计算后归一化。
+- Remotion 手动调参不调用 Actor/Judge，不重跑参数/动画语义探针；保留源码，经参数合法性、编译、预览与默认导出一致性、媒体规格及产物指纹检查后保存 `source=user_parameters` 修订。发布事务必须核对代码与基线一致、参数/spec 与用户补丁一致；生成仍走完整验收。用户修订关联最近 Agent 版本，完整参数事件保存在 SQLite，不进入模型窗口；后续任务从两份状态计算有来源的 `user_parameter_changes` 净变化，改回原值则移除，Actor/Judge 均据此尊重当前基线。生成成功才建立新基线，失败、回答、澄清不清除用户调整。
 - Remotion 重复帧、默认导出与静态帧使用宿主统一的可见像素比较：黑白背景合成后的最大通道差不超过 2/255，且变化像素不超过可见前景并集的 1%，才视为栅格噪声；噪声不能证明动画或参数生效。失败 steer 包含实际差异与修复方向，产物清单仍严格使用 SHA-256 防篡改。
+- Remotion 编译失败的 steer 保留原始诊断，并明确以当前 `config_schema/default_props` 为宿主参数契约，同步修正类型声明和属性读取。无进展判断忽略 TypeScript 报错行列号变化，保留文件、错误码、字段与类型差异。本次执行已提交候选后，宿主拒绝用普通回答结束生成；正常问答与必要澄清仍可用。
 - Remotion 颜色探针允许最多 2/255 的 RGB 取整误差并比较 alpha 加权覆盖，边缘位置探针优先向内移动；一帧转场核验相邻边界，缺少时序证据仍为 unknown。视觉请求提供图片序号与实际帧号映射，不把无效帧引用自动解释为图片序号。
-- Remotion 模型预算由 `server/.env` 的 `IMV_MAX_OUTPUT_TOKENS`（32000）、`IMV_MAX_TOKENS`（200000）、`IMV_MAX_MODEL_CALLS`（32）和 `IMV_MODEL_TIMEOUT_SECONDS`（240）配置；单次输出还受剩余总预算限制，所有模型角色共用任务预算。任务与渲染超时独立配置为 600 / 180 秒；默认值与 `.env.example` 同步，修改后重启服务。
-- `server/src/server/asr/` 提供独立的 `transcribe` 函数与 `python -m server.asr` 命令行入口，尚未注册 HTTP 路由；通过北京地域 Fun-ASR 接收 HTTPS 音频直链并返回原始转写 JSON。`DASHSCOPE_API_KEY` 在模块加载时读取一次，优先源码 `server/.env`，不存在时回退工作目录 `.env`，进程环境变量优先；测试隔离文件、密钥、HTTP 和轮询等待。
-- 在 `server/` 下执行 `uv run server` 启动 Uvicorn，默认监听 `0.0.0.0:20070`（所有 IPv4 接口，供服务器部署后远程访问）；`__main__.py` 的 `ServerSettings` 在每次启动时读取固定的 `server/.env` 中的 `PORT`，进程环境变量优先，范围为 1～65535，空值或非法值阻止启动；仓库根目录使用 `uv run --project server server`。维护 `server/uv.lock`，CI 使用 `--locked` 验证依赖。
+- Remotion 模型预算由 `server/.env` 的 `IMV_MAX_OUTPUT_TOKENS`（32000）、`IMV_MAX_TOKENS`（200000）、`IMV_MAX_MODEL_CALLS`（32）和 `IMV_MODEL_TIMEOUT_SECONDS`（240）配置；单次输出上限始终生效，仅开启预算时按剩余额度缩小，所有模型角色共用任务预算。任务与渲染超时独立配置为 600 / 180 秒；默认值与 `.env.example` 同步，修改后重启服务。
+- `server/src/server/asr/` 提供独立的 `transcribe` 函数与 `python -m server.asr` 命令行入口，尚未注册 HTTP 路由；通过北京地域 Fun-ASR 接收 HTTPS 音频直链并返回原始转写 JSON。字段声明位于 `asr/settings.py`，公开转写函数通过包入口按需导入；设置发现不加载业务，`DASHSCOPE_API_KEY` 在 `asr/asr.py` 业务模块加载时读取一次，固定读取源码 `server/.env`，不存在时不回退工作目录，进程环境变量优先；测试隔离文件、密钥、HTTP 和轮询等待。
+- 在 `server/` 下执行 `uv run server` 启动 Uvicorn，默认监听 `0.0.0.0:20070`（所有 IPv4 接口，供服务器部署后远程访问）；`startup/settings.py` 的 `ServerSettings`（启动入口复用） 在每次启动时读取固定的 `server/.env` 中的 `PORT`，进程环境变量优先，范围为 1～65535，空值或非法值阻止启动；仓库根目录使用 `uv run --project server server`。维护 `server/uv.lock`，CI 使用 `--locked` 验证依赖。
 - `server/pyproject.toml` 显式将官方 PyPI 设为 uv 默认索引，与锁文件来源保持一致。遇到依赖版本不可用时先检查索引覆盖配置和镜像同步情况，不要仅为绕过镜像缺失而降低依赖版本或删除锁文件。
-- `App.tsx` 挂载 `pages/HomePage.tsx`，首页以标签组合 `features/remotion_templates/` 字效生成工作区与原 `features/templates/` 模板库；聊天、任务编排、隔离 Player、参数编辑和 API 请求按职责分离。
+- `App.tsx` 挂载 `pages/HomePage.tsx`，首页以左侧导航组合 `features/remotion_templates/` 字效生成工作区与原 `features/templates/` 模板库，底部设置入口组合环境信息与 `features/settings/` 动态插件表单；窄屏使用带无障碍名称的图标栏，切换设置同样保留工作区。聊天、任务编排、隔离 Player、参数编辑和 API 请求按职责分离。
+- 客户端设置目录通过 `GET /api/settings/plugins` 返回。一级业务模块的 `settings_plugin.py` 导出 `SETTINGS_PLUGIN`，字段由模块配置类生成；公共层按目录排序自动发现一次，不维护业务名单，不返回配置实例值。重复 ID、坏描述或导入失败直接报错；增删入口后重启后端并重新打开设置。入口及父包不得初始化配置或外部任务；无入口的模块不导入。删除设置入口不等同于删除整个业务模块，路由与业务依赖仍显式维护。当前 Agent、IMS、切片、ASR 与服务启动提供入口；Debug 通过入口的 `settings` 模型类生成完整 Schema，并在内置服务启动前加载客户端保存值；数据库不参与。ASR 仍无独立客户端转写页面；测试用临时真实包验证发现。
+- 设置普通与 Debug 模式均展示 Remotion Agent 与上海 IMS，入口声明 `scope: "client"`；普通模式只请求 `client_only=true` 目录，Debug 展示各模块完整配置及启动端口。通用面板不依赖目录成功，动态表单仍依赖 Schema。`IMV_DEBUG` 仅精确值 `true` 开启 Debug，Vite 开发不自动开启。普通模式仍不携带切片配置，保存时保留未展示的 Debug 字段。设置沿用弹窗与纵向模块导航，通用面板展示环境并允许编辑共享后端地址，保存到保留键 `$client.api_url`；新请求立即采用，已有会话连接需重启客户端后切换；桌面启动优先使用保存地址，未配置才启动内置服务或采用默认地址，模块列表只取后端目录，本地值不产生导航；模块导航值与通用面板隔离，切换保留草稿，关闭丢弃未保存值。通用与模块表单统一使用底部固定「取消 / 保存」操作栏；保存只提交当前页并保留弹窗，取消关闭弹窗并丢弃未保存草稿，不撤销此前已保存的值。公共层支持扁平标量 Schema，保存前统一校验类型、必填、数值上下界及字符串长度/模式；空可选数字省略，false 有效，不支持的结构明确报错，不伪装成可保存表单。桌面 `local_settings` 按模块 ID 保存到 `data/settings/settings.json`，包括明文密钥；读改写全程使用目录文件锁，竞争时报错供用户重试，临时文件刷盘后替换；浏览器仅页面内存保存，移除入口保留旧值。切片请求位于 `features/segmentation/api.ts`，执行时读取本模块配置并携带至 `POST /segmentations`，只影响本次调用；省略时兼容旧路径，HTTP 策略归服务端，错误不回显输入。公共设置层不执行业务。Remotion 的能力查询、创建、消息与重试读取本地 `remotion_agent`，IMS 提交与查询读取 `ims`；以 URI 编码 JSON 请求头传递，分别为 `X-Remotion-Config`、`X-IMS-Config`，不写业务输入或 URL。解析复用类型与原有字段校验，未知字段忽略；不新增长度上限、Remotion URL 规则或消息/重试就绪拦截。后端按任务持有凭据，不改全局配置或持久化秘密；IMS 仅记录是否使用客户端配置；播放查询直接使用请求凭据，不维护账号指纹或一致性检查。任务与通知结束清除凭据；缺失客户端 IMS 快照沿用已有阶段失败处理，Remotion 显式重试重新提供凭据。没有 IMS 合成客户端页面，仅 API 联调入口；ASR、切片与素材匹配读取启动配置；Debug 内置后端启动前从同一应用的 `data/settings/settings.json` 加载声明字段，按别名或环境前缀覆盖进程环境，不写 `.env`。新增高级字段保存后重启客户端生效；端口用于实际回环监听，未保存时自动分配；路径留空使用随包默认，相对路径以 `backend/` 为基准，不迁移数据。浏览器、手动启动及远程服务不走这条启动加载路径。详见 `client/src/features/settings/README.md`。
 - 组件卸载时清理定时器、订阅和播放器。新增界面功能遵循组件化结构，不把所有逻辑堆到 App 首页。
 - 项目长期方向见 README；其中提到的云剪辑、Agent、素材召回等功能不代表已经实现，也不构成自动扩展当前任务范围的要求。
 
@@ -50,26 +58,27 @@
 
 - 云端模板库共享，不包含登录、用户隔离或旧数据迁移，配置存入 MySQL，使用 SQLAlchemy 和 PyMySQL。页面提供本地 / 云端下拉框；默认为云端环境，连接失败、超时或服务端 5xx 时提示用户手动切换本地。桌面通过 `@tauri-apps/api/core` 的 `invoke` 调用 Tauri `local_templates` 命令，使用 `isTauri()` 判断桌面环境，不开启 `withGlobalTauri`；命令读写应用数据目录的 `data/template/templates.json`，不请求 Python 服务；浏览器本地模式明确报错。两库独立，切换复用未保存保护，目标读取失败保留原环境和草稿。本地 JSON 通过文件锁和临时文件原子替换保护；本地校验及效果快照使用随包 SDK 目录，预览仍需联网。Rust 存储测试使用临时目录，在 `client/` 执行 `cargo test --locked --manifest-path src-tauri/Cargo.toml`。
 - 数据库配置由 `database.py` 的 `DatabaseSettings`（`pydantic-settings`）自动读取固定的 `server/.env`，字段为 `DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD`、`DB_NAME`，进程环境变量优先；端口校验 1～65535，库名校验 1～64 字符。启动初始化时加载，修改后重启服务。真实环境文件不得入库，维护无密码示例 `.env.example`。
-- 启动端口、数据库、ASR 与切片模型配置共用 `server/.env.example`；从 `server/` 启动可读取全部配置，根目录启动且需要切片模型配置时使用 `uv run --project server --env-file server/.env server`，因为切片设置按当前目录查找 `.env`。
+- 启动端口、数据库、ASR、切片、Remotion 与视频合成的现有配置类继承 `config_base.py` 的 `CommonSettings`，统一读取固定的 `server/.env`；构造参数 > 进程环境变量 > 文件 > 默认值，保留 `_env_file` 覆盖与 `None` 禁用。路径仅面向当前源码布局，不做安装位置发现。保留字段、校验、实例化时机和 Remotion 相对数据目录行为，不建立配置树或统一快照；运行期间不修改配置，修改后重启服务。共用 `server/.env.example`，根目录启动使用 `uv run --project server server`。
 - FastAPI lifespan 启动时连接目标库，仅在 MySQL 返回 1049（库不存在）时通过临时无库连接执行 `CREATE DATABASE IF NOT EXISTS`，使用 `utf8mb4` / `utf8mb4_bin` 并正确引用库名；已有库直接复用。配置无效、连接或建库失败时停止启动，建库账号须具备对应权限。首次模板请求自动创建缺失表；运行中的数据库失败返回可重试的 503。启动失败和退出时释放连接池，临时建库连接始终关闭。
 - 四个路由为 `GET /template`、`POST /template`、`GET /template/{template_id}`、`DELETE /template/{template_id}`。POST 无 ID 创建（201），有 ID 完整更新（200）；不存在的 ID 返回 404，不做 upsert。
 - 名称去除首尾空白后不能为空，MySQL 唯一约束拒绝重名（409）；保存校验数值范围、效果目录与动画互斥关系（422）。服务端生成 ID、UTC 时间和效果参数快照，不接受客户端渲染参数。
 - 重命名和另存为复用 POST；另存为不携带 ID。未保存切换须提供保存并切换、放弃修改、取消，失败保留草稿。删除前确认。
 - 前端使用 SDK 5.2.2 的效果目录和静态动画 JSON，服务端维护同版本白名单；不提供 `/template/effects`。升级 SDK 时同步核对目录。保留用户已有 proto 文件，本次 API 使用 JSON。
 - 示例视频地址通过 `client/.env` 中的 `VITE_PREVIEW_VIDEO_URL` 配置，支持 HTTP(S) 直链与 public 资源路径；空值回退内置示例。修改后重启 Vite，生产使用需重新构建；当前固定片段要求源视频至少 14 秒。
-- 预览保留阿里云 SDK 5.2.2；Windows 生产页面通过 `src-tauri/src/localhost.rs` 在 `127.0.0.1` 的系统分配端口提供打包资源，窗口使用 `http://localhost:<端口>`，避免 `tauri.localhost` 不满足空 License 的 localhost 预览条件。仅允许对应 Host 的 GET/HEAD，不暴露任意磁盘文件；开发模式与 macOS / Linux 保持原加载方式，不扩大 Tauri IPC 权限。
+- 预览保留阿里云 SDK 5.2.2；Windows 生产页面通过 `src-tauri/src/localhost.rs` 在 `127.0.0.1` 的系统分配端口提供打包资源，窗口使用 `http://localhost:<端口>`，避免 `tauri.localhost` 不满足空 License 的 localhost 预览条件。仅允许对应 Host 的 GET/HEAD，不暴露任意磁盘文件；开发模式与 macOS / Linux 保持原加载方式，只向本次绑定的精确 localhost URL 开放模板、设置存储和内置后端启动命令，不授权其他端口或域名。
 - API 地址读取 `client/.env` 的 `VITE_API_URL`，未配置或留空时默认 `http://localhost:20070`；CORS 允许精确 localhost 主机的动态 HTTP 端口。修改配置后重启 Vite，生产需重新构建；避免 `.env.local` 同名配置覆盖。模板列表加载不阻塞本地编辑，但保存须防止晚到列表覆盖结果。预览仍需联网获取 SDK、字体和媒体，不发起云端合成，不将浏览器验证等同于桌面安装包验证。
 
 ## Remotion 字效客户端约定
 
 - 字效客户端位于 `client/src/features/remotion_templates/`，说明维护在该目录 README；复用 `VITE_API_URL`，请求前缀为 `/api/templates`，保留原模板库入口。
-- 顶部代码浮板提供新增和复制，最左侧是历史会话列表、中间聊天，右侧上方预览、下方参数；窄屏使用历史抽屉，仅成功版本替换可复制代码。
-- 视频直链仅用于背景，不发送模型、不嵌入字效导出。生成、参数验收、预览首帧和背景加载期间，禁用发送、图片变更与参数控件；聊天文字可保留草稿，正常播放不锁定。
+- 字效新会话支持生成前选择画布、时长及高级宽高/帧率，默认 1080×1920、30 FPS、5 秒；秒数四舍五入到整帧，至少一帧且不超过 30 秒，尺寸遵循服务端边界。首次请求显式携带 composition，非法草稿禁止发送，上传与生成期间锁定；创建后不修改该会话配置，新增恢复默认，历史展示成功版本实际配置，不宣称代码已支持任意规格适配。
+- 最左侧历史会话列表顶部提供“新增聊天”，中间聊天，右侧上方预览、下方参数。桌面三栏可拖拽或键盘调宽，本地保存尺寸并提供恢复布局；窄屏使用历史抽屉与聊天/预览切换。成功版本在对应聊天结果下显示默认折叠的代码卡片，可独立复制 Export.tsx、单击预览；参数修订标注来源，失败候选与纯问答不产生版本卡片。历史预览只读，不回滚服务端或改变编辑基线；返回最新才能调参与发送，SSE 新成功版本不抢走明确选中的历史预览，切换旧版本沿用未保存参数的保存/放弃/取消保护。
+- 视频直链仅用于背景，不发送模型、不嵌入字效导出。生成、参数保存检查、预览首帧和背景加载期间，禁用发送、图片变更与参数控件；聊天文字可保留草稿，正常播放不锁定。本地参数草稿实时预览不锁控件、不自动提交；显式保存批量提交净变化，撤销恢复上次成功默认值。未保存时禁止发送、图片变更及复制代码。
 - Player 包和带默认 props 的 `Export.tsx` 在服务端隔离构建并纳入产物清单。预览使用无同源权限的 sandbox iframe，消息检查来源、通道和请求编号；完成、失败、超时及卸载均清理加载锁和资源。
 - 两个工作区切换时只隐藏面板，保留模板库未保存草稿及字效会话、播放器和 SSE 订阅；模板库首次访问才加载，离开首页才卸载清理。任务提交使用 POST，公开消息、任务状态与成功版本指针通过作品级 SSE 更新，禁止恢复客户端任务轮询。
-- 新增打开空白会话，历史切换、新增、断线和卸载均不取消后台任务；只有明确停止才取消。迟到结果不得跨会话回填，网络错误不自动重复写入。参数失败保留此前成功代码并恢复其默认参数。新版本产物读取失败独立提示并提供只读重试，保留旧结果可用性，不能阻塞后续 SSE 或反复重放同一个失败事件。
-- 参数待提交、提交中或读取中禁止恢复操作，UI 与会话 hook 同时守卫；延迟参数提交前核对当前成功版本，版本已变化则丢弃旧提交。
-- 公开聊天与可重放事件独立保存于 Remotion 本地 SQLite，不使用模型滑动窗口作为历史。快照绑定消息、最新任务、成功版本指针和游标；SSE 按 ID 去重、断线续传，游标失效时重取快照。浏览器只保存上次选择的会话 ID，旧会话仅恢复有持久事实支持的公开内容。
+- 新增打开空白会话，历史切换、新增、断线和卸载均不取消后台任务；只有明确停止才取消。新增或切换历史遇到未保存参数时，提供保存并切换、放弃修改并切换、取消；保存并取得成功版本后才切换，失败留在原会话。迟到结果不得跨会话回填，网络错误不自动重复写入。参数保存失败保留此前成功代码与本地草稿，显式撤销才恢复默认参数。新版本产物读取失败独立提示并提供只读重试，保留旧结果可用性，不能阻塞后续 SSE 或反复重放同一个失败事件。
+- 参数未保存、提交中或读取中禁止普通恢复操作，UI 与会话 hook 同时守卫；本次保存响应未知或产物读取失败时允许只读恢复，不自动重发写入。保存绑定当前成功版本，只提交净变化；同一会话重复选择不清空草稿，StrictMode 重建订阅仍须恢复历史。
+- 公开聊天与可重放事件独立保存于 Remotion 本地 SQLite，不使用模型滑动窗口作为历史。快照绑定消息、最新任务、成功版本指针和游标；SSE 按 ID 去重、断线续传，游标失效时重取快照。浏览器仅保存上次选择的会话 ID 与桌面栏宽偏好，不保存聊天/代码；旧会话仅恢复有持久事实支持的公开内容。
 - 聊天任务等待与播放器加载分别显示，只有播放器实际加载才显示预览渲染遮罩；原有操作互斥规则保留。纯提问、问候或保持现状经独立审查后以 `answered` 终态结束，回答持久化并通过 SSE 展示，不生成候选、不发布新版本或重载播放器；首次会话和已有模板都支持问答，回答后可继续制作。
 - 任务消息下显示可折叠处理时间线：宿主实际进入阶段才记录，阶段名称为白名单，不从模型普通文本推断，不提供虚构百分比或未来步骤。运行中默认展开，成功/回答后收起，失败或停止保留最后阶段；计时器在终态与卸载时清理。公开进度保存在 SQLite `job_progress`，与 `job.updated` 在同一事务发布；会话快照 `jobs` 携带当前消息页对应的任务链路，支持历史分页、刷新和 SSE 重连，旧任务没有记录则不补造阶段。
 
@@ -80,7 +89,7 @@
 - 客户端核心测试在 `client/tests/`，使用 Bun 自带运行器、Happy DOM 和 React Testing Library；在 `client/` 执行 `bun run test`，每个用例上方写中文场景注释。测试隔离 HTTP 与 SDK，不连接真实服务；只覆盖必要业务行为，不把模拟 DOM 验证等同于真实视频播放、浏览器原生表单校验或 Tauri 验证。`bun run build` 同时检查测试类型。
 - 根据功能适用范围覆盖正常流程、异常输入、边界值、空数据、失败恢复、资源清理，以及涉及的权限、并发与幂等行为。不存在的能力不为凑覆盖率编写空测试；提交说明列出已覆盖场景与实际限制。
 - API 用例应检查状态码、响应契约和副作用。测试隔离外部服务、密钥和持久化数据，使用 fixture、monkeypatch 或临时目录；不得访问生产系统、依赖执行顺序或使用无界等待。
-- 共享服务端夹具保留临时 SQLite 数据库隔离，同时自动清除外部 `IMV_`、`DASHSCOPE_API_KEY` 与旧 `ASR_BASE_URL` 环境变量并切换临时目录，避免读取本机模型配置；ASR 首次导入屏蔽 `.env`，请求使用内存传输。配置用例显式注入，不访问真实 MySQL、ASR 或模型服务。
+- 共享服务端夹具保留临时 SQLite 数据库隔离，同时自动清除外部 `IMV_`、`DASHSCOPE_API_KEY` 与旧 `ASR_BASE_URL` 环境变量并将各配置类的文件路径指向临时 `server/.env`，切换临时目录，避免读取本机模型配置；ASR 首次导入屏蔽 `.env`，请求使用内存传输。配置用例显式注入，不访问真实 MySQL、ASR 或模型服务。
 - 文件头说明测试范围与执行方式，测试函数/夹具的 docstring 说明场景和期望。每次功能改动运行相关用例，交付前运行所属模块的完整测试；CI 使用锁定依赖运行服务端 pytest，测试失败必须修复。
 - 服务端目录执行 `uv run --locked pytest -v`；仓库根目录执行 `uv run --locked --project server pytest server/tests -v`。pytest 仅作为开发依赖维护在 `server/pyproject.toml` 和 `server/uv.lock`。
 
@@ -109,7 +118,7 @@ bun run tauri build
 cargo fmt --manifest-path client/src-tauri/Cargo.toml --check
 bun test ./.github/scripts
 bun .github/scripts/release-smoke.mjs
-actionlint .github/workflows/client-build.yml .github/workflows/release.yml .github/workflows/validation.yml
+actionlint .github/workflows/*.yml
 uv build --project server --out-dir server/dist
 uv run --locked --project server pytest server/tests -v
 git diff --check
@@ -129,7 +138,7 @@ Windows 需要 MSVC C++ 构建工具、Windows SDK 和 WebView2；ARM64 主机�
 
 ## 客户端构建 CI
 
-`.github/workflows/validation.yml` 是 push / PR 检查的唯一 Actions 入口，不在工作流级使用 paths 过滤，以确保每个 PR 都有最终检查结果。
+`.github/workflows/validation.yml` 是常规 push / PR 验证的统一 Actions 入口，不在工作流级使用 paths 过滤，以确保每个 PR 都有最终检查结果。
 `.github/scripts/ci-scope.mjs` 根据 Git 差异调度：PR 比较目标分支与合并结果，push 比较前后提交；新分支检查全部文件，缺失比较基线时保守运行全部检查。
 
 - 非默认分支 push：若同一仓库的同一提交已有打开的 PR，跳过重复任务；否则按变更范围检查。默认分支始终验证集成结果，不参与去重。
@@ -157,6 +166,12 @@ Windows 需要 MSVC C++ 构建工具、Windows SDK 和 WebView2；ARM64 主机�
 校验两端源码版本一致，并通过临时副本验证版本同步、Bun 冻结安装、Cargo 和 uv 锁文件。
 服务端 job 使用 Python 3.12 和 uv 缓存；`server/pyproject.toml` 的 uv 构建模块名显式设为 `server`，对应 `src/server/`。
 在 Validate project 上手动运行会执行全部检查（原生检查模式）；需要安装包时手动运行 Build client。
+
+- Validate project 的 `workflow_dispatch` 支持 `integration-tests`（默认 true）、`build-installers`（默认 false）与 `api-url`。手动集成通过 `backend-integration.yml` 复用工作流运行；普通 push/PR 不开启重型测试，最终汇总必须检查其结果。勾选打包仍使用 release 优化，API 地址仅在构建时注入。
+- 集成环境使用 Python 3.12、uv、临时 MySQL 8.4、Node 24、Bun、服务端 Remotion 锁定依赖、Chrome、FFmpeg/ffprobe、Noto CJK、bubblewrap 和 prlimit。真实 MySQL 测试须显式设置 `IMV_TEST_MYSQL=1` 和回环数据库连接，每例随机建库并清理；既有 SQLite 夹具不变。真实渲染通过 `IMV_TEST_RENDERER=1` 启用，只捕获浏览器及字体路径，不读取真实密钥。
+- `.github/workflows/client-debug.yml`（Debug client）在 `main` / `dev` push 或 `workflow_dispatch` 时运行，不监听 PR；复用 `client-build.yml` 并传入 `build-mode: package`、`debug-backend: true`。共享构建的 `debug-backend` 为布尔输入，默认 false，仅由此输入设置 `IMV_DEBUG`，不绑定分支名；普通构建和正式发布默认不携带后端。Debug artifact 名称为 `intelligent-mix-video-debug-<平台>-<提交 SHA>`。手动入口要求工作流存在于默认分支，分支 push 触发不绕过此限制。各平台打包时由 `.github/scripts/bundle-backend.py` 生成 `backend.tar`、`backend.id` 和临时 Tauri 资源配置，均不入库。随包完整服务、Python 3.12、MySQL（Linux 8.0，其余 8.4.8）、Node 24、Bun/Remotion、Chrome、FFmpeg/ffprobe及字体，Linux 另带 bubblewrap/prlimit 隔离工具。普通非 debug 构建不启动内置服务。客户端 `start_backend` 等实际就绪回执再挂载页面，模板、字效与设置 API 模块共享动态回环地址，不改变业务接口。
+- `server.desktop` 监督私有 MySQL 与完整 FastAPI；`DB_SOCKET` 仅用于本地 Unix socket，去库建库连接也必须保留 socket。数据和无密钥初始 `.env` 保存 app_data_dir/backend，运行时按归档摘要缓存于 app_cache_dir/backend；保留用户配置和数据库。父进程管道关闭时先停 API 再停 MySQL。Unix 内置数据库不开放 TCP；Windows 使用随机密码和动态回环 TCP，初始化时不监听网络，通过 SQL SHUTDOWN 落盘退出。均不读取宿主配置；密钥不得打包。随包库只提供给后端和渲染沙箱，禁止暴露用户目录、凭据或网络。AppImage/MSI/DMG 上传前启用 `IMV_TEST_BUNDLE` 验证真实启动、重启持久化、重复实例、关闭与桌面连接；FFmpeg/ffprobe 在 CI 从官方 `FFmpeg/FFmpeg` 最新稳定 tag 固定提交下载源码并原生编译，归档包含版本、提交与许可证；不使用 nightly 或第三方 Release 二进制。真实 Remotion 渲染目前仅 Linux 支持，Windows/macOS 不得绕过沙箱执行生成代码。macOS 使用 macos-15 / macos-15-intel 原生构建依赖，dylib 转为相对加载路径；Windows 使用 app-local VC 运行库，打包无特权符号链接依赖；常规 pytest 跳过这些真实集成用例。
+- Linux AppImage 排除随包 Wayland/PulseAudio 库，上传前检查 WebKit、GStreamer OpenGL/播放/解码插件。Linux 在 GTK 初始化前默认设置 `WEBKIT_GST_DMABUF_SINK_DISABLED=1` 和 `WEBKIT_GST_USE_PLAYBIN3=1`，保留显式环境配置；网页缓存按 WebKit 版本隔离，本地模板目录不变。`IMV_GDK_BACKEND=wayland|x11` 保留为显示后端对比入口，不将打包检查描述为真实播放与性能验证。
 
 ## 正式版本与 tag 发版
 

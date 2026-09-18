@@ -1,28 +1,27 @@
 """通过 pydantic-settings 读取 MySQL 配置；启动时确保数据库存在，退出时释放连接池。"""
 
 import json
-from pathlib import Path
 from threading import Lock
 
 from pydantic import Field, SecretStr, ValidationError
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import SettingsConfigDict
 from sqlalchemy import URL, Engine, create_engine
 from sqlalchemy.exc import ArgumentError, OperationalError
 
+from .config_base import CommonSettings
 
-class DatabaseSettings(BaseSettings):
+
+class DatabaseSettings(CommonSettings):
     """自动读取 DB_* 环境变量及固定的 server/.env，环境变量优先，不修改进程环境。"""
 
-    model_config = SettingsConfigDict(
-        env_file=Path(__file__).resolve().parents[2] / ".env",
-        env_file_encoding="utf-8", env_prefix="DB_", extra="ignore",
-    )
+    model_config = SettingsConfigDict(env_prefix="DB_")
 
     host: str = "127.0.0.1"
     port: int = Field(default=3306, ge=1, le=65535)
     user: str = "root"
     password: SecretStr = SecretStr("")
     name: str = Field(default="intelligent_mix_video", min_length=1, max_length=64)
+    socket: str | None = None
 
 
 # 连接池与配置在首次使用时一起初始化；退出后可重新读取配置。
@@ -46,7 +45,10 @@ def get_engine() -> Engine:
                 "mysql+pymysql", username=settings.user,
                 password=settings.password.get_secret_value(),
                 host=settings.host, port=settings.port, database=settings.name,
-                query={"charset": "utf8mb4"},
+                query={
+                    "charset": "utf8mb4",
+                    **({"unix_socket": settings.socket} if settings.socket else {}),
+                },
             )
             _engine = create_engine(
                 url, pool_pre_ping=True, pool_recycle=1800,

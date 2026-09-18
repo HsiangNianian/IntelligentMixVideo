@@ -142,17 +142,42 @@ def upstreams(monkeypatch, composition_settings, composition_case):
     return state
 
 
-def finished(client, task_id):
-    """最多五秒观察本地终态，失败时附响应；不使用无界等待。"""
-    end = monotonic() + 5
+def finished(client, task_id, headers=None):
+    """最多三十秒观察本地终态，留足慢 CI 落库余量，成功后立即返回。"""
+    end = monotonic() + 30
     while monotonic() < end:
-        response = client.get(f"{BASE}/{task_id}")
+        response = client.get(f"{BASE}/{task_id}", headers=headers)
         assert response.status_code == 200
         data = response.json()
         if data["status"] in ("succeeded", "failed"):
             return data
         sleep(0.005)
     pytest.fail(f"任务未在测试预算内结束：{data}")
+
+
+@pytest.mark.parametrize("stage,delay", [("matching", 0.15), ("submitting", 5.1)])
+def test_success_survives_slow_stage_persistence(upstreams, client, composition_case, monkeypatch, stage, delay):
+    """正常流程容忍慢 CI 的落库回执，不因测试专用短期限失败或重复提交上游。"""
+    advance = store.advance
+    delayed = []
+
+    def slow_advance(record, target, **data):
+        """只延迟一次阶段初始化回执，真实 SQLite 事务、状态版本和服务时钟保持原样。"""
+        updated = advance(record, target, **data)
+        initial = "match_request" in data if stage == "matching" else "ims_request" in data
+        if target == stage and initial:
+            delayed.append(target)
+            sleep(delay)
+        return updated
+
+    monkeypatch.setattr(store, "advance", slow_advance)
+    response = client.post(BASE, json=composition_case["request"])
+    assert response.status_code == 202
+    result = finished(client, response.json()["taskId"])
+    assert delayed == [stage]
+    assert result["status"] == "succeeded" and result["error"] is None
+    assert len(upstreams["posts"]) == len(upstreams["submits"]) == 1
+    assert upstreams["gets"] == []
 
 
 def test_async_acceptance_queries_and_persisted_success(upstreams, client, composition_case):
@@ -553,9 +578,22 @@ def test_template_changes_do_not_change_running_snapshot(upstreams, client, comp
     assert "fade_in" in upstreams["submits"][0]["timeline"] and "blur_in" not in upstreams["submits"][0]["timeline"]
 
 
-def test_duplicate_post_creates_distinct_tasks_with_bounded_concurrency(upstreams, client, composition_case, monkeypatch):
-    """重复 POST 创建独立 ID；配置并发为一时后续任务留在数据库排队。"""
+@pytest.mark.parametrize("storage_delay", [0, 0.2])
+def test_duplicate_post_creates_distinct_tasks_with_bounded_concurrency(upstreams, client, composition_case, monkeypatch, storage_delay):
+    """重复 POST 独立排队并成功；第二项落库较慢也不应被无关的短匹配预算打断。"""
     monkeypatch.setenv("COMPOSITION_CONCURRENCY", "1")
+    # 本用例验证并发而非超时；避免共享夹具的 100ms 预算依赖 CI 磁盘/调度速度。
+    monkeypatch.setenv("COMPOSITION_MATCH_WAIT_SECONDS", "10")
+    advance = store.advance
+
+    def delayed_advance(record, stage, **data):
+        """保留真实事务，仅模拟第二项保存匹配截止时间后数据库返回稍慢。"""
+        updated = advance(record, stage, **data)
+        if stage == "matching" and "match_request" in data and upstreams["asr_calls"] == 2:
+            sleep(storage_delay)
+        return updated
+
+    monkeypatch.setattr(store, "advance", delayed_advance)
     upstreams["release"].clear()
     try:
         first = client.post(BASE, json=composition_case["request"]).json()["taskId"]
@@ -566,8 +604,10 @@ def test_duplicate_post_creates_distinct_tasks_with_bounded_concurrency(upstream
         assert upstreams["asr_calls"] == 1
     finally:
         upstreams["release"].set()
-    assert finished(client, first)["status"] == finished(client, second)["status"] == "succeeded"
-    assert len(upstreams["submits"]) == 2
+    for task_id in (first, second):
+        result = finished(client, task_id)
+        assert result["status"] == "succeeded", result
+    assert upstreams["asr_calls"] == len(upstreams["posts"]) == len(upstreams["submits"]) == 2
 
 
 @pytest.mark.anyio
@@ -718,8 +758,9 @@ def test_callback_confirms_lost_submission_response(upstreams, client, compositi
     ("done", None, None), ("queued", None, "matching_timeout"),
     ("running", None, "matching_timeout"), ("done", "query", "matching_unavailable"),
 ])
-def test_callback_timeout_queries_once(upstreams, client, composition_case, query_status, failure, code):
+def test_callback_timeout_queries_once(upstreams, client, composition_case, monkeypatch, query_status, failure, code):
     """缺少回调时仅补查一次；成功继续合成，未完成/5xx 明确失败，迟到回调不重启任务。"""
+    monkeypatch.setenv("COMPOSITION_MATCH_WAIT_SECONDS", "1")
     upstreams.update(callback=False, query_status=query_status, failure=failure)
     task_id = client.post(BASE, json=composition_case["request"]).json()["taskId"]
     result = finished(client, task_id)
@@ -931,8 +972,8 @@ def test_invalid_public_base_prevents_acceptance(upstreams, client, composition_
 
 
 def notified(task_id):
-    """只观察隔离数据库中的通知结果，不用 GET 轮询代替被测回调；等待最多五秒。"""
-    end = monotonic() + 5
+    """只观察隔离数据库中的通知结果，不用 GET 代替回调；最多三十秒，成功后立即返回。"""
+    end = monotonic() + 30
     while monotonic() < end:
         record = store.get(task_id)
         if record["data"].get("notification_status") in ("sent", "failed"):
@@ -1046,7 +1087,7 @@ def test_notification_delivery_does_not_retry_or_change_result(upstreams, client
 
 def test_notification_timeout_allows_one_query_without_new_render(upstreams, client, composition_case, monkeypatch):
     """接收端无响应时回调请求有界结束；调用方等待后只 GET 一次即可取结果，无须再合成。"""
-    monkeypatch.setenv("COMPOSITION_HTTP_TIMEOUT_SECONDS", "0.1")
+    monkeypatch.setenv("COMPOSITION_HTTP_TIMEOUT_SECONDS", "1")
     upstreams["notification_release"].clear()
     accepted = client.post(BASE, json={**composition_case["request"], "callbackUrl": "https://notify.example.test/result"})
     try:
@@ -1240,3 +1281,75 @@ async def test_matching_failure_without_active_job_still_notifies(upstreams, com
     assert len(upstreams["notifications"]) == 1
     assert upstreams["notifications"][0]["body"]["error"]["code"] == "matching_failed"
     assert upstreams["submits"] == []
+
+
+@pytest.mark.parametrize("callback", [False, True])
+def test_client_ims_credentials_drive_submit_and_playback(upstreams, client, composition_case, monkeypatch, callback):
+    """两客户端提交、查询和回调独立；覆盖有/无服务器凭据，秘密不落库。"""
+    from urllib.parse import quote
+    seen = []
+    original = ims.IMS
+
+    def provider(settings, **kwargs):
+        """保留完整模拟 SDK 流程，记录实际构造 SDK 的配置边界。"""
+        assert settings.composition_concurrency != 99
+        seen.append((settings.ims_access_key_id.get_secret_value(), settings.ims_access_key_secret.get_secret_value()))
+        return original(settings, **kwargs)
+
+    monkeypatch.setattr(ims, "IMS", provider)
+    if not callback:
+        monkeypatch.delenv("ALIBABA_CLOUD_ACCESS_KEY_ID")
+        monkeypatch.delenv("ALIBABA_CLOUD_ACCESS_KEY_SECRET")
+    upstreams["release"].clear()
+    requests = []
+    for name in ("client-a", "client-b"):
+        header = {"X-IMS-Config": quote(json.dumps({"ims_access_key_id": name, "ims_access_key_secret": name + "-private", "composition_concurrency": 99}))}
+        payload = composition_case["request"] | ({"callbackUrl": "https://notify.example.test/result"} if callback else {})
+        response = client.post(BASE, json=payload, headers=header)
+        assert response.status_code == 202
+        requests.append((response.json()["taskId"], header))
+    upstreams["release"].set()
+    for task_id, header in requests:
+        assert finished(client, task_id, header)["status"] == "succeeded"
+        if callback:
+            assert notified(task_id)["data"]["notification_status"] == "sent"
+        record = store.get(task_id)
+        assert "private" not in json.dumps(record, default=str)
+        assert client.get(f"{BASE}/{task_id}").status_code == 503
+    assert set(seen) == {("client-a", "client-a-private"), ("client-b", "client-b-private")}
+    assert len(upstreams["notifications"]) == (2 if callback else 0)
+    # 不再检查提交账号指纹；查询直接使用本次提供的凭据，访问权限交给 IMS。
+    assert client.get(f"{BASE}/{requests[0][0]}", headers=requests[1][1]).status_code == 200
+    assert seen[-1] == ("client-b", "client-b-private")
+    from server.database import get_engine
+    with get_engine().connect() as connection:
+        logs = connection.execute(select(store.execution_logs.c.detail)).scalars().all()
+    assert "private" not in json.dumps(logs)
+    if not callback:
+        assert client.post(BASE, json=composition_case["request"]).status_code == 503
+
+
+@pytest.mark.parametrize("config", [
+    {"ims_access_key_secret": "private"},
+    {"ims_access_key_id": "id", "ims_access_key_secret": "private", "ims_endpoint": "evil.test"},
+])
+def test_client_ims_validation_is_private(upstreams, client, composition_case, config):
+    """复用原有凭据必填与官方主机校验，输入不进入日志或响应。"""
+    from urllib.parse import quote
+    response = client.post(BASE, json=composition_case["request"], headers={"X-IMS-Config": quote(json.dumps(config))})
+    assert response.status_code == 422
+    assert "private" not in response.text
+    assert upstreams["asr_calls"] == 0
+    assert store.pending([], 10) == []
+
+
+def test_client_ims_restart_does_not_fall_back_to_server(composition_settings, composition_case):
+    """缺任务快照沿用已有阶段失败处理，不切换到服务端另一个账号。"""
+    store.initialize_schema()
+    record = store.create(composition_case["request"], composition_settings.output() | {"client_config": True}, "https://callback.test")
+    runtime = service.Runtime()
+    asyncio.run(runtime._execute(record))
+    result = store.get(record["task_id"])
+    assert result["status"] == "failed"
+    assert result["data"]["error"]["code"] == "stage_error"
+    assert not runtime.client_configs and not runtime.active

@@ -10,16 +10,16 @@ from urllib.parse import urlparse
 from pydantic import ValidationError
 from openai import OpenAI
 
-from .settings import Settings
+from .settings import ClientSettings, Settings
 
 
-def segment(payload: dict) -> dict:
+def segment(payload: dict, *, config: ClientSettings | None = None) -> dict:
     """用正确文案和 ASR 词级时间生成片段；不调用 TTS/ASR，不降级模型失败。
 
     请求为 {script, asr_result}，读取 fun-asr transcripts 第一音轨，词时间为 begin_time/end_time 毫秒。
     替换/增删代价均为 1；波前搜索保留最远位置，平局依次优先替换、文案多字、
     ASR 多字。模型只返回分句切点和关键词，时间投射和关键词校验由代码完成。
-    配置来自当前目录 .env 及优先级更高的 IMV_ 环境变量；SDK 连接在返回前关闭。
+    显式 config 仅用于当前调用；省略时读取 server/.env 与 IMV_ 环境变量，SDK 在返回前关闭。
     返回 segments（整型 segment_id、秒制 start_time/end_time、group_id、字符串 keyword、level）、
     warnings 和 trace；空内容或输出时间错误抛 ValueError，配置或模型输出错误抛
     RuntimeError，内部约束错误抛 AssertionError；ASR 嵌套读取和 SDK 异常原样传播。
@@ -56,9 +56,9 @@ def segment(payload: dict) -> dict:
     if not timeline:
         raise ValueError("ASR 缺少有效发音字符。")
 
-    # 每次调用自动读取配置；配置错误仍归为模型错误，不向 HTTP 暴露配置值。
+    # 客户端完整参数覆盖模型字段；服务端 HTTP 策略仍从环境读取，不修改共享状态。
     try:
-        config = Settings()
+        config = Settings(**config.model_dump()) if config is not None else Settings()
     except ValidationError:
         raise RuntimeError("模型或切片配置缺失或不合法，请检查 IMV_ 配置。") from None
     # 固定业务规则：候选片段至少 2 秒，每段最多一个关键词，词长最多 12 字。

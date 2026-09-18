@@ -47,7 +47,18 @@ from server.remotion_templates.renderer import Renderer
 from server.remotion_templates.runtime import Runtime
 from server.remotion_templates.store import Conflict, NotFound, Store
 from server.remotion_templates.trajectory import Trajectory
-from server.settings import Settings
+from server.remotion_templates.settings import Settings
+
+# 仅显式真实渲染时捕获三个运行路径；自动夹具随后清除 IMV_*，仍不读取 .env 或模型密钥。
+_renderer_paths = {
+    field: os.environ[variable]
+    for field, variable in (
+        ("browser_executable", "IMV_BROWSER_EXECUTABLE"),
+        ("font_regular", "IMV_FONT_REGULAR"),
+        ("font_bold", "IMV_FONT_BOLD"),
+    )
+    if os.environ.get("IMV_TEST_RENDERER") == "1" and variable in os.environ
+}
 
 # A maintained reference component demonstrates direct props and deterministic transparent text.
 SAMPLE_CODE = """/** Static editable text reference; the preview host loads managed fonts. */
@@ -115,6 +126,7 @@ def settings(tmp_path) -> Settings:
         actor_model="offline",
         vision_model="offline",
         actor_api_key=SecretStr("test-private-token"),
+        **_renderer_paths,
     )
 
 
@@ -459,10 +471,26 @@ class ScriptedProvider:
             return AnswerReview(
                 status="pass", detail="Offline answer agrees with user input."
             )
+        intent = json.loads(prompt).get("user_intent") or {}
+        source = (
+            "/original_request/description"
+            if (intent.get("original_request") or {}).get("description")
+            else "/instruction"
+        )
+        quote = (intent.get("original_request") or {}).get("description") or intent.get(
+            "instruction"
+        )
         return VisualReview(
             checks=[
                 VisualCheck(
-                    name=name, status="pass", detail="Offline visual observation."
+                    name=name,
+                    status="pass",
+                    detail="Offline visual observation.",
+                    requirement_source=source,
+                    requirement_quote=quote,
+                    target=self.spec.text_layers[0].id,
+                    observed="Observed fixture mismatch",
+                    mismatch="Explicit requested property differs",
                 )
                 for name in ["text", "layout", "style", "motion", "scope"]
             ]
@@ -538,6 +566,31 @@ class ScriptedRenderer:
         report.checks = [
             check for check in report.checks if not check.name.startswith("visual_")
         ]
+        if kwargs.get("preserve_code"):
+            # User revisions expose runnable/exportable artifacts without fabricated visual judgments.
+            report.checks = [
+                check
+                for check in report.checks
+                if check.name
+                not in {"transparency", "parameter_behavior", "motion_evidence"}
+            ]
+            report.checks.extend(
+                Check(name=name, status="pass", detail="Offline renderer output.")
+                for name in (
+                    "interactive_bundle",
+                    "export_source",
+                    "export_defaults",
+                    "export_default_render",
+                    "repeat_render",
+                )
+            )
+            (directory / "interactive.js").write_text("// Offline player bundle")
+            (directory / "Export.tsx").write_text(
+                candidate.tsx_code
+                + "\n// Defaults: "
+                + json.dumps(candidate.default_config, ensure_ascii=False)
+            )
+            Image.new("RGBA", (64, 64), "white").save(directory / "export-default.png")
         for frame in report.frames:
             Image.new("RGBA", (64, 64), "white").save(directory / f"frame-{frame}.png")
         return candidate, report
@@ -744,7 +797,7 @@ def test_api_generation_edit_artifacts_and_events(settings, spec):
                 -1
             ]
         )
-        assert review_prompt["user_intent"]["original_request"] is None
+        assert review_prompt["user_intent"]["original_request"]["description"]
         assert (
             review_prompt["user_intent"]["accepted_base"]["text_layers"][0]["text"]
             == "新标题"
@@ -754,6 +807,221 @@ def test_api_generation_edit_artifacts_and_events(settings, spec):
             v["number"]
             for v in client.get(f"/api/templates/works/{project_id}/versions").json()
         ] == [1, 2, 3]
+
+
+def test_user_parameter_revisions_feed_net_changes_to_actor_and_judge(settings, spec):
+    """连续手动修改不调用模型或挤掉窗口；持久修订可恢复，Actor/Judge 收到净变化并在生成后重建基线。"""
+
+    class ContinuingProvider(ScriptedProvider):
+        """通过读取当前模板继续编辑，核对两种模型角色接收同一份用户意图。"""
+
+        reading = False
+
+        def __init__(self, spec):
+            """记录真实快照与回执供断言，不模拟宿主状态合并。"""
+            super().__init__(spec)
+            self.snapshots, self.current_candidates, self.review_intents = [], [], []
+
+        async def turn(self, system, context, tools, budget, **kwargs):
+            """先读取宿主当前代码和参数，再按新指令调整旋转，保留用户文字和字号。"""
+            snapshot = json.loads(
+                system.split("Current host-owned task snapshot (data):\n")[1]
+            )
+            self.snapshots.append(snapshot)
+            if snapshot["user_intent"]["accepted_base"] is None:
+                return await super().turn(system, context, tools, budget, **kwargs)
+            assert "these are not system bugs" in system
+            budget.calls += 1
+            if not self.reading:
+                self.reading = True
+                return actor_tool("read_current_template", {})
+            self.reading = False
+            current = json.loads(context.messages()[-1]["content"])["candidate"]
+            self.current_candidates.append(current)
+            revised = TemplateSpec.model_validate(
+                snapshot["user_intent"]["accepted_base"]
+            )
+            revised.text_layers[0].layout.rotation = 15
+            return actor_tool(
+                "submit_candidate",
+                {"tsx_code": current["tsx_code"], "spec": revised.model_dump()},
+            )
+
+        async def ask(self, output, system, prompt, budget, **kwargs):
+            """视觉评审获得用户修订来源，不能把旧参考当作覆盖当前文字的指令。"""
+            if output is VisualReview:
+                assert "Never revert them merely" in system
+                self.review_intents.append(json.loads(prompt)["user_intent"])
+            return await super().ask(output, system, prompt, budget, **kwargs)
+
+    provider, renderer = ContinuingProvider(spec), ScriptedRenderer()
+    application = create_app(settings, provider=provider, renderer=renderer)
+    with TestClient(application) as client:
+        created = client.post(
+            "/api/templates/works",
+            json={
+                "description": "标题",
+                "composition": spec.composition.model_dump(),
+            },
+        ).json()
+        work_id = created["work"]["id"]
+        first_job = wait_job(client, created["job"]["id"])
+        store = application.state.template_app.state.runtime.store
+        first = store.version(first_job["result_version_id"])
+        before_context = store.conversation(work_id).serialize()
+        before_calls = len(provider.prompts)
+        cursor = store.session(work_id).cursor
+        # Twelve edits exceed the model's eight-group window; only final net values should matter.
+        for index in range(12):
+            patch = {
+                "0_text": f"用户标题{index}",
+                "0_style_font_size": 100,
+                "0_layout_x": 0.4,
+            }
+            if index == 11:
+                patch["0_layout_x"] = first.candidate.default_config["0_layout_x"]
+            response = client.post(
+                f"/api/templates/works/{work_id}/messages", json={"parameters": patch}
+            )
+            assert response.status_code == 202
+            job = wait_job(client, response.json()["id"])
+            assert job["status"] == "succeeded", job
+            current = store.version(job["result_version_id"])
+            assert (
+                current.source == "user_parameters"
+                and current.agent_base_version_id == first.id
+            )
+            assert current.validation.render_passed and not current.validation.passed
+            assert not any(
+                c.name.startswith("visual_") for c in current.validation.checks
+            )
+            assert store.job(job["id"]).usage == {"calls": 0, "tokens": 0}
+        assert len(provider.prompts) == before_calls
+        assert store.conversation(work_id).serialize() == before_context
+        restored = Store(store.root).version(current.id)
+        assert (
+            restored == current
+            and current.candidate.tsx_code == first.candidate.tsx_code
+        )
+        assert store.session(work_id).work.current_version_id == current.id
+        events = store.work_events(work_id, cursor)
+        assert sum(e.type == "version.ready" for e in events) == 12
+        public = client.get(f"/api/templates/versions/{current.id}").json()
+        assert public["source"] == "user_parameters" and "validation" not in public
+        exported = client.get(
+            f"/api/templates/versions/{current.id}/artifacts/Export.tsx"
+        )
+        assert exported.status_code == 200 and "用户标题11" in exported.text
+        invalid = client.post(
+            f"/api/templates/works/{work_id}/messages",
+            json={"parameters": {"0_text": ""}},
+        )
+        assert invalid.status_code == 422
+        renderer.failures = renderer.calls + 1
+        failed_edit = client.post(
+            f"/api/templates/works/{work_id}/messages",
+            json={"parameters": {"0_text": "不应保存"}},
+        )
+        failed_job = wait_job(client, failed_edit.json()["id"])
+        assert failed_job["status"] == "failed"
+        assert store.project(work_id).current_version_id == current.id
+        assert store.conversation(work_id).serialize() == before_context
+        assert len(provider.prompts) == before_calls
+        followup = client.post(
+            f"/api/templates/works/{work_id}/messages", json={"instruction": "旋转15度"}
+        )
+        result = wait_job(client, followup.json()["id"])
+        assert result["status"] == "succeeded", result
+        intent = provider.snapshots[-1]["user_intent"]
+        changes = intent["user_parameter_changes"]
+        assert changes["source"] == "user_parameter_edit"
+        assert changes["changes"] == [
+            {"target": "/text_layers/0/text", "before": "你好", "after": "用户标题11"},
+            {"target": "/text_layers/0/style/font_size", "before": 80, "after": 100},
+        ]
+        assert provider.review_intents[-1] == intent
+        assert provider.current_candidates[-1] == current.candidate.model_dump()
+        generated = store.version(result["result_version_id"])
+        assert generated.source == "agent" and generated.agent_base_version_id is None
+        assert generated.candidate.default_config["0_text"] == "用户标题11"
+        # Subsequent manual edits are relative to this new generation, not the first-ever template.
+        edited = client.post(
+            f"/api/templates/works/{work_id}/messages",
+            json={"parameters": {"0_style_font_size": 90}},
+        )
+        revised_job = wait_job(client, edited.json()["id"])
+        assert (
+            store.version(revised_job["result_version_id"]).agent_base_version_id
+            == generated.id
+        )
+
+
+def test_parameter_change_summary_drops_reverts(candidate, spec):
+    """完整参数提交和恢复原值只保留净变化；合并不修改基线或候选。"""
+    from server.remotion_templates.parameters import parameter_changes
+
+    changed, revised = patch_parameters(
+        candidate, spec, {"0_text": "新标题", "0_style_color": "#000000"}
+    )
+    before = candidate.model_dump()
+    assert len(parameter_changes(candidate, changed)) == 2
+    reverted, _ = patch_parameters(changed, revised, candidate.default_config)
+    assert parameter_changes(candidate, reverted) == []
+    assert candidate.model_dump() == before
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "render",
+        "missing_export",
+        "cancelled",
+        "code",
+        "parameters",
+        "fingerprint",
+        "generation",
+    ],
+)
+def test_parameter_publication_keeps_strict_execution_boundary(
+    store, candidate, spec, failure
+):
+    """用户修订仍拒绝渲染失败、缺失证据、取消、偷改源码/参数与旧指纹；生成不能借用轻量门禁。"""
+    project, first_job = store.create(GenerateTemplateRequest(description="标题"))
+    store.claim()
+    first = publish_fixture(
+        store, first_job.id, candidate, spec, evidence(candidate, spec)
+    )
+    mode = "edit" if failure == "generation" else "parameters"
+    job = store.enqueue(
+        project.id, JobInput(mode=mode, parameters={"0_text": "用户修改"}), first.id
+    )
+    store.claim()
+    changed, revised = patch_parameters(candidate, spec, {"0_text": "用户修改"})
+    if failure == "code":
+        changed = changed.model_copy(
+            update={"tsx_code": SAMPLE_CODE + "\n// unrequested change"}
+        )
+    if failure == "parameters":
+        changed, revised = patch_parameters(
+            changed, revised, {"0_style_font_size": 100}
+        )
+    directory = store.job_dir(job.id) / "attempt-1"
+    changed, report = asyncio.run(
+        ScriptedRenderer().validate(changed, revised, directory, preserve_code=True)
+    )
+    if failure == "render":
+        next(c for c in report.checks if c.name == "render").status = "fail"
+    elif failure == "missing_export":
+        report.checks = [c for c in report.checks if c.name != "export_defaults"]
+    elif failure == "cancelled":
+        store.update(job.id, status="cancelled", stage="finished")
+    elif failure == "fingerprint":
+        report.fingerprint = first.validation.fingerprint
+    seal_artifacts(changed, revised, report, directory)
+    with pytest.raises(Conflict):
+        store.publish(job.id, changed, revised, report, directory)
+    assert store.project(project.id).current_version_id == first.id
+    assert len(store.versions(project.id)) == 1
 
 
 def test_api_clarification_failure_and_retry(settings, spec):
@@ -904,8 +1172,10 @@ def test_runtime_exclusive_directory(settings, spec):
     "case",
     ["ok", "unauthorized", "invalid_json", "missing_usage", "truncated", "budget"],
 )
-def test_provider_contract_and_sanitized_errors(settings, case):
-    """Verify wire credentials, JSON parsing, usage accounting and safe error responses offline."""
+@pytest.mark.parametrize("enforced", [False, True])
+def test_provider_contract_and_sanitized_errors(settings, case, enforced):
+    """预算开关只影响额度和用量缺失；鉴权、JSON、截断检查及错误脱敏始终生效。"""
+    settings.enforce_model_budget = enforced
 
     def respond(request):
         """Capture the actual request and return a controlled compatible provider response."""
@@ -933,11 +1203,12 @@ def test_provider_contract_and_sanitized_errors(settings, case):
 
     provider = Provider(settings, transport=httpx.MockTransport(respond))
     budget = Budget(calls=settings.max_model_calls if case == "budget" else 0)
-    if case == "ok":
+    if case == "ok" or (not enforced and case in {"missing_usage", "budget"}):
         result = asyncio.run(
             provider.ask(DialogueOutput, "Return JSON", "title", budget)
         )
-        assert result.questions == ["Which title?"] and budget.tokens == 100
+        assert result.questions == ["Which title?"]
+        assert budget.tokens == (0 if case == "missing_usage" else 100)
     else:
         with pytest.raises(ModelFailure) as caught:
             asyncio.run(provider.ask(DialogueOutput, "Return JSON", "title", budget))
@@ -1062,6 +1333,14 @@ def test_real_isolated_renderer(settings, candidate, spec, tmp_path):
             updated, target, tmp_path / "second", preserve_code=True
         )
         assert revised.tsx_code == output.tsx_code
+        assert validation.render_passed and not validation.passed
+        assert (
+            json.loads((tmp_path / "second" / "request.json").read_text())["probes"]
+            == []
+        )
+        assert not {"parameter_behavior", "motion_evidence", "transparency"} & {
+            check.name for check in validation.checks
+        }
         assert all(check.status == "pass" for check in validation.checks), (
             validation.model_dump()
         )
@@ -1647,18 +1926,63 @@ def test_idle_actor_stops_with_audit_before_global_budget(spec, tmp_path):
     assert any("No user input is pending" in str(event) for event in events)
 
 
-def test_changed_source_without_new_evidence_is_not_progress(spec, tmp_path):
-    """修改注释或空白、重复相同失败不会重置无进展计数。"""
+@pytest.mark.parametrize("moving_location", [False, True])
+def test_changed_source_without_new_evidence_is_not_progress(
+    spec, tmp_path, moving_location
+):
+    """修改注释、空白或编译错误行列号不会重置无进展计数。"""
     from server.remotion_templates.provider import ExecutionFailure
+
+    class CompilerRenderer(ScriptedRenderer):
+        """模拟源码移动后同一个编译错误出现在不同位置。"""
+
+        async def validate(self, candidate, spec, directory, **kwargs):
+            """保留真实检查结果，只改变 TypeScript 诊断的位置。"""
+            output, report = await super().validate(
+                candidate, spec, directory, **kwargs
+            )
+            if moving_location:
+                next(
+                    c for c in report.checks if c.name == "typescript"
+                ).detail = f"Export.tsx({self.calls},11): error TS2740: missing property 'title'."
+            return output, report
 
     actions = [
         ("submit_candidate", {"tsx_code": SAMPLE_CODE + "\n" * i}) for i in range(20)
     ]
-    provider, renderer = ActionProvider(spec, actions), ScriptedRenderer(failures=100)
+    provider, renderer = ActionProvider(spec, actions), CompilerRenderer(failures=100)
     harness = Harness(provider, renderer)
     with pytest.raises(ExecutionFailure, match="no new action evidence"):
         asyncio.run(harness.generate(spec, Budget(), tmp_path, [], lambda *_: None))
     assert renderer.calls == 1 + harness.settings.max_no_progress_turns
+
+
+def test_compiler_steer_preserves_diagnostics_and_explains_contract(spec, tmp_path):
+    """编译失败回执和下一轮快照说明契约权威，保留原始诊断，修复通过后才交付。"""
+    provider, renderer = ScriptedProvider(spec), ScriptedRenderer(failures=1)
+    _, _, report, _ = asyncio.run(
+        Harness(provider, renderer).generate(
+            spec, Budget(), tmp_path, [], lambda *_: None
+        )
+    )
+    assert report.passed and renderer.calls == 2
+    snapshots = [
+        json.loads(prompt.split("Current host-owned task snapshot (data):\n")[1])
+        for output, prompt in provider.prompts
+        if output is CodeOutput
+    ]
+    failed = snapshots[1]
+    original = next(c["detail"] for c in failed["checks"] if c["name"] == "typescript")
+    assert original in " ".join(failed["steer"])
+    assert "config_schema/default_props" in failed["steer"][0]
+    assert "declarations and property reads" in failed["steer"][0]
+    assert (failed["config_schema"], failed["default_props"]) == controls(spec)
+    events = [
+        json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()
+    ]
+    receipts = [e["result"] for e in events if e["event"] == "tool_result"]
+    assert receipts[0]["steer"] == failed["steer"]
+    assert receipts[-1]["steer"] == []
 
 
 def test_real_negative_review_is_not_retried_into_pass(candidate, spec, tmp_path):
@@ -1679,7 +2003,12 @@ def test_real_negative_review_is_not_retried_into_pass(candidate, spec, tmp_path
     provider = NegativeProvider(spec)
     _, report, _ = asyncio.run(
         Harness(provider, ScriptedRenderer()).inspect(
-            candidate, spec, tmp_path / "attempt", [], Budget()
+            candidate,
+            spec,
+            tmp_path / "attempt",
+            [],
+            Budget(),
+            intent={"instruction": "标题"},
         )
     )
     assert not report.passed
@@ -1687,8 +2016,91 @@ def test_real_negative_review_is_not_retried_into_pass(candidate, spec, tmp_path
     assert next(c for c in report.checks if c.name == "visual_text").status == "fail"
 
 
+@pytest.mark.parametrize("invalid_first", [False, True])
+def test_full_requirement_path_reaches_actor_repair(spec, tmp_path, invalid_first):
+    """复现 3fcdbbda：布局 fail 经路径校验后交给 Actor，新候选重新渲染通过才结束。"""
+
+    class LayoutProvider(ScriptedProvider):
+        """在模型边界返回完整用户引用；可先给错误路径以检查同证据协议纠错。"""
+
+        reviews = 0
+        actor_snapshots = []
+        first_payload = None
+
+        async def turn(self, system, context, tools, budget, **kwargs):
+            """记录 Actor 实际收到的 steer，第二轮必须携带有依据的布局失败。"""
+            snapshot = json.loads(
+                system.split("Current host-owned task snapshot (data):\n")[1]
+            )
+            self.actor_snapshots.append(snapshot)
+            return await super().turn(system, context, tools, budget, **kwargs)
+
+        async def ask(self, output, system, prompt, budget, **kwargs):
+            """旧候选始终返回布局失败，只有 Actor 提交新候选之后才允许通过。"""
+            result = await super().ask(output, system, prompt, budget, **kwargs)
+            if output is VisualReview:
+                self.reviews += 1
+                payload = json.loads(prompt)
+                if len(self.actor_snapshots) == 1:
+                    result.checks[1] = VisualCheck(
+                        name="layout",
+                        status="fail",
+                        frame=0,
+                        detail="文字层重叠，最新修改尚未解决。",
+                        requirement_source=(
+                            "/user_intent/user_intent/instruction"
+                            if invalid_first and self.reviews == 1
+                            else "/user_intent/instruction"
+                        ),
+                        requirement_quote="图层之间都挤在一起了，你仔细检查",
+                        target="canvas",
+                        observed="标题覆盖日期文字",
+                        mismatch="没有消除用户指出的文字重叠",
+                    )
+                    if self.reviews > 1:
+                        correction = payload["correction"]
+                        assert "/user_intent/user_intent/instruction" in str(
+                            correction["errors"]
+                        )
+                        assert "/user_intent/instruction" in str(correction["errors"])
+                        assert (
+                            payload["candidate_plan"]
+                            == self.first_payload["candidate_plan"]
+                        )
+                        assert (
+                            payload["frame_images"]
+                            == self.first_payload["frame_images"]
+                        )
+                    self.first_payload = payload
+                else:
+                    assert "correction" not in payload
+            return result
+
+    provider, renderer = LayoutProvider(spec), ScriptedRenderer()
+    _, _, report, directory = asyncio.run(
+        Harness(provider, renderer).generate(
+            spec,
+            Budget(),
+            tmp_path,
+            [],
+            lambda *_: None,
+            intent={"instruction": "图层之间都挤在一起了，你仔细检查"},
+        )
+    )
+    assert report.passed and directory.name == "attempt-2"
+    assert renderer.calls == 2 and len(provider.actor_snapshots) == 2
+    assert provider.reviews == (3 if invalid_first else 2)
+    assert "标题覆盖日期文字" in str(provider.actor_snapshots[1]["steer"])
+    initial = ValidationReport.model_validate_json(
+        (tmp_path / "attempt-1/validation.json").read_text()
+    )
+    assert not initial.passed
+    assert next(c for c in initial.checks if c.name == "visual_layout").status == "fail"
+
+
+@pytest.mark.parametrize("prefix", ["", "/user_intent"])
 def test_valid_failure_survives_correction_of_other_dimension(
-    candidate, spec, tmp_path
+    candidate, spec, tmp_path, prefix
 ):
     """scope 协议纠错时保留此前合法文字失败，不允许整批重审把它洗成通过。"""
 
@@ -1698,6 +2110,9 @@ def test_valid_failure_survives_correction_of_other_dimension(
         async def ask(self, output, system, prompt, budget, **kwargs):
             """使用请求次数决定两次评审结果。"""
             result = await super().ask(output, system, prompt, budget, **kwargs)
+            result.checks[0].requirement_source = (
+                prefix + result.checks[0].requirement_source
+            )
             if len(self.prompts) == 1:
                 result.checks[0].status = "fail"
                 result.checks[0].detail = "Frame 0 shows incorrect wording."
@@ -1708,7 +2123,12 @@ def test_valid_failure_survives_correction_of_other_dimension(
     provider = MixedProvider(spec)
     _, report, _ = asyncio.run(
         Harness(provider, ScriptedRenderer()).inspect(
-            candidate, spec, tmp_path / "attempt", [], Budget()
+            candidate,
+            spec,
+            tmp_path / "attempt",
+            [],
+            Budget(),
+            intent={"instruction": "标题"},
         )
     )
     assert len(provider.prompts) == 2
@@ -1890,6 +2310,33 @@ def test_progress_ignores_review_wording_and_repeated_reads(candidate, spec):
         check for check in report.checks if check.name == "visual_text"
     ).status = "pass"
     assert progress.observe(report) and progress.stalled_turns == 0
+
+
+@pytest.mark.parametrize(
+    "changed_detail",
+    [
+        "Export.tsx(99,7): error TS2322: missing property 'title'.",
+        "Export.tsx(99,7): error TS2740: missing property 'color'.",
+        "contract.tsx(99,7): error TS2740: missing property 'title'.",
+    ],
+)
+def test_compiler_progress_ignores_only_locations(candidate, spec, changed_detail):
+    """编译行列号不算进展，但错误码、字段或文件变化仍保留为新诊断；原报告不变。"""
+    from server.remotion_templates.trajectory import DecisionProgress
+
+    progress = DecisionProgress()
+    report = evidence(candidate, spec, typescript="fail")
+    check = next(c for c in report.checks if c.name == "typescript")
+    check.detail = "Export.tsx(1,2): error TS2740: missing property 'title'."
+    assert progress.observe(report)
+    check.detail = "Export.tsx(99,7): error TS2740: missing property 'title'."
+    before = report.model_dump()
+    assert not progress.observe(report)
+    assert progress.stalled_turns == 1 and report.model_dump() == before
+    check.detail = changed_detail
+    assert progress.observe(report) and progress.stalled_turns == 0
+    check.status = "pass"
+    assert progress.observe(report)
 
 
 def test_task_message_binding_and_private_failures(settings, spec):
@@ -2146,6 +2593,50 @@ def test_answer_cannot_bypass_independent_review(spec, verdict):
     assert "No edit was executed" in " ".join(provider.snapshots[1]["steer"])
 
 
+@pytest.mark.parametrize("clarify", [False, True])
+def test_failed_candidate_cannot_finish_as_answer(settings, spec, clarify):
+    """失败候选后拒绝普通回答，即使 Judge 会放行；仍允许必要澄清或修复后发布。"""
+    submission = (
+        "submit_candidate",
+        {"tsx_code": SAMPLE_CODE, "spec": spec.model_dump()},
+    )
+    provider = ActionProvider(
+        spec,
+        [
+            submission,
+            ("respond", {"answer": "已提交候选，下面是修改说明。"}),
+            ("respond", {"questions": ["标题具体使用哪一句？"]})
+            if clarify
+            else submission,
+        ],
+    )
+    renderer = ScriptedRenderer(failures=1)
+    application = create_app(settings, provider=provider, renderer=renderer)
+    with TestClient(application) as client:
+        created = client.post(
+            "/api/templates/works",
+            json={
+                "description": "生成标题",
+                "composition": spec.composition.model_dump(),
+            },
+        ).json()
+        result = wait_job(client, created["job"]["id"])
+        assert result["status"] == ("needs_input" if clarify else "succeeded")
+        assert bool(result["result_version_id"]) is not clarify
+        assert renderer.calls == (1 if clarify else 2)
+        assert not any(output is AnswerReview for output, _ in provider.prompts)
+        assert "ordinary answer" in " ".join(provider.snapshots[2]["steer"])
+        receipt = json.loads(provider.windows[2][-1]["content"])
+        assert receipt["error"] == provider.snapshots[2]["steer"][0]
+        snapshot = client.get(
+            f"/api/templates/works/{created['work']['id']}/session"
+        ).json()
+        assert snapshot["work"]["current_version_id"] == result["result_version_id"]
+        assert all(
+            m["text"] != "已提交候选，下面是修改说明。" for m in snapshot["messages"]
+        )
+
+
 def test_clarification_can_end_with_answer(settings, spec):
     """回答旧追问“保持现状”可正常结束，不强制继续追问或生成。"""
 
@@ -2373,3 +2864,315 @@ def test_public_history_only_publishes_accepted_versions(store, candidate, spec)
     assert (
         store.version(version.id).candidate.default_config == candidate.default_config
     )
+
+
+def test_judge_gets_complete_plan_and_repairs_ungrounded_verdict(
+    candidate, spec, tmp_path
+):
+    """完整方案仅解释实现；伪造要求导致 Judge 纠错，候选与渲染证据不变。"""
+    spec.assumptions = ["底条属于标题局部装饰"]
+
+    class ScopedProvider(ScriptedProvider):
+        """第一次扩大局部要求，第二次在同一证据上撤回无依据的否决。"""
+
+        async def ask(self, output, system, prompt, budget, **kwargs):
+            """检查新方案全部字段及评审纠错输入，禁止将方案估计作为新要求。"""
+            data = json.loads(prompt)
+            assert data["candidate_plan"] == spec.model_dump()
+            assert data["user_intent"]["instruction"] == "标题加底条"
+            result = await super().ask(output, system, prompt, budget, **kwargs)
+            if len(self.prompts) == 1:
+                result.checks[2].status = "fail"
+                result.checks[2].requirement_quote = "整个画布必须有底色"
+                result.checks[2].target = "canvas"
+            else:
+                assert "not present" in str(data["correction"]["errors"])
+            return result
+
+    provider, renderer = ScopedProvider(spec), ScriptedRenderer()
+    output, report, _ = asyncio.run(
+        Harness(provider, renderer).inspect(
+            candidate,
+            spec,
+            tmp_path / "attempt",
+            [],
+            Budget(),
+            intent={"instruction": "标题加底条"},
+        )
+    )
+    assert report.passed and renderer.calls == 1 and len(provider.prompts) == 2
+    assert output.tsx_code == candidate.tsx_code
+
+
+def test_judge_requested_existing_but_unseen_frame_is_supplied(
+    candidate, spec, tmp_path
+):
+    """代表帧未覆盖的已有帧也能被请求，补证据不能因文件已存在而跳过或仍不发送。"""
+    spec.composition.duration_in_frames = 60
+    spec.text_layers[0].end_frame = 60
+
+    class ManyFrames(ScriptedRenderer):
+        """保存完整帧集合，模型只接收其代表子集。"""
+
+        async def validate(self, candidate, spec, directory, **kwargs):
+            """物化全部受控图像，保留清单校验和渲染次数。"""
+            output, report = await super().validate(
+                candidate, spec, directory, **kwargs
+            )
+            report.frames = list(range(60))
+            for frame in report.frames:
+                Image.new("RGBA", (64, 64), "white").save(
+                    directory / f"frame-{frame}.png"
+                )
+            return output, report
+
+    class MissingView(ScriptedProvider):
+        """明确请求一个尚未展示的现有帧，收到后才通过。"""
+
+        requested = None
+
+        async def ask(self, output, system, prompt, budget, **kwargs):
+            """核对图片路径、序号映射及补采样，避免元数据声称发送但实际缺图。"""
+            data = json.loads(prompt)
+            result = await super().ask(output, system, prompt, budget, **kwargs)
+            assert [p.name for p in kwargs["images"]] == [
+                f"frame-{frame}.png" for frame in data["frames"]
+            ]
+            if self.requested is None:
+                assert len(data["frames"]) <= 12 and len(data["available_frames"]) == 60
+                self.requested = next(
+                    frame
+                    for frame in data["available_frames"]
+                    if frame not in data["frames"]
+                )
+                result.checks[1].status = "unknown"
+                result.checks[1].missing_evidence = ["需要观察具体时刻"]
+                result.checks[1].requested_frames = [self.requested]
+            else:
+                assert self.requested in data["frames"]
+            return result
+
+    renderer = ManyFrames()
+    _, report, _ = asyncio.run(
+        Harness(MissingView(spec), renderer).inspect(
+            candidate,
+            spec,
+            tmp_path / "attempt",
+            [],
+            Budget(),
+            intent={"instruction": "标题"},
+        )
+    )
+    assert report.passed and len(report.frames) == 60 and renderer.calls == 2
+
+
+def test_model_receipts_compact_passes_without_losing_private_evidence(spec, tmp_path):
+    """Actor 只读取失败详情与通过项名称，完整检查报告仍保存于审计和候选文件。"""
+    provider = ActionProvider(
+        spec, [("submit_candidate", {"tsx_code": SAMPLE_CODE})] * 2
+    )
+    context = Conversation()
+    _, _, report, directory = asyncio.run(
+        Harness(provider, ScriptedRenderer(failures=1)).generate(
+            spec, Budget(), tmp_path / "run", [], lambda *_: None, context=context
+        )
+    )
+    assert report.passed and directory.name == "attempt-2"
+    receipt = json.loads(
+        next(m["content"] for m in provider.windows[1] if m["role"] == "tool")
+    )
+    assert receipt["checks"] and all(c["status"] != "pass" for c in receipt["checks"])
+    assert "configuration" in receipt["passed_checks"]
+    assert "configuration" in provider.snapshots[1]["passed_checks"]
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "run/audit.jsonl").read_text().splitlines()
+    ]
+    full = next(e["result"] for e in events if e["event"] == "tool_result")
+    assert any(c["status"] == "pass" and c["detail"] for c in full["checks"])
+    assert any(c["status"] == "fail" for c in full["checks"])
+
+
+def test_judge_correction_continues_past_disabled_quotas(candidate, spec, tmp_path):
+    """超过旧配额后无效 Judge 仍可在相同证据上纠错；不重渲染、不改候选或放行无效结论。"""
+    requests = []
+
+    def respond(request):
+        """先返回无效要求引用，再纠正评审；验证两次请求的图片与候选一致。"""
+        body = json.loads(request.content)
+        requests.append(body)
+        payload = json.loads(body["messages"][1]["content"][0]["text"])
+        checks = [
+            VisualCheck(name=name, status="pass", detail="Observed requested content")
+            for name in ["text", "layout", "style", "motion", "scope"]
+        ]
+        if len(requests) == 1:
+            checks[2] = VisualCheck(
+                name="style",
+                status="fail",
+                detail="Unverified styling claim",
+                requirement_source="/user_intent/original_request/image",
+                requirement_quote="yellow bar",
+                target=spec.text_layers[0].id,
+                observed="bar width",
+                mismatch="too wide",
+            )
+        else:
+            assert len(requests) == 2 and payload["correction"]["errors"]
+            original = json.loads(requests[0]["messages"][1]["content"][0]["text"])
+            assert payload["candidate_plan"] == original["candidate_plan"]
+            assert (
+                body["messages"][1]["content"][1:]
+                == requests[0]["messages"][1]["content"][1:]
+            )
+        assert body["max_tokens"] == 32000
+        return httpx.Response(
+            200,
+            json={
+                "usage": {"total_tokens": 19573},
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "role": "assistant",
+                            "content": VisualReview(checks=checks).model_dump_json(),
+                        },
+                    }
+                ],
+            },
+        )
+
+    provider = Provider(
+        Settings(
+            _env_file=None,
+            actor_api_key=SecretStr("fixture"),
+            vision_model="offline",
+        ),
+        transport=httpx.MockTransport(respond),
+    )
+    renderer = ScriptedRenderer()
+    budget = Budget(
+        calls=50, tokens=200000, phases={"judge": {"calls": 12, "tokens": 60000}}
+    )
+    output, report, directory = asyncio.run(
+        Harness(provider, renderer).inspect(
+            candidate,
+            spec,
+            tmp_path / "attempt",
+            [],
+            budget,
+            intent={"instruction": "标题"},
+        )
+    )
+    assert report.passed and renderer.calls == 1 and len(requests) == 2
+    assert output.tsx_code == candidate.tsx_code
+    assert budget.summary()["judge_calls"] == 14 and budget.tokens == 239146
+    reviews = [
+        json.loads(line)
+        for line in (directory / "reviews.jsonl").read_text().splitlines()
+    ]
+    assert reviews[0]["errors"] and not reviews[1]["errors"]
+
+
+def test_unexplained_unknown_is_corrected_before_sampling(candidate, spec, tmp_path):
+    """缺少证据说明先纠正 Judge，同一候选不触发重渲染或 Actor 修复。"""
+
+    class UnexplainedProvider(ScriptedProvider):
+        """首轮只请求帧号但不解释缺什么，第二轮纠正该无效评审。"""
+
+        async def ask(self, output, system, prompt, budget, **kwargs):
+            """确认协议纠错沿用相同帧集合与方案。"""
+            result = await super().ask(output, system, prompt, budget, **kwargs)
+            payload = json.loads(prompt)
+            if len(self.prompts) == 1:
+                result.checks[1].status = "unknown"
+                result.checks[1].requested_frames = [1]
+            else:
+                assert "missing_evidence" in str(payload["correction"]["errors"])
+                original = json.loads(self.prompts[0][1])
+                assert payload["frames"] == original["frames"]
+                assert payload["candidate_plan"] == original["candidate_plan"]
+            return result
+
+    provider, renderer = UnexplainedProvider(spec), ScriptedRenderer()
+    output, report, directory = asyncio.run(
+        Harness(provider, renderer).inspect(
+            candidate,
+            spec,
+            tmp_path / "attempt",
+            [],
+            Budget(),
+            intent={"instruction": "标题"},
+        )
+    )
+    assert report.passed and output.tsx_code == candidate.tsx_code
+    assert len(provider.prompts) == 2 and renderer.calls == 1
+    assert not list(directory.glob("evidence-*"))
+
+
+def test_client_models_are_task_scoped_and_not_persisted(settings, monkeypatch):
+    """真实 HTTP/队列按任务使用模型凭据，后续消息和重试使用新快照，不写入历史或文件。"""
+    from urllib.parse import quote
+    seen = []
+
+    async def generate(harness, *args, **kwargs):
+        """在真实 Provider 边界观察本任务配置，不访问付费服务。"""
+        seen.append((harness.provider.settings.actor_model, harness.provider.settings.actor_api_key.get_secret_value()))
+        if harness.provider.settings.actor_model == "丙":
+            raise ModelFailure("测试失败供重试")
+        return DialogueOutput(answer="收到")
+
+    monkeypatch.setattr(Harness, "generate", generate)
+    settings.actor_api_key = SecretStr("")
+    application = create_app(settings)
+    headers = lambda name: {"X-Remotion-Config": quote(json.dumps({
+        "actor_model": name, "actor_api_key": name + "-private", "vision_model": name,
+        "data_dir": "/ignored-client-directory",
+    }))}
+    with TestClient(application) as client:
+        assert client.get("/api/templates/capabilities").json()["models_configured"] is False
+        assert client.get("/api/templates/capabilities", headers=headers("甲")).json()["models_configured"] is True
+        jobs = []
+        for name in ("甲", "乙"):
+            result = client.post("/api/templates/works", json={"description": "你好"}, headers=headers(name))
+            assert result.status_code == 202
+            jobs.append(result.json())
+        for result in jobs:
+            assert wait_job(client, result["job"]["id"])["status"] == "answered"
+        assert seen == [("甲", "甲-private"), ("乙", "乙-private")]
+        work_id = jobs[0]["work"]["id"]
+        message = client.post(f"/api/templates/works/{work_id}/messages", json={"instruction": "再问"}, headers=headers("丙"))
+        assert message.status_code == 202
+        assert wait_job(client, message.json()["id"])["status"] == "failed"
+        assert seen[-1] == ("丙", "丙-private")
+        runtime = application.state.template_app.state.runtime
+        retried = client.post(f"/api/templates/jobs/{message.json()['id']}/retry", headers=headers("丁"))
+        assert retried.status_code == 202
+        assert wait_job(client, retried.json()["id"])["status"] == "answered"
+        assert seen[-1] == ("丁", "丁-private")
+        # 消息与重试沿用原入口，不新增模型就绪拦截；未知字段不会覆盖服务器目录。
+        empty = {"X-Remotion-Config": "{}"}
+        response = client.post(f"/api/templates/works/{jobs[1]['work']['id']}/messages", json={"instruction": "继续"}, headers=empty)
+        assert response.status_code == 202
+        assert wait_job(client, response.json()["id"])["status"] == "answered"
+        # 过期任务仍返回原有 409，而非新增的模型未就绪 503。
+        assert client.post(f"/api/templates/jobs/{message.json()['id']}/retry", headers=empty).status_code == 409
+        assert runtime.settings.data_dir == settings.data_dir
+        assert not runtime.client_configs
+        assert settings.actor_api_key.get_secret_value() == ""
+        assert "private" not in client.get(f"/api/templates/works/{work_id}/session").text
+        for path in settings.data_dir.rglob("*"):
+            if path.is_file():
+                for name in ("甲", "乙", "丙", "丁"):
+                    assert (name + "-private").encode() not in path.read_bytes()
+        assert client.post("/api/templates/works", json={"description": "默认配置仍未就绪"}).status_code == 503
+
+
+@pytest.mark.parametrize("value", ["not-json-private", '{"actor_api_key":123}'])
+def test_invalid_client_model_header_does_not_echo_secret(settings, value):
+    """保留 JSON 与字段类型解析，响应不包含请求头里的输入。"""
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/api/templates/works", json={"description": "你好"}, headers={"X-Remotion-Config": value})
+        assert response.status_code == 422
+        assert "private" not in response.text
+        assert client.get("/api/templates/works").json() == []

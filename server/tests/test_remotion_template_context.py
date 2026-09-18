@@ -11,7 +11,7 @@ from pydantic import SecretStr
 from server.remotion_templates.context import AssistantMessage, Conversation
 from server.remotion_templates.models import AnswerReview
 from server.remotion_templates.provider import Budget, ModelFailure, Provider
-from server.settings import Settings
+from server.remotion_templates.settings import Settings
 
 
 def exchange(identifier, content="checked"):

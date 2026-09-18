@@ -25,11 +25,28 @@ from server.template import store
 
 @pytest.fixture(autouse=True)
 def isolate_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """清除外部切片与 ASR 配置并切换临时目录；配置专项测试须显式注入。"""
+    """清除外部配置并将各配置类指向临时 server/.env，避免读取本机文件。"""
     for key in list(os.environ):
-        if key.upper().startswith(("IMV_", "COMPOSITION_", "SEGMENT_MATCH_", "IMS_", "MIX_VIDEO_ALIYUN_IMS_", "ALIBABA_CLOUD_")) or key.upper() in ("DASHSCOPE_API_KEY", "ASR_BASE_URL"):
+        if key.upper().startswith(("DB_", "IMV_", "COMPOSITION_", "SEGMENT_MATCH_", "IMS_", "MIX_VIDEO_ALIYUN_IMS_", "ALIBABA_CLOUD_")) or key.upper() in ("PORT", "DASHSCOPE_API_KEY", "ASR_BASE_URL"):
             monkeypatch.delenv(key)
     monkeypatch.chdir(tmp_path)
+
+    from server.config_base import CommonSettings
+    from server.__main__ import ServerSettings
+    from server.remotion_templates.settings import Settings as RemotionSettings
+    from server.segmentation.settings import Settings as SegmentationSettings
+    from server.video_composition.settings import Settings as CompositionSettings
+
+    env_file = tmp_path / "server/.env"
+    env_file.parent.mkdir()
+    for settings_class in (
+        CommonSettings, ServerSettings, database.DatabaseSettings,
+        RemotionSettings, SegmentationSettings, CompositionSettings,
+    ):
+        monkeypatch.setitem(settings_class.model_config, "env_file", env_file)
+    # 只导入字段声明；业务首次加载时使用本例隔离文件。
+    from server.asr.settings import ASRSettings
+    monkeypatch.setitem(ASRSettings.model_config, "env_file", env_file)
 
 
 @pytest.fixture
@@ -168,7 +185,7 @@ def asr_responses():
 
 @pytest.fixture
 def composition_settings(monkeypatch, asr_env):
-    """显式提供合成假配置，所有上游请求仍须各用例替换，禁止使用真实 .env。"""
+    """合成假配置为正常流程预留 CI 调度余量；超时用例单独缩短期限，不读取真实 .env。"""
     from server.video_composition.settings import Settings
 
     for key, value in {
@@ -177,8 +194,8 @@ def composition_settings(monkeypatch, asr_env):
         "ALIBABA_CLOUD_ACCESS_KEY_ID": "test-id",
         "ALIBABA_CLOUD_ACCESS_KEY_SECRET": "test-secret",
         "COMPOSITION_POLL_SECONDS": "0.01",
-        "COMPOSITION_HTTP_TIMEOUT_SECONDS": "1",
-        "COMPOSITION_MATCH_WAIT_SECONDS": "0.1",
+        "COMPOSITION_HTTP_TIMEOUT_SECONDS": "10",
+        "COMPOSITION_MATCH_WAIT_SECONDS": "10",
         "IMV_LLM_BASE_URL": "https://llm.example.test/v1",
         "IMV_LLM_API_KEY": "test-key",
         "IMV_LLM_MODEL": "test-model",

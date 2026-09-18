@@ -8,7 +8,7 @@ import shutil
 import signal
 from pathlib import Path
 
-from ..settings import Settings
+from .settings import Settings
 from .evidence import digest
 from .image_comparison import consistency_checks
 from .models import (
@@ -139,6 +139,11 @@ class Renderer:
             elif Path(source).exists():
                 command.extend(("--ro-bind", source, source))
         command.extend(("--ro-bind", str(node), "/runtime-node"))
+        prlimit = Path(shutil.which("prlimit") or "/usr/bin/prlimit").resolve()
+        command.extend(("--ro-bind", str(prlimit), "/runtime-prlimit"))
+        if settings.runtime_lib_dir is not None:
+            libraries = str(settings.runtime_lib_dir.resolve())
+            command.extend(("--ro-bind", libraries, "/runtime-lib"))
         browser = settings.browser_executable.resolve()
         command.extend(("--ro-bind", str(browser.parent), str(browser.parent)))
         command.extend(
@@ -165,7 +170,7 @@ class Renderer:
                 "TMPDIR",
                 "/tmp",
                 "--",
-                "/usr/bin/prlimit",
+                "/runtime-prlimit",
                 "--fsize=536870912",
                 "--nofile=1024",
                 "--cpu=300",
@@ -175,6 +180,10 @@ class Renderer:
                 "/renderer/worker.mjs",
             )
         )
+        if settings.runtime_lib_dir is not None:
+            # 只暴露随包共享库，仍清空密钥环境、隔离网络及用户目录。
+            boundary = command.index("--clearenv") + 1
+            command[boundary:boundary] = ["--setenv", "LD_LIBRARY_PATH", "/runtime-lib"]
         return command
 
     async def validate(
@@ -255,7 +264,8 @@ class Renderer:
             report.runtime["ffprobe"] = digest(
                 Path(shutil.which("ffprobe") or "/usr/bin/ffprobe").resolve()
             )
-            probes = parameter_probes(candidate, spec)
+            # User edits authorize their own appearance; do not re-audit parameter/motion semantics.
+            probes = [] if preserve_code else parameter_probes(candidate, spec)
             report.frames = sorted(
                 set(report.frames) | {probe["frame"] for probe in probes}
             )
@@ -306,9 +316,10 @@ class Renderer:
             if all(check.status == "pass" for check in report.checks):
                 report.checks.extend(consistency_checks(directory, spec, report.frames))
                 report.checks.append(await self.media_metadata(directory, spec))
-                report.checks.extend(
-                    pixel_checks(directory, spec, report.frames, probes)
-                )
+                if not preserve_code:
+                    report.checks.extend(
+                        pixel_checks(directory, spec, report.frames, probes)
+                    )
                 self.verify_environment(report)
         except (
             OSError,

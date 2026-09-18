@@ -1,41 +1,27 @@
-"""合成配置读取当前目录 .env 和优先级更高的环境变量，不保存云端凭证到任务。"""
+"""合成配置读取固定的 server/.env 和优先级更高的环境变量，不保存云端凭证到任务。"""
 
 from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
+from pydantic_settings import SettingsConfigDict
 
+from ..config_base import CommonSettings
 from .schema import MediaURL, media_url
 
 
-class Settings(BaseSettings):
-    """受理前验证必要配置；竖屏和运行参数均有默认值，IMS 地域与 Endpoint 从环境读取。"""
+class ClientSettings(BaseModel):
+    """上海 IMS 凭据与官方地域配置；别名继续兼容原服务端环境变量。"""
 
-    model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", extra="ignore", hide_input_in_errors=True,
-        populate_by_name=True,
-    )
+    model_config = ConfigDict(populate_by_name=True, hide_input_in_errors=True)
 
-    match_base_url: MediaURL = Field(validation_alias="SEGMENT_MATCH_BASE_URL")
-    match_authorization: SecretStr = Field(default=SecretStr(""), validation_alias="SEGMENT_MATCH_AUTHORIZATION")
-    composition_public_base_url: str = ""
-    ims_access_key_id: SecretStr = Field(validation_alias="ALIBABA_CLOUD_ACCESS_KEY_ID")
-    ims_access_key_secret: SecretStr = Field(validation_alias="ALIBABA_CLOUD_ACCESS_KEY_SECRET")
-    ims_security_token: SecretStr = Field(default=SecretStr(""), validation_alias="ALIBABA_CLOUD_SECURITY_TOKEN")
-    ims_region_id: str = Field(default="cn-shanghai", pattern=r"^[a-z][a-z0-9-]+$", validation_alias="MIX_VIDEO_ALIYUN_IMS_REGION_ID")
-    ims_endpoint: str = Field(default="ice.cn-shanghai.aliyuncs.com", validation_alias="MIX_VIDEO_ALIYUN_IMS_ENDPOINT")
-    composition_width: int = Field(default=1080, ge=2)
-    composition_height: int = Field(default=1920, ge=2)
-    composition_fps: int = Field(default=30, ge=1, le=60)
-    composition_concurrency: int = Field(default=2, ge=1, le=16)
-    composition_http_timeout_seconds: float = Field(default=30, gt=0, le=300, allow_inf_nan=False)
-    composition_poll_seconds: float = Field(default=2, gt=0, le=60, allow_inf_nan=False)
-    composition_asr_wait_seconds: float = Field(default=1800, gt=0, le=86400, allow_inf_nan=False)
-    composition_match_wait_seconds: float = Field(default=1800, gt=0, le=86400, allow_inf_nan=False)
-    composition_render_wait_seconds: float = Field(default=3600, gt=0, le=86400, allow_inf_nan=False)
+    ims_access_key_id: SecretStr = Field(title="Access Key ID", validation_alias="ALIBABA_CLOUD_ACCESS_KEY_ID")
+    ims_access_key_secret: SecretStr = Field(title="Access Key Secret", validation_alias="ALIBABA_CLOUD_ACCESS_KEY_SECRET")
+    ims_security_token: SecretStr = Field(title="Security Token（可选）", default=SecretStr(""), validation_alias="ALIBABA_CLOUD_SECURITY_TOKEN")
+    ims_region_id: str = Field(title="地域", default="cn-shanghai", pattern=r"^[a-z][a-z0-9-]+$", validation_alias="MIX_VIDEO_ALIYUN_IMS_REGION_ID")
+    ims_endpoint: str = Field(title="IMS Endpoint", default="ice.cn-shanghai.aliyuncs.com", validation_alias="MIX_VIDEO_ALIYUN_IMS_ENDPOINT")
 
     @model_validator(mode="after")
-    def regional_endpoint(self) -> "Settings":
+    def regional_endpoint(self) -> "ClientSettings":
         """地域与官方 Endpoint 必须一致，避免向错误服务主机发送签名请求。"""
         if self.ims_endpoint != f"ice.{self.ims_region_id}.aliyuncs.com":
             raise ValueError("IMS Endpoint 必须是不带协议或路径且与地域一致的官方主机名")
@@ -48,6 +34,25 @@ class Settings(BaseSettings):
         if not value.get_secret_value().strip():
             raise ValueError("IMS 凭证不能为空")
         return value
+
+
+class Settings(ClientSettings, CommonSettings):
+    """合成运行策略留在服务端；IMS 配置可由单个客户端任务覆盖。"""
+
+    model_config = SettingsConfigDict(populate_by_name=True, extra="ignore")
+
+    match_base_url: MediaURL = Field(validation_alias="SEGMENT_MATCH_BASE_URL")
+    match_authorization: SecretStr = Field(default=SecretStr(""), validation_alias="SEGMENT_MATCH_AUTHORIZATION")
+    composition_public_base_url: str = ""
+    composition_width: int = Field(default=1080, ge=2)
+    composition_height: int = Field(default=1920, ge=2)
+    composition_fps: int = Field(default=30, ge=1, le=60)
+    composition_concurrency: int = Field(default=2, ge=1, le=16)
+    composition_http_timeout_seconds: float = Field(default=30, gt=0, le=300, allow_inf_nan=False)
+    composition_poll_seconds: float = Field(default=2, gt=0, le=60, allow_inf_nan=False)
+    composition_asr_wait_seconds: float = Field(default=1800, gt=0, le=86400, allow_inf_nan=False)
+    composition_match_wait_seconds: float = Field(default=1800, gt=0, le=86400, allow_inf_nan=False)
+    composition_render_wait_seconds: float = Field(default=3600, gt=0, le=86400, allow_inf_nan=False)
 
     @field_validator("match_authorization")
     @classmethod
