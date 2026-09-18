@@ -8,8 +8,9 @@ use tauri::Manager;
 fn operate(directory: &Path, id: Option<&str>, values: Option<Value>) -> Result<Value, String> {
     let path = directory.join("settings.json");
     let mut settings = match fs::read(&path) {
-        Ok(bytes) => serde_json::from_slice::<Value>(&bytes)
-            .map_err(|_| "本地设置文件损坏".to_string())?,
+        Ok(bytes) => {
+            serde_json::from_slice::<Value>(&bytes).map_err(|_| "本地设置文件损坏".to_string())?
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!({}),
         Err(_) => return Err("读取本地设置失败".into()),
     };
@@ -75,9 +76,8 @@ mod tests {
     /// 多次独立读取恢复配置，更新一个插件不删除另一个；损坏文件不被覆盖。
     #[test]
     fn persists_plugins_without_overwriting_others() {
-        let directory = Directory(
-            std::env::temp_dir().join(format!("imv-settings-{}", uuid::Uuid::new_v4())),
-        );
+        let directory =
+            Directory(std::env::temp_dir().join(format!("imv-settings-{}", uuid::Uuid::new_v4())));
         assert_eq!(operate(&directory.0, None, None).unwrap(), json!({}));
         operate(
             &directory.0,
