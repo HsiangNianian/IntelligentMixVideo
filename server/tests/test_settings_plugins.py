@@ -140,9 +140,17 @@ def test_client_modules_visible_in_both_modes(client, monkeypatch):
     debug = client.get("/api/settings/plugins")
     assert normal.status_code == debug.status_code == 200
     assert {item["id"] for item in normal.json()} == {"remotion_agent", "ims"}
-    assert {item["id"] for item in debug.json()} == {"remotion_agent", "ims", "asr", "segmentation"}
+    assert {item["id"] for item in debug.json()} == {"remotion_agent", "ims", "asr", "segmentation", "startup"}
     for secret in ("private-agent", "private-ims"):
         assert secret not in debug.text
     fields = next(item for item in normal.json() if item["id"] == "ims")["schema"]["properties"]
     assert fields["ims_access_key_secret"]["format"] == "password"
     assert fields["ims_endpoint"]["default"] == "ice.cn-shanghai.aliyuncs.com"
+    assert "match_base_url" not in fields
+    catalog = {item["id"]: item for item in debug.json()}
+    assert "match_base_url" in catalog["ims"]["schema"]["properties"]
+    assert "allow_insecure_llm_http" in catalog["segmentation"]["schema"]["properties"]
+    assert catalog["startup"]["schema"]["properties"]["port"]["maximum"] == 65535
+    paths = catalog["remotion_agent"]["schema"]["properties"]
+    assert paths["runtime_lib_dir"]["type"] == "string" and paths["data_dir"]["default"] == ""
+    assert all("settings" not in item and "paths" not in item for item in debug.json())

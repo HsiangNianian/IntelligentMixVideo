@@ -1,4 +1,4 @@
-/** 原生数字输入回归：隔离 HTTP，验证不完整数字不被当成清空保存；执行方式见设置模块 README。 */
+/** 设置浏览器回归：隔离 HTTP，验证原生数字校验、取消草稿与窄屏操作栏；执行方式见设置模块 README。 */
 import { chromium } from "playwright-core";
 import assert from "node:assert/strict";
 
@@ -10,7 +10,7 @@ try {
   const page = await browser.newPage();
   // 仅有一个可选数字的新模块；不访问真实后端、凭据或模型。
   await page.route("**/api/templates/**", route => route.fulfill({ status: 503, json: {} }));
-  await page.route("**/api/settings/plugins", route => route.fulfill({ json: [{
+  await page.route("**/api/settings/plugins*", route => route.fulfill({ json: [{
     id: "native-number", name: "数字验证", schema: { type: "object", properties: {
       count: { type: "integer", title: "可选数量", default: 3 },
     } },
@@ -36,11 +36,23 @@ try {
   await input.fill("");
   await save.click();
   await dialog.getByRole("status").filter({ hasText: "已保存到当前页面" }).waitFor();
-  await dialog.getByRole("button", { name: "关闭", exact: true }).click();
+  await input.fill("99");
+  await dialog.getByRole("button", { name: "取消", exact: true }).click();
   await page.getByRole("button", { name: "设置", exact: true }).click();
   await dialog.getByRole("tab", { name: "数字验证" }).click();
   assert.equal(await input.inputValue(), "3");
-  console.log("PASS: 原生数字 badInput 被拒绝，修正可保存，主动清空恢复默认值。");
+  // 场景：窄屏操作栏保持可见，通用地址草稿取消后丢弃。
+  await page.setViewportSize({ width: 390, height: 640 });
+  await dialog.getByRole("tab", { name: "通用", exact: true }).click();
+  const address = dialog.getByLabel("后端服务地址");
+  const original = await address.inputValue();
+  await address.fill("https://unsaved.test");
+  const bounds = await save.boundingBox();
+  assert(bounds && bounds.x >= 0 && bounds.y + bounds.height <= 640);
+  await dialog.getByRole("button", { name: "取消", exact: true }).click();
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  assert.equal(await address.inputValue(), original);
+  console.log("PASS: 原生数字 badInput 被拒绝，修正可保存，主动清空恢复默认值，取消丢弃草稿，窄屏操作栏可见。");
 } finally {
   await browser.close();
 }

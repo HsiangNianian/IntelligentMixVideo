@@ -28,6 +28,21 @@ def discover_plugins(root: Path, package: str = "server") -> dict[str, dict]:
         discovered[plugin_id] = {"id": plugin_id, "name": name, "schema": schema}
         if plugin.get("scope") == "client":
             discovered[plugin_id]["scope"] = "client"
+        if model := plugin.get("settings"):
+            # 完整模型只供 Debug 描述和内置启动使用；不实例化，也不公开模型对象。
+            advanced = model.model_json_schema(by_alias=False)
+            advanced["properties"].update(schema["properties"])
+            paths = set()
+            for key, field in advanced["properties"].items():
+                # 仅折叠可空单类型；真正的联合类型仍由前端明确拒绝。
+                if len(field.get("anyOf", [])) == 2 and {"type": "null"} in field["anyOf"]:
+                    field.update(next(option for option in field.pop("anyOf") if option.get("type") != "null"))
+                    field["default"] = ""
+                if field.get("format") == "path":
+                    paths.add(key)
+                    field.pop("format")
+                    field["default"] = ""  # 随包路径因安装位置而异，留空使用内置默认值。
+            discovered[plugin_id].update(settings=model, debug_schema=advanced, paths=paths)
     return discovered
 
 
@@ -39,4 +54,12 @@ router = APIRouter(prefix="/api/settings", tags=["客户端设置"])
 @router.get("/plugins")
 def list_plugins(client_only: bool = False) -> list[dict]:
     """只返回已注册的公开字段描述，不提供服务端配置读写。"""
-    return [plugin for plugin in plugins.values() if not client_only or plugin.get("scope") == "client"]
+    result = []
+    for plugin in plugins.values():
+        if client_only and plugin.get("scope") != "client":
+            continue
+        public = {key: plugin[key] for key in ("id", "name", "schema", "scope") if key in plugin}
+        if not client_only and "debug_schema" in plugin:
+            public.update(schema=plugin["debug_schema"], description="Debug 高级配置保存后重启客户端，在内置后端生效；路径留空使用内置默认值。")
+        result.append(public)
+    return result

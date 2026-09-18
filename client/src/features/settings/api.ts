@@ -7,6 +7,7 @@ export type Values = Record<string, string | number | boolean>;
 export type Plugin = {
   id: string;
   name: string;
+  description?: string;
   schema: {
     properties: Record<string, {
       type: "string" | "number" | "integer" | "boolean";

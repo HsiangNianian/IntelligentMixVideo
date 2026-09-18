@@ -26,7 +26,7 @@ test.each([undefined, "false", "TRUE"])("普通模式隔离模块配置：%s", a
   const dialog = await screen.findByRole("dialog", { name: "设置" });
   expect(within(dialog).getAllByRole("tab")).toHaveLength(1);
   expect(within(dialog).getByRole("region", { name: "环境与连接" })).toBeTruthy();
-  expect(within(dialog).queryByRole("form")).toBeNull();
+  expect(within(dialog).getByRole("form", { name: "通用设置" })).toBeTruthy();
   await waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
   expect(fetchMock.mock.calls[0][0]).toBe("http://api.test:8000/api/settings/plugins?client_only=true");
   fetchMock.mockClear();
@@ -81,7 +81,7 @@ test("设置和切片跟随内置后端运行时地址", async () => {
   }
 });
 
-// 场景：非法值阻止写入，修正后保存规范化值；重开恢复配置，切片请求只读已保存快照。
+// 场景：非法值阻止写入，修正后保存；切片请求读取快照，但不发送启动时才应用的 HTTP 策略。
 test("保存切片设置并携带本地配置请求切片", async () => {
   let stored: Record<string, Values> = {};
   const invoke = mock(async (command: string, args: Record<string, unknown>) => {
@@ -118,13 +118,14 @@ test("保存切片设置并携带本地配置请求切片", async () => {
   await openModule("文案切片");
   await screen.findByDisplayValue("client-model");
   const saved = structuredClone(stored);
+  stored.segmentation.allow_insecure_llm_http = false;
   // 草稿修改不应提前进入请求使用的已保存配置。
   fireEvent.change(screen.getByLabelText("模型名称"), { target: { value: "unsaved-model" } });
   fetchMock.mockResolvedValueOnce(Response.json({ segments: [{ text: "甲乙" }] }));
   expect(await requestSegmentation({ script: "甲乙", asr_result: {} })).toEqual({ segments: [{ text: "甲乙" }] });
   const [, options] = fetchMock.mock.calls.at(-1)!;
   expect(JSON.parse(String(options?.body))).toEqual({ script: "甲乙", asr_result: {}, config: saved.segmentation });
-  expect(stored).toEqual(saved);
+  expect(stored).toEqual({ segmentation: { ...saved.segmentation, allow_insecure_llm_http: false } });
 });
 
 // 场景：目录变化反映到导航，切换保留草稿；移除模块不发起任何设置写入。
@@ -139,7 +140,7 @@ test("模块目录变化不改写已保存配置", async () => {
   expect(within(navigation).getAllByRole("tab")).toHaveLength(3);
   expect(screen.getByRole("tab", { name: "通用" }).getAttribute("aria-selected")).toBe("true");
   expect(screen.getByRole("region", { name: "环境与连接" })).toBeTruthy();
-  expect(screen.queryByRole("form")).toBeNull();
+  expect(screen.getByRole("form", { name: "通用设置" })).toBeTruthy();
   await openModule("文案切片");
   fireEvent.change(screen.getByLabelText("模型名称"), { target: { value: "未保存模型" } });
   fireEvent.mouseDown(screen.getByRole("tab", { name: "语音识别" }), { button: 0 });
@@ -241,13 +242,13 @@ test.each([
   expect(normalizeValues(plugin, { value: valid })).toEqual({ value: field.type === "string" ? valid : Number(valid) });
 });
 
-// 场景：可选数字清空会从旧值中移除；必填布尔 false 可保存，general ID 不冲突也不显示孤立存储。
+// 场景：清空可选数字、保留 false 及当前 Schema 未展示的 Debug 值；孤立存储不产生导航。
 test("规范化空数字并保留 false，插件 ID 与通用导航隔离", async () => {
   const plugin: Plugin = { id: "general", name: "普通插件", schema: {
     properties: { optional: { type: "number", title: "可选数值", default: 60 }, enabled: { type: "boolean", title: "启用" } },
     required: ["enabled"],
   } };
-  let stored: Record<string, Values> = { general: { optional: 8, enabled: false }, removed_module: { enabled: true } };
+  let stored: Record<string, Values> = { general: { optional: 8, enabled: false, debug_limit: 99 }, removed_module: { enabled: true } };
   mockDesktop(async (_command, args) => {
     if (args?.id) stored[String(args.id)] = args.values as Values;
     return structuredClone(stored);
@@ -260,7 +261,7 @@ test("规范化空数字并保留 false，插件 ID 与通用导航隔离", asyn
   fireEvent.change(screen.getByLabelText("可选数值"), { target: { value: "" } });
   fireEvent.submit(screen.getByRole("form", { name: "普通插件" }));
   await screen.findByText("已保存到当前客户端");
-  expect(stored).toEqual({ general: { enabled: false }, removed_module: { enabled: true } });
+  expect(stored).toEqual({ general: { enabled: false, debug_limit: 99 }, removed_module: { enabled: true } });
 });
 
 // 场景：逐条拒绝不支持的字段与根结构，不降级为可保存的普通输入。
@@ -344,4 +345,65 @@ test.each(["false", "true"])("Agent 和 IMS 在模式 %s 下保存并用于请�
     { actor_api_key: "changed-private" }, { actor_api_key: "changed-private" },
     { ims_access_key_secret: "ims-private" }, { ims_access_key_secret: "new-ims-private" },
   ]);
+});
+
+// 场景：通用页和模块页的取消都关闭弹窗，不写入草稿，重开恢复原值。
+test.each(["通用", "语音识别"])("%s取消丢弃草稿且不保存", async tab => {
+  const original = apiBase();
+  const invoke = mock(async () => ({ asr: { dashscope_api_key: "saved-key" } }));
+  mockDesktop(invoke);
+  fetchMock.mockResolvedValueOnce(Response.json([asr])).mockResolvedValueOnce(Response.json([asr]));
+  const close = mock(() => {});
+  const view = render(<SettingsDialog open onOpenChange={close} />);
+  await openModule(tab);
+  const label = tab === "通用" ? "后端服务地址" : "Dashscope Api Key";
+  fireEvent.change(screen.getByLabelText(label), { target: { value: "https://unsaved.test" } });
+  invoke.mockClear();
+  fireEvent.click(screen.getByRole("button", { name: "取消" }));
+  expect(close).toHaveBeenCalledWith(false);
+  expect(invoke).not.toHaveBeenCalled();
+  view.rerender(<SettingsDialog open={false} onOpenChange={close} />);
+  view.rerender(<SettingsDialog open onOpenChange={close} />);
+  await openModule(tab);
+  expect(screen.getByLabelText<HTMLInputElement>(label).value).toBe(tab === "通用" ? original : "saved-key");
+  expect(apiBase()).toBe(original);
+});
+
+// 场景：两类表单只保存当前页，等待期间不能取消或重复提交；失败保留草稿供重试。
+test.each(["通用", "语音识别"])("%s底部保存保留失败草稿并可重试", async tab => {
+  const original = apiBase();
+  let finish!: (result: unknown) => void;
+  let fail!: (reason: Error) => void;
+  const invoke = mock(async (_command: string, args: Record<string, unknown>) =>
+    args?.id ? new Promise((resolve, reject) => { finish = resolve; fail = reject; }) : {});
+  mockDesktop(invoke);
+  fetchMock.mockResolvedValueOnce(Response.json([asr]));
+  const close = mock(() => {});
+  render(<SettingsDialog open onOpenChange={close} />);
+  await openModule(tab);
+  const label = tab === "通用" ? "后端服务地址" : "Dashscope Api Key";
+  const form = screen.getByRole("form", { name: tab === "通用" ? "通用设置" : "语音识别" });
+  fireEvent.change(screen.getByLabelText(label), { target: { value: "https://saved.test" } });
+  invoke.mockClear();
+  try {
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "取消" }).disabled).toBe(true);
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "保存中…" }).disabled).toBe(true);
+    fireEvent.submit(form);
+    expect(invoke).toHaveBeenCalledTimes(1);
+    fail(new Error("write failed"));
+    await screen.findByText(tab === "通用" ? "保存地址失败，请重试" : "保存设置失败");
+    expect(screen.getByLabelText<HTMLInputElement>(label).value).toBe("https://saved.test");
+    expect(apiBase()).toBe(original);
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledTimes(2));
+    expect(invoke.mock.calls[1]).toEqual(["local_settings", tab === "通用"
+      ? { id: "$client", values: { api_url: "https://saved.test" } }
+      : { id: "asr", values: { dashscope_api_key: "https://saved.test" } }]);
+    finish({});
+    await screen.findByText(tab === "通用" ? /已保存，后续请求使用新地址/ : "已保存到当前客户端");
+    expect(close).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "设置" })).toBeTruthy();
+  } finally { setApiBase(original); }
 });

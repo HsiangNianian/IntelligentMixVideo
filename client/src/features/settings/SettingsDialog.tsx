@@ -21,7 +21,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
             Remotion Agent 与 IMS 使用当前客户端保存的凭据；Debug 另提供服务端模块设置。
           </DialogDescription>
         </DialogHeader>
-        <PluginSettings />
+        <PluginSettings onCancel={() => onOpenChange(false)} />
       </DialogContent>
     </Dialog>
   );

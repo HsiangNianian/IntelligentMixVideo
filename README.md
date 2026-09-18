@@ -60,7 +60,7 @@ bun install --frozen-lockfile
 bun run tauri dev
 ```
 
-首页左侧提供「模板库」「Remotion 字效」和底部「设置」，窄屏收为图标栏。两种模式的设置均提供 Remotion Agent 与上海 IMS 配置，保存后通过各自业务请求使用客户端凭据；Debug 额外展示切片、ASR，ASR 暂未接入转写。配置不修改共享 `.env`，也不进入任务日志；未保存时兼容服务端默认值。切换保留工作区草稿和订阅，IMS 目前提供提交/查询联调函数，未新增合成页面。存储、插拔与边界见 [客户端设置](client/src/features/settings/README.md)。
+首页左侧提供「模板库」「Remotion 字效」和底部「设置」，窄屏收为图标栏。两种模式的设置均提供 Remotion Agent 与上海 IMS 配置，保存后通过各自业务请求使用客户端凭据；Debug 展示除数据库外的全部服务端配置及启动端口；高级字段保存后重启使用内置后端的客户端生效，涵盖 ASR、切片、素材匹配、合成与 Remotion。浏览器或远程后端不走这条本地启动加载路径。配置不修改共享 `.env`，也不进入任务日志；未保存时兼容服务端默认值。切换保留工作区草稿和订阅，IMS 目前提供提交/查询联调函数，未新增合成页面。存储、插拔与边界见 [客户端设置](client/src/features/settings/README.md)。
 
 首页提供模板创建、选择、完整编辑、保存、重命名、另存为和删除，切换前保护未保存修改。页面可选择本地或云端环境：桌面和浏览器均默认云端，沿用现有 MySQL API；连接失败、超时或服务端 5xx 时提示手动切换本地。本地在客户端应用数据目录的 `data/template/templates.json` 保存，无需 Python 服务；浏览器使用本地保存需打开桌面客户端。两套模板库独立，切换环境同样保护未保存修改。桌面本地操作通过官方 `@tauri-apps/api/core` 模块调用，使用 `isTauri()` 判断环境，无需开启全局 Tauri API。
 浏览器开发使用 `bun run dev` 后打开 `http://localhost:1420`；Windows 安装包内置回环静态服务，以 `http://localhost:<动态端口>` 加载页面，预览沿用阿里云 SDK 5.2.2。IPC 仅允许本次绑定的精确 localhost URL 调用已有桌面命令；macOS / Linux 保留原有 Tauri 加载方式。
@@ -118,9 +118,9 @@ Linux 启动默认设置 `WEBKIT_GST_DMABUF_SINK_DISABLED=1`、`WEBKIT_GST_USE_P
 
 **Debug client**（`.github/workflows/client-debug.yml`）在 `main` / `dev` 推送时自动运行，也支持 `workflow_dispatch`，不监听 PR。它向共享构建传入 `debug-backend: true`，由构建设置 `IMV_DEBUG="true"`，不再依赖分支名称；普通构建和正式发布默认 `false`。Debug 安装包的 artifact 名称为 `intelligent-mix-video-debug-<平台>-<提交 SHA>`。网页手动入口要求工作流已存在于默认分支，之后可选择含该工作流的目标分支；`push.branches` 不改变这一要求。
 
-Debug 包中，Linux AppImage/deb、Windows MSI/NSIS 和 macOS 双架构 DMG 额外携带完整 `server/`、Python 3.12、uv、MySQL（Linux 8.0，Windows/macOS 8.4.8）、Node 24、Bun、Remotion、Chrome、FFmpeg/ffprobe及字体；Linux 另带 bubblewrap/prlimit 渲染隔离工具。这个标记编译进客户端，双击无需设置变量或另装后端。首次运行展开运行时并初始化私有数据库，界面等待 API 的真实就绪回执后使用随机回环端口，覆盖构建时的 `api-url`。Unix 数据库使用私有 socket；Windows 使用随机密码和动态回环端口，不使用宿主 MySQL；退出客户端会关闭 API 和数据库。
+Debug 包中，Linux AppImage/deb、Windows MSI/NSIS 和 macOS 双架构 DMG 额外携带完整 `server/`、Python 3.12、uv、MySQL（Linux 8.0，Windows/macOS 8.4.8）、Node 24、Bun、Remotion、Chrome、FFmpeg/ffprobe及字体；Linux 另带 bubblewrap/prlimit 渲染隔离工具。这个标记编译进客户端，双击无需设置变量或另装后端。首次运行展开运行时并初始化私有数据库，界面等待 API 的真实就绪回执后使用回环端口（未保存启动端口时自动分配），覆盖构建时的 `api-url`。Unix 数据库使用私有 socket；Windows 使用随机密码和动态回环端口，不使用宿主 MySQL；退出客户端会关闭 API 和数据库。
 
-Linux 数据、模型配置和日志位于 `${XDG_DATA_HOME:-~/.local/share}/com.intelligentmixvideo.client/backend/`；Windows 为 `%APPDATA%/com.intelligentmixvideo.client/backend/`，macOS 为 `~/Library/Application Support/com.intelligentmixvideo.client/backend/`。目录内容分别为 `mysql/`、`.env`、`server.log`；Remotion 数据在 `remotion/`。首次从无密钥 `.env.example` 创建配置，已有配置及数据不覆盖。按需填写模型、ASR 和云合成凭据后重启；未配置凭据也能启动 API、测试模板读写，但云服务相关功能仍需有效配置和网络。Linux 运行时缓存位于 `${XDG_CACHE_HOME:-~/.cache}/com.intelligentmixvideo.client/backend/`；Windows 为 `%LOCALAPPDATA%/com.intelligentmixvideo.client/backend/`，macOS 为 `~/Library/Caches/com.intelligentmixvideo.client/backend/`。安装包不会包含开发机 `.env` 或数据库。
+Linux 数据、模型配置和日志位于 `${XDG_DATA_HOME:-~/.local/share}/com.intelligentmixvideo.client/backend/`；Windows 为 `%APPDATA%/com.intelligentmixvideo.client/backend/`，macOS 为 `~/Library/Application Support/com.intelligentmixvideo.client/backend/`。目录内容分别为 `mysql/`、`.env`、`server.log`；Remotion 数据在 `remotion/`。首次从无密钥 `.env.example` 创建配置，已有配置及数据不覆盖。可在 Debug 设置中填写模型、ASR、云合成和启动配置，保存后重启；启动从同一应用的 `data/settings/settings.json` 加载本地值覆盖进程环境，不改写 `.env`，数据库不接入设置；未配置凭据也能启动 API、测试模板读写，但云服务相关功能仍需有效配置和网络。Linux 运行时缓存位于 `${XDG_CACHE_HOME:-~/.cache}/com.intelligentmixvideo.client/backend/`；Windows 为 `%LOCALAPPDATA%/com.intelligentmixvideo.client/backend/`，macOS 为 `~/Library/Caches/com.intelligentmixvideo.client/backend/`。安装包不会包含开发机 `.env` 或数据库。
 
 Linux 内置后端需要 glibc 2.35+；macOS 使用对应架构的 macOS 15 构建机与运行时，Windows 使用 x64 原生运行时。普通非 debug 包仍连接外部 API。构建时从最终 AppImage/MSI/DMG 解包，验证工具可执行、首次启动、模板写入与重启持久化、重复实例拒绝、退出清理和桌面连接。FFmpeg/ffprobe 在 CI 从官方 `FFmpeg/FFmpeg` 最新稳定 tag 固定提交下载源码并原生编译，归档包含版本、提交与许可证；不使用 nightly 或第三方 Release 二进制。Remotion 新字效的隔离生成目前仍仅支持 Linux，依赖非特权 user namespace；Windows/macOS 先支持内置 API、模板存储及已有预览，携带渲染依赖不等于新字效生成已支持。实际 Wayland 桌面播放仍需机器验证。仅在 CI 安装软件不会增加 AppImage 体积；现在通过资源归档携带运行时，包体积会增加。
 

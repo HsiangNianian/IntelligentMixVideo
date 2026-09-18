@@ -29,8 +29,8 @@ WINDOWS = sys.platform == "win32"
 CREATION_FLAGS = subprocess.CREATE_NO_WINDOW if WINDOWS else 0
 
 
-def configure(runtime: Path, data: Path, mysql_socket: Path) -> None:
-    """创建无密钥配置样例；固定内置工具、私有数据库和持久化目录，不覆盖用户模型密钥。"""
+def configure(runtime: Path, data: Path, mysql_socket: Path) -> int:
+    """加载内置默认值及本客户端模块设置；数据库保持私有，返回指定端口或零（自动分配）。"""
     config = data / ".env"
     if not config.exists():
         config.write_bytes((runtime / ".env.example").read_bytes())
@@ -61,7 +61,24 @@ def configure(runtime: Path, data: Path, mysql_socket: Path) -> None:
             listener.bind(("127.0.0.1", 0))
             port = listener.getsockname()[1]
         os.environ.update(DB_HOST="127.0.0.1", DB_PORT=str(port), DB_SOCKET="", DB_PASSWORD=secrets.token_hex(32))
+    # local_settings 与 backend 共享应用数据根目录；只读取已声明模型的字段，不写 .env。
+    from .settings_plugins import plugins
+    from .startup.settings import ServerSettings
+
+    path = data.parent / "data" / "settings" / "settings.json"
+    saved = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    for plugin_id, plugin in plugins.items():
+        if model := plugin.get("settings"):
+            for key, field in model.model_fields.items():
+                value = saved.get(plugin_id, {}).get(key)
+                if value is None or (value == "" and key in plugin["paths"]):
+                    continue
+                if key in plugin["paths"]:
+                    value = (data / value).resolve()
+                name = field.validation_alias or model.model_config.get("env_prefix", "") + key.upper()
+                os.environ[name] = str(value)
     os.chdir(data)
+    return ServerSettings().port if saved.get("startup", {}).get("port") is not None else 0
 
 
 def windows_system_directory() -> Path:
@@ -188,7 +205,7 @@ def main() -> None:
             signal.signal(number, lambda *_: stopped.set())
         with tempfile.TemporaryDirectory(prefix="imv-db-") as temporary:
             mysql_socket = Path(temporary) / "mysql.sock"
-            configure(runtime, data, mysql_socket)
+            port = configure(runtime, data, mysql_socket)
             directory = data / "mysql"
             if not directory.exists():
                 # 仅完整初始化的目录才能发布；中断重试不覆盖已存在的数据库。
@@ -223,7 +240,7 @@ def main() -> None:
                 if WINDOWS:
                     initialization.unlink()
                 with socket.socket() as listener:
-                    listener.bind(("127.0.0.1", 0))
+                    listener.bind(("127.0.0.1", port))
                     listener.listen(128)
                     listener.setblocking(False)
                     asyncio.run(serve(listener, mysql, stopped))
