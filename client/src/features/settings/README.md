@@ -4,7 +4,7 @@
 
 `schema.ts` 在渲染前检查扁平字段子集，在保存前校验并规范化当前字段。支持字符串（含密码、JavaScript Unicode 正则 `pattern`、`minLength/maxLength`）、数字/整数（包含及排除上下界）、布尔值、默认值和必填。空的可选数字从保存对象省略，必填数字为空、小数整数、非有限值或越界均拒绝保存；布尔 `false` 有效。对象、数组、联合类型、枚举、引用以及其他尚未支持的约束明确报错，该模块不生成可保存的表单。这里不是完整 JSON Schema 验证器，后端业务入口仍须校验。
 
-- 桌面通过 `local_settings` 命令保存到应用数据目录 `data/settings/settings.json`，按插件 ID 分组。API Key 目前和普通值一起明文保存；没有接系统凭据库。
+- 桌面通过 `local_settings` 命令保存到应用数据目录 `data/settings/settings.json`，按插件 ID 分组。读取和保存全程持有目录文件锁；竞争时提示重试，写入临时文件并刷盘后替换正式文件，失败不先删除旧配置。API Key 目前和普通值一起明文保存；没有接系统凭据库。
 - 浏览器预览仅保存在页面进程内存，切换设置页可恢复，刷新页面丢失，不写 localStorage。
 - `../segmentation/api.ts` 的 `requestSegmentation({script, asr_result})` 读取已保存的切片配置，随 `POST /segmentations` 的 `config` 一起提交。编辑但未保存的值不进入请求。省略本地配置时发送原有请求。
 - 当前没有独立切片业务页面，请求函数通过自动联调用例和下面的开发命令使用；视频合成与 Remotion 不读取这些配置。
