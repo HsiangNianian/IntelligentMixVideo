@@ -3,6 +3,113 @@
 本项目的版本变更由发布工作流根据 Conventional Commits 自动生成。
 推送正式版本 tag 后，成功发布的版本记录会自动写入此文件。
 
+## [v0.4.1] - 2026-09-18
+### New Features
+- [`5cbb550`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/5cbb550c054ee167b6628c96c1de261952f89e43) - **server**: preserve explicit user parameter revisions *(commit by [@jyh20030112](https://github.com/jyh20030112))*
+- [`b70ead1`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/b70ead1b7b8d0ad220048243a139da893b3cbb3d) - **client**: configure Remotion composition before generation *(commit by [@jyh20030112](https://github.com/jyh20030112))*
+- [`3b76d12`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/3b76d1297954d50a81ec9a5d14a01835371fe5e7) - **client**: preview parameter drafts and save changes explicitly *(commit by [@jyh20030112](https://github.com/jyh20030112))*
+- [`4f7d158`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/4f7d1580ea16a59f7611855572ccf2c91c003e20) - **server**: manage the bundled desktop backend lifecycle *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`8bcc473`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/8bcc4731f36b00e63a73993596e8a8922a4fdcb1) - **server**: support bundled libraries in the render sandbox *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`205fd34`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/205fd345bb95e9e981d93c7e8cb4d42d396f28f5) - **client**: start the bundled backend before loading the workspace *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`e4c1929`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/e4c19294377d3d9d63cf13d0ec46c54a4c56f77d) - **linux**: allow explicit display backend selection *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`4c05c57`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/4c05c5789a0cde962d21863a8d555d53a0fc517c) - **client**: redesign Remotion workspace with version history *(commit by [@jyh20030112](https://github.com/jyh20030112))*
+- [`8ca8b6d`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/8ca8b6d562e191e38f2c81d32cbb7178d496bb5b) - **client**: add workspace sidebar and settings navigation *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+- [`1fd23ae`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/1fd23ae0d84c985fb571a8ae4d9d0abfe01fe4a4) - **settings**: add client-local configuration plugins *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+- [`1ec3802`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/1ec38021a6e6b0c770e096591ef36d6ff2d7f4b3) - **settings**: discover module settings and add ASR preview *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+- [`4c6589d`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/4c6589db371187c867b7ede53f25056a5a3a8bfe) - **settings**: use client credentials for Remotion and IMS *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+- [`a759293`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/a759293e64c350623dfc99fb9cebff985105bc87) - **settings**: allow editing the backend service address *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+- [`72549c3`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/72549c39bc737b6358bc759bef223cf4ab7ddddd) - **settings**: apply full debug settings to bundled backend startup *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+
+### Bug Fixes
+- [`fd5e570`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/fd5e5700612de13d5a251382e788e18509558eb6) - **client**: reduce preview rendering overhead *(commit by [@tingfeng347](https://github.com/tingfeng347))*
+- [`b51e38d`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/b51e38d87ed0b2bef2b2ad833654e5d794ce42ce) - **client**: exclude bundled Wayland libraries from AppImage *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`290809c`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/290809c8ccef0a1972089dbbb73796dad42bd234) - **server**: ground visual reviews and select representative frames *(commit by [@jyh20030112](https://github.com/jyh20030112))*
+- [`ec8f99f`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/ec8f99fac3ac338869f52f33c7230582460dcf39) - **server**: preflight model input budgets and record token usage *(commit by [@jyh20030112](https://github.com/jyh20030112))*
+- [`632b2a1`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/632b2a1a3ba7ef19b14fb4e4ff5d3ee9ae2bf9c4) - **server**: unify dotenv loading through a shared settings base *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+- [`b830815`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/b83081513fd2e26c9555cc9ee379d516781ac808) - **server**: disable cumulative model quotas by default *(commit by [@jyh20030112](https://github.com/jyh20030112))*
+- [`4b0ae22`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/4b0ae22b5e412652f6efc9b85ddf7f8dbc4671eb) - **server**: reject unexplained visual review uncertainty *(commit by [@jyh20030112](https://github.com/jyh20030112))*
+- [`b47e708`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/b47e708d3c6e996914a808f9dd2a9bff54e80a75) - **client**: correct AppImage media dependencies *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`ac7d833`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/ac7d83316a6d95c7c2cc6905ece7012aba10dfc8) - **client**: stabilize Linux video preview and replay *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`92b835f`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/92b835f69be4a103f99c656c6ab70feace5be965) - **client**: isolate Linux webview data by WebKit version *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`b925eb8`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/b925eb8b6af9325bab87b5e00094c4e6b6d59a0a) - **server**: normalize judge requirement references *(commit by [@jyh20030112](https://github.com/jyh20030112))*
+- [`bd1d19e`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/bd1d19e96d7f1acb31a3ef122452acf5a4c4a045) - **server**: steer compiler repairs without false progress *(commit by [@jyh20030112](https://github.com/jyh20030112))*
+- [`412aa31`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/412aa314345c0ce91d54c8fae3b9803d6f90abba) - **windows**: embed Common Controls manifests in test executables *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`7a65b2d`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/7a65b2dbd5c855938da5feaf066bd84fc13baf3a) - **debug**: isolate backend startup and address security review *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`c33ac4e`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/c33ac4e5fd77f56a10c60d993d513cdcf8b6a0ef) - **settings**: lock local configuration read-modify-write operations *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+- [`0c1c8bf`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/0c1c8bfdebef2e7facba8cc2cd7dbedf5ebff8c3) - **settings**: limit backend configuration to debug mode *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+
+### Refactors
+- [`63844cf`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/63844cf4924a32e703f53a4357ba17ae76841737) - Improve point generation in visual_evidence.py *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`3f68d98`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/3f68d9800bcac8d78d385b4561e7fe58c4acb532) - **settings**: simplify form state and regression tests *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+- [`fe1e060`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/fe1e0605ff679f0944ff9e8f672d47b809a57d04) - **settings**: remove extra client credential checks *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+
+### Tests
+- [`4811cbb`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/4811cbb63c9a6b2f25444c92a1de10ada4a239ee) - **server**: simplify shared configuration regression coverage *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+- [`7dfbec3`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/7dfbec32f22755ebd5d9f428d5c68eacccd84e36) - **server**: stabilize composition concurrency regression *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`84d76f8`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/84d76f83c6e8ae31bdbf646f8313ce10a937eff4) - **server**: isolate composition timeout scenarios *(commit by [@jyh20030112](https://github.com/jyh20030112))*
+- [`a8ae802`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/a8ae802805a0d3c3398054474df9b01b4ab8813f) - **client**: strengthen preview timeline coverage *(commit by [@tingfeng347](https://github.com/tingfeng347))*
+- [`3c00298`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/3c002989d6f7c2bd2d5b5a5bd4bef30952d0ae24) - **debug**: verify backend startup from packaged installers *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`85a3c8f`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/85a3c8f735ffa96d6a9d5ec6b617933d878803ca) - **settings**: remove newly added dialog action tests *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+- [`91c4ee3`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/91c4ee379bb40f0a06bb1f49658858da26182ef9) - **settings**: trim redundant coverage for minimal workflow *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+
+### Build System
+- [`ef0f537`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/ef0f537bbde2b50eaf452df12e1adcc9415f986b) - verify AppImage libraries before uploading installers *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`7ae1aad`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/7ae1aad38f58f5fc94fc4b031321a0517a59cd7d) - **debug**: compile FFmpeg from official stable sources *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`3ae1b5d`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/3ae1b5d14616d0159f1113d85cce91d94ef0cc2d) - **debug**: assemble portable backend runtimes for all platforms *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`1e7a9f3`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/1e7a9f3017def3e3c7bdad84e71d51c4e76f0548) - **debug**: add automatic and manual desktop debug builds *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`c281af5`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/c281af540821a43fc90de8615c9b4e1a3622c502) - add optional backend integration validation *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+
+### Documentation Changes
+- [`c762b93`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/c762b93cd83eb4d1a998045374cc31157a8cdd58) - update CHANGELOG.md for v0.4.0 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
+- [`da825ec`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/da825ec765aa7a24736d379744def8700a393745) - **server**: document review evidence and model budget boundaries *(commit by [@jyh20030112](https://github.com/jyh20030112))*
+- [`c33fd3a`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/c33fd3a462e590df4b175a60203374e1ddb65f3e) - **server**: document optional model quota enforcement *(commit by [@jyh20030112](https://github.com/jyh20030112))*
+- [`9586a04`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/9586a0491c35dfcb99230296a09ab17d689371df) - **remotion**: describe configuration and revision workflows *(commit by [@jyh20030112](https://github.com/jyh20030112))*
+- [`69b4289`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/69b428967166b6556f8d11a94d68cb74fd4e8d1c) - **debug**: document desktop bundles and CI usage *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`22aa851`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/22aa851e58ab48bb46b81108303d243c4e0318de) - **settings**: remove screenshot from source tree *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+
+### Code Style Changes
+- [`52faf84`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/52faf848dadea10b88c3f009a12ca3c28ba22da9) - **client**: format local settings storage for CI *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+- [`6bcd717`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/6bcd717b44fd1e8d34891d4d9f5ee07c9cfdb6e6) - **settings**: remove trailing blank line in Rust tests *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+
+### Chores
+- [`0d5a63c`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/0d5a63c848e50c1f5f406cff1152e70382e94a85) - merge upstream dev into fix/linux_bug *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`8c3ffb3`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/8c3ffb3095eba0e16e71e37504b478362e305a57) - merge dev and resolve configuration documentation conflict *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+- [`ed87a98`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/ed87a98c8dae107e0f07bd6a153bc7260141119f) - merge latest dev into client settings plugins *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+- [`e7fccea`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/e7fccead1d8644df4647936c53384808826d0109) - bump version into v0.4.1 *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+
+### Other Changes
+- [`fcbc292`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/fcbc29211f1758aa073dd20377d8e041c606d5da) - Merge pull request [#44](https://github.com/HsiangNianian/IntelligentMixVideo/pull/44) from jyh20030112/fix/remotion-review-evidence
+
+fix(server): ground Remotion reviews and bound model evidence inputs *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`59a7d5b`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/59a7d5b7f629f79dad94f7a7bf0ed821f87a5b26) - Merge pull request [#45](https://github.com/HsiangNianian/IntelligentMixVideo/pull/45) from muyuzhong/fix/server-config-base
+
+fix(server): unify dotenv loading through a shared settings base *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`5096d1d`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/5096d1d50ffa5571eb76d5da6cdfddb18399ea03) - Merge branch 'main' into dev *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`55e3a7c`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/55e3a7c61ca17a339fb4b71cf4d58157749bffe9) - Merge pull request [#47](https://github.com/HsiangNianian/IntelligentMixVideo/pull/47) from jyh20030112/feat/remotion-parameter-drafts
+
+feat(remotion): configure generation and save parameter drafts *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`fadc559`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/fadc55980b7e01a9c3c4faa5933fbddddb23e0e8) - Merge pull request [#43](https://github.com/HsiangNianian/IntelligentMixVideo/pull/43) from IT-coder-Yy/fix/linux_bug
+
+fix(client): resolve Linux AppImage startup and preview failures *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`1eab344`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/1eab344a8f1842e0fac41a4210e866d6774a5111) - Merge pull request [#38](https://github.com/HsiangNianian/IntelligentMixVideo/pull/38) from tingfeng347/fix/linux-preview-performance
+
+fix(client): reduce preview rendering overhead *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`99f2dcd`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/99f2dcd1d76285847158ecc58d647cab0cce6c6b) - Merge pull request [#49](https://github.com/HsiangNianian/IntelligentMixVideo/pull/49) from jyh20030112/feat/remotion-workspace-versions
+
+feat(client): redesign Remotion workspace with version history *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`f82d57d`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/f82d57de987dcf3178b1872acc4cf5159019f9e6) - Merge pull request [#48](https://github.com/HsiangNianian/IntelligentMixVideo/pull/48) from IT-coder-Yy/feat/debug_CI
+
+feat(debug): bundle local backend runtimes for desktop testing *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`b311a35`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/b311a35a85b405d0a8dd1bb24fc3c96ede04090e) - Merge pull request [#50](https://github.com/HsiangNianian/IntelligentMixVideo/pull/50) from muyuzhong/feat/client-settings-plugins
+
+feat(settings): discover module settings and add local configuration dialog *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`d47ece2`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/d47ece2734c61defc03069ab3e768f0f110c3125) - Merge pull request [#46](https://github.com/HsiangNianian/IntelligentMixVideo/pull/46) from HsiangNianian/dev
+
+fix(server): ground visual reviews and select representative frames *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`3d0f613`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/3d0f61394d592cdf081a70902c6a195a245b5032) - Merge pull request [#51](https://github.com/HsiangNianian/IntelligentMixVideo/pull/51) from HsiangNianian/dev
+
+chore: bump version into v0.4.1 *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+
 ## [v0.4.0] - 2026-09-15
 ### New Features
 - [`1a5774a`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/1a5774a0659ddf3cf9ce43d4ddb25d6f42d7ba53) - **server**: add task-local template contracts and model context *(commit by [@jyh20030112](https://github.com/jyh20030112))*
@@ -293,3 +400,5 @@ feat(client): 在模板工作区页头添加时钟 *(commit by [@HsiangNianian](
 [v0.3.2]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.3.1...v0.3.2
 
 [v0.4.0]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.3.2...v0.4.0
+
+[v0.4.1]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.4.0...v0.4.1
