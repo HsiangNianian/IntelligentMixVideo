@@ -109,6 +109,7 @@ test("自定义画布提交期间锁定且新增会话恢复默认", async () =>
     target: { value: "字效" },
   });
   fireEvent.click(screen.getByRole("button", { name: "发送" }));
+  await waitFor(() => expect(creations()).toHaveLength(1));
   expect(creations()[0].composition).toEqual({
     width: 1280,
     height: 720,

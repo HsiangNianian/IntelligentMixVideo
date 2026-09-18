@@ -361,3 +361,6 @@ uv run --locked python -m server.remotion_templates.smoke --live
 
 每次验收使用模板目录内独立的 `.data/smoke-<id>/`，保留所有尝试与输出；
 终端只打印任务状态、用量和产物位置，不输出密钥。
+
+
+客户端可在普通与 Debug 模式的 Remotion Agent 设置中保存模型参数。能力查询、创建、消息和重试通过 `X-Remotion-Config`（URI 编码 JSON）提供当前客户端配置；每个任务独立创建 Provider/Harness，复用服务端 Renderer，不修改服务端配置。密钥不写作品、聊天或任务历史；未传配置沿用环境默认值。数据路径、渲染环境和任务策略不接受客户端覆盖。

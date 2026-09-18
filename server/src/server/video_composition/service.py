@@ -5,10 +5,11 @@ from datetime import UTC, datetime, timedelta
 import logging
 import json
 import secrets
+from uuid import uuid4
 
 import httpx
 from fastapi import HTTPException
-from pydantic import TypeAdapter
+from pydantic import SecretStr, TypeAdapter
 from sqlalchemy.exc import SQLAlchemyError
 
 from ..segmentation import segment
@@ -19,15 +20,15 @@ from .errors import CompositionError, remaining
 from .execution_log import exception_details
 from .matching import Matching, payload, validated_matches
 from .schema import CompositionRequest, MatchCallback, PositiveSeconds, Segment, TaskResponse
-from .settings import Settings
+from .settings import ClientSettings, Settings
 from .timeline import build_timeline, validate_segments
 
 logger = logging.getLogger(__name__)
 
 
-def preflight() -> Settings:
+def preflight(config: ClientSettings | None = None) -> Settings:
     """受理前只检查配置，不执行成本调用；延迟导入保持现有 ASR 一次性加载行为。"""
-    settings = Settings()
+    settings = Settings(**config.model_dump()) if config is not None else Settings()
     SegmentationSettings()
     from ..asr.asr import settings as asr_settings
 
@@ -52,6 +53,7 @@ class Runtime:
         """保留后台协程与线程引用；同一应用进程只有一个调度器。"""
         self.settings: Settings | None = None
         self.active: dict[str, asyncio.Task] = {}
+        self.client_configs: dict[str, ClientSettings] = {}
         self.threads: set[asyncio.Task] = set()
         self.thread_limit = asyncio.Semaphore(8)
         self.stopping = False
@@ -92,17 +94,29 @@ class Runtime:
         await asyncio.gather(*tasks, return_exceptions=True)
         await asyncio.gather(*tuple(self.threads), return_exceptions=True)
         self.active.clear()
+        self.client_configs.clear()
 
-    async def accept(self, request: CompositionRequest, callback_base_url: str, raw_request: dict | None = None) -> dict:
+    async def accept(self, request: CompositionRequest, callback_base_url: str, raw_request: dict | None = None, *, config: ClientSettings | None = None) -> dict:
         """优先保存配置的公网地址；配置检查和事务成功后才返回 ID，由后台继续处理。"""
         if self.stopping:
             raise HTTPException(503, "合成服务正在停止")
         try:
-            self.settings = await self.sync(preflight)
+            settings = await self.sync(preflight, config) if config is not None else await self.sync(preflight)
         except (ValueError, RuntimeError):
             raise HTTPException(503, "视频合成配置不完整或无效，请检查服务端 .env") from None
-        callback_base_url = self.settings.composition_public_base_url or callback_base_url
-        record = await self.sync(store.create, request.model_dump(mode="json", by_alias=True), self.settings.output(), callback_base_url, raw_request)
+        # 调度器只保留运行策略；每项云端凭据绑定独立任务，不充当其他任务的默认值。
+        self.settings = settings.model_copy(update={key: SecretStr("") for key in ("ims_access_key_id", "ims_access_key_secret", "ims_security_token")})
+        callback_base_url = settings.composition_public_base_url or callback_base_url
+        task_id = str(uuid4())
+        output = settings.output()
+        if config is not None:
+            output["client_ims_id"] = config.credential_id()
+            self.client_configs[task_id] = config
+        try:
+            record = await self.sync(store.create, request.model_dump(mode="json", by_alias=True), output, callback_base_url, raw_request, **({"task_id": task_id} if config is not None else {}))
+        except BaseException:
+            self.client_configs.pop(task_id, None)
+            raise
         self.wake.set()
         return record
 
@@ -140,13 +154,18 @@ class Runtime:
                               "body": json.loads(request.content) if request.content else None},
                        output={"http_status": response.status_code, "body": body})
 
-    async def response(self, record: dict, *, source: str = "query") -> TaskResponse:
+    async def response(self, record: dict, *, source: str = "query", config: ClientSettings | None = None) -> TaskResponse:
         """GET 与终态回调共用公开响应；成功时刷新播放地址，失败时不依赖云服务。"""
         result = None
         await self.log(record, "response_started", source=source, input={"task_id": record["task_id"]})
         if record["status"] == "succeeded":
             try:
-                settings = await self.sync(Settings)
+                if source == "notification":
+                    config = self.client_configs.get(record["task_id"])
+                expected = record["data"]["output"].get("client_ims_id")
+                if expected and (config is None or config.credential_id() != expected):
+                    raise ValueError("请使用提交任务的 IMS 账号查询")
+                settings = await self.sync(lambda: Settings(**config.model_dump()) if config is not None else Settings())
                 provider = ims.IMS(settings, region_id=record["data"]["output"]["region_id"])
                 async with asyncio.timeout(settings.composition_http_timeout_seconds):
                     url = await self.step(record, "playback", lambda: provider.result_url(record["data"]["result"]["mediaId"]),
@@ -203,8 +222,9 @@ class Runtime:
                 capacity = (self.settings.composition_concurrency if self.settings else 2) - len(self.active)
                 if capacity > 0:
                     records = await self.sync(store.pending, list(self.active), capacity)
-                    if records and self.settings is None:
-                        self.settings = await self.sync(Settings)
+                    if records and self.settings is None and any(not item["data"]["output"].get("client_ims_id") for item in records):
+                        settings = await self.sync(Settings)
+                        self.settings = settings.model_copy(update={key: SecretStr("") for key in ("ims_access_key_id", "ims_access_key_secret", "ims_security_token")})
                         records = records[:self.settings.composition_concurrency]
                     for record in records:
                         task = asyncio.create_task(self._execute(record))
@@ -223,6 +243,12 @@ class Runtime:
             if record["status"] in ("succeeded", "failed"):
                 await self._notify(record)
                 return
+            config = self.client_configs.get(record["task_id"])
+            if record["data"]["output"].get("client_ims_id") and config is None:
+                raise CompositionError("client_config_lost", "服务重启后客户端凭据已清除，请重新提交任务", record["stage"])
+            job.settings = await self.sync(lambda: Settings(**config.model_dump()) if config is not None else Settings())
+            if self.settings is None:
+                self.settings = job.settings.model_copy(update={key: SecretStr("") for key in ("ims_access_key_id", "ims_access_key_secret", "ims_security_token")})
             await job.run()
         except LostOwnership:
             pass
@@ -244,10 +270,15 @@ class Runtime:
                     if attempt == 2:
                         logger.error("合成任务 %s 错误暂无法落库，保留原阶段恢复", record["task_id"])
                     else:
-                        await asyncio.sleep(self.settings.composition_poll_seconds)
+                        await asyncio.sleep(self.settings.composition_poll_seconds if self.settings else 2)
         finally:
-            self.active.pop(record["task_id"], None)
-            self.wake.set()
+            try:
+                latest = await self.sync(store.get, record["task_id"])
+                if latest and latest["status"] in ("succeeded", "failed") and latest["data"].get("notification_status") != "pending":
+                    self.client_configs.pop(record["task_id"], None)
+            finally:
+                self.active.pop(record["task_id"], None)
+                self.wake.set()
 
     async def _notify(self, record: dict) -> None:
         """终态落库后仅尝试一次异步通知；异常/取消不回退合成结果，交由调用方补查。"""
@@ -261,8 +292,8 @@ class Runtime:
                 body = (await self.response(claimed, source="notification")).model_dump(mode="json", by_alias=True)
                 await self.log(claimed, "notification_started", input={"url": claimed["data"]["request"]["callbackUrl"],
                                                                       "body": body})
-                async with asyncio.timeout(self.settings.composition_http_timeout_seconds):
-                    async with httpx.AsyncClient(timeout=self.settings.composition_http_timeout_seconds, follow_redirects=False) as client:
+                async with asyncio.timeout(self.settings.composition_http_timeout_seconds if self.settings else 30):
+                    async with httpx.AsyncClient(timeout=self.settings.composition_http_timeout_seconds if self.settings else 30, follow_redirects=False) as client:
                         async with client.stream("POST", claimed["data"]["request"]["callbackUrl"],
                                                  json=body) as response:
                             details["http_status"] = response.status_code
@@ -312,7 +343,8 @@ class Job:
 
     async def prepare(self) -> None:
         """先在 template 阶段读取模板，快照落库后进入 ASR；模板读取中断可安全重试。"""
-        await self.runtime.sync(preflight)
+        config = self.runtime.client_configs.get(self.record["task_id"])
+        await self.runtime.sync(preflight, config) if config is not None else await self.runtime.sync(preflight)
         if not self.record["data"].get("callback_base_url"):
             raise CompositionError("callback_address_missing", "任务缺少受理时的基础地址，无法生成匹配回调地址", "matching")
         request = CompositionRequest.model_validate(self.record["data"]["request"])

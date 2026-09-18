@@ -1,6 +1,8 @@
 /** 动态配置表单、本地存储与切片请求联调；隔离 HTTP/桌面 IPC，执行 bun run test。 */
 import { beforeEach, expect, mock, test } from "bun:test";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import * as remotion from "@/features/remotion_templates/api";
+import { createComposition, getComposition } from "@/features/video_composition/api";
 import { requestSegmentation } from "@/features/segmentation/api";
 import { PluginSettings } from "@/features/settings/PluginSettings";
 import { SettingsDialog } from "@/features/settings/SettingsDialog";
@@ -12,21 +14,23 @@ import { normalizeValues, schemaError } from "@/features/settings/schema";
 // 现有插件用例验证 Debug 路径；普通模式用例显式覆盖，公共夹具逐例重置开关。
 beforeEach(() => { process.env.IMV_DEBUG = "true"; });
 
-// 场景：普通模式无需后端或本地配置即可打开；旧值保留但不进入业务请求。
+// 场景：普通模式只请求客户端模块目录；旧切片值保留，但不进入业务请求。
 test.each([undefined, "false", "TRUE"])("普通模式隔离模块配置：%s", async (mode) => {
   if (mode === undefined) delete process.env.IMV_DEBUG;
   else process.env.IMV_DEBUG = mode;
   const stored = { segmentation: { llm_model: "old-model", llm_api_key: "test-key" } };
   const invoke = mock(async () => structuredClone(stored));
   mockDesktop(invoke);
+  fetchMock.mockResolvedValueOnce(Response.json([]));
   render(<SettingsDialog open onOpenChange={() => {}} />);
   const dialog = await screen.findByRole("dialog", { name: "设置" });
   expect(within(dialog).getAllByRole("tab")).toHaveLength(1);
   expect(within(dialog).getByRole("region", { name: "环境与连接" })).toBeTruthy();
   expect(within(dialog).queryByRole("form")).toBeNull();
-  expect(within(dialog).getByText("当前仅展示客户端设置，服务端配置由服务端环境管理。")).toBeTruthy();
-  expect(fetchMock).not.toHaveBeenCalled();
-  expect(invoke).not.toHaveBeenCalled();
+  await waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+  expect(fetchMock.mock.calls[0][0]).toBe("http://api.test:8000/api/settings/plugins?client_only=true");
+  fetchMock.mockClear();
+  invoke.mockClear();
   fetchMock.mockResolvedValueOnce(Response.json({ segments: [] }));
   await requestSegmentation({ script: "测试", asr_result: {} });
   expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -291,4 +295,53 @@ test("不支持的模块不影响其他模块表单", async () => {
 // 场景：非有限数字不依赖浏览器原生输入校验，保存规范化本身会拒绝。
 test.each([NaN, Infinity, -Infinity])("拒绝非有限配置 %s", value => {
   expect(() => normalizeValues({ id: "number", name: "数字", schema: { properties: { value: { type: "number" } } } }, { value })).toThrow("有效数字");
+});
+
+
+// 场景：两个模式都能编辑、保存、恢复客户端模块，实际业务请求读取最新值且不写入正文。
+test.each(["false", "true"])("Agent 和 IMS 在模式 %s 下保存并用于请求", async (mode) => {
+  process.env.IMV_DEBUG = mode;
+  let stored: Record<string, Values> = {};
+  mockDesktop(async (_command, args) => {
+    if (args.id) stored[String(args.id)] = structuredClone(args.values as Values);
+    return structuredClone(stored);
+  });
+  const plugins: Plugin[] = [
+    { id: "remotion_agent", name: "Remotion Agent", schema: { properties: { actor_api_key: { type: "string", title: "Actor 密钥", format: "password" } } } },
+    { id: "ims", name: "上海 IMS 官方 SDK", schema: { properties: { ims_access_key_secret: { type: "string", title: "IMS 密钥", format: "password" } } } },
+  ];
+  fetchMock.mockResolvedValueOnce(Response.json(plugins));
+  const view = render(<PluginSettings />);
+  for (const [name, label, value] of [["Remotion Agent", "Actor 密钥", "agent-private"], ["上海 IMS 官方 SDK", "IMS 密钥", "ims-private"]]) {
+    await openModule(name);
+    expect(screen.getByLabelText<HTMLInputElement>(label).type).toBe("password");
+    fireEvent.change(screen.getByLabelText(label), { target: { value } });
+    fireEvent.submit(screen.getByRole("form", { name }));
+    await screen.findByText("已保存到当前客户端");
+  }
+  view.unmount();
+  fetchMock.mockResolvedValueOnce(Response.json(plugins));
+  render(<PluginSettings />);
+  await openModule("Remotion Agent");
+  expect(screen.getByLabelText<HTMLInputElement>("Actor 密钥").value).toBe("agent-private");
+  fetchMock.mockReset();
+  for (let i = 0; i < 6; i++) fetchMock.mockResolvedValueOnce(Response.json({ models_configured: true }));
+  await remotion.capabilities();
+  await remotion.create("你好");
+  await saveSettings("remotion_agent", { actor_api_key: "changed-private" });
+  await remotion.message("work", { instruction: "修改" });
+  await remotion.retry("job");
+  await createComposition({ text: "合成" });
+  await saveSettings("ims", { ims_access_key_secret: "new-ims-private" });
+  await getComposition("task");
+  const configs = fetchMock.mock.calls.map(([, options]) => {
+    expect(String(options?.body)).not.toContain("private");
+    const headers = new Headers(options?.headers);
+    return JSON.parse(decodeURIComponent(headers.get("X-Remotion-Config") ?? headers.get("X-IMS-Config")!));
+  });
+  expect(configs).toEqual([
+    { actor_api_key: "agent-private" }, { actor_api_key: "agent-private" },
+    { actor_api_key: "changed-private" }, { actor_api_key: "changed-private" },
+    { ims_access_key_secret: "ims-private" }, { ims_access_key_secret: "new-ims-private" },
+  ]);
 });

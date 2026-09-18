@@ -30,7 +30,7 @@ let browserSettings: Record<string, Values> = {};
 
 /** 每次打开设置读取目录，调用方卸载时取消请求。 */
 export async function listPlugins(signal?: AbortSignal): Promise<Plugin[]> {
-  const response = await fetch(`${apiBase()}/api/settings/plugins`, { signal });
+  const response = await fetch(`${apiBase()}/api/settings/plugins${import.meta.env.IMV_DEBUG === "true" ? "" : "?client_only=true"}`, { signal });
   if (!response.ok) throw new Error("读取设置插件失败");
   return response.json();
 }

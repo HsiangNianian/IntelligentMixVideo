@@ -66,7 +66,7 @@ def test_local_client_cors(client: TestClient, origin: str, method: str) -> None
     response = client.options("/template", headers={
         "Origin": origin,
         "Access-Control-Request-Method": method,
-        "Access-Control-Request-Headers": "Content-Type",
+        "Access-Control-Request-Headers": "Content-Type, X-Remotion-Config, X-IMS-Config",
     })
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == origin

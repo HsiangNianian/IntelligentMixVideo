@@ -3108,3 +3108,62 @@ def test_unexplained_unknown_is_corrected_before_sampling(candidate, spec, tmp_p
     assert report.passed and output.tsx_code == candidate.tsx_code
     assert len(provider.prompts) == 2 and renderer.calls == 1
     assert not list(directory.glob("evidence-*"))
+
+
+def test_client_models_are_task_scoped_and_not_persisted(settings, monkeypatch):
+    """真实 HTTP/队列按任务使用模型凭据，后续消息和重试使用新快照，不写入历史或文件。"""
+    from urllib.parse import quote
+    seen = []
+
+    async def generate(harness, *args, **kwargs):
+        """在真实 Provider 边界观察本任务配置，不访问付费服务。"""
+        seen.append((harness.provider.settings.actor_model, harness.provider.settings.actor_api_key.get_secret_value()))
+        if harness.provider.settings.actor_model == "丙":
+            raise ModelFailure("测试失败供重试")
+        return DialogueOutput(answer="收到")
+
+    monkeypatch.setattr(Harness, "generate", generate)
+    settings.actor_api_key = SecretStr("")
+    application = create_app(settings)
+    headers = lambda name: {"X-Remotion-Config": quote(json.dumps({
+        "actor_model": name, "actor_api_key": name + "-private", "vision_model": name,
+    }))}
+    with TestClient(application) as client:
+        assert client.get("/api/templates/capabilities").json()["models_configured"] is False
+        assert client.get("/api/templates/capabilities", headers=headers("甲")).json()["models_configured"] is True
+        jobs = []
+        for name in ("甲", "乙"):
+            result = client.post("/api/templates/works", json={"description": "你好"}, headers=headers(name))
+            assert result.status_code == 202
+            jobs.append(result.json())
+        for result in jobs:
+            assert wait_job(client, result["job"]["id"])["status"] == "answered"
+        assert seen == [("甲", "甲-private"), ("乙", "乙-private")]
+        work_id = jobs[0]["work"]["id"]
+        message = client.post(f"/api/templates/works/{work_id}/messages", json={"instruction": "再问"}, headers=headers("丙"))
+        assert message.status_code == 202
+        assert wait_job(client, message.json()["id"])["status"] == "failed"
+        assert seen[-1] == ("丙", "丙-private")
+        runtime = application.state.template_app.state.runtime
+        retried = client.post(f"/api/templates/jobs/{message.json()['id']}/retry", headers=headers("丁"))
+        assert retried.status_code == 202
+        assert wait_job(client, retried.json()["id"])["status"] == "answered"
+        assert seen[-1] == ("丁", "丁-private")
+        assert not runtime.client_configs
+        assert settings.actor_api_key.get_secret_value() == ""
+        assert "private" not in client.get(f"/api/templates/works/{work_id}/session").text
+        for path in settings.data_dir.rglob("*"):
+            if path.is_file():
+                for name in ("甲", "乙", "丙", "丁"):
+                    assert (name + "-private").encode() not in path.read_bytes()
+        assert client.post("/api/templates/works", json={"description": "默认配置仍未就绪"}).status_code == 503
+
+
+@pytest.mark.parametrize("value", ["not-json-private", '{"actor_api_key":"private","data_dir":"/tmp"}', '{"actor_api_key":123}'])
+def test_invalid_client_model_header_does_not_echo_secret(settings, value):
+    """坏配置与越权字段拒绝受理，响应不包含请求头里的输入。"""
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/api/templates/works", json={"description": "你好"}, headers={"X-Remotion-Config": value})
+        assert response.status_code == 422
+        assert "private" not in response.text
+        assert client.get("/api/templates/works").json() == []

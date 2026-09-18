@@ -142,11 +142,11 @@ def upstreams(monkeypatch, composition_settings, composition_case):
     return state
 
 
-def finished(client, task_id):
+def finished(client, task_id, headers=None):
     """最多三十秒观察本地终态，留足慢 CI 落库余量，成功后立即返回。"""
     end = monotonic() + 30
     while monotonic() < end:
-        response = client.get(f"{BASE}/{task_id}")
+        response = client.get(f"{BASE}/{task_id}", headers=headers)
         assert response.status_code == 200
         data = response.json()
         if data["status"] in ("succeeded", "failed"):
@@ -1281,3 +1281,75 @@ async def test_matching_failure_without_active_job_still_notifies(upstreams, com
     assert len(upstreams["notifications"]) == 1
     assert upstreams["notifications"][0]["body"]["error"]["code"] == "matching_failed"
     assert upstreams["submits"] == []
+
+
+@pytest.mark.parametrize("callback", [False, True])
+def test_client_ims_credentials_drive_submit_and_playback(upstreams, client, composition_case, monkeypatch, callback):
+    """两客户端提交、查询和回调独立；覆盖有/无服务器凭据，秘密不落库。"""
+    from urllib.parse import quote
+    seen = []
+    original = ims.IMS
+
+    def provider(settings, **kwargs):
+        """保留完整模拟 SDK 流程，记录实际构造 SDK 的配置边界。"""
+        seen.append((settings.ims_access_key_id.get_secret_value(), settings.ims_access_key_secret.get_secret_value()))
+        return original(settings, **kwargs)
+
+    monkeypatch.setattr(ims, "IMS", provider)
+    if not callback:
+        monkeypatch.delenv("ALIBABA_CLOUD_ACCESS_KEY_ID")
+        monkeypatch.delenv("ALIBABA_CLOUD_ACCESS_KEY_SECRET")
+    upstreams["release"].clear()
+    requests = []
+    for name in ("client-a", "client-b"):
+        header = {"X-IMS-Config": quote(json.dumps({"ims_access_key_id": name, "ims_access_key_secret": name + "-private"}))}
+        payload = composition_case["request"] | ({"callbackUrl": "https://notify.example.test/result"} if callback else {})
+        response = client.post(BASE, json=payload, headers=header)
+        assert response.status_code == 202
+        requests.append((response.json()["taskId"], header))
+    upstreams["release"].set()
+    for task_id, header in requests:
+        assert finished(client, task_id, header)["status"] == "succeeded"
+        if callback:
+            assert notified(task_id)["data"]["notification_status"] == "sent"
+        record = store.get(task_id)
+        assert "private" not in json.dumps(record, default=str)
+        assert client.get(f"{BASE}/{task_id}").status_code == 503
+    assert set(seen) == {("client-a", "client-a-private"), ("client-b", "client-b-private")}
+    assert len(upstreams["notifications"]) == (2 if callback else 0)
+    before = len(seen)
+    assert client.get(f"{BASE}/{requests[0][0]}", headers=requests[1][1]).status_code == 503
+    assert len(seen) == before
+    from server.database import get_engine
+    with get_engine().connect() as connection:
+        logs = connection.execute(select(store.execution_logs.c.detail)).scalars().all()
+    assert "private" not in json.dumps(logs)
+    if not callback:
+        assert client.post(BASE, json=composition_case["request"]).status_code == 503
+
+
+@pytest.mark.parametrize("config", [
+    {"ims_access_key_secret": "private"},
+    {"ims_access_key_id": "id", "ims_access_key_secret": "private", "ims_endpoint": "evil.test"},
+    {"ims_access_key_id": "id", "ims_access_key_secret": "private", "composition_concurrency": 99},
+])
+def test_client_ims_validation_is_private(upstreams, client, composition_case, config):
+    """缺凭据、非官方主机和客户端策略覆盖均拒绝，输入不进入日志或响应。"""
+    from urllib.parse import quote
+    response = client.post(BASE, json=composition_case["request"], headers={"X-IMS-Config": quote(json.dumps(config))})
+    assert response.status_code == 422
+    assert "private" not in response.text
+    assert upstreams["asr_calls"] == 0
+    assert store.pending([], 10) == []
+
+
+def test_client_ims_restart_does_not_fall_back_to_server(composition_settings, composition_case):
+    """重启丢失客户端凭据时明确失败，不使用服务端另一个账号恢复成本调用。"""
+    store.initialize_schema()
+    record = store.create(composition_case["request"], composition_settings.output() | {"client_ims_id": "lost"}, "https://callback.test")
+    runtime = service.Runtime()
+    asyncio.run(runtime._execute(record))
+    result = store.get(record["task_id"])
+    assert result["status"] == "failed"
+    assert result["data"]["error"]["code"] == "client_config_lost"
+    assert not runtime.client_configs and not runtime.active

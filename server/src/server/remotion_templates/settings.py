@@ -2,26 +2,36 @@
 
 from pathlib import Path
 
-from pydantic import Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from pydantic_settings import SettingsConfigDict
 
 from ..config_base import CommonSettings
 
 
-class Settings(CommonSettings):
-    """One local server instance; requests cannot override credentials or executables."""
+class ClientSettings(BaseModel):
+    """客户端可携带的模型参数；运行目录、渲染及任务资源限制仍由服务端维护。"""
 
-    model_config = SettingsConfigDict(env_prefix="IMV_")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
-    data_dir: Path = Path(".data")
-    actor_base_url: str = "https://api.openai.com/v1"
-    actor_model: str = ""
-    actor_api_key: SecretStr = SecretStr("")
+    actor_base_url: str = Field(default="https://api.openai.com/v1", title="Actor API 地址", pattern=r"^https?://\S+$")
+    actor_model: str = Field(default="", title="Actor 模型")
+    actor_api_key: SecretStr = Field(default=SecretStr(""), title="Actor API Key")
+    vision_base_url: str = Field(default="", title="视觉 API 地址（留空复用 Actor）")
+    vision_model: str = Field(default="", title="视觉模型")
+    vision_api_key: SecretStr = Field(default=SecretStr(""), title="视觉 API Key（留空复用 Actor）")
+    disable_thinking: bool = Field(default=False, title="关闭思考")
+    model_timeout_seconds: int = Field(default=240, ge=1, le=600, title="模型请求超时（秒）")
+
+
+class Settings(ClientSettings, CommonSettings):
+    """服务端策略与模型默认值；客户端覆盖只生成任务独立副本。"""
+
+    model_config = SettingsConfigDict(env_prefix="IMV_", extra="ignore")
+
+    # 保留服务端显式 None 的兼容性；客户端用空字符串表达复用 Actor。
     vision_base_url: str | None = None
-    vision_model: str = ""
     vision_api_key: SecretStr | None = None
-    disable_thinking: bool = False
-    model_timeout_seconds: int = Field(default=240, ge=1, le=600)
+    data_dir: Path = Path(".data")
     job_timeout_seconds: int = Field(default=600, ge=1, le=3600)
     render_timeout_seconds: int = Field(default=180, ge=1, le=600)
     # Keep usage accounting while temporarily disabling cumulative model quota enforcement.

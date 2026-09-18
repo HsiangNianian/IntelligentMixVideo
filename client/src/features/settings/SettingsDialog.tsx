@@ -17,10 +17,8 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
         <DialogHeader className="shrink-0 border-b px-6 py-5 pr-12">
           <DialogTitle>设置</DialogTitle>
           <DialogDescription className="text-xs leading-5">
-            {import.meta.env.IMV_DEBUG === "true" ? <>
-              {isTauri() ? "配置仅保存到当前客户端，API Key 随配置以明文保存在本地文件中。" : "浏览器预览仅在当前页面保存配置，刷新后丢失。"}
-              已接入的模块在请求时使用保存的配置，不修改服务端配置文件。
-            </> : "当前仅展示客户端设置，服务端配置由服务端环境管理。"}
+            {isTauri() ? "配置保存在当前客户端，密钥以明文保存在本地文件中。" : "浏览器预览仅在当前页面保存配置，刷新后丢失。"}
+            Remotion Agent 与 IMS 使用当前客户端保存的凭据；Debug 另提供服务端模块设置。
           </DialogDescription>
         </DialogHeader>
         <PluginSettings />

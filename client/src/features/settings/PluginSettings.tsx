@@ -117,11 +117,6 @@ export function PluginSettings() {
   const [error, setError] = useState("");
   const [active, setActive] = useState(GENERAL_TAB);
   useEffect(() => {
-    // 普通模式只显示客户端通用面板，不读取目录或遗留的服务端模块配置。
-    if (import.meta.env.IMV_DEBUG !== "true") {
-      setData({ plugins: [], values: {} });
-      return;
-    }
     const controller = new AbortController();
     Promise.all([listPlugins(controller.signal), readSettings()]).then(([plugins, values]) => {
       if (!controller.signal.aborted) setData({ plugins, values });
@@ -132,8 +127,8 @@ export function PluginSettings() {
   }, []);
   return (
     <section aria-label="模块设置" className="flex min-h-0 min-w-0 flex-1 flex-col">
-      {error ? <p role="alert" className="p-4 sm:p-6">{error}</p> : !data ? <p role="status" className="p-4 sm:p-6">正在读取设置…</p>
-        : (
+      {error && <p role="alert" className="p-4 sm:p-6">{error}</p>}
+      {!data && !error && <p role="status" className="p-4 sm:p-6">正在读取设置…</p>}
           <Tabs orientation="vertical" value={active} onValueChange={setActive} className="min-h-0 flex-1 gap-0">
             <div className="w-14 shrink-0 overflow-y-auto border-r bg-muted/40 p-2 sm:w-52 sm:p-3">
               <TabsList aria-label="设置模块" className="w-full gap-1 rounded-none bg-transparent p-0">
@@ -141,7 +136,7 @@ export function PluginSettings() {
                   <Settings2 className="size-[18px]" aria-hidden="true" />
                   <span className="sr-only sm:not-sr-only">通用</span>
                 </TabsTrigger>
-                {data.plugins.map((plugin) => (
+                {(data?.plugins ?? []).map((plugin) => (
                   <TabsTrigger key={plugin.id} value={`plugin:${plugin.id}`} title={plugin.name} className={navTriggerClass}>
                     <Puzzle className="size-[18px]" aria-hidden="true" />
                     <span className="sr-only sm:not-sr-only">{plugin.name}</span>
@@ -153,18 +148,17 @@ export function PluginSettings() {
               <TabsContent className="h-full overflow-y-auto" value={GENERAL_TAB} forceMount hidden={active !== GENERAL_TAB}>
                 <GeneralSection />
               </TabsContent>
-              {data.plugins.map((plugin) => {
+              {(data?.plugins ?? []).map((plugin) => {
                 const unsupported = schemaError(plugin);
                 return (
                 <TabsContent className="h-full min-h-0" key={plugin.id} value={`plugin:${plugin.id}`} forceMount hidden={active !== `plugin:${plugin.id}`}>
                   {unsupported ? <p role="alert" className="p-5 sm:p-8">{unsupported}</p>
-                    : <PluginForm plugin={plugin} saved={data.values[plugin.id]} />}
+                    : <PluginForm plugin={plugin} saved={data?.values[plugin.id]} />}
                 </TabsContent>
                 );
               })}
             </div>
           </Tabs>
-        )}
     </section>
   );
 }

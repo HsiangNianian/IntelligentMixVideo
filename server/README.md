@@ -141,7 +141,7 @@ result = segment({
 
 请求可另带 `config` 对象：`llm_base_url`、`llm_api_key`、`llm_model` 必填，`llm_timeout_seconds` 默认 120，`llm_max_retries` 默认 1（0～3）。客户端参数仅用于该次切片，完整连接参数不与服务端密钥混用；省略 `config` 仍使用原服务端配置。独立 Python 调用可传 `segment(payload, config=ClientSettings(...))`，模型定义位于 `server.segmentation.settings`。`allow_insecure_llm_http` 仍由服务端决定，不接受客户端覆盖；错误响应不回显请求输入。
 
-`GET /api/settings/plugins` 只返回自动发现的公开描述与代码默认值，不读写服务端配置。一级模块通过 `settings_plugin.py` 导出 `SETTINGS_PLUGIN`，Schema 由自己的配置模型生成；公共层导入时扫描一次，无人工注册名单，重复 ID、坏描述和依赖导入失败直接报错。增删入口后重启后端并重新打开客户端设置；移除入口不删除客户端旧值。当前包含切片与 ASR 设置入口，测试使用临时包文件验证发现与移除。此机制不自动注册业务路由，也不支持删除整个业务目录后免处理依赖；各模块仍须自行接入请求配置消费。
+`GET /api/settings/plugins` 只返回自动发现的公开描述与代码默认值，不读写服务端配置。一级模块通过 `settings_plugin.py` 导出 `SETTINGS_PLUGIN`，Schema 由自己的配置模型生成；公共层导入时扫描一次，无人工注册名单，重复 ID、坏描述和依赖导入失败直接报错。增删入口后重启后端并重新打开客户端设置；移除入口不删除客户端旧值。当前包含 Remotion Agent、上海 IMS、切片与 ASR 设置入口；`client_only=true` 只返回标记 `scope: "client"` 的 Agent 与 IMS，测试使用临时包文件验证发现与移除。此机制不自动注册业务路由，也不支持删除整个业务目录后免处理依赖；各模块仍须自行接入请求配置消费。
 
 ## ASR 音频转写
 
@@ -176,3 +176,10 @@ result = await transcribe("https://example.com/audio.wav", wait_seconds=1800)
 HTTP 请求与轮询等待均为异步，不阻塞事件循环。等待预算必须是有限正数。
 超时或取消本地协程不会取消已提交的云端任务；函数不自动重试提交。
 轮询休眠不超过剩余预算，但单次 HTTP 请求可能使实际等待超出预算。
+
+
+### 客户端 Agent / IMS 凭据
+
+普通与 Debug 客户端均可保存独立模型与 IMS 参数。Remotion 模型操作使用 `X-Remotion-Config`，合成 POST 和成片 GET 使用 `X-IMS-Config`；值为 URI 编码 JSON，字段分别来自模块 `ClientSettings`。省略请求头沿用 `.env`，提供时按任务覆盖全部可编辑字段；服务端策略不可覆盖，校验错误不回显输入。两种请求头已纳入本地客户端 CORS。
+
+凭据仅留任务内存，不保存到作品、任务正文、数据库或日志。IMS 任务只保存账号和地域指纹，GET 刷新成片地址须提供同一账号；后台通知使用提交时的快照，任务及通知结束后清理。服务重启后未完成的客户端 IMS 任务以 `client_config_lost` 失败，需要重新提交，不能用服务端账号恢复；已完成任务仍可带原账号查询。Remotion 重启中断后重试重新携带当前配置。ASR、切片、素材匹配及执行环境仍依赖服务端配置。详见 [客户端设置说明](../client/src/features/settings/README.md)。

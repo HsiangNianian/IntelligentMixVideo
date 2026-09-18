@@ -5,12 +5,12 @@ import json
 from contextlib import suppress
 from uuid import UUID
 
-from .settings import Settings
+from .settings import ClientSettings, Settings
 from ..file_lock import lock_exclusive
 from .harness import Harness
 from .models import DialogueOutput, EditTemplateRequest, JobError, JobInput, TaskMessage
 from .parameters import parameter_changes
-from .provider import Budget, ExecutionFailure, ModelFailure
+from .provider import Budget, ExecutionFailure, ModelFailure, Provider
 from .store import Conflict, Store
 
 
@@ -24,6 +24,7 @@ class Runtime:
         self.active: asyncio.Task | None = None
         self.active_id: UUID | None = None
         self.lock = None
+        self.client_configs: dict[UUID, Settings] = {}
 
     def initialize(self) -> None:
         """Lock the state directory before recovery so a second server cannot interrupt live jobs."""
@@ -38,12 +39,14 @@ class Runtime:
             self.lock = None
             raise
 
-    def notify(self) -> None:
+    def notify(self, job_id: UUID | None = None, config: ClientSettings | None = None) -> None:
         """Create a drain task only when work exists; no idle loop or application lifecycle hook."""
+        if config is not None and job_id is not None:
+            self.client_configs[job_id] = self.settings.model_copy(update=config.model_dump())
         if self.worker is None or self.worker.done():
             self.worker = asyncio.create_task(self._work())
 
-    def edit(self, project_id: UUID, request: EditTemplateRequest):
+    def edit(self, project_id: UUID, request: EditTemplateRequest, config: ClientSettings | None = None):
         """Choose a stable accepted base at enqueue time and reject invalid parameter patches early."""
         from .parameters import patch_parameters
 
@@ -65,16 +68,16 @@ class Runtime:
             ),
             base_id,
         )
-        self.notify()
+        self.notify(job.id, config)
         return job
 
-    def message(self, project_id: UUID, request: TaskMessage):
+    def message(self, project_id: UUID, request: TaskMessage, config: ClientSettings | None = None):
         """Route conversation input to generation, accepted-base edits, or outstanding questions."""
         latest = self.store.latest_job(project_id)
         if request.reply_to_job_id:
             if latest.id != request.reply_to_job_id or latest.status != "needs_input":
                 raise Conflict("Question reply is stale or belongs to another task.")
-            return self.retry(latest.id, request.instruction)
+            return self.retry(latest.id, request.instruction, config)
         if latest.status == "needs_input":
             raise Conflict("Answer the outstanding questions using reply_to_job_id.")
         project = self.store.project(project_id)
@@ -89,16 +92,17 @@ class Runtime:
                 JobInput(mode="generate", instruction=request.instruction),
                 None,
             )
-            self.notify()
+            self.notify(job.id, config)
             return job
         return self.edit(
             project_id,
             EditTemplateRequest.model_validate(
                 request.model_dump(exclude={"reply_to_job_id"})
             ),
+            config,
         )
 
-    def retry(self, job_id: UUID, answer: str | None = None):
+    def retry(self, job_id: UUID, answer: str | None = None, config: ClientSettings | None = None):
         """Retry or clarification creates a new identity, never mutating historical execution state."""
         job = self.store.job(job_id)
         allowed = (
@@ -123,11 +127,12 @@ class Runtime:
             job.base_version_id,
             message_text=answer if answer is not None else "重试本次制作。",
         )
-        self.notify()
+        self.notify(result.id, config)
         return result
 
     async def cancel(self, job_id: UUID):
         """Persist cancellation first so even a late model result cannot publish a revision."""
+        self.client_configs.pop(job_id, None)
         job = self.store.update(job_id, status="cancelled", stage="finished")
         if self.active_id == job_id and self.active:
             self.active.cancel()
@@ -153,6 +158,8 @@ class Runtime:
 
     async def _execute(self, job_id: UUID) -> None:
         """Resolve intent, run a bounded harness and atomically publish only accepted evidence."""
+        settings = self.client_configs.pop(job_id, self.settings)
+        harness = self.harness if settings is self.settings else Harness(Provider(settings), self.harness.renderer)
         budget = Budget(
             audit_path=self.store.job_dir(job_id) / "audit.jsonl",
             on_progress=lambda phase: self.store.progress(job_id, phase),
@@ -160,7 +167,7 @@ class Runtime:
         job = self.store.job(job_id)
         context = self.store.conversation(job.project_id)
         try:
-            async with asyncio.timeout(self.settings.job_timeout_seconds):
+            async with asyncio.timeout(settings.job_timeout_seconds):
                 job = self.store.job(job_id)
                 project = self.store.project(job.project_id)
                 inputs = self.store.inputs(job_id)
@@ -212,7 +219,7 @@ class Runtime:
                         job_id, stage=name, attempts=attempt, usage=budget.summary()
                     )
 
-                result = await self.harness.generate(
+                result = await harness.generate(
                     spec,
                     budget,
                     directory,

@@ -26,6 +26,8 @@ def discover_plugins(root: Path, package: str = "server") -> dict[str, dict]:
         if not isinstance(schema, dict) or schema.get("type") != "object" or not isinstance(schema.get("properties"), dict):
             raise ValueError(f"{entry.__name__} 必须提供对象类型的字段 Schema")
         discovered[plugin_id] = {"id": plugin_id, "name": name, "schema": schema}
+        if plugin.get("scope") == "client":
+            discovered[plugin_id]["scope"] = "client"
     return discovered
 
 
@@ -35,6 +37,6 @@ router = APIRouter(prefix="/api/settings", tags=["客户端设置"])
 
 
 @router.get("/plugins")
-def list_plugins() -> list[dict]:
+def list_plugins(client_only: bool = False) -> list[dict]:
     """只返回已注册的公开字段描述，不提供服务端配置读写。"""
-    return list(plugins.values())
+    return [plugin for plugin in plugins.values() if not client_only or plugin.get("scope") == "client"]

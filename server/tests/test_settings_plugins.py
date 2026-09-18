@@ -130,3 +130,19 @@ assert "server.asr.asr" not in sys.modules
 '''
     result = subprocess.run([sys.executable, "-c", code, str(source)], cwd=tmp_path, capture_output=True, text=True, timeout=20)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_client_modules_visible_in_both_modes(client, monkeypatch):
+    """普通目录只含 Agent 与 IMS；完整目录另含 Debug 模块，凭据从不出现在描述中。"""
+    monkeypatch.setenv("IMV_ACTOR_API_KEY", "private-agent")
+    monkeypatch.setenv("ALIBABA_CLOUD_ACCESS_KEY_SECRET", "private-ims")
+    normal = client.get("/api/settings/plugins?client_only=true")
+    debug = client.get("/api/settings/plugins")
+    assert normal.status_code == debug.status_code == 200
+    assert {item["id"] for item in normal.json()} == {"remotion_agent", "ims"}
+    assert {item["id"] for item in debug.json()} == {"remotion_agent", "ims", "asr", "segmentation"}
+    for secret in ("private-agent", "private-ims"):
+        assert secret not in debug.text
+    fields = next(item for item in normal.json() if item["id"] == "ims")["schema"]["properties"]
+    assert fields["ims_access_key_secret"]["format"] == "password"
+    assert fields["ims_endpoint"]["default"] == "ice.cn-shanghai.aliyuncs.com"
