@@ -1,6 +1,6 @@
 /** 桌面启动门禁：等待就绪、失败诊断、卸载保护及两个功能共享动态端口，不启动真实服务。 */
 import { afterEach, expect, test } from "bun:test";
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import App from "@/App";
 import { apiBase, setApiBase } from "@/lib/api-base";
 import { apiUrl, create } from "@/features/remotion_templates/api";
@@ -29,6 +29,7 @@ test("内置后端接收上游新增的生成配置", async () => {
 test("桌面等待内置服务并共享实际 API 地址", async () => {
   let ready!: (url: string) => void;
   const reset = mockDesktop(async (command) => {
+    if (command === "local_settings") return {};
     expect(command).toBe("start_backend");
     return new Promise<string>((resolve) => { ready = resolve; });
   });
@@ -37,6 +38,7 @@ test("桌面等待内置服务并共享实际 API 地址", async () => {
     expect(screen.getByRole("status").textContent).toContain("正在启动内置服务");
     expect(fetchMock).not.toHaveBeenCalled();
     remotionServer();
+    await waitFor(() => expect(ready).toBeFunction());
     await act(async () => ready("http://127.0.0.1:43210"));
     expect(screen.getByRole("heading", { name: "特效模板" })).toBeTruthy();
     expect(apiUrl("/works")).toBe("http://127.0.0.1:43210/api/templates/works");

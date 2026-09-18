@@ -1,8 +1,9 @@
-/** 应用入口等待桌面内置服务就绪后挂载首页，浏览器及普通安装包保留原 API 地址。 */
+/** 应用入口优先恢复客户端地址；未指定时等待内置服务就绪，再挂载首页。 */
 import HomePage from "@/pages/HomePage";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { setApiBase } from "@/lib/api-base";
+import { readSettings } from "@/features/settings/api";
 
 /** 启动失败展示实际诊断，避免业务页面向尚未启动的后端发送请求。 */
 export default function App() {
@@ -11,7 +12,11 @@ export default function App() {
   useEffect(() => {
     if (!isTauri()) return;
     let active = true;
-    invoke<string | null>("start_backend").then((url) => {
+    readSettings().then((saved) => {
+      if (!active) return null;
+      const url = saved.$client?.api_url;
+      return typeof url === "string" && url ? url : invoke<string | null>("start_backend");
+    }).then((url) => {
       if (!active) return;
       if (url) setApiBase(url);
       setReady(true);

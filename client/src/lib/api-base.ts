@@ -1,7 +1,7 @@
-/** API 地址边界：普通构建使用 Vite 配置，内置服务就绪后使用其实际回环端口。 */
+/** 共享 API 地址：客户端自定义值优先，未指定时使用内置服务或 Vite 默认值。 */
 let base = (import.meta.env.VITE_API_URL?.trim() || "http://localhost:20070").replace(/\/+$/, "");
 
-/** 仅由桌面启动完成回执设置，业务请求和 SSE 共享同一地址。 */
+/** 启动恢复或设置保存时更新，后续业务请求和新 SSE 连接读取同一地址。 */
 export function setApiBase(url: string) {
   base = url.replace(/\/+$/, "");
 }

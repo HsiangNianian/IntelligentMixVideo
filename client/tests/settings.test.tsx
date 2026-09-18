@@ -207,7 +207,7 @@ test("目录为空、读取失败及卸载清理", async () => {
   expect(screen.getByRole("tab", { name: "通用" }).getAttribute("aria-selected")).toBe("true");
   expect(screen.getByRole("region", { name: "环境与连接" })).toBeTruthy();
   expect(screen.getByText("浏览器预览")).toBeTruthy();
-  expect(screen.getByText("http://api.test:8000")).toBeTruthy();
+  expect(screen.getByDisplayValue("http://api.test:8000")).toBeTruthy();
   first.unmount();
   fetchMock.mockResolvedValueOnce(Response.json({}, { status: 503 }));
   const second = render(<PluginSettings />);

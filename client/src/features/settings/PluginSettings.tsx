@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { apiBase } from "@/lib/api-base";
+import { apiBase, setApiBase } from "@/lib/api-base";
 import { listPlugins, readSettings, saveSettings, type Plugin, type Values } from "./api";
 import { normalizeValues, schemaError } from "./schema";
 
@@ -17,21 +17,43 @@ const GENERAL_TAB = "general";
 const navTriggerClass =
   "h-10 w-full flex-none gap-3 rounded-lg px-3 justify-center sm:justify-start hover:bg-muted data-[state=active]:bg-accent data-[state=active]:text-primary group-data-[variant=default]/tabs-list:data-[state=active]:shadow-none";
 
-/** 通用面板展示当前运行环境与服务地址，不依赖后端目录。 */
+/** 通用地址直接保存在客户端；不依赖目录，新请求读取保存后的地址。 */
 function GeneralSection() {
   const titleId = useId();
+  const [url, setUrl] = useState(apiBase);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
   return (
     <section aria-labelledby={titleId} className="p-5 sm:p-8">
       <h2 id={titleId} className="text-lg font-semibold">环境与连接</h2>
-      <p className="mt-2 text-sm text-muted-foreground">查看当前工作台的运行环境与服务地址。</p>
+      <p className="mt-2 text-sm text-muted-foreground">设置当前客户端连接的后端服务地址。</p>
       <dl className="mt-6 divide-y text-sm">
         <div className="flex flex-wrap justify-between gap-3 py-4">
           <dt className="text-muted-foreground">运行环境</dt>
           <dd>{isTauri() ? "桌面客户端" : "浏览器预览"}</dd>
         </div>
         <div className="flex flex-wrap justify-between gap-3 py-4">
-          <dt className="text-muted-foreground">后端服务地址</dt>
-          <dd className="min-w-0 break-all font-mono text-xs leading-5">{apiBase()}</dd>
+          <dt className="text-muted-foreground"><Label htmlFor={`${titleId}-url`}>后端服务地址</Label></dt>
+          <dd className="w-full min-w-0">
+            <form className="space-y-3" onSubmit={async (event) => {
+              event.preventDefault();
+              setSaving(true);
+              setMessage("");
+              try {
+                await saveSettings("$client", { api_url: url.trim() });
+                setApiBase(url.trim());
+                setMessage("已保存，后续请求使用新地址；已有会话连接请重启客户端后切换。");
+              } catch {
+                setMessage("保存地址失败，请重试");
+              } finally {
+                setSaving(false);
+              }
+            }}>
+              <Input id={`${titleId}-url`} type="url" required pattern="https?://.+" value={url} onChange={event => setUrl(event.target.value)} disabled={saving} />
+              <Button type="submit" disabled={saving}>保存地址</Button>
+              {message && <p role="status" className="text-xs text-muted-foreground">{message}</p>}
+            </form>
+          </dd>
         </div>
       </dl>
     </section>
