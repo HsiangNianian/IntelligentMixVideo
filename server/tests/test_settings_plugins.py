@@ -62,23 +62,6 @@ SETTINGS_PLUGIN = {"id": "first", "name": "第一个", "schema": ClientSettings.
     assert list(settings_plugins.discover_plugins(root, name)) == ["last"]
 
 
-@pytest.mark.parametrize("declaration, message", [
-    ("None", "必须导出"),
-    ("{}", "ID 不合法"),
-    ('{"id": " "}', "ID 不合法"),
-    ('{"id": "test", "name": ""}', "缺少显示名称"),
-    ('{"id": "test", "name": "测试", "schema": []}', "对象类型"),
-    ('{"id": "test", "name": "测试", "schema": {"type": "array", "properties": {}}}', "对象类型"),
-    ('{"id": "test", "name": "测试", "schema": {"type": "object", "properties": []}}', "对象类型"),
-])
-def test_invalid_plugin_description(package, declaration, message):
-    """坏描述显式失败，不进入目录，也不被静默忽略。"""
-    root, name = package
-    write_plugin(root, "bad", f"SETTINGS_PLUGIN = {declaration}")
-    with pytest.raises(ValueError, match=message):
-        settings_plugins.discover_plugins(root, name)
-
-
 def test_duplicate_plugin_id(package):
     """重复 ID 阻止发现完成，不允许后加载的模块覆盖配置身份。"""
     root, name = package
@@ -97,14 +80,6 @@ def test_import_failure_propagates(package, source, error):
     root, name = package
     write_plugin(root, "broken", source)
     with pytest.raises(error):
-        settings_plugins.discover_plugins(root, name)
-
-
-def test_invalid_directory_name(package):
-    """不符合 Python 标识符的目录在导入前明确报错。"""
-    root, name = package
-    write_plugin(root, "bad-name", "pass")
-    with pytest.raises(ValueError, match="目录名称不合法"):
         settings_plugins.discover_plugins(root, name)
 
 

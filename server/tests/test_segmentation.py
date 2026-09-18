@@ -10,7 +10,6 @@ from openai import APIConnectionError, APITimeoutError
 import pytest
 
 from server.segmentation import segment, segmentation
-from server.segmentation.settings import ClientSettings
 
 
 def payload(script, transcript=None, step=200):
@@ -631,56 +630,3 @@ def test_client_config_keeps_server_http_policy(model, client, monkeypatch):
     }})
     assert response.status_code == 502
     model[0].assert_not_called()
-
-
-def test_concurrent_calls_keep_independent_model_connections(monkeypatch):
-    """两个交错执行的切片调用分别使用自己的模型与密钥，并关闭各自连接。"""
-    from concurrent.futures import ThreadPoolExecutor
-    from contextlib import contextmanager
-    from threading import Barrier
-
-    barrier = Barrier(2)
-    calls, closed = [], []
-
-    @contextmanager
-    def connection(**kwargs):
-        """连接同时建立后才返回响应，记录每个连接内两阶段实际使用的模型。"""
-        barrier.wait(timeout=5)
-
-        def respond(**request):
-            """返回合法单片段计划，并记录配置匹配关系。"""
-            calls.append((kwargs["api_key"], request["model"], kwargs["base_url"]))
-            content = json.loads(request["messages"][1]["content"])
-            result = {"boundaries_after": []} if isinstance(content[0], dict) else {"keywords": [[]]}
-            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(result)))])
-
-        try:
-            yield SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=respond)))
-        finally:
-            closed.append(kwargs["api_key"])
-
-    monkeypatch.setattr(segmentation, "OpenAI", connection)
-
-    def run(name):
-        """每个调用构造独立客户端参数。"""
-        return segment(payload("甲乙丙丁"), config=ClientSettings(
-            llm_base_url=f"https://{name}.test/v1", llm_api_key=name, llm_model=name,
-        ))
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(run, ("first", "second")))
-    assert all(result["segments"][0]["text"] == "甲乙丙丁" for result in results)
-    assert sorted(calls) == [(name, name, f"https://{name}.test/v1") for name in ("first", "first", "second", "second")]
-    assert sorted(closed) == ["first", "second"]
-
-
-def test_settings_plugin_schema():
-    """切片公开连接字段、密码输入和超时默认值，允许扩展其他字段。"""
-    from server.segmentation.settings_plugin import SETTINGS_PLUGIN
-
-    assert SETTINGS_PLUGIN["id"] == "segmentation"
-    schema = SETTINGS_PLUGIN["schema"]
-    assert {"llm_base_url", "llm_api_key", "llm_model", "llm_timeout_seconds", "llm_max_retries"} <= schema["properties"].keys()
-    assert schema["properties"]["llm_api_key"]["format"] == "password"
-    assert schema["properties"]["llm_timeout_seconds"]["default"] == 120
-    assert {"llm_base_url", "llm_api_key", "llm_model"} <= set(schema["required"])

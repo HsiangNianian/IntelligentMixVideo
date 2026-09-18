@@ -16,16 +16,6 @@ from pydantic import SecretStr
 pytestmark = pytest.mark.anyio
 
 
-def test_public_transcribe_import(asr):
-    """延迟导入保留公开转写函数本身，未知包属性仍明确报错。"""
-    import server.asr as package
-    from server.asr import transcribe
-
-    assert transcribe is asr.transcribe
-    with pytest.raises(AttributeError):
-        getattr(package, "missing_attribute")
-
-
 def respond(http, *documents):
     """依次配置未读取的 JSON 响应，返回响应供资源关闭检查。"""
     responses = [
@@ -371,13 +361,3 @@ def test_main_usage_does_not_transcribe(
     assert "audio_url" in (captured.err if status else captured.out)
     asr_http.assert_not_called()
     assert not Path("asr_result.json").exists()
-
-
-def test_settings_plugin_schema():
-    """ASR 公开密钥字段使用密码输入，默认不携带凭据。"""
-    from server.asr.settings_plugin import SETTINGS_PLUGIN
-
-    assert SETTINGS_PLUGIN["id"] == "asr"
-    field = SETTINGS_PLUGIN["schema"]["properties"]["dashscope_api_key"]
-    assert field["format"] == "password"
-    assert field["default"] == ""

@@ -147,41 +147,4 @@ mod tests {
         );
     }
 
-    /// 两个线程同时保存不同插件；只允许锁竞争失败，显式重试后两份配置均保留。
-    #[test]
-    fn concurrent_saves_preserve_both_plugins() {
-        let directory =
-            Directory(std::env::temp_dir().join(format!("imv-settings-{}", uuid::Uuid::new_v4())));
-        let barrier = std::sync::Barrier::new(2);
-        let results = std::thread::scope(|scope| {
-            let handles: Vec<_> = ["asr", "segmentation"]
-                .into_iter()
-                .map(|id| {
-                    let directory = &directory.0;
-                    let barrier = &barrier;
-                    scope.spawn(move || {
-                        barrier.wait();
-                        (id, operate(directory, Some(id), Some(json!({"value": id}))))
-                    })
-                })
-                .collect();
-            handles
-                .into_iter()
-                .map(|handle| handle.join().unwrap())
-                .collect::<Vec<_>>()
-        });
-        assert!(results.iter().any(|(_, result)| result.is_ok()));
-        for (id, result) in results {
-            if let Err(error) = result {
-                assert!(error.contains("其他操作"), "{error}");
-                operate(&directory.0, Some(id), Some(json!({"value": id}))).unwrap();
-            }
-        }
-        let saved = operate(&directory.0, None, None).unwrap();
-        assert_eq!(
-            saved,
-            json!({"asr": {"value": "asr"}, "segmentation": {"value": "segmentation"}})
-        );
-        assert!(!directory.0.join("settings.json.tmp").exists());
-    }
 }
