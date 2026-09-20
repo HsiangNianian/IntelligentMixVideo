@@ -186,7 +186,8 @@ try {
   const created = (await records()).find((template) => template.name === "浏览器模板 C");
   assert(created);
   assert.notEqual(created.template_id, a.template_id);
-  assert.equal(created.editor.title, "新建并切换标题");
+  assert.equal(created.tracks.find((track) => track.target === "title").editor.title, "新建并切换标题");
+  assert(!Object.hasOwn(created, "editor"));
   assert.equal((await fetch(`${api}/template/${created.template_id}`, { method: "DELETE" })).status, 204);
 
   // 场景：主页列表展示后，目标被删除，读取失败及重试均保留当前模板与草稿。

@@ -256,7 +256,7 @@ export function TemplatePreview({ draft, media, onCatalog, selectedId, onSelect,
   useEffect(() => {
     const timer = window.setTimeout(() => apply.current?.(), 250);
     return () => window.clearTimeout(timer);
-  }, [draft.editor, draft.transition_duration_seconds, draft.tracks, media]);
+  }, [draft.tracks, media]);
 
   return (
     <section aria-label="实时预览" className="min-w-0 space-y-4 p-4">
@@ -302,7 +302,7 @@ export function TemplatePreview({ draft, media, onCatalog, selectedId, onSelect,
         <Button
           type="button"
           variant="outline"
-          disabled={!ready || seeking || (draft.tracks ? !transition : !draft.editor.transition)}
+          disabled={!ready || seeking || !transition}
           onClick={() =>
             playAction.current?.(
               Math.max(0, (transition?.start ?? 5) - 1),

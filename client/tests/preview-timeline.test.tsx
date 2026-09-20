@@ -4,7 +4,8 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { createRef } from "react";
 import { PreviewTimeline, type PreviewTimelineHandle } from "@/features/templates/PreviewTimeline";
 import { buildPreviewRows, buildTimeline, thumbnailTimes } from "@/features/templates/timeline";
-import { newDraft } from "@/features/templates/model";
+import { defaultEditor, newDraft } from "@/features/templates/model";
+import { trackEditor } from "@/features/templates/tracks";
 import { readCatalog } from "@/features/templates/sdk";
 
 // 使用真实目录与草稿生成轨道，检查转场重叠、源素材范围和只读属性。
@@ -15,14 +16,14 @@ test("普通与转场轨道保留实际时间范围", () => {
   expect(ordinary).toHaveLength(1);
   expect(ordinary[0].actions[0]).toMatchObject({ start: 0, end: 10, sourceIn: 0, sourceOut: 10, movable: false, flexible: false });
   expect(ordinary[0].actions[0].transition).toBeUndefined();
-  draft.editor.transition = "transition/normal/directional";
-  draft.transition_duration_seconds = 2;
+  draft.tracks.push({ id: "transition", target: "transition", start_mode: "seconds", start: 5, duration: 2,
+    editor: trackEditor({ ...defaultEditor, transition: "transition/normal/directional" }, "transition") });
   const rows = buildPreviewRows(buildTimeline(draft, catalog));
-  expect(rows).toHaveLength(2);
+  expect(rows).toHaveLength(3);
   expect(rows[0].actions[0]).toMatchObject({ start: 0, end: 7, sourceIn: 0, sourceOut: 7, transition: { start: 5, end: 7 } });
-  expect(rows[1].actions[0]).toMatchObject({ start: 5, end: 10, sourceIn: 8, sourceOut: 13 });
-  expect(new Set(rows.flatMap((row) => row.actions.map((action) => action.id))).size).toBe(2);
-  expect(buildPreviewRows({ ...buildTimeline(draft, catalog), VideoTracks: [] })).toEqual([]);
+  expect(rows[1].actions[0]).toMatchObject({ start: 5, end: 8, sourceIn: 7, sourceOut: 10 });
+  expect(new Set(rows.flatMap((row) => row.actions.map((action) => action.id))).size).toBe(3);
+  expect(buildPreviewRows({ ...buildTimeline(draft, catalog), VideoTracks: [] })).toEqual([rows[2]]);
 });
 
 // 缩略图按源素材位置采样，并拒绝空区间、负时间及非有限值。

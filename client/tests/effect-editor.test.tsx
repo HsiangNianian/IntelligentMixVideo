@@ -2,7 +2,8 @@
 import { expect, test } from "bun:test";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { EffectEditor } from "@/features/templates/EffectEditor";
-import { defaultEditor, newDraft, type Draft, type TextRole } from "@/features/templates/model";
+import { defaultEditor, type EffectDraft as Draft, type TextRole } from "@/features/templates/model";
+import { effectDraft as newDraft } from "./fixtures";
 import type { EffectTarget } from "@/features/templates/effects";
 import { readCatalog } from "@/features/templates/sdk";
 
@@ -28,8 +29,6 @@ async function select(label: string, option: string) {
 // 场景：三种文字对象的输入写入各自字段，支持位置边界与小数，其他参数和原草稿保持不变。
 test.each(["title", "subtitle", "bubble"] as TextRole[])("%s 的文字与数值控件更新正确字段", (role) => {
   const original = newDraft();
-  original.name = "保留名称";
-  original.description = "保留描述";
   const read = renderEditor(original, role);
   fireEvent.change(screen.getByLabelText("示例文字"), { target: { value: "新的示例文字" } });
   fireEvent.change(screen.getByLabelText("字号"), { target: { value: "120" } });
@@ -44,11 +43,9 @@ test.each(["title", "subtitle", "bubble"] as TextRole[])("%s 的文字与数值�
   expect(original.editor).toEqual(defaultEditor);
 });
 
-// 场景：实际重置按钮恢复全部文字参数和时长，清除所选效果，修复空数字，保留模板信息与其他对象。
+// 场景：重置按钮恢复文字参数和时长，清除所选效果并修复空数字，保留其他参数。
 test.each(["title", "subtitle", "bubble"] as TextRole[])("%s 重置按钮恢复控件和草稿，重复操作结果一致", (role) => {
   const original = newDraft();
-  original.name = "保留名称";
-  original.description = "保留描述";
   original.editor.filter = catalog.find((asset) => asset.category === "filter")!.id;
   const textKey = role === "bubble" ? "bubbleText" : role;
   const styleKey = role === "bubble" ? "bubble" : `${role}Flower`;
@@ -104,7 +101,7 @@ test("动画选择器约束互斥关系并恢复无效时长", async () => {
   expect(read().editor.titleIn).toBe(entry.id);
 });
 
-// 场景：转场时长写入模板外层字段，保留所有对象参数；空输入继续保留待校验状态。
+// 场景：参数面板更新转场时长，保留其余参数；空输入继续保留待校验状态。
 test("转场数值编辑保持文字和效果数据", () => {
   const initial = newDraft();
   const read = renderEditor(initial, "transition");

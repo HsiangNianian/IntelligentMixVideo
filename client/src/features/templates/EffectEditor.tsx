@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/button";
 import {
   effectGroups,
   textRoles,
-  type Draft,
+  type EffectDraft,
   type Editor,
   type EffectAsset,
   type EffectKey,
@@ -131,9 +131,9 @@ export function EffectEditor({
   onClose,
   onRemove,
 }: {
-  draft: Draft;
+  draft: EffectDraft;
   catalog: EffectAsset[];
-  onChange: (draft: Draft) => void;
+  onChange: (draft: EffectDraft) => void;
   target: EffectTarget;
   onClose: () => void;
   onRemove?: () => void;

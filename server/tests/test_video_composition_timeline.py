@@ -6,11 +6,17 @@ import pytest
 
 from server.template.schema import EffectTemplateEditor, TemplateSave, effect_catalog
 from server.video_composition.timeline import build_timeline
+from .conftest import template_track
 
 
 def choose(case, key, catalog_id):
     """在独立快照中选择真实目录效果，不修改生产模板或目录。"""
-    case["template"]["editor"][key] = catalog_id
+    target = next((role for role in ("title", "subtitle", "bubble") if key.startswith(role)), key)
+    track = next((track for track in case["template"]["tracks"] if track["target"] == target), None)
+    if track is None:
+        track = template_track(target)
+        case["template"]["tracks"].append(track)
+    track["editor"][key] = catalog_id
     case["template"]["effect_ids"].append(catalog_id)
     case["template"]["effects"].append(effect_catalog()[catalog_id].model_dump(mode="json"))
 
@@ -103,31 +109,28 @@ def test_selected_global_effects_apply_once(composition_case):
 def test_short_text_motions_share_duration_and_position_bounds(composition_case):
     """短字幕的入出同比缩短，100% 坐标映射 0.9999，显式换行保留。"""
     choose(composition_case, "titleOut", "out/fade_out")
-    composition_case["template"]["editor"].update(titleInDuration=3, titleOutDuration=1, titleX=100)
+    composition_case["template"]["tracks"][1]["editor"].update(titleInDuration=3, titleOutDuration=1, titleX=100)
     timeline, _ = build_timeline(**composition_case)
     title = timeline["SubtitleTracks"][1]["SubtitleTrackClips"][0]
     assert (title["AaiMotionIn"], title["AaiMotionOut"]) == (1.5, 0.5)
     assert title["X"] == 0.9999
 
 
-def test_transitions_only_at_visual_boundaries_and_share_budget(composition_case):
-    """连续未命中无转场；一毫秒数字人空隙保留，短片段两侧总预算不超区间。"""
+def test_transition_rejects_insufficient_adjacent_material(composition_case):
+    """转场对象连接明确位置，邻接素材过短时拒绝合成。"""
     effect = next(item for item in effect_catalog().values() if item.category == "transition/normal")
     choose(composition_case, "transition", effect.id)
+    track = composition_case["template"]["tracks"][-1]
+    track.update(start=2.5, duration=0.5)
     plain, _ = build_timeline(**composition_case)
-    assert "DLTransition" not in str(plain)
+    assert len(plain["VideoTracks"][0]["VideoTrackClips"]) == 2
+    assert plain["VideoTracks"][0]["VideoTrackClips"][0]["Effects"][-1]["Duration"] == 0.5
     composition_case["segments"][1]["start_time"] = 3.001
     composition_case["matches"][1]["start_time"] = 3.001
     for i, item in enumerate(composition_case["matches"]):
         item.update(matched_candidate_url=f"https://media.example.test/{i}.mp4", matched_candidate_type="video")
-    timeline, warnings = build_timeline(**composition_case)
-    clips = timeline["VideoTracks"][0]["VideoTrackClips"]
-    assert [(clip["TimelineIn"], clip["TimelineOut"]) for clip in clips] == [(0, 1), (1, 3), (3, 3.001), (3.001, 6), (6, 8)]
-    assert warnings and "DLTransition" in str(timeline) and "'Type': 'Transition'" not in str(timeline)
-    for i, clip in enumerate(clips):
-        before = sum(e["Duration"] for e in clips[i - 1]["Effects"] if e["Type"] == "DLTransition") if i else 0
-        after = sum(e["Duration"] for e in clip["Effects"] if e["Type"] == "DLTransition")
-        assert before + after <= clip["TimelineOut"] - clip["TimelineIn"] + 1e-9
+    with pytest.raises(ValueError, match="相邻片段不足"):
+        build_timeline(**composition_case)
 
 
 @pytest.mark.parametrize("change", [
@@ -173,7 +176,7 @@ def test_invalid_snapshot_fails_before_ims(composition_case, change):
 def apply_tracks(case: dict, tracks: list[dict]) -> None:
     """通过真实 Schema 和随包目录建立对象快照，不调用外部合成服务。"""
     effect_ids = sorted({value for track in tracks for value in EffectTemplateEditor.model_validate(track["editor"]).selected_effects().values()})
-    data = TemplateSave(name="时间规则模板", editor=EffectTemplateEditor(), effect_ids=effect_ids, tracks=tracks)
+    data = TemplateSave(name="时间规则模板", effect_ids=effect_ids, tracks=tracks)
     case["template"].update(data.model_dump(mode="json", by_alias=True, exclude={"template_id"}))
     case["template"]["effects"] = [effect_catalog()[key].model_dump(mode="json") for key in effect_ids]
 

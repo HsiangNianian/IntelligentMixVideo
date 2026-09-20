@@ -8,7 +8,7 @@ import { newDraft, toDraft, type Draft, type EffectAsset, type Template, type Te
 import { EffectEditor } from "./EffectEditor";
 import { AppliedEffects, EffectAssets } from "./EffectAssets";
 import { isTextTarget } from "./effects";
-import { addTrack, previewDuration, removeTrack, setTrackRange, setTrackTiming, trackDraft, updateTrack, withTracks } from "./tracks";
+import { addTrack, previewDuration, removeTrack, setTrackRange, setTrackTiming, trackDraft, updateTrack } from "./tracks";
 import { TrackTiming } from "./TrackTiming";
 import { MasterVideoInput } from "./MasterVideoInput";
 import { TemplatePreview } from "./TemplatePreview";
@@ -40,10 +40,9 @@ export function TemplateWorkspace({ selection = null, onHome }: {
   const mounted = useRef(false);
   const handledSelection = useRef<TemplateSelection | null>(null);
   const dirty = draft !== null && (current === null || JSON.stringify(draft) !== baseline);
-  const selectedTrack = draft?.tracks?.find((track) => track.id === target);
-  const assetTrack = selectedTrack ?? draft?.tracks?.find((track) => track.id === lastTextTrack.current);
-  const selectedDraft = draft && selectedTrack ? trackDraft(draft, selectedTrack) : draft;
-  const assetDraft = draft && assetTrack ? trackDraft(draft, assetTrack) : draft;
+  const selectedTrack = draft?.tracks.find((track) => track.id === target);
+  const assetTrack = selectedTrack ?? draft?.tracks.find((track) => track.id === lastTextTrack.current);
+  const selectedDraft = draft && selectedTrack ? trackDraft(draft, selectedTrack) : null;
 
   useEffect(() => {
     mounted.current = true;
@@ -80,12 +79,11 @@ export function TemplateWorkspace({ selection = null, onHome }: {
           ? await api.getTemplate(openRequest.templateId, openRequest.environment, controller.signal)
           : null;
         if (controller.signal.aborted) return;
-        const next = withTracks(template ? toDraft(template) : {
+        const next = template ? toDraft(template) : {
           ...newDraft(),
-          tracks: [],
           name: openRequest.templateId === null ? openRequest.name : "",
           description: openRequest.templateId === null ? openRequest.description : "",
-        });
+        };
         setCurrent(template);
         setDraft(next);
         setMedia(undefined);
@@ -111,7 +109,7 @@ export function TemplateWorkspace({ selection = null, onHome }: {
   /** 资产和已添加对象共用选中状态，文字资产沿用最近选择的文字对象。 */
   function selectTarget(next: string) {
     setTarget(next);
-    const selected = draft?.tracks?.find((track) => track.id === next);
+    const selected = draft?.tracks.find((track) => track.id === next);
     if (selected && isTextTarget(selected.target)) { setTextTarget(selected.target); lastTextTrack.current = selected.id; }
   }
 
@@ -134,7 +132,7 @@ export function TemplateWorkspace({ selection = null, onHome }: {
     try {
       const saved = await api.saveTemplate(draft, current?.template_id, environment);
       if (!mounted.current) return;
-      const next = withTracks(toDraft(saved));
+      const next = toDraft(saved);
       setCurrent(saved);
       setDraft(next);
       setBaseline(JSON.stringify(next));
@@ -177,15 +175,15 @@ export function TemplateWorkspace({ selection = null, onHome }: {
             </section>
             <div className="grid min-w-0 items-start @min-[680px]:grid-cols-[220px_minmax(0,1fr)] @min-[1000px]:grid-cols-[220px_minmax(0,1fr)_280px]">
               <div className="min-w-0 @min-[680px]:border-r">
-                <EffectAssets draft={assetDraft!} catalog={catalog} textTarget={textTarget} textEditor={draft.tracks?.find((track) => track.id === lastTextTrack.current)?.editor} onTextTarget={(role) => {
+                <EffectAssets editor={assetTrack?.editor} catalog={catalog} textTarget={textTarget} textEditor={draft.tracks.find((track) => track.id === lastTextTrack.current)?.editor} onTextTarget={(role) => {
                   setTextTarget(role);
-                  const text = draft.tracks?.find((track) => track.target === role);
+                  const text = draft.tracks.find((track) => track.target === role);
                   setTarget(text?.id ?? null);
                   lastTextTrack.current = text?.id ?? null;
-                }} onApply={setDraft} onAsset={(asset, role) => editTrack(() => {
+                }} onAsset={(asset, role) => editTrack(() => {
                   const result = addTrack(draft, asset, role, lastTextTrack.current ?? undefined);
                   setTarget(result.id);
-                  const added = result.draft.tracks!.find((track) => track.id === result.id)!;
+                  const added = result.draft.tracks.find((track) => track.id === result.id)!;
                   if (isTextTarget(added.target)) { setTextTarget(added.target); lastTextTrack.current = added.id; }
                   return result.draft;
                 })} />
@@ -193,7 +191,7 @@ export function TemplateWorkspace({ selection = null, onHome }: {
               <div className="min-w-0 border-y bg-muted/30 @min-[680px]:border-y-0">
                 <MasterVideoInput key={`${environment}:${current?.template_id ?? draft.name}`} media={media} onChange={setMedia} />
                 <TemplatePreview draft={draft} media={media} onCatalog={setCatalog} selectedId={target} onSelect={selectTarget} onRangeChange={(id, start, end) => editTrack(() => setTrackRange(draft, id, start, end, media))} />
-                <AppliedEffects draft={draft} catalog={catalog} selected={target} onSelect={selectTarget} />
+                <AppliedEffects draft={draft} selected={target} onSelect={selectTarget} />
               </div>
               {selectedTrack && <div className="min-w-0 @min-[680px]:col-span-2 @min-[680px]:border-t @min-[1000px]:col-span-1 @min-[1000px]:border-l @min-[1000px]:border-t-0">
                 <TrackTiming track={selectedTrack} duration={previewDuration(draft, media)} onChange={(timing) => editTrack(() => setTrackTiming(draft, selectedTrack.id, timing))} />

@@ -6,24 +6,8 @@ use std::{fs, io::Write, path::Path};
 use tauri::Manager;
 use uuid::Uuid;
 
-/// 校验完整编辑草稿并从随包目录生成效果快照；不接受调用方提供的路径、时间或渲染参数。
-fn validate_legacy(mut draft: Value, allow_empty: bool) -> Result<Value, String> {
-    if draft.as_object().is_none_or(|fields| fields.len() != 4) {
-        return Err("模板字段不完整或包含未知字段".into());
-    }
-    for (key, max, required) in [("name", 100, true), ("description", 1000, false)] {
-        let text = draft[key]
-            .as_str()
-            .ok_or("名称和说明必须是文字")?
-            .trim()
-            .to_owned();
-        if (required && text.is_empty()) || text.chars().count() > max {
-            return Err("模板名称或说明长度不合法".into());
-        }
-        draft[key] = json!(text);
-    }
-    number(&draft["transition_duration_seconds"], 0.1, 3.0, false)?;
-    let editor = &draft["editor"];
+/// 校验对象编辑参数并从随包目录生成效果快照。
+fn validate_editor(editor: &Value) -> Result<Vec<Value>, String> {
     if editor.as_object().is_none_or(|fields| fields.len() != 33) {
         return Err("编辑配置字段不完整或包含未知字段".into());
     }
@@ -108,21 +92,38 @@ fn validate_legacy(mut draft: Value, allow_empty: bool) -> Result<Value, String>
             effects.push(asset);
         }
     }
-    if effects.is_empty() && !allow_empty {
-        return Err("请至少选择一个效果".into());
-    }
-    draft["effect_ids"] = effects.iter().map(|item| item["id"].clone()).collect();
-    draft["effects"] = json!(effects);
-    Ok(draft)
+    Ok(effects)
 }
 
 /// 多轨保存校验时间规则、唯一 ID 与所属对象，模板不包含视频信息。
 fn validate(mut draft: Value) -> Result<Value, String> {
-    let object = draft.as_object_mut().ok_or("模板须为对象")?;
-    let tracks = object.remove("tracks").filter(|value| !value.is_null());
-    let mut result = validate_legacy(draft, tracks.is_some())?;
-    if let Some(tracks) = tracks {
-        let items = tracks.as_array().ok_or("轨道须为数组")?;
+    let object = draft.as_object().ok_or("模板须为对象")?;
+    if object.len() != 4
+        || ![
+            "name",
+            "description",
+            "transition_duration_seconds",
+            "tracks",
+        ]
+        .iter()
+        .all(|key| object.contains_key(*key))
+    {
+        return Err("模板字段不完整或包含未知字段".into());
+    }
+    for (key, max, required) in [("name", 100, true), ("description", 1000, false)] {
+        let text = draft[key]
+            .as_str()
+            .ok_or("名称和说明必须是文字")?
+            .trim()
+            .to_owned();
+        if (required && text.is_empty()) || text.chars().count() > max {
+            return Err("模板名称或说明长度不合法".into());
+        }
+        draft[key] = json!(text);
+    }
+    number(&draft["transition_duration_seconds"], 0.1, 3.0, false)?;
+    let effects = {
+        let items = draft["tracks"].as_array().ok_or("轨道须为数组")?;
         if items.len() > 100 {
             return Err("轨道数量不能超过 100".into());
         }
@@ -166,14 +167,8 @@ fn validate(mut draft: Value) -> Result<Value, String> {
                     return Err("转场位置、时长或数量无效".into());
                 }
             }
-            let validated = validate_legacy(
-                json!({
-                    "name": result["name"], "description": "", "editor": track["editor"],
-                    "transition_duration_seconds": 0.5
-                }),
-                true,
-            )?;
-            let editor = &validated["editor"];
+            let editor = &track["editor"];
+            let validated = validate_editor(editor)?;
             let mut allowed = vec![target.to_owned()];
             if ["title", "subtitle", "bubble"].contains(&target) {
                 allowed = vec![if target == "bubble" {
@@ -220,7 +215,7 @@ fn validate(mut draft: Value) -> Result<Value, String> {
                     return Err("轨道包含其他对象的效果".into());
                 }
             }
-            for asset in validated["effects"].as_array().ok_or("效果目录无效")? {
+            for asset in &validated {
                 if !effects.contains(asset) {
                     effects.push(asset.clone());
                 }
@@ -229,11 +224,11 @@ fn validate(mut draft: Value) -> Result<Value, String> {
         if effects.is_empty() {
             return Err("请至少选择一个效果".into());
         }
-        result["effect_ids"] = effects.iter().map(|item| item["id"].clone()).collect();
-        result["effects"] = json!(effects);
-        result["tracks"] = tracks;
-    }
-    Ok(result)
+        effects
+    };
+    draft["effect_ids"] = effects.iter().map(|item| item["id"].clone()).collect();
+    draft["effects"] = json!(effects);
+    Ok(draft)
 }
 
 /// IPC 数值边界：拒绝 null、非有限数、越界和小数字号。
@@ -399,7 +394,7 @@ mod tests {
 
     /// 完整合法草稿，明确覆盖三种文字、所有位置和时长字段。
     fn draft(name: &str) -> Value {
-        let mut editor = json!({"title": "标题", "subtitle": "字幕", "bubbleText": "气泡", "titleFlower": "", "subtitleFlower": "", "bubble": "", "filter": "", "vfx": "", "transition": ""});
+        let mut editor = json!({"title": "标题", "subtitle": "", "bubbleText": "", "titleFlower": "", "subtitleFlower": "", "bubble": "", "filter": "", "vfx": "", "transition": ""});
         for role in ["title", "subtitle", "bubble"] {
             for (suffix, value) in [
                 ("Size", 40.),
@@ -415,7 +410,9 @@ mod tests {
             }
         }
         editor["titleIn"] = json!("in/fade_in");
-        json!({"name": name, "description": "  说明  ", "editor": editor, "transition_duration_seconds": 0.5})
+        json!({"name": name, "description": "  说明  ", "tracks": [
+            {"id": "title", "target": "title", "start_mode": "seconds", "start": 0, "duration": null, "editor": editor}
+        ], "transition_duration_seconds": 0.5})
     }
 
     #[test]
@@ -459,14 +456,14 @@ mod tests {
         let saved = operate(&dir.0, "save", None, Some(draft("保留"))).unwrap();
         for (pointer, value) in [
             ("/name", json!(" ")),
-            ("/editor/titleSize", json!(12.5)),
-            ("/editor/titleX", json!(101)),
-            ("/editor/titleInDuration", Value::Null),
-            ("/editor/titleIn", json!("in/unknown")),
-            ("/editor/titleLoop", json!("loop/bounce")),
-            ("/editor/titleFlower", json!("filter/fake")),
+            ("/tracks/0/editor/titleSize", json!(12.5)),
+            ("/tracks/0/editor/titleX", json!(101)),
+            ("/tracks/0/editor/titleInDuration", Value::Null),
+            ("/tracks/0/editor/titleIn", json!("in/unknown")),
+            ("/tracks/0/editor/titleLoop", json!("loop/bounce")),
+            ("/tracks/0/editor/titleFlower", json!("filter/fake")),
             ("/transition_duration_seconds", json!(0)),
-            ("/editor/title", json!("题".repeat(61))),
+            ("/tracks/0/editor/title", json!("题".repeat(61))),
         ] {
             let mut invalid = draft("错误");
             *invalid.pointer_mut(pointer).unwrap() = value;
@@ -480,8 +477,8 @@ mod tests {
         assert!(operate(&dir.0, "unknown", None, None).is_err());
         assert_eq!(operate(&dir.0, "list", None, None).unwrap(), json!([saved]));
         let mut boundary = draft("边界");
-        boundary["editor"]["titleSize"] = json!(12);
-        boundary["editor"]["titleX"] = json!(100);
+        boundary["tracks"][0]["editor"]["titleSize"] = json!(12);
+        boundary["tracks"][0]["editor"]["titleX"] = json!(100);
         boundary["transition_duration_seconds"] = json!(3);
         assert!(operate(&dir.0, "save", None, Some(boundary)).is_ok());
     }
@@ -491,9 +488,7 @@ mod tests {
     fn multiple_tracks_survive_reload() {
         let dir = Directory::new();
         let mut value = draft("多轨模板");
-        let mut editor = value["editor"].clone();
-        editor["subtitle"] = json!("");
-        editor["bubbleText"] = json!("");
+        let editor = value["tracks"][0]["editor"].clone();
         value["tracks"] = json!([
             {"id": "title-a", "target": "title", "start_mode": "percent", "start": 25, "duration": 3, "editor": editor},
             {"id": "title-b", "target": "title", "start_mode": "seconds", "start": 200, "duration": null, "editor": editor}
@@ -503,6 +498,7 @@ mod tests {
         assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), saved);
         assert_eq!(saved["tracks"], value["tracks"]);
         assert!(saved.get("media").is_none());
+        assert!(saved.get("editor").is_none());
         assert_eq!(saved["effect_ids"], json!(["in/fade_in"]));
         for (field, invalid) in [
             ("duration", json!(0)),
@@ -521,6 +517,43 @@ mod tests {
         assert_eq!(updated["tracks"].as_array().unwrap().len(), 1);
         assert_eq!(updated["tracks"][0]["id"], "title-b");
         assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), updated);
+    }
+
+    #[test]
+    /// 保存与真实文件读取都要求对象数组，格式错误不改写现有记录。
+    fn rejects_unsupported_template_format() {
+        let dir = Directory::new();
+        let value = draft("对象模板");
+        let saved = operate(&dir.0, "save", None, Some(value.clone())).unwrap();
+        let id = saved["template_id"].as_str().unwrap();
+        let path = dir.0.join("templates.json");
+        let original = fs::read(&path).unwrap();
+        for kind in ["missing-tracks", "null-tracks", "top-editor"] {
+            let mut rejected = value.clone();
+            match kind {
+                "missing-tracks" => {
+                    rejected.as_object_mut().unwrap().remove("tracks");
+                }
+                "null-tracks" => rejected["tracks"] = Value::Null,
+                _ => rejected["editor"] = value["tracks"][0]["editor"].clone(),
+            }
+            assert!(operate(&dir.0, "save", None, Some(rejected.clone())).is_err());
+            assert!(operate(&dir.0, "save", Some(id), Some(rejected.clone())).is_err());
+            assert_eq!(fs::read(&path).unwrap(), original);
+            let mut invalid_record = saved.clone();
+            invalid_record.as_object_mut().unwrap().remove("tracks");
+            invalid_record
+                .as_object_mut()
+                .unwrap()
+                .extend(rejected.as_object().unwrap().clone());
+            let bytes = serde_json::to_vec(&json!([invalid_record])).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            assert!(operate(&dir.0, "list", None, None).is_err());
+            assert!(operate(&dir.0, "save", Some(id), Some(value.clone())).is_err());
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            fs::write(&path, &original).unwrap();
+        }
+        assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), saved);
     }
 
     #[test]

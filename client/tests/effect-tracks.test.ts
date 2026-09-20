@@ -1,8 +1,9 @@
 /** 多轨核心测试：真实目录、草稿变更、SDK 时间范围和保存数据；执行 bun run test。 */
 import { expect, test } from "bun:test";
-import { draftEffects, newDraft, toDraft, type Template, type EffectTrack } from "@/features/templates/model";
+import { defaultEditor, draftEffects, newDraft, toDraft, type Template, type EffectTrack } from "@/features/templates/model";
+import { sampleDraft } from "./fixtures";
 import { readCatalog } from "@/features/templates/sdk";
-import { addTrack, previewDuration, removeTrack, resolveTrack, setTrackRange, setTrackTiming, trackDraft, updateTrack, withTracks } from "@/features/templates/tracks";
+import { addTrack, previewDuration, removeTrack, resolveTrack, setTrackRange, setTrackTiming, trackDraft, updateTrack } from "@/features/templates/tracks";
 import { removeTarget, resetTextTarget } from "@/features/templates/effects";
 import { buildPreviewRows, buildTimeline } from "@/features/templates/timeline";
 import timingCases from "../../server/tests/template_timing_cases.json";
@@ -32,7 +33,8 @@ test("新对象采用 IMS 时间默认值并保留已设置的时长", () => {
 
 // 场景：空对象列表经过初始化和 SDK 转换仍为空；添加及序列化只包含用户选择的效果。
 test("空模板预览和保存配置只包含手动添加的对象", () => {
-  const empty = withTracks({ ...newDraft(), tracks: [] });
+  const empty = newDraft();
+  expect(empty).not.toHaveProperty("editor");
   expect(empty.tracks).toEqual([]);
   expect(draftEffects(empty)).toEqual([]);
   const preview = buildTimeline(empty, catalog);
@@ -41,7 +43,7 @@ test("空模板预览和保存配置只包含手动添加的对象", () => {
   expect(buildPreviewRows(preview)).toHaveLength(1);
   const added = addTrack(empty, vfx, "title");
   expect(added.draft.tracks?.map((track) => track.target)).toEqual(["vfx"]);
-  const restored = withTracks(JSON.parse(JSON.stringify(added.draft)));
+  const restored = JSON.parse(JSON.stringify(added.draft));
   expect(restored.tracks).toEqual(added.draft.tracks!);
   expect(draftEffects(restored)).toEqual([vfx.id]);
   expect(removeTrack(restored, added.id).tracks).toEqual([]);
@@ -51,14 +53,14 @@ test("空模板预览和保存配置只包含手动添加的对象", () => {
 // 场景：前后端共用输入和预期结果，逐例说明百分比、截止时间及帧取整的作用。
 for (const item of timingCases) test(item.purpose, () => {
   if (item.mode !== "seconds" && item.mode !== "percent") throw new Error("用例开始方式无效");
-  const track: EffectTrack = { ...withTracks(newDraft()).tracks[0], start_mode: item.mode, start: item.start, duration: item.length };
+  const track: EffectTrack = { ...sampleDraft().tracks[0], start_mode: item.mode, start: item.start, duration: item.length };
   const result = resolveTrack(track, item.duration, item.fps);
   expect([result.start, result.end]).toEqual([item.expected_start, item.expected_end]);
 });
 
 // 场景：两个文字动画至少各占一帧，模板保留原时长，预览使用缩短后的副本。
 test("动画副本按可用帧数缩短并拒绝无法容纳的区间", () => {
-  const track = withTracks(newDraft()).tracks[0];
+  const track = sampleDraft().tracks[0];
   track.editor.titleIn = "in/fade_in";
   track.editor.titleOut = "out/fade_out";
   track.duration = 0.2;
@@ -70,7 +72,7 @@ test("动画副本按可用帧数缩短并拒绝无法容纳的区间", () => {
 
 // 场景：重复添加同类特效保留独立 ID、时间和 SDK 效果轨，目录 ID 只保存一次。
 test("重复特效独立存在并按指定范围进入 SDK", () => {
-  const first = addTrack(withTracks(newDraft()), vfx, "title");
+  const first = addTrack(sampleDraft(), vfx, "title");
   const second = addTrack(first.draft, vfx, "title");
   expect(first.id).not.toBe(second.id);
   const draft = setTrackRange(setTrackRange(second.draft, first.id, 1, 4), second.id, 3, 8);
@@ -86,7 +88,7 @@ test("重复特效独立存在并按指定范围进入 SDK", () => {
 
 // 场景：参数编辑和删除只作用于指定实例，先前草稿和其他对象保持不变。
 test("删除实例不会清除其他同类效果", () => {
-  const first = addTrack(withTracks(newDraft()), vfx, "title");
+  const first = addTrack(sampleDraft(), vfx, "title");
   const second = addTrack(first.draft, vfx, "title");
   const current = second.draft.tracks!.find((track) => track.id === first.id)!;
   const before = JSON.stringify(second.draft);
@@ -98,7 +100,7 @@ test("删除实例不会清除其他同类效果", () => {
 
 // 场景：时间轴拒绝非法区间；短文字的动画在应用时缩短，模板参数保留。
 test("时间边界和动画时长在 SDK 更新前校验", () => {
-  const draft = withTracks(newDraft());
+  const draft = sampleDraft();
   const motion = catalog.find((asset) => asset.id === "in/fade_in")!;
   const animated = addTrack(draft, motion, "title", "title").draft;
   for (const [start, end] of [[NaN, 3], [3, 2], [-1, 2], [0, 11]])
@@ -112,7 +114,7 @@ test("时间边界和动画时长在 SDK 更新前校验", () => {
 
 // 场景：保存内容只含时间规则；同一模板独立应用到长视频，序列化保留参数和 ID。
 test("多轨序列化与预览媒体相互独立", () => {
-  const added = addTrack(withTracks(newDraft()), vfx, "title");
+  const added = addTrack(sampleDraft(), vfx, "title");
   const media = { url: "https://example.com/master.mp4", duration: 24, width: 1080, height: 1920 };
   const draft = setTrackTiming(added.draft, "title", { start_mode: "seconds", start: 12, duration: 8 });
   const saved: Template = { ...draft, template_id: "id", effect_ids: draftEffects(draft), effects: [vfx], created_at: "2026-01-01", updated_at: "2026-01-01" };
@@ -130,7 +132,7 @@ test("多轨序列化与预览媒体相互独立", () => {
 // 场景：转场范围对应母版两个片段的重叠时间，替换转场保留唯一切换位置。
 test("转场对应两个母版片段", () => {
   const transition = catalog.find((asset) => asset.category === "transition/normal")!;
-  const added = addTrack(withTracks(newDraft()), transition, "title");
+  const added = addTrack(sampleDraft(), transition, "title");
   const draft = setTrackTiming(added.draft, added.id, { start_mode: "seconds", start: 3, duration: 1 });
   const timeline = buildTimeline(draft, catalog);
   expect(timeline.VideoTracks[0].VideoTrackClips.map((clip) => [clip.In, clip.Out, clip.TimelineIn, clip.TimelineOut])).toEqual([[0, 4, 0, 4], [4, 10, 3, 9]]);
@@ -145,7 +147,7 @@ test("转场对应两个母版片段", () => {
 // 场景：转场连接连续源片段，调整持续时间只改变应用结果，全长对象规则始终保留。
 test("转场使用不同源画面并按重叠时长缩短合成", () => {
   const transition = catalog.find((asset) => asset.id === "transition/normal/angular")!;
-  const original = withTracks(newDraft());
+  const original = sampleDraft();
   const media = { url: "https://example.com/master.mp4", duration: 10, width: 1920, height: 1080 };
   const added = addTrack(original, transition, "title");
   const draft = setTrackTiming(added.draft, added.id, { start_mode: "seconds", start: 5, duration: 1 });
@@ -180,7 +182,7 @@ test("转场使用不同源画面并按重叠时长缩短合成", () => {
 // 场景：短视频截短有效对象并跳过结尾以外的对象；更换视频不修改任何模板规则。
 test("更换预览视频只重新计算显示区间", () => {
   const media = { url: "https://example.com/short.mp4", duration: 4, width: 1080, height: 1920 };
-  const draft = withTracks(newDraft());
+  const draft = sampleDraft();
   expect(buildTimeline(draft, catalog, media).SubtitleTracks.map((row) => row.SubtitleTrackClips[0].TimelineOut)).toEqual([4, 4]);
   const ranged = setTrackRange(draft, "title", 2, 6);
   const original = JSON.stringify(ranged);
@@ -193,7 +195,7 @@ test("更换预览视频只重新计算显示区间", () => {
 
 // 场景：百分比随视频时长变化，时间轴移动保留百分比方式和固定持续秒数。
 test("百分比规则与时间轴修改可以往返计算", () => {
-  const draft = setTrackTiming(withTracks(newDraft()), "title", { start_mode: "percent", start: 25, duration: 3 });
+  const draft = setTrackTiming(sampleDraft(), "title", { start_mode: "percent", start: 25, duration: 3 });
   for (const [duration, start] of [[20, 5], [60, 15], [120, 30]])
     expect(resolveTrack(draft.tracks![0], duration)).toMatchObject({ start, end: start + 3 });
   const moved = setTrackRange(draft, "title", 6, 9, { url: "https://example.com/video.mp4", duration: 20, width: 1920, height: 1080 });
@@ -203,7 +205,7 @@ test("百分比规则与时间轴修改可以往返计算", () => {
 
 // 场景：调整持续到结束对象的左侧位置保留结束规则，缩短右侧位置改为固定持续时间。
 test("时间轴分别处理开始位置和结束位置", () => {
-  const draft = withTracks(newDraft());
+  const draft = sampleDraft();
   const left = setTrackRange(draft, "title", 2, 10);
   expect(left.tracks![0]).toMatchObject({ start: 2, duration: null });
   expect(setTrackRange(left, "title", 2, 8).tracks![0]).toMatchObject({ start: 2, duration: 6 });
@@ -217,7 +219,7 @@ test("时间轴分别处理开始位置和结束位置", () => {
 
 // 场景：非法百分比、持续时间和数值直接报错；固定秒数允许超过预览时长。
 test("规则校验独立于预览视频", () => {
-  const draft = withTracks(newDraft());
+  const draft = sampleDraft();
   for (const timing of [
     { start_mode: "percent" as const, start: 100, duration: 3 },
     { start_mode: "seconds" as const, start: -1, duration: 3 },
@@ -232,7 +234,7 @@ test("规则校验独立于预览视频", () => {
 
 // 场景：结尾以外的对象仍验证真实效果目录，未知效果不能通过不显示规则隐藏。
 test("跳过显示的对象仍校验效果引用", () => {
-  const added = addTrack(withTracks(newDraft()), vfx, "title");
+  const added = addTrack(sampleDraft(), vfx, "title");
   const draft = setTrackTiming(added.draft, added.id, { start_mode: "seconds", start: 100, duration: 3 });
   draft.tracks!.find((track) => track.id === added.id)!.editor.vfx = "vfx/normal/unknown";
   expect(() => buildTimeline(draft, catalog)).toThrow("效果不在对应目录");
@@ -241,7 +243,7 @@ test("跳过显示的对象仍校验效果引用", () => {
 // 场景：重置气泡样式保留该文字实例及其时间，仍可生成基础文字预览。
 test("重置文字实例保留轨道", () => {
   const asset = catalog.find((item) => item.category === "bubble")!;
-  const added = addTrack(withTracks(newDraft()), asset, "title");
+  const added = addTrack(sampleDraft(), asset, "title");
   const track = added.draft.tracks!.find((item) => item.id === added.id)!;
   const reset = updateTrack(added.draft, track.id, resetTextTarget(trackDraft(added.draft, track), "bubble"));
   expect(reset.tracks!.find((item) => item.id === track.id)?.editor.bubbleText).toBe("超值特惠");
@@ -250,11 +252,11 @@ test("重置文字实例保留轨道", () => {
 
 // 场景：移除文字后通过花字资产重新添加获得独立实例，其余文字参数保留。
 test("文字通过资产重新添加并保留其他对象", () => {
-  const draft = withTracks(newDraft());
+  const draft = sampleDraft();
   const asset = catalog.find((item) => item.category === "flower")!;
   const added = addTrack(removeTrack(draft, "title"), asset, "title");
   expect(added.id).not.toBe("title");
   expect(added.draft.tracks!.find((track) => track.id === "subtitle")).toEqual(draft.tracks[1]);
-  expect(added.draft.tracks!.find((track) => track.id === added.id)?.editor.title).toBe(newDraft().editor.title);
+  expect(added.draft.tracks!.find((track) => track.id === added.id)?.editor.title).toBe(defaultEditor.title);
   expect(added.draft.tracks!.find((track) => track.id === added.id)?.editor.titleFlower).toBe(asset.id);
 });

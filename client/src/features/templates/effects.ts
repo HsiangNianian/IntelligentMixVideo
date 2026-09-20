@@ -1,5 +1,5 @@
 /** 资产分类、编辑对象和效果变更规则；左侧资产与右侧表单共同生成可保存的模板草稿。 */
-import { defaultEditor, defaultTransitionDuration, effectGroups, textRoles, type Category, type Draft, type EffectAsset, type EffectKey, type TextRole } from "./model";
+import { defaultEditor, defaultTransitionDuration, effectGroups, textRoles, type Category, type EffectDraft, type EffectAsset, type EffectKey, type TextRole } from "./model";
 
 /** 编辑对象对应现有模板字段；文字对象共享花字、位置和动画设置。 */
 export const effectTargets = { ...textRoles, filter: "视频滤镜", vfx: "画面特效", transition: "镜头转场" } as const;
@@ -40,7 +40,7 @@ export function assetField(category: Category, role: TextRole): EffectKey {
 }
 
 /** 修改效果时修复被清除动画的无效时长，保留已经合法的时长。 */
-export function changeEffects(draft: Draft, values: Partial<Record<EffectKey, string>>): Draft {
+export function changeEffects(draft: EffectDraft, values: Partial<Record<EffectKey, string>>): EffectDraft {
   const editor = { ...draft.editor, ...values };
   for (const field of Object.keys(values) as EffectKey[]) {
     if (values[field] || !(field.endsWith("In") || field.endsWith("Out"))) continue;
@@ -53,7 +53,7 @@ export function changeEffects(draft: Draft, values: Partial<Record<EffectKey, st
 }
 
 /** 把目录资产分配到真实字段；动画互斥由调用方展示，函数仍拒绝非法组合。 */
-export function applyAsset(draft: Draft, asset: EffectAsset, role: TextRole): { draft: Draft; target: EffectTarget } {
+export function applyAsset(draft: EffectDraft, asset: EffectAsset, role: TextRole): { draft: EffectDraft; target: EffectTarget } {
   const category = asset.category;
   const field = assetField(category, role);
   const target = field === "bubble" || field === "filter" || field === "vfx" || field === "transition" ? field : role;
@@ -72,7 +72,7 @@ export function applyAsset(draft: Draft, asset: EffectAsset, role: TextRole): { 
 }
 
 /** 列出可编辑的画面对象及已选择效果，包括尚未加载的历史效果。 */
-export function appliedTargets(draft: Draft): EffectTarget[] {
+export function appliedTargets(draft: EffectDraft): EffectTarget[] {
   return (Object.keys(effectTargets) as EffectTarget[]).filter((target) => {
     if (target === "title" || target === "subtitle")
       return Boolean(draft.editor[target].trim()) || targetEffectKeys(target).some((key) => draft.editor[key]);
@@ -81,7 +81,7 @@ export function appliedTargets(draft: Draft): EffectTarget[] {
 }
 
 /** 清除当前文字对象的样式与动画，并恢复全部文字参数；其他对象和模板信息保持不变。 */
-export function resetTextTarget(draft: Draft, target: TextRole): Draft {
+export function resetTextTarget(draft: EffectDraft, target: TextRole): EffectDraft {
   const next = changeEffects(draft, Object.fromEntries(targetEffectKeys(target).map((key) => [key, ""])));
   const textKey = target === "bubble" ? "bubbleText" : target;
   next.editor[textKey] = defaultEditor[textKey];
@@ -94,7 +94,7 @@ export function resetTextTarget(draft: Draft, target: TextRole): Draft {
 }
 
 /** 移除对象及其效果；其他对象的文字、动画与位置保持不变。 */
-export function removeTarget(draft: Draft, target: EffectTarget): Draft {
+export function removeTarget(draft: EffectDraft, target: EffectTarget): EffectDraft {
   const next = changeEffects(draft, Object.fromEntries(targetEffectKeys(target).map((key) => [key, ""])));
   if (isTextTarget(target)) {
     next.editor[target === "bubble" ? "bubbleText" : target] = "";

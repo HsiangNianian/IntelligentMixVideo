@@ -159,16 +159,13 @@ class TemplateData(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     name: str = Field(min_length=1, max_length=100)
     description: str = Field(default="", max_length=1000)
-    editor: EffectTemplateEditor
     effect_ids: list[str] = Field(min_length=1, max_length=500)
     transition_duration_seconds: float = Field(default=1, ge=0.1, le=3, allow_inf_nan=False)
-    tracks: list[EffectTrack] | None = Field(default=None, max_length=100)
+    tracks: list[EffectTrack] = Field(max_length=100)
 
     @model_validator(mode="after")
     def validate_tracks(self) -> "TemplateData":
         """对象 ID 唯一，转场保留单个切换位置；时间规则独立于视频。"""
-        if self.tracks is None:
-            return self
         if len({track.id for track in self.tracks}) != len(self.tracks):
             raise ValueError("轨道 ID 重复")
         if sum(track.target == "transition" for track in self.tracks) > 1:
@@ -184,7 +181,7 @@ class TemplateSave(TemplateData):
     @model_validator(mode="after")
     def validate_effects(self) -> "TemplateSave":
         """拒绝重复 ID、未知效果和编辑配置不一致，参数只在服务端解析。"""
-        selections = [track.editor.selected_effects() for track in self.tracks] if self.tracks is not None else [self.editor.selected_effects()]
+        selections = [track.editor.selected_effects() for track in self.tracks]
         if len(self.effect_ids) != len(set(self.effect_ids)):
             raise ValueError("同一个特效不能重复添加")
         if {value for selected in selections for value in selected.values()} != set(self.effect_ids):

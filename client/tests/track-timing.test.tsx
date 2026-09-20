@@ -3,15 +3,15 @@ import { expect, test } from "bun:test";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { TrackTiming } from "@/features/templates/TrackTiming";
-import { newDraft } from "@/features/templates/model";
-import { setTrackTiming, withTracks } from "@/features/templates/tracks";
+import { sampleDraft } from "./fixtures";
+import { setTrackTiming } from "@/features/templates/tracks";
 
 /** 使用真实编辑函数保存表单规则，输出模板供断言检查。 */
 function TimingEditor() {
-  const [draft, setDraft] = useState(() => withTracks(newDraft()));
+  const [draft, setDraft] = useState(sampleDraft);
   const [error, setError] = useState("");
   return <><TrackTiming track={draft.tracks[0]} duration={20} onChange={(timing) => {
-    try { setDraft(withTracks(setTrackTiming(draft, "title", timing))); setError(""); }
+    try { setDraft(setTrackTiming(draft, "title", timing)); setError(""); }
     catch (reason) { setError((reason as Error).message); }
   }} /><output data-testid="draft">{JSON.stringify(draft.tracks[0])}</output>{error && <p role="alert">{error}</p>}</>;
 }
@@ -80,7 +80,7 @@ test("视频结束后没有可自动填入的固定时长", () => {
 
 // 场景：切换对象显示其独立规则；视频时长变化只更新计算结果，不再次修改规则。
 test("切换对象和预览时长保留各自时间规则", () => {
-  const draft = withTracks(newDraft());
+  const draft = sampleDraft();
   const selected = { ...draft.tracks[1], start_mode: "percent" as const, start: 50, duration: null };
   const changes: unknown[] = [];
   const view = render(<TrackTiming track={draft.tracks[0]} duration={20} onChange={(value) => changes.push(value)} />);

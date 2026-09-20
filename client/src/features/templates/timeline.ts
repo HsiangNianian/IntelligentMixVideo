@@ -2,15 +2,15 @@
 import {
   effectGroups,
   type Draft,
+  type Editor,
   type EffectAsset,
   type EffectKey,
   type TextRole,
   type MasterVideo,
 } from "./model";
 import type { TimelineAction, TimelineRow } from "@xzdarcy/timeline-engine";
-import { defaultEditor } from "./model";
-import { isTextTarget } from "./effects";
-import { previewDuration, resolveTrack, trackDraft, trackLabel } from "./tracks";
+import { isTextTarget, type EffectTarget } from "./effects";
+import { previewDuration, resolveTrack, trackLabel } from "./tracks";
 
 /** 预览轨道保留源素材范围，缩略图采样使用源时间，游标使用预览时间。 */
 export interface PreviewClip extends TimelineAction {
@@ -81,15 +81,8 @@ function number(
   return value;
 }
 
-/** 生成十秒组合预览，转场重叠量使用已保存时长；空文字不会生成轨道。 */
-function buildLegacyTimeline(draft: Draft, catalog: EffectAsset[], target?: string) {
-  // 空配置回退到原示例；URL 原生解析支持本地路径，避免重复编码已转义的直链。
-  const video = new URL(
-    import.meta.env.VITE_PREVIEW_VIDEO_URL?.trim() ||
-      "https://ice-pub-media.myalicdn.com/vod-demo/最美中国纪录片-智能字幕.mp4",
-    window.location.origin,
-  ).href;
-  const config = draft.editor;
+/** 从单个对象参数生成文字或效果，校验目录引用及数值范围。 */
+function buildTrackContent(config: Editor, catalog: EffectAsset[], target: EffectTarget) {
   const byId = new Map(catalog.map((item) => [item.id, item]));
   // 效果类别与字段绑定，拒绝错误类别及未知目录条目。
   const effect = (key: EffectKey): Effect => {
@@ -142,48 +135,13 @@ function buildLegacyTimeline(draft: Draft, catalog: EffectAsset[], target?: stri
       ...(role === "bubble" ? { Width: 0.5 } : {}),
     };
   };
-  const effects: Effect[] = [{ Type: "Volume", Gain: 0 }];
-  if (config.filter) effects.push({ Type: "Filter", ...effect("filter") });
-  if (config.vfx) effects.push({ Type: "VFX", ...effect("vfx") });
-  const overlap = config.transition
-    ? number(draft.transition_duration_seconds, 0.1, 3, "转场时长")
-    : 0;
-  // 仅转场需要两个视频元素；普通预览复用单一素材，降低逐帧纹理上传开销。
-  const clip = (start: number, end: number, timelineIn: number) => ({
-    Type: "Video",
-    MediaURL: video,
-    In: start,
-    Out: end,
-    TimelineIn: timelineIn,
-    TimelineOut: timelineIn + end - start,
-    Width: 0.9999,
-    Height: 0.9999,
-    AdaptMode: "Cover",
-    Effects: [...effects],
-  });
-  let clips;
-  if (config.transition) {
-    // 片段一在第 5 秒后延伸 overlap 秒，片段二从第 5 秒开始，形成真实重叠。
-    const first = clip(0, 5 + overlap, 0);
-    first.Effects.push({
-      Type: "Transition",
-      Duration: overlap,
-      ...effect("transition"),
-    });
-    clips = [first, clip(8, 13, 5)];
-  } else {
-    clips = [clip(0, 10, 0)];
-  }
-  const texts = [text("title"), text("subtitle")];
-  if (config.bubble || target === "bubble") texts.push(text("bubble"));
+  if (!isTextTarget(target) && !config[target]) throw new Error("特效轨道缺少效果");
   return {
-    VideoTracks: [{ VideoTrackClips: clips }],
-    SubtitleTracks: [
-      { SubtitleTrackClips: texts.filter((item) => item.Content.trim()) },
-    ],
-    AudioTracks: [],
-    AspectRatio: "16:9",
-    FECanvas: { Width: 800, Height: 450 },
+    text: isTextTarget(target) ? text(target) : undefined,
+    effect: isTextTarget(target) ? undefined : {
+      Type: target === "transition" ? "Transition" : target === "filter" ? "Filter" : "VFX",
+      ...effect(target),
+    } as Effect,
   };
 }
 
@@ -192,15 +150,22 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media?: Mast
   const previewRows: (Omit<TimelineRow, "actions"> & { actions: PreviewClip[] })[] = [];
   const EffectTracks: { EffectTrackItems: Effect[] }[] = [];
   const notices: string[] = [];
-  if (!draft.tracks) return { ...buildLegacyTimeline(draft, catalog), EffectTracks, previewRows, notices };
+  if ("editor" in draft || !Array.isArray(draft.tracks)) throw new Error("模板格式不支持，请重新创建模板");
   const duration = previewDuration(draft, media);
-  const empty = { ...draft, tracks: undefined, editor: { ...defaultEditor, title: "", subtitle: "", bubbleText: "" } };
-  const timeline = buildLegacyTimeline(empty, catalog);
-  timeline.SubtitleTracks = [];
-  const video = timeline.VideoTracks[0].VideoTrackClips[0];
-  if (media) video.MediaURL = media.url;
-  video.Out = media?.duration ?? 10;
-  video.TimelineOut = duration;
+  const video = {
+    Type: "Video", MediaURL: media?.url ?? new URL(
+      import.meta.env.VITE_PREVIEW_VIDEO_URL?.trim() || "https://ice-pub-media.myalicdn.com/vod-demo/最美中国纪录片-智能字幕.mp4",
+      window.location.origin,
+    ).href,
+    In: 0, Out: media?.duration ?? 10, TimelineIn: 0, TimelineOut: duration,
+    Width: 0.9999, Height: 0.9999, AdaptMode: "Cover",
+    Effects: [{ Type: "Volume", Gain: 0 }] as Effect[],
+  };
+  const timeline = {
+    VideoTracks: [{ VideoTrackClips: [video] }],
+    SubtitleTracks: [] as { SubtitleTrackClips: NonNullable<ReturnType<typeof buildTrackContent>["text"]>[] }[],
+    AudioTracks: [], AspectRatio: "16:9", FECanvas: { Width: 800, Height: 450 },
+  };
   const seen = new Set<string>();
   let transitionCount = 0;
   for (const source of draft.tracks) {
@@ -209,16 +174,15 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media?: Mast
     const track = { ...source, ...applied };
     if (!track.id || seen.has(track.id)) throw new Error("特效轨道 ID 必须唯一");
     seen.add(track.id);
-    const view = trackDraft(draft, track);
-    const resolved = buildLegacyTimeline(view, catalog, track.target);
+    const resolved = buildTrackContent(track.editor, catalog, track.target);
     if (track.end <= track.start) continue;
     if (isTextTarget(track.target)) {
-      const text = resolved.SubtitleTracks[0].SubtitleTrackClips[0];
-      if (!text) throw new Error("文字轨道内容不能为空");
+      const text = resolved.text;
+      if (!text?.Content.trim()) throw new Error("文字轨道内容不能为空");
       timeline.SubtitleTracks.push({ SubtitleTrackClips: [{ ...text, TimelineIn: track.start, TimelineOut: track.end }] });
     } else if (track.target === "transition") {
       if (++transitionCount > 1) throw new Error("当前母版的两个片段只允许一个转场");
-      const effect = resolved.VideoTracks[0].VideoTrackClips[0].Effects.find((item) => item.Type === "Transition");
+      const effect = resolved.effect;
       if (!effect) throw new Error("转场轨道缺少效果");
       effect.Duration = Math.round((track.end - track.start) * 30) / 30;
       // 源素材首尾相接，播放区间重叠；第二个片段在合成结束时读到源素材末尾。
@@ -227,7 +191,7 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media?: Mast
         { ...video, In: track.end, TimelineIn: track.start, Effects: [...video.Effects] },
       ];
     } else {
-      const effect = resolved.VideoTracks[0].VideoTrackClips[0].Effects.find((item) => item.Type === (track.target === "filter" ? "Filter" : "VFX"));
+      const effect = resolved.effect;
       if (!effect) throw new Error("特效轨道缺少效果");
       EffectTracks.push({ EffectTrackItems: [{ ...effect, TimelineIn: track.start, TimelineOut: track.end }] });
     }
