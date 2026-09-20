@@ -126,6 +126,7 @@ try {
     return route.fulfill({ status: 404 });
   });
   await page.goto(url);
+  await page.getByRole("tab", { name: "Remotion 字效", exact: true }).click();
   await page.getByRole("button", { name: /温暖的电影标题/ }).click();
   await page.getByRole("button", { name: "预览 V2", exact: true }).waitFor();
   await page
@@ -180,6 +181,7 @@ try {
   );
   assert(pref);
   await page.reload();
+  await page.getByRole("tab", { name: "Remotion 字效", exact: true }).click();
   await page.getByRole("button", { name: "预览 V2", exact: true }).waitFor();
   assert.equal(
     await page.evaluate(() => localStorage.getItem("imv.remotion.layout")),
@@ -298,6 +300,7 @@ try {
   );
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.reload();
+  await page.getByRole("tab", { name: "Remotion 字效", exact: true }).click();
   await page.getByRole("button", { name: "新增聊天" }).waitFor();
   assert(
     Math.abs(
