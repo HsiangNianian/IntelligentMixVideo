@@ -15,7 +15,7 @@ from server.remotion_templates.models import GenerateTemplateRequest, JobError, 
 from server.remotion_templates.routes import router
 from server.remotion_templates.runtime import Runtime
 from server.remotion_templates.store import Conflict, Store
-from server.settings import Settings
+from server.remotion_templates.settings import Settings
 
 
 @pytest.fixture
@@ -39,7 +39,7 @@ def history_app(history_store):
             actor_model="offline",
             vision_model="offline",
         ),
-        notify=lambda: None,
+        notify=lambda *args: None,
     )
     return app
 
@@ -93,7 +93,7 @@ def test_public_history_tracks_inputs_and_hides_repairs(history_store):
     assert store.work_events(work.id, cursor) == []
     store.update(job.id, status="needs_input", questions=["标题写什么？"])
     runtime = Runtime(store, None, None)
-    runtime.notify = lambda: None
+    runtime.notify = lambda *args: None
     answer_job = runtime.retry(job.id, "春日快乐")
     store.update(
         answer_job.id,

@@ -8,7 +8,7 @@ import pytest
 from pydantic import SecretStr, ValidationError
 from server.remotion_templates.models import DialogueOutput
 from server.remotion_templates.provider import Budget, ModelFailure, Provider
-from server.settings import Settings
+from server.remotion_templates.settings import Settings
 
 
 def test_model_budget_defaults_and_env_precedence(tmp_path, monkeypatch):

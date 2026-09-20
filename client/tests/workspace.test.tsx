@@ -268,7 +268,7 @@ test.each(["云端", "本地"])("切换%s模板库后保留字效会话并继续
     // 隐藏期间通过原订阅完成同一任务；切回不重新创建或重复建立连接。
     await waitFor(() => expect(fake.streams.size).toBe(1));
     await act(async () => fake.advance(remotionJob()));
-    await waitFor(()=>expect(screen.getByLabelText("模板 TSX 代码").textContent).toContain("export default"), {timeout:2500});
+    await waitFor(()=>expect(screen.getByLabelText("成功版本 V1")).toBeTruthy(), {timeout:2500});
     fireEvent.mouseDown(screen.getByRole("tab", {name: "Remotion 字效"}), {button: 0});
     expect(within(screen.getByRole("log")).queryByText("保留这个任务") !== null).toBe(true);
     expect(screen.getByLabelText<HTMLTextAreaElement>("字效描述").value).toBe("未发送草稿");
@@ -406,4 +406,28 @@ test.each(["云端", "本地"])("页签切换保留%s模板草稿及未保存保
   } finally {
     restore();
   }
+});
+
+// 场景：设置弹窗关闭丢弃设置草稿，后台聊天草稿保留，模板库没有提前加载。
+test("设置弹窗保留工作区并丢弃未保存设置", async () => {
+  process.env.IMV_DEBUG = "true";
+  remotionServer(path => {
+    if (path === "/api/settings/plugins") return Response.json([
+      { id: "segmentation", name: "文案切片", schema: { properties: { model: { type: "string", title: "切片模型" } } } },
+    ]);
+  });
+  render(<HomePage />);
+  fireEvent.change(screen.getByLabelText("字效描述"), { target: { value: "保留聊天草稿" } });
+  fireEvent.click(screen.getByRole("button", { name: "设置" }));
+  const dialog = await screen.findByRole("dialog", { name: "设置" });
+  fireEvent.mouseDown(await within(dialog).findByRole("tab", { name: "文案切片" }), { button: 0 });
+  fireEvent.change(within(dialog).getByLabelText("切片模型"), { target: { value: "未保存草稿" } });
+  fireEvent.click(within(dialog).getByRole("button", { name: "关闭" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(screen.getByLabelText<HTMLTextAreaElement>("字效描述").value).toBe("保留聊天草稿");
+  fireEvent.click(screen.getByRole("button", { name: "设置" }));
+  const reopened = await screen.findByRole("dialog", { name: "设置" });
+  fireEvent.mouseDown(await within(reopened).findByRole("tab", { name: "文案切片" }), { button: 0 });
+  expect(within(reopened).getByLabelText<HTMLInputElement>("切片模型").value).toBe("");
+  expect(fetchMock.mock.calls.some(call => String(call[0]).endsWith("/template"))).toBe(false);
 });

@@ -1,4 +1,4 @@
-/** Remotion HTTP 客户端；请求有超时，写入不自动重试，服务密钥始终留在服务端。 */
+/** Remotion HTTP 客户端；请求有超时，写入不自动重试，模型凭据从客户端读取并仅随模型任务与能力查询发送。 */
 import type {
   Composition,
   Job,
@@ -7,16 +7,12 @@ import type {
   Version,
   WorkPage,
 } from "./model";
-
-const base =
-  (import.meta.env.VITE_API_URL?.trim() || "http://localhost:20070").replace(
-    /\/+$/,
-    "",
-  ) + "/api/templates";
+import { readSettings } from "@/features/settings/api";
+import { apiBase } from "@/lib/api-base";
 
 /** 拼接当前服务内的已知路径，避免将下载请求发送到响应提供的其他来源。 */
 export function apiUrl(path: string): string {
-  return base + path;
+  return apiBase() + "/api/templates" + path;
 }
 
 /** 读取 JSON 或代码文本；中断与网络失败保留由调用方维护的草稿。 */
@@ -34,10 +30,7 @@ async function request<T>(
     const response = await fetch(apiUrl(path), {
       ...options,
       signal: controller.signal,
-      headers:
-        typeof options.body === "string"
-          ? { "Content-Type": "application/json" }
-          : undefined,
+      headers: { ...(typeof options.body === "string" ? { "Content-Type": "application/json" } : {}), ...options.headers },
     });
     if (!response.ok) {
       throw new Error(
@@ -66,11 +59,17 @@ async function request<T>(
   }
 }
 
-/** 能力查询不携带凭据，供空白会话显示服务就绪状态。 */
+/** 每次模型操作读取已保存快照；头部不会进入作品、聊天或任务输入的持久化。 */
+async function modelRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const config = (await readSettings()).remotion_agent;
+  return request(path, { ...options, headers: config ? { "X-Remotion-Config": encodeURIComponent(JSON.stringify(config)) } : undefined });
+}
+
+/** 按当前客户端模型配置查询就绪状态，省略配置时使用服务端默认值。 */
 export function capabilities(
   signal?: AbortSignal,
 ): Promise<{ models_configured: boolean }> {
-  return request("/capabilities", { signal });
+  return modelRequest("/capabilities", { signal });
 }
 /** 上传参考图片；浏览器负责 multipart 边界，图片不作为背景视频。 */
 export function upload(
@@ -87,7 +86,7 @@ export function create(
   asset?: string,
   composition?: Composition,
 ): Promise<{ work: { id: string }; job: Job }> {
-  return request("/works", {
+  return modelRequest("/works", {
     method: "POST",
     body: JSON.stringify({
       ...(description.trim() ? { description: description.trim() } : {}),
@@ -106,7 +105,7 @@ export function message(
     reply_to_job_id?: string;
   },
 ): Promise<Job> {
-  return request(`/works/${encodeURIComponent(work)}/messages`, {
+  return modelRequest(`/works/${encodeURIComponent(work)}/messages`, {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -115,7 +114,7 @@ export function message(
 export function version(id: string, signal?: AbortSignal): Promise<Version> {
   return request(`/versions/${encodeURIComponent(id)}`, { signal });
 }
-/** 复制与代码浮板使用同一份带默认参数的服务端导出。 */
+/** 聊天版本卡片复制对应成功版本的完整默认参数导出。 */
 export function exported(id: string, signal?: AbortSignal): Promise<string> {
   return request(
     `/versions/${encodeURIComponent(id)}/artifacts/Export.tsx`,
@@ -123,13 +122,20 @@ export function exported(id: string, signal?: AbortSignal): Promise<string> {
     true,
   );
 }
+/** 恢复当前作品的全部成功版本；内部候选不会进入该接口。 */
+export function versions(
+  work: string,
+  signal?: AbortSignal,
+): Promise<Version[]> {
+  return request(`/works/${encodeURIComponent(work)}/versions`, { signal });
+}
 /** 取消可重复调用；不删除之前的成功版本。 */
 export function cancel(id: string): Promise<Job> {
   return request(`/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" });
 }
 /** 由用户明确重试已结束任务，避免网络故障产生重复生成。 */
 export function retry(id: string): Promise<Job> {
-  return request(`/jobs/${encodeURIComponent(id)}/retry`, { method: "POST" });
+  return modelRequest(`/jobs/${encodeURIComponent(id)}/retry`, { method: "POST" });
 }
 
 /** 获取历史列表；每页只含轻量会话元数据。 */

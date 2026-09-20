@@ -86,6 +86,24 @@ test("manual or unavailable baseline checks everything; API errors fail closed",
   await assert.rejects(planCi(api, context("push")), /GitHub unavailable/);
 });
 
+// 手动事件默认运行真实集成测试；关闭与打包参数同时支持 API 字符串和布尔值。
+test("manual integration and packaging are explicit and never affect push or PR", async () => {
+  for (const value of [false, "false"]) {
+    const event = context("workflow_dispatch");
+    event.payload.inputs = { "integration-tests": value, "build-installers": "true" };
+    const plan = await planCi(github(), event, () => null);
+    assert.equal(plan.integration, false);
+    assert.equal(plan.mode, "package");
+  }
+  for (const eventName of ["push", "pull_request"]) {
+    const event = context(eventName);
+    event.payload.inputs = { "integration-tests": "true", "build-installers": "true" };
+    const plan = await planCi(github(), event, () => null);
+    assert.equal(plan.integration, false);
+    assert.equal(plan.mode, "check");
+  }
+});
+
 test("Git scope covers deletions, renames, Unicode, initial and force pushes", () => {
   const dir = mkdtempSync(join(tmpdir(), "imv-ci-scope-"));
   const git = (args) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -125,6 +143,11 @@ test("aggregate rejects failures, cancellations and accidentally skipped require
     assert.throws(() => assertCiResults({ ...needs, client: { result } }), /client/);
   }
   assert.throws(() => assertCiResults({ ...needs, scope: { result: "failure" } }), /scope/);
+  const integration = { ...needs, scope: { result: "success", outputs: { ...needs.scope.outputs, integration: "true" } } };
+  assertCiResults({ ...integration, integration: { result: "success" } });
+  for (const result of ["failure", "cancelled", "skipped"]) {
+    assert.throws(() => assertCiResults({ ...integration, integration: { result } }), /integration/);
+  }
 });
 
 test("workflow keeps PR gate unfiltered and packaging exclusive to package mode", () => {
@@ -135,11 +158,29 @@ test("workflow keeps PR gate unfiltered and packaging exclusive to package mode"
   assert.equal(validation.jobs.result.if, "always()");
   assert(validation.jobs.result.name.includes("'CI result'"));
   assert(validation.jobs.result.name.includes("'Push result'"));
-  assert.deepEqual(validation.jobs.result.needs.sort(), ["scope", "hygiene", "tooling", "client", "server", "desktop"].sort());
+  assert.deepEqual(validation.jobs.result.needs.sort(), ["scope", "hygiene", "tooling", "client", "server", "desktop", "integration"].sort());
   assert.equal(build.on.push, undefined);
   assert.equal(build.on.pull_request, undefined);
   assert.equal(build.on.workflow_call.inputs["build-mode"].default, "package");
   for (const name of ["Build desktop installers", "Upload installers"]) {
     assert.equal(build.jobs.build.steps.find((step) => step.name === name).if, "inputs.build-mode != 'check'");
   }
+});
+
+// 独立服务只有手动入口调度，重型测试失败必须阻止最终检查通过；凭证只属于临时数据库。
+test("integration uses isolated services, locked dependencies and real renderer checks", () => {
+  const validation = Bun.YAML.parse(readFileSync(".github/workflows/validation.yml", "utf8"));
+  const integration = Bun.YAML.parse(readFileSync(".github/workflows/backend-integration.yml", "utf8"));
+  assert.equal(validation.on.workflow_dispatch.inputs["integration-tests"].default, true);
+  assert.equal(validation.jobs.integration.if, "needs.scope.outputs.integration == 'true'");
+  assert.deepEqual(Object.keys(integration.on), ["workflow_call"]);
+  const job = integration.jobs.integration;
+  assert.equal(job.services.mysql.image, "mysql:8.4");
+  const run = job.steps.find((step) => step.name === "Test real MySQL and renderer");
+  assert.equal(run.env.IMV_TEST_MYSQL, "1");
+  assert.equal(run.env.IMV_TEST_RENDERER, "1");
+  assert(run.run.includes("--locked"));
+  assert(run.run.includes("test_mysql_integration.py"));
+  assert(run.run.includes("test_remotion_templates.py"));
+  assert.equal(job.steps.find((step) => step.name === "Upload integration evidence").if, "always()");
 });

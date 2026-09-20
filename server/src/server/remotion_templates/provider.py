@@ -14,7 +14,7 @@ import httpx
 from PIL import Image
 from pydantic import BaseModel, ValidationError
 
-from ..settings import Settings
+from .settings import Settings
 from .context import AssistantMessage, Conversation
 
 Output = TypeVar("Output", bound=BaseModel)

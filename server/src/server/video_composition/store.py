@@ -77,11 +77,11 @@ def _record(row) -> dict:
     return result
 
 
-def create(request: dict, output: dict, callback_base_url: str | None = None, raw_request: dict | None = None) -> dict:
+def create(request: dict, output: dict, callback_base_url: str | None = None, raw_request: dict | None = None, *, task_id: str | None = None) -> dict:
     """事务保存请求的基础地址供后台生成回调 URL；旧任务可缺省，重复 POST 使用新 ID。"""
     now = datetime.now(BEIJING)
     record = dict(
-        task_id=str(uuid4()), status="queued", stage="queued", version=0,
+        task_id=task_id or str(uuid4()), status="queued", stage="queued", version=0,
         data={"request": request, "raw_request": raw_request if raw_request is not None else request,
               "output": output, "callback_base_url": callback_base_url, "storage_timezone": "Asia/Shanghai"}, created_at=now, updated_at=now,
     )

@@ -66,7 +66,7 @@ def test_local_client_cors(client: TestClient, origin: str, method: str) -> None
     response = client.options("/template", headers={
         "Origin": origin,
         "Access-Control-Request-Method": method,
-        "Access-Control-Request-Headers": "Content-Type",
+        "Access-Control-Request-Headers": "Content-Type, X-Remotion-Config, X-IMS-Config",
     })
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == origin
@@ -108,6 +108,7 @@ def test_api_documentation(client: TestClient) -> None:
         "/", "/users/", "/users/{user_id}", "/template", "/template/{template_id}", "/segmentations",
         "/api/v1/video-compositions", "/api/v1/video-compositions/{task_id}",
         "/api/v1/video-compositions/{task_id}/segment-match-callback",
+        "/api/settings/plugins",
     }
     parameter = schema["paths"]["/users/{user_id}"]["get"]["parameters"][0]
     assert parameter["name"] == "user_id"

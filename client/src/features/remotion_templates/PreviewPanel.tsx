@@ -141,11 +141,16 @@ export function PreviewPanel({
   return (
     <section
       aria-label="实时预览"
-      className="flex min-h-0 flex-col rounded-2xl border bg-card p-5 shadow-sm"
+      className="flex min-h-0 min-w-0 flex-col rounded-xl border bg-card p-4"
     >
-      <div className="mb-4 flex items-center gap-2 text-sm font-medium">
+      <div className="mb-3 flex flex-wrap items-center gap-2 text-sm font-medium">
         <Film className="size-4" />
         实时预览
+        {version && (
+          <span className="rounded bg-accent px-1.5 py-0.5 text-[10px] text-primary">
+            V{version.number}
+          </span>
+        )}
         <span className="ml-auto text-xs font-normal text-muted-foreground">
           {c ? `${c.width} × ${c.height} · ${c.fps} fps` : "视频背景 + 字效"}
         </span>
@@ -168,7 +173,9 @@ export function PreviewPanel({
           加载
         </Button>
       </form>
-      <div className="relative flex min-h-40 flex-1 items-center justify-center overflow-hidden rounded-xl bg-muted/50">
+      <div
+        className="relative flex min-h-40 flex-1 items-center justify-center overflow-hidden rounded-lg border border-dashed bg-muted/40"
+      >
         {version ? (
           <iframe
             ref={frame}
@@ -177,7 +184,7 @@ export function PreviewPanel({
             allow="autoplay; fullscreen"
             allowFullScreen
             referrerPolicy="no-referrer"
-            className="size-full min-h-40 border-0"
+            className="h-full w-full border-0"
           />
         ) : (
           <div className="px-6 py-12 text-center">

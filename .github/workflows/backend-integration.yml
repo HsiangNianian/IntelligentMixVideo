@@ -1,0 +1,108 @@
+# 由手动验证调用：使用临时 MySQL 和真实 Linux 渲染器，不读取生产密钥或调用云端模型。
+name: Test backend integration
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    name: MySQL and isolated Remotion rendering
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: ci-only-password
+          MYSQL_ROOT_HOST: "%"
+        ports:
+          - 3306/tcp
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 --silent"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: '3.12'
+          enable-cache: true
+          cache-dependency-glob: server/uv.lock
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: client/package.json
+      - name: Install media and sandbox dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-noto-cjk bubblewrap util-linux
+      - name: Set up Chromium
+        id: chrome
+        uses: browser-actions/setup-chrome@v2
+        with:
+          chrome-version: stable
+          install-dependencies: true
+      - name: Install locked backend dependencies
+        run: uv sync --locked --project server
+      - name: Install locked renderer dependencies
+        working-directory: server/src/server/remotion
+        run: bun install --frozen-lockfile
+      - name: Verify runtime and namespace support
+        env:
+          CHROME_PATH: ${{ steps.chrome.outputs.chrome-path }}
+        run: |
+          mkdir -p integration-results
+          {
+            uv run --locked --project server python --version
+            uv --version
+            node --version
+            bun --version
+            "$CHROME_PATH" --version
+            ffmpeg -version
+            ffprobe -version
+            bwrap --version
+            prlimit --version
+          } > integration-results/runtime.txt
+          test -r /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
+          test -r /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc
+          bwrap --unshare-all --ro-bind / / -- /usr/bin/true
+      - name: Test real MySQL and renderer
+        env:
+          IMV_TEST_MYSQL: '1'
+          DB_HOST: 127.0.0.1
+          DB_PORT: ${{ job.services.mysql.ports['3306'] }}
+          DB_USER: root
+          DB_PASSWORD: ci-only-password
+          IMV_TEST_RENDERER: '1'
+          IMV_BROWSER_EXECUTABLE: ${{ steps.chrome.outputs.chrome-path }}
+          IMV_FONT_REGULAR: /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
+          IMV_FONT_BOLD: /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc
+        run: >-
+          uv run --locked --project server pytest
+          server/tests/test_mysql_integration.py
+          server/tests/test_remotion_templates.py
+          -k 'mysql or real_' -v
+          --junitxml=integration-results/results.xml
+          --basetemp=integration-results/pytest
+      - name: Upload integration evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-integration-${{ github.sha }}-${{ github.run_attempt }}
+          # 只保留诊断和小样，不上传测试重复复制的字体及 Webpack bundle。
+          path: |
+            integration-results/runtime.txt
+            integration-results/results.xml
+            integration-results/pytest/**/worker.log
+            integration-results/pytest/**/renderer.json
+            integration-results/pytest/**/preview.mp4
+            integration-results/pytest/**/frame-*.png
+          if-no-files-found: warn
+          retention-days: 14

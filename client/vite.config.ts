@@ -9,6 +9,8 @@ const host = process.env.TAURI_DEV_HOST;
 /** Tauri 指定开发主机时同步 HMR 地址；Rust 文件交给 Cargo 处理。 */
 export default defineConfig(() => ({
   plugins: [react(), tailwindcss()],
+  // 与 Rust 打包共用显式开关；Vite 开发模式不会自动开启服务端设置。
+  define: { "import.meta.env.IMV_DEBUG": JSON.stringify(process.env.IMV_DEBUG ?? "false") },
   resolve: {
     alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
   },

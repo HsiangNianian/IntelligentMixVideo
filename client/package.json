@@ -1,13 +1,14 @@
 {
   "name": "intelligent-mix-video-client",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.4.1",
   "type": "module",
   "packageManager": "bun@1.4.2",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "test": "bun --no-env-file test",
+    "test:remotion-browser": "bun tests/remotion-layout.browser.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },
@@ -19,6 +20,7 @@
     "radix-ui": "^1.6.7",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "react-resizable-panels": "^4",
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {
@@ -31,6 +33,7 @@
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^6.0.2",
+    "playwright-core": "^1.63.0",
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.3",
     "vite": "^8.0.16"

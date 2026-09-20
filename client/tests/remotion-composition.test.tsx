@@ -109,6 +109,7 @@ test("自定义画布提交期间锁定且新增会话恢复默认", async () =>
     target: { value: "字效" },
   });
   fireEvent.click(screen.getByRole("button", { name: "发送" }));
+  await waitFor(() => expect(creations()).toHaveLength(1));
   expect(creations()[0].composition).toEqual({
     width: 1280,
     height: 720,
@@ -129,7 +130,7 @@ test("自定义画布提交期间锁定且新增会话恢复默认", async () =>
   expect(screen.getByLabelText<HTMLInputElement>("字效时长（秒）").value).toBe(
     "8",
   );
-  fireEvent.click(screen.getByRole("button", { name: "新增" }));
+  fireEvent.click(screen.getByRole("button", { name: "新增聊天" }));
   expect(screen.getByText("1080×1920 · 30 FPS · 5 秒（150 帧）")).toBeTruthy();
   expect(screen.getByLabelText("字效时长（秒）").hasAttribute("disabled")).toBe(
     false,
@@ -149,8 +150,7 @@ test.each([
   await workspace();
   fireEvent.change(screen.getByLabelText(label), { target: { value } });
   expect(
-    screen.getByRole<HTMLButtonElement>("button", { name: "发送" })
-      .disabled,
+    screen.getByRole<HTMLButtonElement>("button", { name: "发送" }).disabled,
   ).toBe(true);
   fireEvent.keyDown(screen.getByLabelText("字效描述"), { key: "Enter" });
   expect(creations()).toHaveLength(0);
