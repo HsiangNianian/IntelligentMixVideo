@@ -49,6 +49,7 @@ def test_create_template_contract(
     assert set(saved) == {
         "template_id", "name", "description", "editor", "effect_ids",
         "transition_duration_seconds", "effects", "created_at", "updated_at",
+        "tracks",
     }
     assert UUID(saved["template_id"]).version == 4
     assert saved["name"] == "中文模板 🎬"
@@ -72,6 +73,24 @@ def test_create_template_contract(
         assert row.template_id == saved["template_id"]
         assert row.configuration["editor"] == saved["editor"]
         assert row.configuration["effects"] == saved["effects"]
+
+
+# 场景：省略转场时长时采用 IMS 的一秒默认值，文字入出场默认值与显式时长均正确保存。
+@pytest.mark.parametrize("duration", [None, 0.5, 2])
+def test_ims_timing_defaults(client: TestClient, template_payload: dict, duration: float | None) -> None:
+    """通过真实 API 保存和读取，验证默认值与用户指定值的区别。"""
+    if duration is None:
+        template_payload.pop("transition_duration_seconds")
+    else:
+        template_payload["transition_duration_seconds"] = duration
+    response = client.post("/template", json=template_payload)
+    assert response.status_code == 201
+    saved = response.json()
+    assert saved["transition_duration_seconds"] == (1 if duration is None else duration)
+    for role in ("title", "subtitle", "bubble"):
+        assert saved["editor"][f"{role}InDuration"] == 0.5
+        assert saved["editor"][f"{role}OutDuration"] == 0.5
+    assert client.get(f"/template/{saved['template_id']}").json() == saved
 
 
 # 测试 POST 携带 ID 完整替换配置并重命名，保留 ID/创建时间并更新时间与效果快照。
@@ -99,7 +118,7 @@ def test_update_replaces_complete_configuration(
     assert saved["editor"]["subtitleSize"] == 42
     assert saved["effect_ids"] == ["in/blur_in"]
     assert [effect["id"] for effect in saved["effects"]] == ["in/blur_in"]
-    assert saved["transition_duration_seconds"] == 0.5
+    assert saved["transition_duration_seconds"] == 1
     assert datetime.fromisoformat(saved["created_at"]) == old_time.replace(tzinfo=UTC)
     assert datetime.fromisoformat(saved["updated_at"]) > old_time.replace(tzinfo=UTC)
     assert client.get(f"/template/{saved['template_id']}").json() == saved

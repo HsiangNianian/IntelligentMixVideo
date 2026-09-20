@@ -159,7 +159,7 @@ test("独立移除画面效果并管理空对象和历史效果", () => {
     draft = applyAsset(draft, asset(category), "title").draft;
   draft.transition_duration_seconds = NaN;
   const next = removeTarget(draft, "transition");
-  expect(next.transition_duration_seconds).toBe(0.5);
+  expect(next.transition_duration_seconds).toBe(1);
   expect(next.editor.filter).toBe(draft.editor.filter);
   expect(next.editor.vfx).toBe(draft.editor.vfx);
   for (const target of appliedTargets(next)) draft = removeTarget(draft, target);

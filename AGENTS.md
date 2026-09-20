@@ -56,11 +56,21 @@
 
 ## 模板功能约定
 
+- 新模板的画面对象列表为空。添加效果统一通过左侧「特效资产」进行；「画面对象与已添加特效」仅展示和选择已有对象，空列表提示从左侧添加，移除对象后也通过左侧资产重新添加。
+
+- 对象时间表单的输入和选项变化立即更新内存中的模板草稿及预览，保存模板时才写入存储。非法输入保留当前有效规则并提示，保存前检查时间输入有效性；时间输入框回车不触发保存。
+
+- 时间默认值采用 IMS 接口定义：转场 1 秒，文字入场与出场各 0.5 秒，滤镜和 VFX 从 0 秒持续到视频结束。持续方式切换为固定时长时使用当前视频剩余区间，没有有效区间时等待用户输入；已保存或手动设置的时长保留。
+
+- 客户端转场连接连续源片段，合成时长扣除重叠；预览、播放终点和对象百分比使用合成时长。视频信息由工作区独立持有，更换预览视频和修改转场只重新计算对象区间，模板规则保持不变。对象开始支持秒数或百分比，持续时间支持固定秒数或持续到结束；结尾以外不显示，结束越界时截短，动画按可用帧数缩短并显示说明，帧数不足时明确报错。回归用例位于 `client/tests/effect-tracks.test.ts` 和 `track-timing.test.tsx`，前后端共用 `server/tests/template_timing_cases.json`。
+
+- 阿里 SDK 预览下方使用 `@xzdarcy/react-timeline-editor` 展示视频和独立特效轨道。视频只读，对象可选中、移动和调整持续时间，右侧编辑时间规则；组件使用独立编辑副本，轨道从成功应用的 SDK Timeline 派生。`tracks` 保存 `id`、`target`、`start_mode`、`start`、`duration` 和 `editor`，最多 100 个实例；开始方式为 `seconds` 或 `percent`，百分比小于 100，`duration: null` 表示持续到视频结束，转场持续时间固定。相同效果可重复添加，文字动画属于选中文字；基础文字首次应用样式保留参数，重复添加生成新实例。预览媒体由工作区独立持有，模板不保存 `media`。云端和桌面校验相同时间规则、分类、动画互斥与 ID 唯一性。SDK 帧事件驱动游标，定位暂停播放，等待 `playerSeeked` 后允许继续；修改效果回到开头。缩略图采用有界缓存，错误独立重试，取消和卸载释放资源。文案合成按成片时长逐个应用对象，标题使用请求文字，字幕与关键词使用文案时间和对象区间的交集；转场按指定位置连接片段，音频总长保持不变。核心用例位于 `client/tests/effect-tracks.test.ts`、`track-timing.test.tsx`、`preview-timeline.test.tsx`、工作区测试、`server/tests/test_template_tracks.py` 和 `test_video_composition_timeline.py`。桌面真实文件测试执行 `cargo test --locked --manifest-path src-tauri/Cargo.toml --test templates_storage`，真实 SDK 验证执行 `bun tests/template-timing.browser.mjs` 和 `bun tests/preview-timeline.browser.mjs`。
+
 - 特效设置通过右上角「×」关闭，移除当前画面对象时同时关闭；`TemplateWorkspace` 使用空选中状态控制面板显示，关闭不修改草稿，桌面保留设置栏宽度，预览画面尺寸保持不变。选择对象或应用资产重新打开设置，切换页签保留关闭状态；组件与真实浏览器测试覆盖各类对象移除、重新添加、关闭后参数保留、预览尺寸和窄屏布局。
 
 - 「重置特效设置」通过 `resetTextTarget` 清除当前标题、字幕或气泡的样式与动画，并从 `defaultEditor` 恢复示例文字、字号、位置和入出场时长；保留其他对象和模板信息，不修改输入草稿或共享默认配置。纯函数与真实浏览器用例覆盖三个对象、重复重置和无效输入恢复。
 
-- 模板库采用资产、预览、参数三栏布局，顶部只读展示当前环境、模板名称、描述和保存状态，并提供保存按钮。模板选择与新建位于主页；新建名称必填、最多 100 个字符，描述最多 1000 个字符，进入编辑前去除首尾空白。尚未选择模板时展示前往主页入口，新模板也受未保存保护。工作区只读取目标详情，失败保留当前草稿并允许重试，卸载取消请求；首次保存创建记录，后续携带原 ID 更新。`EffectAssets` 按 SDK 分类展示真实目录封面并支持名称/编号搜索，文字效果显式选择作用对象；无封面或加载失败显示明确占位。`AppliedEffects` 从草稿字段生成对象列表，选择后由 `EffectEditor` 编辑独立参数；同类效果替换保留文字和位置，循环与入出场动画保持互斥。移除对象同时清除对应效果并恢复其基础数值，其他对象不变。现有标题、字幕、气泡及单个滤镜/画面特效/转场字段继续保存，预览沿用 16:9、十秒 SDK 时间线。窄屏按容器宽度重新排列，搜索回车不提交模板。新增规则测试使用随包真实目录；`bun tests/template-assets.browser.mjs` 使用真实 SDK 与媒体检查未保存编辑，`bun tests/template-save.browser.mjs` 配合 `server/tests/run_template_browser_server.py` 创建的本机独立 MySQL 数据库验证真实保存和失败恢复，启动方式见客户端 README。
+- 模板库采用资产、预览、参数三栏布局，顶部只读展示当前环境、模板名称、描述和保存状态，并提供保存按钮。模板选择与新建位于主页；新建名称必填、最多 100 个字符，描述最多 1000 个字符，进入编辑前去除首尾空白。尚未选择模板时展示前往主页入口，新模板也受未保存保护。工作区只读取目标详情，失败保留当前草稿并允许重试，卸载取消请求；首次保存创建记录，后续携带原 ID 更新。`EffectAssets` 按 SDK 分类展示真实目录封面并支持名称/编号搜索，文字效果显式选择作用对象；无封面或加载失败显示明确占位。`AppliedEffects` 从轨道实例生成对象列表，选择后由 `EffectEditor` 编辑独立参数；循环与入出场动画保持互斥，应用时按文字实际显示时间调整动画。移除对象只清除对应实例，其他对象不变。未选择预览视频时使用 16:9、十秒示例，选择后采用真实媒体信息。窄屏按容器宽度重新排列，搜索回车不提交模板。新增规则测试使用随包真实目录；`bun tests/template-assets.browser.mjs` 使用真实 SDK 与媒体检查未保存编辑，`bun tests/template-save.browser.mjs` 配合 `server/tests/run_template_browser_server.py` 创建的本机独立 MySQL 数据库验证真实保存和失败恢复，启动方式见客户端 README。
 - 云端模板库共享，不包含登录、用户隔离或旧数据迁移，配置存入 MySQL，使用 SQLAlchemy 和 PyMySQL。主页分别提供云端和本地模板的选择与新建入口，模板库展示所选环境；连接失败、超时或服务端 5xx 时提示使用桌面本地环境。桌面通过 `@tauri-apps/api/core` 的 `invoke` 调用 Tauri `local_templates` 命令，使用 `isTauri()` 判断桌面环境，不开启 `withGlobalTauri`；命令读写应用数据目录的 `data/template/templates.json`，不请求 Python 服务；浏览器本地模式明确报错。两库独立，切换复用未保存保护，目标读取失败保留原环境和草稿。本地 JSON 通过文件锁和临时文件原子替换保护；本地校验及效果快照使用随包 SDK 目录，预览仍需联网。Rust 存储测试使用临时目录，在 `client/` 执行 `cargo test --locked --manifest-path src-tauri/Cargo.toml`。
 - 数据库配置由 `database.py` 的 `DatabaseSettings`（`pydantic-settings`）自动读取固定的 `server/.env`，字段为 `DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD`、`DB_NAME`，进程环境变量优先；端口校验 1～65535，库名校验 1～64 字符。启动初始化时加载，修改后重启服务。真实环境文件不得入库，维护无密码示例 `.env.example`。
 - 启动端口、数据库、ASR、切片、Remotion 与视频合成的现有配置类继承 `config_base.py` 的 `CommonSettings`，统一读取固定的 `server/.env`；构造参数 > 进程环境变量 > 文件 > 默认值，保留 `_env_file` 覆盖与 `None` 禁用。路径仅面向当前源码布局，不做安装位置发现。保留字段、校验、实例化时机和 Remotion 相对数据目录行为，不建立配置树或统一快照；运行期间不修改配置，修改后重启服务。共用 `server/.env.example`，根目录启动使用 `uv run --project server server`。
@@ -69,7 +79,7 @@
 - 名称去除首尾空白后不能为空，MySQL 唯一约束拒绝重名（409）；保存校验数值范围、效果目录与动画互斥关系（422）。服务端生成 ID、UTC 时间和效果参数快照，不接受客户端渲染参数。
 - 主页创建草稿不调用 POST；模板库保存时无 ID 创建、有 ID 更新。未保存切换须提供保存并切换、放弃修改、取消，失败保留草稿。
 - 前端使用 SDK 5.2.2 的效果目录和静态动画 JSON，服务端维护同版本白名单；不提供 `/template/effects`。升级 SDK 时同步核对目录。保留用户已有 proto 文件，本次 API 使用 JSON。
-- 示例视频地址通过 `client/.env` 中的 `VITE_PREVIEW_VIDEO_URL` 配置，支持 HTTP(S) 直链与 public 资源路径；空值回退内置示例。修改后重启 Vite，生产使用需重新构建；当前固定片段要求源视频至少 14 秒。
+- 示例视频地址通过 `client/.env` 中的 `VITE_PREVIEW_VIDEO_URL` 配置，支持 HTTP(S) 直链与 public 资源路径；空值使用内置示例。修改后重启 Vite，生产使用需重新构建。「加载预览视频」读取真实时长和尺寸，视频信息独立于模板保存，独立视频元素在完成、失败、取消和卸载时清理。
 - 预览保留阿里云 SDK 5.2.2；Windows 生产页面通过 `src-tauri/src/localhost.rs` 在 `127.0.0.1` 的系统分配端口提供打包资源，窗口使用 `http://localhost:<端口>`，避免 `tauri.localhost` 不满足空 License 的 localhost 预览条件。仅允许对应 Host 的 GET/HEAD，不暴露任意磁盘文件；开发模式与 macOS / Linux 保持原加载方式，只向本次绑定的精确 localhost URL 开放模板、设置存储和内置后端启动命令，不授权其他端口或域名。
 - API 地址读取 `client/.env` 的 `VITE_API_URL`，未配置或留空时默认 `http://localhost:20070`；CORS 允许精确 localhost 主机的动态 HTTP 端口。修改配置后重启 Vite，生产需重新构建；避免 `.env.local` 同名配置覆盖。主页列表加载不阻塞新建，编辑保存不依赖列表，返回主页时读取最新结果。预览仍需联网获取 SDK、字体和媒体，不发起云端合成，不将浏览器验证等同于桌面安装包验证。
 

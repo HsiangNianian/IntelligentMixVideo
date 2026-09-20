@@ -11,10 +11,91 @@ function creation(name = "旅行模板", environment: "cloud" | "local" = "cloud
   return { templateId: null, environment, name, description: "适用于旅行视频" };
 }
 
+/** 从左侧真实资产创建文字对象，供后续参数编辑场景使用。 */
+async function addText(label = "顶部标题") {
+  const assets = await screen.findByRole("region", { name: "特效资产" });
+  fireEvent.click(within(assets).getByRole("button", { name: "花字" }));
+  fireEvent.keyDown(within(assets).getByRole("combobox", { name: "应用到" }), { key: "ArrowDown" });
+  fireEvent.click(screen.getByRole("option", { name: label }));
+  fireEvent.click(within(assets).getAllByRole("button", { name: /^应用花字：/ })[0]);
+}
+
+// 场景：云端和本地新模板均为空；选择作用对象不会添加，点击资产才创建独立对象。
+test.each(["cloud", "local"] as const)("%s 新模板通过左侧资产创建画面对象", async (environment) => {
+  render(<TemplateWorkspace selection={creation("空白模板", environment)} onHome={() => {}} />);
+  const applied = await screen.findByRole("region", { name: "已添加特效" });
+  expect(within(applied).queryAllByRole("button")).toHaveLength(0);
+  expect(within(applied).getByText("从左侧特效资产选择并添加效果。")).toBeTruthy();
+  expect(screen.queryByRole("region", { name: "特效设置" })).toBeNull();
+  expect(screen.queryByLabelText("轨道时间设置")).toBeNull();
+  fireEvent.keyDown(screen.getByRole("combobox", { name: "应用到" }), { key: "ArrowDown" });
+  fireEvent.click(screen.getByRole("option", { name: "底部字幕" }));
+  expect(within(applied).queryAllByRole("button")).toHaveLength(0);
+  await addText("底部字幕");
+  expect(within(applied).getAllByRole("button")).toHaveLength(1);
+  expect(within(applied).getByRole("button", { name: "编辑底部字幕", pressed: true })).toBeTruthy();
+  fireEvent.change(screen.getByLabelText("示例文字"), { target: { value: "手动添加的字幕" } });
+  await addText();
+  expect(within(applied).getAllByRole("button")).toHaveLength(2);
+  fireEvent.click(within(applied).getByRole("button", { name: "编辑底部字幕" }));
+  expect(screen.getByLabelText<HTMLInputElement>("示例文字").value).toBe("手动添加的字幕");
+  fireEvent.click(screen.getByRole("button", { name: "移除当前画面对象" }));
+  fireEvent.click(within(applied).getByRole("button", { name: "编辑顶部标题" }));
+  fireEvent.click(screen.getByRole("button", { name: "移除当前画面对象" }));
+  expect(within(applied).queryAllByRole("button")).toHaveLength(0);
+});
+
+// 场景：时间输入尚未完整时停止保存；修正后使用最新草稿继续执行模板校验。
+test("空白时间阻止保存，修正后恢复保存流程", async () => {
+  render(<TemplateWorkspace selection={creation()} onHome={() => {}} />);
+  await addText();
+  fireEvent.click(screen.getByRole("button", { name: "重置特效设置" }));
+  const input = await screen.findByLabelText("开始时间 / 秒");
+  fireEvent.change(input, { target: { value: "" } });
+  const error = "开始时间须为非负秒数，或 0% 至小于 100% 的百分比";
+  expect(screen.getByText(error)).toBeTruthy();
+  fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
+  expect(screen.getByText(error)).toBeTruthy();
+  expect(screen.queryByText("请至少选择一个效果")).toBeNull();
+  fireEvent.change(input, { target: { value: "2" } });
+  expect(screen.queryByText(error)).toBeNull();
+  fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
+  await screen.findByText("请至少选择一个效果");
+  fireEvent.click(screen.getByRole("button", { name: "关闭特效设置" }));
+  fireEvent.click(screen.getByRole("button", { name: "编辑顶部标题" }));
+  expect(screen.getByLabelText<HTMLInputElement>("开始时间 / 秒").value).toBe("2");
+});
+
+// 场景：同类特效各有独立参数面板，时间修改、非法范围与删除均保持其他实例。
+test("重复添加特效后分别设置时间并删除指定实例", async () => {
+  render(<TemplateWorkspace selection={creation()} onHome={() => {}} />);
+  await screen.findByRole("region", { name: "特效资产" });
+  const assets = screen.getByRole("region", { name: "特效资产" });
+  fireEvent.click(within(assets).getByRole("button", { name: "画面特效" }));
+  const asset = within(assets).getAllByRole("button", { name: /^应用画面特效：/ })[0];
+  fireEvent.click(asset);
+  fireEvent.change(screen.getByLabelText("开始时间 / 秒"), { target: { value: "2" } });
+  fireEvent.keyDown(screen.getByRole("combobox", { name: "持续方式" }), { key: "ArrowDown" });
+  fireEvent.click(screen.getByRole("option", { name: "固定时长" }));
+  fireEvent.change(screen.getByLabelText("持续时间 / 秒"), { target: { value: "3" } });
+  fireEvent.click(asset);
+  expect(screen.getByRole("button", { name: "编辑画面特效 2", pressed: true })).toBeTruthy();
+  expect(screen.getByLabelText<HTMLInputElement>("开始时间 / 秒").value).toBe("0");
+  fireEvent.click(screen.getByRole("button", { name: "编辑画面特效 1" }));
+  expect(screen.getByLabelText<HTMLInputElement>("开始时间 / 秒").value).toBe("2");
+  fireEvent.change(screen.getByLabelText("持续时间 / 秒"), { target: { value: "0" } });
+  expect(screen.getByText("持续时间须大于零")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "移除当前画面对象" }));
+  fireEvent.click(screen.getByRole("button", { name: "编辑画面特效" }));
+  expect(screen.getByLabelText<HTMLInputElement>("开始时间 / 秒").value).toBe("0");
+  expect(screen.getByRole("combobox", { name: "持续方式" }).textContent).toBe("持续到视频结束");
+});
+
 // 场景：设置关闭后继续保护未保存草稿，取消和保存校验失败均保留关闭状态，放弃后才进入新模板。
 test("设置关闭时仍保护模板切换，放弃后恢复新模板的编辑状态", async () => {
   const view = render(<TemplateWorkspace selection={creation()} onHome={() => {}} />);
-  await screen.findByLabelText("示例文字");
+  await addText();
+  fireEvent.click(screen.getByRole("button", { name: "重置特效设置" }));
   fireEvent.change(screen.getByLabelText("示例文字"), { target: { value: "仍需保护的标题" } });
   fireEvent.click(screen.getByRole("button", { name: "关闭特效设置" }));
   view.rerender(<TemplateWorkspace selection={creation("另一模板")} onHome={() => {}} />);
@@ -34,15 +115,17 @@ test("设置关闭时仍保护模板切换，放弃后恢复新模板的编辑�
   fireEvent.click(within(dialog).getByRole("button", { name: "放弃修改" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(screen.getByLabelText("模板名称").textContent).toBe("另一模板");
-  expect(screen.getByLabelText<HTMLInputElement>("示例文字").value).toBe("让每一帧 都有风格");
-  expect(screen.getByRole("button", { name: "编辑顶部标题", pressed: true })).toBeTruthy();
+  expect(screen.queryByLabelText("示例文字")).toBeNull();
+  expect(within(screen.getByRole("region", { name: "已添加特效" })).queryAllByRole("button")).toHaveLength(0);
 });
 
 // 场景：关闭字幕设置后应用文字资产仍使用最近的文字对象，重新打开时保留字幕参数和标题内容。
 test("关闭设置后应用资产沿用最近选择的字幕对象", async () => {
   render(<TemplateWorkspace selection={creation()} onHome={() => {}} />);
-  await screen.findByLabelText("示例文字");
-  fireEvent.click(screen.getByRole("button", { name: "编辑底部字幕" }));
+  await addText();
+  fireEvent.click(screen.getByRole("button", { name: "重置特效设置" }));
+  await addText("底部字幕");
+  fireEvent.click(screen.getByRole("button", { name: "重置特效设置" }));
   fireEvent.change(screen.getByLabelText("示例文字"), { target: { value: "保留字幕内容" } });
   fireEvent.change(screen.getByLabelText("字号"), { target: { value: "59" } });
   fireEvent.click(screen.getByRole("button", { name: "关闭特效设置" }));
@@ -60,7 +143,7 @@ test("关闭设置保留页面退出保护，卸载清理监听", async () => {
   const view = render(<TemplateWorkspace onHome={() => {}} />);
   expect(fireEvent(window, new Event("beforeunload", { cancelable: true }))).toBe(true);
   view.rerender(<TemplateWorkspace selection={creation()} onHome={() => {}} />);
-  await screen.findByLabelText("示例文字");
+  await addText();
   expect(fireEvent(window, new Event("beforeunload", { cancelable: true }))).toBe(false);
   fireEvent.click(screen.getByRole("button", { name: "关闭特效设置" }));
   expect(fireEvent(window, new Event("beforeunload", { cancelable: true }))).toBe(false);
@@ -72,6 +155,7 @@ test("关闭设置保留页面退出保护，卸载清理监听", async () => {
 test("关闭设置后保留对象和草稿，再次选择可以继续编辑", async () => {
   render(<HomePage />);
   await createFromHome();
+  await addText();
   fireEvent.change(screen.getByLabelText("示例文字"), { target: { value: "关闭后保留的标题" } });
   fireEvent.change(screen.getByLabelText("字号", { exact: true }), { target: { value: "59" } });
   fireEvent.click(screen.getByRole("button", { name: "关闭特效设置" }));
@@ -93,9 +177,13 @@ test.each([
   ["视频滤镜", "滤镜"], ["画面特效", "画面特效"], ["镜头转场", "转场"],
 ])("移除 %s 后关闭设置，再次添加 %s 可以重新编辑", async (label, category) => {
   render(<TemplateWorkspace selection={creation()} onHome={() => {}} />);
-  await screen.findByRole("region", { name: "特效设置" });
+  await screen.findByRole("region", { name: "特效资产" });
   const applied = screen.getByRole("region", { name: "已添加特效" });
-  if (label === "底部字幕") fireEvent.click(within(applied).getByRole("button", { name: "编辑底部字幕" }));
+  if (label === "底部字幕") {
+    fireEvent.keyDown(screen.getByRole("combobox", { name: "应用到" }), { key: "ArrowDown" });
+    fireEvent.click(screen.getByRole("option", { name: label }));
+  }
+  expect(within(applied).queryByRole("button", { name: /^添加/ })).toBeNull();
   const assets = screen.getByRole("region", { name: "特效资产" });
   fireEvent.click(within(assets).getByRole("button", { name: category }));
   const asset = within(assets).getAllByRole("button", { name: new RegExp(`^应用${category}：`) })[0];
@@ -105,6 +193,7 @@ test.each([
   expect(within(applied).queryByRole("button", { pressed: true })).toBeNull();
   expect(within(applied).queryByRole("button", { name: `编辑${label}`, pressed: false })).toBeNull();
   expect(asset.getAttribute("aria-pressed")).toBe("false");
+  expect(within(applied).queryByRole("button", { name: /^添加/ })).toBeNull();
   fireEvent.click(asset);
   expect(within(screen.getByRole("region", { name: "特效设置" })).getByText(label, { exact: true, selector: "p" })).toBeTruthy();
   expect(within(applied).getByRole("button", { name: `编辑${label}`, pressed: true })).toBeTruthy();
@@ -177,10 +266,11 @@ test.each(["cloud", "local"] as const)("%s 新草稿在 StrictMode 中保留来�
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
-// 场景：尚未选择效果就保存，验证失败保留创建信息与文字草稿。
+// 场景：添加文字后清除样式，保存校验失败仍保留创建信息与文字草稿。
 test("保存前校验效果，失败保留全部草稿", async () => {
   render(<TemplateWorkspace selection={creation()} onHome={() => {}} />);
-  await screen.findByRole("region", { name: "模板信息" });
+  await addText();
+  fireEvent.click(screen.getByRole("button", { name: "重置特效设置" }));
   fireEvent.change(screen.getByLabelText("示例文字"), { target: { value: "需要保留的标题" } });
   fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
   await screen.findByText("请至少选择一个效果");
@@ -193,7 +283,7 @@ test("保存前校验效果，失败保留全部草稿", async () => {
 test("重新渲染与取消新建均保留原草稿", async () => {
   const selection = creation();
   const view = render(<TemplateWorkspace selection={selection} onHome={() => {}} />);
-  await screen.findByRole("region", { name: "模板信息" });
+  await addText();
   fireEvent.change(screen.getByLabelText("示例文字"), { target: { value: "保留标题" } });
   view.rerender(<TemplateWorkspace selection={selection} onHome={() => {}} />);
   expect(screen.queryByRole("dialog")).toBeNull();
@@ -233,6 +323,7 @@ test("保存并切换失败不会替换当前新模板", async () => {
 test("主页与模板库切换保留未保存内容", async () => {
   render(<HomePage />);
   await createFromHome();
+  await addText();
   fireEvent.change(screen.getByLabelText("示例文字"), { target: { value: "保留标题" } });
   fireEvent.mouseDown(screen.getByRole("tab", { name: "主页" }), { button: 0 });
   fireEvent.mouseDown(screen.getByRole("tab", { name: "模板库" }), { button: 0 });

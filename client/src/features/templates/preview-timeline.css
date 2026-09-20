@@ -1,0 +1,30 @@
+/* 视频轨道使用应用主题；第三方刻度与游标样式仅在当前预览区域覆盖。 */
+.preview-timeline .timeline-editor {
+  background: var(--muted);
+  font-family: inherit;
+}
+
+.preview-timeline .timeline-editor-time-unit {
+  border-color: var(--border);
+}
+
+.preview-timeline .timeline-editor-time-unit-scale {
+  color: var(--muted-foreground);
+}
+
+.preview-timeline .timeline-editor-action {
+  background: transparent;
+  cursor: pointer;
+}
+
+.preview-timeline .timeline-editor-cursor {
+  border-color: var(--primary);
+}
+
+.preview-timeline .timeline-editor-cursor-top path {
+  fill: var(--primary);
+}
+
+.preview-timeline [aria-disabled="true"] {
+  opacity: 0.5;
+}

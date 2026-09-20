@@ -1,10 +1,11 @@
-"""由业务快照确定性生成 IMS Timeline；校验固定时间、模板引用和短片段效果预算。"""
+# 由业务快照生成 IMS Timeline；模板时间规则按成片时长计算，字幕保留文案来源。
 
 from math import floor
 
 from pydantic import TypeAdapter
 
-from ..template.schema import CATEGORY_PARAMETERS, Template
+from ..template.schema import CATEGORY_PARAMETERS, EffectTemplateEditor, Template
+from ..template.timing import resolve_track
 from .schema import CompositionRequest, MatchedSegment, Segment
 
 
@@ -49,26 +50,29 @@ def build_timeline(
         raise ValueError("输出尺寸或帧率无效")
     duration = duration_ms / 1000
     editor = template.editor
-    selected = editor.selected_effects()
     by_id = {item.id: item for item in template.effects}
     if len(by_id) != len(template.effects):
         raise ValueError("模板效果快照包含重复引用")
 
-    # 每个选中效果只校验一次并复用参数；即使当前没有对应文字，也不能跳过校验。
-    parameters = {}
-    for key, effect_id in selected.items():
-        category = {
-            "title_flower": "flower", "subtitle_flower": "flower", "bubble": "bubble",
-            "filter": "filter", "vfx": "vfx/normal", "transition": "transition/normal",
-        }.get(key, key.rsplit("_", 1)[-1])
-        item = by_id.get(effect_id)
-        if (
-            item is None or item.category != category or item.id not in template.effect_ids
-            or item.parameters != {CATEGORY_PARAMETERS[category]: item.effect_id}
-            or item.effect_id == "random"
-        ):
-            raise ValueError("模板效果引用、类别或参数无效")
-        parameters[key] = item.parameters
+    def parameters_for(config: EffectTemplateEditor) -> dict:
+        """逐个核对对象的可信效果快照，即使当前没有可显示区间也检查引用。"""
+        parameters = {}
+        for key, effect_id in config.selected_effects().items():
+            category = {
+                "title_flower": "flower", "subtitle_flower": "flower", "bubble": "bubble",
+                "filter": "filter", "vfx": "vfx/normal", "transition": "transition/normal",
+            }.get(key, key.rsplit("_", 1)[-1])
+            item = by_id.get(effect_id)
+            if (
+                item is None or item.category != category or item.id not in template.effect_ids
+                or item.parameters != {CATEGORY_PARAMETERS[category]: item.effect_id}
+                or item.effect_id == "random"
+            ):
+                raise ValueError("模板效果引用、类别或参数无效")
+            parameters[key] = item.parameters
+        return parameters
+
+    parameters = parameters_for(editor) if template.tracks is None else {}
 
     def video(url: str, kind: str, start: float, end: float, source_start: float) -> dict:
         """数字人源时间等于成片时间；素材从源零点起，所有视频显式静音。"""
@@ -114,23 +118,24 @@ def build_timeline(
             if seconds > 0:
                 clips[i]["Effects"].append({"Type": "DLTransition", **transition, "Duration": seconds})
 
-    def text(role: str, content: str, start: float, end: float) -> dict:
+    def text(role: str, content: str, start: float, end: float,
+             config: EffectTemplateEditor = editor, effects: dict = parameters) -> dict:
         """使用业务文字和模板样式，短入出动画同比缩短且不跨字幕区间。"""
         clip = {
             "Type": "Text", "Content": content, "TimelineIn": start,
             "TimelineOut": end, "Alignment": "Center",
-            "X": min(getattr(editor, f"{role}_x") / 100, 0.9999),
-            "Y": min(getattr(editor, f"{role}_y") / 100, 0.9999),
-            "Font": "Alibaba PuHuiTi", "FontSize": getattr(editor, f"{role}_size"),
+            "X": min(getattr(config, f"{role}_x") / 100, 0.9999),
+            "Y": min(getattr(config, f"{role}_y") / 100, 0.9999),
+            "Font": "Alibaba PuHuiTi", "FontSize": getattr(config, f"{role}_size"),
             "FontColor": "#FFFFFF", "Outline": 0, "AdaptMode": "AutoWrap",
-            **parameters.get("bubble" if role == "bubble" else f"{role}_flower", {}),
+            **effects.get("bubble" if role == "bubble" else f"{role}_flower", {}),
         }
-        timings = {motion: getattr(editor, f"{role}_{motion}_duration")
-                   for motion in ("in", "out") if f"{role}_{motion}" in selected}
+        timings = {motion: getattr(config, f"{role}_{motion}_duration")
+                   for motion in ("in", "out") if f"{role}_{motion}" in effects}
         total = sum(timings.values())
         scale = min(1, (end - start) / total) if total else 1
         for motion in ("in", "out", "loop"):
-            clip.update(parameters.get(f"{role}_{motion}", {}))
+            clip.update(effects.get(f"{role}_{motion}", {}))
             if motion in timings:
                 seconds = floor(timings[motion] * scale * 10000 + 1e-9) / 10000
                 if seconds <= 0:
@@ -138,19 +143,21 @@ def build_timeline(
                 clip[f"AaiMotion{motion.title()}"] = seconds
         return clip
 
-    subtitles, bubbles = [], []
-    for item in source:
-        subtitles.append(text("subtitle", item.text, item.start_time, item.end_time))
-        if item.keyword:
-            bubbles.append(text("bubble", item.keyword,
-                                item.start_time, item.end_time))
-    subtitle_tracks = [{"SubtitleTrackClips": subtitles}]
-    if request.title and request.title.strip():
-        subtitle_tracks.append({"SubtitleTrackClips": [text(
-            "title", request.title, source[0].start_time, source[0].end_time,
-        )]})
-    if bubbles:
-        subtitle_tracks.append({"SubtitleTrackClips": bubbles})
+    subtitle_tracks = []
+    if template.tracks is None:
+        subtitles, bubbles = [], []
+        for item in source:
+            subtitles.append(text("subtitle", item.text, item.start_time, item.end_time))
+            if item.keyword:
+                bubbles.append(text("bubble", item.keyword,
+                                    item.start_time, item.end_time))
+        subtitle_tracks = [{"SubtitleTrackClips": subtitles}]
+        if request.title and request.title.strip():
+            subtitle_tracks.append({"SubtitleTrackClips": [text(
+                "title", request.title, source[0].start_time, source[0].end_time,
+            )]})
+        if bubbles:
+            subtitle_tracks.append({"SubtitleTrackClips": bubbles})
     audio_tracks = [{"AudioTrackClips": [{
         "MediaURL": request.audio_url, "In": 0, "Out": duration,
         "TimelineIn": 0, "TimelineOut": duration,
@@ -166,7 +173,59 @@ def build_timeline(
     effects = [{"EffectTrackItems": [{"Type": kind, **parameters[key],
                                      "TimelineIn": 0, "TimelineOut": duration}]}
                for key, kind in (("filter", "Filter"), ("vfx", "VFX"))
-               if key in selected]
+               if key in parameters]
+    if template.tracks is not None:
+        for track in template.tracks:
+            track_parameters = parameters_for(track.editor)
+            applied = resolve_track(track, duration, fps)
+            if applied.notice:
+                warnings.append(f"对象 {track.id}：{applied.notice}")
+            if applied.end <= applied.start:
+                continue
+            if track.target in ("filter", "vfx"):
+                effects.append({"EffectTrackItems": [{
+                    "Type": "Filter" if track.target == "filter" else "VFX",
+                    **track_parameters[track.target], "TimelineIn": applied.start, "TimelineOut": applied.end,
+                }]})
+            elif track.target == "transition":
+                # 文案合成保持音频时间，转场关联规则指定的切换位置，连续素材在此分为两个片段。
+                boundary = applied.end
+                for index, clip in enumerate(clips):
+                    if clip["TimelineIn"] < boundary < clip["TimelineOut"]:
+                        following = {**clip, "Effects": [dict(effect) for effect in clip["Effects"]], "TimelineIn": boundary}
+                        if clip["Type"] == "Video":
+                            source_boundary = clip["In"] + boundary - clip["TimelineIn"]
+                            clip["Out"] = source_boundary
+                            following["In"] = source_boundary
+                        else:
+                            clip["Duration"] = boundary - clip["TimelineIn"]
+                            following["Duration"] = following["TimelineOut"] - boundary
+                        clip["TimelineOut"] = boundary
+                        clips.insert(index + 1, following)
+                        break
+                index = next((i for i, clip in enumerate(clips[:-1]) if abs(clip["TimelineOut"] - boundary) < 1e-8), None)
+                seconds = applied.end - applied.start
+                if index is None or min(clips[index]["TimelineOut"] - clips[index]["TimelineIn"], clips[index + 1]["TimelineOut"] - clips[index + 1]["TimelineIn"]) + 1e-8 < seconds:
+                    raise ValueError(f"转场对象 {track.id} 的相邻片段不足以容纳持续时间")
+                clips[index]["Effects"].append({"Type": "DLTransition", **track_parameters["transition"], "Duration": seconds})
+            else:
+                # 标题使用请求文字；字幕和关键词只在对象的有效区间内显示，保持业务文字来源。
+                contents = [(request.title, applied.start, applied.end)] if track.target == "title" else [
+                    (item.text if track.target == "subtitle" else item.keyword,
+                     max(item.start_time, applied.start), min(item.end_time, applied.end)) for item in source
+                ]
+                text_clips = []
+                for content, start, end in contents:
+                    if not content or not content.strip() or end <= start:
+                        continue
+                    segment_track = track.model_copy(update={"start_mode": "seconds", "start": start, "duration": end - start})
+                    segment = resolve_track(segment_track, duration, fps)
+                    if segment.notice:
+                        warnings.append(f"对象 {track.id}：{segment.notice}")
+                    if segment.end > segment.start:
+                        text_clips.append(text(track.target, content, segment.start, segment.end, segment.editor, track_parameters))
+                if text_clips:
+                    timeline["SubtitleTracks"].append({"SubtitleTrackClips": text_clips})
     if effects:
         timeline["EffectTracks"] = effects
     return timeline, warnings

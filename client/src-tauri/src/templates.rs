@@ -7,7 +7,7 @@ use tauri::Manager;
 use uuid::Uuid;
 
 /// 校验完整编辑草稿并从随包目录生成效果快照；不接受调用方提供的路径、时间或渲染参数。
-fn validate(mut draft: Value) -> Result<Value, String> {
+fn validate_legacy(mut draft: Value, allow_empty: bool) -> Result<Value, String> {
     if draft.as_object().is_none_or(|fields| fields.len() != 4) {
         return Err("模板字段不完整或包含未知字段".into());
     }
@@ -108,12 +108,132 @@ fn validate(mut draft: Value) -> Result<Value, String> {
             effects.push(asset);
         }
     }
-    if effects.is_empty() {
+    if effects.is_empty() && !allow_empty {
         return Err("请至少选择一个效果".into());
     }
     draft["effect_ids"] = effects.iter().map(|item| item["id"].clone()).collect();
     draft["effects"] = json!(effects);
     Ok(draft)
+}
+
+/// 多轨保存校验时间规则、唯一 ID 与所属对象，模板不包含视频信息。
+fn validate(mut draft: Value) -> Result<Value, String> {
+    let object = draft.as_object_mut().ok_or("模板须为对象")?;
+    let tracks = object.remove("tracks").filter(|value| !value.is_null());
+    let mut result = validate_legacy(draft, tracks.is_some())?;
+    if let Some(tracks) = tracks {
+        let items = tracks.as_array().ok_or("轨道须为数组")?;
+        if items.len() > 100 {
+            return Err("轨道数量不能超过 100".into());
+        }
+        let mut ids = std::collections::HashSet::new();
+        let mut effects: Vec<Value> = Vec::new();
+        let mut transitions = 0;
+        for track in items {
+            if track
+                .as_object()
+                .is_none_or(|fields| fields.len() != 6 || !fields.contains_key("duration"))
+            {
+                return Err("轨道字段不完整".into());
+            }
+            let id = track["id"].as_str().ok_or("轨道 ID 无效")?;
+            if id.is_empty()
+                || id.len() > 100
+                || !id
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                || !ids.insert(id)
+            {
+                return Err("轨道 ID 无效或重复".into());
+            }
+            let target = track["target"].as_str().ok_or("轨道对象无效")?;
+            if !["title", "subtitle", "bubble", "filter", "vfx", "transition"].contains(&target) {
+                return Err("轨道对象无效".into());
+            }
+            number(&track["start"], 0., f64::MAX, false)?;
+            let start = track["start"].as_f64().ok_or("轨道时间无效")?;
+            let mode = track["start_mode"].as_str().ok_or("开始方式无效")?;
+            if !["seconds", "percent"].contains(&mode) || (mode == "percent" && start >= 100.) {
+                return Err("开始方式或百分比无效".into());
+            }
+            if !track["duration"].is_null() {
+                number(&track["duration"], f64::MIN_POSITIVE, f64::MAX, false)?;
+            }
+            if target == "transition" {
+                transitions += 1;
+                let length = track["duration"].as_f64().ok_or("转场需要固定持续时间")?;
+                if transitions > 1 || start <= 0. || !(0.1..=3.).contains(&length) {
+                    return Err("转场位置、时长或数量无效".into());
+                }
+            }
+            let validated = validate_legacy(
+                json!({
+                    "name": result["name"], "description": "", "editor": track["editor"],
+                    "transition_duration_seconds": 0.5
+                }),
+                true,
+            )?;
+            let editor = &validated["editor"];
+            let mut allowed = vec![target.to_owned()];
+            if ["title", "subtitle", "bubble"].contains(&target) {
+                allowed = vec![if target == "bubble" {
+                    "bubble".into()
+                } else {
+                    format!("{target}Flower")
+                }];
+                for suffix in ["In", "Out", "Loop"] {
+                    allowed.push(format!("{target}{suffix}"));
+                }
+            } else if editor[target] == "" {
+                return Err("轨道缺少效果".into());
+            }
+            for (role, field) in [
+                ("title", "title"),
+                ("subtitle", "subtitle"),
+                ("bubble", "bubbleText"),
+            ] {
+                let content = editor[field].as_str().ok_or("文字无效")?;
+                if (role != target && !content.is_empty())
+                    || (role == target && content.trim().is_empty())
+                {
+                    return Err("轨道文字与对象不一致".into());
+                }
+            }
+            for key in [
+                "titleFlower",
+                "subtitleFlower",
+                "bubble",
+                "filter",
+                "vfx",
+                "transition",
+                "titleIn",
+                "titleOut",
+                "titleLoop",
+                "subtitleIn",
+                "subtitleOut",
+                "subtitleLoop",
+                "bubbleIn",
+                "bubbleOut",
+                "bubbleLoop",
+            ] {
+                if editor[key] != "" && !allowed.contains(&key.to_owned()) {
+                    return Err("轨道包含其他对象的效果".into());
+                }
+            }
+            for asset in validated["effects"].as_array().ok_or("效果目录无效")? {
+                if !effects.contains(asset) {
+                    effects.push(asset.clone());
+                }
+            }
+        }
+        if effects.is_empty() {
+            return Err("请至少选择一个效果".into());
+        }
+        result["effect_ids"] = effects.iter().map(|item| item["id"].clone()).collect();
+        result["effects"] = json!(effects);
+        result["tracks"] = tracks;
+    }
+    Ok(result)
 }
 
 /// IPC 数值边界：拒绝 null、非有限数、越界和小数字号。
@@ -364,6 +484,43 @@ mod tests {
         boundary["editor"]["titleX"] = json!(100);
         boundary["transition_duration_seconds"] = json!(3);
         assert!(operate(&dir.0, "save", None, Some(boundary)).is_ok());
+    }
+
+    #[test]
+    /// 时间规则从真实文件恢复，秒数不受预览限制，非法百分比或持续时间保留原记录。
+    fn multiple_tracks_survive_reload() {
+        let dir = Directory::new();
+        let mut value = draft("多轨模板");
+        let mut editor = value["editor"].clone();
+        editor["subtitle"] = json!("");
+        editor["bubbleText"] = json!("");
+        value["tracks"] = json!([
+            {"id": "title-a", "target": "title", "start_mode": "percent", "start": 25, "duration": 3, "editor": editor},
+            {"id": "title-b", "target": "title", "start_mode": "seconds", "start": 200, "duration": null, "editor": editor}
+        ]);
+        let saved = operate(&dir.0, "save", None, Some(value.clone())).unwrap();
+        let id = saved["template_id"].as_str().unwrap();
+        assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), saved);
+        assert_eq!(saved["tracks"], value["tracks"]);
+        assert!(saved.get("media").is_none());
+        assert_eq!(saved["effect_ids"], json!(["in/fade_in"]));
+        for (field, invalid) in [
+            ("duration", json!(0)),
+            ("start", json!(100)),
+            ("start_mode", json!("frames")),
+            ("id", json!("title-b")),
+            ("media", json!({})),
+        ] {
+            let mut rejected = value.clone();
+            rejected["tracks"][0][field] = invalid;
+            assert!(operate(&dir.0, "save", Some(id), Some(rejected)).is_err());
+            assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), saved);
+        }
+        value["tracks"].as_array_mut().unwrap().remove(0);
+        let updated = operate(&dir.0, "save", Some(id), Some(value)).unwrap();
+        assert_eq!(updated["tracks"].as_array().unwrap().len(), 1);
+        assert_eq!(updated["tracks"][0]["id"], "title-b");
+        assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), updated);
     }
 
     #[test]

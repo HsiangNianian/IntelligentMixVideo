@@ -40,18 +40,21 @@ try {
   async function ready() {
     await page.waitForFunction(() => {
       const region = document.querySelector('[aria-label="实时预览"]');
-      return region?.querySelector('[role="alert"]') || [...(region?.querySelectorAll("button") ?? [])].some((button) => button.textContent === "播放 / 重播" && !button.disabled);
+      return region?.querySelector('[role="alert"]') || [...(region?.querySelectorAll("button") ?? [])].some((button) => button.textContent === "播放" && !button.disabled);
     }, undefined, { timeout: 60_000 });
     assert.equal(await preview.getByRole("alert").count(), 0, await preview.innerText());
-    assert.equal(await preview.getByRole("button", { name: "播放 / 重播" }).isEnabled(), true);
+    assert.equal(await preview.getByRole("button", { name: "播放", exact: true }).isEnabled(), true);
   }
 
   // 场景：SDK 真实加载，桌面三栏从左到右排列，播放器可播放并推进时间。
+  await applied.waitFor();
+  assert.equal(await applied.getByRole("button").count(), 0);
+  await assets.getByRole("button", { name: /^应用花字：/ }).first().click();
   await ready();
   const panels = await Promise.all([assets.boundingBox(), preview.boundingBox(), inspector.boundingBox()]);
   assert(panels[0].x + panels[0].width <= panels[1].x + 1);
   assert(panels[1].x + panels[1].width <= panels[2].x + 1);
-  await preview.getByRole("button", { name: "播放 / 重播" }).click();
+  await preview.getByRole("button", { name: "播放", exact: true }).click();
   await page.waitForFunction(() => {
     const text = document.querySelector('[aria-label="实时预览"]')?.textContent ?? "";
     return /16:9 · [1-9]/.test(text);
