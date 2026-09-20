@@ -61,6 +61,7 @@ class WorkSummary(Contract):
 
     id: UUID
     title: str
+    deleting: bool = False
     updated_at: datetime
     current_version_id: UUID | None
     job: SessionJob
@@ -327,6 +328,9 @@ def work_page(db: sqlite3.Connection, cursor: str | None, limit: int) -> WorkPag
         items.append(
             WorkSummary(
                 id=work.id,
+                deleting=db.execute(
+                    "SELECT 1 FROM work_deletions WHERE work_id=?", (str(work.id),)
+                ).fetchone() is not None,
                 title=(work.request.description or "图片字效")[:40],
                 updated_at=row["activity"],
                 current_version_id=work.current_version_id,
