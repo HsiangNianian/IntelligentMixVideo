@@ -43,19 +43,19 @@ try {
   // 选择模板读取真实详情，编辑只保留在页面，取消切换后仍显示原草稿。
   await cloud.getByRole("button", { name: names[0], exact: true }).click();
   const templateName = page.getByLabel("模板名称", { exact: true });
-  await page.waitForFunction(() => document.querySelector('input[id$="-name"]')?.value.length > 0);
-  assert.equal(await templateName.inputValue(), names[0].slice("选择模板：".length));
+  await templateName.waitFor();
+  assert.equal(await templateName.textContent(), names[0].slice("选择模板：".length));
   assert.equal(await page.getByLabel("当前环境", { exact: true }).textContent(), "云端");
-  await templateName.fill("主页选择验证草稿");
+  await page.getByLabel("示例文字", { exact: true }).fill("主页选择验证草稿");
   await page.getByRole("tab", { name: "主页", exact: true }).click();
   await cloud.getByRole("button", { name: names[1], exact: true }).click();
   await page.getByRole("dialog").getByRole("button", { name: "取消", exact: true }).click();
-  assert.equal(await templateName.inputValue(), "主页选择验证草稿");
+  assert.equal(await page.getByLabel("示例文字", { exact: true }).inputValue(), "主页选择验证草稿");
   await page.getByRole("tab", { name: "主页", exact: true }).click();
   await cloud.getByRole("button", { name: names[1], exact: true }).click();
   await page.getByRole("dialog").getByRole("button", { name: "放弃修改", exact: true }).click();
   await page.getByRole("dialog").waitFor({ state: "hidden" });
-  assert.equal(await templateName.inputValue(), names[1].slice("选择模板：".length));
+  assert.equal(await templateName.textContent(), names[1].slice("选择模板：".length));
   await page.reload();
   assert.equal(await page.getByRole("tab", { name: "主页", exact: true }).getAttribute("aria-selected"), "true");
   assert.deepEqual(writes, []);

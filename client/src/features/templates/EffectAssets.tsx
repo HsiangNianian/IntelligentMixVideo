@@ -1,0 +1,103 @@
+/** 特效资产浏览与已添加对象列表；读取真实目录缩略图，选择操作更新父组件草稿和当前编辑对象。 */
+import { useId, useState } from "react";
+import { Check, Image, Plus, Type } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { cn } from "@/lib/utils";
+import { textRoles, type Category, type Draft, type EffectAsset, type TextRole } from "./model";
+import { appliedTargets, applyAsset, assetCategories, assetField, effectTargets, targetEffectKeys, type EffectTarget } from "./effects";
+
+/** 目录封面失败时展示明确占位，保留名称和选择入口。 */
+function AssetCover({ asset }: { asset: EffectAsset }) {
+  const [failed, setFailed] = useState(false);
+  return asset.preview_url && !failed ? (
+    <img src={asset.preview_url} alt="" loading="lazy" className="h-full w-full object-contain" onError={() => setFailed(true)} />
+  ) : (
+    <span className="flex flex-col items-center gap-1 text-muted-foreground">
+      <Image className="size-6" aria-hidden="true" />
+      <span className="text-[11px]">{failed ? "封面加载失败" : "暂无封面"}</span>
+    </span>
+  );
+}
+
+/** 按分类和名称浏览目录；文字资产显式选择作用对象，目录数量较多时分批展示。 */
+export function EffectAssets({ draft, catalog, textTarget, onTextTarget, onApply }: {
+  draft: Draft;
+  catalog: EffectAsset[];
+  textTarget: TextRole;
+  onTextTarget: (target: TextRole) => void;
+  onApply: (draft: Draft, target: EffectTarget) => void;
+}) {
+  const id = useId();
+  const [category, setCategory] = useState<Category>("flower");
+  const [search, setSearch] = useState("");
+  const [limit, setLimit] = useState(24);
+  const isMotion = category === "in" || category === "out" || category === "loop";
+  const role = category === "flower" && textTarget === "bubble" ? "title" : textTarget;
+  const options = catalog.filter((asset) => asset.category === category && `${asset.name} ${asset.effect_id}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
+  const conflicting = isMotion && (category === "loop" ? Boolean(draft.editor[`${role}In`] || draft.editor[`${role}Out`]) : Boolean(draft.editor[`${role}Loop`]));
+  const needsBubble = isMotion && role === "bubble" && !draft.editor.bubble;
+  const selectedField = assetField(category, role);
+  return (
+    <section aria-label="特效资产" className="flex min-w-0 flex-col gap-4 p-4">
+      <div className="flex items-center justify-between gap-2"><h2 className="font-semibold">特效资产</h2><span className="text-xs text-muted-foreground">{options.length} 项</span></div>
+      <div className="flex flex-wrap gap-1" aria-label="资产分类">
+        {(Object.keys(assetCategories) as Category[]).map((value) => (
+          <Button key={value} type="button" size="sm" variant={category === value ? "secondary" : "ghost"} aria-pressed={category === value} onClick={() => { setCategory(value); setLimit(24); }}>
+            {assetCategories[value]}
+          </Button>
+        ))}
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor={`${id}-search`}>搜索特效</Label>
+        <Input
+          id={`${id}-search`}
+          type="search"
+          placeholder="名称或编号"
+          value={search}
+          onChange={(event) => { setSearch(event.target.value); setLimit(24); }}
+          onKeyDown={(event) => { if (event.key === "Enter") event.preventDefault(); }}
+        />
+      </div>
+      {(category === "flower" || isMotion) && (
+        <div className="space-y-2"><Label htmlFor={`${id}-target`}>应用到</Label><Select value={role} onValueChange={(value) => onTextTarget(value as TextRole)}><SelectTrigger id={`${id}-target`} className="w-full"><SelectValue /></SelectTrigger><SelectContent>
+          {(Object.keys(textRoles) as TextRole[]).filter((value) => category !== "flower" || value !== "bubble").map((value) => <SelectItem key={value} value={value}>{textRoles[value]}</SelectItem>)}
+        </SelectContent></Select></div>
+      )}
+      {(conflicting || needsBubble) && <p role="status" className="text-xs text-muted-foreground">{needsBubble ? "请先添加气泡样式。" : "循环动画与入场、出场动画互斥，请在右侧清除当前动画后选择。"}</p>}
+      <div className="max-h-96 overflow-y-auto pr-1 @min-[1000px]:max-h-[65dvh]">
+        <div className="grid grid-cols-2 gap-3">
+          {options.slice(0, limit).map((asset) => {
+            const selected = draft.editor[selectedField] === asset.id;
+            return <Button key={`${asset.id}-${asset.preview_url}`} type="button" variant="ghost" className={cn("h-auto min-w-0 flex-col items-stretch gap-2 whitespace-normal rounded-lg border p-2 text-left", selected && "border-primary bg-accent")} aria-label={`应用${assetCategories[category]}：${asset.name}`} aria-pressed={selected} disabled={conflicting || needsBubble} onClick={() => { const next = applyAsset(draft, asset, role); onApply(next.draft, next.target); }}>
+              <span className="flex aspect-[4/3] items-center justify-center overflow-hidden rounded bg-muted"><AssetCover asset={asset} /></span>
+              <span className="flex items-start justify-between gap-1"><span className="min-w-0 break-all text-xs">{asset.name}</span>{selected ? <Check className="mt-0.5 size-3.5" aria-hidden="true" /> : <Plus className="mt-0.5 size-3.5" aria-hidden="true" />}</span>
+            </Button>;
+          })}
+        </div>
+        {!options.length && <p role="status" className="py-8 text-center text-sm text-muted-foreground">{search.trim() ? "没有匹配的特效" : "此分类暂无特效"}</p>}
+        {options.length > limit && <Button type="button" variant="outline" className="mt-3 w-full" onClick={() => setLimit((value) => value + 24)}>显示更多</Button>}
+      </div>
+    </section>
+  );
+}
+
+/** 从保存字段派生对象列表；选中项只影响参数面板，不修改模板。 */
+export function AppliedEffects({ draft, catalog, selected, onSelect }: {
+  draft: Draft; catalog: EffectAsset[]; selected: EffectTarget | null; onSelect: (target: EffectTarget) => void;
+}) {
+  const targets = appliedTargets(draft);
+  return <section aria-label="已添加特效" className="space-y-3 border-t bg-card p-4">
+    <div className="flex items-center justify-between"><h2 className="text-sm font-semibold">画面对象与已添加特效</h2><span className="text-xs text-muted-foreground">{targets.length} 项</span></div>
+    <div className="flex flex-wrap gap-2">{targets.map((target) => {
+      const effects = targetEffectKeys(target).map((key) => draft.editor[key]).filter(Boolean).map((value) => catalog.find((asset) => asset.id === value)?.name ?? `未载入：${value}`);
+      return <Button key={target} type="button" variant={target === selected ? "secondary" : "outline"} className={cn("h-auto min-w-0 max-w-full flex-col items-start whitespace-normal text-left", target === selected && "border border-primary")} aria-pressed={target === selected} aria-label={`编辑${effectTargets[target]}`} onClick={() => onSelect(target)}>
+        <span className="text-xs">{effectTargets[target]}</span><span className="max-w-full break-all text-xs font-normal text-muted-foreground">{effects.join(" · ") || "基础文字"}</span>
+      </Button>;
+    })}</div>
+    {!targets.length && <p className="text-sm text-muted-foreground">从左侧选择特效，或添加基础文字。</p>}
+    <div className="flex flex-wrap gap-2">{(["title", "subtitle"] as const).filter((target) => !targets.includes(target)).map((target) => <Button key={target} type="button" size="sm" variant="ghost" onClick={() => onSelect(target)}><Type aria-hidden="true" />编辑{effectTargets[target]}</Button>)}</div>
+  </section>;
+}

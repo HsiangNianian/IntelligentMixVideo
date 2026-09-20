@@ -1,7 +1,6 @@
 /** SDK 预览组件：管理单个播放器、串行更新时间线，卸载时清理订阅和异步任务。 */
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import type { Draft, EffectAsset } from "./model";
 import { loadSDK, loadPreviewFont, readCatalog, type Player } from "./sdk";
 import { buildTimeline } from "./timeline";
@@ -172,7 +171,7 @@ export function TemplatePreview({ draft, onCatalog }: Props) {
   }, [draft.editor, draft.transition_duration_seconds]);
 
   return (
-    <Card className="min-w-0 gap-4 p-5 md:sticky md:top-6">
+    <section aria-label="实时预览" className="min-w-0 space-y-4 p-4">
       <div className="flex items-center justify-between">
         <h2 className="font-semibold">实时预览</h2>
         <span className="text-xs text-muted-foreground">
@@ -186,12 +185,14 @@ export function TemplatePreview({ draft, onCatalog }: Props) {
       />
       <div className="flex flex-wrap gap-2">
         <Button
+          type="button"
           disabled={!ready}
           onClick={() => playAction.current?.(0)}
         >
           播放 / 重播
         </Button>
         <Button
+          type="button"
           variant="outline"
           disabled={!ready}
           onClick={() => {
@@ -203,6 +204,7 @@ export function TemplatePreview({ draft, onCatalog }: Props) {
           暂停
         </Button>
         <Button
+          type="button"
           variant="outline"
           disabled={!ready || !draft.editor.transition}
           onClick={() =>
@@ -225,6 +227,7 @@ export function TemplatePreview({ draft, onCatalog }: Props) {
       </p>
       {failed && (
         <Button
+          type="button"
           variant="outline"
           onClick={() =>
             player.current
@@ -239,6 +242,6 @@ export function TemplatePreview({ draft, onCatalog }: Props) {
         示例文字仅用于模板预览。首次加载需要联网获取 SDK、字体和视频；请通过
         localhost 打开，并开启浏览器硬件加速。
       </p>
-    </Card>
+    </section>
   );
 }
