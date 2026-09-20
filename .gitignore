@@ -17,3 +17,4 @@ client/src-tauri/tauri.debug.conf.json
 server/.venv/
 server/.data/
 server/src/server/remotion_templates/.data/
+.DS_Store
