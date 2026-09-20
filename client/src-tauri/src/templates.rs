@@ -257,6 +257,13 @@ fn read(directory: &Path) -> Result<Vec<Value>, String> {
             chrono::DateTime::parse_from_rfc3339(record[key].as_str().ok_or("本地模板时间缺失")?)
                 .map_err(|_| "本地模板时间无效")?;
         }
+        // 旧模板需要用户清理文件，读取期间保留原始数据。
+        if !record["tracks"].is_array() || record.get("editor").is_some() {
+            return Err(format!(
+                "本地模板字段已变化，原有模板无法读取。请删除旧模板文件后重试（将清除全部本地模板）：{}",
+                directory.join("templates.json").display()
+            ));
+        }
         let mut draft = record.clone();
         for key in [
             "template_id",
@@ -520,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    /// 保存与真实文件读取都要求对象数组，格式错误不改写现有记录。
+    /// 旧格式读取显示清理提示与文件路径，保留原文件，删除后恢复空列表。
     fn rejects_unsupported_template_format() {
         let dir = Directory::new();
         let value = draft("对象模板");
@@ -548,12 +555,20 @@ mod tests {
                 .extend(rejected.as_object().unwrap().clone());
             let bytes = serde_json::to_vec(&json!([invalid_record])).unwrap();
             fs::write(&path, &bytes).unwrap();
-            assert!(operate(&dir.0, "list", None, None).is_err());
+            assert_eq!(
+                operate(&dir.0, "list", None, None).unwrap_err(),
+                format!(
+                    "本地模板字段已变化，原有模板无法读取。请删除旧模板文件后重试（将清除全部本地模板）：{}",
+                    path.display()
+                )
+            );
             assert!(operate(&dir.0, "save", Some(id), Some(value.clone())).is_err());
             assert_eq!(fs::read(&path).unwrap(), bytes);
             fs::write(&path, &original).unwrap();
         }
         assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), saved);
+        fs::remove_file(&path).unwrap();
+        assert_eq!(operate(&dir.0, "list", None, None).unwrap(), json!([]));
     }
 
     #[test]

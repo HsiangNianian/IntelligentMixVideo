@@ -140,6 +140,7 @@ bun run build
 
 服务端核心验证执行 `uv run --locked --project server pytest server/tests/test_template_tracks.py server/tests/test_template_api.py server/tests/test_video_composition_timeline.py`（仓库根目录）。现有文案合成按成片时长应用每个对象：标题使用请求文字，字幕及关键词与文案时间取交集，重复实例保留独立参数；转场在指定位置连接片段，音频总长保持不变。桌面存储验证执行 `cargo test --locked --manifest-path src-tauri/Cargo.toml --lib templates::tests`（client 目录），使用真实文件检查规则保存与失败保护。通过 `TMPDIR` 和 pytest 的 `--basetemp` 将中间文件指向已忽略的缓存目录。
 `server/tests/test_template_tracks.py` 直接校验 Schema、默认参数、时间计算和序列化；`test_video_composition_timeline.py` 检查对象规则生成的合成时间线。
+本地模板字段变化导致旧文件无法读取时，页面会提示删除旧模板文件，并显示完整路径及清除全部本地模板的影响。关闭客户端后删除提示中的文件，重新打开客户端即可创建新模板。
 工作区测试使用真实表单、Radix 选择器和弹窗，覆盖核心编辑与草稿保护。Happy DOM 无法验证真实视频播放和 Tauri 原生行为。
 Happy DOM 的小数 step 校验与浏览器不同，保存流程直接触发表单提交；浏览器原生表单约束仍需浏览器验证。
 Windows 原生资源服务的回归测试位于 `src-tauri/src/localhost.rs`，执行 `cargo test --manifest-path src-tauri/Cargo.toml --lib --locked`，覆盖真实 HTTP 资源响应、查询参数、HEAD、错误主机与方法；原生检查 CI 同步执行。
