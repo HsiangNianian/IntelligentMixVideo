@@ -1,5 +1,6 @@
-/** 效果设置面板：以 shadcn/ui 控件编辑三个文字角色、画面和转场，不发起 API 请求。 */
+/** 选中对象的参数面板：编辑文字、动画、画面效果与转场，变更直接传回模板草稿。 */
 import { useId } from "react";
+import { X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -9,10 +10,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import {
-  defaultEditor,
   effectGroups,
   textRoles,
   type Draft,
@@ -21,6 +20,7 @@ import {
   type EffectKey,
   type TextRole,
 } from "./model";
+import { changeEffects, effectTargets, removeTarget, resetTextTarget, type EffectTarget } from "./effects";
 
 /** 带关联标签的数值控件，空值暂记 NaN，交由表单和服务端校验阻止保存。 */
 function NumberField({
@@ -122,33 +122,24 @@ function EffectSelect({
   );
 }
 
-/** 切换页签不丢失其他角色配置；循环与入出场动画通过禁用相互排斥。 */
+/** 仅显示选中对象的参数；循环与入出场动画相互排斥，其他对象的草稿保持不变。 */
 export function EffectEditor({
   draft,
   catalog,
   onChange,
+  target,
+  onClose,
 }: {
   draft: Draft;
   catalog: EffectAsset[];
   onChange: (draft: Draft) => void;
+  target: EffectTarget;
+  onClose: () => void;
 }) {
   const id = useId();
   const editor = draft.editor;
   const update = <K extends keyof Editor>(key: K, value: Editor[K]) =>
     onChange({ ...draft, editor: { ...editor, [key]: value } });
-  /** 取消动画时修复其无效时长，避免禁用的输入留下无法保存的草稿；有效设置继续保留。 */
-  const changeEffects = (values: Partial<Record<EffectKey, string>>) => {
-    const next = { ...editor, ...values };
-    for (const field of Object.keys(values) as EffectKey[]) {
-      if (values[field] || !(field.endsWith("In") || field.endsWith("Out")))
-        continue;
-      const durationKey = `${field}Duration` as `${TextRole}${"In" | "Out"}Duration`;
-      const duration = next[durationKey];
-      if (!Number.isFinite(duration) || duration < 0.1 || duration > 3)
-        next[durationKey] = defaultEditor[durationKey];
-    }
-    onChange({ ...draft, editor: next });
-  };
   const selector = (field: EffectKey, label: string, disabled = false) => (
     <EffectSelect
       key={field}
@@ -157,29 +148,22 @@ export function EffectEditor({
       editor={editor}
       catalog={catalog}
       disabled={disabled}
-      onChange={(value) => changeEffects({ [field]: value })}
+      onChange={(value) => onChange(changeEffects(draft, { [field]: value }))}
     />
   );
-  const clear = (fields: EffectKey[]) =>
-    changeEffects(Object.fromEntries(fields.map((field) => [field, ""])));
 
   return (
-    <Tabs defaultValue="title" className="gap-5">
-      <TabsList className="grid h-auto w-full grid-cols-3 gap-1 sm:grid-cols-5">
-        {Object.entries(textRoles).map(([role, label]) => (
-          <TabsTrigger key={role} value={role}>
-            {label}
-          </TabsTrigger>
-        ))}
-        <TabsTrigger value="picture">画面</TabsTrigger>
-        <TabsTrigger value="transition">转场</TabsTrigger>
-      </TabsList>
-      {(Object.keys(textRoles) as TextRole[]).map((role) => {
+    <section aria-label="特效设置" className="min-w-0 space-y-5 p-4">
+      <div className="flex items-start justify-between gap-2">
+        <div className="space-y-1"><h2 className="font-semibold">特效设置</h2><p className="text-sm text-muted-foreground" aria-live="polite">{effectTargets[target]}</p></div>
+        <Button type="button" variant="ghost" size="icon" className="size-7 shrink-0" aria-label="关闭特效设置" title="关闭特效设置" onClick={onClose}><X aria-hidden="true" /></Button>
+      </div>
+      {(Object.keys(textRoles) as TextRole[]).filter((role) => role === target).map((role) => {
         const textKey = role === "bubble" ? "bubbleText" : role;
         const styleKey =
           role === "bubble" ? "bubble" : (`${role}Flower` as const);
         return (
-          <TabsContent key={role} value={role} className="space-y-5">
+          <div key={role} className="space-y-5">
             <div className="space-y-2">
               <Label htmlFor={`${id}-${role}`}>示例文字</Label>
               <Input
@@ -191,7 +175,7 @@ export function EffectEditor({
                 onChange={(event) => update(textKey, event.target.value)}
               />
             </div>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 gap-3">
               <NumberField
                 label="字号"
                 value={editor[`${role}Size`]}
@@ -220,7 +204,7 @@ export function EffectEditor({
             {(["In", "Out"] as const).map((type, index) => (
               <div
                 key={type}
-                className="grid grid-cols-[minmax(0,1fr)_7rem] gap-3"
+                className="grid grid-cols-[minmax(0,1fr)_5.5rem] gap-3"
               >
                 {selector(
                   `${role}${type}`,
@@ -249,27 +233,18 @@ export function EffectEditor({
             <Button
               type="button"
               variant="outline"
-              onClick={() =>
-                clear([styleKey, `${role}In`, `${role}Out`, `${role}Loop`])
-              }
+              onClick={() => onChange(resetTextTarget(draft, role))}
             >
-              清除本页效果
+              重置特效设置
             </Button>
-          </TabsContent>
+          </div>
         );
       })}
-      <TabsContent value="picture" className="space-y-5">
-        {selector("filter", "视频滤镜")}
-        {selector("vfx", "画面特效")}
-        <Button
-          type="button"
-          variant="outline"
-          onClick={() => clear(["filter", "vfx"])}
-        >
-          清除画面效果
-        </Button>
-      </TabsContent>
-      <TabsContent value="transition" className="space-y-5">
+      {(target === "filter" || target === "vfx") && <div className="space-y-5">
+        {selector(target, effectTargets[target])}
+        <p className="text-xs text-muted-foreground">效果应用于整个视频，修改后将在中间预览。</p>
+      </div>}
+      {target === "transition" && <div className="space-y-5">
         {selector("transition", "镜头转场")}
         <NumberField
           label="转场时长 / 秒"
@@ -281,14 +256,8 @@ export function EffectEditor({
             onChange({ ...draft, transition_duration_seconds: value })
           }
         />
-        <Button
-          type="button"
-          variant="outline"
-          onClick={() => clear(["transition"])}
-        >
-          清除转场
-        </Button>
-      </TabsContent>
-    </Tabs>
+      </div>}
+      <Button type="button" variant="outline" className="w-full" onClick={() => { onChange(removeTarget(draft, target)); onClose(); }}>移除当前画面对象</Button>
+    </section>
   );
 }
