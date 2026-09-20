@@ -31,6 +31,7 @@ import {
 } from "./model";
 import { EffectEditor } from "./EffectEditor";
 import { TemplatePreview } from "./TemplatePreview";
+import type { TemplateSelection } from "./TemplateHome";
 
 /** 对话框只保存当前操作所需状态；null target 表示切换到新建。 */
 type Action =
@@ -38,9 +39,9 @@ type Action =
   | { type: "rename" | "copy" | "delete" };
 
 /** 使用独立草稿，只有成功保存或明确放弃才替换；所有写入串行，防止双击提交。 */
-export function TemplateWorkspace() {
+export function TemplateWorkspace({ selection = null }: { selection?: TemplateSelection | null }) {
   const id = useId();
-  const [environment, setEnvironment] = useState<api.Environment>("cloud");
+  const [environment, setEnvironment] = useState<api.Environment>(selection?.environment ?? "cloud");
   const [templates, setTemplates] = useState<Template[]>([]);
   const [current, setCurrent] = useState<Template | null>(null);
   const [draft, setDraft] = useState<Draft>(newDraft);
@@ -53,6 +54,7 @@ export function TemplateWorkspace() {
   const [action, setAction] = useState<Action | null>(null);
   const [newName, setNewName] = useState("");
   const lock = useRef(false);
+  const handledSelection = useRef<TemplateSelection | null>(null);
   const dirty = JSON.stringify(draft) !== baseline;
 
   useEffect(() => {
@@ -79,6 +81,13 @@ export function TemplateWorkspace() {
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
+
+  // 首次列表读取或写入结束后处理主页选择；每次点击只消费一次，并复用未保存保护。
+  useEffect(() => {
+    if (!selection || handledSelection.current === selection || loading || busy) return;
+    handledSelection.current = selection;
+    requestSwitch(selection.templateId, selection.environment);
+  }, [selection, loading, busy]);
 
   /** 替换当前草稿并记录保存基线；仅在成功读取、保存或明确放弃时调用。 */
   function adopt(template: Template | null) {
@@ -118,13 +127,16 @@ export function TemplateWorkspace() {
 
   /** 先读取目标库或模板再替换草稿；环境切换失败保留原库，保存仍在原环境完成。 */
   async function switchTo(target: string | null, nextEnvironment = environment) {
+    const items = nextEnvironment !== environment
+      ? await api.listTemplates(undefined, nextEnvironment)
+      : null;
+    const template = target ? await api.getTemplate(target, nextEnvironment) : null;
     if (nextEnvironment !== environment) {
-      const items = await api.listTemplates(undefined, nextEnvironment);
-      setTemplates(items);
+      setTemplates(items!);
       setEnvironment(nextEnvironment);
       setNotice("");
     }
-    adopt(target ? await api.getTemplate(target, nextEnvironment) : null);
+    adopt(template);
     setAction(null);
   }
 

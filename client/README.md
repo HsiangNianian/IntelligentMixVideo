@@ -54,10 +54,12 @@ VITE_PREVIEW_VIDEO_URL=https://your-domain.example/preview.mp4
 
 ## 模板行为
 
+启动默认进入「主页」，上方显示云端模板，下方显示本地模板。两个列表独立读取和重试；浏览器显示本地模板需要桌面客户端的提示。点击「选择模板」进入对应环境的模板库，读取最新详情后编辑。返回主页会刷新列表，已打开的模板库与字效工作区保留草稿、播放器和订阅。
+
 中等及以上窗口采用左右布局：左侧选择和配置模板，右侧预览效果并随滚动保持可见；窄屏自动改为上下排列。
 
 - 新建、选择已有模板、完整保存、重命名、另存为和确认删除。
-- 当前环境可选择本地 / 云端。桌面和浏览器均默认云端，连接失败、超时或服务端 5xx 时提示手动切换本地；本地无需 Python 或 MySQL，但需使用桌面客户端。切换前可保存到原环境、放弃修改或取消，读取目标失败保留原草稿，两库不自动同步。
+- 当前环境可选择本地 / 云端。直接进入模板库默认云端，从主页选择模板时使用所选环境。连接失败、超时或服务端 5xx 时提示手动切换本地；本地无需 Python 或 MySQL，但需使用桌面客户端。从主页选择其他模板及切换环境前，可保存到原环境、放弃修改或取消；读取目标失败保留原环境与草稿，两库不自动同步。
 - 本地文件位于 Tauri 应用数据目录下的 `data/template/templates.json`。macOS 为 `~/Library/Application Support/com.intelligentmixvideo.client/data/template/`，Windows 为 `%APPDATA%/com.intelligentmixvideo.client/data/template/`，Linux 为 `${XDG_DATA_HOME:-~/.local/share}/com.intelligentmixvideo.client/data/template/`。本地目录随首次读取自动创建，JSON 损坏时明确报错，不能当成空库覆盖。
 - 离线仍可从内置目录选择效果并保存；SDK、字体与示例视频预览仍需联网。
 - 标题、字幕、气泡独立设置文字、字号、位置、样式、入场/出场/循环动画及动画时长。
@@ -76,6 +78,7 @@ src/
   App.tsx                          # 页面组合
   pages/HomePage.tsx                # 模板首页布局
   features/templates/
+    TemplateHome.tsx               # 主页云端、本地模板列表和选择入口
     TemplateWorkspace.tsx          # 列表、草稿、保存及切换保护
     EffectEditor.tsx               # 文字、画面、转场设置控件
     TemplatePreview.tsx            # 播放器生命周期及预览操作
@@ -106,10 +109,11 @@ bun run build
 
 使用 Bun 自带运行器、Happy DOM 和 React Testing Library，测试位于 `tests/`，每个用例上方都有中文场景注释。
 `templates.test.ts` 检查草稿隔离、效果去重与预览时间线；`api.test.ts` 检查请求契约、保存前校验和错误提示；
-`workspace.test.tsx` 检查创建更新、未保存切换、保存失败重试、另存为和确认删除。
+`workspace.test.tsx` 检查主页默认入口、两个模板库的显示顺序、按环境选择、独立失败与重试、请求清理、创建更新、未保存切换、跨库详情失败保护、保存失败重试、另存为和确认删除。
 `bun run build` 同时检查源码和测试的 TypeScript 类型，CI 在前端构建前执行这些测试。
 
 测试固定 API 与示例视频地址并拦截 fetch，不需要启动后端、MySQL 或下载 SDK。
 工作区测试使用真实表单、Radix 选择器和弹窗，以轻量组件代替 SDK 播放器；不验证实际视频播放、字体排版或 Tauri 原生能力。
 Happy DOM 的小数 step 校验与浏览器不同，保存流程直接触发表单提交；浏览器原生表单约束仍需浏览器验证。
+主页真实浏览器检查执行 `bun tests/template-home.browser.mjs`，需要本机 Chrome、运行中的前端和后端，以及至少两个已有云端模板；通过 `IMV_BROWSER_URL` 指定前端地址，默认 `http://localhost:1420`。脚本只读取模板和编辑未保存草稿，验证默认主页、模板选择、取消/放弃修改与 390/768/1280 像素布局，不保存或删除模板，也不验证 Tauri 本地存储。
 Windows 原生资源服务的回归测试位于 `src-tauri/src/localhost.rs`，执行 `cargo test --manifest-path src-tauri/Cargo.toml --lib --locked`，覆盖真实 HTTP 资源响应、查询参数、HEAD、错误主机与方法；原生检查 CI 同步执行。

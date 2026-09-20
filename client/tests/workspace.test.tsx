@@ -23,7 +23,8 @@ const { default: HomePage } = await import("@/pages/HomePage");
 test("首页标题区显示时钟并保留模板工作区", async () => {
   remotionServer((path) => path === "/template" ? Response.json([]) : undefined);
   render(<HomePage />);
-  expect(screen.getByRole("region", {name: "字效聊天"})).toBeTruthy();
+  expect(screen.getByRole("tab", {name: "主页"}).getAttribute("aria-selected")).toBe("true");
+  expect(screen.queryByRole("region", {name: "字效聊天"})).toBeNull();
   fireEvent.mouseDown(screen.getByRole('tab', {name: '模板库'}), {button: 0});
   await screen.findByText("共享模板库 · 0 个模板");
   const clock = screen.getByRole("region", { name: "当前时间" });
@@ -253,6 +254,7 @@ test.each(["云端", "本地"])("切换%s模板库后保留字效会话并继续
       if (path === "/works") return Response.json({work: {id: "work-1"}, job: remotionJob("running")});
     });
     render(<HomePage />);
+    fireEvent.mouseDown(screen.getByRole("tab", {name: "Remotion 字效"}), {button: 0});
     fireEvent.change(screen.getByLabelText("字效描述"), {target: {value: "保留这个任务"}});
     fireEvent.click(screen.getByRole("button", {name: "发送"}));
     await screen.findByRole("button", {name: "停止"});
@@ -379,7 +381,7 @@ test.each(["云端", "本地"])("页签切换保留%s模板草稿及未保存保
   try {
     remotionServer((path) => path === "/template" ? Response.json([]) : undefined);
     const view = render(<HomePage />);
-    expect(fetchMock.mock.calls.some(call => String(call[0]).endsWith("/template"))).toBe(false);
+    expect(screen.queryByLabelText("模板名称")).toBeNull();
     fireEvent.mouseDown(screen.getByRole("tab", {name: "模板库"}), {button: 0});
     await screen.findByText("共享模板库 · 0 个模板");
     if (environment === "本地") {
@@ -408,15 +410,17 @@ test.each(["云端", "本地"])("页签切换保留%s模板草稿及未保存保
   }
 });
 
-// 场景：设置弹窗关闭丢弃设置草稿，后台聊天草稿保留，模板库没有提前加载。
+// 场景：设置弹窗关闭丢弃设置草稿，后台聊天草稿保留，模板编辑器没有提前加载。
 test("设置弹窗保留工作区并丢弃未保存设置", async () => {
   process.env.IMV_DEBUG = "true";
   remotionServer(path => {
+    if (path === "/template") return Response.json([]);
     if (path === "/api/settings/plugins") return Response.json([
       { id: "segmentation", name: "文案切片", schema: { properties: { model: { type: "string", title: "切片模型" } } } },
     ]);
   });
   render(<HomePage />);
+  fireEvent.mouseDown(screen.getByRole("tab", {name: "Remotion 字效"}), {button: 0});
   fireEvent.change(screen.getByLabelText("字效描述"), { target: { value: "保留聊天草稿" } });
   fireEvent.click(screen.getByRole("button", { name: "设置" }));
   const dialog = await screen.findByRole("dialog", { name: "设置" });
@@ -429,5 +433,139 @@ test("设置弹窗保留工作区并丢弃未保存设置", async () => {
   const reopened = await screen.findByRole("dialog", { name: "设置" });
   fireEvent.mouseDown(await within(reopened).findByRole("tab", { name: "文案切片" }), { button: 0 });
   expect(within(reopened).getByLabelText<HTMLInputElement>("切片模型").value).toBe("");
-  expect(fetchMock.mock.calls.some(call => String(call[0]).endsWith("/template"))).toBe(false);
+  expect(screen.queryByLabelText("模板名称")).toBeNull();
+});
+
+// 场景：桌面主页按云端、本地顺序展示两个库，同 ID 模板根据选择的环境读取最新详情。
+test.each(["cloud", "local"] as const)("主页选择 %s 模板进入对应编辑环境", async (environment) => {
+  const cloud = { ...savedTemplate(), name: "云端款式" };
+  const local = { ...savedTemplate(), name: "本地款式" };
+  const restore = mockDesktop(async (_command, args) => args.operation === "list" ? [local] : local);
+  try {
+    remotionServer((path) => Response.json(path === "/template" ? [cloud] : cloud));
+    render(<HomePage />);
+    const cloudSection = screen.getByRole("region", { name: "云端模板" });
+    const localSection = screen.getByRole("region", { name: "本地模板" });
+    expect(cloudSection.compareDocumentPosition(localSection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await within(cloudSection).findByRole("button", { name: "选择模板：云端款式" });
+    await within(localSection).findByRole("button", { name: "选择模板：本地款式" });
+    const selected = environment === "cloud" ? cloud : local;
+    fireEvent.click(screen.getByRole("button", { name: `选择模板：${selected.name}` }));
+    await screen.findByDisplayValue(selected.name);
+    expect(screen.getByRole("tab", { name: "模板库" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByLabelText("当前环境").textContent).toBe(environment === "cloud" ? "云端" : "本地");
+    expect(screen.getByLabelText("预览标题").textContent).toBe(selected.editor.title);
+    expect(screen.queryByText(/有未保存的修改/)).toBeNull();
+  } finally {
+    restore();
+  }
+});
+
+// 场景：云端失败不影响本地选择，重试只重新读取云端；返回主页重新读取保存后的名称。
+test("主页分别处理失败、重试和返回后的列表更新", async () => {
+  const local = { ...savedTemplate(), name: "本地可用" };
+  const restore = mockDesktop(async (_command, args) => args.operation === "list" ? [local] : local);
+  try {
+    fetchMock.mockResolvedValueOnce(Response.json({ detail: "云端维护中" }, { status: 503 }));
+    render(<HomePage />);
+    const cloudSection = screen.getByRole("region", { name: "云端模板" });
+    await within(cloudSection).findByRole("alert");
+    expect(await screen.findByRole("button", { name: "选择模板：本地可用" })).toBeTruthy();
+    fetchMock.mockResolvedValueOnce(Response.json([]));
+    fireEvent.click(within(cloudSection).getByRole("button", { name: "重试" }));
+    await within(cloudSection).findByText("暂无云端模板，可以前往模板库创建。");
+    fireEvent.click(screen.getByRole("button", { name: "选择模板：本地可用" }));
+    await screen.findByDisplayValue("本地可用");
+    local.name = "重新命名";
+    fetchMock.mockResolvedValueOnce(Response.json([]));
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "主页" }), { button: 0 });
+    await screen.findByRole("button", { name: "选择模板：重新命名" });
+    expect(screen.queryByRole("button", { name: "选择模板：本地可用" })).toBeNull();
+  } finally {
+    restore();
+  }
+});
+
+// 场景：浏览器明确提示本地能力限制；云端空列表正常显示，退出主页中止未完成的请求。
+test("浏览器主页展示本地限制并清理列表请求", async () => {
+  fetchMock.mockResolvedValueOnce(Response.json([]));
+  render(<HomePage />);
+  await screen.findByText("暂无云端模板，可以前往模板库创建。");
+  expect(screen.getByText("请在桌面客户端中查看和选择本地模板。")).toBeTruthy();
+  let finishRead!: (response: Response) => void;
+  fetchMock.mockReturnValueOnce(new Promise<Response>((resolve) => { finishRead = resolve; }));
+  fireEvent.click(within(screen.getByRole("region", { name: "云端模板" })).getByRole("button", { name: "刷新" }));
+  const signal = fetchMock.mock.calls.at(-1)?.[1]?.signal;
+  expect(signal?.aborted).toBe(false);
+  fetchMock.mockResolvedValueOnce(Response.json([]));
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "模板库" }), { button: 0 });
+  await screen.findByText("共享模板库 · 0 个模板");
+  expect(signal?.aborted).toBe(true);
+  await act(async () => finishRead(Response.json([savedTemplate()])));
+  expect(screen.queryByRole("button", { name: "选择模板：已有模板" })).toBeNull();
+});
+
+// 场景：从主页选择另一模板，取消保留草稿；再次选择可放弃修改，重新选择当前模板不清除草稿。
+test("主页选择复用未保存保护且每次点击只处理一次", async () => {
+  const first = savedTemplate();
+  const second = { ...savedTemplate(), template_id: "second", name: "另一模板" };
+  remotionServer((path) => {
+    return Response.json(path === "/template" ? [first, second] : path.endsWith("second") ? second : first);
+  });
+  render(<HomePage />);
+  fireEvent.click(await screen.findByRole("button", { name: `选择模板：${first.name}` }));
+  await screen.findByDisplayValue(first.name);
+  fireEvent.change(screen.getByLabelText("模板名称"), { target: { value: "未保存草稿" } });
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "主页" }), { button: 0 });
+  fireEvent.click(await screen.findByRole("button", { name: `选择模板：${first.name}` }));
+  expect(screen.getByDisplayValue("未保存草稿")).toBeTruthy();
+  expect(screen.queryByRole("dialog")).toBeNull();
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "主页" }), { button: 0 });
+  fireEvent.click(await screen.findByRole("button", { name: "选择模板：另一模板" }));
+  fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "取消" }));
+  expect(screen.getByDisplayValue("未保存草稿")).toBeTruthy();
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "主页" }), { button: 0 });
+  fireEvent.click(await screen.findByRole("button", { name: "选择模板：另一模板" }));
+  fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "放弃修改" }));
+  await screen.findByDisplayValue(second.name);
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.queryByText(/有未保存的修改/)).toBeNull();
+});
+
+// 场景：跨库选择读取详情失败，原环境和草稿保留；重试时先保存到原库，成功后才切换。
+test("主页跨库选择失败保留原环境，保存并切换写入原库", async () => {
+  const cloud = { ...savedTemplate(), name: "云端模板名称" };
+  const local = { ...savedTemplate(), name: "本地模板名称" };
+  let unavailable = true;
+  const restore = mockDesktop(async (_command, args) => {
+    if (args.operation === "list") return [local];
+    if (unavailable) throw new Error("本地模板读取失败");
+    return local;
+  });
+  try {
+    remotionServer((path, options) => {
+      if (options?.method === "POST") return Response.json({ ...cloud, ...JSON.parse(String(options.body)) });
+      return Response.json(path === "/template" ? [cloud] : cloud);
+    });
+    render(<HomePage />);
+    fireEvent.click(await screen.findByRole("button", { name: `选择模板：${cloud.name}` }));
+    await screen.findByDisplayValue(cloud.name);
+    fireEvent.change(screen.getByLabelText("模板名称"), { target: { value: "云端修改" } });
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "主页" }), { button: 0 });
+    fireEvent.click(await screen.findByRole("button", { name: `选择模板：${local.name}` }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "放弃修改" }));
+    await within(screen.getByRole("dialog")).findByText("本地模板读取失败");
+    expect(screen.getByLabelText("当前环境").textContent).toBe("云端");
+    expect(screen.getByDisplayValue("云端修改")).toBeTruthy();
+    unavailable = false;
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "保存并切换" }));
+    await screen.findByDisplayValue(local.name);
+    expect(screen.getByLabelText("当前环境").textContent).toBe("本地");
+    const writes = fetchMock.mock.calls.filter((call) => call[1]?.method === "POST");
+    expect(writes).toHaveLength(1);
+    expect(JSON.parse(String(writes[0][1]?.body))).toMatchObject({ name: "云端修改", template_id: cloud.template_id });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  } finally {
+    restore();
+  }
 });
