@@ -155,6 +155,8 @@ try {
   }
 
   // 场景：手机、平板和桌面下没有横向溢出，关闭及重新打开设置时视频尺寸保持不变。
+  const selectedSubtitle = await applied.getByRole("button", { pressed: true }).getAttribute("aria-label");
+  assert.equal(selectedSubtitle, "编辑底部字幕 2");
   for (const width of [390, 768, 1280, 1440]) {
     await page.setViewportSize({ width, height: 1000 });
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `${width}px 页面横向超出`);
@@ -176,7 +178,7 @@ try {
     await page.getByRole("tab", { name: "主页", exact: true }).click();
     await page.getByRole("tab", { name: "模板库", exact: true }).click();
     assert.equal(await inspector.count(), 0);
-    await applied.getByRole("button", { name: "编辑底部字幕", exact: true }).click();
+    await applied.getByRole("button", { name: selectedSubtitle, exact: true }).click();
     assert.equal(await inspector.getByLabel("示例文字").inputValue(), text);
     const reopenedSize = await frame.boundingBox();
     assert.equal(reopenedSize.width, frameSize.width);
@@ -189,15 +191,18 @@ try {
     if (category === "花字") await choose("应用到", label);
     const asset = assets.getByRole("button", { name: new RegExp(`^应用${category}：`) }).first();
     await asset.click();
+    const objectCount = await applied.getByRole("button").count();
     const frameSize = await frame.boundingBox();
     await inspector.getByRole("button", { name: "移除当前画面对象", exact: true }).click();
     await inspector.waitFor({ state: "detached" });
     const removedSize = await frame.boundingBox();
     assert.equal(removedSize.width, frameSize.width);
     assert.equal(removedSize.height, frameSize.height);
-    assert.equal(await applied.getByRole("button", { name: `编辑${label}`, exact: true }).evaluateAll((buttons) => buttons.filter((button) => button.hasAttribute("aria-pressed")).length), 0);
+    assert.equal(await applied.getByRole("button").count(), objectCount - 1);
+    assert.equal(await applied.getByRole("button", { pressed: true }).count(), 0);
     assert.equal(await asset.getAttribute("aria-pressed"), "false");
     await asset.click();
+    assert.equal(await applied.getByRole("button").count(), objectCount);
     await inspector.getByText(label, { exact: true }).first().waitFor();
     assert.equal(await applied.getByRole("button", { name: `编辑${label}`, pressed: true }).count(), 1);
   }

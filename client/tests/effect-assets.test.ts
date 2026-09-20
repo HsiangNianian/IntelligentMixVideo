@@ -1,7 +1,8 @@
 /** 资产编辑规则测试：使用随包真实目录验证字段分配、互斥、移除与草稿隔离；执行 bun run test。 */
 import { expect, test } from "bun:test";
 import { appliedTargets, applyAsset, assetField, changeEffects, removeTarget, resetTextTarget, targetEffectKeys } from "@/features/templates/effects";
-import { defaultEditor, newDraft, selectedEffects, type Category, type TextRole } from "@/features/templates/model";
+import { defaultEditor, selectedEffects, type Category, type TextRole } from "@/features/templates/model";
+import { effectDraft as newDraft } from "./fixtures";
 import { readCatalog } from "@/features/templates/sdk";
 
 /** 从随包目录中获取真实资产，缺少所需分类时立即报告测试失败。 */
@@ -99,8 +100,6 @@ test.each([
   ["title", true], ["subtitle", true], ["bubble", true],
 ] as const)("重置 %s 的全部参数，包含无效输入：%s", (role, invalid) => {
   let draft = newDraft();
-  draft.name = "保留模板名称";
-  draft.description = "保留模板描述";
   draft.transition_duration_seconds = 2;
   for (const target of ["title", "subtitle", "bubble"] as const) {
     draft = applyAsset(draft, asset(target === "bubble" ? "bubble" : "flower"), target).draft;
@@ -136,8 +135,6 @@ test.each([
   const ownFields = new Set<string>([textKey, `${role}Size`, `${role}X`, `${role}Y`, `${role}InDuration`, `${role}OutDuration`, ...targetEffectKeys(role)]);
   expect(Object.entries(next.editor).filter(([key]) => !ownFields.has(key)))
     .toEqual(Object.entries(original.editor).filter(([key]) => !ownFields.has(key)));
-  expect(next.name).toBe(original.name);
-  expect(next.description).toBe(original.description);
   expect(next.transition_duration_seconds).toBe(original.transition_duration_seconds);
   expect(draft).toEqual(original);
   expect(defaultEditor).toEqual(defaults);

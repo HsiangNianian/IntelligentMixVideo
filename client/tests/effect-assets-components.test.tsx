@@ -2,8 +2,9 @@
 import { expect, test } from "bun:test";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { EffectAssets } from "@/features/templates/EffectAssets";
-import type { EffectTarget } from "@/features/templates/effects";
-import { newDraft, type Draft, type TextRole } from "@/features/templates/model";
+import { applyAsset, type EffectTarget } from "@/features/templates/effects";
+import { type EffectDraft as Draft, type TextRole } from "@/features/templates/model";
+import { effectDraft as newDraft } from "./fixtures";
 import { readCatalog } from "@/features/templates/sdk";
 
 const catalog = readCatalog();
@@ -15,7 +16,10 @@ function renderAssets(initial = newDraft(), initialTarget: TextRole = "title") {
   let selected: EffectTarget | null = null;
   const onTextTarget = (next: TextRole) => { textTarget = next; refresh(); };
   const onApply = (next: Draft, target: EffectTarget) => { draft = next; selected = target; refresh(); };
-  const element = () => <EffectAssets draft={draft} catalog={catalog} textTarget={textTarget} onTextTarget={onTextTarget} onApply={onApply} />;
+  const element = () => <EffectAssets editor={draft.editor} catalog={catalog} textTarget={textTarget} onTextTarget={onTextTarget} onAsset={(asset, role) => {
+    const result = applyAsset(draft, asset, role);
+    onApply(result.draft, result.target);
+  }} />;
   const view = render(element());
   const refresh = () => view.rerender(element());
   return { read: () => ({ draft, selected }), replace: (next: Draft) => { draft = next; refresh(); } };

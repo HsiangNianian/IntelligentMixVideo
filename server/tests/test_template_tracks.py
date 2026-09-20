@@ -9,6 +9,8 @@ from fastapi.testclient import TestClient
 
 from server.template.schema import EffectTemplateEditor, TemplateSave, effect_catalog
 from server.template.timing import resolve_track
+from server.template import store
+from sqlalchemy import select
 
 
 @pytest.mark.parametrize("case", json.loads(Path(__file__).with_name("template_timing_cases.json").read_text()), ids=lambda case: case["purpose"])
@@ -26,7 +28,7 @@ def track_payload() -> dict:
     asset = next(item for item in effect_catalog().values() if item.category == "vfx/normal")
     editor = EffectTemplateEditor(title="", subtitle="", bubble_text="", vfx=asset.id)
     return {
-        "name": "多轨模板", "editor": EffectTemplateEditor().model_dump(by_alias=True),
+        "name": "多轨模板",
         "effect_ids": [asset.id], "tracks": [
             {"id": "effect-a", "target": "vfx", "start_mode": "percent", "start": 25, "duration": 3, "editor": editor.model_dump(by_alias=True)},
             {"id": "effect-b", "target": "vfx", "start_mode": "seconds", "start": 200, "duration": None, "editor": editor.model_dump(by_alias=True)},
@@ -132,3 +134,30 @@ def test_api_persists_tracks_and_rejects_invalid_update(client: TestClient) -> N
     assert updated.status_code == 200
     assert client.get(path).json()["tracks"] == updated.json()["tracks"]
     assert updated.json()["tracks"][0]["id"] == "effect-b"
+
+
+@pytest.mark.parametrize("invalid", ["missing-tracks", "null-tracks", "top-editor"])
+def test_template_format_rejects_invalid_writes_and_reads(client: TestClient, template_db, invalid: str) -> None:
+    """真实数据库保存对象格式；非法创建和更新不改写记录，读取无效配置直接失败。"""
+    payload = track_payload()
+    saved = client.post("/template", json=payload).json()
+    rejected = deepcopy(payload)
+    if invalid == "missing-tracks":
+        rejected.pop("tracks")
+    elif invalid == "null-tracks":
+        rejected["tracks"] = None
+    else:
+        rejected["editor"] = EffectTemplateEditor().model_dump(by_alias=True)
+    assert client.post("/template", json=rejected).status_code == 422
+    assert client.post("/template", json={**rejected, "template_id": saved["template_id"]}).status_code == 422
+    assert client.get(f"/template/{saved['template_id']}").json() == saved
+    with template_db.begin() as connection:
+        row = connection.execute(select(store.templates)).one()
+        assert "editor" not in row.configuration
+        assert row.configuration["tracks"] == saved["tracks"]
+        configuration = {**row.configuration, **{key: value for key, value in rejected.items() if key != "name"}}
+        if invalid == "missing-tracks":
+            configuration.pop("tracks")
+        connection.execute(store.templates.update().values(configuration=configuration))
+    with pytest.raises(ValidationError):
+        store.get_template(saved["template_id"])

@@ -1,5 +1,5 @@
 /** 对象时间规则、实例编辑与视频应用计算；计算结果不修改模板配置。 */
-import { defaultEditor, type Draft, type Editor, type EffectAsset, type EffectTrack, type MasterVideo } from "./model";
+import { defaultEditor, type Draft, type EffectDraft, type Editor, type EffectAsset, type EffectTrack, type MasterVideo } from "./model";
 import { appliedTargets, applyAsset, effectTargets, isTextTarget, targetEffectKeys, type EffectTarget } from "./effects";
 
 /** 应用到视频后的秒数和动画参数，说明用于展示缩短或跳过的对象。 */
@@ -54,7 +54,7 @@ export function resolveTrack(track: EffectTrack, duration: number, fps = 30): Re
 
 /** 预览转场连接连续源片段，合成时长扣除按帧计算的重叠时间。 */
 export function previewDuration(draft: Draft, media?: MasterVideo): number {
-  const transition = draft.tracks?.find((track) => track.target === "transition");
+  const transition = draft.tracks.find((track) => track.target === "transition");
   if (transition) validateTrack(transition);
   return (media?.duration ?? 10) - (transition ? Math.round(transition.duration! * 30) / 30 : 0);
 }
@@ -72,25 +72,15 @@ export function trackEditor(editor: Editor, target: EffectTarget): Editor {
   return result;
 }
 
-/** 为尚未建立对象数组的编辑草稿生成独立实例。 */
-export function withTracks(draft: Draft): Draft & { tracks: EffectTrack[] } {
-  return { ...draft, tracks: draft.tracks ?? appliedTargets(draft).map((target) => ({
-    id: target, target, start_mode: target === "transition" ? "percent" : "seconds",
-    start: target === "transition" ? 50 : 0,
-    duration: target === "transition" ? draft.transition_duration_seconds : null,
-    editor: trackEditor(draft.editor, target),
-  })) };
-}
-
 /** 为选中实例建立参数面板视图。 */
-export function trackDraft(draft: Draft, track: EffectTrack): Draft {
-  return { ...draft, tracks: undefined, editor: track.editor,
+export function trackDraft(draft: Draft, track: EffectTrack): EffectDraft {
+  return { editor: track.editor,
     transition_duration_seconds: track.target === "transition" ? track.duration! : draft.transition_duration_seconds };
 }
 
 /** 参数修改只替换指定实例，清除画面效果时移除对应对象。 */
-export function updateTrack(draft: Draft, id: string, edit: Draft): Draft {
-  const tracks = withTracks(draft).tracks;
+export function updateTrack(draft: Draft, id: string, edit: EffectDraft): Draft {
+  const tracks = draft.tracks;
   const current = tracks.find((track) => track.id === id);
   if (!current) throw new Error("特效轨道不存在");
   if (!isTextTarget(current.target) && !appliedTargets(edit).includes(current.target)) return removeTrack(draft, id);
@@ -102,32 +92,31 @@ export function updateTrack(draft: Draft, id: string, edit: Draft): Draft {
 
 /** 删除指定实例，其他对象的时间规则保持不变。 */
 export function removeTrack(draft: Draft, id: string): Draft {
-  return { ...draft, tracks: withTracks(draft).tracks.filter((track) => track.id !== id) };
+  return { ...draft, tracks: draft.tracks.filter((track) => track.id !== id) };
 }
 
 /** 添加独立实例；动画属于选中文字，转场保留单个切换位置。 */
 export function addTrack(draft: Draft, asset: EffectAsset, target: EffectTarget, selectedId?: string): { draft: Draft; id: string } {
-  const normalized = withTracks(draft);
-  const selected = normalized.tracks.find((track) => track.id === selectedId);
+  const selected = draft.tracks.find((track) => track.id === selectedId);
   if (["in", "out", "loop"].includes(asset.category)) {
     if (!selected || !isTextTarget(selected.target)) throw new Error("请选择需要添加动画的文字轨道");
     const applied = applyAsset(trackDraft(draft, selected), asset, selected.target);
-    return { draft: updateTrack(normalized, selected.id, applied.draft), id: selected.id };
+    return { draft: updateTrack(draft, selected.id, applied.draft), id: selected.id };
   }
   const role = isTextTarget(target) ? target : "title";
-  const transition = asset.category === "transition/normal" ? normalized.tracks.find((track) => track.target === "transition") : undefined;
+  const transition = asset.category === "transition/normal" ? draft.tracks.find((track) => track.target === "transition") : undefined;
   if (transition) {
     const applied = applyAsset(trackDraft(draft, transition), asset, role);
-    return { draft: updateTrack(normalized, transition.id, applied.draft), id: transition.id };
+    return { draft: updateTrack(draft, transition.id, applied.draft), id: transition.id };
   }
   const styleTarget = asset.category === "bubble" ? "bubble" : asset.category === "flower" ? role : null;
   const styleField = styleTarget === "bubble" ? "bubble" : styleTarget ? `${styleTarget}Flower` as const : null;
-  const unstyled = styleTarget && styleField ? normalized.tracks.find((track) => track.target === styleTarget && !track.editor[styleField]) : undefined;
+  const unstyled = styleTarget && styleField ? draft.tracks.find((track) => track.target === styleTarget && !track.editor[styleField]) : undefined;
   if (unstyled) {
     const applied = applyAsset(trackDraft(draft, unstyled), asset, role);
-    return { draft: updateTrack(normalized, unstyled.id, applied.draft), id: unstyled.id };
+    return { draft: updateTrack(draft, unstyled.id, applied.draft), id: unstyled.id };
   }
-  const applied = applyAsset({ ...draft, tracks: undefined, editor: { ...defaultEditor } }, asset, role);
+  const applied = applyAsset({ transition_duration_seconds: draft.transition_duration_seconds, editor: { ...defaultEditor } }, asset, role);
   const track: EffectTrack = {
     id: crypto.randomUUID(), target: applied.target,
     start_mode: applied.target === "transition" ? "percent" : "seconds",
@@ -136,15 +125,14 @@ export function addTrack(draft: Draft, asset: EffectAsset, target: EffectTarget,
     editor: trackEditor(applied.draft.editor, applied.target),
   };
   validateTrack(track);
-  if (normalized.tracks.length >= 100) throw new Error("轨道数量不能超过 100");
-  return { draft: { ...normalized, tracks: [...normalized.tracks, track] }, id: track.id };
+  if (draft.tracks.length >= 100) throw new Error("轨道数量不能超过 100");
+  return { draft: { ...draft, tracks: [...draft.tracks, track] }, id: track.id };
 }
 
 /** 参数表单保存规则，不依赖预览视频长度。 */
 export function setTrackTiming(draft: Draft, id: string, timing: Pick<EffectTrack, "start_mode" | "start" | "duration">): Draft {
-  const normalized = withTracks(draft);
-  if (!normalized.tracks.some((track) => track.id === id)) throw new Error("特效轨道不存在");
-  return { ...normalized, tracks: normalized.tracks.map((track) => {
+  if (!draft.tracks.some((track) => track.id === id)) throw new Error("特效轨道不存在");
+  return { ...draft, tracks: draft.tracks.map((track) => {
     if (track.id !== id) return track;
     const next = { ...track, ...timing };
     validateTrack(next);
@@ -154,7 +142,7 @@ export function setTrackTiming(draft: Draft, id: string, timing: Pick<EffectTrac
 
 /** 时间轴拖动保留开始方式；移动保留持续规则，调整右侧位置改为固定时长。 */
 export function setTrackRange(draft: Draft, id: string, start: number, end: number, media?: MasterVideo): Draft {
-  const track = withTracks(draft).tracks.find((item) => item.id === id);
+  const track = draft.tracks.find((item) => item.id === id);
   if (!track) throw new Error("特效轨道不存在");
   const duration = previewDuration(draft, media);
   if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start || end > duration)

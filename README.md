@@ -20,6 +20,8 @@ Structure
 - `client/`：Rust + Tauri 2 + React + TypeScript 桌面客户端，使用 Tailwind CSS 4 和 shadcn/ui。
 - `server/`：Python + FastAPI + MySQL 服务端，提供模板持久化、文案切片与异步视频合成接口，以及首页和用户路由示例。
 
+模板配置通过必填的 `tracks` 数组保存独立对象，文字、位置与效果参数保存在各对象的 `editor` 中。云端和桌面本地均只接受此格式，模板顶层不包含 `editor`，不提供旧格式转换。
+
 服务端运行
 ----------
 

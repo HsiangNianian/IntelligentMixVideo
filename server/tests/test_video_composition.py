@@ -205,7 +205,7 @@ def test_async_acceptance_queries_and_persisted_success(upstreams, client, compo
     assert set(result) == {"taskId", "status", "stage", "result", "error", "createdAt", "updatedAt"}
     assert datetime.fromisoformat(result["createdAt"]).utcoffset() == timedelta(hours=8)
     snapshot = store.get(task_id)["data"]
-    assert snapshot["template"]["editor"]["titleIn"] == "in/fade_in"
+    assert snapshot["template"]["tracks"][1]["editor"]["titleIn"] == "in/fade_in"
     assert snapshot["segmentation"]["warnings"] == [{"code": "example-warning"}]
     assert snapshot["ims_request"]["client_token"] == task_id
     assert snapshot["result"] == {"mediaId": "ims-media", "durationSeconds": 8.02}
@@ -512,11 +512,12 @@ def test_remote_segmentation_response_reaches_render(upstreams, composition_case
     timeline = json.loads(snapshot["ims_request"]["timeline"])
     subtitles, title, bubbles = [track["SubtitleTrackClips"] for track in timeline["SubtitleTracks"]]
     assert [(s["TimelineIn"], s["TimelineOut"]) for s in subtitles] == [
-        (0.24, 2.84), (2.84, 4.28), (4.28, 5.92), (5.92, 8.96), (8.96, 10.44), (10.44, 12.04), (12.04, 15.08),
+        (7 / 30, 85 / 30), (85 / 30, 128 / 30), (128 / 30, 178 / 30),
+        (178 / 30, 269 / 30), (269 / 30, 313 / 30), (313 / 30, 361 / 30), (361 / 30, 452 / 30),
     ]
     assert [s["Content"] for s in subtitles] == [s["text"] for s in segments]
     assert [s["Content"] for s in bubbles] == ["香佰里火锅", "老师们", "三尺讲台", "恩师", "老师们", "火锅"]
-    assert (title[0]["TimelineIn"], title[0]["TimelineOut"]) == (0.24, 2.84)
+    assert (title[0]["TimelineIn"], title[0]["TimelineOut"]) == (1, 3)
     assert timeline["VideoTracks"][0]["VideoTrackClips"][0]["TimelineOut"] == 15.22
 
 
@@ -566,7 +567,10 @@ def test_template_changes_do_not_change_running_snapshot(upstreams, client, comp
         assert upstreams["entered"].wait(2)
         template_id = composition_case["request"]["styleId"]
         response = client.post("/template", json={
-            "template_id": template_id, "name": "修改后的模板", "editor": {"titleIn": "in/blur_in"},
+            "template_id": template_id, "name": "修改后的模板", "tracks": [{
+                "id": "title", "target": "title", "start_mode": "seconds", "start": 0, "duration": None,
+                "editor": {"title": "标题", "subtitle": "", "bubbleText": "", "titleIn": "in/blur_in"},
+            }],
             "effect_ids": ["in/blur_in"],
         })
         assert response.status_code == 200
