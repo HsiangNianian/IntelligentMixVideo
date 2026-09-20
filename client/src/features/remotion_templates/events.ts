@@ -1,5 +1,5 @@
 /** SSE 传输只读取公开事件；支持分块 UTF-8、心跳与中断，由会话协调重连和游标。 */
-import { apiUrl } from "./api";
+import { ApiError, apiUrl } from "./api";
 import type { WorkEvent } from "./model";
 
 /** 服务端拒绝旧游标时必须重取快照，不能不断重试失效的事件编号。 */
@@ -35,6 +35,8 @@ export async function* events(
         },
       },
     );
+    if (response.status === 404 || response.status === 410)
+      throw new ApiError(response.status, "会话已删除或正在清理。");
     if (response.status === 409)
       throw new StreamReset("会话游标已变化，正在恢复历史。");
     if (
@@ -62,7 +64,10 @@ export async function* events(
         buffer = buffer.slice(match.index + match[0].length);
         if (!line) {
           if (data.length) {
-            const event = JSON.parse(data.join("\n")) as WorkEvent;
+            const payload = JSON.parse(data.join("\n"));
+            if (kind === "work.deleted" && payload.work_id === work)
+              throw new ApiError(410, "会话已删除或正在清理。");
+            const event = payload as WorkEvent;
             if (
               !Number.isSafeInteger(event.id) ||
               event.id <= 0 ||

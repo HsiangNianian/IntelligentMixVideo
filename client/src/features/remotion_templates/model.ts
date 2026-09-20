@@ -213,6 +213,7 @@ export interface ProgressStep {
 }
 /** 历史列表只加载标题、活动时间和当前任务，不加载代码。 */
 export interface WorkSummary {
+  deleting?: boolean;
   id: string;
   title: string;
   updated_at: string;

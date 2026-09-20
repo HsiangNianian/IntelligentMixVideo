@@ -169,6 +169,20 @@ export function remotionServer(
     advance(job);
     return response;
   }
+  /** 删除替身清理关联记录并给已有连接发送无游标终止信号。 */
+  function remove(work: string) {
+    snapshots.delete(work);
+    summaries.delete(work);
+    for (const [id, owner] of versions) if (owner === work) versions.delete(id);
+    for (const stream of streams)
+      if (stream.work === work) {
+        stream.controller.enqueue(
+          new TextEncoder().encode(
+            `event: work.deleted\ndata: ${JSON.stringify({ work_id: work })}\n\n`,
+          ),
+        );
+      }
+  }
   fetchMock.mockImplementation(
     Object.assign(
       async (input: RequestInfo | URL, options?: RequestInit) => {
@@ -181,6 +195,10 @@ export function remotionServer(
           });
         const custom = overrides(path, options, url);
         if (custom) return capture(path, options, await custom);
+        if (/^\/works\/[^/]+$/.test(path) && options?.method === "DELETE") {
+          remove(path.split("/")[2]!);
+          return new Response(null, { status: 204 });
+        }
         if (path === "/capabilities")
           return Response.json({ models_configured: true });
         if (path === "/works") {
@@ -260,7 +278,7 @@ export function remotionServer(
       { preconnect: () => {} },
     ),
   );
-  return { snapshots, summaries, advance, emit, streams, records };
+  return { snapshots, summaries, advance, emit, streams, records, remove };
 }
 
 /** SSE 分帧遵循真实接口的 id/event/data 格式。 */

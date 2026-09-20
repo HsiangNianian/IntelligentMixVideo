@@ -9,6 +9,7 @@ export function useWorkHistory() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const scope = useRef<AbortController | null>(null);
+  const alive = useRef(true);
   /** 首次加载替换列表，分页按 ID 合并；新请求中断旧请求，失败保留已有条目。 */
   const load = useCallback(async (cursor?: string) => {
     scope.current?.abort();
@@ -44,9 +45,11 @@ export function useWorkHistory() {
     void load();
   }, [load]);
   useEffect(() => {
+    alive.current = true;
     refresh();
     window.addEventListener("focus", refresh);
     return () => {
+      alive.current = false;
       scope.current?.abort();
       window.removeEventListener("focus", refresh);
     };
@@ -56,6 +59,16 @@ export function useWorkHistory() {
     loading,
     error,
     refresh,
+    // 删除回执可能晚于页面卸载；淘汰旧请求后重取分页，不能在卸载后开启读取。
+    remove: (id: string) => {
+      if (!alive.current) return;
+      scope.current?.abort();
+      setPage((previous) => ({
+        ...previous,
+        items: previous.items.filter((work) => work.id !== id),
+      }));
+      refresh();
+    },
     more: () => {
       if (page.next_cursor && !loading) void load(page.next_cursor);
     },
