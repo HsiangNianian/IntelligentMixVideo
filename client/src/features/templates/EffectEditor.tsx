@@ -129,12 +129,14 @@ export function EffectEditor({
   onChange,
   target,
   onClose,
+  onRemove,
 }: {
   draft: Draft;
   catalog: EffectAsset[];
   onChange: (draft: Draft) => void;
   target: EffectTarget;
   onClose: () => void;
+  onRemove?: () => void;
 }) {
   const id = useId();
   const editor = draft.editor;
@@ -242,7 +244,7 @@ export function EffectEditor({
       })}
       {(target === "filter" || target === "vfx") && <div className="space-y-5">
         {selector(target, effectTargets[target])}
-        <p className="text-xs text-muted-foreground">效果应用于整个视频，修改后将在中间预览。</p>
+        <p className="text-xs text-muted-foreground">效果作用于完整画面，在当前轨道的时间范围内生效。</p>
       </div>}
       {target === "transition" && <div className="space-y-5">
         {selector("transition", "镜头转场")}
@@ -257,7 +259,7 @@ export function EffectEditor({
           }
         />
       </div>}
-      <Button type="button" variant="outline" className="w-full" onClick={() => { onChange(removeTarget(draft, target)); onClose(); }}>移除当前画面对象</Button>
+      <Button type="button" variant="outline" className="w-full" onClick={() => { if (onRemove) onRemove(); else onChange(removeTarget(draft, target)); onClose(); }}>移除当前画面对象</Button>
     </section>
   );
 }

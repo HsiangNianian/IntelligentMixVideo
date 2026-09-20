@@ -1,5 +1,5 @@
 /** 资产分类、编辑对象和效果变更规则；左侧资产与右侧表单共同生成可保存的模板草稿。 */
-import { defaultEditor, effectGroups, textRoles, type Category, type Draft, type EffectAsset, type EffectKey, type TextRole } from "./model";
+import { defaultEditor, defaultTransitionDuration, effectGroups, textRoles, type Category, type Draft, type EffectAsset, type EffectKey, type TextRole } from "./model";
 
 /** 编辑对象对应现有模板字段；文字对象共享花字、位置和动画设置。 */
 export const effectTargets = { ...textRoles, filter: "视频滤镜", vfx: "画面特效", transition: "镜头转场" } as const;
@@ -103,6 +103,6 @@ export function removeTarget(draft: Draft, target: EffectTarget): Draft {
     next.editor[`${target}Y`] = defaultEditor[`${target}Y`];
   }
   if (target === "transition" && (!Number.isFinite(next.transition_duration_seconds) || next.transition_duration_seconds < 0.1 || next.transition_duration_seconds > 3))
-    next.transition_duration_seconds = 0.5;
+    next.transition_duration_seconds = defaultTransitionDuration;
   return next;
 }

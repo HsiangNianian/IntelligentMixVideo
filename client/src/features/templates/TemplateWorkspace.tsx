@@ -4,10 +4,13 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import * as api from "./api";
 import { readCatalog } from "./sdk";
-import { newDraft, toDraft, type Draft, type EffectAsset, type Template, type TextRole } from "./model";
+import { newDraft, toDraft, type Draft, type EffectAsset, type Template, type TextRole, type MasterVideo } from "./model";
 import { EffectEditor } from "./EffectEditor";
 import { AppliedEffects, EffectAssets } from "./EffectAssets";
-import { isTextTarget, type EffectTarget } from "./effects";
+import { isTextTarget } from "./effects";
+import { addTrack, previewDuration, removeTrack, setTrackRange, setTrackTiming, trackDraft, updateTrack, withTracks } from "./tracks";
+import { TrackTiming } from "./TrackTiming";
+import { MasterVideoInput } from "./MasterVideoInput";
 import { TemplatePreview } from "./TemplatePreview";
 import type { TemplateSelection } from "./TemplateHome";
 
@@ -19,6 +22,7 @@ export function TemplateWorkspace({ selection = null, onHome }: {
   const [environment, setEnvironment] = useState<api.Environment>("cloud");
   const [current, setCurrent] = useState<Template | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [media, setMedia] = useState<MasterVideo>();
   const [baseline, setBaseline] = useState("");
   const [catalog, setCatalog] = useState<EffectAsset[]>(() => readCatalog());
   const [loading, setLoading] = useState(false);
@@ -28,12 +32,18 @@ export function TemplateWorkspace({ selection = null, onHome }: {
   const [action, setAction] = useState<TemplateSelection | null>(null);
   const [openRequest, setOpenRequest] = useState<TemplateSelection | null>(null);
   const [attempt, setAttempt] = useState(0);
-  const [target, setTarget] = useState<EffectTarget | null>("title");
+  const [target, setTarget] = useState<string | null>("title");
   const [textTarget, setTextTarget] = useState<TextRole>("title");
+  const lastTextTrack = useRef<string | null>("title");
   const lock = useRef(false);
+  const form = useRef<HTMLFormElement>(null);
   const mounted = useRef(false);
   const handledSelection = useRef<TemplateSelection | null>(null);
   const dirty = draft !== null && (current === null || JSON.stringify(draft) !== baseline);
+  const selectedTrack = draft?.tracks?.find((track) => track.id === target);
+  const assetTrack = selectedTrack ?? draft?.tracks?.find((track) => track.id === lastTextTrack.current);
+  const selectedDraft = draft && selectedTrack ? trackDraft(draft, selectedTrack) : draft;
+  const assetDraft = draft && assetTrack ? trackDraft(draft, assetTrack) : draft;
 
   useEffect(() => {
     mounted.current = true;
@@ -70,17 +80,21 @@ export function TemplateWorkspace({ selection = null, onHome }: {
           ? await api.getTemplate(openRequest.templateId, openRequest.environment, controller.signal)
           : null;
         if (controller.signal.aborted) return;
-        const next = template ? toDraft(template) : {
+        const next = withTracks(template ? toDraft(template) : {
           ...newDraft(),
+          tracks: [],
           name: openRequest.templateId === null ? openRequest.name : "",
           description: openRequest.templateId === null ? openRequest.description : "",
-        };
+        });
         setCurrent(template);
         setDraft(next);
+        setMedia(undefined);
         setBaseline(JSON.stringify(next));
         setEnvironment(openRequest.environment);
-        setTarget("title");
-        setTextTarget("title");
+        setTarget(next.tracks[0]?.id ?? null);
+        const initialText = next.tracks.find((track) => isTextTarget(track.target));
+        lastTextTrack.current = initialText?.id ?? null;
+        setTextTarget(initialText && isTextTarget(initialText.target) ? initialText.target : "title");
         setNotice("");
         setAction(null);
         setOpenRequest(null);
@@ -95,14 +109,24 @@ export function TemplateWorkspace({ selection = null, onHome }: {
   }, [openRequest, attempt]);
 
   /** 资产和已添加对象共用选中状态，文字资产沿用最近选择的文字对象。 */
-  function selectTarget(next: EffectTarget) {
+  function selectTarget(next: string) {
     setTarget(next);
-    if (isTextTarget(next)) setTextTarget(next);
+    const selected = draft?.tracks?.find((track) => track.id === next);
+    if (selected && isTextTarget(selected.target)) { setTextTarget(selected.target); lastTextTrack.current = selected.id; }
+  }
+
+  /** 所有实例修改共用错误展示，非法输入保留当前可用草稿。 */
+  function editTrack(change: () => Draft) {
+    try { setDraft(change()); setError(""); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "轨道修改失败"); }
   }
 
   /** 成功保存响应建立新基线；失败保留原草稿和待切换目标，不自动重发。 */
   async function persist(nextSelection?: TemplateSelection) {
     if (!draft || lock.current || loading) return;
+    // 时间输入保留局部编辑值，写入前检查；模板配置继续由 saveTemplate 校验。
+    const timingInputs = form.current?.querySelectorAll<HTMLInputElement>('[aria-label="轨道时间设置"] input');
+    if (timingInputs && [...timingInputs].some((input) => !input.reportValidity())) return;
     lock.current = true;
     setBusy(true);
     setError("");
@@ -110,7 +134,7 @@ export function TemplateWorkspace({ selection = null, onHome }: {
     try {
       const saved = await api.saveTemplate(draft, current?.template_id, environment);
       if (!mounted.current) return;
-      const next = toDraft(saved);
+      const next = withTracks(toDraft(saved));
       setCurrent(saved);
       setDraft(next);
       setBaseline(JSON.stringify(next));
@@ -136,7 +160,7 @@ export function TemplateWorkspace({ selection = null, onHome }: {
           <Button type="button" variant="outline" onClick={onHome}>前往主页</Button>
         </section>
       ) : (
-        <form className="overflow-hidden rounded-xl border bg-card" onSubmit={(event) => { event.preventDefault(); void persist(); }}>
+        <form ref={form} className="overflow-hidden rounded-xl border bg-card" onSubmit={(event) => { event.preventDefault(); void persist(); }}>
           <fieldset disabled={busy || loading} className="min-w-0 disabled:opacity-60">
             <section aria-label="模板信息" className="flex flex-wrap items-start justify-between gap-4 border-b p-4">
               <dl className="min-w-0 flex-1 space-y-3">
@@ -153,14 +177,27 @@ export function TemplateWorkspace({ selection = null, onHome }: {
             </section>
             <div className="grid min-w-0 items-start @min-[680px]:grid-cols-[220px_minmax(0,1fr)] @min-[1000px]:grid-cols-[220px_minmax(0,1fr)_280px]">
               <div className="min-w-0 @min-[680px]:border-r">
-                <EffectAssets draft={draft} catalog={catalog} textTarget={textTarget} onTextTarget={selectTarget} onApply={(next, selection) => { setDraft(next); selectTarget(selection); }} />
+                <EffectAssets draft={assetDraft!} catalog={catalog} textTarget={textTarget} textEditor={draft.tracks?.find((track) => track.id === lastTextTrack.current)?.editor} onTextTarget={(role) => {
+                  setTextTarget(role);
+                  const text = draft.tracks?.find((track) => track.target === role);
+                  setTarget(text?.id ?? null);
+                  lastTextTrack.current = text?.id ?? null;
+                }} onApply={setDraft} onAsset={(asset, role) => editTrack(() => {
+                  const result = addTrack(draft, asset, role, lastTextTrack.current ?? undefined);
+                  setTarget(result.id);
+                  const added = result.draft.tracks!.find((track) => track.id === result.id)!;
+                  if (isTextTarget(added.target)) { setTextTarget(added.target); lastTextTrack.current = added.id; }
+                  return result.draft;
+                })} />
               </div>
               <div className="min-w-0 border-y bg-muted/30 @min-[680px]:border-y-0">
-                <TemplatePreview draft={draft} onCatalog={setCatalog} />
+                <MasterVideoInput key={`${environment}:${current?.template_id ?? draft.name}`} media={media} onChange={setMedia} />
+                <TemplatePreview draft={draft} media={media} onCatalog={setCatalog} selectedId={target} onSelect={selectTarget} onRangeChange={(id, start, end) => editTrack(() => setTrackRange(draft, id, start, end, media))} />
                 <AppliedEffects draft={draft} catalog={catalog} selected={target} onSelect={selectTarget} />
               </div>
-              {target !== null && <div className="min-w-0 @min-[680px]:col-span-2 @min-[680px]:border-t @min-[1000px]:col-span-1 @min-[1000px]:border-l @min-[1000px]:border-t-0">
-                <EffectEditor draft={draft} catalog={catalog} onChange={setDraft} target={target} onClose={() => setTarget(null)} />
+              {selectedTrack && <div className="min-w-0 @min-[680px]:col-span-2 @min-[680px]:border-t @min-[1000px]:col-span-1 @min-[1000px]:border-l @min-[1000px]:border-t-0">
+                <TrackTiming track={selectedTrack} duration={previewDuration(draft, media)} onChange={(timing) => editTrack(() => setTrackTiming(draft, selectedTrack.id, timing))} />
+                <EffectEditor draft={selectedDraft!} catalog={catalog} onChange={(next) => editTrack(() => updateTrack(draft, selectedTrack.id, next))} target={selectedTrack.target} onRemove={() => editTrack(() => removeTrack(draft, selectedTrack.id))} onClose={() => setTarget(null)} />
               </div>}
             </div>
           </fieldset>

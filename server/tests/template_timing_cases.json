@@ -1,0 +1,10 @@
+[
+  {"purpose":"百分比开始与固定持续秒数分别计算", "mode":"percent", "start":25, "length":3, "duration":20, "fps":30, "expected_start":5, "expected_end":8},
+  {"purpose":"同一百分比适用于更长的视频", "mode":"percent", "start":25, "length":3, "duration":60, "fps":30, "expected_start":15, "expected_end":18},
+  {"purpose":"固定秒数开始保持原位置", "mode":"seconds", "start":5, "length":3, "duration":60, "fps":30, "expected_start":5, "expected_end":8},
+  {"purpose":"超出视频结尾的区间截短", "mode":"percent", "start":25, "length":3, "duration":2, "fps":30, "expected_start":0.5, "expected_end":2},
+  {"purpose":"持续到结束随视频长度变化", "mode":"percent", "start":50, "length":null, "duration":60, "fps":30, "expected_start":30, "expected_end":60},
+  {"purpose":"视频结尾以外的对象没有显示区间", "mode":"seconds", "start":20, "length":3, "duration":10, "fps":30, "expected_start":20, "expected_end":20},
+  {"purpose":"半帧向后取整且不越过视频末帧", "mode":"seconds", "start":0.125, "length":0.5, "duration":1, "fps":20, "expected_start":0.15, "expected_end":0.65},
+  {"purpose":"不足一帧的对象没有显示区间", "mode":"seconds", "start":1, "length":0.001, "duration":10, "fps":30, "expected_start":1, "expected_end":1}
+]
