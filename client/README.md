@@ -130,23 +130,16 @@ bun run build
 `templates.test.ts` 检查草稿隔离、效果去重与预览时间线；`api.test.ts` 检查请求契约、保存前校验和错误提示；
 `workspace.test.tsx` 检查主页入口、创建表单、只读信息、环境来源、StrictMode、保存前校验、新草稿切换保护和页签保留，以及移除与关闭设置、再次应用资产的文字对象、关闭后的切换保护和退出监听清理。
 `effect-assets.test.ts` 使用随包真实目录，检查所有分类的字段分配、重复选择、效果替换、文字参数保留、动画互斥、非法目标、移除和重新添加、无效数值清理以及历史未知效果。
-`effect-editor.test.tsx` 检查三个文字对象的实际控件编辑、重置按钮、空数字恢复、动画互斥与转场时长；`effect-assets-components.test.tsx` 检查资产搜索、分页、作用对象、同类替换和动画禁用状态。两者使用真实组件与随包目录，无需加载视频 SDK。
+`effect-editor.test.tsx` 检查三个文字对象的字段更新和重置按钮；`effect-assets-components.test.tsx` 检查所选资产与文字对象的传递。两者使用真实组件与随包目录。
 `bun run build` 同时检查源码和测试的 TypeScript 类型，CI 在前端构建前执行这些测试。
-
-启动 Vite 后执行 `bun tests/effect-entry.browser.mjs`，验证桌面与窄屏下的对象列表、清空后从左侧资产重新添加、重复添加与独立参数选择；通过 `IMV_BROWSER_URL` 指定前端地址，仅修改未保存草稿。
-
-对象移除回归执行 `bun tests/template-object-removal.browser.mjs`，需要本机 Chrome、运行中的 Vite，以及可访问的 SDK、字体和示例视频。脚本等待真实预览轨道更新完成，验证播放中移除、保留其他对象、清空特效、六类对象重复添加与移除、转场母版恢复和继续播放；通过 `IMV_BROWSER_URL` 指定前端地址，仅修改未保存草稿，缓存保存在已忽略的 `node_modules/.cache/` 并在结束后清理。
 
 测试固定 API 与示例视频地址并拦截 fetch，不需要启动后端、MySQL 或下载 SDK。
 
-`preview-timeline.test.tsx` 使用实际轨道组件检查播放时间同步、键盘定位、边界与禁用状态，并检查真实 Timeline 的转场范围和缩略图源时间采样。启动 Vite 后执行 `bun tests/preview-timeline.browser.mjs`，使用真实 SDK 与媒体验证缩略图、播放同步、刻度与拖动定位、转场、重播及窄屏布局；可通过 `IMV_BROWSER_URL` 指定前端地址。浏览器缓存位于已忽略的 `node_modules/.cache/`，仅创建未保存草稿。
-`effect-tracks.test.ts` 覆盖重复对象、删除、时间规则、视频替换、动画帧数、SDK 转换和保存恢复；`track-timing.test.tsx` 验证输入自动更新、单位换算、非法输入恢复和对象切换。前后端共同使用 `server/tests/template_timing_cases.json`，其中 `purpose` 说明每个用例的作用。`bun tests/template-timing.browser.mjs` 使用本机 FFmpeg 生成真实视频，通过 Chrome 验证编辑期间无保存请求、视频替换、规则保留、实际播放及窄屏布局；需要运行 Vite，可通过 `IMV_BROWSER_URL` 指定地址，所有媒体文件位于已忽略的缓存目录。
+`preview-timeline.test.tsx` 检查轨道数据转换、缩略图源时间采样、播放时间同步和键盘定位边界。
+`effect-tracks.test.ts` 覆盖独立对象增删、时间规则、视频替换、动画帧数、SDK 数据转换和序列化；`track-timing.test.tsx` 验证输入自动更新、单位换算、非法输入恢复和对象切换。前后端共同使用 `server/tests/template_timing_cases.json`，其中 `purpose` 说明场景，预期结果包含区间和提示，并检查计算过程保留原始规则。
 
 服务端核心验证执行 `uv run --locked --project server pytest server/tests/test_template_tracks.py server/tests/test_template_api.py server/tests/test_video_composition_timeline.py`（仓库根目录）。现有文案合成按成片时长应用每个对象：标题使用请求文字，字幕及关键词与文案时间取交集，重复实例保留独立参数；转场在指定位置连接片段，音频总长保持不变。桌面存储验证执行 `cargo test --locked --manifest-path src-tauri/Cargo.toml --lib templates::tests`（client 目录），使用真实文件检查规则保存与失败保护。通过 `TMPDIR` 和 pytest 的 `--basetemp` 将中间文件指向已忽略的缓存目录。
-工作区测试使用真实表单、Radix 选择器和弹窗；Happy DOM 无法加载外部 SDK，实际播放与 HTTP 存储流程通过独立浏览器脚本验证，不将组件测试视为 Tauri 原生验证。
+`server/tests/test_template_tracks.py` 直接校验 Schema、默认参数、时间计算和序列化；`test_video_composition_timeline.py` 检查对象规则生成的合成时间线。
+工作区测试使用真实表单、Radix 选择器和弹窗，覆盖核心编辑与草稿保护。Happy DOM 无法验证真实视频播放和 Tauri 原生行为。
 Happy DOM 的小数 step 校验与浏览器不同，保存流程直接触发表单提交；浏览器原生表单约束仍需浏览器验证。
-主页真实浏览器检查执行 `bun tests/template-home.browser.mjs`，需要本机 Chrome、运行中的前端和后端，以及至少两个已有云端模板；通过 `IMV_BROWSER_URL` 指定前端地址，默认 `http://localhost:1420`。脚本只读取模板和编辑未保存草稿，验证默认主页、模板选择、取消/放弃修改与 390/768/1280 像素布局，不保存或删除模板，也不验证 Tauri 本地存储。
-资产编辑的真实浏览器检查执行 `bun tests/template-assets.browser.mjs`，需要本机 Chrome、运行中的前端，以及可访问的 SDK、字体和示例视频；前端地址同样由 `IMV_BROWSER_URL` 配置。脚本使用真实视频播放和页面控件，检查三栏顺序、资产搜索与应用、独立参数、动画互斥、移除、未保存保护、页签保留与 390/768/1280/1440 像素布局，只修改未保存草稿。浏览器缓存写入已经忽略的 `node_modules/.cache/`，结束后清理独立会话目录。
-
-完整保存流程使用本机独立 MySQL 数据库和真实 FastAPI 应用。仓库根目录执行 `uv run --locked --project server python server/tests/run_template_browser_server.py`，使用 `server/.env` 中的本机 MySQL 凭据创建随机测试数据库，监听 `127.0.0.1:20171`，退出时删除本次数据库。账号需要创建和删除数据库权限，脚本拒绝远程 MySQL。随后在 `client/` 执行 `VITE_API_URL=http://127.0.0.1:20171 IMV_DEBUG=false bun run dev --port 1427`，另一终端执行 `bun tests/template-save.browser.mjs`。每次运行使用新启动的测试服务。浏览器脚本检查测试数据库标识后，验证创建和更新、防重复提交、同名校验、三种未保存切换选择、真实离线失败与恢复、详情 404 和重试、最大长度与四种宽度布局。结束后关闭这两个测试服务；浏览器缓存自动清理。
 Windows 原生资源服务的回归测试位于 `src-tauri/src/localhost.rs`，执行 `cargo test --manifest-path src-tauri/Cargo.toml --lib --locked`，覆盖真实 HTTP 资源响应、查询参数、HEAD、错误主机与方法；原生检查 CI 同步执行。

@@ -50,12 +50,15 @@ test("空模板预览和保存配置只包含手动添加的对象", () => {
   expect(empty.tracks).toEqual([]);
 });
 
-// 场景：前后端共用输入和预期结果，逐例说明百分比、截止时间及帧取整的作用。
+// 场景：前后端共用区间和提示预期，检查帧取整及输入规则保持不变。
 for (const item of timingCases) test(item.purpose, () => {
   if (item.mode !== "seconds" && item.mode !== "percent") throw new Error("用例开始方式无效");
   const track: EffectTrack = { ...sampleDraft().tracks[0], start_mode: item.mode, start: item.start, duration: item.length };
+  const original = structuredClone(track);
   const result = resolveTrack(track, item.duration, item.fps);
   expect([result.start, result.end]).toEqual([item.expected_start, item.expected_end]);
+  expect(result.notice).toBe(item.expected_notice);
+  expect(track).toEqual(original);
 });
 
 // 场景：两个文字动画至少各占一帧，模板保留原时长，预览使用缩短后的副本。

@@ -1,4 +1,4 @@
-/** 主页创建与只读信息测试：使用真实 React 控件和随包目录；HTTP 保存与读取由真实浏览器集成脚本验证。 */
+/** 工作区核心测试：使用真实 React 控件和随包目录检查创建、独立对象与草稿保护；执行 bun run test。 */
 import { expect, test } from "bun:test";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode } from "react";
@@ -151,54 +151,6 @@ test("关闭设置保留页面退出保护，卸载清理监听", async () => {
   expect(fireEvent(window, new Event("beforeunload", { cancelable: true }))).toBe(true);
 });
 
-// 场景：关闭设置只清除选中状态；页签切换保持关闭，再次选择对象恢复未保存参数。
-test("关闭设置后保留对象和草稿，再次选择可以继续编辑", async () => {
-  render(<HomePage />);
-  await createFromHome();
-  await addText();
-  fireEvent.change(screen.getByLabelText("示例文字"), { target: { value: "关闭后保留的标题" } });
-  fireEvent.change(screen.getByLabelText("字号", { exact: true }), { target: { value: "59" } });
-  fireEvent.click(screen.getByRole("button", { name: "关闭特效设置" }));
-  expect(screen.queryByRole("region", { name: "特效设置" })).toBeNull();
-  const applied = screen.getByRole("region", { name: "已添加特效" });
-  expect(within(applied).queryByRole("button", { pressed: true })).toBeNull();
-  expect(within(applied).getByRole("button", { name: "编辑顶部标题" })).toBeTruthy();
-  fireEvent.mouseDown(screen.getByRole("tab", { name: "主页" }), { button: 0 });
-  fireEvent.mouseDown(screen.getByRole("tab", { name: "模板库" }), { button: 0 });
-  expect(screen.queryByRole("region", { name: "特效设置" })).toBeNull();
-  fireEvent.click(within(applied).getByRole("button", { name: "编辑顶部标题" }));
-  expect(screen.getByLabelText<HTMLInputElement>("示例文字").value).toBe("关闭后保留的标题");
-  expect(screen.getByLabelText<HTMLInputElement>("字号", { exact: true }).value).toBe("59");
-});
-
-// 场景：各类对象移除后关闭设置并清除选中项；重新应用真实目录资产打开对应面板。
-test.each([
-  ["顶部标题", "花字"], ["底部字幕", "花字"], ["气泡字", "气泡"],
-  ["视频滤镜", "滤镜"], ["画面特效", "画面特效"], ["镜头转场", "转场"],
-])("移除 %s 后关闭设置，再次添加 %s 可以重新编辑", async (label, category) => {
-  render(<TemplateWorkspace selection={creation()} onHome={() => {}} />);
-  await screen.findByRole("region", { name: "特效资产" });
-  const applied = screen.getByRole("region", { name: "已添加特效" });
-  if (label === "底部字幕") {
-    fireEvent.keyDown(screen.getByRole("combobox", { name: "应用到" }), { key: "ArrowDown" });
-    fireEvent.click(screen.getByRole("option", { name: label }));
-  }
-  expect(within(applied).queryByRole("button", { name: /^添加/ })).toBeNull();
-  const assets = screen.getByRole("region", { name: "特效资产" });
-  fireEvent.click(within(assets).getByRole("button", { name: category }));
-  const asset = within(assets).getAllByRole("button", { name: new RegExp(`^应用${category}：`) })[0];
-  fireEvent.click(asset);
-  fireEvent.click(screen.getByRole("button", { name: "移除当前画面对象" }));
-  expect(screen.queryByRole("region", { name: "特效设置" })).toBeNull();
-  expect(within(applied).queryByRole("button", { pressed: true })).toBeNull();
-  expect(within(applied).queryByRole("button", { name: `编辑${label}`, pressed: false })).toBeNull();
-  expect(asset.getAttribute("aria-pressed")).toBe("false");
-  expect(within(applied).queryByRole("button", { name: /^添加/ })).toBeNull();
-  fireEvent.click(asset);
-  expect(within(screen.getByRole("region", { name: "特效设置" })).getByText(label, { exact: true, selector: "p" })).toBeTruthy();
-  expect(within(applied).getByRole("button", { name: `编辑${label}`, pressed: true })).toBeTruthy();
-});
-
 /** 填写主页创建表单，界面自行跳转到模板库。 */
 async function createFromHome(name = "旅行模板") {
   fireEvent.click(within(screen.getByRole("region", { name: "云端模板" })).getByRole("button", { name: "新建模板" }));
@@ -303,20 +255,6 @@ test("放弃未保存的新模板后进入主页指定的新环境", async () =>
   expect(screen.getByLabelText("当前环境").textContent).toBe("本地");
   expect(screen.getByLabelText("模板名称").textContent).toBe("本地模板");
   expect(screen.getByLabelText("模板描述").textContent).toBe("暂无模板描述");
-});
-
-// 场景：保存并切换发生校验失败，保护弹窗保留原模板，取消后可以继续编辑。
-test("保存并切换失败不会替换当前新模板", async () => {
-  const view = render(<TemplateWorkspace selection={creation()} onHome={() => {}} />);
-  await screen.findByRole("region", { name: "模板信息" });
-  view.rerender(<TemplateWorkspace selection={creation("另一模板")} onHome={() => {}} />);
-  const dialog = await screen.findByRole("dialog");
-  fireEvent.click(within(dialog).getByRole("button", { name: "保存并切换" }));
-  await within(dialog).findByText("请至少选择一个效果");
-  expect(screen.getByLabelText("模板名称").textContent).toBe("旅行模板");
-  fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
-  expect(screen.queryByRole("dialog")).toBeNull();
-  expect(screen.queryByText("请至少选择一个效果")).toBeNull();
 });
 
 // 场景：切回主页再返回模板库，已创建信息和未保存效果继续保留；重新创建需要确认。

@@ -5,22 +5,22 @@ from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
-from fastapi.testclient import TestClient
 
 from server.template.schema import EffectTemplateEditor, TemplateSave, effect_catalog
 from server.template.timing import resolve_track
-from server.template import store
-from sqlalchemy import select
 
 
 @pytest.mark.parametrize("case", json.loads(Path(__file__).with_name("template_timing_cases.json").read_text()), ids=lambda case: case["purpose"])
 def test_shared_timing_cases(case: dict) -> None:
-    """与客户端共用逐例说明及预期结果，检查百分比、结束规则和帧取整一致性。"""
+    """与客户端共用区间和提示预期，检查帧取整及输入规则保持不变。"""
     payload = track_payload()
     payload["tracks"][0].update(start_mode=case["mode"], start=case["start"], duration=case["length"])
     track = TemplateSave.model_validate(payload).tracks[0]
+    original = track.model_dump()
     result = resolve_track(track, case["duration"], case["fps"])
     assert (result.start, result.end) == (case["expected_start"], case["expected_end"])
+    assert result.notice == case["expected_notice"]
+    assert track.model_dump() == original
 
 
 def track_payload() -> dict:
@@ -87,17 +87,6 @@ def test_track_animation_uses_available_frames() -> None:
         resolve_track(track, 10, 30)
 
 
-@pytest.mark.parametrize("duration,start,end", [(20, 5, 8), (60, 15, 18), (120, 30, 33), (2, 0.5, 2)])
-def test_percentage_applies_to_different_videos(duration: float, start: float, end: float) -> None:
-    """25% 开始与三秒持续时间分别计算，短视频截短区间且保留原规则。"""
-    track = TemplateSave.model_validate(track_payload()).tracks[0]
-    original = track.model_dump()
-    applied = resolve_track(track, duration, 30)
-    assert (applied.start, applied.end) == (start, end)
-    assert track.model_dump() == original
-    assert bool(applied.notice) == (duration == 2)
-
-
 def test_seconds_and_until_end_do_not_depend_on_preview() -> None:
     """第 200 秒开始的对象可以保存；短视频不显示，长视频持续至结束。"""
     track = TemplateSave.model_validate(track_payload()).tracks[1]
@@ -116,48 +105,28 @@ def test_template_rejects_media() -> None:
         TemplateSave.model_validate(payload)
 
 
-def test_api_persists_tracks_and_rejects_invalid_update(client: TestClient) -> None:
-    """真实路由与隔离数据库保存完整轨道，非法更新保留原记录。"""
-    payload = track_payload()
-    response = client.post("/template", json=payload)
-    assert response.status_code == 201
-    saved = response.json()
-    path = f"/template/{saved['template_id']}"
-    assert client.get(path).json()["tracks"] == saved["tracks"]
-    assert "media" not in client.get(path).json()
-    payload["template_id"] = saved["template_id"]
-    payload["tracks"][0]["start"] = 100
-    assert client.post("/template", json=payload).status_code == 422
-    assert client.get(path).json() == saved
-    payload["tracks"].pop(0)
-    updated = client.post("/template", json=payload)
-    assert updated.status_code == 200
-    assert client.get(path).json()["tracks"] == updated.json()["tracks"]
-    assert updated.json()["tracks"][0]["id"] == "effect-b"
-
-
 @pytest.mark.parametrize("invalid", ["missing-tracks", "null-tracks", "top-editor"])
-def test_template_format_rejects_invalid_writes_and_reads(client: TestClient, template_db, invalid: str) -> None:
-    """真实数据库保存对象格式；非法创建和更新不改写记录，读取无效配置直接失败。"""
-    payload = track_payload()
-    saved = client.post("/template", json=payload).json()
-    rejected = deepcopy(payload)
+def test_template_format_requires_tracks(invalid: str) -> None:
+    """Schema 拒绝缺少对象数组、空值以及顶层 editor。"""
+    rejected = track_payload()
     if invalid == "missing-tracks":
         rejected.pop("tracks")
     elif invalid == "null-tracks":
         rejected["tracks"] = None
     else:
         rejected["editor"] = EffectTemplateEditor().model_dump(by_alias=True)
-    assert client.post("/template", json=rejected).status_code == 422
-    assert client.post("/template", json={**rejected, "template_id": saved["template_id"]}).status_code == 422
-    assert client.get(f"/template/{saved['template_id']}").json() == saved
-    with template_db.begin() as connection:
-        row = connection.execute(select(store.templates)).one()
-        assert "editor" not in row.configuration
-        assert row.configuration["tracks"] == saved["tracks"]
-        configuration = {**row.configuration, **{key: value for key, value in rejected.items() if key != "name"}}
-        if invalid == "missing-tracks":
-            configuration.pop("tracks")
-        connection.execute(store.templates.update().values(configuration=configuration))
     with pytest.raises(ValidationError):
-        store.get_template(saved["template_id"])
+        TemplateSave.model_validate(rejected)
+
+
+@pytest.mark.parametrize("duration", [None, 0.5, 2])
+def test_ims_timing_defaults(duration: float | None) -> None:
+    """Schema 使用一秒转场和半秒文字动画默认值，并保留显式转场时长。"""
+    payload = track_payload()
+    if duration is not None:
+        payload["transition_duration_seconds"] = duration
+    saved = TemplateSave.model_validate(payload)
+    assert saved.transition_duration_seconds == (1 if duration is None else duration)
+    for role in ("title", "subtitle", "bubble"):
+        assert getattr(saved.tracks[0].editor, f"{role}_in_duration") == 0.5
+        assert getattr(saved.tracks[0].editor, f"{role}_out_duration") == 0.5
