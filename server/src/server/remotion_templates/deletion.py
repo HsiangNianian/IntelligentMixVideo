@@ -64,14 +64,19 @@ def finish(store: "Store", work_id: UUID) -> None:
             if not shared:
                 remove_path(store.root, "assets", asset_id, ".png")
                 db.execute("DELETE FROM assets WHERE id=?", (asset_id,))
-        for table in ("events", "job_progress"):
-            db.execute(
-                f"DELETE FROM {table} WHERE job_id IN (SELECT id FROM jobs WHERE project_id=?)",
-                (identifier,),
-            )
-        for table in ("chat_messages", "work_events"):
-            db.execute(f"DELETE FROM {table} WHERE work_id=?", (identifier,))
-        for table in ("conversations", "versions", "jobs"):
-            db.execute(f"DELETE FROM {table} WHERE project_id=?", (identifier,))
+        # Keep the foreign-key deletion order explicit and bind every work identifier.
+        db.execute(
+            "DELETE FROM events WHERE job_id IN (SELECT id FROM jobs WHERE project_id=?)",
+            (identifier,),
+        )
+        db.execute(
+            "DELETE FROM job_progress WHERE job_id IN (SELECT id FROM jobs WHERE project_id=?)",
+            (identifier,),
+        )
+        db.execute("DELETE FROM chat_messages WHERE work_id=?", (identifier,))
+        db.execute("DELETE FROM work_events WHERE work_id=?", (identifier,))
+        db.execute("DELETE FROM conversations WHERE project_id=?", (identifier,))
+        db.execute("DELETE FROM versions WHERE project_id=?", (identifier,))
+        db.execute("DELETE FROM jobs WHERE project_id=?", (identifier,))
         db.execute("DELETE FROM projects WHERE id=?", (identifier,))
         db.execute("DELETE FROM work_deletions WHERE work_id=?", (identifier,))
