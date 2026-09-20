@@ -294,19 +294,15 @@ test("明确停止任务后恢复公开快照", async () => {
   ).toHaveLength(1);
 });
 
-// 记录的会话已不存在时提供明确刷新和新增入口；历史空列表不造成整页崩溃。
-test("失效会话 ID 可通过新增恢复", async () => {
+// 已删除或失效的会话直接回到空白页，不提供反复读取不存在会话的恢复入口。
+test("失效会话 ID 自动清空并允许新增", async () => {
   remotionServer();
   localStorage.setItem(
     `imv.remotion.selected:${api.apiUrl("")}`,
     "missing-work",
   );
   render(<RemotionWorkspace />);
-  await screen.findByRole("button", { name: "刷新任务" });
-  expect(
-    screen.getByRole("button", { name: "发送" }).hasAttribute("disabled"),
-  ).toBe(true);
-  fireEvent.click(screen.getByRole("button", { name: "新增聊天" }));
+  await screen.findByText(/会话已删除或正在清理/);
   fireEvent.change(screen.getByLabelText("字效描述"), {
     target: { value: "新的任务" },
   });

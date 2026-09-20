@@ -15,6 +15,17 @@ export function apiUrl(path: string): string {
   return apiBase() + "/api/templates" + path;
 }
 
+/** 保留 HTTP 状态供会话区分永久删除与暂时断线，不暴露后端内部错误。 */
+export class ApiError extends Error {
+  /** 状态用于恢复决策，message 是可直接展示的公共提示。 */
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 /** 读取 JSON 或代码文本；中断与网络失败保留由调用方维护的草稿。 */
 async function request<T>(
   path: string,
@@ -30,10 +41,16 @@ async function request<T>(
     const response = await fetch(apiUrl(path), {
       ...options,
       signal: controller.signal,
-      headers: { ...(typeof options.body === "string" ? { "Content-Type": "application/json" } : {}), ...options.headers },
+      headers: {
+        ...(typeof options.body === "string"
+          ? { "Content-Type": "application/json" }
+          : {}),
+        ...options.headers,
+      },
     });
     if (!response.ok) {
-      throw new Error(
+      throw new ApiError(
+        response.status,
         response.status === 409
           ? "当前任务状态已变化，请刷新任务后重试。"
           : response.status === 413
@@ -45,6 +62,7 @@ async function request<T>(
                 : `请求未完成（${response.status}），请重试。`,
       );
     }
+    if (response.status === 204) return undefined as T;
     return (text ? await response.text() : await response.json()) as T;
   } catch (error) {
     if (options.signal?.aborted) throw error;
@@ -60,9 +78,17 @@ async function request<T>(
 }
 
 /** 每次模型操作读取已保存快照；头部不会进入作品、聊天或任务输入的持久化。 */
-async function modelRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
+async function modelRequest<T>(
+  path: string,
+  options: RequestInit = {},
+): Promise<T> {
   const config = (await readSettings()).remotion_agent;
-  return request(path, { ...options, headers: config ? { "X-Remotion-Config": encodeURIComponent(JSON.stringify(config)) } : undefined });
+  return request(path, {
+    ...options,
+    headers: config
+      ? { "X-Remotion-Config": encodeURIComponent(JSON.stringify(config)) }
+      : undefined,
+  });
 }
 
 /** 按当前客户端模型配置查询就绪状态，省略配置时使用服务端默认值。 */
@@ -135,7 +161,9 @@ export function cancel(id: string): Promise<Job> {
 }
 /** 由用户明确重试已结束任务，避免网络故障产生重复生成。 */
 export function retry(id: string): Promise<Job> {
-  return modelRequest(`/jobs/${encodeURIComponent(id)}/retry`, { method: "POST" });
+  return modelRequest(`/jobs/${encodeURIComponent(id)}/retry`, {
+    method: "POST",
+  });
 }
 
 /** 获取历史列表；每页只含轻量会话元数据。 */
@@ -158,4 +186,9 @@ export function session(
     `/works/${encodeURIComponent(id)}/session${before ? `?before=${before}` : ""}`,
     { signal },
   );
+}
+
+/** 整条删除由服务端停止任务并清理数据；写入失败不自动重发。 */
+export function deleteWork(id: string): Promise<void> {
+  return request(`/works/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
