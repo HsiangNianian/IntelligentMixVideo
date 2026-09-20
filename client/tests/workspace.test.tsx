@@ -4,7 +4,8 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { StrictMode } from "react";
 import HomePage from "@/pages/HomePage";
 import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
-import type { TemplateSelection } from "@/features/templates/TemplateHome";
+import { TemplateCollection, type TemplateSelection } from "@/features/templates/TemplateHome";
+import { savedTemplate } from "./fixtures";
 
 /** 生成独立的主页新建输入，不包含服务端响应或存储数据。 */
 function creation(name = "旅行模板", environment: "cloud" | "local" = "cloud"): TemplateSelection {
@@ -153,7 +154,7 @@ test("关闭设置保留页面退出保护，卸载清理监听", async () => {
 
 /** 填写主页创建表单，界面自行跳转到模板库。 */
 async function createFromHome(name = "旅行模板") {
-  fireEvent.click(within(screen.getByRole("region", { name: "云端模板" })).getByRole("button", { name: "新建模板" }));
+  fireEvent.click(screen.getByRole("button", { name: "新建云端模板" }));
   const dialog = await screen.findByRole("dialog", { name: "新建云端模板" });
   fireEvent.change(within(dialog).getByLabelText("模板名称"), { target: { value: name } });
   fireEvent.change(within(dialog).getByLabelText("模板描述"), { target: { value: "  适用于旅行视频  " } });
@@ -166,27 +167,28 @@ test("未选择模板时通过主页开始创作", async () => {
   render(<HomePage />);
   expect(screen.getByRole("tab", { name: "主页" }).getAttribute("aria-selected")).toBe("true");
   expect(within(screen.getByRole("region", { name: "当前时间" })).getByRole("time").getAttribute("datetime")).toBeTruthy();
-  fireEvent.mouseDown(screen.getByRole("tab", { name: "模板库" }), { button: 0 });
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "模版编辑" }), { button: 0 });
   expect(screen.getByText("请从主页选择已有模板或创建新模板。")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "保存模板" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "前往主页" }));
   expect(screen.getByRole("tab", { name: "主页" }).getAttribute("aria-selected")).toBe("true");
   expect(screen.getByText("请在桌面客户端中查看和选择本地模板。")).toBeTruthy();
-  expect(within(screen.getByRole("region", { name: "本地模板" })).queryByRole("button", { name: "新建模板" })).toBeNull();
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "新建本地模板" }).disabled).toBe(true);
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "新建云端模板" }).disabled).toBe(false);
 });
 
 // 场景：主页填写信息后跳转，模板库只读展示并明确新模板尚未保存。
 test("主页创建后显示环境、名称与描述，模板库只保留保存入口", async () => {
   render(<HomePage />);
   const info = await createFromHome("  旅行模板  ");
-  expect(screen.getByRole("tab", { name: "模板库" }).getAttribute("aria-selected")).toBe("true");
+  expect(screen.getByRole("tab", { name: "模版编辑" }).getAttribute("aria-selected")).toBe("true");
   expect(within(info).getByLabelText("当前环境").textContent).toBe("云端");
   expect(within(info).getByLabelText("模板名称").textContent).toBe("旅行模板");
   expect(within(info).getByLabelText("模板描述").textContent).toBe("适用于旅行视频");
   expect(within(info).queryByRole("textbox")).toBeNull();
   expect(within(info).queryByRole("combobox")).toBeNull();
   expect(within(info).getAllByRole("button").map((button) => button.textContent)).toEqual(["保存模板"]);
-  expect(screen.queryByRole("button", { name: "新建模板" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "新建云端模板" })).toBeNull();
   expect(screen.queryByRole("button", { name: "刷新列表" })).toBeNull();
   expect(screen.getByText("新模板 · 尚未保存")).toBeTruthy();
 });
@@ -194,19 +196,31 @@ test("主页创建后显示环境、名称与描述，模板库只保留保存�
 // 场景：纯空白名称不能创建，取消对话框不切换页面，重新打开清空未提交信息。
 test("创建表单拒绝空白名称并支持取消", async () => {
   render(<HomePage />);
-  const cloud = screen.getByRole("region", { name: "云端模板" });
-  fireEvent.click(within(cloud).getByRole("button", { name: "新建模板" }));
+  fireEvent.click(screen.getByRole("button", { name: "新建云端模板" }));
   let dialog = await screen.findByRole("dialog");
   fireEvent.change(within(dialog).getByLabelText("模板名称"), { target: { value: "   " } });
   fireEvent.submit(within(dialog).getByRole("button", { name: "进入编辑" }).closest("form")!);
   expect(within(dialog).getByRole("alert").textContent).toBe("请输入模板名称");
   fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
   expect(screen.getByRole("tab", { name: "主页" }).getAttribute("aria-selected")).toBe("true");
-  fireEvent.click(within(cloud).getByRole("button", { name: "新建模板" }));
+  fireEvent.click(screen.getByRole("button", { name: "新建云端模板" }));
   dialog = await screen.findByRole("dialog");
   expect(within(dialog).getByLabelText<HTMLInputElement>("模板名称").value).toBe("");
   expect(within(dialog).getByLabelText<HTMLTextAreaElement>("模板描述").maxLength).toBe(1000);
   expect(within(dialog).getByLabelText<HTMLInputElement>("模板名称").maxLength).toBe(100);
+});
+
+// 场景：每行名称与说明共同触发模板选择，云端和本地传递各自环境及模板 ID。
+test.each(["cloud", "local"] as const)("%s 模板整行选择保留来源与 ID", (environment) => {
+  const template = { ...savedTemplate(), description: "用于产品视频的文字效果" };
+  const selections: TemplateSelection[] = [];
+  render(<TemplateCollection environment={environment}
+    collection={{ templates: [template], loading: false, error: "", unavailable: false, refresh: () => {} }}
+    onSelect={(selection) => selections.push(selection)} />);
+  const row = screen.getByRole("button", { name: `选择模板：${template.name}` });
+  expect(screen.getAllByRole("listitem")).toHaveLength(1);
+  fireEvent.click(within(row).getByText(template.description));
+  expect(selections).toEqual([{ environment, templateId: template.template_id }]);
 });
 
 // 场景：两个环境的新草稿保留来源，StrictMode 重建不会清除主页输入或重复打开保护弹窗。
@@ -264,7 +278,7 @@ test("主页与模板库切换保留未保存内容", async () => {
   await addText();
   fireEvent.change(screen.getByLabelText("示例文字"), { target: { value: "保留标题" } });
   fireEvent.mouseDown(screen.getByRole("tab", { name: "主页" }), { button: 0 });
-  fireEvent.mouseDown(screen.getByRole("tab", { name: "模板库" }), { button: 0 });
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "模版编辑" }), { button: 0 });
   expect(screen.getByLabelText<HTMLInputElement>("示例文字").value).toBe("保留标题");
   expect(screen.getByLabelText("模板名称").textContent).toBe("旅行模板");
   fireEvent.mouseDown(screen.getByRole("tab", { name: "主页" }), { button: 0 });

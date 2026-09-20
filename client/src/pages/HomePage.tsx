@@ -1,6 +1,6 @@
 /** 首页以侧边导航组合工作区；设置经侧栏底部按钮打开对话框，业务面板隐藏时保留草稿、播放器与订阅。 */
 import { Fragment, useState } from "react";
-import { Film, House, LayoutTemplate, Settings, Sparkles } from "lucide-react";
+import { Film, House, Settings, Sparkles, SquarePen } from "lucide-react";
 import CurrentTime from "@/components/CurrentTime";
 import { Button } from "@/components/ui/button";
 import { SettingsDialog } from "@/features/settings/SettingsDialog";
@@ -9,11 +9,12 @@ import { TemplateHome, type TemplateSelection } from "@/features/templates/Templ
 import { RemotionWorkspace } from "@/features/remotion_templates/RemotionWorkspace";
 import { Tabs as TabsPrimitive } from "radix-ui";
 import { TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { cn } from "@/lib/utils";
 
 /** 工作区固定入口共享侧栏样式；保留文字的无障碍名称，窄屏只显示图标。 */
 const navigation = [
   { value: "home", label: "主页", icon: House },
-  { value: "library", label: "模板库", icon: LayoutTemplate },
+  { value: "library", label: "模版编辑", icon: SquarePen },
   { value: "remotion", label: "Remotion 字效", icon: Sparkles },
 ];
 
@@ -75,16 +76,16 @@ export default function HomePage() {
           <span className="sr-only md:not-sr-only">设置</span>
         </Button>
       </aside>
-      <main className="min-w-0 flex-1 px-3 py-3 sm:px-5">
-        <div className="mx-auto max-w-[1920px] space-y-3">
-          <header className="flex flex-wrap items-center justify-between gap-3 border-b pb-3">
+      <main className={cn("min-w-0 flex-1 px-3 py-3 sm:px-5", workspace === "home" && "h-dvh")}>
+        <div className={cn("mx-auto max-w-[1920px]", workspace === "home" ? "flex h-full min-h-0 flex-col gap-3" : "space-y-3")}>
+          <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b pb-3">
             <div className="space-y-1.5">
               <p className="text-xs font-medium tracking-widest text-muted-foreground">INTELLIGENT MIX VIDEO</p>
               <h1 className="text-xl font-semibold tracking-tight">特效模板</h1>
             </div>
             <CurrentTime />
           </header>
-          <TabsContent value="home" forceMount hidden={workspace !== "home"}>
+          <TabsContent value="home" forceMount hidden={workspace !== "home"} className="min-h-0">
             {workspace === "home" && (
               <TemplateHome onSelect={(next) => {
                 setSelection(next);
