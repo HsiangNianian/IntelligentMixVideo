@@ -1,16 +1,22 @@
-"""合成时间线的确定性、音视频时序、效果和边界测试；执行 uv run --locked pytest -v。"""
+"""合成时间线的确定性、音视频时序、效果与对象规则测试；执行 uv run --locked pytest -v。"""
 
 from copy import deepcopy
 
 import pytest
-
-from server.template.schema import effect_catalog
+from server.template.schema import EffectTemplateEditor, TemplateSave, effect_catalog
 from server.video_composition.timeline import build_timeline
+
+from .conftest import template_track
 
 
 def choose(case, key, catalog_id):
     """在独立快照中选择真实目录效果，不修改生产模板或目录。"""
-    case["template"]["editor"][key] = catalog_id
+    target = next((role for role in ("title", "subtitle", "bubble") if key.startswith(role)), key)
+    track = next((track for track in case["template"]["tracks"] if track["target"] == target), None)
+    if track is None:
+        track = template_track(target)
+        case["template"]["tracks"].append(track)
+    track["editor"][key] = catalog_id
     case["template"]["effect_ids"].append(catalog_id)
     case["template"]["effects"].append(effect_catalog()[catalog_id].model_dump(mode="json"))
 
@@ -103,31 +109,28 @@ def test_selected_global_effects_apply_once(composition_case):
 def test_short_text_motions_share_duration_and_position_bounds(composition_case):
     """短字幕的入出同比缩短，100% 坐标映射 0.9999，显式换行保留。"""
     choose(composition_case, "titleOut", "out/fade_out")
-    composition_case["template"]["editor"].update(titleInDuration=3, titleOutDuration=1, titleX=100)
+    composition_case["template"]["tracks"][1]["editor"].update(titleInDuration=3, titleOutDuration=1, titleX=100)
     timeline, _ = build_timeline(**composition_case)
     title = timeline["SubtitleTracks"][1]["SubtitleTrackClips"][0]
     assert (title["AaiMotionIn"], title["AaiMotionOut"]) == (1.5, 0.5)
     assert title["X"] == 0.9999
 
 
-def test_transitions_only_at_visual_boundaries_and_share_budget(composition_case):
-    """连续未命中无转场；一毫秒数字人空隙保留，短片段两侧总预算不超区间。"""
+def test_transition_rejects_insufficient_adjacent_material(composition_case):
+    """转场对象连接明确位置，邻接素材过短时拒绝合成。"""
     effect = next(item for item in effect_catalog().values() if item.category == "transition/normal")
     choose(composition_case, "transition", effect.id)
+    track = composition_case["template"]["tracks"][-1]
+    track.update(start=2.5, duration=0.5)
     plain, _ = build_timeline(**composition_case)
-    assert "DLTransition" not in str(plain)
+    assert len(plain["VideoTracks"][0]["VideoTrackClips"]) == 2
+    assert plain["VideoTracks"][0]["VideoTrackClips"][0]["Effects"][-1]["Duration"] == 0.5
     composition_case["segments"][1]["start_time"] = 3.001
     composition_case["matches"][1]["start_time"] = 3.001
     for i, item in enumerate(composition_case["matches"]):
         item.update(matched_candidate_url=f"https://media.example.test/{i}.mp4", matched_candidate_type="video")
-    timeline, warnings = build_timeline(**composition_case)
-    clips = timeline["VideoTracks"][0]["VideoTrackClips"]
-    assert [(clip["TimelineIn"], clip["TimelineOut"]) for clip in clips] == [(0, 1), (1, 3), (3, 3.001), (3.001, 6), (6, 8)]
-    assert warnings and "DLTransition" in str(timeline) and "'Type': 'Transition'" not in str(timeline)
-    for i, clip in enumerate(clips):
-        before = sum(e["Duration"] for e in clips[i - 1]["Effects"] if e["Type"] == "DLTransition") if i else 0
-        after = sum(e["Duration"] for e in clip["Effects"] if e["Type"] == "DLTransition")
-        assert before + after <= clip["TimelineOut"] - clip["TimelineIn"] + 1e-9
+    with pytest.raises(ValueError, match="相邻片段不足"):
+        build_timeline(**composition_case)
 
 
 @pytest.mark.parametrize("change", [
@@ -167,4 +170,73 @@ def test_invalid_snapshot_fails_before_ims(composition_case, change):
     elif change == "wrong-time":
         composition_case["matches"][0]["end_time"] = 3.001
     with pytest.raises(ValueError):
+        build_timeline(**composition_case)
+
+
+def apply_tracks(case: dict, tracks: list[dict]) -> None:
+    """通过真实 Schema 和随包目录建立对象快照，不调用外部合成服务。"""
+    effect_ids = sorted({value for track in tracks for value in EffectTemplateEditor.model_validate(track["editor"]).selected_effects().values()})
+    data = TemplateSave(name="时间规则模板", effect_ids=effect_ids, tracks=tracks)
+    case["template"].update(data.model_dump(mode="json", by_alias=True, exclude={"template_id"}))
+    case["template"]["effects"] = [effect_catalog()[key].model_dump(mode="json") for key in effect_ids]
+
+
+def test_independent_effect_rules_reach_composition(composition_case):
+    """重复画面特效分别应用百分比和秒数，越界截短且完整保留输入快照。"""
+    asset = next(item for item in effect_catalog().values() if item.category == "vfx/normal")
+    editor = EffectTemplateEditor(title="", subtitle="", bubble_text="", vfx=asset.id).model_dump(by_alias=True)
+    apply_tracks(composition_case, [
+        {"id": "effect-a", "target": "vfx", "start_mode": "percent", "start": 25, "duration": 3, "editor": editor},
+        {"id": "effect-b", "target": "vfx", "start_mode": "seconds", "start": 6, "duration": 5, "editor": editor},
+        {"id": "effect-c", "target": "vfx", "start_mode": "seconds", "start": 20, "duration": None, "editor": editor},
+    ])
+    original = deepcopy(composition_case)
+    timeline, warnings = build_timeline(**composition_case)
+    effects = [row["EffectTrackItems"][0] for row in timeline["EffectTracks"]]
+    assert [(item["TimelineIn"], item["TimelineOut"]) for item in effects] == [(2, 5), (6, 8)]
+    assert all(item["SubType"] == asset.effect_id for item in effects)
+    assert any("effect-b" in item and "缩短" in item for item in warnings)
+    assert any("effect-c" in item and "没有可显示" in item for item in warnings)
+    assert composition_case == original
+
+
+def test_text_rules_keep_business_content_and_separate_styles(composition_case):
+    """标题采用指定区间，字幕与文案时间取交集，同类字幕保留独立位置和文字来源。"""
+    title = EffectTemplateEditor(title="示例标题", subtitle="", bubble_text="", title_in="in/fade_in")
+    subtitle = EffectTemplateEditor(title="", subtitle="示例字幕", bubble_text="", subtitle_in="in/fade_in")
+    apply_tracks(composition_case, [
+        {"id": "title", "target": "title", "start_mode": "percent", "start": 50, "duration": 2, "editor": title.model_dump(by_alias=True)},
+        {"id": "subtitle-a", "target": "subtitle", "start_mode": "seconds", "start": 2, "duration": 3, "editor": subtitle.model_dump(by_alias=True)},
+        {"id": "subtitle-b", "target": "subtitle", "start_mode": "seconds", "start": 0, "duration": None, "editor": subtitle.model_copy(update={"subtitle_y": 50}).model_dump(by_alias=True)},
+    ])
+    timeline, _ = build_timeline(**composition_case)
+    title_clips, first, second = [row["SubtitleTrackClips"] for row in timeline["SubtitleTracks"]]
+    assert (title_clips[0]["TimelineIn"], title_clips[0]["TimelineOut"]) == (4, 6)
+    assert title_clips[0]["Content"] == composition_case["request"]["title"]
+    assert [(item["TimelineIn"], item["TimelineOut"]) for item in first] == [(2, 3), (4, 5)]
+    assert [(item["TimelineIn"], item["TimelineOut"]) for item in second] == [(1, 3), (4, 6)]
+    assert first[0]["Y"] == 0.82 and second[0]["Y"] == 0.5
+    assert [item["Content"] for item in first] == [item["text"] for item in composition_case["segments"]]
+    assert "示例" not in str(timeline)
+
+
+def test_transition_rule_creates_one_boundary_without_changing_audio(composition_case):
+    """转场仅作用于指定区间，连续源视频保持对应源时间，文案音频总长保持不变。"""
+    asset = next(item for item in effect_catalog().values() if item.category == "transition/normal")
+    editor = EffectTemplateEditor(title="", subtitle="", bubble_text="", transition=asset.id)
+    apply_tracks(composition_case, [{"id": "transition", "target": "transition", "start_mode": "percent", "start": 25, "duration": 1, "editor": editor.model_dump(by_alias=True)}])
+    timeline, _ = build_timeline(**composition_case)
+    first, second = timeline["VideoTracks"][0]["VideoTrackClips"]
+    assert (first["In"], first["Out"], second["In"], second["Out"]) == (0, 3, 3, 8)
+    assert first["Effects"][-1] == {"Type": "DLTransition", "SubType": asset.effect_id, "Duration": 1}
+    assert second["Effects"] == [{"Type": "Volume", "Gain": 0}]
+    assert timeline["AudioTracks"][0]["AudioTrackClips"][0]["TimelineOut"] == 8
+
+
+def test_skipped_object_still_validates_effect_snapshot(composition_case):
+    """视频结尾以外的对象仍校验效果引用，损坏快照不能被跳过规则掩盖。"""
+    editor = EffectTemplateEditor(title="标题", subtitle="", bubble_text="", title_in="in/fade_in")
+    apply_tracks(composition_case, [{"id": "title", "target": "title", "start_mode": "seconds", "start": 100, "duration": 1, "editor": editor.model_dump(by_alias=True)}])
+    composition_case["template"]["effects"] = []
+    with pytest.raises(ValueError, match="模板效果引用"):
         build_timeline(**composition_case)

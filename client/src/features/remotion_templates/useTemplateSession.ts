@@ -23,6 +23,7 @@ interface Session {
   key: number;
   compositionDraft: CompositionDraft;
   workId: string | null;
+  deleting: boolean;
   messages: ChatMessage[];
   job: Job | SessionJob | null;
   jobs: Record<string, SessionJob>;
@@ -50,6 +51,7 @@ function blank(key: number): Session {
     key,
     compositionDraft: defaultComposition(),
     workId: null,
+    deleting: false,
     messages: [],
     job: null,
     jobs: {},
@@ -224,6 +226,14 @@ export function useTemplateSession(onHistoryChange: () => void) {
     if (current(key, signal)) applyJob(snapshot.job);
     return snapshot.cursor;
   }
+  /** 永久失效终止订阅并清空本地资源，不继续重连不存在的会话。 */
+  function unavailable(error: unknown) {
+    if (!(error instanceof api.ApiError) || ![404, 410].includes(error.status))
+      return false;
+    switchWork(null);
+    publish({ error: "会话已删除或正在清理，可在历史列表重试未完成的删除。" });
+    return true;
+  }
   /** 断线从最后已应用的 ID 续传；游标失效才重新取快照，永不重发 POST。 */
   async function watch(
     work: string,
@@ -254,11 +264,13 @@ export function useTemplateSession(onHistoryChange: () => void) {
         }
       } catch (error) {
         if (!current(key, signal)) return;
+        if (unavailable(error)) return;
         publish({ connection: "reconnecting" });
         if (error instanceof StreamReset) {
           try {
             cursor = await hydrate(work, key, signal);
-          } catch {
+          } catch (error) {
+            if (!current(key, signal) || unavailable(error)) return;
             /* 下一次连接仍以原游标触发快照恢复。 */
           }
         }
@@ -285,6 +297,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
       publish({ loading: false });
       void watch(work, key, controller.signal, cursor);
     } catch (error) {
+      if (!current(key, controller.signal) || unavailable(error)) return;
       if (current(key, controller.signal))
         publish({
           loading: false,
@@ -310,8 +323,36 @@ export function useTemplateSession(onHistoryChange: () => void) {
   /** 未保存参数必须先决定去留，同一会话的重复选择不清空草稿。 */
   function select(work: string | null) {
     if (work !== null && work === latest.current.workId) return;
-    if (dirty()) publish({ navigation: { work, saving: false } });
+    if (dirty() && !latest.current.deleting)
+      publish({ navigation: { work, saving: false } });
     else switchWork(work);
+  }
+  /** 删除确认授权放弃草稿；使旧回执失效，其他会话的删除不打断当前编辑。 */
+  async function deleteWork(work: string) {
+    if (latest.current.workId === work) {
+      scope.current.abort();
+      previewRequest.current?.abort();
+      parameterSave.current = false;
+      publish({
+        key: latest.current.key + 1,
+        deleting: true,
+        busy: null,
+        loading: false,
+        previewLoading: false,
+        connection: null,
+        navigation: null,
+        retryMode: null,
+      });
+    }
+    try {
+      await api.deleteWork(work);
+      if (!alive.current) return;
+      if (latest.current.workId === work) switchWork(null);
+      else changed.current();
+    } catch (error) {
+      if (alive.current) changed.current();
+      throw error;
+    }
   }
   /** 历史预览只读取成功版本；独立请求代号确保快速切换时最后一次选择生效。 */
   async function viewVersion(id: string) {
@@ -349,7 +390,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
   /** 选择版本不改变编辑基线；未保存参数沿用同一套保存、放弃、取消保护。 */
   function selectVersion(id: string) {
     const s = latest.current;
-    if (s.busy || s.loading || s.retryMode === "read") return;
+    if (s.deleting || s.busy || s.loading || s.retryMode === "read") return;
     if (
       !s.previewLoading &&
       !s.previewError &&
@@ -384,7 +425,12 @@ export function useTemplateSession(onHistoryChange: () => void) {
     kind: "chat" | "parameters",
     start: () => Promise<Job>,
   ) {
-    if (latest.current.busy || latest.current.loading) return;
+    if (
+      latest.current.deleting ||
+      latest.current.busy ||
+      latest.current.loading
+    )
+      return;
     const key = latest.current.key;
     publish({ busy: kind, error: "", retryMode: null });
     try {
@@ -413,6 +459,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
   function send(text: string, image?: File) {
     const s = latest.current;
     if (
+      s.deleting ||
       s.busy ||
       s.loading ||
       s.previewLoading ||
@@ -471,6 +518,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
       !s.workId ||
       s.previewVersion ||
       s.previewLoading ||
+      s.deleting ||
       s.busy ||
       s.loading ||
       s.retryMode === "read" ||
@@ -492,6 +540,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
       s.previewVersion ||
       s.previewLoading ||
       !dirty() ||
+      s.deleting ||
       s.busy ||
       s.loading ||
       s.retryMode === "read" ||
@@ -515,7 +564,14 @@ export function useTemplateSession(onHistoryChange: () => void) {
   /** 撤销仅恢复本地已保存参数，不创建任务；保存结果未知时须先读取确认。 */
   function discardParameters() {
     const s = latest.current;
-    if (!s.version || s.busy || s.loading || s.retryMode === "read") return;
+    if (
+      s.deleting ||
+      !s.version ||
+      s.busy ||
+      s.loading ||
+      s.retryMode === "read"
+    )
+      return;
     parameterSave.current = false;
     publish({
       values: { ...s.version.candidate.default_config },
@@ -523,10 +579,15 @@ export function useTemplateSession(onHistoryChange: () => void) {
       retryMode: null,
     });
   }
-  /** 停止是唯一取消服务端任务的入口；回执后恢复快照以覆盖连接暂时中断。 */
+  /** 显式停止保留会话；回执后恢复快照，删除则由独立接口停止并清理。 */
   async function stop() {
     const s = latest.current;
-    if (!s.job || !s.workId || !["queued", "running"].includes(s.job.status))
+    if (
+      s.deleting ||
+      !s.job ||
+      !s.workId ||
+      !["queued", "running"].includes(s.job.status)
+    )
       return;
     try {
       await api.cancel(s.job.id);
@@ -540,6 +601,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
   function retry() {
     const s = latest.current;
     if (
+      s.deleting ||
       s.busy ||
       s.loading ||
       (dirty() &&
@@ -559,7 +621,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
   /** 较早消息分页只合并消息，不用旧分页响应覆盖正在推进的任务或版本。 */
   async function older() {
     const s = latest.current;
-    if (!s.workId || !s.nextBefore || s.olderLoading) return;
+    if (s.deleting || !s.workId || !s.nextBefore || s.olderLoading) return;
     const signal = scope.current.signal;
     publish({ olderLoading: true });
     try {
@@ -613,6 +675,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
     discardParameters,
     resolveNavigation,
     canRecover:
+      !state.deleting &&
       !state.busy &&
       !state.loading &&
       (!dirty() ||
@@ -622,6 +685,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
     retry,
     select,
     selectVersion,
+    deleteWork,
     reset: () => select(null),
     older,
   };

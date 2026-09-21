@@ -33,13 +33,18 @@ try {
   });
   const page = await context.newPage();
   const errors = [];
+  let deleted = false;
   page.on("pageerror", (e) => errors.push(e.message));
   await page.route("**/api/templates/**", async (route) => {
     const req = route.request();
     const url = new URL(req.url());
     const path = url.pathname.replace("/api/templates", "");
-    /** 返回确定的公开数据，所有写请求均失败，防止测试意外连接真实服务。 */
+    /** 返回确定的公开数据，仅允许本测试明确执行的会话删除，不连接真实服务。 */
     const json = (body) => route.fulfill({ json: body });
+    if (req.method() === "DELETE" && path === "/works/work-1") {
+      deleted = true;
+      return route.fulfill({ status: 204 });
+    }
     assert.equal(req.method(), "GET");
     const jobs = versions.map((v, i) => ({
       id: `job-${i + 1}`,
@@ -55,15 +60,17 @@ try {
     if (path === "/capabilities") return json({ models_configured: true });
     if (path === "/works")
       return json({
-        items: [
-          {
-            id: "work-1",
-            title: "温暖的电影标题",
-            updated_at: "2026-09-17T06:01:00Z",
-            current_version_id: "version-2",
-            job: jobs[1],
-          },
-        ],
+        items: deleted
+          ? []
+          : [
+              {
+                id: "work-1",
+                title: "温暖的电影标题",
+                updated_at: "2026-09-17T06:01:00Z",
+                current_version_id: "version-2",
+                job: jobs[1],
+              },
+            ],
         next_cursor: null,
       });
     if (path.endsWith("/session"))
@@ -126,6 +133,7 @@ try {
     return route.fulfill({ status: 404 });
   });
   await page.goto(url);
+  await page.getByRole("tab", { name: "Remotion 字效", exact: true }).click();
   await page.getByRole("button", { name: /温暖的电影标题/ }).click();
   await page.getByRole("button", { name: "预览 V2", exact: true }).waitFor();
   await page
@@ -146,6 +154,11 @@ try {
     path: join(screenshots, "imv-remotion-desktop.png"),
     fullPage: true,
   });
+  // 桌面删除先确认，取消不影响当前播放器或历史选择。
+  await page.getByRole("button", { name: "删除聊天", exact: true }).click();
+  await page.getByRole("dialog").waitFor();
+  await page.getByRole("button", { name: "取消", exact: true }).click();
+  assert.equal(deleted, false);
   const frame = page.locator('iframe[title="Remotion 字效播放器"]');
   const rect = await frame.boundingBox();
   // Player 自身保持画布比例；iframe 占满预览区域，避免竖屏画布挤压播放控件。
@@ -180,6 +193,7 @@ try {
   );
   assert(pref);
   await page.reload();
+  await page.getByRole("tab", { name: "Remotion 字效", exact: true }).click();
   await page.getByRole("button", { name: "预览 V2", exact: true }).waitFor();
   assert.equal(
     await page.evaluate(() => localStorage.getItem("imv.remotion.layout")),
@@ -284,7 +298,27 @@ try {
     fullPage: true,
   });
   assert(await frame.isVisible());
+  // 窄屏删除按钮关闭抽屉并打开确认框，删除当前会话后播放器和选择同步释放。
   await page.getByRole("button", { name: "聊天历史", exact: true }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "删除聊天", exact: true })
+    .click();
+  await page.getByRole("button", { name: "确认删除", exact: true }).click();
+  await page.getByRole("dialog").waitFor({ state: "hidden" });
+  assert.equal(deleted, true);
+  assert.equal(await frame.count(), 0);
+  assert.equal(
+    await page.evaluate(
+      () =>
+        Object.keys(localStorage).filter((key) =>
+          key.startsWith("imv.remotion.selected:"),
+        ).length,
+    ),
+    0,
+  );
+  await page.getByRole("button", { name: "聊天历史", exact: true }).click();
+  await page.getByRole("dialog").getByText("还没有聊天会话").waitFor();
   await page
     .getByRole("dialog")
     .getByRole("button", { name: "新增聊天" })
@@ -298,6 +332,7 @@ try {
   );
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.reload();
+  await page.getByRole("tab", { name: "Remotion 字效", exact: true }).click();
   await page.getByRole("button", { name: "新增聊天" }).waitFor();
   assert(
     Math.abs(
@@ -311,7 +346,7 @@ try {
   );
   assert.equal(errors.length, 0, errors.join("\n"));
   console.log(
-    "PASS: 预览尺寸、拖拽/键盘调宽、栏宽恢复、历史预览、未保存保护、新增聊天及 390px 窄屏布局。截图：" +
+    "PASS: 预览尺寸、拖拽/键盘调宽、栏宽恢复、历史预览、未保存保护、新增聊天、桌面删除确认与窄屏删除清理及 390px 窄屏布局。截图：" +
       screenshots,
   );
 } finally {

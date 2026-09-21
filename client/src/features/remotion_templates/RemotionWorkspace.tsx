@@ -55,6 +55,7 @@ export function RemotionWorkspace() {
   const unresolved =
     !!session.job && ["queued", "running"].includes(session.job.status);
   const pending =
+    session.deleting ||
     session.loading ||
     !!session.busy ||
     unresolved ||
@@ -125,6 +126,11 @@ export function RemotionWorkspace() {
             onRefresh={history.refresh}
             onMore={history.more}
             onNew={session.reset}
+            dirty={session.dirty}
+            onDelete={async (id) => {
+              await session.deleteWork(id);
+              history.remove(id);
+            }}
           />
         }
         chat={
@@ -161,7 +167,7 @@ export function RemotionWorkspace() {
               !!serviceError ||
               !!configurationError
             }
-            canStop={unresolved}
+            canStop={unresolved && !session.deleting}
             first={!session.workId}
             configuration={
               !session.workId ? (

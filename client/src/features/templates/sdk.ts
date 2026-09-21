@@ -17,9 +17,10 @@ export interface Player {
   pause(): void;
   destroy(): void;
   currentTime: number;
+  aspectRatio?: string;
   setTimeline(timeline: unknown): Promise<unknown>;
   event$: {
-    subscribe(callback: (event: { type: string }) => void): {
+    subscribe(callback: (event: { type: string; data?: { currentTime?: number; time?: number } }) => void): {
       unsubscribe(): void;
     };
   };

@@ -85,6 +85,7 @@ Provider 不打印密钥或原始错误响应。部署时可通过环境变量�
 | 上传图片，得到 asset ID | `POST /assets`，multipart 字段 `file` |
 | 历史参考图片 | `GET /assets/{id}`，校验登记文件的完整性 |
 | 创建作品并排队 | `POST /works` |
+| 删除会话与关联数据 | `DELETE /works/{id}`，完成或已不存在返回 204，清理失败返回 503 |
 | 历史会话分页 | `GET /works?history=true&limit=30`，返回 `next_cursor` |
 | 会话快照及更早消息 | `GET /works/{id}/session?limit=50`，以 `next_before` 请求更早消息 |
 | SSE 会话订阅 | `GET /works/{id}/stream?after=0`，支持 `Last-Event-ID` |
@@ -152,13 +153,31 @@ SSE 类型为 `message.created`、`job.updated`、`version.ready`，`data` 为�
 
 空闲时每 15 秒发送心跳注释，响应为 `text/event-stream`、`Cache-Control: no-cache` 和
 `X-Accel-Buffering: no`。服务端每次有界读取后释放数据库连接，空闲等待可中断；
-关闭订阅与运行时任务相互独立。客户端切换、新增或退出不会取消旧任务，取消只由显式 `/cancel` 发起。
+关闭订阅与运行时任务相互独立。客户端切换、新增或退出不会取消旧任务，取消由显式 `/cancel` 或确认删除会话发起。
 部署反向代理时关闭事件缓冲，并使读取超时长于心跳间隔。
 原 `/works` 默认列表、任务查询与 `/jobs/{id}/events` JSON 接口保持兼容。
 
 历史与流协议的离线回归见 `server/tests/test_remotion_history.py`，覆盖事务回滚、旧记录恢复、
 快照并发、分页、素材校验、100 条以上事件重放、心跳、真实 HTTP 重连及主应用跨域预检；
 成功版本与后续参数失败的关系由 `test_remotion_templates.py` 验证。
+
+### 删除聊天与关联数据
+
+`DELETE /works/{id}` 不需要模型配置。先持久化删除标记并取消排队/运行任务，
+等待模型、渲染及队列收尾完成后，清理该会话全部 `jobs/<job_id>/`、
+`accepted/<version_id>/` 与专属参考图片，再删除 SQLite 中的聊天、模型上下文、任务、
+事件、处理时间线、版本和会话记录。共享图片在最后一个会话引用删除时才清理；
+未关联上传、其他会话、数据库文件、运行锁、字体和依赖保持不变。
+所有路径来自实际配置的 `IMV_DATA_DIR`，不固定为工作目录的 `./data`。
+
+数据库与文件系统分步处理。文件清理失败保留删除标记及所需元数据，返回 503；
+历史分页的 `deleting=true` 提供重试入口，该会话读写返回 410，不能继续生成。
+重试 DELETE 或重启服务会继续清理；重复删除已不存在的 ID 返回 204，非法 UUID 返回 422。
+断开 HTTP 请求不取消已经开始的清理。文件删除不意味着对 SQLite 空闲页或磁盘做安全擦除。
+
+已有 SSE 连接收到 `event: work.deleted` 后关闭，其 `data` 仅为 `{ "work_id": "..." }`，
+没有事件 ID，也不保留可重放的删除记录。新连接在删除中返回 410，完成后返回 404；
+客户端将两者作为终止状态，不再重连。
 
 ### 任务阶段时间线
 

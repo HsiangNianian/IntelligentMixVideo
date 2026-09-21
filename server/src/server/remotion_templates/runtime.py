@@ -2,9 +2,12 @@
 
 import asyncio
 import json
+import logging
+import sqlite3
 from contextlib import suppress
 from uuid import UUID
 
+from .deletion import finish as finish_deletion
 from .settings import ClientSettings, Settings
 from ..file_lock import lock_exclusive
 from .harness import Harness
@@ -23,6 +26,8 @@ class Runtime:
         self.worker: asyncio.Task | None = None
         self.active: asyncio.Task | None = None
         self.active_id: UUID | None = None
+        self.active_done: asyncio.Event | None = None
+        self.deletions: dict[UUID, asyncio.Task] = {}
         self.lock = None
         self.client_configs: dict[UUID, Settings] = {}
 
@@ -34,6 +39,13 @@ class Runtime:
             lock_exclusive(self.lock)
             self.store.initialize()
             self.store.interrupt_unfinished()
+            for work_id in self.store.pending_deletions():
+                try:
+                    finish_deletion(self.store, work_id)
+                except (OSError, sqlite3.Error):
+                    logging.getLogger(__name__).exception(
+                        "Work deletion recovery failed: %s", work_id
+                    )
         except BaseException:
             self.lock.close()
             self.lock = None
@@ -135,10 +147,43 @@ class Runtime:
         self.client_configs.pop(job_id, None)
         job = self.store.update(job_id, status="cancelled", stage="finished")
         if self.active_id == job_id and self.active:
-            self.active.cancel()
+            # Repeated stop/delete requests must not interrupt the cancellation finalizer.
+            if not self.active.cancelling():
+                self.active.cancel()
             with suppress(asyncio.CancelledError):
                 await self.active
         return job
+
+    async def delete_work(self, work_id: UUID) -> None:
+        """Coalesce duplicate requests; disconnecting the HTTP client does not cancel cleanup."""
+        task = self.deletions.get(work_id)
+        if task is None:
+            task = asyncio.create_task(self._delete_work(work_id))
+            self.deletions[work_id] = task
+
+            def finished(result: asyncio.Task) -> None:
+                """Release completed operations and consume errors even after client disconnect."""
+                self.deletions.pop(work_id, None)
+                if not result.cancelled():
+                    result.exception()
+
+            task.add_done_callback(finished)
+        await asyncio.shield(task)
+
+    async def _delete_work(self, work_id: UUID) -> None:
+        """Stop writes and wait for queue bookkeeping before removing files or job rows."""
+        jobs = self.store.begin_deletion(work_id)
+        for job_id in jobs:
+            self.client_configs.pop(job_id, None)
+        if self.active_id in jobs and self.active:
+            active, done = self.active, self.active_done
+            if not active.cancelling():
+                active.cancel()
+            with suppress(asyncio.CancelledError):
+                await active
+            if done is not None:
+                await done.wait()
+        await asyncio.to_thread(finish_deletion, self.store, work_id)
 
     async def _work(self) -> None:
         """Drain FIFO jobs without polling or allowing a failed run to stop subsequent work."""
@@ -147,6 +192,7 @@ class Runtime:
             if job is None:
                 return
             self.active_id = job.id
+            done = self.active_done = asyncio.Event()
             self.active = asyncio.create_task(self._execute(job.id))
             try:
                 await self.active
@@ -154,7 +200,8 @@ class Runtime:
                 if self.store.job(job.id).status != "cancelled":
                     raise
             finally:
-                self.active, self.active_id = None, None
+                self.active, self.active_id, self.active_done = None, None, None
+                done.set()
 
     async def _execute(self, job_id: UUID) -> None:
         """Resolve intent, run a bounded harness and atomically publish only accepted evidence."""

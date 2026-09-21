@@ -1,12 +1,13 @@
 /** 历史会话列表和小屏抽屉复用同一内容，业务数据与分页请求由工作区提供。 */
-import { useState } from "react";
-import { History, MessageSquare, Plus, RefreshCw } from "lucide-react";
+import { useRef, useState } from "react";
+import { History, MessageSquare, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogTitle,
+  DialogFooter,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { jobLabel, type WorkSummary } from "./model";
@@ -22,17 +23,47 @@ interface Props {
   onRefresh: () => void;
   onMore: () => void;
   onNew: () => void;
+  dirty: boolean;
+  onDelete: (id: string) => Promise<void>;
 }
 /** 桌面常驻列表，小屏用带焦点管理和 Escape 关闭能力的抽屉。 */
 export function HistorySidebar(props: Props) {
   const [open, setOpen] = useState(false);
+  const [target, setTarget] = useState<WorkSummary | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState("");
+  const submitted = useRef(false);
+  /** 打开确认不修改会话；先关闭窄屏抽屉，避免两个焦点陷阱重叠。 */
+  function askDelete(work: WorkSummary) {
+    setOpen(false);
+    setError("");
+    setTarget(work);
+  }
+  /** 失败保留目标供显式重试，关闭弹窗不会自动再次发送删除。 */
+  async function confirmDelete() {
+    if (!target || submitted.current) return;
+    submitted.current = true;
+    setDeleting(true);
+    setError("");
+    try {
+      await props.onDelete(target.id);
+      setTarget(null);
+    } catch {
+      setError(
+        "删除未确认完成，清理中的会话无法继续编辑。请重试删除；已开始的清理会在服务重启后继续。",
+      );
+    } finally {
+      submitted.current = false;
+      setDeleting(false);
+    }
+  }
   return (
     <>
       <aside
         aria-label="字效历史会话"
         className="hidden h-full min-h-0 lg:block"
       >
-        <HistoryList {...props} />
+        <HistoryList {...props} onDelete={askDelete} />
       </aside>
       <div className="lg:hidden">
         <Button
@@ -55,6 +86,7 @@ export function HistorySidebar(props: Props) {
             <div className="min-h-0 flex-1">
               <HistoryList
                 {...props}
+                onDelete={askDelete}
                 onNew={() => {
                   props.onNew();
                   setOpen(false);
@@ -68,6 +100,53 @@ export function HistorySidebar(props: Props) {
           </DialogContent>
         </Dialog>
       </div>
+      <Dialog
+        open={!!target}
+        onOpenChange={(value) => {
+          if (!value && !submitted.current) setTarget(null);
+        }}
+      >
+        <DialogContent showCloseButton={!deleting}>
+          <DialogTitle>删除字效聊天</DialogTitle>
+          <DialogDescription>
+            将永久删除「{target?.title}
+            」的全部聊天、历史代码和生成文件，无法恢复。
+            {target &&
+              ["queued", "running"].includes(target.job.status) &&
+              "正在进行的任务会先停止。"}
+            {target?.id === props.selected &&
+              props.dirty &&
+              "当前未保存的参数修改也会被放弃。"}
+          </DialogDescription>
+          {error && (
+            <p role="alert" className="text-sm text-destructive">
+              {error}
+            </p>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              disabled={deleting}
+              onClick={() => setTarget(null)}
+            >
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={deleting}
+              onClick={() => void confirmDelete()}
+            >
+              {deleting
+                ? "正在停止并清理…"
+                : error || target?.deleting
+                  ? "重试删除"
+                  : target && ["queued", "running"].includes(target.job.status)
+                    ? "停止并删除"
+                    : "确认删除"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
@@ -82,7 +161,8 @@ function HistoryList({
   onRefresh,
   onMore,
   onNew,
-}: Props) {
+  onDelete,
+}: Omit<Props, "onDelete"> & { onDelete: (work: WorkSummary) => void }) {
   return (
     <section className="flex h-full min-h-0 flex-col rounded-xl border bg-muted/35">
       <div className="flex h-14 shrink-0 items-center justify-between px-4">
@@ -118,41 +198,57 @@ function HistoryList({
           </p>
         )}
         {items.map((work) => (
-          <button
-            key={work.id}
-            type="button"
-            aria-current={selected === work.id ? "true" : undefined}
-            title={work.id}
-            onClick={() => onSelect(work.id)}
-            className={cn(
-              "w-full space-y-2 rounded-lg border border-transparent p-3 text-left text-sm transition-colors hover:bg-background/80 focus-visible:outline-2 focus-visible:outline-ring",
-              selected === work.id &&
-                "border-primary/15 bg-background shadow-sm",
-            )}
-          >
-            <span className="flex items-center gap-2 font-medium">
-              <MessageSquare
-                className={cn(
-                  "size-3.5 shrink-0",
-                  selected === work.id
-                    ? "text-primary"
-                    : "text-muted-foreground",
-                )}
-              />
-              <span className="truncate">{work.title}</span>
-            </span>
-            <span className="flex flex-wrap justify-between gap-1 text-xs text-muted-foreground">
-              <span>{jobLabel(work.job.status)}</span>
-              <time dateTime={work.updated_at}>
-                {new Date(work.updated_at).toLocaleString("zh-CN", {
-                  month: "numeric",
-                  day: "numeric",
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })}
-              </time>
-            </span>
-          </button>
+          <div key={work.id} className="flex items-center gap-1">
+            <button
+              disabled={work.deleting}
+              type="button"
+              aria-current={selected === work.id ? "true" : undefined}
+              title={work.id}
+              onClick={() => onSelect(work.id)}
+              className={cn(
+                "min-w-0 flex-1 space-y-2 rounded-lg border border-transparent p-3 text-left text-sm transition-colors hover:bg-background/80 focus-visible:outline-2 focus-visible:outline-ring",
+                selected === work.id &&
+                  "border-primary/15 bg-background shadow-sm",
+              )}
+            >
+              <span className="flex items-center gap-2 font-medium">
+                <MessageSquare
+                  className={cn(
+                    "size-3.5 shrink-0",
+                    selected === work.id
+                      ? "text-primary"
+                      : "text-muted-foreground",
+                  )}
+                />
+                <span className="truncate">{work.title}</span>
+              </span>
+              <span className="flex flex-wrap justify-between gap-1 text-xs text-muted-foreground">
+                <span>
+                  {work.deleting
+                    ? "等待清理 · 可重试删除"
+                    : jobLabel(work.job.status)}
+                </span>
+                <time dateTime={work.updated_at}>
+                  {new Date(work.updated_at).toLocaleString("zh-CN", {
+                    month: "numeric",
+                    day: "numeric",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </time>
+              </span>
+            </button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="shrink-0 text-muted-foreground hover:text-destructive"
+              aria-label="删除聊天"
+              title={`删除「${work.title}」`}
+              onClick={() => onDelete(work)}
+            >
+              <Trash2 className="size-4" />
+            </Button>
+          </div>
         ))}
         {hasMore && (
           <Button

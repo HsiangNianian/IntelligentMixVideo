@@ -59,20 +59,30 @@ PORT=8010 uv run --locked server
 {
   "name": "简洁字幕",
   "description": "标题使用淡入动画",
-  "editor": { "titleIn": "in/fade_in" },
+  "tracks": [{
+    "id": "title-1",
+    "target": "title",
+    "start_mode": "seconds",
+    "start": 0,
+    "duration": null,
+    "editor": { "title": "示例标题", "subtitle": "", "bubbleText": "", "titleIn": "in/fade_in" }
+  }],
   "effect_ids": ["in/fade_in"],
   "transition_duration_seconds": 0.5
 }
 ```
 
-`editor` 缺省字段补齐默认值，外层更新按完整配置替换，不是局部 PATCH。
+`tracks` 为必填数组，每个对象通过 `tracks[].editor` 保存参数，缺省参数补齐默认值。模板更新完整替换配置。
+API 与数据库读取均要求此结构；缺少 `tracks`、`tracks: null` 或携带顶层 `editor` 均拒绝处理，不提供旧格式转换。
 字段及范围在 OpenAPI 中列出：名称去除首尾空白后 1～100 字符；说明最多 1000 字符；
 标题、字幕、气泡示例文字最多 60、100、40 字符；字号 12～120 整数；位置 0～100%；动画和转场时长 0.1～3 秒。
-同一文字角色的循环动画与入场、出场互斥。至少选择 1 个效果，最多 20 个不同效果 ID。
+
+独立对象通过 `tracks` 保存，每项包含 `id`、`target`、`start_mode`、`start`、`duration` 和 `editor`。`start_mode` 支持 `seconds` 和 `percent`；百分比范围为 0 至小于 100，`duration` 为正秒数或 `null`（持续到视频结束）。模板不保存视频信息，保存校验不依赖预览时长。应用视频时按输出帧率计算区间：结尾以外不显示、结束越界时截短，动画按有效帧数缩短并记录说明，无法容纳所选动画时明确失败。文案合成逐个应用对象，标题使用请求文字，字幕和关键词采用文案时间与对象区间的交集；转场只连接指定位置的片段，音频总长保持不变。
+同一文字角色的循环动画与入场、出场互斥。至少选择 1 个效果，最多 500 个不同效果 ID。
 
 响应补充 UUID、UTC 创建/更新时间和 `effects` 参数快照。服务端通过固定 SDK 5.2.2 白名单解析效果，
-拒绝未知 ID、错误分类和 `editor` 与 `effect_ids` 不一致；客户端不能提交渲染参数。
-`schema.py` 支持 editor 的 camelCase 输入输出及 snake_case 输入，与原模板字段语义保持一致；本次不启用 protobuf 通信。
+拒绝未知 ID、错误分类和全部 `tracks[].editor` 中的效果与 `effect_ids` 不一致；客户端不能提交渲染参数。
+`schema.py` 支持对象参数的 camelCase 输入输出及 snake_case 输入，接口使用 JSON。
 
 MySQL 单独列保存唯一名称、ID 和时间，JSON 保存完整编辑配置与效果快照。
 保存和删除使用事务；同时保存同名新模板仅一个成功。同时编辑同一个模板时，后一次成功保存覆盖前一次完整配置。

@@ -6,24 +6,8 @@ use std::{fs, io::Write, path::Path};
 use tauri::Manager;
 use uuid::Uuid;
 
-/// 校验完整编辑草稿并从随包目录生成效果快照；不接受调用方提供的路径、时间或渲染参数。
-fn validate(mut draft: Value) -> Result<Value, String> {
-    if draft.as_object().is_none_or(|fields| fields.len() != 4) {
-        return Err("模板字段不完整或包含未知字段".into());
-    }
-    for (key, max, required) in [("name", 100, true), ("description", 1000, false)] {
-        let text = draft[key]
-            .as_str()
-            .ok_or("名称和说明必须是文字")?
-            .trim()
-            .to_owned();
-        if (required && text.is_empty()) || text.chars().count() > max {
-            return Err("模板名称或说明长度不合法".into());
-        }
-        draft[key] = json!(text);
-    }
-    number(&draft["transition_duration_seconds"], 0.1, 3.0, false)?;
-    let editor = &draft["editor"];
+/// 校验对象编辑参数并从随包目录生成效果快照。
+fn validate_editor(editor: &Value) -> Result<Vec<Value>, String> {
     if editor.as_object().is_none_or(|fields| fields.len() != 33) {
         return Err("编辑配置字段不完整或包含未知字段".into());
     }
@@ -108,9 +92,140 @@ fn validate(mut draft: Value) -> Result<Value, String> {
             effects.push(asset);
         }
     }
-    if effects.is_empty() {
-        return Err("请至少选择一个效果".into());
+    Ok(effects)
+}
+
+/// 多轨保存校验时间规则、唯一 ID 与所属对象，模板不包含视频信息。
+fn validate(mut draft: Value) -> Result<Value, String> {
+    let object = draft.as_object().ok_or("模板须为对象")?;
+    if object.len() != 4
+        || ![
+            "name",
+            "description",
+            "transition_duration_seconds",
+            "tracks",
+        ]
+        .iter()
+        .all(|key| object.contains_key(*key))
+    {
+        return Err("模板字段不完整或包含未知字段".into());
     }
+    for (key, max, required) in [("name", 100, true), ("description", 1000, false)] {
+        let text = draft[key]
+            .as_str()
+            .ok_or("名称和说明必须是文字")?
+            .trim()
+            .to_owned();
+        if (required && text.is_empty()) || text.chars().count() > max {
+            return Err("模板名称或说明长度不合法".into());
+        }
+        draft[key] = json!(text);
+    }
+    number(&draft["transition_duration_seconds"], 0.1, 3.0, false)?;
+    let effects = {
+        let items = draft["tracks"].as_array().ok_or("轨道须为数组")?;
+        if items.len() > 100 {
+            return Err("轨道数量不能超过 100".into());
+        }
+        let mut ids = std::collections::HashSet::new();
+        let mut effects: Vec<Value> = Vec::new();
+        let mut transitions = 0;
+        for track in items {
+            if track
+                .as_object()
+                .is_none_or(|fields| fields.len() != 6 || !fields.contains_key("duration"))
+            {
+                return Err("轨道字段不完整".into());
+            }
+            let id = track["id"].as_str().ok_or("轨道 ID 无效")?;
+            if id.is_empty()
+                || id.len() > 100
+                || !id
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                || !ids.insert(id)
+            {
+                return Err("轨道 ID 无效或重复".into());
+            }
+            let target = track["target"].as_str().ok_or("轨道对象无效")?;
+            if !["title", "subtitle", "bubble", "filter", "vfx", "transition"].contains(&target) {
+                return Err("轨道对象无效".into());
+            }
+            number(&track["start"], 0., f64::MAX, false)?;
+            let start = track["start"].as_f64().ok_or("轨道时间无效")?;
+            let mode = track["start_mode"].as_str().ok_or("开始方式无效")?;
+            if !["seconds", "percent"].contains(&mode) || (mode == "percent" && start >= 100.) {
+                return Err("开始方式或百分比无效".into());
+            }
+            if !track["duration"].is_null() {
+                number(&track["duration"], f64::MIN_POSITIVE, f64::MAX, false)?;
+            }
+            if target == "transition" {
+                transitions += 1;
+                let length = track["duration"].as_f64().ok_or("转场需要固定持续时间")?;
+                if transitions > 1 || start <= 0. || !(0.1..=3.).contains(&length) {
+                    return Err("转场位置、时长或数量无效".into());
+                }
+            }
+            let editor = &track["editor"];
+            let validated = validate_editor(editor)?;
+            let mut allowed = vec![target.to_owned()];
+            if ["title", "subtitle", "bubble"].contains(&target) {
+                allowed = vec![if target == "bubble" {
+                    "bubble".into()
+                } else {
+                    format!("{target}Flower")
+                }];
+                for suffix in ["In", "Out", "Loop"] {
+                    allowed.push(format!("{target}{suffix}"));
+                }
+            } else if editor[target] == "" {
+                return Err("轨道缺少效果".into());
+            }
+            for (role, field) in [
+                ("title", "title"),
+                ("subtitle", "subtitle"),
+                ("bubble", "bubbleText"),
+            ] {
+                let content = editor[field].as_str().ok_or("文字无效")?;
+                if (role != target && !content.is_empty())
+                    || (role == target && content.trim().is_empty())
+                {
+                    return Err("轨道文字与对象不一致".into());
+                }
+            }
+            for key in [
+                "titleFlower",
+                "subtitleFlower",
+                "bubble",
+                "filter",
+                "vfx",
+                "transition",
+                "titleIn",
+                "titleOut",
+                "titleLoop",
+                "subtitleIn",
+                "subtitleOut",
+                "subtitleLoop",
+                "bubbleIn",
+                "bubbleOut",
+                "bubbleLoop",
+            ] {
+                if editor[key] != "" && !allowed.contains(&key.to_owned()) {
+                    return Err("轨道包含其他对象的效果".into());
+                }
+            }
+            for asset in &validated {
+                if !effects.contains(asset) {
+                    effects.push(asset.clone());
+                }
+            }
+        }
+        if effects.is_empty() {
+            return Err("请至少选择一个效果".into());
+        }
+        effects
+    };
     draft["effect_ids"] = effects.iter().map(|item| item["id"].clone()).collect();
     draft["effects"] = json!(effects);
     Ok(draft)
@@ -141,6 +256,13 @@ fn read(directory: &Path) -> Result<Vec<Value>, String> {
         for key in ["created_at", "updated_at"] {
             chrono::DateTime::parse_from_rfc3339(record[key].as_str().ok_or("本地模板时间缺失")?)
                 .map_err(|_| "本地模板时间无效")?;
+        }
+        // 旧模板需要用户清理文件，读取期间保留原始数据。
+        if !record["tracks"].is_array() || record.get("editor").is_some() {
+            return Err(format!(
+                "本地模板字段已变化，原有模板无法读取。请删除旧模板文件后重试（将清除全部本地模板）：{}",
+                directory.join("templates.json").display()
+            ));
         }
         let mut draft = record.clone();
         for key in [
@@ -279,7 +401,7 @@ mod tests {
 
     /// 完整合法草稿，明确覆盖三种文字、所有位置和时长字段。
     fn draft(name: &str) -> Value {
-        let mut editor = json!({"title": "标题", "subtitle": "字幕", "bubbleText": "气泡", "titleFlower": "", "subtitleFlower": "", "bubble": "", "filter": "", "vfx": "", "transition": ""});
+        let mut editor = json!({"title": "标题", "subtitle": "", "bubbleText": "", "titleFlower": "", "subtitleFlower": "", "bubble": "", "filter": "", "vfx": "", "transition": ""});
         for role in ["title", "subtitle", "bubble"] {
             for (suffix, value) in [
                 ("Size", 40.),
@@ -295,7 +417,9 @@ mod tests {
             }
         }
         editor["titleIn"] = json!("in/fade_in");
-        json!({"name": name, "description": "  说明  ", "editor": editor, "transition_duration_seconds": 0.5})
+        json!({"name": name, "description": "  说明  ", "tracks": [
+            {"id": "title", "target": "title", "start_mode": "seconds", "start": 0, "duration": null, "editor": editor}
+        ], "transition_duration_seconds": 0.5})
     }
 
     #[test]
@@ -339,14 +463,14 @@ mod tests {
         let saved = operate(&dir.0, "save", None, Some(draft("保留"))).unwrap();
         for (pointer, value) in [
             ("/name", json!(" ")),
-            ("/editor/titleSize", json!(12.5)),
-            ("/editor/titleX", json!(101)),
-            ("/editor/titleInDuration", Value::Null),
-            ("/editor/titleIn", json!("in/unknown")),
-            ("/editor/titleLoop", json!("loop/bounce")),
-            ("/editor/titleFlower", json!("filter/fake")),
+            ("/tracks/0/editor/titleSize", json!(12.5)),
+            ("/tracks/0/editor/titleX", json!(101)),
+            ("/tracks/0/editor/titleInDuration", Value::Null),
+            ("/tracks/0/editor/titleIn", json!("in/unknown")),
+            ("/tracks/0/editor/titleLoop", json!("loop/bounce")),
+            ("/tracks/0/editor/titleFlower", json!("filter/fake")),
             ("/transition_duration_seconds", json!(0)),
-            ("/editor/title", json!("题".repeat(61))),
+            ("/tracks/0/editor/title", json!("题".repeat(61))),
         ] {
             let mut invalid = draft("错误");
             *invalid.pointer_mut(pointer).unwrap() = value;
@@ -360,10 +484,91 @@ mod tests {
         assert!(operate(&dir.0, "unknown", None, None).is_err());
         assert_eq!(operate(&dir.0, "list", None, None).unwrap(), json!([saved]));
         let mut boundary = draft("边界");
-        boundary["editor"]["titleSize"] = json!(12);
-        boundary["editor"]["titleX"] = json!(100);
+        boundary["tracks"][0]["editor"]["titleSize"] = json!(12);
+        boundary["tracks"][0]["editor"]["titleX"] = json!(100);
         boundary["transition_duration_seconds"] = json!(3);
         assert!(operate(&dir.0, "save", None, Some(boundary)).is_ok());
+    }
+
+    #[test]
+    /// 时间规则从真实文件恢复，秒数不受预览限制，非法百分比或持续时间保留原记录。
+    fn multiple_tracks_survive_reload() {
+        let dir = Directory::new();
+        let mut value = draft("多轨模板");
+        let editor = value["tracks"][0]["editor"].clone();
+        value["tracks"] = json!([
+            {"id": "title-a", "target": "title", "start_mode": "percent", "start": 25, "duration": 3, "editor": editor},
+            {"id": "title-b", "target": "title", "start_mode": "seconds", "start": 200, "duration": null, "editor": editor}
+        ]);
+        let saved = operate(&dir.0, "save", None, Some(value.clone())).unwrap();
+        let id = saved["template_id"].as_str().unwrap();
+        assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), saved);
+        assert_eq!(saved["tracks"], value["tracks"]);
+        assert!(saved.get("media").is_none());
+        assert!(saved.get("editor").is_none());
+        assert_eq!(saved["effect_ids"], json!(["in/fade_in"]));
+        for (field, invalid) in [
+            ("duration", json!(0)),
+            ("start", json!(100)),
+            ("start_mode", json!("frames")),
+            ("id", json!("title-b")),
+            ("media", json!({})),
+        ] {
+            let mut rejected = value.clone();
+            rejected["tracks"][0][field] = invalid;
+            assert!(operate(&dir.0, "save", Some(id), Some(rejected)).is_err());
+            assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), saved);
+        }
+        value["tracks"].as_array_mut().unwrap().remove(0);
+        let updated = operate(&dir.0, "save", Some(id), Some(value)).unwrap();
+        assert_eq!(updated["tracks"].as_array().unwrap().len(), 1);
+        assert_eq!(updated["tracks"][0]["id"], "title-b");
+        assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), updated);
+    }
+
+    #[test]
+    /// 旧格式读取显示清理提示与文件路径，保留原文件，删除后恢复空列表。
+    fn rejects_unsupported_template_format() {
+        let dir = Directory::new();
+        let value = draft("对象模板");
+        let saved = operate(&dir.0, "save", None, Some(value.clone())).unwrap();
+        let id = saved["template_id"].as_str().unwrap();
+        let path = dir.0.join("templates.json");
+        let original = fs::read(&path).unwrap();
+        for kind in ["missing-tracks", "null-tracks", "top-editor"] {
+            let mut rejected = value.clone();
+            match kind {
+                "missing-tracks" => {
+                    rejected.as_object_mut().unwrap().remove("tracks");
+                }
+                "null-tracks" => rejected["tracks"] = Value::Null,
+                _ => rejected["editor"] = value["tracks"][0]["editor"].clone(),
+            }
+            assert!(operate(&dir.0, "save", None, Some(rejected.clone())).is_err());
+            assert!(operate(&dir.0, "save", Some(id), Some(rejected.clone())).is_err());
+            assert_eq!(fs::read(&path).unwrap(), original);
+            let mut invalid_record = saved.clone();
+            invalid_record.as_object_mut().unwrap().remove("tracks");
+            invalid_record
+                .as_object_mut()
+                .unwrap()
+                .extend(rejected.as_object().unwrap().clone());
+            let bytes = serde_json::to_vec(&json!([invalid_record])).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            assert_eq!(
+                operate(&dir.0, "list", None, None).unwrap_err(),
+                format!(
+                    "本地模板字段已变化，原有模板无法读取。请删除旧模板文件后重试（将清除全部本地模板）：{}",
+                    path.display()
+                )
+            );
+            assert!(operate(&dir.0, "save", Some(id), Some(value.clone())).is_err());
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            fs::write(&path, &original).unwrap();
+        }
+        assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), saved);
+        fs::remove_file(&path).unwrap();
+        assert_eq!(operate(&dir.0, "list", None, None).unwrap(), json!([]));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 /** 模板存储边界：云端沿用 HTTP，本地通过 Tauri 写入客户端 data/template。 */
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { apiBase } from "@/lib/api-base";
-import { selectedEffects, type Draft, type Template } from "./model";
+import { draftEffects, type Draft, type Template } from "./model";
 
 /** 当前模板库的存储位置，每次操作显式传递，避免切换后写入错误环境。 */
 export type Environment = "local" | "cloud";
@@ -20,7 +20,7 @@ async function local<T>(operation: string, id?: string, draft?: Draft): Promise<
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   // 仅服务不可用时建议本地存储；浏览器需先使用桌面客户端。
   const localHint = isTauri()
-    ? "可在「当前环境」中切换到本地环境。"
+    ? "可返回主页选择或创建本地模板。"
     : "可使用桌面客户端切换到本地环境。";
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -75,14 +75,14 @@ export function listTemplates(signal?: AbortSignal, environment: Environment = "
 }
 
 /** 切换时读取最新详情，避免列表缓存覆盖其他客户端的更新。 */
-export function getTemplate(id: string, environment: Environment = "cloud"): Promise<Template> {
-  return environment === "local" ? local("get", id) : request(`/${encodeURIComponent(id)}`);
+export function getTemplate(id: string, environment: Environment = "cloud", signal?: AbortSignal): Promise<Template> {
+  return environment === "local" ? local("get", id) : request(`/${encodeURIComponent(id)}`, { signal });
 }
 
 /** 统一创建、更新及另存为；只有调用方明确传 ID 时才覆盖已有模板。 */
 export function saveTemplate(draft: Draft, id?: string, environment: Environment = "cloud"): Promise<Template> {
   if (!draft.name.trim()) return Promise.reject(new Error("请输入模板名称"));
-  const effect_ids = selectedEffects(draft.editor);
+  const effect_ids = draftEffects(draft);
   if (!effect_ids.length)
     return Promise.reject(new Error("请至少选择一个效果"));
   if (environment === "local") return local("save", id, draft);
