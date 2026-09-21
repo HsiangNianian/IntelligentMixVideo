@@ -131,7 +131,7 @@ export function TemplateHome({ onSelect }: Props) {
   }
 
   return (
-    <div className="mx-auto flex h-full min-h-0 w-full max-w-2xl flex-col gap-5 py-3 sm:py-5">
+    <div className="mx-auto flex h-full min-h-0 w-full min-w-0 max-w-xl flex-col gap-5 py-3 sm:py-5">
       <div className="shrink-0 space-y-2 text-center">
         <h2 className="text-2xl font-semibold tracking-tight">我的模板</h2>
         <p className="text-sm text-muted-foreground">选择模板，进入模版编辑页面继续创作。</p>
@@ -143,11 +143,11 @@ export function TemplateHome({ onSelect }: Props) {
           <TemplateCollection environment="local" collection={local} onSelect={onSelect} />
         </div>
       </Card>
-      <div className="grid shrink-0 grid-cols-2 gap-3 sm:gap-4">
-        <Button className="h-12 min-w-0 rounded-xl px-2 text-xs sm:px-4 sm:text-sm" onClick={() => openCreation("cloud")}>
+      <div className="mx-auto grid w-full max-w-xs shrink-0 grid-cols-2 gap-3">
+        <Button className="h-9 min-w-0 gap-1.5 rounded-lg px-2 text-xs sm:px-3 sm:text-sm" onClick={() => openCreation("cloud")}>
           <Plus aria-hidden="true" />新建云端模板
         </Button>
-        <Button variant="outline" className="h-12 min-w-0 rounded-xl border-primary/40 px-2 text-xs text-primary sm:px-4 sm:text-sm"
+        <Button variant="outline" className="h-9 min-w-0 gap-1.5 rounded-lg border-primary/40 px-2 text-xs text-primary sm:px-3 sm:text-sm"
           disabled={local.unavailable} title={local.unavailable ? "本地模板需要桌面客户端" : undefined}
           onClick={() => openCreation("local")}>
           <Plus aria-hidden="true" />新建本地模板
