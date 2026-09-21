@@ -91,13 +91,24 @@ def template_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Eng
         engine.dispose()
 
 
+def template_track(target: str = "title", **editor) -> dict:
+    """提供独立对象及明确的时间规则，编辑参数可用于合法与非法输入测试。"""
+    content = {"title": "", "subtitle": "", "bubbleText": ""}
+    if target in ("title", "subtitle", "bubble"):
+        content["bubbleText" if target == "bubble" else target] = "示例文字"
+    return {"id": target, "target": target, "start_mode": "seconds",
+            "start": 1 if target == "transition" else 0,
+            "duration": 0.5 if target == "transition" else None,
+            "editor": {**content, **editor}}
+
+
 @pytest.fixture
 def template_payload() -> dict:
     """提供最小合法模板，每次测试获取独立可修改的 JSON 请求。"""
     return {
         "name": "测试模板",
         "description": "标题淡入",
-        "editor": {"titleIn": "in/fade_in"},
+        "tracks": [template_track(titleIn="in/fade_in")],
         "effect_ids": ["in/fade_in"],
         "transition_duration_seconds": 0.5,
     }
@@ -209,6 +220,11 @@ def composition_case(template_db, template_payload):
     """真实模板存储生成快照，搭配有前后静音和片段空隙的脱敏业务数据。"""
     from server.template.schema import TemplateSave
 
+    template_payload["tracks"] = [
+        template_track("subtitle"),
+        {**template_track(titleIn="in/fade_in"), "start": 1, "duration": 2},
+        template_track("bubble"),
+    ]
     template = store.save_template(TemplateSave.model_validate(template_payload))
     segments = [
         {"segment_id": 1, "text": "甲乙丙丁。", "start_time": 1, "end_time": 3,

@@ -1,4 +1,7 @@
-/** 模板数据契约和初始草稿；编辑器使用 SDK camelCase 字段，外层 API 使用 snake_case。 */
+/** 模板配置和初始草稿；对象保存时间规则，预览媒体由工作区独立持有。 */
+
+/** IMS Transition 与 DLTransition 的默认持续时间，单位为秒。 */
+export const defaultTransitionDuration = 1;
 
 /** 新建模板的示例配置；与服务端 EffectTemplateEditor 默认值保持一致。 */
 export const defaultEditor = {
@@ -89,8 +92,32 @@ export interface EffectAsset {
 export interface Draft {
   name: string;
   description: string;
+  transition_duration_seconds: number;
+  tracks: EffectTrack[];
+}
+
+/** 单个对象的参数面板输入，只在编辑期间使用，不作为模板保存。 */
+export interface EffectDraft {
   editor: Editor;
   transition_duration_seconds: number;
+}
+
+/** 预览媒体信息由浏览器读取，只用于本次时间计算和画面比例。 */
+export interface MasterVideo {
+  url: string;
+  duration: number;
+  width: number;
+  height: number;
+}
+
+/** 每个特效实例拥有独立时间和参数；文字动画保存在所属文字实例内。 */
+export interface EffectTrack {
+  id: string;
+  target: TextRole | "filter" | "vfx" | "transition";
+  start_mode: "seconds" | "percent";
+  start: number;
+  duration: number | null;
+  editor: Editor;
 }
 
 /** 后端返回的完整模板，effects 为保存时的可信快照。 */
@@ -107,18 +134,20 @@ export function newDraft(): Draft {
   return {
     name: "",
     description: "",
-    editor: { ...defaultEditor },
-    transition_duration_seconds: 0.5,
+    tracks: [],
+    transition_duration_seconds: defaultTransitionDuration,
   };
 }
 
 /** 剥离只读字段；用于编辑与脏状态比较。 */
 export function toDraft(template: Template): Draft {
+  if ("editor" in template || !Array.isArray(template.tracks))
+    throw new Error("模板格式不支持，请重新创建模板");
   return {
     name: template.name,
     description: template.description,
-    editor: { ...template.editor },
     transition_duration_seconds: template.transition_duration_seconds,
+    tracks: structuredClone(template.tracks),
   };
 }
 
@@ -131,4 +160,9 @@ export function selectedEffects(editor: Editor): string[] {
         .filter(Boolean),
     ),
   ];
+}
+
+/** 从全部对象收集去重后的效果目录 ID。 */
+export function draftEffects(draft: Draft): string[] {
+  return [...new Set(draft.tracks.flatMap((track) => selectedEffects(track.editor)))];
 }

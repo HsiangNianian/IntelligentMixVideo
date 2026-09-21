@@ -1,8 +1,8 @@
-"""运营特效模板：请求只接受目录 ID，特效参数由服务端解析并保存快照。"""
+"""模板保存对象时间规则和可信效果快照，视频信息由应用时提供。"""
 
+import json
 from datetime import datetime
 from functools import lru_cache
-import json
 from pathlib import Path
 from typing import Literal
 from uuid import UUID
@@ -119,15 +119,58 @@ class EffectTemplateEditor(BaseModel):
         }
 
 
+class EffectTrack(BaseModel):
+    """独立特效实例，文字动画归属于该实例的参数。"""
+
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
+    target: Literal["title", "subtitle", "bubble", "filter", "vfx", "transition"]
+    start_mode: Literal["seconds", "percent"]
+    start: float = Field(ge=0, allow_inf_nan=False)
+    duration: float | None = Field(gt=0, allow_inf_nan=False)
+    editor: EffectTemplateEditor
+
+    @model_validator(mode="after")
+    def validate_instance(self) -> "EffectTrack":
+        """检查时间规则和对象内容；应用视频时计算实际区间与动画时长。"""
+        if self.start_mode == "percent" and self.start >= 100:
+            raise ValueError("开始百分比须小于 100")
+        text = self.target in ("title", "subtitle", "bubble")
+        keys = ({"bubble" if self.target == "bubble" else f"{self.target}_flower"}
+                | {f"{self.target}_{motion}" for motion in ("in", "out", "loop")}) if text else {self.target}
+        if set(self.editor.selected_effects()) - keys:
+            raise ValueError("轨道包含其他对象的效果")
+        for role, field in (("title", "title"), ("subtitle", "subtitle"), ("bubble", "bubble_text")):
+            content = getattr(self.editor, field)
+            if role != self.target and content:
+                raise ValueError("轨道包含其他对象的文字")
+            if role == self.target and not content.strip():
+                raise ValueError("文字轨道内容不能为空")
+        if not text and not getattr(self.editor, self.target):
+            raise ValueError("轨道缺少效果")
+        if self.target == "transition" and (self.start <= 0 or self.duration is None or not 0.1 <= self.duration <= 3):
+            raise ValueError("转场位置或时长无效")
+        return self
+
+
 class TemplateData(BaseModel):
     """完整模板配置；API 和数据库读取共用字段定义。"""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     name: str = Field(min_length=1, max_length=100)
     description: str = Field(default="", max_length=1000)
-    editor: EffectTemplateEditor
-    effect_ids: list[str] = Field(min_length=1, max_length=20)
-    transition_duration_seconds: float = Field(default=0.5, ge=0.1, le=3, allow_inf_nan=False)
+    effect_ids: list[str] = Field(min_length=1, max_length=500)
+    transition_duration_seconds: float = Field(default=1, ge=0.1, le=3, allow_inf_nan=False)
+    tracks: list[EffectTrack] = Field(max_length=100)
+
+    @model_validator(mode="after")
+    def validate_tracks(self) -> "TemplateData":
+        """对象 ID 唯一，转场保留单个切换位置；时间规则独立于视频。"""
+        if len({track.id for track in self.tracks}) != len(self.tracks):
+            raise ValueError("轨道 ID 重复")
+        if sum(track.target == "transition" for track in self.tracks) > 1:
+            raise ValueError("两个母版片段只允许一个转场")
+        return self
 
 
 class TemplateSave(TemplateData):
@@ -138,10 +181,10 @@ class TemplateSave(TemplateData):
     @model_validator(mode="after")
     def validate_effects(self) -> "TemplateSave":
         """拒绝重复 ID、未知效果和编辑配置不一致，参数只在服务端解析。"""
-        selected = self.editor.selected_effects()
+        selections = [track.editor.selected_effects() for track in self.tracks]
         if len(self.effect_ids) != len(set(self.effect_ids)):
             raise ValueError("同一个特效不能重复添加")
-        if set(selected.values()) != set(self.effect_ids):
+        if {value for selected in selections for value in selected.values()} != set(self.effect_ids):
             raise ValueError("所选特效与编辑配置不一致")
         expected = {
             "title_flower": "flower", "subtitle_flower": "flower", "bubble": "bubble",
@@ -150,7 +193,7 @@ class TemplateSave(TemplateData):
                for motion in ("in", "out", "loop")},
         }
         catalog = effect_catalog()
-        for key, value in selected.items():
+        for key, value in (item for selected in selections for item in selected.items()):
             if value not in catalog or catalog[value].category != expected[key]:
                 raise ValueError(f"效果不在对应的 SDK 目录中：{value}")
         return self
