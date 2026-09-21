@@ -1,8 +1,8 @@
-# 模板保存对象时间规则和可信效果快照，视频信息由应用时提供。
+"""模板保存对象时间规则和可信效果快照，视频信息由应用时提供。"""
 
+import json
 from datetime import datetime
 from functools import lru_cache
-import json
 from pathlib import Path
 from typing import Literal
 from uuid import UUID

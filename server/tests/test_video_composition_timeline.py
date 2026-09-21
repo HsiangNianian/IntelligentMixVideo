@@ -1,11 +1,11 @@
-# 合成时间线的确定性、音视频时序、效果与对象规则测试；执行 uv run --locked pytest -v。
+"""合成时间线的确定性、音视频时序、效果与对象规则测试；执行 uv run --locked pytest -v。"""
 
 from copy import deepcopy
 
 import pytest
-
 from server.template.schema import EffectTemplateEditor, TemplateSave, effect_catalog
 from server.video_composition.timeline import build_timeline
+
 from .conftest import template_track
 
 

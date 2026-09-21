@@ -1,11 +1,10 @@
-# 多轨模板核心校验与序列化测试；在 server/ 执行 uv run --locked pytest tests/test_template_tracks.py。
-from copy import deepcopy
+"""多轨模板核心校验与序列化测试；在 server/ 执行 uv run --locked pytest tests/test_template_tracks.py。"""
 import json
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
-
 from server.template.schema import EffectTemplateEditor, TemplateSave, effect_catalog
 from server.template.timing import resolve_track
 

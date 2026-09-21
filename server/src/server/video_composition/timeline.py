@@ -1,4 +1,4 @@
-# 由业务快照生成 IMS Timeline；模板时间规则按成片时长计算，字幕保留文案来源。
+"""由业务快照生成 IMS Timeline；模板时间规则按成片时长计算，字幕保留文案来源。"""
 
 from math import floor
 

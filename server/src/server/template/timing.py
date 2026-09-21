@@ -1,4 +1,4 @@
-# 模板对象的时间应用计算；输出帧区间和动画副本，保留输入规则，供合成与测试共用。
+"""模板对象的时间应用计算；输出帧区间和动画副本，保留输入规则，供合成与测试共用。"""
 from dataclasses import dataclass
 from math import floor, isfinite
 
