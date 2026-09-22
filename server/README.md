@@ -87,6 +87,16 @@ API 与数据库读取均要求此结构；缺少 `tracks`、`tracks: null` 或�
 MySQL 单独列保存唯一名称、ID 和时间，JSON 保存完整编辑配置与效果快照。
 保存和删除使用事务；同时保存同名新模板仅一个成功。同时编辑同一个模板时，后一次成功保存覆盖前一次完整配置。
 
+## 异步视频合成
+
+`POST /api/v1/video-compositions` 创建任务，202 响应为 `{"data":{"taskId":"任务ID","status":"queued"}}`；`GET /api/v1/video-compositions/{taskId}` 查询结果，查询结构保持不变。终态回调仅含 `taskId/status/videoUrl/errorMessage`：成功为 `succeed`、视频直链、null 错误；失败为 `failed`、null 地址、错误摘要。回调 ID 与创建响应的 `data.taskId` 一致，内部和查询的成功状态仍为 `succeeded`。模板按 `tracks[].editor` 读取，标题取请求 `title`，字幕与关键词取切片结果，模板示例文字不进入成片。
+
+云端渲染返回 `Success` 后仍保持 `processing/rendering`，在原渲染截止时间内按轮询间隔等待成片地址；取得地址后才保存 `succeeded` 和待通知状态，超时以 `playback_timeout` 失败。保存首次地址及一小时有效期供通知复用，GET 仍刷新地址；旧记录或地址过期时，通知重新获取地址。取得地址不代表额外下载验证了视频内容。
+
+提供 `callbackUrl` 时，终态以 POST JSON 通知，任意 2xx 表示送达；非 2xx、网络错误和超时均在失败后按 5、15、45 秒间隔重试，最多四次，不跟随重定向。次数和下次投递时间落库，等待中的重试可在重启后继续；实际发起时间受调度与并发名额影响。通知失败不回退合成终态，接收方须按 `taskId` 幂等处理。沿用现有恢复边界：发送中进程退出或送达状态保存失败留下的 `sending` 不自动重放，调用方通过 GET 补查。
+
+`COMPOSITION_MATCH_WAIT_SECONDS` 默认 30 秒，匹配回调未到则只主动查询一次。修改配置后重启；已有任务保留其已保存的截止时间，失败历史通知不自动重新发送。
+
 ## 代码结构
 
 - `src/server/database.py`：`DatabaseSettings` 自动加载并校验环境配置，启动时创建缺失数据库，管理 MySQL 连接池。
