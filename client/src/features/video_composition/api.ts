@@ -17,10 +17,10 @@ async function request(path: string, body?: Record<string, unknown>): Promise<Re
   return response.json();
 }
 
-/** 提交现有合成协议，返回任务标识；创建接口把受理结果包在 data 中，这里解包后交给调用方。 */
-export async function createComposition(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+/** 提交现有合成协议，返回创建接口 data 中的任务标识。 */
+export async function createComposition(payload: Record<string, unknown>): Promise<string> {
   const { data } = await request("", payload);
-  return data as Record<string, unknown>;
+  return data as string;
 }
 
 /** 查询成片时提供当前保存的凭据，由 IMS 判断播放资源的访问权限；查询响应是扁平的 TaskResponse。 */
