@@ -49,6 +49,17 @@ class LostOwnership(Exception):
     """条件更新失败后停止本执行，迟到结果不得覆盖终态或发起云端提交。"""
 
 
+class ClientConfigMissing(HTTPException):
+    """客户端 IMS 凭据只存在于任务内存中，服务重启后没有快照可用。
+
+    查询可携带请求头重试，因此保持 503；终态通知没有补带凭据的途径，调用方据此判定为最终失败。
+    """
+
+    def __init__(self, message: str):
+        """固定使用 503，避免查询把可重试的缺配置与任务本身失败混淆。"""
+        super().__init__(503, message)
+
+
 class Runtime:
     """有界并发的进程内调度器；数据库是任务来源，HTTP 查询不会启动处理。"""
 
@@ -166,11 +177,13 @@ class Runtime:
                 and record["data"].get("video_url_expires_at", "") > datetime.now(UTC).isoformat()):
             result = {"videoUrl": saved["videoUrl"], "durationSeconds": saved["durationSeconds"]}
         elif record["status"] == "succeeded":
+            # 客户端凭据只在任务内存中；重启后通知已无取址途径，查询仍可补带请求头重试。
+            if source == "notification":
+                config = self.client_configs.get(record["task_id"])
+            if record["data"]["output"].get("client_config") and config is None:
+                await self.log(record, "playback_failed", source=source, http_status=503, reason="client_config_missing")
+                raise ClientConfigMissing("成片已完成，播放地址暂不可用，请携带客户端 IMS 配置后重试")
             try:
-                if source == "notification":
-                    config = self.client_configs.get(record["task_id"])
-                if record["data"]["output"].get("client_config") and config is None:
-                    raise ValueError("需要客户端 IMS 配置")
                 settings = await self.sync(lambda: Settings(**config.model_dump()) if config is not None else Settings())
                 provider = ims.IMS(settings, region_id=record["data"]["output"]["region_id"])
                 async with asyncio.timeout(settings.composition_http_timeout_seconds):
@@ -249,8 +262,11 @@ class Runtime:
             if record["status"] in ("succeeded", "failed"):
                 await self._notify(record)
                 return
-            # 客户端任务直接取本任务快照；缺失走已有阶段失败处理，不改用服务器账号。
-            config = self.client_configs[record["task_id"]] if record["data"]["output"].get("client_config") else None
+            # 客户端凭据只在任务内存中；服务重启后缺失即不可恢复，明确失败且不改用服务器账号。
+            needs_client_config = bool(record["data"]["output"].get("client_config"))
+            config = self.client_configs.get(record["task_id"]) if needs_client_config else None
+            if needs_client_config and config is None:
+                raise CompositionError("client_config_missing", "服务端重启后不再持有该任务的客户端 IMS 凭据，任务不可恢复，请重新提交", record["stage"])
             job.settings = await self.sync(lambda: Settings(**config.model_dump()) if config is not None else Settings())
             if self.settings is None:
                 self.settings = job.settings.model_copy(update={key: SecretStr("") for key in ("ims_access_key_id", "ims_access_key_secret", "ims_security_token")})
@@ -293,6 +309,7 @@ class Runtime:
                 return
             status = "failed"
             attempt = claimed["data"]["notification_attempts"]
+            permanent = False
             details = {"attempt": attempt}
             try:
                 result = await self.response(claimed, source="notification")
@@ -311,9 +328,11 @@ class Runtime:
                                 status = "sent"
                             await self.http_log(claimed, "notification", response)
             except Exception as exc:
+                # 客户端凭据不落库，重启后重试同样取不到地址；按最终失败处理，不做注定失败的重试。
+                permanent = isinstance(exc, ClientConfigMissing)
                 details.update(exception_details(exc))
                 logger.warning("合成任务 %s 终态通知未送达：%s", record["task_id"], type(exc).__name__)
-            if status == "failed" and attempt <= len(NOTIFICATION_RETRY_DELAYS):
+            if status == "failed" and not permanent and attempt <= len(NOTIFICATION_RETRY_DELAYS):
                 status = "pending"
                 details["next_at"] = deadline(NOTIFICATION_RETRY_DELAYS[attempt - 1])
             await self.sync(store.notification_status, claimed, status, details)
