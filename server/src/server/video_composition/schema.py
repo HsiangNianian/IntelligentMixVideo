@@ -88,6 +88,12 @@ class Accepted(APIModel):
     status: Literal["queued"] = "queued"
 
 
+class AcceptedResponse(APIModel):
+    """创建接口以 data 包装受理结果，查询接口保持独立响应结构。"""
+
+    data: Accepted
+
+
 class Result(APIModel):
     """IMS 确认成功后的实际秒数与查询时获取的有效播放地址。"""
 

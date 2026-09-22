@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, R
 from ..client_config import parse_config
 from .settings import ClientSettings
 from . import store
-from .schema import Accepted, CompositionRequest, MatchCallback, TaskResponse
+from .schema import Accepted, AcceptedResponse, CompositionRequest, MatchCallback, TaskResponse
 
 router = APIRouter(prefix="/api/v1/video-compositions", tags=["video-composition"])
 
@@ -21,12 +21,12 @@ def client_config(value: Annotated[str | None, Header(alias="X-IMS-Config")] = N
 Config = Annotated[ClientSettings | None, Depends(client_config)]
 
 
-@router.post("", status_code=202, response_model=Accepted)
-async def create_composition(payload: CompositionRequest, request: Request, response: Response, config: Config) -> Accepted:
+@router.post("", status_code=202, response_model=AcceptedResponse)
+async def create_composition(payload: CompositionRequest, request: Request, response: Response, config: Config) -> AcceptedResponse:
     """受理后后台依次执行 ASR、切片、素材匹配和 IMS；其他兼容控制字段暂不生效。"""
     record = await request.app.state.video_composition.accept(payload, str(request.base_url).rstrip("/"), await request.json(), config=config)
     response.headers["Location"] = f"/api/v1/video-compositions/{record['task_id']}"
-    return Accepted(task_id=record["task_id"])
+    return AcceptedResponse(data=Accepted(task_id=record["task_id"]))
 
 
 @router.post("/{task_id}/segment-match-callback")

@@ -17,12 +17,13 @@ async function request(path: string, body?: Record<string, unknown>): Promise<Re
   return response.json();
 }
 
-/** 提交现有合成协议，返回任务标识；不新增合成页面或轮询器。 */
-export function createComposition(payload: Record<string, unknown>) {
-  return request("", payload);
+/** 提交现有合成协议，返回任务标识；创建接口把受理结果包在 data 中，这里解包后交给调用方。 */
+export async function createComposition(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const { data } = await request("", payload);
+  return data as Record<string, unknown>;
 }
 
-/** 查询成片时提供当前保存的凭据，由 IMS 判断播放资源的访问权限。 */
+/** 查询成片时提供当前保存的凭据，由 IMS 判断播放资源的访问权限；查询响应是扁平的 TaskResponse。 */
 export function getComposition(taskId: string) {
   return request(`/${encodeURIComponent(taskId)}`);
 }
