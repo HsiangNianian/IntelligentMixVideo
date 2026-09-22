@@ -22,6 +22,7 @@ class DatabaseSettings(CommonSettings):
     password: SecretStr = SecretStr("")
     name: str = Field(default="intelligent_mix_video", min_length=1, max_length=64)
     socket: str | None = None
+    ssl_ca: str | None = None
 
 
 # 连接池与配置在首次使用时一起初始化；退出后可重新读取配置。
@@ -50,10 +51,14 @@ def get_engine() -> Engine:
                     **({"unix_socket": settings.socket} if settings.socket else {}),
                 },
             )
+            connect_args = dict(_connection_timeouts)
+            if settings.ssl_ca:
+                # PyMySQL reads the CA file and verifies the server certificate.
+                connect_args.update(ssl_ca=settings.ssl_ca, ssl_verify_cert=True)
             _engine = create_engine(
                 url, pool_pre_ping=True, pool_recycle=1800,
                 json_serializer=lambda value: json.dumps(value, ensure_ascii=False),
-                connect_args=_connection_timeouts,
+                connect_args=connect_args,
             )
         return _engine
 

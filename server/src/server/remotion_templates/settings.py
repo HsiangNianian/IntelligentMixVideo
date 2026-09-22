@@ -50,9 +50,9 @@ class Settings(ClientSettings, CommonSettings):
     max_image_pixels: int = Field(default=20_000_000, gt=0)
     renderer_dir: Path = Path(__file__).parent.parent / "remotion"
     runtime_lib_dir: Path | None = None
-    browser_executable: Path = Path("/opt/google/chrome/chrome")
-    font_regular: Path = Path("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc")
-    font_bold: Path = Path("/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc")
+    browser_executable: Path = Path("/home/ubuntu/data/wangshuitians/.local/share/imv/chrome-headless-shell-linux64/chrome-headless-shell")
+    font_regular: Path = Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc")
+    font_bold: Path = Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc")
 
     @property
     def models_configured(self) -> bool:
