@@ -1,4 +1,4 @@
-"""由业务快照生成 IMS Timeline；模板时间规则按成片时长计算，字幕保留文案来源。"""
+"""由业务快照生成 IMS Timeline；转场只用效果类型连接实际片段，其他对象保留模板时间规则。"""
 
 from math import floor
 
@@ -140,6 +140,16 @@ def build_timeline(
     effects = []
     for track in template.tracks:
         track_parameters = parameters_for(track.editor)
+        if track.target == "transition":
+            # 忽略模板转场时间，默认一秒；每侧最多占半段，避免同一片段的入出转场重叠。
+            for clip, following in zip(clips, clips[1:]):
+                seconds = floor(min(1, (clip["TimelineOut"] - clip["TimelineIn"]) / 2,
+                                    (following["TimelineOut"] - following["TimelineIn"]) / 2) * fps + 1e-8) / fps
+                if seconds < 0.1:
+                    warnings.append(f"转场对象 {track.id}：{clip['TimelineOut']:g} 秒处片段过短，已跳过转场")
+                    continue
+                clip["Effects"].append({"Type": "DLTransition", **track_parameters["transition"], "Duration": seconds})
+            continue
         applied = resolve_track(track, duration, fps)
         if applied.notice:
             warnings.append(f"对象 {track.id}：{applied.notice}")
@@ -150,27 +160,6 @@ def build_timeline(
                 "Type": "Filter" if track.target == "filter" else "VFX",
                 **track_parameters[track.target], "TimelineIn": applied.start, "TimelineOut": applied.end,
             }]})
-        elif track.target == "transition":
-            # 文案合成保持音频时间，转场连接规则指定位置的两个片段。
-            boundary = applied.end
-            for index, clip in enumerate(clips):
-                if clip["TimelineIn"] < boundary < clip["TimelineOut"]:
-                    following = {**clip, "Effects": [dict(effect) for effect in clip["Effects"]], "TimelineIn": boundary}
-                    if clip["Type"] == "Video":
-                        source_boundary = clip["In"] + boundary - clip["TimelineIn"]
-                        clip["Out"] = source_boundary
-                        following["In"] = source_boundary
-                    else:
-                        clip["Duration"] = boundary - clip["TimelineIn"]
-                        following["Duration"] = following["TimelineOut"] - boundary
-                    clip["TimelineOut"] = boundary
-                    clips.insert(index + 1, following)
-                    break
-            index = next((i for i, clip in enumerate(clips[:-1]) if abs(clip["TimelineOut"] - boundary) < 1e-8), None)
-            seconds = applied.end - applied.start
-            if index is None or min(clips[index]["TimelineOut"] - clips[index]["TimelineIn"], clips[index + 1]["TimelineOut"] - clips[index + 1]["TimelineIn"]) + 1e-8 < seconds:
-                raise ValueError(f"转场对象 {track.id} 的相邻片段不足以容纳持续时间")
-            clips[index]["Effects"].append({"Type": "DLTransition", **track_parameters["transition"], "Duration": seconds})
         else:
             # 标题使用请求文字；字幕和关键词使用文案与对象时间的交集。
             contents = [(request.title, applied.start, applied.end)] if track.target == "title" else [

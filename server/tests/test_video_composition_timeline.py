@@ -116,21 +116,24 @@ def test_short_text_motions_share_duration_and_position_bounds(composition_case)
     assert title["X"] == 0.9999
 
 
-def test_transition_rejects_insufficient_adjacent_material(composition_case):
-    """转场对象连接明确位置，邻接素材过短时拒绝合成。"""
+def test_transition_ignores_template_boundary_and_skips_short_gaps(composition_case):
+    """复现 50% 位置切出 0.32 秒短片段：保留实际素材边界，短间隙跳过转场而非失败。"""
     effect = next(item for item in effect_catalog().values() if item.category == "transition/normal")
     choose(composition_case, "transition", effect.id)
     track = composition_case["template"]["tracks"][-1]
-    track.update(start=2.5, duration=0.5)
-    plain, _ = build_timeline(**composition_case)
-    assert len(plain["VideoTracks"][0]["VideoTrackClips"]) == 2
-    assert plain["VideoTracks"][0]["VideoTrackClips"][0]["Effects"][-1]["Duration"] == 0.5
-    composition_case["segments"][1]["start_time"] = 3.001
-    composition_case["matches"][1]["start_time"] = 3.001
-    for i, item in enumerate(composition_case["matches"]):
-        item.update(matched_candidate_url=f"https://media.example.test/{i}.mp4", matched_candidate_type="video")
-    with pytest.raises(ValueError, match="相邻片段不足"):
-        build_timeline(**composition_case)
+    track.update(start_mode="percent", start=50, duration=1)
+    composition_case["duration_ms"] = 30398
+    for index, (start, end) in enumerate(((13.4, 15.72), (15.88, 19.16))):
+        composition_case["segments"][index].update(start_time=start, end_time=end)
+        composition_case["matches"][index].update(start_time=start, end_time=end,
+            matched_candidate_url=f"https://media.example.test/{index}.mp4", matched_candidate_type="video")
+    timeline, warnings = build_timeline(**composition_case)
+    clips = timeline["VideoTracks"][0]["VideoTrackClips"]
+    assert [(clip["TimelineIn"], clip["TimelineOut"]) for clip in clips] == [
+        (0, 13.4), (13.4, 15.72), (15.72, 15.88), (15.88, 19.16), (19.16, 30.398),
+    ]
+    assert [clip["Effects"][-1]["Type"] for clip in clips] == ["DLTransition", "Volume", "Volume", "DLTransition", "Volume"]
+    assert len([notice for notice in warnings if "已跳过转场" in notice]) == 2
 
 
 @pytest.mark.parametrize("change", [
@@ -220,17 +223,44 @@ def test_text_rules_keep_business_content_and_separate_styles(composition_case):
     assert "示例" not in str(timeline)
 
 
-def test_transition_rule_creates_one_boundary_without_changing_audio(composition_case):
-    """转场仅作用于指定区间，连续源视频保持对应源时间，文案音频总长保持不变。"""
+@pytest.mark.parametrize("kind", ["video", "image"])
+def test_transition_uses_actual_boundaries_and_ignores_template_timing(composition_case, kind):
+    """秒数、百分比和时长不影响转场；按真实边界缩短，保留素材源时间、音频和输入快照。"""
     asset = next(item for item in effect_catalog().values() if item.category == "transition/normal")
     editor = EffectTemplateEditor(title="", subtitle="", bubble_text="", transition=asset.id)
     apply_tracks(composition_case, [{"id": "transition", "target": "transition", "start_mode": "percent", "start": 25, "duration": 1, "editor": editor.model_dump(by_alias=True)}])
+    for index, match in enumerate(composition_case["matches"]):
+        match.update(matched_candidate_url=f"https://media.example.test/{index}", matched_candidate_type=kind)
+    original = deepcopy(composition_case)
     timeline, _ = build_timeline(**composition_case)
-    first, second = timeline["VideoTracks"][0]["VideoTrackClips"]
-    assert (first["In"], first["Out"], second["In"], second["Out"]) == (0, 3, 3, 8)
-    assert first["Effects"][-1] == {"Type": "DLTransition", "SubType": asset.effect_id, "Duration": 1}
-    assert second["Effects"] == [{"Type": "Volume", "Gain": 0}]
+    assert composition_case == original
+    clips = timeline["VideoTracks"][0]["VideoTrackClips"]
+    assert [(clip["TimelineIn"], clip["TimelineOut"]) for clip in clips] == [(0, 1), (1, 3), (3, 4), (4, 6), (6, 8)]
+    assert [clip["Effects"][-1] for clip in clips[:-1]] == [
+        {"Type": "DLTransition", "SubType": asset.effect_id, "Duration": duration}
+        for duration in (0.5, 0.5, 0.5, 1)
+    ]
+    assert clips[-1]["Effects"] == [{"Type": "Volume", "Gain": 0}]
+    assert (clips[2]["In"], clips[2]["Out"], clips[4]["In"], clips[4]["Out"]) == (3, 4, 6, 8)
     assert timeline["AudioTracks"][0]["AudioTrackClips"][0]["TimelineOut"] == 8
+    for start_mode, start, duration in (("seconds", 100, 0.1), ("percent", 99, 3)):
+        composition_case["template"]["tracks"][0].update(start_mode=start_mode, start=start, duration=duration)
+        composition_case["template"]["transition_duration_seconds"] = duration
+        assert build_timeline(**composition_case)[0] == timeline
+
+
+def test_transition_does_not_split_single_clip_and_still_validates_effect(composition_case):
+    """无素材切换时不人为切开视频；忽略转场时间仍拒绝损坏的效果快照。"""
+    asset = next(item for item in effect_catalog().values() if item.category == "transition/normal")
+    choose(composition_case, "transition", asset.id)
+    composition_case["template"]["tracks"][-1].update(start=100, duration=3)
+    timeline, warnings = build_timeline(**composition_case)
+    clip, = timeline["VideoTracks"][0]["VideoTrackClips"]
+    assert (clip["In"], clip["Out"]) == (0, 8)
+    assert clip["Effects"] == [{"Type": "Volume", "Gain": 0}] and warnings == []
+    composition_case["template"]["effects"] = [item for item in composition_case["template"]["effects"] if item["id"] != asset.id]
+    with pytest.raises(ValueError, match="模板效果引用"):
+        build_timeline(**composition_case)
 
 
 def test_skipped_object_still_validates_effect_snapshot(composition_case):
