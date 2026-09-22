@@ -126,6 +126,7 @@ def append_event(detail: dict, event: str, stage: str, status: str, details: dic
         "match_callback_processed": "素材匹配回调已处理", "match_callback_rejected": "素材匹配回调校验失败",
         "notification_sending": "开始处理终态通知", "notification_started": "向调用方发送合成结果",
         "notification_sent": "调用方已返回成功 HTTP 状态", "notification_failed": "结果通知失败",
+        "notification_pending": "通知失败，已安排重试",
         "notification_storage_failed": "通知状态保存失败", "playback_failed": "获取成品视频链接失败",
         "task_finished": "视频合成成功" if status == "succeeded" else "视频合成失败",
     }

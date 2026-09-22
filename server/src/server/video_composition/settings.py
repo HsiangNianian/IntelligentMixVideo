@@ -51,7 +51,7 @@ class Settings(ClientSettings, CommonSettings):
     composition_http_timeout_seconds: float = Field(default=30, gt=0, le=300, allow_inf_nan=False)
     composition_poll_seconds: float = Field(default=2, gt=0, le=60, allow_inf_nan=False)
     composition_asr_wait_seconds: float = Field(default=1800, gt=0, le=86400, allow_inf_nan=False)
-    composition_match_wait_seconds: float = Field(default=1800, gt=0, le=86400, allow_inf_nan=False)
+    composition_match_wait_seconds: float = Field(default=30, gt=0, le=86400, allow_inf_nan=False)
     composition_render_wait_seconds: float = Field(default=3600, gt=0, le=86400, allow_inf_nan=False)
 
     @field_validator("match_authorization")
