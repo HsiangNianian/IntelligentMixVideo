@@ -46,11 +46,11 @@ Debug 安装包保存后，退出并重新打开客户端。`server.desktop.conf
 
 ```js
 const { createComposition, getComposition } = await import('/src/features/video_composition/api.ts');
-const task = await createComposition({ text: '文案', videoUrl: videoUrl, audioUrl: audioUrl, styleId: templateId });
-const result = await getComposition(task.taskId);
+const taskId = await createComposition({ text: '文案', videoUrl: videoUrl, audioUrl: audioUrl, styleId: templateId });
+const result = await getComposition(taskId);
 ```
 
-创建接口的受理结果由服务端包在 `data` 中，`createComposition` 已解包，返回对象可直接读取 `taskId` 和 `status`；查询接口返回扁平的 `TaskResponse`，不额外包一层。
+创建接口的受理结果由服务端包在 `data` 中，`createComposition` 已解包并返回任务 ID 字符串；查询接口返回扁平的 `TaskResponse`，不额外包一层。
 
 ## 开发联调
 

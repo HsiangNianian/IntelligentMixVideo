@@ -89,7 +89,7 @@ def create(request: dict, output: dict, callback_base_url: str | None = None, ra
         connection.execute(tasks.insert().values(
             **{**record, "created_at": now.replace(tzinfo=None), "updated_at": now.replace(tzinfo=None)},
         ))
-        add_log(record, "submitted", {"input": record["data"]["raw_request"], "output": {"data": {"taskId": record["task_id"], "status": "queued"}},
+        add_log(record, "submitted", {"input": record["data"]["raw_request"], "output": {"data": record["task_id"]},
                                       "output_settings": output}, connection)
     return record
 

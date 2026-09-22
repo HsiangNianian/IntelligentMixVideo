@@ -89,7 +89,7 @@ MySQL 单独列保存唯一名称、ID 和时间，JSON 保存完整编辑配置
 
 ## 异步视频合成
 
-`POST /api/v1/video-compositions` 创建任务，202 响应为 `{"data":{"taskId":"任务ID","status":"queued"}}`；`GET /api/v1/video-compositions/{taskId}` 查询结果，查询结构保持不变。终态回调仅含 `taskId/status/videoUrl/errorMessage`：成功为 `succeed`、视频直链、null 错误；失败为 `failed`、null 地址、错误摘要。回调 ID 与创建响应的 `data.taskId` 一致，内部和查询的成功状态仍为 `succeeded`。模板按 `tracks[].editor` 读取，标题取请求 `title`，字幕与关键词取切片结果，模板示例文字不进入成片。
+`POST /api/v1/video-compositions` 创建任务，202 响应为 `{"data":"任务ID"}`；`GET /api/v1/video-compositions/{taskId}` 查询结果，查询结构保持不变。终态回调仅含 `taskId/status/videoUrl/errorMessage`：成功为 `succeed`、视频直链、null 错误；失败为 `failed`、null 地址、错误摘要。回调 ID 与创建响应的 `data` 一致，内部和查询的成功状态仍为 `succeeded`。模板按 `tracks[].editor` 读取，标题取请求 `title`，字幕与关键词取切片结果，模板示例文字不进入成片。
 
 云端渲染返回 `Success` 后仍保持 `processing/rendering`，在原渲染截止时间内按轮询间隔等待成片地址；取得地址后才保存 `succeeded` 和待通知状态，超时以 `playback_timeout` 失败。保存首次地址及一小时有效期供通知复用，GET 仍刷新地址；旧记录或地址过期时，通知重新获取地址。取得地址不代表额外下载验证了视频内容。
 
