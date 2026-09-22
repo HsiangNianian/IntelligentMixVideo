@@ -53,8 +53,8 @@ def get_engine() -> Engine:
             )
             connect_args = dict(_connection_timeouts)
             if settings.ssl_ca:
-                # PyMySQL 读取 CA 文件启用校验；路径无效时在连接阶段明确失败。
-                connect_args["ssl_ca"] = settings.ssl_ca
+                # PyMySQL reads the CA file and verifies the server certificate.
+                connect_args.update(ssl_ca=settings.ssl_ca, ssl_verify_cert=True)
             _engine = create_engine(
                 url, pool_pre_ping=True, pool_recycle=1800,
                 json_serializer=lambda value: json.dumps(value, ensure_ascii=False),
