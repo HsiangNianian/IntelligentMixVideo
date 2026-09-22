@@ -155,6 +155,35 @@ def test_socket_survives_database_bootstrap(monkeypatch, tmp_path):
         database.close_database()
 
 
+@pytest.mark.parametrize("configured", [True, False])
+def test_ssl_ca_is_forwarded_to_driver(configured, monkeypatch, tmp_path):
+    """配置 DB_SSL_CA 时 CA 路径进入驱动连接参数；未配置时不携带该键。"""
+    ca = tmp_path / "mysql-ca.pem"
+    ca.write_text("test-ca", encoding="utf-8")
+    if configured:
+        monkeypatch.setenv("DB_SSL_CA", str(ca))
+    monkeypatch.setattr(database, "_engine", None)
+    settings_type = database.DatabaseSettings
+    monkeypatch.setattr(database, "DatabaseSettings", lambda: settings_type(_env_file=None))
+    captured = {}
+    real_create_engine = database.create_engine
+
+    def capture(url, **kwargs):
+        """记录宿主传给 SQLAlchemy 的连接参数，再交给真实实现。"""
+        captured.update(kwargs)
+        return real_create_engine(url, **kwargs)
+
+    monkeypatch.setattr(database, "create_engine", capture)
+    try:
+        database.get_engine()
+    finally:
+        database.close_database()
+    if configured:
+        assert captured["connect_args"]["ssl_ca"] == str(ca)
+    else:
+        assert "ssl_ca" not in captured["connect_args"]
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux bubblewrap mount contract")
 def test_renderer_only_mounts_private_libraries(tmp_path):
     """随包库进入只读 sandbox，仍清空宿主环境且关闭网络。"""
