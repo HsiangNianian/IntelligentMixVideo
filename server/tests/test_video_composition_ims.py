@@ -85,7 +85,7 @@ def test_defaults_do_not_require_operational_environment(composition_settings, m
     assert (settings.composition_concurrency, settings.composition_http_timeout_seconds,
             settings.composition_poll_seconds) == (2, 30, 2)
     assert (settings.composition_asr_wait_seconds, settings.composition_match_wait_seconds,
-            settings.composition_render_wait_seconds) == (1800, 1800, 3600)
+            settings.composition_render_wait_seconds) == (1800, 30, 3600)
 
 
 def test_configured_region_and_endpoint_reach_sdk_and_output(composition_settings, monkeypatch):
