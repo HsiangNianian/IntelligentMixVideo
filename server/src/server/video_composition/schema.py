@@ -81,17 +81,10 @@ class CompositionRequest(APIModel):
         return self
 
 
-class Accepted(APIModel):
-    """持久化成功后返回的本地任务标识。"""
-
-    task_id: UUID
-    status: Literal["queued"] = "queued"
-
-
 class AcceptedResponse(APIModel):
-    """创建接口以 data 包装受理结果，查询接口保持独立响应结构。"""
+    """创建接口以 data 包装本地任务标识，查询接口保持独立响应结构。"""
 
-    data: Accepted
+    data: UUID
 
 
 class Result(APIModel):

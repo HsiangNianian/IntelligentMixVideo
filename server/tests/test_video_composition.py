@@ -182,7 +182,7 @@ def test_success_survives_slow_stage_persistence(upstreams, client, composition_
     monkeypatch.setattr(store, "advance", slow_advance)
     response = client.post(BASE, json=composition_case["request"])
     assert response.status_code == 202
-    result = finished(client, response.json()["data"]["taskId"])
+    result = finished(client, response.json()["data"])
     assert delayed == [stage]
     assert result["status"] == "succeeded" and result["error"] is None
     assert len(upstreams["posts"]) == len(upstreams["submits"]) == 1
@@ -195,8 +195,8 @@ def test_async_acceptance_queries_and_persisted_success(upstreams, client, compo
     try:
         response = client.post(BASE, json=composition_case["request"])
         assert response.status_code == 202
-        task_id = response.json()["data"]["taskId"]
-        assert response.json() == {"data": {"taskId": task_id, "status": "queued"}}
+        task_id = response.json()["data"]
+        assert response.json() == {"data": task_id}
         assert response.headers["Location"] == f"{BASE}/{task_id}"
         assert store.get(task_id)["data"]["request"]["audioUrl"] == composition_case["request"]["audioUrl"]
         assert upstreams["entered"].wait(2)
@@ -232,7 +232,7 @@ def test_async_acceptance_queries_and_persisted_success(upstreams, client, compo
 
 def test_playback_refresh_failure_preserves_success(upstreams, client, composition_case):
     """刷新地址短暂失败返回 503，再查询可恢复，不回退成功状态或重提合成。"""
-    task_id = client.post(BASE, json=composition_case["request"]).json()["data"]["taskId"]
+    task_id = client.post(BASE, json=composition_case["request"]).json()["data"]
     assert finished(client, task_id)["status"] == "succeeded"
     snapshot = store.get(task_id)
     upstreams["failure"] = "playback"
@@ -277,12 +277,12 @@ def test_stage_failures_are_queryable_and_safe(upstreams, client, composition_ca
     if stage == "render":
         upstreams["render_states"] = ["Failed"]
     accepted = client.post(BASE, json=composition_case["request"]).json()["data"]
-    result = finished(client, accepted["taskId"])
+    result = finished(client, accepted)
     assert result["status"] == "failed" and result["result"] is None
     assert result["error"]["stage"] == expected
     assert "private-key" not in json.dumps(result)
     assert len(upstreams["submits"]) == (1 if stage == "render" else 0)
-    rows = composition_logs(accepted["taskId"])
+    rows = composition_logs(accepted)
     assert rows[0]["event"] == "submitted" and rows[0]["details"]["input"]["text"] == composition_case["request"]["text"]
     terminal = next(row for row in rows if row["event"] == "task_finished")
     assert terminal["status"] == "failed" and terminal["task_finished_at"] >= terminal["task_created_at"]
@@ -310,7 +310,7 @@ def test_template_read_is_queryable_before_asr(upstreams, client, composition_ca
     try:
         accepted = client.post(BASE, json=composition_case["request"])
         assert accepted.status_code == 202
-        task_id = accepted.json()["data"]["taskId"]
+        task_id = accepted.json()["data"]
         assert entered.wait(2)
         response = client.get(f"{BASE}/{task_id}")
         assert response.status_code == 200
@@ -338,7 +338,7 @@ def test_template_read_failure_does_not_start_asr(upstreams, client, composition
     monkeypatch.setattr(service, "get_template", failed_read)
     accepted = client.post(BASE, json=composition_case["request"])
     assert accepted.status_code == 202
-    result = finished(client, accepted.json()["data"]["taskId"])
+    result = finished(client, accepted.json()["data"])
     assert result["status"] == "failed" and result["stage"] == "failed"
     assert result["error"]["stage"] == "template" and result["error"]["code"] == "template_error"
     assert "private-error" not in json.dumps(result)
@@ -357,7 +357,7 @@ def test_template_snapshot_must_persist_before_asr(upstreams, client, compositio
         return advance(record, stage, **data)
 
     monkeypatch.setattr(store, "advance", fail_asr_transition)
-    task_id = client.post(BASE, json=composition_case["request"]).json()["data"]["taskId"]
+    task_id = client.post(BASE, json=composition_case["request"]).json()["data"]
     result = finished(client, task_id)
     assert result["status"] == "failed"
     assert result["error"]["stage"] == "template" and result["error"]["code"] == "storage_error"
@@ -368,7 +368,7 @@ def test_template_snapshot_must_persist_before_asr(upstreams, client, compositio
 def test_missing_template_fails_before_asr(upstreams, client, composition_case):
     """合法但不存在的模板 UUID 在后台 template 阶段失败，不额外消耗 ASR。"""
     accepted = client.post(BASE, json={**composition_case["request"], "styleId": str(uuid4())}).json()["data"]
-    result = finished(client, accepted["taskId"])
+    result = finished(client, accepted)
     assert result["error"]["stage"] == "template" and result["error"]["code"] == "template_not_found"
     assert upstreams["asr_calls"] == 0
 
@@ -391,7 +391,7 @@ def test_database_tracks_template_reaches_ims(upstreams, client, composition_cas
         connection.execute(template_store.templates.update().where(
             template_store.templates.c.template_id == composition_case["request"]["styleId"],
         ).values(configuration=config))
-    task_id = client.post(BASE, json=composition_case["request"]).json()["data"]["taskId"]
+    task_id = client.post(BASE, json=composition_case["request"]).json()["data"]
     assert finished(client, task_id)["status"] == "succeeded"
     timeline = store.get(task_id)["data"]["timeline"]
     assert json.loads(upstreams["submits"][0]["timeline"]) == timeline
@@ -411,7 +411,7 @@ def test_missing_or_invalid_audio_duration_fails(upstreams, client, composition_
     """不以末词/末段时间推测音频总长，缺失和非法毫秒总长停止切片。"""
     upstreams["raw"]["properties"]["original_duration_in_milliseconds"] = duration
     accepted = client.post(BASE, json=composition_case["request"]).json()["data"]
-    result = finished(client, accepted["taskId"])
+    result = finished(client, accepted)
     assert result["error"]["code"] == "audio_duration_missing" and upstreams["segment_calls"] == 0
 
 
@@ -420,7 +420,7 @@ def test_ims_unknown_submission_reuses_token_with_finite_attempts(upstreams, cli
     """提交网络结果不明时只以同请求和同 token 重试一次，仍不明则明确失败。"""
     upstreams["submit_errors"] = failures
     accepted = client.post(BASE, json=composition_case["request"]).json()["data"]
-    result = finished(client, accepted["taskId"])
+    result = finished(client, accepted)
     assert len(upstreams["submits"]) == 2 and upstreams["submits"][0] == upstreams["submits"][1]
     assert result["status"] == ("succeeded" if failures == 1 else "failed")
     if failures > 1:
@@ -431,7 +431,7 @@ def test_ims_pending_states_then_success(upstreams, client, composition_case):
     """Init/Queuing/Processing 继续查询，同一任务只提交一次。"""
     upstreams["render_states"] = ["Init", "Queuing", "Processing", "Success"]
     accepted = client.post(BASE, json=composition_case["request"]).json()["data"]
-    assert finished(client, accepted["taskId"])["status"] == "succeeded"
+    assert finished(client, accepted)["status"] == "succeeded"
     assert len(upstreams["submits"]) == 1 and upstreams["renders"] == ["ims-job"] * 4
 
 
@@ -543,7 +543,7 @@ def test_remote_segmentation_response_reaches_render(upstreams, composition_case
     upstreams.update(callback=callback, render_duration=15.22)
     accepted = client.post(BASE, json=composition_case["request"])
     assert accepted.status_code == 202
-    task_id = accepted.json()["data"]["taskId"]
+    task_id = accepted.json()["data"]
     result = finished(client, task_id)
     assert result["status"] == "succeeded" and result["result"]["durationSeconds"] == 15.22
     assert len(upstreams["posts"]) == len(upstreams["submits"]) == 1
@@ -589,7 +589,7 @@ def test_real_segmentation_with_model_stub(upstreams, composition_case, client, 
         return result
 
     monkeypatch.setattr(service, "segment", cut)
-    task_id = client.post(BASE, json=composition_case["request"]).json()["data"]["taskId"]
+    task_id = client.post(BASE, json=composition_case["request"]).json()["data"]
     assert finished(client, task_id)["status"] == "succeeded"
     snapshot = store.get(task_id)["data"]
     assert snapshot["segmentation"]["trace"]["edit_cost"] == 0
@@ -606,7 +606,7 @@ def test_template_changes_do_not_change_running_snapshot(upstreams, client, comp
     """模板快照取得后，即使模板更新再删除，当前任务仍使用原样式。"""
     upstreams["release"].clear()
     try:
-        task_id = client.post(BASE, json=composition_case["request"]).json()["data"]["taskId"]
+        task_id = client.post(BASE, json=composition_case["request"]).json()["data"]
         assert upstreams["entered"].wait(2)
         template_id = composition_case["request"]["styleId"]
         response = client.post("/template", json={
@@ -643,9 +643,9 @@ def test_duplicate_post_creates_distinct_tasks_with_bounded_concurrency(upstream
     monkeypatch.setattr(store, "advance", delayed_advance)
     upstreams["release"].clear()
     try:
-        first = client.post(BASE, json=composition_case["request"]).json()["data"]["taskId"]
+        first = client.post(BASE, json=composition_case["request"]).json()["data"]
         assert upstreams["entered"].wait(2)
-        second = client.post(BASE, json=composition_case["request"]).json()["data"]["taskId"]
+        second = client.post(BASE, json=composition_case["request"]).json()["data"]
         assert first != second
         assert client.get(f"{BASE}/{second}").json()["status"] == "queued"
         assert upstreams["asr_calls"] == 1
@@ -735,7 +735,7 @@ def pending_match(upstreams, client, composition_case, monkeypatch):
     monkeypatch.setenv("COMPOSITION_MATCH_WAIT_SECONDS", "10")
     accepted = client.post(BASE, json=composition_case["request"])
     assert accepted.status_code == 202
-    record = waiting_match(accepted.json()["data"]["taskId"])
+    record = waiting_match(accepted.json()["data"])
     body = {"taskId": "upstream", "status": "success", "result": {"segments": deepcopy(composition_case["matches"])}}
     return record, record["data"]["match_request"]["callback_url"], body
 
@@ -796,7 +796,7 @@ def test_invalid_callback_cannot_advance(upstreams, client, pending_match, case,
 def test_callback_confirms_lost_submission_response(upstreams, client, composition_case):
     """POST 响应丢失但回调已落库时仍完成合成，不重提匹配也不补查。"""
     upstreams["failure"] = "matching-response"
-    task_id = client.post(BASE, json=composition_case["request"]).json()["data"]["taskId"]
+    task_id = client.post(BASE, json=composition_case["request"]).json()["data"]
     assert finished(client, task_id)["status"] == "succeeded"
     assert len(upstreams["posts"]) == len(upstreams["submits"]) == 1 and upstreams["gets"] == []
 
@@ -809,7 +809,7 @@ def test_callback_timeout_queries_once(upstreams, client, composition_case, monk
     """缺少回调时仅补查一次；成功继续合成，未完成/5xx 明确失败，迟到回调不重启任务。"""
     monkeypatch.setenv("COMPOSITION_MATCH_WAIT_SECONDS", "1")
     upstreams.update(callback=False, query_status=query_status, failure=failure)
-    task_id = client.post(BASE, json=composition_case["request"]).json()["data"]["taskId"]
+    task_id = client.post(BASE, json=composition_case["request"]).json()["data"]
     result = finished(client, task_id)
     assert result["status"] == ("failed" if code else "succeeded")
     assert result["error"]["code"] == code if code else result["error"] is None
@@ -834,7 +834,7 @@ async def test_request_base_url_preserves_deployment_prefix(upstreams, compositi
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, root_path="/imv"), base_url="https://composition.test/imv") as client:
             response = await client.post(BASE, json=composition_case["request"])
             assert response.status_code == 202
-            task_id = response.json()["data"]["taskId"]
+            task_id = response.json()["data"]
             async with asyncio.timeout(2):
                 while not store.get(task_id)["data"].get("match_id"):
                     await asyncio.sleep(0.005)
@@ -998,7 +998,7 @@ def test_callback_uses_public_base_frozen_at_acceptance(upstreams, client, compo
     try:
         response = client.post(BASE, json=composition_case['request'])
         assert response.status_code == 202
-        task_id = response.json()['data']['taskId']
+        task_id = response.json()['data']
         expected = public_base.rstrip('/') or 'http://testserver'
         assert store.get(task_id)['data']['callback_base_url'] == expected
         assert upstreams['entered'].wait(2)
@@ -1043,7 +1043,7 @@ def test_success_notification_uses_flat_callback_contract(upstreams, client, com
     url = "https://notify.example.test/result?token=a%2Fb&source=composition"
     accepted = client.post(BASE, json={**composition_case["request"], "callbackUrl": url})
     assert accepted.status_code == 202
-    task_id = accepted.json()["data"]["taskId"]
+    task_id = accepted.json()["data"]
     record = notified(task_id)
     assert record["status"] == "succeeded" and record["data"]["notification_status"] == "sent"
     assert len(upstreams["notifications"]) == 1
@@ -1074,7 +1074,7 @@ def test_failure_notification_contains_safe_terminal_result(upstreams, client, c
     if failure == "render":
         upstreams["render_states"] = ["Failed"]
     accepted = client.post(BASE, json={**composition_case["request"], "callbackUrl": "https://notify.example.test/result"})
-    task_id = accepted.json()["data"]["taskId"]
+    task_id = accepted.json()["data"]
     record = notified(task_id)
     assert record["status"] == "failed" and record["data"]["notification_status"] == "sent"
     assert len(upstreams["notifications"]) == 1
@@ -1089,7 +1089,7 @@ def test_failure_notification_contains_safe_terminal_result(upstreams, client, c
 @pytest.mark.parametrize("callback", [{}, {"callbackUrl": None}])
 def test_omitted_notification_retains_query_only_behavior(upstreams, client, composition_case, callback):
     """省略或 null 不发送终态通知，也不安排历史任务通知；原查询接口照常工作。"""
-    task_id = client.post(BASE, json={**composition_case["request"], **callback}).json()["data"]["taskId"]
+    task_id = client.post(BASE, json={**composition_case["request"], **callback}).json()["data"]
     assert finished(client, task_id)["status"] == "succeeded"
     assert "notification_status" not in store.get(task_id)["data"]
     assert upstreams["notifications"] == [] and store.pending([], 10) == []
@@ -1123,7 +1123,7 @@ def test_notification_delivery_retries_three_times_without_changing_result(upstr
     """只把 2xx 视为送达；HTTP 或传输失败额外重试三次，保留终态且不泄漏异常。"""
     upstreams.update(notification_code=code, notification_error=error)
     accepted = client.post(BASE, json={**composition_case["request"], "callbackUrl": "https://notify.example.test/result"})
-    record = notified(accepted.json()["data"]["taskId"])
+    record = notified(accepted.json()["data"])
     assert record["data"]["notification_status"] == expected and record["status"] == "succeeded"
     body = client.get(accepted.headers["Location"]).json()
     assert body["status"] == "succeeded" and "private-notification" not in json.dumps(body)
@@ -1141,7 +1141,7 @@ def test_notification_timeout_allows_one_query_without_new_render(upstreams, cli
     accepted = client.post(BASE, json={**composition_case["request"], "callbackUrl": "https://notify.example.test/result"})
     try:
         assert upstreams["notification_entered"].wait(3)
-        record = notified(accepted.json()["data"]["taskId"])
+        record = notified(accepted.json()["data"])
         assert record["data"]["notification_status"] == "failed"
         response = client.get(accepted.headers["Location"])
         assert response.status_code == 200 and response.json()["status"] == "succeeded"
@@ -1158,7 +1158,7 @@ def test_execution_logs_cover_inputs_outputs_and_notification(upstreams, client,
     request = {**composition_case["request"], "callbackUrl": "https://notify.example.test/result?token=hidden-callback"}
     accepted = client.post(BASE, json=request)
     assert accepted.status_code == 202
-    task_id = accepted.json()["data"]["taskId"]
+    task_id = accepted.json()["data"]
     record = notified(task_id)
     response = client.get(f"{BASE}/{task_id}")
     assert response.status_code == 200 and record["data"]["notification_status"] == "sent"
@@ -1201,7 +1201,7 @@ def test_playback_must_be_ready_before_success_and_notification(upstreams, clien
     """云端 Success 后取址两次失败仍保持 processing；取得地址后才成功并复用地址通知。"""
     upstreams["playback_errors"] = 2
     upstreams["playback_release"].clear()
-    task_id = client.post(BASE, json={**composition_case["request"], "callbackUrl": "https://notify.example.test/result"}).json()["data"]["taskId"]
+    task_id = client.post(BASE, json={**composition_case["request"], "callbackUrl": "https://notify.example.test/result"}).json()["data"]
     try:
         assert upstreams["playback_entered"].wait(3)
         record = store.get(task_id)
@@ -1297,7 +1297,7 @@ async def test_notification_reuses_ready_url_until_expiry(upstreams, composition
 
 def test_query_log_failure_preserves_success_response(upstreams, client, composition_case, monkeypatch):
     """任务成功后即使日志表不可写，GET 原结果仍可返回，不重渲染也不改终态。"""
-    task_id = client.post(BASE, json=composition_case["request"]).json()["data"]["taskId"]
+    task_id = client.post(BASE, json=composition_case["request"]).json()["data"]
     assert finished(client, task_id)["status"] == "succeeded"
     record = store.get(task_id)
 
@@ -1430,7 +1430,7 @@ def test_client_ims_credentials_drive_submit_and_playback(upstreams, client, com
         payload = composition_case["request"] | ({"callbackUrl": "https://notify.example.test/result"} if callback else {})
         response = client.post(BASE, json=payload, headers=header)
         assert response.status_code == 202
-        requests.append((response.json()["data"]["taskId"], header))
+        requests.append((response.json()["data"], header))
     upstreams["release"].set()
     for task_id, header in requests:
         assert finished(client, task_id, header)["status"] == "succeeded"
