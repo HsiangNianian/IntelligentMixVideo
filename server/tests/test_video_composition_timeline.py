@@ -33,7 +33,7 @@ def test_unmatched_timeline_uses_business_text_and_full_tts(composition_case):
     assert clips[0]["Effects"] == [{"Type": "Volume", "Gain": 0}]
     assert clips[0]["MediaURL"] == composition_case["request"]["videoUrl"]
     assert clips[0]["Width"] == 1080 and clips[0]["Height"] == 1920
-    assert clips[0]["AdaptMode"] == "Cover"
+    assert clips[0]["AdaptMode"] == "Fit"
     assert timeline["AudioTracks"][0]["AudioTrackClips"][0]["Out"] == 8
     subtitles, title, bubbles = [track["SubtitleTrackClips"] for track in timeline["SubtitleTracks"]]
     assert [s["Content"] for s in subtitles] == ["甲乙丙丁。", "戊己庚辛。"]
