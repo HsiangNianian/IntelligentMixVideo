@@ -6,7 +6,7 @@ Python 3.12+、FastAPI 和 MySQL。模板库在连接此服务的客户端之间
 
 ## 本地启动
 
-先启动 MySQL，再复制 `.env.example` 为 `server/.env`，填写 `DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD` 和 `DB_NAME`。
+先启动 MySQL，再复制 `.env.example` 为 `server/.env`，填写 `DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD` 和 `DB_NAME`；可选 `DB_SSL_CA` 指定 CA 文件，启用后驱动校验服务端证书。
 `pydantic-settings` 自动读取并校验配置，进程环境变量优先于 `.env`，缺省项使用代码默认值。
 各模块通过 `config_base.CommonSettings` 共用读取规则，配置文件固定为 `server/.env`，切换工作目录不改变读取位置；`DB_PORT` 自动转换为整数，范围为 1～65535。
 `DB_NAME` 为 1～64 字符，默认 `intelligent_mix_video`。修改配置后重启服务。
