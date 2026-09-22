@@ -422,7 +422,7 @@ def test_entry_exit_and_other_role_loop_can_coexist(
 
 # 数值字段的公开约束：独立列出 HTTP 字段与上下限，不读取 schema 生成断言。
 NUMERIC_BOUNDS = [
-    ("titleSize", 12, 120), ("subtitleSize", 12, 120), ("bubbleSize", 12, 120),
+    ("titleSize", 12, 300), ("subtitleSize", 12, 300), ("bubbleSize", 12, 300),
     ("titleX", 0, 100), ("titleY", 0, 100), ("subtitleX", 0, 100),
     ("subtitleY", 0, 100), ("bubbleX", 0, 100), ("bubbleY", 0, 100),
     ("titleInDuration", 0.1, 3), ("titleOutDuration", 0.1, 3),

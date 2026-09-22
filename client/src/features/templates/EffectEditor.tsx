@@ -182,7 +182,7 @@ export function EffectEditor({
                 label="字号"
                 value={editor[`${role}Size`]}
                 min={12}
-                max={120}
+                max={300}
                 onChange={(value) => update(`${role}Size`, value)}
               />
               <NumberField

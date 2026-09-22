@@ -11,6 +11,7 @@ import {
 import type { TimelineAction, TimelineRow } from "@xzdarcy/timeline-engine";
 import { isTextTarget, type EffectTarget } from "./effects";
 import { previewDuration, resolveTrack, trackLabel } from "./tracks";
+import { previewVideoUrl } from "./media";
 
 /** 预览轨道保留源素材范围，缩略图采样使用源时间，游标使用预览时间。 */
 export interface PreviewClip extends TimelineAction {
@@ -82,7 +83,7 @@ function number(
 }
 
 /** 从单个对象参数生成文字或效果，校验目录引用及数值范围。 */
-function buildTrackContent(config: Editor, catalog: EffectAsset[], target: EffectTarget) {
+function buildTrackContent(config: Editor, catalog: EffectAsset[], target: EffectTarget, canvasWidth: number) {
   const byId = new Map(catalog.map((item) => [item.id, item]));
   // 效果类别与字段绑定，拒绝错误类别及未知目录条目。
   const effect = (key: EffectKey): Effect => {
@@ -97,7 +98,7 @@ function buildTrackContent(config: Editor, catalog: EffectAsset[], target: Effec
     Math.min(number(value, 0, 100, "位置") / 100, 0.9999);
   const text = (role: TextRole) => {
     const content = role === "bubble" ? config.bubbleText : config[role];
-    const size = number(config[`${role}Size`], 12, 120, "字号", true);
+    const size = number(config[`${role}Size`], 12, 300, "字号", true);
     if (
       config[`${role}Loop`] &&
       (config[`${role}In`] || config[`${role}Out`])
@@ -120,7 +121,7 @@ function buildTrackContent(config: Editor, catalog: EffectAsset[], target: Effec
     }
     return {
       Type: "Text",
-      Content: role === "bubble" ? content : wrapPreviewText(content, size),
+      Content: role === "bubble" ? content : wrapPreviewText(content, size, canvasWidth * 0.9),
       TimelineIn: 0,
       TimelineOut: 10,
       X: position(config[`${role}X`]),
@@ -152,11 +153,9 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media?: Mast
   const notices: string[] = [];
   if ("editor" in draft || !Array.isArray(draft.tracks)) throw new Error("模板格式不支持，请重新创建模板");
   const duration = previewDuration(draft, media);
+  const canvas = { Width: media?.width ?? 1920, Height: media?.height ?? 1080 };
   const video = {
-    Type: "Video", MediaURL: media?.url ?? new URL(
-      import.meta.env.VITE_PREVIEW_VIDEO_URL?.trim() || "https://ice-pub-media.myalicdn.com/vod-demo/最美中国纪录片-智能字幕.mp4",
-      window.location.origin,
-    ).href,
+    Type: "Video", MediaURL: media?.url ?? previewVideoUrl(),
     In: 0, Out: media?.duration ?? 10, TimelineIn: 0, TimelineOut: duration,
     Width: 0.9999, Height: 0.9999, AdaptMode: "Cover",
     Effects: [{ Type: "Volume", Gain: 0 }] as Effect[],
@@ -164,7 +163,7 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media?: Mast
   const timeline = {
     VideoTracks: [{ VideoTrackClips: [video] }],
     SubtitleTracks: [] as { SubtitleTrackClips: NonNullable<ReturnType<typeof buildTrackContent>["text"]>[] }[],
-    AudioTracks: [], AspectRatio: "16:9", FECanvas: { Width: 800, Height: 450 },
+    AudioTracks: [], AspectRatio: `${canvas.Width}:${canvas.Height}`, FECanvas: canvas,
   };
   const seen = new Set<string>();
   let transitionCount = 0;
@@ -174,7 +173,7 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media?: Mast
     const track = { ...source, ...applied };
     if (!track.id || seen.has(track.id)) throw new Error("特效轨道 ID 必须唯一");
     seen.add(track.id);
-    const resolved = buildTrackContent(track.editor, catalog, track.target);
+    const resolved = buildTrackContent(track.editor, catalog, track.target, canvas.Width);
     if (track.end <= track.start) continue;
     if (isTextTarget(track.target)) {
       const text = resolved.text;
@@ -201,15 +200,11 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media?: Mast
       label: trackLabel(track, draft.tracks), url: "", sourceIn: 0, sourceOut: 0,
     }] });
   }
-  if (media) {
-    timeline.AspectRatio = `${media.width}:${media.height}`;
-    timeline.FECanvas = { Width: 800, Height: Math.round(800 * media.height / media.width) };
-  }
   return { ...timeline, EffectTracks, previewRows, notices };
 }
 
 /** 按字素折行并保留显式换行；不把 emoji 或组合字符拆开。 */
-function wrapPreviewText(content: string, size: number): string {
+function wrapPreviewText(content: string, size: number, maxWidth: number): string {
   const context = document.createElement("canvas").getContext("2d");
   if (!context) return content;
   context.font = `${size}px "ims-preview"`;
@@ -223,7 +218,7 @@ function wrapPreviewText(content: string, size: number): string {
         const last = lines.length - 1;
         if (
           lines[last] &&
-          context.measureText(lines[last] + segment).width > 720
+          context.measureText(lines[last] + segment).width > maxWidth
         )
           lines.push(segment);
         else lines[last] += segment;
