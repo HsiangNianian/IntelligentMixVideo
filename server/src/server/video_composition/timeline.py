@@ -76,7 +76,7 @@ def build_timeline(
         clip = {
             "Type": "Image" if kind == "image" else "Video", "MediaURL": url,
             "TimelineIn": start, "TimelineOut": end,
-            "Width": width, "Height": height, "AdaptMode": "Cover",
+            "Width": width, "Height": height, "AdaptMode": "Fit",
             "Effects": [{"Type": "Volume", "Gain": 0}] if kind == "video" else [],
         }
         if kind == "image":
