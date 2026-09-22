@@ -1467,12 +1467,30 @@ def test_client_ims_validation_is_private(upstreams, client, composition_case, c
 
 
 def test_client_ims_restart_does_not_fall_back_to_server(composition_settings, composition_case):
-    """缺任务快照沿用已有阶段失败处理，不切换到服务端另一个账号。"""
+    """缺任务快照明确标记为不可恢复并提示重新提交，不切换到服务端另一个账号。"""
     store.initialize_schema()
     record = store.create(composition_case["request"], composition_settings.output() | {"client_config": True}, "https://callback.test")
     runtime = service.Runtime()
     asyncio.run(runtime._execute(record))
     result = store.get(record["task_id"])
     assert result["status"] == "failed"
-    assert result["data"]["error"]["code"] == "stage_error"
+    assert result["data"]["error"]["code"] == "client_config_missing"
+    assert "重新提交" in result["data"]["error"]["message"]
+    assert not runtime.client_configs and not runtime.active
+
+
+def test_client_ims_restart_fails_notification_without_retry(upstreams, composition_settings, composition_case):
+    """重启后尚未取址且凭据快照已丢失，终态通知按最终失败处理，不做注定失败的重试。"""
+    store.initialize_schema()
+    request = composition_case["request"] | {"callbackUrl": "https://notify.example.test/result"}
+    record = store.create(request, composition_settings.output() | {"client_config": True}, "https://callback.test")
+    # 云端已完成但只保存了媒资信息，播放地址必须重新取址，因此该通知离不开客户端凭据。
+    record = store.advance(record, "completed", status="succeeded", result={"mediaId": "media-1", "durationSeconds": 8})
+    assert record["data"]["notification_status"] == "pending"
+    runtime = service.Runtime()
+    asyncio.run(runtime._execute(record))
+    result = store.get(record["task_id"])
+    assert result["data"]["notification_status"] == "failed"
+    assert result["data"]["notification_attempts"] == 1
+    assert upstreams["notifications"] == []
     assert not runtime.client_configs and not runtime.active
