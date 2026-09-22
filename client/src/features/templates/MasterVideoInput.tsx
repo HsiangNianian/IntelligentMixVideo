@@ -4,34 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { MasterVideo } from "./model";
-
-/** 通过浏览器媒体元数据读取时长和尺寸，超时、取消或无法加载时明确失败。 */
-export function readMasterVideo(url: string, signal: AbortSignal): Promise<MasterVideo> {
-  const parsed = new URL(url, window.location.origin);
-  if (!["http:", "https:"].includes(parsed.protocol)) return Promise.reject(new Error("母版须为 HTTP(S) 视频地址或 public 资源路径"));
-  return new Promise((resolve, reject) => {
-    const video = document.createElement("video");
-    video.preload = "metadata";
-    video.crossOrigin = "anonymous";
-    const finish = (error?: Error) => {
-      clearTimeout(timer);
-      video.removeEventListener("loadedmetadata", loaded);
-      video.removeEventListener("error", failed);
-      signal.removeEventListener("abort", aborted);
-      const media = { url: parsed.href, duration: video.duration, width: video.videoWidth, height: video.videoHeight };
-      video.pause(); video.removeAttribute("src"); video.load();
-      if (error) reject(error); else resolve(media);
-    };
-    const loaded = () => finish(Number.isFinite(video.duration) && video.duration > 0 && video.videoWidth > 0 && video.videoHeight > 0 ? undefined : new Error("母版视频缺少有效时长或画面尺寸"));
-    const failed = () => finish(new Error("母版加载失败，请检查地址与跨域访问配置"));
-    const aborted = () => finish(new DOMException("母版读取已取消", "AbortError"));
-    const timer = setTimeout(() => finish(new Error("母版读取超时")), 20_000);
-    video.addEventListener("loadedmetadata", loaded);
-    video.addEventListener("error", failed);
-    signal.addEventListener("abort", aborted, { once: true });
-    if (signal.aborted) aborted(); else video.src = parsed.href;
-  });
-}
+import { readMasterVideo } from "./media";
 
 /** 读取成功后仅替换工作区的预览视频，模板规则保持不变。 */
 export function MasterVideoInput({ media, onChange }: { media?: MasterVideo; onChange: (media: MasterVideo) => void }) {

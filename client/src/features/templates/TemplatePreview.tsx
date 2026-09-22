@@ -6,6 +6,7 @@ import { loadSDK, loadPreviewFont, readCatalog, type Player } from "./sdk";
 import { buildTimeline, buildPreviewRows } from "./timeline";
 import { PreviewTimeline, type PreviewTimelineHandle } from "./PreviewTimeline";
 import { previewDuration } from "./tracks";
+import { previewVideoUrl, readMasterVideo } from "./media";
 
 /** 编辑状态由父组件持有；目录只在 SDK 初始化成功后回传。 */
 interface Props {
@@ -39,6 +40,7 @@ export function TemplatePreview({ draft, media, onCatalog, selectedId, onSelect,
   const [failed, setFailed] = useState(false);
   const [seeking, setSeeking] = useState(false);
   const [time, setTime] = useState(0);
+  const [canvas, setCanvas] = useState<Pick<MasterVideo, "width" | "height"> | null>(null);
   latest.current = draft;
   latestMedia.current = media;
   catalogCallback.current = onCatalog;
@@ -48,7 +50,12 @@ export function TemplatePreview({ draft, media, onCatalog, selectedId, onSelect,
     let active = false;
     let revision = 0;
     let instance: Player | null = null;
+    let frame: HTMLIFrameElement | undefined;
+    let exampleMedia: MasterVideo | undefined;
+    const controller = new AbortController();
     let catalog: EffectAsset[] = [];
+    let appliedTracks: Draft["tracks"] | undefined;
+    let appliedMedia: MasterVideo | undefined;
     let subscription: { unsubscribe(): void } | undefined;
     let seekTarget: number | null = null;
     let resumeAfterSeek = false;
@@ -113,7 +120,9 @@ export function TemplatePreview({ draft, media, onCatalog, selectedId, onSelect,
         do {
           applied = revision;
           cancel();
-          const timeline = buildTimeline(latest.current, catalog, latestMedia.current);
+          const currentDraft = latest.current;
+          const currentMedia = latestMedia.current;
+          const timeline = buildTimeline(currentDraft, catalog, currentMedia ?? exampleMedia);
           if (disposed) return;
           instance.pause();
           instance.aspectRatio = timeline.AspectRatio;
@@ -121,6 +130,8 @@ export function TemplatePreview({ draft, media, onCatalog, selectedId, onSelect,
           const { previewRows: _rows, notices: adjustments, ...sdkTimeline } = timeline;
           await instance.setTimeline(sdkTimeline);
           if (!disposed && applied === revision) {
+            appliedTracks = currentDraft.tracks;
+            appliedMedia = currentMedia;
             setRows(buildPreviewRows(timeline));
             setNotices(adjustments);
           }
@@ -140,28 +151,71 @@ export function TemplatePreview({ draft, media, onCatalog, selectedId, onSelect,
         }
       } finally {
         active = false;
-        if (disposed) instance?.destroy();
-        else if (applied !== revision) void update();
+        if (!disposed && applied !== revision) void update();
       }
     };
     apply.current = () => {
+      // 初始化已应用相同输入时，延迟通知无需再次重置播放位置。
+      if (appliedTracks === latest.current.tracks && appliedMedia === latestMedia.current) return;
       revision++;
       void update();
     };
-    void Promise.all([loadSDK(), loadPreviewFont()])
-      .then(([sdk]) => {
+    // 示例也读取真实尺寸，但保留十秒预览区间；每种尺寸使用独立 SDK 文档。
+    void Promise.all([
+      media ? Promise.resolve(media) : readMasterVideo(previewVideoUrl(), controller.signal),
+      loadPreviewFont(),
+    ])
+      .then(async ([source]) => {
         if (disposed || !container.current) return;
+        if (!media) exampleMedia = { ...source, duration: 10 };
+        setCanvas({ width: source.width, height: source.height });
+        frame = document.createElement("iframe");
+        frame.title = "模板预览播放器";
+        frame.allow = "autoplay";
+        frame.style.cssText = "display:block;width:100%;height:100%;border:0";
+        // 使用应用自身 URL，让 SDK 能读取实际主机并完成 localhost 授权检查。
+        const previewFrame = frame;
+        await new Promise<void>((resolve, reject) => {
+          const finish = (error?: Error) => {
+            clearTimeout(timeout);
+            previewFrame.onload = previewFrame.onerror = null;
+            controller.signal.removeEventListener("abort", aborted);
+            if (error) reject(error); else resolve();
+          };
+          const aborted = () => finish(new DOMException("预览页面加载已取消", "AbortError"));
+          const timeout = setTimeout(() => finish(new Error("预览页面加载超时，请重试")), 10_000);
+          previewFrame.onload = () => finish();
+          previewFrame.onerror = () => finish(new Error("预览页面加载失败，请重试"));
+          controller.signal.addEventListener("abort", aborted, { once: true });
+          previewFrame.src = new URL("/template-preview.html", window.location.href).href;
+          container.current!.append(previewFrame);
+        });
+        if (disposed) return;
+        const target = frame.contentDocument!;
+        target.documentElement.style.height = "100%";
+        target.body.style.cssText = "margin:0;height:100%;overflow:hidden";
+        const surface = target.createElement("div");
+        surface.style.cssText = "width:100%;height:100%";
+        target.body.append(surface);
+        const sdk = await loadSDK(target, controller.signal);
+        if (disposed) return;
         instance = new sdk({
-          container: container.current,
+          container: surface,
           mode: "component",
           controls: true,
           locale: "zh-CN",
           licenseConfig: { rootDomain: "", licenseKey: "" },
-          aspectRatio: "16:9",
+          aspectRatio: `${source.width}:${source.height}`,
+          // SDK 按 16:9 的包围区域计算场景尺寸，选取受限制的一边以保留真实宽高。
+          maxCanvasConfig: source.width / source.height >= 16 / 9
+            ? { width: source.width } : { height: source.height },
           getMediaInfo: async (id, _type, _origin, url) => url || id,
           getTimelineMaterials: async (materials) =>
-            materials.map((item) => ({ ...item, video: { duration: latestMedia.current?.duration ?? 14 } })),
+            materials.map((item) => ({ ...item, video: { duration: latestMedia.current?.duration ?? exampleMedia?.duration ?? 10 } })),
         });
+        // SDK 在初始化 Promise 中应用场景尺寸，等待该过程后设置 Timeline。
+        await Promise.resolve();
+        if (disposed) return;
         catalog = readCatalog(sdk);
         catalogCallback.current(catalog);
         player.current = instance;
@@ -242,6 +296,7 @@ export function TemplatePreview({ draft, media, onCatalog, selectedId, onSelect,
     };
     return () => {
       disposed = true;
+      controller.abort();
       cancel();
       subscription?.unsubscribe();
       playAction.current = null;
@@ -249,9 +304,10 @@ export function TemplatePreview({ draft, media, onCatalog, selectedId, onSelect,
       seekAction.current = null;
       apply.current = null;
       player.current = null;
-      if (!active) instance?.destroy();
+      instance?.destroy();
+      frame?.remove();
     };
-  }, [attempt]);
+  }, [attempt, media?.width, media?.height]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => apply.current?.(), 250);
@@ -263,13 +319,13 @@ export function TemplatePreview({ draft, media, onCatalog, selectedId, onSelect,
       <div className="flex items-center justify-between">
         <h2 className="font-semibold">实时预览</h2>
         <span className="text-xs text-muted-foreground">
-          {media ? `${media.width}:${media.height}` : "16:9"} · {time.toFixed(1)} / {Number(duration.toFixed(2))} 秒
+          {canvas ? `${canvas.width} × ${canvas.height}` : "正在读取画布尺寸"} · {time.toFixed(1)} / {Number(duration.toFixed(2))} 秒
         </span>
       </div>
       <div
         ref={container}
-        className="aspect-video w-full overflow-hidden rounded-lg bg-foreground"
-        style={media ? { aspectRatio: `${media.width} / ${media.height}` } : undefined}
+        className="mx-auto aspect-video w-full overflow-hidden rounded-lg bg-foreground"
+        style={canvas ? { aspectRatio: `${canvas.width} / ${canvas.height}`, maxWidth: `${60 * canvas.width / canvas.height}dvh` } : undefined}
         aria-label="模板视频预览"
       />
       <PreviewTimeline ref={track} rows={rows} disabled={!ready} time={time} duration={duration} selectedId={selectedId} onSelect={onSelect} onRangeChange={onRangeChange} onSeek={(value) => seekAction.current?.(value)} />
@@ -325,11 +381,7 @@ export function TemplatePreview({ draft, media, onCatalog, selectedId, onSelect,
         <Button
           type="button"
           variant="outline"
-          onClick={() =>
-            player.current
-              ? apply.current?.()
-              : setAttempt((value) => value + 1)
-          }
+          onClick={() => setAttempt((value) => value + 1)}
         >
           重试预览
         </Button>

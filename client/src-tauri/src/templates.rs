@@ -37,7 +37,7 @@ fn validate_editor(editor: &Value) -> Result<Vec<Value>, String> {
             return Err("示例文字过长".into());
         }
         for (suffix, min, max, integer) in [
-            ("Size", 12., 120., true),
+            ("Size", 12., 300., true),
             ("X", 0., 100., false),
             ("Y", 0., 100., false),
             ("InDuration", 0.1, 3., false),
