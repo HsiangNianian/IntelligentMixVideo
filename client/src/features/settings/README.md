@@ -50,6 +50,8 @@ const task = await createComposition({ text: '文案', videoUrl: videoUrl, audio
 const result = await getComposition(task.taskId);
 ```
 
+创建接口的受理结果由服务端包在 `data` 中，`createComposition` 已解包，返回对象可直接读取 `taskId` 和 `status`；查询接口返回扁平的 `TaskResponse`，不额外包一层。
+
 ## 开发联调
 
 启动后端，并在 `client/` 下用 `IMV_DEBUG=true bun run dev` 启动 Vite，打开设置填写切片 API 地址、Key 和模型，点击保存。Vite 开发页面的控制台可以使用以下入口（会真实调用模型，传入自己的 ASR 对象）：

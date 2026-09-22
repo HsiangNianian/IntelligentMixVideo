@@ -207,3 +207,15 @@ test.each(["false", "true"])("Agent 和 IMS 在模式 %s 下使用最新设置",
     { ims_access_key_secret: "ims-private" }, { ims_access_key_secret: "new-ims-private" },
   ]);
 });
+
+// 场景：创建接口的受理结果包在 data 中，helper 解包后可直接读取 taskId；查询响应保持扁平结构。
+test("合成创建解包 data 包装的受理结果", async () => {
+  fetchMock.mockResolvedValueOnce(Response.json({ data: { taskId: "task-a", status: "queued" } }));
+  expect(await createComposition({ text: "合成" })).toEqual({ taskId: "task-a", status: "queued" });
+  fetchMock.mockResolvedValueOnce(Response.json({ taskId: "task-a", status: "succeeded" }));
+  expect((await getComposition("task-a")).status).toBe("succeeded");
+  expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+    "http://api.test:8000/api/v1/video-compositions",
+    "http://api.test:8000/api/v1/video-compositions/task-a",
+  ]);
+});
