@@ -34,6 +34,7 @@ bun run tauri build
 
 Windows 安装包仅在本机回环地址绑定系统分配的空闲端口，窗口访问 `http://localhost:<端口>`；退出程序后释放，无需额外启动 Python 或 Vite。API 允许该 localhost 来源的动态端口。
 开发模式仍使用 Vite，macOS / Linux 保留原有 Tauri 加载方式。预览仍需要联网下载 SDK、字体和公开视频；空 License 的 localhost 预览保留 SDK 水印。
+macOS 通过 `src-tauri/Info.plist` 的 `NSAllowsArbitraryLoadsInWebContent` 允许 WebView 访问用户设置的 HTTP 后端；Tauri 自动将该配置合并到应用包，修改后重新打包生效。
 前端构建不代表桌面打包或跨平台预览验证通过；各平台仍须检查真实 WebView、首帧和播放。
 
 ## 示例视频配置
