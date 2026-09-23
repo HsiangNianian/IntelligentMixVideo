@@ -349,7 +349,7 @@ assert (data / "render/preview.mp4").stat().st_size > 1000
 
 
 def test_bundle_desktop_starts_api_before_home(tmp_path):
-    """在 Xvfb 中启动实际 AppRun；首页成功读取历史才算桌面完成内置服务接入。"""
+    """在 Xvfb 中启动 AppRun；后端自检后首页再次读取模板列表才算接入成功。"""
     if not APPDIR:
         pytest.skip("Set IMV_TEST_APPDIR to the extracted AppImage")
     data = tmp_path / "data"
@@ -370,7 +370,7 @@ def test_bundle_desktop_starts_api_before_home(tmp_path):
             while process.poll() is None and time.monotonic() < deadline:
                 if server_log.exists():
                     content = server_log.read_text()
-                    if 'GET /api/templates/works?history=true HTTP/1.1" 200' in content:
+                    if content.count('GET /template HTTP/1.1" 200') >= 2:
                         return
                 time.sleep(0.5)
             log.flush()
@@ -460,7 +460,7 @@ try {
 
 
 def test_bundle_native_desktop_starts_api_before_home(tmp_path):
-    """在干净的原生 CI 账户启动解包客户端；前端真正读取历史才算启动成功。"""
+    """在干净的原生 CI 账户启动客户端；后端自检后首页再次读取模板列表才算成功。"""
     if not DESKTOP:
         pytest.skip("Set IMV_TEST_DESKTOP_EXECUTABLE on an isolated native CI runner")
     parent = Path(os.environ["APPDATA"]) if sys.platform == "win32" else Path.home() / "Library/Application Support"
@@ -473,7 +473,7 @@ def test_bundle_native_desktop_starts_api_before_home(tmp_path):
         try:
             deadline = time.monotonic() + 240
             while process.poll() is None and time.monotonic() < deadline:
-                if server_log.exists() and 'GET /api/templates/works?history=true HTTP/1.1" 200' in server_log.read_text(encoding="utf-8", errors="replace"):
+                if server_log.exists() and server_log.read_text(encoding="utf-8", errors="replace").count('GET /template HTTP/1.1" 200') >= 2:
                     return
                 time.sleep(0.5)
             log.flush()
