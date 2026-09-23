@@ -129,7 +129,7 @@ test("多轨序列化与预览媒体相互独立", () => {
   expect(JSON.stringify(saved)).not.toContain("media");
   expect(timeline.VideoTracks[0].VideoTrackClips[0]).toMatchObject({ Out: 24, TimelineOut: 24, MediaURL: media.url });
   expect(timeline.SubtitleTracks[0].SubtitleTrackClips[0]).toMatchObject({ TimelineIn: 12, TimelineOut: 20 });
-  expect(timeline.FECanvas).toEqual({ Width: 800, Height: 1422 });
+  expect(timeline.FECanvas).toEqual({ Width: 1080, Height: 1920 });
 });
 
 // 场景：转场范围对应母版两个片段的重叠时间，替换转场保留唯一切换位置。

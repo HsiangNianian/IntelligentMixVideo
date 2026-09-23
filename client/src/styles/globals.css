@@ -1,7 +1,4 @@
 /* 全局样式入口：加载 Tailwind，将语义化主题变量映射到工具类，再设置页面基础样式。 */
-/* SDK 保留播放器外观；置于基础层之后、工具类之前，避免重置按钮颜色等应用样式。 */
-@layer theme, base, sdk, components, utilities;
-@import url("https://g.alicdn.com/thor-server/video-editing-websdk/5.2.2/player.css") layer(sdk);
 @import "tailwindcss";
 
 /* 当前页面实际使用的主题令牌；新增组件时按需补充。 */
