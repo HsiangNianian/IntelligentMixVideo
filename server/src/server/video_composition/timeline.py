@@ -72,12 +72,13 @@ def build_timeline(
         return parameters
 
     def video(url: str, kind: str, start: float, end: float, source_start: float) -> dict:
-        """数字人源时间等于成片时间；素材从源零点起，所有视频显式静音。"""
+        """数字人源时间等于成片时间；素材从源零点起，保留比例并模糊填充留白。"""
         clip = {
             "Type": "Image" if kind == "image" else "Video", "MediaURL": url,
             "TimelineIn": start, "TimelineOut": end,
-            "Width": width, "Height": height, "AdaptMode": "Fit",
-            "Effects": [{"Type": "Volume", "Gain": 0}] if kind == "video" else [],
+            "Width": width, "Height": height, "AdaptMode": "Contain",
+            "Effects": [{"Type": "Background", "SubType": "Blur", "Radius": 0.1}]
+                       + ([{"Type": "Volume", "Gain": 0}] if kind == "video" else []),
         }
         if kind == "image":
             clip["Duration"] = end - start
