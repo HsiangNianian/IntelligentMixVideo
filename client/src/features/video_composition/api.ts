@@ -23,7 +23,7 @@ export async function createComposition(payload: Record<string, unknown>): Promi
   return data as string;
 }
 
-/** 查询成片时提供当前保存的凭据，由 IMS 判断播放资源的访问权限；查询响应是扁平的 TaskResponse。 */
+/** 新成片查询返回 ZOS 地址；仍附带 IMS 凭据供历史任务刷新临时地址。 */
 export function getComposition(taskId: string) {
   return request(`/${encodeURIComponent(taskId)}`);
 }

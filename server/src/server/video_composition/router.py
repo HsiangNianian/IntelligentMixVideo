@@ -1,4 +1,4 @@
-"""异步合成 API；受理先持久化，查询读取本地状态并为成功成片刷新播放地址。"""
+"""异步合成 API；受理先持久化，查询读取本地状态和新任务的 ZOS 成片地址。"""
 
 from typing import Annotated
 from uuid import UUID
@@ -41,7 +41,7 @@ async def segment_match_callback(
 
 @router.get("/{task_id}", response_model=TaskResponse)
 async def get_composition(task_id: UUID, request: Request, config: Config) -> TaskResponse:
-    """失败任务返回 200；成功时刷新地址，临时失败返回可重试 503，不改变终态。"""
+    """失败任务返回 200；新任务返回 ZOS 地址，旧任务取 IMS 地址失败返回 503。"""
     record = await request.app.state.video_composition.sync(store.get, str(task_id))
     if record is None:
         raise HTTPException(404, "合成任务不存在")
