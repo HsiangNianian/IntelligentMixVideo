@@ -1,6 +1,6 @@
 """在共享 SQLAlchemy Engine 上保存合成任务；短事务与版本条件更新阻止重复推进。"""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from contextlib import nullcontext
 from typing import Literal
 from uuid import uuid4
@@ -89,7 +89,7 @@ def create(request: dict, output: dict, callback_base_url: str | None = None, ra
         connection.execute(tasks.insert().values(
             **{**record, "created_at": now.replace(tzinfo=None), "updated_at": now.replace(tzinfo=None)},
         ))
-        add_log(record, "submitted", {"input": record["data"]["raw_request"], "output": {"taskId": record["task_id"], "status": "queued"},
+        add_log(record, "submitted", {"input": record["data"]["raw_request"], "output": {"data": record["task_id"]},
                                       "output_settings": output}, connection)
     return record
 
@@ -108,6 +108,8 @@ def pending(exclude: list[str], limit: int) -> list[dict]:
             (tasks.c.status.in_(("queued", "processing")) | (
                 tasks.c.status.in_(("succeeded", "failed")) &
                 (tasks.c.data["notification_status"].as_string() == "pending")
+                & (tasks.c.data["notification_next_at"].as_string().is_(None)
+                   | (tasks.c.data["notification_next_at"].as_string() <= datetime.now(UTC).isoformat()))
             )), tasks.c.task_id.not_in(exclude),
         ).order_by(tasks.c.created_at, tasks.c.task_id).limit(limit))
         return [_record(row) for row in rows]
@@ -133,10 +135,17 @@ def advance(record: dict, stage: str, *, status: str = "processing", **data) -> 
     return {**record, **values, "updated_at": now}
 
 
-def notification_status(record: dict, status: Literal["sending", "sent", "failed"], details: dict | None = None) -> dict | None:
-    """终态通知先条件认领再发送；不改合成状态/完成时间，已认领的通知不重发。"""
+def notification_status(record: dict, status: Literal["pending", "sending", "sent", "failed"], details: dict | None = None) -> dict | None:
+    """条件认领并保存次数与重试时间；不改合成终态，过期快照不能重复投递。"""
     expected = "pending" if status == "sending" else "sending"
-    values = dict(version=record["version"] + 1, data={**record["data"], "notification_status": status})
+    data = {**record["data"], "notification_status": status}
+    if status == "sending":
+        if data.get("notification_attempts", 0) >= 4 or data.get("notification_next_at", "") > datetime.now(UTC).isoformat():
+            return None
+        data["notification_attempts"] = data.get("notification_attempts", 0) + 1
+    elif status == "pending":
+        data["notification_next_at"] = details["next_at"]
+    values = dict(version=record["version"] + 1, data=data)
     with get_engine().begin() as connection:
         changed = connection.execute(tasks.update().where(
             tasks.c.task_id == record["task_id"], tasks.c.version == record["version"],

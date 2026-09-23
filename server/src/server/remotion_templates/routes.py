@@ -2,6 +2,7 @@
 
 import hashlib
 import re
+import sqlite3
 from pathlib import Path
 from typing import Annotated
 from uuid import UUID
@@ -460,3 +461,20 @@ def stream(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.delete(
+    "/works/{work_id}", status_code=204,
+    tags=["聊天会话"], summary="删除字效聊天及关联数据",
+)
+async def delete_work(work_id: UUID, service: Service) -> Response:
+    """停止后台任务并删除聊天、所有版本及专属文件；不存在时同样返回 204。
+
+    清理失败返回 503，持久化删除标记禁止继续编辑；重试 DELETE 或服务重启后继续清理。
+    其他会话引用的图片保留，不删除共享数据库、字体或依赖。
+    """
+    try:
+        await service.delete_work(work_id)
+    except (OSError, sqlite3.Error) as exc:
+        raise HTTPException(503, "Work cleanup incomplete; retry deletion.") from exc
+    return Response(status_code=204)

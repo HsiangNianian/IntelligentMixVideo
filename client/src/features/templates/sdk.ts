@@ -17,9 +17,10 @@ export interface Player {
   pause(): void;
   destroy(): void;
   currentTime: number;
+  aspectRatio?: string;
   setTimeline(timeline: unknown): Promise<unknown>;
   event$: {
-    subscribe(callback: (event: { type: string }) => void): {
+    subscribe(callback: (event: { type: string; data?: { currentTime?: number; time?: number } }) => void): {
       unsubscribe(): void;
     };
   };
@@ -32,6 +33,7 @@ interface PlayerOptions {
   locale: string;
   licenseConfig: { rootDomain: string; licenseKey: string };
   aspectRatio: string;
+  maxCanvasConfig: { width?: number; height?: number };
   getMediaInfo: (
     id: string,
     type: string,
@@ -57,41 +59,45 @@ declare global {
     AliyunTimelinePlayer?: PreviewSDK;
   }
 }
-let loading: Promise<PreviewSDK> | undefined;
-
-/** 并发加载复用同一 Promise；下载失败清理脚本并允许重试。 */
-export function loadSDK(): Promise<PreviewSDK> {
-  if (window.AliyunTimelinePlayer)
-    return Promise.resolve(window.AliyunTimelinePlayer);
-  if (loading) return loading;
-  loading = new Promise<PreviewSDK>((resolve, reject) => {
-    const script = document.createElement("script");
+/** 在播放器独立文档中加载 SDK 和样式；失败或取消时清理资源，尺寸配置随文档重新初始化。 */
+export function loadSDK(target: Document, signal: AbortSignal): Promise<PreviewSDK> {
+  return new Promise<PreviewSDK>((resolve, reject) => {
+    const script = target.createElement("script");
+    const stylesheet = target.createElement("link");
+    stylesheet.rel = "stylesheet";
+    stylesheet.href = "https://g.alicdn.com/thor-server/video-editing-websdk/5.2.2/player.css";
     script.src =
       "https://g.alicdn.com/thor-server/video-editing-websdk/5.2.2/player.js";
-    // 成功和失败都清理定时器、监听器，失败时移除节点以支持重试。
+    let scriptReady = false;
+    let styleReady = false;
+    // 等待脚本和样式均加载，成功和失败都清理定时器与监听器。
     const finish = (error?: Error) => {
+      if (!error && (!scriptReady || !styleReady)) return;
       window.clearTimeout(timeout);
       script.onload = script.onerror = null;
+      stylesheet.onload = stylesheet.onerror = null;
+      signal.removeEventListener("abort", aborted);
       if (error) {
         script.remove();
+        stylesheet.remove();
         reject(error);
-      } else resolve(window.AliyunTimelinePlayer!);
+      } else resolve(target.defaultView!.AliyunTimelinePlayer!);
     };
+    const aborted = () => finish(new DOMException("SDK 加载已取消", "AbortError"));
     const timeout = window.setTimeout(
       () => finish(new Error("SDK 加载超时，请检查网络后重试")),
       30_000,
     );
-    script.onload = () =>
-      finish(
-        window.AliyunTimelinePlayer ? undefined : new Error("SDK 未正确初始化"),
-      );
+    script.onload = () => {
+      scriptReady = true;
+      finish(target.defaultView?.AliyunTimelinePlayer ? undefined : new Error("SDK 未正确初始化"));
+    };
+    stylesheet.onload = () => { styleReady = true; finish(); };
+    stylesheet.onerror = () => finish(new Error("SDK 样式下载失败，请检查网络后重试"));
     script.onerror = () => finish(new Error("SDK 下载失败，请检查网络后重试"));
-    document.head.append(script);
-  }).catch((error) => {
-    loading = undefined;
-    throw error;
+    signal.addEventListener("abort", aborted, { once: true });
+    if (signal.aborted) aborted(); else target.head.append(stylesheet, script);
   });
-  return loading;
 }
 
 /** 合并效果与动画目录；SDK 未加载时使用同版本随包白名单，让离线编辑不依赖网络。 */

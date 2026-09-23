@@ -81,7 +81,7 @@ STAGES = {
     "segmentation": "文本切分", "matching": "素材匹配", "match_submit": "提交素材匹配",
     "match_query": "素材匹配超时补查", "assembling": "组装视频时间线", "ims_storage": "选择成片存储",
     "submitting": "准备云端合成", "ims_submit": "提交云端合成", "rendering": "等待云端渲染",
-    "ims_query": "查询云端渲染", "playback": "获取成品视频链接", "notification": "通知调用方",
+    "ims_query": "查询云端渲染", "playback": "获取成品视频链接", "zos_upload": "转存视频到 ZOS", "notification": "通知调用方",
     "response": "返回合成结果", "completed": "合成完成", "failed": "合成失败",
 }
 STATUS = {"queued": "排队中", "processing": "执行中", "succeeded": "合成成功", "failed": "合成失败"}
@@ -126,6 +126,7 @@ def append_event(detail: dict, event: str, stage: str, status: str, details: dic
         "match_callback_processed": "素材匹配回调已处理", "match_callback_rejected": "素材匹配回调校验失败",
         "notification_sending": "开始处理终态通知", "notification_started": "向调用方发送合成结果",
         "notification_sent": "调用方已返回成功 HTTP 状态", "notification_failed": "结果通知失败",
+        "notification_pending": "通知失败，已安排重试",
         "notification_storage_failed": "通知状态保存失败", "playback_failed": "获取成品视频链接失败",
         "task_finished": "视频合成成功" if status == "succeeded" else "视频合成失败",
     }

@@ -51,7 +51,7 @@ class Settings(ClientSettings, CommonSettings):
     composition_http_timeout_seconds: float = Field(default=30, gt=0, le=300, allow_inf_nan=False)
     composition_poll_seconds: float = Field(default=2, gt=0, le=60, allow_inf_nan=False)
     composition_asr_wait_seconds: float = Field(default=1800, gt=0, le=86400, allow_inf_nan=False)
-    composition_match_wait_seconds: float = Field(default=1800, gt=0, le=86400, allow_inf_nan=False)
+    composition_match_wait_seconds: float = Field(default=30, gt=0, le=86400, allow_inf_nan=False)
     composition_render_wait_seconds: float = Field(default=3600, gt=0, le=86400, allow_inf_nan=False)
 
     @field_validator("match_authorization")
@@ -85,3 +85,26 @@ class Settings(ClientSettings, CommonSettings):
         """冻结实际输出规格与地域；VOD 存储在组装时查询，不包含任何密钥。"""
         return dict(width=self.composition_width, height=self.composition_height,
                     fps=self.composition_fps, region_id=self.ims_region_id)
+
+
+class ZosSettings(CommonSettings):
+    """服务端专用 ZOS 上传配置；不进入客户端 IMS 设置或任务持久化快照。"""
+
+    zos_api_endpoint: MediaURL
+    zos_bucket: str = Field(min_length=1)
+    zos_access_key_id: SecretStr
+    zos_secret_access_key: SecretStr
+    zos_web_url: MediaURL
+    zos_region: str = Field(default="hangzhou-7", pattern=r"^[a-z][a-z0-9-]+$")
+    zos_force_path_style: bool = False
+
+    @model_validator(mode="after")
+    def valid_storage(self) -> "ZosSettings":
+        """拒绝空凭据和带查询的公开地址，避免返回不可复用的签名链接。"""
+        if not self.zos_access_key_id.get_secret_value().strip() or not self.zos_secret_access_key.get_secret_value().strip():
+            raise ValueError("ZOS 凭据不能为空")
+        for address in (self.zos_api_endpoint, self.zos_web_url):
+            parsed = urlsplit(address)
+            if parsed.query or parsed.fragment:
+                raise ValueError("ZOS 地址不能包含查询参数或片段")
+        return self

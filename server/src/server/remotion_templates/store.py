@@ -68,6 +68,7 @@ class Store:
                 PRAGMA journal_mode=WAL;
                 CREATE TABLE IF NOT EXISTS assets (id TEXT PRIMARY KEY, data TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS work_deletions (work_id TEXT PRIMARY KEY);
                 CREATE TABLE IF NOT EXISTS jobs (
                     id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
                     status TEXT NOT NULL, created_at TEXT NOT NULL,
@@ -100,12 +101,58 @@ class Store:
         finally:
             db.close()
 
+    def require_work(self, db: sqlite3.Connection, identifier: UUID) -> None:
+        """Reject missing/deleting works inside the caller's read or write transaction."""
+        if db.execute(
+            "SELECT 1 FROM work_deletions WHERE work_id=?", (str(identifier),)
+        ).fetchone():
+            raise HTTPException(
+                410, "Work is being deleted; retry DELETE to finish cleanup."
+            )
+        if not db.execute(
+            "SELECT 1 FROM projects WHERE id=?", (str(identifier),)
+        ).fetchone():
+            raise NotFound("work not found")
+
+    def begin_deletion(self, identifier: UUID) -> list[UUID]:
+        """Persist deletion intent and cancel all pending jobs before awaiting any writer."""
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if not db.execute(
+                "SELECT 1 FROM projects WHERE id=?", (str(identifier),)
+            ).fetchone():
+                return []
+            db.execute(
+                "INSERT OR IGNORE INTO work_deletions VALUES (?)", (str(identifier),)
+            )
+            rows = db.execute(
+                "SELECT data FROM jobs WHERE project_id=?", (str(identifier),)
+            ).fetchall()
+            jobs = [GenerationJob.model_validate_json(row[0]) for row in rows]
+            for job in jobs:
+                if job.status in {"queued", "running"}:
+                    job.status, job.stage = "cancelled", "finished"
+                    self._save_job(db, job)
+            return [job.id for job in jobs]
+
+    def pending_deletions(self) -> list[UUID]:
+        """Recover only explicitly requested deletions, never sweep unrelated data."""
+        with self.connection() as db:
+            return [
+                UUID(row[0]) for row in db.execute("SELECT work_id FROM work_deletions")
+            ]
+
     def _get(self, table: str, identifier: UUID, model):
         """Read a typed record from a caller-selected internal table."""
         with self.connection() as db:
+            db.execute("BEGIN")
+            if table == "projects":
+                self.require_work(db, identifier)
             row = db.execute(
                 f"SELECT data FROM {table} WHERE id=?", (str(identifier),)
             ).fetchone()
+            if row is not None and table == "versions":
+                self.require_work(db, UUID(json.loads(row["data"])["project_id"]))
         if row is None:
             raise NotFound(f"{table.rstrip('s')} not found")
         return model.model_validate_json(row["data"])
@@ -197,6 +244,17 @@ class Store:
         )
         job = self._new_job(project.id, None)
         with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if request.image and not db.execute(
+                "SELECT 1 FROM assets WHERE id=?", (str(request.image.asset_id),)
+            ).fetchone():
+                raise NotFound("asset not found")
+            if request.image and db.execute(
+                "SELECT 1 FROM projects p JOIN work_deletions d ON d.work_id=p.id "
+                "WHERE json_extract(p.data, '$.request.image.asset_id')=? LIMIT 1",
+                (str(request.image.asset_id),),
+            ).fetchone():
+                raise Conflict("reference image belongs to a work being deleted")
             db.execute(
                 "INSERT INTO projects VALUES (?, ?)",
                 (str(project.id), project.model_dump_json()),
@@ -254,6 +312,8 @@ class Store:
         job = self._new_job(project_id, base)
         try:
             with self.connection() as db:
+                db.execute("BEGIN IMMEDIATE")
+                self.require_work(db, project_id)
                 self._insert_job(db, job, inputs, message_text)
         except sqlite3.IntegrityError as exc:
             raise Conflict("this work already has a queued or running job") from exc
@@ -476,6 +536,7 @@ class Store:
         """Bind public messages, accepted pointer and event watermark to one SQLite snapshot."""
         with self.connection() as db:
             db.execute("BEGIN")
+            self.require_work(db, work_id)
             result = history.snapshot(db, work_id, before, limit)
         if result is None:
             raise NotFound("work not found")
@@ -492,6 +553,8 @@ class Store:
     def work_events(self, work_id: UUID, after: int) -> list[history.WorkEvent]:
         """Read committed public events without retaining a connection during stream waits."""
         with self.connection() as db:
+            db.execute("BEGIN")
+            self.require_work(db, work_id)
             return history.events(db, work_id, after)
 
     def validate_cursor(self, work_id: UUID, after: int) -> None:

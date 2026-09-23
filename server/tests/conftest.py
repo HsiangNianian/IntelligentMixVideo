@@ -27,7 +27,7 @@ from server.template import store
 def isolate_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """清除外部配置并将各配置类指向临时 server/.env，避免读取本机文件。"""
     for key in list(os.environ):
-        if key.upper().startswith(("DB_", "IMV_", "COMPOSITION_", "SEGMENT_MATCH_", "IMS_", "MIX_VIDEO_ALIYUN_IMS_", "ALIBABA_CLOUD_")) or key.upper() in ("PORT", "DASHSCOPE_API_KEY", "ASR_BASE_URL"):
+        if key.upper().startswith(("DB_", "IMV_", "COMPOSITION_", "SEGMENT_MATCH_", "IMS_", "MIX_VIDEO_ALIYUN_IMS_", "ALIBABA_CLOUD_", "ZOS_")) or key.upper() in ("PORT", "DASHSCOPE_API_KEY", "ASR_BASE_URL"):
             monkeypatch.delenv(key)
     monkeypatch.chdir(tmp_path)
 
@@ -35,13 +35,13 @@ def isolate_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from server.__main__ import ServerSettings
     from server.remotion_templates.settings import Settings as RemotionSettings
     from server.segmentation.settings import Settings as SegmentationSettings
-    from server.video_composition.settings import Settings as CompositionSettings
+    from server.video_composition.settings import Settings as CompositionSettings, ZosSettings
 
     env_file = tmp_path / "server/.env"
     env_file.parent.mkdir()
     for settings_class in (
         CommonSettings, ServerSettings, database.DatabaseSettings,
-        RemotionSettings, SegmentationSettings, CompositionSettings,
+        RemotionSettings, SegmentationSettings, CompositionSettings, ZosSettings,
     ):
         monkeypatch.setitem(settings_class.model_config, "env_file", env_file)
     # 只导入字段声明；业务首次加载时使用本例隔离文件。
@@ -91,13 +91,24 @@ def template_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Eng
         engine.dispose()
 
 
+def template_track(target: str = "title", **editor) -> dict:
+    """提供独立对象及明确的时间规则，编辑参数可用于合法与非法输入测试。"""
+    content = {"title": "", "subtitle": "", "bubbleText": ""}
+    if target in ("title", "subtitle", "bubble"):
+        content["bubbleText" if target == "bubble" else target] = "示例文字"
+    return {"id": target, "target": target, "start_mode": "seconds",
+            "start": 1 if target == "transition" else 0,
+            "duration": 0.5 if target == "transition" else None,
+            "editor": {**content, **editor}}
+
+
 @pytest.fixture
 def template_payload() -> dict:
     """提供最小合法模板，每次测试获取独立可修改的 JSON 请求。"""
     return {
         "name": "测试模板",
         "description": "标题淡入",
-        "editor": {"titleIn": "in/fade_in"},
+        "tracks": [template_track(titleIn="in/fade_in")],
         "effect_ids": ["in/fade_in"],
         "transition_duration_seconds": 0.5,
     }
@@ -193,6 +204,12 @@ def composition_settings(monkeypatch, asr_env):
         "SEGMENT_MATCH_AUTHORIZATION": "Bearer test-only",
         "ALIBABA_CLOUD_ACCESS_KEY_ID": "test-id",
         "ALIBABA_CLOUD_ACCESS_KEY_SECRET": "test-secret",
+        "ZOS_API_ENDPOINT": "https://hangzhou7.zos.ctyun.cn",
+        "ZOS_BUCKET": "archives",
+        "ZOS_ACCESS_KEY_ID": "test-zos-id",
+        "ZOS_SECRET_ACCESS_KEY": "test-zos-secret",
+        "ZOS_WEB_URL": "https://archives.hangzhou7.zos.ctyun.cn",
+        "ZOS_FORCE_PATH_STYLE": "false",
         "COMPOSITION_POLL_SECONDS": "0.01",
         "COMPOSITION_HTTP_TIMEOUT_SECONDS": "10",
         "COMPOSITION_MATCH_WAIT_SECONDS": "10",
@@ -209,6 +226,11 @@ def composition_case(template_db, template_payload):
     """真实模板存储生成快照，搭配有前后静音和片段空隙的脱敏业务数据。"""
     from server.template.schema import TemplateSave
 
+    template_payload["tracks"] = [
+        template_track("subtitle"),
+        {**template_track(titleIn="in/fade_in"), "start": 1, "duration": 2},
+        template_track("bubble"),
+    ]
     template = store.save_template(TemplateSave.model_validate(template_payload))
     segments = [
         {"segment_id": 1, "text": "甲乙丙丁。", "start_time": 1, "end_time": 3,

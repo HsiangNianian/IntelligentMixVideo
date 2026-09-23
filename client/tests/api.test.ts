@@ -11,7 +11,7 @@ test.each([undefined, "existing-id"])("保存请求正确区分创建与更新�
   const draft = toDraft(saved);
   draft.name = "  我的模板  ";
   draft.description = "  说明  ";
-  draft.editor.subtitleIn = "in/fade_in";
+  draft.tracks[1].editor.subtitleIn = "in/fade_in";
   fetchMock.mockResolvedValueOnce(Response.json(saved, { status: id ? 200 : 201 }));
   expect(await saveTemplate(draft, id)).toEqual(saved);
   const [url, options] = fetchMock.mock.calls[0];
@@ -23,6 +23,7 @@ test.each([undefined, "existing-id"])("保存请求正确区分创建与更新�
   if (id) expect(body.template_id).toBe(id);
   else expect(body).not.toHaveProperty("template_id");
   expect(body).not.toHaveProperty("effects");
+  expect(body).not.toHaveProperty("editor");
   expect(draft.name).toBe("  我的模板  ");
 });
 

@@ -6,7 +6,7 @@ Python 3.12+、FastAPI 和 MySQL。模板库在连接此服务的客户端之间
 
 ## 本地启动
 
-先启动 MySQL，再复制 `.env.example` 为 `server/.env`，填写 `DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD` 和 `DB_NAME`。
+先启动 MySQL，再复制 `.env.example` 为 `server/.env`，填写 `DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD` 和 `DB_NAME`；可选 `DB_SSL_CA` 指定 CA 文件，启用后驱动校验服务端证书。
 `pydantic-settings` 自动读取并校验配置，进程环境变量优先于 `.env`，缺省项使用代码默认值。
 各模块通过 `config_base.CommonSettings` 共用读取规则，配置文件固定为 `server/.env`，切换工作目录不改变读取位置；`DB_PORT` 自动转换为整数，范围为 1～65535。
 `DB_NAME` 为 1～64 字符，默认 `intelligent_mix_video`。修改配置后重启服务。
@@ -59,23 +59,49 @@ PORT=8010 uv run --locked server
 {
   "name": "简洁字幕",
   "description": "标题使用淡入动画",
-  "editor": { "titleIn": "in/fade_in" },
+  "tracks": [{
+    "id": "title-1",
+    "target": "title",
+    "start_mode": "seconds",
+    "start": 0,
+    "duration": null,
+    "editor": { "title": "示例标题", "subtitle": "", "bubbleText": "", "titleIn": "in/fade_in" }
+  }],
   "effect_ids": ["in/fade_in"],
   "transition_duration_seconds": 0.5
 }
 ```
 
-`editor` 缺省字段补齐默认值，外层更新按完整配置替换，不是局部 PATCH。
+`tracks` 为必填数组，每个对象通过 `tracks[].editor` 保存参数，缺省参数补齐默认值。模板更新完整替换配置。
+API 与数据库读取均要求此结构；缺少 `tracks`、`tracks: null` 或携带顶层 `editor` 均拒绝处理，不提供旧格式转换。
 字段及范围在 OpenAPI 中列出：名称去除首尾空白后 1～100 字符；说明最多 1000 字符；
 标题、字幕、气泡示例文字最多 60、100、40 字符；字号 12～120 整数；位置 0～100%；动画和转场时长 0.1～3 秒。
-同一文字角色的循环动画与入场、出场互斥。至少选择 1 个效果，最多 20 个不同效果 ID。
+
+独立对象通过 `tracks` 保存，每项包含 `id`、`target`、`start_mode`、`start`、`duration` 和 `editor`。`start_mode` 支持 `seconds` 和 `percent`；百分比范围为 0 至小于 100，`duration` 为正秒数或 `null`（持续到视频结束）。模板不保存视频信息，保存校验不依赖预览时长。应用视频时按输出帧率计算区间：结尾以外不显示、结束越界时截短，动画按有效帧数缩短并记录说明，无法容纳所选动画时明确失败。文案合成逐个应用对象，标题使用请求文字，字幕和关键词采用文案时间与对象区间的交集；合成时转场忽略模板开始与持续时间，仅取特效类型并应用于实际素材边界，音频总长保持不变。
+同一文字角色的循环动画与入场、出场互斥。至少选择 1 个效果，最多 500 个不同效果 ID。
 
 响应补充 UUID、UTC 创建/更新时间和 `effects` 参数快照。服务端通过固定 SDK 5.2.2 白名单解析效果，
-拒绝未知 ID、错误分类和 `editor` 与 `effect_ids` 不一致；客户端不能提交渲染参数。
-`schema.py` 支持 editor 的 camelCase 输入输出及 snake_case 输入，与原模板字段语义保持一致；本次不启用 protobuf 通信。
+拒绝未知 ID、错误分类和全部 `tracks[].editor` 中的效果与 `effect_ids` 不一致；客户端不能提交渲染参数。
+`schema.py` 支持对象参数的 camelCase 输入输出及 snake_case 输入，接口使用 JSON。
 
 MySQL 单独列保存唯一名称、ID 和时间，JSON 保存完整编辑配置与效果快照。
 保存和删除使用事务；同时保存同名新模板仅一个成功。同时编辑同一个模板时，后一次成功保存覆盖前一次完整配置。
+
+## 异步视频合成
+
+`POST /api/v1/video-compositions` 创建任务，HTTP 200 响应为 `{"code":200,"message":"操作成功","data":"任务ID"}`；`GET /api/v1/video-compositions/{taskId}` 查询结果，查询结构保持不变。终态回调仅含 `taskId/status/videoUrl/errorMessage`：成功为 `succeed`、视频直链、null 错误；失败为 `failed`、null 地址、错误摘要。回调 ID 与创建响应的 `data` 一致，内部和查询的成功状态仍为 `succeeded`。模板按 `tracks[].editor` 读取，标题取请求 `title`，关键词取原切片；字幕取切片内 `subtitle_parts`，按标点拆成保留中英文问号、去除其他标点的短句，短句在原切片内首尾衔接，旧快照缺少该字段时保留中英文问号并去除其他标点。素材匹配仍接收原切片文字与时间，模板示例文字不进入成片。
+
+创建请求的字段校验错误返回 HTTP 422，响应含 `{"code":422,"message":"请求参数无效","data":null}`；客户端配置头错误及其他错误沿用原有格式。后台合成失败通过查询结果的 `status: failed` 和 `error` 表示。
+
+视频和图片片段以 `Contain` 方式放入输出画布，保留素材原始宽高比和完整画面；比例不同时使用素材的模糊背景填充留白。已有成片不会自动重新渲染。
+
+云端渲染返回 `Success` 后仍保持 `processing/rendering`，在原渲染截止时间内获取 IMS 临时地址并下载成片，再上传至 ZOS 的 `imv/video_composition/{taskId}.mp4`。只给该对象设置 `public-read`，确认对象大小及匿名读取后才保存 `succeeded` 和待通知状态；GET 与成功通知均返回持久化的 ZOS 地址。取址超时为 `playback_timeout`，转存持续失败为 `zos_upload_timeout`，均不重提渲染。历史成功任务不迁移，GET 仍刷新 IMS 地址，通知复用未过期地址或重新获取。
+
+提供 `callbackUrl` 时，终态以 POST JSON 通知，任意 2xx 表示送达；非 2xx、网络错误和超时均在失败后按 5、15、45 秒间隔重试，最多四次，不跟随重定向。次数和下次投递时间落库，等待中的重试可在重启后继续；新成功任务的通知不再依赖 IMS 凭据，历史成功任务在重启后缺少客户端 IMS 凭据且需要重新取址时仍会直接记为通知失败。通知失败不回退合成终态，接收方须按 `taskId` 幂等处理。沿用现有恢复边界：发送中进程退出或送达状态保存失败留下的 `sending` 不自动重放，调用方通过 GET 补查。
+
+`COMPOSITION_MATCH_WAIT_SECONDS` 默认 30 秒，匹配回调未到则只主动查询一次。修改配置后重启；已有任务保留其已保存的截止时间，失败历史通知不自动重新发送。
+
+新任务还需在 `server/.env` 中设置 `ZOS_API_ENDPOINT`、`ZOS_BUCKET`、`ZOS_ACCESS_KEY_ID`、`ZOS_SECRET_ACCESS_KEY`、`ZOS_WEB_URL`；`ZOS_REGION` 默认 `hangzhou-7`，`ZOS_FORCE_PATH_STYLE` 默认 false。密钥仅由服务端读取，不进入客户端 IMS 设置。上传与公开地址分别使用 API Endpoint 和 Web URL；目前不读取 `ZOS_ENDPOINT`。对象删除或桶生命周期清理后，公开 URL 也会失效。字段示例和完整接口见 [视频合成 API 文档](src/server/video_composition/api.md)。
 
 ## 代码结构
 
@@ -137,7 +163,13 @@ result = segment({
 ```
 
 使用 ASR 第一音轨的词级时间，输入时间为毫秒。返回 `segments`、提示 `warnings` 和诊断信息 `trace`；
-片段包含原文、秒制起止时间、分组和关键词。切片本身不调用 ASR。
+片段包含原文、秒制起止时间、分组和关键词；`subtitle_parts` 只供成片字幕显示，在原片段内按标点切成保留中英文问号、去除其他标点且时间首尾衔接的短句。切片本身不调用 ASR。
+成功响应的 `trace` 保留原有对齐、修复、片段与关键词统计；错误响应保持原有 `error.message` 与状态码。
+FastAPI 启动终端记录成功或失败的详细诊断：候选分句、过滤切点的原文位置及原因、模型选中的切点、
+原始关键词候选、两次模型请求耗时（毫秒）；失败日志还包含失败阶段、状态码与已采集的数据。
+过滤原因包括 `protected_or_repaired`、`min_duration_before` 和 `min_duration_after`。日志可能包含请求文案，
+桌面内置服务也会将其写入 `backend/server.log`；请按敏感数据管理日志。请求体未通过 FastAPI 字段校验时
+仍返回原有的 422 `detail`，不进入切片函数，也不产生日志诊断。
 
 请求可另带 `config` 对象：`llm_base_url`、`llm_api_key`、`llm_model` 必填，`llm_timeout_seconds` 默认 120，`llm_max_retries` 默认 1（0～3）。客户端参数仅用于该次切片，完整连接参数不与服务端密钥混用；省略 `config` 仍使用原服务端配置。独立 Python 调用可传 `segment(payload, config=ClientSettings(...))`，模型定义位于 `server.segmentation.settings`。`allow_insecure_llm_http` 仍由服务端决定，不接受客户端覆盖；错误响应不回显请求输入。
 
@@ -182,4 +214,4 @@ HTTP 请求与轮询等待均为异步，不阻塞事件循环。等待预算必
 
 普通与 Debug 客户端均可保存独立模型与 IMS 参数。Remotion 模型操作使用 `X-Remotion-Config`，合成 POST 和成片 GET 使用 `X-IMS-Config`；值为 URI 编码 JSON，字段分别来自模块 `ClientSettings`。省略请求头沿用 `.env`，提供时按任务覆盖全部可编辑字段；未知字段忽略，服务端策略不可覆盖，字段解析错误不回显输入。两种请求头已纳入本地客户端 CORS。
 
-凭据仅留任务内存，不保存到作品、任务正文、数据库或日志。IMS 任务只保存是否使用客户端配置的标记；GET 使用本次凭据刷新成片地址，访问权限交给云服务；后台通知使用提交时的快照，任务及通知结束后清理。服务重启后未完成的客户端 IMS 任务缺少快照，沿用已有阶段失败处理并需要重新提交；已完成任务仍可带有访问权限的凭据查询。Remotion 重启中断后重试重新携带当前配置。ASR、切片、素材匹配及执行环境读取启动配置。Debug 内置服务在业务导入前从本客户端 `data/settings/settings.json` 加载各入口声明的字段，覆盖进程环境；高级配置保存后重启客户端生效，不修改 `.env`，数据库不参与。启动端口定义位于 `startup/settings.py`，内置服务未保存端口时仍自动分配；路径留空使用随包默认，相对路径以应用 `backend/` 为基准。手动启动及远程后端不会加载客户端文件。详见 [客户端设置说明](../client/src/features/settings/README.md)。
+凭据仅留任务内存，不保存到作品、任务正文、数据库或日志。IMS 任务只保存是否使用客户端配置的标记；GET 使用本次凭据刷新成片地址，访问权限交给云服务；后台通知使用提交时的快照，任务及通知结束后清理。服务重启后未完成的客户端 IMS 任务缺少快照，以 `client_config_missing` 标记为不可恢复并要求重新提交，不会改用服务端账号；已完成任务在已缓存地址有效时仍可通知，地址未取得或已过期则通知直接失败，不携带请求头的 GET 仍返回可重试的 503。Remotion 重启中断后重试重新携带当前配置。ASR、切片、素材匹配及执行环境读取启动配置。Debug 内置服务在业务导入前从本客户端 `data/settings/settings.json` 加载各入口声明的字段，覆盖进程环境；高级配置保存后重启客户端生效，不修改 `.env`，数据库不参与。启动端口定义位于 `startup/settings.py`，内置服务未保存端口时仍自动分配；路径留空使用随包默认，相对路径以应用 `backend/` 为基准。手动启动及远程后端不会加载客户端文件。详见 [客户端设置说明](../client/src/features/settings/README.md)。

@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from server import database
 from server.app import app
 from server.template import store
+from .conftest import template_track
 
 
 # 测试空模板库返回空数组，并在第一次模板请求时创建缺失表。
@@ -47,16 +48,17 @@ def test_create_template_contract(
     assert response.status_code == 201
     saved = response.json()
     assert set(saved) == {
-        "template_id", "name", "description", "editor", "effect_ids",
+        "template_id", "name", "description", "effect_ids",
         "transition_duration_seconds", "effects", "created_at", "updated_at",
+        "tracks",
     }
     assert UUID(saved["template_id"]).version == 4
     assert saved["name"] == "中文模板 🎬"
     assert saved["description"] == "适合字幕"
-    assert saved["editor"]["titleIn"] == "in/fade_in"
-    assert saved["editor"]["titleSize"] == 40
-    assert saved["editor"]["subtitleY"] == 82
-    assert "title_in" not in saved["editor"]
+    assert saved["tracks"][0]["editor"]["titleIn"] == "in/fade_in"
+    assert saved["tracks"][0]["editor"]["titleSize"] == 40
+    assert saved["tracks"][0]["editor"]["subtitleY"] == 82
+    assert "title_in" not in saved["tracks"][0]["editor"]
     assert saved["effect_ids"] == ["in/fade_in"]
     assert saved["transition_duration_seconds"] == 0.5
     assert saved["effects"][0]["parameters"] == {"AaiMotionInEffect": "fade_in"}
@@ -70,7 +72,8 @@ def test_create_template_contract(
     with template_db.connect() as connection:
         row = connection.execute(select(store.templates)).one()
         assert row.template_id == saved["template_id"]
-        assert row.configuration["editor"] == saved["editor"]
+        assert "editor" not in row.configuration
+        assert row.configuration["tracks"] == saved["tracks"]
         assert row.configuration["effects"] == saved["effects"]
 
 
@@ -85,7 +88,7 @@ def test_update_replaces_complete_configuration(
         connection.execute(store.templates.update().values(created_at=old_time, updated_at=old_time))
     payload = {
         "template_id": created["template_id"], "name": "重命名后",
-        "editor": {"subtitleIn": "in/blur_in", "subtitleSize": 42},
+        "tracks": [template_track("subtitle", subtitleIn="in/blur_in", subtitleSize=42)],
         "effect_ids": ["in/blur_in"],
     }
     response = client.post("/template", json=payload)
@@ -94,12 +97,12 @@ def test_update_replaces_complete_configuration(
     assert saved["template_id"] == created["template_id"]
     assert saved["name"] == "重命名后"
     assert saved["description"] == ""
-    assert saved["editor"]["titleIn"] == ""
-    assert saved["editor"]["subtitleIn"] == "in/blur_in"
-    assert saved["editor"]["subtitleSize"] == 42
+    assert saved["tracks"][0]["editor"]["titleIn"] == ""
+    assert saved["tracks"][0]["editor"]["subtitleIn"] == "in/blur_in"
+    assert saved["tracks"][0]["editor"]["subtitleSize"] == 42
     assert saved["effect_ids"] == ["in/blur_in"]
     assert [effect["id"] for effect in saved["effects"]] == ["in/blur_in"]
-    assert saved["transition_duration_seconds"] == 0.5
+    assert saved["transition_duration_seconds"] == 1
     assert datetime.fromisoformat(saved["created_at"]) == old_time.replace(tzinfo=UTC)
     assert datetime.fromisoformat(saved["updated_at"]) > old_time.replace(tzinfo=UTC)
     assert client.get(f"/template/{saved['template_id']}").json() == saved
@@ -118,7 +121,7 @@ def test_save_as_preserves_original(client: TestClient, template_payload: dict) 
     assert response.status_code == 201
     copied = response.json()
     assert copied["template_id"] != original["template_id"]
-    assert copied["editor"] == original["editor"]
+    assert copied["tracks"] == original["tracks"]
     assert copied["effects"] == original["effects"]
     assert client.get(f"/template/{original['template_id']}").json() == original
     assert len(client.get("/template").json()) == 2
@@ -158,7 +161,7 @@ def test_duplicate_name_preserves_data(
     conflicting = {**template_payload, "name": "  测试模板  ", "description": "不能被写入"}
     if updating:
         second = client.post("/template", json={**template_payload, "name": "另一模板"}).json()
-        conflicting.update(template_id=second["template_id"], editor={"titleIn": "in/blur_in"}, effect_ids=["in/blur_in"])
+        conflicting.update(template_id=second["template_id"], tracks=[template_track(titleIn="in/blur_in")], effect_ids=["in/blur_in"])
     before = client.get("/template").json()
     response = client.post("/template", json=conflicting)
     assert response.status_code == 409
@@ -325,11 +328,12 @@ def test_effect_field_generates_snapshot(
     client: TestClient, template_payload: dict, field: str, effect_id: str, parameters: dict,
 ) -> None:
     """使用固定代表素材检查全部选择字段，不从被测目录动态生成期望结果。"""
-    template_payload.update(editor={field: effect_id}, effect_ids=[effect_id])
+    target = next((role for role in ("title", "subtitle", "bubble") if field.startswith(role)), field)
+    template_payload.update(tracks=[template_track(target, **{field: effect_id})], effect_ids=[effect_id])
     response = client.post("/template", json=template_payload)
     assert response.status_code == 201
     saved = response.json()
-    assert saved["editor"][field] == effect_id
+    assert saved["tracks"][0]["editor"][field] == effect_id
     assert len(saved["effects"]) == 1
     effect = saved["effects"][0]
     assert effect["id"] == effect_id
@@ -342,17 +346,17 @@ def test_effect_field_generates_snapshot(
 # 测试多个文字角色可复用同一效果，effect_ids 和快照只需保存一份。
 def test_shared_effect_and_snake_case_input(client: TestClient, template_payload: dict) -> None:
     """兼容 snake_case 输入，输出仍使用 camelCase，保留示例文字的原始空白。"""
-    template_payload["editor"] = {
-        "title_in": "in/fade_in", "subtitle_in": "in/fade_in", "bubble_in": "in/fade_in",
-        "title_size": 48, "bubble_text": "  保留空白  ",
-    }
+    template_payload["tracks"] = [template_track(role, **{f"{role}_in": "in/fade_in"}) for role in ("title", "subtitle", "bubble")]
+    template_payload["tracks"][0]["editor"]["title_size"] = 48
+    template_payload["tracks"][2]["editor"].pop("bubbleText")
+    template_payload["tracks"][2]["editor"]["bubble_text"] = "  保留空白  "
     response = client.post("/template", json=template_payload)
     assert response.status_code == 201
     saved = response.json()
-    assert all(saved["editor"][f"{role}In"] == "in/fade_in" for role in ("title", "subtitle", "bubble"))
-    assert saved["editor"]["titleSize"] == 48
-    assert saved["editor"]["bubbleText"] == "  保留空白  "
-    assert not any("_" in key for key in saved["editor"])
+    assert all(track["editor"][f"{track['target']}In"] == "in/fade_in" for track in saved["tracks"])
+    assert saved["tracks"][0]["editor"]["titleSize"] == 48
+    assert saved["tracks"][2]["editor"]["bubbleText"] == "  保留空白  "
+    assert not any("_" in key for track in saved["tracks"] for key in track["editor"])
     assert saved["effect_ids"] == ["in/fade_in"]
     assert len(saved["effects"]) == 1
 
@@ -362,7 +366,7 @@ def test_shared_effect_and_snake_case_input(client: TestClient, template_payload
     ({"titleIn": "in/not_in_sdk"}, ["in/not_in_sdk"], "效果不在对应的 SDK 目录中"),
     ({"titleIn": "filter/m1"}, ["filter/m1"], "效果不在对应的 SDK 目录中"),
     ({"titleIn": "in/fade_in"}, ["in/fade_in", "in/fade_in"], "同一个特效不能重复添加"),
-    ({"titleIn": "in/fade_in", "filter": "filter/m1"}, ["in/fade_in"], "所选特效与编辑配置不一致"),
+    ({"titleIn": "in/fade_in", "titleOut": "out/blur_out"}, ["in/fade_in"], "所选特效与编辑配置不一致"),
     ({"titleIn": "in/fade_in"}, ["in/fade_in", "filter/m1"], "所选特效与编辑配置不一致"),
     ({}, ["in/fade_in"], "所选特效与编辑配置不一致"),
 ])
@@ -373,7 +377,7 @@ def test_invalid_effect_selection_preserves_template(
     original = client.post("/template", json=template_payload).json()
     response = client.post("/template", json={
         **template_payload, "template_id": original["template_id"], "name": "不应保存",
-        "editor": editor, "effect_ids": effect_ids,
+        "tracks": [template_track(**editor)], "effect_ids": effect_ids,
     })
     assert response.status_code == 422
     assert message in response.json()["detail"][0]["msg"]
@@ -388,7 +392,7 @@ def test_loop_conflicts_with_entry_or_exit(
 ) -> None:
     """对每个角色和两种冲突分别验证错误响应及无写入副作用。"""
     template_payload.update(
-        editor={f"{role}Loop": "loop/normal_display", f"{role}{phase}": effect_id},
+        tracks=[template_track(role, **{f"{role}Loop": "loop/normal_display", f"{role}{phase}": effect_id})],
         effect_ids=["loop/normal_display", effect_id],
     )
     response = client.post("/template", json=template_payload)
@@ -404,19 +408,21 @@ def test_entry_exit_and_other_role_loop_can_coexist(
 ) -> None:
     """防止互斥校验扩大到不同角色或误拒绝入场加出场的合法配置。"""
     template_payload.update(
-        editor={f"{role}In": "in/fade_in", f"{role}Out": "out/blur_out", f"{other_role}Loop": "loop/normal_display"},
+        tracks=[template_track(role, **{f"{role}In": "in/fade_in", f"{role}Out": "out/blur_out"}),
+                template_track(other_role, **{f"{other_role}Loop": "loop/normal_display"})],
         effect_ids=["out/blur_out", "loop/normal_display", "in/fade_in"],
     )
     response = client.post("/template", json=template_payload)
     assert response.status_code == 201
     saved = response.json()
     assert [effect["id"] for effect in saved["effects"]] == template_payload["effect_ids"]
-    assert all(saved["editor"][field] == value for field, value in template_payload["editor"].items())
+    assert all(actual["editor"][field] == value for actual, source in zip(saved["tracks"], template_payload["tracks"])
+               for field, value in source["editor"].items())
 
 
 # 数值字段的公开约束：独立列出 HTTP 字段与上下限，不读取 schema 生成断言。
 NUMERIC_BOUNDS = [
-    ("titleSize", 12, 120), ("subtitleSize", 12, 120), ("bubbleSize", 12, 120),
+    ("titleSize", 12, 300), ("subtitleSize", 12, 300), ("bubbleSize", 12, 300),
     ("titleX", 0, 100), ("titleY", 0, 100), ("subtitleX", 0, 100),
     ("subtitleY", 0, 100), ("bubbleX", 0, 100), ("bubbleY", 0, 100),
     ("titleInDuration", 0.1, 3), ("titleOutDuration", 0.1, 3),
@@ -432,13 +438,13 @@ def test_numeric_boundaries_are_inclusive(client: TestClient, template_payload: 
     """一次提交所有同侧边界，检查每个持久化字段的响应值。"""
     for bounds in NUMERIC_BOUNDS:
         field, value = bounds[0], bounds[bound_index]
-        target = template_payload if field == "transition_duration_seconds" else template_payload["editor"]
+        target = template_payload if field == "transition_duration_seconds" else template_payload["tracks"][0]["editor"]
         target[field] = value
     response = client.post("/template", json=template_payload)
     assert response.status_code == 201
     saved = response.json()
     for bounds in NUMERIC_BOUNDS:
-        source = saved if bounds[0] == "transition_duration_seconds" else saved["editor"]
+        source = saved if bounds[0] == "transition_duration_seconds" else saved["tracks"][0]["editor"]
         assert source[bounds[0]] == bounds[bound_index]
 
 
@@ -450,11 +456,11 @@ def test_invalid_numeric_value(
 ) -> None:
     """使用字符串表示非有限值，避免 HTTP 客户端在发送 JSON 前就拒绝序列化。"""
     value = minimum - 1 if invalid == "below" else maximum + 1 if invalid == "above" else invalid
-    target = template_payload if field == "transition_duration_seconds" else template_payload["editor"]
+    target = template_payload if field == "transition_duration_seconds" else template_payload["tracks"][0]["editor"]
     target[field] = value
     response = client.post("/template", json=template_payload)
     assert response.status_code == 422
-    expected_location = ["body", field] if target is template_payload else ["body", "editor", field]
+    expected_location = ["body", field] if target is template_payload else ["body", "tracks", 0, "editor", field]
     assert any(error["loc"] == expected_location for error in response.json()["detail"])
     assert client.get("/template").json() == []
 
@@ -466,12 +472,12 @@ def test_non_finite_json_number_returns_validation_error(
     client: TestClient, template_payload: dict, field: str, token: str,
 ) -> None:
     """发送原始 JSON 绕过客户端序列化限制，检查错误位置、数值回显和无写入副作用。"""
-    target = template_payload if field == "transition_duration_seconds" else template_payload["editor"]
+    target = template_payload if field == "transition_duration_seconds" else template_payload["tracks"][0]["editor"]
     target[field] = "NON_FINITE"
     body = json.dumps(template_payload).replace('"NON_FINITE"', token)
     response = client.post("/template", content=body, headers={"Content-Type": "application/json"})
     assert response.status_code == 422
-    location = ["body", field] if target is template_payload else ["body", "editor", field]
+    location = ["body", field] if target is template_payload else ["body", "tracks", 0, "editor", field]
     error = next(error for error in response.json()["detail"] if error["loc"] == location)
     assert error["input"] in ("inf", "-inf", "nan")
     assert client.get("/template").json() == []
@@ -494,37 +500,38 @@ def test_nested_non_finite_error_input(client: TestClient, template_payload: dic
 @pytest.mark.parametrize("field", ["titleSize", "subtitleSize", "bubbleSize"])
 def test_fractional_font_size_is_rejected(client: TestClient, template_payload: dict, field: str) -> None:
     """12.5 在数值范围内，但不满足整数字号契约。"""
-    template_payload["editor"][field] = 12.5
+    template_payload["tracks"][0]["editor"][field] = 12.5
     response = client.post("/template", json=template_payload)
     assert response.status_code == 422
-    assert response.json()["detail"][0]["loc"] == ["body", "editor", field]
+    assert response.json()["detail"][0]["loc"] == ["body", "tracks", 0, "editor", field]
     assert client.get("/template").json() == []
 
 
-# 测试名称及各类说明文字的最短和最长合法长度，包括可选文字为空。
+# 测试名称、说明与对象文字的最短和最长合法长度。
 @pytest.mark.parametrize("maximum", [False, True], ids=["shortest", "longest"])
 def test_text_boundaries(client: TestClient, template_payload: dict, maximum: bool) -> None:
-    """中文按字符长度计算；空示例文字不能被默认文案替换。"""
+    """中文按字符长度计算，文字对象至少保留一个字符，说明允许为空。"""
     template_payload.update(name="模" * (100 if maximum else 1), description="说" * (1000 if maximum else 0))
-    template_payload["editor"].update(
-        title="题" * (60 if maximum else 0), subtitle="字" * (100 if maximum else 0),
-        bubbleText="泡" * (40 if maximum else 0),
-    )
+    template_payload["tracks"] = [template_track(role, **{field: char * (limit if maximum else 1)})
+                                  for role, field, char, limit in (("title", "title", "题", 60), ("subtitle", "subtitle", "字", 100), ("bubble", "bubbleText", "泡", 40))]
+    template_payload["tracks"][0]["editor"]["titleIn"] = "in/fade_in"
     response = client.post("/template", json=template_payload)
     assert response.status_code == 201
     saved = response.json()
     assert saved["name"] == template_payload["name"]
     assert saved["description"] == template_payload["description"]
-    assert all(saved["editor"][field] == template_payload["editor"][field] for field in ("title", "subtitle", "bubbleText"))
+    assert all(actual["editor"][field] == source["editor"][field]
+               for actual, source, field in zip(saved["tracks"], template_payload["tracks"], ("title", "subtitle", "bubbleText")))
 
 
 # 测试过长文字、空白名称、非法字段类型、空效果列表和超过数量上限均返回 422。
 @pytest.mark.parametrize("changes", [
     {"name": ""}, {"name": " \t\n "}, {"name": None}, {"name": "模" * 101},
     {"description": "说" * 1001}, {"description": None},
-    {"editor": None}, {"editor": []}, {"editor": {"title": "题" * 61}},
-    {"editor": {"subtitle": "字" * 101}}, {"editor": {"bubbleText": "泡" * 41}},
-    {"editor": {"titleIn": "x" * 201}},
+    {"tracks": [{**template_track(), "editor": None}]}, {"tracks": [{**template_track(), "editor": []}]},
+    {"tracks": [template_track(title="题" * 61)]},
+    {"tracks": [template_track("subtitle", subtitle="字" * 101)]}, {"tracks": [template_track("bubble", bubbleText="泡" * 41)]},
+    {"tracks": [template_track(titleIn="x" * 201)]},
     {"effect_ids": []}, {"effect_ids": None}, {"effect_ids": "in/fade_in"},
     {"effect_ids": [123]}, {"effect_ids": [f"in/unknown_{index}" for index in range(21)]},
 ], ids=[
@@ -541,8 +548,8 @@ def test_invalid_template_fields(client: TestClient, template_payload: dict, cha
     assert client.get("/template").json() == []
 
 
-# 测试名称、编辑器配置和效果 ID 列表为必填字段，缺失时返回对应的 missing 错误。
-@pytest.mark.parametrize("field", ["name", "editor", "effect_ids"])
+# 测试名称、对象数组和效果 ID 列表为必填字段，缺失时返回对应的 missing 错误。
+@pytest.mark.parametrize("field", ["name", "tracks", "effect_ids"])
 def test_missing_required_field(client: TestClient, template_payload: dict, field: str) -> None:
     """区分字段缺失与字段内容非法，确保 API 错误位置可用于前端提示。"""
     del template_payload[field]
@@ -562,11 +569,11 @@ def test_server_owned_and_unknown_fields_are_rejected(
     client: TestClient, template_payload: dict, field: str, value: object, in_editor: bool,
 ) -> None:
     """检查 extra_forbidden 的准确位置，确认外层及嵌套层都执行白名单校验。"""
-    target = template_payload["editor"] if in_editor else template_payload
+    target = template_payload["tracks"][0]["editor"] if in_editor else template_payload
     target[field] = value
     response = client.post("/template", json=template_payload)
     assert response.status_code == 422
-    location = ["body", "editor", field] if in_editor else ["body", field]
+    location = ["body", "tracks", 0, "editor", field] if in_editor else ["body", field]
     assert any(error["loc"] == location and error["type"] == "extra_forbidden" for error in response.json()["detail"])
     assert client.get("/template").json() == []
 

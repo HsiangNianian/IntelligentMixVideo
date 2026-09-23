@@ -15,20 +15,24 @@ from sqlalchemy.exc import SQLAlchemyError
 from ..segmentation import segment
 from ..segmentation.settings import Settings as SegmentationSettings
 from ..template.store import get_template
-from . import ims, store
+from . import ims, store, zos
 from .errors import CompositionError, remaining
 from .execution_log import exception_details
 from .matching import Matching, payload, validated_matches
 from .schema import CompositionRequest, MatchCallback, PositiveSeconds, Segment, TaskResponse
-from .settings import ClientSettings, Settings
+from .settings import ClientSettings, Settings, ZosSettings
 from .timeline import build_timeline, validate_segments
 
 logger = logging.getLogger(__name__)
+
+# 首次失败后再投递三次；等待时间落库，由已有调度器恢复，不占用执行名额。
+NOTIFICATION_RETRY_DELAYS = (5, 15, 45)
 
 
 def preflight(config: ClientSettings | None = None) -> Settings:
     """受理前只检查配置，不执行成本调用；延迟导入保持现有 ASR 一次性加载行为。"""
     settings = Settings(**config.model_dump()) if config is not None else Settings()
+    ZosSettings()
     SegmentationSettings()
     from ..asr.asr import settings as asr_settings
 
@@ -44,6 +48,17 @@ def deadline(seconds: float) -> str:
 
 class LostOwnership(Exception):
     """条件更新失败后停止本执行，迟到结果不得覆盖终态或发起云端提交。"""
+
+
+class ClientConfigMissing(HTTPException):
+    """客户端 IMS 凭据只存在于任务内存中，服务重启后没有快照可用。
+
+    查询可携带请求头重试，因此保持 503；终态通知没有补带凭据的途径，调用方据此判定为最终失败。
+    """
+
+    def __init__(self, message: str):
+        """固定使用 503，避免查询把可重试的缺配置与任务本身失败混淆。"""
+        super().__init__(503, message)
 
 
 class Runtime:
@@ -155,15 +170,23 @@ class Runtime:
                        output={"http_status": response.status_code, "body": body})
 
     async def response(self, record: dict, *, source: str = "query", config: ClientSettings | None = None) -> TaskResponse:
-        """GET 与终态回调共用公开响应；成功时刷新播放地址，失败时不依赖云服务。"""
+        """新成片复用持久 ZOS 地址；历史成片沿用 IMS 动态取址。"""
         result = None
         await self.log(record, "response_started", source=source, input={"task_id": record["task_id"]})
-        if record["status"] == "succeeded":
+        saved = record["data"].get("result") or {}
+        if record["status"] == "succeeded" and record["data"].get("zos_object_key") and saved.get("videoUrl"):
+            result = {"videoUrl": saved["videoUrl"], "durationSeconds": saved["durationSeconds"]}
+        elif (record["status"] == "succeeded" and source == "notification" and saved.get("videoUrl")
+                and record["data"].get("video_url_expires_at", "") > datetime.now(UTC).isoformat()):
+            result = {"videoUrl": saved["videoUrl"], "durationSeconds": saved["durationSeconds"]}
+        elif record["status"] == "succeeded":
+            # 客户端凭据只在任务内存中；重启后通知已无取址途径，查询仍可补带请求头重试。
+            if source == "notification":
+                config = self.client_configs.get(record["task_id"])
+            if record["data"]["output"].get("client_config") and config is None:
+                await self.log(record, "playback_failed", source=source, http_status=503, reason="client_config_missing")
+                raise ClientConfigMissing("成片已完成，播放地址暂不可用，请携带客户端 IMS 配置后重试")
             try:
-                if source == "notification":
-                    config = self.client_configs.get(record["task_id"])
-                if record["data"]["output"].get("client_config") and config is None:
-                    raise ValueError("需要客户端 IMS 配置")
                 settings = await self.sync(lambda: Settings(**config.model_dump()) if config is not None else Settings())
                 provider = ims.IMS(settings, region_id=record["data"]["output"]["region_id"])
                 async with asyncio.timeout(settings.composition_http_timeout_seconds):
@@ -242,8 +265,11 @@ class Runtime:
             if record["status"] in ("succeeded", "failed"):
                 await self._notify(record)
                 return
-            # 客户端任务直接取本任务快照；缺失走已有阶段失败处理，不改用服务器账号。
-            config = self.client_configs[record["task_id"]] if record["data"]["output"].get("client_config") else None
+            # 客户端凭据只在任务内存中；服务重启后缺失即不可恢复，明确失败且不改用服务器账号。
+            needs_client_config = bool(record["data"]["output"].get("client_config"))
+            config = self.client_configs.get(record["task_id"]) if needs_client_config else None
+            if needs_client_config and config is None:
+                raise CompositionError("client_config_missing", "服务端重启后不再持有该任务的客户端 IMS 凭据，任务不可恢复，请重新提交", record["stage"])
             job.settings = await self.sync(lambda: Settings(**config.model_dump()) if config is not None else Settings())
             if self.settings is None:
                 self.settings = job.settings.model_copy(update={key: SecretStr("") for key in ("ims_access_key_id", "ims_access_key_secret", "ims_security_token")})
@@ -279,15 +305,21 @@ class Runtime:
                 self.wake.set()
 
     async def _notify(self, record: dict) -> None:
-        """终态落库后仅尝试一次异步通知；异常/取消不回退合成结果，交由调用方补查。"""
+        """终态通知失败后最多重试三次；次数和下次时间落库，不回退合成结果。"""
         try:
             claimed = await self.sync(store.notification_status, record, "sending")
             if claimed is None:
                 return
             status = "failed"
-            details = {}
+            attempt = claimed["data"]["notification_attempts"]
+            permanent = False
+            details = {"attempt": attempt}
             try:
-                body = (await self.response(claimed, source="notification")).model_dump(mode="json", by_alias=True)
+                result = await self.response(claimed, source="notification")
+                # 通知使用调用方的四字段协议，查询及持久化终态仍使用 succeeded。
+                body = {"taskId": str(result.task_id), "status": "succeed" if result.status == "succeeded" else "failed",
+                        "videoUrl": result.result.video_url if result.result else None,
+                        "errorMessage": result.error.message if result.error else None}
                 await self.log(claimed, "notification_started", input={"url": claimed["data"]["request"]["callbackUrl"],
                                                                       "body": body})
                 async with asyncio.timeout(self.settings.composition_http_timeout_seconds if self.settings else 30):
@@ -299,8 +331,13 @@ class Runtime:
                                 status = "sent"
                             await self.http_log(claimed, "notification", response)
             except Exception as exc:
+                # 客户端凭据不落库，重启后重试同样取不到地址；按最终失败处理，不做注定失败的重试。
+                permanent = isinstance(exc, ClientConfigMissing)
                 details.update(exception_details(exc))
                 logger.warning("合成任务 %s 终态通知未送达：%s", record["task_id"], type(exc).__name__)
+            if status == "failed" and not permanent and attempt <= len(NOTIFICATION_RETRY_DELAYS):
+                status = "pending"
+                details["next_at"] = deadline(NOTIFICATION_RETRY_DELAYS[attempt - 1])
             await self.sync(store.notification_status, claimed, status, details)
         except Exception as exc:
             await self.log(record, "notification_storage_failed", **exception_details(exc))
@@ -464,6 +501,9 @@ class Job:
             await self.save("rendering", ims_job_id=job_id)
 
         data = self.record["data"]
+        if data.get("result"):
+            await self.wait_for_result(provider)
+            return
         failures = 0
         while self.record["stage"] == "rendering":
             budget = remaining(data["ims_deadline"], "rendering")
@@ -488,11 +528,42 @@ class Job:
                     if not isinstance(media_id, str) or not media_id:
                         raise CompositionError("ims_contract_error", "IMS 成功结果缺少成片媒资 ID", "rendering")
                     duration = TypeAdapter(PositiveSeconds).validate_python(job["Duration"])
-                    # 只保存稳定媒资 ID；查询时获取有效地址，不把签名 URL 持久化。
-                    await self.save("completed", status="succeeded", result={"mediaId": media_id, "durationSeconds": duration})
+                    # 先保存云端结果供重启恢复；拿到播放地址之前仍处于 processing。
+                    await self.save("rendering", result={"mediaId": media_id, "durationSeconds": duration})
+                    await self.wait_for_result(provider)
                     return
                 if job["Status"] == "Failed":
                     raise CompositionError("ims_failed", "IMS 合成任务失败，请核对媒体可读性和时间线配置", "rendering")
                 if job["Status"] not in ("Init", "Queuing", "Processing"):
                     raise CompositionError("ims_contract_error", "IMS 返回未知状态", "rendering")
             await asyncio.sleep(min(self.settings.composition_poll_seconds, remaining(data["ims_deadline"], "rendering")))
+
+    async def wait_for_result(self, provider: ims.IMS) -> None:
+        """在原渲染期限内取址并转存 ZOS；恢复不重提渲染，成功后才通知。"""
+        data = self.record["data"]
+        last_stage = "playback"
+        while True:
+            try:
+                budget = remaining(data["ims_deadline"], "playback")
+            except CompositionError:
+                if last_stage == "zos_upload":
+                    raise CompositionError("zos_upload_timeout", "云端渲染已完成，但成片转存 ZOS 持续失败", "zos_upload") from None
+                raise CompositionError("playback_timeout", "云端渲染已完成，但等待成片地址超时", "playback") from None
+            try:
+                last_stage = "playback"
+                async with asyncio.timeout(min(budget, self.settings.composition_http_timeout_seconds)):
+                    url = await self.runtime.step(self.record, "playback", lambda: provider.result_url(data["result"]["mediaId"]),
+                                                  {"media_id": data["result"]["mediaId"], "source": "completion"})
+                last_stage = "zos_upload"
+                key, public_url = await self.runtime.step(
+                    self.record, "zos_upload",
+                    lambda: self.runtime.sync(zos.copy_video, url, self.record["task_id"], ZosSettings(),
+                                              self.settings.composition_http_timeout_seconds),
+                    {"media_id": data["result"]["mediaId"]},
+                )
+            except Exception:
+                await asyncio.sleep(min(self.settings.composition_poll_seconds, budget))
+                continue
+            await self.save("completed", status="succeeded", result={**data["result"], "videoUrl": public_url},
+                            zos_object_key=key)
+            return

@@ -76,6 +76,8 @@ async def database_error(request: Request, exc: SQLAlchemyError) -> JSONResponse
 @app.exception_handler(RequestValidationError)
 async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
     """保留校验错误结构，将回显输入中的非有限数转换为文字，避免 JSON 编码再次失败。"""
+    if request.method == "POST" and request.url.path.removeprefix(request.scope.get("root_path", "")) == composition_router.prefix:
+        return JSONResponse(status_code=422, content={"code": 422, "message": "请求参数无效", "data": None})
     errors = jsonable_encoder(
         exc.errors(), custom_encoder={float: lambda value: value if isfinite(value) else str(value)},
     )
