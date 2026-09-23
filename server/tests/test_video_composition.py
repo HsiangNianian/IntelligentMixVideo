@@ -19,7 +19,7 @@ from sqlalchemy import event, select
 from sqlalchemy.exc import OperationalError
 
 from server.app import app
-from server.video_composition import ims, service, store
+from server.video_composition import ims, service, store, zos
 from server.video_composition.schema import MatchCallback
 
 BASE = "/api/v1/video-compositions"
@@ -40,7 +40,8 @@ def upstreams(monkeypatch, composition_settings, composition_case):
              "render_states": ["Success"], "playbacks": [], "callback": True, "query_status": "done",
              "notifications": [], "notification_code": 204, "notification_error": None, "http_clients": [],
              "notification_entered": Event(), "notification_release": notification_release,
-             "playback_entered": Event(), "playback_release": playback_release, "playback_errors": 0}
+             "playback_entered": Event(), "playback_release": playback_release, "playback_errors": 0,
+             "zos_uploads": []}
     raw = {"properties": {"original_duration_in_milliseconds": 8000}, "transcripts": [{"sentences": [{"words": [
         {"text": "甲乙丙丁。", "begin_time": 1000, "end_time": 3000},
         {"text": "戊己庚辛。", "begin_time": 4000, "end_time": 6000},
@@ -138,6 +139,14 @@ def upstreams(monkeypatch, composition_settings, composition_case):
             raise ValueError("private-key-should-never-appear")
         return f"https://test-output.oss-cn-shanghai.aliyuncs.com/actual.mp4?Signature={len(state['playbacks'])}"
 
+    def copy_video(source_url, task_id, settings, timeout):
+        """模拟下载、公开读取校验与上传，保留源地址只供此步骤使用。"""
+        state["zos_uploads"].append((source_url, task_id))
+        assert settings.zos_bucket == "archives" and timeout > 0
+        if state["failure"] == "zos":
+            raise ValueError("private-key-should-never-appear")
+        return f"imv/video_composition/{task_id}.mp4", f"https://archives.hangzhou7.zos.ctyun.cn/imv/video_composition/{task_id}.mp4"
+
     def http_client(**kwargs):
         """统一隔离素材与终态通知的 HTTP，并保留客户端以检查取消和超时后的关闭。"""
         client = httpx.AsyncClient(transport=httpx.MockTransport(handle), **kwargs)
@@ -148,6 +157,7 @@ def upstreams(monkeypatch, composition_settings, composition_case):
     monkeypatch.setattr(service, "segment", segment)
     monkeypatch.setattr(service, "httpx", SimpleNamespace(AsyncClient=http_client))
     monkeypatch.setattr(ims, "IMS", lambda settings, **kwargs: SimpleNamespace(submit=submit, get=get, storage_location=storage_location, result_url=result_url))
+    monkeypatch.setattr(zos, "copy_video", copy_video)
     return state
 
 
@@ -190,7 +200,7 @@ def test_success_survives_slow_stage_persistence(upstreams, client, composition_
 
 
 def test_async_acceptance_queries_and_persisted_success(upstreams, client, composition_case):
-    """200 受理后可查询持久化任务；ASR 等待不阻塞 GET，成功仅返回实际云结果和北京时间。"""
+    """200 受理后可查询任务；新任务只在 ZOS 转存成功后返回固定链接。"""
     upstreams["release"].clear()
     try:
         response = client.post(BASE, json=composition_case["request"])
@@ -210,37 +220,59 @@ def test_async_acceptance_queries_and_persisted_success(upstreams, client, compo
     result = finished(client, task_id)
     assert result["status"] == "succeeded" and result["stage"] == "completed"
     assert result["result"]["durationSeconds"] == 8.02 and result["error"] is None
-    assert "/actual.mp4?Signature=" in result["result"]["videoUrl"]
+    zos_url = f"https://archives.hangzhou7.zos.ctyun.cn/imv/video_composition/{task_id}.mp4"
+    assert result["result"]["videoUrl"] == zos_url
     assert set(result) == {"taskId", "status", "stage", "result", "error", "createdAt", "updatedAt"}
     assert datetime.fromisoformat(result["createdAt"]).utcoffset() == timedelta(hours=8)
     snapshot = store.get(task_id)["data"]
     assert snapshot["template"]["tracks"][1]["editor"]["titleIn"] == "in/fade_in"
     assert snapshot["segmentation"]["warnings"] == [{"code": "example-warning"}]
     assert snapshot["ims_request"]["client_token"] == task_id
-    assert snapshot["result"] == {"mediaId": "ims-media", "durationSeconds": 8.02,
-                                  "videoUrl": "https://test-output.oss-cn-shanghai.aliyuncs.com/actual.mp4?Signature=1"}
+    assert snapshot["result"] == {"mediaId": "ims-media", "durationSeconds": 8.02, "videoUrl": zos_url}
+    assert snapshot["zos_object_key"] == f"imv/video_composition/{task_id}.mp4"
+    assert upstreams["zos_uploads"] == [("https://test-output.oss-cn-shanghai.aliyuncs.com/actual.mp4?Signature=1", task_id)]
     assert len(upstreams["submits"]) == 1
     assert upstreams["gets"] == []
     assert snapshot["match_request"]["callback_url"].startswith(f"http://testserver{BASE}/{task_id}/segment-match-callback?token=")
     before = deepcopy(upstreams["renders"])
     refreshed = client.get(f"{BASE}/{task_id}").json()
     assert upstreams["renders"] == before
-    assert refreshed["result"]["videoUrl"] != result["result"]["videoUrl"]
+    assert refreshed["result"]["videoUrl"] == result["result"]["videoUrl"]
+    assert len(upstreams["playbacks"]) == 1
     assert store.get(task_id)["data"] == snapshot
     assert "test-secret" not in json.dumps(snapshot)
 
 
-def test_playback_refresh_failure_preserves_success(upstreams, client, composition_case):
-    """刷新地址短暂失败返回 503，再查询可恢复，不回退成功状态或重提合成。"""
+def test_zos_query_does_not_need_ims_playback(upstreams, client, composition_case):
+    """ZOS 成片成功后 IMS 取址故障不影响 GET，也不重新提交合成。"""
     task_id = client.post(BASE, json=composition_case["request"]).json()["data"]
     assert finished(client, task_id)["status"] == "succeeded"
     snapshot = store.get(task_id)
     upstreams["failure"] = "playback"
     response = client.get(f"{BASE}/{task_id}")
-    assert response.status_code == 503 and "private-key" not in response.text
+    assert response.status_code == 200 and response.json()["result"]["videoUrl"] == snapshot["data"]["result"]["videoUrl"]
     assert store.get(task_id) == snapshot and len(upstreams["submits"]) == 1
+    assert len(upstreams["playbacks"]) == 1
+
+
+def test_legacy_playback_refresh_failure_preserves_success(upstreams, client, composition_case, composition_settings):
+    """旧成功记录仍刷新 IMS 地址，取址失败只影响本次 GET。"""
+    record = store.create(composition_case["request"], composition_settings.output())
+    record = store.advance(record, "completed", status="succeeded",
+                           result={"mediaId": "ims-media", "durationSeconds": 8.02,
+                                   "videoUrl": "https://media.example.test/old.mp4?Signature=old"})
+    upstreams["failure"] = "playback"
+    assert client.get(f"{BASE}/{record['task_id']}").status_code == 503
     upstreams["failure"] = None
-    assert client.get(f"{BASE}/{task_id}").json()["status"] == "succeeded"
+    assert client.get(f"{BASE}/{record['task_id']}").json()["result"]["videoUrl"].endswith("Signature=2")
+
+
+def test_missing_zos_config_rejected_before_accept(upstreams, client, composition_case, monkeypatch):
+    """缺少服务端 ZOS 密钥时不受理任务，也不启动 ASR 或云端步骤。"""
+    monkeypatch.delenv("ZOS_SECRET_ACCESS_KEY")
+    response = client.post(BASE, json=composition_case["request"])
+    assert response.status_code == 503
+    assert upstreams["asr_calls"] == 0 and store.pending([], 10) == []
 
 
 @pytest.mark.parametrize("field,value", [
@@ -1075,8 +1107,9 @@ def test_success_notification_uses_flat_callback_contract(upstreams, client, com
                     "videoUrl": record["data"]["result"]["videoUrl"], "errorMessage": None}
     assert queried["status"] == "succeeded" and queried["taskId"] == task_id
     assert queried["result"]["durationSeconds"] == 8.02
-    assert body["videoUrl"] != queried["result"]["videoUrl"]
-    assert body["videoUrl"].endswith("Signature=1")
+    assert body["videoUrl"] == queried["result"]["videoUrl"]
+    assert body["videoUrl"].endswith(f"imv/video_composition/{task_id}.mp4")
+    assert len(upstreams["playbacks"]) == 1
     assert client.post(record["data"]["match_request"]["callback_url"], json={"taskId": "upstream", "status": "failed"}).status_code == 200
     assert client.get(accepted.headers["Location"]).status_code == 200
     assert store.get(task_id) == record
@@ -1181,12 +1214,12 @@ def test_execution_logs_cover_inputs_outputs_and_notification(upstreams, client,
     saved, = composition_logs(task_id, raw=True)
     phases = saved["detail"]["阶段记录"]
     assert saved["detail"]["从提交开始记录"] is True
-    assert {"任务提交", "读取模板", "语音识别", "文本切分", "提交素材匹配", "组装视频时间线", "提交云端合成", "查询云端渲染", "获取成品视频链接", "通知调用方", "返回合成结果"} <= phases.keys()
+    assert {"任务提交", "读取模板", "语音识别", "文本切分", "提交素材匹配", "组装视频时间线", "提交云端合成", "查询云端渲染", "获取成品视频链接", "转存视频到 ZOS", "通知调用方", "返回合成结果"} <= phases.keys()
     assert phases["返回合成结果"]["输出"][-1]["内容"]["result"]["videoUrl"] == response.json()["result"]["videoUrl"]
     rows = composition_logs(task_id)
     started = {row["details"]["step"]: row["details"]["input"] for row in rows if row["event"] == "step_started"}
     outputs = {row["details"]["step"]: row["details"]["output"] for row in rows if row["event"] == "step_finished"}
-    assert set(started) == set(outputs) == {"template", "asr", "segmentation", "match_submit", "assembling", "ims_storage", "ims_submit", "ims_query", "playback"}
+    assert set(started) == set(outputs) == {"template", "asr", "segmentation", "match_submit", "assembling", "ims_storage", "ims_submit", "ims_query", "playback", "zos_upload"}
     assert started["template"] == {"style_id": request["styleId"]}
     assert outputs["template"] == composition_case["template"]
     assert outputs["asr"] == upstreams["raw"] == started["segmentation"]["asr_result"]
@@ -1202,10 +1235,10 @@ def test_execution_logs_cover_inputs_outputs_and_notification(upstreams, client,
     assert any(item["step"] == "notification" and item["output"]["http_status"] == 204 for item in http)
     queried = [row for row in rows if row["event"] == "response_ready" and row["details"]["source"] == "query"][-1]
     assert queried["details"]["output"]["result"]["videoUrl"] == response.json()["result"]["videoUrl"]
-    assert "Signature=" in response.json()["result"]["videoUrl"]
+    assert response.json()["result"]["videoUrl"].endswith(f"imv/video_composition/{task_id}.mp4")
     text = json.dumps(rows, default=str)
     assert "hidden-callback" not in text
-    assert "Signature=" in text and "token=a%2Fb" in text
+    assert "Signature=" not in text and "token=a%2Fb" in text
     assert saved["detail"]["原始输入"]["text"] == request["text"]
     assert set(saved["detail"]["原始输入"]) == set(request)
     assert saved["detail"]["最终输出"] == response.json()
@@ -1235,11 +1268,11 @@ def test_playback_must_be_ready_before_success_and_notification(upstreams, clien
     assert saved["detail"]["阶段记录"]["获取成品视频链接"]["错误日志"]
     assert record["status"] == "succeeded" and record["data"]["notification_status"] == "sent"
     assert len(upstreams["playbacks"]) == 3 and len(upstreams["renders"]) == 1
-    assert upstreams["notifications"][0]["body"]["videoUrl"].endswith("Signature=3")
+    assert upstreams["notifications"][0]["body"]["videoUrl"].endswith(f"imv/video_composition/{task_id}.mp4")
     events = [row["event"] for row in rows]
     assert events.index("task_finished") < events.index("notification_started")
     upstreams["failure"] = "playback"
-    assert client.get(f"{BASE}/{task_id}").status_code == 503
+    assert client.get(f"{BASE}/{task_id}").json()["result"]["videoUrl"] == record["data"]["result"]["videoUrl"]
     upstreams["failure"] = None
     assert client.get(f"{BASE}/{task_id}").status_code == 200
     assert store.get(task_id) == record and len(upstreams["notifications"]) == 1
@@ -1264,6 +1297,21 @@ async def test_playback_resume_and_timeout(upstreams, composition_case, composit
     body = upstreams["notifications"][0]["body"]
     assert body["status"] == ("failed" if expired else "succeed")
     assert (body["videoUrl"] is None) == expired
+
+
+@pytest.mark.anyio
+async def test_zos_failure_never_publishes_success(upstreams, composition_case, composition_runtime):
+    """IMS 已渲染时，ZOS 持续上传失败也不能向查询暴露临时签名地址。"""
+    store.initialize_schema()
+    record = store.create(composition_case["request"], composition_runtime.settings.output(), "https://composition.test")
+    record = store.advance(record, "rendering", result={"mediaId": "ims-media", "durationSeconds": 8.02},
+                           ims_deadline=service.deadline(0.1))
+    upstreams["failure"] = "zos"
+    await composition_runtime._execute(record)
+    saved = store.get(record["task_id"])
+    assert saved["status"] == "failed" and saved["data"]["error"]["code"] == "zos_upload_timeout"
+    assert saved["data"]["result"] == {"mediaId": "ims-media", "durationSeconds": 8.02}
+    assert upstreams["zos_uploads"] and upstreams["submits"] == []
     assert upstreams["renders"] == upstreams["submits"] == []
 
 
@@ -1454,12 +1502,13 @@ def test_client_ims_credentials_drive_submit_and_playback(upstreams, client, com
             assert notified(task_id)["data"]["notification_status"] == "sent"
         record = store.get(task_id)
         assert "private" not in json.dumps(record, default=str)
-        assert client.get(f"{BASE}/{task_id}").status_code == 503
+        assert client.get(f"{BASE}/{task_id}").json()["result"]["videoUrl"] == record["data"]["result"]["videoUrl"]
     assert set(seen) == {("client-a", "client-a-private"), ("client-b", "client-b-private")}
+    assert len(seen) == 4
     assert len(upstreams["notifications"]) == (2 if callback else 0)
-    # 不再检查提交账号指纹；查询直接使用本次提供的凭据，访问权限交给 IMS。
+    # 新成功任务读取已持久化的公开地址，查询头不会再触发 IMS。
     assert client.get(f"{BASE}/{requests[0][0]}", headers=requests[1][1]).status_code == 200
-    assert seen[-1] == ("client-b", "client-b-private")
+    assert len(seen) == 4
     from server.database import get_engine
     with get_engine().connect() as connection:
         logs = connection.execute(select(store.execution_logs.c.detail)).scalars().all()
@@ -1497,7 +1546,7 @@ def test_client_ims_restart_does_not_fall_back_to_server(composition_settings, c
 
 
 def test_client_ims_restart_fails_notification_without_retry(upstreams, composition_settings, composition_case):
-    """重启后尚未取址且凭据快照已丢失，终态通知按最终失败处理，不做注定失败的重试。"""
+    """旧成功记录重启后尚未取址且凭据快照已丢失，通知按最终失败处理。"""
     store.initialize_schema()
     request = composition_case["request"] | {"callbackUrl": "https://notify.example.test/result"}
     record = store.create(request, composition_settings.output() | {"client_config": True}, "https://callback.test")

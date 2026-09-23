@@ -24,6 +24,7 @@ dependencies = [
     "alibabacloud-ice20201109>=6.20.2",
     "alibabacloud-tea-openapi>=0.4.6",
     "darabonba-core>=1.0.9",
+    "boto3>=1.40,<2",
 ]
 
 [project.scripts]

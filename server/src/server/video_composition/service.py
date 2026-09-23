@@ -15,12 +15,12 @@ from sqlalchemy.exc import SQLAlchemyError
 from ..segmentation import segment
 from ..segmentation.settings import Settings as SegmentationSettings
 from ..template.store import get_template
-from . import ims, store
+from . import ims, store, zos
 from .errors import CompositionError, remaining
 from .execution_log import exception_details
 from .matching import Matching, payload, validated_matches
 from .schema import CompositionRequest, MatchCallback, PositiveSeconds, Segment, TaskResponse
-from .settings import ClientSettings, Settings
+from .settings import ClientSettings, Settings, ZosSettings
 from .timeline import build_timeline, validate_segments
 
 logger = logging.getLogger(__name__)
@@ -32,6 +32,7 @@ NOTIFICATION_RETRY_DELAYS = (5, 15, 45)
 def preflight(config: ClientSettings | None = None) -> Settings:
     """受理前只检查配置，不执行成本调用；延迟导入保持现有 ASR 一次性加载行为。"""
     settings = Settings(**config.model_dump()) if config is not None else Settings()
+    ZosSettings()
     SegmentationSettings()
     from ..asr.asr import settings as asr_settings
 
@@ -169,11 +170,13 @@ class Runtime:
                        output={"http_status": response.status_code, "body": body})
 
     async def response(self, record: dict, *, source: str = "query", config: ClientSettings | None = None) -> TaskResponse:
-        """GET 刷新地址；通知优先复用成功前已取得且未过期的地址，避免重复取址。"""
+        """新成片复用持久 ZOS 地址；历史成片沿用 IMS 动态取址。"""
         result = None
         await self.log(record, "response_started", source=source, input={"task_id": record["task_id"]})
         saved = record["data"].get("result") or {}
-        if (record["status"] == "succeeded" and source == "notification" and saved.get("videoUrl")
+        if record["status"] == "succeeded" and record["data"].get("zos_object_key") and saved.get("videoUrl"):
+            result = {"videoUrl": saved["videoUrl"], "durationSeconds": saved["durationSeconds"]}
+        elif (record["status"] == "succeeded" and source == "notification" and saved.get("videoUrl")
                 and record["data"].get("video_url_expires_at", "") > datetime.now(UTC).isoformat()):
             result = {"videoUrl": saved["videoUrl"], "durationSeconds": saved["durationSeconds"]}
         elif record["status"] == "succeeded":
@@ -536,20 +539,31 @@ class Job:
             await asyncio.sleep(min(self.settings.composition_poll_seconds, remaining(data["ims_deadline"], "rendering")))
 
     async def wait_for_result(self, provider: ims.IMS) -> None:
-        """在原渲染期限内等待源文件地址；恢复只取址，不重提渲染，成功通知复用此地址。"""
+        """在原渲染期限内取址并转存 ZOS；恢复不重提渲染，成功后才通知。"""
         data = self.record["data"]
+        last_stage = "playback"
         while True:
             try:
                 budget = remaining(data["ims_deadline"], "playback")
             except CompositionError:
+                if last_stage == "zos_upload":
+                    raise CompositionError("zos_upload_timeout", "云端渲染已完成，但成片转存 ZOS 持续失败", "zos_upload") from None
                 raise CompositionError("playback_timeout", "云端渲染已完成，但等待成片地址超时", "playback") from None
             try:
+                last_stage = "playback"
                 async with asyncio.timeout(min(budget, self.settings.composition_http_timeout_seconds)):
                     url = await self.runtime.step(self.record, "playback", lambda: provider.result_url(data["result"]["mediaId"]),
                                                   {"media_id": data["result"]["mediaId"], "source": "completion"})
+                last_stage = "zos_upload"
+                key, public_url = await self.runtime.step(
+                    self.record, "zos_upload",
+                    lambda: self.runtime.sync(zos.copy_video, url, self.record["task_id"], ZosSettings(),
+                                              self.settings.composition_http_timeout_seconds),
+                    {"media_id": data["result"]["mediaId"]},
+                )
             except Exception:
                 await asyncio.sleep(min(self.settings.composition_poll_seconds, budget))
                 continue
-            await self.save("completed", status="succeeded", result={**data["result"], "videoUrl": url},
-                            video_url_expires_at=deadline(3600))
+            await self.save("completed", status="succeeded", result={**data["result"], "videoUrl": public_url},
+                            zos_object_key=key)
             return

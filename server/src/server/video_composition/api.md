@@ -117,7 +117,7 @@ curl 'http://127.0.0.1:20070/api/v1/video-compositions/22222222-2222-4222-8222-2
 | `status` | `queued`、`processing`、`succeeded`、`failed` |
 | `stage` | 当前阶段，见下表 |
 | `result` | 成功时为成片对象，其余状态为 null |
-| `result.videoUrl` | 本次查询获取的播放地址，可能有有效期；过期后重新查询 |
+| `result.videoUrl` | 新任务返回已转存 ZOS 的公开直链；历史成功任务仍返回 IMS 临时地址，过期后可重新查询 |
 | `result.durationSeconds` | 成片实际时长，单位秒 |
 | `error` | 失败时包含 `code`、`message`、`stage`，其余状态为 null |
 | `createdAt` / `updatedAt` | 带时区的 ISO 8601 时间，当前使用北京时间 `+08:00` |
@@ -132,7 +132,7 @@ curl 'http://127.0.0.1:20070/api/v1/video-compositions/22222222-2222-4222-8222-2
 | `assembling` | 组装合成时间线 |
 | `submitting` | 提交 IMS 合成 |
 | `rendering` | 查询 IMS 合成进度，成功后继续等待成片地址 |
-| `completed` | 合成成功 |
+| `completed` | IMS 合成及 ZOS 转存成功 |
 | `failed` | 任务失败；具体失败环节见 `error.stage` |
 
 成功示例，HTTP **200**：
@@ -170,7 +170,7 @@ curl 'http://127.0.0.1:20070/api/v1/video-compositions/22222222-2222-4222-8222-2
 }
 ```
 
-任务不存在返回 404；UUID 非法返回 422；成片已成功但暂时无法获取播放地址返回 503，此时可重试 GET，任务不会被改成失败。查询本地任务不会主动触发素材匹配补查。
+任务不存在返回 404；UUID 非法返回 422；历史成片已成功但暂时无法获取 IMS 播放地址返回 503，此时可重试 GET，任务不会被改成失败。查询本地任务不会主动触发素材匹配补查。
 
 ## 4. IMV 向业务系统发送最终通知
 
@@ -190,7 +190,7 @@ curl 'http://127.0.0.1:20070/api/v1/video-compositions/22222222-2222-4222-8222-2
 - 接收方返回任意 **2xx** 表示成功，不要求特定响应体。
 - 不跟随重定向；非 2xx、连接失败或超时视为通知失败。
 - 首次失败后按 5、15、45 秒间隔额外重试三次，最多四次；通知失败不改变合成成功/失败状态。接收方按 `taskId` 幂等处理。
-- 单次 HTTP 默认超时 30 秒。云端渲染成功且取得播放地址后才保存 `succeeded`，成功通知复用已取得且未过期的地址；旧记录或地址过期时重新获取。
+- 单次 HTTP 默认超时 30 秒。新任务在 IMS 渲染、ZOS 上传校验和匿名读取验证全部成功后才保存 `succeeded`，成功通知和 GET 复用同一个 ZOS 地址；历史成功任务仍按原规则获取 IMS 地址。
 - 尝试次数和下次投递时间落库，等待重试可在重启后继续；发送中中断或送达状态保存失败留下的 `sending` 沿用不自动重放的恢复边界，由调用方 GET 补查。
 - 未收到通知时，通过 GET 查询结果。HTTP 查询失败与任务业务失败需要分别处理。
 - 通知状态记录在服务端数据库/日志中，公开任务响应不包含 `notification_status`。
@@ -262,10 +262,20 @@ COMPOSITION_CONCURRENCY=2
 COMPOSITION_WIDTH=1080
 COMPOSITION_HEIGHT=1920
 COMPOSITION_FPS=30
+
+# 新合成视频的 ZOS 存储；凭据仅由服务端读取，不放入 X-IMS-Config
+ZOS_API_ENDPOINT=https://hangzhou7.zos.ctyun.cn
+ZOS_BUCKET=archives
+ZOS_ACCESS_KEY_ID=<Access Key ID>
+ZOS_SECRET_ACCESS_KEY=<Access Key Secret>
+ZOS_WEB_URL=https://archives.hangzhou7.zos.ctyun.cn
+ZOS_REGION=hangzhou-7
+ZOS_FORCE_PATH_STYLE=false
 ```
 
 - 素材匹配：提交一次，默认等待回调最多 30 秒；期间检查本地回调落库状态，不持续查询素材库。超时后有上游 ID 才补查一次；仍未完成则失败，不重新提交匹配。
-- IMS：拿到 JobId 后立即查询，未完成时每隔 2 秒继续查询；提交、渲染和成功后的取址等待共用 3600 秒截止时间。取得地址才标记成功，取址超时以 `playback_timeout` 失败，不重新渲染。
+- IMS：拿到 JobId 后立即查询，未完成时每隔 2 秒继续查询；提交、渲染、取址和 ZOS 转存共用 3600 秒截止时间。成片转存成功才标记成功，超时失败时不重新渲染。
+- ZOS：通过 S3 兼容接口上传 `imv/video_composition/{taskId}.mp4`，只给这一对象设置 `public-read`；校验对象大小及匿名读取后返回 `ZOS_WEB_URL` 下的固定地址。`ZOS_API_ENDPOINT` 是上传接口，`ZOS_WEB_URL` 是公开读取域名；当前不读取 `ZOS_ENDPOINT`。对象被删除或命中桶生命周期规则后，固定地址仍会失效。
 - IMS 临时查询故障连续 3 次会提前失败；受理不明确时使用同一 ClientToken，最多尝试提交 2 次。
 - 最终通知：终态后发送，首次失败再重试三次，HTTP 超时共用 30 秒配置。
 - HTTP 超时范围为 `(0, 300]`，查询间隔 `(0, 60]`，ASR/匹配/渲染等待上限各为 `(0, 86400]`，并发数为 1～16。
@@ -292,4 +302,4 @@ COMPOSITION_FPS=30
 
 AccessKey ID/Secret 必填，临时凭据填写 SecurityToken；地域与官方 Endpoint 必须一致。请求头解析或字段校验失败返回 422。此头不能覆盖合成等待时间、尺寸或素材匹配配置。
 
-客户端凭据只保存在任务内存，不写业务正文或任务数据库；用客户端配置创建的成功任务，GET 时需要重新携带有访问权限的 IMS 配置以获取成片地址。服务重启会丢失未完成任务的客户端凭据快照。
+客户端 IMS 凭据只保存在任务内存，不写业务正文或任务数据库；新任务成功转存 ZOS 后，GET 不再需要 IMS 配置头。历史成功任务仍需提供有权限的 IMS 配置获取临时地址；服务重启会丢失未完成任务的客户端凭据快照。

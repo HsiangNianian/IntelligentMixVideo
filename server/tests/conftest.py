@@ -27,7 +27,7 @@ from server.template import store
 def isolate_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """清除外部配置并将各配置类指向临时 server/.env，避免读取本机文件。"""
     for key in list(os.environ):
-        if key.upper().startswith(("DB_", "IMV_", "COMPOSITION_", "SEGMENT_MATCH_", "IMS_", "MIX_VIDEO_ALIYUN_IMS_", "ALIBABA_CLOUD_")) or key.upper() in ("PORT", "DASHSCOPE_API_KEY", "ASR_BASE_URL"):
+        if key.upper().startswith(("DB_", "IMV_", "COMPOSITION_", "SEGMENT_MATCH_", "IMS_", "MIX_VIDEO_ALIYUN_IMS_", "ALIBABA_CLOUD_", "ZOS_")) or key.upper() in ("PORT", "DASHSCOPE_API_KEY", "ASR_BASE_URL"):
             monkeypatch.delenv(key)
     monkeypatch.chdir(tmp_path)
 
@@ -35,13 +35,13 @@ def isolate_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from server.__main__ import ServerSettings
     from server.remotion_templates.settings import Settings as RemotionSettings
     from server.segmentation.settings import Settings as SegmentationSettings
-    from server.video_composition.settings import Settings as CompositionSettings
+    from server.video_composition.settings import Settings as CompositionSettings, ZosSettings
 
     env_file = tmp_path / "server/.env"
     env_file.parent.mkdir()
     for settings_class in (
         CommonSettings, ServerSettings, database.DatabaseSettings,
-        RemotionSettings, SegmentationSettings, CompositionSettings,
+        RemotionSettings, SegmentationSettings, CompositionSettings, ZosSettings,
     ):
         monkeypatch.setitem(settings_class.model_config, "env_file", env_file)
     # 只导入字段声明；业务首次加载时使用本例隔离文件。
@@ -204,6 +204,12 @@ def composition_settings(monkeypatch, asr_env):
         "SEGMENT_MATCH_AUTHORIZATION": "Bearer test-only",
         "ALIBABA_CLOUD_ACCESS_KEY_ID": "test-id",
         "ALIBABA_CLOUD_ACCESS_KEY_SECRET": "test-secret",
+        "ZOS_API_ENDPOINT": "https://hangzhou7.zos.ctyun.cn",
+        "ZOS_BUCKET": "archives",
+        "ZOS_ACCESS_KEY_ID": "test-zos-id",
+        "ZOS_SECRET_ACCESS_KEY": "test-zos-secret",
+        "ZOS_WEB_URL": "https://archives.hangzhou7.zos.ctyun.cn",
+        "ZOS_FORCE_PATH_STYLE": "false",
         "COMPOSITION_POLL_SECONDS": "0.01",
         "COMPOSITION_HTTP_TIMEOUT_SECONDS": "10",
         "COMPOSITION_MATCH_WAIT_SECONDS": "10",

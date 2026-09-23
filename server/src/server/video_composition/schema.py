@@ -90,7 +90,7 @@ class AcceptedResponse(APIModel):
 
 
 class Result(APIModel):
-    """IMS 确认成功后的实际秒数与查询时获取的有效播放地址。"""
+    """成片实际秒数与新任务的 ZOS 地址；历史记录仍可返回 IMS 临时地址。"""
 
     video_url: MediaURL
     duration_seconds: PositiveSeconds
