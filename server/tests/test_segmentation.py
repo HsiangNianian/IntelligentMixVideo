@@ -1,6 +1,7 @@
 """切片核心行为回归，隔离 ASR 与模型；在 server/ 执行 uv run --locked pytest tests/test_segmentation.py -v。"""
 
 import json
+import logging
 import random
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -65,6 +66,18 @@ def model(monkeypatch):
     factory.return_value.__enter__.return_value = client
     monkeypatch.setattr(segmentation, "OpenAI", factory)
     return factory, client
+
+
+@pytest.fixture
+def server_logs(caplog):
+    """直接捕获 Uvicorn logger，兼容其他测试关闭日志传播的情况。"""
+    logger = logging.getLogger("uvicorn.error")
+    logger.addHandler(caplog.handler)
+    try:
+        with caplog.at_level("INFO", logger=logger.name):
+            yield caplog
+    finally:
+        logger.removeHandler(caplog.handler)
 
 
 @pytest.mark.parametrize(
@@ -151,7 +164,7 @@ def test_wavefront_matches_independent_dp(model):
 
 @pytest.mark.parametrize("failure,status", [("json", 502), ("shape", 502), ("connect", 502), ("timeout", 504)])
 def test_model_failures_close_client(model, client, failure, status):
-    """非法模型输出、连接失败和超时明确返回错误，并关闭 SDK 上下文。"""
+    """非法输出、连接失败和超时保留原有错误响应，并关闭 SDK。"""
     if failure in ("json", "shape"):
         model[1].chat.completions.create.side_effect = None
         model[1].chat.completions.create.return_value = SimpleNamespace(
@@ -164,6 +177,7 @@ def test_model_failures_close_client(model, client, failure, status):
     response = client.post("/segmentations", json=payload("甲乙丙丁"))
     assert response.status_code == status
     assert response.json()["error"]["message"]
+    assert set(response.json()) == {"error"}
     assert model[0].return_value.__exit__.call_count == 1
     assert model[1].chat.completions.create.call_count == 1
 
@@ -248,6 +262,22 @@ def test_invalid_model_boundaries_fail_without_fallback(model, client, ids):
     assert "boundaries_after" in response.json()["error"]["message"]
     assert model[1].chat.completions.create.call_count == 1
     assert model[0].return_value.__exit__.call_count == 1
+
+
+def test_keyword_failure_logs_completed_boundary_trace(model, client, server_logs):
+    """关键词模型返回非法 JSON 时，服务端日志保留已选切点，错误响应不回显文案。"""
+    model[1].chat.completions.create.side_effect = [
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"boundaries_after":[1]}'))]),
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="oops"))]),
+    ]
+    response = client.post("/segmentations", json=payload("甲乙丙丁。戊己庚辛。", step=500))
+    assert response.status_code == 502
+    assert response.json() == {"error": {"message": "模型返回非法 JSON。"}}
+    assert "stage=keywords" in server_logs.text
+    assert "selected_boundaries_after': [1]" in server_logs.text
+    assert "甲乙丙丁。" in server_logs.text
+    assert "model_elapsed_ms" in server_logs.text
+    assert "oops" not in response.text
 
 
 def test_english_protection_preserves_model_cut(model):
@@ -403,46 +433,58 @@ def test_group_id_counts_segments_within_asr_sentence(model, groups, expected):
     assert [s["group_id"] for s in result["segments"]] == expected
 
 
-def test_api_response_contract(model, client):
-    """词级时间轴经 HTTP 返回完整片段、秒制时间、字符串关键词及诊断计数。"""
+def test_api_response_contract(model, client, server_logs):
+    """HTTP 响应保留原有统计契约，详细诊断只写入服务端日志。"""
     model[1].chat.completions.create.side_effect = [
         SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(data)))])
-        for data in [{"boundaries_after": []}, {"keywords": [["世界"]]}]
+        for data in [{"boundaries_after": [1]}, {"keywords": [["甲乙"], ["戊己"]]}]
     ]
-    data = {
-        "script": "你好世界。",
-        "asr_result": {"transcripts": [{"sentences": [
-            {"words": [{"text": "你好世界", "begin_time": 0, "end_time": 2000}]}
-        ]}]},
-    }
-    response = client.post("/segmentations", json=data)
+    response = client.post("/segmentations", json=payload("甲乙。丙丁。戊己庚辛。", step=500))
     assert response.status_code == 200
     assert model[0].return_value.__exit__.call_count == 1
     assert response.json() == {
         "segments": [
             {
                 "segment_id": 1,
-                "group_id": [1, 1],
-                "text": "你好世界。",
+                "group_id": [1, 2],
+                "text": "甲乙。丙丁。",
                 "start_time": 0.0,
-                "end_time": 2.0,
-                "keyword": "世界",
+                "end_time": 2.5,
+                "keyword": "甲乙",
                 "level": 2,
-                "subtitle_parts": [{"text": "你好世界", "start_time": 0.0, "end_time": 2.0}],
-            }
+                "subtitle_parts": [
+                    {"text": "甲乙", "start_time": 0.0, "end_time": 1.5},
+                    {"text": "丙丁", "start_time": 1.5, "end_time": 2.5},
+                ],
+            },
+            {
+                "segment_id": 2,
+                "group_id": [2, 2],
+                "text": "戊己庚辛。",
+                "start_time": 3.0,
+                "end_time": 5.0,
+                "keyword": "戊己",
+                "level": 2,
+                "subtitle_parts": [{"text": "戊己庚辛", "start_time": 3.0, "end_time": 5.0}],
+            },
         ],
         "warnings": [],
         "trace": {
-            "matched_chars": 4,
+            "matched_chars": 8,
             "substitution_chars": 0,
             "script_extra_chars": 0,
             "asr_extra_chars": 0,
             "edit_cost": 0,
             "repair_block_count": 0,
-            "segment_count": 1,
+            "segment_count": 2,
             "keyword_rejected_count": 0,
         },
     }
+    assert "切片成功" in server_logs.text
+    assert "'filtered_boundaries': [{'offset': 3, 'reason': 'min_duration_before'}]" in server_logs.text
+    assert "'selected_boundaries_after': [1]" in server_logs.text
+    assert "'keyword_candidates': [['甲乙'], ['戊己']]" in server_logs.text
+    assert "'model_elapsed_ms': {'boundaries':" in server_logs.text
 
 
 @pytest.mark.parametrize("script,transcript,message", [
@@ -467,7 +509,7 @@ def test_framework_validation(client, data):
 
 
 def test_internal_error(client, monkeypatch):
-    """内部约束异常由路由转换为 500 与 error.message。"""
+    """内部约束异常由路由转换为原有的 500 错误格式。"""
     from server.segmentation import router as route
 
     monkeypatch.setattr(route, "segment", MagicMock(side_effect=AssertionError("片段未完整覆盖文案。")))
