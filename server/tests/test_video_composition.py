@@ -559,7 +559,11 @@ def test_remote_segmentation_response_reaches_render(upstreams, composition_case
         (7 / 30, 85 / 30), (85 / 30, 128 / 30), (128 / 30, 178 / 30),
         (178 / 30, 269 / 30), (269 / 30, 313 / 30), (313 / 30, 361 / 30), (361 / 30, 452 / 30),
     ]
-    assert [s["Content"] for s in subtitles] == [s["text"] for s in segments]
+    assert [s["Content"] for s in subtitles] == [
+        "一朝沐杏雨一生念师恩", "香佰里火锅祝", "所有辛勤的老师们",
+        "教师节快乐三尺讲台育桃李", "辛苦了各位恩师", "欢迎老师们来店里",
+        "热辣火锅暖心暖胃好好放松一下",
+    ]
     assert [s["Content"] for s in bubbles] == ["香佰里火锅", "老师们", "三尺讲台", "恩师", "老师们", "火锅"]
     assert (title[0]["TimelineIn"], title[0]["TimelineOut"]) == (1, 3)
     assert timeline["VideoTracks"][0]["VideoTrackClips"][0]["TimelineOut"] == 15.22
@@ -598,8 +602,17 @@ def test_real_segmentation_with_model_stub(upstreams, composition_case, client, 
     assert snapshot["segmentation"]["segments"] == [{
         "segment_id": 1, "text": "甲乙丙丁。戊己庚辛。", "start_time": 1, "end_time": 6,
         "keyword": "甲乙", "level": 2, "group_id": [1, 1],
+        "subtitle_parts": [
+            {"text": "甲乙丙丁", "start_time": 1, "end_time": 4},
+            {"text": "戊己庚辛", "start_time": 4, "end_time": 6},
+        ],
     }]
-    assert json.loads(upstreams["posts"][0]["llm"])["segments"] == snapshot["segmentation"]["segments"]
+    assert json.loads(upstreams["posts"][0]["llm"])["segments"] == [{
+        key: value for key, value in snapshot["segmentation"]["segments"][0].items() if key != "subtitle_parts"
+    }]
+    assert [clip["Content"] for clip in snapshot["timeline"]["SubtitleTracks"][0]["SubtitleTrackClips"]] == [
+        "甲乙丙丁", "戊己庚辛",
+    ]
     assert model.chat.completions.create.call_count == 2 and factory.return_value.__exit__.call_count == 1
 
 
@@ -1179,7 +1192,7 @@ def test_execution_logs_cover_inputs_outputs_and_notification(upstreams, client,
     assert outputs["asr"] == upstreams["raw"] == started["segmentation"]["asr_result"]
     assert outputs["segmentation"]["segments"] == composition_case["segments"]
     assert started["assembling"]["segments"] == composition_case["segments"]
-    assert outputs["assembling"]["timeline"]["SubtitleTracks"][0]["SubtitleTrackClips"][0]["Content"] == "甲乙丙丁。"
+    assert outputs["assembling"]["timeline"]["SubtitleTracks"][0]["SubtitleTrackClips"][0]["Content"] == "甲乙丙丁"
     assert started["ims_submit"]["timeline"] and outputs["ims_submit"] == {"JobId": "ims-job"}
     assert outputs["ims_query"]["MediaProducingJob"]["Status"] == "Success"
     callback = next(row for row in rows if row["event"] == "match_callback_received")

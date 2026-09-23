@@ -16,6 +16,10 @@ def test_match_request_mapping_and_optional_candidates(composition_case, materia
     """所有候选模式均原样透传编号、秒数、关键词、等级和分组，且只序列化一次。"""
     if materials is not None:
         composition_case["request"]["materials"] = materials
+    composition_case["segments"][0]["subtitle_parts"] = [
+        {"text": "甲乙", "start_time": 1, "end_time": 2},
+        {"text": "丙丁", "start_time": 2, "end_time": 3},
+    ]
     body = payload("local-id", CompositionRequest.model_validate(composition_case["request"]),
                    TypeAdapter(list[Segment]).validate_python(composition_case["segments"]), "https://composition.test/callback?token=test")
     assert body["taskId"] == "local-id"

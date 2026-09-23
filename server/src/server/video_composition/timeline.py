@@ -4,6 +4,7 @@ from math import floor
 
 from pydantic import TypeAdapter
 
+from ..segmentation.segmentation import SUBTITLE_PUNCTUATION
 from ..template.schema import CATEGORY_PARAMETERS, EffectTemplateEditor, Template
 from ..template.timing import resolve_track
 from .schema import CompositionRequest, MatchedSegment, Segment
@@ -162,13 +163,16 @@ def build_timeline(
                 **track_parameters[track.target], "TimelineIn": applied.start, "TimelineOut": applied.end,
             }]})
         else:
-            # 标题使用请求文字；字幕和关键词使用文案与对象时间的交集。
+            # 标题使用请求文字；字幕使用标点处细分的短句，关键词仍使用原切片。
+            items = [part for item in source for part in (item.subtitle_parts or [item])] if track.target == "subtitle" else source
             contents = [(request.title, applied.start, applied.end)] if track.target == "title" else [
                 (item.text if track.target == "subtitle" else item.keyword,
-                 max(item.start_time, applied.start), min(item.end_time, applied.end)) for item in source
+                 max(item.start_time, applied.start), min(item.end_time, applied.end)) for item in items
             ]
             text_clips = []
             for content, start, end in contents:
+                if track.target == "subtitle":
+                    content = "".join(char for char in content if char not in SUBTITLE_PUNCTUATION).strip()
                 if not content or not content.strip() or end <= start:
                     continue
                 segment_track = track.model_copy(update={"start_mode": "seconds", "start": start, "duration": end - start})

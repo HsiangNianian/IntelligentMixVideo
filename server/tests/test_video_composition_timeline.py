@@ -38,13 +38,33 @@ def test_unmatched_timeline_uses_business_text_and_full_tts(composition_case):
     assert clips[0]["AdaptMode"] == "Contain"
     assert timeline["AudioTracks"][0]["AudioTrackClips"][0]["Out"] == 8
     subtitles, title, bubbles = [track["SubtitleTrackClips"] for track in timeline["SubtitleTracks"]]
-    assert [s["Content"] for s in subtitles] == ["甲乙丙丁。", "戊己庚辛。"]
+    assert [s["Content"] for s in subtitles] == ["甲乙丙丁", "戊己庚辛"]
     assert [(s["TimelineIn"], s["TimelineOut"]) for s in subtitles] == [(1, 3), (4, 6)]
     assert title[0]["Content"] == composition_case["request"]["title"]
     assert (title[0]["TimelineIn"], title[0]["TimelineOut"]) == (1, 3)
     assert bubbles[0]["Content"] == "甲乙"
     assert "BubbleStyleId" not in bubbles[0]
     assert "让每一帧" not in str(timeline) and "选择花字" not in str(timeline)
+
+
+def test_subtitle_parts_keep_adjacent_times_without_changing_other_text(composition_case):
+    """字幕短句逐段显示且首尾衔接，标题、关键词与原始匹配切片保持不变。"""
+    composition_case["request"]["text"] = "甲乙丙丁。戊己庚辛?"
+    composition_case["segments"][1]["text"] = "戊己庚辛?"
+    composition_case["matches"][1]["text"] = "戊己庚辛?"
+    original = deepcopy(composition_case)
+    composition_case["segments"][0]["subtitle_parts"] = [
+        {"text": "甲乙？，", "start_time": 1, "end_time": 2},
+        {"text": "丙丁?。", "start_time": 2, "end_time": 3},
+    ]
+    timeline, _ = build_timeline(**composition_case)
+    subtitles, title, bubbles = [track["SubtitleTrackClips"] for track in timeline["SubtitleTracks"]]
+    assert [(clip["Content"], clip["TimelineIn"], clip["TimelineOut"]) for clip in subtitles] == [
+        ("甲乙？", 1, 2), ("丙丁?", 2, 3), ("戊己庚辛?", 4, 6),
+    ]
+    assert title[0]["Content"] == original["request"]["title"]
+    assert bubbles[0]["Content"] == original["segments"][0]["keyword"]
+    assert composition_case["matches"] == original["matches"]
 
 
 @pytest.mark.parametrize("title", [None, "", " \n\t"])
@@ -226,7 +246,7 @@ def test_text_rules_keep_business_content_and_separate_styles(composition_case):
     assert [(item["TimelineIn"], item["TimelineOut"]) for item in first] == [(2, 3), (4, 5)]
     assert [(item["TimelineIn"], item["TimelineOut"]) for item in second] == [(1, 3), (4, 6)]
     assert first[0]["Y"] == 0.82 and second[0]["Y"] == 0.5
-    assert [item["Content"] for item in first] == [item["text"] for item in composition_case["segments"]]
+    assert [item["Content"] for item in first] == ["甲乙丙丁", "戊己庚辛"]
     assert "示例" not in str(timeline)
 
 

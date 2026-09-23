@@ -116,8 +116,16 @@ class TaskResponse(APIModel):
     updated_at: datetime
 
 
+class SubtitlePart(BaseModel):
+    """切片内部保留问号的字幕文字及连续秒制区间；不发送给素材匹配。"""
+
+    text: str = Field(min_length=1)
+    start_time: float = Field(ge=0, allow_inf_nan=False, strict=True)
+    end_time: PositiveSeconds = Field(strict=True)
+
+
 class Segment(BaseModel):
-    """与切分接口一致的整数编号、秒制区间和关键词，保留分组与等级供匹配使用。"""
+    """切片保留素材匹配字段；字幕短句只供合成使用，序列化匹配请求时排除。"""
 
     segment_id: int = Field(gt=0, strict=True)
     text: str = Field(min_length=1)
@@ -126,12 +134,20 @@ class Segment(BaseModel):
     keyword: str
     level: int = Field(ge=1, le=2, strict=True)
     group_id: list[Annotated[int, Field(gt=0, strict=True)]] = Field(min_length=2, max_length=2)
+    subtitle_parts: list[SubtitlePart] | None = Field(default=None, min_length=1, exclude=True)
 
     @model_validator(mode="after")
-    def group_position(self) -> Self:
-        """group_id 表示句内片段序号与总数，序号不能超过总数。"""
+    def valid_segment(self) -> Self:
+        """校验句内序号，并保证字幕短句覆盖原片段且时间首尾衔接。"""
         if self.group_id[0] > self.group_id[1]:
             raise ValueError("片段组内序号不能超过总数")
+        if self.subtitle_parts and (
+            self.subtitle_parts[0].start_time != self.start_time
+            or self.subtitle_parts[-1].end_time != self.end_time
+            or any(left.end_time != right.start_time for left, right in zip(self.subtitle_parts, self.subtitle_parts[1:]))
+            or any(part.start_time >= part.end_time for part in self.subtitle_parts)
+        ):
+            raise ValueError("字幕短句时间必须在原切片内首尾衔接")
         return self
 
 
