@@ -181,7 +181,7 @@ def test_success_survives_slow_stage_persistence(upstreams, client, composition_
 
     monkeypatch.setattr(store, "advance", slow_advance)
     response = client.post(BASE, json=composition_case["request"])
-    assert response.status_code == 202
+    assert response.status_code == 200
     result = finished(client, response.json()["data"])
     assert delayed == [stage]
     assert result["status"] == "succeeded" and result["error"] is None
@@ -190,13 +190,13 @@ def test_success_survives_slow_stage_persistence(upstreams, client, composition_
 
 
 def test_async_acceptance_queries_and_persisted_success(upstreams, client, composition_case):
-    """202 前可查询持久化任务；ASR 等待不阻塞 GET，成功仅返回实际云结果和北京时间。"""
+    """200 受理后可查询持久化任务；ASR 等待不阻塞 GET，成功仅返回实际云结果和北京时间。"""
     upstreams["release"].clear()
     try:
         response = client.post(BASE, json=composition_case["request"])
-        assert response.status_code == 202
+        assert response.status_code == 200
         task_id = response.json()["data"]
-        assert response.json() == {"data": task_id}
+        assert response.json() == {"code": 200, "message": "操作成功", "data": task_id}
         assert response.headers["Location"] == f"{BASE}/{task_id}"
         assert store.get(task_id)["data"]["request"]["audioUrl"] == composition_case["request"]["audioUrl"]
         assert upstreams["entered"].wait(2)
@@ -256,11 +256,12 @@ def test_invalid_requests_are_not_accepted(client, composition_case, field, valu
     """Pydantic 拒绝非法必填字段、URL、候选和音乐范围，不留下假任务。"""
     response = client.post(BASE, json={**composition_case["request"], field: value})
     assert response.status_code == 422
+    assert response.json() == {"code": 422, "message": "请求参数无效", "data": None}
     assert store.pending([], 100) == []
 
 
 def test_missing_config_unknown_id_and_invalid_id(client, composition_case):
-    """缺少合成配置返回 503 而非 202；查询无需云端配置且区分 404/422。"""
+    """缺少合成配置返回 503 而非 200；查询无需云端配置且区分 404/422。"""
     assert client.post(BASE, json=composition_case["request"]).status_code == 503
     assert store.pending([], 100) == []
     assert client.get(f"{BASE}/{uuid4()}").status_code == 404
@@ -309,7 +310,7 @@ def test_template_read_is_queryable_before_asr(upstreams, client, composition_ca
     monkeypatch.setattr(service, "get_template", blocked_read)
     try:
         accepted = client.post(BASE, json=composition_case["request"])
-        assert accepted.status_code == 202
+        assert accepted.status_code == 200
         task_id = accepted.json()["data"]
         assert entered.wait(2)
         response = client.get(f"{BASE}/{task_id}")
@@ -337,7 +338,7 @@ def test_template_read_failure_does_not_start_asr(upstreams, client, composition
 
     monkeypatch.setattr(service, "get_template", failed_read)
     accepted = client.post(BASE, json=composition_case["request"])
-    assert accepted.status_code == 202
+    assert accepted.status_code == 200
     result = finished(client, accepted.json()["data"])
     assert result["status"] == "failed" and result["stage"] == "failed"
     assert result["error"]["stage"] == "template" and result["error"]["code"] == "template_error"
@@ -436,7 +437,7 @@ def test_ims_pending_states_then_success(upstreams, client, composition_case):
 
 
 def test_store_failure_before_acceptance_returns_503(upstreams, client, composition_case, monkeypatch):
-    """受理事务失败不返回 202，异常内容不回显连接或密钥。"""
+    """受理事务失败不返回 200，异常内容不回显连接或密钥。"""
     def fail(*args):
         """模拟数据库写入失败，不影响只读查询与其他 API。"""
         raise OperationalError("secret SQL", {}, Exception("secret connection"))
@@ -542,7 +543,7 @@ def test_remote_segmentation_response_reaches_render(upstreams, composition_case
     upstreams["raw"]["properties"]["original_duration_in_milliseconds"] = 15220
     upstreams.update(callback=callback, render_duration=15.22)
     accepted = client.post(BASE, json=composition_case["request"])
-    assert accepted.status_code == 202
+    assert accepted.status_code == 200
     task_id = accepted.json()["data"]
     result = finished(client, task_id)
     assert result["status"] == "succeeded" and result["result"]["durationSeconds"] == 15.22
@@ -734,7 +735,7 @@ def pending_match(upstreams, client, composition_case, monkeypatch):
     upstreams["callback"] = False
     monkeypatch.setenv("COMPOSITION_MATCH_WAIT_SECONDS", "10")
     accepted = client.post(BASE, json=composition_case["request"])
-    assert accepted.status_code == 202
+    assert accepted.status_code == 200
     record = waiting_match(accepted.json()["data"])
     body = {"taskId": "upstream", "status": "success", "result": {"segments": deepcopy(composition_case["matches"])}}
     return record, record["data"]["match_request"]["callback_url"], body
@@ -832,8 +833,10 @@ async def test_request_base_url_preserves_deployment_prefix(upstreams, compositi
     expected = public_base.rstrip("/") or "https://composition.test/imv"
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, root_path="/imv"), base_url="https://composition.test/imv") as client:
+            invalid = await client.post(BASE, json={})
+            assert invalid.status_code == 422 and invalid.json() == {"code": 422, "message": "请求参数无效", "data": None}
             response = await client.post(BASE, json=composition_case["request"])
-            assert response.status_code == 202
+            assert response.status_code == 200
             task_id = response.json()["data"]
             async with asyncio.timeout(2):
                 while not store.get(task_id)["data"].get("match_id"):
@@ -997,7 +1000,7 @@ def test_callback_uses_public_base_frozen_at_acceptance(upstreams, client, compo
     upstreams['release'].clear()
     try:
         response = client.post(BASE, json=composition_case['request'])
-        assert response.status_code == 202
+        assert response.status_code == 200
         task_id = response.json()['data']
         expected = public_base.rstrip('/') or 'http://testserver'
         assert store.get(task_id)['data']['callback_base_url'] == expected
@@ -1042,7 +1045,7 @@ def test_success_notification_uses_flat_callback_contract(upstreams, client, com
     """成功终态落库后自动通知，带可用地址；GET 与迟到上游回调均不重复通知或渲染。"""
     url = "https://notify.example.test/result?token=a%2Fb&source=composition"
     accepted = client.post(BASE, json={**composition_case["request"], "callbackUrl": url})
-    assert accepted.status_code == 202
+    assert accepted.status_code == 200
     task_id = accepted.json()["data"]
     record = notified(task_id)
     assert record["status"] == "succeeded" and record["data"]["notification_status"] == "sent"
@@ -1157,7 +1160,7 @@ def test_execution_logs_cover_inputs_outputs_and_notification(upstreams, client,
     composition_case["matches"][0]["matched_candidate_reason"] = "no_candidates"
     request = {**composition_case["request"], "callbackUrl": "https://notify.example.test/result?token=hidden-callback"}
     accepted = client.post(BASE, json=request)
-    assert accepted.status_code == 202
+    assert accepted.status_code == 200
     task_id = accepted.json()["data"]
     record = notified(task_id)
     response = client.get(f"{BASE}/{task_id}")
@@ -1429,7 +1432,7 @@ def test_client_ims_credentials_drive_submit_and_playback(upstreams, client, com
         header = {"X-IMS-Config": quote(json.dumps({"ims_access_key_id": name, "ims_access_key_secret": name + "-private", "composition_concurrency": 99}))}
         payload = composition_case["request"] | ({"callbackUrl": "https://notify.example.test/result"} if callback else {})
         response = client.post(BASE, json=payload, headers=header)
-        assert response.status_code == 202
+        assert response.status_code == 200
         requests.append((response.json()["data"], header))
     upstreams["release"].set()
     for task_id, header in requests:
@@ -1461,6 +1464,7 @@ def test_client_ims_validation_is_private(upstreams, client, composition_case, c
     from urllib.parse import quote
     response = client.post(BASE, json=composition_case["request"], headers={"X-IMS-Config": quote(json.dumps(config))})
     assert response.status_code == 422
+    assert response.json() == {"detail": "客户端服务配置无效，请检查设置"}
     assert "private" not in response.text
     assert upstreams["asr_calls"] == 0
     assert store.pending([], 10) == []

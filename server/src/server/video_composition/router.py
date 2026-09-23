@@ -21,7 +21,7 @@ def client_config(value: Annotated[str | None, Header(alias="X-IMS-Config")] = N
 Config = Annotated[ClientSettings | None, Depends(client_config)]
 
 
-@router.post("", status_code=202, response_model=AcceptedResponse)
+@router.post("", status_code=200, response_model=AcceptedResponse)
 async def create_composition(payload: CompositionRequest, request: Request, response: Response, config: Config) -> AcceptedResponse:
     """受理后后台依次执行 ASR、切片、素材匹配和 IMS；其他兼容控制字段暂不生效。"""
     record = await request.app.state.video_composition.accept(payload, str(request.base_url).rstrip("/"), await request.json(), config=config)

@@ -82,8 +82,10 @@ class CompositionRequest(APIModel):
 
 
 class AcceptedResponse(APIModel):
-    """创建接口以 data 包装本地任务标识，查询接口保持独立响应结构。"""
+    """创建接口返回操作结果和本地任务标识，查询接口保持独立响应结构。"""
 
+    code: Literal[200] = 200
+    message: Literal["操作成功"] = "操作成功"
     data: UUID
 
 
