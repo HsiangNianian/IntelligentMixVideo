@@ -158,6 +158,12 @@ result = segment({
 
 使用 ASR 第一音轨的词级时间，输入时间为毫秒。返回 `segments`、提示 `warnings` 和诊断信息 `trace`；
 片段包含原文、秒制起止时间、分组和关键词。切片本身不调用 ASR。
+成功响应的 `trace` 还列出送入模型的候选分句、被过滤切点的原文字符位置及原因、模型选中的切点编号、
+各片段的原始关键词候选，以及两次模型调用耗时（毫秒）；可直接在 `POST /segmentations` 的响应中查看。
+过滤原因包括 `protected_or_repaired`、`min_duration_before` 和 `min_duration_after`，不代表模型给出的解释。
+路由捕获切片执行错误时，原有状态码不变；响应通过 `error.stage` 指出 `input`、`config`、`alignment`、
+`candidate_filter`、`boundaries`、`keywords` 或 `output_validation`，顶层 `trace` 只包含失败前已采集的数据。
+请求体未通过 FastAPI 字段校验时仍返回原有的 422 `detail`，不进入切片函数，也没有阶段 trace。
 
 请求可另带 `config` 对象：`llm_base_url`、`llm_api_key`、`llm_model` 必填，`llm_timeout_seconds` 默认 120，`llm_max_retries` 默认 1（0～3）。客户端参数仅用于该次切片，完整连接参数不与服务端密钥混用；省略 `config` 仍使用原服务端配置。独立 Python 调用可传 `segment(payload, config=ClientSettings(...))`，模型定义位于 `server.segmentation.settings`。`allow_insecure_llm_http` 仍由服务端决定，不接受客户端覆盖；错误响应不回显请求输入。
 

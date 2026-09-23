@@ -30,13 +30,16 @@ def create_segmentation(
         }),
     ],
 ) -> dict | JSONResponse:
-    """调用切片函数；输入错误返回 422，内部约束错误 500，模型错误 502，超时 504。"""
+    """调用切片函数；失败时返回已采集的 trace 与阶段，保留原有状态码。"""
+    diagnostics = {"stage": "input", "trace": {}}
     try:
-        return segment(payload.model_dump(exclude={"config"}), config=payload.config)
+        return segment(payload.model_dump(exclude={"config"}), config=payload.config, diagnostics=diagnostics)
     except APITimeoutError:
-        return JSONResponse({"error": {"message": "模型请求超时。"}}, status_code=504)
+        message, status = "模型请求超时。", 504
     except APIError:
-        return JSONResponse({"error": {"message": "模型服务请求失败。"}}, status_code=502)
+        message, status = "模型服务请求失败。", 502
     except (ValueError, RuntimeError, AssertionError) as exc:
         status = 422 if isinstance(exc, ValueError) else 500 if isinstance(exc, AssertionError) else 502
-        return JSONResponse({"error": {"message": str(exc)}}, status_code=status)
+        message = str(exc)
+    return JSONResponse({"error": {"message": message, "stage": diagnostics["stage"]},
+                         "trace": diagnostics["trace"]}, status_code=status)
