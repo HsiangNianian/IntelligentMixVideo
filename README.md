@@ -39,7 +39,7 @@ uv run server
 
 服务端在项目配置中将官方 PyPI 设为默认依赖索引，与 `server/uv.lock` 的来源保持一致，避免本机默认镜像同步滞后导致版本无法解析。
 
-`POST /segmentations` 将文案与单音轨 Fun-ASR 原始结果切为带整数 `segment_id`、秒制 `start_time/end_time`、字符串 `keyword` 及 `level/group_id` 的片段；输入必须恰好包含一个 `transcripts` 元素，词时间使用 `begin_time/end_time` 毫秒，不接受顶层 `sentences` 或仅有旧 `*_ms` 时间字段的输入。模型配置使用 `server/.env.example` 中的 `IMV_` 变量；从仓库根目录启动且需要该配置时使用 `uv run --project server server`。请求与处理约束见 [server/README.md](server/README.md#文案切片)。
+`POST /segmentations` 将文案与单音轨 Fun-ASR 原始结果切为带整数 `segment_id`、秒制 `start_time/end_time`、字符串 `keyword` 及 `level/group_id` 的片段，并在片段内提供按标点拆分、时间相接且保留中英文问号的 `subtitle_parts`；输入必须恰好包含一个 `transcripts` 元素，词时间使用 `begin_time/end_time` 毫秒，不接受顶层 `sentences` 或仅有旧 `*_ms` 时间字段的输入。模型配置使用 `server/.env.example` 中的 `IMV_` 变量；从仓库根目录启动且需要该配置时使用 `uv run --project server server`。请求与处理约束见 [server/README.md](server/README.md#文案切片)。
 
 ASR 转写另提供独立 Python 函数与命令行入口，读取北京地域的 `DASHSCOPE_API_KEY`，尚未注册 HTTP 路由；用法见 [ASR 音频转写](server/README.md#asr-音频转写)。
 
