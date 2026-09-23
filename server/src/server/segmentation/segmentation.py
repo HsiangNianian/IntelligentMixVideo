@@ -4,6 +4,7 @@ import bisect
 from collections import Counter
 import json
 import re
+from time import perf_counter
 import unicodedata
 from urllib.parse import urlparse
 
@@ -13,7 +14,7 @@ from openai import OpenAI
 from .settings import ClientSettings, Settings
 
 
-def segment(payload: dict, *, config: ClientSettings | None = None) -> dict:
+def segment(payload: dict, *, config: ClientSettings | None = None, diagnostics: dict | None = None) -> dict:
     """用正确文案和 ASR 词级时间生成片段；不调用 TTS/ASR，不降级模型失败。
 
     请求为 {script, asr_result}，读取 fun-asr transcripts 第一音轨，词时间为 begin_time/end_time 毫秒。
@@ -23,7 +24,11 @@ def segment(payload: dict, *, config: ClientSettings | None = None) -> dict:
     返回 segments（整型 segment_id、秒制 start_time/end_time、group_id、字符串 keyword、level）、
     warnings 和 trace；空内容或输出时间错误抛 ValueError，配置或模型输出错误抛
     RuntimeError，内部约束错误抛 AssertionError；ASR 嵌套读取和 SDK 异常原样传播。
+    diagnostics 供 HTTP 入口记录已完成阶段的详细 trace；返回值只保留原有统计字段。
     """
+    diagnostics = {} if diagnostics is None else diagnostics
+    diagnostics.update(stage="input", trace={})
+    trace = diagnostics["trace"]
     # 直接调用须提供约定字段；HTTP 类型校验由路由负责。标点不参与对齐，保留原始下标。
     script = payload["script"]
     punctuation = set("，。！？、；：“”‘’（）《》〈〉【】〔〕…—～·,.!?;:\"'()<>[]{}~`")
@@ -57,12 +62,14 @@ def segment(payload: dict, *, config: ClientSettings | None = None) -> dict:
         raise ValueError("ASR 缺少有效发音字符。")
 
     # 客户端完整参数覆盖模型字段；服务端 HTTP 策略仍从环境读取，不修改共享状态。
+    diagnostics["stage"] = "config"
     try:
         config = Settings(**config.model_dump()) if config is not None else Settings()
     except ValidationError:
         raise RuntimeError("模型或切片配置缺失或不合法，请检查 IMV_ 配置。") from None
     # 固定业务规则：候选片段至少 2 秒，每段最多一个关键词，词长最多 12 字。
     minimum, keyword_max_length = 2000, 12
+    diagnostics["stage"] = "alignment"
     # 先剥离相同前后缀，仅对中间差异搜索并回溯。
     prefix = suffix = 0
     limit = min(len(chars), len(timeline))
@@ -132,6 +139,11 @@ def segment(payload: dict, *, config: ClientSettings | None = None) -> dict:
     ops = [("match", i, i) for i in range(prefix)] + middle
     ops += [("match", len(chars) - suffix + i, len(timeline) - suffix + i) for i in range(suffix)]
     counts = Counter(kind for kind, _, _ in ops)
+    trace.update(
+        matched_chars=counts["match"], substitution_chars=counts["substitution"],
+        script_extra_chars=counts["script_extra"], asr_extra_chars=counts["asr_extra"],
+        edit_cost=len(ops) - counts["match"],
+    )
     # 分母覆盖两侧文本，避免 ASR 大量多字仍被视为文案完全匹配。
     ratio = counts["match"] / max(len(chars), len(timeline))
     warnings = []
@@ -167,8 +179,10 @@ def segment(payload: dict, *, config: ClientSettings | None = None) -> dict:
         for order, i in enumerate(indices):
             starts[i], ends[i] = begin_time + step * order, begin_time + step * (order + 1)
         repair_ranges.append((indices[0], indices[-1] + 1))
+    trace["repair_block_count"] = len(repair_ranges)
 
     # 仅保护原文连续的英文、数字串（含小数、连字符和百分号），不跨空格或中文标点保护。
+    diagnostics["stage"] = "candidate_filter"
     offsets = [c[0] for c in chars]
     forbidden = set()
     for token in re.finditer(r"[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*%?", script):
@@ -179,21 +193,31 @@ def segment(payload: dict, *, config: ClientSettings | None = None) -> dict:
         forbidden.update(range(begin + 1, end))
     # ponytail: 只使用中文标点候选；无候选或全文不足 2 秒时保持整段，需多语言时再扩展。
     # 从左到右保留切点，两侧均留足 2 秒；过滤只隐藏边界，不删除原文。
-    candidate_edges = [0]
+    # offset 是原文中标点后的字符位置；多个限制同时命中时记录首个过滤原因。
+    candidate_edges, filtered_boundaries = [0], []
     for clause in re.finditer(r"[^，。！？；：、…]*[，。！？；：、…]+|[^，。！？；：、…]+$", script):
         cut = bisect.bisect_left(offsets, clause.end())
-        if (
-            0 < cut < len(chars) and cut not in forbidden
-            and ends[cut - 1] - starts[candidate_edges[-1]] >= minimum
-            and ends[-1] - starts[cut] >= minimum
-        ):
+        if not 0 < cut < len(chars):
+            continue
+        if cut in forbidden:
+            reason = "protected_or_repaired"
+        elif ends[cut - 1] - starts[candidate_edges[-1]] < minimum:
+            reason = "min_duration_before"
+        elif ends[-1] - starts[cut] < minimum:
+            reason = "min_duration_after"
+        else:
             candidate_edges.append(cut)
+            continue
+        filtered_boundaries.append({"offset": clause.end(), "reason": reason})
     candidate_edges.append(len(chars))
     text_edges = [0, *[offsets[i] for i in candidate_edges[1:-1]], len(script)]
     listing = [
         {"id": i, "text": script[a:b]}
         for i, (a, b) in enumerate(zip(text_edges, text_edges[1:]), 1)
     ]
+    trace.update(candidate_clauses=listing, filtered_boundaries=filtered_boundaries,
+                 selected_boundaries_after=[], keyword_candidates=[], model_elapsed_ms={})
+    diagnostics["stage"] = "config"
     base_url, key, model = config.llm_base_url, config.llm_api_key, config.llm_model
     try:
         address = urlparse(base_url)
@@ -213,6 +237,7 @@ def segment(payload: dict, *, config: ClientSettings | None = None) -> dict:
     # 两次调用有先后依赖：模型选择候选切点后，再标注最终片段；重试仅由 SDK 负责。
     with OpenAI(base_url=base_url, api_key=key, timeout=config.llm_timeout_seconds, max_retries=config.llm_max_retries) as client:
         for stage in ("boundaries", "keywords"):
+            diagnostics["stage"] = stage
             if stage == "boundaries":
                 prompt = (
                     '将口播文案切成短句画面，只返回 JSON：{"boundaries_after":[1,3]}。'
@@ -240,15 +265,19 @@ def segment(payload: dict, *, config: ClientSettings | None = None) -> dict:
                     "自检段数、每段词数、词长和原文匹配。只输出纯JSON，无Markdown或解释。"
                 )
                 content = [s["text"] for s in segments]
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": json.dumps(content, ensure_ascii=False)},
-                ],
-                temperature=0.2,
-                response_format={"type": "json_object"},
-            )
+            started = perf_counter()
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": prompt},
+                        {"role": "user", "content": json.dumps(content, ensure_ascii=False)},
+                    ],
+                    temperature=0.2,
+                    response_format={"type": "json_object"},
+                )
+            finally:
+                trace["model_elapsed_ms"][stage] = round((perf_counter() - started) * 1000, 1)
             if not response.choices or not isinstance(response.choices[0].message.content, str):
                 raise RuntimeError("模型返回空内容。")
             raw = response.choices[0].message.content.strip()
@@ -264,7 +293,8 @@ def segment(payload: dict, *, config: ClientSettings | None = None) -> dict:
                 ids = output.get("boundaries_after")
                 if not isinstance(ids, list) or any(type(n) is not int or not 1 <= n < len(listing) for n in ids):
                     raise RuntimeError("模型 boundaries_after 必须为有效分句编号数组，不含最后一句。")
-                edges = [0, *[candidate_edges[n] for n in sorted(set(ids))], len(chars)]
+                trace["selected_boundaries_after"] = sorted(set(ids))
+                edges = [0, *[candidate_edges[n] for n in trace["selected_boundaries_after"]], len(chars)]
                 spans = list(zip(edges, edges[1:]))
                 # 段落按其首字归属 ASR 句：句内序号从 1 递增，total 为该句的最终段数。
                 # 跨句片段整体计入起始句，使同句编号连续且不因归属再切分文本。
@@ -304,6 +334,7 @@ def segment(payload: dict, *, config: ClientSettings | None = None) -> dict:
                     or any(not isinstance(g, list) or any(not isinstance(w, str) for w in g) for g in groups)
                 ):
                     raise RuntimeError("模型关键词数组必须与片段一一对应且元素为字符串。")
+                trace["keyword_candidates"] = groups
                 # 单次扫描选最靠前的有效词；同位置保留首个候选，其余候选均计为拒绝。
                 for item, candidates in zip(segments, groups):
                     keyword, first = "", len(item["text"])
@@ -318,6 +349,8 @@ def segment(payload: dict, *, config: ClientSettings | None = None) -> dict:
                     item["level"] = 2 if item["keyword"] else 1
 
     # 保留原始停顿，检查文本覆盖和输出时间。
+    diagnostics["stage"] = "output_validation"
+    trace.update(segment_count=len(segments), keyword_rejected_count=rejected)
     if "".join(s["text"] for s in segments) != script:
         raise AssertionError("片段未完整覆盖文案。")
     previous_end = 0
@@ -332,14 +365,8 @@ def segment(payload: dict, *, config: ClientSettings | None = None) -> dict:
     return {
         "segments": segments,
         "warnings": warnings,
-        "trace": {
-            "matched_chars": counts["match"],
-            "substitution_chars": counts["substitution"],
-            "script_extra_chars": counts["script_extra"],
-            "asr_extra_chars": counts["asr_extra"],
-            "edit_cost": len(ops) - counts["match"],
-            "repair_block_count": len(repair_ranges),
-            "segment_count": len(segments),
-            "keyword_rejected_count": rejected,
-        },
+        "trace": {key: trace[key] for key in (
+            "matched_chars", "substitution_chars", "script_extra_chars", "asr_extra_chars",
+            "edit_cost", "repair_block_count", "segment_count", "keyword_rejected_count",
+        )},
     }
