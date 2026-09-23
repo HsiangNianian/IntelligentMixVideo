@@ -12,6 +12,10 @@ from openai import OpenAI
 
 from .settings import ClientSettings, Settings
 
+# 对齐忽略常见中英文标点；字幕显示保留问号，其余标点去除。
+PUNCTUATION = set("，。！？、；：“”‘’（）《》〈〉【】〔〕…—～·,.!?;:\"'()<>[]{}~`")
+SUBTITLE_PUNCTUATION = PUNCTUATION - {"？", "?"}
+
 
 def segment(payload: dict, *, config: ClientSettings | None = None) -> dict:
     """用正确文案和 ASR 词级时间生成片段；不调用 TTS/ASR，不降级模型失败。
@@ -20,17 +24,17 @@ def segment(payload: dict, *, config: ClientSettings | None = None) -> dict:
     替换/增删代价均为 1；波前搜索保留最远位置，平局依次优先替换、文案多字、
     ASR 多字。模型只返回分句切点和关键词，时间投射和关键词校验由代码完成。
     显式 config 仅用于当前调用；省略时读取 server/.env 与 IMV_ 环境变量，SDK 在返回前关闭。
-    返回 segments（整型 segment_id、秒制 start_time/end_time、group_id、字符串 keyword、level）、
-    warnings 和 trace；空内容或输出时间错误抛 ValueError，配置或模型输出错误抛
+    返回 segments（整型 segment_id、秒制 start_time/end_time、group_id、字符串 keyword、level，
+    以及仅供字幕使用、保留问号的 subtitle_parts）、warnings 和 trace；
+    空内容或输出时间错误抛 ValueError，配置或模型输出错误抛
     RuntimeError，内部约束错误抛 AssertionError；ASR 嵌套读取和 SDK 异常原样传播。
     """
     # 直接调用须提供约定字段；HTTP 类型校验由路由负责。标点不参与对齐，保留原始下标。
     script = payload["script"]
-    punctuation = set("，。！？、；：“”‘’（）《》〈〉【】〔〕…—～·,.!?;:\"'()<>[]{}~`")
     chars = [
         (i, unicodedata.normalize("NFKC", c).lower())
         for i, c in enumerate(script)
-        if not c.isspace() and c not in punctuation
+        if not c.isspace() and c not in PUNCTUATION
     ]
     if not chars:
         raise ValueError("文案缺少有效字符。")
@@ -42,7 +46,7 @@ def segment(payload: dict, *, config: ClientSettings | None = None) -> dict:
         for word in sentence["words"]:
             begin, end = word["begin_time"], word["end_time"]
             # ponytail: 词内字符均分词时长，并非真实字级强制对齐；精度不足时需上游提供更细时间轴。
-            content = [c for c in word["text"] if not c.isspace() and c not in punctuation]
+            content = [c for c in word["text"] if not c.isspace() and c not in PUNCTUATION]
             # 空内容不进入循环或执行除法。
             for i, char in enumerate(content):
                 timeline.append(
@@ -174,6 +178,7 @@ def segment(payload: dict, *, config: ClientSettings | None = None) -> dict:
     for token in re.finditer(r"[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*%?", script):
         begin, end = bisect.bisect_left(offsets, token.start()), bisect.bisect_left(offsets, token.end())
         forbidden.update(range(begin + 1, end))
+    subtitle_forbidden = forbidden.copy()
     # 增删修复块内时间为估算值，保留整块以免制造看似精确的切点。
     for begin, end in repair_ranges:
         forbidden.update(range(begin + 1, end))
@@ -329,6 +334,27 @@ def segment(payload: dict, *, config: ClientSettings | None = None) -> dict:
     for item in segments:
         item["start_time"] = item.pop("start_time_ms") / 1000
         item["end_time"] = item.pop("end_time_ms") / 1000
+    # 字幕在原切片内按标点细分；以下一个发音字符的时间切换，保留片段间原有停顿。
+    for item, (a, b) in zip(segments, spans):
+        raw_begin = 0 if a == 0 else offsets[a]
+        raw_end = len(script) if b == len(chars) else offsets[b]
+        cuts = []
+        previous_ms = round(starts[a])
+        for mark in re.finditer(r"[，。！？；：、…—,.!?;:]+", script[raw_begin:raw_end]):
+            cut = bisect.bisect_left(offsets, raw_begin + mark.end())
+            if not a < cut < b or cut in subtitle_forbidden:
+                continue
+            cut_ms = round(starts[cut])
+            if previous_ms < cut_ms < round(ends[b - 1]):
+                cuts.append((cut, cut_ms))
+                previous_ms = cut_ms
+        text_edges = [raw_begin, *(offsets[cut] for cut, _ in cuts), raw_end]
+        times = [item["start_time"], *(ms / 1000 for _, ms in cuts), item["end_time"]]
+        item["subtitle_parts"] = [
+            {"text": "".join(char for char in script[left:right] if char not in SUBTITLE_PUNCTUATION).strip(),
+             "start_time": start, "end_time": end}
+            for left, right, start, end in zip(text_edges, text_edges[1:], times, times[1:])
+        ]
     return {
         "segments": segments,
         "warnings": warnings,

@@ -94,6 +94,20 @@ def test_alignment_and_contract(model, script, transcript, cost):
     assert previous == len(transcript) * 200 / 1000
 
 
+def test_subtitle_parts_split_at_punctuation_with_joined_times(model):
+    """字幕按原文标点拆开，时间来自下一发音字符，原切片仍供素材匹配。"""
+    script = "看新闻了吗？太炸裂了?AI把数学圈搞炸了。"
+    result = segment(payload(script))
+    assert len(result["segments"]) == 1
+    original = result["segments"][0]
+    parts = original["subtitle_parts"]
+    assert original["text"] == script
+    assert [part["text"] for part in parts] == ["看新闻了吗？", "太炸裂了?", "AI把数学圈搞炸了"]
+    assert parts[0]["start_time"] == original["start_time"]
+    assert parts[-1]["end_time"] == original["end_time"]
+    assert all(parts[i]["end_time"] == parts[i + 1]["start_time"] for i in range(len(parts) - 1))
+
+
 @pytest.mark.parametrize("script,transcript", [("甲乙", "甲丙丁戊己庚辛壬癸乙"), ("甲丙丁戊己庚辛壬癸乙", "甲乙"), ("甲乙", "丙丁")])
 def test_low_match_ratio_still_segments(model, script, transcript):
     """低匹配率仍完成对齐和时间投射，只通过 warnings 提示差异。"""
@@ -414,6 +428,7 @@ def test_api_response_contract(model, client):
                 "end_time": 2.0,
                 "keyword": "世界",
                 "level": 2,
+                "subtitle_parts": [{"text": "你好世界", "start_time": 0.0, "end_time": 2.0}],
             }
         ],
         "warnings": [],
@@ -489,6 +504,7 @@ def test_extra_fields_and_first_track(model, client):
     assert response.json()["segments"] == [{
         "segment_id": 1, "group_id": [1, 1], "text": "甲",
         "start_time": 0.0, "end_time": 1.5, "keyword": "甲", "level": 2,
+        "subtitle_parts": [{"text": "甲", "start_time": 0.0, "end_time": 1.5}],
     }]
     assert len(data["asr_result"]["transcripts"]) == 2
 
