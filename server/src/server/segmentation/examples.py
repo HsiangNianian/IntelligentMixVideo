@@ -27,7 +27,7 @@ SEGMENTATION_REQUEST_EXAMPLE = {
     },
 }
 
-# 文档成功响应示例，与请求示例同源，供 Swagger UI 展示 segments、warnings 与 trace 结构。
+# 文档成功响应示例，与请求示例同源，展示切片内仅用于成片字幕的短句时间。
 # warnings 非空时元素为 {"code", "message"}，此处展示正常对齐情况所以为空数组。
 SEGMENTATION_RESPONSE_EXAMPLE = {
     "segments": [
@@ -39,6 +39,10 @@ SEGMENTATION_RESPONSE_EXAMPLE = {
             "end_time": 2.0,
             "keyword": "",
             "level": 1,
+            "subtitle_parts": [
+                {"text": "大家好", "start_time": 0.0, "end_time": 0.6},
+                {"text": "欢迎来到直播间", "start_time": 0.6, "end_time": 2.0},
+            ],
         },
         {
             "segment_id": 2,
@@ -48,6 +52,9 @@ SEGMENTATION_RESPONSE_EXAMPLE = {
             "end_time": 4.4,
             "keyword": "土鸡",
             "level": 2,
+            "subtitle_parts": [
+                {"text": "今天上架散养的土鸡", "start_time": 2.4, "end_time": 4.4},
+            ],
         },
     ],
     "warnings": [],

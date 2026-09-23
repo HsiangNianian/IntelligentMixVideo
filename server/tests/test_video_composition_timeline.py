@@ -30,19 +30,41 @@ def test_unmatched_timeline_uses_business_text_and_full_tts(composition_case):
     clips = timeline["VideoTracks"][0]["VideoTrackClips"]
     assert len(clips) == 1
     assert (clips[0]["In"], clips[0]["Out"], clips[0]["TimelineIn"], clips[0]["TimelineOut"]) == (0, 8, 0, 8)
-    assert clips[0]["Effects"] == [{"Type": "Volume", "Gain": 0}]
+    assert clips[0]["Effects"] == [
+        {"Type": "Background", "SubType": "Blur", "Radius": 0.1}, {"Type": "Volume", "Gain": 0},
+    ]
     assert clips[0]["MediaURL"] == composition_case["request"]["videoUrl"]
     assert clips[0]["Width"] == 1080 and clips[0]["Height"] == 1920
-    assert clips[0]["AdaptMode"] == "Fit"
+    assert clips[0]["AdaptMode"] == "Contain"
     assert timeline["AudioTracks"][0]["AudioTrackClips"][0]["Out"] == 8
     subtitles, title, bubbles = [track["SubtitleTrackClips"] for track in timeline["SubtitleTracks"]]
-    assert [s["Content"] for s in subtitles] == ["甲乙丙丁。", "戊己庚辛。"]
+    assert [s["Content"] for s in subtitles] == ["甲乙丙丁", "戊己庚辛"]
     assert [(s["TimelineIn"], s["TimelineOut"]) for s in subtitles] == [(1, 3), (4, 6)]
     assert title[0]["Content"] == composition_case["request"]["title"]
     assert (title[0]["TimelineIn"], title[0]["TimelineOut"]) == (1, 3)
     assert bubbles[0]["Content"] == "甲乙"
     assert "BubbleStyleId" not in bubbles[0]
     assert "让每一帧" not in str(timeline) and "选择花字" not in str(timeline)
+
+
+def test_subtitle_parts_keep_adjacent_times_without_changing_other_text(composition_case):
+    """字幕短句逐段显示且首尾衔接，标题、关键词与原始匹配切片保持不变。"""
+    composition_case["request"]["text"] = "甲乙丙丁。戊己庚辛?"
+    composition_case["segments"][1]["text"] = "戊己庚辛?"
+    composition_case["matches"][1]["text"] = "戊己庚辛?"
+    original = deepcopy(composition_case)
+    composition_case["segments"][0]["subtitle_parts"] = [
+        {"text": "甲乙？，", "start_time": 1, "end_time": 2},
+        {"text": "丙丁?。", "start_time": 2, "end_time": 3},
+    ]
+    timeline, _ = build_timeline(**composition_case)
+    subtitles, title, bubbles = [track["SubtitleTrackClips"] for track in timeline["SubtitleTracks"]]
+    assert [(clip["Content"], clip["TimelineIn"], clip["TimelineOut"]) for clip in subtitles] == [
+        ("甲乙？", 1, 2), ("丙丁?", 2, 3), ("戊己庚辛?", 4, 6),
+    ]
+    assert title[0]["Content"] == original["request"]["title"]
+    assert bubbles[0]["Content"] == original["segments"][0]["keyword"]
+    assert composition_case["matches"] == original["matches"]
 
 
 @pytest.mark.parametrize("title", [None, "", " \n\t"])
@@ -55,19 +77,24 @@ def test_blank_title_is_omitted(composition_case, title):
 
 @pytest.mark.parametrize("kind", ["video", "image"])
 def test_material_coverage_preserves_avatar_source_and_url(composition_case, kind):
-    """素材从源零点覆盖固定区间，前后恢复对应时刻数字人，图片以时长显示。"""
+    """素材从源零点覆盖固定区间；视频和图片均保持比例并模糊填充留白。"""
     url = "https://media.example.test/clip?clip_ms=2000&concat=a%2Fb"
     composition_case["matches"][0].update(matched_candidate_url=url, matched_candidate_type=kind)
     timeline, _ = build_timeline(**composition_case)
     before, material, after = timeline["VideoTracks"][0]["VideoTrackClips"]
     assert (before["In"], before["Out"], after["In"], after["Out"]) == (0, 1, 3, 8)
     assert (material["TimelineIn"], material["TimelineOut"], material["MediaURL"]) == (1, 3, url)
+    assert all((clip["Width"], clip["Height"], clip["AdaptMode"]) == (1080, 1920, "Contain")
+               for clip in (before, material, after))
+    assert all(clip["Effects"][0] == {"Type": "Background", "SubType": "Blur", "Radius": 0.1}
+               for clip in (before, material, after))
     if kind == "video":
         assert (material["In"], material["Out"]) == (0, 2)
-        assert material["Effects"] == [{"Type": "Volume", "Gain": 0}]
+        assert material["Effects"][1:] == [{"Type": "Volume", "Gain": 0}]
     else:
         assert material["Type"] == "Image" and material["Duration"] == 2
         assert "Out" not in material
+        assert len(material["Effects"]) == 1
 
 
 @pytest.mark.parametrize("enabled,volume", [(False, 0.1), (True, 0), (True, 0.1), (True, 1)])
@@ -219,7 +246,7 @@ def test_text_rules_keep_business_content_and_separate_styles(composition_case):
     assert [(item["TimelineIn"], item["TimelineOut"]) for item in first] == [(2, 3), (4, 5)]
     assert [(item["TimelineIn"], item["TimelineOut"]) for item in second] == [(1, 3), (4, 6)]
     assert first[0]["Y"] == 0.82 and second[0]["Y"] == 0.5
-    assert [item["Content"] for item in first] == [item["text"] for item in composition_case["segments"]]
+    assert [item["Content"] for item in first] == ["甲乙丙丁", "戊己庚辛"]
     assert "示例" not in str(timeline)
 
 
@@ -240,7 +267,9 @@ def test_transition_uses_actual_boundaries_and_ignores_template_timing(compositi
         {"Type": "DLTransition", "SubType": asset.effect_id, "Duration": duration}
         for duration in (0.5, 0.5, 0.5, 1)
     ]
-    assert clips[-1]["Effects"] == [{"Type": "Volume", "Gain": 0}]
+    assert clips[-1]["Effects"] == [
+        {"Type": "Background", "SubType": "Blur", "Radius": 0.1}, {"Type": "Volume", "Gain": 0},
+    ]
     assert (clips[2]["In"], clips[2]["Out"], clips[4]["In"], clips[4]["Out"]) == (3, 4, 6, 8)
     assert timeline["AudioTracks"][0]["AudioTrackClips"][0]["TimelineOut"] == 8
     for start_mode, start, duration in (("seconds", 100, 0.1), ("percent", 99, 3)):
@@ -257,7 +286,9 @@ def test_transition_does_not_split_single_clip_and_still_validates_effect(compos
     timeline, warnings = build_timeline(**composition_case)
     clip, = timeline["VideoTracks"][0]["VideoTrackClips"]
     assert (clip["In"], clip["Out"]) == (0, 8)
-    assert clip["Effects"] == [{"Type": "Volume", "Gain": 0}] and warnings == []
+    assert clip["Effects"] == [
+        {"Type": "Background", "SubType": "Blur", "Radius": 0.1}, {"Type": "Volume", "Gain": 0},
+    ] and warnings == []
     composition_case["template"]["effects"] = [item for item in composition_case["template"]["effects"] if item["id"] != asset.id]
     with pytest.raises(ValueError, match="模板效果引用"):
         build_timeline(**composition_case)

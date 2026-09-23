@@ -210,7 +210,7 @@ test.each(["false", "true"])("Agent 和 IMS 在模式 %s 下使用最新设置",
 
 // 场景：创建接口的受理结果包在 data 中，helper 解包后直接返回任务 ID；查询响应保持扁平结构。
 test("合成创建解包 data 包装的受理结果", async () => {
-  fetchMock.mockResolvedValueOnce(Response.json({ data: "task-a" }));
+  fetchMock.mockResolvedValueOnce(Response.json({ code: 200, message: "操作成功", data: "task-a" }));
   expect(await createComposition({ text: "合成" })).toBe("task-a");
   fetchMock.mockResolvedValueOnce(Response.json({ taskId: "task-a", status: "succeeded" }));
   expect((await getComposition("task-a")).status).toBe("succeeded");
