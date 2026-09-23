@@ -46,7 +46,7 @@ VITE_PREVIEW_VIDEO_URL=https://your-domain.example/preview.mp4
 ```
 
 也可将视频放入 `client/public/preview.mp4`，填写 `VITE_PREVIEW_VIDEO_URL=/preview.mp4`。
-未配置或留空时使用内置阿里云示例。工作区的预览视频与模板独立，保存模板只保存对象配置和时间规则。
+未配置或留空时使用内置示例。工作区的预览视频与模板独立，保存模板只保存对象配置和时间规则。
 
 时间输入和开始、持续方式的选择立即更新内存草稿及预览；点击「保存模板」才写入存储。空值或非法时间会提示错误，修正后继续编辑。
 

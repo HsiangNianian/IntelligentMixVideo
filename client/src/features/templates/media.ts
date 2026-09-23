@@ -4,7 +4,8 @@ import type { MasterVideo } from "./model";
 /** 环境配置留空时使用内置视频，支持 HTTP(S) 直链和 public 资源路径。 */
 export function previewVideoUrl(): string {
   return new URL(
-    import.meta.env.VITE_PREVIEW_VIDEO_URL?.trim() || "https://ice-pub-media.myalicdn.com/vod-demo/最美中国纪录片-智能字幕.mp4",
+    import.meta.env.VITE_PREVIEW_VIDEO_URL?.trim() ||
+      "https://oss.joyfile.net/source/2026/09/14/RC202609141904000001/01c1b9a1e9f747408d6522f7ec4cee61.mp4",
     window.location.origin,
   ).href;
 }
