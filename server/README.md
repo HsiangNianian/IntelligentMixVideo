@@ -95,11 +95,13 @@ MySQL 单独列保存唯一名称、ID 和时间，JSON 保存完整编辑配置
 
 视频和图片片段以 `Contain` 方式放入输出画布，保留素材原始宽高比和完整画面；比例不同时使用素材的模糊背景填充留白。已有成片不会自动重新渲染。
 
-云端渲染返回 `Success` 后仍保持 `processing/rendering`，在原渲染截止时间内按轮询间隔等待成片地址；取得地址后才保存 `succeeded` 和待通知状态，超时以 `playback_timeout` 失败。保存首次地址及一小时有效期供通知复用，GET 仍刷新地址；旧记录或地址过期时，通知重新获取地址。取得地址不代表额外下载验证了视频内容。
+云端渲染返回 `Success` 后仍保持 `processing/rendering`，在原渲染截止时间内获取 IMS 临时地址并下载成片，再上传至 ZOS 的 `imv/video_composition/{taskId}.mp4`。只给该对象设置 `public-read`，确认对象大小及匿名读取后才保存 `succeeded` 和待通知状态；GET 与成功通知均返回持久化的 ZOS 地址。取址超时为 `playback_timeout`，转存持续失败为 `zos_upload_timeout`，均不重提渲染。历史成功任务不迁移，GET 仍刷新 IMS 地址，通知复用未过期地址或重新获取。
 
-提供 `callbackUrl` 时，终态以 POST JSON 通知，任意 2xx 表示送达；非 2xx、网络错误和超时均在失败后按 5、15、45 秒间隔重试，最多四次，不跟随重定向。次数和下次投递时间落库，等待中的重试可在重启后继续；使用客户端 IMS 凭据的任务在重启后缺少快照，地址未取得或已过期时无法重新取址，直接记为通知失败，不再重试；实际发起时间受调度与并发名额影响。通知失败不回退合成终态，接收方须按 `taskId` 幂等处理。沿用现有恢复边界：发送中进程退出或送达状态保存失败留下的 `sending` 不自动重放，调用方通过 GET 补查。
+提供 `callbackUrl` 时，终态以 POST JSON 通知，任意 2xx 表示送达；非 2xx、网络错误和超时均在失败后按 5、15、45 秒间隔重试，最多四次，不跟随重定向。次数和下次投递时间落库，等待中的重试可在重启后继续；新成功任务的通知不再依赖 IMS 凭据，历史成功任务在重启后缺少客户端 IMS 凭据且需要重新取址时仍会直接记为通知失败。通知失败不回退合成终态，接收方须按 `taskId` 幂等处理。沿用现有恢复边界：发送中进程退出或送达状态保存失败留下的 `sending` 不自动重放，调用方通过 GET 补查。
 
 `COMPOSITION_MATCH_WAIT_SECONDS` 默认 30 秒，匹配回调未到则只主动查询一次。修改配置后重启；已有任务保留其已保存的截止时间，失败历史通知不自动重新发送。
+
+新任务还需在 `server/.env` 中设置 `ZOS_API_ENDPOINT`、`ZOS_BUCKET`、`ZOS_ACCESS_KEY_ID`、`ZOS_SECRET_ACCESS_KEY`、`ZOS_WEB_URL`；`ZOS_REGION` 默认 `hangzhou-7`，`ZOS_FORCE_PATH_STYLE` 默认 false。密钥仅由服务端读取，不进入客户端 IMS 设置。上传与公开地址分别使用 API Endpoint 和 Web URL；目前不读取 `ZOS_ENDPOINT`。对象删除或桶生命周期清理后，公开 URL 也会失效。字段示例和完整接口见 [视频合成 API 文档](src/server/video_composition/api.md)。
 
 ## 代码结构
 
