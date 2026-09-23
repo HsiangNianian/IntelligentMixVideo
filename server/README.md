@@ -43,46 +43,28 @@ PORT=8010 uv run --locked server
 
 ## 模板接口
 
+客户端云端模板在现有 HTTP 地址上传输 Protobuf 二进制消息。协议定义在仓库根目录 `proto/`，Python 生成代码位于 `src/generated/imv/template/v1/`，与客户端生成目录结构一致。
+
+模板接口：
+
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/template` | 返回完整模板数组，按更新时间倒序，空库返回 `[]` |
-| POST | `/template` | 无 `template_id`（或为 null）创建，携带 ID 完整更新 |
-| GET | `/template/{template_id}` | 返回单个模板完整配置 |
+| GET | `/template` | 返回 `ListTemplatesResponse`，按更新时间倒序 |
+| POST | `/template` | 接收 `SaveTemplateRequest`；无 `template_id` 创建，携带 ID 完整更新，返回 `SaveTemplateResponse` |
+| GET | `/template/{template_id}` | 返回 `GetTemplateResponse` |
 | DELETE | `/template/{template_id}` | 删除模板，成功返回 204 |
 
-创建返回 201，更新返回 200。名称重复返回 409，模板不存在返回 404，非法 ID 或配置返回 422。
+GET 成功响应与 POST 请求、成功响应均使用 `application/x-protobuf`。POST 的 JSON 请求返回 415；损坏的 Protobuf 消息返回 400。创建返回 201，更新返回 200。名称重复返回 409，模板不存在返回 404，非法 ID 或配置返回 422。错误响应仍使用 JSON。
 重命名使用携带 ID 的 POST；另存为使用不携带 ID 的 POST。不存在的 ID 不会自动变成创建。
 
-创建示例：
-
-```json
-{
-  "name": "简洁字幕",
-  "description": "标题使用淡入动画",
-  "tracks": [{
-    "id": "title-1",
-    "target": "title",
-    "start_mode": "seconds",
-    "start": 0,
-    "duration": null,
-    "editor": { "title": "示例标题", "subtitle": "", "bubbleText": "", "titleIn": "in/fade_in" }
-  }],
-  "effect_ids": ["in/fade_in"],
-  "transition_duration_seconds": 0.5
-}
-```
-
-`tracks` 为必填数组，每个对象通过 `tracks[].editor` 保存参数，缺省参数补齐默认值。模板更新完整替换配置。
-API 与数据库读取均要求此结构；缺少 `tracks`、`tracks: null` 或携带顶层 `editor` 均拒绝处理，不提供旧格式转换。
-字段及范围在 OpenAPI 中列出：名称去除首尾空白后 1～100 字符；说明最多 1000 字符；
-标题、字幕、气泡示例文字最多 60、100、40 字符；字号 12～120 整数；位置 0～100%；动画和转场时长 0.1～3 秒。
+`SaveTemplateRequest.tracks` 必须提供，通过 `TrackList.tracks[].editor` 保存参数；缺省参数由业务校验补齐。模板更新完整替换配置。名称去除首尾空白后为 1～100 字符；说明最多 1000 字符；标题、字幕、气泡示例文字最多 60、100、40 字符；字号 12～300 整数；位置 0～100%；动画和转场时长 0.1～3 秒。
 
 独立对象通过 `tracks` 保存，每项包含 `id`、`target`、`start_mode`、`start`、`duration` 和 `editor`。`start_mode` 支持 `seconds` 和 `percent`；百分比范围为 0 至小于 100，`duration` 为正秒数或 `null`（持续到视频结束）。模板不保存视频信息，保存校验不依赖预览时长。应用视频时按输出帧率计算区间：结尾以外不显示、结束越界时截短，动画按有效帧数缩短并记录说明，无法容纳所选动画时明确失败。文案合成逐个应用对象，标题使用请求文字，字幕和关键词采用文案时间与对象区间的交集；合成时转场忽略模板开始与持续时间，仅取特效类型并应用于实际素材边界，音频总长保持不变。
 同一文字角色的循环动画与入场、出场互斥。至少选择 1 个效果，最多 500 个不同效果 ID。
 
 响应补充 UUID、UTC 创建/更新时间和 `effects` 参数快照。服务端通过固定 SDK 5.2.2 白名单解析效果，
 拒绝未知 ID、错误分类和全部 `tracks[].editor` 中的效果与 `effect_ids` 不一致；客户端不能提交渲染参数。
-`schema.py` 支持对象参数的 camelCase 输入输出及 snake_case 输入，接口使用 JSON。
+`schema.py` 负责业务字段校验，`router.py` 将生成的 Protobuf 消息转换为业务模型并生成响应。
 
 MySQL 单独列保存唯一名称、ID 和时间，JSON 保存完整编辑配置与效果快照。
 保存和删除使用事务；同时保存同名新模板仅一个成功。同时编辑同一个模板时，后一次成功保存覆盖前一次完整配置。

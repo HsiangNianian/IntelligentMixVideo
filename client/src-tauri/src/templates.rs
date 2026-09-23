@@ -1,10 +1,33 @@
-//! 离线模板库：在应用数据目录的 data/template 保存 JSON，文件锁串行化读写，原子替换保留旧数据。
+//! 离线模板库：解析 Protobuf 保存请求，在 data/template 保存 JSON，文件锁保护读写。
 
 use chrono::Utc;
+use prost::Message;
 use serde_json::{json, Value};
 use std::{fs, io::Write, path::Path};
 use tauri::Manager;
 use uuid::Uuid;
+
+#[allow(dead_code)]
+mod generated {
+    //! 由 Buf 从共享模板协议生成的 Rust 消息类型。
+    include!("generated/imv.template.v1.rs");
+}
+
+/// 将本地保存请求转换为现有 JSON 草稿结构，保留磁盘文件格式。
+fn draft_from_protobuf(bytes: &[u8], id: Option<&str>) -> Result<Value, String> {
+    let request =
+        generated::SaveTemplateRequest::decode(bytes).map_err(|_| "本地模板 Protobuf 请求无效")?;
+    if request.template_id.as_deref() != id {
+        return Err("模板 ID 与保存请求不一致".into());
+    }
+    let tracks = request.tracks.map(|list| list.tracks);
+    Ok(json!({
+        "name": request.name,
+        "description": request.description,
+        "transition_duration_seconds": request.transition_duration_seconds,
+        "tracks": tracks,
+    }))
+}
 
 /// 校验对象编辑参数并从随包目录生成效果快照。
 fn validate_editor(editor: &Value) -> Result<Vec<Value>, String> {
@@ -369,8 +392,11 @@ pub fn local_templates(
     app: tauri::AppHandle,
     operation: String,
     id: Option<String>,
-    draft: Option<Value>,
+    draft: Option<Vec<u8>>,
 ) -> Result<Value, String> {
+    let draft = draft
+        .map(|bytes| draft_from_protobuf(&bytes, id.as_deref()))
+        .transpose()?;
     let directory = app
         .path()
         .app_data_dir()
@@ -420,6 +446,84 @@ mod tests {
         json!({"name": name, "description": "  说明  ", "tracks": [
             {"id": "title", "target": "title", "start_mode": "seconds", "start": 0, "duration": null, "editor": editor}
         ], "transition_duration_seconds": 0.5})
+    }
+
+    #[test]
+    /// 真实 Protobuf 保存消息转换后沿用 JSON 文件结构，缺失字段和错误 ID 均拒绝。
+    fn protobuf_save_keeps_json_file_format() {
+        let editor = generated::EffectTemplateEditor {
+            title: Some("标题".into()),
+            subtitle: Some("".into()),
+            bubble_text: Some("".into()),
+            title_size: Some(40),
+            subtitle_size: Some(40),
+            bubble_size: Some(40),
+            title_x: Some(50.),
+            title_y: Some(50.),
+            subtitle_x: Some(50.),
+            subtitle_y: Some(50.),
+            bubble_x: Some(50.),
+            bubble_y: Some(50.),
+            title_flower: Some("".into()),
+            subtitle_flower: Some("".into()),
+            bubble: Some("".into()),
+            filter: Some("".into()),
+            vfx: Some("".into()),
+            transition: Some("".into()),
+            title_in: Some("in/fade_in".into()),
+            title_out: Some("".into()),
+            title_loop: Some("".into()),
+            subtitle_in: Some("".into()),
+            subtitle_out: Some("".into()),
+            subtitle_loop: Some("".into()),
+            bubble_in: Some("".into()),
+            bubble_out: Some("".into()),
+            bubble_loop: Some("".into()),
+            title_in_duration: Some(0.5),
+            title_out_duration: Some(0.5),
+            subtitle_in_duration: Some(0.5),
+            subtitle_out_duration: Some(0.5),
+            bubble_in_duration: Some(0.5),
+            bubble_out_duration: Some(0.5),
+        };
+        let request = generated::SaveTemplateRequest {
+            name: "  模板  ".into(),
+            description: Some("  说明  ".into()),
+            effect_ids: vec!["in/fade_in".into()],
+            transition_duration_seconds: Some(0.5),
+            tracks: Some(generated::TrackList {
+                tracks: vec![generated::EffectTrack {
+                    id: "title".into(),
+                    target: "title".into(),
+                    start_mode: "seconds".into(),
+                    start: Some(0.),
+                    duration: None,
+                    editor: Some(editor),
+                }],
+            }),
+            template_id: None,
+        };
+        let bytes = request.encode_to_vec();
+        let converted = draft_from_protobuf(&bytes, None).unwrap();
+        let mut expected = draft("  模板  ");
+        expected["tracks"][0]["start"] = json!(0.0);
+        for role in ["title", "subtitle", "bubble"] {
+            expected["tracks"][0]["editor"][format!("{role}Size")] = json!(40);
+        }
+        assert_eq!(converted, expected);
+        let dir = Directory::new();
+        let saved = operate(&dir.0, "save", None, Some(converted)).unwrap();
+        let records: Value =
+            serde_json::from_slice(&fs::read(dir.0.join("templates.json")).unwrap()).unwrap();
+        assert_eq!(records, json!([saved]));
+        assert!(records[0]["tracks"].is_array());
+        let mut missing_tracks = request;
+        missing_tracks.tracks = None;
+        assert!(
+            validate(draft_from_protobuf(&missing_tracks.encode_to_vec(), None).unwrap()).is_err()
+        );
+        assert!(draft_from_protobuf(&bytes, Some("different-id")).is_err());
+        assert!(draft_from_protobuf(&[0xff], None).is_err());
     }
 
     #[test]

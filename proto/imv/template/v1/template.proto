@@ -1,0 +1,103 @@
+// 云端 API 与本地保存请求共用的 Protobuf 消息；业务模块负责验证与持久化。
+syntax = "proto3";
+
+package imv.template.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// 服务端保存的效果信息。
+message EffectAsset {
+  string id = 1;
+  string category = 2;
+  string name = 3;
+  string effect_id = 4;
+  map<string, string> parameters = 5;
+  string preview_url = 6;
+}
+
+// 单个画面对象的编辑参数，未提供的字段由业务模块补齐默认值。
+message EffectTemplateEditor {
+  optional string title = 1;
+  optional string subtitle = 2;
+  optional string bubble_text = 3;
+  optional int32 title_size = 4;
+  optional int32 subtitle_size = 5;
+  optional int32 bubble_size = 6;
+  optional double title_x = 7;
+  optional double title_y = 8;
+  optional double subtitle_x = 9;
+  optional double subtitle_y = 10;
+  optional double bubble_x = 11;
+  optional double bubble_y = 12;
+  optional string title_flower = 13;
+  optional string subtitle_flower = 14;
+  optional string bubble = 15;
+  optional string filter = 16;
+  optional string vfx = 17;
+  optional string transition = 18;
+  optional string title_in = 19;
+  optional string title_out = 20;
+  optional string title_loop = 21;
+  optional string subtitle_in = 22;
+  optional string subtitle_out = 23;
+  optional string subtitle_loop = 24;
+  optional string bubble_in = 25;
+  optional string bubble_out = 26;
+  optional string bubble_loop = 27;
+  optional double title_in_duration = 28;
+  optional double title_out_duration = 29;
+  optional double subtitle_in_duration = 30;
+  optional double subtitle_out_duration = 31;
+  optional double bubble_in_duration = 32;
+  optional double bubble_out_duration = 33;
+}
+
+// 画面对象及其时间规则。
+message EffectTrack {
+  string id = 1;
+  string target = 2;
+  string start_mode = 3;
+  optional double start = 4;
+  optional double duration = 5;
+  EffectTemplateEditor editor = 6;
+}
+
+// 包装数组以保留“提供了空轨道列表”的含义。
+message TrackList {
+  repeated EffectTrack tracks = 1;
+}
+
+// 创建或完整更新模板；提供 template_id 时更新。
+message SaveTemplateRequest {
+  string name = 1;
+  optional string description = 2;
+  repeated string effect_ids = 3;
+  optional double transition_duration_seconds = 4;
+  TrackList tracks = 5;
+  optional string template_id = 6;
+}
+
+// 已保存的模板及效果快照。
+message TemplateRecord {
+  string name = 1;
+  string description = 2;
+  repeated string effect_ids = 3;
+  double transition_duration_seconds = 4;
+  TrackList tracks = 5;
+  string template_id = 6;
+  repeated EffectAsset effects = 7;
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp updated_at = 9;
+}
+
+// 模板列表及单个模板的响应。
+message ListTemplatesResponse {
+  repeated TemplateRecord templates = 1;
+}
+
+message GetTemplateResponse {
+  TemplateRecord template = 1;
+}
+message SaveTemplateResponse {
+  TemplateRecord template = 1;
+}

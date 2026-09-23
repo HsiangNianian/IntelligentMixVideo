@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 from types import SimpleNamespace
+from .template_wire import post_template, saved_template
 
 import httpx
 import pytest
@@ -286,9 +287,9 @@ def test_bundle_start_restart_and_cleanup(bundle, tmp_path, template_payload):
         try:
             with httpx.Client(base_url=url, timeout=10, trust_env=False) as client:
                 assert client.get("/api/templates/capabilities").json()["models_configured"] is False
-                response = client.post("/template", json=template_payload)
+                response = post_template(client, template_payload)
                 assert response.status_code == 201, response.text
-                identifier = response.json()["template_id"]
+                identifier = saved_template(response)["template_id"]
                 duplicate = subprocess.run(
                     [str(runtime / PYTHON), "-I", "-X", "utf8", "-m", "server.desktop", str(runtime), str(data)],
                     env=env, input=b"", capture_output=True, timeout=20,
