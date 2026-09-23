@@ -60,13 +60,5 @@ SEGMENTATION_RESPONSE_EXAMPLE = {
         "repair_block_count": 0,
         "segment_count": 2,
         "keyword_rejected_count": 0,
-        "candidate_clauses": [
-            {"id": 1, "text": "大家好，欢迎来到直播间。"},
-            {"id": 2, "text": "今天上架散养的土鸡。"},
-        ],
-        "filtered_boundaries": [],
-        "selected_boundaries_after": [1],
-        "keyword_candidates": [[], ["土鸡"]],
-        "model_elapsed_ms": {"boundaries": 120.0, "keywords": 90.0},
     },
 }

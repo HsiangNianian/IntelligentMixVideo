@@ -1,6 +1,7 @@
 """切片核心行为回归，隔离 ASR 与模型；在 server/ 执行 uv run --locked pytest tests/test_segmentation.py -v。"""
 
 import json
+import logging
 import random
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -65,6 +66,18 @@ def model(monkeypatch):
     factory.return_value.__enter__.return_value = client
     monkeypatch.setattr(segmentation, "OpenAI", factory)
     return factory, client
+
+
+@pytest.fixture
+def server_logs(caplog):
+    """直接捕获 Uvicorn logger，兼容其他测试关闭日志传播的情况。"""
+    logger = logging.getLogger("uvicorn.error")
+    logger.addHandler(caplog.handler)
+    try:
+        with caplog.at_level("INFO", logger=logger.name):
+            yield caplog
+    finally:
+        logger.removeHandler(caplog.handler)
 
 
 @pytest.mark.parametrize(
@@ -137,7 +150,7 @@ def test_wavefront_matches_independent_dp(model):
 
 @pytest.mark.parametrize("failure,status", [("json", 502), ("shape", 502), ("connect", 502), ("timeout", 504)])
 def test_model_failures_close_client(model, client, failure, status):
-    """非法输出、连接失败和超时带回切点阶段的已有 trace，并关闭 SDK。"""
+    """非法输出、连接失败和超时保留原有错误响应，并关闭 SDK。"""
     if failure in ("json", "shape"):
         model[1].chat.completions.create.side_effect = None
         model[1].chat.completions.create.return_value = SimpleNamespace(
@@ -150,9 +163,7 @@ def test_model_failures_close_client(model, client, failure, status):
     response = client.post("/segmentations", json=payload("甲乙丙丁"))
     assert response.status_code == status
     assert response.json()["error"]["message"]
-    assert response.json()["error"]["stage"] == "boundaries"
-    assert response.json()["trace"]["candidate_clauses"] == [{"id": 1, "text": "甲乙丙丁"}]
-    assert set(response.json()["trace"]["model_elapsed_ms"]) == {"boundaries"}
+    assert set(response.json()) == {"error"}
     assert model[0].return_value.__exit__.call_count == 1
     assert model[1].chat.completions.create.call_count == 1
 
@@ -235,27 +246,23 @@ def test_invalid_model_boundaries_fail_without_fallback(model, client, ids):
     response = client.post("/segmentations", json=payload("甲乙丙丁。戊己庚辛。", step=500))
     assert response.status_code == 502
     assert "boundaries_after" in response.json()["error"]["message"]
-    assert response.json()["error"]["stage"] == "boundaries"
     assert model[1].chat.completions.create.call_count == 1
     assert model[0].return_value.__exit__.call_count == 1
 
 
-def test_keyword_failure_returns_completed_boundary_trace(model, client):
-    """关键词模型返回非法 JSON 时，HTTP 错误仍能定位阶段并查看已选切点。"""
+def test_keyword_failure_logs_completed_boundary_trace(model, client, server_logs):
+    """关键词模型返回非法 JSON 时，服务端日志保留已选切点，错误响应不回显文案。"""
     model[1].chat.completions.create.side_effect = [
         SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"boundaries_after":[1]}'))]),
         SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="oops"))]),
     ]
     response = client.post("/segmentations", json=payload("甲乙丙丁。戊己庚辛。", step=500))
     assert response.status_code == 502
-    assert response.json()["error"] == {"message": "模型返回非法 JSON。", "stage": "keywords"}
-    trace = response.json()["trace"]
-    assert trace["candidate_clauses"] == [
-        {"id": 1, "text": "甲乙丙丁。"}, {"id": 2, "text": "戊己庚辛。"},
-    ]
-    assert trace["selected_boundaries_after"] == [1]
-    assert trace["keyword_candidates"] == []
-    assert set(trace["model_elapsed_ms"]) == {"boundaries", "keywords"}
+    assert response.json() == {"error": {"message": "模型返回非法 JSON。"}}
+    assert "stage=keywords" in server_logs.text
+    assert "selected_boundaries_after': [1]" in server_logs.text
+    assert "甲乙丙丁。" in server_logs.text
+    assert "model_elapsed_ms" in server_logs.text
     assert "oops" not in response.text
 
 
@@ -381,7 +388,7 @@ def test_settings_validation_returns_safe_error(model, client, monkeypatch, key,
     monkeypatch.setenv("IMV_" + key, value)
     response = client.post("/segmentations", json=payload("甲乙丙丁"))
     assert response.status_code == 502
-    assert response.json() == {"error": {"message": "模型或切片配置缺失或不合法，请检查 IMV_ 配置。", "stage": "config"}, "trace": {}}
+    assert response.json() == {"error": {"message": "模型或切片配置缺失或不合法，请检查 IMV_ 配置。"}}
     model[0].assert_not_called()
 
 
@@ -412,8 +419,8 @@ def test_group_id_counts_segments_within_asr_sentence(model, groups, expected):
     assert [s["group_id"] for s in result["segments"]] == expected
 
 
-def test_api_response_contract(model, client):
-    """HTTP 响应展示被过滤切点、模型实际选择与关键词候选，保留原有片段契约。"""
+def test_api_response_contract(model, client, server_logs):
+    """HTTP 响应保留原有统计契约，详细诊断只写入服务端日志。"""
     model[1].chat.completions.create.side_effect = [
         SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(data)))])
         for data in [{"boundaries_after": [1]}, {"keywords": [["甲乙"], ["戊己"]]}]
@@ -421,11 +428,7 @@ def test_api_response_contract(model, client):
     response = client.post("/segmentations", json=payload("甲乙。丙丁。戊己庚辛。", step=500))
     assert response.status_code == 200
     assert model[0].return_value.__exit__.call_count == 1
-    result = response.json()
-    elapsed = result["trace"].pop("model_elapsed_ms")
-    assert set(elapsed) == {"boundaries", "keywords"}
-    assert all(isinstance(value, (int, float)) and value >= 0 for value in elapsed.values())
-    assert result == {
+    assert response.json() == {
         "segments": [
             {
                 "segment_id": 1,
@@ -456,15 +459,13 @@ def test_api_response_contract(model, client):
             "repair_block_count": 0,
             "segment_count": 2,
             "keyword_rejected_count": 0,
-            "candidate_clauses": [
-                {"id": 1, "text": "甲乙。丙丁。"},
-                {"id": 2, "text": "戊己庚辛。"},
-            ],
-            "filtered_boundaries": [{"offset": 3, "reason": "min_duration_before"}],
-            "selected_boundaries_after": [1],
-            "keyword_candidates": [["甲乙"], ["戊己"]],
         },
     }
+    assert "切片成功" in server_logs.text
+    assert "'filtered_boundaries': [{'offset': 3, 'reason': 'min_duration_before'}]" in server_logs.text
+    assert "'selected_boundaries_after': [1]" in server_logs.text
+    assert "'keyword_candidates': [['甲乙'], ['戊己']]" in server_logs.text
+    assert "'model_elapsed_ms': {'boundaries':" in server_logs.text
 
 
 @pytest.mark.parametrize("script,transcript,message", [
@@ -476,7 +477,7 @@ def test_api_invalid_input(model, client, script, transcript, message):
     """空文案、纯标点及无有效 ASR 字符由业务层返回 422，不调用模型。"""
     response = client.post("/segmentations", json=payload(script, transcript))
     assert response.status_code == 422
-    assert response.json() == {"error": {"message": message, "stage": "input"}, "trace": {}}
+    assert response.json() == {"error": {"message": message}}
     model[0].assert_not_called()
 
 
@@ -489,13 +490,13 @@ def test_framework_validation(client, data):
 
 
 def test_internal_error(client, monkeypatch):
-    """内部约束异常由路由转换为 500，尚无诊断时返回空 trace。"""
+    """内部约束异常由路由转换为原有的 500 错误格式。"""
     from server.segmentation import router as route
 
     monkeypatch.setattr(route, "segment", MagicMock(side_effect=AssertionError("片段未完整覆盖文案。")))
     response = client.post("/segmentations", json=payload("甲乙丙丁"))
     assert response.status_code == 500
-    assert response.json() == {"error": {"message": "片段未完整覆盖文案。", "stage": "input"}, "trace": {}}
+    assert response.json() == {"error": {"message": "片段未完整覆盖文案。"}}
 
 
 @pytest.mark.parametrize("data,field,error_type", [

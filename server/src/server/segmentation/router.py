@@ -1,5 +1,6 @@
-"""切片 HTTP 入口：调用同包业务函数，将输入、模型及内部错误转换为响应。"""
+"""切片 HTTP 入口：调用同包业务函数，记录诊断并将错误转换为响应。"""
 
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Body
@@ -13,6 +14,8 @@ from .segmentation import segment
 # 应用只注册此路由；业务函数也可由非 HTTP 调用方直接使用。
 # 显式声明文档分组，避免未打标签的接口被 Swagger UI 归入默认分组。
 router = APIRouter(tags=["文案切片"])
+# Uvicorn 为此 logger 配置终端输出；桌面内置服务会将同一输出写入 server.log。
+logger = logging.getLogger("uvicorn.error")
 
 
 @router.post(
@@ -30,10 +33,10 @@ def create_segmentation(
         }),
     ],
 ) -> dict | JSONResponse:
-    """调用切片函数；失败时返回已采集的 trace 与阶段，保留原有状态码。"""
+    """调用切片函数；在服务端记录阶段和 trace，响应保持原有字段与状态码。"""
     diagnostics = {"stage": "input", "trace": {}}
     try:
-        return segment(payload.model_dump(exclude={"config"}), config=payload.config, diagnostics=diagnostics)
+        result = segment(payload.model_dump(exclude={"config"}), config=payload.config, diagnostics=diagnostics)
     except APITimeoutError:
         message, status = "模型请求超时。", 504
     except APIError:
@@ -41,5 +44,9 @@ def create_segmentation(
     except (ValueError, RuntimeError, AssertionError) as exc:
         status = 422 if isinstance(exc, ValueError) else 500 if isinstance(exc, AssertionError) else 502
         message = str(exc)
-    return JSONResponse({"error": {"message": message, "stage": diagnostics["stage"]},
-                         "trace": diagnostics["trace"]}, status_code=status)
+    else:
+        logger.info("切片成功 trace=%s", diagnostics["trace"])
+        return result
+    logger.warning("切片失败 stage=%s status=%s error=%s trace=%s",
+                   diagnostics["stage"], status, message, diagnostics["trace"])
+    return JSONResponse({"error": {"message": message}}, status_code=status)

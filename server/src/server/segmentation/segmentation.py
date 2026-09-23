@@ -24,7 +24,7 @@ def segment(payload: dict, *, config: ClientSettings | None = None, diagnostics:
     返回 segments（整型 segment_id、秒制 start_time/end_time、group_id、字符串 keyword、level）、
     warnings 和 trace；空内容或输出时间错误抛 ValueError，配置或模型输出错误抛
     RuntimeError，内部约束错误抛 AssertionError；ASR 嵌套读取和 SDK 异常原样传播。
-    diagnostics 供 HTTP 入口在失败时读取已完成阶段的 trace，不改变独立调用结果。
+    diagnostics 供 HTTP 入口记录已完成阶段的详细 trace；返回值只保留原有统计字段。
     """
     diagnostics = {} if diagnostics is None else diagnostics
     diagnostics.update(stage="input", trace={})
@@ -365,5 +365,8 @@ def segment(payload: dict, *, config: ClientSettings | None = None, diagnostics:
     return {
         "segments": segments,
         "warnings": warnings,
-        "trace": trace,
+        "trace": {key: trace[key] for key in (
+            "matched_chars", "substitution_chars", "script_extra_chars", "asr_extra_chars",
+            "edit_cost", "repair_block_count", "segment_count", "keyword_rejected_count",
+        )},
     }
