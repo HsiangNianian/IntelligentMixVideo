@@ -23,31 +23,43 @@ export const file_imv_template_v1_template: GenFile = /*@__PURE__*/
  */
 export type EffectAsset = Message<"imv.template.v1.EffectAsset"> & {
   /**
+   * 素材目录中的唯一 ID，包含分类前缀，并由模板的效果选择字段引用。
+   *
    * @generated from field: string id = 1;
    */
   id: string;
 
   /**
+   * 素材所属分类，用于确定作用对象和 IMS 参数名称。
+   *
    * @generated from field: string category = 2;
    */
   category: string;
 
   /**
+   * 提供给用户查看的素材名称。
+   *
    * @generated from field: string name = 3;
    */
   name: string;
 
   /**
+   * IMS 使用的效果标识，不包含素材分类前缀。
+   *
    * @generated from field: string effect_id = 4;
    */
   effectId: string;
 
   /**
+   * 提交给 IMS SDK 的参数名称与参数值。
+   *
    * @generated from field: map<string, string> parameters = 5;
    */
   parameters: { [key: string]: string };
 
   /**
+   * 素材预览封面的 URL，空字符串表示没有预览封面。
+   *
    * @generated from field: string preview_url = 6;
    */
   previewUrl: string;
@@ -67,166 +79,232 @@ export const EffectAssetSchema: GenMessage<EffectAsset> = /*@__PURE__*/
  */
 export type EffectTemplateEditor = Message<"imv.template.v1.EffectTemplateEditor"> & {
   /**
+   * 顶部标题的示例文字。
+   *
    * @generated from field: optional string title = 1;
    */
   title?: string | undefined;
 
   /**
+   * 底部字幕的示例文字。
+   *
    * @generated from field: optional string subtitle = 2;
    */
   subtitle?: string | undefined;
 
   /**
+   * 气泡字的示例文字。
+   *
    * @generated from field: optional string bubble_text = 3;
    */
   bubbleText?: string | undefined;
 
   /**
+   * 顶部标题的字号，单位为画布像素。
+   *
    * @generated from field: optional int32 title_size = 4;
    */
   titleSize?: number | undefined;
 
   /**
+   * 底部字幕的字号，单位为画布像素。
+   *
    * @generated from field: optional int32 subtitle_size = 5;
    */
   subtitleSize?: number | undefined;
 
   /**
+   * 气泡字的字号，单位为画布像素。
+   *
    * @generated from field: optional int32 bubble_size = 6;
    */
   bubbleSize?: number | undefined;
 
   /**
+   * 顶部标题中心点的横向位置，使用画布宽度百分比。
+   *
    * @generated from field: optional double title_x = 7;
    */
   titleX?: number | undefined;
 
   /**
+   * 顶部标题中心点的纵向位置，使用画布高度百分比。
+   *
    * @generated from field: optional double title_y = 8;
    */
   titleY?: number | undefined;
 
   /**
+   * 底部字幕中心点的横向位置，使用画布宽度百分比。
+   *
    * @generated from field: optional double subtitle_x = 9;
    */
   subtitleX?: number | undefined;
 
   /**
+   * 底部字幕中心点的纵向位置，使用画布高度百分比。
+   *
    * @generated from field: optional double subtitle_y = 10;
    */
   subtitleY?: number | undefined;
 
   /**
+   * 气泡字中心点的横向位置，使用画布宽度百分比。
+   *
    * @generated from field: optional double bubble_x = 11;
    */
   bubbleX?: number | undefined;
 
   /**
+   * 气泡字中心点的纵向位置，使用画布高度百分比。
+   *
    * @generated from field: optional double bubble_y = 12;
    */
   bubbleY?: number | undefined;
 
   /**
+   * 顶部标题选用的花字素材目录 ID，空字符串表示未选择。
+   *
    * @generated from field: optional string title_flower = 13;
    */
   titleFlower?: string | undefined;
 
   /**
+   * 底部字幕选用的花字素材目录 ID，空字符串表示未选择。
+   *
    * @generated from field: optional string subtitle_flower = 14;
    */
   subtitleFlower?: string | undefined;
 
   /**
+   * 气泡字选用的气泡素材目录 ID，空字符串表示未选择。
+   *
    * @generated from field: optional string bubble = 15;
    */
   bubble?: string | undefined;
 
   /**
+   * 视频选用的滤镜素材目录 ID，空字符串表示未选择。
+   *
    * @generated from field: optional string filter = 16;
    */
   filter?: string | undefined;
 
   /**
+   * 视频选用的画面特效素材目录 ID，空字符串表示未选择。
+   *
    * @generated from field: optional string vfx = 17;
    */
   vfx?: string | undefined;
 
   /**
+   * 视频片段之间选用的转场素材目录 ID，空字符串表示未选择。
+   *
    * @generated from field: optional string transition = 18;
    */
   transition?: string | undefined;
 
   /**
+   * 顶部标题选用的入场动画素材目录 ID，空字符串表示未选择。
+   *
    * @generated from field: optional string title_in = 19;
    */
   titleIn?: string | undefined;
 
   /**
+   * 顶部标题选用的出场动画素材目录 ID，空字符串表示未选择。
+   *
    * @generated from field: optional string title_out = 20;
    */
   titleOut?: string | undefined;
 
   /**
+   * 顶部标题选用的循环动画素材目录 ID，空字符串表示未选择。
+   *
    * @generated from field: optional string title_loop = 21;
    */
   titleLoop?: string | undefined;
 
   /**
+   * 底部字幕选用的入场动画素材目录 ID，空字符串表示未选择。
+   *
    * @generated from field: optional string subtitle_in = 22;
    */
   subtitleIn?: string | undefined;
 
   /**
+   * 底部字幕选用的出场动画素材目录 ID，空字符串表示未选择。
+   *
    * @generated from field: optional string subtitle_out = 23;
    */
   subtitleOut?: string | undefined;
 
   /**
+   * 底部字幕选用的循环动画素材目录 ID，空字符串表示未选择。
+   *
    * @generated from field: optional string subtitle_loop = 24;
    */
   subtitleLoop?: string | undefined;
 
   /**
+   * 气泡字选用的入场动画素材目录 ID，空字符串表示未选择。
+   *
    * @generated from field: optional string bubble_in = 25;
    */
   bubbleIn?: string | undefined;
 
   /**
+   * 气泡字选用的出场动画素材目录 ID，空字符串表示未选择。
+   *
    * @generated from field: optional string bubble_out = 26;
    */
   bubbleOut?: string | undefined;
 
   /**
+   * 气泡字选用的循环动画素材目录 ID，空字符串表示未选择。
+   *
    * @generated from field: optional string bubble_loop = 27;
    */
   bubbleLoop?: string | undefined;
 
   /**
+   * 顶部标题入场动画的持续时间，单位为秒。
+   *
    * @generated from field: optional double title_in_duration = 28;
    */
   titleInDuration?: number | undefined;
 
   /**
+   * 顶部标题出场动画的持续时间，单位为秒。
+   *
    * @generated from field: optional double title_out_duration = 29;
    */
   titleOutDuration?: number | undefined;
 
   /**
+   * 底部字幕入场动画的持续时间，单位为秒。
+   *
    * @generated from field: optional double subtitle_in_duration = 30;
    */
   subtitleInDuration?: number | undefined;
 
   /**
+   * 底部字幕出场动画的持续时间，单位为秒。
+   *
    * @generated from field: optional double subtitle_out_duration = 31;
    */
   subtitleOutDuration?: number | undefined;
 
   /**
+   * 气泡字入场动画的持续时间，单位为秒。
+   *
    * @generated from field: optional double bubble_in_duration = 32;
    */
   bubbleInDuration?: number | undefined;
 
   /**
+   * 气泡字出场动画的持续时间，单位为秒。
+   *
    * @generated from field: optional double bubble_out_duration = 33;
    */
   bubbleOutDuration?: number | undefined;
@@ -246,31 +324,43 @@ export const EffectTemplateEditorSchema: GenMessage<EffectTemplateEditor> = /*@_
  */
 export type EffectTrack = Message<"imv.template.v1.EffectTrack"> & {
   /**
+   * 模板内唯一的对象实例 ID。
+   *
    * @generated from field: string id = 1;
    */
   id: string;
 
   /**
+   * 效果作用对象，可选值为 title、subtitle、bubble、filter、vfx 或 transition。
+   *
    * @generated from field: string target = 2;
    */
   target: string;
 
   /**
+   * 开始位置的计量方式，可选值为 seconds 或 percent。
+   *
    * @generated from field: string start_mode = 3;
    */
   startMode: string;
 
   /**
+   * 开始位置；含义由 start_mode 决定，分别表示秒数或成片时长百分比。
+   *
    * @generated from field: optional double start = 4;
    */
   start?: number | undefined;
 
   /**
+   * 固定持续时间，单位为秒；未提供时表示持续到成片结束，转场对象必须提供。
+   *
    * @generated from field: optional double duration = 5;
    */
   duration?: number | undefined;
 
   /**
+   * 当前对象的文字、位置、效果选择和动画时长。
+   *
    * @generated from field: imv.template.v1.EffectTemplateEditor editor = 6;
    */
   editor?: EffectTemplateEditor | undefined;
@@ -290,6 +380,8 @@ export const EffectTrackSchema: GenMessage<EffectTrack> = /*@__PURE__*/
  */
 export type TrackList = Message<"imv.template.v1.TrackList"> & {
   /**
+   * 模板包含的画面对象实例，顺序与客户端对象列表一致。
+   *
    * @generated from field: repeated imv.template.v1.EffectTrack tracks = 1;
    */
   tracks: EffectTrack[];
@@ -309,31 +401,43 @@ export const TrackListSchema: GenMessage<TrackList> = /*@__PURE__*/
  */
 export type SaveTemplateRequest = Message<"imv.template.v1.SaveTemplateRequest"> & {
   /**
+   * 模板名称，去除首尾空白后必须有内容。
+   *
    * @generated from field: string name = 1;
    */
   name: string;
 
   /**
+   * 模板说明，未提供时保存为空字符串。
+   *
    * @generated from field: optional string description = 2;
    */
   description?: string | undefined;
 
   /**
+   * 全部轨道选用的素材目录 ID 去重列表。
+   *
    * @generated from field: repeated string effect_ids = 3;
    */
   effectIds: string[];
 
   /**
+   * 新增转场时使用的默认持续时间，单位为秒。
+   *
    * @generated from field: optional double transition_duration_seconds = 4;
    */
   transitionDurationSeconds?: number | undefined;
 
   /**
+   * 模板的画面对象实例及时间规则；包装消息用于区分缺少字段和空列表。
+   *
    * @generated from field: imv.template.v1.TrackList tracks = 5;
    */
   tracks?: TrackList | undefined;
 
   /**
+   * 待更新模板的 UUID；未提供时创建新模板。
+   *
    * @generated from field: optional string template_id = 6;
    */
   templateId?: string | undefined;
@@ -353,46 +457,64 @@ export const SaveTemplateRequestSchema: GenMessage<SaveTemplateRequest> = /*@__P
  */
 export type TemplateRecord = Message<"imv.template.v1.TemplateRecord"> & {
   /**
+   * 模板名称。
+   *
    * @generated from field: string name = 1;
    */
   name: string;
 
   /**
+   * 模板说明，未填写时为空字符串。
+   *
    * @generated from field: string description = 2;
    */
   description: string;
 
   /**
+   * 全部轨道选用的素材目录 ID 去重列表。
+   *
    * @generated from field: repeated string effect_ids = 3;
    */
   effectIds: string[];
 
   /**
+   * 新增转场时使用的默认持续时间，单位为秒。
+   *
    * @generated from field: double transition_duration_seconds = 4;
    */
   transitionDurationSeconds: number;
 
   /**
+   * 模板的画面对象实例及时间规则。
+   *
    * @generated from field: imv.template.v1.TrackList tracks = 5;
    */
   tracks?: TrackList | undefined;
 
   /**
+   * 服务端生成的模板 UUID。
+   *
    * @generated from field: string template_id = 6;
    */
   templateId: string;
 
   /**
+   * 保存模板时根据 effect_ids 生成的可信素材信息快照。
+   *
    * @generated from field: repeated imv.template.v1.EffectAsset effects = 7;
    */
   effects: EffectAsset[];
 
   /**
+   * 模板创建时间，使用 UTC 时间点。
+   *
    * @generated from field: google.protobuf.Timestamp created_at = 8;
    */
   createdAt?: Timestamp | undefined;
 
   /**
+   * 模板最近更新时间，使用 UTC 时间点。
+   *
    * @generated from field: google.protobuf.Timestamp updated_at = 9;
    */
   updatedAt?: Timestamp | undefined;
@@ -412,6 +534,8 @@ export const TemplateRecordSchema: GenMessage<TemplateRecord> = /*@__PURE__*/
  */
 export type ListTemplatesResponse = Message<"imv.template.v1.ListTemplatesResponse"> & {
   /**
+   * 当前共享模板库中的模板记录。
+   *
    * @generated from field: repeated imv.template.v1.TemplateRecord templates = 1;
    */
   templates: TemplateRecord[];
@@ -429,6 +553,8 @@ export const ListTemplatesResponseSchema: GenMessage<ListTemplatesResponse> = /*
  */
 export type GetTemplateResponse = Message<"imv.template.v1.GetTemplateResponse"> & {
   /**
+   * 按模板 UUID 查询得到的完整模板记录。
+   *
    * @generated from field: imv.template.v1.TemplateRecord template = 1;
    */
   template?: TemplateRecord | undefined;
@@ -446,6 +572,8 @@ export const GetTemplateResponseSchema: GenMessage<GetTemplateResponse> = /*@__P
  */
 export type SaveTemplateResponse = Message<"imv.template.v1.SaveTemplateResponse"> & {
   /**
+   * 创建或更新后返回的完整模板记录。
+   *
    * @generated from field: imv.template.v1.TemplateRecord template = 1;
    */
   template?: TemplateRecord | undefined;

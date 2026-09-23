@@ -6,70 +6,103 @@
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct EffectTemplateEditor {
+    /// 顶部标题的示例文字。
     #[prost(string, optional, tag="1")]
     pub title: ::core::option::Option<::prost::alloc::string::String>,
+    /// 底部字幕的示例文字。
     #[prost(string, optional, tag="2")]
     pub subtitle: ::core::option::Option<::prost::alloc::string::String>,
+    /// 气泡字的示例文字。
     #[prost(string, optional, tag="3")]
     pub bubble_text: ::core::option::Option<::prost::alloc::string::String>,
+    /// 顶部标题的字号，单位为画布像素。
     #[prost(int32, optional, tag="4")]
     pub title_size: ::core::option::Option<i32>,
+    /// 底部字幕的字号，单位为画布像素。
     #[prost(int32, optional, tag="5")]
     pub subtitle_size: ::core::option::Option<i32>,
+    /// 气泡字的字号，单位为画布像素。
     #[prost(int32, optional, tag="6")]
     pub bubble_size: ::core::option::Option<i32>,
+    /// 顶部标题中心点的横向位置，使用画布宽度百分比。
     #[prost(double, optional, tag="7")]
     pub title_x: ::core::option::Option<f64>,
+    /// 顶部标题中心点的纵向位置，使用画布高度百分比。
     #[prost(double, optional, tag="8")]
     pub title_y: ::core::option::Option<f64>,
+    /// 底部字幕中心点的横向位置，使用画布宽度百分比。
     #[prost(double, optional, tag="9")]
     pub subtitle_x: ::core::option::Option<f64>,
+    /// 底部字幕中心点的纵向位置，使用画布高度百分比。
     #[prost(double, optional, tag="10")]
     pub subtitle_y: ::core::option::Option<f64>,
+    /// 气泡字中心点的横向位置，使用画布宽度百分比。
     #[prost(double, optional, tag="11")]
     pub bubble_x: ::core::option::Option<f64>,
+    /// 气泡字中心点的纵向位置，使用画布高度百分比。
     #[prost(double, optional, tag="12")]
     pub bubble_y: ::core::option::Option<f64>,
+    /// 顶部标题选用的花字素材目录 ID，空字符串表示未选择。
     #[prost(string, optional, tag="13")]
     pub title_flower: ::core::option::Option<::prost::alloc::string::String>,
+    /// 底部字幕选用的花字素材目录 ID，空字符串表示未选择。
     #[prost(string, optional, tag="14")]
     pub subtitle_flower: ::core::option::Option<::prost::alloc::string::String>,
+    /// 气泡字选用的气泡素材目录 ID，空字符串表示未选择。
     #[prost(string, optional, tag="15")]
     pub bubble: ::core::option::Option<::prost::alloc::string::String>,
+    /// 视频选用的滤镜素材目录 ID，空字符串表示未选择。
     #[prost(string, optional, tag="16")]
     pub filter: ::core::option::Option<::prost::alloc::string::String>,
+    /// 视频选用的画面特效素材目录 ID，空字符串表示未选择。
     #[prost(string, optional, tag="17")]
     pub vfx: ::core::option::Option<::prost::alloc::string::String>,
+    /// 视频片段之间选用的转场素材目录 ID，空字符串表示未选择。
     #[prost(string, optional, tag="18")]
     pub transition: ::core::option::Option<::prost::alloc::string::String>,
+    /// 顶部标题选用的入场动画素材目录 ID，空字符串表示未选择。
     #[prost(string, optional, tag="19")]
     pub title_in: ::core::option::Option<::prost::alloc::string::String>,
+    /// 顶部标题选用的出场动画素材目录 ID，空字符串表示未选择。
     #[prost(string, optional, tag="20")]
     pub title_out: ::core::option::Option<::prost::alloc::string::String>,
+    /// 顶部标题选用的循环动画素材目录 ID，空字符串表示未选择。
     #[prost(string, optional, tag="21")]
     pub title_loop: ::core::option::Option<::prost::alloc::string::String>,
+    /// 底部字幕选用的入场动画素材目录 ID，空字符串表示未选择。
     #[prost(string, optional, tag="22")]
     pub subtitle_in: ::core::option::Option<::prost::alloc::string::String>,
+    /// 底部字幕选用的出场动画素材目录 ID，空字符串表示未选择。
     #[prost(string, optional, tag="23")]
     pub subtitle_out: ::core::option::Option<::prost::alloc::string::String>,
+    /// 底部字幕选用的循环动画素材目录 ID，空字符串表示未选择。
     #[prost(string, optional, tag="24")]
     pub subtitle_loop: ::core::option::Option<::prost::alloc::string::String>,
+    /// 气泡字选用的入场动画素材目录 ID，空字符串表示未选择。
     #[prost(string, optional, tag="25")]
     pub bubble_in: ::core::option::Option<::prost::alloc::string::String>,
+    /// 气泡字选用的出场动画素材目录 ID，空字符串表示未选择。
     #[prost(string, optional, tag="26")]
     pub bubble_out: ::core::option::Option<::prost::alloc::string::String>,
+    /// 气泡字选用的循环动画素材目录 ID，空字符串表示未选择。
     #[prost(string, optional, tag="27")]
     pub bubble_loop: ::core::option::Option<::prost::alloc::string::String>,
+    /// 顶部标题入场动画的持续时间，单位为秒。
     #[prost(double, optional, tag="28")]
     pub title_in_duration: ::core::option::Option<f64>,
+    /// 顶部标题出场动画的持续时间，单位为秒。
     #[prost(double, optional, tag="29")]
     pub title_out_duration: ::core::option::Option<f64>,
+    /// 底部字幕入场动画的持续时间，单位为秒。
     #[prost(double, optional, tag="30")]
     pub subtitle_in_duration: ::core::option::Option<f64>,
+    /// 底部字幕出场动画的持续时间，单位为秒。
     #[prost(double, optional, tag="31")]
     pub subtitle_out_duration: ::core::option::Option<f64>,
+    /// 气泡字入场动画的持续时间，单位为秒。
     #[prost(double, optional, tag="32")]
     pub bubble_in_duration: ::core::option::Option<f64>,
+    /// 气泡字出场动画的持续时间，单位为秒。
     #[prost(double, optional, tag="33")]
     pub bubble_out_duration: ::core::option::Option<f64>,
 }
@@ -78,16 +111,22 @@ pub struct EffectTemplateEditor {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct EffectTrack {
+    /// 模板内唯一的对象实例 ID。
     #[prost(string, tag="1")]
     pub id: ::prost::alloc::string::String,
+    /// 效果作用对象，可选值为 title、subtitle、bubble、filter、vfx 或 transition。
     #[prost(string, tag="2")]
     pub target: ::prost::alloc::string::String,
+    /// 开始位置的计量方式，可选值为 seconds 或 percent。
     #[prost(string, tag="3")]
     pub start_mode: ::prost::alloc::string::String,
+    /// 开始位置；含义由 start_mode 决定，分别表示秒数或成片时长百分比。
     #[prost(double, optional, tag="4")]
     pub start: ::core::option::Option<f64>,
+    /// 固定持续时间，单位为秒；未提供时表示持续到成片结束，转场对象必须提供。
     #[prost(double, optional, tag="5")]
     pub duration: ::core::option::Option<f64>,
+    /// 当前对象的文字、位置、效果选择和动画时长。
     #[prost(message, optional, tag="6")]
     pub editor: ::core::option::Option<EffectTemplateEditor>,
 }
@@ -96,6 +135,7 @@ pub struct EffectTrack {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TrackList {
+    /// 模板包含的画面对象实例，顺序与客户端对象列表一致。
     #[prost(message, repeated, tag="1")]
     pub tracks: ::prost::alloc::vec::Vec<EffectTrack>,
 }
@@ -104,16 +144,22 @@ pub struct TrackList {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SaveTemplateRequest {
+    /// 模板名称，去除首尾空白后必须有内容。
     #[prost(string, tag="1")]
     pub name: ::prost::alloc::string::String,
+    /// 模板说明，未提供时保存为空字符串。
     #[prost(string, optional, tag="2")]
     pub description: ::core::option::Option<::prost::alloc::string::String>,
+    /// 全部轨道选用的素材目录 ID 去重列表。
     #[prost(string, repeated, tag="3")]
     pub effect_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// 新增转场时使用的默认持续时间，单位为秒。
     #[prost(double, optional, tag="4")]
     pub transition_duration_seconds: ::core::option::Option<f64>,
+    /// 模板的画面对象实例及时间规则；包装消息用于区分缺少字段和空列表。
     #[prost(message, optional, tag="5")]
     pub tracks: ::core::option::Option<TrackList>,
+    /// 待更新模板的 UUID；未提供时创建新模板。
     #[prost(string, optional, tag="6")]
     pub template_id: ::core::option::Option<::prost::alloc::string::String>,
 }

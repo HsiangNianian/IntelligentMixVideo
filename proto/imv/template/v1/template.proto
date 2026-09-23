@@ -7,97 +7,161 @@ import "google/protobuf/timestamp.proto";
 
 // 服务端保存的效果信息。
 message EffectAsset {
+  // 素材目录中的唯一 ID，包含分类前缀，并由模板的效果选择字段引用。
   string id = 1;
+  // 素材所属分类，用于确定作用对象和 IMS 参数名称。
   string category = 2;
+  // 提供给用户查看的素材名称。
   string name = 3;
+  // IMS 使用的效果标识，不包含素材分类前缀。
   string effect_id = 4;
+  // 提交给 IMS SDK 的参数名称与参数值。
   map<string, string> parameters = 5;
+  // 素材预览封面的 URL，空字符串表示没有预览封面。
   string preview_url = 6;
 }
 
 // 单个画面对象的编辑参数，未提供的字段由业务模块补齐默认值。
 message EffectTemplateEditor {
+  // 顶部标题的示例文字。
   optional string title = 1;
+  // 底部字幕的示例文字。
   optional string subtitle = 2;
+  // 气泡字的示例文字。
   optional string bubble_text = 3;
+  // 顶部标题的字号，单位为画布像素。
   optional int32 title_size = 4;
+  // 底部字幕的字号，单位为画布像素。
   optional int32 subtitle_size = 5;
+  // 气泡字的字号，单位为画布像素。
   optional int32 bubble_size = 6;
+  // 顶部标题中心点的横向位置，使用画布宽度百分比。
   optional double title_x = 7;
+  // 顶部标题中心点的纵向位置，使用画布高度百分比。
   optional double title_y = 8;
+  // 底部字幕中心点的横向位置，使用画布宽度百分比。
   optional double subtitle_x = 9;
+  // 底部字幕中心点的纵向位置，使用画布高度百分比。
   optional double subtitle_y = 10;
+  // 气泡字中心点的横向位置，使用画布宽度百分比。
   optional double bubble_x = 11;
+  // 气泡字中心点的纵向位置，使用画布高度百分比。
   optional double bubble_y = 12;
+  // 顶部标题选用的花字素材目录 ID，空字符串表示未选择。
   optional string title_flower = 13;
+  // 底部字幕选用的花字素材目录 ID，空字符串表示未选择。
   optional string subtitle_flower = 14;
+  // 气泡字选用的气泡素材目录 ID，空字符串表示未选择。
   optional string bubble = 15;
+  // 视频选用的滤镜素材目录 ID，空字符串表示未选择。
   optional string filter = 16;
+  // 视频选用的画面特效素材目录 ID，空字符串表示未选择。
   optional string vfx = 17;
+  // 视频片段之间选用的转场素材目录 ID，空字符串表示未选择。
   optional string transition = 18;
+  // 顶部标题选用的入场动画素材目录 ID，空字符串表示未选择。
   optional string title_in = 19;
+  // 顶部标题选用的出场动画素材目录 ID，空字符串表示未选择。
   optional string title_out = 20;
+  // 顶部标题选用的循环动画素材目录 ID，空字符串表示未选择。
   optional string title_loop = 21;
+  // 底部字幕选用的入场动画素材目录 ID，空字符串表示未选择。
   optional string subtitle_in = 22;
+  // 底部字幕选用的出场动画素材目录 ID，空字符串表示未选择。
   optional string subtitle_out = 23;
+  // 底部字幕选用的循环动画素材目录 ID，空字符串表示未选择。
   optional string subtitle_loop = 24;
+  // 气泡字选用的入场动画素材目录 ID，空字符串表示未选择。
   optional string bubble_in = 25;
+  // 气泡字选用的出场动画素材目录 ID，空字符串表示未选择。
   optional string bubble_out = 26;
+  // 气泡字选用的循环动画素材目录 ID，空字符串表示未选择。
   optional string bubble_loop = 27;
+  // 顶部标题入场动画的持续时间，单位为秒。
   optional double title_in_duration = 28;
+  // 顶部标题出场动画的持续时间，单位为秒。
   optional double title_out_duration = 29;
+  // 底部字幕入场动画的持续时间，单位为秒。
   optional double subtitle_in_duration = 30;
+  // 底部字幕出场动画的持续时间，单位为秒。
   optional double subtitle_out_duration = 31;
+  // 气泡字入场动画的持续时间，单位为秒。
   optional double bubble_in_duration = 32;
+  // 气泡字出场动画的持续时间，单位为秒。
   optional double bubble_out_duration = 33;
 }
 
 // 画面对象及其时间规则。
 message EffectTrack {
+  // 模板内唯一的对象实例 ID。
   string id = 1;
+  // 效果作用对象，可选值为 title、subtitle、bubble、filter、vfx 或 transition。
   string target = 2;
+  // 开始位置的计量方式，可选值为 seconds 或 percent。
   string start_mode = 3;
+  // 开始位置；含义由 start_mode 决定，分别表示秒数或成片时长百分比。
   optional double start = 4;
+  // 固定持续时间，单位为秒；未提供时表示持续到成片结束，转场对象必须提供。
   optional double duration = 5;
+  // 当前对象的文字、位置、效果选择和动画时长。
   EffectTemplateEditor editor = 6;
 }
 
 // 包装数组以保留“提供了空轨道列表”的含义。
 message TrackList {
+  // 模板包含的画面对象实例，顺序与客户端对象列表一致。
   repeated EffectTrack tracks = 1;
 }
 
 // 创建或完整更新模板；提供 template_id 时更新。
 message SaveTemplateRequest {
+  // 模板名称，去除首尾空白后必须有内容。
   string name = 1;
+  // 模板说明，未提供时保存为空字符串。
   optional string description = 2;
+  // 全部轨道选用的素材目录 ID 去重列表。
   repeated string effect_ids = 3;
+  // 新增转场时使用的默认持续时间，单位为秒。
   optional double transition_duration_seconds = 4;
+  // 模板的画面对象实例及时间规则；包装消息用于区分缺少字段和空列表。
   TrackList tracks = 5;
+  // 待更新模板的 UUID；未提供时创建新模板。
   optional string template_id = 6;
 }
 
 // 已保存的模板及效果快照。
 message TemplateRecord {
+  // 模板名称。
   string name = 1;
+  // 模板说明，未填写时为空字符串。
   string description = 2;
+  // 全部轨道选用的素材目录 ID 去重列表。
   repeated string effect_ids = 3;
+  // 新增转场时使用的默认持续时间，单位为秒。
   double transition_duration_seconds = 4;
+  // 模板的画面对象实例及时间规则。
   TrackList tracks = 5;
+  // 服务端生成的模板 UUID。
   string template_id = 6;
+  // 保存模板时根据 effect_ids 生成的可信素材信息快照。
   repeated EffectAsset effects = 7;
+  // 模板创建时间，使用 UTC 时间点。
   google.protobuf.Timestamp created_at = 8;
+  // 模板最近更新时间，使用 UTC 时间点。
   google.protobuf.Timestamp updated_at = 9;
 }
 
 // 模板列表及单个模板的响应。
 message ListTemplatesResponse {
+  // 当前共享模板库中的模板记录。
   repeated TemplateRecord templates = 1;
 }
 
 message GetTemplateResponse {
+  // 按模板 UUID 查询得到的完整模板记录。
   TemplateRecord template = 1;
 }
 message SaveTemplateResponse {
+  // 创建或更新后返回的完整模板记录。
   TemplateRecord template = 1;
 }
