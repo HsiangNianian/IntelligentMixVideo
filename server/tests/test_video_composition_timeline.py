@@ -107,6 +107,17 @@ def test_subtitle_keyword_style_marks_first_matching_part(composition_case):
     assert [clip["Content"] for clip in subtitles] == [r"{\b1}甲乙{\b0}？", "甲乙丙丁", "戊己庚辛"]
 
 
+def test_title_keyword_styles_select_request_text_when_unset(composition_case):
+    """标题未指定关键词时自动标记请求标题的首段连续文字，重复内容只标记首次。"""
+    editor = composition_case["template"]["tracks"][1]["editor"]
+    editor.update(titleKeyword="", titleKeywordBold=True, titleKeywordColor="#12AB34")
+    composition_case["request"]["title"] = "重点 重点"
+    timeline, _ = build_timeline(**composition_case)
+    assert timeline["SubtitleTracks"][1]["SubtitleTrackClips"][0]["Content"] == (
+        r"{\1c&34AB12&\b1}重点{\1c\b0} 重点"
+    )
+
+
 @pytest.mark.parametrize("title", [None, "", " \n\t"])
 def test_blank_title_is_omitted(composition_case, title):
     """空标题不会从模板预览文字回填；字幕和关键词保留。"""

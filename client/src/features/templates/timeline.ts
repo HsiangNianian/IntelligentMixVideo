@@ -100,8 +100,9 @@ function buildTrackContent(config: Editor, catalog: EffectAsset[], target: Effec
     const content = role === "bubble" ? config.bubbleText : config[role];
     const size = number(config[`${role}Size`], 12, 300, "字号", true);
     const visible = role === "bubble" ? content : wrapPreviewText(content, size, canvasWidth * 0.9);
-    const previewKeyword = role === "subtitle"
-      ? [...new Intl.Segmenter("zh", { granularity: "word" }).segment(visible)].find((part) => part.isWordLike)?.segment ?? ""
+    const previewKeyword = role === "title" || role === "subtitle"
+      ? (role === "title" && config.titleKeyword) ||
+        ([...new Intl.Segmenter("zh", { granularity: "word" }).segment(visible)].find((part) => part.isWordLike)?.segment ?? "")
       : "";
     if (
       config[`${role}Loop`] &&
@@ -125,7 +126,7 @@ function buildTrackContent(config: Editor, catalog: EffectAsset[], target: Effec
     }
     return {
       Type: "Text",
-      Content: role === "subtitle" ? formatSubtitleKeyword(visible, previewKeyword, config) : visible,
+      Content: role === "title" || role === "subtitle" ? formatKeyword(visible, previewKeyword, config, role) : visible,
       TimelineIn: 0,
       TimelineOut: 10,
       X: position(config[`${role}X`]),
@@ -209,18 +210,26 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media?: Mast
 
 /** 将启用的局部样式包在首次出现的关键词两侧；无关键词时保留原文字。 */
 export function formatSubtitleKeyword(content: string, keyword: string, config: Editor): string {
-  const color = config.subtitleKeywordColor;
+  return formatKeyword(content, keyword, config, "subtitle");
+}
+
+/** 生成标题或字幕的局部样式；合成标题没有匹配词语时保留完整标题。 */
+export function formatKeyword(content: string, keyword: string, config: Editor, role: "title" | "subtitle"): string {
+  const color = config[`${role}KeywordColor`];
   if (color && !/^#[0-9A-Fa-f]{6}$/.test(color)) throw new Error("关键词颜色须为 #RRGGBB");
   const styles = [
-    [config.subtitleKeywordBold, "\\b1", "\\b0"],
-    [config.subtitleKeywordItalic, "\\i1", "\\i0"],
-    [config.subtitleKeywordUnderline, "\\u1", "\\u0"],
-    [config.subtitleKeywordStrikeout, "\\s1", "\\s0"],
+    [config[`${role}KeywordBold`], "\\b1", "\\b0"],
+    [config[`${role}KeywordItalic`], "\\i1", "\\i0"],
+    [config[`${role}KeywordUnderline`], "\\u1", "\\u0"],
+    [config[`${role}KeywordStrikeout`], "\\s1", "\\s0"],
   ] as const;
   const enabled = styles.filter(([selected]) => selected);
   if (!keyword || (!enabled.length && !color)) return content;
   const start = content.indexOf(keyword);
-  if (start < 0) throw new Error("关键词不在字幕文字中");
+  if (start < 0) {
+    if (role === "title") return content;
+    throw new Error("关键词不在字幕文字中");
+  }
   const bgr = color ? `${color.slice(5, 7)}${color.slice(3, 5)}${color.slice(1, 3)}`.toUpperCase() : "";
   const opening = (color ? `\\1c&${bgr}&` : "") + enabled.map(([, open]) => open).join("");
   const closing = (color ? "\\1c" : "") + enabled.map(([, , close]) => close).join("");

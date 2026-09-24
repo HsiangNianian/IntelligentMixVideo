@@ -1,6 +1,7 @@
 """由业务快照生成 IMS Timeline；转场只用效果类型连接实际片段，其他对象保留模板时间规则。"""
 
 from math import floor
+import re
 
 from pydantic import TypeAdapter
 
@@ -38,18 +39,31 @@ def validate_matches(segments: list[Segment], matches: list[MatchedSegment]) -> 
 
 def format_subtitle_keyword(content: str, keyword: str, config: EffectTemplateEditor) -> str:
     """按模板选项为本段首次出现的关键词生成 IMS 局部样式指令。"""
-    color = config.subtitle_keyword_color
+    return format_keyword(content, keyword, config, "subtitle")
+
+
+def first_title_keyword(content: str) -> str:
+    """从请求标题取首段连续文字，供没有手动关键词的标题样式使用。"""
+    match = re.search(r"[^\W_]+", content)
+    return match.group() if match else ""
+
+
+def format_keyword(content: str, keyword: str, config: EffectTemplateEditor, role: str) -> str:
+    """为标题或字幕的首个匹配词语添加局部样式；标题缺少该词语时保留原文。"""
+    color = getattr(config, f"{role}_keyword_color")
     styles = (
-        (config.subtitle_keyword_bold, r"\b1", r"\b0"),
-        (config.subtitle_keyword_italic, r"\i1", r"\i0"),
-        (config.subtitle_keyword_underline, r"\u1", r"\u0"),
-        (config.subtitle_keyword_strikeout, r"\s1", r"\s0"),
+        (getattr(config, f"{role}_keyword_bold"), r"\b1", r"\b0"),
+        (getattr(config, f"{role}_keyword_italic"), r"\i1", r"\i0"),
+        (getattr(config, f"{role}_keyword_underline"), r"\u1", r"\u0"),
+        (getattr(config, f"{role}_keyword_strikeout"), r"\s1", r"\s0"),
     )
     enabled = [(start, end) for selected, start, end in styles if selected]
     if not keyword or not (enabled or color):
         return content
     position = content.find(keyword)
     if position < 0:
+        if role == "title":
+            return content
         raise ValueError("关键词不在字幕文字中")
     bgr = (color[5:7] + color[3:5] + color[1:3]).upper() if color else ""
     opening = (rf"\1c&{bgr}&" if color else "") + "".join(start for start, _ in enabled)
@@ -209,8 +223,10 @@ def build_timeline(
                 if segment.notice:
                     warnings.append(f"对象 {track.id}：{segment.notice}")
                 if segment.end > segment.start:
-                    if track.target == "subtitle":
-                        content = format_subtitle_keyword(content, keyword, segment.editor)
+                    if track.target in ("title", "subtitle"):
+                        content = format_keyword(content, (segment.editor.title_keyword or first_title_keyword(content))
+                                                 if track.target == "title" else keyword,
+                                                 segment.editor, track.target)
                     text_clips.append(text(track.target, content, segment.start, segment.end, segment.editor, track_parameters))
             if text_clips:
                 timeline["SubtitleTracks"].append({"SubtitleTrackClips": text_clips})

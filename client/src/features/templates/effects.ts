@@ -90,6 +90,14 @@ export function resetTextTarget(draft: EffectDraft, target: TextRole): EffectDra
   next.editor[`${target}Y`] = defaultEditor[`${target}Y`];
   next.editor[`${target}InDuration`] = defaultEditor[`${target}InDuration`];
   next.editor[`${target}OutDuration`] = defaultEditor[`${target}OutDuration`];
+  if (target === "title") {
+    next.editor.titleKeyword = "";
+    next.editor.titleKeywordBold = false;
+    next.editor.titleKeywordItalic = false;
+    next.editor.titleKeywordUnderline = false;
+    next.editor.titleKeywordStrikeout = false;
+    next.editor.titleKeywordColor = "";
+  }
   if (target === "subtitle") {
     next.editor.subtitleKeywordBold = false;
     next.editor.subtitleKeywordItalic = false;
@@ -108,6 +116,14 @@ export function removeTarget(draft: EffectDraft, target: EffectTarget): EffectDr
     next.editor[`${target}Size`] = defaultEditor[`${target}Size`];
     next.editor[`${target}X`] = defaultEditor[`${target}X`];
     next.editor[`${target}Y`] = defaultEditor[`${target}Y`];
+    if (target === "title") {
+      next.editor.titleKeyword = "";
+      next.editor.titleKeywordBold = false;
+      next.editor.titleKeywordItalic = false;
+      next.editor.titleKeywordUnderline = false;
+      next.editor.titleKeywordStrikeout = false;
+      next.editor.titleKeywordColor = "";
+    }
     if (target === "subtitle") {
       next.editor.subtitleKeywordBold = false;
       next.editor.subtitleKeywordItalic = false;

@@ -99,6 +99,18 @@ message EffectTemplateEditor {
   bool subtitle_keyword_strikeout = 37;
   // 底部字幕关键词的局部颜色，空字符串表示保持字幕原色，格式为 #RRGGBB。
   string subtitle_keyword_color = 38;
+  // 顶部标题中需要设置局部样式的文字；合成标题缺少该文字时保留原文。
+  string title_keyword = 39;
+  // 顶部标题关键词的局部加粗样式。
+  bool title_keyword_bold = 40;
+  // 顶部标题关键词的局部斜体样式。
+  bool title_keyword_italic = 41;
+  // 顶部标题关键词的局部下划线样式。
+  bool title_keyword_underline = 42;
+  // 顶部标题关键词的局部删除线样式。
+  bool title_keyword_strikeout = 43;
+  // 顶部标题关键词的局部颜色，空字符串表示保持标题原色。
+  string title_keyword_color = 44;
 }
 
 // 画面对象及其时间规则。

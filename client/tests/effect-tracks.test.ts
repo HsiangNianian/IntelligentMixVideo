@@ -35,6 +35,15 @@ test("字幕关键词样式生成局部指令并随对象重置", () => {
     subtitleKeywordUnderline: false, subtitleKeywordStrikeout: false, subtitleKeywordColor: "" });
 });
 
+// 场景：标题未指定关键词时，预览自动标记示例标题的首个词语。
+test("标题预览自动显示关键词样式", () => {
+  const draft = sampleDraft();
+  draft.tracks[0].editor.titleKeywordBold = true;
+  draft.tracks[0].editor.titleKeywordColor = "#FF0000";
+  expect(buildTimeline(draft, catalog).SubtitleTracks[0].SubtitleTrackClips[0].Content)
+    .toContain("{\\1c&0000FF&\\b1}让{\\1c\\b0}每");
+});
+
 // 场景：IMS 默认转场为一秒、文字入出场各半秒，滤镜和 VFX 覆盖完整视频；用户时长继续保留。
 test("新对象采用 IMS 时间默认值并保留已设置的时长", () => {
   const empty = { ...newDraft(), tracks: [] };

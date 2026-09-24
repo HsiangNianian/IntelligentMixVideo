@@ -87,6 +87,12 @@ class EffectTemplateEditor(BaseModel):
     subtitle_out_duration: float = Field(default=0.5, ge=0.1, le=3, allow_inf_nan=False)
     bubble_in_duration: float = Field(default=0.5, ge=0.1, le=3, allow_inf_nan=False)
     bubble_out_duration: float = Field(default=0.5, ge=0.1, le=3, allow_inf_nan=False)
+    title_keyword: str = Field(default="", max_length=60)
+    title_keyword_bold: bool = Field(default=False, strict=True)
+    title_keyword_italic: bool = Field(default=False, strict=True)
+    title_keyword_underline: bool = Field(default=False, strict=True)
+    title_keyword_strikeout: bool = Field(default=False, strict=True)
+    title_keyword_color: str = Field(default="", pattern=r"^(?:|#[0-9A-Fa-f]{6})$")
     subtitle_keyword_bold: bool = Field(default=False, strict=True)
     subtitle_keyword_italic: bool = Field(default=False, strict=True)
     subtitle_keyword_underline: bool = Field(default=False, strict=True)
@@ -151,6 +157,12 @@ class EffectTrack(BaseModel):
             bool(self.editor.subtitle_keyword_color),
         )):
             raise ValueError("只有底部字幕可以设置关键词样式")
+        if self.target != "title" and any((
+            self.editor.title_keyword, self.editor.title_keyword_bold,
+            self.editor.title_keyword_italic, self.editor.title_keyword_underline,
+            self.editor.title_keyword_strikeout, bool(self.editor.title_keyword_color),
+        )):
+            raise ValueError("只有顶部标题可以设置标题关键词样式")
         for role, field in (("title", "title"), ("subtitle", "subtitle"), ("bubble", "bubble_text")):
             content = getattr(self.editor, field)
             if role != self.target and content:

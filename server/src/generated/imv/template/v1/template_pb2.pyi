@@ -33,7 +33,7 @@ class EffectAsset(_message.Message):
     def __init__(self, id: _Optional[str] = ..., category: _Optional[str] = ..., name: _Optional[str] = ..., effect_id: _Optional[str] = ..., parameters: _Optional[_Mapping[str, str]] = ..., preview_url: _Optional[str] = ...) -> None: ...
 
 class EffectTemplateEditor(_message.Message):
-    __slots__ = ("title", "subtitle", "bubble_text", "title_size", "subtitle_size", "bubble_size", "title_x", "title_y", "subtitle_x", "subtitle_y", "bubble_x", "bubble_y", "title_flower", "subtitle_flower", "bubble", "filter", "vfx", "transition", "title_in", "title_out", "title_loop", "subtitle_in", "subtitle_out", "subtitle_loop", "bubble_in", "bubble_out", "bubble_loop", "title_in_duration", "title_out_duration", "subtitle_in_duration", "subtitle_out_duration", "bubble_in_duration", "bubble_out_duration", "subtitle_keyword_bold", "subtitle_keyword_italic", "subtitle_keyword_underline", "subtitle_keyword_strikeout", "subtitle_keyword_color")
+    __slots__ = ("title", "subtitle", "bubble_text", "title_size", "subtitle_size", "bubble_size", "title_x", "title_y", "subtitle_x", "subtitle_y", "bubble_x", "bubble_y", "title_flower", "subtitle_flower", "bubble", "filter", "vfx", "transition", "title_in", "title_out", "title_loop", "subtitle_in", "subtitle_out", "subtitle_loop", "bubble_in", "bubble_out", "bubble_loop", "title_in_duration", "title_out_duration", "subtitle_in_duration", "subtitle_out_duration", "bubble_in_duration", "bubble_out_duration", "subtitle_keyword_bold", "subtitle_keyword_italic", "subtitle_keyword_underline", "subtitle_keyword_strikeout", "subtitle_keyword_color", "title_keyword", "title_keyword_bold", "title_keyword_italic", "title_keyword_underline", "title_keyword_strikeout", "title_keyword_color")
     TITLE_FIELD_NUMBER: _ClassVar[int]
     SUBTITLE_FIELD_NUMBER: _ClassVar[int]
     BUBBLE_TEXT_FIELD_NUMBER: _ClassVar[int]
@@ -72,6 +72,12 @@ class EffectTemplateEditor(_message.Message):
     SUBTITLE_KEYWORD_UNDERLINE_FIELD_NUMBER: _ClassVar[int]
     SUBTITLE_KEYWORD_STRIKEOUT_FIELD_NUMBER: _ClassVar[int]
     SUBTITLE_KEYWORD_COLOR_FIELD_NUMBER: _ClassVar[int]
+    TITLE_KEYWORD_FIELD_NUMBER: _ClassVar[int]
+    TITLE_KEYWORD_BOLD_FIELD_NUMBER: _ClassVar[int]
+    TITLE_KEYWORD_ITALIC_FIELD_NUMBER: _ClassVar[int]
+    TITLE_KEYWORD_UNDERLINE_FIELD_NUMBER: _ClassVar[int]
+    TITLE_KEYWORD_STRIKEOUT_FIELD_NUMBER: _ClassVar[int]
+    TITLE_KEYWORD_COLOR_FIELD_NUMBER: _ClassVar[int]
     title: str
     subtitle: str
     bubble_text: str
@@ -110,7 +116,13 @@ class EffectTemplateEditor(_message.Message):
     subtitle_keyword_underline: bool
     subtitle_keyword_strikeout: bool
     subtitle_keyword_color: str
-    def __init__(self, title: _Optional[str] = ..., subtitle: _Optional[str] = ..., bubble_text: _Optional[str] = ..., title_size: _Optional[int] = ..., subtitle_size: _Optional[int] = ..., bubble_size: _Optional[int] = ..., title_x: _Optional[float] = ..., title_y: _Optional[float] = ..., subtitle_x: _Optional[float] = ..., subtitle_y: _Optional[float] = ..., bubble_x: _Optional[float] = ..., bubble_y: _Optional[float] = ..., title_flower: _Optional[str] = ..., subtitle_flower: _Optional[str] = ..., bubble: _Optional[str] = ..., filter: _Optional[str] = ..., vfx: _Optional[str] = ..., transition: _Optional[str] = ..., title_in: _Optional[str] = ..., title_out: _Optional[str] = ..., title_loop: _Optional[str] = ..., subtitle_in: _Optional[str] = ..., subtitle_out: _Optional[str] = ..., subtitle_loop: _Optional[str] = ..., bubble_in: _Optional[str] = ..., bubble_out: _Optional[str] = ..., bubble_loop: _Optional[str] = ..., title_in_duration: _Optional[float] = ..., title_out_duration: _Optional[float] = ..., subtitle_in_duration: _Optional[float] = ..., subtitle_out_duration: _Optional[float] = ..., bubble_in_duration: _Optional[float] = ..., bubble_out_duration: _Optional[float] = ..., subtitle_keyword_bold: _Optional[bool] = ..., subtitle_keyword_italic: _Optional[bool] = ..., subtitle_keyword_underline: _Optional[bool] = ..., subtitle_keyword_strikeout: _Optional[bool] = ..., subtitle_keyword_color: _Optional[str] = ...) -> None: ...
+    title_keyword: str
+    title_keyword_bold: bool
+    title_keyword_italic: bool
+    title_keyword_underline: bool
+    title_keyword_strikeout: bool
+    title_keyword_color: str
+    def __init__(self, title: _Optional[str] = ..., subtitle: _Optional[str] = ..., bubble_text: _Optional[str] = ..., title_size: _Optional[int] = ..., subtitle_size: _Optional[int] = ..., bubble_size: _Optional[int] = ..., title_x: _Optional[float] = ..., title_y: _Optional[float] = ..., subtitle_x: _Optional[float] = ..., subtitle_y: _Optional[float] = ..., bubble_x: _Optional[float] = ..., bubble_y: _Optional[float] = ..., title_flower: _Optional[str] = ..., subtitle_flower: _Optional[str] = ..., bubble: _Optional[str] = ..., filter: _Optional[str] = ..., vfx: _Optional[str] = ..., transition: _Optional[str] = ..., title_in: _Optional[str] = ..., title_out: _Optional[str] = ..., title_loop: _Optional[str] = ..., subtitle_in: _Optional[str] = ..., subtitle_out: _Optional[str] = ..., subtitle_loop: _Optional[str] = ..., bubble_in: _Optional[str] = ..., bubble_out: _Optional[str] = ..., bubble_loop: _Optional[str] = ..., title_in_duration: _Optional[float] = ..., title_out_duration: _Optional[float] = ..., subtitle_in_duration: _Optional[float] = ..., subtitle_out_duration: _Optional[float] = ..., bubble_in_duration: _Optional[float] = ..., bubble_out_duration: _Optional[float] = ..., subtitle_keyword_bold: _Optional[bool] = ..., subtitle_keyword_italic: _Optional[bool] = ..., subtitle_keyword_underline: _Optional[bool] = ..., subtitle_keyword_strikeout: _Optional[bool] = ..., subtitle_keyword_color: _Optional[str] = ..., title_keyword: _Optional[str] = ..., title_keyword_bold: _Optional[bool] = ..., title_keyword_italic: _Optional[bool] = ..., title_keyword_underline: _Optional[bool] = ..., title_keyword_strikeout: _Optional[bool] = ..., title_keyword_color: _Optional[str] = ...) -> None: ...
 
 class EffectTrack(_message.Message):
     __slots__ = ("id", "target", "start_mode", "start", "duration", "editor")

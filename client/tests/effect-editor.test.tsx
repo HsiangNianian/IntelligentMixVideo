@@ -62,3 +62,17 @@ test("底部字幕可独立选择关键词局部样式", () => {
   expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "加粗" }).checked).toBe(false);
   expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "设置关键词颜色" }).checked).toBe(false);
 });
+
+// 场景：标题使用自动选词，修改示例文字后能够设置局部颜色和加粗。
+test("顶部标题可设置关键词局部样式", () => {
+  const initial = newDraft();
+  initial.editor.titleKeyword = "旧词";
+  const read = renderEditor(initial, "title");
+  expect(screen.queryByLabelText("标题关键词")).toBeNull();
+  fireEvent.change(screen.getByLabelText("示例文字"), { target: { value: "示例标题" } });
+  fireEvent.click(screen.getByRole("checkbox", { name: "加粗" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: "设置关键词颜色" }));
+  fireEvent.change(screen.getByLabelText("关键词颜色"), { target: { value: "#123456" } });
+  expect(read().editor).toMatchObject({ titleKeyword: "", titleKeywordBold: true,
+    titleKeywordColor: "#123456" });
+});

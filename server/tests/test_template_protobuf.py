@@ -142,6 +142,22 @@ def test_template_protobuf_update_preserves_identity_and_restores_defaults(
         assert len(connection.execute(select(store.templates)).all()) == 1
 
 
+def test_title_keyword_style_roundtrips_through_protobuf(client: TestClient, template_payload: dict) -> None:
+    """标题关键词配置经过真实二进制保存、详情读取及服务端校验。"""
+    payload = {**template_payload, "tracks": [template_track(
+        titleIn="in/fade_in", titleKeywordBold=True, titleKeywordColor="#12AB34",
+    )]}
+    response = _post(client, payload)
+    assert response.status_code == 201
+    record = pb.SaveTemplateResponse.FromString(response.content).template
+    editor = record.tracks.tracks[0].editor
+    assert (editor.title_keyword_bold, editor.title_keyword_color) == (True, "#12AB34")
+    detail = pb.GetTemplateResponse.FromString(
+        client.get(f"/template/{record.template_id}").content,
+    ).template
+    assert detail == record
+
+
 def test_template_protobuf_invalid_effects_preserve_data(
     client: TestClient, template_payload: dict,
 ) -> None:

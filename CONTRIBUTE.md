@@ -79,10 +79,11 @@ build does not validate the native application or other platforms. State checks
 you could not run and why. Documentation-only changes need content, link, and diff
 checks, without a full application build.
 
-Every new feature must include detailed, comprehensive behavior tests covering
-success, failures, applicable boundaries, and side effects. Bug fixes require a
-regression test. Keep server tests in `server/tests/` and use pytest fixtures and
-parametrization. Tests must be isolated from production services and reproducible.
+Every new feature must include repeatable tests of its core behavior. Bug fixes
+require a regression test. Cover failure and boundary cases when they affect that
+behavior, without duplicating coverage. Keep server tests in `server/tests/` and
+use pytest fixtures and parametrization. Tests must be isolated from production
+services and reproducible.
 Frontend core tests use Bun, Happy DOM and React Testing Library in `client/tests/`.
 Add a Chinese scenario comment above each test and run `bun run test` from `client/`.
 HTTP and SDK dependencies are isolated; these tests do not verify real video

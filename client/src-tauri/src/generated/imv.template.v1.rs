@@ -120,6 +120,24 @@ pub struct EffectTemplateEditor {
     /// 底部字幕关键词的局部颜色，空字符串表示保持字幕原色，格式为 #RRGGBB。
     #[prost(string, tag="38")]
     pub subtitle_keyword_color: ::prost::alloc::string::String,
+    /// 顶部标题中需要设置局部样式的文字；合成标题缺少该文字时保留原文。
+    #[prost(string, tag="39")]
+    pub title_keyword: ::prost::alloc::string::String,
+    /// 顶部标题关键词的局部加粗样式。
+    #[prost(bool, tag="40")]
+    pub title_keyword_bold: bool,
+    /// 顶部标题关键词的局部斜体样式。
+    #[prost(bool, tag="41")]
+    pub title_keyword_italic: bool,
+    /// 顶部标题关键词的局部下划线样式。
+    #[prost(bool, tag="42")]
+    pub title_keyword_underline: bool,
+    /// 顶部标题关键词的局部删除线样式。
+    #[prost(bool, tag="43")]
+    pub title_keyword_strikeout: bool,
+    /// 顶部标题关键词的局部颜色，空字符串表示保持标题原色。
+    #[prost(string, tag="44")]
+    pub title_keyword_color: ::prost::alloc::string::String,
 }
 /// 画面对象及其时间规则。
 #[derive(::serde::Serialize)]
