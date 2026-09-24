@@ -1313,7 +1313,7 @@ async def test_zos_failure_never_publishes_success(upstreams, composition_case, 
     store.initialize_schema()
     record = store.create(composition_case["request"], composition_runtime.settings.output(), "https://composition.test")
     record = store.advance(record, "rendering", result={"mediaId": "ims-media", "durationSeconds": 8.02},
-                           ims_deadline=service.deadline(0.1))
+                           ims_deadline=service.deadline(2))
     upstreams["failure"] = "zos"
     await composition_runtime._execute(record)
     saved = store.get(record["task_id"])
