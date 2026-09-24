@@ -181,7 +181,7 @@ export function EffectEditor({
             </div>
             {(role === "title" || role === "subtitle") && (
               <fieldset className="space-y-2">
-                <legend className="text-sm font-medium">关键词局部样式</legend>
+                <legend className="text-sm font-medium">关键词样式</legend>
                 <div className="grid grid-cols-2 gap-2">
                   {([
                     [`${role}KeywordBold`, "加粗"],

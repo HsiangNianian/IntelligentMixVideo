@@ -15,7 +15,7 @@ mod generated {
 
 /// 按服务端 EffectTemplateEditor 的默认值补齐缺失字段，保留显式提交的数值。
 fn editor_from_protobuf(editor: generated::EffectTemplateEditor) -> Value {
-    json!({
+    let mut fields = json!({
         "title": editor.title.unwrap_or_else(|| "让每一帧 都有风格".into()),
         "subtitle": editor.subtitle.unwrap_or_else(|| "选择花字、滤镜和特效，看看组合效果".into()),
         "bubbleText": editor.bubble_text.unwrap_or_else(|| "超值特惠".into()),
@@ -49,18 +49,19 @@ fn editor_from_protobuf(editor: generated::EffectTemplateEditor) -> Value {
         "subtitleOutDuration": editor.subtitle_out_duration.unwrap_or(0.5),
         "bubbleInDuration": editor.bubble_in_duration.unwrap_or(0.5),
         "bubbleOutDuration": editor.bubble_out_duration.unwrap_or(0.5),
-        "subtitleKeywordBold": editor.subtitle_keyword_bold,
-        "subtitleKeywordItalic": editor.subtitle_keyword_italic,
-        "subtitleKeywordUnderline": editor.subtitle_keyword_underline,
-        "subtitleKeywordStrikeout": editor.subtitle_keyword_strikeout,
-        "subtitleKeywordColor": editor.subtitle_keyword_color,
-        "titleKeyword": editor.title_keyword,
-        "titleKeywordBold": editor.title_keyword_bold,
-        "titleKeywordItalic": editor.title_keyword_italic,
-        "titleKeywordUnderline": editor.title_keyword_underline,
-        "titleKeywordStrikeout": editor.title_keyword_strikeout,
-        "titleKeywordColor": editor.title_keyword_color,
-    })
+    });
+    fields["subtitleKeywordBold"] = json!(editor.subtitle_keyword_bold);
+    fields["subtitleKeywordItalic"] = json!(editor.subtitle_keyword_italic);
+    fields["subtitleKeywordUnderline"] = json!(editor.subtitle_keyword_underline);
+    fields["subtitleKeywordStrikeout"] = json!(editor.subtitle_keyword_strikeout);
+    fields["subtitleKeywordColor"] = json!(editor.subtitle_keyword_color);
+    fields["titleKeyword"] = json!(editor.title_keyword);
+    fields["titleKeywordBold"] = json!(editor.title_keyword_bold);
+    fields["titleKeywordItalic"] = json!(editor.title_keyword_italic);
+    fields["titleKeywordUnderline"] = json!(editor.title_keyword_underline);
+    fields["titleKeywordStrikeout"] = json!(editor.title_keyword_strikeout);
+    fields["titleKeywordColor"] = json!(editor.title_keyword_color);
+    fields
 }
 
 /// 底部字幕关键词的四个局部样式字段，供保存校验和旧记录读取共用。

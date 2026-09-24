@@ -46,8 +46,8 @@ test("重置按钮恢复当前文字对象", () => {
   expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe(String(defaultEditor.titleSize));
 });
 
-// 场景：局部样式只出现在底部字幕设置中，开关与颜色选择器更新所属字幕对象。
-test("底部字幕可独立选择关键词局部样式", () => {
+// 场景：底部字幕显示关键词样式，开关与颜色选择器更新所属字幕对象。
+test("底部字幕可独立选择关键词样式", () => {
   const read = renderEditor(newDraft(), "subtitle");
   for (const label of ["加粗", "斜体", "下划线", "删除线"]) {
     fireEvent.click(screen.getByRole("checkbox", { name: label }));
@@ -63,8 +63,8 @@ test("底部字幕可独立选择关键词局部样式", () => {
   expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "设置关键词颜色" }).checked).toBe(false);
 });
 
-// 场景：标题使用自动选词，修改示例文字后能够设置局部颜色和加粗。
-test("顶部标题可设置关键词局部样式", () => {
+// 场景：顶部标题显示关键词样式，修改示例文字后能够设置颜色和加粗。
+test("顶部标题可设置关键词样式", () => {
   const initial = newDraft();
   initial.editor.titleKeyword = "旧词";
   const read = renderEditor(initial, "title");
