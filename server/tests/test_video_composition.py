@@ -275,6 +275,14 @@ def test_missing_zos_config_rejected_before_accept(upstreams, client, compositio
     assert upstreams["asr_calls"] == 0 and store.pending([], 10) == []
 
 
+def test_missing_ffmpeg_rejected_before_accept(upstreams, client, composition_case, monkeypatch):
+    """缺少第 3 帧提取工具时不受理需要云端成本的新合成。"""
+    monkeypatch.setattr(service.shutil, "which", lambda name: None)
+    response = client.post(BASE, json=composition_case["request"])
+    assert response.status_code == 503
+    assert upstreams["asr_calls"] == 0 and store.pending([], 10) == []
+
+
 @pytest.mark.parametrize("field,value", [
     ("text", " "), ("styleId", "old-external-id"), ("audioUrl", "http://media.test/a"),
     ("videoUrl", "[视频](https://media.test/a)"), ("videoUrl", "https://user:pass@media.test/a"),
@@ -1214,7 +1222,7 @@ def test_execution_logs_cover_inputs_outputs_and_notification(upstreams, client,
     saved, = composition_logs(task_id, raw=True)
     phases = saved["detail"]["阶段记录"]
     assert saved["detail"]["从提交开始记录"] is True
-    assert {"任务提交", "读取模板", "语音识别", "文本切分", "提交素材匹配", "组装视频时间线", "提交云端合成", "查询云端渲染", "获取成品视频链接", "转存视频到 ZOS", "通知调用方", "返回合成结果"} <= phases.keys()
+    assert {"任务提交", "读取模板", "语音识别", "文本切分", "提交素材匹配", "组装视频时间线", "提交云端合成", "查询云端渲染", "获取成品视频链接", "转存视频和封面到 ZOS", "通知调用方", "返回合成结果"} <= phases.keys()
     assert phases["返回合成结果"]["输出"][-1]["内容"]["result"]["videoUrl"] == response.json()["result"]["videoUrl"]
     rows = composition_logs(task_id)
     started = {row["details"]["step"]: row["details"]["input"] for row in rows if row["event"] == "step_started"}
