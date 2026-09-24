@@ -46,7 +46,7 @@ def list_templates() -> Response:
 @router.post("")
 async def save_template(request: Request) -> Response:
     """解析 Protobuf 保存消息；无 ID 创建，有 ID 完整更新。"""
-    if request.headers.get("content-type") != PROTOBUF_MEDIA_TYPE:
+    if request.headers.get("content-type", "").split(";", 1)[0].strip() != PROTOBUF_MEDIA_TYPE:
         raise HTTPException(status_code=415, detail="请使用 application/x-protobuf")
     message = pb.SaveTemplateRequest()
     try:
