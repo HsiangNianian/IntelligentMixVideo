@@ -1,0 +1,165 @@
+// RemotionAgent 字效版本、发布后固定视频资产及模板引用的交换契约。
+// 字效参数只能在 Remotion 工作区修改；导入资产库后，模板轨道只调整入点和可见时长。
+// 本协议不描述 TSX 内部实现或 IMS 效果；非空、唯一性、媒体规格和哈希由发布方校验。
+syntax = "proto3";
+
+package imv.remotion_typography.v1;
+
+// 运营列表的主要用途；文字是否运动由文字层的 motion 单独表示。
+enum DisplayCategory {
+  DISPLAY_CATEGORY_UNSPECIFIED = 0;
+  DISPLAY_CATEGORY_TITLE = 1;
+  DISPLAY_CATEGORY_SUBTITLE = 2;
+  DISPLAY_CATEGORY_GENERAL_TEXT = 3;
+  DISPLAY_CATEGORY_MIXED_TEXT = 4;
+  DISPLAY_CATEGORY_KEYWORD = 5;
+}
+
+// 一层文字在模板中的用途；发布时明确指定，不从示例文案猜测。
+enum TextRole {
+  TEXT_ROLE_UNSPECIFIED = 0;
+  TEXT_ROLE_TITLE = 1;
+  TEXT_ROLE_SUBTITLE = 2;
+  TEXT_ROLE_GENERAL_TEXT = 3;
+  TEXT_ROLE_KEYWORD = 4;
+}
+
+// 已验收方案中的动画阶段；具体插值和视觉效果仍由 TSX 实现。
+enum MotionPhase {
+  MOTION_PHASE_UNSPECIFIED = 0;
+  MOTION_PHASE_ENTER = 1;
+  MOTION_PHASE_HOLD = 2;
+  MOTION_PHASE_EXIT = 3;
+}
+
+// 控件数值的展示单位；不改变 TSX prop 的实际值。
+enum ValueUnit {
+  VALUE_UNIT_UNSPECIFIED = 0;
+  VALUE_UNIT_PIXEL = 1;
+  VALUE_UNIT_NORMALIZED = 2;
+  VALUE_UNIT_DEGREE = 3;
+  VALUE_UNIT_RATIO = 4;
+}
+
+// 与 Remotion 成功版本一致的画布和时长。
+message Composition {
+  uint32 width = 1;
+  uint32 height = 2;
+  double fps = 3;
+  uint32 duration_in_frames = 4;
+}
+
+// 一段文字运动的展示信息；帧号从零开始，end_frame 不包含在区间内。
+message MotionSegment {
+  MotionPhase phase = 1;
+  uint32 start_frame = 2;
+  uint32 end_frame = 3;
+  string description = 4;
+}
+
+// 一层文字的结构与运营标签；sample_text 须等于 text_prop_key 对应的默认值。
+message TextLayer {
+  string id = 1;
+  string sample_text = 2;
+  uint32 start_frame = 3;
+  uint32 end_frame = 4;
+  TextRole role = 5;
+  string text_prop_key = 6;
+  repeated MotionSegment motion = 7;
+}
+
+// TSX prop 支持的标量值；设置的 oneof 分支决定其实际类型。
+message ScalarValue {
+  oneof value {
+    string string_value = 1;
+    double number_value = 2;
+    bool bool_value = 3;
+  }
+}
+
+// 一个经编译和验收的扁平 TSX prop；键、类型和默认值须与当前版本参数契约一致。
+// 约束用于编辑器，服务端仍需校验；不在这里声明可改变层结构或时间轴。
+message EditableProp {
+  string prop_key = 1;
+  string layer_id = 2;
+  string display_name = 3;
+  ScalarValue default_value = 4;
+  optional double minimum = 5;
+  optional double maximum = 6;
+  optional uint32 min_length = 7;
+  optional uint32 max_length = 8;
+  repeated ScalarValue allowed_values = 9;
+  ValueUnit unit = 10;
+}
+
+// 一个可复用的 RemotionAgent 成功版本；参数键只在该版本内有效。
+// export_tsx_sha256 是 export_tsx_ref 所指 Export.tsx 的十六进制 SHA-256。
+message RemotionTemplateVersion {
+  string version_id = 1;
+  string name = 2;
+  string description = 3;
+  Composition composition = 4;
+  repeated TextLayer text_layers = 5;
+  repeated EditableProp editable_props = 6;
+  DisplayCategory display_category = 7;
+  string export_tsx_ref = 8;
+  string export_tsx_sha256 = 9;
+}
+
+// 一份已上传且在合成完成前保持可访问的媒体文件；字段来自实际编码产物。
+// sha256 校验文件字节，mime_type、codec 和 pixel_format 供消费方检查解码能力。
+message MediaFile {
+  string url = 1;
+  string sha256 = 2;
+  string mime_type = 3;
+  string codec = 4;
+  string pixel_format = 5;
+}
+
+// 彩色视频和独立遮罩必须具有相同尺寸、帧率、帧数及逐帧对应关系。
+message ColorAndMask {
+  MediaFile color_video = 1;
+  MediaFile mask_video = 2;
+}
+
+// 已验证的无声透明字效视频；composition 描述实际媒体，不推断 TSX 可适配其他规格。
+// 发布方根据消费方实测支持的格式选择单个带 Alpha 视频或彩色视频加遮罩。
+message OverlayMedia {
+  Composition composition = 1;
+  oneof delivery {
+    MediaFile alpha_video = 2;
+    ColorAndMask color_and_mask = 3;
+  }
+}
+
+// 固定视频中实际可见的文字及本地帧区间；不表示总线可以替换文案或动画。
+message FixedTextLayer {
+  string id = 1;
+  string text = 2;
+  uint32 start_frame = 3;
+  uint32 end_frame = 4;
+  TextRole role = 5;
+}
+
+// 点击“导入特效资产”后形成的不可变发布快照；只引用已验收成功版本。
+// asset_id 是目录身份；再次发布可更新目录展示，但旧模板仍按 version_id 取得原快照。
+// preview_url 仅供运营预览，不得代替 overlay 中的合成媒体。
+message PublishedRemotionAsset {
+  string asset_id = 1;
+  string version_id = 2;
+  string name = 3;
+  string description = 4;
+  DisplayCategory display_category = 5;
+  OverlayMedia overlay = 6;
+  repeated FixedTextLayer text_layers = 7;
+  string cover_url = 8;
+  string preview_url = 9;
+}
+
+// 供模板编辑的 EffectTrack 引用资产；开始方式、开始位置和持续时间沿用该轨道字段。
+// 对 Remotion 轨道，duration 必须为固定正值且不超过媒体原始时长：从源零帧播放，缩短只裁掉尾部。
+// 不提供 TSX 参数覆盖、文字替换、变速、循环或“持续到视频结束”。
+message RemotionAssetRef {
+  string asset_id = 1;
+  string version_id = 2;
+}

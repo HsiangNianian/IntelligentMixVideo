@@ -14,6 +14,7 @@ from sqlalchemy import URL, create_engine, inspect
 from server import database
 from server.app import app
 from server.template import store
+from .template_wire import detail_template, listed_templates, post_template, saved_template
 
 
 pytestmark = pytest.mark.skipif(
@@ -65,11 +66,11 @@ def test_mysql_bootstrap_unicode_and_persistence(mysql_database, template_payloa
                 "SELECT @@character_set_database, @@collation_database"
             ).one()
             assert (charset, collation) == ("utf8mb4", "utf8mb4_bin")
-        assert client.get("/template").json() == []
+        assert listed_templates(client.get("/template")) == []
         template_payload["name"] = "  中文测试 🎬  "
-        response = client.post("/template", json=template_payload)
+        response = post_template(client, template_payload)
         assert response.status_code == 201
-        saved = response.json()
+        saved = saved_template(response)
         assert UUID(saved["template_id"]).version == 4
         assert saved["name"] == "中文测试 🎬"
         assert saved["effects"][0]["parameters"] == {"AaiMotionInEffect": "fade_in"}
@@ -77,31 +78,31 @@ def test_mysql_bootstrap_unicode_and_persistence(mysql_database, template_payloa
     assert database._engine is None
     with TestClient(app) as client:
         response = client.get(f"/template/{saved['template_id']}")
-        assert response.status_code == 200 and response.json() == saved
-        assert client.get("/template").json() == [saved]
+        assert response.status_code == 200 and detail_template(response) == saved
+        assert listed_templates(client.get("/template")) == [saved]
 
 
 def test_mysql_conflict_rollback_update_and_delete(mysql_database, template_payload):
     """MySQL 唯一约束冲突返回 409，回滚后仍可更新/删除；无效请求不得写入数据。"""
     with TestClient(app) as client:
-        response = client.post("/template", json=template_payload)
+        response = post_template(client, template_payload)
         assert response.status_code == 201
-        saved = response.json()
+        saved = saved_template(response)
         path = f"/template/{saved['template_id']}"
-        duplicate = client.post("/template", json=template_payload)
+        duplicate = post_template(client, template_payload)
         assert duplicate.status_code == 409 and duplicate.json()["detail"]
-        assert client.post("/template", json={**template_payload, "name": " "}).status_code == 422
-        assert client.get("/template").json() == [saved]
-        updated = client.post("/template", json={
+        assert post_template(client, {**template_payload, "name": " "}).status_code == 422
+        assert listed_templates(client.get("/template")) == [saved]
+        updated = post_template(client, {
             **template_payload, "template_id": saved["template_id"], "name": "重命名",
         })
         assert updated.status_code == 200
-        assert updated.json()["created_at"] == saved["created_at"]
-        assert client.get(path).json()["name"] == "重命名"
+        assert saved_template(updated)["created_at"] == saved["created_at"]
+        assert detail_template(client.get(path))["name"] == "重命名"
         assert client.delete(path).status_code == 204
         assert client.get(path).status_code == 404
         assert client.delete(path).status_code == 404
-        assert client.post("/template", json={
+        assert post_template(client, {
             **template_payload, "template_id": saved["template_id"],
         }).status_code == 404
-        assert client.get("/template").json() == []
+        assert listed_templates(client.get("/template")) == []

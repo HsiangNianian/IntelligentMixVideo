@@ -21,6 +21,7 @@ from sqlalchemy.exc import OperationalError
 from server.app import app
 from server.video_composition import ims, service, store, zos
 from server.video_composition.schema import MatchCallback
+from .template_wire import post_template
 
 BASE = "/api/v1/video-compositions"
 
@@ -663,7 +664,7 @@ def test_template_changes_do_not_change_running_snapshot(upstreams, client, comp
         task_id = client.post(BASE, json=composition_case["request"]).json()["data"]
         assert upstreams["entered"].wait(2)
         template_id = composition_case["request"]["styleId"]
-        response = client.post("/template", json={
+        response = post_template(client, {
             "template_id": template_id, "name": "修改后的模板", "tracks": [{
                 "id": "title", "target": "title", "start_mode": "seconds", "start": 0, "duration": None,
                 "editor": {"title": "标题", "subtitle": "", "bubbleText": "", "titleIn": "in/blur_in"},
