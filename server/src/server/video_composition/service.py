@@ -544,6 +544,7 @@ class Job:
     async def wait_for_result(self, provider: ims.IMS) -> None:
         """在原渲染期限内转存视频和封面；恢复不重提渲染，成功后才通知。"""
         data = self.record["data"]
+        # 一旦进入 ZOS 转存，重取 IMS 地址只是转存重试的一部分，超时仍归因于 ZOS。
         last_stage = "playback"
         while True:
             try:
@@ -553,7 +554,6 @@ class Job:
                     raise CompositionError("zos_upload_timeout", "云端渲染已完成，但成片或封面转存 ZOS 持续失败", "zos_upload") from None
                 raise CompositionError("playback_timeout", "云端渲染已完成，但等待成片地址超时", "playback") from None
             try:
-                last_stage = "playback"
                 async with asyncio.timeout(min(budget, self.settings.composition_http_timeout_seconds)):
                     url = await self.runtime.step(self.record, "playback", lambda: provider.result_url(data["result"]["mediaId"]),
                                                   {"media_id": data["result"]["mediaId"], "source": "completion"})
