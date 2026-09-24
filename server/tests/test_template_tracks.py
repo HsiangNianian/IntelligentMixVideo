@@ -70,6 +70,31 @@ def test_track_rejects_foreign_content_and_unknown_effect() -> None:
             TemplateSave.model_validate(payload)
 
 
+def test_keyword_style_belongs_to_subtitle_track() -> None:
+    """旧模板默认关闭局部样式，只有字幕轨道可以选择样式与颜色。"""
+    payload = track_payload()
+    payload["tracks"] = payload["tracks"][:1]
+    assert not TemplateSave.model_validate(payload).tracks[0].editor.subtitle_keyword_bold
+    payload["tracks"][0]["editor"]["subtitleKeywordBold"] = True
+    with pytest.raises(ValidationError, match="只有底部字幕"):
+        TemplateSave.model_validate(payload)
+    payload["tracks"][0]["editor"].update(subtitleKeywordBold=False, subtitleKeywordColor="#12AB34")
+    with pytest.raises(ValidationError, match="只有底部字幕"):
+        TemplateSave.model_validate(payload)
+    payload["tracks"][0]["target"] = "subtitle"
+    payload["tracks"][0]["editor"].update(title="", subtitle="示例字幕", vfx="", subtitleIn="in/fade_in", subtitleKeywordBold=True)
+    payload["effect_ids"] = ["in/fade_in"]
+    saved = TemplateSave.model_validate(payload)
+    assert saved.tracks[0].editor.subtitle_keyword_bold
+    assert saved.tracks[0].editor.subtitle_keyword_color == "#12AB34"
+    payload["tracks"][0]["editor"]["subtitleKeywordBold"] = "true"
+    with pytest.raises(ValidationError):
+        TemplateSave.model_validate(payload)
+    payload["tracks"][0]["editor"].update(subtitleKeywordBold=True, subtitleKeywordColor="red")
+    with pytest.raises(ValidationError):
+        TemplateSave.model_validate(payload)
+
+
 def test_track_animation_uses_available_frames() -> None:
     """应用时缩短动画，输入模板保持原参数；一帧无法容纳两个动画时明确失败。"""
     payload = track_payload()

@@ -49,8 +49,21 @@ fn editor_from_protobuf(editor: generated::EffectTemplateEditor) -> Value {
         "subtitleOutDuration": editor.subtitle_out_duration.unwrap_or(0.5),
         "bubbleInDuration": editor.bubble_in_duration.unwrap_or(0.5),
         "bubbleOutDuration": editor.bubble_out_duration.unwrap_or(0.5),
+        "subtitleKeywordBold": editor.subtitle_keyword_bold,
+        "subtitleKeywordItalic": editor.subtitle_keyword_italic,
+        "subtitleKeywordUnderline": editor.subtitle_keyword_underline,
+        "subtitleKeywordStrikeout": editor.subtitle_keyword_strikeout,
+        "subtitleKeywordColor": editor.subtitle_keyword_color,
     })
 }
+
+/// 底部字幕关键词的四个局部样式字段，供保存校验和旧记录读取共用。
+const SUBTITLE_KEYWORD_FIELDS: [&str; 4] = [
+    "subtitleKeywordBold",
+    "subtitleKeywordItalic",
+    "subtitleKeywordUnderline",
+    "subtitleKeywordStrikeout",
+];
 
 /// 将本地保存请求转换为现有 JSON 草稿结构，保留磁盘文件格式。
 fn draft_from_protobuf(bytes: &[u8], id: Option<&str>) -> Result<Value, String> {
@@ -112,8 +125,21 @@ fn draft_from_protobuf(bytes: &[u8], id: Option<&str>) -> Result<Value, String> 
 
 /// 校验对象编辑参数并从随包目录生成效果快照。
 fn validate_editor(editor: &Value) -> Result<Vec<Value>, String> {
-    if editor.as_object().is_none_or(|fields| fields.len() != 33) {
+    if editor.as_object().is_none_or(|fields| fields.len() != 38) {
         return Err("编辑配置字段不完整或包含未知字段".into());
+    }
+    for key in SUBTITLE_KEYWORD_FIELDS {
+        editor[key].as_bool().ok_or("关键词样式必须是布尔值")?;
+    }
+    let color = editor["subtitleKeywordColor"]
+        .as_str()
+        .ok_or("关键词颜色须为文字")?;
+    if !color.is_empty()
+        && (color.len() != 7
+            || !color.starts_with('#')
+            || !color[1..].bytes().all(|value| value.is_ascii_hexdigit()))
+    {
+        return Err("关键词颜色须为 #RRGGBB".into());
     }
     let catalog: Value = serde_json::from_str(include_str!(
         "../../../server/src/server/template/sdk_catalog.json"
@@ -273,6 +299,14 @@ fn validate(mut draft: Value) -> Result<Value, String> {
             }
             let editor = &track["editor"];
             let validated = validate_editor(editor)?;
+            if target != "subtitle"
+                && (SUBTITLE_KEYWORD_FIELDS
+                    .iter()
+                    .any(|key| editor[*key] == true)
+                    || editor["subtitleKeywordColor"] != "")
+            {
+                return Err("只有底部字幕可以设置关键词样式".into());
+            }
             let mut allowed = vec![target.to_owned()];
             if ["title", "subtitle", "bubble"].contains(&target) {
                 allowed = vec![if target == "bubble" {
@@ -350,13 +384,16 @@ fn read(directory: &Path) -> Result<Vec<Value>, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(format!("读取本地模板失败：{error}")),
     };
-    let records: Vec<Value> =
+    let mut records: Vec<Value> =
         serde_json::from_slice(&bytes).map_err(|_| "本地模板文件损坏，请先恢复备份")?;
     let mut ids = std::collections::HashSet::new();
     let mut names = std::collections::HashSet::new();
-    for record in &records {
-        let id = record["template_id"].as_str().ok_or("本地模板 ID 缺失")?;
-        Uuid::parse_str(id).map_err(|_| "本地模板 ID 无效")?;
+    for record in &mut records {
+        let id = record["template_id"]
+            .as_str()
+            .ok_or("本地模板 ID 缺失")?
+            .to_owned();
+        Uuid::parse_str(&id).map_err(|_| "本地模板 ID 无效")?;
         for key in ["created_at", "updated_at"] {
             chrono::DateTime::parse_from_rfc3339(record[key].as_str().ok_or("本地模板时间缺失")?)
                 .map_err(|_| "本地模板时间无效")?;
@@ -367,6 +404,15 @@ fn read(directory: &Path) -> Result<Vec<Value>, String> {
                 "本地模板字段已变化，原有模板无法读取。请删除旧模板文件后重试（将清除全部本地模板）：{}",
                 directory.join("templates.json").display()
             ));
+        }
+        // 旧记录缺少新增开关时补充内存视图，读取操作不改写文件。
+        for track in record["tracks"].as_array_mut().ok_or("轨道须为数组")? {
+            if let Some(editor) = track["editor"].as_object_mut() {
+                for key in SUBTITLE_KEYWORD_FIELDS {
+                    editor.entry(key).or_insert(json!(false));
+                }
+                editor.entry("subtitleKeywordColor").or_insert(json!(""));
+            }
         }
         let mut draft = record.clone();
         for key in [
@@ -509,6 +555,10 @@ mod tests {
     /// 完整合法草稿，明确覆盖三种文字、所有位置和时长字段。
     fn draft(name: &str) -> Value {
         let mut editor = json!({"title": "标题", "subtitle": "", "bubbleText": "", "titleFlower": "", "subtitleFlower": "", "bubble": "", "filter": "", "vfx": "", "transition": ""});
+        for key in SUBTITLE_KEYWORD_FIELDS {
+            editor[key] = json!(false);
+        }
+        editor["subtitleKeywordColor"] = json!("");
         for role in ["title", "subtitle", "bubble"] {
             for (suffix, value) in [
                 ("Size", 40.),
@@ -565,6 +615,11 @@ mod tests {
             subtitle_out_duration: Some(0.5),
             bubble_in_duration: Some(0.5),
             bubble_out_duration: Some(0.5),
+            subtitle_keyword_bold: false,
+            subtitle_keyword_italic: false,
+            subtitle_keyword_underline: false,
+            subtitle_keyword_strikeout: false,
+            subtitle_keyword_color: "".into(),
         };
         generated::SaveTemplateRequest {
             name: "  模板  ".into(),
@@ -697,6 +752,50 @@ mod tests {
     }
 
     #[test]
+    /// 底部字幕样式经本地文件保存和重新读取保持不变，旧记录在内存中补充关闭值。
+    fn subtitle_keyword_style_survives_reload_and_old_records() {
+        let dir = Directory::new();
+        let mut styled = draft("关键词模板");
+        styled["tracks"][0]["target"] = json!("subtitle");
+        styled["tracks"][0]["editor"]["title"] = json!("");
+        styled["tracks"][0]["editor"]["subtitle"] = json!("示例字幕");
+        styled["tracks"][0]["editor"]["titleIn"] = json!("");
+        styled["tracks"][0]["editor"]["subtitleIn"] = json!("in/fade_in");
+        styled["tracks"][0]["editor"]["subtitleKeywordBold"] = json!(true);
+        styled["tracks"][0]["editor"]["subtitleKeywordUnderline"] = json!(true);
+        styled["tracks"][0]["editor"]["subtitleKeywordColor"] = json!("#12AB34");
+        let saved = operate(&dir.0, "save", None, Some(styled)).unwrap();
+        let id = saved["template_id"].as_str().unwrap();
+        assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), saved);
+
+        let mut old_records = json!([saved]);
+        for key in SUBTITLE_KEYWORD_FIELDS {
+            old_records[0]["tracks"][0]["editor"]
+                .as_object_mut()
+                .unwrap()
+                .remove(key);
+        }
+        old_records[0]["tracks"][0]["editor"]
+            .as_object_mut()
+            .unwrap()
+            .remove("subtitleKeywordColor");
+        let path = dir.0.join("templates.json");
+        let original = serde_json::to_vec(&old_records).unwrap();
+        fs::write(&path, &original).unwrap();
+        let restored = operate(&dir.0, "get", Some(id), None).unwrap();
+        assert_eq!(
+            restored["tracks"][0]["editor"]["subtitleKeywordBold"],
+            false
+        );
+        assert_eq!(
+            restored["tracks"][0]["editor"]["subtitleKeywordUnderline"],
+            false
+        );
+        assert_eq!(restored["tracks"][0]["editor"]["subtitleKeywordColor"], "");
+        assert_eq!(fs::read(path).unwrap(), original);
+    }
+
+    #[test]
     /// 无效配置和任意路径 ID 被拒绝，保留既有数据；有效数值边界允许保存。
     fn validates_input_without_writes() {
         let dir = Directory::new();
@@ -709,6 +808,10 @@ mod tests {
             ("/tracks/0/editor/titleIn", json!("in/unknown")),
             ("/tracks/0/editor/titleLoop", json!("loop/bounce")),
             ("/tracks/0/editor/titleFlower", json!("filter/fake")),
+            ("/tracks/0/editor/subtitleKeywordBold", json!(true)),
+            ("/tracks/0/editor/subtitleKeywordItalic", json!("true")),
+            ("/tracks/0/editor/subtitleKeywordColor", json!("#12AB34")),
+            ("/tracks/0/editor/subtitleKeywordColor", json!("orange")),
             ("/transition_duration_seconds", json!(0)),
             ("/tracks/0/editor/title", json!("题".repeat(61))),
         ] {

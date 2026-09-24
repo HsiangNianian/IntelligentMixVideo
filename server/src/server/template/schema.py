@@ -87,6 +87,11 @@ class EffectTemplateEditor(BaseModel):
     subtitle_out_duration: float = Field(default=0.5, ge=0.1, le=3, allow_inf_nan=False)
     bubble_in_duration: float = Field(default=0.5, ge=0.1, le=3, allow_inf_nan=False)
     bubble_out_duration: float = Field(default=0.5, ge=0.1, le=3, allow_inf_nan=False)
+    subtitle_keyword_bold: bool = Field(default=False, strict=True)
+    subtitle_keyword_italic: bool = Field(default=False, strict=True)
+    subtitle_keyword_underline: bool = Field(default=False, strict=True)
+    subtitle_keyword_strikeout: bool = Field(default=False, strict=True)
+    subtitle_keyword_color: str = Field(default="", pattern=r"^(?:|#[0-9A-Fa-f]{6})$")
 
     @model_validator(mode="after")
     def exclusive_motions(self) -> "EffectTemplateEditor":
@@ -140,6 +145,12 @@ class EffectTrack(BaseModel):
                 | {f"{self.target}_{motion}" for motion in ("in", "out", "loop")}) if text else {self.target}
         if set(self.editor.selected_effects()) - keys:
             raise ValueError("轨道包含其他对象的效果")
+        if self.target != "subtitle" and any((
+            self.editor.subtitle_keyword_bold, self.editor.subtitle_keyword_italic,
+            self.editor.subtitle_keyword_underline, self.editor.subtitle_keyword_strikeout,
+            bool(self.editor.subtitle_keyword_color),
+        )):
+            raise ValueError("只有底部字幕可以设置关键词样式")
         for role, field in (("title", "title"), ("subtitle", "subtitle"), ("bubble", "bubble_text")):
             content = getattr(self.editor, field)
             if role != self.target and content:

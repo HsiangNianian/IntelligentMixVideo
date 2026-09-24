@@ -90,6 +90,13 @@ export function resetTextTarget(draft: EffectDraft, target: TextRole): EffectDra
   next.editor[`${target}Y`] = defaultEditor[`${target}Y`];
   next.editor[`${target}InDuration`] = defaultEditor[`${target}InDuration`];
   next.editor[`${target}OutDuration`] = defaultEditor[`${target}OutDuration`];
+  if (target === "subtitle") {
+    next.editor.subtitleKeywordBold = false;
+    next.editor.subtitleKeywordItalic = false;
+    next.editor.subtitleKeywordUnderline = false;
+    next.editor.subtitleKeywordStrikeout = false;
+    next.editor.subtitleKeywordColor = "";
+  }
   return next;
 }
 
@@ -101,6 +108,13 @@ export function removeTarget(draft: EffectDraft, target: EffectTarget): EffectDr
     next.editor[`${target}Size`] = defaultEditor[`${target}Size`];
     next.editor[`${target}X`] = defaultEditor[`${target}X`];
     next.editor[`${target}Y`] = defaultEditor[`${target}Y`];
+    if (target === "subtitle") {
+      next.editor.subtitleKeywordBold = false;
+      next.editor.subtitleKeywordItalic = false;
+      next.editor.subtitleKeywordUnderline = false;
+      next.editor.subtitleKeywordStrikeout = false;
+      next.editor.subtitleKeywordColor = "";
+    }
   }
   if (target === "transition" && (!Number.isFinite(next.transition_duration_seconds) || next.transition_duration_seconds < 0.1 || next.transition_duration_seconds > 3))
     next.transition_duration_seconds = defaultTransitionDuration;

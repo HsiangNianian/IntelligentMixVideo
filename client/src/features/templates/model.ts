@@ -38,6 +38,11 @@ export const defaultEditor = {
   subtitleOutDuration: 0.5,
   bubbleInDuration: 0.5,
   bubbleOutDuration: 0.5,
+  subtitleKeywordBold: false,
+  subtitleKeywordItalic: false,
+  subtitleKeywordUnderline: false,
+  subtitleKeywordStrikeout: false,
+  subtitleKeywordColor: "",
 };
 
 /** 三类文字共享字号、位置和动画设置。 */

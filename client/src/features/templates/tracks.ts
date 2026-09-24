@@ -68,6 +68,13 @@ export function trackEditor(editor: Editor, target: EffectTarget): Editor {
     result[key] = editor[key];
     for (const suffix of ["Size", "X", "Y", "InDuration", "OutDuration"] as const)
       result[`${target}${suffix}`] = editor[`${target}${suffix}`];
+    if (target === "subtitle") {
+      result.subtitleKeywordBold = editor.subtitleKeywordBold;
+      result.subtitleKeywordItalic = editor.subtitleKeywordItalic;
+      result.subtitleKeywordUnderline = editor.subtitleKeywordUnderline;
+      result.subtitleKeywordStrikeout = editor.subtitleKeywordStrikeout;
+      result.subtitleKeywordColor = editor.subtitleKeywordColor;
+    }
   }
   return result;
 }

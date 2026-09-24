@@ -177,6 +177,36 @@ export function EffectEditor({
                 onChange={(event) => update(textKey, event.target.value)}
               />
             </div>
+            {role === "subtitle" && (
+              <fieldset className="space-y-2">
+                <legend className="text-sm font-medium">关键词局部样式</legend>
+                <div className="grid grid-cols-2 gap-2">
+                  {([
+                    ["subtitleKeywordBold", "加粗"],
+                    ["subtitleKeywordItalic", "斜体"],
+                    ["subtitleKeywordUnderline", "下划线"],
+                    ["subtitleKeywordStrikeout", "删除线"],
+                  ] as const).map(([key, label]) => (
+                    <label key={key} className="flex items-center gap-2 text-sm">
+                      <input type="checkbox" checked={editor[key]} onChange={(event) => update(key, event.target.checked)} />
+                      {label}
+                    </label>
+                  ))}
+                </div>
+                <div className="space-y-2">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={Boolean(editor.subtitleKeywordColor)} onChange={(event) => update("subtitleKeywordColor", event.target.checked ? "#FFFF00" : "")} />
+                    设置关键词颜色
+                  </label>
+                  <div className="flex items-center gap-3">
+                    <Label htmlFor={`${id}-keyword-color`}>关键词颜色</Label>
+                    <input id={`${id}-keyword-color`} type="color" value={editor.subtitleKeywordColor || "#FFFF00"} disabled={!editor.subtitleKeywordColor} onChange={(event) => update("subtitleKeywordColor", event.target.value.toUpperCase())} className="h-9 w-14 rounded border bg-background p-1 disabled:cursor-not-allowed" />
+                    <span className="text-xs text-muted-foreground">{editor.subtitleKeywordColor || "保持字幕原色"}</span>
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground">预览使用示例文字的首个词语；合成时作用于每段字幕的关键词。</p>
+              </fieldset>
+            )}
             <div className="grid grid-cols-2 gap-3">
               <NumberField
                 label="字号"

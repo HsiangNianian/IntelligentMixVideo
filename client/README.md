@@ -85,6 +85,7 @@ VITE_PREVIEW_VIDEO_URL=https://your-domain.example/preview.mp4
 - 本地保存请求使用共享 Protobuf 消息，Rust 端解析后继续将模板保存在 Tauri 应用数据目录下的 `data/template/templates.json`。macOS 为 `~/Library/Application Support/com.intelligentmixvideo.client/data/template/`，Windows 为 `%APPDATA%/com.intelligentmixvideo.client/data/template/`，Linux 为 `${XDG_DATA_HOME:-~/.local/share}/com.intelligentmixvideo.client/data/template/`。本地目录随首次读取自动创建，JSON 损坏时明确报错，不能当成空库覆盖。
 - 离线仍可从内置目录选择效果并保存；SDK、字体与示例视频预览仍需联网。
 - 标题、字幕、气泡独立设置文字、字号、位置、样式、入场/出场/循环动画及动画时长；字号支持 12～300 的整数，预览、云端和本地保存使用相同范围。
+- 底部字幕对象可选择关键词局部加粗、斜体、下划线、删除线和颜色；颜色选择器支持 `#RRGGBB`，关闭后保持字幕原色。选项保存在 `tracks[].editor` 并随模板返回；预览取示例字幕的首个词语，正式合成使用切片结果中的 `keyword`。
 - 画面滤镜、特效、转场和转场时长可选；预览不提交云端合成任务。
 - 新模板首次保存创建记录，此后保存更新同一模板；环境、名称和描述跟随当前模板，保存包含全部效果配置。
 - 切换前提供保存并切换、放弃修改、取消；失败保留草稿。刷新列表不会覆盖正在编辑的内容。

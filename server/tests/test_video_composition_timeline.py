@@ -4,7 +4,7 @@ from copy import deepcopy
 
 import pytest
 from server.template.schema import EffectTemplateEditor, TemplateSave, effect_catalog
-from server.video_composition.timeline import build_timeline
+from server.video_composition.timeline import build_timeline, format_subtitle_keyword
 
 from .conftest import template_track
 
@@ -65,6 +65,46 @@ def test_subtitle_parts_keep_adjacent_times_without_changing_other_text(composit
     assert title[0]["Content"] == original["request"]["title"]
     assert bubbles[0]["Content"] == original["segments"][0]["keyword"]
     assert composition_case["matches"] == original["matches"]
+
+
+def test_subtitle_keyword_styles_apply_only_to_matching_text(composition_case):
+    """组合样式只标记字幕首个关键词，空关键词、标题和气泡维持原文。"""
+    composition_case["template"]["tracks"][0]["editor"].update(
+        subtitleKeywordBold=True, subtitleKeywordItalic=True,
+        subtitleKeywordUnderline=True, subtitleKeywordStrikeout=True,
+        subtitleKeywordColor="#12AB34",
+    )
+    timeline, _ = build_timeline(**composition_case)
+    subtitles, title, bubbles = [row["SubtitleTrackClips"] for row in timeline["SubtitleTracks"]]
+    assert subtitles[0]["Content"] == r"{\1c&34AB12&\b1\i1\u1\s1}甲乙{\1c\b0\i0\u0\s0}丙丁"
+    assert subtitles[1]["Content"] == "戊己庚辛"
+    assert title[0]["Content"] == composition_case["request"]["title"]
+    assert bubbles[0]["Content"] == "甲乙"
+
+
+def test_subtitle_keyword_styles_keep_first_occurrence_and_reject_missing_keyword():
+    """重复词只处理首次出现的位置，启用样式后拒绝不属于字幕的关键词。"""
+    config = EffectTemplateEditor(subtitle_keyword_bold=True)
+    assert format_subtitle_keyword("甲乙甲乙", "甲乙", config) == r"{\b1}甲乙{\b0}甲乙"
+    assert format_subtitle_keyword("甲乙", "", config) == "甲乙"
+    assert format_subtitle_keyword("甲乙", "甲", EffectTemplateEditor()) == "甲乙"
+    assert format_subtitle_keyword("甲乙甲乙", "甲乙", EffectTemplateEditor(subtitle_keyword_color="#12ab34")) == (
+        r"{\1c&34AB12&}甲乙{\1c}甲乙"
+    )
+    with pytest.raises(ValueError, match="关键词不在字幕文字中"):
+        format_subtitle_keyword("甲乙", "丙", config)
+
+
+def test_subtitle_keyword_style_marks_first_matching_part(composition_case):
+    """原切片分为多个短句时，局部样式只作用于首次包含关键词的短句。"""
+    composition_case["segments"][0]["subtitle_parts"] = [
+        {"text": "甲乙？", "start_time": 1, "end_time": 2},
+        {"text": "甲乙丙丁。", "start_time": 2, "end_time": 3},
+    ]
+    composition_case["template"]["tracks"][0]["editor"]["subtitleKeywordBold"] = True
+    timeline, _ = build_timeline(**composition_case)
+    subtitles = timeline["SubtitleTracks"][0]["SubtitleTrackClips"]
+    assert [clip["Content"] for clip in subtitles] == [r"{\b1}甲乙{\b0}？", "甲乙丙丁", "戊己庚辛"]
 
 
 @pytest.mark.parametrize("title", [None, "", " \n\t"])

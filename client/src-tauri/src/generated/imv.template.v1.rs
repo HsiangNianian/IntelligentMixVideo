@@ -105,6 +105,21 @@ pub struct EffectTemplateEditor {
     /// 气泡字出场动画的持续时间，单位为秒。
     #[prost(double, optional, tag="33")]
     pub bubble_out_duration: ::core::option::Option<f64>,
+    /// 底部字幕关键词的局部加粗样式。
+    #[prost(bool, tag="34")]
+    pub subtitle_keyword_bold: bool,
+    /// 底部字幕关键词的局部斜体样式。
+    #[prost(bool, tag="35")]
+    pub subtitle_keyword_italic: bool,
+    /// 底部字幕关键词的局部下划线样式。
+    #[prost(bool, tag="36")]
+    pub subtitle_keyword_underline: bool,
+    /// 底部字幕关键词的局部删除线样式。
+    #[prost(bool, tag="37")]
+    pub subtitle_keyword_strikeout: bool,
+    /// 底部字幕关键词的局部颜色，空字符串表示保持字幕原色，格式为 #RRGGBB。
+    #[prost(string, tag="38")]
+    pub subtitle_keyword_color: ::prost::alloc::string::String,
 }
 /// 画面对象及其时间规则。
 #[derive(::serde::Serialize)]

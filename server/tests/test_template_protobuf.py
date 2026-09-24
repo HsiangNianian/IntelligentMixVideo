@@ -119,7 +119,8 @@ def test_template_protobuf_update_preserves_identity_and_restores_defaults(
         "template_id": original.template_id,
         "name": "更新后的模板",
         "effect_ids": ["in/blur_in"],
-        "tracks": [template_track("subtitle", subtitleIn="in/blur_in")],
+        "tracks": [template_track("subtitle", subtitleIn="in/blur_in", subtitleKeywordBold=True,
+                                  subtitleKeywordUnderline=True, subtitleKeywordColor="#12AB34")],
     })
     assert changed.status_code == 200
     revised = pb.SaveTemplateResponse.FromString(changed.content).template
@@ -129,6 +130,10 @@ def test_template_protobuf_update_preserves_identity_and_restores_defaults(
     assert revised.description == ""
     assert revised.transition_duration_seconds == 1
     assert revised.tracks.tracks[0].editor.subtitle_in == "in/blur_in"
+    assert revised.tracks.tracks[0].editor.subtitle_keyword_bold
+    assert revised.tracks.tracks[0].editor.subtitle_keyword_underline
+    assert not revised.tracks.tracks[0].editor.subtitle_keyword_italic
+    assert revised.tracks.tracks[0].editor.subtitle_keyword_color == "#12AB34"
     assert revised.effects[0].parameters == {"AaiMotionInEffect": "blur_in"}
     assert pb.GetTemplateResponse.FromString(
         client.get(f"/template/{original.template_id}").content,

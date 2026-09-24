@@ -99,6 +99,10 @@ function buildTrackContent(config: Editor, catalog: EffectAsset[], target: Effec
   const text = (role: TextRole) => {
     const content = role === "bubble" ? config.bubbleText : config[role];
     const size = number(config[`${role}Size`], 12, 300, "字号", true);
+    const visible = role === "bubble" ? content : wrapPreviewText(content, size, canvasWidth * 0.9);
+    const previewKeyword = role === "subtitle"
+      ? [...new Intl.Segmenter("zh", { granularity: "word" }).segment(visible)].find((part) => part.isWordLike)?.segment ?? ""
+      : "";
     if (
       config[`${role}Loop`] &&
       (config[`${role}In`] || config[`${role}Out`])
@@ -121,7 +125,7 @@ function buildTrackContent(config: Editor, catalog: EffectAsset[], target: Effec
     }
     return {
       Type: "Text",
-      Content: role === "bubble" ? content : wrapPreviewText(content, size, canvasWidth * 0.9),
+      Content: role === "subtitle" ? formatSubtitleKeyword(visible, previewKeyword, config) : visible,
       TimelineIn: 0,
       TimelineOut: 10,
       X: position(config[`${role}X`]),
@@ -201,6 +205,26 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media?: Mast
     }] });
   }
   return { ...timeline, EffectTracks, previewRows, notices };
+}
+
+/** 将启用的局部样式包在首次出现的关键词两侧；无关键词时保留原文字。 */
+export function formatSubtitleKeyword(content: string, keyword: string, config: Editor): string {
+  const color = config.subtitleKeywordColor;
+  if (color && !/^#[0-9A-Fa-f]{6}$/.test(color)) throw new Error("关键词颜色须为 #RRGGBB");
+  const styles = [
+    [config.subtitleKeywordBold, "\\b1", "\\b0"],
+    [config.subtitleKeywordItalic, "\\i1", "\\i0"],
+    [config.subtitleKeywordUnderline, "\\u1", "\\u0"],
+    [config.subtitleKeywordStrikeout, "\\s1", "\\s0"],
+  ] as const;
+  const enabled = styles.filter(([selected]) => selected);
+  if (!keyword || (!enabled.length && !color)) return content;
+  const start = content.indexOf(keyword);
+  if (start < 0) throw new Error("关键词不在字幕文字中");
+  const bgr = color ? `${color.slice(5, 7)}${color.slice(3, 5)}${color.slice(1, 3)}`.toUpperCase() : "";
+  const opening = (color ? `\\1c&${bgr}&` : "") + enabled.map(([, open]) => open).join("");
+  const closing = (color ? "\\1c" : "") + enabled.map(([, , close]) => close).join("");
+  return `${content.slice(0, start)}{${opening}}${keyword}{${closing}}${content.slice(start + keyword.length)}`;
 }
 
 /** 按字素折行并保留显式换行；不把 emoji 或组合字符拆开。 */
