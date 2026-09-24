@@ -23,9 +23,9 @@ fn draft_from_protobuf(bytes: &[u8], id: Option<&str>) -> Result<Value, String> 
     let tracks = request.tracks.map(|list| list.tracks);
     Ok(json!({
         "name": request.name,
-        "description": request.description,
-        "transition_duration_seconds": request.transition_duration_seconds,
-        "tracks": tracks,
+        "description": request.description.unwrap_or_default(),
+        "transition_duration_seconds": request.transition_duration_seconds.unwrap_or(1.0),
+        "tracks": tracks
     }))
 }
 
