@@ -10,6 +10,7 @@ from datetime import datetime
 from collections.abc import Iterator
 from functools import partial
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -196,9 +197,11 @@ def asr_responses():
 
 @pytest.fixture
 def composition_settings(monkeypatch, asr_env):
-    """合成假配置为正常流程预留 CI 调度余量；超时用例单独缩短期限，不读取真实 .env。"""
+    """隔离真实配置和 FFmpeg 探测；接口用例不依赖 CI 安装视频工具。"""
+    from server.video_composition import service
     from server.video_composition.settings import Settings
 
+    monkeypatch.setattr(service, "shutil", SimpleNamespace(which=lambda name: "ffmpeg"))
     for key, value in {
         "SEGMENT_MATCH_BASE_URL": "https://matching.example.test/deployment",
         "SEGMENT_MATCH_AUTHORIZATION": "Bearer test-only",

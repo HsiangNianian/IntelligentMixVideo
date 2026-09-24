@@ -263,19 +263,19 @@ COMPOSITION_WIDTH=1080
 COMPOSITION_HEIGHT=1920
 COMPOSITION_FPS=30
 
-# 新合成视频的 ZOS 存储；凭据仅由服务端读取，不放入 X-IMS-Config
+# 新合成视频及第 3 帧 PNG 的 ZOS 存储；凭据仅由服务端读取
 ZOS_API_ENDPOINT=https://hangzhou7.zos.ctyun.cn
 ZOS_BUCKET=archives
 ZOS_ACCESS_KEY_ID=<Access Key ID>
 ZOS_SECRET_ACCESS_KEY=<Access Key Secret>
-ZOS_WEB_URL=https://archives.hangzhou7.zos.ctyun.cn
+ZOS_WEB_URL=https://oss.joyfile.net
 ZOS_REGION=hangzhou-7
 ZOS_FORCE_PATH_STYLE=false
 ```
 
 - 素材匹配：提交一次，默认等待回调最多 30 秒；期间检查本地回调落库状态，不持续查询素材库。超时后有上游 ID 才补查一次；仍未完成则失败，不重新提交匹配。
-- IMS：拿到 JobId 后立即查询，未完成时每隔 2 秒继续查询；提交、渲染、取址和 ZOS 转存共用 3600 秒截止时间。成片转存成功才标记成功，超时失败时不重新渲染。
-- ZOS：通过 S3 兼容接口上传 `imv/video_composition/{taskId}.mp4`，只给这一对象设置 `public-read`；校验对象大小及匿名读取后返回 `ZOS_WEB_URL` 下的固定地址。`ZOS_API_ENDPOINT` 是上传接口，`ZOS_WEB_URL` 是公开读取域名；当前不读取 `ZOS_ENDPOINT`。对象被删除或命中桶生命周期规则后，固定地址仍会失效。
+- IMS：拿到 JobId 后立即查询，未完成时每隔 2 秒继续查询；提交、渲染、取址和 ZOS 转存共用 3600 秒截止时间。视频与封面转存成功才标记成功，超时失败时不重新渲染。
+- ZOS：服务端 PATH 须有 `ffmpeg`。下载一次 IMS 成片，按解码顺序截取第 3 帧，分别上传 `imv/video_composition/{taskId}.mp4` 与 `.png`，只给这两个对象设置 `public-read`；校验大小及匿名读取后仅在 GET 和回调返回视频 URL。图片可通过 `ZOS_WEB_URL/imv/video_composition/{taskId}.png` 直接访问，不进入接口结果。`ZOS_API_ENDPOINT` 是上传接口，`ZOS_WEB_URL` 是公开读取域名；当前不读取 `ZOS_ENDPOINT`。对象被删除或命中桶生命周期规则后，固定地址仍会失效。
 - IMS 临时查询故障连续 3 次会提前失败；受理不明确时使用同一 ClientToken，最多尝试提交 2 次。
 - 最终通知：终态后发送，首次失败再重试三次，HTTP 超时共用 30 秒配置。
 - HTTP 超时范围为 `(0, 300]`，查询间隔 `(0, 60]`，ASR/匹配/渲染等待上限各为 `(0, 86400]`，并发数为 1～16。
