@@ -127,10 +127,6 @@ jobs:
           python-version: '3.12'
           enable-cache: true
           cache-dependency-glob: server/uv.lock
-      - name: Install FFmpeg for video composition tests
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
       - name: Test API routes
         run: uv run --locked --project server pytest server/tests -v
       - name: Build server distributions
