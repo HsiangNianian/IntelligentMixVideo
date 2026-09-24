@@ -82,10 +82,10 @@
 - 数据库配置由 `database.py` 的 `DatabaseSettings`（`pydantic-settings`）自动读取固定的 `server/.env`，字段为 `DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD`、`DB_NAME`，可选 `DB_SSL_CA` 指定 CA 文件启用 TLS 校验，进程环境变量优先；端口校验 1～65535，库名校验 1～64 字符。启动初始化时加载，修改后重启服务。真实环境文件不得入库，维护无密码示例 `.env.example`。
 - 启动端口、数据库、ASR、切片、Remotion 与视频合成的现有配置类继承 `config_base.py` 的 `CommonSettings`，统一读取固定的 `server/.env`；构造参数 > 进程环境变量 > 文件 > 默认值，保留 `_env_file` 覆盖与 `None` 禁用。路径仅面向当前源码布局，不做安装位置发现。保留字段、校验、实例化时机和 Remotion 相对数据目录行为，不建立配置树或统一快照；运行期间不修改配置，修改后重启服务。共用 `server/.env.example`，根目录启动使用 `uv run --project server server`。
 - FastAPI lifespan 启动时连接目标库，仅在 MySQL 返回 1049（库不存在）时通过临时无库连接执行 `CREATE DATABASE IF NOT EXISTS`，使用 `utf8mb4` / `utf8mb4_bin` 并正确引用库名；已有库直接复用。配置无效、连接或建库失败时停止启动，建库账号须具备对应权限。首次模板请求自动创建缺失表；运行中的数据库失败返回可重试的 503。启动失败和退出时释放连接池，临时建库连接始终关闭。
-- 四个路由为 `GET /template`、`POST /template`、`GET /template/{template_id}`、`DELETE /template/{template_id}`。POST 无 ID 创建（201），有 ID 完整更新（200）；不存在的 ID 返回 404，不做 upsert。
+- 云端模板在 `GET /template`、`POST /template`、`GET /template/{template_id}`、`DELETE /template/{template_id}` 上传输 Protobuf 二进制消息；POST 请求与成功响应使用 `application/x-protobuf`。POST 无 ID 创建（201），有 ID 完整更新（200）；不存在的 ID 返回 404，不做 upsert。不存在独立的 Connect 路由。本地模板保存请求也使用共享 Protobuf 消息，磁盘文件继续使用 JSON。Buf 配置位于仓库根目录，TypeScript、Python 生成代码位于各自 `src/generated/imv/template/v1/`，Rust 生成代码位于 `client/src-tauri/src/generated/`。
 - 名称去除首尾空白后不能为空，MySQL 唯一约束拒绝重名（409）；保存校验数值范围、效果目录与动画互斥关系（422）。服务端生成 ID、UTC 时间和效果参数快照，不接受客户端渲染参数。
 - 主页创建草稿不调用 POST；模板库保存时无 ID 创建、有 ID 更新。未保存切换须提供保存并切换、放弃修改、取消，失败保留草稿。
-- 前端使用 SDK 5.2.2 的效果目录和静态动画 JSON，服务端维护同版本白名单；不提供 `/template/effects`。升级 SDK 时同步核对目录。保留用户已有 proto 文件，本次 API 使用 JSON。
+- 前端使用 SDK 5.2.2 的效果目录和静态动画 JSON，服务端维护同版本白名单；不提供 `/template/effects`。升级 SDK 时同步核对目录。修改 `proto/` 协议后运行 `buf lint`、`buf generate` 并提交三种语言的生成代码；已发布协议使用 `buf breaking` 检查兼容性。
 - 示例视频地址通过 `client/.env` 中的 `VITE_PREVIEW_VIDEO_URL` 配置，支持 HTTP(S) 直链与 public 资源路径；空值使用内置示例。修改后重启 Vite，生产使用需重新构建。「加载预览视频」读取真实时长和尺寸，视频信息独立于模板保存，独立视频元素在完成、失败、取消和卸载时清理。
 - 模板预览画布与 SDK 场景使用视频原始宽高；默认示例也读取真实尺寸并保留十秒区间。标题、字幕和气泡字号支持 12～300 的整数，预览、云端和本地保存统一校验；字号按画布像素计算，折行宽度为画布宽度的 90%。显示区域同时受可用宽度与窗口高度的 60% 限制，等比例呈现完整画面。SDK 在独立 iframe 初始化，通过 `maxCanvasConfig` 设置尺寸，视频尺寸变化时重新初始化并清理旧播放器。
 - 预览保留阿里云 SDK 5.2.2；Windows 生产页面通过 `src-tauri/src/localhost.rs` 在 `127.0.0.1` 的系统分配端口提供打包资源，窗口使用 `http://localhost:<端口>`，避免 `tauri.localhost` 不满足空 License 的 localhost 预览条件。仅允许对应 Host 的 GET/HEAD，不暴露任意磁盘文件；开发模式与 macOS / Linux 保持原加载方式，只向本次绑定的精确 localhost URL 开放模板、设置存储和内置后端启动命令，不授权其他端口或域名。

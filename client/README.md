@@ -20,7 +20,7 @@ bun run dev
 VITE_API_URL=http://localhost:20070
 ```
 
-API 使用其他端口时同步修改此地址，不包含 `/template` 后缀。
+API 使用其他端口时同步修改此地址，填写服务根地址。
 客户端配置保存 API 与示例视频地址，数据库连接和密码只放服务端。修改后重启 Vite 并刷新页面；生产使用需重新构建。
 避免在 `.env.local` 中重复设置 `VITE_API_URL`，否则会覆盖 `.env` 中的值。
 
@@ -46,7 +46,7 @@ VITE_PREVIEW_VIDEO_URL=https://your-domain.example/preview.mp4
 ```
 
 也可将视频放入 `client/public/preview.mp4`，填写 `VITE_PREVIEW_VIDEO_URL=/preview.mp4`。
-未配置或留空时使用内置阿里云示例。工作区的预览视频与模板独立，保存模板只保存对象配置和时间规则。
+未配置或留空时使用内置示例。工作区的预览视频与模板独立，保存模板只保存对象配置和时间规则。
 
 时间输入和开始、持续方式的选择立即更新内存草稿及预览；点击「保存模板」才写入存储。空值或非法时间会提示错误，修正后继续编辑。
 
@@ -82,7 +82,7 @@ VITE_PREVIEW_VIDEO_URL=https://your-domain.example/preview.mp4
 
 - 模板选择和新建均在主页完成；直接进入模板库且尚无草稿时，显示前往主页的入口。
 - 当前环境由主页选择或新建的模板决定。连接失败、超时或服务端 5xx 时提示使用桌面本地环境；本地无需 Python 或 MySQL，但需使用桌面客户端。从主页选择其他模板或新建模板前，可保存到原环境、放弃修改或取消；读取目标失败保留原环境与草稿，并提供重试，两库不自动同步。
-- 本地文件位于 Tauri 应用数据目录下的 `data/template/templates.json`。macOS 为 `~/Library/Application Support/com.intelligentmixvideo.client/data/template/`，Windows 为 `%APPDATA%/com.intelligentmixvideo.client/data/template/`，Linux 为 `${XDG_DATA_HOME:-~/.local/share}/com.intelligentmixvideo.client/data/template/`。本地目录随首次读取自动创建，JSON 损坏时明确报错，不能当成空库覆盖。
+- 本地保存请求使用共享 Protobuf 消息，Rust 端解析后继续将模板保存在 Tauri 应用数据目录下的 `data/template/templates.json`。macOS 为 `~/Library/Application Support/com.intelligentmixvideo.client/data/template/`，Windows 为 `%APPDATA%/com.intelligentmixvideo.client/data/template/`，Linux 为 `${XDG_DATA_HOME:-~/.local/share}/com.intelligentmixvideo.client/data/template/`。本地目录随首次读取自动创建，JSON 损坏时明确报错，不能当成空库覆盖。
 - 离线仍可从内置目录选择效果并保存；SDK、字体与示例视频预览仍需联网。
 - 标题、字幕、气泡独立设置文字、字号、位置、样式、入场/出场/循环动画及动画时长；字号支持 12～300 的整数，预览、云端和本地保存使用相同范围。
 - 画面滤镜、特效、转场和转场时长可选；预览不提交云端合成任务。
@@ -107,11 +107,12 @@ src/
     effects.ts                     # 资产字段分配、互斥与移除规则
     TemplatePreview.tsx            # 播放器生命周期及预览操作
     model.ts                       # 数据类型、默认配置与选择字段映射
-    api.ts                         # 四个模板接口和错误处理
+    api.ts                         # 云端 Protobuf、本地 Tauri 模板操作和错误处理
     sdk.ts                         # SDK 加载、目录及类型边界
     timeline.ts                    # 配置到预览时间线的转换
     motions.json                   # 固定版本动画目录
   components/ui/                   # shadcn/ui 基础控件
+  generated/imv/template/v1/       # Buf 生成的 Protobuf 消息类型
   lib/utils.ts                     # cn 类名合并
   styles/globals.css               # Tailwind 与语义主题令牌
 ```
@@ -145,7 +146,7 @@ bun run build
 画布的真实浏览器回归执行 `bun tests/preview-canvas.browser.mjs`，需要 Chrome、FFmpeg 和联网访问 SDK、字体。脚本自动启动独立 Vite 服务，生成本地视频，验证 Canvas 像素、横竖屏切换、实际播放、数字时间更新频率、窄屏比例、文字折行与卸载清理；不访问业务后端。中间文件保存在已忽略的 `node_modules/.cache/preview-canvas-tests/`，结束时关闭浏览器和测试服务。
 `effect-tracks.test.ts` 覆盖独立对象增删、时间规则、视频替换、动画帧数、SDK 数据转换和序列化；`track-timing.test.tsx` 验证输入自动更新、单位换算、非法输入恢复和对象切换。前后端共同使用 `server/tests/template_timing_cases.json`，其中 `purpose` 说明场景，预期结果包含区间和提示，并检查计算过程保留原始规则。
 
-服务端核心验证执行 `uv run --locked --project server pytest server/tests/test_template_tracks.py server/tests/test_template_api.py server/tests/test_video_composition_timeline.py`（仓库根目录）。现有文案合成按成片时长应用每个对象：标题使用请求文字，字幕及关键词与文案时间取交集，重复实例保留独立参数；转场在指定位置连接片段，音频总长保持不变。桌面存储验证执行 `cargo test --locked --manifest-path src-tauri/Cargo.toml --lib templates::tests`（client 目录），使用真实文件检查规则保存与失败保护。通过 `TMPDIR` 和 pytest 的 `--basetemp` 将中间文件指向已忽略的缓存目录。
+服务端核心验证执行 `uv run --locked --project server pytest server/tests/test_template_tracks.py server/tests/test_template_protobuf.py server/tests/test_template_validation.py server/tests/test_video_composition_timeline.py`（仓库根目录）。现有文案合成按成片时长应用每个对象：标题使用请求文字，字幕及关键词与文案时间取交集，重复实例保留独立参数；转场在指定位置连接片段，音频总长保持不变。桌面存储验证执行 `cargo test --locked --manifest-path src-tauri/Cargo.toml --lib templates::tests`（client 目录），使用真实文件检查规则保存与失败保护。通过 `TMPDIR` 和 pytest 的 `--basetemp` 将中间文件指向已忽略的缓存目录。
 `server/tests/test_template_tracks.py` 直接校验 Schema、默认参数、时间计算和序列化；`test_video_composition_timeline.py` 检查对象规则生成的合成时间线。
 本地模板字段变化导致旧文件无法读取时，页面会提示删除旧模板文件，并显示完整路径及清除全部本地模板的影响。关闭客户端后删除提示中的文件，重新打开客户端即可创建新模板。
 工作区测试使用真实表单、Radix 选择器和弹窗，覆盖核心编辑与草稿保护。Happy DOM 无法验证真实视频播放和 Tauri 原生行为。
