@@ -13,6 +13,45 @@ mod generated {
     include!("generated/imv.template.v1.rs");
 }
 
+/// 按服务端 EffectTemplateEditor 的默认值补齐缺失字段，保留显式提交的数值。
+fn editor_from_protobuf(editor: generated::EffectTemplateEditor) -> Value {
+    json!({
+        "title": editor.title.unwrap_or_else(|| "让每一帧 都有风格".into()),
+        "subtitle": editor.subtitle.unwrap_or_else(|| "选择花字、滤镜和特效，看看组合效果".into()),
+        "bubbleText": editor.bubble_text.unwrap_or_else(|| "超值特惠".into()),
+        "titleSize": editor.title_size.unwrap_or(40),
+        "subtitleSize": editor.subtitle_size.unwrap_or(26),
+        "bubbleSize": editor.bubble_size.unwrap_or(32),
+        "titleX": editor.title_x.unwrap_or(50.),
+        "titleY": editor.title_y.unwrap_or(8.),
+        "subtitleX": editor.subtitle_x.unwrap_or(50.),
+        "subtitleY": editor.subtitle_y.unwrap_or(82.),
+        "bubbleX": editor.bubble_x.unwrap_or(25.),
+        "bubbleY": editor.bubble_y.unwrap_or(32.),
+        "titleFlower": editor.title_flower.unwrap_or_default(),
+        "subtitleFlower": editor.subtitle_flower.unwrap_or_default(),
+        "bubble": editor.bubble.unwrap_or_default(),
+        "filter": editor.filter.unwrap_or_default(),
+        "vfx": editor.vfx.unwrap_or_default(),
+        "transition": editor.transition.unwrap_or_default(),
+        "titleIn": editor.title_in.unwrap_or_default(),
+        "titleOut": editor.title_out.unwrap_or_default(),
+        "titleLoop": editor.title_loop.unwrap_or_default(),
+        "subtitleIn": editor.subtitle_in.unwrap_or_default(),
+        "subtitleOut": editor.subtitle_out.unwrap_or_default(),
+        "subtitleLoop": editor.subtitle_loop.unwrap_or_default(),
+        "bubbleIn": editor.bubble_in.unwrap_or_default(),
+        "bubbleOut": editor.bubble_out.unwrap_or_default(),
+        "bubbleLoop": editor.bubble_loop.unwrap_or_default(),
+        "titleInDuration": editor.title_in_duration.unwrap_or(0.5),
+        "titleOutDuration": editor.title_out_duration.unwrap_or(0.5),
+        "subtitleInDuration": editor.subtitle_in_duration.unwrap_or(0.5),
+        "subtitleOutDuration": editor.subtitle_out_duration.unwrap_or(0.5),
+        "bubbleInDuration": editor.bubble_in_duration.unwrap_or(0.5),
+        "bubbleOutDuration": editor.bubble_out_duration.unwrap_or(0.5),
+    })
+}
+
 /// 将本地保存请求转换为现有 JSON 草稿结构，保留磁盘文件格式。
 fn draft_from_protobuf(bytes: &[u8], id: Option<&str>) -> Result<Value, String> {
     let request =
@@ -20,7 +59,21 @@ fn draft_from_protobuf(bytes: &[u8], id: Option<&str>) -> Result<Value, String> 
     if request.template_id.as_deref() != id {
         return Err("模板 ID 与保存请求不一致".into());
     }
-    let tracks = request.tracks.map(|list| list.tracks);
+    let tracks = request.tracks.map(|list| {
+        list.tracks
+            .into_iter()
+            .map(|track| {
+                json!({
+                    "id": track.id,
+                    "target": track.target,
+                    "start_mode": track.start_mode,
+                    "start": track.start,
+                    "duration": track.duration,
+                    "editor": track.editor.map(editor_from_protobuf),
+                })
+            })
+            .collect::<Vec<_>>()
+    });
     Ok(json!({
         "name": request.name,
         "description": request.description.unwrap_or_default(),
