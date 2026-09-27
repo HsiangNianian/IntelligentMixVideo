@@ -74,12 +74,45 @@ fn draft_from_protobuf(bytes: &[u8], id: Option<&str>) -> Result<Value, String> 
             })
             .collect::<Vec<_>>()
     });
-    Ok(json!({
+    let mut draft = json!({
         "name": request.name,
         "description": request.description.unwrap_or_default(),
         "transition_duration_seconds": request.transition_duration_seconds.unwrap_or(1.0),
-        "tracks": tracks
-    }))
+        "tracks": tracks,
+        "effect_ids": request.effect_ids,
+    });
+
+    let mut expected_ids = Vec::new();
+    for track in draft["tracks"].as_array().ok_or("轨道须为数组")? {
+        for asset in validate_editor(&track["editor"])? {
+            expected_ids.push(
+                asset["id"]
+                    .as_str()
+                    .ok_or("效果 ID 无效")?
+                    .to_owned(),
+            );
+        }
+    }
+    expected_ids.sort();
+    expected_ids.dedup();
+
+    let mut declared_ids = draft["effect_ids"]
+        .as_array()
+        .ok_or("效果 ID 列表无效")?
+        .iter()
+        .map(|value| value.as_str().map(str::to_owned))
+        .collect::<Option<Vec<_>>>()
+        .ok_or("效果 ID 列表无效")?;
+    declared_ids.sort();
+    if declared_ids != expected_ids {
+        return Err("所选特效与编辑配置不一致".into());
+    }
+
+    draft
+        .as_object_mut()
+        .ok_or("模板须为对象")?
+        .remove("effect_ids");
+    Ok(draft)
 }
 
 /// 校验对象编辑参数并从随包目录生成效果快照。
