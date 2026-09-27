@@ -34,7 +34,9 @@ uv run server
 
 默认监听 `0.0.0.0:20070`（所有 IPv4 接口），本机 API 文档位于 http://127.0.0.1:20070/docs；远程访问使用服务器 IP 或域名。
 通过 `server/.env` 中的 `PORT` 或进程环境变量设置端口（环境变量优先，范围 1～65535）；修改后重启服务。
-仓库根目录使用 `uv run --project server server`。模板 API 统一使用 `/template` 前缀，POST 通过可选 `template_id` 区分创建和完整更新；详情见 [server/README.md](server/README.md)。
+仓库根目录使用 `uv run --project server server`。客户端云端模板在现有 `/template` 地址上传输 Protobuf 二进制消息。接口详情见 [server/README.md](server/README.md)。
+
+根目录 `buf.yaml` 管理 `proto/` 中的消息定义及兼容性检查，`buf.gen.yaml` 生成客户端 TypeScript、Rust 和服务端 Python 代码。TypeScript、Python 位于各自的 `src/generated/imv/template/v1/`，Rust 位于 `client/src-tauri/src/generated/`。修改协议后在仓库根目录运行 `buf lint`、`buf generate`，并提交生成结果；已有协议版本使用 `buf breaking --against <基线>` 检查兼容性。
 服务端各配置类共用 `config_base.py` 的读取规则，源码运行固定读取 `server/.env`，不随启动目录变化；构造参数、进程环境变量、文件、字段默认值依次优先。修改后重启服务。
 
 服务端在项目配置中将官方 PyPI 设为默认依赖索引，与 `server/uv.lock` 的来源保持一致，避免本机默认镜像同步滞后导致版本无法解析。

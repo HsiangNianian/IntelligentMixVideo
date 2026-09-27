@@ -8,6 +8,7 @@ import { listTemplates } from "@/features/templates/api";
 import { fetchMock, mockDesktop } from "./setup";
 import { remotionServer } from "./remotion-server";
 import { remotionJob } from "./remotion-fixtures";
+import { protobufListResponse } from "./fixtures";
 
 const originalBase = apiBase();
 afterEach(() => setApiBase(originalBase));
@@ -42,7 +43,7 @@ test("桌面等待内置服务并共享实际 API 地址", async () => {
     await act(async () => ready("http://127.0.0.1:43210"));
     expect(screen.getByRole("heading", { name: "特效模板" })).toBeTruthy();
     expect(apiUrl("/works")).toBe("http://127.0.0.1:43210/api/templates/works");
-    fetchMock.mockResolvedValueOnce(Response.json([]));
+    fetchMock.mockResolvedValueOnce(protobufListResponse([]));
     await listTemplates();
     expect(fetchMock.mock.calls.at(-1)?.[0]).toBe("http://127.0.0.1:43210/template");
   } finally {

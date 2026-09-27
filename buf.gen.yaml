@@ -1,0 +1,16 @@
+version: v2
+plugins:
+  - remote: buf.build/bufbuild/es:v2.15.0
+    out: client/src/generated
+    opt: target=ts
+  - remote: buf.build/protocolbuffers/python:v36.2
+    out: server/src/generated
+  - remote: buf.build/protocolbuffers/pyi:v36.2
+    out: server/src/generated
+  - remote: buf.build/community/neoeinstein-prost:v0.4.0
+    out: client/src-tauri/src/generated
+    types:
+      - imv.template.v1.SaveTemplateRequest
+    opt:
+      - 'message_attribute=.=#[derive(::serde::Serialize)]'
+      - 'message_attribute=.imv.template.v1.EffectTemplateEditor=#[serde(rename_all = "camelCase")]'

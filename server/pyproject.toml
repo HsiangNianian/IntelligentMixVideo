@@ -18,6 +18,7 @@ dependencies = [
     "pydantic-settings>=2.15.0,<3",
     "python-dotenv>=1.2.3",
     "python-multipart>=0.0.32",
+    "protobuf>=7.36.2,<8",
     "uvicorn>=0.52.4",
     "sqlalchemy>=2.0,<3",
     "pymysql[rsa]>=1.1,<2",
@@ -35,7 +36,7 @@ requires = ["uv_build>=0.12.3,<0.13.0"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
-module-name = "server"
+module-name = ["server", "generated"]
 source-exclude = ["node_modules", ".cache", "__pycache__", ".data"]
 
 # 在项目根目录运行 pytest 时，仅发现服务端测试；包由 uv 安装，不修改 sys.path。

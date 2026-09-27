@@ -100,7 +100,7 @@ mod tests {
     /// 用真实权限清单验证准确 URL 可调用，其他端口、域名和窗口均被拒绝。
     #[test]
     fn localhost_ipc_is_limited_to_the_bound_page() {
-        let mut context = tauri::generate_context!();
+        let mut context = tauri::generate_context!(test = true);
         context.config_mut().app.windows.clear();
         let app = tauri::test::mock_builder()
             .invoke_handler(tauri::generate_handler![start_backend, local_settings])

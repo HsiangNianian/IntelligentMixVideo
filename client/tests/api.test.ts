@@ -1,8 +1,10 @@
 /** 模板 HTTP 核心测试：请求契约、必要校验与错误展示；fetch 由 setup.ts 隔离。 */
 import { expect, spyOn, test } from "bun:test";
+import { fromBinary, toBinary } from "@bufbuild/protobuf";
+import { GetTemplateResponseSchema, SaveTemplateRequestSchema } from "@/generated/imv/template/v1/template_pb";
 import { deleteTemplate, getTemplate, listTemplates, saveTemplate } from "@/features/templates/api";
 import { newDraft, toDraft } from "@/features/templates/model";
-import { savedTemplate } from "./fixtures";
+import { protobufListResponse, protobufTemplateResponse, savedTemplate } from "./fixtures";
 import { fetchMock, mockDesktop } from "./setup";
 
 // 测试创建和更新都使用 POST /template，只有更新带 ID，名称说明被修剪且效果去重。
@@ -12,16 +14,16 @@ test.each([undefined, "existing-id"])("保存请求正确区分创建与更新�
   draft.name = "  我的模板  ";
   draft.description = "  说明  ";
   draft.tracks[1].editor.subtitleIn = "in/fade_in";
-  fetchMock.mockResolvedValueOnce(Response.json(saved, { status: id ? 200 : 201 }));
+  fetchMock.mockResolvedValueOnce(protobufTemplateResponse(saved, "save", id ? 200 : 201));
   expect(await saveTemplate(draft, id)).toEqual(saved);
   const [url, options] = fetchMock.mock.calls[0];
   expect(url).toBe("http://api.test:8000/template");
   expect(options?.method).toBe("POST");
-  expect(options?.headers).toEqual({ "Content-Type": "application/json" });
-  const body = JSON.parse(String(options?.body));
-  expect(body).toMatchObject({ name: "我的模板", description: "说明", effect_ids: ["in/fade_in"] });
-  if (id) expect(body.template_id).toBe(id);
-  else expect(body).not.toHaveProperty("template_id");
+  expect(options?.headers).toEqual({ Accept: "application/x-protobuf", "Content-Type": "application/x-protobuf" });
+  const body = fromBinary(SaveTemplateRequestSchema, new Uint8Array(options?.body as Uint8Array));
+  expect(body).toMatchObject({ name: "我的模板", description: "说明", effectIds: ["in/fade_in"] });
+  if (id) expect(body.templateId).toBe(id);
+  else expect(body.templateId).toBeUndefined();
   expect(body).not.toHaveProperty("effects");
   expect(body).not.toHaveProperty("editor");
   expect(draft.name).toBe("  我的模板  ");
@@ -39,15 +41,24 @@ test("保存前检查名称和所选效果", async () => {
 // 测试列表与详情响应透传、路径 ID 编码，以及删除成功的 204 不尝试解析 JSON。
 test("读取与删除遵循接口契约", async () => {
   const saved = savedTemplate();
-  fetchMock.mockResolvedValueOnce(Response.json([saved]));
+  fetchMock.mockResolvedValueOnce(protobufListResponse([saved]));
   expect(await listTemplates()).toEqual([saved]);
-  fetchMock.mockResolvedValueOnce(Response.json(saved));
+  fetchMock.mockResolvedValueOnce(protobufTemplateResponse(saved, "get"));
   expect(await getTemplate("id/with space")).toEqual(saved);
   expect(fetchMock.mock.calls[1][0]).toBe("http://api.test:8000/template/id%2Fwith%20space");
   fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
   expect(await deleteTemplate(saved.template_id)).toBeUndefined();
   expect(fetchMock.mock.calls[2][0]).toBe(`http://api.test:8000/template/${saved.template_id}`);
   expect(fetchMock.mock.calls[2][1]?.method).toBe("DELETE");
+});
+
+// 测试服务端遗漏编辑参数时拒绝详情响应，避免客户端静默补齐字段。
+test("模板响应缺少编辑参数时拒绝读取", async () => {
+  const response = protobufTemplateResponse(savedTemplate(), "get");
+  const message = fromBinary(GetTemplateResponseSchema, new Uint8Array(await response.arrayBuffer()));
+  message.template!.tracks!.tracks[0].editor!.title = undefined;
+  fetchMock.mockResolvedValueOnce(new Response(Uint8Array.from(toBinary(GetTemplateResponseSchema, message))));
+  await expect(getTemplate("missing-editor-field")).rejects.toThrow("模板编辑配置缺少必要字段");
 });
 
 // 测试重名与字段校验错误显示服务端提示，断网转换为可理解的错误且不自动重试。
@@ -69,6 +80,12 @@ test.each([400, 404, 409, 422, 500, 502, 503, 504])("按 HTTP 状态提示本地
   ));
 });
 
+// 测试网关返回空正文或普通文本时仍展示 HTTP 状态与本地环境提示。
+test.each([null, "upstream unavailable"])("非 JSON 的 503 响应仍提示本地环境：%s", async (body) => {
+  fetchMock.mockResolvedValueOnce(new Response(body, { status: 503 }));
+  await expect(listTemplates()).rejects.toThrow("HTTP 503 可使用桌面客户端切换到本地环境。");
+});
+
 // 测试超时保留保存结果不确定的提醒，主动取消不误报服务不可用。
 test.each([false, true])("超时与主动取消区分处理：%s", async (cancelled) => {
   const timer = spyOn(window, "setTimeout");
@@ -88,7 +105,7 @@ test.each([false, true])("超时与主动取消区分处理：%s", async (cancel
     : "请求超时，草稿已保留。保存结果可能已写入，请刷新列表确认后再重试。可使用桌面客户端切换到本地环境。");
 });
 
-// 回归：没有全局 __TAURI__ 时本地增删改查仍走官方 IPC，云端走 HTTP；IPC 失败保留原因。
+// 回归：本地操作走官方 IPC，云端走 HTTP；桌面服务故障显示本地模板提示。
 test("本地和云端存储严格分流", async () => {
   const { mock } = await import("bun:test");
   const saved = savedTemplate();
@@ -106,13 +123,19 @@ test("本地和云端存储严格分流", async () => {
     await deleteTemplate(saved.template_id, "local");
     expect(invoke.mock.calls.every(([command]) => command === "local_templates")).toBe(true);
     expect(invoke.mock.calls.map(([, args]) => args.operation)).toEqual(["list", "get", "save", "delete"]);
-    expect(invoke.mock.calls[2][1]).toEqual({ operation: "save", id: undefined, draft: toDraft(saved) });
+    const saveArgs = invoke.mock.calls[2][1];
+    expect(saveArgs.operation).toBe("save");
+    expect(saveArgs.id).toBeUndefined();
+    expect(fromBinary(SaveTemplateRequestSchema, Uint8Array.from(saveArgs.draft as number[])))
+      .toMatchObject({ name: saved.name, description: saved.description });
     expect(fetchMock).not.toHaveBeenCalled();
     invoke.mockRejectedValueOnce("磁盘空间不足");
     await expect(saveTemplate(toDraft(saved), undefined, "local")).rejects.toThrow("磁盘空间不足");
-    fetchMock.mockResolvedValueOnce(Response.json([]));
+    fetchMock.mockResolvedValueOnce(protobufListResponse([]));
     expect(await listTemplates(undefined, "cloud")).toEqual([]);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 503 }));
+    await expect(listTemplates(undefined, "cloud")).rejects.toThrow("HTTP 503 可返回主页选择或创建本地模板。");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   } finally {
     restoreDesktop();
   }
