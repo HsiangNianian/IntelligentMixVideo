@@ -16,6 +16,8 @@ from .schema import Template, TemplateSave
 # 静态集合路径和 UUID 详情路径组成约定的四个接口，无效果目录接口。
 router = APIRouter(prefix="/template", tags=["模板管理"])
 PROTOBUF_MEDIA_TYPE = "application/x-protobuf"
+# OpenAPI 使用相同的二进制格式描述模板请求与成功响应。
+PROTOBUF_CONTENT = {PROTOBUF_MEDIA_TYPE: {"schema": {"type": "string", "format": "binary"}}}
 
 
 def _template_message(template: Template) -> pb.TemplateRecord:
@@ -34,7 +36,7 @@ def _protobuf_response(message: Message, status_code: int = 200) -> Response:
     )
 
 
-@router.get("")
+@router.get("", response_class=Response, responses={200: {"content": PROTOBUF_CONTENT}})
 def list_templates() -> Response:
     """返回共享模板库的 Protobuf 列表，空库返回空消息。"""
     templates = store.list_templates()
@@ -43,7 +45,15 @@ def list_templates() -> Response:
     ))
 
 
-@router.post("")
+@router.post(
+    "",
+    response_class=Response,
+    responses={
+        200: {"content": PROTOBUF_CONTENT},
+        201: {"content": PROTOBUF_CONTENT},
+    },
+    openapi_extra={"requestBody": {"required": True, "content": PROTOBUF_CONTENT}},
+)
 async def save_template(request: Request) -> Response:
     """解析 Protobuf 保存消息；无 ID 创建，有 ID 完整更新。"""
     if request.headers.get("content-type", "").split(";", 1)[0].strip() != PROTOBUF_MEDIA_TYPE:
@@ -70,7 +80,7 @@ async def save_template(request: Request) -> Response:
     )
 
 
-@router.get("/{template_id}")
+@router.get("/{template_id}", response_class=Response, responses={200: {"content": PROTOBUF_CONTENT}})
 def get_template(template_id: UUID) -> Response:
     """按 URL 中的 UUID 返回模板及服务端效果快照。"""
     template = store.get_template(template_id)

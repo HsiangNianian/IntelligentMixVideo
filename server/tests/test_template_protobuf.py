@@ -13,6 +13,33 @@ from .conftest import template_track
 from .template_wire import post_template as _post
 
 
+@pytest.mark.parametrize(("path", "method", "status"), [
+    ("/template", "get", "200"),
+    ("/template", "post", "200"),
+    ("/template", "post", "201"),
+    ("/template/{template_id}", "get", "200"),
+])
+def test_template_openapi_documents_binary_responses(
+    client: TestClient, path: str, method: str, status: str,
+) -> None:
+    """每种模板读取与保存结果都声明唯一的 Protobuf 二进制成功响应。"""
+    operation = client.get("/openapi.json").json()["paths"][path][method]
+    assert operation["responses"][status]["content"] == {
+        "application/x-protobuf": {"schema": {"type": "string", "format": "binary"}},
+    }
+
+
+def test_template_openapi_documents_binary_save_request(client: TestClient) -> None:
+    """保存接口要求二进制 Protobuf 请求体。"""
+    operation = client.get("/openapi.json").json()["paths"]["/template"]["post"]
+    assert operation["requestBody"] == {
+        "required": True,
+        "content": {
+            "application/x-protobuf": {"schema": {"type": "string", "format": "binary"}},
+        },
+    }
+
+
 def test_template_protobuf_create_read_update_delete(
     client: TestClient, template_db: Engine, template_payload: dict,
 ) -> None:
@@ -35,12 +62,15 @@ def test_template_protobuf_create_read_update_delete(
 
     detail = client.get(f"/template/{record.template_id}")
     assert detail.status_code == 200
+    assert detail.headers["content-type"] == "application/x-protobuf"
     assert pb.GetTemplateResponse.FromString(detail.content).template == record
     listed = client.get("/template")
+    assert listed.headers["content-type"] == "application/x-protobuf"
     assert pb.ListTemplatesResponse.FromString(listed.content).templates == [record]
 
     updated = _post(client, {**template_payload, "template_id": record.template_id, "name": "修改后的模板"})
     assert updated.status_code == 200
+    assert updated.headers["content-type"] == "application/x-protobuf"
     revised = pb.SaveTemplateResponse.FromString(updated.content).template
     assert revised.template_id == record.template_id
     assert revised.name == "修改后的模板"
@@ -48,17 +78,22 @@ def test_template_protobuf_create_read_update_delete(
     deleted = client.delete(f"/template/{record.template_id}")
     assert deleted.status_code == 204
     assert deleted.content == b""
-    assert client.get(f"/template/{record.template_id}").status_code == 404
+    missing = client.get(f"/template/{record.template_id}")
+    assert missing.status_code == 404
+    assert missing.headers["content-type"] == "application/json"
     assert pb.ListTemplatesResponse.FromString(client.get("/template").content).templates == []
 
 
 def test_template_protobuf_rejects_json_and_damaged_binary(client: TestClient) -> None:
     """拒绝旧 JSON 请求及损坏的二进制消息，且不产生记录。"""
-    assert client.post("/template", json={"name": "旧请求"}).status_code == 415
+    wrong_media = client.post("/template", json={"name": "旧请求"})
+    assert wrong_media.status_code == 415
+    assert wrong_media.headers["content-type"] == "application/json"
     invalid = client.post(
         "/template", content=b"\xff", headers={"Content-Type": "application/x-protobuf"},
     )
     assert invalid.status_code == 400
+    assert invalid.headers["content-type"] == "application/json"
     assert pb.ListTemplatesResponse.FromString(client.get("/template").content).templates == []
 
 
@@ -161,4 +196,5 @@ def test_template_protobuf_requires_tracks_message(client: TestClient) -> None:
         headers={"Content-Type": "application/x-protobuf"},
     )
     assert response.status_code == 422
+    assert response.headers["content-type"] == "application/json"
     assert any(error["loc"] == ["body", "tracks"] for error in response.json()["detail"])
