@@ -85,12 +85,7 @@ fn draft_from_protobuf(bytes: &[u8], id: Option<&str>) -> Result<Value, String> 
     let mut expected_ids = Vec::new();
     for track in draft["tracks"].as_array().ok_or("轨道须为数组")? {
         for asset in validate_editor(&track["editor"])? {
-            expected_ids.push(
-                asset["id"]
-                    .as_str()
-                    .ok_or("效果 ID 无效")?
-                    .to_owned(),
-            );
+            expected_ids.push(asset["id"].as_str().ok_or("效果 ID 无效")?.to_owned());
         }
     }
     expected_ids.sort();
@@ -534,9 +529,8 @@ mod tests {
         ], "transition_duration_seconds": 0.5})
     }
 
-    #[test]
-    /// 真实 Protobuf 保存消息转换后沿用 JSON 文件结构，缺失字段和错误 ID 均拒绝。
-    fn protobuf_save_keeps_json_file_format() {
+    /// 构造带完整编辑字段的合法 Protobuf 请求，供保存与拒绝路径共同使用。
+    fn protobuf_request() -> generated::SaveTemplateRequest {
         let editor = generated::EffectTemplateEditor {
             title: Some("标题".into()),
             subtitle: Some("".into()),
@@ -572,7 +566,7 @@ mod tests {
             bubble_in_duration: Some(0.5),
             bubble_out_duration: Some(0.5),
         };
-        let request = generated::SaveTemplateRequest {
+        generated::SaveTemplateRequest {
             name: "  模板  ".into(),
             description: Some("  说明  ".into()),
             effect_ids: vec!["in/fade_in".into()],
@@ -588,7 +582,13 @@ mod tests {
                 }],
             }),
             template_id: None,
-        };
+        }
+    }
+
+    #[test]
+    /// 真实 Protobuf 保存消息转换后沿用 JSON 文件结构，缺失字段和错误 ID 均拒绝。
+    fn protobuf_save_keeps_json_file_format() {
+        let request = protobuf_request();
         let bytes = request.encode_to_vec();
         let converted = draft_from_protobuf(&bytes, None).unwrap();
         let mut expected = draft("  模板  ");
@@ -605,11 +605,61 @@ mod tests {
         assert!(records[0]["tracks"].is_array());
         let mut missing_tracks = request;
         missing_tracks.tracks = None;
-        assert!(
-            validate(draft_from_protobuf(&missing_tracks.encode_to_vec(), None).unwrap()).is_err()
+        assert_eq!(
+            draft_from_protobuf(&missing_tracks.encode_to_vec(), None).unwrap_err(),
+            "轨道须为数组"
         );
         assert!(draft_from_protobuf(&bytes, Some("different-id")).is_err());
         assert!(draft_from_protobuf(&[0xff], None).is_err());
+    }
+
+    #[test]
+    /// 缺失、重复、未知或不匹配的效果列表拒绝更新，保留原模板文件。
+    fn protobuf_rejects_invalid_effect_ids_without_writes() {
+        let dir = Directory::new();
+        let saved = operate(&dir.0, "save", None, Some(draft("保留"))).unwrap();
+        let id = saved["template_id"].as_str().unwrap();
+        let path = dir.0.join("templates.json");
+        let original = fs::read(&path).unwrap();
+        for effect_ids in [
+            vec![],
+            vec!["in/fade_in", "in/fade_in"],
+            vec!["in/unknown"],
+            vec!["in/blur_in"],
+            vec!["in/fade_in", "in/blur_in"],
+        ] {
+            let mut request = protobuf_request();
+            request.template_id = Some(id.into());
+            request.effect_ids = effect_ids.iter().map(|value| (*value).into()).collect();
+            let result = draft_from_protobuf(&request.encode_to_vec(), Some(id))
+                .and_then(|draft| operate(&dir.0, "save", Some(id), Some(draft)));
+            assert_eq!(result.unwrap_err(), "所选特效与编辑配置不一致");
+            assert_eq!(fs::read(&path).unwrap(), original);
+        }
+    }
+
+    #[test]
+    /// 效果列表顺序可变，多个轨道共用效果只需声明一次，保存后仍可重新读取。
+    fn protobuf_accepts_reordered_and_shared_effect_ids() {
+        let mut request = protobuf_request();
+        let tracks = &mut request.tracks.as_mut().unwrap().tracks;
+        let mut second = tracks[0].clone();
+        second.id = "title-b".into();
+        second.editor.as_mut().unwrap().title_in = Some("in/blur_in".into());
+        let mut third = tracks[0].clone();
+        third.id = "title-c".into();
+        tracks.extend([second, third]);
+        request.effect_ids = vec!["in/blur_in".into(), "in/fade_in".into()];
+
+        let converted = draft_from_protobuf(&request.encode_to_vec(), None).unwrap();
+        assert_eq!(converted.as_object().unwrap().len(), 4);
+        assert!(converted.get("effect_ids").is_none());
+        let dir = Directory::new();
+        let saved = operate(&dir.0, "save", None, Some(converted)).unwrap();
+        assert_eq!(saved["effect_ids"], json!(["in/fade_in", "in/blur_in"]));
+        assert_eq!(saved["tracks"].as_array().unwrap().len(), 3);
+        let id = saved["template_id"].as_str().unwrap();
+        assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), saved);
     }
 
     #[test]
