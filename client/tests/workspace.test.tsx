@@ -47,6 +47,28 @@ test.each(["cloud", "local"] as const)("%s 新模板通过左侧资产创建画�
   expect(within(applied).queryAllByRole("button")).toHaveLength(0);
 });
 
+// 场景：从文字外观切换到转场时只显示时间设置，修改时长后仍可移除转场。
+test("转场仅提供时间设置并保留移除操作", async () => {
+  render(<TemplateWorkspace selection={creation()} onHome={() => {}} />);
+  await addText();
+  const assets = screen.getByRole("region", { name: "特效资产" });
+  fireEvent.click(within(assets).getByRole("button", { name: "转场" }));
+  fireEvent.click(within(assets).getAllByRole("button", { name: /^应用转场：/ })[0]);
+  const inspector = screen.getByRole("region", { name: "画面对象设置" });
+  expect(within(inspector).getAllByRole("tab")).toHaveLength(1);
+  expect(within(inspector).getByRole("tab", { name: "时间设置", selected: true })).toBeTruthy();
+  expect(within(inspector).queryByRole("tab", { name: "外观与效果" })).toBeNull();
+  expect(within(inspector).queryByRole("searchbox", { name: "搜索转场", hidden: true })).toBeNull();
+  fireEvent.change(within(inspector).getByLabelText("持续时间 / 秒"), { target: { value: "2" } });
+  fireEvent.click(screen.getByRole("button", { name: "编辑顶部标题" }));
+  expect(screen.getByRole("tab", { name: "外观与效果" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "编辑镜头转场" }));
+  expect(screen.getByLabelText<HTMLInputElement>("持续时间 / 秒").value).toBe("2");
+  fireEvent.click(screen.getByRole("button", { name: "移除当前画面对象" }));
+  expect(screen.queryByRole("button", { name: "编辑镜头转场" })).toBeNull();
+  expect(screen.queryByRole("region", { name: "画面对象设置" })).toBeNull();
+});
+
 // 场景：时间输入尚未完整时停止保存；修正后使用最新草稿继续执行模板校验。
 test("空白时间阻止保存，修正后恢复保存流程", async () => {
   render(<TemplateWorkspace selection={creation()} onHome={() => {}} />);
