@@ -22,6 +22,7 @@ import {
 interface Session {
   key: number;
   compositionDraft: CompositionDraft;
+  spriteKind: "text" | "subtitle" | "filter_overlay" | "video_overlay" | "transition_overlay";
   workId: string | null;
   deleting: boolean;
   messages: ChatMessage[];
@@ -50,6 +51,7 @@ function blank(key: number): Session {
   return {
     key,
     compositionDraft: defaultComposition(),
+    spriteKind: "text",
     workId: null,
     deleting: false,
     messages: [],
@@ -483,7 +485,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
       if (!s.workId) {
         const asset = image ? await api.upload(image) : undefined;
         if (!current(s.key)) throw new DOMException("Aborted", "AbortError");
-        return (await api.create(text, asset?.id, configuration.composition!))
+        return (await api.create(text, asset?.id, configuration.composition!, s.spriteKind))
           .job;
       }
       return api.message(s.workId, {
@@ -499,6 +501,12 @@ export function useTemplateSession(onHistoryChange: () => void) {
     const s = latest.current;
     if (s.workId || s.busy || s.loading) return;
     publish({ compositionDraft });
+  }
+  /** Lock the authoring kind once the first message creates a server project. */
+  function configureSpriteKind(spriteKind: Session["spriteKind"]) {
+    const s = latest.current;
+    if (s.workId || s.busy || s.loading) return;
+    publish({ spriteKind });
   }
   /** 尚未验收的参数与成功默认值不同，提交和复制维持锁定。 */
   function dirty() {
@@ -670,6 +678,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
       !sameValues(state.values, state.version.candidate.default_config),
     send,
     configure,
+    configureSpriteKind,
     change,
     saveParameters,
     discardParameters,

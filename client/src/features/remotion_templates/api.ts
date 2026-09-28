@@ -111,6 +111,7 @@ export function create(
   description: string,
   asset?: string,
   composition?: Composition,
+  spriteKind: "text" | "subtitle" | "filter_overlay" | "video_overlay" | "transition_overlay" = "text",
 ): Promise<{ work: { id: string }; job: Job }> {
   return modelRequest("/works", {
     method: "POST",
@@ -118,6 +119,7 @@ export function create(
       ...(description.trim() ? { description: description.trim() } : {}),
       ...(asset ? { image: { asset_id: asset } } : {}),
       ...(composition ? { composition } : {}),
+      ...(spriteKind === "text" ? {} : { sprite_kind: spriteKind }),
     }),
   });
 }

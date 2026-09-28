@@ -174,6 +174,8 @@ export function RemotionWorkspace() {
                 <CompositionSettings
                   value={session.compositionDraft}
                   disabled={locked}
+                  spriteKind={session.spriteKind}
+                  onSpriteKindChange={session.configureSpriteKind}
                   onChange={(value) => {
                     if (!locked) session.configure(value);
                   }}

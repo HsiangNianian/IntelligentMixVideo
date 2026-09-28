@@ -15,7 +15,7 @@ import { remotionServer } from "./remotion-server";
 import { remotionJob, remotionVersion } from "./remotion-fixtures";
 import { fetchMock } from "./setup";
 
-/** 通过实际下拉控件选项切换画布或帧率。 */
+/** 通过实际下拉控件选项切换画布或 Sprite 类型。 */
 async function choose(label: string, option: string) {
   fireEvent.keyDown(screen.getByRole("combobox", { name: label }), {
     key: "ArrowDown",
@@ -67,25 +67,34 @@ test("默认生成配置随首次文字请求提交", async () => {
   });
 });
 
-// 修改预设、时长和帧率后传递实际整帧值；后续对话不重新覆盖画布。
-test("横屏与 24 FPS 将小数秒取整到帧", async () => {
+// 新作品显式绑定视觉 Sprite 类型，后续任务不能从另一个类型重新解释成功版本。
+test("首次生成可选择滤镜 Sprite 类型", async () => {
+  await workspace();
+  await choose("Sprite 类型", "滤镜叠加");
+  fireEvent.click(screen.getByRole("button", { name: "发送" }));
+  await waitFor(() => expect(creations()).toHaveLength(1));
+  expect(creations()[0].sprite_kind).toBe("filter_overlay");
+});
+
+// 修改预设和时长后按固定 30 FPS 传递整帧值。
+test("横屏与固定 30 FPS 将小数秒取整到帧", async () => {
   await workspace();
   await choose("画布", "横屏 16:9");
   fireEvent.change(screen.getByLabelText("字效时长（秒）"), {
     target: { value: "3.2" },
   });
-  fireEvent.click(screen.getByText("高级设置（分辨率、帧率）"));
-  await choose("帧率", "24 FPS");
+  fireEvent.click(screen.getByText("高级设置（分辨率）"));
+  expect(screen.queryByLabelText("帧率")).toBeNull();
   expect(
-    screen.getByText("1920×1080 · 24 FPS · 3.208 秒（77 帧）"),
+    screen.getByText("1920×1080 · 30 FPS · 3.2 秒（96 帧）"),
   ).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "发送" }));
   await waitFor(() => expect(creations()).toHaveLength(1));
   expect(creations()[0].composition).toEqual({
     width: 1920,
     height: 1080,
-    fps: 24,
-    duration_in_frames: 77,
+    fps: 30,
+    duration_in_frames: 96,
   });
 });
 
@@ -120,7 +129,6 @@ test("自定义画布提交期间锁定且新增会话恢复默认", async () =>
     "画布",
     "画布宽度（像素）",
     "画布高度（像素）",
-    "帧率",
     "字效时长（秒）",
   ])
     expect(screen.getByLabelText(label).hasAttribute("disabled")).toBe(true);
@@ -165,7 +173,7 @@ test.each([
 });
 
 // 像素总数是独立限制；合法的单边尺寸组合仍可能超出画布预算。
-test("超大像素画布不提交，4K 与 30 秒 60 FPS 边界可用", async () => {
+test("超大像素画布不提交，4K 与 30 秒 30 FPS 边界可用", async () => {
   await workspace();
   await choose("画布", "自定义");
   for (const label of ["画布宽度（像素）", "画布高度（像素）"])
@@ -179,14 +187,13 @@ test("超大像素画布不提交，4K 与 30 秒 60 FPS 边界可用", async ()
   fireEvent.change(screen.getByLabelText("字效时长（秒）"), {
     target: { value: "30" },
   });
-  await choose("帧率", "60 FPS");
   fireEvent.click(screen.getByRole("button", { name: "发送" }));
   await waitFor(() => expect(creations()).toHaveLength(1));
   expect(creations()[0].composition).toEqual({
     width: 3840,
     height: 2160,
-    fps: 60,
-    duration_in_frames: 1800,
+    fps: 30,
+    duration_in_frames: 900,
   });
 });
 
@@ -228,7 +235,7 @@ test("会话核心拒绝非法配置且图片首轮携带合法配置", async ()
   const { result } = renderHook(() => useTemplateSession(() => {}));
   const image = new File(["image"], "test.png", { type: "image/png" });
   act(() => {
-    result.current.configure({ ...defaultComposition(), fps: "NaN" });
+    result.current.configure({ ...defaultComposition(), seconds: "NaN" });
     result.current.send("", image);
   });
   expect(result.current.messages).toHaveLength(0);
@@ -239,7 +246,6 @@ test("会话核心拒绝非法配置且图片首轮携带合法配置", async ()
       canvas: "square",
       width: "1080",
       height: "1080",
-      fps: "25",
     });
     result.current.send("", image);
   });
@@ -249,8 +255,8 @@ test("会话核心拒绝非法配置且图片首轮携带合法配置", async ()
     composition: {
       width: 1080,
       height: 1080,
-      fps: 25,
-      duration_in_frames: 125,
+      fps: 30,
+      duration_in_frames: 150,
     },
   });
   act(() =>

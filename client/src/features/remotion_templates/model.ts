@@ -36,6 +36,7 @@ export interface Version {
   };
   spec: {
     name: string;
+    sprite_kind?: "text" | "subtitle" | "filter_overlay" | "video_overlay" | "transition_overlay";
     composition: Composition;
     text_layers: { id: string; text: string }[];
   };

@@ -13,7 +13,6 @@ export interface CompositionDraft {
   canvas: keyof typeof canvasPresets | "custom";
   width: string;
   height: string;
-  fps: string;
   seconds: string;
 }
 
@@ -23,7 +22,6 @@ export function defaultComposition(): CompositionDraft {
     canvas: "portrait",
     width: "1080",
     height: "1920",
-    fps: "30",
     seconds: "5",
   };
 }
@@ -36,7 +34,7 @@ export function resolveComposition(
   | { composition: null; error: string } {
   const width = Number(draft.width);
   const height = Number(draft.height);
-  const fps = Number(draft.fps);
+  const fps = 30;
   const seconds = Number(draft.seconds);
   if (
     [draft.width, draft.height].some((value) => !value.trim()) ||
@@ -51,8 +49,6 @@ export function resolveComposition(
     return { composition: null, error: "宽高须为 64～3840 之间的偶数像素。" };
   if (width * height > 8_294_400)
     return { composition: null, error: "画布总像素不能超过 8,294,400。" };
-  if (![24, 25, 30, 60].includes(fps))
-    return { composition: null, error: "请选择 24、25、30 或 60 FPS。" };
   const frames = Math.round(seconds * fps);
   if (
     !draft.seconds.trim() ||
