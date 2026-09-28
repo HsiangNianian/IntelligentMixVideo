@@ -605,7 +605,7 @@ def test_remote_segmentation_response_reaches_render(upstreams, composition_case
         "教师节快乐三尺讲台育桃李", "辛苦了各位恩师", "欢迎老师们来店里",
         "热辣火锅暖心暖胃好好放松一下",
     ]
-    assert [s["Content"] for s in bubbles] == ["香佰里火锅", "老师们", "三尺讲台", "恩师", "老师们", "火锅"]
+    assert [clip["Content"] for clip in bubbles] == [composition_case["template"]["tracks"][2]["editor"]["bubbleText"]]
     assert (title[0]["TimelineIn"], title[0]["TimelineOut"]) == (1, 3)
     assert timeline["VideoTracks"][0]["VideoTrackClips"][0]["TimelineOut"] == 15.22
 

@@ -59,7 +59,7 @@ GET 成功响应与 POST 请求、成功响应均使用 `application/x-protobuf`
 
 `SaveTemplateRequest.tracks` 必须提供，通过 `TrackList.tracks[].editor` 保存参数；缺省参数由业务校验补齐。模板更新完整替换配置。名称去除首尾空白后为 1～100 字符；说明最多 1000 字符；标题、字幕、气泡示例文字最多 60、100、40 字符；字号 12～300 整数；位置 0～100%；动画和转场时长 0.1～3 秒。
 
-顶部标题对象的 `titleKeywordBold`、`titleKeywordItalic`、`titleKeywordUnderline`、`titleKeywordStrikeout` 可组合使用，`titleKeywordColor` 设置局部颜色，`titleKeywordSize` 设置局部字号；合成时优先在请求标题中查找已有的 `titleKeyword`，空值时自动选取请求标题首段连续文字的前两个字，只标记首次出现的位置。底部字幕对象独立保存 `subtitleKeywordBold`、`subtitleKeywordItalic`、`subtitleKeywordUnderline`、`subtitleKeywordStrikeout`、`subtitleKeywordColor` 和 `subtitleKeywordSize`，作用于原切片中首次包含 `keyword` 的字幕短句，空关键词保留原文。颜色为空字符串或 `#RRGGBB`，空字符串表示保持文字原色；合成时转换为 IMS 要求的 BGR 顺序。局部字号为 0（沿用原字号）或 12～300 的整数，合成时使用 IMS `\fs` 指令设置并恢复。模板响应在对应对象的 `tracks[].editor` 返回这些值。
+顶部标题对象的 `titleKeywordBold`、`titleKeywordItalic`、`titleKeywordUnderline`、`titleKeywordStrikeout` 可组合使用，`titleKeywordColor` 设置局部颜色，`titleKeywordSize` 设置局部字号；合成时优先在请求标题中查找已有的 `titleKeyword`，空值时自动选取请求标题首段连续文字的前两个字，只标记首次出现的位置。底部字幕对象独立保存 `subtitleKeywordBold`、`subtitleKeywordItalic`、`subtitleKeywordUnderline`、`subtitleKeywordStrikeout`、`subtitleKeywordColor` 和 `subtitleKeywordSize`，作用于原切片中首次包含 `keyword` 的字幕短句，空关键词保留原文。颜色为空字符串或 `#RRGGBB`，空字符串表示保持文字原色；合成时转换为 IMS 要求的 BGR 顺序。局部字号为 0（沿用原字号）或 12～300 的整数，合成时使用 IMS `\fs` 指令设置并恢复。模板响应在对应对象的 `tracks[].editor` 返回这些值。 视频合成按气泡对象自身时间区间显示其 `bubbleText` 示例文字一次，不使用切片关键词；有气泡对象但未选气泡样式时仍显示文字，无气泡对象则不生成。关键词继续通过标题和字幕的局部样式强调。
 
 独立对象通过 `tracks` 保存，每项包含 `id`、`target`、`start_mode`、`start`、`duration` 和 `editor`。`start_mode` 支持 `seconds` 和 `percent`；百分比范围为 0 至小于 100，`duration` 为正秒数或 `null`（持续到视频结束）。模板不保存视频信息，保存校验不依赖预览时长。应用视频时按输出帧率计算区间：结尾以外不显示、结束越界时截短，动画按有效帧数缩短并记录说明，无法容纳所选动画时明确失败。文案合成逐个应用对象，标题使用请求文字，字幕和关键词采用文案时间与对象区间的交集；合成时转场忽略模板开始与持续时间，仅取特效类型并应用于实际素材边界，音频总长保持不变。
 同一文字角色的循环动画与入场、出场互斥。至少选择 1 个效果，最多 500 个不同效果 ID。
@@ -73,7 +73,7 @@ MySQL 单独列保存唯一名称、ID 和时间，JSON 保存完整编辑配置
 
 ## 异步视频合成
 
-`POST /api/v1/video-compositions` 创建任务，HTTP 200 响应为 `{"code":200,"message":"操作成功","data":"任务ID"}`；`GET /api/v1/video-compositions/{taskId}` 查询结果，查询结构保持不变。终态回调仅含 `taskId/status/videoUrl/errorMessage`：成功为 `succeed`、视频直链、null 错误；失败为 `failed`、null 地址、错误摘要。回调 ID 与创建响应的 `data` 一致，内部和查询的成功状态仍为 `succeeded`。模板按 `tracks[].editor` 读取，标题取请求 `title`，关键词取原切片；字幕取切片内 `subtitle_parts`，按标点拆成保留中英文问号、去除其他标点的短句，短句在原切片内首尾衔接，旧快照缺少该字段时保留中英文问号并去除其他标点。素材匹配仍接收原切片文字与时间，模板示例文字不进入成片。
+`POST /api/v1/video-compositions` 创建任务，HTTP 200 响应为 `{"code":200,"message":"操作成功","data":"任务ID"}`；`GET /api/v1/video-compositions/{taskId}` 查询结果，查询结构保持不变。终态回调仅含 `taskId/status/videoUrl/errorMessage`：成功为 `succeed`、视频直链、null 错误；失败为 `failed`、null 地址、错误摘要。回调 ID 与创建响应的 `data` 一致，内部和查询的成功状态仍为 `succeeded`。模板按 `tracks[].editor` 读取，标题取请求 `title`，关键词取原切片；字幕取切片内 `subtitle_parts`，按标点拆成保留中英文问号、去除其他标点的短句，短句在原切片内首尾衔接，旧快照缺少该字段时保留中英文问号并去除其他标点。素材匹配仍接收原切片文字与时间，标题和字幕的模板示例文字不进入成片，气泡对象使用其模板示例文字。
 
 创建请求的字段校验错误返回 HTTP 422，响应含 `{"code":422,"message":"请求参数无效","data":null}`；客户端配置头错误及其他错误沿用原有格式。后台合成失败通过查询结果的 `status: failed` 和 `error` 表示。
 
