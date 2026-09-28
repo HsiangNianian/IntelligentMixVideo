@@ -242,23 +242,23 @@ class SaveStyleSpritesResponse(_message.Message):
     def __init__(self, bindings: _Optional[_Union[StyleSpriteBindings, _Mapping]] = ...) -> None: ...
 
 class SpriteRenderInput(_message.Message):
-    __slots__ = ("sprite_id", "placement_id", "output", "text", "keywords", "resolved_style", "effect_total_frames", "effect_offset_frames", "render_frame_count")
+    __slots__ = ("sprite_id", "placement_id", "output", "effect_offset_frames", "render_frame_count", "text", "keywords", "resolved_style", "effect_total_frames")
     SPRITE_ID_FIELD_NUMBER: _ClassVar[int]
     PLACEMENT_ID_FIELD_NUMBER: _ClassVar[int]
     OUTPUT_FIELD_NUMBER: _ClassVar[int]
+    EFFECT_OFFSET_FRAMES_FIELD_NUMBER: _ClassVar[int]
+    RENDER_FRAME_COUNT_FIELD_NUMBER: _ClassVar[int]
     TEXT_FIELD_NUMBER: _ClassVar[int]
     KEYWORDS_FIELD_NUMBER: _ClassVar[int]
     RESOLVED_STYLE_FIELD_NUMBER: _ClassVar[int]
     EFFECT_TOTAL_FRAMES_FIELD_NUMBER: _ClassVar[int]
-    EFFECT_OFFSET_FRAMES_FIELD_NUMBER: _ClassVar[int]
-    RENDER_FRAME_COUNT_FIELD_NUMBER: _ClassVar[int]
     sprite_id: str
     placement_id: str
     output: SpriteCanvas
+    effect_offset_frames: int
+    render_frame_count: int
     text: str
     keywords: _containers.RepeatedScalarFieldContainer[str]
     resolved_style: _containers.RepeatedCompositeFieldContainer[SpriteParameterOverride]
     effect_total_frames: int
-    effect_offset_frames: int
-    render_frame_count: int
-    def __init__(self, sprite_id: _Optional[str] = ..., placement_id: _Optional[str] = ..., output: _Optional[_Union[SpriteCanvas, _Mapping]] = ..., text: _Optional[str] = ..., keywords: _Optional[_Iterable[str]] = ..., resolved_style: _Optional[_Iterable[_Union[SpriteParameterOverride, _Mapping]]] = ..., effect_total_frames: _Optional[int] = ..., effect_offset_frames: _Optional[int] = ..., render_frame_count: _Optional[int] = ...) -> None: ...
+    def __init__(self, sprite_id: _Optional[str] = ..., placement_id: _Optional[str] = ..., output: _Optional[_Union[SpriteCanvas, _Mapping]] = ..., effect_offset_frames: _Optional[int] = ..., render_frame_count: _Optional[int] = ..., text: _Optional[str] = ..., keywords: _Optional[_Iterable[str]] = ..., resolved_style: _Optional[_Iterable[_Union[SpriteParameterOverride, _Mapping]]] = ..., effect_total_frames: _Optional[int] = ...) -> None: ...

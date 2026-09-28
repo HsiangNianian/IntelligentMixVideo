@@ -267,9 +267,12 @@ message SpriteRenderInput {
   // width、height、fps 必须与发布画布一致；preview_frames 不决定本次渲染时长。
   // IMS 可在加入时间线后通过 Cover 把输出缩放到最终成片画布。
   SpriteCanvas output = 3;
-  // 旧版绝对时间轴帧号及逻辑效果起点已废弃，避免误把 IMS 放置时间传给 Sprite 渲染器。
-  reserved 4, 5, 9;
-  reserved "timeline_in_frame", "timeline_out_frame", "effect_start_frame";
+  // 本段从效果起点算起的零基帧偏移；首段为 0，后续段等于此前各段帧数之和。
+  // 与业务字幕或最终成片的开始时间无关；由总线另行决定 IMS TimelineIn。
+  uint64 effect_offset_frames = 4;
+  // 本段要输出的帧数，必须大于零，且偏移加帧数不得超过完整效果总帧数。
+  // 单段最多 30 秒、1800 帧；总线用此值计算 IMS 放置区间的实际时长。
+  uint64 render_frame_count = 5;
   // 标题取请求 title，字幕取当前短句清理后的正文；视觉 Sprite 留空。
   // 服务端最多使用前 2000 个字符，过长内容直接截断。
   string text = 6;
@@ -281,11 +284,5 @@ message SpriteRenderInput {
   repeated SpriteParameterOverride resolved_style = 8;
   // 完整逻辑效果的总帧数，必须大于零；长效果分段时每段传相同值。
   // 当前上限为 216000 帧，渲染器以此决定完整动画进度，避免分段处重新播放。
-  uint64 effect_total_frames = 10;
-  // 本段从效果起点算起的零基帧偏移；首段为 0，后续段等于此前各段帧数之和。
-  // 与业务字幕或最终成片的开始时间无关；由总线另行决定 IMS TimelineIn。
-  uint64 effect_offset_frames = 11;
-  // 本段要输出的帧数，必须大于零，且偏移加帧数不得超过完整效果总帧数。
-  // 单段最多 30 秒、1800 帧；总线用此值计算 IMS 放置区间的实际时长。
-  uint64 render_frame_count = 12;
+  uint64 effect_total_frames = 9;
 }
