@@ -6,11 +6,45 @@ from PIL import Image, ImageChops
 
 from .image_comparison import MAX_CHANNEL_DELTA, compare_images
 from .models import Check, TemplateCandidate, TemplateSpec
+from .keywords import literal_ranges
+
+
+def preview_values(candidate: TemplateCandidate, spec: TemplateSpec, *, text: str | None = None) -> dict:
+    """Add transient sample keyword spans to render props without changing the editable scalar contract."""
+    values = dict(candidate.default_config)
+    if text is not None:
+        values["0_text"] = text
+    if spec.sprite_kind == "subtitle":
+        values["highlightRanges"] = literal_ranges(values["0_text"], spec.keyword_examples)
+    return values
 
 
 def parameter_probes(candidate: TemplateCandidate, spec: TemplateSpec) -> list[dict]:
     """Exercise text, color, size and both coordinates on every layer at an active midpoint."""
     probes = []
+    if spec.sprite_kind not in {"text", "subtitle"}:
+        frames = {spec.composition.duration_in_frames // 2}
+        for motion in spec.visual_motion:
+            if motion.phase != "hold":
+                length = motion.end_frame - motion.start_frame
+                frames.add(motion.start_frame + min(length - 1, max(1, length // 3)))
+        for key, previous in spec.visual_parameters.items():
+            if isinstance(previous, bool):
+                value = not previous
+            elif isinstance(previous, (int, float)):
+                value = previous * 0.7 if previous else 0.5
+            elif previous.startswith("#") and len(previous) in {7, 9}:
+                value = "#FF00FF" if previous.upper() != "#FF00FF" else "#00FF00"
+            else:
+                value = "alternate" if previous != "alternate" else "default"
+            for frame in sorted(frames):
+                probes.append({
+                    "key": key, "kind": "visual", "value": value,
+                    "previous": previous, "frame": frame,
+                    "config": candidate.default_config | {key: value},
+                })
+        return probes
+    baseline = preview_values(candidate, spec)
     for index, layer in enumerate(spec.text_layers):
         # Prefer the hold interval; otherwise use the layer midpoint, away from invisible endpoints.
         hold = next((motion for motion in layer.motion if motion.phase == "hold"), None)
@@ -40,9 +74,19 @@ def parameter_probes(candidate: TemplateCandidate, spec: TemplateSpec) -> list[d
                     "value": value,
                     "previous": candidate.default_config[key],
                     "frame": frame,
-                    "config": candidate.default_config | {key: value},
+                    "config": preview_values(candidate, spec, text=value)
+                    if spec.sprite_kind == "subtitle" and suffix == "text"
+                    else baseline | {key: value},
                 }
             )
+    if spec.sprite_kind == "subtitle":
+        layer = spec.text_layers[0]
+        frame = (layer.start_frame + layer.end_frame - 1) // 2
+        probes.append({
+            "key": "highlight_ranges", "kind": "keywords", "value": spec.keyword_examples,
+            "previous": spec.keyword_examples, "frame": frame,
+            "config": baseline | {"highlightRanges": []},
+        })
     return probes
 
 
@@ -92,8 +136,10 @@ def pixel_checks(
                 if image.size != (spec.composition.width, spec.composition.height):
                     raise ValueError("PNG dimensions differ from requested canvas")
                 originals[frame] = image.convert("RGBA")
-        transparent = all(
-            image.getchannel("A").getextrema()[0] == 0 for image in originals.values()
+        transparent = (
+            all(image.getchannel("A").getextrema()[0] == 0 for image in originals.values())
+            if spec.sprite_kind in {"text", "subtitle"}
+            else any(image.getchannel("A").getextrema()[0] < 255 for image in originals.values())
         )
         visible = any(image.getchannel("A").getbbox() for image in originals.values())
         checks.append(
@@ -108,7 +154,7 @@ def pixel_checks(
             for layer in spec.text_layers
             for motion in layer.motion
             if motion.phase != "hold"
-        ]
+        ] + [motion for motion in spec.visual_motion if motion.phase != "hold"]
         missing = []
         insufficient = []
         for motion in changing:
@@ -160,11 +206,17 @@ def pixel_checks(
             )
         )
         failures = []
+        visual_responses: dict[str, bool] = {}
         for index, probe in enumerate(probes):
             with Image.open(directory / f"probe-{index}.png") as image:
                 changed = image.convert("RGBA")
             baseline = originals[probe["frame"]]
             difference = compare_images(baseline, changed)
+            if probe["kind"] == "visual":
+                visual_responses[probe["key"]] = (
+                    visual_responses.get(probe["key"], False) or not difference.equivalent
+                )
+                continue
             if difference.equivalent:
                 failures.append(
                     f"{probe['key']}: no visible response beyond raster tolerance. "
@@ -195,13 +247,17 @@ def pixel_checks(
                         f"(alpha-weighted mass {before}->{after}, RGB tolerance {MAX_CHANNEL_DELTA}/255). "
                         "Check color prop forwarding; occlusion or color blending can make this experiment inconclusive."
                     )
+        failures.extend(
+            f"{key}: no visible response in sampled motion phases; connect this style prop to the overlay"
+            for key, observed in visual_responses.items() if not observed
+        )
         checks.append(
             Check(
                 name="parameter_behavior",
                 status="fail" if failures else "pass",
                 detail="; ".join(failures)[:6000]
                 if failures
-                else f"Executed {len(probes)} controlled text/color/size/position render experiments.",
+                else f"Executed {len(probes)} controlled parameter render experiments.",
             )
         )
     except (OSError, ValueError, KeyError) as exc:

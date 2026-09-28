@@ -15,6 +15,9 @@ def select_frames(spec, frames, *, preferred=(), limit=12):
         for part in layer.motion:
             if part.phase != "hold":
                 points.extend((part.start_frame, part.end_frame - 1))
+    for part in spec.visual_motion:
+        if part.phase != "hold":
+            points.extend((part.start_frame, part.end_frame - 1))
     for layer in spec.text_layers:
         hold = next((part for part in layer.motion if part.phase == "hold"), None)
         start, end = (

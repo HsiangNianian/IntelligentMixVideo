@@ -54,19 +54,22 @@ class ImageReference(Contract):
 
 
 class GenerateTemplateRequest(Contract):
-    """MVP supports description and/or image; video remains an unsupported extension."""
+    """Start one Agent project for text or a transparent visual overlay Sprite."""
 
     description: Text | None = None
     image: ImageReference | None = None
     composition: CompositionConfig = Field(default_factory=CompositionConfig)
+    sprite_kind: Literal["text", "subtitle", "filter_overlay", "video_overlay", "transition_overlay"] = "text"
 
     @model_validator(mode="after")
     def require_input(self) -> Self:
-        """Reject empty requests instead of silently generating an arbitrary template."""
+        """Require user input and a fixed 30 FPS for new Agent generations."""
         if self.description is None and self.image is None:
             raise ValueError(
                 "description or image is required; video is not supported yet"
             )
+        if self.composition.fps != 30:
+            raise ValueError("new Remotion generations require 30 FPS")
         return self
 
 
@@ -177,12 +180,60 @@ class TemplateSpec(Contract):
     name: Text
     description: Text
     composition: CompositionConfig
-    text_layers: list[TextLayer] = Field(min_length=1, max_length=12)
+    sprite_kind: Literal["text", "subtitle", "filter_overlay", "video_overlay", "transition_overlay"] = "text"
+    text_layers: list[TextLayer] = Field(default_factory=list, max_length=12)
+    visual_parameters: dict[str, str | float | bool] = Field(default_factory=dict, max_length=12)
+    visual_motion: list[MotionSegment] = Field(default_factory=list, max_length=8)
+    keyword_examples: list[Text] = Field(
+        default_factory=list,
+        max_length=5,
+        description="Literal keywords to highlight, not sample sentences; each must occur at least twice in text_layers[0].text.",
+    )
     assumptions: list[Text] = Field(default_factory=list, max_length=20)
 
     @model_validator(mode="after")
     def validate_layers(self) -> Self:
-        """Reject ambiguous IDs, blank copy, and effects outside their layer interval."""
+        """Separate text from visual overlays and constrain declared motion to the canvas."""
+        if self.sprite_kind in {"text", "subtitle"}:
+            if not self.text_layers or self.visual_parameters or self.visual_motion:
+                raise ValueError("text Sprites require text layers and no visual overlay fields")
+            if self.sprite_kind == "subtitle":
+                if len(self.text_layers) != 1:
+                    raise ValueError("subtitle Sprites require exactly one text layer")
+                if not self.keyword_examples or any(
+                    self.text_layers[0].text.count(word) < 2 for word in self.keyword_examples
+                ):
+                    raise ValueError(
+                        "字幕 keyword_examples 要填关键词本身，不要填示例句子；"
+                        "每个关键词须在 text_layers[0].text 中至少出现两次，"
+                        "例如 text='这个方法简单，操作也很简单' 时填 ['简单']"
+                    )
+            if self.sprite_kind == "text" and self.keyword_examples:
+                raise ValueError("title Sprites do not declare keyword examples")
+        elif self.text_layers or not self.visual_parameters:
+            raise ValueError("visual Sprites require scalar parameters and no text layers")
+        elif self.keyword_examples:
+            raise ValueError("visual Sprites do not declare keyword examples")
+        if self.sprite_kind in {"video_overlay", "transition_overlay"} and not any(
+            motion.phase != "hold" for motion in self.visual_motion
+        ):
+            raise ValueError("video and transition Sprites require declared visible motion")
+        if self.sprite_kind == "filter_overlay" and not {
+            "brightness", "contrast", "saturation"
+        } <= self.visual_parameters.keys():
+            raise ValueError("filter Sprites require brightness, contrast and saturation controls")
+        if any(
+            not key.isidentifier() or key.startswith("_") or len(key) > 32
+            or key in {"text", "keywords", "start_time", "end_time", "media_url"}
+            or isinstance(value, str) and len(value) > 100
+            for key, value in self.visual_parameters.items()
+        ):
+            raise ValueError("visual Sprite parameter name or value is invalid")
+        if any(
+            not 0 <= motion.start_frame < motion.end_frame <= self.composition.duration_in_frames
+            for motion in self.visual_motion
+        ):
+            raise ValueError("visual motion frames must fit the composition")
         if len({layer.id for layer in self.text_layers}) != len(self.text_layers):
             raise ValueError("text layer IDs must be unique")
         for layer in self.text_layers:

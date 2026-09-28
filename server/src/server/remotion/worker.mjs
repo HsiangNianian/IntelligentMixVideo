@@ -14,6 +14,7 @@ import {
 
 const root = "/work";
 const request = JSON.parse(await fs.readFile(`${root}/request.json`, "utf8"));
+const previewConfig = request.preview_config ?? request.config;
 const checks = [];
 const result = {
   checks,
@@ -174,9 +175,11 @@ function sourcePolicy(code) {
 }
 
 /** Typecheck candidate and the actual default-props call site against installed declarations. */
-function typecheck() {
+function typecheck(sprite = false) {
   const program = ts.createProgram(
-    [`${root}/Template.tsx`, `${root}/Export.tsx`, `${root}/contract.tsx`],
+    sprite
+      ? [`${root}/Template.tsx`, `${root}/contract.tsx`]
+      : [`${root}/Template.tsx`, `${root}/Export.tsx`, `${root}/contract.tsx`],
     {
       strict: true,
       noEmit: true,
@@ -200,9 +203,83 @@ function typecheck() {
     );
 }
 
+/** Render an accepted, bus-bound Sprite with VP9 alpha inside the same source-policy sandbox. */
+async function renderSprite() {
+  let browser;
+  try {
+    const code = await check("source_policy", async () => {
+      sourcePolicy(request.code);
+      return prettier.format(request.code, { parser: "typescript" });
+    });
+    await fs.writeFile(`${root}/Template.tsx`, code);
+    await fs.symlink("/renderer/node_modules", `${root}/node_modules`);
+    await fs.writeFile(
+      `${root}/contract.tsx`,
+      `/** Bind validated runtime props to the accepted component type. */\nimport React from 'react';\nimport Template from './Template';\nconst props = ${JSON.stringify(request.config)} as React.ComponentProps<typeof Template>;\nconst element = <Template {...props} />;\n`,
+    );
+    await fs.writeFile(
+      `${root}/entry.tsx`,
+      `/** Trusted Sprite host supplies fonts, canvas and business time. */
+import React from 'react';
+import {Composition, Freeze, registerRoot, delayRender, continueRender, cancelRender, staticFile} from 'remotion';
+import Template from './Template';
+const handle = delayRender('managed fonts');
+Promise.all([400,700].map(async weight => {
+  const face = new FontFace('Noto Sans CJK SC', 'url(' + staticFile('font-' + weight + '.ttc') + ')', {weight:String(weight)});
+  document.fonts.add(await face.load());
+})).then(() => continueRender(handle)).catch(cancelRender);
+const Bound = (props) => ${Number.isInteger(request.static_frame) ? `<Freeze frame={${request.static_frame}}><Template {...props}/></Freeze>` : `<Template {...props}/>`};
+registerRoot(() => <Composition id="Sprite" component={Bound} defaultProps={${JSON.stringify(request.config)}} width={${request.composition.width}} height={${request.composition.height}} fps={${request.composition.fps}} durationInFrames={${request.composition.duration_in_frames}} />);
+`,
+    );
+    await check("typescript", async () => typecheck(true));
+    const serveUrl = await check("bundle", () =>
+      bundle({
+        entryPoint: `${root}/entry.tsx`,
+        outDir: `${root}/bundle`,
+        publicDir: `${root}/public`,
+        webpackOverride: (config) => ({ ...config, cache: false }),
+      }),
+    );
+    browser = await openBrowser("chrome", {
+      browserExecutable: request.browser,
+      logLevel: "error",
+      chromiumOptions: { gl: "swangle" },
+    });
+    const composition = await selectComposition({
+      serveUrl,
+      id: "Sprite",
+      inputProps: request.config,
+      puppeteerInstance: browser,
+    });
+    await check("render", () =>
+      renderMedia({
+        serveUrl,
+        composition,
+        inputProps: request.config,
+        puppeteerInstance: browser,
+        logLevel: "error",
+        timeoutInMilliseconds: 30000,
+        codec: "vp9",
+        pixelFormat: "yuva420p",
+        imageFormat: "png",
+        concurrency: 2,
+        frameRange: request.frame_range,
+        outputLocation: `${root}/sprite.webm`,
+      }),
+    );
+  } catch (error) {
+    if (!checks.some((item) => item.status === "fail"))
+      checks.push({ name: "render", status: "fail", detail: String(error.message).slice(0, 6000) });
+  } finally {
+    if (browser) await browser.close({ silent: true });
+    await fs.writeFile(`${root}/renderer.json`, JSON.stringify(result));
+  }
+}
+
 /** Load managed fonts before Remotion captures any frame; user code owns no loader side effects. */
 function entrypoint() {
-  const config = JSON.stringify(request.config);
+  const config = JSON.stringify(previewConfig);
   const composition = request.composition;
   return `/** Trusted preview host waits for both managed font weights. */
 import React from 'react';
@@ -234,18 +311,19 @@ async function main() {
         code,
         request.config,
         request.composition,
+        request.subtitle ? previewConfig.highlightRanges : null,
       );
       await fs.writeFile(`${root}/Export.tsx`, exported);
     });
     await fs.symlink("/renderer/node_modules", `${root}/node_modules`);
     await fs.writeFile(
       `${root}/contract.tsx`,
-      `/** Verify source props and default export call sites. */\nimport React from 'react';\nimport Template from './Template';\nimport Export from './Export';\nconst props = ${JSON.stringify(request.config)};\nconst element = <Template {...props} />;\nconst exported = <Export />;\n`,
+      `/** Verify source props and default export call sites. */\nimport React from 'react';\nimport Template from './Template';\nimport Export from './Export';\nconst props = ${JSON.stringify(request.config)};\nconst element = <Template {...props} ${request.subtitle ? `highlightRanges={[[0,1]]}` : ""} />;\nconst exported = <Export />;\n`,
     );
     await fs.writeFile(`${root}/entry.tsx`, entrypoint());
     await check("typescript", async () => typecheck());
     await check("interactive_bundle", () =>
-      buildPresentation(root, request.config, request.composition),
+      buildPresentation(root, request.config, request.composition, request.keywords),
     );
     const serveUrl = await check("bundle", () =>
       bundle({
@@ -263,13 +341,13 @@ async function main() {
     const composition = await selectComposition({
       serveUrl,
       id: "Template",
-      inputProps: request.config,
+      inputProps: previewConfig,
       puppeteerInstance: browser,
     });
     const options = {
       serveUrl,
       composition,
-      inputProps: request.config,
+      inputProps: previewConfig,
       puppeteerInstance: browser,
       logLevel: "error",
       timeoutInMilliseconds: 30000,
@@ -345,4 +423,5 @@ async function main() {
   }
 }
 
-await main();
+if (request.mode === "sprite_render") await renderSprite();
+else await main();

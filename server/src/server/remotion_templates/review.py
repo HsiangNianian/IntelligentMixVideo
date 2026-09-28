@@ -8,6 +8,7 @@ from pathlib import Path
 from .evidence import verify_artifacts
 from .models import Check, VisualReview
 from .provider import ExecutionFailure, ModelContractFailure
+from .probes import parameter_probes
 from .visual_evidence import select_frames
 
 
@@ -26,7 +27,7 @@ def static_motion_verified(spec, report) -> bool:
         and layer.end_frame == spec.composition.duration_in_frames
         and all(motion.phase == "hold" for motion in layer.motion)
         for layer in spec.text_layers
-    ) and {"determinism", "motion_evidence"} <= {
+    ) and not any(motion.phase != "hold" for motion in spec.visual_motion) and {"determinism", "motion_evidence"} <= {
         check.name
         for check in report.checks
         if check.source == "host" and check.status == "pass"
@@ -88,7 +89,7 @@ def grounding_error(item, intent, targets, reference_count):
             "Legacy paths such as /instruction are also accepted; do not repeat user_intent."
         )
     if parts[0] == "original_request" and (
-        len(parts) < 2 or parts[1] not in {"description", "composition"}
+        len(parts) < 2 or parts[1] not in {"description", "composition", "sprite_kind"}
     ):
         return "cite original description/composition or an original reference image"
     if (
@@ -98,16 +99,22 @@ def grounding_error(item, intent, targets, reference_count):
     ):
         return "a composition property must target canvas"
     if parts[0] == "parameters" and len(parts) == 2:
-        try:
-            index = parts[1].split("_", 1)[0]
-            layer = intent["accepted_base"]["text_layers"][int(index)]
-            if not index.isdigit() or item.target != layer["id"]:
-                return "a layer parameter cannot be expanded to another layer or canvas"
-        except (KeyError, IndexError, TypeError, ValueError):
-            return "parameter target does not identify an accepted layer"
+        if parts[1] in (intent.get("accepted_base") or {}).get("visual_parameters", {}):
+            if item.target != "canvas":
+                return "visual parameters target canvas"
+        else:
+            try:
+                index = parts[1].split("_", 1)[0]
+                layer = intent["accepted_base"]["text_layers"][int(index)]
+                if not index.isdigit() or item.target != layer["id"]:
+                    return "a layer parameter cannot be expanded to another layer or canvas"
+            except (KeyError, IndexError, TypeError, ValueError):
+                return "parameter target does not identify an accepted layer"
     if parts[0] == "accepted_base":
-        if len(parts) < 3 or parts[1] not in {"text_layers", "composition"}:
+        if len(parts) < 3 or parts[1] not in {"text_layers", "composition", "visual_parameters", "visual_motion"}:
             return "cite an accepted property, not inferred descriptions or assumptions"
+        if parts[1] in {"visual_parameters", "visual_motion"} and item.target != "canvas":
+            return "visual Sprite properties target canvas"
         if parts[1] == "text_layers":
             try:
                 layer = intent["accepted_base"]["text_layers"][int(parts[2])]
@@ -222,6 +229,11 @@ async def review_candidate(
     targets = {layer.id for layer in spec.text_layers}
     accepted = (intent or {}).get("accepted_base") or {}
     targets.update(layer["id"] for layer in accepted.get("text_layers", []))
+    keyword_probe = next(
+        (index for index, probe in enumerate(parameter_probes(candidate, spec)) if probe["kind"] == "keywords"),
+        None,
+    )
+    probe_images = [directory / f"probe-{keyword_probe}.png"] if keyword_probe is not None else []
     payload = {
         "user_intent": intent,
         "candidate_plan": spec.model_dump(),
@@ -233,6 +245,8 @@ async def review_candidate(
             for index, frame in enumerate(frames)
         ],
         "host_motion": "verified_static" if static else "semantic_review_required",
+        "keyword_probe_image_position": len(images) + len(frames) + 1 if probe_images else None,
+        "keyword_examples": spec.keyword_examples,
     }
     instruction = (
         scope
@@ -240,7 +254,8 @@ async def review_candidate(
 Independently inspect actual frames against the original user_intent and reference images. candidate_plan describes the implementation, NOT acceptance requirements: never reject corrected inferred coordinates, size, line-height or timing just because they differ from a previous estimate. For edits, preserve unrelated accepted_base properties and honor the latest instruction/parameters. Block only clear user-visible errors: wrong/missing wording, unreadable overlap or clipping, clearly wrong requested style, missing requested animation or unauthorized content. Allow reasonable font approximation and small aesthetic/layout differences; do not demand pixel-exact matching or personal aesthetic preferences. Explicit user constraints still apply.
 Return exactly five checks: text, layout, style, motion, scope. Cite actual Remotion frame numbers from frames, not image positions; use null for judgments spanning frames. frame_images maps one-based positions in the complete image list to actual frames. Reference images have no frame number.
 Only frames lists images supplied in this review. available_frames lists all host samples, not all visible observations; request missing frames via requested_frames instead of assuming their contents.
-Check readable wording, clipping, placement, styling, requested temporal behavior and typography-only scope. Do not demand background reconstruction. host_motion=verified_static reports observed static output only; it does NOT authorize ignoring a user request for animation. Check requested behavior against user_intent even if candidate_plan claims motion: []. When static behavior is requested, trust host noise-tolerant temporal checks; do not require explicit hold or invent animation requirements.
+For text Sprites, check readable wording, clipping, placement and typography. For filter, video and transition Sprites, check requested overlay look, transparency and motion; the text check passes when no text is requested and none appears. Do not demand access to underlying source footage or a reconstructed background. host_motion=verified_static reports observed static output only; it does NOT authorize ignoring a user request for animation. Check requested behavior against user_intent even if candidate_plan claims motion: []. When static behavior is requested, trust host noise-tolerant temporal checks; do not require explicit hold or invent animation requirements.
+For subtitle Sprites, inspect the ordinary frame images for the requested keyword highlights: every literal occurrence in the sample must be highlighted and other text must remain readable. keyword_probe_image_position identifies an extra parameter probe with sample highlights disabled; it tests that keyword spans actually change the output. Do not treat the probe as the requested final appearance. If an ordinary frame misses a required keyword occurrence, cite the user's subtitle/highlight requirement, not the probe as a new requirement.
 Unknown evidence stays unknown. A valid failure must identify an actual mismatch against an existing requirement. Status and detail must agree. Correction requests concern the assessment, not permission to relax the target or accept an artifact.
 For every fail, provide requirement_source (full JSON pointer such as /user_intent/instruction, /user_intent/original_request/description, /user_intent/accepted_base/text_layers/0/text, or /reference_images/N for a zero-based original image), requirement_quote (verbatim source excerpt, or a specific original-reference observation), target (text layer id or canvas), observed and mismatch. Cite a specific property of accepted_base, never its inferred description/assumptions. User intent takes precedence: latest instruction/parameters override the corresponding original request and accepted properties, while unrelated accepted behavior remains protected. Candidate descriptions and assumptions explain implementation but cannot create acceptance requirements. Bind each requirement to its actual object: a local text/background/layout request must not expand to the whole composition. If scope is ambiguous, use unknown and describe the ambiguity instead of inventing a failure. Inspection backgrounds and other presentation aids are not authored template content.
 Use conflict for inconsistent evidence and unknown for missing evidence. State missing_evidence explicitly; requested_frames can ask for up to eight valid additional frame numbers. A known pass/fail cannot require missing evidence. The host may capture requested frames within its budget; do not invent their contents.
@@ -256,7 +271,7 @@ Use conflict for inconsistent evidence and unknown for missing evidence. State m
                 instruction,
                 json.dumps(payload, ensure_ascii=False),
                 budget,
-                images=images + [directory / f"frame-{frame}.png" for frame in frames],
+                images=images + [directory / f"frame-{frame}.png" for frame in frames] + probe_images,
                 vision=True,
                 phase="judge",
             )

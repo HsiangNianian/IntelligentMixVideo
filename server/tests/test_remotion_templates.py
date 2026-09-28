@@ -208,6 +208,14 @@ def test_composition_bounds(patch):
         CompositionConfig(**patch)
 
 
+@pytest.mark.parametrize("fps", [24, 25, 60])
+def test_new_remotion_generation_requires_30_fps(fps):
+    """New Agent jobs reject historical frame rates while stored versions remain readable."""
+    with pytest.raises(ValidationError, match="30 FPS"):
+        GenerateTemplateRequest(description="生成标题", composition=CompositionConfig(fps=fps))
+    assert GenerateTemplateRequest(description="生成标题").composition.fps == 30
+
+
 def test_parameters_preserve_source_and_update_goal(candidate, spec):
     """Scalar edits change both defaults and target while preserving exact source bytes."""
     updated, target = patch_parameters(
