@@ -128,6 +128,8 @@ export function TemplatePreview({ draft, media, onCatalog, selectedId, onSelect,
           instance.aspectRatio = timeline.AspectRatio;
           setStatus("正在应用效果并加载媒体…");
           const { previewRows: _rows, notices: adjustments, ...sdkTimeline } = timeline;
+          // 清空 SDK 缓存的旧时间线，确保文字更新后只显示当前内容。
+          instance.timeline = {};
           await instance.setTimeline(sdkTimeline);
           if (!disposed && applied === revision) {
             appliedTracks = currentDraft.tracks;
