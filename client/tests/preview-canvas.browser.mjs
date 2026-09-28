@@ -8,7 +8,6 @@ import { createServer } from "vite";
 
 const cache = resolve("node_modules/.cache/preview-canvas-tests");
 mkdirSync(cache, { recursive: true });
-process.env.TMPDIR = cache;
 // FFmpeg 生成可被浏览器实际解码的短视频，全部中间文件保存在忽略目录。
 for (const [name, size] of [["landscape", "1920x1080"], ["portrait", "1080x1920"]]) {
   const result = spawnSync("ffmpeg", ["-y", "-v", "error", "-f", "lavfi", "-i", `testsrc2=size=${size}:rate=10`, "-t", "2", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-movflags", "+faststart", resolve(cache, `${name}.mp4`)], { encoding: "utf8" });
