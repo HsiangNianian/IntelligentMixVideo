@@ -2,7 +2,6 @@
 import { Fragment, useId, useState } from "react";
 import { Film, House, LayoutTemplate, PanelLeftClose, PanelLeftOpen, Settings, Sparkles, SquarePen } from "lucide-react";
 import CurrentTime from "@/components/CurrentTime";
-import { ChangelogPanel } from "@/components/ChangelogPanel";
 import { Button } from "@/components/ui/button";
 import { SettingsDialog } from "@/features/settings/SettingsDialog";
 import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
@@ -120,17 +119,16 @@ export default function HomePage() {
                 </div>
               )}
             </div>
-            <CurrentTime />
+            {workspace !== "home" && <CurrentTime />}
           </header>}
           <TabsContent value="home" forceMount hidden={workspace !== "home"} className="min-h-0 overflow-y-auto">
             {workspace === "home" && (
-              <div className="grid min-h-full w-full grid-rows-[minmax(28rem,65dvh)_28rem] gap-6 lg:h-full lg:min-h-0 lg:grid-cols-[minmax(0,1fr)_minmax(0,40%)] lg:grid-rows-1 lg:gap-8 xl:grid-cols-[minmax(0,1fr)_28rem]">
+              <div className="h-full min-h-[28rem]">
                 <TemplateHome onSelect={(next) => {
                   setSelection(next);
                   setLibraryOpened(true);
                   setWorkspace("library");
                 }} />
-                <ChangelogPanel />
               </div>
             )}
           </TabsContent>

@@ -203,11 +203,11 @@ async function createFromHome(name = "旅行模板") {
   return screen.findByLabelText("模板信息");
 }
 
-// 场景：直接进入模板库显示主页入口，时钟和默认主页保持可用。
+// 场景：直接进入模板库显示主页入口，默认主页不显示时钟。
 test("未选择模板时通过主页开始创作", async () => {
   render(<HomePage />);
   expect(screen.getByRole("tab", { name: "主页" }).getAttribute("aria-selected")).toBe("true");
-  expect(within(screen.getByRole("region", { name: "当前时间" })).getByRole("time").getAttribute("datetime")).toBeTruthy();
+  expect(screen.queryByRole("region", { name: "当前时间" })).toBeNull();
   fireEvent.mouseDown(screen.getByRole("tab", { name: "模版编辑" }), { button: 0 });
   expect(screen.getByText("请从主页选择已有模板或创建新模板。")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "保存模板" })).toBeNull();
