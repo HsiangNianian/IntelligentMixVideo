@@ -23,7 +23,7 @@ import {TemplatePreview} from '/src/features/templates/TemplatePreview.tsx';
 import {newDraft} from '/src/features/templates/model.ts';
 import {readMasterVideo} from '/src/features/templates/media.ts';
 import {buildTimeline} from '/src/features/templates/timeline.ts';
-import {readCatalog,loadPreviewFont} from '/src/features/templates/sdk.ts';
+import {readCatalog} from '/src/features/templates/sdk.ts';
 import '/src/styles/globals.css';
 const root=createRoot(document.getElementById('root'));
 const draft=newDraft();
@@ -33,11 +33,10 @@ window.mountPreview=async(name)=>{
  return media;
 };
 window.unmountPreview=()=>root.unmount();
-window.checkWrapping=async()=>{
- await loadPreviewFont();
- const editor={...(await import('/src/features/templates/model.ts')).defaultEditor,title:'画布文字宽度验证'.repeat(20),titleSize:100};
- const textDraft={...draft,tracks:[{id:'title',target:'title',start_mode:'seconds',start:0,duration:null,editor}]};
- return [1920,1080].map(width=>buildTimeline(textDraft,readCatalog(),{url:location.origin+'/node_modules/.cache/preview-canvas-tests/landscape.mp4',width,height:1080,duration:2}).SubtitleTracks[0].SubtitleTrackClips[0].Content);
+window.checkTextContent=async()=>{
+ const editor={...(await import('/src/features/templates/model.ts')).defaultEditor,title:'画布文字宽度验证'.repeat(20),subtitle:'字幕宽度验证'.repeat(20),titleSize:100,subtitleSize:100};
+ const textDraft={...draft,tracks:['title','subtitle'].map(target=>({id:target,target,start_mode:'seconds',start:0,duration:null,editor}))};
+ return [1920,1080].map(width=>buildTimeline(textDraft,readCatalog(),{url:location.origin+'/node_modules/.cache/preview-canvas-tests/landscape.mp4',width,height:1080,duration:2}).SubtitleTracks.map(track=>track.SubtitleTrackClips[0].Content));
 };
 </script></body></html>`;
 const server = await createServer({ server: { host: "localhost", port: 0, open: false }, plugins: [{
@@ -112,15 +111,14 @@ try {
       await page.setViewportSize({ width: 1440, height: 1000 });
     }
   }
-  // 真实 Canvas 字体测量应随画布宽度改变折行，正文内容保持完整。
-  const [wide, narrow] = await page.evaluate(() => window.checkWrapping());
-  assert(narrow.split("\n").length > wide.split("\n").length);
-  assert.equal(wide.replaceAll("\n", ""), "画布文字宽度验证".repeat(20));
-  assert.equal(narrow.replaceAll("\n", ""), wide.replaceAll("\n", ""));
+  // 两种画布宽度都保留标题和字幕原文，不插入换行。
+  const [wide, narrow] = await page.evaluate(() => window.checkTextContent());
+  assert.deepEqual(wide, ["画布文字宽度验证".repeat(20), "字幕宽度验证".repeat(20)]);
+  assert.deepEqual(narrow, wide);
   await page.evaluate(() => window.unmountPreview());
   assert.equal(await page.locator("iframe").count(), 0);
   assert.equal(await previous.evaluate(frame => frame.isConnected), false);
-  console.log("PASS：原始画布、横竖屏切换、实际播放、窄屏比例、文字折行和卸载清理。");
+  console.log("PASS：原始画布、横竖屏切换、实际播放、窄屏比例、文字内容和卸载清理。");
 } finally {
   await browser?.close();
   await server.close();

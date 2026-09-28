@@ -17,6 +17,7 @@ export interface Player {
   pause(): void;
   destroy(): void;
   currentTime: number;
+  timeline: unknown;
   aspectRatio?: string;
   setTimeline(timeline: unknown): Promise<unknown>;
   event$: {

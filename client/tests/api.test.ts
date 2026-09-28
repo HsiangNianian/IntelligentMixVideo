@@ -14,6 +14,8 @@ test.each([undefined, "existing-id"])("保存请求正确区分创建与更新�
   draft.name = "  我的模板  ";
   draft.description = "  说明  ";
   draft.tracks[1].editor.subtitleIn = "in/fade_in";
+  draft.tracks[0].editor.titleKeywordSize = 72;
+  draft.tracks[1].editor.subtitleKeywordSize = 48;
   fetchMock.mockResolvedValueOnce(protobufTemplateResponse(saved, "save", id ? 200 : 201));
   expect(await saveTemplate(draft, id)).toEqual(saved);
   const [url, options] = fetchMock.mock.calls[0];
@@ -22,6 +24,8 @@ test.each([undefined, "existing-id"])("保存请求正确区分创建与更新�
   expect(options?.headers).toEqual({ Accept: "application/x-protobuf", "Content-Type": "application/x-protobuf" });
   const body = fromBinary(SaveTemplateRequestSchema, new Uint8Array(options?.body as Uint8Array));
   expect(body).toMatchObject({ name: "我的模板", description: "说明", effectIds: ["in/fade_in"] });
+  expect(body.tracks?.tracks.map((track) => [track.editor?.titleKeywordSize, track.editor?.subtitleKeywordSize]))
+    .toEqual([[72, 0], [0, 48]]);
   if (id) expect(body.templateId).toBe(id);
   else expect(body.templateId).toBeUndefined();
   expect(body).not.toHaveProperty("effects");
@@ -41,6 +45,8 @@ test("保存前检查名称和所选效果", async () => {
 // 测试列表与详情响应透传、路径 ID 编码，以及删除成功的 204 不尝试解析 JSON。
 test("读取与删除遵循接口契约", async () => {
   const saved = savedTemplate();
+  saved.tracks[0].editor.titleKeywordSize = 72;
+  saved.tracks[1].editor.subtitleKeywordSize = 48;
   fetchMock.mockResolvedValueOnce(protobufListResponse([saved]));
   expect(await listTemplates()).toEqual([saved]);
   fetchMock.mockResolvedValueOnce(protobufTemplateResponse(saved, "get"));

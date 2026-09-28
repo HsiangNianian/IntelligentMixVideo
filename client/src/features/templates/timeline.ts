@@ -83,7 +83,7 @@ function number(
 }
 
 /** 从单个对象参数生成文字或效果，校验目录引用及数值范围。 */
-function buildTrackContent(config: Editor, catalog: EffectAsset[], target: EffectTarget, canvasWidth: number) {
+function buildTrackContent(config: Editor, catalog: EffectAsset[], target: EffectTarget) {
   const byId = new Map(catalog.map((item) => [item.id, item]));
   // 效果类别与字段绑定，拒绝错误类别及未知目录条目。
   const effect = (key: EffectKey): Effect => {
@@ -99,6 +99,11 @@ function buildTrackContent(config: Editor, catalog: EffectAsset[], target: Effec
   const text = (role: TextRole) => {
     const content = role === "bubble" ? config.bubbleText : config[role];
     const size = number(config[`${role}Size`], 12, 300, "字号", true);
+    const previewKeyword = role === "title"
+      ? config.titleKeyword || (content.match(/[\p{L}\p{N}]{1,2}/u)?.[0] ?? "")
+      : role === "subtitle"
+        ? ([...new Intl.Segmenter("zh", { granularity: "word" }).segment(content)].find((part) => part.isWordLike)?.segment ?? "")
+        : "";
     if (
       config[`${role}Loop`] &&
       (config[`${role}In`] || config[`${role}Out`])
@@ -121,7 +126,7 @@ function buildTrackContent(config: Editor, catalog: EffectAsset[], target: Effec
     }
     return {
       Type: "Text",
-      Content: role === "bubble" ? content : wrapPreviewText(content, size, canvasWidth * 0.9),
+      Content: role === "title" || role === "subtitle" ? formatKeyword(content, previewKeyword, config, role) : content,
       TimelineIn: 0,
       TimelineOut: 10,
       X: position(config[`${role}X`]),
@@ -173,7 +178,7 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media?: Mast
     const track = { ...source, ...applied };
     if (!track.id || seen.has(track.id)) throw new Error("特效轨道 ID 必须唯一");
     seen.add(track.id);
-    const resolved = buildTrackContent(track.editor, catalog, track.target, canvas.Width);
+    const resolved = buildTrackContent(track.editor, catalog, track.target);
     if (track.end <= track.start) continue;
     if (isTextTarget(track.target)) {
       const text = resolved.text;
@@ -203,27 +208,32 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media?: Mast
   return { ...timeline, EffectTracks, previewRows, notices };
 }
 
-/** 按字素折行并保留显式换行；不把 emoji 或组合字符拆开。 */
-function wrapPreviewText(content: string, size: number, maxWidth: number): string {
-  const context = document.createElement("canvas").getContext("2d");
-  if (!context) return content;
-  context.font = `${size}px "ims-preview"`;
-  const segmenter = new Intl.Segmenter("zh", { granularity: "grapheme" });
-  // ponytail: 测量字体宽度不包含花字外扩；需逐像素一致时改用 SDK 字形测量。
-  return content
-    .split(/\r\n?|\n/)
-    .map((paragraph) => {
-      const lines = [""];
-      for (const { segment } of segmenter.segment(paragraph)) {
-        const last = lines.length - 1;
-        if (
-          lines[last] &&
-          context.measureText(lines[last] + segment).width > maxWidth
-        )
-          lines.push(segment);
-        else lines[last] += segment;
-      }
-      return lines.join("\n");
-    })
-    .join("\n");
+/** 将启用的局部样式包在首次出现的关键词两侧；无关键词时保留原文字。 */
+export function formatSubtitleKeyword(content: string, keyword: string, config: Editor): string {
+  return formatKeyword(content, keyword, config, "subtitle");
+}
+
+/** 生成标题或字幕的局部样式；合成标题没有匹配词语时保留完整标题。 */
+export function formatKeyword(content: string, keyword: string, config: Editor, role: "title" | "subtitle"): string {
+  const color = config[`${role}KeywordColor`];
+  const size = config[`${role}KeywordSize`];
+  if (color && !/^#[0-9A-Fa-f]{6}$/.test(color)) throw new Error("关键词颜色须为 #RRGGBB");
+  if (size !== 0 && (!Number.isInteger(size) || size < 12 || size > 300)) throw new Error("关键词字号须为 12～300 的整数");
+  const styles = [
+    [config[`${role}KeywordBold`], "\\b1", "\\b0"],
+    [config[`${role}KeywordItalic`], "\\i1", "\\i0"],
+    [config[`${role}KeywordUnderline`], "\\u1", "\\u0"],
+    [config[`${role}KeywordStrikeout`], "\\s1", "\\s0"],
+  ] as const;
+  const enabled = styles.filter(([selected]) => selected);
+  if (!keyword || (!enabled.length && !color && !size)) return content;
+  const start = content.indexOf(keyword);
+  if (start < 0) {
+    if (role === "title") return content;
+    throw new Error("关键词不在字幕文字中");
+  }
+  const bgr = color ? `${color.slice(5, 7)}${color.slice(3, 5)}${color.slice(1, 3)}`.toUpperCase() : "";
+  const opening = (color ? `\\1c&${bgr}&` : "") + (size ? `\\fs${size}` : "") + enabled.map(([, open]) => open).join("");
+  const closing = (color ? "\\1c" : "") + (size ? "\\fs" : "") + enabled.map(([, , close]) => close).join("");
+  return `${content.slice(0, start)}{${opening}}${keyword}{${closing}}${content.slice(start + keyword.length)}`;
 }

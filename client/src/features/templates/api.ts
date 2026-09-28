@@ -49,16 +49,17 @@ function toTemplate(record: TemplateRecord): Template {
     tracks: record.tracks.tracks.map((track): EffectTrack => {
       if (track.start === undefined || !track.editor)
         throw new Error("模板对象缺少必要字段");
-      const editor = toJson(EffectTemplateEditorSchema, track.editor) as Partial<Editor>;
-      if (Object.keys(defaultEditor).some((key) => !Object.prototype.hasOwnProperty.call(editor, key)))
+      const received = toJson(EffectTemplateEditorSchema, track.editor) as Partial<Editor>;
+      if (Object.keys(defaultEditor).some((key) => !key.startsWith("subtitleKeyword") && !key.startsWith("titleKeyword") && !Object.prototype.hasOwnProperty.call(received, key)))
         throw new Error("模板编辑配置缺少必要字段");
+      const editor = { ...defaultEditor, ...received };
       return {
         id: track.id,
         target: track.target as EffectTrack["target"],
         start_mode: track.startMode as EffectTrack["start_mode"],
         start: track.start,
         duration: track.duration ?? null,
-        editor: editor as Editor,
+        editor,
       };
     }),
   };

@@ -119,7 +119,9 @@ def test_template_protobuf_update_preserves_identity_and_restores_defaults(
         "template_id": original.template_id,
         "name": "更新后的模板",
         "effect_ids": ["in/blur_in"],
-        "tracks": [template_track("subtitle", subtitleIn="in/blur_in")],
+        "tracks": [template_track("subtitle", subtitleIn="in/blur_in", subtitleKeywordBold=True,
+                                  subtitleKeywordUnderline=True, subtitleKeywordColor="#12AB34",
+                                  subtitleKeywordSize=64)],
     })
     assert changed.status_code == 200
     revised = pb.SaveTemplateResponse.FromString(changed.content).template
@@ -129,12 +131,33 @@ def test_template_protobuf_update_preserves_identity_and_restores_defaults(
     assert revised.description == ""
     assert revised.transition_duration_seconds == 1
     assert revised.tracks.tracks[0].editor.subtitle_in == "in/blur_in"
+    assert revised.tracks.tracks[0].editor.subtitle_keyword_bold
+    assert revised.tracks.tracks[0].editor.subtitle_keyword_underline
+    assert not revised.tracks.tracks[0].editor.subtitle_keyword_italic
+    assert revised.tracks.tracks[0].editor.subtitle_keyword_color == "#12AB34"
+    assert revised.tracks.tracks[0].editor.subtitle_keyword_size == 64
     assert revised.effects[0].parameters == {"AaiMotionInEffect": "blur_in"}
     assert pb.GetTemplateResponse.FromString(
         client.get(f"/template/{original.template_id}").content,
     ).template == revised
     with template_db.connect() as connection:
         assert len(connection.execute(select(store.templates)).all()) == 1
+
+
+def test_title_keyword_style_roundtrips_through_protobuf(client: TestClient, template_payload: dict) -> None:
+    """标题关键词配置经过真实二进制保存、详情读取及服务端校验。"""
+    payload = {**template_payload, "tracks": [template_track(
+        titleIn="in/fade_in", titleKeywordBold=True, titleKeywordColor="#12AB34", titleKeywordSize=72,
+    )]}
+    response = _post(client, payload)
+    assert response.status_code == 201
+    record = pb.SaveTemplateResponse.FromString(response.content).template
+    editor = record.tracks.tracks[0].editor
+    assert (editor.title_keyword_bold, editor.title_keyword_color, editor.title_keyword_size) == (True, "#12AB34", 72)
+    detail = pb.GetTemplateResponse.FromString(
+        client.get(f"/template/{record.template_id}").content,
+    ).template
+    assert detail == record
 
 
 def test_template_protobuf_invalid_effects_preserve_data(

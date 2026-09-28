@@ -174,9 +174,55 @@ export function EffectEditor({
                 maxLength={
                   role === "title" ? 60 : role === "subtitle" ? 100 : 40
                 }
-                onChange={(event) => update(textKey, event.target.value)}
+                onChange={(event) => role === "title"
+                  ? onChange({ ...draft, editor: { ...editor, title: event.target.value, titleKeyword: "" } })
+                  : update(textKey, event.target.value)}
               />
             </div>
+            {(role === "title" || role === "subtitle") && (
+              <fieldset className="space-y-2">
+                <legend className="text-sm font-medium">关键词样式</legend>
+                <div className="grid grid-cols-2 gap-2">
+                  {([
+                    [`${role}KeywordBold`, "加粗"],
+                    [`${role}KeywordItalic`, "斜体"],
+                    [`${role}KeywordUnderline`, "下划线"],
+                    [`${role}KeywordStrikeout`, "删除线"],
+                  ] as const).map(([key, label]) => (
+                    <label key={key} className="flex items-center gap-2 text-sm">
+                      <input type="checkbox" checked={editor[key]} onChange={(event) => update(key, event.target.checked)} />
+                      {label}
+                    </label>
+                  ))}
+                </div>
+                <div className="space-y-2">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={Boolean(editor[`${role}KeywordColor`])} onChange={(event) => update(`${role}KeywordColor`, event.target.checked ? "#FFFF00" : "")} />
+                    设置关键词颜色
+                  </label>
+                  <div className="flex items-center gap-3">
+                    <Label htmlFor={`${id}-keyword-color`}>关键词颜色</Label>
+                    <input id={`${id}-keyword-color`} type="color" value={editor[`${role}KeywordColor`] || "#FFFF00"} disabled={!editor[`${role}KeywordColor`]} onChange={(event) => update(`${role}KeywordColor`, event.target.value.toUpperCase())} className="h-9 w-14 rounded border bg-background p-1 disabled:cursor-not-allowed" />
+                    <span className="text-xs text-muted-foreground">{editor[`${role}KeywordColor`] || `保持${role === "title" ? "标题" : "字幕"}原色`}</span>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={editor[`${role}KeywordSize`] !== 0} onChange={(event) => update(`${role}KeywordSize`, event.target.checked ? editor[`${role}Size`] : 0)} />
+                    设置关键词字号
+                  </label>
+                  <NumberField
+                    label="关键词字号"
+                    value={editor[`${role}KeywordSize`] || editor[`${role}Size`]}
+                    min={12}
+                    max={300}
+                    disabled={editor[`${role}KeywordSize`] === 0}
+                    onChange={(value) => update(`${role}KeywordSize`, value)}
+                  />
+                </div>
+                <p className="text-xs text-muted-foreground">{role === "title" ? "预览和合成分别从示例标题与请求标题的首段连续文字选取前两个字。" : "预览使用示例文字的首个词语；合成时作用于每段字幕的关键词。"}</p>
+              </fieldset>
+            )}
             <div className="grid grid-cols-2 gap-3">
               <NumberField
                 label="字号"

@@ -87,7 +87,8 @@
 - 主页创建草稿不调用 POST；模板库保存时无 ID 创建、有 ID 更新。未保存切换须提供保存并切换、放弃修改、取消，失败保留草稿。
 - 前端使用 SDK 5.2.2 的效果目录和静态动画 JSON，服务端维护同版本白名单；不提供 `/template/effects`。升级 SDK 时同步核对目录。修改 `proto/` 协议后运行 `buf lint`、`buf generate` 并提交三种语言的生成代码；已发布协议使用 `buf breaking` 检查兼容性。
 - 示例视频地址通过 `client/.env` 中的 `VITE_PREVIEW_VIDEO_URL` 配置，支持 HTTP(S) 直链与 public 资源路径；空值使用内置示例。修改后重启 Vite，生产使用需重新构建。「加载预览视频」读取真实时长和尺寸，视频信息独立于模板保存，独立视频元素在完成、失败、取消和卸载时清理。
-- 模板预览画布与 SDK 场景使用视频原始宽高；默认示例也读取真实尺寸并保留十秒区间。标题、字幕和气泡字号支持 12～300 的整数，预览、云端和本地保存统一校验；字号按画布像素计算，折行宽度为画布宽度的 90%。显示区域同时受可用宽度与窗口高度的 60% 限制，等比例呈现完整画面。SDK 在独立 iframe 初始化，通过 `maxCanvasConfig` 设置尺寸，视频尺寸变化时重新初始化并清理旧播放器。
+- 模板预览画布与 SDK 场景使用视频原始宽高；默认示例也读取真实尺寸并保留十秒区间。标题、字幕和气泡字号支持 12～300 的整数，预览、云端和本地保存统一校验；字号按画布像素计算，标题和字幕预览保留原文，不添加自动换行。显示区域同时受可用宽度与窗口高度的 60% 限制，等比例呈现完整画面。SDK 在独立 iframe 初始化，通过 `maxCanvasConfig` 设置尺寸，视频尺寸变化时重新初始化并清理旧播放器。
+- 顶部标题对象的 `tracks[].editor` 保存 `titleKeyword`、四个可组合的局部样式布尔选项 `titleKeywordBold`、`titleKeywordItalic`、`titleKeywordUnderline`、`titleKeywordStrikeout`、可选的 `titleKeywordColor` 与 `titleKeywordSize`；关键词为空时，预览和合成分别从示例标题与请求标题的首段连续文字选取前两个字，已有指定关键词继续应用；修改示例标题时清除指定关键词。底部字幕对象独立保存 `subtitleKeywordBold`、`subtitleKeywordItalic`、`subtitleKeywordUnderline`、`subtitleKeywordStrikeout`、`subtitleKeywordColor` 与 `subtitleKeywordSize`；预览使用示例字幕的首个词语，合成使用每段切片的 `keyword`。颜色为空字符串或 `#RRGGBB`，局部字号为 0（沿用原字号）或 12～300 的整数；只标记首次出现的位置，颜色按 IMS 要求转换为 BGR，字号通过 IMS `\fs` 设置并恢复；其他对象不得启用对应样式，已有本地模板缺少新字段时读取默认值。
 - 预览保留阿里云 SDK 5.2.2；Windows 生产页面通过 `src-tauri/src/localhost.rs` 在 `127.0.0.1` 的系统分配端口提供打包资源，窗口使用 `http://localhost:<端口>`，避免 `tauri.localhost` 不满足空 License 的 localhost 预览条件。仅允许对应 Host 的 GET/HEAD，不暴露任意磁盘文件；开发模式与 macOS / Linux 保持原加载方式，只向本次绑定的精确 localhost URL 开放模板、设置存储和内置后端启动命令，不授权其他端口或域名。
 - API 地址读取 `client/.env` 的 `VITE_API_URL`，未配置或留空时默认 `http://localhost:20070`；CORS 允许精确 localhost 主机的动态 HTTP 端口。修改配置后重启 Vite，生产需重新构建；避免 `.env.local` 同名配置覆盖。主页列表加载不阻塞新建，编辑保存不依赖列表，返回主页时读取最新结果。预览仍需联网获取 SDK、字体和媒体，不发起云端合成，不将浏览器验证等同于桌面安装包验证。
 - macOS 通过 `client/src-tauri/Info.plist` 设置 `NSAppTransportSecurity.NSAllowsArbitraryLoadsInWebContent=true`，允许 WebView 访问用户设置的 HTTP 后端；Tauri 自动合并到应用包，修改后重新打包生效。
@@ -109,10 +110,10 @@
 
 ## Feature 测试约束（强制）
 
-- 每次新增 feature 必须同时提交详细、覆盖全面且可重复执行的测试脚本；修复 bug 必须增加能够复现问题的回归用例。不能只测成功路径，也不能只断言函数被调用或复制实现来凑测试数量。
+- 每次新增 feature 必须同时提交可重复执行的核心功能测试；修复 bug 必须增加能够复现问题的回归用例。测试断言实际业务结果，避免重复验证同一行为。
 - 服务端测试统一放在 `server/tests/`，使用 pytest 的 `test_*.py`、fixture 和参数化用例；共享夹具放 `conftest.py`，不再新增 unittest 风格测试。按功能组织文件，规模增大后再分目录。
 - 客户端核心测试在 `client/tests/`，使用 Bun 自带运行器、Happy DOM 和 React Testing Library；在 `client/` 执行 `bun run test`，每个用例上方写中文场景注释。测试隔离 HTTP 与 SDK，不连接真实服务；只覆盖必要业务行为，不把模拟 DOM 验证等同于真实视频播放、浏览器原生表单校验或 Tauri 验证。`bun run build` 同时检查测试类型。
-- 根据功能适用范围覆盖正常流程、异常输入、边界值、空数据、失败恢复、资源清理，以及涉及的权限、并发与幂等行为。不存在的能力不为凑覆盖率编写空测试；提交说明列出已覆盖场景与实际限制。
+- 按核心功能涉及的实际风险选择正常流程及必要的异常、边界和恢复场景；不为凑覆盖率增加测试。提交说明列出已覆盖场景与实际限制。
 - API 用例应检查状态码、响应契约和副作用。测试隔离外部服务、密钥和持久化数据，使用 fixture、monkeypatch 或临时目录；不得访问生产系统、依赖执行顺序或使用无界等待。
 - 共享服务端夹具保留临时 SQLite 数据库隔离，同时自动清除外部 `IMV_`、`DASHSCOPE_API_KEY` 与旧 `ASR_BASE_URL` 环境变量并将各配置类的文件路径指向临时 `server/.env`，切换临时目录，避免读取本机模型配置；ASR 首次导入屏蔽 `.env`，请求使用内存传输。配置用例显式注入，不访问真实 MySQL、ASR 或模型服务。
 - 文件头说明测试范围与执行方式，测试函数/夹具的 docstring 说明场景和期望。每次功能改动运行相关用例，交付前运行所属模块的完整测试；CI 使用锁定依赖运行服务端 pytest，测试失败必须修复。

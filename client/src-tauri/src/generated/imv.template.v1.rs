@@ -105,6 +105,45 @@ pub struct EffectTemplateEditor {
     /// 气泡字出场动画的持续时间，单位为秒。
     #[prost(double, optional, tag="33")]
     pub bubble_out_duration: ::core::option::Option<f64>,
+    /// 底部字幕关键词的局部加粗样式。
+    #[prost(bool, tag="34")]
+    pub subtitle_keyword_bold: bool,
+    /// 底部字幕关键词的局部斜体样式。
+    #[prost(bool, tag="35")]
+    pub subtitle_keyword_italic: bool,
+    /// 底部字幕关键词的局部下划线样式。
+    #[prost(bool, tag="36")]
+    pub subtitle_keyword_underline: bool,
+    /// 底部字幕关键词的局部删除线样式。
+    #[prost(bool, tag="37")]
+    pub subtitle_keyword_strikeout: bool,
+    /// 底部字幕关键词的局部颜色，空字符串表示保持字幕原色，格式为 #RRGGBB。
+    #[prost(string, tag="38")]
+    pub subtitle_keyword_color: ::prost::alloc::string::String,
+    /// 顶部标题中需要设置局部样式的文字；合成标题缺少该文字时保留原文。
+    #[prost(string, tag="39")]
+    pub title_keyword: ::prost::alloc::string::String,
+    /// 顶部标题关键词的局部加粗样式。
+    #[prost(bool, tag="40")]
+    pub title_keyword_bold: bool,
+    /// 顶部标题关键词的局部斜体样式。
+    #[prost(bool, tag="41")]
+    pub title_keyword_italic: bool,
+    /// 顶部标题关键词的局部下划线样式。
+    #[prost(bool, tag="42")]
+    pub title_keyword_underline: bool,
+    /// 顶部标题关键词的局部删除线样式。
+    #[prost(bool, tag="43")]
+    pub title_keyword_strikeout: bool,
+    /// 顶部标题关键词的局部颜色，空字符串表示保持标题原色。
+    #[prost(string, tag="44")]
+    pub title_keyword_color: ::prost::alloc::string::String,
+    /// 顶部标题关键词的局部字号，0 表示保持标题字号，其他值为 12～300 像素。
+    #[prost(int32, tag="45")]
+    pub title_keyword_size: i32,
+    /// 底部字幕关键词的局部字号，0 表示保持字幕字号，其他值为 12～300 像素。
+    #[prost(int32, tag="46")]
+    pub subtitle_keyword_size: i32,
 }
 /// 画面对象及其时间规则。
 #[derive(::serde::Serialize)]
