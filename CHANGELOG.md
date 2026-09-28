@@ -3,6 +3,158 @@
 本项目的版本变更由发布工作流根据 Conventional Commits 自动生成。
 推送正式版本 tag 后，成功发布的版本记录会自动写入此文件。
 
+## [v0.4.2] - 2026-09-28
+### BREAKING CHANGES
+- due to [`8b984f3`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/8b984f3dc947c4e42ff82efb7cac588828e5cc3f) - 统一使用 tracks 保存模板对象参数 *(commit by [@left0ver](https://github.com/left0ver))*:
+
+  统一使用 tracks 保存模板对象参数
+
+- due to [`36145fa`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/36145fa45df0a9f6eb42aaa27feea19b98cc0ab9) - return HTTP 200 creation envelope *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*:
+
+  POST /api/v1/video-compositions now returns HTTP 200 instead of 202; request-body validation errors use code/message/data.
+
+
+### New Features
+- [`cd3ab93`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/cd3ab936d9004c2227c6fa3d72092952ec247d9c) - **remotion**: delete chat history and associated data *(commit by [@jyh20030112](https://github.com/jyh20030112))*
+- [`3ae6241`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/3ae62412893086ceb7463960b76952c93e530759) - **home**: add home tab with cloud and local template selection *(commit by [@left0ver](https://github.com/left0ver))*
+- [`7edab4a`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/7edab4a2058c7f10d122276894b2805c37bd7bda) - **client_template**: add asset-based template editing *(commit by [@left0ver](https://github.com/left0ver))*
+- [`2d20636`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/2d2063662c8b37f0d2838a53ec25591b2eb72912) - **templates**: 支持独立时间规则与独立的特效轨道 *(commit by [@left0ver](https://github.com/left0ver))*
+- [`ece555a`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/ece555a7b0c5897370d64425662b77820011fbc6) - **client**: redesign template home and editor navigation *(commit by [@left0ver](https://github.com/left0ver))*
+- [`feaac83`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/feaac8331351abbbaadc81c5d376de3c9dba36ad) - **client**: display changelog beside and compact home template panel *(commit by [@left0ver](https://github.com/left0ver))*
+- [`e2c81f1`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/e2c81f1faf29e8e16635c006cd9e6a95580db3ef) - **server**: improve video composition callbacks and recovery *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`9c6af80`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/9c6af801ee74d9e6fec87787dc3ee21e9f2f682a) - **server**: add MySQL CA support and align renderer defaults *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`e35e6f6`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/e35e6f6e8876fc41cc3262742937a69746d5596b) - **templates**: preview at native resolution and support larger text *(commit by [@left0ver](https://github.com/left0ver))*
+- [`1a2c307`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/1a2c307d48c5ba721ef3975466c7bdf52231cd3e) - **server**: expose segmentation trace on failures *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+- [`b10ff65`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/b10ff659bbf2447b454cde03acf56e17ac895f5d) - **segmentation**: add timed subtitle parts at punctuation *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`105efd5`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/105efd596d3bd9d187cbe5da5e0d25257f0ba148) - **video-composition**: render timed subtitle clips *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`7ed4423`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/7ed44237afdf2655e78fdefac60d0d1cebef0942) - **video-composition**: add ZOS video transfer *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`5ecb6a1`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/5ecb6a1b3332a4012ba889982ba6b8ec49f0e664) - **video-composition**: return persistent ZOS video URLs *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`9a47087`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/9a47087b5c077513da24f005757be16c65b68b3b) - **template**: use protobuf for template APIs *(commit by [@left0ver](https://github.com/left0ver))*
+- [`6163ea2`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/6163ea2446112b635b00dd0b68d0786e9c8d5c37) - **server**: upload third-frame composition covers to ZOS *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`48ea257`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/48ea257a8b12d104252c14ad8a1bd4fc2dc10d82) - **template**: use protobuf for template APIs *(PR [#63](https://github.com/HsiangNianian/IntelligentMixVideo/pull/63) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`c15366c`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/c15366cd96995c73bf63fd5e20311e9b6e017e1f) - **template**: 支持底部字幕关键词局部样式与颜色 *(commit by [@left0ver](https://github.com/left0ver))*
+- [`93aeb06`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/93aeb06f36d9f6245693f074c3fa54e0efdef2ab) - **template**: 支持顶部标题设置关键字 *(commit by [@left0ver](https://github.com/left0ver))*
+- [`0696d63`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/0696d63513e951121718a9e50a69545478648b3b) - **templates**: support keyword font size *(commit by [@left0ver](https://github.com/left0ver))*
+- [`01a91d1`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/01a91d1fd8d95ce34aba5d7077a29173f38ab56a) - **template**: add keyword styling for titles and subtitles *(PR [#70](https://github.com/HsiangNianian/IntelligentMixVideo/pull/70) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`345dae4`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/345dae4e1421b797debd526d44b227161d8d2b65) - **client**: 优化模板编辑布局与时间轴交互 *(commit by [@left0ver](https://github.com/left0ver))*
+- [`e12efa6`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/e12efa63fc9c1762f791a50c8a8c4c77695f5f55) - **client**: redesign home page with gallery cards and changelog timeline *(commit by [@left0ver](https://github.com/left0ver))*
+- [`34a4c22`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/34a4c226ce63865fdcb2b5457e6ff8f97dda4f04) - **proto**: define reusable Remotion Sprite contract *(PR [#71](https://github.com/HsiangNianian/IntelligentMixVideo/pull/71) by [@jyh20030112](https://github.com/jyh20030112))*
+- [`9565e9f`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/9565e9f43d7578336d63c3a5857ab16bbc791e50) - **client**: redesign home page and template editor layout *(PR [#73](https://github.com/HsiangNianian/IntelligentMixVideo/pull/73) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Bug Fixes
+- [`dd642b0`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/dd642b031979182dc616205c19238b4f73277b1e) - **templates**: explain how to clear outdated local templates *(commit by [@left0ver](https://github.com/left0ver))*
+- [`ddf07a5`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/ddf07a5e8bb7a6b992e261c22763d819d8f869ce) - **server**: adapt composition timeline to template tracks *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`4b2527a`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/4b2527a4f5ab7a77f4858d3eadf9ef687b64b3a8) - **client**: unwrap data wrapper in composition creation response *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`77a6a65`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/77a6a65770e1d1fa8686cd2116b589d8f6e3b4b9) - **server**: mark client IMS tasks unrecoverable after restart *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`87465ee`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/87465eedd063d88582c0ccec5031f5ef021dffbe) - **video-composition**: return task ID directly in creation response *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`b5aa0af`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/b5aa0af415d152a96e3b167c81879b6c2518b372) - **video-composition**: preserve material aspect ratio with fit mode *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`5d8686c`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/5d8686cf7b59119b5a702bd9fc35a455cd3ed67b) - **video-composition**: sync task response contract *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`751daf9`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/751daf9daf550021da6d1c5a547483a1d542b28c) - **client**: allow HTTP backend requests on macOS *(commit by [@left0ver](https://github.com/left0ver))*
+- [`2d5153f`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/2d5153f2390ec0f423777b406f7a255dab540d91) - **server**: log segmentation diagnostics without response echo *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+- [`1cc0cb5`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/1cc0cb507af608953985179d7baec8ca94f57097) - **video-composition**: preserve media aspect ratio in timelines *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`36145fa`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/36145fa45df0a9f6eb42aaa27feea19b98cc0ab9) - **video-composition**: return HTTP 200 creation envelope *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`b4a18d1`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/b4a18d17aae10fe6cd19949cd7d56ed5cad8b558) - **ci**: align desktop startup smoke with home page *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`68087b8`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/68087b89b3355c67c6cf157d506e27f4947088ad) - **client**: avoid duplicate macOS plist in tests *(commit by [@left0ver](https://github.com/left0ver))*
+- [`7f8d261`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/7f8d261fc8aaa478d31f0be3f1e145e0d8066cc6) - **server**: preserve ZOS timeout stage across retries *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`eb844dc`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/eb844dc92721e42174e225bec1c6517a9558ab45) - **template**: apply server defaults to omitted local Protobuf editor fields *(commit by [@left0ver](https://github.com/left0ver))*
+- [`84b4ea3`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/84b4ea3b6e1df3b71ea026d522d5b90d41569cea) - **server**: document template Protobuf media types in OpenAPI *(commit by [@left0ver](https://github.com/left0ver))*
+- [`a69ab43`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/a69ab4303dd1dce384fab08bc131fc16a970d7e5) - **client**: restore protobuf template CI checks *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`e0bf1b8`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/e0bf1b83b252a0ee759dac1b457019d227aef2ca) - **template**: select two characters for title keywords *(commit by [@left0ver](https://github.com/left0ver))*
+- [`9e62423`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/9e624231a6ed888ae7342b84d9857beee1f99aaa) - **template**: preserve title and subtitle preview text *(commit by [@left0ver](https://github.com/left0ver))*
+- [`681a02d`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/681a02d501151e9452c90a111242b967dffcd6d2) - **template**: clear cached preview timeline before updates *(commit by [@left0ver](https://github.com/left0ver))*
+- [`1cf2649`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/1cf2649592ae75c277a9858fcc308397fecb99ea) - **video-composition**: use template text for bubble tracks *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`2128e58`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/2128e58794a6f0bf2817804f5c89c3def5607748) - **video-composition**: use template text for bubble tracks *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`b51e460`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/b51e460b59aff23e0629d8dac927ac08b9fbc42e) - **client**: limit transition inspector to timing settings *(commit by [@left0ver](https://github.com/left0ver))*
+- [`4f4eeb9`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/4f4eeb9fc577e8edda1b8d5872402c573c53ec02) - **client**: preserve template state across layout breakpoints *(commit by [@left0ver](https://github.com/left0ver))*
+- [`a7ef86b`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/a7ef86b13e2dd5917e576fbd46655d9153c2ca07) - **client**: keep preview seeking responsive during dragging *(commit by [@left0ver](https://github.com/left0ver))*
+
+### Refactors
+- [`d1713a0`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/d1713a021e60ccf032f61c69c4ec378d9eaa176c) - **server**: use explicit statements for chat deletion *(commit by [@jyh20030112](https://github.com/jyh20030112))*
+- [`8b984f3`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/8b984f3dc947c4e42ff82efb7cac588828e5cc3f) - **templates**: 统一使用 tracks 保存模板对象参数 *(commit by [@left0ver](https://github.com/left0ver))*
+- [`283c959`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/283c959cbc0ec41864f62898eb3315fb8216888d) - **client**: remove changelog and clock from home page *(commit by [@left0ver](https://github.com/left0ver))*
+
+### Tests
+- [`037a409`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/037a4090260b578c5a0a6fa34f057139259fcb05) - **client**: remove duplicate template storage test target *(commit by [@left0ver](https://github.com/left0ver))*
+- [`25b1400`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/25b14003d84e52a01e3d9d8eaaa16b847cfd9672) - **templates**: focus coverage on core behavior *(commit by [@left0ver](https://github.com/left0ver))*
+- [`d8bcf11`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/d8bcf11d7297c3cbc6c21804d8c6331fb758f711) - **server**: stabilize ZOS timeout assertion *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`ae13b25`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/ae13b251e082774305637063bd1166d27a24a364) - **server**: isolate FFmpeg availability in composition tests *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+
+### Build System
+- [`56e8c84`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/56e8c844386f0b726abf1111710a496afc4e44e3) - **server**: install FFmpeg for composition tests *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`cc600fb`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/cc600fb596ace18daf752eca6a1b0a0b4beaae64) - **server**: avoid installing FFmpeg in Python job *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+
+### Documentation Changes
+- [`725312e`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/725312e1d7bd3dc72e27a128d6335772b579655e) - update CHANGELOG.md for v0.4.1 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
+- [`6bfca32`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/6bfca32a66425aabf7e9b7de4d95d29d8fc117ce) - **server**: document video composition behavior *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`552d90d`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/552d90db97b5c1e34597e13ac43319f6148f0105) - document punctuation-aware subtitle timing *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`3d37ba2`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/3d37ba28484e4af50073f4b8c750cc9c1bf3a982) - **video-composition**: document ZOS output links *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`7a5f802`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/7a5f80282b4df4a2b300e17e350edde7a7e885c6) - **proto**: 添加protobuf字段的注释 *(commit by [@left0ver](https://github.com/left0ver))*
+- [`6c295d5`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/6c295d5a1cd52d29cc2f40fe7ed0a924cf202348) - **server**: document ZOS covers and custom public URLs *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`db797a4`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/db797a4426eaba42e9f6bfb6be241c523cca6901) - **video-composition**: clarify bubble and keyword rendering *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`27c6981`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/27c6981782032481265a19b1493bfbaefcbf9891) - **video-composition**: clarify bubble and keyword rendering *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+
+### Code Style Changes
+- [`49d34f8`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/49d34f8b928803b304e0916f2ffd68f95ce6cd69) - **server**: standardize module docstrings and import ordering *(commit by [@left0ver](https://github.com/left0ver))*
+
+### Chores
+- [`1b9445d`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/1b9445d7636303efbb8c1dacd9622b99bb392961) - add  .DS_Store to .gitignore *(commit by [@left0ver](https://github.com/left0ver))*
+- [`a2b21f9`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/a2b21f90a7207aa6662d16d4297eccc80421d7b0) - merge upstream dev with subtitle diagnostics *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`9655c6e`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/9655c6eaaa62652f5957d483416c93d01c434d6a) - merge upstream dev into ZOS branch *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`5e0ff8d`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/5e0ff8d0613f3fb5053964ab689f794a3205b796) - 修改默认的预览视频 *(commit by [@left0ver](https://github.com/left0ver))*
+- [`d403e03`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/d403e039c5d73629af132bf1501da5e7e17b4dc4) - 修改关键词样式文案 *(commit by [@left0ver](https://github.com/left0ver))*
+- [`5014930`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/5014930f808947d8fd8613dc4199632016f4cb2d) - update gitignore *(commit by [@left0ver](https://github.com/left0ver))*
+- [`a8f8f5e`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/a8f8f5ed60fea24b7ba7340d4400dc13e6d82eb5) - **release**: prepare v0.4.2 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`195f96d`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/195f96da7361a050ef43a72e1100b99af3d661da) - **release**: promote dev to main for v0.4.2 *(PR [#75](https://github.com/HsiangNianian/IntelligentMixVideo/pull/75) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Other Changes
+- [`253109a`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/253109a7666590b13e5ecca24e866960708b260b) - Merge pull request [#52](https://github.com/HsiangNianian/IntelligentMixVideo/pull/52) from jyh20030112/feat/delete-remotion-chats
+
+feat(remotion): delete chat history and associated data *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`b3d3639`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/b3d3639b6036e148cc320f1a2f0f541218ce1155) - Merge pull request [#54](https://github.com/HsiangNianian/IntelligentMixVideo/pull/54) from left0ver/feature/add_home_track
+
+feat(templates)!: add template home and independent effect tracks *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`7dc29a1`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/7dc29a1b2047cd6f33ef030bfe5b6bc15af5ee4c) - Merge pull request [#56](https://github.com/HsiangNianian/IntelligentMixVideo/pull/56) from IT-coder-Yy/dev
+
+feat: Improve video composition callbacks and template track compatibility *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`17a0d94`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/17a0d943f144a993d8a7982fd80c61a52d12b295) - Update SSL connection settings for PyMySQL
+
+Co-authored-by: Copilot Autofix powered by AI <175728472+Copilot@users.noreply.github.com> *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`64f606d`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/64f606d6a53928c598e674f24671876a0e6dbfea) - Merge pull request [#57](https://github.com/HsiangNianian/IntelligentMixVideo/pull/57) from HsiangNianian/feat/server-mysql-ca-and-host-defaults
+
+feat(server): add MySQL CA support and align renderer defaults *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`2b2b673`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/2b2b6733400c95b2f93efdd36e97be2590956977) - Merge pull request [#58](https://github.com/HsiangNianian/IntelligentMixVideo/pull/58) from IT-coder-Yy/dev
+
+fix(video-composition): preserve material aspect ratio *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`67e59b5`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/67e59b5be55753c86255f9b1deed42ad1df5739c) - Merge pull request [#60](https://github.com/HsiangNianian/IntelligentMixVideo/pull/60) from left0ver/codex/upstream-dev
+
+feat(client): improve template previews and macOS HTTP access *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`43c6987`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/43c69870ea2ea4aaf74ca0a46712f796145b830e) - Merge pull request [#61](https://github.com/HsiangNianian/IntelligentMixVideo/pull/61) from muyuzhong/feat/segmentation-trace-observability *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`a4dc78f`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/a4dc78f2381832db0d9fa086c5d313e21dd41f0d) - Merge pull request [#62](https://github.com/HsiangNianian/IntelligentMixVideo/pull/62) from IT-coder-Yy/dev
+
+feat(video-composition)!: split subtitles and standardize task creation *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`c0c25f6`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/c0c25f68b07ad715ea95342b688bfe1c3843e83f) - Merge pull request [#64](https://github.com/HsiangNianian/IntelligentMixVideo/pull/64) from IT-coder-Yy/feat/video_ZOS
+
+feat(video-composition): persist finished videos in ZOS *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`cc5d112`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/cc5d1126d387f6bc5670a93e74ae786ebec1e7dd) - Merge pull request [#65](https://github.com/HsiangNianian/IntelligentMixVideo/pull/65) from HsiangNianian/dev
+
+feat: sync dev code to main *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`00b72e6`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/00b72e602af007a303bf0f9822066779996339a5) - Merge pull request [#67](https://github.com/HsiangNianian/IntelligentMixVideo/pull/67) from IT-coder-Yy/feat/video_ZOS
+
+feat(server): publish third-frame video composition covers to ZOS *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`83be2d7`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/83be2d7ad4d3e2edbc01f2344cbeb1b41b05ebe9) - Update server/src/server/template/router.py
+
+Co-authored-by: sourcery-ai[bot] <58596630+sourcery-ai[bot]@users.noreply.github.com> *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`4137656`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/413765607c0cae2895739c9caec7e9f9daa331a4) - Handle optional fields in JSON response
+
+Co-authored-by: Copilot Autofix powered by AI <175728472+Copilot@users.noreply.github.com> *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`c3ac5d0`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/c3ac5d05e9e1b050f2e43dc6a56ac1a08c1c5016) - Update client/src-tauri/src/templates.rs
+
+Co-authored-by: Thefool <thefoolyuzhe@gmail.com> *(commit by [@left0ver](https://github.com/left0ver))*
+- [`5ccaf76`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/5ccaf769af9103d20a49eccb97542900595e57e5) - Merge pull request [#72](https://github.com/HsiangNianian/IntelligentMixVideo/pull/72) from IT-coder-Yy/feat/video_composition
+
+fix(video-composition): render bubbles from template text *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`a0c17a5`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/a0c17a5e4ee982d33c0865ba142c55a3e3237524) - Merge branch 'dev' into refactor/optimize_frontend_ui *(commit by [@left0ver](https://github.com/left0ver))*
+
 ## [v0.4.1] - 2026-09-18
 ### New Features
 - [`5cbb550`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/5cbb550c054ee167b6628c96c1de261952f89e43) - **server**: preserve explicit user parameter revisions *(commit by [@jyh20030112](https://github.com/jyh20030112))*
@@ -402,3 +554,5 @@ feat(client): 在模板工作区页头添加时钟 *(commit by [@HsiangNianian](
 [v0.4.0]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.3.2...v0.4.0
 
 [v0.4.1]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.4.0...v0.4.1
+
+[v0.4.2]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.4.1...v0.4.2
