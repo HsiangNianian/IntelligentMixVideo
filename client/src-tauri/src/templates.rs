@@ -55,12 +55,14 @@ fn editor_from_protobuf(editor: generated::EffectTemplateEditor) -> Value {
     fields["subtitleKeywordUnderline"] = json!(editor.subtitle_keyword_underline);
     fields["subtitleKeywordStrikeout"] = json!(editor.subtitle_keyword_strikeout);
     fields["subtitleKeywordColor"] = json!(editor.subtitle_keyword_color);
+    fields["subtitleKeywordSize"] = json!(editor.subtitle_keyword_size);
     fields["titleKeyword"] = json!(editor.title_keyword);
     fields["titleKeywordBold"] = json!(editor.title_keyword_bold);
     fields["titleKeywordItalic"] = json!(editor.title_keyword_italic);
     fields["titleKeywordUnderline"] = json!(editor.title_keyword_underline);
     fields["titleKeywordStrikeout"] = json!(editor.title_keyword_strikeout);
     fields["titleKeywordColor"] = json!(editor.title_keyword_color);
+    fields["titleKeywordSize"] = json!(editor.title_keyword_size);
     fields
 }
 
@@ -140,7 +142,7 @@ fn draft_from_protobuf(bytes: &[u8], id: Option<&str>) -> Result<Value, String> 
 
 /// 校验对象编辑参数并从随包目录生成效果快照。
 fn validate_editor(editor: &Value) -> Result<Vec<Value>, String> {
-    if editor.as_object().is_none_or(|fields| fields.len() != 44) {
+    if editor.as_object().is_none_or(|fields| fields.len() != 46) {
         return Err("编辑配置字段不完整或包含未知字段".into());
     }
     for key in SUBTITLE_KEYWORD_FIELDS
@@ -163,6 +165,12 @@ fn validate_editor(editor: &Value) -> Result<Vec<Value>, String> {
                 || !color[1..].bytes().all(|value| value.is_ascii_hexdigit()))
         {
             return Err("关键词颜色须为 #RRGGBB".into());
+        }
+    }
+    for field in ["titleKeywordSize", "subtitleKeywordSize"] {
+        let size = editor[field].as_i64().ok_or("关键词字号须为整数")?;
+        if size != 0 && !(12..=300).contains(&size) {
+            return Err("关键词字号须为 12～300 的整数".into());
         }
     }
     let catalog: Value = serde_json::from_str(include_str!(
@@ -327,14 +335,16 @@ fn validate(mut draft: Value) -> Result<Value, String> {
                 && (SUBTITLE_KEYWORD_FIELDS
                     .iter()
                     .any(|key| editor[*key] == true)
-                    || editor["subtitleKeywordColor"] != "")
+                    || editor["subtitleKeywordColor"] != ""
+                    || editor["subtitleKeywordSize"] != 0)
             {
                 return Err("只有底部字幕可以设置关键词样式".into());
             }
             if target != "title"
                 && (editor["titleKeyword"] != ""
                     || TITLE_KEYWORD_FIELDS.iter().any(|key| editor[*key] == true)
-                    || editor["titleKeywordColor"] != "")
+                    || editor["titleKeywordColor"] != ""
+                    || editor["titleKeywordSize"] != 0)
             {
                 return Err("只有顶部标题可以设置标题关键词样式".into());
             }
@@ -443,11 +453,13 @@ fn read(directory: &Path) -> Result<Vec<Value>, String> {
                     editor.entry(key).or_insert(json!(false));
                 }
                 editor.entry("subtitleKeywordColor").or_insert(json!(""));
+                editor.entry("subtitleKeywordSize").or_insert(json!(0));
                 for key in TITLE_KEYWORD_FIELDS {
                     editor.entry(key).or_insert(json!(false));
                 }
                 editor.entry("titleKeyword").or_insert(json!(""));
                 editor.entry("titleKeywordColor").or_insert(json!(""));
+                editor.entry("titleKeywordSize").or_insert(json!(0));
             }
         }
         let mut draft = record.clone();
@@ -595,11 +607,13 @@ mod tests {
             editor[key] = json!(false);
         }
         editor["subtitleKeywordColor"] = json!("");
+        editor["subtitleKeywordSize"] = json!(0);
         for key in TITLE_KEYWORD_FIELDS {
             editor[key] = json!(false);
         }
         editor["titleKeyword"] = json!("");
         editor["titleKeywordColor"] = json!("");
+        editor["titleKeywordSize"] = json!(0);
         for role in ["title", "subtitle", "bubble"] {
             for (suffix, value) in [
                 ("Size", 40.),
@@ -661,12 +675,14 @@ mod tests {
             subtitle_keyword_underline: false,
             subtitle_keyword_strikeout: false,
             subtitle_keyword_color: "".into(),
+            subtitle_keyword_size: 0,
             title_keyword: "".into(),
             title_keyword_bold: false,
             title_keyword_italic: false,
             title_keyword_underline: false,
             title_keyword_strikeout: false,
             title_keyword_color: "".into(),
+            title_keyword_size: 0,
         };
         generated::SaveTemplateRequest {
             name: "  模板  ".into(),
@@ -690,11 +706,17 @@ mod tests {
     #[test]
     /// 真实 Protobuf 保存消息转换后沿用 JSON 文件结构，缺失字段和错误 ID 均拒绝。
     fn protobuf_save_keeps_json_file_format() {
-        let request = protobuf_request();
+        let mut request = protobuf_request();
+        request.tracks.as_mut().unwrap().tracks[0]
+            .editor
+            .as_mut()
+            .unwrap()
+            .title_keyword_size = 72;
         let bytes = request.encode_to_vec();
         let converted = draft_from_protobuf(&bytes, None).unwrap();
         let mut expected = draft("  模板  ");
         expected["tracks"][0]["start"] = json!(0.0);
+        expected["tracks"][0]["editor"]["titleKeywordSize"] = json!(72);
         for role in ["title", "subtitle", "bubble"] {
             expected["tracks"][0]["editor"][format!("{role}Size")] = json!(40);
         }
@@ -811,6 +833,7 @@ mod tests {
         styled["tracks"][0]["editor"]["subtitleKeywordBold"] = json!(true);
         styled["tracks"][0]["editor"]["subtitleKeywordUnderline"] = json!(true);
         styled["tracks"][0]["editor"]["subtitleKeywordColor"] = json!("#12AB34");
+        styled["tracks"][0]["editor"]["subtitleKeywordSize"] = json!(64);
         let saved = operate(&dir.0, "save", None, Some(styled)).unwrap();
         let id = saved["template_id"].as_str().unwrap();
         assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), saved);
@@ -826,13 +849,17 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("subtitleKeywordColor");
+        old_records[0]["tracks"][0]["editor"]
+            .as_object_mut()
+            .unwrap()
+            .remove("subtitleKeywordSize");
         for key in TITLE_KEYWORD_FIELDS {
             old_records[0]["tracks"][0]["editor"]
                 .as_object_mut()
                 .unwrap()
                 .remove(key);
         }
-        for key in ["titleKeyword", "titleKeywordColor"] {
+        for key in ["titleKeyword", "titleKeywordColor", "titleKeywordSize"] {
             old_records[0]["tracks"][0]["editor"]
                 .as_object_mut()
                 .unwrap()
@@ -851,6 +878,7 @@ mod tests {
             false
         );
         assert_eq!(restored["tracks"][0]["editor"]["subtitleKeywordColor"], "");
+        assert_eq!(restored["tracks"][0]["editor"]["subtitleKeywordSize"], 0);
         assert_eq!(restored["tracks"][0]["editor"]["titleKeyword"], "");
         assert_eq!(restored["tracks"][0]["editor"]["titleKeywordBold"], false);
         assert_eq!(fs::read(path).unwrap(), original);
@@ -864,6 +892,7 @@ mod tests {
         styled["tracks"][0]["editor"]["titleKeyword"] = json!("标题");
         styled["tracks"][0]["editor"]["titleKeywordBold"] = json!(true);
         styled["tracks"][0]["editor"]["titleKeywordColor"] = json!("#12AB34");
+        styled["tracks"][0]["editor"]["titleKeywordSize"] = json!(72);
         let saved = operate(&dir.0, "save", None, Some(styled)).unwrap();
         let id = saved["template_id"].as_str().unwrap();
         assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), saved);
@@ -887,6 +916,8 @@ mod tests {
             ("/tracks/0/editor/subtitleKeywordColor", json!("#12AB34")),
             ("/tracks/0/editor/subtitleKeywordColor", json!("orange")),
             ("/tracks/0/editor/titleKeywordColor", json!("orange")),
+            ("/tracks/0/editor/titleKeywordSize", json!(11)),
+            ("/tracks/0/editor/subtitleKeywordSize", json!(64)),
             ("/tracks/0/editor/titleKeyword", json!("题".repeat(61))),
             ("/transition_duration_seconds", json!(0)),
             ("/tracks/0/editor/title", json!("题".repeat(61))),

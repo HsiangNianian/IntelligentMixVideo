@@ -51,6 +51,7 @@ def first_title_keyword(content: str) -> str:
 def format_keyword(content: str, keyword: str, config: EffectTemplateEditor, role: str) -> str:
     """为标题或字幕的首个匹配词语添加局部样式；标题缺少该词语时保留原文。"""
     color = getattr(config, f"{role}_keyword_color")
+    size = getattr(config, f"{role}_keyword_size")
     styles = (
         (getattr(config, f"{role}_keyword_bold"), r"\b1", r"\b0"),
         (getattr(config, f"{role}_keyword_italic"), r"\i1", r"\i0"),
@@ -58,7 +59,7 @@ def format_keyword(content: str, keyword: str, config: EffectTemplateEditor, rol
         (getattr(config, f"{role}_keyword_strikeout"), r"\s1", r"\s0"),
     )
     enabled = [(start, end) for selected, start, end in styles if selected]
-    if not keyword or not (enabled or color):
+    if not keyword or not (enabled or color or size):
         return content
     position = content.find(keyword)
     if position < 0:
@@ -66,8 +67,8 @@ def format_keyword(content: str, keyword: str, config: EffectTemplateEditor, rol
             return content
         raise ValueError("关键词不在字幕文字中")
     bgr = (color[5:7] + color[3:5] + color[1:3]).upper() if color else ""
-    opening = (rf"\1c&{bgr}&" if color else "") + "".join(start for start, _ in enabled)
-    closing = (r"\1c" if color else "") + "".join(end for _, end in enabled)
+    opening = (rf"\1c&{bgr}&" if color else "") + (rf"\fs{size}" if size else "") + "".join(start for start, _ in enabled)
+    closing = (r"\1c" if color else "") + (r"\fs" if size else "") + "".join(end for _, end in enabled)
     return f"{content[:position]}{{{opening}}}{keyword}{{{closing}}}{content[position + len(keyword):]}"
 
 

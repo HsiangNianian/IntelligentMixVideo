@@ -216,7 +216,9 @@ export function formatSubtitleKeyword(content: string, keyword: string, config: 
 /** 生成标题或字幕的局部样式；合成标题没有匹配词语时保留完整标题。 */
 export function formatKeyword(content: string, keyword: string, config: Editor, role: "title" | "subtitle"): string {
   const color = config[`${role}KeywordColor`];
+  const size = config[`${role}KeywordSize`];
   if (color && !/^#[0-9A-Fa-f]{6}$/.test(color)) throw new Error("关键词颜色须为 #RRGGBB");
+  if (size !== 0 && (!Number.isInteger(size) || size < 12 || size > 300)) throw new Error("关键词字号须为 12～300 的整数");
   const styles = [
     [config[`${role}KeywordBold`], "\\b1", "\\b0"],
     [config[`${role}KeywordItalic`], "\\i1", "\\i0"],
@@ -224,15 +226,15 @@ export function formatKeyword(content: string, keyword: string, config: Editor, 
     [config[`${role}KeywordStrikeout`], "\\s1", "\\s0"],
   ] as const;
   const enabled = styles.filter(([selected]) => selected);
-  if (!keyword || (!enabled.length && !color)) return content;
+  if (!keyword || (!enabled.length && !color && !size)) return content;
   const start = content.indexOf(keyword);
   if (start < 0) {
     if (role === "title") return content;
     throw new Error("关键词不在字幕文字中");
   }
   const bgr = color ? `${color.slice(5, 7)}${color.slice(3, 5)}${color.slice(1, 3)}`.toUpperCase() : "";
-  const opening = (color ? `\\1c&${bgr}&` : "") + enabled.map(([, open]) => open).join("");
-  const closing = (color ? "\\1c" : "") + enabled.map(([, , close]) => close).join("");
+  const opening = (color ? `\\1c&${bgr}&` : "") + (size ? `\\fs${size}` : "") + enabled.map(([, open]) => open).join("");
+  const closing = (color ? "\\1c" : "") + (size ? "\\fs" : "") + enabled.map(([, , close]) => close).join("");
   return `${content.slice(0, start)}{${opening}}${keyword}{${closing}}${content.slice(start + keyword.length)}`;
 }
 

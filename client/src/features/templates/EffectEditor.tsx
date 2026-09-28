@@ -206,6 +206,20 @@ export function EffectEditor({
                     <span className="text-xs text-muted-foreground">{editor[`${role}KeywordColor`] || `保持${role === "title" ? "标题" : "字幕"}原色`}</span>
                   </div>
                 </div>
+                <div className="space-y-2">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={editor[`${role}KeywordSize`] !== 0} onChange={(event) => update(`${role}KeywordSize`, event.target.checked ? editor[`${role}Size`] : 0)} />
+                    设置关键词字号
+                  </label>
+                  <NumberField
+                    label="关键词字号"
+                    value={editor[`${role}KeywordSize`] || editor[`${role}Size`]}
+                    min={12}
+                    max={300}
+                    disabled={editor[`${role}KeywordSize`] === 0}
+                    onChange={(value) => update(`${role}KeywordSize`, value)}
+                  />
+                </div>
                 <p className="text-xs text-muted-foreground">{role === "title" ? "预览自动选择示例标题的首个词语；合成时从请求标题选取首段连续文字。" : "预览使用示例文字的首个词语；合成时作用于每段字幕的关键词。"}</p>
               </fieldset>
             )}

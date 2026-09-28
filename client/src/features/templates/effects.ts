@@ -97,6 +97,7 @@ export function resetTextTarget(draft: EffectDraft, target: TextRole): EffectDra
     next.editor.titleKeywordUnderline = false;
     next.editor.titleKeywordStrikeout = false;
     next.editor.titleKeywordColor = "";
+    next.editor.titleKeywordSize = 0;
   }
   if (target === "subtitle") {
     next.editor.subtitleKeywordBold = false;
@@ -104,6 +105,7 @@ export function resetTextTarget(draft: EffectDraft, target: TextRole): EffectDra
     next.editor.subtitleKeywordUnderline = false;
     next.editor.subtitleKeywordStrikeout = false;
     next.editor.subtitleKeywordColor = "";
+    next.editor.subtitleKeywordSize = 0;
   }
   return next;
 }
@@ -123,6 +125,7 @@ export function removeTarget(draft: EffectDraft, target: EffectTarget): EffectDr
       next.editor.titleKeywordUnderline = false;
       next.editor.titleKeywordStrikeout = false;
       next.editor.titleKeywordColor = "";
+      next.editor.titleKeywordSize = 0;
     }
     if (target === "subtitle") {
       next.editor.subtitleKeywordBold = false;
@@ -130,6 +133,7 @@ export function removeTarget(draft: EffectDraft, target: EffectTarget): EffectDr
       next.editor.subtitleKeywordUnderline = false;
       next.editor.subtitleKeywordStrikeout = false;
       next.editor.subtitleKeywordColor = "";
+      next.editor.subtitleKeywordSize = 0;
     }
   }
   if (target === "transition" && (!Number.isFinite(next.transition_duration_seconds) || next.transition_duration_seconds < 0.1 || next.transition_duration_seconds > 3))

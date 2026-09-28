@@ -138,6 +138,12 @@ pub struct EffectTemplateEditor {
     /// 顶部标题关键词的局部颜色，空字符串表示保持标题原色。
     #[prost(string, tag="44")]
     pub title_keyword_color: ::prost::alloc::string::String,
+    /// 顶部标题关键词的局部字号，0 表示保持标题字号，其他值为 12～300 像素。
+    #[prost(int32, tag="45")]
+    pub title_keyword_size: i32,
+    /// 底部字幕关键词的局部字号，0 表示保持字幕字号，其他值为 12～300 像素。
+    #[prost(int32, tag="46")]
+    pub subtitle_keyword_size: i32,
 }
 /// 画面对象及其时间规则。
 #[derive(::serde::Serialize)]

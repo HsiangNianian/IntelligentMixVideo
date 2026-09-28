@@ -75,6 +75,7 @@ export function trackEditor(editor: Editor, target: EffectTarget): Editor {
       result.titleKeywordUnderline = editor.titleKeywordUnderline;
       result.titleKeywordStrikeout = editor.titleKeywordStrikeout;
       result.titleKeywordColor = editor.titleKeywordColor;
+      result.titleKeywordSize = editor.titleKeywordSize;
     }
     if (target === "subtitle") {
       result.subtitleKeywordBold = editor.subtitleKeywordBold;
@@ -82,6 +83,7 @@ export function trackEditor(editor: Editor, target: EffectTarget): Editor {
       result.subtitleKeywordUnderline = editor.subtitleKeywordUnderline;
       result.subtitleKeywordStrikeout = editor.subtitleKeywordStrikeout;
       result.subtitleKeywordColor = editor.subtitleKeywordColor;
+      result.subtitleKeywordSize = editor.subtitleKeywordSize;
     }
   }
   return result;

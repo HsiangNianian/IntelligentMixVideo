@@ -75,22 +75,30 @@ def test_keyword_style_belongs_to_subtitle_track() -> None:
     payload = track_payload()
     payload["tracks"] = payload["tracks"][:1]
     assert not TemplateSave.model_validate(payload).tracks[0].editor.subtitle_keyword_bold
+    assert TemplateSave.model_validate(payload).tracks[0].editor.subtitle_keyword_size == 0
     payload["tracks"][0]["editor"]["subtitleKeywordBold"] = True
     with pytest.raises(ValidationError, match="只有底部字幕"):
         TemplateSave.model_validate(payload)
     payload["tracks"][0]["editor"].update(subtitleKeywordBold=False, subtitleKeywordColor="#12AB34")
     with pytest.raises(ValidationError, match="只有底部字幕"):
         TemplateSave.model_validate(payload)
+    payload["tracks"][0]["editor"].update(subtitleKeywordColor="", subtitleKeywordSize=64)
+    with pytest.raises(ValidationError, match="只有底部字幕"):
+        TemplateSave.model_validate(payload)
     payload["tracks"][0]["target"] = "subtitle"
-    payload["tracks"][0]["editor"].update(title="", subtitle="示例字幕", vfx="", subtitleIn="in/fade_in", subtitleKeywordBold=True)
+    payload["tracks"][0]["editor"].update(title="", subtitle="示例字幕", vfx="", subtitleIn="in/fade_in", subtitleKeywordBold=True, subtitleKeywordColor="#12AB34")
     payload["effect_ids"] = ["in/fade_in"]
     saved = TemplateSave.model_validate(payload)
     assert saved.tracks[0].editor.subtitle_keyword_bold
     assert saved.tracks[0].editor.subtitle_keyword_color == "#12AB34"
+    assert saved.tracks[0].editor.subtitle_keyword_size == 64
     payload["tracks"][0]["editor"]["subtitleKeywordBold"] = "true"
     with pytest.raises(ValidationError):
         TemplateSave.model_validate(payload)
     payload["tracks"][0]["editor"].update(subtitleKeywordBold=True, subtitleKeywordColor="red")
+    with pytest.raises(ValidationError):
+        TemplateSave.model_validate(payload)
+    payload["tracks"][0]["editor"].update(subtitleKeywordColor="", subtitleKeywordSize=11)
     with pytest.raises(ValidationError):
         TemplateSave.model_validate(payload)
 
@@ -103,12 +111,16 @@ def test_title_keyword_style_belongs_to_title_track() -> None:
     editor["titleKeywordBold"] = True
     with pytest.raises(ValidationError, match="只有顶部标题"):
         TemplateSave.model_validate(payload)
+    editor.update(titleKeywordBold=False, titleKeywordSize=72)
+    with pytest.raises(ValidationError, match="只有顶部标题"):
+        TemplateSave.model_validate(payload)
     payload["tracks"][0]["target"] = "title"
-    editor.update(title="标题示例", vfx="", titleIn="in/fade_in", titleKeywordColor="#12AB34")
+    editor.update(title="标题示例", vfx="", titleIn="in/fade_in", titleKeywordBold=True, titleKeywordColor="#12AB34")
     payload["effect_ids"] = ["in/fade_in"]
     saved = TemplateSave.model_validate(payload)
     assert saved.tracks[0].editor.title_keyword_bold
     assert saved.tracks[0].editor.title_keyword_color == "#12AB34"
+    assert saved.tracks[0].editor.title_keyword_size == 72
     editor["titleKeywordColor"] = "red"
     with pytest.raises(ValidationError):
         TemplateSave.model_validate(payload)

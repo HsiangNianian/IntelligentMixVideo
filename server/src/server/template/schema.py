@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.alias_generators import to_camel
 
 EffectCategory = Literal[
@@ -93,11 +93,21 @@ class EffectTemplateEditor(BaseModel):
     title_keyword_underline: bool = Field(default=False, strict=True)
     title_keyword_strikeout: bool = Field(default=False, strict=True)
     title_keyword_color: str = Field(default="", pattern=r"^(?:|#[0-9A-Fa-f]{6})$")
+    title_keyword_size: int = Field(default=0, ge=0, le=300, strict=True)
     subtitle_keyword_bold: bool = Field(default=False, strict=True)
     subtitle_keyword_italic: bool = Field(default=False, strict=True)
     subtitle_keyword_underline: bool = Field(default=False, strict=True)
     subtitle_keyword_strikeout: bool = Field(default=False, strict=True)
     subtitle_keyword_color: str = Field(default="", pattern=r"^(?:|#[0-9A-Fa-f]{6})$")
+    subtitle_keyword_size: int = Field(default=0, ge=0, le=300, strict=True)
+
+    @field_validator("title_keyword_size", "subtitle_keyword_size")
+    @classmethod
+    def validate_keyword_size(cls, value: int) -> int:
+        """局部字号为零时沿用文字字号；启用时要求 12～300 像素。"""
+        if value != 0 and value < 12:
+            raise ValueError("关键词字号须为 12～300 的整数")
+        return value
 
     @model_validator(mode="after")
     def exclusive_motions(self) -> "EffectTemplateEditor":
@@ -155,12 +165,14 @@ class EffectTrack(BaseModel):
             self.editor.subtitle_keyword_bold, self.editor.subtitle_keyword_italic,
             self.editor.subtitle_keyword_underline, self.editor.subtitle_keyword_strikeout,
             bool(self.editor.subtitle_keyword_color),
+            bool(self.editor.subtitle_keyword_size),
         )):
             raise ValueError("只有底部字幕可以设置关键词样式")
         if self.target != "title" and any((
             self.editor.title_keyword, self.editor.title_keyword_bold,
             self.editor.title_keyword_italic, self.editor.title_keyword_underline,
             self.editor.title_keyword_strikeout, bool(self.editor.title_keyword_color),
+            bool(self.editor.title_keyword_size),
         )):
             raise ValueError("只有顶部标题可以设置标题关键词样式")
         for role, field in (("title", "title"), ("subtitle", "subtitle"), ("bubble", "bubble_text")):

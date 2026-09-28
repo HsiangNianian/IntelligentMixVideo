@@ -5,7 +5,7 @@ import { sampleDraft } from "./fixtures";
 import { readCatalog } from "@/features/templates/sdk";
 import { addTrack, previewDuration, removeTrack, resolveTrack, setTrackRange, setTrackTiming, trackDraft, updateTrack } from "@/features/templates/tracks";
 import { removeTarget, resetTextTarget } from "@/features/templates/effects";
-import { buildPreviewRows, buildTimeline, formatSubtitleKeyword } from "@/features/templates/timeline";
+import { buildPreviewRows, buildTimeline, formatKeyword, formatSubtitleKeyword } from "@/features/templates/timeline";
 import timingCases from "../../server/tests/template_timing_cases.json";
 
 const catalog = readCatalog();
@@ -42,6 +42,24 @@ test("标题预览自动显示关键词样式", () => {
   draft.tracks[0].editor.titleKeywordColor = "#FF0000";
   expect(buildTimeline(draft, catalog).SubtitleTracks[0].SubtitleTrackClips[0].Content)
     .toContain("{\\1c&0000FF&\\b1}让{\\1c\\b0}每");
+});
+
+// 场景：标题和字幕局部字号只作用于首次关键词，结尾恢复原字号，独立对象编辑和重置保留默认值。
+test("关键词字号进入两类文字预览并可恢复默认", () => {
+  const draft = sampleDraft();
+  draft.tracks[0].editor.titleKeywordSize = 64;
+  draft.tracks[1].editor.subtitleKeywordSize = 48;
+  const clips = buildTimeline(draft, catalog).SubtitleTracks.map((row) => row.SubtitleTrackClips[0]);
+  expect(clips[0].Content).toContain("{\\fs64}让{\\fs}");
+  expect(clips[1].Content).toContain("{\\fs48}选择{\\fs}");
+  expect(clips[0].FontSize).toBe(defaultEditor.titleSize);
+  expect(clips[1].FontSize).toBe(defaultEditor.subtitleSize);
+  expect(formatKeyword("词语词语", "词语", { ...defaultEditor, titleKeywordSize: 64 }, "title"))
+    .toBe("{\\fs64}词语{\\fs}词语");
+  expect(() => formatSubtitleKeyword("词语", "词", { ...defaultEditor, subtitleKeywordSize: 11 }))
+    .toThrow("关键词字号须为 12～300 的整数");
+  expect(resetTextTarget(trackDraft(draft, draft.tracks[0]), "title").editor.titleKeywordSize).toBe(0);
+  expect(removeTarget(trackDraft(draft, draft.tracks[1]), "subtitle").editor.subtitleKeywordSize).toBe(0);
 });
 
 // 场景：IMS 默认转场为一秒、文字入出场各半秒，滤镜和 VFX 覆盖完整视频；用户时长继续保留。

@@ -44,11 +44,13 @@ export const defaultEditor = {
   titleKeywordUnderline: false,
   titleKeywordStrikeout: false,
   titleKeywordColor: "",
+  titleKeywordSize: 0,
   subtitleKeywordBold: false,
   subtitleKeywordItalic: false,
   subtitleKeywordUnderline: false,
   subtitleKeywordStrikeout: false,
   subtitleKeywordColor: "",
+  subtitleKeywordSize: 0,
 };
 
 /** 三类文字共享字号、位置和动画设置。 */
