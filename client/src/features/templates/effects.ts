@@ -90,6 +90,23 @@ export function resetTextTarget(draft: EffectDraft, target: TextRole): EffectDra
   next.editor[`${target}Y`] = defaultEditor[`${target}Y`];
   next.editor[`${target}InDuration`] = defaultEditor[`${target}InDuration`];
   next.editor[`${target}OutDuration`] = defaultEditor[`${target}OutDuration`];
+  if (target === "title") {
+    next.editor.titleKeyword = "";
+    next.editor.titleKeywordBold = false;
+    next.editor.titleKeywordItalic = false;
+    next.editor.titleKeywordUnderline = false;
+    next.editor.titleKeywordStrikeout = false;
+    next.editor.titleKeywordColor = "";
+    next.editor.titleKeywordSize = 0;
+  }
+  if (target === "subtitle") {
+    next.editor.subtitleKeywordBold = false;
+    next.editor.subtitleKeywordItalic = false;
+    next.editor.subtitleKeywordUnderline = false;
+    next.editor.subtitleKeywordStrikeout = false;
+    next.editor.subtitleKeywordColor = "";
+    next.editor.subtitleKeywordSize = 0;
+  }
   return next;
 }
 
@@ -101,6 +118,23 @@ export function removeTarget(draft: EffectDraft, target: EffectTarget): EffectDr
     next.editor[`${target}Size`] = defaultEditor[`${target}Size`];
     next.editor[`${target}X`] = defaultEditor[`${target}X`];
     next.editor[`${target}Y`] = defaultEditor[`${target}Y`];
+    if (target === "title") {
+      next.editor.titleKeyword = "";
+      next.editor.titleKeywordBold = false;
+      next.editor.titleKeywordItalic = false;
+      next.editor.titleKeywordUnderline = false;
+      next.editor.titleKeywordStrikeout = false;
+      next.editor.titleKeywordColor = "";
+      next.editor.titleKeywordSize = 0;
+    }
+    if (target === "subtitle") {
+      next.editor.subtitleKeywordBold = false;
+      next.editor.subtitleKeywordItalic = false;
+      next.editor.subtitleKeywordUnderline = false;
+      next.editor.subtitleKeywordStrikeout = false;
+      next.editor.subtitleKeywordColor = "";
+      next.editor.subtitleKeywordSize = 0;
+    }
   }
   if (target === "transition" && (!Number.isFinite(next.transition_duration_seconds) || next.transition_duration_seconds < 0.1 || next.transition_duration_seconds > 3))
     next.transition_duration_seconds = defaultTransitionDuration;

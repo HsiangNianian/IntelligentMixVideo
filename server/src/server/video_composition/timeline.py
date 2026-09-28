@@ -1,6 +1,7 @@
 """由业务快照生成 IMS Timeline；转场只用效果类型连接实际片段，其他对象保留模板时间规则。"""
 
 from math import floor
+import re
 
 from pydantic import TypeAdapter
 
@@ -34,6 +35,41 @@ def validate_matches(segments: list[Segment], matches: list[MatchedSegment]) -> 
             or matched.end_time != source.end_time
         ):
             raise ValueError("匹配片段编号、文案或时间与切片不一致")
+
+
+def format_subtitle_keyword(content: str, keyword: str, config: EffectTemplateEditor) -> str:
+    """按模板选项为本段首次出现的关键词生成 IMS 局部样式指令。"""
+    return format_keyword(content, keyword, config, "subtitle")
+
+
+def first_title_keyword(content: str) -> str:
+    """从请求标题首段连续文字取前两个字，供没有手动关键词的标题样式使用。"""
+    match = re.search(r"[^\W_]{1,2}", content)
+    return match.group() if match else ""
+
+
+def format_keyword(content: str, keyword: str, config: EffectTemplateEditor, role: str) -> str:
+    """为标题或字幕的首个匹配词语添加局部样式；标题缺少该词语时保留原文。"""
+    color = getattr(config, f"{role}_keyword_color")
+    size = getattr(config, f"{role}_keyword_size")
+    styles = (
+        (getattr(config, f"{role}_keyword_bold"), r"\b1", r"\b0"),
+        (getattr(config, f"{role}_keyword_italic"), r"\i1", r"\i0"),
+        (getattr(config, f"{role}_keyword_underline"), r"\u1", r"\u0"),
+        (getattr(config, f"{role}_keyword_strikeout"), r"\s1", r"\s0"),
+    )
+    enabled = [(start, end) for selected, start, end in styles if selected]
+    if not keyword or not (enabled or color or size):
+        return content
+    position = content.find(keyword)
+    if position < 0:
+        if role == "title":
+            return content
+        raise ValueError("关键词不在字幕文字中")
+    bgr = (color[5:7] + color[3:5] + color[1:3]).upper() if color else ""
+    opening = (rf"\1c&{bgr}&" if color else "") + (rf"\fs{size}" if size else "") + "".join(start for start, _ in enabled)
+    closing = (r"\1c" if color else "") + (r"\fs" if size else "") + "".join(end for _, end in enabled)
+    return f"{content[:position]}{{{opening}}}{keyword}{{{closing}}}{content[position + len(keyword):]}"
 
 
 def build_timeline(
@@ -103,7 +139,7 @@ def build_timeline(
     warnings = []
     def text(role: str, content: str, start: float, end: float,
              config: EffectTemplateEditor, effects: dict) -> dict:
-        """使用业务文字和模板样式，短入出动画同比缩短且不跨字幕区间。"""
+        """使用对象文字和模板样式，短入出动画同比缩短且不跨对象区间。"""
         clip = {
             "Type": "Text", "Content": content, "TimelineIn": start,
             "TimelineOut": end, "Alignment": "Center",
@@ -163,16 +199,23 @@ def build_timeline(
                 **track_parameters[track.target], "TimelineIn": applied.start, "TimelineOut": applied.end,
             }]})
         else:
-            # 标题使用请求文字；字幕使用标点处细分的短句，关键词仍使用原切片。
-            items = [part for item in source for part in (item.subtitle_parts or [item])] if track.target == "subtitle" else source
-            contents = [(request.title, applied.start, applied.end)] if track.target == "title" else [
-                (item.text if track.target == "subtitle" else item.keyword,
-                 max(item.start_time, applied.start), min(item.end_time, applied.end)) for item in items
-            ]
+            # 标题使用请求文字；字幕沿用切片关键词；气泡按对象区间显示模板文字一次。
+            contents = []
+            if track.target == "title":
+                contents.append((request.title, "", applied.start, applied.end))
+            elif track.target == "subtitle":
+                for item in source:
+                    keyword_used = False
+                    for part in item.subtitle_parts or [item]:
+                        content = "".join(char for char in part.text if char not in SUBTITLE_PUNCTUATION).strip()
+                        keyword = item.keyword if not keyword_used and item.keyword in content else ""
+                        keyword_used = keyword_used or bool(keyword)
+                        contents.append((content, keyword,
+                                         max(part.start_time, applied.start), min(part.end_time, applied.end)))
+            else:
+                contents.append((track.editor.bubble_text, "", applied.start, applied.end))
             text_clips = []
-            for content, start, end in contents:
-                if track.target == "subtitle":
-                    content = "".join(char for char in content if char not in SUBTITLE_PUNCTUATION).strip()
+            for content, keyword, start, end in contents:
                 if not content or not content.strip() or end <= start:
                     continue
                 segment_track = track.model_copy(update={"start_mode": "seconds", "start": start, "duration": end - start})
@@ -180,6 +223,10 @@ def build_timeline(
                 if segment.notice:
                     warnings.append(f"对象 {track.id}：{segment.notice}")
                 if segment.end > segment.start:
+                    if track.target in ("title", "subtitle"):
+                        content = format_keyword(content, (segment.editor.title_keyword or first_title_keyword(content))
+                                                 if track.target == "title" else keyword,
+                                                 segment.editor, track.target)
                     text_clips.append(text(track.target, content, segment.start, segment.end, segment.editor, track_parameters))
             if text_clips:
                 timeline["SubtitleTracks"].append({"SubtitleTrackClips": text_clips})

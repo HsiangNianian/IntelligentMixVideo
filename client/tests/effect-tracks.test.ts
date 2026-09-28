@@ -5,11 +5,62 @@ import { sampleDraft } from "./fixtures";
 import { readCatalog } from "@/features/templates/sdk";
 import { addTrack, previewDuration, removeTrack, resolveTrack, setTrackRange, setTrackTiming, trackDraft, updateTrack } from "@/features/templates/tracks";
 import { removeTarget, resetTextTarget } from "@/features/templates/effects";
-import { buildPreviewRows, buildTimeline } from "@/features/templates/timeline";
+import { buildPreviewRows, buildTimeline, formatKeyword, formatSubtitleKeyword } from "@/features/templates/timeline";
 import timingCases from "../../server/tests/template_timing_cases.json";
 
 const catalog = readCatalog();
 const vfx = catalog.find((asset) => asset.category === "vfx/normal")!;
+
+// 场景：字幕关键词组合样式只包围首次匹配文字，关闭后保持原文，重置清除全部选项。
+test("字幕关键词样式生成局部指令并随对象重置", () => {
+  const editor = { ...defaultEditor, subtitleKeywordBold: true, subtitleKeywordItalic: true,
+    subtitleKeywordUnderline: true, subtitleKeywordStrikeout: true };
+  expect(formatSubtitleKeyword("甲乙甲乙", "甲乙", editor)).toBe("{\\b1\\i1\\u1\\s1}甲乙{\\b0\\i0\\u0\\s0}甲乙");
+  expect(formatSubtitleKeyword("甲乙", "", editor)).toBe("甲乙");
+  expect(formatSubtitleKeyword("甲乙", "甲", defaultEditor)).toBe("甲乙");
+  expect(() => formatSubtitleKeyword("甲乙", "丙", editor)).toThrow("关键词不在字幕文字中");
+  expect(formatSubtitleKeyword("甲乙甲乙", "甲乙", { ...defaultEditor, subtitleKeywordColor: "#12ab34" }))
+    .toBe("{\\1c&34AB12&}甲乙{\\1c}甲乙");
+  expect(formatSubtitleKeyword("甲乙", "甲", { ...editor, subtitleKeywordColor: "#12AB34" }))
+    .toBe("{\\1c&34AB12&\\b1\\i1\\u1\\s1}甲{\\1c\\b0\\i0\\u0\\s0}乙");
+  expect(() => formatSubtitleKeyword("甲乙", "甲", { ...editor, subtitleKeywordColor: "red" }))
+    .toThrow("关键词颜色须为 #RRGGBB");
+  const draft = sampleDraft();
+  draft.tracks[1].editor = { ...draft.tracks[1].editor, ...editor, title: "" };
+  draft.tracks[1].editor.subtitle = "重点 其他文字";
+  const preview = buildTimeline(draft, catalog).SubtitleTracks[1].SubtitleTrackClips[0].Content;
+  expect(preview).toContain("{\\b1\\i1\\u1\\s1}重点{\\b0\\i0\\u0\\s0}");
+  const reset = resetTextTarget(trackDraft(draft, draft.tracks[1]), "subtitle");
+  expect(reset.editor).toMatchObject({ subtitleKeywordBold: false, subtitleKeywordItalic: false,
+    subtitleKeywordUnderline: false, subtitleKeywordStrikeout: false, subtitleKeywordColor: "" });
+});
+
+// 场景：标题未指定关键词时，预览自动标记示例标题的前两个字。
+test("标题预览自动显示关键词样式", () => {
+  const draft = sampleDraft();
+  draft.tracks[0].editor.titleKeywordBold = true;
+  draft.tracks[0].editor.titleKeywordColor = "#FF0000";
+  expect(buildTimeline(draft, catalog).SubtitleTracks[0].SubtitleTrackClips[0].Content)
+    .toContain("{\\1c&0000FF&\\b1}让每{\\1c\\b0}一");
+});
+
+// 场景：标题和字幕局部字号只作用于首次关键词，结尾恢复原字号，独立对象编辑和重置保留默认值。
+test("关键词字号进入两类文字预览并可恢复默认", () => {
+  const draft = sampleDraft();
+  draft.tracks[0].editor.titleKeywordSize = 64;
+  draft.tracks[1].editor.subtitleKeywordSize = 48;
+  const clips = buildTimeline(draft, catalog).SubtitleTracks.map((row) => row.SubtitleTrackClips[0]);
+  expect(clips[0].Content).toContain("{\\fs64}让每{\\fs}");
+  expect(clips[1].Content).toContain("{\\fs48}选择{\\fs}");
+  expect(clips[0].FontSize).toBe(defaultEditor.titleSize);
+  expect(clips[1].FontSize).toBe(defaultEditor.subtitleSize);
+  expect(formatKeyword("词语词语", "词语", { ...defaultEditor, titleKeywordSize: 64 }, "title"))
+    .toBe("{\\fs64}词语{\\fs}词语");
+  expect(() => formatSubtitleKeyword("词语", "词", { ...defaultEditor, subtitleKeywordSize: 11 }))
+    .toThrow("关键词字号须为 12～300 的整数");
+  expect(resetTextTarget(trackDraft(draft, draft.tracks[0]), "title").editor.titleKeywordSize).toBe(0);
+  expect(removeTarget(trackDraft(draft, draft.tracks[1]), "subtitle").editor.subtitleKeywordSize).toBe(0);
+});
 
 // 场景：IMS 默认转场为一秒、文字入出场各半秒，滤镜和 VFX 覆盖完整视频；用户时长继续保留。
 test("新对象采用 IMS 时间默认值并保留已设置的时长", () => {

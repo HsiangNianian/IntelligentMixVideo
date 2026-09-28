@@ -1,15 +1,177 @@
-//! 离线模板库：在应用数据目录的 data/template 保存 JSON，文件锁串行化读写，原子替换保留旧数据。
+//! 离线模板库：解析 Protobuf 保存请求，在 data/template 保存 JSON，文件锁保护读写。
 
 use chrono::Utc;
+use prost::Message;
 use serde_json::{json, Value};
 use std::{fs, io::Write, path::Path};
 use tauri::Manager;
 use uuid::Uuid;
 
+#[allow(dead_code)]
+mod generated {
+    //! 由 Buf 从共享模板协议生成的 Rust 消息类型。
+    include!("generated/imv.template.v1.rs");
+}
+
+/// 按服务端 EffectTemplateEditor 的默认值补齐缺失字段，保留显式提交的数值。
+fn editor_from_protobuf(editor: generated::EffectTemplateEditor) -> Value {
+    let mut fields = json!({
+        "title": editor.title.unwrap_or_else(|| "让每一帧 都有风格".into()),
+        "subtitle": editor.subtitle.unwrap_or_else(|| "选择花字、滤镜和特效，看看组合效果".into()),
+        "bubbleText": editor.bubble_text.unwrap_or_else(|| "超值特惠".into()),
+        "titleSize": editor.title_size.unwrap_or(40),
+        "subtitleSize": editor.subtitle_size.unwrap_or(26),
+        "bubbleSize": editor.bubble_size.unwrap_or(32),
+        "titleX": editor.title_x.unwrap_or(50.),
+        "titleY": editor.title_y.unwrap_or(8.),
+        "subtitleX": editor.subtitle_x.unwrap_or(50.),
+        "subtitleY": editor.subtitle_y.unwrap_or(82.),
+        "bubbleX": editor.bubble_x.unwrap_or(25.),
+        "bubbleY": editor.bubble_y.unwrap_or(32.),
+        "titleFlower": editor.title_flower.unwrap_or_default(),
+        "subtitleFlower": editor.subtitle_flower.unwrap_or_default(),
+        "bubble": editor.bubble.unwrap_or_default(),
+        "filter": editor.filter.unwrap_or_default(),
+        "vfx": editor.vfx.unwrap_or_default(),
+        "transition": editor.transition.unwrap_or_default(),
+        "titleIn": editor.title_in.unwrap_or_default(),
+        "titleOut": editor.title_out.unwrap_or_default(),
+        "titleLoop": editor.title_loop.unwrap_or_default(),
+        "subtitleIn": editor.subtitle_in.unwrap_or_default(),
+        "subtitleOut": editor.subtitle_out.unwrap_or_default(),
+        "subtitleLoop": editor.subtitle_loop.unwrap_or_default(),
+        "bubbleIn": editor.bubble_in.unwrap_or_default(),
+        "bubbleOut": editor.bubble_out.unwrap_or_default(),
+        "bubbleLoop": editor.bubble_loop.unwrap_or_default(),
+        "titleInDuration": editor.title_in_duration.unwrap_or(0.5),
+        "titleOutDuration": editor.title_out_duration.unwrap_or(0.5),
+        "subtitleInDuration": editor.subtitle_in_duration.unwrap_or(0.5),
+        "subtitleOutDuration": editor.subtitle_out_duration.unwrap_or(0.5),
+        "bubbleInDuration": editor.bubble_in_duration.unwrap_or(0.5),
+        "bubbleOutDuration": editor.bubble_out_duration.unwrap_or(0.5),
+    });
+    fields["subtitleKeywordBold"] = json!(editor.subtitle_keyword_bold);
+    fields["subtitleKeywordItalic"] = json!(editor.subtitle_keyword_italic);
+    fields["subtitleKeywordUnderline"] = json!(editor.subtitle_keyword_underline);
+    fields["subtitleKeywordStrikeout"] = json!(editor.subtitle_keyword_strikeout);
+    fields["subtitleKeywordColor"] = json!(editor.subtitle_keyword_color);
+    fields["subtitleKeywordSize"] = json!(editor.subtitle_keyword_size);
+    fields["titleKeyword"] = json!(editor.title_keyword);
+    fields["titleKeywordBold"] = json!(editor.title_keyword_bold);
+    fields["titleKeywordItalic"] = json!(editor.title_keyword_italic);
+    fields["titleKeywordUnderline"] = json!(editor.title_keyword_underline);
+    fields["titleKeywordStrikeout"] = json!(editor.title_keyword_strikeout);
+    fields["titleKeywordColor"] = json!(editor.title_keyword_color);
+    fields["titleKeywordSize"] = json!(editor.title_keyword_size);
+    fields
+}
+
+/// 底部字幕关键词的四个局部样式字段，供保存校验和旧记录读取共用。
+const SUBTITLE_KEYWORD_FIELDS: [&str; 4] = [
+    "subtitleKeywordBold",
+    "subtitleKeywordItalic",
+    "subtitleKeywordUnderline",
+    "subtitleKeywordStrikeout",
+];
+
+/// 顶部标题关键词的四个局部样式字段，供保存校验和旧记录读取共用。
+const TITLE_KEYWORD_FIELDS: [&str; 4] = [
+    "titleKeywordBold",
+    "titleKeywordItalic",
+    "titleKeywordUnderline",
+    "titleKeywordStrikeout",
+];
+
+/// 将本地保存请求转换为现有 JSON 草稿结构，保留磁盘文件格式。
+fn draft_from_protobuf(bytes: &[u8], id: Option<&str>) -> Result<Value, String> {
+    let request =
+        generated::SaveTemplateRequest::decode(bytes).map_err(|_| "本地模板 Protobuf 请求无效")?;
+    if request.template_id.as_deref() != id {
+        return Err("模板 ID 与保存请求不一致".into());
+    }
+    let tracks = request.tracks.map(|list| {
+        list.tracks
+            .into_iter()
+            .map(|track| {
+                json!({
+                    "id": track.id,
+                    "target": track.target,
+                    "start_mode": track.start_mode,
+                    "start": track.start,
+                    "duration": track.duration,
+                    "editor": track.editor.map(editor_from_protobuf),
+                })
+            })
+            .collect::<Vec<_>>()
+    });
+    let mut draft = json!({
+        "name": request.name,
+        "description": request.description.unwrap_or_default(),
+        "transition_duration_seconds": request.transition_duration_seconds.unwrap_or(1.0),
+        "tracks": tracks,
+        "effect_ids": request.effect_ids,
+    });
+
+    let mut expected_ids = Vec::new();
+    for track in draft["tracks"].as_array().ok_or("轨道须为数组")? {
+        for asset in validate_editor(&track["editor"])? {
+            expected_ids.push(asset["id"].as_str().ok_or("效果 ID 无效")?.to_owned());
+        }
+    }
+    expected_ids.sort();
+    expected_ids.dedup();
+
+    let mut declared_ids = draft["effect_ids"]
+        .as_array()
+        .ok_or("效果 ID 列表无效")?
+        .iter()
+        .map(|value| value.as_str().map(str::to_owned))
+        .collect::<Option<Vec<_>>>()
+        .ok_or("效果 ID 列表无效")?;
+    declared_ids.sort();
+    if declared_ids != expected_ids {
+        return Err("所选特效与编辑配置不一致".into());
+    }
+
+    draft
+        .as_object_mut()
+        .ok_or("模板须为对象")?
+        .remove("effect_ids");
+    Ok(draft)
+}
+
 /// 校验对象编辑参数并从随包目录生成效果快照。
 fn validate_editor(editor: &Value) -> Result<Vec<Value>, String> {
-    if editor.as_object().is_none_or(|fields| fields.len() != 33) {
+    if editor.as_object().is_none_or(|fields| fields.len() != 46) {
         return Err("编辑配置字段不完整或包含未知字段".into());
+    }
+    for key in SUBTITLE_KEYWORD_FIELDS
+        .into_iter()
+        .chain(TITLE_KEYWORD_FIELDS)
+    {
+        editor[key].as_bool().ok_or("关键词样式必须是布尔值")?;
+    }
+    let keyword = editor["titleKeyword"]
+        .as_str()
+        .ok_or("标题关键词须为文字")?;
+    if keyword.chars().count() > 60 {
+        return Err("标题关键词过长".into());
+    }
+    for field in ["titleKeywordColor", "subtitleKeywordColor"] {
+        let color = editor[field].as_str().ok_or("关键词颜色须为文字")?;
+        if !color.is_empty()
+            && (color.len() != 7
+                || !color.starts_with('#')
+                || !color[1..].bytes().all(|value| value.is_ascii_hexdigit()))
+        {
+            return Err("关键词颜色须为 #RRGGBB".into());
+        }
+    }
+    for field in ["titleKeywordSize", "subtitleKeywordSize"] {
+        let size = editor[field].as_i64().ok_or("关键词字号须为整数")?;
+        if size != 0 && !(12..=300).contains(&size) {
+            return Err("关键词字号须为 12～300 的整数".into());
+        }
     }
     let catalog: Value = serde_json::from_str(include_str!(
         "../../../server/src/server/template/sdk_catalog.json"
@@ -169,6 +331,23 @@ fn validate(mut draft: Value) -> Result<Value, String> {
             }
             let editor = &track["editor"];
             let validated = validate_editor(editor)?;
+            if target != "subtitle"
+                && (SUBTITLE_KEYWORD_FIELDS
+                    .iter()
+                    .any(|key| editor[*key] == true)
+                    || editor["subtitleKeywordColor"] != ""
+                    || editor["subtitleKeywordSize"] != 0)
+            {
+                return Err("只有底部字幕可以设置关键词样式".into());
+            }
+            if target != "title"
+                && (editor["titleKeyword"] != ""
+                    || TITLE_KEYWORD_FIELDS.iter().any(|key| editor[*key] == true)
+                    || editor["titleKeywordColor"] != ""
+                    || editor["titleKeywordSize"] != 0)
+            {
+                return Err("只有顶部标题可以设置标题关键词样式".into());
+            }
             let mut allowed = vec![target.to_owned()];
             if ["title", "subtitle", "bubble"].contains(&target) {
                 allowed = vec![if target == "bubble" {
@@ -246,13 +425,16 @@ fn read(directory: &Path) -> Result<Vec<Value>, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(format!("读取本地模板失败：{error}")),
     };
-    let records: Vec<Value> =
+    let mut records: Vec<Value> =
         serde_json::from_slice(&bytes).map_err(|_| "本地模板文件损坏，请先恢复备份")?;
     let mut ids = std::collections::HashSet::new();
     let mut names = std::collections::HashSet::new();
-    for record in &records {
-        let id = record["template_id"].as_str().ok_or("本地模板 ID 缺失")?;
-        Uuid::parse_str(id).map_err(|_| "本地模板 ID 无效")?;
+    for record in &mut records {
+        let id = record["template_id"]
+            .as_str()
+            .ok_or("本地模板 ID 缺失")?
+            .to_owned();
+        Uuid::parse_str(&id).map_err(|_| "本地模板 ID 无效")?;
         for key in ["created_at", "updated_at"] {
             chrono::DateTime::parse_from_rfc3339(record[key].as_str().ok_or("本地模板时间缺失")?)
                 .map_err(|_| "本地模板时间无效")?;
@@ -263,6 +445,22 @@ fn read(directory: &Path) -> Result<Vec<Value>, String> {
                 "本地模板字段已变化，原有模板无法读取。请删除旧模板文件后重试（将清除全部本地模板）：{}",
                 directory.join("templates.json").display()
             ));
+        }
+        // 旧记录缺少新增开关时补充内存视图，读取操作不改写文件。
+        for track in record["tracks"].as_array_mut().ok_or("轨道须为数组")? {
+            if let Some(editor) = track["editor"].as_object_mut() {
+                for key in SUBTITLE_KEYWORD_FIELDS {
+                    editor.entry(key).or_insert(json!(false));
+                }
+                editor.entry("subtitleKeywordColor").or_insert(json!(""));
+                editor.entry("subtitleKeywordSize").or_insert(json!(0));
+                for key in TITLE_KEYWORD_FIELDS {
+                    editor.entry(key).or_insert(json!(false));
+                }
+                editor.entry("titleKeyword").or_insert(json!(""));
+                editor.entry("titleKeywordColor").or_insert(json!(""));
+                editor.entry("titleKeywordSize").or_insert(json!(0));
+            }
         }
         let mut draft = record.clone();
         for key in [
@@ -369,8 +567,11 @@ pub fn local_templates(
     app: tauri::AppHandle,
     operation: String,
     id: Option<String>,
-    draft: Option<Value>,
+    draft: Option<Vec<u8>>,
 ) -> Result<Value, String> {
+    let draft = draft
+        .map(|bytes| draft_from_protobuf(&bytes, id.as_deref()))
+        .transpose()?;
     let directory = app
         .path()
         .app_data_dir()
@@ -402,6 +603,17 @@ mod tests {
     /// 完整合法草稿，明确覆盖三种文字、所有位置和时长字段。
     fn draft(name: &str) -> Value {
         let mut editor = json!({"title": "标题", "subtitle": "", "bubbleText": "", "titleFlower": "", "subtitleFlower": "", "bubble": "", "filter": "", "vfx": "", "transition": ""});
+        for key in SUBTITLE_KEYWORD_FIELDS {
+            editor[key] = json!(false);
+        }
+        editor["subtitleKeywordColor"] = json!("");
+        editor["subtitleKeywordSize"] = json!(0);
+        for key in TITLE_KEYWORD_FIELDS {
+            editor[key] = json!(false);
+        }
+        editor["titleKeyword"] = json!("");
+        editor["titleKeywordColor"] = json!("");
+        editor["titleKeywordSize"] = json!(0);
         for role in ["title", "subtitle", "bubble"] {
             for (suffix, value) in [
                 ("Size", 40.),
@@ -420,6 +632,158 @@ mod tests {
         json!({"name": name, "description": "  说明  ", "tracks": [
             {"id": "title", "target": "title", "start_mode": "seconds", "start": 0, "duration": null, "editor": editor}
         ], "transition_duration_seconds": 0.5})
+    }
+
+    /// 构造带完整编辑字段的合法 Protobuf 请求，供保存与拒绝路径共同使用。
+    fn protobuf_request() -> generated::SaveTemplateRequest {
+        let editor = generated::EffectTemplateEditor {
+            title: Some("标题".into()),
+            subtitle: Some("".into()),
+            bubble_text: Some("".into()),
+            title_size: Some(40),
+            subtitle_size: Some(40),
+            bubble_size: Some(40),
+            title_x: Some(50.),
+            title_y: Some(50.),
+            subtitle_x: Some(50.),
+            subtitle_y: Some(50.),
+            bubble_x: Some(50.),
+            bubble_y: Some(50.),
+            title_flower: Some("".into()),
+            subtitle_flower: Some("".into()),
+            bubble: Some("".into()),
+            filter: Some("".into()),
+            vfx: Some("".into()),
+            transition: Some("".into()),
+            title_in: Some("in/fade_in".into()),
+            title_out: Some("".into()),
+            title_loop: Some("".into()),
+            subtitle_in: Some("".into()),
+            subtitle_out: Some("".into()),
+            subtitle_loop: Some("".into()),
+            bubble_in: Some("".into()),
+            bubble_out: Some("".into()),
+            bubble_loop: Some("".into()),
+            title_in_duration: Some(0.5),
+            title_out_duration: Some(0.5),
+            subtitle_in_duration: Some(0.5),
+            subtitle_out_duration: Some(0.5),
+            bubble_in_duration: Some(0.5),
+            bubble_out_duration: Some(0.5),
+            subtitle_keyword_bold: false,
+            subtitle_keyword_italic: false,
+            subtitle_keyword_underline: false,
+            subtitle_keyword_strikeout: false,
+            subtitle_keyword_color: "".into(),
+            subtitle_keyword_size: 0,
+            title_keyword: "".into(),
+            title_keyword_bold: false,
+            title_keyword_italic: false,
+            title_keyword_underline: false,
+            title_keyword_strikeout: false,
+            title_keyword_color: "".into(),
+            title_keyword_size: 0,
+        };
+        generated::SaveTemplateRequest {
+            name: "  模板  ".into(),
+            description: Some("  说明  ".into()),
+            effect_ids: vec!["in/fade_in".into()],
+            transition_duration_seconds: Some(0.5),
+            tracks: Some(generated::TrackList {
+                tracks: vec![generated::EffectTrack {
+                    id: "title".into(),
+                    target: "title".into(),
+                    start_mode: "seconds".into(),
+                    start: Some(0.),
+                    duration: None,
+                    editor: Some(editor),
+                }],
+            }),
+            template_id: None,
+        }
+    }
+
+    #[test]
+    /// 真实 Protobuf 保存消息转换后沿用 JSON 文件结构，缺失字段和错误 ID 均拒绝。
+    fn protobuf_save_keeps_json_file_format() {
+        let mut request = protobuf_request();
+        request.tracks.as_mut().unwrap().tracks[0]
+            .editor
+            .as_mut()
+            .unwrap()
+            .title_keyword_size = 72;
+        let bytes = request.encode_to_vec();
+        let converted = draft_from_protobuf(&bytes, None).unwrap();
+        let mut expected = draft("  模板  ");
+        expected["tracks"][0]["start"] = json!(0.0);
+        expected["tracks"][0]["editor"]["titleKeywordSize"] = json!(72);
+        for role in ["title", "subtitle", "bubble"] {
+            expected["tracks"][0]["editor"][format!("{role}Size")] = json!(40);
+        }
+        assert_eq!(converted, expected);
+        let dir = Directory::new();
+        let saved = operate(&dir.0, "save", None, Some(converted)).unwrap();
+        let records: Value =
+            serde_json::from_slice(&fs::read(dir.0.join("templates.json")).unwrap()).unwrap();
+        assert_eq!(records, json!([saved]));
+        assert!(records[0]["tracks"].is_array());
+        let mut missing_tracks = request;
+        missing_tracks.tracks = None;
+        assert_eq!(
+            draft_from_protobuf(&missing_tracks.encode_to_vec(), None).unwrap_err(),
+            "轨道须为数组"
+        );
+        assert!(draft_from_protobuf(&bytes, Some("different-id")).is_err());
+        assert!(draft_from_protobuf(&[0xff], None).is_err());
+    }
+
+    #[test]
+    /// 缺失、重复、未知或不匹配的效果列表拒绝更新，保留原模板文件。
+    fn protobuf_rejects_invalid_effect_ids_without_writes() {
+        let dir = Directory::new();
+        let saved = operate(&dir.0, "save", None, Some(draft("保留"))).unwrap();
+        let id = saved["template_id"].as_str().unwrap();
+        let path = dir.0.join("templates.json");
+        let original = fs::read(&path).unwrap();
+        for effect_ids in [
+            vec![],
+            vec!["in/fade_in", "in/fade_in"],
+            vec!["in/unknown"],
+            vec!["in/blur_in"],
+            vec!["in/fade_in", "in/blur_in"],
+        ] {
+            let mut request = protobuf_request();
+            request.template_id = Some(id.into());
+            request.effect_ids = effect_ids.iter().map(|value| (*value).into()).collect();
+            let result = draft_from_protobuf(&request.encode_to_vec(), Some(id))
+                .and_then(|draft| operate(&dir.0, "save", Some(id), Some(draft)));
+            assert_eq!(result.unwrap_err(), "所选特效与编辑配置不一致");
+            assert_eq!(fs::read(&path).unwrap(), original);
+        }
+    }
+
+    #[test]
+    /// 效果列表顺序可变，多个轨道共用效果只需声明一次，保存后仍可重新读取。
+    fn protobuf_accepts_reordered_and_shared_effect_ids() {
+        let mut request = protobuf_request();
+        let tracks = &mut request.tracks.as_mut().unwrap().tracks;
+        let mut second = tracks[0].clone();
+        second.id = "title-b".into();
+        second.editor.as_mut().unwrap().title_in = Some("in/blur_in".into());
+        let mut third = tracks[0].clone();
+        third.id = "title-c".into();
+        tracks.extend([second, third]);
+        request.effect_ids = vec!["in/blur_in".into(), "in/fade_in".into()];
+
+        let converted = draft_from_protobuf(&request.encode_to_vec(), None).unwrap();
+        assert_eq!(converted.as_object().unwrap().len(), 4);
+        assert!(converted.get("effect_ids").is_none());
+        let dir = Directory::new();
+        let saved = operate(&dir.0, "save", None, Some(converted)).unwrap();
+        assert_eq!(saved["effect_ids"], json!(["in/fade_in", "in/blur_in"]));
+        assert_eq!(saved["tracks"].as_array().unwrap().len(), 3);
+        let id = saved["template_id"].as_str().unwrap();
+        assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), saved);
     }
 
     #[test]
@@ -457,6 +821,84 @@ mod tests {
     }
 
     #[test]
+    /// 底部字幕样式经本地文件保存和重新读取保持不变，旧记录在内存中补充关闭值。
+    fn subtitle_keyword_style_survives_reload_and_old_records() {
+        let dir = Directory::new();
+        let mut styled = draft("关键词模板");
+        styled["tracks"][0]["target"] = json!("subtitle");
+        styled["tracks"][0]["editor"]["title"] = json!("");
+        styled["tracks"][0]["editor"]["subtitle"] = json!("示例字幕");
+        styled["tracks"][0]["editor"]["titleIn"] = json!("");
+        styled["tracks"][0]["editor"]["subtitleIn"] = json!("in/fade_in");
+        styled["tracks"][0]["editor"]["subtitleKeywordBold"] = json!(true);
+        styled["tracks"][0]["editor"]["subtitleKeywordUnderline"] = json!(true);
+        styled["tracks"][0]["editor"]["subtitleKeywordColor"] = json!("#12AB34");
+        styled["tracks"][0]["editor"]["subtitleKeywordSize"] = json!(64);
+        let saved = operate(&dir.0, "save", None, Some(styled)).unwrap();
+        let id = saved["template_id"].as_str().unwrap();
+        assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), saved);
+
+        let mut old_records = json!([saved]);
+        for key in SUBTITLE_KEYWORD_FIELDS {
+            old_records[0]["tracks"][0]["editor"]
+                .as_object_mut()
+                .unwrap()
+                .remove(key);
+        }
+        old_records[0]["tracks"][0]["editor"]
+            .as_object_mut()
+            .unwrap()
+            .remove("subtitleKeywordColor");
+        old_records[0]["tracks"][0]["editor"]
+            .as_object_mut()
+            .unwrap()
+            .remove("subtitleKeywordSize");
+        for key in TITLE_KEYWORD_FIELDS {
+            old_records[0]["tracks"][0]["editor"]
+                .as_object_mut()
+                .unwrap()
+                .remove(key);
+        }
+        for key in ["titleKeyword", "titleKeywordColor", "titleKeywordSize"] {
+            old_records[0]["tracks"][0]["editor"]
+                .as_object_mut()
+                .unwrap()
+                .remove(key);
+        }
+        let path = dir.0.join("templates.json");
+        let original = serde_json::to_vec(&old_records).unwrap();
+        fs::write(&path, &original).unwrap();
+        let restored = operate(&dir.0, "get", Some(id), None).unwrap();
+        assert_eq!(
+            restored["tracks"][0]["editor"]["subtitleKeywordBold"],
+            false
+        );
+        assert_eq!(
+            restored["tracks"][0]["editor"]["subtitleKeywordUnderline"],
+            false
+        );
+        assert_eq!(restored["tracks"][0]["editor"]["subtitleKeywordColor"], "");
+        assert_eq!(restored["tracks"][0]["editor"]["subtitleKeywordSize"], 0);
+        assert_eq!(restored["tracks"][0]["editor"]["titleKeyword"], "");
+        assert_eq!(restored["tracks"][0]["editor"]["titleKeywordBold"], false);
+        assert_eq!(fs::read(path).unwrap(), original);
+    }
+
+    #[test]
+    /// 标题关键词样式经本地保存和重新读取保持不变。
+    fn title_keyword_style_survives_reload() {
+        let dir = Directory::new();
+        let mut styled = draft("标题关键词模板");
+        styled["tracks"][0]["editor"]["titleKeyword"] = json!("标题");
+        styled["tracks"][0]["editor"]["titleKeywordBold"] = json!(true);
+        styled["tracks"][0]["editor"]["titleKeywordColor"] = json!("#12AB34");
+        styled["tracks"][0]["editor"]["titleKeywordSize"] = json!(72);
+        let saved = operate(&dir.0, "save", None, Some(styled)).unwrap();
+        let id = saved["template_id"].as_str().unwrap();
+        assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), saved);
+    }
+
+    #[test]
     /// 无效配置和任意路径 ID 被拒绝，保留既有数据；有效数值边界允许保存。
     fn validates_input_without_writes() {
         let dir = Directory::new();
@@ -469,6 +911,14 @@ mod tests {
             ("/tracks/0/editor/titleIn", json!("in/unknown")),
             ("/tracks/0/editor/titleLoop", json!("loop/bounce")),
             ("/tracks/0/editor/titleFlower", json!("filter/fake")),
+            ("/tracks/0/editor/subtitleKeywordBold", json!(true)),
+            ("/tracks/0/editor/subtitleKeywordItalic", json!("true")),
+            ("/tracks/0/editor/subtitleKeywordColor", json!("#12AB34")),
+            ("/tracks/0/editor/subtitleKeywordColor", json!("orange")),
+            ("/tracks/0/editor/titleKeywordColor", json!("orange")),
+            ("/tracks/0/editor/titleKeywordSize", json!(11)),
+            ("/tracks/0/editor/subtitleKeywordSize", json!(64)),
+            ("/tracks/0/editor/titleKeyword", json!("题".repeat(61))),
             ("/transition_duration_seconds", json!(0)),
             ("/tracks/0/editor/title", json!("题".repeat(61))),
         ] {

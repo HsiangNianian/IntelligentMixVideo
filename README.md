@@ -34,7 +34,9 @@ uv run server
 
 默认监听 `0.0.0.0:20070`（所有 IPv4 接口），本机 API 文档位于 http://127.0.0.1:20070/docs；远程访问使用服务器 IP 或域名。
 通过 `server/.env` 中的 `PORT` 或进程环境变量设置端口（环境变量优先，范围 1～65535）；修改后重启服务。
-仓库根目录使用 `uv run --project server server`。模板 API 统一使用 `/template` 前缀，POST 通过可选 `template_id` 区分创建和完整更新；详情见 [server/README.md](server/README.md)。
+仓库根目录使用 `uv run --project server server`。客户端云端模板在现有 `/template` 地址上传输 Protobuf 二进制消息。接口详情见 [server/README.md](server/README.md)。
+
+根目录 `buf.yaml` 管理 `proto/` 中的消息定义及兼容性检查，`buf.gen.yaml` 生成客户端 TypeScript、Rust 和服务端 Python 代码。TypeScript、Python 位于各自的 `src/generated/imv/template/v1/`，Rust 位于 `client/src-tauri/src/generated/`。修改协议后在仓库根目录运行 `buf lint`、`buf generate`，并提交生成结果；已有协议版本使用 `buf breaking --against <基线>` 检查兼容性。
 服务端各配置类共用 `config_base.py` 的读取规则，源码运行固定读取 `server/.env`，不随启动目录变化；构造参数、进程环境变量、文件、字段默认值依次优先。修改后重启服务。
 
 服务端在项目配置中将官方 PyPI 设为默认依赖索引，与 `server/uv.lock` 的来源保持一致，避免本机默认镜像同步滞后导致版本无法解析。
@@ -43,7 +45,7 @@ uv run server
 
 ASR 转写另提供独立 Python 函数与命令行入口，读取北京地域的 `DASHSCOPE_API_KEY`，尚未注册 HTTP 路由；用法见 [ASR 音频转写](server/README.md#asr-音频转写)。
 
-`POST /api/v1/video-compositions` 持久化合成任务后返回本地 ID，可传入 `callbackUrl` 接收成功/失败通知，调用方等待超时后用 `GET /api/v1/video-compositions/{task_id}` 补查一次。实现位于 `server/src/server/video_composition/`，直接复用本地 ASR、切片和模板函数；素材匹配与上海 IMS 使用外部接口，IMS 成片再转存 ZOS。匹配结果通过任务回调接收，等待超时仅补查一次，随后继续生成时间线和渲染。回调优先使用 `COMPOSITION_PUBLIC_BASE_URL`（可填 ngrok HTTPS 地址），留空沿用合成请求的基础地址。默认输出 1080×1920、30 FPS，自动选择 VOD 存储；新任务上传 ZOS 的 `imv/video_composition/` 前缀并仅公开该成片对象，GET 和成功回调返回同一固定地址，历史成功任务仍查询 IMS 临时地址。执行过程及每步输入输出写入独立 `video_composition_logs` 表，一个任务一行，`detail` 展示原始输入、最终输出及中文阶段执行/错误日志，数据库时间统一北京时间；保留实际媒体链接，服务凭证和回调鉴权脱敏。当前使用单实例、单进程调度；配置、恢复边界及联调限制见 [视频合成说明](server/README.md#异步视频合成)。
+`POST /api/v1/video-compositions` 持久化合成任务后返回本地 ID，可传入 `callbackUrl` 接收成功/失败通知，调用方等待超时后用 `GET /api/v1/video-compositions/{task_id}` 补查一次。实现位于 `server/src/server/video_composition/`，直接复用本地 ASR、切片和模板函数；素材匹配与上海 IMS 使用外部接口，IMS 成片再转存 ZOS。匹配结果通过任务回调接收，等待超时仅补查一次，随后继续生成时间线和渲染。回调优先使用 `COMPOSITION_PUBLIC_BASE_URL`（可填 ngrok HTTPS 地址），留空沿用合成请求的基础地址。默认输出 1080×1920、30 FPS，自动选择 VOD 存储；新任务上传 ZOS 的 `imv/video_composition/{task_id}.mp4`，并从第 3 帧生成同名 `.png`，两者公开可读；GET 和成功回调只返回视频固定地址，历史成功任务不补图。执行过程及每步输入输出写入独立 `video_composition_logs` 表，一个任务一行，`detail` 展示原始输入、最终输出及中文阶段执行/错误日志，数据库时间统一北京时间；保留实际媒体链接，服务凭证和回调鉴权脱敏。当前使用单实例、单进程调度；配置、恢复边界及联调限制见 [视频合成说明](server/README.md#异步视频合成)。
 
 客户端运行
 ----------

@@ -21,6 +21,7 @@ from sqlalchemy.exc import OperationalError
 from server.app import app
 from server.video_composition import ims, service, store, zos
 from server.video_composition.schema import MatchCallback
+from .template_wire import post_template
 
 BASE = "/api/v1/video-compositions"
 
@@ -270,6 +271,14 @@ def test_legacy_playback_refresh_failure_preserves_success(upstreams, client, co
 def test_missing_zos_config_rejected_before_accept(upstreams, client, composition_case, monkeypatch):
     """缺少服务端 ZOS 密钥时不受理任务，也不启动 ASR 或云端步骤。"""
     monkeypatch.delenv("ZOS_SECRET_ACCESS_KEY")
+    response = client.post(BASE, json=composition_case["request"])
+    assert response.status_code == 503
+    assert upstreams["asr_calls"] == 0 and store.pending([], 10) == []
+
+
+def test_missing_ffmpeg_rejected_before_accept(upstreams, client, composition_case, monkeypatch):
+    """缺少第 3 帧提取工具时不受理需要云端成本的新合成。"""
+    monkeypatch.setattr(service.shutil, "which", lambda name: None)
     response = client.post(BASE, json=composition_case["request"])
     assert response.status_code == 503
     assert upstreams["asr_calls"] == 0 and store.pending([], 10) == []
@@ -596,7 +605,7 @@ def test_remote_segmentation_response_reaches_render(upstreams, composition_case
         "教师节快乐三尺讲台育桃李", "辛苦了各位恩师", "欢迎老师们来店里",
         "热辣火锅暖心暖胃好好放松一下",
     ]
-    assert [s["Content"] for s in bubbles] == ["香佰里火锅", "老师们", "三尺讲台", "恩师", "老师们", "火锅"]
+    assert [clip["Content"] for clip in bubbles] == [composition_case["template"]["tracks"][2]["editor"]["bubbleText"]]
     assert (title[0]["TimelineIn"], title[0]["TimelineOut"]) == (1, 3)
     assert timeline["VideoTracks"][0]["VideoTrackClips"][0]["TimelineOut"] == 15.22
 
@@ -655,7 +664,7 @@ def test_template_changes_do_not_change_running_snapshot(upstreams, client, comp
         task_id = client.post(BASE, json=composition_case["request"]).json()["data"]
         assert upstreams["entered"].wait(2)
         template_id = composition_case["request"]["styleId"]
-        response = client.post("/template", json={
+        response = post_template(client, {
             "template_id": template_id, "name": "修改后的模板", "tracks": [{
                 "id": "title", "target": "title", "start_mode": "seconds", "start": 0, "duration": None,
                 "editor": {"title": "标题", "subtitle": "", "bubbleText": "", "titleIn": "in/blur_in"},
@@ -1214,7 +1223,7 @@ def test_execution_logs_cover_inputs_outputs_and_notification(upstreams, client,
     saved, = composition_logs(task_id, raw=True)
     phases = saved["detail"]["阶段记录"]
     assert saved["detail"]["从提交开始记录"] is True
-    assert {"任务提交", "读取模板", "语音识别", "文本切分", "提交素材匹配", "组装视频时间线", "提交云端合成", "查询云端渲染", "获取成品视频链接", "转存视频到 ZOS", "通知调用方", "返回合成结果"} <= phases.keys()
+    assert {"任务提交", "读取模板", "语音识别", "文本切分", "提交素材匹配", "组装视频时间线", "提交云端合成", "查询云端渲染", "获取成品视频链接", "转存视频和封面到 ZOS", "通知调用方", "返回合成结果"} <= phases.keys()
     assert phases["返回合成结果"]["输出"][-1]["内容"]["result"]["videoUrl"] == response.json()["result"]["videoUrl"]
     rows = composition_logs(task_id)
     started = {row["details"]["step"]: row["details"]["input"] for row in rows if row["event"] == "step_started"}
@@ -1305,7 +1314,7 @@ async def test_zos_failure_never_publishes_success(upstreams, composition_case, 
     store.initialize_schema()
     record = store.create(composition_case["request"], composition_runtime.settings.output(), "https://composition.test")
     record = store.advance(record, "rendering", result={"mediaId": "ims-media", "durationSeconds": 8.02},
-                           ims_deadline=service.deadline(0.1))
+                           ims_deadline=service.deadline(2))
     upstreams["failure"] = "zos"
     await composition_runtime._execute(record)
     saved = store.get(record["task_id"])

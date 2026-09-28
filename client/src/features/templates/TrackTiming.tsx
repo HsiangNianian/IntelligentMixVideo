@@ -52,15 +52,15 @@ export function TrackTiming({ track, duration, onChange }: {
     updateTiming(mode, start, nextLength, nextUntilEnd);
   }
 
-  return <div className="space-y-3 border-b p-4" aria-label="轨道时间设置" onKeyDown={(event) => { if (event.key === "Enter" && event.target instanceof HTMLInputElement) event.preventDefault(); }}>
-    <div className="space-y-2"><Label htmlFor={`${id}-mode`}>开始方式</Label>
-      <Select value={mode} onValueChange={changeMode}><SelectTrigger id={`${id}-mode`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="seconds">指定秒数</SelectItem><SelectItem value="percent">视频时长百分比</SelectItem></SelectContent></Select>
+  return <div className="template-inspector-timing space-y-3 border-b p-4" aria-label="轨道时间设置" onKeyDown={(event) => { if (event.key === "Enter" && event.target instanceof HTMLInputElement) event.preventDefault(); }}>
+    <div className="space-y-1.5"><Label htmlFor={`${id}-mode`}>开始方式</Label>
+      <Select value={mode} onValueChange={changeMode}><SelectTrigger id={`${id}-mode`} className="w-full"><SelectValue /></SelectTrigger><SelectContent className="template-inspector-select"><SelectItem value="seconds">指定秒数</SelectItem><SelectItem value="percent">视频时长百分比</SelectItem></SelectContent></Select>
     </div>
-    <div className="space-y-2"><Label htmlFor={`${id}-start`}>开始{mode === "percent" ? "位置 / %" : "时间 / 秒"}</Label><Input id={`${id}-start`} type="number" required min={track.target === "transition" ? Number.MIN_VALUE : 0} max={mode === "percent" ? 99.999999 : undefined} step="any" value={start} onChange={(event) => { setStart(event.target.value); updateTiming(mode, event.target.value); }} /></div>
-    <div className="space-y-2"><Label htmlFor={`${id}-duration-mode`}>持续方式</Label>
-      <Select value={untilEnd ? "end" : "seconds"} onValueChange={changeDurationMode}><SelectTrigger id={`${id}-duration-mode`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="seconds">固定时长</SelectItem>{track.target !== "transition" && <SelectItem value="end">持续到视频结束</SelectItem>}</SelectContent></Select>
+    <div className="space-y-1.5"><Label htmlFor={`${id}-start`}>开始{mode === "percent" ? "位置 / %" : "时间 / 秒"}</Label><Input id={`${id}-start`} type="number" required min={track.target === "transition" ? Number.MIN_VALUE : 0} max={mode === "percent" ? 99.999999 : undefined} step="any" value={start} onChange={(event) => { setStart(event.target.value); updateTiming(mode, event.target.value); }} /></div>
+    <div className="space-y-1.5"><Label htmlFor={`${id}-duration-mode`}>持续方式</Label>
+      <Select value={untilEnd ? "end" : "seconds"} onValueChange={changeDurationMode}><SelectTrigger id={`${id}-duration-mode`} className="w-full"><SelectValue /></SelectTrigger><SelectContent className="template-inspector-select"><SelectItem value="seconds">固定时长</SelectItem>{track.target !== "transition" && <SelectItem value="end">持续到视频结束</SelectItem>}</SelectContent></Select>
     </div>
-    {!untilEnd && <div className="space-y-2"><Label htmlFor={`${id}-length`}>持续时间 / 秒</Label><Input id={`${id}-length`} type="number" required min={track.target === "transition" ? 0.1 : Number.MIN_VALUE} max={track.target === "transition" ? 3 : undefined} step="any" value={length} onChange={(event) => { setLength(event.target.value); updateTiming(mode, start, event.target.value); }} /></div>}
+    {!untilEnd && <div className="space-y-1.5"><Label htmlFor={`${id}-length`}>持续时间 / 秒</Label><Input id={`${id}-length`} type="number" required min={track.target === "transition" ? 0.1 : Number.MIN_VALUE} max={track.target === "transition" ? 3 : undefined} step="any" value={length} onChange={(event) => { setLength(event.target.value); updateTiming(mode, start, event.target.value); }} /></div>}
     <p className="text-xs text-muted-foreground" role="status">{result}</p>
   </div>;
 }

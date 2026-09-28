@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 import logging
 import json
 import secrets
+import shutil
 from uuid import uuid4
 
 import httpx
@@ -30,9 +31,11 @@ NOTIFICATION_RETRY_DELAYS = (5, 15, 45)
 
 
 def preflight(config: ClientSettings | None = None) -> Settings:
-    """受理前只检查配置，不执行成本调用；延迟导入保持现有 ASR 一次性加载行为。"""
+    """受理前检查配置和封面提帧工具，不执行成本调用。"""
     settings = Settings(**config.model_dump()) if config is not None else Settings()
     ZosSettings()
+    if shutil.which("ffmpeg") is None:
+        raise RuntimeError("缺少 FFmpeg，无法提取视频第 3 帧")
     SegmentationSettings()
     from ..asr.asr import settings as asr_settings
 
@@ -118,7 +121,7 @@ class Runtime:
         try:
             settings = await self.sync(preflight, config) if config is not None else await self.sync(preflight)
         except (ValueError, RuntimeError):
-            raise HTTPException(503, "视频合成配置不完整或无效，请检查服务端 .env") from None
+            raise HTTPException(503, "视频合成配置或 FFmpeg 不可用，请检查服务端环境") from None
         # 调度器只保留运行策略；每项云端凭据绑定独立任务，不充当其他任务的默认值。
         self.settings = settings.model_copy(update={key: SecretStr("") for key in ("ims_access_key_id", "ims_access_key_secret", "ims_security_token")})
         callback_base_url = settings.composition_public_base_url or callback_base_url
@@ -539,18 +542,18 @@ class Job:
             await asyncio.sleep(min(self.settings.composition_poll_seconds, remaining(data["ims_deadline"], "rendering")))
 
     async def wait_for_result(self, provider: ims.IMS) -> None:
-        """在原渲染期限内取址并转存 ZOS；恢复不重提渲染，成功后才通知。"""
+        """在原渲染期限内转存视频和封面；恢复不重提渲染，成功后才通知。"""
         data = self.record["data"]
+        # 一旦进入 ZOS 转存，重取 IMS 地址只是转存重试的一部分，超时仍归因于 ZOS。
         last_stage = "playback"
         while True:
             try:
                 budget = remaining(data["ims_deadline"], "playback")
             except CompositionError:
                 if last_stage == "zos_upload":
-                    raise CompositionError("zos_upload_timeout", "云端渲染已完成，但成片转存 ZOS 持续失败", "zos_upload") from None
+                    raise CompositionError("zos_upload_timeout", "云端渲染已完成，但成片或封面转存 ZOS 持续失败", "zos_upload") from None
                 raise CompositionError("playback_timeout", "云端渲染已完成，但等待成片地址超时", "playback") from None
             try:
-                last_stage = "playback"
                 async with asyncio.timeout(min(budget, self.settings.composition_http_timeout_seconds)):
                     url = await self.runtime.step(self.record, "playback", lambda: provider.result_url(data["result"]["mediaId"]),
                                                   {"media_id": data["result"]["mediaId"], "source": "completion"})

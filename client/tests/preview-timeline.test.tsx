@@ -7,6 +7,7 @@ import { buildPreviewRows, buildTimeline, thumbnailTimes } from "@/features/temp
 import { defaultEditor, newDraft } from "@/features/templates/model";
 import { trackEditor } from "@/features/templates/tracks";
 import { readCatalog } from "@/features/templates/sdk";
+import { sampleDraft } from "./fixtures";
 
 // 使用真实目录与草稿生成轨道，检查转场重叠、源素材范围和只读属性。
 test("普通与转场轨道保留实际时间范围", () => {
@@ -58,4 +59,15 @@ test("轨道接收播放时间，键盘定位限制范围并遵守禁用状态",
   expect(slider.getAttribute("aria-disabled")).toBe("true");
   view.unmount();
   expect(ref.current).toBeNull();
+});
+
+// 视频、标题与字幕轨道各自显示名称和类别图标。
+test("时间轴显示轨道图标与名称", () => {
+  const rows = buildPreviewRows(buildTimeline(sampleDraft(), readCatalog()));
+  const view = render(<PreviewTimeline ref={createRef<PreviewTimelineHandle>()} rows={rows} disabled time={0} onSeek={() => {}} />);
+  const labels = screen.getByLabelText("时间轴轨道标签").querySelectorAll(".template-timeline-label");
+  expect([...labels].map((label) => label.textContent)).toEqual(["视频", "顶部标题", "底部字幕"]);
+  expect([...labels].every((label) => label.querySelector("svg"))).toBe(true);
+  expect(new Set([...labels].map((label) => label.querySelector("svg")?.getAttribute("class"))).size).toBe(3);
+  view.unmount();
 });

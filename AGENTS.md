@@ -23,7 +23,7 @@
 - Remotion 颜色探针允许最多 2/255 的 RGB 取整误差并比较 alpha 加权覆盖，边缘位置探针优先向内移动；一帧转场核验相邻边界，缺少时序证据仍为 unknown。视觉请求提供图片序号与实际帧号映射，不把无效帧引用自动解释为图片序号。
 - Remotion 模型预算由 `server/.env` 的 `IMV_MAX_OUTPUT_TOKENS`（32000）、`IMV_MAX_TOKENS`（200000）、`IMV_MAX_MODEL_CALLS`（32）和 `IMV_MODEL_TIMEOUT_SECONDS`（240）配置；单次输出上限始终生效，仅开启预算时按剩余额度缩小，所有模型角色共用任务预算。任务与渲染超时独立配置为 600 / 180 秒；默认值与 `.env.example` 同步，修改后重启服务。
 - `server/src/server/asr/` 提供独立的 `transcribe` 函数与 `python -m server.asr` 命令行入口，尚未注册 HTTP 路由；通过北京地域 Fun-ASR 接收 HTTPS 音频直链并返回原始转写 JSON。字段声明位于 `asr/settings.py`，公开转写函数通过包入口按需导入；设置发现不加载业务，`DASHSCOPE_API_KEY` 在 `asr/asr.py` 业务模块加载时读取一次，固定读取源码 `server/.env`，不存在时不回退工作目录，进程环境变量优先；测试隔离文件、密钥、HTTP 和轮询等待。
-- 视频合成新任务在 IMS 渲染后将临时源地址的内容转存至 ZOS `imv/video_composition/{task_id}.mp4`，只给该对象设置 `public-read`；核对大小和匿名读取后才保存成功。回调与 GET 返回同一持久化地址，旧成功任务不迁移，继续按原规则向 IMS 取址。ZOS 凭据只读服务端环境，不进入客户端配置头或任务快照；转存失败不能返回 IMS 临时直链作为成功结果。
+- 视频合成新任务在 IMS 渲染后将临时源地址的内容转存至 ZOS `imv/video_composition/{task_id}.mp4`，并通过服务端 FFmpeg 从同一成片按解码顺序截取第 3 帧，上传同名 `.png`；只给这两个对象设置 `public-read`，核对大小和匿名读取后才保存成功。图片 URL 可按 `ZOS_WEB_URL` 和对象 key 拼出，不进入 GET 或回调；两者仍只返回视频的持久化地址。旧成功任务不迁移或补图。ZOS 凭据只读服务端环境，不进入客户端配置头或任务快照；转存失败不能返回 IMS 临时直链作为成功结果。
 - 在 `server/` 下执行 `uv run server` 启动 Uvicorn，默认监听 `0.0.0.0:20070`（所有 IPv4 接口，供服务器部署后远程访问）；`startup/settings.py` 的 `ServerSettings`（启动入口复用） 在每次启动时读取固定的 `server/.env` 中的 `PORT`，进程环境变量优先，范围为 1～65535，空值或非法值阻止启动；仓库根目录使用 `uv run --project server server`。维护 `server/uv.lock`，CI 使用 `--locked` 验证依赖。
 - `server/pyproject.toml` 显式将官方 PyPI 设为 uv 默认索引，与锁文件来源保持一致。遇到依赖版本不可用时先检查索引覆盖配置和镜像同步情况，不要仅为绕过镜像缺失而降低依赖版本或删除锁文件。
 - `App.tsx` 挂载 `pages/HomePage.tsx`，左侧导航提供默认打开的「主页」、`features/templates/` 模板库和 `features/remotion_templates/` 字效工作区。主页通过 `TemplateHome` 按云端在上、本地在下展示模板，各库独立读取和重试，浏览器提示本地模板需要桌面客户端；重新进入主页刷新列表。主页选择模板携带环境和 ID，或通过新建表单携带环境、名称与描述进入模板库；已有模板读取最新详情成功后才替换环境与草稿，新模板点击保存才写入。两种入口均复用保存/放弃/取消保护。底部设置入口组合环境信息与 `features/settings/` 动态插件表单；窄屏使用带无障碍名称的图标栏，切换设置同样保留工作区。聊天、任务编排、隔离 Player、参数编辑和 API 请求按职责分离。
@@ -59,9 +59,11 @@
 
 - 侧栏编辑入口显示「模版编辑」，使用现有 Lucide `SquarePen` 图标；保留 `library` 内部标识和工作区状态，窄屏保留图标及无障碍名称。
 
-- 主页模板列表最大宽度为 576px，云端在上、本地在下，每行仅展示名称、说明与进入箭头，点击整行选择模板。更新日志紧靠内容区右侧，宽屏宽度为 448px，移除外框和阴影，通过 react-markdown 展示根目录 `CHANGELOG.md`，构建时打包内容，日志独立滚动；窄屏时排列在模板区域下方。列表内部滚动，底部并排固定「新建云端模板」「新建本地模板」按钮；浏览器禁用本地新建并显示桌面客户端要求。复用 shadcn/ui 的 Card、Button、Dialog 和表单组件，两库分别加载和重试。
+- 主页模板列表最大宽度为 576px，云端在上、本地在下，分组标题带存储说明与数量；模板以两列画廊卡片展示（窄屏单列），灰底点阵画框居中黑底场记板图标，名称与单行说明位于画框下方，点击整张卡片选择模板；新建按钮位于列表卡片底部操作栏。主页不展示更新日志与当前时间（时间仅保留在 Remotion 页头）。列表内部滚动，底部并排固定「新建云端模板」「新建本地模板」按钮；浏览器禁用本地新建并显示桌面客户端要求。复用 shadcn/ui 的 Card、Button、Dialog 和表单组件，两库分别加载和重试。
 
 - 新模板的画面对象列表为空。添加效果统一通过左侧「特效资产」进行；「画面对象与已添加特效」仅展示和选择已有对象，空列表提示从左侧添加，移除对象后也通过左侧资产重新添加。
+
+- 转场参数面板仅提供「时间设置」页签与移除操作，转场效果通过左侧特效资产选择。
 
 - 模板保存结构中的 `tracks` 为必填数组，参数仅保存在 `tracks[].editor`。参数面板使用独立的 `EffectDraft` 临时视图。前端读取、云端 API/数据库、本地 Rust 文件存储及合成均要求对象格式，拒绝缺少 `tracks`、`tracks: null` 或携带顶层 `editor` 的模板，不提供旧格式转换。本地读取旧格式时提示模板字段变化，显示待删除文件的完整路径，说明删除将清除全部本地模板；读取过程保留文件，用户删除后重试可获得空列表。
 
@@ -71,7 +73,7 @@
 
 - 客户端转场连接连续源片段，合成时长扣除重叠；预览、播放终点和对象百分比使用合成时长。视频信息由工作区独立持有，更换预览视频和修改转场只重新计算对象区间，模板规则保持不变。对象开始支持秒数或百分比，持续时间支持固定秒数或持续到结束；结尾以外不显示，结束越界时截短，动画按可用帧数缩短并显示说明，帧数不足时明确报错。回归用例位于 `client/tests/effect-tracks.test.ts` 和 `track-timing.test.tsx`，前后端共用 `server/tests/template_timing_cases.json`。
 
-- 阿里 SDK 预览下方使用 `@xzdarcy/react-timeline-editor` 展示视频和独立特效轨道。视频只读，对象可选中、移动和调整持续时间，右侧编辑时间规则；组件使用独立编辑副本，轨道从成功应用的 SDK Timeline 派生。`tracks` 保存 `id`、`target`、`start_mode`、`start`、`duration` 和 `editor`，最多 100 个实例；开始方式为 `seconds` 或 `percent`，百分比小于 100，`duration: null` 表示持续到视频结束，转场持续时间固定。相同效果可重复添加，文字动画属于选中文字；基础文字首次应用样式保留参数，重复添加生成新实例。预览媒体由工作区独立持有，模板不保存 `media`。云端和桌面校验相同时间规则、分类、动画互斥与 ID 唯一性。SDK 帧事件驱动游标，定位暂停播放，等待 `playerSeeked` 后允许继续；修改效果回到开头。缩略图采用有界缓存，错误独立重试，取消和卸载释放资源。文案合成按成片时长逐个应用对象，标题使用请求文字，关键词使用原切片时间与对象区间的交集；字幕使用切分结果的 `subtitle_parts`，在原切片内按标点拆成保留中英文问号、去除其他标点且时间首尾衔接的短句，匹配请求仍使用原切片，旧快照缺少短句时保留中英文问号并去除其他标点。合成时转场忽略模板开始与持续时间，仅取特效类型并应用于实际素材边界，音频总长保持不变。视频和图片片段用 IMS `Contain` 保留完整画面与原始宽高比，比例不同时使用 `Background/Blur` 填充留白。核心用例位于 `client/tests/effect-tracks.test.ts`、`track-timing.test.tsx`、`preview-timeline.test.tsx`、工作区测试、`server/tests/test_template_tracks.py` 和 `test_video_composition_timeline.py`。桌面文件测试执行 `cargo test --locked --manifest-path src-tauri/Cargo.toml --lib templates::tests`。
+- 阿里 SDK 预览下方使用 `@xzdarcy/react-timeline-editor` 展示视频和独立特效轨道。视频只读，对象可选中、移动和调整持续时间，右侧编辑时间规则；组件使用独立编辑副本，轨道从成功应用的 SDK Timeline 派生。`tracks` 保存 `id`、`target`、`start_mode`、`start`、`duration` 和 `editor`，最多 100 个实例；开始方式为 `seconds` 或 `percent`，百分比小于 100，`duration: null` 表示持续到视频结束，转场持续时间固定。相同效果可重复添加，文字动画属于选中文字；基础文字首次应用样式保留参数，重复添加生成新实例。预览媒体由工作区独立持有，模板不保存 `media`。云端和桌面校验相同时间规则、分类、动画互斥与 ID 唯一性。SDK 帧事件驱动游标，定位暂停播放，等待 `playerSeeked` 后允许继续；修改效果回到开头。缩略图采用有界缓存，错误独立重试，取消和卸载释放资源。文案合成按成片时长逐个应用对象，标题使用请求文字，气泡使用模板文字和自身时间区间；字幕使用切分结果的 `subtitle_parts`，在原切片内按标点拆成保留中英文问号、去除其他标点且时间首尾衔接的短句，匹配请求仍使用原切片，旧快照缺少短句时保留中英文问号并去除其他标点。合成时转场忽略模板开始与持续时间，仅取特效类型并应用于实际素材边界，音频总长保持不变。视频和图片片段用 IMS `Contain` 保留完整画面与原始宽高比，比例不同时使用 `Background/Blur` 填充留白。核心用例位于 `client/tests/effect-tracks.test.ts`、`track-timing.test.tsx`、`preview-timeline.test.tsx`、工作区测试、`server/tests/test_template_tracks.py` 和 `test_video_composition_timeline.py`。桌面文件测试执行 `cargo test --locked --manifest-path src-tauri/Cargo.toml --lib templates::tests`。
 
 - 特效设置通过右上角「×」关闭，移除当前画面对象时同时关闭；`TemplateWorkspace` 使用空选中状态控制面板显示，关闭不修改草稿，桌面保留设置栏宽度，预览画面尺寸保持不变。选择对象或应用资产重新打开设置，切换页签保留关闭状态；组件核心用例覆盖独立对象编辑和未保存草稿保护。
 
@@ -82,12 +84,13 @@
 - 数据库配置由 `database.py` 的 `DatabaseSettings`（`pydantic-settings`）自动读取固定的 `server/.env`，字段为 `DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD`、`DB_NAME`，可选 `DB_SSL_CA` 指定 CA 文件启用 TLS 校验，进程环境变量优先；端口校验 1～65535，库名校验 1～64 字符。启动初始化时加载，修改后重启服务。真实环境文件不得入库，维护无密码示例 `.env.example`。
 - 启动端口、数据库、ASR、切片、Remotion 与视频合成的现有配置类继承 `config_base.py` 的 `CommonSettings`，统一读取固定的 `server/.env`；构造参数 > 进程环境变量 > 文件 > 默认值，保留 `_env_file` 覆盖与 `None` 禁用。路径仅面向当前源码布局，不做安装位置发现。保留字段、校验、实例化时机和 Remotion 相对数据目录行为，不建立配置树或统一快照；运行期间不修改配置，修改后重启服务。共用 `server/.env.example`，根目录启动使用 `uv run --project server server`。
 - FastAPI lifespan 启动时连接目标库，仅在 MySQL 返回 1049（库不存在）时通过临时无库连接执行 `CREATE DATABASE IF NOT EXISTS`，使用 `utf8mb4` / `utf8mb4_bin` 并正确引用库名；已有库直接复用。配置无效、连接或建库失败时停止启动，建库账号须具备对应权限。首次模板请求自动创建缺失表；运行中的数据库失败返回可重试的 503。启动失败和退出时释放连接池，临时建库连接始终关闭。
-- 四个路由为 `GET /template`、`POST /template`、`GET /template/{template_id}`、`DELETE /template/{template_id}`。POST 无 ID 创建（201），有 ID 完整更新（200）；不存在的 ID 返回 404，不做 upsert。
+- 云端模板在 `GET /template`、`POST /template`、`GET /template/{template_id}`、`DELETE /template/{template_id}` 上传输 Protobuf 二进制消息；POST 请求与成功响应使用 `application/x-protobuf`。POST 无 ID 创建（201），有 ID 完整更新（200）；不存在的 ID 返回 404，不做 upsert。不存在独立的 Connect 路由。本地模板保存请求也使用共享 Protobuf 消息，磁盘文件继续使用 JSON。Buf 配置位于仓库根目录，TypeScript、Python 生成代码位于各自 `src/generated/imv/template/v1/`，Rust 生成代码位于 `client/src-tauri/src/generated/`。
 - 名称去除首尾空白后不能为空，MySQL 唯一约束拒绝重名（409）；保存校验数值范围、效果目录与动画互斥关系（422）。服务端生成 ID、UTC 时间和效果参数快照，不接受客户端渲染参数。
 - 主页创建草稿不调用 POST；模板库保存时无 ID 创建、有 ID 更新。未保存切换须提供保存并切换、放弃修改、取消，失败保留草稿。
-- 前端使用 SDK 5.2.2 的效果目录和静态动画 JSON，服务端维护同版本白名单；不提供 `/template/effects`。升级 SDK 时同步核对目录。保留用户已有 proto 文件，本次 API 使用 JSON。
+- 前端使用 SDK 5.2.2 的效果目录和静态动画 JSON，服务端维护同版本白名单；不提供 `/template/effects`。升级 SDK 时同步核对目录。修改 `proto/` 协议后运行 `buf lint`、`buf generate` 并提交三种语言的生成代码；已发布协议使用 `buf breaking` 检查兼容性。
 - 示例视频地址通过 `client/.env` 中的 `VITE_PREVIEW_VIDEO_URL` 配置，支持 HTTP(S) 直链与 public 资源路径；空值使用内置示例。修改后重启 Vite，生产使用需重新构建。「加载预览视频」读取真实时长和尺寸，视频信息独立于模板保存，独立视频元素在完成、失败、取消和卸载时清理。
-- 模板预览画布与 SDK 场景使用视频原始宽高；默认示例也读取真实尺寸并保留十秒区间。标题、字幕和气泡字号支持 12～300 的整数，预览、云端和本地保存统一校验；字号按画布像素计算，折行宽度为画布宽度的 90%。显示区域同时受可用宽度与窗口高度的 60% 限制，等比例呈现完整画面。SDK 在独立 iframe 初始化，通过 `maxCanvasConfig` 设置尺寸，视频尺寸变化时重新初始化并清理旧播放器。
+- 模板预览画布与 SDK 场景使用视频原始宽高；默认示例也读取真实尺寸并保留十秒区间。标题、字幕和气泡字号支持 12～300 的整数，预览、云端和本地保存统一校验；字号按画布像素计算，标题和字幕预览保留原文，不添加自动换行。显示区域同时受可用宽度与窗口高度的 48% 限制，等比例呈现完整画面。SDK 在独立 iframe 初始化，通过 `maxCanvasConfig` 设置尺寸，视频尺寸变化时重新初始化并清理旧播放器。
+- 顶部标题对象的 `tracks[].editor` 保存 `titleKeyword`、四个可组合的局部样式布尔选项 `titleKeywordBold`、`titleKeywordItalic`、`titleKeywordUnderline`、`titleKeywordStrikeout`、可选的 `titleKeywordColor` 与 `titleKeywordSize`；关键词为空时，预览和合成分别从示例标题与请求标题的首段连续文字选取前两个字，已有指定关键词继续应用；修改示例标题时清除指定关键词。底部字幕对象独立保存 `subtitleKeywordBold`、`subtitleKeywordItalic`、`subtitleKeywordUnderline`、`subtitleKeywordStrikeout`、`subtitleKeywordColor` 与 `subtitleKeywordSize`；预览使用示例字幕的首个词语，合成使用每段切片的 `keyword`。颜色为空字符串或 `#RRGGBB`，局部字号为 0（沿用原字号）或 12～300 的整数；只标记首次出现的位置，颜色按 IMS 要求转换为 BGR，字号通过 IMS `\fs` 设置并恢复；其他对象不得启用对应样式，已有本地模板缺少新字段时读取默认值。 视频合成按气泡对象自身时间区间显示其 `bubbleText` 示例文字一次，不使用切片关键词；有气泡对象但未选气泡样式时仍显示文字，无气泡对象则不生成。关键词继续通过标题和字幕的局部样式强调。
 - 预览保留阿里云 SDK 5.2.2；Windows 生产页面通过 `src-tauri/src/localhost.rs` 在 `127.0.0.1` 的系统分配端口提供打包资源，窗口使用 `http://localhost:<端口>`，避免 `tauri.localhost` 不满足空 License 的 localhost 预览条件。仅允许对应 Host 的 GET/HEAD，不暴露任意磁盘文件；开发模式与 macOS / Linux 保持原加载方式，只向本次绑定的精确 localhost URL 开放模板、设置存储和内置后端启动命令，不授权其他端口或域名。
 - API 地址读取 `client/.env` 的 `VITE_API_URL`，未配置或留空时默认 `http://localhost:20070`；CORS 允许精确 localhost 主机的动态 HTTP 端口。修改配置后重启 Vite，生产需重新构建；避免 `.env.local` 同名配置覆盖。主页列表加载不阻塞新建，编辑保存不依赖列表，返回主页时读取最新结果。预览仍需联网获取 SDK、字体和媒体，不发起云端合成，不将浏览器验证等同于桌面安装包验证。
 - macOS 通过 `client/src-tauri/Info.plist` 设置 `NSAppTransportSecurity.NSAllowsArbitraryLoadsInWebContent=true`，允许 WebView 访问用户设置的 HTTP 后端；Tauri 自动合并到应用包，修改后重新打包生效。
@@ -109,10 +112,10 @@
 
 ## Feature 测试约束（强制）
 
-- 每次新增 feature 必须同时提交详细、覆盖全面且可重复执行的测试脚本；修复 bug 必须增加能够复现问题的回归用例。不能只测成功路径，也不能只断言函数被调用或复制实现来凑测试数量。
+- 每次新增 feature 必须同时提交可重复执行的核心功能测试；修复 bug 必须增加能够复现问题的回归用例。测试断言实际业务结果，避免重复验证同一行为。
 - 服务端测试统一放在 `server/tests/`，使用 pytest 的 `test_*.py`、fixture 和参数化用例；共享夹具放 `conftest.py`，不再新增 unittest 风格测试。按功能组织文件，规模增大后再分目录。
 - 客户端核心测试在 `client/tests/`，使用 Bun 自带运行器、Happy DOM 和 React Testing Library；在 `client/` 执行 `bun run test`，每个用例上方写中文场景注释。测试隔离 HTTP 与 SDK，不连接真实服务；只覆盖必要业务行为，不把模拟 DOM 验证等同于真实视频播放、浏览器原生表单校验或 Tauri 验证。`bun run build` 同时检查测试类型。
-- 根据功能适用范围覆盖正常流程、异常输入、边界值、空数据、失败恢复、资源清理，以及涉及的权限、并发与幂等行为。不存在的能力不为凑覆盖率编写空测试；提交说明列出已覆盖场景与实际限制。
+- 按核心功能涉及的实际风险选择正常流程及必要的异常、边界和恢复场景；不为凑覆盖率增加测试。提交说明列出已覆盖场景与实际限制。
 - API 用例应检查状态码、响应契约和副作用。测试隔离外部服务、密钥和持久化数据，使用 fixture、monkeypatch 或临时目录；不得访问生产系统、依赖执行顺序或使用无界等待。
 - 共享服务端夹具保留临时 SQLite 数据库隔离，同时自动清除外部 `IMV_`、`DASHSCOPE_API_KEY` 与旧 `ASR_BASE_URL` 环境变量并将各配置类的文件路径指向临时 `server/.env`，切换临时目录，避免读取本机模型配置；ASR 首次导入屏蔽 `.env`，请求使用内存传输。配置用例显式注入，不访问真实 MySQL、ASR 或模型服务。
 - 文件头说明测试范围与执行方式，测试函数/夹具的 docstring 说明场景和期望。每次功能改动运行相关用例，交付前运行所属模块的完整测试；CI 使用锁定依赖运行服务端 pytest，测试失败必须修复。

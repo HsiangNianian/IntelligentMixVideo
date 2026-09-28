@@ -43,65 +43,49 @@ PORT=8010 uv run --locked server
 
 ## 模板接口
 
+客户端云端模板在现有 HTTP 地址上传输 Protobuf 二进制消息。协议定义在仓库根目录 `proto/`，Python 生成代码位于 `src/generated/imv/template/v1/`，与客户端生成目录结构一致。
+
+模板接口：
+
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/template` | 返回完整模板数组，按更新时间倒序，空库返回 `[]` |
-| POST | `/template` | 无 `template_id`（或为 null）创建，携带 ID 完整更新 |
-| GET | `/template/{template_id}` | 返回单个模板完整配置 |
+| GET | `/template` | 返回 `ListTemplatesResponse`，按更新时间倒序 |
+| POST | `/template` | 接收 `SaveTemplateRequest`；无 `template_id` 创建，携带 ID 完整更新，返回 `SaveTemplateResponse` |
+| GET | `/template/{template_id}` | 返回 `GetTemplateResponse` |
 | DELETE | `/template/{template_id}` | 删除模板，成功返回 204 |
 
-创建返回 201，更新返回 200。名称重复返回 409，模板不存在返回 404，非法 ID 或配置返回 422。
+GET 成功响应与 POST 请求、成功响应均使用 `application/x-protobuf`。POST 的 JSON 请求返回 415；损坏的 Protobuf 消息返回 400。创建返回 201，更新返回 200。名称重复返回 409，模板不存在返回 404，非法 ID 或配置返回 422。错误响应仍使用 JSON。
 重命名使用携带 ID 的 POST；另存为使用不携带 ID 的 POST。不存在的 ID 不会自动变成创建。
 
-创建示例：
+`SaveTemplateRequest.tracks` 必须提供，通过 `TrackList.tracks[].editor` 保存参数；缺省参数由业务校验补齐。模板更新完整替换配置。名称去除首尾空白后为 1～100 字符；说明最多 1000 字符；标题、字幕、气泡示例文字最多 60、100、40 字符；字号 12～300 整数；位置 0～100%；动画和转场时长 0.1～3 秒。
 
-```json
-{
-  "name": "简洁字幕",
-  "description": "标题使用淡入动画",
-  "tracks": [{
-    "id": "title-1",
-    "target": "title",
-    "start_mode": "seconds",
-    "start": 0,
-    "duration": null,
-    "editor": { "title": "示例标题", "subtitle": "", "bubbleText": "", "titleIn": "in/fade_in" }
-  }],
-  "effect_ids": ["in/fade_in"],
-  "transition_duration_seconds": 0.5
-}
-```
-
-`tracks` 为必填数组，每个对象通过 `tracks[].editor` 保存参数，缺省参数补齐默认值。模板更新完整替换配置。
-API 与数据库读取均要求此结构；缺少 `tracks`、`tracks: null` 或携带顶层 `editor` 均拒绝处理，不提供旧格式转换。
-字段及范围在 OpenAPI 中列出：名称去除首尾空白后 1～100 字符；说明最多 1000 字符；
-标题、字幕、气泡示例文字最多 60、100、40 字符；字号 12～120 整数；位置 0～100%；动画和转场时长 0.1～3 秒。
+顶部标题对象的 `titleKeywordBold`、`titleKeywordItalic`、`titleKeywordUnderline`、`titleKeywordStrikeout` 可组合使用，`titleKeywordColor` 设置局部颜色，`titleKeywordSize` 设置局部字号；合成时优先在请求标题中查找已有的 `titleKeyword`，空值时自动选取请求标题首段连续文字的前两个字，只标记首次出现的位置。底部字幕对象独立保存 `subtitleKeywordBold`、`subtitleKeywordItalic`、`subtitleKeywordUnderline`、`subtitleKeywordStrikeout`、`subtitleKeywordColor` 和 `subtitleKeywordSize`，作用于原切片中首次包含 `keyword` 的字幕短句，空关键词保留原文。颜色为空字符串或 `#RRGGBB`，空字符串表示保持文字原色；合成时转换为 IMS 要求的 BGR 顺序。局部字号为 0（沿用原字号）或 12～300 的整数，合成时使用 IMS `\fs` 指令设置并恢复。模板响应在对应对象的 `tracks[].editor` 返回这些值。 视频合成按气泡对象自身时间区间显示其 `bubbleText` 示例文字一次，不使用切片关键词；有气泡对象但未选气泡样式时仍显示文字，无气泡对象则不生成。关键词继续通过标题和字幕的局部样式强调。
 
 独立对象通过 `tracks` 保存，每项包含 `id`、`target`、`start_mode`、`start`、`duration` 和 `editor`。`start_mode` 支持 `seconds` 和 `percent`；百分比范围为 0 至小于 100，`duration` 为正秒数或 `null`（持续到视频结束）。模板不保存视频信息，保存校验不依赖预览时长。应用视频时按输出帧率计算区间：结尾以外不显示、结束越界时截短，动画按有效帧数缩短并记录说明，无法容纳所选动画时明确失败。文案合成逐个应用对象，标题使用请求文字，字幕和关键词采用文案时间与对象区间的交集；合成时转场忽略模板开始与持续时间，仅取特效类型并应用于实际素材边界，音频总长保持不变。
 同一文字角色的循环动画与入场、出场互斥。至少选择 1 个效果，最多 500 个不同效果 ID。
 
 响应补充 UUID、UTC 创建/更新时间和 `effects` 参数快照。服务端通过固定 SDK 5.2.2 白名单解析效果，
 拒绝未知 ID、错误分类和全部 `tracks[].editor` 中的效果与 `effect_ids` 不一致；客户端不能提交渲染参数。
-`schema.py` 支持对象参数的 camelCase 输入输出及 snake_case 输入，接口使用 JSON。
+`schema.py` 负责业务字段校验，`router.py` 将生成的 Protobuf 消息转换为业务模型并生成响应。
 
 MySQL 单独列保存唯一名称、ID 和时间，JSON 保存完整编辑配置与效果快照。
 保存和删除使用事务；同时保存同名新模板仅一个成功。同时编辑同一个模板时，后一次成功保存覆盖前一次完整配置。
 
 ## 异步视频合成
 
-`POST /api/v1/video-compositions` 创建任务，HTTP 200 响应为 `{"code":200,"message":"操作成功","data":"任务ID"}`；`GET /api/v1/video-compositions/{taskId}` 查询结果，查询结构保持不变。终态回调仅含 `taskId/status/videoUrl/errorMessage`：成功为 `succeed`、视频直链、null 错误；失败为 `failed`、null 地址、错误摘要。回调 ID 与创建响应的 `data` 一致，内部和查询的成功状态仍为 `succeeded`。模板按 `tracks[].editor` 读取，标题取请求 `title`，关键词取原切片；字幕取切片内 `subtitle_parts`，按标点拆成保留中英文问号、去除其他标点的短句，短句在原切片内首尾衔接，旧快照缺少该字段时保留中英文问号并去除其他标点。素材匹配仍接收原切片文字与时间，模板示例文字不进入成片。
+`POST /api/v1/video-compositions` 创建任务，HTTP 200 响应为 `{"code":200,"message":"操作成功","data":"任务ID"}`；`GET /api/v1/video-compositions/{taskId}` 查询结果，查询结构保持不变。终态回调仅含 `taskId/status/videoUrl/errorMessage`：成功为 `succeed`、视频直链、null 错误；失败为 `failed`、null 地址、错误摘要。回调 ID 与创建响应的 `data` 一致，内部和查询的成功状态仍为 `succeeded`。模板按 `tracks[].editor` 读取，标题取请求 `title`，关键词取原切片；字幕取切片内 `subtitle_parts`，按标点拆成保留中英文问号、去除其他标点的短句，短句在原切片内首尾衔接，旧快照缺少该字段时保留中英文问号并去除其他标点。素材匹配仍接收原切片文字与时间，标题和字幕的模板示例文字不进入成片，气泡对象使用其模板示例文字。
 
 创建请求的字段校验错误返回 HTTP 422，响应含 `{"code":422,"message":"请求参数无效","data":null}`；客户端配置头错误及其他错误沿用原有格式。后台合成失败通过查询结果的 `status: failed` 和 `error` 表示。
 
 视频和图片片段以 `Contain` 方式放入输出画布，保留素材原始宽高比和完整画面；比例不同时使用素材的模糊背景填充留白。已有成片不会自动重新渲染。
 
-云端渲染返回 `Success` 后仍保持 `processing/rendering`，在原渲染截止时间内获取 IMS 临时地址并下载成片，再上传至 ZOS 的 `imv/video_composition/{taskId}.mp4`。只给该对象设置 `public-read`，确认对象大小及匿名读取后才保存 `succeeded` 和待通知状态；GET 与成功通知均返回持久化的 ZOS 地址。取址超时为 `playback_timeout`，转存持续失败为 `zos_upload_timeout`，均不重提渲染。历史成功任务不迁移，GET 仍刷新 IMS 地址，通知复用未过期地址或重新获取。
+云端渲染返回 `Success` 后仍保持 `processing/rendering`，在原渲染截止时间内获取 IMS 临时地址并下载成片。FFmpeg 按解码顺序截取第 3 帧，视频与 PNG 分别上传至 ZOS 的 `imv/video_composition/{taskId}.mp4` 和同名前缀的 `.png`；两个对象单独设置 `public-read`，确认大小及匿名读取后才保存 `succeeded` 和待通知状态。PNG 可通过 `ZOS_WEB_URL/imv/video_composition/{taskId}.png` 访问，不进入 GET 或回调；两者仍只返回视频地址。取址超时为 `playback_timeout`，转存持续失败为 `zos_upload_timeout`，均不重提渲染。历史成功任务不补图，GET 仍按原规则返回地址。
 
 提供 `callbackUrl` 时，终态以 POST JSON 通知，任意 2xx 表示送达；非 2xx、网络错误和超时均在失败后按 5、15、45 秒间隔重试，最多四次，不跟随重定向。次数和下次投递时间落库，等待中的重试可在重启后继续；新成功任务的通知不再依赖 IMS 凭据，历史成功任务在重启后缺少客户端 IMS 凭据且需要重新取址时仍会直接记为通知失败。通知失败不回退合成终态，接收方须按 `taskId` 幂等处理。沿用现有恢复边界：发送中进程退出或送达状态保存失败留下的 `sending` 不自动重放，调用方通过 GET 补查。
 
 `COMPOSITION_MATCH_WAIT_SECONDS` 默认 30 秒，匹配回调未到则只主动查询一次。修改配置后重启；已有任务保留其已保存的截止时间，失败历史通知不自动重新发送。
 
-新任务还需在 `server/.env` 中设置 `ZOS_API_ENDPOINT`、`ZOS_BUCKET`、`ZOS_ACCESS_KEY_ID`、`ZOS_SECRET_ACCESS_KEY`、`ZOS_WEB_URL`；`ZOS_REGION` 默认 `hangzhou-7`，`ZOS_FORCE_PATH_STYLE` 默认 false。密钥仅由服务端读取，不进入客户端 IMS 设置。上传与公开地址分别使用 API Endpoint 和 Web URL；目前不读取 `ZOS_ENDPOINT`。对象删除或桶生命周期清理后，公开 URL 也会失效。字段示例和完整接口见 [视频合成 API 文档](src/server/video_composition/api.md)。
+新任务还需在 `server/.env` 中设置 `ZOS_API_ENDPOINT`、`ZOS_BUCKET`、`ZOS_ACCESS_KEY_ID`、`ZOS_SECRET_ACCESS_KEY`、`ZOS_WEB_URL`，并确保 `ffmpeg` 在服务端 PATH 中；缺少 FFmpeg 时受理返回 503。`ZOS_REGION` 默认 `hangzhou-7`，`ZOS_FORCE_PATH_STYLE` 默认 false。密钥仅由服务端读取，不进入客户端 IMS 设置。上传与公开地址分别使用 API Endpoint 和 Web URL；目前不读取 `ZOS_ENDPOINT`。对象删除或桶生命周期清理后，公开 URL 也会失效。字段示例和完整接口见 [视频合成 API 文档](src/server/video_composition/api.md)。
 
 ## 代码结构
 

@@ -5,6 +5,8 @@ from importlib.metadata import version
 import pytest
 from fastapi.testclient import TestClient
 
+from .template_wire import detail_template, post_template, saved_template
+
 
 # 测试首页和用户列表的状态码、JSON 类型与示例响应。
 @pytest.mark.parametrize("path,message", [("/", "首页"), ("/users/", "用户列表")])
@@ -120,9 +122,9 @@ def test_template_agent_mount_preserves_shared_routes(
     client: TestClient, template_payload: dict,
 ) -> None:
     """合并后生成服务保留独立文档，模板库持久化与切片路由仍使用原有契约。"""
-    created = client.post("/template", json=template_payload)
+    created = post_template(client, template_payload)
     assert created.status_code == 201
-    saved = created.json()
+    saved = saved_template(created)
 
     docs = client.get("/api/templates/docs")
     assert docs.status_code == 200
@@ -135,5 +137,5 @@ def test_template_agent_mount_preserves_shared_routes(
 
     restored = client.get(f"/template/{saved['template_id']}")
     assert restored.status_code == 200
-    assert restored.json() == saved
+    assert detail_template(restored) == saved
     assert client.post("/segmentations", json={}).status_code == 422

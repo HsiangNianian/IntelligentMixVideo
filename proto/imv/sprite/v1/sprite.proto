@@ -1,0 +1,288 @@
+// Remotion Sprite 的发布、云端样式绑定和合成输入协议。
+// Sprite 保存已经验收的外观与动画；业务文字、关键词、素材边界和最终时间由合成总线提供。
+// 本包独立于 imv.template.v1，同一个 style_id 可以同时使用 IMS 效果和 Sprite。
+syntax = "proto3";
+
+package imv.sprite.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// 发布版本的内容类型；发布后不能把同一个 Sprite 改成另一种类型。
+// 字效和字幕共用 TEXT，实际作用对象由 SpritePlacement.target 区分。
+enum SpriteKind {
+  // 未指定；不能作为可发布的类型。
+  SPRITE_KIND_UNSPECIFIED = 0;
+  // 透明背景文字层，可绑定标题或支持关键词高亮的字幕。
+  SPRITE_KIND_TEXT = 1;
+  // 亮度、对比度、饱和度等视觉叠加层；不读取或逐像素修改业务原视频。
+  SPRITE_KIND_FILTER_OVERLAY = 2;
+  // 覆盖在底片上的视频动效，可用于整段、片段入场或片段出场。
+  SPRITE_KIND_VIDEO_OVERLAY = 3;
+  // 在相邻素材片段的实际边界播放的透明转场叠加层。
+  SPRITE_KIND_TRANSITION_OVERLAY = 4;
+}
+
+// 一次绑定所响应的业务事件；总线据此生成一个或多个实际渲染区间。
+// 类型合法性由发布 Sprite 的 SpriteKind 与服务端绑定校验共同决定。
+enum SpriteTarget {
+  // 未指定；不能保存为有效绑定。
+  SPRITE_TARGET_UNSPECIFIED = 0;
+  // 标题：文字取合成请求的 title，显示区间取绑定时间与成片时间的交集。
+  SPRITE_TARGET_TITLE = 1;
+  // 字幕：按原切片内的短句逐条触发，文字和关键词来自该短句及所属切片。
+  SPRITE_TARGET_SUBTITLE = 2;
+  // 滤镜叠加：在绑定区间显示透明视觉层，不接收业务文字。
+  SPRITE_TARGET_FILTER = 3;
+  // 普通视频动效：在绑定区间显示透明动画，不接收业务文字。
+  SPRITE_TARGET_VIDEO_EFFECT = 4;
+  // 转场：按最终底片中相邻素材的真实边界逐次触发。
+  SPRITE_TARGET_TRANSITION = 5;
+  // 入场：按最终底片中每个源片段的起点触发，并裁到该片段内。
+  SPRITE_TARGET_VIDEO_ENTER = 6;
+  // 出场：按最终底片中每个源片段的终点触发，并裁到该片段内。
+  SPRITE_TARGET_VIDEO_EXIT = 7;
+}
+
+// 参数在运营界面的展示与编辑权限，仅约束发布版本的样式参数。
+// 无论权限为何值，运营都不能用参数覆盖总线负责的业务文字、关键词或真实时间。
+enum OperatorAccess {
+  // 未声明权限；不应作为可编辑控件使用。
+  OPERATOR_ACCESS_UNSPECIFIED = 0;
+  // 运营可见发布值，但不能在模板编辑里修改。
+  OPERATOR_ACCESS_VISIBLE_READ_ONLY = 1;
+  // 运营可见且可修改；修改值存入 SpritePlacement.overrides。
+  OPERATOR_ACCESS_VISIBLE_EDITABLE = 2;
+  // 发布版本内部使用；模板编辑不展示，也不接受覆盖。
+  OPERATOR_ACCESS_INTERNAL = 3;
+}
+
+// 单个样式标量。oneof 保留字符串、数字或布尔值的类型，
+// 绑定覆盖值必须与发布默认值同型，并满足发布时保存的参数约束。
+message ScalarValue {
+  oneof value {
+    // 字符串样式值；是否允许运营编辑由参数声明决定。
+    string string_value = 1;
+    // 有限数字；可再受 SpriteParameter.minimum/maximum 约束。
+    double number_value = 2;
+    // 开关类样式值；false 是有效值，不表示字段缺失。
+    bool bool_value = 3;
+  }
+}
+
+// 已发布版本允许运营查看或修改的一个样式控件。
+// key 对应验收代码中的配置字段；字段只能表示样式，不能表示业务文案或绝对时间。
+message SpriteParameter {
+  // 配置字段名，绑定覆盖值通过同名 key 找到该参数。
+  string key = 1;
+  // 模板编辑界面显示的控件名称。
+  string label = 2;
+  // 控件可见性和可编辑性；只有 VISIBLE_EDITABLE 接受绑定覆盖。
+  OperatorAccess access = 3;
+  // 发布时验收过的默认值，也决定后续覆盖值的数据类型。
+  ScalarValue default_value = 4;
+  // 可选数字下界；缺失与显式设置为零不同。
+  optional double minimum = 5;
+  // 可选数字上界；缺失表示不通过此字段设置上界。
+  optional double maximum = 6;
+  // 可选离散取值；非空时运营覆盖值必须与某一项同型且相等。
+  // 例如字重只允许 400/700、对齐只允许 left/center/right；空数组表示不限制枚举。
+  repeated ScalarValue allowed_values = 7;
+}
+
+// Sprite 发布时固定的画布和帧率，也是 SpriteRenderInput 帧数的计量基准。
+// IMS 成片可以使用不同画幅；透明视频交给 IMS 后再通过 Cover 缩放或裁切。
+message SpriteCanvas {
+  // 发布画布宽度，单位像素。
+  uint32 width = 1;
+  // 发布画布高度，单位像素。
+  uint32 height = 2;
+  // 发布帧率，单位帧/秒；新发布的 Remotion Sprite 固定为 30 FPS。
+  // 渲染请求中的效果内帧数按此值计算；历史发布仍保留原帧率。
+  uint32 fps = 3;
+  // Agent 验收时的示例预览帧数；不限制总线实际业务区间的长度。
+  uint32 preview_frames = 4;
+}
+
+// 一次不可变发布。服务端复制已通过验收的代码、参数契约和预览，
+// 因而源聊天被删除或继续编辑后，已绑定的 Sprite 仍指向同一发布内容。
+// 此消息包含私有源码和配置，不通过公开目录或模板编辑接口完整返回。
+message PublishedSprite {
+  // 发布记录的 UUID；绑定和渲染均引用此 ID，而不是聊天版本 ID。
+  string sprite_id = 1;
+  // 生成该发布内容且已通过完整验收的 Remotion Agent 版本 UUID。
+  string source_version_id = 2;
+  // 运营看到的发布名称。
+  string name = 3;
+  // 发布时固定的内容类型，用于校验允许绑定的 target。
+  SpriteKind kind = 4;
+  // 发布画布；实际渲染必须使用相同宽、高和 FPS。
+  SpriteCanvas canvas = 5;
+  // 已验收的 TSX 实现，仅服务端渲染使用，不进入公开目录响应。
+  string tsx_code = 6;
+  // TSX 字节内容的 SHA-256，用于读取发布记录时核验完整性。
+  string code_sha256 = 7;
+  // 运营可见或内部使用的已验收样式参数声明，不包含业务文字参数。
+  repeated SpriteParameter parameters = 8;
+  // 文字 Sprite 接收总线标题或字幕的配置字段名；视觉 Sprite 留空。
+  string text_prop = 9;
+  // 字幕 Sprite 接收关键词命中区间的配置字段名；不支持高亮时留空。
+  // 服务端按业务文字计算所有字面命中，传入以 Unicode 码点计数的半开区间。
+  string keywords_prop = 10;
+  // 不可变发布记录创建的时间。
+  google.protobuf.Timestamp published_at = 11;
+  // 另行保存的示例预览 MP4 的 SHA-256；该 MP4 不是合成用透明素材。
+  string preview_sha256 = 12;
+  // 发布时验收的 JSON Schema，仅服务端用于校验最终渲染配置。
+  string config_schema_json = 13;
+  // 发布时验收的完整默认配置；渲染时先读取它，再应用合法样式覆盖与业务文字。
+  string default_config_json = 14;
+  // 字幕入场与出场动画的合计帧数；业务字幕更短时用于决定是否直接显示静态画面。
+  uint32 animation_frames = 15;
+  // 发布验收帧中选出的可见帧号；短字幕冻结此帧，避免动画吞掉正文。
+  uint32 static_frame = 16;
+  // 预留的气泡素材地址；本期不制作气泡字，保持空值。
+  string bubble_asset_url = 17;
+  // 预留气泡素材宽度；本期保持零。
+  uint32 bubble_asset_width = 18;
+  // 预留气泡素材高度；本期保持零。
+  uint32 bubble_asset_height = 19;
+}
+
+// 公开目录使用的发布摘要；只包含运营选择与预览需要的信息，不返回 TSX 源码。
+message SpriteSummary {
+  // 不可变发布的 UUID，模板绑定通过此 ID 引用。
+  string sprite_id = 1;
+  // 目录和已绑定对象显示的名称。
+  string name = 2;
+  // 用于筛选可选择的作用对象。
+  SpriteKind kind = 3;
+  // 供编辑器预览布局及总线确定渲染画布。
+  SpriteCanvas canvas = 4;
+  // 样式参数声明；界面按 access 决定展示与编辑，只有可编辑项能写入绑定覆盖。
+  repeated SpriteParameter parameters = 5;
+  // 对应的 Agent 成功版本 ID，仅供追溯来源。
+  string source_version_id = 6;
+  // 固定示例 MP4 的读取路径；不作为 IMS 合成素材。
+  string preview_url = 7;
+  // 是否已验收关键词高亮能力；字幕绑定要求此值为 true。
+  bool keywords_supported = 8;
+}
+
+// GET /api/sprites 的响应，返回可供运营选择的不可变发布条目。
+message ListSpritesResponse {
+  // 当前可供运营绑定的 Sprite 目录。
+  repeated SpriteSummary sprites = 1;
+}
+
+// POST /api/sprites/publish 的请求；源版本必须已完整通过验收。
+message PublishSpriteRequest {
+  // 要发布的 Agent 成功版本 UUID。
+  string source_version_id = 1;
+  // 必须与源版本创建时固定的类型一致。
+  SpriteKind kind = 2;
+  // 文字 Sprite 的唯一业务文字配置字段；视觉 Sprite 留空。
+  string text_prop = 3;
+  // 字幕高亮使用的配置字段；标题和视觉 Sprite 留空。
+  string keywords_prop = 4;
+}
+
+// 发布结果只返回可公开的摘要；相同源版本和参数重复发布返回原 Sprite。
+message PublishSpriteResponse {
+  SpriteSummary sprite = 1;
+}
+
+// 已发布 Sprite 在一个云端 style_id 下的一次使用。同一 Sprite 可以绑定多次。
+// 运营在此设置作用对象、有效区间、样式覆盖和叠放顺序；业务文字与真实事件时间不存入绑定。
+message SpritePlacement {
+  // 本次绑定实例的 ID，同一 style_id 内唯一；用于编辑和渲染追踪。
+  string id = 1;
+  // 引用 PublishedSprite.sprite_id；同一发布版本可以被不同实例复用。
+  string sprite_id = 2;
+  // 决定总线从标题、短句、整段画面或素材边界的哪类事件生成渲染请求。
+  SpriteTarget target = 3;
+  // 起点的计量方式：seconds 为最终成片秒数，percent 为最终成片时长百分比。
+  string start_mode = 4;
+  // 按 start_mode 表示的起点；percent 的有效范围为 [0,100)。
+  // 边界类 target 的实际触发点仍由总线确定的素材边界决定。
+  double start = 5;
+  // 固定持续时间，单位秒；缺失表示延续到成片末尾。
+  // 转场、片段入场和片段出场必须指定此值；入/出场按片段裁切，转场受相邻片段时长限制。
+  optional double duration = 6;
+  // 只保存运营有权编辑且不同于发布默认值的样式标量，不存文字、关键词或真实时间。
+  repeated SpriteParameterOverride overrides = 7;
+  // 同一 style_id 下从 0 开始的连续顺序；Sprite 视频轨道按此顺序由下到上叠放。
+  uint32 order = 8;
+}
+
+// 一个运营样式覆盖；key 必须对应已发布 Sprite 的 VISIBLE_EDITABLE 参数。
+message SpriteParameterOverride {
+  // 参数配置字段名，同一绑定或渲染请求中不能重复。
+  string key = 1;
+  // 与 SpriteParameter.default_value 同型，并满足发布时的 JSON Schema 与数字边界。
+  ScalarValue value = 2;
+}
+
+// 云端模板的独立 Sprite 绑定记录，主键为已有云端模板 UUID。
+// IMS 模板仍通过 imv.template.v1 保存；本消息只管理 Sprite，不支持本地模板绑定。
+message StyleSpriteBindings {
+  // 现有云端模板 ID，也是视频合成请求使用的 style_id。
+  string style_id = 1;
+  // 运营为该样式添加的 Sprite 实例；没有绑定时返回空数组。
+  repeated SpritePlacement placements = 2;
+  // 乐观锁版本；无记录时为 0，每次成功整体替换后递增。
+  uint64 revision = 3;
+  // 最近一次成功保存绑定的时间；无记录时可缺失。
+  google.protobuf.Timestamp updated_at = 4;
+}
+
+// GET /api/sprites/styles/{style_id} 的响应；不存在绑定记录时仍返回空的版本 0。
+message GetStyleSpritesResponse {
+  StyleSpriteBindings bindings = 1;
+}
+
+// POST /api/sprites/styles/{style_id} 的请求；用完整 placements 替换旧绑定。
+message SaveStyleSpritesRequest {
+  // 请求体中的云端模板 UUID，必须与路径 style_id 相同。
+  string style_id = 1;
+  // 保存后的完整绑定列表，最多 100 条；空列表表示清空该样式的 Sprite。
+  repeated SpritePlacement placements = 2;
+  // 调用方上次读取的 revision；不相等时返回冲突，防止覆盖其他运营的修改。
+  uint64 expected_revision = 3;
+}
+
+// 保存成功后的新绑定版本，供编辑器继续以该 revision 修改。
+message SaveStyleSpritesResponse {
+  StyleSpriteBindings bindings = 1;
+}
+
+// POST /api/sprites/render 的一次实际渲染输入，由总线在切片、素材匹配与时间对齐后生成。
+// 一个请求只渲染一个连续区间，最长 30 秒且不超过 1800 帧；长效果分成相邻请求。
+// 效果内的帧数都按 output.fps 计数，与最终 IMS 成片的时间轴位置无关；返回临时 VP9 Alpha WebM。
+// 服务端只渲染透明叠加视频；总线负责上传可公开读取的素材并放入 IMS VideoTrack。
+message SpriteRenderInput {
+  // 需要渲染的不可变发布 ID；服务端据此读取已验收源码与默认配置。
+  string sprite_id = 1;
+  // 触发本次渲染的绑定实例 ID，供总线关联和诊断；渲染器不会据此重新读取绑定。
+  string placement_id = 2;
+  // width、height、fps 必须与发布画布一致；preview_frames 不决定本次渲染时长。
+  // IMS 可在加入时间线后通过 Cover 把输出缩放到最终成片画布。
+  SpriteCanvas output = 3;
+  // 本段从效果起点算起的零基帧偏移；首段为 0，后续段等于此前各段帧数之和。
+  // 与业务字幕或最终成片的开始时间无关；由总线另行决定 IMS TimelineIn。
+  uint64 effect_offset_frames = 4;
+  // 本段要输出的帧数，必须大于零，且偏移加帧数不得超过完整效果总帧数。
+  // 单段最多 30 秒、1800 帧；总线用此值计算 IMS 放置区间的实际时长。
+  uint64 render_frame_count = 5;
+  // 标题取请求 title，字幕取当前短句清理后的正文；视觉 Sprite 留空。
+  // 服务端最多使用前 2000 个字符，过长内容直接截断。
+  string text = 6;
+  // 字幕关键词来自当前短句所属原切片；服务端在 text 内计算全部字面命中并高亮。
+  // 不支持关键词的 Sprite 不接收非空数组；当前最多 20 个词，每词最多 100 字符。
+  repeated string keywords = 7;
+  // 总线从绑定快照取出的可编辑样式覆盖；不允许在此覆盖文字、时间、只读字段或源码。
+  // 未列出的字段沿用发布默认值，渲染服务会再按发布参数契约校验。
+  repeated SpriteParameterOverride resolved_style = 8;
+  // 完整逻辑效果的总帧数，必须大于零；长效果分段时每段传相同值。
+  // 当前上限为 216000 帧，渲染器以此决定完整动画进度，避免分段处重新播放。
+  uint64 effect_total_frames = 9;
+}
