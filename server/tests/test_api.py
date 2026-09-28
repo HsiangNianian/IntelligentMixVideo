@@ -96,7 +96,7 @@ def test_disallowed_origin_cors_is_rejected(client: TestClient, origin: str) -> 
     assert "access-control-allow-origin" not in client.get("/template", headers={"Origin": origin}).headers
 
 
-# 测试文档包含首页、用户、模板和切片全部路由，且用户 ID 参数定义正确。
+# 测试文档包含首页、用户、模板、切片和 Sprite 全部路由，且用户 ID 参数定义正确。
 def test_api_documentation(client: TestClient) -> None:
     """文档可访问，OpenAPI 声明实际路由及必填整数路径参数。"""
     docs = client.get("/docs")
@@ -111,6 +111,9 @@ def test_api_documentation(client: TestClient) -> None:
         "/api/v1/video-compositions", "/api/v1/video-compositions/{task_id}",
         "/api/v1/video-compositions/{task_id}/segment-match-callback",
         "/api/settings/plugins",
+        "/api/sprites", "/api/sprites/publish", "/api/sprites/render",
+        "/api/sprites/{sprite_id}/preview.mp4", "/api/sprites/{sprite_id}/interactive",
+        "/api/sprites/{sprite_id}/fonts/{weight}", "/api/sprites/styles/{style_id}",
     }
     parameter = schema["paths"]["/users/{user_id}"]["get"]["parameters"][0]
     assert parameter["name"] == "user_id"
