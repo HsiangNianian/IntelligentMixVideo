@@ -72,7 +72,8 @@ test("顶部标题可设置关键词样式", () => {
   const initial = newDraft();
   initial.editor.titleKeyword = "旧词";
   const read = renderEditor(initial, "title");
-  expect(screen.queryByLabelText("标题关键词")).toBeNull();
+  expect(screen.queryByRole("textbox", { name: "指定关键词" })).toBeNull();
+  expect(read().editor.titleKeyword).toBe("旧词");
   fireEvent.change(screen.getByLabelText("示例文字"), { target: { value: "示例标题" } });
   fireEvent.click(screen.getByRole("checkbox", { name: "加粗" }));
   fireEvent.click(screen.getByRole("checkbox", { name: "设置关键词颜色" }));

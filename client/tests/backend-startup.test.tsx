@@ -41,7 +41,7 @@ test("桌面等待内置服务并共享实际 API 地址", async () => {
     remotionServer();
     await waitFor(() => expect(ready).toBeFunction());
     await act(async () => ready("http://127.0.0.1:43210"));
-    expect(screen.getByRole("heading", { name: "特效模板" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "我的模板" })).toBeTruthy();
     expect(apiUrl("/works")).toBe("http://127.0.0.1:43210/api/templates/works");
     fetchMock.mockResolvedValueOnce(protobufListResponse([]));
     await listTemplates();
