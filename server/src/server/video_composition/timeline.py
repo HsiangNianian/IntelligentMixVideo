@@ -139,7 +139,7 @@ def build_timeline(
     warnings = []
     def text(role: str, content: str, start: float, end: float,
              config: EffectTemplateEditor, effects: dict) -> dict:
-        """使用业务文字和模板样式，短入出动画同比缩短且不跨字幕区间。"""
+        """使用对象文字和模板样式，短入出动画同比缩短且不跨对象区间。"""
         clip = {
             "Type": "Text", "Content": content, "TimelineIn": start,
             "TimelineOut": end, "Alignment": "Center",
@@ -199,7 +199,7 @@ def build_timeline(
                 **track_parameters[track.target], "TimelineIn": applied.start, "TimelineOut": applied.end,
             }]})
         else:
-            # 标题使用请求文字；字幕短句沿用原切片的关键词，气泡使用原切片关键词。
+            # 标题使用请求文字；字幕沿用切片关键词；气泡按对象区间显示模板文字一次。
             contents = []
             if track.target == "title":
                 contents.append((request.title, "", applied.start, applied.end))
@@ -213,8 +213,7 @@ def build_timeline(
                         contents.append((content, keyword,
                                          max(part.start_time, applied.start), min(part.end_time, applied.end)))
             else:
-                contents = [(item.keyword, "", max(item.start_time, applied.start),
-                             min(item.end_time, applied.end)) for item in source]
+                contents.append((track.editor.bubble_text, "", applied.start, applied.end))
             text_clips = []
             for content, keyword, start, end in contents:
                 if not content or not content.strip() or end <= start:

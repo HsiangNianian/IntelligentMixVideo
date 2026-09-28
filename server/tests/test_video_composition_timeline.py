@@ -22,7 +22,7 @@ def choose(case, key, catalog_id):
 
 
 def test_unmatched_timeline_uses_business_text_and_full_tts(composition_case):
-    """全未命中仍正常显示字幕和关键词，数字人保留全长及尾部静音，不含预览文案。"""
+    """全未命中保留业务字幕、标题及模板气泡文字，数字人保留全长及尾部静音。"""
     original = deepcopy(composition_case)
     timeline, warnings = build_timeline(**composition_case)
     assert (timeline, warnings) == build_timeline(**composition_case)
@@ -42,7 +42,9 @@ def test_unmatched_timeline_uses_business_text_and_full_tts(composition_case):
     assert [(s["TimelineIn"], s["TimelineOut"]) for s in subtitles] == [(1, 3), (4, 6)]
     assert title[0]["Content"] == composition_case["request"]["title"]
     assert (title[0]["TimelineIn"], title[0]["TimelineOut"]) == (1, 3)
-    assert bubbles[0]["Content"] == "甲乙"
+    assert len(bubbles) == 1
+    assert bubbles[0]["Content"] == composition_case["template"]["tracks"][2]["editor"]["bubbleText"]
+    assert (bubbles[0]["TimelineIn"], bubbles[0]["TimelineOut"]) == (0, 8)
     assert "BubbleStyleId" not in bubbles[0]
     assert "让每一帧" not in str(timeline) and "选择花字" not in str(timeline)
 
@@ -63,12 +65,12 @@ def test_subtitle_parts_keep_adjacent_times_without_changing_other_text(composit
         ("甲乙？", 1, 2), ("丙丁?", 2, 3), ("戊己庚辛?", 4, 6),
     ]
     assert title[0]["Content"] == original["request"]["title"]
-    assert bubbles[0]["Content"] == original["segments"][0]["keyword"]
+    assert [clip["Content"] for clip in bubbles] == [original["template"]["tracks"][2]["editor"]["bubbleText"]]
     assert composition_case["matches"] == original["matches"]
 
 
 def test_subtitle_keyword_styles_apply_only_to_matching_text(composition_case):
-    """组合样式只标记字幕首个关键词，空关键词、标题和气泡维持原文。"""
+    """组合样式只标记字幕首个关键词，空关键词和标题维持原文，气泡显示模板文字。"""
     composition_case["template"]["tracks"][0]["editor"].update(
         subtitleKeywordBold=True, subtitleKeywordItalic=True,
         subtitleKeywordUnderline=True, subtitleKeywordStrikeout=True,
@@ -79,8 +81,8 @@ def test_subtitle_keyword_styles_apply_only_to_matching_text(composition_case):
     subtitles, title, bubbles = [row["SubtitleTrackClips"] for row in timeline["SubtitleTracks"]]
     assert subtitles[0]["Content"] == r"{\1c&34AB12&\fs64\b1\i1\u1\s1}甲乙{\1c\fs\b0\i0\u0\s0}丙丁"
     assert subtitles[1]["Content"] == "戊己庚辛"
+    assert [clip["Content"] for clip in bubbles] == [composition_case["template"]["tracks"][2]["editor"]["bubbleText"]]
     assert title[0]["Content"] == composition_case["request"]["title"]
-    assert bubbles[0]["Content"] == "甲乙"
 
 
 def test_subtitle_keyword_styles_keep_first_occurrence_and_reject_missing_keyword():
@@ -125,6 +127,39 @@ def test_blank_title_is_omitted(composition_case, title):
     composition_case["request"]["title"] = title
     timeline, _ = build_timeline(**composition_case)
     assert len(timeline["SubtitleTracks"]) == 2
+
+
+@pytest.mark.parametrize("present,styled,mode,start,duration,interval", [
+    (False, False, "seconds", 0, None, None),
+    (True, False, "seconds", 2, 3, (2, 5)),
+    (True, True, "percent", 50, 2, (4, 6)),
+    (True, False, "seconds", 2, None, (2, 8)),
+])
+def test_bubble_uses_template_text_and_object_timing(composition_case, present, styled, mode, start, duration, interval):
+    """气泡只由对象存在与否决定，示例文字按自身时间显示一次，样式和动画可选。"""
+    bubble = template_track("bubble", bubbleText="模板气泡，不是关键词", bubbleSize=48, bubbleX=30, bubbleY=40)
+    bubble.update(start_mode=mode, start=start, duration=duration)
+    composition_case["template"]["tracks"] = [bubble] if present else []
+    if styled:
+        asset = next(item for item in effect_catalog().values() if item.category == "bubble")
+        choose(composition_case, "bubble", asset.id)
+        bubble["editor"]["bubbleIn"] = "in/fade_in"
+    original = deepcopy(composition_case)
+    timeline, warnings = build_timeline(**composition_case)
+    if present:
+        row, = timeline["SubtitleTracks"]
+        clip, = row["SubtitleTrackClips"]
+        assert clip["Content"] == "模板气泡，不是关键词"
+        assert (clip["TimelineIn"], clip["TimelineOut"]) == interval
+        assert (clip["FontSize"], clip["X"], clip["Y"]) == (48, 0.3, 0.4)
+        assert ("BubbleStyleId" in clip) == styled
+        if styled:
+            assert clip["BubbleStyleId"] == asset.effect_id
+            assert clip["AaiMotionIn"] == 0.5
+    else:
+        assert timeline["SubtitleTracks"] == []
+    assert warnings == []
+    assert composition_case == original
 
 
 @pytest.mark.parametrize("kind", ["video", "image"])
