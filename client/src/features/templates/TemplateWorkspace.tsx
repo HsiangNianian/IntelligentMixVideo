@@ -1,18 +1,36 @@
 /** 模板编辑工作区：接收主页选择，展示模板信息，协调效果编辑、保存和未保存切换保护。 */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { CircleCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import * as api from "./api";
 import { readCatalog } from "./sdk";
 import { newDraft, toDraft, type Draft, type EffectAsset, type Template, type TextRole, type MasterVideo } from "./model";
-import { EffectEditor } from "./EffectEditor";
 import { AppliedEffects, EffectAssets } from "./EffectAssets";
 import { isTextTarget } from "./effects";
 import { addTrack, previewDuration, removeTrack, setTrackRange, setTrackTiming, trackDraft, updateTrack } from "./tracks";
-import { TrackTiming } from "./TrackTiming";
-import { MasterVideoInput } from "./MasterVideoInput";
+import { TemplateInspector, type InspectorTab } from "./TemplateInspector";
 import { TemplatePreview } from "./TemplatePreview";
 import type { TemplateSelection } from "./TemplateHome";
+import "./template-workspace.css";
+
+/** 宽屏沿用原型的可调三栏，窄屏依容器宽度重新排列相同组件。 */
+function WorkspaceColumns({ assets, canvas, inspector }: { assets: ReactNode; canvas: ReactNode; inspector: ReactNode }) {
+  const [desktop, setDesktop] = useState(() => window.innerWidth >= 1280);
+  useEffect(() => {
+    const update = () => setDesktop(window.innerWidth >= 1280);
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, []);
+  return desktop ? <ResizablePanelGroup orientation="horizontal" className="min-h-[760px]" style={{ height: "calc(100dvh - 108px)" }}>
+    <ResizablePanel id="assets" defaultSize={205} minSize={205} maxSize="28%" className="min-w-0">{assets}</ResizablePanel>
+    <ResizableHandle withHandle aria-label="调整资产与画布宽度" className="template-workspace-handle" />
+    <ResizablePanel id="canvas" minSize={420} className="min-w-0">{canvas}</ResizablePanel>
+    <ResizableHandle withHandle aria-label="调整画布与参数宽度" className="template-workspace-handle" />
+    <ResizablePanel id="inspector" defaultSize={250} minSize={250} maxSize="32%" className="min-w-0">{inspector}</ResizablePanel>
+  </ResizablePanelGroup> : <div className="grid min-w-0"><div className="order-2 min-w-0">{assets}</div><div className="order-1 min-w-0">{canvas}</div><div className="order-3 min-w-0 border-t">{inspector}</div></div>;
+}
 
 /** 只有成功读取或明确放弃时才替换草稿；保存始终使用当前模板的环境和 ID。 */
 export function TemplateWorkspace({ selection = null, onHome }: {
@@ -33,6 +51,7 @@ export function TemplateWorkspace({ selection = null, onHome }: {
   const [openRequest, setOpenRequest] = useState<TemplateSelection | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [target, setTarget] = useState<string | null>("title");
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>("timing");
   const [textTarget, setTextTarget] = useState<TextRole>("title");
   const lastTextTrack = useRef<string | null>("title");
   const lock = useRef(false);
@@ -124,7 +143,7 @@ export function TemplateWorkspace({ selection = null, onHome }: {
     if (!draft || lock.current || loading) return;
     // 时间输入保留局部编辑值，写入前检查；模板配置继续由 saveTemplate 校验。
     const timingInputs = form.current?.querySelectorAll<HTMLInputElement>('[aria-label="轨道时间设置"] input');
-    if (timingInputs && [...timingInputs].some((input) => !input.reportValidity())) return;
+    if (timingInputs && [...timingInputs].some((input) => !input.checkValidity())) { setInspectorTab("timing"); return; }
     lock.current = true;
     setBusy(true);
     setError("");
@@ -158,23 +177,19 @@ export function TemplateWorkspace({ selection = null, onHome }: {
           <Button type="button" variant="outline" onClick={onHome}>前往主页</Button>
         </section>
       ) : (
-        <form ref={form} className="overflow-hidden rounded-xl border bg-card" onSubmit={(event) => { event.preventDefault(); void persist(); }}>
+        <form ref={form} noValidate className="template-workspace overflow-hidden rounded-[22px] border bg-white" onSubmit={(event) => { event.preventDefault(); void persist(); }}>
           <fieldset disabled={busy || loading} className="min-w-0 disabled:opacity-60">
-            <section aria-label="模板信息" className="flex flex-wrap items-start justify-between gap-4 border-b p-4">
-              <dl className="min-w-0 flex-1 space-y-3">
-                <div className="flex flex-wrap items-start gap-x-8 gap-y-3">
-                  <div className="space-y-1"><dt className="text-xs text-muted-foreground">当前环境</dt><dd aria-label="当前环境" className="text-sm">{environment === "cloud" ? "云端" : "本地"}</dd></div>
-                  <div className="min-w-0 space-y-1"><dt className="text-xs text-muted-foreground">模板名称</dt><dd aria-label="模板名称" className="break-all font-medium">{draft.name}</dd></div>
-                </div>
-                <div className="space-y-1"><dt className="text-xs text-muted-foreground">模板描述</dt><dd aria-label="模板描述" className="whitespace-pre-wrap break-all text-sm text-muted-foreground">{draft.description || "暂无模板描述"}</dd></div>
-              </dl>
+            <section aria-label="模板信息" className="template-workspace-header flex min-h-18 flex-wrap items-center justify-between gap-4 border-b px-5 py-3 lg:px-7">
+              <div className="flex min-w-0 items-center gap-4"><span className="template-workspace-mark flex size-10 shrink-0 items-center justify-center rounded-[13px] text-sm font-black tracking-[-.08em]" aria-hidden="true">IM</span>
+                <dl className="min-w-0 space-y-1"><div className="flex min-w-0 flex-wrap items-center gap-2"><div className="min-w-0"><dt className="sr-only">模板名称</dt><dd aria-label="模板名称" className="truncate text-[17px] font-semibold tracking-tight">{draft.name}</dd></div><div><dt className="sr-only">当前环境</dt><dd aria-label="当前环境" className="template-workspace-environment rounded-full px-2 py-0.5 text-[10px]">{environment === "cloud" ? "云端" : "本地"}</dd></div></div><div><dt className="sr-only">模板描述</dt><dd aria-label="模板描述" className="truncate text-[11px] text-muted-foreground">{draft.description || "暂无模板描述"}</dd></div></dl>
+              </div>
               <div className="flex flex-wrap items-center gap-3">
-                <span className="text-xs text-muted-foreground">{current ? dirty ? "有未保存的修改" : "已保存" : "新模板 · 尚未保存"}</span>
-                <Button type="submit">{busy ? "正在保存…" : "保存模板"}</Button>
+                <span className="template-workspace-status flex items-center gap-2 text-[11px] text-muted-foreground"><span className={`size-1.5 rounded-full ${dirty ? "bg-amber-500" : "bg-emerald-500"}`} />{current ? dirty ? "有未保存的修改" : "已保存" : "新模板 · 尚未保存"}</span>
+                <Button type="submit" className="template-workspace-save h-9 gap-2 rounded-lg px-4 text-xs"><CircleCheck className="size-4" aria-hidden="true" />{busy ? "正在保存…" : "保存模板"}</Button>
               </div>
             </section>
-            <div className="grid min-w-0 items-start @min-[680px]:grid-cols-[220px_minmax(0,1fr)] @min-[1000px]:grid-cols-[220px_minmax(0,1fr)_280px]">
-              <div className="min-w-0 @min-[680px]:border-r">
+            <WorkspaceColumns
+              assets={<aside className="template-workspace-assets h-full min-w-0 overflow-y-auto border-b xl:border-b-0">
                 <EffectAssets editor={assetTrack?.editor} catalog={catalog} textTarget={textTarget} textEditor={draft.tracks.find((track) => track.id === lastTextTrack.current)?.editor} onTextTarget={(role) => {
                   setTextTarget(role);
                   const text = draft.tracks.find((track) => track.target === role);
@@ -187,17 +202,14 @@ export function TemplateWorkspace({ selection = null, onHome }: {
                   if (isTextTarget(added.target)) { setTextTarget(added.target); lastTextTrack.current = added.id; }
                   return result.draft;
                 })} />
-              </div>
-              <div className="min-w-0 border-y bg-muted/30 @min-[680px]:border-y-0">
-                <MasterVideoInput key={`${environment}:${current?.template_id ?? draft.name}`} media={media} onChange={setMedia} />
-                <TemplatePreview draft={draft} media={media} onCatalog={setCatalog} selectedId={target} onSelect={selectTarget} onRangeChange={(id, start, end) => editTrack(() => setTrackRange(draft, id, start, end, media))} />
-                <AppliedEffects draft={draft} selected={target} onSelect={selectTarget} />
-              </div>
-              {selectedTrack && <div className="min-w-0 @min-[680px]:col-span-2 @min-[680px]:border-t @min-[1000px]:col-span-1 @min-[1000px]:border-l @min-[1000px]:border-t-0">
-                <TrackTiming track={selectedTrack} duration={previewDuration(draft, media)} onChange={(timing) => editTrack(() => setTrackTiming(draft, selectedTrack.id, timing))} />
-                <EffectEditor draft={selectedDraft!} catalog={catalog} onChange={(next) => editTrack(() => updateTrack(draft, selectedTrack.id, next))} target={selectedTrack.target} onRemove={() => editTrack(() => removeTrack(draft, selectedTrack.id))} onClose={() => setTarget(null)} />
-              </div>}
-            </div>
+              </aside>}
+              canvas={<main className="template-workspace-canvas h-full min-w-0 overflow-y-auto border-b xl:border-b-0">
+                <TemplatePreview draft={draft} media={media} onMediaChange={setMedia} videoInputKey={`${environment}:${current?.template_id ?? draft.name}`} onCatalog={setCatalog} selectedId={target} onSelect={selectTarget} onRangeChange={(id, start, end) => editTrack(() => setTrackRange(draft, id, start, end, media))} />
+              </main>}
+              inspector={<aside className="template-workspace-inspector h-full min-w-0 overflow-y-auto xl:border-l"><AppliedEffects draft={draft} catalog={catalog} duration={previewDuration(draft, media)} selected={target} onSelect={selectTarget} />
+                {selectedTrack && <TemplateInspector track={selectedTrack} draft={selectedDraft!} catalog={catalog} duration={previewDuration(draft, media)} tab={inspectorTab} onTabChange={setInspectorTab} onTimingChange={(timing) => editTrack(() => setTrackTiming(draft, selectedTrack.id, timing))} onEffectChange={(next) => editTrack(() => updateTrack(draft, selectedTrack.id, next))} onRemove={() => editTrack(() => removeTrack(draft, selectedTrack.id))} onClose={() => setTarget(null)} />}
+              </aside>}
+            />
           </fieldset>
         </form>
       )}

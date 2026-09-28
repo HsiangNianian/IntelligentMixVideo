@@ -19,6 +19,7 @@ async function addText(label = "顶部标题") {
   fireEvent.keyDown(within(assets).getByRole("combobox", { name: "应用到" }), { key: "ArrowDown" });
   fireEvent.click(screen.getByRole("option", { name: label }));
   fireEvent.click(within(assets).getAllByRole("button", { name: /^应用花字：/ })[0]);
+  fireEvent.click(screen.getByRole("tab", { name: "外观与效果" }));
 }
 
 // 场景：云端和本地新模板均为空；选择作用对象不会添加，点击资产才创建独立对象。
@@ -51,6 +52,7 @@ test("空白时间阻止保存，修正后恢复保存流程", async () => {
   render(<TemplateWorkspace selection={creation()} onHome={() => {}} />);
   await addText();
   fireEvent.click(screen.getByRole("button", { name: "重置特效设置" }));
+  fireEvent.click(screen.getByRole("tab", { name: "时间设置" }));
   const input = await screen.findByLabelText("开始时间 / 秒");
   fireEvent.change(input, { target: { value: "" } });
   const error = "开始时间须为非负秒数，或 0% 至小于 100% 的百分比";
@@ -86,8 +88,10 @@ test("重复添加特效后分别设置时间并删除指定实例", async () =>
   expect(screen.getByLabelText<HTMLInputElement>("开始时间 / 秒").value).toBe("2");
   fireEvent.change(screen.getByLabelText("持续时间 / 秒"), { target: { value: "0" } });
   expect(screen.getByText("持续时间须大于零")).toBeTruthy();
+  fireEvent.click(screen.getByRole("tab", { name: "外观与效果" }));
   fireEvent.click(screen.getByRole("button", { name: "移除当前画面对象" }));
   fireEvent.click(screen.getByRole("button", { name: "编辑画面特效" }));
+  fireEvent.click(screen.getByRole("tab", { name: "时间设置" }));
   expect(screen.getByLabelText<HTMLInputElement>("开始时间 / 秒").value).toBe("0");
   expect(screen.getByRole("combobox", { name: "持续方式" }).textContent).toBe("持续到视频结束");
 });
@@ -137,6 +141,43 @@ test("关闭设置后应用资产沿用最近选择的字幕对象", async () =>
   fireEvent.click(screen.getByRole("button", { name: "编辑顶部标题" }));
   expect(screen.getByLabelText<HTMLInputElement>("示例文字").value).toBe("让每一帧 都有风格");
   expect(screen.getByRole("combobox", { name: "花字样式" }).textContent).toBe("无效果");
+});
+
+// 场景：标题和字幕的关键词设置独立保存于各自的画面对象，其他类别不显示该页签。
+test("关键词页签分别编辑标题和字幕", async () => {
+  render(<TemplateWorkspace selection={creation()} onHome={() => {}} />);
+  await addText();
+  fireEvent.click(screen.getByRole("tab", { name: "关键词设置" }));
+  expect(screen.queryByRole("textbox", { name: "指定关键词" })).toBeNull();
+  expect(screen.queryByText("关键词预览")).toBeNull();
+  fireEvent.click(screen.getByRole("checkbox", { name: "加粗" }));
+  expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "加粗" }).checked).toBe(true);
+  await addText("底部字幕");
+  fireEvent.click(screen.getByRole("tab", { name: "关键词设置" }));
+  expect(screen.queryByRole("textbox", { name: "指定关键词" })).toBeNull();
+  fireEvent.click(screen.getByRole("checkbox", { name: "斜体" }));
+  expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "斜体" }).checked).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "编辑顶部标题" }));
+  expect(screen.queryByRole("textbox", { name: "指定关键词" })).toBeNull();
+  expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "加粗" }).checked).toBe(true);
+  expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "斜体" }).checked).toBe(false);
+});
+
+// 场景：预览视频入口位于播放控制区，展开后保留地址输入与加载操作。
+test("播放控制栏展开预览视频地址", async () => {
+  render(<TemplateWorkspace selection={creation()} onHome={() => {}} />);
+  await screen.findByRole("region", { name: "实时预览" });
+  const trigger = screen.getByRole("button", { name: "加载预览视频" });
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  expect(screen.queryByRole("textbox", { name: "预览视频地址" })).toBeNull();
+  fireEvent.click(trigger);
+  expect(trigger.getAttribute("aria-expanded")).toBe("true");
+  const input = screen.getByRole<HTMLInputElement>("textbox", { name: "预览视频地址" });
+  fireEvent.change(input, { target: { value: "/video.mp4" } });
+  expect(input.value).toBe("/video.mp4");
+  expect(screen.getByRole("button", { name: /^加载$/ })).toBeTruthy();
+  fireEvent.click(trigger);
+  expect(screen.queryByRole("textbox", { name: "预览视频地址" })).toBeNull();
 });
 
 // 场景：未保存保护在设置关闭后仍然生效，卸载工作区会移除页面退出监听。
@@ -277,8 +318,13 @@ test("主页与模板库切换保留未保存内容", async () => {
   await createFromHome();
   await addText();
   fireEvent.change(screen.getByLabelText("示例文字"), { target: { value: "保留标题" } });
+  fireEvent.click(screen.getByRole("button", { name: "收起侧边栏" }));
+  expect(screen.getByRole("button", { name: "展开侧边栏" }).getAttribute("aria-expanded")).toBe("false");
+  expect(screen.getByLabelText<HTMLInputElement>("示例文字").value).toBe("保留标题");
   fireEvent.mouseDown(screen.getByRole("tab", { name: "主页" }), { button: 0 });
   fireEvent.mouseDown(screen.getByRole("tab", { name: "模版编辑" }), { button: 0 });
+  fireEvent.click(screen.getByRole("button", { name: "展开侧边栏" }));
+  expect(screen.getByRole("button", { name: "收起侧边栏" }).getAttribute("aria-expanded")).toBe("true");
   expect(screen.getByLabelText<HTMLInputElement>("示例文字").value).toBe("保留标题");
   expect(screen.getByLabelText("模板名称").textContent).toBe("旅行模板");
   fireEvent.mouseDown(screen.getByRole("tab", { name: "主页" }), { button: 0 });

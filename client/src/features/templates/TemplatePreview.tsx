@@ -1,5 +1,6 @@
 /** SDK 预览组件：管理单个播放器、串行更新时间线，卸载时清理订阅和异步任务。 */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { Maximize2, Pause, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { Draft, EffectAsset, MasterVideo } from "./model";
 import { loadSDK, loadPreviewFont, readCatalog, type Player } from "./sdk";
@@ -7,20 +8,29 @@ import { buildTimeline, buildPreviewRows } from "./timeline";
 import { PreviewTimeline, type PreviewTimelineHandle } from "./PreviewTimeline";
 import { previewDuration } from "./tracks";
 import { previewVideoUrl, readMasterVideo } from "./media";
+import { MasterVideoInput } from "./MasterVideoInput";
 
 /** 编辑状态由父组件持有；目录只在 SDK 初始化成功后回传。 */
 interface Props {
   draft: Draft;
   media?: MasterVideo;
+  onMediaChange: (media: MasterVideo) => void;
+  videoInputKey: string;
   onCatalog: (catalog: EffectAsset[]) => void;
   selectedId?: string | null;
   onSelect?: (id: string) => void;
   onRangeChange?: (id: string, start: number, end: number) => void;
 }
 
+/** 时间轴标记由三条片段和一条播放指针组成。 */
+function TimelineMark() {
+  return <span className="template-timeline-mark flex size-8 items-center justify-center rounded-lg" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" className="size-5"><rect x="2" y="7" width="8" height="4" rx="1" fill="currentColor" /><rect x="14" y="7" width="8" height="4" rx="1" fill="currentColor" /><rect x="5" y="15" width="13" height="4" rx="1" fill="currentColor" /><path d="M12 4v17m-2-18h4l-2 3-2-3Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /></svg></span>;
+}
+
 /** 每次修改全量更新时间线并回到开头；串行处理，快速修改只应用最新草稿。 */
-export function TemplatePreview({ draft, media, onCatalog, selectedId, onSelect, onRangeChange }: Props) {
+export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, onCatalog, selectedId, onSelect, onRangeChange }: Props) {
   const duration = Math.max(0, previewDuration(draft, media));
+  const stage = useRef<HTMLDivElement>(null);
   const container = useRef<HTMLDivElement>(null);
   const player = useRef<Player | null>(null);
   const latest = useRef(draft);
@@ -41,6 +51,7 @@ export function TemplatePreview({ draft, media, onCatalog, selectedId, onSelect,
   const [seeking, setSeeking] = useState(false);
   const [time, setTime] = useState(0);
   const [canvas, setCanvas] = useState<Pick<MasterVideo, "width" | "height"> | null>(null);
+  const playing = status === "正在播放预览…" || status === "正在预览转场…";
   latest.current = draft;
   latestMedia.current = media;
   catalogCallback.current = onCatalog;
@@ -316,83 +327,24 @@ export function TemplatePreview({ draft, media, onCatalog, selectedId, onSelect,
     return () => window.clearTimeout(timer);
   }, [draft.tracks, media]);
 
-  return (
-    <section aria-label="实时预览" className="min-w-0 space-y-4 p-4">
-      <div className="flex items-center justify-between">
-        <h2 className="font-semibold">实时预览</h2>
-        <span className="text-xs text-muted-foreground">
-          {canvas ? `${canvas.width} × ${canvas.height}` : "正在读取画布尺寸"} · {time.toFixed(1)} / {Number(duration.toFixed(2))} 秒
-        </span>
+  return <section aria-label="实时预览" className="min-w-0">
+    <div className="template-preview-stage border-b px-4 pb-3 pt-4 lg:px-7 lg:pt-5"><div className="mx-auto max-w-[900px]">
+      <div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><span className="template-live-dot size-1.5 rounded-full" aria-hidden="true" /><h2 className="text-[11px] font-bold tracking-[0.08em] text-muted-foreground">实时预览</h2></div><span className="rounded-md border px-2 py-1 text-[10px] tabular-nums text-muted-foreground">{canvas ? `${canvas.width} × ${canvas.height}` : "正在读取画布尺寸"}</span></div>
+      <div ref={stage} className="template-preview-canvas relative mx-auto aspect-video w-full overflow-hidden rounded-xl bg-[#0b2736]" style={canvas ? { aspectRatio: `${canvas.width} / ${canvas.height}`, maxWidth: `${48 * canvas.width / canvas.height}dvh`, "--preview-ratio": canvas.width / canvas.height } as CSSProperties : undefined} aria-label="模板视频预览">
+        <div ref={container} className="template-preview-player absolute inset-0 size-full" />
+        <Button type="button" variant="ghost" size="icon-xs" aria-label="全屏预览" title="全屏预览" onClick={() => { if (stage.current) void stage.current.requestFullscreen(); }} className="template-preview-fullscreen absolute bottom-2 right-2 rounded-[5px] p-0"><Maximize2 className="size-3" aria-hidden="true" /></Button>
       </div>
-      <div
-        ref={container}
-        className="mx-auto aspect-video w-full overflow-hidden rounded-lg bg-foreground"
-        style={canvas ? { aspectRatio: `${canvas.width} / ${canvas.height}`, maxWidth: `${60 * canvas.width / canvas.height}dvh` } : undefined}
-        aria-label="模板视频预览"
-      />
-      <PreviewTimeline ref={track} rows={rows} disabled={!ready} time={time} duration={duration} selectedId={selectedId} onSelect={onSelect} onRangeChange={onRangeChange} onSeek={(value) => seekAction.current?.(value)} />
-      <div className="flex flex-wrap gap-2">
-        <Button
-          type="button"
-          disabled={!ready || seeking}
-          onClick={() => {
-            const current = player.current?.currentTime ?? 0;
-            playAction.current?.(current >= duration ? 0 : current);
-          }}
-        >
-          播放
-        </Button>
-        <Button type="button" variant="outline" disabled={!ready || seeking} onClick={() => playAction.current?.(0)}>
-          从头重播
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          disabled={!ready}
-          onClick={() => {
-            cancelPlaybackAction.current?.();
-            player.current?.pause();
-            setStatus("预览已暂停");
-          }}
-        >
-          暂停
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          disabled={!ready || seeking || !transition}
-          onClick={() =>
-            playAction.current?.(
-              Math.max(0, (transition?.start ?? 5) - 1),
-              Math.min(duration, (transition?.end ?? 5 + draft.transition_duration_seconds) + 1),
-            )
-          }
-        >
-          预览转场
-        </Button>
+      <div className="template-preview-controls flex flex-wrap items-center gap-2.5 py-3">
+        <Button type="button" aria-label={playing ? "暂停" : "播放"} title={playing ? "暂停" : "播放"} disabled={!ready || seeking} onClick={() => { if (playing) { cancelPlaybackAction.current?.(); player.current?.pause(); setStatus("预览已暂停"); } else { const current = player.current?.currentTime ?? 0; playAction.current?.(current >= duration ? 0 : current); } }} className="template-preview-play size-8 shrink-0 rounded-lg p-0">{playing ? <Pause className="size-4 fill-current" aria-hidden="true" /> : <Play className="ml-0.5 size-4 fill-current" aria-hidden="true" />}</Button>
+        <Button type="button" variant="ghost" size="sm" disabled={!ready || seeking} onClick={() => playAction.current?.(0)} className="template-preview-restart h-8 px-2 text-[11px]">从头重播</Button>
+        <input type="range" aria-label="预览进度" min={0} max={duration} step={0.1} value={Math.min(time, duration)} disabled={!ready || seeking} onChange={(event) => seekAction.current?.(Number(event.target.value))} className="template-preview-progress min-w-20 flex-1" style={{ "--preview-progress": `${duration > 0 ? time / duration * 100 : 0}%` } as CSSProperties} />
+        <span className="min-w-20 text-right text-[11px] font-medium tabular-nums">{time.toFixed(1)} <span className="font-normal text-muted-foreground">/ {duration.toFixed(1)} 秒</span></span>
+        <MasterVideoInput key={videoInputKey} media={media} onChange={onMediaChange} />
       </div>
-      <p
-        role={failed ? "alert" : "status"}
-        className={
-          failed ? "text-sm text-destructive" : "text-sm text-muted-foreground"
-        }
-      >
-        {status}
-      </p>
-      {failed && (
-        <Button
-          type="button"
-          variant="outline"
-          onClick={() => setAttempt((value) => value + 1)}
-        >
-          重试预览
-        </Button>
-      )}
+      <p role={failed ? "alert" : "status"} className={failed ? "text-xs text-destructive" : ready ? "sr-only" : "text-[11px] text-muted-foreground"}>{status}</p>
+      {failed && <Button type="button" variant="outline" onClick={() => setAttempt((value) => value + 1)}>重试预览</Button>}
       {notices.length > 0 && <ul aria-label="时间调整说明" className="space-y-1 text-xs text-muted-foreground">{notices.map((notice, index) => <li key={index}>{notice}</li>)}</ul>}
-      <p className="text-xs text-muted-foreground">
-        示例文字仅用于模板预览。首次加载需要联网获取 SDK、字体和视频；请通过
-        localhost 打开，并开启浏览器硬件加速。
-      </p>
-    </section>
-  );
+    </div></div>
+    <div className="template-preview-timeline px-4 pb-5 pt-4 lg:px-7"><div className="mx-auto max-w-[900px]"><div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><TimelineMark /><h2 className="text-xs font-semibold">时间轴</h2>{transition && <Button type="button" variant="ghost" size="sm" disabled={!ready || seeking} onClick={() => playAction.current?.(Math.max(0, transition.start - 1), Math.min(duration, transition.end + 1))} className="template-preview-transition h-7 px-2 text-[10px]">预览转场</Button>}</div><div className="flex items-center gap-3 text-[10px] tabular-nums text-muted-foreground"><span className="font-semibold text-foreground">{time.toFixed(1)} / {duration.toFixed(1)} 秒</span><span>{draft.tracks.length} 个对象</span></div></div><PreviewTimeline ref={track} rows={rows} disabled={!ready} time={time} duration={duration} selectedId={selectedId} onSelect={onSelect} onRangeChange={onRangeChange} onSeek={(value) => seekAction.current?.(value)} /></div></div>
+  </section>;
 }

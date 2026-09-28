@@ -3,12 +3,12 @@ import { useId } from "react";
 import Markdown from "react-markdown";
 import changelog from "../../../CHANGELOG.md?raw";
 
-/** 更新日志随源码构建更新；外部链接在新页面打开，保留当前工作区。 */
-export function ChangelogPanel() {
+/** 更新日志随源码构建更新；原型可将标题左置，外部链接在新页面打开。 */
+export function ChangelogPanel({ align = "center" }: { align?: "center" | "left" } = {}) {
   const headingId = useId();
   return (
     <aside aria-labelledby={headingId} className="flex h-full min-h-0 min-w-0 flex-col gap-5 py-3 sm:py-5">
-      <div className="shrink-0 space-y-2 text-center">
+      <div className={`shrink-0 space-y-2 ${align === "left" ? "text-left" : "text-center"}`}>
         <h2 id={headingId} className="text-2xl font-semibold tracking-tight">更新日志</h2>
         <p className="text-sm text-muted-foreground">查看版本更新与功能改进。</p>
       </div>

@@ -17,9 +17,10 @@ export type TemplateSelection = { environment: Environment } & (
   | { templateId: null; name: string; description: string }
 );
 
-/** 主页只负责选择，模板详情读取和未保存保护由编辑工作区处理。 */
+/** 主页只负责选择；focused 仅调整原型中的标题、列表和按钮样式。 */
 interface Props {
   onSelect: (selection: TemplateSelection) => void;
+  presentation?: "focused";
 }
 
 /** 两个模板库分别读取和重试；卸载取消 HTTP，并忽略迟到的本地 IPC 结果。 */
@@ -112,7 +113,8 @@ export function TemplateCollection({ environment, collection, onSelect }: Props 
 }
 
 /** 居中列表内部滚动，底部保留两个新建入口；再次进入主页重新读取两库。 */
-export function TemplateHome({ onSelect }: Props) {
+export function TemplateHome({ onSelect, presentation }: Props) {
+  const focused = presentation === "focused";
   const cloud = useTemplateCollection("cloud");
   const local = useTemplateCollection("local");
   const [creating, setCreating] = useState<Environment | null>(null);
@@ -131,23 +133,23 @@ export function TemplateHome({ onSelect }: Props) {
   }
 
   return (
-    <div className="mx-auto flex h-full min-h-0 w-full min-w-0 max-w-xl flex-col gap-5 py-3 sm:py-5">
-      <div className="shrink-0 space-y-2 text-center">
-        <h2 className="text-2xl font-semibold tracking-tight">我的模板</h2>
-        <p className="text-sm text-muted-foreground">选择模板，进入模版编辑页面继续创作。</p>
+    <div className={`mx-auto flex h-full min-h-0 w-full min-w-0 max-w-xl flex-col py-3 sm:py-5 ${focused ? "gap-6" : "gap-5"}`}>
+      <div className={`shrink-0 space-y-2 ${focused ? "text-left" : "text-center"}`}>
+        <h2 className={`${focused ? "text-3xl" : "text-2xl"} font-semibold tracking-tight`}>我的模板</h2>
+        <p className="text-sm text-muted-foreground">{focused ? "选择模板继续编辑。" : "选择模板，进入模版编辑页面继续创作。"}</p>
       </div>
-      <Card className="min-h-0 flex-1 gap-0 overflow-hidden py-0">
+      <Card className={`min-h-0 flex-1 gap-0 overflow-hidden py-0 ${focused ? "rounded-2xl border-slate-200 shadow-[0_14px_35px_rgba(28,45,85,.07)]" : ""}`}>
         <div role="region" aria-label="模板列表" tabIndex={0}
           className="min-h-0 flex-1 overflow-y-auto overscroll-contain outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
           <TemplateCollection environment="cloud" collection={cloud} onSelect={onSelect} />
           <TemplateCollection environment="local" collection={local} onSelect={onSelect} />
         </div>
       </Card>
-      <div className="mx-auto grid w-full max-w-xs shrink-0 grid-cols-2 gap-3">
-        <Button className="h-9 min-w-0 gap-1.5 rounded-lg px-2 text-xs sm:px-3 sm:text-sm" onClick={() => openCreation("cloud")}>
+      <div className={`grid w-full shrink-0 grid-cols-2 gap-3 ${focused ? "max-w-xl" : "mx-auto max-w-xs"}`}>
+        <Button className={`${focused ? "h-11 rounded-xl" : "h-9 rounded-lg"} min-w-0 gap-1.5 px-2 text-xs sm:px-3 sm:text-sm`} onClick={() => openCreation("cloud")}>
           <Plus aria-hidden="true" />新建云端模板
         </Button>
-        <Button variant="outline" className="h-9 min-w-0 gap-1.5 rounded-lg border-primary/40 px-2 text-xs text-primary sm:px-3 sm:text-sm"
+        <Button variant="outline" className={`${focused ? "h-11 rounded-xl" : "h-9 rounded-lg"} min-w-0 gap-1.5 border-primary/40 px-2 text-xs text-primary sm:px-3 sm:text-sm`}
           disabled={local.unavailable} title={local.unavailable ? "本地模板需要桌面客户端" : undefined}
           onClick={() => openCreation("local")}>
           <Plus aria-hidden="true" />新建本地模板

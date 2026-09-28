@@ -16,6 +16,7 @@ import { previewVideoUrl } from "./media";
 /** 预览轨道保留源素材范围，缩略图采样使用源时间，游标使用预览时间。 */
 export interface PreviewClip extends TimelineAction {
   label: string;
+  effectName?: string;
   url: string;
   sourceIn: number;
   sourceOut: number;
@@ -199,10 +200,12 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media?: Mast
       if (!effect) throw new Error("特效轨道缺少效果");
       EffectTracks.push({ EffectTrackItems: [{ ...effect, TimelineIn: track.start, TimelineOut: track.end }] });
     }
+    const effectId = { title: track.editor.titleFlower, subtitle: track.editor.subtitleFlower, bubble: track.editor.bubble, filter: track.editor.filter, vfx: track.editor.vfx, transition: track.editor.transition }[track.target];
+    const effectName = catalog.find((item) => item.id === effectId)?.name ?? (effectId ? effectId.split("/").at(-1) : undefined);
     previewRows.push({ id: track.id, actions: [{
       id: track.id, targetId: track.id, effectId: track.target,
       start: track.start, end: track.end, movable: true, flexible: true,
-      label: trackLabel(track, draft.tracks), url: "", sourceIn: 0, sourceOut: 0,
+      label: trackLabel(track, draft.tracks), effectName, url: "", sourceIn: 0, sourceOut: 0,
     }] });
   }
   return { ...timeline, EffectTracks, previewRows, notices };

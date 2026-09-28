@@ -38,8 +38,6 @@ export async function loadThumbnails(
   video.preload = "auto";
   video.muted = true;
   const canvas = document.createElement("canvas");
-  canvas.width = 160;
-  canvas.height = 90;
   const context = canvas.getContext("2d");
   if (!context) throw new Error("当前环境无法生成视频缩略图");
   try {
@@ -47,6 +45,12 @@ export async function loadThumbnails(
     video.src = clip.url;
     video.load();
     await loaded;
+    if (video.videoWidth <= 0 || video.videoHeight <= 0)
+      throw new Error("视频尺寸无效，无法生成缩略图");
+    // 按源视频比例生成缩略图，最长边限制为 160 像素。
+    const scale = 160 / Math.max(video.videoWidth, video.videoHeight);
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+    canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
     if (!Number.isFinite(video.duration) || clip.sourceOut > video.duration + 0.05)
       throw new Error("视频时长不足，无法提取当前片段的缩略图");
     const images: string[] = [];
