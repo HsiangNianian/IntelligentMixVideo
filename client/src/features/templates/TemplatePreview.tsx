@@ -286,7 +286,7 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
       }
     };
     cancelPlaybackAction.current = cancel;
-    // 一次浏览器绘制只提交最新定位，拖动期间始终暂停，最终位置等待 SDK 帧事件。
+    // 输入立即更新游标，一次浏览器绘制只提交最新定位；保持暂停并等待 SDK 确认。
     seekAction.current = (value) => {
       if (!instance || active || disposed || !Number.isFinite(value)) return;
       const wasSeeking = seekTarget !== null;
@@ -294,6 +294,9 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
       instance.pause();
       const target = Math.min(previewDuration(latest.current, latestMedia.current), Math.max(0, value));
       seekTarget = target;
+      displayedDecisecond = Math.round(target * 10);
+      setTime(target);
+      track.current?.setTime(target);
       setStatus("正在定位播放位置…");
       watchSeek();
       seekFrame = requestAnimationFrame(() => {
@@ -301,9 +304,6 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
         if (!instance || disposed) return;
         if (!wasSeeking && Math.abs(instance.currentTime - target) < 0.001) {
           finishSeek();
-          displayedDecisecond = Math.round(target * 10);
-          setTime(displayedDecisecond / 10);
-          track.current?.setTime(target);
         } else instance.currentTime = target;
       });
     };
@@ -337,7 +337,7 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
       <div className="template-preview-controls flex flex-wrap items-center gap-2.5 py-3">
         <Button type="button" aria-label={playing ? "暂停" : "播放"} title={playing ? "暂停" : "播放"} disabled={!ready || seeking} onClick={() => { if (playing) { cancelPlaybackAction.current?.(); player.current?.pause(); setStatus("预览已暂停"); } else { const current = player.current?.currentTime ?? 0; playAction.current?.(current >= duration ? 0 : current); } }} className="template-preview-play size-8 shrink-0 rounded-lg p-0">{playing ? <Pause className="size-4 fill-current" aria-hidden="true" /> : <Play className="ml-0.5 size-4 fill-current" aria-hidden="true" />}</Button>
         <Button type="button" variant="ghost" size="sm" disabled={!ready || seeking} onClick={() => playAction.current?.(0)} className="template-preview-restart h-8 px-2 text-[11px]">从头重播</Button>
-        <input type="range" aria-label="预览进度" min={0} max={duration} step={0.1} value={Math.min(time, duration)} disabled={!ready || seeking} onChange={(event) => seekAction.current?.(Number(event.target.value))} className="template-preview-progress min-w-20 flex-1" style={{ "--preview-progress": `${duration > 0 ? time / duration * 100 : 0}%` } as CSSProperties} />
+        <input type="range" aria-label="预览进度" min={0} max={duration} step={0.1} value={Math.min(time, duration)} disabled={!ready} onChange={(event) => seekAction.current?.(Number(event.target.value))} className="template-preview-progress min-w-20 flex-1" style={{ "--preview-progress": `${duration > 0 ? time / duration * 100 : 0}%` } as CSSProperties} />
         <span className="min-w-20 text-right text-[11px] font-medium tabular-nums">{time.toFixed(1)} <span className="font-normal text-muted-foreground">/ {duration.toFixed(1)} 秒</span></span>
         <MasterVideoInput key={videoInputKey} media={media} onChange={onMediaChange} />
       </div>
