@@ -100,10 +100,11 @@ function buildTrackContent(config: Editor, catalog: EffectAsset[], target: Effec
     const content = role === "bubble" ? config.bubbleText : config[role];
     const size = number(config[`${role}Size`], 12, 300, "字号", true);
     const visible = role === "bubble" ? content : wrapPreviewText(content, size, canvasWidth * 0.9);
-    const previewKeyword = role === "title" || role === "subtitle"
-      ? (role === "title" && config.titleKeyword) ||
-        ([...new Intl.Segmenter("zh", { granularity: "word" }).segment(visible)].find((part) => part.isWordLike)?.segment ?? "")
-      : "";
+    const previewKeyword = role === "title"
+      ? config.titleKeyword || (content.match(/[\p{L}\p{N}]{1,2}/u)?.[0] ?? "")
+      : role === "subtitle"
+        ? ([...new Intl.Segmenter("zh", { granularity: "word" }).segment(visible)].find((part) => part.isWordLike)?.segment ?? "")
+        : "";
     if (
       config[`${role}Loop`] &&
       (config[`${role}In`] || config[`${role}Out`])

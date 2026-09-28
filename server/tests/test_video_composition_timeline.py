@@ -109,13 +109,13 @@ def test_subtitle_keyword_style_marks_first_matching_part(composition_case):
 
 
 def test_title_keyword_styles_select_request_text_when_unset(composition_case):
-    """标题未指定关键词时自动标记请求标题的首段连续文字，重复内容只标记首次。"""
+    """标题未指定关键词时自动标记请求标题的前两个字，重复内容只标记首次。"""
     editor = composition_case["template"]["tracks"][1]["editor"]
     editor.update(titleKeyword="", titleKeywordBold=True, titleKeywordColor="#12AB34", titleKeywordSize=72)
-    composition_case["request"]["title"] = "重点 重点"
+    composition_case["request"]["title"] = "重点内容 重点内容"
     timeline, _ = build_timeline(**composition_case)
     assert timeline["SubtitleTracks"][1]["SubtitleTrackClips"][0]["Content"] == (
-        r"{\1c&34AB12&\fs72\b1}重点{\1c\fs\b0} 重点"
+        r"{\1c&34AB12&\fs72\b1}重点{\1c\fs\b0}内容 重点内容"
     )
 
 

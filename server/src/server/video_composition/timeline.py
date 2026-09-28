@@ -43,8 +43,8 @@ def format_subtitle_keyword(content: str, keyword: str, config: EffectTemplateEd
 
 
 def first_title_keyword(content: str) -> str:
-    """从请求标题取首段连续文字，供没有手动关键词的标题样式使用。"""
-    match = re.search(r"[^\W_]+", content)
+    """从请求标题首段连续文字取前两个字，供没有手动关键词的标题样式使用。"""
+    match = re.search(r"[^\W_]{1,2}", content)
     return match.group() if match else ""
 
 

@@ -220,7 +220,7 @@ export function EffectEditor({
                     onChange={(value) => update(`${role}KeywordSize`, value)}
                   />
                 </div>
-                <p className="text-xs text-muted-foreground">{role === "title" ? "预览自动选择示例标题的首个词语；合成时从请求标题选取首段连续文字。" : "预览使用示例文字的首个词语；合成时作用于每段字幕的关键词。"}</p>
+                <p className="text-xs text-muted-foreground">{role === "title" ? "预览和合成分别从示例标题与请求标题的首段连续文字选取前两个字。" : "预览使用示例文字的首个词语；合成时作用于每段字幕的关键词。"}</p>
               </fieldset>
             )}
             <div className="grid grid-cols-2 gap-3">
