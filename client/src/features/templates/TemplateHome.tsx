@@ -1,7 +1,7 @@
 /** 主页按云端、本地顺序读取模板；各库独立显示状态，选择后交给模板工作区编辑。 */
 import { useEffect, useId, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
-import { ChevronRight, Cloud, FolderOpen, Plus, RefreshCw } from "lucide-react";
+import { ChevronRight, Clapperboard, Cloud, FolderOpen, RefreshCw, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -17,10 +17,9 @@ export type TemplateSelection = { environment: Environment } & (
   | { templateId: null; name: string; description: string }
 );
 
-/** 主页只负责选择；focused 仅调整原型中的标题、列表和按钮样式。 */
+/** 主页只负责选择，编辑交给模板工作区。 */
 interface Props {
   onSelect: (selection: TemplateSelection) => void;
-  presentation?: "focused";
 }
 
 /** 两个模板库分别读取和重试；卸载取消 HTTP，并忽略迟到的本地 IPC 结果。 */
@@ -64,46 +63,64 @@ export function TemplateCollection({ environment, collection, onSelect }: Props 
   const Icon = environment === "cloud" ? Cloud : FolderOpen;
 
   return (
-    <section aria-labelledby={headingId} className="border-b last:border-b-0">
-      <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b bg-card px-4 py-3 sm:px-6">
-        <div className="flex items-center gap-2">
-          <Icon className="size-5 text-primary" aria-hidden="true" />
-          <h3 id={headingId} className="font-semibold">{title}</h3>
+    <section aria-labelledby={headingId}>
+      <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-dashed bg-card/90 px-4 py-2.5 backdrop-blur sm:px-5">
+        <div className="flex min-w-0 items-baseline gap-2.5">
+          <h3 id={headingId} className="flex items-center gap-1.5 text-sm font-semibold">
+            <Icon className="size-4 self-center text-muted-foreground" strokeWidth={1.75} aria-hidden="true" />{title}
+          </h3>
+          <span className="hidden truncate text-xs text-muted-foreground sm:inline">{environment === "cloud" ? "团队共享，保存在服务端" : "仅保存在本机"}</span>
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
           {!loading && !error && !unavailable && (
-            <span className="rounded-full bg-accent px-2 py-0.5 text-xs font-medium text-primary" aria-label={`${templates.length} 个模板`}>{templates.length}</span>
+            <span className="font-mono text-[11px] tabular-nums text-muted-foreground" aria-label={`${templates.length} 个模板`}>{templates.length}</span>
+          )}
+          {!unavailable && (
+            <Button variant="ghost" size="icon-sm" disabled={loading} onClick={refresh}
+              aria-label={`${error ? "重试" : "刷新"}${title}`} title={`${error ? "重试" : "刷新"}${title}`}>
+              <RefreshCw className="size-3.5 text-muted-foreground" aria-hidden="true" />
+            </Button>
           )}
         </div>
-        {!unavailable && (
-          <Button variant="ghost" size="icon-sm" disabled={loading} onClick={refresh}
-            aria-label={`${error ? "重试" : "刷新"}${title}`} title={`${error ? "重试" : "刷新"}${title}`}>
-            <RefreshCw className="size-4 text-muted-foreground" aria-hidden="true" />
-          </Button>
-        )}
       </div>
       {unavailable ? (
-        <p className="px-4 py-8 text-sm text-muted-foreground sm:px-6">请在桌面客户端中查看和选择本地模板。</p>
+        <div className="m-3 flex items-center gap-3 rounded-lg border border-dashed px-4 py-5 text-sm text-muted-foreground">
+          <FolderOpen className="size-4 shrink-0" strokeWidth={1.75} aria-hidden="true" />
+          <p>请在桌面客户端中查看和选择本地模板。</p>
+        </div>
       ) : loading ? (
-        <p role="status" className="px-4 py-8 text-sm text-muted-foreground sm:px-6">正在读取{title}…</p>
+        <p role="status" className="px-4 py-6 font-mono text-xs text-muted-foreground sm:px-5">正在读取{title}…</p>
       ) : error ? (
         <p role="alert" className="m-3 break-words rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive [overflow-wrap:anywhere]">{error}</p>
       ) : templates.length === 0 ? (
-        <p className="px-4 py-8 text-sm text-muted-foreground sm:px-6">暂无{title}，点击下方「新建{title}」开始创作。</p>
+        <div className="m-3 flex items-center gap-3 rounded-lg border border-dashed px-4 py-5 text-sm text-muted-foreground">
+          <Sparkles className="size-4 shrink-0" strokeWidth={1.75} aria-hidden="true" />
+          <p>暂无{title}，点击下方「新建{title}」开始创作。</p>
+        </div>
       ) : (
-        <ul className="px-2">
+        <ul className="grid grid-cols-1 gap-x-4 gap-y-5 p-4 min-[420px]:grid-cols-2 sm:p-5">
           {templates.map((template) => (
-            <li key={template.template_id} className="border-b last:border-b-0">
-              <Button
-                variant="ghost"
-                className="my-1 h-auto min-h-20 w-full justify-between gap-4 whitespace-normal rounded-lg px-2 py-3 text-left hover:bg-accent/70 hover:text-primary focus-visible:ring-inset sm:px-4"
+            <li key={template.template_id} className="min-w-0">
+              {/* 画廊式卡片：灰底点阵画框作为缩略图，名称与说明位于画框下方。 */}
+              <button
+                type="button"
+                className="group flex w-full cursor-pointer flex-col gap-2.5 rounded-xl text-left outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
                 aria-label={`选择模板：${template.name}`}
                 onClick={() => onSelect({ environment, templateId: template.template_id })}
               >
-                <span className="min-w-0 space-y-1">
-                  <span className="block truncate text-base font-medium" title={template.name}>{template.name}</span>
-                  <span className="line-clamp-2 break-words text-sm font-normal text-muted-foreground [overflow-wrap:anywhere]">{template.description || "暂无模板说明"}</span>
+                <span aria-hidden="true" className="flex aspect-video w-full items-center justify-center rounded-xl border bg-muted/60 bg-[radial-gradient(var(--border)_1px,transparent_1px)] bg-[size:14px_14px] transition group-hover:-translate-y-0.5 group-hover:border-foreground/25 group-hover:shadow-md motion-reduce:transition-none">
+                  <span className="flex size-10 items-center justify-center rounded-xl bg-foreground text-background shadow-sm transition-transform group-hover:scale-110 motion-reduce:transition-none">
+                    <Clapperboard className="size-5" strokeWidth={1.75} />
+                  </span>
                 </span>
-                <ChevronRight className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
-              </Button>
+                <span className="min-w-0 px-0.5">
+                  <span className="flex items-center gap-1 text-sm font-medium">
+                    <span className="truncate" title={template.name}>{template.name}</span>
+                    <ChevronRight className="size-3.5 shrink-0 -translate-x-1 text-muted-foreground opacity-0 transition group-hover:translate-x-0 group-hover:opacity-100 motion-reduce:transition-none" aria-hidden="true" />
+                  </span>
+                  <span className="mt-0.5 block truncate text-xs text-muted-foreground">{template.description || "暂无模板说明"}</span>
+                </span>
+              </button>
             </li>
           ))}
         </ul>
@@ -112,9 +129,8 @@ export function TemplateCollection({ environment, collection, onSelect }: Props 
   );
 }
 
-/** 居中列表内部滚动，底部保留两个新建入口；再次进入主页重新读取两库。 */
-export function TemplateHome({ onSelect, presentation }: Props) {
-  const focused = presentation === "focused";
+/** 居中列表内部滚动，卡片底部操作栏保留两个新建入口；再次进入主页重新读取两库。 */
+export function TemplateHome({ onSelect }: Props) {
   const cloud = useTemplateCollection("cloud");
   const local = useTemplateCollection("local");
   const [creating, setCreating] = useState<Environment | null>(null);
@@ -133,28 +149,27 @@ export function TemplateHome({ onSelect, presentation }: Props) {
   }
 
   return (
-    <div className={`mx-auto flex h-full min-h-0 w-full min-w-0 max-w-xl flex-col py-3 sm:py-5 ${focused ? "gap-6" : "gap-5"}`}>
-      <div className={`shrink-0 space-y-2 ${focused ? "text-left" : "text-center"}`}>
-        <h2 className={`${focused ? "text-3xl" : "text-2xl"} font-semibold tracking-tight`}>我的模板</h2>
-        <p className="text-sm text-muted-foreground">{focused ? "选择模板继续编辑。" : "选择模板，进入模版编辑页面继续创作。"}</p>
-      </div>
-      <Card className={`min-h-0 flex-1 gap-0 overflow-hidden py-0 ${focused ? "rounded-2xl border-slate-200 shadow-[0_14px_35px_rgba(28,45,85,.07)]" : ""}`}>
+    <div className="mx-auto flex h-full min-h-0 w-full min-w-0 max-w-xl flex-col gap-5 py-3 sm:py-5">
+      <Card className="min-h-0 flex-1 gap-0 overflow-hidden py-0 shadow-none">
         <div role="region" aria-label="模板列表" tabIndex={0}
           className="min-h-0 flex-1 overflow-y-auto overscroll-contain outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
           <TemplateCollection environment="cloud" collection={cloud} onSelect={onSelect} />
           <TemplateCollection environment="local" collection={local} onSelect={onSelect} />
         </div>
+        {/* 卡片底部操作栏：新建入口与列表同属一张卡片，虚线与滚动区域分隔。 */}
+        <div className="flex shrink-0 items-center justify-end gap-3 border-t border-dashed bg-muted/40 px-4 py-2.5 sm:px-5">
+          <div className="flex min-w-0 gap-2">
+            <Button className="h-8 min-w-0 cursor-pointer gap-1.5 rounded-md bg-foreground px-3 text-xs text-background shadow-sm hover:bg-foreground/85 sm:text-[13px]" onClick={() => openCreation("cloud")}>
+              <Cloud strokeWidth={1.75} aria-hidden="true" />新建云端模板
+            </Button>
+            <Button variant="outline" className="h-8 min-w-0 cursor-pointer gap-1.5 rounded-md bg-card px-3 text-xs text-foreground shadow-sm hover:bg-muted disabled:pointer-events-auto disabled:cursor-not-allowed disabled:opacity-45 sm:text-[13px]"
+              disabled={local.unavailable} title={local.unavailable ? "本地模板需要桌面客户端" : undefined}
+              onClick={() => openCreation("local")}>
+              <FolderOpen strokeWidth={1.75} aria-hidden="true" />新建本地模板
+            </Button>
+          </div>
+        </div>
       </Card>
-      <div className={`grid w-full shrink-0 grid-cols-2 gap-3 ${focused ? "max-w-xl" : "mx-auto max-w-xs"}`}>
-        <Button className={`${focused ? "h-11 rounded-xl" : "h-9 rounded-lg"} min-w-0 gap-1.5 px-2 text-xs sm:px-3 sm:text-sm`} onClick={() => openCreation("cloud")}>
-          <Plus aria-hidden="true" />新建云端模板
-        </Button>
-        <Button variant="outline" className={`${focused ? "h-11 rounded-xl" : "h-9 rounded-lg"} min-w-0 gap-1.5 border-primary/40 px-2 text-xs text-primary sm:px-3 sm:text-sm`}
-          disabled={local.unavailable} title={local.unavailable ? "本地模板需要桌面客户端" : undefined}
-          onClick={() => openCreation("local")}>
-          <Plus aria-hidden="true" />新建本地模板
-        </Button>
-      </div>
       <Dialog open={creating !== null} onOpenChange={(open) => { if (!open) setCreating(null); }}>
         <DialogContent>
           <DialogHeader>

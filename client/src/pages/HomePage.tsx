@@ -1,6 +1,6 @@
 /** 首页以侧边导航组合工作区；设置经侧栏底部按钮打开对话框，业务面板隐藏时保留草稿、播放器与订阅。 */
 import { Fragment, useId, useState } from "react";
-import { Film, House, PanelLeftClose, PanelLeftOpen, Settings, Sparkles, SquarePen } from "lucide-react";
+import { Film, House, LayoutTemplate, PanelLeftClose, PanelLeftOpen, Settings, Sparkles, SquarePen } from "lucide-react";
 import CurrentTime from "@/components/CurrentTime";
 import { ChangelogPanel } from "@/components/ChangelogPanel";
 import { Button } from "@/components/ui/button";
@@ -41,9 +41,9 @@ export default function HomePage() {
       }}
       className="flex min-h-dvh gap-0"
     >
-      <aside className={cn("sticky top-0 flex h-dvh w-16 shrink-0 flex-col border-r bg-card px-2 py-6 transition-[width,padding] duration-200 motion-reduce:transition-none", !sidebarCollapsed && "md:w-52 md:px-4")}>
+      <aside className={cn("sticky top-0 flex h-dvh w-16 shrink-0 flex-col border-r bg-card px-2 py-6 after:pointer-events-none after:absolute after:inset-y-0 after:-right-[9px] after:w-2 after:border-r after:bg-[repeating-linear-gradient(-45deg,var(--border)_0_1px,transparent_1px_6px)] after:content-[''] transition-[width,padding] duration-200 motion-reduce:transition-none", !sidebarCollapsed && "md:w-52 md:px-4")}>
         <div className={cn("mb-10 flex items-center justify-center gap-3", !sidebarCollapsed && "md:justify-start md:px-2")}>
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-foreground text-background">
             <Film className="size-5" aria-hidden="true" />
           </div>
           <div className={cn("hidden", !sidebarCollapsed && "md:block")}>
@@ -55,14 +55,14 @@ export default function HomePage() {
           {navigation.map(({ value, label, icon: Icon }) => (
             <Fragment key={value}>
               {value === "library" && (
-                <p className={cn("mb-1 mt-4 hidden px-3 text-[11px] font-medium tracking-widest text-muted-foreground", !sidebarCollapsed && "md:block")}>工作空间</p>
+                <p className={cn("mb-1 mt-4 hidden px-3 font-mono text-[11px] tracking-widest text-muted-foreground", !sidebarCollapsed && "md:block")}>工作空间</p>
               )}
               <TabsTrigger
                 value={value}
                 title={label}
-                className={cn("h-11 w-full flex-none gap-3 rounded-lg px-3 py-3 justify-center hover:bg-muted data-[state=active]:bg-accent data-[state=active]:text-primary group-data-[variant=default]/tabs-list:data-[state=active]:shadow-none", !sidebarCollapsed && "md:justify-start")}
+                className={cn("h-10 w-full flex-none gap-3 rounded-lg px-3 py-2 justify-center text-muted-foreground hover:bg-muted hover:text-foreground data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:ring-1 data-[state=active]:ring-border group-data-[variant=default]/tabs-list:data-[state=active]:shadow-sm", !sidebarCollapsed && "md:justify-start")}
               >
-                <Icon className="size-[18px]" aria-hidden="true" />
+                <Icon className="size-[18px]" strokeWidth={1.75} aria-hidden="true" />
                 <span className={cn("sr-only", !sidebarCollapsed && "md:not-sr-only")}>{label}</span>
               </TabsTrigger>
             </Fragment>
@@ -74,9 +74,9 @@ export default function HomePage() {
           title="设置"
           aria-haspopup="dialog"
           onClick={() => setSettingsOpen(true)}
-          className={cn("h-11 w-full gap-3 rounded-lg px-3 justify-center hover:bg-muted", !sidebarCollapsed && "md:justify-start")}
+          className={cn("h-10 w-full gap-3 rounded-lg px-3 justify-center font-normal text-muted-foreground hover:bg-muted hover:text-foreground", !sidebarCollapsed && "md:justify-start")}
         >
-          <Settings className="size-[18px]" aria-hidden="true" />
+          <Settings className="size-[18px]" strokeWidth={1.75} aria-hidden="true" />
           <span className={cn("sr-only", !sidebarCollapsed && "md:not-sr-only")}>设置</span>
         </Button>
         <Button
@@ -87,7 +87,7 @@ export default function HomePage() {
           aria-expanded={!sidebarCollapsed}
           aria-controls={navigationId}
           onClick={() => setSidebarCollapsed((value) => !value)}
-          className={cn("mt-2 hidden h-9 w-full shrink-0 cursor-pointer justify-center gap-3 rounded-lg px-3 hover:bg-muted md:inline-flex", !sidebarCollapsed && "md:justify-start")}
+          className={cn("mt-2 hidden h-9 w-full shrink-0 cursor-pointer justify-center gap-3 rounded-lg px-3 font-normal text-muted-foreground hover:bg-muted hover:text-foreground md:inline-flex", !sidebarCollapsed && "md:justify-start")}
         >
           {sidebarCollapsed ? <PanelLeftOpen className="size-[18px]" aria-hidden="true" /> : <PanelLeftClose className="size-[18px]" aria-hidden="true" />}
           {!sidebarCollapsed && <span>收起侧边栏</span>}
@@ -95,10 +95,30 @@ export default function HomePage() {
       </aside>
       <main className={cn("min-w-0 flex-1 px-3 py-3 sm:px-5", workspace === "home" && "h-dvh", workspace === "library" && "bg-white")}>
         <div className={cn("mx-auto", workspace === "home" ? "flex h-full min-h-0 flex-col gap-3" : "max-w-[1920px] space-y-3")}>
-          {workspace !== "library" && <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b pb-3">
-            <div className="space-y-1.5">
-              <p className="text-xs font-medium tracking-widest text-muted-foreground">INTELLIGENT MIX VIDEO</p>
-              <h1 className="text-xl font-semibold tracking-tight">特效模板</h1>
+          {workspace !== "library" && <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-dashed pb-3">
+            <div className="flex items-center gap-3">
+              <span className="flex size-10 items-center justify-center rounded-xl border bg-card shadow-sm" aria-hidden="true">
+                <LayoutTemplate className="size-5" strokeWidth={1.75} />
+              </span>
+              {/* 主页标题仅保留给读屏器，视觉上显示字标与说明；其他工作区显示品牌标签与标题。 */}
+              {workspace === "home" ? (
+                <div className="space-y-0.5">
+                  <h1 className="sr-only">我的模板</h1>
+                  <p className="flex items-center gap-2 text-lg font-semibold leading-tight tracking-tight">
+                    <span className="bg-linear-to-r from-foreground to-foreground/55 bg-clip-text text-transparent">Intelligent Mix</span>
+                    <span className="rounded-md border bg-card px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-widest text-muted-foreground shadow-sm">Video</span>
+                  </p>
+                  <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <span className="size-1.5 rounded-full bg-primary" aria-hidden="true" />
+                    视频创作工作台 · 选择模板继续创作，或新建模板
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-0.5">
+                  <p className="font-mono text-[11px] tracking-widest text-muted-foreground">INTELLIGENT MIX VIDEO</p>
+                  <h1 className="text-xl font-semibold tracking-tight">特效模板</h1>
+                </div>
+              )}
             </div>
             <CurrentTime />
           </header>}
