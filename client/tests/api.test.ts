@@ -42,6 +42,18 @@ test("保存前检查名称和所选效果", async () => {
   expect(fetchMock).not.toHaveBeenCalled();
 });
 
+// Sprite-only 云端样式仍保存原模板消息，IMS tracks 可为空，Sprite 绑定另走独立接口。
+test("云端 Sprite-only 样式允许空 IMS 效果列表", async () => {
+  const draft = newDraft();
+  draft.name = "只有 Sprite";
+  const saved = { ...savedTemplate(), name: draft.name, tracks: [], effect_ids: [], effects: [] };
+  fetchMock.mockResolvedValueOnce(protobufTemplateResponse(saved, "save", 201));
+  expect((await saveTemplate(draft, undefined, "cloud", true)).effect_ids).toEqual([]);
+  const body = fromBinary(SaveTemplateRequestSchema, new Uint8Array(fetchMock.mock.calls[0][1]?.body as Uint8Array));
+  expect(body.effectIds).toEqual([]);
+  expect(body.tracks?.tracks).toEqual([]);
+});
+
 // 测试列表与详情响应透传、路径 ID 编码，以及删除成功的 204 不尝试解析 JSON。
 test("读取与删除遵循接口契约", async () => {
   const saved = savedTemplate();

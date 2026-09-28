@@ -14,6 +14,10 @@ import { TemplateInspector, type InspectorTab } from "./TemplateInspector";
 import { TemplatePreview } from "./TemplatePreview";
 import type { TemplateSelection } from "./TemplateHome";
 import "./template-workspace.css";
+import { SpriteAssetPicker, SpriteBindingsPanel } from "@/features/sprites/SpriteBindingsPanel";
+import type { SpritePreviewCopy } from "@/features/sprites/preview";
+import { getStyleSprites, listSprites, saveStyleSprites } from "@/features/sprites/api";
+import type { SpritePlacement, SpriteSummary } from "@/generated/imv/sprite/v1/sprite_pb";
 
 /** 窗口宽度仅改变排列和调整权限，保留各栏组件、输入草稿与播放器实例。 */
 function WorkspaceColumns({ assets, canvas, inspector }: { assets: ReactNode; canvas: ReactNode; inspector: ReactNode }) {
@@ -43,6 +47,14 @@ export function TemplateWorkspace({ selection = null, onHome }: {
   const [media, setMedia] = useState<MasterVideo>();
   const [baseline, setBaseline] = useState("");
   const [catalog, setCatalog] = useState<EffectAsset[]>(() => readCatalog());
+  const [spriteCatalog, setSpriteCatalog] = useState<SpriteSummary[]>([]);
+  const [spritePlacements, setSpritePlacements] = useState<SpritePlacement[]>([]);
+  const [spritePreviewCopy, setSpritePreviewCopy] = useState<Record<string, SpritePreviewCopy>>({});
+  const [openSpriteId, setOpenSpriteId] = useState<string | null>(null);
+  const [spriteBaseline, setSpriteBaseline] = useState("[]");
+  const [spriteRevision, setSpriteRevision] = useState(0n);
+  const [spriteReady, setSpriteReady] = useState(false);
+  const [spriteError, setSpriteError] = useState("");
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -58,7 +70,8 @@ export function TemplateWorkspace({ selection = null, onHome }: {
   const form = useRef<HTMLFormElement>(null);
   const mounted = useRef(false);
   const handledSelection = useRef<TemplateSelection | null>(null);
-  const dirty = draft !== null && (current === null || JSON.stringify(draft) !== baseline);
+  const spriteDirty = JSON.stringify(spritePlacements) !== spriteBaseline;
+  const dirty = draft !== null && (current === null || JSON.stringify(draft) !== baseline || spriteDirty);
   const selectedTrack = draft?.tracks.find((track) => track.id === target);
   const assetTrack = selectedTrack ?? draft?.tracks.find((track) => track.id === lastTextTrack.current);
   const selectedDraft = draft && selectedTrack ? trackDraft(draft, selectedTrack) : null;
@@ -108,6 +121,13 @@ export function TemplateWorkspace({ selection = null, onHome }: {
         setMedia(undefined);
         setBaseline(JSON.stringify(next));
         setEnvironment(openRequest.environment);
+        setSpritePlacements([]);
+        setSpritePreviewCopy({});
+        setOpenSpriteId(null);
+        setSpriteBaseline("[]");
+        setSpriteRevision(0n);
+        setSpriteReady(openRequest.environment === "cloud" && template === null);
+        setSpriteError("");
         setTarget(next.tracks[0]?.id ?? null);
         const initialText = next.tracks.find((track) => isTextTarget(track.target));
         lastTextTrack.current = initialText?.id ?? null;
@@ -125,6 +145,33 @@ export function TemplateWorkspace({ selection = null, onHome }: {
     return () => controller.abort();
   }, [openRequest, attempt]);
 
+  // Sprite catalog and bindings are separate cloud records; a failed read never overwrites IMS draft data.
+  useEffect(() => {
+    if (!draft || environment !== "cloud") return;
+    const controller = new AbortController();
+    void listSprites(controller.signal)
+      .then((items) => { if (!controller.signal.aborted) setSpriteCatalog(items); })
+      .catch(() => { if (!controller.signal.aborted) setSpriteError("Sprite 资产目录暂不可用，请稍后重新打开模板。"); });
+    return () => controller.abort();
+  }, [environment, current?.template_id, draft !== null]);
+
+  useEffect(() => {
+    if (!draft || environment !== "cloud" || !current?.template_id || busy || spriteDirty) return;
+    const controller = new AbortController();
+    setSpriteReady(false);
+    void getStyleSprites(current.template_id, controller.signal)
+      .then((bindings) => {
+        if (controller.signal.aborted) return;
+        setSpritePlacements(bindings.placements);
+        setSpriteBaseline(JSON.stringify(bindings.placements));
+        setSpriteRevision(bindings.revision);
+        setSpriteReady(true);
+        setSpriteError("");
+      })
+      .catch(() => { if (!controller.signal.aborted) setSpriteError("Sprite 绑定读取失败；当前可编辑 IMS 效果，重新打开模板后再编辑 Sprite。"); });
+    return () => controller.abort();
+  }, [environment, current?.template_id, draft !== null, busy, spriteDirty]);
+
   /** 资产和已添加对象共用选中状态，文字资产沿用最近选择的文字对象。 */
   function selectTarget(next: string) {
     setTarget(next);
@@ -141,20 +188,36 @@ export function TemplateWorkspace({ selection = null, onHome }: {
   /** 成功保存响应建立新基线；失败保留原草稿和待切换目标，不自动重发。 */
   async function persist(nextSelection?: TemplateSelection) {
     if (!draft || lock.current || loading) return;
-    // 时间输入保留局部编辑值，写入前检查；模板配置继续由 saveTemplate 校验。
+    // 保存前检查当前可见的 IMS 时间输入和 Sprite 数值输入。
     const timingInputs = form.current?.querySelectorAll<HTMLInputElement>('[aria-label="轨道时间设置"] input');
     if (timingInputs && [...timingInputs].some((input) => !input.checkValidity())) { setInspectorTab("timing"); return; }
+    const spriteInputs = form.current?.querySelectorAll<HTMLInputElement>('[aria-label="已添加的 Remotion Sprite"] input[type="number"]');
+    if (spriteInputs && [...spriteInputs].some((input) => !input.reportValidity())) return;
     lock.current = true;
     setBusy(true);
     setError("");
     setNotice("");
     try {
-      const saved = await api.saveTemplate(draft, current?.template_id, environment);
-      if (!mounted.current) return;
-      const next = toDraft(saved);
-      setCurrent(saved);
-      setDraft(next);
-      setBaseline(JSON.stringify(next));
+      if (spriteDirty && (!spriteReady || environment !== "cloud"))
+        throw new Error("Sprite 绑定尚未读取完成，请重新打开模板后重试");
+      const imsChanged = current === null || JSON.stringify(draft) !== baseline;
+      const saved = imsChanged
+        ? await api.saveTemplate(draft, current?.template_id, environment, spritePlacements.length > 0)
+        : current;
+      if (!mounted.current || !saved) return;
+      if (imsChanged) {
+        const next = toDraft(saved);
+        setCurrent(saved);
+        setDraft(next);
+        setBaseline(JSON.stringify(next));
+      }
+      if (spriteDirty) {
+        const result = await saveStyleSprites(saved.template_id, spritePlacements, spriteRevision);
+        if (!mounted.current) return;
+        setSpritePlacements(result.placements);
+        setSpriteBaseline(JSON.stringify(result.placements));
+        setSpriteRevision(result.revision);
+      }
       setNotice(`模板「${saved.name}」已保存`);
       if (nextSelection) { setOpenRequest(nextSelection); setAttempt((value) => value + 1); }
     } catch (reason) {
@@ -169,6 +232,7 @@ export function TemplateWorkspace({ selection = null, onHome }: {
     <div className="@container min-w-0 space-y-3">
       {error && !action && <p role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{error}</p>}
       {notice && <p role="status" className="text-sm text-muted-foreground">{notice}</p>}
+      {spriteError && environment === "cloud" && <p role="alert" className="rounded-lg border p-3 text-sm text-muted-foreground">{spriteError}</p>}
       {openRequest && error && !action && <Button type="button" variant="outline" disabled={loading} onClick={() => setAttempt((value) => value + 1)}>重试打开模板</Button>}
       {loading && <p role="status" className="text-sm text-muted-foreground">正在读取模板…</p>}
       {!draft ? (
@@ -190,6 +254,10 @@ export function TemplateWorkspace({ selection = null, onHome }: {
             </section>
             <WorkspaceColumns
               assets={<aside className="template-workspace-assets h-full min-w-0 overflow-y-auto border-b xl:border-b-0">
+                {environment === "cloud" && <SpriteAssetPicker catalog={spriteCatalog} count={spritePlacements.length} loading={!spriteReady} onAdd={(placement) => {
+                  setSpritePlacements((items) => [...items, placement]);
+                  setOpenSpriteId(placement.id);
+                }} />}
                 <EffectAssets editor={assetTrack?.editor} catalog={catalog} textTarget={textTarget} textEditor={draft.tracks.find((track) => track.id === lastTextTrack.current)?.editor} onTextTarget={(role) => {
                   setTextTarget(role);
                   const text = draft.tracks.find((track) => track.target === role);
@@ -204,10 +272,11 @@ export function TemplateWorkspace({ selection = null, onHome }: {
                 })} />
               </aside>}
               canvas={<main className="template-workspace-canvas h-full min-w-0 overflow-y-auto border-b xl:border-b-0">
-                <TemplatePreview draft={draft} media={media} onMediaChange={setMedia} videoInputKey={`${environment}:${current?.template_id ?? draft.name}`} onCatalog={setCatalog} selectedId={target} onSelect={selectTarget} onRangeChange={(id, start, end) => editTrack(() => setTrackRange(draft, id, start, end, media))} />
+                <TemplatePreview draft={draft} media={media} onMediaChange={setMedia} videoInputKey={`${environment}:${current?.template_id ?? draft.name}`} onCatalog={setCatalog} selectedId={target} onSelect={selectTarget} onRangeChange={(id, start, end) => editTrack(() => setTrackRange(draft, id, start, end, media))} spritePlacements={environment === "cloud" ? spritePlacements : []} spriteCatalog={spriteCatalog} spritePreviewCopy={spritePreviewCopy} />
               </main>}
               inspector={<aside className="template-workspace-inspector h-full min-w-0 overflow-y-auto xl:border-l"><AppliedEffects draft={draft} catalog={catalog} duration={previewDuration(draft, media)} selected={target} onSelect={selectTarget} />
                 {selectedTrack && <TemplateInspector track={selectedTrack} draft={selectedDraft!} catalog={catalog} duration={previewDuration(draft, media)} tab={inspectorTab} onTabChange={setInspectorTab} onTimingChange={(timing) => editTrack(() => setTrackTiming(draft, selectedTrack.id, timing))} onEffectChange={(next) => editTrack(() => updateTrack(draft, selectedTrack.id, next))} onRemove={() => editTrack(() => removeTrack(draft, selectedTrack.id))} onClose={() => setTarget(null)} />}
+                {environment === "cloud" && <SpriteBindingsPanel catalog={spriteCatalog} placements={spritePlacements} onChange={setSpritePlacements} open={openSpriteId} onOpenChange={setOpenSpriteId} previewCopy={spritePreviewCopy} onPreviewCopyChange={(id, value) => setSpritePreviewCopy((items) => ({ ...items, [id]: value }))} />}
               </aside>}
             />
           </fieldset>
