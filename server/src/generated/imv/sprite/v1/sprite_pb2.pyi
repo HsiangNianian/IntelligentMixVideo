@@ -64,20 +64,22 @@ class ScalarValue(_message.Message):
     def __init__(self, string_value: _Optional[str] = ..., number_value: _Optional[float] = ..., bool_value: _Optional[bool] = ...) -> None: ...
 
 class SpriteParameter(_message.Message):
-    __slots__ = ("key", "label", "access", "default_value", "minimum", "maximum")
+    __slots__ = ("key", "label", "access", "default_value", "minimum", "maximum", "allowed_values")
     KEY_FIELD_NUMBER: _ClassVar[int]
     LABEL_FIELD_NUMBER: _ClassVar[int]
     ACCESS_FIELD_NUMBER: _ClassVar[int]
     DEFAULT_VALUE_FIELD_NUMBER: _ClassVar[int]
     MINIMUM_FIELD_NUMBER: _ClassVar[int]
     MAXIMUM_FIELD_NUMBER: _ClassVar[int]
+    ALLOWED_VALUES_FIELD_NUMBER: _ClassVar[int]
     key: str
     label: str
     access: OperatorAccess
     default_value: ScalarValue
     minimum: float
     maximum: float
-    def __init__(self, key: _Optional[str] = ..., label: _Optional[str] = ..., access: _Optional[_Union[OperatorAccess, str]] = ..., default_value: _Optional[_Union[ScalarValue, _Mapping]] = ..., minimum: _Optional[float] = ..., maximum: _Optional[float] = ...) -> None: ...
+    allowed_values: _containers.RepeatedCompositeFieldContainer[ScalarValue]
+    def __init__(self, key: _Optional[str] = ..., label: _Optional[str] = ..., access: _Optional[_Union[OperatorAccess, str]] = ..., default_value: _Optional[_Union[ScalarValue, _Mapping]] = ..., minimum: _Optional[float] = ..., maximum: _Optional[float] = ..., allowed_values: _Optional[_Iterable[_Union[ScalarValue, _Mapping]]] = ...) -> None: ...
 
 class SpriteCanvas(_message.Message):
     __slots__ = ("width", "height", "fps", "preview_frames")
@@ -240,25 +242,23 @@ class SaveStyleSpritesResponse(_message.Message):
     def __init__(self, bindings: _Optional[_Union[StyleSpriteBindings, _Mapping]] = ...) -> None: ...
 
 class SpriteRenderInput(_message.Message):
-    __slots__ = ("sprite_id", "placement_id", "output", "timeline_in_frame", "timeline_out_frame", "text", "keywords", "resolved_style", "effect_start_frame", "effect_total_frames")
+    __slots__ = ("sprite_id", "placement_id", "output", "text", "keywords", "resolved_style", "effect_total_frames", "effect_offset_frames", "render_frame_count")
     SPRITE_ID_FIELD_NUMBER: _ClassVar[int]
     PLACEMENT_ID_FIELD_NUMBER: _ClassVar[int]
     OUTPUT_FIELD_NUMBER: _ClassVar[int]
-    TIMELINE_IN_FRAME_FIELD_NUMBER: _ClassVar[int]
-    TIMELINE_OUT_FRAME_FIELD_NUMBER: _ClassVar[int]
     TEXT_FIELD_NUMBER: _ClassVar[int]
     KEYWORDS_FIELD_NUMBER: _ClassVar[int]
     RESOLVED_STYLE_FIELD_NUMBER: _ClassVar[int]
-    EFFECT_START_FRAME_FIELD_NUMBER: _ClassVar[int]
     EFFECT_TOTAL_FRAMES_FIELD_NUMBER: _ClassVar[int]
+    EFFECT_OFFSET_FRAMES_FIELD_NUMBER: _ClassVar[int]
+    RENDER_FRAME_COUNT_FIELD_NUMBER: _ClassVar[int]
     sprite_id: str
     placement_id: str
     output: SpriteCanvas
-    timeline_in_frame: int
-    timeline_out_frame: int
     text: str
     keywords: _containers.RepeatedScalarFieldContainer[str]
     resolved_style: _containers.RepeatedCompositeFieldContainer[SpriteParameterOverride]
-    effect_start_frame: int
     effect_total_frames: int
-    def __init__(self, sprite_id: _Optional[str] = ..., placement_id: _Optional[str] = ..., output: _Optional[_Union[SpriteCanvas, _Mapping]] = ..., timeline_in_frame: _Optional[int] = ..., timeline_out_frame: _Optional[int] = ..., text: _Optional[str] = ..., keywords: _Optional[_Iterable[str]] = ..., resolved_style: _Optional[_Iterable[_Union[SpriteParameterOverride, _Mapping]]] = ..., effect_start_frame: _Optional[int] = ..., effect_total_frames: _Optional[int] = ...) -> None: ...
+    effect_offset_frames: int
+    render_frame_count: int
+    def __init__(self, sprite_id: _Optional[str] = ..., placement_id: _Optional[str] = ..., output: _Optional[_Union[SpriteCanvas, _Mapping]] = ..., text: _Optional[str] = ..., keywords: _Optional[_Iterable[str]] = ..., resolved_style: _Optional[_Iterable[_Union[SpriteParameterOverride, _Mapping]]] = ..., effect_total_frames: _Optional[int] = ..., effect_offset_frames: _Optional[int] = ..., render_frame_count: _Optional[int] = ...) -> None: ...

@@ -84,16 +84,20 @@ message SpriteParameter {
   optional double minimum = 5;
   // 可选数字上界；缺失表示不通过此字段设置上界。
   optional double maximum = 6;
+  // 可选离散取值；非空时运营覆盖值必须与某一项同型且相等。
+  // 例如字重只允许 400/700、对齐只允许 left/center/right；空数组表示不限制枚举。
+  repeated ScalarValue allowed_values = 7;
 }
 
-// Sprite 发布时固定的画布和帧率，也是 SpriteRenderInput 帧号的计量基准。
+// Sprite 发布时固定的画布和帧率，也是 SpriteRenderInput 帧数的计量基准。
 // IMS 成片可以使用不同画幅；透明视频交给 IMS 后再通过 Cover 缩放或裁切。
 message SpriteCanvas {
   // 发布画布宽度，单位像素。
   uint32 width = 1;
   // 发布画布高度，单位像素。
   uint32 height = 2;
-  // 发布帧率，单位帧/秒；渲染输入的全部绝对帧号按此值计算。
+  // 发布帧率，单位帧/秒；新发布的 Remotion Sprite 固定为 30 FPS。
+  // 渲染请求中的效果内帧数按此值计算；历史发布仍保留原帧率。
   uint32 fps = 3;
   // Agent 验收时的示例预览帧数；不限制总线实际业务区间的长度。
   uint32 preview_frames = 4;
@@ -253,7 +257,7 @@ message SaveStyleSpritesResponse {
 
 // POST /api/sprites/render 的一次实际渲染输入，由总线在切片、素材匹配与时间对齐后生成。
 // 一个请求只渲染一个连续区间，最长 30 秒且不超过 1800 帧；长效果分成相邻请求。
-// 所有帧号都按 output.fps 计数，即使最终 IMS 成片使用其他帧率；返回临时 VP9 Alpha WebM。
+// 效果内的帧数都按 output.fps 计数，与最终 IMS 成片的时间轴位置无关；返回临时 VP9 Alpha WebM。
 // 服务端只渲染透明叠加视频；总线负责上传可公开读取的素材并放入 IMS VideoTrack。
 message SpriteRenderInput {
   // 需要渲染的不可变发布 ID；服务端据此读取已验收源码与默认配置。
@@ -263,12 +267,9 @@ message SpriteRenderInput {
   // width、height、fps 必须与发布画布一致；preview_frames 不决定本次渲染时长。
   // IMS 可在加入时间线后通过 Cover 把输出缩放到最终成片画布。
   SpriteCanvas output = 3;
-  // 本次区间在最终成片时间轴上的起始帧，包含该帧；以 output.fps 量化。
-  // 例如 30 FPS 下的 4.2 秒为第 126 帧。
-  uint64 timeline_in_frame = 4;
-  // 本次区间在最终成片时间轴上的结束帧，不包含该帧；必须大于起始帧。
-  // 两者之差是返回 WebM 的帧数；视频本地时间从零开始。
-  uint64 timeline_out_frame = 5;
+  // 旧版绝对时间轴帧号及逻辑效果起点已废弃，避免误把 IMS 放置时间传给 Sprite 渲染器。
+  reserved 4, 5, 9;
+  reserved "timeline_in_frame", "timeline_out_frame", "effect_start_frame";
   // 标题取请求 title，字幕取当前短句清理后的正文；视觉 Sprite 留空。
   // 服务端最多使用前 2000 个字符，过长内容直接截断。
   string text = 6;
@@ -278,10 +279,13 @@ message SpriteRenderInput {
   // 总线从绑定快照取出的可编辑样式覆盖；不允许在此覆盖文字、时间、只读字段或源码。
   // 未列出的字段沿用发布默认值，渲染服务会再按发布参数契约校验。
   repeated SpriteParameterOverride resolved_style = 8;
-  // 可选的完整逻辑效果起始帧，仍以 output.fps 计数；效果从零秒开始时可为 0。
-  // 长效果分段时，每段都传同一个起点和 effect_total_frames，避免动画在分段处重播。
-  uint64 effect_start_frame = 9;
-  // 完整逻辑效果的总帧数；0 表示只按当前区间渲染，非零时本次区间必须落在效果内。
-  // 当前上限为 216000 帧；与 effect_start_frame 一起用于连续分段的帧偏移。
+  // 完整逻辑效果的总帧数，必须大于零；长效果分段时每段传相同值。
+  // 当前上限为 216000 帧，渲染器以此决定完整动画进度，避免分段处重新播放。
   uint64 effect_total_frames = 10;
+  // 本段从效果起点算起的零基帧偏移；首段为 0，后续段等于此前各段帧数之和。
+  // 与业务字幕或最终成片的开始时间无关；由总线另行决定 IMS TimelineIn。
+  uint64 effect_offset_frames = 11;
+  // 本段要输出的帧数，必须大于零，且偏移加帧数不得超过完整效果总帧数。
+  // 单段最多 30 秒、1800 帧；总线用此值计算 IMS 放置区间的实际时长。
+  uint64 render_frame_count = 12;
 }
