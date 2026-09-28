@@ -15,7 +15,7 @@ import { TemplatePreview } from "./TemplatePreview";
 import type { TemplateSelection } from "./TemplateHome";
 import "./template-workspace.css";
 
-/** 宽屏沿用原型的可调三栏，窄屏依容器宽度重新排列相同组件。 */
+/** 窗口宽度仅改变排列和调整权限，保留各栏组件、输入草稿与播放器实例。 */
 function WorkspaceColumns({ assets, canvas, inspector }: { assets: ReactNode; canvas: ReactNode; inspector: ReactNode }) {
   const [desktop, setDesktop] = useState(() => window.innerWidth >= 1280);
   useEffect(() => {
@@ -23,13 +23,13 @@ function WorkspaceColumns({ assets, canvas, inspector }: { assets: ReactNode; ca
     window.addEventListener("resize", update);
     return () => window.removeEventListener("resize", update);
   }, []);
-  return desktop ? <ResizablePanelGroup orientation="horizontal" className="min-h-[760px]" style={{ height: "calc(100dvh - 108px)" }}>
-    <ResizablePanel id="assets" defaultSize={205} minSize={205} maxSize="28%" className="min-w-0">{assets}</ResizablePanel>
+  return <ResizablePanelGroup orientation="horizontal" disabled={!desktop} data-layout={desktop ? "desktop" : "narrow"} className="template-workspace-columns" style={{ height: desktop ? "calc(100dvh - 108px)" : "auto", minHeight: desktop ? 760 : undefined }}>
+    <ResizablePanel id="assets" data-workspace-panel="assets" defaultSize={205} minSize={205} maxSize="28%" className="min-w-0">{assets}</ResizablePanel>
     <ResizableHandle withHandle aria-label="调整资产与画布宽度" className="template-workspace-handle" />
-    <ResizablePanel id="canvas" minSize={420} className="min-w-0">{canvas}</ResizablePanel>
+    <ResizablePanel id="canvas" data-workspace-panel="canvas" minSize={420} className="min-w-0">{canvas}</ResizablePanel>
     <ResizableHandle withHandle aria-label="调整画布与参数宽度" className="template-workspace-handle" />
-    <ResizablePanel id="inspector" defaultSize={250} minSize={250} maxSize="32%" className="min-w-0">{inspector}</ResizablePanel>
-  </ResizablePanelGroup> : <div className="grid min-w-0"><div className="order-2 min-w-0">{assets}</div><div className="order-1 min-w-0">{canvas}</div><div className="order-3 min-w-0 border-t">{inspector}</div></div>;
+    <ResizablePanel id="inspector" data-workspace-panel="inspector" defaultSize={250} minSize={250} maxSize="32%" className="min-w-0">{inspector}</ResizablePanel>
+  </ResizablePanelGroup>;
 }
 
 /** 只有成功读取或明确放弃时才替换草稿；保存始终使用当前模板的环境和 ID。 */

@@ -26,6 +26,18 @@
 .template-workspace-handle:focus-visible { background: #cdebf5; }
 .template-workspace-handle > div { color: #064b64; border-color: #e0e8ec; background: #f1f5f7; }
 
+/* 窄屏覆盖分栏库的内联排列与高度限制，保持原组件和 DOM 节点。 */
+.template-workspace-columns[data-layout="narrow"] { display: grid !important; grid-template-columns: minmax(0, 1fr); }
+.template-workspace-columns[data-layout="narrow"] > .template-workspace-handle { display: none; }
+.template-workspace-columns[data-layout="narrow"] > [data-panel],
+.template-workspace-columns[data-layout="narrow"] > [data-panel] > div { max-height: none !important; }
+.template-workspace-columns[data-layout="narrow"] > [data-panel] > div { overflow: visible !important; }
+.template-workspace-columns[data-layout="narrow"] > [data-panel] > div > :is(aside, main) { height: auto; }
+.template-workspace-columns[data-layout="narrow"] > [data-workspace-panel="canvas"] { order: 1; }
+.template-workspace-columns[data-layout="narrow"] > [data-workspace-panel="assets"] { order: 2; }
+.template-workspace-columns[data-layout="narrow"] > [data-workspace-panel="inspector"] { order: 3; }
+.template-workspace-columns[data-layout="narrow"] .template-workspace-inspector { border-top: 1px solid var(--border); }
+
 /* 可操作的设置页签、资产分类和特效卡片使用手型指针。 */
 .template-workspace :is([role="tab"], .template-category-pill, .template-asset-card):not(:disabled) { cursor: pointer; }
 

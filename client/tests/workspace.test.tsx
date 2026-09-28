@@ -91,6 +91,49 @@ test("空白时间阻止保存，修正后恢复保存流程", async () => {
   expect(screen.getByLabelText<HTMLInputElement>("开始时间 / 秒").value).toBe("2");
 });
 
+// 场景：往返经过 1280px 时保留未完成输入、焦点及预览节点，空白时间继续阻止保存。
+test("跨越布局断点保留输入草稿和时间校验", async () => {
+  const originalWidth = window.innerWidth;
+  Reflect.set(window, "innerWidth", 1200);
+  const view = render(<TemplateWorkspace selection={creation()} onHome={() => {}} />);
+  try {
+    await addText();
+    fireEvent.click(screen.getByRole("button", { name: "重置特效设置" }));
+    fireEvent.click(screen.getByRole("tab", { name: "时间设置" }));
+    const start = screen.getByLabelText<HTMLInputElement>("开始时间 / 秒");
+    fireEvent.change(start, { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "加载预览视频" }));
+    const video = screen.getByRole<HTMLInputElement>("textbox", { name: "预览视频地址" });
+    fireEvent.change(video, { target: { value: "/unfinished-video.mp4" } });
+    const preview = screen.getByRole("region", { name: "实时预览" });
+    const error = "开始时间须为非负秒数，或 0% 至小于 100% 的百分比";
+    start.focus();
+
+    for (const width of [1279, 1280, 1400, 1280, 1279, 1200]) {
+      Reflect.set(window, "innerWidth", width);
+      fireEvent(window, new Event("resize"));
+      expect(screen.getByLabelText("开始时间 / 秒")).toBe(start);
+      expect(start.value).toBe("");
+      expect(document.activeElement).toBe(start);
+      expect(screen.getByRole("textbox", { name: "预览视频地址" })).toBe(video);
+      expect(video.value).toBe("/unfinished-video.mp4");
+      expect(screen.getByRole("region", { name: "实时预览" })).toBe(preview);
+      fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
+      expect(screen.getByText(error)).toBeTruthy();
+      expect(screen.queryByText("请至少选择一个效果")).toBeNull();
+    }
+
+    fireEvent.change(start, { target: { value: "2" } });
+    expect(screen.queryByText(error)).toBeNull();
+    fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
+    await screen.findByText("请至少选择一个效果");
+  } finally {
+    view.unmount();
+    Reflect.set(window, "innerWidth", originalWidth);
+    fireEvent(window, new Event("resize"));
+  }
+});
+
 // 场景：同类特效各有独立参数面板，时间修改、非法范围与删除均保持其他实例。
 test("重复添加特效后分别设置时间并删除指定实例", async () => {
   render(<TemplateWorkspace selection={creation()} onHome={() => {}} />);
