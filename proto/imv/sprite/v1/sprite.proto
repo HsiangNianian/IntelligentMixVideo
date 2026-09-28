@@ -1,0 +1,175 @@
+// Remotion Sprite publication and style bindings; runtime copy and timing come from the composition bus.
+syntax = "proto3";
+
+package imv.sprite.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// The visual behavior of an immutable Sprite release.
+enum SpriteKind {
+  SPRITE_KIND_UNSPECIFIED = 0;
+  SPRITE_KIND_TEXT = 1;
+  SPRITE_KIND_FILTER_OVERLAY = 2;
+  SPRITE_KIND_VIDEO_OVERLAY = 3;
+  SPRITE_KIND_TRANSITION_OVERLAY = 4;
+}
+
+// A style placement decides which business event receives the Sprite.
+enum SpriteTarget {
+  SPRITE_TARGET_UNSPECIFIED = 0;
+  SPRITE_TARGET_TITLE = 1;
+  SPRITE_TARGET_SUBTITLE = 2;
+  SPRITE_TARGET_FILTER = 3;
+  SPRITE_TARGET_VIDEO_EFFECT = 4;
+  SPRITE_TARGET_TRANSITION = 5;
+  SPRITE_TARGET_VIDEO_ENTER = 6;
+  SPRITE_TARGET_VIDEO_EXIT = 7;
+}
+
+// This is an authoring permission, never permission to replace bus-owned text or timing.
+enum OperatorAccess {
+  OPERATOR_ACCESS_UNSPECIFIED = 0;
+  OPERATOR_ACCESS_VISIBLE_READ_ONLY = 1;
+  OPERATOR_ACCESS_VISIBLE_EDITABLE = 2;
+  OPERATOR_ACCESS_INTERNAL = 3;
+}
+
+// A scalar style value, preserving its type when copied into a renderer prop.
+message ScalarValue {
+  oneof value {
+    string string_value = 1;
+    double number_value = 2;
+    bool bool_value = 3;
+  }
+}
+
+// Validated authoring control; values are style only, never business copy or absolute time.
+message SpriteParameter {
+  string key = 1;
+  string label = 2;
+  OperatorAccess access = 3;
+  ScalarValue default_value = 4;
+  optional double minimum = 5;
+  optional double maximum = 6;
+}
+
+// Published pixel and frame contract; its fps is the unit for SpriteRenderInput frame fields.
+message SpriteCanvas {
+  uint32 width = 1;
+  uint32 height = 2;
+  uint32 fps = 3;
+  uint32 preview_frames = 4;
+}
+
+// Accepted source is copied at publication so deleting a chat cannot change a release.
+message PublishedSprite {
+  string sprite_id = 1;
+  string source_version_id = 2;
+  string name = 3;
+  SpriteKind kind = 4;
+  SpriteCanvas canvas = 5;
+  string tsx_code = 6;
+  string code_sha256 = 7;
+  repeated SpriteParameter parameters = 8;
+  // The accepted component prop replaced by title/subtitle text; empty for non-text Sprites.
+  string text_prop = 9;
+  // The accepted component prop receiving half-open code-point ranges for all literal matches.
+  string keywords_prop = 10;
+  google.protobuf.Timestamp published_at = 11;
+  // Digest of the independently retained authoring preview MP4.
+  string preview_sha256 = 12;
+  // Private accepted scalar contract and defaults used to validate overrides at render time.
+  string config_schema_json = 13;
+  string default_config_json = 14;
+  // Subtitle fallback freezes an accepted visible frame if entrance/exit exceeds business duration.
+  uint32 animation_frames = 15;
+  uint32 static_frame = 16;
+  // Future subtitle bubble asset; this release leaves these fields empty or zero.
+  string bubble_asset_url = 17;
+  uint32 bubble_asset_width = 18;
+  uint32 bubble_asset_height = 19;
+}
+
+// Catalog response omits source bytes and exposes only authoring information.
+message SpriteSummary {
+  string sprite_id = 1;
+  string name = 2;
+  SpriteKind kind = 3;
+  SpriteCanvas canvas = 4;
+  repeated SpriteParameter parameters = 5;
+  string source_version_id = 6;
+  string preview_url = 7;
+  bool keywords_supported = 8;
+}
+
+message ListSpritesResponse {
+  repeated SpriteSummary sprites = 1;
+}
+
+message PublishSpriteRequest {
+  string source_version_id = 1;
+  SpriteKind kind = 2;
+  string text_prop = 3;
+  string keywords_prop = 4;
+}
+
+message PublishSpriteResponse {
+  SpriteSummary sprite = 1;
+}
+
+// One use of a published Sprite in a style; order is bottom-to-top among Sprite video tracks.
+message SpritePlacement {
+  string id = 1;
+  string sprite_id = 2;
+  SpriteTarget target = 3;
+  string start_mode = 4;
+  double start = 5;
+  optional double duration = 6;
+  repeated SpriteParameterOverride overrides = 7;
+  uint32 order = 8;
+}
+
+message SpriteParameterOverride {
+  string key = 1;
+  ScalarValue value = 2;
+}
+
+// A separate record keyed by the existing cloud template UUID; imv.template.v1 is unchanged.
+message StyleSpriteBindings {
+  string style_id = 1;
+  repeated SpritePlacement placements = 2;
+  uint64 revision = 3;
+  google.protobuf.Timestamp updated_at = 4;
+}
+
+message GetStyleSpritesResponse {
+  StyleSpriteBindings bindings = 1;
+}
+
+message SaveStyleSpritesRequest {
+  string style_id = 1;
+  repeated SpritePlacement placements = 2;
+  uint64 expected_revision = 3;
+}
+
+message SaveStyleSpritesResponse {
+  StyleSpriteBindings bindings = 1;
+}
+
+// The bus resolves this only after business segmentation and timing alignment.
+// All frame positions use output.fps, even when the final IMS composition has another fps.
+message SpriteRenderInput {
+  string sprite_id = 1;
+  string placement_id = 2;
+  // Must equal the referenced PublishedSprite.canvas; IMS scales the WebM separately.
+  SpriteCanvas output = 3;
+  // Half-open absolute positions on the final composition timeline, quantized at output.fps.
+  uint64 timeline_in_frame = 4;
+  uint64 timeline_out_frame = 5;
+  string text = 6;
+  repeated string keywords = 7;
+  repeated SpriteParameterOverride resolved_style = 8;
+  // Optional logical effect interval in output.fps; set both fields to keep animation continuous across 30-second chunks.
+  uint64 effect_start_frame = 9;
+  uint64 effect_total_frames = 10;
+}
