@@ -20,6 +20,8 @@ Structure
 - `client/`：Rust + Tauri 2 + React + TypeScript 桌面客户端，使用 Tailwind CSS 4 和 shadcn/ui。
 - `server/`：Python + FastAPI + MySQL 服务端，提供模板持久化、文案切片与异步视频合成接口，以及首页和用户路由示例。
 
+Remotion Agent 后续重构的函数级设计见 [工具契约文档](docs/remotion-agent-tool-contracts.md)，使用 Python 函数签名和 Pydantic 2 模型定义 preset、sprite 及图片、检索、组合、校验工具的输入输出。该文档为待实施规格，不表示当前代码已采用新架构。
+
 模板配置通过必填的 `tracks` 数组保存独立对象，文字、位置与效果参数保存在各对象的 `editor` 中。云端和桌面本地均只接受此格式，模板顶层不包含 `editor`，不提供旧格式转换。
 
 服务端运行
