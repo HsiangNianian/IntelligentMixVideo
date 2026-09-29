@@ -1,15 +1,16 @@
-"""文案切片：单函数完成字符对齐、时间投射、模型规划和结果校验。"""
+"""文案切片：共用入口记录日志，业务完成字符对齐、模型切分与时间投射。"""
 
 import bisect
 from collections import Counter
 import json
+import logging
 import re
 from time import perf_counter
 import unicodedata
 from urllib.parse import urlparse
 
 from pydantic import ValidationError
-from openai import OpenAI
+from openai import APIError, APITimeoutError, OpenAI
 
 from .settings import ClientSettings, Settings
 
@@ -19,6 +20,30 @@ SUBTITLE_PUNCTUATION = PUNCTUATION - {"？", "?"}
 
 
 def segment(payload: dict, *, config: ClientSettings | None = None, diagnostics: dict | None = None) -> dict:
+    """HTTP 与合成任务共用入口：记录阶段诊断，保留返回值和原异常，不记录凭据。"""
+    diagnostics = {} if diagnostics is None else diagnostics
+    diagnostics.update(stage="input", trace={})
+    logger = logging.getLogger("uvicorn.error")
+    try:
+        result = _segment(payload, config=config, diagnostics=diagnostics)
+    except Exception as exc:
+        if isinstance(exc, APITimeoutError):
+            message, status = "模型请求超时。", 504
+        elif isinstance(exc, APIError):
+            message, status = "模型服务请求失败。", 502
+        elif isinstance(exc, (ValueError, RuntimeError, AssertionError)):
+            message = str(exc)
+            status = 422 if isinstance(exc, ValueError) else 500 if isinstance(exc, AssertionError) else 502
+        else:
+            message, status = type(exc).__name__, 500
+        logger.warning("切片失败 stage=%s status=%s error=%s trace=%s",
+                       diagnostics["stage"], status, message, diagnostics["trace"])
+        raise
+    logger.info("切片成功 trace=%s", diagnostics["trace"])
+    return result
+
+
+def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict) -> dict:
     """用正确文案和 ASR 词级时间生成片段；不调用 TTS/ASR，不降级模型失败。
 
     请求为 {script, asr_result}，读取 fun-asr transcripts 第一音轨，词时间为 begin_time/end_time 毫秒。
@@ -29,10 +54,8 @@ def segment(payload: dict, *, config: ClientSettings | None = None, diagnostics:
     以及仅供字幕使用、保留问号的 subtitle_parts）、warnings 和 trace；
     空内容或输出时间错误抛 ValueError，配置或模型输出错误抛
     RuntimeError，内部约束错误抛 AssertionError；ASR 嵌套读取和 SDK 异常原样传播。
-    diagnostics 供 HTTP 入口记录已完成阶段的详细 trace；返回值只保留原有统计字段。
+    diagnostics 供共用入口记录已完成阶段的详细 trace；返回值只保留原有统计字段。
     """
-    diagnostics = {} if diagnostics is None else diagnostics
-    diagnostics.update(stage="input", trace={})
     trace = diagnostics["trace"]
     # 直接调用须提供约定字段；HTTP 类型校验由路由负责。标点不参与对齐，保留原始下标。
     script = payload["script"]
@@ -71,8 +94,8 @@ def segment(payload: dict, *, config: ClientSettings | None = None, diagnostics:
         config = Settings(**config.model_dump()) if config is not None else Settings()
     except ValidationError:
         raise RuntimeError("模型或切片配置缺失或不合法，请检查 IMV_ 配置。") from None
-    # 固定业务规则：候选片段至少 2 秒，每段最多一个关键词，词长最多 12 字。
-    minimum, keyword_max_length = 2000, 12
+    # 首次候选至少 2 秒；二次切分复用对齐字符计数，标点和空白不占长度。
+    minimum, keyword_max_length, segment_max_length = 2000, 12, 8
     diagnostics["stage"] = "alignment"
     # 先剥离相同前后缀，仅对中间差异搜索并回溯。
     prefix = suffix = 0
@@ -196,7 +219,7 @@ def segment(payload: dict, *, config: ClientSettings | None = None, diagnostics:
     # 增删修复块内时间为估算值，保留整块以免制造看似精确的切点。
     for begin, end in repair_ranges:
         forbidden.update(range(begin + 1, end))
-    # ponytail: 只使用中文标点候选；无候选或全文不足 2 秒时保持整段，需多语言时再扩展。
+    # 首次只使用中文标点候选；无候选或全文不足 2 秒时保持整段，超长片段随后二次切分。
     # 从左到右保留切点，两侧均留足 2 秒；过滤只隐藏边界，不删除原文。
     # offset 是原文中标点后的字符位置；多个限制同时命中时记录首个过滤原因。
     candidate_edges, filtered_boundaries = [0], []
@@ -239,9 +262,9 @@ def segment(payload: dict, *, config: ClientSettings | None = None, diagnostics:
     ):
         raise RuntimeError("模型地址必须有效，远程 HTTP 需要显式授权。")
     segments, rejected = [], 0
-    # 两次调用有先后依赖：模型选择候选切点后，再标注最终片段；重试仅由 SDK 负责。
+    # 先选切点、提关键词，仅有超长片段时追加一批语义切分；重试仅由 SDK 负责。
     with OpenAI(base_url=base_url, api_key=key, timeout=config.llm_timeout_seconds, max_retries=config.llm_max_retries) as client:
-        for stage in ("boundaries", "keywords"):
+        for stage in ("boundaries", "keywords", "secondary_split"):
             diagnostics["stage"] = stage
             if stage == "boundaries":
                 prompt = (
@@ -256,7 +279,7 @@ def segment(payload: dict, *, config: ClientSettings | None = None, diagnostics:
                     "输入是标准文案，不是待纠错的ASR文本；不改写、不删字或标点。自检编号范围和顺序；只输出纯JSON，无Markdown或解释。"
                 )
                 content = listing
-            else:
+            elif stage == "keywords":
                 prompt = (
                     '为短视频素材召回提取关键词，只返回 JSON：{"keywords":[[],["词"],[]]}。'
                     "全篇关键词总数不限，逐段判断是否有值得检索画面的具体对象，无合适对象时留空，不凑词。"
@@ -270,6 +293,21 @@ def segment(payload: dict, *, config: ClientSettings | None = None, diagnostics:
                     "自检段数、每段词数、词长和原文匹配。只输出纯JSON，无Markdown或解释。"
                 )
                 content = [s["text"] for s in segments]
+            else:
+                oversized = [i for i, (a, b) in enumerate(spans) if b - a > segment_max_length]
+                if not oversized:
+                    continue
+                content = [{"text": segments[i]["text"], "keyword": segments[i]["keyword"]} for i in oversized]
+                trace["secondary_split_input"] = content
+                prompt = (
+                    '按语义细分每个输入片段，只返回 JSON：{"cuts":[[5,10],[8]]}。'
+                    'cuts 与输入逐项对应，每项列出全部内部切点：从片段开头数的 Unicode 字符数，'
+                    '切点位置按原文计算，包含标点和空白，不是字节或词数；位置递增、不重复，不含0及文本末尾。'
+                    f'每个子段最多{segment_max_length}个有效字符，长度不计标点和空白；必须包含发音文字。'
+                    '优先在标点、完整短语和自然语义边界切分，允许句内切分，不设2秒下限。'
+                    f'保留原关键词首次出现位置的完整性；关键词自身超过{segment_max_length}个有效字符时允许拆开。'
+                    '英文单词、数字串尽量保持完整，但长度上限优先。不要输出或改写原文，不要解释。'
+                )
             started = perf_counter()
             try:
                 response = client.chat.completions.create(
@@ -314,16 +352,12 @@ def segment(payload: dict, *, config: ClientSettings | None = None, diagnostics:
                 first_sentence = next((s for s in attribution if s is not None), 0)
                 attribution = [first_sentence if s is None else s for s in attribution]
                 span_groups = [attribution[a] for a, _ in spans]
-                group_totals, group_seen = Counter(span_groups), Counter()
                 for index, (a, b) in enumerate(spans, 1):
                     begin = 0 if a == 0 else offsets[a]
                     end = len(script) if b == len(chars) else offsets[b]
-                    group = span_groups[index - 1]
-                    group_seen[group] += 1
                     segments.append(
                         {
                             "segment_id": index,
-                            "group_id": [group_seen[group], group_totals[group]],
                             "text": script[begin:end],
                             "start_time_ms": round(starts[a]),
                             "end_time_ms": round(ends[b - 1]),
@@ -331,7 +365,7 @@ def segment(payload: dict, *, config: ClientSettings | None = None, diagnostics:
                             "level": 1,
                         }
                     )
-            else:
+            elif stage == "keywords":
                 groups = output.get("keywords")
                 if (
                     not isinstance(groups, list)
@@ -352,7 +386,43 @@ def segment(payload: dict, *, config: ClientSettings | None = None, diagnostics:
                     rejected += len(candidates) - bool(item["keyword"])
                     # 有关键词即重点句 2，否则为普通句 1；CTA 需语义判断，不标注。
                     item["level"] = 2 if item["keyword"] else 1
+            else:
+                cuts = output.get("cuts")
+                trace["secondary_split_cuts"] = cuts
+                if not isinstance(cuts, list) or len(cuts) != len(oversized):
+                    raise RuntimeError("二次切分 cuts 必须与超长片段一一对应。")
+                planned = dict(zip(oversized, cuts))
+                refined, spans, span_groups, cursor = [], [], [], 0
+                for index, item in enumerate(segments):
+                    text, keyword = item["text"], item["keyword"]
+                    points = planned.get(index, [])
+                    if (not isinstance(points, list)
+                        or any(type(p) is not int or not 0 < p < len(text) for p in points)
+                        or points != sorted(set(points))):
+                        raise RuntimeError(f"二次切分片段 {index + 1} 的切点不合法。")
+                    edges = [0, *points, len(text)]
+                    keyword_start = text.find(keyword) if keyword else -1
+                    keyword_length = sum(not c.isspace() and c not in PUNCTUATION for c in keyword)
+                    if 0 < keyword_length <= segment_max_length and any(keyword_start < p < keyword_start + len(keyword) for p in points):
+                        raise RuntimeError(f"二次切分片段 {index + 1} 拆开了关键词。")
+                    for begin, end in zip(edges, edges[1:]):
+                        a, b = bisect.bisect_left(offsets, cursor + begin), bisect.bisect_left(offsets, cursor + end)
+                        if b - a > segment_max_length or a == b:
+                            raise RuntimeError(f"二次切分片段 {index + 1} 的子段超长或缺少发音文字。")
+                        inherited = keyword if begin <= keyword_start and keyword_start + len(keyword) <= end else ""
+                        refined.append({**item, "text": text[begin:end], "keyword": inherited,
+                                        "level": 2 if inherited else 1,
+                                        "start_time_ms": round(starts[a]), "end_time_ms": round(ends[b - 1])})
+                        spans.append((a, b))
+                        span_groups.append(attribution[a])
+                    cursor += len(text)
+                segments = refined
 
+    # 按最终片段重编序号与 ASR 句内分组，二次切分不重新提取关键词。
+    group_totals, group_seen = Counter(span_groups), Counter()
+    for index, (item, group) in enumerate(zip(segments, span_groups), 1):
+        group_seen[group] += 1
+        item.update(segment_id=index, group_id=[group_seen[group], group_totals[group]])
     # 保留原始停顿，检查文本覆盖和输出时间。
     diagnostics["stage"] = "output_validation"
     trace.update(segment_count=len(segments), keyword_rejected_count=rejected)
@@ -368,9 +438,9 @@ def segment(payload: dict, *, config: ClientSettings | None = None, diagnostics:
         item["start_time"] = item.pop("start_time_ms") / 1000
         item["end_time"] = item.pop("end_time_ms") / 1000
     # 字幕在原切片内按标点细分；以下一个发音字符的时间切换，保留片段间原有停顿。
+    raw_begin = 0
     for item, (a, b) in zip(segments, spans):
-        raw_begin = 0 if a == 0 else offsets[a]
-        raw_end = len(script) if b == len(chars) else offsets[b]
+        raw_end = raw_begin + len(item["text"])
         cuts = []
         previous_ms = round(starts[a])
         for mark in re.finditer(r"[，。！？；：、…—,.!?;:]+", script[raw_begin:raw_end]):
@@ -388,6 +458,7 @@ def segment(payload: dict, *, config: ClientSettings | None = None, diagnostics:
              "start_time": start, "end_time": end}
             for left, right, start, end in zip(text_edges, text_edges[1:], times, times[1:])
         ]
+        raw_begin = raw_end
     return {
         "segments": segments,
         "warnings": warnings,

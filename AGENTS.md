@@ -8,6 +8,7 @@
 - `client/` 是 Rust + Tauri 2 + React + TypeScript 桌面客户端，前端使用 Vite，包管理器与脚本运行时使用 Bun。
 - `client/src/` 存放 React 前端；`client/src-tauri/` 存放 Rust 桌面入口、Tauri 配置和图标。
 - `server/` 使用 Python + FastAPI + MySQL，提供模板持久化 API 与 `POST /segmentations` 文案切片接口，首页与用户路由仍为示例、尚未接入用户存储。包内导入使用相对路径，向应用注册 `APIRouter` 实例。
+- 切片保留首次切点选择和关键词提取，随后仅对超过 8 个有效字符的片段批量追加一次语义切分；有效字符沿用对齐规则，不计标点和空白，超限筛选、子段校验和关键词保护口径一致，切点仍按原文位置计算并保留原文。二次切分不受 2 秒下限限制，非法切点或超长结果直接报错、不兜底。时间复用字符对齐，原关键词只由完整包含其首次出现位置的子段继承，超长关键词允许拆开但不继承；最终重编序号和 ASR 句内分组。共用 `segment` 入口通过 `uvicorn.error` 记录阶段与详细 trace，HTTP 和视频合成均输出到 FastAPI 终端，路由不重复记录。
 - 模板模块位于 `server/src/server/template/`，与用户示例目录 `sub_api/` 平级；路由、配置校验、数据库存储与效果目录均放在该模块内。
 - Remotion 文字模板生成服务位于 `server/src/server/remotion_templates/`，Python 包名为 `server.remotion_templates`，挂载 `/api/templates`；本地数据默认保存在该模块的 `.data/`，使用说明维护在模块内 README。
 - Remotion 配置类与加载函数位于 `remotion_templates/settings.py`，通过 `server.remotion_templates.settings` 导入；继续复用 `config_base.CommonSettings` 读取 `server/.env`，相对数据目录和默认 `server/remotion/` 渲染资源位置保持不变。
