@@ -26,6 +26,9 @@ async function addText(label = "顶部标题") {
 test.each(["cloud", "local"] as const)("%s 新模板通过左侧资产创建画面对象", async (environment) => {
   render(<TemplateWorkspace selection={creation("空白模板", environment)} onHome={() => {}} />);
   const applied = await screen.findByRole("region", { name: "已添加特效" });
+  // Sprite 资产和绑定留在云端编辑的左右栏，本地模板不展示独立绑定。
+  expect(!!screen.queryByRole("region", { name: "Remotion Sprite 资产" })).toBe(environment === "cloud");
+  expect(!!screen.queryByRole("region", { name: "已添加的 Remotion Sprite" })).toBe(environment === "cloud");
   expect(within(applied).queryAllByRole("button")).toHaveLength(0);
   expect(within(applied).getByText("从左侧特效资产选择并添加效果。")).toBeTruthy();
   expect(screen.queryByRole("region", { name: "特效设置" })).toBeNull();

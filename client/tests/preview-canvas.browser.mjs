@@ -8,7 +8,6 @@ import { createServer } from "vite";
 
 const cache = resolve("node_modules/.cache/preview-canvas-tests");
 mkdirSync(cache, { recursive: true });
-process.env.TMPDIR = cache;
 // FFmpeg 生成可被浏览器实际解码的短视频，全部中间文件保存在忽略目录。
 for (const [name, size] of [["landscape", "1920x1080"], ["portrait", "1080x1920"]]) {
   const result = spawnSync("ffmpeg", ["-y", "-v", "error", "-f", "lavfi", "-i", `testsrc2=size=${size}:rate=10`, "-t", "2", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-movflags", "+faststart", resolve(cache, `${name}.mp4`)], { encoding: "utf8" });
@@ -65,8 +64,11 @@ try {
   for (const [name, width, height] of [["landscape", 1920, 1080], ["portrait", 1080, 1920], ["landscape", 1920, 1080]]) {
     const media = await page.evaluate(name => window.mountPreview(name), name);
     assert.deepEqual([media.width, media.height], [width, height]);
-    await page.getByText(`${width} × ${height} · 0.0 / 2 秒`, { exact: true }).waitFor();
-    await page.getByText("预览已就绪，点击播放查看效果", { exact: true }).waitFor();
+    await page.getByText(`${width} × ${height}`, { exact: true }).waitFor();
+    await page.waitForFunction(() => {
+      const button = document.querySelector('button[aria-label="播放"]');
+      return button && !button.disabled;
+    });
     if (previous) {
       assert.equal(await previous.evaluate(frame => frame.isConnected), false);
       await previous.dispose();
@@ -84,15 +86,15 @@ try {
 
     // 实际播放推进后暂停，验证更换尺寸后的播放器仍可工作。
     await page.evaluate(() => {
-      const label = document.querySelector('section[aria-label="实时预览"] span');
+      const label = document.querySelector('.template-preview-controls > span');
       window.displayTimes = [];
       window.timeObserver = new MutationObserver(() => {
-        window.displayTimes.push(Number(label.textContent.split(" · ")[1].split(" / ")[0]));
+        window.displayTimes.push(Number(label.textContent.match(/^\d+(?:\.\d+)?/)?.[0]));
       });
       window.timeObserver.observe(label, { characterData: true, childList: true, subtree: true });
     });
     await page.getByRole("button", { name: "播放", exact: true }).click();
-    await page.getByText(new RegExp(`${width} × ${height} · [1-2]\\.[0-9] / 2 秒`)).waitFor();
+    await page.waitForFunction(() => Number(document.querySelector('.template-preview-controls > span')?.textContent.match(/^\d+(?:\.\d+)?/)?.[0]) >= 1);
     await page.getByRole("button", { name: "暂停", exact: true }).click();
     // 数字时间仅在十分之一秒发生变化时更新，不随重复视频帧反复更新。
     const times = await page.evaluate(() => {

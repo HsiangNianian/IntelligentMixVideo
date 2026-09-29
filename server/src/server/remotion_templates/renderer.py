@@ -19,7 +19,7 @@ from .models import (
     validation_fingerprint,
 )
 from .parameters import validate_candidate
-from .probes import parameter_probes, pixel_checks
+from .probes import parameter_probes, pixel_checks, preview_values
 
 
 def keyframes(spec: TemplateSpec) -> list[int]:
@@ -40,6 +40,9 @@ def keyframes(spec: TemplateSpec) -> list[int]:
                     min(last, end),
                 )
             )
+    for motion in spec.visual_motion:
+        start, end = motion.start_frame, motion.end_frame
+        frames.update((max(0, start - 1), start, (start + end - 1) // 2, end - 1, min(last, end)))
     return sorted(frame for frame in frames if 0 <= frame <= last)
 
 
@@ -114,8 +117,10 @@ class Renderer:
                 process.kill()
             await process.wait()
 
-    def command(self, directory: Path) -> list[str]:
-        """Expose system libraries, managed renderer and one writable attempt; hide home and secrets."""
+    def command(self, directory: Path, *, worker: str = "worker.mjs") -> list[str]:
+        """Run an approved worker with one writable attempt; hide home and secrets."""
+        if worker not in {"worker.mjs", "sprite-preview-worker.mjs"}:
+            raise ValueError("Unknown isolated renderer worker")
         settings = self.settings
         node = Path(shutil.which("node") or "/usr/bin/node").resolve()
         command = [
@@ -177,7 +182,7 @@ class Renderer:
                 "--",
                 "/runtime-node",
                 "--max-old-space-size=2048",
-                "/renderer/worker.mjs",
+                f"/renderer/{worker}",
             )
         )
         if settings.runtime_lib_dir is not None:
@@ -273,6 +278,9 @@ class Renderer:
                 "probes": probes,
                 "code": candidate.tsx_code,
                 "config": candidate.default_config,
+                "preview_config": preview_values(candidate, spec),
+                "keywords": spec.keyword_examples,
+                "subtitle": spec.sprite_kind == "subtitle",
                 "composition": spec.composition.model_dump(),
                 "frames": report.frames,
                 "browser": str(settings.browser_executable.resolve()),

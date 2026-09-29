@@ -245,7 +245,7 @@ class Provider:
             content = [
                 {
                     "type": "text",
-                    "text": "Images follow the host snapshot mapping: original user references first, then current candidate frames. Candidate frames are observations, not new user requirements. Interpret typography only, not application chrome or scenery.",
+                    "text": "Images follow the host snapshot mapping: original user references first, then current candidate frames. Candidate frames are observations, not new user requirements. Interpret only the requested Sprite appearance, not application chrome or scenery.",
                 }
             ]
             content.extend(_image_content(images, label="Reference"))

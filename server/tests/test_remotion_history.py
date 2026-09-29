@@ -45,12 +45,12 @@ def history_app(history_store):
 
 
 @pytest.mark.parametrize("composition", [
-    {"width": 1920, "height": 1080, "fps": 24, "duration_in_frames": 77},
-    {"width": 3840, "height": 2160, "fps": 60, "duration_in_frames": 1800},
-    {"width": 1080, "height": 1080, "fps": 25, "duration_in_frames": 125},
+    {"width": 1920, "height": 1080, "fps": 30, "duration_in_frames": 96},
+    {"width": 3840, "height": 2160, "fps": 30, "duration_in_frames": 900},
+    {"width": 1080, "height": 1080, "fps": 30, "duration_in_frames": 150},
 ])
 def test_creation_preserves_selected_composition(history_app, history_store, composition):
-    """客户端选择的画布与整帧时长持久化到作品，后续读取保留实际生成配置。"""
+    """固定 30 FPS 的画布与整帧时长持久化到作品，后续读取保留实际生成配置。"""
     with TestClient(history_app) as client:
         response = client.post("/works", json={
             "description": "按所选配置生成标题", "composition": composition,
@@ -65,7 +65,7 @@ def test_creation_preserves_selected_composition(history_app, history_store, com
 
 
 @pytest.mark.parametrize("patch", [
-    {"width": 1081}, {"height": 0}, {"fps": 0},
+    {"width": 1081}, {"height": 0}, {"fps": 0}, {"fps": 24}, {"fps": 25}, {"fps": 60},
     {"duration_in_frames": 0}, {"duration_in_frames": 901},
     {"width": 3840, "height": 3840},
 ])

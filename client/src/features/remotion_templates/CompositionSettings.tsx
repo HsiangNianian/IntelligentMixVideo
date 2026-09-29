@@ -17,15 +17,19 @@ import {
   type CompositionDraft,
 } from "./composition";
 
-/** 折叠低频宽高与帧率设置；禁用时拒绝所有回调，避免提交期间变更已捕获的配置。 */
+/** 折叠低频宽高设置；禁用时拒绝所有回调，避免提交期间变更已捕获的配置。 */
 export function CompositionSettings({
   value,
   disabled,
   onChange,
+  spriteKind = "text",
+  onSpriteKindChange,
 }: {
   value: CompositionDraft;
   disabled: boolean;
   onChange: (value: CompositionDraft) => void;
+  spriteKind?: "text" | "subtitle" | "filter_overlay" | "video_overlay" | "transition_overlay";
+  onSpriteKindChange?: (kind: "text" | "subtitle" | "filter_overlay" | "video_overlay" | "transition_overlay") => void;
 }) {
   const id = useId();
   const [advanced, setAdvanced] = useState(false);
@@ -43,6 +47,21 @@ export function CompositionSettings({
       className="space-y-3 rounded-xl border bg-muted/30 p-3"
     >
       <p className="text-sm font-medium">生成配置</p>
+      {onSpriteKindChange && (
+        <div className="space-y-2">
+          <Label htmlFor={`${id}-kind`}>Sprite 类型</Label>
+          <Select value={spriteKind} disabled={disabled} onValueChange={(value) => onSpriteKindChange(value as typeof spriteKind)}>
+            <SelectTrigger id={`${id}-kind`} aria-label="Sprite 类型"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="text">文字（标题）</SelectItem>
+              <SelectItem value="subtitle">字幕（关键词高亮）</SelectItem>
+              <SelectItem value="filter_overlay">滤镜叠加</SelectItem>
+              <SelectItem value="video_overlay">视频动效</SelectItem>
+              <SelectItem value="transition_overlay">转场叠加</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-2">
           <Label htmlFor={`${id}-canvas`}>画布</Label>
@@ -81,7 +100,7 @@ export function CompositionSettings({
           <Input
             id={`${id}-seconds`}
             type="number"
-            min={1 / Number(value.fps)}
+            min={1 / 30}
             max={30}
             step="any"
             disabled={disabled}
@@ -111,7 +130,7 @@ export function CompositionSettings({
         onToggle={(event) => setAdvanced(event.currentTarget.open)}
       >
         <summary className="cursor-pointer text-xs text-muted-foreground">
-          高级设置（分辨率、帧率）
+          高级设置（分辨率）
         </summary>
         <div className="mt-3 grid grid-cols-2 gap-3">
           {(["width", "height"] as const).map((dimension) => (
@@ -136,25 +155,6 @@ export function CompositionSettings({
               />
             </div>
           ))}
-          <div className="col-span-2 space-y-2">
-            <Label htmlFor={`${id}-fps`}>帧率</Label>
-            <Select
-              value={value.fps}
-              disabled={disabled}
-              onValueChange={(fps) => update({ fps })}
-            >
-              <SelectTrigger id={`${id}-fps`} className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {[24, 25, 30, 60].map((fps) => (
-                  <SelectItem key={fps} value={String(fps)}>
-                    {fps} FPS
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
         </div>
       </details>
       <p
@@ -169,7 +169,7 @@ export function CompositionSettings({
         {resolved.error || compositionSummary(resolved.composition!)}
       </p>
       <p className="text-xs text-muted-foreground">
-        时长按整帧取整，最长 30 秒。创建后固定配置；需要其他规格时新增会话。
+        固定 30 FPS，时长按整帧取整，最长 30 秒。创建后固定配置；需要其他规格时新增会话。
       </p>
     </section>
   );

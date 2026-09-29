@@ -147,10 +147,10 @@ export function getTemplate(id: string, environment: Environment = "cloud", sign
 }
 
 /** 统一创建、更新及另存为；只有调用方明确传 ID 时才覆盖已有模板。 */
-export function saveTemplate(draft: Draft, id?: string, environment: Environment = "cloud"): Promise<Template> {
+export function saveTemplate(draft: Draft, id?: string, environment: Environment = "cloud", hasSprites = false): Promise<Template> {
   if (!draft.name.trim()) return Promise.reject(new Error("请输入模板名称"));
   const effect_ids = draftEffects(draft);
-  if (!effect_ids.length)
+  if (!effect_ids.length && !(environment === "cloud" && hasSprites))
     return Promise.reject(new Error("请至少选择一个效果"));
   const message = create(SaveTemplateRequestSchema, {
     name: draft.name.trim(),

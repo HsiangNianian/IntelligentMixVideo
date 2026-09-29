@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { exported } from "./api";
+import { publishSprite } from "@/features/sprites/api";
 import type { Version } from "./model";
 
 /** 每张卡片只拥有本版本的读取与提示，卸载取消请求，不展示未经确认的参数草稿。 */
@@ -34,6 +35,8 @@ export function VersionCard({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [publishing, setPublishing] = useState(false);
+  const [publication, setPublication] = useState("");
   const request = useRef<Promise<string> | null>(null);
   const scope = useRef(new AbortController());
   const copyAllowed = useRef(!disabled);
@@ -86,6 +89,22 @@ export function VersionCard({
         setOpen(true);
         setNotice("复制失败，请展开代码后手动选择复制。");
       }
+    }
+  }
+  /** Copy an accepted version into the immutable Sprite catalog with its verified kind. */
+  async function publish() {
+    if (publishing) return;
+    setPublishing(true);
+    setPublication("");
+    try {
+      const sprite = await publishSprite(version.id, version.spec.sprite_kind ?? "text");
+      if (!scope.current.signal.aborted)
+        setPublication(`已发布到云端特效资产：${sprite.name}`);
+    } catch (reason) {
+      if (!scope.current.signal.aborted)
+        setPublication(reason instanceof Error ? reason.message : "发布失败，请重试");
+    } finally {
+      if (!scope.current.signal.aborted) setPublishing(false);
     }
   }
   return (
@@ -161,7 +180,13 @@ export function VersionCard({
           {notice === "已复制" ? <Check /> : <Copy />}
           {loading ? "读取中…" : "复制代码"}
         </Button>
+        {(!["text", "subtitle"].includes(version.spec.sprite_kind ?? "text") || version.spec.text_layers.length === 1) && (
+          <Button variant="ghost" size="sm" disabled={disabled || publishing} onClick={() => void publish()}>
+            {publishing ? "发布中…" : "发布 Sprite"}
+          </Button>
+        )}
       </div>
+      {publication && <p role="status" className="px-3 pb-2 text-xs text-muted-foreground">{publication}</p>}
       {notice && (
         <p role="status" className="px-3 pb-2 text-xs text-muted-foreground">
           {notice}

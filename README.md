@@ -47,6 +47,8 @@ ASR 转写另提供独立 Python 函数与命令行入口，读取北京地域�
 
 `POST /api/v1/video-compositions` 持久化合成任务后返回本地 ID，可传入 `callbackUrl` 接收成功/失败通知，调用方等待超时后用 `GET /api/v1/video-compositions/{task_id}` 补查一次。实现位于 `server/src/server/video_composition/`，直接复用本地 ASR、切片和模板函数；素材匹配与上海 IMS 使用外部接口，IMS 成片再转存 ZOS。匹配结果通过任务回调接收，等待超时仅补查一次，随后继续生成时间线和渲染。回调优先使用 `COMPOSITION_PUBLIC_BASE_URL`（可填 ngrok HTTPS 地址），留空沿用合成请求的基础地址。默认输出 1080×1920、30 FPS，自动选择 VOD 存储；新任务上传 ZOS 的 `imv/video_composition/{task_id}.mp4`，并从第 3 帧生成同名 `.png`，两者公开可读；GET 和成功回调只返回视频固定地址，历史成功任务不补图。执行过程及每步输入输出写入独立 `video_composition_logs` 表，一个任务一行，`detail` 展示原始输入、最终输出及中文阶段执行/错误日志，数据库时间统一北京时间；保留实际媒体链接，服务凭证和回调鉴权脱敏。当前使用单实例、单进程调度；配置、恢复边界及联调限制见 [视频合成说明](server/README.md#异步视频合成)。
 
+Remotion Agent 可生成文字、字幕、滤镜叠加、视频动效和转场叠加 Sprite；成功验收版本可发布到独立 Sprite 目录，云端模板编辑可在同一 `style_id` 下混用 IMS 效果与 Sprite，并以透明交互层同屏预览示例效果，不上传 ZOS。Sprite 使用独立的 `proto/imv/sprite/v1/` Protobuf，不修改现有模板协议。服务端按总线提供的业务文字和时间窗口生成 VP9 Alpha WebM；现有合成总线尚未调用这些接口，正式媒体上传与 IMS 轨道接入仍由总线负责。字段、时间交集、视频轨道排层和待接入工作见 [Sprite 接入文档](server/src/server/sprites/README.md)。
+
 客户端运行
 ----------
 

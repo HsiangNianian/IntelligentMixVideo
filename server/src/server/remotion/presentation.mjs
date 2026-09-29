@@ -5,7 +5,7 @@ import prettier from "prettier";
 import { build } from "esbuild";
 
 /** Preserve source imports and declarations while replacing its default export with an optional-props wrapper. */
-export async function exportTemplate(code, config, composition) {
+export async function exportTemplate(code, config, composition, highlightRanges = null) {
   const source = ts.createSourceFile(
     "Template.tsx",
     code,
@@ -81,16 +81,18 @@ ${body}
 export const ${prefix}Composition = ${JSON.stringify(composition)} as const;
 /** Defaults reflect this accepted version; caller props can override them. */
 const ${prefix}Defaults = ${JSON.stringify(config)} as const;
+${highlightRanges === null ? "" : `/** Sample spans are transient rendering inputs, separate from editable scalar defaults. */
+const ${prefix}HighlightRanges: [number, number][] = ${JSON.stringify(highlightRanges)};`}
 /** Render with accepted defaults when no props are supplied. */
 export default function ${prefix}(props: Partial<${prefix}React.ComponentProps<typeof ${component}>> = {}) {
- return <${component} {...${prefix}Defaults} {...props} />;
+ return <${component} {...${prefix}Defaults} ${highlightRanges === null ? "" : `highlightRanges={${prefix}HighlightRanges}`} {...props} />;
 }`,
     { parser: "typescript" },
   );
 }
 
 /** Bundle trusted Player hosting code plus accepted TSX into one sealed script, with no runtime compiler. */
-export async function buildPresentation(root, config, composition) {
+export async function buildPresentation(root, config, composition, keywords = []) {
   const result = await build({
     entryPoints: ["/renderer/preview-host.tsx"],
     bundle: true,
@@ -115,7 +117,7 @@ export async function buildPresentation(root, config, composition) {
             namespace: "imv",
           }));
           builder.onLoad({ filter: /.*/, namespace: "imv" }, () => ({
-            contents: JSON.stringify({ config, composition }),
+            contents: JSON.stringify({ config, composition, keywords }),
             loader: "json",
           }));
         },
