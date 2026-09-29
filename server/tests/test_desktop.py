@@ -315,6 +315,8 @@ def test_bundle_real_renderer(bundle, tmp_path):
     """使用随包 Node/Chrome/FFprobe/font 和共享库真实渲染，不调用模型或宿主工具链。"""
     runtime, data, env = bundle
     data.mkdir()
+    from inspect import getsource
+    from .remotion_legacy import controls
     script = '''
 import asyncio, sys
 from pathlib import Path
@@ -322,7 +324,7 @@ from server.desktop import configure
 from server.remotion_templates.settings import load_settings
 from server.remotion_templates.renderer import Renderer
 from server.remotion_templates.models import TemplateCandidate, TemplateSpec, CompositionConfig, TextLayer
-from server.remotion_templates.harness import controls
+__LEGACY_CONTROLS__
 runtime, data = map(Path, sys.argv[1:3])
 configure(runtime, data, data / "unused.sock")
 spec = TemplateSpec(name="标题", description="白色文字", composition=CompositionConfig(width=320, height=240, duration_in_frames=6), text_layers=[TextLayer(id="title", text="你好", end_frame=6)])
@@ -340,6 +342,7 @@ _, report = asyncio.run(Renderer(load_settings()).validate(candidate, spec, data
 assert all(check.status == "pass" for check in report.checks), report.model_dump()
 assert (data / "render/preview.mp4").stat().st_size > 1000
 '''
+    script = script.replace("__LEGACY_CONTROLS__", getsource(controls))
     result = subprocess.run(
         [str(runtime / PYTHON), "-I", "-X", "utf8", "-c", script, str(runtime), str(data)],
         env=env, capture_output=True, text=True, timeout=240,

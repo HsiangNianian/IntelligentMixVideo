@@ -9,10 +9,11 @@ import {
 } from "./composition";
 import {
   sameValues,
+  sameJson,
   validValue,
   type ChatMessage,
   type Job,
-  type Scalar,
+  type JsonValue,
   type SessionJob,
   type Values,
   type Version,
@@ -22,6 +23,7 @@ import {
 interface Session {
   key: number;
   compositionDraft: CompositionDraft;
+  spriteKind: "text" | "subtitle" | "filter_overlay" | "video_overlay" | "transition_overlay";
   workId: string | null;
   deleting: boolean;
   messages: ChatMessage[];
@@ -50,6 +52,7 @@ function blank(key: number): Session {
   return {
     key,
     compositionDraft: defaultComposition(),
+    spriteKind: "text",
     workId: null,
     deleting: false,
     messages: [],
@@ -483,7 +486,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
       if (!s.workId) {
         const asset = image ? await api.upload(image) : undefined;
         if (!current(s.key)) throw new DOMException("Aborted", "AbortError");
-        return (await api.create(text, asset?.id, configuration.composition!))
+        return (await api.create(text, asset?.id, configuration.composition!, s.spriteKind))
           .job;
       }
       return api.message(s.workId, {
@@ -500,6 +503,12 @@ export function useTemplateSession(onHistoryChange: () => void) {
     if (s.workId || s.busy || s.loading) return;
     publish({ compositionDraft });
   }
+  /** Lock the authoring kind once the first message creates a server project. */
+  function configureSpriteKind(spriteKind: Session["spriteKind"]) {
+    const s = latest.current;
+    if (s.workId || s.busy || s.loading) return;
+    publish({ spriteKind });
+  }
   /** 尚未验收的参数与成功默认值不同，提交和复制维持锁定。 */
   function dirty() {
     return (
@@ -511,7 +520,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
     );
   }
   /** 合法参数仅更新本地预览；连续调整不提交任务，也不锁住下一次编辑。 */
-  function change(name: string, value: Scalar) {
+  function change(name: string, value: JsonValue) {
     const s = latest.current;
     if (
       !s.version ||
@@ -526,7 +535,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
     )
       return;
     const control = s.version.candidate.config_schema.properties[name];
-    if (!control || !validValue(control, value)) return;
+    if (!control || (s.version.spec.schema_version !== "2" && !validValue(control, value))) return;
     parameterSave.current = false;
     const values = { ...s.values, [name]: value };
     publish({ values, error: "", retryMode: null });
@@ -549,7 +558,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
       return false;
     const parameters = Object.fromEntries(
       Object.entries(s.values).filter(
-        ([name, value]) => value !== s.version!.candidate.default_config[name],
+        ([name, value]) => !sameJson(value, s.version!.candidate.default_config[name]),
       ),
     );
     parameterSave.current = true;
@@ -670,6 +679,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
       !sameValues(state.values, state.version.candidate.default_config),
     send,
     configure,
+    configureSpriteKind,
     change,
     saveParameters,
     discardParameters,

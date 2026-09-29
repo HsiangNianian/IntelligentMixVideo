@@ -5,10 +5,12 @@ from PIL import Image, ImageDraw
 from server.remotion_templates.models import (
     CompositionConfig,
     MotionSegment,
+    TemplateCandidate,
     TemplateSpec,
     TextLayer,
 )
-from server.remotion_templates.probes import pixel_checks
+from server.remotion_templates.probes import parameter_probes, pixel_checks
+from .remotion_legacy import controls
 
 
 def rectangle(path, *, box=(20, 20, 40, 40), color="#FFFFFF", background=(0, 0, 0, 0)):
@@ -103,6 +105,46 @@ def test_parameter_probes_check_direction_size_and_requested_color(tmp_path):
     rectangle(tmp_path / "probe-1.png", box=(25, 25, 35, 35))
     rectangle(tmp_path / "probe-2.png", color="#FF00FF")
     assert verdicts(tmp_path, probes=probes)["parameter_behavior"].status == "pass"
+
+
+def test_visual_duration_parameter_is_sampled_during_its_motion_phase(tmp_path):
+    """A fade-duration control can respond during entrance even if the middle frame is unchanged."""
+    spec = TemplateSpec(
+        name="闪入", description="视觉动效", sprite_kind="video_overlay",
+        composition=CompositionConfig(width=64, height=64, duration_in_frames=6),
+        visual_parameters={"fadeInFrames": 3.0},
+        visual_motion=[MotionSegment(phase="enter", start_frame=0, end_frame=3, description="淡入")],
+    )
+    schema, defaults = controls(spec)
+    candidate = TemplateCandidate(tsx_code="export default () => null", config_schema=schema, default_config=defaults)
+    probes = parameter_probes(candidate, spec)
+    assert [probe["frame"] for probe in probes] == [1, 3]
+    for frame in (0, 1, 3, 5):
+        rectangle(tmp_path / f"frame-{frame}.png")
+    rectangle(tmp_path / "probe-0.png", color="#FFAA00")
+    rectangle(tmp_path / "probe-1.png")
+    checks = {item.name: item for item in pixel_checks(tmp_path, spec, [0, 1, 3, 5], probes)}
+    assert checks["parameter_behavior"].status == "pass"
+
+
+def test_subtitle_preview_and_parameter_probes_use_sample_keyword_ranges():
+    """The ordinary preview highlights every sample match; probes start from that same visible state."""
+    from server.remotion_templates.probes import preview_values
+
+    spec = TemplateSpec(
+        name="关键词字幕", description="重复词高亮", sprite_kind="subtitle",
+        composition=CompositionConfig(width=64, height=64, duration_in_frames=6),
+        text_layers=[TextLayer(id="line", text="简单的事不简单", end_frame=6)],
+        keyword_examples=["简单"],
+    )
+    schema, defaults = controls(spec)
+    candidate = TemplateCandidate(tsx_code="export default () => null", config_schema=schema, default_config=defaults)
+    assert preview_values(candidate, spec)["highlightRanges"] == [[0, 2], [5, 7]]
+    probes = parameter_probes(candidate, spec)
+    assert probes[0]["config"]["highlightRanges"] == []
+    assert probes[-1]["kind"] == "keywords"
+    assert probes[-1]["config"]["highlightRanges"] == []
+    assert "highlightRanges" not in candidate.default_config
 
 
 def test_missing_or_wrong_size_frames_never_create_passing_evidence(tmp_path):
@@ -209,7 +251,7 @@ def test_single_frame_canvas_reports_missing_temporal_evidence(tmp_path):
 @pytest.mark.parametrize("axis", ["x", "y"])
 def test_edge_position_probe_moves_inward_and_verifies_actual_direction(tmp_path, axis):
     """靠边图层优先向内实验，避免探针主动裁切字效后误判整图重心方向。"""
-    from server.remotion_templates.harness import controls
+    from .remotion_legacy import controls
     from server.remotion_templates.models import TemplateCandidate
     from server.remotion_templates.probes import parameter_probes
 

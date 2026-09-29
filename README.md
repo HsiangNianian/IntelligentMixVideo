@@ -20,6 +20,8 @@ Structure
 - `client/`：Rust + Tauri 2 + React + TypeScript 桌面客户端，使用 Tailwind CSS 4 和 shadcn/ui。
 - `server/`：Python + FastAPI + MySQL 服务端，提供模板持久化、文案切片与异步视频合成接口，以及首页和用户路由示例。
 
+PR76 工具契约见 [docs/remotion-agent-tool-contracts.md](docs/remotion-agent-tool-contracts.md)。当前工具目录采用装饰器注册，已实现图片 info/resize/crop（不含超分辨率）及 Preset/Sprite/validate 的调用桥接。
+
 模板配置通过必填的 `tracks` 数组保存独立对象，文字、位置与效果参数保存在各对象的 `editor` 中。云端和桌面本地均只接受此格式，模板顶层不包含 `editor`，不提供旧格式转换。
 
 服务端运行
@@ -46,6 +48,8 @@ uv run server
 ASR 转写另提供独立 Python 函数与命令行入口，读取北京地域的 `DASHSCOPE_API_KEY`，尚未注册 HTTP 路由；用法见 [ASR 音频转写](server/README.md#asr-音频转写)。
 
 `POST /api/v1/video-compositions` 持久化合成任务后返回本地 ID，可传入 `callbackUrl` 接收成功/失败通知，调用方等待超时后用 `GET /api/v1/video-compositions/{task_id}` 补查一次。实现位于 `server/src/server/video_composition/`，直接复用本地 ASR、切片和模板函数；素材匹配与上海 IMS 使用外部接口，IMS 成片再转存 ZOS。匹配结果通过任务回调接收，等待超时仅补查一次，随后继续生成时间线和渲染。回调优先使用 `COMPOSITION_PUBLIC_BASE_URL`（可填 ngrok HTTPS 地址），留空沿用合成请求的基础地址。默认输出 1080×1920、30 FPS，自动选择 VOD 存储；新任务上传 ZOS 的 `imv/video_composition/{task_id}.mp4`，并从第 3 帧生成同名 `.png`，两者公开可读；GET 和成功回调只返回视频固定地址，历史成功任务不补图。执行过程及每步输入输出写入独立 `video_composition_logs` 表，一个任务一行，`detail` 展示原始输入、最终输出及中文阶段执行/错误日志，数据库时间统一北京时间；保留实际媒体链接，服务凭证和回调鉴权脱敏。当前使用单实例、单进程调度；配置、恢复边界及联调限制见 [视频合成说明](server/README.md#异步视频合成)。
+
+Remotion Agent 使用外层任务 ReAct 与内层 Executor，支持本地不可变 Preset 语义检索、填参复用、创建/修订及重新生成式 Sprite 合成；工具与接入边界见 [Agent 文档](server/src/server/remotion_templates/README.md)。图片处理工具由独立实现接入，本次只留说明。Agent 可生成文字、字幕、滤镜叠加、视频动效和转场叠加 Sprite；成功验收版本可发布到独立 Sprite 目录，云端模板编辑可在同一 `style_id` 下混用 IMS 效果与 Sprite，并以透明交互层同屏预览示例效果，不上传 ZOS。Sprite 使用独立的 `proto/imv/sprite/v1/` Protobuf，不修改现有模板协议。服务端按总线提供的业务文字和时间窗口生成 VP9 Alpha WebM；现有合成总线尚未调用这些接口，正式媒体上传与 IMS 轨道接入仍由总线负责。字段、时间交集、视频轨道排层和待接入工作见 [Sprite 接入文档](server/src/server/sprites/README.md)。
 
 客户端运行
 ----------
@@ -131,7 +135,7 @@ Debug 包中，Linux AppImage/deb、Windows MSI/NSIS 和 macOS 双架构 DMG 额
 
 Linux 数据、模型配置和日志位于 `${XDG_DATA_HOME:-~/.local/share}/com.intelligentmixvideo.client/backend/`；Windows 为 `%APPDATA%/com.intelligentmixvideo.client/backend/`，macOS 为 `~/Library/Application Support/com.intelligentmixvideo.client/backend/`。目录内容分别为 `mysql/`、`.env`、`server.log`；Remotion 数据在 `remotion/`。首次从无密钥 `.env.example` 创建配置，已有配置及数据不覆盖。可在 Debug 设置中填写模型、ASR、云合成和启动配置，保存后重启；启动从同一应用的 `data/settings/settings.json` 加载本地值覆盖进程环境，不改写 `.env`，数据库不接入设置；未配置凭据也能启动 API、测试模板读写，但云服务相关功能仍需有效配置和网络。Linux 运行时缓存位于 `${XDG_CACHE_HOME:-~/.cache}/com.intelligentmixvideo.client/backend/`；Windows 为 `%LOCALAPPDATA%/com.intelligentmixvideo.client/backend/`，macOS 为 `~/Library/Caches/com.intelligentmixvideo.client/backend/`。安装包不会包含开发机 `.env` 或数据库。
 
-Linux 内置后端需要 glibc 2.35+；macOS 使用对应架构的 macOS 15 构建机与运行时，Windows 使用 x64 原生运行时。普通非 debug 包仍连接外部 API。构建时从最终 AppImage/MSI/DMG 解包，验证工具可执行、首次启动、模板写入与重启持久化、重复实例拒绝、退出清理和桌面连接。FFmpeg/ffprobe 在 CI 从官方 `FFmpeg/FFmpeg` 最新稳定 tag 固定提交下载源码并原生编译，归档包含版本、提交与许可证；不使用 nightly 或第三方 Release 二进制。Remotion 新字效的隔离生成目前仍仅支持 Linux，依赖非特权 user namespace；Windows/macOS 先支持内置 API、模板存储及已有预览，携带渲染依赖不等于新字效生成已支持。实际 Wayland 桌面播放仍需机器验证。仅在 CI 安装软件不会增加 AppImage 体积；现在通过资源归档携带运行时，包体积会增加。
+Linux 内置后端需要 glibc 2.35+；macOS 使用对应架构的 macOS 15 构建机与运行时，Windows 使用 x64 原生运行时。普通非 debug 包仍连接外部 API。构建时从最终 AppImage/MSI/DMG 解包，验证工具可执行、首次启动、模板写入与重启持久化，重复实例拒绝、退出清理和桌面连接。FFmpeg/ffprobe 在 CI 从官方 `FFmpeg/FFmpeg` 最新稳定 tag 固定提交下载源码并原生编译，归档包含版本、提交与许可证；不使用 nightly 或第三方 Release 二进制。Remotion 新字效的隔离生成在 Linux 使用 bubblewrap，在 macOS 开发调试使用 Colima Linux 容器，容器无网络、只读根文件系统并只挂载受管源码和当前任务目录；Windows 仍只支持内置 API、模板存储及已有预览。实际 Wayland 桌面播放仍需机器验证。仅在 CI 安装软件不会增加 AppImage 体积；现在通过资源归档携带运行时，包体积会增加。
 
 Wayland 卡顿可在相同场景分别运行 `IMV_GDK_BACKEND=wayland ./应用.AppImage` 和 `IMV_GDK_BACKEND=x11 ./应用.AppImage` 对比。
 该选项在 GTK 初始化前覆盖 AppImage hook 的后端设置，默认不改变后端或关闭硬件加速；排除旧 Wayland 库和构建通过不代表已验证帧率改善。
@@ -201,3 +205,5 @@ PowerShell 先执行 `$env:RELEASE_TAG = "v0.3.0"`，再运行同一条 `bun ...
 仅合并当前版本条目，按版本号降序排列；遇到并发提交最多尝试五次，不强制推送，也不重复插入已有版本。
 目前只接受正式版本（不含 `-beta` / `-rc`），且版本须满足 Windows MSI 的数值限制。
 正式构建仍使用上述未签名安装包配置，代码签名和 macOS 公证需另行接入。
+
+当前 Remotion Agent 重构使用三层 ReAct 与 PR76 工具；新生成固定 1080×1920、30 FPS，交付组合代码和交互预览。详见 [实现与 Linux 验证说明](server/src/server/remotion_templates/README.md)。

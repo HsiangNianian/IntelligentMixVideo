@@ -6,6 +6,8 @@ from datetime import datetime
 from typing import Annotated, Literal, Self
 from uuid import UUID
 
+from .tools.contracts import SpriteDraft
+
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -13,6 +15,7 @@ from pydantic import (
     JsonValue,
     StringConstraints,
     model_validator,
+    field_serializer,
 )
 
 Text = Annotated[
@@ -54,19 +57,22 @@ class ImageReference(Contract):
 
 
 class GenerateTemplateRequest(Contract):
-    """MVP supports description and/or image; video remains an unsupported extension."""
+    """Start one Agent project for text or a transparent visual overlay Sprite."""
 
     description: Text | None = None
     image: ImageReference | None = None
     composition: CompositionConfig = Field(default_factory=CompositionConfig)
+    sprite_kind: Literal["text", "subtitle", "filter_overlay", "video_overlay", "transition_overlay"] = "text"
 
     @model_validator(mode="after")
     def require_input(self) -> Self:
-        """Reject empty requests instead of silently generating an arbitrary template."""
+        """Require user input and a fixed 30 FPS for new Agent generations."""
         if self.description is None and self.image is None:
             raise ValueError(
                 "description or image is required; video is not supported yet"
             )
+        if self.composition.fps != 30:
+            raise ValueError("new Remotion generations require 30 FPS")
         return self
 
 
@@ -173,16 +179,81 @@ class TextLayer(Contract):
 class TemplateSpec(Contract):
     """Revisable candidate implementation plan; estimates never override user requirements."""
 
-    schema_version: Literal["1"] = "1"
+    schema_version: Literal["1", "2"] = "1"
     name: Text
     description: Text
     composition: CompositionConfig
-    text_layers: list[TextLayer] = Field(min_length=1, max_length=12)
+    sprite_kind: Literal["text", "subtitle", "filter_overlay", "video_overlay", "transition_overlay", "composition"] = "text"
+    sprite: SpriteDraft | None = None
+    text_layers: list[TextLayer] = Field(default_factory=list, max_length=12)
+    visual_parameters: dict[str, str | float | bool] = Field(default_factory=dict, max_length=12)
+    visual_motion: list[MotionSegment] = Field(default_factory=list, max_length=8)
+    keyword_examples: list[Text] = Field(
+        default_factory=list,
+        max_length=5,
+        description="Literal keywords to highlight, not sample sentences; each must occur at least twice in text_layers[0].text.",
+    )
     assumptions: list[Text] = Field(default_factory=list, max_length=20)
+
+    @field_serializer("sprite")
+    def serialize_sprite(self, sprite):
+        """Preserve PR76 omitted fields while retaining explicitly supplied JSON null parameters."""
+        return sprite.model_dump(mode="json", exclude_unset=True) if sprite is not None else None
 
     @model_validator(mode="after")
     def validate_layers(self) -> Self:
-        """Reject ambiguous IDs, blank copy, and effects outside their layer interval."""
+        """Separate text from visual overlays and constrain declared motion to the canvas."""
+        if self.schema_version == "2":
+            if self.sprite is None or self.sprite_kind != "composition":
+                raise ValueError("PR76 versions require the complete composed Sprite")
+            expected = self.sprite.composition
+            if (self.composition.width, self.composition.height, self.composition.fps, self.composition.duration_in_frames) != (expected.width, expected.height, expected.fps, expected.duration_frames):
+                raise ValueError("Sprite and version composition differ")
+            if self.text_layers or self.visual_parameters or self.visual_motion or self.keyword_examples:
+                raise ValueError("PR76 versions do not use legacy typography fields")
+            return self
+        if self.sprite is not None or self.sprite_kind == "composition":
+            raise ValueError("Composed Sprite requires schema version 2")
+        if self.sprite_kind in {"text", "subtitle"}:
+            if not self.text_layers or self.visual_parameters or self.visual_motion:
+                raise ValueError("text Sprites require text layers and no visual overlay fields")
+            if self.sprite_kind == "subtitle":
+                if len(self.text_layers) != 1:
+                    raise ValueError("subtitle Sprites require exactly one text layer")
+                if not self.keyword_examples or any(
+                    self.text_layers[0].text.count(word) < 2 for word in self.keyword_examples
+                ):
+                    raise ValueError(
+                        "字幕 keyword_examples 要填关键词本身，不要填示例句子；"
+                        "每个关键词须在 text_layers[0].text 中至少出现两次，"
+                        "例如 text='这个方法简单，操作也很简单' 时填 ['简单']"
+                    )
+            if self.sprite_kind == "text" and self.keyword_examples:
+                raise ValueError("title Sprites do not declare keyword examples")
+        elif self.text_layers or not self.visual_parameters:
+            raise ValueError("visual Sprites require scalar parameters and no text layers")
+        elif self.keyword_examples:
+            raise ValueError("visual Sprites do not declare keyword examples")
+        if self.sprite_kind in {"video_overlay", "transition_overlay"} and not any(
+            motion.phase != "hold" for motion in self.visual_motion
+        ):
+            raise ValueError("video and transition Sprites require declared visible motion")
+        if self.sprite_kind == "filter_overlay" and not {
+            "brightness", "contrast", "saturation"
+        } <= self.visual_parameters.keys():
+            raise ValueError("filter Sprites require brightness, contrast and saturation controls")
+        if any(
+            not key.isidentifier() or key.startswith("_") or len(key) > 32
+            or key in {"text", "keywords", "start_time", "end_time", "media_url"}
+            or isinstance(value, str) and len(value) > 100
+            for key, value in self.visual_parameters.items()
+        ):
+            raise ValueError("visual Sprite parameter name or value is invalid")
+        if any(
+            not 0 <= motion.start_frame < motion.end_frame <= self.composition.duration_in_frames
+            for motion in self.visual_motion
+        ):
+            raise ValueError("visual motion frames must fit the composition")
         if len({layer.id for layer in self.text_layers}) != len(self.text_layers):
             raise ValueError("text layer IDs must be unique")
         for layer in self.text_layers:
@@ -299,6 +370,7 @@ class VisualReview(Contract):
 class ValidationReport(Contract):
     """Every check is bound to code, configuration, specification, fonts, and runtime."""
 
+    profile: Literal["legacy", "pr76"] = "legacy"
     fingerprint: str
     artifacts: dict[str, str] = Field(default_factory=dict)
     checks: list[Check] = Field(default_factory=list)
@@ -308,6 +380,8 @@ class ValidationReport(Contract):
     @property
     def render_passed(self) -> bool:
         """User parameter revisions need fresh runnable artifacts, not model approval of their appearance."""
+        if self.profile == "pr76":
+            return self._pr76_passed()
         required = {
             "configuration",
             "source_policy",
@@ -332,6 +406,8 @@ class ValidationReport(Contract):
     @property
     def passed(self) -> bool:
         """Unknown or missing required evidence cannot approve a candidate."""
+        if self.profile == "pr76":
+            return self._pr76_passed()
         required = {
             "configuration",
             "source_policy",
@@ -352,6 +428,15 @@ class ValidationReport(Contract):
         return (
             len({check.name for check in self.checks}) == len(self.checks)
             and required <= {check.name for check in self.checks}
+            and all(check.status == "pass" for check in self.checks)
+        )
+
+    def _pr76_passed(self) -> bool:
+        """Require actual runtime checks and sealed presentation construction for PR76 versions."""
+        required = {"code_validation", "runtime_validation", "presentation_bundle", "export_source"}
+        return (
+            len({check.name for check in self.checks}) == len(self.checks)
+            and required <= {check.name for check in self.checks if check.source == "host"}
             and all(check.status == "pass" for check in self.checks)
         )
 

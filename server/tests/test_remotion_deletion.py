@@ -19,7 +19,7 @@ from server.remotion_templates.settings import Settings
 from server.remotion_templates.store import Conflict, NotFound, Store
 from server.remotion_templates.stream import event_stream
 from server.remotion_templates.evidence import seal_artifacts
-from server.remotion_templates.harness import controls
+from .remotion_legacy import controls
 from server.remotion_templates.models import (
     Check,
     CompositionConfig,

@@ -256,6 +256,14 @@ try {
   await page
     .getByText("正在渲染预览…", { exact: true })
     .waitFor({ state: "hidden" });
+  // 预览遮罩关闭与参数面板解锁由不同状态更新完成，等待实际控件恢复。
+  await page.waitForFunction(() => {
+    const label = [...document.querySelectorAll("label")].find(
+      (item) => item.textContent?.trim() === "字号",
+    );
+    const input = label && document.getElementById(label.htmlFor);
+    return input instanceof HTMLInputElement && !input.disabled;
+  });
   assert(await page.getByLabel("字号", { exact: true }).isEnabled());
   await page.getByLabel("字号", { exact: true }).fill("104");
   await page.getByRole("button", { name: "预览 V1", exact: true }).click();

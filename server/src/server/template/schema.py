@@ -194,7 +194,7 @@ class TemplateData(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     name: str = Field(min_length=1, max_length=100)
     description: str = Field(default="", max_length=1000)
-    effect_ids: list[str] = Field(min_length=1, max_length=500)
+    effect_ids: list[str] = Field(default_factory=list, max_length=500)
     transition_duration_seconds: float = Field(default=1, ge=0.1, le=3, allow_inf_nan=False)
     tracks: list[EffectTrack] = Field(max_length=100)
 

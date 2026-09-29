@@ -46,17 +46,15 @@ def test_invalid_output_budget_rejected(value):
         Settings(_env_file=None, max_output_tokens=value)
 
 
-@pytest.mark.parametrize("vision", [False, True])
 @pytest.mark.parametrize(
     "cap,used,expected", [(32000, 0, 32000), (40000, 0, 40000), (32000, 199999, None)]
 )
-def test_provider_uses_configured_cap_and_remaining_budget(cap, used, expected, vision):
-    """Actor 与 Vision 请求采用配置的输出上限，并按剩余总预算缩小；HTTP 超时实际传入传输层。"""
+def test_provider_uses_configured_cap_and_remaining_budget(cap, used, expected):
+    """三层使用共同模型和输出上限，并按剩余总预算缩小；HTTP 超时实际传入传输层。"""
     settings = Settings(
         _env_file=None,
         enforce_model_budget=True,
         actor_model="offline",
-        vision_model="offline-vision",
         actor_api_key=SecretStr("test"),
         max_output_tokens=cap,
     )
@@ -65,7 +63,7 @@ def test_provider_uses_configured_cap_and_remaining_budget(cap, used, expected, 
         """检查真实 HTTP 请求参数，返回仅消耗一个 token 的合法回答。"""
         body = json.loads(request.content)
         assert body["max_tokens"] == expected
-        assert body["model"] == ("offline-vision" if vision else "offline")
+        assert body["model"] == "offline"
         assert set(request.extensions["timeout"].values()) == {240}
         return httpx.Response(
             200,
@@ -88,12 +86,12 @@ def test_provider_uses_configured_cap_and_remaining_budget(cap, used, expected, 
     if expected is None:
         with pytest.raises(ModelFailure, match="estimated input"):
             asyncio.run(
-                provider.ask(DialogueOutput, "system", "user", budget, vision=vision)
+                provider.ask(DialogueOutput, "system", "user", budget)
             )
         assert budget.calls == 0 and budget.tokens == used
         return
     result = asyncio.run(
-        provider.ask(DialogueOutput, "system", "user", budget, vision=vision)
+        provider.ask(DialogueOutput, "system", "user", budget)
     )
     assert result.answer == "你好" and budget.tokens == used + 1
 
@@ -123,8 +121,8 @@ def test_phase_limit_preserves_other_roles_and_global_cap(tmp_path):
         enforce_model_budget=True,
         actor_model="offline",
         actor_api_key=SecretStr("test"),
-        max_judge_calls=1,
-        max_actor_tokens=1000,
+        max_plan_calls=1,
+        max_executor_tokens=1000,
         max_tokens=3000,
         max_output_tokens=64,
     )
@@ -150,30 +148,32 @@ def test_phase_limit_preserves_other_roles_and_global_cap(tmp_path):
 
     provider = Provider(settings, transport=httpx.MockTransport(respond))
     budget = Budget(audit_path=tmp_path / "audit.jsonl")
-    with budget.phase("judge"):
+    with budget.phase("plan"):
         asyncio.run(provider._request({"messages": []}, budget))
-    with pytest.raises(ExecutionFailure, match="judge"), budget.phase("judge"):
+    with pytest.raises(ExecutionFailure, match="plan"), budget.phase("plan"):
         asyncio.run(provider._request({"messages": []}, budget))
-    with budget.phase("actor"):
+    with budget.phase("executor"):
         asyncio.run(provider._request({"messages": []}, budget))
-    with pytest.raises(ExecutionFailure, match="actor"), budget.phase("actor"):
+    with pytest.raises(ExecutionFailure, match="executor"), budget.phase("executor"):
         asyncio.run(provider._request({"messages": []}, budget))
     assert budget.summary() == {
         "calls": 3,
         "tokens": 1800,
-        "judge_calls": 1,
-        "judge_tokens": 600,
-        "actor_calls": 2,
-        "actor_tokens": 1200,
+        "outer_calls": 0,
+        "outer_tokens": 0,
+        "plan_calls": 1,
+        "plan_tokens": 600,
+        "executor_calls": 2,
+        "executor_tokens": 1200,
     }
     usage = 1300
-    settings.max_actor_tokens = 3000
+    settings.max_executor_tokens = 3000
     with (
         pytest.raises(ModelFailure, match="Model token budget exhausted"),
-        budget.phase("actor"),
+        budget.phase("executor"),
     ):
         asyncio.run(provider._request({"messages": []}, budget))
-    assert budget.summary()["actor_tokens"] == 2500
+    assert budget.summary()["executor_tokens"] == 2500
     assert budget.tokens == 3100
     assert budget.active_phase is None
 
@@ -202,7 +202,7 @@ def test_phase_accounting_survives_cancelled_request(tmp_path):
 
         async def call():
             """阶段作用域必须在取消时结算并退出。"""
-            with budget.phase("actor"):
+            with budget.phase("outer"):
                 await provider.ask(DialogueOutput, "s", "u", budget)
 
         async with asyncio.timeout(2):
@@ -211,7 +211,7 @@ def test_phase_accounting_survives_cancelled_request(tmp_path):
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
-        assert budget.summary()["actor_calls"] == 1
+        assert budget.summary()["outer_calls"] == 1
         assert budget.active_phase is None
         audit = budget.audit_path.read_text()
         assert "CancelledError" in audit and "secret-not-audited" not in audit
@@ -219,20 +219,20 @@ def test_phase_accounting_survives_cancelled_request(tmp_path):
     asyncio.run(scenario())
 
 
-def test_recovery_settings_read_environment(tmp_path):
-    """恢复次数与阶段预算来自 .env，而非写死在 agent loop 中。"""
+def test_three_layer_settings_read_environment(tmp_path):
+    """无进展保护和三层预算来自 .env，而非写死在 Agent loop 中。"""
     path = tmp_path / ".env"
     path.write_text(
-        "IMV_MAX_REVIEW_RETRIES=1\nIMV_MAX_EVIDENCE_RETRIES=2\nIMV_MAX_NO_PROGRESS_TURNS=3\nIMV_MAX_JUDGE_CALLS=5\nIMV_MAX_JUDGE_TOKENS=12000\n"
+        "IMV_MAX_STEPS=4\nIMV_MAX_TOOLUSE=8\nIMV_MAX_NO_PROGRESS_TURNS=3\nIMV_MAX_PLAN_CALLS=5\nIMV_MAX_PLAN_TOKENS=12000\n"
     )
     settings = Settings(_env_file=path)
     assert (
-        settings.max_review_retries,
-        settings.max_evidence_retries,
+        settings.max_steps,
+        settings.max_tooluse,
         settings.max_no_progress_turns,
-        settings.max_judge_calls,
-        settings.max_judge_tokens,
-    ) == (1, 2, 3, 5, 12000)
+        settings.max_plan_calls,
+        settings.max_plan_tokens,
+    ) == (4, 8, 3, 5, 12000)
 
 
 def test_input_budget_stops_before_http_and_records_reason(tmp_path):
@@ -305,7 +305,7 @@ def test_usage_breakdown_and_output_reservation(tmp_path):
 
 
 @pytest.mark.parametrize("enforced", [False, True])
-def test_actor_budget_trims_whole_exchanges_without_mutating_history(
+def test_layer_budget_trims_whole_exchanges_without_mutating_history(
     tmp_path, enforced
 ):
     """关闭配额保留完整请求，开启后只裁剪旧工具组；两者都不修改持久历史。"""
@@ -368,20 +368,21 @@ def test_actor_budget_trims_whole_exchanges_without_mutating_history(
     assert ('"dropped_groups": 1' in budget.audit_path.read_text()) is enforced
 
 
-@pytest.mark.parametrize("phase", ["actor", "judge"])
+@pytest.mark.parametrize("phase", ["outer", "plan", "executor"])
 def test_disabled_quotas_allow_over_limit_requests_and_responses(tmp_path, phase):
     """达到全局和角色上限仍发送大输入并接受超额响应；调用和 token 继续如实累计。"""
     settings = Settings(
         _env_file=None,
         actor_model="offline",
-        vision_model="offline-vision",
         actor_api_key=SecretStr("fixture"),
         max_model_calls=1,
         max_tokens=1000,
-        max_actor_calls=1,
-        max_judge_calls=1,
-        max_actor_tokens=1000,
-        max_judge_tokens=1000,
+        max_outer_calls=1,
+        max_plan_calls=1,
+        max_executor_calls=1,
+        max_outer_tokens=1000,
+        max_plan_tokens=1000,
+        max_executor_tokens=1000,
     )
     budget = Budget(
         calls=50,
@@ -419,16 +420,18 @@ def test_disabled_quotas_allow_over_limit_requests_and_responses(tmp_path, phase
                     "rules",
                     "需求" * 20000,
                     budget,
-                    vision=phase == "judge",
                 )
             )
         assert result.answer == "继续执行"
-    assert budget.summary() == {
+    expected_summary = {
         "calls": 52,
         "tokens": 300000,
         f"{phase}_calls": 52,
         f"{phase}_tokens": 300000,
     }
+    for other in {"outer", "plan", "executor"} - {phase}:
+        expected_summary.update({f"{other}_calls": 0, f"{other}_tokens": 0})
+    assert budget.summary() == expected_summary
     events = [json.loads(line) for line in budget.audit_path.read_text().splitlines()]
     requests = [e for e in events if e["event"] == "model_request"]
     assert len(requests) == 2

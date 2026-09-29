@@ -9,6 +9,13 @@ import { PreviewTimeline, type PreviewTimelineHandle } from "./PreviewTimeline";
 import { previewDuration } from "./tracks";
 import { previewVideoUrl, readMasterVideo } from "./media";
 import { MasterVideoInput } from "./MasterVideoInput";
+import { SpritePreviewLayer, type SpritePreviewLayerHandle } from "@/features/sprites/SpritePreviewLayer";
+import type { SpritePreviewCopy } from "@/features/sprites/preview";
+import type { SpritePlacement, SpriteSummary } from "@/generated/imv/sprite/v1/sprite_pb";
+
+const emptyPlacements: SpritePlacement[] = [];
+const emptySprites: SpriteSummary[] = [];
+const emptyCopy: Record<string, SpritePreviewCopy> = {};
 
 /** 编辑状态由父组件持有；目录只在 SDK 初始化成功后回传。 */
 interface Props {
@@ -20,6 +27,9 @@ interface Props {
   selectedId?: string | null;
   onSelect?: (id: string) => void;
   onRangeChange?: (id: string, start: number, end: number) => void;
+  spritePlacements?: SpritePlacement[];
+  spriteCatalog?: SpriteSummary[];
+  spritePreviewCopy?: Record<string, SpritePreviewCopy>;
 }
 
 /** 时间轴标记由三条片段和一条播放指针组成。 */
@@ -28,7 +38,8 @@ function TimelineMark() {
 }
 
 /** 每次修改全量更新时间线并回到开头；串行处理，快速修改只应用最新草稿。 */
-export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, onCatalog, selectedId, onSelect, onRangeChange }: Props) {
+export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, onCatalog, selectedId, onSelect, onRangeChange,
+  spritePlacements = emptyPlacements, spriteCatalog = emptySprites, spritePreviewCopy = emptyCopy }: Props) {
   const duration = Math.max(0, previewDuration(draft, media));
   const stage = useRef<HTMLDivElement>(null);
   const container = useRef<HTMLDivElement>(null);
@@ -41,6 +52,7 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
   const cancelPlaybackAction = useRef<(() => void) | null>(null);
   const seekAction = useRef<((time: number) => void) | null>(null);
   const track = useRef<PreviewTimelineHandle>(null);
+  const spriteLayer = useRef<SpritePreviewLayerHandle>(null);
   const [rows, setRows] = useState<ReturnType<typeof buildPreviewRows>>([]);
   const [notices, setNotices] = useState<string[]>([]);
   const transition = rows.flatMap((row) => row.actions).find((item) => item.effectId === "transition");
@@ -151,6 +163,7 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
         } while (!disposed && applied !== revision);
         if (!disposed) {
           instance.currentTime = 0;
+          spriteLayer.current?.seek(0);
           displayedDecisecond = 0;
           setTime(0);
           track.current?.setTime(0);
@@ -235,6 +248,7 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
         subscription = instance.event$.subscribe((event) => {
           if (disposed || active || !instance) return;
           if (event.type === "playerSeeked") {
+            if (event.data?.currentTime !== undefined) spriteLayer.current?.seek(event.data.currentTime);
             if (seekTarget !== null && event.data?.currentTime !== undefined && Math.abs(event.data.currentTime - seekTarget) <= 0.05)
               finishSeek();
             return;
@@ -245,6 +259,7 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
             if (Math.abs(current - seekTarget) > 0.05) return;
           }
           track.current?.setTime(current);
+          spriteLayer.current?.seek(current);
           // SDK 仍逐帧驱动播放控制，界面时间最多每 0.1 秒渲染一次。
           const nextDecisecond = Math.min(
             previewDuration(latest.current, latestMedia.current) * 10,
@@ -304,6 +319,7 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
         if (!instance || disposed) return;
         if (!wasSeeking && Math.abs(instance.currentTime - target) < 0.001) {
           finishSeek();
+          spriteLayer.current?.seek(target);
         } else instance.currentTime = target;
       });
     };
@@ -327,11 +343,16 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
     return () => window.clearTimeout(timer);
   }, [draft.tracks, media]);
 
+  useEffect(() => {
+    spriteLayer.current?.seek(player.current?.currentTime ?? 0);
+  }, [spritePlacements, spriteCatalog, spritePreviewCopy]);
+
   return <section aria-label="实时预览" className="min-w-0">
     <div className="template-preview-stage border-b px-4 pb-3 pt-4 lg:px-7 lg:pt-5"><div className="mx-auto max-w-[900px]">
       <div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><span className="template-live-dot size-1.5 rounded-full" aria-hidden="true" /><h2 className="text-[11px] font-bold tracking-[0.08em] text-muted-foreground">实时预览</h2></div><span className="rounded-md border px-2 py-1 text-[10px] tabular-nums text-muted-foreground">{canvas ? `${canvas.width} × ${canvas.height}` : "正在读取画布尺寸"}</span></div>
       <div ref={stage} className="template-preview-canvas relative mx-auto aspect-video w-full overflow-hidden rounded-xl bg-[#0b2736]" style={canvas ? { aspectRatio: `${canvas.width} / ${canvas.height}`, maxWidth: `${48 * canvas.width / canvas.height}dvh`, "--preview-ratio": canvas.width / canvas.height } as CSSProperties : undefined} aria-label="模板视频预览">
         <div ref={container} className="template-preview-player absolute inset-0 size-full" />
+        <div className="pointer-events-none absolute inset-0"><SpritePreviewLayer ref={spriteLayer} placements={spritePlacements} catalog={spriteCatalog} duration={duration} canvas={canvas} copy={spritePreviewCopy} time={time} /></div>
         <Button type="button" variant="ghost" size="icon-xs" aria-label="全屏预览" title="全屏预览" onClick={() => { if (stage.current) void stage.current.requestFullscreen(); }} className="template-preview-fullscreen absolute bottom-2 right-2 rounded-[5px] p-0"><Maximize2 className="size-3" aria-hidden="true" /></Button>
       </div>
       <div className="template-preview-controls flex flex-wrap items-center gap-2.5 py-3">

@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import json
+from pathlib import Path
 from uuid import uuid4
 
 import httpx
@@ -318,3 +319,45 @@ def test_actor_receives_reference_images_outside_persistent_window(
     )
     assert result.tool_calls[0].id == "new"
     assert context.serialize() == original and "image_url" not in original
+
+
+@pytest.mark.parametrize("vision", [False, True])
+@pytest.mark.parametrize("supports_thinking", [False, True])
+def test_thinking_extension_is_opt_in_for_actor_and_judge(vision, supports_thinking):
+    """复制示例配置可接严格网关；显式开启后仍支持接受 thinking 的接口，两条模型路径均不隐式重试。"""
+    settings = Settings(
+        _env_file=Path(__file__).resolve().parents[1] / ".env.example",
+        actor_model="glm-5.3-flash",
+        vision_model="glm-5.3-flash",
+        actor_api_key=SecretStr("offline-fixture"),
+        vision_api_key=SecretStr("offline-fixture"),
+    )
+    if supports_thinking:
+        settings.disable_thinking = True
+    requests = []
+
+    def respond(request):
+        """模拟拒绝未知字段的实际 HTTP 400，不连接真实模型或读取用户密钥。"""
+        body = json.loads(request.content)
+        requests.append(body)
+        if not supports_thinking and "thinking" in body:
+            return httpx.Response(400, json={"error": {"code": "unknown_parameter", "message": 'unknown field "thinking"'}})
+        return httpx.Response(200, json={
+            "usage": {"total_tokens": 10},
+            "choices": [{"finish_reason": "stop", "message": {
+                "role": "assistant",
+                "content": '{"status":"pass","detail":"Offline response."}',
+            }}],
+        })
+
+    provider = Provider(settings, transport=httpx.MockTransport(respond))
+    budget = Budget()
+    result = asyncio.run(
+        provider.ask(AnswerReview, "review", "test", budget, vision=True)
+        if vision else provider.turn("actor", Conversation(), [], budget)
+    )
+    assert result is not None and len(requests) == budget.calls == 1
+    if supports_thinking:
+        assert requests[0]["thinking"] == {"type": "disabled"}
+    else:
+        assert "thinking" not in requests[0]

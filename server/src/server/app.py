@@ -20,6 +20,7 @@ from .segmentation.router import router as segmentation_router
 from .settings_plugins import router as settings_router
 from .sub_api.router import router
 from .template.router import router as template_router
+from .sprites.router import router as sprites_router
 from .remotion_templates.api import app as remotion_templates_app
 from .video_composition.router import router as composition_router
 from .video_composition.service import Runtime
@@ -59,6 +60,7 @@ app.add_middleware(
 )
 app.include_router(router)
 app.include_router(template_router)
+app.include_router(sprites_router)
 app.include_router(segmentation_router)
 app.include_router(settings_router)
 app.mount("/api/templates", remotion_templates_app)
