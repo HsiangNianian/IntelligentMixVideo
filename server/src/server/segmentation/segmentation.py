@@ -14,7 +14,7 @@ from openai import APIError, APITimeoutError, OpenAI
 
 from .settings import ClientSettings, Settings
 
-# 对齐忽略常见中英文标点；字幕显示保留问号，其余标点去除。
+# 对齐忽略常见中英文标点；字幕过滤集合供下游合成使用，切片原文保留标点。
 PUNCTUATION = set("，。！？、；：“”‘’（）《》〈〉【】〔〕…—～·,.!?;:\"'()<>[]{}~`")
 SUBTITLE_PUNCTUATION = PUNCTUATION - {"？", "?"}
 
@@ -54,8 +54,8 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     替换/增删代价均为 1；波前搜索保留最远位置，平局依次优先替换、文案多字、
     ASR 多字。模型只返回分句切点和关键词，时间投射和关键词校验由代码完成。
     显式 config 仅用于当前调用；省略时读取 server/.env 与 IMV_ 环境变量，SDK 在返回前关闭。
-    返回 segments（整型 segment_id、秒制 start_time/end_time、group_id、字符串 keyword、level，
-    以及仅供字幕使用、保留问号的 subtitle_parts）、warnings 和 trace；
+    返回 segments（整型 segment_id、秒制 start_time/end_time、group_id、字符串 keyword、level）、
+    warnings 和 trace；原文保留标点，字幕去标点由下游合成处理。
     空内容或输出时间错误抛 ValueError，配置或模型输出错误抛
     RuntimeError，内部约束错误抛 AssertionError；ASR 嵌套读取和 SDK 异常原样传播。
     diagnostics 供共用入口记录已完成阶段的详细 trace；返回值只保留原有统计字段。
@@ -219,7 +219,6 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     for token in re.finditer(r"[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*%?", script):
         begin, end = bisect.bisect_left(offsets, token.start()), bisect.bisect_left(offsets, token.end())
         forbidden.update(range(begin + 1, end))
-    subtitle_forbidden = forbidden.copy()
     # 增删修复块内时间为估算值，保留整块以免制造看似精确的切点。
     for begin, end in repair_ranges:
         forbidden.update(range(begin + 1, end))
@@ -396,7 +395,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                 if not isinstance(cuts, list) or len(cuts) != len(oversized):
                     raise RuntimeError("二次切分 cuts 必须与超长片段一一对应。")
                 planned = dict(zip(oversized, cuts))
-                refined, spans, span_groups, cursor = [], [], [], 0
+                refined, span_groups, cursor = [], [], 0
                 for index, item in enumerate(segments):
                     text, keyword = item["text"], item["keyword"]
                     points = planned.get(index, [])
@@ -417,7 +416,6 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                         refined.append({**item, "text": text[begin:end], "keyword": inherited,
                                         "level": 2 if inherited else 1,
                                         "start_time_ms": round(starts[a]), "end_time_ms": round(ends[b - 1])})
-                        spans.append((a, b))
                         span_groups.append(attribution[a])
                     cursor += len(text)
                 segments = refined
@@ -441,28 +439,6 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     for item in segments:
         item["start_time"] = item.pop("start_time_ms") / 1000
         item["end_time"] = item.pop("end_time_ms") / 1000
-    # 字幕在原切片内按标点细分；以下一个发音字符的时间切换，保留片段间原有停顿。
-    raw_begin = 0
-    for item, (a, b) in zip(segments, spans):
-        raw_end = raw_begin + len(item["text"])
-        cuts = []
-        previous_ms = round(starts[a])
-        for mark in re.finditer(r"[，。！？；：、…—,.!?;:]+", script[raw_begin:raw_end]):
-            cut = bisect.bisect_left(offsets, raw_begin + mark.end())
-            if not a < cut < b or cut in subtitle_forbidden:
-                continue
-            cut_ms = round(starts[cut])
-            if previous_ms < cut_ms < round(ends[b - 1]):
-                cuts.append((cut, cut_ms))
-                previous_ms = cut_ms
-        text_edges = [raw_begin, *(offsets[cut] for cut, _ in cuts), raw_end]
-        times = [item["start_time"], *(ms / 1000 for _, ms in cuts), item["end_time"]]
-        item["subtitle_parts"] = [
-            {"text": "".join(char for char in script[left:right] if char not in SUBTITLE_PUNCTUATION).strip(),
-             "start_time": start, "end_time": end}
-            for left, right, start, end in zip(text_edges, text_edges[1:], times, times[1:])
-        ]
-        raw_begin = raw_end
     return {
         "segments": segments,
         "warnings": warnings,
