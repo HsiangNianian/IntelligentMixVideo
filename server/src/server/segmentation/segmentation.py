@@ -19,6 +19,18 @@ PUNCTUATION = set("，。！？、；：“”‘’（）《》〈〉【】〔�
 SUBTITLE_PUNCTUATION = PUNCTUATION - {"？", "?"}
 
 
+def segmentation_error(exc: Exception) -> tuple[str, int]:
+    """日志与 HTTP 共用错误摘要和状态码；模型异常不回显供应商响应或凭据。"""
+    if isinstance(exc, APITimeoutError):
+        return "模型请求超时。", 504
+    if isinstance(exc, APIError):
+        return "模型服务请求失败。", 502
+    if isinstance(exc, (ValueError, RuntimeError, AssertionError)):
+        status = 422 if isinstance(exc, ValueError) else 500 if isinstance(exc, AssertionError) else 502
+        return str(exc), status
+    return type(exc).__name__, 500
+
+
 def segment(payload: dict, *, config: ClientSettings | None = None, diagnostics: dict | None = None) -> dict:
     """HTTP 与合成任务共用入口：记录阶段诊断，保留返回值和原异常，不记录凭据。"""
     diagnostics = {} if diagnostics is None else diagnostics
@@ -27,15 +39,7 @@ def segment(payload: dict, *, config: ClientSettings | None = None, diagnostics:
     try:
         result = _segment(payload, config=config, diagnostics=diagnostics)
     except Exception as exc:
-        if isinstance(exc, APITimeoutError):
-            message, status = "模型请求超时。", 504
-        elif isinstance(exc, APIError):
-            message, status = "模型服务请求失败。", 502
-        elif isinstance(exc, (ValueError, RuntimeError, AssertionError)):
-            message = str(exc)
-            status = 422 if isinstance(exc, ValueError) else 500 if isinstance(exc, AssertionError) else 502
-        else:
-            message, status = type(exc).__name__, 500
+        message, status = segmentation_error(exc)
         logger.warning("切片失败 stage=%s status=%s error=%s trace=%s",
                        diagnostics["stage"], status, message, diagnostics["trace"])
         raise

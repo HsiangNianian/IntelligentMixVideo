@@ -4,11 +4,11 @@ from typing import Annotated
 
 from fastapi import APIRouter, Body
 from fastapi.responses import JSONResponse
-from openai import APIError, APITimeoutError
+from openai import APIError
 
 from .examples import SEGMENTATION_REQUEST_EXAMPLE, SEGMENTATION_RESPONSE_EXAMPLE
 from .schema import SegmentationRequest
-from .segmentation import segment
+from .segmentation import segment, segmentation_error
 
 # 应用只注册此路由；业务函数也可由非 HTTP 调用方直接使用。
 # 显式声明文档分组，避免未打标签的接口被 Swagger UI 归入默认分组。
@@ -33,11 +33,6 @@ def create_segmentation(
     """调用切片函数，由共用入口记录日志；响应保持原有字段与状态码。"""
     try:
         return segment(payload.model_dump(exclude={"config"}), config=payload.config)
-    except APITimeoutError:
-        message, status = "模型请求超时。", 504
-    except APIError:
-        message, status = "模型服务请求失败。", 502
-    except (ValueError, RuntimeError, AssertionError) as exc:
-        status = 422 if isinstance(exc, ValueError) else 500 if isinstance(exc, AssertionError) else 502
-        message = str(exc)
+    except (APIError, ValueError, RuntimeError, AssertionError) as exc:
+        message, status = segmentation_error(exc)
     return JSONResponse({"error": {"message": message}}, status_code=status)
