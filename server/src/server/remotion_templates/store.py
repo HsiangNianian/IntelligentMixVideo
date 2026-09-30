@@ -28,7 +28,6 @@ from .models import (
     validation_fingerprint,
 )
 from .parameters import patch_parameters
-from .trajectory import Trajectory
 
 
 class NotFound(HTTPException):
@@ -442,12 +441,10 @@ class Store:
                         else base.id
                     )
                 else:
-                    assessment = Trajectory().observe(candidate, spec, report)
-                    if not assessment.completion_allowed:
-                        raise Conflict(
-                            "candidate cannot be published: "
-                            + "; ".join(assessment.feedback)
-                        )
+                    if (not report.passed
+                        or report.fingerprint != validation_fingerprint(candidate, spec, report.runtime)
+                        or (spec.schema_version == "2") != (report.profile == "pr76")):
+                        raise Conflict("Candidate lacks current successful validation evidence")
                 row = db.execute(
                     "SELECT data FROM projects WHERE id=?", (str(job.project_id),)
                 ).fetchone()
