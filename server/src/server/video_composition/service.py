@@ -219,7 +219,7 @@ class Runtime:
                 raise HTTPException(403, "匹配回调令牌无效")
             if data.get("match_id") and data["match_id"] != callback.taskId:
                 raise HTTPException(409, "匹配任务 ID 不符")
-            await self.log(record, "match_callback_received", input=raw if raw is not None else callback.model_dump(mode="json"))
+            await self.log(record, "match_callback_received", output=raw if raw is not None else callback.model_dump(mode="json"))
             if record["stage"] != "matching" or record["status"] in ("succeeded", "failed"):
                 await self.log(record, "match_callback_processed", output={"http_status": 200, "status": "ok", "ignored": True})
                 return

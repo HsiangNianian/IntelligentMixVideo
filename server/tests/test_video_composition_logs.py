@@ -10,7 +10,10 @@ from sqlalchemy import event
 from sqlalchemy.exc import OperationalError
 
 from server.video_composition import store
-from server.video_composition.execution_log import exception_details, sanitize
+from server.video_composition.execution_log import (
+    MODULES, add_event, append_event, compact_columns, exception_details, expand_columns,
+    sanitize, split_detail, update_summary,
+)
 
 
 def test_log_redacts_nested_credentials_and_url_queries():
@@ -111,13 +114,13 @@ async def test_concurrent_log_append_and_historical_task(composition_case, compo
     record = store.create(composition_case["request"], composition_settings.output())
     with template_db.begin() as connection:
         connection.execute(store.execution_logs.delete())
-    await asyncio.gather(*(asyncio.to_thread(store.add_log, record, "probe", {"index": i}) for i in range(12)))
+    await asyncio.gather(*(asyncio.to_thread(store.add_log, record, "probe", {"input": {"index": i}}) for i in range(12)))
     rows = composition_logs(record["task_id"])
-    assert len(rows) == 12 and sorted(row["details"]["index"] for row in rows) == list(range(12))
+    assert len(rows) == 12 and sorted(row["details"]["input"]["index"] for row in rows) == list(range(12))
     assert store.get(record["task_id"]) == record
     saved = composition_logs(record["task_id"], raw=True)
-    assert len(saved) == 1 and saved[0]["detail"]["记录条数"] == 12
-    assert saved[0]["detail"]["从提交开始记录"] is False
+    assert len(saved) == 1 and len(saved[0]["request"]["execute_log"]) == 12
+    assert len(saved[0]["request"]["input"]) == 12
 
 
 @pytest.mark.anyio
@@ -144,268 +147,340 @@ async def test_step_failure_and_cancellation_leave_input_log(composition_case, c
     assert rows[2]["details"]["exceptions"][0]["message"] == "素材不存在"
 
 
-def test_one_row_groups_complete_io_errors_and_readable_chinese(composition_case, composition_settings, composition_logs, template_db):
-    """新任务一行保留提交、步骤输入输出、报错与结束；中文及嵌套 SDK JSON 不被双重编码。"""
-    from sqlalchemy import select, text
+def test_module_columns_keep_io_errors_and_only_three_execution_fields(composition_case, composition_settings, composition_logs, template_db):
+    """七列各自存储，不新增 detail；陈旧事件不能覆盖任务终态，中文和嵌套 JSON 保持可读。"""
+    from sqlalchemy import inspect, text
 
     store.initialize_schema()
     record = store.create(composition_case["request"], composition_settings.output())
     running = store.advance(record, "template")
     store.add_log(running, "step_started", {"step": "template", "input": {"styleId": "模板编号"}})
-    store.add_log(running, "step_finished", {"step": "template", "output": {"Timeline": json.dumps({"Content": "标题中文", "token": "hidden-json"})}})
+    store.add_log(running, "step_finished", {"step": "template", "output": {"nested": json.dumps({"text": "中文", "token": "hidden"})}})
     failed = store.advance(running, "failed", status="failed", error={"stage": "template", "message": "模板错误"})
-    # 陈旧查询仍可记入事件，但不能把聚合行的终态覆盖为 processing。
-    store.add_log(running, "response_started", {"source": "query", "input": {"task_id": record["task_id"]}})
-    saved, = composition_logs(record["task_id"], raw=True)
+    store.add_log(running, "response_started", {"input": {"task_id": record["task_id"]}})
+    saved, = composition_logs(raw=True)
     assert saved["status"] == "failed" and saved["task_finished_at"] == failed["updated_at"].replace(tzinfo=None)
-    detail = saved["detail"]
-    assert detail["从提交开始记录"] is True and detail["记录条数"] == 6
-    assert detail["阶段记录"]["任务提交"]["输入"][0]["内容"]["text"] == composition_case["request"]["text"]
-    phase = detail["阶段记录"]["读取模板"]
-    assert phase["输入"][0]["内容"] == {"styleId": "模板编号"}
-    assert phase["输出"][0]["内容"]["Timeline"] == {"Content": "标题中文", "token": "[REDACTED]"}
-    assert phase["错误日志"][0]["错误原因"] == "模板错误"
+    for name in MODULES:
+        assert set(saved[name]) == {"input", "output", "execute_log", "error_log"}
+        assert all(set(entry) == {"time", "action", "status"} for entry in saved[name]["execute_log"])
+    assert saved["template"]["input"][0]["data"] == {"styleId": "模板编号"}
+    assert saved["template"]["output"][0]["data"] == {"nested": {"text": "中文", "token": "[REDACTED]"}}
+    assert saved["template"]["error_log"][0]["error"]["message"] == "模板错误"
+    assert all(not items for items in saved["asr"].values())
     with template_db.connect() as connection:
-        raw = connection.scalar(text("SELECT detail FROM video_composition_logs"))
-        assert "标题中文" in raw and "\\u" not in raw and "hidden-json" not in raw
-        assert connection.scalar(select(store.tasks.c.version)) == failed["version"]
+        assert "detail" not in {c["name"] for c in inspect(connection).get_columns("video_composition_logs")}
+        raw = connection.scalar(text("SELECT template FROM video_composition_logs"))
+        assert "中文" in raw and "\\u" not in raw and "hidden" not in raw
 
 
-def test_nested_json_chinese_is_decoded_without_corrupting_plain_text():
-    """只展开 JSON 对象/数组，普通中文、反斜杠文本与非 JSON 字符串保持原意。"""
-    nested = json.dumps({"items": json.dumps([{"keyword": "关键词", "api_key": "hidden"}])})
-    assert sanitize(nested) == {"items": [{"keyword": "关键词", "api_key": "[REDACTED]"}]}
-    assert sanitize("普通中文 C:\\users\\name") == "普通中文 C:\\users\\name"
-    assert sanitize("[不是 JSON]") == "[不是 JSON]"
+def test_final_submitted_timeline_and_long_asr_are_complete(composition_case, composition_settings, composition_logs):
+    """不把中间组装结果当最终时间线；超过一 MB 的 ASR、重复调用与末尾字段均完整保留。"""
+    store.initialize_schema()
+    record = store.create(composition_case["request"], composition_settings.output())
+    raw = {"text": "完整文字" * 100000, "tail": "结束"}
+    for _ in range(2):
+        store.add_log(record, "step_finished", {"step": "asr", "output": raw})
+    store.add_log(record, "step_finished", {"step": "assembling", "output": {"timeline": {"Content": "中间版"}, "warnings": []}})
+    assert composition_logs(raw=True)[0]["timeline"]["output"] == []
+    timeline = {"Content": "最终版", "EffectColorStyle": "CS0003-000003", "AdaptMode": "AutoWrap"}
+    payload = {"timeline": json.dumps(timeline), "output_media_config": '{"Width":1080}', "client_token": "hidden"}
+    current = store.advance(record, "submitting", ims_request=payload)
+    store.add_log(current, "step_started", {"step": "ims_submit", "input": payload})
+    saved, = composition_logs(raw=True)
+    assert saved["asr"]["output"][1]["data"] == {"$log_ref": "#/asr/output/0/data"}
+    assert [item["data"] for item in expand_columns(saved)["asr"]["output"]] == [raw, raw]
+    assert [item["data"] for item in saved["timeline"]["output"]] == [timeline]
+    assert saved["timeline"]["input"][0]["data"] == {"output_media_config": {"Width": 1080}, "client_token": "[REDACTED]"}
+    assert "中间版" not in json.dumps(saved, ensure_ascii=False, default=str)
+    assert "hidden" not in json.dumps(saved, default=str)
 
 
 @pytest.fixture
-def legacy_logs(template_db, composition_case, composition_settings):
-    """构建与上一版本一致的事件表，两个任务分别覆盖新提交与只有查询记录的旧任务。"""
-    from datetime import UTC, datetime
-    from sqlalchemy import JSON, Column, DateTime, Integer, MetaData, String, Table
+def legacy_detail_logs(template_db, composition_case, composition_settings):
+    """构造待迁移的真实 detail 表与任务，保留完整输入输出和历史缺失说明。"""
+    from sqlalchemy import JSON, Column, MetaData, Table
 
     store.initialize_schema()
-    records = [store.create(composition_case["request"], composition_settings.output()) for _ in range(2)]
+    record = store.create(composition_case["request"], composition_settings.output())
     store.execution_logs.drop(template_db)
-    old = Table("video_composition_logs", MetaData(),
-                Column("id", Integer, primary_key=True), Column("task_id", String(36)),
-                Column("event", String(40)), Column("stage", String(16)), Column("status", String(16)),
-                Column("details", JSON), Column("created_at", DateTime), Column("task_created_at", DateTime),
-                Column("task_finished_at", DateTime))
+    old = Table("video_composition_logs", MetaData(), *(
+        Column(c.name, c.type, primary_key=c.primary_key, nullable=c.nullable, unique=c.unique)
+        for c in store.execution_logs.columns if c.name not in MODULES
+    ), Column("detail", JSON, nullable=False))
     old.create(template_db)
+    detail = append_event({}, "submitted", "queued", "queued", {"input": composition_case["request"]}, record["created_at"])
+    detail = append_event(detail, "step_finished", "asr", "processing", {"step": "asr", "output": {"text": "完整识别"}}, record["updated_at"])
+    detail = update_summary(detail, record)
     with template_db.begin() as connection:
-        for index, (record, event_name) in enumerate(((records[0], "submitted"), (records[0], "step_finished"), (records[1], "response_ready"))):
-            connection.execute(old.insert().values(id=index + 1, task_id=record["task_id"], event=event_name,
-                stage="queued", status="queued", details={"step": "template", "output": json.dumps({"text": "迁移中文"})},
-                created_at=datetime.now(UTC).replace(tzinfo=None), task_created_at=record["created_at"].replace(tzinfo=None)))
-    return old, records
+        connection.execute(old.insert().values(id=42, task_id=record["task_id"], stage="queued", status="queued", detail=detail,
+            created_at=record["created_at"].replace(tzinfo=None), updated_at=record["updated_at"].replace(tzinfo=None),
+            task_created_at=record["created_at"].replace(tzinfo=None)))
+    return old, record
 
 
-def test_legacy_migration_preserves_every_event_and_backup(legacy_logs, template_db, composition_logs):
-    """旧三条事件合为两任务行，保留完整备份及顺序，重启不重复合并且可继续追加。"""
-    from sqlalchemy import func, inspect, select, text
+def test_detail_migration_keeps_exact_backup_and_restarts_once(legacy_detail_logs, template_db, composition_logs):
+    """旧表原样保留；ID、输入输出、时间不丢失，重复启动不重复迁移且可继续写日志。"""
+    from sqlalchemy import MetaData, Table, select
 
-    old, records = legacy_logs
-    store.initialize_schema()
-    store.initialize_schema()
-    saved = composition_logs(raw=True)
-    assert len(saved) == 2 and [r["detail"]["记录条数"] for r in saved] == [2, 1]
-    assert [r["detail"]["从提交开始记录"] for r in saved] == [True, False]
-    assert [r["event"] for r in composition_logs()] == ["submitted", "step_finished", "response_ready"]
-    assert composition_logs()[1]["details"]["output"] == {"text": "迁移中文"}
+    old, record = legacy_detail_logs
     with template_db.connect() as connection:
-        assert connection.scalar(text("SELECT COUNT(*) FROM video_composition_logs_events_backup")) == 3
-        assert connection.scalar(select(func.count()).select_from(store.execution_logs)) == 2
-        assert "detail" in {c["name"] for c in inspect(connection).get_columns(old.name)}
-    store.add_log(records[0], "probe", {"input": "迁移后继续"})
-    assert composition_logs(records[0]["task_id"], raw=True)[0]["detail"]["记录条数"] == 3
+        before = dict(connection.execute(select(old)).mappings().one())
+    store.initialize_schema()
+    saved, = composition_logs(raw=True)
+    assert saved["id"] == 42
+    assert saved["asr"]["output"][0]["data"] == {"text": "完整识别"}
+    assert saved["request"]["input"][0]["data"] == record["data"]["request"]
+    backup = Table("video_composition_logs_detail_backup", MetaData(), autoload_with=template_db)
+    with template_db.connect() as connection:
+        assert dict(connection.execute(select(backup)).mappings().one()) == before
+    store.initialize_schema()
+    assert composition_logs(raw=True) == [saved]
+    store.add_log(record, "step_failed", {"step": "asr", "exceptions": [{"message": "迁移后错误"}]})
+    assert composition_logs(raw=True)[0]["asr"]["error_log"][0]["error"]["message"] == "迁移后错误"
+    created = store.create(record["data"]["request"], record["data"]["output"])
+    assert composition_logs(created["task_id"], raw=True)[0]["id"] == 43
 
 
-def test_legacy_migration_failure_keeps_original_table(legacy_logs, template_db):
-    """合并失败不替换或删除原日志，中间表阻止盲目重跑以免覆盖排错数据。"""
-    from sqlalchemy import func, inspect, select
+@pytest.mark.parametrize("failure", ["insert", "readback"])
+def test_module_migration_failure_never_replaces_original(legacy_detail_logs, template_db, failure):
+    """写入或读回校验失败均保留原表，中间表阻止盲目覆盖；不触碰业务任务。"""
+    from sqlalchemy import inspect, select
 
-    old, _ = legacy_logs
+    old, record = legacy_detail_logs
+    with template_db.connect() as connection:
+        before = dict(connection.execute(select(old)).mappings().one())
 
-    def reject_merged(connection, cursor, statement, parameters, context, executemany):
-        """只拒绝向中间表写入，原表始终可读取。"""
-        if statement.startswith("INSERT INTO video_composition_logs_merged"):
-            raise OperationalError("merge failed", {}, Exception("unavailable"))
+    def reject_copy(connection, cursor, statement, parameters, context, executemany):
+        """插入时注入故障，或在读回之前修改新表内容以验证校验有效。"""
+        if statement.startswith("INSERT INTO video_composition_logs_modules"):
+            if failure == "insert":
+                raise OperationalError("copy failed", {}, Exception("unavailable"))
+            cursor.execute("UPDATE video_composition_logs_modules SET status='invalid'")
 
-    event.listen(template_db, "before_cursor_execute", reject_merged)
+    event.listen(template_db, "after_cursor_execute", reject_copy)
     try:
-        with pytest.raises(OperationalError):
+        with pytest.raises(OperationalError if failure == "insert" else RuntimeError):
             store.initialize_schema()
     finally:
-        event.remove(template_db, "before_cursor_execute", reject_merged)
+        event.remove(template_db, "after_cursor_execute", reject_copy)
     with template_db.connect() as connection:
-        assert connection.scalar(select(func.count()).select_from(old)) == 3
-        assert not inspect(connection).has_table("video_composition_logs_events_backup")
+        assert dict(connection.execute(select(old)).mappings().one()) == before
+        assert not inspect(connection).has_table("video_composition_logs_detail_backup")
+    assert store.get(record["task_id"]) == record
     with pytest.raises(RuntimeError, match="不会覆盖历史数据"):
         store.initialize_schema()
 
 
-def test_beijing_migration_restores_real_snapshots_once(template_db, composition_case, composition_settings, composition_logs):
-    """UTC 跨日转换一次，原始请求和已存快照可读；不补造 ASR、执行事件或未知异常。"""
-    from datetime import datetime, timedelta
-    from sqlalchemy import select
-
-    store.initialize_schema()
-    record = store.create(composition_case["request"], composition_settings.output())
-    old_created = datetime(2026, 9, 14, 20, 10, 0)
-    data = {**record["data"], "template": composition_case["template"],
-            "segmentation": {"segments": composition_case["segments"]}, "matches": composition_case["matches"],
-            "match_request": {"taskId": "旧匹配任务"}, "timeline": {"VideoTracks": []},
-            "ims_request": {"timeline": '{"VideoTracks": []}'}, "timeline_warnings": ["转场已缩短"],
-            "result": {"mediaId": "real-snapshot-id", "durationSeconds": 8.02},
-            "notification_status": "failed", "ims_deadline": "2026-09-15T00:00:00+00:00"}
-    data.pop("storage_timezone")
-    with template_db.begin() as connection:
-        connection.execute(store.execution_logs.delete())
-        connection.execute(store.tasks.update().values(status="succeeded", stage="completed", data=data,
-                           created_at=old_created, updated_at=old_created + timedelta(minutes=1)))
-    store.initialize_schema()
-    converted = store.get(record["task_id"])
-    saved, = composition_logs(raw=True)
-    assert converted["created_at"].isoformat() == "2026-09-15T04:10:00+08:00"
-    assert saved["task_finished_at"] == datetime(2026, 9, 15, 4, 11)
-    assert saved["detail"]["原始输入"] == composition_case["request"]
-    assert set(saved["detail"]["历史补录"]) == {"说明", "语音识别原始输出", "通知错误", "时间线警告"}
-    assert saved["detail"]["历史补录"]["时间线警告"] == ["转场已缩短"]
-    assert "无法" in saved["detail"]["历史补录"]["语音识别原始输出"]
-    assert "通知失败" in saved["detail"]["历史补录"]["通知错误"]
-    assert saved["detail"]["记录条数"] == 0
-    assert saved["detail"]["阶段记录"]["文本切分"]["输出"][0]["内容"]["segments"] == composition_case["segments"]
-    phases = saved["detail"]["阶段记录"]
-    assert phases["读取模板"]["输出"][0]["内容"] == composition_case["template"]
-    assert phases["提交素材匹配"]["输入"][0]["内容"] == {"taskId": "旧匹配任务"}
-    assert phases["素材匹配"]["输出"][0]["内容"] == composition_case["matches"]
-    assert phases["组装视频时间线"]["输出"][0]["内容"] == {"VideoTracks": []}
-    assert phases["提交云端合成"]["输入"][0]["内容"] == {"timeline": {"VideoTracks": []}}
-    assert saved["detail"]["阶段记录"]["通知调用方"]["错误日志"][0]["时间"] is None
-    assert saved["detail"]["最终输出"]["视频链接"] is None
-    store.initialize_schema()
-    assert store.get(record["task_id"]) == converted and composition_logs(raw=True) == [saved]
-    assert converted["data"]["ims_deadline"] == data["ims_deadline"]
-    with template_db.connect() as connection:
-        from sqlalchemy import text
-        assert connection.scalar(text("SELECT created_at FROM video_compositions_utc_backup")) == str(old_created) + ".000000"
-        assert connection.scalar(select(store.tasks.c.version)) == record["version"]
-
-
-def test_old_aggregate_events_become_readable_with_same_instant(template_db, composition_case, composition_settings, composition_logs):
-    """保留已有事件和原始输入输出；事件显式 +00:00 转成 +08:00，异常不变成假成功。"""
+def test_migration_restores_only_existing_snapshots_and_marks_missing_asr(legacy_detail_logs, template_db, composition_logs):
+    """无日志旧任务从真实快照补录，UTC 只转换一次，ASR 未保存事实不得伪造成输出。"""
     from datetime import datetime
 
-    store.initialize_schema()
-    record = store.create(composition_case["request"], composition_settings.output())
-    old = {"stages": {"asr": {"logs": [
-        {"sequence": 1, "event": "step_started", "time": "2026-09-14T10:00:00+00:00", "stage": "asr", "status": "processing", "step": "asr", "input": {"audio_url": "https://media.test/tts.wav"}}],
-        "errors": [{"sequence": 2, "event": "step_failed", "time": "2026-09-14T10:00:01+00:00", "stage": "asr", "status": "processing", "step": "asr", "exceptions": [{"message": "音频无法下载"}]}]}}}
+    old, record = legacy_detail_logs
+    data = {**record["data"], "template": {"name": "旧模板"}, "ims_request": {"timeline": '{"Content":"最终提交"}'},
+            "notification_status": "failed", "result": {"videoUrl": "https://video.test/final.mp4"}}
+    data.pop("storage_timezone")
     with template_db.begin() as connection:
-        connection.execute(store.execution_logs.update().values(detail=old, created_at=datetime(2026, 9, 14, 10), updated_at=datetime(2026, 9, 14, 10, 0, 1)))
+        connection.execute(old.delete())
+        connection.execute(store.tasks.update().values(data=data, status="succeeded", stage="completed",
+                           created_at=datetime(2026, 9, 14, 20), updated_at=datetime(2026, 9, 14, 21)))
     store.initialize_schema()
     saved, = composition_logs(raw=True)
-    phase = saved["detail"]["阶段记录"]["语音识别"]
-    assert phase["执行日志"][0]["说明"] == "开始语音识别，输入已记录"
-    assert phase["错误日志"][0]["错误原因"] == "音频无法下载"
-    assert phase["输入"][0]["内容"] == {"audio_url": "https://media.test/tts.wav"}
-    assert phase["输出"] == []
-    assert phase["输入"][0]["时间"] == "2026-09-14 18:00:00.000000+08:00"
-    assert saved["created_at"] == datetime(2026, 9, 14, 18)
+    assert saved["task_created_at"] == datetime(2026, 9, 15, 4)
+    assert saved["task_finished_at"] == datetime(2026, 9, 15, 5)
+    assert saved["template"]["output"][0]["data"] == {"name": "旧模板"}
+    assert saved["timeline"]["output"][0]["data"] == {"Content": "最终提交"}
+    assert saved["asr"]["output"] == []
+    assert saved["zos"]["output"][0]["data"] == {"aliyun_video_url": data["result"]["videoUrl"]}
+    assert "无法" in json.dumps(saved["request"]["output"], ensure_ascii=False)
+    assert saved["request"]["error_log"][0]["time"] is None
     store.initialize_schema()
     assert composition_logs(raw=True) == [saved]
 
 
-def test_beijing_migration_failure_rolls_back_times_and_detail(template_db, composition_case, composition_settings, composition_logs):
-    """历史补录落库失败时任务时间及转换标记一起回滚，下次启动安全重试。"""
-    store.initialize_schema()
-    record = store.create(composition_case["request"], composition_settings.output())
-    data = dict(record["data"])
-    data.pop("storage_timezone")
+def test_old_aggregate_utc_errors_are_preserved(legacy_detail_logs, template_db, composition_logs):
+    """兼容更早的英文聚合格式；错误和原始输入保留，时间统一转换为北京时间。"""
+    from datetime import datetime
+
+    old, _ = legacy_detail_logs
+    detail = {"stages": {"asr": {"logs": [
+        {"sequence": 1, "event": "step_started", "time": "2026-09-14T10:00:00+00:00", "stage": "asr", "status": "processing", "step": "asr", "input": {"audio_url": "https://media.test/tts.wav"}}],
+        "errors": [{"sequence": 2, "event": "step_failed", "time": "2026-09-14T10:00:01+00:00", "stage": "asr", "status": "processing", "step": "asr", "exceptions": [{"message": "音频无法下载"}]}]}}}
     with template_db.begin() as connection:
-        connection.execute(store.tasks.update().values(data=data))
-    before_task, before_logs = store.get(record["task_id"]), composition_logs(raw=True)
-
-    def reject_update(connection, cursor, statement, parameters, context, executemany):
-        """只拒绝主日志更新，不阻止备份和任务事务准备。"""
-        if statement.startswith("UPDATE video_composition_logs SET"):
-            raise OperationalError("write failed", {}, Exception("unavailable"))
-
-    event.listen(template_db, "before_cursor_execute", reject_update)
-    try:
-        with pytest.raises(OperationalError):
-            store.initialize_schema()
-    finally:
-        event.remove(template_db, "before_cursor_execute", reject_update)
-    assert store.get(record["task_id"]) == before_task and composition_logs(raw=True) == before_logs
+        connection.execute(old.update().values(detail=detail, created_at=datetime(2026, 9, 14, 10), updated_at=datetime(2026, 9, 14, 10, 0, 1)))
     store.initialize_schema()
-    assert store.get(record["task_id"])["data"]["storage_timezone"] == "Asia/Shanghai"
-
-
-def test_media_urls_preserve_actual_output_without_callback_credentials():
-    """用户提供和接口返回的媒体链接保留签名，回调令牌和服务鉴权仍脱敏。"""
-    payload = {"videoUrl": "https://media.test/video.mp4?Signature=actual-signature", "Authorization": "secret",
-               "callbackUrl": "https://callback.test/result?token=hidden"}
-    cleaned = sanitize(payload)
-    assert cleaned["videoUrl"] == payload["videoUrl"]
-    assert cleaned["callbackUrl"] == "https://callback.test/result"
-    assert cleaned["Authorization"] == "[REDACTED]"
-
-
-def test_compaction_removes_only_identical_history_copies():
-    """删掉历史补录中的同文副本，保留不同版本、无对应阶段的独有数据和完整效果字段。"""
-    from server.video_composition.execution_log import compact_detail
-
-    timeline = {"SubtitleTrackClips": [{"EffectColorStyle": "CS0003-000003", "AdaptMode": "AutoWrap", "Content": "中文正文"}]}
-    detail = {"历史补录": {"视频时间线的输出": deepcopy(timeline), "云端合成的输入": {"timeline": "独有旧版本"},
-                         "读取模板的输出": {"name": "尚无阶段记录"}, "说明": "历史数据，非补造事件"},
-              "阶段记录": {"组装视频时间线": {"输入": [], "输出": [{"内容": timeline}], "执行日志": [], "错误日志": []},
-                           "提交云端合成": {"输入": [{"内容": {"timeline": timeline}}], "输出": [], "执行日志": [], "错误日志": []}}}
-    before_phases = deepcopy(detail["阶段记录"])
-    compact_detail(detail)
-    assert "视频时间线的输出" not in detail["历史补录"]
-    assert detail["历史补录"]["云端合成的输入"] == {"timeline": "独有旧版本"}
-    assert detail["历史补录"]["读取模板的输出"] == {"name": "尚无阶段记录"}
-    assert detail["阶段记录"] == before_phases
-    snapshot = deepcopy(detail)
-    assert compact_detail(detail) == snapshot
-
-
-def test_stage_snapshot_retained_until_actual_output_is_saved(composition_case, composition_settings, composition_logs):
-    """阶段输出尚未落库时保留快照；同文输出到达后删除副本，重复真实调用和错误日志仍全部保留。"""
-    store.initialize_schema()
-    record = store.create(composition_case["request"], composition_settings.output())
-    template = composition_case["template"]
-    current = store.advance(record, "asr", template=template)
-    phase = composition_logs(raw=True)[0]["detail"]["阶段记录"]["语音识别"]
-    assert phase["执行日志"][0]["详情"]["template"] == template
-    store.add_log(current, "step_finished", {"step": "template", "output": template})
-    store.add_log(current, "step_failed", {"step": "template", "exceptions": [{"message": "读取失败，请重试"}]})
-    store.add_log(current, "step_finished", {"step": "template", "output": template})
     saved, = composition_logs(raw=True)
-    phases = saved["detail"]["阶段记录"]
-    assert "template" not in phases["语音识别"]["执行日志"][0]["详情"]
-    assert phases["语音识别"]["执行日志"][0]["数据位置"]["读取模板的输出"] == "读取模板 → 输出"
-    assert [item["内容"] for item in phases["读取模板"]["输出"]] == [template, template]
-    assert phases["读取模板"]["错误日志"][0]["错误原因"] == "读取失败，请重试"
-    assert saved["detail"]["记录条数"] == 5
-    assert store.get(record["task_id"]) == current
+    assert saved["asr"]["error_log"][0]["error"]["message"] == "音频无法下载"
+    assert saved["asr"]["input"][0]["time"] == "2026-09-14 18:00:00.000000+08:00"
+    assert saved["created_at"] == datetime(2026, 9, 14, 18)
 
 
-def test_long_json_preserves_complete_effect_values_and_tail(composition_case, composition_settings, composition_logs, template_db):
-    """超过常见单元格预览长度的 JSON 完整写入，SDK 嵌套串解析和整理不截断枚举或末尾内容。"""
-    from sqlalchemy import select
+def test_legacy_event_table_migrates_with_all_original_rows_backed_up(legacy_detail_logs, template_db, composition_logs):
+    """兼容最早的一事件一行表；原始事件备份和 detail 备份均保留，步骤输出可继续读取。"""
+    from datetime import datetime
+    from sqlalchemy import JSON, Column, DateTime, Integer, MetaData, String, Table, text
 
+    old, record = legacy_detail_logs
+    old.drop(template_db)
+    events = Table(old.name, MetaData(), Column("id", Integer, primary_key=True), Column("task_id", String(36)),
+                   Column("stage", String(16)), Column("status", String(16)), Column("event", String(40)),
+                   Column("details", JSON), Column("created_at", DateTime), Column("task_created_at", DateTime),
+                   Column("task_finished_at", DateTime))
+    events.create(template_db)
+    with template_db.begin() as connection:
+        connection.execute(events.insert().values(id=1, task_id=record["task_id"], stage="asr", status="processing",
+            event="step_finished", details={"step": "asr", "output": {"text": "迁移中文"}},
+            created_at=datetime(2026, 9, 14, 10), task_created_at=datetime(2026, 9, 14, 10)))
     store.initialize_schema()
-    record = store.create(composition_case["request"], composition_settings.output())
-    timeline = {"EffectColorStyle": "CS0003-000003", "AdaptMode": "AutoWrap", "Content": "长文本验证。" * 12000, "末尾": "完整结束"}
-    store.add_log(record, "step_finished", {"step": "assembling", "output": {"timeline": json.dumps(timeline)}})
-    current = store.advance(record, "submitting", timeline=timeline)
-    saved, = composition_logs(raw=True)
-    assert saved["detail"]["阶段记录"]["组装视频时间线"]["输出"][0]["内容"]["timeline"] == timeline
-    assert "timeline" not in saved["detail"]["阶段记录"]["准备云端合成"]["执行日志"][0]["详情"]
+    assert composition_logs(raw=True)[0]["asr"]["output"][0]["data"] == {"text": "迁移中文"}
     with template_db.connect() as connection:
-        assert connection.scalar(select(store.tasks.c.data))["timeline"] == timeline
-    assert store.get(record["task_id"]) == current
+        assert connection.scalar(text("SELECT COUNT(*) FROM video_composition_logs_events_backup")) == 1
+        assert connection.scalar(text("SELECT COUNT(*) FROM video_composition_logs_detail_backup")) == 1
+
+
+def test_nested_json_and_media_urls_keep_content_without_credentials():
+    """递归展开 SDK JSON，保留媒体 URL，回调凭证仍脱敏，普通文本不变。"""
+    nested = json.dumps({"items": json.dumps([{"keyword": "关键词", "api_key": "hidden"}])})
+    assert sanitize(nested) == {"items": [{"keyword": "关键词", "api_key": "[REDACTED]"}]}
+    payload = {"videoUrl": "https://media.test/v.mp4?Signature=actual", "callbackUrl": "https://notify.test/?token=hidden"}
+    assert sanitize(payload) == {"videoUrl": payload["videoUrl"], "callbackUrl": "https://notify.test/"}
+    assert sanitize("普通中文 C:\\users\\name") == "普通中文 C:\\users\\name"
+    assert sanitize("[不是 JSON]") == "[不是 JSON]"
+
+
+def test_legacy_response_address_is_available_in_zos():
+    """旧成功任务的签名成片地址可能仅保存在最终响应，迁移后也能直接在 ZOS 列查看。"""
+
+    result = {"videoUrl": "https://media.test/final.mp4?Signature=actual", "durationSeconds": 10}
+    columns = split_detail({"最终输出": {"status": "succeeded", "result": result}})
+    assert columns["zos"]["output"][0]["data"] == {"aliyun_video_url": result["videoUrl"]}
+    assert columns["zos"]["execute_log"] == []
+
+
+def test_module_references_preserve_payloads_events_and_upstream_sources():
+    """上游原文、不同版本、重试与错误无损；嵌套键可转义，业务 $ref 不误解析。"""
+
+    columns = split_detail({})
+    transcript = {"text": "完整转写" * 100, "$ref": "业务中的普通引用"}
+    template = {"tracks": [{"id": "对象" * 80}]}
+    segments = [{"text": "切片" * 100}]
+    timeline = {"VideoTracks": [{"VideoTrackClips": [{"MediaURL": "https://media.test/" + "x" * 200}]}]}
+    result = {"videoUrl": "https://media.test/" + "v" * 200}
+
+    def put(module, direction, data):
+        """模拟不同模块的实际输入输出条目，保留每次调用的动作和时间。"""
+        columns[module][direction].append({"time": "2026-09-30T10:00:00+08:00", "action": f"{module}.step", "data": data})
+
+    put("asr", "output", transcript)
+    put("asr", "output", transcript)
+    put("template", "output", template)
+    put("segmentation", "input", {"asr_result": transcript})
+    put("segmentation", "output", {"a/b~c": segments})
+    put("matching", "input", {"llm": {"segments": segments}})
+    put("timeline", "input", {"template": template, "segments": segments})
+    put("timeline", "output", timeline)
+    put("zos", "output", {"MediaProducingJob": {"Timeline": timeline, "Status": "Processing"}})
+    put("zos", "output", {"MediaProducingJob": {"Timeline": timeline, "Status": "Success"}})
+    put("zos", "output", result)
+    put("request", "output", {"result": result})
+    columns["zos"]["execute_log"] = [{"time": None, "action": "ims_query.step_finished", "status": "processing"}]
+    columns["zos"]["error_log"] = [{"time": None, "action": "ims_query.step_failed", "status": "failed", "error": transcript}]
+    before = deepcopy(columns)
+    compacted = compact_columns(columns)
+    assert columns == before
+    expected = deepcopy(before)
+    expected["zos"]["output"] = [{**before["zos"]["output"][2], "data": {"aliyun_video_url": result["videoUrl"]}}]
+    assert expand_columns(compacted) == expected
+    assert compact_columns(compacted) == compacted
+    assert compacted["asr"]["output"][0]["data"] == transcript
+    assert compacted["asr"]["output"][1]["data"] == {"$log_ref": "#/asr/output/0/data"}
+    assert compacted["segmentation"]["input"][0]["data"]["asr_result"] == {"$log_ref": "#/asr/output/0/data"}
+    assert compacted["matching"]["input"][0]["data"]["llm"]["segments"] == {"$log_ref": "#/segmentation/output/0/data/a~1b~0c"}
+    assert compacted["timeline"]["input"][0]["data"]["template"] == {"$log_ref": "#/template/output/0/data"}
+    assert compacted["zos"]["output"][0]["data"] == {"aliyun_video_url": result["videoUrl"]}
+    assert compacted["request"]["output"][0]["data"]["result"] == result
+    assert len(json.dumps(compacted)) < len(json.dumps(before))
+
+
+def test_append_rebuilds_references_after_sorting_and_keeps_distinct_versions():
+    """较早事件插入导致数组位置变化后仍指向原值；快照补录去重在展开后判断。"""
+    from datetime import datetime
+
+    record = {"stage": "asr", "status": "processing"}
+    raw = {"text": "第一版" * 100}
+    columns = add_event(None, "step_finished", record, {"step": "asr", "output": raw}, datetime.fromisoformat("2026-09-30T10:00:00+08:00"))
+    columns = add_event(columns, "step_started", record, {"step": "segmentation", "input": {"asr_result": raw}}, datetime.fromisoformat("2026-09-30T11:00:00+08:00"))
+    changed = {"text": "另一版" * 100}
+    columns = add_event(columns, "step_finished", record, {"step": "asr", "output": changed}, datetime.fromisoformat("2026-09-30T09:00:00+08:00"))
+    assert columns["segmentation"]["input"][0]["data"]["asr_result"] == {"$log_ref": "#/asr/output/1/data"}
+    expanded = expand_columns(columns)
+    assert [item["data"] for item in expanded["asr"]["output"]] == [changed, raw]
+    assert expanded["segmentation"]["input"][0]["data"]["asr_result"] == raw
+    assert len(expanded["asr"]["execute_log"]) == 2
+
+
+def test_matching_callback_moves_to_output_without_losing_referenced_data():
+    """旧回调及其引用一起迁移；请求仍在输入，匹配失败原文和执行记录完整保留。"""
+
+    columns = split_detail({})
+    request = {"text": "匹配请求" * 80}
+    callback = {"taskId": "match-1", "status": "failed", "error": "匹配失败" * 80}
+    columns["matching"]["input"] = [
+        {"time": "1", "action": "match_submit.step_started", "data": request},
+        {"time": "2", "action": "matching.http_response", "data": {"body": {"$log_ref": "#/matching/input/0/data"}}},
+        {"time": "3", "action": "matching.match_callback_received", "data": callback},
+    ]
+    columns["matching"]["output"] = [
+        {"time": "4", "action": "matching.match_callback_processed", "data": {"http_status": 200}},
+        {"time": "5", "action": "matching.historical_snapshot", "data": {"$log_ref": "#/matching/input/2/data"}},
+    ]
+    columns["matching"]["execute_log"] = [{"time": "3", "action": "matching.match_callback_received", "status": "processing"}]
+    original = deepcopy(columns)
+    saved = compact_columns(columns)
+    expanded = expand_columns(saved)["matching"]
+    assert columns == original
+    assert [item["action"] for item in expanded["input"]] == ["match_submit.step_started", "matching.http_response"]
+    assert expanded["input"][0]["data"] == expanded["input"][1]["data"]["body"] == request
+    assert expanded["output"][0]["action"] == "matching.match_callback_received"
+    assert expanded["output"][0]["data"] == expanded["output"][2]["data"] == callback
+    assert saved["matching"]["output"][2]["data"] == {"$log_ref": "#/matching/output/0/data"}
+    assert expanded["execute_log"] == original["matching"]["execute_log"]
+    assert compact_columns(saved) == saved
+
+
+def test_timeline_requested_fields_remain_inline_even_when_parent_repeats():
+    """materials、packRules 子树与父请求均可直接阅读，其他重复字段继续引用。"""
+
+    columns = split_detail({})
+    request = {"materials": [{"fileUrl": "https://media.test/" + "x" * 150}],
+               "packRules": {"backgroundMusic": {"audioUrl": "https://media.test/" + "y" * 150}}}
+    entry = {"time": None, "action": "test", "data": request}
+    columns["request"]["input"] = [entry, {**entry, "data": {"request": request}}]
+    columns["timeline"]["input"] = [{**entry, "data": {"request": request}}] * 2
+    saved = compact_columns(columns)
+    assert saved["timeline"]["input"] == columns["timeline"]["input"]
+    assert expand_columns(saved) == columns
+    assert compact_columns(saved) == saved
+
+
+def test_zos_keeps_only_distinct_video_links_and_preserves_playback_signature():
+    """渲染正文丢弃前展开所有引用；两类地址原文保留，错误和每次执行记录不受影响。"""
+    from datetime import datetime
+
+    columns = split_detail({})
+    url = "https://aliyun.test/result.mp4?Signature=actual"
+    public = "https://zos.test/result.mp4"
+    payloads = [("ims_query.step_finished", {"MediaProducingJob": {"Timeline": {"VideoTracks": []}, "Status": "Success"}}),
+                ("playback.step_finished", url), ("zos_upload.step_finished", ["key.mp4", public]),
+                ("completed.task_finished.result", {"videoUrl": public, "durationSeconds": 5}),
+                ("completed.task_finished.zos_object_key", "key.mp4"), ("playback.step_finished", url)]
+    columns["zos"]["output"] = [{"time": None, "action": action, "data": data} for action, data in payloads]
+    columns["request"]["output"] = [{"time": None, "action": "response.response_ready", "data": {"$log_ref": "#/zos/output/3/data"}}]
+    columns["zos"]["execute_log"] = [{"time": None, "action": action, "status": "processing"} for action, _ in payloads]
+    saved = compact_columns(columns)
+    assert [item["data"] for item in saved["zos"]["output"]] == [{"aliyun_video_url": url}, {"zos_video_url": public}]
+    assert expand_columns(saved)["request"]["output"][0]["data"] == payloads[3][1]
+    assert saved["zos"]["execute_log"] == columns["zos"]["execute_log"]
+    assert compact_columns(saved) == saved
+    added = add_event(None, "step_finished", {"stage": "rendering", "status": "processing"},
+                      {"step": "playback", "output": url}, datetime.now())
+    assert added["zos"]["output"][0]["data"] == {"aliyun_video_url": url}

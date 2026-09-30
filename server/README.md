@@ -87,6 +87,42 @@ MySQL 单独列保存唯一名称、ID 和时间，JSON 保存完整编辑配置
 
 新任务还需在 `server/.env` 中设置 `ZOS_API_ENDPOINT`、`ZOS_BUCKET`、`ZOS_ACCESS_KEY_ID`、`ZOS_SECRET_ACCESS_KEY`、`ZOS_WEB_URL`，并确保 `ffmpeg` 在服务端 PATH 中；缺少 FFmpeg 时受理返回 503。`ZOS_REGION` 默认 `hangzhou-7`，`ZOS_FORCE_PATH_STYLE` 默认 false。密钥仅由服务端读取，不进入客户端 IMS 设置。上传与公开地址分别使用 API Endpoint 和 Web URL；目前不读取 `ZOS_ENDPOINT`。对象删除或桶生命周期清理后，公开 URL 也会失效。字段示例和完整接口见 [视频合成 API 文档](src/server/video_composition/api.md)。
 
+### 执行日志
+
+`video_composition_logs` 一个任务一行，保留任务 ID、阶段、状态和北京时间字段，业务数据只存七个 JSON 列：
+
+| 列 | 内容 |
+| --- | --- |
+| `request` | 原始请求、任务级记录、查询响应和通知请求/响应 |
+| `template` | 模板读取输入与完整输出 |
+| `asr` | 音频 URL 与阿里返回的完整转写 JSON |
+| `segmentation` | 切片输入与输出 |
+| `matching` | 输入保存匹配请求；输出保存受理响应、原始回调结果与超时补查结果 |
+| `timeline` | 组装输入、提交设置与最终合成请求中的完整 `timeline` 对象 |
+| `zos` | 渲染、取址与转存的输入及执行/错误记录；输出只保留两类视频链接 |
+
+每列均为 `{"input": [], "output": [], "execute_log": [], "error_log": []}`。输入输出条目使用
+`time/action/data`，执行条目严格只有 `time/action/status`，状态沿用该事件发生时的任务状态；错误条目另外保存 `error`。
+动作采用 `阶段.事件`，如 `asr.step_finished`；输入输出可按时间和动作定位，重试与查询记录保留。
+任务快照仅补充尚未保存的内容，不重复把输入输出塞入执行记录。`timeline.output` 不保存中间组装的时间线，
+只从最终提交请求提取；同列还保留提交响应和非空组装警告。密钥与回调令牌继续脱敏。
+
+完全相同的对象/数组正文只保存一份，重复处使用同任务内的 JSON Pointer，例如
+`{"$log_ref":"#/asr/output/0/data"}` 指向该行 `asr.output[0].data`，Navicat 可按路径查看原文。
+原始请求和上游输出优先保留；切片输入引用 ASR，组装输入引用模板/切片/匹配结果。
+`timeline` 中的 `materials`、`packRules` 始终原文显示，其父对象也不整块引用。仅内容完全相同且引用更短时替换，
+不同版本、每次调用的时间/动作及执行/错误记录均保留。`$log_ref` 是日志保留字段，业务 `$ref` 不受影响。
+`execution_log.expand_columns` 可完整展开七列；每次追加先展开再排序、重建引用，避免索引失效。
+素材匹配回调按模块视角归 `output`，旧输入中的回调在整理时移到输出；提交参数和 HTTP 请求
+分别保留调用记录，HTTP `body` 引用同一份参数，不重复存正文。
+`zos.output` 的 `data` 仅保留 `aliyun_video_url`（阿里云动态视频链接）或 `zos_video_url`（ZOS 视频链接），
+同类同址只留一次并直接显示原文；不再保存渲染查询正文、Timeline 或其引用、媒资 ID、时长及对象 key。
+新记录的动态视频链接保留签名；历史缺失签名不补造。仅有旧成片链接且无转存记录时归阿里云链接，
+转存成功以已有转存结果或对象 key 为依据；失败原因继续保存在 `error_log`。
+日志归类、正文引用、链接整理、脱敏、异常提取及旧格式迁移统一位于 `execution_log.py`。
+新事件由 `add_event` 直接生成七列，共用输入输出写入与快照补录规则；不生成中文 `detail` 再拆分。
+`split_detail` 仅用于旧表迁移，旧英文事件适配、UTC 转换及备份/读回校验暂时保留，供旧服务器升级。
+
 ## 代码结构
 
 - `src/server/database.py`：`DatabaseSettings` 自动加载并校验环境配置，启动时创建缺失数据库，管理 MySQL 连接池。

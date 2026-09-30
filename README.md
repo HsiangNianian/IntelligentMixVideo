@@ -45,7 +45,7 @@ uv run server
 
 ASR 转写另提供独立 Python 函数与命令行入口，读取北京地域的 `DASHSCOPE_API_KEY`，尚未注册 HTTP 路由；用法见 [ASR 音频转写](server/README.md#asr-音频转写)。
 
-`POST /api/v1/video-compositions` 持久化合成任务后返回本地 ID，可传入 `callbackUrl` 接收成功/失败通知，调用方等待超时后用 `GET /api/v1/video-compositions/{task_id}` 补查一次。实现位于 `server/src/server/video_composition/`，直接复用本地 ASR、切片和模板函数；素材匹配与上海 IMS 使用外部接口，IMS 成片再转存 ZOS。匹配结果通过任务回调接收，等待超时仅补查一次，随后继续生成时间线和渲染。回调优先使用 `COMPOSITION_PUBLIC_BASE_URL`（可填 ngrok HTTPS 地址），留空沿用合成请求的基础地址。默认输出 1080×1920、30 FPS，自动选择 VOD 存储；新任务上传 ZOS 的 `imv/video_composition/{task_id}.mp4`，并从第 3 帧生成同名 `.png`，两者公开可读；GET 和成功回调只返回视频固定地址，历史成功任务不补图。执行过程及每步输入输出写入独立 `video_composition_logs` 表，一个任务一行，`detail` 展示原始输入、最终输出及中文阶段执行/错误日志，数据库时间统一北京时间；保留实际媒体链接，服务凭证和回调鉴权脱敏。当前使用单实例、单进程调度；配置、恢复边界及联调限制见 [视频合成说明](server/README.md#异步视频合成)。
+`POST /api/v1/video-compositions` 持久化合成任务后返回本地 ID，可传入 `callbackUrl` 接收成功/失败通知，调用方等待超时后用 `GET /api/v1/video-compositions/{task_id}` 补查一次。实现位于 `server/src/server/video_composition/`，直接复用本地 ASR、切片和模板函数；素材匹配与上海 IMS 使用外部接口，IMS 成片再转存 ZOS。匹配结果通过任务回调接收，等待超时仅补查一次，随后继续生成时间线和渲染。回调优先使用 `COMPOSITION_PUBLIC_BASE_URL`（可填 ngrok HTTPS 地址），留空沿用合成请求的基础地址。默认输出 1080×1920、30 FPS，自动选择 VOD 存储；新任务上传 ZOS 的 `imv/video_composition/{task_id}.mp4`，并从第 3 帧生成同名 `.png`，两者公开可读；GET 和成功回调只返回视频固定地址，历史成功任务不补图。执行过程及每步输入输出写入独立 `video_composition_logs` 表，一个任务一行，`request`、`template`、`asr`、`segmentation`、`matching`、`timeline`、`zos` 七个 JSON 列分别保存 `input/output/execute_log/error_log`，执行记录只包含时间、动作、状态，重复正文以同任务内 `$log_ref` 引用保留的原文，时间线的 `materials/packRules` 直接展示，`zos.output` 仅保存阿里云与 ZOS 视频链接；旧日志启动时备份后迁移，数据库时间统一北京时间；保留实际媒体链接，服务凭证和回调鉴权脱敏。当前使用单实例、单进程调度；配置、恢复边界及联调限制见 [视频合成说明](server/README.md#异步视频合成)。
 
 客户端运行
 ----------
