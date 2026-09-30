@@ -1,4 +1,4 @@
-"""执行日志脱敏、中文阶段视图与启动迁移；保留业务媒体链接，备份旧表后合并事件并转换北京时间。"""
+"""执行日志的脱敏、七列归类、正文引用与旧表备份迁移；数据库写入事务由 store 管理。"""
 
 import json
 import re
@@ -8,7 +8,7 @@ from math import isfinite
 from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, ValidationError
-from sqlalchemy import MetaData, Table, inspect, select, text
+from sqlalchemy import JSON, Column, MetaData, Table, inspect, select, text
 from sqlalchemy.exc import SQLAlchemyError
 
 
@@ -46,7 +46,8 @@ def sanitize(value, *, media_url: bool = False):
             return url(re.match(r".+", value))
         value = re.sub(r'https?://[^\s\"\'<>]+', url, value)
         value = re.sub(r"(?i)\b(?:Bearer|Basic)\s+[^\s\"',;]+", "[REDACTED]", value)
-        return re.sub(rf'''(?i)(["']?{sensitive}["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}}]+)''',
+        # 仅从字段边界匹配；长篇无空格正文不能在每个字符位置重新回溯整段内容。
+        return re.sub(rf'''(?i)(?<![\w-])(["']?{sensitive}["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}}]+)''',
                       r"\1[REDACTED]", value)
     return value
 
@@ -92,9 +93,8 @@ def display_time(value: datetime) -> str:
     return value.replace(tzinfo=value.tzinfo or BEIJING).astimezone(BEIJING).isoformat(sep=" ", timespec="microseconds")
 
 
-def append_event(detail: dict, event: str, stage: str, status: str, details: dict, time: datetime) -> dict:
-    """每阶段直接展示输入、输出、中文执行说明和错误；序号关联一次调用的各项记录。"""
-    details = sanitize(details)
+def event_group(event: str, stage: str, details: dict) -> str:
+    """按业务事件确定所属阶段；新日志和旧事件迁移共用归类规则。"""
     group = details.get("step") or stage
     if event == "submitted":
         group = "submission"
@@ -108,43 +108,38 @@ def append_event(detail: dict, event: str, stage: str, status: str, details: dic
         group = "matching"
     elif event == "task_finished" and details.get("error"):
         group = details["error"].get("stage", stage)
+    return group
+
+
+def error_message(details: dict) -> str:
+    """合并已有异常、业务错误和拒绝原因，不把输入输出放入错误摘要。"""
+    reasons = [item.get("message") for item in details.get("exceptions", []) if item.get("message")]
+    if details.get("error"):
+        reasons.insert(0, details["error"].get("message"))
+    if details.get("reason"):
+        reasons.append(details["reason"])
+    return "；".join(str(reason) for reason in reasons if reason) or "原调用未提供错误正文，请查看详情中的状态码或异常链"
+
+
+def append_event(detail: dict, event: str, stage: str, status: str, details: dict, time: datetime) -> dict:
+    """仅供旧英文事件迁移：序号关联旧 detail 的输入、输出与错误。"""
+    details = sanitize(details)
+    group = event_group(event, stage, details)
     name = STAGES.get(group, group)
     if not detail:
         detail.update({"格式版本": 2, "时区": "北京时间（UTC+08:00）", "从提交开始记录": event == "submitted", "记录条数": 0, "阶段记录": {}})
     detail["记录条数"] += 1
     sequence = detail["记录条数"]
     timestamp = display_time(time)
-    http_status = details["output"].get("http_status") if isinstance(details.get("output"), dict) else None
-    messages = {
-        "submitted": "已接收完整合成请求，等待执行", "execution_started": "开始执行合成任务",
-        "stage_updated": f"任务进入「{STAGES.get(stage, stage)}」阶段，已保存本阶段数据",
-        "step_started": f"开始{name}，输入已记录", "step_finished": f"{name}完成，输出已记录",
-        "step_failed": f"{name}失败", "step_cancelled": f"{name}被中断",
-        "http_response": f"收到上游 HTTP 响应：{http_status}",
-        "response_started": "开始准备返回合成结果", "response_ready": "已生成返回内容，视频链接及结果见输出",
-        "match_callback_received": "收到素材匹配回调，已记录原始回调内容",
-        "match_callback_processed": "素材匹配回调已处理", "match_callback_rejected": "素材匹配回调校验失败",
-        "notification_sending": "开始处理终态通知", "notification_started": "向调用方发送合成结果",
-        "notification_sent": "调用方已返回成功 HTTP 状态", "notification_failed": "结果通知失败",
-        "notification_pending": "通知失败，已安排重试",
-        "notification_storage_failed": "通知状态保存失败", "playback_failed": "获取成品视频链接失败",
-        "task_finished": "视频合成成功" if status == "succeeded" else "视频合成失败",
-    }
     failed = event.endswith(("_failed", "_rejected", "_cancelled")) or (event == "task_finished" and status == "failed")
     section = detail["阶段记录"].setdefault(name, {"输入": [], "输出": [], "执行日志": [], "错误日志": []})
     for key, label in (("input", "输入"), ("output", "输出")):
         if key in details:
             section[label].append({"序号": sequence, "时间": timestamp, "内容": details[key]})
-    entry = {"序号": sequence, "时间": timestamp, "说明": messages.get(event, f"{name}：{event}"),
-             "事件": event, "任务阶段": stage, "任务状态": status,
+    entry = {"序号": sequence, "时间": timestamp, "事件": event, "任务状态": status,
              "详情": {key: value for key, value in details.items() if key not in ("input", "output")}}
     if failed:
-        reasons = [item.get("message") for item in details.get("exceptions", []) if item.get("message")]
-        if details.get("error"):
-            reasons.insert(0, details["error"].get("message"))
-        if details.get("reason"):
-            reasons.append(details["reason"])
-        entry["错误原因"] = "；".join(str(reason) for reason in reasons if reason) or "原调用未提供错误正文，请查看详情中的状态码或异常链"
+        entry["错误原因"] = error_message(details)
     section["错误日志" if failed else "执行日志"].append(entry)
     if event == "response_ready" and isinstance(details.get("output"), dict):
         detail["最终输出"] = details.get("output")
@@ -156,8 +151,6 @@ def update_summary(detail: dict, record: dict) -> dict:
     data = record["data"]
     detail["原始输入"] = sanitize(data.get("raw_request", data["request"]))
     detail["任务状态"] = STATUS.get(record["status"], record["status"])
-    detail["任务创建时间"] = display_time(record["created_at"])
-    detail["任务结束时间"] = display_time(record["updated_at"]) if record["status"] in ("succeeded", "failed") else None
     if (not detail.get("最终输出") or "状态" in detail["最终输出"]
             or detail["最终输出"].get("status") != record["status"]):
         result = data.get("result") or {}
@@ -238,6 +231,16 @@ def upgrade_detail(previous: dict, record: dict) -> dict:
     return update_summary(detail, record)
 
 
+def switch_tables(engine, current: str, backup: str, replacement: str) -> None:
+    """保留原表并切换已校验的新表；MySQL 原子重命名，SQLite 供隔离测试使用。"""
+    with engine.begin() as connection:
+        if engine.dialect.name == "mysql":
+            connection.execute(text(f"RENAME TABLE {current} TO {backup}, {replacement} TO {current}"))
+        else:
+            connection.execute(text(f"ALTER TABLE {current} RENAME TO {backup}"))
+            connection.execute(text(f"ALTER TABLE {replacement} RENAME TO {current}"))
+
+
 def migrate_logs(engine, target: Table, tasks: Table) -> None:
     """只处理带 details 列的旧表；先构建新表，成功后切换，失败保留原表与中间表供排查。"""
     inspector = inspect(engine)
@@ -272,14 +275,7 @@ def migrate_logs(engine, target: Table, tasks: Table) -> None:
                 created_at=first["created_at"], updated_at=last["created_at"],
                 task_created_at=first["task_created_at"], task_finished_at=finished,
             ))
-    with engine.begin() as connection:
-        if engine.dialect.name == "mysql":
-            # MySQL 多表 RENAME 原子切换；原事件表完整保留为备份。
-            connection.execute(text(f"RENAME TABLE {target.name} TO {backup_name}, {merged_name} TO {target.name}"))
-        else:
-            # 隔离 SQLite 回归用例使用同一合并逻辑。
-            connection.execute(text(f"ALTER TABLE {target.name} RENAME TO {backup_name}"))
-            connection.execute(text(f"ALTER TABLE {merged_name} RENAME TO {target.name}"))
+    switch_tables(engine, target.name, backup_name, merged_name)
 
 
 def migrate_beijing_logs(engine, logs: Table, tasks: Table) -> None:
@@ -326,3 +322,233 @@ def migrate_beijing_logs(engine, logs: Table, tasks: Table) -> None:
                 connection.execute(logs.update().where(logs.c.task_id == task_id).values(**values))
             else:
                 connection.execute(logs.insert().values(task_id=task_id, **values))
+
+
+# 模块列即持久化契约；未执行的模块保留四个空数组。
+MODULES = ("request", "template", "asr", "segmentation", "matching", "timeline", "zos")
+GROUPS = {
+    "template": "template", "asr": "asr", "segmentation": "segmentation",
+    "matching": "matching", "match_submit": "matching", "match_query": "matching",
+    "assembling": "timeline", "ims_storage": "timeline", "submitting": "timeline", "ims_submit": "timeline",
+    "rendering": "zos", "ims_query": "zos", "playback": "zos", "zos_upload": "zos",
+}
+
+
+def expand_columns(columns: dict) -> dict:
+    """展开本行输入输出中的 $log_ref（JSON Pointer）；返回副本供追加、排序和校验。"""
+    def expand(value):
+        """引用只读取当前行；普通业务 $ref 不作日志引用处理。"""
+        if isinstance(value, dict):
+            if set(value) == {"$log_ref"}:
+                target = columns
+                for part in value["$log_ref"].removeprefix("#/").split("/"):
+                    key = part.replace("~1", "/").replace("~0", "~")
+                    target = target[int(key)] if isinstance(target, list) else target[key]
+                return expand(target)
+            return {key: expand(child) for key, child in value.items()}
+        if isinstance(value, list):
+            return [expand(child) for child in value]
+        return value
+
+    return {name: {**columns[name], **{
+        direction: [{**item, "data": expand(item["data"])} for item in columns[name][direction]]
+        for direction in ("input", "output")
+    }} for name in MODULES}
+
+
+def video_links(items: list[dict]) -> list[dict]:
+    """从已展开的旧/新 ZOS 输出提取两类视频地址；以转存记录判定来源，同类同址只留一次。"""
+    stored = any(item["action"].endswith(".zos_object_key") or item["action"] == "zos_upload.step_finished"
+                 or isinstance(item["data"], dict) and "zos_video_url" in item["data"] for item in items)
+    links, seen = [], set()
+    for item in items:
+        data, action = item["data"], item["action"]
+        if isinstance(data, dict):
+            values = {key: data[key] for key in ("aliyun_video_url", "zos_video_url") if data.get(key)}
+            if data.get("videoUrl"):
+                key = "aliyun_video_url" if action.startswith("playback.") or not stored else "zos_video_url"
+                values[key] = data["videoUrl"]
+        elif action == "playback.step_finished" and isinstance(data, str):
+            values = {"aliyun_video_url": data}
+        elif action == "zos_upload.step_finished" and isinstance(data, list) and len(data) == 2:
+            values = {"zos_video_url": data[1]}
+        else:
+            continue
+        for key, url in values.items():
+            if isinstance(url, str) and url.startswith(("http://", "https://")) and (key, url) not in seen:
+                links.append({**item, "data": {key: url}})
+                seen.add((key, url))
+    return links
+
+
+def compact_columns(columns: dict) -> dict:
+    """整理模块归属和 ZOS 地址；重复正文用引用，时间线指定字段原文展示，执行/错误不变。"""
+    columns = expand_columns(columns)
+    for section in columns.values():
+        for items in section.values():
+            items.sort(key=lambda item: item["time"] or "")
+    columns["zos"]["output"] = video_links(columns["zos"]["output"])
+    # 旧回调按 HTTP 接收方向记为输入；模块视角属于匹配输出，展开后移动再重建引用。
+    matching = columns["matching"]
+    callbacks = [item for item in matching["input"] if item["action"] == "matching.match_callback_received"]
+    if callbacks:
+        matching["input"] = [item for item in matching["input"] if item["action"] != "matching.match_callback_received"]
+        matching["output"] = sorted(matching["output"] + callbacks, key=lambda item: item["time"] or "")
+    seen = {}
+
+    def compact(value, path):
+        """先匹配完整对象，再处理子项；索引只指向仍保留的节点，避免悬空引用。"""
+        if path.startswith("#/zos/output/") or (path.startswith("#/timeline/") and path.rsplit("/", 1)[-1] in ("materials", "packRules")):
+            return value
+        if not isinstance(value, (dict, list)):
+            return value
+        encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        if encoded in seen:
+            reference = {"$log_ref": seen[encoded]}
+            # 指定字段的父对象也不能整块引用，否则 Navicat 中仍看不到它们的原文。
+            inline = path.startswith("#/timeline/") and any(f'"{key}":' in encoded for key in ("materials", "packRules"))
+            if not inline and len(json.dumps(reference, ensure_ascii=False, separators=(",", ":"))) < len(encoded):
+                return reference
+        else:
+            pending.setdefault(encoded, path)
+        if isinstance(value, list):
+            return [compact(child, f"{path}/{index}") for index, child in enumerate(value)]
+        return {key: compact(child, f"{path}/{key.replace('~', '~0').replace('/', '~1')}") for key, child in value.items()}
+
+    # 原始请求、上游输出优先保留，最终响应最后处理。
+    locations = [("request", "input")] + [
+        (name, direction) for name in MODULES[1:] for direction in ("output", "input")
+    ] + [("request", "output")]
+    for name, direction in locations:
+        for index, item in enumerate(columns[name][direction]):
+            pending = {}
+            item["data"] = compact(item["data"], f"#/{name}/{direction}/{index}/data")
+            seen.update(pending)
+    return columns
+
+
+def put_data(columns: dict, group: str, direction: str, time, action: str, data, *, fallback=False) -> None:
+    """写入模块输入输出；统一提取最终时间线、组装警告和成片结果，快照只补缺。"""
+    if group == "ims_submit" and direction == "input":
+        data = sanitize(data)
+        if "timeline" in data:
+            put_data(columns, "timeline", "output", time, action, data["timeline"], fallback=True)
+        data = {key: value for key, value in data.items() if key != "timeline"}
+        if not data:
+            return
+    elif group == "assembling" and direction == "output":
+        if not isinstance(data, dict) or not data.get("warnings"):
+            return
+        data = {"warnings": data["warnings"]}
+    module = GROUPS.get(group, group if group in MODULES else "request")
+    items = columns[module][direction]
+    if not fallback or not any(item["data"] == data for item in items):
+        items.append({"time": time, "action": action, "data": data})
+    if direction == "output" and action.endswith(".response_ready") and isinstance(data, dict) and data.get("result"):
+        put_data(columns, "zos", "output", time, action, data["result"], fallback=True)
+
+
+def put_snapshots(columns: dict, time, action: str, payload: dict) -> None:
+    """只补录事件已保存的模块快照，不替代实际调用的输入输出。"""
+    for key, group, direction in (("template", "template", "output"), ("segmentation", "segmentation", "output"),
+                                  ("match_request", "matching", "input"), ("matches", "matching", "output"),
+                                  ("result", "zos", "output"), ("zos_object_key", "zos", "output")):
+        if key in payload:
+            put_data(columns, group, direction, time, f"{action}.{key}", payload[key], fallback=True)
+    if "ims_request" in payload:
+        put_data(columns, "ims_submit", "input", time, action, payload["ims_request"], fallback=True)
+
+
+def split_detail(detail: dict, snapshot: dict | None = None) -> dict:
+    """仅用于旧表迁移：先转换实际输入输出，再补快照；缺失历史时间保持未知。"""
+    columns = {name: {key: [] for key in ("input", "output", "execute_log", "error_log")} for name in MODULES}
+    stages = {label: group for group, label in STAGES.items()}
+    for phase, section in detail.get("阶段记录", {}).items():
+        group = stages.get(phase, phase)
+        entries = {item.get("序号"): item for key in ("执行日志", "错误日志") for item in section.get(key, [])}
+        for source, direction in (("输入", "input"), ("输出", "output")):
+            for item in section.get(source, []):
+                event = entries.get(item.get("序号"), {}).get("事件", "historical_snapshot")
+                put_data(columns, group, direction, item.get("时间"), f"{group}.{event}", item["内容"])
+    for phase, section in detail.get("阶段记录", {}).items():
+        group = stages.get(phase, phase)
+        for kind, destination in (("执行日志", "execute_log"), ("错误日志", "error_log")):
+            for item in section.get(kind, []):
+                action, time = f"{group}.{item.get('事件', 'historical_snapshot')}", item.get("时间")
+                entry = {"time": time, "action": action, "status": item.get("任务状态", "unknown")}
+                payload = item.get("详情", {})
+                if destination == "error_log":
+                    entry["error"] = {**payload, "message": item.get("错误原因", item.get("说明"))}
+                columns[GROUPS.get(group, "request")][destination].append(entry)
+                put_snapshots(columns, time, action, payload)
+    for key, direction, action in (("原始输入", "input", "submission"), ("最终输出", "output", "response"),
+                                   ("历史补录", "output", "legacy")):
+        if key in detail and (key != "历史补录" or detail[key]):
+            put_data(columns, "request", direction, None, f"{action}.historical_snapshot", detail[key], fallback=True)
+    if detail.get("最终输出", {}).get("result"):
+        put_data(columns, "zos", "output", None, "response.historical_snapshot", detail["最终输出"]["result"], fallback=True)
+    for key in ("result", "zos_object_key"):
+        if snapshot and key in snapshot:
+            put_data(columns, "zos", "output", None, f"zos_upload.historical_snapshot.{key}", sanitize(snapshot[key]), fallback=True)
+    return compact_columns(columns)
+
+
+def add_event(previous: dict | None, event: str, record: dict, details: dict, time) -> dict:
+    """新事件直接生成七列内容；不构造 detail，不经过旧格式转换。"""
+    columns = expand_columns(previous) if previous else {
+        name: {key: [] for key in ("input", "output", "execute_log", "error_log")} for name in MODULES
+    }
+    if details.get("step") == "playback" and isinstance(details.get("output"), str):
+        details = {**details, "output": {"videoUrl": details["output"]}}  # 媒体字段保留实际链接签名。
+    details = sanitize(details)
+    group, time = event_group(event, record["stage"], details), display_time(time)
+    action = f"{group}.{event}"
+    for direction in ("input", "output"):
+        if direction in details:
+            put_data(columns, group, direction, time, action, details[direction])
+    payload = {key: value for key, value in details.items() if key not in ("input", "output")}
+    failed = event.endswith(("_failed", "_rejected", "_cancelled")) or (event == "task_finished" and record["status"] == "failed")
+    entry = {"time": time, "action": action, "status": record["status"]}
+    if failed:
+        entry["error"] = {**payload, "message": error_message(details)}
+    columns[GROUPS.get(group, "request")]["error_log" if failed else "execute_log"].append(entry)
+    put_snapshots(columns, time, action, payload)
+    return compact_columns(columns)
+
+
+def migrate_modules(engine, target: Table, tasks: Table) -> None:
+    """仅在单进程调度启动前迁移；旧表完整留档，复制或校验失败不切换、不覆盖。"""
+    inspector = inspect(engine)
+    exists = inspector.has_table(target.name)
+    if exists and "request" in {column["name"] for column in inspector.get_columns(target.name)}:
+        return
+    with engine.connect() as connection:
+        has_tasks = connection.execute(select(tasks.c.task_id).limit(1)).first() is not None
+    if not exists and not has_tasks:
+        target.create(engine)
+        return
+    backup_name, staging_name = "video_composition_logs_detail_backup", "video_composition_logs_modules"
+    if inspector.has_table(backup_name) or inspector.has_table(staging_name):
+        raise RuntimeError("日志迁移备份或中间表已存在，请核查上次迁移；不会覆盖历史数据")
+    # 复用旧版本的事件合并、UTC 转换和缺失快照补录，保留其原有备份机制。
+    legacy = Table(target.name, MetaData(), *(
+        Column(c.name, c.type, primary_key=c.primary_key, nullable=c.nullable, unique=c.unique)
+        for c in target.columns if c.name not in MODULES
+    ), Column("detail", JSON, nullable=False), mysql_charset="utf8mb4")
+    migrate_logs(engine, legacy, tasks)
+    legacy.create(engine, checkfirst=True)
+    migrate_beijing_logs(engine, legacy, tasks)
+    staging = target.to_metadata(MetaData(), name=staging_name)
+    staging.create(engine)
+    with engine.begin() as connection:
+        ids = connection.execute(select(legacy.c.id)).scalars().all()
+        for row_id in ids:
+            row = dict(connection.execute(select(legacy).where(legacy.c.id == row_id)).mappings().one())
+            detail = row.pop("detail")
+            snapshot = connection.execute(select(tasks.c.data).where(tasks.c.task_id == row["task_id"])).scalar_one_or_none()
+            converted = {**row, **split_detail(detail, snapshot=snapshot)}
+            connection.execute(staging.insert().values(**converted))
+            saved = dict(connection.execute(select(staging).where(staging.c.id == row_id)).mappings().one())
+            if saved != converted:
+                raise RuntimeError("日志迁移读回校验失败，原表未切换")
+    switch_tables(engine, target.name, backup_name, staging_name)

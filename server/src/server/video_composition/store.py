@@ -9,9 +9,9 @@ from sqlalchemy import JSON, Column, Integer, MetaData, String, Table, select
 from sqlalchemy.dialects.mysql import DATETIME
 
 from ..database import get_engine
-from .execution_log import BEIJING, append_event, migrate_beijing_logs, migrate_logs, update_summary
+from .execution_log import BEIJING, MODULES, add_event, migrate_modules
 
-# 任务保存业务快照；独立日志表一任务一行，在 detail 内按阶段追加完整事件。
+# 任务保存业务快照；独立日志表一任务一行，七个模块各自保存输入、输出与精简执行记录。
 metadata = MetaData()
 tasks = Table(
     "video_compositions", metadata,
@@ -32,7 +32,7 @@ execution_logs = Table(
     Column("task_id", String(36), nullable=False, unique=True),
     Column("stage", String(16), nullable=False),
     Column("status", String(16), nullable=False),
-    Column("detail", JSON, nullable=False),
+    *(Column(name, JSON, nullable=False) for name in MODULES),
     Column("created_at", DATETIME(fsp=6), nullable=False),
     Column("updated_at", DATETIME(fsp=6), nullable=False),
     Column("task_created_at", DATETIME(fsp=6), nullable=False),
@@ -51,7 +51,7 @@ def add_log(record: dict, event: str, details: dict, connection=None) -> None:
         now = datetime.now(BEIJING)
         values = dict(
             stage=latest["stage"], status=latest["status"],
-            detail=update_summary(append_event(previous["detail"] if previous else {}, event, record["stage"], record["status"], details, now), dict(latest)),
+            **add_event(previous, event, record, details, now),
             updated_at=now.replace(tzinfo=None), task_created_at=latest["created_at"],
             task_finished_at=latest["updated_at"] if latest["status"] in ("succeeded", "failed") else None,
         )
@@ -62,11 +62,10 @@ def add_log(record: dict, event: str, details: dict, connection=None) -> None:
 
 
 def initialize_schema() -> None:
-    """单进程启动时备份合并旧日志并转换北京时间和中文结构；迁移失败阻止启动。"""
+    """调度器启动前备份并迁移旧日志为模块列；任何迁移失败均阻止启动。"""
     engine = get_engine()
-    migrate_logs(engine, execution_logs, tasks)
-    metadata.create_all(engine)
-    migrate_beijing_logs(engine, execution_logs, tasks)
+    tasks.create(engine, checkfirst=True)
+    migrate_modules(engine, execution_logs, tasks)
 
 
 def _record(row) -> dict:

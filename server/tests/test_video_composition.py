@@ -1210,8 +1210,16 @@ def test_notification_timeout_allows_one_query_without_new_render(upstreams, cli
         upstreams["notification_release"].set()
 
 
-def test_execution_logs_cover_inputs_outputs_and_notification(upstreams, client, composition_case, composition_logs):
+def test_execution_logs_cover_inputs_outputs_and_notification(upstreams, client, composition_case, composition_logs, monkeypatch):
     """真实编排的每个步骤输入输出、原始素材回调原因和最终通知均落库，保留实际媒体链接但隐藏回调凭证。"""
+    from server.video_composition import execution_log
+
+    def reject_legacy_conversion(*args, **kwargs):
+        """正常任务必须直接生成七列；旧格式转换只允许在启动迁移时使用。"""
+        pytest.fail("新事件不应生成或转换旧 detail")
+
+    monkeypatch.setattr(execution_log, "append_event", reject_legacy_conversion)
+    monkeypatch.setattr(execution_log, "split_detail", reject_legacy_conversion)
     composition_case["matches"][0]["matched_candidate_reason"] = "no_candidates"
     request = {**composition_case["request"], "callbackUrl": "https://notify.example.test/result?token=hidden-callback"}
     accepted = client.post(BASE, json=request)
@@ -1221,36 +1229,42 @@ def test_execution_logs_cover_inputs_outputs_and_notification(upstreams, client,
     response = client.get(f"{BASE}/{task_id}")
     assert response.status_code == 200 and record["data"]["notification_status"] == "sent"
     saved, = composition_logs(task_id, raw=True)
-    phases = saved["detail"]["阶段记录"]
-    assert saved["detail"]["从提交开始记录"] is True
-    assert {"任务提交", "读取模板", "语音识别", "文本切分", "提交素材匹配", "组装视频时间线", "提交云端合成", "查询云端渲染", "获取成品视频链接", "转存视频和封面到 ZOS", "通知调用方", "返回合成结果"} <= phases.keys()
-    assert phases["返回合成结果"]["输出"][-1]["内容"]["result"]["videoUrl"] == response.json()["result"]["videoUrl"]
+    from server.video_composition.execution_log import MODULES, expand_columns, sanitize
+    assert all(saved[name]["input"] and saved[name]["output"] for name in MODULES)
+    assert all(set(entry) == {"time", "action", "status"}
+               for name in MODULES for entry in saved[name]["execute_log"])
     rows = composition_logs(task_id)
     started = {row["details"]["step"]: row["details"]["input"] for row in rows if row["event"] == "step_started"}
-    outputs = {row["details"]["step"]: row["details"]["output"] for row in rows if row["event"] == "step_finished"}
+    outputs = {row["details"]["step"]: row["details"].get("output") for row in rows if row["event"] == "step_finished"}
     assert set(started) == set(outputs) == {"template", "asr", "segmentation", "match_submit", "assembling", "ims_storage", "ims_submit", "ims_query", "playback", "zos_upload"}
     assert started["template"] == {"style_id": request["styleId"]}
     assert outputs["template"] == composition_case["template"]
     assert outputs["asr"] == upstreams["raw"] == started["segmentation"]["asr_result"]
     assert outputs["segmentation"]["segments"] == composition_case["segments"]
     assert started["assembling"]["segments"] == composition_case["segments"]
-    assert outputs["assembling"]["timeline"]["SubtitleTracks"][0]["SubtitleTrackClips"][0]["Content"] == "甲乙丙丁"
-    assert started["ims_submit"]["timeline"] and outputs["ims_submit"] == {"JobId": "ims-job"}
-    assert outputs["ims_query"]["MediaProducingJob"]["Status"] == "Success"
+    submitted_timeline = sanitize(record["data"]["ims_request"]["timeline"])
+    assert any(item["data"] == submitted_timeline for item in expand_columns(saved)["timeline"]["output"])
+    assert submitted_timeline["SubtitleTracks"][0]["SubtitleTrackClips"][0]["Content"] == "甲乙丙丁"
+    assert "timeline" not in started["ims_submit"] and outputs["ims_submit"] == {"JobId": "ims-job"}
+    assert outputs["ims_query"] is None
+    assert outputs["playback"] == {"aliyun_video_url": upstreams["zos_uploads"][0][0]}
+    assert outputs["zos_upload"] == {"zos_video_url": record["data"]["result"]["videoUrl"]}
     callback = next(row for row in rows if row["event"] == "match_callback_received")
-    assert callback["details"]["input"]["result"]["segments"][0]["matched_candidate_reason"] == "no_candidates"
+    assert "input" not in callback["details"]
+    assert callback["details"]["output"]["result"]["segments"][0]["matched_candidate_reason"] == "no_candidates"
+    assert not any(item["action"] == "matching.match_callback_received" for item in saved["matching"]["input"])
     http = [row["details"] for row in rows if row["event"] == "http_response"]
     assert any(item["step"] == "matching" and item["output"]["http_status"] == 202 for item in http)
     assert any(item["step"] == "notification" and item["output"]["http_status"] == 204 for item in http)
-    queried = [row for row in rows if row["event"] == "response_ready" and row["details"]["source"] == "query"][-1]
+    queried = [row for row in rows if row["event"] == "response_ready" and row["stage"] == "response"][-1]
     assert queried["details"]["output"]["result"]["videoUrl"] == response.json()["result"]["videoUrl"]
     assert response.json()["result"]["videoUrl"].endswith(f"imv/video_composition/{task_id}.mp4")
     text = json.dumps(rows, default=str)
     assert "hidden-callback" not in text
-    assert "Signature=" not in text and "token=a%2Fb" in text
-    assert saved["detail"]["原始输入"]["text"] == request["text"]
-    assert set(saved["detail"]["原始输入"]) == set(request)
-    assert saved["detail"]["最终输出"] == response.json()
+    assert "Signature=1" in outputs["playback"]["aliyun_video_url"] and "token=a%2Fb" in text
+    assert saved["request"]["input"][0]["data"]["text"] == request["text"]
+    assert set(saved["request"]["input"][0]["data"]) == set(request)
+    assert expand_columns(saved)["request"]["output"][-1]["data"] == response.json()
     assert len([row for row in rows if row["event"] == "task_finished"]) == 1
     assert queried["task_finished_at"] == record["updated_at"].replace(tzinfo=None)
 
@@ -1274,7 +1288,7 @@ def test_playback_must_be_ready_before_success_and_notification(upstreams, clien
     failures = [row for row in rows if row["event"] == "step_failed" and row["details"]["step"] == "playback"]
     assert len(failures) == 2 and all(row["details"]["exceptions"][0]["type"] == "ValueError" for row in failures)
     saved, = composition_logs(task_id, raw=True)
-    assert saved["detail"]["阶段记录"]["获取成品视频链接"]["错误日志"]
+    assert saved["zos"]["error_log"]
     assert record["status"] == "succeeded" and record["data"]["notification_status"] == "sent"
     assert len(upstreams["playbacks"]) == 3 and len(upstreams["renders"]) == 1
     assert upstreams["notifications"][0]["body"]["videoUrl"].endswith(f"imv/video_composition/{task_id}.mp4")
@@ -1520,7 +1534,7 @@ def test_client_ims_credentials_drive_submit_and_playback(upstreams, client, com
     assert len(seen) == 4
     from server.database import get_engine
     with get_engine().connect() as connection:
-        logs = connection.execute(select(store.execution_logs.c.detail)).scalars().all()
+        logs = [dict(row) for row in connection.execute(select(*(store.execution_logs.c[name] for name in store.MODULES))).mappings()]
     assert "private" not in json.dumps(logs)
     if not callback:
         assert client.post(BASE, json=composition_case["request"]).status_code == 503
