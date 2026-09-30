@@ -643,16 +643,10 @@ def test_real_segmentation_with_model_stub(upstreams, composition_case, client, 
     assert snapshot["segmentation"]["segments"] == [{
         "segment_id": 1, "text": "甲乙丙丁。戊己庚辛。", "start_time": 1, "end_time": 6,
         "keyword": "甲乙", "level": 2, "group_id": [1, 1],
-        "subtitle_parts": [
-            {"text": "甲乙丙丁", "start_time": 1, "end_time": 4},
-            {"text": "戊己庚辛", "start_time": 4, "end_time": 6},
-        ],
     }]
-    assert json.loads(upstreams["posts"][0]["llm"])["segments"] == [{
-        key: value for key, value in snapshot["segmentation"]["segments"][0].items() if key != "subtitle_parts"
-    }]
+    assert json.loads(upstreams["posts"][0]["llm"])["segments"] == snapshot["segmentation"]["segments"]
     assert [clip["Content"] for clip in snapshot["timeline"]["SubtitleTracks"][0]["SubtitleTrackClips"]] == [
-        "甲乙丙丁", "戊己庚辛",
+        "甲乙丙丁戊己庚辛",
     ]
     assert model.chat.completions.create.call_count == 2 and factory.return_value.__exit__.call_count == 1
 

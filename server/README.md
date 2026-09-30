@@ -73,7 +73,7 @@ MySQL 单独列保存唯一名称、ID 和时间，JSON 保存完整编辑配置
 
 ## 异步视频合成
 
-`POST /api/v1/video-compositions` 创建任务，HTTP 200 响应为 `{"code":200,"message":"操作成功","data":"任务ID"}`；`GET /api/v1/video-compositions/{taskId}` 查询结果，查询结构保持不变。终态回调仅含 `taskId/status/videoUrl/errorMessage`：成功为 `succeed`、视频直链、null 错误；失败为 `failed`、null 地址、错误摘要。回调 ID 与创建响应的 `data` 一致，内部和查询的成功状态仍为 `succeeded`。模板按 `tracks[].editor` 读取，标题取请求 `title`，关键词取原切片；字幕取切片内 `subtitle_parts`，按标点拆成保留中英文问号、去除其他标点的短句，短句在原切片内首尾衔接，旧快照缺少该字段时保留中英文问号并去除其他标点。素材匹配仍接收原切片文字与时间，标题和字幕的模板示例文字不进入成片，气泡对象使用其模板示例文字。
+`POST /api/v1/video-compositions` 创建任务，HTTP 200 响应为 `{"code":200,"message":"操作成功","data":"任务ID"}`；`GET /api/v1/video-compositions/{taskId}` 查询结果，查询结构保持不变。终态回调仅含 `taskId/status/videoUrl/errorMessage`：成功为 `succeed`、视频直链、null 错误；失败为 `failed`、null 地址、错误摘要。回调 ID 与创建响应的 `data` 一致，内部和查询的成功状态仍为 `succeeded`。模板按 `tracks[].editor` 读取，标题取请求 `title`，关键词取原切片；字幕使用切片原文与时间，由合成时间线保留中英文问号并去除其他标点；已有快照中的 `subtitle_parts` 仍可读取。素材匹配仍接收原切片文字与时间，标题和字幕的模板示例文字不进入成片，气泡对象使用其模板示例文字。
 
 创建请求的字段校验错误返回 HTTP 422，响应含 `{"code":422,"message":"请求参数无效","data":null}`；客户端配置头错误及其他错误沿用原有格式。后台合成失败通过查询结果的 `status: failed` 和 `error` 表示。
 
@@ -182,14 +182,12 @@ result = segment({
 })
 ```
 
-使用 ASR 第一音轨的词级时间，输入时间为毫秒。返回 `segments`、提示 `warnings` 和诊断信息 `trace`；
-片段包含原文、秒制起止时间、分组和关键词；`subtitle_parts` 只供成片字幕显示，在原片段内按标点切成保留中英文问号、去除其他标点且时间首尾衔接的短句。切片本身不调用 ASR。
-成功响应的 `trace` 保留原有对齐、修复、片段与关键词统计；错误响应保持原有 `error.message` 与状态码。
-FastAPI 启动终端记录成功或失败的详细诊断：候选分句、过滤切点的原文位置及原因、模型选中的切点、
-原始关键词候选、两次模型请求耗时（毫秒）；失败日志还包含失败阶段、状态码与已采集的数据。
-过滤原因包括 `protected_or_repaired`、`min_duration_before` 和 `min_duration_after`。日志可能包含请求文案，
-桌面内置服务也会将其写入 `backend/server.log`；请按敏感数据管理日志。请求体未通过 FastAPI 字段校验时
-仍返回原有的 422 `detail`，不进入切片函数，也不产生日志诊断。
+使用 ASR 第一音轨的词级时间（毫秒），返回 `segments`、`warnings` 和 `trace`；片段包含保留标点的原文、秒制时间、分组和关键词。
+首次切分和关键词提取后，超过 8 个有效字（不计标点和空白）的片段批量进行一次语义切分，非法结果直接报错。
+切片不调用 ASR，不生成字幕子段；最终去标点由下游合成负责。
+
+HTTP 与视频合成调用均在 FastAPI 终端记录阶段、切点、关键词与模型耗时，桌面日志写入 `backend/server.log`。
+日志包含文案，请按敏感数据管理；请求字段校验失败仍返回 422，不进入切片日志。
 
 请求可另带 `config` 对象：`llm_base_url`、`llm_api_key`、`llm_model` 必填，`llm_timeout_seconds` 默认 120，`llm_max_retries` 默认 1（0～3）。客户端参数仅用于该次切片，完整连接参数不与服务端密钥混用；省略 `config` 仍使用原服务端配置。独立 Python 调用可传 `segment(payload, config=ClientSettings(...))`，模型定义位于 `server.segmentation.settings`。`allow_insecure_llm_http` 仍由服务端决定，不接受客户端覆盖；错误响应不回显请求输入。
 
