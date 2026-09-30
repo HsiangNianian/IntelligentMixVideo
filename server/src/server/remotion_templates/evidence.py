@@ -23,6 +23,11 @@ def seal_artifacts(
 ) -> None:
     """Capture only actual output bytes, after the renderer has stopped all child processes."""
     names = ["Template.tsx", "candidate.json", "spec.json"]
+    if report.profile == "pr76":
+        names += ["Export.tsx", "interactive.js", "tool-validation.json"]
+        report.artifacts = {name: digest(directory / name) for name in names}
+        verify_artifacts(candidate, spec, report, directory)
+        return
     for check_name, artifacts in (
         ("interactive_bundle", ["interactive.js"]),
         ("export_source", ["Export.tsx"]),
@@ -60,6 +65,19 @@ def verify_artifacts(
 ) -> None:
     """Bracket model review and completion with current byte checks; no self-reported evidence is accepted."""
     required = {"Template.tsx", "candidate.json", "spec.json"}
+    if report.profile == "pr76":
+        required |= {"Export.tsx", "interactive.js", "tool-validation.json"}
+    if report.profile == "pr76":
+        from .tools.contracts import RenderValidationReport
+        data = json.loads((directory / "tool-validation.json").read_text())
+        component = {"code": candidate.tsx_code, "parameter_schema": candidate.config_schema, "default_parameters": candidate.default_config}
+        validation = RenderValidationReport.model_validate(data["report"])
+        if (spec.schema_version != "2" or data["component"] != component or not validation.passed
+            or validation.composition.duration_frames != spec.composition.duration_in_frames
+            or not {"default_render", "configured_render"} <= {check.name for check in validation.checks}
+            or not validation.code_validation.passed
+            or any(check.status != "passed" for check in [*validation.checks, *validation.tests])):
+            raise ValueError("Runtime validation does not belong to the published component")
     for check_name, artifact in (
         ("interactive_bundle", "interactive.js"),
         ("export_source", "Export.tsx"),

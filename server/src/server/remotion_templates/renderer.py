@@ -19,7 +19,7 @@ from .models import (
     validation_fingerprint,
 )
 from .parameters import validate_candidate
-from .probes import parameter_probes, pixel_checks
+from .probes import parameter_probes, pixel_checks, preview_values
 
 
 def keyframes(spec: TemplateSpec) -> list[int]:
@@ -40,6 +40,11 @@ def keyframes(spec: TemplateSpec) -> list[int]:
                     min(last, end),
                 )
             )
+    for motion in spec.visual_motion:
+        start, end = motion.start_frame, motion.end_frame
+        frames.update(
+            (max(0, start - 1), start, (start + end - 1) // 2, end - 1, min(last, end))
+        )
     return sorted(frame for frame in frames if 0 <= frame <= last)
 
 
@@ -49,6 +54,14 @@ class Renderer:
     def __init__(self, settings: Settings) -> None:
         """Use only server-owned executable and font paths."""
         self.settings = settings
+
+    def worker_browser_path(self) -> str:
+        """Return the browser path visible to the Linux sandbox worker."""
+        return str(self.settings.browser_executable.resolve())
+
+    def worker_environment(self, directory: Path) -> dict[str, str]:
+        """Expose only a fixed executable search path to an isolated worker."""
+        return {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
 
     def verify_environment(self, report: ValidationReport) -> None:
         """Reject evidence if managed code, dependencies, fonts or executables changed since rendering."""
@@ -114,8 +127,10 @@ class Renderer:
                 process.kill()
             await process.wait()
 
-    def command(self, directory: Path) -> list[str]:
+    def command(self, directory: Path, *, worker: str = "worker.mjs") -> list[str]:
         """Expose system libraries, managed renderer and one writable attempt; hide home and secrets."""
+        if worker not in {"worker.mjs", "tool-validation-worker.mjs", "presentation-worker.mjs"}:
+            raise ValueError("Unknown isolated renderer worker")
         settings = self.settings
         node = Path(shutil.which("node") or "/usr/bin/node").resolve()
         command = [
@@ -177,7 +192,7 @@ class Renderer:
                 "--",
                 "/runtime-node",
                 "--max-old-space-size=2048",
-                "/renderer/worker.mjs",
+                f"/renderer/{worker}",
             )
         )
         if settings.runtime_lib_dir is not None:
@@ -185,6 +200,59 @@ class Renderer:
             boundary = command.index("--clearenv") + 1
             command[boundary:boundary] = ["--setenv", "LD_LIBRARY_PATH", "/runtime-lib"]
         return command
+
+    async def run_worker(
+        self,
+        directory: Path,
+        *,
+        worker: str = "worker.mjs",
+        timeout_seconds: float | None = None,
+    ) -> dict:
+        """Run one approved Linux worker and return its JSON report after reaping its sandbox.
+
+        Workers communicate only through ``request.json`` and ``renderer.json`` in the
+        attempt directory.  Cancellation and timeout always kill the complete process
+        group, then wait for it before returning so browsers cannot leak between tests.
+        """
+        directory.mkdir(parents=True, exist_ok=True)
+        timeout = timeout_seconds or self.settings.render_timeout_seconds
+        process = None
+        log_path = directory / "worker.log"
+        try:
+            with log_path.open("wb") as log:
+                process = await asyncio.create_subprocess_exec(
+                    *self.command(directory, worker=worker),
+                    stdout=log,
+                    stderr=log,
+                    cwd=directory,
+                    start_new_session=True,
+                    env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+                )
+                try:
+                    async with asyncio.timeout(timeout):
+                        await process.wait()
+                except asyncio.CancelledError:
+                    raise
+                finally:
+                    if process.returncode is None:
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                    await process.wait()
+            if process.returncode:
+                detail = "isolated renderer worker failed"
+                try:
+                    detail = log_path.read_text(encoding="utf-8", errors="replace")[-4000:]
+                except OSError:
+                    pass
+                raise RuntimeError(detail)
+            report_path = directory / "renderer.json"
+            if not report_path.exists():
+                raise RuntimeError("isolated renderer worker produced no report")
+            return json.loads(report_path.read_text(encoding="utf-8"))
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(f"isolated renderer worker timed out after {timeout:g}s") from exc
 
     async def validate(
         self,
@@ -230,6 +298,7 @@ class Renderer:
             return candidate, report
         settings = self.settings
         try:
+            (directory / ".tmp").mkdir()
             public = directory / "public"
             public.mkdir()
             for weight, font in (
@@ -242,6 +311,9 @@ class Renderer:
             report.runtime["worker"] = hashlib.sha256(
                 (settings.renderer_dir / "worker.mjs").read_bytes()
             ).hexdigest()
+            report.runtime["typescript_service"] = digest(
+                settings.renderer_dir / "typescript.mjs"
+            )
             report.runtime["image_comparison"] = digest(
                 Path(__file__).with_name("image_comparison.py")
             )
@@ -273,9 +345,12 @@ class Renderer:
                 "probes": probes,
                 "code": candidate.tsx_code,
                 "config": candidate.default_config,
+                "preview_config": preview_values(candidate, spec),
+                "keywords": spec.keyword_examples,
+                "subtitle": spec.sprite_kind == "subtitle",
                 "composition": spec.composition.model_dump(),
                 "frames": report.frames,
-                "browser": str(settings.browser_executable.resolve()),
+                "browser": self.worker_browser_path(),
             }
             (directory / "request.json").write_text(
                 json.dumps(request), encoding="utf-8"
@@ -285,8 +360,9 @@ class Renderer:
                     *self.command(directory),
                     stdout=log,
                     stderr=log,
+                    cwd=directory,
                     start_new_session=True,
-                    env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+                    env=self.worker_environment(directory),
                 )
                 try:
                     async with asyncio.timeout(settings.render_timeout_seconds):
@@ -340,3 +416,63 @@ class Renderer:
             candidate.model_dump_json(), encoding="utf-8"
         )
         return candidate, report
+
+    async def code_diagnostics(self, candidate, spec, directory):
+        """Typecheck through the same sandbox worker; never run TSX in the API process."""
+        validate_candidate(candidate, spec)
+        directory.mkdir(parents=True, exist_ok=False)
+        request = {
+            "mode": "code",
+            "code": candidate.tsx_code,
+            "config": candidate.default_config,
+            "preview_config": preview_values(candidate, spec),
+            "subtitle": spec.sprite_kind == "subtitle",
+            "composition": spec.composition.model_dump(),
+            "frames": [],
+        }
+        (directory / "request.json").write_text(json.dumps(request), encoding="utf-8")
+        try:
+            (directory / ".tmp").mkdir()
+            with (directory / "worker.log").open("wb") as log:
+                process = await asyncio.create_subprocess_exec(
+                    *self.command(directory),
+                    stdout=log,
+                    stderr=log,
+                    cwd=directory,
+                    start_new_session=True,
+                    env=self.worker_environment(directory),
+                )
+                try:
+                    async with asyncio.timeout(self.settings.render_timeout_seconds):
+                        await process.wait()
+                finally:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    await process.wait()
+            if process.returncode:
+                raise RuntimeError(
+                    "Code validation worker failed; inspect private worker.log"
+                )
+            payload = json.loads((directory / "renderer.json").read_text())
+            checks = [Check.model_validate(item) for item in payload["checks"]]
+            required = {"source_policy", "export_source", "typescript"}
+            return {
+                "passed": required <= {check.name for check in checks}
+                and all(check.status == "pass" for check in checks),
+                "checks": [check.model_dump() for check in checks],
+                "diagnostics": payload.get("diagnostics", []),
+                "worker_hash": digest(self.settings.renderer_dir / "worker.mjs"),
+                "typescript_service_hash": digest(
+                    self.settings.renderer_dir / "typescript.mjs"
+                ),
+                "dependency_hash": digest(self.settings.renderer_dir / "bun.lock"),
+            }
+        except (OSError, RuntimeError, TimeoutError, ValueError, KeyError) as exc:
+            from .provider import ExecutionFailure
+
+            raise ExecutionFailure(
+                "renderer_unavailable",
+                "Isolated code validation is unavailable: " + str(exc)[:1000],
+            ) from exc

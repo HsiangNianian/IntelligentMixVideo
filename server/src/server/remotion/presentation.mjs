@@ -5,7 +5,7 @@ import prettier from "prettier";
 import { build } from "esbuild";
 
 /** Preserve source imports and declarations while replacing its default export with an optional-props wrapper. */
-export async function exportTemplate(code, config, composition) {
+export async function exportTemplate(code, config, composition, highlightRanges = null) {
   const source = ts.createSourceFile(
     "Template.tsx",
     code,
@@ -74,25 +74,37 @@ export async function exportTemplate(code, config, composition) {
   for (const [start, end, replacement] of edits.reverse())
     body = body.slice(0, start) + replacement + body.slice(end);
   return prettier.format(
-    `/** Accepted typography template with editable default props; load Noto Sans CJK SC in the consuming composition. */
+    `/** Reusable Remotion component with editable defaults; load required fonts in the consuming composition. */
 import * as ${prefix}React from 'react';
 ${body}
 /** Composition dimensions and timing used during acceptance. */
 export const ${prefix}Composition = ${JSON.stringify(composition)} as const;
 /** Defaults reflect this accepted version; caller props can override them. */
-const ${prefix}Defaults = ${JSON.stringify(config)} as const;
+const ${prefix}Defaults = ${JSON.stringify(config)};
+/** Merge nested objects; arrays, scalars and null replace whole values. */
+function ${prefix}Merge(base: any, patch: any): any {
+ if (!patch || Array.isArray(patch) || typeof patch !== "object") return patch;
+ const next: Record<string, any> = {...base};
+ for (const key of Object.keys(patch)) {
+  Object.defineProperty(next, key, {value: ${prefix}Merge(base?.[key], patch[key]), enumerable:true, writable:true, configurable:true});
+ }
+ return next;
+}
+${highlightRanges === null ? "" : `/** Sample spans are transient rendering inputs, separate from editable scalar defaults. */
+const ${prefix}HighlightRanges: [number, number][] = ${JSON.stringify(highlightRanges)};`}
 /** Render with accepted defaults when no props are supplied. */
 export default function ${prefix}(props: Partial<${prefix}React.ComponentProps<typeof ${component}>> = {}) {
- return <${component} {...${prefix}Defaults} {...props} />;
+ return <${component} {...${prefix}Merge(${prefix}Defaults, props)} ${highlightRanges === null ? "" : `highlightRanges={${prefix}HighlightRanges}`} />;
 }`,
     { parser: "typescript" },
   );
 }
 
 /** Bundle trusted Player hosting code plus accepted TSX into one sealed script, with no runtime compiler. */
-export async function buildPresentation(root, config, composition) {
+export async function buildPresentation(root, config, composition, keywords = []) {
+  const rendererRoot = process.env.IMV_RENDERER_ROOT ?? "/renderer";
   const result = await build({
-    entryPoints: ["/renderer/preview-host.tsx"],
+    entryPoints: [`${rendererRoot}/preview-host.tsx`],
     bundle: true,
     write: false,
     platform: "browser",
@@ -115,7 +127,7 @@ export async function buildPresentation(root, config, composition) {
             namespace: "imv",
           }));
           builder.onLoad({ filter: /.*/, namespace: "imv" }, () => ({
-            contents: JSON.stringify({ config, composition }),
+            contents: JSON.stringify({ config, composition, keywords }),
             loader: "json",
           }));
         },

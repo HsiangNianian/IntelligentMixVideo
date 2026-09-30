@@ -7,7 +7,36 @@ import Template from "imv:template";
 import initial from "imv:config";
 
 const channel = window.location.hash.slice(1);
-type Values = Record<string, string | number | boolean>;
+type JsonValue = null | string | number | boolean | JsonValue[] | {[key: string]: JsonValue};
+type Values = Record<string, JsonValue>;
+/** Reject non-JSON or unbounded message values before updating the isolated Player. */
+function jsonValue(value: unknown, depth = 0): value is JsonValue {
+ if (depth > 30) return false;
+ if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+ if (typeof value === "number") return Number.isFinite(value);
+ if (Array.isArray(value)) return value.length < 10000 && value.every(item => jsonValue(item, depth + 1));
+ return typeof value === "object" && Object.values(value).every(item => jsonValue(item, depth + 1));
+}
+/** Match the server's code-point ranges whenever the operator edits sample subtitle copy. */
+function literalRanges(text: string, keywords: string[]): [number, number][] {
+  const chars = Array.from(text);
+  const ranges: [number, number][] = [];
+  for (const word of new Set(keywords)) {
+    const needle = Array.from(word);
+    if (!needle.length) continue;
+    for (let start = 0; start <= chars.length - needle.length; start++)
+      if (needle.every((char, index) => chars[start + index] === char))
+        ranges.push([start, start + needle.length]);
+  }
+  ranges.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const merged: [number, number][] = [];
+  for (const [start, end] of ranges) {
+    const last = merged.at(-1);
+    if (last && start <= last[1]) last[1] = Math.max(last[1], end);
+    else merged.push([start, end]);
+  }
+  return merged;
+}
 /** A revision identifies one parameter/background update, independently of playback frames. */
 interface PreviewProps {
   values: Values;
@@ -25,6 +54,10 @@ function Composition({ values, background, requestId }: PreviewProps) {
   const [failed, setFailed] = useState("");
   const video = useRef<HTMLVideoElement>(null);
   const [loaded, setLoaded] = useState("");
+  const keywords: string[] = initial.keywords ?? [];
+  const highlights = keywords.length
+    ? { highlightRanges: literalRanges(String(values["0_text"] ?? ""), keywords) }
+    : {};
   useEffect(() => {
     if (
       background &&
@@ -66,7 +99,7 @@ function Composition({ values, background, requestId }: PreviewProps) {
         />
       )}
       <AbsoluteFill>
-        <Template {...values} />
+        <Template {...values} {...highlights} />
       </AbsoluteFill>
     </AbsoluteFill>
   );
@@ -91,13 +124,8 @@ function App() {
       const values = data.values;
       if (
         !values ||
-        Object.keys(values).length !== Object.keys(initial.config).length ||
-        !Object.entries(initial.config).every(
-          ([key, value]) =>
-            Object.hasOwn(values, key) &&
-            typeof values[key] === typeof value &&
-            (typeof values[key] !== "number" || Number.isFinite(values[key])),
-        )
+        Array.isArray(values) ||
+        !jsonValue(values) || JSON.stringify(values).length > 240000
       )
         return;
       if (

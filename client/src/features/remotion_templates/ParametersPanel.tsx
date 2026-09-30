@@ -3,6 +3,7 @@ import { cn } from "@/lib/utils";
 import { useEffect, useId, useState } from "react";
 import { SlidersHorizontal } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import {
@@ -14,10 +15,13 @@ import {
 } from "@/components/ui/select";
 import {
   controlLabel,
+  isJsonValue,
+  sameJson,
   numericRules,
   validValue,
   type Control,
   type Scalar,
+  type JsonValue,
   type Values,
   type Version,
 } from "./model";
@@ -69,7 +73,7 @@ function Parameter({
       setInvalid(false);
     }
   }
-  const color = control["x-imv-target"].endsWith("/color");
+  const color = (control["x-imv-target"] ?? "").endsWith("/color");
   return (
     <div className="space-y-2">
       <Label htmlFor={id} className="text-xs text-muted-foreground">
@@ -202,10 +206,12 @@ export function ParametersPanel({
   dirty: boolean;
   saving: boolean;
   readOnly?: boolean;
-  onChange: (key: string, value: Scalar) => void;
+  onChange: (key: string, value: JsonValue) => void;
   onSave: () => void;
   onDiscard: () => void;
 }) {
+  const [invalid, setInvalid] = useState<Record<string, boolean>>({});
+  useEffect(() => setInvalid({}), [version?.id]);
   return (
     <section
       aria-label="模板参数"
@@ -234,7 +240,7 @@ export function ParametersPanel({
         </div>
         {version && !readOnly && (
           <div className="flex flex-wrap items-center gap-2">
-            <Button size="sm" disabled={disabled || !dirty} onClick={onSave}>
+            <Button size="sm" disabled={disabled || !dirty || Object.values(invalid).some(Boolean)} onClick={onSave}>
               保存配置
             </Button>
             <Button
@@ -257,6 +263,15 @@ export function ParametersPanel({
         <p className="py-7 text-center text-sm text-muted-foreground">
           模板生成后，在这里调整文字、颜色和位置。
         </p>
+      ) : version.spec.schema_version === "2" ? (
+        <div className="space-y-4 py-3">
+          <p className="text-xs text-muted-foreground">每个实例的参数可独立调整；保存时会检查参数和运行结果。布局与时间修改请通过聊天描述。</p>
+          {Object.entries(values).map(([key, value]) => (
+            <JsonParameter key={key} label={key} value={value} disabled={disabled}
+              onChange={(next) => onChange(key, next)}
+              onValidity={(bad) => setInvalid(previous => ({...previous, [key]: bad}))} />
+          ))}
+        </div>
       ) : (
         version.spec.text_layers.map((layer, index) => (
           <details
@@ -270,19 +285,19 @@ export function ParametersPanel({
             <div className="grid gap-4 pt-2 @min-[420px]:grid-cols-2">
               {Object.entries(version.candidate.config_schema.properties)
                 .filter(([, control]) =>
-                  control["x-imv-target"].startsWith(`/text_layers/${index}/`),
+                  (control["x-imv-target"] ?? "").startsWith(`/text_layers/${index}/`),
                 )
                 .map(([key, control]) => (
                   <div
                     key={key}
                     className={cn(
-                      control["x-imv-target"].endsWith("/text") &&
+                      (control["x-imv-target"] ?? "").endsWith("/text") &&
                         "@min-[420px]:col-span-2",
                     )}
                   >
                     <Parameter
                       control={control}
-                      value={values[key]}
+                      value={values[key] as Scalar}
                       disabled={disabled}
                       onChange={(value) => onChange(key, value)}
                     />
@@ -294,4 +309,35 @@ export function ParametersPanel({
       )}
     </section>
   );
+}
+
+/** 编辑任意 JSON 参数；保留非法中间输入并阻止保存，具体 Schema 约束由服务端检查。 */
+function JsonParameter({label, value, disabled, onChange, onValidity}: {
+  label: string; value: JsonValue; disabled: boolean;
+  onChange: (value: JsonValue) => void; onValidity: (invalid: boolean) => void;
+}) {
+  const id = useId();
+  const [draft, setDraft] = useState(JSON.stringify(value, null, 2));
+  const [error, setError] = useState("");
+  useEffect(() => {
+    setDraft(previous => {
+      try { if (sameJson(JSON.parse(previous), value)) return previous; } catch { /* Saved value replaces invalid drafts. */ }
+      return JSON.stringify(value, null, 2);
+    });
+    setError("");
+  }, [value]);
+  return <div className="space-y-2">
+    <Label htmlFor={id}>实例参数 · {label}</Label>
+    <Textarea id={id} value={draft} disabled={disabled} aria-invalid={!!error} className="min-h-32 font-mono text-xs"
+      onChange={(event) => {
+        const text = event.target.value;
+        setDraft(text);
+        try {
+          const next = JSON.parse(text) as JsonValue;
+          if (!isJsonValue(next)) throw new Error();
+          setError(""); onValidity(false); onChange(next);
+        } catch { setError("请输入有效的 JSON 参数。"); onValidity(true); }
+      }} />
+    {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+  </div>;
 }
