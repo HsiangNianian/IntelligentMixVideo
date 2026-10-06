@@ -1204,16 +1204,8 @@ def test_notification_timeout_allows_one_query_without_new_render(upstreams, cli
         upstreams["notification_release"].set()
 
 
-def test_execution_logs_cover_inputs_outputs_and_notification(upstreams, client, composition_case, composition_logs, monkeypatch):
-    """真实编排的每个步骤输入输出、原始素材回调原因和最终通知均落库，保留实际媒体链接但隐藏回调凭证。"""
-    from server.video_composition import execution_log
-
-    def reject_legacy_conversion(*args, **kwargs):
-        """正常任务必须直接生成七列；旧格式转换只允许在启动迁移时使用。"""
-        pytest.fail("新事件不应生成或转换旧 detail")
-
-    monkeypatch.setattr(execution_log, "append_event", reject_legacy_conversion)
-    monkeypatch.setattr(execution_log, "split_detail", reject_legacy_conversion)
+def test_execution_logs_cover_inputs_outputs_and_notification(upstreams, client, composition_case, composition_logs):
+    """真实编排的每个步骤输入输出、原始素材回调原因和最终通知均写文件，保留实际媒体链接但隐藏回调凭证。"""
     composition_case["matches"][0]["matched_candidate_reason"] = "no_candidates"
     request = {**composition_case["request"], "callbackUrl": "https://notify.example.test/result?token=hidden-callback"}
     accepted = client.post(BASE, json=request)
@@ -1526,9 +1518,8 @@ def test_client_ims_credentials_drive_submit_and_playback(upstreams, client, com
     # 新成功任务读取已持久化的公开地址，查询头不会再触发 IMS。
     assert client.get(f"{BASE}/{requests[0][0]}", headers=requests[1][1]).status_code == 200
     assert len(seen) == 4
-    from server.database import get_engine
-    with get_engine().connect() as connection:
-        logs = [dict(row) for row in connection.execute(select(*(store.execution_logs.c[name] for name in store.MODULES))).mappings()]
+    from server.video_composition.execution_log import read_log
+    logs = [read_log(task_id) for task_id, _ in requests]
     assert "private" not in json.dumps(logs)
     if not callback:
         assert client.post(BASE, json=composition_case["request"]).status_code == 503

@@ -31,6 +31,8 @@ def isolate_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         if key.upper().startswith(("DB_", "IMV_", "COMPOSITION_", "SEGMENT_MATCH_", "IMS_", "MIX_VIDEO_ALIYUN_IMS_", "ALIBABA_CLOUD_", "ZOS_")) or key.upper() in ("PORT", "DASHSCOPE_API_KEY", "ASR_BASE_URL"):
             monkeypatch.delenv(key)
     monkeypatch.chdir(tmp_path)
+    from server.video_composition import execution_log
+    monkeypatch.setattr(execution_log, "LOG_ROOT", tmp_path / ".log")
 
     from server.config_base import CommonSettings
     from server.__main__ import ServerSettings
@@ -272,18 +274,23 @@ async def composition_runtime(composition_settings, template_db):
 
 @pytest.fixture
 def composition_logs(template_db):
-    """读取真实模块列；默认按时间展平执行事件，raw=True 检查物理结构。"""
+    """读取实际 JSON 文件与业务任务时间；默认展平事件，raw=True 检查模块结构。"""
     from sqlalchemy import select
-    from server.video_composition.store import execution_logs
-    from server.video_composition.execution_log import MODULES, expand_columns
+    from server.video_composition.store import tasks
+    from server.video_composition.execution_log import LOG_ROOT, LOG_LOCK, MODULES, expand_columns, read_log
 
     def read(task_id=None, *, raw=False):
         """用同一时间与动作关联输入输出，错误信息直接来自 error_log。"""
-        statement = select(execution_logs).order_by(execution_logs.c.id)
+        statement = select(tasks.c.task_id, tasks.c.status, tasks.c.stage, tasks.c.created_at,
+                           tasks.c.updated_at).order_by(tasks.c.created_at)
         if task_id is not None:
-            statement = statement.where(execution_logs.c.task_id == task_id)
+            statement = statement.where(tasks.c.task_id == task_id)
         with template_db.connect() as connection:
             rows = [dict(row) for row in connection.execute(statement).mappings()]
+        with LOG_LOCK:
+            rows = [{**row, **read_log(row["task_id"]), "task_created_at": row["created_at"],
+                     "task_finished_at": row["updated_at"] if row["status"] in ("succeeded", "failed") else None}
+                    for row in rows if (LOG_ROOT / "video_composition" / row["task_id"]).exists()]
         if raw:
             return rows
         events = []
