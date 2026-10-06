@@ -1569,3 +1569,34 @@ def test_client_ims_restart_fails_notification_without_retry(upstreams, composit
     assert result["data"]["notification_attempts"] == 1
     assert upstreams["notifications"] == []
     assert not runtime.client_configs and not runtime.active
+
+
+def test_zos_address_available_while_log_writer_is_blocked(upstreams, client, composition_case, monkeypatch):
+    """日志磁盘阻塞时，POST、完整合成和 GET 成功地址均可完成。"""
+    from server.video_composition import execution_log
+
+    entered, release = Event(), Event()
+    original = execution_log.write_log
+
+    def blocked_write(*args, **kwargs):
+        """阻塞后台文件线程，直到业务响应检查完成才允许写盘。"""
+        entered.set()
+        assert release.wait(15)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(execution_log, "write_log", blocked_write)
+    try:
+        response = client.post(BASE, json=composition_case["request"])
+        assert response.status_code == 200 and entered.wait(2)
+        task_id = response.json()["data"]
+        end = monotonic() + 10
+        while store.get(task_id)["status"] not in ("succeeded", "failed") and monotonic() < end:
+            sleep(0.01)
+        result = client.get(f"{BASE}/{task_id}")
+        assert result.status_code == 200 and result.json()["status"] == "succeeded"
+        assert result.json()["result"]["videoUrl"].endswith(f"imv/video_composition/{task_id}.mp4")
+        assert not (execution_log.LOG_ROOT / "video_composition" / task_id).exists()
+    finally:
+        release.set()
+        execution_log.LOG_QUEUE.join()
+    assert (execution_log.LOG_ROOT / "video_composition" / task_id / "zos.json").exists()
