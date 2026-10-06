@@ -7,6 +7,7 @@ import os
 import shutil
 from datetime import datetime
 from pathlib import Path
+from threading import Event, Thread
 
 from pydantic import BaseModel, ValidationError
 import pytest
@@ -447,3 +448,132 @@ def test_old_log_tables_are_never_read_modified_or_migrated(template_db, composi
         for name in names:
             assert connection.execute(text(f"SELECT detail FROM {name}")).scalars().all() == ["old log"]
     assert set(inspect(template_db).get_table_names()) == {*original_tables, *names, "video_compositions"}
+
+
+def test_async_log_snapshots_order_time_and_shutdown(logged_task, monkeypatch):
+    """慢磁盘不阻止入队；保留提交时数据、时间与顺序，关闭等待积压写完。"""
+    record, folder = logged_task(status="processing")
+    entered, release, closed = Event(), Event(), Event()
+    original = execution_log.write_log
+
+    def slow_write(*args, **kwargs):
+        """暂停实际写入，显式验证生产者与关闭行为。"""
+        entered.set()
+        assert release.wait(10)
+        return original(*args, **kwargs)
+
+    def close():
+        """模拟生产者结束后的正常服务退出。"""
+        execution_log.close_logs()
+        closed.set()
+
+    monkeypatch.setattr(execution_log, "write_log", slow_write)
+    details = {"step": "asr", "output": {"text": "入队原文"}}
+    before = datetime.now(execution_log.BEIJING)
+    store.add_log(record, "step_finished", details)
+    after = datetime.now(execution_log.BEIJING)
+    closer = Thread(target=close)
+    try:
+        assert entered.wait(2)
+        details["output"]["text"] = "后续修改"
+        store.add_log(record, "probe", {"input": {"index": 2}})
+        record["status"] = "failed"
+        closer.start()
+        assert not closed.wait(0.05)
+    finally:
+        release.set()
+        if closer.ident is not None:
+            closer.join(10)
+    assert closed.is_set() and execution_log._writer is None
+    saved = execution_log.read_log(record["task_id"])
+    entry = saved["asr"]["output"][0]
+    assert entry["data"] == {"text": "入队原文"}
+    assert before <= datetime.fromisoformat(entry["time"]) <= after
+    assert saved["asr"]["execute_log"][0]["status"] == "processing"
+    assert saved["matching"]["input"][-1]["data"] == {"index": 2}
+    assert not execution_log.PENDING and execution_log.LOG_QUEUE.unfinished_tasks == 0
+
+
+def test_queue_full_waits_without_losing_events(logged_task, monkeypatch):
+    """磁盘持续慢导致队列满时等待空位，不无限增长或丢失日志。"""
+    from queue import Queue
+
+    record, _ = logged_task(status="processing")
+    execution_log.close_logs()
+    monkeypatch.setattr(execution_log, "LOG_QUEUE", Queue(maxsize=1))
+    entered, release, submitted = Event(), Event(), Event()
+    original = execution_log.write_log
+
+    def slow_write(*args, **kwargs):
+        """暂停消费者，使小队列确定性达到上限。"""
+        entered.set()
+        assert release.wait(10)
+        return original(*args, **kwargs)
+
+    def third():
+        """额外生产者仅在获得队列空位后返回。"""
+        store.add_log(record, "probe", {"input": {"index": 3}})
+        submitted.set()
+
+    monkeypatch.setattr(execution_log, "write_log", slow_write)
+    producer = Thread(target=third)
+    try:
+        store.add_log(record, "probe", {"input": {"index": 1}})
+        assert entered.wait(2)
+        store.add_log(record, "probe", {"input": {"index": 2}})
+        producer.start()
+        assert not submitted.wait(0.05)
+        assert execution_log.LOG_QUEUE.qsize() == 1
+    finally:
+        release.set()
+        if producer.ident is not None:
+            producer.join(10)
+        execution_log.close_logs()
+    assert submitted.is_set()
+    saved = execution_log.read_log(record["task_id"])
+    assert [e["data"]["index"] for e in saved["matching"]["input"]] == [1, 2, 3]
+
+
+def test_cleanup_protects_queued_task_until_last_write(logged_task, monkeypatch):
+    """终态已有后续日志排队时整目录保留；最后一条写完后才允许按容量删除。"""
+    record, folder = logged_task()
+    entered, release = Event(), Event()
+    original = execution_log.write_log
+    remaining = []
+
+    def slow_write(*args, **kwargs):
+        """首条写入完成清理后检查文件仍在，第二条完成后可删除。"""
+        entered.set()
+        assert release.wait(10)
+        original(*args, **kwargs)
+        remaining.append(folder.exists())
+
+    monkeypatch.setattr(execution_log, "write_log", slow_write)
+    monkeypatch.setattr(execution_log, "MAX_BYTES", 1)
+    try:
+        store.add_log(record, "probe", {})
+        assert entered.wait(2)
+        store.add_log(record, "probe", {})
+    finally:
+        release.set()
+        execution_log.LOG_QUEUE.join()
+    assert remaining == [True, False]
+
+
+def test_background_write_failure_does_not_stop_consumer(logged_task, monkeypatch, caplog):
+    """单条故障记录到运行日志，后台继续处理后续事件。"""
+    record, _ = logged_task(status="processing")
+    original = execution_log.write_log
+
+    def fail_once(record, event, *args, **kwargs):
+        """只让指定事件失败，其余执行真实文件写入。"""
+        if event == "broken":
+            raise OSError("disk failure")
+        return original(record, event, *args, **kwargs)
+
+    monkeypatch.setattr(execution_log, "write_log", fail_once)
+    store.add_log(record, "broken", {})
+    store.add_log(record, "probe", {"input": {"ok": True}})
+    execution_log.LOG_QUEUE.join()
+    assert "disk failure" in caplog.text
+    assert execution_log.read_log(record["task_id"])["matching"]["input"][-1]["data"] == {"ok": True}
