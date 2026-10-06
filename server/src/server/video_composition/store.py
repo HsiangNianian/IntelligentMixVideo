@@ -38,11 +38,11 @@ def finished_tasks() -> set[str]:
 
 
 def add_log(record: dict, event: str, details: dict) -> None:
-    """写文件失败只报告异常，不回滚已提交的业务任务或打断后续步骤。"""
+    """事务外提交日志快照至后台队列；失败只报告，不回滚业务状态。"""
     try:
-        execution_log.write_log(record, event, details, finished_tasks)
+        execution_log.enqueue_log(record, event, details, finished_tasks)
     except Exception:
-        logging.getLogger(__name__).exception("任务 %s 执行日志写入或清理失败", record["task_id"])
+        logging.getLogger(__name__).exception("任务 %s 执行日志入队失败", record["task_id"])
 
 
 def initialize_schema() -> None:

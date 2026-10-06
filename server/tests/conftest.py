@@ -90,6 +90,8 @@ def template_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Eng
     try:
         yield engine
     finally:
+        from server.video_composition.execution_log import close_logs
+        close_logs()
         database.close_database()
         engine.dispose()
 
@@ -277,10 +279,11 @@ def composition_logs(template_db):
     """读取实际 JSON 文件与业务任务时间；默认展平事件，raw=True 检查模块结构。"""
     from sqlalchemy import select
     from server.video_composition.store import tasks
-    from server.video_composition.execution_log import LOG_ROOT, LOG_LOCK, MODULES, expand_columns, read_log
+    from server.video_composition.execution_log import LOG_ROOT, LOG_LOCK, LOG_QUEUE, MODULES, expand_columns, read_log
 
     def read(task_id=None, *, raw=False):
         """用同一时间与动作关联输入输出，错误信息直接来自 error_log。"""
+        LOG_QUEUE.join()
         statement = select(tasks.c.task_id, tasks.c.status, tasks.c.stage, tasks.c.created_at,
                            tasks.c.updated_at).order_by(tasks.c.created_at)
         if task_id is not None:

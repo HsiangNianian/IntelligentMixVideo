@@ -103,6 +103,7 @@ def test_log_write_failure_keeps_committed_state(composition_case, composition_s
         saved = store.notification_status(record, "sending")
         assert saved["data"]["notification_status"] == "sending"
     assert store.get(saved["task_id"]) == saved
+    execution_log.LOG_QUEUE.join()
     assert "disk full" in caplog.text
 
 
@@ -111,6 +112,7 @@ async def test_concurrent_log_append(composition_case, composition_settings, com
     """七文件聚合并发事件不丢失，且不改变业务任务状态、版本和时间。"""
     store.initialize_schema()
     record = store.create(composition_case["request"], composition_settings.output())
+    execution_log.LOG_QUEUE.join()
     shutil.rmtree(execution_log.LOG_ROOT / "video_composition" / record["task_id"])
     await asyncio.gather(*(asyncio.to_thread(store.add_log, record, "probe", {"input": {"index": i}}) for i in range(12)))
     rows = composition_logs(record["task_id"])
@@ -314,6 +316,7 @@ def logged_task(composition_case, composition_settings):
         if status != "queued":
             record = store.advance(record, "completed" if status == "succeeded" else "matching", status=status,
                                    **({"notification_status": notification} if notification else {}))
+        execution_log.LOG_QUEUE.join()
         folder = execution_log.LOG_ROOT / "video_composition" / record["task_id"]
         stamp = datetime.now().timestamp() - age_days * 86400
         for path in folder.iterdir():
@@ -385,6 +388,7 @@ def test_first_write_counts_existing_files_and_whole_log_root(logged_task, monke
     store.initialize_schema()
     assert old.exists()
     store.add_log(active, "probe", {"input": {"text": "重启后写入"}})
+    execution_log.LOG_QUEUE.join()
     assert not old.exists() and protected.exists() and other.exists()
     assert execution_log.read_log(active["task_id"])["matching"]["input"][-1]["data"] == {"text": "重启后写入"}
 
@@ -403,6 +407,7 @@ def test_partial_temporary_write_preserves_previous_json(logged_task, monkeypatc
 
     monkeypatch.setattr(Path, "write_text", fail_asr)
     store.add_log(record, "probe", {"input": {"text": "写入失败"}})
+    execution_log.LOG_QUEUE.join()
     assert {path.name: path.read_bytes() for path in folder.iterdir()} == before
 
 
@@ -413,6 +418,7 @@ def test_log_root_does_not_follow_working_directory(logged_task, monkeypatch, tm
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
     store.add_log(record, "probe", {})
+    execution_log.LOG_QUEUE.join()
     assert len(execution_log.read_log(record["task_id"])["matching"]["execute_log"]) == 2
     assert folder.exists() and not (elsewhere / ".log").exists()
 

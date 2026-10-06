@@ -1518,7 +1518,8 @@ def test_client_ims_credentials_drive_submit_and_playback(upstreams, client, com
     # 新成功任务读取已持久化的公开地址，查询头不会再触发 IMS。
     assert client.get(f"{BASE}/{requests[0][0]}", headers=requests[1][1]).status_code == 200
     assert len(seen) == 4
-    from server.video_composition.execution_log import read_log
+    from server.video_composition.execution_log import LOG_QUEUE, read_log
+    LOG_QUEUE.join()
     logs = [read_log(task_id) for task_id, _ in requests]
     assert "private" not in json.dumps(logs)
     if not callback:

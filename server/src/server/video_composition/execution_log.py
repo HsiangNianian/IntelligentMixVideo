@@ -1,13 +1,17 @@
-"""执行日志归类、脱敏后保存七个模块 JSON；单进程串行读写，超限时整任务清理。"""
+"""执行日志先快照入队，再由单线程归类、脱敏并保存七个 JSON；超限时整任务清理。"""
 
 import json
+import logging
 import re
 import shutil
 import traceback
+from collections import Counter
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from math import isfinite
 from pathlib import Path
-from threading import Lock
+from queue import Queue
+from threading import Lock, Thread
 from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, ValidationError
@@ -270,6 +274,53 @@ def add_event(previous: dict | None, event: str, record: dict, details: dict, ti
 LOG_ROOT = Path(__file__).resolve().parent.parent / ".log"
 MAX_BYTES = 50 * 1024 * 1024
 LOG_LOCK = Lock()
+# 队列满时提交线程等待空位，避免无限占用内存或丢日志；正常入队不等待磁盘。
+LOG_QUEUE = Queue(maxsize=128)
+PENDING = Counter()
+WRITER_LOCK = Lock()
+_writer: Thread | None = None
+
+
+def enqueue_log(record: dict, event: str, details: dict, finished_tasks) -> None:
+    """固定事件时间和独立输入输出快照；工作线程按入队顺序写入，不复制整个业务任务。"""
+    global _writer
+    time = datetime.now(BEIJING)
+    snapshot = {key: record[key] for key in ("task_id", "stage", "status")}
+    item = (snapshot, event, deepcopy(details), finished_tasks, time)
+    with WRITER_LOCK:
+        if _writer is None:
+            _writer = Thread(target=_consume_logs, name="composition-logs", daemon=True)
+            _writer.start()
+        PENDING[record["task_id"]] += 1
+    LOG_QUEUE.put(item)
+
+
+def _consume_logs() -> None:
+    """消费至退出标记；单条失败只报告异常，继续处理后续日志并释放队列计数。"""
+    while True:
+        item = LOG_QUEUE.get()
+        try:
+            if item is None:
+                return
+            record, event, details, finished_tasks, time = item
+            with WRITER_LOCK:
+                PENDING[record["task_id"]] -= 1
+                if not PENDING[record["task_id"]]:
+                    del PENDING[record["task_id"]]
+            write_log(record, event, details, finished_tasks, time=time)
+        except Exception:
+            logging.getLogger(__name__).exception("合成执行日志写入或清理失败")
+        finally:
+            LOG_QUEUE.task_done()
+
+
+def close_logs() -> None:
+    """调用方停止提交后，等已入队日志全部写完再退出；必须早于数据库关闭。"""
+    global _writer
+    if _writer is not None:
+        LOG_QUEUE.put(None)
+        _writer.join()
+        _writer = None
 
 
 def read_log(task_id: str) -> dict:
@@ -279,11 +330,11 @@ def read_log(task_id: str) -> dict:
             else {key: [] for key in ("input", "output", "execute_log", "error_log")} for name in MODULES}
 
 
-def write_log(record: dict, event: str, details: dict, finished_tasks) -> None:
+def write_log(record: dict, event: str, details: dict, finished_tasks, *, time=None) -> None:
     """锁内追加并以临时文件替换 JSON；写入后检查容量，结束任务由调用方查询确认。"""
     with LOG_LOCK:
         task_id = record["task_id"]
-        columns = add_event(read_log(task_id), event, record, details, datetime.now(BEIJING))
+        columns = add_event(read_log(task_id), event, record, details, time or datetime.now(BEIJING))
         folder = LOG_ROOT / "video_composition" / task_id
         folder.mkdir(parents=True, exist_ok=True)
         try:
@@ -311,8 +362,10 @@ def cleanup(finished_tasks) -> None:
             task_id = parts[1]
             sizes[task_id] = sizes.get(task_id, 0) + stat.st_size
             modified[task_id] = max(modified.get(task_id, 0), stat.st_mtime_ns)
-    for task_id in sorted(set(sizes) & finished_tasks(), key=modified.get):
-        shutil.rmtree(LOG_ROOT / "video_composition" / task_id)
-        total -= sizes[task_id]
-        if total <= MAX_BYTES:
-            break
+    finished = finished_tasks()
+    with WRITER_LOCK:
+        for task_id in sorted((set(sizes) & finished) - PENDING.keys(), key=modified.get):
+            shutil.rmtree(LOG_ROOT / "video_composition" / task_id)
+            total -= sizes[task_id]
+            if total <= MAX_BYTES:
+                break
