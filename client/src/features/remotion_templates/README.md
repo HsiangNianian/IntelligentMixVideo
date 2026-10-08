@@ -16,6 +16,6 @@
 会话切换、新增、历史预览继续使用保存/放弃/取消保护，取消请求由服务端持久化后停止工作。
 
 在 `client/` 执行 `bun install --frozen-lockfile`、`bun run test` 和 `bun run build`。
-`remotion-composition.test.tsx` 覆盖配置默认值、预设和自定义画布、小数时长取整、帧率、边界、图片上传和会话隔离，`remotion-sprite.test.tsx` 覆盖嵌套参数、隔离预览协议和历史只读。
+`remotion-composition.test.tsx` 覆盖固定画布、上传互斥、会话隔离与成功版本配置恢复，`remotion-parameters.test.tsx` 覆盖 v2 嵌套 JSON 参数的渲染、非法输入拦截与净变化提交；目录、删除、进度、历史与版本用例覆盖隔离预览协议和历史只读。
 这些 UI 测试不执行真实模型、Remotion 或浏览器。Linux 行为验证命令见
 [服务端说明](../../../../../server/src/server/remotion_templates/README.md)。
