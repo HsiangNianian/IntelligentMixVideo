@@ -52,41 +52,6 @@ def _external_reference(value: Any) -> str | None:
     return None
 
 
-def _refuse_retrieval(uri: str) -> Any:
-    """拒绝任何需要离开文档获取的引用，避免提交的 Schema 触发 API 进程的网络读取。"""
-    raise Unresolvable(uri)
-
-
-# 只解析文档内部引用；外部引用直接失败，绝不发起请求。
-_REGISTRY = Registry(retrieve=_refuse_retrieval)
-# 只有片段引用（``#`` 开头）留在文档内部，其余写法都要求外部获取。
-_REFERENCE_KEYWORDS = ("$ref", "$dynamicRef")
-
-
-def _reference_validator(schema: dict[str, Any]) -> Draft202012Validator:
-    """构造只解析文档内部引用的校验器。"""
-    return Draft202012Validator(schema, registry=_REGISTRY)
-
-
-def _external_reference(value: Any) -> str | None:
-    """返回第一个指向文档外部的引用，供契约在解析前给出明确诊断。"""
-    if isinstance(value, dict):
-        for keyword in _REFERENCE_KEYWORDS:
-            reference = value.get(keyword)
-            if isinstance(reference, str) and not reference.startswith("#"):
-                return reference
-        items: Any = value.values()
-    elif isinstance(value, list):
-        items = value
-    else:
-        return None
-    for item in items:
-        found = _external_reference(item)
-        if found is not None:
-            return found
-    return None
-
-
 def _diagnostic(message: str, *, field: str | None = None) -> CodeDiagnostic:
     """Build a contract diagnostic with a JSON Pointer when one is known."""
     values: dict[str, Any] = {
