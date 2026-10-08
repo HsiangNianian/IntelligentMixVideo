@@ -33,9 +33,12 @@ from .models import (
     TaskMessage,
     TemplateProject,
 )
+from .provider import ExecutionFailure
 from .runtime import Runtime
 from .store import NotFound
 from .stream import event_stream
+from .tool_validation import ValidationUnavailable
+from .tools.contracts import CodeValidationReport, ComponentDefinition
 
 # 按接口职责设置标签，供模板服务的 Swagger 分组展示。
 router = APIRouter()
@@ -328,6 +331,36 @@ def artifacts(job_id: UUID, service: Service) -> list[dict]:
             }
         )
     return result
+
+
+@router.get(
+    "/versions/{version_id}/diagnostics",
+    response_model=CodeValidationReport,
+    tags=["生成产物"],
+    summary="读取成功版本的代码诊断",
+)
+async def diagnostics(version_id: UUID, service: Service) -> CodeValidationReport:
+    """对已验收版本按需重跑一次隔离类型检查，返回契约与 LSP 诊断。
+
+    代码和默认参数取自封存记录，先按现有证据清单校验 `accepted/` 未被修改；
+    文件被改写时返回 404，不返回与当前字节不符的陈旧诊断。
+    隔离 worker 不可用（例如缺少 Linux 沙箱）时返回 503，调用方应保留代码显示并提供重试。
+    """
+    version = service.store.version(version_id)
+    accepted = service.store.root / "accepted" / str(version.id)
+    try:
+        verify_artifacts(version.candidate, version.spec, version.validation, accepted)
+    except (ValueError, OSError) as exc:
+        raise NotFound("accepted artifact unavailable") from exc
+    component = ComponentDefinition(
+        code=version.candidate.tsx_code,
+        parameter_schema=version.candidate.config_schema,
+        default_parameters=version.candidate.default_config,
+    )
+    try:
+        return await service.code_report(component)
+    except (ValidationUnavailable, ExecutionFailure) as exc:
+        raise HTTPException(503, "代码诊断服务暂不可用，请稍后重试。") from exc
 
 
 @router.get(

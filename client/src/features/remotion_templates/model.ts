@@ -52,6 +52,32 @@ export interface Version {
     text_layers: { id: string; text: string }[];
   };
 }
+/** 服务端隔离类型检查返回的零基行列；与 LSP 一致，character 以 UTF-16 计。 */
+export interface TextPosition {
+  line: number;
+  character: number;
+}
+/** 诊断范围结束位置排他。 */
+export interface TextRange {
+  start: TextPosition;
+  end: TextPosition;
+}
+/** 一条真实诊断：契约检查或 TypeScript 语言服务，不包含模型推测。 */
+export interface Diagnostic {
+  source: "contract" | "lsp";
+  severity: "error" | "warning" | "information" | "hint";
+  message: string;
+  file?: string;
+  code?: string;
+  range?: TextRange;
+  field?: string;
+}
+/** 成功版本的只读诊断结论；passed 为 false 表示存在 error 级诊断。 */
+export interface DiagnosticsReport {
+  passed: boolean;
+  diagnostics: Diagnostic[];
+}
+
 /** 公开执行状态只含结果引用、追问和简短错误。 */
 export interface Job {
   id: string;

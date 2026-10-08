@@ -118,6 +118,19 @@ class ToolValidator:
         diagnostics = _contract_diagnostics(component)
         if diagnostics:
             return CodeValidationReport(passed=False, diagnostics=diagnostics)
+        return await self.code_report(component)
+
+    async def code_report(self, component: ComponentDefinition) -> CodeValidationReport:
+        """Re-run only the isolated code checks for an already contracted component.
+
+        Used by the read-only diagnostics route so viewing an accepted version costs
+        one language-service attempt instead of a full browser behavior run.  The
+        contract is re-checked here anyway: callers may hold older records, and a
+        contract failure must never be reported as a clean typecheck.
+        """
+        diagnostics = _contract_diagnostics(component)
+        if diagnostics:
+            return CodeValidationReport(passed=False, diagnostics=diagnostics)
         directory = self._attempt("validate-code")
         request = {
             "mode": "code",

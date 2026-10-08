@@ -15,6 +15,8 @@ from .models import DialogueOutput, EditTemplateRequest, JobError, JobInput, Tas
 from .parameters import parameter_changes
 from .provider import Budget, ExecutionFailure, ModelFailure, Provider
 from .store import Conflict, Store
+from .tool_validation import ToolValidator
+from .tools.contracts import CodeValidationReport, ComponentDefinition
 
 
 logger = logging.getLogger("uvicorn.error")
@@ -144,6 +146,11 @@ class Runtime:
         )
         self.notify(result.id, config)
         return result
+
+    async def code_report(self, component: ComponentDefinition) -> CodeValidationReport:
+        """Read-only isolated typecheck for an accepted version; never queues or publishes work."""
+        validator = ToolValidator(self.harness.renderer, self.store.root / "diagnostics")
+        return await validator.code_report(component)
 
     async def cancel(self, job_id: UUID):
         """Persist cancellation first so even a late model result cannot publish a revision."""

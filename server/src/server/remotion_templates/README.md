@@ -54,3 +54,13 @@ IMV_TEST_RENDERER=1 uv run --locked --project server pytest server/tests/test_re
 The browser path requires Chromium, Noto CJK fonts, bubblewrap and util-linux.
 Offline tests cover tool registration, deferred-tool behaviour, immutable
 storage and source consistency without a model or semantic index.
+
+## Code diagnostics
+
+`GET /api/templates/versions/{id}/diagnostics` re-runs the isolated TypeScript
+language service over an accepted version's sealed source and returns its
+contract and LSP diagnostics. It re-checks the sealed `accepted/` artifacts
+first, so tampered bytes return 404 rather than a stale conclusion, and an
+unavailable sandbox returns 503 instead of reporting "no diagnostics" for code
+that was never checked. The route is read-only: it never queues work, publishes
+a version or adds a diagnostics table.
