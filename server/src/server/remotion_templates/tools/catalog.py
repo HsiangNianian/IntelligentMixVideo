@@ -28,7 +28,7 @@ from .contracts import (
     ToolInspectInput,
     ToolResult,
 )
-from .registry import RegisteredTool, ToolFault, get_tool, registered_tools, tool
+from .registry import RegisteredTool, ToolFault, registered_tools, tool
 
 
 def _success(data: Any) -> dict[str, Any]:
@@ -102,17 +102,37 @@ async def sprite_create(owner, request: SpriteCreateInput) -> ToolResult[SpriteC
         return _failure(exc, "SPRITE_STORE_FAILED")
 
 
+def _inspectable(name: str) -> RegisteredTool:
+    """Resolve one registered descriptor by dotted ID or by the wire name the model is shown.
+
+    Inspection stays contract-only: it never executes a handler and never reveals a
+    tool that is not registered, but it must accept the same names the model sees in
+    its own tool window. `resolve()` is not reused here because it hides tools that
+    are registered with a contract but no implementation yet, and describing those
+    contracts is exactly what this tool is for.
+    """
+    for item in registered_tools():
+        if name in {item.name, item.name.replace(".", "_")}:
+            return item
+    known = ", ".join(item.name for item in registered_tools())
+    raise ToolFault("TOOL_NOT_FOUND", f"Unknown tool: {name}. Registered tools: {known}")
+
+
 @tool(
     "tools.inspect",
-    constraints=["The name is exact; inspection never discovers or executes tools."],
+    constraints=["The name is a dotted tool ID or the wire name shown in this tool window; inspection never discovers or executes tools."],
     side_effects=["registry read only"],
     error_codes=["INVALID_ARGUMENT", "TOOL_NOT_FOUND"],
     examples=[{"input": {"tool_name": "sprite.compose"}, "output": {"ok": False, "error": {"code": "TOOL_NOT_FOUND", "message": "example"}}}],
 )
 async def tools_inspect(owner, request: ToolInspectInput) -> ToolResult[ToolDescriptor]:
-    """Return one exact registered creation-tool descriptor."""
+    """Return one registered tool descriptor by dotted ID or by the wire name this window shows.
+
+    An unknown name reports every registered ID, so a model that guesses a name
+    learns the real one instead of retrying blind.
+    """
     try:
-        return _success(get_tool(request.tool_name).describe())
+        return _success(_inspectable(request.tool_name).describe())
     except ToolFault as exc:
         return _failure(exc, "TOOL_NOT_FOUND")
 
