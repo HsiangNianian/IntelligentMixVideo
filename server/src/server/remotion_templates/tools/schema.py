@@ -2,7 +2,8 @@
 
 This module owns the data-only part of the tool contract: JSON Schema
 validation, recursive parameter overlays, and diagnostics.  It never runs
-TSX or mutates a stored Preset/Sprite.
+TSX or mutates a stored Preset/Sprite.  References resolve inside the
+submitted document only; a Schema can never make the API process fetch a URL.
 """
 from __future__ import annotations
 
@@ -10,8 +11,80 @@ from copy import deepcopy
 from typing import Any
 
 from jsonschema import Draft202012Validator, SchemaError, ValidationError
+from referencing import Registry
+from referencing.exceptions import Unresolvable
 
 from .contracts import CodeDiagnostic, ComponentDefinition
+
+
+def _refuse_retrieval(uri: str) -> Any:
+    """拒绝任何需要离开文档获取的引用，避免提交的 Schema 触发 API 进程的网络读取。"""
+    raise Unresolvable(uri)
+
+
+# 只解析文档内部引用；外部引用直接失败，绝不发起请求。
+_REGISTRY = Registry(retrieve=_refuse_retrieval)
+# 只有片段引用（``#`` 开头）留在文档内部，其余写法都要求外部获取。
+_REFERENCE_KEYWORDS = ("$ref", "$dynamicRef")
+
+
+def _reference_validator(schema: dict[str, Any]) -> Draft202012Validator:
+    """构造只解析文档内部引用的校验器。"""
+    return Draft202012Validator(schema, registry=_REGISTRY)
+
+
+def _external_reference(value: Any) -> str | None:
+    """返回第一个指向文档外部的引用，供契约在解析前给出明确诊断。"""
+    if isinstance(value, dict):
+        for keyword in _REFERENCE_KEYWORDS:
+            reference = value.get(keyword)
+            if isinstance(reference, str) and not reference.startswith("#"):
+                return reference
+        items: Any = value.values()
+    elif isinstance(value, list):
+        items = value
+    else:
+        return None
+    for item in items:
+        found = _external_reference(item)
+        if found is not None:
+            return found
+    return None
+
+
+def _refuse_retrieval(uri: str) -> Any:
+    """拒绝任何需要离开文档获取的引用，避免提交的 Schema 触发 API 进程的网络读取。"""
+    raise Unresolvable(uri)
+
+
+# 只解析文档内部引用；外部引用直接失败，绝不发起请求。
+_REGISTRY = Registry(retrieve=_refuse_retrieval)
+# 只有片段引用（``#`` 开头）留在文档内部，其余写法都要求外部获取。
+_REFERENCE_KEYWORDS = ("$ref", "$dynamicRef")
+
+
+def _reference_validator(schema: dict[str, Any]) -> Draft202012Validator:
+    """构造只解析文档内部引用的校验器。"""
+    return Draft202012Validator(schema, registry=_REGISTRY)
+
+
+def _external_reference(value: Any) -> str | None:
+    """返回第一个指向文档外部的引用，供契约在解析前给出明确诊断。"""
+    if isinstance(value, dict):
+        for keyword in _REFERENCE_KEYWORDS:
+            reference = value.get(keyword)
+            if isinstance(reference, str) and not reference.startswith("#"):
+                return reference
+        items: Any = value.values()
+    elif isinstance(value, list):
+        items = value
+    else:
+        return None
+    for item in items:
+        found = _external_reference(item)
+        if found is not None:
+            return found
+    return None
 
 
 def _diagnostic(message: str, *, field: str | None = None) -> CodeDiagnostic:
@@ -33,9 +106,13 @@ def _pointer(path: Any) -> str:
 
 
 def validate_parameters(schema: dict[str, Any], values: dict[str, Any]) -> None:
-    """Raise ``ValidationError`` when a complete parameter object is invalid."""
+    """Raise ``ValidationError`` when a complete parameter object is invalid.
+
+    引用只在本 Schema 文档内部解析；文档内定位不到的引用抛出 ``Unresolvable``，
+    不会退化成网络读取。
+    """
     Draft202012Validator.check_schema(schema)
-    Draft202012Validator(schema).validate(values)
+    _reference_validator(schema).validate(values)
 
 
 def merge_parameters(defaults: dict[str, Any], patch: dict[str, Any] | None) -> dict[str, Any]:
@@ -73,6 +150,10 @@ def validate_component_contract(component: ComponentDefinition) -> list[CodeDiag
     except SchemaError as exc:
         diagnostics.append(_diagnostic(f"parameter_schema 不是有效的 JSON Schema：{exc.message}", field="/parameter_schema"))
         return diagnostics
+    external = _external_reference(component.parameter_schema)
+    if external is not None:
+        diagnostics.append(_diagnostic(f"parameter_schema 只允许文档内部引用，不接受外部引用：{external}", field="/parameter_schema"))
+        return diagnostics
     if component.parameter_schema.get("type") != "object":
         diagnostics.append(_diagnostic("parameter_schema 根类型必须为 object。", field="/parameter_schema/type"))
     if component.parameter_schema.get("additionalProperties") is not False:
@@ -81,7 +162,7 @@ def validate_component_contract(component: ComponentDefinition) -> list[CodeDiag
         validate_parameters(component.parameter_schema, component.default_parameters)
     except ValidationError as exc:
         diagnostics.append(_diagnostic(f"默认参数不满足 parameter_schema：{exc.message}", field="/default_parameters" + _pointer(exc.absolute_path)))
-    except (SchemaError, TypeError) as exc:
+    except (SchemaError, TypeError, Unresolvable) as exc:
         diagnostics.append(_diagnostic(f"参数 Schema 无法验证默认参数：{exc}", field="/parameter_schema"))
     return diagnostics
 
