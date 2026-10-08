@@ -50,7 +50,7 @@ class PresentationBuilder:
             raise ValueError("Presentation worker did not finish its required checks")
         if runtime != self.environment():
             raise ValueError("Presentation environment changed during publication")
-        report = ValidationReport(profile="pr76", fingerprint=validation_fingerprint(candidate, spec, runtime), runtime=runtime, checks=[
+        report = ValidationReport(profile="v2", fingerprint=validation_fingerprint(candidate, spec, runtime), runtime=runtime, checks=[
             Check(name="code_validation", status="pass", detail="PR76 code and parameter contract checked."),
             Check(name="runtime_validation", status="pass", detail=f"Base runtime checks and {validation.custom_tests_executed} supplied scripts passed; no visual review performed."),
             Check(name="export_source", status="pass", detail="Standalone export typechecked with omitted props."),

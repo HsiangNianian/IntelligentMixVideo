@@ -33,7 +33,7 @@ class FakeSession:
         """Resolve only the task's exact saved Sprite."""
         return self.saved_sprites[identifier]
 
-    async def validate_pr76_render(self, _request):
+    async def validate_render(self, _request):
         """Return a passing mount report so publication can proceed."""
         return SimpleNamespace(passed=True)
 

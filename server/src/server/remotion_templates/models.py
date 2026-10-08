@@ -370,7 +370,7 @@ class VisualReview(Contract):
 class ValidationReport(Contract):
     """Every check is bound to code, configuration, specification, fonts, and runtime."""
 
-    profile: Literal["legacy", "pr76"] = "legacy"
+    profile: Literal["legacy", "v2"] = "legacy"
     fingerprint: str
     artifacts: dict[str, str] = Field(default_factory=dict)
     checks: list[Check] = Field(default_factory=list)
@@ -380,8 +380,8 @@ class ValidationReport(Contract):
     @property
     def render_passed(self) -> bool:
         """User parameter revisions need fresh runnable artifacts, not model approval of their appearance."""
-        if self.profile == "pr76":
-            return self._pr76_passed()
+        if self.profile == "v2":
+            return self._contract_passed()
         required = {
             "configuration",
             "source_policy",
@@ -406,8 +406,8 @@ class ValidationReport(Contract):
     @property
     def passed(self) -> bool:
         """Unknown or missing required evidence cannot approve a candidate."""
-        if self.profile == "pr76":
-            return self._pr76_passed()
+        if self.profile == "v2":
+            return self._contract_passed()
         required = {
             "configuration",
             "source_policy",
@@ -431,7 +431,7 @@ class ValidationReport(Contract):
             and all(check.status == "pass" for check in self.checks)
         )
 
-    def _pr76_passed(self) -> bool:
+    def _contract_passed(self) -> bool:
         """Require actual runtime checks and sealed presentation construction for PR76 versions."""
         required = {"code_validation", "runtime_validation", "presentation_bundle", "export_source"}
         return (

@@ -18,6 +18,7 @@ from server.remotion_templates.tools.contracts import (
     PresetRecord,
     SpriteComposeInput,
     SpriteCreateInput,
+    SpriteRecord,
 )
 from server.remotion_templates.tools.registry import ToolFault, registered_tools
 from server.remotion_templates.tools.session import ToolSession
@@ -44,7 +45,7 @@ def patch_validation(current: ToolSession) -> None:
         """Keep the test focused on the creation catalog and source integrity."""
         return valid_report()
 
-    current.validate_pr76_code = validate
+    current.validate_code = validate
 
 
 def draft() -> PresetDraft:
@@ -55,6 +56,58 @@ def draft() -> PresetDraft:
         parameter_schema={"type": "object", "properties": {}, "additionalProperties": False},
         default_parameters={},
     )
+
+
+def saved_sprite(sprite_code: str, preset_code: str) -> SpriteRecord:
+    """构造一条带实例快照的 Sprite 记录，用于观察任务快照的体积收缩。"""
+    return SpriteRecord(
+        sprite_id="saved-sprite",
+        created_at="2026-09-30T00:00:00+00:00",
+        description="标题",
+        code=sprite_code,
+        parameter_schema={"type": "object", "properties": {"title": {"type": "object"}}, "additionalProperties": False},
+        default_parameters={"title": {"text": "今日灵感"}},
+        composition={"width": 1080, "height": 1920, "fps": 30, "duration_frames": 30},
+        instances=[{
+            "instance_id": "title",
+            "preset": {
+                "description": "title",
+                "code": preset_code,
+                "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+                "default_parameters": {},
+            },
+            "parameters": {"text": "今日灵感"},
+            "layout": {"x": 0, "y": 0, "width": 1080, "height": 1920, "z_index": 0},
+            "timing": {"start_frame": 0, "duration_frames": 30},
+        }],
+    )
+
+
+def test_snapshot_drops_rebuildable_source_only_when_over_budget(tmp_path):
+    """快照超过请求预算时才丢弃可由记录重建的源码，结构、Schema 与默认值始终保留。
+
+    实例内的预设源码已包含在合成后的 Sprite 源码里，先丢它；仍超限才丢 Sprite 源码。
+    """
+    current = session(tmp_path)
+    source = "export default function Sprite(){return null}"
+    current.latest_sprite_id = "saved-sprite"
+
+    current.saved_sprites["saved-sprite"] = saved_sprite(source, source)
+    plain = current.snapshot()
+    assert plain["saved_sprites"][0]["code"] == source
+    assert plain["saved_sprites"][0]["instances"][0]["preset"]["code"] == source
+
+    current.saved_sprites["saved-sprite"] = saved_sprite(source, "x" * 150_000)
+    trimmed = current.snapshot()
+    assert "code" not in trimmed["saved_sprites"][0]["instances"][0]["preset"]
+    assert trimmed["saved_sprites"][0]["code"] == source
+
+    current.saved_sprites["saved-sprite"] = saved_sprite("y" * 250_000, "x" * 150_000)
+    minimal = current.snapshot()
+    assert "code" not in minimal["saved_sprites"][0]
+    assert "code" not in minimal["latest_sprite"]
+    assert minimal["saved_sprites"][0]["parameter_schema"]["type"] == "object"
+    assert minimal["saved_sprites"][0]["default_parameters"] == {"title": {"text": "今日灵感"}}
 
 
 def test_full_catalog_is_registered_but_only_implemented_tools_are_public():

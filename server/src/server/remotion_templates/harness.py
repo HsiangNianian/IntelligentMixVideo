@@ -85,7 +85,7 @@ class Harness:
 
     async def host_check(self, session, sprite: SpriteDraft):
         """Run the isolated mount check the host requires before building a preview."""
-        return await session.validate_pr76_render(RenderValidationInput(
+        return await session.validate_render(RenderValidationInput(
             component=ComponentDefinition(
                 code=sprite.code,
                 parameter_schema=sprite.parameter_schema,

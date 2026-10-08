@@ -443,7 +443,7 @@ class Store:
                 else:
                     if (not report.passed
                         or report.fingerprint != validation_fingerprint(candidate, spec, report.runtime)
-                        or (spec.schema_version == "2") != (report.profile == "pr76")):
+                        or (spec.schema_version == "2") != (report.profile == "v2")):
                         raise Conflict("Candidate lacks current successful validation evidence")
                 row = db.execute(
                     "SELECT data FROM projects WHERE id=?", (str(job.project_id),)

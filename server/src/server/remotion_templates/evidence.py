@@ -23,7 +23,7 @@ def seal_artifacts(
 ) -> None:
     """Capture only actual output bytes, after the renderer has stopped all child processes."""
     names = ["Template.tsx", "candidate.json", "spec.json"]
-    if report.profile == "pr76":
+    if report.profile == "v2":
         names += ["Export.tsx", "interactive.js", "tool-validation.json"]
         report.artifacts = {name: digest(directory / name) for name in names}
         verify_artifacts(candidate, spec, report, directory)
@@ -65,9 +65,9 @@ def verify_artifacts(
 ) -> None:
     """Bracket model review and completion with current byte checks; no self-reported evidence is accepted."""
     required = {"Template.tsx", "candidate.json", "spec.json"}
-    if report.profile == "pr76":
+    if report.profile == "v2":
         required |= {"Export.tsx", "interactive.js", "tool-validation.json"}
-    if report.profile == "pr76":
+    if report.profile == "v2":
         from .tools.contracts import RenderValidationReport
         data = json.loads((directory / "tool-validation.json").read_text())
         component = {"code": candidate.tsx_code, "parameter_schema": candidate.config_schema, "default_parameters": candidate.default_config}

@@ -67,7 +67,7 @@ def _deferred(name: str):
 async def preset_create(owner, request: PresetCreateInput) -> ToolResult[PresetCreateOutput]:
     """Validate and save a new immutable Preset definition."""
     try:
-        return _success(await owner.create_pr76_preset(request))
+        return _success(await owner.create_preset(request))
     except Exception as exc:
         return _failure(exc, "PRESET_STORE_FAILED")
 
@@ -82,7 +82,7 @@ async def preset_create(owner, request: PresetCreateInput) -> ToolResult[PresetC
 async def sprite_compose(owner, request: SpriteComposeInput) -> ToolResult[SpriteComposeOutput]:
     """Resolve Presets and produce a complete immutable Sprite draft."""
     try:
-        return _success({"sprite": owner.compose_pr76(request)["sprite"]})
+        return _success({"sprite": (await owner.compose_sprite(request))["sprite"]})
     except Exception as exc:
         return _failure(exc, "COMPOSITION_FAILED")
 
@@ -97,7 +97,7 @@ async def sprite_compose(owner, request: SpriteComposeInput) -> ToolResult[Sprit
 async def sprite_create(owner, request: SpriteCreateInput) -> ToolResult[SpriteCreateOutput]:
     """Validate and persist one composed Sprite draft."""
     try:
-        return _success(await owner.create_pr76_sprite(request.sprite))
+        return _success(await owner.create_sprite(request.sprite))
     except Exception as exc:
         return _failure(exc, "SPRITE_STORE_FAILED")
 

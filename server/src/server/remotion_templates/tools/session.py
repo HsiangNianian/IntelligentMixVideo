@@ -27,6 +27,37 @@ from .schema import merge_parameters, validate_component_contract, validate_para
 from .compose import compose_source
 
 
+# 快照预算：provider 的请求体上限是 512000 字节，会话窗口自身上限 240000 字节，
+# 余量留给工具描述。快照本身没有别的边界，只能在这里按需收缩。
+_SNAPSHOT_BYTE_BUDGET = 200_000
+
+
+def _snapshot_bytes(data: dict) -> int:
+    """测量模型实际收到的快照体积（UTF-8 字节）。"""
+    return len(json.dumps(data, ensure_ascii=False, default=str).encode())
+
+
+def _bounded_snapshot(data: dict) -> dict:
+    """超过预算时按顺序丢弃可由记录重建的源码，保留 ID、Schema、默认值与校验结论。
+
+    合成后的 Sprite 源码已经包含各实例的预设源码，所以先丢实例源码；仍超限才丢
+    Sprite 自身源码。正常任务体积远低于预算，模型可见信息不因此改变。
+    """
+    if _snapshot_bytes(data) <= _SNAPSHOT_BYTE_BUDGET:
+        return data
+    for record in data.get("saved_sprites", []):
+        for instance in record.get("instances", []):
+            preset = instance.get("preset")
+            if isinstance(preset, dict):
+                preset.pop("code", None)
+    if _snapshot_bytes(data) <= _SNAPSHOT_BYTE_BUDGET:
+        return data
+    for record in [*data.get("saved_sprites", []), data.get("latest_sprite")]:
+        if isinstance(record, dict):
+            record.pop("code", None)
+    return data
+
+
 class ToolSession:
     """Keep renderer candidates task-local while PR76 Preset/Sprite records remain immutable."""
 
@@ -44,9 +75,9 @@ class ToolSession:
         root = harness.settings.data_dir
         if not root.is_absolute():
             root = Path(__file__).parent.parent / root
-        self.pr76_root = root / "pr76_catalog"
-        self.pr76_root.mkdir(parents=True, exist_ok=True)
-        self.catalog = CatalogStore(self.pr76_root)
+        self.catalog_root = root / "catalog"
+        self.catalog_root.mkdir(parents=True, exist_ok=True)
+        self.catalog = CatalogStore(self.catalog_root)
         self.latest_sprite_id: str | None = None
         self.saved_sprites: dict[str, SpriteRecord] = {}
         self.validation_reports: dict[str, RenderValidationReport] = {}
@@ -66,7 +97,7 @@ class ToolSession:
     def snapshot(self) -> dict:
         """Expose task-local PR76 observations without leaking mutable catalog state."""
         latest = self.saved_sprites.get(self.latest_sprite_id or "")
-        return {
+        return _bounded_snapshot({
             "latest_sprite_id": self.latest_sprite_id,
             "saved_sprites": [item.model_dump(mode="json", exclude_unset=True) for item in self.saved_sprites.values()],
             "latest_sprite": latest.model_dump(mode="json", exclude_unset=True) if latest else None,
@@ -75,7 +106,7 @@ class ToolSession:
             },
             "preset_backend": self.catalog_backend,
             "feedback": list(self.feedback),
-        }
+        })
 
     def saved_sprite(self, identifier: str) -> SpriteRecord:
         """Resolve only a Sprite created by this task, preserving publication provenance."""
@@ -129,7 +160,7 @@ class ToolSession:
             raise ToolFault("PRESET_NOT_FOUND", f"Unknown preset: {preset_id}")
         return record
 
-    async def validate_pr76_code(self, component: ComponentDefinition) -> CodeValidationReport:
+    async def validate_code(self, component: ComponentDefinition) -> CodeValidationReport:
         """Run the isolated PR76 code validator and preserve real diagnostics."""
         diagnostics = validate_component_contract(component)
         if diagnostics:
@@ -138,7 +169,7 @@ class ToolSession:
             raise ToolFault("VALIDATION_UNAVAILABLE", "The isolated TypeScript validator is unavailable.")
         return await self.validator.validate_code(component)
 
-    async def validate_pr76_render(self, request: RenderValidationInput) -> RenderValidationReport:
+    async def validate_render(self, request: RenderValidationInput) -> RenderValidationReport:
         """Run the isolated component behavior runner and cache the exact report."""
         if self.validator is None:
             raise ToolFault("VALIDATION_UNAVAILABLE", "The isolated behavior validator is unavailable.")
@@ -152,11 +183,11 @@ class ToolSession:
         self.validation_reports[self._component_validation_key(request.component, request.duration_frames, parameters)] = report
         return report
 
-    async def create_pr76_preset(self, request: PresetCreateInput) -> PresetCreateOutput:
+    async def create_preset(self, request: PresetCreateInput) -> PresetCreateOutput:
         """Validate and store a new immutable PR76 Preset record."""
         if request.source_preset_id is not None:
             self._find_preset(request.source_preset_id)
-        validation = await self.validate_pr76_code(request)
+        validation = await self.validate_code(request)
         if not validation.passed:
             raise ToolFault("CODE_VALIDATION_FAILED", "Preset code validation failed.", details={"validation": validation.model_dump(mode="json")})
         record = PresetRecord(
@@ -168,7 +199,7 @@ class ToolSession:
         self.catalog_backend = self.catalog.append_preset(record)
         return PresetCreateOutput(preset=record, validation=validation)
 
-    async def create_pr76_sprite(self, sprite: SpriteDraft) -> SpriteCreateOutput:
+    async def create_sprite(self, sprite: SpriteDraft) -> SpriteCreateOutput:
         """Validate source consistency and store one immutable composed Sprite."""
         if sprite.composition.width != 1080 or sprite.composition.height != 1920 or sprite.composition.fps != 30:
             raise ToolFault("INVALID_ARGUMENT", "Sprite composition must be 1080x1920 at 30 FPS")
@@ -181,7 +212,8 @@ class ToolSession:
         if expected_duration != sprite.composition.duration_frames:
             raise ToolFault("COMPOSITION_FAILED", "Sprite duration does not match instance timings.")
         try:
-            expected_code, expected_schema, expected_defaults = compose_source(resolved)
+            # 打包器是同步子进程；放到线程里执行，避免阻塞同进程的 SSE 与其它请求。
+            expected_code, expected_schema, expected_defaults = await asyncio.to_thread(compose_source, resolved)
         except ToolFault:
             raise
         expected_payload = {
@@ -202,10 +234,10 @@ class ToolSession:
             raise ToolFault("COMPOSITION_FAILED", "Sprite code, schema or defaults do not match its instance definition.")
         # Bundling erases TypeScript annotations; validate each original module before its generated adapter.
         for instance in sprite.instances:
-            original = await self.validate_pr76_code(ComponentDefinition(code=instance.preset.code, parameter_schema=instance.preset.parameter_schema, default_parameters=instance.preset.default_parameters))
+            original = await self.validate_code(ComponentDefinition(code=instance.preset.code, parameter_schema=instance.preset.parameter_schema, default_parameters=instance.preset.default_parameters))
             if not original.passed:
                 raise ToolFault("CODE_VALIDATION_FAILED", "A source Preset does not typecheck", details={"validation": original.model_dump(mode="json", exclude_unset=True)})
-        validation = await self.validate_pr76_code(
+        validation = await self.validate_code(
             ComponentDefinition(
                 code=sprite.code,
                 parameter_schema=sprite.parameter_schema,
@@ -225,7 +257,7 @@ class ToolSession:
         self._last_component_sprite = record
         return SpriteCreateOutput(sprite=record, validation=validation)
 
-    def compose_pr76(self, request):
+    async def compose_sprite(self, request):
         """Resolve immutable Presets and generate deterministic local-frame Sprite code."""
         seen: set[str] = set()
         resolved: list[dict] = []
@@ -258,7 +290,8 @@ class ToolSession:
                 "layout": instance.layout.model_dump(mode="json"),
                 "timing": instance.timing.model_dump(mode="json"),
             })
-        code, schema, defaults = compose_source(resolved)
+        # 打包器是同步子进程；放到线程里执行，避免阻塞同进程的 SSE 与其它请求。
+        code, schema, defaults = await asyncio.to_thread(compose_source, resolved)
         sprite = SpriteDraft(
             description=request.description,
             code=code,

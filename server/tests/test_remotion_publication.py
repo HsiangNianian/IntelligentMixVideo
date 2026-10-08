@@ -69,7 +69,7 @@ def session_for(sprite, validation):
     return SimpleNamespace(
         saved_sprite=lambda identifier: record if identifier == "saved" else None,
         validation_for=lambda requested: validation if requested == sprite else None,
-        validate_pr76_render=host_check,
+        validate_render=host_check,
     )
 
 
@@ -79,7 +79,7 @@ def test_finalization_requires_validation_and_seals_exact_sprite(harness, sprite
         asyncio.run(harness.finalize_sprite(session_for(sprite, None), "saved", Budget(), tmp_path / "unvalidated"))
     result = asyncio.run(harness.finalize_sprite(session_for(sprite, runtime_report(sprite)), "saved", Budget(), tmp_path / "generated"))
     candidate, spec, report, directory = result
-    assert report.passed and report.profile == "pr76"
+    assert report.passed and report.profile == "v2"
     assert spec.schema_version == "2" and spec.sprite == sprite
     assert candidate.default_config == sprite.default_parameters
     assert candidate.tsx_code == sprite.code
@@ -155,7 +155,7 @@ def test_host_builds_preview_without_agent_test_scripts(harness, sprite, tmp_pat
         seen.append(request)
         return runtime_report(sprite)
 
-    session.validate_pr76_render = validate
+    session.validate_render = validate
     candidate, spec, report, directory = asyncio.run(harness.finalize_sprite(session, "saved", Budget(), tmp_path / "created"))
     assert len(seen) == 1 and seen[0].tests == []
     assert seen[0].component.code == sprite.code
