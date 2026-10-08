@@ -1,6 +1,6 @@
-/** 页头时间卡片每秒读取本机时钟，跟随系统时区，并在卸载时清理定时器。 */
+/** 页头时间胶囊每秒读取本机时钟，跟随系统时区，并在卸载时清理定时器。 */
 import { useEffect, useId, useState } from "react";
-import { Card } from "@/components/ui/card";
+import { Clock } from "lucide-react";
 
 /** 复用中文 24 小时制格式器；省略时区以跟随系统设置。 */
 const formatter = new Intl.DateTimeFormat("zh-CN", {
@@ -24,13 +24,12 @@ export default function CurrentTime() {
   }, []);
 
   return (
-    <section aria-labelledby={titleId} className="ml-auto shrink-0">
-      <Card className="gap-1 px-4 py-3 text-right">
-        <h2 id={titleId} className="text-xs font-medium text-muted-foreground">当前时间</h2>
-        <time className="text-sm whitespace-nowrap tabular-nums" dateTime={now.toISOString()}>
-          {formatter.format(now)}
-        </time>
-      </Card>
+    <section aria-labelledby={titleId} className="ml-auto flex h-8 shrink-0 items-center gap-2 rounded-full border bg-card px-3 text-muted-foreground">
+      <Clock className="size-3.5" aria-hidden="true" />
+      <h2 id={titleId} className="sr-only">当前时间</h2>
+      <time className="font-mono text-xs whitespace-nowrap text-foreground/85 tabular-nums" dateTime={now.toISOString()}>
+        {formatter.format(now)}
+      </time>
     </section>
   );
 }

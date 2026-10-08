@@ -4,6 +4,7 @@ import { Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Spinner } from "@/components/ui/spinner";
 import type { MasterVideo } from "./model";
 import { readMasterVideo } from "./media";
 
@@ -37,7 +38,7 @@ export function MasterVideoInput({ media, onChange }: { media?: MasterVideo; onC
     <Button type="button" variant="ghost" size="sm" aria-expanded={open} aria-controls={`${id}-panel`} onClick={() => setOpen((value) => !value)} className="template-master-video-trigger ml-auto h-8 gap-1.5 px-2 text-[11px]"><Upload className="size-3.5" aria-hidden="true" />加载预览视频</Button>
     {open && <div id={`${id}-panel`} className="template-master-video-panel order-last w-full basis-full space-y-2 rounded-lg border p-3">
       <Label htmlFor={id}>预览视频地址</Label>
-      <div className="flex gap-2"><Input id={id} value={url} placeholder="HTTPS 视频直链或 /video.mp4" onChange={(event) => setUrl(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void load(); } }} /><Button type="button" variant="outline" disabled={loading} onClick={() => void load()}>{loading ? "正在读取…" : "加载"}</Button></div>
+      <div className="flex gap-2"><Input id={id} value={url} placeholder="HTTPS 视频直链或 /video.mp4" onChange={(event) => setUrl(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void load(); } }} /><Button type="button" variant="outline" disabled={loading} onClick={() => void load()}>{loading && <Spinner />}{loading ? "正在读取…" : "加载"}</Button></div>
       {media && <p className="text-xs text-muted-foreground">{media.width} × {media.height} · {media.duration.toFixed(2)} 秒</p>}
       {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
     </div>}

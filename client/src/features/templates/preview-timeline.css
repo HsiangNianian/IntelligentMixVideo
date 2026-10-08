@@ -29,28 +29,29 @@
   opacity: 0.5;
 }
 
-/* 工作区时间轴使用浅色刻度、垂直参考线与按对象类别区分的片段。 */
-.template-workspace .preview-timeline .timeline-editor { background: #ffffff; }
+/* 工作区时间轴位于最深的轨道面板：浅色刻度、垂直参考线，片段按对象类别着色，游标使用强调色。 */
+.template-workspace .preview-timeline .timeline-editor { background: transparent; color: var(--foreground); }
 .template-workspace .preview-timeline .timeline-editor-time-area { border-bottom: 0; }
-.template-workspace .preview-timeline .timeline-editor-time-unit { border-color: #cbd6da; }
-.template-workspace .preview-timeline .timeline-editor-time-unit-scale { color: #6b7a81; font-size: 10px; }
+.template-workspace .preview-timeline .timeline-editor-time-unit { border-color: var(--scrollbar); }
+.template-workspace .preview-timeline .timeline-editor-time-unit-scale { color: var(--muted-foreground); font-size: 10px; }
 .template-workspace .preview-timeline .timeline-editor-edit-area { margin-top: 0; }
 .template-workspace .preview-timeline .timeline-editor-edit-row {
   border-bottom: 0;
-  background-image: linear-gradient(90deg, #e9eef0 1px, transparent 1px);
+  background-color: color-mix(in oklch, var(--foreground) 3%, transparent);
+  background-image: linear-gradient(90deg, var(--border) 1px, transparent 1px);
   background-size: 20% 100%;
 }
 .template-workspace .preview-timeline .template-timeline-clip,
 .template-workspace .preview-timeline .template-timeline-video-clip { height: 26px; margin-top: 8px; }
-.template-workspace .preview-timeline .template-timeline-clip { color: var(--object-ink); background: var(--object-fill); transition: box-shadow 150ms ease; }
-.template-workspace .preview-timeline .template-timeline-video-clip { background: #40565f; }
-.template-workspace .preview-timeline .template-timeline-video-clip img { opacity: .22; }
-.template-workspace .preview-timeline .timeline-editor-action:hover .template-timeline-clip:not(.is-selected) { box-shadow: 0 0 0 1px #94a3b8; }
-.template-workspace .preview-timeline .template-timeline-clip.is-selected { box-shadow: 0 0 0 2px #0b6384; }
+.template-workspace .preview-timeline .template-timeline-clip { color: var(--object-ink); background: var(--object-fill); box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--object-ink) 30%, transparent); transition: box-shadow 150ms ease; }
+.template-workspace .preview-timeline .template-timeline-video-clip { background: oklch(0.32 0.02 230); box-shadow: inset 0 0 0 1px oklch(1 0 0 / 10%); }
+.template-workspace .preview-timeline .template-timeline-video-clip img { opacity: .45; }
+.template-workspace .preview-timeline .timeline-editor-action:hover .template-timeline-clip:not(.is-selected) { box-shadow: inset 0 0 0 1px var(--object-ink); }
+.template-workspace .preview-timeline .template-timeline-clip.is-selected { box-shadow: 0 0 0 2px var(--primary); }
 @media (prefers-reduced-motion: reduce) {
   .template-workspace .preview-timeline .template-timeline-clip { transition: none; }
 }
-.template-workspace .preview-timeline .timeline-editor-cursor { border-color: #0b6384; }
-.template-workspace .preview-timeline .timeline-editor-cursor-top path { fill: #0b6384; }
-.template-workspace .preview-timeline .template-timeline-label { color: #64747b; }
-.template-workspace .preview-timeline .template-timeline-label svg { color: var(--object-ink, #465961); }
+.template-workspace .preview-timeline .timeline-editor-cursor { border-color: var(--primary); }
+.template-workspace .preview-timeline .timeline-editor-cursor-top path { fill: var(--primary); }
+.template-workspace .preview-timeline .template-timeline-label { color: var(--muted-foreground); }
+.template-workspace .preview-timeline .template-timeline-label svg { color: var(--object-ink, var(--muted-foreground)); }

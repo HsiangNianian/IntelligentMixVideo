@@ -1,30 +1,20 @@
-/* 模版编辑工作区：白色编辑表面、蓝青操作色和按对象区分的低饱和标记。 */
+/* 模版编辑工作区：沿用全局深色剪辑台令牌，面板为卡片层、预览区为更深的监视器层，对象按类别使用低饱和标记色。 */
 .template-workspace {
-  --primary: #0b6384;
-  --primary-foreground: #ffffff;
-  --accent: #e8f4f8;
-  --accent-foreground: #064b64;
-  --muted: #f1f5f7;
-  --muted-foreground: #596b73;
-  --border: #e0e8ec;
-  --input: #dce5e9;
-  --ring: #0b6384;
-  color: #182327;
-  box-shadow: 0 12px 40px rgb(24 35 39 / 6%);
+  color: var(--foreground);
+  box-shadow: 0 20px 48px -24px rgb(0 0 0 / 60%);
 }
 
-/* 顶栏与三栏分界保持轻量，画布和设置栏各自滚动。 */
-.template-workspace-header { background: #ffffff; }
-.template-workspace-mark { color: #ffffff; background: #2b3d46; box-shadow: 0 2px 6px rgb(24 35 39 / 12%); }
-.template-workspace-environment { color: #465961; background: #f1f5f7; }
-.template-workspace-save { box-shadow: 0 2px 5px rgb(24 35 39 / 16%); }
+/* 顶栏与三栏分界保持轻量：资产与参数为面板层，画布为监视器层，各栏独立滚动。 */
+.template-workspace-header { background: var(--card); }
+.template-workspace-mark { color: var(--primary-foreground); background: linear-gradient(135deg, var(--primary), color-mix(in oklch, var(--primary) 55%, transparent)); }
+.template-workspace-environment { color: var(--primary); background: color-mix(in oklch, var(--primary) 14%, transparent); }
 .template-workspace-assets,
-.template-workspace-canvas,
-.template-workspace-inspector { background: #ffffff; }
-.template-workspace-handle { width: 7px; border-inline: 1px solid #e0e8ec; background: #f8fafb; }
+.template-workspace-inspector { background: var(--card); }
+.template-workspace-canvas { background: var(--background); }
+.template-workspace-handle { width: 5px; border-inline: 1px solid var(--border); background: var(--sidebar); }
 .template-workspace-handle:hover,
-.template-workspace-handle:focus-visible { background: #cdebf5; }
-.template-workspace-handle > div { color: #064b64; border-color: #e0e8ec; background: #f1f5f7; }
+.template-workspace-handle:focus-visible { background: color-mix(in oklch, var(--primary) 30%, transparent); }
+.template-workspace-handle > div { color: var(--muted-foreground); border-color: var(--border); background: var(--muted); }
 
 /* 窄屏覆盖分栏库的内联排列与高度限制，保持原组件和 DOM 节点。 */
 .template-workspace-columns[data-layout="narrow"] { display: grid !important; grid-template-columns: minmax(0, 1fr); }
@@ -41,86 +31,82 @@
 /* 可操作的设置页签、资产分类和特效卡片使用手型指针。 */
 .template-workspace :is([role="tab"], .template-category-pill, .template-asset-card):not(:disabled) { cursor: pointer; }
 
-/* 资产分类保留真实数量，选中状态使用中性色。 */
-.template-workspace .template-category-pill { border-color: #dce4e8; color: #4f5d64; background: #ffffff; box-shadow: none; }
-.template-workspace .template-category-pill:hover { border-color: #aebdc4; color: #29363c; background: #f6f8f9; }
-.template-workspace .template-category-pill[aria-pressed="true"] { border-color: #29363c; color: #ffffff; background: #29363c; }
-.template-workspace .template-category-count { color: #637178; }
-.template-workspace .template-category-pill[aria-pressed="true"] .template-category-count { color: #d9e1e4; }
-.template-workspace .template-asset-card { border-color: #e0e8ec; background: #ffffff; box-shadow: 0 1px 2px rgb(24 35 39 / 6%); }
-.template-workspace .template-asset-card:hover { border-color: #0b6384; background: #ffffff; box-shadow: 0 3px 9px rgb(24 35 39 / 12%); }
-.template-workspace .template-asset-card.is-selected { border-color: #0b6384; background: #e8f4f8; }
+/* 资产分类保留真实数量，选中分类使用强调色描边；特效卡片悬停与选中统一使用强调色。 */
+.template-workspace .template-category-pill { border-color: var(--border); color: var(--muted-foreground); background: transparent; box-shadow: none; }
+.template-workspace .template-category-pill:hover { color: var(--foreground); background: var(--accent); }
+.template-workspace .template-category-pill[data-state="on"] { border-color: color-mix(in oklch, var(--primary) 45%, transparent); color: var(--primary); background: color-mix(in oklch, var(--primary) 12%, transparent); }
+.template-workspace .template-category-count { color: var(--muted-foreground); opacity: .75; }
+.template-workspace .template-category-pill[data-state="on"] .template-category-count { color: inherit; }
+.template-workspace .template-asset-card { border-color: transparent; background: var(--muted); box-shadow: none; transition: border-color 150ms ease, transform 150ms ease; }
+.template-workspace .template-asset-card:hover { border-color: color-mix(in oklch, var(--foreground) 28%, transparent); background: var(--muted); transform: translateY(-1px); }
+.template-workspace .template-asset-card.is-selected { border-color: var(--primary); background: color-mix(in oklch, var(--primary) 10%, var(--muted)); color: var(--primary); }
 
-/* 对象卡片和图标按实际类别着色，当前对象增加左侧选中标记。 */
-.template-workspace [data-object="title"] { --object-ink: #345b78; --object-fill: #e8f0f5; }
-.template-workspace [data-object="subtitle"] { --object-ink: #376e67; --object-fill: #e4f0eb; }
-.template-workspace [data-object="bubble"] { --object-ink: #8e5c35; --object-fill: #f7eee4; }
-.template-workspace [data-object="filter"] { --object-ink: #626d3a; --object-fill: #eff1e4; }
-.template-workspace [data-object="vfx"] { --object-ink: #2f7584; --object-fill: #e4f0f2; }
-.template-workspace [data-object="transition"] { --object-ink: #5e6677; --object-fill: #eceef3; }
+/* 对象列表参考图层面板：行无边框，悬停与选中仅用逐级加深的整行填充；时间轴片段和图标按实际类别着色；文字色与前景色混合，在浅色和深色主题下都保持可读，填充半透明。 */
+.template-workspace [data-object="title"] { --object-ink: color-mix(in oklch, oklch(0.62 0.1 250) 72%, var(--foreground)); --object-fill: oklch(0.62 0.1 250 / 20%); }
+.template-workspace [data-object="subtitle"] { --object-ink: color-mix(in oklch, oklch(0.62 0.1 165) 72%, var(--foreground)); --object-fill: oklch(0.62 0.1 165 / 20%); }
+.template-workspace [data-object="bubble"] { --object-ink: color-mix(in oklch, oklch(0.62 0.1 60) 72%, var(--foreground)); --object-fill: oklch(0.62 0.1 60 / 20%); }
+.template-workspace [data-object="filter"] { --object-ink: color-mix(in oklch, oklch(0.62 0.1 115) 72%, var(--foreground)); --object-fill: oklch(0.62 0.1 115 / 20%); }
+.template-workspace [data-object="vfx"] { --object-ink: color-mix(in oklch, oklch(0.62 0.1 310) 72%, var(--foreground)); --object-fill: oklch(0.62 0.1 310 / 20%); }
+.template-workspace [data-object="transition"] { --object-ink: color-mix(in oklch, oklch(0.62 0.03 265) 72%, var(--foreground)); --object-fill: oklch(0.62 0.03 265 / 20%); }
 .template-workspace .template-object-icon { color: var(--object-ink); background: var(--object-fill); }
-.template-workspace .template-object-row { border-color: #e0e8ec; color: #182327; background: #ffffff; }
-.template-workspace .template-object-row:hover { background: #f8fafb; }
-.template-workspace .template-object-row[aria-pressed="true"] { border-color: #82949c; background: #ffffff; box-shadow: inset 3px 0 #0b6384; }
-.template-workspace .template-object-row > svg { color: #465961; }
+.template-workspace .template-object-row { color: var(--foreground); background: transparent; }
+.template-workspace .template-object-row:hover { background: color-mix(in oklch, var(--foreground) 5%, transparent); }
+.template-workspace .template-object-row[aria-pressed="true"] { background: color-mix(in oklch, var(--foreground) 9%, transparent); }
 
-/* 参数栏使用与原型相同的结构，缩小文字和控件以展示完整设置。 */
+/* 参数栏采用紧凑表单：标签与控件统一字号，禁用控件降低对比度。 */
 .template-workspace .template-inspector-fields label,
 .template-workspace .template-inspector-fields legend,
-.template-workspace .template-inspector-timing label { font-size: 10px; line-height: 14px; font-weight: 500; }
+.template-workspace .template-inspector-timing label { font-size: 11px; line-height: 16px; font-weight: 500; color: var(--muted-foreground); }
 .template-workspace .template-inspector-fields input:not([type="checkbox"]):not([type="color"]),
 .template-workspace .template-inspector-timing input,
 .template-workspace .template-inspector-fields button[data-slot="select-trigger"],
-.template-workspace .template-inspector-timing button[data-slot="select-trigger"] { height: 32px; padding-inline: 8px; border-color: #dce5e9; background: #ffffff; font-size: 11px; line-height: 16px; }
+.template-workspace .template-inspector-timing button[data-slot="select-trigger"] { height: 32px; padding-inline: 10px; border-color: var(--input); background: var(--background); font-size: 12px; line-height: 16px; }
 .template-workspace .template-inspector-fields button[data-slot="select-trigger"],
 .template-workspace .template-inspector-timing button[data-slot="select-trigger"] { width: 100%; }
 .template-workspace .template-inspector-fields :is(input, button):disabled,
-.template-workspace .template-inspector-timing :is(input, button):disabled { background: #f1f5f7; color: #82929a; }
+.template-workspace .template-inspector-timing :is(input, button):disabled { background: var(--muted); color: var(--muted-foreground); }
+.template-workspace .template-inspector-fields input[type="checkbox"] { accent-color: var(--primary); }
 .template-workspace .template-inspector-fields img[alt$="示例"] { display: none; }
 .template-workspace .template-inspector-fields .template-inspector-reset,
-.template-workspace .template-inspector-fields .template-inspector-remove { height: 28px; font-size: 10px; font-weight: 500; }
-.template-workspace .template-inspector-fields .template-inspector-reset { color: #52636c; border-color: #dce5e9; background: #ffffff; }
-.template-workspace .template-inspector-fields .template-inspector-remove { color: #a84741; border-color: #f4c3bf; background: #fbe7e5; }
-.template-workspace .template-inspector-fields .template-inspector-remove:hover { color: #923934; background: #f8d8d5; }
-.template-workspace .template-inspector-timing [role="status"] { border-radius: 8px; padding: 8px 10px; color: #4f6a78; background: #eef5f8; font-size: 10px; line-height: 15px; }
+.template-workspace .template-inspector-fields .template-inspector-remove { height: 30px; font-size: 11px; font-weight: 500; }
+.template-workspace .template-inspector-fields .template-inspector-reset { color: var(--foreground); border-color: var(--input); background: transparent; }
+.template-workspace .template-inspector-fields .template-inspector-reset:hover { background: var(--accent); }
+.template-workspace .template-inspector-fields .template-inspector-remove { color: var(--destructive); border-color: color-mix(in oklch, var(--destructive) 40%, transparent); background: color-mix(in oklch, var(--destructive) 10%, transparent); }
+.template-workspace .template-inspector-fields .template-inspector-remove:hover { color: var(--destructive); background: color-mix(in oklch, var(--destructive) 18%, transparent); }
+.template-workspace .template-inspector-timing [role="status"] { border-radius: 8px; padding: 8px 10px; color: var(--muted-foreground); background: var(--muted); font-size: 11px; line-height: 16px; }
 
-/* 下拉菜单通过 Portal 显示，选项独立沿用参数输入框的文字规格。 */
-.template-inspector-select { color: #182327; }
-.template-inspector-select [data-slot="select-item"] { color: inherit; font-size: 11px; line-height: 16px; font-weight: 400; }
+/* 下拉菜单与可搜索下拉框通过 Portal 显示，选项和搜索框独立沿用参数输入框的文字规格。 */
+.template-inspector-select { color: var(--popover-foreground); }
+.template-inspector-select :is([data-slot="select-item"], [data-slot="command-item"], [data-slot="command-input"]) { color: inherit; font-size: 12px; line-height: 16px; font-weight: 400; }
 
-/* 右栏的关键词和转场卡片延续原型预览方式。 */
-.template-workspace [role="tab"][data-selected="true"] { border-color: #0b6384; color: #0b6384; }
-.template-workspace .template-keyword-option { border-color: #e0e8ec; background: #ffffff; }
-.template-workspace .template-keyword-option:has(input:checked) { color: #064b64; border-color: #9acbdc; background: #e8f4f8; }
-.template-workspace .template-transition-card { border-color: #e0e8ec; background: #f7f9fa; }
-.template-workspace .template-transition-swatch { background: linear-gradient(90deg, #465c83 0 49%, #e0956f 49% 100%); box-shadow: inset 0 0 0 1px rgb(26 42 52 / 8%); }
-.template-workspace .template-transition-choices { border-color: #e0e8ec; background: #ffffff; box-shadow: 0 8px 20px rgb(24 35 39 / 8%); }
-.template-workspace .template-transition-choices button[aria-pressed="true"] { background: #e8f4f8; }
+/* 右栏页签使用主色标记当前选择；转场卡片作为可搜索下拉框的触发器，悬停加深描边。 */
+.template-workspace [role="tab"][data-selected="true"] { border-color: var(--primary); color: var(--primary); }
+.template-workspace .template-transition-card { border-color: var(--border); background: var(--muted); }
+.template-workspace button:hover > .template-transition-card { border-color: color-mix(in oklch, var(--foreground) 25%, transparent); }
+.template-workspace .template-transition-swatch { background: linear-gradient(90deg, oklch(0.5 0.1 260) 0 49%, oklch(0.72 0.12 50) 49% 100%); box-shadow: inset 0 0 0 1px rgb(255 255 255 / 8%); }
 
-/* 预览控制栏与时间轴沿用原型的白色表面和深色播放按钮。 */
-.template-workspace .template-preview-stage { border-color: #e9eef0; }
-.template-workspace .template-preview-canvas { background: radial-gradient(circle at 72% 42%, #155f70, transparent 40%), linear-gradient(130deg, #0b2736, #213b43 55%, #0b2736); box-shadow: 0 10px 26px rgb(16 36 46 / 16%); }
+/* 预览为黑色监视器画面，控制栏使用强调色播放按钮与进度条。 */
+.template-workspace .template-preview-stage { border-color: var(--border); }
+.template-workspace .template-preview-canvas { background: #000; box-shadow: 0 0 0 1px var(--border), 0 18px 40px -18px rgb(0 0 0 / 80%); }
 .template-workspace .template-preview-canvas:fullscreen { display: flex; width: 100vw; height: 100vh; max-width: none !important; align-items: center; justify-content: center; aspect-ratio: auto !important; border-radius: 0; }
 .template-workspace .template-preview-canvas:fullscreen .template-preview-player { position: static; width: min(100vw, calc(100vh * var(--preview-ratio))); height: min(100vh, calc(100vw / var(--preview-ratio))); }
-.template-workspace .template-preview-fullscreen { color: #ffffff; border: 1px solid rgb(255 255 255 / 35%); background: rgb(20 35 42 / 70%); }
-.template-workspace .template-preview-fullscreen:hover { color: #ffffff; background: rgb(20 35 42 / 90%); }
-.template-workspace .template-live-dot { background: #1b9b80; box-shadow: 0 0 0 3px rgb(27 155 128 / 11%); }
-.template-workspace .template-preview-controls { color: #33464e; }
-.template-workspace .template-preview-controls .template-preview-play { color: #ffffff; background: #263940; }
-.template-workspace .template-preview-controls .template-preview-play:hover { background: #0b6384; }
-.template-workspace .template-preview-controls .template-preview-restart { color: #61717a; }
-.template-workspace .template-preview-controls .template-preview-restart:hover { color: #0b6384; background: #e8f4f8; }
-.template-workspace .template-preview-controls button[data-variant="outline"] { color: #52636c; border-color: #dce5e9; background: #ffffff; }
-.template-workspace .template-preview-controls button[data-variant="outline"]:hover { color: #0b6384; background: #e8f4f8; }
-.template-workspace .template-preview-controls .template-master-video-trigger { color: #61717a; }
-.template-workspace .template-preview-controls .template-master-video-trigger:hover { color: #0b6384; background: #e8f4f8; }
-.template-workspace .template-master-video-panel { border-color: #dce5e9; background: #f8fafb; }
-.template-workspace .template-master-video-panel input { background: #ffffff; }
-.template-workspace .template-preview-progress { height: 4px; border-radius: 999px; appearance: none; background: linear-gradient(90deg, #465a63 var(--preview-progress), #d8e0e3 var(--preview-progress)); cursor: pointer; }
-.template-workspace .template-preview-progress::-webkit-slider-thumb { width: 12px; height: 12px; border: 2px solid #ffffff; border-radius: 50%; appearance: none; background: #263940; box-shadow: 0 1px 4px rgb(0 0 0 / 22%); }
-.template-workspace .template-preview-progress::-moz-range-thumb { width: 9px; height: 9px; border: 2px solid #ffffff; border-radius: 50%; background: #263940; box-shadow: 0 1px 4px rgb(0 0 0 / 22%); }
-.template-workspace .template-preview-progress:disabled { cursor: default; opacity: .55; }
-.template-workspace .template-preview-timeline { background: #ffffff; }
-.template-workspace .template-timeline-mark { color: #0b6384; background: #e8f4f8; }
-.template-workspace .template-preview-transition { color: #61717a; }
-.template-workspace .template-preview-transition:hover { color: #0b6384; background: #e8f4f8; }
+.template-workspace .template-preview-fullscreen { color: #fff; border: 1px solid rgb(255 255 255 / 25%); background: rgb(0 0 0 / 55%); }
+.template-workspace .template-preview-fullscreen:hover { color: #fff; background: rgb(0 0 0 / 80%); }
+.template-workspace .template-live-dot { background: var(--success); box-shadow: 0 0 0 3px color-mix(in oklch, var(--success) 22%, transparent); }
+.template-workspace .template-preview-controls { color: var(--foreground); }
+.template-workspace .template-preview-controls .template-preview-play { color: var(--primary-foreground); background: var(--primary); }
+.template-workspace .template-preview-controls .template-preview-play:hover { background: color-mix(in oklch, var(--primary) 82%, var(--background)); }
+.template-workspace .template-preview-controls :is(.template-preview-restart, .template-master-video-trigger) { color: var(--muted-foreground); }
+.template-workspace .template-preview-controls :is(.template-preview-restart, .template-master-video-trigger):hover { color: var(--foreground); background: var(--accent); }
+.template-workspace .template-preview-controls button[data-variant="outline"] { color: var(--foreground); border-color: var(--input); background: transparent; }
+.template-workspace .template-preview-controls button[data-variant="outline"]:hover { background: var(--accent); }
+.template-workspace .template-master-video-panel { border-color: var(--border); background: var(--card); }
+.template-workspace .template-master-video-panel input { background: var(--background); }
+.template-workspace .template-preview-progress { height: 4px; border-radius: 999px; appearance: none; background: linear-gradient(90deg, var(--primary) var(--preview-progress), var(--scrollbar) var(--preview-progress)); cursor: pointer; }
+.template-workspace .template-preview-progress::-webkit-slider-thumb { width: 12px; height: 12px; border: 2px solid var(--background); border-radius: 50%; appearance: none; background: var(--primary); box-shadow: 0 1px 4px rgb(0 0 0 / 40%); }
+.template-workspace .template-preview-progress::-moz-range-thumb { width: 9px; height: 9px; border: 2px solid var(--background); border-radius: 50%; background: var(--primary); box-shadow: 0 1px 4px rgb(0 0 0 / 40%); }
+.template-workspace .template-preview-progress:disabled { cursor: default; opacity: .45; }
+.template-workspace .template-preview-timeline { background: var(--sidebar); }
+.template-workspace .template-timeline-mark { color: var(--primary); background: color-mix(in oklch, var(--primary) 14%, transparent); }
+.template-workspace .template-preview-transition { color: var(--muted-foreground); }
+.template-workspace .template-preview-transition:hover { color: var(--foreground); background: var(--accent); }

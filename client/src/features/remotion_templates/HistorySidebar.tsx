@@ -2,6 +2,9 @@
 import { useRef, useState } from "react";
 import { History, MessageSquare, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { Hint } from "@/components/Hint";
+import { Spinner } from "@/components/ui/spinner";
 import {
   Dialog,
   DialogContent,
@@ -167,15 +170,17 @@ function HistoryList({
     <section className="flex h-full min-h-0 flex-col rounded-xl border bg-muted/35">
       <div className="flex h-14 shrink-0 items-center justify-between px-4">
         <h2 className="text-sm font-medium">聊天历史</h2>
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label="刷新历史"
-          disabled={loading}
-          onClick={onRefresh}
-        >
-          <RefreshCw className={cn("size-4", loading && "animate-spin")} />
-        </Button>
+        <Hint label="刷新历史">
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="刷新历史"
+            disabled={loading}
+            onClick={onRefresh}
+          >
+            <RefreshCw className={cn("size-4", loading && "animate-spin")} />
+          </Button>
+        </Hint>
       </div>
       <div className="px-3 pb-3">
         <Button
@@ -192,10 +197,24 @@ function HistoryList({
             {error}
           </p>
         )}
-        {!items.length && (
-          <p className="p-3 text-xs text-muted-foreground">
-            {loading ? "正在读取历史…" : "还没有聊天会话"}
+        {!items.length && loading && (
+          <p className="flex items-center gap-2 p-3 text-xs text-muted-foreground">
+            <Spinner className="size-3.5" />
+            正在读取历史…
           </p>
+        )}
+        {!items.length && !loading && (
+          <Empty className="p-6 md:p-6">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <MessageSquare className="size-5" aria-hidden="true" />
+              </EmptyMedia>
+              <EmptyTitle className="text-sm">还没有聊天会话</EmptyTitle>
+              <EmptyDescription className="text-xs">
+                点击「新增聊天」描述你想要的字效。
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
         )}
         {items.map((work) => (
           <div key={work.id} className="flex items-center gap-1">
@@ -238,16 +257,17 @@ function HistoryList({
                 </time>
               </span>
             </button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="shrink-0 text-muted-foreground hover:text-destructive"
-              aria-label="删除聊天"
-              title={`删除「${work.title}」`}
-              onClick={() => onDelete(work)}
-            >
-              <Trash2 className="size-4" />
-            </Button>
+            <Hint label={`删除「${work.title}」`}>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="shrink-0 text-muted-foreground hover:text-destructive"
+                aria-label="删除聊天"
+                onClick={() => onDelete(work)}
+              >
+                <Trash2 className="size-4" />
+              </Button>
+            </Hint>
           </div>
         ))}
         {hasMore && (
