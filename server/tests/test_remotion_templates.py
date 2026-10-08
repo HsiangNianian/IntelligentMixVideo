@@ -11,6 +11,7 @@ import pytest
 from server.remotion_templates.provider import Budget
 from server.remotion_templates.settings import Settings
 from server.remotion_templates.tools.catalog import available
+from server.remotion_templates.tools.compose import compose_source
 from server.remotion_templates.tools.contracts import (
     CodeValidationReport,
     ComponentDefinition,
@@ -232,6 +233,35 @@ def test_mysql_preset_create_persists_through_the_catalog_store(tmp_path):
         assert current.catalog.find_preset(saved["preset"]["preset_id"]).description == "title"
 
     asyncio.run(run())
+
+
+@pytest.mark.skipif(not RENDERER_DEPS.exists(), reason="install locked Remotion renderer dependencies")
+def test_compose_source_is_stable_across_parameter_key_order():
+    """参数键顺序变化必须生成完全相同的源码：模型回显 JSON 时键序合法地会变。
+
+    sprite.create 逐字节比对重新生成的源码；若生成结果依赖调用方的字典顺序，
+    一次未经修改的回显会被判成手工改过的候选而无法保存。
+    """
+    parameters = {"text": "今日灵感", "size": 64, "color": "#FFFFFF"}
+
+    def instance(values):
+        """构造一个最小可组合实例，字段与 compose 契约一致。"""
+        return {
+            "instance_id": "title",
+            "preset": {
+                "code": 'import React from "react"; export default function Label(p: {text: string; size: number; color: string}) { return <div>{p.text}</div>; }',
+                "parameter_schema": {"type": "object", "properties": {"text": {"type": "string"}, "size": {"type": "number"}, "color": {"type": "string"}}, "additionalProperties": False},
+                "default_parameters": values,
+                "description": "title",
+            },
+            "parameters": values,
+            "layout": {"x": 0, "y": 0, "width": 1080, "height": 1920, "z_index": 0},
+            "timing": {"start_frame": 0, "duration_frames": 30},
+        }
+
+    first = compose_source([instance(parameters)])
+    reordered = {key: parameters[key] for key in reversed(list(parameters))}
+    assert compose_source([instance(reordered)]) == first
 
 
 def test_code_failure_returns_diagnostics_and_the_fix_saves(tmp_path):

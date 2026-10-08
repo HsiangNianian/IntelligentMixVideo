@@ -56,7 +56,8 @@ def compose_source(instances: list[dict[str, Any]]) -> tuple[str, dict[str, Any]
     try:
         process = subprocess.run(
             ["node", str(script)],
-            input=json.dumps(payload, ensure_ascii=False),
+            # 参数按固定键序序列化：生成的源码只取决于数据，不受调用方字典顺序影响。
+            input=json.dumps(payload, ensure_ascii=False, sort_keys=True),
             text=True,
             capture_output=True,
             timeout=30,
