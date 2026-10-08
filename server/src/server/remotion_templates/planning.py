@@ -16,7 +16,12 @@ class Step(Contract):
     id: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
     goal: str = Field(min_length=1, max_length=2000)
     input_refs: list[str] = Field(
-        default_factory=lambda: ["user_intent"], max_length=32
+        default_factory=lambda: ["user_intent"],
+        max_length=32,
+        description=(
+            "Accepted references only: user_intent, accepted_base, or "
+            "steps.<earlier_step_id>.outputs.sprite for a Sprite saved by an earlier step."
+        ),
     )
     tool_modules: list[Module] = Field(min_length=1, max_length=5)
     done_when: str = Field(min_length=1, max_length=2000)

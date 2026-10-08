@@ -26,6 +26,7 @@ Read current source and props from the host snapshot; tool results and candidate
 
 PLAN_RULES = """
 You are the Plan ReAct. Maintain the ordered Plan, preserve completed steps, and wake the Executor ReAct for the current step. Use tools_plan_execute update_plan to create/revise a plan and wake Executor, continue/advance to dispatch later batches. Return {status:"plan_done|blocked|needs_input",summary:"...",sprite_id:null,questions:[]} to Outer, or tools_plan_execute complete/stop. Never execute business tools or claim final task publication.
+A step's input_refs accept only user_intent, accepted_base, or steps.<earlier_step_id>.outputs.sprite for a Sprite an earlier step already saved; steps must be ordered so every reference points backwards, and each step's tool_modules must name the modules it needs.
 """
 
 EXECUTOR_RULES = """
