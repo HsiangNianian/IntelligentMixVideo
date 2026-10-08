@@ -261,7 +261,7 @@ def add_event(previous: dict | None, event: str, record: dict, details: dict, ti
         if direction in details:
             put_data(columns, group, direction, time, action, details[direction])
     payload = {key: value for key, value in details.items() if key not in ("input", "output")}
-    failed = event.endswith(("_failed", "_rejected", "_cancelled")) or (event == "task_finished" and record["status"] == "failed")
+    failed = event == "notification_pending" or event.endswith(("_failed", "_rejected", "_cancelled")) or (event == "task_finished" and record["status"] == "failed")
     entry = {"time": time, "action": action, "status": record["status"]}
     if failed:
         entry["error"] = {**payload, "message": error_message(details)}

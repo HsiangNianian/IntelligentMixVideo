@@ -1325,10 +1325,11 @@ async def test_zos_failure_never_publishes_success(upstreams, composition_case, 
 
 
 @pytest.mark.anyio
-async def test_pending_retry_recovers_and_stops_on_success(upstreams, notification_task, composition_runtime, monkeypatch):
-    """失败重试的时间和次数落库；未到时间不能抢发，新进程沿用次数，成功立即停止。"""
+@pytest.mark.parametrize("error", [None, httpx.ReadTimeout], ids=["http-500", "timeout"])
+async def test_pending_retry_recovers_and_stops_on_success(upstreams, notification_task, composition_runtime, monkeypatch, composition_logs, error):
+    """失败按计划重试，成功立即停止；文件仍保留首次失败的次数、重试时间与原因。"""
     monkeypatch.setattr(service, "NOTIFICATION_RETRY_DELAYS", (1, 1, 1))
-    upstreams["notification_codes"] = [500, 204]
+    upstreams.update(notification_code=500, notification_error=error)
     await composition_runtime._execute(notification_task)
     current = store.get(notification_task["task_id"])
     assert current["data"]["notification_attempts"] == 1
@@ -1337,6 +1338,7 @@ async def test_pending_retry_recovers_and_stops_on_success(upstreams, notificati
     assert store.pending([], 10) == []
     await composition_runtime._execute(current)
     assert len(upstreams["notifications"]) == 1
+    upstreams.update(notification_code=204, notification_error=None)
     async with app.router.lifespan_context(app):
         async with asyncio.timeout(5):
             while store.get(current["task_id"])["data"]["notification_status"] != "sent":
@@ -1345,6 +1347,18 @@ async def test_pending_retry_recovers_and_stops_on_success(upstreams, notificati
         assert store.pending([], 10) == []
     assert len(upstreams["notifications"]) == saved["data"]["notification_attempts"] == 2
     assert saved["updated_at"] == notification_task["updated_at"]
+    logs, = composition_logs(current["task_id"], raw=True)
+    failure, = logs["request"]["error_log"]
+    assert failure["action"] == "notification.notification_pending"
+    assert failure["error"]["attempt"] == 1
+    assert failure["error"]["next_at"] == current["data"]["notification_next_at"]
+    if error:
+        assert failure["error"]["exceptions"][0]["type"] == "ReadTimeout"
+        assert failure["error"]["message"] == "private-notification-error"
+    else:
+        assert failure["error"]["http_status"] == 500
+    assert any(entry["action"] == "notification.notification_sent" for entry in logs["request"]["execute_log"])
+    assert all(set(entry) == {"time", "action", "status"} for entry in logs["request"]["execute_log"])
 
 
 @pytest.mark.anyio
