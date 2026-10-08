@@ -1,6 +1,7 @@
 """Offline tests for PR76 validation report semantics using a fake sandbox worker."""
 
 import asyncio
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -118,3 +119,53 @@ def test_incomplete_render_report_preserves_runtime_error(tmp_path, monkeypatch,
         asyncio.run(ToolValidator(renderer, tmp_path).validate_render(request))
     expected = runtime_error or "Render validation worker returned an incomplete report"
     assert expected in str(failure.value)
+
+
+@pytest.mark.parametrize(
+    "checks",
+    [
+        [{"name": "source_policy", "status": "failed", "message": "Import not permitted: node:fs"}],
+        [
+            {"name": "source_policy", "status": "pass"},
+            {"name": "export_source", "status": "failed", "message": "Default component export rejected"},
+        ],
+    ],
+)
+def test_failing_stage_report_returns_diagnostics_instead_of_an_outage(tmp_path, checks):
+    """worker 在语法、源码策略或导出检查失败时提前返回，此时只报告已执行的阶段。
+
+    这是正常的负面结论：诊断必须回到 Executor，任务不能按基础设施故障结束。
+    """
+    message = checks[-1]["message"]
+
+    class EarlyExitRenderer(FakeRenderer):
+        """Emit the worker's early-exit shape, which stops at the failing stage."""
+
+        async def run_worker(self, directory: Path, *, worker: str, timeout_seconds=None):
+            """Return only the stages the real worker reached."""
+            return {
+                "passed": False,
+                "checks": deepcopy(checks),
+                "diagnostics": [{"source": "contract", "severity": "error", "message": message}],
+            }
+
+    report = asyncio.run(ToolValidator(EarlyExitRenderer(), tmp_path).validate_code(component()))
+    assert report.passed is False
+    assert [item.message for item in report.diagnostics if item.message == message]
+
+
+def test_stopped_stage_report_must_name_the_failure(tmp_path):
+    """只缺少后续阶段并不构成可读报告；没有失败阶段时仍按缺失报告处理。"""
+    class TruncatedRenderer(FakeRenderer):
+        """Drop later stages without reporting a failure."""
+
+        async def run_worker(self, directory: Path, *, worker: str, timeout_seconds=None):
+            """Return a report that stops after a passing stage."""
+            return {
+                "passed": False,
+                "checks": [{"name": "source_policy", "status": "pass"}],
+                "diagnostics": [],
+            }
+
+    with pytest.raises(ValidationUnavailable, match="incomplete report"):
+        asyncio.run(ToolValidator(TruncatedRenderer(), tmp_path).validate_code(component()))

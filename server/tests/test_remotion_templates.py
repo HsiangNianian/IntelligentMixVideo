@@ -1,6 +1,7 @@
 """Focused tests for Preset creation, Sprite composition, persistence and preview publication."""
 
 import asyncio
+import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,7 +19,7 @@ from server.remotion_templates.tools.contracts import (
     SpriteComposeInput,
     SpriteCreateInput,
 )
-from server.remotion_templates.tools.registry import registered_tools
+from server.remotion_templates.tools.registry import ToolFault, registered_tools
 from server.remotion_templates.tools.session import ToolSession
 
 
@@ -178,6 +179,69 @@ def test_mysql_preset_create_persists_through_the_catalog_store(tmp_path):
         assert current.catalog.find_preset(saved["preset"]["preset_id"]).description == "title"
 
     asyncio.run(run())
+
+
+def test_code_failure_returns_diagnostics_and_the_fix_saves(tmp_path):
+    """语法错误时 Executor 收到真实诊断，同一会话修复后才保存 Preset。
+
+    修复前 worker 的提前返回被当作基础设施故障，ValidationUnavailable 直接穿透
+    工具调度，任务失败且模型拿不到任何可以照着修的诊断。
+    """
+    class ScriptedRenderer:
+        """按提交源码复现 worker 的两种报告形态，不启动浏览器。"""
+
+        def worker_browser_path(self):
+            """单元测试不启动浏览器，只返回一个固定路径。"""
+            return "/usr/bin/chromium"
+
+        async def run_worker(self, directory, *, worker, timeout_seconds=None):
+            """只有闭合的默认导出通过源码策略检查，否则按真实形态停在失败阶段。"""
+            code = json.loads((directory / "request.json").read_text())["code"]
+            if code.rstrip().endswith("}"):
+                return {
+                    "passed": True,
+                    "checks": [
+                        {"name": "source_policy", "status": "pass"},
+                        {"name": "export_source", "status": "pass"},
+                        {"name": "typescript", "status": "pass"},
+                    ],
+                    "diagnostics": [],
+                }
+            return {
+                "passed": False,
+                "checks": [{"name": "source_policy", "status": "failed", "message": "JSX element has no corresponding closing tag."}],
+                "diagnostics": [{"source": "lsp", "severity": "error", "message": "JSX element has no corresponding closing tag."}],
+            }
+
+    class RecordingCatalog:
+        """只记录入库调用；目录存储的读写由它自己的用例覆盖。"""
+
+        def __init__(self):
+            """保存本次用例实际入库的记录，便于断言失败时没有落库。"""
+            self.records: list[PresetRecord] = []
+
+        def append_preset(self, record):
+            """返回本地后端标记，避免测试连接数据库。"""
+            self.records.append(record)
+            return "local"
+
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    catalog = RecordingCatalog()
+    current = ToolSession(
+        SimpleNamespace(settings=settings, renderer=ScriptedRenderer()),
+        None, None, Budget(), tmp_path / "run", [], lambda *_: None, {},
+    )
+    current.catalog = catalog
+    broken = draft().model_copy(update={"code": "export default function Label(){return <div>Title</div>"})
+    with pytest.raises(ToolFault) as failure:
+        asyncio.run(current.execute("preset.create", broken, available()))
+    assert failure.value.error.code == "CODE_VALIDATION_FAILED"
+    detail = json.dumps(failure.value.error.model_dump(mode="json"), ensure_ascii=False)
+    assert "JSX element has no corresponding closing tag." in detail
+    assert catalog.records == []
+    saved = asyncio.run(current.execute("preset.create", draft(), available()))
+    assert saved["validation"]["passed"] is True
+    assert len(catalog.records) == 1
 
 
 def test_local_fallback_preset_stays_readable_after_database_recovers(tmp_path):

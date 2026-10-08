@@ -34,6 +34,27 @@ class ValidationUnavailable(RuntimeError):
     """The isolated compiler/browser service could not produce a conclusion."""
 
 
+# worker 按这个顺序执行检查，任一阶段失败或无法继续即停止，报告只会是它的前缀。
+_CODE_CHECKS = ("source_policy", "export_source", "typescript")
+_RENDER_CHECKS = _CODE_CHECKS + ("default_render", "configured_render")
+_FAILED_STATUSES = {"failed", "fail", "error"}
+
+
+def _reported_stages(checks: list[Any], stages: tuple[str, ...]) -> tuple[str, ...] | None:
+    """Return the reported stage names when they form a usable prefix of ``stages``.
+
+    A worker that stops early always names the failing stage last, so a strict
+    prefix ending in a failure is a complete negative report.  Anything else is
+    a missing report and must not be read as one.
+    """
+    names = [str(item.get("name")) for item in checks]
+    if not names or names != list(stages[: len(names)]):
+        return None
+    if len(names) < len(stages) and str(checks[-1].get("status")) not in _FAILED_STATUSES:
+        return None
+    return tuple(names)
+
+
 def _diagnostic(value: Any) -> CodeDiagnostic:
     """Normalize a helper diagnostic into the public strict LSP-like shape."""
     if isinstance(value, CodeDiagnostic):
@@ -88,7 +109,12 @@ class ToolValidator:
         return path
 
     async def validate_code(self, component: ComponentDefinition) -> CodeValidationReport:
-        """Validate schema/defaults and run source-policy plus TypeScript diagnostics."""
+        """Validate schema/defaults and run source-policy plus TypeScript diagnostics.
+
+        A worker that stops after the failing stage still reports real
+        diagnostics; only a report that cannot be read at all is an
+        infrastructure failure, so the Executor keeps the chance to fix code.
+        """
         diagnostics = _contract_diagnostics(component)
         if diagnostics:
             return CodeValidationReport(passed=False, diagnostics=diagnostics)
@@ -106,17 +132,23 @@ class ToolValidator:
             payload = await self.renderer.run_worker(directory, worker="tool-validation-worker.mjs")
         except (OSError, RuntimeError, TimeoutError) as exc:
             raise ValidationUnavailable(str(exc)) from exc
-        check_names = {str(item.get("name")) for item in payload.get("checks", []) if isinstance(item, dict)}
-        if not {"source_policy", "export_source", "typescript"} <= check_names:
+        checks = payload.get("checks")
+        if not isinstance(checks, list) or not checks or not all(isinstance(item, dict) for item in checks):
+            raise ValidationUnavailable("Code validation worker returned no checks")
+        # A worker startup/runtime error explains missing checks; preserve its diagnostic.
+        for item in checks:
+            if item.get("name") == "runtime" and item.get("status") == "error":
+                raise ValidationUnavailable(str(item.get("message") or "Code validation worker runtime error"))
+        if _reported_stages(checks, _CODE_CHECKS) is None:
             raise ValidationUnavailable("Code validation worker returned an incomplete report")
         for item in payload.get("diagnostics", []):
             diagnostics.append(_diagnostic(item))
-        for check in payload.get("checks", []):
-            if check.get("status") in {"failed", "fail", "error"} and check.get("name") not in {"typescript"}:
+        for check in checks:
+            if check.get("status") in _FAILED_STATUSES and check.get("name") not in {"typescript"}:
                 diagnostics.append(CodeDiagnostic(source="contract", severity="error", message=str(check.get("message") or "Code check failed")))
         has_errors = any(item.severity == "error" for item in diagnostics)
         worker_passed = bool(payload.get("passed", False)) or all(
-            check.get("status") in {"pass", "passed"} for check in payload.get("checks", [])
+            check.get("status") in {"pass", "passed"} for check in checks
         )
         return CodeValidationReport(passed=worker_passed and not has_errors, diagnostics=diagnostics)
 
@@ -172,8 +204,7 @@ class ToolValidator:
         for item in raw_checks:
             if isinstance(item, dict) and item.get("name") == "runtime" and item.get("status") == "error":
                 raise ValidationUnavailable(str(item.get("message") or "Render validation worker runtime error"))
-        check_names = {str(item.get("name")) for item in raw_checks if isinstance(item, dict)}
-        if not {"source_policy", "export_source", "typescript", "default_render", "configured_render"} <= check_names:
+        if _reported_stages(raw_checks, _RENDER_CHECKS) is None:
             raise ValidationUnavailable("Render validation worker returned an incomplete report")
         expected_tests = [test.name for test in request.tests]
         raw_tests = payload.get("tests")
