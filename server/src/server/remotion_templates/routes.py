@@ -412,17 +412,6 @@ def asset_image(asset_id: UUID, service: Service) -> Response:
     )
 
 
-@router.get("/tool-assets/{filename}", tags=["参考素材"], summary="读取图片工具产物")
-def tool_asset(filename: str, service: Service) -> FileResponse:
-    """Serve only PNGs created by image.resize/crop from the private tool directory."""
-    if not re.fullmatch(r"[0-9a-f]{32}\.png", filename):
-        raise NotFound("tool image not found")
-    path = service.settings.data_dir / "tool-images" / filename
-    if not path.is_file():
-        raise NotFound("tool image not found")
-    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "private, max-age=3600"})
-
-
 @router.get(
     "/works/{work_id}/session",
     response_model=SessionSnapshot,

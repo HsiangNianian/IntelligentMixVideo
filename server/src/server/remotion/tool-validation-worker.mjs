@@ -88,7 +88,7 @@ async function prepareSource() {
   }
   await fs.writeFile(`${root}/contract.tsx`, `/** Host-generated default props call site. */\nimport React from 'react';\nimport Template from './Template';\nimport Export from './Export';\nconst props = ${JSON.stringify(request.default_parameters)};\nconst element = <Template {...props} />;\nconst exported = <Export />;\n`, "utf8");
   await fs.symlink(`${rendererRoot}/node_modules`, `${root}/node_modules`).catch(() => undefined);
-  const checked = languageDiagnostics(root, false);
+  const checked = languageDiagnostics(root);
   if (checked.diagnostics.length) result.diagnostics.push(...lspDiagnostics(checked.diagnostics));
   checks.push({ name: "typescript", status: checked.diagnostics.some((item) => item.severity === "error") ? "failed" : "pass", message: checked.detail ? checked.detail.slice(0, 6000) : "TypeScript checks passed." });
   result.diagnostics = result.diagnostics.filter((item, index, all) => index === all.findIndex((other) => JSON.stringify(other) === JSON.stringify(item)));

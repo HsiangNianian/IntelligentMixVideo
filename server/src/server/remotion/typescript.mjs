@@ -3,10 +3,8 @@ import ts from "typescript";
 import path from "node:path";
 
 /** Typecheck candidate and the actual default-props call site against installed declarations. */
-export function languageDiagnostics(root, sprite = false) {
-  const files = sprite
-    ? [`${root}/Template.tsx`, `${root}/contract.tsx`]
-    : [`${root}/Template.tsx`, `${root}/Export.tsx`, `${root}/contract.tsx`];
+export function languageDiagnostics(root) {
+  const files = [`${root}/Template.tsx`, `${root}/Export.tsx`, `${root}/contract.tsx`];
   const options = {
     strict: true,
     noEmit: true,
