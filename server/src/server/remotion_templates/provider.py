@@ -99,6 +99,7 @@ class Budget:
     phases: dict[str, dict[str, int]] = field(default_factory=dict)
     audit_path: Path | None = None
     on_progress: Callable[[str], None] | None = None
+    on_loop: Callable[[dict], None] | None = None
     active_phase: str | None = None
     _start: tuple[int, int] = (0, 0)
 
@@ -106,6 +107,11 @@ class Budget:
         """Send host-selected phase codes to this run's persistence boundary, never model prose."""
         if self.on_progress is not None:
             self.on_progress(phase)
+
+    def loop(self, position: dict) -> None:
+        """Send host-observed ReAct counters to persistence, never model text or plan goals."""
+        if self.on_loop is not None:
+            self.on_loop(position)
 
     def record(self, event: str, **data) -> None:
         """Append private execution facts independently of the bounded model conversation."""

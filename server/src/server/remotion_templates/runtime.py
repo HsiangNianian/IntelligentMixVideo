@@ -213,6 +213,7 @@ class Runtime:
         budget = Budget(
             audit_path=self.store.job_dir(job_id) / "audit.jsonl",
             on_progress=lambda phase: self.store.progress(job_id, phase),
+            on_loop=lambda position: self.store.loop(job_id, position),
         )
         job = self.store.job(job_id)
         context = self.store.conversation(job.project_id)

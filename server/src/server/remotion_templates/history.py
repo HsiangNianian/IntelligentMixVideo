@@ -9,7 +9,14 @@ from uuid import UUID, uuid4
 
 from pydantic import Field
 
-from .models import Contract, GenerationJob, JobInput, PublicJob, TemplateProject
+from .models import (
+    Contract,
+    GenerationJob,
+    JobInput,
+    LoopPosition,
+    PublicJob,
+    TemplateProject,
+)
 from .progress import ProgressStep, finish_steps, read_steps
 
 
@@ -33,6 +40,7 @@ class SessionJob(PublicJob):
     updated_at: datetime
     parameters: dict | None = None
     progress: list[ProgressStep] = Field(default_factory=list)
+    loop: LoopPosition | None = None
 
 
 class WorkEvent(Contract):
@@ -198,6 +206,7 @@ def public_job(db: sqlite3.Connection, job: GenerationJob) -> SessionJob:
         updated_at=job.updated_at,
         parameters=inputs.parameters,
         progress=read_steps(db, job),
+        loop=job.loop,
     )
 
 

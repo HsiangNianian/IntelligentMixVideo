@@ -212,6 +212,14 @@ export interface SessionJob extends Job {
   updated_at: string;
   parameters: Values | null;
   progress?: ProgressStep[];
+  loop?: LoopPosition | null;
+}
+/** 宿主观察到的 ReAct 位置：只有层级与已进入的计数，没有计划目标或模型原文。 */
+export interface LoopPosition {
+  layer: "outer" | "plan" | "executor";
+  turn: number;
+  step_index?: number | null;
+  step_total?: number | null;
 }
 /** 宿主公开的阶段摘要；只含白名单阶段与时间，不含候选代码或内部评审。 */
 export interface ProgressStep {

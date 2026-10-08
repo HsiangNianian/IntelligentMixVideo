@@ -396,6 +396,23 @@ class AgentRun:
             self._append_handoff(self._context_for_layer(), "layer_return", self.plan_result if transition is Layer.OUTER else self.delegation if transition is Layer.PLAN else None)
         return None
 
+    def _report_loop(self):
+        """Publish the host-observed ReAct position: layer and counters only.
+
+        Plan step goals are model-authored text and stay out of the public stream,
+        so only the current index and the plan's length are reported. Counters
+        describe what the host has already entered, never a projected total.
+        """
+        plan = self.state.plan
+        self.budget.loop(
+            {
+                "layer": self.layer.value,
+                "turn": self.turn,
+                "step_index": self.state.index + 1 if plan else None,
+                "step_total": len(plan.steps) if plan else None,
+            }
+        )
+
     async def _three_layer_execute(self):
         """Run the role state machine until Outer returns a dialogue or final artifact."""
         from .harness import AGENT_RULES, SCOPE
@@ -403,6 +420,7 @@ class AgentRun:
         while True:
             await asyncio.sleep(0)
             self.turn += 1
+            self._report_loop()
             if getattr(self.harness.settings, "enforce_model_budget", False) and self.turn > 50:
                 raise ModelFailure("Agent turn budget exhausted without verified completion.")
             if (

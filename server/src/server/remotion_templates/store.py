@@ -20,6 +20,7 @@ from .models import (
     GenerationJob,
     JobError,
     JobInput,
+    LoopPosition,
     TemplateCandidate,
     TemplateProject,
     TemplateSpec,
@@ -232,6 +233,29 @@ class Store:
             job = GenerationJob.model_validate_json(row[0])
             if start_step(db, job, phase, now()):
                 self._save_job(db, job)
+
+    def loop(self, identifier: UUID, position: dict) -> None:
+        """Publish the host-observed ReAct position through the existing work stream.
+
+        Unknown layers are rejected by the contract rather than stored, and a
+        terminal job keeps its last observed position. Repeated identical
+        positions do not produce a new event.
+        """
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT data FROM jobs WHERE id=?", (str(identifier),)
+            ).fetchone()
+            if row is None:
+                raise NotFound("job not found")
+            job = GenerationJob.model_validate_json(row[0])
+            if job.status != "running":
+                return
+            current = LoopPosition.model_validate(position)
+            if job.loop == current:
+                return
+            job.loop = current
+            self._save_job(db, job)
 
     def create(
         self, request: GenerateTemplateRequest
