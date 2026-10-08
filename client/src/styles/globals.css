@@ -112,6 +112,10 @@
     min-width: 320px;
     font-family: Inter, "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
   }
+  /* 错误信息常含路径或 URL 等无空格长串，允许任意位置断行，避免撑破弹窗与面板。 */
+  [role="alert"] {
+    overflow-wrap: anywhere;
+  }
   ::selection {
     @apply bg-primary/20;
   }
