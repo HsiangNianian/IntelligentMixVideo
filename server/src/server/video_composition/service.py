@@ -1,4 +1,4 @@
-"""单进程合成调度：持久化阶段、有限恢复和异步上游调用，退出先收束任务与数据库线程。"""
+"""单进程合成调度：持久化阶段、有限恢复和异步上游调用，退出收束任务与后台日志。"""
 
 import asyncio
 from datetime import UTC, datetime, timedelta
@@ -18,7 +18,7 @@ from ..segmentation.settings import Settings as SegmentationSettings
 from ..template.store import get_template
 from . import ims, store, zos
 from .errors import CompositionError, remaining
-from .execution_log import exception_details
+from .execution_log import close_logs, exception_details
 from .matching import Matching, payload, validated_matches
 from .schema import CompositionRequest, MatchCallback, PositiveSeconds, Segment, TaskResponse
 from .settings import ClientSettings, Settings, ZosSettings
@@ -104,13 +104,14 @@ class Runtime:
         self.dispatcher = asyncio.create_task(self._dispatch())
 
     async def close(self) -> None:
-        """先禁止新工作、取消异步任务，再等真实同步线程结束，之后方可关闭共享 Engine。"""
+        """先停止任务和提交线程，再写完后台日志；返回后方可关闭共享 Engine。"""
         self.stopping = True
         tasks = [*self.active.values(), *([self.dispatcher] if self.dispatcher else [])]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await asyncio.gather(*tuple(self.threads), return_exceptions=True)
+        await asyncio.to_thread(close_logs)
         self.active.clear()
         self.client_configs.clear()
 
@@ -219,7 +220,7 @@ class Runtime:
                 raise HTTPException(403, "匹配回调令牌无效")
             if data.get("match_id") and data["match_id"] != callback.taskId:
                 raise HTTPException(409, "匹配任务 ID 不符")
-            await self.log(record, "match_callback_received", input=raw if raw is not None else callback.model_dump(mode="json"))
+            await self.log(record, "match_callback_received", output=raw if raw is not None else callback.model_dump(mode="json"))
             if record["stage"] != "matching" or record["status"] in ("succeeded", "failed"):
                 await self.log(record, "match_callback_processed", output={"http_status": 200, "status": "ok", "ignored": True})
                 return

@@ -1,16 +1,23 @@
-"""执行日志的脱敏、事务、时间和并发测试；pytest 使用隔离 SQLite，不访问真实服务。"""
+"""文件执行日志的脱敏、并发与容量清理测试；仅使用临时文件和隔离 SQLite。"""
 
 import asyncio
 from copy import deepcopy
 import json
+import os
+import shutil
+from datetime import datetime
+from pathlib import Path
+from threading import Event, Thread
 
 from pydantic import BaseModel, ValidationError
 import pytest
-from sqlalchemy import event
+from sqlalchemy import event, inspect, text
 from sqlalchemy.exc import OperationalError
 
-from server.video_composition import store
-from server.video_composition.execution_log import exception_details, sanitize
+from server.video_composition import execution_log, store
+from server.video_composition.execution_log import (
+    MODULES, add_event, compact_columns, exception_details, expand_columns, sanitize,
+)
 
 
 def test_log_redacts_nested_credentials_and_url_queries():
@@ -76,48 +83,45 @@ def test_log_events_keep_task_times_and_cas_history(composition_case, compositio
 
 
 @pytest.mark.parametrize("operation", ["create", "advance", "notification"])
-def test_log_write_failure_rolls_back_related_state(template_db, composition_case, composition_settings, composition_logs, operation):
-    """关键日志插入失败时同事务的任务/通知状态也回滚，避免没有日志的已确认推进。"""
+def test_log_write_failure_keeps_committed_state(composition_case, composition_settings, monkeypatch, caplog, operation):
+    """文件写入失败不回滚已提交任务或通知状态，异常仍报告到运行日志。"""
     store.initialize_schema()
     record = store.create(composition_case["request"], composition_settings.output())
     if operation == "notification":
         record = store.advance(record, "completed", status="succeeded", notification_status="pending")
-    before = composition_logs()
 
-    def reject_log(connection, cursor, statement, parameters, context, executemany):
-        """模拟日志表写入失败，其余数据库操作使用真实事务。"""
-        if statement.startswith(("INSERT INTO video_composition_logs", "UPDATE video_composition_logs")):
-            raise OperationalError("log insert", {}, Exception("database unavailable"))
+    def reject_write(*args, **kwargs):
+        """模拟磁盘无可用空间。"""
+        raise OSError("disk full")
 
-    event.listen(template_db, "before_cursor_execute", reject_log)
-    try:
-        with pytest.raises(OperationalError):
-            if operation == "create":
-                store.create(composition_case["request"], composition_settings.output())
-            elif operation == "advance":
-                store.advance(record, "template")
-            else:
-                store.notification_status(record, "sending")
-    finally:
-        event.remove(template_db, "before_cursor_execute", reject_log)
-    assert composition_logs() == before and store.get(record["task_id"]) == record
-    assert len(store.pending([], 10)) == 1
+    monkeypatch.setattr(Path, "write_text", reject_write)
+    if operation == "create":
+        saved = store.create(composition_case["request"], composition_settings.output())
+    elif operation == "advance":
+        saved = store.advance(record, "template")
+        assert saved["stage"] == "template"
+    else:
+        saved = store.notification_status(record, "sending")
+        assert saved["data"]["notification_status"] == "sending"
+    assert store.get(saved["task_id"]) == saved
+    execution_log.LOG_QUEUE.join()
+    assert "disk full" in caplog.text
 
 
 @pytest.mark.anyio
-async def test_concurrent_log_append_and_historical_task(composition_case, composition_settings, composition_logs, template_db):
-    """历史任务一行聚合；并发合并不丢事件，且不改变任务状态、版本和时间。"""
+async def test_concurrent_log_append(composition_case, composition_settings, composition_logs):
+    """七文件聚合并发事件不丢失，且不改变业务任务状态、版本和时间。"""
     store.initialize_schema()
     record = store.create(composition_case["request"], composition_settings.output())
-    with template_db.begin() as connection:
-        connection.execute(store.execution_logs.delete())
-    await asyncio.gather(*(asyncio.to_thread(store.add_log, record, "probe", {"index": i}) for i in range(12)))
+    execution_log.LOG_QUEUE.join()
+    shutil.rmtree(execution_log.LOG_ROOT / "video_composition" / record["task_id"])
+    await asyncio.gather(*(asyncio.to_thread(store.add_log, record, "probe", {"input": {"index": i}}) for i in range(12)))
     rows = composition_logs(record["task_id"])
-    assert len(rows) == 12 and sorted(row["details"]["index"] for row in rows) == list(range(12))
+    assert len(rows) == 12 and sorted(row["details"]["input"]["index"] for row in rows) == list(range(12))
     assert store.get(record["task_id"]) == record
     saved = composition_logs(record["task_id"], raw=True)
-    assert len(saved) == 1 and saved[0]["detail"]["记录条数"] == 12
-    assert saved[0]["detail"]["从提交开始记录"] is False
+    assert len(saved) == 1 and len(saved[0]["request"]["execute_log"]) == 12
+    assert len(saved[0]["request"]["input"]) == 12
 
 
 @pytest.mark.anyio
@@ -144,268 +148,432 @@ async def test_step_failure_and_cancellation_leave_input_log(composition_case, c
     assert rows[2]["details"]["exceptions"][0]["message"] == "素材不存在"
 
 
-def test_one_row_groups_complete_io_errors_and_readable_chinese(composition_case, composition_settings, composition_logs, template_db):
-    """新任务一行保留提交、步骤输入输出、报错与结束；中文及嵌套 SDK JSON 不被双重编码。"""
-    from sqlalchemy import select, text
-
+def test_module_files_keep_io_errors_and_only_three_execution_fields(composition_case, composition_settings, composition_logs, template_db):
+    """七文件各自存储；陈旧日志不改任务终态，中文和嵌套 JSON 保持可读。"""
     store.initialize_schema()
     record = store.create(composition_case["request"], composition_settings.output())
     running = store.advance(record, "template")
     store.add_log(running, "step_started", {"step": "template", "input": {"styleId": "模板编号"}})
-    store.add_log(running, "step_finished", {"step": "template", "output": {"Timeline": json.dumps({"Content": "标题中文", "token": "hidden-json"})}})
+    store.add_log(running, "step_finished", {"step": "template", "output": {"nested": json.dumps({"text": "中文", "token": "hidden"})}})
     failed = store.advance(running, "failed", status="failed", error={"stage": "template", "message": "模板错误"})
-    # 陈旧查询仍可记入事件，但不能把聚合行的终态覆盖为 processing。
-    store.add_log(running, "response_started", {"source": "query", "input": {"task_id": record["task_id"]}})
-    saved, = composition_logs(record["task_id"], raw=True)
+    store.add_log(running, "response_started", {"input": {"task_id": record["task_id"]}})
+    saved, = composition_logs(raw=True)
     assert saved["status"] == "failed" and saved["task_finished_at"] == failed["updated_at"].replace(tzinfo=None)
-    detail = saved["detail"]
-    assert detail["从提交开始记录"] is True and detail["记录条数"] == 6
-    assert detail["阶段记录"]["任务提交"]["输入"][0]["内容"]["text"] == composition_case["request"]["text"]
-    phase = detail["阶段记录"]["读取模板"]
-    assert phase["输入"][0]["内容"] == {"styleId": "模板编号"}
-    assert phase["输出"][0]["内容"]["Timeline"] == {"Content": "标题中文", "token": "[REDACTED]"}
-    assert phase["错误日志"][0]["错误原因"] == "模板错误"
-    with template_db.connect() as connection:
-        raw = connection.scalar(text("SELECT detail FROM video_composition_logs"))
-        assert "标题中文" in raw and "\\u" not in raw and "hidden-json" not in raw
-        assert connection.scalar(select(store.tasks.c.version)) == failed["version"]
+    for name in MODULES:
+        assert set(saved[name]) == {"input", "output", "execute_log", "error_log"}
+        assert all(set(entry) == {"time", "action", "status"} for entry in saved[name]["execute_log"])
+    assert saved["template"]["input"][0]["data"] == {"styleId": "模板编号"}
+    assert saved["template"]["output"][0]["data"] == {"nested": {"text": "中文", "token": "[REDACTED]"}}
+    assert saved["template"]["error_log"][0]["error"]["message"] == "模板错误"
+    assert all(not items for items in saved["asr"].values())
+    assert not inspect(template_db).has_table("video_composition_logs")
+    folder = execution_log.LOG_ROOT / "video_composition" / record["task_id"]
+    assert {path.name for path in folder.iterdir()} == {f"{name}.json" for name in MODULES}
+    raw = (folder / "template.json").read_text(encoding="utf-8")
+    assert "中文" in raw and "\\u" not in raw and "hidden" not in raw
 
 
-def test_nested_json_chinese_is_decoded_without_corrupting_plain_text():
-    """只展开 JSON 对象/数组，普通中文、反斜杠文本与非 JSON 字符串保持原意。"""
+def test_final_submitted_timeline_and_long_asr_are_complete(composition_case, composition_settings, composition_logs):
+    """不把中间组装结果当最终时间线；超过一 MB 的 ASR、重复调用与末尾字段均完整保留。"""
+    store.initialize_schema()
+    record = store.create(composition_case["request"], composition_settings.output())
+    raw = {"text": "完整文字" * 100000, "tail": "结束"}
+    for _ in range(2):
+        store.add_log(record, "step_finished", {"step": "asr", "output": raw})
+    store.add_log(record, "step_finished", {"step": "assembling", "output": {"timeline": {"Content": "中间版"}, "warnings": []}})
+    assert composition_logs(raw=True)[0]["timeline"]["output"] == []
+    timeline = {"Content": "最终版", "EffectColorStyle": "CS0003-000003", "AdaptMode": "AutoWrap"}
+    payload = {"timeline": json.dumps(timeline), "output_media_config": '{"Width":1080}', "client_token": "hidden"}
+    current = store.advance(record, "submitting", ims_request=payload)
+    store.add_log(current, "step_started", {"step": "ims_submit", "input": payload})
+    saved, = composition_logs(raw=True)
+    assert saved["asr"]["output"][1]["data"] == {"$log_ref": "#/asr/output/0/data"}
+    assert [item["data"] for item in expand_columns(saved)["asr"]["output"]] == [raw, raw]
+    assert [item["data"] for item in saved["timeline"]["output"]] == [timeline]
+    assert saved["timeline"]["input"][0]["data"] == {"output_media_config": {"Width": 1080}, "client_token": "[REDACTED]"}
+    assert "中间版" not in json.dumps(saved, ensure_ascii=False, default=str)
+    assert "hidden" not in json.dumps(saved, default=str)
+
+
+def test_nested_json_and_media_urls_keep_content_without_credentials():
+    """递归展开 SDK JSON，保留媒体 URL，回调凭证仍脱敏，普通文本不变。"""
     nested = json.dumps({"items": json.dumps([{"keyword": "关键词", "api_key": "hidden"}])})
     assert sanitize(nested) == {"items": [{"keyword": "关键词", "api_key": "[REDACTED]"}]}
+    payload = {"videoUrl": "https://media.test/v.mp4?Signature=actual", "callbackUrl": "https://notify.test/?token=hidden"}
+    assert sanitize(payload) == {"videoUrl": payload["videoUrl"], "callbackUrl": "https://notify.test/"}
     assert sanitize("普通中文 C:\\users\\name") == "普通中文 C:\\users\\name"
     assert sanitize("[不是 JSON]") == "[不是 JSON]"
 
 
-@pytest.fixture
-def legacy_logs(template_db, composition_case, composition_settings):
-    """构建与上一版本一致的事件表，两个任务分别覆盖新提交与只有查询记录的旧任务。"""
-    from datetime import UTC, datetime
-    from sqlalchemy import JSON, Column, DateTime, Integer, MetaData, String, Table
+def test_module_references_preserve_payloads_events_and_upstream_sources():
+    """上游原文、不同版本、重试与错误无损；嵌套键可转义，业务 $ref 不误解析。"""
 
-    store.initialize_schema()
-    records = [store.create(composition_case["request"], composition_settings.output()) for _ in range(2)]
-    store.execution_logs.drop(template_db)
-    old = Table("video_composition_logs", MetaData(),
-                Column("id", Integer, primary_key=True), Column("task_id", String(36)),
-                Column("event", String(40)), Column("stage", String(16)), Column("status", String(16)),
-                Column("details", JSON), Column("created_at", DateTime), Column("task_created_at", DateTime),
-                Column("task_finished_at", DateTime))
-    old.create(template_db)
-    with template_db.begin() as connection:
-        for index, (record, event_name) in enumerate(((records[0], "submitted"), (records[0], "step_finished"), (records[1], "response_ready"))):
-            connection.execute(old.insert().values(id=index + 1, task_id=record["task_id"], event=event_name,
-                stage="queued", status="queued", details={"step": "template", "output": json.dumps({"text": "迁移中文"})},
-                created_at=datetime.now(UTC).replace(tzinfo=None), task_created_at=record["created_at"].replace(tzinfo=None)))
-    return old, records
+    columns = {name: {key: [] for key in ("input", "output", "execute_log", "error_log")} for name in MODULES}
+    transcript = {"text": "完整转写" * 100, "$ref": "业务中的普通引用"}
+    template = {"tracks": [{"id": "对象" * 80}]}
+    segments = [{"text": "切片" * 100}]
+    timeline = {"VideoTracks": [{"VideoTrackClips": [{"MediaURL": "https://media.test/" + "x" * 200}]}]}
+    result = {"videoUrl": "https://media.test/" + "v" * 200}
 
+    def put(module, direction, data):
+        """模拟不同模块的实际输入输出条目，保留每次调用的动作和时间。"""
+        columns[module][direction].append({"time": "2026-09-30T10:00:00+08:00", "action": f"{module}.step", "data": data})
 
-def test_legacy_migration_preserves_every_event_and_backup(legacy_logs, template_db, composition_logs):
-    """旧三条事件合为两任务行，保留完整备份及顺序，重启不重复合并且可继续追加。"""
-    from sqlalchemy import func, inspect, select, text
-
-    old, records = legacy_logs
-    store.initialize_schema()
-    store.initialize_schema()
-    saved = composition_logs(raw=True)
-    assert len(saved) == 2 and [r["detail"]["记录条数"] for r in saved] == [2, 1]
-    assert [r["detail"]["从提交开始记录"] for r in saved] == [True, False]
-    assert [r["event"] for r in composition_logs()] == ["submitted", "step_finished", "response_ready"]
-    assert composition_logs()[1]["details"]["output"] == {"text": "迁移中文"}
-    with template_db.connect() as connection:
-        assert connection.scalar(text("SELECT COUNT(*) FROM video_composition_logs_events_backup")) == 3
-        assert connection.scalar(select(func.count()).select_from(store.execution_logs)) == 2
-        assert "detail" in {c["name"] for c in inspect(connection).get_columns(old.name)}
-    store.add_log(records[0], "probe", {"input": "迁移后继续"})
-    assert composition_logs(records[0]["task_id"], raw=True)[0]["detail"]["记录条数"] == 3
-
-
-def test_legacy_migration_failure_keeps_original_table(legacy_logs, template_db):
-    """合并失败不替换或删除原日志，中间表阻止盲目重跑以免覆盖排错数据。"""
-    from sqlalchemy import func, inspect, select
-
-    old, _ = legacy_logs
-
-    def reject_merged(connection, cursor, statement, parameters, context, executemany):
-        """只拒绝向中间表写入，原表始终可读取。"""
-        if statement.startswith("INSERT INTO video_composition_logs_merged"):
-            raise OperationalError("merge failed", {}, Exception("unavailable"))
-
-    event.listen(template_db, "before_cursor_execute", reject_merged)
-    try:
-        with pytest.raises(OperationalError):
-            store.initialize_schema()
-    finally:
-        event.remove(template_db, "before_cursor_execute", reject_merged)
-    with template_db.connect() as connection:
-        assert connection.scalar(select(func.count()).select_from(old)) == 3
-        assert not inspect(connection).has_table("video_composition_logs_events_backup")
-    with pytest.raises(RuntimeError, match="不会覆盖历史数据"):
-        store.initialize_schema()
+    put("asr", "output", transcript)
+    put("asr", "output", transcript)
+    put("template", "output", template)
+    put("segmentation", "input", {"asr_result": transcript})
+    put("segmentation", "output", {"a/b~c": segments})
+    put("matching", "input", {"llm": {"segments": segments}})
+    put("timeline", "input", {"template": template, "segments": segments})
+    put("timeline", "output", timeline)
+    put("zos", "output", {"MediaProducingJob": {"Timeline": timeline, "Status": "Processing"}})
+    put("zos", "output", {"MediaProducingJob": {"Timeline": timeline, "Status": "Success"}})
+    put("zos", "output", result)
+    put("request", "output", {"result": result})
+    columns["zos"]["execute_log"] = [{"time": None, "action": "ims_query.step_finished", "status": "processing"}]
+    columns["zos"]["error_log"] = [{"time": None, "action": "ims_query.step_failed", "status": "failed", "error": transcript}]
+    before = deepcopy(columns)
+    compacted = compact_columns(columns)
+    assert columns == before
+    expected = deepcopy(before)
+    expected["zos"]["output"] = [{**before["zos"]["output"][2], "data": {"aliyun_video_url": result["videoUrl"]}}]
+    assert expand_columns(compacted) == expected
+    assert compact_columns(compacted) == compacted
+    assert compacted["asr"]["output"][0]["data"] == transcript
+    assert compacted["asr"]["output"][1]["data"] == {"$log_ref": "#/asr/output/0/data"}
+    assert compacted["segmentation"]["input"][0]["data"]["asr_result"] == {"$log_ref": "#/asr/output/0/data"}
+    assert compacted["matching"]["input"][0]["data"]["llm"]["segments"] == {"$log_ref": "#/segmentation/output/0/data/a~1b~0c"}
+    assert compacted["timeline"]["input"][0]["data"]["template"] == {"$log_ref": "#/template/output/0/data"}
+    assert compacted["zos"]["output"][0]["data"] == {"aliyun_video_url": result["videoUrl"]}
+    assert compacted["request"]["output"][0]["data"]["result"] == result
+    assert len(json.dumps(compacted)) < len(json.dumps(before))
 
 
-def test_beijing_migration_restores_real_snapshots_once(template_db, composition_case, composition_settings, composition_logs):
-    """UTC 跨日转换一次，原始请求和已存快照可读；不补造 ASR、执行事件或未知异常。"""
-    from datetime import datetime, timedelta
-    from sqlalchemy import select
-
-    store.initialize_schema()
-    record = store.create(composition_case["request"], composition_settings.output())
-    old_created = datetime(2026, 9, 14, 20, 10, 0)
-    data = {**record["data"], "template": composition_case["template"],
-            "segmentation": {"segments": composition_case["segments"]}, "matches": composition_case["matches"],
-            "match_request": {"taskId": "旧匹配任务"}, "timeline": {"VideoTracks": []},
-            "ims_request": {"timeline": '{"VideoTracks": []}'}, "timeline_warnings": ["转场已缩短"],
-            "result": {"mediaId": "real-snapshot-id", "durationSeconds": 8.02},
-            "notification_status": "failed", "ims_deadline": "2026-09-15T00:00:00+00:00"}
-    data.pop("storage_timezone")
-    with template_db.begin() as connection:
-        connection.execute(store.execution_logs.delete())
-        connection.execute(store.tasks.update().values(status="succeeded", stage="completed", data=data,
-                           created_at=old_created, updated_at=old_created + timedelta(minutes=1)))
-    store.initialize_schema()
-    converted = store.get(record["task_id"])
-    saved, = composition_logs(raw=True)
-    assert converted["created_at"].isoformat() == "2026-09-15T04:10:00+08:00"
-    assert saved["task_finished_at"] == datetime(2026, 9, 15, 4, 11)
-    assert saved["detail"]["原始输入"] == composition_case["request"]
-    assert set(saved["detail"]["历史补录"]) == {"说明", "语音识别原始输出", "通知错误", "时间线警告"}
-    assert saved["detail"]["历史补录"]["时间线警告"] == ["转场已缩短"]
-    assert "无法" in saved["detail"]["历史补录"]["语音识别原始输出"]
-    assert "通知失败" in saved["detail"]["历史补录"]["通知错误"]
-    assert saved["detail"]["记录条数"] == 0
-    assert saved["detail"]["阶段记录"]["文本切分"]["输出"][0]["内容"]["segments"] == composition_case["segments"]
-    phases = saved["detail"]["阶段记录"]
-    assert phases["读取模板"]["输出"][0]["内容"] == composition_case["template"]
-    assert phases["提交素材匹配"]["输入"][0]["内容"] == {"taskId": "旧匹配任务"}
-    assert phases["素材匹配"]["输出"][0]["内容"] == composition_case["matches"]
-    assert phases["组装视频时间线"]["输出"][0]["内容"] == {"VideoTracks": []}
-    assert phases["提交云端合成"]["输入"][0]["内容"] == {"timeline": {"VideoTracks": []}}
-    assert saved["detail"]["阶段记录"]["通知调用方"]["错误日志"][0]["时间"] is None
-    assert saved["detail"]["最终输出"]["视频链接"] is None
-    store.initialize_schema()
-    assert store.get(record["task_id"]) == converted and composition_logs(raw=True) == [saved]
-    assert converted["data"]["ims_deadline"] == data["ims_deadline"]
-    with template_db.connect() as connection:
-        from sqlalchemy import text
-        assert connection.scalar(text("SELECT created_at FROM video_compositions_utc_backup")) == str(old_created) + ".000000"
-        assert connection.scalar(select(store.tasks.c.version)) == record["version"]
-
-
-def test_old_aggregate_events_become_readable_with_same_instant(template_db, composition_case, composition_settings, composition_logs):
-    """保留已有事件和原始输入输出；事件显式 +00:00 转成 +08:00，异常不变成假成功。"""
+def test_append_rebuilds_references_after_sorting_and_keeps_distinct_versions():
+    """较早事件插入导致数组位置变化后仍指向原值；快照补录去重在展开后判断。"""
     from datetime import datetime
 
+    record = {"stage": "asr", "status": "processing"}
+    raw = {"text": "第一版" * 100}
+    columns = add_event(None, "step_finished", record, {"step": "asr", "output": raw}, datetime.fromisoformat("2026-09-30T10:00:00+08:00"))
+    columns = add_event(columns, "step_started", record, {"step": "segmentation", "input": {"asr_result": raw}}, datetime.fromisoformat("2026-09-30T11:00:00+08:00"))
+    changed = {"text": "另一版" * 100}
+    columns = add_event(columns, "step_finished", record, {"step": "asr", "output": changed}, datetime.fromisoformat("2026-09-30T09:00:00+08:00"))
+    assert columns["segmentation"]["input"][0]["data"]["asr_result"] == {"$log_ref": "#/asr/output/1/data"}
+    expanded = expand_columns(columns)
+    assert [item["data"] for item in expanded["asr"]["output"]] == [changed, raw]
+    assert expanded["segmentation"]["input"][0]["data"]["asr_result"] == raw
+    assert len(expanded["asr"]["execute_log"]) == 2
+
+
+def test_timeline_requested_fields_remain_inline_even_when_parent_repeats():
+    """materials、packRules 子树与父请求均可直接阅读，其他重复字段继续引用。"""
+
+    columns = {name: {key: [] for key in ("input", "output", "execute_log", "error_log")} for name in MODULES}
+    request = {"materials": [{"fileUrl": "https://media.test/" + "x" * 150}],
+               "packRules": {"backgroundMusic": {"audioUrl": "https://media.test/" + "y" * 150}}}
+    entry = {"time": None, "action": "test", "data": request}
+    columns["request"]["input"] = [entry, {**entry, "data": {"request": request}}]
+    columns["timeline"]["input"] = [{**entry, "data": {"request": request}}] * 2
+    saved = compact_columns(columns)
+    assert saved["timeline"]["input"] == columns["timeline"]["input"]
+    assert expand_columns(saved) == columns
+    assert compact_columns(saved) == saved
+
+
+def test_zos_keeps_only_distinct_video_links_and_preserves_playback_signature():
+    """渲染正文丢弃前展开所有引用；两类地址原文保留，错误和每次执行记录不受影响。"""
+    from datetime import datetime
+
+    columns = {name: {key: [] for key in ("input", "output", "execute_log", "error_log")} for name in MODULES}
+    url = "https://aliyun.test/result.mp4?Signature=actual"
+    public = "https://zos.test/result.mp4"
+    payloads = [("ims_query.step_finished", {"MediaProducingJob": {"Timeline": {"VideoTracks": []}, "Status": "Success"}}),
+                ("playback.step_finished", url), ("zos_upload.step_finished", ["key.mp4", public]),
+                ("completed.task_finished.result", {"videoUrl": public, "durationSeconds": 5}),
+                ("completed.task_finished.zos_object_key", "key.mp4"), ("playback.step_finished", url)]
+    columns["zos"]["output"] = [{"time": None, "action": action, "data": data} for action, data in payloads]
+    columns["request"]["output"] = [{"time": None, "action": "response.response_ready", "data": {"$log_ref": "#/zos/output/3/data"}}]
+    columns["zos"]["execute_log"] = [{"time": None, "action": action, "status": "processing"} for action, _ in payloads]
+    saved = compact_columns(columns)
+    assert [item["data"] for item in saved["zos"]["output"]] == [{"aliyun_video_url": url}, {"zos_video_url": public}]
+    assert expand_columns(saved)["request"]["output"][0]["data"] == payloads[3][1]
+    assert saved["zos"]["execute_log"] == columns["zos"]["execute_log"]
+    assert compact_columns(saved) == saved
+    added = add_event(None, "step_finished", {"stage": "rendering", "status": "processing"},
+                      {"step": "playback", "output": url}, datetime.now())
+    assert added["zos"]["output"][0]["data"] == {"aliyun_video_url": url}
+
+
+@pytest.fixture
+def logged_task(composition_case, composition_settings):
+    """创建真实任务与七文件日志，可设置终态、通知状态和文件年龄。"""
     store.initialize_schema()
-    record = store.create(composition_case["request"], composition_settings.output())
-    old = {"stages": {"asr": {"logs": [
-        {"sequence": 1, "event": "step_started", "time": "2026-09-14T10:00:00+00:00", "stage": "asr", "status": "processing", "step": "asr", "input": {"audio_url": "https://media.test/tts.wav"}}],
-        "errors": [{"sequence": 2, "event": "step_failed", "time": "2026-09-14T10:00:01+00:00", "stage": "asr", "status": "processing", "step": "asr", "exceptions": [{"message": "音频无法下载"}]}]}}}
+
+    def create(*, status="succeeded", notification=None, age_days=0):
+        """仅调整测试文件时间，不借用目录时间决定清理顺序。"""
+        record = store.create(composition_case["request"], composition_settings.output())
+        if status != "queued":
+            record = store.advance(record, "completed" if status == "succeeded" else "matching", status=status,
+                                   **({"notification_status": notification} if notification else {}))
+        execution_log.LOG_QUEUE.join()
+        folder = execution_log.LOG_ROOT / "video_composition" / record["task_id"]
+        stamp = datetime.now().timestamp() - age_days * 86400
+        for path in folder.iterdir():
+            os.utime(path, (stamp, stamp))
+        return record, folder
+
+    return create
+
+
+def log_size(path):
+    """返回实际文件字节数，测试容量边界无需创建 50 MB 数据。"""
+    return sum(file.stat().st_size for file in path.rglob("*") if file.is_file())
+
+
+def test_under_limit_keeps_expired_logs_without_querying_tasks(logged_task, monkeypatch):
+    """不足或恰好达到容量上限时，即使过期也不删除，不查询任务清理名单。"""
+    _, folder = logged_task(age_days=30)
+
+    def unexpected_query():
+        """未超容量不得查询数据库终态。"""
+        pytest.fail("不应查询清理名单")
+
+    execution_log.cleanup(unexpected_query)
+    monkeypatch.setattr(execution_log, "MAX_BYTES", log_size(execution_log.LOG_ROOT))
+    execution_log.cleanup(unexpected_query)
+    assert folder.exists()
+
+
+@pytest.mark.parametrize("old_age", [2, 10])
+def test_over_limit_deletes_oldest_finished_directory(logged_task, monkeypatch, old_age):
+    """无满七天的任务也按文件最新时间清理；达到上限立即停止，目录时间不影响排序。"""
+    _, old = logged_task(age_days=old_age)
+    _, recent = logged_task(age_days=1)
+    os.utime(old, None)
+    monkeypatch.setattr(execution_log, "MAX_BYTES", log_size(execution_log.LOG_ROOT) - log_size(old))
+    execution_log.cleanup(store.finished_tasks)
+    assert not old.exists() and recent.exists()
+    assert log_size(execution_log.LOG_ROOT) == execution_log.MAX_BYTES
+
+
+@pytest.mark.parametrize("status,notification", [("queued", None), ("processing", None),
+    ("succeeded", "pending"), ("failed", "sending")])
+def test_over_limit_protects_active_and_notifying_tasks(logged_task, monkeypatch, status, notification):
+    """活动任务及通知未结束的任务不删，只有这些任务时允许超限。"""
+    _, protected = logged_task(status=status, notification=notification, age_days=30)
+    _, finished = logged_task(age_days=1)
+    monkeypatch.setattr(execution_log, "MAX_BYTES", 1)
+    execution_log.cleanup(store.finished_tasks)
+    assert protected.exists() and not finished.exists()
+    assert log_size(execution_log.LOG_ROOT) > execution_log.MAX_BYTES
+
+
+@pytest.mark.parametrize("notification", [None, "sent", "failed"])
+def test_failed_tasks_with_finished_notifications_can_be_deleted(logged_task, monkeypatch, notification):
+    """失败任务和通知最终失败均视作已结束，可整体清理。"""
+    _, folder = logged_task(status="failed", notification=notification)
+    monkeypatch.setattr(execution_log, "MAX_BYTES", 1)
+    execution_log.cleanup(store.finished_tasks)
+    assert not folder.exists()
+
+
+def test_first_write_counts_existing_files_and_whole_log_root(logged_task, monkeypatch):
+    """启动不清理；后续写入统计已有目录和其他日志，但只删除已结束合成任务。"""
+    _, old = logged_task(age_days=20)
+    active, protected = logged_task(status="processing")
+    other = execution_log.LOG_ROOT / "other.log"
+    other.write_bytes(b"x" * 20000)
+    monkeypatch.setattr(execution_log, "MAX_BYTES", 20000)
+    store.initialize_schema()
+    assert old.exists()
+    store.add_log(active, "probe", {"input": {"text": "重启后写入"}})
+    execution_log.LOG_QUEUE.join()
+    assert not old.exists() and protected.exists() and other.exists()
+    assert execution_log.read_log(active["task_id"])["matching"]["input"][-1]["data"] == {"text": "重启后写入"}
+
+
+def test_partial_temporary_write_preserves_previous_json(logged_task, monkeypatch):
+    """临时文件写入中途失败保留原七文件，清除残余临时文件。"""
+    record, folder = logged_task(status="processing")
+    before = {path.name: path.read_bytes() for path in folder.iterdir()}
+    original = Path.write_text
+
+    def fail_asr(path, *args, **kwargs):
+        """前两个模块临时写入成功后模拟磁盘写失败。"""
+        if path.name == "asr.tmp":
+            raise OSError("disk full")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", fail_asr)
+    store.add_log(record, "probe", {"input": {"text": "写入失败"}})
+    execution_log.LOG_QUEUE.join()
+    assert {path.name: path.read_bytes() for path in folder.iterdir()} == before
+
+
+def test_log_root_does_not_follow_working_directory(logged_task, monkeypatch, tmp_path):
+    """切换启动工作目录后仍向同一个后端根目录追加文件。"""
+    record, folder = logged_task(status="processing")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    store.add_log(record, "probe", {})
+    execution_log.LOG_QUEUE.join()
+    assert len(execution_log.read_log(record["task_id"])["matching"]["execute_log"]) == 2
+    assert folder.exists() and not (elsewhere / ".log").exists()
+
+
+def test_old_log_tables_are_never_read_modified_or_migrated(template_db, composition_case, composition_settings):
+    """旧表保留原样；初始化及新任务不访问它们，不创建日志备份或替代表。"""
+    names = ("video_composition_logs", "video_composition_logs_detail_backup")
+    original_tables = set(inspect(template_db).get_table_names())
     with template_db.begin() as connection:
-        connection.execute(store.execution_logs.update().values(detail=old, created_at=datetime(2026, 9, 14, 10), updated_at=datetime(2026, 9, 14, 10, 0, 1)))
-    store.initialize_schema()
-    saved, = composition_logs(raw=True)
-    phase = saved["detail"]["阶段记录"]["语音识别"]
-    assert phase["执行日志"][0]["说明"] == "开始语音识别，输入已记录"
-    assert phase["错误日志"][0]["错误原因"] == "音频无法下载"
-    assert phase["输入"][0]["内容"] == {"audio_url": "https://media.test/tts.wav"}
-    assert phase["输出"] == []
-    assert phase["输入"][0]["时间"] == "2026-09-14 18:00:00.000000+08:00"
-    assert saved["created_at"] == datetime(2026, 9, 14, 18)
-    store.initialize_schema()
-    assert composition_logs(raw=True) == [saved]
+        for name in names:
+            connection.execute(text(f"CREATE TABLE {name} (detail TEXT)"))
+            connection.execute(text(f"INSERT INTO {name} VALUES ('old log')"))
 
+    def reject_access(connection, cursor, statement, parameters, context, executemany):
+        """业务路径对旧日志表的任何访问都令测试失败。"""
+        assert "video_composition_logs" not in statement
 
-def test_beijing_migration_failure_rolls_back_times_and_detail(template_db, composition_case, composition_settings, composition_logs):
-    """历史补录落库失败时任务时间及转换标记一起回滚，下次启动安全重试。"""
-    store.initialize_schema()
-    record = store.create(composition_case["request"], composition_settings.output())
-    data = dict(record["data"])
-    data.pop("storage_timezone")
-    with template_db.begin() as connection:
-        connection.execute(store.tasks.update().values(data=data))
-    before_task, before_logs = store.get(record["task_id"]), composition_logs(raw=True)
-
-    def reject_update(connection, cursor, statement, parameters, context, executemany):
-        """只拒绝主日志更新，不阻止备份和任务事务准备。"""
-        if statement.startswith("UPDATE video_composition_logs SET"):
-            raise OperationalError("write failed", {}, Exception("unavailable"))
-
-    event.listen(template_db, "before_cursor_execute", reject_update)
+    event.listen(template_db, "before_cursor_execute", reject_access)
     try:
-        with pytest.raises(OperationalError):
-            store.initialize_schema()
+        store.initialize_schema()
+        record = store.create(composition_case["request"], composition_settings.output())
+        store.advance(record, "completed", status="succeeded")
     finally:
-        event.remove(template_db, "before_cursor_execute", reject_update)
-    assert store.get(record["task_id"]) == before_task and composition_logs(raw=True) == before_logs
-    store.initialize_schema()
-    assert store.get(record["task_id"])["data"]["storage_timezone"] == "Asia/Shanghai"
-
-
-def test_media_urls_preserve_actual_output_without_callback_credentials():
-    """用户提供和接口返回的媒体链接保留签名，回调令牌和服务鉴权仍脱敏。"""
-    payload = {"videoUrl": "https://media.test/video.mp4?Signature=actual-signature", "Authorization": "secret",
-               "callbackUrl": "https://callback.test/result?token=hidden"}
-    cleaned = sanitize(payload)
-    assert cleaned["videoUrl"] == payload["videoUrl"]
-    assert cleaned["callbackUrl"] == "https://callback.test/result"
-    assert cleaned["Authorization"] == "[REDACTED]"
-
-
-def test_compaction_removes_only_identical_history_copies():
-    """删掉历史补录中的同文副本，保留不同版本、无对应阶段的独有数据和完整效果字段。"""
-    from server.video_composition.execution_log import compact_detail
-
-    timeline = {"SubtitleTrackClips": [{"EffectColorStyle": "CS0003-000003", "AdaptMode": "AutoWrap", "Content": "中文正文"}]}
-    detail = {"历史补录": {"视频时间线的输出": deepcopy(timeline), "云端合成的输入": {"timeline": "独有旧版本"},
-                         "读取模板的输出": {"name": "尚无阶段记录"}, "说明": "历史数据，非补造事件"},
-              "阶段记录": {"组装视频时间线": {"输入": [], "输出": [{"内容": timeline}], "执行日志": [], "错误日志": []},
-                           "提交云端合成": {"输入": [{"内容": {"timeline": timeline}}], "输出": [], "执行日志": [], "错误日志": []}}}
-    before_phases = deepcopy(detail["阶段记录"])
-    compact_detail(detail)
-    assert "视频时间线的输出" not in detail["历史补录"]
-    assert detail["历史补录"]["云端合成的输入"] == {"timeline": "独有旧版本"}
-    assert detail["历史补录"]["读取模板的输出"] == {"name": "尚无阶段记录"}
-    assert detail["阶段记录"] == before_phases
-    snapshot = deepcopy(detail)
-    assert compact_detail(detail) == snapshot
-
-
-def test_stage_snapshot_retained_until_actual_output_is_saved(composition_case, composition_settings, composition_logs):
-    """阶段输出尚未落库时保留快照；同文输出到达后删除副本，重复真实调用和错误日志仍全部保留。"""
-    store.initialize_schema()
-    record = store.create(composition_case["request"], composition_settings.output())
-    template = composition_case["template"]
-    current = store.advance(record, "asr", template=template)
-    phase = composition_logs(raw=True)[0]["detail"]["阶段记录"]["语音识别"]
-    assert phase["执行日志"][0]["详情"]["template"] == template
-    store.add_log(current, "step_finished", {"step": "template", "output": template})
-    store.add_log(current, "step_failed", {"step": "template", "exceptions": [{"message": "读取失败，请重试"}]})
-    store.add_log(current, "step_finished", {"step": "template", "output": template})
-    saved, = composition_logs(raw=True)
-    phases = saved["detail"]["阶段记录"]
-    assert "template" not in phases["语音识别"]["执行日志"][0]["详情"]
-    assert phases["语音识别"]["执行日志"][0]["数据位置"]["读取模板的输出"] == "读取模板 → 输出"
-    assert [item["内容"] for item in phases["读取模板"]["输出"]] == [template, template]
-    assert phases["读取模板"]["错误日志"][0]["错误原因"] == "读取失败，请重试"
-    assert saved["detail"]["记录条数"] == 5
-    assert store.get(record["task_id"]) == current
-
-
-def test_long_json_preserves_complete_effect_values_and_tail(composition_case, composition_settings, composition_logs, template_db):
-    """超过常见单元格预览长度的 JSON 完整写入，SDK 嵌套串解析和整理不截断枚举或末尾内容。"""
-    from sqlalchemy import select
-
-    store.initialize_schema()
-    record = store.create(composition_case["request"], composition_settings.output())
-    timeline = {"EffectColorStyle": "CS0003-000003", "AdaptMode": "AutoWrap", "Content": "长文本验证。" * 12000, "末尾": "完整结束"}
-    store.add_log(record, "step_finished", {"step": "assembling", "output": {"timeline": json.dumps(timeline)}})
-    current = store.advance(record, "submitting", timeline=timeline)
-    saved, = composition_logs(raw=True)
-    assert saved["detail"]["阶段记录"]["组装视频时间线"]["输出"][0]["内容"]["timeline"] == timeline
-    assert "timeline" not in saved["detail"]["阶段记录"]["准备云端合成"]["执行日志"][0]["详情"]
+        event.remove(template_db, "before_cursor_execute", reject_access)
     with template_db.connect() as connection:
-        assert connection.scalar(select(store.tasks.c.data))["timeline"] == timeline
-    assert store.get(record["task_id"]) == current
+        for name in names:
+            assert connection.execute(text(f"SELECT detail FROM {name}")).scalars().all() == ["old log"]
+    assert set(inspect(template_db).get_table_names()) == {*original_tables, *names, "video_compositions"}
+
+
+def test_async_log_snapshots_order_time_and_shutdown(logged_task, monkeypatch):
+    """慢磁盘不阻止入队；保留提交时数据、时间与顺序，关闭等待积压写完。"""
+    record, folder = logged_task(status="processing")
+    entered, release, closed = Event(), Event(), Event()
+    original = execution_log.write_log
+
+    def slow_write(*args, **kwargs):
+        """暂停实际写入，显式验证生产者与关闭行为。"""
+        entered.set()
+        assert release.wait(10)
+        return original(*args, **kwargs)
+
+    def close():
+        """模拟生产者结束后的正常服务退出。"""
+        execution_log.close_logs()
+        closed.set()
+
+    monkeypatch.setattr(execution_log, "write_log", slow_write)
+    details = {"step": "asr", "output": {"text": "入队原文"}}
+    before = datetime.now(execution_log.BEIJING)
+    store.add_log(record, "step_finished", details)
+    after = datetime.now(execution_log.BEIJING)
+    closer = Thread(target=close)
+    try:
+        assert entered.wait(2)
+        details["output"]["text"] = "后续修改"
+        store.add_log(record, "probe", {"input": {"index": 2}})
+        record["status"] = "failed"
+        closer.start()
+        assert not closed.wait(0.05)
+    finally:
+        release.set()
+        if closer.ident is not None:
+            closer.join(10)
+    assert closed.is_set() and execution_log._writer is None
+    saved = execution_log.read_log(record["task_id"])
+    entry = saved["asr"]["output"][0]
+    assert entry["data"] == {"text": "入队原文"}
+    assert before <= datetime.fromisoformat(entry["time"]) <= after
+    assert saved["asr"]["execute_log"][0]["status"] == "processing"
+    assert saved["matching"]["input"][-1]["data"] == {"index": 2}
+    assert not execution_log.PENDING and execution_log.LOG_QUEUE.unfinished_tasks == 0
+
+
+def test_queue_full_waits_without_losing_events(logged_task, monkeypatch):
+    """磁盘持续慢导致队列满时等待空位，不无限增长或丢失日志。"""
+    from queue import Queue
+
+    record, _ = logged_task(status="processing")
+    execution_log.close_logs()
+    monkeypatch.setattr(execution_log, "LOG_QUEUE", Queue(maxsize=1))
+    entered, release, submitted = Event(), Event(), Event()
+    original = execution_log.write_log
+
+    def slow_write(*args, **kwargs):
+        """暂停消费者，使小队列确定性达到上限。"""
+        entered.set()
+        assert release.wait(10)
+        return original(*args, **kwargs)
+
+    def third():
+        """额外生产者仅在获得队列空位后返回。"""
+        store.add_log(record, "probe", {"input": {"index": 3}})
+        submitted.set()
+
+    monkeypatch.setattr(execution_log, "write_log", slow_write)
+    producer = Thread(target=third)
+    try:
+        store.add_log(record, "probe", {"input": {"index": 1}})
+        assert entered.wait(2)
+        store.add_log(record, "probe", {"input": {"index": 2}})
+        producer.start()
+        assert not submitted.wait(0.05)
+        assert execution_log.LOG_QUEUE.qsize() == 1
+    finally:
+        release.set()
+        if producer.ident is not None:
+            producer.join(10)
+        execution_log.close_logs()
+    assert submitted.is_set()
+    saved = execution_log.read_log(record["task_id"])
+    assert [e["data"]["index"] for e in saved["matching"]["input"]] == [1, 2, 3]
+
+
+def test_cleanup_protects_queued_task_until_last_write(logged_task, monkeypatch):
+    """终态已有后续日志排队时整目录保留；最后一条写完后才允许按容量删除。"""
+    record, folder = logged_task()
+    entered, release = Event(), Event()
+    original = execution_log.write_log
+    remaining = []
+
+    def slow_write(*args, **kwargs):
+        """首条写入完成清理后检查文件仍在，第二条完成后可删除。"""
+        entered.set()
+        assert release.wait(10)
+        original(*args, **kwargs)
+        remaining.append(folder.exists())
+
+    monkeypatch.setattr(execution_log, "write_log", slow_write)
+    monkeypatch.setattr(execution_log, "MAX_BYTES", 1)
+    try:
+        store.add_log(record, "probe", {})
+        assert entered.wait(2)
+        store.add_log(record, "probe", {})
+    finally:
+        release.set()
+        execution_log.LOG_QUEUE.join()
+    assert remaining == [True, False]
+
+
+def test_background_write_failure_does_not_stop_consumer(logged_task, monkeypatch, caplog):
+    """单条故障记录到运行日志，后台继续处理后续事件。"""
+    record, _ = logged_task(status="processing")
+    original = execution_log.write_log
+
+    def fail_once(record, event, *args, **kwargs):
+        """只让指定事件失败，其余执行真实文件写入。"""
+        if event == "broken":
+            raise OSError("disk failure")
+        return original(record, event, *args, **kwargs)
+
+    monkeypatch.setattr(execution_log, "write_log", fail_once)
+    store.add_log(record, "broken", {})
+    store.add_log(record, "probe", {"input": {"ok": True}})
+    execution_log.LOG_QUEUE.join()
+    assert "disk failure" in caplog.text
+    assert execution_log.read_log(record["task_id"])["matching"]["input"][-1]["data"] == {"ok": True}

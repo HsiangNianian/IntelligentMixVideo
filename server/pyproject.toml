@@ -37,7 +37,7 @@ build-backend = "uv_build"
 
 [tool.uv.build-backend]
 module-name = ["server", "generated"]
-source-exclude = ["node_modules", ".cache", "__pycache__", ".data"]
+source-exclude = ["node_modules", ".cache", "__pycache__", ".data", ".log"]
 
 # 在项目根目录运行 pytest 时，仅发现服务端测试；包由 uv 安装，不修改 sys.path。
 [tool.pytest.ini_options]

@@ -24,6 +24,7 @@
 - Remotion 模型预算由 `server/.env` 的 `IMV_MAX_OUTPUT_TOKENS`（32000）、`IMV_MAX_TOKENS`（200000）、`IMV_MAX_MODEL_CALLS`（32）和 `IMV_MODEL_TIMEOUT_SECONDS`（240）配置；单次输出上限始终生效，仅开启预算时按剩余额度缩小，所有模型角色共用任务预算。任务与渲染超时独立配置为 600 / 180 秒；默认值与 `.env.example` 同步，修改后重启服务。
 - `server/src/server/asr/` 提供独立的 `transcribe` 函数与 `python -m server.asr` 命令行入口，尚未注册 HTTP 路由；通过北京地域 Fun-ASR 接收 HTTPS 音频直链并返回原始转写 JSON。字段声明位于 `asr/settings.py`，公开转写函数通过包入口按需导入；设置发现不加载业务，`DASHSCOPE_API_KEY` 在 `asr/asr.py` 业务模块加载时读取一次，固定读取源码 `server/.env`，不存在时不回退工作目录，进程环境变量优先；测试隔离文件、密钥、HTTP 和轮询等待。
 - 视频合成新任务在 IMS 渲染后将临时源地址的内容转存至 ZOS `imv/video_composition/{task_id}.mp4`，并通过服务端 FFmpeg 从同一成片按解码顺序截取第 3 帧，上传同名 `.png`；只给这两个对象设置 `public-read`，核对大小和匿名读取后才保存成功。图片 URL 可按 `ZOS_WEB_URL` 和对象 key 拼出，不进入 GET 或回调；两者仍只返回视频的持久化地址。旧成功任务不迁移或补图。ZOS 凭据只读服务端环境，不进入客户端配置头或任务快照；转存失败不能返回 IMS 临时直链作为成功结果。
+- 视频合成执行日志实现位于 `execution_log.py`（归类、引用、脱敏、文件写入与容量清理），新事件直接生成七模块内容，保存到以后端包 `server/src/server` 为相对根目录的 `.log/video_composition/<task_id>/`，七文件为 `request/template/asr/segmentation/matching/timeline/zos.json`，各自统一 `input/output/execute_log/error_log`。不再创建、读写或迁移数据库日志表和备份表，已有表不自动删除；业务任务表保留。重复正文以同任务七文件组成的对象为根使用 JSON Pointer `$log_ref`，上游输出优先保留，追加前展开、排序后重建引用；执行记录仅 `time/action/status`，错误单独保存，凭证继续脱敏。任务级、查询与通知归 request，素材匹配回调归 matching.output；最终提交请求的 timeline 归 timeline 输出，materials、packRules 原文展示且父对象不整块引用。渲染、取址与转存归 zos，zos.output 仅保存去重后的 aliyun_video_url、zos_video_url 原文和实际签名。业务事务提交后只将独立日志快照入队，单个后台线程顺序写入，时间取入队时刻；队列上限 128 条，满时提交线程等空位，不丢记录。
 - 在 `server/` 下执行 `uv run server` 启动 Uvicorn，默认监听 `0.0.0.0:20070`（所有 IPv4 接口，供服务器部署后远程访问）；`startup/settings.py` 的 `ServerSettings`（启动入口复用） 在每次启动时读取固定的 `server/.env` 中的 `PORT`，进程环境变量优先，范围为 1～65535，空值或非法值阻止启动；仓库根目录使用 `uv run --project server server`。维护 `server/uv.lock`，CI 使用 `--locked` 验证依赖。
 - `server/pyproject.toml` 显式将官方 PyPI 设为 uv 默认索引，与锁文件来源保持一致。遇到依赖版本不可用时先检查索引覆盖配置和镜像同步情况，不要仅为绕过镜像缺失而降低依赖版本或删除锁文件。
 - `App.tsx` 挂载 `pages/HomePage.tsx`，左侧导航提供默认打开的「主页」、`features/templates/` 模板库和 `features/remotion_templates/` 字效工作区。主页通过 `TemplateHome` 按云端在上、本地在下展示模板，各库独立读取和重试，浏览器提示本地模板需要桌面客户端；重新进入主页刷新列表。主页选择模板携带环境和 ID，或通过新建表单携带环境、名称与描述进入模板库；已有模板读取最新详情成功后才替换环境与草稿，新模板点击保存才写入。两种入口均复用保存/放弃/取消保护。底部设置入口组合环境信息与 `features/settings/` 动态插件表单；窄屏使用带无障碍名称的图标栏，切换设置同样保留工作区。聊天、任务编排、隔离 Player、参数编辑和 API 请求按职责分离。
@@ -181,11 +182,11 @@ Windows 需要 MSVC C++ 构建工具、Windows SDK 和 WebView2；ARM64 主机�
 `.github/workflows/client-build.yml` 仅提供手动触发和 `workflow_call`，复用同一平台矩阵、Linux 系统依赖和 Bun / Rust 缓存。
 `build-mode=check` 做原生编译检查，`package` 生成并上传安装包；默认 `package`，正式 tag 必须使用打包模式。检查模式不能保证最终链接或安装器成功，完整打包由默认分支、tag 和手动构建验证。
 
-| 平台 | 架构 | 安装包 |
-| --- | --- | --- |
-| Windows | x64 | NSIS exe、MSI |
-| Linux | x64 | deb、AppImage |
-| macOS | Apple Silicon、Intel | dmg |
+| 平台    | 架构                 | 安装包        |
+| ------- | -------------------- | ------------- |
+| Windows | x64                  | NSIS exe、MSI |
+| Linux   | x64                  | deb、AppImage |
+| macOS   | Apple Silicon、Intel | dmg           |
 
 普通构建的 Actions artifacts 保留 14 天。发版应复用这一构建工作流，避免维护两套不一致的平台构建逻辑。
 构建产物来自被触发的提交；正式发布时必须来自对应 tag 的源码。
