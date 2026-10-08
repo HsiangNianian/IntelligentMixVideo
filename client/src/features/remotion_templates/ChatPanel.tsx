@@ -5,6 +5,7 @@ import { ArrowUp, ImagePlus, Square, Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { apiUrl } from "./api";
+import { LoopRounds } from "./LoopRounds";
 import { TaskStatus } from "./TaskStatus";
 import { VersionCard } from "./VersionCard";
 import type { ChatMessage, Job, SessionJob, Version } from "./model";
@@ -227,6 +228,12 @@ export function ChatPanel({
               index ? (
               <TaskStatus job={jobs[message.job_id]} />
             ) : null}
+            {message.job_id &&
+            jobs[message.job_id]?.rounds?.length &&
+            messages.findIndex((item) => item.job_id === message.job_id) ===
+              index ? (
+              <LoopRounds job={jobs[message.job_id]} />
+            ) : null}
             {versions
               .filter((version) => anchors.get(version.id) === message.id)
               .map(resultCard)}
@@ -238,6 +245,12 @@ export function ChatPanel({
           !!job.progress?.length &&
           !messages.some((message) => message.job_id === job.id) && (
             <TaskStatus job={job} />
+          )}
+        {job &&
+          "created_at" in job &&
+          !!job.rounds?.length &&
+          !messages.some((message) => message.job_id === job.id) && (
+            <LoopRounds job={job} />
           )}
         {busy && !phaseCount && (
           <p className="flex items-center gap-2 text-xs text-muted-foreground">

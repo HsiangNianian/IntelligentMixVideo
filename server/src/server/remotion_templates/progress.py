@@ -1,9 +1,11 @@
-"""Public host-owned phase summaries, persisted separately from private model/tool diagnostics."""
+"""Public host-owned phase and loop summaries, persisted separately from private model/tool diagnostics."""
 
 import json
 import sqlite3
 from datetime import datetime
 from typing import Literal
+
+from pydantic import Field
 
 from .models import Contract, GenerationJob
 
@@ -32,6 +34,27 @@ class ProgressStep(Contract):
     status: Literal["active", "done", "stopped"] = "active"
 
 
+class RoundCall(Contract):
+    """One tool call the host actually ran; the name and the outcome only.
+
+    Arguments and result payloads stay in the private audit, so a public round can
+    never carry model input, candidate source or tool output.
+    """
+
+    tool: str = Field(min_length=1, max_length=64)
+    status: Literal["pass", "fail"]
+    error_code: str | None = Field(default=None, max_length=64)
+    message: str | None = Field(default=None, max_length=200)
+
+
+class LoopRound(Contract):
+    """One ReAct turn of one layer; an empty call list means the layer only replied."""
+
+    layer: Literal["outer", "plan", "executor"]
+    turn: int = Field(ge=1)
+    calls: list[RoundCall] = Field(default_factory=list, max_length=4)
+
+
 def read_steps(db: sqlite3.Connection, job: GenerationJob) -> list[ProgressStep]:
     """Read only recorded summaries; legacy jobs have no fabricated intermediate history."""
     row = db.execute(
@@ -51,6 +74,28 @@ def save_steps(
     db.execute(
         "INSERT INTO job_progress(job_id,data) VALUES (?,?) ON CONFLICT(job_id) DO UPDATE SET data=excluded.data",
         (str(job.id), json.dumps([step.model_dump(mode="json") for step in steps])),
+    )
+
+
+def read_rounds(db: sqlite3.Connection, job: GenerationJob) -> list[LoopRound]:
+    """Read only recorded rounds; jobs without records never get fabricated history."""
+    row = db.execute(
+        "SELECT data FROM job_rounds WHERE job_id=?", (str(job.id),)
+    ).fetchone()
+    return (
+        [LoopRound.model_validate(item) for item in json.loads(row[0])]
+        if row
+        else []
+    )
+
+
+def save_rounds(
+    db: sqlite3.Connection, job: GenerationJob, rounds: list[LoopRound]
+) -> None:
+    """Append inside the job/event transaction, so the stream cannot outrun the record."""
+    db.execute(
+        "INSERT INTO job_rounds(job_id,data) VALUES (?,?) ON CONFLICT(job_id) DO UPDATE SET data=excluded.data",
+        (str(job.id), json.dumps([item.model_dump(mode="json") for item in rounds])),
     )
 
 

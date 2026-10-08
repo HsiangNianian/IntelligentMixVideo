@@ -55,12 +55,13 @@ The browser path requires Chromium, Noto CJK fonts, bubblewrap and util-linux.
 Offline tests cover tool registration, deferred-tool behaviour, immutable
 storage and source consistency without a model or semantic index.
 
-## Loop visibility
+## Loop rounds
 
-Each Outer → Plan → Executor turn publishes the host's current ReAct position —
-the layer, the turn, and the index of the plan step it has actually entered —
-through the same `job.updated` event as the phase timeline, so the workspace can
-show which loop is running. Plan step goals are model-authored text and are
-never published, and step counters appear only once a plan exists, so the stream
-never announces a step the host has not reached. Repeated identical positions
-publish nothing, and a terminal job keeps its last observed position.
+Every Outer → Plan → Executor turn appends one public round record through the
+same `job.updated` event as the phase timeline, so the workspace can show what
+each loop round actually did. A round carries the layer, the turn and the tools
+the host ran in that turn — the canonical dotted tool ID, whether it passed, and
+on failure the tool's error code plus a 200-character message. Tool arguments
+and result payloads stay in the private audit, plan step goals and model prose
+are never published, a turn that only replied records an empty call list, and a
+terminal job accepts no further rounds.

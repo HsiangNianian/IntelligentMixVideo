@@ -212,14 +212,20 @@ export interface SessionJob extends Job {
   updated_at: string;
   parameters: Values | null;
   progress?: ProgressStep[];
-  loop?: LoopPosition | null;
+  rounds?: LoopRound[];
 }
-/** 宿主观察到的 ReAct 位置：只有层级与已进入的计数，没有计划目标或模型原文。 */
-export interface LoopPosition {
+/** 一次宿主实际执行的工具调用；只有工具名与结论，不含参数与返回载荷。 */
+export interface RoundCall {
+  tool: string;
+  status: "pass" | "fail";
+  error_code?: string | null;
+  message?: string | null;
+}
+/** 一层 ReAct 的一轮；calls 为空表示该轮只回了消息，没有调用工具。 */
+export interface LoopRound {
   layer: "outer" | "plan" | "executor";
   turn: number;
-  step_index?: number | null;
-  step_total?: number | null;
+  calls: RoundCall[];
 }
 /** 宿主公开的阶段摘要；只含白名单阶段与时间，不含候选代码或内部评审。 */
 export interface ProgressStep {

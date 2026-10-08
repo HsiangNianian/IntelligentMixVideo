@@ -100,6 +100,7 @@ class AgentRun:
         }
         self.observations = set()
         self.turn = 0
+        self.round_calls: list[dict] = []
         self.generation_started = False
         self.delegation = None
         self.plan_result = None
@@ -282,6 +283,7 @@ class AgentRun:
         final_identifier = None
         outer_batch_started = False
         handled = set()
+        resolved: dict[str, str] = {}
         fatal = None
         try:
             for call in response.tool_calls:
@@ -307,6 +309,7 @@ class AgentRun:
                     tool = next((item for item in visible if name in {item.name, item.name.replace(".", "_")}), None)
                     if tool is None:
                         raise ValueError("Unknown or out-of-scope tool for this ReAct layer")
+                    resolved[call.id] = tool.name
                     args = tool.input.model_validate_json(call.function.arguments)
                     if tool.name == "tools.plan_execute":
                         if len(response.tool_calls) != 1:
@@ -379,6 +382,7 @@ class AgentRun:
                     result = tool_receipt("fail", error="NOT_EXECUTED", data={"detail": "Earlier action interrupted the batch"})
                     exchange.append({"role": "tool", "tool_call_id": call.id, "content": json.dumps(result)})
                     self.budget.record("tool_result", role=self.layer.value, call_id=call.id, tool=call.function.name, result=result, actual_tooluse=self.state.calls)
+            self._note_round_calls(response, exchange, resolved)
             context.append(exchange)
         if fatal is not None:
             raise fatal
@@ -396,21 +400,41 @@ class AgentRun:
             self._append_handoff(self._context_for_layer(), "layer_return", self.plan_result if transition is Layer.OUTER else self.delegation if transition is Layer.PLAN else None)
         return None
 
-    def _report_loop(self):
-        """Publish the host-observed ReAct position: layer and counters only.
+    def _note_round_calls(self, response, exchange, resolved):
+        """Record what the host actually ran this turn for the public round record.
 
-        Plan step goals are model-authored text and stay out of the public stream,
-        so only the current index and the plan's length are reported. Counters
-        describe what the host has already entered, never a projected total.
+        Only the tool name and its outcome leave this method: arguments and result
+        payloads stay in the private audit. Receipts are matched by call ID so the
+        record keeps the order the model asked for, and a resolved call reports the
+        canonical dotted tool ID while an out-of-scope attempt keeps the name the
+        model used.
         """
-        plan = self.state.plan
-        self.budget.loop(
-            {
-                "layer": self.layer.value,
-                "turn": self.turn,
-                "step_index": self.state.index + 1 if plan else None,
-                "step_total": len(plan.steps) if plan else None,
+        receipts = {
+            message.get("tool_call_id"): message.get("content")
+            for message in exchange
+            if message.get("role") == "tool"
+        }
+        for call in response.tool_calls:
+            raw = receipts.get(call.id)
+            if raw is None:
+                continue
+            result = json.loads(raw)
+            summary = {
+                "tool": resolved.get(call.id, call.function.name),
+                "status": "pass" if result.get("ok") else "fail",
             }
+            if not result.get("ok"):
+                error = result.get("error") or {}
+                summary["error_code"] = str(error.get("code") or "TOOL_FAILED")[:64]
+                message = str(error.get("message") or "").strip()
+                if message:
+                    summary["message"] = message[:200]
+            self.round_calls.append(summary)
+
+    def _report_round(self, layer):
+        """Publish one finished ReAct round through the job's own event stream."""
+        self.budget.round(
+            {"layer": layer, "turn": self.turn, "calls": self.round_calls}
         )
 
     async def _three_layer_execute(self):
@@ -420,7 +444,6 @@ class AgentRun:
         while True:
             await asyncio.sleep(0)
             self.turn += 1
-            self._report_loop()
             if getattr(self.harness.settings, "enforce_model_budget", False) and self.turn > 50:
                 raise ModelFailure("Agent turn budget exhausted without verified completion.")
             if (
@@ -439,13 +462,20 @@ class AgentRun:
                 self._set_feedback("Return the declared JSON/tool-call protocol: " + str(exc))
                 self.stalled_turns += 1
                 continue
-            if response.tool_calls:
-                result = await self._handle_layer_tools(response)
-            else:
-                # A prose/JSON-only turn is not host evidence. Tool receipts are
-                # the only observations allowed to reset no-progress protection.
-                self.stalled_turns += 1
-                result = await self._handle_layer_message(response)
+            # One round is one turn of the layer that ran, published whether the
+            # turn succeeded, failed or ended the task.
+            layer = role
+            self.round_calls = []
+            try:
+                if response.tool_calls:
+                    result = await self._handle_layer_tools(response)
+                else:
+                    # A prose/JSON-only turn is not host evidence. Tool receipts are
+                    # the only observations allowed to reset no-progress protection.
+                    self.stalled_turns += 1
+                    result = await self._handle_layer_message(response)
+            finally:
+                self._report_round(layer)
             if result is not None:
                 return result
 

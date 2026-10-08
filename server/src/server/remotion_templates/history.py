@@ -13,11 +13,10 @@ from .models import (
     Contract,
     GenerationJob,
     JobInput,
-    LoopPosition,
     PublicJob,
     TemplateProject,
 )
-from .progress import ProgressStep, finish_steps, read_steps
+from .progress import LoopRound, ProgressStep, finish_steps, read_rounds, read_steps
 
 
 class ChatMessage(Contract):
@@ -40,7 +39,7 @@ class SessionJob(PublicJob):
     updated_at: datetime
     parameters: dict | None = None
     progress: list[ProgressStep] = Field(default_factory=list)
-    loop: LoopPosition | None = None
+    rounds: list[LoopRound] = Field(default_factory=list)
 
 
 class WorkEvent(Contract):
@@ -97,6 +96,9 @@ def initialize(db: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS events_by_work ON work_events(work_id, id);
         CREATE TABLE IF NOT EXISTS job_progress (
+            job_id TEXT PRIMARY KEY REFERENCES jobs(id), data TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS job_rounds (
             job_id TEXT PRIMARY KEY REFERENCES jobs(id), data TEXT NOT NULL
         );
     """)
@@ -206,7 +208,7 @@ def public_job(db: sqlite3.Connection, job: GenerationJob) -> SessionJob:
         updated_at=job.updated_at,
         parameters=inputs.parameters,
         progress=read_steps(db, job),
-        loop=job.loop,
+        rounds=read_rounds(db, job),
     )
 
 

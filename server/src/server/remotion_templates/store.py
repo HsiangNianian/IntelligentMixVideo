@@ -20,7 +20,6 @@ from .models import (
     GenerationJob,
     JobError,
     JobInput,
-    LoopPosition,
     TemplateCandidate,
     TemplateProject,
     TemplateSpec,
@@ -234,13 +233,17 @@ class Store:
             if start_step(db, job, phase, now()):
                 self._save_job(db, job)
 
-    def loop(self, identifier: UUID, position: dict) -> None:
-        """Publish the host-observed ReAct position through the existing work stream.
+    def round(self, identifier: UUID, record: dict) -> None:
+        """Append one finished ReAct round and publish it through the existing work stream.
 
-        Unknown layers are rejected by the contract rather than stored, and a
-        terminal job keeps its last observed position. Repeated identical
-        positions do not produce a new event.
+        The record carries the layer, the turn and the tool calls the host actually
+        ran; arguments and result payloads stay in the private audit. Unknown
+        layers are rejected by the contract, terminal jobs accept nothing, and a
+        repeated layer/turn pair is ignored so a retried handler cannot duplicate
+        a round.
         """
+        from .progress import LoopRound, read_rounds, save_rounds
+
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(
@@ -251,10 +254,15 @@ class Store:
             job = GenerationJob.model_validate_json(row[0])
             if job.status != "running":
                 return
-            current = LoopPosition.model_validate(position)
-            if job.loop == current:
+            current = LoopRound.model_validate(record)
+            rounds = read_rounds(db, job)
+            if any(
+                item.layer == current.layer and item.turn == current.turn
+                for item in rounds
+            ):
                 return
-            job.loop = current
+            rounds.append(current)
+            save_rounds(db, job, rounds)
             self._save_job(db, job)
 
     def create(

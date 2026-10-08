@@ -4,7 +4,6 @@ import { Check, ChevronDown, Circle, LoaderCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   jobLabel,
-  type LoopPosition,
   type ProgressStep,
   type SessionJob,
 } from "./model";
@@ -24,22 +23,6 @@ const phaseLabels: Record<ProgressStep["phase"], string> = {
   adjusting_text: "调整文字内容",
   preparing: "准备可用结果",
 };
-
-/** 循环层级只用宿主上报的角色名，不展示计划目标或任何模型原文。 */
-const loopLabels: Record<LoopPosition["layer"], string> = {
-  outer: "任务循环",
-  plan: "计划循环",
-  executor: "执行循环",
-};
-
-/** 组装当前循环位置；宿主没有上报步骤时不编造步骤数或百分比。 */
-function loopText(loop: LoopPosition): string {
-  const steps =
-    loop.step_index != null && loop.step_total != null
-      ? ` · 步骤 ${loop.step_index}/${loop.step_total}`
-      : "";
-  return `${loopLabels[loop.layer]} 第 ${loop.turn} 轮${steps}`;
-}
 
 /** 时间完全来自服务端区间，运行阶段才使用本地当前时间。 */
 function elapsed(start: string, end: number): number {
@@ -65,8 +48,6 @@ export function TaskStatus({ job }: { job: SessionJob }) {
     active ? now : Date.parse(job.updated_at),
   );
   const steps = job.progress ?? [];
-  // 循环位置是当前快照，只在运行中展示，避免把已结束的位置当作进度。
-  const loop = active ? (job.loop ?? null) : null;
   const adjustments = steps.filter((step) =>
     step.phase.startsWith("adjusting"),
   ).length;
@@ -87,11 +68,6 @@ export function TaskStatus({ job }: { job: SessionJob }) {
             <span className="block text-sm">
               {active ? phaseLabels[steps.at(-1)!.phase] : jobLabel(job.status)}
             </span>
-            {loop && (
-              <span className="block font-normal text-primary">
-                {loopText(loop)}
-              </span>
-            )}
             <span className="block font-normal text-muted-foreground">
               {active ? "已用" : "耗时"} {seconds} 秒
               {adjustments > 0 ? ` · 调整 ${adjustments} 次` : ""}
@@ -156,7 +132,6 @@ export function TaskStatus({ job }: { job: SessionJob }) {
       title={`任务 ${job.id}`}
       className="border-b px-5 py-2 text-xs leading-5 text-muted-foreground"
     >
-      {loop && <span className="text-primary">{loopText(loop)} · </span>}
       {jobLabel(job.status)} · {active ? "已用" : "耗时"} {seconds} 秒
       <time dateTime={job.created_at} className="ml-2">
         {new Date(job.created_at).toLocaleString("zh-CN")}

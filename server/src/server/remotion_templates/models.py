@@ -499,21 +499,6 @@ class JobError(Contract):
     message: str
 
 
-class LoopPosition(Contract):
-    """Host-observed ReAct position: layer and bounded counters only.
-
-    Deliberately excludes plan step goals, tool arguments and model prose. The
-    public stream carries host-filtered facts, never model-authored text, and the
-    counters are what the host has actually entered, so they never imply a
-    percentage or announce a future step.
-    """
-
-    layer: Literal["outer", "plan", "executor"]
-    turn: int = Field(ge=1)
-    step_index: int | None = Field(default=None, ge=1)
-    step_total: int | None = Field(default=None, ge=1)
-
-
 class GenerationJob(Contract):
     """One queued execution; questions and failures retain candidate artifacts."""
 
@@ -539,7 +524,6 @@ class GenerationJob(Contract):
     answer: Text | None = None
     error: JobError | None = None
     usage: dict[str, int] = Field(default_factory=dict)
-    loop: LoopPosition | None = None
     created_at: datetime
     updated_at: datetime
 
