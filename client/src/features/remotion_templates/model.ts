@@ -1,8 +1,9 @@
 /** Remotion 服务契约与参数解释；只保存当前会话和已验收模板，不暴露内部候选。 */
 /** 第一版参数只支持字符串、有限数值和布尔值。 */
 export type Scalar = string | number | boolean;
-/** 完整参数快照使用服务端生成的扁平键。 */
-export type Values = Record<string, Scalar>;
+/** PR76 参数允许嵌套 JSON；旧版本仍保留扁平标量。 */
+export type JsonValue = Scalar | null | JsonValue[] | { [key: string]: JsonValue };
+export type Values = Record<string, JsonValue>;
 /** 宿主控制的画布与整帧时长，同时用于生成请求和成功版本展示。 */
 export interface Composition {
   width: number;
@@ -10,9 +11,18 @@ export interface Composition {
   fps: number;
   duration_in_frames: number;
 }
+/** 解析后的 JSON 仍可能包含溢出数字；只接受有界、有限的 JSON 值。 */
+export function isJsonValue(value: unknown, depth = 0): value is JsonValue {
+  if (depth > 30) return false;
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(item => isJsonValue(item, depth + 1));
+  return typeof value === "object" && Object.values(value).every(item => isJsonValue(item, depth + 1));
+}
+
 /** 已验收的扁平标量控件，路径绑定服务端目标规格。 */
 export interface Control {
-  type: "string" | "number" | "integer" | "boolean";
+  type: "string" | "number" | "integer" | "boolean" | "object" | "array" | "null";
   title?: string;
   description?: string;
   enum?: Scalar[];
@@ -20,7 +30,7 @@ export interface Control {
   maximum?: number;
   minLength?: number;
   maxLength?: number;
-  "x-imv-target": string;
+  "x-imv-target"?: string;
 }
 /** 成功版本提供代码、参数默认值、控件和画布信息。 */
 export interface Version {
@@ -35,7 +45,9 @@ export interface Version {
     config_schema: { properties: Record<string, Control> };
   };
   spec: {
+    schema_version?: "1" | "2";
     name: string;
+    sprite_kind?: "text" | "subtitle" | "filter_overlay" | "video_overlay" | "transition_overlay" | "composition";
     composition: Composition;
     text_layers: { id: string; text: string }[];
   };
@@ -72,15 +84,21 @@ export interface ChatMessage {
 
 /** 稳定比较完整参数快照，避免依赖对象属性插入顺序。 */
 export function sameValues(left: Values, right: Values): boolean {
-  return (
-    Object.keys(left).length === Object.keys(right).length &&
-    Object.keys(left).every((key) => left[key] === right[key])
-  );
+  return sameJson(left, right);
+}
+
+/** JSON 对象忽略键顺序，数组保留顺序；不把相同对象副本误判为未保存修改。 */
+export function sameJson(left: JsonValue, right: JsonValue): boolean {
+  if (left === right) return true;
+  if (left === null || right === null || typeof left !== "object" || typeof right !== "object") return false;
+  if (Array.isArray(left) || Array.isArray(right)) return Array.isArray(left) && Array.isArray(right) && left.length === right.length && left.every((value, index) => sameJson(value, right[index]));
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length && keys.every(key => Object.prototype.hasOwnProperty.call(right, key) && sameJson(left[key], right[key]));
 }
 
 /** 由服务端字段语义生成中文标签；保留未知字段的 schema 标题。 */
 export function controlLabel(control: Control): string {
-  const path = control["x-imv-target"];
+  const path = control["x-imv-target"] ?? "";
   const leaf = path.split("/").at(-1) ?? "";
   const names: Record<string, string> = {
     text: "文字",
@@ -112,7 +130,7 @@ export function numericRules(control: Control): {
   step: number;
   percent: boolean;
 } {
-  const path = control["x-imv-target"];
+  const path = control["x-imv-target"] ?? "";
   const leaf = path.split("/").at(-1) ?? "";
   const percent = /\/layout\/(x|y|width)$/.test(path);
   let range: [number, number] | undefined;
@@ -138,22 +156,25 @@ export function numericRules(control: Control): {
 }
 
 /** 校验当前支持的扁平参数；非法草稿不会进入预览或提交队列。 */
-export function validValue(control: Control, value: Scalar): boolean {
-  if (control.enum && !control.enum.includes(value)) return false;
+export function validValue(control: Control, value: JsonValue): boolean {
+  if (control.type === "object") return value !== null && typeof value === "object" && !Array.isArray(value);
+  if (control.type === "array") return Array.isArray(value);
+  if (control.type === "null") return value === null;
+  if (control.enum && !control.enum.some(item => sameJson(item, value))) return false;
   if (control.type === "string") {
     if (typeof value !== "string") return false;
     if (
-      control["x-imv-target"].endsWith("/color") &&
+      (control["x-imv-target"] ?? "").endsWith("/color") &&
       !/^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(value)
     )
       return false;
     const max =
       control.maxLength ??
-      (control["x-imv-target"].endsWith("/text") ? 2000 : undefined);
+      ((control["x-imv-target"] ?? "").endsWith("/text") ? 2000 : undefined);
     return (
       value.length >= (control.minLength ?? 0) &&
       (max === undefined || value.length <= max) &&
-      (!control["x-imv-target"].endsWith("/text") || !!value.trim())
+      (!(control["x-imv-target"] ?? "").endsWith("/text") || !!value.trim())
     );
   }
   if (control.type === "boolean") return typeof value === "boolean";

@@ -1,385 +1,56 @@
-# Remotion 文字模板 Agent MVP
+# Remotion Preset → Sprite
 
-模板功能直接挂载在 `/api/templates`，交互文档为
-http://127.0.0.1:20070/api/templates/docs。只增量挂载模板路由，
-不接管应用生命周期，不添加统一异常处理，不替换共享 `app` 或其他服务的路由。
-普通首页与用户 API 不需要模型密钥、字体或渲染器；模板运行时在首次访问模板接口时启动。
+This module runs the three-layer ReAct workflow: the Outer task loop plans, the
+Plan loop sequences steps, and the Executor loop calls tools for one step. The
+final delivery is a saved Sprite published as an isolated Player preview.
 
-输入至少包含描述或上传图片之一，可同时提供。图片按实际内容验证，支持单帧
-PNG/JPEG/WebP，默认最多 10 MiB、两千万像素，去除元数据并缩放到最长边 2048。
-视频第一版不解析；请求中的 `video` 字段会被明确拒绝，后续通过版本化协议扩展。
-图片文字或目标区域不明确时返回 `needs_input` 和问题；只有图片时默认生成静态模板。
-纯提问、问候或明确保持现状时可直接回答，首轮及已有模板后的会话均支持。
-回答经过独立语义审查，不能以“已修改”的承诺替代生成验收；图片提问会重新提供原参考图。
+## Tool catalog
 
-范围是文字及直接相关的背景板、描边、阴影、下划线和高亮，不复刻人物、场景或独立标志。
-组件背景透明，不把参考图片嵌入代码。默认画布为 1080×1920、30 fps、150 帧；
-可覆盖为偶数边长 64–3840、1–60 fps、1–1800 帧，同时限制八百万级像素及 30 秒。
-坐标为归一化中心位置，结束帧为排他边界。
+All eleven tools in `docs/remotion-agent-tool-contracts.md` are registered with
+their full input/output contracts, so `tools.inspect` can describe any of them.
+Only four have implementations in this build:
 
-### 本地配置
-
-配置类与加载入口位于本模块的 `settings.py`（`server.remotion_templates.settings`）。仍读取统一的 `server/.env`；相对数据目录以本模块为基准，默认渲染资源目录仍为 `server/src/server/remotion/`。
-
-生成与渲染目前要求 Linux、Node 24、Bun 1.4.2、bubblewrap、util-linux 的 prlimit、
-Chrome/Chromium、FFmpeg 的 `ffprobe`，以及 Noto Sans CJK 的常规/粗体 TTC 字体。根据本机调整
-`IMV_BROWSER_EXECUTABLE`、`IMV_FONT_REGULAR` 和 `IMV_FONT_BOLD`；默认路径对应开发主机。
-只有受管 `Noto Sans CJK SC` 400/700 两种字重，不提供字体上传；预览端点仅提供与成功版本指纹匹配的受管字体。
-
-在 `server/` 执行：
-
-共享服务启动时会初始化上游模板库的 MySQL 连接；先启动 MySQL，并按
-[`server/README.md`](../../../README.md) 配置 `.env` 中的 `DB_*` 字段。
-该模板库使用 `/template`，本生成服务使用 `/api/templates`，生成任务仍保存在本模块的 SQLite 中。
-
-```sh
-uv sync --locked
-# 没有现有 .env 时复制示例，再填入自己的模型密钥。
-cp -n .env.example .env
-chmod 600 .env
-cd src/server/remotion
-bun install --frozen-lockfile
-cd ../../..
-uv run --locked server
-```
-
-`.env` 已被 Git 忽略。Actor 与 Vision 模型均由服务端配置，不接受请求内模型或密钥覆盖。
-`IMV_VISION_BASE_URL`、`IMV_VISION_API_KEY` 省略时继承 Actor 配置。
-使用兼容 Chat Completions 的 function tools、JSON 输出与图片输入；`deepseek-flash` 可同时承担两种角色。
-Provider 不打印密钥或原始错误响应。部署时可通过环境变量提供配置。
-模型配置统一在 `server/.env`，示例文件和代码默认值一致；修改后重启服务生效。
-当前默认关闭累计模型预算，先观察链路稳定性；调用次数和供应商返回的有效 token 用量仍记录。
-
-| 配置 | 默认值 | 含义 |
-| --- | --- | --- |
-| `IMV_ENFORCE_MODEL_BUDGET` | false | 关闭累计调用/token 配额、输入估算拦截、预算驱动的上下文裁剪和 50 轮总上限；设为 true 恢复 |
-| `IMV_MAX_OUTPUT_TOKENS` | 32000 | 始终生效的单次响应输出上限；仅开启配额时按剩余预算扣除估算输入后缩小 |
-| `IMV_MAX_TOKENS` | 200000 | 单任务所有模型调用累计的输入、输出 token 预算 |
-| `IMV_MAX_MODEL_CALLS` | 32 | 单任务理解、审查、生成、修复共用的调用次数上限 |
-| `IMV_MAX_JUDGE_CALLS` / `IMV_MAX_JUDGE_TOKENS` | 12 / 60000 | 回答与视觉结果审查的分类上限，包含评审纠错 |
-| `IMV_MAX_ACTOR_CALLS` / `IMV_MAX_ACTOR_TOKENS` | 24 / 160000 | 理解需求、制定方案、工具选择与 TSX 生成/修复共用的分类上限 |
-| `IMV_MAX_REVIEW_RETRIES` | 2 | 每份回答或候选证据的无效评审最多纠错两次，共三次请求 |
-| `IMV_MAX_EVIDENCE_RETRIES` | 1 | 单个候选最多追加一次隔离采样，之后仍未知则停止 |
-| `IMV_MAX_NO_PROGRESS_TURNS` | 4 | Actor 连续四轮没有新观察时停止；修改估算值、普通文字和重复失败不算完成证据 |
-| `IMV_MODEL_TIMEOUT_SECONDS` | 240 | 模型 HTTP 连接、读写等超时秒数，不是整次请求的总计时 |
-| `IMV_JOB_TIMEOUT_SECONDS` | 600 | 单任务开始执行后的总超时秒数，不包含排队 |
-| `IMV_RENDER_TIMEOUT_SECONDS` | 180 | 单次隔离渲染超时秒数 |
-
-上述累计调用/token 配额只在 `IMV_ENFORCE_MODEL_BUDGET=true` 时生效，分类预算同时受总预算约束。
-关闭时，超过已配置配额或输入估算过高均不终止请求；缺失/非法 token 用量在私有审计记为 null，
-累计 token 仅包含有效回执，不能当作完整账单。格式错误、评审纠错和取消前已发出的调用仍计数。
-单次输出上限、输出截断检查、八组滑动窗口、传输大小限制、任务/请求/渲染超时、取消、
-连续无进展和有限评审纠错/补证据始终保留。开启预算后，缺少有效用量或额度不足仍停止执行。
-
-`IMV_DATA_DIR` 可指定可写的绝对路径；默认直接保存到模板模块内的
-`src/server/remotion_templates/.data/`，包含 SQLite、上传图片、代码和预览，已被 Git 与构建产物排除。
-相对路径也以模板模块目录为基准。共享服务默认监听 `0.0.0.0:20070`（所有 IPv4 接口），
-端口可通过 `PORT` 配置。MVP 没有多租户或鉴权系统，部署时须通过防火墙或带鉴权的反向代理限制访问，
-不能将默认监听行为视为仅本机可访问。
-
-### HTTP 流程
-
-| 操作 | 接口（前缀 `/api/templates`） |
+| Tool | Status |
 | --- | --- |
-| 支持的输入、字体和配置就绪状态 | `GET /capabilities` |
-| 上传图片，得到 asset ID | `POST /assets`，multipart 字段 `file` |
-| 历史参考图片 | `GET /assets/{id}`，校验登记文件的完整性 |
-| 创建作品并排队 | `POST /works` |
-| 删除会话与关联数据 | `DELETE /works/{id}`，完成或已不存在返回 204，清理失败返回 503 |
-| 历史会话分页 | `GET /works?history=true&limit=30`，返回 `next_cursor` |
-| 会话快照及更早消息 | `GET /works/{id}/session?limit=50`，以 `next_before` 请求更早消息 |
-| SSE 会话订阅 | `GET /works/{id}/stream?after=0`，支持 `Last-Event-ID` |
-| 列表、作品与成功版本 | `GET /works`、`GET /works/{id}`、`GET /works/{id}/versions` |
-| 可用版本及代码/配置 | `GET /versions/{id}` |
-| 提问、参数或自然语言修改、回答澄清 | `POST /works/{id}/messages` |
-| 运行状态、简短提示和追问 | `GET /jobs/{id}` |
-| 兼容的 JSON 事件查询 | `GET /jobs/{id}/events?after=0`，使用返回的 `next_cursor` |
-| 取消、重试 | `POST /jobs/{id}/cancel`、`/retry` |
-| 可用结果下载链接，无结果时为空列表 | `GET /jobs/{id}/artifacts` |
-| 隔离 Player 页面 | `GET /versions/{id}/preview` |
-| 对应版本的受管字体 | `GET /versions/{id}/fonts/{weight}`，仅 400/700 |
-| 下载已验收代码、PNG 或 MP4 | `GET /versions/{id}/artifacts/{filename}` |
+| `preset.create` | implemented — validates the Preset and saves it |
+| `sprite.compose` | implemented — deterministic combination of Preset instances |
+| `sprite.create` | implemented — consistency check, code validation and save |
+| `tools.inspect` | implemented — returns one exact tool descriptor |
+| `image.info` / `image.resize` / `image.crop` | contract only |
+| `preset.search` / `preset.modify` | contract only |
+| `validate.code` / `validate.render` | contract only |
 
-```json
-{"description":"标题写‘今日灵感’，白色粗体居中，黄色下划线"}
-```
+Deferred tools are marked `implemented=False` at registration and are filtered
+out of every layer's tool window, so the model is never offered a tool that
+cannot run. Calling one directly returns `NOT_IMPLEMENTED` rather than a
+fabricated result. The host still performs the code, parameter and browser
+checks needed to build a preview; those are not model-facing tools.
 
-图片请求用 `"image":{"asset_id":"上传返回的 UUID"}`，可以与 `description` 合用。
-创建返回 HTTP 202 和 `work`、`job`；读取会话快照后从其游标订阅 SSE。成功后版本包含 `candidate.tsx_code`、
-`candidate.config_schema`、`candidate.default_config` 和 `spec`，产物列表可下载 `.tsx`、PNG 和 MP4。
-兼容任务查询保留状态、问题、结果 ID 和简短提示；会话快照与作品级 SSE 额外提供筛选后的阶段时间线，不包含模型用量或内部诊断。
-失败候选与报告保留在本地，HTTP 不提供下载入口；尚未运行的检查不能算成功。
-问答完成的任务状态为 `answered`，`message` 保存回答，`questions` 为空且 `result_version_id` 为 null。
-该终态不调用代码生成或渲染、不创建版本、不发送 `version.ready`，现有成功代码与参数保持不变。
-公开回答同任务终态在一个事务内保存，可通过快照和 SSE 重放；下一条消息可正常继续提问或制作。
-尚无成功版本时，自然语言消息继续基于原始参考及最新指令规划，参数补丁仍要求成功版本。
+Image tools read the reference image the user already uploaded and the server
+registered as a local asset. They take that asset reference, not a URL, and
+never upload anything.
 
-修改请求为 `{"parameters":{"0_text":"新的标题"}}` 或 `{"instruction":"把标题改为黄色"}`，
-二选一；参数名以返回的 schema 为准。可用 `base_version_id` 选择历史成功版本。
-回答问题仍使用消息接口，例如 `{"instruction":"图片上半部分的大标题","reply_to_job_id":"提出问题的任务 UUID"}`。
-`reply_to_job_id` 必须指向该作品最新且处于 `needs_input` 的任务；重复回答、跨作品回答或过期回答返回 409。
-待澄清时不能把普通修改指令误当成答案。同一作品同时只允许一个排队或运行任务。
-默认修改基于最近成功版本；版本按发布次序线性编号，失败候选不改变当前版本。
-版本 `source` 区分 `agent`（通过完整生成验收）和 `user_parameters`（用户主动修改且渲染可用）。
-手动调参不调用 Actor/Judge，不因换行、位置变化或不再匹配原图而被语义否决。
-仍检查参数类型/范围、源码保持、编译、预览及默认导出一致性、媒体规格和产物指纹；失败或取消保留上个可用版本。
-每个参数任务及输入继续保存，成功后通过原有 `version.ready` 更新预览、复制代码和历史恢复。
-取消会停止模型请求与隔离子进程。重启后未完成任务标记为 `interrupted`；
-重试和澄清均创建新的执行 ID，继承本模板任务的有限窗口，不恢复中断中的工具调用。
-仅最新一次执行允许重试；一次新模板任务必须重新 `POST /works`，上下文从空窗口开始。
+## Preset storage
 
-本次接口调整移除了 `/works/{id}/edits`、`/jobs/{id}/clarify` 与按 attempt 下载的地址。
-调用方改用 `/messages` 和产物列表提供的成功版本链接。旧本地版本没有新的证据清单，
-仍可读取数据库中的代码；需要新的预览下载时应重新生成并通过当前验收。
+`preset.create` writes through `tools/catalog_store.py`, which targets MySQL via
+the shared `server.database` settings (`DB_*`). When the database is unreachable
+it falls back to the task-local catalog under the module data directory, and
+`ToolSession.snapshot()` reports the backend that was actually used. Both paths
+append immutable records only; there is no update or delete.
 
-### 公开聊天历史与 SSE
+## Preview
 
-一个作品是一段历史会话，包含其后续澄清、修改和重试任务。公开消息保存在 `chat_messages`，
-可重放事件保存在 `work_events`；模型的 `conversations` 仍只维护既有滑动窗口。
-初始化增量创建表，按旧任务中可确认的输入、问题和结果恢复公开记录，标记 `reconstructed`，
-重复启动不重复恢复；不迁移或公开内部工具上下文。
+The preview is built from the saved Sprite's exact code, schema and defaults.
+The main canvas is 1080×1920 at 30 FPS and the last instance's exclusive end
+determines the duration.
 
-用户消息、任务状态、终态消息和成功版本事件在对应 SQLite 事务内写入；SSE 只读取已提交记录。
-`/session` 在同一读取事务中返回消息、最新任务、成功版本指针及事件水位 `cursor`，
-另以 `jobs` 数组返回当前消息页所属任务的公开状态与进度，供历史卡片恢复。
-消息按正序返回，`next_before` 非空时可以继续读取更早页；列表使用活动时间与作品 ID 的游标分页。
-
-SSE 类型为 `message.created`、`job.updated`、`version.ready`，`data` 为包含
-`id`、`work_id`、`type`、`data`、`created_at` 的 JSON。公开任务额外包含创建/更新时间和提交的参数补丁，
-任务的 `progress` 数组随 `job.updated` 推进；只有成功版本产生 `version.ready`。
-首次连接使用快照游标，重连优先采用 `Last-Event-ID`；0 表示重放全部公开记录。
-事件按 ID 顺序分批读完，再等待新记录；跨作品的编号间隙正常，客户端应按 ID 去重。
-游标不属于此作品或已不可用返回 409，客户端应重新取快照。
-
-空闲时每 15 秒发送心跳注释，响应为 `text/event-stream`、`Cache-Control: no-cache` 和
-`X-Accel-Buffering: no`。服务端每次有界读取后释放数据库连接，空闲等待可中断；
-关闭订阅与运行时任务相互独立。客户端切换、新增或退出不会取消旧任务，取消由显式 `/cancel` 或确认删除会话发起。
-部署反向代理时关闭事件缓冲，并使读取超时长于心跳间隔。
-原 `/works` 默认列表、任务查询与 `/jobs/{id}/events` JSON 接口保持兼容。
-
-历史与流协议的离线回归见 `server/tests/test_remotion_history.py`，覆盖事务回滚、旧记录恢复、
-快照并发、分页、素材校验、100 条以上事件重放、心跳、真实 HTTP 重连及主应用跨域预检；
-成功版本与后续参数失败的关系由 `test_remotion_templates.py` 验证。
-
-### 删除聊天与关联数据
-
-`DELETE /works/{id}` 不需要模型配置。先持久化删除标记并取消排队/运行任务，
-等待模型、渲染及队列收尾完成后，清理该会话全部 `jobs/<job_id>/`、
-`accepted/<version_id>/` 与专属参考图片，再删除 SQLite 中的聊天、模型上下文、任务、
-事件、处理时间线、版本和会话记录。共享图片在最后一个会话引用删除时才清理；
-未关联上传、其他会话、数据库文件、运行锁、字体和依赖保持不变。
-所有路径来自实际配置的 `IMV_DATA_DIR`，不固定为工作目录的 `./data`。
-
-数据库与文件系统分步处理。文件清理失败保留删除标记及所需元数据，返回 503；
-历史分页的 `deleting=true` 提供重试入口，该会话读写返回 410，不能继续生成。
-重试 DELETE 或重启服务会继续清理；重复删除已不存在的 ID 返回 204，非法 UUID 返回 422。
-断开 HTTP 请求不取消已经开始的清理。文件删除不意味着对 SQLite 空闲页或磁盘做安全擦除。
-
-已有 SSE 连接收到 `event: work.deleted` 后关闭，其 `data` 仅为 `{ "work_id": "..." }`，
-没有事件 ID，也不保留可重放的删除记录。新连接在删除中返回 410，完成后返回 404；
-客户端将两者作为终止状态，不再重连。
-
-### 任务阶段时间线
-
-`progress.py` 保存公开阶段区间到 `job_progress`，Harness / Runtime 通过当前任务的回调记录实际执行阶段。
-每项只有 `phase`、`started_at`、`ended_at` 和 `status`（`active` / `done` / `stopped`）。
-进入下一阶段时结束前一个区间；`done` 表示该阶段执行结束，不代表候选验收通过。
-终态关闭最后区间；取消或服务重启中断会标为 `stopped`，迟到回调不能更新终态任务。
-记录阶段与发布 SSE 在同一个 SQLite 事务中完成，重复进入同一活动阶段不会重复写事件。
-
-新任务记录理解需求、整理回答、渲染检查、视觉验收、补帧、
-调整效果/布局/文字/样式、准备结果。具体修复分类仅根据宿主检查项名称选择，不公开诊断原文。旧历史的确认目标/生成代码阶段仍可读取，新任务不虚构已移除的独立规划阶段。
-纯问答只走理解与回答审查；参数验收直接从渲染开始。评审格式纠错仍显示当前验收阶段，
-没有发生的阶段不展示；工具调用、失败候选与完整私有审计保持隔离。
-客户端根据 `adjusting*` 阶段区间统计调整次数，不等同于模型调用数或内部候选次数。
-更新后重启服务以创建新表；旧任务没有公开阶段记录时返回空数组，不从私有日志补造历史。
-
-阶段回归覆盖真实 Runtime 的生成/布局修复/回答链路、事务回滚、重复阶段、终态封闭、
-分页与作品隔离，以及真实 HTTP SSE 的阶段传输和断线恢复，不调用真实模型。
-
-### 代码契约与执行边界
-
-输出是新的组件契约：单个默认导出 React 组件，直接接收扁平的标量 props。
-只允许受限的 React/Remotion 导入；不自行注册 Composition、加载字体或读取文件/网络。
-所有文字、字体、大小、颜色、位置及已有样式标量均在 JSON Schema 中暴露；
-`x-imv-target` 将控件绑定到 `TemplateSpec` 的标量路径。参数修改同时更新默认值和候选方案，
-保留 TSX 字节不变，更新默认参数后检查渲染可用性，不重跑视觉 Judge 或参数/动画语义探针。
-结构和时间轴修改需要重新生成代码。
-旧 XLS 模板的配置结构与此不同，不承诺可以直接运行旧模板。
-
-客户端复制使用 `Export.tsx`：保留原组件，增加可选 props 包装及当前成功参数的默认值，
-并导出画布、帧率和时长常量。消费方需安装 React/Remotion 并加载受管字体；不包含背景视频。
-每次验收同时编译导出并以空 props 渲染一帧，与原参数渲染的可见像素比较，防止复制时丢失默认值。
-`Template.tsx` 仍保留原始扁平 props 契约，参数修改不会改写它。
-
-`presentation.mjs` 将 `preview-host.tsx`、当前组件和参数打成 `interactive.js`；
-新版本把交互包、导出及导出首帧加入 SHA-256 清单，两个新增宿主源码也加入运行时指纹。
-`/preview` 验证清单后嵌入该包，使用 CSP sandbox，不允许同源权限或任意 fetch；字体及媒体可加载。
-父页面通过 URL fragment 通道发送参数、背景 URL 和请求编号，Player 在字体及媒体就绪并绘制首帧后确认对应编号。
-正常播放不重复触发加载锁。字体文件变更、产物缺失或被修改时返回 404。
-旧版本缺少交互包或 Export 时也返回 404，重新生成后才提供新的预览能力。
-
-`context.py` 保留单模板任务内最近 8 组完整 user/assistant/tool 交互，总 UTF-8 大小不超过
-240,000 字节，超限时按组裁剪，不拆散 tool calls 与对应结果，不截断代码。
-单组过大时明确终止本次执行。固定 system 规则和当前任务快照独立于窗口：原始需求、
-当前修改要求、成功版本方案、候选 ID、实际检查结果与未解决问题始终可见。
-手动参数任务不写入模型滑动窗口，完整输入历史仍在本地 SQLite。用户修订关联最近的 Agent 版本；
-下一次模型任务根据该基线与当前参数计算 `user_parameter_changes`（来源、版本 ID、每项 target/before/after），
-同一字段仅保留净变化，改回原值则移除，大小受参数数量限制而非修改次数影响。
-Actor 通过当前快照和 `read_current_template` 获取同步后的 spec、参数及源码；Judge 接收同一份净变化。
-宿主提示这些是用户有意修改，不是系统异常，不得为恢复旧参考而撤销；最新指令仍可覆盖或要求联动调整。
-下一次生成成功建立新基线；失败、问答与必要澄清不清除用户修订。旧版本仍可作为基线，无需重写历史。
-Actor 的快照、窗口与工具定义合计上限为 512,000 字节；输出另受单次响应上限限制。
-Actor 直接接收原始参考图片和候选代表帧，快照明确图片序号与实际帧号；Judge 读取参考与实际帧。
-宿主仍生成、保存并校验全部 frame/probe，模型只接收子集：Judge 通常最多 12 帧，Actor 通常最多 6 帧，
-帧数不再按剩余 token 配额缩减。优先覆盖文字稳定展示与动效边界；失败引用帧、Judge 明确请求的补充帧优先保留，
-这些必须帧超过软上限时不静默丢弃。`frames` 是本次实际展示帧，`available_frames` 是宿主完整采样清单。
-模型可请求尚未展示的已有帧或新帧，不能把未看到的清单项当作视觉证据。
-图片仅进入本次 HTTP 请求，不在窗口累计 base64。
-Actor 窗口中的通过项仅保留检查名，失败项保留具体诊断，完整检查仍保存于私有审计。
-请求前以文本 UTF-8 字节数的一半及每图 2048 token 估算输入，仅用于默认模式的私有诊断。
-只有开启预算时，才按剩余总预算与角色预算预留输出空间，
-不足时仅在本次请求中按完整旧交互组裁剪窗口，不改持久历史或拆散工具回执；最少保留最新一组。
-开启预算后，剩余输出不足 512 token（单次配置更小时取该配置）则以 `input_budget_exhausted` 停止，尚未发送的请求不记调用成本。
-该估算不是供应商分词或计费保证，响应后记录有效 `total_tokens`；关闭预算时不会因估算或实际用量而拒绝结果。
-`audit.jsonl` 的 `model_request`/`model_usage` 记录图片数、文本大小、估算输入、输出额度和供应方提供的输入/输出 token，
-缺少的明细记为 null，不记录密钥；`context_trimmed` 记录本次请求移除的旧交互组数。
-Actor 文本窗口上限与图片大小分开计算；Actor 与 Judge 共用图片组装与累计 24 MiB 上限检查，完整模型请求仍受大小限制。
-结构化 Judge 请求只接收本次输入，不读取或写入 Actor 的滑动窗口。
-SQLite `conversations` 表只覆盖保存这个有限窗口；没有跨任务记忆、对话摘要或向量库。
-Runtime 每次执行只向窗口写入一次用户请求。Actor 的工具调用与结果作为完整组保留，
-候选方案与失败诊断明确属于未发布实现，不作为用户要求；每轮快照携带当前方案、实际检查和反馈。
-没有独立 Planner、目标预审、重规划工具或额外规划上下文。
-私有 `.data/jobs/<job_id>/audit.jsonl` 独立追加记录模型角色、返回内容、工具调用及结果、
-检查报告、宿主决策、steer、分类成本与结束原因，不随窗口裁剪，也不作为已验证事实回填模型。
-每份候选证据旁的 `reviews.jsonl` 保存评审尝试、指纹和协议错误；这些诊断不通过公开聊天或下载接口暴露。
-
-事实来源明确区分：用户输入保存在作品和执行输入中；Actor 提交的 spec 是可修订的实现方案，
-assumptions 是模型假设；验证报告中的 `source=host` 是工具观察，
-`source=visual_model` 是视觉判断。模型的承诺、生成的 TSX 和 spec 都不能自行变成通过证据。
-每次视觉验收都读取原始请求、当前完整候选方案（包含 description/assumptions）与实际帧；后续修改同时读取成功版本和此次用户输入，
-不把已被用户修改的旧文字或颜色重新作为要求。不能仅用模型自己写的新 spec 证明需求已满足。
-Actor 一并负责理解需求、估算布局、写代码和修复。`submit_candidate` 首次提交必须包含 `spec` 和
-`tsx_code`；后续可以同时修改方案与代码，省略 `spec` 表示沿用当前方案。宿主根据本次方案生成
-参数 schema/defaults；新候选使旧验收回执失效，旧候选的验收证据不能完成当前任务。
-用户明确指定的画布尺寸和时长由代码保护；用户文字、效果与未授权修改的成功版本属性由独立结果审查核对。
-从图片估算的字号、位置、行高等不冻结为目标，Actor 可根据明显重叠、裁切和换行问题直接调整。
-
-Judge 对照原始用户要求、参考图和实际渲染结果，只阻止明显错误：文字错误或缺失、不可读的遮挡/裁切、
-明显不符的要求样式、缺失动画、越界内容及未授权修改；允许合理字体近似和轻微审美/布局差异。
-`candidate_plan` 只解释当前实现，不能用它替代用户要求，也不能以偏离上一轮估算值为理由拒绝结果。
-最新修改覆盖对应的旧要求，未涉及的成功属性仍受保护。局部文字/背景/布局要求不能擅自扩展成整张画布的要求；
-透明图片供模型检查时合成的灰底等展示辅助内容，不属于模板。
-整组旋转仍须按共同中心处理相对位置，先用像素计算再归一化。
-
-回归在 `tests/test_remotion_templates.py`，覆盖 Actor 修订估算布局、保留显式画布约束、旧回执失效、
-静态声明不能掩盖用户动画要求、问答和澄清、取消与失败后保留成功版本。
-设置 `IMV_TEST_RENDERER=1` 可运行 `test_real_actor_revises_layout_and_renders_requested_fade`，
-使用真实隔离渲染器验证方案修订和淡入淡出，模型保持离线替身。
-`tests/test_remotion_template_context.py` 检查真实 Provider 的工具/图片载荷，确保图片不污染持久窗口。
-评审依据与目标范围回归在 `tests/test_remotion_review_grounding.py`；代表帧、失败帧邻近观察与强制补帧在
-`tests/test_remotion_frame_selection.py`；输入预算预检、实际用量结算与按完整交互组裁剪在
-`tests/test_remotion_model_budget.py`。在 `server/` 执行 `uv run --locked pytest tests/test_remotion_*.py -v`，
-均使用离线模型与隔离数据；这些测试不能证明真实模型永不误判。
-
-`review.py` 负责候选评审恢复：格式错误、无效帧引用、已知结论却要求缺失证据，
-unknown/conflict 未提供非空 `missing_evidence`（仅列帧号也不够），
-或失败项缺少有效 `requirement_source`、`requirement_quote`、`target`、`observed`、`mismatch`，
-以及 detail 中显式 `Status is pass/fail/unknown/conflict` 与结构化状态冲突时，
-要求 Judge 根据同一目标、源码和帧纠正评审。已有合法维度结论保留，有效负面结论不会被反复询问成通过。
-显式状态检查只是协议保护，不能识别所有自然语言自相矛盾，也不证明模型判断正确。
-要求来源使用完整 JSON pointer，例如 `/user_intent/instruction`、`/user_intent/original_request/description`，
-或 `/reference_images/N`（从零开始的原参考图序号）。宿主仅移除一层明确的 `user_intent` 前缀，
-同时兼容旧的 `/instruction` 等相对路径；重复前缀、候选路径及未知来源仍拒绝。
-协议纠错列出实际错误路径及具体原因，来源不合法时提供正确路径示例，不把有效失败改成通过。
-文本引用须存在于对应要求，目标须为文字层 ID 或 canvas，成功版本的层属性不能扩展到其他层或画布。
-候选估计、成功版本的描述/假设、检查底色都不能作为要求来源；自然语言的作用域及视觉语义仍由 Judge 判断，
-宿主不声称能靠引用匹配消除所有误判。有效失败的依据、对象、观察和不匹配项会一起进入 Actor steer。
-宿主确定性与时序检查说明实际产物是否静态，合法的 `motion: []` 不需要补造 hold。
-这不等于用户允许静态：若用户要求淡入淡出而 Actor 提交静态方案，Judge 的有效动画失败不得被宿主覆盖。
-
-合法未知或证据冲突先由宿主补采样，Judge 可以用 `requested_frames` 指定帧号；未指定时补较大采样间隔的中间帧。
-新增帧在原尝试的 `evidence-1/` 等子目录重新渲染同一代码并绑定新清单，不覆盖旧证据。
-有明确代码失败时先交给 Actor 修复；只有未知时有限补证，补证仍未知则以 `evidence_unavailable` 停止。
-无效评审纠错耗尽为 `review_unavailable`，渲染环境失败为 `renderer_unavailable`，文件丢失/不可读为 `evidence_unavailable`。
-这些故障不会转化成“修改 TSX”的 steer；错误原因存于私有任务记录，公开端只保留任务状态和成功版本。
-
-`harness.py` 使用 `while True` 编排真实工具调用：`read_current_template`、
-`submit_candidate`、`respond`。提交候选会实际运行校验，把结果通过对应
-`tool_call_id` 返回；模型的普通完成声明和未知工具都不能绕过验收。
-`respond` 单独用于事实回答或必要澄清；回答仍经独立审查，不能以声称完成代替编辑。
-本次执行已经提交候选后，宿主直接拒绝 `respond(answer=...)`，要求修复并重新提交；
-必要澄清仍可返回 `needs_input`，不将失败候选当作问答完成。
-整批工具执行并保存回执后，宿主对最新候选复核运行环境、证据及文件，通过后直接完成并发布。
-不再调用模型请求完成确认；发布事务仍检查任务状态，取消优先，不能发布同批次中已被替换的旧候选。
-失败、缺失、未知、重复或冲突的证据会阻止完成。代码失败反馈具体检查项与诊断；
-编译失败额外说明 `config_schema/default_props` 是宿主实际参数契约，要求同步核对类型声明和属性读取；
-“缺少属性”不代表宿主应添加模型自行声明的字段，原始编译诊断仍完整保留。
-纯等待/普通文字响应的 steer 指明当前没有待用户回复的信息，以及应提交候选修复当前失败。
-`DecisionProgress` 每轮检查新观察；重复读取、只改源码空白、重复相同失败、视觉措辞或通过项数值波动都不重置计数。
-TypeScript 诊断仅行列号变化不算新观察；错误码、字段、类型和文件变化仍参与比较，不修改原始报告或 steer。
-连续无进展达到上限时以 `no_progress` 停止；仅开启预算时，角色预算耗尽为 `phase_budget_exhausted`。
-模型协议错误在所属角色内有限修复；网络不可用、取消、超时或开启预算后的额度耗尽则结束执行，不输出失败代码。
-参数补丁复用可用代码，只执行渲染可用性门禁；不通过时保留原结果，不擅自改写代码或用户参数。
-发布事务根据任务类型选择门禁，手动修订必须与基线代码及用户补丁完全一致；生成任务仍须完整语义验收。
-默认每次执行仍有 600 秒时限，但不限制累计模型调用次数、token 或 Actor 总轮数。
-只有开启预算后才恢复 32 次模型请求、200,000 token 和 50 次 Actor turn 上限。
-
-`runtime.py`
-管理 FIFO 队列、预算、超时、取消和持久化；`trajectory.py` 根据真实检查结果判断
-实际失败、退步、重复无进展和过期证据，不能让模型用完成声明绕过验收。
-这是本项目实现，参考 SimAgentPlg 的职责分离，运行时没有 `ejagent-core` 依赖。
-
-Worker 在无网络的 bubblewrap 中执行，仅暴露系统库、渲染依赖、字体与单次尝试目录，
-不挂载用户目录或 `.env`。依次格式化、检查源码策略、TypeScript、bundle、PNG/MP4、
-乱序后的重复帧和默认导出帧；宿主比较这些证据，再由视觉模型评估文字、布局、样式、动画与范围。
-`ffprobe` 检查真实 MP4 的尺寸、帧率、帧数和时长；Pillow 检查 PNG 尺寸、透明通道、
-可见内容与声明动画区间的跨帧变化。全程显示且没有进入／退出动画的目标（包括纯 hold）必须保持帧稳定。
-`image_comparison.py` 统一重复帧、默认导出、静态帧及动画/参数变化的比较规则：
-将 RGBA 分别合成到黑、白背景，取各通道的最大差异，忽略 PNG 编码和全透明 RGB 差异。
-只有最大差异不超过 **2/255**，且变化像素不超过两图可见前景并集的 **1%**，才视为栅格噪声。
-两项须同时满足；不使用整张透明画布稀释差异，明显单像素变化与大面积细微变化仍失败。
-噪声不能充当动画或参数生效的证据；透明/空白、尺寸、类型、配置及独立视觉验收继续执行。
-一致性失败的内部 steer 给出帧号、文件名、差异数量/比例、最大幅度、区域、阈值及对应修复方向，
-提示保留用户设计，并区分代码依赖帧/时间/可变状态与需要调查渲染器的情况。
-比较器与参数实验源码加入运行时指纹；像素容差只用于画面等价判断，产物防篡改仍严格校验 SHA-256。
-一帧 enter/exit 区间使用可用的相邻边界帧核验变化；整段只有一帧等缺少时序证据的情况返回 unknown，不能当作成功。
-每个文字层分别变更文字、颜色、字号、x 和 y，
-重新渲染并检查像素变化、目标颜色、字号覆盖面积及位移方向；颜色覆盖按 alpha 加权，允许各 RGB 通道最多 2/255 的取整误差，错误色相仍拒绝。
-靠边位置优先向画布中心移动以减少探针自身裁切；极小字号使用增大探针，确保实验值不同于原值。参数实验明确覆盖这五类，
-其他样式控件仍依靠类型、配置一致性和视觉验收，不宣称所有参数组合都已穷举。
-多层遮挡、装饰与极端参数可能让实验结果保守失败；通过验证表示满足当前验收规则，
-不保证所有潜在参数值和每一帧都符合审美预期。
-当前字号与位置证据仍基于整图 alpha 面积/重心，不能在所有遮挡、裁切与换行情形下隔离单层因果；
-渐变或混色也可能缺少接近目标色的像素，不能仅因这些启发式局限而自动放行。
-视觉请求提供完整图片序号到实际 Remotion 帧号的映射，评审引用必须使用实际帧号；
-无效引用触发 Judge 有限纠错，不把图片序号自动猜成帧号，也不要求 Actor 重写代码。
-检查指纹绑定代码、参数、目标、字体、浏览器及 worker/依赖版本；生成须完整验收，用户修订须通过渲染可用性检查才允许发布。
-产物清单记录源码、配置、规格、帧、视频及参数实验的 SHA-256，视觉验收前后和发布前
-复核字节。完成时同时复核字体、渲染器、浏览器、Node 与 ffprobe 的环境指纹。
-已验收文件复制到独立 `accepted/<version_id>/` 后再次验证，再原子更新当前版本指针。
-下载也核验产物清单；文件被修改或缺失时返回 404，不把旧报告套在新内容上。
-视觉评估仍是模型判断，关键帧抽样也不能证明每一帧像素级还原；下载产物可人工复核。
-
-离线测试与实际隔离渲染测试分开运行，前者不需要模型、浏览器或 Node：
+For Linux renderer validation, install the locked Bun dependencies in
+`server/src/server/remotion`, then run:
 
 ```sh
-uv run --locked pytest -v
-IMV_TEST_RENDERER=1 uv run --locked pytest tests/test_remotion_templates.py -k 'real_' -v
+IMV_TEST_RENDERER=1 uv run --locked --project server pytest server/tests/test_remotion_templates.py -q
 ```
 
-普通 CI 的服务端 pytest 覆盖契约、错误、恢复、版本、轨迹和 API 兼容行为。
-实际渲染测试需先安装上述 Linux 前提；不会由离线测试通过推断渲染或真实模型已通过。
-
-使用自己的 `.env` 显式运行真实模型验收（会消耗模型 token）：
-
-```sh
-# 在 server/ 执行；验证文本生成、参数修改、自然语言修改和纯图片生成。
-uv run --locked python -m server.remotion_templates.smoke --live
-```
-
-每次验收使用模板目录内独立的 `.data/smoke-<id>/`，保留所有尝试与输出；
-终端只打印任务状态、用量和产物位置，不输出密钥。
-
-
-客户端可在普通与 Debug 模式的 Remotion Agent 设置中保存模型参数。能力查询、创建、消息和重试通过 `X-Remotion-Config`（URI 编码 JSON）提供当前客户端配置；每个任务独立创建 Provider/Harness，复用服务端 Renderer，不修改服务端配置。密钥不写作品、聊天或任务历史；未传配置沿用环境默认值。数据路径、渲染环境和任务策略不接受客户端覆盖。
+The browser path requires Chromium, Noto CJK fonts, bubblewrap and util-linux.
+Offline tests cover tool registration, deferred-tool behaviour, immutable
+storage and source consistency without a model or semantic index.

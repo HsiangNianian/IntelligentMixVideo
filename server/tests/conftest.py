@@ -25,9 +25,12 @@ from server.template import store
 
 
 @pytest.fixture(autouse=True)
-def isolate_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """清除外部配置并将各配置类指向临时 server/.env，避免读取本机文件。"""
+def isolate_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, request: pytest.FixtureRequest) -> None:
+    """清除外部配置并将各配置类指向临时 server/.env，保留真实 MySQL 集成凭据。"""
+    integration_mysql = request.module.__name__.endswith("test_mysql_integration")
     for key in list(os.environ):
+        if integration_mysql and key.upper().startswith("DB_"):
+            continue
         if key.upper().startswith(("DB_", "IMV_", "COMPOSITION_", "SEGMENT_MATCH_", "IMS_", "MIX_VIDEO_ALIYUN_IMS_", "ALIBABA_CLOUD_", "ZOS_")) or key.upper() in ("PORT", "DASHSCOPE_API_KEY", "ASR_BASE_URL"):
             monkeypatch.delenv(key)
     monkeypatch.chdir(tmp_path)
