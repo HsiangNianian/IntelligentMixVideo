@@ -1024,7 +1024,7 @@ ToolName = Literal[
 
 
 class ToolInspectInput(ContractModel):
-    """精确工具名称；未知名称由工具返回 TOOL_NOT_FOUND。"""
+    """工具的点号 ID，或模型窗口里显示的下划线名；未知名称返回 TOOL_NOT_FOUND 并列出已注册 ID。"""
 
     tool_name: NonEmptyString
 
@@ -1134,7 +1134,7 @@ inspect 自身也可被查询。已知工具列表由集成方提供给 Agent；
 | 自定义测试断言失败 | 返回失败项及实际值，原 preset/sprite 不变 |
 | 运行校验 | 不生成截图、不抽帧、不调用视觉 Judge；时间定位本身不输出图片 |
 | tools.inspect 已知工具 | 输出可解析的完整输入输出 Schema、规则和示例，不执行目标工具 |
-| tools.inspect 未知工具 | TOOL_NOT_FOUND，不推荐其他工具或执行 find |
+| tools.inspect 未知工具 | TOOL_NOT_FOUND，列出已注册的工具 ID 供纠正名称；不做模糊匹配、不推荐任务方案、不执行 find |
 
 ## 12. 实施边界
 

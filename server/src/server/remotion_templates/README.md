@@ -15,7 +15,7 @@ Only four have implementations in this build:
 | `preset.create` | implemented — validates the Preset and saves it |
 | `sprite.compose` | implemented — deterministic combination of Preset instances |
 | `sprite.create` | implemented — consistency check, code validation and save |
-| `tools.inspect` | implemented — returns one exact tool descriptor |
+| `tools.inspect` | implemented — returns one tool descriptor by dotted ID or wire name |
 | `image.info` / `image.resize` / `image.crop` | contract only |
 | `preset.search` / `preset.modify` | contract only |
 | `validate.code` / `validate.render` | contract only |
