@@ -119,4 +119,17 @@
   ::selection {
     @apply bg-primary/20;
   }
+  /*
+   * 系统开启「减少动态效果」时统一压缩 CSS 动画与过渡（浮层展开、加载旋转、悬停位移等）。
+   * 时长保留极小值而非 none，Radix 浮层仍能收到 animationend 正常卸载；motion 库动画由 MotionConfig 处理。
+   */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
 }
