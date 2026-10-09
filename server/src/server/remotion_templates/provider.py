@@ -59,7 +59,7 @@ class ModelFailure(RuntimeError):
 
 
 # 连接失败、超时与上游限流/不可用都是瞬时故障，等待后重试；其余状态码是配置或权限问题。
-_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+_RETRYABLE_STATUS = frozenset({429, *range(500, 600)})
 # 指数退避的上限，避免一次任务把时间全花在等待上。
 _MAX_RETRY_DELAY_SECONDS = 30.0
 
@@ -366,6 +366,15 @@ class Provider:
         breaks mid-response keeps its own meaning, because those failures include
         deterministic size limits that another attempt cannot fix.
         """
+        received_bytes = False
+
+        def record_response(event, **data):
+            """Keep the audit unchanged and stop retries once any response bytes arrived."""
+            nonlocal received_bytes
+            if event == "model_response_first_bytes":
+                received_bytes = True
+            budget.record(event, **data)
+
         try:
             async with httpx.AsyncClient(
                 timeout=settings.model_timeout_seconds,
@@ -386,11 +395,19 @@ class Provider:
                         if response.status_code in _RETRYABLE_STATUS:
                             raise RetryableRequest(message)
                         raise ModelFailure(message)
-                    return await read_completion(response, budget.record)
+                    return await read_completion(response, record_response)
+        except (httpx.UnsupportedProtocol, httpx.LocalProtocolError, httpx.InvalidURL) as exc:
+            raise ModelFailure("Model endpoint configuration is invalid.") from exc
         except httpx.TimeoutException as exc:
+            if received_bytes:
+                raise ModelFailure("Model request timed out.") from exc
             raise RetryableRequest("Model request timed out.", exc) from exc
         except httpx.TransportError as exc:
+            if received_bytes:
+                raise ModelFailure("Model stream disconnected before completion; no partial output was accepted.") from exc
             raise RetryableRequest("Model endpoint is unreachable.", exc) from exc
+        except httpx.HTTPError as exc:
+            raise ModelFailure("Model response could not be read.") from exc
         except StreamFailure as exc:
             raise ModelFailure(str(exc)) from exc
 
@@ -451,8 +468,10 @@ class Provider:
         if settings.disable_thinking:
             body["thinking"] = {"type": "disabled"}
         budget.calls += 1
-        payload = await self._retrying_stream(base, key, body, settings, budget)
         try:
+            payload = await self._retrying_stream(base, key, body, settings, budget)
+            if not isinstance(payload, dict):
+                raise ValueError("Expected a completion object")
             token_detail = payload.get("usage")
             token_detail = token_detail if isinstance(token_detail, dict) else {}
             usage = token_detail.get("total_tokens")
@@ -488,7 +507,10 @@ class Provider:
                         "phase_budget_exhausted",
                         f"{name} model token budget exhausted.",
                     )
-            choice = payload["choices"][0]
+            choices = payload["choices"]
+            if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
+                raise ValueError("Expected exactly one completion choice")
+            choice = choices[0]
             if choice.get("finish_reason") not in (
                 {"stop", "tool_calls"} if tools else {"stop"}
             ):
@@ -496,6 +518,8 @@ class Provider:
                     "Model output did not finish normally; no partial artifact was accepted."
                 )
             message = choice["message"]
+            if not isinstance(message, dict):
+                raise ValueError("Expected an assistant message object")
             if message.get("role") != "assistant":
                 raise ModelFailure("Model returned a non-assistant message.")
             return message
