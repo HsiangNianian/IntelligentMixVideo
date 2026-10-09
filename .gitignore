@@ -17,6 +17,6 @@ skills-lock.json
 !.env.example
 server/.venv/
 server/.data/
-server/src/server/.log/
+server/.log/
 server/src/server/remotion_templates/.data/
 .DS_Store

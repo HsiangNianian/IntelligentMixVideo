@@ -91,7 +91,7 @@ MySQL 单独列保存唯一名称、ID 和时间，JSON 保存完整编辑配置
 
 ### 执行日志
 
-新任务执行日志保存到 `src/server/.log/video_composition/<task_id>/`，相对根目录固定为 `server/src/server`，不受启动工作目录影响。每个任务包含下面七个 JSON 文件（如 `asr.json`），时间使用北京时间：
+新任务执行日志保存到 `.log/video_composition/<task_id>/`，相对根目录固定为 `server/` 项目目录，按源码位置定位，不受启动工作目录影响。每个任务包含下面七个 JSON 文件（如 `asr.json`），时间使用北京时间：
 
 | 文件名（省略 `.json`） | 内容 |
 | --- | --- |
