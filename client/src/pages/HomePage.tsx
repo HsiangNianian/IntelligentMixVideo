@@ -1,11 +1,11 @@
 /** 首页以侧边导航组合工作区；设置经侧栏底部按钮打开对话框，业务面板隐藏时保留草稿、播放器与订阅。 */
-import { Fragment, useId, useRef, useState } from "react";
+import { Fragment, useId, useState } from "react";
 import { Film, House, PanelLeftClose, PanelLeftOpen, Settings, Sparkles, SquarePen } from "lucide-react";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Hint } from "@/components/Hint";
 import { Button } from "@/components/ui/button";
 import { SettingsDialog } from "@/features/settings/SettingsDialog";
-import { TemplateWorkspace, type TemplateWorkspaceHandle } from "@/features/templates/TemplateWorkspace";
+import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
 import { TemplateHome, type TemplateSelection } from "@/features/templates/TemplateHome";
 import { RemotionWorkspace } from "@/features/remotion_templates/RemotionWorkspace";
 import { Tabs as TabsPrimitive } from "radix-ui";
@@ -26,8 +26,6 @@ export default function HomePage() {
   const [remotionOpened, setRemotionOpened] = useState(false);
   const [selection, setSelection] = useState<TemplateSelection | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const templateWorkspace = useRef<TemplateWorkspaceHandle>(null);
-  const [storageRevision, setStorageRevision] = useState(0);
   // 侧栏收起只调整导航宽度，工作区继续保留当前编辑状态。
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const navigationId = useId();
@@ -109,7 +107,7 @@ export default function HomePage() {
           </header>}
           <TabsContent value="home" forceMount hidden={workspace !== "home"}>
             {workspace === "home" && (
-              <TemplateHome localRevision={storageRevision}
+              <TemplateHome
                 onSelect={(next) => {
                   setSelection(next);
                   setLibraryOpened(true);
@@ -123,18 +121,14 @@ export default function HomePage() {
             )}
           </TabsContent>
           <TabsContent value="library" forceMount hidden={workspace !== "library"}>
-            {libraryOpened && <TemplateWorkspace ref={templateWorkspace} selection={selection} onHome={() => setWorkspace("home")} />}
+            {libraryOpened && <TemplateWorkspace selection={selection} onHome={() => setWorkspace("home")} />}
           </TabsContent>
           <TabsContent value="remotion" forceMount hidden={workspace !== "remotion"}>
             {remotionOpened && <RemotionWorkspace />}
           </TabsContent>
         </div>
       </main>
-      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} onStorageChange={async save => {
-        if (templateWorkspace.current) await templateWorkspace.current.changeStorage(save);
-        else await save();
-        setStorageRevision(value => value + 1);
-      }} />
+      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
     </TabsPrimitive.Root>
   );
 }

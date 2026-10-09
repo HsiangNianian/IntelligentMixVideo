@@ -116,9 +116,9 @@ test("本地和云端存储严格分流", async () => {
   const { mock } = await import("bun:test");
   const saved = savedTemplate();
   const invoke = mock(async (_command: string, args: Record<string, unknown>): Promise<unknown> => {
-    if (args.operation === "list") return { data: [saved], warning: null };
-    if (args.operation === "delete") return { data: null, warning: null };
-    return { data: saved, warning: null };
+    if (args.operation === "list") return [saved];
+    if (args.operation === "delete") return null;
+    return saved;
   });
   const restoreDesktop = mockDesktop(invoke);
   try {
