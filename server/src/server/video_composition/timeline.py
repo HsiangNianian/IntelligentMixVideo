@@ -25,12 +25,12 @@ def validate_segments(segments: list[Segment], duration_ms: int) -> None:
 
 
 def validate_matches(segments: list[Segment], matches: list[MatchedSegment]) -> None:
-    """逐项核对上游整数编号、顺序、文案和秒制边界，拒绝其他任务或重新对齐的结果。"""
+    """严格核对数量、编号、顺序和时间；文字仅忽略首尾空白，不改写本地切片或匹配回执。"""
     if len(segments) != len(matches):
         raise ValueError("匹配片段数量不一致")
     for source, matched in zip(segments, matches):
         if (
-            matched.segment_id != source.segment_id or matched.text != source.text
+            matched.segment_id != source.segment_id or matched.text.strip() != source.text.strip()
             or matched.start_time != source.start_time
             or matched.end_time != source.end_time
         ):

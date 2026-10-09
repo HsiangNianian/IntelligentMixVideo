@@ -1204,6 +1204,39 @@ def test_notification_timeout_allows_one_query_without_new_render(upstreams, cli
         upstreams["notification_release"].set()
 
 
+@pytest.mark.parametrize("callback", [True, False])
+def test_matching_whitespace_keeps_local_subtitles_and_raw_receipt(upstreams, client, composition_case, composition_logs, callback):
+    """回调和补查均容忍首尾空白；字幕用本地短句，日志保留上游原文及额外未命中原因。"""
+    upstreams["callback"] = callback
+    composition_case["segments"][0]["text"] = " \n甲乙丙丁。\t"
+    composition_case["segments"][0]["subtitle_parts"] = [
+        {"text": "甲乙", "start_time": 1, "end_time": 2},
+        {"text": "丙丁", "start_time": 2, "end_time": 3},
+    ]
+    composition_case["matches"][1]["text"] = "\t戊己庚辛。 \n"
+    composition_case["matches"][0]["matched_candidate_reason"] = "no_candidates"
+    response = client.post(BASE, json=composition_case["request"])
+    assert response.status_code == 200
+    task_id = response.json()["data"]
+    result = finished(client, task_id)
+    assert result["status"] == "succeeded", result
+    data = store.get(task_id)["data"]
+    assert data["segmentation"]["segments"] == composition_case["segments"]
+    subtitles = data["timeline"]["SubtitleTracks"][0]["SubtitleTrackClips"]
+    assert [item["Content"] for item in subtitles] == ["甲乙", "丙丁", "戊己庚辛"]
+    assert [(item["TimelineIn"], item["TimelineOut"]) for item in subtitles] == [(1, 2), (2, 3), (4, 6)]
+    rows = composition_logs(task_id)
+    if callback:
+        receipt = next(row["details"]["output"] for row in rows if row["event"] == "match_callback_received")
+    else:
+        receipt = next(row["details"]["output"]["body"] for row in rows
+                       if row["event"] == "http_response" and row["stage"] == "matching"
+                       and row["details"]["output"]["http_status"] == 200)
+    assert receipt["result"]["segments"] == composition_case["matches"]
+    assert len(upstreams["gets"]) == int(not callback)
+
+
+
 def test_execution_logs_cover_inputs_outputs_and_notification(upstreams, client, composition_case, composition_logs):
     """真实编排的每个步骤输入输出、原始素材回调原因和最终通知均写文件，保留实际媒体链接但隐藏回调凭证。"""
     composition_case["matches"][0]["matched_candidate_reason"] = "no_candidates"
