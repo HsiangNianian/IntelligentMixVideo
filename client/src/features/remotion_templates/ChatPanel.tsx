@@ -258,14 +258,14 @@ export function ChatPanel({
             <TaskStatus job={job} />
           )}
         {busy && !phaseCount && (
-          <p className="flex items-center gap-2 text-xs text-muted-foreground">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <LoaderGooeyBlobs size={6} />
             正在处理…
-          </p>
+          </div>
         )}
         <div ref={end} />
       </div>
-      {/* 输入区接受拖入参考图：仅首次请求可附图，拖入时显示淡入遮罩。 */}
+      {/* 输入区接受拖入参考图：始终阻止浏览器默认打开文件，避免离开应用；仅首次请求且未锁定时附图并显示遮罩。 */}
       <form
         className={cn(
           "relative m-4 mt-0 rounded-xl border bg-background p-3 transition-colors",
@@ -276,16 +276,14 @@ export function ChatPanel({
           send();
         }}
         onDragOver={(event) => {
-          if (disabled || !first) return;
           event.preventDefault();
-          setDragging(true);
+          setDragging(!disabled && first);
         }}
         onDragLeave={(event) => {
           if (!event.currentTarget.contains(event.relatedTarget as Node | null))
             setDragging(false);
         }}
         onDrop={(event) => {
-          if (disabled || !first) return;
           event.preventDefault();
           setDragging(false);
           attach(event.dataTransfer.files[0]);

@@ -41,7 +41,8 @@ test("消息等待不冒充预览渲染", async () => {
   );
   expect(screen.queryByTitle("Remotion 字效播放器")).toBeNull();
   expect(screen.queryByText("正在渲染预览…") !== null).toBe(false);
-  expect(screen.getByText("正在处理…")).toBeTruthy();
+  // 加载器根节点是块级元素，所在容器不能是段落，否则形成 <p><div> 非法嵌套。
+  expect(screen.getByText("正在处理…").tagName).not.toBe("P");
   expect(
     screen.getByRole("button", { name: "发送" }).hasAttribute("disabled"),
   ).toBe(true);
@@ -734,6 +735,19 @@ test("拖入参考图校验格式并显示预览", async () => {
   expect(screen.queryByRole("alert")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "移除参考图片" }));
   expect(screen.queryByAltText("参考图片：dropped.png")).toBeNull();
+});
+
+// 首轮结束后不能再附图，但拖放仍须阻止浏览器默认打开文件，避免离开应用丢失未保存状态。
+test("不可附图时拖放仍阻止默认行为且不添加图片", async () => {
+  server();
+  render(<RemotionWorkspace />);
+  await generate();
+  const form = screen.getByLabelText("字效描述").closest("form")!;
+  const file = new File(["png"], "late.png", { type: "image/png" });
+  expect(fireEvent.dragOver(form, { dataTransfer: { files: [file] } })).toBe(false);
+  expect(screen.queryByText("松开以添加参考图片")).toBeNull();
+  expect(fireEvent.drop(form, { dataTransfer: { files: [file] } })).toBe(false);
+  expect(screen.queryByAltText("参考图片：late.png")).toBeNull();
 });
 
 // 参数写入结果未知时保留草稿，先只读恢复确认任务，不自动重发。
