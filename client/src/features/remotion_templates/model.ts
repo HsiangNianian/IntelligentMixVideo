@@ -238,6 +238,21 @@ export interface SessionJob extends Job {
   updated_at: string;
   parameters: Values | null;
   progress?: ProgressStep[];
+  rounds?: LoopRound[];
+}
+/** 一次宿主实际执行的工具调用；只有工具名与结论，不含参数与返回载荷。 */
+export interface RoundCall {
+  tool: string;
+  status: "pass" | "fail";
+  error_code?: string | null;
+  message?: string | null;
+}
+/** 一层 ReAct 的一轮；空 calls 且无 error_code 才表示普通消息轮次。 */
+export interface LoopRound {
+  layer: "outer" | "plan" | "executor";
+  turn: number;
+  calls: RoundCall[];
+  error_code?: "MODEL_CONTRACT_FAILED" | "MODEL_FAILED" | "CANCELLED" | null;
 }
 /** 宿主公开的阶段摘要；只含白名单阶段与时间，不含候选代码或内部评审。 */
 export interface ProgressStep {
@@ -285,6 +300,7 @@ export interface SessionSnapshot {
 export type WorkEvent = { id: number; work_id: string; created_at: string } & (
   | { type: "message.created"; data: ChatMessage }
   | { type: "job.updated"; data: SessionJob }
+  | { type: "job.round"; data: { job_id: string; round: LoopRound } }
   | { type: "version.ready"; data: { version_id: string; job_id: string } }
 );
 

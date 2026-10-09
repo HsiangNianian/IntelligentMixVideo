@@ -32,12 +32,12 @@ try {
     viewport: { width: 1440, height: 1000 },
   });
   const page = await context.newPage();
+  // 主页读取也使用离线夹具，不连接用户真实后端。
+  await page.route("**/template", (route) => route.fulfill({ status: 503 }));
   const errors = [];
   let deleted = false;
   let diagnosticRequests = 0;
   page.on("pageerror", (e) => errors.push(e.message));
-  // 主页先读取云端列表；浏览器夹具不连接用户真实后端。
-  await page.route("**/template", (route) => route.fulfill({ status: 503 }));
   await page.route("**/api/templates/**", async (route) => {
     const req = route.request();
     const url = new URL(req.url());
@@ -59,6 +59,10 @@ try {
       parameters: null,
       created_at: "2026-09-17T06:00:00Z",
       updated_at: "2026-09-17T06:01:00Z",
+      rounds: [
+        { layer: "outer", turn: 1, calls: [], error_code: "MODEL_CONTRACT_FAILED" },
+        { layer: "executor", turn: 2, calls: [{ tool: "sprite.compose", status: "fail", error_code: "COMPOSITION_FAILED", message: "组合生成失败。" }] },
+      ],
     }));
     if (path === "/capabilities") return json({ models_configured: true });
     if (path === "/works")
@@ -176,6 +180,15 @@ try {
     path: join(screenshots, "imv-remotion-desktop.png"),
     fullPage: true,
   });
+  // 在真实浏览器验证失败轮次文案，不执行生成的 TSX。
+  const rounds = page.getByRole("region", { name: "循环记录", exact: true }).last();
+  await rounds.getByRole("button", { name: /循环记录 · 2 轮/ }).click();
+  await rounds.getByRole("button", { name: /任务循环 第 1 轮/ }).click();
+  await rounds.getByText("模型响应格式无效，本轮未调用工具。").waitFor();
+  await rounds.getByRole("button", { name: /执行循环 第 2 轮/ }).click();
+  await rounds.getByText("sprite.compose → 失败 · COMPOSITION_FAILED：组合生成失败。").waitFor();
+  await page.screenshot({ path: join(screenshots, "imv-audit-rounds.png"), fullPage: true });
+  await rounds.getByRole("button", { name: /循环记录 · 2 轮/ }).click();
   // 桌面删除先确认，取消不影响当前播放器或历史选择。
   await page.getByRole("button", { name: "删除聊天", exact: true }).click();
   await page.getByRole("dialog").waitFor();

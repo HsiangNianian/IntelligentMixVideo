@@ -2,7 +2,11 @@
 import { useEffect, useId, useState } from "react";
 import { Check, ChevronDown, Circle, LoaderCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { jobLabel, type ProgressStep, type SessionJob } from "./model";
+import {
+  jobLabel,
+  type ProgressStep,
+  type SessionJob,
+} from "./model";
 
 /** 公开阶段固定中文文案，绝不展示模型原文或内部错误。 */
 const phaseLabels: Record<ProgressStep["phase"], string> = {
