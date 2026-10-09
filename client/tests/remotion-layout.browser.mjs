@@ -358,9 +358,11 @@ try {
     .getByRole("dialog")
     .getByRole("button", { name: "新增聊天" })
     .click();
+  // 抽屉带关闭动画，等待卸载完成后再确认没有残留弹窗。
+  await page.getByRole("dialog").waitFor({ state: "detached" });
   assert.equal(await page.getByRole("dialog").count(), 0);
   await page.getByRole("tab", { name: "聊天", exact: true }).click();
-  await page.getByText("把想法变成字效").waitFor();
+  await page.getByRole("heading", { name: "把想法变成字效" }).waitFor();
   // 损坏的本地偏好不能阻止打开工作区，也不能生成 NaN 或挤掉面板。
   await page.evaluate(() =>
     localStorage.setItem("imv.remotion.layout", '{"history":"bad"}'),

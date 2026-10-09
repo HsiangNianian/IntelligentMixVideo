@@ -53,7 +53,9 @@
 - 依赖方向为页面 → 业务组件 → 基础 UI / 工具。跨层导入使用 `@/`（指向 `src/`）；文件内或同目录的相对导入可保留。组件命名保持现有 PascalCase，shadcn/ui 文件遵循上游小写命名。
 - 有交互和无障碍语义的基础控件优先使用 shadcn/ui；在 `client/` 执行 `bunx --bun shadcn@latest add <组件>` 按需添加，随后审阅生成代码、依赖和主题令牌，只保留有调用方的导出。不要预装整个组件库。
 - `client/components.json` 维护 shadcn/ui 路径与别名；`src/styles/globals.css` 是全局样式入口，只放 Tailwind 导入、主题令牌和基础样式。组件布局使用工具类，颜色使用语义令牌，条件类名通过 `cn` 合并。
-- 主题令牌按使用需求补齐，不预先创建暗色切换、动画、路由或状态管理设施。局部状态优先留在组件；effect 必须清理定时器、订阅及监听器。重复渲染组件的关联 ID 用 `useId`，保留语义 HTML 和无障碍属性。
+- 应用提供浅色与深色两套主题：`globals.css` 的 `:root` 为浅色、`.dark` 为深色，以冷灰中性层级区分侧栏、工作区与面板，主色为中性近黑 / 近白，不使用额外品牌强调色；状态色只用于保存状态与提示。`index.html` 首帧脚本按 `localStorage` 的 `imv.theme` 恢复选择，未保存时跟随系统；侧栏底部 `components/ThemeToggle.tsx` 切换 `<html>` 的 `dark` 类（同时启用 shadcn/ui 的 `dark:` 变体）。业务样式（含模版编辑 CSS）只引用令牌，不写死某一主题的颜色。系统开启「减少动态效果」时，`globals.css` 统一压缩 CSS 动画与过渡，`App.tsx` 的 `MotionConfig reducedMotion="user"` 处理 motion 动画。
+- 基础组件另复用 ObsidianUI（shadcn 生态，MIT）的 select、popover、command、tooltip、sonner、slider、switch、toggle-group、empty、spinner、skeleton、flip-text 与 loaders-gooey-blobs，统一从 `radix-ui` 包导入原语，许可证记录在 `public/THIRD_PARTY_NOTICES.txt`，与上游差异写在文件头。模版编辑的特效选择使用 `features/templates/EffectCombobox.tsx` 可搜索下拉框；纯图标按钮使用 `components/Hint.tsx` 悬停提示，文字标签可见时不渲染提示，依赖 `data-state` 的 TabsTrigger 须先包一层元素再交给 Hint；保存成功等短反馈使用 `toast()`，校验与持续错误仍内联显示。
+- 主题令牌按使用需求补齐，不预先创建动画、路由或状态管理设施。局部状态优先留在组件；effect 必须清理定时器、订阅及监听器。重复渲染组件的关联 ID 用 `useId`，保留语义 HTML 和无障碍属性。
 - 模板 API 请求集中在 `features/templates/api.ts`，SDK 加载与预览在独立模块，避免在纯展示组件中散落请求与错误处理。
 - 前端改动运行冻结依赖安装和 `bun run build`，并检查浏览器/桌面中的相关行为。新增 feature 必须提供行为测试；测试方案按实际运行环境选择，不用 Python 强行测试 React。纯样式调整验证渲染与响应式，不写重复实现的断言。
 
@@ -61,7 +63,7 @@
 
 - 侧栏编辑入口显示「模版编辑」，使用现有 Lucide `SquarePen` 图标；保留 `library` 内部标识和工作区状态，窄屏保留图标及无障碍名称。
 
-- 主页模板列表最大宽度为 576px，云端在上、本地在下，分组标题带存储说明与数量；模板以两列画廊卡片展示（窄屏单列），灰底点阵画框居中黑底场记板图标，名称与单行说明位于画框下方，点击整张卡片选择模板；新建按钮位于列表卡片底部操作栏。主页不展示更新日志与当前时间（时间仅保留在 Remotion 页头）。列表内部滚动，底部并排固定「新建云端模板」「新建本地模板」按钮；浏览器禁用本地新建并显示桌面客户端要求。复用 shadcn/ui 的 Card、Button、Dialog 和表单组件，两库分别加载和重试。
+- 主页内容最大宽度 1400px、整页滚动。顶部「开始创作」并排「新建云端模板」「新建本地模板」「AI 生成字效」（跳转 Remotion 字效）快捷卡片，浏览器禁用本地新建并说明需要桌面客户端；下方「我的模板」云端在上、本地在下，分组标题带存储说明与数量。模板以自动列数画廊卡片展示（最小约 210px，窄屏单列），封面按模板 ID 生成稳定配色并排版模板自身的标题 / 字幕文字，角标显示对象数，悬停显示「打开编辑」；名称、更新日期与单行说明位于封面下方，点击整张卡片选择模板；空列表与不可用状态使用 Empty。主页不展示更新日志，客户端各页头均不显示当前时间。复用 Button、Dialog 和表单组件，两库分别加载和重试。
 
 - 新模板的画面对象列表为空。添加效果统一通过左侧「特效资产」进行；「画面对象与已添加特效」仅展示和选择已有对象，空列表提示从左侧添加，移除对象后也通过左侧资产重新添加。
 

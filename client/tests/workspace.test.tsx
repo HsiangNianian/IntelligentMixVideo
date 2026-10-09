@@ -5,7 +5,9 @@ import { StrictMode } from "react";
 import HomePage from "@/pages/HomePage";
 import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
 import { TemplateCollection, type TemplateSelection } from "@/features/templates/TemplateHome";
-import { savedTemplate } from "./fixtures";
+import { Toaster } from "@/components/ui/sonner";
+import { fetchMock } from "./setup";
+import { protobufTemplateResponse, savedTemplate } from "./fixtures";
 
 /** 生成独立的主页新建输入，不包含服务端响应或存储数据。 */
 function creation(name = "旅行模板", environment: "cloud" | "local" = "cloud"): TemplateSelection {
@@ -15,7 +17,7 @@ function creation(name = "旅行模板", environment: "cloud" | "local" = "cloud
 /** 从左侧真实资产创建文字对象，供后续参数编辑场景使用。 */
 async function addText(label = "顶部标题") {
   const assets = await screen.findByRole("region", { name: "特效资产" });
-  fireEvent.click(within(assets).getByRole("button", { name: "花字" }));
+  fireEvent.click(within(assets).getByRole("radio", { name: "花字" }));
   fireEvent.keyDown(within(assets).getByRole("combobox", { name: "应用到" }), { key: "ArrowDown" });
   fireEvent.click(screen.getByRole("option", { name: label }));
   fireEvent.click(within(assets).getAllByRole("button", { name: /^应用花字：/ })[0]);
@@ -52,7 +54,7 @@ test("转场仅提供时间设置并保留移除操作", async () => {
   render(<TemplateWorkspace selection={creation()} onHome={() => {}} />);
   await addText();
   const assets = screen.getByRole("region", { name: "特效资产" });
-  fireEvent.click(within(assets).getByRole("button", { name: "转场" }));
+  fireEvent.click(within(assets).getByRole("radio", { name: "转场" }));
   fireEvent.click(within(assets).getAllByRole("button", { name: /^应用转场：/ })[0]);
   const inspector = screen.getByRole("region", { name: "画面对象设置" });
   expect(within(inspector).getAllByRole("tab")).toHaveLength(1);
@@ -139,7 +141,7 @@ test("重复添加特效后分别设置时间并删除指定实例", async () =>
   render(<TemplateWorkspace selection={creation()} onHome={() => {}} />);
   await screen.findByRole("region", { name: "特效资产" });
   const assets = screen.getByRole("region", { name: "特效资产" });
-  fireEvent.click(within(assets).getByRole("button", { name: "画面特效" }));
+  fireEvent.click(within(assets).getByRole("radio", { name: "画面特效" }));
   const asset = within(assets).getAllByRole("button", { name: /^应用画面特效：/ })[0];
   fireEvent.click(asset);
   fireEvent.change(screen.getByLabelText("开始时间 / 秒"), { target: { value: "2" } });
@@ -215,17 +217,17 @@ test("关键词页签分别编辑标题和字幕", async () => {
   fireEvent.click(screen.getByRole("tab", { name: "关键词设置" }));
   expect(screen.queryByRole("textbox", { name: "指定关键词" })).toBeNull();
   expect(screen.queryByText("关键词预览")).toBeNull();
-  fireEvent.click(screen.getByRole("checkbox", { name: "加粗" }));
-  expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "加粗" }).checked).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "加粗" }));
+  expect(screen.getByRole("button", { name: "加粗" }).getAttribute("aria-pressed")).toBe("true");
   await addText("底部字幕");
   fireEvent.click(screen.getByRole("tab", { name: "关键词设置" }));
   expect(screen.queryByRole("textbox", { name: "指定关键词" })).toBeNull();
-  fireEvent.click(screen.getByRole("checkbox", { name: "斜体" }));
-  expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "斜体" }).checked).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "斜体" }));
+  expect(screen.getByRole("button", { name: "斜体" }).getAttribute("aria-pressed")).toBe("true");
   fireEvent.click(screen.getByRole("button", { name: "编辑顶部标题" }));
   expect(screen.queryByRole("textbox", { name: "指定关键词" })).toBeNull();
-  expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "加粗" }).checked).toBe(true);
-  expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "斜体" }).checked).toBe(false);
+  expect(screen.getByRole("button", { name: "加粗" }).getAttribute("aria-pressed")).toBe("true");
+  expect(screen.getByRole("button", { name: "斜体" }).getAttribute("aria-pressed")).toBe("false");
 });
 
 // 场景：预览视频入口位于播放控制区，展开后保留地址输入与加载操作。
@@ -268,10 +270,30 @@ async function createFromHome(name = "旅行模板") {
   return screen.findByLabelText("模板信息");
 }
 
-// 场景：直接进入模板库显示主页入口，默认主页不显示时钟。
+// 场景：收起侧栏后页签带悬停提示，切换后页签自身的 data-state 仍与选中状态一致，选中样式不丢失；展开时文字可见不渲染提示。
+test("侧栏页签的选中状态不被悬停提示覆盖", async () => {
+  render(<HomePage />);
+  fireEvent.focus(screen.getByRole("tab", { name: "主页" }));
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "收起侧边栏" }));
+  fireEvent.focus(screen.getByRole("tab", { name: "主页" }));
+  expect((await screen.findByRole("tooltip")).textContent).toBe("主页");
+  const home = screen.getByRole("tab", { name: "主页" });
+  const library = screen.getByRole("tab", { name: "模版编辑" });
+  expect(home.getAttribute("data-state")).toBe("active");
+  fireEvent.mouseDown(library, { button: 0 });
+  expect(library.getAttribute("aria-selected")).toBe("true");
+  expect(library.getAttribute("data-state")).toBe("active");
+  expect(home.getAttribute("data-state")).toBe("inactive");
+});
+
+// 场景：直接进入模板库显示主页入口，主页与 Remotion 页头都不显示时钟。
 test("未选择模板时通过主页开始创作", async () => {
   render(<HomePage />);
   expect(screen.getByRole("tab", { name: "主页" }).getAttribute("aria-selected")).toBe("true");
+  expect(screen.queryByRole("region", { name: "当前时间" })).toBeNull();
+  // Remotion 页头同样不显示当前时间。
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Remotion 字效" }), { button: 0 });
   expect(screen.queryByRole("region", { name: "当前时间" })).toBeNull();
   fireEvent.mouseDown(screen.getByRole("tab", { name: "模版编辑" }), { button: 0 });
   expect(screen.getByText("请从主页选择已有模板或创建新模板。")).toBeTruthy();
@@ -397,4 +419,17 @@ test("主页与模板库切换保留未保存内容", async () => {
   const dialog = await screen.findByRole("dialog", { name: "保存当前修改？" });
   fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
   expect(screen.getByLabelText<HTMLInputElement>("示例文字").value).toBe("保留标题");
+});
+
+// 场景：已有模板保存成功后以轻提示反馈；图标按钮聚焦时显示悬停提示。
+test("保存成功显示轻提示，图标按钮提供悬停提示", async () => {
+  const template = savedTemplate();
+  fetchMock.mockImplementation((async (_url, init) =>
+    protobufTemplateResponse(template, init?.method === "POST" ? "save" : "get")) as typeof fetch);
+  render(<><TemplateWorkspace selection={{ environment: "cloud", templateId: template.template_id }} onHome={() => {}} /><Toaster /></>);
+  await screen.findByLabelText("模板信息");
+  fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
+  await screen.findByText(`模板「${template.name}」已保存`);
+  fireEvent.focus(screen.getByRole("button", { name: "全屏预览" }));
+  expect((await screen.findByRole("tooltip")).textContent).toBe("全屏预览");
 });

@@ -157,6 +157,9 @@ test("规范化空数字并保留 false，插件 ID 与通用导航隔离", asyn
   await openModule("普通插件");
   expect(screen.getAllByRole("tab")).toHaveLength(2);
   expect(screen.getByRole("tab", { name: "通用" }).getAttribute("aria-selected")).toBe("false");
+  // 导航带悬停提示时，页签自身的 data-state 仍须反映选中状态，选中样式依赖它。
+  expect(screen.getByRole("tab", { name: "普通插件" }).getAttribute("data-state")).toBe("active");
+  expect(screen.getByRole("tab", { name: "通用" }).getAttribute("data-state")).toBe("inactive");
   fireEvent.change(screen.getByLabelText("可选数值"), { target: { value: "" } });
   fireEvent.submit(screen.getByRole("form", { name: "普通插件" }));
   await screen.findByText("已保存到当前客户端");

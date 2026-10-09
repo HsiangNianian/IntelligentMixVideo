@@ -25,6 +25,8 @@ import {
   type Values,
   type Version,
 } from "./model";
+import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
 
 /** 保留用户清空数字或输入半个色值的编辑过程，防止 NaN 或无效颜色进入渲染器。 */
 function Parameter({
@@ -111,15 +113,12 @@ function Parameter({
           </SelectContent>
         </Select>
       ) : control.type === "boolean" ? (
-        <Button
+        <Switch
           id={id}
-          variant="outline"
-          aria-pressed={!!value}
+          checked={!!value}
           disabled={disabled}
-          onClick={() => onChange(!value)}
-        >
-          {value ? "开启" : "关闭"}
-        </Button>
+          onCheckedChange={(checked) => onChange(checked)}
+        />
       ) : (
         <div className="flex items-center gap-3">
           {color && (
@@ -138,21 +137,18 @@ function Parameter({
             />
           )}
           {numeric && rules.min !== undefined && rules.max !== undefined && (
-            <Input
-              type="range"
-              aria-label={`${label}滑块`}
+            <Slider
+              label={`${label}滑块`}
               min={rules.min * scale}
               max={rules.max * scale}
               step={rules.step * scale}
-              value={
-                draft === "" || invalid ? Number(value) * scale : Number(draft)
-              }
+              value={[
+                draft === "" || invalid ? Number(value) * scale : Number(draft),
+              ]}
               disabled={disabled}
-              onChange={(event) => edit(event.target.value)}
-              onPointerUp={(event) => commit(event.currentTarget.value)}
-              onKeyUp={(event) => commit(event.currentTarget.value)}
-              onBlur={() => commit()}
-              className="h-2 flex-1 border-0 p-0 accent-primary shadow-none"
+              onValueChange={([next]) => edit(String(next))}
+              onValueCommit={([next]) => commit(String(next))}
+              className="flex-1"
             />
           )}
           <Input

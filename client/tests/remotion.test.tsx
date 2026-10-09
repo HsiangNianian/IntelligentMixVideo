@@ -18,6 +18,13 @@ import { remotionJob, remotionVersion } from "./remotion-fixtures";
 import { latestCopy, latestCode } from "./remotion-version-helpers";
 import { remotionServer as server } from "./remotion-server";
 
+/** 字号滑块步长 0.1，PageUp 每次增加 10 步即 1 号；每次按键都会提交一次变化，模拟拖动后松手。 */
+function slideFontSize(points: number) {
+  const slider = screen.getByRole("slider", { name: "字号滑块" });
+  for (let index = 0; index < points; index += 1)
+    fireEvent.keyDown(slider, { key: "PageUp" });
+}
+
 // 首次消息请求尚未返回、没有播放器时，只锁定操作，不显示预览渲染遮罩。
 test("消息等待不冒充预览渲染", async () => {
   server((path) =>
@@ -34,7 +41,8 @@ test("消息等待不冒充预览渲染", async () => {
   );
   expect(screen.queryByTitle("Remotion 字效播放器")).toBeNull();
   expect(screen.queryByText("正在渲染预览…") !== null).toBe(false);
-  expect(screen.getByText("正在处理…")).toBeTruthy();
+  // 加载器根节点是块级元素，所在容器不能是段落，否则形成 <p><div> 非法嵌套。
+  expect(screen.getByText("正在处理…").tagName).not.toBe("P");
   expect(
     screen.getByRole("button", { name: "发送" }).hasAttribute("disabled"),
   ).toBe(true);
@@ -253,13 +261,8 @@ test("参数连续预览，保存成功后才能复制新代码", async () => {
   });
   render(<RemotionWorkspace />);
   await generate();
-  fireEvent.change(screen.getByLabelText("字号滑块"), {
-    target: { value: "72" },
-  });
-  fireEvent.pointerUp(screen.getByLabelText("字号滑块"));
-  fireEvent.change(screen.getByLabelText("字号滑块"), {
-    target: { value: "88" },
-  });
+  slideFontSize(8);
+  slideFontSize(16);
   expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("88");
   expect(latestCopy().hasAttribute("disabled")).toBe(true);
   expect(submitted).toEqual({});
@@ -287,13 +290,9 @@ test("多项参数实时预览，过期回执被忽略", async () => {
   const iframe = screen.getByTitle<HTMLIFrameElement>("Remotion 字效播放器");
   const channel = new URL(iframe.src).hash.slice(1);
   const post = spyOn(iframe.contentWindow!, "postMessage");
-  fireEvent.change(screen.getByLabelText("字号滑块"), {
-    target: { value: "72" },
-  });
+  slideFontSize(8);
   const first = post.mock.calls.at(-1)![0];
-  fireEvent.change(screen.getByLabelText("字号滑块"), {
-    target: { value: "88" },
-  });
+  slideFontSize(16);
   fireEvent.change(screen.getByLabelText("文字"), {
     target: { value: "本地新标题" },
   });
@@ -710,6 +709,45 @@ test("图片限制与剪贴板失败反馈", async () => {
   );
   fireEvent.click(latestCopy());
   await screen.findByText("复制失败，请展开代码后手动选择复制。");
+});
+
+// 参考图可直接拖入输入区：不支持的格式提示错误，合规图片显示预览并可移除；拖入时出现遮罩。
+test("拖入参考图校验格式并显示预览", async () => {
+  server();
+  render(<RemotionWorkspace />);
+  const form = screen.getByLabelText("字效描述").closest("form")!;
+  fireEvent.dragOver(form, { dataTransfer: { files: [] } });
+  expect(screen.getByText("松开以添加参考图片")).toBeTruthy();
+  fireEvent.drop(form, {
+    dataTransfer: {
+      files: [new File(["gif"], "reference.gif", { type: "image/gif" })],
+    },
+  });
+  expect(screen.getByRole("alert").textContent).toBe(
+    "请选择不超过 10 MiB 的 PNG、JPEG 或 WebP 图片。",
+  );
+  fireEvent.drop(form, {
+    dataTransfer: {
+      files: [new File(["png"], "dropped.png", { type: "image/png" })],
+    },
+  });
+  expect(screen.getByAltText("参考图片：dropped.png")).toBeTruthy();
+  expect(screen.queryByRole("alert")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "移除参考图片" }));
+  expect(screen.queryByAltText("参考图片：dropped.png")).toBeNull();
+});
+
+// 首轮结束后不能再附图，但拖放仍须阻止浏览器默认打开文件，避免离开应用丢失未保存状态。
+test("不可附图时拖放仍阻止默认行为且不添加图片", async () => {
+  server();
+  render(<RemotionWorkspace />);
+  await generate();
+  const form = screen.getByLabelText("字效描述").closest("form")!;
+  const file = new File(["png"], "late.png", { type: "image/png" });
+  expect(fireEvent.dragOver(form, { dataTransfer: { files: [file] } })).toBe(false);
+  expect(screen.queryByText("松开以添加参考图片")).toBeNull();
+  expect(fireEvent.drop(form, { dataTransfer: { files: [file] } })).toBe(false);
+  expect(screen.queryByAltText("参考图片：late.png")).toBeNull();
 });
 
 // 参数写入结果未知时保留草稿，先只读恢复确认任务，不自动重发。
