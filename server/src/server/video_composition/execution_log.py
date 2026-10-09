@@ -123,7 +123,7 @@ MODULES = ("request", "template", "asr", "segmentation", "matching", "timeline",
 GROUPS = {
     "template": "template", "asr": "asr", "segmentation": "segmentation",
     "matching": "matching", "match_submit": "matching", "match_query": "matching",
-    "assembling": "timeline", "ims_storage": "timeline", "submitting": "timeline", "ims_submit": "timeline",
+    "assembling": "timeline", "material_probe": "timeline", "ims_storage": "timeline", "submitting": "timeline", "ims_submit": "timeline",
     "rendering": "zos", "ims_query": "zos", "playback": "zos", "zos_upload": "zos",
 }
 
