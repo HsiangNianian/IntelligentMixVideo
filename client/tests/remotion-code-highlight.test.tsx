@@ -8,6 +8,7 @@ import type { Diagnostic } from "@/features/remotion_templates/model";
 import { remotionVersion } from "./remotion-fixtures";
 import { remotionServer } from "./remotion-server";
 import { fetchMock } from "./setup";
+import { diagnostics } from "@/features/remotion_templates/api";
 
 /** 构造一条带一基行列的诊断，与服务端 CodeDiagnostic 字段一致。 */
 function diagnostic(
@@ -19,7 +20,7 @@ function diagnostic(
     source: "lsp",
     severity,
     message: severity === "error" ? "类型不匹配" : "该变量已声明但未被读取",
-    file: "Template.tsx",
+    file: "Export.tsx",
     code: severity === "error" ? "2322" : "6133",
     range: {
       start: { line: line - 1, character: 4 },
@@ -190,7 +191,7 @@ test("诊断失败保留代码显示并允许重试", async () => {
 });
 
 // 未保存参数时与复制代码一致：不发起诊断请求。
-test("版本卡片在禁用状态不请求诊断", () => {
+test("版本卡片在禁用状态不请求诊断", async () => {
   remotionServer();
   render(
     <VersionCard
@@ -206,4 +207,85 @@ test("版本卡片在禁用状态不请求诊断", () => {
   expect(
     fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/diagnostics")),
   ).toHaveLength(0);
+  await waitFor(() => expect(screen.getByLabelText("模板 TSX 代码").textContent).toContain("今日灵感"));
+});
+
+// 外部文件与越界位置只展示清单，不标到当前导出文件或提供无效跳转。
+test("其他文件和越界诊断不标记当前导出源码", () => {
+  render(<CodeBlock code={"one\ntwo"} fileName="Export.tsx" diagnostics={[
+    diagnostic(1, "error", { file: "Template.tsx", message: "原始组件诊断" }),
+    diagnostic(2, "error", { file: "contract.tsx", message: "调用点诊断" }),
+    diagnostic(99, "error", { message: "越界诊断" }),
+    diagnostic(1, "error", { file: undefined, message: "无文件诊断" }),
+  ]} />);
+  expect(screen.queryByLabelText(/第 .* 行：/)).toBeNull();
+  expect(screen.queryAllByRole("button")).toHaveLength(0);
+  expect(screen.getByText(/Template.tsx.*原始组件诊断/)).toBeTruthy();
+  expect(screen.getByText(/contract.tsx.*调用点诊断/)).toBeTruthy();
+});
+
+// 成功读取后的再次展开复用报告，避免持续生成只读 worker。
+test("重新展开卡片复用成功诊断", async () => {
+  let signal: AbortSignal | null | undefined;
+  let calls = 0;
+  remotionServer((path, options) => {
+    if (!path.endsWith("/diagnostics")) return;
+    calls++;
+    signal = options?.signal;
+    return Response.json({ passed: false, diagnostics: [diagnostic(1, "warning")] });
+  });
+  const view = render(<VersionCard version={remotionVersion()} selected={false} latest={false}
+    disabled={false} previewDisabled={false} onPreview={() => {}} />);
+  fireEvent.click(screen.getByRole("button", { name: "展开 V1 代码" }));
+  await screen.findByText("1 项诊断");
+  fireEvent.click(screen.getByRole("button", { name: "展开 V1 代码" }));
+  fireEvent.click(screen.getByRole("button", { name: "展开 V1 代码" }));
+  expect(calls).toBe(1);
+  expect(signal?.aborted).toBe(false);
+  view.unmount();
+});
+
+// 客户端超时覆盖服务端允许的 600 秒上限；调用方取消仍能立刻中断并清理定时器。
+test("慢诊断使用独立超时并支持调用方取消", async () => {
+  const timer = spyOn(window, "setTimeout");
+  const clear = spyOn(window, "clearTimeout");
+  remotionServer((_path, options) => new Promise<Response>((_resolve, reject) => {
+    options?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+  }));
+  const controller = new AbortController();
+  const request = diagnostics("version-1", controller.signal);
+  expect(timer.mock.calls.at(-1)?.[1]).toBeGreaterThan(600_000);
+  const timerId = timer.mock.results.at(-1)?.value;
+  controller.abort();
+  await expect(request).rejects.toThrow("Aborted");
+  expect(clear.mock.calls.some(([id]) => id === timerId)).toBe(true);
+});
+
+// 服务端明确失败但缺少定位详情时不得把空清单呈现为代码检查通过。
+test("没有定位信息的失败诊断仍显示未通过", async () => {
+  remotionServer((path) => path.endsWith("/diagnostics")
+    ? Response.json({ passed: false, diagnostics: [] }) : undefined);
+  render(<VersionCard version={remotionVersion()} selected={false} latest={false}
+    disabled={false} previewDisabled={false} onPreview={() => {}} />);
+  fireEvent.click(screen.getByRole("button", { name: "展开 V1 代码" }));
+  expect(await screen.findByText("代码检查未通过，服务端未提供定位信息。")).toBeTruthy();
+});
+
+// 退出卡片时取消慢诊断，释放本地请求监听且不在卸载后写入状态。
+test("卸载版本卡片中止未完成的诊断", async () => {
+  let signal: AbortSignal | null | undefined;
+  remotionServer((path, options) => {
+    if (!path.endsWith("/diagnostics")) return;
+    signal = options?.signal;
+    return new Promise<Response>((_resolve, reject) => {
+      signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+    });
+  });
+  const view = render(<VersionCard version={remotionVersion()} selected={false} latest={false}
+    disabled={false} previewDisabled={false} onPreview={() => {}} />);
+  fireEvent.click(screen.getByRole("button", { name: "展开 V1 代码" }));
+  await screen.findByText("正在检查代码…");
+  expect(signal?.aborted).toBe(false);
+  view.unmount();
+  expect(signal?.aborted).toBe(true);
 });

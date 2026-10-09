@@ -72,7 +72,7 @@ export interface Diagnostic {
   range?: TextRange;
   field?: string;
 }
-/** 成功版本的只读诊断结论；passed 为 false 表示存在 error 级诊断。 */
+/** 成功版本的只读诊断结论；未通过时可能只有失败检查而没有定位信息。 */
 export interface DiagnosticsReport {
   passed: boolean;
   diagnostics: Diagnostic[];

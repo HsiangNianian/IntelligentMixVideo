@@ -78,7 +78,8 @@ async function prepareSource() {
   }
   await fs.writeFile(`${root}/Template.tsx`, formatted, "utf8");
   try {
-    const exported = await exportTemplate(formatted, request.default_parameters, request.composition);
+    // Read-only diagnostics use the exact sealed bytes displayed by the client.
+    const exported = request.export_code ?? await exportTemplate(formatted, request.default_parameters, request.composition);
     await fs.writeFile(`${root}/Export.tsx`, exported, "utf8");
     checks.push({ name: "export_source", status: "pass", message: "Default component export accepted." });
   } catch (error) {

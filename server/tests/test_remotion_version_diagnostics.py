@@ -7,6 +7,9 @@
 
 import asyncio
 import json
+import os
+import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -213,6 +216,8 @@ def test_diagnostics_return_real_lsp_ranges(published):
     assert request["code"] == published.version.candidate.tsx_code
     assert request["default_parameters"] == published.version.candidate.default_config
     assert request["parameter_schema"] == published.version.candidate.config_schema
+    accepted = published.store.root / "accepted" / str(published.version.id)
+    assert request["export_code"] == (accepted / "Export.tsx").read_text()
 
 
 def test_clean_typecheck_passes_without_diagnostics(published):
@@ -360,3 +365,127 @@ def test_diagnostics_do_not_create_versions_or_jobs(published):
     project = published.store.project(published.version.project_id)
     assert project.current_version_id == before
     assert [item.id for item in published.store.versions(published.version.project_id)] == [published.version.id]
+
+
+@pytest.mark.parametrize("contents", ["{}", '{"report": {}}', "[]", "null", '{"component": {}}'])
+def test_malformed_sealed_validation_returns_404(published, contents):
+    """合法 JSON 的缺字段或错误容器均视为无效产物，下载与诊断不得返回 500。"""
+    accepted = published.store.root / "accepted" / str(published.version.id)
+    (accepted / "tool-validation.json").write_text(contents)
+    with client_for(published) as client:
+        for suffix in ("diagnostics", "artifacts/Export.tsx"):
+            assert client.get(f"/api/templates/versions/{published.version.id}/{suffix}").status_code == 404
+    assert published.code_renderer.requests == []
+
+
+@pytest.mark.parametrize("failure", [None, RuntimeError("worker unavailable"), asyncio.CancelledError()])
+def test_diagnostic_attempts_are_removed_on_every_exit(published, failure):
+    """成功、异常和取消均清理尝试目录，重复读取不积累输入、日志或报告。"""
+    published.code_renderer.payload = {"passed": True, "checks": [
+        {"name": name, "status": "pass"} for name in ("source_policy", "export_source", "typescript")
+    ]}
+    published.code_renderer.failure = failure
+    runtime = Runtime(published.store, published.harness, published.settings)
+    component = ComponentDefinition(code=CODE, parameter_schema=published.version.candidate.config_schema,
+                                    default_parameters=published.version.candidate.default_config)
+    for _ in range(3):
+        if failure is None:
+            assert asyncio.run(runtime.code_report(component, export_code=CODE)).passed
+        else:
+            with pytest.raises(asyncio.CancelledError if isinstance(failure, asyncio.CancelledError) else ValidationUnavailable):
+                asyncio.run(runtime.code_report(component, export_code=CODE))
+        assert list((published.store.root / "diagnostics").iterdir()) == []
+        assert not runtime.diagnostics_lock.locked()
+
+
+@pytest.mark.parametrize("stage", ["directory", "request"])
+def test_diagnostic_setup_io_failure_returns_503(published, monkeypatch, stage):
+    """创建尝试目录或写入输入失败均映射成可重试的 503 并清理临时数据。"""
+    if stage == "directory":
+        def unavailable_attempt(*_):
+            """模拟只读磁盘。"""
+            raise PermissionError("PRIVATE_PATH")
+        monkeypatch.setattr(ToolValidator, "_attempt", unavailable_attempt)
+    else:
+        original = Path.write_text
+        def failed_write(path, *args, **kwargs):
+            """仅令诊断输入写入失败，不影响测试数据库与夹具。"""
+            if path.name == "request.json":
+                raise OSError("PRIVATE_PATH disk full")
+            return original(path, *args, **kwargs)
+        monkeypatch.setattr(Path, "write_text", failed_write)
+    with client_for(published) as client:
+        response = client.get(f"/api/templates/versions/{published.version.id}/diagnostics")
+    assert response.status_code == 503 and "PRIVATE_PATH" not in response.text
+    assert list((published.store.root / "diagnostics").iterdir()) == []
+
+
+def test_concurrent_diagnostics_do_not_spawn_multiple_workers(published, monkeypatch):
+    """慢检查占用期间返回可重试忙状态，取消后释放 worker 槽与所有临时文件。"""
+    async def scenario():
+        """在同一事件循环内持有一次检查并验证并发与取消边界。"""
+        started = asyncio.Event()
+        async def waiting_worker(*_, **__):
+            """模拟仍在执行的受控 worker。"""
+            started.set()
+            await asyncio.Event().wait()
+        monkeypatch.setattr(published.code_renderer, "run_worker", waiting_worker)
+        runtime = Runtime(published.store, published.harness, published.settings)
+        component = ComponentDefinition(code=CODE, parameter_schema=published.version.candidate.config_schema,
+                                        default_parameters=published.version.candidate.default_config)
+        task = asyncio.create_task(runtime.code_report(component, export_code=CODE))
+        await asyncio.wait_for(started.wait(), 2)
+        try:
+            with pytest.raises(ValidationUnavailable, match="busy"):
+                await runtime.code_report(component, export_code=CODE)
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert not runtime.diagnostics_lock.locked()
+        assert list((published.store.root / "diagnostics").iterdir()) == []
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("payload", [[], {"checks": [{"name": "source_policy", "status": "pass"}, {"name": "export_source", "status": "pass"}, {"name": "typescript", "status": "pass"}], "diagnostics": None}])
+def test_malformed_worker_reports_return_503(published, payload):
+    """损坏 worker 协议不得作为代码通过，也不泄漏成内部 500。"""
+    published.code_renderer.payload = payload
+    with client_for(published) as client:
+        assert client.get(f"/api/templates/versions/{published.version.id}/diagnostics").status_code == 503
+
+
+def test_worker_checks_exact_export_coordinates(tmp_path):
+    """真实语言服务只静态检查固定夹具，保留导出文件字节和零基行号；不执行 TSX。"""
+    renderer = Path(__file__).parents[1] / "src/server/remotion"
+    node = shutil.which("node")
+    if node is None or not (renderer / "node_modules/typescript").is_dir():
+        pytest.skip("Node and pinned renderer dependencies are required for static typecheck")
+    exported = "// sealed export\n" * 8 + "const invalid: string = 42;\nexport default function Export(){return null;}\n"
+    (tmp_path / "request.json").write_text(json.dumps({
+        "mode": "code", "code": "export default function C(){return null;}",
+        "default_parameters": {}, "parameter_schema": {"type": "object"},
+        "composition": {"width": 1080, "height": 1920, "fps": 30, "duration_frames": 30},
+        "export_code": exported,
+    }))
+    result = subprocess.run([node, str(renderer / "tool-validation-worker.mjs")], cwd=tmp_path,
+        env={"PATH": os.environ.get("PATH", ""), "IMV_WORK_ROOT": str(tmp_path), "IMV_RENDERER_ROOT": str(renderer)},
+        capture_output=True, text=True, timeout=30, check=False)
+    assert result.returncode == 0, result.stderr
+    report = json.loads((tmp_path / "renderer.json").read_text())
+    assert report["passed"] is False
+    assert (tmp_path / "Export.tsx").read_text() == exported
+    error = next(item for item in report["diagnostics"] if item.get("file") == "Export.tsx" and item.get("code") == "2322")
+    assert error["range"]["start"] == {"line": 8, "character": 6}
+
+
+def test_failed_worker_stage_cannot_be_overridden_by_pass_flag(published):
+    """互相矛盾的报告不得把失败阶段当成通过，即使 worker 顶层误报 passed=true。"""
+    published.code_renderer.payload = {"passed": True, "checks": [
+        {"name": "source_policy", "status": "pass"},
+        {"name": "export_source", "status": "pass"},
+        {"name": "typescript", "status": "failed"},
+    ], "diagnostics": []}
+    with client_for(published) as client:
+        response = client.get(f"/api/templates/versions/{published.version.id}/diagnostics")
+    assert response.status_code == 200 and response.json()["passed"] is False

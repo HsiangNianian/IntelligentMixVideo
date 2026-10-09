@@ -32,6 +32,7 @@ function summary(item: Diagnostic): string {
   const line = lineOf(item);
   const column = item.range ? item.range.start.character + 1 : null;
   return [
+    item.file,
     line === null ? "文件级" : `第 ${line} 行${column === null ? "" : ` 第 ${column} 列`}`,
     item.severity,
     item.code ? `TS${item.code}` : item.source,
@@ -59,15 +60,19 @@ export function CodeBlock({
 }) {
   const rows = useRef<Map<number, HTMLDivElement>>(new Map());
   const lines = code.split("\n");
+  /** 只允许当前文件的有效行号跳转；其他文件保留其诊断原文和文件名。 */
+  function targetLine(item: Diagnostic): number | null {
+    const line = lineOf(item);
+    return item.file === fileName && line !== null && Number.isSafeInteger(line) &&
+      line >= 1 && line <= lines.length ? line : null;
+  }
   /** 诊断按 1 基行号分组，同一行的多条合并标记。 */
   const byLine = new Map<number, Diagnostic[]>();
   for (const item of diagnostics) {
-    const line = lineOf(item);
-    if (line === null || line < 1 || line > lines.length) continue;
+    const line = targetLine(item);
+    if (line === null) continue;
     byLine.set(line, [...(byLine.get(line) ?? []), item]);
   }
-  const located = diagnostics.filter((item) => lineOf(item) !== null);
-  const unlocated = diagnostics.length - located.length;
   /** 滚动并聚焦目标行；不触发预览或版本选择。 */
   function reveal(line: number) {
     const row = rows.current.get(line);
@@ -166,7 +171,7 @@ export function CodeBlock({
           className="max-h-40 overflow-auto border-t px-4 py-2 text-xs"
         >
           {diagnostics.map((item, offset) => {
-            const line = lineOf(item);
+            const line = targetLine(item);
             return (
               <li key={offset} className="flex items-start gap-2 py-0.5">
                 <span
@@ -197,11 +202,6 @@ export function CodeBlock({
               </li>
             );
           })}
-          {unlocated > 0 && (
-            <li className="py-0.5 text-muted-foreground">
-              另有 {unlocated} 条无位置信息的诊断。
-            </li>
-          )}
         </ul>
       )}
       <p className="border-t px-4 py-2 text-[11px] text-muted-foreground">

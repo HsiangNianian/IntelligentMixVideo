@@ -350,6 +350,7 @@ async def diagnostics(version_id: UUID, service: Service) -> CodeValidationRepor
     accepted = service.store.root / "accepted" / str(version.id)
     try:
         verify_artifacts(version.candidate, version.spec, version.validation, accepted)
+        export_code = (accepted / "Export.tsx").read_text(encoding="utf-8")
     except (ValueError, OSError) as exc:
         raise NotFound("accepted artifact unavailable") from exc
     component = ComponentDefinition(
@@ -358,7 +359,7 @@ async def diagnostics(version_id: UUID, service: Service) -> CodeValidationRepor
         default_parameters=version.candidate.default_config,
     )
     try:
-        return await service.code_report(component)
+        return await service.code_report(component, export_code=export_code)
     except (ValidationUnavailable, ExecutionFailure) as exc:
         raise HTTPException(503, "代码诊断服务暂不可用，请稍后重试。") from exc
 

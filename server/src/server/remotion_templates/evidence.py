@@ -67,17 +67,6 @@ def verify_artifacts(
     required = {"Template.tsx", "candidate.json", "spec.json"}
     if report.profile == "v2":
         required |= {"Export.tsx", "interactive.js", "tool-validation.json"}
-    if report.profile == "v2":
-        from .tools.contracts import RenderValidationReport
-        data = json.loads((directory / "tool-validation.json").read_text())
-        component = {"code": candidate.tsx_code, "parameter_schema": candidate.config_schema, "default_parameters": candidate.default_config}
-        validation = RenderValidationReport.model_validate(data["report"])
-        if (spec.schema_version != "2" or data["component"] != component or not validation.passed
-            or validation.composition.duration_frames != spec.composition.duration_in_frames
-            or not {"default_render", "configured_render"} <= {check.name for check in validation.checks}
-            or not validation.code_validation.passed
-            or any(check.status != "passed" for check in [*validation.checks, *validation.tests])):
-            raise ValueError("Runtime validation does not belong to the published component")
     for check_name, artifact in (
         ("interactive_bundle", "interactive.js"),
         ("export_source", "Export.tsx"),
@@ -99,6 +88,19 @@ def verify_artifacts(
     for name, expected in report.artifacts.items():
         if Path(name).name != name or digest(directory / name) != expected:
             raise ValueError("Artifact evidence changed; validate current bytes again")
+    if report.profile == "v2":
+        from .tools.contracts import RenderValidationReport
+        data = json.loads((directory / "tool-validation.json").read_text())
+        if not isinstance(data, dict) or not {"report", "component"} <= data.keys():
+            raise ValueError("Runtime validation artifact is incomplete")
+        component = {"code": candidate.tsx_code, "parameter_schema": candidate.config_schema, "default_parameters": candidate.default_config}
+        validation = RenderValidationReport.model_validate(data["report"])
+        if (spec.schema_version != "2" or data["component"] != component or not validation.passed
+            or validation.composition.duration_frames != spec.composition.duration_in_frames
+            or not {"default_render", "configured_render"} <= {check.name for check in validation.checks}
+            or not validation.code_validation.passed
+            or any(check.status != "passed" for check in [*validation.checks, *validation.tests])):
+            raise ValueError("Runtime validation does not belong to the published component")
     if (directory / "Template.tsx").read_text() != candidate.tsx_code:
         raise ValueError("Validated source differs from candidate")
     if (

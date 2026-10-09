@@ -5,6 +5,8 @@ import json
 import logging
 import sqlite3
 from contextlib import suppress
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from uuid import UUID
 
 from .deletion import finish as finish_deletion
@@ -15,7 +17,7 @@ from .models import DialogueOutput, EditTemplateRequest, JobError, JobInput, Tas
 from .parameters import parameter_changes
 from .provider import Budget, ExecutionFailure, ModelFailure, Provider
 from .store import Conflict, Store
-from .tool_validation import ToolValidator
+from .tool_validation import ToolValidator, ValidationUnavailable
 from .tools.contracts import CodeValidationReport, ComponentDefinition
 
 
@@ -35,6 +37,7 @@ class Runtime:
         self.deletions: dict[UUID, asyncio.Task] = {}
         self.lock = None
         self.client_configs: dict[UUID, Settings] = {}
+        self.diagnostics_lock = asyncio.Lock()
 
     def initialize(self) -> None:
         """Lock the state directory before recovery so a second server cannot interrupt live jobs."""
@@ -147,10 +150,21 @@ class Runtime:
         self.notify(result.id, config)
         return result
 
-    async def code_report(self, component: ComponentDefinition) -> CodeValidationReport:
-        """Read-only isolated typecheck for an accepted version; never queues or publishes work."""
-        validator = ToolValidator(self.harness.renderer, self.store.root / "diagnostics")
-        return await validator.code_report(component)
+    async def code_report(
+        self, component: ComponentDefinition, *, export_code: str
+    ) -> CodeValidationReport:
+        """Check sealed export bytes in disposable storage; bound concurrent read-only workers."""
+        if self.diagnostics_lock.locked():
+            raise ValidationUnavailable("Code diagnostics are busy; retry later")
+        async with self.diagnostics_lock:
+            try:
+                root = self.store.root / "diagnostics"
+                root.mkdir(parents=True, exist_ok=True)
+                with TemporaryDirectory(prefix="read-", dir=root) as directory:
+                    validator = ToolValidator(self.harness.renderer, Path(directory))
+                    return await validator.code_report(component, export_code=export_code)
+            except OSError as exc:
+                raise ValidationUnavailable("Code diagnostics storage is unavailable") from exc
 
     async def cancel(self, job_id: UUID):
         """Persist cancellation first so even a late model result cannot publish a revision."""

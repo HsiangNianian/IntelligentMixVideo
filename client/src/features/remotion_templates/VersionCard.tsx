@@ -75,7 +75,7 @@ export function VersionCard({
   }
   /** 读取服务端隔离类型检查；失败只影响诊断区，代码与复制照常可用。 */
   async function loadDiagnostics() {
-    if (disabled || diagnosticRequest.current) return;
+    if (disabled || loaded || diagnosticRequest.current) return;
     const signal = scope.current.signal;
     setDiagnosticsNotice("正在检查代码…");
     setDiagnosticsFailed(false);
@@ -84,8 +84,8 @@ export function VersionCard({
         if (signal.aborted) return;
         setItems(report.diagnostics);
         setLoaded(true);
-        // 无诊断时不加提示，避免长期占用卡片空间。
-        setDiagnosticsNotice("");
+        setDiagnosticsNotice(!report.passed && !report.diagnostics.length
+          ? "代码检查未通过，服务端未提供定位信息。" : "");
       })
       .catch((reason) => {
         if (signal.aborted) return;
@@ -105,7 +105,6 @@ export function VersionCard({
   /** 显式重试诊断；不重试代码读取，也不改变预览选择。 */
   function retryDiagnostics() {
     if (disabled || diagnosticRequest.current) return;
-    diagnosticRequest.current = null;
     void loadDiagnostics();
   }
   /** 展开时同时读取代码与诊断；两者互不阻塞。 */
@@ -243,7 +242,7 @@ export function VersionCard({
                 ? "正在读取代码…"
                 : diagnosticsNotice
             }
-            onRetry={diagnosticsFailed ? retryDiagnostics : undefined}
+            onRetry={diagnosticsFailed && !disabled ? retryDiagnostics : undefined}
           />
         ) : (
           <pre
