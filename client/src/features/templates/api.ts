@@ -17,10 +17,10 @@ import { defaultEditor, draftEffects, type Category, type Draft, type Editor, ty
 export type Environment = "local" | "cloud";
 
 /** 本地操作仅在桌面中可用；IPC 字符串错误统一转成 Error 供现有弹窗显示。 */
-async function local<T>(operation: string, id?: string, draft?: number[]): Promise<T> {
+async function local<T>(operation: string, id?: string, draft?: number[], library?: string): Promise<T> {
   if (!isTauri()) throw new Error("本地模式需要在桌面客户端中使用");
   try {
-    return await invoke<T>("local_templates", { operation, id, draft });
+    return await invoke<T>("local_templates", { operation, id, draft, library });
   } catch (error) {
     throw error instanceof Error ? error : new Error(String(error));
   }
@@ -146,8 +146,8 @@ export function getTemplate(id: string, environment: Environment = "cloud", sign
   }, signal);
 }
 
-/** 统一创建、更新及另存为；只有调用方明确传 ID 时才覆盖已有模板。 */
-export function saveTemplate(draft: Draft, id?: string, environment: Environment = "cloud"): Promise<Template> {
+/** 统一创建、更新及另存为；只有调用方明确传 ID 时才覆盖已有模板，本地更新携带打开时所属的库。 */
+export function saveTemplate(draft: Draft, id?: string, environment: Environment = "cloud", library?: string): Promise<Template> {
   if (!draft.name.trim()) return Promise.reject(new Error("请输入模板名称"));
   const effect_ids = draftEffects(draft);
   if (!effect_ids.length)
@@ -170,7 +170,7 @@ export function saveTemplate(draft: Draft, id?: string, environment: Environment
     templateId: id,
   });
   const payload = toBinary(SaveTemplateRequestSchema, message);
-  if (environment === "local") return local("save", id, Array.from(payload));
+  if (environment === "local") return local("save", id, Array.from(payload), library);
   return cloud(async (requestSignal) => {
     const response = await cloudRequest("/template", "POST", requestSignal, payload);
     const saved = fromBinary(SaveTemplateResponseSchema, new Uint8Array(await response.arrayBuffer()));

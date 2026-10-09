@@ -6,6 +6,7 @@ import { createComposition, getComposition } from "@/features/video_composition/
 import { requestSegmentation } from "@/features/segmentation/api";
 import { PluginSettings } from "@/features/settings/PluginSettings";
 import { listPlugins, readSettings, saveSettings, type Plugin, type Values } from "@/features/settings/api";
+import { apiBase, setApiBase } from "@/lib/api-base";
 import { fetchMock, mockDesktop } from "./setup";
 
 // 现有插件用例验证 Debug 路径；普通模式用例显式覆盖，公共夹具逐例重置开关。
@@ -141,21 +142,49 @@ test("读取失败及卸载清理", async () => {
   await waitFor(() => expect(signal?.aborted).toBe(true));
 });
 
-// 场景：通用面板读取已存模板路径，保存时与后端地址一并写入 $client，不丢失任一字段。
-test("保存本地模板路径", async () => {
-  let stored: Record<string, Values> = { $client: { api_url: "http://api.test:8000", template_path: "/old/templates.json" } };
+/** 模拟宿主按字段合并 $client，并记录每次提交的字段。 */
+function mockClientSettings(stored: Record<string, Values>) {
+  const sent: Values[] = [];
   mockDesktop(async (command, args) => {
     if (command !== "local_settings") throw new Error(`未知命令：${command}`);
-    if (args?.id) stored = { ...stored, [String(args.id)]: structuredClone(args.values as Values) };
+    if (args?.id) {
+      sent.push(structuredClone(args.values as Values));
+      stored[String(args.id)] = { ...stored[String(args.id)], ...(args.values as Values) };
+    }
     return structuredClone(stored);
   });
   fetchMock.mockResolvedValueOnce(Response.json([]));
   render(<PluginSettings />);
-  const input = await screen.findByDisplayValue<HTMLInputElement>("/old/templates.json");
-  fireEvent.change(input, { target: { value: " /new/templates.json " } });
+  return sent;
+}
+
+// 回归：未配置固定地址时只改模板路径，不把运行时后端地址存成固定地址，避免下次启动跳过内置服务。
+test("只改模板路径不保存运行时后端地址", async () => {
+  const stored: Record<string, Values> = { $client: { template_path: "/old/templates.json" } };
+  const sent = mockClientSettings(stored);
+  fireEvent.change(await screen.findByDisplayValue("/old/templates.json"), { target: { value: " /new/templates.json " } });
   fireEvent.submit(screen.getByRole("form", { name: "通用设置" }));
-  await screen.findByText(/返回主页后使用新模板路径/);
-  expect(stored.$client).toEqual({ api_url: "http://api.test:8000", template_path: "/new/templates.json" });
+  await screen.findByText(/本地模板读写立即使用新路径/);
+  expect(sent).toEqual([{ template_path: "/new/templates.json" }]);
+  expect(stored.$client).toEqual({ template_path: "/new/templates.json" });
+});
+
+// 回归：其他实例在表单打开后保存了新路径，本实例只改地址时不把路径改回打开时的旧值。
+test("只改后端地址不覆盖其他实例保存的路径", async () => {
+  const stored: Record<string, Values> = { $client: { template_path: "/old/templates.json" } };
+  const sent = mockClientSettings(stored);
+  await screen.findByDisplayValue("/old/templates.json");
+  stored.$client = { template_path: "/other-instance/templates.json" };
+  const previous = apiBase();
+  try {
+    fireEvent.change(screen.getByLabelText("后端服务地址"), { target: { value: "http://fixed.test:9000" } });
+    fireEvent.submit(screen.getByRole("form", { name: "通用设置" }));
+    await screen.findByText(/本地模板读写立即使用新路径/);
+    expect(sent).toEqual([{ api_url: "http://fixed.test:9000" }]);
+    expect(stored.$client).toEqual({ template_path: "/other-instance/templates.json", api_url: "http://fixed.test:9000" });
+  } finally {
+    setApiBase(previous);
+  }
 });
 
 // 场景：清空可选数字、保留 false 及当前 Schema 未展示的 Debug 值；孤立存储不产生导航。

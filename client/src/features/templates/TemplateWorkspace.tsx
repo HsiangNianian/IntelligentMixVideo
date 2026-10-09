@@ -149,7 +149,7 @@ export function TemplateWorkspace({ selection = null, onHome }: {
     setBusy(true);
     setError("");
     try {
-      const saved = await api.saveTemplate(draft, current?.template_id, environment);
+      const saved = await api.saveTemplate(draft, current?.template_id, environment, current?.library);
       if (!mounted.current) return;
       const next = toDraft(saved);
       setCurrent(saved);

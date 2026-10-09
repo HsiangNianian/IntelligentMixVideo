@@ -135,6 +135,9 @@ test("本地和云端存储严格分流", async () => {
     expect(fromBinary(SaveTemplateRequestSchema, Uint8Array.from(saveArgs.draft as number[])))
       .toMatchObject({ name: saved.name, description: saved.description });
     expect(fetchMock).not.toHaveBeenCalled();
+    // 本地更新携带打开时所属的库，由桌面端拒绝跨库写入。
+    await saveTemplate(toDraft(saved), saved.template_id, "local", "/library/templates.json");
+    expect(invoke.mock.calls.at(-1)![1]).toMatchObject({ operation: "save", id: saved.template_id, library: "/library/templates.json" });
     invoke.mockRejectedValueOnce("磁盘空间不足");
     await expect(saveTemplate(toDraft(saved), undefined, "local")).rejects.toThrow("磁盘空间不足");
     fetchMock.mockResolvedValueOnce(protobufListResponse([]));

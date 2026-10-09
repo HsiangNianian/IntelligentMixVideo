@@ -1,5 +1,5 @@
 /** 设置对话框主体：左侧纵向模块导航（首项通用展示环境与连接），右侧滚动表单；选择模块后显式保存到客户端本地。 */
-import { useEffect, useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { Puzzle, Settings2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -42,11 +42,17 @@ function GeneralSection({ onCancel }: { onCancel?: () => void }) {
   const [url, setUrl] = useState(apiBase);
   // 读取到已存值前禁用路径输入，避免用空值覆盖已保存路径。
   const [path, setPath] = useState<string>();
+  // 只提交相对打开时实际修改的字段：运行时分配的内置后端地址不能被存成固定地址，也不改回其他实例保存的路径。
+  const initial = useRef({ url: apiBase(), path: "" });
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   useEffect(() => {
     let active = true;
-    if (isTauri()) readSettings().then(saved => { if (active) setPath(String(saved.$client?.template_path ?? "")); }, () => undefined);
+    if (isTauri()) readSettings().then(saved => {
+      if (!active) return;
+      initial.current.path = String(saved.$client?.template_path ?? "");
+      setPath(initial.current.path);
+    }, () => undefined);
     return () => { active = false; };
   }, []);
   return (
@@ -57,11 +63,14 @@ function GeneralSection({ onCancel }: { onCancel?: () => void }) {
         setSaving(true);
         setMessage("");
         try {
-          // 保存会整体替换 $client；先合并最新已存值，避免读取未完成时丢失模板路径。
-          const stored = (await readSettings()).$client ?? {};
-          await saveSettings("$client", { ...stored, api_url: url.trim(), ...(path === undefined ? {} : { template_path: path.trim() }) });
-          setApiBase(url.trim());
-          setMessage("已保存，后续请求使用新地址，返回主页后使用新模板路径；已有会话连接请重启客户端后切换。");
+          const values: Values = {};
+          if (url.trim() !== initial.current.url) values.api_url = url.trim();
+          if (path !== undefined && path.trim() !== initial.current.path) values.template_path = path.trim();
+          // 宿主按字段合并 $client，未修改的字段保持磁盘上的最新值。
+          if (Object.keys(values).length) await saveSettings("$client", values);
+          if (values.api_url !== undefined) setApiBase(url.trim());
+          initial.current = { url: url.trim(), path: path?.trim() ?? initial.current.path };
+          setMessage("已保存。后续请求使用新地址；本地模板读写立即使用新路径，已打开的本地模板需回主页重新打开；已有会话连接请重启客户端后切换。");
         } catch {
           setMessage("保存地址失败，请重试");
         } finally {

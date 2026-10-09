@@ -552,14 +552,17 @@ fn operate(
         }
         _ => unreachable!(),
     };
-    let temporary = path.with_extension("json.tmp");
-    let write = || -> std::io::Result<()> {
-        let mut file = fs::File::create(&temporary)?;
-        file.write_all(&serde_json::to_vec_pretty(&records)?)?;
-        file.sync_all()?;
-        fs::rename(&temporary, path)
-    };
-    if let Err(error) = write() {
+    // 同目录唯一临时文件独占创建，不跟随或截断用户已有文件；失败只清理本次创建的文件。
+    let bytes = serde_json::to_vec_pretty(&records).map_err(|error| error.to_string())?;
+    let temporary = path.with_extension(format!("json.{}.tmp", Uuid::new_v4()));
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(|error| format!("保存本地模板失败，原数据已保留：{error}"))?;
+    let written = file.write_all(&bytes).and_then(|_| file.sync_all());
+    drop(file);
+    if let Err(error) = written.and_then(|_| fs::rename(&temporary, path)) {
         let _ = fs::remove_file(&temporary);
         return Err(format!("保存本地模板失败，原数据已保留：{error}"));
     }
@@ -593,6 +596,29 @@ fn storage_path(app_data: &Path) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// 按当前设置定位模板文件后执行；编辑器传回打开时所属的库，库已变化时拒绝写入。
+fn run(
+    app_data: &Path,
+    operation: &str,
+    id: Option<&str>,
+    draft: Option<Value>,
+    library: Option<&str>,
+) -> Result<Value, String> {
+    let path = storage_path(app_data)?;
+    let current = path.to_string_lossy();
+    if library.is_some_and(|library| library != current) {
+        return Err(
+            "本地模板保存路径已变更，请回到主页重新打开模板；当前修改仍保留在编辑器中".into(),
+        );
+    }
+    let mut result = operate(&path, operation, id, draft)?;
+    // 单条记录附带所属库供编辑器保存时校验，不写入模板文件。
+    if let Some(record) = result.as_object_mut() {
+        record.insert("library".into(), json!(current));
+    }
+    Ok(result)
+}
+
 /// 每次操作按当前设置定位模板文件；不调用 Python 服务。
 #[tauri::command]
 pub fn local_templates(
@@ -600,6 +626,7 @@ pub fn local_templates(
     operation: String,
     id: Option<String>,
     draft: Option<Vec<u8>>,
+    library: Option<String>,
 ) -> Result<Value, String> {
     let draft = draft
         .map(|bytes| draft_from_protobuf(&bytes, id.as_deref()))
@@ -608,7 +635,13 @@ pub fn local_templates(
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    operate(&storage_path(&app_data)?, &operation, id.as_deref(), draft)
+    run(
+        &app_data,
+        &operation,
+        id.as_deref(),
+        draft,
+        library.as_deref(),
+    )
 }
 
 #[cfg(test)]
@@ -626,7 +659,7 @@ mod tests {
         super::operate(&directory.join("templates.json"), operation, id, draft)
     }
 
-    /// 未设置用默认文件；自定义路径（扩展名大小写均可）独立读写；非法路径与损坏设置报错。
+    /// 未设置用默认文件；自定义路径（扩展名大小写均可）独立读写；库变化后拒绝旧编辑器写入；非法路径与损坏设置报错。
     #[test]
     fn storage_path_follows_client_setting() {
         let dir = Directory::new();
@@ -643,14 +676,36 @@ mod tests {
             .unwrap()
         };
         write(json!(custom));
-        let path = storage_path(&dir.0).unwrap();
-        assert_eq!(path, custom);
-        let saved = super::operate(&path, "save", None, Some(draft("自定义"))).unwrap();
-        assert_eq!(
-            super::operate(&path, "list", None, None).unwrap(),
-            json!([saved])
-        );
+        assert_eq!(storage_path(&dir.0).unwrap(), custom);
+        let saved = run(&dir.0, "save", None, Some(draft("自定义")), None).unwrap();
+        let library = saved["library"].as_str().unwrap().to_owned();
+        assert_eq!(library, custom.to_string_lossy());
         assert!(!default.exists());
+        // 备份保留相同 ID；切到备份后，按原库打开的编辑器不能覆盖备份。
+        let backup = dir.0.join("backup.json");
+        fs::copy(&custom, &backup).unwrap();
+        write(json!(backup));
+        let id = saved["template_id"].as_str();
+        assert!(
+            run(&dir.0, "save", id, Some(draft("旧库草稿")), Some(&library))
+                .unwrap_err()
+                .contains("路径已变更")
+        );
+        assert_eq!(fs::read(&backup).unwrap(), fs::read(&custom).unwrap());
+        let reopened = run(&dir.0, "get", id, None, None).unwrap();
+        let backup_library = reopened["library"].as_str().unwrap();
+        run(
+            &dir.0,
+            "save",
+            id,
+            Some(draft("备份")),
+            Some(backup_library),
+        )
+        .unwrap();
+        assert_eq!(
+            super::operate(&custom, "get", id, None).unwrap()["name"],
+            "自定义"
+        );
         write(json!(""));
         assert_eq!(storage_path(&dir.0).unwrap(), default);
         write(json!(1));
@@ -895,7 +950,11 @@ mod tests {
         assert!(operate(&dir.0, "get", Some(id), None).is_err());
         assert!(operate(&dir.0, "save", Some(id), Some(draft("不能重建"))).is_err());
         assert_eq!(operate(&dir.0, "list", None, None).unwrap(), json!([copy]));
-        assert!(!dir.0.join("templates.json.tmp").exists());
+        assert!(fs::read_dir(&dir.0).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".tmp")));
     }
 
     #[test]
@@ -1100,7 +1159,7 @@ mod tests {
     }
 
     #[test]
-    /// 文件锁竞争、临时写入失败和损坏 JSON 均可见报错，不覆盖原始文件，解除后可重试。
+    /// 文件锁竞争和损坏 JSON 均可见报错，不覆盖原始文件，解除后可重试；用户同名临时文件不被覆盖。
     fn failures_preserve_file_and_allow_retry() {
         let dir = Directory::new();
         operate(&dir.0, "save", None, Some(draft("保留"))).unwrap();
@@ -1116,10 +1175,14 @@ mod tests {
             .unwrap_err()
             .contains("其他操作"));
         drop(lock);
-        fs::create_dir(dir.0.join("templates.json.tmp")).unwrap();
-        assert!(operate(&dir.0, "save", None, Some(draft("失败"))).is_err());
         assert_eq!(fs::read(&path).unwrap(), original);
-        fs::remove_dir(dir.0.join("templates.json.tmp")).unwrap();
+        fs::write(dir.0.join("templates.json.tmp"), b"user backup").unwrap();
+        operate(&dir.0, "save", None, Some(draft("临时文件"))).unwrap();
+        assert_eq!(
+            fs::read(dir.0.join("templates.json.tmp")).unwrap(),
+            b"user backup"
+        );
+        let original = fs::read(&path).unwrap();
         fs::write(&path, b"broken json").unwrap();
         assert!(operate(&dir.0, "save", None, Some(draft("禁止覆盖"))).is_err());
         assert_eq!(fs::read(&path).unwrap(), b"broken json");
