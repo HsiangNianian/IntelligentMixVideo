@@ -165,23 +165,27 @@ class ImageCropInput(ImageInfoInput):
 # create 承接 Agent 已写好的完整定义；输入模型即 PresetDraft。
 
 class PresetSearchInput(ContractModel):
-    """自然语言检索描述与结果数量上限。"""
+    """可选关键词（子串匹配）与结果数量上限；留空则列出最近的预设；给出 preset_id 则读取该完整记录。"""
 
-    query: Description
-    limit: PositiveInteger = 5
+    query: str = ""
+    limit: Annotated[PositiveInteger, Field(le=100)] = 20
+    preset_id: Omittable[PresetId]
 
 
-class PresetSearchMatch(ContractModel):
-    """按相关性排序的完整预设记录。"""
+class PresetSummary(ContractModel):
+    """供 Agent 自行挑选的预设摘要；完整记录用 preset_id 再取。"""
 
-    rank: PositiveInteger
-    preset: PresetRecord
+    preset_id: PresetId
+    description: Description
+    parameter_names: list[str]
 
 
 class PresetSearchOutput(ContractModel):
-    """检索结果列表，允许为空。"""
+    """摘要列表，允许为空。"""
 
-    matches: list[PresetSearchMatch]
+    presets: list[PresetSummary]
+    preset: Omittable[PresetRecord]
+    has_more: bool = False
 
 
 class PresetChanges(ContractModel):
@@ -201,7 +205,7 @@ class PresetModifyInput(ContractModel):
 
 
 class PresetModifyOutput(ContractModel):
-    """完整副本，不含新记录 ID。"""
+    """完整副本，不含新记录 ID；source_preset_id 指向原记录。"""
 
     preset: PresetDraft
 
@@ -437,6 +441,7 @@ class ToolDescriptor(ContractModel):
     """工具模型及不能只靠 Schema 表达的行为规则。"""
 
     tool_name: ToolName
+    contract_version: PositiveInteger = 1
     description: Description
     input_schema: JsonSchema
     output_schema: JsonSchema

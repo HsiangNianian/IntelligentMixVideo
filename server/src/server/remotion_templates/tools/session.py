@@ -14,6 +14,11 @@ from .contracts import (
     PresetCreateInput,
     PresetCreateOutput,
     PresetDraft,
+    PresetModifyInput,
+    PresetModifyOutput,
+    PresetSearchInput,
+    PresetSearchOutput,
+    PresetSummary,
     PresetRecord,
     RenderValidationInput,
     RenderValidationReport,
@@ -30,6 +35,8 @@ from .compose import compose_source
 # 快照预算：provider 的请求体上限是 512000 字节，会话窗口自身上限 240000 字节，
 # 余量留给工具描述。快照本身没有别的边界，只能在这里按需收缩。
 _SNAPSHOT_BYTE_BUDGET = 200_000
+# 四个搜索回执需共享 240 KB 会话交换，留出调用参数与消息封装的空间。
+_SEARCH_BYTE_BUDGET = 40_000
 
 
 def _snapshot_bytes(data: dict) -> int:
@@ -153,11 +160,28 @@ class ToolSession:
         }
         return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
-    def _find_preset(self, preset_id: str) -> PresetDraft:
+    def _recent_presets(self) -> list[PresetRecord]:
+        """Order the merged catalog by creation time for listing and missing-ID hints."""
+        def created_at(record):
+            """旧无时区值按 UTC 处理；不可解析值放末尾，不使整个目录不可读。"""
+            try:
+                value = datetime.fromisoformat(record.created_at)
+                return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+            except (ValueError, OverflowError):
+                return datetime.min.replace(tzinfo=UTC)
+
+        return sorted(
+            self.catalog.read_presets(),
+            key=lambda item: (created_at(item), item.preset_id),
+            reverse=True,
+        )
+
+    def _find_preset(self, preset_id: str) -> PresetRecord:
         """Resolve a Preset ID from the immutable catalog; unknown IDs fail loudly."""
         record = self.catalog.find_preset(preset_id)
         if record is None:
-            raise ToolFault("PRESET_NOT_FOUND", f"Unknown preset: {preset_id}")
+            known = [item.preset_id for item in self._recent_presets()[:10]]
+            raise ToolFault("PRESET_NOT_FOUND", f"Unknown preset: {preset_id}. Use an ID returned by a tool; recent preset_ids: {known}")
         return record
 
     async def validate_code(self, component: ComponentDefinition) -> CodeValidationReport:
@@ -186,7 +210,7 @@ class ToolSession:
     async def create_preset(self, request: PresetCreateInput) -> PresetCreateOutput:
         """Validate and store a new immutable PR76 Preset record."""
         if request.source_preset_id is not None:
-            self._find_preset(request.source_preset_id)
+            await asyncio.to_thread(self._find_preset, request.source_preset_id)
         validation = await self.validate_code(request)
         if not validation.passed:
             raise ToolFault("CODE_VALIDATION_FAILED", "Preset code validation failed.", details={"validation": validation.model_dump(mode="json")})
@@ -196,8 +220,58 @@ class ToolSession:
             **request.model_dump(mode="json", exclude_unset=True),
         )
         # Presets persist to MySQL with a local fallback; the record is immutable once saved.
-        self.catalog_backend = self.catalog.append_preset(record)
+        self.catalog_backend = await asyncio.to_thread(self.catalog.append_preset, record)
         return PresetCreateOutput(preset=record, validation=validation)
+
+    def search_presets(self, request: PresetSearchInput) -> PresetSearchOutput:
+        """List summaries, newest first, filtered by a case-insensitive description substring.
+
+        With ``preset_id`` the matching full record (including code) is returned as well, so
+        reading a Preset never requires a write-shaped tool.
+        """
+        full = self._find_preset(request.preset_id) if request.preset_id is not None else None
+        needle = request.query.strip().lower()
+        output = PresetSearchOutput(**({"preset": full} if full else {}), presets=[], has_more=False)
+
+        def fits_reply():
+            """计入 ToolResult 及保存 content 字符串时的二次转义，不截断完整源码。"""
+            content = json.dumps({"ok": True, "data": output.model_dump(mode="json", exclude_unset=True)}, ensure_ascii=False)
+            return len(json.dumps(content, ensure_ascii=False).encode("utf-8")) <= _SEARCH_BYTE_BUDGET
+
+        if not fits_reply():
+            raise ToolFault("RESOURCE_LIMIT_EXCEEDED", "The full Preset exceeds the tool reply size limit.")
+        for item in self._recent_presets():
+            if needle not in item.description.lower():
+                continue
+            if len(output.presets) >= request.limit:
+                output.has_more = True
+                break
+            output.presets.append(PresetSummary(
+                preset_id=item.preset_id,
+                description=item.description,
+                parameter_names=list(item.parameter_schema.get("properties", {})),
+            ))
+            if not fits_reply():
+                output.presets.pop()
+                if not output.presets and full is None:
+                    raise ToolFault("RESOURCE_LIMIT_EXCEEDED", "A Preset summary exceeds the tool reply size limit.")
+                output.has_more = True
+                break
+        return output
+
+    def modify_preset(self, request: PresetModifyInput) -> PresetModifyOutput:
+        """Copy a stored Preset with whole-field replacements; unknown IDs list what exists."""
+        changes = request.changes.model_dump(mode="json", exclude_unset=True)
+        if not changes:
+            raise ToolFault("INVALID_ARGUMENT", "changes must replace at least one field", field="/changes")
+        record = self._find_preset(request.preset_id)
+        base = record.model_dump(mode="json", exclude={"preset_id", "created_at"}, exclude_unset=True)
+        draft = PresetDraft(**{**base, **changes, "source_preset_id": record.preset_id})
+        diagnostics = validate_component_contract(draft)
+        if diagnostics:
+            raise ToolFault("INVALID_ARGUMENT", "The edited Preset violates the component contract.",
+                            field="/changes", details={"diagnostics": [item.model_dump(mode="json", exclude_unset=True) for item in diagnostics]})
+        return PresetModifyOutput(preset=draft)
 
     async def create_sprite(self, sprite: SpriteDraft) -> SpriteCreateOutput:
         """Validate source consistency and store one immutable composed Sprite."""
@@ -251,7 +325,7 @@ class ToolSession:
             created_at=datetime.now(UTC).isoformat(),
             **sprite.model_dump(mode="json", exclude_unset=True),
         )
-        self.catalog.append_sprite(record)
+        await asyncio.to_thread(self.catalog.append_sprite, record)
         self.saved_sprites[record.sprite_id] = record
         self.latest_sprite_id = record.sprite_id
         self._last_component_sprite = record
@@ -267,7 +341,7 @@ class ToolSession:
                 raise ToolFault("INVALID_ARGUMENT", "instance_id must be unique and safe")
             seen.add(instance.instance_id)
             if instance.source.kind == "stored":
-                source = self._find_preset(instance.source.preset_id)
+                source = await asyncio.to_thread(self._find_preset, instance.source.preset_id)
                 preset = source.model_dump(mode="json", exclude={"preset_id", "created_at"}, exclude_unset=True)
             else:
                 preset = instance.source.preset.model_dump(mode="json", exclude_unset=True)

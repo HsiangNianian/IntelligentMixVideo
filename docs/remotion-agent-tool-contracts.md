@@ -9,7 +9,7 @@
 - Agent 整体目标仍是代码和预览。预览界面、视频下载形式及产物展示不属于本文，不新增预览发布工具。
 - 主画布固定为 **宽 1080、高 1920、9:16 竖屏、30 fps**。主画布宽高和帧率不是调用方可修改的配置。
 - preset 为单文件 TSX、参数 Schema 和默认参数构成的代码原子；sprite 组合多个 preset 实例。
-- preset.create 承接 Agent 已经写好的代码和描述。search 按描述通过 ChromaDB 语义检索。
+- preset.create 承接 Agent 已经写好的代码和描述。search 按描述关键词列出摘要，再按 ID 读取完整记录，不使用向量或语义检索。
 - preset.modify 承接 Agent 修改后的字段，返回副本，不修改原记录、不自动入库。需要长期复用时再调用 create。
 - sprite.compose 生成组合定义与代码，sprite.create 保存组合结果；本期不定义 sprite 嵌套组合。
 - 两个 create 均在内部执行代码校验，通过后才入库。无需传入之前的校验回执，也不在工具内调用模型修复。
@@ -189,7 +189,7 @@ class PresetRecord(PresetDraft):
 | code | 是 | 非空单文件 TSX；默认导出一个 React 组件，参数从 props 接收；外部宿主负责装载 |
 | parameter_schema | 是 | 自包含 JSON Schema 2020-12，根为 object，明确声明可调参数并拒绝未知参数；引用仅在 Schema 文档内部解析 |
 | default_parameters | 是 | 完整默认参数对象，必须通过 parameter_schema，并满足组件 props 类型 |
-| description | 是 | 去除首尾空白后非空；说明功能、效果、可调内容及适用场景，作为语义检索内容 |
+| description | 是 | 去除首尾空白后非空；说明功能、效果、可调内容及适用场景，用于关键词过滤和 Agent 自行选择 |
 | source_preset_id | 否 | 副本直接来源的库内 preset ID，仅表示来源，不授权修改原记录 |
 | preset_id / created_at | 出参 | 由 create 生成，调用方不能指定 |
 
@@ -208,7 +208,7 @@ class PresetRecord(PresetDraft):
 | image.info | ImageInfoInput | ImageInfo | 读取图片 |
 | image.resize | ImageResizeInput | ProcessedImage | 生成并存储新图片 |
 | image.crop | ImageCropInput | ProcessedImage | 生成并存储新图片 |
-| preset.search | PresetSearchInput | PresetSearchOutput | 语义检索，只读 |
+| preset.search | PresetSearchInput | PresetSearchOutput | v2 摘要列表、关键词过滤及按 ID 读取，只读 |
 | preset.create | PresetCreateInput | PresetCreateOutput | 代码校验、保存记录、建立可检索索引 |
 | preset.modify | PresetModifyInput | PresetModifyOutput | 读取原记录，返回内存副本；不入库 |
 | validate.code | CodeValidationInput | CodeValidationReport | 执行契约及 LSP 检查 |
@@ -354,23 +354,27 @@ resize/crop 统一生成 PNG，保留可用 alpha，存储完成后才返回可�
 
 ```python
 class PresetSearchInput(ContractModel):
-    """自然语言检索描述与结果数量上限。"""
+    """可选关键词（子串匹配）与结果数量上限；留空则列出最近的预设；给出 preset_id 则读取该完整记录。"""
 
-    query: Description
-    limit: PositiveInteger = 5
+    query: str = ""
+    limit: Annotated[PositiveInteger, Field(le=100)] = 20
+    preset_id: Omittable[PresetId]
 
 
-class PresetSearchMatch(ContractModel):
-    """按相关性排序的完整预设记录。"""
+class PresetSummary(ContractModel):
+    """供 Agent 自行挑选的预设摘要；完整记录用 preset_id 再取。"""
 
-    rank: PositiveInteger
-    preset: PresetRecord
+    preset_id: PresetId
+    description: Description
+    parameter_names: list[str]
 
 
 class PresetSearchOutput(ContractModel):
-    """检索结果列表，允许为空。"""
+    """摘要列表，允许为空。"""
 
-    matches: list[PresetSearchMatch]
+    presets: list[PresetSummary]
+    preset: Omittable[PresetRecord]
+    has_more: bool = False
 
 
 async def preset_search(request: PresetSearchInput) -> ToolResult[PresetSearchOutput]:
@@ -378,19 +382,48 @@ async def preset_search(request: PresetSearchInput) -> ToolResult[PresetSearchOu
     ...
 ```
 
-- query 为去除首尾空白后非空的自然语言需求；limit 为正整数，省略时为 5。
-- 以创建时的 description 为预设语义内容，通过 ChromaDB 返回按相关性排序的结果，最多 limit 条，rank 从 1 连续递增。
-- 每条结果必须包含完整代码、Schema 和默认参数，以便 Agent 阅读、改写或实例化。
+- 契约版本为 2，由 `tools.inspect` 的 `contract_version` 标识。旧版本只声明过 `matches` 语义检索结构，尚未启用；消费者必须按版本选择解析器，v2 不返回旧字段。
+- 不做语义或向量检索：只列出摘要（preset_id、description、参数名），由 Agent 自行判断召回哪个。query 可选，为 description 的不区分大小写子串过滤；limit 为 1～100 的整数，省略时为 20，按创建时间由新到旧。旧无时区时间按 UTC 解释，无效时间放末尾，记录仍可按 ID 读取。
+- 传入 preset_id 时，另在 preset 字段返回该预设的完整代码、Schema 和默认参数；ID 不存在返回 PRESET_NOT_FOUND 并列出近期可用 ID。读取预设不得借用 preset.modify。
 - 匹配结果是候选能力，不表示已经符合当前用户需求。排序不承诺统一的相似度百分比，不暴露含义未统一的“置信度”。
-- 没有结果返回 `matches: []`；不会自动创建预设。查询不得写入预设库。
+- 没有结果返回 `presets: []`；不会自动创建预设。查询不得写入预设库。
+- 搜索回执的序列化 content 字符串（含 JSON 二次转义）不超过 40000 个 UTF-8 字节；受数量或字节上限截取时 `has_more=true`，可缩小 query 或按 ID 读取。完整记录不截断源码；单条摘要或完整记录无法容纳时返回 `RESOURCE_LIMIT_EXCEEDED`，不伪装为空结果。
+
+列表输入和成功响应示例：
 
 ```json
-{"query":"可以设置文字和颜色的渐显标题，入场使用淡入动画","limit":5}
+{"query":"文字","limit":5}
 ```
 
-成功数据形状为 `{"matches": [{"rank": 1, "preset": <完整 PresetRecord>} ]}`。这里的尖括号是说明，实际调用必须提供完整 JSON 对象。
+```json
+{"ok":true,"data":{"presets":[{"preset_id":"preset_label_001","description":"静态文字","parameter_names":["text"]}],"has_more":false}}
+```
 
-错误：`INVALID_ARGUMENT`、`SEARCH_UNAVAILABLE`、`TIMEOUT`。向量生成、集合配置和排序实现由实施方维护，不作为 Agent 的业务入参。
+按 ID 读取的输入和成功响应示例：
+
+```json
+{"preset_id":"preset_label_001","limit":1}
+```
+
+```json
+{
+  "ok": true,
+  "data": {
+    "presets": [{"preset_id":"preset_label_001","description":"静态文字","parameter_names":["text"]}],
+    "preset": {
+      "preset_id": "preset_label_001",
+      "created_at": "2026-10-09T00:00:00+00:00",
+      "description": "静态文字",
+      "code": "/** 静态文字原子。 */\nimport React from 'react';\n/** 使用调用方文字。 */\nexport default function Label(props: {text: string}) { return <div>{props.text}</div>; }",
+      "parameter_schema": {"type":"object","properties":{"text":{"type":"string"}},"required":["text"],"additionalProperties":false},
+      "default_parameters": {"text":"示例文字"}
+    },
+    "has_more": false
+  }
+}
+```
+
+错误：`INVALID_ARGUMENT`、`PRESET_NOT_FOUND`、`PRESET_STORE_FAILED`、`RESOURCE_LIMIT_EXCEEDED`。数据库获取、连接或查询失败时回退到本地记录；本地目录也无法读取时返回存储失败。
 
 ### 6.2 create
 
@@ -416,10 +449,10 @@ async def preset_create(request: PresetCreateInput) -> ToolResult[PresetCreateOu
 
 1. 检查描述、Schema、默认参数及来源字段。source_preset_id 若存在，必须引用真实库记录。
 2. 内部执行与 validate.code 相同的契约及 LSP 检查。
-3. 无阻断错误后保存新记录，并使其描述可用于 ChromaDB 检索。
+3. 无阻断错误后保存新记录，使其描述可用于关键词列表过滤。
 4. 返回新 preset_id、created_at、完整内容和通过的代码校验报告；警告可以保留。
 
-校验不通过不写库，返回 `CODE_VALIDATION_FAILED`，`details.validation` 为 CodeValidationReport。保存或索引失败不返回成功，不让半完成记录成为可搜索的预设。
+校验不通过不写库，返回 `CODE_VALIDATION_FAILED`，`details.validation` 为 CodeValidationReport。保存失败不返回成功，不让半完成记录成为可搜索的预设。
 
 create 始终创建新记录，不覆盖来源预设，也不把相同描述视为同一份预设。本期没有新增业务去重或自动 upsert 语义。
 
@@ -442,7 +475,7 @@ create 始终创建新记录，不覆盖来源预设，也不把相同描述视�
 }
 ```
 
-错误：`INVALID_ARGUMENT`、`PRESET_NOT_FOUND`、`CODE_VALIDATION_FAILED`、`VALIDATION_UNAVAILABLE`、`PRESET_STORE_FAILED`、`SEARCH_UNAVAILABLE`、`TIMEOUT`。
+错误：`INVALID_ARGUMENT`、`PRESET_NOT_FOUND`、`CODE_VALIDATION_FAILED`、`VALIDATION_UNAVAILABLE`、`PRESET_STORE_FAILED`、`TIMEOUT`。
 
 ### 6.3 modify
 
@@ -464,7 +497,7 @@ class PresetModifyInput(ContractModel):
 
 
 class PresetModifyOutput(ContractModel):
-    """完整副本，不含新记录 ID。"""
+    """完整副本，不含新记录 ID；source_preset_id 指向原记录。"""
 
     preset: PresetDraft
 
@@ -478,6 +511,7 @@ async def preset_modify(request: PresetModifyInput) -> ToolResult[PresetModifyOu
 - changes.code 是 Agent **已经修改完的完整源码**，不是自然语言修改要求，也不是待工具应用的文本 diff。
 - changes 中每个字段整体替换原字段；未传字段保留原值。特别是 Schema 和 default_parameters 整体替换，不递归拼接旧字段。
 - 合并后检查数据结构、Schema 和默认参数的一致性，返回完整 PresetDraft，并令 source_preset_id 为输入 preset_id。
+- 数据契约无效时返回 `INVALID_ARGUMENT`，`field` 为 `/changes`，`details.diagnostics` 指出具体字段；原记录保持不变。Schema 只允许文档内引用，不读取外部 URL。
 - 工具不执行模型调用、不写库、不创建新的 preset_id，不承诺 LSP 或行为检查已通过。可单独调用 validate 获取诊断。
 - 修改副本可以直接交给 compose；需要检索复用时，将完整副本交给 create。
 
@@ -491,7 +525,7 @@ async def preset_modify(request: PresetModifyInput) -> ToolResult[PresetModifyOu
 }
 ```
 
-错误：`INVALID_ARGUMENT`、`PRESET_NOT_FOUND`。返回副本不能使原记录的代码、描述、默认参数或向量索引发生变化。
+错误：`INVALID_ARGUMENT`、`PRESET_NOT_FOUND`、`PRESET_STORE_FAILED`。返回副本不能使原记录的代码、描述或默认参数发生变化。
 
 ## 7. Sprite 组合与保存
 
@@ -1047,6 +1081,7 @@ class ToolDescriptor(ContractModel):
     """工具模型及不能只靠 Schema 表达的行为规则。"""
 
     tool_name: ToolName
+    contract_version: PositiveInteger = 1
     description: Description
     input_schema: JsonSchema
     output_schema: JsonSchema
@@ -1062,6 +1097,8 @@ async def tools_inspect(request: ToolInspectInput) -> ToolResult[ToolDescriptor]
 ```
 
 根据精确工具名返回真实契约，不做语义搜索、不执行被查询工具。未知名称返回 `TOOL_NOT_FOUND`。输入格式错误返回 `INVALID_ARGUMENT`。
+
+描述符始终返回 `contract_version`；默认版本为 1，`preset.search` 的列表加 ID 查找结构为版本 2。调用方应先读取版本和 Schema，再选择对应的输入输出解析器，不把 v2 摘要当成旧 `matches` 完整记录。
 
 input_schema 描述完整入参；output_schema 描述包含 ok/data/error 的完整 ToolResult，而非只描述成功 data。Schema 为自包含 JSON Schema，公共类型可以放入 `$defs`，不能依赖 Agent 自行查找未给出的模型。
 
@@ -1098,7 +1135,7 @@ inspect 自身也可被查询。已知工具列表由集成方提供给 Agent；
 用户输入：参考图和“上方放一个渐显标题，下方放说明文字，标题写今日灵感”。主画布与帧率固定。
 
 1. Agent 调用 image.info 读取参考图信息；必要时调用 crop/resize 获取更适合观察的图片 URL。
-2. Agent 用自然语言调用 preset.search，读取返回的完整代码和参数契约。
+2. Agent 用可选关键词调用 preset.search，从 `presets` 摘要选择 ID，再用 `preset_id` 读取 `preset` 中的完整代码和参数契约；`has_more=true` 时缩小关键词范围。
 3. 已有预设满足需求时直接实例化并填参数，不调用 modify。
 4. 需要改变实现时，由 Agent 先写出修改后的代码，再调用 modify 返回完整副本；原预设不变。如果没有合适预设，Agent 编写完整定义，通过 create 校验后加入库。
 5. Agent 明确提供各实例的位置、尺寸、层级和时间，调用 compose。输入可以同时包含 stored 和 draft 两类来源。
@@ -1123,9 +1160,10 @@ inspect 自身也可被查询。已知工具列表由集成方提供给 Agent；
 | 空描述创建预设 | 拒绝，不能产生无法描述的搜索条目 |
 | create 代码有 LSP error | 返回诊断，不保存可搜索记录 |
 | create 只有 warning | 允许保存，返回 warning，不宣称行为测试通过 |
-| 预设保存或索引失败 | 不返回成功，不暴露半完成预设 |
-| search 无匹配结果 | 成功返回空 matches，不自动生成代码 |
-| modify 原预设 | 返回完整副本；原记录及索引不变；副本没有新 preset_id |
+| 预设保存失败 | 不返回成功，不暴露半完成预设 |
+| search 无匹配结果 | 成功返回空 presets 和 has_more=false，不自动生成代码 |
+| search 超出数量或字节上限 | 返回有界摘要和 has_more=true；单条无法容纳时返回 RESOURCE_LIMIT_EXCEEDED |
+| modify 原预设 | 返回完整副本；原记录不变；副本没有新 preset_id |
 | modify 只改代码 | 继承原 Schema 和默认值，来源指向原记录；编译结论留给 validate/create |
 | 副本直接参与 compose | 能形成完整 sprite，无需把副本加入 preset 库 |
 | 同一 preset 使用两次 | 实例 ID、参数和局部时间相互独立 |
@@ -1153,7 +1191,7 @@ inspect 自身也可被查询。已知工具列表由集成方提供给 Agent；
 
 ## 12. 实施边界
 
-实施方按 Python + Pydantic 工具契约对接，可以选择存储介质、LSP 服务、测试运行器、图片库以及 ChromaDB 的具体部署和向量配置，但必须满足本文的可观察语义。运行依赖、资源限额及图片素材引用的可用期需要在部署中明确；不得把这些部署选择隐式变成不同的坐标、参数合并或时间规则。
+实施方按 Python + Pydantic 工具契约对接，可以选择存储介质、LSP 服务、测试运行器和图片库，但必须满足本文的可观察语义。运行依赖、资源限额及图片素材引用的可用期需要在部署中明确；不得把这些部署选择隐式变成不同的坐标、参数合并或时间规则。
 
 新增代码、外部资源读取和自定义测试需要在实施方的受控执行环境运行；工具错误应提供业务可用诊断，不暴露凭据。本文不设计执行沙箱实现、访问控制系统或额外审批流程。
 

@@ -1,6 +1,7 @@
 """PR76 decorator registry: derive strict schemas and dispatch only declared handlers."""
 
 from dataclasses import dataclass
+from difflib import get_close_matches
 from inspect import signature
 from typing import Any, get_type_hints
 
@@ -33,6 +34,7 @@ class RegisteredTool:
     function: object
     descriptor: ToolDescriptor
     implemented: bool = True
+    starts_generation: bool = False
 
     @property
     def input(self) -> type[BaseModel]:
@@ -44,7 +46,7 @@ class RegisteredTool:
         return {
             "type": "function",
             "function": {
-                "name": self.name.replace(".", "_"),
+                "name": wire_name(self.name),
                 "description": self.descriptor.description,
                 "parameters": self.descriptor.input_schema,
             },
@@ -88,6 +90,8 @@ def tool(
     error_codes: list[str] | tuple[str, ...] = (),
     examples: list[dict[str, Any]] | tuple[dict[str, Any], ...] = (),
     implemented: bool = True,
+    starts_generation: bool = False,
+    contract_version: int = 1,
 ):
     """Decorate an async ``(owner, request)`` handler and register its exact contract."""
 
@@ -102,13 +106,14 @@ def tool(
         if return_hint is None:
             raise TypeError(f"{name} handlers must annotate ToolResult output")
         output = TypeAdapter(return_hint)
-        if name in _TOOLS or any(name.replace(".", "_") == key.replace(".", "_") for key in _TOOLS):
+        if any(wire_name(name) == wire_name(key) for key in _TOOLS):
             raise ValueError(f"Duplicate tool: {name}")
         for example in examples:
             model.model_validate(example["input"])
             output.validate_python(example["output"])
         descriptor = ToolDescriptor(
             tool_name=name,
+            contract_version=contract_version,
             description=(function.__doc__ or "").strip() or name,
             input_schema=model.model_json_schema(),
             output_schema=output.json_schema(),
@@ -117,7 +122,7 @@ def tool(
             error_codes=list(error_codes),
             examples=list(examples),
         )
-        _TOOLS[name] = RegisteredTool(name, model, output, function, descriptor, implemented)
+        _TOOLS[name] = RegisteredTool(name, model, output, function, descriptor, implemented, starts_generation)
         return function
 
     return decorate
@@ -128,9 +133,23 @@ def registered_tools() -> tuple[RegisteredTool, ...]:
     return tuple(_TOOLS.values())
 
 
-def get_tool(name: str) -> RegisteredTool:
-    """Resolve an exact registered name; no discovery or fuzzy matching is performed."""
-    try:
-        return _TOOLS[name]
-    except KeyError as exc:
-        raise ToolFault("TOOL_NOT_FOUND", f"Unknown tool: {name}") from exc
+def wire_name(name: str) -> str:
+    """Provider function name for a dotted tool ID; the one place that defines the mapping."""
+    return name.replace(".", "_")
+
+
+def get_tool(name: str, candidates=None):
+    """Resolve a tool by dotted ID or provider wire name; anything else is rejected, never guessed.
+
+    Candidates default to the business registry. Dispatch supplies its permitted
+    tool window; inspection adds host Plan control. Errors and suggestions use
+    only that window, so resolving a name never expands a layer's permissions.
+    """
+    candidates = registered_tools() if candidates is None else tuple(candidates)
+    for item in candidates:
+        if name in {item.name, wire_name(item.name)}:
+            return item
+    close = get_close_matches(str(name), [wire_name(item.name) for item in candidates], n=2, cutoff=0.5)
+    hint = f" Closest: {', '.join(close)}." if close else ""
+    known = ", ".join(item.name for item in candidates) or "none"
+    raise ToolFault("TOOL_NOT_FOUND", f"Unknown or out-of-scope tool: {name}.{hint} Available tools: {known}")
