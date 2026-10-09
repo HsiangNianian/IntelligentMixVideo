@@ -115,23 +115,39 @@ class ToolValidator:
         diagnostics; only a report that cannot be read at all is an
         infrastructure failure, so the Executor keeps the chance to fix code.
         """
+        return await self.code_report(component)
+
+    async def code_report(
+        self, component: ComponentDefinition, *, export_code: str | None = None
+    ) -> CodeValidationReport:
+        """Re-run only the isolated code checks for an already contracted component.
+
+        Used by the read-only diagnostics route so viewing an accepted version costs
+        one language-service attempt instead of a full browser behavior run.  The
+        contract is re-checked here anyway: callers may hold older records, and a
+        contract failure must never be reported as a clean typecheck.
+        """
         diagnostics = _contract_diagnostics(component)
         if diagnostics:
             return CodeValidationReport(passed=False, diagnostics=diagnostics)
-        directory = self._attempt("validate-code")
-        request = {
-            "mode": "code",
-            "code": component.code,
-            "parameter_schema": component.parameter_schema,
-            "default_parameters": component.default_parameters,
-            "composition": {"width": 1080, "height": 1920, "fps": 30, "duration_frames": 1},
-            "browser": self.renderer.worker_browser_path(),
-        }
-        (directory / "request.json").write_text(json.dumps(request), encoding="utf-8")
         try:
+            directory = self._attempt("validate-code")
+            request = {
+                "mode": "code",
+                "code": component.code,
+                "parameter_schema": component.parameter_schema,
+                "default_parameters": component.default_parameters,
+                "composition": {"width": 1080, "height": 1920, "fps": 30, "duration_frames": 1},
+                "browser": self.renderer.worker_browser_path(),
+            }
+            if export_code is not None:
+                request["export_code"] = export_code
+            (directory / "request.json").write_text(json.dumps(request), encoding="utf-8")
             payload = await self.renderer.run_worker(directory, worker="tool-validation-worker.mjs")
         except (OSError, RuntimeError, TimeoutError) as exc:
             raise ValidationUnavailable(str(exc)) from exc
+        if not isinstance(payload, dict):
+            raise ValidationUnavailable("Code validation worker returned an invalid report")
         checks = payload.get("checks")
         if not isinstance(checks, list) or not checks or not all(isinstance(item, dict) for item in checks):
             raise ValidationUnavailable("Code validation worker returned no checks")
@@ -141,13 +157,16 @@ class ToolValidator:
                 raise ValidationUnavailable(str(item.get("message") or "Code validation worker runtime error"))
         if _reported_stages(checks, _CODE_CHECKS) is None:
             raise ValidationUnavailable("Code validation worker returned an incomplete report")
-        for item in payload.get("diagnostics", []):
-            diagnostics.append(_diagnostic(item))
+        try:
+            for item in payload.get("diagnostics", []):
+                diagnostics.append(_diagnostic(item))
+        except (TypeError, ValueError) as exc:
+            raise ValidationUnavailable("Code validation worker returned invalid diagnostics") from exc
         for check in checks:
             if check.get("status") in _FAILED_STATUSES and check.get("name") not in {"typescript"}:
                 diagnostics.append(CodeDiagnostic(source="contract", severity="error", message=str(check.get("message") or "Code check failed")))
         has_errors = any(item.severity == "error" for item in diagnostics)
-        worker_passed = bool(payload.get("passed", False)) or all(
+        worker_passed = payload.get("passed") is not False and all(
             check.get("status") in {"pass", "passed"} for check in checks
         )
         return CodeValidationReport(passed=worker_passed and not has_errors, diagnostics=diagnostics)

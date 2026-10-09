@@ -65,3 +65,13 @@ on failure the tool's error code plus a 200-character message. Tool arguments
 and result payloads stay in the private audit, plan step goals and model prose
 are never published, a turn that only replied records an empty call list, and a
 terminal job accepts no further rounds.
+
+## Code diagnostics
+
+`GET /api/templates/versions/{id}/diagnostics` re-runs the isolated TypeScript
+language service over an accepted version's sealed source and returns its
+contract and LSP diagnostics. It re-checks the sealed `accepted/` artifacts
+first, so tampered bytes return 404 rather than a stale conclusion, and an
+unavailable sandbox returns 503 instead of reporting "no diagnostics" for code
+that was never checked. The route is read-only: it never queues work, publishes
+a version or adds a diagnostics table.

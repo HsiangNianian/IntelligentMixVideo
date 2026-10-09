@@ -20,6 +20,11 @@
 记录来自服务端白名单字段，不含工具参数、返回载荷、计划步骤目标或任何模型原文；
 运行中默认展开，任务结束后收起，没有记录的旧任务不渲染该区域。
 
+展开版本卡片的代码时同时读取 `GET /versions/{id}/diagnostics`：代码按行着色并标注
+error/warning 行，诊断清单点击可跳到对应行。高亮是 `codeHighlight.ts` 的展示用近似分词，
+只影响颜色，不参与验收；真实结论只用服务端隔离类型检查返回的诊断。诊断读取失败时
+代码仍可查看，并提供显式「重试诊断」；未保存参数等禁用状态下不发起诊断请求。
+
 在 `client/` 执行 `bun install --frozen-lockfile`、`bun run test` 和 `bun run build`。
 `remotion-composition.test.tsx` 覆盖固定画布、上传互斥、会话隔离与成功版本配置恢复，`remotion-parameters.test.tsx` 覆盖 v2 嵌套 JSON 参数的渲染、非法输入拦截与净变化提交；目录、删除、进度、历史与版本用例覆盖隔离预览协议和历史只读。
 这些 UI 测试不执行真实模型、Remotion 或浏览器。Linux 行为验证命令见

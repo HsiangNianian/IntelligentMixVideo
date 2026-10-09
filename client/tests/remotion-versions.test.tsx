@@ -16,6 +16,7 @@ import { useTemplateVersions } from "@/features/remotion_templates/useTemplateVe
 import * as api from "@/features/remotion_templates/api";
 import { remotionJob, remotionVersion } from "./remotion-fixtures";
 import { remotionServer } from "./remotion-server";
+import { codeText } from "./remotion-version-helpers";
 import { fetchMock } from "./setup";
 
 /** 建立两个真实公开成功任务，刷新恢复时可把版本放回对应的助手消息。 */
@@ -168,18 +169,19 @@ test("代码读取重试与剪贴板失败恢复", async () => {
   fail = false;
   fireEvent.click(screen.getByRole("button", { name: "重试代码" }));
   await waitFor(() =>
-    expect(screen.getByLabelText("模板 TSX 代码").textContent).toBe(
-      "export default 'old';",
-    ),
+    expect(codeText()).toBe("export default 'old';"),
   );
   fireEvent.click(screen.getByRole("button", { name: "展开 V1 代码" }));
   fireEvent.click(screen.getByRole("button", { name: "复制代码" }));
   await screen.findByText("复制失败，请展开代码后手动选择复制。");
-  expect(screen.getByLabelText("模板 TSX 代码").textContent).toBe(
-    "export default 'old';",
-  );
+  expect(codeText()).toBe("export default 'old';");
   expect(copy).toHaveBeenCalledTimes(1);
-  expect(fetchMock).toHaveBeenCalledTimes(2);
+  // 只统计代码读取：展开时的诊断请求与复制去重无关。
+  expect(
+    fetchMock.mock.calls.filter(([url]) =>
+      String(url).endsWith("/artifacts/Export.tsx"),
+    ),
+  ).toHaveLength(2);
 });
 
 // 复制请求尚未完成就卸载或进入未保存状态，迟到代码不得再写剪贴板。

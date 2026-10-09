@@ -36,6 +36,7 @@ try {
   await page.route("**/template", (route) => route.fulfill({ status: 503 }));
   const errors = [];
   let deleted = false;
+  let diagnosticRequests = 0;
   page.on("pageerror", (e) => errors.push(e.message));
   await page.route("**/api/templates/**", async (route) => {
     const req = route.request();
@@ -129,6 +130,13 @@ try {
     if (path.endsWith("/versions")) return json(versions);
     if (/\/versions\/[^/]+$/.test(path))
       return json(versions.find((v) => path.endsWith(v.id)));
+    if (path.endsWith("/diagnostics")) {
+      diagnosticRequests++;
+      return json({ passed: false, diagnostics: [
+        { source: "lsp", severity: "error", file: "Export.tsx", code: "2322", message: "导出类型不匹配", range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } },
+        { source: "lsp", severity: "error", file: "contract.tsx", code: "2322", message: "调用点类型不匹配", range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } },
+      ] });
+    }
     if (path.endsWith("Export.tsx"))
       return route.fulfill({
         contentType: "text/plain",
@@ -146,6 +154,18 @@ try {
     .getByText("正在渲染预览…", { exact: true })
     .waitFor({ state: "hidden" });
   await page.getByLabel("字号", { exact: true }).waitFor();
+  // 在真实浏览器验证诊断定位和折叠缓存；不执行生成的 TSX。
+  const codeToggle = page.getByRole("button", { name: "展开 V2 代码", exact: true });
+  await codeToggle.click();
+  await page.getByLabel("第 1 行：error", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: /contract.tsx.*调用点类型不匹配/ }).count(), 0);
+  await page.getByRole("button", { name: /Export.tsx.*导出类型不匹配/ }).click();
+  assert.equal(await page.locator('[data-line="1"]:focus').count(), 1);
+  await codeToggle.click();
+  await codeToggle.click();
+  assert.equal(diagnosticRequests, 1);
+  await page.screenshot({ path: join(screenshots, "imv-audit-diagnostics.png"), fullPage: true });
+  await codeToggle.click();
   // 历史消息、任务栏与版本卡片异步恢复后，底部代码操作仍须可见。
   await page.waitForFunction(() => {
     const log = document.querySelector('[role="log"]');
