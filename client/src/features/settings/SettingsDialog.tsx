@@ -7,10 +7,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import type { StorageChange } from "./api";
 import { PluginSettings } from "./PluginSettings";
 
 /** 居中宽弹窗承载模块设置；Radix 关闭即卸载内容，下次打开重新读取目录和已存值。 */
-export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+export function SettingsDialog({ open, onOpenChange, onStorageChange }: { open: boolean; onOpenChange: (open: boolean) => void; onStorageChange?: StorageChange }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex h-[min(600px,70dvh)] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
@@ -21,7 +22,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
             Remotion Agent 与 IMS 使用当前客户端保存的凭据；Debug 另提供服务端模块设置。
           </DialogDescription>
         </DialogHeader>
-        <PluginSettings onCancel={() => onOpenChange(false)} />
+        <PluginSettings onCancel={() => onOpenChange(false)} onStorageChange={onStorageChange} />
       </DialogContent>
     </Dialog>
   );

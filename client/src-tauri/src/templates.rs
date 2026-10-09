@@ -1,9 +1,9 @@
-//! 离线模板库：解析 Protobuf 保存请求，在 data/template 保存 JSON，文件锁保护读写。
+//! 离线模板库：解析 Protobuf 保存请求，按客户端配置路径保存 JSON（默认 data/template/templates.json），文件锁保护读写。
 
 use chrono::Utc;
 use prost::Message;
 use serde_json::{json, Value};
-use std::{fs, io::Write, path::Path};
+use std::{fs, io::Write, path::{Path, PathBuf}};
 use tauri::Manager;
 use uuid::Uuid;
 
@@ -419,8 +419,8 @@ fn number(value: &Value, min: f64, max: f64, integer: bool) -> Result<(), String
 }
 
 /// 从磁盘读取后检查结构；损坏时明确失败，不能当成空库覆盖。
-fn read(directory: &Path) -> Result<Vec<Value>, String> {
-    let bytes = match fs::read(directory.join("templates.json")) {
+fn read(path: &Path) -> Result<Vec<Value>, String> {
+    let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(format!("读取本地模板失败：{error}")),
@@ -443,7 +443,7 @@ fn read(directory: &Path) -> Result<Vec<Value>, String> {
         if !record["tracks"].is_array() || record.get("editor").is_some() {
             return Err(format!(
                 "本地模板字段已变化，原有模板无法读取。请删除旧模板文件后重试（将清除全部本地模板）：{}",
-                directory.join("templates.json").display()
+                path.display()
             ));
         }
         // 旧记录缺少新增开关时补充内存视图，读取操作不改写文件。
@@ -485,13 +485,13 @@ fn read(directory: &Path) -> Result<Vec<Value>, String> {
 }
 
 /// 所有操作在同一文件锁下执行；临时文件刷盘后替换，失败保留原文件且允许重试。
-fn operate(
-    directory: &Path,
+fn operate_file(
+    path: &Path,
     operation: &str,
     id: Option<&str>,
     draft: Option<Value>,
 ) -> Result<Value, String> {
-    if !["list", "get", "save", "delete"].contains(&operation) {
+    if !["list", "get", "save", "delete", "check"].contains(&operation) {
         return Err("未知本地模板操作".into());
     }
     if let Some(id) = id {
@@ -500,6 +500,7 @@ fn operate(
     if matches!(operation, "get" | "delete") && id.is_none() {
         return Err("缺少模板 ID".into());
     }
+    let directory = path.parent().ok_or("本地模板路径缺少目录")?;
     fs::create_dir_all(directory).map_err(|error| format!("无法创建本地模板目录：{error}"))?;
     let lock = fs::OpenOptions::new()
         .read(true)
@@ -510,12 +511,22 @@ fn operate(
         .map_err(|error| format!("无法打开模板锁：{error}"))?;
     lock.try_lock()
         .map_err(|_| "本地模板正在被其他操作使用，请重试")?;
-    let mut records = read(directory)?;
+    let mut records = read(path)?;
     let index = id.and_then(|id| records.iter().position(|item| item["template_id"] == id));
     if id.is_some() && index.is_none() {
         return Err("模板不存在".into());
     }
     let result = match operation {
+        "check" => {
+            if path.exists() && fs::metadata(path).map_err(|e| e.to_string())?.permissions().readonly() {
+                return Err("本地模板文件不可写".into());
+            }
+            let probe = directory.join(format!(".imv-{}.tmp", Uuid::new_v4()));
+            fs::OpenOptions::new().write(true).create_new(true).open(&probe)
+                .map_err(|e| format!("本地模板目录不可写：{e}"))?;
+            fs::remove_file(probe).map_err(|e| format!("清理模板目录检查文件失败：{e}"))?;
+            return Ok(Value::Null);
+        }
         "list" => return Ok(json!(records)),
         "get" => return Ok(records[index.ok_or("模板不存在")?].clone()),
         "delete" => {
@@ -547,12 +558,12 @@ fn operate(
         }
         _ => unreachable!(),
     };
-    let temporary = directory.join("templates.json.tmp");
+    let temporary = path.with_extension("json.tmp");
     let write = || -> std::io::Result<()> {
         let mut file = fs::File::create(&temporary)?;
         file.write_all(&serde_json::to_vec_pretty(&records)?)?;
         file.sync_all()?;
-        fs::rename(&temporary, directory.join("templates.json"))
+        fs::rename(&temporary, path)
     };
     if let Err(error) = write() {
         let _ = fs::remove_file(&temporary);
@@ -561,7 +572,26 @@ fn operate(
     Ok(result)
 }
 
-/// 只允许在固定应用数据目录操作模板；不调用 Python 服务或访问用户传入的任意路径。
+/// 空配置沿用默认文件；自定义路径必须为绝对 JSON 文件路径。
+pub(crate) fn storage_path(app_data: &Path, settings: &Value) -> Result<PathBuf, String> {
+    let value = match settings["$client"].get("template_path") {
+        None => "",
+        Some(value) => value.as_str().ok_or("本地模板保存路径须为字符串")?,
+    }.trim();
+    if value.is_empty() { return Ok(app_data.join("data/template/templates.json")); }
+    let path = PathBuf::from(value);
+    if !path.is_absolute() || path.extension().and_then(|s| s.to_str()) != Some("json") {
+        return Err("本地模板保存路径须为以 .json 结尾的绝对文件路径".into());
+    }
+    Ok(path)
+}
+
+/// 保存设置前复用模板校验与文件锁；探测可写性，不创建或修改模板文件。
+pub(crate) fn check_storage(path: &Path) -> Result<(), String> {
+    operate_file(path, "check", None, None).map(|_| ())
+}
+
+/// 每次操作读取已保存的客户端路径；不调用 Python 服务。
 #[tauri::command]
 pub fn local_templates(
     app: tauri::AppHandle,
@@ -572,18 +602,45 @@ pub fn local_templates(
     let draft = draft
         .map(|bytes| draft_from_protobuf(&bytes, id.as_deref()))
         .transpose()?;
-    let directory = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?
-        .join("data/template");
-    operate(&directory, &operation, id.as_deref(), draft)
+    let data = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    let settings = crate::settings::local_settings(app, None, None)?;
+    operate_file(&storage_path(&data, &settings)?, &operation, id.as_deref(), draft)
 }
 
 #[cfg(test)]
 mod tests {
     //! 使用临时目录验证离线增删改查、校验、锁冲突和失败保留；cargo test --locked。
     use super::*;
+
+    /// 既有用例继续使用默认文件名，实际读写与自定义路径共用实现。
+    fn operate(directory: &Path, operation: &str, id: Option<&str>, draft: Option<Value>) -> Result<Value, String> {
+        operate_file(&directory.join("templates.json"), operation, id, draft)
+    }
+
+    /// 自定义路径读写与默认库隔离，检查不创建文件，损坏文件不能切入。
+    #[test]
+    fn custom_storage_preserves_default_library() {
+        let dir = Directory::new();
+        let default = storage_path(&dir.0, &json!({})).unwrap();
+        let original = operate_file(&default, "save", None, Some(draft("原库"))).unwrap();
+        let custom = dir.0.join("custom/other.json");
+        let settings = json!({"$client": {"template_path": custom}});
+        let path = storage_path(&dir.0, &settings).unwrap();
+        check_storage(&path).unwrap();
+        assert!(!path.exists());
+        let saved = operate_file(&path, "save", None, Some(draft("新库"))).unwrap();
+        let id = saved["template_id"].as_str().unwrap();
+        assert_eq!(operate_file(&path, "get", Some(id), None).unwrap(), saved);
+        operate_file(&path, "save", Some(id), Some(draft("改名"))).unwrap();
+        operate_file(&path, "delete", Some(id), None).unwrap();
+        assert_eq!(operate_file(&path, "list", None, None).unwrap(), json!([]));
+        assert_eq!(operate_file(&default, "list", None, None).unwrap(), json!([original]));
+        assert_eq!(storage_path(&dir.0, &json!({"$client": {"template_path": ""}})).unwrap(), default);
+        assert!(storage_path(&dir.0, &json!({"$client": {"template_path": "relative.json"}})).is_err());
+        fs::write(&path, b"broken").unwrap();
+        assert!(check_storage(&path).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"broken");
+    }
 
     /// 每例独立目录，退出时清理文件，不接触真实应用数据。
     struct Directory(std::path::PathBuf);

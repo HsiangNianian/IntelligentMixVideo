@@ -60,11 +60,18 @@ pub fn local_settings(
     values: Option<Value>,
 ) -> Result<Value, String> {
     // ponytail: 密钥与普通配置同存本地 JSON；需要加密存储时再接系统凭据库。
-    let directory = app
-        .path()
-        .app_data_dir()
-        .map_err(|_| "读取应用目录失败")?
-        .join("data/settings");
+    let data = app.path().app_data_dir().map_err(|_| "读取应用目录失败")?;
+    let directory = data.join("data/settings");
+    if id.as_deref() == Some("$client") {
+        let candidate = json!({"$client": values});
+        let path = crate::templates::storage_path(&data, &candidate)?;
+        let previous = operate(&directory, None, None)?;
+        if previous["$client"]["template_path"].as_str().unwrap_or("")
+            != candidate["$client"]["template_path"].as_str().unwrap_or("")
+        {
+            crate::templates::check_storage(&path)?;
+        }
+    }
     operate(&directory, id.as_deref(), values)
 }
 

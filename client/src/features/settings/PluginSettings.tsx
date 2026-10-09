@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { apiBase, setApiBase } from "@/lib/api-base";
-import { listPlugins, readSettings, saveSettings, type Plugin, type Values } from "./api";
+import { listPlugins, readSettings, saveSettings, type Plugin, type Values, type StorageChange } from "./api";
 import { normalizeValues, schemaError } from "./schema";
 import { Spinner } from "@/components/ui/spinner";
 import { Hint } from "@/components/Hint";
@@ -36,12 +36,17 @@ function SettingsActions({ saving, onCancel, children }: {
   );
 }
 
-/** 通用地址直接保存在客户端；不依赖目录，新请求读取保存后的地址。 */
-function GeneralSection({ onCancel }: { onCancel?: () => void }) {
+/** 通用地址与模板路径保存在客户端；路径提交先经过工作区草稿保护，不依赖后端目录。 */
+function GeneralSection({ onCancel, onStorageChange, initialValues }: { onCancel?: () => void; onStorageChange?: StorageChange; initialValues?: Values }) {
   const titleId = useId();
   const [url, setUrl] = useState(apiBase);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
+  const [saved, setSaved] = useState<Values>();
+  const [path, setPath] = useState("");
+  useEffect(() => {
+    if (initialValues) { setSaved(initialValues); setPath(String(initialValues.template_path ?? "")); }
+  }, [initialValues]);
   return (
     <section aria-labelledby={titleId} className="flex h-full min-h-0 flex-col">
       <form aria-label="通用设置" className="flex min-h-0 flex-1 flex-col" onSubmit={async (event) => {
@@ -50,18 +55,23 @@ function GeneralSection({ onCancel }: { onCancel?: () => void }) {
         setSaving(true);
         setMessage("");
         try {
-          await saveSettings("$client", { api_url: url.trim() });
+          if (!saved) throw new Error("通用设置尚未读取完成");
+          const values = { ...saved, api_url: url.trim(), ...(isTauri() ? { template_path: path.trim() } : {}) };
+          const save = () => saveSettings("$client", values);
+          if (isTauri() && path.trim() !== (saved.template_path ?? "") && onStorageChange) await onStorageChange(save);
+          else await save();
+          setSaved(values);
           setApiBase(url.trim());
-          setMessage("已保存，后续请求使用新地址；已有会话连接请重启客户端后切换。");
-        } catch {
-          setMessage("保存地址失败，请重试");
+          setMessage("已保存，新配置用于后续操作；已有后端会话连接请重启客户端后切换。");
+        } catch (reason) {
+          setMessage(reason instanceof Error ? reason.message : String(reason));
         } finally {
           setSaving(false);
         }
       }}>
         <div className="min-h-0 flex-1 overflow-y-auto p-5 sm:p-8">
           <h2 id={titleId} className="text-lg font-semibold">环境与连接</h2>
-          <p className="mt-2 text-sm text-muted-foreground">设置当前客户端连接的后端服务地址。</p>
+          <p className="mt-2 text-sm text-muted-foreground">设置后端服务地址和本地模板保存位置。</p>
           <dl className="mt-6 divide-y text-sm">
             <div className="flex flex-wrap justify-between gap-3 py-4">
               <dt className="text-muted-foreground">运行环境</dt>
@@ -72,6 +82,15 @@ function GeneralSection({ onCancel }: { onCancel?: () => void }) {
               <dd className="w-full min-w-0">
                 <Input id={`${titleId}-url`} type="url" required pattern="https?://.+" value={url}
                   onChange={event => { setUrl(event.target.value); setMessage(""); }} disabled={saving} />
+              </dd>
+            </div>
+            <div className="space-y-2 py-4">
+              <dt><Label htmlFor={`${titleId}-path`}>本地模板保存路径</Label></dt>
+              <dd className="space-y-2">
+                <Input id={`${titleId}-path`} value={path} disabled={!isTauri() || !saved || saving}
+                  placeholder="留空使用默认 data/template/templates.json"
+                  onChange={event => { setPath(event.target.value); setMessage(""); }} />
+                <p className="text-xs text-muted-foreground">{isTauri() ? "填写完整的 .json 绝对文件路径，留空恢复默认。保存后生效，原文件保留，不自动迁移。" : "本地模板存储仅支持桌面客户端。"}</p>
               </dd>
             </div>
           </dl>
@@ -157,13 +176,18 @@ function PluginForm({ plugin, saved, onCancel }: { plugin: Plugin; saved?: Value
 }
 
 /** 默认选择通用面板，切换仅隐藏表单保留草稿；卸载取消目录读取并忽略迟到结果。 */
-export function PluginSettings({ onCancel }: { onCancel?: () => void }) {
+export function PluginSettings({ onCancel, onStorageChange }: { onCancel?: () => void; onStorageChange?: StorageChange }) {
   const [data, setData] = useState<{ plugins: Plugin[]; values: Record<string, Values> }>();
   const [error, setError] = useState("");
   const [active, setActive] = useState(GENERAL_TAB);
+  const [generalValues, setGeneralValues] = useState<Values>();
   useEffect(() => {
     const controller = new AbortController();
-    Promise.all([listPlugins(controller.signal), readSettings()]).then(([plugins, values]) => {
+    const settings = readSettings().then(values => {
+      if (!controller.signal.aborted) setGeneralValues(values.$client ?? {});
+      return values;
+    });
+    Promise.all([listPlugins(controller.signal), settings]).then(([plugins, values]) => {
       if (!controller.signal.aborted) setData({ plugins, values });
     }).catch(() => {
       if (!controller.signal.aborted) setError("无法加载模块设置，请确认后端服务已启动后重新打开设置");
@@ -191,7 +215,7 @@ export function PluginSettings({ onCancel }: { onCancel?: () => void }) {
             </div>
             <div className="min-h-0 min-w-0 flex-1">
               <TabsContent className="h-full min-h-0" value={GENERAL_TAB} forceMount hidden={active !== GENERAL_TAB}>
-                <GeneralSection onCancel={onCancel} />
+                <GeneralSection onCancel={onCancel} onStorageChange={onStorageChange} initialValues={generalValues} />
               </TabsContent>
               {(data?.plugins ?? []).map((plugin) => {
                 const unsupported = schemaError(plugin);

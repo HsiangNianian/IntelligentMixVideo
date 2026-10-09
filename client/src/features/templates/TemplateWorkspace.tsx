@@ -1,5 +1,5 @@
 /** 模板编辑工作区：接收主页选择，展示模板信息，协调效果编辑、保存和未保存切换保护。 */
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useImperativeHandle, useRef, useState, type ReactNode, type Ref } from "react";
 import { CircleCheck, SquarePen } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -35,8 +35,12 @@ function WorkspaceColumns({ assets, canvas, inspector }: { assets: ReactNode; ca
   </ResizablePanelGroup>;
 }
 
+/** 设置保存借用工作区的草稿保护，提交成功后解除旧本地库的编辑状态。 */
+export type TemplateWorkspaceHandle = { changeStorage: (save: () => Promise<void>) => Promise<void> };
+
 /** 只有成功读取或明确放弃时才替换草稿；保存始终使用当前模板的环境和 ID。 */
-export function TemplateWorkspace({ selection = null, onHome }: {
+export function TemplateWorkspace({ selection = null, onHome, ref }: {
+  ref?: Ref<TemplateWorkspaceHandle>;
   selection?: TemplateSelection | null;
   onHome: () => void;
 }) {
@@ -49,7 +53,7 @@ export function TemplateWorkspace({ selection = null, onHome }: {
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [action, setAction] = useState<TemplateSelection | null>(null);
+  const [action, setAction] = useState<TemplateSelection | { commit: () => Promise<void>; cancel: () => void } | null>(null);
   const [openRequest, setOpenRequest] = useState<TemplateSelection | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [target, setTarget] = useState<string | null>("title");
@@ -126,6 +130,42 @@ export function TemplateWorkspace({ selection = null, onHome }: {
     return () => controller.abort();
   }, [openRequest, attempt]);
 
+  useImperativeHandle(ref, () => ({
+    /** 先保护旧库草稿，提交失败时保留编辑状态并将错误交回设置表单。 */
+    async changeStorage(save) {
+      if (busy || loading || action || openRequest) throw new Error("请等待模板操作完成后再切换保存路径");
+      return new Promise<void>((resolve, reject) => {
+        const change = {
+          cancel: () => reject(new Error("已取消路径切换")),
+          commit: async () => {
+            setBusy(true);
+            try {
+              await save();
+              if (environment === "local") { setCurrent(null); setDraft(null); setMedia(undefined); }
+              resolve();
+            } catch (reason) { reject(reason); }
+            finally { setBusy(false); setAction(null); }
+          },
+        };
+        if (environment === "local" && dirty) setAction(change);
+        else void change.commit();
+      });
+    },
+  }));
+
+  /** 取消任何切换都保留草稿，并让设置表单结束等待。 */
+  function cancelSwitch() {
+    if (action && "cancel" in action) action.cancel();
+    setAction(null); setOpenRequest(null); setError("");
+  }
+
+  /** 模板选择与存储位置切换共用确认按钮；只有成功提交后才解除旧草稿。 */
+  async function switchTarget() {
+    if (!action) return;
+    if ("commit" in action) await action.commit();
+    else { setOpenRequest(action); setAttempt(value => value + 1); }
+  }
+
   /** 资产和已添加对象共用选中状态，文字资产沿用最近选择的文字对象。 */
   function selectTarget(next: string) {
     setTarget(next);
@@ -140,7 +180,7 @@ export function TemplateWorkspace({ selection = null, onHome }: {
   }
 
   /** 成功保存响应建立新基线；失败保留原草稿和待切换目标，不自动重发。 */
-  async function persist(nextSelection?: TemplateSelection) {
+  async function persist(switchAfter = false) {
     if (!draft || lock.current || loading) return;
     // 时间输入保留局部编辑值，写入前检查；模板配置继续由 saveTemplate 校验。
     const timingInputs = form.current?.querySelectorAll<HTMLInputElement>('[aria-label="轨道时间设置"] input');
@@ -156,7 +196,7 @@ export function TemplateWorkspace({ selection = null, onHome }: {
       setDraft(next);
       setBaseline(JSON.stringify(next));
       toast.success(`模板「${saved.name}」已保存`);
-      if (nextSelection) { setOpenRequest(nextSelection); setAttempt((value) => value + 1); }
+      if (switchAfter) await switchTarget();
     } catch (reason) {
       if (mounted.current) setError(reason instanceof Error ? reason.message : "保存失败，请重试");
     } finally {
@@ -220,14 +260,14 @@ export function TemplateWorkspace({ selection = null, onHome }: {
           </fieldset>
         </form>
       )}
-      <Dialog open={!!action} onOpenChange={(open) => { if (!open && !busy && !loading) { setAction(null); setOpenRequest(null); setError(""); } }}>
-        <DialogContent showCloseButton={!busy && !loading}>
+      <Dialog open={!!action} onOpenChange={(open) => { if (!open && !busy && !loading) cancelSwitch(); }}>
+        <DialogContent className="z-60" showCloseButton={!busy && !loading}>
           <DialogHeader><DialogTitle>保存当前修改？</DialogTitle><DialogDescription>切换前可以保存当前配置、放弃修改，或取消切换。</DialogDescription></DialogHeader>
           {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
           <DialogFooter>
-            <Button type="button" variant="outline" disabled={busy || loading} onClick={() => { setAction(null); setOpenRequest(null); setError(""); }}>取消</Button>
-            <Button type="button" variant="outline" disabled={busy || loading} onClick={() => { setOpenRequest(action); setAttempt((value) => value + 1); }}>放弃修改</Button>
-            <Button type="button" disabled={busy || loading} onClick={() => { if (action) void persist(action); }}>保存并切换</Button>
+            <Button type="button" variant="outline" disabled={busy || loading} onClick={cancelSwitch}>取消</Button>
+            <Button type="button" variant="outline" disabled={busy || loading} onClick={() => void switchTarget()}>放弃修改</Button>
+            <Button type="button" disabled={busy || loading} onClick={() => { if (action) void persist(true); }}>保存并切换</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
