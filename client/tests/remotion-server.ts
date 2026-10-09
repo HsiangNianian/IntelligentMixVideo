@@ -269,6 +269,8 @@ export function remotionServer(
             project_id: versions.get(id),
           });
         }
+        if (/^\/versions\/[^/]+\/diagnostics$/.test(path))
+          return Response.json({ passed: true, diagnostics: [] });
         if (path.endsWith("/artifacts/Export.tsx"))
           return new Response(
             'export default function Template() { return "今日灵感"; }',
