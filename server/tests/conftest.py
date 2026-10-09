@@ -252,7 +252,7 @@ def composition_case(template_db, template_payload):
         "request": {"text": "甲乙丙丁。戊己庚辛。", "title": "业务标题\n保留换行",
                     "videoUrl": "https://media.example.test/avatar.mp4?token=a%2Fb&x=1",
                     "audioUrl": "https://media.example.test/tts.wav?token=c%2Bd",
-                    "styleId": str(template.template_id)},
+                    "styleId": str(template.template_id), "materials": []},
         "template": template.model_dump(mode="json", by_alias=True),
         "segments": segments,
         "matches": [
