@@ -184,6 +184,29 @@ def test_standard_material_presence_keeps_matching_contract(upstreams, client, c
     assert ("materials" in store.get(task_id)["data"]["request"]) == (materials is not None)
 
 
+@pytest.mark.parametrize("mode", ["standard_materials", "standard_avatar", "materials_voice", "materials_silent"])
+def test_null_background_music_disables_music(upstreams, client, composition_case, mode):
+    """四种业务组合均接受 null 音乐，保存后组装不添加背景音乐轨道，有声组合保留配音。"""
+    request = {**composition_case["request"], "packRules": {"backgroundMusic": None}}
+    if mode == "standard_avatar":
+        request.pop("materials")
+    else:
+        request["materials"] = [{"fileUrl": f"https://media.test/{i}.jpg", "type": "image"} for i in range(3)]
+    if mode.startswith("materials_"):
+        request.pop("videoUrl")
+    if mode == "materials_silent":
+        request.pop("audioUrl")
+        request["processRules"] = {"videoDuration": 8}
+    response = client.post(BASE, json=request)
+    assert response.status_code == 200
+    task_id = response.json()["data"]
+    assert finished(client, task_id)["status"] == "succeeded"
+    data = store.get(task_id)["data"]
+    assert data["request"]["packRules"]["backgroundMusic"] is None
+    audio_clips = [clip for track in data["timeline"]["AudioTracks"] for clip in track["AudioTrackClips"]]
+    assert [clip["MediaURL"] for clip in audio_clips] == ([] if mode == "materials_silent" else [request["audioUrl"]])
+
+
 @pytest.fixture
 def upstreams(monkeypatch, composition_settings, composition_case):
     """提供可控异步上游，默认完整成功；所有真实网络入口均由内存替身接管。"""

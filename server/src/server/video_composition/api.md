@@ -40,7 +40,7 @@
 | `fileUrl` | string | 是 | 素材 HTTP(S) 直链 |
 | `type` | string | 是 | `video` 或 `image` |
 
-`packRules.backgroundMusic` 字段：
+`packRules.backgroundMusic` 接受对象或 null；省略、传 null 或 `audioSwitch: false` 均表示不使用背景音乐。对象字段如下：
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |

@@ -188,7 +188,7 @@ def build_timeline(
         "TimelineIn": 0, "TimelineOut": duration,
     }]}]
     music = request.pack_rules.background_music
-    if music.audio_switch:
+    if music is not None and music.audio_switch:
         audio_tracks.append({"AudioTrackClips": [{
             "MediaURL": music.audio_url, "In": 0, "TimelineIn": 0, "TimelineOut": duration,
             "LoopMode": True, "Effects": [{"Type": "Volume", "Gain": music.volume}],

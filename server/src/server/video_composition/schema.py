@@ -56,9 +56,9 @@ class BackgroundMusic(APIModel):
 
 
 class PackRules(APIModel):
-    """仅背景音乐生效；其余包装开关被忽略。"""
+    """仅背景音乐生效，null 表示关闭；其余包装开关被忽略。"""
 
-    background_music: BackgroundMusic = Field(default_factory=BackgroundMusic)
+    background_music: BackgroundMusic | None = Field(default_factory=BackgroundMusic)
 
 
 class ProcessRules(APIModel):
