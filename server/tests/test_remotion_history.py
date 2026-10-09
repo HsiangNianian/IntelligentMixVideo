@@ -547,7 +547,7 @@ def test_sse_http_reconnect_and_followup_job(history_app, history_store):
             time.sleep(0.01)
         assert server.started
         url = f"http://127.0.0.1:{port}/works/{work.id}/stream"
-        with httpx.stream("GET", url, params={"after": cursor}, timeout=3) as response:
+        with httpx.stream("GET", url, params={"after": cursor}, timeout=3, trust_env=False) as response:
             assert response.status_code == 200
             assert response.headers["content-type"].startswith("text/event-stream")
             assert response.headers["x-accel-buffering"] == "no"
@@ -572,6 +572,7 @@ def test_sse_http_reconnect_and_followup_job(history_app, history_store):
             params={"after": 0},
             headers={"Last-Event-ID": str(cursor)},
             timeout=3,
+            trust_env=False,
         ) as response:
             lines = response.iter_lines()
             events = [json.loads(line[6:]) for line in _data_lines(lines, 2)]

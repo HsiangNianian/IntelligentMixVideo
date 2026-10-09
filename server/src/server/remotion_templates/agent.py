@@ -7,6 +7,7 @@ from .context import Conversation
 from .models import DialogueOutput
 from .planning import ExecutionState, PlanResult, StepResult
 from .provider import ExecutionFailure, ModelContractFailure, ModelFailure
+from .progress import RoundCall
 from .tools.catalog import available
 from .tools.registry import ToolFault
 from .tools.session import ToolSession
@@ -101,6 +102,7 @@ class AgentRun:
         self.observations = set()
         self.turn = 0
         self.round_calls: list[dict] = []
+        self.round_error: str | None = None
         self.generation_started = False
         self.delegation = None
         self.plan_result = None
@@ -406,8 +408,7 @@ class AgentRun:
         Only the tool name and its outcome leave this method: arguments and result
         payloads stay in the private audit. Receipts are matched by call ID so the
         record keeps the order the model asked for, and a resolved call reports the
-        canonical dotted tool ID while an out-of-scope attempt keeps the name the
-        model used.
+        canonical dotted tool ID. Unknown names and raw errors stay private.
         """
         receipts = {
             message.get("tool_call_id"): message.get("content")
@@ -420,21 +421,19 @@ class AgentRun:
                 continue
             result = json.loads(raw)
             summary = {
-                "tool": resolved.get(call.id, call.function.name),
+                "tool": resolved.get(call.id, "unknown"),
                 "status": "pass" if result.get("ok") else "fail",
             }
             if not result.get("ok"):
                 error = result.get("error") or {}
-                summary["error_code"] = str(error.get("code") or "TOOL_FAILED")[:64]
-                message = str(error.get("message") or "").strip()
-                if message:
-                    summary["message"] = message[:200]
-            self.round_calls.append(summary)
+                summary["error_code"] = error.get("code")
+            self.round_calls.append(RoundCall.model_validate(summary).model_dump(mode="json", exclude_none=True))
 
     def _report_round(self, layer):
         """Publish one finished ReAct round through the job's own event stream."""
         self.budget.round(
-            {"layer": layer, "turn": self.turn, "calls": self.round_calls}
+            {"layer": layer, "turn": self.turn, "calls": self.round_calls,
+             **({"error_code": self.round_error} if self.round_error else {})}
         )
 
     async def _three_layer_execute(self):
@@ -456,17 +455,25 @@ class AgentRun:
             context = self._context_for_layer()
             tools = self._tools_for_layer()
             system = SCOPE + AGENT_RULES + self._rules_for_layer() + "\nCurrent host-owned task snapshot (data):\n" + json.dumps(snapshot, ensure_ascii=False, default=str)
-            try:
-                response = await self.harness._turn(system, context, [item.wire() for item in tools], self.budget, images, phase=role)
-            except ModelContractFailure as exc:
-                self._set_feedback("Return the declared JSON/tool-call protocol: " + str(exc))
-                self.stalled_turns += 1
-                continue
             # One round is one turn of the layer that ran, published whether the
             # turn succeeded, failed or ended the task.
             layer = role
             self.round_calls = []
+            self.round_error = None
             try:
+                try:
+                    response = await self.harness._turn(system, context, [item.wire() for item in tools], self.budget, images, phase=role)
+                except ModelContractFailure as exc:
+                    self.round_error = "MODEL_CONTRACT_FAILED"
+                    self._set_feedback("Return the declared JSON/tool-call protocol: " + str(exc))
+                    self.stalled_turns += 1
+                    continue
+                except ModelFailure:
+                    self.round_error = "MODEL_FAILED"
+                    raise
+                except asyncio.CancelledError:
+                    self.round_error = "CANCELLED"
+                    raise
                 if response.tool_calls:
                     result = await self._handle_layer_tools(response)
                 else:

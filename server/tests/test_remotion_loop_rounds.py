@@ -17,7 +17,7 @@ from server.remotion_templates.context import AssistantMessage
 from server.remotion_templates.models import GenerateTemplateRequest
 from server.remotion_templates.planning import Plan
 from server.remotion_templates.progress import LoopRound
-from server.remotion_templates.provider import Budget
+from server.remotion_templates.provider import Budget, ModelContractFailure
 from server.remotion_templates.store import Store
 from server.remotion_templates.tools.registry import ToolFault
 
@@ -77,9 +77,9 @@ def test_public_payload_never_carries_arguments_or_payloads(round_store):
         },
     )
     events = store.work_events(work.id, cursor)
-    assert [event.type for event in events] == ["job.updated"]
-    rounds = events[-1].data["rounds"]
-    assert set(rounds[0]) == {"layer", "turn", "calls"}
+    assert [event.type for event in events] == ["job.round"]
+    rounds = [events[-1].data["round"]]
+    assert set(rounds[0]) == {"layer", "turn", "calls", "error_code"}
     assert set(rounds[0]["calls"][0]) == {"tool", "status", "error_code", "message"}
     payload = json.dumps(events[-1].data, ensure_ascii=False)
     for leaked in ("arguments", "details", "tsx_code", "goal", "done_when", "input_refs"):
@@ -171,7 +171,10 @@ class FakeHarness:
     async def _turn(self, _system, _context, _tools, _budget, _images, *, phase):
         """按角色返回下一条脚本响应。"""
         self.roles.append(phase)
-        return next(self.responses)
+        response = next(self.responses)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
     async def finalize_sprite(self, _session, identifier, _budget, _directory):
         """返回标记，证明只有 Outer 触发发布。"""
@@ -282,7 +285,7 @@ def test_failed_call_is_recorded_with_its_error_code(monkeypatch, tmp_path):
             "tool": "preset.create",
             "status": "fail",
             "error_code": "CODE_VALIDATION_FAILED",
-            "message": "Preset code validation failed.",
+            "message": "代码校验未通过。",
         }
     ]
     # 失败详情里的候选源码留在私有诊断里，不进入公开记录。
@@ -306,3 +309,127 @@ def test_round_published_through_the_store_round_trips(round_store):
             {"layer": "executor", "turn": 3, "calls": [{"tool": "sprite.compose", "status": "fail", "error_code": "COMPOSITION_FAILED"}]},
         )
     ]
+
+
+def test_invalid_model_turn_is_recorded_before_recovery(monkeypatch, tmp_path, round_store):
+    """无效协议轮次保留失败标记，下一轮继续且不会沿用上一轮调用。"""
+    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
+    work, job = running_job(round_store)
+    harness = FakeHarness([
+        call("inspect", "tools_inspect", {"tool_name": "sprite.create"}),
+        ModelContractFailure("private model text"),
+        AssistantMessage(content=json.dumps({"action": "complete", "sprite_id": "sprite-1"})),
+    ])
+    run = AgentRun(harness, None, Budget(on_round=lambda record: round_store.round(job.id, record)), tmp_path, [], lambda *_: None)
+    asyncio.run(run.plan_execute())
+    rounds = round_store.session(work.id).job.rounds
+    assert [item.turn for item in rounds] == [1, 2, 3]
+    assert rounds[1].error_code == "MODEL_CONTRACT_FAILED"
+    assert rounds[1].calls == []
+    assert "private model text" not in round_store.session(work.id).model_dump_json()
+
+
+def test_unresolved_names_do_not_break_rounds(monkeypatch, tmp_path, round_store):
+    """协议允许的四个调用仍可恢复：长名称与 Pydantic 输入仅留在私有上下文。"""
+    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
+    work, job = running_job(round_store)
+    calls = [call("valid", "tools_inspect", {"tool_name": "sprite.create"}).tool_calls[0]]
+    calls += [call("invalid", "preset_create", {"code": "PRIVATE_SOURCE"}).tool_calls[0]]
+    calls += [call(f"unknown-{i}", "PRIVATE_TOOL_" * 6, {}).tool_calls[0] for i in range(2)]
+    harness = FakeHarness([
+        AssistantMessage(tool_calls=calls),
+        AssistantMessage(content=json.dumps({"action": "complete", "sprite_id": "sprite-1"})),
+    ])
+    harness.settings.max_tooluse = 10
+    run = AgentRun(harness, None, Budget(on_round=lambda record: round_store.round(job.id, record)), tmp_path, [], lambda *_: None)
+    asyncio.run(run.plan_execute())
+    rounds = round_store.session(work.id).job.rounds
+    assert len(rounds[0].calls) == 4
+    assert rounds[0].calls[0].status == "pass"
+    assert rounds[0].calls[1].error_code == "INVALID_ARGUMENT"
+    assert all(item.tool == "unknown" for item in rounds[0].calls[2:])
+    assert "PRIVATE_SOURCE" in run.outer.serialize()
+    public = round_store.session(work.id).model_dump_json()
+    assert "PRIVATE_SOURCE" not in public and "PRIVATE_TOOL_" not in public
+
+
+def test_round_storage_does_not_limit_recorded_receipts(round_store):
+    """持久化接受宿主的全部回执，不重复设置模型入口已有的四调用协议限制。"""
+    work, job = running_job(round_store)
+    round_store.round(job.id, ROUND | {"calls": ROUND["calls"] * 6})
+    assert len(round_store.session(work.id).job.rounds[0].calls) == 6
+
+
+def test_round_messages_and_error_codes_are_host_owned(round_store):
+    """原始异常、内部路径和任意错误码在存储边界被固定文案替换。"""
+    work, job = running_job(round_store)
+    for turn, code in enumerate(["COMPOSITION_FAILED", "PRIVATE_CODE_/home/key"], 1):
+        round_store.round(job.id, ROUND | {"turn": turn, "calls": [{
+            "tool": "sprite.compose", "status": "fail", "error_code": code,
+            "message": "PRIVATE_SOURCE /home/internal/secret.tsx " * 100,
+        }]})
+    snapshot = round_store.session(work.id)
+    assert [item.calls[0].error_code for item in snapshot.job.rounds] == ["COMPOSITION_FAILED", "TOOL_FAILED"]
+    events = " ".join(event.model_dump_json() for event in round_store.work_events(work.id, 0))
+    assert "PRIVATE_" not in events and "/home/" not in events
+
+
+def test_round_storage_and_events_grow_linearly(round_store):
+    """两百轮每轮只保存和推送一条；阶段与终态事件不重复携带轮次。"""
+    work, job = running_job(round_store)
+    cursor = round_store.session(work.id).cursor
+    for turn in range(1, 201):
+        round_store.round(job.id, ROUND | {"turn": turn})
+    round_store.progress(job.id, "preparing")
+    round_store.update(job.id, status="answered", answer="完成")
+    events = []
+    while batch := round_store.work_events(work.id, cursor):
+        events.extend(batch)
+        cursor = batch[-1].id
+    deltas = [event for event in events if event.type == "job.round"]
+    assert len(deltas) == 200
+    assert all("rounds" not in event.data for event in events)
+    sizes = [len(event.model_dump_json()) for event in deltas]
+    assert max(sizes) < min(sizes) + 20
+    with round_store.connection() as db:
+        assert db.execute("SELECT COUNT(*) FROM job_rounds").fetchone()[0] == 200
+    assert len(round_store.session(work.id).job.rounds) == 200
+    assert round_store.work_history().items[0].job.rounds == []
+
+
+def test_legacy_jobs_rounds_and_replay_migrate_without_deleting_history(round_store):
+    """旧 loop 字段和列表式轮次自动迁移，旧 SSE 错误脱敏且保留事件游标。"""
+    from server.remotion_templates.deletion import finish
+
+    work, job = running_job(round_store)
+    other, _ = round_store.create(GenerateTemplateRequest(description="保留会话"))
+    legacy_round = ROUND | {"calls": [{"tool": "PRIVATE_NAME", "status": "fail", "error_code": "COMPOSITION_FAILED", "message": "PRIVATE_MESSAGE"}]}
+    with round_store.connection() as db:
+        db.execute("DROP TABLE job_rounds")
+        db.execute("CREATE TABLE job_rounds (job_id TEXT PRIMARY KEY REFERENCES jobs(id), data TEXT NOT NULL)")
+        db.execute("INSERT INTO job_rounds VALUES (?,?)", (str(job.id), json.dumps([legacy_round])))
+        data = json.loads(db.execute("SELECT data FROM jobs WHERE id=?", (str(job.id),)).fetchone()[0])
+        data["loop"] = {"layer": "executor", "turn": 3}
+        db.execute("UPDATE jobs SET data=? WHERE id=?", (json.dumps(data), str(job.id)))
+        db.execute("UPDATE events SET data=? WHERE job_id=?", (json.dumps(data), str(job.id)))
+        event = db.execute("SELECT id,data FROM work_events WHERE work_id=? AND type='job.updated' ORDER BY id DESC LIMIT 1", (str(work.id),)).fetchone()
+        state = json.loads(event[1]) | {"loop": data["loop"], "rounds": [legacy_round]}
+        db.execute("UPDATE work_events SET data=? WHERE id=?", (json.dumps(state), event[0]))
+    reopened = Store(round_store.root)
+    reopened.initialize()
+    snapshot = reopened.session(work.id)
+    assert snapshot.job.id == job.id and snapshot.messages
+    assert snapshot.job.rounds[0].calls[0].tool == "unknown"
+    replay = reopened.work_events(work.id, 0)
+    assert replay[-1].id == event[0]
+    assert "PRIVATE_" not in " ".join(item.model_dump_json() for item in replay)
+    assert all("loop" not in item.data for item in replay)
+    assert all("loop" not in json.loads(data) for _, data in reopened.events(job.id, 0))
+    reopened.initialize()
+    assert reopened.session(work.id) == snapshot
+    reopened.begin_deletion(work.id)
+    finish(reopened, work.id)
+    assert reopened.project(other.id).id == other.id
+    with reopened.connection() as db:
+        assert db.execute("SELECT COUNT(*) FROM job_rounds").fetchone()[0] == 0
+        assert db.execute("PRAGMA foreign_key_check").fetchall() == []

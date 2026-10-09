@@ -74,6 +74,10 @@ def finish(store: "Store", work_id: UUID) -> None:
             (identifier,),
         )
         db.execute("DELETE FROM chat_messages WHERE work_id=?", (identifier,))
+        db.execute(
+            "DELETE FROM job_rounds WHERE job_id IN (SELECT id FROM jobs WHERE project_id=?)",
+            (identifier,),
+        )
         db.execute("DELETE FROM work_events WHERE work_id=?", (identifier,))
         db.execute("DELETE FROM conversations WHERE project_id=?", (identifier,))
         db.execute("DELETE FROM versions WHERE project_id=?", (identifier,))

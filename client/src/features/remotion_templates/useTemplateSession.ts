@@ -157,6 +157,9 @@ export function useTemplateSession(onHistoryChange: () => void) {
   }
   /** 公开任务决定操作锁；成功版本读取完成或明确读取失败后解锁。 */
   function applyJob(job: Job | SessionJob) {
+    // State events omit round history; preserve the snapshot plus streamed deltas.
+    const previous = latest.current.jobs[job.id];
+    if (previous) job = { ...previous, ...job };
     const active = job.status === "queued" || job.status === "running";
     const waitingVersion =
       job.status === "succeeded" &&
@@ -248,13 +251,27 @@ export function useTemplateSession(onHistoryChange: () => void) {
               messages: mergeMessages(latest.current.messages, [event.data]),
             });
           else if (event.type === "job.updated") applyJob(event.data);
+          else if (event.type === "job.round") {
+            const job = latest.current.jobs[event.data.job_id];
+            if (job) {
+              const round = event.data.round;
+              const rounds = job.rounds ?? [];
+              if (!rounds.some((item) => item.layer === round.layer && item.turn === round.turn)) {
+                const updated = { ...job, rounds: [...rounds, round] };
+                publish({
+                  jobs: { ...latest.current.jobs, [job.id]: updated },
+                  ...(latest.current.job?.id === job.id ? { job: updated } : {}),
+                });
+              }
+            }
+          }
           else {
             await accept(event.data.version_id, key, signal);
             if (!current(key, signal)) return;
             if (latest.current.job) applyJob(latest.current.job);
           }
           cursor = event.id;
-          if (event.type !== "message.created")
+          if (event.type === "job.updated" || event.type === "version.ready")
             if (alive.current) changed.current();
         }
       } catch (error) {

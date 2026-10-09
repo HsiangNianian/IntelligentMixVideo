@@ -16,7 +16,7 @@ from .models import (
     PublicJob,
     TemplateProject,
 )
-from .progress import LoopRound, ProgressStep, finish_steps, read_rounds, read_steps
+from .progress import LoopRound, ProgressStep, finish_steps, initialize_rounds, read_rounds, read_steps
 
 
 class ChatMessage(Contract):
@@ -47,7 +47,7 @@ class WorkEvent(Contract):
 
     id: int
     work_id: UUID
-    type: Literal["message.created", "job.updated", "version.ready"]
+    type: Literal["message.created", "job.updated", "job.round", "version.ready"]
     data: dict
     created_at: datetime
 
@@ -95,13 +95,12 @@ def initialize(db: sqlite3.Connection) -> None:
             type TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS events_by_work ON work_events(work_id, id);
+        CREATE INDEX IF NOT EXISTS events_by_work_type ON work_events(work_id, type, id);
         CREATE TABLE IF NOT EXISTS job_progress (
             job_id TEXT PRIMARY KEY REFERENCES jobs(id), data TEXT NOT NULL
         );
-        CREATE TABLE IF NOT EXISTS job_rounds (
-            job_id TEXT PRIMARY KEY REFERENCES jobs(id), data TEXT NOT NULL
-        );
     """)
+    initialize_rounds(db)
     # Only jobs missing their user message need backfilling. Never expose conversations/tool records.
     rows = db.execute("""SELECT j.data, j.input_data FROM jobs j
         WHERE NOT EXISTS (SELECT 1 FROM chat_messages m WHERE m.job_id=j.id AND m.role='user')
@@ -196,7 +195,7 @@ def record_input(
     append_message(db, job, "user", text, image=image, reconstructed=reconstructed)
 
 
-def public_job(db: sqlite3.Connection, job: GenerationJob) -> SessionJob:
+def public_job(db: sqlite3.Connection, job: GenerationJob, *, include_rounds: bool = True) -> SessionJob:
     """Expose timestamps and input scalars, never provider errors, stages, attempts or tool traces."""
     row = db.execute(
         "SELECT input_data FROM jobs WHERE id=?", (str(job.id),)
@@ -208,7 +207,7 @@ def public_job(db: sqlite3.Connection, job: GenerationJob) -> SessionJob:
         updated_at=job.updated_at,
         parameters=inputs.parameters,
         progress=read_steps(db, job),
-        rounds=read_rounds(db, job),
+        rounds=read_rounds(db, job) if include_rounds else [],
     )
 
 
@@ -217,14 +216,14 @@ def record_job(
 ) -> None:
     """Suppress internal-only updates and atomically attach terminal messages and success pointers."""
     finish_steps(db, job)
-    state = public_job(db, job).model_dump(mode="json")
+    state = public_job(db, job, include_rounds=False).model_dump(mode="json", exclude={"rounds"})
     previous = db.execute(
         "SELECT data FROM work_events WHERE work_id=? AND type='job.updated' ORDER BY id DESC LIMIT 1",
         (str(job.project_id),),
     ).fetchone()
     if previous:
         old = json.loads(previous[0])
-        if {k: v for k, v in old.items() if k != "updated_at"} == {
+        if {k: v for k, v in old.items() if k not in {"updated_at", "rounds"}} == {
             k: v for k, v in state.items() if k != "updated_at"
         }:
             return
@@ -345,7 +344,7 @@ def work_page(db: sqlite3.Connection, cursor: str | None, limit: int) -> WorkPag
                 title=(work.request.description or "图片字效")[:40],
                 updated_at=row["activity"],
                 current_version_id=work.current_version_id,
-                job=public_job(db, GenerationJob.model_validate_json(job[0])),
+                job=public_job(db, GenerationJob.model_validate_json(job[0]), include_rounds=False),
             )
         )
     next_cursor = None

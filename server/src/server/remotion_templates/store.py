@@ -242,7 +242,7 @@ class Store:
         repeated layer/turn pair is ignored so a retried handler cannot duplicate
         a round.
         """
-        from .progress import LoopRound, read_rounds, save_rounds
+        from .progress import LoopRound, save_round
 
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -255,15 +255,12 @@ class Store:
             if job.status != "running":
                 return
             current = LoopRound.model_validate(record)
-            rounds = read_rounds(db, job)
-            if any(
-                item.layer == current.layer and item.turn == current.turn
-                for item in rounds
-            ):
+            if not save_round(db, str(job.id), current):
                 return
-            rounds.append(current)
-            save_rounds(db, job, rounds)
             self._save_job(db, job)
+            history.append_event(db, job.project_id, "job.round", {
+                "job_id": str(job.id), "round": current.model_dump(mode="json"),
+            }, job.updated_at)
 
     def create(
         self, request: GenerateTemplateRequest

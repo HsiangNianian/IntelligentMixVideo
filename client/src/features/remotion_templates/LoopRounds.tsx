@@ -12,7 +12,7 @@ const layerLabels: Record<LoopRound["layer"], string> = {
   executor: "执行循环",
 };
 
-/** 一项调用的结论文案；失败时保留宿主的错误码与截断后的简短说明。 */
+/** 一项调用的结论文案；失败时显示宿主白名单中的错误码和说明。 */
 function callText(call: RoundCall): string {
   if (call.status === "pass") return `${call.tool} → 成功`;
   const detail = [call.error_code, call.message].filter(Boolean).join("：");
@@ -74,7 +74,7 @@ export function LoopRounds({ job }: { job: SessionJob }) {
                 <span className="ml-auto text-muted-foreground">
                   {round.calls.length
                     ? `${round.calls.length} 次调用`
-                    : "未调用工具"}
+                    : round.error_code ? "本轮未完成" : "未调用工具"}
                 </span>
               </Button>
               {opened && (
@@ -86,7 +86,13 @@ export function LoopRounds({ job }: { job: SessionJob }) {
                       </li>
                     ))
                   ) : (
-                    <li>本轮只返回了消息，没有调用工具。</li>
+                    <li>{round.error_code === "MODEL_CONTRACT_FAILED"
+                      ? "模型响应格式无效，本轮未调用工具。"
+                      : round.error_code === "MODEL_FAILED"
+                        ? "模型请求失败，本轮未调用工具。"
+                        : round.error_code === "CANCELLED"
+                          ? "本轮已取消。"
+                          : "本轮只返回了消息，没有调用工具。"}</li>
                   )}
                 </ul>
               )}

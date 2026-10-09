@@ -41,12 +41,18 @@ export function remotionServer(
     snap.cursor = event.id;
     if (event.type === "message.created") snap.messages.push(event.data);
     else if (event.type === "job.updated") {
-      snap.job = event.data;
+      const previous = snap.jobs?.find((job) => job.id === event.data.id);
+      snap.job = { ...previous, ...event.data };
       snap.jobs = [
         ...new Map(
-          [...(snap.jobs ?? []), event.data].map((job) => [job.id, job]),
+          [...(snap.jobs ?? []), snap.job].map((job) => [job.id, job]),
         ).values(),
       ];
+    } else if (event.type === "job.round") {
+      const job = snap.jobs?.find((job) => job.id === event.data.job_id);
+      if (job && !job.rounds?.some((round) => round.layer === event.data.round.layer && round.turn === event.data.round.turn)) {
+        job.rounds = [...(job.rounds ?? []), event.data.round];
+      }
     } else snap.work.current_version_id = event.data.version_id;
     for (const stream of streams)
       if (stream.work === work) stream.controller.enqueue(encode(event));
