@@ -19,6 +19,7 @@ OBJECT = '{"status":"step_done","summary":"ok","sprite_id":null}'
     f"```json\n{OBJECT}\n```",
     f"已完成本步骤。\n```json\n{OBJECT}\n```\n以上。",
     f"Step is complete: {OBJECT} done.",
+    f'Step is "complete": {OBJECT}',
 ])
 def test_step_result_is_found_in_fences_and_prose(reply):
     """Logged replies were fenced or wrapped in prose; the strict schema still validates the object."""
@@ -28,6 +29,19 @@ def test_step_result_is_found_in_fences_and_prose(reply):
 @pytest.mark.parametrize("reply", ["no json here", f"{OBJECT} and {OBJECT}", "[1, 2]", "{broken"])
 def test_ambiguous_or_missing_json_is_not_guessed(reply):
     """Zero or several objects (or a non-object) are rejected so the steer can ask again."""
+    assert extract_json_object(reply) is None
+
+
+@pytest.mark.parametrize("reply", [
+    f"[{OBJECT}]",
+    f"Result: [{OBJECT}]",
+    '{"unfinished":' + OBJECT,
+    'Prefix {broken ' + OBJECT,
+    '"{\\"status\\":\\"step_done\\",\\"summary\\":\\"ok\\"}"',
+    OBJECT + " and {broken",
+])
+def test_nested_or_broken_json_is_not_salvaged_as_a_protocol_reply(reply):
+    """数组、字符串或损坏容器中的子对象不能被提升为合法协议回复。"""
     assert extract_json_object(reply) is None
 
 

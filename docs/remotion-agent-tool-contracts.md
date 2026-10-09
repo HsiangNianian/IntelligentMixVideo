@@ -511,6 +511,7 @@ async def preset_modify(request: PresetModifyInput) -> ToolResult[PresetModifyOu
 - changes.code 是 Agent **已经修改完的完整源码**，不是自然语言修改要求，也不是待工具应用的文本 diff。
 - changes 中每个字段整体替换原字段；未传字段保留原值。特别是 Schema 和 default_parameters 整体替换，不递归拼接旧字段。
 - 合并后检查数据结构、Schema 和默认参数的一致性，返回完整 PresetDraft，并令 source_preset_id 为输入 preset_id。
+- 数据契约无效时返回 `INVALID_ARGUMENT`，`field` 为 `/changes`，`details.diagnostics` 指出具体字段；原记录保持不变。Schema 只允许文档内引用，不读取外部 URL。
 - 工具不执行模型调用、不写库、不创建新的 preset_id，不承诺 LSP 或行为检查已通过。可单独调用 validate 获取诊断。
 - 修改副本可以直接交给 compose；需要检索复用时，将完整副本交给 create。
 

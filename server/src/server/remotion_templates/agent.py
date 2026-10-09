@@ -66,16 +66,28 @@ def extract_json_object(content):
     zero or several candidate objects are ambiguous and are rejected instead of guessed.
     """
     decoder = json.JSONDecoder()
-    found, index = [], content.find("{")
-    while index != -1:
+    found, index = [], 0
+    while index < len(content):
+        if content[index] not in ('{', '[', '"'):
+            index += 1
+            continue
         try:
             value, end = decoder.raw_decode(content, index)
-        except ValueError:
-            index = content.find("{", index + 1)
-            continue
-        found.append(value)
-        index = content.find("{", end)
-    return json.dumps(found[0]) if len(found) == 1 and isinstance(found[0], dict) else None
+        except (ValueError, RecursionError):
+            # Never salvage a nested object from malformed JSON or an incomplete wrapper.
+            return None
+        if isinstance(value, list):
+            return None
+        if isinstance(value, dict):
+            found.append(value)
+            if len(found) > 1:
+                return None
+        # Quoted prose/JSON strings are consumed whole, not searched for embedded objects.
+        index = end
+    try:
+        return json.dumps(found[0]) if found else None
+    except RecursionError:
+        return None
 
 
 STEP_RESULT_FORMAT = (
@@ -122,6 +134,7 @@ class AgentRun:
         )
         self.layer = Layer.OUTER
         self.stalled_turns = 0
+        self._round_progress = False
         self.seen_calls = {
             call["id"]
             for message in self.outer.messages()
@@ -220,6 +233,7 @@ class AgentRun:
             return False
         self.observations.add(key)
         self.stalled_turns = 0
+        self._round_progress = True
         return True
 
     def _observe_handoff(self, destination, status):
@@ -261,17 +275,17 @@ class AgentRun:
             content = extract_json_object(content) or content
         try:
             payload = json.loads(content)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, RecursionError):
             payload = None
         if self.layer is Layer.EXECUTOR:
             try:
                 result = StepResult.model_validate_json(content)
+                if result.sprite_id:
+                    self.session.saved_sprite(result.sprite_id)
             except Exception as exc:
                 self._set_feedback(f"Your last reply was not a valid StepResult ({str(exc)[:300]}). " + STEP_RESULT_FORMAT)
                 self.stalled_turns += 1
                 return None
-            if result.sprite_id:
-                self.session.saved_sprite(result.sprite_id)
             self.state.finish_batch(**result.model_dump())
             context.append([response.wire()])
             self._observe_handoff(Layer.PLAN, result.status)
@@ -283,12 +297,12 @@ class AgentRun:
             if status in {"plan_done", "blocked", "needs_input"}:
                 try:
                     payload = PlanResult.model_validate(payload).model_dump(mode="json")
+                    if payload.get("sprite_id"):
+                        self.session.saved_sprite(payload["sprite_id"])
                 except ValueError as exc:
                     self._set_feedback(str(exc))
                     self.stalled_turns += 1
                     return None
-                if payload.get("sprite_id"):
-                    self.session.saved_sprite(payload["sprite_id"])
                 self.plan_result = payload
                 context.append([response.wire()])
                 self._observe_handoff(Layer.OUTER, payload["status"])
@@ -508,6 +522,9 @@ class AgentRun:
             layer = role
             self.round_calls = []
             self.round_error = None
+            previous_stalls = self.stalled_turns
+            self._round_progress = False
+            result = None
             try:
                 try:
                     response = await self.harness._turn(system, context, [item.wire() for item in tools], self.budget, images, phase=role)
@@ -528,6 +545,9 @@ class AgentRun:
                     # Handlers distinguish fresh handoffs from repeated or rejected replies.
                     result = await self._handle_layer_message(response)
             finally:
+                # A round may contain several calls. Count it once, and preserve any
+                # fresh evidence even if later calls in the same round are duplicates.
+                self.stalled_turns = 0 if self._round_progress or result is not None else previous_stalls + 1
                 self._report_round(layer)
             if result is not None:
                 return result

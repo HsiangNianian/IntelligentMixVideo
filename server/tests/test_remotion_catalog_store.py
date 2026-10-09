@@ -2,10 +2,11 @@
 
 import subprocess
 import sys
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Event
 from types import SimpleNamespace
 
 import pytest
@@ -21,7 +22,7 @@ def record(identifier):
     return PresetRecord(
         preset_id=identifier, created_at="2026-10-09T00:00:00+00:00", description=identifier,
         code="export default function C(){return null}",
-        parameter_schema={"type": "object", "properties": {}}, default_parameters={},
+        parameter_schema={"type": "object", "properties": {}, "additionalProperties": False}, default_parameters={},
     )
 
 
@@ -132,3 +133,68 @@ def test_database_read_failure_falls_back_to_local_records(tmp_path, monkeypatch
     monkeypatch.setattr(store, "_engine", lambda: SimpleNamespace(connect=connect))
     assert store.read_presets() == [value]
     assert store.find_preset(value.preset_id) == value
+
+
+def test_waiting_for_a_catalog_lock_has_a_deadline(tmp_path):
+    """持锁进程长期不释放时，另一个进程明确超时，不永久占用工作线程。"""
+    script = "from server.file_lock import lock_exclusive; import sys; f=open(sys.argv[1], 'a+b'); lock_exclusive(f, blocking=True, timeout=0.1)"
+    path = tmp_path / "catalog.lock"
+    with path.open("a+b") as lock:
+        lock_exclusive(lock)
+        result = subprocess.run([sys.executable, "-c", script, str(path)], capture_output=True, text=True, timeout=5)
+        assert result.returncode != 0
+        assert "TimeoutError: Timed out waiting" in result.stderr
+
+
+@pytest.mark.parametrize("operation", ["search", "modify", "create"])
+def test_catalog_waits_leave_the_event_loop_responsive(tmp_path, monkeypatch, operation):
+    """真实工具调用等待目录读写时，事件循环仍能处理取消和其他请求。"""
+    from server.remotion_templates.tools.contracts import CodeValidationReport
+    from server.remotion_templates.tools.registry import get_tool
+    from server.remotion_templates.tools.session import ToolSession
+
+    async def scenario():
+        """用线程事件暂停存储边界，确认循环在存储释放之前仍能继续调度。"""
+        loop = asyncio.get_running_loop()
+        entered, release = asyncio.Event(), Event()
+        harness = SimpleNamespace(settings=SimpleNamespace(data_dir=tmp_path), renderer=None)
+        session = ToolSession(harness, None, None, None, tmp_path, [], lambda *_: None, {})
+        stored = record("source")
+
+        def blocked(*_args):
+            """模拟慢数据库或文件锁；上界保证测试失败时也能退出。"""
+            loop.call_soon_threadsafe(entered.set)
+            release.wait(timeout=2)
+            return [stored] if operation == "search" else stored if operation == "modify" else "local"
+
+        async def validate(_component):
+            """只隔离渲染器，本例验证实际创建工具的持久化调度。"""
+            return CodeValidationReport(passed=True, diagnostics=[])
+
+        if operation == "search":
+            monkeypatch.setattr(session.catalog, "read_presets", blocked)
+            arguments = {}
+        elif operation == "modify":
+            monkeypatch.setattr(session.catalog, "find_preset", blocked)
+            arguments = {"preset_id": stored.preset_id, "changes": {"description": "updated"}}
+        else:
+            monkeypatch.setattr(session.catalog, "append_preset", blocked)
+            monkeypatch.setattr(session, "validate_code", validate)
+            arguments = stored.model_dump(mode="json", exclude={"preset_id", "created_at"}, exclude_unset=True)
+        task = asyncio.create_task(get_tool(f"preset.{operation}").invoke(session, arguments))
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=1)
+            assert not task.done(), "Catalog I/O blocked the event loop until completion"
+            if operation == "search":
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, timeout=1)
+            else:
+                release.set()
+                result = await asyncio.wait_for(task, timeout=1)
+                assert result["ok"] is True
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())

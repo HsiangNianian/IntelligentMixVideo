@@ -210,7 +210,7 @@ class ToolSession:
     async def create_preset(self, request: PresetCreateInput) -> PresetCreateOutput:
         """Validate and store a new immutable PR76 Preset record."""
         if request.source_preset_id is not None:
-            self._find_preset(request.source_preset_id)
+            await asyncio.to_thread(self._find_preset, request.source_preset_id)
         validation = await self.validate_code(request)
         if not validation.passed:
             raise ToolFault("CODE_VALIDATION_FAILED", "Preset code validation failed.", details={"validation": validation.model_dump(mode="json")})
@@ -220,7 +220,7 @@ class ToolSession:
             **request.model_dump(mode="json", exclude_unset=True),
         )
         # Presets persist to MySQL with a local fallback; the record is immutable once saved.
-        self.catalog_backend = self.catalog.append_preset(record)
+        self.catalog_backend = await asyncio.to_thread(self.catalog.append_preset, record)
         return PresetCreateOutput(preset=record, validation=validation)
 
     def search_presets(self, request: PresetSearchInput) -> PresetSearchOutput:
@@ -266,7 +266,12 @@ class ToolSession:
             raise ToolFault("INVALID_ARGUMENT", "changes must replace at least one field", field="/changes")
         record = self._find_preset(request.preset_id)
         base = record.model_dump(mode="json", exclude={"preset_id", "created_at"}, exclude_unset=True)
-        return PresetModifyOutput(preset=PresetDraft(**{**base, **changes, "source_preset_id": record.preset_id}))
+        draft = PresetDraft(**{**base, **changes, "source_preset_id": record.preset_id})
+        diagnostics = validate_component_contract(draft)
+        if diagnostics:
+            raise ToolFault("INVALID_ARGUMENT", "The edited Preset violates the component contract.",
+                            field="/changes", details={"diagnostics": [item.model_dump(mode="json", exclude_unset=True) for item in diagnostics]})
+        return PresetModifyOutput(preset=draft)
 
     async def create_sprite(self, sprite: SpriteDraft) -> SpriteCreateOutput:
         """Validate source consistency and store one immutable composed Sprite."""
@@ -320,7 +325,7 @@ class ToolSession:
             created_at=datetime.now(UTC).isoformat(),
             **sprite.model_dump(mode="json", exclude_unset=True),
         )
-        self.catalog.append_sprite(record)
+        await asyncio.to_thread(self.catalog.append_sprite, record)
         self.saved_sprites[record.sprite_id] = record
         self.latest_sprite_id = record.sprite_id
         self._last_component_sprite = record
@@ -336,7 +341,7 @@ class ToolSession:
                 raise ToolFault("INVALID_ARGUMENT", "instance_id must be unique and safe")
             seen.add(instance.instance_id)
             if instance.source.kind == "stored":
-                source = self._find_preset(instance.source.preset_id)
+                source = await asyncio.to_thread(self._find_preset, instance.source.preset_id)
                 preset = source.model_dump(mode="json", exclude={"preset_id", "created_at"}, exclude_unset=True)
             else:
                 preset = instance.source.preset.model_dump(mode="json", exclude_unset=True)

@@ -42,6 +42,10 @@ append immutable records only; there is no update or delete.
 Connection and query failures also fall back to local records. Local appends
 hold a cross-process file lock over the entire read/modify/write transaction
 and replace the catalog from a unique, flushed temporary file.
+Catalog reads and writes run in worker threads, so database and lock waits do
+not block the event loop or delay cancellation. File-lock waits expire after
+10 seconds on every platform. An atomic write already in progress may finish
+after task cancellation; it does not publish a task version.
 
 `preset.search` merges database and local records, sorts by creation time newest
 first, and then applies `limit`. UUID ordering and storage backend do not affect
@@ -79,9 +83,17 @@ New tool observations, new handoffs and advancing completed steps reset the
 counter. Repeated handoffs at the same step count as stalls, including valid
 `delegate`/`blocked` and `continue`/`blocked` loops. Changing summaries, reasons,
 plan revision numbers or batch counters does not count as progress.
+The threshold counts model rounds, not individual tool calls. A round counts
+at most once, and any new evidence in that round resets the counter even if
+later calls repeat earlier results.
 Only a successful generation-starting tool sets `generation_started`. A failed
 first attempt may still be followed by an explanatory answer; failure after a
 successful generation attempt does not remove the completion requirement.
+
+Executor and Plan accept a single JSON object with ordinary prose or a markdown
+fence around it. They reject arrays, quoted JSON strings, multiple objects and
+objects nested inside malformed JSON. Unknown task Sprite IDs produce feedback
+without changing the active layer or Plan, so the next round can correct them.
 
 Every Outer → Plan → Executor turn appends one public round record through the
 `job.round` delta event on the same work stream as the phase timeline. A round

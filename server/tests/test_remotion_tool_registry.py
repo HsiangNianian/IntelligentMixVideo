@@ -278,3 +278,35 @@ def test_single_oversized_preset_returns_a_bounded_error(tmp_path, monkeypatch, 
     assert result["ok"] is False
     assert result["error"]["code"] == "RESOURCE_LIMIT_EXCEEDED"
     assert len(json.dumps(result).encode()) < 1000
+
+
+@pytest.mark.parametrize("changes", [
+    {"default_parameters": {"text": 123}},
+    {"default_parameters": {"undeclared": "x"}},
+    {"parameter_schema": {"type": "not-a-type"}},
+    {"parameter_schema": {"type": "object", "$ref": "https://example.invalid/schema"}},
+])
+def test_modify_rejects_invalid_merged_contracts_without_writing(tmp_path, monkeypatch, changes):
+    """修改草稿必须保证 Schema 与默认值一致；拒绝外部引用且原记录不变。"""
+    session = make_session(tmp_path, monkeypatch)
+    stored = save_preset(session, "title", {"text": {"type": "string"}})
+    result = asyncio.run(get_tool("preset.modify").invoke(session, {
+        "preset_id": stored.preset_id, "changes": changes,
+    }))
+    assert result["error"]["code"] == "INVALID_ARGUMENT"
+    assert result["error"]["field"] == "/changes"
+    assert result["error"]["details"]["diagnostics"]
+    assert session.catalog.read_presets() == [stored]
+
+
+def test_modify_can_replace_schema_and_defaults_together(tmp_path, monkeypatch):
+    """一致的整体替换仍可返回草稿，且不隐式写库或执行渲染。"""
+    session = make_session(tmp_path, monkeypatch)
+    stored = save_preset(session, "title", {"text": {"type": "string"}})
+    schema = {"type": "object", "properties": {"size": {"type": "integer"}}, "required": ["size"], "additionalProperties": False}
+    result = session.modify_preset(PresetModifyInput(preset_id=stored.preset_id, changes={
+        "parameter_schema": schema, "default_parameters": {"size": 42},
+    }))
+    assert result.preset.parameter_schema == schema
+    assert result.preset.default_parameters == {"size": 42}
+    assert session.catalog.read_presets() == [stored]

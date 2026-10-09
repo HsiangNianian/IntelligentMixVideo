@@ -13,6 +13,10 @@ deterministic single-file Sprite source. The host builds the preview after the
 saved Sprite passes its checks.
 Local catalog transactions use a cross-process file lock and unique atomic
 replacement files; database connection/query failures preserve local visibility.
+Catalog I/O runs outside the event loop and file-lock acquisition waits at most
+10 seconds. `preset.modify` validates the merged component's data contract,
+including schema/default consistency and local-only references, before returning
+a draft; it neither compiles the code nor writes the draft to the catalog.
 
 `registry.get_tool` is the single name resolver: it accepts the dotted ID or the
 provider wire name (`wire_name`) and rejects everything else with the tool

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
@@ -191,7 +192,7 @@ async def image_crop(owner, request: ImageCropInput) -> ToolResult[ProcessedImag
 async def preset_search(owner, request: PresetSearchInput) -> ToolResult[PresetSearchOutput]:
     """List Preset summaries (id, description, parameter names), optionally filtered by keyword."""
     try:
-        return _success(owner.search_presets(request))
+        return _success(await asyncio.to_thread(owner.search_presets, request))
     except Exception as exc:
         return _failure(exc, "PRESET_STORE_FAILED")
 
@@ -206,7 +207,7 @@ async def preset_search(owner, request: PresetSearchInput) -> ToolResult[PresetS
 async def preset_modify(owner, request: PresetModifyInput) -> ToolResult[PresetModifyOutput]:
     """Return an in-memory copy of a stored Preset carrying the caller's replacements."""
     try:
-        return _success(owner.modify_preset(request))
+        return _success(await asyncio.to_thread(owner.modify_preset, request))
     except Exception as exc:
         return _failure(exc, "PRESET_STORE_FAILED")
 

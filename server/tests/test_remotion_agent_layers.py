@@ -302,3 +302,59 @@ def test_failed_generation_tool_preserves_previous_generation_state(monkeypatch,
         assert "Generation has started" in run.session.feedback[0]
     else:
         assert result.answer == "代码校验失败，请调整需求。"
+
+
+@pytest.mark.parametrize("layer,status", [(Layer.EXECUTOR, "step_done"), (Layer.PLAN, "plan_done")])
+def test_unknown_sprite_reply_is_correctable_without_mutating_plan(monkeypatch, tmp_path, layer, status):
+    """模型捏造 Sprite ID 时保留当前层和计划，给出纠错后可接受有效回复。"""
+    from server.remotion_templates.tools.registry import ToolFault
+
+    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
+    run = AgentRun(FakeHarness([]), None, Budget(), tmp_path, [], lambda *_: None)
+    run.layer = layer
+    plan = Plan(goal="g", steps=[{"id": "s", "goal": "g", "tool_modules": ["preset"], "done_when": "d"}])
+    run.state.control(PlanAction(action="update_plan", plan=plan))
+    original = run.session.saved_sprite
+
+    def saved_sprite(identifier):
+        """采用真实 Session 的未知 ID 错误类型，避免测试夹具的 KeyError 掩盖行为。"""
+        if identifier == "unknown":
+            raise ToolFault("SPRITE_NOT_FOUND", "Unknown task Sprite: unknown")
+        return original(identifier)
+
+    monkeypatch.setattr(run.session, "saved_sprite", saved_sprite)
+    before = run.state.snapshot()
+    asyncio.run(run._handle_layer_message(AssistantMessage(content=json.dumps({
+        "status": status, "summary": "done", "sprite_id": "unknown",
+    }))))
+    assert run.layer is layer and run.state.snapshot() == before
+    assert run.plan_result is None
+    assert run.stalled_turns == 1
+    assert "Unknown task Sprite" in run.session.feedback[0]
+    asyncio.run(run._handle_layer_message(AssistantMessage(content=json.dumps({
+        "status": status, "summary": "done", "sprite_id": "sprite-1",
+    }))))
+    assert run.layer is (Layer.PLAN if layer is Layer.EXECUTOR else Layer.OUTER)
+    assert run.stalled_turns == 0
+
+
+def test_no_progress_threshold_counts_rounds_instead_of_tool_calls(monkeypatch, tmp_path):
+    """同轮四个重复调用只算一次空转；首轮的新观察不能被尾部重复调用抹掉。"""
+    from server.remotion_templates.provider import ExecutionFailure
+
+    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
+    responses = [AssistantMessage(tool_calls=[
+        call(f"inspect-{turn}-{index}", "tools_inspect", {"tool_name": "sprite.create"}).tool_calls[0]
+        for index in range(4)
+    ]) for turn in range(10)]
+    harness = FakeHarness(responses)
+    harness.settings.enforce_no_progress = True
+    harness.settings.max_steps = 20
+    harness.settings.max_tooluse = 4
+    run = AgentRun(harness, None, Budget(), tmp_path, [], lambda *_: None)
+    with pytest.raises(ExecutionFailure) as stopped:
+        asyncio.run(run.plan_execute())
+    assert stopped.value.code == "no_progress"
+    assert run.stalled_turns == 6
+    assert len(harness.roles) == 7  # 一轮新观察后，确实经历六轮空转。
+    assert run.state.calls == 28
