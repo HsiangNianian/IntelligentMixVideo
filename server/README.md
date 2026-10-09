@@ -73,6 +73,8 @@ MySQL 单独列保存唯一名称、ID 和时间，JSON 保存完整编辑配置
 
 ## 异步视频合成
 
+请求不包含 `materials` 时为纯数字人：跳过素材匹配，以 `audioUrl` 的 ASR 原始总时长铺满数字人视频，字幕继续按文案切片和模板时间规则显示。显式 `materials: []` 保留素材匹配但不指定候选，非空数组携带候选匹配，`null` 返回 422。需要保留此前缺省字段也匹配的行为时，调用方须改为显式传入 `[]`；已有任务继续按已保存的请求和阶段恢复。
+
 `POST /api/v1/video-compositions` 创建任务，HTTP 200 响应为 `{"code":200,"message":"操作成功","data":"任务ID"}`；`GET /api/v1/video-compositions/{taskId}` 查询结果，查询结构保持不变。终态回调仅含 `taskId/status/videoUrl/errorMessage`：成功为 `succeed`、视频直链、null 错误；失败为 `failed`、null 地址、错误摘要。回调 ID 与创建响应的 `data` 一致，内部和查询的成功状态仍为 `succeeded`。模板按 `tracks[].editor` 读取，标题取请求 `title`，关键词取原切片；字幕使用切片原文与时间，由合成时间线保留中英文问号并去除其他标点；已有快照中的 `subtitle_parts` 仍可读取。素材匹配仍接收原切片文字与时间，标题和字幕的模板示例文字不进入成片，气泡对象使用其模板示例文字。
 
 创建请求的字段校验错误返回 HTTP 422，响应含 `{"code":422,"message":"请求参数无效","data":null}`；客户端配置头错误及其他错误沿用原有格式。后台合成失败通过查询结果的 `status: failed` 和 `error` 表示。
