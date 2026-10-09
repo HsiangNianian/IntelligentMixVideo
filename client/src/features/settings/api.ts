@@ -47,5 +47,5 @@ export type StorageChange = (save: () => Promise<void>) => Promise<void>;
 /** 保存单个插件，不发送配置到后端；失败交由表单展示。 */
 export async function saveSettings(id: string, values: Values): Promise<void> {
   if (isTauri()) await invoke("local_settings", { id, values });
-  else browserSettings = { ...browserSettings, [id]: structuredClone(values) };
+  else browserSettings = { ...browserSettings, [id]: structuredClone(id === "$client" ? { ...browserSettings[id], ...values } : values) };
 }

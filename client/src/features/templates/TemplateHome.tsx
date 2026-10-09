@@ -27,7 +27,7 @@ interface Props {
 }
 
 /** 两个模板库分别读取和重试；卸载取消 HTTP，并忽略迟到的本地 IPC 结果。 */
-function useTemplateCollection(environment: Environment) {
+function useTemplateCollection(environment: Environment, revision = 0) {
   const [templates, setTemplates] = useState<Template[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -51,7 +51,7 @@ function useTemplateCollection(environment: Environment) {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [environment, attempt, unavailable]);
+  }, [environment, attempt, unavailable, revision]);
 
   return { templates, loading, error, unavailable, refresh: () => setAttempt((value) => value + 1) };
 }
@@ -193,9 +193,9 @@ function CreateTile({ icon: Icon, title, description, onClick, disabled, feature
 }
 
 /** 主页：顶部快捷创作入口，下方按云端、本地分组展示模板画廊；再次进入主页重新读取两库。 */
-export function TemplateHome({ onSelect, onOpenRemotion }: Props & { onOpenRemotion: () => void }) {
+export function TemplateHome({ onSelect, onOpenRemotion, localRevision = 0 }: Props & { onOpenRemotion: () => void; localRevision?: number }) {
   const cloud = useTemplateCollection("cloud");
-  const local = useTemplateCollection("local");
+  const local = useTemplateCollection("local", localRevision);
   const [creating, setCreating] = useState<Environment | null>(null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");

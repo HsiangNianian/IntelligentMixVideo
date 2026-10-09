@@ -1,6 +1,7 @@
 /** 桌面启动门禁：等待就绪、失败诊断、卸载保护及两个功能共享动态端口，不启动真实服务。 */
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import { act, render, screen, waitFor } from "@testing-library/react";
+import { toast } from "sonner";
 import App from "@/App";
 import { apiBase, setApiBase } from "@/lib/api-base";
 import { apiUrl, create } from "@/features/remotion_templates/api";
@@ -31,6 +32,7 @@ test("桌面等待内置服务并共享实际 API 地址", async () => {
   let ready!: (url: string) => void;
   const reset = mockDesktop(async (command) => {
     if (command === "local_settings") return {};
+    if (command === "local_templates") return { data: [], warning: null };
     expect(command).toBe("start_backend");
     return new Promise<string>((resolve) => { ready = resolve; });
   });
@@ -54,7 +56,10 @@ test("桌面等待内置服务并共享实际 API 地址", async () => {
 
 // 启动失败停留诊断页，不让业务界面连续报网络连接错误。
 test("启动失败保留具体诊断且不请求 API", async () => {
-  const reset = mockDesktop(async () => { throw "数据库启动失败，请查看 server.log"; });
+  const reset = mockDesktop(async command => {
+    if (command === "local_settings") return {};
+    throw "数据库启动失败，请查看 server.log";
+  });
   const view = render(<App />);
   try {
     expect((await screen.findByRole("alert")).textContent).toContain("数据库启动失败");
@@ -78,4 +83,23 @@ test("卸载后忽略迟到的内置服务回执", async () => {
   } finally {
     reset();
   }
+});
+
+// 设置读取失败仍挂载主页，保留离线模板入口并提示；不使用未知配置启动内置服务。
+test("设置损坏不阻止进入本地模板库", async () => {
+  const invoke = mock(async (command: string) => {
+    if (command === "local_settings") throw new Error("本地设置文件损坏");
+    if (command === "local_templates") return { data: [], warning: "已回退默认模板库：/default/templates.json" };
+    throw new Error("不应启动内置服务");
+  });
+  mockDesktop(invoke);
+  fetchMock.mockResolvedValue(protobufListResponse([]));
+  const warning = spyOn(toast, "warning");
+  render(<App />);
+  await screen.findByRole("heading", { name: "我的模板" });
+  await screen.findByText("暂无本地模板");
+  expect(invoke.mock.calls.some(([command]) => command === "start_backend")).toBe(false);
+  expect(warning).toHaveBeenCalledWith(expect.stringContaining("本地设置文件损坏"), expect.objectContaining({ duration: Infinity }));
+  toast.dismiss("client-settings");
+  toast.dismiss("local-template-storage");
 });

@@ -61,6 +61,7 @@ export function TemplateWorkspace({ selection = null, onHome, ref }: {
   const [textTarget, setTextTarget] = useState<TextRole>("title");
   const lastTextTrack = useRef<string | null>("title");
   const lock = useRef(false);
+  const storageLock = useRef(false);
   const form = useRef<HTMLFormElement>(null);
   const mounted = useRef(false);
   const handledSelection = useRef<TemplateSelection | null>(null);
@@ -133,18 +134,32 @@ export function TemplateWorkspace({ selection = null, onHome, ref }: {
   useImperativeHandle(ref, () => ({
     /** 先保护旧库草稿，提交失败时保留编辑状态并将错误交回设置表单。 */
     async changeStorage(save) {
-      if (busy || loading || action || openRequest) throw new Error("请等待模板操作完成后再切换保存路径");
+      const local = environment === "local";
+      if (storageLock.current || (local && (busy || lock.current)) || (loading && openRequest?.environment === "local")) {
+        throw new Error("请等待本地模板操作完成后再切换保存路径");
+      }
+      storageLock.current = true;
       return new Promise<void>((resolve, reject) => {
+        let committing = false;
         const change = {
-          cancel: () => reject(new Error("已取消路径切换")),
+          cancel: () => { storageLock.current = false; reject(new Error("已取消路径切换")); },
           commit: async () => {
-            setBusy(true);
+            if (committing) return;
+            committing = true;
+            if (local) setBusy(true);
             try {
               await save();
-              if (environment === "local") { setCurrent(null); setDraft(null); setMedia(undefined); }
+              if (local) { setCurrent(null); setDraft(null); setMedia(undefined); }
+              // 失败的本地读取不阻止换库，也不能在换库后继续重试旧 ID；云端读取保持原状。
+              if (openRequest?.environment === "local") setOpenRequest(null);
+              if (openRequest?.environment === "local" || (local && !openRequest)) setError("");
               resolve();
             } catch (reason) { reject(reason); }
-            finally { setBusy(false); setAction(null); }
+            finally {
+              storageLock.current = false;
+              if (local) setBusy(false);
+              setAction(current => current === change ? null : current);
+            }
           },
         };
         if (environment === "local" && dirty) setAction(change);
@@ -160,8 +175,8 @@ export function TemplateWorkspace({ selection = null, onHome, ref }: {
   }
 
   /** 模板选择与存储位置切换共用确认按钮；只有成功提交后才解除旧草稿。 */
-  async function switchTarget() {
-    if (!action) return;
+  async function switchTarget(afterSave = false) {
+    if (!action || (lock.current && !afterSave)) return;
     if ("commit" in action) await action.commit();
     else { setOpenRequest(action); setAttempt(value => value + 1); }
   }
@@ -196,7 +211,7 @@ export function TemplateWorkspace({ selection = null, onHome, ref }: {
       setDraft(next);
       setBaseline(JSON.stringify(next));
       toast.success(`模板「${saved.name}」已保存`);
-      if (switchAfter) await switchTarget();
+      if (switchAfter) await switchTarget(true);
     } catch (reason) {
       if (mounted.current) setError(reason instanceof Error ? reason.message : "保存失败，请重试");
     } finally {

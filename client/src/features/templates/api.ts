@@ -1,4 +1,5 @@
 /** 模板存储边界：云端及本地保存请求使用 Protobuf，本地文件仍使用 JSON。 */
+import { toast } from "sonner";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { create, fromBinary, toBinary, toJson } from "@bufbuild/protobuf";
 import { timestampDate } from "@bufbuild/protobuf/wkt";
@@ -20,7 +21,10 @@ export type Environment = "local" | "cloud";
 async function local<T>(operation: string, id?: string, draft?: number[]): Promise<T> {
   if (!isTauri()) throw new Error("本地模式需要在桌面客户端中使用");
   try {
-    return await invoke<T>("local_templates", { operation, id, draft });
+    const result = await invoke<{ data: T; warning: string | null }>("local_templates", { operation, id, draft });
+    if (result.warning) toast.warning(result.warning, { id: "local-template-storage", duration: Infinity, closeButton: true });
+    else toast.dismiss("local-template-storage");
+    return result.data;
   } catch (error) {
     throw error instanceof Error ? error : new Error(String(error));
   }

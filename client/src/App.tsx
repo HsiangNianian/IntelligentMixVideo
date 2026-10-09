@@ -1,5 +1,6 @@
 /** 应用入口优先恢复客户端地址；未指定时等待内置服务就绪，再挂载首页与全局轻提示容器。 */
 import HomePage from "@/pages/HomePage";
+import { toast } from "sonner";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { setApiBase } from "@/lib/api-base";
@@ -15,8 +16,12 @@ export default function App() {
   useEffect(() => {
     if (!isTauri()) return;
     let active = true;
-    readSettings().then((saved) => {
-      if (!active) return null;
+    // 设置损坏不能封锁离线模板；此时使用默认地址，避免用未知配置启动内置后端。
+    readSettings().catch((reason) => {
+      if (active) toast.warning(`无法读取客户端设置：${String(reason)}。使用默认后端地址，本地模板仍可使用；请修复设置。`, { id: "client-settings", duration: Infinity, closeButton: true });
+      return null;
+    }).then((saved) => {
+      if (!active || saved === null) return null;
       const url = saved.$client?.api_url;
       return typeof url === "string" && url ? url : invoke<string | null>("start_backend");
     }).then((url) => {

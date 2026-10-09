@@ -109,7 +109,7 @@ export default function HomePage() {
           </header>}
           <TabsContent value="home" forceMount hidden={workspace !== "home"}>
             {workspace === "home" && (
-              <TemplateHome key={storageRevision}
+              <TemplateHome localRevision={storageRevision}
                 onSelect={(next) => {
                   setSelection(next);
                   setLibraryOpened(true);

@@ -55,12 +55,13 @@ function GeneralSection({ onCancel, onStorageChange, initialValues }: { onCancel
         setSaving(true);
         setMessage("");
         try {
-          if (!saved) throw new Error("通用设置尚未读取完成");
-          const values = { ...saved, api_url: url.trim(), ...(isTauri() ? { template_path: path.trim() } : {}) };
+          const pathChanged = isTauri() && saved !== undefined && path.trim() !== (saved.template_path ?? "");
+          // 通用设置只发送改动字段，由宿主在写锁内合并；读取失败也允许单独保存地址。
+          const values: Values = { api_url: url.trim(), ...(pathChanged ? { template_path: path.trim() } : {}) };
           const save = () => saveSettings("$client", values);
-          if (isTauri() && path.trim() !== (saved.template_path ?? "") && onStorageChange) await onStorageChange(save);
+          if (pathChanged && onStorageChange) await onStorageChange(save);
           else await save();
-          setSaved(values);
+          setSaved(previous => previous ? { ...previous, ...values } : previous);
           setApiBase(url.trim());
           setMessage("已保存，新配置用于后续操作；已有后端会话连接请重启客户端后切换。");
         } catch (reason) {
@@ -189,8 +190,8 @@ export function PluginSettings({ onCancel, onStorageChange }: { onCancel?: () =>
     });
     Promise.all([listPlugins(controller.signal), settings]).then(([plugins, values]) => {
       if (!controller.signal.aborted) setData({ plugins, values });
-    }).catch(() => {
-      if (!controller.signal.aborted) setError("无法加载模块设置，请确认后端服务已启动后重新打开设置");
+    }).catch((reason) => {
+      if (!controller.signal.aborted) setError(`无法加载设置：${reason instanceof Error ? reason.message : String(reason)}。请重新打开设置重试；后端地址仍可单独保存。`);
     });
     return () => controller.abort();
   }, []);

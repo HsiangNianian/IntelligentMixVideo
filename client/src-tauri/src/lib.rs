@@ -39,6 +39,7 @@ pub fn run() {
     };
     tauri::Builder::default()
         .manage(backend::Backend::default())
+        .manage(templates::TemplateStorage::default())
         .invoke_handler(tauri::generate_handler![
             templates::local_templates,
             settings::local_settings,
