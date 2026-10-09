@@ -9,6 +9,50 @@ from server.video_composition.timeline import build_timeline, format_subtitle_ke
 from .conftest import template_track
 
 
+@pytest.mark.parametrize("mode", ["materials_voice", "materials_silent"])
+def test_material_defaults_use_business_text_without_modifying_template(composition_case, mode):
+    """缺少文字对象时补默认样式；无声只显示标题，有声字幕仍依切片时间。"""
+    case = composition_case
+    case["request"].update(videoUrl=None,
+                           audioUrl=case["request"]["audioUrl"] if mode == "materials_voice" else None,
+                           processRules={"videoDuration": 8},
+                           materials=[{"fileUrl": "https://media.test/a.mp4", "type": "video"}])
+    case["template"]["tracks"] = []
+    case["material_durations"] = [10]
+    original = deepcopy(case)
+    timeline, _ = build_timeline(**case)
+    title = timeline["SubtitleTracks"][0]["SubtitleTrackClips"][0]
+    assert title["Content"] == case["request"]["title"]
+    assert (title["FontSize"], title["X"], title["Y"]) == (40, 0.5, 0.08)
+    assert (title["TimelineIn"], title["TimelineOut"]) == (0, 8)
+    assert "AaiMotionInEffect" not in title
+    if mode == "materials_voice":
+        subtitles = timeline["SubtitleTracks"][1]["SubtitleTrackClips"]
+        assert [item["Content"] for item in subtitles] == ["甲乙丙丁", "戊己庚辛"]
+        assert [(item["TimelineIn"], item["TimelineOut"]) for item in subtitles] == [(1, 3), (4, 6)]
+        assert (subtitles[0]["FontSize"], subtitles[0]["X"], subtitles[0]["Y"]) == (26, 0.5, 0.82)
+    else:
+        assert len(timeline["SubtitleTracks"]) == 1 and timeline["AudioTracks"] == []
+    assert case == original
+
+
+@pytest.mark.parametrize("duration", [3, 2.99])
+def test_silent_skips_subtitle_timing_and_overrides_outside_title(composition_case, duration):
+    """无声不校验未输出字幕的动画时长；模板标题原在结尾外也须全程显示。"""
+    case = composition_case
+    case["request"].update(videoUrl=None, audioUrl=None, processRules={"videoDuration": duration},
+                           materials=[{"fileUrl": "https://media.test/a.jpg", "type": "image"}])
+    case["duration_ms"] = duration * 1000
+    case["material_durations"] = [3]
+    case["template"]["tracks"][0].update(duration=0.001)
+    case["template"]["tracks"][0]["editor"]["subtitleIn"] = "in/fade_in"
+    case["template"]["tracks"][1].update(start=100, duration=1)
+    timeline, _ = build_timeline(**case)
+    title = timeline["SubtitleTracks"][0]["SubtitleTrackClips"][0]
+    assert title["Content"] == case["request"]["title"]
+    assert (title["TimelineIn"], title["TimelineOut"]) == (0, duration)
+
+
 def choose(case, key, catalog_id):
     """在独立快照中选择真实目录效果，不修改生产模板或目录。"""
     target = next((role for role in ("title", "subtitle", "bubble") if key.startswith(role)), key)
