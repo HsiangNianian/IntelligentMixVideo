@@ -1,14 +1,18 @@
-/** 当前会话的聊天展示与输入；图片只作为生成参考，预览 URL 随组件卸载释放。 */
+/** 当前会话的聊天展示与输入；参考图可点击选择或拖入输入区，只作为生成参考，预览 URL 随组件卸载释放。 */
 import { cn } from "@/lib/utils";
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowUp, ImagePlus, Square, Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/Hint";
 import { Textarea } from "@/components/ui/textarea";
 import { apiUrl } from "./api";
 import { LoopRounds } from "./LoopRounds";
 import { TaskStatus } from "./TaskStatus";
 import { VersionCard } from "./VersionCard";
 import type { ChatMessage, Job, SessionJob, Version } from "./model";
+import { FlipText } from "@/components/ui/flip-text";
+import { LoaderGooeyBlobs } from "@/components/ui/loaders-gooey-blobs";
+import { AnimatePresence, motion } from "motion/react";
 
 /** 本地图片预览不上传到第三方，替换文件和清空会话时清理 object URL。 */
 function ReferenceImage({ file }: { file: File }) {
@@ -78,6 +82,7 @@ export function ChatPanel({
   const [text, setText] = useState("");
   const [image, setImage] = useState<File>();
   const [error, setError] = useState("");
+  const [dragging, setDragging] = useState(false);
   const end = useRef<HTMLDivElement>(null);
   const following = useRef(true);
   const picker = useRef<HTMLInputElement>(null);
@@ -89,6 +94,19 @@ export function ChatPanel({
       : null;
     if (versionId && (message.role === "assistant" || !anchors.has(versionId)))
       anchors.set(versionId, message.id);
+  }
+  /** 选择与拖放共用的参考图校验；仅首次请求可附图，不合规时显示错误并保留原图。 */
+  function attach(file: File | undefined) {
+    if (disabled || !first || !file) return;
+    if (
+      !["image/png", "image/jpeg", "image/webp"].includes(file.type) ||
+      file.size > 10 * 1024 * 1024
+    ) {
+      setError("请选择不超过 10 MiB 的 PNG、JPEG 或 WebP 图片。");
+      return;
+    }
+    setImage(file);
+    setError("");
   }
   /** 代码、预览与选择各自绑定版本，不能从当前草稿推导历史内容。 */
   function resultCard(version: Version) {
@@ -162,7 +180,7 @@ export function ChatPanel({
             <div className="flex size-10 items-center justify-center rounded-xl bg-primary/10">
               <Sparkles className="size-5 text-primary" />
             </div>
-            <h2 className="text-lg font-semibold">把想法变成字效</h2>
+            <h2 className="text-lg font-semibold"><FlipText loop={false} duration={1.6}>把想法变成字效</FlipText></h2>
             <p className="max-w-72 leading-6 text-muted-foreground">
               描述文字、颜色、位置和出场方式，也可以上传一张参考图片。
             </p>
@@ -194,8 +212,8 @@ export function ChatPanel({
                 className={cn(
                   "max-w-[90%] space-y-2 rounded-2xl px-4 py-3 text-sm leading-6",
                   message.role === "user"
-                    ? "bg-primary text-primary-foreground"
-                    : "bg-muted",
+                    ? "rounded-br-md bg-primary/15 ring-1 ring-primary/25"
+                    : "rounded-bl-md bg-muted",
                 )}
               >
                 {message.image && <ReferenceImage file={message.image} />}
@@ -253,34 +271,73 @@ export function ChatPanel({
             <LoopRounds job={job} />
           )}
         {busy && !phaseCount && (
-          <p className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span className="size-2 animate-pulse rounded-full bg-primary" />
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <LoaderGooeyBlobs size={6} />
             正在处理…
-          </p>
+          </div>
         )}
         <div ref={end} />
       </div>
+      {/* 输入区接受拖入参考图：始终阻止浏览器默认打开文件，避免离开应用；仅首次请求且未锁定时附图并显示遮罩。 */}
       <form
-        className="m-4 mt-0 rounded-xl border bg-background p-3"
+        className={cn(
+          "relative m-4 mt-0 rounded-xl border bg-background p-3 transition-colors",
+          dragging && "border-primary/60",
+        )}
         onSubmit={(event) => {
           event.preventDefault();
           send();
         }}
+        onDragOver={(event) => {
+          event.preventDefault();
+          setDragging(!disabled && first);
+        }}
+        onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+            setDragging(false);
+        }}
+        onDrop={(event) => {
+          event.preventDefault();
+          setDragging(false);
+          attach(event.dataTransfer.files[0]);
+        }}
       >
-        {image && (
-          <div className="mb-2 flex items-start gap-2">
-            <ReferenceImage file={image} />
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-xs"
-              aria-label="移除参考图片"
-              disabled={disabled}
-              onClick={() => setImage(undefined)}
+        <AnimatePresence>
+          {dragging && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2, ease: "easeOut" }}
+              className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-1.5 rounded-xl bg-background/80 text-sm font-medium backdrop-blur-sm"
             >
-              <X />
-            </Button>
-          </div>
+              <ImagePlus className="size-6 text-muted-foreground" aria-hidden="true" />
+              松开以添加参考图片
+            </motion.div>
+          )}
+        </AnimatePresence>
+        {image && (
+          <motion.div
+            key={image.name + image.size}
+            initial={{ opacity: 0, scale: 0.85, filter: "blur(8px)" }}
+            animate={{ opacity: 1, scale: 1, filter: "blur(0px)" }}
+            transition={{ type: "spring", duration: 0.4, bounce: 0 }}
+            className="mb-2 flex origin-top-left items-start gap-2"
+          >
+            <ReferenceImage file={image} />
+            <Hint label="移除参考图片">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                aria-label="移除参考图片"
+                disabled={disabled}
+                onClick={() => setImage(undefined)}
+              >
+                <X />
+              </Button>
+            </Hint>
+          </motion.div>
         )}
         <Textarea
           aria-label="字效描述"
@@ -301,9 +358,15 @@ export function ChatPanel({
           }}
         />
         {error && (
-          <p role="alert" className="py-2 text-xs text-destructive">
+          <motion.p
+            key={error}
+            role="alert"
+            animate={{ x: [0, 2, -2, 2, -2, 0] }}
+            transition={{ duration: 0.3, delay: 0.1 }}
+            className="py-2 text-xs text-destructive"
+          >
             {error}
-          </p>
+          </motion.p>
         )}
         <div className="mt-2 flex items-center justify-between">
           <input
@@ -314,21 +377,9 @@ export function ChatPanel({
             className="hidden"
             aria-label="上传参考图片"
             onChange={(event) => {
-              if (disabled || !first) return;
               const file = event.target.files?.[0];
               event.target.value = "";
-              if (!file) return;
-              if (
-                !["image/png", "image/jpeg", "image/webp"].includes(
-                  file.type,
-                ) ||
-                file.size > 10 * 1024 * 1024
-              ) {
-                setError("请选择不超过 10 MiB 的 PNG、JPEG 或 WebP 图片。");
-                return;
-              }
-              setImage(file);
-              setError("");
+              attach(file);
             }}
           />
           <Button

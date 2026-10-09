@@ -6,9 +6,10 @@ final delivery is a saved Sprite published as an isolated Player preview.
 
 ## Tool catalog
 
-All eleven tools in `docs/remotion-agent-tool-contracts.md` are registered with
-their full input/output contracts, so `tools.inspect` can describe any of them.
-Only four have implementations in this build:
+Eleven business tools are registered with their full input/output contracts.
+`tools.inspect` also describes the host-owned `tools.plan_execute` control by
+dotted ID or wire name, without executing it or changing role permissions.
+Only four business tools have implementations in this build:
 
 | Tool | Status |
 | --- | --- |
@@ -58,13 +59,15 @@ storage and source consistency without a model or semantic index.
 ## Loop rounds
 
 Every Outer → Plan → Executor turn appends one public round record through the
-same `job.updated` event as the phase timeline, so the workspace can show what
-each loop round actually did. A round carries the layer, the turn and the tools
-the host ran in that turn — the canonical dotted tool ID, whether it passed, and
-on failure the tool's error code plus a 200-character message. Tool arguments
-and result payloads stay in the private audit, plan step goals and model prose
+`job.round` delta event on the same work stream as the phase timeline. A round
+carries the layer, the turn and the tools the host handled in that turn — the
+canonical dotted tool ID, whether it passed, and on failure a whitelisted error
+code plus a fixed host-authored message. Tool arguments and result payloads
+stay in the private audit, plan step goals and model prose
 are never published, a turn that only replied records an empty call list, and a
-terminal job accepts no further rounds.
+terminal job accepts no further rounds. Unknown tool names become `unknown`;
+model protocol failures are explicitly marked. Snapshots carry all rounds, while
+`job.updated` omits that history and clients retain already received deltas.
 
 ## Code diagnostics
 

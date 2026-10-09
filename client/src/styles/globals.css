@@ -1,5 +1,10 @@
 /* 全局样式入口：加载 Tailwind，将语义化主题变量映射到工具类，再设置页面基础样式。 */
 @import "tailwindcss";
+/* tw-animate-css 提供 shadcn/ObsidianUI 浮层使用的 animate-in/out、fade、zoom、slide 工具类。 */
+@import "tw-animate-css";
+
+/* 深色主题由 <html> 上的 .dark 类启用，同时让 shadcn/ui 的 dark: 变体生效；切换逻辑见 ThemeToggle。 */
+@custom-variant dark (&:where(.dark, .dark *));
 
 /* 当前页面实际使用的主题令牌；新增组件时按需补充。 */
 @theme inline {
@@ -15,6 +20,9 @@
   --color-destructive: var(--destructive);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
 
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -23,40 +31,105 @@
   --color-muted-foreground: var(--muted-foreground);
   --color-border: var(--border);
   --radius-xl: var(--radius);
+  /* FlipText 的逐字翻转：前 30% 完成一圈，其余时间静止，循环时形成间歇波浪。 */
+  --animate-flip-char: flip-char 2.2s ease-in-out both;
+
+  @keyframes flip-char {
+    0% { transform: rotateX(0deg); }
+    30%, 100% { transform: rotateX(360deg); }
+  }
 }
 
-/* 浅色主题集中定义颜色，组件通过语义类名使用。 */
+/*
+ * 浅色主题：冷灰中性层级区分侧栏、工作区与面板；主色为近黑的中性色，
+ * 不引入额外品牌色，让画面内容成为视觉焦点；状态色仅用于保存状态与提示。
+ */
 :root {
-  --primary: oklch(0.48 0.16 260);
+  color-scheme: light;
+  --primary: oklch(0.22 0.006 265);
   --primary-foreground: oklch(0.99 0 0);
-  --secondary: oklch(0.96 0 0);
-  --secondary-foreground: oklch(0.2 0 0);
-  --muted: oklch(0.96 0 0);
-  --accent: oklch(0.95 0.02 260);
-  --accent-foreground: oklch(0.25 0.06 260);
+  --secondary: oklch(0.95 0.003 265);
+  --secondary-foreground: oklch(0.22 0.006 265);
+  --muted: oklch(0.955 0.003 265);
+  --accent: oklch(0.94 0.004 265);
+  --accent-foreground: oklch(0.2 0.006 265);
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --destructive: oklch(0.57 0.22 27);
-  --input: oklch(0.89 0 0);
-  --ring: oklch(0.6 0.13 260);
+  --popover-foreground: oklch(0.2 0.006 265);
+  --destructive: oklch(0.58 0.21 25);
+  --input: oklch(0 0 0 / 13%);
+  --ring: oklch(0.55 0.01 265);
+  --sidebar: oklch(0.96 0.003 265);
+  --success: oklch(0.62 0.15 155);
+  --warning: oklch(0.72 0.15 70);
+  --scrollbar: oklch(0 0 0 / 18%);
 
-  --background: oklch(0.985 0 0);
-  --foreground: oklch(0.145 0 0);
+  --background: oklch(0.982 0.002 265);
+  --foreground: oklch(0.2 0.006 265);
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --border: oklch(0.922 0 0);
+  --card-foreground: oklch(0.2 0.006 265);
+  --muted-foreground: oklch(0.52 0.01 265);
+  --border: oklch(0 0 0 / 9%);
   --radius: 0.75rem;
 }
 
-/* 仅在全局层处理字体、背景和边框默认值，页面布局使用 Tailwind。 */
+/* 深色剪辑台主题：侧栏最深、工作区居中、面板最亮；主色反转为近白色。 */
+.dark {
+  color-scheme: dark;
+  --primary: oklch(0.93 0.003 265);
+  --primary-foreground: oklch(0.18 0.005 265);
+  --secondary: oklch(0.27 0.006 265);
+  --secondary-foreground: oklch(0.93 0.004 265);
+  --muted: oklch(0.265 0.006 265);
+  --accent: oklch(0.29 0.008 265);
+  --accent-foreground: oklch(0.96 0.003 265);
+  --popover: oklch(0.225 0.006 265);
+  --popover-foreground: oklch(0.94 0.003 265);
+  --destructive: oklch(0.66 0.19 25);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.65 0.01 265);
+  --sidebar: oklch(0.155 0.005 265);
+  --success: oklch(0.74 0.15 160);
+  --warning: oklch(0.8 0.14 75);
+  --scrollbar: oklch(1 0 0 / 14%);
+
+  --background: oklch(0.175 0.005 265);
+  --foreground: oklch(0.96 0.003 265);
+  --card: oklch(0.215 0.006 265);
+  --card-foreground: oklch(0.94 0.003 265);
+  --muted-foreground: oklch(0.76 0.008 265);
+  --border: oklch(1 0 0 / 11%);
+}
+
+/* 仅在全局层处理字体、背景、边框和滚动条默认值，页面布局使用 Tailwind。 */
 @layer base {
   * {
     @apply border-border;
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar) transparent;
   }
   body {
     @apply bg-background text-foreground antialiased;
     min-width: 320px;
-    font-family: Inter, "Segoe UI", system-ui, sans-serif;
+    font-family: Inter, "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+  }
+  /* 错误信息常含路径或 URL 等无空格长串，允许任意位置断行，避免撑破弹窗与面板。 */
+  [role="alert"] {
+    overflow-wrap: anywhere;
+  }
+  ::selection {
+    @apply bg-primary/20;
+  }
+  /*
+   * 系统开启「减少动态效果」时统一压缩 CSS 动画与过渡（浮层展开、加载旋转、悬停位移等）。
+   * 时长保留极小值而非 none，Radix 浮层仍能收到 animationend 正常卸载；motion 库动画由 MotionConfig 处理。
+   */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
   }
 }

@@ -1,16 +1,14 @@
 /** 选中对象的参数面板：编辑文字、动画、画面效果与转场，变更直接传回模板草稿。 */
-import { useId, useState } from "react";
-import { X } from "lucide-react";
+import { useId } from "react";
+import { Bold, Italic, Strikethrough, Underline, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
+import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { Hint } from "@/components/Hint";
+import { EffectCombobox } from "./EffectCombobox";
 import {
   effectGroups,
   textRoles,
@@ -22,7 +20,10 @@ import {
 } from "./model";
 import { changeEffects, effectTargets, removeTarget, resetTextTarget, type EffectTarget } from "./effects";
 
-/** 带关联标签的数值控件，空值暂记 NaN，交由表单和服务端校验阻止保存。 */
+/**
+ * 带关联标签的数值控件；slider 为 true 时在输入框左侧加滑块用于快速拖动，二者共享同一个值。
+ * 半宽布局（动画时长等）不开启滑块。输入框空值暂记 NaN，交由表单和服务端校验阻止保存；此时滑块停在最小值。
+ */
 function NumberField({
   label,
   value,
@@ -31,6 +32,7 @@ function NumberField({
   max,
   step = 1,
   disabled = false,
+  slider = false,
 }: {
   label: string;
   value: number;
@@ -39,24 +41,48 @@ function NumberField({
   max: number;
   step?: number;
   disabled?: boolean;
+  slider?: boolean;
 }) {
   const id = useId();
   return (
     <div className="space-y-1.5">
       <Label htmlFor={id}>{label}</Label>
-      <Input
-        id={id}
-        type="number"
-        required
-        min={min}
-        max={max}
-        step={step}
-        disabled={disabled}
-        value={Number.isFinite(value) ? value : ""}
-        onChange={(event) => onChange(event.target.valueAsNumber)}
-      />
+      <div className="flex items-center gap-3">
+        {slider && <Slider
+          label={`${label}滑块`}
+          min={min}
+          max={max}
+          step={step}
+          disabled={disabled}
+          value={[Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : min]}
+          onValueChange={([next]) => onChange(next)}
+          className="flex-1"
+        />}
+        <Input
+          id={id}
+          type="number"
+          required
+          min={min}
+          max={max}
+          step={step}
+          disabled={disabled}
+          value={Number.isFinite(value) ? value : ""}
+          onChange={(event) => onChange(event.target.valueAsNumber)}
+          className={slider ? "w-[4.5rem] shrink-0 text-right" : undefined}
+        />
+      </div>
     </div>
   );
+}
+
+/** 标题或字幕的四种关键词局部样式：编辑字段、无障碍名称与图标。 */
+function keywordStyles(role: "title" | "subtitle") {
+  return [
+    [`${role}KeywordBold`, "加粗", Bold],
+    [`${role}KeywordItalic`, "斜体", Italic],
+    [`${role}KeywordUnderline`, "下划线", Underline],
+    [`${role}KeywordStrikeout`, "删除线", Strikethrough],
+  ] as const;
 }
 
 /** 单个效果选择器；无效果使用独立哨兵值，历史未知 ID 仍可显示并清除。 */
@@ -84,28 +110,19 @@ function EffectSelect({
     <div className="space-y-1.5">
       <Label htmlFor={id}>{label}</Label>
       <div className="flex items-center gap-3">
-        <Select
+        <EffectCombobox
+          id={id}
           value={editor[field] || "none"}
-          onValueChange={(value) => onChange(value === "none" ? "" : value)}
+          onChange={(value) => onChange(value === "none" ? "" : value)}
           disabled={disabled || !catalog.length}
-        >
-          <SelectTrigger id={id} className="w-full min-w-0">
-            <SelectValue placeholder="无效果" />
-          </SelectTrigger>
-          <SelectContent className="template-inspector-select">
-            <SelectItem value="none">无效果</SelectItem>
-            {editor[field] && !selected && (
-              <SelectItem value={editor[field]}>
-                未载入：{editor[field]}
-              </SelectItem>
-            )}
-            {options.map((item) => (
-              <SelectItem key={item.id} value={item.id}>
-                {item.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+          placeholder="无效果"
+          searchPlaceholder={`搜索${label}`}
+          options={[
+            { value: "none", label: "无效果" },
+            ...(editor[field] && !selected ? [{ value: editor[field], label: `未载入：${editor[field]}` }] : []),
+            ...options.map((item) => ({ value: item.id, label: item.name, hint: item.effect_id })),
+          ]}
+        />
         {selected?.preview_url && (
           <img
             key={selected.preview_url}
@@ -124,24 +141,18 @@ function EffectSelect({
 
 /** 当前转场使用预览卡片展示，目录搜索只替换所选转场的效果。 */
 function TransitionPicker({ value, catalog, onChange }: { value: string; catalog: EffectAsset[]; onChange: (value: string) => void }) {
-  const id = useId();
-  const [open, setOpen] = useState(false);
-  const [search, setSearch] = useState("");
   const assets = catalog.filter((asset) => asset.category === "transition/normal");
   const current = assets.find((asset) => asset.id === value);
-  const choices = assets.filter((asset) => `${asset.name} ${asset.effect_id}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
   return <div className="space-y-2">
     <p className="text-xs font-medium text-muted-foreground">转场类型</p>
-    <div className="template-transition-card flex min-w-0 items-center gap-2.5 rounded-lg border px-2.5 py-2.5">
-      <span className="template-transition-swatch h-10 w-14 shrink-0 rounded-md" aria-hidden="true" />
-      <div className="min-w-0 flex-1"><p className="truncate text-xs font-semibold">{current?.name ?? (value || "未设置转场")}</p><p className="mt-1 truncate text-[10px] text-muted-foreground">转场 · {current?.effect_id ?? (value || "请选择")}</p></div>
-      <Button type="button" variant="ghost" size="sm" className="h-7 shrink-0 px-2 text-[11px]" aria-expanded={open} aria-controls={id} onClick={() => setOpen((shown) => !shown)}>更换</Button>
-    </div>
-    {open && <div id={id} className="template-transition-choices space-y-2 rounded-lg border p-2">
-      <Input type="search" aria-label="搜索转场" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索名称或编号" className="h-8 text-xs" />
-      <div role="group" aria-label="可选转场" className="max-h-48 space-y-1 overflow-y-auto">{choices.map((asset) => <Button key={asset.id} type="button" variant="ghost" aria-label={`选择转场：${asset.name}`} aria-pressed={value === asset.id} onClick={() => { onChange(asset.id); setOpen(false); setSearch(""); }} className="h-auto w-full min-w-0 justify-between gap-2 rounded-md px-2 py-1.5 text-left text-[11px]"><span className="truncate">{asset.name}</span><span className="shrink-0 text-[10px] text-muted-foreground">{asset.effect_id}</span></Button>)}</div>
-      {!choices.length && <p role="status" className="px-2 py-3 text-xs text-muted-foreground">没有匹配的转场</p>}
-    </div>}
+    <EffectCombobox value={value} ariaLabel="转场类型" placeholder="未设置转场" searchPlaceholder="搜索转场" onChange={onChange}
+      options={assets.map((asset) => ({ value: asset.id, label: asset.name, hint: asset.effect_id }))}>
+      <span className="template-transition-card flex min-w-0 items-center gap-2.5 rounded-lg border px-2.5 py-2.5 transition-colors">
+        <span className="template-transition-swatch h-10 w-14 shrink-0 rounded-md" aria-hidden="true" />
+        <span className="min-w-0 flex-1"><span className="block truncate text-xs font-semibold">{current?.name ?? (value || "未设置转场")}</span><span className="mt-1 block truncate text-[11px] text-muted-foreground">转场 · {current?.effect_id ?? (value || "请选择")}</span></span>
+        <span className="shrink-0 text-[11px] text-muted-foreground">更换</span>
+      </span>
+    </EffectCombobox>
   </div>;
 }
 
@@ -185,7 +196,7 @@ export function EffectEditor({
     <section aria-label="特效设置" className={view === "all" ? "min-w-0 space-y-5 p-4" : "template-inspector-fields min-w-0 space-y-3 p-4"}>
       {showHeader && <div className="flex items-start justify-between gap-2">
         <div className="space-y-1"><h2 className="font-semibold">特效设置</h2><p className="text-sm text-muted-foreground" aria-live="polite">{effectTargets[target]}</p></div>
-        <Button type="button" variant="ghost" size="icon" className="size-7 shrink-0" aria-label="关闭特效设置" title="关闭特效设置" onClick={onClose}><X aria-hidden="true" /></Button>
+        <Hint label="关闭特效设置"><Button type="button" variant="ghost" size="icon" className="size-7 shrink-0" aria-label="关闭特效设置" onClick={onClose}><X aria-hidden="true" /></Button></Hint>
       </div>}
       {(Object.keys(textRoles) as TextRole[]).filter((role) => role === target).map((role) => {
         const textKey = role === "bubble" ? "bubbleText" : role;
@@ -209,24 +220,19 @@ export function EffectEditor({
             {(role === "title" || role === "subtitle") && view !== "appearance" && (
               <fieldset className="space-y-2">
                 <legend className="text-sm font-medium">关键词样式</legend>
-                <div className="grid grid-cols-2 gap-2">
-                  {([
-                    [`${role}KeywordBold`, "加粗"],
-                    [`${role}KeywordItalic`, "斜体"],
-                    [`${role}KeywordUnderline`, "下划线"],
-                    [`${role}KeywordStrikeout`, "删除线"],
-                  ] as const).map(([key, label]) => (
-                    <label key={key} className="template-keyword-option flex min-h-9 items-center gap-2 rounded-md border px-2.5 text-xs">
-                      <input type="checkbox" checked={editor[key]} onChange={(event) => update(key, event.target.checked)} />
-                      {label}
-                    </label>
+                {/* 四种局部样式可组合，多选切换组按下即开启对应字段。 */}
+                <ToggleGroup type="multiple" variant="outline" size="sm" className="w-full"
+                  value={keywordStyles(role).filter(([key]) => editor[key]).map(([key]) => key)}
+                  onValueChange={(on) => onChange({ ...draft, editor: { ...editor, ...Object.fromEntries(keywordStyles(role).map(([key]) => [key, on.includes(key)])) } })}>
+                  {keywordStyles(role).map(([key, label, Icon]) => (
+                    <ToggleGroupItem key={key} value={key} aria-label={label} className="flex-1"><Icon aria-hidden="true" /></ToggleGroupItem>
                   ))}
-                </div>
+                </ToggleGroup>
                 <div className="space-y-2">
-                  <label className="flex items-center gap-2 text-sm">
-                    <input type="checkbox" checked={Boolean(editor[`${role}KeywordColor`])} onChange={(event) => update(`${role}KeywordColor`, event.target.checked ? "#FFFF00" : "")} />
-                    设置关键词颜色
-                  </label>
+                  <div className="flex items-center justify-between gap-2">
+                    <Label htmlFor={`${id}-keyword-color-on`}>设置关键词颜色</Label>
+                    <Switch id={`${id}-keyword-color-on`} checked={Boolean(editor[`${role}KeywordColor`])} onCheckedChange={(checked) => update(`${role}KeywordColor`, checked ? "#FFFF00" : "")} />
+                  </div>
                   <div className="flex items-center gap-3">
                     <Label htmlFor={`${id}-keyword-color`}>关键词颜色</Label>
                     <input id={`${id}-keyword-color`} type="color" value={editor[`${role}KeywordColor`] || "#FFFF00"} disabled={!editor[`${role}KeywordColor`]} onChange={(event) => update(`${role}KeywordColor`, event.target.value.toUpperCase())} className="h-9 w-14 rounded border bg-background p-1 disabled:cursor-not-allowed" />
@@ -234,12 +240,13 @@ export function EffectEditor({
                   </div>
                 </div>
                 <div className="space-y-2">
-                  <label className="flex items-center gap-2 text-sm">
-                    <input type="checkbox" checked={editor[`${role}KeywordSize`] !== 0} onChange={(event) => update(`${role}KeywordSize`, event.target.checked ? editor[`${role}Size`] : 0)} />
-                    设置关键词字号
-                  </label>
+                  <div className="flex items-center justify-between gap-2">
+                    <Label htmlFor={`${id}-keyword-size-on`}>设置关键词字号</Label>
+                    <Switch id={`${id}-keyword-size-on`} checked={editor[`${role}KeywordSize`] !== 0} onCheckedChange={(checked) => update(`${role}KeywordSize`, checked ? editor[`${role}Size`] : 0)} />
+                  </div>
                   <NumberField
                     label="关键词字号"
+                    slider
                     value={editor[`${role}KeywordSize`] || editor[`${role}Size`]}
                     min={12}
                     max={300}
@@ -249,9 +256,10 @@ export function EffectEditor({
                 </div>
               </fieldset>
             )}
-            {view !== "keyword" && <><div className="grid grid-cols-2 gap-2">
+            {view !== "keyword" && <><div className="space-y-3">
               <NumberField
                 label="字号"
+                slider
                 value={editor[`${role}Size`]}
                 min={12}
                 max={300}
@@ -259,6 +267,7 @@ export function EffectEditor({
               />
               <NumberField
                 label="水平位置 %"
+                slider
                 value={editor[`${role}X`]}
                 min={0}
                 max={100}
@@ -267,6 +276,7 @@ export function EffectEditor({
               />
               <NumberField
                 label="垂直位置 %"
+                slider
                 value={editor[`${role}Y`]}
                 min={0}
                 max={100}

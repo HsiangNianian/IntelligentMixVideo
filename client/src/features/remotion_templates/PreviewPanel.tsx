@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { apiUrl } from "./api";
 import { backgroundUrl, type Values, type Version } from "./model";
+import { Spinner } from "@/components/ui/spinner";
 
 /** 背景链接不进入生成请求，模板切换后的旧 iframe 消息不会影响当前画面。 */
 export function PreviewPanel({
@@ -200,8 +201,9 @@ export function PreviewPanel({
         {rendering && !error && (
           <div
             role="status"
-            className="absolute inset-0 flex items-center justify-center bg-muted text-sm text-muted-foreground"
+            className="absolute inset-0 flex items-center justify-center gap-2 bg-muted text-sm text-muted-foreground"
           >
+            <Spinner />
             正在渲染预览…
           </div>
         )}

@@ -1,6 +1,6 @@
 # Remotion Agent 工具函数契约
 
-本文是交给实施方的设计规格，不代表仓库中已经实现这些工具。交付范围是函数职责、输入输出数据模型、约束、错误和示例；不包含业务实现代码。
+本文维护已注册工具的数据契约；注册契约不代表业务实现已启用，当前实现范围见 [服务端说明](../server/src/server/remotion_templates/README.md)。交付范围是函数职责、输入输出数据模型、约束、错误和示例；不包含业务实现代码。
 
 ## 1. 范围与已确认决定
 
@@ -14,7 +14,7 @@
 - sprite.compose 生成组合定义与代码，sprite.create 保存组合结果；本期不定义 sprite 嵌套组合。
 - 两个 create 均在内部执行代码校验，通过后才入库。无需传入之前的校验回执，也不在工具内调用模型修复。
 - validate 提供代码检查和运行行为测试。工具提供统一测试上下文，Agent 编写自定义断言；不截图、不从视频抽帧、不做视觉 Judge。
-- 图片统一使用 URL 字符串。resize 强制缩放到目标宽高，**不保持比例**；crop 使用像素坐标。处理后返回新 URL，保留原图。
+- 图片使用用户上传后由服务端登记的 `image.asset_id` 引用，不接收远程 URL。resize 强制缩放到目标宽高，**不保持比例**；crop 使用像素坐标。处理后返回新的素材引用，保留原图。
 - 工具自描述只提供 inspect，暂不提供 find。
 
 下文统一采用 `preset`、`create`、`inspect` 拼写。字段命名、公共结果结构和示例默认值在本文中具体化，供实施方按同一契约接入。
@@ -46,9 +46,10 @@ description 用于表达预设或模板的能力和适用场景，不是命令�
 from __future__ import annotations
 
 from typing import Annotated, Any, Generic, Literal, TypeVar
+from uuid import UUID
 
 from pydantic import (
-    AfterValidator, AnyHttpUrl, BaseModel, BeforeValidator, ConfigDict,
+    BaseModel, BeforeValidator, ConfigDict,
     Field, StrictBool, StrictFloat, StrictInt, StrictStr, StringConstraints,
     TypeAdapter,
 )
@@ -72,13 +73,8 @@ Timestamp = NonEmptyString  # 输出还须符合下文的 UTC ISO 8601 约定。
 T = TypeVar("T")
 
 
-def validate_image_url(value: str) -> str:
-    """检查 HTTP(S) URL，保留原始字符串供图片工具读取。"""
-    TypeAdapter(AnyHttpUrl).validate_python(value)
-    return value
-
-
-ImageUrl = Annotated[StrictStr, AfterValidator(validate_image_url)]
+# JSON 使用 UUID 字符串；宿主内部保留同一素材的 UUID 值。
+AssetId = Annotated[UUID, BeforeValidator(lambda value: value if isinstance(value, UUID) else UUID(str(value)))]
 
 
 def reject_explicit_none(value: Any) -> Any:
@@ -210,8 +206,8 @@ class PresetRecord(PresetDraft):
 | 工具 | 输入模型 | 成功数据模型 | 主要副作用 |
 | --- | --- | --- | --- |
 | image.info | ImageInfoInput | ImageInfo | 读取图片 |
-| image.resize | ImageResizeInput | ImageInfo | 生成并存储新图片 |
-| image.crop | ImageCropInput | ImageInfo | 生成并存储新图片 |
+| image.resize | ImageResizeInput | ProcessedImage | 生成并存储新图片 |
+| image.crop | ImageCropInput | ProcessedImage | 生成并存储新图片 |
 | preset.search | PresetSearchInput | PresetSearchOutput | 语义检索，只读 |
 | preset.create | PresetCreateInput | PresetCreateOutput | 代码校验、保存记录、建立可检索索引 |
 | preset.modify | PresetModifyInput | PresetModifyOutput | 读取原记录，返回内存副本；不入库 |
@@ -220,24 +216,30 @@ class PresetRecord(PresetDraft):
 | sprite.compose | SpriteComposeInput | SpriteComposeOutput | 读取引用，生成组合定义与代码；不保存 sprite |
 | sprite.create | SpriteCreateInput | SpriteCreateOutput | 代码校验并保存 sprite |
 | tools.inspect | ToolInspectInput | ToolDescriptor | 读取工具契约 |
+| tools.plan_execute（宿主控制） | PlanAction | JsonObject | 调整任务内的计划与执行状态 |
 
-目录共 11 个工具。没有 tools.find、自动写代码工具、预览发布工具或框架完成工具。后面的函数签名使用下划线作为文档中的语言标识符，实际工具名称以本表的点号形式为准。
+目录包含 11 个业务工具和 1 个宿主控制入口。计划控制由宿主处理，不进入业务工具注册器；检查契约不会授予调用权限。没有 tools.find、自动写代码工具或预览发布工具。后面的函数签名使用下划线作为文档中的语言标识符，实际工具名称以本表的点号形式为准。
 
 ## 5. 图片工具
 
 ### 5.1 公共图片结果与 info
 
 ```python
-class ImageInfoInput(ContractModel):
-    """待读取图片的 URL。"""
+class ImageReference(ContractModel):
+    """用户上传后已登记的本地素材引用。"""
 
-    image_url: ImageUrl
+    asset_id: AssetId
+
+
+class ImageInfoInput(ContractModel):
+    """待读取的任务参考图片。"""
+
+    image: ImageReference
 
 
 class ImageInfo(ContractModel):
-    """实际读取或处理后的图片信息。"""
+    """实际读取到的图片信息。"""
 
-    image_url: ImageUrl
     width: PositiveInteger
     height: PositiveInteger
     mime_type: Literal["image/png", "image/jpeg", "image/webp"]
@@ -245,19 +247,25 @@ class ImageInfo(ContractModel):
     has_alpha: bool
 
 
+class ProcessedImage(ImageInfo):
+    """处理后的图片信息，以及供后续工具读取的新素材引用。"""
+
+    image: ImageReference
+
+
 async def image_info(request: ImageInfoInput) -> ToolResult[ImageInfo]:
     """读取图片信息；函数体由实施方提供。"""
     ...
 ```
 
-`image.info` 读取真实图片，返回解码后的像素宽高、实际媒体类型、文件字节数和是否含 alpha 通道；has_alpha 不承诺存在实际透明像素。不得仅依据 URL 后缀推测格式。
+`image.info` 读取真实图片，返回解码后的像素宽高、实际媒体类型、文件字节数和是否含 alpha 通道；has_alpha 不承诺存在实际透明像素。按素材 ID 读取实际文件，不得仅依据文件后缀推测格式。
 
 本期图片操作以单帧 PNG、JPEG、WebP 为输入范围，其他格式或多帧图片明确返回 `UNSUPPORTED_IMAGE`，不默默取第一帧。尺寸和裁剪坐标均以应用图片方向元数据后的可见图像为准；size_bytes 为读取的原文件字节数。
 
 输入示例：
 
 ```json
-{"image_url":"https://assets.example.com/reference.png"}
+{"image":{"asset_id":"3f2504e0-4f89-41d3-9a0c-0305e82c3301"}}
 ```
 
 成功示例：
@@ -266,7 +274,6 @@ async def image_info(request: ImageInfoInput) -> ToolResult[ImageInfo]:
 {
   "ok": true,
   "data": {
-    "image_url": "https://assets.example.com/reference.png",
     "width": 1200,
     "height": 800,
     "mime_type": "image/png",
@@ -276,7 +283,7 @@ async def image_info(request: ImageInfoInput) -> ToolResult[ImageInfo]:
 }
 ```
 
-上述 URL 和字节数只是结构示例，实际结果必须读取文件后产生。
+上述素材 ID 和字节数只是结构示例，实际结果必须读取文件后产生。
 
 ### 5.2 resize
 
@@ -288,7 +295,7 @@ class ImageResizeInput(ImageInfoInput):
     height: PositiveInteger
 
 
-async def image_resize(request: ImageResizeInput) -> ToolResult[ImageInfo]:
+async def image_resize(request: ImageResizeInput) -> ToolResult[ProcessedImage]:
     """缩放并返回新图片信息；函数体由实施方提供。"""
     ...
 ```
@@ -297,13 +304,13 @@ width、height 都必填且为正整数。输出像素尺寸必须精确等于�
 
 ```json
 {
-  "image_url": "https://assets.example.com/reference.png",
+  "image": {"asset_id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301"},
   "width": 600,
   "height": 600
 }
 ```
 
-若原图为 1200×800，结果就是 600×600。成功返回 ImageInfo，其中 image_url 指向新图片，width、height 均为 600。
+若原图为 1200×800，结果就是 600×600。成功返回 ProcessedImage，其中 image.asset_id 指向新图片，width、height 均为 600。
 
 ### 5.3 crop
 
@@ -317,7 +324,7 @@ class ImageCropInput(ImageInfoInput):
     height: PositiveInteger
 
 
-async def image_crop(request: ImageCropInput) -> ToolResult[ImageInfo]:
+async def image_crop(request: ImageCropInput) -> ToolResult[ProcessedImage]:
     """裁剪并返回新图片信息；函数体由实施方提供。"""
     ...
 ```
@@ -329,7 +336,7 @@ async def image_crop(request: ImageCropInput) -> ToolResult[ImageInfo]:
 
 ```json
 {
-  "image_url": "https://assets.example.com/reference.png",
+  "image": {"asset_id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301"},
   "x": 100,
   "y": 50,
   "width": 400,
@@ -337,7 +344,7 @@ async def image_crop(request: ImageCropInput) -> ToolResult[ImageInfo]:
 }
 ```
 
-resize/crop 统一生成 PNG，保留可用 alpha，存储完成后才返回可供后续工具读取的新 URL；该 URL 不得在函数返回后立即失效。原图不被覆盖。URL 存储实现和部署资源上限由实施方维护，不增加 Agent 可调的图片质量或存储后端字段。
+resize/crop 统一生成 PNG，保留可用 alpha，存储完成后才返回可供后续工具读取的新素材引用；该引用不得在函数返回后立即失效。原图不被覆盖。本地素材存储实现和部署资源上限由实施方维护，不增加 Agent 可调的图片质量或存储后端字段。
 
 公共错误：`INVALID_ARGUMENT`、`IMAGE_FETCH_FAILED`、`UNSUPPORTED_IMAGE`、`IMAGE_DECODE_FAILED`、`IMAGE_PROCESSING_FAILED`、`IMAGE_STORE_FAILED`、`RESOURCE_LIMIT_EXCEEDED`、`TIMEOUT`。info 不产生处理或存储错误，crop 额外可能返回 `CROP_OUT_OF_BOUNDS`。
 
@@ -1019,7 +1026,7 @@ ToolName = Literal[
     "image.info", "image.resize", "image.crop",
     "preset.search", "preset.create", "preset.modify",
     "validate.code", "validate.render", "sprite.compose", "sprite.create",
-    "tools.inspect",
+    "tools.inspect", "tools.plan_execute",
 ]
 
 
@@ -1058,7 +1065,7 @@ async def tools_inspect(request: ToolInspectInput) -> ToolResult[ToolDescriptor]
 
 input_schema 描述完整入参；output_schema 描述包含 ok/data/error 的完整 ToolResult，而非只描述成功 data。Schema 为自包含 JSON Schema，公共类型可以放入 `$defs`，不能依赖 Agent 自行查找未给出的模型。
 
-实施时，入参 Schema 从对应 Pydantic 模型的 `model_json_schema()` 生成，完整出参 Schema 从 `TypeAdapter(ToolResult[对应成功数据模型]).json_schema()` 生成。例如 resize 对应 `ImageResizeInput.model_json_schema()` 和 `TypeAdapter(ToolResult[ImageInfo]).json_schema()`。这两者生成的是 Schema 对象，实际回执序列化仍遵循第 3.1 节。ToolInspectInput 接受非空字符串，使未知工具名能进入 TOOL_NOT_FOUND 分支；成功返回的名称由 ToolName 限定。
+实施时，入参 Schema 从对应 Pydantic 模型的 `model_json_schema()` 生成，完整出参 Schema 从 `TypeAdapter(ToolResult[对应成功数据模型]).json_schema()` 生成。例如 resize 对应 `ImageResizeInput.model_json_schema()` 和 `TypeAdapter(ToolResult[ProcessedImage]).json_schema()`。这两者生成的是 Schema 对象，实际回执序列化仍遵循第 3.1 节。ToolInspectInput 接受非空字符串，使未知工具名能进入 TOOL_NOT_FOUND 分支；成功返回的名称由 ToolName 限定。
 
 constraints 必须包含像素坐标、时间单位、默认值、不可变性等 Schema 不能完整表达的规则。side_effects 明确读写与代码执行行为，examples 提供符合两个 Schema 的完整输入输出。示例不能使用 `...` 或省略必要字段。
 
@@ -1070,13 +1077,21 @@ constraints 必须包含像素坐标、时间单位、默认值、不可变性�
 
 返回描述必须至少表达：
 
-- 工具 image.resize 接收 image_url、width、height。
+- 工具 image.resize 接收 image.asset_id、width、height。
 - width、height 为正整数，按目标宽高强制缩放，不保持比例。
-- 返回完整 `ToolResult[ImageInfo]`，结果图片为新 URL，原图保留。
+- 返回完整 `ToolResult[ProcessedImage]`，结果携带新素材引用，原图保留。
 - 会读取原图片并存储处理后的 PNG。
 - 可能返回第 5 节列出的相关错误。
 
 inspect 自身也可被查询。已知工具列表由集成方提供给 Agent；本期不通过 inspect 暗中实现 find、推荐工具或自动选择操作。
+
+### 9.1 宿主计划控制
+
+`tools.plan_execute` / `tools_plan_execute` 可被 inspect 查询，返回同一 ToolDescriptor，
+包括 [PlanAction](../server/src/server/remotion_templates/planning.py) 的完整输入 Schema、
+`ToolResult[JsonObject]` 输出 Schema、约束、副作用、错误码和示例。
+这个入口由宿主处理，Outer 负责委派或完成，Plan 负责步骤更新；Executor 只能检查其契约，
+不能执行计划控制。读取描述符不会修改计划，也不会发布 Sprite。
 
 ## 10. 端到端数据流示例
 
@@ -1101,10 +1116,10 @@ inspect 自身也可被查询。已知工具列表由集成方提供给 Agent；
 
 | 场景 | 必须观察到的结果 |
 | --- | --- |
-| 1200×800 图片 resize 到 600×600 | 返回新 URL，实际像素为 600×600，不保持比例 |
+| 1200×800 图片 resize 到 600×600 | 返回新素材引用，实际像素为 600×600，不保持比例 |
 | crop 区域超过原图边界 | CROP_OUT_OF_BOUNDS，不产生伪成功的截短结果 |
 | 带方向元数据的图片 | info 尺寸与 crop 坐标使用同一可见方向 |
-| 图片处理成功 | 新 URL 可被 info/resize/crop 再次读取，原图内容不变 |
+| 图片处理成功 | 新素材引用可被 info/resize/crop 再次读取，原图内容不变 |
 | 空描述创建预设 | 拒绝，不能产生无法描述的搜索条目 |
 | create 代码有 LSP error | 返回诊断，不保存可搜索记录 |
 | create 只有 warning | 允许保存，返回 warning，不宣称行为测试通过 |
@@ -1138,7 +1153,7 @@ inspect 自身也可被查询。已知工具列表由集成方提供给 Agent；
 
 ## 12. 实施边界
 
-实施方按 Python + Pydantic 工具契约对接，可以选择存储介质、LSP 服务、测试运行器、图片库以及 ChromaDB 的具体部署和向量配置，但必须满足本文的可观察语义。运行依赖、资源限额及图片 URL 的可用期需要在部署中明确；不得把这些部署选择隐式变成不同的坐标、参数合并或时间规则。
+实施方按 Python + Pydantic 工具契约对接，可以选择存储介质、LSP 服务、测试运行器、图片库以及 ChromaDB 的具体部署和向量配置，但必须满足本文的可观察语义。运行依赖、资源限额及图片素材引用的可用期需要在部署中明确；不得把这些部署选择隐式变成不同的坐标、参数合并或时间规则。
 
 新增代码、外部资源读取和自定义测试需要在实施方的受控执行环境运行；工具错误应提供业务可用诊断，不暴露凭据。本文不设计执行沙箱实现、访问控制系统或额外审批流程。
 

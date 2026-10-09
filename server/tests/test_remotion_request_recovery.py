@@ -158,9 +158,9 @@ def test_setting_zero_retries_preserves_single_attempt(retry_waits):
 @pytest.mark.parametrize("body,content_type", [
     (b'data: {"choices":[{"index":0,"delta":{"role":"assistant","content":"partial"}}]}\n\n', "text/event-stream"),
     (b'x' * 2_000_001, "application/json"),
-])
+], ids=["missing-done", "oversized-json"])
 def test_incomplete_and_oversized_responses_never_retry(body, content_type, retry_waits):
-    """缺少结束标记和超过大小上限不是可重试的网络故障，不能接受半份结果。"""
+    """拒绝不完整/超大响应；显式用例名避免 pytest -v 把 2 MB 数据写进 CI 日志。"""
     stream = ResponseStream(body)
     requests = []
 

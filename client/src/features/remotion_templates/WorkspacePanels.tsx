@@ -92,7 +92,7 @@ export function WorkspacePanels({
         onLayoutChanged={(value, meta) => {
           if (desktop && meta.isUserInteraction) save(value);
         }}
-        style={{ height: desktop ? "calc(100dvh - 190px)" : "auto" }}
+        style={{ height: desktop ? "calc(100dvh - 168px)" : "auto" }}
         className="max-lg:block! lg:min-h-[560px]"
       >
         <ResizablePanel
