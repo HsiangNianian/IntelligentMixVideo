@@ -3,6 +3,7 @@
 # 文档请求示例，供 Swagger UI 的“Try it out”预填；结构与 Fun-ASR 原始输出一致。
 # 文案字符数与词内字符数相同，时间轴单调递增，可直接提交。
 SEGMENTATION_REQUEST_EXAMPLE = {
+    "title": "散养土鸡上新",
     "script": "大家好，欢迎来到直播间。今天上架散养的土鸡。",
     "asr_result": {
         "transcripts": [
@@ -30,6 +31,7 @@ SEGMENTATION_REQUEST_EXAMPLE = {
 # 文档成功响应示例：二次切分后每段至多 8 个有效字，原文标点保留给下游。
 # warnings 非空时元素为 {"code", "message"}，此处展示正常对齐情况所以为空数组。
 SEGMENTATION_RESPONSE_EXAMPLE = {
+    "title_keyword": "散养土鸡",
     "segments": [
         {
             "segment_id": 1,
