@@ -177,15 +177,15 @@ export function PluginSettings({ onCancel }: { onCancel?: () => void }) {
           <Tabs orientation="vertical" value={active} onValueChange={setActive} className="min-h-0 flex-1 gap-0">
             <div className="w-14 shrink-0 overflow-y-auto border-r bg-muted/40 p-2 sm:w-52 sm:p-3">
               <TabsList aria-label="设置模块" className="w-full gap-1 rounded-none bg-transparent p-0">
-                <Hint label="通用" side="right" className="sm:hidden"><TabsTrigger value={GENERAL_TAB} className={navTriggerClass}>
+                <Hint label="通用" side="right" visibleBelow="sm"><div className="flex w-full"><TabsTrigger value={GENERAL_TAB} className={navTriggerClass}>
                   <Settings2 className="size-[18px]" aria-hidden="true" />
                   <span className="sr-only sm:not-sr-only">通用</span>
-                </TabsTrigger></Hint>
+                </TabsTrigger></div></Hint>
                 {(data?.plugins ?? []).map((plugin) => (
-                  <Hint key={plugin.id} label={plugin.name} side="right" className="sm:hidden"><TabsTrigger value={`plugin:${plugin.id}`} className={navTriggerClass}>
+                  <Hint key={plugin.id} label={plugin.name} side="right" visibleBelow="sm"><div className="flex w-full"><TabsTrigger value={`plugin:${plugin.id}`} className={navTriggerClass}>
                     <Puzzle className="size-[18px]" aria-hidden="true" />
                     <span className="sr-only sm:not-sr-only">{plugin.name}</span>
-                  </TabsTrigger></Hint>
+                  </TabsTrigger></div></Hint>
                 ))}
               </TabsList>
             </div>

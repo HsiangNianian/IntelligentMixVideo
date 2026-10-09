@@ -58,13 +58,13 @@ export default function HomePage() {
               {value === "library" && (
                 <p className={cn("mb-1 mt-5 hidden px-3 text-[11px] font-medium tracking-wider text-muted-foreground/70", !sidebarCollapsed && "md:block")}>工作空间</p>
               )}
-              <Hint label={label} side="right" className={cn(!sidebarCollapsed && "md:hidden")}><TabsTrigger
+              <Hint label={label} side="right" visibleBelow={sidebarCollapsed ? undefined : "md"}><div className="flex"><TabsTrigger
                 value={value}
                 className={cn("h-9 w-full flex-none justify-center gap-3 rounded-md px-3 py-2 font-normal text-muted-foreground hover:bg-accent/60 hover:text-foreground data-[state=active]:bg-accent data-[state=active]:font-medium data-[state=active]:text-foreground before:absolute before:inset-y-2 before:-left-2 before:w-[3px] before:rounded-r-full before:bg-primary before:opacity-0 before:transition-opacity data-[state=active]:before:opacity-100 data-[state=active]:[&_svg]:text-primary dark:data-[state=active]:border-transparent dark:data-[state=active]:bg-accent", !sidebarCollapsed && "md:justify-start md:before:-left-3")}
               >
                 <Icon className="size-[18px]" strokeWidth={1.75} aria-hidden="true" />
                 <span className={cn("sr-only", !sidebarCollapsed && "md:not-sr-only")}>{label}</span>
-              </TabsTrigger></Hint>
+              </TabsTrigger></div></Hint>
             </Fragment>
           ))}
         </TabsList>
@@ -73,7 +73,7 @@ export default function HomePage() {
             collapsed={sidebarCollapsed}
             className={cn("h-9 w-full justify-center gap-3 rounded-md px-3 font-normal text-muted-foreground hover:bg-accent/60 hover:text-foreground", !sidebarCollapsed && "md:justify-start")}
           />
-          <Hint label="设置" side="right" className={cn(!sidebarCollapsed && "md:hidden")}><Button
+          <Hint label="设置" side="right" visibleBelow={sidebarCollapsed ? undefined : "md"}><Button
             type="button"
             variant="ghost"
             aria-haspopup="dialog"
@@ -83,7 +83,7 @@ export default function HomePage() {
             <Settings className="size-[18px]" strokeWidth={1.75} aria-hidden="true" />
             <span className={cn("sr-only", !sidebarCollapsed && "md:not-sr-only")}>设置</span>
           </Button></Hint>
-          <Hint label="展开侧边栏" side="right" className={cn(!sidebarCollapsed && "hidden")}><Button
+          <Hint label="展开侧边栏" side="right" disabled={!sidebarCollapsed}><Button
             type="button"
             variant="ghost"
             aria-label={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"}

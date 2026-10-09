@@ -270,6 +270,23 @@ async function createFromHome(name = "旅行模板") {
   return screen.findByLabelText("模板信息");
 }
 
+// 场景：收起侧栏后页签带悬停提示，切换后页签自身的 data-state 仍与选中状态一致，选中样式不丢失；展开时文字可见不渲染提示。
+test("侧栏页签的选中状态不被悬停提示覆盖", async () => {
+  render(<HomePage />);
+  fireEvent.focus(screen.getByRole("tab", { name: "主页" }));
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "收起侧边栏" }));
+  fireEvent.focus(screen.getByRole("tab", { name: "主页" }));
+  expect((await screen.findByRole("tooltip")).textContent).toBe("主页");
+  const home = screen.getByRole("tab", { name: "主页" });
+  const library = screen.getByRole("tab", { name: "模版编辑" });
+  expect(home.getAttribute("data-state")).toBe("active");
+  fireEvent.mouseDown(library, { button: 0 });
+  expect(library.getAttribute("aria-selected")).toBe("true");
+  expect(library.getAttribute("data-state")).toBe("active");
+  expect(home.getAttribute("data-state")).toBe("inactive");
+});
+
 // 场景：直接进入模板库显示主页入口，默认主页不显示时钟。
 test("未选择模板时通过主页开始创作", async () => {
   render(<HomePage />);

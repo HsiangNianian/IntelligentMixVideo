@@ -23,7 +23,7 @@ export function ThemeToggle({ collapsed, className }: { collapsed: boolean; clas
 
   const Icon = dark ? Sun : Moon;
   return (
-    <Hint label={label} side="right" className={cn(!collapsed && "md:hidden")}><Button type="button" variant="ghost" aria-label={label} onClick={toggle} className={className}>
+    <Hint label={label} side="right" visibleBelow={collapsed ? undefined : "md"}><Button type="button" variant="ghost" aria-label={label} onClick={toggle} className={className}>
       <Icon className="size-[18px]" strokeWidth={1.75} aria-hidden="true" />
       <span className={cn("hidden", !collapsed && "md:inline")}>{dark ? "浅色主题" : "深色主题"}</span>
     </Button></Hint>
