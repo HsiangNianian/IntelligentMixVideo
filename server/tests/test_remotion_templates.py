@@ -213,14 +213,17 @@ async def _inspect_scenario():
     from server.remotion_templates.tools.registry import get_tool
 
     tool = get_tool("tools.inspect")
-    for name in ("sprite.create", "sprite_create"):
-        result = await tool.invoke(None, tool.input.model_validate({"tool_name": name}))
-        assert result["ok"] is True
-        assert result["data"]["tool_name"] == "sprite.create"
+    # 每个模型可见名称都必须可检查，包括非业务注册器管理的计划控制工具。
+    for visible in available():
+        for name in (visible.name, visible.wire()["function"]["name"]):
+            result = await tool.invoke(None, tool.input.model_validate({"tool_name": name}))
+            assert result["ok"] is True
+            assert result["data"]["tool_name"] == visible.name
+            assert result["data"]["input_schema"] == visible.input.model_json_schema()
     unknown = await tool.invoke(None, tool.input.model_validate({"tool_name": "preset"}))
     assert unknown["ok"] is False
     assert unknown["error"]["code"] == "TOOL_NOT_FOUND"
-    for expected in ("preset.create", "sprite.create", "tools.inspect"):
+    for expected in ("preset.create", "sprite.create", "tools.inspect", "tools.plan_execute"):
         assert expected in unknown["error"]["message"]
 
 

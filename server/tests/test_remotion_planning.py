@@ -70,3 +70,20 @@ def test_model_visible_schema_documents_accepted_references():
     assert "steps.<earlier_step_id>.outputs.sprite" in json.dumps(
         schema, ensure_ascii=False
     )
+
+
+def test_reference_requires_a_saved_output_before_dispatch():
+    """合法语法不等于已取得产物：前一步没有 Sprite 时不能唤醒依赖它的下一步。"""
+    from server.remotion_templates.planning import ExecutionState
+
+    state = ExecutionState(4, 3)
+    plan = Plan(goal="组合", steps=[step("first", ["user_intent"]), step("second", ["steps.first.outputs.sprite"])])
+    state.control(PlanAction(action="update_plan", plan=plan))
+    state.finish_batch("step_done", sprite_id=None)
+    before = state.snapshot()
+    with pytest.raises(ValueError, match="without a saved Sprite"):
+        state.control(PlanAction(action="advance"))
+    assert state.snapshot() == before
+    state.finish_batch("step_done", sprite_id="saved-sprite")
+    state.control(PlanAction(action="advance"))
+    assert state.snapshot()["step_inputs"] == {"steps.first.outputs.sprite": "saved-sprite"}

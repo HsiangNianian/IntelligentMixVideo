@@ -416,12 +416,12 @@ ToolName = Literal[
     "image.info", "image.resize", "image.crop",
     "preset.search", "preset.create", "preset.modify",
     "validate.code", "validate.render", "sprite.compose", "sprite.create",
-    "tools.inspect",
+    "tools.inspect", "tools.plan_execute",
 ]
 
 
 class ToolInspectInput(ContractModel):
-    """精确工具名称；未知名称由工具返回 TOOL_NOT_FOUND。"""
+    """点号 ID 或模型可见下划线名；未知名称返回 TOOL_NOT_FOUND。"""
 
     tool_name: NonEmptyString
 
