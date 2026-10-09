@@ -20,7 +20,7 @@ from . import ims, store, zos
 from .errors import CompositionError, remaining
 from .execution_log import close_logs, exception_details
 from .matching import Matching, payload, validated_matches
-from .schema import CompositionRequest, MatchCallback, PositiveSeconds, Segment, TaskResponse
+from .schema import CompositionRequest, MatchCallback, MatchedSegment, PositiveSeconds, Segment, TaskResponse
 from .settings import ClientSettings, Settings, ZosSettings
 from .timeline import build_timeline, validate_segments
 
@@ -131,8 +131,12 @@ class Runtime:
         if config is not None:
             output["client_config"] = True
             self.client_configs[task_id] = config
+        # 保留字段是否传入，后台及重启恢复才能区分纯数字人与显式空候选。
+        request_data = request.model_dump(mode="json", by_alias=True)
+        if "materials" not in request.model_fields_set:
+            request_data.pop("materials")
         try:
-            record = await self.sync(store.create, request.model_dump(mode="json", by_alias=True), output, callback_base_url, raw_request, **({"task_id": task_id} if config is not None else {}))
+            record = await self.sync(store.create, request_data, output, callback_base_url, raw_request, **({"task_id": task_id} if config is not None else {}))
         except BaseException:
             self.client_configs.pop(task_id, None)
             raise
@@ -372,7 +376,8 @@ class Job:
             raise CompositionError("interrupted", "任务在不可恢复的本地阶段中断，未重放成本调用", stage)
         if stage in ("queued", "template"):
             await self.prepare()
-            await self.match(submit=True)
+            if self.record["stage"] == "matching":
+                await self.match(submit=True)
         elif stage == "matching":
             await self.match(submit=False)
         if self.record["stage"] == "assembling":
@@ -381,12 +386,12 @@ class Job:
             await self.render()
 
     async def prepare(self) -> None:
-        """先在 template 阶段读取模板，快照落库后进入 ASR；模板读取中断可安全重试。"""
+        """读取模板、ASR 和切片；缺省 materials 直接组装，显式数组进入匹配。"""
         config = self.runtime.client_configs.get(self.record["task_id"])
         await self.runtime.sync(preflight, config) if config is not None else await self.runtime.sync(preflight)
-        if not self.record["data"].get("callback_base_url"):
-            raise CompositionError("callback_address_missing", "任务缺少受理时的基础地址，无法生成匹配回调地址", "matching")
         request = CompositionRequest.model_validate(self.record["data"]["request"])
+        if "materials" in request.model_fields_set and not self.record["data"].get("callback_base_url"):
+            raise CompositionError("callback_address_missing", "任务缺少受理时的基础地址，无法生成匹配回调地址", "matching")
         await self.save("template")
         try:
             template = await self.runtime.step(self.record, "template", lambda: self.runtime.sync(get_template, request.style_id),
@@ -408,6 +413,12 @@ class Job:
         segmented = await self.runtime.step(self.record, "segmentation", lambda: self.runtime.sync(segment, segment_input), segment_input)
         segments = TypeAdapter(list[Segment]).validate_python(segmented["segments"])
         validate_segments(segments, duration_ms)
+        if "materials" not in request.model_fields_set:
+            # 复用未命中片段的全长数字人组装逻辑，字幕仍读取原始切片。
+            await self.save("assembling", segmentation=segmented, matches=[
+                MatchedSegment.model_validate(item.model_dump()).model_dump(mode="json") for item in segments
+            ])
+            return
         token = secrets.token_urlsafe(32)
         callback_url = f"{self.record['data']['callback_base_url']}/api/v1/video-compositions/{self.record['task_id']}/segment-match-callback?token={token}"
         await self.save("matching", segmentation=segmented, match_callback_token=token,

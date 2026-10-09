@@ -69,7 +69,7 @@ class CompositionRequest(APIModel):
     audio_url: MediaURL
     style_id: UUID
     title: str | None = None
-    materials: list[Material] = Field(default_factory=list)
+    materials: list[Material] = Field(default_factory=list, description="省略时纯数字人；空数组仍匹配但不指定候选；非空数组指定候选；不接受 null")
     pack_rules: PackRules = Field(default_factory=PackRules)
     callback_url: MediaURL | None = None
 
