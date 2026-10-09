@@ -1159,11 +1159,12 @@ def test_invalid_notification_url_rejected_before_acceptance(upstreams, client, 
     assert upstreams["asr_calls"] == 0 and upstreams["notifications"] == []
 
 
-def test_notification_url_openapi_uses_camel_case(client):
-    """公开请求契约只声明可选 callbackUrl，与其他字段保持 camelCase。"""
+def test_request_openapi_hides_internal_mode_and_uses_camel_case(client):
+    """公开契约不含内部模式，回调地址与其他请求字段保持 camelCase。"""
     schema = client.get("/openapi.json").json()["components"]["schemas"]["CompositionRequest"]
     assert "callbackUrl" in schema["properties"] and "callback_url" not in schema["properties"]
     assert "callbackUrl" not in schema["required"]
+    assert "compositionMode" not in schema["properties"] and "composition_mode" not in schema["properties"]
 
 
 @pytest.mark.parametrize("code,error,expected", [
