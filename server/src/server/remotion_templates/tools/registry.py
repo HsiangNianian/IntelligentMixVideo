@@ -91,6 +91,7 @@ def tool(
     examples: list[dict[str, Any]] | tuple[dict[str, Any], ...] = (),
     implemented: bool = True,
     starts_generation: bool = False,
+    contract_version: int = 1,
 ):
     """Decorate an async ``(owner, request)`` handler and register its exact contract."""
 
@@ -112,6 +113,7 @@ def tool(
             output.validate_python(example["output"])
         descriptor = ToolDescriptor(
             tool_name=name,
+            contract_version=contract_version,
             description=(function.__doc__ or "").strip() or name,
             input_schema=model.model_json_schema(),
             output_schema=output.json_schema(),

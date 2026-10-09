@@ -11,6 +11,8 @@ window so the model only sees tools that can actually run.
 Presets to MySQL with a local JSON fallback, and `compose.py` generates the
 deterministic single-file Sprite source. The host builds the preview after the
 saved Sprite passes its checks.
+Local catalog transactions use a cross-process file lock and unique atomic
+replacement files; database connection/query failures preserve local visibility.
 
 `registry.get_tool` is the single name resolver: it accepts the dotted ID or the
 provider wire name (`wire_name`) and rejects everything else with the tool
@@ -21,3 +23,7 @@ Registration also declares `starts_generation`, so the
 host never keeps its own tool-name sets. `tests/test_remotion_tool_registry.py`
 fails when a registered tool is not resolvable, inspectable and correctly
 exposed, which is the check to run after adding a tool.
+
+Inspection includes `contract_version`: 1 by default, 2 for the implemented
+`preset.search` listing/ID-lookup contract. Search returns bounded summaries and
+`has_more`; storage and response-size failures are declared in its descriptor.

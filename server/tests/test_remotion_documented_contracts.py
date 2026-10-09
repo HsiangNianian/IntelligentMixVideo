@@ -1,6 +1,7 @@
 """按公开文档构造真实调用方，验证工具目录、输入输出 Schema 及检查回执兼容。"""
 
 import asyncio
+import json
 import re
 import sys
 from pathlib import Path
@@ -53,3 +54,19 @@ def test_published_descriptor_accepts_actual_inspection(published_contract, tool
     assert response["ok"] is True
     descriptor = published_contract.ToolDescriptor.model_validate(response["data"])
     assert descriptor.tool_name == tool.name
+    assert descriptor.contract_version == (2 if tool.name == "preset.search" else 1)
+
+
+def test_documented_search_examples_follow_the_published_version(published_contract):
+    """文档中的列表和 ID 读取 JSON 示例必须通过真实工具输入输出校验。"""
+    document = Path(__file__).parents[2] / "docs/remotion-agent-tool-contracts.md"
+    section = document.read_text().split("### 6.1 search", 1)[1].split("### 6.2 create", 1)[0]
+    examples = [json.loads(block) for block in re.findall(r"^```json\n(.*?)^```", section, re.MULTILINE | re.DOTALL)]
+    tool = get_tool("preset.search")
+    assert len(examples) == 4
+    for example in examples:
+        if "ok" in example:
+            result = tool.output.validate_python(example)
+            assert result.data.presets
+        else:
+            tool.input.model_validate(example)

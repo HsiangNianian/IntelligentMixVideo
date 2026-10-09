@@ -39,10 +39,21 @@ the shared `server.database` settings (`DB_*`). When the database is unreachable
 it falls back to the task-local catalog under the module data directory, and
 `ToolSession.snapshot()` reports the backend that was actually used. Both paths
 append immutable records only; there is no update or delete.
+Connection and query failures also fall back to local records. Local appends
+hold a cross-process file lock over the entire read/modify/write transaction
+and replace the catalog from a unique, flushed temporary file.
 
 `preset.search` merges database and local records, sorts by creation time newest
 first, and then applies `limit`. UUID ordering and storage backend do not affect
 which recent Presets are returned.
+Legacy timestamps without a timezone are interpreted as UTC; invalid timestamps
+sort last without hiding the record. `tools.inspect` identifies this search
+contract as version 2, replacing the previously unimplemented `matches` shape.
+`limit` accepts 1–100, and serialized search content is capped at 40,000 UTF-8
+bytes including JSON string escaping. `has_more` marks omitted summaries;
+oversized individual summaries or full records return `RESOURCE_LIMIT_EXCEEDED`
+without truncating source. Search and modify declare `PRESET_STORE_FAILED` for
+storage errors.
 
 ## Preview
 
@@ -68,6 +79,9 @@ New tool observations, new handoffs and advancing completed steps reset the
 counter. Repeated handoffs at the same step count as stalls, including valid
 `delegate`/`blocked` and `continue`/`blocked` loops. Changing summaries, reasons,
 plan revision numbers or batch counters does not count as progress.
+Only a successful generation-starting tool sets `generation_started`. A failed
+first attempt may still be followed by an explanatory answer; failure after a
+successful generation attempt does not remove the completion requirement.
 
 Every Outer → Plan → Executor turn appends one public round record through the
 `job.round` delta event on the same work stream as the phase timeline. A round

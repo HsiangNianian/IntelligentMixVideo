@@ -9,13 +9,16 @@ MySQL 复用 `server.database` 的 `DatabaseSettings` 与连接池，表在首�
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from threading import Lock
 from typing import Any
 
 from sqlalchemy import JSON, Column, MetaData, String, Table, select
 from sqlalchemy.exc import SQLAlchemyError
 
+from ...file_lock import lock_exclusive
 from .contracts import PresetRecord, SpriteRecord
 
 # Preset 元数据与完整记录分离：preset_id 用于主键查询，payload 保留不可变快照。
@@ -66,11 +69,11 @@ class CatalogStore:
         """
         try:
             engine = self._engine()
+            with engine.connect() as connection:
+                rows = connection.execute(select(presets.c.payload).order_by(presets.c.preset_id))
+                remote = [PresetRecord.model_validate(row.payload) for row in rows]
         except SQLAlchemyError:
             return self._read_records("presets", PresetRecord)
-        with engine.connect() as connection:
-            rows = connection.execute(select(presets.c.payload).order_by(presets.c.preset_id))
-            remote = [PresetRecord.model_validate(row.payload) for row in rows]
         seen = {item.preset_id for item in remote}
         # 本地兜底记录排在末尾；同 ID 已由数据库提供时以数据库为准。
         return remote + [item for item in self._read_records("presets", PresetRecord) if item.preset_id not in seen]
@@ -96,11 +99,18 @@ class CatalogStore:
 
     def _append_local(self, record: PresetRecord) -> None:
         """把记录写入本地兜底目录，重复 ID 不产生第二份副本。"""
-        records = self._read_records("presets", PresetRecord)
-        if any(item.preset_id == record.preset_id for item in records):
-            return
-        records.append(record)
-        self._write_records("presets", records)
+        self._append_record("presets", record, "preset_id")
+
+    def _append_record(self, category, record, id_field) -> None:
+        """跨进程串行化整个读改写事务；保留锁文件，避免更换 inode 后失去互斥。"""
+        self.root.mkdir(parents=True, exist_ok=True)
+        with (self.root / ".catalog.lock").open("a+b") as lock:
+            lock_exclusive(lock, blocking=True)
+            records = self._read_records(category, type(record))
+            if any(getattr(item, id_field) == getattr(record, id_field) for item in records):
+                return
+            records.append(record)
+            self._write_records(category, records)
 
     def read_sprites(self) -> list[SpriteRecord]:
         """读取任务所属的 Sprite 记录；Sprite 只保存在任务本地目录。"""
@@ -108,12 +118,8 @@ class CatalogStore:
 
     def append_sprite(self, record: SpriteRecord) -> str:
         """追加一条 Sprite 记录并返回实际使用的后端；写入失败时向上抛出。"""
-        records = self.read_sprites()
-        if any(item.sprite_id == record.sprite_id for item in records):
-            return "local"
-        records.append(record)
         # 这里不吞异常：写不进去时必须让调用方看到失败，而不是返回成功回执。
-        self._write_records("sprites", records)
+        self._append_record("sprites", record, "sprite_id")
         return "local"
 
     def _records_path(self, category: str) -> Path:
@@ -129,15 +135,21 @@ class CatalogStore:
         return [model.model_validate(item) for item in values]
 
     def _write_records(self, category: str, records) -> None:
-        """原子替换本地记录文件，不暴露半完成状态。"""
+        """刷盘后从唯一临时文件原子替换；失败时清理临时文件并保留原目录。"""
         self.root.mkdir(parents=True, exist_ok=True)
         path = self._records_path(category)
-        temporary = path.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps([item.model_dump(mode="json", exclude_unset=True) for item in records], ensure_ascii=False),
-            encoding="utf-8",
-        )
-        temporary.replace(path)
+        temporary = None
+        try:
+            with NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.root,
+                                    prefix=f".{category}-", suffix=".tmp", delete=False) as file:
+                temporary = Path(file.name)
+                json.dump([item.model_dump(mode="json", exclude_unset=True) for item in records], file, ensure_ascii=False)
+                file.flush()
+                os.fsync(file.fileno())
+            temporary.replace(path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     def find_preset(self, preset_id: str) -> PresetRecord | None:
         """按 ID 精确查找；数据库不可用时同样回退到本地目录。"""

@@ -35,6 +35,8 @@ from .compose import compose_source
 # 快照预算：provider 的请求体上限是 512000 字节，会话窗口自身上限 240000 字节，
 # 余量留给工具描述。快照本身没有别的边界，只能在这里按需收缩。
 _SNAPSHOT_BYTE_BUDGET = 200_000
+# 四个搜索回执需共享 240 KB 会话交换，留出调用参数与消息封装的空间。
+_SEARCH_BYTE_BUDGET = 40_000
 
 
 def _snapshot_bytes(data: dict) -> int:
@@ -160,9 +162,17 @@ class ToolSession:
 
     def _recent_presets(self) -> list[PresetRecord]:
         """Order the merged catalog by creation time for listing and missing-ID hints."""
+        def created_at(record):
+            """旧无时区值按 UTC 处理；不可解析值放末尾，不使整个目录不可读。"""
+            try:
+                value = datetime.fromisoformat(record.created_at)
+                return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+            except (ValueError, OverflowError):
+                return datetime.min.replace(tzinfo=UTC)
+
         return sorted(
             self.catalog.read_presets(),
-            key=lambda item: datetime.fromisoformat(item.created_at),
+            key=lambda item: (created_at(item), item.preset_id),
             reverse=True,
         )
 
@@ -221,15 +231,33 @@ class ToolSession:
         """
         full = self._find_preset(request.preset_id) if request.preset_id is not None else None
         needle = request.query.strip().lower()
-        records = [item for item in self._recent_presets() if needle in item.description.lower()]
-        return PresetSearchOutput(**({"preset": full} if full else {}), presets=[
-            PresetSummary(
+        output = PresetSearchOutput(**({"preset": full} if full else {}), presets=[], has_more=False)
+
+        def fits_reply():
+            """计入 ToolResult 及保存 content 字符串时的二次转义，不截断完整源码。"""
+            content = json.dumps({"ok": True, "data": output.model_dump(mode="json", exclude_unset=True)}, ensure_ascii=False)
+            return len(json.dumps(content, ensure_ascii=False).encode("utf-8")) <= _SEARCH_BYTE_BUDGET
+
+        if not fits_reply():
+            raise ToolFault("RESOURCE_LIMIT_EXCEEDED", "The full Preset exceeds the tool reply size limit.")
+        for item in self._recent_presets():
+            if needle not in item.description.lower():
+                continue
+            if len(output.presets) >= request.limit:
+                output.has_more = True
+                break
+            output.presets.append(PresetSummary(
                 preset_id=item.preset_id,
                 description=item.description,
                 parameter_names=list(item.parameter_schema.get("properties", {})),
-            )
-            for item in records[: request.limit]
-        ])
+            ))
+            if not fits_reply():
+                output.presets.pop()
+                if not output.presets and full is None:
+                    raise ToolFault("RESOURCE_LIMIT_EXCEEDED", "A Preset summary exceeds the tool reply size limit.")
+                output.has_more = True
+                break
+        return output
 
     def modify_preset(self, request: PresetModifyInput) -> PresetModifyOutput:
         """Copy a stored Preset with whole-field replacements; unknown IDs list what exists."""

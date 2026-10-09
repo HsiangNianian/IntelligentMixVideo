@@ -8,6 +8,7 @@ Run: `uv run --locked pytest tests/test_remotion_tool_registry.py -v`.
 """
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -188,3 +189,92 @@ def test_search_with_preset_id_returns_the_full_record(tmp_path, monkeypatch):
     with pytest.raises(ToolFault) as missing:
         session.search_presets(PresetSearchInput(preset_id="nope"))
     assert missing.value.error.code == "PRESET_NOT_FOUND"
+
+
+def test_search_tolerates_invalid_and_naive_catalog_timestamps(tmp_path, monkeypatch):
+    """历史无时区值按 UTC 排序，非法时间置后且仍可按 ID 读取或提供纠错提示。"""
+    session = make_session(tmp_path, monkeypatch)
+    invalid = save_preset(session, "invalid", created_at="not-a-date")
+    aware = save_preset(session, "aware", created_at="2026-10-09T08:00:00+08:00")
+    naive = save_preset(session, "naive", created_at="2026-10-09T01:00:00")
+    result = session.search_presets(PresetSearchInput())
+    assert [item.preset_id for item in result.presets] == [naive.preset_id, aware.preset_id, invalid.preset_id]
+    assert session.search_presets(PresetSearchInput(preset_id=invalid.preset_id)).preset == invalid
+    with pytest.raises(ToolFault) as missing:
+        session._find_preset("missing")
+    assert missing.value.error.code == "PRESET_NOT_FOUND"
+    assert invalid.preset_id in missing.value.error.message
+
+
+def test_search_contract_version_is_discoverable_before_calling():
+    """调用方可先检查版本和 Schema，区分旧 matches 契约与已实现的 v2 列表。"""
+    result = asyncio.run(get_tool("tools.inspect").invoke(None, {"tool_name": "preset_search"}))
+    descriptor = result["data"]
+    assert descriptor["contract_version"] == 2
+    assert "presets" in json.dumps(descriptor["output_schema"])
+    assert "matches" not in json.dumps(descriptor["output_schema"])
+    assert get_tool("preset.create").describe()["contract_version"] == 1
+
+
+@pytest.mark.parametrize("tool_name,method,arguments", [
+    ("preset.search", "search_presets", {}),
+    ("preset.modify", "modify_preset", {"preset_id": "preset", "changes": {"description": "new"}}),
+])
+def test_preset_storage_errors_are_in_the_published_descriptor(tool_name, method, arguments):
+    """读取目录的实际存储错误必须出现在 inspect 返回的错误清单中。"""
+    def broken(_request):
+        """模拟磁盘读失败，不让测试访问真实存储。"""
+        raise OSError("disk read failed")
+
+    tool = get_tool(tool_name)
+    result = asyncio.run(tool.invoke(SimpleNamespace(**{method: broken}), arguments))
+    assert result["ok"] is False
+    assert result["error"]["code"] == "PRESET_STORE_FAILED"
+    assert result["error"]["code"] in tool.describe()["error_codes"]
+
+
+def test_search_rejects_an_unbounded_requested_limit():
+    """过大的 limit 在工具边界返回可纠正错误，且不读取目录。"""
+    result = asyncio.run(get_tool("preset.search").invoke(None, {"limit": 101}))
+    assert result["error"]["code"] == "INVALID_ARGUMENT"
+    assert result["error"]["field"] == "/limit"
+
+
+def test_large_search_replies_fit_a_complete_multi_tool_exchange(tmp_path, monkeypatch):
+    """四次合法大列表调用仍可保存成完整会话；包含中文和转义字符的字节计数有效。"""
+    from server.remotion_templates.context import AssistantMessage, Conversation
+
+    session = make_session(tmp_path, monkeypatch)
+    for index in range(25):
+        save_preset(session, f"标题 {index} " + '中\\"\n' * 800,
+                    properties={'参数\\"\n' * 20: {"type": "string"}})
+    message = AssistantMessage(tool_calls=[{
+        "id": f"search-{index}", "function": {"name": "preset_search", "arguments": '{"limit":100}'},
+    } for index in range(4)])
+    exchange = [message.wire()]
+    for call in message.tool_calls:
+        result = asyncio.run(get_tool("preset.search").invoke(session, call.function.arguments))
+        assert result["ok"] is True
+        assert result["data"]["has_more"] is True
+        assert 0 < len(result["data"]["presets"]) < 25
+        content = json.dumps(result, ensure_ascii=False)
+        assert len(json.dumps(content, ensure_ascii=False).encode()) <= 40_000
+        exchange.append({"role": "tool", "tool_call_id": call.id, "content": content})
+    context = Conversation()
+    context.append(exchange)
+    assert len(context.messages()) == 5
+    assert len(context.serialize().encode()) < 240_000
+
+
+@pytest.mark.parametrize("large_field", ["summary", "code"])
+def test_single_oversized_preset_returns_a_bounded_error(tmp_path, monkeypatch, large_field):
+    """单条摘要或完整源码超过响应预算时明确报错，不返回空列表或截断代码。"""
+    session = make_session(tmp_path, monkeypatch)
+    stored = save_preset(session, "normal")
+    oversized = stored.model_copy(update={"description" if large_field == "summary" else "code": "中" * 40_000})
+    monkeypatch.setattr(session.catalog, "read_presets", lambda: [oversized])
+    request = {} if large_field == "summary" else {"preset_id": stored.preset_id}
+    result = asyncio.run(get_tool("preset.search").invoke(session, request))
+    assert result["ok"] is False
+    assert result["error"]["code"] == "RESOURCE_LIMIT_EXCEEDED"
+    assert len(json.dumps(result).encode()) < 1000

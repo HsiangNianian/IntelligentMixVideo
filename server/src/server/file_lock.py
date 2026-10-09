@@ -1,17 +1,17 @@
-"""进程级非阻塞文件锁：Unix 使用 flock，Windows 锁定首字节；关闭文件即释放。"""
+"""进程级文件锁：默认不等待，目录事务可等待；关闭句柄即释放。"""
 
 import os
 from typing import IO
 
 
-def lock_exclusive(file: IO) -> None:
-    """保持锁在传入文件句柄的生命周期内；冲突抛出 OSError，不等待另一实例。"""
+def lock_exclusive(file: IO, *, blocking: bool = False) -> None:
+    """锁随句柄释放；默认冲突即失败，blocking 等待写事务（Windows 最多约十秒）。"""
     if os.name == "nt":
         import msvcrt
 
         file.seek(0)
-        msvcrt.locking(file.fileno(), msvcrt.LK_NBLCK, 1)
+        msvcrt.locking(file.fileno(), msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK, 1)
     else:
         import fcntl
 
-        fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(file, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))

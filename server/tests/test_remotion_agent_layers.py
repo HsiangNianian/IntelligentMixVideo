@@ -274,3 +274,31 @@ def test_dispatch_reports_only_tools_the_current_layer_can_call(monkeypatch, tmp
         assert "tools.plan_execute" not in listed and "sprite.compose" not in listed
     assert run.state.calls == 1
     assert run.round_calls[0]["status"] == "fail"
+
+
+@pytest.mark.parametrize("earlier_success", [False, True])
+def test_failed_generation_tool_preserves_previous_generation_state(monkeypatch, tmp_path, earlier_success):
+    """首次生成失败仍可解释问题；已经成功开始生成时，后续失败不能解除完成约束。"""
+    from server.remotion_templates.tools.registry import ToolFault
+
+    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
+    run = AgentRun(FakeHarness([]), None, Budget(), tmp_path, [], lambda *_: None)
+    run.session.latest_sprite_id = None
+    arguments = {"description": "title", "code": "export default function C(){return null}",
+                 "parameter_schema": {"type": "object", "properties": {}}, "default_parameters": {}}
+    if earlier_success:
+        asyncio.run(run._handle_layer_tools(call("success", "preset_create", arguments)))
+
+    async def fail(*_args):
+        """模拟真实代码校验失败，尚未保存任何新的预设。"""
+        raise ToolFault("CODE_VALIDATION_FAILED", "Invalid code")
+
+    monkeypatch.setattr(run.session, "execute", fail)
+    asyncio.run(run._handle_layer_tools(call("failure", "preset_create", arguments)))
+    assert run.generation_started is earlier_success
+    result = asyncio.run(run._handle_layer_message(AssistantMessage(content='{"answer":"代码校验失败，请调整需求。"}')))
+    if earlier_success:
+        assert result is None
+        assert "Generation has started" in run.session.feedback[0]
+    else:
+        assert result.answer == "代码校验失败，请调整需求。"

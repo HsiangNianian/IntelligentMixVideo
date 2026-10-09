@@ -168,7 +168,7 @@ class PresetSearchInput(ContractModel):
     """可选关键词（子串匹配）与结果数量上限；留空则列出最近的预设；给出 preset_id 则读取该完整记录。"""
 
     query: str = ""
-    limit: PositiveInteger = 20
+    limit: Annotated[PositiveInteger, Field(le=100)] = 20
     preset_id: Omittable[PresetId]
 
 
@@ -185,6 +185,7 @@ class PresetSearchOutput(ContractModel):
 
     presets: list[PresetSummary]
     preset: Omittable[PresetRecord]
+    has_more: bool = False
 
 
 class PresetChanges(ContractModel):
@@ -440,6 +441,7 @@ class ToolDescriptor(ContractModel):
     """工具模型及不能只靠 Schema 表达的行为规则。"""
 
     tool_name: ToolName
+    contract_version: PositiveInteger = 1
     description: Description
     input_schema: JsonSchema
     output_schema: JsonSchema

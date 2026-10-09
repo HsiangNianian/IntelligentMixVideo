@@ -182,9 +182,10 @@ async def image_crop(owner, request: ImageCropInput) -> ToolResult[ProcessedImag
 
 @tool(
     "preset.search",
-    constraints=["Plain listing with optional substring filter on the description; the agent decides which Preset to recall. Pass preset_id to also receive that Preset's full record including code. An empty result is not an error and never creates a Preset."],
+    contract_version=2,
+    constraints=["Contract v2: presets summaries replace the former unimplemented matches contract. Optional substring filter; limit is 1-100. Results also have a 40000-byte serialized content budget; has_more indicates omitted summaries. Use a narrower query or preset_id to read a full record. An oversized full record fails without truncating code."],
     side_effects=["read-only catalog listing"],
-    error_codes=["INVALID_ARGUMENT", "PRESET_NOT_FOUND"],
+    error_codes=["INVALID_ARGUMENT", "PRESET_NOT_FOUND", "PRESET_STORE_FAILED", "RESOURCE_LIMIT_EXCEEDED"],
     examples=[{"input": {"query": "标题", "limit": 5}, "output": {"ok": True, "data": {"presets": []}}}],
 )
 async def preset_search(owner, request: PresetSearchInput) -> ToolResult[PresetSearchOutput]:
@@ -199,7 +200,7 @@ async def preset_search(owner, request: PresetSearchInput) -> ToolResult[PresetS
     "preset.modify",
     constraints=["Replaces whole fields only; the original record never changes and no new preset_id is created. Save the returned draft with preset.create."],
     side_effects=["read-only copy of one stored Preset"],
-    error_codes=["INVALID_ARGUMENT", "PRESET_NOT_FOUND"],
+    error_codes=["INVALID_ARGUMENT", "PRESET_NOT_FOUND", "PRESET_STORE_FAILED"],
     examples=[{"input": {"preset_id": "preset_title_001", "changes": {"description": "带描边的文字原子"}}, "output": {"ok": False, "error": {"code": "PRESET_NOT_FOUND", "message": "example"}}}],
 )
 async def preset_modify(owner, request: PresetModifyInput) -> ToolResult[PresetModifyOutput]:
@@ -250,6 +251,7 @@ class PlanTool:
         """Return the same complete inspection contract as business tools, without changing state."""
         return ToolDescriptor(
             tool_name=self.name,
+            contract_version=1,
             description=self.wire()["function"]["description"],
             input_schema=self.input.model_json_schema(),
             output_schema=TypeAdapter(ToolResult[JsonObject]).json_schema(),

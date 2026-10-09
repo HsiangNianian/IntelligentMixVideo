@@ -392,9 +392,9 @@ class AgentRun:
                             self._observe_handoff(transition, args.action)
                         data = self.state.snapshot()
                     else:
+                        data = await self.session.execute(tool.name, args, visible)
                         if getattr(tool, "starts_generation", False):
                             self.generation_started = True
-                        data = await self.session.execute(tool.name, args, visible)
                         self._observe_receipt(tool.name, data)
                     result = tool_receipt("pass", data=data)
                 except asyncio.CancelledError as exc:
