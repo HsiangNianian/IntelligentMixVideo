@@ -287,10 +287,13 @@ test("侧栏页签的选中状态不被悬停提示覆盖", async () => {
   expect(home.getAttribute("data-state")).toBe("inactive");
 });
 
-// 场景：直接进入模板库显示主页入口，默认主页不显示时钟。
+// 场景：直接进入模板库显示主页入口，主页与 Remotion 页头都不显示时钟。
 test("未选择模板时通过主页开始创作", async () => {
   render(<HomePage />);
   expect(screen.getByRole("tab", { name: "主页" }).getAttribute("aria-selected")).toBe("true");
+  expect(screen.queryByRole("region", { name: "当前时间" })).toBeNull();
+  // Remotion 页头同样不显示当前时间。
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Remotion 字效" }), { button: 0 });
   expect(screen.queryByRole("region", { name: "当前时间" })).toBeNull();
   fireEvent.mouseDown(screen.getByRole("tab", { name: "模版编辑" }), { button: 0 });
   expect(screen.getByText("请从主页选择已有模板或创建新模板。")).toBeTruthy();

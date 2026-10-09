@@ -1,7 +1,6 @@
 /** 首页以侧边导航组合工作区；设置经侧栏底部按钮打开对话框，业务面板隐藏时保留草稿、播放器与订阅。 */
 import { Fragment, useId, useState } from "react";
 import { Film, House, PanelLeftClose, PanelLeftOpen, Settings, Sparkles, SquarePen } from "lucide-react";
-import CurrentTime from "@/components/CurrentTime";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Hint } from "@/components/Hint";
 import { Button } from "@/components/ui/button";
@@ -99,13 +98,12 @@ export default function HomePage() {
       </aside>
       <main className="min-w-0 flex-1 px-3 py-3 sm:px-6">
         <div className="mx-auto max-w-[1920px] space-y-3">
-          {workspace === "remotion" && <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b px-1">
-            {/* Remotion 页头保留标题、说明与时间；主页标题由模板主页自身提供，品牌标识统一放在侧栏。 */}
+          {workspace === "remotion" && <header className="flex h-14 shrink-0 items-center gap-3 border-b px-1">
+            {/* Remotion 页头只保留标题与说明；主页标题由模板主页自身提供，品牌标识统一放在侧栏。 */}
             <div className="min-w-0">
               <h1 className="truncate text-base font-semibold tracking-tight">Remotion 字效</h1>
               <p className="truncate text-xs text-muted-foreground">用对话生成可调参数的文字动效</p>
             </div>
-            <div className="hidden sm:block"><CurrentTime /></div>
           </header>}
           <TabsContent value="home" forceMount hidden={workspace !== "home"}>
             {workspace === "home" && (
