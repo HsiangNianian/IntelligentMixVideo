@@ -60,6 +60,9 @@ class Settings(ClientSettings, CommonSettings):
     data_dir: Path = Path(".data")
     job_timeout_seconds: int = Field(default=600, ge=1, le=3600)
     render_timeout_seconds: int = Field(default=180, ge=1, le=600)
+    # 瞬时传输故障与上游限流/不可用会等待后重试；等待按次数翻倍，上限 30 秒。
+    model_retries: int = Field(default=2, ge=0, le=5)
+    model_retry_delay_seconds: float = Field(default=2.0, ge=0.1, le=30.0)
     # Keep usage accounting while temporarily disabling cumulative model quota enforcement.
     enforce_model_budget: bool = False
     max_model_calls: int = Field(default=32, ge=1, le=50)

@@ -1,7 +1,11 @@
 """Register only the Preset-to-Sprite creation tools and host Plan inspection."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Any
+
+from pydantic import TypeAdapter
 
 from ..planning import PlanAction
 from .contracts import (
@@ -11,6 +15,7 @@ from .contracts import (
     ImageInfo,
     ImageInfoInput,
     ImageResizeInput,
+    JsonObject,
     PresetCreateInput,
     PresetCreateOutput,
     PresetModifyInput,
@@ -28,7 +33,7 @@ from .contracts import (
     ToolInspectInput,
     ToolResult,
 )
-from .registry import RegisteredTool, ToolFault, get_tool, registered_tools, tool
+from .registry import RegisteredTool, ToolFault, registered_tools, tool
 
 
 def _success(data: Any) -> dict[str, Any]:
@@ -102,17 +107,38 @@ async def sprite_create(owner, request: SpriteCreateInput) -> ToolResult[SpriteC
         return _failure(exc, "SPRITE_STORE_FAILED")
 
 
+def _inspectable(name: str) -> RegisteredTool | PlanTool:
+    """Resolve one registered descriptor by dotted ID or by the wire name the model is shown.
+
+    Inspection stays contract-only: it includes host Plan control without granting
+    permission to invoke it. It accepts the same names the model sees in its own
+    tool window. `resolve()` is not reused here because it hides tools that
+    are registered with a contract but no implementation yet, and describing those
+    contracts is exactly what this tool is for.
+    """
+    tools = (*registered_tools(), PLAN_TOOL)
+    for item in tools:
+        if name in {item.name, item.name.replace(".", "_")}:
+            return item
+    known = ", ".join(item.name for item in tools)
+    raise ToolFault("TOOL_NOT_FOUND", f"Unknown tool: {name}. Registered tools: {known}")
+
+
 @tool(
     "tools.inspect",
-    constraints=["The name is exact; inspection never discovers or executes tools."],
+    constraints=["The name is a dotted tool ID or the wire name shown in this tool window; inspection never discovers or executes tools."],
     side_effects=["registry read only"],
     error_codes=["INVALID_ARGUMENT", "TOOL_NOT_FOUND"],
     examples=[{"input": {"tool_name": "sprite.compose"}, "output": {"ok": False, "error": {"code": "TOOL_NOT_FOUND", "message": "example"}}}],
 )
 async def tools_inspect(owner, request: ToolInspectInput) -> ToolResult[ToolDescriptor]:
-    """Return one exact registered creation-tool descriptor."""
+    """Return one registered tool descriptor by dotted ID or by the wire name this window shows.
+
+    An unknown name reports every registered ID, so a model that guesses a name
+    learns the real one instead of retrying blind.
+    """
     try:
-        return _success(get_tool(request.tool_name).describe())
+        return _success(_inspectable(request.tool_name).describe())
     except ToolFault as exc:
         return _failure(exc, "TOOL_NOT_FOUND")
 
@@ -219,8 +245,24 @@ class PlanTool:
         return {"type": "function", "function": {"name": self.name.replace(".", "_"), "description": "Create, continue, advance or finish the ordered Plan; never executes a business tool.", "parameters": self.input.model_json_schema()}}
 
     def describe(self) -> dict[str, Any]:
-        """Describe the host-owned Plan transition without executing it."""
-        return {"tool_id": self.name, "version": 1, "description": "Host-owned Plan transition control.", "input_schema": self.input.model_json_schema(), "writes": False, "available": True}
+        """Return the same complete inspection contract as business tools, without changing state."""
+        return ToolDescriptor(
+            tool_name=self.name,
+            description=self.wire()["function"]["description"],
+            input_schema=self.input.model_json_schema(),
+            output_schema=TypeAdapter(ToolResult[JsonObject]).json_schema(),
+            constraints=[
+                "Only Outer and Plan may invoke this tool; Executor may only inspect it.",
+                "Outer delegates or completes; Plan owns ordered step changes.",
+                "Completion still requires host verification of a saved Sprite.",
+            ],
+            side_effects=["task-local Plan and execution state updates"],
+            error_codes=["INVALID_ARGUMENT", "tool_limit_reached", "tool_budget_exhausted", "agent_stopped"],
+            examples=[{
+                "input": {"action": "advance"},
+                "output": {"ok": False, "error": {"code": "INVALID_ARGUMENT", "message": "Advance requires a completed current step"}},
+            }],
+        ).model_dump(mode="json", exclude_unset=True)
 
 
 PLAN_TOOL = PlanTool()

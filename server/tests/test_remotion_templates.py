@@ -199,6 +199,34 @@ def test_deferred_tools_refuse_instead_of_fabricating():
     asyncio.run(_deferred_scenario())
 
 
+def test_tools_inspect_accepts_both_name_forms():
+    """tools.inspect 同时接受契约里的点号 ID 和模型窗口里显示的下划线名。
+
+    模型看到的函数名是下划线形式（preset_create），只能查点号 ID 时它会反复
+    猜名字并因此失败。
+    """
+    asyncio.run(_inspect_scenario())
+
+
+async def _inspect_scenario():
+    """两种写法返回同一份描述，未知名字报出全部已注册 ID。"""
+    from server.remotion_templates.tools.registry import get_tool
+
+    tool = get_tool("tools.inspect")
+    # 每个模型可见名称都必须可检查，包括非业务注册器管理的计划控制工具。
+    for visible in available():
+        for name in (visible.name, visible.wire()["function"]["name"]):
+            result = await tool.invoke(None, tool.input.model_validate({"tool_name": name}))
+            assert result["ok"] is True
+            assert result["data"]["tool_name"] == visible.name
+            assert result["data"]["input_schema"] == visible.input.model_json_schema()
+    unknown = await tool.invoke(None, tool.input.model_validate({"tool_name": "preset"}))
+    assert unknown["ok"] is False
+    assert unknown["error"]["code"] == "TOOL_NOT_FOUND"
+    for expected in ("preset.create", "sprite.create", "tools.inspect", "tools.plan_execute"):
+        assert expected in unknown["error"]["message"]
+
+
 async def _deferred_scenario():
     """逐个调用延后工具，确认统一返回 NOT_IMPLEMENTED 与自身名称。"""
     from server.remotion_templates.tools.registry import get_tool
