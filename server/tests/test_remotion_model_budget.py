@@ -490,3 +490,150 @@ def test_missing_usage_is_unknown_without_quotas(tmp_path, enforced, usage):
         event = next(e for e in events if e["event"] == "model_usage")
         assert event["total_tokens"] is None
     assert budget.calls == 1 and budget.tokens == 100
+
+
+def retry_settings(**overrides):
+    """构造只关心重试边界的服务端配置，不读取真实 .env。"""
+    return Settings(
+        _env_file=None,
+        actor_model="offline",
+        actor_api_key=SecretStr("test"),
+        **overrides,
+    )
+
+
+def unreachable(request):
+    """模拟网关不可达：连接阶段就失败，请求体不会被发送。"""
+    raise httpx.ConnectError("connection refused", request=request)
+
+
+def answering(request):
+    """返回一份合法的最小流式回答。"""
+    return httpx.Response(
+        200,
+        json={
+            "usage": {"total_tokens": 1},
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": '{"answer":"重试后成功"}'},
+                }
+            ],
+        },
+    )
+
+
+def test_transient_transport_failure_is_retried_and_counted_once(tmp_path):
+    """网关瞬时不可达时等待后重试；重试不重复计入模型调用次数，并写进私有审计。"""
+    calls = {"count": 0}
+
+    def flaky(request):
+        """第一次连接失败，第二次返回合法回答。"""
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise httpx.ConnectError("connection refused", request=request)
+        return answering(request)
+
+    budget = Budget(audit_path=tmp_path / "audit.jsonl")
+    provider = Provider(
+        retry_settings(model_retries=2, model_retry_delay_seconds=0.1),
+        transport=httpx.MockTransport(flaky),
+    )
+    result = asyncio.run(provider.ask(DialogueOutput, "s", "u", budget))
+    assert result.answer == "重试后成功"
+    assert calls["count"] == 2
+    # 一次逻辑调用只记账一次，重试只是同一次调用的等待与重发。
+    assert budget.calls == 1 and budget.tokens == 1
+    events = [json.loads(line) for line in budget.audit_path.read_text().splitlines()]
+    retry = next(e for e in events if e["event"] == "model_retry")
+    assert retry["attempt"] == 1 and retry["reason"].startswith("Model endpoint is unreachable")
+
+
+def test_retries_are_bounded_and_report_the_last_failure():
+    """一直不可达时按配置次数重试后失败，错误信息保持既有文案。"""
+    calls = {"count": 0}
+
+    def always(request):
+        """每次连接都失败，用于确认重试有上限。"""
+        calls["count"] += 1
+        raise httpx.ConnectError("connection refused", request=request)
+
+    provider = Provider(
+        retry_settings(model_retries=2, model_retry_delay_seconds=0.1),
+        transport=httpx.MockTransport(always),
+    )
+    with pytest.raises(ModelFailure, match="Model endpoint is unreachable"):
+        asyncio.run(provider.ask(DialogueOutput, "s", "u", Budget()))
+    assert calls["count"] == 3
+
+
+def test_retryable_status_is_retried_but_configuration_error_is_not():
+    """429/5xx 等待后重试；模型名或权限等配置错误立即失败，不做无意义重试。"""
+    seen = []
+
+    def throttled(request):
+        """先返回 503，再返回合法回答。"""
+        seen.append(request)
+        if len(seen) == 1:
+            return httpx.Response(503, json={"error": "unavailable"})
+        return answering(request)
+
+    provider = Provider(
+        retry_settings(model_retries=2, model_retry_delay_seconds=0.1),
+        transport=httpx.MockTransport(throttled),
+    )
+    assert asyncio.run(provider.ask(DialogueOutput, "s", "u", Budget())).answer == "重试后成功"
+    assert len(seen) == 2
+
+    rejected = []
+
+    def unauthorized(request):
+        """返回配置类错误码。"""
+        rejected.append(request)
+        return httpx.Response(403, json={"error": "forbidden"})
+
+    provider = Provider(
+        retry_settings(model_retries=2, model_retry_delay_seconds=0.1),
+        transport=httpx.MockTransport(unauthorized),
+    )
+    with pytest.raises(ModelFailure, match="HTTP 403"):
+        asyncio.run(provider.ask(DialogueOutput, "s", "u", Budget()))
+    assert len(rejected) == 1
+
+
+def test_retry_wait_doubles_and_is_capped(monkeypatch):
+    """等待时间按次数翻倍并封顶 30 秒，不把任务时间全花在等待上。"""
+    delays: list[float] = []
+
+    async def fake_sleep(seconds):
+        """记录退避时间，测试不真的等待。"""
+        delays.append(seconds)
+
+    monkeypatch.setattr(
+        "server.remotion_templates.provider.asyncio.sleep", fake_sleep
+    )
+    provider = Provider(
+        retry_settings(model_retries=3, model_retry_delay_seconds=20),
+        transport=httpx.MockTransport(unreachable),
+    )
+    with pytest.raises(ModelFailure, match="unreachable"):
+        asyncio.run(provider.ask(DialogueOutput, "s", "u", Budget()))
+    assert delays == [20, 30, 30]
+
+
+def test_waiting_retry_stops_immediately_on_cancel():
+    """等待重试期间取消任务必须立刻结束，而不是等完整个退避。"""
+    provider = Provider(
+        retry_settings(model_retries=3, model_retry_delay_seconds=30),
+        transport=httpx.MockTransport(unreachable),
+    )
+
+    async def run():
+        """发起请求后立刻取消，确认取消能穿透等待。"""
+        task = asyncio.create_task(provider.ask(DialogueOutput, "s", "u", Budget()))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
