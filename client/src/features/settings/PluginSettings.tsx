@@ -57,7 +57,9 @@ function GeneralSection({ onCancel }: { onCancel?: () => void }) {
         setSaving(true);
         setMessage("");
         try {
-          await saveSettings("$client", { api_url: url.trim(), ...(path === undefined ? {} : { template_path: path.trim() }) });
+          // 保存会整体替换 $client；先合并最新已存值，避免读取未完成时丢失模板路径。
+          const stored = (await readSettings()).$client ?? {};
+          await saveSettings("$client", { ...stored, api_url: url.trim(), ...(path === undefined ? {} : { template_path: path.trim() }) });
           setApiBase(url.trim());
           setMessage("已保存，后续请求使用新地址，返回主页后使用新模板路径；已有会话连接请重启客户端后切换。");
         } catch {

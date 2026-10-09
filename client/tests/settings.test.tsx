@@ -144,7 +144,8 @@ test("读取失败及卸载清理", async () => {
 // 场景：通用面板读取已存模板路径，保存时与后端地址一并写入 $client，不丢失任一字段。
 test("保存本地模板路径", async () => {
   let stored: Record<string, Values> = { $client: { api_url: "http://api.test:8000", template_path: "/old/templates.json" } };
-  mockDesktop(async (_command, args) => {
+  mockDesktop(async (command, args) => {
+    if (command !== "local_settings") throw new Error(`未知命令：${command}`);
     if (args?.id) stored = { ...stored, [String(args.id)]: structuredClone(args.values as Values) };
     return structuredClone(stored);
   });

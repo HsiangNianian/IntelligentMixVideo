@@ -511,7 +511,7 @@ fn operate(
         .write(true)
         .create(true)
         .truncate(false)
-        .open(path.with_extension("json.lock"))
+        .open(directory.join(".lock"))
         .map_err(|error| format!("无法打开模板锁：{error}"))?;
     lock.try_lock()
         .map_err(|_| "本地模板正在被其他操作使用，请重试")?;
@@ -574,10 +574,11 @@ fn storage_path(app_data: &Path) -> Result<PathBuf, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!({}),
         Err(error) => return Err(format!("读取本地设置失败：{error}")),
     };
-    let value = settings["$client"]["template_path"]
-        .as_str()
-        .unwrap_or("")
-        .trim();
+    let value = match &settings["$client"]["template_path"] {
+        Value::Null => "",
+        value => value.as_str().ok_or("本地模板保存路径须为字符串")?,
+    }
+    .trim();
     if value.is_empty() {
         return Ok(app_data.join("data/template/templates.json"));
     }
@@ -652,6 +653,8 @@ mod tests {
         assert!(!default.exists());
         write(json!(""));
         assert_eq!(storage_path(&dir.0).unwrap(), default);
+        write(json!(1));
+        assert!(storage_path(&dir.0).is_err());
         write(json!("relative.json"));
         assert!(storage_path(&dir.0).is_err());
         write(json!(dir.0.join("templates.txt")));
@@ -1106,7 +1109,7 @@ mod tests {
         let lock = fs::OpenOptions::new()
             .read(true)
             .write(true)
-            .open(dir.0.join("templates.json.lock"))
+            .open(dir.0.join(".lock"))
             .unwrap();
         lock.try_lock().unwrap();
         assert!(operate(&dir.0, "save", None, Some(draft("冲突")))
