@@ -1,5 +1,6 @@
 """Bounded Chat Completions streams for the Outer, Plan and Executor ReAct layers."""
 
+import asyncio
 import base64
 import json
 from collections.abc import Callable
@@ -55,6 +56,25 @@ def _image_content(paths: list[Path], *, label: str) -> list[dict]:
 
 class ModelFailure(RuntimeError):
     """A sanitized provider, budget or output-contract failure safe to expose to API clients."""
+
+
+# 连接失败、超时与上游限流/不可用都是瞬时故障，等待后重试；其余状态码是配置或权限问题。
+_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+# 指数退避的上限，避免一次任务把时间全花在等待上。
+_MAX_RETRY_DELAY_SECONDS = 30.0
+
+
+class RetryableRequest(RuntimeError):
+    """A transient transport or upstream failure the provider may retry after a wait.
+
+    The message is what the caller reports if every attempt fails, and `cause`
+    keeps the original exception for that final failure.
+    """
+
+    def __init__(self, message: str, cause: Exception | None = None) -> None:
+        """Keep the public message and the underlying exception together."""
+        super().__init__(message)
+        self.cause = cause
 
 
 class ModelContractFailure(ModelFailure):
@@ -309,6 +329,71 @@ class Provider:
                 "Model returned an invalid tool-call contract."
             ) from exc
 
+    async def _retrying_stream(self, base, key, body, settings, budget) -> dict:
+        """Send one request, waiting and retrying transient failures.
+
+        A network blip, a timeout or a throttled or unavailable upstream must not
+        end the task: each attempt stays bounded by the model timeout, the wait
+        doubles up to a cap, and every retry is recorded in the private audit. The
+        wait is an ordinary sleep, so cancelling the job still stops it promptly.
+        """
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                return await self._stream_once(base, key, body, settings, budget)
+            except RetryableRequest as exc:
+                if attempt > settings.model_retries:
+                    raise ModelFailure(str(exc)) from exc.cause
+                delay = min(
+                    settings.model_retry_delay_seconds * 2 ** (attempt - 1),
+                    _MAX_RETRY_DELAY_SECONDS,
+                )
+                budget.record(
+                    "model_retry",
+                    phase=budget.active_phase,
+                    attempt=attempt,
+                    delay_seconds=delay,
+                    reason=str(exc)[:200],
+                )
+                await asyncio.sleep(delay)
+
+    async def _stream_once(self, base, key, body, settings, budget) -> dict:
+        """Send one streaming request and return its payload.
+
+        Transport failures, timeouts and retryable upstream statuses raise
+        ``RetryableRequest`` so the caller may wait and try again. A stream that
+        breaks mid-response keeps its own meaning, because those failures include
+        deterministic size limits that another attempt cannot fix.
+        """
+        try:
+            async with httpx.AsyncClient(
+                timeout=settings.model_timeout_seconds,
+                transport=self.transport,
+                follow_redirects=False,
+            ) as client:
+                async with client.stream(
+                    "POST",
+                    base.rstrip("/") + "/chat/completions",
+                    headers={"Authorization": "Bearer " + key.get_secret_value()},
+                    json=body,
+                ) as response:
+                    if response.status_code != 200:
+                        message = (
+                            f"Model endpoint returned HTTP {response.status_code}; "
+                            "check server model configuration or retry later."
+                        )
+                        if response.status_code in _RETRYABLE_STATUS:
+                            raise RetryableRequest(message)
+                        raise ModelFailure(message)
+                    return await read_completion(response, budget.record)
+        except httpx.TimeoutException as exc:
+            raise RetryableRequest("Model request timed out.", exc) from exc
+        except httpx.TransportError as exc:
+            raise RetryableRequest("Model endpoint is unreachable.", exc) from exc
+        except StreamFailure as exc:
+            raise ModelFailure(str(exc)) from exc
+
     async def _request(
         self, body: dict, budget: Budget, *, vision: bool = False, tools: bool = False
     ) -> dict:
@@ -366,23 +451,8 @@ class Provider:
         if settings.disable_thinking:
             body["thinking"] = {"type": "disabled"}
         budget.calls += 1
+        payload = await self._retrying_stream(base, key, body, settings, budget)
         try:
-            async with httpx.AsyncClient(
-                timeout=settings.model_timeout_seconds,
-                transport=self.transport,
-                follow_redirects=False,
-            ) as client:
-                async with client.stream(
-                    "POST",
-                    base.rstrip("/") + "/chat/completions",
-                    headers={"Authorization": "Bearer " + key.get_secret_value()},
-                    json=body,
-                ) as response:
-                    if response.status_code != 200:
-                        raise ModelFailure(
-                            f"Model endpoint returned HTTP {response.status_code}; check server model configuration or retry later."
-                        )
-                    payload = await read_completion(response, budget.record)
             token_detail = payload.get("usage")
             token_detail = token_detail if isinstance(token_detail, dict) else {}
             usage = token_detail.get("total_tokens")
@@ -429,12 +499,6 @@ class Provider:
             if message.get("role") != "assistant":
                 raise ModelFailure("Model returned a non-assistant message.")
             return message
-        except StreamFailure as exc:
-            raise ModelFailure(str(exc)) from exc
-        except httpx.TimeoutException as exc:
-            raise ModelFailure("Model request timed out.") from exc
-        except httpx.HTTPError as exc:
-            raise ModelFailure("Model endpoint is unreachable.") from exc
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             raise ModelContractFailure(
                 "Model returned invalid JSON or violated the requested output contract."
