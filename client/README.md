@@ -80,7 +80,7 @@ VITE_PREVIEW_VIDEO_URL=https://your-domain.example/preview.mp4
 
 - 模板选择和新建均在主页完成；直接进入模板库且尚无草稿时，显示前往主页的入口。
 - 当前环境由主页选择或新建的模板决定。连接失败、超时或服务端 5xx 时提示使用桌面本地环境；本地无需 Python 或 MySQL，但需使用桌面客户端。从主页选择其他模板或新建模板前，可保存到原环境、放弃修改或取消；读取目标失败保留原环境与草稿，并提供重试，两库不自动同步。
-- 本地保存请求使用共享 Protobuf 消息，Rust 端解析后继续将模板保存在 Tauri 应用数据目录下的 `data/template/templates.json`。macOS 为 `~/Library/Application Support/com.intelligentmixvideo.client/data/template/`，Windows 为 `%APPDATA%/com.intelligentmixvideo.client/data/template/`，Linux 为 `${XDG_DATA_HOME:-~/.local/share}/com.intelligentmixvideo.client/data/template/`。本地目录随首次读取自动创建，JSON 损坏时明确报错，不能当成空库覆盖。
+- 本地保存请求使用共享 Protobuf 消息，Rust 端解析后默认将模板保存在 Tauri 应用数据目录下的 `data/template/templates.json`；设置「通用」的「本地模板保存路径」可改为其他 `.json` 绝对路径，留空恢复默认，原文件不迁移。macOS 为 `~/Library/Application Support/com.intelligentmixvideo.client/data/template/`，Windows 为 `%APPDATA%/com.intelligentmixvideo.client/data/template/`，Linux 为 `${XDG_DATA_HOME:-~/.local/share}/com.intelligentmixvideo.client/data/template/`。本地目录随首次读取自动创建，JSON 损坏时明确报错，不能当成空库覆盖。
 - 离线仍可从内置目录选择效果并保存；SDK、字体与示例视频预览仍需联网。
 - 标题、字幕、气泡独立设置文字、字号、位置、样式、入场/出场/循环动画及动画时长；字号支持 12～300 的整数，预览、云端和本地保存使用相同范围。
 - 顶部标题和底部字幕对象可分别选择关键词局部加粗、斜体、下划线、删除线、颜色和字号；关键词设置页只显示这些样式选项。颜色选择器支持 `#RRGGBB`，关闭后保持文字原色，局部字号支持 12～300 的整数，关闭后沿用原文字号。标题未指定关键词时，预览和正式合成分别从示例标题与请求标题的首段连续文字选取前两个字；已有指定关键词在标题中首次出现时继续应用。字幕预览选取示例文字的首个词语，正式合成使用切片结果中的 `keyword`。选项保存在 `tracks[].editor` 并随模板返回。

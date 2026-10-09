@@ -36,12 +36,19 @@ function SettingsActions({ saving, onCancel, children }: {
   );
 }
 
-/** 通用地址直接保存在客户端；不依赖目录，新请求读取保存后的地址。 */
+/** 通用地址与本地模板路径保存在客户端；不依赖目录，新请求读取保存后的地址。 */
 function GeneralSection({ onCancel }: { onCancel?: () => void }) {
   const titleId = useId();
   const [url, setUrl] = useState(apiBase);
+  // 读取到已存值前禁用路径输入，避免用空值覆盖已保存路径。
+  const [path, setPath] = useState<string>();
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
+  useEffect(() => {
+    let active = true;
+    if (isTauri()) readSettings().then(saved => { if (active) setPath(String(saved.$client?.template_path ?? "")); }, () => undefined);
+    return () => { active = false; };
+  }, []);
   return (
     <section aria-labelledby={titleId} className="flex h-full min-h-0 flex-col">
       <form aria-label="通用设置" className="flex min-h-0 flex-1 flex-col" onSubmit={async (event) => {
@@ -50,9 +57,9 @@ function GeneralSection({ onCancel }: { onCancel?: () => void }) {
         setSaving(true);
         setMessage("");
         try {
-          await saveSettings("$client", { api_url: url.trim() });
+          await saveSettings("$client", { api_url: url.trim(), ...(path === undefined ? {} : { template_path: path.trim() }) });
           setApiBase(url.trim());
-          setMessage("已保存，后续请求使用新地址；已有会话连接请重启客户端后切换。");
+          setMessage("已保存，后续请求使用新地址，返回主页后使用新模板路径；已有会话连接请重启客户端后切换。");
         } catch {
           setMessage("保存地址失败，请重试");
         } finally {
@@ -61,7 +68,7 @@ function GeneralSection({ onCancel }: { onCancel?: () => void }) {
       }}>
         <div className="min-h-0 flex-1 overflow-y-auto p-5 sm:p-8">
           <h2 id={titleId} className="text-lg font-semibold">环境与连接</h2>
-          <p className="mt-2 text-sm text-muted-foreground">设置当前客户端连接的后端服务地址。</p>
+          <p className="mt-2 text-sm text-muted-foreground">设置当前客户端连接的后端服务地址和本地模板保存位置。</p>
           <dl className="mt-6 divide-y text-sm">
             <div className="flex flex-wrap justify-between gap-3 py-4">
               <dt className="text-muted-foreground">运行环境</dt>
@@ -72,6 +79,15 @@ function GeneralSection({ onCancel }: { onCancel?: () => void }) {
               <dd className="w-full min-w-0">
                 <Input id={`${titleId}-url`} type="url" required pattern="https?://.+" value={url}
                   onChange={event => { setUrl(event.target.value); setMessage(""); }} disabled={saving} />
+              </dd>
+            </div>
+            <div className="flex flex-wrap justify-between gap-3 py-4">
+              <dt className="text-muted-foreground"><Label htmlFor={`${titleId}-path`}>本地模板保存路径</Label></dt>
+              <dd className="w-full min-w-0 space-y-2">
+                <Input id={`${titleId}-path`} value={path ?? ""} disabled={path === undefined || saving}
+                  placeholder="留空使用默认 data/template/templates.json"
+                  onChange={event => { setPath(event.target.value); setMessage(""); }} />
+                <p className="text-xs text-muted-foreground">{isTauri() ? "填写 .json 绝对文件路径，留空恢复默认；原文件保留，不自动迁移。" : "本地模板仅支持桌面客户端。"}</p>
               </dd>
             </div>
           </dl>

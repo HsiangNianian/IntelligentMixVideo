@@ -94,7 +94,7 @@ test("保存切片设置并携带本地配置请求切片", async () => {
 
 // 场景：切换模块保留各自草稿，未保存内容不写入本地配置。
 test("切换模块保留草稿", async () => {
-  const invoke = mock(async () => ({}));
+  const invoke = mock(async (_command: string, _args: Record<string, unknown>) => ({}));
   mockDesktop(invoke);
   fetchMock.mockResolvedValueOnce(Response.json([segmentation, asr]));
   render(<PluginSettings />);
@@ -103,7 +103,7 @@ test("切换模块保留草稿", async () => {
   await openModule("语音识别");
   await openModule("文案切片");
   expect(screen.getByDisplayValue("未保存模型")).toBeTruthy();
-  expect(invoke.mock.calls).toHaveLength(1);
+  expect(invoke.mock.calls.some(([, args]) => args?.id)).toBe(false);
 });
 
 // 场景：IPC 保存失败可见，界面不假报成功，保留输入并允许修正。
@@ -139,6 +139,22 @@ test("读取失败及卸载清理", async () => {
   const signal = fetchMock.mock.calls.at(-1)![1]?.signal;
   third.unmount();
   await waitFor(() => expect(signal?.aborted).toBe(true));
+});
+
+// 场景：通用面板读取已存模板路径，保存时与后端地址一并写入 $client，不丢失任一字段。
+test("保存本地模板路径", async () => {
+  let stored: Record<string, Values> = { $client: { api_url: "http://api.test:8000", template_path: "/old/templates.json" } };
+  mockDesktop(async (_command, args) => {
+    if (args?.id) stored = { ...stored, [String(args.id)]: structuredClone(args.values as Values) };
+    return structuredClone(stored);
+  });
+  fetchMock.mockResolvedValueOnce(Response.json([]));
+  render(<PluginSettings />);
+  const input = await screen.findByDisplayValue<HTMLInputElement>("/old/templates.json");
+  fireEvent.change(input, { target: { value: " /new/templates.json " } });
+  fireEvent.submit(screen.getByRole("form", { name: "通用设置" }));
+  await screen.findByText(/返回主页后使用新模板路径/);
+  expect(stored.$client).toEqual({ api_url: "http://api.test:8000", template_path: "/new/templates.json" });
 });
 
 // 场景：清空可选数字、保留 false 及当前 Schema 未展示的 Debug 值；孤立存储不产生导航。
