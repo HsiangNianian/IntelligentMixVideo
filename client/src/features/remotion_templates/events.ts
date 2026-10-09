@@ -77,7 +77,7 @@ export async function* events(
             )
               throw new Error("收到不属于当前会话的事件。");
             if (
-              ["message.created", "job.updated", "version.ready"].includes(
+              ["message.created", "job.updated", "job.round", "version.ready"].includes(
                 event.type,
               )
             )

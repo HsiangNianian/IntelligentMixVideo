@@ -28,7 +28,6 @@ from .models import (
     validation_fingerprint,
 )
 from .parameters import patch_parameters
-from .trajectory import Trajectory
 
 
 class NotFound(HTTPException):
@@ -233,6 +232,35 @@ class Store:
             job = GenerationJob.model_validate_json(row[0])
             if start_step(db, job, phase, now()):
                 self._save_job(db, job)
+
+    def round(self, identifier: UUID, record: dict) -> None:
+        """Append one finished ReAct round and publish it through the existing work stream.
+
+        The record carries the layer, the turn and the tool calls the host actually
+        ran; arguments and result payloads stay in the private audit. Unknown
+        layers are rejected by the contract, terminal jobs accept nothing, and a
+        repeated layer/turn pair is ignored so a retried handler cannot duplicate
+        a round.
+        """
+        from .progress import LoopRound, save_round
+
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT data FROM jobs WHERE id=?", (str(identifier),)
+            ).fetchone()
+            if row is None:
+                raise NotFound("job not found")
+            job = GenerationJob.model_validate_json(row[0])
+            if job.status != "running":
+                return
+            current = LoopRound.model_validate(record)
+            if not save_round(db, str(job.id), current):
+                return
+            self._save_job(db, job)
+            history.append_event(db, job.project_id, "job.round", {
+                "job_id": str(job.id), "round": current.model_dump(mode="json"),
+            }, job.updated_at)
 
     def create(
         self, request: GenerateTemplateRequest
@@ -442,12 +470,10 @@ class Store:
                         else base.id
                     )
                 else:
-                    assessment = Trajectory().observe(candidate, spec, report)
-                    if not assessment.completion_allowed:
-                        raise Conflict(
-                            "candidate cannot be published: "
-                            + "; ".join(assessment.feedback)
-                        )
+                    if (not report.passed
+                        or report.fingerprint != validation_fingerprint(candidate, spec, report.runtime)
+                        or (spec.schema_version == "2") != (report.profile == "v2")):
+                        raise Conflict("Candidate lacks current successful validation evidence")
                 row = db.execute(
                     "SELECT data FROM projects WHERE id=?", (str(job.project_id),)
                 ).fetchone()

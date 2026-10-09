@@ -1,6 +1,7 @@
 /** Remotion HTTP 客户端；请求有超时，写入不自动重试，模型凭据从客户端读取并仅随模型任务与能力查询发送。 */
 import type {
   Composition,
+  DiagnosticsReport,
   Job,
   SessionSnapshot,
   Values,
@@ -31,12 +32,13 @@ async function request<T>(
   path: string,
   options: RequestInit = {},
   text = false,
+  timeoutMs = 20_000,
 ): Promise<T> {
   const controller = new AbortController();
   const abort = () => controller.abort();
   options.signal?.addEventListener("abort", abort, { once: true });
   if (options.signal?.aborted) controller.abort();
-  const timeout = window.setTimeout(abort, 20_000);
+  const timeout = window.setTimeout(abort, timeoutMs);
   try {
     const response = await fetch(apiUrl(path), {
       ...options,
@@ -147,6 +149,14 @@ export function exported(id: string, signal?: AbortSignal): Promise<string> {
     { signal },
     true,
   );
+}
+/** 读取服务端对已验收版本重新执行的隔离类型检查；失败不影响代码展示。 */
+export function diagnostics(
+  id: string,
+  signal?: AbortSignal,
+): Promise<DiagnosticsReport> {
+  // Server render_timeout_seconds is capped at 600; allow transport/cleanup overhead.
+  return request(`/versions/${encodeURIComponent(id)}/diagnostics`, { signal }, false, 630_000);
 }
 /** 恢复当前作品的全部成功版本；内部候选不会进入该接口。 */
 export function versions(

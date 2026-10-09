@@ -33,9 +33,12 @@ from .models import (
     TaskMessage,
     TemplateProject,
 )
+from .provider import ExecutionFailure
 from .runtime import Runtime
 from .store import NotFound
 from .stream import event_stream
+from .tool_validation import ValidationUnavailable
+from .tools.contracts import CodeValidationReport, ComponentDefinition
 
 # 按接口职责设置标签，供模板服务的 Swagger 分组展示。
 router = APIRouter()
@@ -116,9 +119,11 @@ async def create(
     `description` 与 `image` 至少提供一种；可通过 `composition` 设置画布和时长。
     返回 202 及 `work`、`job`，随后使用任务 ID 查询进度；模型未配置时返回 503。
     """
+    if (request.composition.width, request.composition.height, request.composition.fps) != (1080, 1920, 30):
+        raise HTTPException(422, "主画布固定为 1080×1920、30 FPS")
     settings = service.settings.model_copy(update=config.model_dump()) if config is not None else service.settings
     if not settings.models_configured:
-        raise HTTPException(503, "请配置 Actor 和视觉模型及密钥")
+        raise HTTPException(503, "请配置 Agent 模型及密钥")
     if request.image:
         service.store.asset(request.image.asset_id)
     project, job = service.store.create(request)
@@ -329,6 +334,37 @@ def artifacts(job_id: UUID, service: Service) -> list[dict]:
 
 
 @router.get(
+    "/versions/{version_id}/diagnostics",
+    response_model=CodeValidationReport,
+    tags=["生成产物"],
+    summary="读取成功版本的代码诊断",
+)
+async def diagnostics(version_id: UUID, service: Service) -> CodeValidationReport:
+    """对已验收版本按需重跑一次隔离类型检查，返回契约与 LSP 诊断。
+
+    代码和默认参数取自封存记录，先按现有证据清单校验 `accepted/` 未被修改；
+    文件被改写时返回 404，不返回与当前字节不符的陈旧诊断。
+    隔离 worker 不可用（例如缺少 Linux 沙箱）时返回 503，调用方应保留代码显示并提供重试。
+    """
+    version = service.store.version(version_id)
+    accepted = service.store.root / "accepted" / str(version.id)
+    try:
+        verify_artifacts(version.candidate, version.spec, version.validation, accepted)
+        export_code = (accepted / "Export.tsx").read_text(encoding="utf-8")
+    except (ValueError, OSError) as exc:
+        raise NotFound("accepted artifact unavailable") from exc
+    component = ComponentDefinition(
+        code=version.candidate.tsx_code,
+        parameter_schema=version.candidate.config_schema,
+        default_parameters=version.candidate.default_config,
+    )
+    try:
+        return await service.code_report(component, export_code=export_code)
+    except (ValidationUnavailable, ExecutionFailure) as exc:
+        raise HTTPException(503, "代码诊断服务暂不可用，请稍后重试。") from exc
+
+
+@router.get(
     "/versions/{version_id}/artifacts/{filename}",
     tags=["生成产物"],
     summary="下载可用模板代码或预览",
@@ -363,7 +399,7 @@ def preview(version_id: UUID, service: Service) -> HTMLResponse:
         "body{color:#fff;background-color:#25252b;background-image:conic-gradient(#35353d 25%,transparent 0 50%,#35353d 0 75%,transparent 0);background-size:24px 24px;font-family:sans-serif}</style>"
         '<body><div id="root"></div><script>' + script + "</script></body></html>",
         headers={
-            "Content-Security-Policy": "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src http: https:; media-src http: https: data:; connect-src 'none'; base-uri 'none'; form-action 'none'",
+            "Content-Security-Policy": "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src http: https:; media-src http: https: data:; img-src http: https: data:; connect-src 'none'; base-uri 'none'; form-action 'none'",
             "Cache-Control": "no-store",
             "Referrer-Policy": "no-referrer",
         },
