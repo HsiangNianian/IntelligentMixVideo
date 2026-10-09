@@ -18,7 +18,8 @@ Only four business tools have implementations in this build:
 | `sprite.create` | implemented — consistency check, code validation and save |
 | `tools.inspect` | implemented — returns one tool descriptor by dotted ID or wire name |
 | `image.info` / `image.resize` / `image.crop` | contract only |
-| `preset.search` / `preset.modify` | contract only |
+| `preset.search` | implemented: plain listing with optional keyword; the agent picks what to recall |
+| `preset.modify` | implemented: returns an edited draft copy; save it with `preset.create` |
 | `validate.code` / `validate.render` | contract only |
 
 Deferred tools are marked `implemented=False` at registration and are filtered

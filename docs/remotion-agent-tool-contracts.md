@@ -354,23 +354,26 @@ resize/crop 统一生成 PNG，保留可用 alpha，存储完成后才返回可�
 
 ```python
 class PresetSearchInput(ContractModel):
-    """自然语言检索描述与结果数量上限。"""
+    """可选关键词（子串匹配）与结果数量上限；留空则列出最近的预设；给出 preset_id 则读取该完整记录。"""
 
-    query: Description
-    limit: PositiveInteger = 5
+    query: str = ""
+    limit: PositiveInteger = 20
+    preset_id: Omittable[PresetId]
 
 
-class PresetSearchMatch(ContractModel):
-    """按相关性排序的完整预设记录。"""
+class PresetSummary(ContractModel):
+    """供 Agent 自行挑选的预设摘要；完整记录用 preset_id 再取。"""
 
-    rank: PositiveInteger
-    preset: PresetRecord
+    preset_id: PresetId
+    description: Description
+    parameter_names: list[str]
 
 
 class PresetSearchOutput(ContractModel):
-    """检索结果列表，允许为空。"""
+    """摘要列表，允许为空。"""
 
-    matches: list[PresetSearchMatch]
+    presets: list[PresetSummary]
+    preset: Omittable[PresetRecord]
 
 
 async def preset_search(request: PresetSearchInput) -> ToolResult[PresetSearchOutput]:
@@ -378,9 +381,8 @@ async def preset_search(request: PresetSearchInput) -> ToolResult[PresetSearchOu
     ...
 ```
 
-- query 为去除首尾空白后非空的自然语言需求；limit 为正整数，省略时为 5。
-- 以创建时的 description 为预设语义内容，通过 ChromaDB 返回按相关性排序的结果，最多 limit 条，rank 从 1 连续递增。
-- 每条结果必须包含完整代码、Schema 和默认参数，以便 Agent 阅读、改写或实例化。
+- 不做语义或向量检索：只列出摘要（preset_id、description、参数名），由 Agent 自行判断召回哪个。query 可选，为 description 的不区分大小写子串过滤；limit 为正整数，省略时为 20，按创建时间由新到旧。
+- 传入 preset_id 时，另在 preset 字段返回该预设的完整代码、Schema 和默认参数；ID 不存在返回 PRESET_NOT_FOUND 并列出近期可用 ID。读取预设不得借用 preset.modify。
 - 匹配结果是候选能力，不表示已经符合当前用户需求。排序不承诺统一的相似度百分比，不暴露含义未统一的“置信度”。
 - 没有结果返回 `matches: []`；不会自动创建预设。查询不得写入预设库。
 
@@ -464,7 +466,7 @@ class PresetModifyInput(ContractModel):
 
 
 class PresetModifyOutput(ContractModel):
-    """完整副本，不含新记录 ID。"""
+    """完整副本，不含新记录 ID；source_preset_id 指向原记录。"""
 
     preset: PresetDraft
 

@@ -10,6 +10,7 @@ import pytest
 from server.remotion_templates.agent import AgentRun
 from server.remotion_templates.context import AssistantMessage
 from server.remotion_templates.planning import Plan
+from server.remotion_templates.tools.registry import registered_tools
 from server.remotion_templates.provider import Budget
 
 
@@ -92,7 +93,8 @@ def test_deferred_tools_are_hidden_and_completion_still_publishes(monkeypatch, t
     harness = FakeHarness([response])
     run = AgentRun(harness, None, Budget(), tmp_path, [], lambda *_: None)
     names = {tool.name for tool in run._tools_for_layer()}
-    assert names == {"preset.create", "sprite.compose", "sprite.create", "tools.inspect", "tools.plan_execute"}
+    implemented = {item.name for item in registered_tools() if item.implemented}
+    assert names == implemented | {"tools.plan_execute"}
     assert asyncio.run(run.plan_execute()) == {"published": "sprite-1"}
     assert harness.roles == ["outer"]
 
@@ -126,6 +128,8 @@ def test_outer_plan_executor_plan_outer_handoff(monkeypatch, tmp_path):
     assert result == {"published": "sprite-1"}
     assert harness.roles == ["outer", "plan", "executor", "executor", "plan", "outer"]
     assert run.plan_context.messages() and run.executor_context.messages()
+    # Successful delegate/update_plan/complete controls must not accumulate towards no_progress.
+    assert run.stalled_turns == 0
 
 
 def test_executor_cannot_call_plan_control(monkeypatch, tmp_path):
@@ -156,3 +160,24 @@ def test_executor_cannot_call_plan_control(monkeypatch, tmp_path):
     result = asyncio.run(run.plan_execute())
     assert result.questions == ["需要更多输入"]
     assert run.state.index == 0
+
+
+def test_repeated_invalid_executor_replies_stop_the_run(monkeypatch, tmp_path):
+    """Prose that never yields a StepResult is a stall: the guard ends the run after the threshold."""
+    from server.remotion_templates.provider import ExecutionFailure
+
+    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
+    plan = Plan(goal="g", steps=[{"id": "s", "goal": "g", "tool_modules": ["tools"], "done_when": "d"}])
+    harness = FakeHarness(
+        [
+            call("outer-1", "tools_plan_execute", {"action": "delegate", "plan": plan.model_dump()}),
+            call("plan-1", "tools_plan_execute", {"action": "update_plan", "plan": plan.model_dump()}),
+            *[AssistantMessage(content="The step is complete, nothing more to do.") for _ in range(10)],
+        ]
+    )
+    harness.settings.enforce_no_progress = True
+    run = AgentRun(harness, None, Budget(), tmp_path, [], lambda *_: None, intent={"original_request": {"description": "demo"}})
+    with pytest.raises(ExecutionFailure) as stopped:
+        asyncio.run(run.plan_execute())
+    assert stopped.value.code == "no_progress"
+    assert harness.roles.count("executor") == harness.settings.max_no_progress_turns

@@ -33,7 +33,7 @@ from .contracts import (
     ToolInspectInput,
     ToolResult,
 )
-from .registry import RegisteredTool, ToolFault, registered_tools, tool
+from .registry import RegisteredTool, ToolFault, registered_tools, tool, wire_name
 
 
 def _success(data: Any) -> dict[str, Any]:
@@ -67,6 +67,7 @@ def _deferred(name: str):
     constraints=["The complete source, parameter schema and defaults are saved as a new immutable record."],
     side_effects=["code validation and preset catalog write"],
     error_codes=["INVALID_ARGUMENT", "CODE_VALIDATION_FAILED", "PRESET_STORE_FAILED"],
+    starts_generation=True,
     examples=[{"input": {"description": "静态文字", "code": "export default function Label(){return null}", "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": False}, "default_parameters": {}}, "output": {"ok": False, "error": {"code": "CODE_VALIDATION_FAILED", "message": "example"}}}],
 )
 async def preset_create(owner, request: PresetCreateInput) -> ToolResult[PresetCreateOutput]:
@@ -82,6 +83,7 @@ async def preset_create(owner, request: PresetCreateInput) -> ToolResult[PresetC
     constraints=["The host canvas is fixed at 1080x1920, 30 FPS; duration is derived from instances."],
     side_effects=["deterministic source generation; no catalog write"],
     error_codes=["INVALID_ARGUMENT", "PRESET_NOT_FOUND", "COMPOSITION_FAILED"],
+    starts_generation=True,
     examples=[{"input": {"description": "组合", "instances": [{"instance_id": "title", "source": {"kind": "draft", "preset": {"description": "文字", "code": "export default function Label(){return null}", "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": False}, "default_parameters": {}}}, "layout": {"x": 0.0, "y": 0.0, "width": 100, "height": 100, "z_index": 0}, "timing": {"start_frame": 0, "duration_frames": 1}}]}, "output": {"ok": False, "error": {"code": "COMPOSITION_FAILED", "message": "example"}}}],
 )
 async def sprite_compose(owner, request: SpriteComposeInput) -> ToolResult[SpriteComposeOutput]:
@@ -97,6 +99,7 @@ async def sprite_compose(owner, request: SpriteComposeInput) -> ToolResult[Sprit
     constraints=["Only a compose-produced SpriteDraft with consistent source and parameters may be saved."],
     side_effects=["code validation and sprite catalog write"],
     error_codes=["INVALID_ARGUMENT", "CODE_VALIDATION_FAILED", "SPRITE_STORE_FAILED"],
+    starts_generation=True,
     examples=[{"input": {"sprite": {"description": "组合", "code": "export default function Sprite(){return null}", "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": False}, "default_parameters": {}, "composition": {"width": 1080, "height": 1920, "fps": 30, "duration_frames": 1}, "instances": [{"instance_id": "title", "preset": {"description": "文字", "code": "export default function Label(){return null}", "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": False}, "default_parameters": {}}, "parameters": {}, "layout": {"x": 0.0, "y": 0.0, "width": 100, "height": 100, "z_index": 0}, "timing": {"start_frame": 0, "duration_frames": 1}}]}}, "output": {"ok": False, "error": {"code": "CODE_VALIDATION_FAILED", "message": "example"}}}],
 )
 async def sprite_create(owner, request: SpriteCreateInput) -> ToolResult[SpriteCreateOutput]:
@@ -118,7 +121,7 @@ def _inspectable(name: str) -> RegisteredTool | PlanTool:
     """
     tools = (*registered_tools(), PLAN_TOOL)
     for item in tools:
-        if name in {item.name, item.name.replace(".", "_")}:
+        if name in {item.name, wire_name(item.name)}:
             return item
     known = ", ".join(item.name for item in tools)
     raise ToolFault("TOOL_NOT_FOUND", f"Unknown tool: {name}. Registered tools: {known}")
@@ -184,28 +187,32 @@ async def image_crop(owner, request: ImageCropInput) -> ToolResult[ProcessedImag
 
 @tool(
     "preset.search",
-    constraints=["Ranked by description similarity; an empty query result is not an error and never creates a Preset."],
-    side_effects=["read-only semantic retrieval"],
-    error_codes=["INVALID_ARGUMENT", "SEARCH_UNAVAILABLE", "TIMEOUT"],
-    examples=[{"input": {"query": "渐显标题", "limit": 5}, "output": {"ok": False, "error": {"code": "NOT_IMPLEMENTED", "message": "example"}}}],
-    implemented=False,
+    constraints=["Plain listing with optional substring filter on the description; the agent decides which Preset to recall. Pass preset_id to also receive that Preset's full record including code. An empty result is not an error and never creates a Preset."],
+    side_effects=["read-only catalog listing"],
+    error_codes=["INVALID_ARGUMENT", "PRESET_NOT_FOUND"],
+    examples=[{"input": {"query": "标题", "limit": 5}, "output": {"ok": True, "data": {"presets": []}}}],
 )
 async def preset_search(owner, request: PresetSearchInput) -> ToolResult[PresetSearchOutput]:
-    """Retrieve Presets by description and return complete records."""
-    return await _deferred("preset.search")(owner, request)
+    """List Preset summaries (id, description, parameter names), optionally filtered by keyword."""
+    try:
+        return _success(owner.search_presets(request))
+    except Exception as exc:
+        return _failure(exc, "PRESET_STORE_FAILED")
 
 
 @tool(
     "preset.modify",
-    constraints=["Replaces whole fields only; the original record and its index never change and no new preset_id is created."],
+    constraints=["Replaces whole fields only; the original record never changes and no new preset_id is created. Save the returned draft with preset.create."],
     side_effects=["read-only copy of one stored Preset"],
     error_codes=["INVALID_ARGUMENT", "PRESET_NOT_FOUND"],
-    examples=[{"input": {"preset_id": "preset_title_001", "changes": {"description": "带描边的文字原子"}}, "output": {"ok": False, "error": {"code": "NOT_IMPLEMENTED", "message": "example"}}}],
-    implemented=False,
+    examples=[{"input": {"preset_id": "preset_title_001", "changes": {"description": "带描边的文字原子"}}, "output": {"ok": False, "error": {"code": "PRESET_NOT_FOUND", "message": "example"}}}],
 )
 async def preset_modify(owner, request: PresetModifyInput) -> ToolResult[PresetModifyOutput]:
-    """Return an in-memory copy carrying the caller's replacements."""
-    return await _deferred("preset.modify")(owner, request)
+    """Return an in-memory copy of a stored Preset carrying the caller's replacements."""
+    try:
+        return _success(owner.modify_preset(request))
+    except Exception as exc:
+        return _failure(exc, "PRESET_STORE_FAILED")
 
 
 @tool(
@@ -242,7 +249,7 @@ class PlanTool:
 
     def wire(self) -> dict[str, Any]:
         """Expose the Plan transition schema as a provider function."""
-        return {"type": "function", "function": {"name": self.name.replace(".", "_"), "description": "Create, continue, advance or finish the ordered Plan; never executes a business tool.", "parameters": self.input.model_json_schema()}}
+        return {"type": "function", "function": {"name": wire_name(self.name), "description": "Create, continue, advance or finish the ordered Plan; never executes a business tool.", "parameters": self.input.model_json_schema()}}
 
     def describe(self) -> dict[str, Any]:
         """Return the same complete inspection contract as business tools, without changing state."""
@@ -289,6 +296,6 @@ def available(modules=None, *, executor=False):
 def resolve(name: str, modules=None, *, executor=False):
     """Resolve one permitted tool by dotted or provider-wire name."""
     for item in available(modules, executor=executor):
-        if name in {item.name, item.name.replace(".", "_")}:
+        if name in {item.name, wire_name(item.name)}:
             return item
     raise ValueError("Unknown or out-of-scope tool")

@@ -75,7 +75,10 @@ class PlanAction(Contract):
         if self.action not in {"delegate", "update_plan"} and self.plan is not None:
             raise ValueError("Only delegate/update_plan accept a plan")
         if self.sprite_id is not None and self.action != "complete":
-            raise ValueError("Only complete accepts sprite_id")
+            raise ValueError(
+                f"sprite_id is only valid with action=complete; omit it for {self.action} "
+                "(Preset IDs are not Sprite IDs)"
+            )
         return self
 
 
@@ -202,8 +205,11 @@ class ExecutionState:
             if ref.startswith("steps.") and not completed.get(
                 ref.split(".")[1], {}
             ).get("sprite_id"):
+                usable = [key for key, value in completed.items() if value.get("sprite_id")]
                 raise ValueError(
-                    "Step input refers to an earlier step without a saved Sprite output"
+                    f"Step input {ref} refers to an earlier step without a saved Sprite output; "
+                    f"steps with a Sprite output: {usable or 'none'}. Drop input_refs for steps that only "
+                    "created a Preset, or reference user_intent instead"
                 )
         if start_batch:
             self.begin_batch()

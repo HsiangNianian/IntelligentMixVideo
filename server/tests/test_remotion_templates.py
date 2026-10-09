@@ -121,7 +121,10 @@ def test_full_catalog_is_registered_but_only_implemented_tools_are_public():
         "tools.inspect",
     }
     implemented = {item.name for item in registered_tools() if item.implemented}
-    assert implemented == {"preset.create", "sprite.compose", "sprite.create", "tools.inspect"}
+    assert implemented == {
+        "preset.create", "preset.search", "preset.modify",
+        "sprite.compose", "sprite.create", "tools.inspect",
+    }
     assert {item.name for item in available()} == implemented | {"tools.plan_execute"}
 
 
@@ -233,7 +236,7 @@ async def _deferred_scenario():
 
     deferred = {
         "image.info": {"image": {"asset_id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301"}},
-        "preset.search": {"query": "渐显标题"},
+        "image.crop": {"image": {"asset_id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301"}, "x": 0, "y": 0, "width": 1, "height": 1},
         "validate.code": {"component": {"code": "export default function C(){return null}", "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": False}, "default_parameters": {}}},
     }
     for name, values in deferred.items():
@@ -246,7 +249,7 @@ async def _deferred_scenario():
 
 def test_deferred_tools_stay_out_of_the_model_window():
     """延后工具不得出现在任何一层的工具列表里。"""
-    skipped = [item.name for item in available() if item.name in {"image.info", "preset.search", "validate.code"}]
+    skipped = [item.name for item in available() if item.name in {"image.info", "image.crop", "validate.code"}]
     assert skipped == []
 
 

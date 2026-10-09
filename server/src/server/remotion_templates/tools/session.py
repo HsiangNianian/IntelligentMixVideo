@@ -14,6 +14,11 @@ from .contracts import (
     PresetCreateInput,
     PresetCreateOutput,
     PresetDraft,
+    PresetModifyInput,
+    PresetModifyOutput,
+    PresetSearchInput,
+    PresetSearchOutput,
+    PresetSummary,
     PresetRecord,
     RenderValidationInput,
     RenderValidationReport,
@@ -157,7 +162,8 @@ class ToolSession:
         """Resolve a Preset ID from the immutable catalog; unknown IDs fail loudly."""
         record = self.catalog.find_preset(preset_id)
         if record is None:
-            raise ToolFault("PRESET_NOT_FOUND", f"Unknown preset: {preset_id}")
+            known = [item.preset_id for item in self.catalog.read_presets()][-10:]
+            raise ToolFault("PRESET_NOT_FOUND", f"Unknown preset: {preset_id}. Use an ID returned by a tool; recent preset_ids: {known}")
         return record
 
     async def validate_code(self, component: ComponentDefinition) -> CodeValidationReport:
@@ -198,6 +204,36 @@ class ToolSession:
         # Presets persist to MySQL with a local fallback; the record is immutable once saved.
         self.catalog_backend = self.catalog.append_preset(record)
         return PresetCreateOutput(preset=record, validation=validation)
+
+    def search_presets(self, request: PresetSearchInput) -> PresetSearchOutput:
+        """List summaries, newest first, filtered by a case-insensitive description substring.
+
+        With ``preset_id`` the matching full record (including code) is returned as well, so
+        reading a Preset never requires a write-shaped tool.
+        """
+        full = self._find_preset(request.preset_id) if request.preset_id is not None else None
+        needle = request.query.strip().lower()
+        records = [item for item in reversed(self.catalog.read_presets()) if needle in item.description.lower()]
+        return PresetSearchOutput(**({"preset": full} if full else {}), presets=[
+            PresetSummary(
+                preset_id=item.preset_id,
+                description=item.description,
+                parameter_names=list(item.parameter_schema.get("properties", {})),
+            )
+            for item in records[: request.limit]
+        ])
+
+    def modify_preset(self, request: PresetModifyInput) -> PresetModifyOutput:
+        """Copy a stored Preset with whole-field replacements; unknown IDs list what exists."""
+        changes = request.changes.model_dump(mode="json", exclude_unset=True)
+        if not changes:
+            raise ToolFault("INVALID_ARGUMENT", "changes must replace at least one field", field="/changes")
+        record = self.catalog.find_preset(request.preset_id)
+        if record is None:
+            known = [item.preset_id for item in self.catalog.read_presets()][-10:]
+            raise ToolFault("PRESET_NOT_FOUND", f"Unknown preset: {request.preset_id}. Recent preset_ids: {known}")
+        base = record.model_dump(mode="json", exclude={"preset_id", "created_at"}, exclude_unset=True)
+        return PresetModifyOutput(preset=PresetDraft(**{**base, **changes, "source_preset_id": record.preset_id}))
 
     async def create_sprite(self, sprite: SpriteDraft) -> SpriteCreateOutput:
         """Validate source consistency and store one immutable composed Sprite."""
