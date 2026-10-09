@@ -9,7 +9,7 @@ final delivery is a saved Sprite published as an isolated Player preview.
 Eleven business tools are registered with their full input/output contracts.
 `tools.inspect` also describes the host-owned `tools.plan_execute` control by
 dotted ID or wire name, without executing it or changing role permissions.
-Only four business tools have implementations in this build:
+Six business tools have implementations in this build:
 
 | Tool | Status |
 | --- | --- |
@@ -40,6 +40,10 @@ it falls back to the task-local catalog under the module data directory, and
 `ToolSession.snapshot()` reports the backend that was actually used. Both paths
 append immutable records only; there is no update or delete.
 
+`preset.search` merges database and local records, sorts by creation time newest
+first, and then applies `limit`. UUID ordering and storage backend do not affect
+which recent Presets are returned.
+
 ## Preview
 
 The preview is built from the saved Sprite's exact code, schema and defaults.
@@ -58,6 +62,12 @@ Offline tests cover tool registration, deferred-tool behaviour, immutable
 storage and source consistency without a model or semantic index.
 
 ## Loop rounds
+
+`IMV_ENFORCE_NO_PROGRESS` defaults to true and `IMV_MAX_NO_PROGRESS_TURNS` to 6.
+New tool observations, new handoffs and advancing completed steps reset the
+counter. Repeated handoffs at the same step count as stalls, including valid
+`delegate`/`blocked` and `continue`/`blocked` loops. Changing summaries, reasons,
+plan revision numbers or batch counters does not count as progress.
 
 Every Outer → Plan → Executor turn appends one public round record through the
 `job.round` delta event on the same work stream as the phase timeline. A round

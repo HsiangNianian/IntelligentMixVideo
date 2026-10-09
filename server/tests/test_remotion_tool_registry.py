@@ -41,7 +41,7 @@ def make_session(tmp_path, monkeypatch):
     return ToolSession(harness, None, None, None, tmp_path, [], lambda *_: None, {})
 
 
-def save_preset(session, description, properties=None):
+def save_preset(session, description, properties=None, *, preset_id=None, created_at=None):
     """Store one valid Preset record directly through the catalog."""
     from datetime import UTC, datetime
     from uuid import uuid4
@@ -49,8 +49,8 @@ def save_preset(session, description, properties=None):
     from server.remotion_templates.tools.contracts import PresetRecord
 
     record = PresetRecord(
-        preset_id=uuid4().hex,
-        created_at=datetime.now(UTC).isoformat(),
+        preset_id=preset_id or uuid4().hex,
+        created_at=created_at or datetime.now(UTC).isoformat(),
         description=description,
         code="export default function C(){return null}",
         parameter_schema={"type": "object", "properties": properties or {}, "additionalProperties": False},
@@ -93,7 +93,15 @@ def test_unknown_tool_names_fail_with_list_and_suggestions(bad):
         get_tool(bad)
     error = caught.value.error
     assert error.code == "TOOL_NOT_FOUND"
-    assert "Registered tools:" in error.message and "preset.create" in error.message
+    assert "Available tools:" in error.message and "preset.create" in error.message
+
+
+def test_empty_tool_window_never_falls_back_to_the_registry():
+    """空权限窗口必须拒绝已注册工具，且不能建议窗口外的工具。"""
+    with pytest.raises(ToolFault) as caught:
+        get_tool("preset_create", [])
+    assert caught.value.error.message.endswith("Available tools: none")
+    assert "Closest:" not in caught.value.error.message
 
 
 def test_inspect_accepts_wire_name():
@@ -115,6 +123,26 @@ def test_search_lists_summaries_with_optional_keyword(tmp_path, monkeypatch):
     assert only.presets[0].parameter_names == ["text"]
     assert session.search_presets(PresetSearchInput(query="不存在")).presets == []
     assert len(session.search_presets(PresetSearchInput(limit=1)).presets) == 1
+
+
+def test_search_orders_merged_database_and_local_presets_by_creation_time(tmp_path, monkeypatch, template_db):
+    """数据库 UUID 顺序与本地追加顺序均不能替代创建时间，混合后排序再截取。"""
+    from server.remotion_templates.tools import catalog_store
+
+    session = make_session(tmp_path, monkeypatch)
+    local = save_preset(session, "Title local", preset_id="b" * 32, created_at="2026-10-08T12:00:00+00:00")
+    save_preset(session, "Title oldest", preset_id="e" * 32, created_at="2026-10-07T00:00:00+00:00")
+    catalog_store.metadata.create_all(template_db)
+    monkeypatch.setattr(catalog_store.CatalogStore, "_engine", lambda self: template_db)
+    save_preset(session, "Title older", preset_id="f" * 32, created_at="2026-10-08T00:00:00+00:00")
+    newest = save_preset(session, "Title newest", preset_id="0" * 32, created_at="2026-10-09T00:00:00+00:00")
+    result = session.search_presets(PresetSearchInput(query="title", limit=2))
+    assert [item.preset_id for item in result.presets] == [newest.preset_id, local.preset_id]
+    assert session.search_presets(PresetSearchInput(limit=1)).presets[0].preset_id == newest.preset_id
+    with pytest.raises(ToolFault) as missing:
+        session.modify_preset(PresetModifyInput(preset_id="missing", changes={"description": "copy"}))
+    message = missing.value.error.message
+    assert message.index(newest.preset_id) < message.index(local.preset_id)
 
 
 def test_modify_returns_a_copy_without_changing_the_original(tmp_path, monkeypatch):

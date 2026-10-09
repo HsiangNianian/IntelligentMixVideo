@@ -158,11 +158,19 @@ class ToolSession:
         }
         return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
-    def _find_preset(self, preset_id: str) -> PresetDraft:
+    def _recent_presets(self) -> list[PresetRecord]:
+        """Order the merged catalog by creation time for listing and missing-ID hints."""
+        return sorted(
+            self.catalog.read_presets(),
+            key=lambda item: datetime.fromisoformat(item.created_at),
+            reverse=True,
+        )
+
+    def _find_preset(self, preset_id: str) -> PresetRecord:
         """Resolve a Preset ID from the immutable catalog; unknown IDs fail loudly."""
         record = self.catalog.find_preset(preset_id)
         if record is None:
-            known = [item.preset_id for item in self.catalog.read_presets()][-10:]
+            known = [item.preset_id for item in self._recent_presets()[:10]]
             raise ToolFault("PRESET_NOT_FOUND", f"Unknown preset: {preset_id}. Use an ID returned by a tool; recent preset_ids: {known}")
         return record
 
@@ -213,7 +221,7 @@ class ToolSession:
         """
         full = self._find_preset(request.preset_id) if request.preset_id is not None else None
         needle = request.query.strip().lower()
-        records = [item for item in reversed(self.catalog.read_presets()) if needle in item.description.lower()]
+        records = [item for item in self._recent_presets() if needle in item.description.lower()]
         return PresetSearchOutput(**({"preset": full} if full else {}), presets=[
             PresetSummary(
                 preset_id=item.preset_id,
@@ -228,10 +236,7 @@ class ToolSession:
         changes = request.changes.model_dump(mode="json", exclude_unset=True)
         if not changes:
             raise ToolFault("INVALID_ARGUMENT", "changes must replace at least one field", field="/changes")
-        record = self.catalog.find_preset(request.preset_id)
-        if record is None:
-            known = [item.preset_id for item in self.catalog.read_presets()][-10:]
-            raise ToolFault("PRESET_NOT_FOUND", f"Unknown preset: {request.preset_id}. Recent preset_ids: {known}")
+        record = self._find_preset(request.preset_id)
         base = record.model_dump(mode="json", exclude={"preset_id", "created_at"}, exclude_unset=True)
         return PresetModifyOutput(preset=PresetDraft(**{**base, **changes, "source_preset_id": record.preset_id}))
 

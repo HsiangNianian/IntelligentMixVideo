@@ -384,7 +384,7 @@ async def preset_search(request: PresetSearchInput) -> ToolResult[PresetSearchOu
 - 不做语义或向量检索：只列出摘要（preset_id、description、参数名），由 Agent 自行判断召回哪个。query 可选，为 description 的不区分大小写子串过滤；limit 为正整数，省略时为 20，按创建时间由新到旧。
 - 传入 preset_id 时，另在 preset 字段返回该预设的完整代码、Schema 和默认参数；ID 不存在返回 PRESET_NOT_FOUND 并列出近期可用 ID。读取预设不得借用 preset.modify。
 - 匹配结果是候选能力，不表示已经符合当前用户需求。排序不承诺统一的相似度百分比，不暴露含义未统一的“置信度”。
-- 没有结果返回 `matches: []`；不会自动创建预设。查询不得写入预设库。
+- 没有结果返回 `presets: []`；不会自动创建预设。查询不得写入预设库。
 
 ```json
 {"query":"可以设置文字和颜色的渐显标题，入场使用淡入动画","limit":5}

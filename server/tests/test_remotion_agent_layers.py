@@ -7,11 +7,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from server.remotion_templates.agent import AgentRun
+from server.remotion_templates.agent import AgentRun, Layer
 from server.remotion_templates.context import AssistantMessage
-from server.remotion_templates.planning import Plan
+from server.remotion_templates.planning import Plan, PlanAction
 from server.remotion_templates.tools.registry import registered_tools
 from server.remotion_templates.provider import Budget
+from server.remotion_templates.settings import Settings
 
 
 class FakeSession:
@@ -57,7 +58,7 @@ class FakeHarness:
             max_steps=4,
             max_tooluse=3,
             enforce_no_progress=False,
-            max_no_progress_turns=4,
+            max_no_progress_turns=Settings.model_fields["max_no_progress_turns"].default,
         )
 
     async def _turn(self, _system, _context, _tools, _budget, _images, *, phase):
@@ -181,3 +182,95 @@ def test_repeated_invalid_executor_replies_stop_the_run(monkeypatch, tmp_path):
         asyncio.run(run.plan_execute())
     assert stopped.value.code == "no_progress"
     assert harness.roles.count("executor") == harness.settings.max_no_progress_turns
+
+
+@pytest.mark.parametrize("loop", ["delegate", "continue", "update_plan"])
+def test_repeated_valid_handoffs_stop_without_new_evidence(monkeypatch, tmp_path, loop):
+    """重复合法交接仍须停止；改写说明、增加批次或计划版本不能伪装成进展。"""
+    from server.remotion_templates.provider import ExecutionFailure
+
+    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
+    plan = Plan(goal="inspect", steps=[{
+        "id": "inspect", "goal": "inspect", "tool_modules": ["tools"], "done_when": "observed",
+    }])
+    responses = []
+    if loop != "delegate":
+        responses = [
+            call("delegate", "tools_plan_execute", {"action": "delegate"}),
+            call("plan", "tools_plan_execute", {"action": "update_plan", "plan": plan.model_dump()}),
+        ]
+    for index in range(12):
+        blocked = AssistantMessage(content=json.dumps({"status": "blocked", "summary": f"still blocked {index}"}))
+        arguments = {"action": loop, "reason": f"try again {index}"}
+        if loop == "update_plan":
+            arguments["plan"] = plan.model_dump() | {"goal": f"revised wording {index}"}
+        control = call(f"retry-{index}", "tools_plan_execute", arguments)
+        responses.extend([control, blocked] if loop == "delegate" else [blocked, control])
+    harness = FakeHarness(responses)
+    harness.settings.enforce_no_progress = True
+    harness.settings.max_steps = 32
+    run = AgentRun(harness, None, Budget(), tmp_path, [], lambda *_: None)
+    with pytest.raises(ExecutionFailure) as stopped:
+        asyncio.run(run.plan_execute())
+    assert stopped.value.code == "no_progress"
+    assert run.stalled_turns == 6
+    assert len(harness.roles) <= 10
+    assert run.state.calls < run.state.total_limit
+
+
+def test_advancing_steps_with_valid_handoffs_can_finish(monkeypatch, tmp_path):
+    """跨步骤的正常交接超过阈值仍可完成，不把相同状态名一概当成空转。"""
+    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
+    plan = Plan(goal="inspect", steps=[{
+        "id": f"inspect_{index}", "goal": "inspect", "tool_modules": ["tools"], "done_when": "observed",
+    } for index in range(4)])
+    responses = [
+        call("delegate", "tools_plan_execute", {"action": "delegate"}),
+        call("plan", "tools_plan_execute", {"action": "update_plan", "plan": plan.model_dump()}),
+    ]
+    for index in range(4):
+        responses.extend([
+            call(f"inspect-{index}", "tools_inspect", {"tool_name": "sprite.create"}),
+            AssistantMessage(content='{"status":"step_done","summary":"observed"}'),
+            call(f"advance-{index}", "tools_plan_execute", {"action": "advance" if index < 3 else "complete"}),
+        ])
+    responses.append(AssistantMessage(content='{"action":"complete","sprite_id":"sprite-1"}'))
+    harness = FakeHarness(responses)
+    harness.settings.enforce_no_progress = True
+    harness.settings.max_tooluse = 10
+    run = AgentRun(harness, None, Budget(), tmp_path, [], lambda *_: None)
+    assert asyncio.run(run.plan_execute()) == {"published": "sprite-1"}
+    assert run.state.index == 3
+    assert len(harness.roles) > harness.settings.max_no_progress_turns
+    assert run.stalled_turns == 0
+
+
+@pytest.mark.parametrize("layer,bad_name", [
+    (Layer.OUTER, "preset"),
+    (Layer.EXECUTOR, "preset"),
+    (Layer.EXECUTOR, "sprite_compose"),
+    (Layer.PLAN, "preset_create"),
+])
+def test_dispatch_reports_only_tools_the_current_layer_can_call(monkeypatch, tmp_path, layer, bad_name):
+    """真实分发回执包含纠错名称，同时保留 Executor 模块范围和 Plan 权限边界。"""
+    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
+    run = AgentRun(FakeHarness([]), None, Budget(), tmp_path, [], lambda *_: None)
+    run.layer = layer
+    if layer is Layer.EXECUTOR:
+        plan = Plan(goal="preset", steps=[{
+            "id": "preset", "goal": "preset", "tool_modules": ["preset"], "done_when": "saved",
+        }])
+        run.state.control(PlanAction(action="update_plan", plan=plan))
+    context = run._context_for_layer()
+    asyncio.run(run._handle_layer_tools(call("wrong", bad_name, {})))
+    error = json.loads(context.messages()[-1]["content"])["error"]
+    assert error["code"] == "TOOL_NOT_FOUND"
+    offered = {item.name for item in run._tools_for_layer()}
+    listed = set(error["message"].split("Available tools: ")[1].split(", "))
+    assert listed == offered
+    if bad_name == "preset":
+        assert "Closest:" in error["message"]
+    if layer is Layer.EXECUTOR:
+        assert "tools.plan_execute" not in listed and "sprite.compose" not in listed
+    assert run.state.calls == 1
+    assert run.round_calls[0]["status"] == "fail"

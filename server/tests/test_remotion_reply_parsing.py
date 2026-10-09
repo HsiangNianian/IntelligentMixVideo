@@ -43,5 +43,10 @@ def test_steer_text_states_the_exact_format():
 
 
 def test_no_progress_guard_is_on_by_default():
-    """Repeated reply loops must stop after bounded steering instead of running to the task timeout."""
+    """默认开启保护并允许六次连续空转，示例配置与实际默认值保持一致。"""
+    from pathlib import Path
+
     assert Settings.model_fields["enforce_no_progress"].default is True
+    assert Settings(_env_file=None).max_no_progress_turns == 6
+    example = Path(__file__).parents[1] / ".env.example"
+    assert "IMV_MAX_NO_PROGRESS_TURNS=6\n" in example.read_text()

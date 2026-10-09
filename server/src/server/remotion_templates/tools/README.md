@@ -13,8 +13,11 @@ deterministic single-file Sprite source. The host builds the preview after the
 saved Sprite passes its checks.
 
 `registry.get_tool` is the single name resolver: it accepts the dotted ID or the
-provider wire name (`wire_name`) and rejects everything else with the full tool
-list and closest names. Registration also declares `starts_generation`, so the
+provider wire name (`wire_name`) and rejects everything else with the tool
+list and closest names from the supplied window. Agent dispatch and `resolve`
+pass only the current layer's permitted tools; inspection passes all registered
+contracts plus host Plan control without granting execution rights.
+Registration also declares `starts_generation`, so the
 host never keeps its own tool-name sets. `tests/test_remotion_tool_registry.py`
 fails when a registered tool is not resolvable, inspectable and correctly
 exposed, which is the check to run after adding a tool.

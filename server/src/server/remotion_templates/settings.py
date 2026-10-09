@@ -72,7 +72,7 @@ class Settings(ClientSettings, CommonSettings):
     max_evidence_retries: int = Field(default=1, ge=0, le=3)
     # Stop a run that keeps producing no new observation after bounded steering.
     enforce_no_progress: bool = True
-    max_no_progress_turns: int = Field(default=4, ge=2, le=20)
+    max_no_progress_turns: int = Field(default=6, ge=2, le=20)
     # Execution batches and actual tool calls remain bounded even without model quotas.
     max_steps: int = Field(default=8, ge=1, le=32)
     max_tooluse: int = Field(default=10, ge=1, le=32)

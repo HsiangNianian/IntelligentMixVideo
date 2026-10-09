@@ -33,7 +33,7 @@ from .contracts import (
     ToolInspectInput,
     ToolResult,
 )
-from .registry import RegisteredTool, ToolFault, registered_tools, tool, wire_name
+from .registry import RegisteredTool, ToolFault, get_tool, registered_tools, tool, wire_name
 
 
 def _success(data: Any) -> dict[str, Any]:
@@ -119,12 +119,7 @@ def _inspectable(name: str) -> RegisteredTool | PlanTool:
     are registered with a contract but no implementation yet, and describing those
     contracts is exactly what this tool is for.
     """
-    tools = (*registered_tools(), PLAN_TOOL)
-    for item in tools:
-        if name in {item.name, wire_name(item.name)}:
-            return item
-    known = ", ".join(item.name for item in tools)
-    raise ToolFault("TOOL_NOT_FOUND", f"Unknown tool: {name}. Registered tools: {known}")
+    return get_tool(name, (*registered_tools(), PLAN_TOOL))
 
 
 @tool(
@@ -295,7 +290,4 @@ def available(modules=None, *, executor=False):
 
 def resolve(name: str, modules=None, *, executor=False):
     """Resolve one permitted tool by dotted or provider-wire name."""
-    for item in available(modules, executor=executor):
-        if name in {item.name, wire_name(item.name)}:
-            return item
-    raise ValueError("Unknown or out-of-scope tool")
+    return get_tool(name, available(modules, executor=executor))

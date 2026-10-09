@@ -136,15 +136,18 @@ def wire_name(name: str) -> str:
     return name.replace(".", "_")
 
 
-def get_tool(name: str) -> RegisteredTool:
+def get_tool(name: str, candidates=None):
     """Resolve a tool by dotted ID or provider wire name; anything else is rejected, never guessed.
 
-    The failure lists every registered name and the closest matches so the model can
-    correct itself on the next turn without a discovery round trip.
+    Candidates default to the business registry. Dispatch supplies its permitted
+    tool window; inspection adds host Plan control. Errors and suggestions use
+    only that window, so resolving a name never expands a layer's permissions.
     """
-    for item in _TOOLS.values():
+    candidates = registered_tools() if candidates is None else tuple(candidates)
+    for item in candidates:
         if name in {item.name, wire_name(item.name)}:
             return item
-    close = get_close_matches(str(name), [wire_name(key) for key in _TOOLS], n=2, cutoff=0.5)
+    close = get_close_matches(str(name), [wire_name(item.name) for item in candidates], n=2, cutoff=0.5)
     hint = f" Closest: {', '.join(close)}." if close else ""
-    raise ToolFault("TOOL_NOT_FOUND", f"Unknown tool: {name}.{hint} Registered tools: {', '.join(_TOOLS)}")
+    known = ", ".join(item.name for item in candidates) or "none"
+    raise ToolFault("TOOL_NOT_FOUND", f"Unknown or out-of-scope tool: {name}.{hint} Available tools: {known}")

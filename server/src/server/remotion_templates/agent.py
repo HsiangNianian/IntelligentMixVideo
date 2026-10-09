@@ -9,7 +9,7 @@ from .planning import ExecutionState, PlanResult, StepResult
 from .provider import ExecutionFailure, ModelContractFailure, ModelFailure
 from .progress import RoundCall
 from .tools.catalog import available
-from .tools.registry import ToolFault, wire_name
+from .tools.registry import ToolFault, get_tool
 from .tools.session import ToolSession
 from enum import StrEnum
 
@@ -222,6 +222,21 @@ class AgentRun:
         self.stalled_turns = 0
         return True
 
+    def _observe_handoff(self, destination, status):
+        """Count repeated handoffs without treating prose or budget counters as progress.
+
+        A new transition or advancing a completed step is progress. Repeating the
+        same transition at the same step is not, even with a new reason, summary,
+        plan revision or execution batch. Fresh tool evidence still resets stalls.
+        """
+        self._observe_receipt("handoff", {
+            "source": self.layer.value,
+            "destination": destination.value,
+            "status": status,
+            "step_index": self.state.index,
+            "completed_steps": sorted(self.state.completed),
+        })
+
     def _latest_sprite_id(self):
         """Resolve the newest task Sprite from the task-owned PR76 session."""
         return self.session.latest_sprite_id
@@ -259,6 +274,7 @@ class AgentRun:
                 self.session.saved_sprite(result.sprite_id)
             self.state.finish_batch(**result.model_dump())
             context.append([response.wire()])
+            self._observe_handoff(Layer.PLAN, result.status)
             self.layer = Layer.PLAN
             self._append_handoff(self.plan_context, "executor_result")
             return None
@@ -275,6 +291,7 @@ class AgentRun:
                     self.session.saved_sprite(payload["sprite_id"])
                 self.plan_result = payload
                 context.append([response.wire()])
+                self._observe_handoff(Layer.OUTER, payload["status"])
                 self.layer = Layer.OUTER
                 self._append_handoff(self.outer, "plan_result", payload)
                 return None
@@ -340,9 +357,7 @@ class AgentRun:
                         raise ValueError("Use a fresh tool_call_id for each action")
                     self.seen_calls.add(call.id)
                     visible = self._tools_for_layer()
-                    tool = next((item for item in visible if name in {item.name, wire_name(item.name)}), None)
-                    if tool is None:
-                        raise ValueError("Unknown or out-of-scope tool for this ReAct layer")
+                    tool = get_tool(name, visible)
                     resolved[call.id] = tool.name
                     args = tool.input.model_validate_json(call.function.arguments)
                     if tool.name == "tools.plan_execute":
@@ -373,7 +388,8 @@ class AgentRun:
                                 transition = Layer.EXECUTOR
                         else:
                             raise ValueError("Executor cannot control the Plan")
-                        # A valid control transition changes host state, so it is progress, not a stall.
+                        if transition is not None:
+                            self._observe_handoff(transition, args.action)
                         data = self.state.snapshot()
                     else:
                         if getattr(tool, "starts_generation", False):
@@ -509,8 +525,7 @@ class AgentRun:
                 if response.tool_calls:
                     result = await self._handle_layer_tools(response)
                 else:
-                    # A valid protocol reply is a successful handoff; every rejected reply
-                    # counts its own stall inside the handler.
+                    # Handlers distinguish fresh handoffs from repeated or rejected replies.
                     result = await self._handle_layer_message(response)
             finally:
                 self._report_round(layer)
