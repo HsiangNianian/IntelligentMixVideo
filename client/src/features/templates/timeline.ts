@@ -52,6 +52,36 @@ export function buildPreviewRows(timeline: ReturnType<typeof buildTimeline>): (O
   ), ...timeline.previewRows];
 }
 
+/** 时间轴上的 Remotion 资产片段：固定长度，只能整体移动。 */
+export interface SpriteClip {
+  id: string;
+  spriteId: string;
+  aspect: number;
+  name: string;
+  start: number;
+  end: number;
+}
+
+/** 每个 Remotion 资产独占一行；它不属于 SDK 时间线，仅在时间轴上占位并可拖动。 */
+export function spriteRows(clips: SpriteClip[]): (Omit<TimelineRow, "actions"> & { actions: PreviewClip[] })[] {
+  return clips.map((clip) => ({
+    id: `row-${clip.id}`,
+    actions: [{
+      id: clip.id,
+      effectId: "remotion",
+      start: clip.start,
+      end: clip.end,
+      movable: true,
+      flexible: false,
+      label: clip.name,
+      url: "",
+      sourceIn: 0,
+      sourceOut: 0,
+      targetId: clip.id,
+    }],
+  }));
+}
+
 /** 每秒约取一张源素材缩略图，使用区间中心，避免在片段结束边界采样。 */
 export function thumbnailTimes(clip: Pick<PreviewClip, "sourceIn" | "sourceOut">): number[] {
   const { sourceIn, sourceOut } = clip;

@@ -120,14 +120,24 @@ source and field choice returns the original Sprite. `animation_frames` and `sta
 because composition versions carry no such evidence, and `preview_url` serves the sealed
 interactive player page rather than an MP4.
 
-`GET /api/sprites` lists asset summaries without TSX. A record that cannot be parsed or fails its
-hash check is logged and left out, so one damaged row never hides the library; reading it by ID still
-reports the failure. `GET /api/sprites/{id}/preview`
-serves the asset's own sealed interactive player copy, with managed fonts under the same asset URL.
-The optional `overlay=true` query removes the inspection checkerboard; the document stays sandboxed.
-Publishing does not rebuild the bundle or depend on a project/IMS template record. The source chat
-can be deleted without deleting its published assets. This feature does not implement project
-editing, timeline synchronization, template bindings or final video composition.
+`GET /api/sprites` lists summaries (no TSX). A record that cannot be parsed or fails its hash check is
+logged and left out, so one damaged row never hides the library; reading it by ID still reports the
+failure. `GET/POST /api/sprites/styles/{style_id}` read and replace the Remotion clips placed under one
+style ID in this module's own SQLite database (`style_sprite_bindings`) with an `expected_revision` lock (409);
+the check and the write share one immediate transaction. The ID only associates clips with a cloud template:
+it is never looked up in the IMS template library, so no IMS template has to exist, saving or deleting a
+template does not touch the clips (clips of a deleted template stay unread), and IMS rules and tables never
+enter this module. Saving validates only what Remotion owns: referenced assets exist, clips are fixed
+(`start_mode` seconds, a finite start of at least 0, an optional positive duration, contiguous `order`, unique
+IDs, at most 100); object targets and style overrides are refused. The router lives in `sprite_router.py` on the
+main app and borrows the Remotion runtime; `/api/sprites/render` is not implemented.
+`GET /api/sprites/{id}/preview?overlay=true&sync=1` serves the sealed player on a transparent page for the template editor;
+a sync-mode bundle has no controls or loop and seeks on `imv-preview-sync {time}` messages, reporting `sync: true` in its
+ready message. Publishing rebuilds the bundle from the sealed source in the isolated worker when the sealed one lacks
+the marker (and refreshes an existing publication on re-save); a failed rebuild still saves the asset, just without overlay preview.
+A refresh stages the new bundle and records its hash before replacing the copy, so a failed update keeps the
+previous copy working and publishing again retries it. Identical publish requests (same version and field
+choice) take turns, so a double click rebuilds once.
 
 ## Code diagnostics
 

@@ -1,26 +1,40 @@
-"""Publish accepted Remotion versions as immutable assets for the independent Remotion library.
+"""Publish accepted Remotion versions as immutable Sprites and save where they are placed.
 
 A publication copies the sealed source, parameter contract and interactive player bundle out of the
-chat-owned version directory, so deleting or editing the source work never changes a bound Sprite.
-Records live in the Remotion SQLite database as `imv.sprite.v1.PublishedSprite` JSON; reads never mutate a publication. HTTP framing lives in `sprite_router.py`.
+chat-owned version directory, so deleting or editing the source work never changes a placed Sprite.
+Publications (`imv.sprite.v1.PublishedSprite` JSON) and the clip layouts that place them both live in
+the Remotion SQLite database. Nothing here reads or validates IMS template data, so IMS rules never
+apply to Remotion content. HTTP framing lives in `sprite_router.py`.
 """
 
+import asyncio
 import hashlib
 import json
 import logging
+import math
 import shutil
 import sqlite3
+import weakref
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException
 from generated.imv.sprite.v1 import sprite_pb2 as pb
 from google.protobuf.json_format import MessageToDict, ParseDict, ParseError
+from starlette.concurrency import run_in_threadpool
 
 from .evidence import digest, verify_artifacts
+from .models import TemplateVersion
 from .store import Conflict, NotFound, Store
 
+MAX_PLACEMENTS = 100
 PREVIEW_BUNDLE = "interactive.js"
+# 只有包含逐帧同步处理的预览包才能叠加到模板预览上；更早构建的包缺少此标记。
+SYNC_MARKER = b"imv-preview-sync"
+# 同一来源与字段选择的发布轮流执行：重复点击等待首个完成后读取它保存的资产，不重复重建播放器包。
+# 值为弱引用，没有持有者和等待者后锁自动释放，字典不会随发布次数增长。
+_publishing: weakref.WeakValueDictionary[tuple, asyncio.Lock] = weakref.WeakValueDictionary()
 
 # 版本创建时的内容类型与发布类型的对应；composition 版本不固定类型，由发布请求选择。
 _VERSION_KINDS = {
@@ -30,7 +44,7 @@ _VERSION_KINDS = {
     "video_overlay": pb.SPRITE_KIND_VIDEO_OVERLAY,
     "transition_overlay": pb.SPRITE_KIND_TRANSITION_OVERLAY,
 }
-# 发布内容类型独立于项目中的 IMS 效果目标。
+# 发布时允许声明的内容类型；它只描述资产自身，与 IMS 模板里的对象无关。
 _PUBLISH_KINDS = {
     pb.SPRITE_KIND_TEXT, pb.SPRITE_KIND_FILTER_OVERLAY,
     pb.SPRITE_KIND_VIDEO_OVERLAY, pb.SPRITE_KIND_TRANSITION_OVERLAY,
@@ -197,10 +211,68 @@ def _validated_request(request: pb.PublishSpriteRequest, schema: dict, version_k
         raise _invalid("只有文字 Sprite 可以声明 text_prop 与 keywords_prop")
 
 
-def publish(store: Store, request: pb.PublishSpriteRequest) -> pb.SpriteSummary:
-    """Copy a verified accepted version and its sealed player; repeating returns the original asset.
+async def _rebuild_bundle(service, version) -> bytes | None:
+    """Rebuild the player bundle from the sealed source with the current host code; None when unavailable.
 
-    It hashes every sealed artifact and copies the player bundle, so the route runs it in a worker thread.
+    Failure is non-fatal: the asset is still saved with its original bundle and simply cannot be previewed
+    over the template.
+    """
+    store = service.store
+    work = store.root / "sprites" / f".build-{uuid4()}"
+    try:
+        work.mkdir(parents=True)
+        (work / "request.json").write_text(json.dumps({
+            "code": version.candidate.tsx_code,
+            "config": version.candidate.default_config,
+            "composition": version.spec.composition.model_dump(),
+        }, ensure_ascii=False), encoding="utf-8")
+        await service.harness.renderer.run_worker(work, worker="presentation-worker.mjs")
+        data = (work / PREVIEW_BUNDLE).read_bytes()
+        return data if SYNC_MARKER in data else None
+    except Exception:
+        logging.getLogger(__name__).exception("Sprite preview rebuild failed: %s", version.id)
+        return None
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _store_bundle(store: Store, sprite: pb.PublishedSprite, data: bytes) -> None:
+    """Replace a publication's player copy and its recorded hash; the source and parameters are untouched.
+
+    The new bytes are staged beside the copy and the hash is recorded before they take its place, so a failed
+    write or database update leaves the old copy matching its hash. A swap that never completes leaves the old
+    copy, which still lacks the synchronisation marker, so publishing again retries it.
+    """
+    target = store.root / "sprites" / sprite.sprite_id / PREVIEW_BUNDLE
+    staged = target.with_name(f"{PREVIEW_BUNDLE}.{uuid4().hex}.tmp")
+    try:
+        staged.write_bytes(data)
+        sprite.preview_sha256 = hashlib.sha256(data).hexdigest()
+        with store.connection() as db:
+            db.execute(
+                "UPDATE sprites SET data=? WHERE id=?",
+                (json.dumps(MessageToDict(sprite, preserving_proto_field_name=True), ensure_ascii=False), sprite.sprite_id),
+            )
+        staged.replace(target)
+    finally:
+        staged.unlink(missing_ok=True)
+
+
+def _existing(store: Store, version: TemplateVersion, request: pb.PublishSpriteRequest) -> sqlite3.Row | None:
+    """Look up the publication that this exact source and field choice already produced."""
+    with store.connection() as db:
+        return db.execute(
+            "SELECT data FROM sprites WHERE source_version_id=? AND kind=? AND text_prop=? AND keywords_prop=?",
+            (str(version.id), request.kind, request.text_prop, request.keywords_prop),
+        ).fetchone()
+
+
+def _inspect(store: Store, request: pb.PublishSpriteRequest) -> tuple[TemplateVersion, pb.PublishedSprite | None, bytes]:
+    """Check the request against its re-verified source and find the player bytes involved.
+
+    Returns the version, the publication this source and field choice already produced (or None) and the
+    bundle that publication serves, or that a new one would copy. It hashes every sealed artifact, so callers
+    run it in a worker thread.
     """
     try:
         version_id = UUID(request.source_version_id)
@@ -214,24 +286,19 @@ def publish(store: Store, request: pb.PublishSpriteRequest) -> pb.SpriteSummary:
         raise Conflict("accepted artifact unavailable") from exc
     if PREVIEW_BUNDLE not in version.validation.artifacts:
         raise Conflict("该版本没有可发布的交互预览")
+    _validated_request(request, version.candidate.config_schema, version.spec.sprite_kind)
+    if (row := _existing(store, version, request)) is None:
+        return version, None, (accepted / PREVIEW_BUNDLE).read_bytes()
+    sprite = _sprite_from(row)
+    return version, sprite, (store.root / "sprites" / sprite.sprite_id / PREVIEW_BUNDLE).read_bytes()
+
+
+def _create(store: Store, request: pb.PublishSpriteRequest, version: TemplateVersion, bundle: bytes) -> pb.SpriteSummary:
+    """Record a new publication with its own copy of the player bundle; losing a race to an identical one returns the winner."""
     schema = version.candidate.config_schema
-    _validated_request(request, schema, version.spec.sprite_kind)
-
-    def existing() -> sqlite3.Row | None:
-        """Look up the publication that this exact source and field choice already produced."""
-        with store.connection() as db:
-            return db.execute(
-                "SELECT data FROM sprites WHERE source_version_id=? AND kind=? AND text_prop=? AND keywords_prop=?",
-                (str(version.id), request.kind, request.text_prop, request.keywords_prop),
-            ).fetchone()
-
-    if (row := existing()) is not None:
-        return summarize(_sprite_from(row))
-
     composition = version.spec.composition
     sprite_id = str(uuid4())
     published_at = datetime.now(UTC)
-    bundle = (accepted / PREVIEW_BUNDLE).read_bytes()
     directory = store.root / "sprites" / sprite_id
     directory.mkdir(parents=True)
     try:
@@ -268,10 +335,101 @@ def publish(store: Store, request: pb.PublishSpriteRequest) -> pb.SpriteSummary:
             )
     except sqlite3.IntegrityError:
         shutil.rmtree(directory, ignore_errors=True)
-        if (row := existing()) is None:
+        if (row := _existing(store, version, request)) is None:
             raise
         return summarize(_sprite_from(row))
     except BaseException:
         shutil.rmtree(directory, ignore_errors=True)
         raise
     return summarize(sprite)
+
+
+async def publish(service, request: pb.PublishSpriteRequest) -> pb.SpriteSummary:
+    """Copy a verified accepted version into an immutable publication; repeating returns the original.
+
+    The player bundle is rebuilt with the current host code when the sealed one predates frame-synchronised
+    previews, so older versions can still be previewed over a template after saving. Hashing, copying and
+    database work run in worker threads and only the rebuild is awaited, so the event loop stays free;
+    identical publications take turns, so a double click rebuilds once.
+    """
+    store = service.store
+    lock = _publishing.setdefault(
+        (request.source_version_id, request.kind, request.text_prop, request.keywords_prop), asyncio.Lock()
+    )
+    async with lock:
+        version, sprite, bundle = await run_in_threadpool(_inspect, store, request)
+        fresh = None if SYNC_MARKER in bundle else await _rebuild_bundle(service, version)
+        if sprite is None:
+            return await run_in_threadpool(_create, store, request, version, fresh or bundle)
+        if fresh:
+            await run_in_threadpool(_store_bundle, store, sprite, fresh)
+        return summarize(sprite)
+
+
+def validate_placements(store: Store, placements: Iterable[pb.SpritePlacement]) -> None:
+    """Reject a clip list that references unknown Sprites or is not made of fixed clips.
+
+    A clip is a published Sprite plus the second it starts at; the Sprite's own length is its duration.
+    IMS template objects have no meaning here, so an object target or a style override is refused instead
+    of being stored and later read as an IMS rule.
+    """
+    items = list(placements)
+    if len(items) > MAX_PLACEMENTS:
+        raise _invalid(f"最多添加 {MAX_PLACEMENTS} 个 Remotion 片段")
+    if sorted(item.order for item in items) != list(range(len(items))):
+        raise _invalid("order 必须从 0 开始连续且不重复")
+    identifiers = [item.id for item in items]
+    if any(not identifier or len(identifier) > 64 for identifier in identifiers) or len(set(identifiers)) != len(items):
+        raise _invalid("片段 id 必须非空、不超过 64 个字符且互不相同")
+    for item in items:
+        if item.target != pb.SPRITE_TARGET_UNSPECIFIED or item.overrides:
+            raise _invalid("Remotion 片段是固定内容，不支持作用对象和样式覆盖")
+        if item.start_mode != "seconds":
+            raise _invalid("start_mode 只能是 seconds")
+        if not math.isfinite(item.start) or item.start < 0:
+            raise _invalid("start 必须是不小于 0 的有限数字")
+        if item.HasField("duration") and (not math.isfinite(item.duration) or item.duration <= 0):
+            raise _invalid("duration 必须是大于 0 的有限数字")
+    for sprite_id in {item.sprite_id for item in items}:
+        try:
+            get(store, sprite_id)
+        except NotFound:
+            raise _invalid(f"Remotion 资产 {sprite_id} 不存在") from None
+
+
+def get_bindings(store: Store, style_id: UUID) -> tuple[int, list[dict], datetime | None]:
+    """Read the saved clips of one style ID; no record is revision 0 with an empty list.
+
+    The ID only associates clips with an IMS template for the editor: it is never looked up in the
+    IMS template library, so it does not have to exist there.
+    """
+    with store.connection() as db:
+        row = db.execute(
+            "SELECT revision, updated_at, data FROM style_sprite_bindings WHERE style_id=?", (str(style_id),),
+        ).fetchone()
+    if row is None:
+        return 0, [], None
+    return row["revision"], json.loads(row["data"]), datetime.fromisoformat(row["updated_at"])
+
+
+def replace_bindings(
+    store: Store, style_id: UUID, placements: list[dict], expected_revision: int,
+) -> tuple[int, list[dict], datetime]:
+    """Replace the whole clip list of one style ID; a revision other than the caller's last read is a 409.
+
+    The revision check and the write share one immediate transaction, so two editors saving from the same
+    revision cannot both succeed.
+    """
+    with store.connection() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT revision FROM style_sprite_bindings WHERE style_id=?", (str(style_id),)).fetchone()
+        current = row["revision"] if row else 0
+        if current != expected_revision:
+            raise Conflict("Remotion 片段已被其他修改更新，请刷新后重试")
+        now = datetime.now(UTC)
+        db.execute(
+            "INSERT INTO style_sprite_bindings VALUES (?, ?, ?, ?) ON CONFLICT(style_id) DO UPDATE SET "
+            "revision=excluded.revision, updated_at=excluded.updated_at, data=excluded.data",
+            (str(style_id), current + 1, now.isoformat(), json.dumps(placements, ensure_ascii=False)),
+        )
+    return current + 1, placements, now

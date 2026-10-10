@@ -1,4 +1,4 @@
-"""Remotion 字效保存为 Sprite 资产：发布、目录与独立资产预览的真实 SQLite/文件/HTTP 回归。
+"""Remotion 字效保存为 Sprite 资产：发布、目录、预览与云端模板绑定的真实 SQLite/文件/HTTP 回归。
 
 不访问模型、浏览器或 MySQL（模板库使用 conftest 的临时 SQLite）；发布版本由离线渲染替身落盘。
 在 server/ 目录执行 `uv run --locked pytest tests/test_remotion_sprite_publish.py -v`。
@@ -8,11 +8,16 @@ import asyncio
 import json
 import logging
 import shutil
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 from generated.imv.sprite.v1 import sprite_pb2 as pb
+from sqlalchemy import Engine, inspect
 
 from server.app import app
 from server.remotion_templates import sprites
@@ -21,7 +26,7 @@ from server.remotion_templates.models import GenerateTemplateRequest
 from server.remotion_templates.provider import Budget
 from server.remotion_templates.settings import Settings
 from server.remotion_templates.sprite_router import sprite_runtime
-from server.remotion_templates.store import Store
+from server.remotion_templates.store import Conflict, Store
 from server.remotion_templates.tools.contracts import SpriteDraft
 
 from .test_remotion_version_diagnostics import (
@@ -47,6 +52,24 @@ SCHEMA = {
 }
 DEFAULTS = {"text": "标题", "keywords": "", "color": "#ffffff", "size": 64, "weight": 400, "shadow": False}
 CODE = 'import React from "react";\nexport default function Sprite(p: {text: string}) { return <div>{p.text}</div>; }\n'
+
+
+class BundleRebuilder:
+    """记录重建请求的渲染替身：写出带同步标记的新预览包，或按要求失败；不执行真实浏览器或沙箱。"""
+
+    def __init__(self):
+        """默认成功，requests 保存宿主写给 worker 的请求。"""
+        self.requests: list[dict] = []
+        self.failure: Exception | None = None
+
+    async def run_worker(self, directory, *, worker=None, timeout_seconds=None):
+        """只接受预览包构建；失败时不写任何文件。"""
+        assert worker == "presentation-worker.mjs"
+        self.requests.append(json.loads((directory / "request.json").read_text()))
+        if self.failure:
+            raise self.failure
+        (directory / "interactive.js").write_text("// rebuilt imv-preview-sync")
+        return {}
 
 
 NESTED_SCHEMA = {
@@ -108,9 +131,10 @@ def published_version(tmp_path, schema, defaults):
         "saved", Budget(), store.job_dir(job.id),
     ))
     version = store.publish(job.id, *result)
-    service = SimpleNamespace(store=store, settings=settings)
+    renderer = BundleRebuilder()
+    service = SimpleNamespace(store=store, settings=settings, harness=SimpleNamespace(renderer=renderer))
     app.dependency_overrides[sprite_runtime] = lambda: service
-    yield SimpleNamespace(store=store, version=version)
+    yield SimpleNamespace(store=store, version=version, renderer=renderer, service=service)
     app.dependency_overrides.pop(sprite_runtime)
 
 
@@ -130,6 +154,35 @@ def published_sprite(client: TestClient, version_id, **fields) -> pb.SpriteSumma
     response = publish(client, publish_request(version_id, **fields))
     assert response.status_code == 200
     return pb.PublishSpriteResponse.FromString(response.content).sprite
+
+
+def placement(sprite_id: str, **fields) -> pb.SpritePlacement:
+    """默认是从 0 秒开始的一个固定片段；用例按需覆盖字段。"""
+    values = {"id": "p1", "start_mode": "seconds", "start": 0, "order": 0, **fields}
+    return pb.SpritePlacement(sprite_id=sprite_id, **values)
+
+
+def save_bindings(client: TestClient, style_id: str, placements: list, expected_revision: int = 0, body_style_id: str | None = None):
+    """整体替换一个 style_id 下的 Remotion 片段。"""
+    request = pb.SaveStyleSpritesRequest(
+        style_id=body_style_id or style_id, placements=placements, expected_revision=expected_revision,
+    )
+    return client.post(f"/api/sprites/styles/{style_id}", content=request.SerializeToString(), headers=PROTOBUF)
+
+
+def bindings(response) -> pb.StyleSpriteBindings:
+    """解码绑定读取/保存响应。"""
+    return pb.GetStyleSpritesResponse.FromString(response.content).bindings
+
+
+def create_style(client: TestClient, template_payload: dict) -> str:
+    """创建一个 IMS 云端模板并返回其 ID，用来证明片段与 IMS 数据互不依赖。"""
+    from generated.imv.template.v1 import template_pb2 as template_pb
+    from .template_wire import post_template
+
+    response = post_template(client, template_payload)
+    assert response.status_code == 201
+    return template_pb.SaveTemplateResponse.FromString(response.content).template.template_id
 
 
 def test_publish_copies_content_and_lists_summary_without_source(client: TestClient, published) -> None:
@@ -172,7 +225,7 @@ def test_published_sprite_survives_deleting_its_source_version(client: TestClien
     assert pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites[0].sprite_id == summary.sprite_id
     preview = client.get(summary.preview_url)
     assert preview.status_code == 200
-    assert "offline Player fixture" in preview.text
+    assert "rebuilt imv-preview-sync" in preview.text
     assert "sandbox allow-scripts" in preview.headers["content-security-policy"]
 
 
@@ -199,6 +252,111 @@ def test_publish_rejects_unknown_malformed_or_tampered_sources(client: TestClien
     assert publish(client, publish_request(published.version.id)).status_code == 409
     assert client.post("/api/sprites/publish", json={}).status_code == 415
     assert client.post("/api/sprites/publish", content=b"\xff\xff", headers=PROTOBUF).status_code == 400
+
+
+def test_style_bindings_roundtrip_with_revision_lock(client: TestClient, published) -> None:
+    """未保存时为版本 0；保存递增 revision，过期 revision 返回 409 且不改动已存片段。"""
+    sprite = published_sprite(client, published.version.id)
+    style_id = str(uuid4())
+    empty = client.get(f"/api/sprites/styles/{style_id}")
+    assert empty.status_code == 200 and (bindings(empty).revision, list(bindings(empty).placements)) == (0, [])
+
+    first = save_bindings(client, style_id, [
+        placement(sprite.sprite_id, start=2, duration=1),
+        placement(sprite.sprite_id, id="p2", start=7.5, order=1),
+    ])
+    assert first.status_code == 200
+    saved = bindings(first)
+    assert saved.revision == 1 and [item.id for item in saved.placements] == ["p1", "p2"]
+    assert (saved.placements[0].start, saved.placements[0].duration) == (2, 1)
+    assert saved.placements[1].start == 7.5 and not saved.placements[1].HasField("duration")
+    assert saved.updated_at.seconds > 0
+
+    stale = save_bindings(client, style_id, [], expected_revision=0)
+    assert stale.status_code == 409
+    again = bindings(client.get(f"/api/sprites/styles/{style_id}"))
+    assert again.revision == 1 and len(again.placements) == 2
+    cleared = bindings(save_bindings(client, style_id, [], expected_revision=1))
+    assert cleared.revision == 2 and list(cleared.placements) == []
+
+
+@pytest.mark.parametrize("build", [
+    lambda sid: [placement(sid, target=pb.SPRITE_TARGET_TITLE)],
+    lambda sid: [placement(sid, overrides=[pb.SpriteParameterOverride(key="size", value=pb.ScalarValue(number_value=88))])],
+    lambda sid: [placement(sid, start_mode="frames")],
+    lambda sid: [placement(sid, start_mode="percent", start=50)],
+    lambda sid: [placement(sid, start=-1)],
+    lambda sid: [placement(sid, start=float("inf"))],
+    lambda sid: [placement(sid, duration=0)],
+    lambda sid: [placement(sid, order=1)],
+    lambda sid: [placement(sid), placement(sid, order=1)],
+    lambda sid: [placement(sid, id="")],
+    lambda sid: [placement(sid, id="x" * 65)],
+    lambda sid: [placement(sid, id=f"p{index}", order=index) for index in range(101)],
+    lambda sid: [placement("00000000-0000-4000-8000-000000000000")],
+], ids=[
+    "object-target", "style-override", "bad-start-mode", "percent-start", "negative-start", "infinite-start",
+    "zero-duration", "order-gap", "duplicate-id", "empty-id", "long-id", "too-many", "unknown-sprite",
+])
+def test_invalid_placements_are_rejected_without_saving(client: TestClient, published, build) -> None:
+    """片段必须是引用已有资产的固定内容：作用对象、样式覆盖、非秒起点、非法时间与顺序都返回 422，且不产生记录。"""
+    sprite = published_sprite(client, published.version.id)
+    style_id = str(uuid4())
+    assert save_bindings(client, style_id, build(sprite.sprite_id)).status_code == 422
+    assert bindings(client.get(f"/api/sprites/styles/{style_id}")).revision == 0
+
+
+def test_every_published_kind_can_be_placed_without_imv_object_rules(client: TestClient, published) -> None:
+    """IMS 的对象规则不属于 Remotion：没有关键词的文字资产、没有固定时长的视觉叠加都只需起点就能放置。"""
+    visual = published_sprite(client, published.version.id, kind=pb.SPRITE_KIND_VIDEO_OVERLAY, text_prop="", keywords_prop="")
+    plain_text = published_sprite(client, published.version.id, keywords_prop="")
+    style_id = str(uuid4())
+    response = save_bindings(client, style_id, [placement(visual.sprite_id), placement(plain_text.sprite_id, id="p2", order=1)])
+    assert response.status_code == 200
+    assert [item.sprite_id for item in bindings(response).placements] == [visual.sprite_id, plain_text.sprite_id]
+
+
+def test_binding_routes_check_the_body_and_need_no_imv_template(client: TestClient, published) -> None:
+    """style_id 只用于关联：没有对应 IMS 模板也能读写；请求体 style_id 与路径不一致、类型或内容错误被拒绝。"""
+    sprite = published_sprite(client, published.version.id)
+    style_id, other = str(uuid4()), str(uuid4())
+    assert save_bindings(client, style_id, [placement(sprite.sprite_id)]).status_code == 200
+    assert save_bindings(client, style_id, [], expected_revision=1, body_style_id=other).status_code == 422
+    assert client.post(f"/api/sprites/styles/{style_id}", json={}).status_code == 415
+    assert client.post(f"/api/sprites/styles/{style_id}", content=b"\xff\xff", headers=PROTOBUF).status_code == 400
+    assert client.get("/api/sprites/styles/not-a-uuid").status_code == 422
+    assert bindings(client.get(f"/api/sprites/styles/{style_id}")).revision == 1
+
+
+def test_bindings_and_imv_templates_are_independent(client: TestClient, template_db: Engine, published, template_payload) -> None:
+    """Remotion 片段只存在 Remotion 自己的库里：IMS 数据库没有对应表，删除 IMS 模板不影响片段，资产也保留。"""
+    sprite = published_sprite(client, published.version.id)
+    template_id = create_style(client, template_payload)
+    assert save_bindings(client, template_id, [placement(sprite.sprite_id)]).status_code == 200
+    assert not inspect(template_db).has_table("style_sprite_bindings")
+    assert client.delete(f"/template/{template_id}").status_code == 204
+    assert [item.id for item in bindings(client.get(f"/api/sprites/styles/{template_id}")).placements] == ["p1"]
+    assert len(pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites) == 1
+
+
+def test_concurrent_saves_from_the_same_revision_only_accept_one(client: TestClient, published) -> None:
+    """两个编辑器同时从版本 0 保存同一个 style_id，只有一个成功，另一个得到版本冲突而不覆盖对方。"""
+    sprite = published_sprite(client, published.version.id)
+    style_id = uuid4()
+    barrier = Barrier(2, timeout=5)
+
+    def save(name: str):
+        """并发执行真实 SQLite 事务，返回新版本号或冲突标记。"""
+        barrier.wait()
+        try:
+            return sprites.replace_bindings(published.store, style_id, [{"id": name, "sprite_id": sprite.sprite_id}], 0)[0]
+        except Conflict:
+            return "conflict"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(save, ["a", "b"]))
+    assert sorted(map(str, results)) == ["1", "conflict"]
+    assert sprites.get_bindings(published.store, style_id)[0] == 1
 
 
 def test_nested_parameters_publish_with_dot_paths(client: TestClient, nested_published) -> None:
@@ -266,3 +424,78 @@ def test_catalog_skips_unreadable_records_and_keeps_the_rest(client: TestClient,
     assert [item.sprite_id for item in pb.ListSpritesResponse.FromString(listed.content).sprites] == [healthy.sprite_id]
     assert tampered.sprite_id in caplog.text and unparsable.sprite_id in caplog.text
     assert client.get(tampered.preview_url).status_code == 409
+
+
+def test_stale_player_bundle_is_rebuilt_from_sealed_source(client: TestClient, published) -> None:
+    """封存包缺少同步支持时发布会用封存的源码、默认参数和画布重建；原版本目录不被改动。"""
+    summary = published_sprite(client, published.version.id)
+    request = published.renderer.requests[0]
+    assert request["code"] == published.version.candidate.tsx_code
+    assert request["config"] == published.version.candidate.default_config
+    assert request["composition"]["duration_in_frames"] == 30
+    copied = published.store.root / "sprites" / summary.sprite_id / "interactive.js"
+    assert b"imv-preview-sync" in copied.read_bytes()
+    assert b"offline Player fixture" in (published.store.root / "accepted" / str(published.version.id) / "interactive.js").read_bytes()
+    assert not [item for item in (published.store.root / "sprites").iterdir() if item.name.startswith(".build-")]
+
+
+def test_current_sealed_bundle_is_copied_without_rebuilding(client: TestClient, published) -> None:
+    """封存包已含同步支持时直接复制，不启动任何构建。"""
+    (published.store.root / "accepted" / str(published.version.id) / "interactive.js").write_text("// imv-preview-sync")
+    from server.remotion_templates.evidence import digest
+    published.version.validation.artifacts["interactive.js"] = digest(published.store.root / "accepted" / str(published.version.id) / "interactive.js")
+    with published.store.connection() as db:
+        db.execute("UPDATE versions SET data=? WHERE id=?", (published.version.model_dump_json(), str(published.version.id)))
+    summary = published_sprite(client, published.version.id)
+    assert published.renderer.requests == []
+    assert client.get(summary.preview_url).text.count("imv-preview-sync") == 1
+
+
+def test_rebuild_failure_still_saves_and_republishing_refreshes_the_old_copy(client: TestClient, published) -> None:
+    """重建失败不阻止保存（仅无法叠加预览）；之后重新保存同一资产会把旧副本刷新为新包，其余内容不变。"""
+    published.renderer.failure = RuntimeError("sandbox unavailable")
+    first = published_sprite(client, published.version.id)
+    assert "offline Player fixture" in client.get(first.preview_url).text
+    published.renderer.failure = None
+    again = published_sprite(client, published.version.id)
+    assert again.sprite_id == first.sprite_id
+    assert "rebuilt imv-preview-sync" in client.get(first.preview_url).text
+    assert len(pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites) == 1
+
+
+def test_failed_hash_update_keeps_the_old_player_copy_and_republishing_finishes_the_refresh(client: TestClient, published) -> None:
+    """刷新旧副本时记录新哈希的数据库更新失败（锁超时、进程中断）：旧副本与旧哈希仍一致、预览可用且不留临时文件；数据库恢复后再次保存完成刷新。"""
+    published.renderer.failure = RuntimeError("sandbox unavailable")
+    summary = published_sprite(client, published.version.id)
+    published.renderer.failure = None
+    with published.store.connection() as db:
+        db.execute("CREATE TRIGGER fail_refresh BEFORE UPDATE ON sprites BEGIN SELECT RAISE(ABORT, 'database is locked'); END")
+    with pytest.raises(sqlite3.DatabaseError):
+        publish(client, publish_request(published.version.id))
+    assert "offline Player fixture" in client.get(summary.preview_url).text
+    assert [item.name for item in (published.store.root / "sprites" / summary.sprite_id).iterdir()] == ["interactive.js"]
+    with published.store.connection() as db:
+        db.execute("DROP TRIGGER fail_refresh")
+    assert published_sprite(client, published.version.id).sprite_id == summary.sprite_id
+    assert "rebuilt imv-preview-sync" in client.get(summary.preview_url).text
+
+
+def test_concurrent_identical_publishes_build_the_player_once(published) -> None:
+    """重复点击或并发请求相同来源与字段选择时轮流执行：只重建一次播放器包，两次都返回同一个资产。"""
+    run_worker = published.renderer.run_worker
+
+    async def slow_worker(*args, **kwargs):
+        """让首个重建在事件循环上停留片刻，另一个请求此时必然已经检查完毕。"""
+        await asyncio.sleep(0.05)
+        return await run_worker(*args, **kwargs)
+
+    published.renderer.run_worker = slow_worker
+    request = publish_request(published.version.id)
+
+    async def twice():
+        """在同一事件循环里同时发起两次发布。"""
+        return await asyncio.gather(*(sprites.publish(published.service, request) for _ in range(2)))
+
+    first, second = asyncio.run(twice())
+    assert first.sprite_id == second.sprite_id
+    assert len(published.renderer.requests) == 1
