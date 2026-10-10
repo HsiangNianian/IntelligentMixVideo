@@ -27,12 +27,13 @@ Read current source and props from the host snapshot; tool results and candidate
 
 PLAN_RULES = """
 You are the Plan ReAct. Maintain the ordered Plan, preserve completed steps, and wake the Executor ReAct for the current step. Use tools_plan_execute update_plan to create/revise a plan and wake Executor, continue/advance to dispatch later batches. Return {status:"plan_done|blocked|needs_input",summary:"...",sprite_id:null,questions:[]} to Outer, or tools_plan_execute complete/stop. Never execute business tools or claim final task publication.
-A step's input_refs accept only user_intent, accepted_base, or steps.<earlier_step_id>.outputs.sprite for a Sprite an earlier step already saved; steps must be ordered so every reference points backwards, and each step's tool_modules must name the modules it needs.
+sprite_compose only returns a draft; a Sprite exists once sprite_create saved it, so compose and save in the SAME step, and reference steps.<id>.outputs.sprite only from a step that calls sprite_create. A step's input_refs accept only user_intent, accepted_base, or steps.<earlier_step_id>.outputs.sprite for a Sprite an earlier step already saved; steps must be ordered so every reference points backwards, and each step's tool_modules must name the modules it needs.
 """
 
 EXECUTOR_RULES = """
 You are the Executor ReAct awakened by the Plan ReAct. Execute ONLY the current logical step using its permitted tools.
 Do not rewrite the Plan or invoke tools_plan_execute. Repeated tool calls and failures use the same task budget.
+A step that must produce a Sprite is done only after sprite_create succeeded: report that sprite_id, and never report step_done from a draft, a summary of earlier work or memory.
 When done or blocked, return ONLY this JSON object as message content (no markdown fence, no prose): {"status":"step_done|blocked|needs_input", "summary":"...", "sprite_id":null}. Supply an actual saved Sprite/candidate ID when this step produces one.
 The host returns to Plan ReAct at the tool limit; reaching a limit does not mean the task or step is complete.
 """
@@ -259,6 +260,11 @@ class AgentRun:
         """Resolve the latest task Sprite; the host finalizer owns render checks and publication."""
         if not identifier:
             raise ValueError("Completion requires a saved Sprite ID")
+        if self.session.latest_sprite_id is None:
+            raise ValueError(
+                f"This task has saved no Sprite yet, so {identifier} is not a result of this task (it may be the accepted base). "
+                "Delegate again so a step calls sprite_create, or stop with the reason."
+            )
         if self.session.latest_sprite_id != identifier:
             raise ValueError("Completion must reference the latest task Sprite")
         self.session.saved_sprite(identifier)
@@ -284,6 +290,16 @@ class AgentRun:
                     self.session.saved_sprite(result.sprite_id)
             except Exception as exc:
                 self._set_feedback(f"Your last reply was not a valid StepResult ({str(exc)[:300]}). " + STEP_RESULT_FORMAT)
+                self.stalled_turns += 1
+                return None
+            needed_by = self.state.dependents()
+            if result.status == "step_done" and not result.sprite_id and needed_by:
+                # The Plan cannot redo a finished step, so refuse the claim here, where sprite_create is still callable.
+                self._set_feedback(
+                    f"Step {self.state.step.id} is not done: step(s) {', '.join(needed_by)} take its saved Sprite as "
+                    f"steps.{self.state.step.id}.outputs.sprite, but you reported no sprite_id. sprite_compose only returns a draft: "
+                    "save it with sprite_create and report that sprite_id, or return status blocked with the reason."
+                )
                 self.stalled_turns += 1
                 return None
             self.state.finish_batch(**result.model_dump())

@@ -130,6 +130,11 @@ Executor and Plan accept a single JSON object with ordinary prose or a markdown
 fence around it. They reject arrays, quoted JSON strings, multiple objects and
 objects nested inside malformed JSON. Unknown task Sprite IDs produce feedback
 without changing the active layer or Plan, so the next round can correct them.
+A step whose saved Sprite a later step takes as `steps.<id>.outputs.sprite` cannot be reported
+`step_done` without a `sprite_id`: the host refuses the claim in the Executor layer and asks for
+`sprite_create`, because the Plan cannot re-open a step that was reported done and
+`sprite_compose` only returns a draft. When the task has saved no Sprite at all, a completion
+request is refused with that fact and the way forward instead of a generic mismatch.
 
 Every Outer → Plan → Executor turn appends one public round record through the
 `job.round` delta event on the same work stream as the phase timeline. A round

@@ -158,6 +158,57 @@ def test_every_layer_is_told_that_inspect_cannot_search_for_tools(monkeypatch, t
     assert set(systems) == {"outer", "plan", "executor"}
     for role, system in systems.items():
         assert "cannot search or list tools" in system, role
+    # compose only returns a draft: Plan must keep compose and save together, Executor must not claim a save it did not make
+    assert "compose and save in the SAME step" in systems["plan"]
+    assert "never report step_done from a draft" in systems["executor"]
+
+
+def test_a_step_whose_sprite_a_later_step_needs_cannot_finish_without_saving_it(monkeypatch, tmp_path):
+    """真实失败（56 轮）：执行器没调 sprite_create 就报 step_done，计划之后无法重做该步；必须在执行器这一层拦下并让它补存。"""
+    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
+    plan = Plan(goal="lighter", steps=[
+        {"id": "compose", "goal": "compose and save", "tool_modules": ["sprite"], "done_when": "saved"},
+        {"id": "verify", "goal": "check", "tool_modules": ["tools"], "done_when": "checked",
+         "input_refs": ["user_intent", "steps.compose.outputs.sprite"]},
+    ])
+    harness = FakeHarness([
+        call("outer-1", "tools_plan_execute", {"action": "delegate", "plan": plan.model_dump()}),
+        call("plan-1", "tools_plan_execute", {"action": "update_plan", "plan": plan.model_dump()}),
+        AssistantMessage(content=json.dumps({"status": "step_done", "summary": "composed a draft"})),
+        AssistantMessage(content=json.dumps({"status": "step_done", "summary": "saved", "sprite_id": "sprite-1"})),
+        call("plan-2", "tools_plan_execute", {"action": "advance"}),
+        AssistantMessage(content=json.dumps({"status": "step_done", "summary": "checked", "sprite_id": "sprite-1"})),
+        call("plan-3", "tools_plan_execute", {"action": "complete"}),
+        AssistantMessage(content=json.dumps({"action": "complete", "sprite_id": "sprite-1"})),
+    ])
+    run = AgentRun(harness, None, Budget(), tmp_path, [], lambda *_: None, intent={"original_request": {"description": "demo"}})
+    feedback_before_each_turn = []
+
+    async def turn(_system, _context, _tools, _budget, _images, *, phase):
+        """Record what the host told the model before each turn, then return the scripted reply."""
+        feedback_before_each_turn.append((phase, list(run.session.feedback)))
+        harness.roles.append(phase)
+        return next(harness.responses)
+
+    harness._turn = turn
+    assert asyncio.run(run.plan_execute()) == {"published": "sprite-1"}
+    # the first claim was refused in the Executor layer, so Executor ran twice before Plan saw a result
+    assert harness.roles == ["outer", "plan", "executor", "executor", "plan", "executor", "plan", "outer"]
+    refused = feedback_before_each_turn[3][1]
+    assert refused and "not done" in refused[0] and "sprite_create" in refused[0] and "verify" in refused[0]
+
+
+def test_completion_refusal_says_when_the_task_saved_no_sprite(monkeypatch, tmp_path):
+    """Outer 反复提交基线版本的 Sprite ID 40 次：任务一个 Sprite 都没存时，拒绝原因要明说并给出下一步，而不是「必须引用最新 Sprite」。"""
+    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
+    run = AgentRun(FakeHarness([]), None, Budget(), tmp_path, [], lambda *_: None)
+    run.session.latest_sprite_id = None
+    with pytest.raises(ValueError, match="saved no Sprite yet") as refusal:
+        asyncio.run(run._finalize_outer("c2e32b55bdaa4e9a8e46e7a073fb2b3b"))
+    assert "sprite_create" in str(refusal.value)
+    run.session.latest_sprite_id = "sprite-2"
+    with pytest.raises(ValueError, match="latest task Sprite"):
+        asyncio.run(run._finalize_outer("sprite-1"))
 
 
 def test_executor_cannot_call_plan_control(monkeypatch, tmp_path):
