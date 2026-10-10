@@ -1,8 +1,10 @@
 /** Isolated renderer: format and check one TSX candidate, then render evidence into /work. */
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import ts from "typescript";
 import prettier from "prettier";
+import { languageDiagnostics } from "./typescript.mjs";
 import { bundle } from "@remotion/bundler";
 import { exportTemplate, buildPresentation } from "./presentation.mjs";
 import {
@@ -12,8 +14,12 @@ import {
   renderMedia,
 } from "@remotion/renderer";
 
-const root = "/work";
+const root = process.env.IMV_WORK_ROOT ?? "/work";
+const rendererRoot = process.env.IMV_RENDERER_ROOT ?? "/renderer";
+// Remotion creates browser profiles through os.tmpdir(); keep that state inside this attempt.
+os.tmpdir = () => `${root}/.tmp`;
 const request = JSON.parse(await fs.readFile(`${root}/request.json`, "utf8"));
+const previewConfig = request.preview_config ?? request.config;
 const checks = [];
 const result = {
   checks,
@@ -173,36 +179,16 @@ function sourcePolicy(code) {
   visit(source);
 }
 
-/** Typecheck candidate and the actual default-props call site against installed declarations. */
+/** Check the actual candidate/default-props call sites and retain structured diagnostic locations. */
 function typecheck() {
-  const program = ts.createProgram(
-    [`${root}/Template.tsx`, `${root}/Export.tsx`, `${root}/contract.tsx`],
-    {
-      strict: true,
-      noEmit: true,
-      skipLibCheck: true,
-      jsx: ts.JsxEmit.ReactJSX,
-      target: ts.ScriptTarget.ES2022,
-      module: ts.ModuleKind.ESNext,
-      moduleResolution: ts.ModuleResolutionKind.Bundler,
-      esModuleInterop: true,
-      types: ["react", "react-dom"],
-    },
-  );
-  const errors = ts.getPreEmitDiagnostics(program);
-  if (errors.length)
-    throw new Error(
-      ts.formatDiagnostics(errors, {
-        getCurrentDirectory: () => root,
-        getCanonicalFileName: (name) => name,
-        getNewLine: () => "\n",
-      }),
-    );
+  const checked = languageDiagnostics(root);
+  result.diagnostics = checked.diagnostics;
+  if (checked.diagnostics.length) throw new Error(checked.detail);
 }
 
 /** Load managed fonts before Remotion captures any frame; user code owns no loader side effects. */
 function entrypoint() {
-  const config = JSON.stringify(request.config);
+  const config = JSON.stringify(previewConfig);
   const composition = request.composition;
   return `/** Trusted preview host waits for both managed font weights. */
 import React from 'react';
@@ -234,18 +220,19 @@ async function main() {
         code,
         request.config,
         request.composition,
+        request.subtitle ? previewConfig.highlightRanges : null,
       );
       await fs.writeFile(`${root}/Export.tsx`, exported);
     });
-    await fs.symlink("/renderer/node_modules", `${root}/node_modules`);
+    await fs.symlink(`${rendererRoot}/node_modules`, `${root}/node_modules`);
     await fs.writeFile(
       `${root}/contract.tsx`,
-      `/** Verify source props and default export call sites. */\nimport React from 'react';\nimport Template from './Template';\nimport Export from './Export';\nconst props = ${JSON.stringify(request.config)};\nconst element = <Template {...props} />;\nconst exported = <Export />;\n`,
+      `/** Verify source props and default export call sites. */\nimport React from 'react';\nimport Template from './Template';\nimport Export from './Export';\nconst props = ${JSON.stringify(request.config)};\nconst element = <Template {...props} ${request.subtitle ? `highlightRanges={[[0,1]]}` : ""} />;\nconst exported = <Export />;\n`,
     );
     await fs.writeFile(`${root}/entry.tsx`, entrypoint());
     await check("typescript", async () => typecheck());
     await check("interactive_bundle", () =>
-      buildPresentation(root, request.config, request.composition),
+      buildPresentation(root, request.config, request.composition, request.keywords),
     );
     const serveUrl = await check("bundle", () =>
       bundle({
@@ -263,13 +250,13 @@ async function main() {
     const composition = await selectComposition({
       serveUrl,
       id: "Template",
-      inputProps: request.config,
+      inputProps: previewConfig,
       puppeteerInstance: browser,
     });
     const options = {
       serveUrl,
       composition,
-      inputProps: request.config,
+      inputProps: previewConfig,
       puppeteerInstance: browser,
       logLevel: "error",
       timeoutInMilliseconds: 30000,

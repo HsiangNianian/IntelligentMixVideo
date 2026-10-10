@@ -1,7 +1,7 @@
 /** 母版与特效轨道编辑；SDK 驱动游标，特效变更回传草稿，卸载取消缩略图任务。 */
 import { useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
 import { Timeline, type TimelineState } from "@xzdarcy/react-timeline-editor";
-import { Film } from "lucide-react";
+import { Film, Wand2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { buildPreviewRows, PreviewClip } from "./timeline";
 import { objectIcons } from "./EffectAssets";
@@ -52,9 +52,9 @@ function ClipThumbnails({ clip, cache }: { clip: PreviewClip; cache: Map<string,
         {images.map((src, index) => <img key={index} src={src} alt="" draggable={false} className="h-full min-w-0 flex-1 object-cover" />)}
       </div>
       <span className="absolute inset-y-0 left-2 flex items-center text-white"><Film className="size-3" aria-hidden="true" /></span>
-      {error && <div className="absolute inset-y-0 right-1 flex items-center gap-1 text-[10px] text-white/80">
+      {error && <div className="absolute inset-y-0 right-1 flex items-center gap-1 text-[11px] text-white/80">
         <span role="status" className="sr-only" title={error}>{error}</span>
-        <Button type="button" size="sm" variant="ghost" onClick={(event) => { event.stopPropagation(); setAttempt((value) => value + 1); }} className="h-5 px-1 text-[10px] text-white hover:bg-white/15 hover:text-white">重试缩略图</Button>
+        <Button type="button" size="sm" variant="ghost" onClick={(event) => { event.stopPropagation(); setAttempt((value) => value + 1); }} className="h-5 px-1 text-[11px] text-white hover:bg-white/15 hover:text-white">重试缩略图</Button>
       </div>}
       {clip.transition && <div
         className="pointer-events-none absolute inset-y-0 border-x-2 border-primary bg-primary/25"
@@ -105,9 +105,9 @@ export function PreviewTimeline({ ref, rows, disabled, time, onSeek, duration = 
         {rows.map((row) => {
           const clip = row.actions[0];
           if (!clip) throw new Error("时间轴轨道缺少片段");
-          const Icon = clip.effectId === "video" ? Film : objectIcons[clip.effectId as EffectTarget];
+          const Icon = clip.effectId === "video" ? Film : clip.effectId === "remotion" ? Wand2 : objectIcons[clip.effectId as EffectTarget];
           if (!Icon) throw new Error("时间轴轨道类型无效");
-          return <div key={row.id} data-object={clip.effectId} className="template-timeline-label flex h-[42px] min-w-0 items-center gap-1.5" title={clip.label}><Icon className="size-3.5 shrink-0" aria-hidden="true" /><span className="truncate text-[10px]">{clip.effectId === "video" ? "视频" : clip.label}</span></div>;
+          return <div key={row.id} data-object={clip.effectId} className="template-timeline-label flex h-[42px] min-w-0 items-center gap-1.5" title={clip.label}><Icon className="size-3.5 shrink-0" aria-hidden="true" /><span className="truncate text-[11px]">{clip.effectId === "video" ? "视频" : clip.label}</span></div>;
         })}
       </div>
       <div

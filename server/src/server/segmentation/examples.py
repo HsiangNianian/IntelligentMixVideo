@@ -3,6 +3,7 @@
 # 文档请求示例，供 Swagger UI 的“Try it out”预填；结构与 Fun-ASR 原始输出一致。
 # 文案字符数与词内字符数相同，时间轴单调递增，可直接提交。
 SEGMENTATION_REQUEST_EXAMPLE = {
+    "title": "散养土鸡上新",
     "script": "大家好，欢迎来到直播间。今天上架散养的土鸡。",
     "asr_result": {
         "transcripts": [
@@ -27,34 +28,46 @@ SEGMENTATION_REQUEST_EXAMPLE = {
     },
 }
 
-# 文档成功响应示例，与请求示例同源，展示切片内仅用于成片字幕的短句时间。
+# 文档成功响应示例：二次切分后每段至多 8 个有效字，原文标点保留给下游。
 # warnings 非空时元素为 {"code", "message"}，此处展示正常对齐情况所以为空数组。
 SEGMENTATION_RESPONSE_EXAMPLE = {
+    "title_keyword": "散养土鸡",
     "segments": [
         {
             "segment_id": 1,
-            "group_id": [1, 2],
-            "text": "大家好，欢迎来到直播间。",
+            "group_id": [1, 4],
+            "text": "大家好，",
             "start_time": 0.0,
-            "end_time": 2.0,
+            "end_time": 0.6,
             "keyword": "",
             "level": 1,
-            "subtitle_parts": [
-                {"text": "大家好", "start_time": 0.0, "end_time": 0.6},
-                {"text": "欢迎来到直播间", "start_time": 0.6, "end_time": 2.0},
-            ],
         },
         {
             "segment_id": 2,
-            "group_id": [2, 2],
-            "text": "今天上架散养的土鸡。",
+            "group_id": [2, 4],
+            "text": "欢迎来到直播间。",
+            "start_time": 0.6,
+            "end_time": 2.0,
+            "keyword": "",
+            "level": 1,
+        },
+        {
+            "segment_id": 3,
+            "group_id": [3, 4],
+            "text": "今天上架",
             "start_time": 2.4,
+            "end_time": 3.2,
+            "keyword": "",
+            "level": 1,
+        },
+        {
+            "segment_id": 4,
+            "group_id": [4, 4],
+            "text": "散养的土鸡。",
+            "start_time": 3.2,
             "end_time": 4.4,
             "keyword": "土鸡",
             "level": 2,
-            "subtitle_parts": [
-                {"text": "今天上架散养的土鸡", "start_time": 2.4, "end_time": 4.4},
-            ],
         },
     ],
     "warnings": [],
@@ -65,7 +78,7 @@ SEGMENTATION_RESPONSE_EXAMPLE = {
         "asr_extra_chars": 0,
         "edit_cost": 0,
         "repair_block_count": 0,
-        "segment_count": 2,
+        "segment_count": 4,
         "keyword_rejected_count": 0,
     },
 }

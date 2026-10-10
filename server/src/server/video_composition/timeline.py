@@ -1,4 +1,4 @@
-"""由业务快照生成 IMS Timeline；转场只用效果类型连接实际片段，其他对象保留模板时间规则。"""
+"""由业务快照生成 IMS Timeline；纯素材按序裁尾，无声标题铺满全片，其余对象沿用模板规则。"""
 
 from math import floor
 import re
@@ -6,9 +6,9 @@ import re
 from pydantic import TypeAdapter
 
 from ..segmentation.segmentation import SUBTITLE_PUNCTUATION
-from ..template.schema import CATEGORY_PARAMETERS, EffectTemplateEditor, Template
+from ..template.schema import CATEGORY_PARAMETERS, EffectTemplateEditor, EffectTrack, Template
 from ..template.timing import resolve_track
-from .schema import CompositionRequest, MatchedSegment, Segment
+from .schema import CompositionRequest, MatchedSegment, PositiveSeconds, Segment
 
 
 def validate_segments(segments: list[Segment], duration_ms: int) -> None:
@@ -25,12 +25,12 @@ def validate_segments(segments: list[Segment], duration_ms: int) -> None:
 
 
 def validate_matches(segments: list[Segment], matches: list[MatchedSegment]) -> None:
-    """逐项核对上游整数编号、顺序、文案和秒制边界，拒绝其他任务或重新对齐的结果。"""
+    """严格核对数量、编号、顺序和时间；文字仅忽略首尾空白，不改写本地切片或匹配回执。"""
     if len(segments) != len(matches):
         raise ValueError("匹配片段数量不一致")
     for source, matched in zip(segments, matches):
         if (
-            matched.segment_id != source.segment_id or matched.text != source.text
+            matched.segment_id != source.segment_id or matched.text.strip() != source.text.strip()
             or matched.start_time != source.start_time
             or matched.end_time != source.end_time
         ):
@@ -74,18 +74,23 @@ def format_keyword(content: str, keyword: str, config: EffectTemplateEditor, rol
 
 def build_timeline(
     request: dict, template: dict, segments: list[dict], matches: list[dict],
-    duration_ms: int, *, width: int, height: int, fps: int,
+    duration_ms: int | float, *, width: int, height: int, fps: int,
+    material_durations: list[float] | None = None,
 ) -> tuple[dict, list[str]]:
     """返回时间线及转场调整说明；无网络、模型、随机值或对输入快照的修改。"""
     request = CompositionRequest.model_validate(request)
     template = Template.model_validate(template)
-    source = TypeAdapter(list[Segment]).validate_python(segments)
-    matched = TypeAdapter(list[MatchedSegment]).validate_python(matches)
-    validate_segments(source, duration_ms)
-    validate_matches(source, matched)
+    standard = request.composition_mode == "standard"
+    has_subtitles = request.composition_mode != "materials_silent" and bool(request.text)
+    source = TypeAdapter(list[Segment]).validate_python(segments) if has_subtitles else []
+    matched = TypeAdapter(list[MatchedSegment]).validate_python(matches) if standard else []
+    if has_subtitles:
+        validate_segments(source, duration_ms)
+    if standard:
+        validate_matches(source, matched)
     if not all(type(v) is int and v > 0 for v in (width, height, fps)) or fps > 60:
         raise ValueError("输出尺寸或帧率无效")
-    duration = duration_ms / 1000
+    duration = TypeAdapter(PositiveSeconds).validate_python(duration_ms) / 1000
     by_id = {item.id: item for item in template.effects}
     if len(by_id) != len(template.effects):
         raise ValueError("模板效果快照包含重复引用")
@@ -123,18 +128,33 @@ def build_timeline(
             clip.update(In=source_start, Out=end if source_start == start else source_start + (end - start))
         return clip
 
-    # 只按命中素材切开可见画面；连续未命中字幕和所有间隙合为原时刻数字人。
+    # 纯素材按源时长顺序铺满；标准模式只按命中切片切开画面，其余使用数字人。
     clips, cursor = [], 0
-    for item, match in zip(source, matched):
-        if match.matched_candidate_url is None:
-            continue
-        if cursor < item.start_time:
-            clips.append(video(request.video_url, "video", cursor, item.start_time, cursor))
-        clips.append(video(match.matched_candidate_url, match.matched_candidate_type,
-                           item.start_time, item.end_time, 0))
-        cursor = item.end_time
-    if cursor < duration:
-        clips.append(video(request.video_url, "video", cursor, duration, cursor))
+    if standard:
+        for item, match in zip(source, matched):
+            if match.matched_candidate_url is None:
+                continue
+            if cursor < item.start_time:
+                clips.append(video(request.video_url, "video", cursor, item.start_time, cursor))
+            clips.append(video(match.matched_candidate_url, match.matched_candidate_type,
+                               item.start_time, item.end_time, 0))
+            cursor = item.end_time
+        if cursor < duration:
+            clips.append(video(request.video_url, "video", cursor, duration, cursor))
+    else:
+        durations = TypeAdapter(list[PositiveSeconds]).validate_python(material_durations)
+        if len(durations) > len(request.materials):
+            raise ValueError("素材时长与请求数量不一致")
+        for material, seconds in zip(request.materials, durations):
+            end = min(duration, cursor + seconds)
+            if abs(end - duration) < 1e-8:
+                end = duration
+            clips.append(video(material.file_url, material.type, cursor, end, 0))
+            cursor = end
+            if cursor >= duration:
+                break
+        if cursor < duration:
+            raise ValueError("素材时长不足以覆盖成片")
 
     warnings = []
     def text(role: str, content: str, start: float, end: float,
@@ -163,12 +183,12 @@ def build_timeline(
         return clip
 
     subtitle_tracks = []
-    audio_tracks = [{"AudioTrackClips": [{
+    audio_tracks = [] if request.composition_mode == "materials_silent" else [{"AudioTrackClips": [{
         "MediaURL": request.audio_url, "In": 0, "Out": duration,
         "TimelineIn": 0, "TimelineOut": duration,
     }]}]
     music = request.pack_rules.background_music
-    if music.audio_switch:
+    if music is not None and music.audio_switch:
         audio_tracks.append({"AudioTrackClips": [{
             "MediaURL": music.audio_url, "In": 0, "TimelineIn": 0, "TimelineOut": duration,
             "LoopMode": True, "Effects": [{"Type": "Volume", "Gain": music.volume}],
@@ -176,7 +196,21 @@ def build_timeline(
     timeline = {"VideoTracks": [{"VideoTrackClips": clips}], "AudioTracks": audio_tracks,
                 "SubtitleTracks": subtitle_tracks}
     effects = []
-    for track in template.tracks:
+    tracks = list(template.tracks)
+    if not standard:
+        # 缺少对象时只补本次合成的默认样式，不保存模板，也不使用编辑器示例文字。
+        for target, content in (("title", request.title), ("subtitle", source)):
+            if content and not any(track.target == target for track in tracks):
+                tracks.append(EffectTrack(id=f"composition-{target}", target=target, start_mode="seconds",
+                                          start=0, duration=None, editor=EffectTemplateEditor(**{
+                                              key: "" for key in ("title", "subtitle", "bubble_text") if key != target
+                                          })))
+    for track in tracks:
+        if not standard:
+            if (track.target == "subtitle" and not source) or (track.target == "title" and not request.title):
+                continue
+            if track.target == "title" and request.composition_mode == "materials_silent":
+                track = track.model_copy(update={"start_mode": "seconds", "start": 0, "duration": None})
         track_parameters = parameters_for(track.editor)
         if track.target == "transition":
             # 忽略模板转场时间，默认一秒；每侧最多占半段，避免同一片段的入出转场重叠。
@@ -227,7 +261,9 @@ def build_timeline(
                         content = format_keyword(content, (segment.editor.title_keyword or first_title_keyword(content))
                                                  if track.target == "title" else keyword,
                                                  segment.editor, track.target)
-                    text_clips.append(text(track.target, content, segment.start, segment.end, segment.editor, track_parameters))
+                    # 固定标题覆盖到请求终点，避免非整帧时长留下没有标题的尾部画面。
+                    end = duration if request.composition_mode == "materials_silent" and track.target == "title" else segment.end
+                    text_clips.append(text(track.target, content, segment.start, end, segment.editor, track_parameters))
             if text_clips:
                 timeline["SubtitleTracks"].append({"SubtitleTrackClips": text_clips})
     if effects:

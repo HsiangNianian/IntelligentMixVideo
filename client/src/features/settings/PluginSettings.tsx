@@ -1,5 +1,5 @@
 /** 设置对话框主体：左侧纵向模块导航（首项通用展示环境与连接），右侧滚动表单；选择模块后显式保存到客户端本地。 */
-import { useEffect, useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { Puzzle, Settings2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { apiBase, setApiBase } from "@/lib/api-base";
 import { listPlugins, readSettings, saveSettings, type Plugin, type Values } from "./api";
 import { normalizeValues, schemaError } from "./schema";
+import { Spinner } from "@/components/ui/spinner";
+import { Hint } from "@/components/Hint";
 
 /** 固定面板使用独立值，插件导航统一加前缀，存储 ID 不受影响。 */
 const GENERAL_TAB = "general";
@@ -34,12 +36,25 @@ function SettingsActions({ saving, onCancel, children }: {
   );
 }
 
-/** 通用地址直接保存在客户端；不依赖目录，新请求读取保存后的地址。 */
+/** 通用地址与本地模板路径保存在客户端；不依赖目录，新请求读取保存后的地址。 */
 function GeneralSection({ onCancel }: { onCancel?: () => void }) {
   const titleId = useId();
   const [url, setUrl] = useState(apiBase);
+  // 读取到已存值前禁用路径输入，避免用空值覆盖已保存路径。
+  const [path, setPath] = useState<string>();
+  // 只提交相对打开时实际修改的字段：运行时分配的内置后端地址不能被存成固定地址，也不改回其他实例保存的路径。
+  const initial = useRef({ url: apiBase(), path: "" });
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
+  useEffect(() => {
+    let active = true;
+    if (isTauri()) readSettings().then(saved => {
+      if (!active) return;
+      initial.current.path = String(saved.$client?.template_path ?? "");
+      setPath(initial.current.path);
+    }, () => undefined);
+    return () => { active = false; };
+  }, []);
   return (
     <section aria-labelledby={titleId} className="flex h-full min-h-0 flex-col">
       <form aria-label="通用设置" className="flex min-h-0 flex-1 flex-col" onSubmit={async (event) => {
@@ -48,9 +63,14 @@ function GeneralSection({ onCancel }: { onCancel?: () => void }) {
         setSaving(true);
         setMessage("");
         try {
-          await saveSettings("$client", { api_url: url.trim() });
-          setApiBase(url.trim());
-          setMessage("已保存，后续请求使用新地址；已有会话连接请重启客户端后切换。");
+          const values: Values = {};
+          if (url.trim() !== initial.current.url) values.api_url = url.trim();
+          if (path !== undefined && path.trim() !== initial.current.path) values.template_path = path.trim();
+          // 宿主按字段合并 $client，未修改的字段保持磁盘上的最新值。
+          if (Object.keys(values).length) await saveSettings("$client", values);
+          if (values.api_url !== undefined) setApiBase(url.trim());
+          initial.current = { url: url.trim(), path: path?.trim() ?? initial.current.path };
+          setMessage("已保存。后续请求使用新地址；本地模板读写立即使用新路径，已打开的本地模板需回主页重新打开；已有会话连接请重启客户端后切换。");
         } catch {
           setMessage("保存地址失败，请重试");
         } finally {
@@ -59,7 +79,7 @@ function GeneralSection({ onCancel }: { onCancel?: () => void }) {
       }}>
         <div className="min-h-0 flex-1 overflow-y-auto p-5 sm:p-8">
           <h2 id={titleId} className="text-lg font-semibold">环境与连接</h2>
-          <p className="mt-2 text-sm text-muted-foreground">设置当前客户端连接的后端服务地址。</p>
+          <p className="mt-2 text-sm text-muted-foreground">设置当前客户端连接的后端服务地址和本地模板保存位置。</p>
           <dl className="mt-6 divide-y text-sm">
             <div className="flex flex-wrap justify-between gap-3 py-4">
               <dt className="text-muted-foreground">运行环境</dt>
@@ -70,6 +90,15 @@ function GeneralSection({ onCancel }: { onCancel?: () => void }) {
               <dd className="w-full min-w-0">
                 <Input id={`${titleId}-url`} type="url" required pattern="https?://.+" value={url}
                   onChange={event => { setUrl(event.target.value); setMessage(""); }} disabled={saving} />
+              </dd>
+            </div>
+            <div className="flex flex-wrap justify-between gap-3 py-4">
+              <dt className="text-muted-foreground"><Label htmlFor={`${titleId}-path`}>本地模板保存路径</Label></dt>
+              <dd className="w-full min-w-0 space-y-2">
+                <Input id={`${titleId}-path`} value={path ?? ""} disabled={path === undefined || saving}
+                  placeholder="留空使用默认 data/template/templates.json"
+                  onChange={event => { setPath(event.target.value); setMessage(""); }} />
+                <p className="text-xs text-muted-foreground">{isTauri() ? "填写 .json 绝对文件路径，留空恢复默认；原文件保留，不自动迁移。" : "本地模板仅支持桌面客户端。"}</p>
               </dd>
             </div>
           </dl>
@@ -171,19 +200,19 @@ export function PluginSettings({ onCancel }: { onCancel?: () => void }) {
   return (
     <section aria-label="模块设置" className="flex min-h-0 min-w-0 flex-1 flex-col">
       {error && <p role="alert" className="p-4 sm:p-6">{error}</p>}
-      {!data && !error && <p role="status" className="p-4 sm:p-6">正在读取设置…</p>}
+      {!data && !error && <p role="status" className="flex items-center gap-2 p-4 text-sm text-muted-foreground sm:p-6"><Spinner />正在读取设置…</p>}
           <Tabs orientation="vertical" value={active} onValueChange={setActive} className="min-h-0 flex-1 gap-0">
             <div className="w-14 shrink-0 overflow-y-auto border-r bg-muted/40 p-2 sm:w-52 sm:p-3">
               <TabsList aria-label="设置模块" className="w-full gap-1 rounded-none bg-transparent p-0">
-                <TabsTrigger value={GENERAL_TAB} title="通用" className={navTriggerClass}>
+                <Hint label="通用" side="right" visibleBelow="sm"><div className="flex w-full"><TabsTrigger value={GENERAL_TAB} className={navTriggerClass}>
                   <Settings2 className="size-[18px]" aria-hidden="true" />
                   <span className="sr-only sm:not-sr-only">通用</span>
-                </TabsTrigger>
+                </TabsTrigger></div></Hint>
                 {(data?.plugins ?? []).map((plugin) => (
-                  <TabsTrigger key={plugin.id} value={`plugin:${plugin.id}`} title={plugin.name} className={navTriggerClass}>
+                  <Hint key={plugin.id} label={plugin.name} side="right" visibleBelow="sm"><div className="flex w-full"><TabsTrigger value={`plugin:${plugin.id}`} className={navTriggerClass}>
                     <Puzzle className="size-[18px]" aria-hidden="true" />
                     <span className="sr-only sm:not-sr-only">{plugin.name}</span>
-                  </TabsTrigger>
+                  </TabsTrigger></div></Hint>
                 ))}
               </TabsList>
             </div>

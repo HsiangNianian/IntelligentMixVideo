@@ -6,6 +6,7 @@ import { createComposition, getComposition } from "@/features/video_composition/
 import { requestSegmentation } from "@/features/segmentation/api";
 import { PluginSettings } from "@/features/settings/PluginSettings";
 import { listPlugins, readSettings, saveSettings, type Plugin, type Values } from "@/features/settings/api";
+import { apiBase, setApiBase } from "@/lib/api-base";
 import { fetchMock, mockDesktop } from "./setup";
 
 // 现有插件用例验证 Debug 路径；普通模式用例显式覆盖，公共夹具逐例重置开关。
@@ -55,7 +56,7 @@ async function openModule(name: string) {
 }
 
 // 场景：非法值阻止写入，修正后保存；切片请求读取快照，但不发送启动时才应用的 HTTP 策略。
-test("保存切片设置并携带本地配置请求切片", async () => {
+test.each(["测试标题", null])("保存切片设置并携带本地配置请求切片：%s", async (title) => {
   let stored: Record<string, Values> = {};
   const invoke = mock(async (_command: string, args: Record<string, unknown>) => {
     if (args?.id) stored = { ...stored, [String(args.id)]: structuredClone(args.values as Values) };
@@ -87,14 +88,14 @@ test("保存切片设置并携带本地配置请求切片", async () => {
   // 草稿修改不应提前进入请求使用的已保存配置。
   fireEvent.change(screen.getByLabelText("模型名称"), { target: { value: "unsaved-model" } });
   fetchMock.mockResolvedValueOnce(Response.json({ segments: [{ text: "甲乙" }] }));
-  expect(await requestSegmentation({ script: "甲乙", asr_result: {} })).toEqual({ segments: [{ text: "甲乙" }] });
+  expect(await requestSegmentation({ title, script: "甲乙", asr_result: {} })).toEqual({ segments: [{ text: "甲乙" }] });
   const [, options] = fetchMock.mock.calls.at(-1)!;
-  expect(JSON.parse(String(options?.body))).toEqual({ script: "甲乙", asr_result: {}, config: saved.segmentation });
+  expect(JSON.parse(String(options?.body))).toEqual({ title, script: "甲乙", asr_result: {}, config: saved.segmentation });
 });
 
 // 场景：切换模块保留各自草稿，未保存内容不写入本地配置。
 test("切换模块保留草稿", async () => {
-  const invoke = mock(async () => ({}));
+  const invoke = mock(async (_command: string, _args: Record<string, unknown>) => ({}));
   mockDesktop(invoke);
   fetchMock.mockResolvedValueOnce(Response.json([segmentation, asr]));
   render(<PluginSettings />);
@@ -103,7 +104,7 @@ test("切换模块保留草稿", async () => {
   await openModule("语音识别");
   await openModule("文案切片");
   expect(screen.getByDisplayValue("未保存模型")).toBeTruthy();
-  expect(invoke.mock.calls).toHaveLength(1);
+  expect(invoke.mock.calls.some(([, args]) => args?.id)).toBe(false);
 });
 
 // 场景：IPC 保存失败可见，界面不假报成功，保留输入并允许修正。
@@ -141,6 +142,51 @@ test("读取失败及卸载清理", async () => {
   await waitFor(() => expect(signal?.aborted).toBe(true));
 });
 
+/** 模拟宿主按字段合并 $client，并记录每次提交的字段。 */
+function mockClientSettings(stored: Record<string, Values>) {
+  const sent: Values[] = [];
+  mockDesktop(async (command, args) => {
+    if (command !== "local_settings") throw new Error(`未知命令：${command}`);
+    if (args?.id) {
+      sent.push(structuredClone(args.values as Values));
+      stored[String(args.id)] = { ...stored[String(args.id)], ...(args.values as Values) };
+    }
+    return structuredClone(stored);
+  });
+  fetchMock.mockResolvedValueOnce(Response.json([]));
+  render(<PluginSettings />);
+  return sent;
+}
+
+// 回归：未配置固定地址时只改模板路径，不把运行时后端地址存成固定地址，避免下次启动跳过内置服务。
+test("只改模板路径不保存运行时后端地址", async () => {
+  const stored: Record<string, Values> = { $client: { template_path: "/old/templates.json" } };
+  const sent = mockClientSettings(stored);
+  fireEvent.change(await screen.findByDisplayValue("/old/templates.json"), { target: { value: " /new/templates.json " } });
+  fireEvent.submit(screen.getByRole("form", { name: "通用设置" }));
+  await screen.findByText(/本地模板读写立即使用新路径/);
+  expect(sent).toEqual([{ template_path: "/new/templates.json" }]);
+  expect(stored.$client).toEqual({ template_path: "/new/templates.json" });
+});
+
+// 回归：其他实例在表单打开后保存了新路径，本实例只改地址时不把路径改回打开时的旧值。
+test("只改后端地址不覆盖其他实例保存的路径", async () => {
+  const stored: Record<string, Values> = { $client: { template_path: "/old/templates.json" } };
+  const sent = mockClientSettings(stored);
+  await screen.findByDisplayValue("/old/templates.json");
+  stored.$client = { template_path: "/other-instance/templates.json" };
+  const previous = apiBase();
+  try {
+    fireEvent.change(screen.getByLabelText("后端服务地址"), { target: { value: "http://fixed.test:9000" } });
+    fireEvent.submit(screen.getByRole("form", { name: "通用设置" }));
+    await screen.findByText(/本地模板读写立即使用新路径/);
+    expect(sent).toEqual([{ api_url: "http://fixed.test:9000" }]);
+    expect(stored.$client).toEqual({ template_path: "/other-instance/templates.json", api_url: "http://fixed.test:9000" });
+  } finally {
+    setApiBase(previous);
+  }
+});
+
 // 场景：清空可选数字、保留 false 及当前 Schema 未展示的 Debug 值；孤立存储不产生导航。
 test("规范化空数字并保留 false，插件 ID 与通用导航隔离", async () => {
   const plugin: Plugin = { id: "general", name: "普通插件", schema: {
@@ -157,6 +203,9 @@ test("规范化空数字并保留 false，插件 ID 与通用导航隔离", asyn
   await openModule("普通插件");
   expect(screen.getAllByRole("tab")).toHaveLength(2);
   expect(screen.getByRole("tab", { name: "通用" }).getAttribute("aria-selected")).toBe("false");
+  // 导航带悬停提示时，页签自身的 data-state 仍须反映选中状态，选中样式依赖它。
+  expect(screen.getByRole("tab", { name: "普通插件" }).getAttribute("data-state")).toBe("active");
+  expect(screen.getByRole("tab", { name: "通用" }).getAttribute("data-state")).toBe("inactive");
   fireEvent.change(screen.getByLabelText("可选数值"), { target: { value: "" } });
   fireEvent.submit(screen.getByRole("form", { name: "普通插件" }));
   await screen.findByText("已保存到当前客户端");

@@ -62,7 +62,7 @@ GET 成功响应与 POST 请求、成功响应均使用 `application/x-protobuf`
 顶部标题对象的 `titleKeywordBold`、`titleKeywordItalic`、`titleKeywordUnderline`、`titleKeywordStrikeout` 可组合使用，`titleKeywordColor` 设置局部颜色，`titleKeywordSize` 设置局部字号；合成时优先在请求标题中查找已有的 `titleKeyword`，空值时自动选取请求标题首段连续文字的前两个字，只标记首次出现的位置。底部字幕对象独立保存 `subtitleKeywordBold`、`subtitleKeywordItalic`、`subtitleKeywordUnderline`、`subtitleKeywordStrikeout`、`subtitleKeywordColor` 和 `subtitleKeywordSize`，作用于原切片中首次包含 `keyword` 的字幕短句，空关键词保留原文。颜色为空字符串或 `#RRGGBB`，空字符串表示保持文字原色；合成时转换为 IMS 要求的 BGR 顺序。局部字号为 0（沿用原字号）或 12～300 的整数，合成时使用 IMS `\fs` 指令设置并恢复。模板响应在对应对象的 `tracks[].editor` 返回这些值。 视频合成按气泡对象自身时间区间显示其 `bubbleText` 示例文字一次，不使用切片关键词；有气泡对象但未选气泡样式时仍显示文字，无气泡对象则不生成。关键词继续通过标题和字幕的局部样式强调。
 
 独立对象通过 `tracks` 保存，每项包含 `id`、`target`、`start_mode`、`start`、`duration` 和 `editor`。`start_mode` 支持 `seconds` 和 `percent`；百分比范围为 0 至小于 100，`duration` 为正秒数或 `null`（持续到视频结束）。模板不保存视频信息，保存校验不依赖预览时长。应用视频时按输出帧率计算区间：结尾以外不显示、结束越界时截短，动画按有效帧数缩短并记录说明，无法容纳所选动画时明确失败。文案合成逐个应用对象，标题使用请求文字，字幕和关键词采用文案时间与对象区间的交集；合成时转场忽略模板开始与持续时间，仅取特效类型并应用于实际素材边界，音频总长保持不变。
-同一文字角色的循环动画与入场、出场互斥。至少选择 1 个效果，最多 500 个不同效果 ID。
+同一文字角色的循环动画与入场、出场互斥。效果可以为空（只放 Remotion 片段的模板），最多 500 个不同效果 ID。
 
 响应补充 UUID、UTC 创建/更新时间和 `effects` 参数快照。服务端通过固定 SDK 5.2.2 白名单解析效果，
 拒绝未知 ID、错误分类和全部 `tracks[].editor` 中的效果与 `effect_ids` 不一致；客户端不能提交渲染参数。
@@ -73,7 +73,17 @@ MySQL 单独列保存唯一名称、ID 和时间，JSON 保存完整编辑配置
 
 ## 异步视频合成
 
-`POST /api/v1/video-compositions` 创建任务，HTTP 200 响应为 `{"code":200,"message":"操作成功","data":"任务ID"}`；`GET /api/v1/video-compositions/{taskId}` 查询结果，查询结构保持不变。终态回调仅含 `taskId/status/videoUrl/errorMessage`：成功为 `succeed`、视频直链、null 错误；失败为 `failed`、null 地址、错误摘要。回调 ID 与创建响应的 `data` 一致，内部和查询的成功状态仍为 `succeeded`。模板按 `tracks[].editor` 读取，标题取请求 `title`，关键词取原切片；字幕取切片内 `subtitle_parts`，按标点拆成保留中英文问号、去除其他标点的短句，短句在原切片内首尾衔接，旧快照缺少该字段时保留中英文问号并去除其他标点。素材匹配仍接收原切片文字与时间，标题和字幕的模板示例文字不进入成片，气泡对象使用其模板示例文字。
+所有模式均接受 `packRules.backgroundMusic: null`，表示不使用背景音乐，等同于省略该字段或传 `audioSwitch: false`。
+
+统一入口根据现有字段自动确定内部模式：有 `videoUrl` 为 standard；没有 `videoUrl`、有顶层 `audioUrl` 为 materials_voice；两者都没有为 materials_silent。地址缺省或 null 均视为没有，背景音乐不参与分流；请求不包含 `compositionMode`。standard 省略 `materials` 为纯数字人，显式数组才匹配；两个纯素材模式要求非空素材数组，严格按顺序拼接且不调用匹配。视频使用 FFprobe 获取实际视频流时长，图片每张 3 秒，超长裁尾、不足异步失败。非空 `text` 优先，否则读取 `copy`；有语音以 ASR 配音总长合成，有文案才切片生成字幕。无语音以 `processRules.videoDuration`（有限正数秒，可为小数，不接受布尔值或数字字符串）合成，始终无字幕，`title` 使用模板标题样式及动画并全程显示。纯素材缺少文字对象时回退内置默认样式，正文仍取请求，不保存回模板。素材原声静音，背景音乐仍可选。无语音不依赖 ASR／切片／匹配配置；纯素材含视频时 PATH 需有 `ffprobe`；探测白名单包含 HTTP 代理所需的 `httpproxy`，失败的退出码与脱敏诊断写入 `timeline.json`。字段矩阵和完整请求示例见 [视频合成 API 文档](src/server/video_composition/api.md#三种模式)。
+
+standard 模式中，请求不包含 `materials` 时为纯数字人：跳过素材匹配，以 `audioUrl` 的 ASR 原始总时长铺满数字人视频，字幕继续按文案切片和模板时间规则显示。显式 `materials: []` 保留素材匹配但不指定候选，非空数组携带候选匹配，`null` 返回 422。需要保留此前缺省字段也匹配的行为时，调用方须改为显式传入 `[]`；已有任务继续按已保存的请求和阶段恢复。
+
+视频时长优先读取首个视频轨的 `duration`；缺失或为 `N/A` 时读取该轨 `DURATION` 标签（`HH:MM:SS.小数`），普通标签缺失时兼容 `DURATION-eng`、`DURATION-ZH` 等两至三字母语言后缀，标签名不区分大小写，扣除视频轨起始偏移后仍须为有限正数。真实媒体测试覆盖 MP4、WebM（VP8/VP9）和 MKV，并检查音轨更长、语言标签与视频起点偏移的情况。不使用容器或音轨时长代替；两种视频轨时长信息均不可用的素材（如部分 FLV）仍异步报 `material_probe_failed`，具体原因写入 `timeline.json`。测试环境有 FFmpeg/FFprobe 时运行真实样本，无工具时跳过；后端集成工作流安装工具并执行这些用例。
+
+`SEGMENT_MATCH_BASE_URL` 在环境变量、`.env` 或 Debug 桌面设置中留空或仅含空白，均视为未配置。只有 standard 显式传入 `materials` 时必须提供有效匹配地址，否则受理返回 503；纯数字人和两个纯素材模式不要求该配置。非空非法地址仍拒绝加载。
+
+`POST /api/v1/video-compositions` 创建任务，HTTP 200 响应为 `{"code":200,"message":"操作成功","data":"任务ID"}`；`GET /api/v1/video-compositions/{taskId}` 查询结果，查询结构保持不变。终态回调仅含 `taskId/status/videoUrl/errorMessage`：成功为 `succeed`、视频直链、null 错误；失败为 `failed`、null 地址、错误摘要。回调 ID 与创建响应的 `data` 一致，内部和查询的成功状态仍为 `succeeded`。模板按 `tracks[].editor` 读取，标题取请求 `title`，关键词取原切片；字幕使用切片原文与时间，由合成时间线保留中英文问号并去除其他标点；已有快照中的 `subtitle_parts` 仍可读取。素材匹配仍接收原切片文字与时间，结果的数量、编号、顺序及起止时间严格校验，文字仅允许首尾空白差异；字幕继续取本地切片，原始匹配回执保留在脱敏日志中。标题和字幕的模板示例文字不进入成片，气泡对象使用其模板示例文字。
 
 创建请求的字段校验错误返回 HTTP 422，响应含 `{"code":422,"message":"请求参数无效","data":null}`；客户端配置头错误及其他错误沿用原有格式。后台合成失败通过查询结果的 `status: failed` 和 `error` 表示。
 
@@ -86,6 +96,54 @@ MySQL 单独列保存唯一名称、ID 和时间，JSON 保存完整编辑配置
 `COMPOSITION_MATCH_WAIT_SECONDS` 默认 30 秒，匹配回调未到则只主动查询一次。修改配置后重启；已有任务保留其已保存的截止时间，失败历史通知不自动重新发送。
 
 新任务还需在 `server/.env` 中设置 `ZOS_API_ENDPOINT`、`ZOS_BUCKET`、`ZOS_ACCESS_KEY_ID`、`ZOS_SECRET_ACCESS_KEY`、`ZOS_WEB_URL`，并确保 `ffmpeg` 在服务端 PATH 中；缺少 FFmpeg 时受理返回 503。`ZOS_REGION` 默认 `hangzhou-7`，`ZOS_FORCE_PATH_STYLE` 默认 false。密钥仅由服务端读取，不进入客户端 IMS 设置。上传与公开地址分别使用 API Endpoint 和 Web URL；目前不读取 `ZOS_ENDPOINT`。对象删除或桶生命周期清理后，公开 URL 也会失效。字段示例和完整接口见 [视频合成 API 文档](src/server/video_composition/api.md)。
+
+### 执行日志
+
+历史日志仍保留在 `server/src/server/.log/`，不迁移或删除。新旧日志目录均由 Git 忽略，避免误提交带签名的业务链接；日志采集需同时覆盖历史目录与当前的 `server/.log/`。
+
+新任务执行日志保存到 `.log/video_composition/<task_id>/`，相对根目录固定为 `server/` 项目目录，按源码位置定位，不受启动工作目录影响。每个任务包含下面七个 JSON 文件（如 `asr.json`），时间使用北京时间：
+
+| 文件名（省略 `.json`） | 内容 |
+| --- | --- |
+| `request` | 原始请求、任务级记录、查询响应和通知请求/响应 |
+| `template` | 模板读取输入与完整输出 |
+| `asr` | 音频 URL 与阿里返回的完整转写 JSON |
+| `segmentation` | 切片输入与输出 |
+| `matching` | 输入保存匹配请求；输出保存受理响应、原始回调结果与超时补查结果 |
+| `timeline` | 组装输入、提交设置与最终合成请求中的完整 `timeline` 对象 |
+| `zos` | 渲染、取址与转存的输入及执行/错误记录；输出只保留两类视频链接 |
+
+每个文件均为 `{"input": [], "output": [], "execute_log": [], "error_log": []}`。输入输出条目使用
+`time/action/data`，执行条目严格只有 `time/action/status`，状态沿用该事件发生时的任务状态；错误条目另外保存 `error`。
+动作采用 `阶段.事件`，如 `asr.step_finished`；输入输出可按时间和动作定位，重试与查询记录保留。
+任务快照仅补充尚未保存的内容，不重复把输入输出塞入执行记录。`timeline.output` 不保存中间组装的时间线，
+只从最终提交请求提取；同模块还保留提交响应和非空组装警告。密钥与回调令牌继续脱敏。
+
+完全相同的对象/数组正文只保存一份，重复处使用同任务内的 JSON Pointer，例如
+`{"$log_ref":"#/asr/output/0/data"}` 指向同任务 `asr.json` 的 `output[0].data`，可按路径打开原文。
+原始请求和上游输出优先保留；切片输入引用 ASR，组装输入引用模板/切片/匹配结果。
+`timeline` 中的 `materials`、`packRules` 始终原文显示，其父对象也不整块引用。仅内容完全相同且引用更短时替换，
+不同版本、每次调用的时间/动作及执行/错误记录均保留。`$log_ref` 是日志保留字段，业务 `$ref` 不受影响。
+`execution_log.expand_columns` 可完整展开按模块名合并的七文件内容；每次追加先展开再排序、重建引用，避免索引失效。
+素材匹配回调按模块视角归 `output`；提交参数和 HTTP 请求
+分别保留调用记录，HTTP `body` 引用同一份参数，不重复存正文。
+`zos.output` 的 `data` 仅保留 `aliyun_video_url`（阿里云动态视频链接）或 `zos_video_url`（ZOS 视频链接），
+同类同址只留一次并直接显示原文；不再保存渲染查询正文、Timeline 或其引用、媒资 ID、时长及对象 key。
+动态视频链接保留签名；转存成功以已有转存结果或对象 key 为依据；失败原因继续保存在 `error_log`。
+日志归类、正文引用、链接整理、脱敏、异常提取、文件写入与容量清理统一位于 `execution_log.py`。
+新事件直接生成七模块内容，不经过 `detail`。不再创建、读写或迁移 `video_composition_logs` 及其备份表；已有表保持原样，可自行删除。
+`video_compositions` 业务任务表继续保存恢复所需快照和状态。
+
+业务事务提交后只将独立日志快照入队，由单个后台线程顺序写入；正常入队不等待磁盘，事件时间取入队时刻。
+队列最多缓存 128 条，满时提交线程等待空位，不丢弃记录；文件或清理失败报告到运行日志并继续消费，不回滚业务状态。
+正常退出先收束任务与提交线程，再写完队列、停止日志线程，最后关闭数据库；进程被强制终止可能丢失尚未落盘的日志。
+文件读改写和清理共用单进程锁；先写完七个临时文件，再逐个原子替换 JSON，避免单文件出现半份正文。
+数据库与文件之间不保证事务原子性。
+每次成功写入后统计整个 `.log` 的文件大小，仅超过 50 MB（50 × 1024 × 1024 字节）时清理：
+按任务目录内文件的最新修改时间从旧到新，删除合成与通知均已结束的整个任务目录，直到不超过上限。
+超过七天的任务自然优先，没有满七天的也按相同顺序删除；未超容量即使超过七天也保留。
+正在执行、等待回调、通知 pending/sending 或仍有日志排队的任务不删；只剩受保护任务或其他日志时允许暂时超限。
+不删除 `.log` 内其他业务文件。不设定时器、不在启动时检查、不维护清理目录队列，后台写入后直接统计现有文件。
 
 ## 代码结构
 
@@ -133,7 +191,7 @@ uv sync --locked --default-index https://pypi.org/simple
 uv run --locked --project server server
 ```
 
-HTTP 请求体包含 `script`（正确文案字符串）和 `asr_result`（Fun-ASR 原始结果对象），由 Pydantic 校验必填字段与类型。也可在代码中读取 ASR 输出文件并调用：
+HTTP 请求体必填 `script`（正确文案字符串）和 `asr_result`（Fun-ASR 原始结果对象），可选 `title`（标题字符串，可省略或为 null），由 Pydantic 校验字段类型。也可在代码中读取 ASR 输出文件并调用：
 
 ```python
 import json
@@ -141,19 +199,19 @@ from pathlib import Path
 from server.segmentation import segment
 
 result = segment({
+    "title": "示例标题",
     "script": "你好世界。",
     "asr_result": json.loads(Path("asr_result.json").read_text(encoding="utf-8")),
 })
 ```
 
-使用 ASR 第一音轨的词级时间，输入时间为毫秒。返回 `segments`、提示 `warnings` 和诊断信息 `trace`；
-片段包含原文、秒制起止时间、分组和关键词；`subtitle_parts` 只供成片字幕显示，在原片段内按标点切成保留中英文问号、去除其他标点且时间首尾衔接的短句。切片本身不调用 ASR。
-成功响应的 `trace` 保留原有对齐、修复、片段与关键词统计；错误响应保持原有 `error.message` 与状态码。
-FastAPI 启动终端记录成功或失败的详细诊断：候选分句、过滤切点的原文位置及原因、模型选中的切点、
-原始关键词候选、两次模型请求耗时（毫秒）；失败日志还包含失败阶段、状态码与已采集的数据。
-过滤原因包括 `protected_or_repaired`、`min_duration_before` 和 `min_duration_after`。日志可能包含请求文案，
-桌面内置服务也会将其写入 `backend/server.log`；请按敏感数据管理日志。请求体未通过 FastAPI 字段校验时
-仍返回原有的 422 `detail`，不进入切片函数，也不产生日志诊断。
+使用 ASR 第一音轨的词级时间（毫秒），返回 `segments`、`warnings` 和 `trace`；片段包含保留标点的原文、秒制时间、分组和关键词。
+提供非 null 的 `title` 时，在现有关键词模型调用中同时提取一个标题关键词，响应新增同级 `title_keyword` 字符串；关键词须在标题中连续出现且最多 12 字。标题为空或无合适关键词时由模型返回空字符串；省略或传 null 时不返回此字段。模型结果缺失或非法直接报错，不增加兜底或额外重试。
+首次切分和关键词提取后，超过 8 个有效字（不计标点和空白）的片段批量进行语义切分。二次切分结果的 JSON、切点、子段字数或关键词完整性校验失败时，将失败输出和具体错误反馈给模型，最多修正一次；再次失败直接报错，全部通过后才应用结果。网络错误沿用 SDK 策略，不触发此校验重试。
+切片不调用 ASR，不生成字幕子段；最终去标点由下游合成负责。
+
+HTTP 与视频合成调用均在 FastAPI 终端记录阶段、切点、关键词与模型耗时，桌面日志写入 `backend/server.log`。
+日志包含文案，请按敏感数据管理；请求字段校验失败仍返回 422，不进入切片日志。
 
 请求可另带 `config` 对象：`llm_base_url`、`llm_api_key`、`llm_model` 必填，`llm_timeout_seconds` 默认 120，`llm_max_retries` 默认 1（0～3）。客户端参数仅用于该次切片，完整连接参数不与服务端密钥混用；省略 `config` 仍使用原服务端配置。独立 Python 调用可传 `segment(payload, config=ClientSettings(...))`，模型定义位于 `server.segmentation.settings`。`allow_insecure_llm_http` 仍由服务端决定，不接受客户端覆盖；错误响应不回显请求输入。
 

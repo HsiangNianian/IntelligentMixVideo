@@ -10,7 +10,7 @@
 
 - 桌面通过 `local_settings` 命令保存到应用数据目录 `data/settings/settings.json`，按插件 ID 分组。读取和保存全程持有目录文件锁；竞争时提示重试，写入临时文件并刷盘后替换正式文件，失败不先删除旧配置。API Key 目前和普通值一起明文保存；没有接系统凭据库。
 - 浏览器预览仅保存在页面进程内存，切换设置页可恢复，刷新页面丢失，不写 localStorage。
-- `../segmentation/api.ts` 的 `requestSegmentation({script, asr_result})` 读取已保存的切片配置，随 `POST /segmentations` 的 `config` 一起提交。编辑但未保存的值不进入请求。省略本地配置时发送原有请求。
+- `../segmentation/api.ts` 的 `requestSegmentation({title, script, asr_result})` 读取已保存的切片配置，随 `POST /segmentations` 的 `config` 一起提交。`title` 为可选字符串，也允许传 null。编辑但未保存的值不进入请求。省略本地配置时发送原有请求。
 - 当前没有独立切片业务页面，请求函数通过自动联调用例和下面的开发命令使用；Debug 内置后端重启后，视频合成也使用已保存的切片配置；普通模式不变。
 - 设置目录和切片请求复用共享运行时 API 地址，内置后端启动后使用实际回环端口。
 
@@ -58,7 +58,7 @@ const result = await getComposition(taskId);
 
 ```js
 const { requestSegmentation } = await import('/src/features/segmentation/api.ts');
-const result = await requestSegmentation({script: '与 ASR 对应的文案', asr_result: yourAsrResult});
+const result = await requestSegmentation({title: '示例标题', script: '与 ASR 对应的文案', asr_result: yourAsrResult});
 ```
 
 自动测试隔离网络与真实密钥，不会调用模型：

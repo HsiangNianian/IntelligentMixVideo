@@ -45,15 +45,28 @@ def history_app(history_store):
 
 
 @pytest.mark.parametrize("composition", [
-    {"width": 1920, "height": 1080, "fps": 24, "duration_in_frames": 77},
-    {"width": 3840, "height": 2160, "fps": 60, "duration_in_frames": 1800},
-    {"width": 1080, "height": 1080, "fps": 25, "duration_in_frames": 125},
+    {"width": 1920, "height": 1080, "fps": 30, "duration_in_frames": 150},
+    {"width": 1080, "height": 1920, "fps": 24, "duration_in_frames": 150},
+    {"width": 1080, "height": 1080, "fps": 30, "duration_in_frames": 150},
 ])
-def test_creation_preserves_selected_composition(history_app, history_store, composition):
-    """客户端选择的画布与整帧时长持久化到作品，后续读取保留实际生成配置。"""
+def test_creation_rejects_any_other_canvas_or_frame_rate(history_app, history_store, composition):
+    """本链路主画布固定为 1080×1920、30 FPS；其他规格在创建时即被拒绝。"""
     with TestClient(history_app) as client:
         response = client.post("/works", json={
             "description": "按所选配置生成标题", "composition": composition,
+        })
+        assert response.status_code == 422
+    with history_store.connection() as db:
+        for table in ("projects", "jobs", "chat_messages"):
+            assert db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+
+
+def test_creation_accepts_the_fixed_canvas_and_queues_the_job(history_app, history_store):
+    """固定画布请求正常入库并排队；作品保留实际生成配置。"""
+    composition = {"width": 1080, "height": 1920, "fps": 30, "duration_in_frames": 150}
+    with TestClient(history_app) as client:
+        response = client.post("/works", json={
+            "description": "固定画布标题", "composition": composition,
         })
         assert response.status_code == 202
         work_id = response.json()["work"]["id"]
@@ -534,7 +547,7 @@ def test_sse_http_reconnect_and_followup_job(history_app, history_store):
             time.sleep(0.01)
         assert server.started
         url = f"http://127.0.0.1:{port}/works/{work.id}/stream"
-        with httpx.stream("GET", url, params={"after": cursor}, timeout=3) as response:
+        with httpx.stream("GET", url, params={"after": cursor}, timeout=3, trust_env=False) as response:
             assert response.status_code == 200
             assert response.headers["content-type"].startswith("text/event-stream")
             assert response.headers["x-accel-buffering"] == "no"
@@ -559,6 +572,7 @@ def test_sse_http_reconnect_and_followup_job(history_app, history_store):
             params={"after": 0},
             headers={"Last-Event-ID": str(cursor)},
             timeout=3,
+            trust_env=False,
         ) as response:
             lines = response.iter_lines()
             events = [json.loads(line[6:]) for line in _data_lines(lines, 2)]

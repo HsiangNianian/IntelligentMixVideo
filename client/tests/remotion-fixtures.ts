@@ -62,3 +62,30 @@ export function remotionJob(
         : null,
   };
 }
+/** v2 成功版本的参数是嵌套 JSON，参数面板按实例渲染 JSON 文本域。 */
+export function remotionNestedVersion(id = "version-2"): Version {
+  return {
+    id,
+    project_id: "work-1",
+    number: Number(id.match(/\d+$/)?.[0] ?? 2),
+    source: "agent",
+    created_at: "2026-09-14T08:01:08Z",
+    candidate: {
+      tsx_code: "composed source code",
+      default_config: { title: { text: "今日灵感", size: 64 } },
+      config_schema: { properties: { title: { type: "object" } } },
+    },
+    spec: {
+      schema_version: "2",
+      name: "组合字效",
+      sprite_kind: "composition",
+      composition: {
+        width: 1080,
+        height: 1920,
+        fps: 30,
+        duration_in_frames: 150,
+      },
+      text_layers: [],
+    },
+  };
+}

@@ -16,6 +16,12 @@ import { useWorkHistory } from "@/features/remotion_templates/useWorkHistory";
 import { remotionServer } from "./remotion-server";
 import { fetchMock } from "./setup";
 
+/** 历史行内的删除按钮：删除提示改为悬停 Tooltip，按会话标题定位所在行再取删除按钮。 */
+function deleteButton(title: string) {
+  const row = screen.getByRole("button", { name: new RegExp(title) }).parentElement!;
+  return within(row).getByRole("button", { name: "删除聊天" });
+}
+
 /** 统计删除写入，排除历史刷新和断线恢复读取。 */
 function deletes() {
   return fetchMock.mock.calls.filter(
@@ -31,18 +37,18 @@ test("删除当前聊天先确认，成功清理当前视图和订阅", async ()
   render(<RemotionWorkspace />);
   fireEvent.click(await screen.findByRole("button", { name: /待删除/ }));
   await waitFor(() => expect(fake.streams.size).toBe(1));
-  fireEvent.click(screen.getByTitle("删除「待删除」"));
+  fireEvent.click(deleteButton("待删除"));
   expect(deletes()).toHaveLength(0);
   fireEvent.click(
     within(screen.getByRole("dialog")).getByRole("button", { name: "取消" }),
   );
   expect(deletes()).toHaveLength(0);
   expect(fake.snapshots.has("work-1")).toBe(true);
-  fireEvent.click(screen.getByTitle("删除「待删除」"));
+  fireEvent.click(deleteButton("待删除"));
   fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
   await waitFor(() => expect(screen.queryByRole("dialog") === null).toBe(true));
   expect(screen.queryByTitle("Remotion 字效播放器") === null).toBe(true);
-  expect(screen.queryByTitle("删除「待删除」") === null).toBe(true);
+  expect(screen.queryByRole("button", { name: /待删除/ }) === null).toBe(true);
   expect(screen.getByRole("button", { name: /保留会话/ }) !== null).toBe(true);
   expect(fake.streams.size).toBe(0);
   expect(
@@ -128,7 +134,8 @@ test("删除弹窗防重复提交并保留失败重试入口", async () => {
   );
   await api.create("慢删除");
   render(<RemotionWorkspace />);
-  fireEvent.click(await screen.findByTitle("删除「慢删除」"));
+  await screen.findByRole("button", { name: /慢删除/ });
+  fireEvent.click(deleteButton("慢删除"));
   const confirm = screen.getByRole("button", { name: "确认删除" });
   fireEvent.click(confirm);
   fireEvent.click(confirm);
@@ -231,7 +238,8 @@ test("卸载后删除回执不再刷新历史", async () => {
   );
   await api.create("卸载清理");
   const view = render(<RemotionWorkspace />);
-  fireEvent.click(await screen.findByTitle("删除「卸载清理」"));
+  await screen.findByRole("button", { name: /卸载清理/ });
+  fireEvent.click(deleteButton("卸载清理"));
   fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
   await waitFor(() => expect(release).toBeDefined());
   view.unmount();

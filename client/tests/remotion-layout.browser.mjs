@@ -32,8 +32,11 @@ try {
     viewport: { width: 1440, height: 1000 },
   });
   const page = await context.newPage();
+  // 主页读取也使用离线夹具，不连接用户真实后端。
+  await page.route("**/template", (route) => route.fulfill({ status: 503 }));
   const errors = [];
   let deleted = false;
+  let diagnosticRequests = 0;
   page.on("pageerror", (e) => errors.push(e.message));
   await page.route("**/api/templates/**", async (route) => {
     const req = route.request();
@@ -56,6 +59,10 @@ try {
       parameters: null,
       created_at: "2026-09-17T06:00:00Z",
       updated_at: "2026-09-17T06:01:00Z",
+      rounds: [
+        { layer: "outer", turn: 1, calls: [], error_code: "MODEL_CONTRACT_FAILED" },
+        { layer: "executor", turn: 2, calls: [{ tool: "sprite.compose", status: "fail", error_code: "COMPOSITION_FAILED", message: "组合生成失败。" }] },
+      ],
     }));
     if (path === "/capabilities") return json({ models_configured: true });
     if (path === "/works")
@@ -123,6 +130,13 @@ try {
     if (path.endsWith("/versions")) return json(versions);
     if (/\/versions\/[^/]+$/.test(path))
       return json(versions.find((v) => path.endsWith(v.id)));
+    if (path.endsWith("/diagnostics")) {
+      diagnosticRequests++;
+      return json({ passed: false, diagnostics: [
+        { source: "lsp", severity: "error", file: "Export.tsx", code: "2322", message: "导出类型不匹配", range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } },
+        { source: "lsp", severity: "error", file: "contract.tsx", code: "2322", message: "调用点类型不匹配", range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } },
+      ] });
+    }
     if (path.endsWith("Export.tsx"))
       return route.fulfill({
         contentType: "text/plain",
@@ -140,6 +154,18 @@ try {
     .getByText("正在渲染预览…", { exact: true })
     .waitFor({ state: "hidden" });
   await page.getByLabel("字号", { exact: true }).waitFor();
+  // 在真实浏览器验证诊断定位和折叠缓存；不执行生成的 TSX。
+  const codeToggle = page.getByRole("button", { name: "展开 V2 代码", exact: true });
+  await codeToggle.click();
+  await page.getByLabel("第 1 行：error", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: /contract.tsx.*调用点类型不匹配/ }).count(), 0);
+  await page.getByRole("button", { name: /Export.tsx.*导出类型不匹配/ }).click();
+  assert.equal(await page.locator('[data-line="1"]:focus').count(), 1);
+  await codeToggle.click();
+  await codeToggle.click();
+  assert.equal(diagnosticRequests, 1);
+  await page.screenshot({ path: join(screenshots, "imv-audit-diagnostics.png"), fullPage: true });
+  await codeToggle.click();
   // 历史消息、任务栏与版本卡片异步恢复后，底部代码操作仍须可见。
   await page.waitForFunction(() => {
     const log = document.querySelector('[role="log"]');
@@ -154,6 +180,15 @@ try {
     path: join(screenshots, "imv-remotion-desktop.png"),
     fullPage: true,
   });
+  // 在真实浏览器验证失败轮次文案，不执行生成的 TSX。
+  const rounds = page.getByRole("region", { name: "循环记录", exact: true }).last();
+  await rounds.getByRole("button", { name: /循环记录 · 2 轮/ }).click();
+  await rounds.getByRole("button", { name: /任务循环 第 1 轮/ }).click();
+  await rounds.getByText("模型响应格式无效，本轮未调用工具。").waitFor();
+  await rounds.getByRole("button", { name: /执行循环 第 2 轮/ }).click();
+  await rounds.getByText("sprite.compose → 失败 · COMPOSITION_FAILED：组合生成失败。").waitFor();
+  await page.screenshot({ path: join(screenshots, "imv-audit-rounds.png"), fullPage: true });
+  await rounds.getByRole("button", { name: /循环记录 · 2 轮/ }).click();
   // 桌面删除先确认，取消不影响当前播放器或历史选择。
   await page.getByRole("button", { name: "删除聊天", exact: true }).click();
   await page.getByRole("dialog").waitFor();
@@ -323,9 +358,11 @@ try {
     .getByRole("dialog")
     .getByRole("button", { name: "新增聊天" })
     .click();
+  // 抽屉带关闭动画，等待卸载完成后再确认没有残留弹窗。
+  await page.getByRole("dialog").waitFor({ state: "detached" });
   assert.equal(await page.getByRole("dialog").count(), 0);
   await page.getByRole("tab", { name: "聊天", exact: true }).click();
-  await page.getByText("把想法变成字效").waitFor();
+  await page.getByRole("heading", { name: "把想法变成字效" }).waitFor();
   // 损坏的本地偏好不能阻止打开工作区，也不能生成 NaN 或挤掉面板。
   await page.evaluate(() =>
     localStorage.setItem("imv.remotion.layout", '{"history":"bad"}'),

@@ -1,7 +1,7 @@
 """在共享 SQLAlchemy Engine 上保存合成任务；短事务与版本条件更新阻止重复推进。"""
 
 from datetime import UTC, datetime
-from contextlib import nullcontext
+import logging
 from typing import Literal
 from uuid import uuid4
 
@@ -9,9 +9,10 @@ from sqlalchemy import JSON, Column, Integer, MetaData, String, Table, select
 from sqlalchemy.dialects.mysql import DATETIME
 
 from ..database import get_engine
-from .execution_log import BEIJING, append_event, migrate_beijing_logs, migrate_logs, update_summary
+from . import execution_log
+from .execution_log import BEIJING
 
-# 任务保存业务快照；独立日志表一任务一行，在 detail 内按阶段追加完整事件。
+# 数据库只保存业务快照供任务恢复；执行日志独立写入本地文件。
 metadata = MetaData()
 tasks = Table(
     "video_compositions", metadata,
@@ -26,47 +27,27 @@ tasks = Table(
 )
 
 
-execution_logs = Table(
-    "video_composition_logs", metadata,
-    Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("task_id", String(36), nullable=False, unique=True),
-    Column("stage", String(16), nullable=False),
-    Column("status", String(16), nullable=False),
-    Column("detail", JSON, nullable=False),
-    Column("created_at", DATETIME(fsp=6), nullable=False),
-    Column("updated_at", DATETIME(fsp=6), nullable=False),
-    Column("task_created_at", DATETIME(fsp=6), nullable=False),
-    Column("task_finished_at", DATETIME(fsp=6)),
-    mysql_charset="utf8mb4",
-)
+def finished_tasks() -> set[str]:
+    """只允许清理合成与通知均已结束的任务；终态不可重新推进。"""
+    notification = tasks.c.data["notification_status"].as_string()
+    with get_engine().connect() as connection:
+        return set(connection.execute(select(tasks.c.task_id).where(
+            tasks.c.status.in_(("succeeded", "failed")),
+            notification.is_(None) | notification.not_in(("pending", "sending")),
+        )).scalars())
 
 
-def add_log(record: dict, event: str, details: dict, connection=None) -> None:
-    """同事务锁定任务行后合并日志，避免并发覆盖；日志时间与任务创建/结束时间独立。"""
-    with get_engine().begin() if connection is None else nullcontext(connection) as current:
-        # 无值变更的 UPDATE 在 MySQL 锁行、SQLite 锁写事务；锁一直持有到事务结束。
-        current.execute(tasks.update().where(tasks.c.task_id == record["task_id"]).values(version=tasks.c.version))
-        latest = current.execute(select(tasks).where(tasks.c.task_id == record["task_id"])).mappings().one()
-        previous = current.execute(select(execution_logs).where(execution_logs.c.task_id == record["task_id"])).mappings().first()
-        now = datetime.now(BEIJING)
-        values = dict(
-            stage=latest["stage"], status=latest["status"],
-            detail=update_summary(append_event(previous["detail"] if previous else {}, event, record["stage"], record["status"], details, now), dict(latest)),
-            updated_at=now.replace(tzinfo=None), task_created_at=latest["created_at"],
-            task_finished_at=latest["updated_at"] if latest["status"] in ("succeeded", "failed") else None,
-        )
-        if previous:
-            current.execute(execution_logs.update().where(execution_logs.c.task_id == record["task_id"]).values(**values))
-        else:
-            current.execute(execution_logs.insert().values(task_id=record["task_id"], created_at=now.replace(tzinfo=None), **values))
+def add_log(record: dict, event: str, details: dict) -> None:
+    """事务外提交日志快照至后台队列；失败只报告，不回滚业务状态。"""
+    try:
+        execution_log.enqueue_log(record, event, details, finished_tasks)
+    except Exception:
+        logging.getLogger(__name__).exception("任务 %s 执行日志入队失败", record["task_id"])
 
 
 def initialize_schema() -> None:
-    """单进程启动时备份合并旧日志并转换北京时间和中文结构；迁移失败阻止启动。"""
-    engine = get_engine()
-    migrate_logs(engine, execution_logs, tasks)
-    metadata.create_all(engine)
-    migrate_beijing_logs(engine, execution_logs, tasks)
+    """仅创建业务任务表，不读写旧日志表，也不在启动时清理文件。"""
+    tasks.create(get_engine(), checkfirst=True)
 
 
 def _record(row) -> dict:
@@ -89,8 +70,8 @@ def create(request: dict, output: dict, callback_base_url: str | None = None, ra
         connection.execute(tasks.insert().values(
             **{**record, "created_at": now.replace(tzinfo=None), "updated_at": now.replace(tzinfo=None)},
         ))
-        add_log(record, "submitted", {"input": record["data"]["raw_request"], "output": {"data": record["task_id"]},
-                                      "output_settings": output}, connection)
+    add_log(record, "submitted", {"input": record["data"]["raw_request"], "output": {"data": record["task_id"]},
+                                  "output_settings": output})
     return record
 
 
@@ -129,9 +110,7 @@ def advance(record: dict, stage: str, *, status: str = "processing", **data) -> 
         ).values(**values))
         if changed.rowcount != 1:
             return None
-        # 每次成功流转保存完整新增数据；只脱敏，不以摘要替代步骤输入输出。
-        add_log({**record, **values}, "task_finished" if status in ("succeeded", "failed") else "stage_updated",
-                data, connection)
+    add_log({**record, **values}, "task_finished" if status in ("succeeded", "failed") else "stage_updated", data)
     return {**record, **values, "updated_at": now}
 
 
@@ -154,5 +133,5 @@ def notification_status(record: dict, status: Literal["pending", "sending", "sen
         ).values(**values))
         if changed.rowcount != 1:
             return None
-        add_log(record, f"notification_{status}", details or {}, connection)
+    add_log({**record, **values}, f"notification_{status}", details or {})
     return {**record, **values}

@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 
 [[package]]
@@ -855,7 +855,7 @@ wheels = [
 
 [[package]]
 name = "imv-server"
-version = "0.4.2"
+version = "0.5.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
@@ -874,6 +874,7 @@ dependencies = [
     { name = "pymysql", extra = ["rsa"] },
     { name = "python-dotenv" },
     { name = "python-multipart" },
+    { name = "referencing" },
     { name = "sqlalchemy" },
     { name = "uvicorn" },
 ]
@@ -902,6 +903,7 @@ requires-dist = [
     { name = "pymysql", extras = ["rsa"], specifier = ">=1.1,<2" },
     { name = "python-dotenv", specifier = ">=1.2.3" },
     { name = "python-multipart", specifier = ">=0.0.32" },
+    { name = "referencing", specifier = ">=0.37.0" },
     { name = "sqlalchemy", specifier = ">=2.0,<3" },
     { name = "uvicorn", specifier = ">=0.52.4" },
 ]

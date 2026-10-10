@@ -1,5 +1,5 @@
-/** shadcn/ui select 基础组件，不依赖业务逻辑。
- * Copyright (c) 2023 shadcn — MIT；完整声明见 client/public/THIRD_PARTY_NOTICES.txt。
+/** ObsidianUI select 基础组件（基于 shadcn/ui）：下拉在触发器下方弹出并带展开动画，不依赖业务逻辑。
+ * Copyright (c) 2026 ObsidianUI、(c) 2023 shadcn — MIT；完整声明见 client/public/THIRD_PARTY_NOTICES.txt。
  */
 "use client";
 
@@ -15,14 +15,14 @@ function Select({
   return <SelectPrimitive.Root data-slot="select" {...props} />;
 }
 
-/** SelectValue 组合 Radix 原语与主题样式，交互和焦点管理由原语负责。 */
+/** SelectValue 显示当前选中项文字，未选择时显示占位。 */
 function SelectValue({
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Value>) {
   return <SelectPrimitive.Value data-slot="select-value" {...props} />;
 }
 
-/** SelectTrigger 组合 Radix 原语与主题样式，交互和焦点管理由原语负责。 */
+/** SelectTrigger 是带下拉箭头的输入样式按钮；size 控制 32/36px 两种高度。 */
 function SelectTrigger({
   className,
   size = "default",
@@ -49,11 +49,11 @@ function SelectTrigger({
   );
 }
 
-/** SelectContent 组合 Radix 原语与主题样式，交互和焦点管理由原语负责。 */
+/** SelectContent 通过 Portal 渲染；默认 popper 定位在触发器下方，宽度不小于触发器，超出可用高度时滚动。 */
 function SelectContent({
   className,
   children,
-  position = "item-aligned",
+  position = "popper",
   align = "center",
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Content>) {
@@ -62,7 +62,7 @@ function SelectContent({
       <SelectPrimitive.Content
         data-slot="select-content"
         className={cn(
-          "relative z-50 max-h-(--radix-select-content-available-height) min-w-[8rem] origin-(--radix-select-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md border bg-popover text-popover-foreground shadow-md data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
+          "relative z-50 max-h-(--radix-select-content-available-height) min-w-[8rem] origin-(--radix-select-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md border bg-popover text-popover-foreground shadow-md data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2",
           position === "popper" &&
             "data-[side=bottom]:translate-y-1 data-[side=left]:-translate-x-1 data-[side=right]:translate-x-1 data-[side=top]:-translate-y-1",
           className,
@@ -87,7 +87,7 @@ function SelectContent({
   );
 }
 
-/** SelectItem 组合 Radix 原语与主题样式，交互和焦点管理由原语负责。 */
+/** SelectItem 是单个选项，选中时在右侧显示对勾。 */
 function SelectItem({
   className,
   children,
@@ -102,10 +102,7 @@ function SelectItem({
       )}
       {...props}
     >
-      <span
-        data-slot="select-item-indicator"
-        className="absolute right-2 flex size-3.5 items-center justify-center"
-      >
+      <span className="absolute right-2 flex size-3.5 items-center justify-center">
         <SelectPrimitive.ItemIndicator>
           <CheckIcon className="size-4" />
         </SelectPrimitive.ItemIndicator>
@@ -115,7 +112,7 @@ function SelectItem({
   );
 }
 
-/** SelectScrollUpButton 组合 Radix 原语与主题样式，交互和焦点管理由原语负责。 */
+/** SelectScrollUpButton 在选项超出可见区域时出现，悬停向上滚动。 */
 function SelectScrollUpButton({
   className,
   ...props
@@ -134,7 +131,7 @@ function SelectScrollUpButton({
   );
 }
 
-/** SelectScrollDownButton 组合 Radix 原语与主题样式，交互和焦点管理由原语负责。 */
+/** SelectScrollDownButton 在选项超出可见区域时出现，悬停向下滚动。 */
 function SelectScrollDownButton({
   className,
   ...props

@@ -26,9 +26,15 @@ fn operate(directory: &Path, id: Option<&str>, values: Option<Value>) -> Result<
     };
     let entries = settings.as_object_mut().ok_or("本地设置格式错误")?;
     if let Some(id) = id {
-        let values = values
+        let mut values = values
             .filter(Value::is_object)
             .ok_or("插件配置必须为对象")?;
+        // 通用设置按字段补丁在锁内合并，旧表单只覆盖本次修改的字段，不改回其他实例保存的值。
+        if let (true, Some(Value::Object(previous))) = (id == "$client", entries.get(id)) {
+            let mut merged = previous.clone();
+            merged.extend(values.as_object().cloned().unwrap_or_default());
+            values = Value::Object(merged);
+        }
         entries.insert(id.to_owned(), values);
         let temporary = directory.join("settings.json.tmp");
         let write = || -> std::io::Result<()> {
@@ -52,7 +58,7 @@ fn operate(directory: &Path, id: Option<&str>, values: Option<Value>) -> Result<
     Ok(settings)
 }
 
-/// 省略 ID 读取全部设置，携带 ID/values 保存单个插件；不访问后端或任意用户路径。
+/// 省略 ID 读取全部设置，携带 ID/values 保存单个插件（通用设置按字段合并）；不访问后端或任意用户路径。
 #[tauri::command]
 pub fn local_settings(
     app: tauri::AppHandle,
@@ -82,7 +88,7 @@ mod tests {
         }
     }
 
-    /// 多次独立读取恢复配置，更新一个插件不删除另一个；损坏文件不被覆盖。
+    /// 多次独立读取恢复配置，更新一个插件不删除另一个；通用设置按字段合并；损坏文件不被覆盖。
     #[test]
     fn persists_plugins_without_overwriting_others() {
         let directory =
@@ -106,7 +112,23 @@ mod tests {
             Some(json!({"llm_model": "second"})),
         )
         .unwrap();
+        operate(
+            &directory.0,
+            Some("$client"),
+            Some(json!({"api_url": "http://a.test", "template_path": "/other.json"})),
+        )
+        .unwrap();
+        operate(
+            &directory.0,
+            Some("$client"),
+            Some(json!({"api_url": "http://b.test"})),
+        )
+        .unwrap();
         let saved = operate(&directory.0, None, None).unwrap();
+        assert_eq!(
+            saved["$client"],
+            json!({"api_url": "http://b.test", "template_path": "/other.json"})
+        );
         assert_eq!(saved["segmentation"]["llm_model"], "second");
         assert_eq!(saved["asr"]["dashscope_api_key"], "asr-key");
         let path = directory.0.join("settings.json");

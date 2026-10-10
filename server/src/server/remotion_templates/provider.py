@@ -1,5 +1,6 @@
-"""Bounded OpenAI-compatible JSON calls for actor and vision roles, with private credentials."""
+"""Bounded Chat Completions streams for the Outer, Plan and Executor ReAct layers."""
 
+import asyncio
 import base64
 import json
 from collections.abc import Callable
@@ -16,6 +17,7 @@ from pydantic import BaseModel, ValidationError
 
 from .settings import Settings
 from .context import AssistantMessage, Conversation
+from .completion_stream import StreamFailure, read_completion
 
 Output = TypeVar("Output", bound=BaseModel)
 
@@ -56,6 +58,25 @@ class ModelFailure(RuntimeError):
     """A sanitized provider, budget or output-contract failure safe to expose to API clients."""
 
 
+# 连接失败、超时与上游限流/不可用都是瞬时故障，等待后重试；其余状态码是配置或权限问题。
+_RETRYABLE_STATUS = frozenset({429, *range(500, 600)})
+# 指数退避的上限，避免一次任务把时间全花在等待上。
+_MAX_RETRY_DELAY_SECONDS = 30.0
+
+
+class RetryableRequest(RuntimeError):
+    """A transient transport or upstream failure the provider may retry after a wait.
+
+    The message is what the caller reports if every attempt fails, and `cause`
+    keeps the original exception for that final failure.
+    """
+
+    def __init__(self, message: str, cause: Exception | None = None) -> None:
+        """Keep the public message and the underlying exception together."""
+        super().__init__(message)
+        self.cause = cause
+
+
 class ModelContractFailure(ModelFailure):
     """A recoverable model protocol error; the harness may steer another turn within the same budget."""
 
@@ -91,13 +112,14 @@ def request_cost(body: dict) -> tuple[int, int, int]:
 
 @dataclass
 class Budget:
-    """One run shares accounting across analysis, actor generation, repairs and visual review."""
+    """One run shares accounting across exactly the Outer, Plan and Executor layers."""
 
     calls: int = 0
     tokens: int = 0
     phases: dict[str, dict[str, int]] = field(default_factory=dict)
     audit_path: Path | None = None
     on_progress: Callable[[str], None] | None = None
+    on_round: Callable[[dict], None] | None = None
     active_phase: str | None = None
     _start: tuple[int, int] = (0, 0)
 
@@ -105,6 +127,11 @@ class Budget:
         """Send host-selected phase codes to this run's persistence boundary, never model prose."""
         if self.on_progress is not None:
             self.on_progress(phase)
+
+    def round(self, record: dict) -> None:
+        """Send one finished ReAct round to persistence, never arguments or result payloads."""
+        if self.on_round is not None:
+            self.on_round(record)
 
     def record(self, event: str, **data) -> None:
         """Append private execution facts independently of the bounded model conversation."""
@@ -124,11 +151,16 @@ class Budget:
         result = {"calls": self.calls, "tokens": self.tokens}
         for name, usage in self.phases.items():
             result.update({f"{name}_{key}": value for key, value in usage.items()})
+        for name in ("outer", "plan", "executor"):
+            result[f"{name}_calls"] = self.phases.get(name, {}).get("calls", 0)
+            result[f"{name}_tokens"] = self.phases.get(name, {}).get("tokens", 0)
         return result
 
     @contextmanager
     def phase(self, name: str):
         """Account one model invocation, including malformed outputs, failures and cancellation."""
+        if name not in {"outer", "plan", "executor"}:
+            raise ValueError("Model phases are limited to outer, plan and executor")
         if self.active_phase is not None:
             raise RuntimeError("Model accounting phases cannot overlap")
         self.active_phase, self._start = name, (self.calls, self.tokens)
@@ -153,6 +185,18 @@ class Budget:
                 usage=self.summary(),
             )
 
+    def role_usage(self, name: str) -> tuple[str, int, int]:
+        """Return usage for one of the three ReAct layers without legacy aliases."""
+        roles = {"outer", "plan", "executor"}
+        if name not in roles:
+            raise ValueError(f"Unknown ReAct budget role: {name}")
+        calls = self.phases.get(name, {}).get("calls", 0)
+        tokens = self.phases.get(name, {}).get("tokens", 0)
+        if self.active_phase == name:
+            calls += self.calls - self._start[0]
+            tokens += self.tokens - self._start[1]
+        return name, calls, tokens
+
     def remaining(self, settings: Settings) -> int | None:
         """Return no quota when enforcement is disabled; otherwise check global and role limits."""
         if not settings.enforce_model_budget:
@@ -161,10 +205,7 @@ class Budget:
             raise ModelFailure("Model call or token budget exhausted.")
         remaining = settings.max_tokens - self.tokens
         if self.active_phase:
-            name = self.active_phase
-            usage = self.phases.get(name, {"calls": 0, "tokens": 0})
-            calls = usage["calls"] + self.calls - self._start[0]
-            tokens = usage["tokens"] + self.tokens - self._start[1]
+            name, calls, tokens = self.role_usage(self.active_phase)
             if calls >= getattr(settings, f"max_{name}_calls") or tokens >= getattr(
                 settings, f"max_{name}_tokens"
             ):
@@ -195,7 +236,7 @@ class Provider:
         images: list[Path] | None = None,
         vision: bool = False,
     ) -> Output:
-        """Review one independent JSON request without reading or mutating actor history."""
+        """Run one independent structured model request without reading ReAct history."""
         content = [
             {"type": "text", "text": prompt},
             *_image_content(images or [], label="Review"),
@@ -239,13 +280,13 @@ class Provider:
         }
         if len(json.dumps(body, ensure_ascii=False).encode()) > 512_000:
             raise ModelFailure(
-                "Actor task snapshot and window exceed the context budget."
+                "Model task snapshot and window exceed the context budget."
             )
         if images:
             content = [
                 {
                     "type": "text",
-                    "text": "Images follow the host snapshot mapping: original user references first, then current candidate frames. Candidate frames are observations, not new user requirements. Interpret typography only, not application chrome or scenery.",
+                    "text": "Images follow the host snapshot mapping: original user references first, then current candidate frames. Candidate frames are observations, not new user requirements. Interpret only the requested Sprite appearance, not application chrome or scenery.",
                 }
             ]
             content.extend(_image_content(images, label="Reference"))
@@ -285,13 +326,95 @@ class Provider:
             return AssistantMessage.model_validate(normalized)
         except ValidationError as exc:
             raise ModelContractFailure(
-                "Actor returned an invalid tool-call contract."
+                "Model returned an invalid tool-call contract."
             ) from exc
+
+    async def _retrying_stream(self, base, key, body, settings, budget) -> dict:
+        """Send one request, waiting and retrying transient failures.
+
+        A network blip, a timeout or a throttled or unavailable upstream must not
+        end the task: each attempt stays bounded by the model timeout, the wait
+        doubles up to a cap, and every retry is recorded in the private audit. The
+        wait is an ordinary sleep, so cancelling the job still stops it promptly.
+        """
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                return await self._stream_once(base, key, body, settings, budget)
+            except RetryableRequest as exc:
+                if attempt > settings.model_retries:
+                    raise ModelFailure(str(exc)) from exc.cause
+                delay = min(
+                    settings.model_retry_delay_seconds * 2 ** (attempt - 1),
+                    _MAX_RETRY_DELAY_SECONDS,
+                )
+                budget.record(
+                    "model_retry",
+                    phase=budget.active_phase,
+                    attempt=attempt,
+                    delay_seconds=delay,
+                    reason=str(exc)[:200],
+                )
+                await asyncio.sleep(delay)
+
+    async def _stream_once(self, base, key, body, settings, budget) -> dict:
+        """Send one streaming request and return its payload.
+
+        Transport failures, timeouts and retryable upstream statuses raise
+        ``RetryableRequest`` so the caller may wait and try again. A stream that
+        breaks mid-response keeps its own meaning, because those failures include
+        deterministic size limits that another attempt cannot fix.
+        """
+        received_bytes = False
+
+        def record_response(event, **data):
+            """Keep the audit unchanged and stop retries once any response bytes arrived."""
+            nonlocal received_bytes
+            if event == "model_response_first_bytes":
+                received_bytes = True
+            budget.record(event, **data)
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=settings.model_timeout_seconds,
+                transport=self.transport,
+                follow_redirects=False,
+            ) as client:
+                async with client.stream(
+                    "POST",
+                    base.rstrip("/") + "/chat/completions",
+                    headers={"Authorization": "Bearer " + key.get_secret_value()},
+                    json=body,
+                ) as response:
+                    if response.status_code != 200:
+                        message = (
+                            f"Model endpoint returned HTTP {response.status_code}; "
+                            "check server model configuration or retry later."
+                        )
+                        if response.status_code in _RETRYABLE_STATUS:
+                            raise RetryableRequest(message)
+                        raise ModelFailure(message)
+                    return await read_completion(response, record_response)
+        except (httpx.UnsupportedProtocol, httpx.LocalProtocolError, httpx.InvalidURL) as exc:
+            raise ModelFailure("Model endpoint configuration is invalid.") from exc
+        except httpx.TimeoutException as exc:
+            if received_bytes:
+                raise ModelFailure("Model request timed out.") from exc
+            raise RetryableRequest("Model request timed out.", exc) from exc
+        except httpx.TransportError as exc:
+            if received_bytes:
+                raise ModelFailure("Model stream disconnected before completion; no partial output was accepted.") from exc
+            raise RetryableRequest("Model endpoint is unreachable.", exc) from exc
+        except httpx.HTTPError as exc:
+            raise ModelFailure("Model response could not be read.") from exc
+        except StreamFailure as exc:
+            raise ModelFailure(str(exc)) from exc
 
     async def _request(
         self, body: dict, budget: Budget, *, vision: bool = False, tools: bool = False
     ) -> dict:
-        """Share transport limits and token accounting across structured review and actor turns."""
+        """Share transport limits and token accounting across structured ReAct turns."""
         settings = self.settings
         remaining = budget.remaining(settings)
         base = (
@@ -307,11 +430,13 @@ class Provider:
         )
         if not model or not key.get_secret_value():
             raise ModelFailure(
-                "Configure server actor and vision model credentials before submitting work."
+                "Configure server model and vision credentials before submitting work."
             )
         body = dict(
             body,
             model=model,
+            stream=True,
+            stream_options={"include_usage": True},
         )
         estimated, image_count, text_bytes = request_cost(body)
         output_limit = (
@@ -327,6 +452,8 @@ class Provider:
             text_bytes=text_bytes,
             remaining_tokens=remaining,
             max_output_tokens=max(0, output_limit),
+            stream=True,
+            timeout_seconds=settings.model_timeout_seconds,
         )
         if remaining is not None and output_limit < min(
             512, settings.max_output_tokens
@@ -342,29 +469,9 @@ class Provider:
             body["thinking"] = {"type": "disabled"}
         budget.calls += 1
         try:
-            async with httpx.AsyncClient(
-                timeout=settings.model_timeout_seconds,
-                transport=self.transport,
-                follow_redirects=False,
-            ) as client:
-                async with client.stream(
-                    "POST",
-                    base.rstrip("/") + "/chat/completions",
-                    headers={"Authorization": "Bearer " + key.get_secret_value()},
-                    json=body,
-                ) as response:
-                    if response.status_code != 200:
-                        raise ModelFailure(
-                            f"Model endpoint returned HTTP {response.status_code}; check server model configuration or retry later."
-                        )
-                    data = bytearray()
-                    async for chunk in response.aiter_bytes():
-                        data.extend(chunk)
-                        if len(data) > 2_000_000:
-                            raise ModelFailure(
-                                "Model response exceeded the size limit."
-                            )
-            payload = json.loads(data)
+            payload = await self._retrying_stream(base, key, body, settings, budget)
+            if not isinstance(payload, dict):
+                raise ValueError("Expected a completion object")
             token_detail = payload.get("usage")
             token_detail = token_detail if isinstance(token_detail, dict) else {}
             usage = token_detail.get("total_tokens")
@@ -394,18 +501,16 @@ class Provider:
             if settings.enforce_model_budget and budget.tokens > settings.max_tokens:
                 raise ModelFailure("Model token budget exhausted.")
             if settings.enforce_model_budget and budget.active_phase:
-                name = budget.active_phase
-                used = (
-                    budget.phases.get(name, {"tokens": 0})["tokens"]
-                    + budget.tokens
-                    - budget._start[1]
-                )
+                name, _calls, used = budget.role_usage(budget.active_phase)
                 if used > getattr(settings, f"max_{name}_tokens"):
                     raise ExecutionFailure(
                         "phase_budget_exhausted",
                         f"{name} model token budget exhausted.",
                     )
-            choice = payload["choices"][0]
+            choices = payload["choices"]
+            if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
+                raise ValueError("Expected exactly one completion choice")
+            choice = choices[0]
             if choice.get("finish_reason") not in (
                 {"stop", "tool_calls"} if tools else {"stop"}
             ):
@@ -413,13 +518,11 @@ class Provider:
                     "Model output did not finish normally; no partial artifact was accepted."
                 )
             message = choice["message"]
+            if not isinstance(message, dict):
+                raise ValueError("Expected an assistant message object")
             if message.get("role") != "assistant":
                 raise ModelFailure("Model returned a non-assistant message.")
             return message
-        except httpx.TimeoutException as exc:
-            raise ModelFailure("Model request timed out.") from exc
-        except httpx.HTTPError as exc:
-            raise ModelFailure("Model endpoint is unreachable.") from exc
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             raise ModelContractFailure(
                 "Model returned invalid JSON or violated the requested output contract."

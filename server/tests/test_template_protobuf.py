@@ -191,6 +191,19 @@ def test_template_protobuf_rejects_loop_conflict(
     assert pb.ListTemplatesResponse.FromString(client.get("/template").content).templates == []
 
 
+def test_template_without_effects_can_be_saved_and_read_back(client: TestClient, template_payload: dict) -> None:
+    """只放 Remotion 片段的模板没有 IMS 效果：空效果与空对象一致时可以创建、读取并出现在列表中。"""
+    created = _post(client, {**template_payload, "effect_ids": [], "tracks": []})
+    assert created.status_code == 201
+    record = pb.SaveTemplateResponse.FromString(created.content).template
+    assert list(record.effect_ids) == [] and list(record.effects) == [] and list(record.tracks.tracks) == []
+    detail = client.get(f"/template/{record.template_id}")
+    assert detail.status_code == 200
+    assert list(pb.GetTemplateResponse.FromString(detail.content).template.effect_ids) == []
+    listed = pb.ListTemplatesResponse.FromString(client.get("/template").content).templates
+    assert [item.template_id for item in listed] == [record.template_id]
+
+
 @pytest.mark.parametrize("field,value", [
     ("name", " "), ("tracks", []),
 ])

@@ -123,8 +123,8 @@ def test_phase_limit_preserves_other_roles_and_global_cap(tmp_path):
         enforce_model_budget=True,
         actor_model="offline",
         actor_api_key=SecretStr("test"),
-        max_judge_calls=1,
-        max_actor_tokens=1000,
+        max_plan_calls=1,
+        max_outer_tokens=1000,
         max_tokens=3000,
         max_output_tokens=64,
     )
@@ -150,30 +150,33 @@ def test_phase_limit_preserves_other_roles_and_global_cap(tmp_path):
 
     provider = Provider(settings, transport=httpx.MockTransport(respond))
     budget = Budget(audit_path=tmp_path / "audit.jsonl")
-    with budget.phase("judge"):
+    with budget.phase("plan"):
         asyncio.run(provider._request({"messages": []}, budget))
-    with pytest.raises(ExecutionFailure, match="judge"), budget.phase("judge"):
+    with pytest.raises(ExecutionFailure, match="plan"), budget.phase("plan"):
         asyncio.run(provider._request({"messages": []}, budget))
-    with budget.phase("actor"):
+    with budget.phase("outer"):
         asyncio.run(provider._request({"messages": []}, budget))
-    with pytest.raises(ExecutionFailure, match="actor"), budget.phase("actor"):
+    with pytest.raises(ExecutionFailure, match="outer"), budget.phase("outer"):
         asyncio.run(provider._request({"messages": []}, budget))
+    # Every documented role is reported; only the exercised ones carry usage.
     assert budget.summary() == {
         "calls": 3,
         "tokens": 1800,
-        "judge_calls": 1,
-        "judge_tokens": 600,
-        "actor_calls": 2,
-        "actor_tokens": 1200,
+        "outer_calls": 2,
+        "outer_tokens": 1200,
+        "plan_calls": 1,
+        "plan_tokens": 600,
+        "executor_calls": 0,
+        "executor_tokens": 0,
     }
     usage = 1300
-    settings.max_actor_tokens = 3000
+    settings.max_outer_tokens = 3000
     with (
         pytest.raises(ModelFailure, match="Model token budget exhausted"),
-        budget.phase("actor"),
+        budget.phase("outer"),
     ):
         asyncio.run(provider._request({"messages": []}, budget))
-    assert budget.summary()["actor_tokens"] == 2500
+    assert budget.summary()["outer_tokens"] == 2500
     assert budget.tokens == 3100
     assert budget.active_phase is None
 
@@ -202,7 +205,7 @@ def test_phase_accounting_survives_cancelled_request(tmp_path):
 
         async def call():
             """阶段作用域必须在取消时结算并退出。"""
-            with budget.phase("actor"):
+            with budget.phase("outer"):
                 await provider.ask(DialogueOutput, "s", "u", budget)
 
         async with asyncio.timeout(2):
@@ -211,7 +214,7 @@ def test_phase_accounting_survives_cancelled_request(tmp_path):
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
-        assert budget.summary()["actor_calls"] == 1
+        assert budget.summary()["outer_calls"] == 1
         assert budget.active_phase is None
         audit = budget.audit_path.read_text()
         assert "CancelledError" in audit and "secret-not-audited" not in audit
@@ -223,15 +226,15 @@ def test_recovery_settings_read_environment(tmp_path):
     """恢复次数与阶段预算来自 .env，而非写死在 agent loop 中。"""
     path = tmp_path / ".env"
     path.write_text(
-        "IMV_MAX_REVIEW_RETRIES=1\nIMV_MAX_EVIDENCE_RETRIES=2\nIMV_MAX_NO_PROGRESS_TURNS=3\nIMV_MAX_JUDGE_CALLS=5\nIMV_MAX_JUDGE_TOKENS=12000\n"
+        "IMV_MAX_REVIEW_RETRIES=1\nIMV_MAX_EVIDENCE_RETRIES=2\nIMV_MAX_NO_PROGRESS_TURNS=3\nIMV_MAX_PLAN_CALLS=5\nIMV_MAX_PLAN_TOKENS=12000\n"
     )
     settings = Settings(_env_file=path)
     assert (
         settings.max_review_retries,
         settings.max_evidence_retries,
         settings.max_no_progress_turns,
-        settings.max_judge_calls,
-        settings.max_judge_tokens,
+        settings.max_plan_calls,
+        settings.max_plan_tokens,
     ) == (1, 2, 3, 5, 12000)
 
 
@@ -368,7 +371,7 @@ def test_actor_budget_trims_whole_exchanges_without_mutating_history(
     assert ('"dropped_groups": 1' in budget.audit_path.read_text()) is enforced
 
 
-@pytest.mark.parametrize("phase", ["actor", "judge"])
+@pytest.mark.parametrize("phase", ["outer", "plan"])
 def test_disabled_quotas_allow_over_limit_requests_and_responses(tmp_path, phase):
     """达到全局和角色上限仍发送大输入并接受超额响应；调用和 token 继续如实累计。"""
     settings = Settings(
@@ -378,10 +381,10 @@ def test_disabled_quotas_allow_over_limit_requests_and_responses(tmp_path, phase
         actor_api_key=SecretStr("fixture"),
         max_model_calls=1,
         max_tokens=1000,
-        max_actor_calls=1,
-        max_judge_calls=1,
-        max_actor_tokens=1000,
-        max_judge_tokens=1000,
+        max_outer_calls=1,
+        max_plan_calls=1,
+        max_outer_tokens=1000,
+        max_plan_tokens=1000,
     )
     budget = Budget(
         calls=50,
@@ -419,16 +422,17 @@ def test_disabled_quotas_allow_over_limit_requests_and_responses(tmp_path, phase
                     "rules",
                     "需求" * 20000,
                     budget,
-                    vision=phase == "judge",
+                    vision=False,
                 )
             )
         assert result.answer == "继续执行"
-    assert budget.summary() == {
-        "calls": 52,
-        "tokens": 300000,
-        f"{phase}_calls": 52,
-        f"{phase}_tokens": 300000,
-    }
+    # The exercised role carries the usage; the other documented roles stay at zero.
+    expected = {"calls": 52, "tokens": 300000}
+    for role in ("outer", "plan", "executor"):
+        value = 52 if role == phase else 0
+        expected[f"{role}_calls"] = value
+        expected[f"{role}_tokens"] = 300000 if role == phase else 0
+    assert budget.summary() == expected
     events = [json.loads(line) for line in budget.audit_path.read_text().splitlines()]
     requests = [e for e in events if e["event"] == "model_request"]
     assert len(requests) == 2
@@ -486,3 +490,150 @@ def test_missing_usage_is_unknown_without_quotas(tmp_path, enforced, usage):
         event = next(e for e in events if e["event"] == "model_usage")
         assert event["total_tokens"] is None
     assert budget.calls == 1 and budget.tokens == 100
+
+
+def retry_settings(**overrides):
+    """构造只关心重试边界的服务端配置，不读取真实 .env。"""
+    return Settings(
+        _env_file=None,
+        actor_model="offline",
+        actor_api_key=SecretStr("test"),
+        **overrides,
+    )
+
+
+def unreachable(request):
+    """模拟网关不可达：连接阶段就失败，请求体不会被发送。"""
+    raise httpx.ConnectError("connection refused", request=request)
+
+
+def answering(request):
+    """返回一份合法的最小流式回答。"""
+    return httpx.Response(
+        200,
+        json={
+            "usage": {"total_tokens": 1},
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": '{"answer":"重试后成功"}'},
+                }
+            ],
+        },
+    )
+
+
+def test_transient_transport_failure_is_retried_and_counted_once(tmp_path):
+    """网关瞬时不可达时等待后重试；重试不重复计入模型调用次数，并写进私有审计。"""
+    calls = {"count": 0}
+
+    def flaky(request):
+        """第一次连接失败，第二次返回合法回答。"""
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise httpx.ConnectError("connection refused", request=request)
+        return answering(request)
+
+    budget = Budget(audit_path=tmp_path / "audit.jsonl")
+    provider = Provider(
+        retry_settings(model_retries=2, model_retry_delay_seconds=0.1),
+        transport=httpx.MockTransport(flaky),
+    )
+    result = asyncio.run(provider.ask(DialogueOutput, "s", "u", budget))
+    assert result.answer == "重试后成功"
+    assert calls["count"] == 2
+    # 一次逻辑调用只记账一次，重试只是同一次调用的等待与重发。
+    assert budget.calls == 1 and budget.tokens == 1
+    events = [json.loads(line) for line in budget.audit_path.read_text().splitlines()]
+    retry = next(e for e in events if e["event"] == "model_retry")
+    assert retry["attempt"] == 1 and retry["reason"].startswith("Model endpoint is unreachable")
+
+
+def test_retries_are_bounded_and_report_the_last_failure():
+    """一直不可达时按配置次数重试后失败，错误信息保持既有文案。"""
+    calls = {"count": 0}
+
+    def always(request):
+        """每次连接都失败，用于确认重试有上限。"""
+        calls["count"] += 1
+        raise httpx.ConnectError("connection refused", request=request)
+
+    provider = Provider(
+        retry_settings(model_retries=2, model_retry_delay_seconds=0.1),
+        transport=httpx.MockTransport(always),
+    )
+    with pytest.raises(ModelFailure, match="Model endpoint is unreachable"):
+        asyncio.run(provider.ask(DialogueOutput, "s", "u", Budget()))
+    assert calls["count"] == 3
+
+
+def test_retryable_status_is_retried_but_configuration_error_is_not():
+    """429/5xx 等待后重试；模型名或权限等配置错误立即失败，不做无意义重试。"""
+    seen = []
+
+    def throttled(request):
+        """先返回 503，再返回合法回答。"""
+        seen.append(request)
+        if len(seen) == 1:
+            return httpx.Response(503, json={"error": "unavailable"})
+        return answering(request)
+
+    provider = Provider(
+        retry_settings(model_retries=2, model_retry_delay_seconds=0.1),
+        transport=httpx.MockTransport(throttled),
+    )
+    assert asyncio.run(provider.ask(DialogueOutput, "s", "u", Budget())).answer == "重试后成功"
+    assert len(seen) == 2
+
+    rejected = []
+
+    def unauthorized(request):
+        """返回配置类错误码。"""
+        rejected.append(request)
+        return httpx.Response(403, json={"error": "forbidden"})
+
+    provider = Provider(
+        retry_settings(model_retries=2, model_retry_delay_seconds=0.1),
+        transport=httpx.MockTransport(unauthorized),
+    )
+    with pytest.raises(ModelFailure, match="HTTP 403"):
+        asyncio.run(provider.ask(DialogueOutput, "s", "u", Budget()))
+    assert len(rejected) == 1
+
+
+def test_retry_wait_doubles_and_is_capped(monkeypatch):
+    """等待时间按次数翻倍并封顶 30 秒，不把任务时间全花在等待上。"""
+    delays: list[float] = []
+
+    async def fake_sleep(seconds):
+        """记录退避时间，测试不真的等待。"""
+        delays.append(seconds)
+
+    monkeypatch.setattr(
+        "server.remotion_templates.provider.asyncio.sleep", fake_sleep
+    )
+    provider = Provider(
+        retry_settings(model_retries=3, model_retry_delay_seconds=20),
+        transport=httpx.MockTransport(unreachable),
+    )
+    with pytest.raises(ModelFailure, match="unreachable"):
+        asyncio.run(provider.ask(DialogueOutput, "s", "u", Budget()))
+    assert delays == [20, 30, 30]
+
+
+def test_waiting_retry_stops_immediately_on_cancel():
+    """等待重试期间取消任务必须立刻结束，而不是等完整个退避。"""
+    provider = Provider(
+        retry_settings(model_retries=3, model_retry_delay_seconds=30),
+        transport=httpx.MockTransport(unreachable),
+    )
+
+    async def run():
+        """发起请求后立刻取消，确认取消能穿透等待。"""
+        task = asyncio.create_task(provider.ask(DialogueOutput, "s", "u", Budget()))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())

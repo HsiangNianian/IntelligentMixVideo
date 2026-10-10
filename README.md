@@ -41,11 +41,11 @@ uv run server
 
 服务端在项目配置中将官方 PyPI 设为默认依赖索引，与 `server/uv.lock` 的来源保持一致，避免本机默认镜像同步滞后导致版本无法解析。
 
-`POST /segmentations` 将文案与单音轨 Fun-ASR 原始结果切为带整数 `segment_id`、秒制 `start_time/end_time`、字符串 `keyword` 及 `level/group_id` 的片段，并在片段内提供按标点拆分、时间相接且保留中英文问号的 `subtitle_parts`；输入必须恰好包含一个 `transcripts` 元素，词时间使用 `begin_time/end_time` 毫秒，不接受顶层 `sentences` 或仅有旧 `*_ms` 时间字段的输入。模型配置使用 `server/.env.example` 中的 `IMV_` 变量；从仓库根目录启动且需要该配置时使用 `uv run --project server server`。请求与处理约束见 [server/README.md](server/README.md#文案切片)。
+`POST /segmentations` 将文案与单音轨 Fun-ASR 原始结果切为带整数 `segment_id`、秒制 `start_time/end_time`、字符串 `keyword` 及 `level/group_id` 的片段；字幕短句由合成时间线在每个切片内保留中英文问号、去除其他标点后生成，接口不再返回 `subtitle_parts`（已有快照仍可读取）；输入必须恰好包含一个 `transcripts` 元素，词时间使用 `begin_time/end_time` 毫秒，不接受顶层 `sentences` 或仅有旧 `*_ms` 时间字段的输入。模型配置使用 `server/.env.example` 中的 `IMV_` 变量；从仓库根目录启动且需要该配置时使用 `uv run --project server server`。请求与处理约束见 [server/README.md](server/README.md#文案切片)。
 
 ASR 转写另提供独立 Python 函数与命令行入口，读取北京地域的 `DASHSCOPE_API_KEY`，尚未注册 HTTP 路由；用法见 [ASR 音频转写](server/README.md#asr-音频转写)。
 
-`POST /api/v1/video-compositions` 持久化合成任务后返回本地 ID，可传入 `callbackUrl` 接收成功/失败通知，调用方等待超时后用 `GET /api/v1/video-compositions/{task_id}` 补查一次。实现位于 `server/src/server/video_composition/`，直接复用本地 ASR、切片和模板函数；素材匹配与上海 IMS 使用外部接口，IMS 成片再转存 ZOS。匹配结果通过任务回调接收，等待超时仅补查一次，随后继续生成时间线和渲染。回调优先使用 `COMPOSITION_PUBLIC_BASE_URL`（可填 ngrok HTTPS 地址），留空沿用合成请求的基础地址。默认输出 1080×1920、30 FPS，自动选择 VOD 存储；新任务上传 ZOS 的 `imv/video_composition/{task_id}.mp4`，并从第 3 帧生成同名 `.png`，两者公开可读；GET 和成功回调只返回视频固定地址，历史成功任务不补图。执行过程及每步输入输出写入独立 `video_composition_logs` 表，一个任务一行，`detail` 展示原始输入、最终输出及中文阶段执行/错误日志，数据库时间统一北京时间；保留实际媒体链接，服务凭证和回调鉴权脱敏。当前使用单实例、单进程调度；配置、恢复边界及联调限制见 [视频合成说明](server/README.md#异步视频合成)。
+`POST /api/v1/video-compositions` 持久化合成任务后返回本地 ID，可传入 `callbackUrl` 接收成功/失败通知，调用方等待超时后用 `GET /api/v1/video-compositions/{task_id}` 补查一次。实现位于 `server/src/server/video_composition/`，直接复用本地 ASR、切片和模板函数；素材匹配与上海 IMS 使用外部接口，IMS 成片再转存 ZOS。匹配结果通过任务回调接收，等待超时仅补查一次，随后继续生成时间线和渲染。回调优先使用 `COMPOSITION_PUBLIC_BASE_URL`（可填 ngrok HTTPS 地址），留空沿用合成请求的基础地址。默认输出 1080×1920、30 FPS，自动选择 VOD 存储；新任务上传 ZOS 的 `imv/video_composition/{task_id}.mp4`，并从第 3 帧生成同名 `.png`，两者公开可读；GET 和成功回调只返回视频固定地址，历史成功任务不补图。执行过程及每步输入输出通过有界队列交给单个后台线程，异步写入 `server/src/server/.log/video_composition/<task_id>/` 下的 `request/template/asr/segmentation/matching/timeline/zos.json` 七个模块文件，各自保存 `input/output/execute_log/error_log`，执行记录只包含时间、动作、状态。重复正文以同任务内 `$log_ref` 引用，时间线的 `materials/packRules` 直接展示，`zos.output` 仅保存阿里云与 ZOS 视频链接。日志时间使用北京时间，实际媒体链接保留签名，服务凭证和回调鉴权脱敏。写入后仅当整个 `.log` 超过 50 MB 时，从旧到新删除合成与通知均已结束且无日志排队的任务目录；不设定时器和启动清理。正常退出会等待日志写完，队列满时提交线程等待空位。业务任务仍存数据库，旧执行日志表不再读写或迁移。当前使用单实例、单进程调度；配置、恢复边界及联调限制见 [视频合成说明](server/README.md#异步视频合成)。
 
 客户端运行
 ----------
@@ -66,7 +66,7 @@ bun run tauri dev
 
 左侧提供「主页」「模版编辑」「Remotion 字效」和底部「设置」，模版编辑使用方框与铅笔线条图标，窄屏显示图标栏。启动默认进入主页，云端模板显示在上方，本地模板显示在下方；各库独立加载和重试，选择模板进入对应环境的编辑页面。浏览器提示本地模板需要桌面客户端。两种模式的设置均提供 Remotion Agent 与上海 IMS 配置，保存后通过各自业务请求使用客户端凭据；Debug 展示除数据库外的全部服务端配置及启动端口；高级字段保存后重启使用内置后端的客户端生效，涵盖 ASR、切片、素材匹配、合成与 Remotion。浏览器或远程后端不走这条本地启动加载路径。配置不修改共享 `.env`，也不进入任务日志；未保存时兼容服务端默认值。切换保留工作区草稿和订阅，IMS 目前提供提交/查询联调函数，未新增合成页面。存储、插拔与边界见 [客户端设置](client/src/features/settings/README.md)。
 
-主页各环境提供「选择模板」和「新建模板」入口。新建时填写名称与描述，然后进入模板库设置效果；点击保存才写入对应环境。已有模板保存时更新原模板。直接进入模板库且尚未选择模板时，显示前往主页的入口。云端沿用现有 MySQL API；连接失败、超时或服务端 5xx 时提示使用桌面本地环境。本地在客户端应用数据目录的 `data/template/templates.json` 保存，无需 Python 服务。两套模板库独立，从主页选择其他模板或新建模板时保护未保存修改，目标读取失败保留原环境和草稿。桌面本地操作通过官方 `@tauri-apps/api/core` 模块调用，使用 `isTauri()` 判断环境，无需开启全局 Tauri API。
+主页各环境提供「选择模板」和「新建模板」入口。新建时填写名称与描述，然后进入模板库设置效果；点击保存才写入对应环境。已有模板保存时更新原模板。直接进入模板库且尚未选择模板时，显示前往主页的入口。云端沿用现有 MySQL API；连接失败、超时或服务端 5xx 时提示使用桌面本地环境。本地默认在客户端应用数据目录的 `data/template/templates.json` 保存，可在设置「通用」中改为其他 `.json` 绝对路径（原文件不迁移），无需 Python 服务。两套模板库独立，从主页选择其他模板或新建模板时保护未保存修改，目标读取失败保留原环境和草稿。桌面本地操作通过官方 `@tauri-apps/api/core` 模块调用，使用 `isTauri()` 判断环境，无需开启全局 Tauri API。
 
 模板库采用三栏编辑：左侧按花字、气泡、滤镜、画面特效、转场和动画分类浏览真实资产，支持名称或编号搜索；中间显示实时视频和已添加对象，右侧编辑当前对象的文字、字号、位置、动画或转场时长。文字资产可以指定应用对象，同类资产替换时保留文字和位置，移除只影响当前对象。顶部只读展示环境、模板名称、描述和保存状态，并提供保存按钮；窄屏自动调整排列。操作和验证说明见 [客户端模板库说明](client/README.md#模板行为)。
 

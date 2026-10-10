@@ -1,6 +1,7 @@
-// Remotion Sprite 的发布、云端样式绑定和合成输入协议。
+// Remotion Sprite 的发布、style_id 下的 Remotion 片段和合成输入协议。
 // Sprite 保存已经验收的外观与动画；业务文字、关键词、素材边界和最终时间由合成总线提供。
-// 本包独立于 imv.template.v1，同一个 style_id 可以同时使用 IMS 效果和 Sprite。
+// 本包独立于 imv.template.v1：Remotion 片段单独保存在 Remotion 自己的库里，不经过 IMS 模板的校验，
+// style_id 只用来与模板关联，同一个 style_id 可以同时使用 IMS 效果和 Remotion 片段。
 syntax = "proto3";
 
 package imv.sprite.v1;
@@ -8,7 +9,7 @@ package imv.sprite.v1;
 import "google/protobuf/timestamp.proto";
 
 // 发布版本的内容类型；发布后不能把同一个 Sprite 改成另一种类型。
-// 字效和字幕共用 TEXT，实际作用对象由 SpritePlacement.target 区分。
+// 字效和字幕共用 TEXT；实际作用对象留给合成总线决定，Remotion 片段保存时不记录。
 enum SpriteKind {
   // 未指定；不能作为可发布的类型。
   SPRITE_KIND_UNSPECIFIED = 0;
@@ -22,10 +23,10 @@ enum SpriteKind {
   SPRITE_KIND_TRANSITION_OVERLAY = 4;
 }
 
-// 一次绑定所响应的业务事件；总线据此生成一个或多个实际渲染区间。
-// 类型合法性由发布 Sprite 的 SpriteKind 与服务端绑定校验共同决定。
+// 合成总线渲染时所响应的业务事件，留给后续合成使用；总线据此生成一个或多个实际渲染区间。
+// 独立保存的 Remotion 片段不记录作用对象，SpritePlacement.target 必须保持未指定。
 enum SpriteTarget {
-  // 未指定；不能保存为有效绑定。
+  // 未指定；Remotion 片段保存时只接受此值。
   SPRITE_TARGET_UNSPECIFIED = 0;
   // 标题：文字取合成请求的 title，显示区间取绑定时间与成片时间的交集。
   SPRITE_TARGET_TITLE = 1;
@@ -50,7 +51,7 @@ enum OperatorAccess {
   OPERATOR_ACCESS_UNSPECIFIED = 0;
   // 运营可见发布值，但不能在模板编辑里修改。
   OPERATOR_ACCESS_VISIBLE_READ_ONLY = 1;
-  // 运营可见且可修改；修改值存入 SpritePlacement.overrides。
+  // 运营可见且可修改；修改值由合成总线存入 SpritePlacement.overrides，Remotion 片段目前不保存覆盖。
   OPERATOR_ACCESS_VISIBLE_EDITABLE = 2;
   // 发布版本内部使用；模板编辑不展示，也不接受覆盖。
   OPERATOR_ACCESS_INTERNAL = 3;
@@ -113,7 +114,7 @@ message PublishedSprite {
   string source_version_id = 2;
   // 运营看到的发布名称。
   string name = 3;
-  // 发布时固定的内容类型，用于校验允许绑定的 target。
+  // 发布时固定的内容类型。
   SpriteKind kind = 4;
   // 发布画布；实际渲染必须使用相同宽、高和 FPS。
   SpriteCanvas canvas = 5;
@@ -130,7 +131,8 @@ message PublishedSprite {
   string keywords_prop = 10;
   // 不可变发布记录创建的时间。
   google.protobuf.Timestamp published_at = 11;
-  // 另行保存的示例预览 MP4 的 SHA-256；该 MP4 不是合成用透明素材。
+  // 发布时复制到资产自有目录的交互预览播放器包（interactive.js）的 SHA-256，
+  // 每次读取预览前核验；该预览不是合成用透明素材。
   string preview_sha256 = 12;
   // 发布时验收的 JSON Schema，仅服务端用于校验最终渲染配置。
   string config_schema_json = 13;
@@ -150,7 +152,7 @@ message PublishedSprite {
 
 // 公开目录使用的发布摘要；只包含运营选择与预览需要的信息，不返回 TSX 源码。
 message SpriteSummary {
-  // 不可变发布的 UUID，模板绑定通过此 ID 引用。
+  // 不可变发布的 UUID，Remotion 片段通过此 ID 引用。
   string sprite_id = 1;
   // 目录和已绑定对象显示的名称。
   string name = 2;
@@ -162,9 +164,10 @@ message SpriteSummary {
   repeated SpriteParameter parameters = 5;
   // 对应的 Agent 成功版本 ID，仅供追溯来源。
   string source_version_id = 6;
-  // 固定示例 MP4 的读取路径；不作为 IMS 合成素材。
+  // 交互预览页的读取路径（/api/sprites/{sprite_id}/preview）：在隔离沙箱中运行发布时复制的播放器包，
+  // 追加 overlay=true 得到透明背景版本；仅用于编辑预览，不作为 IMS 合成素材。
   string preview_url = 7;
-  // 是否已验收关键词高亮能力；字幕绑定要求此值为 true。
+  // 是否已验收关键词高亮能力；合成总线绑定字幕时参考此值。
   bool keywords_supported = 8;
 }
 
@@ -191,24 +194,23 @@ message PublishSpriteResponse {
   SpriteSummary sprite = 1;
 }
 
-// 已发布 Sprite 在一个云端 style_id 下的一次使用。同一 Sprite 可以绑定多次。
-// 运营在此设置作用对象、有效区间、样式覆盖和叠放顺序；业务文字与真实事件时间不存入绑定。
+// 已发布 Sprite 在一个 style_id 下的一次固定使用，同一 Sprite 可以添加多次。
+// Remotion 片段只由资产、起点（秒）和叠放顺序决定；不记录 IMS 作用对象或样式覆盖，
+// 业务文字与真实事件时间也不存入片段。
 message SpritePlacement {
-  // 本次绑定实例的 ID，同一 style_id 内唯一；用于编辑和渲染追踪。
+  // 本次片段实例的 ID，同一 style_id 内唯一；用于编辑和渲染追踪。
   string id = 1;
   // 引用 PublishedSprite.sprite_id；同一发布版本可以被不同实例复用。
   string sprite_id = 2;
-  // 决定总线从标题、短句、整段画面或素材边界的哪类事件生成渲染请求。
+  // 保留给合成总线的作用对象；Remotion 片段保存时必须为未指定。
   SpriteTarget target = 3;
-  // 起点的计量方式：seconds 为最终成片秒数，percent 为最终成片时长百分比。
+  // 起点的计量方式；Remotion 片段只接受 seconds，即预览时间轴上的秒数。
   string start_mode = 4;
-  // 按 start_mode 表示的起点；percent 的有效范围为 [0,100)。
-  // 边界类 target 的实际触发点仍由总线确定的素材边界决定。
+  // 按 start_mode 表示的起点，必须是不小于 0 的有限数字。
   double start = 5;
-  // 固定持续时间，单位秒；缺失表示延续到成片末尾。
-  // 转场、片段入场和片段出场必须指定此值；入/出场按片段裁切，转场受相邻片段时长限制。
+  // 固定持续时间，单位秒，必须是大于 0 的有限数字；模板编辑写入资产自身长度，缺失时的含义留给合成总线。
   optional double duration = 6;
-  // 只保存运营有权编辑且不同于发布默认值的样式标量，不存文字、关键词或真实时间。
+  // 保留给合成总线的样式覆盖；Remotion 片段保存时必须为空。
   repeated SpriteParameterOverride overrides = 7;
   // 同一 style_id 下从 0 开始的连续顺序；Sprite 视频轨道按此顺序由下到上叠放。
   uint32 order = 8;
@@ -222,35 +224,36 @@ message SpriteParameterOverride {
   ScalarValue value = 2;
 }
 
-// 云端模板的独立 Sprite 绑定记录，主键为已有云端模板 UUID。
-// IMS 模板仍通过 imv.template.v1 保存；本消息只管理 Sprite，不支持本地模板绑定。
+// 一个 style_id 下的 Remotion 片段记录，保存在 Remotion 自己的库里。
+// style_id 只用来与云端模板关联：不要求存在对应的 imv.template.v1 模板，模板的保存、校验与删除都不影响本记录；
+// 本地模板不支持添加 Remotion 片段。
 message StyleSpriteBindings {
-  // 现有云端模板 ID，也是视频合成请求使用的 style_id。
+  // 与模板关联的 style_id（通常是云端模板 UUID），也是视频合成请求使用的 style_id。
   string style_id = 1;
-  // 运营为该样式添加的 Sprite 实例；没有绑定时返回空数组。
+  // 该样式下的 Remotion 片段；没有记录时返回空数组。
   repeated SpritePlacement placements = 2;
   // 乐观锁版本；无记录时为 0，每次成功整体替换后递增。
   uint64 revision = 3;
-  // 最近一次成功保存绑定的时间；无记录时可缺失。
+  // 最近一次成功保存片段的时间；无记录时可缺失。
   google.protobuf.Timestamp updated_at = 4;
 }
 
-// GET /api/sprites/styles/{style_id} 的响应；不存在绑定记录时仍返回空的版本 0。
+// GET /api/sprites/styles/{style_id} 的响应；不存在记录时（包括没有对应 IMS 模板）仍返回空的版本 0。
 message GetStyleSpritesResponse {
   StyleSpriteBindings bindings = 1;
 }
 
-// POST /api/sprites/styles/{style_id} 的请求；用完整 placements 替换旧绑定。
+// POST /api/sprites/styles/{style_id} 的请求；用完整 placements 替换旧片段。
 message SaveStyleSpritesRequest {
-  // 请求体中的云端模板 UUID，必须与路径 style_id 相同。
+  // 请求体中的 style_id，必须与路径 style_id 相同。
   string style_id = 1;
-  // 保存后的完整绑定列表，最多 100 条；空列表表示清空该样式的 Sprite。
+  // 保存后的完整片段列表，最多 100 条；空列表表示清空该样式的 Remotion 片段。
   repeated SpritePlacement placements = 2;
   // 调用方上次读取的 revision；不相等时返回冲突，防止覆盖其他运营的修改。
   uint64 expected_revision = 3;
 }
 
-// 保存成功后的新绑定版本，供编辑器继续以该 revision 修改。
+// 保存成功后的新片段版本，供编辑器继续以该 revision 修改。
 message SaveStyleSpritesResponse {
   StyleSpriteBindings bindings = 1;
 }

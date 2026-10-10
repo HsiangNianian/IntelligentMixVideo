@@ -106,7 +106,7 @@ class Matching:
 
 
 def validated_matches(segments: list[dict], result: dict) -> list[dict]:
-    """回调与补查共用片段校验；仅保存与本地文本、顺序及时间完全一致的结果。"""
+    """回调与补查共用片段校验，仅容忍文字首尾空白；保存已知匹配字段，不改写回执原文。"""
     matches = MatchResult.model_validate(result).segments
     validate_matches(TypeAdapter(list[Segment]).validate_python(segments), matches)
     return [item.model_dump(mode="json") for item in matches]

@@ -34,7 +34,7 @@ class APIModel(BaseModel):
 
 
 class Material(APIModel):
-    """可选候选素材，仅转发 URL 和已知媒体类型。"""
+    """标准模式的匹配候选或纯素材模式的顺序画面，类型由调用方明确声明。"""
 
     file_url: MediaURL
     type: Literal["video", "image"]
@@ -56,27 +56,61 @@ class BackgroundMusic(APIModel):
 
 
 class PackRules(APIModel):
-    """仅背景音乐生效；其余包装开关被忽略。"""
+    """仅背景音乐生效，null 表示关闭；其余包装开关被忽略。"""
 
-    background_music: BackgroundMusic = Field(default_factory=BackgroundMusic)
+    background_music: BackgroundMusic | None = Field(default_factory=BackgroundMusic)
+
+
+class ProcessRules(APIModel):
+    """无语音纯素材使用秒制成片时长，其余处理开关仍不参与合成。"""
+
+    video_duration: PositiveSeconds | None = Field(default=None, strict=True)
 
 
 class CompositionRequest(APIModel):
     """合成输入含可选终态通知地址；原声音量、水印、卡片和其他控制字段暂不生效。"""
 
-    text: str = Field(min_length=1, max_length=20000, pattern=r"\S")
-    video_url: MediaURL
-    audio_url: MediaURL
+    text: str | None = Field(default=None, max_length=20000)
+    video_url: MediaURL | None = None
+    audio_url: MediaURL | None = None
     style_id: UUID
     title: str | None = None
-    materials: list[Material] = Field(default_factory=list)
+    materials: list[Material] = Field(default_factory=list, description="standard 省略为纯数字人、显式数组匹配；纯素材要求非空数组并按序使用")
     pack_rules: PackRules = Field(default_factory=PackRules)
+    process_rules: ProcessRules = Field(default_factory=ProcessRules)
     callback_url: MediaURL | None = None
 
+    @property
+    def composition_mode(self) -> Literal["standard", "materials_voice", "materials_silent"]:
+        """仅由数字人视频和顶层配音地址推导内部模式，不进入请求 Schema 或序列化快照。"""
+        if self.video_url is not None:
+            return "standard"
+        return "materials_voice" if self.audio_url is not None else "materials_silent"
+
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_copy(cls, value):
+        """空 text 回退 copy；只统一业务文案，不修改原请求或去掉正文中的换行。"""
+        if isinstance(value, dict):
+            value = value.copy()
+            text = value.get("text")
+            if text is None or isinstance(text, str) and not text.strip():
+                text = value.get("copy")
+            value["text"] = None if isinstance(text, str) and not text.strip() else text
+        return value
+
     @model_validator(mode="after")
-    def https_audio(self) -> Self:
-        """现有 Fun-ASR 只接受 HTTPS 音频；不接受 Markdown 链接。"""
-        if not self.audio_url.startswith("https://"):
+    def mode_fields(self) -> Self:
+        """按模式检查真实依赖；纯素材不需要数字人视频，无语音不需要配音或文案。"""
+        if self.composition_mode == "standard":
+            if not self.text or not self.video_url:
+                raise ValueError("standard 模式需要文案和 videoUrl")
+        elif not self.materials:
+            raise ValueError("纯素材模式需要非空 materials")
+        if self.composition_mode == "materials_silent":
+            if self.process_rules.video_duration is None:
+                raise ValueError("无语音模式需要 processRules.videoDuration")
+        elif not self.audio_url or not self.audio_url.startswith("https://"):
             raise ValueError("audioUrl 必须是 HTTPS 直链")
         return self
 

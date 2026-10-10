@@ -24,3 +24,11 @@ export function latestCode() {
     fireEvent.click(trigger);
   return within(card).getByLabelText("模板 TSX 代码");
 }
+
+/** 读取展开后的源码纯文本；行号栏独立渲染，不进入源码断言。 */
+export function codeText(): string {
+  const group = screen.getByLabelText("模板 TSX 代码");
+  return [...group.querySelectorAll("[data-code-line]")]
+    .map((line) => line.textContent ?? "")
+    .join("\n");
+}

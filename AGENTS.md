@@ -9,21 +9,29 @@
 - `client/src/` 存放 React 前端；`client/src-tauri/` 存放 Rust 桌面入口、Tauri 配置和图标。
 - `server/` 使用 Python + FastAPI + MySQL，提供模板持久化 API 与 `POST /segmentations` 文案切片接口，首页与用户路由仍为示例、尚未接入用户存储。包内导入使用相对路径，向应用注册 `APIRouter` 实例。
 - 模板模块位于 `server/src/server/template/`，与用户示例目录 `sub_api/` 平级；路由、配置校验、数据库存储与效果目录均放在该模块内。
+- `POST /segmentations` 请求体的 `title` 为可选字符串，可省略或为 null；`script` 和 `asr_result` 仍为必填。非 null 标题复用现有关键词模型调用，响应新增 `title_keyword`（标题内连续原文，最多 12 字，无合适词由模型返回空字符串）；未提供标题时不返回该字段，非法模型结果直接报错，不增加兜底或额外重试。
+- 切片的二次切分校验失败时，将失败输出与具体错误反馈给模型，最多修正一次；修正结果全部通过后才替换片段，再次失败直接报错。首次切分和关键词提取不增加此重试，网络错误仍沿用 SDK 策略。
 - Remotion 文字模板生成服务位于 `server/src/server/remotion_templates/`，Python 包名为 `server.remotion_templates`，挂载 `/api/templates`；本地数据默认保存在该模块的 `.data/`，使用说明维护在模块内 README。
+- 成功版本只读诊断接口复用 `validate.code` 的契约检查与隔离 TypeScript 语言服务，不新增诊断持久化表；先按证据清单校验封存产物（改写返回 404），隔离运行时不可用返回 503，不把「未检查」表示为「无诊断」；只读接口不排队、不发布。
 - Remotion 配置类与加载函数位于 `remotion_templates/settings.py`，通过 `server.remotion_templates.settings` 导入；继续复用 `config_base.CommonSettings` 读取 `server/.env`，相对数据目录和默认 `server/remotion/` 渲染资源位置保持不变。
 - Remotion Harness 区分代码失败、评审协议故障、证据不足与渲染环境故障：有效代码失败才交给 Actor 修复；无效 Judge 结果对同一候选/证据有限纠错，合法负面结论不得重试成通过。纯未知证据由宿主有限补采样并保存独立清单，仍未知或环境不可用则停止，Agent 生成只有全部验收通过的版本可发布；用户手动参数修订使用独立渲染可用性门禁。整批工具回执保存后，宿主复核最新候选的证据、产物与环境，直接完成，不再要求模型调用完成工具；发布事务仍检查取消状态。合法空 motion 不强制补 hold；宿主观察到静态不代表用户允许静态，不能覆盖 Judge 对缺少所要求动画的有效失败。
 - Judge 接收原始请求、最新修改、成功基线与完整候选方案；方案只解释实现。失败项须引用实际要求并声明作用对象、观察与不匹配，宿主校验引用和结构化作用域，不能把无依据否决交给 Actor，也不能声称字符串检查能证明语义正确。unknown/conflict 必须提供非空 missing_evidence，缺少说明先纠正评审，不直接补采样。检查灰底不属于模板内容。
 - Judge 需求引用使用 `/user_intent/instruction` 等完整路径，宿主只移除一层明确的 `user_intent` 前缀并兼容旧相对路径；原参考图保持 `/reference_images/N`。规范化后仍校验原文、来源和作用域，重复前缀或候选路径不得放行；协议 steer 指出错误路径与原因，合法负面结论交给 Actor 修复。
 - 模型读取代表帧，宿主保留全部 frame/probe 校验；Judge/Actor 通常最多接收 12/6 帧，不按剩余预算缩减，明确要求的补充帧与失败引用帧优先保留。模型帧号映射只对应实际发送图片，未展示的已有帧也可请求。输入估算默认仅用于诊断；只有开启预算时才预留输出并按完整旧工具组裁剪本次 Actor 请求，不修改持久窗口。有效 token 回执继续记账，缺失用量在私有审计记为 null。私有审计记录图片数、输入估算和可用的 token 明细。
 - `IMV_ENFORCE_MODEL_BUDGET` 默认 false，暂不执行累计调用/token 配额、输入预算拦截、预算裁剪及 50 轮上限；设为 true 才恢复。开启时 Actor、Judge 的分类调用/token 预算共用任务总上限，恢复次数与连续无进展阈值通过 `server/.env` 配置并同步 `.env.example`。每轮检查实际观察，超时、取消、有限纠错/补证据和无进展保护始终保留，纯等待、重复读取或相同失败不得无限循环；私有任务 `audit.jsonl` 和候选 `reviews.jsonl` 保留诊断，独立于模型八组滑动窗口及公开 SQLite 聊天。允许公开宿主筛选的阶段名称与时间，不公开失败候选、原始评审、steer 或工具参数。
+- 当前三层 ReAct 默认开启 `IMV_ENFORCE_NO_PROGRESS`，`IMV_MAX_NO_PROGRESS_TURNS` 默认 6。有效交接按来源/目标层、状态与已完成步骤识别新进展；同一步骤的重复 delegate/blocked 或 continue/blocked 仍计为空转，说明文字、计划版本与批次数不构成新证据。工具调用与检查共用 `registry.get_tool`，执行时仅在当前层可用工具中解析并提供纠错建议；Preset 摘要合并数据库与本地记录后按创建时间倒序，再应用 limit。
+- Preset 本地目录追加使用跨进程文件锁覆盖整个读改写事务，并以唯一临时文件刷盘后原子替换；数据库连接/查询失败仍读取本地记录。旧无时区时间按 UTC 排序，非法时间置后。`tools.inspect` 返回 `contract_version`，搜索列表/ID 读取为 v2；搜索 limit 为 1～100，序列化回执 content（含 JSON 二次转义）上限 40000 字节，截取摘要时返回 `has_more`，单条过大则明确报错，不截断源码。生成工具成功后才置 `generation_started`，首次失败允许普通解释，已有成功生成不因后续失败而解除完成约束。
+- 目录读写放到工作线程，文件锁跨平台最多等待 10 秒，不能阻塞事件循环、SSE 或取消；已经开始的原子写入可收尾，但取消任务不发布版本。`preset.modify` 返回前校验合并后的数据契约，不执行编译或写库。协议解析不从数组、字符串或损坏 JSON 中提取子对象；无效 Sprite 引用保持当前层和计划并进入纠错。连续空转按模型轮次计数，每轮最多一次；该轮有新证据就清零，不被随后重复调用抵消。
 - Remotion 使用统一 Actor 理解需求、制定方案、写代码和修复，不设置独立 Planner、目标预审或重规划工具。`submit_candidate` 首次提供 `spec` 与 TSX，后续可修订方案；模型估算的字号、位置、行高不是冻结目标。Judge 对照用户要求、参考与实际帧，只拒绝明显文字错误、不可读遮挡/裁切、缺少要求效果及未授权修改，允许合理字体近似和轻微布局差异。宿主保护显式画布约束、当前参数契约和成功版本证据，旧候选回执不能用于新方案。Runtime 每次执行只记一次用户请求，Actor 工具交互保持八组滑动窗口；连续无进展受既有阈值限制，总预算只在开关启用时限制。整组旋转按共同中心和像素坐标计算后归一化。
 - Remotion 手动调参不调用 Actor/Judge，不重跑参数/动画语义探针；保留源码，经参数合法性、编译、预览与默认导出一致性、媒体规格及产物指纹检查后保存 `source=user_parameters` 修订。发布事务必须核对代码与基线一致、参数/spec 与用户补丁一致；生成仍走完整验收。用户修订关联最近 Agent 版本，完整参数事件保存在 SQLite，不进入模型窗口；后续任务从两份状态计算有来源的 `user_parameter_changes` 净变化，改回原值则移除，Actor/Judge 均据此尊重当前基线。生成成功才建立新基线，失败、回答、澄清不清除用户调整。
 - Remotion 重复帧、默认导出与静态帧使用宿主统一的可见像素比较：黑白背景合成后的最大通道差不超过 2/255，且变化像素不超过可见前景并集的 1%，才视为栅格噪声；噪声不能证明动画或参数生效。失败 steer 包含实际差异与修复方向，产物清单仍严格使用 SHA-256 防篡改。
 - Remotion 编译失败的 steer 保留原始诊断，并明确以当前 `config_schema/default_props` 为宿主参数契约，同步修正类型声明和属性读取。无进展判断忽略 TypeScript 报错行列号变化，保留文件、错误码、字段与类型差异。本次执行已提交候选后，宿主拒绝用普通回答结束生成；正常问答与必要澄清仍可用。
 - Remotion 颜色探针允许最多 2/255 的 RGB 取整误差并比较 alpha 加权覆盖，边缘位置探针优先向内移动；一帧转场核验相邻边界，缺少时序证据仍为 unknown。视觉请求提供图片序号与实际帧号映射，不把无效帧引用自动解释为图片序号。
-- Remotion 模型预算由 `server/.env` 的 `IMV_MAX_OUTPUT_TOKENS`（32000）、`IMV_MAX_TOKENS`（200000）、`IMV_MAX_MODEL_CALLS`（32）和 `IMV_MODEL_TIMEOUT_SECONDS`（240）配置；单次输出上限始终生效，仅开启预算时按剩余额度缩小，所有模型角色共用任务预算。任务与渲染超时独立配置为 600 / 180 秒；默认值与 `.env.example` 同步，修改后重启服务。
+- Remotion 模型预算由 `server/.env` 的 `IMV_MAX_OUTPUT_TOKENS`（32000）、`IMV_MAX_TOKENS`（200000）、`IMV_MAX_MODEL_CALLS`（32）和 `IMV_MODEL_TIMEOUT_SECONDS`（240）配置；单次输出上限始终生效，仅开启预算时按剩余额度缩小，所有模型角色共用任务预算。任务与渲染超时独立配置为 600 / 180 秒；模型请求遇到连接失败、超时或 429/5xx 时按 `IMV_MODEL_RETRIES`（2）与 `IMV_MODEL_RETRY_DELAY_SECONDS`（2，指数退避、上限 30 秒）等待后重试，重试不重复计入模型调用次数，等待期间取消任务立即停止；默认值与 `.env.example` 同步，修改后重启服务。
 - `server/src/server/asr/` 提供独立的 `transcribe` 函数与 `python -m server.asr` 命令行入口，尚未注册 HTTP 路由；通过北京地域 Fun-ASR 接收 HTTPS 音频直链并返回原始转写 JSON。字段声明位于 `asr/settings.py`，公开转写函数通过包入口按需导入；设置发现不加载业务，`DASHSCOPE_API_KEY` 在 `asr/asr.py` 业务模块加载时读取一次，固定读取源码 `server/.env`，不存在时不回退工作目录，进程环境变量优先；测试隔离文件、密钥、HTTP 和轮询等待。
+- 视频合成 `processRules.videoDuration` 仅接受 JSON 有限正数，允许整数和小数；布尔值与数字字符串返回 422，不创建任务。无语音纯素材模式必填，其他模式可省略或为 null。
 - 视频合成新任务在 IMS 渲染后将临时源地址的内容转存至 ZOS `imv/video_composition/{task_id}.mp4`，并通过服务端 FFmpeg 从同一成片按解码顺序截取第 3 帧，上传同名 `.png`；只给这两个对象设置 `public-read`，核对大小和匿名读取后才保存成功。图片 URL 可按 `ZOS_WEB_URL` 和对象 key 拼出，不进入 GET 或回调；两者仍只返回视频的持久化地址。旧成功任务不迁移或补图。ZOS 凭据只读服务端环境，不进入客户端配置头或任务快照；转存失败不能返回 IMS 临时直链作为成功结果。
+- 视频合成执行日志实现位于 `execution_log.py`（归类、引用、脱敏、文件写入与容量清理），新事件直接生成七模块内容，保存到以后端包 `server/src/server` 为相对根目录的 `.log/video_composition/<task_id>/`，七文件为 `request/template/asr/segmentation/matching/timeline/zos.json`，各自统一 `input/output/execute_log/error_log`。不再创建、读写或迁移数据库日志表和备份表，已有表不自动删除；业务任务表保留。重复正文以同任务七文件组成的对象为根使用 JSON Pointer `$log_ref`，上游输出优先保留，追加前展开、排序后重建引用；执行记录仅 `time/action/status`，错误单独保存，凭证继续脱敏。任务级、查询与通知归 request，素材匹配回调归 matching.output；最终提交请求的 timeline 归 timeline 输出，materials、packRules 原文展示且父对象不整块引用。渲染、取址与转存归 zos，zos.output 仅保存去重后的 aliyun_video_url、zos_video_url 原文和实际签名。业务事务提交后只将独立日志快照入队，单个后台线程顺序写入，时间取入队时刻；队列上限 128 条，满时提交线程等空位，不丢记录。
 - 在 `server/` 下执行 `uv run server` 启动 Uvicorn，默认监听 `0.0.0.0:20070`（所有 IPv4 接口，供服务器部署后远程访问）；`startup/settings.py` 的 `ServerSettings`（启动入口复用） 在每次启动时读取固定的 `server/.env` 中的 `PORT`，进程环境变量优先，范围为 1～65535，空值或非法值阻止启动；仓库根目录使用 `uv run --project server server`。维护 `server/uv.lock`，CI 使用 `--locked` 验证依赖。
 - `server/pyproject.toml` 显式将官方 PyPI 设为 uv 默认索引，与锁文件来源保持一致。遇到依赖版本不可用时先检查索引覆盖配置和镜像同步情况，不要仅为绕过镜像缺失而降低依赖版本或删除锁文件。
 - `App.tsx` 挂载 `pages/HomePage.tsx`，左侧导航提供默认打开的「主页」、`features/templates/` 模板库和 `features/remotion_templates/` 字效工作区。主页通过 `TemplateHome` 按云端在上、本地在下展示模板，各库独立读取和重试，浏览器提示本地模板需要桌面客户端；重新进入主页刷新列表。主页选择模板携带环境和 ID，或通过新建表单携带环境、名称与描述进入模板库；已有模板读取最新详情成功后才替换环境与草稿，新模板点击保存才写入。两种入口均复用保存/放弃/取消保护。底部设置入口组合环境信息与 `features/settings/` 动态插件表单；窄屏使用带无障碍名称的图标栏，切换设置同样保留工作区。聊天、任务编排、隔离 Player、参数编辑和 API 请求按职责分离。
@@ -51,7 +59,9 @@
 - 依赖方向为页面 → 业务组件 → 基础 UI / 工具。跨层导入使用 `@/`（指向 `src/`）；文件内或同目录的相对导入可保留。组件命名保持现有 PascalCase，shadcn/ui 文件遵循上游小写命名。
 - 有交互和无障碍语义的基础控件优先使用 shadcn/ui；在 `client/` 执行 `bunx --bun shadcn@latest add <组件>` 按需添加，随后审阅生成代码、依赖和主题令牌，只保留有调用方的导出。不要预装整个组件库。
 - `client/components.json` 维护 shadcn/ui 路径与别名；`src/styles/globals.css` 是全局样式入口，只放 Tailwind 导入、主题令牌和基础样式。组件布局使用工具类，颜色使用语义令牌，条件类名通过 `cn` 合并。
-- 主题令牌按使用需求补齐，不预先创建暗色切换、动画、路由或状态管理设施。局部状态优先留在组件；effect 必须清理定时器、订阅及监听器。重复渲染组件的关联 ID 用 `useId`，保留语义 HTML 和无障碍属性。
+- 应用提供浅色与深色两套主题：`globals.css` 的 `:root` 为浅色、`.dark` 为深色，以冷灰中性层级区分侧栏、工作区与面板，主色为中性近黑 / 近白，不使用额外品牌强调色；状态色只用于保存状态与提示。`index.html` 首帧脚本按 `localStorage` 的 `imv.theme` 恢复选择，未保存时跟随系统；侧栏底部 `components/ThemeToggle.tsx` 切换 `<html>` 的 `dark` 类（同时启用 shadcn/ui 的 `dark:` 变体）。业务样式（含模版编辑 CSS）只引用令牌，不写死某一主题的颜色。系统开启「减少动态效果」时，`globals.css` 统一压缩 CSS 动画与过渡，`App.tsx` 的 `MotionConfig reducedMotion="user"` 处理 motion 动画。
+- 基础组件另复用 ObsidianUI（shadcn 生态，MIT）的 select、popover、command、tooltip、sonner、slider、switch、toggle-group、empty、spinner、skeleton、flip-text 与 loaders-gooey-blobs，统一从 `radix-ui` 包导入原语，许可证记录在 `public/THIRD_PARTY_NOTICES.txt`，与上游差异写在文件头。模版编辑的特效选择使用 `features/templates/EffectCombobox.tsx` 可搜索下拉框；纯图标按钮使用 `components/Hint.tsx` 悬停提示，文字标签可见时不渲染提示，依赖 `data-state` 的 TabsTrigger 须先包一层元素再交给 Hint；保存成功等短反馈使用 `toast()`，校验与持续错误仍内联显示。
+- 主题令牌按使用需求补齐，不预先创建动画、路由或状态管理设施。局部状态优先留在组件；effect 必须清理定时器、订阅及监听器。重复渲染组件的关联 ID 用 `useId`，保留语义 HTML 和无障碍属性。
 - 模板 API 请求集中在 `features/templates/api.ts`，SDK 加载与预览在独立模块，避免在纯展示组件中散落请求与错误处理。
 - 前端改动运行冻结依赖安装和 `bun run build`，并检查浏览器/桌面中的相关行为。新增 feature 必须提供行为测试；测试方案按实际运行环境选择，不用 Python 强行测试 React。纯样式调整验证渲染与响应式，不写重复实现的断言。
 
@@ -59,7 +69,7 @@
 
 - 侧栏编辑入口显示「模版编辑」，使用现有 Lucide `SquarePen` 图标；保留 `library` 内部标识和工作区状态，窄屏保留图标及无障碍名称。
 
-- 主页模板列表最大宽度为 576px，云端在上、本地在下，分组标题带存储说明与数量；模板以两列画廊卡片展示（窄屏单列），灰底点阵画框居中黑底场记板图标，名称与单行说明位于画框下方，点击整张卡片选择模板；新建按钮位于列表卡片底部操作栏。主页不展示更新日志与当前时间（时间仅保留在 Remotion 页头）。列表内部滚动，底部并排固定「新建云端模板」「新建本地模板」按钮；浏览器禁用本地新建并显示桌面客户端要求。复用 shadcn/ui 的 Card、Button、Dialog 和表单组件，两库分别加载和重试。
+- 主页内容最大宽度 1400px、整页滚动。顶部「开始创作」并排「新建云端模板」「新建本地模板」「AI 生成字效」（跳转 Remotion 字效）快捷卡片，浏览器禁用本地新建并说明需要桌面客户端；下方「我的模板」云端在上、本地在下，分组标题带存储说明与数量。模板以自动列数画廊卡片展示（最小约 210px，窄屏单列），封面按模板 ID 生成稳定配色并排版模板自身的标题 / 字幕文字，角标显示对象数，悬停显示「打开编辑」；名称、更新日期与单行说明位于封面下方，点击整张卡片选择模板；空列表与不可用状态使用 Empty。主页不展示更新日志，客户端各页头均不显示当前时间。复用 Button、Dialog 和表单组件，两库分别加载和重试。
 
 - 新模板的画面对象列表为空。添加效果统一通过左侧「特效资产」进行；「画面对象与已添加特效」仅展示和选择已有对象，空列表提示从左侧添加，移除对象后也通过左侧资产重新添加。
 
@@ -73,14 +83,14 @@
 
 - 客户端转场连接连续源片段，合成时长扣除重叠；预览、播放终点和对象百分比使用合成时长。视频信息由工作区独立持有，更换预览视频和修改转场只重新计算对象区间，模板规则保持不变。对象开始支持秒数或百分比，持续时间支持固定秒数或持续到结束；结尾以外不显示，结束越界时截短，动画按可用帧数缩短并显示说明，帧数不足时明确报错。回归用例位于 `client/tests/effect-tracks.test.ts` 和 `track-timing.test.tsx`，前后端共用 `server/tests/template_timing_cases.json`。
 
-- 阿里 SDK 预览下方使用 `@xzdarcy/react-timeline-editor` 展示视频和独立特效轨道。视频只读，对象可选中、移动和调整持续时间，右侧编辑时间规则；组件使用独立编辑副本，轨道从成功应用的 SDK Timeline 派生。`tracks` 保存 `id`、`target`、`start_mode`、`start`、`duration` 和 `editor`，最多 100 个实例；开始方式为 `seconds` 或 `percent`，百分比小于 100，`duration: null` 表示持续到视频结束，转场持续时间固定。相同效果可重复添加，文字动画属于选中文字；基础文字首次应用样式保留参数，重复添加生成新实例。预览媒体由工作区独立持有，模板不保存 `media`。云端和桌面校验相同时间规则、分类、动画互斥与 ID 唯一性。SDK 帧事件驱动游标，定位暂停播放，等待 `playerSeeked` 后允许继续；修改效果回到开头。缩略图采用有界缓存，错误独立重试，取消和卸载释放资源。文案合成按成片时长逐个应用对象，标题使用请求文字，气泡使用模板文字和自身时间区间；字幕使用切分结果的 `subtitle_parts`，在原切片内按标点拆成保留中英文问号、去除其他标点且时间首尾衔接的短句，匹配请求仍使用原切片，旧快照缺少短句时保留中英文问号并去除其他标点。合成时转场忽略模板开始与持续时间，仅取特效类型并应用于实际素材边界，音频总长保持不变。视频和图片片段用 IMS `Contain` 保留完整画面与原始宽高比，比例不同时使用 `Background/Blur` 填充留白。核心用例位于 `client/tests/effect-tracks.test.ts`、`track-timing.test.tsx`、`preview-timeline.test.tsx`、工作区测试、`server/tests/test_template_tracks.py` 和 `test_video_composition_timeline.py`。桌面文件测试执行 `cargo test --locked --manifest-path src-tauri/Cargo.toml --lib templates::tests`。
+- 阿里 SDK 预览下方使用 `@xzdarcy/react-timeline-editor` 展示视频和独立特效轨道。视频只读，对象可选中、移动和调整持续时间，右侧编辑时间规则；组件使用独立编辑副本，轨道从成功应用的 SDK Timeline 派生。`tracks` 保存 `id`、`target`、`start_mode`、`start`、`duration` 和 `editor`，最多 100 个实例；开始方式为 `seconds` 或 `percent`，百分比小于 100，`duration: null` 表示持续到视频结束，转场持续时间固定。相同效果可重复添加，文字动画属于选中文字；基础文字首次应用样式保留参数，重复添加生成新实例。预览媒体由工作区独立持有，模板不保存 `media`。云端和桌面校验相同时间规则、分类、动画互斥与 ID 唯一性。SDK 帧事件驱动游标，定位暂停播放，等待 `playerSeeked` 后允许继续；修改效果回到开头。缩略图采用有界缓存，错误独立重试，取消和卸载释放资源。文案合成按成片时长逐个应用对象，标题使用请求文字，气泡使用模板文字和自身时间区间；字幕使用切片原文与时间，由合成时间线在每个切片内保留中英文问号、去除其他标点，匹配请求仍使用原切片，旧快照携带 `subtitle_parts` 时仍按短句合成。合成时转场忽略模板开始与持续时间，仅取特效类型并应用于实际素材边界，音频总长保持不变。视频和图片片段用 IMS `Contain` 保留完整画面与原始宽高比，比例不同时使用 `Background/Blur` 填充留白。核心用例位于 `client/tests/effect-tracks.test.ts`、`track-timing.test.tsx`、`preview-timeline.test.tsx`、工作区测试、`server/tests/test_template_tracks.py` 和 `test_video_composition_timeline.py`。桌面文件测试执行 `cargo test --locked --manifest-path src-tauri/Cargo.toml --lib templates::tests`。
 
 - 特效设置通过右上角「×」关闭，移除当前画面对象时同时关闭；`TemplateWorkspace` 使用空选中状态控制面板显示，关闭不修改草稿，桌面保留设置栏宽度，预览画面尺寸保持不变。选择对象或应用资产重新打开设置，切换页签保留关闭状态；组件核心用例覆盖独立对象编辑和未保存草稿保护。
 
 - 「重置特效设置」通过 `resetTextTarget` 清除当前标题、字幕或气泡的样式与动画，并从 `defaultEditor` 恢复示例文字、字号、位置和入出场时长；保留其他对象和模板信息，不修改输入草稿或共享默认配置。纯函数用例覆盖三个对象、重复重置和无效输入恢复，组件用例检查重置按钮更新草稿。
 
 - 模板库采用资产、预览、参数三栏布局，顶部只读展示当前环境、模板名称、描述和保存状态，并提供保存按钮。模板选择与新建位于主页；新建名称必填、最多 100 个字符，描述最多 1000 个字符，进入编辑前去除首尾空白。尚未选择模板时展示前往主页入口，新模板也受未保存保护。工作区只读取目标详情，失败保留当前草稿并允许重试，卸载取消请求；首次保存创建记录，后续携带原 ID 更新。`EffectAssets` 按 SDK 分类展示真实目录封面并支持名称/编号搜索，文字效果显式选择作用对象；无封面或加载失败显示明确占位。`AppliedEffects` 从轨道实例生成对象列表，选择后由 `EffectEditor` 编辑独立参数；循环与入出场动画保持互斥，应用时按文字实际显示时间调整动画。移除对象只清除对应实例，其他对象不变。未选择预览视频时使用 16:9、十秒示例，选择后采用真实媒体信息。窄屏按容器宽度重新排列，搜索回车不提交模板。模板测试使用随包真实目录，覆盖核心数据规则及必要组件行为，执行方式见客户端 README。
-- 云端模板库共享，不包含登录、用户隔离或旧数据迁移，配置存入 MySQL，使用 SQLAlchemy 和 PyMySQL。主页分别提供云端和本地模板的选择与新建入口，模板库展示所选环境；连接失败、超时或服务端 5xx 时提示使用桌面本地环境。桌面通过 `@tauri-apps/api/core` 的 `invoke` 调用 Tauri `local_templates` 命令，使用 `isTauri()` 判断桌面环境，不开启 `withGlobalTauri`；命令读写应用数据目录的 `data/template/templates.json`，不请求 Python 服务；浏览器本地模式明确报错。两库独立，切换复用未保存保护，目标读取失败保留原环境和草稿。本地 JSON 通过文件锁和临时文件原子替换保护；本地校验及效果快照使用随包 SDK 目录，预览仍需联网。Rust 存储测试使用临时目录，在 `client/` 执行 `cargo test --locked --manifest-path src-tauri/Cargo.toml`。
+- 云端模板库共享，不包含登录、用户隔离或旧数据迁移，配置存入 MySQL，使用 SQLAlchemy 和 PyMySQL。主页分别提供云端和本地模板的选择与新建入口，模板库展示所选环境；连接失败、超时或服务端 5xx 时提示使用桌面本地环境。桌面通过 `@tauri-apps/api/core` 的 `invoke` 调用 Tauri `local_templates` 命令，使用 `isTauri()` 判断桌面环境，不开启 `withGlobalTauri`；命令默认读写应用数据目录的 `data/template/templates.json`，通用设置的 `$client.template_path` 可指定 `.json` 绝对文件路径（留空恢复默认），每次操作读取当前设置并立即使用新路径，已打开的本地模板保存时携带所属库，库已变更则拒绝写入并保留草稿；`$client` 由宿主按字段合并，通用表单只提交实际修改的字段；临时文件使用同目录唯一名称独占创建；原文件不迁移，设置损坏或路径非法时明确报错；不请求 Python 服务；浏览器本地模式明确报错。两库独立，切换复用未保存保护，目标读取失败保留原环境和草稿。本地 JSON 通过文件锁和临时文件原子替换保护；本地校验及效果快照使用随包 SDK 目录，预览仍需联网。Rust 存储测试使用临时目录，在 `client/` 执行 `cargo test --locked --manifest-path src-tauri/Cargo.toml`。
 - 数据库配置由 `database.py` 的 `DatabaseSettings`（`pydantic-settings`）自动读取固定的 `server/.env`，字段为 `DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD`、`DB_NAME`，可选 `DB_SSL_CA` 指定 CA 文件启用 TLS 校验，进程环境变量优先；端口校验 1～65535，库名校验 1～64 字符。启动初始化时加载，修改后重启服务。真实环境文件不得入库，维护无密码示例 `.env.example`。
 - 启动端口、数据库、ASR、切片、Remotion 与视频合成的现有配置类继承 `config_base.py` 的 `CommonSettings`，统一读取固定的 `server/.env`；构造参数 > 进程环境变量 > 文件 > 默认值，保留 `_env_file` 覆盖与 `None` 禁用。路径仅面向当前源码布局，不做安装位置发现。保留字段、校验、实例化时机和 Remotion 相对数据目录行为，不建立配置树或统一快照；运行期间不修改配置，修改后重启服务。共用 `server/.env.example`，根目录启动使用 `uv run --project server server`。
 - FastAPI lifespan 启动时连接目标库，仅在 MySQL 返回 1049（库不存在）时通过临时无库连接执行 `CREATE DATABASE IF NOT EXISTS`，使用 `utf8mb4` / `utf8mb4_bin` 并正确引用库名；已有库直接复用。配置无效、连接或建库失败时停止启动，建库账号须具备对应权限。首次模板请求自动创建缺失表；运行中的数据库失败返回可重试的 503。启动失败和退出时释放连接池，临时建库连接始终关闭。
@@ -98,6 +108,8 @@
 ## Remotion 字效客户端约定
 
 - 字效客户端位于 `client/src/features/remotion_templates/`，说明维护在该目录 README；复用 `VITE_API_URL`，请求前缀为 `/api/templates`，保留原模板库入口。
+- 成功版本代码卡片展开时读取 `GET /api/templates/versions/{id}/diagnostics`，按行标注 error/warning 并提供可跳转的诊断清单；高亮由 `codeHighlight.ts` 的展示用近似分词产生，只影响阅读颜色，不参与验收、不进入隔离预览。诊断由服务端在隔离 worker 内重跑，读取失败只降级诊断区并提供显式重试，禁用状态下不发起请求。
+- Remotion 成功版本卡片「保存到资产」调用 `POST /api/sprites/publish`（`imv.sprite.v1` Protobuf）。新组合默认发布为视频叠加，旧文字类型自动选择嵌套 text/title 字段；无额外发布配置。服务端复核封存产物，独立复制源码、参数契约和原始交互预览至 SQLite `sprites` 表及 `sprites/<id>/interactive.js`；相同版本与字段选择重复保存返回原资产，删除源聊天不删除资产。`GET /api/sprites` 提供不含源码的目录（无法解析或哈希校验失败的记录记日志后跳过，不拖垮整个目录，按 ID 读取仍报错），`GET /api/sprites/{id}/preview` 和 `/fonts/{weight}` 提供隔离预览及受管字体，`overlay=true` 可使用透明背景。Remotion 资产是固定片段，不提供任何参数、作用对象或样式覆盖配置：云端模板编辑左侧「Remotion 资产」从 `GET /api/sprites` 目录添加，右侧只列名称与时间并可移除；在预览下方时间轴独占一行，长度固定为资产自身时长（`preview_frames / fps`），只能整体拖动调整起点，超出模板时长的部分截短显示。摆放（Remotion 片段）单独保存在 Remotion 自己的 SQLite：`GET/POST /api/sprites/styles/{style_id}` 整体读写 `style_sprite_bindings` 表（`expected_revision` 乐观锁），`style_id` 只用来与云端模板关联，不要求存在对应的 IMS 模板，也不随模板保存、校验或删除而变化（模板删除后记录留在原处、不再被读取）；服务端只校验 Remotion 自己的规则（引用的资产存在、固定片段、秒起点与时长合法、最多 100 个、顺序连续），作用对象、`percent` 起点和样式覆盖一律拒绝，IMS 的模板规则、效果目录校验与数据库表都不进入 Remotion。客户端写入 seconds 起点、固定时长，不带作用对象或覆盖。「保存模板」只保存有改动的部分：只改了 Remotion 片段时不重新提交 IMS 模板；新模板需先创建（受 IMS 自身规则约束，如至少一个效果）才有 ID，之后用该 ID 保存片段；模板和片段都有改动时先保存模板，片段失败则提示模板已保存并保留片段修改。本地模板不支持。SDK 本身不渲染 Remotion 资产：预览画面上另叠透明的隔离 Remotion 播放器（`GET /api/sprites/{id}/preview?overlay=true&sync=1`，字体走同级 `/fonts/{weight}`），由 SDK 的播放时间经 `imv-preview-sync` 消息逐帧定位，播放器自身不播放、无控制条；仅回报 `sync` 能力的预览包可叠加；保存到资产时若版本封存的包较旧，会用封存源码、默认参数和画布在隔离 worker 中重建副本（失败不阻止保存，只是无法叠加预览；重复保存同一资产会刷新旧副本：先暂存并记录新哈希再替换，更新失败时旧副本仍可用，再次保存即重试；相同版本与字段选择的并发保存轮流执行，只重建一次），仍无能力的资产保持隐藏并提示。`/api/sprites/render` 尚未实现。
 - 字效新会话支持生成前选择画布、时长及高级宽高/帧率，默认 1080×1920、30 FPS、5 秒；秒数四舍五入到整帧，至少一帧且不超过 30 秒，尺寸遵循服务端边界。首次请求显式携带 composition，非法草稿禁止发送，上传与生成期间锁定；创建后不修改该会话配置，新增恢复默认，历史展示成功版本实际配置，不宣称代码已支持任意规格适配。
 - 最左侧历史会话列表顶部提供“新增聊天”，中间聊天，右侧上方预览、下方参数。桌面三栏可拖拽或键盘调宽，本地保存尺寸并提供恢复布局；窄屏使用历史抽屉与聊天/预览切换。成功版本在对应聊天结果下显示默认折叠的代码卡片，可独立复制 Export.tsx、单击预览；参数修订标注来源，失败候选与纯问答不产生版本卡片。历史预览只读，不回滚服务端或改变编辑基线；返回最新才能调参与发送，SSE 新成功版本不抢走明确选中的历史预览，切换旧版本沿用未保存参数的保存/放弃/取消保护。
 - 视频直链仅用于背景，不发送模型、不嵌入字效导出。生成、参数保存检查、预览首帧和背景加载期间，禁用发送、图片变更与参数控件；聊天文字可保留草稿，正常播放不锁定。本地参数草稿实时预览不锁控件、不自动提交；显式保存批量提交净变化，撤销恢复上次成功默认值。未保存时禁止发送、图片变更及复制代码。
@@ -108,7 +120,8 @@
 - 字效会话通过 `DELETE /api/templates/works/{id}` 整条删除，完成或不存在返回 204。先持久化删除标记，取消并等待运行任务及队列收尾，再删除任务目录、所有成功版本目录、无其他会话引用的参考图和关联 SQLite 记录；使用实际数据根目录，不删除共享数据库、运行锁或其他会话。清理失败返回 503，保留标记支持显式重试和启动恢复；删除中读写返回 410，历史列表携带 `deleting` 状态。已有 SSE 发送无 ID 的 `work.deleted` 控制事件后关闭，404/410 均终止客户端重连。删除确认允许放弃当前草稿，当前会话删除后释放预览与订阅，其他会话删除不影响当前编辑；写请求不自动重发。
 - 公开聊天与可重放事件独立保存于 Remotion 本地 SQLite，不使用模型滑动窗口作为历史。快照绑定消息、最新任务、成功版本指针和游标；SSE 按 ID 去重、断线续传，游标失效时重取快照。浏览器仅保存上次选择的会话 ID 与桌面栏宽偏好，不保存聊天/代码；旧会话仅恢复有持久事实支持的公开内容。
 - 聊天任务等待与播放器加载分别显示，只有播放器实际加载才显示预览渲染遮罩；原有操作互斥规则保留。纯提问、问候或保持现状经独立审查后以 `answered` 终态结束，回答持久化并通过 SSE 展示，不生成候选、不发布新版本或重载播放器；首次会话和已有模板都支持问答，回答后可继续制作。
-- 任务消息下显示可折叠处理时间线：宿主实际进入阶段才记录，阶段名称为白名单，不从模型普通文本推断，不提供虚构百分比或未来步骤。运行中默认展开，成功/回答后收起，失败或停止保留最后阶段；计时器在终态与卸载时清理。公开进度保存在 SQLite `job_progress`，与 `job.updated` 在同一事务发布；会话快照 `jobs` 携带当前消息页对应的任务链路，支持历史分页、刷新和 SSE 重连，旧任务没有记录则不补造阶段。
+- 任务消息下显示可折叠处理时间线：宿主实际进入阶段才记录，阶段名称为白名单，不从模型普通文本推断，不提供虚构百分比或未来步骤。运行中默认展开，成功/回答后收起，失败或停止保留最后阶段；计时器在终态与卸载时清理。公开进度保存在 SQLite `job_progress`，与 `job.updated` 在同一事务发布；同一通道通过 `job.round` 增量发布、在 `job_rounds` 逐条保存循环记录，只发布层级、轮次与该轮实际执行的工具名和结论（失败时带白名单错误码与宿主固定说明），不含工具参数、返回载荷、计划步骤目标或任何模型原文，只回消息的轮次记为空调用，终态任务不再接受记录。会话快照 `jobs` 携带当前消息页对应的任务链路，支持历史分页、刷新和 SSE 重连，旧任务没有记录则不补造阶段。
+- 公开循环快照携带完整轮次，普通 `job.updated` 与侧栏不重复携带累计记录；客户端合并 `job.round` 并去重，状态更新保留已收到记录。未知工具名统一为 `unknown`，模型协议失败与普通消息轮次明确区分。启动迁移旧列表式记录并移除旧 `loop` 字段，保留聊天与成功版本；删除会话先清理轮次外键。
 
 ## Feature 测试约束（强制）
 
@@ -181,11 +194,11 @@ Windows 需要 MSVC C++ 构建工具、Windows SDK 和 WebView2；ARM64 主机�
 `.github/workflows/client-build.yml` 仅提供手动触发和 `workflow_call`，复用同一平台矩阵、Linux 系统依赖和 Bun / Rust 缓存。
 `build-mode=check` 做原生编译检查，`package` 生成并上传安装包；默认 `package`，正式 tag 必须使用打包模式。检查模式不能保证最终链接或安装器成功，完整打包由默认分支、tag 和手动构建验证。
 
-| 平台 | 架构 | 安装包 |
-| --- | --- | --- |
-| Windows | x64 | NSIS exe、MSI |
-| Linux | x64 | deb、AppImage |
-| macOS | Apple Silicon、Intel | dmg |
+| 平台    | 架构                 | 安装包        |
+| ------- | -------------------- | ------------- |
+| Windows | x64                  | NSIS exe、MSI |
+| Linux   | x64                  | deb、AppImage |
+| macOS   | Apple Silicon、Intel | dmg           |
 
 普通构建的 Actions artifacts 保留 14 天。发版应复用这一构建工作流，避免维护两套不一致的平台构建逻辑。
 构建产物来自被触发的提交；正式发布时必须来自对应 tag 的源码。

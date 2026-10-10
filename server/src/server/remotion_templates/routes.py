@@ -33,17 +33,19 @@ from .models import (
     TaskMessage,
     TemplateProject,
 )
+from .provider import ExecutionFailure
 from .runtime import Runtime
 from .store import NotFound
 from .stream import event_stream
+from .tool_validation import ValidationUnavailable
+from .tools.contracts import CodeValidationReport, ComponentDefinition
 
 # 按接口职责设置标签，供模板服务的 Swagger 分组展示。
 router = APIRouter()
 
 
-async def runtime(request: Request) -> Runtime:
+async def runtime_for(state) -> Runtime:
     """Start only the feature-local runtime on first use; unrelated routes need no model or database."""
-    state = request.app.state
     if not hasattr(state, "runtime"):
         service = state.build_runtime()
         try:
@@ -55,6 +57,11 @@ async def runtime(request: Request) -> Runtime:
             ) from exc
         state.runtime = service
     return state.runtime
+
+
+async def runtime(request: Request) -> Runtime:
+    """Resolve the runtime owned by the app serving this request."""
+    return await runtime_for(request.app.state)
 
 
 Service = Annotated[Runtime, Depends(runtime)]
@@ -116,9 +123,11 @@ async def create(
     `description` 与 `image` 至少提供一种；可通过 `composition` 设置画布和时长。
     返回 202 及 `work`、`job`，随后使用任务 ID 查询进度；模型未配置时返回 503。
     """
+    if (request.composition.width, request.composition.height, request.composition.fps) != (1080, 1920, 30):
+        raise HTTPException(422, "主画布固定为 1080×1920、30 FPS")
     settings = service.settings.model_copy(update=config.model_dump()) if config is not None else service.settings
     if not settings.models_configured:
-        raise HTTPException(503, "请配置 Actor 和视觉模型及密钥")
+        raise HTTPException(503, "请配置 Agent 模型及密钥")
     if request.image:
         service.store.asset(request.image.asset_id)
     project, job = service.store.create(request)
@@ -329,6 +338,37 @@ def artifacts(job_id: UUID, service: Service) -> list[dict]:
 
 
 @router.get(
+    "/versions/{version_id}/diagnostics",
+    response_model=CodeValidationReport,
+    tags=["生成产物"],
+    summary="读取成功版本的代码诊断",
+)
+async def diagnostics(version_id: UUID, service: Service) -> CodeValidationReport:
+    """对已验收版本按需重跑一次隔离类型检查，返回契约与 LSP 诊断。
+
+    代码和默认参数取自封存记录，先按现有证据清单校验 `accepted/` 未被修改；
+    文件被改写时返回 404，不返回与当前字节不符的陈旧诊断。
+    隔离 worker 不可用（例如缺少 Linux 沙箱）时返回 503，调用方应保留代码显示并提供重试。
+    """
+    version = service.store.version(version_id)
+    accepted = service.store.root / "accepted" / str(version.id)
+    try:
+        verify_artifacts(version.candidate, version.spec, version.validation, accepted)
+        export_code = (accepted / "Export.tsx").read_text(encoding="utf-8")
+    except (ValueError, OSError) as exc:
+        raise NotFound("accepted artifact unavailable") from exc
+    component = ComponentDefinition(
+        code=version.candidate.tsx_code,
+        parameter_schema=version.candidate.config_schema,
+        default_parameters=version.candidate.default_config,
+    )
+    try:
+        return await service.code_report(component, export_code=export_code)
+    except (ValidationUnavailable, ExecutionFailure) as exc:
+        raise HTTPException(503, "代码诊断服务暂不可用，请稍后重试。") from exc
+
+
+@router.get(
     "/versions/{version_id}/artifacts/{filename}",
     tags=["生成产物"],
     summary="下载可用模板代码或预览",
@@ -339,6 +379,26 @@ def download(version_id: UUID, filename: str, service: Service) -> FileResponse:
     下载内容与验收时的文件一致；不存在、被修改或属于内部诊断的文件返回 404。
     """
     return FileResponse(artifact_path(service, version_id, filename), filename=filename)
+
+
+def player_page(script: str, *, overlay: bool = False) -> HTMLResponse:
+    """Wrap a sealed interactive bundle in the sandboxed player document shared by versions and sprites.
+
+    `overlay` drops the inspection checkerboard so the page can sit transparently over other video.
+    """
+    script = script.replace("</", "<\\/")
+    return HTMLResponse(
+        '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width">'
+        "<title>Remotion 字效预览</title><style>html,body,#root{margin:0;width:100%;height:100%;overflow:hidden}"
+        + (":root{color-scheme:light}html,body{background:transparent}body{color:#fff;font-family:sans-serif}</style>" if overlay else "body{color:#fff;background-color:#25252b;background-image:conic-gradient(#35353d 25%,transparent 0 50%,#35353d 0 75%,transparent 0);background-size:24px 24px;font-family:sans-serif}</style>")
+        +
+        '<body><div id="root"></div><script>' + script + "</script></body></html>",
+        headers={
+            "Content-Security-Policy": "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src http: https:; media-src http: https: data:; img-src http: https: data:; connect-src 'none'; base-uri 'none'; form-action 'none'",
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+        },
+    )
 
 
 @router.get(
@@ -352,22 +412,8 @@ def preview(version_id: UUID, service: Service) -> HTMLResponse:
 
     父页面以 iframe 加载，使用 URL fragment 作为消息通道标识；只交换参数、背景链接及就绪通知。
     """
-    script = (
-        artifact_path(service, version_id, "interactive.js")
-        .read_text()
-        .replace("</", "<\\/")
-    )
-    return HTMLResponse(
-        '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width">'
-        "<title>Remotion 字效预览</title><style>html,body,#root{margin:0;width:100%;height:100%;overflow:hidden}"
-        "body{color:#fff;background-color:#25252b;background-image:conic-gradient(#35353d 25%,transparent 0 50%,#35353d 0 75%,transparent 0);background-size:24px 24px;font-family:sans-serif}</style>"
-        '<body><div id="root"></div><script>' + script + "</script></body></html>",
-        headers={
-            "Content-Security-Policy": "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src http: https:; media-src http: https: data:; connect-src 'none'; base-uri 'none'; form-action 'none'",
-            "Cache-Control": "no-store",
-            "Referrer-Policy": "no-referrer",
-        },
-    )
+    script = artifact_path(service, version_id, "interactive.js").read_text()
+    return player_page(script)
 
 
 @router.get(
