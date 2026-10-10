@@ -10,13 +10,13 @@ from .schema import Material
 
 
 async def video_duration(url: str, timeout: float) -> float:
-    """读取首个视频流时长，缺省回退该轨 DURATION 标签；支持环境代理，诊断仅写脱敏日志。"""
+    """读取首个视频流时长，缺省回退该轨 DURATION 标签（含语言后缀）；支持代理，诊断仅写脱敏日志。"""
     process = None
     try:
         process = await asyncio.create_subprocess_exec(
             "ffprobe", "-v", "error", "-protocol_whitelist", "http,https,tcp,tls,httpproxy",
             "-rw_timeout", str(int(timeout * 1_000_000)), "-select_streams", "v:0",
-            "-show_entries", "stream=duration,start_time:stream_tags=DURATION", "-of", "json", url,
+            "-show_entries", "stream=duration,start_time:stream_tags", "-of", "json", url,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         output, stderr = await asyncio.wait_for(process.communicate(), timeout)
@@ -25,7 +25,10 @@ async def video_duration(url: str, timeout: float) -> float:
         stream = json.loads(output)["streams"][0]
         raw = stream.get("duration")
         if raw in (None, "N/A"):
-            tag = stream.get("tags", {}).get("DURATION", "")
+            tags = {key.upper(): value for key, value in stream.get("tags", {}).items()}
+            tag = tags.get("DURATION")
+            if tag is None:
+                tag = next((value for key, value in tags.items() if re.fullmatch(r"DURATION-[A-Z]{2,3}", key)), "")
             parts = re.fullmatch(r"(\d+):([0-5]\d):([0-5]\d(?:\.\d+)?)", tag)
             if parts is None:
                 raise ValueError("视频流缺少有效 duration 或 DURATION 标签")

@@ -90,6 +90,13 @@ async def test_images_cover_target_without_probing(monkeypatch, duration):
     ({"streams": [{"tags": {"DURATION": "00:00:03.125000000"}}]}, 0, 3.125),
     ({"streams": [{"duration": "N/A", "start_time": "1", "tags": {"DURATION": "00:00:04.000"}}]}, 0, 3),
     ({"streams": [{"start_time": "N/A", "tags": {"DURATION": "01:02:03.5"}}]}, 0, 3723.5),
+    ({"streams": [{"tags": {"DURATION-eng": "00:00:03.125000000"}}]}, 0, 3.125),
+    ({"streams": [{"start_time": "1", "tags": {"dUrAtIoN-Zh": "00:00:04"}}]}, 0, 3),
+    ({"streams": [{"tags": {"DURATION-eng": "00:00:20", "duration": "00:00:03"}}]}, 0, 3),
+    ({"streams": [{"duration": "2.5", "tags": {"DURATION-eng": "00:00:20"}}]}, 0, 2.5),
+    ({"streams": [{"tags": {"DURATION-eng": "00:00:NaN"}}]}, 0, None),
+    ({"streams": [{"tags": {"DURATION-eng": "00:00:03", "DURATION": "invalid"}}]}, 0, None),
+    ({"streams": [{"tags": {"DURATION-other": "00:00:03"}}]}, 0, None),
     ({"streams": [{"tags": {"DURATION": "00:60:00"}}]}, 0, None),
     ({"streams": [{"tags": {"DURATION": "00:00:NaN"}}]}, 0, None),
     ({"streams": [{"start_time": "3", "tags": {"DURATION": "00:00:03"}}]}, 0, None),
@@ -108,7 +115,7 @@ async def test_probe_uses_video_stream_and_rejects_unknown(monkeypatch, payload,
         """检查不经 shell 且限制协议，带签名地址作为单个参数保留。"""
         assert args[-1] == "https://media.test/a.mp4?token=a%2Fb&x=1"
         assert args[args.index("-select_streams") + 1] == "v:0"
-        assert args[args.index("-show_entries") + 1] == "stream=duration,start_time:stream_tags=DURATION"
+        assert args[args.index("-show_entries") + 1] == "stream=duration,start_time:stream_tags"
         protocols = args[args.index("-protocol_whitelist") + 1].split(",")
         assert "httpproxy" in protocols and "file" not in protocols
         assert kwargs["stderr"] == asyncio.subprocess.PIPE
@@ -124,23 +131,30 @@ async def test_probe_uses_video_stream_and_rejects_unknown(monkeypatch, payload,
 
 @pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"), reason="需要 FFmpeg 和 FFprobe 探测真实素材")
 @pytest.mark.anyio
-@pytest.mark.parametrize("extension,video_codec,audio_codec,start", [
-    ("mp4", "mpeg4", "aac", 0), ("webm", "libvpx", "libopus", 0),
-    ("webm", "libvpx-vp9", "libopus", 0), ("mkv", "ffv1", "pcm_s16le", 0),
-    ("mkv", "ffv1", "pcm_s16le", 1), ("flv", "flv", "libmp3lame", 0),
+@pytest.mark.parametrize("extension,video_codec,audio_codec,start,tag", [
+    ("mp4", "mpeg4", "aac", 0, None), ("webm", "libvpx", "libopus", 0, None),
+    ("webm", "libvpx-vp9", "libopus", 0, None), ("mkv", "ffv1", "pcm_s16le", 0, None),
+    ("mkv", "ffv1", "pcm_s16le", 1, None), ("flv", "flv", "libmp3lame", 0, None),
+    ("mkv", "ffv1", None, 0, "DURATION-eng"), ("mkv", "ffv1", None, 1, "DURATION-zh"),
 ])
-async def test_real_video_probe_uses_video_duration(tmp_path, monkeypatch, extension, video_codec, audio_codec, start):
-    """真实 HTTP 素材含三秒视频和六秒音轨；兼容视频轨标签及偏移，FLV 无轨时长时明确失败。"""
+async def test_real_video_probe_uses_video_duration(tmp_path, monkeypatch, extension, video_codec, audio_codec, start, tag):
+    """真实 HTTP 素材覆盖长音轨、语言标签及偏移；FLV 无轨时长时明确失败。"""
     for key in list(os.environ):
         if key.lower().endswith("_proxy"):
             monkeypatch.delenv(key)
     path = tmp_path / f"sample.{extension}"
-    subprocess.run([
+    # 管道输出避免 Matroska 自动补写普通 DURATION，确保样本仅依赖语言标签。
+    output_args = (["-metadata:s:v:0", f"{tag}=00:00:0{3 + start}.000000000", "-f", "matroska", "pipe:1"]
+                   if tag else [str(path)])
+    audio_args = (["-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono:d=6", "-map", "0:v:0", "-map", "1:a:0",
+                   "-c:a", audio_codec] if audio_codec else [])
+    encoded = subprocess.run([
         "ffmpeg", "-nostdin", "-v", "error", "-itsoffset", str(start),
         "-f", "lavfi", "-i", "color=c=red:s=160x90:r=10:d=3",
-        "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono:d=6", "-map", "0:v:0", "-map", "1:a:0",
-        "-c:v", video_codec, "-c:a", audio_codec, "-threads", "1", str(path),
+        *audio_args, "-c:v", video_codec, "-threads", "1", *output_args,
     ], check=True, capture_output=True, timeout=30)
+    if tag:
+        path.write_bytes(encoded.stdout)
     server = ThreadingHTTPServer(("127.0.0.1", 0), partial(SimpleHTTPRequestHandler, directory=str(tmp_path)))
     worker = Thread(target=server.serve_forever, daemon=True)
     worker.start()
