@@ -194,7 +194,9 @@ class TemplateData(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     name: str = Field(min_length=1, max_length=100)
     description: str = Field(default="", max_length=1000)
-    effect_ids: list[str] = Field(min_length=1, max_length=500)
+    # 可以为空：只放 Remotion 片段的模板没有 IMS 效果；效果与对象是否一致仍由 TemplateSave 校验。
+    # Protobuf 转字典会省略空数组，所以缺失按空列表处理。
+    effect_ids: list[str] = Field(default_factory=list, max_length=500)
     transition_duration_seconds: float = Field(default=1, ge=0.1, le=3, allow_inf_nan=False)
     tracks: list[EffectTrack] = Field(max_length=100)
 

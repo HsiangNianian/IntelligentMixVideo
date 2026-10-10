@@ -48,6 +48,7 @@
 .template-workspace [data-object="filter"] { --object-ink: color-mix(in oklch, oklch(0.62 0.1 115) 72%, var(--foreground)); --object-fill: oklch(0.62 0.1 115 / 20%); }
 .template-workspace [data-object="vfx"] { --object-ink: color-mix(in oklch, oklch(0.62 0.1 310) 72%, var(--foreground)); --object-fill: oklch(0.62 0.1 310 / 20%); }
 .template-workspace [data-object="transition"] { --object-ink: color-mix(in oklch, oklch(0.62 0.03 265) 72%, var(--foreground)); --object-fill: oklch(0.62 0.03 265 / 20%); }
+.template-workspace [data-object="remotion"] { --object-ink: color-mix(in oklch, oklch(0.62 0.1 20) 72%, var(--foreground)); --object-fill: oklch(0.62 0.1 20 / 20%); }
 .template-workspace .template-object-icon { color: var(--object-ink); background: var(--object-fill); }
 .template-workspace .template-object-row { color: var(--foreground); background: transparent; }
 .template-workspace .template-object-row:hover { background: color-mix(in oklch, var(--foreground) 5%, transparent); }

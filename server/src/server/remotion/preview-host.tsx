@@ -1,12 +1,14 @@
 /** Isolated browser preview: synchronize background video and accepted typography through one Player timeline. */
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Player } from "@remotion/player";
+import { Player, type PlayerRef } from "@remotion/player";
 import { AbsoluteFill, Html5Video } from "remotion";
 import Template from "imv:template";
 import initial from "imv:config";
 
 const channel = window.location.hash.slice(1);
+/** Sync mode (`?sync=1`): no controls or loop; the parent scrubs the Player with `imv-preview-sync` times. */
+const sync = new URLSearchParams(window.location.search).get("sync") === "1";
 type JsonValue = null | string | number | boolean | JsonValue[] | {[key: string]: JsonValue};
 type Values = Record<string, JsonValue>;
 /** Reject non-JSON or unbounded message values before updating the isolated Player. */
@@ -44,9 +46,9 @@ interface PreviewProps {
   requestId: number;
 }
 
-/** Send only protocol notifications; the parent must check source, channel and message type. */
+/** Send only protocol notifications; `sync` tells the parent whether this bundle understands scrub messages. */
 function notify(type: string, message?: string, requestId?: number) {
-  window.parent.postMessage({ type, channel, message, requestId }, "*");
+  window.parent.postMessage({ type, channel, message, requestId, sync }, "*");
 }
 
 /** Keep both layers on Remotion's frame clock; failed background media leaves the typography visible. */
@@ -112,15 +114,20 @@ function App() {
     background: "",
     requestId: 0,
   });
+  const player = useRef<PlayerRef>(null);
+  const c = initial.composition;
   useEffect(() => {
     function receive(event: MessageEvent) {
       const data = event.data;
-      if (
-        event.source !== window.parent ||
-        data?.channel !== channel ||
-        data?.type !== "imv-preview-update"
-      )
+      if (event.source !== window.parent || data?.channel !== channel) return;
+      if (data?.type === "imv-preview-sync") {
+        // Scrub to the parent's clock; frames are derived here so the parent needs no fps.
+        if (!sync || typeof data.time !== "number" || !Number.isFinite(data.time)) return;
+        player.current?.pause();
+        player.current?.seekTo(Math.min(c.duration_in_frames - 1, Math.max(0, Math.round(data.time * c.fps))));
         return;
+      }
+      if (data?.type !== "imv-preview-update") return;
       const values = data.values;
       if (
         !values ||
@@ -144,17 +151,21 @@ function App() {
     notify("imv-preview-ready");
     return () => window.removeEventListener("message", receive);
   }, []);
-  const c = initial.composition;
   return (
     <Player
+      ref={player}
       component={Composition}
       inputProps={props}
       compositionWidth={c.width}
       compositionHeight={c.height}
       durationInFrames={c.duration_in_frames}
       fps={c.fps}
-      controls
-      loop
+      controls={!sync}
+      loop={!sync}
+      clickToPlay={!sync}
+      doubleClickToFullscreen={!sync}
+      spaceKeyToPlayOrPause={!sync}
+      allowFullscreen={!sync}
       initiallyMuted
       style={{ width: "100%", height: "100%" }}
       errorFallback={() => <PreviewError requestId={props.requestId} />}

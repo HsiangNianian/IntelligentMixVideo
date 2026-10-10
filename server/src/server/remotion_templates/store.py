@@ -91,6 +91,10 @@ class Store:
                     published_at TEXT NOT NULL, data TEXT NOT NULL,
                     UNIQUE(source_version_id, kind, text_prop, keywords_prop)
                 );
+                CREATE TABLE IF NOT EXISTS style_sprite_bindings (
+                    style_id TEXT PRIMARY KEY, revision INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL, data TEXT NOT NULL
+                );
             """)
             history.initialize(db)
 

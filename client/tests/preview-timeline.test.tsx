@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { createRef } from "react";
 import { PreviewTimeline, type PreviewTimelineHandle } from "@/features/templates/PreviewTimeline";
-import { buildPreviewRows, buildTimeline, thumbnailTimes } from "@/features/templates/timeline";
+import { buildPreviewRows, buildTimeline, spriteRows, thumbnailTimes } from "@/features/templates/timeline";
 import { defaultEditor, newDraft } from "@/features/templates/model";
 import { trackEditor } from "@/features/templates/tracks";
 import { readCatalog } from "@/features/templates/sdk";
@@ -70,4 +70,12 @@ test("时间轴显示轨道图标与名称", () => {
   expect([...labels].every((label) => label.querySelector("svg"))).toBe(true);
   expect(new Set([...labels].map((label) => label.querySelector("svg")?.getAttribute("class"))).size).toBe(3);
   view.unmount();
+});
+
+// Remotion 资产在时间轴上独占一行，只能整体移动；拖动结果以资产片段 ID 回传，标签使用资产名称。
+test("Remotion 资产行可移动不可缩放，并显示在轨道标签中", () => {
+  const rows = [...buildPreviewRows(buildTimeline(newDraft(), readCatalog())), ...spriteRows([{ id: "sprite-a", spriteId: "s1", aspect: 9 / 16, name: "霓虹标题", start: 1, end: 4 }])];
+  expect(rows.at(-1)!.actions[0]).toMatchObject({ id: "sprite-a", effectId: "remotion", start: 1, end: 4, movable: true, flexible: false, targetId: "sprite-a" });
+  render(<PreviewTimeline ref={createRef()} rows={rows} disabled={false} time={0} onSeek={() => {}} />);
+  expect(screen.getByLabelText("时间轴轨道标签").textContent).toContain("霓虹标题");
 });

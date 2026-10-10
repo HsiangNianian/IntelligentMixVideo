@@ -146,11 +146,14 @@ export function getTemplate(id: string, environment: Environment = "cloud", sign
   }, signal);
 }
 
-/** 统一创建、更新及另存为；只有调用方明确传 ID 时才覆盖已有模板，本地更新携带打开时所属的库。 */
-export function saveTemplate(draft: Draft, id?: string, environment: Environment = "cloud", library?: string): Promise<Template> {
+/**
+ * 统一创建、更新及另存为；只有调用方明确传 ID 时才覆盖已有模板，本地更新携带打开时所属的库。
+ * `allowEmpty` 由调用方在模板已放入 Remotion 片段时声明，此时可以没有 IMS 效果；否则仍至少需要一个效果。
+ */
+export function saveTemplate(draft: Draft, id?: string, environment: Environment = "cloud", library?: string, allowEmpty = false): Promise<Template> {
   if (!draft.name.trim()) return Promise.reject(new Error("请输入模板名称"));
   const effect_ids = draftEffects(draft);
-  if (!effect_ids.length)
+  if (!effect_ids.length && !allowEmpty)
     return Promise.reject(new Error("请至少选择一个效果"));
   const message = create(SaveTemplateRequestSchema, {
     name: draft.name.trim(),
