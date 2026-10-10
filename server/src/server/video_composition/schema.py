@@ -64,7 +64,7 @@ class PackRules(APIModel):
 class ProcessRules(APIModel):
     """无语音纯素材使用秒制成片时长，其余处理开关仍不参与合成。"""
 
-    video_duration: PositiveSeconds | None = None
+    video_duration: PositiveSeconds | None = Field(default=None, strict=True)
 
 
 class CompositionRequest(APIModel):

@@ -106,6 +106,27 @@ def test_material_silent_skips_voice_services_and_keeps_full_title(upstreams, cl
     assert upstreams["notifications"][0]["body"]["videoUrl"] == result["result"]["videoUrl"]
 
 
+@pytest.mark.parametrize("duration,status", [(True, 422), (False, 422), ("10.5", 422), (6, 200), (10.5, 200)])
+def test_material_silent_duration_requires_json_number(upstreams, client, composition_case, duration, status):
+    """时长只接受数字；布尔值和数字字符串不创建任务，整数与小数按原时长合成。"""
+    response = client.post(BASE, json={
+        "styleId": composition_case["request"]["styleId"],
+        "processRules": {"videoDuration": duration},
+        "materials": [{"fileUrl": f"https://media.test/{i}.jpg", "type": "image"} for i in range(4)],
+    })
+    assert response.status_code == status
+    if status == 422:
+        assert response.json() == {"code": 422, "message": "请求参数无效", "data": None}
+        assert store.pending([], 100) == [] and upstreams["submits"] == []
+        return
+    task_id = response.json()["data"]
+    result = finished(client, task_id)
+    assert result["status"] == "succeeded", result
+    data = store.get(task_id)["data"]
+    assert data["request"]["processRules"]["videoDuration"] == duration
+    assert data["timeline"]["VideoTracks"][0]["VideoTrackClips"][-1]["TimelineOut"] == duration
+
+
 @pytest.mark.parametrize("missing_tool", [True, False])
 def test_material_probe_failures_do_not_render(upstreams, client, composition_case, monkeypatch, missing_tool):
     """缺少 FFprobe 受理前报错，媒体探测失败则异步报错，两者都不提交 IMS。"""
