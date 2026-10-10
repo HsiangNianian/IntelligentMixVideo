@@ -22,6 +22,18 @@ const request = JSON.parse(await fs.readFile(`${root}/request.json`, "utf8"));
 const checks = [];
 const result = { checks, diagnostics: [], tests: [], custom_tests_executed: 0 };
 
+/**
+ * A policy violation that remembers where it is in the submitted code, so the diagnostic can point at it
+ * instead of leaving the author to search the whole file.
+ */
+class PolicyError extends Error {
+  constructor(message, node, source) {
+    const { line, character } = source.getLineAndCharacterOfPosition(node.getStart(source));
+    super(`${message} (line ${line + 1}, column ${character + 1})`);
+    this.position = { line, character, length: Math.max(1, node.getEnd() - node.getStart(source)) };
+  }
+}
+
 /** Reject generated code which can reach the host, files or network. */
 function sourcePolicy(code) {
   const source = ts.createSourceFile("Component.tsx", code, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -29,23 +41,37 @@ function sourcePolicy(code) {
   // Capability restrictions here only prevent escaping the sandbox; visual
   // elements, media props and hooks are valid PR76 component behavior.
   const forbidden = new Set(["eval", "Function", "require", "process", "global", "globalThis", "fetch", "XMLHttpRequest", "WebSocket", "Worker", "child_process", "exec", "spawn"]);
+  // `exec` and `spawn` only name host capabilities when used as a bare identifier. As a member name they
+  // are ordinary methods, such as RegExp.prototype.exec, which colour and text parsing legitimately use.
+  const memberAllowed = new Set(["exec", "spawn"]);
+  const isMemberName = (node) => (ts.isPropertyAccessExpression(node.parent) && node.parent.name === node)
+    || (ts.isQualifiedName(node.parent) && node.parent.right === node);
   function visit(node) {
     if (ts.isImportDeclaration(node)) {
       const module = node.moduleSpecifier.text;
-      if (!["react", "react/jsx-runtime", "react/jsx-dev-runtime", "remotion"].includes(module)) throw new Error(`Import not permitted: ${module}`);
+      if (!["react", "react/jsx-runtime", "react/jsx-dev-runtime", "remotion"].includes(module)) throw new PolicyError(`Import not permitted: ${module}`, node, source);
       const clause = node.importClause;
-      if (!clause || (clause.name && module !== "react") || (clause.namedBindings && !ts.isNamedImports(clause.namedBindings) && !ts.isNamespaceImport(clause.namedBindings))) throw new Error("Only React/Remotion imports are permitted.");
+      if (!clause || (clause.name && module !== "react") || (clause.namedBindings && !ts.isNamedImports(clause.namedBindings) && !ts.isNamespaceImport(clause.namedBindings))) throw new PolicyError("Only React/Remotion imports are permitted.", node, source);
     }
-    if (ts.isIdentifier(node) && forbidden.has(node.text)) throw new Error(`Unsupported capability: ${node.text}`);
-    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) throw new Error("Dynamic imports are not permitted.");
-    if (ts.isExportDeclaration(node) && node.moduleSpecifier) throw new Error("Re-exports are not permitted.");
+    if (ts.isIdentifier(node) && forbidden.has(node.text) && !(memberAllowed.has(node.text) && isMemberName(node)))
+      throw new PolicyError(`Unsupported capability: ${node.text}`, node, source);
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) throw new PolicyError("Dynamic imports are not permitted.", node, source);
+    if (ts.isExportDeclaration(node) && node.moduleSpecifier) throw new PolicyError("Re-exports are not permitted.", node, source);
     ts.forEachChild(node, visit);
   }
   visit(source);
 }
 
-function diagnosticFromError(message, code = null) {
-  return { source: "contract", severity: "error", message: String(message), ...(code ? { code: String(code) } : {}) };
+/** Build the public diagnostic for a thrown error; a policy violation also reports its zero-based range. */
+function diagnosticFromError(error, code = null) {
+  const position = error?.position;
+  return {
+    source: "contract",
+    severity: "error",
+    message: String(error?.message ?? error),
+    ...(code ? { code: String(code) } : {}),
+    ...(position ? { range: { start: { line: position.line, character: position.character }, end: { line: position.line, character: position.character + position.length } } } : {}),
+  };
 }
 
 /** Convert the existing language service shape into the public LSP-like shape. */
@@ -73,7 +99,7 @@ async function prepareSource() {
     checks.push({ name: "source_policy", status: "pass", message: "Source policy passed." });
   } catch (error) {
     checks.push({ name: "source_policy", status: "failed", message: String(error?.message ?? error).slice(0, 6000) });
-    result.diagnostics.push(diagnosticFromError(error?.message ?? error));
+    result.diagnostics.push(diagnosticFromError(error));
     return false;
   }
   await fs.writeFile(`${root}/Template.tsx`, formatted, "utf8");

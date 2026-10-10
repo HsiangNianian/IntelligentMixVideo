@@ -94,6 +94,12 @@ sandbox and returns 503 at acceptance.
 Offline tests cover tool registration, deferred-tool behaviour, immutable
 storage and source consistency without a model or semantic index.
 
+## Creating a Sprite
+
+Contract diagnostics carry the position of a violation (line, column and range in the submitted code).
+`exec` and `spawn` are refused only as bare identifiers; as member names, such as `RegExp.prototype.exec`,
+they are ordinary methods.
+
 ## Loop rounds
 
 `IMV_ENFORCE_NO_PROGRESS` defaults to true and `IMV_MAX_NO_PROGRESS_TURNS` to 6.

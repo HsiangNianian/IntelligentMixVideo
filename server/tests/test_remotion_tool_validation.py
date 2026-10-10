@@ -1,6 +1,10 @@
 """Offline tests for PR76 validation report semantics using a fake sandbox worker."""
 
 import asyncio
+import json
+import os
+import shutil
+import subprocess
 from copy import deepcopy
 from pathlib import Path
 
@@ -169,3 +173,86 @@ def test_stopped_stage_report_must_name_the_failure(tmp_path):
 
     with pytest.raises(ValidationUnavailable, match="incomplete report"):
         asyncio.run(ToolValidator(TruncatedRenderer(), tmp_path).validate_code(component()))
+
+
+def test_policy_violation_is_reported_once_with_its_position(tmp_path):
+    """worker 已带位置报告的违规不会被同文的失败检查再追加一条无位置的重复诊断。"""
+    message = "Unsupported capability: exec (line 3, column 15)"
+
+    class Renderer(FakeRenderer):
+        """Fail source policy the way the worker does: one failed check and one located diagnostic."""
+
+        async def run_worker(self, directory: Path, *, worker: str, timeout_seconds=None):
+            """Return the early negative report."""
+            return {
+                "passed": False,
+                "checks": [{"name": "source_policy", "status": "failed", "message": message}],
+                "diagnostics": [{
+                    "source": "contract", "severity": "error", "message": message,
+                    "range": {"start": {"line": 2, "character": 14}, "end": {"line": 2, "character": 18}},
+                }],
+            }
+
+    report = asyncio.run(ToolValidator(Renderer(), tmp_path).validate_code(component()))
+    assert report.passed is False
+    assert len(report.diagnostics) == 1
+    assert report.diagnostics[0].message == message
+    assert report.diagnostics[0].range.start.line == 2 and report.diagnostics[0].range.start.character == 14
+
+
+# ---- real worker: Node plus the locked renderer dependencies, no model, no network ----
+RENDERER_DIR = Path(__file__).parents[1] / "src" / "server" / "remotion"
+DEPENDENCIES = RENDERER_DIR / "node_modules" / "typescript"
+needs_node = pytest.mark.skipif(
+    not DEPENDENCIES.exists() or shutil.which("node") is None,
+    reason="install locked Remotion renderer dependencies and Node",
+)
+
+
+def run_code_worker(tmp_path: Path, code: str, properties: dict, defaults: dict) -> dict:
+    """Run only the compile-time stages of the real worker (source policy, export, TypeScript)."""
+    root = tmp_path / "work"
+    root.mkdir()
+    (root / "request.json").write_text(json.dumps({
+        "mode": "code", "code": code, "parameter_schema": {"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False},
+        "default_parameters": defaults, "composition": {"width": 1080, "height": 1920, "fps": 30, "duration_frames": 1},
+    }), encoding="utf-8")
+    environment = {**os.environ, "IMV_WORK_ROOT": str(root), "IMV_RENDERER_ROOT": str(RENDERER_DIR)}
+    subprocess.run(["node", str(RENDERER_DIR / "tool-validation-worker.mjs")], cwd=RENDERER_DIR, env=environment, check=True, capture_output=True, timeout=120)
+    return json.loads((root / "renderer.json").read_text(encoding="utf-8"))
+
+
+REGEX_COMPONENT = """import React from "react";
+
+/** Colour parsing with RegExp.prototype.exec, which is ordinary code and not a host capability. */
+const parse = (value: string): number[] | null => {
+  const match = /^#([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$/.exec(value);
+  return match ? [1, 2, 3].map((index) => parseInt(match[index], 16)) : null;
+};
+
+export default function Tint(props: { color: string }) {
+  const rgb = parse(props.color);
+  return <div style={{ color: rgb ? `rgb(${rgb.join(",")})` : "white" }}>tint</div>;
+}
+"""
+
+
+@needs_node
+def test_regexp_exec_is_ordinary_code_for_the_real_worker(tmp_path):
+    """16:03 的生成失败：正则的 .exec() 方法曾被当作被禁止的 exec 能力，模型无从定位而放弃。"""
+    report = run_code_worker(tmp_path, REGEX_COMPONENT, {"color": {"type": "string"}}, {"color": "#FFAA00"})
+    assert report["passed"] is True, report
+    assert [item["status"] for item in report["checks"]] == ["pass", "pass", "pass"]
+
+
+@needs_node
+def test_a_bare_exec_call_is_still_refused_and_located(tmp_path):
+    """被禁止的 exec 仍然拒绝，并且诊断给出行列号与范围，模型可以直接定位。"""
+    code = 'import React from "react";\nexport default function T(props: { t: string }) {\n  const out = exec("ls");\n  return <div>{props.t}</div>;\n}\n'
+    report = run_code_worker(tmp_path, code, {"t": {"type": "string"}}, {"t": "x"})
+    assert report["passed"] is False
+    assert [item["name"] for item in report["checks"]] == ["source_policy"]
+    assert report["diagnostics"] == [{
+        "source": "contract", "severity": "error", "message": "Unsupported capability: exec (line 3, column 15)",
+        "range": {"start": {"line": 2, "character": 14}, "end": {"line": 2, "character": 18}},
+    }]

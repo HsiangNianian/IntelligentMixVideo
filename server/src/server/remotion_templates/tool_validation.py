@@ -164,7 +164,10 @@ class ToolValidator:
             raise ValidationUnavailable("Code validation worker returned invalid diagnostics") from exc
         for check in checks:
             if check.get("status") in _FAILED_STATUSES and check.get("name") not in {"typescript"}:
-                diagnostics.append(CodeDiagnostic(source="contract", severity="error", message=str(check.get("message") or "Code check failed")))
+                message = str(check.get("message") or "Code check failed")
+                # The worker normally reported this failure as a diagnostic already, with its position.
+                if not any(item.message == message for item in diagnostics):
+                    diagnostics.append(CodeDiagnostic(source="contract", severity="error", message=message))
         has_errors = any(item.severity == "error" for item in diagnostics)
         worker_passed = payload.get("passed") is not False and all(
             check.get("status") in {"pass", "passed"} for check in checks
