@@ -97,8 +97,11 @@ async def sprite_compose(owner, request: SpriteComposeInput) -> ToolResult[Sprit
 
 @tool(
     "sprite.create",
-    constraints=["Only a compose-produced SpriteDraft with consistent source and parameters may be saved."],
-    side_effects=["code validation and sprite catalog write"],
+    constraints=[
+        "Only a compose-produced SpriteDraft with consistent source and parameters may be saved.",
+        "The Sprite is mounted once in the browser and must leave the user's video visible: a canvas that is opaque in every sampled frame is refused with CODE_VALIDATION_FAILED.",
+    ],
+    side_effects=["code validation, one browser mount with a transparency measurement, and sprite catalog write"],
     error_codes=["INVALID_ARGUMENT", "CODE_VALIDATION_FAILED", "VALIDATION_UNAVAILABLE", "SPRITE_STORE_FAILED"],
     starts_generation=True,
     examples=[{"input": {"sprite": {"description": "组合", "code": "export default function Sprite(){return null}", "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": False}, "default_parameters": {}, "composition": {"width": 1080, "height": 1920, "fps": 30, "duration_frames": 1}, "instances": [{"instance_id": "title", "preset": {"description": "文字", "code": "export default function Label(){return null}", "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": False}, "default_parameters": {}}, "parameters": {}, "layout": {"x": 0.0, "y": 0.0, "width": 100, "height": 100, "z_index": 0}, "timing": {"start_frame": 0, "duration_frames": 1}}]}}, "output": {"ok": False, "error": {"code": "CODE_VALIDATION_FAILED", "message": "example"}}}],

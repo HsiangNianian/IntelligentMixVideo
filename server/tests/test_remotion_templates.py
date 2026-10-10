@@ -13,10 +13,13 @@ from server.remotion_templates.settings import Settings
 from server.remotion_templates.tools.catalog import available
 from server.remotion_templates.tools.compose import compose_source
 from server.remotion_templates.tools.contracts import (
+    CheckResult,
     CodeValidationReport,
     ComponentDefinition,
+    Composition,
     PresetDraft,
     PresetRecord,
+    RenderValidationReport,
     SpriteComposeInput,
     SpriteCreateInput,
     SpriteRecord,
@@ -40,13 +43,30 @@ def valid_report() -> CodeValidationReport:
     return CodeValidationReport(passed=True, diagnostics=[])
 
 
+def render_report(duration_frames: int, *checks: CheckResult) -> RenderValidationReport:
+    """A browser mount report for the fixed canvas with the given base checks; passes when none failed."""
+    return RenderValidationReport(
+        passed=all(item.status == "passed" for item in checks),
+        composition=Composition(width=1080, height=1920, fps=30, duration_frames=duration_frames),
+        code_validation=valid_report(),
+        checks=list(checks),
+        tests=[],
+        custom_tests_executed=0,
+    )
+
+
 def patch_validation(current: ToolSession) -> None:
     """Replace isolated browser validation for the no-browser unit path."""
     async def validate(_component: ComponentDefinition) -> CodeValidationReport:
         """Keep the test focused on the creation catalog and source integrity."""
         return valid_report()
 
+    async def mount(request, **_options) -> RenderValidationReport:
+        """The browser mount and its transparency measurement need Chromium; report a clean pass."""
+        return render_report(request.duration_frames, CheckResult(name="transparency", status="passed"))
+
     current.validate_code = validate
+    current.validate_render = mount
 
 
 def draft() -> PresetDraft:
@@ -152,6 +172,73 @@ def test_creation_flow_persists_one_sprite_without_semantic_index(tmp_path):
         assert saved["sprite"]["code"] == composed["sprite"]["code"]
         assert len(current.saved_sprites) == 1
         assert len(current.catalog.read_sprites()) == 1
+
+    asyncio.run(run())
+
+
+def title_instance(preset_id: str) -> SpriteComposeInput:
+    """One full-canvas instance of a stored Preset, ready for sprite.compose."""
+    return SpriteComposeInput.model_validate({
+        "description": "title preview",
+        "instances": [{
+            "instance_id": "title",
+            "source": {"kind": "stored", "preset_id": preset_id},
+            "layout": {"x": 0, "y": 0, "width": 1080, "height": 1920, "z_index": 0},
+            "timing": {"start_frame": 0, "duration_frames": 30},
+        }],
+    })
+
+
+@pytest.mark.skipif(not RENDERER_DEPS.exists(), reason="install locked Remotion renderer dependencies")
+def test_sprite_that_hides_the_video_is_refused_with_an_actionable_reason(tmp_path):
+    """滤镜与特效叠在用户视频上：整帧不透明的 Sprite 在保存前被拒绝，原因写进回执，且不落库。"""
+    reason = "The Sprite hides the video: at least 98% of the 1080x1920 canvas is opaque in every sampled frame."
+
+    async def run():
+        current = session(tmp_path)
+        patch_validation(current)
+
+        async def opaque(request, **_options):
+            """The browser measured an opaque canvas in every sampled frame."""
+            return render_report(request.duration_frames, CheckResult(name="transparency", status="failed", message=reason))
+
+        current.validate_render = opaque
+        preset = await current.execute("preset.create", draft(), available())
+        composed = await current.execute("sprite.compose", title_instance(preset["preset"]["preset_id"]), available())
+        with pytest.raises(ToolFault) as refused:
+            await current.execute("sprite.create", SpriteCreateInput.model_validate(composed), available())
+        assert refused.value.error.code == "CODE_VALIDATION_FAILED"
+        messages = [item["message"] for item in refused.value.error.details["validation"]["diagnostics"]]
+        assert messages == [f"transparency: {reason}"]
+        assert current.saved_sprites == {} and current.catalog.read_sprites() == []
+
+    asyncio.run(run())
+
+
+@pytest.mark.skipif(not RENDERER_DEPS.exists(), reason="install locked Remotion renderer dependencies")
+def test_creation_mounts_the_sprite_once_and_completion_reuses_that_report(tmp_path):
+    """sprite.create 带透明度度量挂载一次；宿主完成时读取同一份缓存，不再启动第二次浏览器。"""
+    calls = []
+
+    class Validator:
+        """Record how the Sprite was mounted; code validation is not needed here."""
+
+        async def validate_render(self, request, **options):
+            """Pass, remembering whether the transparency measurement was requested."""
+            calls.append(options.get("transparency", False))
+            return render_report(request.duration_frames, CheckResult(name="transparency", status="passed"))
+
+    async def run():
+        current = session(tmp_path)
+        patch_validation(current)
+        del current.validate_render  # use the real session method so the report is cached
+        current.validator = Validator()
+        preset = await current.execute("preset.create", draft(), available())
+        composed = await current.execute("sprite.compose", title_instance(preset["preset"]["preset_id"]), available())
+        saved = await current.execute("sprite.create", SpriteCreateInput.model_validate(composed), available())
+        record = current.saved_sprite(saved["sprite"]["sprite_id"])
+        assert calls == [True]
+        assert current.validation_for(record) is not None and current.validation_for(record).passed
 
     asyncio.run(run())
 

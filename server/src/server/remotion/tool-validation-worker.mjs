@@ -190,6 +190,76 @@ function querySnapshot(page, selector, all) {
   }, { selector, all });
 }
 
+/** Alpha at or above this value (about 95%) hides whatever lies underneath. */
+const OPAQUE_ALPHA = 242;
+/** A frame hides the video when at least this share of its pixels is opaque. */
+const COVERED_SHARE = 0.98;
+
+/** First, last and three frames in between, so a Sprite that is clear for part of its time is not rejected. */
+function sampleFrames(total) {
+  return [...new Set([0, 0.25, 0.5, 0.75, 1].map((ratio) => Math.min(total - 1, Math.floor((total - 1) * ratio))))];
+}
+
+/** Share of canvas pixels that are nearly opaque at the current frame, read from a screenshot taken without a page background. */
+async function opaqueShare(page, composition) {
+  const client = page._client();
+  await client.send("Emulation.setDefaultBackgroundColorOverride", { color: { r: 0, g: 0, b: 0, a: 0 } });
+  try {
+    const shot = await client.send("Page.captureScreenshot", {
+      format: "png", fromSurface: true, captureBeyondViewport: true,
+      clip: { x: 0, y: 0, width: composition.width, height: composition.height, scale: 1 },
+    });
+    // The renderer's protocol client wraps the CDP result as `{ value: { data } }`.
+    const encoded = (shot.value ?? shot).data;
+    if (typeof encoded !== "string" || !encoded) throw new Error("Transparency screenshot was empty");
+    return await page.evaluate(async ({ encoded, threshold }) => {
+      const image = new Image();
+      image.src = `data:image/png;base64,${encoded}`;
+      await image.decode();
+      const canvas = document.createElement("canvas");
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      context.drawImage(image, 0, 0);
+      const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+      let opaque = 0;
+      for (let index = 3; index < pixels.length; index += 4) if (pixels[index] >= threshold) opaque += 1;
+      return { width: canvas.width, height: canvas.height, share: opaque / (canvas.width * canvas.height) };
+    }, { encoded, threshold: OPAQUE_ALPHA });
+  } finally {
+    await client.send("Emulation.setDefaultBackgroundColorOverride", {});
+  }
+}
+
+/**
+ * Mechanical check that a Sprite leaves the video visible: it fails only when every sampled frame is
+ * opaque almost everywhere. This is a pixel measurement, not a visual review of how the result looks.
+ */
+async function transparencyCheck(page) {
+  const composition = request.composition;
+  const samples = [];
+  for (const frame of sampleFrames(composition.duration_frames)) {
+    await page.evaluate((target) => window.__imvTool.setFrame(target), frame);
+    await ensureHealthy(page);
+    const measured = await opaqueShare(page, composition);
+    if (measured.width !== composition.width || measured.height !== composition.height)
+      throw new Error(`Transparency screenshot is ${measured.width}x${measured.height}, expected ${composition.width}x${composition.height}`);
+    samples.push({ frame, share: measured.share });
+  }
+  await page.evaluate(() => window.__imvTool.setFrame(0));
+  const summary = samples.map(({ frame, share }) => `frame ${frame}: ${(share * 100).toFixed(1)}% opaque`).join(", ");
+  if (samples.every(({ share }) => share >= COVERED_SHARE))
+    return {
+      name: "transparency",
+      status: "failed",
+      message: `The Sprite hides the video: at least ${COVERED_SHARE * 100}% of the ${composition.width}x${composition.height} canvas is opaque in every sampled frame (${summary}). `
+        + "Sprites are composited over the user's own video, so keep the canvas transparent: do not paint an opaque full-frame background "
+        + "(backgroundColor or background on the root or on a full-size layer, or a full-size layer at opacity 1). "
+        + "For a filter or colour tint build translucent layers (alpha well below 1), gradients, a vignette or grain.",
+    };
+  return { name: "transparency", status: "passed", message: `The video stays visible in at least one sampled frame (${summary}).` };
+}
+
 function scriptPolicy(code) {
   if (/\b(?:import|export\s+(?!default))\b|\b(?:require|process|globalThis|self|window|document|navigator|location|fetch|XMLHttpRequest|WebSocket|Worker|importScripts|postMessage|Function|eval)\b/.test(code)) throw new Error("Test scripts may only use TestContext.");
 }
@@ -247,6 +317,7 @@ async function main() {
     } else {
       checks.push({ name: "configured_render", status: "not_run", message: "Default render failed." });
     }
+    if (baseReady && request.transparency === true) checks.push(await transparencyCheck(page));
     if (!baseReady) {
       result.tests = (request.tests ?? []).map((test) => ({ name: test.name, status: "not_run", message: "Base render failed.", assertions: [] }));
       result.custom_tests_executed = 0;

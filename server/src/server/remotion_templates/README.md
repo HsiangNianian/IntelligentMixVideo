@@ -96,6 +96,16 @@ storage and source consistency without a model or semantic index.
 
 ## Creating a Sprite
 
+A Sprite is composited over the user's own video, so `sprite.create` must leave that video visible. After code
+validation it mounts the composed Sprite once in the isolated browser and, on the first, last and three
+in-between frames, measures how much of the canvas is nearly opaque (alpha of 242/255 or more, from a screenshot
+taken without a page background). When every sampled frame is opaque on 98% or more of the canvas the Sprite is
+refused with `CODE_VALIDATION_FAILED`, the reason names the frames and what to do, and nothing is saved. One
+sampled frame with the video showing through is enough, so a transition that covers the screen only for a
+moment is not affected. The mount is cached under the key the host's final check reads, so completing the task
+does not mount the Sprite a second time. Only generation asks for the measurement; a user's manual parameter
+edits and already published versions are never blocked by it.
+
 Contract diagnostics carry the position of a violation (line, column and range in the submitted code).
 `exec` and `spawn` are refused only as bare identifiers; as member names, such as `RegExp.prototype.exec`,
 they are ordinary methods.

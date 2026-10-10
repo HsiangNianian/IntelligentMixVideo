@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from server.remotion_templates.renderer import Renderer
+from server.remotion_templates.settings import Settings
 from server.remotion_templates.tool_validation import ToolValidator, ValidationUnavailable
 from server.remotion_templates.tools.contracts import (
     ComponentDefinition,
@@ -175,6 +177,68 @@ def test_stopped_stage_report_must_name_the_failure(tmp_path):
         asyncio.run(ToolValidator(TruncatedRenderer(), tmp_path).validate_code(component()))
 
 
+def transparency_renderer(share: float | None, *, stop_after: int | None = None):
+    """A worker double that reports the transparency stage the way the real worker does.
+
+    ``share`` is the opaque share every sampled frame shows; ``None`` omits the stage altogether and
+    ``stop_after`` truncates the stages to simulate a worker that quit early.
+    """
+    class Renderer(FakeRenderer):
+        """Record requests and append the transparency stage when the caller asked for it."""
+
+        requests: list[dict] = []
+
+        async def run_worker(self, directory: Path, *, worker: str, timeout_seconds=None):
+            """Return the base report plus a transparency check derived from ``share``."""
+            payload = await super().run_worker(directory, worker=worker, timeout_seconds=timeout_seconds)
+            request = json.loads((directory / "request.json").read_text())
+            self.requests.append(request)
+            if request["mode"] == "render" and request.get("transparency") and share is not None:
+                hidden = share >= 0.98
+                payload["checks"].append({
+                    "name": "transparency",
+                    "status": "failed" if hidden else "passed",
+                    "message": "The Sprite hides the video: the canvas is opaque in every sampled frame." if hidden else "The video stays visible.",
+                })
+                payload["passed"] = not hidden
+            if stop_after is not None:
+                payload["checks"] = payload["checks"][:stop_after]
+            return payload
+
+    return Renderer()
+
+
+def small_request() -> RenderValidationInput:
+    """A 30 frame render validation without behavior scripts."""
+    return RenderValidationInput(component=component(), duration_frames=30, tests=[])
+
+
+def test_transparency_is_measured_only_when_the_caller_asks_for_it(tmp_path):
+    """生成路径要求透明度度量；用户手动改参数的路径不要求，也不会被它拦下。"""
+    renderer = transparency_renderer(1.0)
+    plain = asyncio.run(ToolValidator(renderer, tmp_path).validate_render(small_request()))
+    assert plain.passed is True and "transparency" not in [item.name for item in plain.checks]
+    measured = asyncio.run(ToolValidator(renderer, tmp_path).validate_render(small_request(), transparency=True))
+    assert [request.get("transparency") for request in renderer.requests if request["mode"] == "render"] == [False, True]
+    assert measured.passed is False
+    check = next(item for item in measured.checks if item.name == "transparency")
+    assert check.status == "failed" and "hides the video" in check.message
+
+
+def test_a_clear_canvas_passes_the_transparency_stage(tmp_path):
+    """画面有透出视频的帧时 transparency 阶段通过，整份报告通过。"""
+    report = asyncio.run(ToolValidator(transparency_renderer(0.0), tmp_path).validate_render(small_request(), transparency=True))
+    assert report.passed is True
+    assert [item.name for item in report.checks][-1] == "transparency"
+
+
+@pytest.mark.parametrize("renderer", [transparency_renderer(None), transparency_renderer(0.0, stop_after=5)], ids=["omitted", "truncated"])
+def test_missing_transparency_stage_fails_closed(tmp_path, renderer):
+    """要求度量却没有收到该阶段的报告不能被当作通过，而是明确的验证服务故障。"""
+    with pytest.raises(ValidationUnavailable, match="incomplete report"):
+        asyncio.run(ToolValidator(renderer, tmp_path).validate_render(small_request(), transparency=True))
+
+
 def test_policy_violation_is_reported_once_with_its_position(tmp_path):
     """worker 已带位置报告的违规不会被同文的失败检查再追加一条无位置的重复诊断。"""
     message = "Unsupported capability: exec (line 3, column 15)"
@@ -203,9 +267,23 @@ def test_policy_violation_is_reported_once_with_its_position(tmp_path):
 # ---- real worker: Node plus the locked renderer dependencies, no model, no network ----
 RENDERER_DIR = Path(__file__).parents[1] / "src" / "server" / "remotion"
 DEPENDENCIES = RENDERER_DIR / "node_modules" / "typescript"
+# 浏览器与字体位置在导入阶段读取：autouse 隔离夹具会在用例开始时清除 IMV_* 变量。
+BROWSER = {
+    name: Path(value)
+    for name, value in (
+        ("browser_executable", os.environ.get("IMV_BROWSER_EXECUTABLE")),
+        ("font_regular", os.environ.get("IMV_FONT_REGULAR")),
+        ("font_bold", os.environ.get("IMV_FONT_BOLD")),
+    )
+    if value
+}
 needs_node = pytest.mark.skipif(
     not DEPENDENCIES.exists() or shutil.which("node") is None,
     reason="install locked Remotion renderer dependencies and Node",
+)
+needs_browser = pytest.mark.skipif(
+    os.environ.get("IMV_TEST_RENDERER") != "1",
+    reason="set IMV_TEST_RENDERER=1 for the Linux browser integration",
 )
 
 
@@ -256,3 +334,61 @@ def test_a_bare_exec_call_is_still_refused_and_located(tmp_path):
         "source": "contract", "severity": "error", "message": "Unsupported capability: exec (line 3, column 15)",
         "range": {"start": {"line": 2, "character": 14}, "end": {"line": 2, "character": 18}},
     }]
+
+
+# 一个有不透明根背景的「滤镜」，以及去掉背景后只用半透明层的同款，和只在中间帧不透明的转场。
+OPAQUE_FILTER = """import React from "react";
+import { AbsoluteFill } from "remotion";
+export default function Warm(props: { tint: string }) {
+  return (
+    <AbsoluteFill style={{ backgroundColor: "#1A0F06" }}>
+      <AbsoluteFill style={{ background: props.tint, opacity: 0.55 }} />
+    </AbsoluteFill>
+  );
+}
+"""
+TRANSLUCENT_FILTER = """import React from "react";
+import { AbsoluteFill } from "remotion";
+export default function Warm(props: { tint: string }) {
+  return (
+    <AbsoluteFill>
+      <AbsoluteFill style={{ background: props.tint, opacity: 0.4 }} />
+      <AbsoluteFill style={{ background: "radial-gradient(circle, rgba(0,0,0,0) 40%, rgba(0,0,0,0.6) 100%)" }} />
+    </AbsoluteFill>
+  );
+}
+"""
+MIDDLE_ONLY_COVER = """import React from "react";
+import { AbsoluteFill, useCurrentFrame } from "remotion";
+export default function Wipe(props: { tint: string }) {
+  const frame = useCurrentFrame();
+  return <AbsoluteFill style={{ backgroundColor: props.tint, opacity: frame > 10 && frame < 20 ? 1 : 0 }} />;
+}
+"""
+
+
+def browser_validate(tmp_path: Path, code: str, *, frames: int = 30):
+    """Mount a one-parameter component in the real sandboxed browser with the transparency measurement."""
+    settings = Settings(_env_file=None, data_dir=tmp_path, **BROWSER)
+    component_ = ComponentDefinition(
+        code=code,
+        parameter_schema={"type": "object", "properties": {"tint": {"type": "string"}}, "required": ["tint"], "additionalProperties": False},
+        default_parameters={"tint": "#FFB347"},
+    )
+    validator = ToolValidator(Renderer(settings), tmp_path)
+    return asyncio.run(validator.validate_render(RenderValidationInput(component=component_, duration_frames=frames), transparency=True))
+
+
+@needs_node
+@needs_browser
+@pytest.mark.parametrize(("code", "passed"), [
+    (OPAQUE_FILTER, False),
+    (TRANSLUCENT_FILTER, True),
+    (MIDDLE_ONLY_COVER, True),
+], ids=["opaque-root-background", "translucent-layers", "opaque-only-in-the-middle"])
+def test_real_browser_measures_whether_the_video_stays_visible(tmp_path, code, passed):
+    """用真实浏览器度量：不透明根背景的滤镜被拒；只用半透明层的滤镜、只在中间帧覆盖的转场通过。"""
+    report = browser_validate(tmp_path, code)
+    check = next(item for item in report.checks if item.name == "transparency")
+    assert (check.status == "passed") is passed, check.message
+    assert report.passed is passed
