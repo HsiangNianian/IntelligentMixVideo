@@ -77,7 +77,7 @@ MySQL 单独列保存唯一名称、ID 和时间，JSON 保存完整编辑配置
 
 统一入口根据现有字段自动确定内部模式：有 `videoUrl` 为 standard；没有 `videoUrl`、有顶层 `audioUrl` 为 materials_voice；两者都没有为 materials_silent。地址缺省或 null 均视为没有，背景音乐不参与分流；请求不包含 `compositionMode`。standard 省略 `materials` 为纯数字人，显式数组才匹配；两个纯素材模式要求非空素材数组，严格按顺序拼接且不调用匹配。视频使用 FFprobe 获取实际视频流时长，图片每张 3 秒，超长裁尾、不足异步失败。非空 `text` 优先，否则读取 `copy`；有语音以 ASR 配音总长合成，有文案才切片生成字幕。无语音以 `processRules.videoDuration`（有限正数秒，可为小数，不接受布尔值或数字字符串）合成，始终无字幕，`title` 使用模板标题样式及动画并全程显示。纯素材缺少文字对象时回退内置默认样式，正文仍取请求，不保存回模板。素材原声静音，背景音乐仍可选。无语音不依赖 ASR／切片／匹配配置；纯素材含视频时 PATH 需有 `ffprobe`；探测白名单包含 HTTP 代理所需的 `httpproxy`，失败的退出码与脱敏诊断写入 `timeline.json`。字段矩阵和完整请求示例见 [视频合成 API 文档](src/server/video_composition/api.md#三种模式)。
 
-视频时长优先读取首个视频轨的 `duration`；缺失或为 `N/A` 时读取该轨 `DURATION` 标签（`HH:MM:SS.小数`），扣除视频轨起始偏移后仍须为有限正数。真实媒体测试覆盖 MP4、WebM（VP8/VP9）和 MKV，并检查音轨更长与视频起点偏移的情况。不使用容器或音轨时长代替；两种视频轨时长信息均不可用的素材（如部分 FLV）仍异步报 `material_probe_failed`，具体原因写入 `timeline.json`。测试环境有 FFmpeg/FFprobe 时运行真实样本，无工具时跳过；后端集成工作流安装工具并执行这些用例。
+视频时长优先读取首个视频轨的 `duration`；缺失或为 `N/A` 时读取该轨 `DURATION` 标签（`HH:MM:SS.小数`），普通标签缺失时兼容 `DURATION-eng`、`DURATION-ZH` 等两至三字母语言后缀，标签名不区分大小写，扣除视频轨起始偏移后仍须为有限正数。真实媒体测试覆盖 MP4、WebM（VP8/VP9）和 MKV，并检查音轨更长、语言标签与视频起点偏移的情况。不使用容器或音轨时长代替；两种视频轨时长信息均不可用的素材（如部分 FLV）仍异步报 `material_probe_failed`，具体原因写入 `timeline.json`。测试环境有 FFmpeg/FFprobe 时运行真实样本，无工具时跳过；后端集成工作流安装工具并执行这些用例。
 
 `SEGMENT_MATCH_BASE_URL` 在环境变量、`.env` 或 Debug 桌面设置中留空或仅含空白，均视为未配置。只有 standard 显式传入 `materials` 时必须提供有效匹配地址，否则受理返回 503；纯数字人和两个纯素材模式不要求该配置。非空非法地址仍拒绝加载。
 
