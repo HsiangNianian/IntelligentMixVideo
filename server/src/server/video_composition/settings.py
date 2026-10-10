@@ -62,6 +62,12 @@ class Settings(ClientSettings, CommonSettings):
             raise ValueError("素材匹配鉴权头无效")
         return value
 
+    @field_validator("match_base_url", mode="before")
+    @classmethod
+    def blank_match_base(cls, value):
+        """桌面设置、环境变量及 .env 的空白匹配地址统一视为未配置。"""
+        return None if isinstance(value, str) and not value.strip() else value
+
     @field_validator("match_base_url")
     @classmethod
     def service_base(cls, value: str | None) -> str | None:

@@ -228,6 +228,30 @@ def test_null_background_music_disables_music(upstreams, client, composition_cas
     assert [clip["MediaURL"] for clip in audio_clips] == ([] if mode == "materials_silent" else [request["audioUrl"]])
 
 
+@pytest.mark.parametrize("mode", ["standard_materials", "standard_avatar", "materials_voice", "materials_silent"])
+def test_blank_match_address_only_blocks_matching(upstreams, client, composition_case, monkeypatch, mode):
+    """匹配地址留空时，仅显式传 materials 的标准模式拒绝受理，其他三种组合正常完成。"""
+    monkeypatch.setenv("SEGMENT_MATCH_BASE_URL", "")
+    request = dict(composition_case["request"])
+    if mode == "standard_avatar":
+        request.pop("materials")
+    if mode.startswith("materials_"):
+        request.pop("videoUrl")
+        request["materials"] = [{"fileUrl": f"https://media.test/{i}.jpg", "type": "image"} for i in range(3)]
+    if mode == "materials_silent":
+        request.pop("audioUrl")
+        request["processRules"] = {"videoDuration": 6}
+    response = client.post(BASE, json=request)
+    if mode == "standard_materials":
+        assert response.status_code == 503 and store.pending([], 100) == []
+        assert upstreams["submits"] == []
+    else:
+        assert response.status_code == 200
+        result = finished(client, response.json()["data"])
+        assert result["status"] == "succeeded", result
+    assert upstreams["posts"] == upstreams["gets"] == []
+
+
 @pytest.fixture
 def upstreams(monkeypatch, composition_settings, composition_case):
     """提供可控异步上游，默认完整成功；所有真实网络入口均由内存替身接管。"""
