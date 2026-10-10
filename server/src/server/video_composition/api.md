@@ -31,7 +31,7 @@
 | `title` | string/null | 否 | 标题；省略、null 或全空白时不生成标题 |
 | `materials` | array | 纯素材必填 | 纯素材必须非空、按数组顺序播放；standard 省略为纯数字人，显式 `[]` 匹配但不指定候选，非空数组指定候选；不接受 null |
 | `packRules` | object | 否 | 当前仅 `backgroundMusic` 生效 |
-| `processRules.videoDuration` | number | materials_silent | 秒制有限正数，允许小数；其他模式不使用，可省略或为 null |
+| `processRules.videoDuration` | number | materials_silent | 秒制有限正数，允许小数，不接受布尔值或数字字符串；其他模式不使用，可省略或为 null |
 | `callbackUrl` | string/null | 否 | IMV 向业务系统发送最终结果的 HTTP(S) 地址；省略或 null 不通知 |
 
 `materials[]` 字段：
