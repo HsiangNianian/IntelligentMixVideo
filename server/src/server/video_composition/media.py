@@ -3,25 +3,37 @@
 import asyncio
 import json
 from math import isfinite
+import re
 
 from .errors import CompositionError
 from .schema import Material
 
 
 async def video_duration(url: str, timeout: float) -> float:
-    """读取首个视频流时长，支持环境 HTTP 代理；失败诊断由异常链交给日志脱敏，对外仅固定摘要。"""
+    """读取首个视频流时长，缺省回退该轨 DURATION 标签；支持环境代理，诊断仅写脱敏日志。"""
     process = None
     try:
         process = await asyncio.create_subprocess_exec(
             "ffprobe", "-v", "error", "-protocol_whitelist", "http,https,tcp,tls,httpproxy",
             "-rw_timeout", str(int(timeout * 1_000_000)), "-select_streams", "v:0",
-            "-show_entries", "stream=duration", "-of", "json", url,
+            "-show_entries", "stream=duration,start_time:stream_tags=DURATION", "-of", "json", url,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         output, stderr = await asyncio.wait_for(process.communicate(), timeout)
         if process.returncode:
             raise ValueError(f"FFprobe 退出码 {process.returncode}: {stderr.decode(errors='replace')[:4000]}")
-        duration = float(json.loads(output)["streams"][0]["duration"])
+        stream = json.loads(output)["streams"][0]
+        raw = stream.get("duration")
+        if raw in (None, "N/A"):
+            tag = stream.get("tags", {}).get("DURATION", "")
+            parts = re.fullmatch(r"(\d+):([0-5]\d):([0-5]\d(?:\.\d+)?)", tag)
+            if parts is None:
+                raise ValueError("视频流缺少有效 duration 或 DURATION 标签")
+            hours, minutes, seconds = map(float, parts.groups())
+            # Matroska 的 DURATION 标签包含起始偏移，扣除视频轨起点才是实际时长。
+            start = stream.get("start_time")
+            raw = hours * 3600 + minutes * 60 + seconds - (0 if start in (None, "N/A") else float(start))
+        duration = float(raw)
         if not isfinite(duration) or duration <= 0:
             raise ValueError("视频流时长无效")
         return duration

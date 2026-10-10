@@ -1,7 +1,16 @@
-"""纯素材请求及媒体探测边界；隔离子进程和网络，执行 uv run --locked pytest tests/test_video_composition_media.py。"""
+"""纯素材请求及探测边界；单测隔离进程，真实媒体用例仅访问回环 HTTP。
+
+执行 uv run --locked pytest tests/test_video_composition_media.py；真实用例需要 FFmpeg/FFprobe。
+"""
 
 import asyncio
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
+import shutil
+import subprocess
+from threading import Thread
 from types import SimpleNamespace
 
 import pytest
@@ -77,7 +86,14 @@ async def test_images_cover_target_without_probing(monkeypatch, duration):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("payload,returncode,expected", [
-    ({"streams": [{"duration": "2.5"}], "format": {"duration": "20"}}, 0, 2.5),
+    ({"streams": [{"duration": "2.5", "tags": {"DURATION": "00:00:20.000"}}], "format": {"duration": "20"}}, 0, 2.5),
+    ({"streams": [{"tags": {"DURATION": "00:00:03.125000000"}}]}, 0, 3.125),
+    ({"streams": [{"duration": "N/A", "start_time": "1", "tags": {"DURATION": "00:00:04.000"}}]}, 0, 3),
+    ({"streams": [{"start_time": "N/A", "tags": {"DURATION": "01:02:03.5"}}]}, 0, 3723.5),
+    ({"streams": [{"tags": {"DURATION": "00:60:00"}}]}, 0, None),
+    ({"streams": [{"tags": {"DURATION": "00:00:NaN"}}]}, 0, None),
+    ({"streams": [{"start_time": "3", "tags": {"DURATION": "00:00:03"}}]}, 0, None),
+    ({"streams": [{}], "format": {"duration": "20"}}, 0, None),
     ({"streams": []}, 0, None), ({"streams": [{"duration": "N/A"}]}, 0, None),
     ({"streams": [{"duration": "NaN"}]}, 0, None), ({"streams": [{"duration": "0"}]}, 0, None),
     ({"streams": [{"duration": "2"}]}, 1, None),
@@ -92,6 +108,7 @@ async def test_probe_uses_video_stream_and_rejects_unknown(monkeypatch, payload,
         """检查不经 shell 且限制协议，带签名地址作为单个参数保留。"""
         assert args[-1] == "https://media.test/a.mp4?token=a%2Fb&x=1"
         assert args[args.index("-select_streams") + 1] == "v:0"
+        assert args[args.index("-show_entries") + 1] == "stream=duration,start_time:stream_tags=DURATION"
         protocols = args[args.index("-protocol_whitelist") + 1].split(",")
         assert "httpproxy" in protocols and "file" not in protocols
         assert kwargs["stderr"] == asyncio.subprocess.PIPE
@@ -103,6 +120,43 @@ async def test_probe_uses_video_stream_and_rejects_unknown(monkeypatch, payload,
             await media.video_duration("https://media.test/a.mp4?token=a%2Fb&x=1", 1)
     else:
         assert await media.video_duration("https://media.test/a.mp4?token=a%2Fb&x=1", 1) == expected
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"), reason="需要 FFmpeg 和 FFprobe 探测真实素材")
+@pytest.mark.anyio
+@pytest.mark.parametrize("extension,video_codec,audio_codec,start", [
+    ("mp4", "mpeg4", "aac", 0), ("webm", "libvpx", "libopus", 0),
+    ("webm", "libvpx-vp9", "libopus", 0), ("mkv", "ffv1", "pcm_s16le", 0),
+    ("mkv", "ffv1", "pcm_s16le", 1), ("flv", "flv", "libmp3lame", 0),
+])
+async def test_real_video_probe_uses_video_duration(tmp_path, monkeypatch, extension, video_codec, audio_codec, start):
+    """真实 HTTP 素材含三秒视频和六秒音轨；兼容视频轨标签及偏移，FLV 无轨时长时明确失败。"""
+    for key in list(os.environ):
+        if key.lower().endswith("_proxy"):
+            monkeypatch.delenv(key)
+    path = tmp_path / f"sample.{extension}"
+    subprocess.run([
+        "ffmpeg", "-nostdin", "-v", "error", "-itsoffset", str(start),
+        "-f", "lavfi", "-i", "color=c=red:s=160x90:r=10:d=3",
+        "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono:d=6", "-map", "0:v:0", "-map", "1:a:0",
+        "-c:v", video_codec, "-c:a", audio_codec, "-threads", "1", str(path),
+    ], check=True, capture_output=True, timeout=30)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), partial(SimpleHTTPRequestHandler, directory=str(tmp_path)))
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/{path.name}"
+        if extension == "flv":
+            with pytest.raises(CompositionError) as caught:
+                await media.video_duration(url, 10)
+            assert caught.value.error["code"] == "material_probe_failed"
+            assert "视频流缺少有效 duration 或 DURATION 标签" in json.dumps(exception_details(caught.value), ensure_ascii=False)
+        else:
+            assert await media.video_duration(url, 10) == pytest.approx(3, abs=0.001)
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=2)
 
 
 @pytest.mark.anyio

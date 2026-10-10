@@ -88,6 +88,7 @@ jobs:
           uv run --locked --project server pytest
           server/tests/test_mysql_integration.py
           server/tests/test_remotion_templates.py
+          server/tests/test_video_composition_media.py
           -k 'mysql or real_' -v
           --junitxml=integration-results/results.xml
           --basetemp=integration-results/pytest
