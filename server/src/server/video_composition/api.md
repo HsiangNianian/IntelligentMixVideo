@@ -34,6 +34,8 @@
 | `processRules.videoDuration` | number | materials_silent | 秒制有限正数，允许小数，不接受布尔值或数字字符串；其他模式不使用，可省略或为 null |
 | `callbackUrl` | string/null | 否 | IMV 向业务系统发送最终结果的 HTTP(S) 地址；省略或 null 不通知 |
 
+纯数字人模式仍对 `audioUrl` 执行 ASR，以原始音频总时长确定时间线；字幕由输入文案与 ASR 对齐后的 segmentation 切片确定，并受模板字幕对象显示区间限制。模板效果、背景音乐、IMS 渲染、ZOS 视频与 PNG 转存、查询和终态通知沿用相同流程。此前省略 `materials` 也会匹配；需要保留该行为的调用方应显式传入 `[]`。已有任务按保存的请求字段和阶段恢复，不重新解释原始请求日志。
+
 `materials[]` 字段：
 
 | 字段 | 类型 | 必填 | 说明 |

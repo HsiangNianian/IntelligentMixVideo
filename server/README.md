@@ -77,6 +77,8 @@ MySQL 单独列保存唯一名称、ID 和时间，JSON 保存完整编辑配置
 
 统一入口根据现有字段自动确定内部模式：有 `videoUrl` 为 standard；没有 `videoUrl`、有顶层 `audioUrl` 为 materials_voice；两者都没有为 materials_silent。地址缺省或 null 均视为没有，背景音乐不参与分流；请求不包含 `compositionMode`。standard 省略 `materials` 为纯数字人，显式数组才匹配；两个纯素材模式要求非空素材数组，严格按顺序拼接且不调用匹配。视频使用 FFprobe 获取实际视频流时长，图片每张 3 秒，超长裁尾、不足异步失败。非空 `text` 优先，否则读取 `copy`；有语音以 ASR 配音总长合成，有文案才切片生成字幕。无语音以 `processRules.videoDuration`（有限正数秒，可为小数，不接受布尔值或数字字符串）合成，始终无字幕，`title` 使用模板标题样式及动画并全程显示。纯素材缺少文字对象时回退内置默认样式，正文仍取请求，不保存回模板。素材原声静音，背景音乐仍可选。无语音不依赖 ASR／切片／匹配配置；纯素材含视频时 PATH 需有 `ffprobe`；探测白名单包含 HTTP 代理所需的 `httpproxy`，失败的退出码与脱敏诊断写入 `timeline.json`。字段矩阵和完整请求示例见 [视频合成 API 文档](src/server/video_composition/api.md#三种模式)。
 
+standard 模式中，请求不包含 `materials` 时为纯数字人：跳过素材匹配，以 `audioUrl` 的 ASR 原始总时长铺满数字人视频，字幕继续按文案切片和模板时间规则显示。显式 `materials: []` 保留素材匹配但不指定候选，非空数组携带候选匹配，`null` 返回 422。需要保留此前缺省字段也匹配的行为时，调用方须改为显式传入 `[]`；已有任务继续按已保存的请求和阶段恢复。
+
 视频时长优先读取首个视频轨的 `duration`；缺失或为 `N/A` 时读取该轨 `DURATION` 标签（`HH:MM:SS.小数`），普通标签缺失时兼容 `DURATION-eng`、`DURATION-ZH` 等两至三字母语言后缀，标签名不区分大小写，扣除视频轨起始偏移后仍须为有限正数。真实媒体测试覆盖 MP4、WebM（VP8/VP9）和 MKV，并检查音轨更长、语言标签与视频起点偏移的情况。不使用容器或音轨时长代替；两种视频轨时长信息均不可用的素材（如部分 FLV）仍异步报 `material_probe_failed`，具体原因写入 `timeline.json`。测试环境有 FFmpeg/FFprobe 时运行真实样本，无工具时跳过；后端集成工作流安装工具并执行这些用例。
 
 `SEGMENT_MATCH_BASE_URL` 在环境变量、`.env` 或 Debug 桌面设置中留空或仅含空白，均视为未配置。只有 standard 显式传入 `materials` 时必须提供有效匹配地址，否则受理返回 503；纯数字人和两个纯素材模式不要求该配置。非空非法地址仍拒绝加载。
@@ -189,7 +191,7 @@ uv sync --locked --default-index https://pypi.org/simple
 uv run --locked --project server server
 ```
 
-HTTP 请求体包含 `script`（正确文案字符串）和 `asr_result`（Fun-ASR 原始结果对象），由 Pydantic 校验必填字段与类型。也可在代码中读取 ASR 输出文件并调用：
+HTTP 请求体必填 `script`（正确文案字符串）和 `asr_result`（Fun-ASR 原始结果对象），可选 `title`（标题字符串，可省略或为 null），由 Pydantic 校验字段类型。也可在代码中读取 ASR 输出文件并调用：
 
 ```python
 import json
@@ -197,13 +199,15 @@ from pathlib import Path
 from server.segmentation import segment
 
 result = segment({
+    "title": "示例标题",
     "script": "你好世界。",
     "asr_result": json.loads(Path("asr_result.json").read_text(encoding="utf-8")),
 })
 ```
 
 使用 ASR 第一音轨的词级时间（毫秒），返回 `segments`、`warnings` 和 `trace`；片段包含保留标点的原文、秒制时间、分组和关键词。
-首次切分和关键词提取后，超过 8 个有效字（不计标点和空白）的片段批量进行一次语义切分，非法结果直接报错。
+提供非 null 的 `title` 时，在现有关键词模型调用中同时提取一个标题关键词，响应新增同级 `title_keyword` 字符串；关键词须在标题中连续出现且最多 12 字。标题为空或无合适关键词时由模型返回空字符串；省略或传 null 时不返回此字段。模型结果缺失或非法直接报错，不增加兜底或额外重试。
+首次切分和关键词提取后，超过 8 个有效字（不计标点和空白）的片段批量进行语义切分。二次切分结果的 JSON、切点、子段字数或关键词完整性校验失败时，将失败输出和具体错误反馈给模型，最多修正一次；再次失败直接报错，全部通过后才应用结果。网络错误沿用 SDK 策略，不触发此校验重试。
 切片不调用 ASR，不生成字幕子段；最终去标点由下游合成负责。
 
 HTTP 与视频合成调用均在 FastAPI 终端记录阶段、切点、关键词与模型耗时，桌面日志写入 `backend/server.log`。

@@ -566,6 +566,7 @@ def test_missing_ffmpeg_rejected_before_accept(upstreams, client, composition_ca
 @pytest.mark.parametrize("field,value", [
     ("text", " "), ("styleId", "old-external-id"), ("audioUrl", "http://media.test/a"),
     ("videoUrl", "[视频](https://media.test/a)"), ("videoUrl", "https://user:pass@media.test/a"),
+    ("materials", None),
     ("materials", [{"fileUrl": "https://media.test/a"}]),
     ("materials", [{"fileUrl": "https://media.test/a", "type": "audio"}]),
     ("packRules", {"backgroundMusic": {"audioSwitch": True}}),
@@ -1028,8 +1029,6 @@ async def test_lifespan_cancels_asr_and_recovers_as_interrupted(upstreams, compo
     upstreams["release"].clear()
     async with app.router.lifespan_context(app):
         runtime = app.state.video_composition
-        from server.video_composition.schema import CompositionRequest
-
         record = await runtime.accept(CompositionRequest.model_validate(composition_case["request"]), "http://testserver")
         async with asyncio.timeout(2):
             while not upstreams["entered"].is_set():

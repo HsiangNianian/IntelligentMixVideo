@@ -56,7 +56,7 @@ async function openModule(name: string) {
 }
 
 // 场景：非法值阻止写入，修正后保存；切片请求读取快照，但不发送启动时才应用的 HTTP 策略。
-test("保存切片设置并携带本地配置请求切片", async () => {
+test.each(["测试标题", null])("保存切片设置并携带本地配置请求切片：%s", async (title) => {
   let stored: Record<string, Values> = {};
   const invoke = mock(async (_command: string, args: Record<string, unknown>) => {
     if (args?.id) stored = { ...stored, [String(args.id)]: structuredClone(args.values as Values) };
@@ -88,9 +88,9 @@ test("保存切片设置并携带本地配置请求切片", async () => {
   // 草稿修改不应提前进入请求使用的已保存配置。
   fireEvent.change(screen.getByLabelText("模型名称"), { target: { value: "unsaved-model" } });
   fetchMock.mockResolvedValueOnce(Response.json({ segments: [{ text: "甲乙" }] }));
-  expect(await requestSegmentation({ script: "甲乙", asr_result: {} })).toEqual({ segments: [{ text: "甲乙" }] });
+  expect(await requestSegmentation({ title, script: "甲乙", asr_result: {} })).toEqual({ segments: [{ text: "甲乙" }] });
   const [, options] = fetchMock.mock.calls.at(-1)!;
-  expect(JSON.parse(String(options?.body))).toEqual({ script: "甲乙", asr_result: {}, config: saved.segmentation });
+  expect(JSON.parse(String(options?.body))).toEqual({ title, script: "甲乙", asr_result: {}, config: saved.segmentation });
 });
 
 // 场景：切换模块保留各自草稿，未保存内容不写入本地配置。
