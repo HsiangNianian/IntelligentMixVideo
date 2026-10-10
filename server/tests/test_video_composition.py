@@ -20,7 +20,7 @@ from sqlalchemy.exc import OperationalError
 
 from server.app import app
 from server.video_composition import ims, service, store, zos
-from server.video_composition.schema import MatchCallback
+from server.video_composition.schema import CompositionRequest, MatchCallback
 from .template_wire import post_template
 
 BASE = "/api/v1/video-compositions"
@@ -29,6 +29,8 @@ BASE = "/api/v1/video-compositions"
 @pytest.fixture
 def upstreams(monkeypatch, composition_settings, composition_case):
     """提供可控异步上游，默认完整成功；所有真实网络入口均由内存替身接管。"""
+    # 既有编排用例显式启用匹配；纯数字人用例单独移除此字段。
+    composition_case["request"]["materials"] = []
     release = Event()
     release.set()
     notification_release = Event()
@@ -244,6 +246,73 @@ def test_async_acceptance_queries_and_persisted_success(upstreams, client, compo
     assert "test-secret" not in json.dumps(snapshot)
 
 
+@pytest.mark.parametrize("materials", [None, [], [{"fileUrl": "https://media.example.test/asset.png", "type": "image"}]],
+                         ids=["omitted", "empty", "candidates"])
+def test_materials_presence_selects_matching(upstreams, client, composition_case, materials):
+    """缺省只合成数字人；显式数组仍匹配，三种请求均保留字幕、转存、查询和通知。"""
+    request = composition_case["request"]
+    if materials is None:
+        request.pop("materials")
+    else:
+        request["materials"] = materials
+    request["callbackUrl"] = "https://notify.example.test/result"
+    asset_url = "https://media.example.test/asset.png"
+    composition_case["matches"][0].update(matched_candidate_url=asset_url, matched_candidate_type="image")
+    response = client.post(BASE, json=request)
+    assert response.status_code == 200
+    task_id = response.json()["data"]
+    result = finished(client, task_id)
+    assert result["status"] == "succeeded"
+    saved = notified(task_id)["data"]
+    assert saved["notification_status"] == "sent"
+    assert ("materials" in saved["request"]) == (materials is not None)
+    assert upstreams["asr_calls"] == upstreams["segment_calls"] == len(upstreams["submits"]) == 1
+    assert upstreams["gets"] == []
+    timeline = saved["timeline"]
+    clips = timeline["VideoTracks"][0]["VideoTrackClips"]
+    if materials is None:
+        assert upstreams["posts"] == []
+        assert not any(key.startswith("match_") for key in saved)
+        assert len(clips) == 1 and clips[0]["MediaURL"] == request["videoUrl"]
+        assert (clips[0]["In"], clips[0]["Out"], clips[0]["TimelineIn"], clips[0]["TimelineOut"]) == (0, 8, 0, 8)
+    else:
+        assert saved["request"]["materials"] == materials
+        assert len(upstreams["posts"]) == 1
+        assert clips[1]["MediaURL"] == asset_url
+        if materials:
+            assert upstreams["posts"][0]["asset_url_list"] == [{"file_url": asset_url, "type": "image"}]
+        else:
+            assert "asset_url_list" not in upstreams["posts"][0]
+    assert timeline["AudioTracks"][0]["AudioTrackClips"][0]["Out"] == 8
+    subtitles = timeline["SubtitleTracks"][0]["SubtitleTrackClips"]
+    assert [item["Content"] for item in subtitles] == ["甲乙丙丁", "戊己庚辛"]
+    assert [(item["TimelineIn"], item["TimelineOut"]) for item in subtitles] == [(1, 3), (4, 6)]
+    assert upstreams["zos_uploads"][0][1] == task_id
+    assert result["result"]["videoUrl"].endswith(f"/imv/video_composition/{task_id}.mp4")
+    assert upstreams["notifications"][0]["body"]["videoUrl"] == result["result"]["videoUrl"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("stage", ["queued", "template", "assembling"])
+async def test_avatar_recovery_keeps_omitted_materials(upstreams, composition_case, composition_runtime, stage):
+    """从数据库恢复缺省字段的任务仍跳过匹配，已保存的切片不重复调用 ASR 或切片。"""
+    store.initialize_schema()
+    composition_case["request"].pop("materials")
+    record = await composition_runtime.accept(CompositionRequest.model_validate(composition_case["request"]), "http://testserver")
+    if stage == "template":
+        store.advance(record, "template")
+    elif stage == "assembling":
+        await service.Job(composition_runtime, record, composition_runtime.settings).prepare()
+    restored = store.get(record["task_id"])
+    assert restored["stage"] == stage and "materials" not in restored["data"]["request"]
+    await composition_runtime._execute(restored)
+    saved = store.get(record["task_id"])
+    assert saved["status"] == "succeeded"
+    assert upstreams["asr_calls"] == upstreams["segment_calls"] == len(upstreams["submits"]) == 1
+    assert upstreams["posts"] == upstreams["gets"] == []
+    assert len(saved["data"]["timeline"]["VideoTracks"][0]["VideoTrackClips"]) == 1
+
+
 def test_zos_query_does_not_need_ims_playback(upstreams, client, composition_case):
     """ZOS 成片成功后 IMS 取址故障不影响 GET，也不重新提交合成。"""
     task_id = client.post(BASE, json=composition_case["request"]).json()["data"]
@@ -287,6 +356,7 @@ def test_missing_ffmpeg_rejected_before_accept(upstreams, client, composition_ca
 @pytest.mark.parametrize("field,value", [
     ("text", " "), ("styleId", "old-external-id"), ("audioUrl", "http://media.test/a"),
     ("videoUrl", "[视频](https://media.test/a)"), ("videoUrl", "https://user:pass@media.test/a"),
+    ("materials", None),
     ("materials", [{"fileUrl": "https://media.test/a"}]),
     ("materials", [{"fileUrl": "https://media.test/a", "type": "audio"}]),
     ("packRules", {"backgroundMusic": {"audioSwitch": True}}),
@@ -749,8 +819,6 @@ async def test_lifespan_cancels_asr_and_recovers_as_interrupted(upstreams, compo
     upstreams["release"].clear()
     async with app.router.lifespan_context(app):
         runtime = app.state.video_composition
-        from server.video_composition.schema import CompositionRequest
-
         record = await runtime.accept(CompositionRequest.model_validate(composition_case["request"]), "http://testserver")
         async with asyncio.timeout(2):
             while not upstreams["entered"].is_set():
