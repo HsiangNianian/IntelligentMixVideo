@@ -285,6 +285,7 @@ def test_materials_presence_selects_matching(upstreams, client, composition_case
             assert "asset_url_list" not in upstreams["posts"][0]
     assert timeline["AudioTracks"][0]["AudioTrackClips"][0]["Out"] == 8
     subtitles = timeline["SubtitleTracks"][0]["SubtitleTrackClips"]
+    assert [item["Content"] for item in subtitles] == ["甲乙丙丁", "戊己庚辛"]
     assert [(item["TimelineIn"], item["TimelineOut"]) for item in subtitles] == [(1, 3), (4, 6)]
     assert upstreams["zos_uploads"][0][1] == task_id
     assert result["result"]["videoUrl"].endswith(f"/imv/video_composition/{task_id}.mp4")
