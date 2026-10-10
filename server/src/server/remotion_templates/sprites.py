@@ -186,9 +186,11 @@ def _validated_request(request: pb.PublishSpriteRequest, schema: dict, version_k
         raise _invalid("只有文字 Sprite 可以声明 text_prop 与 keywords_prop")
 
 
-async def publish(service, request: pb.PublishSpriteRequest) -> pb.SpriteSummary:
-    """Copy a verified accepted version and its sealed player; repeating returns the original asset."""
-    store = service.store
+def publish(store: Store, request: pb.PublishSpriteRequest) -> pb.SpriteSummary:
+    """Copy a verified accepted version and its sealed player; repeating returns the original asset.
+
+    It hashes every sealed artifact and copies the player bundle, so the route runs it in a worker thread.
+    """
     try:
         version_id = UUID(request.source_version_id)
     except ValueError:

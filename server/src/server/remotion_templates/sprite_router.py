@@ -58,7 +58,7 @@ async def publish_sprite(request: Request, service: Service) -> Response:
     """复制已验收版本的源码、参数契约与预览；相同来源与字段选择重复发布返回原 Sprite。"""
     message = pb.PublishSpriteRequest()
     await _body(request, message)
-    summary = await sprites.publish(service, message)
+    summary = await run_in_threadpool(sprites.publish, service.store, message)
     return _response(pb.PublishSpriteResponse(sprite=summary))
 
 

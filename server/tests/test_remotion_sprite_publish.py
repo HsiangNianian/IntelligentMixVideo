@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from generated.imv.sprite.v1 import sprite_pb2 as pb
 
 from server.app import app
+from server.remotion_templates import sprites
 from server.remotion_templates.harness import Harness
 from server.remotion_templates.models import GenerateTemplateRequest
 from server.remotion_templates.provider import Budget
@@ -227,3 +228,22 @@ def test_overlay_preview_is_transparent_and_serves_managed_fonts(client: TestCli
     assert font.headers["access-control-allow-origin"] == "*"
     assert client.get(f"/api/sprites/{summary.sprite_id}/fonts/500").status_code == 404
     assert client.get("/api/sprites/00000000-0000-4000-8000-000000000000/fonts/400").status_code == 404
+
+
+def test_publish_hashes_and_copies_off_the_event_loop(client: TestClient, published, monkeypatch) -> None:
+    """发布要哈希全部封存产物并复制播放器包，必须在工作线程执行，不能占住事件循环（SSE 与取消都依赖它）。"""
+    where = []
+    verify = sprites.verify_artifacts
+
+    def probe(*args, **kwargs):
+        """工作线程里没有运行中的事件循环，事件循环线程里有；记录所在位置后照常校验。"""
+        try:
+            asyncio.get_running_loop()
+            where.append("event loop")
+        except RuntimeError:
+            where.append("worker thread")
+        return verify(*args, **kwargs)
+
+    monkeypatch.setattr(sprites, "verify_artifacts", probe)
+    published_sprite(client, published.version.id)
+    assert where == ["worker thread"]
