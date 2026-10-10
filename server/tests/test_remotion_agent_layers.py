@@ -133,6 +133,33 @@ def test_outer_plan_executor_plan_outer_handoff(monkeypatch, tmp_path):
     assert run.stalled_turns == 0
 
 
+def test_every_layer_is_told_that_inspect_cannot_search_for_tools(monkeypatch, tmp_path):
+    """真实日志里 55% 的 tools_inspect 是在猜工具名：「只读已知名称的契约」这条规则必须进入三层的系统提示。"""
+    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
+    plan = Plan(goal="inspect", steps=[{"id": "inspect", "goal": "inspect a tool", "tool_modules": ["tools"], "done_when": "observed"}])
+    harness = FakeHarness([
+        call("outer-1", "tools_plan_execute", {"action": "delegate", "plan": plan.model_dump()}),
+        call("plan-1", "tools_plan_execute", {"action": "update_plan", "plan": plan.model_dump()}),
+        AssistantMessage(content=json.dumps({"status": "step_done", "summary": "observed", "sprite_id": "sprite-1"})),
+        call("plan-2", "tools_plan_execute", {"action": "complete"}),
+        AssistantMessage(content=json.dumps({"action": "complete", "sprite_id": "sprite-1"})),
+    ])
+    systems = {}
+
+    async def turn(system, _context, _tools, _budget, _images, *, phase):
+        """Remember the system prompt each role received before returning the scripted reply."""
+        systems.setdefault(phase, system)
+        harness.roles.append(phase)
+        return next(harness.responses)
+
+    harness._turn = turn
+    run = AgentRun(harness, None, Budget(), tmp_path, [], lambda *_: None, intent={"original_request": {"description": "demo"}})
+    assert asyncio.run(run.plan_execute()) == {"published": "sprite-1"}
+    assert set(systems) == {"outer", "plan", "executor"}
+    for role, system in systems.items():
+        assert "cannot search or list tools" in system, role
+
+
 def test_executor_cannot_call_plan_control(monkeypatch, tmp_path):
     """An Executor orchestration call is rejected and does not advance the Plan."""
     monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)

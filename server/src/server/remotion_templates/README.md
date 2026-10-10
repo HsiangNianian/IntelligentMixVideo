@@ -16,7 +16,7 @@ Six business tools have implementations in this build:
 | `preset.create` | implemented — validates the Preset and saves it |
 | `sprite.compose` | implemented — deterministic combination of Preset instances |
 | `sprite.create` | implemented — consistency check, code validation and save |
-| `tools.inspect` | implemented — returns one tool descriptor by dotted ID or wire name |
+| `tools.inspect` | implemented — returns one tool descriptor by dotted ID or wire name; it reads a contract, it does not search or list tools |
 | `image.info` / `image.resize` / `image.crop` | contract only |
 | `preset.search` | implemented: plain listing with optional keyword; the agent picks what to recall |
 | `preset.modify` | implemented: returns an edited draft copy; save it with `preset.create` |
@@ -25,7 +25,9 @@ Six business tools have implementations in this build:
 Deferred tools are marked `implemented=False` at registration and are filtered
 out of every layer's tool window, so the model is never offered a tool that
 cannot run. Calling one directly returns `NOT_IMPLEMENTED` rather than a
-fabricated result. The host still performs the code, parameter and browser
+fabricated result. `tools.inspect` still describes them and says so in the first
+words of the description (`[Not callable in this build ...]`); an unknown name
+lists callable tools and contract-only tools apart. The host still performs the code, parameter and browser
 checks needed to build a preview; those are not model-facing tools.
 
 Image tools read the reference image the user already uploaded and the server

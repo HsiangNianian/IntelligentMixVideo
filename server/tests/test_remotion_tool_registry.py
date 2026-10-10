@@ -97,6 +97,30 @@ def test_unknown_tool_names_fail_with_list_and_suggestions(bad):
     assert "Available tools:" in error.message and "preset.create" in error.message
 
 
+def test_contract_only_tools_say_they_are_not_callable():
+    """只有契约的工具仍可被 inspect，但描述第一句就声明当前不可调用，实现了的工具不受影响。"""
+    contract_only = [item for item in registered_tools() if not item.implemented]
+    assert contract_only, "the registry must still hold deferred contracts"
+    for item in contract_only:
+        assert item.describe()["description"].startswith("[Not callable in this build"), item.name
+    for item in registered_tools():
+        if item.implemented:
+            assert not item.describe()["description"].startswith("[Not callable"), item.name
+
+
+def test_inspect_unknown_name_lists_callable_tools_apart_from_contract_only_ones():
+    """模型在真实日志里曾被「Available tools」带去调用 validate.code；报错必须把可调用与仅有契约的分开列。"""
+    result = asyncio.run(get_tool("tools.inspect").invoke(None, {"tool_name": "preset"}))
+    assert result["ok"] is False and result["error"]["code"] == "TOOL_NOT_FOUND"
+    available, _, contract_only = result["error"]["message"].partition(". Contract-only, not callable: ")
+    callable_names = set(available.split("Available tools: ")[1].split(", "))
+    reference_names = set(contract_only.split(", "))
+    implemented = {item.name for item in registered_tools() if item.implemented}
+    assert implemented <= callable_names
+    assert reference_names == {item.name for item in registered_tools() if not item.implemented}
+    assert callable_names.isdisjoint(reference_names)
+
+
 def test_empty_tool_window_never_falls_back_to_the_registry():
     """空权限窗口必须拒绝已注册工具，且不能建议窗口外的工具。"""
     with pytest.raises(ToolFault) as caught:
