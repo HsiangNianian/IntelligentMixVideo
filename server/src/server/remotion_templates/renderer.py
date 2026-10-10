@@ -129,7 +129,12 @@ class Renderer:
 
     def command(self, directory: Path, *, worker: str = "worker.mjs") -> list[str]:
         """Expose system libraries, managed renderer and one writable attempt; hide home and secrets."""
-        if worker not in {"worker.mjs", "tool-validation-worker.mjs", "presentation-worker.mjs"}:
+        if worker not in {
+            "worker.mjs",
+            "tool-validation-worker.mjs",
+            "presentation-worker.mjs",
+            "overlay-worker.mjs",
+        }:
             raise ValueError("Unknown isolated renderer worker")
         settings = self.settings
         node = Path(shutil.which("node") or "/usr/bin/node").resolve()

@@ -130,7 +130,7 @@ template does not touch the clips (clips of a deleted template stay unread), and
 enter this module. Saving validates only what Remotion owns: referenced assets exist, clips are fixed
 (`start_mode` seconds, a finite start of at least 0, an optional positive duration, contiguous `order`, unique
 IDs, at most 100); object targets and style overrides are refused. The router lives in `sprite_router.py` on the
-main app and borrows the Remotion runtime; `/api/sprites/render` is not implemented.
+main app and borrows the Remotion runtime; `/api/sprites/render` is superseded by the overlay renders below.
 `GET /api/sprites/{id}/preview?overlay=true&sync=1` serves the sealed player on a transparent page for the template editor;
 a sync-mode bundle has no controls or loop and seeks on `imv-preview-sync {time}` messages, reporting `sync: true` in its
 ready message. Publishing rebuilds the bundle from the sealed source in the isolated worker when the sealed one lacks
@@ -138,6 +138,26 @@ the marker (and refreshes an existing publication on re-save); a failed rebuild 
 A refresh stages the new bundle and records its hash before replacing the copy, so a failed update keeps the
 previous copy working and publishing again retries it. Identical publish requests (same version and field
 choice) take turns, so a double click rebuilds once.
+
+## Overlay renders for the bus
+
+`POST /api/v1/overlay-renders` (`overlay_router.py`) renders **all Remotion clips saved under one style ID**
+into one transparent VP9 alpha WebM, uploads it to ZOS (`imv/overlay_render/{taskId}.webm`, public-read) and
+returns/notifies the public URL. Body (camelCase): `styleId`, optional `audioUrl`, `duration` (seconds),
+`callbackUrl`. `GET /api/v1/overlay-renders/{taskId}` returns `{taskId, status, result:{videoUrl}, error}`
+(`queued/rendering/uploading/succeeded/failed`); the callback body is `{taskId, status: succeed|failed,
+videoUrl, errorMessage}`, retried after 5/15/45 s.
+
+- **Length**: TTS `audioUrl` (full ffprobe duration) wins; otherwise `duration`; otherwise the latest clip end.
+  Longer than `IMV_OVERLAY_MAX_SECONDS` (120) is a 422 at acceptance.
+- **Layout**: every asset must share width/height/fps. Clips are stacked by `order` on one canvas; each plays for
+  its saved duration (or its own `preview_frames / fps`), keeps its full own length (cut by the total, so its internal animation ranges are unchanged), and is dropped when it starts later.
+- **Output**: no audio; the bus/IMS keeps its own audio track and overlays the WebM. The host re-probes the file
+  (VP9, size, fps, frame count, alpha tag) before uploading.
+- **Execution**: `overlay_render.py` plans, `remotion/overlay-worker.mjs` renders in the bwrap sandbox
+  (`IMV_OVERLAY_RENDER_TIMEOUT_SECONDS`, 600), `overlay_service.py` owns the SQLite `overlay_renders` task table,
+  one render at a time, recovery of unfinished tasks on first runtime use, and ZOS upload via
+  `video_composition.zos.upload_public`. Sealed sources are not re-policy-checked in this worker.
 
 ## Code diagnostics
 

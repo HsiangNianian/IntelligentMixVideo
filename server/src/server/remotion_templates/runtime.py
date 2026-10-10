@@ -13,6 +13,7 @@ from .deletion import finish as finish_deletion
 from .settings import ClientSettings, Settings
 from ..file_lock import lock_exclusive
 from .harness import Harness
+from .overlay_service import OverlayRenders
 from .models import DialogueOutput, EditTemplateRequest, JobError, JobInput, TaskMessage
 from .parameters import parameter_changes
 from .provider import Budget, ExecutionFailure, ModelFailure, Provider
@@ -38,6 +39,14 @@ class Runtime:
         self.lock = None
         self.client_configs: dict[UUID, Settings] = {}
         self.diagnostics_lock = asyncio.Lock()
+        self._overlays: OverlayRenders | None = None
+
+    @property
+    def overlays(self) -> OverlayRenders:
+        """Template overlay-video tasks, created on first use so job-only runtimes need no renderer."""
+        if self._overlays is None:
+            self._overlays = OverlayRenders(self.store, self.harness.renderer, self.settings)
+        return self._overlays
 
     def initialize(self) -> None:
         """Lock the state directory before recovery so a second server cannot interrupt live jobs."""

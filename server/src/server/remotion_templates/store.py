@@ -95,6 +95,10 @@ class Store:
                     style_id TEXT PRIMARY KEY, revision INTEGER NOT NULL,
                     updated_at TEXT NOT NULL, data TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS overlay_renders (
+                    id TEXT PRIMARY KEY, status TEXT NOT NULL,
+                    created_at TEXT NOT NULL, data TEXT NOT NULL
+                );
             """)
             history.initialize(db)
 
