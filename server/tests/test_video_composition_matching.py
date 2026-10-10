@@ -1,6 +1,7 @@
 """素材匹配 HTTP 契约测试：内存传输隔离网络，覆盖字段映射、同源 Location 和有界失败。"""
 
 import json
+from copy import deepcopy
 
 import httpx
 import pytest
@@ -52,6 +53,40 @@ def test_segment_ids_and_fractional_seconds_are_not_rewritten(composition_case):
     composition_case["matches"][0]["segment_id"] = 1
     with pytest.raises(ValueError):
         validated_matches(composition_case["segments"], {"segments": composition_case["matches"]})
+
+
+@pytest.mark.parametrize("source_text,matched_text", [
+    ("甲乙丙丁。 ", "甲乙丙丁。"), ("甲乙丙丁。", " \t甲乙丙丁。\n"),
+    ("\u3000甲乙丙丁。\r\n", "\t甲乙丙丁。\u00a0"), (" 甲乙 丙丁。 ", "甲乙 丙丁。"),
+])
+def test_matching_allows_only_outer_whitespace_without_rewriting(composition_case, source_text, matched_text):
+    """仅忽略首尾空白，校验不改写本地切片或上游回执，保存的匹配文字仍是原回执。"""
+    composition_case["segments"][0]["text"] = source_text
+    composition_case["matches"][0]["text"] = matched_text
+    original = deepcopy(composition_case)
+    result = validated_matches(composition_case["segments"], {"segments": composition_case["matches"]})
+    assert result[0]["text"] == matched_text
+    assert composition_case == original
+
+
+@pytest.mark.parametrize("change", ["id", "order", "count", "start", "end", "content", "punctuation", "inner-space", "inner-newline"])
+def test_matching_whitespace_tolerance_keeps_other_fields_strict(composition_case, change):
+    """允许首尾空白的同时，仍拒绝编号、顺序、数量、微小时间变化及正文内部差异。"""
+    matches = composition_case["matches"]
+    matches[0]["text"] = " \t" + matches[0]["text"] + "\n"
+    if change == "order":
+        matches.reverse()
+    elif change == "count":
+        matches.pop()
+    else:
+        field, value = {
+            "id": ("segment_id", 3), "start": ("start_time", 1.000001), "end": ("end_time", 3.000001),
+            "content": ("text", "甲乙丙戊。"), "punctuation": ("text", "甲乙丙丁！"),
+            "inner-space": ("text", "甲乙 丙丁。"), "inner-newline": ("text", "甲乙\n丙丁。"),
+        }[change]
+        matches[0][field] = value
+    with pytest.raises(ValueError):
+        validated_matches(composition_case["segments"], {"segments": matches})
 
 
 @pytest.mark.parametrize("field,value", [

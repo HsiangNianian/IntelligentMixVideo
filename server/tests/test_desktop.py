@@ -62,8 +62,9 @@ def test_desktop_config_preserves_credentials_and_uses_private_paths(tmp_path, m
     assert database.DatabaseSettings().socket == str(tmp_path / "mysql.sock")
 
 
-def test_debug_local_settings_are_loaded_before_business(tmp_path, monkeypatch):
-    """本地配置覆盖内置默认值供实际配置类读取；路径/端口生效，数据库和原文件不变。"""
+@pytest.mark.parametrize("match_base", ["https://match.test", "", " \t"])
+def test_debug_local_settings_are_loaded_before_business(tmp_path, monkeypatch, match_base):
+    """本地配置与空白匹配地址由实际配置类读取；路径/端口生效，数据库和原文件不变。"""
     from server.asr.settings import ASRSettings
     from server.segmentation.settings import Settings as SegmentationSettings
     from server.video_composition.settings import Settings as CompositionSettings
@@ -81,7 +82,7 @@ def test_debug_local_settings_are_loaded_before_business(tmp_path, monkeypatch):
         "asr": {"dashscope_api_key": "client-asr"},
         "segmentation": {"llm_base_url": "https://model.test", "llm_api_key": "client-key", "llm_model": "client-model", "allow_insecure_llm_http": False},
         "ims": {"ims_access_key_id": "client-id", "ims_access_key_secret": "client-secret",
-                "match_base_url": "https://match.test", "match_authorization": "client-match", "composition_width": 640},
+                "match_base_url": match_base, "match_authorization": "client-match", "composition_width": 640},
         "database": {"host": "ignored.test"},
     }
     path = tmp_path / "data/settings/settings.json"
@@ -94,7 +95,7 @@ def test_debug_local_settings_are_loaded_before_business(tmp_path, monkeypatch):
     assert not models.enforce_model_budget and not SegmentationSettings().allow_insecure_llm_http
     assert ASRSettings().dashscope_api_key.get_secret_value() == "client-asr"
     composition = CompositionSettings()
-    assert composition.composition_width == 640 and composition.match_base_url == "https://match.test"
+    assert composition.composition_width == 640 and composition.match_base_url == (match_base if match_base.strip() else None)
     assert composition.ims_access_key_secret.get_secret_value() == "client-secret"
     assert composition.match_authorization.get_secret_value() == "client-match"
     assert database.DatabaseSettings().host == "localhost"

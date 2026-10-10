@@ -14,7 +14,7 @@
 
 当前模块没有任务列表、取消、删除、重试或重新发送最终通知接口。创建接口没有调用方幂等键，重复 POST 会创建新的任务；响应丢失时不要盲目重复提交。
 
-业务调用流程：创建任务 → 保存返回的 `taskId` → 接收最终通知或查询任务 → 取得视频地址。后台依次执行模板读取、ASR、文本切片、素材匹配、时间线组装和 IMS 合成；请求未包含 `materials` 时跳过素材匹配，使用数字人视频覆盖完整音频时长。
+业务调用流程：创建任务 → 保存返回的 `taskId` → 接收最终通知或查询任务 → 取得视频地址。后台根据 `videoUrl` 和顶层 `audioUrl` 自动判断模式，准备素材与文字，共用模板、IMS、ZOS、查询和通知。`compositionMode` 仅为内部概念，不属于请求字段。
 
 ## 2. 创建任务
 
@@ -24,13 +24,14 @@
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `text` | string | 是 | 文案，1～20000 字符，不能全为空白 |
-| `videoUrl` | string | 是 | 基础视频 HTTP(S) 直链 |
-| `audioUrl` | string | 是 | 配音音频 HTTPS 直链，供 ASR 和合成使用 |
+| `text` / `copy` | string/null | 按模式 | 非空 `text` 优先；缺省、null、空串或全空白时回退 `copy`，最多 20000 字符；内部统一保存为 `text` |
+| `videoUrl` | string/null | standard | 数字人视频 HTTP(S) 直链；提供时走原数字人流程，纯素材必须省略或传 null |
+| `audioUrl` | string/null | standard / materials_voice | 配音 HTTPS 直链，供 ASR 获取完整音频时长和合成；无数字人视频时由此字段决定有无语音，无语音必须省略或传 null |
 | `styleId` | string(UUID) | 是 | 已保存的云端模板 ID；后台从服务端模板存储读取 |
 | `title` | string/null | 否 | 标题；省略、null 或全空白时不生成标题 |
-| `materials` | array | 否 | 省略时纯数字人；显式 `[]` 仍匹配但不指定候选；非空数组携带候选匹配；`null` 返回 422 |
+| `materials` | array | 纯素材必填 | 纯素材必须非空、按数组顺序播放；standard 省略为纯数字人，显式 `[]` 匹配但不指定候选，非空数组指定候选；不接受 null |
 | `packRules` | object | 否 | 当前仅 `backgroundMusic` 生效 |
+| `processRules.videoDuration` | number | materials_silent | 秒制有限正数，允许小数，不接受布尔值或数字字符串；其他模式不使用，可省略或为 null |
 | `callbackUrl` | string/null | 否 | IMV 向业务系统发送最终结果的 HTTP(S) 地址；省略或 null 不通知 |
 
 纯数字人模式仍对 `audioUrl` 执行 ASR，以原始音频总时长确定时间线；字幕由输入文案与 ASR 对齐后的 segmentation 切片确定，并受模板字幕对象显示区间限制。模板效果、背景音乐、IMS 渲染、ZOS 视频与 PNG 转存、查询和终态通知沿用相同流程。此前省略 `materials` 也会匹配；需要保留该行为的调用方应显式传入 `[]`。已有任务按保存的请求字段和阶段恢复，不重新解释原始请求日志。
@@ -42,7 +43,7 @@
 | `fileUrl` | string | 是 | 素材 HTTP(S) 直链 |
 | `type` | string | 是 | `video` 或 `image` |
 
-`packRules.backgroundMusic` 字段：
+`packRules.backgroundMusic` 接受对象或 null；省略、传 null 或 `audioSwitch: false` 均表示不使用背景音乐。对象字段如下：
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
@@ -52,7 +53,21 @@
 
 URL 不接受 Markdown 链接、空白、用户名密码或 `#fragment`，允许查询参数。媒体需要可被实际处理服务访问；URL 格式通过不代表媒体可用。
 
-`headerSwitch`、`keywordSwitch`、`materialSwitch`、`subtitleSwitch`、`processRules`、`introduceCard`、`materialSoundSwitch` 等额外字段目前被忽略，不控制输出。正式请求推荐使用本文列出的 camelCase 字段。
+`headerSwitch`、`keywordSwitch`、`materialSwitch`、`subtitleSwitch`、`processRules.watermarkShow`、`introduceCard`、`materialSoundSwitch` 等额外字段目前被忽略，不控制输出。正式请求推荐使用本文列出的 camelCase 字段。
+
+### 三种模式
+
+以下名称仅在接口内部使用，无需传入。提供 `videoUrl` 时为 `standard`；没有 `videoUrl`、提供顶层 `audioUrl` 时为 `materials_voice`；两者都没有时为 `materials_silent`。地址缺省或 null 均视为没有，`packRules.backgroundMusic.audioUrl` 不参与判断。
+
+- `standard`：仍需非空文案、数字人视频和配音。省略 `materials` 跳过匹配，数字人铺满音频；显式数组保留匹配流程。保存请求时保留 `materials` 缺省状态，旧任务依据已保存字段恢复，不重新解释原始日志。
+- `materials_voice`：ASR 获取配音原始总时长（含静音）；有文案才进行字幕切片，没有文案不生成字幕。按素材顺序铺满完整配音，字幕间隙不影响画面，不调用素材匹配。
+- `materials_silent`：以 `processRules.videoDuration` 为总长，跳过 ASR、切片和匹配；始终不生成字幕，即使请求带了 `text/copy`。请求 `title` 使用模板标题样式，显示区间覆盖为 `0～videoDuration`，保留原文换行、标点和模板花字、关键词及动画。标题为空就不显示。
+
+两个纯素材模式均使用后端 FFprobe 读取视频流实际时长，图片每张 3 秒。按顺序探测至足够覆盖目标，不访问后续未使用素材；不足报 `materials_duration_insufficient`，视频无法读取或缺少有效视频流时长报 `material_probe_failed`，不拿可能更长的容器音轨时长代替。POST 先返回任务 ID，以上错误通过查询与终态回调报告，不提交 IMS。超长时裁切最后实际使用的素材（图片也可裁短），相等则完整使用，不循环补足。素材时长快照保存后，恢复组装不再探测。
+
+纯素材缺少标题／字幕对象时，仅为本次合成补默认样式：标题 40 px、位置 50% / 8%；字幕 26 px、位置 50% / 82%；阿里巴巴普惠体、白色，无花字或动画。文字仍来自请求及切片，不使用模板示例文案、不修改模板存储。已有对象沿用原样式，除无语音标题外继续应用原时间规则；没有业务文字不补对象。其余模板效果和转场沿用，转场不缩短目标总长。
+
+素材原声全部静音。有语音模式播放配音及可选背景音乐，无语音模式只播放可选背景音乐；关闭背景音乐则无语音成片完全静音。背景音乐开启时空 URL 返回 422。所有模式沿用输出规格及 ZOS 路径，GET 返回 IMS 实际成片时长。
 
 ### 请求示例
 
@@ -79,6 +94,39 @@ curl -X POST 'http://127.0.0.1:20070/api/v1/video-compositions' \
     },
     "callbackUrl": "https://business.example.com/video-result"
   }'
+```
+
+纯素材有语音示例（标题可选，删除 `copy` 则不生成字幕）：
+
+```json
+{
+  "styleId": "11111111-1111-4111-8111-111111111111",
+  "videoUrl": null,
+  "audioUrl": "https://media.example.com/narration.wav",
+  "title": "产品介绍",
+  "copy": "这是用于配音对齐的文案。",
+  "materials": [
+    {"fileUrl": "https://media.example.com/scene.mp4", "type": "video"},
+    {"fileUrl": "https://media.example.com/product.jpg", "type": "image"}
+  ],
+  "callbackUrl": "https://business.example.com/video-result"
+}
+```
+
+纯素材无语音示例（每图 3 秒，目标 4.5 秒，第二张只显示 1.5 秒）：
+
+```json
+{
+  "styleId": "11111111-1111-4111-8111-111111111111",
+  "title": "产品介绍\n保留多行标题！",
+  "processRules": {"videoDuration": 4.5},
+  "materials": [
+    {"fileUrl": "https://media.example.com/first.jpg", "type": "image"},
+    {"fileUrl": "https://media.example.com/second.jpg", "type": "image"}
+  ],
+  "packRules": {"backgroundMusic": {"audioSwitch": false}},
+  "callbackUrl": "https://business.example.com/video-result"
+}
 ```
 
 ### 受理响应
@@ -229,7 +277,7 @@ curl 'http://127.0.0.1:20070/api/v1/video-compositions/22222222-2222-4222-8222-2
 }
 ```
 
-`segments` 必须非空，片段数量、顺序、编号、文字和时间必须与 IMV 提交的切片一致。命中时必须提供 HTTP(S) 素材 URL 和 `video`/`image` 类型；未命中时对应 URL 和类型可为 null。
+`segments` 必须非空，片段数量、顺序、编号、起止时间必须与 IMV 提交的切片严格一致。文字仅允许首尾空白差异，正文、标点和内部空白必须一致；回调与超时补查共用此规则。合成字幕继续使用本地切片原文及时间，匹配服务的原始回执保留在 `matching.json`，沿用日志脱敏规则，不用校验后的文字覆盖回执。命中时必须提供 HTTP(S) 素材 URL 和 `video`/`image` 类型；未命中时对应 URL 和类型可为 null。
 
 失败回调：
 
@@ -284,7 +332,7 @@ ZOS_FORCE_PATH_STYLE=false
 - `COMPOSITION_PUBLIC_BASE_URL` 可填 `http://公网IP:端口` 或 HTTPS 域名，可包含部署路径前缀；不要附加 `/api/v1/video-compositions`，不能包含查询参数。应确保生成的回调路径能到达该后端。
 - 任务已保存的回调地址和截止时间不会随 `.env` 修改而更新；本地超时也不代表云端任务已被取消。
 
-素材匹配服务使用 `SEGMENT_MATCH_BASE_URL` 和可选的 `SEGMENT_MATCH_AUTHORIZATION`。IMS、ASR、切片和数据库还需配置对应模块的凭据与服务参数，参见 `server/.env.example`。
+素材匹配使用 `SEGMENT_MATCH_BASE_URL` 和可选的 `SEGMENT_MATCH_AUTHORIZATION`，仅 standard 显式传 `materials` 时要求匹配地址。两个纯素材模式不依赖匹配配置；包含视频素材时服务端 PATH 还须有 `ffprobe`，单个探测使用 `COMPOSITION_HTTP_TIMEOUT_SECONDS` 超时，取消或超时回收子进程。FFprobe 白名单包含 HTTP 代理所需的 `httpproxy`；探测失败的退出码及脱敏 stderr 保存到 `timeline.json` 的 `error_log`，查询与回调仍返回固定错误摘要。无语音模式不依赖 ASR 和切片配置；有语音模式仍依赖 ASR，有文案才要求切片配置。所有模式仍需 IMS、ZOS、数据库和 FFmpeg；缺少所需配置或工具时受理返回 503。参见 `server/.env.example`。
 
 ## 7. 可选的客户端 IMS 配置
 

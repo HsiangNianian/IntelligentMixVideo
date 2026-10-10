@@ -16,7 +16,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from ..segmentation import segment
 from ..segmentation.settings import Settings as SegmentationSettings
 from ..template.store import get_template
-from . import ims, store, zos
+from . import ims, media, store, zos
 from .errors import CompositionError, remaining
 from .execution_log import close_logs, exception_details
 from .matching import Matching, payload, validated_matches
@@ -30,17 +30,24 @@ logger = logging.getLogger(__name__)
 NOTIFICATION_RETRY_DELAYS = (5, 15, 45)
 
 
-def preflight(config: ClientSettings | None = None) -> Settings:
-    """受理前检查配置和封面提帧工具，不执行成本调用。"""
+def preflight(request: CompositionRequest, config: ClientSettings | None = None) -> Settings:
+    """只检查本模式使用的配置和媒体工具，不执行成本调用。"""
     settings = Settings(**config.model_dump()) if config is not None else Settings()
     ZosSettings()
     if shutil.which("ffmpeg") is None:
         raise RuntimeError("缺少 FFmpeg，无法提取视频第 3 帧")
-    SegmentationSettings()
-    from ..asr.asr import settings as asr_settings
+    if request.composition_mode == "standard":
+        if "materials" in request.model_fields_set and settings.match_base_url is None:
+            raise ValueError("缺少素材匹配配置")
+    elif any(item.type == "video" for item in request.materials) and shutil.which("ffprobe") is None:
+        raise RuntimeError("缺少 FFprobe，无法读取素材视频时长")
+    if request.composition_mode != "materials_silent":
+        if request.text:
+            SegmentationSettings()
+        from ..asr.asr import settings as asr_settings
 
-    if not asr_settings.dashscope_api_key.get_secret_value().strip():
-        raise ValueError("缺少 ASR 配置")
+        if not asr_settings.dashscope_api_key.get_secret_value().strip():
+            raise ValueError("缺少 ASR 配置")
     return settings
 
 
@@ -120,9 +127,9 @@ class Runtime:
         if self.stopping:
             raise HTTPException(503, "合成服务正在停止")
         try:
-            settings = await self.sync(preflight, config) if config is not None else await self.sync(preflight)
+            settings = await self.sync(preflight, request, config)
         except (ValueError, RuntimeError):
-            raise HTTPException(503, "视频合成配置或 FFmpeg 不可用，请检查服务端环境") from None
+            raise HTTPException(503, "视频合成配置或媒体工具不可用，请检查服务端环境") from None
         # 调度器只保留运行策略；每项云端凭据绑定独立任务，不充当其他任务的默认值。
         self.settings = settings.model_copy(update={key: SecretStr("") for key in ("ims_access_key_id", "ims_access_key_secret", "ims_security_token")})
         callback_base_url = settings.composition_public_base_url or callback_base_url
@@ -131,12 +138,11 @@ class Runtime:
         if config is not None:
             output["client_config"] = True
             self.client_configs[task_id] = config
-        # 保留字段是否传入，后台及重启恢复才能区分纯数字人与显式空候选。
-        request_data = request.model_dump(mode="json", by_alias=True)
-        if "materials" not in request.model_fields_set:
-            request_data.pop("materials")
         try:
-            record = await self.sync(store.create, request_data, output, callback_base_url, raw_request, **({"task_id": task_id} if config is not None else {}))
+            saved_request = request.model_dump(mode="json", by_alias=True)
+            if "materials" not in request.model_fields_set:
+                saved_request.pop("materials")
+            record = await self.sync(store.create, saved_request, output, callback_base_url, raw_request, **({"task_id": task_id} if config is not None else {}))
         except BaseException:
             self.client_configs.pop(task_id, None)
             raise
@@ -353,7 +359,7 @@ class Runtime:
 
 
 class Job:
-    """一条固定合成流程；当前记录随成功事务更新，进程中断只恢复已确认的上游句柄。"""
+    """按模式准备素材与文字，共用渲染流程；当前记录随成功事务更新，恢复已保存的快照和句柄。"""
 
     def __init__(self, runtime: Runtime, record: dict, settings: Settings):
         """持有本次业务快照和配置，不共享数据库 Connection。"""
@@ -386,11 +392,12 @@ class Job:
             await self.render()
 
     async def prepare(self) -> None:
-        """读取模板、ASR 和切片；缺省 materials 直接组装，显式数组进入匹配。"""
+        """模板读取后按模式准备字幕和总时长；纯素材直接进入组装，只有标准模式可能匹配。"""
         config = self.runtime.client_configs.get(self.record["task_id"])
-        await self.runtime.sync(preflight, config) if config is not None else await self.runtime.sync(preflight)
         request = CompositionRequest.model_validate(self.record["data"]["request"])
-        if "materials" in request.model_fields_set and not self.record["data"].get("callback_base_url"):
+        await self.runtime.sync(preflight, request, config)
+        needs_matching = request.composition_mode == "standard" and "materials" in request.model_fields_set
+        if needs_matching and not self.record["data"].get("callback_base_url"):
             raise CompositionError("callback_address_missing", "任务缺少受理时的基础地址，无法生成匹配回调地址", "matching")
         await self.save("template")
         try:
@@ -400,6 +407,10 @@ class Job:
             raise CompositionError("template_not_found" if exc.status_code == 404 else "template_error", "模板不存在或无法读取", "template") from None
         except Exception:
             raise CompositionError("template_error", "模板读取失败", "template") from None
+        if request.composition_mode == "materials_silent":
+            await self.save("assembling", template=template.model_dump(mode="json", by_alias=True),
+                            duration_ms=request.process_rules.video_duration * 1000)
+            return
         await self.save("asr", template=template.model_dump(mode="json", by_alias=True))
         from ..asr import transcribe
 
@@ -408,16 +419,20 @@ class Job:
         duration_ms = asr_result.get("properties", {}).get("original_duration_in_milliseconds")
         if type(duration_ms) is not int or duration_ms <= 0:
             raise CompositionError("audio_duration_missing", "ASR 结果缺少有效的实际音频总时长", "asr")
-        await self.save("segmentation", duration_ms=duration_ms)
-        segment_input = {"script": request.text, "asr_result": asr_result}
-        segmented = await self.runtime.step(self.record, "segmentation", lambda: self.runtime.sync(segment, segment_input), segment_input)
-        segments = TypeAdapter(list[Segment]).validate_python(segmented["segments"])
-        validate_segments(segments, duration_ms)
-        if "materials" not in request.model_fields_set:
-            # 复用未命中片段的全长数字人组装逻辑，字幕仍读取原始切片。
-            await self.save("assembling", segmentation=segmented, matches=[
-                MatchedSegment.model_validate(item.model_dump()).model_dump(mode="json") for item in segments
-            ])
+        segmented, segments = {"segments": []}, []
+        if request.text:
+            await self.save("segmentation", duration_ms=duration_ms)
+            segment_input = {"script": request.text, "asr_result": asr_result}
+            segmented = await self.runtime.step(self.record, "segmentation", lambda: self.runtime.sync(segment, segment_input), segment_input)
+            segments = TypeAdapter(list[Segment]).validate_python(segmented["segments"])
+            validate_segments(segments, duration_ms)
+        if not needs_matching:
+            prepared = {"duration_ms": duration_ms}
+            if request.text:
+                prepared["segmentation"] = segmented
+            if request.composition_mode == "standard":
+                prepared["matches"] = [MatchedSegment.model_validate(item.model_dump()).model_dump(mode="json") for item in segments]
+            await self.save("assembling", **prepared)
             return
         token = secrets.token_urlsafe(32)
         callback_url = f"{self.record['data']['callback_base_url']}/api/v1/video-compositions/{self.record['task_id']}/segment-match-callback?token={token}"
@@ -474,9 +489,18 @@ class Job:
     async def assemble(self) -> None:
         """组装只读业务快照，提交前持久化完整请求、稳定 ClientToken 和总截止时间。"""
         data = self.record["data"]
-        inputs = dict(request=data["request"], template=data["template"], segments=data["segmentation"]["segments"],
-                      matches=data["matches"], duration_ms=data["duration_ms"],
+        request = CompositionRequest.model_validate(data["request"])
+        if request.composition_mode != "standard" and "material_durations" not in data:
+            durations = await self.runtime.step(self.record, "material_probe", lambda: media.material_durations(
+                request.materials, data["duration_ms"] / 1000, self.settings.composition_http_timeout_seconds,
+            ), {"materials": data["request"]["materials"], "duration_ms": data["duration_ms"]})
+            await self.save("assembling", material_durations=durations)
+            data = self.record["data"]
+        inputs = dict(request=data["request"], template=data["template"], segments=data.get("segmentation", {}).get("segments", []),
+                      matches=data.get("matches", []), duration_ms=data["duration_ms"],
                       **{key: data["output"][key] for key in ("width", "height", "fps")})
+        if request.composition_mode != "standard":
+            inputs["material_durations"] = data["material_durations"]
         await self.runtime.log(self.record, "step_started", step="assembling", input=inputs)
         try:
             timeline, warnings = build_timeline(**inputs)

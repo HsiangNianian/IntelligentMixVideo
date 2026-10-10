@@ -23,7 +23,7 @@ Config = Annotated[ClientSettings | None, Depends(client_config)]
 
 @router.post("", status_code=200, response_model=AcceptedResponse)
 async def create_composition(payload: CompositionRequest, request: Request, response: Response, config: Config) -> AcceptedResponse:
-    """受理后后台执行 ASR、切片和 IMS；仅显式传入 materials 时匹配素材。"""
+    """持久化后按模式准备画面与文字，共用 IMS、ZOS 和终态通知。"""
     record = await request.app.state.video_composition.accept(payload, str(request.base_url).rstrip("/"), await request.json(), config=config)
     response.headers["Location"] = f"/api/v1/video-compositions/{record['task_id']}"
     return AcceptedResponse(data=record["task_id"])

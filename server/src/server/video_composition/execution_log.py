@@ -123,7 +123,7 @@ MODULES = ("request", "template", "asr", "segmentation", "matching", "timeline",
 GROUPS = {
     "template": "template", "asr": "asr", "segmentation": "segmentation",
     "matching": "matching", "match_submit": "matching", "match_query": "matching",
-    "assembling": "timeline", "ims_storage": "timeline", "submitting": "timeline", "ims_submit": "timeline",
+    "assembling": "timeline", "material_probe": "timeline", "ims_storage": "timeline", "submitting": "timeline", "ims_submit": "timeline",
     "rendering": "zos", "ims_query": "zos", "playback": "zos", "zos_upload": "zos",
 }
 
@@ -270,8 +270,8 @@ def add_event(previous: dict | None, event: str, record: dict, details: dict, ti
     return compact_columns(columns)
 
 
-# 路径固定相对于后端包根目录，与启动工作目录无关；只支持现有单进程调度。
-LOG_ROOT = Path(__file__).resolve().parent.parent / ".log"
+# 路径固定相对于 server/ 项目目录，与启动工作目录无关；只支持现有单进程调度。
+LOG_ROOT = Path(__file__).resolve().parents[3] / ".log"
 MAX_BYTES = 50 * 1024 * 1024
 LOG_LOCK = Lock()
 # 队列满时提交线程等待空位，避免无限占用内存或丢日志；正常入队不等待磁盘。

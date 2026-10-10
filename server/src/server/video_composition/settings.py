@@ -41,7 +41,7 @@ class Settings(ClientSettings, CommonSettings):
 
     model_config = SettingsConfigDict(populate_by_name=True, extra="ignore")
 
-    match_base_url: MediaURL = Field(validation_alias="SEGMENT_MATCH_BASE_URL")
+    match_base_url: MediaURL | None = Field(default=None, validation_alias="SEGMENT_MATCH_BASE_URL")
     match_authorization: SecretStr = Field(default=SecretStr(""), validation_alias="SEGMENT_MATCH_AUTHORIZATION")
     composition_public_base_url: str = ""
     composition_width: int = Field(default=1080, ge=2)
@@ -62,10 +62,18 @@ class Settings(ClientSettings, CommonSettings):
             raise ValueError("素材匹配鉴权头无效")
         return value
 
+    @field_validator("match_base_url", mode="before")
+    @classmethod
+    def blank_match_base(cls, value):
+        """桌面设置、环境变量及 .env 的空白匹配地址统一视为未配置。"""
+        return None if isinstance(value, str) and not value.strip() else value
+
     @field_validator("match_base_url")
     @classmethod
-    def service_base(cls, value: str) -> str:
+    def service_base(cls, value: str | None) -> str | None:
         """接受服务源或以 /api/v1 结尾的 API 地址，统一保留部署前缀以免重复拼接。"""
+        if value is None:
+            return None
         if urlsplit(value).query:
             raise ValueError("匹配 Base URL 不能包含查询参数")
         return value.rstrip("/").removesuffix("/api/v1")

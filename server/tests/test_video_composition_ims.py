@@ -64,6 +64,18 @@ def test_settings_reject_invalid_configuration(composition_settings, monkeypatch
     assert "input_value" not in str(error.value)
 
 
+@pytest.mark.parametrize("source", ["env", "env_file"])
+@pytest.mark.parametrize("value", ["", " \t"])
+def test_blank_match_address_is_unset(composition_settings, monkeypatch, tmp_path, source, value):
+    """环境变量和 .env 的空白匹配地址均视为未配置，不影响其他合成配置加载。"""
+    if source == "env":
+        monkeypatch.setenv("SEGMENT_MATCH_BASE_URL", value)
+    else:
+        monkeypatch.delenv("SEGMENT_MATCH_BASE_URL")
+        (tmp_path / "server/.env").write_text(f'SEGMENT_MATCH_BASE_URL="{value}"\n')
+    assert Settings().match_base_url is None
+
+
 def test_settings_env_priority_and_default_output(composition_settings, monkeypatch, tmp_path):
     """固定的 server/.env 与环境变量复用切片启动方式，输出可覆盖且快照不含鉴权。"""
     (tmp_path / "server/.env").write_text("COMPOSITION_WIDTH=720\nCOMPOSITION_HEIGHT=1280\n", encoding="utf-8")
