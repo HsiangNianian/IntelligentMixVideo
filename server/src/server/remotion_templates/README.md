@@ -106,6 +106,27 @@ terminal job accepts no further rounds. Unknown tool names become `unknown`;
 model protocol failures are explicitly marked. Snapshots carry all rounds, while
 `job.updated` omits that history and clients retain already received deltas.
 
+## Sprite assets
+
+`POST /api/sprites/publish` copies an accepted version into an immutable
+`imv.sprite.v1.PublishedSprite` (SQLite `sprites` table plus `sprites/<id>/interactive.js`),
+so deleting or editing the source work never changes a published Sprite.
+Publishing re-verifies the sealed `accepted/` artifacts (409 when changed), requires the
+declared kind to match a version-fixed kind (composition versions choose it), and for text
+Sprites requires `text_prop` to be a string parameter. Parameters are addressed by dot path
+(`title_main.title`), so composed Sprites with nested objects work. Scalar leaves at any depth become
+`VISIBLE_EDITABLE` controls; text and keyword fields stay with the composition bus. The same
+source and field choice returns the original Sprite. `animation_frames` and `static_frame` stay 0
+because composition versions carry no such evidence, and `preview_url` serves the sealed
+interactive player page rather than an MP4.
+
+`GET /api/sprites` lists asset summaries without TSX. `GET /api/sprites/{id}/preview`
+serves the asset's own sealed interactive player copy, with managed fonts under the same asset URL.
+The optional `overlay=true` query removes the inspection checkerboard; the document stays sandboxed.
+Publishing does not rebuild the bundle or depend on a project/IMS template record. The source chat
+can be deleted without deleting its published assets. This feature does not implement project
+editing, timeline synchronization, template bindings or final video composition.
+
 ## Code diagnostics
 
 `GET /api/templates/versions/{id}/diagnostics` re-runs the isolated TypeScript
