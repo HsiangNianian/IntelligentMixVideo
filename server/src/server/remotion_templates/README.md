@@ -120,7 +120,9 @@ source and field choice returns the original Sprite. `animation_frames` and `sta
 because composition versions carry no such evidence, and `preview_url` serves the sealed
 interactive player page rather than an MP4.
 
-`GET /api/sprites` lists asset summaries without TSX. `GET /api/sprites/{id}/preview`
+`GET /api/sprites` lists asset summaries without TSX. A record that cannot be parsed or fails its
+hash check is logged and left out, so one damaged row never hides the library; reading it by ID still
+reports the failure. `GET /api/sprites/{id}/preview`
 serves the asset's own sealed interactive player copy, with managed fonts under the same asset URL.
 The optional `overlay=true` query removes the inspection checkerboard; the document stays sandboxed.
 Publishing does not rebuild the bundle or depend on a project/IMS template record. The source chat

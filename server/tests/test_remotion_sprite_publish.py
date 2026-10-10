@@ -6,6 +6,7 @@
 
 import asyncio
 import json
+import logging
 import shutil
 from types import SimpleNamespace
 
@@ -247,3 +248,21 @@ def test_publish_hashes_and_copies_off_the_event_loop(client: TestClient, publis
     monkeypatch.setattr(sprites, "verify_artifacts", probe)
     published_sprite(client, published.version.id)
     assert where == ["worker thread"]
+
+
+def test_catalog_skips_unreadable_records_and_keeps_the_rest(client: TestClient, published, caplog) -> None:
+    """被改写或损坏的发布记录只从目录中隔离并记日志，其余资产照常列出；按 ID 访问仍给出明确错误。"""
+    healthy = published_sprite(client, published.version.id, keywords_prop="")
+    tampered = published_sprite(client, published.version.id)
+    unparsable = published_sprite(client, published.version.id, text_prop="color", keywords_prop="")
+    with published.store.connection() as db:
+        data = json.loads(db.execute("SELECT data FROM sprites WHERE id=?", (tampered.sprite_id,)).fetchone()["data"])
+        data["tsx_code"] += "// edited"
+        db.execute("UPDATE sprites SET data=? WHERE id=?", (json.dumps(data), tampered.sprite_id))
+        db.execute("UPDATE sprites SET data='{not json' WHERE id=?", (unparsable.sprite_id,))
+    with caplog.at_level(logging.WARNING):
+        listed = client.get("/api/sprites")
+    assert listed.status_code == 200
+    assert [item.sprite_id for item in pb.ListSpritesResponse.FromString(listed.content).sprites] == [healthy.sprite_id]
+    assert tampered.sprite_id in caplog.text and unparsable.sprite_id in caplog.text
+    assert client.get(tampered.preview_url).status_code == 409

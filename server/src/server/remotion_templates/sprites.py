@@ -7,6 +7,7 @@ Records live in the Remotion SQLite database as `imv.sprite.v1.PublishedSprite` 
 
 import hashlib
 import json
+import logging
 import shutil
 import sqlite3
 from datetime import UTC, datetime
@@ -14,7 +15,7 @@ from uuid import UUID, uuid4
 
 from fastapi import HTTPException
 from generated.imv.sprite.v1 import sprite_pb2 as pb
-from google.protobuf.json_format import MessageToDict, ParseDict
+from google.protobuf.json_format import MessageToDict, ParseDict, ParseError
 
 from .evidence import digest, verify_artifacts
 from .store import Conflict, NotFound, Store
@@ -147,10 +148,20 @@ def summarize(sprite: pb.PublishedSprite) -> pb.SpriteSummary:
 
 
 def catalog(store: Store) -> list[pb.SpriteSummary]:
-    """List publications newest first."""
+    """List readable publications newest first.
+
+    A record that cannot be parsed or fails its hash check is logged and left out, so one damaged row
+    never hides the whole library; reading that asset by ID still reports the exact failure.
+    """
     with store.connection() as db:
-        rows = db.execute("SELECT data FROM sprites ORDER BY published_at DESC, id").fetchall()
-    return [summarize(_sprite_from(row)) for row in rows]
+        rows = db.execute("SELECT id, data FROM sprites ORDER BY published_at DESC, id").fetchall()
+    items = []
+    for row in rows:
+        try:
+            items.append(summarize(_sprite_from(row)))
+        except (Conflict, ValueError, ParseError) as exc:
+            logging.getLogger(__name__).warning("Skipping unreadable Sprite %s: %s", row["id"], exc)
+    return items
 
 
 def preview_script(store: Store, sprite_id: str) -> str:
