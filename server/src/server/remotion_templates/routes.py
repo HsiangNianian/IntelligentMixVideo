@@ -44,9 +44,8 @@ from .tools.contracts import CodeValidationReport, ComponentDefinition
 router = APIRouter()
 
 
-async def runtime(request: Request) -> Runtime:
+async def runtime_for(state) -> Runtime:
     """Start only the feature-local runtime on first use; unrelated routes need no model or database."""
-    state = request.app.state
     if not hasattr(state, "runtime"):
         service = state.build_runtime()
         try:
@@ -58,6 +57,11 @@ async def runtime(request: Request) -> Runtime:
             ) from exc
         state.runtime = service
     return state.runtime
+
+
+async def runtime(request: Request) -> Runtime:
+    """Resolve the runtime owned by the app serving this request."""
+    return await runtime_for(request.app.state)
 
 
 Service = Annotated[Runtime, Depends(runtime)]
@@ -377,6 +381,26 @@ def download(version_id: UUID, filename: str, service: Service) -> FileResponse:
     return FileResponse(artifact_path(service, version_id, filename), filename=filename)
 
 
+def player_page(script: str, *, overlay: bool = False) -> HTMLResponse:
+    """Wrap a sealed interactive bundle in the sandboxed player document shared by versions and sprites.
+
+    `overlay` drops the inspection checkerboard so the page can sit transparently over other video.
+    """
+    script = script.replace("</", "<\\/")
+    return HTMLResponse(
+        '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width">'
+        "<title>Remotion 字效预览</title><style>html,body,#root{margin:0;width:100%;height:100%;overflow:hidden}"
+        + (":root{color-scheme:light}html,body{background:transparent}body{color:#fff;font-family:sans-serif}</style>" if overlay else "body{color:#fff;background-color:#25252b;background-image:conic-gradient(#35353d 25%,transparent 0 50%,#35353d 0 75%,transparent 0);background-size:24px 24px;font-family:sans-serif}</style>")
+        +
+        '<body><div id="root"></div><script>' + script + "</script></body></html>",
+        headers={
+            "Content-Security-Policy": "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src http: https:; media-src http: https: data:; img-src http: https: data:; connect-src 'none'; base-uri 'none'; form-action 'none'",
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+        },
+    )
+
+
 @router.get(
     "/versions/{version_id}/preview",
     response_class=HTMLResponse,
@@ -388,22 +412,8 @@ def preview(version_id: UUID, service: Service) -> HTMLResponse:
 
     父页面以 iframe 加载，使用 URL fragment 作为消息通道标识；只交换参数、背景链接及就绪通知。
     """
-    script = (
-        artifact_path(service, version_id, "interactive.js")
-        .read_text()
-        .replace("</", "<\\/")
-    )
-    return HTMLResponse(
-        '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width">'
-        "<title>Remotion 字效预览</title><style>html,body,#root{margin:0;width:100%;height:100%;overflow:hidden}"
-        "body{color:#fff;background-color:#25252b;background-image:conic-gradient(#35353d 25%,transparent 0 50%,#35353d 0 75%,transparent 0);background-size:24px 24px;font-family:sans-serif}</style>"
-        '<body><div id="root"></div><script>' + script + "</script></body></html>",
-        headers={
-            "Content-Security-Policy": "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src http: https:; media-src http: https: data:; img-src http: https: data:; connect-src 'none'; base-uri 'none'; form-action 'none'",
-            "Cache-Control": "no-store",
-            "Referrer-Policy": "no-referrer",
-        },
-    )
+    script = artifact_path(service, version_id, "interactive.js").read_text()
+    return player_page(script)
 
 
 @router.get(

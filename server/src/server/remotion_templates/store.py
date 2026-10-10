@@ -85,6 +85,12 @@ class Store:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     job_id TEXT NOT NULL REFERENCES jobs(id), data TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS sprites (
+                    id TEXT PRIMARY KEY, source_version_id TEXT NOT NULL,
+                    kind INTEGER NOT NULL, text_prop TEXT NOT NULL, keywords_prop TEXT NOT NULL,
+                    published_at TEXT NOT NULL, data TEXT NOT NULL,
+                    UNIQUE(source_version_id, kind, text_prop, keywords_prop)
+                );
             """)
             history.initialize(db)
 

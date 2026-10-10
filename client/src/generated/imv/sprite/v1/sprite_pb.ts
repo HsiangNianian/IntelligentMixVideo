@@ -258,7 +258,8 @@ export type PublishedSprite = Message<"imv.sprite.v1.PublishedSprite"> & {
   publishedAt?: Timestamp | undefined;
 
   /**
-   * 另行保存的示例预览 MP4 的 SHA-256；该 MP4 不是合成用透明素材。
+   * 发布时复制到资产自有目录的交互预览播放器包（interactive.js）的 SHA-256，
+   * 每次读取预览前核验；该预览不是合成用透明素材。
    *
    * @generated from field: string preview_sha256 = 12;
    */
@@ -370,7 +371,8 @@ export type SpriteSummary = Message<"imv.sprite.v1.SpriteSummary"> & {
   sourceVersionId: string;
 
   /**
-   * 固定示例 MP4 的读取路径；不作为 IMS 合成素材。
+   * 交互预览页的读取路径（/api/sprites/{sprite_id}/preview）：在隔离沙箱中运行发布时复制的播放器包，
+   * 追加 overlay=true 得到透明背景版本；仅用于编辑预览，不作为 IMS 合成素材。
    *
    * @generated from field: string preview_url = 7;
    */

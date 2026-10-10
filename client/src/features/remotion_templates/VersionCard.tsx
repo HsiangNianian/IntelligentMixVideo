@@ -1,6 +1,6 @@
 /** 聊天中的成功版本卡片：独立预览、按需读取默认参数导出，折叠和复制不会改变预览选择。 */
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, Code2, Copy, Play } from "lucide-react";
+import { Check, ChevronDown, Code2, Copy, Play, Wand2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Collapsible,
@@ -11,6 +11,8 @@ import { cn } from "@/lib/utils";
 import { diagnostics as readDiagnostics, exported } from "./api";
 import { CodeBlock } from "./CodeBlock";
 import type { Diagnostic, Version } from "./model";
+import { publishSprite } from "@/features/sprites/api";
+import { publishChoice } from "./spriteChoice";
 
 /** 每张卡片只拥有本版本的读取与提示，卸载取消请求，不展示未经确认的参数草稿。 */
 export function VersionCard({
@@ -35,6 +37,8 @@ export function VersionCard({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [publishing, setPublishing] = useState(false);
+  const [publishError, setPublishError] = useState("");
   const [items, setItems] = useState<Diagnostic[]>([]);
   const [diagnosticsNotice, setDiagnosticsNotice] = useState("");
   const [diagnosticsFailed, setDiagnosticsFailed] = useState(false);
@@ -113,6 +117,21 @@ export function VersionCard({
     if (!value) return;
     void load().catch(() => {});
     void loadDiagnostics();
+  }
+  /** 一键保存为资产；重复保存同一版本由服务端返回原资产，失败显示原因且可重试。 */
+  async function saveAsset() {
+    if (publishing) return;
+    setPublishing(true);
+    setNotice("");
+    setPublishError("");
+    try {
+      const asset = await publishSprite(version.id, publishChoice(version));
+      if (!scope.current.signal.aborted) setNotice(`已保存到资产「${asset.name}」。`);
+    } catch (reason) {
+      if (!scope.current.signal.aborted) setPublishError(reason instanceof Error ? reason.message : "保存到资产失败，请重试");
+    } finally {
+      if (!scope.current.signal.aborted) setPublishing(false);
+    }
   }
   /** 复制固定版本的 Export.tsx；剪贴板失败时展开相同代码供手动复制。 */
   async function copy() {
@@ -196,20 +215,29 @@ export function VersionCard({
             {open ? "收起代码" : "查看代码"}
           </Button>
         </CollapsibleTrigger>
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={disabled || loading}
-          onClick={() => void copy()}
-        >
-          {notice === "已复制" ? <Check /> : <Copy />}
-          {loading ? "读取中…" : "复制代码"}
-        </Button>
+        <div className="flex items-center">
+          <Button variant="ghost" size="sm" disabled={disabled || publishing} onClick={() => void saveAsset()}>
+            <Wand2 />
+            {publishing ? "保存中…" : "保存到资产"}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={disabled || loading}
+            onClick={() => void copy()}
+          >
+            {notice === "已复制" ? <Check /> : <Copy />}
+            {loading ? "读取中…" : "复制代码"}
+          </Button>
+        </div>
       </div>
       {notice && (
         <p role="status" className="px-3 pb-2 text-xs text-muted-foreground">
           {notice}
         </p>
+      )}
+      {publishError && (
+        <p role="alert" className="px-3 pb-2 text-xs text-destructive">{publishError}</p>
       )}
       {error && (
         <div

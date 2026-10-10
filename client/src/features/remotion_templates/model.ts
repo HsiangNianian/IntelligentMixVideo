@@ -31,6 +31,7 @@ export interface Control {
   minLength?: number;
   maxLength?: number;
   "x-imv-target"?: string;
+  properties?: Record<string, Control>;
 }
 /** 成功版本提供代码、参数默认值、控件和画布信息。 */
 export interface Version {
