@@ -3,6 +3,180 @@
 本项目的版本变更由发布工作流根据 Conventional Commits 自动生成。
 推送正式版本 tag 后，成功发布的版本记录会自动写入此文件。
 
+## [v0.5.0] - 2026-10-10
+### BREAKING CHANGES
+- due to [`6cfc094`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/6cfc0949e58644e45796ed15b82d4bd4fa209a54) - write composition logs to files asynchronously *(PR [#79](https://github.com/HsiangNianian/IntelligentMixVideo/pull/79) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*:
+
+  video_composition_logs replaces detail with seven JSON columns. Stop older workers before starting the new server to migrate existing logs. Log consumers must follow the new fields and local references; ZOS outputs retain video links only.  
+  * docs(server): document module logs and reference semantics  
+  * chore: ignore local composition log directories  
+  * build(server): exclude runtime logs from distribution archives  
+  * refactor(server)!: persist execution logs in module JSON files  
+  Replace database log storage and migration with seven module files. Keep business task transactions independent from logging failures and evict only finished task directories when the total log directory exceeds 50 MiB.  
+  Execution logs are no longer stored or migrated in database tables. Consumers must read the per-task module JSON files; existing database log tables remain untouched.  
+  * test(server): cover file log retention and storage failures  
+  * perf(server): write composition logs through a bounded queue  
+  Snapshot event payloads and timestamps before queueing. Use one writer thread, protect pending logs during cleanup, and drain the queue before closing the database.  
+  * test(server): cover asynchronous log queue lifecycle  
+  * test(server): allow ZOS responses while log writes are blocked  
+  * docs(server): document asynchronous file logs and retention  
+  * docs: update the composition logging overview  
+  * docs: align project guidance with asynchronous file logs  
+  * fix(server): preserve notification retry diagnostics
+
+- due to [`6edeb13`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/6edeb132850ef1704fc96463623a4e997e497bfa) - support voiced and silent material composition *(PR [#91](https://github.com/HsiangNianian/IntelligentMixVideo/pull/91) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*:
+
+  Standard requests that omit materials now skip asset  
+  matching and use only the avatar video. Send materials: [] to retain  
+  unrestricted matching, or a nonempty array to restrict candidates.  
+  * fix(server): accept null background music in all modes  
+  * fix(server): place composition logs under the server project  
+  * docs(server): document material composition contracts  
+  * fix(server): reject non-numeric composition durations  
+  * docs(server): clarify composition duration input types  
+  * fix(server): read material video duration tags  
+  * fix(server): treat blank matching URLs as unset  
+  * test(server): cover avatar output and task recovery  
+  * docs(server): clarify material probing and log paths  
+  * fix(server): support language-qualified video duration tags  
+  * docs(server): document language-qualified duration tags
+
+
+### New Features
+- [`e72566c`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/e72566c34b3f5904b8588fbe1eae1f9b01c825c5) - **server**: split long segments at semantic boundaries *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+- [`9b9abfa`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/9b9abfab53315458327fa245f7af3dd65e7609b5) - **remotion**: add LSP diagnostics and code highlighting *(PR [#83](https://github.com/HsiangNianian/IntelligentMixVideo/pull/83) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`6810537`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/6810537e43c3cc2f5268a768920aa8d6913f2c5c) - **remotion**: record what each loop round actually did *(PR [#84](https://github.com/HsiangNianian/IntelligentMixVideo/pull/84) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`8a17fbe`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/8a17fbe7fb95dc4d8ec80efb4edadaeadf0425b8) - **client**: redesign UI with light/dark themes and ObsidianUI components *(PR [#82](https://github.com/HsiangNianian/IntelligentMixVideo/pull/82) by [@muyuzhong](https://github.com/muyuzhong))*
+- [`c2b3949`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/c2b3949c7dd1e10acc22c2558fe097d0b3a2902f) - **client**: configure the local template storage path *(PR [#86](https://github.com/HsiangNianian/IntelligentMixVideo/pull/86) by [@muyuzhong](https://github.com/muyuzhong))*
+- [`6e69dc5`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/6e69dc53bb034bebee0492968356b2e50d132af8) - **segmentation**: extract title keywords and retry invalid splits *(PR [#90](https://github.com/HsiangNianian/IntelligentMixVideo/pull/90) by [@muyuzhong](https://github.com/muyuzhong))*
+- [`8273b41`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/8273b41f73ebc5129eb6f12a1f6f4908a07ebed0) - **remotion**: publish accepted versions as standalone assets *(PR [#93](https://github.com/HsiangNianian/IntelligentMixVideo/pull/93) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`74c90a9`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/74c90a980545ce810b46553ce716afbc9d03ab87) - **remotion**: add independent Remotion assets to template editing *(PR [#94](https://github.com/HsiangNianian/IntelligentMixVideo/pull/94) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`6edeb13`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/6edeb132850ef1704fc96463623a4e997e497bfa) - **server**: support voiced and silent material composition *(PR [#91](https://github.com/HsiangNianian/IntelligentMixVideo/pull/91) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+
+### Bug Fixes
+- [`2c45eab`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/2c45eabf891dc28a04b4ceb3340832be43c1a040) - **server**: leave subtitle punctuation handling downstream *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+- [`43645d1`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/43645d1b01e66768d1a33a538e246c708c35c740) - **remotion**: repair tool inspection and model request recovery *(PR [#85](https://github.com/HsiangNianian/IntelligentMixVideo/pull/85) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`5e35fb7`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/5e35fb771eff5eb30c227f7be31c5cca9560697c) - **remotion**: stabilise tool calls and bound empty handoff loops *(PR [#88](https://github.com/HsiangNianian/IntelligentMixVideo/pull/88) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Refactors
+- [`4b18292`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/4b18292f577f0e4671dace1e170c342ff73b7187) - **server**: share segmentation error mapping *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+- [`6cfc094`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/6cfc0949e58644e45796ed15b82d4bd4fa209a54) - **server**: write composition logs to files asynchronously *(PR [#79](https://github.com/HsiangNianian/IntelligentMixVideo/pull/79) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`5989192`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/59891929b338daa87157eccb810d127d84251f17) - **remotion**: deliver the Preset to Sprite agent flow *(PR [#80](https://github.com/HsiangNianian/IntelligentMixVideo/pull/80) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Tests
+- [`f73feb2`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/f73feb2461e3f3332e16fbd59d50092d59cafc6d) - **server**: align segmentation fixtures with secondary splitting *(commit by [@muyuzhong](https://github.com/muyuzhong))*
+
+### Documentation Changes
+- [`424e4d7`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/424e4d77b340de28226c33a1a7cd4d2b32f36c41) - update CHANGELOG.md for v0.4.2 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
+
+### Chores
+- [`ae2c519`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/ae2c519448f895351db5ce9bff405e0c87843630) - **release**: prepare v0.5.0 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`07adeb6`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/07adeb64aac5eabfeaf087769ba7a99f16711e93) - **release**: promote dev to main for v0.5.0 *(PR [#96](https://github.com/HsiangNianian/IntelligentMixVideo/pull/96) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Other Changes
+- [`a12e043`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/a12e043fd0e3666c2a2ed95ba942b96cf654b797) - [ImgBot] Optimize images
+
+*Total -- 335.51kb -> 308.34kb (8.1%)
+
+/client/src/features/remotion_templates/screenshots/chat-deletion-desktop.png -- 117.24kb -> 105.90kb (9.67%)
+/client/src/features/remotion_templates/screenshots/parameter-drafts-mobile.png -- 52.19kb -> 48.40kb (7.27%)
+/client/src/features/remotion_templates/screenshots/parameter-drafts-desktop.png -- 166.07kb -> 154.04kb (7.25%)
+
+Signed-off-by: ImgBotApp <ImgBotHelp@gmail.com> *(commit by [@ImgBotApp](https://github.com/ImgBotApp))*
+- [`5583d8a`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/5583d8a7f1ba01a3f562771b1dfaddbcfc43cb86) - Merge pull request [#77](https://github.com/HsiangNianian/IntelligentMixVideo/pull/77) from muyuzhong/feat/segmentation-secondary-split
+
+feat(server): split long segments at semantic boundaries *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`4cddafa`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/4cddafa136241ad83edb3c96cd7ddfae54739bc4) - Merge pull request [#66](https://github.com/HsiangNianian/IntelligentMixVideo/pull/66) from HsiangNianian/imgbot
+
+[ImgBot] Optimize images *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`0916c45`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/0916c4568ae7e98dcb5fce611c08e7e522f28969) - feat(server)!: support avatar-only composition without materials ([#87](https://github.com/HsiangNianian/IntelligentMixVideo/pull/87))
+
+* refactor(server)!: store composition logs in module columns
+
+Write new events directly into seven module columns, deduplicate payloads with local references, and preserve verified backups during legacy migration. Cover direct event writes, callback placement, video links, and migration behavior.
+
+BREAKING CHANGE: video_composition_logs replaces detail with seven JSON columns. Stop older workers before starting the new server to migrate existing logs. Log consumers must follow the new fields and local references; ZOS outputs retain video links only.
+
+* docs(server): document module logs and reference semantics
+
+* chore: ignore local composition log directories
+
+* build(server): exclude runtime logs from distribution archives
+
+* refactor(server)!: persist execution logs in module JSON files
+
+Replace database log storage and migration with seven module files. Keep business task transactions independent from logging failures and evict only finished task directories when the total log directory exceeds 50 MiB.
+
+BREAKING CHANGE: Execution logs are no longer stored or migrated in database tables. Consumers must read the per-task module JSON files; existing database log tables remain untouched.
+
+* test(server): cover file log retention and storage failures
+
+* perf(server): write composition logs through a bounded queue
+
+Snapshot event payloads and timestamps before queueing. Use one writer thread, protect pending logs during cleanup, and drain the queue before closing the database.
+
+* test(server): cover asynchronous log queue lifecycle
+
+* test(server): allow ZOS responses while log writes are blocked
+
+* docs(server): document asynchronous file logs and retention
+
+* docs: update the composition logging overview
+
+* docs: align project guidance with asynchronous file logs
+
+* fix(server): preserve notification retry diagnostics
+
+* fix(remotion): resolve inspected tools by the name the model is shown
+
+The model sees underscored function names (`preset_create`), but tools.inspect
+looked its argument up as an exact dotted registry key, so inspecting any name
+the model could actually see failed with TOOL_NOT_FOUND. In one recorded run
+the Executor spent four failed inspections and four turns narrating the
+failure, then reported the step as blocked.
+
+Resolve the descriptor by dotted ID or by the wire name, and report the
+registered IDs when the name is unknown, so a wrong guess is corrected in one
+turn instead of being retried blind. Inspection stays contract-only: it never
+executes a handler and never reveals an unregistered tool.
+
+* fix(remotion): document the plan input_refs the host accepts
+
+The accepted reference forms only appeared in the rejection message, so the
+model had to build a plan, be rejected and rebuild it; one recorded run spent
+two plan calls on that. Describe the accepted forms on the field the model
+receives and in the Plan layer rules.
+
+* fix(remotion): wait and retry transient model request failures
+
+A single connection error ended the whole task: both failures recorded on
+2026-10-09 were "Model endpoint is unreachable." after one attempt, throwing
+away every earlier round of a generation that was otherwise progressing.
+
+Retry connection failures, request timeouts and HTTP 429/5xx with an
+exponentially growing wait (IMV_MODEL_RETRIES, IMV_MODEL_RETRY_DELAY_SECONDS,
+capped at 30 seconds), record each retry in the private audit, and count the
+logical call once. Configuration errors such as 401/403/404 still fail
+immediately, a broken stream keeps its own meaning because it includes
+deterministic size limits, and the wait is an ordinary sleep so cancelling
+the job stops it at once.
+
+* fix(remotion): expose complete host plan inspection contracts
+
+* fix(remotion): preserve protocol and stream retry boundaries
+
+* feat(server)!: skip matching when materials is omitted
+
+BREAKING CHANGE: Requests without materials now produce avatar-only videos. Send an explicit empty array to retain material matching.
+
+* docs(server): document avatar-only composition requests
+
+* test(server): assert composition subtitle content
+
+---------
+
+Co-authored-by: thefool <thefoolyuzhe@gmail.com> *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+
 ## [v0.4.2] - 2026-09-28
 ### BREAKING CHANGES
 - due to [`8b984f3`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/8b984f3dc947c4e42ff82efb7cac588828e5cc3f) - 统一使用 tracks 保存模板对象参数 *(commit by [@left0ver](https://github.com/left0ver))*:
@@ -556,3 +730,5 @@ feat(client): 在模板工作区页头添加时钟 *(commit by [@HsiangNianian](
 [v0.4.1]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.4.0...v0.4.1
 
 [v0.4.2]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.4.1...v0.4.2
+
+[v0.5.0]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.4.2...v0.5.0
