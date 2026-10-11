@@ -100,6 +100,48 @@ def test_plan_clips_and_orders_placements() -> None:
     assert overlay.span == 204  # 144 + 60：合成必须覆盖最晚片段结尾，否则该片段的 Sequence 会被截短
 
 
+# 场景：秒转帧与模板时间轴一致：半帧向后取整（0.75 秒 @30 FPS 是第 23 帧，而不是银行家舍入的 22）。
+@pytest.mark.parametrize("fps, start, length, total, expected", [
+    (30, 0.75, 1.0, 4.0, (23, 30, 120)),  # 22.5 -> 23
+    (20, 0.125, 0.125, 2.0, (3, 3, 40)),  # 2.5 -> 3 起点与时长各自半帧进位
+    (30, 0.0, 0.25, 0.25, (0, 8, 8)),  # 成片 7.5 帧 -> 8 帧
+])
+def test_plan_rounds_half_frames_up(fps, start, length, total, expected) -> None:
+    """起点帧、片段帧数和成片总帧数都用同一个半帧向上规则。"""
+    published = {"a": sprite("a", fps=fps, frames=60)}
+    overlay = plan_overlay([placement("a", start=start, duration=length)], published, total, 120)
+    item = overlay.instances[0]
+    assert (item["start_frame"], item["duration_frames"], overlay.frames) == expected
+
+
+# 场景：与前后端共用的模板时间向量对拍：秒制起点在叠加视频里落在同一帧。
+@pytest.mark.parametrize(
+    "case", [
+        case for case in json.loads(Path(__file__).with_name("template_timing_cases.json").read_text())
+        if case["mode"] == "seconds" and case["expected_end"] > case["expected_start"]
+    ],
+    ids=lambda case: case["purpose"],
+)
+def test_plan_matches_the_shared_timing_vectors(case) -> None:
+    """起点帧与模板时间轴相同，片段在成片内的结束帧也相同（叠加视频每个片段至少一帧）。"""
+    fps = case["fps"]
+    published = {"a": sprite("a", fps=fps, frames=60)}
+    overlay = plan_overlay([placement("a", start=case["start"], duration=case["length"])], published, case["duration"], 1000)
+    item = overlay.instances[0]
+    assert item["start_frame"] / fps == pytest.approx(case["expected_start"])
+    assert min(item["start_frame"] + item["duration_frames"], overlay.frames) / fps == pytest.approx(case["expected_end"])
+
+
+# 场景：已保存的超大数值不会让规划抛出 OverflowError：超大起点被当作越界丢弃，超长片段按最长成片截短。
+def test_plan_survives_huge_saved_values() -> None:
+    """起点 1e307 秒的片段丢弃、其余正常；时长 1e300 秒的片段取最长成片的帧数，合成不会无限增长。"""
+    overlay = plan_overlay(
+        [placement("a", start=1e307, order=0), placement("b", start=0, duration=1e300, order=1)], PUBLICATIONS, 6, 120,
+    )
+    assert [(i["start_frame"], i["duration_frames"]) for i in overlay.instances] == [(0, 120 * 30)]
+    assert overlay.span == 3600
+
+
 @pytest.mark.parametrize("placements, total, code", [
     ([], 5, "no_placements"),
     ([placement("a"), placement("c")], 5, "canvas_mismatch"),

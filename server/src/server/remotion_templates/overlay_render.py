@@ -127,6 +127,11 @@ def shared_canvas(
     return canvases.pop()
 
 
+def to_frames(seconds: float, fps: int) -> int:
+    """Whole frames for a time, rounding half a frame up like the template timing (`template.timing`)."""
+    return math.floor(seconds * fps + 0.5)
+
+
 def plan_overlay(
     placements: list[pb.SpritePlacement], sprites: dict[str, pb.PublishedSprite],
     total_seconds: float, max_seconds: float,
@@ -134,21 +139,24 @@ def plan_overlay(
     """Place every asset on one canvas; starts past the end are dropped, later ends are cut by the total.
 
     A clip keeps its full length: a Sprite reads its length from its own Sequence, so shrinking the Sequence
-    would change animations computed from it. The output length does the cutting (`Overlay.span`).
+    would change animations computed from it. The output length does the cutting (`Overlay.span`). A clip is
+    never longer than the longest overlay, which keeps a corrupt saved length from growing the composition.
     """
     width, height, fps = shared_canvas(placements, sprites)
     if not math.isfinite(total_seconds) or total_seconds <= 0:
         raise OverlayError("duration_invalid", "成片时长必须是大于 0 的有限数字")
     if total_seconds > max_seconds:
         raise OverlayError("duration_too_long", f"成片时长超过上限 {max_seconds:g} 秒")
-    frames = max(1, round(total_seconds * fps))
+    frames = max(1, to_frames(total_seconds, fps))
     instances = []
     for placement in sorted(placements, key=lambda item: item.order):
         sprite = sprites[placement.sprite_id]
-        start_frame = round(placement.start * fps)
+        if placement.start * fps >= frames:  # past the end; a huge saved start never reaches int arithmetic
+            continue
+        start_frame = to_frames(placement.start, fps)
         if start_frame >= frames:
             continue
-        length = max(1, round(placement_seconds(sprite, placement) * fps))
+        length = max(1, to_frames(min(placement_seconds(sprite, placement), max_seconds), fps))
         instances.append({
             "code": sprite.tsx_code,
             "config": json.loads(sprite.default_config_json),

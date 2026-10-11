@@ -161,8 +161,10 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
 - **Layout**: every asset must share width/height/fps. Clips are stacked by `order` on one canvas; each plays for
   its saved duration (or its own `preview_frames / fps`), which its Sprite reads as `durationInFrames` just like in
   its accepted preview, keeps that full length when the total cuts it (so its internal animation ranges are
-  unchanged), and is dropped when it starts later. Remotion clamps a Sequence to its composition, so the worker
-  declares the composition up to the latest clip end and renders only the first `total` frames of it.
+  unchanged), and is dropped when it starts later. Seconds become frames with half a frame rounding up, like the
+  template timing, and a clip is at most `IMV_OVERLAY_MAX_SECONDS` long. Remotion clamps a Sequence to its
+  composition, so the worker declares the composition up to the latest clip end and renders only the first `total`
+  frames of it.
 - **Output**: no audio; the bus/IMS keeps its own audio track and overlays the WebM. The host re-probes the file
   (VP9, size, fps, frame count, alpha tag) before uploading.
 - **Execution**: `overlay_render.py` plans, `remotion/overlay-worker.mjs` renders in the bwrap sandbox
