@@ -251,10 +251,10 @@ def fast_retries(monkeypatch) -> None:
     monkeypatch.setattr(overlay_service, "NOTIFICATION_RETRY_DELAYS", (0.001, 0.001, 0.001))
 
 
-def notification_of(overlays: OverlayRenders, task_id: str) -> str | None:
-    """任务行里记录的回调状态（pending/sent/failed）。"""
+def is_notified(overlays: OverlayRenders, task_id: str) -> bool:
+    """任务行是否已记录终态通知处理完毕（送达或放弃）。"""
     with overlays.store.connection() as db:
-        return json.loads(db.execute("SELECT data FROM overlay_renders WHERE id=?", (task_id,)).fetchone()["data"]).get("notification")
+        return bool(json.loads(db.execute("SELECT data FROM overlay_renders WHERE id=?", (task_id,)).fetchone()["data"]).get("notified"))
 
 
 # 场景：成功路径按 duration 渲染，转存 ZOS 指定键，并向回调发送四字段通知。
@@ -279,14 +279,14 @@ def test_task_renders_uploads_and_notifies(service, callbacks) -> None:
     assert callbacks.posted == [("https://bus.example/cb", {
         "taskId": task_id, "status": "succeed", "videoUrl": f"https://zos.example/{key}", "errorMessage": None,
     })]
-    assert notification_of(overlays, task_id) == "sent"
+    assert is_notified(overlays, task_id)
     assert not (overlays.store.root / "overlays" / task_id).exists()
 
 
 # 场景：回调地址通过 schema 校验却无法被 httpx 解析（补零 IPv4、控制字符）时，终态也会记录，不卡在 pending。
 @pytest.mark.parametrize("url", ["http://192.168.001.010:8080/cb", "http://bus.example/cb\x7f"])
 def test_unparseable_callback_url_ends_failed(service, fast_retries, caplog, url) -> None:
-    """httpx.InvalidURL 不是 HTTPError：四次尝试后记为 failed，任务仍是 succeeded，日志有放弃记录。"""
+    """httpx.InvalidURL 不是 HTTPError：四次尝试后记为已处理，任务仍是 succeeded，日志有放弃记录。"""
     overlays, _, _ = service
     TypeAdapter(MediaURL).validate_python(url)  # 受理前的 schema 放行了这个地址
 
@@ -297,13 +297,13 @@ def test_unparseable_callback_url_ends_failed(service, fast_retries, caplog, url
 
     with caplog.at_level(logging.WARNING, logger=overlay_service.logger.name):
         task_id = asyncio.run(scenario())
-    assert overlays.get(task_id)["status"] == "succeeded" and notification_of(overlays, task_id) == "failed"
+    assert overlays.get(task_id)["status"] == "succeeded" and is_notified(overlays, task_id)
     assert caplog.text.count("InvalidURL") == 4 and "重试 4 次后放弃" in caplog.text
 
 
 # 场景：回调端点返回非 2xx 时按间隔重试，成功即停；全部失败则记录并放弃，日志写明状态码。
 def test_callback_retries_error_statuses(service, callbacks, fast_retries, caplog) -> None:
-    """两次 500 后第三次 200 记为 sent；四次都 500 记为 failed，且日志含 HTTP 500 与放弃记录。"""
+    """两次 500 后第三次 200 即送达且不记放弃；四次都 500 则放弃（任务行记为已处理），日志含 HTTP 500 与放弃记录。"""
     overlays, _, _ = service
     answers = iter([500, 500, 200])
 
@@ -320,8 +320,8 @@ def test_callback_retries_error_statuses(service, callbacks, fast_retries, caplo
 
     with caplog.at_level(logging.WARNING, logger=overlay_service.logger.name):
         task_id = asyncio.run(scenario())
-    assert len(callbacks.posted) == 3 and notification_of(overlays, task_id) == "sent"
-    assert caplog.text.count("收到 HTTP 500") == 2
+    assert len(callbacks.posted) == 3 and is_notified(overlays, task_id)
+    assert caplog.text.count("收到 HTTP 500") == 2 and "放弃" not in caplog.text
 
     async def always_500():
         """始终 500。"""
@@ -331,7 +331,7 @@ def test_callback_retries_error_statuses(service, callbacks, fast_retries, caplo
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger=overlay_service.logger.name):
         task_id = asyncio.run(scenario())
-    assert len(callbacks.posted) == 4 and notification_of(overlays, task_id) == "failed"
+    assert len(callbacks.posted) == 4 and is_notified(overlays, task_id)
     assert caplog.text.count("收到 HTTP 500") == 4 and "重试 4 次后放弃" in caplog.text
 
 
@@ -354,7 +354,7 @@ def test_callback_attempt_has_an_overall_deadline(service, callbacks, fast_retri
 
     with caplog.at_level(logging.WARNING, logger=overlay_service.logger.name):
         task_id = asyncio.run(asyncio.wait_for(scenario(), 10))
-    assert len(callbacks.posted) == 4 and notification_of(overlays, task_id) == "failed"
+    assert len(callbacks.posted) == 4 and is_notified(overlays, task_id)
     assert caplog.text.count("TimeoutError") == 4
 
 
@@ -659,6 +659,24 @@ def test_resume_skips_damaged_rows(service, caplog) -> None:
         asyncio.run(scenario())
     assert overlays.resumed and overlays.get(good)["status"] == "succeeded" and len(renderer.requests) == 1
     assert all(task_id in caplog.text for task_id in ("bad-json", "no-request", "not-object"))
+
+
+# 场景：重启后只补发还没处理完的终态通知；已送达或已放弃的不会重复投递。
+def test_resume_resends_only_unnotified_callbacks(service, callbacks) -> None:
+    """两个已成功且带回调地址的任务，只有未标记 notified 的那个重新收到 POST。"""
+    overlays, _, _ = service
+    request = {"style_id": str(uuid4()), "audio_url": None, "duration": 3.0, "callback_url": "https://bus.example/cb"}
+    pending, done = "44444444-4444-4444-4444-444444444444", "55555555-5555-5555-5555-555555555555"
+    for task_id, extra in ((pending, {}), (done, {"notified": True})):
+        data = {"request": request, "video_url": f"https://zos.example/{task_id}.webm", **extra}
+        insert_row(overlays, task_id, "succeeded", "2026-01-01T00:00:00+00:00", json.dumps(data))
+
+    async def scenario():
+        overlays.resume()
+        await finish(overlays)
+
+    asyncio.run(scenario())
+    assert [body["taskId"] for _, body in callbacks.posted] == [pending] and is_notified(overlays, pending)
 
 
 # 场景：恢复按创建时间从早到晚重新启动任务，而不是按主键或存储顺序。

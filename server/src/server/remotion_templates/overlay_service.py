@@ -181,7 +181,7 @@ class OverlayRenders:
                 continue
             if row["status"] not in TERMINAL:
                 self._spawn(self._run(row["id"]))
-            elif callback_url and data.get("notification") == "pending":
+            elif callback_url and not data.get("notified"):
                 self._spawn(self._notify(row["id"]))
 
     async def _run(self, task_id: str) -> None:
@@ -226,32 +226,28 @@ class OverlayRenders:
             await self._persist(task_id, "rendering")
             shutil.rmtree(work, ignore_errors=True)
             output = await render_overlay(self.renderer, overlay, work)
-        await self._persist(task_id, "uploading", duration_seconds=total)
-        key = f"imv/overlay_render/{task_id}.webm"
+        await self._persist(task_id, "uploading")
         urls = await asyncio.to_thread(
-            upload_public, [(output, key, "video/webm")], ZosSettings(), HTTP_TIMEOUT_SECONDS,
+            upload_public, [(output, f"imv/overlay_render/{task_id}.webm", "video/webm")], ZosSettings(),
+            HTTP_TIMEOUT_SECONDS,
         )
-        await self._persist(task_id, "succeeded", video_url=urls[0], zos_object_key=key, error=None,
-                            notification="pending" if request["callback_url"] else None)
+        await self._persist(task_id, "succeeded", video_url=urls[0])
 
     async def _fail(self, task_id: str, code: str, message: str) -> None:
         """Record a terminal failure; the public error never contains local paths or credentials."""
-        _, data = self._read(task_id)
-        await self._persist(task_id, "failed", error={"code": code, "message": message},
-                            notification="pending" if data["request"]["callback_url"] else None)
+        await self._persist(task_id, "failed", error={"code": code, "message": message})
 
     async def _notify(self, task_id: str) -> None:
         """POST the four-field terminal body, retrying with fixed delays; the result is never rolled back."""
         status, data = self._read(task_id)
         url = data["request"]["callback_url"]
-        if not url or data.get("notification") != "pending":
+        if not url or data.get("notified"):
             return
         error = data.get("error")
         body = {
             "taskId": task_id, "status": "succeed" if status == "succeeded" else "failed",
             "videoUrl": data.get("video_url"), "errorMessage": error["message"] if error else None,
         }
-        outcome = "failed"
         for attempt, delay in enumerate((0, *NOTIFICATION_RETRY_DELAYS), start=1):
             if delay:
                 await asyncio.sleep(delay)
@@ -265,12 +261,11 @@ class OverlayRenders:
                 logger.warning("叠加渲染任务 %s 终态通知第 %d 次未送达：%s", task_id, attempt, type(exc).__name__)
                 continue
             if 200 <= response.status_code < 300:
-                outcome = "sent"
                 break
             logger.warning("叠加渲染任务 %s 终态通知第 %d 次收到 HTTP %d", task_id, attempt, response.status_code)
-        if outcome == "failed":
+        else:
             logger.error("叠加渲染任务 %s 终态通知重试 %d 次后放弃", task_id, attempt)
         try:
-            await self._persist(task_id, status, notification=outcome)
+            await self._persist(task_id, status, notified=True)
         except sqlite3.Error:
             logger.error("叠加渲染任务 %s 的通知结果暂无法保存，重启后可能重复投递", task_id)
