@@ -7,7 +7,6 @@ verifies the produced file with ffprobe. Persistence, upload and notification li
 `overlay_service.py`.
 """
 
-import asyncio
 import json
 import logging
 import math
@@ -18,10 +17,12 @@ from pathlib import Path
 
 from generated.imv.sprite.v1 import sprite_pb2 as pb
 
+from ..video_composition.media import ffprobe_json
 from .renderer import CPU_SECONDS, Renderer
 from .settings import Settings
 
 logger = logging.getLogger(__name__)
+PROBE_SECONDS = 60  # ffprobe of the finished file (it decodes every frame to count them)
 
 
 class OverlayError(Exception):
@@ -64,18 +65,9 @@ def placement_seconds(sprite: pb.PublishedSprite, placement: pb.SpritePlacement)
 
 async def audio_duration(url: str, timeout: float) -> float:
     """Read the complete container duration of the TTS audio; the subprocess is always reaped."""
-    process = None
     try:
-        process = await asyncio.create_subprocess_exec(
-            "ffprobe", "-v", "error", "-protocol_whitelist", "http,https,tcp,tls,httpproxy",
-            "-rw_timeout", str(int(timeout * 1_000_000)), "-show_entries", "format=duration",
-            "-of", "json", url,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-        )
-        output, _ = await asyncio.wait_for(process.communicate(), timeout)
-        if process.returncode:
-            raise ValueError("ffprobe failed")
-        seconds = float(json.loads(output)["format"]["duration"])
+        data = await ffprobe_json(url, timeout, "-show_entries", "format=duration")
+        seconds = float(data["format"]["duration"])
         if not math.isfinite(seconds) or seconds <= 0:
             raise ValueError("invalid duration")
         return seconds
@@ -83,10 +75,6 @@ async def audio_duration(url: str, timeout: float) -> float:
         # Only the type is logged: the URL and ffprobe's message may carry a signed query string.
         logger.warning("配音音频时长读取失败：%s", type(exc).__name__)
         raise OverlayError("audio_duration_invalid", "无法读取配音音频的有效时长") from None
-    finally:
-        if process is not None and process.returncode is None:
-            process.kill()
-            await process.wait()
 
 
 def fixed_end_seconds(
@@ -170,21 +158,13 @@ def plan_overlay(
 
 async def probe_overlay(path: Path, overlay: Overlay) -> None:
     """Check size, rate, frame count and the alpha flag of the rendered file; raise on any mismatch."""
-    process = await asyncio.create_subprocess_exec(
-        "ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames",
-        "-show_entries", "stream=codec_name,width,height,avg_frame_rate,nb_read_frames:stream_tags",
-        "-of", "json", str(path),
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-    )
     try:
-        async with asyncio.timeout(60):
-            output, _ = await process.communicate()
-    finally:
-        if process.returncode is None:
-            process.kill()
-        await process.wait()
-    try:
-        stream = json.loads(output)["streams"][0]
+        data = await ffprobe_json(
+            str(path), PROBE_SECONDS, "-select_streams", "v:0", "-count_frames",
+            "-show_entries", "stream=codec_name,width,height,avg_frame_rate,nb_read_frames:stream_tags",
+            remote=False,
+        )
+        stream = data["streams"][0]
         numerator, denominator = map(float, stream["avg_frame_rate"].split("/"))
         tags = {key.upper(): str(value) for key, value in stream.get("tags", {}).items()}
         correct = (

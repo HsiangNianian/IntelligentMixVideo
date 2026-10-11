@@ -129,6 +129,49 @@ async def test_probe_uses_video_stream_and_rejects_unknown(monkeypatch, payload,
         assert await media.video_duration("https://media.test/a.mp4?token=a%2Fb&x=1", 1) == expected
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("remote", [True, False])
+async def test_ffprobe_json_limits_protocols_only_for_remote_targets(monkeypatch, remote):
+    """远程地址带协议白名单与读取超时，本地文件两者都没有；目标始终是最后的参数，不经 shell。"""
+    seen = {}
+
+    async def communicate():
+        """模拟 ffprobe 的 JSON 输出。"""
+        return b'{"ok": 1}', b""
+
+    async def spawn(*args, **kwargs):
+        """记录实际参数。"""
+        seen["args"] = args
+        return SimpleNamespace(communicate=communicate, returncode=0)
+
+    monkeypatch.setattr(media.asyncio, "create_subprocess_exec", spawn)
+    assert await media.ffprobe_json("target", 2, "-show_entries", "format=duration", remote=remote) == {"ok": 1}
+    args = seen["args"]
+    assert args[:3] == ("ffprobe", "-v", "error") and args[-3:] == ("-of", "json", "target")
+    assert ("-protocol_whitelist" in args) is remote and ("-rw_timeout" in args) is remote
+    if remote:
+        assert args[args.index("-rw_timeout") + 1] == "2000000"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("output,returncode", [(b"{}", 3), (b"not json", 0)])
+async def test_ffprobe_json_rejects_failures_with_private_detail(monkeypatch, output, returncode):
+    """非零退出带退出码与 stderr，输出不是 JSON 同样抛 ValueError；两者都不放行半截结果。"""
+    async def communicate():
+        """返回受控输出和 stderr。"""
+        return output, b"Invalid data found"
+
+    async def spawn(*args, **kwargs):
+        """子进程替身。"""
+        return SimpleNamespace(communicate=communicate, returncode=returncode)
+
+    monkeypatch.setattr(media.asyncio, "create_subprocess_exec", spawn)
+    with pytest.raises(ValueError) as caught:
+        await media.ffprobe_json("target", 1)
+    if returncode:
+        assert f"退出码 {returncode}" in str(caught.value) and "Invalid data found" in str(caught.value)
+
+
 @pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"), reason="需要 FFmpeg 和 FFprobe 探测真实素材")
 @pytest.mark.anyio
 @pytest.mark.parametrize("extension,video_codec,audio_codec,start,tag", [

@@ -36,6 +36,7 @@ from server.remotion_templates.renderer import Renderer
 from server.remotion_templates.routes import runtime_for
 from server.remotion_templates.settings import Settings
 from server.remotion_templates.store import Store
+from server.video_composition import media
 from server.video_composition.schema import MediaURL
 
 CODE = "export default function Sprite() { return null; }"
@@ -497,11 +498,81 @@ def test_unreadable_audio_is_logged_without_the_url(monkeypatch, caplog) -> None
     async def missing(*args, **kwargs):
         raise FileNotFoundError("[Errno 2] No such file or directory: 'ffprobe'")
 
-    monkeypatch.setattr(overlay_render.asyncio, "create_subprocess_exec", missing)
+    monkeypatch.setattr(media.asyncio, "create_subprocess_exec", missing)
     with caplog.at_level(logging.WARNING, logger=overlay_render.logger.name), pytest.raises(OverlayError) as caught:
         asyncio.run(overlay_render.audio_duration("https://x/tts.mp3?token=secret", 5))
     assert caught.value.code == "audio_duration_invalid"
     assert "FileNotFoundError" in caplog.text and "secret" not in caplog.text
+
+
+def fake_ffprobe(monkeypatch, payload, returncode: int = 0) -> list:
+    """用固定输出替换 ffprobe 子进程，返回记录实际参数的列表；不启动真实进程。"""
+    calls = []
+
+    async def communicate():
+        """模拟 ffprobe 的 JSON 输出。"""
+        return json.dumps(payload).encode(), b""
+
+    async def spawn(*args, **kwargs):
+        """记录参数并返回受控子进程。"""
+        calls.append(args)
+        return SimpleNamespace(communicate=communicate, returncode=returncode)
+
+    monkeypatch.setattr(media.asyncio, "create_subprocess_exec", spawn)
+    return calls
+
+
+# 场景：配音时长取容器的完整时长，只允许 HTTP(S) 协议；读不出有效正数时统一报 audio_duration_invalid。
+@pytest.mark.parametrize("payload, returncode, expected", [
+    ({"format": {"duration": "12.5"}}, 0, 12.5),
+    ({"format": {}}, 0, None), ({"format": {"duration": "0"}}, 0, None), ({"format": {"duration": "NaN"}}, 0, None),
+    ({"format": {"duration": "-1"}}, 0, None), ({}, 0, None), ({"format": {"duration": "3"}}, 1, None),
+])
+def test_audio_duration_uses_the_container_duration(monkeypatch, payload, returncode, expected) -> None:
+    """读取 format.duration；缺失、非正、非有限或 ffprobe 失败都得到同一个公开错误。"""
+    calls = fake_ffprobe(monkeypatch, payload, returncode)
+    url = "https://x/tts.mp3?token=a%2Fb"
+    if expected is None:
+        with pytest.raises(OverlayError) as caught:
+            asyncio.run(overlay_render.audio_duration(url, 5))
+        assert caught.value.code == "audio_duration_invalid"
+    else:
+        assert asyncio.run(overlay_render.audio_duration(url, 5)) == expected
+    args = calls[0]
+    assert args[-1] == url and "-protocol_whitelist" in args and args[args.index("-show_entries") + 1] == "format=duration"
+
+
+def rendered_stream(**changes) -> dict:
+    """与 6 秒、1080×1920、30 FPS 叠加视频相符的 ffprobe 视频流，可覆盖个别字段。"""
+    stream = {"codec_name": "vp9", "width": 1080, "height": 1920, "avg_frame_rate": "30/1",
+              "nb_read_frames": "180", "tags": {"ALPHA_MODE": "1"}}
+    return {"streams": [{**stream, **changes}]}
+
+
+# 场景：成片探测核对编码、尺寸、帧率、帧数与透明标记，任何不符或无法读取都拒绝。
+@pytest.mark.parametrize("payload, returncode, valid", [
+    (rendered_stream(), 0, True),
+    (rendered_stream(tags={"alpha_mode": "1"}), 0, True),  # 标签名大小写不敏感
+    (rendered_stream(codec_name="vp8"), 0, False), (rendered_stream(width=720), 0, False),
+    (rendered_stream(height=1280), 0, False), (rendered_stream(avg_frame_rate="25/1"), 0, False),
+    (rendered_stream(avg_frame_rate="0/0"), 0, False), (rendered_stream(nb_read_frames="179"), 0, False),
+    (rendered_stream(nb_read_frames="N/A"), 0, False), (rendered_stream(tags={}), 0, False),
+    (rendered_stream(tags={"ALPHA_MODE": "0"}), 0, False), ({"streams": []}, 0, False), ({}, 0, False),
+    (rendered_stream(), 1, False),
+])
+def test_probe_overlay_verifies_the_rendered_file(monkeypatch, tmp_path, payload, returncode, valid) -> None:
+    """规格全部相符才放行；本地文件探测不带远程协议限制，并且只读取第一个视频流。"""
+    calls = fake_ffprobe(monkeypatch, payload, returncode)
+    overlay = plan_overlay([placement("a")], PUBLICATIONS, 6, 120)
+    if valid:
+        asyncio.run(overlay_render.probe_overlay(tmp_path / "overlay.webm", overlay))
+    else:
+        with pytest.raises(OverlayError) as caught:
+            asyncio.run(overlay_render.probe_overlay(tmp_path / "overlay.webm", overlay))
+        assert caught.value.code == "render_invalid"
+    args = calls[0]
+    assert args[-1] == str(tmp_path / "overlay.webm") and "-protocol_whitelist" not in args
+    assert args[args.index("-select_streams") + 1] == "v:0"
 
 
 # 场景：环境检查逐项指出缺少的工具或文件；全部具备时返回 None。
