@@ -146,7 +146,8 @@ into one transparent VP9 alpha WebM, uploads it to ZOS (`imv/overlay_render/{tas
 returns/notifies the public URL. Body (camelCase): `styleId`, optional `audioUrl`, `duration` (seconds),
 `callbackUrl`. `GET /api/v1/overlay-renders/{taskId}` returns `{taskId, status, result:{videoUrl}, error}`
 (`queued/rendering/uploading/succeeded/failed`); the callback body is `{taskId, status: succeed|failed,
-videoUrl, errorMessage}`, retried after 5/15/45 s.
+videoUrl, errorMessage}`, retried after 5/15/45 s. A failure publishes only a stable `error.code` and a fixed
+message (also the callback's `errorMessage`); the renderer's output and other root causes go to the server log.
 
 - **Length**: TTS `audioUrl` (full ffprobe duration) wins; otherwise `duration`; otherwise the latest clip end.
   Longer than `IMV_OVERLAY_MAX_SECONDS` (120) is a 422 at acceptance.

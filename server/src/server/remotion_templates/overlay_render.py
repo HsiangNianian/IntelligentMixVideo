@@ -11,7 +11,6 @@ import asyncio
 import json
 import math
 import os
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,7 +20,10 @@ from .renderer import CPU_SECONDS, Renderer
 
 
 class OverlayError(Exception):
-    """A request or render failure with a stable code that is safe to show to the bus."""
+    """A request or render failure with a stable code and message that are safe to show to the bus.
+
+    A chained `__cause__` may hold private detail (renderer output); the service logs it and never publishes it.
+    """
 
     def __init__(self, code: str, message: str) -> None:
         """Keep the code and the public message separately."""
@@ -217,8 +219,9 @@ async def render_overlay(renderer: Renderer, overlay: Overlay, directory: Path) 
             cpu_seconds=overlay_cpu_seconds(settings.overlay_render_timeout_seconds),
         )
     except (RuntimeError, TimeoutError) as exc:
-        detail = re.sub(r"\s+", " ", str(exc))[:300]
-        raise OverlayError("render_failed", f"叠加视频渲染失败：{detail}") from None
+        # The worker log tail holds sandbox paths and source excerpts: only the chained cause carries it.
+        message = "叠加视频渲染超时" if isinstance(exc, TimeoutError) else "叠加视频渲染失败"
+        raise OverlayError("render_failed", message) from exc
     output = directory / "overlay.webm"
     if not output.is_file() or output.stat().st_size == 0:
         raise OverlayError("render_failed", "渲染器没有产出视频")

@@ -144,6 +144,7 @@ class OverlayRenders:
             try:
                 await self._execute(task_id, work)
             except OverlayError as exc:
+                logger.warning("叠加渲染任务 %s 失败（%s）：%s", task_id, exc.code, exc.__cause__ or exc.message)
                 self._fail(task_id, exc.code, exc.message)
             except asyncio.CancelledError:
                 raise

@@ -7,6 +7,7 @@
 
 import asyncio
 import json
+import logging
 import os
 import subprocess
 from pathlib import Path
@@ -168,11 +169,10 @@ async def finish(overlays: OverlayRenders) -> None:
         await asyncio.gather(*list(overlays.tasks))
 
 
-# 场景：成功路径按 duration 渲染，转存 ZOS 指定键，并向回调发送四字段通知。
-def test_task_renders_uploads_and_notifies(service, monkeypatch) -> None:
-    """GET 返回 ZOS 地址；回调体为 taskId/status/videoUrl/errorMessage，源文件在任务结束后被清理。"""
-    overlays, renderer, uploads = service
-    posted = []
+@pytest.fixture
+def callbacks(monkeypatch) -> list[tuple[str, dict]]:
+    """替换回调使用的 httpx 客户端，记录每次 POST 的地址与请求体并返回 200。"""
+    posted: list[tuple[str, dict]] = []
 
     class Client:
         """记录 POST 的 httpx 替身。"""
@@ -186,6 +186,13 @@ def test_task_renders_uploads_and_notifies(service, monkeypatch) -> None:
             return httpx.Response(200)
 
     monkeypatch.setattr(overlay_service.httpx, "AsyncClient", Client)
+    return posted
+
+
+# 场景：成功路径按 duration 渲染，转存 ZOS 指定键，并向回调发送四字段通知。
+def test_task_renders_uploads_and_notifies(service, callbacks) -> None:
+    """GET 返回 ZOS 地址；回调体为 taskId/status/videoUrl/errorMessage，源文件在任务结束后被清理。"""
+    overlays, renderer, uploads = service
 
     async def scenario():
         task_id = await overlays.accept(uuid4(), None, 4.0, "https://bus.example/cb")
@@ -201,7 +208,7 @@ def test_task_renders_uploads_and_notifies(service, monkeypatch) -> None:
         "width": 1080, "height": 1920, "fps": 30, "duration_in_frames": 120, "frames": 120,
     }
     assert [i["start_frame"] for i in renderer.requests[0]["instances"]] == [0, 30]
-    assert posted == [("https://bus.example/cb", {
+    assert callbacks == [("https://bus.example/cb", {
         "taskId": task_id, "status": "succeed", "videoUrl": f"https://zos.example/{key}", "errorMessage": None,
     })]
     assert not (overlays.store.root / "overlays" / task_id).exists()
@@ -254,21 +261,31 @@ def test_task_passes_the_overlay_cpu_cap_to_the_worker(service) -> None:
     assert renderer.cpu_seconds == overlay_cpu_seconds(overlays.settings.overlay_render_timeout_seconds)
 
 
-# 场景：渲染失败时任务为 failed，公开错误脱敏且不上传。
-def test_render_failure_is_sanitized(service) -> None:
-    """失败状态保留错误码，不含本地路径，也没有 ZOS 地址。"""
+# 场景：渲染失败时任务为 failed，GET 和回调只含固定说明；渲染器输出只进服务端日志，不上传。
+@pytest.mark.parametrize("failure, message", [
+    (RuntimeError("Traceback at /home/secret/path token=abc123"), "叠加视频渲染失败"),
+    (TimeoutError("isolated renderer worker timed out after 3600s"), "叠加视频渲染超时"),
+])
+def test_render_failure_is_sanitized(service, callbacks, caplog, failure, message) -> None:
+    """错误码为 render_failed，说明是固定文案，不含本地路径或密钥；根因保留在服务端日志。"""
     overlays, renderer, uploads = service
-    renderer.failure = RuntimeError("Traceback at /home/secret/path")
+    renderer.failure = failure
 
     async def scenario():
-        task_id = await overlays.accept(uuid4(), None, 3.0, None)
+        task_id = await overlays.accept(uuid4(), None, 3.0, "https://bus.example/cb")
         await finish(overlays)
         return task_id
 
-    view = overlays.get(asyncio.run(scenario()))
+    with caplog.at_level(logging.WARNING, logger=overlay_service.logger.name):
+        task_id = asyncio.run(scenario())
+    view = overlays.get(task_id)
     assert view["status"] == "failed" and view["result"] is None
-    assert view["error"]["code"] == "render_failed"
+    assert view["error"] == {"code": "render_failed", "message": message}
+    assert callbacks == [("https://bus.example/cb", {
+        "taskId": task_id, "status": "failed", "videoUrl": None, "errorMessage": message,
+    })]
     assert uploads == []
+    assert str(failure) in caplog.text  # 运维仍能在日志中看到完整根因
 
 
 # 场景：受理阶段即拒绝不可能完成的请求，不写任务行。
