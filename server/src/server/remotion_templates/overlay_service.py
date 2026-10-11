@@ -212,15 +212,22 @@ class OverlayRenders:
             "errorMessage": view["error"]["message"] if view["error"] else None,
         }
         outcome = "failed"
-        for delay in (0, *NOTIFICATION_RETRY_DELAYS):
+        for attempt, delay in enumerate((0, *NOTIFICATION_RETRY_DELAYS), start=1):
             if delay:
                 await asyncio.sleep(delay)
             try:
-                async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SECONDS, follow_redirects=False) as client:
-                    response = await client.post(url, json=body)
-                if 200 <= response.status_code < 300:
-                    outcome = "sent"
-                    break
-            except httpx.HTTPError:
-                logger.warning("叠加渲染任务 %s 终态通知未送达", task_id)
+                # The client timeout is per phase; the outer deadline bounds a response that trickles in.
+                async with asyncio.timeout(HTTP_TIMEOUT_SECONDS):
+                    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SECONDS, follow_redirects=False) as client:
+                        response = await client.post(url, json=body)
+            except Exception as exc:
+                # Not only httpx.HTTPError: an address the schema accepts can still be httpx.InvalidURL.
+                logger.warning("叠加渲染任务 %s 终态通知第 %d 次未送达：%s", task_id, attempt, type(exc).__name__)
+                continue
+            if 200 <= response.status_code < 300:
+                outcome = "sent"
+                break
+            logger.warning("叠加渲染任务 %s 终态通知第 %d 次收到 HTTP %d", task_id, attempt, response.status_code)
+        if outcome == "failed":
+            logger.error("叠加渲染任务 %s 终态通知重试 %d 次后放弃", task_id, attempt)
         self._save(task_id, view["status"], notification=outcome)

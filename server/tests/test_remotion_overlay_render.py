@@ -20,6 +20,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from generated.imv.sprite.v1 import sprite_pb2 as pb
 from google.protobuf.json_format import MessageToDict
+from pydantic import TypeAdapter
 
 from server.app import app
 from server.remotion_templates import overlay_render, overlay_service
@@ -31,6 +32,7 @@ from server.remotion_templates.overlay_service import OverlayRenders
 from server.remotion_templates.renderer import Renderer
 from server.remotion_templates.settings import Settings
 from server.remotion_templates.store import Store
+from server.video_composition.schema import MediaURL
 
 CODE = "export default function Sprite() { return null; }"
 # 自动隔离夹具会清除 IMV_*，所以在导入时读取本次运行配置的渲染器位置。
@@ -171,9 +173,15 @@ async def finish(overlays: OverlayRenders) -> None:
 
 
 @pytest.fixture
-def callbacks(monkeypatch) -> list[tuple[str, dict]]:
-    """替换回调使用的 httpx 客户端，记录每次 POST 的地址与请求体并返回 200。"""
-    posted: list[tuple[str, dict]] = []
+def callbacks(monkeypatch) -> SimpleNamespace:
+    """替换回调使用的 httpx 客户端：posted 记录每次 POST 的地址与请求体，respond 决定响应（默认 200）。"""
+    state = SimpleNamespace(posted=[])
+
+    async def ok():
+        """默认回应 200。"""
+        return httpx.Response(200)
+
+    state.respond = ok
 
     class Client:
         """记录 POST 的 httpx 替身。"""
@@ -183,11 +191,23 @@ def callbacks(monkeypatch) -> list[tuple[str, dict]]:
         async def __aexit__(self, *_): ...
 
         async def post(self, url, json):
-            posted.append((url, json))
-            return httpx.Response(200)
+            state.posted.append((url, json))
+            return await state.respond()
 
     monkeypatch.setattr(overlay_service.httpx, "AsyncClient", Client)
-    return posted
+    return state
+
+
+@pytest.fixture
+def fast_retries(monkeypatch) -> None:
+    """把 5/15/45 秒的通知重试间隔缩成毫秒，用例不等待。"""
+    monkeypatch.setattr(overlay_service, "NOTIFICATION_RETRY_DELAYS", (0.001, 0.001, 0.001))
+
+
+def notification_of(overlays: OverlayRenders, task_id: str) -> str | None:
+    """任务行里记录的回调状态（pending/sent/failed）。"""
+    with overlays.store.connection() as db:
+        return json.loads(db.execute("SELECT data FROM overlay_renders WHERE id=?", (task_id,)).fetchone()["data"]).get("notification")
 
 
 # 场景：成功路径按 duration 渲染，转存 ZOS 指定键，并向回调发送四字段通知。
@@ -209,10 +229,86 @@ def test_task_renders_uploads_and_notifies(service, callbacks) -> None:
         "width": 1080, "height": 1920, "fps": 30, "duration_in_frames": 120, "frames": 120,
     }
     assert [i["start_frame"] for i in renderer.requests[0]["instances"]] == [0, 30]
-    assert callbacks == [("https://bus.example/cb", {
+    assert callbacks.posted == [("https://bus.example/cb", {
         "taskId": task_id, "status": "succeed", "videoUrl": f"https://zos.example/{key}", "errorMessage": None,
     })]
+    assert notification_of(overlays, task_id) == "sent"
     assert not (overlays.store.root / "overlays" / task_id).exists()
+
+
+# 场景：回调地址通过 schema 校验却无法被 httpx 解析（补零 IPv4、控制字符）时，终态也会记录，不卡在 pending。
+@pytest.mark.parametrize("url", ["http://192.168.001.010:8080/cb", "http://bus.example/cb\x7f"])
+def test_unparseable_callback_url_ends_failed(service, fast_retries, caplog, url) -> None:
+    """httpx.InvalidURL 不是 HTTPError：四次尝试后记为 failed，任务仍是 succeeded，日志有放弃记录。"""
+    overlays, _, _ = service
+    TypeAdapter(MediaURL).validate_python(url)  # 受理前的 schema 放行了这个地址
+
+    async def scenario():
+        task_id = await overlays.accept(uuid4(), None, 3.0, url)
+        await finish(overlays)  # 后台协程若抛出未处理异常，这里会重新抛出
+        return task_id
+
+    with caplog.at_level(logging.WARNING, logger=overlay_service.logger.name):
+        task_id = asyncio.run(scenario())
+    assert overlays.get(task_id)["status"] == "succeeded" and notification_of(overlays, task_id) == "failed"
+    assert caplog.text.count("InvalidURL") == 4 and "重试 4 次后放弃" in caplog.text
+
+
+# 场景：回调端点返回非 2xx 时按间隔重试，成功即停；全部失败则记录并放弃，日志写明状态码。
+def test_callback_retries_error_statuses(service, callbacks, fast_retries, caplog) -> None:
+    """两次 500 后第三次 200 记为 sent；四次都 500 记为 failed，且日志含 HTTP 500 与放弃记录。"""
+    overlays, _, _ = service
+    answers = iter([500, 500, 200])
+
+    async def flaky():
+        """前两次 500，之后 200。"""
+        return httpx.Response(next(answers))
+
+    callbacks.respond = flaky
+
+    async def scenario():
+        task_id = await overlays.accept(uuid4(), None, 3.0, "https://bus.example/cb")
+        await finish(overlays)
+        return task_id
+
+    with caplog.at_level(logging.WARNING, logger=overlay_service.logger.name):
+        task_id = asyncio.run(scenario())
+    assert len(callbacks.posted) == 3 and notification_of(overlays, task_id) == "sent"
+    assert caplog.text.count("收到 HTTP 500") == 2
+
+    async def always_500():
+        """始终 500。"""
+        return httpx.Response(500)
+
+    callbacks.respond, callbacks.posted[:] = always_500, []
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger=overlay_service.logger.name):
+        task_id = asyncio.run(scenario())
+    assert len(callbacks.posted) == 4 and notification_of(overlays, task_id) == "failed"
+    assert caplog.text.count("收到 HTTP 500") == 4 and "重试 4 次后放弃" in caplog.text
+
+
+# 场景：回调端点发出响应头后迟迟不结束时，每次尝试都有整体期限，重试照常推进。
+def test_callback_attempt_has_an_overall_deadline(service, callbacks, fast_retries, monkeypatch, caplog) -> None:
+    """超时按阶段计算的客户端挡不住滴灌响应：整体期限到点后记录 TimeoutError 并进入下一次。"""
+    overlays, _, _ = service
+    monkeypatch.setattr(overlay_service, "HTTP_TIMEOUT_SECONDS", 0.05)
+
+    async def hangs():
+        """永不返回，代表响应迟迟不结束。"""
+        await asyncio.Event().wait()
+
+    callbacks.respond = hangs
+
+    async def scenario():
+        task_id = await overlays.accept(uuid4(), None, 3.0, "https://bus.example/cb")
+        await finish(overlays)
+        return task_id
+
+    with caplog.at_level(logging.WARNING, logger=overlay_service.logger.name):
+        task_id = asyncio.run(asyncio.wait_for(scenario(), 10))
+    assert len(callbacks.posted) == 4 and notification_of(overlays, task_id) == "failed"
+    assert caplog.text.count("TimeoutError") == 4
 
 
 # 场景：片段超出成片结尾时，worker 请求中的合成仍覆盖最晚片段结尾，只渲染成片总帧数。
@@ -282,7 +378,7 @@ def test_render_failure_is_sanitized(service, callbacks, caplog, failure, messag
     view = overlays.get(task_id)
     assert view["status"] == "failed" and view["result"] is None
     assert view["error"] == {"code": "render_failed", "message": message}
-    assert callbacks == [("https://bus.example/cb", {
+    assert callbacks.posted == [("https://bus.example/cb", {
         "taskId": task_id, "status": "failed", "videoUrl": None, "errorMessage": message,
     })]
     assert uploads == []
