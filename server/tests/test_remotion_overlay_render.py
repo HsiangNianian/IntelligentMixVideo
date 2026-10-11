@@ -22,7 +22,9 @@ from google.protobuf.json_format import MessageToDict
 
 from server.app import app
 from server.remotion_templates import overlay_render, overlay_service
-from server.remotion_templates.overlay_render import OverlayError, plan_overlay, render_overlay, resolve_total_seconds
+from server.remotion_templates.overlay_render import (
+    OverlayError, overlay_cpu_seconds, plan_overlay, render_overlay, resolve_total_seconds,
+)
 from server.remotion_templates.overlay_router import overlay_renders
 from server.remotion_templates.overlay_service import OverlayRenders
 from server.remotion_templates.renderer import Renderer
@@ -113,14 +115,16 @@ class FakeRenderer:
         self.settings = settings
         self.requests: list[dict] = []
         self.failure: Exception | None = None
+        self.cpu_seconds: int | None = None
 
     def worker_browser_path(self) -> str:
         """返回固定浏览器路径。"""
         return "/browser"
 
-    async def run_worker(self, directory: Path, *, worker=None, timeout_seconds=None) -> dict:
-        """校验 worker 名称，保存请求并产出文件。"""
+    async def run_worker(self, directory: Path, *, worker=None, timeout_seconds=None, cpu_seconds=None) -> dict:
+        """校验 worker 名称，保存请求与沙箱 CPU 上限并产出文件。"""
         assert worker == "overlay-worker.mjs"
+        self.cpu_seconds = cpu_seconds
         self.requests.append(json.loads((directory / "request.json").read_text()))
         if self.failure:
             raise self.failure
@@ -215,6 +219,39 @@ def test_request_spans_clips_cut_by_the_total(service) -> None:
     asyncio.run(scenario())
     composition = renderer.requests[0]["composition"]
     assert (composition["duration_in_frames"], composition["frames"]) == (90, 60)
+
+
+# 场景：沙箱 CPU 上限默认沿用短 worker 的 300 秒，调用方可按自己的渲染期限放大。
+def test_sandbox_command_applies_the_cpu_cap(tmp_path: Path) -> None:
+    """prlimit 的 --cpu 取调用方给定的秒数；不给定时保持 300 秒。"""
+    renderer = Renderer(Settings(_env_file=None, data_dir=tmp_path))
+    assert "--cpu=300" in renderer.command(tmp_path)
+    assert "--cpu=1234" in renderer.command(tmp_path, worker="overlay-worker.mjs", cpu_seconds=1234)
+
+
+# 场景：叠加渲染的 CPU 上限随超时和核数放大，不会在超时前先结束健康的长渲染。
+@pytest.mark.parametrize("timeout, cores, expected", [
+    (3600, 8, 28800),  # 一小时期限内 8 核最多能用的 CPU 秒
+    (600, None, 600),  # 核数未知时按单核
+    (50, 2, 300),  # 短期限不低于短 worker 的既有上限
+])
+def test_overlay_cpu_cap_follows_the_deadline_and_cores(monkeypatch, timeout, cores, expected) -> None:
+    """上限 = 期限 × 核数，且不低于 300 秒。"""
+    monkeypatch.setattr(overlay_render.os, "cpu_count", lambda: cores)
+    assert overlay_cpu_seconds(timeout) == expected
+
+
+# 场景：任务把按渲染期限算出的 CPU 上限交给沙箱 worker。
+def test_task_passes_the_overlay_cpu_cap_to_the_worker(service) -> None:
+    """worker 收到 overlay_cpu_seconds(渲染超时)，而不是短 worker 的固定 300 秒。"""
+    overlays, renderer, _ = service
+
+    async def scenario():
+        await overlays.accept(uuid4(), None, 2.0, None)
+        await finish(overlays)
+
+    asyncio.run(scenario())
+    assert renderer.cpu_seconds == overlay_cpu_seconds(overlays.settings.overlay_render_timeout_seconds)
 
 
 # 场景：渲染失败时任务为 failed，公开错误脱敏且不上传。

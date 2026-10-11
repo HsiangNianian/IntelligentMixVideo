@@ -10,13 +10,14 @@ verifies the produced file with ffprobe. Persistence, upload and notification li
 import asyncio
 import json
 import math
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from generated.imv.sprite.v1 import sprite_pb2 as pb
 
-from .renderer import Renderer
+from .renderer import CPU_SECONDS, Renderer
 
 
 class OverlayError(Exception):
@@ -182,6 +183,17 @@ async def probe_overlay(path: Path, overlay: Overlay) -> None:
         raise OverlayError("render_invalid", "渲染结果与请求的规格或透明通道不一致")
 
 
+def overlay_cpu_seconds(timeout_seconds: float) -> int:
+    """Per-process CPU cap of one overlay render: its wall-clock deadline times the host's cores.
+
+    On a 1080x1920 overlay Chrome's software-GL process and the single VP9 encoder each used about 0.9 CPU
+    seconds per frame, so a 120 s overlay needs thousands of CPU seconds in one process and the short workers'
+    300 s cap would end it far before its timeout. No process can use more than this within the deadline, so
+    the cap still bounds a runaway without cutting a healthy render short.
+    """
+    return max(CPU_SECONDS, math.ceil(timeout_seconds * (os.cpu_count() or 1)))
+
+
 async def render_overlay(renderer: Renderer, overlay: Overlay, directory: Path) -> Path:
     """Run the isolated worker in `directory` and return the verified `overlay.webm`."""
     settings = renderer.settings
@@ -202,6 +214,7 @@ async def render_overlay(renderer: Renderer, overlay: Overlay, directory: Path) 
     try:
         await renderer.run_worker(
             directory, worker="overlay-worker.mjs", timeout_seconds=settings.overlay_render_timeout_seconds,
+            cpu_seconds=overlay_cpu_seconds(settings.overlay_render_timeout_seconds),
         )
     except (RuntimeError, TimeoutError) as exc:
         detail = re.sub(r"\s+", " ", str(exc))[:300]
