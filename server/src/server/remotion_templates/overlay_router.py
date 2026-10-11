@@ -8,7 +8,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 from starlette.concurrency import run_in_threadpool
 
@@ -21,13 +21,16 @@ router = APIRouter(prefix="/api/v1/overlay-renders", tags=["Remotion 叠加视�
 
 
 class OverlayRequest(BaseModel):
-    """Template to render plus the optional TTS audio or explicit length that decides its duration."""
+    """Template to render plus the optional TTS audio or explicit length that decides its duration.
+
+    `duration` is strict like the composition API's `videoDuration`: booleans and numeric strings are refused.
+    """
 
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
 
     style_id: UUID
     audio_url: MediaURL | None = None
-    duration: PositiveSeconds | None = None
+    duration: PositiveSeconds | None = Field(default=None, strict=True)
     callback_url: MediaURL | None = None
 
 

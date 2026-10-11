@@ -149,8 +149,13 @@ returns/notifies the public URL. Body (camelCase): `styleId`, optional `audioUrl
 videoUrl, errorMessage}`, retried after 5/15/45 s. A failure publishes only a stable `error.code` and a fixed
 message (also the callback's `errorMessage`); the renderer's output and other root causes go to the server log.
 
-- **Length**: TTS `audioUrl` (full ffprobe duration) wins; otherwise `duration`; otherwise the latest clip end.
-  Longer than `IMV_OVERLAY_MAX_SECONDS` (120) is a 422 at acceptance.
+- **Length**: TTS `audioUrl` (full ffprobe duration) wins; otherwise `duration` (a JSON number above 0, strict like
+  the composition API's `videoDuration`: booleans and numeric strings are a 422); otherwise the latest clip end.
+  Longer than `IMV_OVERLAY_MAX_SECONDS` (120) is a 422 at acceptance when the length is already known (`duration`
+  or the clips' end); an `audioUrl` is only probed while rendering, so an over-long one fails the task with
+  `duration_too_long`.
+- **Acceptance**: also a 503 when ZOS, ffprobe, bubblewrap, prlimit, Node, the browser or the managed fonts are
+  missing (the isolated renderer is Linux-only), instead of accepting tasks that can only fail later.
 - **Layout**: every asset must share width/height/fps. Clips are stacked by `order` on one canvas; each plays for
   its saved duration (or its own `preview_frames / fps`), which its Sprite reads as `durationInFrames` just like in
   its accepted preview, keeps that full length when the total cuts it (so its internal animation ranges are

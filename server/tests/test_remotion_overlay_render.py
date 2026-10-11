@@ -156,6 +156,7 @@ def service(tmp_path, monkeypatch):
         return [f"https://zos.example/{files[0][1]}"]
 
     monkeypatch.setattr(overlay_render, "probe_overlay", probed)
+    monkeypatch.setattr(overlay_service, "environment_problem", lambda settings: None)
     monkeypatch.setattr(overlay_service, "upload_public", upload)
     monkeypatch.setattr(overlay_service, "ZosSettings", lambda: SimpleNamespace())
     monkeypatch.setattr(overlay_service.sprites, "get_bindings", lambda store, style_id: (1, bindings, None))
@@ -288,17 +289,100 @@ def test_render_failure_is_sanitized(service, callbacks, caplog, failure, messag
     assert str(failure) in caplog.text  # 运维仍能在日志中看到完整根因
 
 
-# 场景：受理阶段即拒绝不可能完成的请求，不写任务行。
-def test_accept_rejects_unknown_duration_and_overlong(service, monkeypatch) -> None:
-    """duration 超过上限和缺少任何时长来源分别 422。"""
+def task_rows(overlays: OverlayRenders) -> int:
+    """任务表当前的行数。"""
+    with overlays.store.connection() as db:
+        return db.execute("SELECT COUNT(*) FROM overlay_renders").fetchone()[0]
+
+
+def long_bindings(monkeypatch) -> None:
+    """让样式的片段结束于 150 秒（片段 b 起点 148 秒 + 资产自身 2 秒），超过 120 秒上限。"""
+    stored = [MessageToDict(item, preserving_proto_field_name=True) for item in (
+        placement("a", start=0, order=0), placement("b", start=148, order=1),
+    )]
+    monkeypatch.setattr(overlay_service.sprites, "get_bindings", lambda store, style_id: (1, stored, None))
+
+
+# 场景：时长已知时受理阶段就拒绝超限请求（显式 duration 或片段自身结尾），不写任务行。
+def test_accept_enforces_the_limit_on_known_lengths(service, monkeypatch) -> None:
+    """显式 duration 超限 422；未提供时片段结尾超限同样 422；上限内的请求被受理。"""
     overlays, _, _ = service
     with pytest.raises(HTTPException) as caught:
         asyncio.run(overlays.accept(uuid4(), None, 9999.0, None))
-    assert caught.value.status_code == 422
-    monkeypatch.setattr(overlay_service, "fixed_end_seconds", lambda *_: None)
+    assert caught.value.status_code == 422 and "超过上限 120" in caught.value.detail
+    assert task_rows(overlays) == 0
+    asyncio.run(overlays.accept(uuid4(), None, 120.0, None))  # 恰好等于上限
+    long_bindings(monkeypatch)
     with pytest.raises(HTTPException) as caught:
         asyncio.run(overlays.accept(uuid4(), None, None, None))
-    assert caught.value.status_code == 422 and "duration" in caught.value.detail or "时长" in caught.value.detail
+    assert caught.value.status_code == 422 and "超过上限 120" in caught.value.detail
+    assert task_rows(overlays) == 1
+
+
+# 场景：有 audioUrl 时 duration 被忽略，不能因它超限而拒绝；音频本身过长要到探测后才知道。
+def test_audio_length_is_checked_after_probing(service, monkeypatch) -> None:
+    """audioUrl 加超大 duration 被受理；探测出的音频时长超限时任务以 duration_too_long 失败。"""
+    overlays, renderer, _ = service
+
+    async def probed(url: str, timeout: float) -> float:
+        return 500.0
+
+    monkeypatch.setattr(overlay_render, "audio_duration", probed)
+
+    async def scenario():
+        task_id = await overlays.accept(uuid4(), "https://x/tts.mp3", 9999.0, None)
+        await finish(overlays)
+        return task_id
+
+    view = overlays.get(asyncio.run(scenario()))
+    assert view["status"] == "failed" and view["error"]["code"] == "duration_too_long"
+    assert "超过上限 120" in view["error"]["message"] and renderer.requests == []
+
+
+# 场景：缺少渲染所需的工具或文件时受理阶段就 503，而不是接受后才失败。
+def test_accept_refuses_a_host_that_cannot_render(service, monkeypatch) -> None:
+    """环境检查报告缺失项时返回 503、写服务端日志，且不创建任务。"""
+    overlays, _, _ = service
+    monkeypatch.setattr(overlay_service, "environment_problem", lambda settings: "ffprobe")
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(overlays.accept(uuid4(), None, 3.0, None))
+    assert caught.value.status_code == 503 and task_rows(overlays) == 0
+
+
+# 场景：读不到配音时长时对调用方只给固定说明，服务端日志留下异常类型而不含带签名的地址。
+def test_unreadable_audio_is_logged_without_the_url(monkeypatch, caplog) -> None:
+    """ffprobe 无法启动时任务得到 audio_duration_invalid，日志只记 FileNotFoundError。"""
+    async def missing(*args, **kwargs):
+        raise FileNotFoundError("[Errno 2] No such file or directory: 'ffprobe'")
+
+    monkeypatch.setattr(overlay_render.asyncio, "create_subprocess_exec", missing)
+    with caplog.at_level(logging.WARNING, logger=overlay_render.logger.name), pytest.raises(OverlayError) as caught:
+        asyncio.run(overlay_render.audio_duration("https://x/tts.mp3?token=secret", 5))
+    assert caught.value.code == "audio_duration_invalid"
+    assert "FileNotFoundError" in caplog.text and "secret" not in caplog.text
+
+
+# 场景：环境检查逐项指出缺少的工具或文件；全部具备时返回 None。
+def test_environment_problem_names_the_missing_piece(tmp_path, monkeypatch) -> None:
+    """依次缺 ffprobe、bwrap、prlimit、node，再缺浏览器和两个字体文件。"""
+    files = {name: tmp_path / name for name in ("browser", "regular.ttc", "bold.ttc")}
+    for path in files.values():
+        path.write_bytes(b"x")
+    settings = Settings(
+        _env_file=None, data_dir=tmp_path, browser_executable=files["browser"],
+        font_regular=files["regular.ttc"], font_bold=files["bold.ttc"],
+    )
+    present = {"ffprobe", "bwrap", "prlimit", "node"}
+    monkeypatch.setattr(overlay_render.shutil, "which", lambda name: f"/usr/bin/{name}" if name in present else None)
+    assert overlay_render.environment_problem(settings) is None
+    for tool in ("ffprobe", "bwrap", "prlimit", "node"):
+        present.discard(tool)
+        assert overlay_render.environment_problem(settings) == tool
+        present.add(tool)
+    for path in files.values():
+        path.unlink()
+        assert overlay_render.environment_problem(settings) == str(path)
+        path.write_bytes(b"x")
 
 
 # 场景：重启后恢复未终态任务并完成；终态任务不会被重复渲染。
@@ -320,6 +404,24 @@ def test_resume_reruns_unfinished_tasks(service) -> None:
     assert len(renderer.requests) == 1
 
 
+# 场景：duration 与合成接口的 videoDuration 一样严格：布尔值、数字字符串和非正数都是 422。
+@pytest.mark.parametrize("duration", [True, "7.5", 0, -1])
+def test_duration_is_strict(service, client: TestClient, duration) -> None:
+    """布尔值、数字字符串和非正数的 duration 返回 422 且不创建任务。"""
+    overlays, _, _ = service
+
+    async def provide():
+        return overlays
+
+    app.dependency_overrides[overlay_renders] = provide
+    try:
+        response = client.post("/api/v1/overlay-renders", json={"styleId": str(uuid4()), "duration": duration})
+        assert response.status_code == 422
+        assert task_rows(overlays) == 0
+    finally:
+        app.dependency_overrides.pop(overlay_renders, None)
+
+
 # 场景：HTTP 契约——受理返回 taskId，GET 返回状态；未知任务 404。
 def test_routes_accept_and_query(service, client: TestClient) -> None:
     """路由使用 camelCase 请求体，未知字段拒绝，查询未知任务 404。"""
@@ -332,6 +434,7 @@ def test_routes_accept_and_query(service, client: TestClient) -> None:
     try:
         created = client.post("/api/v1/overlay-renders", json={"styleId": str(uuid4()), "duration": 3})
         assert created.status_code == 200
+        assert client.post("/api/v1/overlay-renders", json={"styleId": str(uuid4()), "duration": 7.5}).status_code == 200
         assert client.post("/api/v1/overlay-renders", json={"styleId": str(uuid4()), "bogus": 1}).status_code == 422
         assert client.get(f"/api/v1/overlay-renders/{uuid4()}").status_code == 404
         task_id = created.json()["taskId"]

@@ -23,6 +23,7 @@ from ..video_composition.zos import upload_public
 from . import sprites
 from .overlay_render import (
     OverlayError,
+    environment_problem,
     fixed_end_seconds,
     plan_overlay,
     render_overlay,
@@ -96,18 +97,27 @@ class OverlayRenders:
 
     async def accept(self, style_id: UUID, audio_url: str | None, duration: float | None,
                      callback_url: str | None) -> str:
-        """Validate cheaply, persist the task and start it; no ffprobe or render happens here."""
+        """Validate cheaply, persist the task and start it; no ffprobe or render happens here.
+
+        The length limit is applied where the length is already known: an explicit `duration` or, without
+        either input, the clips' own end. A TTS audio length is only known once it is probed, so an
+        over-long audio fails the task later with `duration_too_long`.
+        """
         try:
             ZosSettings()
         except ValueError:
             raise HTTPException(503, "ZOS 配置不可用，请检查服务端环境") from None
+        missing = environment_problem(self.settings)
+        if missing:
+            logger.error("叠加渲染环境缺少 %s，拒绝受理", missing)
+            raise HTTPException(503, "叠加渲染环境不可用，请检查服务端环境")
         try:
             placements, publications = await asyncio.to_thread(self._load, style_id)
             shared_canvas(placements, publications)
-            if duration is not None and duration > self.settings.overlay_max_seconds:
-                raise OverlayError("duration_too_long", f"成片时长超过上限 {self.settings.overlay_max_seconds:g} 秒")
-            if audio_url is None and duration is None and fixed_end_seconds(placements, publications) is None:
-                raise OverlayError("duration_unknown", "无法确定成片时长：请提供 audioUrl 或 duration")
+            if audio_url is None:
+                seconds = duration if duration is not None else fixed_end_seconds(placements, publications)
+                if seconds > self.settings.overlay_max_seconds:
+                    raise OverlayError("duration_too_long", f"成片时长超过上限 {self.settings.overlay_max_seconds:g} 秒")
         except OverlayError as exc:
             raise HTTPException(422, exc.message) from None
         task_id = str(uuid4())

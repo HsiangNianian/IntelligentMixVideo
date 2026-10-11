@@ -9,14 +9,19 @@ verifies the produced file with ffprobe. Persistence, upload and notification li
 
 import asyncio
 import json
+import logging
 import math
 import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
 from generated.imv.sprite.v1 import sprite_pb2 as pb
 
 from .renderer import CPU_SECONDS, Renderer
+from .settings import Settings
+
+logger = logging.getLogger(__name__)
 
 
 class OverlayError(Exception):
@@ -74,7 +79,9 @@ async def audio_duration(url: str, timeout: float) -> float:
         if not math.isfinite(seconds) or seconds <= 0:
             raise ValueError("invalid duration")
         return seconds
-    except (OSError, TimeoutError, ValueError, KeyError, TypeError):
+    except (OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
+        # Only the type is logged: the URL and ffprobe's message may carry a signed query string.
+        logger.warning("配音音频时长读取失败：%s", type(exc).__name__)
         raise OverlayError("audio_duration_invalid", "无法读取配音音频的有效时长") from None
     finally:
         if process is not None and process.returncode is None:
@@ -183,6 +190,21 @@ async def probe_overlay(path: Path, overlay: Overlay) -> None:
         correct = False
     if not correct:
         raise OverlayError("render_invalid", "渲染结果与请求的规格或透明通道不一致")
+
+
+def environment_problem(settings: Settings) -> str | None:
+    """Name the first tool or file an overlay render needs that this host lacks, or None when all exist.
+
+    Acceptance refuses with a 503 instead of queueing a task that would only fail later; the isolated
+    renderer runs on Linux with bubblewrap, prlimit, Node, a browser and the managed fonts.
+    """
+    for tool in ("ffprobe", "bwrap", "prlimit", "node"):
+        if shutil.which(tool) is None:
+            return tool
+    for path in (settings.browser_executable, settings.font_regular, settings.font_bold):
+        if not path.is_file():
+            return str(path)
+    return None
 
 
 def overlay_cpu_seconds(timeout_seconds: float) -> int:
