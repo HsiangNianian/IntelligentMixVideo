@@ -43,7 +43,7 @@ class Runtime:
 
     @property
     def overlays(self) -> OverlayRenders:
-        """Template overlay-video tasks, created on first use so job-only runtimes need no renderer."""
+        """Template overlay-video tasks, created on first use (`runtime_for` does so to start their recovery)."""
         if self._overlays is None:
             self._overlays = OverlayRenders(self.store, self.harness.renderer, self.settings)
         return self._overlays

@@ -35,7 +35,7 @@ class OverlayRequest(BaseModel):
 
 
 async def overlay_renders() -> OverlayRenders:
-    """Share the Remotion runtime's task service and start recovery on first use."""
+    """Share the Remotion runtime's task service; recovery retries here if its first table read failed."""
     service = (await runtime_for(remotion_templates_app.state)).overlays
     service.resume()
     return service

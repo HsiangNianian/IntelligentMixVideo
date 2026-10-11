@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import sqlite3
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,9 +28,11 @@ from server.remotion_templates import overlay_render, overlay_service
 from server.remotion_templates.overlay_render import (
     OverlayError, overlay_cpu_seconds, plan_overlay, render_overlay, resolve_total_seconds,
 )
+from server.remotion_templates.api import create_template_app
 from server.remotion_templates.overlay_router import overlay_renders
 from server.remotion_templates.overlay_service import OverlayRenders
 from server.remotion_templates.renderer import Renderer
+from server.remotion_templates.routes import runtime_for
 from server.remotion_templates.settings import Settings
 from server.remotion_templates.store import Store
 from server.video_composition.schema import MediaURL
@@ -498,6 +501,172 @@ def test_resume_reruns_unfinished_tasks(service) -> None:
     asyncio.run(scenario())
     assert overlays.get("11111111-1111-1111-1111-111111111111")["status"] == "succeeded"
     assert len(renderer.requests) == 1
+
+
+def insert_row(overlays: OverlayRenders, task_id: str, status: str, created_at: str, data: str) -> None:
+    """直接写入一行任务记录，可以是损坏的内容。"""
+    with overlays.store.connection() as db:
+        db.execute("INSERT INTO overlay_renders VALUES (?, ?, ?, ?)", (task_id, status, created_at, data))
+
+
+# 场景：运行时第一次建立就恢复叠加任务，不论之后先访问哪条路由，也只恢复一次。
+def test_runtime_start_recovers_overlay_tasks(tmp_path, monkeypatch) -> None:
+    """runtime_for 建立运行时后调用 resume 一次；再次取用不重复恢复。"""
+    settings = Settings(_env_file=None, data_dir=tmp_path / "state")
+    application = create_template_app(
+        settings, provider=SimpleNamespace(settings=settings), renderer=SimpleNamespace(settings=settings),
+    )
+    resumed = []
+    monkeypatch.setattr(OverlayRenders, "resume", lambda self: resumed.append(self))
+
+    async def scenario():
+        return await runtime_for(application.state), await runtime_for(application.state)
+
+    first, second = asyncio.run(scenario())
+    assert first is second and resumed == [first.overlays]
+
+
+# 场景：恢复时损坏的记录被记录并跳过，不阻塞其余任务，也不让首个请求报 500。
+def test_resume_skips_damaged_rows(service, caplog) -> None:
+    """无法解析的 JSON、缺 request 的终态行、非对象 JSON 都跳过；正常的排队任务仍被渲染完成。"""
+    overlays, renderer, _ = service
+    insert_row(overlays, "bad-json", "queued", "2026-01-01T00:00:00+00:00", "{not json")
+    insert_row(overlays, "no-request", "succeeded", "2026-01-01T00:00:01+00:00", '{"notification": "pending"}')
+    insert_row(overlays, "not-object", "queued", "2026-01-01T00:00:02+00:00", "[]")
+    good = "33333333-3333-3333-3333-333333333333"
+    request = {"style_id": str(uuid4()), "audio_url": None, "duration": 3.0, "callback_url": None}
+    insert_row(overlays, good, "queued", "2026-01-01T00:00:03+00:00", json.dumps({"request": request}))
+
+    async def scenario():
+        overlays.resume()
+        await finish(overlays)
+
+    with caplog.at_level(logging.ERROR, logger=overlay_service.logger.name):
+        asyncio.run(scenario())
+    assert overlays.resumed and overlays.get(good)["status"] == "succeeded" and len(renderer.requests) == 1
+    assert all(task_id in caplog.text for task_id in ("bad-json", "no-request", "not-object"))
+
+
+# 场景：恢复按创建时间从早到晚重新排队，而不是按主键或存储顺序。
+def test_resume_requeues_oldest_first(service) -> None:
+    """较早创建的任务（主键较大、较晚写入）先渲染并先上传。"""
+    overlays, _, uploads = service
+    request = json.dumps({"request": {"style_id": str(uuid4()), "audio_url": None, "duration": 3.0, "callback_url": None}})
+    newer, older = "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"
+    insert_row(overlays, newer, "queued", "2026-01-02T00:00:00+00:00", request)
+    insert_row(overlays, older, "queued", "2026-01-01T00:00:00+00:00", request)
+
+    async def scenario():
+        overlays.resume()
+        await finish(overlays)
+
+    asyncio.run(scenario())
+    assert [key for key, _, _ in uploads] == [f"imv/overlay_render/{older}.webm", f"imv/overlay_render/{newer}.webm"]
+
+
+# 场景：任务表暂时读不出来时不吞掉恢复机会：不抛异常，也不标记已恢复，下次访问再试。
+def test_resume_retries_when_the_table_is_unreadable(service, monkeypatch) -> None:
+    """第一次读表失败时 resumed 仍为 False，第二次成功后才置为 True。"""
+    overlays, _, _ = service
+    real = overlays.store.connection
+
+    def locked():
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(overlays.store, "connection", locked)
+    overlays.resume()
+    assert overlays.resumed is False
+    monkeypatch.setattr(overlays.store, "connection", real)
+    overlays.resume()
+    assert overlays.resumed is True
+
+
+def lock_writes(overlays: OverlayRenders, status: str, times: int | None) -> None:
+    """让写入 `status` 的 `_save` 以“数据库被锁”失败 `times` 次；None 表示一直失败。"""
+    real, left = overlays._save, {"n": times}
+
+    def save(task_id, new_status, **changes):
+        """失败次数未用完时抛 OperationalError，否则交给真实实现。"""
+        if new_status == status and (left["n"] is None or left["n"] > 0):
+            if left["n"] is not None:
+                left["n"] -= 1
+            raise sqlite3.OperationalError("database is locked")
+        return real(task_id, new_status, **changes)
+
+    overlays._save = save
+
+
+@pytest.fixture
+def fast_persist(monkeypatch) -> None:
+    """把状态写入重试间隔缩成毫秒。"""
+    monkeypatch.setattr(overlay_service, "PERSIST_DELAY_SECONDS", 0.001)
+
+
+# 场景：数据库短暂被锁时终态写入自动重试，任务照常成功并通知。
+def test_transient_database_lock_is_retried(service, callbacks, fast_persist) -> None:
+    """成功状态前两次写入失败、第三次成功：任务 succeeded 且回调送达，不被改成失败。"""
+    overlays, _, _ = service
+    lock_writes(overlays, "succeeded", 2)
+
+    async def scenario():
+        task_id = await overlays.accept(uuid4(), None, 3.0, "https://bus.example/cb")
+        await finish(overlays)
+        return task_id
+
+    task_id = asyncio.run(scenario())
+    assert overlays.get(task_id)["status"] == "succeeded" and len(callbacks.posted) == 1
+
+
+# 场景：上传成功后成功状态始终写不进去：任务不能被改成失败，也不通知；重启恢复后重新完成。
+def test_unwritable_success_keeps_the_task_recoverable(service, callbacks, fast_persist, caplog) -> None:
+    """GET 仍显示 uploading（ZOS 对象已存在）；换上可写的库后 resume 重新渲染并成功，沿用同一个对象键。"""
+    overlays, renderer, uploads = service
+    lock_writes(overlays, "succeeded", None)
+
+    async def scenario():
+        task_id = await overlays.accept(uuid4(), None, 3.0, "https://bus.example/cb")
+        await finish(overlays)  # 后台协程不得带着未处理异常结束
+        return task_id
+
+    with caplog.at_level(logging.ERROR, logger=overlay_service.logger.name):
+        task_id = asyncio.run(scenario())
+    assert overlays.get(task_id)["status"] == "uploading" and len(uploads) == 1 and callbacks.posted == []
+    assert "状态暂无法保存" in caplog.text
+
+    restarted = OverlayRenders(overlays.store, renderer, overlays.settings)
+
+    async def recover():
+        restarted.resume()
+        await finish(restarted)
+
+    asyncio.run(recover())
+    assert restarted.get(task_id)["status"] == "succeeded" and len(callbacks.posted) == 1
+    assert [key for key, _, _ in uploads] == [f"imv/overlay_render/{task_id}.webm"] * 2
+
+
+# 场景：渲染失败后失败状态也写不进去：同样不崩溃、不通知，重启后任务仍会被处理到终态。
+def test_unwritable_failure_keeps_the_task_recoverable(service, callbacks, fast_persist) -> None:
+    """失败状态写入一直失败时任务停在 rendering；恢复后再次失败并正常记录、通知。"""
+    overlays, renderer, _ = service
+    renderer.failure = RuntimeError("worker crashed")
+    lock_writes(overlays, "failed", None)
+
+    async def scenario():
+        task_id = await overlays.accept(uuid4(), None, 3.0, "https://bus.example/cb")
+        await finish(overlays)
+        return task_id
+
+    task_id = asyncio.run(scenario())
+    assert overlays.get(task_id)["status"] == "rendering" and callbacks.posted == []
+    restarted = OverlayRenders(overlays.store, renderer, overlays.settings)
+
+    async def recover():
+        restarted.resume()
+        await finish(restarted)
+
+    asyncio.run(recover())
+    assert restarted.get(task_id)["status"] == "failed"
+    assert [body["status"] for _, body in callbacks.posted] == ["failed"]
 
 
 # 场景：duration 与合成接口的 videoDuration 一样严格：布尔值、数字字符串和非正数都是 422。
