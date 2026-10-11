@@ -56,6 +56,8 @@ async def runtime_for(state) -> Runtime:
                 "Template runtime requires a writable local data folder owned by one process.",
             ) from exc
         state.runtime = service
+        # Overlay tasks left unfinished by the previous process continue as soon as the runtime exists.
+        service.overlays.resume()
     return state.runtime
 
 

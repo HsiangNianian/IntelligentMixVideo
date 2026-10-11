@@ -21,6 +21,9 @@ from .models import (
 from .parameters import validate_candidate
 from .probes import parameter_probes, pixel_checks, preview_values
 
+# Per-process CPU-time cap (seconds) of the sandbox; short workers keep it, long ones pass their own.
+CPU_SECONDS = 300
+
 
 def keyframes(spec: TemplateSpec) -> list[int]:
     """Sample endpoints and each layer/effect boundary; keep all declared motion intervals visible."""
@@ -127,9 +130,19 @@ class Renderer:
                 process.kill()
             await process.wait()
 
-    def command(self, directory: Path, *, worker: str = "worker.mjs") -> list[str]:
-        """Expose system libraries, managed renderer and one writable attempt; hide home and secrets."""
-        if worker not in {"worker.mjs", "tool-validation-worker.mjs", "presentation-worker.mjs"}:
+    def command(
+        self, directory: Path, *, worker: str = "worker.mjs", cpu_seconds: int = CPU_SECONDS
+    ) -> list[str]:
+        """Expose system libraries, managed renderer and one writable attempt; hide home and secrets.
+
+        Every sandboxed process inherits a CPU-time cap of ``cpu_seconds``.
+        """
+        if worker not in {
+            "worker.mjs",
+            "tool-validation-worker.mjs",
+            "presentation-worker.mjs",
+            "overlay-worker.mjs",
+        }:
             raise ValueError("Unknown isolated renderer worker")
         settings = self.settings
         node = Path(shutil.which("node") or "/usr/bin/node").resolve()
@@ -188,7 +201,7 @@ class Renderer:
                 "/runtime-prlimit",
                 "--fsize=536870912",
                 "--nofile=1024",
-                "--cpu=300",
+                f"--cpu={cpu_seconds}",
                 "--",
                 "/runtime-node",
                 "--max-old-space-size=2048",
@@ -207,6 +220,7 @@ class Renderer:
         *,
         worker: str = "worker.mjs",
         timeout_seconds: float | None = None,
+        cpu_seconds: int = CPU_SECONDS,
     ) -> dict:
         """Run one approved Linux worker and return its JSON report after reaping its sandbox.
 
@@ -221,7 +235,7 @@ class Renderer:
         try:
             with log_path.open("wb") as log:
                 process = await asyncio.create_subprocess_exec(
-                    *self.command(directory, worker=worker),
+                    *self.command(directory, worker=worker, cpu_seconds=cpu_seconds),
                     stdout=log,
                     stderr=log,
                     cwd=directory,
