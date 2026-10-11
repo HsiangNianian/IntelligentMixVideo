@@ -26,10 +26,11 @@ from pydantic import TypeAdapter
 
 from server.app import app
 from server.remotion_templates import overlay_render, overlay_service
+from server.remotion_templates.api import app as remotion_templates_app
+from server.remotion_templates.api import create_template_app
 from server.remotion_templates.overlay_render import (
     OverlayError, overlay_cpu_seconds, plan_overlay, render_overlay, resolve_total_seconds,
 )
-from server.remotion_templates.api import create_template_app
 from server.remotion_templates.overlay_router import overlay_renders
 from server.remotion_templates.overlay_service import OverlayRenders
 from server.remotion_templates.renderer import Renderer
@@ -70,6 +71,7 @@ PUBLICATIONS = {"a": A, "b": B}
 def test_audio_duration_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     """音频时长优先；无音频用 duration；都没有取摆放的最晚结束；全无则报错。"""
     async def probed(url: str, timeout: float) -> float:
+        """替身探测：固定返回 7.5 秒，并确认传入的是配音地址。"""
         assert url == "https://x/tts.mp3"
         return 7.5
 
@@ -77,6 +79,7 @@ def test_audio_duration_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     placements = [placement("a", start=1), placement("b", start=4, duration=3)]
 
     async def total(audio, duration):
+        """按给定的配音地址与 duration 解析成片总秒数。"""
         return await resolve_total_seconds(audio, duration, placements, PUBLICATIONS, 5)
 
     assert asyncio.run(total("https://x/tts.mp3", 99)) == 7.5
@@ -184,7 +187,7 @@ class FakeRenderer:
 
 @pytest.fixture
 def service(tmp_path, monkeypatch):
-    """带临时任务表、假渲染器、假 ZOS 的任务服务；返回服务、渲染器和上传记录。"""
+    """带临时任务表、假渲染器、假 ZOS 的任务服务；重试间隔缩成毫秒，返回服务、渲染器和上传记录。"""
     font = tmp_path / "font.ttc"
     font.write_bytes(b"font")
     settings = Settings(_env_file=None, data_dir=tmp_path / "state", font_regular=font, font_bold=font)
@@ -210,13 +213,42 @@ def service(tmp_path, monkeypatch):
     monkeypatch.setattr(overlay_service, "ZosSettings", lambda: SimpleNamespace())
     monkeypatch.setattr(overlay_service.sprites, "get_bindings", lambda store, style_id: (1, bindings, None))
     monkeypatch.setattr(overlay_service.sprites, "get", lambda store, sprite_id: PUBLICATIONS[sprite_id])
+    # 5/15/45 秒的通知重试和 2 秒的写库重试在用例里不等待；用例按次数而不是按时间断言。
+    monkeypatch.setattr(overlay_service, "NOTIFICATION_RETRY_DELAYS", (0.001, 0.001, 0.001))
+    monkeypatch.setattr(overlay_service, "PERSIST_DELAY_SECONDS", 0.001)
     return OverlayRenders(store, renderer, settings), renderer, uploads
 
 
 async def finish(overlays: OverlayRenders) -> None:
-    """等待全部后台任务（渲染与通知）结束。"""
-    while overlays.tasks:
-        await asyncio.gather(*list(overlays.tasks))
+    """等待全部后台任务（渲染与通知）结束；整体限时，卡住的用例不会无限等待。"""
+    async def settle():
+        """反复等待，直到任务集合清空（任务结束时才会从集合中移除自己）。"""
+        while overlays.tasks:
+            await asyncio.gather(*list(overlays.tasks))
+
+    await asyncio.wait_for(settle(), 15)
+
+
+def run_task(overlays: OverlayRenders, *, duration: float | None = 3.0, audio: str | None = None,
+             callback: str | None = None) -> str:
+    """受理一个任务并等待它的渲染、上传和通知全部结束；返回任务 ID。"""
+    async def scenario():
+        """受理后等待后台协程；协程若抛出未处理异常，这里会重新抛出。"""
+        task_id = await overlays.accept(uuid4(), audio, duration, callback)
+        await finish(overlays)
+        return task_id
+
+    return asyncio.run(scenario())
+
+
+def run_resume(overlays: OverlayRenders) -> None:
+    """触发恢复并等待被启动的后台任务结束。"""
+    async def scenario():
+        """恢复后等待后台协程。"""
+        overlays.resume()
+        await finish(overlays)
+
+    asyncio.run(scenario())
 
 
 @pytest.fixture
@@ -233,11 +265,18 @@ def callbacks(monkeypatch) -> SimpleNamespace:
     class Client:
         """记录 POST 的 httpx 替身。"""
 
-        def __init__(self, **_): ...
-        async def __aenter__(self): return self
-        async def __aexit__(self, *_): ...
+        def __init__(self, **_):
+            """接受并忽略 httpx.AsyncClient 的构造参数。"""
+
+        async def __aenter__(self):
+            """作为异步上下文返回自身。"""
+            return self
+
+        async def __aexit__(self, *_):
+            """退出时无需清理。"""
 
         async def post(self, url, json):
+            """记录请求，并交给当前的 respond 决定返回、抛错或挂起。"""
             state.posted.append((url, json))
             return await state.respond()
 
@@ -245,29 +284,30 @@ def callbacks(monkeypatch) -> SimpleNamespace:
     return state
 
 
-@pytest.fixture
-def fast_retries(monkeypatch) -> None:
-    """把 5/15/45 秒的通知重试间隔缩成毫秒，用例不等待。"""
-    monkeypatch.setattr(overlay_service, "NOTIFICATION_RETRY_DELAYS", (0.001, 0.001, 0.001))
-
-
 def is_notified(overlays: OverlayRenders, task_id: str) -> bool:
     """任务行是否已记录终态通知处理完毕（送达或放弃）。"""
     with overlays.store.connection() as db:
-        return bool(json.loads(db.execute("SELECT data FROM overlay_renders WHERE id=?", (task_id,)).fetchone()["data"]).get("notified"))
+        row = db.execute("SELECT data FROM overlay_renders WHERE id=?", (task_id,)).fetchone()
+    return bool(json.loads(row["data"]).get("notified"))
+
+
+def task_rows(overlays: OverlayRenders) -> int:
+    """任务表当前的行数。"""
+    with overlays.store.connection() as db:
+        return db.execute("SELECT COUNT(*) FROM overlay_renders").fetchone()[0]
+
+
+def insert_row(overlays: OverlayRenders, task_id: str, status: str, created_at: str, data: str) -> None:
+    """直接写入一行任务记录，可以是损坏的内容。"""
+    with overlays.store.connection() as db:
+        db.execute("INSERT INTO overlay_renders VALUES (?, ?, ?, ?)", (task_id, status, created_at, data))
 
 
 # 场景：成功路径按 duration 渲染，转存 ZOS 指定键，并向回调发送四字段通知。
 def test_task_renders_uploads_and_notifies(service, callbacks) -> None:
     """GET 返回 ZOS 地址；回调体为 taskId/status/videoUrl/errorMessage，源文件在任务结束后被清理。"""
     overlays, renderer, uploads = service
-
-    async def scenario():
-        task_id = await overlays.accept(uuid4(), None, 4.0, "https://bus.example/cb")
-        await finish(overlays)
-        return task_id
-
-    task_id = asyncio.run(scenario())
+    task_id = run_task(overlays, duration=4.0, callback="https://bus.example/cb")
     view = overlays.get(task_id)
     key = f"imv/overlay_render/{task_id}.webm"
     assert view["status"] == "succeeded" and view["result"] == {"videoUrl": f"https://zos.example/{key}"}
@@ -283,26 +323,20 @@ def test_task_renders_uploads_and_notifies(service, callbacks) -> None:
     assert not (overlays.store.root / "overlays" / task_id).exists()
 
 
-# 场景：回调地址通过 schema 校验却无法被 httpx 解析（补零 IPv4、控制字符）时，终态也会记录，不卡在 pending。
+# 场景：回调地址通过 schema 校验却无法被 httpx 解析（补零 IPv4、控制字符）时，终态也会处理完毕，不会反复待通知。
 @pytest.mark.parametrize("url", ["http://192.168.001.010:8080/cb", "http://bus.example/cb\x7f"])
-def test_unparseable_callback_url_ends_failed(service, fast_retries, caplog, url) -> None:
+def test_unparseable_callback_url_is_given_up(service, caplog, url) -> None:
     """httpx.InvalidURL 不是 HTTPError：四次尝试后记为已处理，任务仍是 succeeded，日志有放弃记录。"""
     overlays, _, _ = service
     TypeAdapter(MediaURL).validate_python(url)  # 受理前的 schema 放行了这个地址
-
-    async def scenario():
-        task_id = await overlays.accept(uuid4(), None, 3.0, url)
-        await finish(overlays)  # 后台协程若抛出未处理异常，这里会重新抛出
-        return task_id
-
     with caplog.at_level(logging.WARNING, logger=overlay_service.logger.name):
-        task_id = asyncio.run(scenario())
+        task_id = run_task(overlays, callback=url)
     assert overlays.get(task_id)["status"] == "succeeded" and is_notified(overlays, task_id)
     assert caplog.text.count("InvalidURL") == 4 and "重试 4 次后放弃" in caplog.text
 
 
 # 场景：回调端点返回非 2xx 时按间隔重试，成功即停；全部失败则记录并放弃，日志写明状态码。
-def test_callback_retries_error_statuses(service, callbacks, fast_retries, caplog) -> None:
+def test_callback_retries_error_statuses(service, callbacks, caplog) -> None:
     """两次 500 后第三次 200 即送达且不记放弃；四次都 500 则放弃（任务行记为已处理），日志含 HTTP 500 与放弃记录。"""
     overlays, _, _ = service
     answers = iter([500, 500, 200])
@@ -312,14 +346,8 @@ def test_callback_retries_error_statuses(service, callbacks, fast_retries, caplo
         return httpx.Response(next(answers))
 
     callbacks.respond = flaky
-
-    async def scenario():
-        task_id = await overlays.accept(uuid4(), None, 3.0, "https://bus.example/cb")
-        await finish(overlays)
-        return task_id
-
     with caplog.at_level(logging.WARNING, logger=overlay_service.logger.name):
-        task_id = asyncio.run(scenario())
+        task_id = run_task(overlays, callback="https://bus.example/cb")
     assert len(callbacks.posted) == 3 and is_notified(overlays, task_id)
     assert caplog.text.count("收到 HTTP 500") == 2 and "放弃" not in caplog.text
 
@@ -330,13 +358,13 @@ def test_callback_retries_error_statuses(service, callbacks, fast_retries, caplo
     callbacks.respond, callbacks.posted[:] = always_500, []
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger=overlay_service.logger.name):
-        task_id = asyncio.run(scenario())
+        task_id = run_task(overlays, callback="https://bus.example/cb")
     assert len(callbacks.posted) == 4 and is_notified(overlays, task_id)
     assert caplog.text.count("收到 HTTP 500") == 4 and "重试 4 次后放弃" in caplog.text
 
 
 # 场景：回调端点发出响应头后迟迟不结束时，每次尝试都有整体期限，重试照常推进。
-def test_callback_attempt_has_an_overall_deadline(service, callbacks, fast_retries, monkeypatch, caplog) -> None:
+def test_callback_attempt_has_an_overall_deadline(service, callbacks, monkeypatch, caplog) -> None:
     """超时按阶段计算的客户端挡不住滴灌响应：整体期限到点后记录 TimeoutError 并进入下一次。"""
     overlays, _, _ = service
     monkeypatch.setattr(overlay_service, "HTTP_TIMEOUT_SECONDS", 0.05)
@@ -346,14 +374,8 @@ def test_callback_attempt_has_an_overall_deadline(service, callbacks, fast_retri
         await asyncio.Event().wait()
 
     callbacks.respond = hangs
-
-    async def scenario():
-        task_id = await overlays.accept(uuid4(), None, 3.0, "https://bus.example/cb")
-        await finish(overlays)
-        return task_id
-
     with caplog.at_level(logging.WARNING, logger=overlay_service.logger.name):
-        task_id = asyncio.run(asyncio.wait_for(scenario(), 10))
+        task_id = run_task(overlays, callback="https://bus.example/cb")
     assert len(callbacks.posted) == 4 and is_notified(overlays, task_id)
     assert caplog.text.count("TimeoutError") == 4
 
@@ -362,12 +384,7 @@ def test_callback_attempt_has_an_overall_deadline(service, callbacks, fast_retri
 def test_request_spans_clips_cut_by_the_total(service) -> None:
     """成片 2 秒（60 帧）而片段 b 结束于第 90 帧：duration_in_frames 取 90，frames 仍为 60。"""
     overlays, renderer, _ = service
-
-    async def scenario():
-        await overlays.accept(uuid4(), None, 2.0, None)
-        await finish(overlays)
-
-    asyncio.run(scenario())
+    run_task(overlays, duration=2.0)
     composition = renderer.requests[0]["composition"]
     assert (composition["duration_in_frames"], composition["frames"]) == (90, 60)
 
@@ -396,12 +413,7 @@ def test_overlay_cpu_cap_follows_the_deadline_and_cores(monkeypatch, timeout, co
 def test_task_passes_the_overlay_cpu_cap_to_the_worker(service) -> None:
     """worker 收到 overlay_cpu_seconds(渲染超时)，而不是短 worker 的固定 300 秒。"""
     overlays, renderer, _ = service
-
-    async def scenario():
-        await overlays.accept(uuid4(), None, 2.0, None)
-        await finish(overlays)
-
-    asyncio.run(scenario())
+    run_task(overlays, duration=2.0)
     assert renderer.cpu_seconds == overlay_cpu_seconds(overlays.settings.overlay_render_timeout_seconds)
 
 
@@ -414,14 +426,8 @@ def test_render_failure_is_sanitized(service, callbacks, caplog, failure, messag
     """错误码为 render_failed，说明是固定文案，不含本地路径或密钥；根因保留在服务端日志。"""
     overlays, renderer, uploads = service
     renderer.failure = failure
-
-    async def scenario():
-        task_id = await overlays.accept(uuid4(), None, 3.0, "https://bus.example/cb")
-        await finish(overlays)
-        return task_id
-
     with caplog.at_level(logging.WARNING, logger=overlay_service.logger.name):
-        task_id = asyncio.run(scenario())
+        task_id = run_task(overlays, callback="https://bus.example/cb")
     view = overlays.get(task_id)
     assert view["status"] == "failed" and view["result"] is None
     assert view["error"] == {"code": "render_failed", "message": message}
@@ -430,12 +436,6 @@ def test_render_failure_is_sanitized(service, callbacks, caplog, failure, messag
     })]
     assert uploads == []
     assert str(failure) in caplog.text  # 运维仍能在日志中看到完整根因
-
-
-def task_rows(overlays: OverlayRenders) -> int:
-    """任务表当前的行数。"""
-    with overlays.store.connection() as db:
-        return db.execute("SELECT COUNT(*) FROM overlay_renders").fetchone()[0]
 
 
 def long_bindings(monkeypatch) -> None:
@@ -468,16 +468,11 @@ def test_audio_length_is_checked_after_probing(service, monkeypatch) -> None:
     overlays, renderer, _ = service
 
     async def probed(url: str, timeout: float) -> float:
+        """替身探测：配音有 500 秒，超过 120 秒上限。"""
         return 500.0
 
     monkeypatch.setattr(overlay_render, "audio_duration", probed)
-
-    async def scenario():
-        task_id = await overlays.accept(uuid4(), "https://x/tts.mp3", 9999.0, None)
-        await finish(overlays)
-        return task_id
-
-    view = overlays.get(asyncio.run(scenario()))
+    view = overlays.get(run_task(overlays, duration=9999.0, audio="https://x/tts.mp3"))
     assert view["status"] == "failed" and view["error"]["code"] == "duration_too_long"
     assert "超过上限 120" in view["error"]["message"] and renderer.requests == []
 
@@ -496,6 +491,7 @@ def test_accept_refuses_a_host_that_cannot_render(service, monkeypatch) -> None:
 def test_unreadable_audio_is_logged_without_the_url(monkeypatch, caplog) -> None:
     """ffprobe 无法启动时任务得到 audio_duration_invalid，日志只记 FileNotFoundError。"""
     async def missing(*args, **kwargs):
+        """模拟系统里没有 ffprobe。"""
         raise FileNotFoundError("[Errno 2] No such file or directory: 'ffprobe'")
 
     monkeypatch.setattr(media.asyncio, "create_subprocess_exec", missing)
@@ -604,23 +600,11 @@ def test_resume_reruns_unfinished_tasks(service) -> None:
     overlays, renderer, _ = service
     request = {"style_id": str(uuid4()), "audio_url": None, "duration": 3.0, "callback_url": None}
     overlays._insert("11111111-1111-1111-1111-111111111111", {"request": request})
-
-    async def scenario():
-        overlays.resume()
-        await finish(overlays)
-        overlays.resumed = False
-        overlays.resume()
-        await finish(overlays)
-
-    asyncio.run(scenario())
+    run_resume(overlays)
+    overlays.resumed = False
+    run_resume(overlays)
     assert overlays.get("11111111-1111-1111-1111-111111111111")["status"] == "succeeded"
     assert len(renderer.requests) == 1
-
-
-def insert_row(overlays: OverlayRenders, task_id: str, status: str, created_at: str, data: str) -> None:
-    """直接写入一行任务记录，可以是损坏的内容。"""
-    with overlays.store.connection() as db:
-        db.execute("INSERT INTO overlay_renders VALUES (?, ?, ?, ?)", (task_id, status, created_at, data))
 
 
 # 场景：运行时第一次建立就恢复叠加任务，不论之后先访问哪条路由，也只恢复一次。
@@ -634,10 +618,21 @@ def test_runtime_start_recovers_overlay_tasks(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(OverlayRenders, "resume", lambda self: resumed.append(self))
 
     async def scenario():
+        """连续两次取用同一个应用的运行时。"""
         return await runtime_for(application.state), await runtime_for(application.state)
 
     first, second = asyncio.run(scenario())
     assert first is second and resumed == [first.overlays]
+
+
+# 场景：路由依赖取用 Remotion 运行时里的任务服务，并在取用时触发（重试）恢复。
+def test_overlay_dependency_borrows_the_runtime_service(service, monkeypatch) -> None:
+    """overlay_renders() 返回运行时持有的服务对象，并调用一次 resume。"""
+    overlays, _, _ = service
+    resumed = []
+    monkeypatch.setattr(overlays, "resume", lambda: resumed.append(True))
+    monkeypatch.setattr(remotion_templates_app.state, "runtime", SimpleNamespace(overlays=overlays), raising=False)
+    assert asyncio.run(overlay_renders()) is overlays and resumed == [True]
 
 
 # 场景：恢复时损坏的记录被记录并跳过，不阻塞其余任务，也不让首个请求报 500。
@@ -645,18 +640,13 @@ def test_resume_skips_damaged_rows(service, caplog) -> None:
     """无法解析的 JSON、缺 request 的终态行、非对象 JSON 都跳过；正常的排队任务仍被渲染完成。"""
     overlays, renderer, _ = service
     insert_row(overlays, "bad-json", "queued", "2026-01-01T00:00:00+00:00", "{not json")
-    insert_row(overlays, "no-request", "succeeded", "2026-01-01T00:00:01+00:00", '{"notification": "pending"}')
+    insert_row(overlays, "no-request", "succeeded", "2026-01-01T00:00:01+00:00", '{"notified": false}')
     insert_row(overlays, "not-object", "queued", "2026-01-01T00:00:02+00:00", "[]")
     good = "33333333-3333-3333-3333-333333333333"
     request = {"style_id": str(uuid4()), "audio_url": None, "duration": 3.0, "callback_url": None}
     insert_row(overlays, good, "queued", "2026-01-01T00:00:03+00:00", json.dumps({"request": request}))
-
-    async def scenario():
-        overlays.resume()
-        await finish(overlays)
-
     with caplog.at_level(logging.ERROR, logger=overlay_service.logger.name):
-        asyncio.run(scenario())
+        run_resume(overlays)
     assert overlays.resumed and overlays.get(good)["status"] == "succeeded" and len(renderer.requests) == 1
     assert all(task_id in caplog.text for task_id in ("bad-json", "no-request", "not-object"))
 
@@ -670,12 +660,7 @@ def test_resume_resends_only_unnotified_callbacks(service, callbacks) -> None:
     for task_id, extra in ((pending, {}), (done, {"notified": True})):
         data = {"request": request, "video_url": f"https://zos.example/{task_id}.webm", **extra}
         insert_row(overlays, task_id, "succeeded", "2026-01-01T00:00:00+00:00", json.dumps(data))
-
-    async def scenario():
-        overlays.resume()
-        await finish(overlays)
-
-    asyncio.run(scenario())
+    run_resume(overlays)
     assert [body["taskId"] for _, body in callbacks.posted] == [pending] and is_notified(overlays, pending)
 
 
@@ -694,12 +679,7 @@ def test_resume_requeues_oldest_first(service, monkeypatch) -> None:
     newer, older = "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"
     insert_row(overlays, newer, "queued", "2026-01-02T00:00:00+00:00", request)
     insert_row(overlays, older, "queued", "2026-01-01T00:00:00+00:00", request)
-
-    async def scenario():
-        overlays.resume()
-        await finish(overlays)
-
-    asyncio.run(scenario())
+    run_resume(overlays)
     assert spawned == [older, newer]
 
 
@@ -710,6 +690,7 @@ def test_resume_retries_when_the_table_is_unreadable(service, monkeypatch) -> No
     real = overlays.store.connection
 
     def locked():
+        """模拟数据库被锁，读表失败。"""
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(overlays.store, "connection", locked)
@@ -735,75 +716,40 @@ def lock_writes(overlays: OverlayRenders, status: str, times: int | None) -> Non
     overlays._save = save
 
 
-@pytest.fixture
-def fast_persist(monkeypatch) -> None:
-    """把状态写入重试间隔缩成毫秒。"""
-    monkeypatch.setattr(overlay_service, "PERSIST_DELAY_SECONDS", 0.001)
-
-
 # 场景：数据库短暂被锁时终态写入自动重试，任务照常成功并通知。
-def test_transient_database_lock_is_retried(service, callbacks, fast_persist) -> None:
+def test_transient_database_lock_is_retried(service, callbacks) -> None:
     """成功状态前两次写入失败、第三次成功：任务 succeeded 且回调送达，不被改成失败。"""
     overlays, _, _ = service
     lock_writes(overlays, "succeeded", 2)
-
-    async def scenario():
-        task_id = await overlays.accept(uuid4(), None, 3.0, "https://bus.example/cb")
-        await finish(overlays)
-        return task_id
-
-    task_id = asyncio.run(scenario())
+    task_id = run_task(overlays, callback="https://bus.example/cb")
     assert overlays.get(task_id)["status"] == "succeeded" and len(callbacks.posted) == 1
 
 
 # 场景：上传成功后成功状态始终写不进去：任务不能被改成失败，也不通知；重启恢复后重新完成。
-def test_unwritable_success_keeps_the_task_recoverable(service, callbacks, fast_persist, caplog) -> None:
+def test_unwritable_success_keeps_the_task_recoverable(service, callbacks, caplog) -> None:
     """GET 仍显示 uploading（ZOS 对象已存在）；换上可写的库后 resume 重新渲染并成功，沿用同一个对象键。"""
     overlays, renderer, uploads = service
     lock_writes(overlays, "succeeded", None)
-
-    async def scenario():
-        task_id = await overlays.accept(uuid4(), None, 3.0, "https://bus.example/cb")
-        await finish(overlays)  # 后台协程不得带着未处理异常结束
-        return task_id
-
     with caplog.at_level(logging.ERROR, logger=overlay_service.logger.name):
-        task_id = asyncio.run(scenario())
+        task_id = run_task(overlays, callback="https://bus.example/cb")  # 后台协程不得带着未处理异常结束
     assert overlays.get(task_id)["status"] == "uploading" and len(uploads) == 1 and callbacks.posted == []
     assert "状态暂无法保存" in caplog.text
-
     restarted = OverlayRenders(overlays.store, renderer, overlays.settings)
-
-    async def recover():
-        restarted.resume()
-        await finish(restarted)
-
-    asyncio.run(recover())
+    run_resume(restarted)
     assert restarted.get(task_id)["status"] == "succeeded" and len(callbacks.posted) == 1
     assert [key for key, _, _ in uploads] == [f"imv/overlay_render/{task_id}.webm"] * 2
 
 
 # 场景：渲染失败后失败状态也写不进去：同样不崩溃、不通知，重启后任务仍会被处理到终态。
-def test_unwritable_failure_keeps_the_task_recoverable(service, callbacks, fast_persist) -> None:
+def test_unwritable_failure_keeps_the_task_recoverable(service, callbacks) -> None:
     """失败状态写入一直失败时任务停在 rendering；恢复后再次失败并正常记录、通知。"""
     overlays, renderer, _ = service
     renderer.failure = RuntimeError("worker crashed")
     lock_writes(overlays, "failed", None)
-
-    async def scenario():
-        task_id = await overlays.accept(uuid4(), None, 3.0, "https://bus.example/cb")
-        await finish(overlays)
-        return task_id
-
-    task_id = asyncio.run(scenario())
+    task_id = run_task(overlays, callback="https://bus.example/cb")
     assert overlays.get(task_id)["status"] == "rendering" and callbacks.posted == []
     restarted = OverlayRenders(overlays.store, renderer, overlays.settings)
-
-    async def recover():
-        restarted.resume()
-        await finish(restarted)
-
-    asyncio.run(recover())
+    run_resume(restarted)
     assert restarted.get(task_id)["status"] == "failed"
     assert [body["status"] for _, body in callbacks.posted] == ["failed"]
 
@@ -811,6 +757,7 @@ def test_unwritable_failure_keeps_the_task_recoverable(service, callbacks, fast_
 async def wait_until(condition, seconds: float = 5) -> None:
     """轮询等待条件成立；超时即抛 TimeoutError，避免卡住的用例无限等待。"""
     async def poll():
+        """每 10 毫秒检查一次条件。"""
         while not condition():
             await asyncio.sleep(0.01)
 
@@ -824,6 +771,7 @@ def test_slow_audio_probe_does_not_hold_the_render_slot(service, monkeypatch) ->
     released = []
 
     async def probed(url: str, timeout: float) -> float:
+        """替身探测：被放行之前一直不返回。"""
         while not released:
             await asyncio.sleep(0.01)
         return 3.0
@@ -831,6 +779,7 @@ def test_slow_audio_probe_does_not_hold_the_render_slot(service, monkeypatch) ->
     monkeypatch.setattr(overlay_render, "audio_duration", probed)
 
     async def scenario():
+        """先受理卡住的音频任务，再受理普通任务，并在放行前确认后者已完成。"""
         slow = await overlays.accept(uuid4(), "https://x/tts.mp3", None, None)
         fast = await overlays.accept(uuid4(), None, 3.0, None)
         await wait_until(lambda: overlays.get(fast)["status"] == "succeeded")
@@ -859,6 +808,7 @@ def test_slow_upload_does_not_hold_the_render_slot(service, monkeypatch) -> None
     monkeypatch.setattr(overlay_service, "upload_public", upload)
 
     async def scenario():
+        """受理两个任务，确认先上传的那个卡在 ZOS 时两个渲染都已开始。"""
         tasks = [await overlays.accept(uuid4(), None, 3.0, None) for _ in range(2)]
         # 两个渲染都已开始，而先上传的那个还卡在 ZOS：上传没有占着渲染名额（先后顺序由调度决定）。
         await wait_until(lambda: len(renderer.requests) == 2 and calls)
@@ -872,43 +822,68 @@ def test_slow_upload_does_not_hold_the_render_slot(service, monkeypatch) -> None
     assert [overlays.get(task_id)["status"] for task_id in tasks] == ["succeeded", "succeeded"]
 
 
-# 场景：duration 与合成接口的 videoDuration 一样严格：布尔值、数字字符串和非正数都是 422。
-@pytest.mark.parametrize("duration", [True, "7.5", 0, -1])
-def test_duration_is_strict(service, client: TestClient, duration) -> None:
-    """布尔值、数字字符串和非正数的 duration 返回 422 且不创建任务。"""
+@pytest.fixture
+def overlay_client(service, client: TestClient):
+    """让路由使用测试里的任务服务；返回测试客户端与服务，结束时还原依赖覆盖。"""
     overlays, _, _ = service
 
     async def provide():
+        """依赖替身：返回测试创建的任务服务。"""
         return overlays
 
     app.dependency_overrides[overlay_renders] = provide
-    try:
-        response = client.post("/api/v1/overlay-renders", json={"styleId": str(uuid4()), "duration": duration})
-        assert response.status_code == 422
-        assert task_rows(overlays) == 0
-    finally:
-        app.dependency_overrides.pop(overlay_renders, None)
+    yield client, overlays
+    app.dependency_overrides.pop(overlay_renders, None)
+
+
+# 场景：duration 与合成接口的 videoDuration 一样严格：布尔值、数字字符串和非正数都是 422。
+@pytest.mark.parametrize("duration", [True, "7.5", 0, -1])
+def test_duration_is_strict(overlay_client, duration) -> None:
+    """布尔值、数字字符串和非正数的 duration 返回 422 且不创建任务。"""
+    client, overlays = overlay_client
+    response = client.post("/api/v1/overlay-renders", json={"styleId": str(uuid4()), "duration": duration})
+    assert response.status_code == 422
+    assert task_rows(overlays) == 0
 
 
 # 场景：HTTP 契约——受理返回 taskId，GET 返回状态；未知任务 404。
-def test_routes_accept_and_query(service, client: TestClient) -> None:
-    """路由使用 camelCase 请求体，未知字段拒绝，查询未知任务 404。"""
-    overlays, _, _ = service
+def test_routes_accept_and_query(overlay_client) -> None:
+    """路由使用 camelCase 请求体，整数与小数 duration 都可用，未知字段拒绝，查询未知任务 404。"""
+    client, _ = overlay_client
+    created = client.post("/api/v1/overlay-renders", json={"styleId": str(uuid4()), "duration": 3})
+    assert created.status_code == 200
+    assert client.post("/api/v1/overlay-renders", json={"styleId": str(uuid4()), "duration": 7.5}).status_code == 200
+    assert client.post("/api/v1/overlay-renders", json={"styleId": str(uuid4()), "bogus": 1}).status_code == 422
+    assert client.get(f"/api/v1/overlay-renders/{uuid4()}").status_code == 404
+    task_id = created.json()["taskId"]
+    assert client.get(f"/api/v1/overlay-renders/{task_id}").json()["taskId"] == task_id
 
-    async def provide():
-        return overlays
 
-    app.dependency_overrides[overlay_renders] = provide
-    try:
-        created = client.post("/api/v1/overlay-renders", json={"styleId": str(uuid4()), "duration": 3})
-        assert created.status_code == 200
-        assert client.post("/api/v1/overlay-renders", json={"styleId": str(uuid4()), "duration": 7.5}).status_code == 200
-        assert client.post("/api/v1/overlay-renders", json={"styleId": str(uuid4()), "bogus": 1}).status_code == 422
-        assert client.get(f"/api/v1/overlay-renders/{uuid4()}").status_code == 404
-        task_id = created.json()["taskId"]
-        assert client.get(f"/api/v1/overlay-renders/{task_id}").json()["taskId"] == task_id
-    finally:
-        app.dependency_overrides.pop(overlay_renders, None)
+# 场景：GET 只返回公开视图：三种状态的形状固定，且不泄漏请求里的音频或回调地址。
+def test_query_returns_only_the_public_view(overlay_client) -> None:
+    """排队、成功、失败各自返回 taskId/status/result/error，不含 request 及其中带令牌的地址。"""
+    client, overlays = overlay_client
+    request = {"style_id": str(uuid4()), "audio_url": "https://x/tts.mp3?token=secret", "duration": None,
+               "callback_url": "https://bus.example/cb?token=secret"}
+    error = {"code": "render_failed", "message": "叠加视频渲染失败"}
+    rows = {
+        "queued": ("66666666-6666-6666-6666-000000000001", {"request": request}),
+        "succeeded": ("66666666-6666-6666-6666-000000000002",
+                      {"request": request, "video_url": "https://zos.example/a.webm", "notified": True}),
+        "failed": ("66666666-6666-6666-6666-000000000003", {"request": request, "error": error}),
+    }
+    for status, (task_id, data) in rows.items():
+        insert_row(overlays, task_id, status, "2026-01-01T00:00:00+00:00", json.dumps(data))
+    responses = {status: client.get(f"/api/v1/overlay-renders/{task_id}") for status, (task_id, _) in rows.items()}
+    assert all(response.status_code == 200 for response in responses.values())
+    expected = {
+        "queued": {"status": "queued", "result": None, "error": None},
+        "succeeded": {"status": "succeeded", "result": {"videoUrl": "https://zos.example/a.webm"}, "error": None},
+        "failed": {"status": "failed", "result": None, "error": error},
+    }
+    for status, (task_id, _) in rows.items():
+        assert responses[status].json() == {"taskId": task_id, **expected[status]}
+    assert "secret" not in "".join(response.text for response in responses.values())
 
 
 # 组合型 Sprite：标题 Preset 位于嵌套的 Sequence(from=30, 60 帧)，淡出区间取自自身的 durationInFrames。
