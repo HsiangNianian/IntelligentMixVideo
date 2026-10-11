@@ -167,7 +167,9 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   (VP9, size, fps, frame count, alpha tag) before uploading.
 - **Execution**: `overlay_render.py` plans, `remotion/overlay-worker.mjs` renders in the bwrap sandbox
   (`IMV_OVERLAY_RENDER_TIMEOUT_SECONDS`, 3600), `overlay_service.py` owns the SQLite `overlay_renders` task table,
-  one render at a time, recovery of unfinished tasks and pending notifications when the runtime is first built
+  one render at a time (the slot covers only the render: the remote audio probe before it and the ZOS upload after it
+  run outside, so a slow network never delays queued renders), recovery of unfinished tasks and pending notifications
+  when the runtime is first built
   (`routes.runtime_for`, oldest first; a damaged row is logged and skipped, and the overlay routes retry if the table
   could not be read), and ZOS upload via `video_composition.zos.upload_public`. State writes retry a locked database
   three times; if it stays unwritable the row keeps its previous state (never rewritten as a failure) and the next

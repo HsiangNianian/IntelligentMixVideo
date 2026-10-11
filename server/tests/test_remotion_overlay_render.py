@@ -11,6 +11,7 @@ import logging
 import os
 import sqlite3
 import subprocess
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -547,10 +548,17 @@ def test_resume_skips_damaged_rows(service, caplog) -> None:
     assert all(task_id in caplog.text for task_id in ("bad-json", "no-request", "not-object"))
 
 
-# 场景：恢复按创建时间从早到晚重新排队，而不是按主键或存储顺序。
-def test_resume_requeues_oldest_first(service) -> None:
-    """较早创建的任务（主键较大、较晚写入）先渲染并先上传。"""
-    overlays, _, uploads = service
+# 场景：恢复按创建时间从早到晚重新启动任务，而不是按主键或存储顺序。
+def test_resume_requeues_oldest_first(service, monkeypatch) -> None:
+    """较早创建的任务（主键较大、较晚写入）先启动；之后各任务何时轮到渲染名额取决于各自的进度。"""
+    overlays, _, _ = service
+    spawned = []
+
+    async def record(task_id: str) -> None:
+        """只记录被启动的任务，不执行。"""
+        spawned.append(task_id)
+
+    monkeypatch.setattr(overlays, "_run", record)
     request = json.dumps({"request": {"style_id": str(uuid4()), "audio_url": None, "duration": 3.0, "callback_url": None}})
     newer, older = "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"
     insert_row(overlays, newer, "queued", "2026-01-02T00:00:00+00:00", request)
@@ -561,7 +569,7 @@ def test_resume_requeues_oldest_first(service) -> None:
         await finish(overlays)
 
     asyncio.run(scenario())
-    assert [key for key, _, _ in uploads] == [f"imv/overlay_render/{older}.webm", f"imv/overlay_render/{newer}.webm"]
+    assert spawned == [older, newer]
 
 
 # 场景：任务表暂时读不出来时不吞掉恢复机会：不抛异常，也不标记已恢复，下次访问再试。
@@ -667,6 +675,70 @@ def test_unwritable_failure_keeps_the_task_recoverable(service, callbacks, fast_
     asyncio.run(recover())
     assert restarted.get(task_id)["status"] == "failed"
     assert [body["status"] for _, body in callbacks.posted] == ["failed"]
+
+
+async def wait_until(condition, seconds: float = 5) -> None:
+    """轮询等待条件成立；超时即抛 TimeoutError，避免卡住的用例无限等待。"""
+    async def poll():
+        while not condition():
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(poll(), seconds)
+
+
+# 场景：配音音频探测很慢时不占用渲染名额，后面排队的任务照常渲染并完成。
+def test_slow_audio_probe_does_not_hold_the_render_slot(service, monkeypatch) -> None:
+    """第一个任务卡在远程音频探测，第二个（显式 duration）仍能渲染、上传并成功；放行后第一个也完成。"""
+    overlays, renderer, uploads = service
+    released = []
+
+    async def probed(url: str, timeout: float) -> float:
+        while not released:
+            await asyncio.sleep(0.01)
+        return 3.0
+
+    monkeypatch.setattr(overlay_render, "audio_duration", probed)
+
+    async def scenario():
+        slow = await overlays.accept(uuid4(), "https://x/tts.mp3", None, None)
+        fast = await overlays.accept(uuid4(), None, 3.0, None)
+        await wait_until(lambda: overlays.get(fast)["status"] == "succeeded")
+        assert overlays.get(slow)["status"] == "queued"  # 仍在探测，还没有轮到渲染
+        released.append(True)
+        await finish(overlays)
+        return slow
+
+    slow = asyncio.run(scenario())
+    assert overlays.get(slow)["status"] == "succeeded" and len(renderer.requests) == 2
+
+
+# 场景：上传很慢时不占用渲染名额，下一个任务可以立刻开始渲染。
+def test_slow_upload_does_not_hold_the_render_slot(service, monkeypatch) -> None:
+    """第一个任务卡在 ZOS 上传时，第二个任务的渲染已经开始；放行后两者都成功。"""
+    overlays, renderer, _ = service
+    gate, calls = threading.Event(), []
+
+    def upload(files, zos, timeout):
+        """第一次上传阻塞到被放行，其余立即返回。"""
+        calls.append(files[0][1])
+        if len(calls) == 1:
+            gate.wait(5)
+        return [f"https://zos.example/{files[0][1]}"]
+
+    monkeypatch.setattr(overlay_service, "upload_public", upload)
+
+    async def scenario():
+        tasks = [await overlays.accept(uuid4(), None, 3.0, None) for _ in range(2)]
+        # 两个渲染都已开始，而先上传的那个还卡在 ZOS：上传没有占着渲染名额（先后顺序由调度决定）。
+        await wait_until(lambda: len(renderer.requests) == 2 and calls)
+        blocked = calls[0].removeprefix("imv/overlay_render/").removesuffix(".webm")
+        assert overlays.get(blocked)["status"] == "uploading"
+        gate.set()
+        await finish(overlays)
+        return tasks
+
+    tasks = asyncio.run(scenario())
+    assert [overlays.get(task_id)["status"] for task_id in tasks] == ["succeeded", "succeeded"]
 
 
 # 场景：duration 与合成接口的 videoDuration 一样严格：布尔值、数字字符串和非正数都是 422。

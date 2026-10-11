@@ -192,36 +192,40 @@ class OverlayRenders:
         """
         work = self.store.root / "overlays" / task_id
         try:
-            async with self.slot:
-                try:
-                    await self._execute(task_id, work)
-                except OverlayError as exc:
-                    logger.warning("叠加渲染任务 %s 失败（%s）：%s", task_id, exc.code, exc.__cause__ or exc.message)
-                    await self._fail(task_id, exc.code, exc.message)
-                except sqlite3.Error:
-                    raise
-                except Exception:
-                    logger.exception("叠加渲染任务 %s 失败", task_id)
-                    await self._fail(task_id, "internal_error", "叠加视频渲染或上传失败")
-                finally:
-                    shutil.rmtree(work, ignore_errors=True)
+            try:
+                await self._execute(task_id, work)
+            except OverlayError as exc:
+                logger.warning("叠加渲染任务 %s 失败（%s）：%s", task_id, exc.code, exc.__cause__ or exc.message)
+                await self._fail(task_id, exc.code, exc.message)
+            except sqlite3.Error:
+                raise
+            except Exception:
+                logger.exception("叠加渲染任务 %s 失败", task_id)
+                await self._fail(task_id, "internal_error", "叠加视频渲染或上传失败")
+            finally:
+                shutil.rmtree(work, ignore_errors=True)
         except sqlite3.Error:
             logger.error("叠加渲染任务 %s 的状态暂无法保存，保留原状态，重启后重新执行", task_id)
             return
         await self._notify(task_id)
 
     async def _execute(self, task_id: str, work: Path) -> None:
-        """Resolve the duration, render the overlay and publish it to ZOS."""
+        """Resolve the duration, render the overlay and publish it to ZOS.
+
+        Only the render holds the single slot: the remote audio probe before it and the upload after it
+        would otherwise keep every queued render waiting on the network.
+        """
         _, data = self._read(task_id)
         request = data["request"]
         placements, publications = await asyncio.to_thread(self._load, UUID(request["style_id"]))
-        await self._persist(task_id, "rendering")
         total = await resolve_total_seconds(
             request["audio_url"], request["duration"], placements, publications, HTTP_TIMEOUT_SECONDS,
         )
         overlay = plan_overlay(placements, publications, total, self.settings.overlay_max_seconds)
-        shutil.rmtree(work, ignore_errors=True)
-        output = await render_overlay(self.renderer, overlay, work)
+        async with self.slot:
+            await self._persist(task_id, "rendering")
+            shutil.rmtree(work, ignore_errors=True)
+            output = await render_overlay(self.renderer, overlay, work)
         await self._persist(task_id, "uploading", duration_seconds=total)
         key = f"imv/overlay_render/{task_id}.webm"
         urls = await asyncio.to_thread(
