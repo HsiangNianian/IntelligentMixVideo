@@ -16,32 +16,19 @@ const request = JSON.parse(await fs.readFile(`${root}/request.json`, "utf8"));
 const { composition, instances } = request;
 
 /**
- * Sprites were accepted as standalone compositions and size their animations from
- * useVideoConfig().durationInFrames. Inside the shared composition that value would be the whole
- * overlay length, so each Sprite's `remotion` import is routed through this shim, which reports the
- * Sprite's own length instead.
+ * Generate the trusted entry: managed fonts, then one Sequence per placement in bottom-to-top order.
+ * A Sprite reads useVideoConfig().durationInFrames from its own Sequence, exactly as when it was accepted
+ * standalone, so its source runs unmodified. Remotion clamps a Sequence to its composition, so the
+ * composition spans the latest clip end (`duration_in_frames`) and only `frames` of it are rendered.
  */
-const shim = `import {createContext, useContext} from 'react';
-import {useVideoConfig as useCompositionConfig} from 'remotion';
-export * from 'remotion';
-export const OwnDuration = createContext<number | null>(null);
-export const useVideoConfig = () => {
-  const config = useCompositionConfig();
-  const own = useContext(OwnDuration);
-  return own === null ? config : {...config, durationInFrames: own};
-};
-`;
-
-/** Generate the trusted entry: managed fonts, then one Sequence per placement in bottom-to-top order. */
 function entrypoint() {
   const imports = instances.map((_, index) => `import Sprite${index} from './Sprite${index}';`).join("\n");
   const placed = instances.map((item, index) =>
-    `<Sequence key={${index}} from={${item.start_frame}} durationInFrames={${item.duration_frames}}><OwnDuration.Provider value={${item.own_frames}}><Sprite${index} {...${JSON.stringify(item.config)}} /></OwnDuration.Provider></Sequence>`,
+    `<Sequence key={${index}} from={${item.start_frame}} durationInFrames={${item.duration_frames}}><Sprite${index} {...${JSON.stringify(item.config)}} /></Sequence>`,
   ).join("");
   return `/** Trusted overlay host waits for both managed font weights. */
 import React from 'react';
 import {AbsoluteFill, Composition, Sequence, registerRoot, delayRender, continueRender, cancelRender, staticFile} from 'remotion';
-import {OwnDuration} from './remotion-shim';
 ${imports}
 const handle = delayRender('managed fonts');
 Promise.all([400,700].map(async weight => {
@@ -58,10 +45,8 @@ registerRoot(Root);
 let browser;
 try {
   await fs.symlink(`${rendererRoot}/node_modules`, `${root}/node_modules`);
-  await fs.writeFile(`${root}/remotion-shim.tsx`, shim);
   for (const [index, item] of instances.entries()) {
-    const code = item.code.replace(/from\s+(['"])remotion\1/g, `from "./remotion-shim"`);
-    await fs.writeFile(`${root}/Sprite${index}.tsx`, code);
+    await fs.writeFile(`${root}/Sprite${index}.tsx`, item.code);
   }
   await fs.writeFile(`${root}/entry.tsx`, entrypoint());
   const serveUrl = await bundle({
@@ -83,6 +68,7 @@ try {
     puppeteerInstance: browser,
     logLevel: "error",
     timeoutInMilliseconds: 30000,
+    frameRange: [0, composition.frames - 1],
     codec: "vp9",
     imageFormat: "png",
     pixelFormat: "yuva420p",
@@ -90,7 +76,7 @@ try {
     concurrency: 1,
     outputLocation: `${root}/overlay.webm`,
   });
-  await fs.writeFile(`${root}/renderer.json`, JSON.stringify({ frames: composition.duration_in_frames }));
+  await fs.writeFile(`${root}/renderer.json`, JSON.stringify({ frames: composition.frames }));
 } catch (error) {
   // A non-zero exit lets the host surface worker.log; no partial report is ever written.
   console.error(String(error?.stack ?? error));

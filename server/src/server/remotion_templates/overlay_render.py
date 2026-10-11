@@ -30,13 +30,21 @@ class OverlayError(Exception):
 
 @dataclass(frozen=True)
 class Overlay:
-    """One render job: shared canvas plus instances already clipped to `frames`, bottom layer first."""
+    """One render job: a shared canvas, the `frames` of output and the placed clips, bottom layer first.
+
+    Clips keep their full length, so one may run past `frames`; `span` is what the composition must cover.
+    """
 
     width: int
     height: int
     fps: int
     frames: int
     instances: list[dict]
+
+    @property
+    def span(self) -> int:
+        """Composition length: the output or the latest clip end, so no clip is shortened by the composition."""
+        return max([self.frames, *(item["start_frame"] + item["duration_frames"] for item in self.instances)])
 
 
 def placement_seconds(sprite: pb.PublishedSprite, placement: pb.SpritePlacement) -> float:
@@ -115,8 +123,8 @@ def plan_overlay(
 ) -> Overlay:
     """Place every asset on one canvas; starts past the end are dropped, later ends are cut by the total.
 
-    A clip keeps its full length: Remotion reports a Sequence's length as the asset's own duration, so
-    shrinking it would change animations computed from it. The composition length does the cutting.
+    A clip keeps its full length: a Sprite reads its length from its own Sequence, so shrinking the Sequence
+    would change animations computed from it. The output length does the cutting (`Overlay.span`).
     """
     width, height, fps = shared_canvas(placements, sprites)
     if not math.isfinite(total_seconds) or total_seconds <= 0:
@@ -136,8 +144,6 @@ def plan_overlay(
             "config": json.loads(sprite.default_config_json),
             "start_frame": start_frame,
             "duration_frames": length,
-            # Sprites derive animation ranges from useVideoConfig().durationInFrames of their own composition.
-            "own_frames": sprite.canvas.preview_frames,
         })
     if not instances:
         raise OverlayError("no_placements", "所有 Remotion 资产的起点都晚于成片结尾")
@@ -188,7 +194,7 @@ async def render_overlay(renderer: Renderer, overlay: Overlay, directory: Path) 
     (directory / "request.json").write_text(json.dumps({
         "composition": {
             "width": overlay.width, "height": overlay.height, "fps": overlay.fps,
-            "duration_in_frames": overlay.frames,
+            "duration_in_frames": overlay.span, "frames": overlay.frames,
         },
         "instances": overlay.instances,
         "browser": renderer.worker_browser_path(),

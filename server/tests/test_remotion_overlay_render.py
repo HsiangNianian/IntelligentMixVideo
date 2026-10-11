@@ -1,11 +1,14 @@
 """Remotion 叠加视频：时长优先级、摆放规划、任务流转、ZOS 转存与回调的离线回归。
 
-不启动浏览器、ffprobe 或 ZOS：渲染器、探测与上传由替身承担，任务表使用临时 SQLite。
+默认不启动浏览器、ffprobe 或 ZOS：渲染器、探测与上传由替身承担，任务表使用临时 SQLite。
+`real_` 用例在 Linux 上经隔离沙箱真实渲染，需 IMV_TEST_RENDERER=1（见 backend-integration 工作流）。
 在 server/ 目录执行 `uv run --locked pytest tests/test_remotion_overlay_render.py -v`。
 """
 
 import asyncio
 import json
+import os
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -19,19 +22,22 @@ from google.protobuf.json_format import MessageToDict
 
 from server.app import app
 from server.remotion_templates import overlay_render, overlay_service
-from server.remotion_templates.overlay_render import OverlayError, plan_overlay, resolve_total_seconds
+from server.remotion_templates.overlay_render import OverlayError, plan_overlay, render_overlay, resolve_total_seconds
 from server.remotion_templates.overlay_router import overlay_renders
 from server.remotion_templates.overlay_service import OverlayRenders
+from server.remotion_templates.renderer import Renderer
 from server.remotion_templates.settings import Settings
 from server.remotion_templates.store import Store
 
 CODE = "export default function Sprite() { return null; }"
+# 自动隔离夹具会清除 IMV_*，所以在导入时读取本次运行配置的渲染器位置。
+RENDERER_PATHS = {name: os.environ.get(name) for name in ("IMV_BROWSER_EXECUTABLE", "IMV_FONT_REGULAR", "IMV_FONT_BOLD")}
 
 
-def sprite(sprite_id: str, *, width=1080, height=1920, fps=30, frames=60) -> pb.PublishedSprite:
+def sprite(sprite_id: str, *, width=1080, height=1920, fps=30, frames=60, code=CODE) -> pb.PublishedSprite:
     """构造一个已发布 Sprite：默认 2 秒、无可编辑参数。"""
     return pb.PublishedSprite(
-        sprite_id=sprite_id, name=sprite_id, kind=pb.SPRITE_KIND_TEXT, tsx_code=CODE,
+        sprite_id=sprite_id, name=sprite_id, kind=pb.SPRITE_KIND_TEXT, tsx_code=code,
         canvas=pb.SpriteCanvas(width=width, height=height, fps=fps, preview_frames=frames),
         config_schema_json=json.dumps({"type": "object", "properties": {}}),
         default_config_json="{}",
@@ -81,6 +87,8 @@ def test_plan_clips_and_orders_placements() -> None:
     overlay = plan_overlay(placements, PUBLICATIONS, 6, 120)
     assert (overlay.width, overlay.height, overlay.fps, overlay.frames) == (1080, 1920, 30, 180)
     assert [(i["start_frame"], i["duration_frames"]) for i in overlay.instances] == [(0, 60), (144, 60)]
+    assert all(set(item) == {"code", "config", "start_frame", "duration_frames"} for item in overlay.instances)
+    assert overlay.span == 204  # 144 + 60：合成必须覆盖最晚片段结尾，否则该片段的 Sequence 会被截短
 
 
 @pytest.mark.parametrize("placements, total, code", [
@@ -185,12 +193,28 @@ def test_task_renders_uploads_and_notifies(service, monkeypatch) -> None:
     key = f"imv/overlay_render/{task_id}.webm"
     assert view["status"] == "succeeded" and view["result"] == {"videoUrl": f"https://zos.example/{key}"}
     assert uploads == [(key, "video/webm", b"webm")]
-    assert renderer.requests[0]["composition"] == {"width": 1080, "height": 1920, "fps": 30, "duration_in_frames": 120}
+    assert renderer.requests[0]["composition"] == {
+        "width": 1080, "height": 1920, "fps": 30, "duration_in_frames": 120, "frames": 120,
+    }
     assert [i["start_frame"] for i in renderer.requests[0]["instances"]] == [0, 30]
     assert posted == [("https://bus.example/cb", {
         "taskId": task_id, "status": "succeed", "videoUrl": f"https://zos.example/{key}", "errorMessage": None,
     })]
     assert not (overlays.store.root / "overlays" / task_id).exists()
+
+
+# 场景：片段超出成片结尾时，worker 请求中的合成仍覆盖最晚片段结尾，只渲染成片总帧数。
+def test_request_spans_clips_cut_by_the_total(service) -> None:
+    """成片 2 秒（60 帧）而片段 b 结束于第 90 帧：duration_in_frames 取 90，frames 仍为 60。"""
+    overlays, renderer, _ = service
+
+    async def scenario():
+        await overlays.accept(uuid4(), None, 2.0, None)
+        await finish(overlays)
+
+    asyncio.run(scenario())
+    composition = renderer.requests[0]["composition"]
+    assert (composition["duration_in_frames"], composition["frames"]) == (90, 60)
 
 
 # 场景：渲染失败时任务为 failed，公开错误脱敏且不上传。
@@ -260,3 +284,53 @@ def test_routes_accept_and_query(service, client: TestClient) -> None:
         assert client.get(f"/api/v1/overlay-renders/{task_id}").json()["taskId"] == task_id
     finally:
         app.dependency_overrides.pop(overlay_renders, None)
+
+
+# 组合型 Sprite：标题 Preset 位于嵌套的 Sequence(from=30, 60 帧)，淡出区间取自自身的 durationInFrames。
+NESTED_FADE = """import React from 'react';
+import {AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig, interpolate} from 'remotion';
+function Title() {
+  const frame = useCurrentFrame();
+  const {durationInFrames: d} = useVideoConfig();
+  const opacity = interpolate(frame, [0, 10, d - 10, d], [0, 1, 1, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'});
+  return <AbsoluteFill style={{background: '#ff0000', opacity}} />;
+}
+export default function Sprite() {
+  return <AbsoluteFill><Sequence from={30} durationInFrames={60}><Title /></Sequence></AbsoluteFill>;
+}
+"""
+
+
+def decoded_alpha(video: Path, index: int) -> float:
+    """用 libvpx 解码一帧并返回左上角像素的 alpha；原生 vp9 解码器会丢弃透明通道。"""
+    raw = subprocess.run(
+        ["ffmpeg", "-v", "error", "-c:v", "libvpx-vp9", "-i", str(video), "-vf", f"select=eq(n\\,{index})",
+         "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "-"],
+        capture_output=True, check=True,
+    ).stdout
+    return raw[3] / 255
+
+
+# 场景：真实沙箱渲染中，嵌套 Sequence 内的 Preset 读到自己的时长，且被成片总长截断时也不受影响。
+@pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
+def test_real_overlay_keeps_nested_sequence_timing(tmp_path: Path) -> None:
+    """片段起点第 30 帧、成片 4 秒（120 帧，截断片段）：标题在局部第 52/55/59 帧的 alpha 为 0.8/0.5/0.1。
+
+    标题自己的 Sequence 为 60 帧，所以淡出以 60 为终点；若 Preset 读到整个 Sprite 的 150 帧，alpha 会一直是 1。
+    同时 render_overlay 内的 ffprobe 核对编码、尺寸、帧率、帧数与透明标记。
+    """
+    configured = {
+        name: Path(value)
+        for name, value in (
+            ("browser_executable", RENDERER_PATHS["IMV_BROWSER_EXECUTABLE"]),
+            ("font_regular", RENDERER_PATHS["IMV_FONT_REGULAR"]),
+            ("font_bold", RENDERER_PATHS["IMV_FONT_BOLD"]),
+        )
+        if value
+    }
+    settings = Settings(_env_file=None, data_dir=tmp_path / "state", **configured)
+    published = {"nested": sprite("nested", width=180, height=320, frames=150, code=NESTED_FADE)}
+    overlay = plan_overlay([placement("nested", start=1.0)], published, 4.0, 120)
+    video = asyncio.run(render_overlay(Renderer(settings), overlay, tmp_path / "job"))
+    for frame, expected in ((112, 0.8), (115, 0.5), (119, 0.1)):  # 标题从第 60 帧开始
+        assert decoded_alpha(video, frame) == pytest.approx(expected, abs=0.05)
