@@ -110,6 +110,16 @@ def template_track(target: str = "title", **editor) -> dict:
             "editor": {**content, **editor}}
 
 
+# 测试用的已发布 Sprite ID；同一模板可以多次摆放它，各次摆放用不同的轨道 ID。
+SPRITE_ID = "6f1c8a52-3d94-4b7e-9a10-2c5e8d7b4f31"
+
+
+def remotion_track(track_id: str = "clip", **changes) -> dict:
+    """提供引用已发布 Sprite 的片段轨道：秒数起点、时长缺省、编辑参数为空对象，可用关键字覆盖字段。"""
+    return {"id": track_id, "target": "remotion", "sprite_id": SPRITE_ID, "start_mode": "seconds",
+            "start": 1, "duration": None, "editor": {}, **changes}
+
+
 @pytest.fixture
 def template_payload() -> dict:
     """提供最小合法模板，每次测试获取独立可修改的 JSON 请求。"""

@@ -9,7 +9,7 @@ from generated.imv.template.v1 import template_pb2 as pb
 from sqlalchemy import Engine, inspect, select
 
 from server.template import store
-from .conftest import template_track
+from .conftest import SPRITE_ID, remotion_track, template_track
 from .template_wire import post_template as _post
 
 
@@ -188,6 +188,37 @@ def test_template_protobuf_rejects_loop_conflict(
         "tracks": [template_track("title", titleLoop="loop/normal_display", titleIn="in/fade_in")],
     })
     assert response.status_code == 422
+    assert pb.ListTemplatesResponse.FromString(client.get("/template").content).templates == []
+
+
+def test_remotion_tracks_roundtrip_through_protobuf(client: TestClient, template_payload: dict) -> None:
+    """片段轨道经 Protobuf 保存、读取后保持引用、秒数起点和空 editor，IMS 对象不带 sprite_id。"""
+    tracks = [*template_payload["tracks"], remotion_track("clip-a", start=2.5, duration=3), remotion_track("clip-b")]
+    created = _post(client, {**template_payload, "tracks": tracks})
+    assert created.status_code == 201
+    record = pb.SaveTemplateResponse.FromString(created.content).template
+    ims, *clips = record.tracks.tracks
+    assert ims.sprite_id == ""
+    assert [(clip.id, clip.sprite_id, clip.start_mode, clip.start) for clip in clips] == [
+        ("clip-a", SPRITE_ID, "seconds", 2.5), ("clip-b", SPRITE_ID, "seconds", 1),
+    ]
+    assert clips[0].duration == 3 and not clips[1].HasField("duration")
+    assert all(clip.HasField("editor") and not clip.editor.ListFields() for clip in clips)
+    detail = client.get(f"/template/{record.template_id}")
+    assert pb.GetTemplateResponse.FromString(detail.content).template == record
+
+
+@pytest.mark.parametrize(("change", "reason"), [
+    ({"sprite_id": ""}, "缺少 sprite_id"), ({"sprite_id": "not-a-uuid"}, "valid UUID"),
+    ({"editor": {"title": "不允许"}}, "不能携带编辑参数"), ({"editor": None}, "Field required"),
+], ids=["no-sprite", "bad-sprite", "explicit-editor", "missing-editor"])
+def test_invalid_remotion_tracks_return_422_without_writing(
+    client: TestClient, template_payload: dict, change: dict, reason: str,
+) -> None:
+    """片段轨道缺少引用、引用不是 UUID、携带编辑参数或缺少 editor 消息时返回 422 并说明原因，且不写库。"""
+    tracks = [*template_payload["tracks"], remotion_track("clip-a", **change)]
+    response = _post(client, {**template_payload, "tracks": tracks})
+    assert response.status_code == 422 and reason in response.text
     assert pb.ListTemplatesResponse.FromString(client.get("/template").content).templates == []
 
 

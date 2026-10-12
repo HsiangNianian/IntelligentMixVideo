@@ -64,6 +64,10 @@ GET 成功响应与 POST 请求、成功响应均使用 `application/x-protobuf`
 独立对象通过 `tracks` 保存，每项包含 `id`、`target`、`start_mode`、`start`、`duration` 和 `editor`。`start_mode` 支持 `seconds` 和 `percent`；百分比范围为 0 至小于 100，`duration` 为正秒数或 `null`（持续到视频结束）。模板不保存视频信息，保存校验不依赖预览时长。应用视频时按输出帧率计算区间：结尾以外不显示、结束越界时截短，动画按有效帧数缩短并记录说明，无法容纳所选动画时明确失败。文案合成逐个应用对象，标题使用请求文字，字幕和关键词采用文案时间与对象区间的交集；合成时转场忽略模板开始与持续时间，仅取特效类型并应用于实际素材边界，音频总长保持不变。
 同一文字角色的循环动画与入场、出场互斥。效果可以为空（只放 Remotion 片段的模板），最多 500 个不同效果 ID。
 
+Remotion 片段也保存在 `tracks` 里：`target` 为 `remotion`，`sprite_id` 引用已发布的 Sprite；`id` 仍是模板内唯一的摆放 ID，所以同一个 Sprite 可以摆放多次。
+`start_mode` 只能是 `seconds`，`duration` 为 `null`（取 Sprite 自身时长）或正秒数，`editor` 必须是空消息（响应里为 `{}`）；其他对象不能带 `sprite_id`。
+片段与 IMS 对象共用 100 条上限，也不产生 `effect_ids`。视频合成的 IMS 时间线跳过这些轨道，不为它们生成任何文字或效果；层级为它们在 `tracks` 中的先后（先者在下）。
+
 响应补充 UUID、UTC 创建/更新时间和 `effects` 参数快照。服务端通过固定 SDK 5.2.2 白名单解析效果，
 拒绝未知 ID、错误分类和全部 `tracks[].editor` 中的效果与 `effect_ids` 不一致；客户端不能提交渲染参数。
 `schema.py` 负责业务字段校验，`router.py` 将生成的 Protobuf 消息转换为业务模型并生成响应。

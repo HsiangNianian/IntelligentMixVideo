@@ -1,4 +1,4 @@
-"""模板保存对象时间规则和可信效果快照，视频信息由应用时提供。"""
+"""模板保存对象时间规则和可信效果快照，视频信息由应用时提供；Remotion 片段只保存对已发布 Sprite 的引用和秒数起点。"""
 
 import json
 from datetime import datetime
@@ -7,7 +7,10 @@ from pathlib import Path
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel, ConfigDict, Field, SerializerFunctionWrapHandler, field_serializer,
+    field_validator, model_validator,
+)
 from pydantic.alias_generators import to_camel
 
 EffectCategory = Literal[
@@ -141,19 +144,37 @@ class EffectTemplateEditor(BaseModel):
 
 
 class EffectTrack(BaseModel):
-    """独立特效实例，文字动画归属于该实例的参数。"""
+    """独立特效实例，文字动画归属于该实例的参数；`remotion` 是引用已发布 Sprite 的片段。"""
 
     model_config = ConfigDict(extra="forbid")
     id: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
-    target: Literal["title", "subtitle", "bubble", "filter", "vfx", "transition"]
+    target: Literal["title", "subtitle", "bubble", "filter", "vfx", "transition", "remotion"]
     start_mode: Literal["seconds", "percent"]
     start: float = Field(ge=0, allow_inf_nan=False)
     duration: float | None = Field(gt=0, allow_inf_nan=False)
     editor: EffectTemplateEditor
+    # 仅 Remotion 片段引用 Sprite；为空时不输出，其余对象的 JSON 与引入该字段前保持一致。
+    sprite_id: UUID | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    @field_serializer("editor", mode="wrap")
+    def serialize_editor(self, editor: EffectTemplateEditor, handler: SerializerFunctionWrapHandler) -> dict:
+        """Remotion 片段不携带编辑参数，输出为空对象而不是一整套默认值；其余对象沿用原序列化。"""
+        return {} if self.target == "remotion" else handler(editor)
 
     @model_validator(mode="after")
     def validate_instance(self) -> "EffectTrack":
         """检查时间规则和对象内容；应用视频时计算实际区间与动画时长。"""
+        if self.target == "remotion":
+            # 文字和效果规则只适用于 IMS 对象；片段只需要指向 Sprite 的秒数起点，时长缺省取 Sprite 自身。
+            if self.sprite_id is None:
+                raise ValueError("Remotion 片段缺少 sprite_id")
+            if self.start_mode != "seconds":
+                raise ValueError("Remotion 片段只能使用秒数起点")
+            if self.editor.model_fields_set:
+                raise ValueError("Remotion 片段不能携带编辑参数")
+            return self
+        if self.sprite_id is not None:
+            raise ValueError("只有 Remotion 片段可以引用 Sprite")
         if self.start_mode == "percent" and self.start >= 100:
             raise ValueError("开始百分比须小于 100")
         text = self.target in ("title", "subtitle", "bubble")

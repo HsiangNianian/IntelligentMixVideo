@@ -6,7 +6,7 @@ import pytest
 from server.template.schema import EffectTemplateEditor, TemplateSave, effect_catalog
 from server.video_composition.timeline import build_timeline, format_subtitle_keyword
 
-from .conftest import template_track
+from .conftest import remotion_track, template_track
 
 
 @pytest.mark.parametrize("mode", ["materials_voice", "materials_silent"])
@@ -366,6 +366,13 @@ def test_independent_effect_rules_reach_composition(composition_case):
     assert any("effect-b" in item and "缩短" in item for item in warnings)
     assert any("effect-c" in item and "没有可显示" in item for item in warnings)
     assert composition_case == original
+
+
+def test_remotion_tracks_do_not_enter_the_ims_timeline(composition_case):
+    """Remotion 片段由叠加视频服务渲染：快照里出现它们时，IMS 时间线与不含它们时完全一致，也不会报错。"""
+    expected = build_timeline(**deepcopy(composition_case))
+    composition_case["template"]["tracks"] += [remotion_track("clip-a", start=2), remotion_track("clip-b", duration=1.5)]
+    assert build_timeline(**composition_case) == expected
 
 
 def test_text_rules_keep_business_content_and_separate_styles(composition_case):

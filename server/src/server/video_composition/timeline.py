@@ -189,7 +189,8 @@ def build_timeline(
     timeline = {"VideoTracks": [{"VideoTrackClips": clips}], "AudioTracks": audio_tracks,
                 "SubtitleTracks": subtitle_tracks}
     effects = []
-    tracks = list(template.tracks)
+    # Remotion 片段由叠加视频服务渲染，不属于 IMS 时间线，也没有 IMS 效果可校验。
+    tracks = [track for track in template.tracks if track.target != "remotion"]
     if not standard:
         # 缺少对象时只补本次合成的默认样式，不保存模板，也不使用编辑器示例文字。
         for target, content in (("title", request.title), ("subtitle", source)):
