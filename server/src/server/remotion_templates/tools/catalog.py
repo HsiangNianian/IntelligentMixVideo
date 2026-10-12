@@ -136,8 +136,8 @@ def _inspectable(name: str) -> RegisteredTool | PlanTool:
 async def tools_inspect(owner, request: ToolInspectInput) -> ToolResult[ToolDescriptor]:
     """Return one registered tool descriptor by dotted ID or by the wire name this window shows.
 
-    An unknown name reports every registered ID, so a model that guesses a name
-    learns the real one instead of retrying blind.
+    It reads the contract of a name the caller already has and does not search; the IDs listed in an
+    unknown-name error only correct a typo.
     """
     try:
         return _success(_inspectable(request.tool_name).describe())

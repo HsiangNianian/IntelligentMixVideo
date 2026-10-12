@@ -121,6 +121,12 @@ def test_inspect_unknown_name_lists_callable_tools_apart_from_contract_only_ones
     assert callable_names.isdisjoint(reference_names)
 
 
+def test_inspect_description_does_not_invite_guessing_names():
+    """模型可见的 tools_inspect 描述曾写着「未知名称会列出全部 ID，猜名字即可学到真名」，与系统提示「不能搜索或列出工具」相矛盾。"""
+    description = get_tool("tools.inspect").wire()["function"]["description"]
+    assert "does not search" in description and "guess" not in description
+
+
 def test_empty_tool_window_never_falls_back_to_the_registry():
     """空权限窗口必须拒绝已注册工具，且不能建议窗口外的工具。"""
     with pytest.raises(ToolFault) as caught:
