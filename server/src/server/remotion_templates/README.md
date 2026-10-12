@@ -57,7 +57,9 @@ contract as version 2, replacing the previously unimplemented `matches` shape.
 bytes including JSON string escaping. `has_more` marks omitted summaries;
 oversized individual summaries or full records return `RESOURCE_LIMIT_EXCEEDED`
 without truncating source. Search and modify declare `PRESET_STORE_FAILED` for
-storage errors.
+storage errors only: when the isolated validator cannot start while creating or
+modifying a Preset (for example `bwrap` is missing), the tool returns
+`VALIDATION_UNAVAILABLE` with the original error and nothing is stored.
 
 ## Preview
 
@@ -73,6 +75,10 @@ IMV_TEST_RENDERER=1 uv run --locked --project server pytest server/tests/test_re
 ```
 
 The browser path requires Chromium, Noto CJK fonts, bubblewrap and util-linux.
+The isolation is Linux-only: `POST /works`, `POST /works/{id}/messages` and
+`POST /jobs/{id}/retry` return 503 naming the unsupported platform or the missing
+`bwrap`, `prlimit` or `node` before anything is queued, so on macOS the service
+starts but cannot generate templates.
 Offline tests cover tool registration, deferred-tool behaviour, immutable
 storage and source consistency without a model or semantic index.
 

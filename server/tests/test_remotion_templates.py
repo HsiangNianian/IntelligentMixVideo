@@ -408,3 +408,75 @@ def test_local_fallback_preset_stays_readable_after_database_recovers(tmp_path):
     store._engine = lambda: RecoveredEngine()
     assert [item.preset_id for item in store.read_presets()] == ["fallback-1"]
     assert store.find_preset("fallback-1").description == "兜底预设"
+
+
+def test_missing_sandbox_is_a_validation_error_not_a_store_failure(tmp_path):
+    """worker 因缺少 bwrap 无法启动时，preset.create 返回 VALIDATION_UNAVAILABLE 且不落库。
+
+    修复前 ValidationUnavailable 落入 preset_create 的兜底分支，被报成
+    PRESET_STORE_FAILED，用户只看到“预设保存失败”，看不出是校验环境缺失。
+    """
+    class MissingSandboxRenderer:
+        """复现 macOS：启动 worker 时 create_subprocess_exec 找不到 bwrap。"""
+
+        def worker_browser_path(self):
+            """单元测试不启动浏览器，只返回一个固定路径。"""
+            return "/usr/bin/chromium"
+
+        async def run_worker(self, directory, *, worker, timeout_seconds=None):
+            """与真实 Renderer.run_worker 相同的异常。"""
+            raise FileNotFoundError(2, "No such file or directory", "bwrap")
+
+    class RecordingCatalog:
+        """记录入库调用，断言校验不可用时没有写入。"""
+
+        def __init__(self):
+            """保存本次用例实际入库的记录。"""
+            self.records: list[PresetRecord] = []
+
+        def append_preset(self, record):
+            """返回本地后端标记，避免测试连接数据库。"""
+            self.records.append(record)
+            return "local"
+
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    catalog = RecordingCatalog()
+    current = ToolSession(
+        SimpleNamespace(settings=settings, renderer=MissingSandboxRenderer()),
+        None, None, Budget(), tmp_path / "run", [], lambda *_: None, {},
+    )
+    current.catalog = catalog
+    with pytest.raises(ToolFault) as failure:
+        asyncio.run(current.execute("preset.create", draft(), available()))
+    assert failure.value.error.code == "VALIDATION_UNAVAILABLE"
+    assert "bwrap" in failure.value.error.message
+    assert catalog.records == []
+
+
+@pytest.mark.parametrize(
+    ("platform", "present", "expected"),
+    [
+        ("darwin", {"bwrap", "prlimit", "node"}, "darwin"),
+        ("linux", {"prlimit", "node"}, "bwrap"),
+        ("linux", {"bwrap", "node"}, "prlimit"),
+        ("linux", {"bwrap", "prlimit"}, "node"),
+        ("linux", {"bwrap", "prlimit", "node"}, None),
+    ],
+)
+def test_sandbox_problem_names_the_unsupported_piece(monkeypatch, tmp_path, platform, present, expected):
+    """非 Linux 先报平台；Linux 逐项报缺少的工具；全部具备时返回 None，保持原流程。"""
+    from server.remotion_templates import renderer as renderer_module
+
+    monkeypatch.setattr(renderer_module.sys, "platform", platform)
+    monkeypatch.setattr(renderer_module.shutil, "which", lambda name: f"/usr/bin/{name}" if name in present else None)
+    problem = renderer_module.Renderer(Settings(_env_file=None, data_dir=tmp_path)).sandbox_problem()
+    assert (problem is None) if expected is None else (expected in problem)
+
+
+def test_validation_unavailable_has_an_actionable_public_message():
+    """公开轮次记录保留 VALIDATION_UNAVAILABLE 并提示 Linux 与 bubblewrap，不暴露异常原文。"""
+    from server.remotion_templates.progress import RoundCall
+
+    call = RoundCall(tool="preset.create", status="fail", error_code="VALIDATION_UNAVAILABLE", message="[Errno 2] 'bwrap'")
+    assert call.error_code == "VALIDATION_UNAVAILABLE"
+    assert "Linux" in call.message and "bubblewrap" in call.message and "Errno" not in call.message

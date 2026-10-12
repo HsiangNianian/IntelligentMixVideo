@@ -48,7 +48,7 @@ PUBLIC_ERRORS = {
     "PRESET_STORE_FAILED": "预设保存失败。",
     "SPRITE_STORE_FAILED": "字效保存失败。",
     "PRESET_NOT_FOUND": "预设不存在。",
-    "VALIDATION_UNAVAILABLE": "校验服务暂不可用。",
+    "VALIDATION_UNAVAILABLE": "校验环境不可用，请确认服务端为 Linux 且已安装 bubblewrap。",
     "RESOURCE_LIMIT_EXCEEDED": "已达到资源限制。",
     "TIMEOUT": "工具执行超时。",
     "NOT_IMPLEMENTED": "工具尚不可用。",

@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import signal
+import sys
 from pathlib import Path
 
 from .settings import Settings
@@ -61,6 +62,19 @@ class Renderer:
     def worker_browser_path(self) -> str:
         """Return the browser path visible to the Linux sandbox worker."""
         return str(self.settings.browser_executable.resolve())
+
+    def sandbox_problem(self) -> str | None:
+        """Say why the isolated worker cannot start on this host, or None when it can.
+
+        The sandbox is bubblewrap on Linux with prlimit and Node, so a missing piece is reported
+        before a task is accepted instead of surfacing later as a failed tool call.
+        """
+        if sys.platform != "linux":
+            return f"the isolated validator runs only on Linux, this host is {sys.platform}"
+        for tool in ("bwrap", "prlimit", "node"):
+            if shutil.which(tool) is None:
+                return f"{tool} is not installed"
+        return None
 
     def worker_environment(self, directory: Path) -> dict[str, str]:
         """Expose only a fixed executable search path to an isolated worker."""

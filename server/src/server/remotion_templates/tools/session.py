@@ -28,6 +28,7 @@ from .contracts import (
 )
 from .catalog_store import CatalogStore
 from .registry import ToolFault
+from ..tool_validation import ValidationUnavailable
 from .schema import merge_parameters, validate_component_contract, validate_parameters
 from .compose import compose_source
 
@@ -191,13 +192,19 @@ class ToolSession:
             return CodeValidationReport(passed=False, diagnostics=diagnostics)
         if self.validator is None:
             raise ToolFault("VALIDATION_UNAVAILABLE", "The isolated TypeScript validator is unavailable.")
-        return await self.validator.validate_code(component)
+        try:
+            return await self.validator.validate_code(component)
+        except ValidationUnavailable as exc:
+            raise ToolFault("VALIDATION_UNAVAILABLE", f"The isolated TypeScript validator is unavailable: {exc}"[:3000]) from exc
 
     async def validate_render(self, request: RenderValidationInput) -> RenderValidationReport:
         """Run the isolated component behavior runner and cache the exact report."""
         if self.validator is None:
             raise ToolFault("VALIDATION_UNAVAILABLE", "The isolated behavior validator is unavailable.")
-        report = await self.validator.validate_render(request)
+        try:
+            report = await self.validator.validate_render(request)
+        except ValidationUnavailable as exc:
+            raise ToolFault("VALIDATION_UNAVAILABLE", f"The isolated behavior validator is unavailable: {exc}"[:3000]) from exc
         parameters = merge_parameters(request.component.default_parameters, request.parameters)
         try:
             validate_parameters(request.component.parameter_schema, parameters)

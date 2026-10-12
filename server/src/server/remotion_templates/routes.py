@@ -69,6 +69,13 @@ async def runtime(request: Request) -> Runtime:
 Service = Annotated[Runtime, Depends(runtime)]
 
 
+def require_sandbox(service: Runtime) -> None:
+    """Refuse work that needs the isolated validator on a host that cannot start it, before anything is queued."""
+    problem = service.sandbox_problem()
+    if problem is not None:
+        raise HTTPException(503, f"校验环境不可用：{problem}。隔离校验需要安装 bubblewrap、prlimit 与 Node 的 Linux 服务端。")
+
+
 def client_config(value: Annotated[str | None, Header(alias="X-Remotion-Config")] = None) -> ClientSettings | None:
     """模型配置只来自当前请求头，不进入作品、聊天或任务输入持久化。"""
     return parse_config(value, ClientSettings)
@@ -130,6 +137,7 @@ async def create(
     settings = service.settings.model_copy(update=config.model_dump()) if config is not None else service.settings
     if not settings.models_configured:
         raise HTTPException(503, "请配置 Agent 模型及密钥")
+    require_sandbox(service)
     if request.image:
         service.store.asset(request.image.asset_id)
     project, job = service.store.create(request)
@@ -193,6 +201,7 @@ async def edit(work_id: UUID, request: TaskMessage, service: Service, config: Co
     纯问答或明确保持现状时返回 answered 终态，回答通过 message 和会话历史提供，不产生新版本。
     尚无成功版本的会话也可继续提问或描述生成需求；参数修改仍须已有成功版本。
     """
+    require_sandbox(service)
     try:
         return PublicJob.from_job(service.message(work_id, request, config))
     except ValueError as exc:
@@ -292,6 +301,7 @@ async def retry(job_id: UUID, service: Service, config: Config) -> PublicJob:
 
     保留原任务记录及产物，不从中断位置续跑；不符合重试条件时返回 409。
     """
+    require_sandbox(service)
     return PublicJob.from_job(service.retry(job_id, config=config))
 
 

@@ -40,6 +40,7 @@ def history_app(history_store):
             vision_model="offline",
         ),
         notify=lambda *args: None,
+        sandbox_problem=lambda: None,
     )
     return app
 
@@ -644,3 +645,20 @@ def test_mounted_stream_allows_replay_header(client, origin):
         ).status_code
         == 400
     )
+
+
+def test_generation_is_refused_before_queueing_when_the_sandbox_is_missing(history_app, history_store):
+    """宿主无法启动隔离校验器（如 macOS）时，创建、消息、重试都返回 503 并给出原因，不留下作品或任务。"""
+    history_app.state.runtime.sandbox_problem = lambda: "the isolated validator runs only on Linux, this host is darwin"
+    composition = {"width": 1080, "height": 1920, "fps": 30, "duration_in_frames": 150}
+    with TestClient(history_app) as client:
+        for response in (
+            client.post("/works", json={"description": "标题", "composition": composition}),
+            client.post(f"/works/{uuid4()}/messages", json={"instruction": "改大"}),
+            client.post(f"/jobs/{uuid4()}/retry"),
+        ):
+            assert response.status_code == 503
+            assert "darwin" in response.json()["detail"] and "Linux" in response.json()["detail"]
+    with history_store.connection() as db:
+        for table in ("projects", "jobs", "chat_messages"):
+            assert db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
