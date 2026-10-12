@@ -538,3 +538,33 @@ def test_unsandboxed_macos_still_requires_node(monkeypatch, tmp_path):
     monkeypatch.setattr(renderer_module.shutil, "which", lambda name: None)
     renderer = renderer_module.Renderer(Settings(_env_file=None, data_dir=tmp_path, allow_unsandboxed_worker=True))
     assert renderer.sandbox_problem() == "node is not installed"
+
+
+@pytest.mark.parametrize("name", ["preset.create", "sprite.create"])
+def test_creation_tools_declare_validation_unavailable(name):
+    """会启动校验器的两个创建工具在契约里声明 VALIDATION_UNAVAILABLE，tools.inspect 与实际行为一致。"""
+    from server.remotion_templates.tools.registry import get_tool
+
+    assert "VALIDATION_UNAVAILABLE" in get_tool(name).describe()["error_codes"]
+
+
+def test_session_stays_importable_without_the_validation_module(monkeypatch, tmp_path):
+    """部署可裁剪校验模块：session 仍可导入，构造时降级为无校验器，校验返回 VALIDATION_UNAVAILABLE。
+
+    修复前 session 在模块顶层导入 tool_validation，模块缺失时导入阶段就失败，降级路径不可达。
+    """
+    import importlib
+    import sys
+
+    monkeypatch.setitem(sys.modules, "server.remotion_templates.tool_validation", None)
+    monkeypatch.delitem(sys.modules, "server.remotion_templates.tools.session")
+    module = importlib.import_module("server.remotion_templates.tools.session")
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    current = module.ToolSession(
+        SimpleNamespace(settings=settings, renderer=None), None, None, Budget(), tmp_path / "run", [], lambda *_: None, {},
+    )
+    assert current.validator is None
+    component = ComponentDefinition(**draft().model_dump(include={"code", "parameter_schema", "default_parameters"}))
+    with pytest.raises(module.ToolFault) as failure:
+        asyncio.run(current.validate_code(component))
+    assert failure.value.error.code == "VALIDATION_UNAVAILABLE"

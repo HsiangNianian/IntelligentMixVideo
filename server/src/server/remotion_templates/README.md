@@ -57,9 +57,10 @@ contract as version 2, replacing the previously unimplemented `matches` shape.
 bytes including JSON string escaping. `has_more` marks omitted summaries;
 oversized individual summaries or full records return `RESOURCE_LIMIT_EXCEEDED`
 without truncating source. Search and modify declare `PRESET_STORE_FAILED` for
-storage errors only: when the isolated validator cannot start while creating or
-modifying a Preset (for example `bwrap` is missing), the tool returns
-`VALIDATION_UNAVAILABLE` with the original error and nothing is stored.
+storage errors only. `preset.create` and `sprite.create` run the isolated validator
+before storing: when it cannot start (for example `bwrap` is missing) they return
+`VALIDATION_UNAVAILABLE` with the original error and store nothing. `preset.modify`
+only checks the contract and never starts the validator.
 
 ## Preview
 
