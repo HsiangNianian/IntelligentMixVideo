@@ -161,6 +161,8 @@ Outer has no publish action, so publication is the host's. Besides the last acce
 `complete` (or a text `plan_done`) publishes the latest Sprite this task saved; a completion that names any
 other Sprite is refused. When the task budget allows no further batch or control call, the host publishes
 the latest task Sprite if there is one, and only otherwise returns `blocked` to Outer.
+A handoff counts for the no-progress guard only once it has happened: an automatic advance or a
+publication the host refuses is recorded as the return to the Plan, not as the transition it attempted.
 
 Call arguments are parsed by the host. Only surplus `}` or `]` after one complete JSON object are dropped
 (and recorded as `tool_arguments_repaired` in the private audit); any other invalid JSON is refused with the

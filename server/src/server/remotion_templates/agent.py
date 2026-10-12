@@ -368,15 +368,17 @@ class AgentRun:
         # Whatever steered this step is obsolete once it is accepted, and must not mislead the next step.
         self.session.feedback = []
         if self.state.index + 1 >= len(self.state.plan.steps):
-            self._observe_handoff(Layer.OUTER, "publish")
+            # _switch records how publishing ended; a handoff counted now could still be refused.
             return None
-        self._observe_handoff(Layer.EXECUTOR, "advance")
         try:
             self.state.control(PlanAction(action="advance"))
         except (ExecutionFailure, ValueError) as exc:
             # Out of batches, or the next step's input is missing: the Plan decides how to go on.
             self._set_feedback(str(exc))
+            self._observe_handoff(Layer.PLAN, "advance_refused")
             return Layer.PLAN
+        # Only a transition that happened is recorded, so a refused advance cannot pass for progress.
+        self._observe_handoff(Layer.EXECUTOR, "advance")
         self.batch_evidence = 0
         return Layer.EXECUTOR
 
@@ -413,6 +415,7 @@ class AgentRun:
                 # A finished plan without a publishable Sprite goes back to the Plan, which can add a step.
                 self._set_feedback(str(exc))
                 self.stalled_turns += 1
+                self._observe_handoff(Layer.PLAN, "publish_refused")
                 transition = Layer.PLAN
         if transition is not None:
             self.layer = transition

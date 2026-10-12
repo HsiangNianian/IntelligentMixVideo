@@ -348,6 +348,49 @@ def test_repeating_a_draft_under_a_fresh_handle_is_no_new_evidence(monkeypatch, 
     assert harness.roles == ["outer"] + ["executor"] * 6 + ["plan", "outer"]
 
 
+def recorded_handoffs(run):
+    """The (source, destination, status) handoffs the no-progress guard has recorded so far."""
+    found = []
+    for key in run.observations:
+        if key.startswith("handoff:"):
+            item = json.loads(key.removeprefix("handoff:"))
+            found.append((item["source"], item["destination"], item["status"]))
+    return found
+
+
+def test_a_refused_advance_records_the_return_to_the_plan_not_an_advance(monkeypatch, tmp_path):
+    """审计复现：推进前就记下了 Executor→Executor 的 advance 交接；没有批次可开、推进失败退回 Plan 时，那次交接并不存在。"""
+    run, harness = new_run(monkeypatch, tmp_path, [
+        delegate(),
+        call("exec-1", "preset_search", {"preset_id": "preset-1"}),
+        report("exec-2"),
+    ], max_steps=1)
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+    assert harness.roles[-1] == "plan" and run.state.index == 0
+    handoffs = recorded_handoffs(run)
+    assert ("executor", "executor", "advance") not in handoffs
+    assert ("executor", "plan", "advance_refused") in handoffs
+
+
+def test_a_refused_publication_records_the_return_to_the_plan_not_a_publication(monkeypatch, tmp_path):
+    """审计复现：最后一步完成时先记下了交给 Outer 发布的交接；任务没有 Sprite、发布被拒退回 Plan 时，那次交接并不存在。"""
+    inspect = {"goal": "inspect", "steps": [{"id": "inspect", "goal": "inspect", "tool_modules": ["tools"], "done_when": "observed"}]}
+    run, harness = new_run(monkeypatch, tmp_path, [
+        delegate(),
+        report("exec-1", "blocked", "只需检查"),
+        call("plan-1", "tools_plan_execute", {"action": "update_plan", "plan": inspect}),
+        report("exec-2"),
+    ])
+    run.session.latest_sprite_id, run.session.saved_sprites = None, {}
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+    assert harness.roles[-1] == "plan"
+    handoffs = recorded_handoffs(run)
+    assert ("executor", "outer", "publish") not in handoffs
+    assert ("executor", "plan", "publish_refused") in handoffs
+
+
 def test_a_blocked_step_wakes_the_plan_which_can_continue_it(monkeypatch, tmp_path):
     """步骤受阻时才唤醒 Plan；Plan continue 后执行层在同一步骤上补齐产出并完成。"""
     run, harness = new_run(monkeypatch, tmp_path, [
