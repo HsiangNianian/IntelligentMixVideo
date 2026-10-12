@@ -1,5 +1,6 @@
 // Remotion Sprite 的发布、目录和合成输入协议。
-// Sprite 保存已经验收的外观与动画；业务文字、关键词、素材边界和最终时间由合成总线提供。
+// Sprite 保存已经验收的外观与动画；代码只是确定的样例，文字、颜色、位置等由发布时抽出的参数调整，
+// 模板里每次摆放的参数覆盖保存在 remotion 轨道的 editor.remotion 中。
 // Sprite 在云端模板里的使用不在本包：它是 imv.template.v1.EffectTrack 的一条 remotion 轨道，
 // 以 sprite_id 引用这里发布的 Sprite，同一个 Sprite 可以在同一模板里摆放多次。
 syntax = "proto3";
@@ -9,50 +10,67 @@ package imv.sprite.v1;
 import "google/protobuf/timestamp.proto";
 
 // 发布版本的内容类型；发布后不能把同一个 Sprite 改成另一种类型。
-// 字效和字幕共用 TEXT；实际作用对象留给合成总线决定，Remotion 片段保存时不记录。
+// 界面分为三类：TEXT 为「字效」，FILTER_OVERLAY 为「滤镜」，VIDEO_OVERLAY 与 TRANSITION_OVERLAY 合为「转场与视频特效」。
+// 所有类型都是透明叠加层，不读取也不修改底片像素；类型决定发布时必备的参数和宿主可调的变换。
 enum SpriteKind {
   // 未指定；不能作为可发布的类型。
   SPRITE_KIND_UNSPECIFIED = 0;
-  // 透明背景文字层，可绑定标题或支持关键词高亮的字幕。
+  // 字效：透明背景文字层，必备 text、fontSize、fontWeight、color；宿主可调位置、缩放、旋转和不透明度。
   SPRITE_KIND_TEXT = 1;
-  // 亮度、对比度、饱和度等视觉叠加层；不读取或逐像素修改业务原视频。
+  // 滤镜：调色蒙层、颗粒、暗角等整画面叠加层，必备 intensity、tintColor；宿主只调不透明度。
   SPRITE_KIND_FILTER_OVERLAY = 2;
-  // 覆盖在底片上的视频动效，可用于整段、片段入场或片段出场。
+  // 视频特效：覆盖在底片上的动效，必备 color、speed；宿主可调位置、缩放、旋转和不透明度。
   SPRITE_KIND_VIDEO_OVERLAY = 3;
-  // 在相邻素材片段的实际边界播放的透明转场叠加层。
+  // 转场：按秒摆放在切点附近的闪白、漏光、色块擦除等叠加层，必备 color、speed；宿主只调不透明度。
   SPRITE_KIND_TRANSITION_OVERLAY = 4;
 }
 
-// 参数在运营界面的展示与编辑权限，仅约束发布版本的样式参数。
-// 无论权限为何值，运营都不能用参数覆盖总线负责的业务文字、关键词或真实时间。
+// 参数在运营界面的展示与编辑权限；运营不能用参数覆盖源码或真实时间。
 enum OperatorAccess {
   // 未声明权限；不应作为可编辑控件使用。
   OPERATOR_ACCESS_UNSPECIFIED = 0;
   // 运营可见发布值，但不能在模板编辑里修改。
   OPERATOR_ACCESS_VISIBLE_READ_ONLY = 1;
-  // 运营可见且可修改；覆盖值由合成总线保存，Remotion 片段目前不保存覆盖。
+  // 运营可见且可修改；覆盖值保存在模板 remotion 轨道的 editor.remotion.parameters 中。
   OPERATOR_ACCESS_VISIBLE_EDITABLE = 2;
   // 发布版本内部使用；模板编辑不展示，也不接受覆盖。
   OPERATOR_ACCESS_INTERNAL = 3;
 }
 
-// 单个样式标量。oneof 保留字符串、数字或布尔值的类型，
+// 字符串列表值，目前只用于字效的 keywords 参数。
+message StringList {
+  // 按声明顺序保存的字符串；空列表是有效值。
+  repeated string values = 1;
+}
+
+// 单个参数值。oneof 保留字符串、数字、布尔值或字符串列表的类型，
 // 覆盖值必须与发布默认值同型，并满足发布时保存的参数约束。
 message ScalarValue {
   oneof value {
-    // 字符串样式值；是否允许运营编辑由参数声明决定。
+    // 字符串值；可再受 SpriteParameter.min_length/max_length 约束。
     string string_value = 1;
     // 有限数字；可再受 SpriteParameter.minimum/maximum 约束。
     double number_value = 2;
     // 开关类样式值；false 是有效值，不表示字段缺失。
     bool bool_value = 3;
+    // 字符串列表；可再受 SpriteParameter.max_items 与 max_length（逐项）约束。
+    StringList string_list_value = 4;
   }
 }
 
-// 已发布版本允许运营查看或修改的一个样式控件。
-// key 对应验收代码中的配置字段；字段只能表示样式，不能表示业务文案或绝对时间。
+// 参数的展示格式；未指定时按值的类型选择控件。
+enum SpriteParameterFormat {
+  // 未指定格式。
+  SPRITE_PARAMETER_FORMAT_UNSPECIFIED = 0;
+  // 颜色字符串，格式为 #RRGGBB 或 #RRGGBBAA。
+  SPRITE_PARAMETER_FORMAT_COLOR = 1;
+}
+
+// 已发布版本允许运营查看或修改的一个参数控件。
+// key 对应验收代码中的配置字段；字段不能表示绝对时间。
 message SpriteParameter {
   // 配置字段名，覆盖值通过同名 key 找到该参数。
+  // 新发布只暴露配置顶层的参数；历史发布可能使用以点分隔的嵌套路径。
   string key = 1;
   // 模板编辑界面显示的控件名称。
   string label = 2;
@@ -67,6 +85,26 @@ message SpriteParameter {
   // 可选离散取值；非空时运营覆盖值必须与某一项同型且相等。
   // 例如字重只允许 400/700、对齐只允许 left/center/right；空数组表示不限制枚举。
   repeated ScalarValue allowed_values = 7;
+  // 展示格式，例如颜色。
+  SpriteParameterFormat format = 8;
+  // 可选字符串长度下界，按 Unicode 码点计数；对字符串列表逐项生效。
+  optional uint32 min_length = 9;
+  // 可选字符串长度上界，按 Unicode 码点计数；对字符串列表逐项生效。
+  optional uint32 max_length = 10;
+  // 可选字符串列表的最大项数。
+  optional uint32 max_items = 11;
+}
+
+// 画布上的矩形区域，单位为画布像素，原点在左上角。
+message SpriteBox {
+  // 左边缘横坐标。
+  double x = 1;
+  // 上边缘纵坐标。
+  double y = 2;
+  // 宽度，大于零。
+  double width = 3;
+  // 高度，大于零。
+  double height = 4;
 }
 
 // Sprite 发布时固定的画布和帧率，也是 SpriteRenderInput 帧数的计量基准。
@@ -101,12 +139,12 @@ message PublishedSprite {
   string tsx_code = 6;
   // TSX 字节内容的 SHA-256，用于读取发布记录时核验完整性。
   string code_sha256 = 7;
-  // 运营可见或内部使用的已验收样式参数声明，不包含业务文字参数。
+  // 运营可见或内部使用的已验收参数声明；新发布的字效包含可编辑的文字参数。
   repeated SpriteParameter parameters = 8;
-  // 文字 Sprite 接收总线标题或字幕的配置字段名；视觉 Sprite 留空。
+  // 字效保存文字内容的配置字段名，新发布固定为 text；视觉 Sprite 留空。
   string text_prop = 9;
-  // 字幕 Sprite 接收关键词命中区间的配置字段名；不支持高亮时留空。
-  // 服务端按业务文字计算所有字面命中，传入以 Unicode 码点计数的半开区间。
+  // 字效保存高亮关键词列表的配置字段名，新发布声明了关键词时为 keywords，否则留空。
+  // 组件自行在文字内查找各关键词的字面命中并高亮。
   string keywords_prop = 10;
   // 不可变发布记录创建的时间。
   google.protobuf.Timestamp published_at = 11;
@@ -127,6 +165,9 @@ message PublishedSprite {
   uint32 bubble_asset_width = 18;
   // 预留气泡素材高度；本期保持零。
   uint32 bubble_asset_height = 19;
+  // 内容区域：发布时各实例布局的并集与画布求交；宿主的位置、缩放和旋转以其中心为原点。
+  // 历史发布未记录时视为整块画布。
+  SpriteBox content_box = 20;
 }
 
 // 公开目录使用的发布摘要；只包含运营选择与预览需要的信息，不返回 TSX 源码。
@@ -148,6 +189,8 @@ message SpriteSummary {
   string preview_url = 7;
   // 是否已验收关键词高亮能力；合成总线绑定字幕时参考此值。
   bool keywords_supported = 8;
+  // 内容区域，与 PublishedSprite.content_box 相同；模板编辑器据此计算默认位置和拖动范围。
+  SpriteBox content_box = 9;
 }
 
 // GET /api/sprites 的响应，返回可供运营选择的不可变发布条目。
@@ -160,11 +203,11 @@ message ListSpritesResponse {
 message PublishSpriteRequest {
   // 要发布的 Agent 成功版本 UUID。
   string source_version_id = 1;
-  // 必须与源版本创建时固定的类型一致。
+  // 发布类型，默认取 Agent 判断的分类，用户可以改选；服务端按此类型检查必备参数。
   SpriteKind kind = 2;
-  // 文字 Sprite 的唯一业务文字配置字段；视觉 Sprite 留空。
+  // 字效的文字配置字段，新版本必须为 text；视觉 Sprite 留空。
   string text_prop = 3;
-  // 字幕高亮使用的配置字段；标题和视觉 Sprite 留空。
+  // 字效的关键词配置字段，新版本声明了关键词时为 keywords，否则留空。
   string keywords_prop = 4;
 }
 
@@ -173,7 +216,7 @@ message PublishSpriteResponse {
   SpriteSummary sprite = 1;
 }
 
-// 一个运营样式覆盖；key 必须对应已发布 Sprite 的 VISIBLE_EDITABLE 参数。
+// 一个运营参数覆盖；key 必须对应已发布 Sprite 的 VISIBLE_EDITABLE 参数。
 message SpriteParameterOverride {
   // 参数配置字段名，同一渲染请求中不能重复。
   string key = 1;
