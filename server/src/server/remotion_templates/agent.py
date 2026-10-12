@@ -497,7 +497,7 @@ class AgentRun:
     def _outer_control(self, args):
         """Apply one Outer action; returns (transition, dialogue, completion ID)."""
         if args.action == "delegate":
-            self.delegation = args.model_dump(mode="json", exclude_none=True, exclude={"plan"})
+            self.delegation = args.model_dump(mode="json", exclude_none=True)
             if self.state.plan is not None:
                 # A re-delegation resumes the existing Plan, whose completed steps stay immutable.
                 return Layer.PLAN, None, None

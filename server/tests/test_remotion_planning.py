@@ -1,4 +1,4 @@
-"""Plan 契约：引用形式与产出模块校验、只收未完成步骤的 update_plan、剩余额度快照、宿主标准计划及模型可见 Schema 的说明。
+"""Plan 契约：引用形式与产出模块校验、只有 update_plan 接收计划、只收未完成步骤的 update_plan、剩余额度快照、宿主标准计划及模型可见 Schema 的说明。
 
 在 server/ 目录执行 `uv run --locked pytest tests/test_remotion_planning.py -v`。
 """
@@ -72,6 +72,15 @@ def test_model_visible_schema_documents_accepted_references():
     assert "steps.<earlier_step_id>.outputs.sprite" in json.dumps(
         schema, ensure_ascii=False
     )
+
+
+def test_delegate_refuses_a_plan_it_would_ignore():
+    """审计复现：delegate 携带的 plan 曾被校验接受，随后被宿主标准计划静默替换；现在直接拒绝，只有 update_plan 接收计划。"""
+    plan = {"goal": "组合", "steps": [step("first", ["user_intent"])]}
+    with pytest.raises(ValidationError, match="Only update_plan accepts a plan"):
+        PlanAction(action="delegate", reason="做滤镜", plan=plan)
+    assert PlanAction(action="delegate", reason="做滤镜").plan is None
+    assert PlanAction(action="update_plan", plan=plan).plan.steps[0].id == "first"
 
 
 def test_reference_requires_a_saved_output_before_dispatch():

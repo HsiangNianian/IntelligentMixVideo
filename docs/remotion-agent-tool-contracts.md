@@ -1166,6 +1166,7 @@ inspect 自身也可被查询。已知工具列表由集成方提供给 Agent；
 包括 [PlanAction](../server/src/server/remotion_templates/planning.py) 的完整输入 Schema、
 `ToolResult[JsonObject]` 输出 Schema、约束、副作用、错误码和示例。
 这个入口由宿主处理：Outer 只做 `answer`（回答）、`ask`（必要澄清）、`delegate`（委派）或 `stop`；
+`plan` 只能随 `update_plan` 提交，`delegate` 携带 `plan` 会以 `INVALID_ARGUMENT` 拒绝，而不是接受后忽略；
 委派后宿主直接建立标准两步计划（`preset` 准备预设，`sprite` 组合并保存），Plan 只在步骤受阻或整批调用没有新进展时被唤醒（报告
 `needs_input` 的步骤带着 `questions` 直接交给 Outer 向用户提问，因为只有 Outer 能提问），`update_plan` 只发送未完成的步骤，已完成步骤由宿主保留，
 `input_refs` 在建立计划时即校验产出模块（`steps.<id>.outputs.presets` 需 preset 模块，

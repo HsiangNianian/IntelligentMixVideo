@@ -124,8 +124,9 @@ class PlanAction(Contract):
         """Require exactly the payload consumed by the selected control transition."""
         if self.action == "update_plan" and self.plan is None:
             raise ValueError(f"{self.action} requires a plan")
-        if self.action not in {"delegate", "update_plan"} and self.plan is not None:
-            raise ValueError("Only update_plan accepts a plan")
+        if self.action != "update_plan" and self.plan is not None:
+            # A delegation always starts the host's standard plan; a plan it carried would be silently ignored.
+            raise ValueError("Only update_plan accepts a plan; delegate {reason} starts the host's standard plan")
         if self.sprite_id is not None and self.action != "complete":
             raise ValueError(
                 f"sprite_id is only valid with action=complete; omit it for {self.action} "
