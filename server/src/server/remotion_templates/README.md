@@ -79,6 +79,11 @@ The isolation is Linux-only: `POST /works`, `POST /works/{id}/messages` and
 `POST /jobs/{id}/retry` return 503 naming the unsupported platform or the missing
 `bwrap`, `prlimit` or `node` before anything is queued, so on macOS the service
 starts but cannot generate templates.
+For local development on macOS only, `IMV_ALLOW_UNSANDBOXED_WORKER=true` runs the
+workers as plain Node instead (only `node` is required): generated code then runs
+with no isolation and a warning is logged at startup. The switch is off by default
+and ignored on every other system, so Linux and deployed servers always use the
+sandbox. Overlay rendering still needs the Linux sandbox and returns 503.
 Offline tests cover tool registration, deferred-tool behaviour, immutable
 storage and source consistency without a model or semantic index.
 

@@ -480,3 +480,37 @@ def test_validation_unavailable_has_an_actionable_public_message():
     call = RoundCall(tool="preset.create", status="fail", error_code="VALIDATION_UNAVAILABLE", message="[Errno 2] 'bwrap'")
     assert call.error_code == "VALIDATION_UNAVAILABLE"
     assert "Linux" in call.message and "bubblewrap" in call.message and "Errno" not in call.message
+
+
+@pytest.mark.parametrize(
+    ("platform", "allowed", "isolated"),
+    [("darwin", True, False), ("darwin", False, True), ("linux", True, True), ("win32", True, True)],
+)
+def test_unsandboxed_worker_is_macos_development_opt_in_only(monkeypatch, tmp_path, platform, allowed, isolated):
+    """只有 macOS 且显式开启时 worker 才以普通 Node 运行；其他系统即使开启也保持沙箱。"""
+    from server.remotion_templates import renderer as renderer_module
+
+    monkeypatch.setattr(renderer_module.sys, "platform", platform)
+    monkeypatch.setattr(renderer_module.shutil, "which", lambda name: f"/usr/bin/{name}")
+    settings = Settings(_env_file=None, data_dir=tmp_path, allow_unsandboxed_worker=allowed)
+    renderer = renderer_module.Renderer(settings)
+    command = renderer.command(tmp_path, worker="tool-validation-worker.mjs")
+    environment = renderer.worker_environment(tmp_path)
+    if isolated:
+        assert command[0] == "bwrap" and "IMV_WORK_ROOT" not in environment
+    else:
+        assert renderer.sandbox_problem() is None
+        assert "bwrap" not in command and command[-1].endswith("tool-validation-worker.mjs")
+        assert environment["IMV_WORK_ROOT"] == str(tmp_path.resolve())
+        assert environment["IMV_RENDERER_ROOT"] == str(settings.renderer_dir.resolve())
+        assert set(environment) == {"PATH", "HOME", "IMV_WORK_ROOT", "IMV_RENDERER_ROOT"}
+
+
+def test_unsandboxed_macos_still_requires_node(monkeypatch, tmp_path):
+    """免沙箱模式仍要求 Node；缺失时给出明确原因而不是启动失败。"""
+    from server.remotion_templates import renderer as renderer_module
+
+    monkeypatch.setattr(renderer_module.sys, "platform", "darwin")
+    monkeypatch.setattr(renderer_module.shutil, "which", lambda name: None)
+    renderer = renderer_module.Renderer(Settings(_env_file=None, data_dir=tmp_path, allow_unsandboxed_worker=True))
+    assert renderer.sandbox_problem() == "node is not installed"

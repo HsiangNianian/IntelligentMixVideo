@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import shutil
 import signal
@@ -53,11 +54,19 @@ def keyframes(spec: TemplateSpec) -> list[int]:
 
 
 class Renderer:
-    """Own subprocess lifetime; no fallback ever executes untrusted code in the API environment."""
+    """Own subprocess lifetime; untrusted code runs only in the Linux sandbox unless a macOS dev host opts out."""
 
     def __init__(self, settings: Settings) -> None:
         """Use only server-owned executable and font paths."""
         self.settings = settings
+        if self.unsandboxed():
+            logging.getLogger("uvicorn.error").warning(
+                "IMV_ALLOW_UNSANDBOXED_WORKER is on: generated code runs without isolation; for development only."
+            )
+
+    def unsandboxed(self) -> bool:
+        """True only on macOS with the explicit development opt-in; every other system always isolates."""
+        return self.settings.allow_unsandboxed_worker and sys.platform == "darwin"
 
     def worker_browser_path(self) -> str:
         """Return the browser path visible to the Linux sandbox worker."""
@@ -69,6 +78,8 @@ class Renderer:
         The sandbox is bubblewrap on Linux with prlimit and Node, so a missing piece is reported
         before a task is accepted instead of surfacing later as a failed tool call.
         """
+        if self.unsandboxed():
+            return None if shutil.which("node") else "node is not installed"
         if sys.platform != "linux":
             return f"the isolated validator runs only on Linux, this host is {sys.platform}"
         for tool in ("bwrap", "prlimit", "node"):
@@ -77,8 +88,18 @@ class Renderer:
         return None
 
     def worker_environment(self, directory: Path) -> dict[str, str]:
-        """Expose only a fixed executable search path to an isolated worker."""
-        return {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+        """Expose only a fixed executable search path to an isolated worker.
+
+        Without the sandbox there is no ``/work`` or ``/renderer`` mount, so the worker is told where they are.
+        """
+        environment = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+        if self.unsandboxed():
+            environment.update(
+                HOME=str(directory.resolve()),
+                IMV_WORK_ROOT=str(directory.resolve()),
+                IMV_RENDERER_ROOT=str(self.settings.renderer_dir.resolve()),
+            )
+        return environment
 
     def verify_environment(self, report: ValidationReport) -> None:
         """Reject evidence if managed code, dependencies, fonts or executables changed since rendering."""
@@ -160,6 +181,8 @@ class Renderer:
             raise ValueError("Unknown isolated renderer worker")
         settings = self.settings
         node = Path(shutil.which("node") or "/usr/bin/node").resolve()
+        if self.unsandboxed():
+            return [str(node), "--max-old-space-size=2048", str(settings.renderer_dir.resolve() / worker)]
         command = [
             "bwrap",
             "--unshare-all",
@@ -254,7 +277,7 @@ class Renderer:
                     stderr=log,
                     cwd=directory,
                     start_new_session=True,
-                    env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+                    env=self.worker_environment(directory),
                 )
                 try:
                     async with asyncio.timeout(timeout):
