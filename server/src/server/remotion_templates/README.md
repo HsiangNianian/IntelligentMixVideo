@@ -143,7 +143,9 @@ successful generation attempt does not remove the completion requirement.
 Drafts are handles: neither the model nor the snapshot carries Sprite or draft source, so a large
 composition is never copied back verbatim. Presets of the same source are bundled once however many
 instances use them. For an edit, the accepted base's instances are registered as `base_<instance_id>`
-Preset drafts; only the Executor's snapshot shows their source, each distinct source once. The execution
+Preset drafts; only the Executor's snapshot shows their source, each distinct source once. The session
+snapshot stays within 200 KB: a base too large for it has its largest sources omitted first (`code_omitted`,
+`legacy_code_omitted`), while their handles still compose unchanged. The execution
 snapshot shows `tool_calls_left_in_batch` and `tool_calls_left_in_task` instead of used/limit pairs.
 Every call returns a fresh `draft_id`, so the no-progress guard ignores draft handles and compares the
 content `digest` that `preset_modify` and `sprite_compose` return: repeating the same draft is no new evidence.

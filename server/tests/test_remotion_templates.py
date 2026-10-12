@@ -137,6 +137,34 @@ def test_edit_base_presets_become_drafts_and_only_the_coder_sees_their_source(tm
     assert coded["base_right"] == {"same_code_as": "base_left"}
 
 
+def test_a_large_edit_base_is_omitted_largest_first_to_fit_the_snapshot_budget(tmp_path):
+    """审计复现：快照体积上限被整体删掉后，Executor 快照里的基线源码不受限制，大基线会让请求超过提供方的 512000 字节上限。"""
+    from server.remotion_templates.tools.session import _SNAPSHOT_BYTE_BUDGET
+
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    harness = SimpleNamespace(settings=settings, renderer=None)
+    sprite = saved_sprite("bundle", "b" * 190_000, ("big",))
+    sprite.instances.append(saved_sprite("bundle", "s" * 30_000, ("small",)).instances[0])
+    spec = SimpleNamespace(sprite=sprite, composition=Composition(width=1080, height=1920, fps=30, duration_frames=30), sprite_kind="filter_overlay")
+    base = TemplateCandidate(tsx_code="bundle", config_schema={"type": "object"}, default_config={})
+    current = ToolSession(harness, spec, base, Budget(), tmp_path / "run", [], lambda *_: None, {})
+    snapshot = current.snapshot(with_code=True)
+    assert len(json.dumps(snapshot, ensure_ascii=False).encode()) <= _SNAPSHOT_BYTE_BUDGET
+    presets = snapshot["base"]["presets"]
+    assert "code" not in presets["base_big"] and "190000 bytes" in presets["base_big"]["code_omitted"]
+    assert presets["base_big"]["parameter_schema"] and presets["base_small"]["code"] == "s" * 30_000
+    # The handle still composes: the draft itself keeps its source.
+    assert current.preset_drafts["base_big"].code == "b" * 190_000
+    # A small base keeps every source, and a large legacy component is omitted the same way.
+    small_spec = SimpleNamespace(sprite=saved_sprite("bundle", "x" * 1000), composition=spec.composition, sprite_kind="filter_overlay")
+    small = ToolSession(harness, small_spec, base, Budget(), tmp_path / "small", [], lambda *_: None, {})
+    assert small.snapshot(with_code=True)["base"]["presets"]["base_title"]["code"] == "x" * 1000
+    # A legacy component holds at most 100000 characters, which only multi-byte text pushes past the budget.
+    legacy = TemplateCandidate(tsx_code="灯" * 100_000, config_schema={"type": "object"}, default_config={})
+    old = ToolSession(harness, SimpleNamespace(sprite=None, composition=spec.composition, sprite_kind="filter_overlay"), legacy, Budget(), tmp_path / "legacy", [], lambda *_: None, {}).snapshot(with_code=True)
+    assert "legacy_code" not in old["base"] and "300000 bytes" in old["base"]["legacy_code_omitted"]
+
+
 def test_full_catalog_is_registered_but_only_implemented_tools_are_public():
     """The documented catalog registers eleven tools; deferred ones stay out of the model window."""
     names = {item.name for item in registered_tools()}

@@ -38,6 +38,36 @@ from .compose import compose_source
 
 # 四个搜索回执需共享 240 KB 会话交换，留出调用参数与消息封装的空间。
 _SEARCH_BYTE_BUDGET = 40_000
+# 快照预算：provider 的请求体上限是 512000 字节，会话窗口自身上限 240000 字节，
+# 余量留给规则与工具描述。快照里只有编辑基线的源码没有上限，只能在这里按需省略。
+_SNAPSHOT_BYTE_BUDGET = 200_000
+_OMITTED = (
+    "{size} bytes of source omitted to keep the snapshot within the request limit. Compose it unchanged by its "
+    "draft_id, or write a replacement with preset_create."
+)
+
+
+def _snapshot_bytes(data: dict) -> int:
+    """测量模型实际收到的快照体积（UTF-8 字节）。"""
+    return len(json.dumps(data, ensure_ascii=False, default=str).encode())
+
+
+def _bounded_snapshot(data: dict) -> dict:
+    """超过预算时从最大的开始省略基线源码，保留草稿句柄、Schema、默认值与编排。
+
+    正常编辑的基线远低于预算，模型可见信息不变；省略的预设仍可按 draft_id 原样组合。
+    """
+    base = data.get("base") or {}
+    if _snapshot_bytes(data) <= _SNAPSHOT_BYTE_BUDGET:
+        return data
+    if "legacy_code" in base:
+        base["legacy_code_omitted"] = _OMITTED.format(size=len(base.pop("legacy_code").encode()))
+    presets = base.get("presets", {})
+    for draft_id in sorted((key for key, value in presets.items() if "code" in value), key=lambda key: -len(presets[key]["code"])):
+        if _snapshot_bytes(data) <= _SNAPSHOT_BYTE_BUDGET:
+            break
+        presets[draft_id]["code_omitted"] = _OMITTED.format(size=len(presets[draft_id].pop("code").encode()))
+    return data
 
 
 def _ts_code(item: CodeDiagnostic) -> str:
@@ -147,10 +177,11 @@ class ToolSession:
     def snapshot(self, *, with_code: bool = False) -> dict:
         """Expose task-local observations as IDs and summaries; source is only read on purpose.
 
-        ``with_code`` adds the accepted base's Preset source for the layer that edits code. Saved
-        Sprites and drafts are never repeated here: their handles are what the tools take.
+        ``with_code`` adds the accepted base's Preset source for the layer that edits code, largest
+        sources first omitted when they would exceed the snapshot budget. Saved Sprites and drafts are
+        never repeated here: their handles are what the tools take.
         """
-        return {
+        return _bounded_snapshot({
             "latest_sprite_id": self.latest_sprite_id,
             "saved_sprites": [
                 {
@@ -168,7 +199,7 @@ class ToolSession:
             },
             "preset_backend": self.catalog_backend,
             "feedback": list(self.feedback),
-        }
+        })
 
     def _base_summary(self, with_code: bool) -> dict | None:
         """Describe the accepted base as instances over base_* Preset drafts, each source listed once."""
@@ -282,7 +313,7 @@ class ToolSession:
             # A weak model reads or composes a draft handle like a stored ID; say what it is and how to use it.
             raise ToolFault("PRESET_NOT_FOUND", (
                 f"{preset_id} is a draft of this task, not a stored Preset: its source is in the snapshot "
-                f"(base.presets for base_* drafts). Change it with preset_modify {{\"preset_id\": \"{preset_id}\", \"changes\": ...}} "
+                f"(base.presets for base_* drafts, unless omitted for size). Change it with preset_modify {{\"preset_id\": \"{preset_id}\", \"changes\": ...}} "
                 f"or compose it with source {{\"kind\": \"draft\", \"draft_id\": \"{preset_id}\"}}."
             ))
         if record is None:
