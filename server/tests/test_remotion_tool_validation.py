@@ -239,6 +239,49 @@ def test_missing_transparency_stage_fails_closed(tmp_path, renderer):
         asyncio.run(ToolValidator(renderer, tmp_path).validate_render(small_request(), transparency=True))
 
 
+def test_failed_default_render_is_a_negative_report_even_with_transparency(tmp_path):
+    """审计复现：default_render 失败后 worker 仍追加 configured_render=not_run；要求透明度度量时这份完整负报告被当成缺失，真实错误丢失。"""
+    error = "Component runtime error: items is not iterable"
+
+    class Renderer(FakeRenderer):
+        """Report a failed default render followed by the not_run stage the real worker still lists."""
+
+        async def run_worker(self, directory: Path, *, worker: str, timeout_seconds=None):
+            """Return the checks up to the code stages, the failure and the skipped configured render."""
+            payload = await super().run_worker(directory, worker=worker, timeout_seconds=timeout_seconds)
+            if directory.name.startswith("validate-render-"):
+                payload["checks"] = payload["checks"][:3] + [
+                    {"name": "default_render", "status": "failed", "message": error},
+                    {"name": "configured_render", "status": "not_run", "message": "Default render failed."},
+                ]
+                payload.update(passed=False, tests=[], custom_tests_executed=0)
+            return payload
+
+    for transparency in (False, True):
+        report = asyncio.run(ToolValidator(Renderer(), tmp_path).validate_render(small_request(), transparency=transparency))
+        assert report.passed is False
+        status = {item.name: item.status for item in report.checks}
+        assert status["default_render"] == "failed" and status["configured_render"] == "not_run"
+        assert next(item for item in report.checks if item.name == "default_render").message == error
+
+
+def test_not_run_stages_do_not_hide_a_missing_failure(tmp_path):
+    """not_run 后缀只在前面确有失败阶段时才算负报告；通过阶段之后直接 not_run 仍是缺失报告。"""
+    class Renderer(FakeRenderer):
+        """Skip stages although the last executed one passed."""
+
+        async def run_worker(self, directory: Path, *, worker: str, timeout_seconds=None):
+            """Return a passing default render followed by not_run stages."""
+            payload = await super().run_worker(directory, worker=worker, timeout_seconds=timeout_seconds)
+            if directory.name.startswith("validate-render-"):
+                payload["checks"] = payload["checks"][:4] + [{"name": "configured_render", "status": "not_run"}]
+                payload.update(passed=False, tests=[], custom_tests_executed=0)
+            return payload
+
+    with pytest.raises(ValidationUnavailable, match="incomplete report"):
+        asyncio.run(ToolValidator(Renderer(), tmp_path).validate_render(small_request(), transparency=True))
+
+
 def test_policy_violation_is_reported_once_with_its_position(tmp_path):
     """worker 已带位置报告的违规不会被同文的失败检查再追加一条无位置的重复诊断。"""
     message = "Unsupported capability: exec (line 3, column 15)"

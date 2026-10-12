@@ -45,15 +45,18 @@ _FAILED_STATUSES = {"failed", "fail", "error"}
 def _reported_stages(checks: list[Any], stages: tuple[str, ...]) -> tuple[str, ...] | None:
     """Return the reported stage names when they form a usable prefix of ``stages``.
 
-    A worker that stops early always names the failing stage last, so a strict
-    prefix ending in a failure is a complete negative report.  Anything else is
-    a missing report and must not be read as one.
+    A worker that stops early names the failing stage last, optionally followed by the stages it
+    records as ``not_run`` (a failed default render still lists the configured render), so a strict
+    prefix whose last executed stage failed is a complete negative report.  Anything else is a
+    missing report and must not be read as one.
     """
     names = [str(item.get("name")) for item in checks]
     if not names or names != list(stages[: len(names)]):
         return None
-    if len(names) < len(stages) and str(checks[-1].get("status")) not in _FAILED_STATUSES:
-        return None
+    if len(names) < len(stages):
+        executed = [item for item in checks if str(item.get("status")) != "not_run"]
+        if not executed or str(executed[-1].get("status")) not in _FAILED_STATUSES:
+            return None
     return tuple(names)
 
 
