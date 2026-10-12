@@ -13,8 +13,9 @@ import { isTextTarget } from "./effects";
 import { addTrack, previewDuration, removeTrack, setTrackRange, setTrackTiming, trackDraft, updateTrack } from "./tracks";
 import { TemplateInspector, type InspectorTab } from "./TemplateInspector";
 import { TemplatePreview } from "./TemplatePreview";
-import { SpriteCatalog, SpritePlacements } from "./SpritePanels";
-import { useSpriteBindings } from "./useSpriteBindings";
+import { SpriteCatalog, SpriteClips } from "./SpritePanels";
+import { addClip, moveClip, removeClip } from "./clips";
+import { useSpriteCatalog } from "./useSpriteCatalog";
 import type { TemplateSelection } from "./TemplateHome";
 import "./template-workspace.css";
 import { Spinner } from "@/components/ui/spinner";
@@ -54,7 +55,6 @@ export function TemplateWorkspace({ selection = null, onHome }: {
   const [action, setAction] = useState<TemplateSelection | null>(null);
   const [openRequest, setOpenRequest] = useState<TemplateSelection | null>(null);
   const [attempt, setAttempt] = useState(0);
-  const [session, setSession] = useState(0);
   const [target, setTarget] = useState<string | null>("title");
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("timing");
   const [textTarget, setTextTarget] = useState<TextRole>("title");
@@ -63,17 +63,21 @@ export function TemplateWorkspace({ selection = null, onHome }: {
   const form = useRef<HTMLFormElement>(null);
   const mounted = useRef(false);
   const handledSelection = useRef<TemplateSelection | null>(null);
-  const sprites = useSpriteBindings(session, environment, current?.template_id ?? null);
+  const spriteCatalog = useSpriteCatalog(environment, (draft?.clips.length ?? 0) > 0);
   const previewLength = draft ? Math.max(0, previewDuration(draft, media)) : 0;
-  const spriteClips = useMemo(() => sprites.placements.map((placement) => ({
-    id: placement.id,
-    spriteId: placement.spriteId,
-    aspect: sprites.assets?.find((item) => item.id === placement.spriteId)?.aspect ?? 9 / 16,
-    name: sprites.assets?.find((item) => item.id === placement.spriteId)?.name ?? "Remotion 资产",
-    start: placement.start,
-    end: Math.min(previewLength, placement.start + placement.duration),
-  })).filter((clip) => clip.end > clip.start), [sprites.placements, sprites.assets, previewLength]);
-  const dirty = draft !== null && (current === null || JSON.stringify(draft) !== baseline || sprites.dirty);
+  const draftClips = draft?.clips;
+  const spriteClips = useMemo(() => (draftClips ?? []).map((clip) => {
+    const asset = spriteCatalog.assets?.find((item) => item.id === clip.sprite_id);
+    return {
+      id: clip.id,
+      spriteId: clip.sprite_id,
+      aspect: asset?.aspect ?? 9 / 16,
+      name: asset?.name ?? "Remotion 资产",
+      start: clip.start,
+      end: Math.min(previewLength, clip.start + (clip.duration ?? asset?.seconds ?? 0)),
+    };
+  }).filter((clip) => clip.end > clip.start), [draftClips, spriteCatalog.assets, previewLength]);
+  const dirty = draft !== null && (current === null || JSON.stringify(draft) !== baseline);
   const selectedTrack = draft?.tracks.find((track) => track.id === target);
   const assetTrack = selectedTrack ?? draft?.tracks.find((track) => track.id === lastTextTrack.current);
   const selectedDraft = draft && selectedTrack ? trackDraft(draft, selectedTrack) : null;
@@ -123,7 +127,6 @@ export function TemplateWorkspace({ selection = null, onHome }: {
         setMedia(undefined);
         setBaseline(JSON.stringify(next));
         setEnvironment(openRequest.environment);
-        setSession((value) => value + 1);
         setTarget(next.tracks[0]?.id ?? null);
         const initialText = next.tracks.find((track) => isTextTarget(track.target));
         lastTextTrack.current = initialText?.id ?? null;
@@ -163,24 +166,13 @@ export function TemplateWorkspace({ selection = null, onHome }: {
     setBusy(true);
     setError("");
     try {
-      // Remotion 片段单独保存，不经过 IMS 模板校验：只改了片段时不重新提交模板，模板有改动或尚未创建才走 saveTemplate。
-      const onlyClips = current !== null && sprites.dirty && JSON.stringify(draft) === baseline;
-      let saved = current;
-      if (!onlyClips || !saved) {
-        saved = await api.saveTemplate(draft, current?.template_id, environment, current?.library, sprites.placements.length > 0);
-        if (!mounted.current) return;
-        const next = toDraft(saved);
-        setCurrent(saved);
-        setDraft(next);
-        setBaseline(JSON.stringify(next));
-      }
-      if (sprites.dirty) {
-        try { await sprites.save(saved.template_id); }
-        catch (reason) {
-          if (mounted.current) setError(`${onlyClips ? "" : "模板已保存，但 "}Remotion 资产绑定保存失败：${reason instanceof Error ? reason.message : "请重试"}`);
-          return;
-        }
-      }
+      // Remotion 片段是模板的 `remotion` 轨道，与 IMS 对象在同一次请求里保存，要么都成功要么都不写入。
+      const saved = await api.saveTemplate(draft, current?.template_id, environment, current?.library);
+      if (!mounted.current) return;
+      const next = toDraft(saved);
+      setCurrent(saved);
+      setDraft(next);
+      setBaseline(JSON.stringify(next));
       toast.success(`模板「${saved.name}」已保存`);
       if (nextSelection) { setOpenRequest(nextSelection); setAttempt((value) => value + 1); }
     } catch (reason) {
@@ -235,16 +227,16 @@ export function TemplateWorkspace({ selection = null, onHome }: {
                   if (isTextTarget(added.target)) { setTextTarget(added.target); lastTextTrack.current = added.id; }
                   return result.draft;
                 })} />
-                <SpriteCatalog environment={environment} sprites={sprites} />
+                <SpriteCatalog environment={environment} catalog={spriteCatalog} onAdd={(asset) => editTrack(() => addClip(draft, asset))} />
               </aside>}
               canvas={<main className="template-workspace-canvas h-full min-w-0 overflow-y-auto border-b xl:border-b-0">
                 <TemplatePreview draft={draft} media={media} onMediaChange={setMedia} videoInputKey={`${environment}:${current?.template_id ?? draft.name}`} onCatalog={setCatalog} selectedId={target} onSelect={(id) => { if (draft.tracks.some((track) => track.id === id)) selectTarget(id); }} sprites={spriteClips} onRangeChange={(id, start, end) => {
-                  if (sprites.placements.some((item) => item.id === id)) sprites.setPlacements((items) => items.map((item) => item.id === id ? { ...item, start: Math.round(start * 1000) / 1000 } : item));
+                  if (draft.clips.some((clip) => clip.id === id)) editTrack(() => moveClip(draft, id, start));
                   else editTrack(() => setTrackRange(draft, id, start, end, media));
                 }} />
               </main>}
               inspector={<aside className="template-workspace-inspector h-full min-w-0 overflow-y-auto xl:border-l"><AppliedEffects draft={draft} catalog={catalog} duration={previewDuration(draft, media)} selected={target} onSelect={selectTarget} />
-                <SpritePlacements sprites={sprites} duration={previewLength} />
+                <SpriteClips environment={environment} clips={draft.clips} catalog={spriteCatalog} duration={previewLength} onRemove={(id) => editTrack(() => removeClip(draft, id))} />
                 {selectedTrack && <TemplateInspector track={selectedTrack} draft={selectedDraft!} catalog={catalog} duration={previewDuration(draft, media)} tab={inspectorTab} onTabChange={setInspectorTab} onTimingChange={(timing) => editTrack(() => setTrackTiming(draft, selectedTrack.id, timing))} onEffectChange={(next) => editTrack(() => updateTrack(draft, selectedTrack.id, next))} onRemove={() => editTrack(() => removeTrack(draft, selectedTrack.id))} onClose={() => setTarget(null)} />}
               </aside>}
             />

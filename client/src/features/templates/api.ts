@@ -154,15 +154,15 @@ export function getTemplate(id: string, environment: Environment = "cloud", sign
 
 /**
  * 统一创建、更新及另存为；只有调用方明确传 ID 时才覆盖已有模板，本地更新携带打开时所属的库。
- * 草稿带有 Remotion 片段，或调用方用 `allowEmpty` 声明模板已放入片段时，可以没有 IMS 效果；否则仍至少需要一个效果。
- * 片段在线路上是 `remotion` 轨道，排在 IMS 对象之后；本地模板不支持，带片段的草稿直接拒绝。
+ * 草稿带有 Remotion 片段时可以没有 IMS 效果；否则至少需要一个效果。
+ * 片段在线路上是 `remotion` 轨道，排在 IMS 对象之后，与模板在同一次请求里原子保存；本地模板不支持，带片段的草稿直接拒绝。
  */
-export function saveTemplate(draft: Draft, id?: string, environment: Environment = "cloud", library?: string, allowEmpty = false): Promise<Template> {
+export function saveTemplate(draft: Draft, id?: string, environment: Environment = "cloud", library?: string): Promise<Template> {
   if (!draft.name.trim()) return Promise.reject(new Error("请输入模板名称"));
   if (environment === "local" && draft.clips.length)
     return Promise.reject(new Error("本地模板不支持 Remotion 资产"));
   const effect_ids = draftEffects(draft);
-  if (!effect_ids.length && !allowEmpty && !draft.clips.length)
+  if (!effect_ids.length && !draft.clips.length)
     return Promise.reject(new Error("请至少选择一个效果"));
   const message = create(SaveTemplateRequestSchema, {
     name: draft.name.trim(),
