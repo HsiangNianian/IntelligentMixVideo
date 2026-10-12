@@ -9,7 +9,7 @@ from generated.imv.template.v1 import template_pb2 as pb
 from sqlalchemy import Engine, inspect, select
 
 from server.template import store
-from .conftest import SPRITE_ID, remotion_track, template_track
+from .conftest import SPRITE_ID, remotion_track, seed_sprite, template_track
 from .template_wire import post_template as _post
 
 
@@ -193,6 +193,7 @@ def test_template_protobuf_rejects_loop_conflict(
 
 def test_remotion_tracks_roundtrip_through_protobuf(client: TestClient, template_payload: dict) -> None:
     """片段轨道经 Protobuf 保存、读取后保持引用、秒数起点和空 editor，IMS 对象不带 sprite_id。"""
+    seed_sprite()
     tracks = [*template_payload["tracks"], remotion_track("clip-a", start=2.5, duration=3), remotion_track("clip-b")]
     created = _post(client, {**template_payload, "tracks": tracks})
     assert created.status_code == 201
@@ -220,6 +221,27 @@ def test_invalid_remotion_tracks_return_422_without_writing(
     response = _post(client, {**template_payload, "tracks": tracks})
     assert response.status_code == 422 and reason in response.text
     assert pb.ListTemplatesResponse.FromString(client.get("/template").content).templates == []
+
+
+def test_remotion_tracks_must_reference_published_sprites(client: TestClient, template_payload: dict) -> None:
+    """引用未发布的 Sprite 返回 422 且不写库；发布后同一个 Sprite 摆放两次可以保存，更新时引用新的未发布 Sprite 仍被拒绝。"""
+    tracks = [*template_payload["tracks"], remotion_track("clip-a"), remotion_track("clip-b", start=2)]
+    rejected = _post(client, {**template_payload, "tracks": tracks})
+    assert rejected.status_code == 422 and SPRITE_ID in rejected.text
+    assert pb.ListTemplatesResponse.FromString(client.get("/template").content).templates == []
+    seed_sprite()
+    created = _post(client, {**template_payload, "tracks": tracks})
+    assert created.status_code == 201
+    unknown = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    template_id = pb.SaveTemplateResponse.FromString(created.content).template.template_id
+    updated = _post(client, {**template_payload, "template_id": template_id, "tracks": [*tracks, remotion_track("clip-c", sprite_id=unknown)]})
+    assert updated.status_code == 422 and unknown in updated.text
+
+
+def test_templates_without_clips_never_touch_the_sprite_table(client: TestClient, template_payload: dict, template_db: Engine) -> None:
+    """普通模板的保存不查询也不创建 Sprite 表：检查只在模板含 Remotion 片段时发生。"""
+    assert _post(client, template_payload).status_code == 201
+    assert not inspect(template_db).has_table("remotion_sprites")
 
 
 def test_template_without_effects_can_be_saved_and_read_back(client: TestClient, template_payload: dict) -> None:
