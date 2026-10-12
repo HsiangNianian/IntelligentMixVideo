@@ -214,7 +214,7 @@ class PresetRecord(PresetDraft):
 | validate.code | CodeValidationInput | CodeValidationReport | 执行契约及 LSP 检查 |
 | validate.render | RenderValidationInput | RenderValidationReport | 在测试环境运行组件与脚本 |
 | sprite.compose | SpriteComposeInput | SpriteComposeOutput | 读取引用，生成组合定义与代码；不保存 sprite |
-| sprite.create | SpriteCreateInput | SpriteCreateOutput | 代码校验并保存 sprite |
+| sprite.create | SpriteCreateInput | SpriteCreateOutput | 代码校验、一次浏览器挂载的透明度检查并保存 sprite |
 | tools.inspect | ToolInspectInput | ToolDescriptor | 读取工具契约 |
 | tools.plan_execute（宿主控制） | PlanAction | JsonObject | 调整任务内的计划与执行状态 |
 
@@ -726,7 +726,7 @@ async def sprite_create(request: SpriteCreateInput) -> ToolResult[SpriteCreateOu
     ...
 ```
 
-接收 compose 的完整结果。验证固定宽高和帧率、自动计算时长、实例快照、参数结构及组合产物的一致性，并在内部执行代码校验；通过后保存新记录并返回 sprite_id。
+接收 compose 的完整结果。验证固定宽高和帧率、自动计算时长、实例快照、参数结构及组合产物的一致性，并在内部执行代码校验；Sprite 叠在用户自己的视频上，create 还会用默认参数在隔离浏览器中挂载一次，在首、尾及中间三帧度量不透明像素（alpha 不低于 242/255）的占比，至少 80% 的采样帧（5 帧中的 4 帧）有不低于 98% 的画面不透明时按 `CODE_VALIDATION_FAILED` 拒绝并说明做法，淡入或延后出现的整帧遮罩也在此列，只覆盖中间一两帧的转场仍通过。通过后保存新记录并返回 sprite_id。
 
 不能接受与实例定义脱节的任意改写产物。可重新组合或以等效方式核对 code、Schema、默认值与 instances 的一致性，不静默把传入内容改成另一份模板。修改预设实现或编排，应先得到新的 compose 结果。
 
@@ -734,7 +734,7 @@ async def sprite_create(request: SpriteCreateInput) -> ToolResult[SpriteCreateOu
 
 输入来自 compose 成功回执的 data，即 `{"sprite": <完整 SpriteDraft>}`。成功输出增加 sprite_id、created_at，并附 CodeValidationReport。
 
-错误：`INVALID_ARGUMENT`、`COMPOSITION_FAILED`、`CODE_VALIDATION_FAILED`、`VALIDATION_UNAVAILABLE`、`SPRITE_STORE_FAILED`、`TIMEOUT`。校验失败不保存；create 不运行自定义行为测试，也不声明视觉验收通过。
+错误：`INVALID_ARGUMENT`、`COMPOSITION_FAILED`、`CODE_VALIDATION_FAILED`、`VALIDATION_UNAVAILABLE`、`SPRITE_STORE_FAILED`、`TIMEOUT`。校验失败不保存；create 的挂载只度量画面是否遮住视频，不运行自定义行为测试，也不声明视觉验收通过。
 
 ## 8. 校验工具
 
@@ -1143,10 +1143,10 @@ inspect 自身也可被查询。已知工具列表由集成方提供给 Agent；
 6. compose 返回完整 SpriteDraft，示例时间编排得到 150 帧、5 秒。
 7. Agent 把 SpriteDraft 的 code、parameter_schema、default_parameters 作为 component，composition.duration_frames 作为测试总帧数，连同需求断言交给 validate.render。
 8. 工具返回真实检查报告。上层 Agent 根据诊断修改预设副本、参数或编排，再次 compose 和校验；工具本身不实现修复循环。
-9. 满足调用方验收要求后，调用 sprite.create 保存。create 再执行入库代码校验，返回 SpriteRecord。
+9. 满足调用方验收要求后，调用 sprite.create 保存。create 再执行入库代码校验和一次浏览器挂载的透明度检查，返回 SpriteRecord。
 10. 上层使用保存后的代码、默认参数和 composition 接入自己的预览流程；本契约不规定预览 UI 或下载方式。
 
-校验并不是隐式发布事务：sprite.create 不要求调用方提交行为测试回执，也不会声称已执行该测试。调用顺序和业务验收决策属于上层，工具入库门禁只保证其明确承诺的代码检查与数据一致性。
+校验并不是隐式发布事务：sprite.create 不要求调用方提交行为测试回执，也不会声称已执行该测试。调用顺序和业务验收决策属于上层，工具入库门禁只保证其明确承诺的代码检查、透明度检查与数据一致性。
 
 ## 11. 实施方验收用例
 

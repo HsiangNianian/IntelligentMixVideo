@@ -195,6 +195,7 @@ def test_sprite_that_hides_the_video_is_refused_with_an_actionable_reason(tmp_pa
     reason = "The Sprite hides the video: at least 98% of the 1080x1920 canvas is opaque in 4 of the 5 sampled frames."
 
     async def run():
+        """Refuse a Sprite the browser measured as opaque in most sampled frames, then check nothing was stored."""
         current = session(tmp_path)
         patch_validation(current)
 
@@ -229,6 +230,7 @@ def test_creation_mounts_the_sprite_once_and_completion_reuses_that_report(tmp_p
             return render_report(request.duration_frames, CheckResult(name="transparency", status="passed"))
 
     async def run():
+        """Create a Sprite through the real session method, then read back the report the host's final check uses."""
         current = session(tmp_path)
         patch_validation(current)
         del current.validate_render  # use the real session method so the report is cached
