@@ -249,6 +249,20 @@ def test_an_edit_can_reuse_the_base_drafts(monkeypatch, tmp_path):
     assert run.state.completed["preset"]["presets"] == [{"kind": "draft", "draft_id": "base_title"}]
 
 
+def test_an_edit_of_a_legacy_base_is_told_to_write_a_preset(monkeypatch, tmp_path):
+    """旧版基线没有登记 base_* 草稿：委派后的标准计划不提复用草稿，而是按 legacy_code 写预设，预设步骤也不会凭空算作就绪。"""
+    run, harness = new_run(monkeypatch, tmp_path, [delegate(), report("exec-1")], intent={
+        "original_request": {"description": "demo"}, "accepted_base": {"name": "old"},
+    })
+    run.session.preset_drafts = {}
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+    goal = run.state.plan.steps[0].goal
+    assert "base.legacy_code" in goal and "base_*" not in goal
+    assert harness.roles == ["outer", "executor", "executor"]
+    assert run.state.index == 0 and "no Preset is ready" in run.session.feedback[0]
+
+
 def test_a_surplus_closing_brace_does_not_waste_the_call_and_is_audited(monkeypatch, tmp_path):
     """回放 bb0decec：28k token 的 sprite_create 只因结尾多一个括号失败；现在照常执行，并在私有审计中记录被丢弃的文本。"""
     trailing = AssistantMessage(tool_calls=[{

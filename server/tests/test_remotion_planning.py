@@ -167,3 +167,16 @@ def test_default_plan_composes_and_saves_in_one_step(edit):
     assert plan.steps[1].tool_modules == ["preset", "sprite"]
     assert plan.steps[1].input_refs == ["user_intent", "steps.preset.outputs.presets"]
     assert ("accepted_base" in plan.steps[0].input_refs) is edit
+
+
+def test_a_legacy_base_is_not_offered_base_drafts_it_does_not_have():
+    """审计复现：没有 Sprite 的旧版基线也走编辑计划，提示却让执行层复用并不存在的 base_* 草稿；现在改为提示按 legacy_code 写预设。"""
+    from server.remotion_templates.planning import default_plan
+
+    legacy = default_plan(edit=True, base_drafts=False)
+    assert "accepted_base" in legacy.steps[0].input_refs
+    assert "base_*" not in legacy.steps[0].goal and "base_*" not in legacy.steps[1].goal
+    assert "base.legacy_code" in legacy.steps[0].goal
+    sprite_base = default_plan(edit=True)
+    assert "base_* drafts" in sprite_base.steps[0].goal and "base_* drafts" in sprite_base.steps[1].goal
+    assert "base_*" not in default_plan(edit=False).steps[1].goal

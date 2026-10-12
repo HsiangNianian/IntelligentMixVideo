@@ -154,7 +154,8 @@ The host records each step's outputs from tool receipts: the Sprites `sprite_cre
 sources that `preset_create`, `preset_search {preset_id}` or `preset_modify` made ready. A step with the
 `sprite` module cannot be reported `step_done` before a `sprite_create` in that step succeeded, and a
 `preset` step needs at least one ready Preset (or, for an edit, the base drafts); the refusal names the tool
-to call next. Plans reference `steps.<id>.outputs.presets` or `steps.<id>.outputs.sprite`, and a reference to
+to call next. A pre-Sprite base registers no base drafts: its edit plan says to write the Preset from
+`base.legacy_code` instead of reusing drafts. Plans reference `steps.<id>.outputs.presets` or `steps.<id>.outputs.sprite`, and a reference to
 an output the earlier step's modules cannot produce is refused when the Plan is built. `update_plan` takes
 only the unfinished steps; completed steps are kept by the host and a resent copy is ignored by ID, with
 the ignored IDs listed in the receipt (`ignored_step_ids`) so the Plan knows to redo work under a new ID. At the

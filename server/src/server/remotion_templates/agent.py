@@ -501,7 +501,9 @@ class AgentRun:
             if self.state.plan is not None:
                 # A re-delegation resumes the existing Plan, whose completed steps stay immutable.
                 return Layer.PLAN, None, None
-            self.state.control(PlanAction(action="update_plan", plan=default_plan(edit=bool(self.session.intent.get("accepted_base")))))
+            # A pre-Sprite base is still an edit, but it registered no base_* drafts to reuse.
+            plan = default_plan(edit=bool(self.session.intent.get("accepted_base")), base_drafts=bool(getattr(self.session, "preset_drafts", None)))
+            self.state.control(PlanAction(action="update_plan", plan=plan))
             self.batch_evidence = 0
             return Layer.EXECUTOR, None, None
         if args.action in {"answer", "ask"}:

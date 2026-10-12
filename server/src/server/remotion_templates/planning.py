@@ -74,8 +74,22 @@ class Plan(PlanDraft):
         return self
 
 
-def default_plan(edit: bool) -> Plan:
-    """The host's standard two-step pipeline, so the Plan model is only needed when something goes wrong."""
+def default_plan(edit: bool, base_drafts: bool | None = None) -> Plan:
+    """The host's standard two-step pipeline, so the Plan model is only needed when something goes wrong.
+
+    ``base_drafts`` says whether the accepted base registered ``base_*`` Preset drafts (default: ``edit``);
+    a pre-Sprite base has one legacy component instead, which the edit rewrites as a Preset.
+    """
+    base_drafts = edit if base_drafts is None else base_drafts
+    if base_drafts:
+        edit_hint = "For this edit, reuse the base_* drafts listed in base, or save a changed copy with preset_create."
+    elif edit:
+        edit_hint = (
+            "For this edit, the accepted base is one legacy component (base.legacy_code), not reusable drafts: "
+            "write the Preset it needs with preset_create."
+        )
+    else:
+        edit_hint = ""
     return Plan(
         goal="Build and save the Sprite the user asked for.",
         steps=[
@@ -84,7 +98,7 @@ def default_plan(edit: bool) -> Plan:
                 goal=(
                     "Get the Preset(s) the Sprite needs ready. Reuse a fitting stored Preset (read it with preset_search "
                     "{preset_id}) instead of writing a near copy; otherwise write complete code with preset_create. "
-                    + ("For this edit, reuse the base_* drafts listed in base, or save a changed copy with preset_create." if edit else "")
+                    + edit_hint
                 ).strip(),
                 input_refs=["user_intent", *(["accepted_base"] if edit else [])],
                 tool_modules=["preset"],
@@ -93,7 +107,7 @@ def default_plan(edit: bool) -> Plan:
             Step(
                 id="sprite",
                 goal=(
-                    "Compose the Presets from step_inputs (or base_* drafts) with sprite_compose, one instance per "
+                    f"Compose the Presets from step_inputs{' (or base_* drafts)' if base_drafts else ''} with sprite_compose, one instance per "
                     "visual element (a filter is one full-canvas instance), then save it with sprite_create {draft_id}."
                 ),
                 input_refs=["user_intent", "steps.preset.outputs.presets"],
