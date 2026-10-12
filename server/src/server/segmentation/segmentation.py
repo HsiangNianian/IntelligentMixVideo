@@ -62,6 +62,20 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     diagnostics 供共用入口记录已完成阶段的详细 trace；返回值只保留原有统计字段。
     """
     trace = diagnostics["trace"]
+    title = payload.get("title")
+    title_only = payload.get("asr_result") is None and title is not None
+    if not title_only:
+        # HTTP 类型校验由路由负责；有 ASR 时仍须有效文案，标点不参与对齐。
+        script = payload.get("script") or ""
+        chars = [
+            (i, unicodedata.normalize("NFKC", c).lower())
+            for i, c in enumerate(script)
+            if not c.isspace() and c not in PUNCTUATION
+        ]
+        if not chars:
+            raise ValueError("文案缺少有效字符。")
+        if payload.get("asr_result") is None:
+            raise ValueError("缺少 ASR 结果或标题。")
     # 客户端完整参数覆盖模型字段；服务端 HTTP 策略仍从环境读取，不修改共享状态。
     diagnostics["stage"] = "config"
     try:
@@ -83,8 +97,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
         )
     ):
         raise RuntimeError("模型地址必须有效，远程 HTTP 需要显式授权。")
-    title = payload.get("title")
-    if payload.get("asr_result") is None and title is not None:
+    if title_only:
         diagnostics["stage"] = "keywords"
         with OpenAI(base_url=base_url, api_key=key, timeout=config.llm_timeout_seconds, max_retries=config.llm_max_retries) as client:
             response = client.chat.completions.create(
@@ -93,21 +106,11 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                           {"role": "user", "content": title}],
             )
         try:
-            return {"title_keyword": json.loads(response.choices[0].message.content).get("title_keyword", "")}
+            keyword = json.loads(response.choices[0].message.content).get("title_keyword", "")
+            return {"title_keyword": keyword if isinstance(keyword, str) else ""}
         except (AttributeError, IndexError, TypeError, ValueError):
             raise RuntimeError("模型标题提词响应格式无效。") from None
     diagnostics["stage"] = "input"
-    # HTTP 类型校验由路由负责；有 ASR 时仍须有效文案，标点不参与对齐。
-    script = payload.get("script") or ""
-    chars = [
-        (i, unicodedata.normalize("NFKC", c).lower())
-        for i, c in enumerate(script)
-        if not c.isspace() and c not in PUNCTUATION
-    ]
-    if not chars:
-        raise ValueError("文案缺少有效字符。")
-    if payload.get("asr_result") is None:
-        raise ValueError("缺少 ASR 结果或标题。")
     # ponytail: MVP 信任上游 Fun-ASR 结构与词时间，只取第一音轨；接入其他来源时再扩展校验。
     sentences = payload["asr_result"]["transcripts"][0]["sentences"]
     # timeline_sentences 与 timeline 下标一一对应，记录每个字符所属的 ASR 句序号。

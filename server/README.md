@@ -191,7 +191,7 @@ uv sync --locked --default-index https://pypi.org/simple
 uv run --locked --project server server
 ```
 
-HTTP 请求体的 `script`、`asr_result`、`title` 均可省略或为 null，字段类型仍由 Pydantic 校验。提供 ASR 时仍须有效 `script`；`asr_result` 省略或为 null 且提供 `title` 时，只调用一次模型提取标题关键词，忽略 `script`，仅返回 `{"title_keyword":"关键词"}`。例如请求 `{"title":"散养土鸡上新"}` 即可；这一分支不校验词长或原文匹配，缺少返回字段按空字符串处理。也可在代码中读取 ASR 输出文件并调用：
+HTTP 请求体的 `script`、`asr_result`、`title` 均可省略或为 null，字段类型仍由 Pydantic 校验。提供 ASR 时仍须有效 `script`；`asr_result` 省略或为 null 且提供 `title` 时，只调用一次模型提取标题关键词，忽略 `script`，仅返回 `{"title_keyword":"关键词"}`。例如请求 `{"title":"散养土鸡上新"}` 即可；这一分支不校验词长或原文匹配，缺少返回字段或返回非字符串时按空字符串处理。也可在代码中读取 ASR 输出文件并调用：
 
 ```python
 import json

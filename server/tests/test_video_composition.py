@@ -68,9 +68,9 @@ def test_material_voice_uses_order_and_full_audio(upstreams, client, composition
 
 
 @pytest.mark.parametrize("music", [False, True])
-@pytest.mark.parametrize("keyword", ["标题", ""])
-def test_material_silent_extracts_title_without_asr(upstreams, client, composition_case, monkeypatch, music, keyword):
-    """无声模式只调用一次真实标题提词，保留长标题、动画和音乐，关键词样式传至 IMS。"""
+@pytest.mark.parametrize("keyword,expected_keyword", [("标题", "标题"), ("", ""), (123, "")])
+def test_material_silent_extracts_title_without_asr(upstreams, client, composition_case, monkeypatch, music, keyword, expected_keyword):
+    """无声只提一次标题词，非字符串按空词合成；保留长标题、动画、音乐和合法关键词样式。"""
     from unittest.mock import MagicMock
     from pydantic import SecretStr
     import server.asr.asr as asr_module
@@ -104,7 +104,7 @@ def test_material_silent_extracts_title_without_asr(upstreams, client, compositi
     assert [(clip["TimelineIn"], clip["TimelineOut"]) for clip in clips] == [(0, 3), (3, 4.5)]
     assert [clip["Duration"] for clip in clips] == [3, 1.5]
     title = timeline["SubtitleTracks"][0]["SubtitleTrackClips"][0]
-    expected = request["title"].replace("标题", r"{\b1}标题{\b0}", 1) if keyword else request["title"]
+    expected = request["title"].replace("标题", r"{\b1}标题{\b0}", 1) if expected_keyword else request["title"]
     assert title["Content"] == expected and (title["TimelineIn"], title["TimelineOut"]) == (0, 4.5)
     assert title["AaiMotionIn"] == 0.5 and "AaiMotionInEffect" in title
     assert len(timeline["SubtitleTracks"]) == 2  # 标题和模板气泡，没有字幕。
@@ -116,7 +116,7 @@ def test_material_silent_extracts_title_without_asr(upstreams, client, compositi
     assert model.chat.completions.create.call_args.kwargs["messages"][1]["content"] == request["title"]
     assert factory.return_value.__exit__.call_count == 1
     assert upstreams["posts"] == upstreams["gets"] == []
-    assert data["segmentation"] == {"title_keyword": keyword} and "matches" not in data
+    assert data["segmentation"] == {"title_keyword": expected_keyword} and "matches" not in data
     assert json.loads(upstreams["submits"][0]["timeline"]) == timeline
     assert "compositionMode" not in data["request"]
     assert notified(task_id)["data"]["notification_status"] == "sent"

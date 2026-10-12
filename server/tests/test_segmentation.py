@@ -626,10 +626,15 @@ def test_title_only_calls_model_once(model, client, data, keyword):
 
 @pytest.mark.parametrize("raw,status,expected", [
     ('{}', 200, {"title_keyword": ""}),
+    ('{"title_keyword":null}', 200, {"title_keyword": ""}),
+    ('{"title_keyword":123}', 200, {"title_keyword": ""}),
+    ('{"title_keyword":true}', 200, {"title_keyword": ""}),
+    ('{"title_keyword":["土鸡"]}', 200, {"title_keyword": ""}),
+    ('{"title_keyword":{"word":"土鸡"}}', 200, {"title_keyword": ""}),
     ('{broken', 502, {"error": {"message": "模型标题提词响应格式无效。"}}),
 ])
 def test_title_only_missing_keyword_and_broken_json(model, client, raw, status, expected):
-    """未返回标题词时保持空词；无法解析模型响应时明确失败且关闭客户端，不额外重试。"""
+    """标题词缺失或非字符串时保持空词；无法解析响应时明确失败且关闭客户端，不额外重试。"""
     model[1].chat.completions.create.side_effect = None
     model[1].chat.completions.create.return_value = SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content=raw))])
@@ -679,9 +684,16 @@ def test_required_field_types(model, client, data, field, error_type):
     model[0].assert_not_called()
 
 
-@pytest.mark.parametrize("data", [{}, {"script": "甲"}, {"script": "甲", "asr_result": None}, {"asr_result": {}}])
-def test_incomplete_segmentation_without_title(model, client, data):
-    """没有标题时不能进入提词分支，正文或 ASR 缺失仍报 422，不调用模型。"""
+@pytest.mark.parametrize("configuration", ["valid", "missing", "invalid"])
+@pytest.mark.parametrize("data", [{}, {"script": "甲"}, {"script": "甲", "asr_result": None}, {"asr_result": {}},
+                                  {"script": " 。\t", "asr_result": {}}, {"title": "标题", "asr_result": {}}])
+def test_incomplete_segmentation_input_precedes_config(model, client, monkeypatch, data, configuration):
+    """普通切片输入不完整时优先报 422，即使配置缺失或损坏也不调用模型。"""
+    if configuration == "missing":
+        for name in ("IMV_LLM_BASE_URL", "IMV_LLM_API_KEY", "IMV_LLM_MODEL"):
+            monkeypatch.delenv(name)
+    elif configuration == "invalid":
+        monkeypatch.setenv("IMV_LLM_TIMEOUT_SECONDS", "invalid")
     assert client.post("/segmentations", json=data).status_code == 422
     model[0].assert_not_called()
 
