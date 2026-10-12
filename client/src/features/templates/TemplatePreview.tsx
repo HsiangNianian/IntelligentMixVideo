@@ -24,6 +24,8 @@ interface Props {
   onSelect?: (id: string) => void;
   onRangeChange?: (id: string, start: number, end: number) => void;
   sprites?: SpriteClip[];
+  /** 在画面上拖动所选 Remotion 资产时回报新的内容中心坐标（画布像素）。 */
+  onSpriteMove?: (id: string, x: number, y: number) => void;
 }
 
 /** 时间轴标记由三条片段和一条播放指针组成。 */
@@ -32,7 +34,7 @@ function TimelineMark() {
 }
 
 /** 每次修改全量更新时间线并回到开头；串行处理，快速修改只应用最新草稿。 */
-export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, onCatalog, selectedId, onSelect, onRangeChange, sprites = [] }: Props) {
+export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, onCatalog, selectedId, onSelect, onRangeChange, sprites = [], onSpriteMove }: Props) {
   const duration = Math.max(0, previewDuration(draft, media));
   const stage = useRef<HTMLDivElement>(null);
   const container = useRef<HTMLDivElement>(null);
@@ -341,7 +343,7 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
       <div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><span className="template-live-dot size-1.5 rounded-full" aria-hidden="true" /><h2 className="text-[13px] font-semibold">实时预览</h2></div><span className="rounded-md border px-2 py-1 text-[11px] tabular-nums text-muted-foreground">{canvas ? `${canvas.width} × ${canvas.height}` : "正在读取画布尺寸"}</span></div>
       <div ref={stage} className="template-preview-canvas relative mx-auto aspect-video w-full overflow-hidden rounded-lg bg-black" style={canvas ? { aspectRatio: `${canvas.width} / ${canvas.height}`, maxWidth: `${48 * canvas.width / canvas.height}dvh`, "--preview-ratio": canvas.width / canvas.height } as CSSProperties : undefined} aria-label="模板视频预览">
         <div ref={container} className="template-preview-player absolute inset-0 size-full" />
-        {sprites.length > 0 && canvas && <SpriteOverlay ref={overlay} clips={sprites} stageAspect={canvas.width / canvas.height} initialTime={time} />}
+        {sprites.length > 0 && canvas && <SpriteOverlay ref={overlay} clips={sprites} stageAspect={canvas.width / canvas.height} initialTime={time} selectedId={selectedId} onMove={onSpriteMove} />}
         {!ready && !failed && <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-white/60"><Spinner className="size-6" /></div>}
         <Hint label="全屏预览"><Button type="button" variant="ghost" size="icon-xs" aria-label="全屏预览" onClick={() => { if (stage.current) void stage.current.requestFullscreen(); }} className="template-preview-fullscreen absolute bottom-2 right-2 rounded-[5px] p-0"><Maximize2 className="size-3" aria-hidden="true" /></Button></Hint>
       </div>

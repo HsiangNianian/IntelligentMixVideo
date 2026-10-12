@@ -9,6 +9,7 @@ import {
   type SpriteSummary,
 } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { SpriteAsset } from "./model";
+import { assetParameter } from "./parameters";
 
 /** 一次发布选择：文字类型必须指明接收业务文字（和可选关键词）的参数字段。 */
 export interface PublishChoice {
@@ -62,6 +63,10 @@ function toAsset(summary: SpriteSummary): SpriteAsset {
     width: summary.canvas?.width ?? 0,
     height: summary.canvas?.height ?? 0,
     fps: summary.canvas?.fps ?? 0,
+    box: summary.contentBox && summary.contentBox.width > 0 && summary.contentBox.height > 0
+      ? { x: summary.contentBox.x, y: summary.contentBox.y, width: summary.contentBox.width, height: summary.contentBox.height }
+      : { x: 0, y: 0, width: summary.canvas?.width ?? 0, height: summary.canvas?.height ?? 0 },
+    parameters: summary.parameters.map(assetParameter).filter((item) => item !== null),
   };
 }
 

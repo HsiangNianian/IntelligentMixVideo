@@ -1,4 +1,5 @@
 /** 将模板草稿转换为 SDK 5.2.2 母版、文字和特效轨道，并生成时间轴展示数据。 */
+import type { ClipTransform, ContentBox } from "@/features/sprites/parameters";
 import {
   effectGroups,
   type Draft,
@@ -60,6 +61,12 @@ export interface SpriteClip {
   name: string;
   start: number;
   end: number;
+  /** 这次摆放的参数覆盖（嵌套对象），播放器合并到资产默认值之上。 */
+  values?: Record<string, unknown>;
+  /** 宿主变换，未设置的字段取默认值。 */
+  transform?: ClipTransform;
+  /** 资产画布与内容区域，用于在预览上拖动位置；movable 为 false 的分类只能调整强度。 */
+  canvas?: { width: number; height: number; box: ContentBox; movable: boolean };
 }
 
 /** 每个 Remotion 资产独占一行；它不属于 SDK 时间线，仅在时间轴上占位并可拖动。 */

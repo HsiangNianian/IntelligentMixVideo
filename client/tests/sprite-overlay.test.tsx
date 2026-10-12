@@ -1,6 +1,6 @@
 /** Remotion 资产叠加预览核心测试：就绪握手、按预览时间逐帧定位、区间外隐藏、旧资产降级；执行 bun run test。 */
 import { expect, spyOn, test } from "bun:test";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRef } from "react";
 import { SpriteOverlay, type SpriteOverlayHandle } from "@/features/templates/SpriteOverlay";
 
@@ -94,4 +94,52 @@ test("增删资产后每个播放器继续使用稳定通道同步", async () =>
   expect(other.src).toBe(otherSrc);
   await act(async () => { ref.current!.setTime(2); await new Promise((resolve) => requestAnimationFrame(resolve)); });
   expect(posts[1]).toHaveBeenLastCalledWith({ type: "imv-preview-sync", channel: new URL(other.src).hash.slice(1), time: 1 }, "*");
+});
+
+/** 带参数覆盖、宿主变换与画布信息的可移动片段。 */
+const placed = {
+  ...clip, values: { text: "新品" }, transform: { x: 300 },
+  canvas: { width: 1080, height: 1920, box: { x: 90, y: 760, width: 900, height: 400 }, movable: true },
+};
+
+// 场景：回报 host 能力的播放器在就绪后收到这次摆放的参数与宿主变换；内容变化时重发，未变化时不重复发送。
+test("支持参数覆盖的播放器收到参数与宿主变换", async () => {
+  const ref = createRef<SpriteOverlayHandle>();
+  const view = render(<SpriteOverlay ref={ref} clips={[placed]} stageAspect={16 / 9} initialTime={0} />);
+  const frame = screen.getByTitle<HTMLIFrameElement>("Remotion 资产预览：霓虹标题");
+  const post = spyOn(frame.contentWindow!, "postMessage");
+  const channel = new URL(frame.src).hash.slice(1);
+  await act(async () => {
+    window.dispatchEvent(new MessageEvent("message", { source: frame.contentWindow, data: { type: "imv-preview-ready", channel, sync: true, host: true } }));
+  });
+  const updates = () => post.mock.calls.map(([message]) => message as Record<string, unknown>).filter((message) => message.type === "imv-preview-update");
+  expect(updates()).toEqual([{ type: "imv-preview-update", channel, requestId: 1, values: { text: "新品" }, background: "", host: { transform: { x: 300 } } }]);
+  view.rerender(<SpriteOverlay ref={ref} clips={[{ ...placed }]} stageAspect={16 / 9} initialTime={0} />);
+  expect(updates()).toHaveLength(1);
+  view.rerender(<SpriteOverlay ref={ref} clips={[{ ...placed, transform: { x: 400, scale: 2 } }]} stageAspect={16 / 9} initialTime={0} />);
+  expect(updates().at(-1)).toMatchObject({ requestId: 2, host: { transform: { x: 400, scale: 2 } } });
+});
+
+// 场景：能逐帧同步但不支持参数覆盖的旧包仍按时间显示，只提示参数调整不显示在预览里，不发送参数。
+test("不支持参数覆盖的资产只同步时间并提示", async () => {
+  const { post, ready, setTime } = mount();
+  await ready(true);
+  await setTime(2);
+  expect(post.mock.calls.some(([message]) => (message as { type: string }).type === "imv-preview-update")).toBe(false);
+  expect(screen.getByRole("status").textContent).toContain("预览不显示参数调整");
+});
+
+// 场景：选中的可移动资产在画面上显示位置框；方向键按步长移动并限制在画布内，未选中或不可移动的资产没有位置框。
+test("选中的资产可以用位置框调整位置", () => {
+  const moves: [string, number, number][] = [];
+  const ref = createRef<SpriteOverlayHandle>();
+  const view = render(<SpriteOverlay ref={ref} clips={[placed]} stageAspect={16 / 9} initialTime={0} selectedId="sprite-a" onMove={(id, x, y) => moves.push([id, x, y])} />);
+  const handle = screen.getByRole("slider", { name: "拖动调整位置：霓虹标题" });
+  expect(handle.style.left).toBe(`${((300 - 450) / 1080) * 100}%`);
+  fireEvent.keyDown(handle, { key: "ArrowRight" });
+  fireEvent.keyDown(handle, { key: "ArrowUp", shiftKey: true });
+  fireEvent.keyDown(handle, { key: "ArrowLeft", shiftKey: true });
+  expect(moves).toEqual([["sprite-a", 310, 960], ["sprite-a", 300, 910], ["sprite-a", 250, 960]]);
+  view.rerender(<SpriteOverlay ref={ref} clips={[{ ...placed, canvas: { ...placed.canvas, movable: false } }]} stageAspect={16 / 9} initialTime={0} selectedId="sprite-a" onMove={() => {}} />);
+  expect(screen.queryByRole("slider")).toBeNull();
 });

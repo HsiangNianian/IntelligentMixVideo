@@ -14,7 +14,9 @@ import { addTrack, previewDuration, removeTrack, setTrackRange, setTrackTiming, 
 import { TemplateInspector, type InspectorTab } from "./TemplateInspector";
 import { TemplatePreview } from "./TemplatePreview";
 import { SpriteCatalog, SpriteClips } from "./SpritePanels";
-import { addClip, moveClip, removeClip } from "./clips";
+import { SpriteClipInspector } from "./SpriteClipInspector";
+import { addClip, moveClip, removeClip, setClipParameter, setClipTransform } from "./clips";
+import { overrideValues, transformFields } from "@/features/sprites/parameters";
 import { useSpriteCatalog } from "./useSpriteCatalog";
 import type { TemplateSelection } from "./TemplateHome";
 import "./template-workspace.css";
@@ -75,12 +77,17 @@ export function TemplateWorkspace({ selection = null, onHome }: {
       name: asset?.name ?? "Remotion 资产",
       start: clip.start,
       end: Math.min(previewLength, clip.start + (clip.duration ?? asset?.seconds ?? 0)),
+      values: overrideValues(clip.parameters),
+      transform: clip.transform,
+      canvas: asset ? { width: asset.width, height: asset.height, box: asset.box, movable: transformFields(asset.kind).includes("x") } : undefined,
     };
   }).filter((clip) => clip.end > clip.start), [draftClips, spriteCatalog.assets, previewLength]);
   const dirty = draft !== null && (current === null || JSON.stringify(draft) !== baseline);
   const selectedTrack = draft?.tracks.find((track) => track.id === target);
   const assetTrack = selectedTrack ?? draft?.tracks.find((track) => track.id === lastTextTrack.current);
   const selectedDraft = draft && selectedTrack ? trackDraft(draft, selectedTrack) : null;
+  // IMS 对象与 Remotion 片段共用一个选中状态，右栏只显示其中一种设置。
+  const selectedClip = draft?.clips.find((clip) => clip.id === target);
 
   useEffect(() => {
     mounted.current = true;
@@ -230,13 +237,19 @@ export function TemplateWorkspace({ selection = null, onHome }: {
                 <SpriteCatalog environment={environment} catalog={spriteCatalog} onAdd={(asset) => editTrack(() => addClip(draft, asset, spriteCatalog.assets ?? []))} />
               </aside>}
               canvas={<main className="template-workspace-canvas h-full min-w-0 overflow-y-auto border-b xl:border-b-0">
-                <TemplatePreview draft={draft} media={media} onMediaChange={setMedia} videoInputKey={`${environment}:${current?.template_id ?? draft.name}`} onCatalog={setCatalog} selectedId={target} onSelect={(id) => { if (draft.tracks.some((track) => track.id === id)) selectTarget(id); }} sprites={spriteClips} onRangeChange={(id, start, end) => {
+                <TemplatePreview draft={draft} media={media} onMediaChange={setMedia} videoInputKey={`${environment}:${current?.template_id ?? draft.name}`} onCatalog={setCatalog} selectedId={target} onSelect={(id) => { if (draft.tracks.some((track) => track.id === id) || draft.clips.some((clip) => clip.id === id)) selectTarget(id); }} sprites={spriteClips} onSpriteMove={(id, x, y) => editTrack(() => setClipTransform(draft, id, { x, y }))} onRangeChange={(id, start, end) => {
                   if (draft.clips.some((clip) => clip.id === id)) editTrack(() => moveClip(draft, id, start));
                   else editTrack(() => setTrackRange(draft, id, start, end, media));
                 }} />
               </main>}
               inspector={<aside className="template-workspace-inspector h-full min-w-0 overflow-y-auto xl:border-l"><AppliedEffects draft={draft} catalog={catalog} duration={previewDuration(draft, media)} selected={target} onSelect={selectTarget} />
-                <SpriteClips environment={environment} clips={draft.clips} catalog={spriteCatalog} duration={previewLength} onRemove={(id) => editTrack(() => removeClip(draft, id))} />
+                <SpriteClips environment={environment} clips={draft.clips} catalog={spriteCatalog} duration={previewLength} selected={selectedClip?.id ?? null} onSelect={selectTarget} onRemove={(id) => editTrack(() => removeClip(draft, id))} />
+                {selectedClip && <SpriteClipInspector clip={selectedClip} asset={spriteCatalog.assets?.find((item) => item.id === selectedClip.sprite_id)} duration={previewLength}
+                  onParameter={(key, value) => editTrack(() => setClipParameter(draft, selectedClip.id, key, value))}
+                  onTransform={(patch) => editTrack(() => setClipTransform(draft, selectedClip.id, patch))}
+                  onStart={(start) => editTrack(() => moveClip(draft, selectedClip.id, start))}
+                  onRemove={() => { editTrack(() => removeClip(draft, selectedClip.id)); setTarget(null); }}
+                  onClose={() => setTarget(null)} />}
                 {selectedTrack && <TemplateInspector track={selectedTrack} draft={selectedDraft!} catalog={catalog} duration={previewDuration(draft, media)} tab={inspectorTab} onTabChange={setInspectorTab} onTimingChange={(timing) => editTrack(() => setTrackTiming(draft, selectedTrack.id, timing))} onEffectChange={(next) => editTrack(() => updateTrack(draft, selectedTrack.id, next))} onRemove={() => editTrack(() => removeTrack(draft, selectedTrack.id))} onClose={() => setTarget(null)} />}
               </aside>}
             />

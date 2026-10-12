@@ -58,10 +58,16 @@ function templateRecord(template: Template): TemplateRecord {
         id: track.id, target: track.target, startMode: track.start_mode,
         start: track.start, duration: track.duration ?? undefined, editor: track.editor,
       })),
-      // 服务端把 Remotion 片段作为带空 editor 的 remotion 轨道返回。
+      // 服务端把 Remotion 片段作为 remotion 轨道返回，editor 只带参数覆盖与宿主变换（没有时为空消息）。
       ...(template.clips ?? []).map((clip) => ({
         id: clip.id, target: "remotion", startMode: "seconds", start: clip.start,
-        duration: clip.duration ?? undefined, editor: {}, spriteId: clip.sprite_id,
+        duration: clip.duration ?? undefined, spriteId: clip.sprite_id,
+        editor: Object.keys(clip.parameters ?? {}).length || Object.keys(clip.transform ?? {}).length ? { remotion: {
+          parameters: Object.entries(clip.parameters ?? {}).map(([key, value]) => ({
+            key, ...(Array.isArray(value) ? { stringListValue: { values: value } } : typeof value === "string" ? { stringValue: value } : typeof value === "number" ? { numberValue: value } : { boolValue: value }),
+          })),
+          transform: Object.keys(clip.transform ?? {}).length ? clip.transform : undefined,
+        } } : {},
       })),
     ] },
     effects: template.effects.map((effect) => ({
