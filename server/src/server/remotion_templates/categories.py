@@ -186,3 +186,9 @@ def agent_message(kind: str | None, problems: list[Problem]) -> str:
         '"targets": [{"instance_id": ..., "parameter": <Preset prop>}]}] after giving the Preset prop that schema.'
     )
     return "\n".join(lines)
+
+
+def operator_message(problems: list[Problem]) -> str:
+    """给运营的中文说明：列出所选分类缺少或不合规的必备参数及应有形状。"""
+    parts = [f"{item.name}（{item.rule.label}）" for item in problems if item.rule is not None]
+    return f"所选分类缺少或不符合必备参数：{'；'.join(parts)}。请在聊天中让 Agent 补充后再保存到资产"

@@ -24,6 +24,7 @@ from sqlalchemy.exc import IntegrityError
 from starlette.concurrency import run_in_threadpool
 
 from . import sprite_store
+from .categories import HEX_COLOR, category_problems, operator_message
 from .evidence import digest, verify_artifacts
 from .models import TemplateVersion
 from .store import Conflict, NotFound, Store
@@ -35,19 +36,16 @@ SYNC_MARKER = b"imv-preview-sync"
 # 值为弱引用，没有持有者和等待者后锁自动释放，字典不会随发布次数增长。
 _publishing: weakref.WeakValueDictionary[tuple, asyncio.Lock] = weakref.WeakValueDictionary()
 
-# 版本创建时的内容类型与发布类型的对应；composition 版本不固定类型，由发布请求选择。
-_VERSION_KINDS = {
-    "text": pb.SPRITE_KIND_TEXT,
-    "subtitle": pb.SPRITE_KIND_TEXT,
-    "filter_overlay": pb.SPRITE_KIND_FILTER_OVERLAY,
-    "video_overlay": pb.SPRITE_KIND_VIDEO_OVERLAY,
-    "transition_overlay": pb.SPRITE_KIND_TRANSITION_OVERLAY,
+# 发布类型与效果分类的对应；视频特效与转场在界面上合为第三类，但必备参数和宿主变换按各自类型检查。
+_KIND_NAMES = {
+    pb.SPRITE_KIND_TEXT: "text",
+    pb.SPRITE_KIND_FILTER_OVERLAY: "filter_overlay",
+    pb.SPRITE_KIND_VIDEO_OVERLAY: "video_overlay",
+    pb.SPRITE_KIND_TRANSITION_OVERLAY: "transition_overlay",
 }
-# 发布时允许声明的内容类型；它只描述资产自身，与 IMS 模板里的对象无关。
-_PUBLISH_KINDS = {
-    pb.SPRITE_KIND_TEXT, pb.SPRITE_KIND_FILTER_OVERLAY,
-    pb.SPRITE_KIND_VIDEO_OVERLAY, pb.SPRITE_KIND_TRANSITION_OVERLAY,
-}
+# 字效固定的文字与关键词参数名；关键词可选。
+TEXT_PROP = "text"
+KEYWORDS_PROP = "keywords"
 
 
 def _invalid(message: str) -> HTTPException:
@@ -66,63 +64,61 @@ def _scalar(kind: str, value) -> pb.ScalarValue | None:
     return None
 
 
-def _nodes(schema: dict, prefix: str = ""):
-    """Yield (dot path, definition) for every declared property, descending through nested objects.
-
-    Property names containing a dot cannot be addressed unambiguously and are skipped.
-    """
-    for name, definition in schema.get("properties", {}).items():
-        if "." in name or not isinstance(definition, dict):
-            continue
-        path = f"{prefix}{name}"
-        yield path, definition
-        if definition.get("type") == "object":
-            yield from _nodes(definition, f"{path}.")
-
-
-def _definition(schema: dict, path: str) -> dict | None:
-    """Resolve one dot path to its schema definition, or None when it is not declared."""
-    return next((definition for found, definition in _nodes(schema) if found == path), None)
-
-
-def _lookup(values: dict, path: str):
-    """Read a dot path from nested configuration; a missing step yields None."""
-    for part in path.split("."):
-        if not isinstance(values, dict) or part not in values:
+def _parameter(key: str, definition: dict, default) -> pb.SpriteParameter | None:
+    """Describe one top-level parameter as an editable control; None when its default does not match its type."""
+    kind = definition.get("type")
+    if kind == "array":
+        if not isinstance(default, list) or not all(isinstance(item, str) for item in default):
             return None
-        values = values[part]
-    return values
+        value = pb.ScalarValue(string_list_value=pb.StringList(values=default))
+    elif (value := _scalar(kind, default)) is None:
+        return None
+    parameter = pb.SpriteParameter(
+        key=key,
+        label=str(definition.get("title") or key)[:100],
+        access=pb.OPERATOR_ACCESS_VISIBLE_EDITABLE,
+        default_value=value,
+    )
+    if kind in {"number", "integer"}:
+        for bound in ("minimum", "maximum"):
+            if isinstance(definition.get(bound), (int, float)) and not isinstance(definition[bound], bool):
+                setattr(parameter, bound, float(definition[bound]))
+    for item in definition.get("enum", []):
+        allowed = _scalar(kind, item)
+        if allowed is not None:
+            parameter.allowed_values.append(allowed)
+    lengths = definition.get("items", {}) if kind == "array" else definition
+    for field, bound in (("min_length", "minLength"), ("max_length", "maxLength")):
+        if isinstance(lengths.get(bound), int) and not isinstance(lengths[bound], bool):
+            setattr(parameter, field, lengths[bound])
+    if kind == "array" and isinstance(definition.get("maxItems"), int):
+        parameter.max_items = definition["maxItems"]
+    if definition.get("pattern") == HEX_COLOR:
+        parameter.format = pb.SPRITE_PARAMETER_FORMAT_COLOR
+    return parameter
 
 
-def _parameters(schema: dict, defaults: dict, reserved: set[str]) -> list[pb.SpriteParameter]:
-    """Expose scalar controls at any depth as editable parameters keyed by dot path.
+def _parameters(schema: dict, defaults: dict, names: list[str]) -> list[pb.SpriteParameter]:
+    """Expose the version's top-level parameters, text and keywords included, as editable controls.
 
-    Bus-owned fields (text, keywords) and structured values are skipped.
+    Each Preset instance's remaining props stay nested and internal: the code is a fixed sample that templates
+    change only through these parameters.
     """
-    result = []
-    for key, definition in _nodes(schema):
-        if key in reserved:
-            continue
-        kind = definition.get("type")
-        default = _scalar(kind, _lookup(defaults, key))
-        if default is None:
-            continue
-        parameter = pb.SpriteParameter(
-            key=key,
-            label=str(definition.get("title") or key)[:100],
-            access=pb.OPERATOR_ACCESS_VISIBLE_EDITABLE,
-            default_value=default,
-        )
-        if kind in {"number", "integer"}:
-            for bound in ("minimum", "maximum"):
-                if isinstance(definition.get(bound), (int, float)) and not isinstance(definition[bound], bool):
-                    setattr(parameter, bound, float(definition[bound]))
-        for item in definition.get("enum", []):
-            allowed = _scalar(kind, item)
-            if allowed is not None:
-                parameter.allowed_values.append(allowed)
-        result.append(parameter)
-    return result
+    properties = schema.get("properties", {})
+    return [item for name in names if (item := _parameter(name, properties.get(name, {}), defaults.get(name))) is not None]
+
+
+def _content_box(version: TemplateVersion) -> pb.SpriteBox:
+    """The union of the instances' layout boxes clipped to the canvas; the whole canvas when nothing is visible."""
+    composition = version.spec.composition
+    layouts = [item.layout for item in version.spec.sprite.instances]
+    left = max(0.0, min(item.x for item in layouts))
+    top = max(0.0, min(item.y for item in layouts))
+    right = min(float(composition.width), max(item.x + item.width for item in layouts))
+    bottom = min(float(composition.height), max(item.y + item.height for item in layouts))
+    if right <= left or bottom <= top:
+        return pb.SpriteBox(x=0, y=0, width=composition.width, height=composition.height)
+    return pb.SpriteBox(x=left, y=top, width=right - left, height=bottom - top)
 
 
 def _sprite_from(data: dict) -> pb.PublishedSprite:
@@ -156,6 +152,10 @@ def summarize(sprite: pb.PublishedSprite) -> pb.SpriteSummary:
         source_version_id=sprite.source_version_id,
         preview_url=f"/api/sprites/{sprite.sprite_id}/preview",
         keywords_supported=bool(sprite.keywords_prop),
+        # Publications made before content boxes were recorded transform around the whole canvas.
+        content_box=sprite.content_box if sprite.HasField("content_box") else pb.SpriteBox(
+            x=0, y=0, width=sprite.canvas.width, height=sprite.canvas.height,
+        ),
     )
 
 
@@ -186,27 +186,26 @@ def preview_script(store: Store, sprite_id: str) -> str:
         raise NotFound("sprite preview unavailable") from exc
 
 
-def _validated_request(request: pb.PublishSpriteRequest, schema: dict, version_kind: str) -> None:
-    """Check the declared kind and the text/keyword field names against the sealed schema."""
+def _validated_request(request: pb.PublishSpriteRequest, version: TemplateVersion) -> None:
+    """Check the chosen kind against the version's category parameters and the fixed text/keyword names."""
     if max(len(request.text_prop), len(request.keywords_prop)) > sprite_store.NAME_LENGTH:
         raise _invalid(f"text_prop 与 keywords_prop 不能超过 {sprite_store.NAME_LENGTH} 个字符")
-    if request.kind not in _PUBLISH_KINDS:
-        raise _invalid("kind 必须是文字、滤镜叠加、视频叠加或转场叠加")
-    expected = _VERSION_KINDS.get(version_kind)
-    if expected is not None and expected != request.kind:
-        raise _invalid("kind 与该版本创建时的类型不一致")
+    if request.kind not in _KIND_NAMES:
+        raise _invalid("kind 必须是字效、滤镜、视频特效或转场")
+    sprite = version.spec.sprite
+    if version.spec.schema_version != "2" or sprite is None or sprite.kind is None:
+        raise _invalid("该版本由旧版生成，没有效果分类和参数契约；请在聊天中继续修改，生成新版本后再保存到资产")
+    bound = {item.name for item in sprite.bindings}
+    problems = category_problems(_KIND_NAMES[request.kind], version.candidate.config_schema, bound)
+    if problems:
+        raise _invalid(operator_message(problems))
     if request.kind == pb.SPRITE_KIND_TEXT:
-        text = _definition(schema, request.text_prop)
-        if text is None or text.get("type") != "string":
-            raise _invalid("text_prop 必须是该版本参数中的字符串字段（嵌套字段用点号，如 title_main.title）")
-        if request.keywords_prop and (
-            _definition(schema, request.keywords_prop) is None
-            or request.keywords_prop == request.text_prop
-            or _definition(schema, request.keywords_prop).get("type") == "object"
-        ):
-            raise _invalid("keywords_prop 必须是该版本参数中不同于 text_prop 的非对象字段")
+        if request.text_prop != TEXT_PROP:
+            raise _invalid(f"字效的 text_prop 必须是 {TEXT_PROP}")
+        if request.keywords_prop not in {"", KEYWORDS_PROP} or (request.keywords_prop and KEYWORDS_PROP not in bound):
+            raise _invalid(f"keywords_prop 只能为空，或在该版本声明了关键词参数时为 {KEYWORDS_PROP}")
     elif request.text_prop or request.keywords_prop:
-        raise _invalid("只有文字 Sprite 可以声明 text_prop 与 keywords_prop")
+        raise _invalid("只有字效可以声明 text_prop 与 keywords_prop")
 
 
 async def _rebuild_bundle(service, version) -> bytes | None:
@@ -276,7 +275,7 @@ def _inspect(store: Store, request: pb.PublishSpriteRequest) -> tuple[TemplateVe
         raise Conflict("accepted artifact unavailable") from exc
     if PREVIEW_BUNDLE not in version.validation.artifacts:
         raise Conflict("该版本没有可发布的交互预览")
-    _validated_request(request, version.candidate.config_schema, version.spec.sprite_kind)
+    _validated_request(request, version)
     if (data := _existing(version, request)) is None:
         return version, None, (accepted / PREVIEW_BUNDLE).read_bytes()
     sprite = _sprite_from(data)
@@ -287,6 +286,7 @@ def _create(store: Store, request: pb.PublishSpriteRequest, version: TemplateVer
     """Record a new publication with its own copy of the player bundle; losing a race to an identical one returns the winner."""
     schema = version.candidate.config_schema
     composition = version.spec.composition
+    names = [name for name in schema.get("properties", {}) if name in {item.name for item in version.spec.sprite.bindings}]
     sprite_id = str(uuid4())
     published_at = datetime.now(UTC)
     directory = store.root / "sprites" / sprite_id
@@ -306,12 +306,13 @@ def _create(store: Store, request: pb.PublishSpriteRequest, version: TemplateVer
             ),
             tsx_code=version.candidate.tsx_code,
             code_sha256=hashlib.sha256(version.candidate.tsx_code.encode()).hexdigest(),
-            parameters=_parameters(schema, version.candidate.default_config, {request.text_prop, request.keywords_prop}),
+            parameters=_parameters(schema, version.candidate.default_config, names),
             text_prop=request.text_prop,
             keywords_prop=request.keywords_prop,
             preview_sha256=hashlib.sha256(bundle).hexdigest(),
             config_schema_json=json.dumps(schema, ensure_ascii=False),
             default_config_json=json.dumps(version.candidate.default_config, ensure_ascii=False),
+            content_box=_content_box(version),
         )
         sprite.published_at.FromDatetime(published_at)
         sprite_store.insert(

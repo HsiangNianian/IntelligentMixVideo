@@ -206,12 +206,16 @@ templates that reference its IDs, which is what lets a template save check its `
 but answers its preview with a 404, while overlay renders only need the stored TSX. Sprites published before this
 storage (the SQLite `sprites` table and the `sprites/<id>/` folders it pointed at) are neither read nor migrated and
 stay where they are: publish the accepted versions again.
-Publishing re-verifies the sealed `accepted/` artifacts (409 when changed), requires the
-declared kind to match a version-fixed kind (composition versions choose it), and for text
-Sprites requires `text_prop` to be a string parameter. Parameters are addressed by dot path
-(`title_main.title`), so composed Sprites with nested objects work. Scalar leaves at any depth become
-`VISIBLE_EDITABLE` controls; text and keyword fields stay with the composition bus. The same
-source and field choice returns the original Sprite. `animation_frames` and `static_frame` stay 0
+Publishing re-verifies the sealed `accepted/` artifacts (409 when changed) and only accepts versions composed
+with a kind and top-level parameter bindings (`spec.sprite.kind`/`bindings`); older versions are refused with a
+422 that asks for an edit in chat. The requested kind defaults to the agent's choice on the client but may be
+changed: the version must expose that kind's required parameters (`categories.REQUIRED`), otherwise the 422 lists
+them in Chinese. A text Sprite fixes `text_prop` to `text` and `keywords_prop` to `""` or `keywords` (only when the
+version binds a keywords parameter); other kinds leave both empty. Every bound top-level parameter, text and
+keywords included, becomes a `VISIBLE_EDITABLE` control with its bounds, enum, colour format, string lengths and
+list size; the instances' remaining nested props stay internal. `content_box` records the union of the instances'
+layout boxes clipped to the canvas, the pivot of the host transform; summaries of older publications report the
+whole canvas. The same source and field choice returns the original Sprite. `animation_frames` and `static_frame` stay 0
 because composition versions carry no such evidence, and `preview_url` serves the sealed
 interactive player page rather than an MP4.
 
