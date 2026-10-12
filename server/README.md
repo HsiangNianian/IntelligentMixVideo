@@ -29,7 +29,7 @@ uv run --locked server
 
 默认监听 `0.0.0.0:20070`（所有 IPv4 接口），本机交互文档为 `http://127.0.0.1:20070/docs`。
 远程访问使用 `http://<服务器 IP 或域名>:20070`，服务器防火墙或云安全组需允许对应端口；客户端 `VITE_API_URL` 配置为实际服务地址。
-仓库根目录可执行 `uv run --locked --project server server`。首次模板请求自动创建缺失的 `templates` 表，不执行旧数据迁移。
+仓库根目录可执行 `uv run --locked --project server server`。首次模板请求自动创建缺失的 `templates` 表，不执行旧数据迁移；Remotion 已发布 Sprite 的 `remotion_sprites` 表在首次访问资产目录、发布，或保存含 Remotion 片段的模板时创建。
 应用启动后数据库暂时不可用时，模板接口返回 503，恢复后可重试；首页和用户示例接口本身不查询数据库。
 
 `uv run server` 与 `uv run python -m server` 均读取固定的 `server/.env` 中的 `PORT`，进程环境变量优先。未设置时默认 `20070`；端口须为 1～65535 的整数，空值、非整数或越界值会阻止启动。修改后重启服务。
@@ -65,7 +65,7 @@ GET 成功响应与 POST 请求、成功响应均使用 `application/x-protobuf`
 同一文字角色的循环动画与入场、出场互斥。效果可以为空（只放 Remotion 片段的模板），最多 500 个不同效果 ID。
 
 Remotion 片段也保存在 `tracks` 里：`target` 为 `remotion`，`sprite_id` 引用已发布的 Sprite；`id` 仍是模板内唯一的摆放 ID，所以同一个 Sprite 可以摆放多次。
-`start_mode` 只能是 `seconds`，`duration` 为 `null`（取 Sprite 自身时长）或正秒数，`editor` 必须是空消息（响应里为 `{}`）；其他对象不能带 `sprite_id`。
+`start_mode` 只能是 `seconds`，`duration` 为 `null`（取 Sprite 自身时长）或正秒数，`editor` 必须是空消息（响应里为 `{}`）；其他对象不能带 `sprite_id`。保存时引用的 Sprite 都必须已在 `remotion_sprites` 发布，否则返回 422。
 片段与 IMS 对象共用 100 条上限，也不产生 `effect_ids`。视频合成的 IMS 时间线跳过这些轨道，不为它们生成任何文字或效果；层级为它们在 `tracks` 中的先后（先者在下）。
 
 响应补充 UUID、UTC 创建/更新时间和 `effects` 参数快照。服务端通过固定 SDK 5.2.2 白名单解析效果，

@@ -160,8 +160,14 @@ model protocol failures are explicitly marked. Snapshots carry all rounds, while
 ## Sprite assets
 
 `POST /api/sprites/publish` copies an accepted version into an immutable
-`imv.sprite.v1.PublishedSprite` (SQLite `sprites` table plus `sprites/<id>/interactive.js`),
-so deleting or editing the source work never changes a published Sprite.
+`imv.sprite.v1.PublishedSprite` (a row of the shared MySQL table `remotion_sprites`, `sprite_store.py`, plus
+`sprites/<id>/interactive.js` in this module's data folder), so deleting or editing the source work never changes a
+published Sprite. The table is created on first use like the template table and sits in the same database as the
+templates that reference its IDs, which is what lets a template save check its `remotion` tracks (422 when a
+`sprite_id` is not published). The preview bundle is a local file: a host that did not publish the Sprite lists it
+but answers its preview with a 404, while overlay renders only need the stored TSX. Sprites published before this
+storage (the SQLite `sprites` table and the `sprites/<id>/` folders it pointed at) are neither read nor migrated and
+stay where they are: publish the accepted versions again.
 Publishing re-verifies the sealed `accepted/` artifacts (409 when changed), requires the
 declared kind to match a version-fixed kind (composition versions choose it), and for text
 Sprites requires `text_prop` to be a string parameter. Parameters are addressed by dot path
