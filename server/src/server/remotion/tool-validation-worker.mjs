@@ -152,7 +152,10 @@ function serveBundle() {
           res.end(await fs.readFile(`${root}/interactive.js`));
         } else {
           res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-          res.end(`<!doctype html><html><body style="margin:0"><div id="root"></div><script src="/interactive.js"></script></body></html>`);
+          // The host installs its own listeners only after the component module has evaluated, so a component that throws
+          // while loading would leave no trace; the shell records that error first.
+          const early = `for (const type of ["error", "unhandledrejection"]) window.addEventListener(type, (event) => { window.__imvRuntimeError = String(event.error?.message ?? event.reason?.message ?? event.reason ?? event.message ?? "Runtime error"); });`;
+          res.end(`<!doctype html><html><body style="margin:0"><div id="root"></div><script>${early}</script><script src="/interactive.js"></script></body></html>`);
         }
       } catch (error) { res.writeHead(500); res.end(String(error)); }
     });
@@ -161,12 +164,15 @@ function serveBundle() {
   });
 }
 
+/** Wait for the host bridge. Returns the error a component threw while loading, which keeps the host from ever mounting, else null. */
 async function waitReady(page) {
   await page.goto({ url: page.__imvUrl, timeout: 30000, options: { waitUntil: "load" } });
-  await page.evaluate(async () => {
+  return page.evaluate(async () => {
     const end = Date.now() + 15000;
-    while (!(window).__imvTool?.ready && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 20));
-    if (!(window).__imvTool?.ready) throw new Error("Validation host did not initialize");
+    while (!(window).__imvTool?.ready && !(window).__imvRuntimeError && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 20));
+    if ((window).__imvTool?.ready) return null;
+    if ((window).__imvRuntimeError) return (window).__imvRuntimeError;
+    throw new Error("Validation host did not initialize");
   });
 }
 
@@ -242,7 +248,14 @@ async function transparencyCheck(page) {
   const samples = [];
   for (const frame of sampleFrames(composition.duration_frames)) {
     await page.evaluate((target) => window.__imvTool.setFrame(target), frame);
-    await ensureHealthy(page);
+    // The base checks only mount frame 0; a component that throws later is the author's to fix, not an unavailable validator.
+    const failure = await page.evaluate(() => window.__imvRuntimeError ?? null);
+    if (failure)
+      return {
+        name: "transparency",
+        status: "failed",
+        message: `The component throws at frame ${frame}: ${failure}. Every frame of its duration must render without an error, so the canvas could not be measured.`.slice(0, 6000),
+      };
     const measured = await opaqueShare(page, composition);
     if (measured.width !== composition.width || measured.height !== composition.height)
       throw new Error(`Transparency screenshot is ${measured.width}x${measured.height}, expected ${composition.width}x${composition.height}`);
@@ -296,9 +309,10 @@ async function main() {
     const pages = await browser.pages();
     const page = pages[0] ?? await browser.newPage({ context: () => null, logLevel: "error", indent: false, pageIndex: 0, onBrowserLog: null, onLog: () => undefined });
     page.__imvUrl = url;
-    await waitReady(page);
+    const loadError = await waitReady(page);
     let baseReady = true;
     try {
+      if (loadError !== null) throw new Error(`Component runtime error: ${loadError}`);
       await page.evaluate(() => window.__imvTool.setFrame(0));
       await ensureHealthy(page);
       checks.push({ name: "default_render", status: "passed", message: "Default parameters mounted at frame 0." });

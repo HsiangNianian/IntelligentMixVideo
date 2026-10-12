@@ -450,3 +450,41 @@ def test_real_browser_measures_whether_the_video_stays_visible(tmp_path, code, p
     check = next(item for item in report.checks if item.name == "transparency")
     assert (check.status == "passed") is passed, check.message
     assert report.passed is passed
+
+
+# 一个只在后面的帧才抛错的组件，以及一个在模块加载时就抛错、宿主根本挂不上的组件。
+THROWS_LATE = """import React from "react";
+import { AbsoluteFill, useCurrentFrame } from "remotion";
+export default function Late(props: { tint: string }) {
+  const frame = useCurrentFrame();
+  if (frame > 10) throw new Error("boom at frame " + frame);
+  return <AbsoluteFill style={{ background: props.tint, opacity: 0.4 }} />;
+}
+"""
+THROWS_ON_LOAD = """import React from "react";
+const palette = JSON.parse("null").colors;
+export default function Boot(props: { tint: string }) {
+  return <div style={{ color: palette[0] }}>{props.tint}</div>;
+}
+"""
+
+
+@needs_node
+@needs_browser
+def test_real_browser_reports_an_error_on_a_later_frame_as_the_components_failure(tmp_path):
+    """审计复现：只在第 14 帧抛错的组件曾被报成验证服务不可用（runtime 错误），模型拿不到帧号和原因；现在是带帧号的失败检查。"""
+    report = browser_validate(tmp_path, THROWS_LATE)
+    check = next(item for item in report.checks if item.name == "transparency")
+    assert report.passed is False and check.status == "failed"
+    assert "frame 14" in check.message and "boom at frame 14" in check.message
+
+
+@needs_node
+@needs_browser
+def test_real_browser_reports_an_error_thrown_while_loading_as_a_failed_default_render(tmp_path):
+    """审计复现：模块加载时抛错的组件曾等 15 秒后报「Validation host did not initialize」并丢失原因；现在是 default_render 失败并带组件自己的错误。"""
+    report = browser_validate(tmp_path, THROWS_ON_LOAD)
+    checks = {item.name: item for item in report.checks}
+    assert report.passed is False
+    assert checks["default_render"].status == "failed" and "Cannot read properties of null" in checks["default_render"].message
+    assert checks["configured_render"].status == "not_run"
