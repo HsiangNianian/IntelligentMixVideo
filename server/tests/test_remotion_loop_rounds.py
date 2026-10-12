@@ -254,7 +254,6 @@ def test_failed_call_is_recorded_with_its_error_code(monkeypatch, tmp_path):
             ),
             report("exec-2", "blocked", "保存失败"),
             call("plan-1", "tools_plan_execute", {"action": "complete"}),
-            call("outer-2", "tools_plan_execute", {"action": "complete", "sprite_id": "sprite-1"}),
         ]
     )
     seen: list[dict] = []
@@ -325,7 +324,6 @@ def test_unresolved_names_do_not_break_rounds(monkeypatch, tmp_path, round_store
         AssistantMessage(tool_calls=calls),
         report("blocked", "blocked", "无法继续"),
         call("plan-stop", "tools_plan_execute", {"action": "complete"}),
-        AssistantMessage(content=json.dumps({"action": "complete", "sprite_id": "sprite-1"})),
     ])
     harness.settings.max_tooluse = 10
     run = AgentRun(harness, None, Budget(on_round=lambda record: round_store.round(job.id, record)), tmp_path, [], lambda *_: None)

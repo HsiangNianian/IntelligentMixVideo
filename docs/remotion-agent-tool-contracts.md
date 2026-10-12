@@ -1166,7 +1166,10 @@ inspect 自身也可被查询。已知工具列表由集成方提供给 Agent；
 委派后宿主直接建立标准两步计划（`preset` 准备预设，`sprite` 组合并保存），Plan 只在步骤受阻、
 需要输入或整批调用没有新进展时被唤醒，`update_plan` 只发送未完成的步骤，已完成步骤由宿主保留，
 `input_refs` 在建立计划时即校验产出模块（`steps.<id>.outputs.presets` 需 preset 模块，
-`steps.<id>.outputs.sprite` 需 sprite 模块）。Executor 只能检查其契约，不能执行计划控制。
+`steps.<id>.outputs.sprite` 需 sprite 模块）。Plan 的 `complete`（或文本回复 `plan_done`）只能指向本任务最新保存的
+Sprite，宿主随即直接发布它，不再交回 Outer（Outer 没有发布动作）；任务尚未保存 Sprite 时完成请求被拒绝，控制留在 Plan。
+任务总额度或批次用尽、无法再开新批次时，若本任务已保存 Sprite，宿主同样直接发布最新的那个；没有 Sprite 才以 blocked
+交回 Outer。Executor 只能检查其契约，不能执行计划控制。
 
 `tools.report_step` / `tools_report_step` 只供 Executor 调用，输入为
 [StepResult](../server/src/server/remotion_templates/planning.py)（`status`、`summary`、可选 `questions`）。

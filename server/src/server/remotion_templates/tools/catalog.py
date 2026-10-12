@@ -276,12 +276,12 @@ PLAN_TOOL = HostTool(
     description=(
         "Host control; never runs a business tool. Outer: answer, ask (clarification), delegate (the host then runs "
         "its standard Preset -> Sprite plan) or stop. Plan: update_plan (send only the unfinished steps), continue, "
-        "advance, complete or stop."
+        "advance, complete (the host publishes the latest Sprite this task saved) or stop."
     ),
     constraints=(
         "Only Outer and Plan may invoke this tool; Executor may only inspect it.",
         "Outer answers, asks, delegates or stops; Plan owns ordered step changes.",
-        "Completion still requires host verification of a saved Sprite.",
+        "Completion still requires host verification of a saved Sprite; the host, not Outer, publishes it.",
     ),
     error_codes=("INVALID_ARGUMENT", "tool_limit_reached", "tool_budget_exhausted", "agent_stopped"),
     example={

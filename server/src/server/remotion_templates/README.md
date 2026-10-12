@@ -154,6 +154,11 @@ only the unfinished steps; completed steps are kept by the host and a resent cop
 batch limit the host continues a step that observed something new in that batch and wakes the Plan
 otherwise.
 
+Outer has no publish action, so publication is the host's. Besides the last accepted step, a Plan
+`complete` (or a text `plan_done`) publishes the latest Sprite this task saved; a completion that names any
+other Sprite is refused. When the task budget allows no further batch or control call, the host publishes
+the latest task Sprite if there is one, and only otherwise returns `blocked` to Outer.
+
 Call arguments are parsed by the host. Only surplus `}` or `]` after one complete JSON object are dropped
 (and recorded as `tool_arguments_repaired` in the private audit); any other invalid JSON is refused with the
 character position and the text around it, and schema errors give the first JSON Pointer as `field` and up

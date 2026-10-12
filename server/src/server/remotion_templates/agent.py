@@ -40,6 +40,7 @@ You are the Plan ReAct. The host wakes you only when the current step is blocked
 - continue: give the unfinished current step another batch;
 - update_plan {plan:{goal, steps}}: send ONLY the steps that are not finished yet; the host keeps the completed ones;
 - advance: move on after a step_done;
+- complete: the latest Sprite this task saved is the result; the host publishes it;
 - stop {reason}: return to Outer when the task cannot be finished.
 A step with the sprite module must compose AND save its Sprite: sprite_compose only returns a draft_id, sprite_create saves it. input_refs accept user_intent, accepted_base, steps.<earlier_id>.outputs.presets (an earlier step with the preset module) or steps.<earlier_id>.outputs.sprite (an earlier step with the sprite module). Never execute business tools.
 """
@@ -369,16 +370,28 @@ class AgentRun:
         return Layer.EXECUTOR
 
     def _continue_or_replan(self):
-        """At the batch limit, continue a step that is still making progress; otherwise wake the Plan."""
+        """At the batch limit, continue a step that is still making progress; otherwise wake the Plan.
+
+        When the task budget allows no further batch, a Sprite the task already saved is published
+        (None) instead of asking the Plan, which could no longer act either.
+        """
         if self.batch_evidence:
             try:
                 self.state.control(PlanAction(action="continue"))
                 self.batch_evidence = 0
                 return Layer.EXECUTOR
             except ExecutionFailure:
-                pass
+                if self._latest_sprite_id():
+                    return None
         self.state.finish_batch("tool_limit_reached")
         return Layer.PLAN
+
+    def _check_completion(self, identifier):
+        """A Plan completion names no Sprite or the latest task Sprite, which the host then publishes."""
+        if identifier:
+            self.session.saved_sprite(identifier)
+            if identifier != self._latest_sprite_id():
+                raise ValueError(f"Completion must reference the latest task Sprite {self._latest_sprite_id()}")
 
     async def _switch(self, transition, *, publish=False):
         """Publish the latest saved Sprite, or hand control to another layer with the host state as data."""
@@ -418,14 +431,16 @@ class AgentRun:
             if status in {"plan_done", "blocked", "needs_input"}:
                 try:
                     payload = PlanResult.model_validate(payload).model_dump(mode="json")
-                    if payload.get("sprite_id"):
-                        self.session.saved_sprite(payload["sprite_id"])
+                    self._check_completion(payload.get("sprite_id"))
                 except ValueError as exc:
                     self._set_feedback(str(exc))
                     self.stalled_turns += 1
                     return None
                 self.plan_result = payload
                 context.append([response.wire()])
+                if payload["status"] == "plan_done":
+                    # Outer has no publish action: the host publishes a finished Plan's Sprite itself.
+                    return await self._switch(None, publish=True)
                 self._observe_handoff(Layer.OUTER, payload["status"])
                 return await self._switch(Layer.OUTER)
             self._set_feedback("Plan ReAct must call tools_plan_execute or return plan_done/blocked/needs_input JSON.")
@@ -484,13 +499,16 @@ class AgentRun:
         raise ValueError("Outer answers, asks, delegates or stops; the host and the Plan own step changes")
 
     def _plan_control(self, args):
-        """Apply one Plan action and return the layer that runs next."""
+        """Apply one Plan action and return the layer that runs next, or None to publish."""
         if args.action in {"delegate", "answer", "ask"}:
-            raise ValueError("Plan cannot delegate, answer or ask; use update_plan, continue, advance or stop")
-        if args.action in {"complete", "stop"}:
-            if args.sprite_id:
-                self.session.saved_sprite(args.sprite_id)
-            self.plan_result = {"status": "plan_done" if args.action == "complete" else "blocked", "summary": args.reason, "sprite_id": args.sprite_id or self._latest_sprite_id()}
+            raise ValueError("Plan cannot delegate, answer or ask; use update_plan, continue, advance, complete or stop")
+        if args.action == "complete":
+            self._check_completion(args.sprite_id)
+            self.plan_result = {"status": "plan_done", "summary": args.reason, "sprite_id": self._latest_sprite_id()}
+            # Outer has no publish action: the host publishes a finished Plan's Sprite itself.
+            return None
+        if args.action == "stop":
+            self.plan_result = {"status": "blocked", "summary": args.reason, "sprite_id": self._latest_sprite_id()}
             return Layer.OUTER
         self.state.control(args, start_batch=True)
         self.batch_evidence = 0
@@ -553,6 +571,7 @@ class AgentRun:
                                 transition, dialogue, final_identifier = self._outer_control(args)
                             else:
                                 transition = self._plan_control(args)
+                                publish = transition is None
                             if transition is not None:
                                 self._observe_handoff(transition, args.action)
                             data = self.state.snapshot()
@@ -574,6 +593,9 @@ class AgentRun:
                     if exc.code in {"tool_limit_reached", "tool_budget_exhausted"}:
                         if self.layer is Layer.EXECUTOR:
                             limit_hit = True
+                        elif self._latest_sprite_id():
+                            # Plan and Outer only hit the task-wide budget; a Sprite the task saved is still delivered.
+                            publish = True
                         elif self.layer is Layer.PLAN:
                             self.plan_result = {"status": "blocked", "summary": str(exc)}
                             transition = Layer.OUTER
@@ -616,6 +638,7 @@ class AgentRun:
             and (limit_hit or self.state.batch_calls >= self.state.max_tooluse)
         ):
             transition = self._continue_or_replan()
+            publish = transition is None
         return await self._switch(transition, publish=publish)
 
     def _note_round_calls(self, response, exchange, resolved):

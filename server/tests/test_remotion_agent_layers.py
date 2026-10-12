@@ -186,7 +186,6 @@ def test_every_layer_is_told_the_protocol_it_must_follow(monkeypatch, tmp_path):
         delegate(),
         report("exec-1", "blocked", "缺少信息"),
         call("plan-1", "tools_plan_execute", {"action": "complete"}),
-        call("outer-2", "tools_plan_execute", {"action": "complete", "sprite_id": "sprite-1"}),
     ])
     assert asyncio.run(run.plan_execute()) == {"published": "sprite-1"}
     assert set(harness.systems) == {"outer", "plan", "executor"}
@@ -336,6 +335,65 @@ def test_a_blocked_step_wakes_the_plan_which_can_continue_it(monkeypatch, tmp_pa
     ])
     assert asyncio.run(run.plan_execute()) == {"published": "sprite-2"}
     assert harness.roles == ["outer", "executor", "plan"] + ["executor"] * 5
+
+
+SAVED_THEN_BLOCKED = [
+    delegate(),
+    call("exec-1", "preset_search", {"preset_id": "preset-1"}),
+    report("exec-2"),
+    call("exec-3", "sprite_create", {"draft_id": "sprite_draft_1"}),
+    report("exec-4", "blocked", "不确定是否满足要求"),
+]
+
+
+@pytest.mark.parametrize("completion", [
+    call("plan-1", "tools_plan_execute", {"action": "complete"}),
+    AssistantMessage(content=json.dumps({"status": "plan_done", "summary": "已保存", "sprite_id": "sprite-2"})),
+])
+def test_a_plan_completion_is_published_by_the_host(monkeypatch, tmp_path, completion):
+    """审计复现：Plan complete 后原来交回 Outer，而 Outer 的规则里没有发布动作，只能重新委派或停止；现在宿主直接发布。"""
+    run, harness = new_run(monkeypatch, tmp_path, [*SAVED_THEN_BLOCKED, completion])
+    assert asyncio.run(run.plan_execute()) == {"published": "sprite-2"}
+    assert harness.roles[-1] == "plan" and harness.roles.count("outer") == 1
+    assert run.plan_result["status"] == "plan_done"
+
+
+def test_a_plan_completion_must_name_the_latest_task_sprite(monkeypatch, tmp_path):
+    """Plan 完成时点名的必须是本任务最新的 Sprite；更早的那个被拒绝，控制留在 Plan。"""
+    run, _ = new_run(monkeypatch, tmp_path, [
+        *SAVED_THEN_BLOCKED,
+        AssistantMessage(content=json.dumps({"status": "plan_done", "summary": "旧的", "sprite_id": "sprite-1"})),
+        call("plan-2", "tools_plan_execute", {"action": "complete", "sprite_id": "sprite-1"}),
+    ])
+    feedback = watch_feedback(run, run.harness)
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+    assert run.layer is Layer.PLAN
+    assert "latest task Sprite sprite-2" in feedback[-1][0]
+    assert "latest task Sprite sprite-2" in run.session.feedback[0]
+
+
+@pytest.mark.parametrize("ending", ["executor", "plan"])
+def test_a_spent_task_budget_publishes_the_sprite_the_task_saved(monkeypatch, tmp_path, ending):
+    """审计复现：任务额度用尽时 Outer 只被告知停止，已保存并通过校验的 Sprite 就此丢失；现在宿主直接发布它。
+
+    executor：保存后 tools_report_step 本身已无额度，也开不了新批次；plan：步骤受阻后 Plan 想继续，却开不了新批次。
+    """
+    responses = [
+        delegate(),
+        call("exec-1", "preset_search", {"preset_id": "preset-1"}),
+        report("exec-2"),
+        call("exec-3", "sprite_create", {"draft_id": "sprite_draft_1"}),
+    ]
+    if ending == "executor":
+        responses.append(report("exec-4"))
+        limits = {"max_steps": 2, "max_tooluse": 2}
+    else:
+        responses += [report("exec-4", "blocked", "想再调一下"), call("plan-1", "tools_plan_execute", {"action": "continue"})]
+        limits = {"max_steps": 2, "max_tooluse": 3}
+    run, harness = new_run(monkeypatch, tmp_path, responses, **limits)
+    assert asyncio.run(run.plan_execute()) == {"published": "sprite-2"}
+    assert "outer" not in harness.roles[1:]
 
 
 def test_outer_answers_and_asks_through_the_control_tool(monkeypatch, tmp_path):
@@ -514,11 +572,10 @@ def test_unknown_sprite_in_a_plan_result_is_correctable_without_mutating_plan(mo
     assert run.plan_result is None
     assert run.stalled_turns == 1
     assert "Unknown task Sprite" in run.session.feedback[0]
-    asyncio.run(run._handle_layer_message(AssistantMessage(content=json.dumps({
+    published = asyncio.run(run._handle_layer_message(AssistantMessage(content=json.dumps({
         "status": "plan_done", "summary": "done", "sprite_id": "sprite-1",
     }))))
-    assert run.layer is Layer.OUTER
-    assert run.stalled_turns == 0
+    assert published == {"published": "sprite-1"}
 
 
 def test_a_repeated_policy_violation_is_the_same_observation_wherever_it_sits(monkeypatch, tmp_path):
