@@ -136,6 +136,8 @@ class OverlayRenders:
         try:
             publications = await asyncio.to_thread(self._publications, placements)
             shared_canvas(placements, publications)
+            for item in placements:
+                item.resolved(publications[item.sprite_id])
             if audio_url is None:
                 seconds = duration if duration is not None else fixed_end_seconds(placements, publications)
                 if seconds > self.settings.overlay_max_seconds:

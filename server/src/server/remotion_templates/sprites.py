@@ -40,7 +40,7 @@ HOST_MARKER = b"imv-preview-host"
 _publishing: weakref.WeakValueDictionary[tuple, asyncio.Lock] = weakref.WeakValueDictionary()
 
 # 发布类型与效果分类的对应；视频特效与转场在界面上合为第三类，但必备参数和宿主变换按各自类型检查。
-_KIND_NAMES = {
+KIND_NAMES = {
     pb.SPRITE_KIND_TEXT: "text",
     pb.SPRITE_KIND_FILTER_OVERLAY: "filter_overlay",
     pb.SPRITE_KIND_VIDEO_OVERLAY: "video_overlay",
@@ -124,7 +124,7 @@ def _content_box(version: TemplateVersion) -> pb.SpriteBox:
     return pb.SpriteBox(x=left, y=top, width=right - left, height=bottom - top)
 
 
-def _sprite_from(data: dict) -> pb.PublishedSprite:
+def published_from(data: dict) -> pb.PublishedSprite:
     """Restore a stored publication and refuse source bytes that no longer match their hash."""
     sprite = ParseDict(data, pb.PublishedSprite())
     if hashlib.sha256(sprite.tsx_code.encode()).hexdigest() != sprite.code_sha256:
@@ -141,7 +141,7 @@ def get(sprite_id: str) -> pb.PublishedSprite:
     data = sprite_store.get(identifier)
     if data is None:
         raise NotFound("sprite not found")
-    return _sprite_from(data)
+    return published_from(data)
 
 
 def content_box(sprite: pb.PublishedSprite) -> pb.SpriteBox:
@@ -181,7 +181,7 @@ def catalog() -> list[pb.SpriteSummary]:
     items = []
     for sprite_id, data in sprite_store.listing():
         try:
-            items.append(summarize(_sprite_from(data)))
+            items.append(summarize(published_from(data)))
         except (Conflict, ValueError, ParseError, TypeError) as exc:
             logging.getLogger(__name__).warning("Skipping unreadable Sprite %s: %s", sprite_id, exc)
     return items
@@ -207,13 +207,13 @@ def _validated_request(request: pb.PublishSpriteRequest, version: TemplateVersio
     """Check the chosen kind against the version's category parameters and the fixed text/keyword names."""
     if max(len(request.text_prop), len(request.keywords_prop)) > sprite_store.NAME_LENGTH:
         raise _invalid(f"text_prop 与 keywords_prop 不能超过 {sprite_store.NAME_LENGTH} 个字符")
-    if request.kind not in _KIND_NAMES:
+    if request.kind not in KIND_NAMES:
         raise _invalid("kind 必须是字效、滤镜、视频特效或转场")
     sprite = version.spec.sprite
     if version.spec.schema_version != "2" or sprite is None or sprite.kind is None:
         raise _invalid("该版本由旧版生成，没有效果分类和参数契约；请在聊天中继续修改，生成新版本后再保存到资产")
     bound = {item.name for item in sprite.bindings}
-    problems = category_problems(_KIND_NAMES[request.kind], version.candidate.config_schema, bound)
+    problems = category_problems(KIND_NAMES[request.kind], version.candidate.config_schema, bound)
     if problems:
         raise _invalid(operator_message(problems))
     if request.kind == pb.SPRITE_KIND_TEXT:
@@ -300,7 +300,7 @@ def _inspect(store: Store, request: pb.PublishSpriteRequest) -> tuple[TemplateVe
     _validated_request(request, version)
     if (data := _existing(version, request)) is None:
         return version, None, (accepted / PREVIEW_BUNDLE).read_bytes()
-    sprite = _sprite_from(data)
+    sprite = published_from(data)
     return version, sprite, (store.root / "sprites" / sprite.sprite_id / PREVIEW_BUNDLE).read_bytes()
 
 
@@ -322,7 +322,7 @@ async def _sample(service, version: TemplateVersion, kind: int) -> None:
     candidate, composition = version.candidate, version.spec.composition
     box = _content_box(version)
     samples = boundary.samples(
-        candidate.config_schema, candidate.default_config, _bound_names(version), _KIND_NAMES[kind],
+        candidate.config_schema, candidate.default_config, _bound_names(version), KIND_NAMES[kind],
         (composition.width, composition.height),
     )
     work = service.store.root / "sprites" / f".samples-{uuid4()}"
@@ -388,7 +388,7 @@ def _create(store: Store, request: pb.PublishSpriteRequest, version: TemplateVer
         # Only a duplicate key means an identical publication won the race; other integrity errors are real.
         if exc.orig.args[0] != 1062 or (data := _existing(version, request)) is None:
             raise
-        return summarize(_sprite_from(data))
+        return summarize(published_from(data))
     except BaseException:
         shutil.rmtree(directory, ignore_errors=True)
         raise

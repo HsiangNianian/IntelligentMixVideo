@@ -1,5 +1,6 @@
 # 使用临时 SQLite 和真实 FastAPI 路由验证模板 Protobuf 通信；执行 uv run pytest tests/test_template_protobuf.py。
 
+import json
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -211,7 +212,7 @@ def test_remotion_tracks_roundtrip_through_protobuf(client: TestClient, template
 
 @pytest.mark.parametrize(("change", "reason"), [
     ({"sprite_id": ""}, "缺少 sprite_id"), ({"sprite_id": "not-a-uuid"}, "valid UUID"),
-    ({"editor": {"title": "不允许"}}, "不能携带编辑参数"), ({"editor": None}, "Field required"),
+    ({"editor": {"title": "不允许"}}, "只能携带参数覆盖与宿主变换"), ({"editor": None}, "Field required"),
 ], ids=["no-sprite", "bad-sprite", "explicit-editor", "missing-editor"])
 def test_invalid_remotion_tracks_return_422_without_writing(
     client: TestClient, template_payload: dict, change: dict, reason: str,
@@ -327,3 +328,60 @@ def test_template_protobuf_requires_tracks_message(client: TestClient) -> None:
     assert response.status_code == 422
     assert response.headers["content-type"] == "application/json"
     assert any(error["loc"] == ["body", "tracks"] for error in response.json()["detail"])
+
+
+def test_remotion_overrides_and_transform_roundtrip_through_protobuf(client: TestClient, template_payload: dict, template_db: Engine) -> None:
+    """片段的参数覆盖与宿主变换随模板保存、读回不变，库里的配置以驼峰 JSON 存在 editor.remotion 下。"""
+    seed_sprite()
+    remotion = {
+        "parameters": [
+            {"key": "text", "stringValue": "新品上市"},
+            {"key": "fontWeight", "numberValue": 700},
+            {"key": "keywords", "stringListValue": {"values": ["新品"]}},
+        ],
+        "transform": {"x": 540, "y": 300, "scale": 1.5, "opacity": 0.8},
+    }
+    created = _post(client, {**template_payload, "tracks": [*template_payload["tracks"], remotion_track("clip-a", editor={"remotion": remotion})]})
+    assert created.status_code == 201
+    record = pb.SaveTemplateResponse.FromString(created.content).template
+    clip = record.tracks.tracks[1].editor.remotion
+    assert [item.key for item in clip.parameters] == ["text", "fontWeight", "keywords"]
+    assert clip.parameters[0].string_value == "新品上市" and clip.parameters[1].number_value == 700
+    assert list(clip.parameters[2].string_list_value.values) == ["新品"]
+    assert (clip.transform.x, clip.transform.y, clip.transform.scale, clip.transform.opacity) == (540, 300, 1.5, 0.8)
+    assert not clip.transform.HasField("rotation")
+    with template_db.connect() as connection:
+        stored = connection.exec_driver_sql("SELECT configuration FROM templates").scalar_one()
+    stored = stored if isinstance(stored, dict) else json.loads(stored)
+    assert stored["tracks"][1]["editor"] == {"remotion": {
+        "parameters": [
+            {"key": "text", "stringValue": "新品上市"}, {"key": "fontWeight", "numberValue": 700.0},
+            {"key": "keywords", "stringListValue": {"values": ["新品"]}},
+        ],
+        "transform": {"x": 540.0, "y": 300.0, "scale": 1.5, "opacity": 0.8},
+    }}
+    assert pb.GetTemplateResponse.FromString(client.get(f"/template/{record.template_id}").content).template == record
+
+
+@pytest.mark.parametrize(("remotion", "reason"), [
+    ({"parameters": [{"key": "fontSize", "numberValue": 999}]}, "Remotion 片段「clip-a」：参数 fontSize 超出允许范围"),
+    ({"parameters": [{"key": "glow", "numberValue": 0.1}]}, "参数 glow 不可修改"),
+    ({"transform": {"rotation": 270}}, "rotation 超出允许范围"),
+], ids=["out-of-range", "read-only", "transform"])
+def test_remotion_overrides_outside_the_contract_return_422_without_writing(
+    client: TestClient, template_payload: dict, remotion: dict, reason: str,
+) -> None:
+    """不符合所引用 Sprite 参数契约的覆盖或变换返回 422，说明片段与原因，且不写库。"""
+    seed_sprite()
+    tracks = [*template_payload["tracks"], remotion_track("clip-a", editor={"remotion": remotion})]
+    response = _post(client, {**template_payload, "tracks": tracks})
+    assert response.status_code == 422 and reason in response.json()["detail"]
+    assert pb.ListTemplatesResponse.FromString(client.get("/template").content).templates == []
+
+
+def test_only_remotion_tracks_carry_remotion_overrides(client: TestClient, template_payload: dict) -> None:
+    """IMS 对象的 editor 不能带 Remotion 参数覆盖。"""
+    track = {**template_payload["tracks"][0]}
+    track["editor"] = {**track["editor"], "remotion": {"transform": {"opacity": 0.5}}}
+    response = _post(client, {**template_payload, "tracks": [track]})
+    assert response.status_code == 422 and "只有 Remotion 片段可以设置参数覆盖与宿主变换" in response.text

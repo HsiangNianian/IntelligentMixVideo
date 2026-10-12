@@ -230,7 +230,10 @@ interactive player page rather than an MP4.
 `GET /api/sprites` lists summaries (no TSX). A record that cannot be parsed or fails its hash check is
 logged and left out, so one damaged row never hides the library; reading it by ID still reports the
 failure. Where a Sprite is placed is not stored here: a placement is a `remotion` track of the cloud template
-(`sprite_id`, a seconds start, an optional duration), saved with the template in one request, so deleting a
+(`sprite_id`, a seconds start, an optional duration and `editor.remotion` with parameter overrides and a host
+transform), saved with the template in one request; the save resolves every placement with `placement.resolve`
+(the override must name an editable parameter, keep its type, stay inside its bounds, enum, lengths and list size,
+and the merged configuration must still satisfy the published schema; filters and transitions only take opacity), so deleting a
 template removes its placements with it and the composition bus finds them with its single template lookup.
 There is no separate route for placements; the template save checks that every `sprite_id` is published. The
 SQLite `style_sprite_bindings` table and the `GET/POST /api/sprites/styles/{style_id}` routes of earlier versions
@@ -254,9 +257,11 @@ choice) take turns, so a double click rebuilds once.
 `POST /api/v1/overlay-renders` (`overlay_router.py`) renders **the Remotion clips of a request**
 into one transparent VP9 alpha WebM, uploads it to ZOS (`imv/overlay_render/{taskId}.webm`, public-read) and
 returns/notifies the public URL. Body (camelCase): `placements` (at most 100, bottom layer first, each
-`{spriteId, start, duration?}`: `start` is a finite number of seconds from 0 and `duration` a number above 0, both
-strict like the top-level `duration`; the bus reads them from the template's `remotion` tracks, so a template is
-looked up once and this module never reads the IMS template library), optional `audioUrl`, `duration` (seconds),
+`{spriteId, start, duration?, editor?}`: `start` is a finite number of seconds from 0 and `duration` a number above 0, both
+strict like the top-level `duration`; `editor` is the track's editor forwarded as is and may only hold `remotion`
+overrides and a host transform, resolved by `placement.py` against the published parameter contract (422 at
+acceptance when outside it; without it the Sprite renders its published defaults); the bus reads them from the
+template's `remotion` tracks, so a template is looked up once and this module never reads the IMS template library), optional `audioUrl`, `duration` (seconds),
 `callbackUrl`. `GET /api/v1/overlay-renders/{taskId}` returns `{taskId, status, result:{videoUrl}, error}`
 (`queued/rendering/uploading/succeeded/failed`); the callback body is `{taskId, status: succeed|failed,
 videoUrl, errorMessage}`, retried after 5/15/45 s; each attempt has a 30 s overall deadline, and a non-2xx answer, an
