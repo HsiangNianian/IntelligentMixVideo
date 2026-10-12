@@ -179,15 +179,14 @@ interactive player page rather than an MP4.
 
 `GET /api/sprites` lists summaries (no TSX). A record that cannot be parsed or fails its hash check is
 logged and left out, so one damaged row never hides the library; reading it by ID still reports the
-failure. `GET/POST /api/sprites/styles/{style_id}` read and replace the Remotion clips placed under one
-style ID in this module's own SQLite database (`style_sprite_bindings`) with an `expected_revision` lock (409);
-the check and the write share one immediate transaction. The ID only associates clips with a cloud template:
-it is never looked up in the IMS template library, so no IMS template has to exist, saving or deleting a
-template does not touch the clips (clips of a deleted template stay unread), and IMS rules and tables never
-enter this module. Saving validates only what Remotion owns: referenced assets exist, clips are fixed
-(`start_mode` seconds, a finite start of at least 0, an optional positive duration, contiguous `order`, unique
-IDs, at most 100); object targets and style overrides are refused. The router lives in `sprite_router.py` on the
-main app and borrows the Remotion runtime; `/api/sprites/render` is superseded by the overlay renders below.
+failure. Where a Sprite is placed is not stored here: a placement is a `remotion` track of the cloud template
+(`sprite_id`, a seconds start, an optional duration), saved with the template in one request, so deleting a
+template removes its placements with it and the composition bus finds them with its single template lookup.
+There is no separate route for placements; the template save checks that every `sprite_id` is published. The
+SQLite `style_sprite_bindings` table and the `GET/POST /api/sprites/styles/{style_id}` routes of earlier versions
+are gone: bindings saved there are neither read nor migrated, and an existing table is left in place. The router
+lives in `sprite_router.py` on the main app and borrows the Remotion runtime; `/api/sprites/render` is superseded
+by the overlay renders below.
 `GET /api/sprites/{id}/preview?overlay=true&sync=1` serves the sealed player on a transparent page for the template editor;
 a sync-mode bundle has no controls or loop and seeks on `imv-preview-sync {time}` messages, reporting `sync: true` in its
 ready message. Publishing rebuilds the bundle from the sealed source in the isolated worker when the sealed one lacks
