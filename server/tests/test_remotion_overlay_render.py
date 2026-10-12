@@ -21,7 +21,6 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from generated.imv.sprite.v1 import sprite_pb2 as pb
-from google.protobuf.json_format import MessageToDict
 from pydantic import TypeAdapter
 
 from server.app import app
@@ -29,14 +28,14 @@ from server.remotion_templates import overlay_render, overlay_service
 from server.remotion_templates.api import app as remotion_templates_app
 from server.remotion_templates.api import create_template_app
 from server.remotion_templates.overlay_render import (
-    OverlayError, overlay_cpu_seconds, plan_overlay, render_overlay, resolve_total_seconds,
+    OverlayError, OverlayPlacement, overlay_cpu_seconds, plan_overlay, render_overlay, resolve_total_seconds,
 )
 from server.remotion_templates.overlay_router import overlay_renders
 from server.remotion_templates.overlay_service import OverlayRenders
 from server.remotion_templates.renderer import Renderer
 from server.remotion_templates.routes import runtime_for
 from server.remotion_templates.settings import Settings
-from server.remotion_templates.store import Store
+from server.remotion_templates.store import NotFound, Store
 from server.video_composition import media
 from server.video_composition.schema import MediaURL
 
@@ -55,16 +54,22 @@ def sprite(sprite_id: str, *, width=1080, height=1920, fps=30, frames=60, code=C
     )
 
 
-def placement(sprite_id: str, *, start=0.0, duration=None, order=0) -> pb.SpritePlacement:
+def placement(sprite_id: str, *, start=0.0, duration=None) -> OverlayPlacement:
     """构造一个摆放；duration 缺省时使用资产自身时长。"""
-    item = pb.SpritePlacement(id=f"p{order}", sprite_id=sprite_id, start_mode="seconds", start=start, order=order)
-    if duration is not None:
-        item.duration = duration
-    return item
+    return OverlayPlacement(sprite_id=sprite_id, start=start, duration=duration)
 
 
 A, B = sprite("a"), sprite("b")
 PUBLICATIONS = {"a": A, "b": B}
+# 默认请求：a 从 0 秒、b 从 1 秒开始（各 2 秒），b 叠在 a 上；WIRE 是同一份请求的 HTTP 形式。
+PLACED = [placement("a", start=0), placement("b", start=1)]
+WIRE = [{"spriteId": "a", "start": 0}, {"spriteId": "b", "start": 1}]
+
+
+def stored_request(**changes) -> dict:
+    """任务行里保存的请求：默认的摆放列表，其余字段可覆盖。"""
+    return {"placements": [item.model_dump(mode="json") for item in PLACED], "audio_url": None, "duration": 3.0,
+            "callback_url": None, **changes}
 
 
 # 场景：有 TTS 音频时无视请求 duration，以探测到的完整音频时长为准。
@@ -89,17 +94,17 @@ def test_audio_duration_wins(monkeypatch: pytest.MonkeyPatch) -> None:
         asyncio.run(resolve_total_seconds(None, None, [], PUBLICATIONS, 5))
 
 
-# 场景：摆放按 order 叠放，超出结尾截短、起点越界丢弃。
-def test_plan_clips_and_orders_placements() -> None:
-    """帧范围以统一画布 fps 计算，越界起点被丢弃，超出结尾的片段保留完整时长（不改变资产内部时间轴）。"""
+# 场景：摆放按请求里的先后叠放（先者在下），超出结尾截短、起点越界丢弃。
+def test_plan_keeps_list_order_and_clips_placements() -> None:
+    """帧范围以统一画布 fps 计算，实例顺序就是请求顺序而不是起点顺序；越界起点被丢弃，超出结尾的片段保留完整时长。"""
     placements = [
-        placement("b", start=4.8, order=1),  # 2s 时长保持完整，由 6s 总长截断
-        placement("a", start=0, order=0),
-        placement("a", start=6, order=2),  # 起点等于结尾，丢弃
+        placement("b", start=4.8),  # 2s 时长保持完整，由 6s 总长截断
+        placement("a", start=0),
+        placement("a", start=6),  # 起点等于结尾，丢弃
     ]
     overlay = plan_overlay(placements, PUBLICATIONS, 6, 120)
     assert (overlay.width, overlay.height, overlay.fps, overlay.frames) == (1080, 1920, 30, 180)
-    assert [(i["start_frame"], i["duration_frames"]) for i in overlay.instances] == [(0, 60), (144, 60)]
+    assert [(i["start_frame"], i["duration_frames"]) for i in overlay.instances] == [(144, 60), (0, 60)]
     assert all(set(item) == {"code", "config", "start_frame", "duration_frames"} for item in overlay.instances)
     assert overlay.span == 204  # 144 + 60：合成必须覆盖最晚片段结尾，否则该片段的 Sequence 会被截短
 
@@ -140,7 +145,7 @@ def test_plan_matches_the_shared_timing_vectors(case) -> None:
 def test_plan_survives_huge_saved_values() -> None:
     """起点 1e307 秒的片段丢弃、其余正常；时长 1e300 秒的片段取最长成片的帧数，合成不会无限增长。"""
     overlay = plan_overlay(
-        [placement("a", start=1e307, order=0), placement("b", start=0, duration=1e300, order=1)], PUBLICATIONS, 6, 120,
+        [placement("a", start=1e307), placement("b", start=0, duration=1e300)], PUBLICATIONS, 6, 120,
     )
     assert [(i["start_frame"], i["duration_frames"]) for i in overlay.instances] == [(0, 120 * 30)]
     assert overlay.span == 3600
@@ -195,9 +200,6 @@ def service(tmp_path, monkeypatch):
     store.initialize()
     renderer = FakeRenderer(settings)
     uploads: list[tuple] = []
-    bindings = [MessageToDict(item, preserving_proto_field_name=True) for item in (
-        placement("a", start=0, order=0), placement("b", start=1, order=1),
-    )]
 
     async def probed(path, overlay) -> None:
         """替身探测：视为规格一致。"""
@@ -211,8 +213,14 @@ def service(tmp_path, monkeypatch):
     monkeypatch.setattr(overlay_service, "environment_problem", lambda settings: None)
     monkeypatch.setattr(overlay_service, "upload_public", upload)
     monkeypatch.setattr(overlay_service, "ZosSettings", lambda: SimpleNamespace())
-    monkeypatch.setattr(overlay_service.sprites, "get_bindings", lambda store, style_id: (1, bindings, None))
-    monkeypatch.setattr(overlay_service.sprites, "get", lambda store, sprite_id: PUBLICATIONS[sprite_id])
+
+    def get(store, sprite_id):
+        """替身读取已发布 Sprite：未知 ID 与真实存储一样抛 NotFound。"""
+        if sprite_id not in PUBLICATIONS:
+            raise NotFound("sprite not found")
+        return PUBLICATIONS[sprite_id]
+
+    monkeypatch.setattr(overlay_service.sprites, "get", get)
     # 5/15/45 秒的通知重试和 2 秒的写库重试在用例里不等待；用例按次数而不是按时间断言。
     monkeypatch.setattr(overlay_service, "NOTIFICATION_RETRY_DELAYS", (0.001, 0.001, 0.001))
     monkeypatch.setattr(overlay_service, "PERSIST_DELAY_SECONDS", 0.001)
@@ -230,11 +238,11 @@ async def finish(overlays: OverlayRenders) -> None:
 
 
 def run_task(overlays: OverlayRenders, *, duration: float | None = 3.0, audio: str | None = None,
-             callback: str | None = None) -> str:
-    """受理一个任务并等待它的渲染、上传和通知全部结束；返回任务 ID。"""
+             callback: str | None = None, placements: list[OverlayPlacement] | None = None) -> str:
+    """受理一个任务（默认的摆放）并等待它的渲染、上传和通知全部结束；返回任务 ID。"""
     async def scenario():
         """受理后等待后台协程；协程若抛出未处理异常，这里会重新抛出。"""
-        task_id = await overlays.accept(uuid4(), audio, duration, callback)
+        task_id = await overlays.accept(placements or PLACED, audio, duration, callback)
         await finish(overlays)
         return task_id
 
@@ -438,26 +446,21 @@ def test_render_failure_is_sanitized(service, callbacks, caplog, failure, messag
     assert str(failure) in caplog.text  # 运维仍能在日志中看到完整根因
 
 
-def long_bindings(monkeypatch) -> None:
-    """让样式的片段结束于 150 秒（片段 b 起点 148 秒 + 资产自身 2 秒），超过 120 秒上限。"""
-    stored = [MessageToDict(item, preserving_proto_field_name=True) for item in (
-        placement("a", start=0, order=0), placement("b", start=148, order=1),
-    )]
-    monkeypatch.setattr(overlay_service.sprites, "get_bindings", lambda store, style_id: (1, stored, None))
+# 片段结束于 150 秒（片段 b 起点 148 秒 + 资产自身 2 秒），超过 120 秒上限。
+LONG = [placement("a", start=0), placement("b", start=148)]
 
 
 # 场景：时长已知时受理阶段就拒绝超限请求（显式 duration 或片段自身结尾），不写任务行。
-def test_accept_enforces_the_limit_on_known_lengths(service, monkeypatch) -> None:
+def test_accept_enforces_the_limit_on_known_lengths(service) -> None:
     """显式 duration 超限 422；未提供时片段结尾超限同样 422；上限内的请求被受理。"""
     overlays, _, _ = service
     with pytest.raises(HTTPException) as caught:
-        asyncio.run(overlays.accept(uuid4(), None, 9999.0, None))
+        asyncio.run(overlays.accept(PLACED, None, 9999.0, None))
     assert caught.value.status_code == 422 and "超过上限 120" in caught.value.detail
     assert task_rows(overlays) == 0
-    asyncio.run(overlays.accept(uuid4(), None, 120.0, None))  # 恰好等于上限
-    long_bindings(monkeypatch)
+    asyncio.run(overlays.accept(PLACED, None, 120.0, None))  # 恰好等于上限
     with pytest.raises(HTTPException) as caught:
-        asyncio.run(overlays.accept(uuid4(), None, None, None))
+        asyncio.run(overlays.accept(LONG, None, None, None))
     assert caught.value.status_code == 422 and "超过上限 120" in caught.value.detail
     assert task_rows(overlays) == 1
 
@@ -483,7 +486,7 @@ def test_accept_refuses_a_host_that_cannot_render(service, monkeypatch) -> None:
     overlays, _, _ = service
     monkeypatch.setattr(overlay_service, "environment_problem", lambda settings: "ffprobe")
     with pytest.raises(HTTPException) as caught:
-        asyncio.run(overlays.accept(uuid4(), None, 3.0, None))
+        asyncio.run(overlays.accept(PLACED, None, 3.0, None))
     assert caught.value.status_code == 503 and task_rows(overlays) == 0
 
 
@@ -598,8 +601,7 @@ def test_environment_problem_names_the_missing_piece(tmp_path, monkeypatch) -> N
 def test_resume_reruns_unfinished_tasks(service) -> None:
     """queued 任务经 resume 渲染成功；已成功任务不再产生新的渲染请求。"""
     overlays, renderer, _ = service
-    request = {"style_id": str(uuid4()), "audio_url": None, "duration": 3.0, "callback_url": None}
-    overlays._insert("11111111-1111-1111-1111-111111111111", {"request": request})
+    overlays._insert("11111111-1111-1111-1111-111111111111", {"request": stored_request()})
     run_resume(overlays)
     overlays.resumed = False
     run_resume(overlays)
@@ -643,8 +645,7 @@ def test_resume_skips_damaged_rows(service, caplog) -> None:
     insert_row(overlays, "no-request", "succeeded", "2026-01-01T00:00:01+00:00", '{"notified": false}')
     insert_row(overlays, "not-object", "queued", "2026-01-01T00:00:02+00:00", "[]")
     good = "33333333-3333-3333-3333-333333333333"
-    request = {"style_id": str(uuid4()), "audio_url": None, "duration": 3.0, "callback_url": None}
-    insert_row(overlays, good, "queued", "2026-01-01T00:00:03+00:00", json.dumps({"request": request}))
+    insert_row(overlays, good, "queued", "2026-01-01T00:00:03+00:00", json.dumps({"request": stored_request()}))
     with caplog.at_level(logging.ERROR, logger=overlay_service.logger.name):
         run_resume(overlays)
     assert overlays.resumed and overlays.get(good)["status"] == "succeeded" and len(renderer.requests) == 1
@@ -655,7 +656,7 @@ def test_resume_skips_damaged_rows(service, caplog) -> None:
 def test_resume_resends_only_unnotified_callbacks(service, callbacks) -> None:
     """两个已成功且带回调地址的任务，只有未标记 notified 的那个重新收到 POST。"""
     overlays, _, _ = service
-    request = {"style_id": str(uuid4()), "audio_url": None, "duration": 3.0, "callback_url": "https://bus.example/cb"}
+    request = stored_request(callback_url="https://bus.example/cb")
     pending, done = "44444444-4444-4444-4444-444444444444", "55555555-5555-5555-5555-555555555555"
     for task_id, extra in ((pending, {}), (done, {"notified": True})):
         data = {"request": request, "video_url": f"https://zos.example/{task_id}.webm", **extra}
@@ -675,7 +676,7 @@ def test_resume_requeues_oldest_first(service, monkeypatch) -> None:
         spawned.append(task_id)
 
     monkeypatch.setattr(overlays, "_run", record)
-    request = json.dumps({"request": {"style_id": str(uuid4()), "audio_url": None, "duration": 3.0, "callback_url": None}})
+    request = json.dumps({"request": stored_request()})
     newer, older = "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"
     insert_row(overlays, newer, "queued", "2026-01-02T00:00:00+00:00", request)
     insert_row(overlays, older, "queued", "2026-01-01T00:00:00+00:00", request)
@@ -780,8 +781,8 @@ def test_slow_audio_probe_does_not_hold_the_render_slot(service, monkeypatch) ->
 
     async def scenario():
         """先受理卡住的音频任务，再受理普通任务，并在放行前确认后者已完成。"""
-        slow = await overlays.accept(uuid4(), "https://x/tts.mp3", None, None)
-        fast = await overlays.accept(uuid4(), None, 3.0, None)
+        slow = await overlays.accept(PLACED, "https://x/tts.mp3", None, None)
+        fast = await overlays.accept(PLACED, None, 3.0, None)
         await wait_until(lambda: overlays.get(fast)["status"] == "succeeded")
         assert overlays.get(slow)["status"] == "queued"  # 仍在探测，还没有轮到渲染
         released.append(True)
@@ -809,7 +810,7 @@ def test_slow_upload_does_not_hold_the_render_slot(service, monkeypatch) -> None
 
     async def scenario():
         """受理两个任务，确认先上传的那个卡在 ZOS 时两个渲染都已开始。"""
-        tasks = [await overlays.accept(uuid4(), None, 3.0, None) for _ in range(2)]
+        tasks = [await overlays.accept(PLACED, None, 3.0, None) for _ in range(2)]
         # 两个渲染都已开始，而先上传的那个还卡在 ZOS：上传没有占着渲染名额（先后顺序由调度决定）。
         await wait_until(lambda: len(renderer.requests) == 2 and calls)
         blocked = calls[0].removeprefix("imv/overlay_render/").removesuffix(".webm")
@@ -841,30 +842,81 @@ def overlay_client(service, client: TestClient):
 def test_duration_is_strict(overlay_client, duration) -> None:
     """布尔值、数字字符串和非正数的 duration 返回 422 且不创建任务。"""
     client, overlays = overlay_client
-    response = client.post("/api/v1/overlay-renders", json={"styleId": str(uuid4()), "duration": duration})
+    response = client.post("/api/v1/overlay-renders", json={"placements": WIRE, "duration": duration})
     assert response.status_code == 422
     assert task_rows(overlays) == 0
 
 
 # 场景：HTTP 契约——受理返回 taskId，GET 返回状态；未知任务 404。
 def test_routes_accept_and_query(overlay_client) -> None:
-    """路由使用 camelCase 请求体，整数与小数 duration 都可用，未知字段拒绝，查询未知任务 404。"""
+    """路由使用 camelCase 请求体，整数与小数 duration 都可用，未知字段（含已移除的 styleId）拒绝，查询未知任务 404。"""
     client, _ = overlay_client
-    created = client.post("/api/v1/overlay-renders", json={"styleId": str(uuid4()), "duration": 3})
+    created = client.post("/api/v1/overlay-renders", json={"placements": WIRE, "duration": 3})
     assert created.status_code == 200
-    assert client.post("/api/v1/overlay-renders", json={"styleId": str(uuid4()), "duration": 7.5}).status_code == 200
-    assert client.post("/api/v1/overlay-renders", json={"styleId": str(uuid4()), "bogus": 1}).status_code == 422
+    assert client.post("/api/v1/overlay-renders", json={"placements": WIRE, "duration": 7.5}).status_code == 200
+    assert client.post("/api/v1/overlay-renders", json={"placements": WIRE, "bogus": 1}).status_code == 422
+    assert client.post("/api/v1/overlay-renders", json={"placements": WIRE, "styleId": str(uuid4())}).status_code == 422
     assert client.get(f"/api/v1/overlay-renders/{uuid4()}").status_code == 404
     task_id = created.json()["taskId"]
     assert client.get(f"/api/v1/overlay-renders/{task_id}").json()["taskId"] == task_id
+
+
+# 场景：摆放的每个字段都严格校验：缺失或类型错误、负起点、非正时长、多余字段（含已移除的 order）和超过 100 个都是 422。
+@pytest.mark.parametrize("placements", [
+    [{"start": 0}], [{"spriteId": "", "start": 0}], [{"spriteId": "x" * 65, "start": 0}], [{"spriteId": "a"}],
+    [{"spriteId": "a", "start": -1}], [{"spriteId": "a", "start": True}], [{"spriteId": "a", "start": "1"}],
+    [{"spriteId": "a", "start": 0, "duration": 0}], [{"spriteId": "a", "start": 0, "duration": -2}],
+    [{"spriteId": "a", "start": 0, "duration": "3"}], [{"spriteId": "a", "start": 0, "order": 1}],
+    [{"spriteId": "a", "start": 0}] * 101, "a", None,
+], ids=["no-sprite", "empty-sprite", "long-sprite", "no-start", "negative-start", "bool-start", "string-start",
+        "zero-duration", "negative-duration", "string-duration", "order-removed", "over-100", "not-a-list", "null"])
+def test_invalid_placements_are_rejected(overlay_client, placements) -> None:
+    """摆放字段不合法时返回 422 且不创建任务；缺少 placements 同样如此。"""
+    client, overlays = overlay_client
+    response = client.post("/api/v1/overlay-renders", json={"placements": placements, "duration": 3})
+    assert response.status_code == 422 and task_rows(overlays) == 0
+    assert client.post("/api/v1/overlay-renders", json={"duration": 3}).status_code == 422
+
+
+# 场景：空摆放和未知 Sprite 在受理阶段就是 422 并给出原因，不创建任务。
+def test_accept_rejects_empty_and_unknown_placements(overlay_client) -> None:
+    """空列表得到 no_placements 的说明，引用不存在的 Sprite 得到 sprite_missing 的说明。"""
+    client, overlays = overlay_client
+    empty = client.post("/api/v1/overlay-renders", json={"placements": [], "duration": 3})
+    assert empty.status_code == 422 and "没有 Remotion 资产摆放" in empty.json()["detail"]
+    unknown = client.post("/api/v1/overlay-renders", json={"placements": [{"spriteId": "missing", "start": 0}], "duration": 3})
+    assert unknown.status_code == 422 and "Sprite missing 不存在" in unknown.json()["detail"]
+    assert task_rows(overlays) == 0
+
+
+# 场景：受理时把摆放（含先后、起点和时长）原样存进任务行，渲染与恢复都只用这份记录。
+def test_accept_stores_the_placements_with_the_task(service) -> None:
+    """任务行的 request.placements 与受理时的列表一致，缺省时长保存为 null。"""
+    overlays, _, _ = service
+    task_id = run_task(overlays, placements=[placement("b", start=2, duration=1), placement("a")])
+    _, data = overlays._read(task_id)
+    assert data["request"]["placements"] == [
+        {"sprite_id": "b", "start": 2.0, "duration": 1.0}, {"sprite_id": "a", "start": 0.0, "duration": None},
+    ]
+
+
+# 场景：恢复的任务按受理时保存的摆放渲染，先后、起点和时长原样落到 worker 请求。
+def test_recovered_task_renders_its_stored_placements(service) -> None:
+    """重启后 resume 渲染的是任务行里保存的摆放，而不是任何别处的当前数据。"""
+    overlays, renderer, _ = service
+    stored = [placement("b", start=2, duration=1), placement("a")]
+    request = stored_request(placements=[item.model_dump(mode="json") for item in stored])
+    overlays._insert("11111111-1111-1111-1111-111111111111", {"request": request})
+    run_resume(overlays)
+    assert [(i["start_frame"], i["duration_frames"]) for i in renderer.requests[0]["instances"]] == [(60, 30), (0, 60)]
 
 
 # 场景：GET 只返回公开视图：三种状态的形状固定，且不泄漏请求里的音频或回调地址。
 def test_query_returns_only_the_public_view(overlay_client) -> None:
     """排队、成功、失败各自返回 taskId/status/result/error，不含 request 及其中带令牌的地址。"""
     client, overlays = overlay_client
-    request = {"style_id": str(uuid4()), "audio_url": "https://x/tts.mp3?token=secret", "duration": None,
-               "callback_url": "https://bus.example/cb?token=secret"}
+    request = stored_request(audio_url="https://x/tts.mp3?token=secret", duration=None,
+                             callback_url="https://bus.example/cb?token=secret")
     error = {"code": "render_failed", "message": "叠加视频渲染失败"}
     rows = {
         "queued": ("66666666-6666-6666-6666-000000000001", {"request": request}),
