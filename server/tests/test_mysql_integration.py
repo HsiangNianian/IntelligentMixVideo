@@ -9,11 +9,12 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import URL, create_engine, inspect
+from sqlalchemy import URL, create_engine, inspect, select
 
 from server import database
 from server.app import app
 from server.template import store
+from .conftest import SPRITE_ID, remotion_track
 from .template_wire import detail_template, listed_templates, post_template, saved_template
 
 
@@ -80,6 +81,25 @@ def test_mysql_bootstrap_unicode_and_persistence(mysql_database, template_payloa
         response = client.get(f"/template/{saved['template_id']}")
         assert response.status_code == 200 and detail_template(response) == saved
         assert listed_templates(client.get("/template")) == [saved]
+
+
+def test_mysql_stores_remotion_tracks_as_references(mysql_database, template_payload):
+    """片段轨道的引用、秒数起点和空 editor 经 MySQL JSON 列往返不变，重启后读取仍通过校验；IMS 轨道不带 sprite_id。"""
+    template_payload["tracks"] += [remotion_track("clip-a", start=2.5, duration=3), remotion_track("clip-b")]
+    with TestClient(app) as client:
+        response = post_template(client, template_payload)
+        assert response.status_code == 201
+        saved = saved_template(response)
+        with database.get_engine().connect() as connection:
+            stored = connection.execute(select(store.templates.c.configuration)).scalar_one()
+        assert stored["tracks"][1] == {
+            "id": "clip-a", "target": "remotion", "sprite_id": SPRITE_ID,
+            "start_mode": "seconds", "start": 2.5, "duration": 3, "editor": {},
+        }
+        assert stored["tracks"][2]["duration"] is None
+        assert "sprite_id" not in stored["tracks"][0]
+    with TestClient(app) as client:
+        assert detail_template(client.get(f"/template/{saved['template_id']}")) == saved
 
 
 def test_mysql_conflict_rollback_update_and_delete(mysql_database, template_payload):
