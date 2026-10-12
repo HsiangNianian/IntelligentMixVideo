@@ -142,8 +142,8 @@ class AgentRun:
             for call in message.get("tool_calls", [])
         }
         self.observations = set()
-        # Sprites each step saved itself, by step id: the only IDs that step may report as its output.
-        self.step_sprites: dict[str, set[str]] = {}
+        # Sprites each step saved itself, by plan position and in saving order: the only output that step may report.
+        self.step_sprites: dict[int, list[str]] = {}
         self.turn = 0
         self.round_calls: list[dict] = []
         self.round_error: str | None = None
@@ -295,26 +295,39 @@ class AgentRun:
                 self.stalled_turns += 1
                 return None
             needed_by = self.state.dependents()
-            if result.status == "step_done" and needed_by:
+            # Only a step whose window offers sprite_create can be asked to save a Sprite. A Preset-only or read-only
+            # step is left to the Plan, whose input_refs check already tells it how to repair the reference.
+            can_save = any(item.name == "sprite.create" for item in self._tools_for_layer())
+            if result.status == "step_done" and needed_by and can_save:
                 step_id = self.state.step.id
+                saved_here = self.step_sprites.get(self.state.index, [])
+                newest = saved_here[-1] if saved_here else None
                 if not result.sprite_id:
                     # The Plan cannot redo a finished step, so refuse the claim here, where sprite_create is still callable.
-                    self._set_feedback(
-                        f"Step {step_id} is not done: step(s) {', '.join(needed_by)} take its saved Sprite as "
-                        f"steps.{step_id}.outputs.sprite, but you reported no sprite_id. sprite_compose only returns a draft: "
-                        "save it with sprite_create and report that sprite_id, or return status blocked with the reason."
+                    problem = (
+                        "you reported no sprite_id. sprite_compose only returns a draft: save it with sprite_create "
+                        "and report that sprite_id, or return status blocked with the reason."
                     )
-                    self.stalled_turns += 1
-                    return None
-                if result.sprite_id not in self.step_sprites.get(step_id, ()):
+                elif newest is None:
                     # An earlier step's Sprite would reach the dependents, and the Outer would publish it, as this step's output.
+                    problem = (
+                        f"sprite_id {result.sprite_id} was not saved by this step. Call sprite_create in this step "
+                        "and report the new sprite_id, or return status blocked with the reason."
+                    )
+                elif result.sprite_id != newest:
+                    problem = f"sprite_id {result.sprite_id} is not the Sprite this step saved last: report {newest}."
+                else:
+                    problem = None
+                if problem:
                     self._set_feedback(
-                        f"Step {step_id} is not done: sprite_id {result.sprite_id} was not saved by this step, and step(s) "
-                        f"{', '.join(needed_by)} take its output as steps.{step_id}.outputs.sprite. Call sprite_create in this "
-                        "step and report the new sprite_id, or return status blocked with the reason."
+                        f"Step {step_id} is not done: step(s) {', '.join(needed_by)} take its output as "
+                        f"steps.{step_id}.outputs.sprite, but {problem}"
                     )
                     self.stalled_turns += 1
                     return None
+            if result.status == "step_done":
+                # Whatever steered this step is obsolete once it is accepted, and must not mislead the next layers.
+                self.session.feedback = []
             self.state.finish_batch(**result.model_dump())
             context.append([response.wire()])
             self._observe_handoff(Layer.PLAN, result.status)
@@ -438,7 +451,9 @@ class AgentRun:
                         saved_before = set(self.session.saved_sprites)
                         data = await self.session.execute(tool.name, args, visible)
                         if self.layer is Layer.EXECUTOR and self.state.step is not None:
-                            self.step_sprites.setdefault(self.state.step.id, set()).update(set(self.session.saved_sprites) - saved_before)
+                            self.step_sprites.setdefault(self.state.index, []).extend(
+                                identifier for identifier in self.session.saved_sprites if identifier not in saved_before
+                            )
                         if getattr(tool, "starts_generation", False):
                             self.generation_started = True
                         self._observe_receipt(tool.name, data)

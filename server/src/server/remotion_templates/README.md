@@ -130,12 +130,16 @@ Executor and Plan accept a single JSON object with ordinary prose or a markdown
 fence around it. They reject arrays, quoted JSON strings, multiple objects and
 objects nested inside malformed JSON. Unknown task Sprite IDs produce feedback
 without changing the active layer or Plan, so the next round can correct them.
-A step whose saved Sprite a later step takes as `steps.<id>.outputs.sprite` cannot be reported
-`step_done` without a `sprite_id` that this very step saved (a missing ID, or one an earlier step
-saved, counts as none): the host refuses the claim in the Executor layer and asks for
-`sprite_create`, because the Plan cannot re-open a step that was reported done and
-`sprite_compose` only returns a draft. When the task has saved no Sprite at all, a completion
-request is refused with that fact and the way forward instead of a generic mismatch.
+A step whose saved Sprite a later step takes as `steps.<id>.outputs.sprite`, and whose tool window
+offers `sprite_create`, cannot be reported `step_done` without the `sprite_id` that this very step
+saved last (a missing ID, one an earlier step saved, or an older one of its own counts as none): the
+host refuses the claim in the Executor layer and asks for `sprite_create`, because the Plan cannot
+re-open a step that was reported done and `sprite_compose` only returns a draft. Saved Sprites are
+tracked by plan position, so renaming the unfinished step after a tool limit keeps them, and an
+accepted `step_done` clears the refusal text. A Preset-only or read-only step has no `sprite_create`
+and is not held to this: the Plan's `input_refs` check tells it how to repair the reference. When the
+task has saved no Sprite at all, a completion request is refused with that fact and the way forward
+instead of a generic mismatch.
 
 Every Outer → Plan → Executor turn appends one public round record through the
 `job.round` delta event on the same work stream as the phase timeline. A round
