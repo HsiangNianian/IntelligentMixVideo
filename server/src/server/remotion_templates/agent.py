@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 
 from .context import Conversation
 from .models import DialogueOutput
@@ -14,6 +15,9 @@ from .tools.session import ToolSession
 from enum import StrEnum
 
 from .tools.catalog import PLAN_TOOL
+
+# Policy diagnostics name where they are in their message; the position is not what makes an observation new.
+_POSITION = re.compile(r" \(line \d+, column \d+\)")
 
 OUTER_RULES = """
 You are the outer task ReAct. For simple generation or questions, act directly without a formal Plan.
@@ -224,6 +228,8 @@ class AgentRun:
                 }
             if isinstance(item, list):
                 return [scrub(value) for value in item]
+            if isinstance(item, str):
+                return _POSITION.sub("", item)
             return item
 
         return tool_name + ":" + json.dumps(scrub(value), ensure_ascii=False, sort_keys=True, default=str)

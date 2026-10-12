@@ -381,6 +381,24 @@ def test_renaming_the_unfinished_step_keeps_the_sprites_it_already_saved(monkeyp
     assert harness.roles == ["outer", "plan", "executor", "executor", "executor", "plan", "executor", "plan", "executor", "plan", "outer"]
 
 
+def test_a_repeated_policy_violation_is_the_same_observation_wherever_it_sits(monkeypatch, tmp_path):
+    """审计复现：策略诊断的文字里带「(line N, column M)」，同一条违规换了行号就成了新观察，重复犯同一个错不再计入无进展。"""
+    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
+    run = AgentRun(FakeHarness([]), None, Budget(), tmp_path, [], lambda *_: None)
+
+    def refusal(capability, line):
+        """The tool error sprite.create returns for one policy violation at the given line."""
+        message = f"Unsupported capability: {capability} (line {line}, column 7)"
+        diagnostic = {"source": "contract", "severity": "error", "message": message,
+                      "range": {"start": {"line": line - 1, "character": 6}, "end": {"line": line - 1, "character": 11}}}
+        return {"code": "CODE_VALIDATION_FAILED", "message": "Sprite code validation failed.",
+                "details": {"validation": {"passed": False, "diagnostics": [diagnostic]}}}
+
+    key = run._receipt_key("error:sprite_create", refusal("fetch", 5))
+    assert run._receipt_key("error:sprite_create", refusal("fetch", 9)) == key
+    assert run._receipt_key("error:sprite_create", refusal("eval", 5)) != key
+
+
 def test_completion_refusal_says_when_the_task_saved_no_sprite(monkeypatch, tmp_path):
     """Outer 反复提交基线版本的 Sprite ID 40 次：任务一个 Sprite 都没存时，拒绝原因要明说并给出下一步，而不是「必须引用最新 Sprite」。"""
     monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
