@@ -99,7 +99,7 @@ async def sprite_compose(owner, request: SpriteComposeInput) -> ToolResult[Sprit
     "sprite.create",
     constraints=[
         "Only a compose-produced SpriteDraft with consistent source and parameters may be saved.",
-        "The Sprite is mounted once in the browser and must leave the user's video visible: a canvas that is opaque in every sampled frame is refused with CODE_VALIDATION_FAILED.",
+        "The Sprite is mounted once in the browser and must leave the user's video visible: a canvas that is opaque in most sampled frames (4 of 5) is refused with CODE_VALIDATION_FAILED.",
     ],
     side_effects=["code validation, one browser mount with a transparency measurement, and sprite catalog write"],
     error_codes=["INVALID_ARGUMENT", "CODE_VALIDATION_FAILED", "VALIDATION_UNAVAILABLE", "SPRITE_STORE_FAILED"],

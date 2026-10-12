@@ -183,7 +183,7 @@ class ToolValidator:
         """Run fixed-canvas default/configured mounts and each independent behavior script.
 
         With ``transparency`` the worker also measures, on sampled frames, whether the canvas stays see-through
-        and fails the ``transparency`` check when every sampled frame is opaque almost everywhere. Only the
+        and fails the ``transparency`` check when most sampled frames are opaque almost everywhere. Only the
         generation path asks for it: a user's own parameter edits are never blocked by it.
         """
         if request.duration_frames > 216000:

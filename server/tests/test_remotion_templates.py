@@ -192,14 +192,14 @@ def title_instance(preset_id: str) -> SpriteComposeInput:
 @pytest.mark.skipif(not RENDERER_DEPS.exists(), reason="install locked Remotion renderer dependencies")
 def test_sprite_that_hides_the_video_is_refused_with_an_actionable_reason(tmp_path):
     """滤镜与特效叠在用户视频上：整帧不透明的 Sprite 在保存前被拒绝，原因写进回执，且不落库。"""
-    reason = "The Sprite hides the video: at least 98% of the 1080x1920 canvas is opaque in every sampled frame."
+    reason = "The Sprite hides the video: at least 98% of the 1080x1920 canvas is opaque in 4 of the 5 sampled frames."
 
     async def run():
         current = session(tmp_path)
         patch_validation(current)
 
         async def opaque(request, **_options):
-            """The browser measured an opaque canvas in every sampled frame."""
+            """The browser measured an opaque canvas in most sampled frames."""
             return render_report(request.duration_frames, CheckResult(name="transparency", status="failed", message=reason))
 
         current.validate_render = opaque

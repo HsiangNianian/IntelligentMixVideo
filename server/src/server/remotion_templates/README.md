@@ -101,10 +101,11 @@ storage and source consistency without a model or semantic index.
 A Sprite is composited over the user's own video, so `sprite.create` must leave that video visible. After code
 validation it mounts the composed Sprite once in the isolated browser and, on the first, last and three
 in-between frames, measures how much of the canvas is nearly opaque (alpha of 242/255 or more, from a screenshot
-taken without a page background). When every sampled frame is opaque on 98% or more of the canvas the Sprite is
-refused with `CODE_VALIDATION_FAILED`, the reason names the frames and what to do, and nothing is saved. One
-sampled frame with the video showing through is enough, so a transition that covers the screen only for a
-moment is not affected. The page is opened at the canvas size (1080x1920), as the real overlay render does, so
+taken without a page background). When at least 80% of the sampled frames (4 of 5) are opaque on 98% or more of
+the canvas the Sprite is refused with `CODE_VALIDATION_FAILED`, the reason names the frames and what to do, and
+nothing is saved. One clear frame is not enough, because a cover that fades in or starts late is clear on the
+first frame and hides the video afterwards; a transition that covers the screen only for a moment is not
+affected. Sampling stops once the verdict is settled. The page is opened at the canvas size (1080x1920), as the real overlay render does, so
 `100vw`/`100vh`, `window.innerWidth`/`innerHeight` and media queries see the canvas. The mount is cached under
 the key the host's final check reads, so completing the task does not mount the Sprite a second time. A component that throws on a sampled frame, or while its
 module loads, fails the `transparency` (with the frame) or `default_render` check with its own error, so

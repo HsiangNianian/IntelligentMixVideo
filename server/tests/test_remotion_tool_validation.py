@@ -198,7 +198,7 @@ def transparency_renderer(share: float | None, *, stop_after: int | None = None)
                 payload["checks"].append({
                     "name": "transparency",
                     "status": "failed" if hidden else "passed",
-                    "message": "The Sprite hides the video: the canvas is opaque in every sampled frame." if hidden else "The video stays visible.",
+                    "message": "The Sprite hides the video: the canvas is opaque in most sampled frames." if hidden else "The video stays visible.",
                 })
                 payload["passed"] = not hidden
             if stop_after is not None:
@@ -421,6 +421,26 @@ export default function Fill(props: { tint: string }) {
   return <div style={{ position: "absolute", left: 0, top: 0, width: "100vw", height: "100vh", background: "#000" }} />;
 }
 """
+FADE_IN_COVER = """import React from "react";
+import { AbsoluteFill, interpolate, useCurrentFrame } from "remotion";
+export default function FadeIn(props: { tint: string }) {
+  const frame = useCurrentFrame();
+  return <AbsoluteFill style={{ backgroundColor: "#000", opacity: interpolate(frame, [0, 5], [0, 1], { extrapolateRight: "clamp" }) }} />;
+}
+"""
+LATE_COVER = """import React from "react";
+import { AbsoluteFill, useCurrentFrame } from "remotion";
+export default function Late(props: { tint: string }) {
+  return <AbsoluteFill style={{ backgroundColor: props.tint, opacity: useCurrentFrame() >= 3 ? 1 : 0 }} />;
+}
+"""
+THREE_OF_FIVE_COVER = """import React from "react";
+import { AbsoluteFill, useCurrentFrame } from "remotion";
+export default function Hold(props: { tint: string }) {
+  const frame = useCurrentFrame();
+  return <AbsoluteFill style={{ backgroundColor: props.tint, opacity: frame >= 5 && frame <= 22 ? 1 : 0 }} />;
+}
+"""
 MIDDLE_ONLY_COVER = """import React from "react";
 import { AbsoluteFill, useCurrentFrame } from "remotion";
 export default function Wipe(props: { tint: string }) {
@@ -447,11 +467,15 @@ def browser_validate(tmp_path: Path, code: str, *, frames: int = 30):
 @pytest.mark.parametrize(("code", "passed"), [
     (OPAQUE_FILTER, False),
     (VIEWPORT_COVER, False),
+    (FADE_IN_COVER, False),
+    (LATE_COVER, False),
     (TRANSLUCENT_FILTER, True),
     (MIDDLE_ONLY_COVER, True),
-], ids=["opaque-root-background", "viewport-sized-cover", "translucent-layers", "opaque-only-in-the-middle"])
+    (THREE_OF_FIVE_COVER, True),
+], ids=["opaque-root-background", "viewport-sized-cover", "fading-in-cover", "late-cover", "translucent-layers",
+        "opaque-only-in-the-middle", "opaque-in-three-of-five"])
 def test_real_browser_measures_whether_the_video_stays_visible(tmp_path, code, passed):
-    """用真实浏览器度量：不透明根背景的滤镜、按 100vw/100vh 铺满的图层被拒（真实渲染页面就是画布尺寸）；只用半透明层的滤镜、只在中间帧覆盖的转场通过。"""
+    """用真实浏览器度量：不透明根背景、按 100vw/100vh 铺满、淡入或延后出现的整帧遮罩被拒（5 帧中 4 帧被盖住）；只用半透明层的滤镜、只盖住中间一两帧的转场（含 5 帧中 3 帧）通过。"""
     report = browser_validate(tmp_path, code)
     check = next(item for item in report.checks if item.name == "transparency")
     assert (check.status == "passed") is passed, check.message

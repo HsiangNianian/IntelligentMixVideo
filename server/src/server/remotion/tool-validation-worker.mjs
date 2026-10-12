@@ -202,6 +202,12 @@ function querySnapshot(page, selector, all) {
 const OPAQUE_ALPHA = 242;
 /** A frame hides the video when at least this share of its pixels is opaque. */
 const COVERED_SHARE = 0.98;
+/**
+ * A Sprite hides the video when this share of the sampled frames is covered. One clear frame is not enough: a cover that fades in
+ * or starts late is clear on the first frame and hides the video afterwards. A cover over only the middle of the timeline, as a
+ * transition has, stays well below this share.
+ */
+const COVERED_FRAMES = 0.8;
 
 /** First, last and three frames in between, so a Sprite that is clear for part of its time is not rejected. */
 function sampleFrames(total) {
@@ -240,13 +246,16 @@ async function opaqueShare(page, composition) {
 }
 
 /**
- * Mechanical check that a Sprite leaves the video visible: it fails only when every sampled frame is
- * opaque almost everywhere. This is a pixel measurement, not a visual review of how the result looks.
+ * Mechanical check that a Sprite leaves the video visible: it fails when most sampled frames are opaque almost
+ * everywhere. This is a pixel measurement, not a visual review of how the result looks.
  */
 async function transparencyCheck(page) {
   const composition = request.composition;
+  const frames = sampleFrames(composition.duration_frames);
+  const needed = Math.ceil(frames.length * COVERED_FRAMES);
   const samples = [];
-  for (const frame of sampleFrames(composition.duration_frames)) {
+  let covered = 0;
+  for (const frame of frames) {
     await page.evaluate((target) => window.__imvTool.setFrame(target), frame);
     // The base checks only mount frame 0; a component that throws later is the author's to fix, not an unavailable validator.
     const failure = await page.evaluate(() => window.__imvRuntimeError ?? null);
@@ -256,23 +265,26 @@ async function transparencyCheck(page) {
         status: "failed",
         message: `The component throws at frame ${frame}: ${failure}. Every frame of its duration must render without an error, so the canvas could not be measured.`.slice(0, 6000),
       };
+    // Capturing is the costly part; once the verdict is settled the remaining frames are only mounted, to catch errors.
+    if (covered >= needed || samples.length - covered > frames.length - needed) continue;
     const measured = await opaqueShare(page, composition);
     if (measured.width !== composition.width || measured.height !== composition.height)
       throw new Error(`Transparency screenshot is ${measured.width}x${measured.height}, expected ${composition.width}x${composition.height}`);
     samples.push({ frame, share: measured.share });
+    if (measured.share >= COVERED_SHARE) covered += 1;
   }
   await page.evaluate(() => window.__imvTool.setFrame(0));
   const summary = samples.map(({ frame, share }) => `frame ${frame}: ${(share * 100).toFixed(1)}% opaque`).join(", ");
-  if (samples.every(({ share }) => share >= COVERED_SHARE))
+  if (covered >= needed)
     return {
       name: "transparency",
       status: "failed",
-      message: `The Sprite hides the video: at least ${COVERED_SHARE * 100}% of the ${composition.width}x${composition.height} canvas is opaque in every sampled frame (${summary}). `
+      message: `The Sprite hides the video: at least ${COVERED_SHARE * 100}% of the ${composition.width}x${composition.height} canvas is opaque in ${covered} of the ${frames.length} sampled frames (${summary}). `
         + "Sprites are composited over the user's own video, so keep the canvas transparent: do not paint an opaque full-frame background "
-        + "(backgroundColor or background on the root or on a full-size layer, or a full-size layer at opacity 1). "
+        + "(backgroundColor or background on the root or on a full-size layer, or a full-size layer at opacity 1), also when it fades in or starts late. "
         + "For a filter or colour tint build translucent layers (alpha well below 1), gradients, a vignette or grain.",
     };
-  return { name: "transparency", status: "passed", message: `The video stays visible in at least one sampled frame (${summary}).` };
+  return { name: "transparency", status: "passed", message: `The video stays visible: the canvas is covered in ${covered} of the ${samples.length} measured frames (${summary}).` };
 }
 
 function scriptPolicy(code) {

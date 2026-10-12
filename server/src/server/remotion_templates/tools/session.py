@@ -349,7 +349,7 @@ class ToolSession:
         return SpriteCreateOutput(sprite=record, validation=validation)
 
     async def _require_visible_video(self, sprite: SpriteDraft) -> None:
-        """Refuse a Sprite that hides the video in every sampled frame while the Executor can still fix it.
+        """Refuse a Sprite that hides the video in most sampled frames while the Executor can still fix it.
 
         Sprites are composited over the user's own video, so a full-frame opaque layer is never what a filter
         or an effect wants. This is the browser mount the host needs anyway: the report is cached under the key
