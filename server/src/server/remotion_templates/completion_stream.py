@@ -55,6 +55,9 @@ class Completion:
             if not isinstance(delta, dict):
                 raise ValueError("Missing stream delta")
             finish = choice.get("finish_reason")
+            if finish == "":
+                # Some OpenAI-compatible gateways send "" instead of null on every non-final chunk.
+                finish = None
             if self.finish is not None and (delta or finish is not None):
                 raise ValueError("Completion changed after its finish reason")
             if delta.get("role") is not None:
