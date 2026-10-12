@@ -9,4 +9,8 @@ export interface SpriteAsset {
   seconds: number;
   /** 发布画布宽高比，叠加预览按 Cover 方式铺满模板画面。 */
   aspect: number;
+  /** 发布画布；叠加渲染要求同一模板里所有片段的宽、高和帧率完全一致。 */
+  width: number;
+  height: number;
+  fps: number;
 }

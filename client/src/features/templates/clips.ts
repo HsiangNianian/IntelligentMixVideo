@@ -5,9 +5,21 @@ import type { Draft, RemotionClip } from "./model";
 /** 片段与 IMS 对象共用的轨道上限，与服务端和本地文件一致。 */
 const maxTracks = 100;
 
-/** 添加一次摆放：从模板开头播放，持续整个资产长度；同一个资产可以重复添加，每次都是独立的摆放。 */
-export function addClip(draft: Draft, asset: SpriteAsset): Draft {
+/** 画布描述，用于提示：宽×高 @ 帧率。 */
+function canvasLabel(asset: SpriteAsset): string {
+  return `${asset.width}×${asset.height} @ ${asset.fps} FPS`;
+}
+
+/**
+ * 添加一次摆放：从模板开头播放，持续整个资产长度；同一个资产可以重复添加，每次都是独立的摆放。
+ * 叠加渲染要求所有片段的画布尺寸与帧率相同，所以与已添加片段画布不同的资产在这里就拒绝；`known` 是用来查找已添加片段资产的目录，服务端保存时仍会复核。
+ */
+export function addClip(draft: Draft, asset: SpriteAsset, known: SpriteAsset[]): Draft {
   if (draft.tracks.length + draft.clips.length >= maxTracks) throw new Error("轨道数量不能超过 100");
+  const clash = draft.clips
+    .map((clip) => known.find((item) => item.id === clip.sprite_id))
+    .find((item) => item && (item.width !== asset.width || item.height !== asset.height || item.fps !== asset.fps));
+  if (clash) throw new Error(`「${asset.name}」的画布（${canvasLabel(asset)}）与已添加的「${clash.name}」（${canvasLabel(clash)}）不一致，叠加视频要求同一模板里的资产画布尺寸和帧率相同`);
   const clip: RemotionClip = {
     id: `sprite-${crypto.randomUUID()}`,
     sprite_id: asset.id,

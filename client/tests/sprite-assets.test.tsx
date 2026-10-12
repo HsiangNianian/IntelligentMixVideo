@@ -37,7 +37,7 @@ function binary(schema: Parameters<typeof toBinary>[0], message: unknown, status
 }
 
 /** 按路径模拟模板与 Sprite 服务：GET 返回带给定片段的已保存模板，记录每次模板保存请求和所有写入路径（posts，按发送顺序）。 */
-function sprites(options: { clips?: RemotionClip[]; saveStatus?: number; saveDetail?: string } = {}) {
+function sprites(options: { clips?: RemotionClip[]; saveStatus?: number; saveDetail?: string; catalog?: ReturnType<typeof summary>[] } = {}) {
   const template = { ...savedTemplate(), clips: options.clips ?? [] };
   const saved: ReturnType<typeof fromBinary<typeof SaveTemplateRequestSchema>>[] = [];
   const posts: string[] = [];
@@ -45,7 +45,7 @@ function sprites(options: { clips?: RemotionClip[]; saveStatus?: number; saveDet
     const path = new URL(String(url)).pathname;
     const post = init?.method === "POST";
     if (post) posts.push(path);
-    if (path === "/api/sprites") return binary(ListSpritesResponseSchema, create(ListSpritesResponseSchema, { sprites: [summary()] }));
+    if (path === "/api/sprites") return binary(ListSpritesResponseSchema, create(ListSpritesResponseSchema, { sprites: options.catalog ?? [summary()] }));
     if (path === "/template" && post) {
       const request = fromBinary(SaveTemplateRequestSchema, new Uint8Array(init!.body as Uint8Array));
       saved.push(request);
@@ -230,4 +230,19 @@ test("本地模板不请求也不显示 Remotion 资产", async () => {
   expect(within(catalog).getByText("Remotion 资产只能添加到云端模板。")).toBeTruthy();
   expect(screen.queryByRole("region", { name: "已添加 Remotion 资产" })).toBeNull();
   expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/api/sprites"))).toBe(false);
+});
+
+// 场景：叠加渲染要求画布一致：目录里画布不同的资产在添加时就被提示并拒绝，模板里仍只有第一个片段，目录中显示各资产画布。
+test("添加画布不一致的资产时提示原因", async () => {
+  const landscape = { ...summary("sprite-2"), name: "横版标题", canvas: { width: 1920, height: 1080, fps: 30, previewFrames: 90 } };
+  const { template } = sprites({ catalog: [summary(), landscape] });
+  render(<TemplateWorkspace selection={{ environment: "cloud", templateId: template.template_id }} onHome={() => {}} />);
+  const catalog = await screen.findByRole("region", { name: "Remotion 资产" });
+  fireEvent.click(within(catalog).getByRole("button", { name: "展开" }));
+  expect((await within(catalog).findAllByText(/1080×1920 @ 30 FPS/)).length).toBe(1);
+  expect(within(catalog).getAllByText(/1920×1080 @ 30 FPS/).length).toBe(1);
+  fireEvent.click(await within(catalog).findByRole("button", { name: "添加 Remotion 资产：霓虹标题" }));
+  fireEvent.click(await within(catalog).findByRole("button", { name: "添加 Remotion 资产：横版标题" }));
+  await screen.findByText(/「横版标题」的画布（1920×1080 @ 30 FPS）与已添加的「霓虹标题」（1080×1920 @ 30 FPS）不一致/);
+  expect(screen.getAllByRole("listitem", { name: /^Remotion 资产：/ })).toHaveLength(1);
 });

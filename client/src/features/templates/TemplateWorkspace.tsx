@@ -227,7 +227,7 @@ export function TemplateWorkspace({ selection = null, onHome }: {
                   if (isTextTarget(added.target)) { setTextTarget(added.target); lastTextTrack.current = added.id; }
                   return result.draft;
                 })} />
-                <SpriteCatalog environment={environment} catalog={spriteCatalog} onAdd={(asset) => editTrack(() => addClip(draft, asset))} />
+                <SpriteCatalog environment={environment} catalog={spriteCatalog} onAdd={(asset) => editTrack(() => addClip(draft, asset, spriteCatalog.assets ?? []))} />
               </aside>}
               canvas={<main className="template-workspace-canvas h-full min-w-0 overflow-y-auto border-b xl:border-b-0">
                 <TemplatePreview draft={draft} media={media} onMediaChange={setMedia} videoInputKey={`${environment}:${current?.template_id ?? draft.name}`} onCatalog={setCatalog} selectedId={target} onSelect={(id) => { if (draft.tracks.some((track) => track.id === id)) selectTarget(id); }} sprites={spriteClips} onRangeChange={(id, start, end) => {

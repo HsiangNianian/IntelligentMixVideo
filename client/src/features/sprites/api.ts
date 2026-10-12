@@ -56,6 +56,9 @@ function toAsset(summary: SpriteSummary): SpriteAsset {
     kind: summary.kind,
     seconds: summary.canvas && summary.canvas.fps ? summary.canvas.previewFrames / summary.canvas.fps : 0,
     aspect: summary.canvas && summary.canvas.height ? summary.canvas.width / summary.canvas.height : 9 / 16,
+    width: summary.canvas?.width ?? 0,
+    height: summary.canvas?.height ?? 0,
+    fps: summary.canvas?.fps ?? 0,
   };
 }
 
