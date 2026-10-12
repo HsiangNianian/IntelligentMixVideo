@@ -439,17 +439,35 @@ def test_curly_quoted_protocol_json_is_still_understood(monkeypatch, tmp_path):
 
 
 def test_executor_cannot_call_plan_control(monkeypatch, tmp_path):
-    """执行层调用计划控制会被拒绝且不推进计划；需要输入时经 Plan 回到 Outer 提问。"""
+    """执行层调用计划控制会被拒绝且不推进计划。"""
     run, _ = new_run(monkeypatch, tmp_path, [
         delegate(),
         call("exec-1", "tools_plan_execute", {"action": "advance"}),
-        report("exec-2", "needs_input", "需要更多输入"),
-        AssistantMessage(content=json.dumps({"status": "needs_input", "summary": "stop", "questions": ["需要更多输入"]})),
-        call("outer-2", "tools_plan_execute", {"action": "ask", "questions": ["需要更多输入"]}),
     ])
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+    assert run.layer is Layer.EXECUTOR and run.state.index == 0
+    assert "TOOL_NOT_FOUND" in json.dumps(run.executor_context.messages()[-1])
+
+
+def test_a_step_that_needs_input_goes_straight_to_outer_with_its_questions(monkeypatch, tmp_path):
+    """审计复现：needs_input 原来先交给 Plan，Plan 不能提问只能 stop，被记成 blocked，Outer 按规则停止，问题到不了用户；现在直接交给 Outer 提问。"""
+    asked = call("exec-2", "tools_report_step", {"status": "needs_input", "summary": "缺少颜色", "questions": ["要多暖？"]})
+    run, harness = new_run(monkeypatch, tmp_path, [
+        delegate(),
+        report("exec-1", "needs_input", "缺少颜色"),
+        asked,
+        call("outer-2", "tools_plan_execute", {"action": "ask", "questions": ["要多暖？"]}),
+    ])
+    feedback = watch_feedback(run, harness)
     result = asyncio.run(run.plan_execute())
-    assert result.questions == ["需要更多输入"]
-    assert run.state.index == 0
+    assert result.questions == ["要多暖？"]
+    assert harness.roles == ["outer", "executor", "executor", "outer"]
+    # A needs_input report without questions is refused: Outer would have nothing to ask.
+    assert "needs_input requires the questions" in feedback[2][0]
+    assert run.plan_result == {"status": "needs_input", "summary": "缺少颜色", "sprite_id": None, "questions": ["要多暖？"]}
+    handoffs = [item["content"] for item in run.outer.messages() if str(item.get("content", "")).startswith("Host handoff")]
+    assert "要多暖？" in handoffs[-1] and '"needs_input"' in handoffs[-1]
 
 
 def test_repeated_invalid_executor_replies_stop_the_run(monkeypatch, tmp_path):

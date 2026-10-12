@@ -143,7 +143,17 @@ class StepResult(Contract):
 
     status: Literal["step_done", "blocked", "needs_input"]
     summary: str = Field(min_length=1, max_length=2000)
-    questions: list[str] = Field(default_factory=list, max_length=5)
+    questions: list[str] = Field(
+        default_factory=list, max_length=5,
+        description="needs_input only: the questions Outer relays to the user.",
+    )
+
+    @model_validator(mode="after")
+    def questions_for_input(self):
+        """needs_input goes straight to Outer, which can only ask the user what the report asks."""
+        if self.status == "needs_input" and not self.questions:
+            raise ValueError("needs_input requires the questions for the user")
+        return self
 
 
 class PlanResult(Contract):

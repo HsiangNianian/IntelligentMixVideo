@@ -1166,8 +1166,8 @@ inspect 自身也可被查询。已知工具列表由集成方提供给 Agent；
 包括 [PlanAction](../server/src/server/remotion_templates/planning.py) 的完整输入 Schema、
 `ToolResult[JsonObject]` 输出 Schema、约束、副作用、错误码和示例。
 这个入口由宿主处理：Outer 只做 `answer`（回答）、`ask`（必要澄清）、`delegate`（委派）或 `stop`；
-委派后宿主直接建立标准两步计划（`preset` 准备预设，`sprite` 组合并保存），Plan 只在步骤受阻、
-需要输入或整批调用没有新进展时被唤醒，`update_plan` 只发送未完成的步骤，已完成步骤由宿主保留，
+委派后宿主直接建立标准两步计划（`preset` 准备预设，`sprite` 组合并保存），Plan 只在步骤受阻或整批调用没有新进展时被唤醒（报告
+`needs_input` 的步骤带着 `questions` 直接交给 Outer 向用户提问，因为只有 Outer 能提问），`update_plan` 只发送未完成的步骤，已完成步骤由宿主保留，
 `input_refs` 在建立计划时即校验产出模块（`steps.<id>.outputs.presets` 需 preset 模块，
 `steps.<id>.outputs.sprite` 需 sprite 模块）。Plan 的 `complete`（或文本回复 `plan_done`）只能指向本任务最新保存的
 Sprite，宿主随即直接发布它，不再交回 Outer（Outer 没有发布动作）；任务尚未保存 Sprite 时完成请求被拒绝，控制留在 Plan。
@@ -1175,7 +1175,7 @@ Sprite，宿主随即直接发布它，不再交回 Outer（Outer 没有发布�
 交回 Outer。Executor 只能检查其契约，不能执行计划控制。
 
 `tools.report_step` / `tools_report_step` 只供 Executor 调用，输入为
-[StepResult](../server/src/server/remotion_templates/planning.py)（`status`、`summary`、可选 `questions`）。
+[StepResult](../server/src/server/remotion_templates/planning.py)（`status`、`summary`、`questions`；`needs_input` 必须带至少一个问题）。
 步骤产出由宿主从工具回执登记：带 sprite 模块的步骤须在本步 `sprite_create` 成功，preset 步骤须至少准备好一个预设
 （或编辑任务已有基线草稿），否则 `step_done` 被拒绝并说明下一步应调用的工具；通过后宿主推进下一步，最后一步完成即发布最新 Sprite。
 批次用尽时，若本批有新观察，宿主自动继续当前步骤。读取描述符不会修改计划，也不会发布 Sprite。

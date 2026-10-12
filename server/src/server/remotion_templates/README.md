@@ -6,8 +6,9 @@ host's standard two-step plan directly: `preset` readies the Presets and
 `sprite` composes and saves the Sprite. The Executor loop calls the tools of one
 step and ends it with `tools_report_step`; the host checks the step's recorded
 outputs, starts the next step and publishes the saved Sprite after the last one.
-The Plan loop only runs to recover a step that is blocked, needs input or used a
-batch without new evidence. The final delivery is a saved Sprite published as an
+A step reported `needs_input` goes straight to Outer with its questions, since
+only Outer can ask the user. The Plan loop only runs to recover a step that is
+blocked or used a batch without new evidence. The final delivery is a saved Sprite published as an
 isolated Player preview.
 
 ## Tool catalog

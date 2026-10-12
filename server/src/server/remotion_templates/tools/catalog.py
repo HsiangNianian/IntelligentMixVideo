@@ -296,7 +296,8 @@ REPORT_TOOL = HostTool(
     description=(
         "Executor: report the current step as step_done, blocked or needs_input; call it alone. The host checks "
         "the step really produced its output (a sprite_create success in a step with the sprite module, a ready "
-        "Preset in a preset step) and then starts the next step or publishes the Sprite."
+        "Preset in a preset step) and then starts the next step or publishes the Sprite. needs_input takes the questions "
+        "for the user, which Outer asks."
     ),
     constraints=(
         "Only the Executor may invoke this tool; the host records the step's Presets and Sprite from tool receipts.",
