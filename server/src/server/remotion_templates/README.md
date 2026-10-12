@@ -192,9 +192,12 @@ choice) take turns, so a double click rebuilds once.
 
 ## Overlay renders for the bus
 
-`POST /api/v1/overlay-renders` (`overlay_router.py`) renders **all Remotion clips saved under one style ID**
+`POST /api/v1/overlay-renders` (`overlay_router.py`) renders **the Remotion clips of a request**
 into one transparent VP9 alpha WebM, uploads it to ZOS (`imv/overlay_render/{taskId}.webm`, public-read) and
-returns/notifies the public URL. Body (camelCase): `styleId`, optional `audioUrl`, `duration` (seconds),
+returns/notifies the public URL. Body (camelCase): `placements` (at most 100, bottom layer first, each
+`{spriteId, start, duration?}`: `start` is a finite number of seconds from 0 and `duration` a number above 0, both
+strict like the top-level `duration`; the bus reads them from the template's `remotion` tracks, so a template is
+looked up once and this module never reads the IMS template library), optional `audioUrl`, `duration` (seconds),
 `callbackUrl`. `GET /api/v1/overlay-renders/{taskId}` returns `{taskId, status, result:{videoUrl}, error}`
 (`queued/rendering/uploading/succeeded/failed`); the callback body is `{taskId, status: succeed|failed,
 videoUrl, errorMessage}`, retried after 5/15/45 s; each attempt has a 30 s overall deadline, and a non-2xx answer, an
@@ -209,9 +212,10 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   or the clips' end); an `audioUrl` is only probed while rendering, so an over-long one fails the task with
   `duration_too_long`.
 - **Acceptance**: also a 503 when ZOS, ffprobe, bubblewrap, prlimit, Node, the browser or the managed fonts are
-  missing (the isolated renderer is Linux-only), instead of accepting tasks that can only fail later.
-- **Layout**: every asset must share width/height/fps. Clips are stacked by `order` on one canvas; each plays for
-  its saved duration (or its own `preview_frames / fps`), which its Sprite reads as `durationInFrames` just like in
+  missing (the isolated renderer is Linux-only), instead of accepting tasks that can only fail later. An empty
+  `placements` (`no_placements`) or a `spriteId` that is not published (`sprite_missing`) is a 422.
+- **Layout**: every asset must share width/height/fps. Clips are stacked in request order on one canvas (the first
+  is the bottom layer); each plays for its `duration` (or its own `preview_frames / fps`), which its Sprite reads as `durationInFrames` just like in
   its accepted preview, keeps that full length when the total cuts it (so its internal animation ranges are
   unchanged), and is dropped when it starts later. Seconds become frames with half a frame rounding up, like the
   template timing, and a clip is at most `IMV_OVERLAY_MAX_SECONDS` long. Remotion clamps a Sequence to its
@@ -225,7 +229,8 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   run outside, so a slow network never delays queued renders), recovery of unfinished tasks and pending notifications
   when the runtime is first built
   (`routes.runtime_for`, oldest first; a damaged row is logged and skipped, and the overlay routes retry if the table
-  could not be read), and ZOS upload via `video_composition.zos.upload_public`. State writes retry a locked database
+  could not be read), and ZOS upload via `video_composition.zos.upload_public`. The placements are stored with the
+  task, so a recovered task renders exactly what was accepted and only re-reads the published Sprites. State writes retry a locked database
   three times; if it stays unwritable the row keeps its previous state (never rewritten as a failure) and the next
   start re-runs it. Sealed sources are not re-policy-checked in this worker.
 - **Cost**: a 1080×1920 frame takes about 0.4–1 s on one Chrome tab (software GL), so a 120 s overlay at 30 FPS needs
