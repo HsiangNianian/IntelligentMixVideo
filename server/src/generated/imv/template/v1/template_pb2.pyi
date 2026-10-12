@@ -129,20 +129,22 @@ class EffectTemplateEditor(_message.Message):
     def __init__(self, title: _Optional[str] = ..., subtitle: _Optional[str] = ..., bubble_text: _Optional[str] = ..., title_size: _Optional[int] = ..., subtitle_size: _Optional[int] = ..., bubble_size: _Optional[int] = ..., title_x: _Optional[float] = ..., title_y: _Optional[float] = ..., subtitle_x: _Optional[float] = ..., subtitle_y: _Optional[float] = ..., bubble_x: _Optional[float] = ..., bubble_y: _Optional[float] = ..., title_flower: _Optional[str] = ..., subtitle_flower: _Optional[str] = ..., bubble: _Optional[str] = ..., filter: _Optional[str] = ..., vfx: _Optional[str] = ..., transition: _Optional[str] = ..., title_in: _Optional[str] = ..., title_out: _Optional[str] = ..., title_loop: _Optional[str] = ..., subtitle_in: _Optional[str] = ..., subtitle_out: _Optional[str] = ..., subtitle_loop: _Optional[str] = ..., bubble_in: _Optional[str] = ..., bubble_out: _Optional[str] = ..., bubble_loop: _Optional[str] = ..., title_in_duration: _Optional[float] = ..., title_out_duration: _Optional[float] = ..., subtitle_in_duration: _Optional[float] = ..., subtitle_out_duration: _Optional[float] = ..., bubble_in_duration: _Optional[float] = ..., bubble_out_duration: _Optional[float] = ..., subtitle_keyword_bold: _Optional[bool] = ..., subtitle_keyword_italic: _Optional[bool] = ..., subtitle_keyword_underline: _Optional[bool] = ..., subtitle_keyword_strikeout: _Optional[bool] = ..., subtitle_keyword_color: _Optional[str] = ..., title_keyword: _Optional[str] = ..., title_keyword_bold: _Optional[bool] = ..., title_keyword_italic: _Optional[bool] = ..., title_keyword_underline: _Optional[bool] = ..., title_keyword_strikeout: _Optional[bool] = ..., title_keyword_color: _Optional[str] = ..., title_keyword_size: _Optional[int] = ..., subtitle_keyword_size: _Optional[int] = ...) -> None: ...
 
 class EffectTrack(_message.Message):
-    __slots__ = ("id", "target", "start_mode", "start", "duration", "editor")
+    __slots__ = ("id", "target", "start_mode", "start", "duration", "editor", "sprite_id")
     ID_FIELD_NUMBER: _ClassVar[int]
     TARGET_FIELD_NUMBER: _ClassVar[int]
     START_MODE_FIELD_NUMBER: _ClassVar[int]
     START_FIELD_NUMBER: _ClassVar[int]
     DURATION_FIELD_NUMBER: _ClassVar[int]
     EDITOR_FIELD_NUMBER: _ClassVar[int]
+    SPRITE_ID_FIELD_NUMBER: _ClassVar[int]
     id: str
     target: str
     start_mode: str
     start: float
     duration: float
     editor: EffectTemplateEditor
-    def __init__(self, id: _Optional[str] = ..., target: _Optional[str] = ..., start_mode: _Optional[str] = ..., start: _Optional[float] = ..., duration: _Optional[float] = ..., editor: _Optional[_Union[EffectTemplateEditor, _Mapping]] = ...) -> None: ...
+    sprite_id: str
+    def __init__(self, id: _Optional[str] = ..., target: _Optional[str] = ..., start_mode: _Optional[str] = ..., start: _Optional[float] = ..., duration: _Optional[float] = ..., editor: _Optional[_Union[EffectTemplateEditor, _Mapping]] = ..., sprite_id: _Optional[str] = ...) -> None: ...
 
 class TrackList(_message.Message):
     __slots__ = ("tracks",)

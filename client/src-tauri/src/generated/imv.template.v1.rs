@@ -150,24 +150,28 @@ pub struct EffectTemplateEditor {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct EffectTrack {
-    /// 模板内唯一的对象实例 ID。
+    /// 模板内唯一的对象实例 ID；Remotion 片段也用它标识这一次摆放，同一个 Sprite 可以摆放多次。
     #[prost(string, tag="1")]
     pub id: ::prost::alloc::string::String,
-    /// 效果作用对象，可选值为 title、subtitle、bubble、filter、vfx 或 transition。
+    /// 效果作用对象，可选值为 title、subtitle、bubble、filter、vfx、transition 或 remotion。
     #[prost(string, tag="2")]
     pub target: ::prost::alloc::string::String,
-    /// 开始位置的计量方式，可选值为 seconds 或 percent。
+    /// 开始位置的计量方式，可选值为 seconds 或 percent；remotion 片段只能使用 seconds。
     #[prost(string, tag="3")]
     pub start_mode: ::prost::alloc::string::String,
     /// 开始位置；含义由 start_mode 决定，分别表示秒数或成片时长百分比。
     #[prost(double, optional, tag="4")]
     pub start: ::core::option::Option<f64>,
-    /// 固定持续时间，单位为秒；未提供时表示持续到成片结束，转场对象必须提供。
+    /// 固定持续时间，单位为秒；未提供时表示持续到成片结束，转场对象必须提供；
+    /// remotion 片段未提供时使用所引用 Sprite 自身的时长。
     #[prost(double, optional, tag="5")]
     pub duration: ::core::option::Option<f64>,
-    /// 当前对象的文字、位置、效果选择和动画时长。
+    /// 当前对象的文字、位置、效果选择和动画时长；remotion 片段必须提供空消息。
     #[prost(message, optional, tag="6")]
     pub editor: ::core::option::Option<EffectTemplateEditor>,
+    /// remotion 片段引用的已发布 Sprite ID；其他对象必须留空。
+    #[prost(string, tag="7")]
+    pub sprite_id: ::prost::alloc::string::String,
 }
 /// 包装数组以保留“提供了空轨道列表”的含义。
 #[derive(::serde::Serialize)]

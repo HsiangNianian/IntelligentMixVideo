@@ -830,6 +830,7 @@ mod tests {
                     start: Some(0.),
                     duration: None,
                     editor: Some(editor),
+                    sprite_id: String::new(),
                 }],
             }),
             template_id: None,
