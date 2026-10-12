@@ -1,4 +1,4 @@
-"""文案切片：共用入口记录日志，业务完成字符对齐、模型切分与时间投射。"""
+"""文案切片与标题提词：无 ASR 时仅提取标题词，其余完成字符对齐、切分与时间投射。"""
 
 import bisect
 from collections import Counter
@@ -52,26 +52,65 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
 
     请求为 {script, asr_result}，读取 fun-asr transcripts 第一音轨，词时间为 begin_time/end_time 毫秒。
     替换/增删代价均为 1；波前搜索保留最远位置，平局依次优先替换、文案多字、
-    ASR 多字。模型只返回分句切点和关键词，时间投射和关键词校验由代码完成。
+    ASR 多字。模型只返回分句切点和关键词，超长片段按中点硬切，时间投射和关键词校验由代码完成。
     显式 config 仅用于当前调用；省略时读取 server/.env 与 IMV_ 环境变量，SDK 在返回前关闭。
     返回 segments（整型 segment_id、秒制 start_time/end_time、group_id、字符串 keyword、level）、
     warnings 和 trace；原文保留标点，字幕去标点由下游合成处理。
-    可选 title 与片段共用关键词调用，提供非 null 标题时另返回 title_keyword；非法模型结果直接报错。
+    有 ASR 时 title 与片段共用关键词调用；无 ASR 时仅调用一次模型，返回 title_keyword，不校验提词内容。
     空内容或输出时间错误抛 ValueError，配置或模型输出错误抛
     RuntimeError，内部约束错误抛 AssertionError；ASR 嵌套读取和 SDK 异常原样传播。
     diagnostics 供共用入口记录已完成阶段的详细 trace；返回值只保留原有统计字段。
     """
     trace = diagnostics["trace"]
-    # 直接调用须提供约定字段；HTTP 类型校验由路由负责。标点不参与对齐，保留原始下标。
-    script = payload["script"]
     title = payload.get("title")
-    chars = [
-        (i, unicodedata.normalize("NFKC", c).lower())
-        for i, c in enumerate(script)
-        if not c.isspace() and c not in PUNCTUATION
-    ]
-    if not chars:
-        raise ValueError("文案缺少有效字符。")
+    title_only = payload.get("asr_result") is None and title is not None
+    if not title_only:
+        # HTTP 类型校验由路由负责；有 ASR 时仍须有效文案，标点不参与对齐。
+        script = payload.get("script") or ""
+        chars = [
+            (i, unicodedata.normalize("NFKC", c).lower())
+            for i, c in enumerate(script)
+            if not c.isspace() and c not in PUNCTUATION
+        ]
+        if not chars:
+            raise ValueError("文案缺少有效字符。")
+        if payload.get("asr_result") is None:
+            raise ValueError("缺少 ASR 结果或标题。")
+    # 客户端完整参数覆盖模型字段；服务端 HTTP 策略仍从环境读取，不修改共享状态。
+    diagnostics["stage"] = "config"
+    try:
+        config = Settings(**config.model_dump()) if config is not None else Settings()
+    except ValidationError:
+        raise RuntimeError("模型或切片配置缺失或不合法，请检查 IMV_ 配置。") from None
+    base_url, key, model = config.llm_base_url, config.llm_api_key, config.llm_model
+    try:
+        address = urlparse(base_url)
+    except ValueError:
+        raise RuntimeError("模型地址格式不合法。") from None
+    if (
+        address.scheme not in ("https", "http")
+        or not address.netloc
+        or (
+            address.scheme == "http"
+            and address.hostname not in ("localhost", "127.0.0.1", "::1")
+            and not config.allow_insecure_llm_http
+        )
+    ):
+        raise RuntimeError("模型地址必须有效，远程 HTTP 需要显式授权。")
+    if title_only:
+        diagnostics["stage"] = "keywords"
+        with OpenAI(base_url=base_url, api_key=key, timeout=config.llm_timeout_seconds, max_retries=config.llm_max_retries) as client:
+            response = client.chat.completions.create(
+                model=model, temperature=0.2, response_format={"type": "json_object"},
+                messages=[{"role": "system", "content": '从标题中提取一个关键词，只返回 JSON：{"title_keyword":"关键词"}，无合适词时返回空字符串。'},
+                          {"role": "user", "content": title}],
+            )
+        try:
+            keyword = json.loads(response.choices[0].message.content).get("title_keyword", "")
+            return {"title_keyword": keyword if isinstance(keyword, str) else ""}
+        except (AttributeError, IndexError, TypeError, ValueError):
+            raise RuntimeError("模型标题提词响应格式无效。") from None
+    diagnostics["stage"] = "input"
     # ponytail: MVP 信任上游 Fun-ASR 结构与词时间，只取第一音轨；接入其他来源时再扩展校验。
     sentences = payload["asr_result"]["transcripts"][0]["sentences"]
     # timeline_sentences 与 timeline 下标一一对应，记录每个字符所属的 ASR 句序号。
@@ -94,12 +133,6 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     if not timeline:
         raise ValueError("ASR 缺少有效发音字符。")
 
-    # 客户端完整参数覆盖模型字段；服务端 HTTP 策略仍从环境读取，不修改共享状态。
-    diagnostics["stage"] = "config"
-    try:
-        config = Settings(**config.model_dump()) if config is not None else Settings()
-    except ValidationError:
-        raise RuntimeError("模型或切片配置缺失或不合法，请检查 IMV_ 配置。") from None
     # 首次候选至少 2 秒；二次切分复用对齐字符计数，标点和空白不占长度。
     minimum, keyword_max_length, segment_max_length = 2000, 12, 8
     diagnostics["stage"] = "alignment"
@@ -250,26 +283,10 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     ]
     trace.update(candidate_clauses=listing, filtered_boundaries=filtered_boundaries,
                  selected_boundaries_after=[], keyword_candidates=[], model_elapsed_ms={})
-    diagnostics["stage"] = "config"
-    base_url, key, model = config.llm_base_url, config.llm_api_key, config.llm_model
-    try:
-        address = urlparse(base_url)
-    except ValueError:
-        raise RuntimeError("模型地址格式不合法。") from None
-    if (
-        address.scheme not in ("https", "http")
-        or not address.netloc
-        or (
-            address.scheme == "http"
-            and address.hostname not in ("localhost", "127.0.0.1", "::1")
-            and not config.allow_insecure_llm_http
-        )
-    ):
-        raise RuntimeError("模型地址必须有效，远程 HTTP 需要显式授权。")
     segments, rejected = [], 0
-    # 先选切点、提关键词，仅有超长片段时追加语义切分；二次切分校验失败只反馈纠正一次。
+    # 模型依次选切点、提关键词；超长片段随后由代码硬切。
     with OpenAI(base_url=base_url, api_key=key, timeout=config.llm_timeout_seconds, max_retries=config.llm_max_retries) as client:
-        for stage in ("boundaries", "keywords", "secondary_split"):
+        for stage in ("boundaries", "keywords"):
             diagnostics["stage"] = stage
             if stage == "boundaries":
                 prompt = (
@@ -306,149 +323,111 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                         '必须在标题中连续出现；标题为空或无合适关键词时返回空字符串。'
                         '完整输出为 {"keywords":[[],["词"],[]],"title_keyword":"标题关键词"}。'
                     )
-            else:
-                oversized = [i for i, (a, b) in enumerate(spans) if b - a > segment_max_length]
-                if not oversized:
-                    continue
-                content = [{"text": segments[i]["text"], "keyword": segments[i]["keyword"]} for i in oversized]
-                trace["secondary_split_input"] = content
-                prompt = (
-                    '按语义细分每个输入片段，只返回 JSON：{"cuts":[[5,10],[8]]}。'
-                    'cuts 与输入逐项对应，每项列出全部内部切点：从片段开头数的 Unicode 字符数，'
-                    '切点位置按原文计算，包含标点和空白，不是字节或词数；位置递增、不重复，不含0及文本末尾。'
-                    f'每个子段最多{segment_max_length}个有效字符，长度不计标点和空白；必须包含发音文字。'
-                    '优先在标点、完整短语和自然语义边界切分，允许句内切分，不设2秒下限。'
-                    f'保留原关键词首次出现位置的完整性；关键词自身超过{segment_max_length}个有效字符时允许拆开。'
-                    '英文单词、数字串尽量保持完整，但长度上限优先。不要输出或改写原文，不要解释。'
-                )
             messages = [
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": json.dumps(content, ensure_ascii=False)},
             ]
             started = perf_counter()
-            for attempt in range(2 if stage == "secondary_split" else 1):
-                try:
-                    response = client.chat.completions.create(
-                        model=model,
-                        messages=messages,
-                        temperature=0.2,
-                        response_format={"type": "json_object"},
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=0.2,
+                    response_format={"type": "json_object"},
+                )
+            finally:
+                trace["model_elapsed_ms"][stage] = round((perf_counter() - started) * 1000, 1)
+            if not response.choices or not isinstance(response.choices[0].message.content, str):
+                raise RuntimeError("模型返回空内容。")
+            raw = response.choices[0].message.content.strip()
+            if raw.startswith("```json") and raw.endswith("```"):
+                raw = raw[7:-3].strip()
+            try:
+                output = json.loads(raw)
+            except json.JSONDecodeError:
+                raise RuntimeError("模型返回非法 JSON。") from None
+            if not isinstance(output, dict):
+                raise RuntimeError("模型必须返回 JSON 对象。")
+            if stage == "boundaries":
+                ids = output.get("boundaries_after")
+                if not isinstance(ids, list) or any(type(n) is not int or not 1 <= n < len(listing) for n in ids):
+                    raise RuntimeError("模型 boundaries_after 必须为有效分句编号数组，不含最后一句。")
+                trace["selected_boundaries_after"] = sorted(set(ids))
+                edges = [0, *[candidate_edges[n] for n in trace["selected_boundaries_after"]], len(chars)]
+                spans = list(zip(edges, edges[1:]))
+                # 段落按其首字归属 ASR 句：句内序号从 1 递增，total 为该句的最终段数。
+                # 跨句片段整体计入起始句，使同句编号连续且不因归属再切分文本。
+                sentence_of_char = [None] * len(chars)
+                for _, i, j in ops:
+                    if i is not None and j is not None:
+                        sentence_of_char[i] = timeline_sentences[j]
+                attribution, fallback_sentence = [], None
+                for value in sentence_of_char:
+                    fallback_sentence = value if value is not None else fallback_sentence
+                    attribution.append(fallback_sentence)
+                first_sentence = next((s for s in attribution if s is not None), 0)
+                attribution = [first_sentence if s is None else s for s in attribution]
+                for index, (a, b) in enumerate(spans, 1):
+                    begin = 0 if a == 0 else offsets[a]
+                    end = len(script) if b == len(chars) else offsets[b]
+                    segments.append(
+                        {
+                            "segment_id": index,
+                            "text": script[begin:end],
+                            "start_time_ms": round(starts[a]),
+                            "end_time_ms": round(ends[b - 1]),
+                            "keyword": "",
+                            "level": 1,
+                        }
                     )
-                finally:
-                    trace["model_elapsed_ms"][stage] = round((perf_counter() - started) * 1000, 1)
-                raw = ""
-                try:
-                    if not response.choices or not isinstance(response.choices[0].message.content, str):
-                        raise RuntimeError("模型返回空内容。")
-                    raw = response.choices[0].message.content.strip()
-                    if raw.startswith("```json") and raw.endswith("```"):
-                        raw = raw[7:-3].strip()
-                    try:
-                        output = json.loads(raw)
-                    except json.JSONDecodeError as exc:
-                        if stage == "secondary_split":
-                            raise RuntimeError(f"模型返回非法 JSON：第 {exc.lineno} 行第 {exc.colno} 列，{exc.msg}。") from None
-                        raise RuntimeError("模型返回非法 JSON。") from None
-                    if not isinstance(output, dict):
-                        raise RuntimeError("模型必须返回 JSON 对象。")
-                    if stage == "boundaries":
-                        ids = output.get("boundaries_after")
-                        if not isinstance(ids, list) or any(type(n) is not int or not 1 <= n < len(listing) for n in ids):
-                            raise RuntimeError("模型 boundaries_after 必须为有效分句编号数组，不含最后一句。")
-                        trace["selected_boundaries_after"] = sorted(set(ids))
-                        edges = [0, *[candidate_edges[n] for n in trace["selected_boundaries_after"]], len(chars)]
-                        spans = list(zip(edges, edges[1:]))
-                        # 段落按其首字归属 ASR 句：句内序号从 1 递增，total 为该句的最终段数。
-                        # 跨句片段整体计入起始句，使同句编号连续且不因归属再切分文本。
-                        sentence_of_char = [None] * len(chars)
-                        for _, i, j in ops:
-                            if i is not None and j is not None:
-                                sentence_of_char[i] = timeline_sentences[j]
-                        attribution, fallback_sentence = [], None
-                        for value in sentence_of_char:
-                            fallback_sentence = value if value is not None else fallback_sentence
-                            attribution.append(fallback_sentence)
-                        first_sentence = next((s for s in attribution if s is not None), 0)
-                        attribution = [first_sentence if s is None else s for s in attribution]
-                        span_groups = [attribution[a] for a, _ in spans]
-                        for index, (a, b) in enumerate(spans, 1):
-                            begin = 0 if a == 0 else offsets[a]
-                            end = len(script) if b == len(chars) else offsets[b]
-                            segments.append(
-                                {
-                                    "segment_id": index,
-                                    "text": script[begin:end],
-                                    "start_time_ms": round(starts[a]),
-                                    "end_time_ms": round(ends[b - 1]),
-                                    "keyword": "",
-                                    "level": 1,
-                                }
-                            )
-                    elif stage == "keywords":
-                        if title is not None:
-                            title_keyword = output.get("title_keyword")
-                            if not isinstance(title_keyword, str) or len(title_keyword) > keyword_max_length or title_keyword not in title:
-                                raise RuntimeError("模型 title_keyword 必须为标题中的连续字符串，且不超过12字。")
-                        groups = output.get("keywords")
-                        if (
-                            not isinstance(groups, list)
-                            or len(groups) != len(segments)
-                            or any(not isinstance(g, list) or any(not isinstance(w, str) for w in g) for g in groups)
-                        ):
-                            raise RuntimeError("模型关键词数组必须与片段一一对应且元素为字符串。")
-                        trace["keyword_candidates"] = groups
-                        # 单次扫描选最靠前的有效词；同位置保留首个候选，其余候选均计为拒绝。
-                        for item, candidates in zip(segments, groups):
-                            keyword, first = "", len(item["text"])
-                            for candidate in candidates:
-                                word = candidate.strip()
-                                start = item["text"].find(word)
-                                if word and len(word) <= keyword_max_length and 0 <= start < first:
-                                    keyword, first = word, start
-                            item["keyword"] = keyword
-                            rejected += len(candidates) - bool(item["keyword"])
-                            # 有关键词即重点句 2，否则为普通句 1；CTA 需语义判断，不标注。
-                            item["level"] = 2 if item["keyword"] else 1
-                    else:
-                        cuts = output.get("cuts")
-                        trace["secondary_split_cuts"] = cuts
-                        if not isinstance(cuts, list) or len(cuts) != len(oversized):
-                            raise RuntimeError(f"二次切分 cuts 必须为数组并与 {len(oversized)} 个输入片段一一对应。")
-                        planned = dict(zip(oversized, cuts))
-                        refined, refined_groups, cursor = [], [], 0
-                        for index, item in enumerate(segments):
-                            text, keyword = item["text"], item["keyword"]
-                            points = planned.get(index, [])
-                            if (not isinstance(points, list)
-                                or any(type(p) is not int or not 0 < p < len(text) for p in points)
-                                or points != sorted(set(points))):
-                                raise RuntimeError(f"二次切分输入 {oversized.index(index) + 1} 的切点 {points!r} 不合法：须为严格递增、不重复的整数数组，且 0 < 切点 < {len(text)}。")
-                            edges = [0, *points, len(text)]
-                            keyword_start = text.find(keyword) if keyword else -1
-                            keyword_length = sum(not c.isspace() and c not in PUNCTUATION for c in keyword)
-                            if 0 < keyword_length <= segment_max_length and any(keyword_start < p < keyword_start + len(keyword) for p in points):
-                                raise RuntimeError(f"二次切分输入 {oversized.index(index) + 1} 的切点 {points!r} 拆开了关键词，不能在 ({keyword_start}, {keyword_start + len(keyword)}) 内切分。")
-                            for begin, end in zip(edges, edges[1:]):
-                                a, b = bisect.bisect_left(offsets, cursor + begin), bisect.bisect_left(offsets, cursor + end)
-                                if b - a > segment_max_length or a == b:
-                                    raise RuntimeError(f"二次切分输入 {oversized.index(index) + 1} 的子段 [{begin}, {end}) 有 {b - a} 个有效字符，要求 1～{segment_max_length} 个。")
-                                inherited = keyword if begin <= keyword_start and keyword_start + len(keyword) <= end else ""
-                                refined.append({**item, "text": text[begin:end], "keyword": inherited,
-                                                "level": 2 if inherited else 1,
-                                                "start_time_ms": round(starts[a]), "end_time_ms": round(ends[b - 1])})
-                                refined_groups.append(attribution[a])
-                            cursor += len(text)
-                        segments, span_groups = refined, refined_groups
-                except RuntimeError as exc:
-                    if stage != "secondary_split" or attempt == 1:
-                        raise
-                    trace["secondary_split_validation_error"] = str(exc)
-                    messages = [*messages,
-                        *([{"role": "assistant", "content": raw}] if raw else []),
-                        {"role": "user", "content": f"校验失败：{exc} 请根据原始输入修正，并重新返回完整 cuts JSON。"},
-                    ]
-                    continue
-                break
+            elif stage == "keywords":
+                if title is not None:
+                    title_keyword = output.get("title_keyword")
+                    if not isinstance(title_keyword, str) or len(title_keyword) > keyword_max_length or title_keyword not in title:
+                        raise RuntimeError("模型 title_keyword 必须为标题中的连续字符串，且不超过12字。")
+                groups = output.get("keywords")
+                if (
+                    not isinstance(groups, list)
+                    or len(groups) != len(segments)
+                    or any(not isinstance(g, list) or any(not isinstance(w, str) for w in g) for g in groups)
+                ):
+                    raise RuntimeError("模型关键词数组必须与片段一一对应且元素为字符串。")
+                trace["keyword_candidates"] = groups
+                # 单次扫描选最靠前的有效词；同位置保留首个候选，其余候选均计为拒绝。
+                for item, candidates in zip(segments, groups):
+                    keyword, first = "", len(item["text"])
+                    for candidate in candidates:
+                        word = candidate.strip()
+                        start = item["text"].find(word)
+                        if word and len(word) <= keyword_max_length and 0 <= start < first:
+                            keyword, first = word, start
+                    item["keyword"] = keyword
+                    rejected += len(candidates) - bool(item["keyword"])
+                    # 有关键词即重点句 2，否则为普通句 1；CTA 需语义判断，不标注。
+                    item["level"] = 2 if item["keyword"] else 1
+
+    # 按有效字中点二分，奇数左短右长；标点留在前段，关键词仅继承到完整包含首次出现位置的子段。
+    diagnostics["stage"] = "secondary_split"
+    refined, refined_groups = [], []
+    for item, (a, b) in zip(segments, spans):
+        origin = 0 if a == 0 else offsets[a]
+        keyword = item["keyword"]
+        keyword_start = origin + item["text"].find(keyword) if keyword else -1
+        pending = [(a, b)]
+        while pending:
+            a, b = pending.pop()
+            if b - a > segment_max_length:
+                middle = (a + b) // 2
+                pending.extend([(middle, b), (a, middle)])
+                continue
+            begin = 0 if a == 0 else offsets[a]
+            end = len(script) if b == len(chars) else offsets[b]
+            inherited = keyword if begin <= keyword_start and keyword_start + len(keyword) <= end else ""
+            refined.append({**item, "text": script[begin:end], "keyword": inherited,
+                            "level": 2 if inherited else 1,
+                            "start_time_ms": round(starts[a]), "end_time_ms": round(ends[b - 1])})
+            refined_groups.append(attribution[a])
+    segments, span_groups = refined, refined_groups
 
     # 按最终片段重编序号与 ASR 句内分组，二次切分不重新提取关键词。
     group_totals, group_seen = Counter(span_groups), Counter()
