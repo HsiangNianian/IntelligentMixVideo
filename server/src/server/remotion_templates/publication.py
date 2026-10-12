@@ -24,6 +24,7 @@ class PresentationBuilder:
             "presentation": settings.renderer_dir / "presentation.mjs",
             "presentation_worker": settings.renderer_dir / "presentation-worker.mjs",
             "preview_host": settings.renderer_dir / "preview-host.tsx",
+            "host_layer": settings.renderer_dir / "host-layer.tsx",
             "dependencies": settings.renderer_dir / "bun.lock",
         }
         return {key: digest(path) for key, path in paths.items()}

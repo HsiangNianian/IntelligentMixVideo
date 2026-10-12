@@ -75,7 +75,7 @@ class BundleRebuilder:
         self.requests.append(json.loads((directory / "request.json").read_text()))
         if self.failure:
             raise self.failure
-        (directory / "interactive.js").write_text("// rebuilt imv-preview-sync")
+        (directory / "interactive.js").write_text("// rebuilt imv-preview-sync imv-preview-host")
         return {}
 
 
@@ -373,7 +373,7 @@ def test_stale_player_bundle_is_rebuilt_from_sealed_source(client: TestClient, p
 
 def test_current_sealed_bundle_is_copied_without_rebuilding(client: TestClient, published) -> None:
     """封存包已含同步支持时直接复制，不启动任何构建。"""
-    (published.store.root / "accepted" / str(published.version.id) / "interactive.js").write_text("// imv-preview-sync")
+    (published.store.root / "accepted" / str(published.version.id) / "interactive.js").write_text("// imv-preview-sync imv-preview-host")
     from server.remotion_templates.evidence import digest
     published.version.validation.artifacts["interactive.js"] = digest(published.store.root / "accepted" / str(published.version.id) / "interactive.js")
     with published.store.connection() as db:
@@ -381,6 +381,38 @@ def test_current_sealed_bundle_is_copied_without_rebuilding(client: TestClient, 
     summary = published_sprite(client, published.version.id)
     assert published.renderer.requests == []
     assert client.get(summary.preview_url).text.count("imv-preview-sync") == 1
+
+
+def test_a_bundle_without_placement_support_is_rebuilt(client: TestClient, published) -> None:
+    """可逐帧同步但不认识参数覆盖与宿主变换的旧包（缺少 imv-preview-host 标记）同样在发布时重建。"""
+    accepted = published.store.root / "accepted" / str(published.version.id) / "interactive.js"
+    accepted.write_text("// imv-preview-sync")
+    from server.remotion_templates.evidence import digest
+    published.version.validation.artifacts["interactive.js"] = digest(accepted)
+    with published.store.connection() as db:
+        db.execute("UPDATE versions SET data=? WHERE id=?", (published.version.model_dump_json(), str(published.version.id)))
+    summary = published_sprite(client, published.version.id)
+    assert len(published.renderer.requests) == 1
+    assert "rebuilt imv-preview-sync imv-preview-host" in client.get(summary.preview_url).text
+
+
+def test_preview_page_injects_the_published_defaults_and_content_box(client: TestClient, published) -> None:
+    """资产预览页把发布时的默认参数与内容区域写成 JSON 数据块，播放器据此起步；脚本无法借数据提前结束标签。"""
+    summary = published_sprite(client, published.version.id)
+    page = client.get(summary.preview_url, params={"overlay": "true"}).text
+    data = page.split('<script type="application/json" id="imv-preview-host">', 1)[1].split("</script>", 1)[0]
+    assert json.loads(data) == {"config": DEFAULTS, "box": {"x": 90, "y": 760, "width": 900, "height": 400}}
+
+
+def test_page_data_cannot_close_its_script_element() -> None:
+    """注入的数据含 </script>、& 与行分隔符时全部转义，解析结果不变。"""
+    from server.remotion_templates.routes import player_page
+
+    value = {"config": {"text": "</script><script>alert(1)</script>&\u2028\u2029"}}
+    page = player_page("void 0", overlay=True, host=value).body.decode()
+    data = page.split('id="imv-preview-host">', 1)[1].split("</script>", 1)[0]
+    assert "<" not in data and "&" not in data and "\u2028" not in data
+    assert json.loads(data) == value
 
 
 def test_rebuild_failure_still_saves_and_republishing_refreshes_the_old_copy(client: TestClient, published) -> None:
@@ -391,7 +423,7 @@ def test_rebuild_failure_still_saves_and_republishing_refreshes_the_old_copy(cli
     published.renderer.failure = None
     again = published_sprite(client, published.version.id)
     assert again.sprite_id == first.sprite_id
-    assert "rebuilt imv-preview-sync" in client.get(first.preview_url).text
+    assert "rebuilt imv-preview-sync imv-preview-host" in client.get(first.preview_url).text
     assert len(pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites) == 1
 
 

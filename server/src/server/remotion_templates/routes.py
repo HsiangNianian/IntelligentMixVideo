@@ -1,6 +1,7 @@
 """HTTP contracts for local template works, durable job events, uploads and bounded artifacts."""
 
 import hashlib
+import json
 import re
 import sqlite3
 from pathlib import Path
@@ -401,10 +402,20 @@ def download(version_id: UUID, filename: str, service: Service) -> FileResponse:
     return FileResponse(artifact_path(service, version_id, filename), filename=filename)
 
 
-def player_page(script: str, *, overlay: bool = False) -> HTMLResponse:
+def _json_script(value: dict) -> str:
+    """Serialize page data for a JSON script element; ``<``, ``>``, ``&`` and line separators cannot end it early."""
+    text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    for character, escaped in (("<", "\\u003c"), (">", "\\u003e"), ("&", "\\u0026"), ("\u2028", "\\u2028"), ("\u2029", "\\u2029")):
+        text = text.replace(character, escaped)
+    return text
+
+
+def player_page(script: str, *, overlay: bool = False, host: dict | None = None) -> HTMLResponse:
     """Wrap a sealed interactive bundle in the sandboxed player document shared by versions and sprites.
 
-    `overlay` drops the inspection checkerboard so the page can sit transparently over other video.
+    `overlay` drops the inspection checkerboard so the page can sit transparently over other video. `host`
+    (defaults ``config`` and content ``box``) is injected as JSON the player reads at start-up instead of the
+    defaults built into the bundle.
     """
     script = script.replace("</", "<\\/")
     return HTMLResponse(
@@ -412,7 +423,9 @@ def player_page(script: str, *, overlay: bool = False) -> HTMLResponse:
         "<title>Remotion 字效预览</title><style>html,body,#root{margin:0;width:100%;height:100%;overflow:hidden}"
         + (":root{color-scheme:light}html,body{background:transparent}body{color:#fff;font-family:sans-serif}</style>" if overlay else "body{color:#fff;background-color:#25252b;background-image:conic-gradient(#35353d 25%,transparent 0 50%,#35353d 0 75%,transparent 0);background-size:24px 24px;font-family:sans-serif}</style>")
         +
-        '<body><div id="root"></div><script>' + script + "</script></body></html>",
+        '<body><div id="root"></div>'
+        + (f'<script type="application/json" id="imv-preview-host">{_json_script(host)}</script>' if host is not None else "")
+        + "<script>" + script + "</script></body></html>",
         headers={
             "Content-Security-Policy": "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src http: https:; media-src http: https: data:; img-src http: https: data:; connect-src 'none'; base-uri 'none'; form-action 'none'",
             "Cache-Control": "no-store",

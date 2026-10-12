@@ -231,8 +231,12 @@ lives in `sprite_router.py` on the main app and borrows the Remotion runtime; `/
 by the overlay renders below.
 `GET /api/sprites/{id}/preview?overlay=true&sync=1` serves the sealed player on a transparent page for the template editor;
 a sync-mode bundle has no controls or loop and seeks on `imv-preview-sync {time}` messages, reporting `sync: true` in its
-ready message. Publishing rebuilds the bundle from the sealed source in the isolated worker when the sealed one lacks
-the marker (and refreshes an existing publication on re-save); a failed rebuild still saves the asset, just without overlay preview.
+ready message. The page injects the published defaults and content box as a JSON element (`#imv-preview-host`, with
+`<`, `>`, `&` and line separators escaped); the player starts from them, merges `imv-preview-update` values over
+them (objects key by key, arrays and scalars replace) and applies an optional `host: {transform}` through
+`remotion/host-layer.tsx`, the wrapper the overlay render uses too. Such a bundle reports `host: true` when ready.
+Publishing rebuilds the bundle from the sealed source in the isolated worker when the sealed one lacks either
+marker (`imv-preview-sync`, `imv-preview-host`) and refreshes an existing publication on re-save; a failed rebuild still saves the asset, just without overlay preview.
 A refresh stages the new bundle and records its hash before replacing the copy, so a failed update keeps the
 previous copy working and publishing again retries it. Identical publish requests (same version and field
 choice) take turns, so a double click rebuilds once.
@@ -262,7 +266,8 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   missing (the isolated renderer is Linux-only), instead of accepting tasks that can only fail later. An empty
   `placements` (`no_placements`) or a `spriteId` that is not published (`sprite_missing`) is a 422.
 - **Layout**: every asset must share width/height/fps. Clips are stacked in request order on one canvas (the first
-  is the bottom layer); each plays for its `duration` (or its own `preview_frames / fps`), which its Sprite reads as `durationInFrames` just like in
+  is the bottom layer), each inside the shared host layer (`remotion/host-layer.tsx`) that pivots around the
+  Sprite's content box; each plays for its `duration` (or its own `preview_frames / fps`), which its Sprite reads as `durationInFrames` just like in
   its accepted preview, keeps that full length when the total cuts it (so its internal animation ranges are
   unchanged), and is dropped when it starts later. Seconds become frames with half a frame rounding up, like the
   template timing, and a clip is at most `IMV_OVERLAY_MAX_SECONDS` long. Remotion clamps a Sequence to its

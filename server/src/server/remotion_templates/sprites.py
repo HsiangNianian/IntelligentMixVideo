@@ -32,6 +32,8 @@ from .store import Conflict, NotFound, Store
 PREVIEW_BUNDLE = "interactive.js"
 # 只有包含逐帧同步处理的预览包才能叠加到模板预览上；更早构建的包缺少此标记。
 SYNC_MARKER = b"imv-preview-sync"
+# 能读取页面注入的默认值与内容区域、接受参数覆盖和宿主变换的预览包带有此标记；更早构建的包需要重建。
+HOST_MARKER = b"imv-preview-host"
 # 同一来源与字段选择的发布轮流执行：重复点击等待首个完成后读取它保存的资产，不重复重建播放器包。
 # 值为弱引用，没有持有者和等待者后锁自动释放，字典不会随发布次数增长。
 _publishing: weakref.WeakValueDictionary[tuple, asyncio.Lock] = weakref.WeakValueDictionary()
@@ -141,6 +143,19 @@ def get(sprite_id: str) -> pb.PublishedSprite:
     return _sprite_from(data)
 
 
+def content_box(sprite: pb.PublishedSprite) -> pb.SpriteBox:
+    """The pivot box of the host transform; publications made before boxes were recorded use the whole canvas."""
+    if sprite.HasField("content_box"):
+        return sprite.content_box
+    return pb.SpriteBox(x=0, y=0, width=sprite.canvas.width, height=sprite.canvas.height)
+
+
+def box_json(sprite: pb.PublishedSprite) -> dict:
+    """The content box as the plain object the preview page and the overlay worker read."""
+    box = content_box(sprite)
+    return {"x": box.x, "y": box.y, "width": box.width, "height": box.height}
+
+
 def summarize(sprite: pb.PublishedSprite) -> pb.SpriteSummary:
     """Project a publication onto the public catalog entry, never including TSX."""
     return pb.SpriteSummary(
@@ -152,10 +167,7 @@ def summarize(sprite: pb.PublishedSprite) -> pb.SpriteSummary:
         source_version_id=sprite.source_version_id,
         preview_url=f"/api/sprites/{sprite.sprite_id}/preview",
         keywords_supported=bool(sprite.keywords_prop),
-        # Publications made before content boxes were recorded transform around the whole canvas.
-        content_box=sprite.content_box if sprite.HasField("content_box") else pb.SpriteBox(
-            x=0, y=0, width=sprite.canvas.width, height=sprite.canvas.height,
-        ),
+        content_box=content_box(sprite),
     )
 
 
@@ -174,16 +186,20 @@ def catalog() -> list[pb.SpriteSummary]:
     return items
 
 
-def preview_script(store: Store, sprite_id: str) -> str:
-    """Read the sprite's own copy of the player bundle after checking it against the published hash."""
+def preview_script(store: Store, sprite_id: str) -> tuple[str, dict]:
+    """Read the sprite's own copy of the player bundle after checking it against the published hash.
+
+    Also returns what the page injects for the player: the published defaults and the content box.
+    """
     sprite = get(sprite_id)
     path = store.root / "sprites" / sprite.sprite_id / PREVIEW_BUNDLE
     try:
         if digest(path) != sprite.preview_sha256:
             raise ValueError("preview changed")
-        return path.read_text(encoding="utf-8")
+        script = path.read_text(encoding="utf-8")
     except (OSError, ValueError) as exc:
         raise NotFound("sprite preview unavailable") from exc
+    return script, {"config": json.loads(sprite.default_config_json or "{}"), "box": box_json(sprite)}
 
 
 def _validated_request(request: pb.PublishSpriteRequest, version: TemplateVersion) -> None:
@@ -225,12 +241,17 @@ async def _rebuild_bundle(service, version) -> bytes | None:
         }, ensure_ascii=False), encoding="utf-8")
         await service.harness.renderer.run_worker(work, worker="presentation-worker.mjs")
         data = (work / PREVIEW_BUNDLE).read_bytes()
-        return data if SYNC_MARKER in data else None
+        return data if _current(data) else None
     except Exception:
         logging.getLogger(__name__).exception("Sprite preview rebuild failed: %s", version.id)
         return None
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def _current(bundle: bytes) -> bool:
+    """Whether a player bundle can be scrubbed by the template editor and takes placement overrides."""
+    return SYNC_MARKER in bundle and HOST_MARKER in bundle
 
 
 def _store_bundle(store: Store, sprite: pb.PublishedSprite, data: bytes) -> None:
@@ -346,7 +367,7 @@ async def publish(service, request: pb.PublishSpriteRequest) -> pb.SpriteSummary
     )
     async with lock:
         version, sprite, bundle = await run_in_threadpool(_inspect, store, request)
-        fresh = None if SYNC_MARKER in bundle else await _rebuild_bundle(service, version)
+        fresh = None if _current(bundle) else await _rebuild_bundle(service, version)
         if sprite is None:
             return await run_in_threadpool(_create, store, request, version, fresh or bundle)
         if fresh:

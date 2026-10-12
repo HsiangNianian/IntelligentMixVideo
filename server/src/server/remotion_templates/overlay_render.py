@@ -23,6 +23,7 @@ from ..video_composition.media import ffprobe_json
 from ..video_composition.schema import PositiveSeconds
 from .renderer import CPU_SECONDS, Renderer
 from .settings import Settings
+from .sprites import box_json
 
 logger = logging.getLogger(__name__)
 PROBE_SECONDS = 60  # ffprobe of the finished file (it decodes every frame to count them)
@@ -167,6 +168,8 @@ def plan_overlay(
         instances.append({
             "code": sprite.tsx_code,
             "config": json.loads(sprite.default_config_json),
+            # The host layer pivots around the published content box; an empty transform keeps the sample as is.
+            "host": {"box": box_json(sprite), "transform": {}},
             "start_frame": start_frame,
             "duration_frames": length,
         })

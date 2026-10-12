@@ -105,7 +105,9 @@ def test_plan_keeps_list_order_and_clips_placements() -> None:
     overlay = plan_overlay(placements, PUBLICATIONS, 6, 120)
     assert (overlay.width, overlay.height, overlay.fps, overlay.frames) == (1080, 1920, 30, 180)
     assert [(i["start_frame"], i["duration_frames"]) for i in overlay.instances] == [(144, 60), (0, 60)]
-    assert all(set(item) == {"code", "config", "start_frame", "duration_frames"} for item in overlay.instances)
+    assert all(set(item) == {"code", "config", "host", "start_frame", "duration_frames"} for item in overlay.instances)
+    # Publications without a recorded content box pivot around the whole canvas; no placement transform yet.
+    assert overlay.instances[0]["host"] == {"box": {"x": 0, "y": 0, "width": 1080, "height": 1920}, "transform": {}}
     assert overlay.span == 204  # 144 + 60：合成必须覆盖最晚片段结尾，否则该片段的 Sequence 会被截短
 
 
