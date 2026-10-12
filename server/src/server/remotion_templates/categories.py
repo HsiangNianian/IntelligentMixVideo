@@ -192,3 +192,21 @@ def operator_message(problems: list[Problem]) -> str:
     """给运营的中文说明：列出所选分类缺少或不合规的必备参数及应有形状。"""
     parts = [f"{item.name}（{item.rule.label}）" for item in problems if item.rule is not None]
     return f"所选分类缺少或不符合必备参数：{'；'.join(parts)}。请在聊天中让 Agent 补充后再保存到资产"
+
+
+# 宿主变换的取值范围（缩放、旋转、不透明度）；位置在 0 到画布宽高之间。
+SCALE_RANGE = (0.25, 4.0)
+ROTATION_RANGE = (-180.0, 180.0)
+OPACITY_RANGE = (0.0, 1.0)
+# 滤镜与转场覆盖整块画布，只能调整不透明度（强度）；字效与视频特效还可以移动、缩放和旋转。
+_FULL_FRAME = {"filter_overlay", "transition_overlay"}
+
+
+def transform_fields(kind: str | None) -> set[str]:
+    """宿主变换中该分类可以设置的字段。"""
+    return {"opacity"} if kind in _FULL_FRAME else {"x", "y", "scale", "rotation", "opacity"}
+
+
+def transform_ranges(width: float, height: float) -> dict[str, tuple[float, float]]:
+    """每个宿主变换字段在给定画布上的闭区间。"""
+    return {"x": (0.0, float(width)), "y": (0.0, float(height)), "scale": SCALE_RANGE, "rotation": ROTATION_RANGE, "opacity": OPACITY_RANGE}

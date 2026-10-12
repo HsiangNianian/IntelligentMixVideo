@@ -271,3 +271,46 @@ class ToolValidator:
         executed = int(payload.get("custom_tests_executed", len(tests)))
         passed = bool(payload.get("passed", False)) and all(check.status == "passed" for check in checks) and all(test.status == "passed" for test in tests)
         return RenderValidationReport(passed=passed, composition=composition, code_validation=code, checks=checks, tests=tests, custom_tests_executed=executed)
+
+    async def validate_samples(
+        self, component: ComponentDefinition, composition: dict[str, int], box: dict[str, float], samples: list[dict[str, Any]],
+    ) -> list[CheckResult]:
+        """Mount publish-time boundary samples in one isolated browser and report one check per sample.
+
+        ``composition`` is the version canvas (width, height, fps, duration_frames); each sample carries complete
+        ``values`` and a host ``transform`` applied around ``box``. A failed code stage is reported as that check
+        alone; a report that cannot be read at all is an infrastructure failure.
+        """
+        try:
+            directory = self._attempt("validate-samples")
+            request = {
+                "mode": "samples",
+                "code": component.code,
+                "parameter_schema": component.parameter_schema,
+                "default_parameters": component.default_parameters,
+                "composition": composition,
+                "box": box,
+                "samples": samples,
+                "browser": self.renderer.worker_browser_path(),
+            }
+            (directory / "request.json").write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8")
+            payload = await self.renderer.run_worker(directory, worker="tool-validation-worker.mjs")
+        except (OSError, RuntimeError, TimeoutError) as exc:
+            raise ValidationUnavailable(str(exc)) from exc
+        raw = payload.get("checks") if isinstance(payload, dict) else None
+        if not isinstance(raw, list) or not all(isinstance(item, dict) for item in raw):
+            raise ValidationUnavailable("Sample validation worker returned no checks")
+        for item in raw:
+            if item.get("name") == "runtime" and item.get("status") == "error":
+                raise ValidationUnavailable(str(item.get("message") or "Sample validation worker runtime error"))
+        code = [item for item in raw if item.get("name") in _CODE_CHECKS]
+        if any(item.get("status") in _FAILED_STATUSES for item in code):
+            failed = next(item for item in code if item.get("status") in _FAILED_STATUSES)
+            return [CheckResult(name=str(failed["name"]), status="failed", message=str(failed.get("message") or "Code check failed")[:6000])]
+        reported = [item for item in raw if str(item.get("name", "")).startswith("sample:")]
+        if [item["name"] for item in reported] != [f"sample:{item['name']}" for item in samples]:
+            raise ValidationUnavailable("Sample validation worker returned an incomplete report")
+        return [
+            CheckResult(name=str(item["name"]), status=_check_status(item.get("status")), **({"message": str(item["message"])[:6000]} if item.get("message") else {}))
+            for item in reported
+        ]

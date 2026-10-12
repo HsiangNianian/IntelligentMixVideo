@@ -62,17 +62,36 @@ LAYOUT = {"x": 90, "y": 760, "width": 900, "height": 400, "z_index": 0}
 
 
 class BundleRebuilder:
-    """记录重建请求的渲染替身：写出带同步标记的新预览包，或按要求失败；不执行真实浏览器或沙箱。"""
+    """记录重建与边界抽样请求的渲染替身：写出带标记的新预览包、报告各样本通过，或按要求失败；不执行真实浏览器或沙箱。"""
 
     def __init__(self):
-        """默认成功，requests 保存宿主写给 worker 的请求。"""
+        """默认成功；requests 保存重建请求，samples 保存抽样请求。"""
         self.requests: list[dict] = []
+        self.samples: list[dict] = []
         self.failure: Exception | None = None
+        self.sample_failure: Exception | None = None
+        self.failing_sample: str | None = None
+
+    def worker_browser_path(self):
+        """抽样请求记录的浏览器路径；替身不启动浏览器。"""
+        return "/usr/bin/chromium"
 
     async def run_worker(self, directory, *, worker=None, timeout_seconds=None):
-        """只接受预览包构建；失败时不写任何文件。"""
+        """预览包构建写出新包；边界抽样逐个报告样本结果。失败时不写任何文件。"""
+        request = json.loads((directory / "request.json").read_text())
+        if worker == "tool-validation-worker.mjs":
+            assert request["mode"] == "samples"
+            self.samples.append(request)
+            if self.sample_failure:
+                raise self.sample_failure
+            return {"passed": True, "checks": [
+                {"name": name, "status": "pass"} for name in ("source_policy", "export_source", "typescript")
+            ] + [
+                {"name": f"sample:{item['name']}", "status": "failed" if item["name"] == self.failing_sample else "passed", "message": "frame 15: boom"}
+                for item in request["samples"]
+            ]}
         assert worker == "presentation-worker.mjs"
-        self.requests.append(json.loads((directory / "request.json").read_text()))
+        self.requests.append(request)
         if self.failure:
             raise self.failure
         (directory / "interactive.js").write_text("// rebuilt imv-preview-sync imv-preview-host")
@@ -123,7 +142,7 @@ def published_version(tmp_path, schema, defaults, kind, bound):
     ))
     version = store.publish(job.id, *result)
     renderer = BundleRebuilder()
-    service = SimpleNamespace(store=store, settings=settings, harness=SimpleNamespace(renderer=renderer))
+    service = SimpleNamespace(store=store, settings=settings, harness=SimpleNamespace(renderer=renderer), sandbox_problem=lambda: None)
     app.dependency_overrides[sprite_runtime] = lambda: service
     yield SimpleNamespace(store=store, version=version, renderer=renderer, service=service)
     app.dependency_overrides.pop(sprite_runtime)
@@ -462,3 +481,39 @@ def test_concurrent_identical_publishes_build_the_player_once(published) -> None
     first, second = asyncio.run(twice())
     assert first.sprite_id == second.sprite_id
     assert len(published.renderer.requests) == 1
+
+
+def test_a_new_publication_renders_its_boundary_samples_once(client: TestClient, published) -> None:
+    """新发布先在隔离浏览器里渲染边界样本（默认值、两端取值和宿主变换），重复保存同一资产不再抽样。"""
+    first = published_sprite(client, published.version.id)
+    [request] = published.renderer.samples
+    names = [item["name"] for item in request["samples"]]
+    assert names[:3] == ["defaults", "low", "high"]
+    assert request["box"] == {"x": 90, "y": 760, "width": 900, "height": 400}
+    assert request["composition"] == {"width": 1080, "height": 1920, "fps": 30, "duration_frames": 30}
+    low = request["samples"][1]
+    assert low["values"]["text"] == "测" * 40 and low["values"]["keywords"] == ["测"] * 20 and low["values"]["color"] == "#000000"
+    assert low["transform"] == {"x": 0, "y": 0, "scale": 0.25, "rotation": -180, "opacity": 0}
+    assert published_sprite(client, published.version.id).sprite_id == first.sprite_id
+    assert len(published.renderer.samples) == 1
+    assert not [item for item in (published.store.root / "sprites").iterdir() if item.name.startswith(".samples-")]
+
+
+def test_a_failed_boundary_sample_refuses_the_publication(client: TestClient, published) -> None:
+    """任一边界样本渲染出错时不保存资产，422 说明是哪一个样本和第几帧。"""
+    published.renderer.failing_sample = "high"
+    response = publish(client, publish_request(published.version.id))
+    assert response.status_code == 422
+    assert "参数边界检查未通过（high）：frame 15: boom" in response.json()["detail"]
+    assert client.get("/api/sprites").content == b""
+
+
+def test_publishing_needs_the_isolated_validator(client: TestClient, published) -> None:
+    """校验环境缺失时先以 503 拒绝；运行中校验器无法启动同样是 503，且不保存资产。"""
+    published.service.sandbox_problem = lambda: "bwrap is not installed"
+    response = publish(client, publish_request(published.version.id))
+    assert response.status_code == 503 and "bwrap" in response.json()["detail"]
+    published.service.sandbox_problem = lambda: None
+    published.renderer.sample_failure = RuntimeError("worker crashed")
+    assert publish(client, publish_request(published.version.id)).status_code == 503
+    assert client.get("/api/sprites").content == b""

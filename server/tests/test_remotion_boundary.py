@@ -1,0 +1,59 @@
+"""发布时边界样本的生成：默认值、两端取值、逐个参数的回退、中间枚举值和各分类的宿主变换。"""
+
+from server.remotion_templates.boundary import FILLER, samples
+from server.remotion_templates.categories import HEX_COLOR
+
+SCHEMA = {
+    "type": "object",
+    "properties": {
+        "text": {"type": "string", "minLength": 2, "maxLength": 12},
+        "size": {"type": "number", "minimum": 10, "maximum": 90},
+        "align": {"type": "string", "enum": ["left", "center", "right", "justify"]},
+        "color": {"type": "string", "pattern": HEX_COLOR},
+        "glow": {"type": "boolean"},
+        "inner": {"type": "object"},
+    },
+    "additionalProperties": False,
+}
+DEFAULTS = {"text": "标题", "size": 40, "align": "center", "color": "#FF0000", "glow": False, "inner": {"a": 1}}
+NAMES = ["text", "size", "align", "color", "glow"]
+
+
+def by_name(items):
+    """Index samples by name for readable assertions."""
+    return {item.name: item for item in items}
+
+
+def test_defaults_and_both_extremes_cover_every_top_level_parameter():
+    """第一个样本是默认值；low/high 把每个顶层参数推到一端，未绑定的嵌套参数保持默认值。"""
+    found = by_name(samples(SCHEMA, DEFAULTS, NAMES, "text", (1080, 1920)))
+    assert list(found)[:3] == ["defaults", "low", "high"]
+    assert found["defaults"].values == DEFAULTS and found["defaults"].transform == {}
+    assert found["low"].values == {**DEFAULTS, "text": FILLER * 12, "size": 10, "align": "left", "color": "#000000", "glow": False}
+    assert found["high"].values == {**DEFAULTS, "text": FILLER * 2, "size": 90, "align": "justify", "color": "#FFFFFF", "glow": True}
+    assert found["high"].transform == {"x": 1080, "y": 1920, "scale": 4.0, "rotation": 180.0, "opacity": 1.0}
+    # Middle values of the four-value enum get their own samples; "center" equals the defaults and is not repeated.
+    assert "enum:1" not in found and found["enum:2"].values == {**DEFAULTS, "align": "right"}
+
+
+def test_full_frame_kinds_only_sample_opacity():
+    """滤镜与转场的宿主变换只有不透明度。"""
+    found = by_name(samples(SCHEMA, DEFAULTS, NAMES, "filter_overlay", (1080, 1920)))
+    assert found["low"].transform == {"opacity": 0.0} and found["high"].transform == {"opacity": 1.0}
+
+
+def test_a_combined_extreme_that_breaks_the_schema_falls_back_to_single_parameters():
+    """参数之间互相约束、组合样本不合 Schema 时，改为逐个参数推到一端，宿主变换单独成样本。"""
+    schema = {**SCHEMA, "if": {"properties": {"glow": {"const": True}}}, "then": {"properties": {"size": {"maximum": 50}}}}
+    found = by_name(samples(schema, DEFAULTS, NAMES, "text", (1080, 1920)))
+    assert "high" not in found
+    assert found["high:size"].values == {**DEFAULTS, "size": 90}
+    assert found["high:glow"].values == {**DEFAULTS, "glow": True}
+    assert found["high:transform"].values == DEFAULTS and found["high:transform"].transform["scale"] == 4.0
+    assert "low" in found
+
+
+def test_identical_samples_are_rendered_once():
+    """没有可推的参数时，两端样本与默认值相同的部分去重。"""
+    found = samples({"type": "object", "properties": {}}, {}, [], "filter_overlay", (1080, 1920))
+    assert [item.name for item in found] == ["defaults", "low", "high"]

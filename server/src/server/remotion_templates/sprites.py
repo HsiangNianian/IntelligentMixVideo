@@ -14,6 +14,7 @@ import json
 import logging
 import shutil
 import weakref
+from dataclasses import asdict
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -23,7 +24,7 @@ from google.protobuf.json_format import MessageToDict, ParseDict, ParseError
 from sqlalchemy.exc import IntegrityError
 from starlette.concurrency import run_in_threadpool
 
-from . import sprite_store
+from . import boundary, sprite_store
 from .categories import HEX_COLOR, category_problems, operator_message
 from .evidence import digest, verify_artifacts
 from .models import TemplateVersion
@@ -303,11 +304,52 @@ def _inspect(store: Store, request: pb.PublishSpriteRequest) -> tuple[TemplateVe
     return version, sprite, (store.root / "sprites" / sprite.sprite_id / PREVIEW_BUNDLE).read_bytes()
 
 
+def _bound_names(version: TemplateVersion) -> list[str]:
+    """The version's top-level parameters in schema order."""
+    bound = {item.name for item in version.spec.sprite.bindings}
+    return [name for name in version.candidate.config_schema.get("properties", {}) if name in bound]
+
+
+async def _sample(service, version: TemplateVersion, kind: int) -> None:
+    """Render the version's boundary samples in the isolated browser before it becomes an asset.
+
+    After this passes, any template value inside the published parameter contract only needs the instant schema
+    check. A sample that fails is a 422 naming it; a validator that cannot start is a 503.
+    """
+    from .tool_validation import ToolValidator, ValidationUnavailable
+    from .tools.contracts import ComponentDefinition
+
+    candidate, composition = version.candidate, version.spec.composition
+    box = _content_box(version)
+    samples = boundary.samples(
+        candidate.config_schema, candidate.default_config, _bound_names(version), _KIND_NAMES[kind],
+        (composition.width, composition.height),
+    )
+    work = service.store.root / "sprites" / f".samples-{uuid4()}"
+    try:
+        checks = await ToolValidator(service.harness.renderer, work).validate_samples(
+            ComponentDefinition(code=candidate.tsx_code, parameter_schema=candidate.config_schema, default_parameters=candidate.default_config),
+            {"width": composition.width, "height": composition.height, "fps": round(composition.fps), "duration_frames": composition.duration_in_frames},
+            {"x": box.x, "y": box.y, "width": box.width, "height": box.height},
+            [asdict(item) for item in samples],
+        )
+    except ValidationUnavailable as exc:
+        logging.getLogger(__name__).warning("Sprite boundary samples unavailable for %s: %s", version.id, exc)
+        raise HTTPException(503, "参数边界检查环境不可用，请稍后重试") from None
+    finally:
+        await run_in_threadpool(shutil.rmtree, work, True)
+    failed = next((item for item in checks if item.status != "passed"), None)
+    if failed is not None:
+        raise _invalid(
+            f"参数边界检查未通过（{failed.name.removeprefix('sample:')}）：{(failed.message or '')[:300]}。"
+            "请在聊天中让 Agent 修复后再保存到资产"
+        )
+
+
 def _create(store: Store, request: pb.PublishSpriteRequest, version: TemplateVersion, bundle: bytes) -> pb.SpriteSummary:
     """Record a new publication with its own copy of the player bundle; losing a race to an identical one returns the winner."""
     schema = version.candidate.config_schema
     composition = version.spec.composition
-    names = [name for name in schema.get("properties", {}) if name in {item.name for item in version.spec.sprite.bindings}]
     sprite_id = str(uuid4())
     published_at = datetime.now(UTC)
     directory = store.root / "sprites" / sprite_id
@@ -327,7 +369,7 @@ def _create(store: Store, request: pb.PublishSpriteRequest, version: TemplateVer
             ),
             tsx_code=version.candidate.tsx_code,
             code_sha256=hashlib.sha256(version.candidate.tsx_code.encode()).hexdigest(),
-            parameters=_parameters(schema, version.candidate.default_config, names),
+            parameters=_parameters(schema, version.candidate.default_config, _bound_names(version)),
             text_prop=request.text_prop,
             keywords_prop=request.keywords_prop,
             preview_sha256=hashlib.sha256(bundle).hexdigest(),
@@ -356,10 +398,12 @@ def _create(store: Store, request: pb.PublishSpriteRequest, version: TemplateVer
 async def publish(service, request: pb.PublishSpriteRequest) -> pb.SpriteSummary:
     """Copy a verified accepted version into an immutable publication; repeating returns the original.
 
-    The player bundle is rebuilt with the current host code when the sealed one predates frame-synchronised
-    previews, so older versions can still be previewed over a template after saving. Hashing, copying and
-    database work run in worker threads and only the rebuild is awaited, so the event loop stays free;
-    identical publications take turns, so a double click rebuilds once.
+    A new publication first renders its boundary samples (`boundary.py`), so later template overrides inside its
+    parameter contract need no sandbox. The player bundle is rebuilt with the current host code when the sealed
+    one predates frame-synchronised previews or placement overrides, so older versions can still be previewed
+    over a template after saving. Hashing, copying and database work run in worker threads and only the browser
+    work is awaited, so the event loop stays free; identical publications take turns, so a double click samples
+    and rebuilds once.
     """
     store = service.store
     lock = _publishing.setdefault(
@@ -367,6 +411,8 @@ async def publish(service, request: pb.PublishSpriteRequest) -> pb.SpriteSummary
     )
     async with lock:
         version, sprite, bundle = await run_in_threadpool(_inspect, store, request)
+        if sprite is None:
+            await _sample(service, version, request.kind)
         fresh = None if _current(bundle) else await _rebuild_bundle(service, version)
         if sprite is None:
             return await run_in_threadpool(_create, store, request, version, fresh or bundle)

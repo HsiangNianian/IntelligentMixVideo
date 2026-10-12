@@ -151,7 +151,7 @@ async function bundleHost() {
       setup(builder) {
         builder.onResolve({ filter: /^imv:template$/ }, () => ({ path: `${root}/Template.tsx` }));
         builder.onResolve({ filter: /^imv:config$/ }, () => ({ path: "config", namespace: "imv" }));
-        builder.onLoad({ filter: /.*/, namespace: "imv" }, () => ({ contents: JSON.stringify({ defaults: request.default_parameters, configured: request.parameters ?? request.default_parameters, parameter_schema: request.parameter_schema, composition: request.composition }), loader: "json" }));
+        builder.onLoad({ filter: /.*/, namespace: "imv" }, () => ({ contents: JSON.stringify({ defaults: request.default_parameters, configured: request.parameters ?? request.default_parameters, parameter_schema: request.parameter_schema, composition: request.composition, ...(request.box ? { box: request.box } : {}) }), loader: "json" }));
       },
     }],
   });
@@ -323,6 +323,32 @@ async function executeTest(page, test, timeoutMs) {
   return page.evaluate(({ script, timeoutMs }) => window.__imvTool.runTest(script, timeoutMs), { script, timeoutMs });
 }
 
+/**
+ * Publish-time boundary samples: mount each complete sample with its host transform and require the first,
+ * middle and last frame to render without an error. One check per sample, named `sample:<name>`.
+ */
+async function sampleChecks(page, loadError) {
+  const total = request.composition.duration_frames;
+  const frames = [...new Set([0, Math.floor((total - 1) / 2), total - 1])];
+  for (const sample of request.samples) {
+    const name = `sample:${sample.name}`;
+    try {
+      if (loadError !== null) throw new Error(`Component runtime error: ${loadError}`);
+      await page.evaluate(() => window.__imvTool.reset());
+      await page.evaluate((item) => window.__imvTool.setSample(item.values, item.transform), sample);
+      for (const frame of frames) {
+        await page.evaluate((target) => window.__imvTool.setFrame(target), frame);
+        const failure = await page.evaluate(() => window.__imvRuntimeError ?? null);
+        if (failure) throw new Error(`frame ${frame}: ${failure}`);
+      }
+      checks.push({ name, status: "passed", message: `Frames ${frames.join(", ")} rendered.` });
+    } catch (error) {
+      checks.push({ name, status: "failed", message: String(error?.message ?? error).slice(0, 6000) });
+    }
+  }
+  result.passed = checks.every((item) => item.status === "passed" || item.status === "pass");
+}
+
 async function main() {
   const valid = await prepareSource();
   if (!valid) { result.passed = false; return; }
@@ -340,6 +366,10 @@ async function main() {
     // The real overlay render opens its page at the composition size, so vw/vh, window.inner* and media queries must see that size here too.
     await page.setViewport({ width: request.composition.width, height: request.composition.height, deviceScaleFactor: 1 });
     const loadError = await waitReady(page);
+    if (request.mode === "samples") {
+      await sampleChecks(page, loadError);
+      return;
+    }
     let baseReady = true;
     try {
       if (loadError !== null) throw new Error(`Component runtime error: ${loadError}`);

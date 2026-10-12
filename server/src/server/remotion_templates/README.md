@@ -215,7 +215,15 @@ version binds a keywords parameter); other kinds leave both empty. Every bound t
 keywords included, becomes a `VISIBLE_EDITABLE` control with its bounds, enum, colour format, string lengths and
 list size; the instances' remaining nested props stay internal. `content_box` records the union of the instances'
 layout boxes clipped to the canvas, the pivot of the host transform; summaries of older publications report the
-whole canvas. The same source and field choice returns the original Sprite. `animation_frames` and `static_frame` stay 0
+whole canvas. A new publication first renders boundary samples (`boundary.py`, `ToolValidator.validate_samples`,
+the worker's `samples` mode): the defaults, every top-level parameter at its low and at its high end (numbers at
+their bounds, first and last enum values, colours black and white, text filled to `maxLength` with a CJK glyph or
+cut to `minLength`, keywords full or empty) combined with the host transform at its extremes, the middle enum
+values, and single-parameter samples when a combined one breaks the schema. Each sample must render its first,
+middle and last frame without an error inside the shared host layer; a failure is a 422 naming the sample and
+frame, and a validator that cannot start is a 503 (the route checks the sandbox first). Templates may then change
+any value inside the published contract with only an instant schema check. The same source and field choice
+returns the original Sprite without sampling again. `animation_frames` and `static_frame` stay 0
 because composition versions carry no such evidence, and `preview_url` serves the sealed
 interactive player page rather than an MP4.
 
