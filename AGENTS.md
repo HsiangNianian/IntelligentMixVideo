@@ -10,7 +10,7 @@
 - `server/` 使用 Python + FastAPI + MySQL，提供模板持久化 API 与 `POST /segmentations` 文案切片接口，首页与用户路由仍为示例、尚未接入用户存储。包内导入使用相对路径，向应用注册 `APIRouter` 实例。
 - 模板模块位于 `server/src/server/template/`，与用户示例目录 `sub_api/` 平级；路由、配置校验、数据库存储与效果目录均放在该模块内。
 - `POST /segmentations` 的 `title`、`script`、`asr_result` 均可省略或为 null，类型仍由请求模型校验。有 ASR 时必须提供有效文案，非 null 标题复用片段关键词调用，返回 `title_keyword`（标题内连续原文、最多 12 字）；无 ASR 且提供标题时仅调用一次模型并只返回 `title_keyword`，忽略文案，不做词长或原文匹配校验，模型缺少该字段按空字符串处理。正常切片的校验和重试规则保持不变。
-- 切片的二次切分校验失败时，将失败输出与具体错误反馈给模型，最多修正一次；修正结果全部通过后才替换片段，再次失败直接报错。首次切分和关键词提取不增加此重试，网络错误仍沿用 SDK 策略。
+- 切片在首次模型切分和关键词提取后，由代码将超过 8 个有效字（不计标点和空白）的片段按中点二分，奇数左短右长，直到每段最多 8 字；原文和 ASR 时间保留，英文、数字和关键词也允许硬切。关键词只由完整包含首次出现位置的子段继承，拆开后不高亮，标题关键词不受影响。二次切分不调用模型；首次切分和提词不做结果纠错重试，网络错误仍沿用 SDK 策略。
 - Remotion 文字模板生成服务位于 `server/src/server/remotion_templates/`，Python 包名为 `server.remotion_templates`，挂载 `/api/templates`；本地数据默认保存在该模块的 `.data/`，使用说明维护在模块内 README。
 - 成功版本只读诊断接口复用 `validate.code` 的契约检查与隔离 TypeScript 语言服务，不新增诊断持久化表；先按证据清单校验封存产物（改写返回 404），隔离运行时不可用返回 503，不把「未检查」表示为「无诊断」；只读接口不排队、不发布。
 - Remotion 配置类与加载函数位于 `remotion_templates/settings.py`，通过 `server.remotion_templates.settings` 导入；继续复用 `config_base.CommonSettings` 读取 `server/.env`，相对数据目录和默认 `server/remotion/` 渲染资源位置保持不变。
