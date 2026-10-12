@@ -77,7 +77,7 @@ def require_sandbox(service: Runtime) -> None:
     """
     problem = service.sandbox_problem()
     if problem is not None:
-        raise HTTPException(503, f"校验环境不可用：{problem}。隔离校验需要安装 bubblewrap、prlimit 与 Node 的 Linux 服务端。")
+        raise HTTPException(503, f"校验环境不可用：{problem}")
 
 
 def client_config(value: Annotated[str | None, Header(alias="X-Remotion-Config")] = None) -> ClientSettings | None:

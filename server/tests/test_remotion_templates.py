@@ -473,13 +473,24 @@ def test_sandbox_problem_names_the_unsupported_piece(monkeypatch, tmp_path, plat
     assert (problem is None) if expected is None else (expected in problem)
 
 
-def test_validation_unavailable_has_an_actionable_public_message():
-    """公开轮次记录保留 VALIDATION_UNAVAILABLE 并提示 Linux 与 bubblewrap，不暴露异常原文。"""
+def test_validation_unavailable_public_message_is_generic():
+    """同一错误码也覆盖 worker 报告无效、超时等原因，公开文案不指向某个具体缺失，也不暴露异常原文。"""
     from server.remotion_templates.progress import RoundCall
 
     call = RoundCall(tool="preset.create", status="fail", error_code="VALIDATION_UNAVAILABLE", message="[Errno 2] 'bwrap'")
     assert call.error_code == "VALIDATION_UNAVAILABLE"
-    assert "Linux" in call.message and "bubblewrap" in call.message and "Errno" not in call.message
+    assert "校验环境" in call.message and "Linux" not in call.message and "bubblewrap" not in call.message
+    assert "Errno" not in call.message
+
+
+def test_macos_sandbox_problem_mentions_the_development_switch(monkeypatch, tmp_path):
+    """macOS 未开启免沙箱时，原因里直接给出可用的开发开关；其他系统不提这个开关。"""
+    from server.remotion_templates import renderer as renderer_module
+
+    renderer = renderer_module.Renderer(Settings(_env_file=None, data_dir=tmp_path))
+    for platform, mentioned in (("darwin", True), ("win32", False)):
+        monkeypatch.setattr(renderer_module.sys, "platform", platform)
+        assert ("IMV_ALLOW_UNSANDBOXED_WORKER" in renderer.sandbox_problem()) is mentioned
 
 
 @pytest.mark.parametrize(

@@ -87,7 +87,8 @@ class Renderer:
         if self.opted_out():
             return None if shutil.which("node") else "node is not installed"
         if sys.platform != "linux":
-            return f"the isolated validator runs only on Linux, this host is {sys.platform}"
+            hint = "; set IMV_ALLOW_UNSANDBOXED_WORKER=true for local development" if sys.platform == "darwin" else ""
+            return f"the isolated validator runs only on Linux, this host is {sys.platform}{hint}"
         for tool in ("bwrap", "prlimit", "node"):
             if shutil.which(tool) is None:
                 return f"{tool} is not installed"
