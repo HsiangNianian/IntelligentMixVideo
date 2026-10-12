@@ -442,42 +442,23 @@ class ToolSession:
             **({"source_preset_id": source} if source else {}),
         ))
 
-    async def create_sprite(self, sprite: SpriteDraft) -> SpriteCreateOutput:
-        """Validate source consistency and store one immutable composed Sprite."""
-        if sprite.composition.width != 1080 or sprite.composition.height != 1920 or sprite.composition.fps != 30:
-            raise ToolFault("INVALID_ARGUMENT", "Sprite composition must be 1080x1920 at 30 FPS")
-        # Rebuild source, schema and defaults from the immutable instance snapshot;
-        # arbitrary code/schema edits must never be accepted as a compose result.
-        resolved = [item.model_dump(mode="json", exclude_unset=True) for item in sprite.instances]
-        expected_duration = max(
-            item["timing"]["start_frame"] + item["timing"]["duration_frames"] for item in resolved
-        )
-        if expected_duration != sprite.composition.duration_frames:
-            raise ToolFault("COMPOSITION_FAILED", "Sprite duration does not match instance timings.")
-        try:
-            # 打包器是同步子进程；放到线程里执行，避免阻塞同进程的 SSE 与其它请求。
-            expected_code, expected_schema, expected_defaults = await asyncio.to_thread(compose_source, resolved)
-        except ToolFault:
-            raise
-        expected_payload = {
-            "code": expected_code,
-            "parameter_schema": expected_schema,
-            "default_parameters": expected_defaults,
-            "composition": sprite.composition.model_dump(mode="json"),
-            "instances": resolved,
-        }
-        actual_payload = {
-            "code": sprite.code,
-            "parameter_schema": sprite.parameter_schema,
-            "default_parameters": sprite.default_parameters,
-            "composition": sprite.composition.model_dump(mode="json"),
-            "instances": resolved,
-        }
-        if expected_payload != actual_payload:
-            raise ToolFault("COMPOSITION_FAILED", "Sprite code, schema or defaults do not match its instance definition.")
-        # Bundling erases TypeScript annotations; validate each original module before its generated adapter.
+    async def create_sprite(self, draft_id: str) -> SpriteCreateOutput:
+        """Validate and store the composed Sprite a sprite.compose handle refers to.
+
+        Only compose_sprite writes Sprite drafts, from resolved Presets, so their code, schema, defaults
+        and timing agree by construction; the draft is not bundled a second time just to compare.
+        """
+        sprite = self.sprite_draft(draft_id)
+        # Bundling erases TypeScript annotations; validate each distinct original module before its generated
+        # adapter. Instances of one Preset share a module, so its check runs once.
+        checked: set[str] = set()
         for instance in sprite.instances:
-            original = await self.validate_code(ComponentDefinition(code=instance.preset.code, parameter_schema=instance.preset.parameter_schema, default_parameters=instance.preset.default_parameters))
+            component = ComponentDefinition(code=instance.preset.code, parameter_schema=instance.preset.parameter_schema, default_parameters=instance.preset.default_parameters)
+            key = component.model_dump_json()
+            if key in checked:
+                continue
+            checked.add(key)
+            original = await self.validate_code(component)
             if not original.passed:
                 raise _validation_fault(f"Source Preset of instance {instance.instance_id} does not typecheck.", original)
         validation = await self.validate_code(

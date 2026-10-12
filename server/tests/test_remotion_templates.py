@@ -25,6 +25,7 @@ from server.remotion_templates.tools.contracts import (
     RenderValidationReport,
     SpriteComposeInput,
     SpriteCreateInput,
+    SpriteDraft,
     SpriteRecord,
 )
 from server.remotion_templates.tools.registry import ToolFault, registered_tools
@@ -262,6 +263,34 @@ def test_repeated_compose_returns_the_same_digest_under_a_new_handle(tmp_path):
         assert first["draft_id"] != again["draft_id"]
         assert first["digest"] == again["digest"]
         assert moved["digest"] != first["digest"]
+
+    asyncio.run(run())
+
+
+def test_create_checks_each_preset_source_once_and_does_not_bundle_again(tmp_path, monkeypatch):
+    """审计复现：create 收到的是宿主自己组合的草稿，却再打包一次来比对，并对同一预设的每个实例都跑一次沙箱类型检查；现在每种源码只查一次。"""
+    async def run():
+        current = session(tmp_path)
+        patch_validation(current)
+        checked = []
+
+        async def validate(component):
+            """Record which source the isolated validator was asked to check."""
+            checked.append(component.code)
+            return valid_report()
+
+        def bundle_again(_instances):
+            """The draft was bundled by compose already; a second bundle is wasted work."""
+            raise AssertionError("sprite.create bundled the host draft again")
+
+        current.validate_code = validate
+        monkeypatch.setattr("server.remotion_templates.tools.session.compose_source", bundle_again)
+        record = saved_sprite("bundle", "shared", ("a", "b", "c"))
+        record.instances.append(saved_sprite("bundle", "other", ("d",)).instances[0])
+        current.sprite_drafts["sprite_draft_1"] = SpriteDraft(**record.model_dump(mode="json", exclude={"sprite_id", "created_at"}, exclude_unset=True))
+        saved = await current.execute("sprite.create", SpriteCreateInput(draft_id="sprite_draft_1"), available())
+        assert checked == ["shared", "other", "bundle"]
+        assert current.saved_sprite(saved["sprite_id"]).code == "bundle"
 
     asyncio.run(run())
 

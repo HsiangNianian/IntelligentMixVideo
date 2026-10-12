@@ -109,7 +109,7 @@ async def sprite_compose(owner, request: SpriteComposeInput) -> ToolResult[Sprit
 async def sprite_create(owner, request: SpriteCreateInput) -> ToolResult[SpriteCreateOutput]:
     """Validate and persist the composed Sprite a sprite.compose draft_id refers to."""
     try:
-        return _success(await owner.create_sprite(owner.sprite_draft(request.draft_id)))
+        return _success(await owner.create_sprite(request.draft_id))
     except Exception as exc:
         return _failure(exc, "SPRITE_STORE_FAILED")
 

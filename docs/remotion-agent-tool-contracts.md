@@ -760,9 +760,9 @@ async def sprite_create(request: SpriteCreateInput) -> ToolResult[SpriteCreateOu
     ...
 ```
 
-按 `draft_id` 读取本任务 compose 保存的完整结果。验证固定宽高和帧率、自动计算时长、实例快照、参数结构及组合产物的一致性，并在内部执行代码校验；Sprite 叠在用户自己的视频上，create 还会用默认参数在隔离浏览器中挂载一次，在首、尾及中间三帧度量不透明像素（alpha 不低于 242/255）的占比，至少 80% 的采样帧（5 帧中的 4 帧）有不低于 98% 的画面不透明时按 `CODE_VALIDATION_FAILED` 拒绝并说明做法，淡入或延后出现的整帧遮罩也在此列，只覆盖中间一两帧的转场仍通过。通过后保存新记录并返回 sprite_id。
+按 `draft_id` 读取本任务 compose 保存的完整结果。宽高、帧率、时长、实例快照、参数结构与组合产物由 compose 一次生成，彼此一致；create 在内部执行代码校验（每种不同的原始预设源码检查一次，再检查组合产物）；Sprite 叠在用户自己的视频上，create 还会用默认参数在隔离浏览器中挂载一次，在首、尾及中间三帧度量不透明像素（alpha 不低于 242/255）的占比，至少 80% 的采样帧（5 帧中的 4 帧）有不低于 98% 的画面不透明时按 `CODE_VALIDATION_FAILED` 拒绝并说明做法，淡入或延后出现的整帧遮罩也在此列，只覆盖中间一两帧的转场仍通过。通过后保存新记录并返回 sprite_id。
 
-调用方不回传源码，因而无法提交与实例定义脱节的改写产物；宿主仍重新组合核对 code、Schema、默认值与 instances 的一致性。修改预设实现或编排，应先得到新的 compose 结果和新的 `draft_id`。
+调用方不回传源码，因而无法提交与实例定义脱节的改写产物；草稿只由 compose 写入，create 不再重新打包比对。修改预设实现或编排，应先得到新的 compose 结果和新的 `draft_id`。
 
 存储完整快照，后续不因某个库记录或临时副本发生变化而改变已保存 sprite。不要求副本另行入 preset 库。不覆盖其他 sprite，不新增 sprite 搜索、更新或删除工具。
 
@@ -1228,7 +1228,7 @@ Sprite，宿主随即直接发布它，不再交回 Outer（Outer 没有发布�
 | sprite 空 props 运行 | 使用 compose 时生成的完整默认参数 |
 | 只覆盖 title.text | 保留 title 的其他默认参数及其他实例参数 |
 | 修改布局或时间 | 通过再次 compose 产生新定义，不能靠参数覆盖改写编排 |
-| create 接收未知 draft_id | INVALID_ARGUMENT，field 为 /draft_id 并列出本任务句柄；宿主仍重组核对已保存草稿的一致性 |
+| create 接收未知 draft_id | INVALID_ARGUMENT，field 为 /draft_id 并列出本任务句柄 |
 | 同一 preset 的多个实例 | 组合源码只包含一份该预设模块 |
 | validate.code 报编译错误 | ok=true、passed=false，带结构化诊断 |
 | validate 环境不可用 | ToolError，不把环境故障当作代码或行为失败 |
