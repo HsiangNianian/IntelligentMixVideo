@@ -93,6 +93,14 @@ fn draft_from_protobuf(bytes: &[u8], id: Option<&str>) -> Result<Value, String> 
     if request.template_id.as_deref() != id {
         return Err("模板 ID 与保存请求不一致".into());
     }
+    // Remotion 片段引用云端已发布的 Sprite，本地模板不支持；明确拒绝，而不是落到轨道白名单的笼统错误。
+    if request.tracks.as_ref().is_some_and(|list| {
+        list.tracks
+            .iter()
+            .any(|track| track.target == "remotion" || !track.sprite_id.is_empty())
+    }) {
+        return Err("本地模板不支持 Remotion 资产".into());
+    }
     let tracks = request.tracks.map(|list| {
         list.tracks
             .into_iter()
@@ -830,6 +838,7 @@ mod tests {
                     start: Some(0.),
                     duration: None,
                     editor: Some(editor),
+                    sprite_id: String::new(),
                 }],
             }),
             template_id: None,
@@ -891,6 +900,31 @@ mod tests {
             let result = draft_from_protobuf(&request.encode_to_vec(), Some(id))
                 .and_then(|draft| operate(&dir.0, "save", Some(id), Some(draft)));
             assert_eq!(result.unwrap_err(), "所选特效与编辑配置不一致");
+            assert_eq!(fs::read(&path).unwrap(), original);
+        }
+    }
+
+    #[test]
+    /// Remotion 片段只存在于云端模板：remotion 轨道或任何轨道上的 Sprite 引用都被明确拒绝，模板文件保持原样。
+    fn protobuf_refuses_remotion_tracks_without_writes() {
+        let dir = Directory::new();
+        let saved = operate(&dir.0, "save", None, Some(draft("保留"))).unwrap();
+        let id = saved["template_id"].as_str().unwrap();
+        let path = dir.0.join("templates.json");
+        let original = fs::read(&path).unwrap();
+        for (target, sprite_id) in [
+            ("remotion", "6f1c8a52-3d94-4b7e-9a10-2c5e8d7b4f31"),
+            ("title", "6f1c8a52-3d94-4b7e-9a10-2c5e8d7b4f31"),
+            ("remotion", ""),
+        ] {
+            let mut request = protobuf_request();
+            request.template_id = Some(id.into());
+            let track = &mut request.tracks.as_mut().unwrap().tracks[0];
+            track.target = target.into();
+            track.sprite_id = sprite_id.into();
+            let result = draft_from_protobuf(&request.encode_to_vec(), Some(id))
+                .and_then(|draft| operate(&dir.0, "save", Some(id), Some(draft)));
+            assert_eq!(result.unwrap_err(), "本地模板不支持 Remotion 资产");
             assert_eq!(fs::read(&path).unwrap(), original);
         }
     }

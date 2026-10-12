@@ -160,8 +160,14 @@ model protocol failures are explicitly marked. Snapshots carry all rounds, while
 ## Sprite assets
 
 `POST /api/sprites/publish` copies an accepted version into an immutable
-`imv.sprite.v1.PublishedSprite` (SQLite `sprites` table plus `sprites/<id>/interactive.js`),
-so deleting or editing the source work never changes a published Sprite.
+`imv.sprite.v1.PublishedSprite` (a row of the shared MySQL table `remotion_sprites`, `sprite_store.py`, plus
+`sprites/<id>/interactive.js` in this module's data folder), so deleting or editing the source work never changes a
+published Sprite. The table is created on first use like the template table and sits in the same database as the
+templates that reference its IDs, which is what lets a template save check its `remotion` tracks (422 when a
+`sprite_id` is not published or the clips' Sprites do not share one width, height and fps, which an overlay render requires). The preview bundle is a local file: a host that did not publish the Sprite lists it
+but answers its preview with a 404, while overlay renders only need the stored TSX. Sprites published before this
+storage (the SQLite `sprites` table and the `sprites/<id>/` folders it pointed at) are neither read nor migrated and
+stay where they are: publish the accepted versions again.
 Publishing re-verifies the sealed `accepted/` artifacts (409 when changed), requires the
 declared kind to match a version-fixed kind (composition versions choose it), and for text
 Sprites requires `text_prop` to be a string parameter. Parameters are addressed by dot path
@@ -173,15 +179,14 @@ interactive player page rather than an MP4.
 
 `GET /api/sprites` lists summaries (no TSX). A record that cannot be parsed or fails its hash check is
 logged and left out, so one damaged row never hides the library; reading it by ID still reports the
-failure. `GET/POST /api/sprites/styles/{style_id}` read and replace the Remotion clips placed under one
-style ID in this module's own SQLite database (`style_sprite_bindings`) with an `expected_revision` lock (409);
-the check and the write share one immediate transaction. The ID only associates clips with a cloud template:
-it is never looked up in the IMS template library, so no IMS template has to exist, saving or deleting a
-template does not touch the clips (clips of a deleted template stay unread), and IMS rules and tables never
-enter this module. Saving validates only what Remotion owns: referenced assets exist, clips are fixed
-(`start_mode` seconds, a finite start of at least 0, an optional positive duration, contiguous `order`, unique
-IDs, at most 100); object targets and style overrides are refused. The router lives in `sprite_router.py` on the
-main app and borrows the Remotion runtime; `/api/sprites/render` is superseded by the overlay renders below.
+failure. Where a Sprite is placed is not stored here: a placement is a `remotion` track of the cloud template
+(`sprite_id`, a seconds start, an optional duration), saved with the template in one request, so deleting a
+template removes its placements with it and the composition bus finds them with its single template lookup.
+There is no separate route for placements; the template save checks that every `sprite_id` is published. The
+SQLite `style_sprite_bindings` table and the `GET/POST /api/sprites/styles/{style_id}` routes of earlier versions
+are gone: bindings saved there are neither read nor migrated, and an existing table is left in place. The router
+lives in `sprite_router.py` on the main app and borrows the Remotion runtime; `/api/sprites/render` is superseded
+by the overlay renders below.
 `GET /api/sprites/{id}/preview?overlay=true&sync=1` serves the sealed player on a transparent page for the template editor;
 a sync-mode bundle has no controls or loop and seeks on `imv-preview-sync {time}` messages, reporting `sync: true` in its
 ready message. Publishing rebuilds the bundle from the sealed source in the isolated worker when the sealed one lacks
@@ -192,9 +197,12 @@ choice) take turns, so a double click rebuilds once.
 
 ## Overlay renders for the bus
 
-`POST /api/v1/overlay-renders` (`overlay_router.py`) renders **all Remotion clips saved under one style ID**
+`POST /api/v1/overlay-renders` (`overlay_router.py`) renders **the Remotion clips of a request**
 into one transparent VP9 alpha WebM, uploads it to ZOS (`imv/overlay_render/{taskId}.webm`, public-read) and
-returns/notifies the public URL. Body (camelCase): `styleId`, optional `audioUrl`, `duration` (seconds),
+returns/notifies the public URL. Body (camelCase): `placements` (at most 100, bottom layer first, each
+`{spriteId, start, duration?}`: `start` is a finite number of seconds from 0 and `duration` a number above 0, both
+strict like the top-level `duration`; the bus reads them from the template's `remotion` tracks, so a template is
+looked up once and this module never reads the IMS template library), optional `audioUrl`, `duration` (seconds),
 `callbackUrl`. `GET /api/v1/overlay-renders/{taskId}` returns `{taskId, status, result:{videoUrl}, error}`
 (`queued/rendering/uploading/succeeded/failed`); the callback body is `{taskId, status: succeed|failed,
 videoUrl, errorMessage}`, retried after 5/15/45 s; each attempt has a 30 s overall deadline, and a non-2xx answer, an
@@ -209,9 +217,10 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   or the clips' end); an `audioUrl` is only probed while rendering, so an over-long one fails the task with
   `duration_too_long`.
 - **Acceptance**: also a 503 when ZOS, ffprobe, bubblewrap, prlimit, Node, the browser or the managed fonts are
-  missing (the isolated renderer is Linux-only), instead of accepting tasks that can only fail later.
-- **Layout**: every asset must share width/height/fps. Clips are stacked by `order` on one canvas; each plays for
-  its saved duration (or its own `preview_frames / fps`), which its Sprite reads as `durationInFrames` just like in
+  missing (the isolated renderer is Linux-only), instead of accepting tasks that can only fail later. An empty
+  `placements` (`no_placements`) or a `spriteId` that is not published (`sprite_missing`) is a 422.
+- **Layout**: every asset must share width/height/fps. Clips are stacked in request order on one canvas (the first
+  is the bottom layer); each plays for its `duration` (or its own `preview_frames / fps`), which its Sprite reads as `durationInFrames` just like in
   its accepted preview, keeps that full length when the total cuts it (so its internal animation ranges are
   unchanged), and is dropped when it starts later. Seconds become frames with half a frame rounding up, like the
   template timing, and a clip is at most `IMV_OVERLAY_MAX_SECONDS` long. Remotion clamps a Sequence to its
@@ -225,7 +234,8 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   run outside, so a slow network never delays queued renders), recovery of unfinished tasks and pending notifications
   when the runtime is first built
   (`routes.runtime_for`, oldest first; a damaged row is logged and skipped, and the overlay routes retry if the table
-  could not be read), and ZOS upload via `video_composition.zos.upload_public`. State writes retry a locked database
+  could not be read), and ZOS upload via `video_composition.zos.upload_public`. The placements are stored with the
+  task, so a recovered task renders exactly what was accepted and only re-reads the published Sprites. State writes retry a locked database
   three times; if it stays unwritable the row keeps its previous state (never rewritten as a failure) and the next
   start re-runs it. Sealed sources are not re-policy-checked in this worker.
 - **Cost**: a 1080×1920 frame takes about 0.4–1 s on one Chrome tab (software GL), so a 120 s overlay at 30 FPS needs

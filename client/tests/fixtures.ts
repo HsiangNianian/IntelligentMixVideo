@@ -53,10 +53,17 @@ function templateRecord(template: Template): TemplateRecord {
     effectIds: template.effect_ids,
     transitionDurationSeconds: template.transition_duration_seconds,
     templateId: template.template_id,
-    tracks: { tracks: template.tracks.map((track) => ({
-      id: track.id, target: track.target, startMode: track.start_mode,
-      start: track.start, duration: track.duration ?? undefined, editor: track.editor,
-    })) },
+    tracks: { tracks: [
+      ...template.tracks.map((track) => ({
+        id: track.id, target: track.target, startMode: track.start_mode,
+        start: track.start, duration: track.duration ?? undefined, editor: track.editor,
+      })),
+      // 服务端把 Remotion 片段作为带空 editor 的 remotion 轨道返回。
+      ...(template.clips ?? []).map((clip) => ({
+        id: clip.id, target: "remotion", startMode: "seconds", start: clip.start,
+        duration: clip.duration ?? undefined, editor: {}, spriteId: clip.sprite_id,
+      })),
+    ] },
     effects: template.effects.map((effect) => ({
       id: effect.id, category: effect.category, name: effect.name,
       effectId: effect.effect_id, parameters: effect.parameters, previewUrl: effect.preview_url,

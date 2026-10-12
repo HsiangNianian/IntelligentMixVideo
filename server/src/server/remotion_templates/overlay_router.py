@@ -1,4 +1,4 @@
-"""JSON routes for the bus to request a template's Remotion overlay video under /api/v1/overlay-renders.
+"""JSON routes for the bus to request the Remotion overlay video of a template under /api/v1/overlay-renders.
 
 Mirrors the video-composition contract (camelCase, async task, callback notification). The runtime and
 its task service are borrowed from the Remotion app, like `sprite_router.py`.
@@ -14,6 +14,7 @@ from starlette.concurrency import run_in_threadpool
 
 from ..video_composition.schema import MediaURL, PositiveSeconds
 from .api import app as remotion_templates_app
+from .overlay_render import MAX_PLACEMENTS, OverlayPlacement
 from .overlay_service import OverlayRenders
 from .routes import runtime_for
 
@@ -21,14 +22,15 @@ router = APIRouter(prefix="/api/v1/overlay-renders", tags=["Remotion 叠加视�
 
 
 class OverlayRequest(BaseModel):
-    """Template to render plus the optional TTS audio or explicit length that decides its duration.
+    """The clips to render plus the optional TTS audio or explicit length that decides the duration.
 
+    The bus reads the clips from the template's `remotion` tracks and sends them bottom layer first.
     `duration` is strict like the composition API's `videoDuration`: booleans and numeric strings are refused.
     """
 
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
 
-    style_id: UUID
+    placements: list[OverlayPlacement] = Field(max_length=MAX_PLACEMENTS)
     audio_url: MediaURL | None = None
     duration: PositiveSeconds | None = Field(default=None, strict=True)
     callback_url: MediaURL | None = None
@@ -44,10 +46,10 @@ async def overlay_renders() -> OverlayRenders:
 Service = Annotated[OverlayRenders, Depends(overlay_renders)]
 
 
-@router.post("", summary="受理整个模板的 Remotion 叠加视频渲染")
+@router.post("", summary="受理 Remotion 叠加视频渲染")
 async def create_overlay_render(payload: OverlayRequest, service: Service) -> dict:
     """有 audioUrl 以音频完整时长为准，否则用 duration，再否则取摆放的最晚结束；渲染后转存 ZOS 并回调。"""
-    task_id = await service.accept(payload.style_id, payload.audio_url, payload.duration, payload.callback_url)
+    task_id = await service.accept(payload.placements, payload.audio_url, payload.duration, payload.callback_url)
     return {"taskId": task_id}
 
 

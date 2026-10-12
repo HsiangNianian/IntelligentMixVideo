@@ -1,9 +1,9 @@
 /** 模板 HTTP 核心测试：请求契约、必要校验与错误展示；fetch 由 setup.ts 隔离。 */
 import { expect, spyOn, test } from "bun:test";
-import { fromBinary, toBinary } from "@bufbuild/protobuf";
-import { GetTemplateResponseSchema, SaveTemplateRequestSchema } from "@/generated/imv/template/v1/template_pb";
+import { fromBinary, toBinary, toJson } from "@bufbuild/protobuf";
+import { EffectTemplateEditorSchema, GetTemplateResponseSchema, SaveTemplateRequestSchema } from "@/generated/imv/template/v1/template_pb";
 import { deleteTemplate, getTemplate, listTemplates, saveTemplate } from "@/features/templates/api";
-import { newDraft, toDraft } from "@/features/templates/model";
+import { newDraft, toDraft, type RemotionClip } from "@/features/templates/model";
 import { protobufListResponse, protobufTemplateResponse, savedTemplate } from "./fixtures";
 import { fetchMock, mockDesktop } from "./setup";
 
@@ -56,6 +56,74 @@ test("读取与删除遵循接口契约", async () => {
   expect(await deleteTemplate(saved.template_id)).toBeUndefined();
   expect(fetchMock.mock.calls[2][0]).toBe(`http://api.test:8000/template/${saved.template_id}`);
   expect(fetchMock.mock.calls[2][1]?.method).toBe("DELETE");
+});
+
+const spriteId = "6f1c8a52-3d94-4b7e-9a10-2c5e8d7b4f31";
+const clips: RemotionClip[] = [
+  { id: "clip-a", sprite_id: spriteId, start: 2.5, duration: 3 },
+  { id: "clip-b", sprite_id: spriteId, start: 0, duration: null },
+];
+
+// 测试含 Remotion 片段的模板（片段轨道的 editor 为空消息）可以正常读取：片段与 IMS 对象分开，且不会拖垮整个列表。
+test("读取含 Remotion 片段的模板", async () => {
+  const withClips = { ...savedTemplate(), template_id: "00000000-0000-4000-8000-000000000002", clips };
+  fetchMock.mockResolvedValueOnce(protobufListResponse([savedTemplate(), withClips]));
+  const listed = await listTemplates();
+  expect(listed).toEqual([savedTemplate(), withClips]);
+  expect(listed[1].tracks.map((track) => track.target)).toEqual(["title", "subtitle"]);
+  fetchMock.mockResolvedValueOnce(protobufTemplateResponse(withClips, "get"));
+  expect(await getTemplate(withClips.template_id)).toEqual(withClips);
+});
+
+// 测试保存时片段排在 IMS 对象之后，作为 remotion 轨道带上引用、秒数起点和空 editor 消息；只含片段的模板不需要 IMS 效果。
+test("保存 Remotion 片段", async () => {
+  const draft = { ...newDraft(), name: "只有片段", clips };
+  fetchMock.mockResolvedValueOnce(protobufTemplateResponse({ ...savedTemplate(), clips }, "save", 201));
+  await saveTemplate(draft);
+  const body = fromBinary(SaveTemplateRequestSchema, new Uint8Array(fetchMock.mock.calls[0][1]?.body as Uint8Array));
+  expect(body.effectIds).toEqual([]);
+  expect(body.tracks?.tracks.map((track) => [track.id, track.target, track.startMode, track.start, track.duration, track.spriteId])).toEqual([
+    ["clip-a", "remotion", "seconds", 2.5, 3, spriteId],
+    ["clip-b", "remotion", "seconds", 0, undefined, spriteId],
+  ]);
+  expect(body.tracks?.tracks.map((track) => track.editor && toJson(EffectTemplateEditorSchema, track.editor))).toEqual([{}, {}]);
+  const mixed = { ...toDraft(savedTemplate()), clips };
+  fetchMock.mockResolvedValueOnce(protobufTemplateResponse({ ...savedTemplate(), clips }, "save", 201));
+  await saveTemplate(mixed);
+  const sent = fromBinary(SaveTemplateRequestSchema, new Uint8Array(fetchMock.mock.calls[1][1]?.body as Uint8Array));
+  expect(sent.tracks?.tracks.map((track) => track.target)).toEqual(["title", "subtitle", "remotion", "remotion"]);
+  expect(sent.effectIds).toEqual(["in/fade_in"]);
+});
+
+// 测试读取后原样保存：编辑其他字段不会丢失或改写片段，也不会把它们当成 IMS 对象。
+test("含片段的模板读取后再保存不丢片段", async () => {
+  const withClips = { ...savedTemplate(), clips };
+  fetchMock.mockResolvedValueOnce(protobufTemplateResponse(withClips, "get"));
+  const draft = toDraft(await getTemplate(withClips.template_id));
+  draft.name = "改名";
+  fetchMock.mockResolvedValueOnce(protobufTemplateResponse(withClips, "save"));
+  await saveTemplate(draft, withClips.template_id);
+  const body = fromBinary(SaveTemplateRequestSchema, new Uint8Array(fetchMock.mock.calls[1][1]?.body as Uint8Array));
+  const sent = body.tracks!.tracks.filter((track) => track.target === "remotion");
+  expect(sent.map((track) => [track.id, track.spriteId, track.start, track.duration])).toEqual([
+    ["clip-a", spriteId, 2.5, 3], ["clip-b", spriteId, 0, undefined],
+  ]);
+  expect(body.tracks!.tracks.length - sent.length).toBe(2);
+});
+
+// 测试本地模板不支持 Remotion 资产：草稿带片段时直接拒绝，不调用桌面 IPC，也不写入云端。
+test("本地环境拒绝保存 Remotion 片段", async () => {
+  const { mock } = await import("bun:test");
+  const invoke = mock(async () => null);
+  const restoreDesktop = mockDesktop(invoke);
+  try {
+    const draft = { ...toDraft(savedTemplate()), clips };
+    await expect(saveTemplate(draft, undefined, "local")).rejects.toThrow("本地模板不支持 Remotion 资产");
+    expect(invoke).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  } finally {
+    restoreDesktop();
+  }
 });
 
 // 测试服务端遗漏编辑参数时拒绝详情响应，避免客户端静默补齐字段。

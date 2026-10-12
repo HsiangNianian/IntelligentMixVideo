@@ -1,8 +1,8 @@
-"""Render every Remotion placement of one cloud template into a single transparent VP9 WebM.
+"""Render the Remotion placements of one request into a single transparent VP9 WebM.
 
 `resolve_total_seconds` decides the video length (TTS audio wins, then an explicit duration, then the
-latest fixed placement end); `plan_overlay` turns bindings and publications into per-instance frame
-ranges on one shared canvas; `render_overlay` runs the sealed sources in the isolated worker and
+latest fixed placement end); `plan_overlay` turns the placements and their publications into per-instance
+frame ranges on one shared canvas; `render_overlay` runs the sealed sources in the isolated worker and
 verifies the produced file with ffprobe. Persistence, upload and notification live in
 `overlay_service.py`.
 """
@@ -16,13 +16,17 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from generated.imv.sprite.v1 import sprite_pb2 as pb
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic.alias_generators import to_camel
 
 from ..video_composition.media import ffprobe_json
+from ..video_composition.schema import PositiveSeconds
 from .renderer import CPU_SECONDS, Renderer
 from .settings import Settings
 
 logger = logging.getLogger(__name__)
 PROBE_SECONDS = 60  # ffprobe of the finished file (it decodes every frame to count them)
+MAX_PLACEMENTS = 100  # the same cap as a template's tracks
 
 
 class OverlayError(Exception):
@@ -35,6 +39,21 @@ class OverlayError(Exception):
         """Keep the code and the public message separately."""
         super().__init__(message)
         self.code, self.message = code, message
+
+
+class OverlayPlacement(BaseModel):
+    """One clip of the overlay: a published Sprite, the second it starts and an optional fixed length.
+
+    The request, the stored task and the planner share this model, so a recovered task renders exactly
+    what was accepted. Placements are listed bottom layer first, like a template's `remotion` tracks.
+    Numbers are strict like the composition API's: booleans and numeric strings are refused.
+    """
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
+
+    sprite_id: str = Field(min_length=1, max_length=64)
+    start: float = Field(ge=0, allow_inf_nan=False, strict=True)
+    duration: PositiveSeconds | None = Field(default=None, strict=True)
 
 
 @dataclass(frozen=True)
@@ -56,9 +75,9 @@ class Overlay:
         return max([self.frames, *(item["start_frame"] + item["duration_frames"] for item in self.instances)])
 
 
-def placement_seconds(sprite: pb.PublishedSprite, placement: pb.SpritePlacement) -> float:
-    """Fixed duration of a placement: its saved duration, otherwise the asset's own preview length."""
-    if placement.HasField("duration"):
+def placement_seconds(sprite: pb.PublishedSprite, placement: OverlayPlacement) -> float:
+    """Fixed duration of a placement: its own duration, otherwise the asset's own preview length."""
+    if placement.duration is not None:
         return placement.duration
     return sprite.canvas.preview_frames / sprite.canvas.fps
 
@@ -78,7 +97,7 @@ async def audio_duration(url: str, timeout: float) -> float:
 
 
 def fixed_end_seconds(
-    placements: list[pb.SpritePlacement], sprites: dict[str, pb.PublishedSprite],
+    placements: list[OverlayPlacement], sprites: dict[str, pb.PublishedSprite],
 ) -> float | None:
     """Latest end among the fixed clips, or None when there are none."""
     ends = [item.start + placement_seconds(sprites[item.sprite_id], item) for item in placements]
@@ -87,7 +106,7 @@ def fixed_end_seconds(
 
 async def resolve_total_seconds(
     audio_url: str | None, duration: float | None,
-    placements: list[pb.SpritePlacement], sprites: dict[str, pb.PublishedSprite], timeout: float,
+    placements: list[OverlayPlacement], sprites: dict[str, pb.PublishedSprite], timeout: float,
 ) -> float:
     """TTS audio decides the length; otherwise the requested duration, then the last fixed end."""
     if audio_url:
@@ -101,11 +120,11 @@ async def resolve_total_seconds(
 
 
 def shared_canvas(
-    placements: list[pb.SpritePlacement], sprites: dict[str, pb.PublishedSprite],
+    placements: list[OverlayPlacement], sprites: dict[str, pb.PublishedSprite],
 ) -> tuple[int, int, int]:
     """Width, height and fps shared by every placed asset; empty or mixed canvases are rejected."""
     if not placements:
-        raise OverlayError("no_placements", "模板没有 Remotion 资产摆放")
+        raise OverlayError("no_placements", "没有 Remotion 资产摆放")
     canvases = {
         (item.canvas.width, item.canvas.height, item.canvas.fps)
         for item in (sprites[placement.sprite_id] for placement in placements)
@@ -121,10 +140,10 @@ def to_frames(seconds: float, fps: int) -> int:
 
 
 def plan_overlay(
-    placements: list[pb.SpritePlacement], sprites: dict[str, pb.PublishedSprite],
+    placements: list[OverlayPlacement], sprites: dict[str, pb.PublishedSprite],
     total_seconds: float, max_seconds: float,
 ) -> Overlay:
-    """Place every asset on one canvas; starts past the end are dropped, later ends are cut by the total.
+    """Place every asset on one canvas, in list order; starts past the end are dropped, later ends are cut.
 
     A clip keeps its full length: a Sprite reads its length from its own Sequence, so shrinking the Sequence
     would change animations computed from it. The output length does the cutting (`Overlay.span`). A clip is
@@ -137,7 +156,7 @@ def plan_overlay(
         raise OverlayError("duration_too_long", f"成片时长超过上限 {max_seconds:g} 秒")
     frames = max(1, to_frames(total_seconds, fps))
     instances = []
-    for placement in sorted(placements, key=lambda item: item.order):
+    for placement in placements:
         sprite = sprites[placement.sprite_id]
         if placement.start * fps >= frames:  # past the end; a huge saved start never reaches int arithmetic
             continue

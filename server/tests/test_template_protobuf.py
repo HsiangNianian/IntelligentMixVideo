@@ -9,7 +9,7 @@ from generated.imv.template.v1 import template_pb2 as pb
 from sqlalchemy import Engine, inspect, select
 
 from server.template import store
-from .conftest import template_track
+from .conftest import SPRITE_ID, remotion_track, seed_sprite, template_track
 from .template_wire import post_template as _post
 
 
@@ -191,8 +191,101 @@ def test_template_protobuf_rejects_loop_conflict(
     assert pb.ListTemplatesResponse.FromString(client.get("/template").content).templates == []
 
 
-def test_template_without_effects_can_be_saved_and_read_back(client: TestClient, template_payload: dict) -> None:
-    """只放 Remotion 片段的模板没有 IMS 效果：空效果与空对象一致时可以创建、读取并出现在列表中。"""
+def test_remotion_tracks_roundtrip_through_protobuf(client: TestClient, template_payload: dict) -> None:
+    """片段轨道经 Protobuf 保存、读取后保持引用、秒数起点和空 editor，IMS 对象不带 sprite_id。"""
+    seed_sprite()
+    tracks = [*template_payload["tracks"], remotion_track("clip-a", start=2.5, duration=3), remotion_track("clip-b")]
+    created = _post(client, {**template_payload, "tracks": tracks})
+    assert created.status_code == 201
+    record = pb.SaveTemplateResponse.FromString(created.content).template
+    ims, *clips = record.tracks.tracks
+    assert ims.sprite_id == ""
+    assert [(clip.id, clip.sprite_id, clip.start_mode, clip.start) for clip in clips] == [
+        ("clip-a", SPRITE_ID, "seconds", 2.5), ("clip-b", SPRITE_ID, "seconds", 1),
+    ]
+    assert clips[0].duration == 3 and not clips[1].HasField("duration")
+    assert all(clip.HasField("editor") and not clip.editor.ListFields() for clip in clips)
+    detail = client.get(f"/template/{record.template_id}")
+    assert pb.GetTemplateResponse.FromString(detail.content).template == record
+
+
+@pytest.mark.parametrize(("change", "reason"), [
+    ({"sprite_id": ""}, "缺少 sprite_id"), ({"sprite_id": "not-a-uuid"}, "valid UUID"),
+    ({"editor": {"title": "不允许"}}, "不能携带编辑参数"), ({"editor": None}, "Field required"),
+], ids=["no-sprite", "bad-sprite", "explicit-editor", "missing-editor"])
+def test_invalid_remotion_tracks_return_422_without_writing(
+    client: TestClient, template_payload: dict, change: dict, reason: str,
+) -> None:
+    """片段轨道缺少引用、引用不是 UUID、携带编辑参数或缺少 editor 消息时返回 422 并说明原因，且不写库。"""
+    tracks = [*template_payload["tracks"], remotion_track("clip-a", **change)]
+    response = _post(client, {**template_payload, "tracks": tracks})
+    assert response.status_code == 422 and reason in response.text
+    assert pb.ListTemplatesResponse.FromString(client.get("/template").content).templates == []
+
+
+def test_remotion_tracks_must_reference_published_sprites(client: TestClient, template_payload: dict) -> None:
+    """引用未发布的 Sprite 返回 422 且不写库；发布后同一个 Sprite 摆放两次可以保存，更新时引用新的未发布 Sprite 仍被拒绝。"""
+    tracks = [*template_payload["tracks"], remotion_track("clip-a"), remotion_track("clip-b", start=2)]
+    rejected = _post(client, {**template_payload, "tracks": tracks})
+    assert rejected.status_code == 422 and SPRITE_ID in rejected.text
+    assert pb.ListTemplatesResponse.FromString(client.get("/template").content).templates == []
+    seed_sprite()
+    created = _post(client, {**template_payload, "tracks": tracks})
+    assert created.status_code == 201
+    unknown = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    template_id = pb.SaveTemplateResponse.FromString(created.content).template.template_id
+    updated = _post(client, {**template_payload, "template_id": template_id, "tracks": [*tracks, remotion_track("clip-c", sprite_id=unknown)]})
+    assert updated.status_code == 422 and unknown in updated.text
+
+
+def test_templates_without_clips_never_touch_the_sprite_table(client: TestClient, template_payload: dict, template_db: Engine) -> None:
+    """普通模板的保存不查询也不创建 Sprite 表：检查只在模板含 Remotion 片段时发生。"""
+    assert _post(client, template_payload).status_code == 201
+    assert not inspect(template_db).has_table("remotion_sprites")
+
+
+def test_clips_only_template_roundtrips_over_http(client: TestClient, template_payload: dict) -> None:
+    """HTTP 层真正只放 Remotion 片段的模板：已发布 Sprite、单个片段、空效果列表，可以创建、读取、出现在列表中并更新。"""
+    seed_sprite()
+    payload = {**template_payload, "effect_ids": [], "tracks": [remotion_track("clip-a", start=1.5)]}
+    created = _post(client, payload)
+    assert created.status_code == 201
+    record = pb.SaveTemplateResponse.FromString(created.content).template
+    assert list(record.effect_ids) == [] and list(record.effects) == []
+    assert [(item.id, item.target, item.sprite_id, item.start) for item in record.tracks.tracks] == [("clip-a", "remotion", SPRITE_ID, 1.5)]
+    detail = pb.GetTemplateResponse.FromString(client.get(f"/template/{record.template_id}").content).template
+    assert detail == record
+    listed = pb.ListTemplatesResponse.FromString(client.get("/template").content).templates
+    assert [item.template_id for item in listed] == [record.template_id]
+    updated = _post(client, {**payload, "template_id": record.template_id, "tracks": [remotion_track("clip-a", start=4), remotion_track("clip-b", start=6)]})
+    assert updated.status_code == 200
+    again = pb.GetTemplateResponse.FromString(client.get(f"/template/{record.template_id}").content).template
+    assert [(item.id, item.start) for item in again.tracks.tracks] == [("clip-a", 4), ("clip-b", 6)]
+    assert list(again.effect_ids) == []
+
+
+def test_remotion_tracks_must_share_one_canvas(client: TestClient, template_payload: dict) -> None:
+    """叠加渲染要求片段画布一致：宽高或帧率不同的 Sprite 放进同一个模板时保存即 422 并列出各画布，且不写库；画布相同的不同 Sprite 可以一起保存。"""
+    same, landscape, other_fps = (str(uuid4()) for _ in range(3))
+    seed_sprite(SPRITE_ID)
+    seed_sprite(same)
+    seed_sprite(landscape, (1920, 1080, 30))
+    seed_sprite(other_fps, (1080, 1920, 60))
+    clips = lambda *ids: [remotion_track(f"clip-{index}", sprite_id=item) for index, item in enumerate(ids)]
+    for mismatched in ((SPRITE_ID, landscape), (SPRITE_ID, other_fps)):
+        rejected = _post(client, {**template_payload, "effect_ids": [], "tracks": clips(*mismatched)})
+        assert rejected.status_code == 422
+        assert "1080x1920@30" in rejected.text and ("1920x1080@30" in rejected.text or "1080x1920@60" in rejected.text)
+    assert pb.ListTemplatesResponse.FromString(client.get("/template").content).templates == []
+    created = _post(client, {**template_payload, "effect_ids": [], "tracks": clips(SPRITE_ID, same, SPRITE_ID)})
+    assert created.status_code == 201
+    template_id = pb.SaveTemplateResponse.FromString(created.content).template.template_id
+    updated = _post(client, {**template_payload, "template_id": template_id, "effect_ids": [], "tracks": clips(SPRITE_ID, landscape)})
+    assert updated.status_code == 422
+
+
+def test_template_without_clips_or_effects_can_be_saved_and_read_back(client: TestClient, template_payload: dict) -> None:
+    """没有任何对象的空模板（空效果、空轨道）也可以创建、读取并出现在列表中；只放片段的情形见 test_clips_only_template_roundtrips_over_http。"""
     created = _post(client, {**template_payload, "effect_ids": [], "tracks": []})
     assert created.status_code == 201
     record = pb.SaveTemplateResponse.FromString(created.content).template

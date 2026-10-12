@@ -142,7 +142,7 @@ export function addTrack(draft: Draft, asset: EffectAsset, target: EffectTarget,
     editor: trackEditor(applied.draft.editor, applied.target),
   };
   validateTrack(track);
-  if (draft.tracks.length >= 100) throw new Error("轨道数量不能超过 100");
+  if (draft.tracks.length + draft.clips.length >= 100) throw new Error("轨道数量不能超过 100");
   return { draft: { ...draft, tracks: [...draft.tracks, track] }, id: track.id };
 }
 

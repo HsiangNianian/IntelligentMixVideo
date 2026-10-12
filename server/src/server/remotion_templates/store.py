@@ -85,16 +85,6 @@ class Store:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     job_id TEXT NOT NULL REFERENCES jobs(id), data TEXT NOT NULL
                 );
-                CREATE TABLE IF NOT EXISTS sprites (
-                    id TEXT PRIMARY KEY, source_version_id TEXT NOT NULL,
-                    kind INTEGER NOT NULL, text_prop TEXT NOT NULL, keywords_prop TEXT NOT NULL,
-                    published_at TEXT NOT NULL, data TEXT NOT NULL,
-                    UNIQUE(source_version_id, kind, text_prop, keywords_prop)
-                );
-                CREATE TABLE IF NOT EXISTS style_sprite_bindings (
-                    style_id TEXT PRIMARY KEY, revision INTEGER NOT NULL,
-                    updated_at TEXT NOT NULL, data TEXT NOT NULL
-                );
                 CREATE TABLE IF NOT EXISTS overlay_renders (
                     id TEXT PRIMARY KEY, status TEXT NOT NULL,
                     created_at TEXT NOT NULL, data TEXT NOT NULL

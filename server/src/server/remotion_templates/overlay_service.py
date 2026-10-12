@@ -1,6 +1,6 @@
-"""Durable async tasks that render a cloud template's Remotion placements and publish the video to ZOS.
+"""Durable async tasks that render the Remotion placements of a request and publish the video to ZOS.
 
-Accepting a task validates the bindings and stores it in the Remotion SQLite database; a background
+Accepting a task validates the placements and stores them in the Remotion SQLite database; a background
 asyncio task renders (one at a time), uploads to ZOS, saves the result and notifies the callback.
 Unfinished tasks are re-run by `resume()` after a restart, and the terminal notification is retried
 with fixed delays. The rendering and planning rules live in `overlay_render.py`.
@@ -13,18 +13,18 @@ import shutil
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import httpx
 from fastapi import HTTPException
 from generated.imv.sprite.v1 import sprite_pb2 as pb
-from google.protobuf.json_format import ParseDict
 
 from ..video_composition.settings import ZosSettings
 from ..video_composition.zos import upload_public
 from . import sprites
 from .overlay_render import (
     OverlayError,
+    OverlayPlacement,
     environment_problem,
     fixed_end_seconds,
     plan_overlay,
@@ -55,18 +55,16 @@ class OverlayRenders:
         self.tasks: set[asyncio.Task] = set()
         self.resumed = False
 
-    def _load(self, style_id: UUID) -> tuple[list[pb.SpritePlacement], dict[str, pb.PublishedSprite]]:
-        """Read the style's saved clips with their publications; a style without clips yields none."""
-        _, stored, _ = sprites.get_bindings(self.store, style_id)
-        placements = [ParseDict(item, pb.SpritePlacement()) for item in stored]
+    def _publications(self, placements: list[OverlayPlacement]) -> dict[str, pb.PublishedSprite]:
+        """Read the published Sprite of every distinct placement; an unknown one is `sprite_missing`."""
         publications: dict[str, pb.PublishedSprite] = {}
         for item in placements:
             if item.sprite_id not in publications:
                 try:
-                    publications[item.sprite_id] = sprites.get(self.store, item.sprite_id)
+                    publications[item.sprite_id] = sprites.get(item.sprite_id)
                 except NotFound:
                     raise OverlayError("sprite_missing", f"Sprite {item.sprite_id} 不存在") from None
-        return placements, publications
+        return publications
 
     def _insert(self, task_id: str, data: dict) -> None:
         """Persist a new queued task."""
@@ -119,7 +117,7 @@ class OverlayRenders:
             "error": data.get("error"),
         }
 
-    async def accept(self, style_id: UUID, audio_url: str | None, duration: float | None,
+    async def accept(self, placements: list[OverlayPlacement], audio_url: str | None, duration: float | None,
                      callback_url: str | None) -> str:
         """Validate cheaply, persist the task and start it; no ffprobe or render happens here.
 
@@ -136,7 +134,7 @@ class OverlayRenders:
             logger.error("叠加渲染环境缺少 %s，拒绝受理", missing)
             raise HTTPException(503, "叠加渲染环境不可用，请检查服务端环境")
         try:
-            placements, publications = await asyncio.to_thread(self._load, style_id)
+            publications = await asyncio.to_thread(self._publications, placements)
             shared_canvas(placements, publications)
             if audio_url is None:
                 seconds = duration if duration is not None else fixed_end_seconds(placements, publications)
@@ -146,7 +144,8 @@ class OverlayRenders:
             raise HTTPException(422, exc.message) from None
         task_id = str(uuid4())
         await asyncio.to_thread(self._insert, task_id, {"request": {
-            "style_id": str(style_id), "audio_url": audio_url, "duration": duration, "callback_url": callback_url,
+            "placements": [item.model_dump(mode="json") for item in placements],
+            "audio_url": audio_url, "duration": duration, "callback_url": callback_url,
         }})
         self._spawn(self._run(task_id))
         return task_id
@@ -217,7 +216,9 @@ class OverlayRenders:
         """
         _, data = self._read(task_id)
         request = data["request"]
-        placements, publications = await asyncio.to_thread(self._load, UUID(request["style_id"]))
+        # The accepted placements are rendered as stored; only the published Sprites are read again.
+        placements = [OverlayPlacement.model_validate(item) for item in request["placements"]]
+        publications = await asyncio.to_thread(self._publications, placements)
         total = await resolve_total_seconds(
             request["audio_url"], request["duration"], placements, publications, HTTP_TIMEOUT_SECONDS,
         )

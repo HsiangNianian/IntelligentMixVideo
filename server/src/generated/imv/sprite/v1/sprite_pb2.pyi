@@ -18,17 +18,6 @@ class SpriteKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     SPRITE_KIND_VIDEO_OVERLAY: _ClassVar[SpriteKind]
     SPRITE_KIND_TRANSITION_OVERLAY: _ClassVar[SpriteKind]
 
-class SpriteTarget(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
-    __slots__ = ()
-    SPRITE_TARGET_UNSPECIFIED: _ClassVar[SpriteTarget]
-    SPRITE_TARGET_TITLE: _ClassVar[SpriteTarget]
-    SPRITE_TARGET_SUBTITLE: _ClassVar[SpriteTarget]
-    SPRITE_TARGET_FILTER: _ClassVar[SpriteTarget]
-    SPRITE_TARGET_VIDEO_EFFECT: _ClassVar[SpriteTarget]
-    SPRITE_TARGET_TRANSITION: _ClassVar[SpriteTarget]
-    SPRITE_TARGET_VIDEO_ENTER: _ClassVar[SpriteTarget]
-    SPRITE_TARGET_VIDEO_EXIT: _ClassVar[SpriteTarget]
-
 class OperatorAccess(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     OPERATOR_ACCESS_UNSPECIFIED: _ClassVar[OperatorAccess]
@@ -40,14 +29,6 @@ SPRITE_KIND_TEXT: SpriteKind
 SPRITE_KIND_FILTER_OVERLAY: SpriteKind
 SPRITE_KIND_VIDEO_OVERLAY: SpriteKind
 SPRITE_KIND_TRANSITION_OVERLAY: SpriteKind
-SPRITE_TARGET_UNSPECIFIED: SpriteTarget
-SPRITE_TARGET_TITLE: SpriteTarget
-SPRITE_TARGET_SUBTITLE: SpriteTarget
-SPRITE_TARGET_FILTER: SpriteTarget
-SPRITE_TARGET_VIDEO_EFFECT: SpriteTarget
-SPRITE_TARGET_TRANSITION: SpriteTarget
-SPRITE_TARGET_VIDEO_ENTER: SpriteTarget
-SPRITE_TARGET_VIDEO_EXIT: SpriteTarget
 OPERATOR_ACCESS_UNSPECIFIED: OperatorAccess
 OPERATOR_ACCESS_VISIBLE_READ_ONLY: OperatorAccess
 OPERATOR_ACCESS_VISIBLE_EDITABLE: OperatorAccess
@@ -179,26 +160,6 @@ class PublishSpriteResponse(_message.Message):
     sprite: SpriteSummary
     def __init__(self, sprite: _Optional[_Union[SpriteSummary, _Mapping]] = ...) -> None: ...
 
-class SpritePlacement(_message.Message):
-    __slots__ = ("id", "sprite_id", "target", "start_mode", "start", "duration", "overrides", "order")
-    ID_FIELD_NUMBER: _ClassVar[int]
-    SPRITE_ID_FIELD_NUMBER: _ClassVar[int]
-    TARGET_FIELD_NUMBER: _ClassVar[int]
-    START_MODE_FIELD_NUMBER: _ClassVar[int]
-    START_FIELD_NUMBER: _ClassVar[int]
-    DURATION_FIELD_NUMBER: _ClassVar[int]
-    OVERRIDES_FIELD_NUMBER: _ClassVar[int]
-    ORDER_FIELD_NUMBER: _ClassVar[int]
-    id: str
-    sprite_id: str
-    target: SpriteTarget
-    start_mode: str
-    start: float
-    duration: float
-    overrides: _containers.RepeatedCompositeFieldContainer[SpriteParameterOverride]
-    order: int
-    def __init__(self, id: _Optional[str] = ..., sprite_id: _Optional[str] = ..., target: _Optional[_Union[SpriteTarget, str]] = ..., start_mode: _Optional[str] = ..., start: _Optional[float] = ..., duration: _Optional[float] = ..., overrides: _Optional[_Iterable[_Union[SpriteParameterOverride, _Mapping]]] = ..., order: _Optional[int] = ...) -> None: ...
-
 class SpriteParameterOverride(_message.Message):
     __slots__ = ("key", "value")
     KEY_FIELD_NUMBER: _ClassVar[int]
@@ -206,40 +167,6 @@ class SpriteParameterOverride(_message.Message):
     key: str
     value: ScalarValue
     def __init__(self, key: _Optional[str] = ..., value: _Optional[_Union[ScalarValue, _Mapping]] = ...) -> None: ...
-
-class StyleSpriteBindings(_message.Message):
-    __slots__ = ("style_id", "placements", "revision", "updated_at")
-    STYLE_ID_FIELD_NUMBER: _ClassVar[int]
-    PLACEMENTS_FIELD_NUMBER: _ClassVar[int]
-    REVISION_FIELD_NUMBER: _ClassVar[int]
-    UPDATED_AT_FIELD_NUMBER: _ClassVar[int]
-    style_id: str
-    placements: _containers.RepeatedCompositeFieldContainer[SpritePlacement]
-    revision: int
-    updated_at: _timestamp_pb2.Timestamp
-    def __init__(self, style_id: _Optional[str] = ..., placements: _Optional[_Iterable[_Union[SpritePlacement, _Mapping]]] = ..., revision: _Optional[int] = ..., updated_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
-
-class GetStyleSpritesResponse(_message.Message):
-    __slots__ = ("bindings",)
-    BINDINGS_FIELD_NUMBER: _ClassVar[int]
-    bindings: StyleSpriteBindings
-    def __init__(self, bindings: _Optional[_Union[StyleSpriteBindings, _Mapping]] = ...) -> None: ...
-
-class SaveStyleSpritesRequest(_message.Message):
-    __slots__ = ("style_id", "placements", "expected_revision")
-    STYLE_ID_FIELD_NUMBER: _ClassVar[int]
-    PLACEMENTS_FIELD_NUMBER: _ClassVar[int]
-    EXPECTED_REVISION_FIELD_NUMBER: _ClassVar[int]
-    style_id: str
-    placements: _containers.RepeatedCompositeFieldContainer[SpritePlacement]
-    expected_revision: int
-    def __init__(self, style_id: _Optional[str] = ..., placements: _Optional[_Iterable[_Union[SpritePlacement, _Mapping]]] = ..., expected_revision: _Optional[int] = ...) -> None: ...
-
-class SaveStyleSpritesResponse(_message.Message):
-    __slots__ = ("bindings",)
-    BINDINGS_FIELD_NUMBER: _ClassVar[int]
-    bindings: StyleSpriteBindings
-    def __init__(self, bindings: _Optional[_Union[StyleSpriteBindings, _Mapping]] = ...) -> None: ...
 
 class SpriteRenderInput(_message.Message):
     __slots__ = ("sprite_id", "placement_id", "output", "effect_offset_frames", "render_frame_count", "text", "keywords", "resolved_style", "effect_total_frames")

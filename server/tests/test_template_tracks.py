@@ -8,6 +8,8 @@ from pydantic import ValidationError
 from server.template.schema import EffectTemplateEditor, TemplateSave, effect_catalog
 from server.template.timing import resolve_track
 
+from .conftest import SPRITE_ID, remotion_track
+
 
 @pytest.mark.parametrize("case", json.loads(Path(__file__).with_name("template_timing_cases.json").read_text()), ids=lambda case: case["purpose"])
 def test_shared_timing_cases(case: dict) -> None:
@@ -172,6 +174,62 @@ def test_template_format_requires_tracks(invalid: str) -> None:
         rejected["editor"] = EffectTemplateEditor().model_dump(by_alias=True)
     with pytest.raises(ValidationError):
         TemplateSave.model_validate(rejected)
+
+
+def test_remotion_tracks_are_references_with_an_empty_editor() -> None:
+    """片段轨道只保存 Sprite 引用和秒数起点，编辑参数输出为空对象；同一 Sprite 可摆放多次，IMS 对象的键不增加。"""
+    payload = track_payload()
+    payload["tracks"] += [remotion_track("clip-a", start=1.5, duration=2), remotion_track("clip-b")]
+    saved = TemplateSave.model_validate(payload)
+    dumped = saved.model_dump(mode="json", by_alias=True)
+    assert dumped["tracks"][2] == {
+        "id": "clip-a", "target": "remotion", "sprite_id": SPRITE_ID,
+        "start_mode": "seconds", "start": 1.5, "duration": 2, "editor": {},
+    }
+    assert dumped["tracks"][3]["duration"] is None
+    assert [track["sprite_id"] for track in dumped["tracks"][2:]] == [SPRITE_ID, SPRITE_ID]
+    assert set(dumped["tracks"][0]) == {"id", "target", "start_mode", "start", "duration", "editor"}
+    assert saved.effect_ids == payload["effect_ids"]
+    assert TemplateSave.model_validate_json(saved.model_dump_json(by_alias=True)) == saved
+
+
+def test_template_may_contain_only_remotion_tracks() -> None:
+    """只放片段的模板没有 IMS 效果，空的效果列表与对象一致即可保存。"""
+    saved = TemplateSave.model_validate({"name": "片段模板", "effect_ids": [], "tracks": [remotion_track()]})
+    assert saved.effect_ids == []
+    assert str(saved.tracks[0].sprite_id) == SPRITE_ID
+
+
+@pytest.mark.parametrize(("change", "reason"), [
+    ({"sprite_id": None}, "缺少 sprite_id"), ({"sprite_id": "not-a-uuid"}, "valid UUID"),
+    ({"start_mode": "percent"}, "只能使用秒数起点"), ({"start": -1}, "greater than or equal to 0"),
+    ({"duration": 0}, "greater than 0"), ({"editor": {"title": ""}}, "不能携带编辑参数"),
+    ({"editor": {"vfx": "vfx/normal/unknown"}}, "不能携带编辑参数"), ({"id": "effect-a"}, "轨道 ID 重复"),
+], ids=["no-sprite", "bad-sprite", "percent", "negative-start", "zero-duration",
+        "explicit-editor", "editor-effect", "duplicate-id"])
+def test_invalid_remotion_tracks_are_validation_errors(change: dict, reason: str) -> None:
+    """缺失或伪造的引用、百分比起点、编辑参数和重复 ID 都是校验错误（而不是服务端异常），并说明各自的原因。"""
+    payload = track_payload()
+    payload["tracks"].append(remotion_track("clip-a", **change))
+    with pytest.raises(ValidationError, match=reason):
+        TemplateSave.model_validate(payload)
+
+
+def test_sprite_reference_is_rejected_on_ims_tracks() -> None:
+    """只有 Remotion 片段可以引用 Sprite，IMS 对象携带引用时拒绝保存。"""
+    payload = track_payload()
+    payload["tracks"][0]["sprite_id"] = SPRITE_ID
+    with pytest.raises(ValidationError, match="只有 Remotion 片段"):
+        TemplateSave.model_validate(payload)
+
+
+def test_remotion_tracks_share_the_track_limit() -> None:
+    """片段与 IMS 对象共用 100 条上限。"""
+    payload = {"name": "上限", "effect_ids": [], "tracks": [remotion_track(f"clip-{index}") for index in range(101)]}
+    with pytest.raises(ValidationError):
+        TemplateSave.model_validate(payload)
+    payload["tracks"].pop()
+    assert len(TemplateSave.model_validate(payload).tracks) == 100
 
 
 @pytest.mark.parametrize("duration", [None, 0.5, 2])
