@@ -1,6 +1,7 @@
 """模型请求重试与协议恢复边界；内存 HTTP/SSE 夹具不访问真实模型或凭据。"""
 
 import asyncio
+import json
 import httpx
 import pytest
 from pydantic import SecretStr
@@ -225,3 +226,50 @@ def test_retry_settings_follow_environment_precedence(tmp_path, monkeypatch):
     monkeypatch.setenv("IMV_MODEL_RETRIES", "0")
     assert Settings(_env_file=env).model_retries == 0
     assert "model_retries" not in ClientSettings.model_fields
+
+
+def sse(*events):
+    """把事件对象编码成完整的 SSE 响应体，最后以 [DONE] 结束。"""
+    return "".join(f"data: {json.dumps(event, ensure_ascii=False)}\n\n" for event in events).encode() + b"data: [DONE]\n\n"
+
+
+def test_empty_string_finish_reason_on_intermediate_chunks_is_not_a_finish(retry_waits):
+    """部分网关在每个非末尾数据块里发 finish_reason:""而不是 null，只有真正的结束原因才算完成。
+
+    修复前空字符串被当作已结束，下一个带内容的数据块触发
+    “Completion changed after its finish reason”，每一轮都变成协议失败且用量为 0。
+    """
+    chunk = lambda delta, finish: {"choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+    body = sse(
+        chunk({"role": "assistant", "content": '{"answer":'}, ""),
+        chunk({"content": '"完成"}'}, ""),
+        {**chunk({"role": "assistant", "content": ""}, "stop"), "usage": {"total_tokens": 7}},
+    )
+    requests = []
+
+    def respond(request):
+        """返回带空字符串 finish_reason 的流式响应。"""
+        requests.append(request)
+        return httpx.Response(200, content=body, headers={"content-type": "text/event-stream"})
+
+    result = asyncio.run(provider(respond).ask(DialogueOutput, "s", "u", Budget()))
+    assert result.answer == "完成" and len(requests) == 1
+
+
+@pytest.mark.parametrize("finish", [0, False, []])
+def test_non_string_finish_reason_is_still_rejected(finish):
+    """只放宽空字符串；其他非字符串的结束原因仍是协议错误。"""
+    from server.remotion_templates.completion_stream import Completion
+
+    with pytest.raises(ValueError):
+        Completion().accept({"choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": finish}]})
+
+
+def test_content_after_a_real_finish_reason_is_still_rejected():
+    """真正的结束原因出现后再有内容或再次结束仍被拒绝。"""
+    from server.remotion_templates.completion_stream import Completion
+
+    completion = Completion()
+    completion.accept({"choices": [{"index": 0, "delta": {"role": "assistant", "content": "a"}, "finish_reason": "stop"}]})
+    with pytest.raises(ValueError, match="after its finish reason"):
+        completion.accept({"choices": [{"index": 0, "delta": {"content": "b"}, "finish_reason": None}]})

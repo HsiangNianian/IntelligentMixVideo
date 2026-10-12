@@ -69,6 +69,17 @@ async def runtime(request: Request) -> Runtime:
 Service = Annotated[Runtime, Depends(runtime)]
 
 
+def require_sandbox(service: Runtime) -> None:
+    """Refuse work that needs the isolated validator on a host that cannot start it, before anything is queued.
+
+    Only call this where rendering is certain: a model turn may still just answer or ask a question, which
+    needs no validator, so free-text messages are left to fail at the tool call with VALIDATION_UNAVAILABLE.
+    """
+    problem = service.sandbox_problem()
+    if problem is not None:
+        raise HTTPException(503, f"校验环境不可用：{problem}")
+
+
 def client_config(value: Annotated[str | None, Header(alias="X-Remotion-Config")] = None) -> ClientSettings | None:
     """模型配置只来自当前请求头，不进入作品、聊天或任务输入持久化。"""
     return parse_config(value, ClientSettings)
@@ -130,6 +141,7 @@ async def create(
     settings = service.settings.model_copy(update=config.model_dump()) if config is not None else service.settings
     if not settings.models_configured:
         raise HTTPException(503, "请配置 Agent 模型及密钥")
+    require_sandbox(service)
     if request.image:
         service.store.asset(request.image.asset_id)
     project, job = service.store.create(request)
@@ -190,9 +202,12 @@ async def edit(work_id: UUID, request: TaskMessage, service: Service, config: Co
     回答问题时用 instruction 提交答案，并用 reply_to_job_id 绑定提出问题的任务。
     参数修改保留 TSX，经参数合法性与渲染可用性检查后保存，不调用 Actor 或 Judge。
     手动修订成为后续自然语言修改的基线；问题已过期或已有运行任务时返回 409。
+    参数修改在入队前检查校验环境，缺失时返回 503；提问、澄清回复与自然语言修改不需要校验器即可回答，不受此限制。
     纯问答或明确保持现状时返回 answered 终态，回答通过 message 和会话历史提供，不产生新版本。
     尚无成功版本的会话也可继续提问或描述生成需求；参数修改仍须已有成功版本。
     """
+    if request.parameters is not None:
+        require_sandbox(service)
     try:
         return PublicJob.from_job(service.message(work_id, request, config))
     except ValueError as exc:
@@ -291,7 +306,10 @@ async def retry(job_id: UUID, service: Service, config: Config) -> PublicJob:
     """为失败、已取消或中断的任务创建一次新的执行，返回新的任务 ID。
 
     保留原任务记录及产物，不从中断位置续跑；不符合重试条件时返回 409。
+    参数修订任务的重试需要渲染校验环境，缺失时返回 503；对话类任务仍可重试，环境问题在校验工具调用时报告。
     """
+    if service.store.inputs(job_id).mode == "parameters":
+        require_sandbox(service)
     return PublicJob.from_job(service.retry(job_id, config=config))
 
 

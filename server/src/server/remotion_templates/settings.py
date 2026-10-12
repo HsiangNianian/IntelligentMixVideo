@@ -90,6 +90,8 @@ class Settings(ClientSettings, CommonSettings):
     max_image_pixels: int = Field(default=20_000_000, gt=0)
     renderer_dir: Path = Path(__file__).parent.parent / "remotion"
     runtime_lib_dir: Path | None = None
+    # 开发专用：macOS 没有 bubblewrap，开启后直接用 Node 运行 worker，生成的代码不受隔离；其他系统忽略此开关。
+    allow_unsandboxed_worker: bool = False
     browser_executable: Path = Field(default_factory=default_browser_executable)
     font_regular: Path = Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc")
     font_bold: Path = Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc")

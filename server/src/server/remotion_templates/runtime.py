@@ -48,6 +48,10 @@ class Runtime:
             self._overlays = OverlayRenders(self.store, self.harness.renderer, self.settings)
         return self._overlays
 
+    def sandbox_problem(self) -> str | None:
+        """Why the isolated validator cannot run on this host, or None; routes refuse to queue work when set."""
+        return self.harness.renderer.sandbox_problem()
+
     def initialize(self) -> None:
         """Lock the state directory before recovery so a second server cannot interrupt live jobs."""
         self.store.root.mkdir(parents=True, exist_ok=True)

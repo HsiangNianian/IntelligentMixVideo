@@ -3,9 +3,11 @@
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import shutil
 import signal
+import sys
 from pathlib import Path
 
 from .settings import Settings
@@ -23,6 +25,8 @@ from .probes import parameter_probes, pixel_checks, preview_values
 
 # Per-process CPU-time cap (seconds) of the sandbox; short workers keep it, long ones pass their own.
 CPU_SECONDS = 300
+# Workers a macOS development host may run as plain Node; overlay rendering always keeps the sandbox.
+UNSANDBOXED_WORKERS = {"worker.mjs", "tool-validation-worker.mjs", "presentation-worker.mjs"}
 
 
 def keyframes(spec: TemplateSpec) -> list[int]:
@@ -52,19 +56,57 @@ def keyframes(spec: TemplateSpec) -> list[int]:
 
 
 class Renderer:
-    """Own subprocess lifetime; no fallback ever executes untrusted code in the API environment."""
+    """Own subprocess lifetime; untrusted code runs only in the Linux sandbox unless a macOS dev host opts out."""
 
     def __init__(self, settings: Settings) -> None:
         """Use only server-owned executable and font paths."""
         self.settings = settings
+        if self.opted_out():
+            logging.getLogger("uvicorn.error").warning(
+                "IMV_ALLOW_UNSANDBOXED_WORKER is on: generated code runs without isolation; for development only."
+            )
+
+    def opted_out(self) -> bool:
+        """True only on macOS with the explicit development opt-in; every other system always isolates."""
+        return self.settings.allow_unsandboxed_worker and sys.platform == "darwin"
+
+    def unsandboxed(self, worker: str) -> bool:
+        """Whether this worker runs as plain Node: opted out, and one of the generation-flow workers."""
+        return self.opted_out() and worker in UNSANDBOXED_WORKERS
 
     def worker_browser_path(self) -> str:
         """Return the browser path visible to the Linux sandbox worker."""
         return str(self.settings.browser_executable.resolve())
 
-    def worker_environment(self, directory: Path) -> dict[str, str]:
-        """Expose only a fixed executable search path to an isolated worker."""
-        return {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+    def sandbox_problem(self) -> str | None:
+        """Say why the isolated worker cannot start on this host, or None when it can.
+
+        The sandbox is bubblewrap on Linux with prlimit and Node, so a missing piece is reported
+        before a task is accepted instead of surfacing later as a failed tool call.
+        """
+        if self.opted_out():
+            return None if shutil.which("node") else "node is not installed"
+        if sys.platform != "linux":
+            hint = "; set IMV_ALLOW_UNSANDBOXED_WORKER=true for local development" if sys.platform == "darwin" else ""
+            return f"the isolated validator runs only on Linux, this host is {sys.platform}{hint}"
+        for tool in ("bwrap", "prlimit", "node"):
+            if shutil.which(tool) is None:
+                return f"{tool} is not installed"
+        return None
+
+    def worker_environment(self, directory: Path, worker: str = "worker.mjs") -> dict[str, str]:
+        """Expose only a fixed executable search path to an isolated worker.
+
+        Without the sandbox there is no ``/work`` or ``/renderer`` mount, so the worker is told where they are.
+        """
+        environment = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+        if self.unsandboxed(worker):
+            environment.update(
+                HOME=str(directory.resolve()),
+                IMV_WORK_ROOT=str(directory.resolve()),
+                IMV_RENDERER_ROOT=str(self.settings.renderer_dir.resolve()),
+            )
+        return environment
 
     def verify_environment(self, report: ValidationReport) -> None:
         """Reject evidence if managed code, dependencies, fonts or executables changed since rendering."""
@@ -146,6 +188,8 @@ class Renderer:
             raise ValueError("Unknown isolated renderer worker")
         settings = self.settings
         node = Path(shutil.which("node") or "/usr/bin/node").resolve()
+        if self.unsandboxed(worker):
+            return [str(node), "--max-old-space-size=2048", str(settings.renderer_dir.resolve() / worker)]
         command = [
             "bwrap",
             "--unshare-all",
@@ -240,7 +284,7 @@ class Renderer:
                     stderr=log,
                     cwd=directory,
                     start_new_session=True,
-                    env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+                    env=self.worker_environment(directory, worker),
                 )
                 try:
                     async with asyncio.timeout(timeout):

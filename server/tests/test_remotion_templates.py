@@ -408,3 +408,163 @@ def test_local_fallback_preset_stays_readable_after_database_recovers(tmp_path):
     store._engine = lambda: RecoveredEngine()
     assert [item.preset_id for item in store.read_presets()] == ["fallback-1"]
     assert store.find_preset("fallback-1").description == "兜底预设"
+
+
+def test_missing_sandbox_is_a_validation_error_not_a_store_failure(tmp_path):
+    """worker 因缺少 bwrap 无法启动时，preset.create 返回 VALIDATION_UNAVAILABLE 且不落库。
+
+    修复前 ValidationUnavailable 落入 preset_create 的兜底分支，被报成
+    PRESET_STORE_FAILED，用户只看到“预设保存失败”，看不出是校验环境缺失。
+    """
+    class MissingSandboxRenderer:
+        """复现 macOS：启动 worker 时 create_subprocess_exec 找不到 bwrap。"""
+
+        def worker_browser_path(self):
+            """单元测试不启动浏览器，只返回一个固定路径。"""
+            return "/usr/bin/chromium"
+
+        async def run_worker(self, directory, *, worker, timeout_seconds=None):
+            """与真实 Renderer.run_worker 相同的异常。"""
+            raise FileNotFoundError(2, "No such file or directory", "bwrap")
+
+    class RecordingCatalog:
+        """记录入库调用，断言校验不可用时没有写入。"""
+
+        def __init__(self):
+            """保存本次用例实际入库的记录。"""
+            self.records: list[PresetRecord] = []
+
+        def append_preset(self, record):
+            """返回本地后端标记，避免测试连接数据库。"""
+            self.records.append(record)
+            return "local"
+
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    catalog = RecordingCatalog()
+    current = ToolSession(
+        SimpleNamespace(settings=settings, renderer=MissingSandboxRenderer()),
+        None, None, Budget(), tmp_path / "run", [], lambda *_: None, {},
+    )
+    current.catalog = catalog
+    with pytest.raises(ToolFault) as failure:
+        asyncio.run(current.execute("preset.create", draft(), available()))
+    assert failure.value.error.code == "VALIDATION_UNAVAILABLE"
+    assert "bwrap" in failure.value.error.message
+    assert catalog.records == []
+
+
+@pytest.mark.parametrize(
+    ("platform", "present", "expected"),
+    [
+        ("darwin", {"bwrap", "prlimit", "node"}, "darwin"),
+        ("linux", {"prlimit", "node"}, "bwrap"),
+        ("linux", {"bwrap", "node"}, "prlimit"),
+        ("linux", {"bwrap", "prlimit"}, "node"),
+        ("linux", {"bwrap", "prlimit", "node"}, None),
+    ],
+)
+def test_sandbox_problem_names_the_unsupported_piece(monkeypatch, tmp_path, platform, present, expected):
+    """非 Linux 先报平台；Linux 逐项报缺少的工具；全部具备时返回 None，保持原流程。"""
+    from server.remotion_templates import renderer as renderer_module
+
+    monkeypatch.setattr(renderer_module.sys, "platform", platform)
+    monkeypatch.setattr(renderer_module.shutil, "which", lambda name: f"/usr/bin/{name}" if name in present else None)
+    problem = renderer_module.Renderer(Settings(_env_file=None, data_dir=tmp_path)).sandbox_problem()
+    assert (problem is None) if expected is None else (expected in problem)
+
+
+def test_validation_unavailable_public_message_is_generic():
+    """同一错误码也覆盖 worker 报告无效、超时等原因，公开文案不指向某个具体缺失，也不暴露异常原文。"""
+    from server.remotion_templates.progress import RoundCall
+
+    call = RoundCall(tool="preset.create", status="fail", error_code="VALIDATION_UNAVAILABLE", message="[Errno 2] 'bwrap'")
+    assert call.error_code == "VALIDATION_UNAVAILABLE"
+    assert "校验环境" in call.message and "Linux" not in call.message and "bubblewrap" not in call.message
+    assert "Errno" not in call.message
+
+
+def test_macos_sandbox_problem_mentions_the_development_switch(monkeypatch, tmp_path):
+    """macOS 未开启免沙箱时，原因里直接给出可用的开发开关；其他系统不提这个开关。"""
+    from server.remotion_templates import renderer as renderer_module
+
+    renderer = renderer_module.Renderer(Settings(_env_file=None, data_dir=tmp_path))
+    for platform, mentioned in (("darwin", True), ("win32", False)):
+        monkeypatch.setattr(renderer_module.sys, "platform", platform)
+        assert ("IMV_ALLOW_UNSANDBOXED_WORKER" in renderer.sandbox_problem()) is mentioned
+
+
+@pytest.mark.parametrize(
+    ("platform", "allowed", "isolated"),
+    [("darwin", True, False), ("darwin", False, True), ("linux", True, True), ("win32", True, True)],
+)
+def test_unsandboxed_worker_is_macos_development_opt_in_only(monkeypatch, tmp_path, platform, allowed, isolated):
+    """只有 macOS 且显式开启时生成流程的 worker 才以普通 Node 运行；其他系统即使开启也保持沙箱。"""
+    from server.remotion_templates import renderer as renderer_module
+
+    monkeypatch.setattr(renderer_module.sys, "platform", platform)
+    monkeypatch.setattr(renderer_module.shutil, "which", lambda name: f"/usr/bin/{name}")
+    settings = Settings(_env_file=None, data_dir=tmp_path, allow_unsandboxed_worker=allowed)
+    renderer = renderer_module.Renderer(settings)
+    for worker in renderer_module.UNSANDBOXED_WORKERS:
+        command = renderer.command(tmp_path, worker=worker)
+        environment = renderer.worker_environment(tmp_path, worker)
+        if isolated:
+            assert command[0] == "bwrap" and "IMV_WORK_ROOT" not in environment
+        else:
+            assert renderer.sandbox_problem() is None
+            assert "bwrap" not in command and command[-1].endswith(worker)
+            assert environment["IMV_WORK_ROOT"] == str(tmp_path.resolve())
+            assert environment["IMV_RENDERER_ROOT"] == str(settings.renderer_dir.resolve())
+            assert set(environment) == {"PATH", "HOME", "IMV_WORK_ROOT", "IMV_RENDERER_ROOT"}
+
+
+def test_overlay_worker_keeps_the_sandbox_even_when_opted_out(monkeypatch, tmp_path):
+    """叠加渲染（含重启后恢复任务）不在免沙箱名单内：即使开启开关，仍走 bwrap，环境变量也不放开路径。"""
+    from server.remotion_templates import renderer as renderer_module
+
+    monkeypatch.setattr(renderer_module.sys, "platform", "darwin")
+    monkeypatch.setattr(renderer_module.shutil, "which", lambda name: f"/usr/bin/{name}")
+    renderer = renderer_module.Renderer(Settings(_env_file=None, data_dir=tmp_path, allow_unsandboxed_worker=True))
+    assert "overlay-worker.mjs" not in renderer_module.UNSANDBOXED_WORKERS
+    assert renderer.command(tmp_path, worker="overlay-worker.mjs")[0] == "bwrap"
+    assert "IMV_WORK_ROOT" not in renderer.worker_environment(tmp_path, "overlay-worker.mjs")
+
+
+def test_unsandboxed_macos_still_requires_node(monkeypatch, tmp_path):
+    """免沙箱模式仍要求 Node；缺失时给出明确原因而不是启动失败。"""
+    from server.remotion_templates import renderer as renderer_module
+
+    monkeypatch.setattr(renderer_module.sys, "platform", "darwin")
+    monkeypatch.setattr(renderer_module.shutil, "which", lambda name: None)
+    renderer = renderer_module.Renderer(Settings(_env_file=None, data_dir=tmp_path, allow_unsandboxed_worker=True))
+    assert renderer.sandbox_problem() == "node is not installed"
+
+
+@pytest.mark.parametrize("name", ["preset.create", "sprite.create"])
+def test_creation_tools_declare_validation_unavailable(name):
+    """会启动校验器的两个创建工具在契约里声明 VALIDATION_UNAVAILABLE，tools.inspect 与实际行为一致。"""
+    from server.remotion_templates.tools.registry import get_tool
+
+    assert "VALIDATION_UNAVAILABLE" in get_tool(name).describe()["error_codes"]
+
+
+def test_session_stays_importable_without_the_validation_module(monkeypatch, tmp_path):
+    """部署可裁剪校验模块：session 仍可导入，构造时降级为无校验器，校验返回 VALIDATION_UNAVAILABLE。
+
+    修复前 session 在模块顶层导入 tool_validation，模块缺失时导入阶段就失败，降级路径不可达。
+    """
+    import importlib
+    import sys
+
+    monkeypatch.setitem(sys.modules, "server.remotion_templates.tool_validation", None)
+    monkeypatch.delitem(sys.modules, "server.remotion_templates.tools.session")
+    module = importlib.import_module("server.remotion_templates.tools.session")
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    current = module.ToolSession(
+        SimpleNamespace(settings=settings, renderer=None), None, None, Budget(), tmp_path / "run", [], lambda *_: None, {},
+    )
+    assert current.validator is None
+    component = ComponentDefinition(**draft().model_dump(include={"code", "parameter_schema", "default_parameters"}))
+    with pytest.raises(module.ToolFault) as failure:
+        asyncio.run(current.validate_code(component))
+    assert failure.value.error.code == "VALIDATION_UNAVAILABLE"

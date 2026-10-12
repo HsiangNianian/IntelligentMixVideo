@@ -191,13 +191,24 @@ class ToolSession:
             return CodeValidationReport(passed=False, diagnostics=diagnostics)
         if self.validator is None:
             raise ToolFault("VALIDATION_UNAVAILABLE", "The isolated TypeScript validator is unavailable.")
-        return await self.validator.validate_code(component)
+        # Imported here: a deployment may drop the validation module, which leaves self.validator None.
+        from ..tool_validation import ValidationUnavailable
+
+        try:
+            return await self.validator.validate_code(component)
+        except ValidationUnavailable as exc:
+            raise ToolFault("VALIDATION_UNAVAILABLE", f"The isolated TypeScript validator is unavailable: {exc}"[:3000]) from exc
 
     async def validate_render(self, request: RenderValidationInput) -> RenderValidationReport:
         """Run the isolated component behavior runner and cache the exact report."""
         if self.validator is None:
             raise ToolFault("VALIDATION_UNAVAILABLE", "The isolated behavior validator is unavailable.")
-        report = await self.validator.validate_render(request)
+        from ..tool_validation import ValidationUnavailable
+
+        try:
+            report = await self.validator.validate_render(request)
+        except ValidationUnavailable as exc:
+            raise ToolFault("VALIDATION_UNAVAILABLE", f"The isolated behavior validator is unavailable: {exc}"[:3000]) from exc
         parameters = merge_parameters(request.component.default_parameters, request.parameters)
         try:
             validate_parameters(request.component.parameter_schema, parameters)

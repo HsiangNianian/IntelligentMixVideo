@@ -40,6 +40,7 @@ def history_app(history_store):
             vision_model="offline",
         ),
         notify=lambda *args: None,
+        sandbox_problem=lambda: None,
     )
     return app
 
@@ -644,3 +645,45 @@ def test_mounted_stream_allows_replay_header(client, origin):
         ).status_code
         == 400
     )
+
+
+MISSING_SANDBOX = "the isolated validator runs only on Linux, this host is darwin"
+
+
+def test_creation_is_refused_before_queueing_when_the_sandbox_is_missing(history_app, history_store):
+    """宿主无法启动隔离校验器（如 macOS）时，创建作品返回 503 并给出原因，不留下作品或任务。"""
+    history_app.state.runtime.sandbox_problem = lambda: MISSING_SANDBOX
+    with TestClient(history_app) as client:
+        response = client.post("/works", json={"description": "标题"})
+        assert response.status_code == 503
+        assert "darwin" in response.json()["detail"] and "Linux" in response.json()["detail"]
+    with history_store.connection() as db:
+        for table in ("projects", "jobs", "chat_messages"):
+            assert db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+
+
+def test_parameter_work_is_refused_but_conversation_is_not(history_app, history_store, monkeypatch):
+    """参数补丁与参数任务的重试必然渲染，缺环境时返回 503；提问、澄清回复、文字修改、普通重试不需要校验器，仍交给服务层。
+
+    修复前 messages 无条件预检，macOS 上用户连普通问答和 needs_input 回复都被 503 拒绝。
+    """
+    runtime = history_app.state.runtime
+    with TestClient(history_app) as client:
+        work_id = client.post("/works", json={"description": "标题"}).json()["work"]["id"]
+        job = history_store.latest_job(work_id)
+        reached = []
+        runtime.message = lambda *args: reached.append("message") or job
+        runtime.retry = lambda *args, **kwargs: reached.append("retry") or job
+        runtime.sandbox_problem = lambda: MISSING_SANDBOX
+
+        patch = client.post(f"/works/{work_id}/messages", json={"parameters": {"size": 80}})
+        assert patch.status_code == 503 and "darwin" in patch.json()["detail"]
+        for body in ({"instruction": "这个模板能做什么？"}, {"instruction": "改大"},
+                     {"instruction": "白色", "reply_to_job_id": str(job.id)}):
+            assert client.post(f"/works/{work_id}/messages", json=body).status_code == 202
+        assert reached == ["message"] * 3
+
+        assert client.post(f"/jobs/{job.id}/retry").status_code == 202
+        monkeypatch.setattr(history_store, "inputs", lambda _id: JobInput(mode="parameters", parameters={"size": 80}))
+        assert client.post(f"/jobs/{job.id}/retry").status_code == 503
+        assert reached == ["message"] * 3 + ["retry"]
