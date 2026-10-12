@@ -81,6 +81,20 @@ def require_sandbox(service: Runtime) -> None:
         raise HTTPException(503, f"校验环境不可用：{problem}")
 
 
+def parameters_need_sandbox(service: Runtime, base_id: UUID | None, work_id: UUID | None = None) -> bool:
+    """Whether a parameter patch on this base renders in the sandbox; PR76 versions are revised instantly.
+
+    Without an explicit base the work's current version is the base. A missing work or version needs the sandbox
+    check here and is then reported by the edit itself.
+    """
+    try:
+        if base_id is None and work_id is not None:
+            base_id = service.store.project(work_id).current_version_id
+        return base_id is None or service.store.version(base_id).spec.schema_version != "2"
+    except (NotFound, ValueError):
+        return True
+
+
 def client_config(value: Annotated[str | None, Header(alias="X-Remotion-Config")] = None) -> ClientSettings | None:
     """模型配置只来自当前请求头，不进入作品、聊天或任务输入持久化。"""
     return parse_config(value, ClientSettings)
@@ -201,13 +215,14 @@ async def edit(work_id: UUID, request: TaskMessage, service: Service, config: Co
 
     默认基于当前成功版本，也可用 `base_version_id` 指定历史成功版本。
     回答问题时用 instruction 提交答案，并用 reply_to_job_id 绑定提出问题的任务。
-    参数修改保留 TSX，经参数合法性与渲染可用性检查后保存，不调用 Actor 或 Judge。
+    参数修改保留 TSX：组合版本（PR76）只做参数 Schema 校验并立即封存新默认值，不进入任务队列、不启动沙箱、不重新打包；
+    更早的版本仍经渲染检查后保存。都不调用 Actor 或 Judge。
     手动修订成为后续自然语言修改的基线；问题已过期或已有运行任务时返回 409。
-    参数修改在入队前检查校验环境，缺失时返回 503；提问、澄清回复与自然语言修改不需要校验器即可回答，不受此限制。
+    更早版本的参数修改在入队前检查校验环境，缺失时返回 503；提问、澄清回复与自然语言修改不需要校验器即可回答，不受此限制。
     纯问答或明确保持现状时返回 answered 终态，回答通过 message 和会话历史提供，不产生新版本。
     尚无成功版本的会话也可继续提问或描述生成需求；参数修改仍须已有成功版本。
     """
-    if request.parameters is not None:
+    if request.parameters is not None and parameters_need_sandbox(service, request.base_version_id, work_id):
         require_sandbox(service)
     try:
         return PublicJob.from_job(service.message(work_id, request, config))
@@ -307,9 +322,9 @@ async def retry(job_id: UUID, service: Service, config: Config) -> PublicJob:
     """为失败、已取消或中断的任务创建一次新的执行，返回新的任务 ID。
 
     保留原任务记录及产物，不从中断位置续跑；不符合重试条件时返回 409。
-    参数修订任务的重试需要渲染校验环境，缺失时返回 503；对话类任务仍可重试，环境问题在校验工具调用时报告。
+    更早版本的参数修订任务重试需要渲染校验环境，缺失时返回 503；组合版本的参数修订与对话类任务仍可重试，环境问题在校验工具调用时报告。
     """
-    if service.store.inputs(job_id).mode == "parameters":
+    if service.store.inputs(job_id).mode == "parameters" and parameters_need_sandbox(service, service.store.job(job_id).base_version_id):
         require_sandbox(service)
     return PublicJob.from_job(service.retry(job_id, config=config))
 
@@ -446,7 +461,8 @@ def preview(version_id: UUID, service: Service) -> HTMLResponse:
     父页面以 iframe 加载，使用 URL fragment 作为消息通道标识；只交换参数、背景链接及就绪通知。
     """
     script = artifact_path(service, version_id, "interactive.js").read_text()
-    return player_page(script)
+    # A parameter revision reuses its base's bundle, so the page supplies this version's own defaults.
+    return player_page(script, host={"config": service.store.version(version_id).candidate.default_config})
 
 
 @router.get(

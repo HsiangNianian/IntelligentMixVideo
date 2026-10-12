@@ -1,10 +1,15 @@
 """Build sealed PR76 code/Player artifacts; successful tool checks are never replaced by a model verdict."""
 
 import json
+import shutil
+import subprocess
 from pathlib import Path
 
 from .evidence import digest, seal_artifacts, verify_artifacts
-from .models import Check, CompositionConfig, TemplateCandidate, TemplateSpec, ValidationReport, validation_fingerprint
+from .models import (
+    Check, CompositionConfig, TemplateCandidate, TemplateSpec, TemplateVersion, ValidationReport, validation_fingerprint,
+)
+from .parameters import patch_parameters
 from .tools.contracts import RenderValidationReport, SpriteDraft
 
 
@@ -59,4 +64,46 @@ class PresentationBuilder:
         ])
         seal_artifacts(candidate, spec, report, directory)
         verify_artifacts(candidate, spec, report, directory)
+        return candidate, spec, report, directory
+
+    def revise(self, base: TemplateVersion, accepted: Path, patch: dict, directory: Path):
+        """Seal a parameter revision of an accepted PR76 version at once, without the sandbox or a new bundle.
+
+        The code is unchanged and the new defaults satisfy the parameter schema, so the player bundle and the
+        runtime evidence are reused: the player reads its defaults from the page, and the publish-time boundary
+        samples render any value inside the schema. Only the standalone export, which embeds the defaults, is
+        regenerated, by parsing and formatting the sealed source on the host.
+        """
+        verify_artifacts(base.candidate, base.spec, base.validation, accepted)
+        candidate, spec = patch_parameters(base.candidate, base.spec, patch)
+        directory.mkdir(parents=True, exist_ok=False)
+        for name in ("Template.tsx", "interactive.js"):
+            shutil.copyfile(accepted / name, directory / name)
+        script = self.renderer.settings.renderer_dir / "export.mjs"
+        try:
+            process = subprocess.run(
+                ["node", str(script)],
+                input=json.dumps({"code": candidate.tsx_code, "config": candidate.default_config, "composition": spec.composition.model_dump()}, ensure_ascii=False),
+                text=True, capture_output=True, timeout=60, check=True, cwd=script.parent,
+            )
+            exported = json.loads(process.stdout)["code"]
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError) as exc:
+            raise ValueError("Standalone export could not be regenerated") from exc
+        (directory / "Export.tsx").write_text(exported, encoding="utf-8")
+        (directory / "candidate.json").write_text(candidate.model_dump_json(), encoding="utf-8")
+        (directory / "spec.json").write_text(spec.model_dump_json(), encoding="utf-8")
+        inherited = json.loads((accepted / "tool-validation.json").read_text())
+        (directory / "tool-validation.json").write_text(json.dumps({
+            "component": {"code": candidate.tsx_code, "parameter_schema": candidate.config_schema, "default_parameters": candidate.default_config},
+            "report": inherited["report"],
+            "inherited_from": str(base.id),
+        }, ensure_ascii=False), encoding="utf-8")
+        runtime = base.validation.runtime
+        report = ValidationReport(profile="v2", fingerprint=validation_fingerprint(candidate, spec, runtime), runtime=runtime, checks=[
+            Check(name="code_validation", status="pass", detail=f"Code unchanged from version {base.number}; new defaults checked against the parameter schema."),
+            Check(name="runtime_validation", status="pass", detail="Runtime checks inherited from the base version; publishing renders boundary samples of the parameters."),
+            Check(name="export_source", status="pass", detail="Standalone export regenerated with the new defaults."),
+            Check(name="presentation_bundle", status="pass", detail="Player bundle reused; the preview page supplies the new defaults."),
+        ])
+        seal_artifacts(candidate, spec, report, directory)
         return candidate, spec, report, directory

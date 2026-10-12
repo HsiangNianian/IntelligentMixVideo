@@ -87,10 +87,17 @@ IMV_TEST_RENDERER=1 uv run --locked --project server pytest server/tests/test_re
 ```
 
 The browser path requires Chromium, Noto CJK fonts, bubblewrap and util-linux.
-The isolation is Linux-only: `POST /works`, a parameter patch sent to
-`POST /works/{id}/messages` and the retry of a parameter job return 503 naming the
-unsupported platform or the missing `bwrap`, `prlimit` or `node` before anything is
-queued, so on macOS the service starts but cannot generate templates. Questions,
+The isolation is Linux-only: `POST /works`, a parameter patch on a pre-composition
+(PR74) version sent to `POST /works/{id}/messages`, the retry of such a parameter job and
+`POST /api/sprites/publish` return 503 naming the unsupported platform or the missing
+`bwrap`, `prlimit` or `node` before anything is queued, so on macOS the service starts but
+cannot generate templates. A parameter patch on a composed (PR76) version never needs the
+sandbox: `Runtime` records the job as running outside the FIFO queue and
+`PresentationBuilder.revise` checks the patch against the parameter schema, reuses the
+base's `Template.tsx`, player bundle and runtime evidence (`tool-validation.json` names the
+base in `inherited_from`), regenerates `Export.tsx` with the host-side `export.mjs` (parse
+and format only) and seals a `user_parameters` version at once; the version preview page
+injects that version's own defaults, and publishing later renders the boundary samples. Questions,
 clarification replies, free-text edits and other retries are not refused up front,
 because the model may answer without a validator; if it does need one, the tool call
 returns `VALIDATION_UNAVAILABLE`.

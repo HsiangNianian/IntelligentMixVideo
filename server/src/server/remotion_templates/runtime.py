@@ -7,7 +7,7 @@ import sqlite3
 from contextlib import suppress
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from .deletion import finish as finish_deletion
 from .settings import ClientSettings, Settings
@@ -36,6 +36,8 @@ class Runtime:
         self.active_id: UUID | None = None
         self.active_done: asyncio.Event | None = None
         self.deletions: dict[UUID, asyncio.Task] = {}
+        # Instant parameter revisions in flight, by job; they never enter the FIFO queue.
+        self.saves: dict[UUID, asyncio.Task] = {}
         self.lock = None
         self.client_configs: dict[UUID, Settings] = {}
         self.diagnostics_lock = asyncio.Lock()
@@ -92,17 +94,41 @@ class Runtime:
             raise Conflict("base version belongs to another work")
         if request.parameters is not None:
             patch_parameters(base.candidate, base.spec, request.parameters)
-        job = self.store.enqueue(
-            project_id,
-            JobInput(
-                mode="parameters" if request.parameters is not None else "edit",
-                instruction=request.instruction,
-                parameters=request.parameters,
-            ),
-            base_id,
+        inputs = JobInput(
+            mode="parameters" if request.parameters is not None else "edit",
+            instruction=request.instruction,
+            parameters=request.parameters,
         )
+        return self._start(project_id, inputs, base, config)
+
+    def _start(self, project_id: UUID, inputs: JobInput, base, config: ClientSettings | None, message_text: str | None = None):
+        """Queue a job for the worker, or save a PR76 parameter revision at once outside the FIFO queue.
+
+        A parameter revision of a PR76 version only re-checks the schema and seals new defaults, so it must not
+        wait behind another work's generation; it is recorded as running so the one-active-job rule still holds.
+        """
+        if inputs.mode == "parameters" and base is not None and base.spec.schema_version == "2":
+            job = self.store.enqueue(project_id, inputs, base.id, message_text=message_text, running=True)
+            task = asyncio.create_task(self._save_parameters(job.id, base, inputs.parameters))
+            self.saves[job.id] = task
+            task.add_done_callback(lambda _done: self.saves.pop(job.id, None))
+            return job
+        job = self.store.enqueue(project_id, inputs, base.id if base else None, message_text=message_text)
         self.notify(job.id, config)
         return job
+
+    async def _save_parameters(self, job_id: UUID, base, patch: dict) -> None:
+        """Seal the revision off the event loop and publish it; failures are recorded on the job, never raised."""
+        try:
+            directory = self.store.job_dir(job_id) / f"parameters-{uuid4().hex}"
+            accepted = self.store.root / "accepted" / str(base.id)
+            result = await asyncio.to_thread(self.harness.presentation.revise, base, accepted, patch, directory)
+            await asyncio.to_thread(self.store.publish, job_id, *result)
+        except Exception as exc:
+            logger.exception("Remotion parameter revision %s failed", job_id)
+            self.store.update(job_id, status="failed", stage="finished", error=JobError(
+                code="execution_failed", message=str(exc)[:1000] or "Parameter revision failed.",
+            ))
 
     def message(self, project_id: UUID, request: TaskMessage, config: ClientSettings | None = None):
         """Route conversation input to generation, accepted-base edits, or outstanding questions."""
@@ -154,14 +180,11 @@ class Runtime:
                     {"questions": job.questions, "answer": answer}, ensure_ascii=False
                 )
             ]
-        result = self.store.enqueue(
-            job.project_id,
-            inputs,
-            job.base_version_id,
+        base = self.store.version(job.base_version_id) if job.base_version_id else None
+        return self._start(
+            job.project_id, inputs, base, config,
             message_text=answer if answer is not None else "重试本次制作。",
         )
-        self.notify(result.id, config)
-        return result
 
     async def code_report(
         self, component: ComponentDefinition, *, export_code: str
@@ -212,6 +235,10 @@ class Runtime:
         jobs = self.store.begin_deletion(work_id)
         for job_id in jobs:
             self.client_configs.pop(job_id, None)
+            if (save := self.saves.get(job_id)) is not None:
+                # The job is cancelled already, so the revision cannot publish; let it finish writing its files.
+                with suppress(asyncio.CancelledError):
+                    await asyncio.shield(save)
         if self.active_id in jobs and self.active:
             active, done = self.active, self.active_done
             if not active.cancelling():
