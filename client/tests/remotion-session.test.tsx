@@ -331,3 +331,35 @@ test("连续修改、撤销与卸载均不自动保存", async () => {
     ),
   ).toHaveLength(0);
 });
+
+// 服务端在入队前以 503 说明原因（如缺少 Linux 沙箱）时，界面显示该原因，且不提示检查历史会话。
+test("创建被 503 拒绝时显示服务端原因而非通用提示", async () => {
+  const reason = "校验环境不可用：the isolated validator runs only on Linux, this host is darwin。";
+  remotionServer((path, options) =>
+    options?.method === "POST" && path.endsWith("/works")
+      ? Response.json({ detail: reason }, { status: 503 })
+      : undefined,
+  );
+  const { result } = renderHook(() => useTemplateSession(() => {}));
+  act(() => result.current.send("新的标题"));
+  await waitFor(() => expect(result.current.error).toBe(reason));
+  expect(result.current.busy).toBeNull();
+  expect(result.current.error).not.toContain("历史会话");
+});
+
+// 没有可用文本 detail 的 503 仍显示通用就绪提示；入队前被拒绝，同样不提示检查历史会话。
+test.each([null, { detail: ["not", "text"] }, { detail: "" }])(
+  "缺少文本 detail 的 503 回退到通用提示：%j",
+  async (body) => {
+    remotionServer((path, options) =>
+      options?.method === "POST" && path.endsWith("/works")
+        ? body === null
+          ? new Response(null, { status: 503 })
+          : Response.json(body, { status: 503 })
+        : undefined,
+    );
+    const { result } = renderHook(() => useTemplateSession(() => {}));
+    act(() => result.current.send("新的标题"));
+    await waitFor(() => expect(result.current.error).toBe("服务尚未就绪，请检查服务端配置。"));
+  },
+);

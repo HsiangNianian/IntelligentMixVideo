@@ -27,6 +27,17 @@ export class ApiError extends Error {
   }
 }
 
+/** 503 的 detail 是服务端自己编写的就绪原因（缺沙箱、未配置模型等）；缺失或不是文本时回退到通用提示。 */
+async function serviceDetail(response: Response): Promise<string | null> {
+  try {
+    const body: unknown = await response.json();
+    const detail = (body as { detail?: unknown } | null)?.detail;
+    return typeof detail === "string" && detail.trim() ? detail : null;
+  } catch {
+    return null;
+  }
+}
+
 /** 读取 JSON 或代码文本；中断与网络失败保留由调用方维护的草稿。 */
 async function request<T>(
   path: string,
@@ -51,17 +62,19 @@ async function request<T>(
       },
     });
     if (!response.ok) {
+      const detail = response.status === 503 ? await serviceDetail(response) : null;
       throw new ApiError(
         response.status,
-        response.status === 409
-          ? "当前任务状态已变化，请刷新任务后重试。"
-          : response.status === 413
-            ? "图片超过 10 MiB，请选择较小的图片。"
-            : response.status === 422
-              ? "输入未通过校验，请检查文字、图片或参数。"
-              : response.status === 503
-                ? "服务尚未就绪，请检查服务端配置。"
-                : `请求未完成（${response.status}），请重试。`,
+        detail ??
+          (response.status === 409
+            ? "当前任务状态已变化，请刷新任务后重试。"
+            : response.status === 413
+              ? "图片超过 10 MiB，请选择较小的图片。"
+              : response.status === 422
+                ? "输入未通过校验，请检查文字、图片或参数。"
+                : response.status === 503
+                  ? "服务尚未就绪，请检查服务端配置。"
+                  : `请求未完成（${response.status}），请重试。`),
       );
     }
     if (response.status === 204) return undefined as T;
