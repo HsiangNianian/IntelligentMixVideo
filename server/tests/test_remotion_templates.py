@@ -487,23 +487,36 @@ def test_validation_unavailable_has_an_actionable_public_message():
     [("darwin", True, False), ("darwin", False, True), ("linux", True, True), ("win32", True, True)],
 )
 def test_unsandboxed_worker_is_macos_development_opt_in_only(monkeypatch, tmp_path, platform, allowed, isolated):
-    """只有 macOS 且显式开启时 worker 才以普通 Node 运行；其他系统即使开启也保持沙箱。"""
+    """只有 macOS 且显式开启时生成流程的 worker 才以普通 Node 运行；其他系统即使开启也保持沙箱。"""
     from server.remotion_templates import renderer as renderer_module
 
     monkeypatch.setattr(renderer_module.sys, "platform", platform)
     monkeypatch.setattr(renderer_module.shutil, "which", lambda name: f"/usr/bin/{name}")
     settings = Settings(_env_file=None, data_dir=tmp_path, allow_unsandboxed_worker=allowed)
     renderer = renderer_module.Renderer(settings)
-    command = renderer.command(tmp_path, worker="tool-validation-worker.mjs")
-    environment = renderer.worker_environment(tmp_path)
-    if isolated:
-        assert command[0] == "bwrap" and "IMV_WORK_ROOT" not in environment
-    else:
-        assert renderer.sandbox_problem() is None
-        assert "bwrap" not in command and command[-1].endswith("tool-validation-worker.mjs")
-        assert environment["IMV_WORK_ROOT"] == str(tmp_path.resolve())
-        assert environment["IMV_RENDERER_ROOT"] == str(settings.renderer_dir.resolve())
-        assert set(environment) == {"PATH", "HOME", "IMV_WORK_ROOT", "IMV_RENDERER_ROOT"}
+    for worker in renderer_module.UNSANDBOXED_WORKERS:
+        command = renderer.command(tmp_path, worker=worker)
+        environment = renderer.worker_environment(tmp_path, worker)
+        if isolated:
+            assert command[0] == "bwrap" and "IMV_WORK_ROOT" not in environment
+        else:
+            assert renderer.sandbox_problem() is None
+            assert "bwrap" not in command and command[-1].endswith(worker)
+            assert environment["IMV_WORK_ROOT"] == str(tmp_path.resolve())
+            assert environment["IMV_RENDERER_ROOT"] == str(settings.renderer_dir.resolve())
+            assert set(environment) == {"PATH", "HOME", "IMV_WORK_ROOT", "IMV_RENDERER_ROOT"}
+
+
+def test_overlay_worker_keeps_the_sandbox_even_when_opted_out(monkeypatch, tmp_path):
+    """叠加渲染（含重启后恢复任务）不在免沙箱名单内：即使开启开关，仍走 bwrap，环境变量也不放开路径。"""
+    from server.remotion_templates import renderer as renderer_module
+
+    monkeypatch.setattr(renderer_module.sys, "platform", "darwin")
+    monkeypatch.setattr(renderer_module.shutil, "which", lambda name: f"/usr/bin/{name}")
+    renderer = renderer_module.Renderer(Settings(_env_file=None, data_dir=tmp_path, allow_unsandboxed_worker=True))
+    assert "overlay-worker.mjs" not in renderer_module.UNSANDBOXED_WORKERS
+    assert renderer.command(tmp_path, worker="overlay-worker.mjs")[0] == "bwrap"
+    assert "IMV_WORK_ROOT" not in renderer.worker_environment(tmp_path, "overlay-worker.mjs")
 
 
 def test_unsandboxed_macos_still_requires_node(monkeypatch, tmp_path):

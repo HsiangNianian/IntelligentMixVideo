@@ -83,10 +83,13 @@ clarification replies, free-text edits and other retries are not refused up fron
 because the model may answer without a validator; if it does need one, the tool call
 returns `VALIDATION_UNAVAILABLE`.
 For local development on macOS only, `IMV_ALLOW_UNSANDBOXED_WORKER=true` runs the
-workers as plain Node instead (only `node` is required): generated code then runs
-with no isolation and a warning is logged at startup. The switch is off by default
-and ignored on every other system, so Linux and deployed servers always use the
-sandbox. Overlay rendering still needs the Linux sandbox and returns 503.
+generation workers (`tool-validation-worker.mjs`, `presentation-worker.mjs` and
+`worker.mjs`) as plain Node instead, and only `node` is required: generated code then
+runs with no isolation and a warning is logged at startup. The switch is off by
+default and ignored on every other system, so Linux and deployed servers always use
+the sandbox. `overlay-worker.mjs` is not on that list: overlay rendering, including
+the recovery of pending overlay tasks after a restart, always needs the Linux
+sandbox and returns 503 at acceptance.
 Offline tests cover tool registration, deferred-tool behaviour, immutable
 storage and source consistency without a model or semantic index.
 

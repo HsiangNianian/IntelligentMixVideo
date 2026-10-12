@@ -25,6 +25,8 @@ from .probes import parameter_probes, pixel_checks, preview_values
 
 # Per-process CPU-time cap (seconds) of the sandbox; short workers keep it, long ones pass their own.
 CPU_SECONDS = 300
+# Workers a macOS development host may run as plain Node; overlay rendering always keeps the sandbox.
+UNSANDBOXED_WORKERS = {"worker.mjs", "tool-validation-worker.mjs", "presentation-worker.mjs"}
 
 
 def keyframes(spec: TemplateSpec) -> list[int]:
@@ -59,14 +61,18 @@ class Renderer:
     def __init__(self, settings: Settings) -> None:
         """Use only server-owned executable and font paths."""
         self.settings = settings
-        if self.unsandboxed():
+        if self.opted_out():
             logging.getLogger("uvicorn.error").warning(
                 "IMV_ALLOW_UNSANDBOXED_WORKER is on: generated code runs without isolation; for development only."
             )
 
-    def unsandboxed(self) -> bool:
+    def opted_out(self) -> bool:
         """True only on macOS with the explicit development opt-in; every other system always isolates."""
         return self.settings.allow_unsandboxed_worker and sys.platform == "darwin"
+
+    def unsandboxed(self, worker: str) -> bool:
+        """Whether this worker runs as plain Node: opted out, and one of the generation-flow workers."""
+        return self.opted_out() and worker in UNSANDBOXED_WORKERS
 
     def worker_browser_path(self) -> str:
         """Return the browser path visible to the Linux sandbox worker."""
@@ -78,7 +84,7 @@ class Renderer:
         The sandbox is bubblewrap on Linux with prlimit and Node, so a missing piece is reported
         before a task is accepted instead of surfacing later as a failed tool call.
         """
-        if self.unsandboxed():
+        if self.opted_out():
             return None if shutil.which("node") else "node is not installed"
         if sys.platform != "linux":
             return f"the isolated validator runs only on Linux, this host is {sys.platform}"
@@ -87,13 +93,13 @@ class Renderer:
                 return f"{tool} is not installed"
         return None
 
-    def worker_environment(self, directory: Path) -> dict[str, str]:
+    def worker_environment(self, directory: Path, worker: str = "worker.mjs") -> dict[str, str]:
         """Expose only a fixed executable search path to an isolated worker.
 
         Without the sandbox there is no ``/work`` or ``/renderer`` mount, so the worker is told where they are.
         """
         environment = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
-        if self.unsandboxed():
+        if self.unsandboxed(worker):
             environment.update(
                 HOME=str(directory.resolve()),
                 IMV_WORK_ROOT=str(directory.resolve()),
@@ -181,7 +187,7 @@ class Renderer:
             raise ValueError("Unknown isolated renderer worker")
         settings = self.settings
         node = Path(shutil.which("node") or "/usr/bin/node").resolve()
-        if self.unsandboxed():
+        if self.unsandboxed(worker):
             return [str(node), "--max-old-space-size=2048", str(settings.renderer_dir.resolve() / worker)]
         command = [
             "bwrap",
@@ -277,7 +283,7 @@ class Renderer:
                     stderr=log,
                     cwd=directory,
                     start_new_session=True,
-                    env=self.worker_environment(directory),
+                    env=self.worker_environment(directory, worker),
                 )
                 try:
                     async with asyncio.timeout(timeout):
