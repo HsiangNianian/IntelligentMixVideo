@@ -1,31 +1,24 @@
-/** 一键保存到资产时自动确定发布类型与文字字段：固定效果不需要用户选择。 */
+/** 保存到资产时的发布类型：默认取 Agent 判断的分类，用户可以改选；字效的文字与关键词字段名固定。 */
 import { SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { PublishChoice } from "@/features/sprites/api";
-import type { Control, Version } from "./model";
+import type { SpriteKindName, Version } from "./model";
 
-/** 递归列出字符串参数的点号路径，与服务端发布校验的写法一致。 */
-function stringPaths(properties: Record<string, Control>, prefix = ""): string[] {
-  return Object.entries(properties).flatMap(([name, definition]) => {
-    if (name.includes(".")) return [];
-    const path = `${prefix}${name}`;
-    if (definition.type === "object" && definition.properties) return stringPaths(definition.properties, `${path}.`);
-    return definition.type === "string" ? [path] : [];
-  });
+/** 发布时可选的类型；视频特效与转场在资产库里同属「转场与视频特效」。 */
+export const PUBLISH_KINDS: { kind: SpriteKind; name: SpriteKindName; label: string }[] = [
+  { kind: SpriteKind.TEXT, name: "text", label: "字效" },
+  { kind: SpriteKind.FILTER_OVERLAY, name: "filter_overlay", label: "滤镜" },
+  { kind: SpriteKind.VIDEO_OVERLAY, name: "video_overlay", label: "视频特效" },
+  { kind: SpriteKind.TRANSITION_OVERLAY, name: "transition_overlay", label: "转场" },
+];
+
+/** Agent 记录的分类；没有记录的旧版本默认视频特效（服务端会要求先在聊天中改出新版本）。 */
+export function defaultKind(version: Version): SpriteKind {
+  return PUBLISH_KINDS.find((item) => item.name === version.spec.sprite?.kind)?.kind ?? SpriteKind.VIDEO_OVERLAY;
 }
 
-/** 新生成的组合版本发布为视频叠加；旧版本沿用创建时固定的类型，文字类自动取标题/文字字段。 */
-export function publishChoice(version: Version): PublishChoice {
-  switch (version.spec.sprite_kind) {
-    case "filter_overlay": return { kind: SpriteKind.FILTER_OVERLAY, textProp: "", keywordsProp: "" };
-    case "video_overlay": return { kind: SpriteKind.VIDEO_OVERLAY, textProp: "", keywordsProp: "" };
-    case "transition_overlay": return { kind: SpriteKind.TRANSITION_OVERLAY, textProp: "", keywordsProp: "" };
-    case "text":
-    case "subtitle": {
-      const strings = stringPaths(version.candidate.config_schema.properties);
-      const textProp = strings.find((path) => /(^|\.)(text|title)$/i.test(path)) ?? strings[0];
-      if (!textProp) throw new Error("该版本没有可作为文字的参数，无法保存到资产");
-      return { kind: SpriteKind.TEXT, textProp, keywordsProp: "" };
-    }
-    default: return { kind: SpriteKind.VIDEO_OVERLAY, textProp: "", keywordsProp: "" };
-  }
+/** 按所选类型生成发布请求：字效固定 text 字段，声明了关键词参数时同时发布 keywords。 */
+export function publishChoice(version: Version, kind: SpriteKind): PublishChoice {
+  if (kind !== SpriteKind.TEXT) return { kind, textProp: "", keywordsProp: "" };
+  const keywords = (version.spec.sprite?.bindings ?? []).some((item) => item.name === "keywords");
+  return { kind, textProp: "text", keywordsProp: keywords ? "keywords" : "" };
 }

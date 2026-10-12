@@ -1,4 +1,6 @@
 /** Remotion 服务契约与参数解释；只保存当前会话和已验收模板，不暴露内部候选。 */
+import { HEX_COLOR, type ParameterField } from "@/components/ParameterControl";
+
 /** 第一版参数只支持字符串、有限数值和布尔值。 */
 export type Scalar = string | number | boolean;
 /** PR76 参数允许嵌套 JSON；旧版本仍保留扁平标量。 */
@@ -30,9 +32,14 @@ export interface Control {
   maximum?: number;
   minLength?: number;
   maxLength?: number;
+  pattern?: string;
+  maxItems?: number;
+  items?: Control;
   "x-imv-target"?: string;
   properties?: Record<string, Control>;
 }
+/** 效果分类：字效、滤镜、视频特效、转场（后两者在界面上合为「转场与视频特效」）。 */
+export type SpriteKindName = "text" | "filter_overlay" | "video_overlay" | "transition_overlay";
 /** 成功版本提供代码、参数默认值、控件和画布信息。 */
 export interface Version {
   id: string;
@@ -51,7 +58,53 @@ export interface Version {
     sprite_kind?: "text" | "subtitle" | "filter_overlay" | "video_overlay" | "transition_overlay" | "composition";
     composition: Composition;
     text_layers: { id: string; text: string }[];
+    /** 组合版本的分类与顶层参数绑定；更早的版本没有。 */
+    sprite?: { kind?: SpriteKindName; bindings?: { name: string; title: string }[] };
   };
+}
+
+/** 一个 Schema 属性对应的控件描述；对象、未约束的数组等无法逐项编辑的形状返回 null。 */
+export function schemaField(key: string, control: Control): ParameterField | null {
+  const base = { key, label: control.title || key };
+  switch (control.type) {
+    case "boolean":
+      return { ...base, kind: "boolean" };
+    case "number":
+    case "integer":
+      return { ...base, kind: control.type, options: control.enum as number[] | undefined, minimum: control.minimum, maximum: control.maximum };
+    case "string":
+      return {
+        ...base,
+        kind: control.pattern !== undefined && control.pattern === HEX_COLOR.source ? "color" : "string",
+        options: control.enum as string[] | undefined,
+        minLength: control.minLength,
+        maxLength: control.maxLength,
+      };
+    case "array":
+      return control.items?.type === "string" ? { ...base, kind: "keywords", maxItems: control.maxItems, maxLength: control.items.maxLength } : null;
+    default:
+      return null;
+  }
+}
+
+/** 组合版本的参数分组：顶层参数（模板里可逐次修改），以及各实例的内部参数；实例里有无法逐项编辑的形状时整体回退为 JSON。 */
+export function schemaGroups(properties: Record<string, Control>): {
+  top: ParameterField[];
+  instances: { id: string; fields: ParameterField[] | null }[];
+} {
+  const top: ParameterField[] = [];
+  const instances: { id: string; fields: ParameterField[] | null }[] = [];
+  for (const [key, control] of Object.entries(properties)) {
+    if (control.type !== "object") {
+      const field = schemaField(key, control);
+      if (field) top.push(field);
+      else instances.push({ id: key, fields: null });
+      continue;
+    }
+    const nested = Object.entries(control.properties ?? {}).map(([name, child]) => schemaField(name, child));
+    instances.push({ id: key, fields: nested.length && nested.every(Boolean) ? (nested as ParameterField[]) : null });
+  }
+  return { top, instances };
 }
 /** 服务端隔离类型检查返回的零基行列；与 LSP 一致，character 以 UTF-16 计。 */
 export interface TextPosition {

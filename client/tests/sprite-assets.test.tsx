@@ -3,6 +3,7 @@ import { expect, test } from "bun:test";
 import { create, fromBinary, toBinary, toJson } from "@bufbuild/protobuf";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { VersionCard } from "@/features/remotion_templates/VersionCard";
+import { defaultKind, publishChoice } from "@/features/remotion_templates/spriteChoice";
 import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
 import type { RemotionClip } from "@/features/templates/model";
 import { EffectTemplateEditorSchema, SaveTemplateRequestSchema } from "@/generated/imv/template/v1/template_pb";
@@ -67,8 +68,8 @@ async function addTitleEffect() {
   fireEvent.click(within(assets).getAllByRole("button", { name: /^应用花字：/ })[0]);
 }
 
-// 场景：新生成的组合版本一键保存为资产，不弹窗、不要求选择；请求只带版本和视频叠加类型。
-test("版本卡片一键把成功版本保存为 Sprite 资产", async () => {
+// 场景：保存到资产时默认使用 Agent 判断的分类；字效固定 text 字段，声明了关键词参数时同时发布 keywords。
+test("版本卡片按 Agent 判断的分类把成功版本保存为 Sprite 资产", async () => {
   let request: ReturnType<typeof fromBinary<typeof PublishSpriteRequestSchema>> | undefined;
   fetchMock.mockImplementation((async (url, init) => {
     expect(new URL(String(url)).pathname).toBe("/api/sprites/publish");
@@ -77,24 +78,27 @@ test("版本卡片一键把成功版本保存为 Sprite 资产", async () => {
   }) as typeof fetch);
   const version = remotionVersion("version-2");
   version.spec.sprite_kind = "composition";
+  version.spec.sprite = { kind: "text", bindings: [{ name: "text", title: "文字" }, { name: "keywords", title: "关键词" }] };
   render(<VersionCard version={version} selected={false} latest disabled={false} previewDisabled={false} onPreview={() => {}} />);
+  expect(screen.getByRole("combobox", { name: "资产分类" }).textContent).toContain("字效");
   fireEvent.click(screen.getByRole("button", { name: "保存到资产" }));
   await screen.findByText("已保存到资产「霓虹标题」，可在云端模板的 Remotion 资产中添加。");
   expect(screen.queryByRole("dialog")).toBeNull();
-  expect(request).toMatchObject({ sourceVersionId: "version-2", kind: SpriteKind.VIDEO_OVERLAY, textProp: "", keywordsProp: "" });
+  expect(request).toMatchObject({ sourceVersionId: "version-2", kind: SpriteKind.TEXT, textProp: "text", keywordsProp: "keywords" });
 });
 
-// 场景：旧的文字版本沿用文字类型并自动取嵌套的标题字段；失败显示服务端原因，未保存参数时入口禁用。
-test("旧文字版本自动选择文字字段，失败显示原因，未保存参数时禁用", async () => {
-  fetchMock.mockResolvedValue(new Response(JSON.stringify({ detail: "accepted artifact unavailable" }), { status: 409 }));
+// 场景：改选其他分类时不带文字字段；没有分类的旧版本默认视频特效，由服务端说明需要先在聊天中改出新版本。
+test("发布请求随所选分类变化，旧版本的拒绝原因原样显示", async () => {
   const version = remotionVersion("version-2");
-  version.spec.sprite_kind = "text";
-  version.candidate.config_schema = { properties: { title_main: { type: "object", properties: { title: { type: "string" }, fontSize: { type: "number" } } } } };
+  version.spec.sprite = { kind: "text", bindings: [{ name: "text", title: "文字" }] };
+  expect(publishChoice(version, SpriteKind.TEXT)).toEqual({ kind: SpriteKind.TEXT, textProp: "text", keywordsProp: "" });
+  expect(publishChoice(version, SpriteKind.FILTER_OVERLAY)).toEqual({ kind: SpriteKind.FILTER_OVERLAY, textProp: "", keywordsProp: "" });
+  delete version.spec.sprite;
+  expect(defaultKind(version)).toBe(SpriteKind.VIDEO_OVERLAY);
+  fetchMock.mockResolvedValue(new Response(JSON.stringify({ detail: "该版本由旧版生成，没有效果分类和参数契约；请在聊天中继续修改，生成新版本后再保存到资产" }), { status: 422 }));
   const { rerender } = render(<VersionCard version={version} selected={false} latest disabled={false} previewDisabled={false} onPreview={() => {}} />);
   fireEvent.click(screen.getByRole("button", { name: "保存到资产" }));
-  expect((await screen.findByText("accepted artifact unavailable")).getAttribute("role")).toBe("alert");
-  const body = fetchMock.mock.calls[0][1]!.body as Uint8Array;
-  expect(fromBinary(PublishSpriteRequestSchema, new Uint8Array(body))).toMatchObject({ kind: SpriteKind.TEXT, textProp: "title_main.title" });
+  expect((await screen.findByText(/请在聊天中继续修改/)).getAttribute("role")).toBe("alert");
   rerender(<VersionCard version={version} selected={false} latest disabled previewDisabled={false} onPreview={() => {}} />);
   expect(screen.getByRole<HTMLButtonElement>("button", { name: "保存到资产" }).disabled).toBe(true);
 });
