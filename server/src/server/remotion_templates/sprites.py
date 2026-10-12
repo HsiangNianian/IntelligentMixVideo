@@ -1,21 +1,19 @@
-"""Publish accepted Remotion versions as immutable Sprites and save where they are placed.
+"""Publish accepted Remotion versions as immutable Sprites.
 
 A publication copies the sealed source, parameter contract and interactive player bundle out of the
 chat-owned version directory, so deleting or editing the source work never changes a placed Sprite.
 Publications (`imv.sprite.v1.PublishedSprite` JSON) are rows of the MySQL table in `sprite_store.py`, next
-to the templates that reference them; their player bundle copies live in the Remotion data folder and the
-clip layouts that place them in the Remotion SQLite database. Nothing here reads or validates IMS template
-data, so IMS rules never apply to Remotion content. HTTP framing lives in `sprite_router.py`.
+to the templates whose `remotion` tracks reference them; their player bundle copies live in the Remotion
+data folder. Where a Sprite is placed is part of the template, so nothing here reads or validates IMS
+template data. HTTP framing lives in `sprite_router.py`.
 """
 
 import asyncio
 import hashlib
 import json
 import logging
-import math
 import shutil
 import weakref
-from collections.abc import Iterable
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -30,7 +28,6 @@ from .evidence import digest, verify_artifacts
 from .models import TemplateVersion
 from .store import Conflict, NotFound, Store
 
-MAX_PLACEMENTS = 100
 PREVIEW_BUNDLE = "interactive.js"
 # 只有包含逐帧同步处理的预览包才能叠加到模板预览上；更早构建的包缺少此标记。
 SYNC_MARKER = b"imv-preview-sync"
@@ -354,72 +351,3 @@ async def publish(service, request: pb.PublishSpriteRequest) -> pb.SpriteSummary
         if fresh:
             await run_in_threadpool(_store_bundle, store, sprite, fresh)
         return summarize(sprite)
-
-
-def validate_placements(placements: Iterable[pb.SpritePlacement]) -> None:
-    """Reject a clip list that references unknown Sprites or is not made of fixed clips.
-
-    A clip is a published Sprite plus the second it starts at; the Sprite's own length is its duration.
-    IMS template objects have no meaning here, so an object target or a style override is refused instead
-    of being stored and later read as an IMS rule.
-    """
-    items = list(placements)
-    if len(items) > MAX_PLACEMENTS:
-        raise _invalid(f"最多添加 {MAX_PLACEMENTS} 个 Remotion 片段")
-    if sorted(item.order for item in items) != list(range(len(items))):
-        raise _invalid("order 必须从 0 开始连续且不重复")
-    identifiers = [item.id for item in items]
-    if any(not identifier or len(identifier) > 64 for identifier in identifiers) or len(set(identifiers)) != len(items):
-        raise _invalid("片段 id 必须非空、不超过 64 个字符且互不相同")
-    for item in items:
-        if item.target != pb.SPRITE_TARGET_UNSPECIFIED or item.overrides:
-            raise _invalid("Remotion 片段是固定内容，不支持作用对象和样式覆盖")
-        if item.start_mode != "seconds":
-            raise _invalid("start_mode 只能是 seconds")
-        if not math.isfinite(item.start) or item.start < 0:
-            raise _invalid("start 必须是不小于 0 的有限数字")
-        if item.HasField("duration") and (not math.isfinite(item.duration) or item.duration <= 0):
-            raise _invalid("duration 必须是大于 0 的有限数字")
-    for sprite_id in {item.sprite_id for item in items}:
-        try:
-            get(sprite_id)
-        except NotFound:
-            raise _invalid(f"Remotion 资产 {sprite_id} 不存在") from None
-
-
-def get_bindings(store: Store, style_id: UUID) -> tuple[int, list[dict], datetime | None]:
-    """Read the saved clips of one style ID; no record is revision 0 with an empty list.
-
-    The ID only associates clips with an IMS template for the editor: it is never looked up in the
-    IMS template library, so it does not have to exist there.
-    """
-    with store.connection() as db:
-        row = db.execute(
-            "SELECT revision, updated_at, data FROM style_sprite_bindings WHERE style_id=?", (str(style_id),),
-        ).fetchone()
-    if row is None:
-        return 0, [], None
-    return row["revision"], json.loads(row["data"]), datetime.fromisoformat(row["updated_at"])
-
-
-def replace_bindings(
-    store: Store, style_id: UUID, placements: list[dict], expected_revision: int,
-) -> tuple[int, list[dict], datetime]:
-    """Replace the whole clip list of one style ID; a revision other than the caller's last read is a 409.
-
-    The revision check and the write share one immediate transaction, so two editors saving from the same
-    revision cannot both succeed.
-    """
-    with store.connection() as db:
-        db.execute("BEGIN IMMEDIATE")
-        row = db.execute("SELECT revision FROM style_sprite_bindings WHERE style_id=?", (str(style_id),)).fetchone()
-        current = row["revision"] if row else 0
-        if current != expected_revision:
-            raise Conflict("Remotion 片段已被其他修改更新，请刷新后重试")
-        now = datetime.now(UTC)
-        db.execute(
-            "INSERT INTO style_sprite_bindings VALUES (?, ?, ?, ?) ON CONFLICT(style_id) DO UPDATE SET "
-            "revision=excluded.revision, updated_at=excluded.updated_at, data=excluded.data",
-            (str(style_id), current + 1, now.isoformat(), json.dumps(placements, ensure_ascii=False)),
-        )
-    return current + 1, placements, now

@@ -1,4 +1,4 @@
-"""Remotion 字效保存为 Sprite 资产：发布、目录、预览与云端模板绑定的真实 SQLite/文件/HTTP 回归。
+"""Remotion 字效保存为 Sprite 资产：发布、目录与预览的真实 SQLite/文件/HTTP 回归。
 
 不访问模型、浏览器或真实 MySQL（发布记录与模板库一样使用 conftest 的临时 SQLite 替身）；发布版本由离线渲染替身落盘。
 真实 MySQL 的建表、排序规则与唯一键见 test_mysql_integration.py。
@@ -9,8 +9,6 @@ import asyncio
 import json
 import logging
 import shutil
-from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -18,7 +16,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from generated.imv.sprite.v1 import sprite_pb2 as pb
-from sqlalchemy import Engine, inspect, select, update
+from sqlalchemy import Engine, select, update
 
 from server.app import app
 from server.remotion_templates import sprite_store, sprites
@@ -27,7 +25,7 @@ from server.remotion_templates.models import GenerateTemplateRequest
 from server.remotion_templates.provider import Budget
 from server.remotion_templates.settings import Settings
 from server.remotion_templates.sprite_router import sprite_runtime
-from server.remotion_templates.store import Conflict, Store
+from server.remotion_templates.store import Store
 from server.remotion_templates.tools.contracts import SpriteDraft
 
 from .test_remotion_version_diagnostics import (
@@ -157,35 +155,6 @@ def published_sprite(client: TestClient, version_id, **fields) -> pb.SpriteSumma
     return pb.PublishSpriteResponse.FromString(response.content).sprite
 
 
-def placement(sprite_id: str, **fields) -> pb.SpritePlacement:
-    """默认是从 0 秒开始的一个固定片段；用例按需覆盖字段。"""
-    values = {"id": "p1", "start_mode": "seconds", "start": 0, "order": 0, **fields}
-    return pb.SpritePlacement(sprite_id=sprite_id, **values)
-
-
-def save_bindings(client: TestClient, style_id: str, placements: list, expected_revision: int = 0, body_style_id: str | None = None):
-    """整体替换一个 style_id 下的 Remotion 片段。"""
-    request = pb.SaveStyleSpritesRequest(
-        style_id=body_style_id or style_id, placements=placements, expected_revision=expected_revision,
-    )
-    return client.post(f"/api/sprites/styles/{style_id}", content=request.SerializeToString(), headers=PROTOBUF)
-
-
-def bindings(response) -> pb.StyleSpriteBindings:
-    """解码绑定读取/保存响应。"""
-    return pb.GetStyleSpritesResponse.FromString(response.content).bindings
-
-
-def create_style(client: TestClient, template_payload: dict) -> str:
-    """创建一个 IMS 云端模板并返回其 ID，用来证明片段与 IMS 数据互不依赖。"""
-    from generated.imv.template.v1 import template_pb2 as template_pb
-    from .template_wire import post_template
-
-    response = post_template(client, template_payload)
-    assert response.status_code == 201
-    return template_pb.SaveTemplateResponse.FromString(response.content).template.template_id
-
-
 def test_publish_copies_content_and_lists_summary_without_source(client: TestClient, published) -> None:
     """发布后目录只含摘要与可编辑参数；文字与关键词字段归总线，不进入参数。"""
     summary = published_sprite(client, published.version.id)
@@ -304,109 +273,11 @@ def test_publish_rejects_unknown_malformed_or_tampered_sources(client: TestClien
     assert client.post("/api/sprites/publish", content=b"\xff\xff", headers=PROTOBUF).status_code == 400
 
 
-def test_style_bindings_roundtrip_with_revision_lock(client: TestClient, published) -> None:
-    """未保存时为版本 0；保存递增 revision，过期 revision 返回 409 且不改动已存片段。"""
-    sprite = published_sprite(client, published.version.id)
-    style_id = str(uuid4())
-    empty = client.get(f"/api/sprites/styles/{style_id}")
-    assert empty.status_code == 200 and (bindings(empty).revision, list(bindings(empty).placements)) == (0, [])
-
-    first = save_bindings(client, style_id, [
-        placement(sprite.sprite_id, start=2, duration=1),
-        placement(sprite.sprite_id, id="p2", start=7.5, order=1),
-    ])
-    assert first.status_code == 200
-    saved = bindings(first)
-    assert saved.revision == 1 and [item.id for item in saved.placements] == ["p1", "p2"]
-    assert (saved.placements[0].start, saved.placements[0].duration) == (2, 1)
-    assert saved.placements[1].start == 7.5 and not saved.placements[1].HasField("duration")
-    assert saved.updated_at.seconds > 0
-
-    stale = save_bindings(client, style_id, [], expected_revision=0)
-    assert stale.status_code == 409
-    again = bindings(client.get(f"/api/sprites/styles/{style_id}"))
-    assert again.revision == 1 and len(again.placements) == 2
-    cleared = bindings(save_bindings(client, style_id, [], expected_revision=1))
-    assert cleared.revision == 2 and list(cleared.placements) == []
-
-
-@pytest.mark.parametrize("build", [
-    lambda sid: [placement(sid, target=pb.SPRITE_TARGET_TITLE)],
-    lambda sid: [placement(sid, overrides=[pb.SpriteParameterOverride(key="size", value=pb.ScalarValue(number_value=88))])],
-    lambda sid: [placement(sid, start_mode="frames")],
-    lambda sid: [placement(sid, start_mode="percent", start=50)],
-    lambda sid: [placement(sid, start=-1)],
-    lambda sid: [placement(sid, start=float("inf"))],
-    lambda sid: [placement(sid, duration=0)],
-    lambda sid: [placement(sid, order=1)],
-    lambda sid: [placement(sid), placement(sid, order=1)],
-    lambda sid: [placement(sid, id="")],
-    lambda sid: [placement(sid, id="x" * 65)],
-    lambda sid: [placement(sid, id=f"p{index}", order=index) for index in range(101)],
-    lambda sid: [placement("00000000-0000-4000-8000-000000000000")],
-], ids=[
-    "object-target", "style-override", "bad-start-mode", "percent-start", "negative-start", "infinite-start",
-    "zero-duration", "order-gap", "duplicate-id", "empty-id", "long-id", "too-many", "unknown-sprite",
-])
-def test_invalid_placements_are_rejected_without_saving(client: TestClient, published, build) -> None:
-    """片段必须是引用已有资产的固定内容：作用对象、样式覆盖、非秒起点、非法时间与顺序都返回 422，且不产生记录。"""
-    sprite = published_sprite(client, published.version.id)
-    style_id = str(uuid4())
-    assert save_bindings(client, style_id, build(sprite.sprite_id)).status_code == 422
-    assert bindings(client.get(f"/api/sprites/styles/{style_id}")).revision == 0
-
-
-def test_every_published_kind_can_be_placed_without_imv_object_rules(client: TestClient, published) -> None:
-    """IMS 的对象规则不属于 Remotion：没有关键词的文字资产、没有固定时长的视觉叠加都只需起点就能放置。"""
-    visual = published_sprite(client, published.version.id, kind=pb.SPRITE_KIND_VIDEO_OVERLAY, text_prop="", keywords_prop="")
-    plain_text = published_sprite(client, published.version.id, keywords_prop="")
-    style_id = str(uuid4())
-    response = save_bindings(client, style_id, [placement(visual.sprite_id), placement(plain_text.sprite_id, id="p2", order=1)])
-    assert response.status_code == 200
-    assert [item.sprite_id for item in bindings(response).placements] == [visual.sprite_id, plain_text.sprite_id]
-
-
-def test_binding_routes_check_the_body_and_need_no_imv_template(client: TestClient, published) -> None:
-    """style_id 只用于关联：没有对应 IMS 模板也能读写；请求体 style_id 与路径不一致、类型或内容错误被拒绝。"""
-    sprite = published_sprite(client, published.version.id)
-    style_id, other = str(uuid4()), str(uuid4())
-    assert save_bindings(client, style_id, [placement(sprite.sprite_id)]).status_code == 200
-    assert save_bindings(client, style_id, [], expected_revision=1, body_style_id=other).status_code == 422
-    assert client.post(f"/api/sprites/styles/{style_id}", json={}).status_code == 415
-    assert client.post(f"/api/sprites/styles/{style_id}", content=b"\xff\xff", headers=PROTOBUF).status_code == 400
-    assert client.get("/api/sprites/styles/not-a-uuid").status_code == 422
-    assert bindings(client.get(f"/api/sprites/styles/{style_id}")).revision == 1
-
-
-def test_bindings_and_imv_templates_are_independent(client: TestClient, template_db: Engine, published, template_payload) -> None:
-    """Remotion 片段只存在 Remotion 自己的库里：IMS 数据库没有对应表，删除 IMS 模板不影响片段，资产也保留。"""
-    sprite = published_sprite(client, published.version.id)
-    template_id = create_style(client, template_payload)
-    assert save_bindings(client, template_id, [placement(sprite.sprite_id)]).status_code == 200
-    assert not inspect(template_db).has_table("style_sprite_bindings")
-    assert client.delete(f"/template/{template_id}").status_code == 204
-    assert [item.id for item in bindings(client.get(f"/api/sprites/styles/{template_id}")).placements] == ["p1"]
-    assert len(pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites) == 1
-
-
-def test_concurrent_saves_from_the_same_revision_only_accept_one(client: TestClient, published) -> None:
-    """两个编辑器同时从版本 0 保存同一个 style_id，只有一个成功，另一个得到版本冲突而不覆盖对方。"""
-    sprite = published_sprite(client, published.version.id)
+def test_style_binding_routes_are_gone(client: TestClient) -> None:
+    """片段随云端模板的 remotion 轨道保存，没有单独的绑定接口：旧的读取与保存路径不再存在。"""
     style_id = uuid4()
-    barrier = Barrier(2, timeout=5)
-
-    def save(name: str):
-        """并发执行真实 SQLite 事务，返回新版本号或冲突标记。"""
-        barrier.wait()
-        try:
-            return sprites.replace_bindings(published.store, style_id, [{"id": name, "sprite_id": sprite.sprite_id}], 0)[0]
-        except Conflict:
-            return "conflict"
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(save, ["a", "b"]))
-    assert sorted(map(str, results)) == ["1", "conflict"]
-    assert sprites.get_bindings(published.store, style_id)[0] == 1
+    assert client.get(f"/api/sprites/styles/{style_id}").status_code == 404
+    assert client.post(f"/api/sprites/styles/{style_id}", content=b"", headers=PROTOBUF).status_code == 404
 
 
 def test_nested_parameters_publish_with_dot_paths(client: TestClient, nested_published) -> None:
