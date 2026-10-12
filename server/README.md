@@ -65,7 +65,8 @@ GET 成功响应与 POST 请求、成功响应均使用 `application/x-protobuf`
 同一文字角色的循环动画与入场、出场互斥。效果可以为空（只放 Remotion 片段的模板），最多 500 个不同效果 ID。
 
 Remotion 片段也保存在 `tracks` 里：`target` 为 `remotion`，`sprite_id` 引用已发布的 Sprite；`id` 仍是模板内唯一的摆放 ID，所以同一个 Sprite 可以摆放多次。
-`start_mode` 只能是 `seconds`，`duration` 为 `null`（取 Sprite 自身时长）或正秒数，`editor` 必须是空消息（响应里为 `{}`）；其他对象不能带 `sprite_id`。保存时引用的 Sprite 都必须已在 `remotion_sprites` 发布，且画布宽、高、帧率一致（叠加渲染要把它们叠成同一个视频），否则返回 422。
+`start_mode` 只能是 `seconds`，`duration` 为 `null`（取 Sprite 自身时长）或正秒数；`editor` 只能设置 `remotion`（这次摆放的参数覆盖 `parameters` 与宿主变换 `transform`，没有时响应里为 `{}`），IMS 对象不能设置它；其他对象不能带 `sprite_id`。保存时引用的 Sprite 都必须已在 `remotion_sprites` 发布，且画布宽、高、帧率一致（叠加渲染要把它们叠成同一个视频），每个片段的覆盖须指向可编辑参数、类型与默认值相同、在声明范围内且合并后满足发布 Schema，变换只能设置该分类允许的字段（滤镜与转场只有 `opacity`）并在范围内，否则返回 422。
+Sprite 分为字效（TEXT）、滤镜（FILTER_OVERLAY）与转场和视频特效（VIDEO_OVERLAY、TRANSITION_OVERLAY），都是不读取底片像素的透明叠加层；分类、必备参数与发布时的边界抽样见 `src/server/remotion_templates/README.md`。
 片段与 IMS 对象共用 100 条上限，也不产生 `effect_ids`。视频合成的 IMS 时间线跳过这些轨道，不为它们生成任何文字或效果；层级为它们在 `tracks` 中的先后（先者在下）。
 
 响应补充 UUID、UTC 创建/更新时间和 `effects` 参数快照。服务端通过固定 SDK 5.2.2 白名单解析效果，
