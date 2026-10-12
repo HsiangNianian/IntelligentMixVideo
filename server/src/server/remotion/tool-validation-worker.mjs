@@ -28,9 +28,11 @@ const result = { checks, diagnostics: [], tests: [], custom_tests_executed: 0 };
  */
 class PolicyError extends Error {
   constructor(message, node, source) {
-    const { line, character } = source.getLineAndCharacterOfPosition(node.getStart(source));
+    const start = node.getStart(source);
+    const { line, character } = source.getLineAndCharacterOfPosition(start);
     super(`${message} (line ${line + 1}, column ${character + 1})`);
-    this.position = { line, character, length: Math.max(1, node.getEnd() - node.getStart(source)) };
+    // A node can span lines, so its end is resolved from its own offset rather than added to the start column.
+    this.position = { line, character, end: source.getLineAndCharacterOfPosition(Math.max(node.getEnd(), start + 1)) };
   }
 }
 
@@ -70,7 +72,7 @@ function diagnosticFromError(error, code = null) {
     severity: "error",
     message: String(error?.message ?? error),
     ...(code ? { code: String(code) } : {}),
-    ...(position ? { range: { start: { line: position.line, character: position.character }, end: { line: position.line, character: position.character + position.length } } } : {}),
+    ...(position ? { range: { start: { line: position.line, character: position.character }, end: { line: position.end.line, character: position.end.character } } } : {}),
   };
 }
 

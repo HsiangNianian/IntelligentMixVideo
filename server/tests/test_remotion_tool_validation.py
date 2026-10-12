@@ -379,6 +379,21 @@ def test_a_bare_exec_call_is_still_refused_and_located(tmp_path):
     }]
 
 
+@needs_node
+@pytest.mark.parametrize("statement, message, end", [
+    ('import {\n  readFileSync,\n} from "node:fs";', "Import not permitted: node:fs", {"line": 3, "character": 17}),
+    ('export {\n  readFileSync,\n} from "react";', "Re-exports are not permitted.", {"line": 3, "character": 15}),
+], ids=["import", "re-export"])
+def test_a_multiline_violation_ends_on_the_line_where_the_node_ends(tmp_path, statement, message, end):
+    """审计复现：多行 import/re-export 的 range 终点曾由起始列加节点长度算出，落在起始行甚至超出行长。"""
+    code = f'import React from "react";\n{statement}\nexport default function T(props: {{ t: string }}) {{\n  return <div>{{props.t}}</div>;\n}}\n'
+    report = run_code_worker(tmp_path, code, {"t": {"type": "string"}}, {"t": "x"})
+    assert report["passed"] is False
+    [diagnostic] = report["diagnostics"]
+    assert diagnostic["message"].startswith(message) and "(line 2, column 1)" in diagnostic["message"]
+    assert diagnostic["range"] == {"start": {"line": 1, "character": 0}, "end": end}
+
+
 # 一个有不透明根背景的「滤镜」，以及去掉背景后只用半透明层的同款，和只在中间帧不透明的转场。
 OPAQUE_FILTER = """import React from "react";
 import { AbsoluteFill } from "remotion";
