@@ -297,14 +297,19 @@ class AgentRun:
         return self.session.latest_sprite_id
 
     async def _finalize_outer(self, identifier):
-        """Resolve the latest task Sprite; the host finalizer owns render checks and publication."""
-        if not identifier:
-            raise ValueError("Completion requires a saved Sprite ID")
+        """Resolve the latest task Sprite; the host finalizer owns render checks and publication.
+
+        The host publishes a finished plan with no ID at all, so "no Sprite saved" is checked first:
+        it is the refusal that tells the Plan what to do next.
+        """
         if self.session.latest_sprite_id is None:
+            named = f", so {identifier} is not a result of this task (it may be the accepted base)" if identifier else ""
             raise ValueError(
-                f"This task has saved no Sprite yet, so {identifier} is not a result of this task (it may be the accepted base). "
+                f"This task has saved no Sprite yet{named}. "
                 "A step with the sprite module must call sprite_create first, or stop with the reason."
             )
+        if not identifier:
+            raise ValueError("Completion requires a saved Sprite ID")
         if self.session.latest_sprite_id != identifier:
             raise ValueError("Completion must reference the latest task Sprite")
         self.session.saved_sprite(identifier)

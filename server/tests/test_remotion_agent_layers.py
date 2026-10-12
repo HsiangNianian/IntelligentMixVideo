@@ -386,6 +386,8 @@ def test_a_refused_publication_records_the_return_to_the_plan_not_a_publication(
     with pytest.raises(ScriptEnd):
         asyncio.run(run.plan_execute())
     assert harness.roles[-1] == "plan"
+    # The host publishes without an ID, so the refusal must still say why and what to do next.
+    assert "saved no Sprite yet" in run.session.feedback[0] and "sprite_create" in run.session.feedback[0]
     handoffs = recorded_handoffs(run)
     assert ("executor", "outer", "publish") not in handoffs
     assert ("executor", "plan", "publish_refused") in handoffs
