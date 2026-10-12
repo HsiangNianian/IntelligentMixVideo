@@ -393,6 +393,27 @@ def test_a_refused_publication_records_the_return_to_the_plan_not_a_publication(
     assert ("executor", "plan", "publish_refused") in handoffs
 
 
+def test_the_plan_is_told_which_resent_steps_the_host_kept(monkeypatch, tmp_path):
+    """Plan 以同一 ID 重发已完成的 preset 步骤想重做它：回执列出被宿主保留的步骤 ID，并说明改用新 ID。"""
+    redo = {"goal": "重做", "steps": [
+        {"id": "preset", "goal": "重写预设", "tool_modules": ["preset"], "done_when": "saved"},
+        {"id": "sprite", "goal": "组合并保存", "input_refs": ["steps.preset.outputs.presets"], "tool_modules": ["preset", "sprite"], "done_when": "saved"},
+    ]}
+    run, harness = new_run(monkeypatch, tmp_path, [
+        delegate(),
+        call("exec-1", "preset_search", {"preset_id": "preset-1"}),
+        report("exec-2"),
+        report("exec-3", "blocked", "预设有问题"),
+        call("plan-1", "tools_plan_execute", {"action": "update_plan", "plan": redo}),
+    ])
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+    receipt = json.loads(run.plan_context.messages()[-1]["content"])
+    assert receipt["ok"] and receipt["data"]["ignored_step_ids"] == ["preset"]
+    assert "new step id" in receipt["data"]["note"]
+    assert run.state.step.id == "sprite"
+
+
 def test_a_blocked_step_wakes_the_plan_which_can_continue_it(monkeypatch, tmp_path):
     """步骤受阻时才唤醒 Plan；Plan continue 后执行层在同一步骤上补齐产出并完成。"""
     run, harness = new_run(monkeypatch, tmp_path, [

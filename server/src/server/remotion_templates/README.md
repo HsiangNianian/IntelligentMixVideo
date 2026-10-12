@@ -156,7 +156,8 @@ sources that `preset_create`, `preset_search {preset_id}` or `preset_modify` mad
 `preset` step needs at least one ready Preset (or, for an edit, the base drafts); the refusal names the tool
 to call next. Plans reference `steps.<id>.outputs.presets` or `steps.<id>.outputs.sprite`, and a reference to
 an output the earlier step's modules cannot produce is refused when the Plan is built. `update_plan` takes
-only the unfinished steps; completed steps are kept by the host and a resent copy is ignored by ID. At the
+only the unfinished steps; completed steps are kept by the host and a resent copy is ignored by ID, with
+the ignored IDs listed in the receipt (`ignored_step_ids`) so the Plan knows to redo work under a new ID. At the
 batch limit the host continues a step that observed something new in that batch and wakes the Plan
 otherwise.
 

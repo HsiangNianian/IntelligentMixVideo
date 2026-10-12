@@ -227,10 +227,15 @@ class ExecutionState:
             )
         self.calls += 1
 
-    def control(self, action: PlanAction, *, start_batch=True):
-        """Update pending steps or dispatch exactly one batch while preserving completed work."""
+    def control(self, action: PlanAction, *, start_batch=True) -> list[str]:
+        """Update pending steps or dispatch exactly one batch while preserving completed work.
+
+        Returns the IDs of completed steps an update_plan resent: the host kept its own copies, and the
+        caller tells the Plan so, because a step it meant to redo under the same ID did not run again.
+        """
         proposed = self.plan.model_copy(deep=True) if self.plan else None
         index, revision, completed = self.index, self.revision, dict(self.completed)
+        ignored: list[str] = []
         if action.action == "delegate":
             raise ValueError("Delegation belongs to Outer; Plan owns step definitions")
         if action.action == "update_plan":
@@ -240,8 +245,12 @@ class ExecutionState:
             # Completed steps are the host's; a resent copy is recognised by ID and ignored, never compared as text.
             finished = {step.id for step in kept}
             pending = [step for step in action.plan.steps if step.id not in finished]
+            ignored = [step.id for step in action.plan.steps if step.id in finished]
             if not pending:
-                raise ValueError("Plan has no pending step; request completion instead")
+                raise ValueError(
+                    f"Plan has no pending step: {', '.join(ignored)} already finished and the host keeps them. "
+                    "Give work to redo a new step id, or call complete."
+                )
             if done:
                 completed[self.step.id] = self.result
                 index += 1
@@ -285,6 +294,7 @@ class ExecutionState:
         )
         self.executing = True
         self.result = None
+        return ignored
 
     def finish_batch(self, status: str, **details):
         """Return a batch result to the outer loop without marking a limit as step completion."""

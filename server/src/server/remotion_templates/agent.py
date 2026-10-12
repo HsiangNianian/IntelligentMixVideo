@@ -518,20 +518,25 @@ class AgentRun:
         raise ValueError("Outer answers, asks, delegates or stops; the host and the Plan own step changes")
 
     def _plan_control(self, args):
-        """Apply one Plan action and return the layer that runs next, or None to publish."""
+        """Apply one Plan action; returns the layer that runs next (None to publish) and notes for its receipt."""
         if args.action in {"delegate", "answer", "ask"}:
             raise ValueError("Plan cannot delegate, answer or ask; use update_plan, continue, advance, complete or stop")
         if args.action == "complete":
             self._check_completion(args.sprite_id)
             self.plan_result = {"status": "plan_done", "summary": args.reason, "sprite_id": self._latest_sprite_id()}
             # Outer has no publish action: the host publishes a finished Plan's Sprite itself.
-            return None
+            return None, {}
         if args.action == "stop":
             self.plan_result = {"status": "blocked", "summary": args.reason, "sprite_id": self._latest_sprite_id()}
-            return Layer.OUTER
-        self.state.control(args, start_batch=True)
+            return Layer.OUTER, {}
+        ignored = self.state.control(args, start_batch=True)
         self.batch_evidence = 0
-        return Layer.EXECUTOR
+        if not ignored:
+            return Layer.EXECUTOR, {}
+        return Layer.EXECUTOR, {
+            "ignored_step_ids": ignored,
+            "note": "These steps already finished, so the host kept them as they were; give work to redo a new step id.",
+        }
 
     def _record_step_outputs(self, tool_name, data, saved_before):
         """Remember the Sprites and Preset sources the current Executor step produced."""
@@ -586,14 +591,15 @@ class AgentRun:
                             publish = transition is None
                             data = {"status": args.status, "next": "publishing" if publish else transition.value}
                         else:
+                            notes = {}
                             if self.layer is Layer.OUTER:
                                 transition, dialogue, final_identifier = self._outer_control(args)
                             else:
-                                transition = self._plan_control(args)
+                                transition, notes = self._plan_control(args)
                                 publish = transition is None
                             if transition is not None:
                                 self._observe_handoff(transition, args.action)
-                            data = self.state.snapshot()
+                            data = {**self.state.snapshot(), **notes}
                     else:
                         saved_before = set(self.session.saved_sprites)
                         data = await self.session.execute(tool.name, args, visible)

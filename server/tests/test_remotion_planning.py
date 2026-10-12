@@ -128,6 +128,21 @@ def test_update_plan_keeps_completed_steps_and_takes_only_pending_ones():
     assert state.snapshot()["step_inputs"] == {"steps.first.outputs.presets": [{"kind": "stored", "preset_id": "p1"}]}
 
 
+def test_update_plan_names_the_completed_steps_it_kept():
+    """审计复现：Plan 想用同一 ID 重做已完成步骤时，新步骤被静默丢弃；现在返回被保留的步骤 ID，只剩已完成步骤时报错并说明改用新 ID。"""
+    from server.remotion_templates.planning import ExecutionState
+
+    state = ExecutionState(4, 3)
+    state.control(PlanAction(action="update_plan", plan={"goal": "组合", "steps": [step("first", ["user_intent"]), step("second", ["user_intent"])]}))
+    state.finish_batch("step_done", presets=[{"kind": "stored", "preset_id": "p1"}])
+    redo = {**step("first", ["user_intent"]), "goal": "重写预设"}
+    assert state.control(PlanAction(action="update_plan", plan={"goal": "组合", "steps": [redo, step("second", ["user_intent"])]})) == ["first"]
+    assert state.control(PlanAction(action="continue")) == []
+    with pytest.raises(ValueError, match="first already finished") as refused:
+        state.control(PlanAction(action="update_plan", plan={"goal": "组合", "steps": [redo]}))
+    assert "new step id" in str(refused.value)
+
+
 def test_snapshot_shows_remaining_tool_calls_instead_of_raw_counters():
     """回放 2db032a4：快照只给剩余额度，不再并列已用总数与单批上限，避免模型误读为预算耗尽。"""
     from server.remotion_templates.planning import ExecutionState, default_plan

@@ -1168,7 +1168,8 @@ inspect 自身也可被查询。已知工具列表由集成方提供给 Agent；
 这个入口由宿主处理：Outer 只做 `answer`（回答）、`ask`（必要澄清）、`delegate`（委派）或 `stop`；
 `plan` 只能随 `update_plan` 提交，`delegate` 携带 `plan` 会以 `INVALID_ARGUMENT` 拒绝，而不是接受后忽略；
 委派后宿主直接建立标准两步计划（`preset` 准备预设，`sprite` 组合并保存），Plan 只在步骤受阻或整批调用没有新进展时被唤醒（报告
-`needs_input` 的步骤带着 `questions` 直接交给 Outer 向用户提问，因为只有 Outer 能提问），`update_plan` 只发送未完成的步骤，已完成步骤由宿主保留，
+`needs_input` 的步骤带着 `questions` 直接交给 Outer 向用户提问，因为只有 Outer 能提问），`update_plan` 只发送未完成的步骤，已完成步骤由宿主保留（重发的已完成步骤按 ID 忽略，回执的 `ignored_step_ids`
+列出它们，提醒要重做的工作须换新的步骤 ID；只剩已完成步骤时直接拒绝并说明），
 `input_refs` 在建立计划时即校验产出模块（`steps.<id>.outputs.presets` 需 preset 模块，
 `steps.<id>.outputs.sprite` 需 sprite 模块）。Plan 的 `complete`（或文本回复 `plan_done`）只能指向本任务最新保存的
 Sprite，宿主随即直接发布它，不再交回 Outer（Outer 没有发布动作）；任务尚未保存 Sprite 时完成请求被拒绝，控制留在 Plan。
