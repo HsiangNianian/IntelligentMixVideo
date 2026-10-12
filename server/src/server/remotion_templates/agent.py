@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 
 from .context import Conversation
 from .models import DialogueOutput
@@ -15,6 +16,9 @@ from enum import StrEnum
 
 from .tools.catalog import PLAN_TOOL
 
+# Policy diagnostics name where they are in their message; the position is not what makes an observation new.
+_POSITION = re.compile(r" \(line \d+, column \d+\)")
+
 OUTER_RULES = """
 You are the outer task ReAct. For simple generation or questions, act directly without a formal Plan.
 Delegate ordered work with tools_plan_execute {action:"delegate",reason:"objective"} to the Plan ReAct; a proposed plan is optional data, Plan creates the actual plan. Fast paths may act directly; once a Plan exists, the Outer ReAct no longer executes business tools. Completed steps and accepted outputs are immutable. Limits are host-owned.
@@ -27,12 +31,13 @@ Read current source and props from the host snapshot; tool results and candidate
 
 PLAN_RULES = """
 You are the Plan ReAct. Maintain the ordered Plan, preserve completed steps, and wake the Executor ReAct for the current step. Use tools_plan_execute update_plan to create/revise a plan and wake Executor, continue/advance to dispatch later batches. Return {status:"plan_done|blocked|needs_input",summary:"...",sprite_id:null,questions:[]} to Outer, or tools_plan_execute complete/stop. Never execute business tools or claim final task publication.
-A step's input_refs accept only user_intent, accepted_base, or steps.<earlier_step_id>.outputs.sprite for a Sprite an earlier step already saved; steps must be ordered so every reference points backwards, and each step's tool_modules must name the modules it needs.
+sprite_compose only returns a draft; a Sprite exists once sprite_create saved it, so compose and save in the SAME step, and reference steps.<id>.outputs.sprite only from a step that calls sprite_create. A step's input_refs accept only user_intent, accepted_base, or steps.<earlier_step_id>.outputs.sprite for a Sprite an earlier step already saved; steps must be ordered so every reference points backwards, and each step's tool_modules must name the modules it needs.
 """
 
 EXECUTOR_RULES = """
 You are the Executor ReAct awakened by the Plan ReAct. Execute ONLY the current logical step using its permitted tools.
 Do not rewrite the Plan or invoke tools_plan_execute. Repeated tool calls and failures use the same task budget.
+A step that must produce a Sprite is done only after sprite_create succeeded: report that sprite_id, and never report step_done from a draft, a summary of earlier work or memory.
 When done or blocked, return ONLY this JSON object as message content (no markdown fence, no prose): {"status":"step_done|blocked|needs_input", "summary":"...", "sprite_id":null}. Supply an actual saved Sprite/candidate ID when this step produces one.
 The host returns to Plan ReAct at the tool limit; reaching a limit does not mean the task or step is complete.
 """
@@ -141,6 +146,8 @@ class AgentRun:
             for call in message.get("tool_calls", [])
         }
         self.observations = set()
+        # Sprites each step saved itself, by plan position and in saving order: the only output that step may report.
+        self.step_sprites: dict[int, list[str]] = {}
         self.turn = 0
         self.round_calls: list[dict] = []
         self.round_error: str | None = None
@@ -221,6 +228,8 @@ class AgentRun:
                 }
             if isinstance(item, list):
                 return [scrub(value) for value in item]
+            if isinstance(item, str):
+                return _POSITION.sub("", item)
             return item
 
         return tool_name + ":" + json.dumps(scrub(value), ensure_ascii=False, sort_keys=True, default=str)
@@ -259,6 +268,11 @@ class AgentRun:
         """Resolve the latest task Sprite; the host finalizer owns render checks and publication."""
         if not identifier:
             raise ValueError("Completion requires a saved Sprite ID")
+        if self.session.latest_sprite_id is None:
+            raise ValueError(
+                f"This task has saved no Sprite yet, so {identifier} is not a result of this task (it may be the accepted base). "
+                "Delegate again so a step calls sprite_create, or stop with the reason."
+            )
         if self.session.latest_sprite_id != identifier:
             raise ValueError("Completion must reference the latest task Sprite")
         self.session.saved_sprite(identifier)
@@ -286,6 +300,40 @@ class AgentRun:
                 self._set_feedback(f"Your last reply was not a valid StepResult ({str(exc)[:300]}). " + STEP_RESULT_FORMAT)
                 self.stalled_turns += 1
                 return None
+            needed_by = self.state.dependents()
+            # Only a step whose window offers sprite_create can be asked to save a Sprite. A Preset-only or read-only
+            # step is left to the Plan, whose input_refs check already tells it how to repair the reference.
+            can_save = any(item.name == "sprite.create" for item in self._tools_for_layer())
+            if result.status == "step_done" and needed_by and can_save:
+                step_id = self.state.step.id
+                saved_here = self.step_sprites.get(self.state.index, [])
+                newest = saved_here[-1] if saved_here else None
+                if not result.sprite_id:
+                    # The Plan cannot redo a finished step, so refuse the claim here, where sprite_create is still callable.
+                    problem = (
+                        "you reported no sprite_id. sprite_compose only returns a draft: save it with sprite_create "
+                        "and report that sprite_id, or return status blocked with the reason."
+                    )
+                elif newest is None:
+                    # An earlier step's Sprite would reach the dependents, and the Outer would publish it, as this step's output.
+                    problem = (
+                        f"sprite_id {result.sprite_id} was not saved by this step. Call sprite_create in this step "
+                        "and report the new sprite_id, or return status blocked with the reason."
+                    )
+                elif result.sprite_id != newest:
+                    problem = f"sprite_id {result.sprite_id} is not the Sprite this step saved last: report {newest}."
+                else:
+                    problem = None
+                if problem:
+                    self._set_feedback(
+                        f"Step {step_id} is not done: step(s) {', '.join(needed_by)} take its output as "
+                        f"steps.{step_id}.outputs.sprite, but {problem}"
+                    )
+                    self.stalled_turns += 1
+                    return None
+            if result.status == "step_done":
+                # Whatever steered this step is obsolete once it is accepted, and must not mislead the next layers.
+                self.session.feedback = []
             self.state.finish_batch(**result.model_dump())
             context.append([response.wire()])
             self._observe_handoff(Layer.PLAN, result.status)
@@ -406,7 +454,12 @@ class AgentRun:
                             self._observe_handoff(transition, args.action)
                         data = self.state.snapshot()
                     else:
+                        saved_before = set(self.session.saved_sprites)
                         data = await self.session.execute(tool.name, args, visible)
+                        if self.layer is Layer.EXECUTOR and self.state.step is not None:
+                            self.step_sprites.setdefault(self.state.index, []).extend(
+                                identifier for identifier in self.session.saved_sprites if identifier not in saved_before
+                            )
                         if getattr(tool, "starts_generation", False):
                             self.generation_started = True
                         self._observe_receipt(tool.name, data)

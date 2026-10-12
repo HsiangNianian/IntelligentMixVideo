@@ -37,21 +37,26 @@ class ValidationUnavailable(RuntimeError):
 # worker 按这个顺序执行检查，任一阶段失败或无法继续即停止，报告只会是它的前缀。
 _CODE_CHECKS = ("source_policy", "export_source", "typescript")
 _RENDER_CHECKS = _CODE_CHECKS + ("default_render", "configured_render")
+# 调用方要求透明度度量时，worker 在两次基础渲染之后追加这一阶段。
+_TRANSPARENCY_CHECKS = _RENDER_CHECKS + ("transparency",)
 _FAILED_STATUSES = {"failed", "fail", "error"}
 
 
 def _reported_stages(checks: list[Any], stages: tuple[str, ...]) -> tuple[str, ...] | None:
     """Return the reported stage names when they form a usable prefix of ``stages``.
 
-    A worker that stops early always names the failing stage last, so a strict
-    prefix ending in a failure is a complete negative report.  Anything else is
-    a missing report and must not be read as one.
+    A worker that stops early names the failing stage last, optionally followed by the stages it
+    records as ``not_run`` (a failed default render still lists the configured render), so a strict
+    prefix whose last executed stage failed is a complete negative report.  Anything else is a
+    missing report and must not be read as one.
     """
     names = [str(item.get("name")) for item in checks]
     if not names or names != list(stages[: len(names)]):
         return None
-    if len(names) < len(stages) and str(checks[-1].get("status")) not in _FAILED_STATUSES:
-        return None
+    if len(names) < len(stages):
+        executed = [item for item in checks if str(item.get("status")) != "not_run"]
+        if not executed or str(executed[-1].get("status")) not in _FAILED_STATUSES:
+            return None
     return tuple(names)
 
 
@@ -164,15 +169,23 @@ class ToolValidator:
             raise ValidationUnavailable("Code validation worker returned invalid diagnostics") from exc
         for check in checks:
             if check.get("status") in _FAILED_STATUSES and check.get("name") not in {"typescript"}:
-                diagnostics.append(CodeDiagnostic(source="contract", severity="error", message=str(check.get("message") or "Code check failed")))
+                message = str(check.get("message") or "Code check failed")
+                # The worker normally reported this failure as a diagnostic already, with its position.
+                if not any(item.message == message for item in diagnostics):
+                    diagnostics.append(CodeDiagnostic(source="contract", severity="error", message=message))
         has_errors = any(item.severity == "error" for item in diagnostics)
         worker_passed = payload.get("passed") is not False and all(
             check.get("status") in {"pass", "passed"} for check in checks
         )
         return CodeValidationReport(passed=worker_passed and not has_errors, diagnostics=diagnostics)
 
-    async def validate_render(self, request: RenderValidationInput) -> RenderValidationReport:
-        """Run fixed-canvas default/configured mounts and each independent behavior script."""
+    async def validate_render(self, request: RenderValidationInput, *, transparency: bool = False) -> RenderValidationReport:
+        """Run fixed-canvas default/configured mounts and each independent behavior script.
+
+        With ``transparency`` the worker also measures, on sampled frames, whether the canvas stays see-through
+        and fails the ``transparency`` check when most sampled frames are opaque almost everywhere. Only the
+        generation path asks for it: a user's own parameter edits are never blocked by it.
+        """
         if request.duration_frames > 216000:
             raise ValueError("duration_frames exceeds the validation resource limit")
         names = [test.name for test in request.tests]
@@ -210,6 +223,7 @@ class ToolValidator:
             "composition": composition.model_dump(mode="json"),
             "tests": [test.model_dump(mode="json") for test in request.tests],
             "browser": self.renderer.worker_browser_path(),
+            "transparency": transparency,
         }
         (directory / "request.json").write_text(json.dumps(payload_request), encoding="utf-8")
         try:
@@ -223,7 +237,7 @@ class ToolValidator:
         for item in raw_checks:
             if isinstance(item, dict) and item.get("name") == "runtime" and item.get("status") == "error":
                 raise ValidationUnavailable(str(item.get("message") or "Render validation worker runtime error"))
-        if _reported_stages(raw_checks, _RENDER_CHECKS) is None:
+        if _reported_stages(raw_checks, _TRANSPARENCY_CHECKS if transparency else _RENDER_CHECKS) is None:
             raise ValidationUnavailable("Render validation worker returned an incomplete report")
         expected_tests = [test.name for test in request.tests]
         raw_tests = payload.get("tests")

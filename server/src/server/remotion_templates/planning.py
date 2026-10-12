@@ -126,6 +126,18 @@ class ExecutionState:
             else None
         )
 
+    def dependents(self) -> list[str]:
+        """IDs of later steps that take the current step's saved Sprite as their input.
+
+        Such a step is not finished until a Sprite was actually saved: the Plan cannot re-open a step
+        that was reported done, so the missing output has to be caught while the Executor can still
+        produce it.
+        """
+        if self.plan is None or self.step is None:
+            return []
+        reference = f"steps.{self.step.id}.outputs.sprite"
+        return [later.id for later in self.plan.steps[self.index + 1 :] if reference in later.input_refs]
+
     def begin_batch(self):
         """A continuation consumes a fresh batch; unused slots never transfer."""
         if (

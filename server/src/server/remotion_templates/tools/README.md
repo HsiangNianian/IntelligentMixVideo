@@ -22,7 +22,10 @@ a draft; it neither compiles the code nor writes the draft to the catalog.
 provider wire name (`wire_name`) and rejects everything else with the tool
 list and closest names from the supplied window. Agent dispatch and `resolve`
 pass only the current layer's permitted tools; inspection passes all registered
-contracts plus host Plan control without granting execution rights.
+contracts plus host Plan control without granting execution rights. Because
+inspection also holds contract-only tools, its unknown-name error lists callable
+tools and contract-only tools apart, and a contract-only descriptor begins
+`[Not callable in this build ...]`.
 Registration also declares `starts_generation`, so the
 host never keeps its own tool-name sets. `tests/test_remotion_tool_registry.py`
 fails when a registered tool is not resolvable, inspectable and correctly

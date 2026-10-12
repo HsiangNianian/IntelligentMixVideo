@@ -15,8 +15,8 @@ Six business tools have implementations in this build:
 | --- | --- |
 | `preset.create` | implemented — validates the Preset and saves it |
 | `sprite.compose` | implemented — deterministic combination of Preset instances |
-| `sprite.create` | implemented — consistency check, code validation and save |
-| `tools.inspect` | implemented — returns one tool descriptor by dotted ID or wire name |
+| `sprite.create` | implemented — consistency check, code validation, one browser mount that must leave the video visible, and save |
+| `tools.inspect` | implemented — returns one tool descriptor by dotted ID or wire name; it reads a contract, it does not search or list tools |
 | `image.info` / `image.resize` / `image.crop` | contract only |
 | `preset.search` | implemented: plain listing with optional keyword; the agent picks what to recall |
 | `preset.modify` | implemented: returns an edited draft copy; save it with `preset.create` |
@@ -25,7 +25,9 @@ Six business tools have implementations in this build:
 Deferred tools are marked `implemented=False` at registration and are filtered
 out of every layer's tool window, so the model is never offered a tool that
 cannot run. Calling one directly returns `NOT_IMPLEMENTED` rather than a
-fabricated result. The host still performs the code, parameter and browser
+fabricated result. `tools.inspect` still describes them and says so in the first
+words of the description (`[Not callable in this build ...]`); an unknown name
+lists callable tools and contract-only tools apart. The host still performs the code, parameter and browser
 checks needed to build a preview; those are not model-facing tools.
 
 Image tools read the reference image the user already uploaded and the server
@@ -94,6 +96,27 @@ sandbox and returns 503 at acceptance.
 Offline tests cover tool registration, deferred-tool behaviour, immutable
 storage and source consistency without a model or semantic index.
 
+## Creating a Sprite
+
+A Sprite is composited over the user's own video, so `sprite.create` must leave that video visible. After code
+validation it mounts the composed Sprite once in the isolated browser and, on the first, last and three
+in-between frames, measures how much of the canvas is nearly opaque (alpha of 242/255 or more, from a screenshot
+taken without a page background). When at least 80% of the sampled frames (4 of 5) are opaque on 98% or more of
+the canvas the Sprite is refused with `CODE_VALIDATION_FAILED`, the reason names the frames and what to do, and
+nothing is saved. One clear frame is not enough, because a cover that fades in or starts late is clear on the
+first frame and hides the video afterwards; a transition that covers the screen only for a moment is not
+affected. Sampling stops once the verdict is settled. The page is opened at the canvas size (1080x1920), as the real overlay render does, so
+`100vw`/`100vh`, `window.innerWidth`/`innerHeight` and media queries see the canvas. The mount is cached under
+the key the host's final check reads, so completing the task does not mount the Sprite a second time. A component that throws on a sampled frame, or while its
+module loads, fails the `transparency` (with the frame) or `default_render` check with its own error, so
+the model gets `CODE_VALIDATION_FAILED` and the cause rather than `VALIDATION_UNAVAILABLE`. Only
+generation asks for the measurement; a user's manual parameter edits and already published versions are
+never blocked by it.
+
+Contract diagnostics carry the position of a violation (line, column and range in the submitted code).
+`exec` and `spawn` are refused only as bare identifiers; as member names, such as `RegExp.prototype.exec`,
+they are ordinary methods.
+
 ## Loop rounds
 
 `IMV_ENFORCE_NO_PROGRESS` defaults to true and `IMV_MAX_NO_PROGRESS_TURNS` to 6.
@@ -112,6 +135,16 @@ Executor and Plan accept a single JSON object with ordinary prose or a markdown
 fence around it. They reject arrays, quoted JSON strings, multiple objects and
 objects nested inside malformed JSON. Unknown task Sprite IDs produce feedback
 without changing the active layer or Plan, so the next round can correct them.
+A step whose saved Sprite a later step takes as `steps.<id>.outputs.sprite`, and whose tool window
+offers `sprite_create`, cannot be reported `step_done` without the `sprite_id` that this very step
+saved last (a missing ID, one an earlier step saved, or an older one of its own counts as none): the
+host refuses the claim in the Executor layer and asks for `sprite_create`, because the Plan cannot
+re-open a step that was reported done and `sprite_compose` only returns a draft. Saved Sprites are
+tracked by plan position, so renaming the unfinished step after a tool limit keeps them, and an
+accepted `step_done` clears the refusal text. A Preset-only or read-only step has no `sprite_create`
+and is not held to this: the Plan's `input_refs` check tells it how to repair the reference. When the
+task has saved no Sprite at all, a completion request is refused with that fact and the way forward
+instead of a generic mismatch.
 
 Every Outer → Plan → Executor turn appends one public round record through the
 `job.round` delta event on the same work stream as the phase timeline. A round

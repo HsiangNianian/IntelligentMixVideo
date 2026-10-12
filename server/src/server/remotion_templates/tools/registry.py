@@ -111,10 +111,14 @@ def tool(
         for example in examples:
             model.model_validate(example["input"])
             output.validate_python(example["output"])
+        description = (function.__doc__ or "").strip() or name
+        if not implemented:
+            # Deferred contracts stay inspectable, but no layer's window offers them; say that before the rest.
+            description = f"[Not callable in this build: contract only, no tool window offers it.] {description}"
         descriptor = ToolDescriptor(
             tool_name=name,
             contract_version=contract_version,
-            description=(function.__doc__ or "").strip() or name,
+            description=description,
             input_schema=model.model_json_schema(),
             output_schema=output.json_schema(),
             constraints=list(constraints),
@@ -151,5 +155,11 @@ def get_tool(name: str, candidates=None):
             return item
     close = get_close_matches(str(name), [wire_name(item.name) for item in candidates], n=2, cutoff=0.5)
     hint = f" Closest: {', '.join(close)}." if close else ""
-    known = ", ".join(item.name for item in candidates) or "none"
-    raise ToolFault("TOOL_NOT_FOUND", f"Unknown or out-of-scope tool: {name}.{hint} Available tools: {known}")
+    # A dispatch window only holds implemented tools. Inspection also holds contract-only ones, which can be
+    # read but never called, so they are listed apart instead of being offered as available.
+    known = ", ".join(item.name for item in candidates if getattr(item, "implemented", True)) or "none"
+    reference = [item.name for item in candidates if not getattr(item, "implemented", True)]
+    message = f"Unknown or out-of-scope tool: {name}.{hint} Available tools: {known}"
+    if reference:
+        message += f". Contract-only, not callable: {', '.join(reference)}"
+    raise ToolFault("TOOL_NOT_FOUND", message)
