@@ -75,10 +75,13 @@ IMV_TEST_RENDERER=1 uv run --locked --project server pytest server/tests/test_re
 ```
 
 The browser path requires Chromium, Noto CJK fonts, bubblewrap and util-linux.
-The isolation is Linux-only: `POST /works`, `POST /works/{id}/messages` and
-`POST /jobs/{id}/retry` return 503 naming the unsupported platform or the missing
-`bwrap`, `prlimit` or `node` before anything is queued, so on macOS the service
-starts but cannot generate templates.
+The isolation is Linux-only: `POST /works`, a parameter patch sent to
+`POST /works/{id}/messages` and the retry of a parameter job return 503 naming the
+unsupported platform or the missing `bwrap`, `prlimit` or `node` before anything is
+queued, so on macOS the service starts but cannot generate templates. Questions,
+clarification replies, free-text edits and other retries are not refused up front,
+because the model may answer without a validator; if it does need one, the tool call
+returns `VALIDATION_UNAVAILABLE`.
 For local development on macOS only, `IMV_ALLOW_UNSANDBOXED_WORKER=true` runs the
 workers as plain Node instead (only `node` is required): generated code then runs
 with no isolation and a warning is logged at startup. The switch is off by default
