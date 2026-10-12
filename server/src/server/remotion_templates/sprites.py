@@ -2,9 +2,10 @@
 
 A publication copies the sealed source, parameter contract and interactive player bundle out of the
 chat-owned version directory, so deleting or editing the source work never changes a placed Sprite.
-Publications (`imv.sprite.v1.PublishedSprite` JSON) and the clip layouts that place them both live in
-the Remotion SQLite database. Nothing here reads or validates IMS template data, so IMS rules never
-apply to Remotion content. HTTP framing lives in `sprite_router.py`.
+Publications (`imv.sprite.v1.PublishedSprite` JSON) are rows of the MySQL table in `sprite_store.py`, next
+to the templates that reference them; their player bundle copies live in the Remotion data folder and the
+clip layouts that place them in the Remotion SQLite database. Nothing here reads or validates IMS template
+data, so IMS rules never apply to Remotion content. HTTP framing lives in `sprite_router.py`.
 """
 
 import asyncio
@@ -13,7 +14,6 @@ import json
 import logging
 import math
 import shutil
-import sqlite3
 import weakref
 from collections.abc import Iterable
 from datetime import UTC, datetime
@@ -22,8 +22,10 @@ from uuid import UUID, uuid4
 from fastapi import HTTPException
 from generated.imv.sprite.v1 import sprite_pb2 as pb
 from google.protobuf.json_format import MessageToDict, ParseDict, ParseError
+from sqlalchemy.exc import IntegrityError
 from starlette.concurrency import run_in_threadpool
 
+from . import sprite_store
 from .evidence import digest, verify_artifacts
 from .models import TemplateVersion
 from .store import Conflict, NotFound, Store
@@ -126,25 +128,24 @@ def _parameters(schema: dict, defaults: dict, reserved: set[str]) -> list[pb.Spr
     return result
 
 
-def _sprite_from(row: sqlite3.Row) -> pb.PublishedSprite:
+def _sprite_from(data: dict) -> pb.PublishedSprite:
     """Restore a stored publication and refuse source bytes that no longer match their hash."""
-    sprite = ParseDict(json.loads(row["data"]), pb.PublishedSprite())
+    sprite = ParseDict(data, pb.PublishedSprite())
     if hashlib.sha256(sprite.tsx_code.encode()).hexdigest() != sprite.code_sha256:
         raise Conflict("Published Sprite failed integrity verification.")
     return sprite
 
 
-def get(store: Store, sprite_id: str) -> pb.PublishedSprite:
+def get(sprite_id: str) -> pb.PublishedSprite:
     """Read one publication by ID; unknown or malformed IDs are a 404."""
     try:
         identifier = str(UUID(sprite_id))
     except ValueError:
         raise NotFound("sprite not found") from None
-    with store.connection() as db:
-        row = db.execute("SELECT data FROM sprites WHERE id=?", (identifier,)).fetchone()
-    if row is None:
+    data = sprite_store.get(identifier)
+    if data is None:
         raise NotFound("sprite not found")
-    return _sprite_from(row)
+    return _sprite_from(data)
 
 
 def summarize(sprite: pb.PublishedSprite) -> pb.SpriteSummary:
@@ -161,26 +162,24 @@ def summarize(sprite: pb.PublishedSprite) -> pb.SpriteSummary:
     )
 
 
-def catalog(store: Store) -> list[pb.SpriteSummary]:
+def catalog() -> list[pb.SpriteSummary]:
     """List readable publications newest first.
 
     A record that cannot be parsed or fails its hash check is logged and left out, so one damaged row
     never hides the whole library; reading that asset by ID still reports the exact failure.
     """
-    with store.connection() as db:
-        rows = db.execute("SELECT id, data FROM sprites ORDER BY published_at DESC, id").fetchall()
     items = []
-    for row in rows:
+    for sprite_id, data in sprite_store.listing():
         try:
-            items.append(summarize(_sprite_from(row)))
-        except (Conflict, ValueError, ParseError) as exc:
-            logging.getLogger(__name__).warning("Skipping unreadable Sprite %s: %s", row["id"], exc)
+            items.append(summarize(_sprite_from(data)))
+        except (Conflict, ValueError, ParseError, TypeError) as exc:
+            logging.getLogger(__name__).warning("Skipping unreadable Sprite %s: %s", sprite_id, exc)
     return items
 
 
 def preview_script(store: Store, sprite_id: str) -> str:
     """Read the sprite's own copy of the player bundle after checking it against the published hash."""
-    sprite = get(store, sprite_id)
+    sprite = get(sprite_id)
     path = store.root / "sprites" / sprite.sprite_id / PREVIEW_BUNDLE
     try:
         if digest(path) != sprite.preview_sha256:
@@ -192,6 +191,8 @@ def preview_script(store: Store, sprite_id: str) -> str:
 
 def _validated_request(request: pb.PublishSpriteRequest, schema: dict, version_kind: str) -> None:
     """Check the declared kind and the text/keyword field names against the sealed schema."""
+    if max(len(request.text_prop), len(request.keywords_prop)) > sprite_store.NAME_LENGTH:
+        raise _invalid(f"text_prop 与 keywords_prop 不能超过 {sprite_store.NAME_LENGTH} 个字符")
     if request.kind not in _PUBLISH_KINDS:
         raise _invalid("kind 必须是文字、滤镜叠加、视频叠加或转场叠加")
     expected = _VERSION_KINDS.get(version_kind)
@@ -248,23 +249,15 @@ def _store_bundle(store: Store, sprite: pb.PublishedSprite, data: bytes) -> None
     try:
         staged.write_bytes(data)
         sprite.preview_sha256 = hashlib.sha256(data).hexdigest()
-        with store.connection() as db:
-            db.execute(
-                "UPDATE sprites SET data=? WHERE id=?",
-                (json.dumps(MessageToDict(sprite, preserving_proto_field_name=True), ensure_ascii=False), sprite.sprite_id),
-            )
+        sprite_store.replace_data(sprite.sprite_id, MessageToDict(sprite, preserving_proto_field_name=True))
         staged.replace(target)
     finally:
         staged.unlink(missing_ok=True)
 
 
-def _existing(store: Store, version: TemplateVersion, request: pb.PublishSpriteRequest) -> sqlite3.Row | None:
-    """Look up the publication that this exact source and field choice already produced."""
-    with store.connection() as db:
-        return db.execute(
-            "SELECT data FROM sprites WHERE source_version_id=? AND kind=? AND text_prop=? AND keywords_prop=?",
-            (str(version.id), request.kind, request.text_prop, request.keywords_prop),
-        ).fetchone()
+def _existing(version: TemplateVersion, request: pb.PublishSpriteRequest) -> dict | None:
+    """Look up the publication JSON that this exact source and field choice already produced."""
+    return sprite_store.find(str(version.id), request.kind, request.text_prop, request.keywords_prop)
 
 
 def _inspect(store: Store, request: pb.PublishSpriteRequest) -> tuple[TemplateVersion, pb.PublishedSprite | None, bytes]:
@@ -287,9 +280,9 @@ def _inspect(store: Store, request: pb.PublishSpriteRequest) -> tuple[TemplateVe
     if PREVIEW_BUNDLE not in version.validation.artifacts:
         raise Conflict("该版本没有可发布的交互预览")
     _validated_request(request, version.candidate.config_schema, version.spec.sprite_kind)
-    if (row := _existing(store, version, request)) is None:
+    if (data := _existing(version, request)) is None:
         return version, None, (accepted / PREVIEW_BUNDLE).read_bytes()
-    sprite = _sprite_from(row)
+    sprite = _sprite_from(data)
     return version, sprite, (store.root / "sprites" / sprite.sprite_id / PREVIEW_BUNDLE).read_bytes()
 
 
@@ -324,20 +317,17 @@ def _create(store: Store, request: pb.PublishSpriteRequest, version: TemplateVer
             default_config_json=json.dumps(version.candidate.default_config, ensure_ascii=False),
         )
         sprite.published_at.FromDatetime(published_at)
-        with store.connection() as db:
-            db.execute(
-                "INSERT INTO sprites VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (
-                    sprite_id, str(version.id), request.kind, request.text_prop, request.keywords_prop,
-                    published_at.isoformat(),
-                    json.dumps(MessageToDict(sprite, preserving_proto_field_name=True), ensure_ascii=False),
-                ),
-            )
-    except sqlite3.IntegrityError:
+        sprite_store.insert(
+            sprite_id=sprite_id, source_version_id=str(version.id), kind=request.kind,
+            text_prop=request.text_prop, keywords_prop=request.keywords_prop, published_at=published_at,
+            data=MessageToDict(sprite, preserving_proto_field_name=True),
+        )
+    except IntegrityError as exc:
         shutil.rmtree(directory, ignore_errors=True)
-        if (row := _existing(store, version, request)) is None:
+        # Only a duplicate key means an identical publication won the race; other integrity errors are real.
+        if exc.orig.args[0] != 1062 or (data := _existing(version, request)) is None:
             raise
-        return summarize(_sprite_from(row))
+        return summarize(_sprite_from(data))
     except BaseException:
         shutil.rmtree(directory, ignore_errors=True)
         raise
@@ -366,7 +356,7 @@ async def publish(service, request: pb.PublishSpriteRequest) -> pb.SpriteSummary
         return summarize(sprite)
 
 
-def validate_placements(store: Store, placements: Iterable[pb.SpritePlacement]) -> None:
+def validate_placements(placements: Iterable[pb.SpritePlacement]) -> None:
     """Reject a clip list that references unknown Sprites or is not made of fixed clips.
 
     A clip is a published Sprite plus the second it starts at; the Sprite's own length is its duration.
@@ -392,7 +382,7 @@ def validate_placements(store: Store, placements: Iterable[pb.SpritePlacement]) 
             raise _invalid("duration 必须是大于 0 的有限数字")
     for sprite_id in {item.sprite_id for item in items}:
         try:
-            get(store, sprite_id)
+            get(sprite_id)
         except NotFound:
             raise _invalid(f"Remotion 资产 {sprite_id} 不存在") from None
 

@@ -214,7 +214,7 @@ def service(tmp_path, monkeypatch):
     monkeypatch.setattr(overlay_service, "upload_public", upload)
     monkeypatch.setattr(overlay_service, "ZosSettings", lambda: SimpleNamespace())
 
-    def get(store, sprite_id):
+    def get(sprite_id):
         """替身读取已发布 Sprite：未知 ID 与真实存储一样抛 NotFound。"""
         if sprite_id not in PUBLICATIONS:
             raise NotFound("sprite not found")

@@ -61,7 +61,7 @@ class OverlayRenders:
         for item in placements:
             if item.sprite_id not in publications:
                 try:
-                    publications[item.sprite_id] = sprites.get(self.store, item.sprite_id)
+                    publications[item.sprite_id] = sprites.get(item.sprite_id)
                 except NotFound:
                     raise OverlayError("sprite_missing", f"Sprite {item.sprite_id} 不存在") from None
         return publications

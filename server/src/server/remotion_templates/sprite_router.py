@@ -66,7 +66,7 @@ def _bindings_message(
 @router.get("", response_class=Response, responses={200: {"content": PROTOBUF_CONTENT}}, summary="查询已发布的 Sprite 目录")
 async def list_sprites(service: Service) -> Response:
     """返回可供模板编辑添加的不可变发布条目，不包含 TSX 源码。"""
-    items = await run_in_threadpool(sprites.catalog, service.store)
+    items = await run_in_threadpool(sprites.catalog)
     return _response(pb.ListSpritesResponse(sprites=items))
 
 
@@ -104,7 +104,7 @@ async def save_style_sprites(style_id: UUID, request: Request, service: Service)
     await _body(request, message)
     if message.style_id != str(style_id):
         raise HTTPException(422, "请求体 style_id 必须与路径一致")
-    await run_in_threadpool(sprites.validate_placements, service.store, message.placements)
+    await run_in_threadpool(sprites.validate_placements, message.placements)
     placements = [
         MessageToDict(item, preserving_proto_field_name=True) for item in message.placements
     ]
@@ -133,7 +133,7 @@ async def sprite_font(sprite_id: str, weight: int, service: Service) -> FileResp
 
     发布记录不保存字体指纹，这里直接提供当前配置的受管字体，只用于编辑预览。
     """
-    await run_in_threadpool(sprites.get, service.store, sprite_id)
+    await run_in_threadpool(sprites.get, sprite_id)
     if weight not in {400, 700}:
         raise NotFound("font not found")
     font = service.settings.font_regular if weight == 400 else service.settings.font_bold

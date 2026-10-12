@@ -5,14 +5,17 @@
 """
 
 import os
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import URL, create_engine, inspect, select
+from sqlalchemy.exc import IntegrityError
 
 from server import database
 from server.app import app
+from server.remotion_templates import sprite_store
 from server.template import store
 from .conftest import SPRITE_ID, remotion_track
 from .template_wire import detail_template, listed_templates, post_template, saved_template
@@ -100,6 +103,36 @@ def test_mysql_stores_remotion_tracks_as_references(mysql_database, template_pay
         assert "sprite_id" not in stored["tracks"][0]
     with TestClient(app) as client:
         assert detail_template(client.get(f"/template/{saved['template_id']}")) == saved
+
+
+def test_mysql_sprite_table_keeps_field_names_binary_and_selections_unique(mysql_database):
+    """真实 MySQL 建表成功（唯一键在 utf8mb4 的长度限制内）；字段名按二进制比较，同一来源与选择只能发布一次，大 JSON 往返不变。"""
+    database.initialize_database()
+    engine = sprite_store.initialize_schema()
+    with engine.connect() as connection:
+        collations = dict(connection.exec_driver_sql(
+            "SELECT COLUMN_NAME, COLLATION_NAME FROM information_schema.COLUMNS "
+            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'remotion_sprites' AND COLLATION_NAME IS NOT NULL"
+        ).all())
+    assert collations["text_prop"] == collations["keywords_prop"] == "utf8mb4_bin"
+    version = str(uuid4())
+
+    def publish(sprite_id: str, **fields) -> None:
+        """为同一个来源版本写入一条发布记录，字段选择可覆盖。"""
+        values = {"source_version_id": version, "kind": 1, "text_prop": "text", "keywords_prop": "", **fields}
+        sprite_store.insert(sprite_id=sprite_id, published_at=datetime.now(UTC), data={"sprite_id": sprite_id}, **values)
+
+    first = str(uuid4())
+    publish(first)
+    publish(str(uuid4()), text_prop="Text")  # 大小写不同是另一个字段名
+    with pytest.raises(IntegrityError) as caught:
+        publish(str(uuid4()))
+    assert caught.value.orig.args[0] == 1062
+    large = {"tsx_code": "路径🎬" * 100_000}
+    sprite_store.replace_data(first, large)
+    assert sprite_store.get(first) == large
+    assert sprite_store.missing([first, "unknown"]) == {"unknown"}
+    assert [sprite_id for sprite_id, _ in sprite_store.listing()].count(first) == 1
 
 
 def test_mysql_conflict_rollback_update_and_delete(mysql_database, template_payload):

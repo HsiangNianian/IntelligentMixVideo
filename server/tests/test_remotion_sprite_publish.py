@@ -1,6 +1,7 @@
 """Remotion 字效保存为 Sprite 资产：发布、目录、预览与云端模板绑定的真实 SQLite/文件/HTTP 回归。
 
-不访问模型、浏览器或 MySQL（模板库使用 conftest 的临时 SQLite）；发布版本由离线渲染替身落盘。
+不访问模型、浏览器或真实 MySQL（发布记录与模板库一样使用 conftest 的临时 SQLite 替身）；发布版本由离线渲染替身落盘。
+真实 MySQL 的建表、排序规则与唯一键见 test_mysql_integration.py。
 在 server/ 目录执行 `uv run --locked pytest tests/test_remotion_sprite_publish.py -v`。
 """
 
@@ -8,19 +9,19 @@ import asyncio
 import json
 import logging
 import shutil
-import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from generated.imv.sprite.v1 import sprite_pb2 as pb
-from sqlalchemy import Engine, inspect
+from sqlalchemy import Engine, inspect, select, update
 
 from server.app import app
-from server.remotion_templates import sprites
+from server.remotion_templates import sprite_store, sprites
 from server.remotion_templates.harness import Harness
 from server.remotion_templates.models import GenerateTemplateRequest
 from server.remotion_templates.provider import Budget
@@ -91,13 +92,13 @@ NESTED_DEFAULTS = {"title_main": {"title": "今日灵感", "fontSize": 160, "tex
 
 
 @pytest.fixture
-def published(tmp_path):
-    """发布一个带扁平标量参数的成功版本，并让主应用的 Sprite 路由使用同一份临时数据。"""
+def published(tmp_path, template_db):
+    """发布一个带扁平标量参数的成功版本，并让主应用的 Sprite 路由使用同一份临时数据；发布记录写入共享库替身。"""
     yield from published_version(tmp_path, SCHEMA, DEFAULTS)
 
 
 @pytest.fixture
-def nested_published(tmp_path):
+def nested_published(tmp_path, template_db):
     """发布组合 Sprite 常见的嵌套参数版本：业务文字位于 title_main.title。"""
     yield from published_version(tmp_path, NESTED_SCHEMA, NESTED_DEFAULTS)
 
@@ -206,6 +207,29 @@ def test_publish_copies_content_and_lists_summary_without_source(client: TestCli
     assert (published.store.root / "sprites" / summary.sprite_id / "interactive.js").is_file()
 
 
+def test_publications_are_rows_of_the_shared_database_not_of_the_remotion_sqlite(client: TestClient, published, template_db: Engine) -> None:
+    """发布记录是共享库 remotion_sprites 里的一行（标识列与 JSON），Remotion SQLite 没有 sprites 表；预览包仍是本机文件。"""
+    summary = published_sprite(client, published.version.id)
+    with template_db.connect() as connection:
+        row = connection.execute(select(sprite_store.sprites)).one()
+    assert (row.sprite_id, row.source_version_id, row.kind, row.text_prop, row.keywords_prop) == (
+        summary.sprite_id, str(published.version.id), pb.SPRITE_KIND_TEXT, "text", "keywords",
+    )
+    assert row.data["tsx_code"] == CODE and row.data["sprite_id"] == summary.sprite_id
+    with published.store.connection() as db:
+        assert db.execute("SELECT name FROM sqlite_master WHERE name='sprites'").fetchone() is None
+    assert (published.store.root / "sprites" / summary.sprite_id / "interactive.js").is_file()
+
+
+def test_catalog_lists_the_newest_publication_first(client: TestClient, published) -> None:
+    """目录按发布时间倒序：排序在应用里完成（MySQL 对带整个 JSON 的行排序可能超出排序缓冲区）。"""
+    first = published_sprite(client, published.version.id, keywords_prop="")
+    second = published_sprite(client, published.version.id)
+    third = published_sprite(client, published.version.id, text_prop="color", keywords_prop="")
+    listed = pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites
+    assert [item.sprite_id for item in listed] == [third.sprite_id, second.sprite_id, first.sprite_id]
+
+
 def test_republishing_returns_the_original_sprite(client: TestClient, published) -> None:
     """相同来源与字段选择重复发布幂等；不同字段选择产生独立资产。"""
     first = published_sprite(client, published.version.id)
@@ -227,6 +251,32 @@ def test_published_sprite_survives_deleting_its_source_version(client: TestClien
     assert preview.status_code == 200
     assert "rebuilt imv-preview-sync" in preview.text
     assert "sandbox allow-scripts" in preview.headers["content-security-policy"]
+
+
+def test_losing_a_publish_race_returns_the_winner_and_cleans_up(published) -> None:
+    """并发的相同发布在写库时撞上唯一键：落败者返回胜者的资产，并删除自己刚复制的目录。"""
+    request = publish_request(published.version.id)
+    first = sprites._create(published.store, request, published.version, b"bundle")
+    second = sprites._create(published.store, request, published.version, b"bundle")
+    assert second.sprite_id == first.sprite_id
+    assert [item.name for item in (published.store.root / "sprites").iterdir()] == [first.sprite_id]
+
+
+def test_field_names_longer_than_the_column_are_a_422() -> None:
+    """text_prop 与 keywords_prop 受列宽限制：即使 schema 真有这么长的属性名，也在写库之前以 422 拒绝。"""
+    name = "n" * (sprite_store.NAME_LENGTH + 1)
+    schema = {"type": "object", "properties": {name: {"type": "string"}}}
+    with pytest.raises(HTTPException) as caught:
+        sprites._validated_request(pb.PublishSpriteRequest(kind=pb.SPRITE_KIND_TEXT, text_prop=name), schema, "composition")
+    assert caught.value.status_code == 422 and str(sprite_store.NAME_LENGTH) in caught.value.detail
+
+
+def test_preview_is_unavailable_when_the_local_bundle_is_missing(client: TestClient, published) -> None:
+    """发布记录在共享库，预览包只是本机文件：缺失时预览 404，目录仍列出该资产（叠加渲染只用 TSX，不受影响）。"""
+    summary = published_sprite(client, published.version.id)
+    shutil.rmtree(published.store.root / "sprites" / summary.sprite_id)
+    assert client.get(summary.preview_url).status_code == 404
+    assert [item.sprite_id for item in pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites] == [summary.sprite_id]
 
 
 @pytest.mark.parametrize(("fields", "status"), [
@@ -408,21 +458,29 @@ def test_publish_hashes_and_copies_off_the_event_loop(client: TestClient, publis
     assert where == ["worker thread"]
 
 
-def test_catalog_skips_unreadable_records_and_keeps_the_rest(client: TestClient, published, caplog) -> None:
-    """被改写或损坏的发布记录只从目录中隔离并记日志，其余资产照常列出；按 ID 访问仍给出明确错误。"""
+def test_catalog_skips_unreadable_records_and_keeps_the_rest(client: TestClient, published, template_db: Engine, caplog) -> None:
+    """被改写或形状损坏的发布记录只从目录中隔离并记日志，其余资产照常列出；按 ID 访问仍给出明确错误。
+
+    MySQL 的 JSON 列保证内容是合法 JSON，所以损坏表现为形状不对：哈希对不上、字段类型错误或根本不是对象（如一个数字）。
+    """
     healthy = published_sprite(client, published.version.id, keywords_prop="")
     tampered = published_sprite(client, published.version.id)
-    unparsable = published_sprite(client, published.version.id, text_prop="color", keywords_prop="")
-    with published.store.connection() as db:
-        data = json.loads(db.execute("SELECT data FROM sprites WHERE id=?", (tampered.sprite_id,)).fetchone()["data"])
-        data["tsx_code"] += "// edited"
-        db.execute("UPDATE sprites SET data=? WHERE id=?", (json.dumps(data), tampered.sprite_id))
-        db.execute("UPDATE sprites SET data='{not json' WHERE id=?", (unparsable.sprite_id,))
+    malformed = published_sprite(client, published.version.id, text_prop="color", keywords_prop="")
+    not_an_object = published_sprite(client, published.version.id, kind=pb.SPRITE_KIND_VIDEO_OVERLAY, text_prop="", keywords_prop="")
+    table = sprite_store.sprites
+    with template_db.begin() as connection:
+        data = connection.execute(select(table.c.data).where(table.c.sprite_id == tampered.sprite_id)).scalar_one()
+        for sprite_id, damaged in (
+            (tampered.sprite_id, {**data, "tsx_code": data["tsx_code"] + "// edited"}),
+            (malformed.sprite_id, {"sprite_id": 5}),
+            (not_an_object.sprite_id, 5),
+        ):
+            connection.execute(update(table).where(table.c.sprite_id == sprite_id).values(data=damaged))
     with caplog.at_level(logging.WARNING):
         listed = client.get("/api/sprites")
     assert listed.status_code == 200
     assert [item.sprite_id for item in pb.ListSpritesResponse.FromString(listed.content).sprites] == [healthy.sprite_id]
-    assert tampered.sprite_id in caplog.text and unparsable.sprite_id in caplog.text
+    assert all(broken.sprite_id in caplog.text for broken in (tampered, malformed, not_an_object))
     assert client.get(tampered.preview_url).status_code == 409
 
 
@@ -463,19 +521,18 @@ def test_rebuild_failure_still_saves_and_republishing_refreshes_the_old_copy(cli
     assert len(pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites) == 1
 
 
-def test_failed_hash_update_keeps_the_old_player_copy_and_republishing_finishes_the_refresh(client: TestClient, published) -> None:
-    """刷新旧副本时记录新哈希的数据库更新失败（锁超时、进程中断）：旧副本与旧哈希仍一致、预览可用且不留临时文件；数据库恢复后再次保存完成刷新。"""
+def test_failed_hash_update_keeps_the_old_player_copy_and_republishing_finishes_the_refresh(client: TestClient, published, template_db: Engine) -> None:
+    """刷新旧副本时记录新哈希的数据库更新失败（锁超时、进程中断，应用答复 503）：旧副本与旧哈希仍一致、预览可用且不留临时文件；数据库恢复后再次保存完成刷新。"""
     published.renderer.failure = RuntimeError("sandbox unavailable")
     summary = published_sprite(client, published.version.id)
     published.renderer.failure = None
-    with published.store.connection() as db:
-        db.execute("CREATE TRIGGER fail_refresh BEFORE UPDATE ON sprites BEGIN SELECT RAISE(ABORT, 'database is locked'); END")
-    with pytest.raises(sqlite3.DatabaseError):
-        publish(client, publish_request(published.version.id))
+    with template_db.begin() as connection:
+        connection.exec_driver_sql("CREATE TRIGGER fail_refresh BEFORE UPDATE ON remotion_sprites BEGIN SELECT RAISE(ABORT, 'database is locked'); END")
+    assert publish(client, publish_request(published.version.id)).status_code == 503
     assert "offline Player fixture" in client.get(summary.preview_url).text
     assert [item.name for item in (published.store.root / "sprites" / summary.sprite_id).iterdir()] == ["interactive.js"]
-    with published.store.connection() as db:
-        db.execute("DROP TRIGGER fail_refresh")
+    with template_db.begin() as connection:
+        connection.exec_driver_sql("DROP TRIGGER fail_refresh")
     assert published_sprite(client, published.version.id).sprite_id == summary.sprite_id
     assert "rebuilt imv-preview-sync" in client.get(summary.preview_url).text
 
