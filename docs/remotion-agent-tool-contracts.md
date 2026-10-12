@@ -70,6 +70,7 @@ JsonSchema = JsonObject
 PresetId = NonEmptyString
 SpriteId = NonEmptyString
 DraftId = NonEmptyString  # 任务内草稿句柄，只在创建它的任务中有效。
+DraftDigest = NonEmptyString  # 草稿内容摘要：内容相同则摘要相同，与随机的 draft_id 无关。
 Timestamp = NonEmptyString  # 输出还须符合下文的 UTC ISO 8601 约定。
 T = TypeVar("T")
 
@@ -512,6 +513,7 @@ class PresetModifyOutput(ContractModel):
     """副本句柄与摘要，不含新记录 ID；source_preset_id 指向原记录。"""
 
     draft_id: DraftId
+    digest: DraftDigest
     preset: PresetDraftSummary
 
 
@@ -523,7 +525,7 @@ async def preset_modify(request: PresetModifyInput) -> ToolResult[PresetModifyOu
 - preset_id 来自 search；也可以是本任务的预设草稿句柄（编辑基线登记的 `base_<instance_id>` 或此前 modify 返回的 `draft_id`），此时以该草稿为底复制，source_preset_id 沿用草稿已有的来源（没有则省略）。工具读取该记录或草稿，changes 至少包含一个字段；未知 ID 返回 `PRESET_NOT_FOUND`，并列出近期 preset_id 与本任务草稿句柄。
 - changes.code 是 Agent **已经修改完的完整源码**，不是自然语言修改要求，也不是待工具应用的文本 diff。
 - changes 中每个字段整体替换原字段；未传字段保留原值。特别是 Schema 和 default_parameters 整体替换，不递归拼接旧字段。
-- 合并后检查数据结构、Schema 和默认参数的一致性，把完整 PresetDraft（source_preset_id 为输入 preset_id）保存在任务内，返回 `draft_id` 和不含源码的摘要；源码不回传给调用方。
+- 合并后检查数据结构、Schema 和默认参数的一致性，把完整 PresetDraft（source_preset_id 为输入 preset_id）保存在任务内，返回 `draft_id`、内容摘要 `digest` 和不含源码的摘要；源码不回传给调用方。`draft_id` 每次调用都是新的，`digest` 只由草稿内容决定：同样的修改得到同样的 `digest`，宿主的空转判断据此识别重复调用。
 - 数据契约无效时返回 `INVALID_ARGUMENT`，`field` 为 `/changes`，`details.diagnostics` 指出具体字段；原记录保持不变。Schema 只允许文档内引用，不读取外部 URL。
 - 工具不执行模型调用、不写库、不创建新的 preset_id，不承诺 LSP 或行为检查已通过。可单独调用 validate 获取诊断。
 - 修改副本以 `{kind: "draft", draft_id}` 直接交给 compose；需要检索复用时，由调用方把完整定义交给 create。
@@ -668,6 +670,7 @@ class SpriteComposeOutput(ContractModel):
     """宿主保存的组合草稿句柄与摘要；完整源码不回传，sprite.create 按 draft_id 保存。"""
 
     draft_id: DraftId
+    digest: DraftDigest
     description: Description
     composition: Composition
     instances: list[InstanceSummary]
@@ -689,7 +692,7 @@ description 非空，instances 非空。主画布配置和 sprite 总帧数均�
 3. 计算固定画布下的总帧数。
 4. 生成单文件 TSX，包含各预设实现和组合宿主；源码相同的预设只打包一份模块，由多个实例复用；处理导入、组件名及辅助符号冲突，保持各预设原本逻辑。
 5. 按 instance_id 生成嵌套参数 Schema 和完整默认参数。
-6. 把完整 SpriteDraft 保存在任务内并返回其 `draft_id`、实例摘要、完整默认参数与源码字节数，不回传源码，不保存 sprite，也不把 draft 来源自动写入 preset 库。
+6. 把完整 SpriteDraft 保存在任务内并返回其 `draft_id`、内容摘要 `digest`（只由草稿内容决定，重复组合得到同一值）、实例摘要、完整默认参数与源码字节数，不回传源码，不保存 sprite，也不把 draft 来源自动写入 preset 库。
 
 组合后的 props 示例：
 

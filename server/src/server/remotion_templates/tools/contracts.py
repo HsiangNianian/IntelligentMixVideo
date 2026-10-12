@@ -26,6 +26,8 @@ PresetId = NonEmptyString
 SpriteId = NonEmptyString
 # 任务内草稿句柄：只在创建它的任务会话中有效。
 DraftId = NonEmptyString
+# 草稿内容摘要：内容相同则摘要相同，与每次随机生成的 draft_id 无关。
+DraftDigest = NonEmptyString
 Timestamp = NonEmptyString  # 输出还须符合下文的 UTC ISO 8601 约定。
 T = TypeVar("T")
 
@@ -218,6 +220,7 @@ class PresetModifyOutput(ContractModel):
     """副本句柄与摘要，不含新记录 ID；source_preset_id 指向原记录。"""
 
     draft_id: DraftId
+    digest: DraftDigest
     preset: PresetDraftSummary
 
 
@@ -322,6 +325,7 @@ class SpriteComposeOutput(ContractModel):
     """宿主保存的组合草稿句柄与摘要；完整源码不回传，sprite.create 按 draft_id 保存。"""
 
     draft_id: DraftId
+    digest: DraftDigest
     description: Description
     composition: Composition
     instances: list[InstanceSummary]

@@ -205,6 +205,39 @@ def test_an_edit_can_modify_a_base_draft_by_its_handle(tmp_path):
     assert "is a draft of this task" in draft_read.value.error.message and "base.presets" in draft_read.value.error.message
 
 
+def test_draft_receipts_carry_a_digest_of_their_content(tmp_path):
+    """同样的修改每次得到新的 draft_id，但内容摘要相同；内容一变摘要就变，空转判断据此区分重复与修改。"""
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    spec = SimpleNamespace(sprite=saved_sprite("bundle", "export default function Label(){return <div>Title</div>}"), composition=Composition(width=1080, height=1920, fps=30, duration_frames=30), sprite_kind="filter_overlay")
+    base = TemplateCandidate(tsx_code="bundle", config_schema={"type": "object"}, default_config={})
+    current = ToolSession(SimpleNamespace(settings=settings, renderer=None), spec, base, Budget(), tmp_path / "run", [], lambda *_: None, {})
+    first = current.modify_preset(PresetModifyInput(preset_id="base_title", changes={"description": "更淡"}))
+    again = current.modify_preset(PresetModifyInput(preset_id="base_title", changes={"description": "更淡"}))
+    other = current.modify_preset(PresetModifyInput(preset_id="base_title", changes={"code": "export default function Label(){return <div>Other</div>}"}))
+    assert first.draft_id != again.draft_id
+    assert first.digest == again.digest
+    assert other.digest != first.digest
+
+
+@pytest.mark.skipif(not RENDERER_DEPS.exists(), reason="install locked Remotion renderer dependencies")
+def test_repeated_compose_returns_the_same_digest_under_a_new_handle(tmp_path):
+    """重复同一组合：draft_id 不同、digest 相同；换一个参数 digest 就变。"""
+    async def run():
+        current = session(tmp_path)
+        patch_validation(current)
+        preset = await current.execute("preset.create", draft(), available())
+        first = await current.execute("sprite.compose", title_instance(preset["preset"]["preset_id"]), available())
+        again = await current.execute("sprite.compose", title_instance(preset["preset"]["preset_id"]), available())
+        changed = title_instance(preset["preset"]["preset_id"]).model_dump(mode="json", exclude_unset=True)
+        changed["instances"][0]["timing"]["duration_frames"] = 60
+        moved = await current.execute("sprite.compose", SpriteComposeInput.model_validate(changed), available())
+        assert first["draft_id"] != again["draft_id"]
+        assert first["digest"] == again["digest"]
+        assert moved["digest"] != first["digest"]
+
+    asyncio.run(run())
+
+
 def test_refused_code_lists_located_errors_with_their_lines_and_fixed_hints(tmp_path):
     """create 校验失败时，拒绝文本逐条给出位置、错误码与所在行源码，最多五条；常见错误附宿主固定的修复说明。"""
     def lsp(line, code="2322", message="Type 'string' is not assignable to type 'number'."):

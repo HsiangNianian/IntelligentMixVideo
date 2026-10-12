@@ -321,6 +321,33 @@ def test_a_batch_without_new_evidence_wakes_the_plan(monkeypatch, tmp_path):
     assert run.state.result["status"] == "tool_limit_reached"
 
 
+def test_repeating_a_draft_under_a_fresh_handle_is_no_new_evidence(monkeypatch, tmp_path):
+    """审计复现：每次 sprite_compose 都返回新的随机 draft_id，同样的组合曾被当成新证据，宿主一直自动续批直到硬额度；现在按内容摘要识别重复，整批重复就唤醒 Plan。"""
+    run, harness = new_run(monkeypatch, tmp_path, [
+        delegate(),
+        call("exec-1", "preset_search", {"preset_id": "preset-1"}),
+        report("exec-2"),
+        *[compose(f"exec-{index}") for index in range(3, 7)],
+        call("plan-1", "tools_plan_execute", {"action": "stop", "reason": "重复组合"}),
+        call("outer-2", "tools_plan_execute", {"action": "stop", "reason": "重复组合"}),
+    ], max_tooluse=2, max_steps=8)
+    execute = run.session.execute
+    handles = iter(range(100))
+
+    async def fresh_handles(name, args, catalog):
+        """Answer like the real compose: a new handle every call, the digest of the same content."""
+        if name == "sprite.compose":
+            return {"draft_id": f"sprite_draft_{next(handles)}", "digest": "3f2a9c1e5b7d4f60", "instances": []}
+        return await execute(name, args, catalog)
+
+    run.session.execute = fresh_handles
+    with pytest.raises(ExecutionFailure) as stopped:
+        asyncio.run(run.plan_execute())
+    assert stopped.value.code == "agent_stopped"
+    # The first compose batch saw one new draft and was continued; the next only repeated it.
+    assert harness.roles == ["outer"] + ["executor"] * 6 + ["plan", "outer"]
+
+
 def test_a_blocked_step_wakes_the_plan_which_can_continue_it(monkeypatch, tmp_path):
     """步骤受阻时才唤醒 Plan；Plan continue 后执行层在同一步骤上补齐产出并完成。"""
     run, harness = new_run(monkeypatch, tmp_path, [

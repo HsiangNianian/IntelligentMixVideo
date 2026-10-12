@@ -90,6 +90,16 @@ def _parameter_names(schema: dict) -> list[str]:
     return list(schema.get("properties", {}))
 
 
+def _digest(draft: PresetDraft | SpriteDraft) -> str:
+    """Short stable hash of a draft's whole content; the random draft_id never enters it.
+
+    The no-progress guard compares receipts: the same request yields a new draft_id every time, so this is
+    what tells a repeated draft apart from one whose source, schema, defaults or instances changed.
+    """
+    content = json.dumps(draft.model_dump(mode="json", exclude_unset=True), ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(content.encode()).hexdigest()[:16]
+
+
 class ToolSession:
     """Keep renderer candidates task-local while PR76 Preset/Sprite records remain immutable."""
 
@@ -396,7 +406,7 @@ class ToolSession:
                             field="/changes", details={"diagnostics": [item.model_dump(mode="json", exclude_unset=True) for item in diagnostics]})
         draft_id = "preset_draft_" + uuid4().hex[:12]
         self.preset_drafts[draft_id] = draft
-        return PresetModifyOutput(draft_id=draft_id, preset=PresetDraftSummary(
+        return PresetModifyOutput(draft_id=draft_id, digest=_digest(draft), preset=PresetDraftSummary(
             description=draft.description, parameter_names=_parameter_names(draft.parameter_schema),
             **({"source_preset_id": source} if source else {}),
         ))
@@ -547,6 +557,7 @@ class ToolSession:
         self.sprite_drafts[draft_id] = sprite
         return SpriteComposeOutput(
             draft_id=draft_id,
+            digest=_digest(sprite),
             description=sprite.description,
             composition=sprite.composition,
             instances=summaries,

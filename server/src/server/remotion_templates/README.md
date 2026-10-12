@@ -143,6 +143,8 @@ composition is never copied back verbatim. Presets of the same source are bundle
 instances use them. For an edit, the accepted base's instances are registered as `base_<instance_id>`
 Preset drafts; only the Executor's snapshot shows their source, each distinct source once. The execution
 snapshot shows `tool_calls_left_in_batch` and `tool_calls_left_in_task` instead of used/limit pairs.
+Every call returns a fresh `draft_id`, so the no-progress guard ignores draft handles and compares the
+content `digest` that `preset_modify` and `sprite_compose` return: repeating the same draft is no new evidence.
 
 The host records each step's outputs from tool receipts: the Sprites `sprite_create` saved, and the Preset
 sources that `preset_create`, `preset_search {preset_id}` or `preset_modify` made ready. A step with the

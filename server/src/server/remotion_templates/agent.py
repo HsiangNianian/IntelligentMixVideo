@@ -242,8 +242,12 @@ class AgentRun:
         )
 
     def _receipt_key(self, tool_name, value):
-        """Digest meaningful observations while ignoring random asset/write identifiers."""
-        ignored = {"id", "asset_id", "sprite_id", "preset_id", "ref", "content_hash", "created_at", "range", "line", "column"}
+        """Digest meaningful observations while ignoring random asset/write identifiers.
+
+        Draft handles are fresh on every call, so they are ignored too; a draft receipt carries the
+        content digest that still tells a changed draft from a repeated one.
+        """
+        ignored = {"id", "asset_id", "sprite_id", "preset_id", "draft_id", "ref", "content_hash", "created_at", "range", "line", "column"}
 
         def scrub(item):
             if isinstance(item, dict):
