@@ -309,6 +309,8 @@ async function main() {
     const pages = await browser.pages();
     const page = pages[0] ?? await browser.newPage({ context: () => null, logLevel: "error", indent: false, pageIndex: 0, onBrowserLog: null, onLog: () => undefined });
     page.__imvUrl = url;
+    // The real overlay render opens its page at the composition size, so vw/vh, window.inner* and media queries must see that size here too.
+    await page.setViewport({ width: request.composition.width, height: request.composition.height, deviceScaleFactor: 1 });
     const loadError = await waitReady(page);
     let baseReady = true;
     try {

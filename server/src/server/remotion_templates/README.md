@@ -104,8 +104,9 @@ in-between frames, measures how much of the canvas is nearly opaque (alpha of 24
 taken without a page background). When every sampled frame is opaque on 98% or more of the canvas the Sprite is
 refused with `CODE_VALIDATION_FAILED`, the reason names the frames and what to do, and nothing is saved. One
 sampled frame with the video showing through is enough, so a transition that covers the screen only for a
-moment is not affected. The mount is cached under the key the host's final check reads, so completing the task
-does not mount the Sprite a second time. A component that throws on a sampled frame, or while its
+moment is not affected. The page is opened at the canvas size (1080x1920), as the real overlay render does, so
+`100vw`/`100vh`, `window.innerWidth`/`innerHeight` and media queries see the canvas. The mount is cached under
+the key the host's final check reads, so completing the task does not mount the Sprite a second time. A component that throws on a sampled frame, or while its
 module loads, fails the `transparency` (with the frame) or `default_render` check with its own error, so
 the model gets `CODE_VALIDATION_FAILED` and the cause rather than `VALIDATION_UNAVAILABLE`. Only
 generation asks for the measurement; a user's manual parameter edits and already published versions are
