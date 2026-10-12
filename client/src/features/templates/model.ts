@@ -101,12 +101,24 @@ export interface EffectAsset {
   preview_url: string;
 }
 
+/** 模板里的一次 Remotion 片段摆放：引用已发布的 Sprite，起点为秒；列表先后决定叠放层级，先者在下。 */
+export interface RemotionClip {
+  /** 模板内唯一的摆放 ID，同一个 Sprite 可以摆放多次。 */
+  id: string;
+  sprite_id: string;
+  start: number;
+  /** 秒数；null 表示沿用 Sprite 自身的时长。 */
+  duration: number | null;
+}
+
 /** 用户可修改的完整配置，不包含服务端标识和时间。 */
 export interface Draft {
   name: string;
   description: string;
   transition_duration_seconds: number;
   tracks: EffectTrack[];
+  /** Remotion 片段不是 IMS 对象，不进入效果与预览，随模板一并保存。 */
+  clips: RemotionClip[];
 }
 
 /** 单个对象的参数面板输入，只在编辑期间使用，不作为模板保存。 */
@@ -134,7 +146,9 @@ export interface EffectTrack {
 }
 
 /** 后端返回的完整模板，effects 为保存时的可信快照。 */
-export interface Template extends Draft {
+export interface Template extends Omit<Draft, "clips"> {
+  /** 旧版本地模板文件没有该字段，按空列表处理。 */
+  clips?: RemotionClip[];
   template_id: string;
   /** 本地模板所属文件路径，由桌面端返回；保存时传回，路径已变更则拒绝写入。 */
   library?: string;
@@ -150,6 +164,7 @@ export function newDraft(): Draft {
     name: "",
     description: "",
     tracks: [],
+    clips: [],
     transition_duration_seconds: defaultTransitionDuration,
   };
 }
@@ -163,6 +178,7 @@ export function toDraft(template: Template): Draft {
     description: template.description,
     transition_duration_seconds: template.transition_duration_seconds,
     tracks: structuredClone(template.tracks),
+    clips: structuredClone(template.clips ?? []),
   };
 }
 

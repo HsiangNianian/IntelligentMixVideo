@@ -11,7 +11,7 @@ import {
   SaveTemplateResponseSchema,
   type TemplateRecord,
 } from "@/generated/imv/template/v1/template_pb";
-import { defaultEditor, draftEffects, type Category, type Draft, type Editor, type EffectTrack, type Template } from "./model";
+import { defaultEditor, draftEffects, type Category, type Draft, type Editor, type EffectTrack, type RemotionClip, type Template } from "./model";
 
 /** 当前模板库的存储位置，每次操作显式传递，避免切换后写入错误环境。 */
 export type Environment = "local" | "cloud";
@@ -26,10 +26,11 @@ async function local<T>(operation: string, id?: string, draft?: number[], librar
   }
 }
 
-/** 还原现有模板视图的字段名称、可空时长及 UTC 时间。 */
+/** 还原现有模板视图的字段名称、可空时长及 UTC 时间；`remotion` 轨道拆成独立的片段列表，不进入 IMS 对象。 */
 function toTemplate(record: TemplateRecord): Template {
   if (!record.tracks || !record.createdAt || !record.updatedAt)
     throw new Error("模板响应缺少必要字段");
+  const wireTracks = record.tracks.tracks;
   return {
     name: record.name,
     description: record.description,
@@ -46,7 +47,7 @@ function toTemplate(record: TemplateRecord): Template {
       parameters: effect.parameters,
       preview_url: effect.previewUrl,
     })),
-    tracks: record.tracks.tracks.map((track): EffectTrack => {
+    tracks: wireTracks.filter((track) => track.target !== "remotion").map((track): EffectTrack => {
       if (track.start === undefined || !track.editor)
         throw new Error("模板对象缺少必要字段");
       const received = toJson(EffectTemplateEditorSchema, track.editor) as Partial<Editor>;
@@ -61,6 +62,11 @@ function toTemplate(record: TemplateRecord): Template {
         duration: track.duration ?? null,
         editor,
       };
+    }),
+    clips: wireTracks.filter((track) => track.target === "remotion").map((track): RemotionClip => {
+      if (track.start === undefined || !track.spriteId)
+        throw new Error("模板对象缺少必要字段");
+      return { id: track.id, sprite_id: track.spriteId, start: track.start, duration: track.duration ?? null };
     }),
   };
 }
@@ -148,12 +154,15 @@ export function getTemplate(id: string, environment: Environment = "cloud", sign
 
 /**
  * 统一创建、更新及另存为；只有调用方明确传 ID 时才覆盖已有模板，本地更新携带打开时所属的库。
- * `allowEmpty` 由调用方在模板已放入 Remotion 片段时声明，此时可以没有 IMS 效果；否则仍至少需要一个效果。
+ * 草稿带有 Remotion 片段，或调用方用 `allowEmpty` 声明模板已放入片段时，可以没有 IMS 效果；否则仍至少需要一个效果。
+ * 片段在线路上是 `remotion` 轨道，排在 IMS 对象之后；本地模板不支持，带片段的草稿直接拒绝。
  */
 export function saveTemplate(draft: Draft, id?: string, environment: Environment = "cloud", library?: string, allowEmpty = false): Promise<Template> {
   if (!draft.name.trim()) return Promise.reject(new Error("请输入模板名称"));
+  if (environment === "local" && draft.clips.length)
+    return Promise.reject(new Error("本地模板不支持 Remotion 资产"));
   const effect_ids = draftEffects(draft);
-  if (!effect_ids.length && !allowEmpty)
+  if (!effect_ids.length && !allowEmpty && !draft.clips.length)
     return Promise.reject(new Error("请至少选择一个效果"));
   const message = create(SaveTemplateRequestSchema, {
     name: draft.name.trim(),
@@ -161,14 +170,26 @@ export function saveTemplate(draft: Draft, id?: string, environment: Environment
     effectIds: effect_ids,
     transitionDurationSeconds: draft.transition_duration_seconds,
     tracks: {
-      tracks: draft.tracks.map((track) => ({
-        id: track.id,
-        target: track.target,
-        startMode: track.start_mode,
-        start: track.start,
-        duration: track.duration ?? undefined,
-        editor: track.editor,
-      })),
+      tracks: [
+        ...draft.tracks.map((track) => ({
+          id: track.id,
+          target: track.target,
+          startMode: track.start_mode,
+          start: track.start,
+          duration: track.duration ?? undefined,
+          editor: track.editor,
+        })),
+        // 片段只带引用和秒数起点，editor 必须是空消息而不是缺省。
+        ...draft.clips.map((clip) => ({
+          id: clip.id,
+          target: "remotion",
+          startMode: "seconds",
+          start: clip.start,
+          duration: clip.duration ?? undefined,
+          editor: {},
+          spriteId: clip.sprite_id,
+        })),
+      ],
     },
     templateId: id,
   });

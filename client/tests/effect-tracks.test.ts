@@ -304,6 +304,15 @@ test("重置文字实例保留轨道", () => {
   expect(buildTimeline(reset, catalog).SubtitleTracks.flatMap((item) => item.SubtitleTrackClips).some((item) => item.Content === "超值特惠")).toBe(true);
 });
 
+// 场景：Remotion 片段与 IMS 对象共用 100 条上限，片段占满后不能再添加对象。
+test("片段与对象共用轨道上限", () => {
+  const draft = sampleDraft();
+  draft.clips = Array.from({ length: 98 }, (_, index) => ({ id: `clip-${index}`, sprite_id: "sprite", start: 0, duration: null }));
+  expect(() => addTrack(draft, vfx, "title")).toThrow("轨道数量不能超过 100");
+  draft.clips.pop();
+  expect(addTrack(draft, vfx, "title").draft.tracks).toHaveLength(3);
+});
+
 // 场景：移除文字后通过花字资产重新添加获得独立实例，其余文字参数保留。
 test("文字通过资产重新添加并保留其他对象", () => {
   const draft = sampleDraft();
