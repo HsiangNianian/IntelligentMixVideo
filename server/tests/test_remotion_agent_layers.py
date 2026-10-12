@@ -1,4 +1,9 @@
-"""Focused offline tests for the Outer → Plan → Executor handoff protocol."""
+"""Offline tests for the Outer → host plan → Executor protocol with scripted model turns.
+
+Covers the Outer control-only window, the host's standard two-step plan, tools_report_step with
+host-recorded outputs, automatic batch continuation, Plan recovery and the no-progress guard.
+Run: `uv run --locked pytest tests/test_remotion_agent_layers.py -v`.
+"""
 
 import asyncio
 import json
@@ -9,25 +14,31 @@ import pytest
 
 from server.remotion_templates.agent import AgentRun, Layer
 from server.remotion_templates.context import AssistantMessage
-from server.remotion_templates.planning import Plan, PlanAction
-from server.remotion_templates.tools.registry import registered_tools
-from server.remotion_templates.provider import Budget
+from server.remotion_templates.planning import Plan, PlanAction, default_plan
+from server.remotion_templates.provider import Budget, ExecutionFailure
 from server.remotion_templates.settings import Settings
+from server.remotion_templates.tools.catalog import PLAN_TOOL, REPORT_TOOL
 
 
 class FakeSession:
-    """Small task-owned session exposing only the PR76 APIs used by AgentRun."""
+    """Small task-owned session exposing only the APIs AgentRun uses.
+
+    Preset tools answer with a preset_id, preset_modify with a draft_id, and sprite_create saves a
+    new Sprite like the real tool, so the host can record each step's outputs from the receipts.
+    """
 
     def __init__(self, _harness, _spec, _base, _budget, directory, images, _stage, intent):
         self.directory = Path(directory)
         self.images = images
         self.intent = intent or {"original_request": {"description": "demo"}}
         self.feedback = []
-        self.step_scope = None
+        self.preset_drafts = {}
         self.latest_sprite_id = "sprite-1"
         self.saved_sprites = {"sprite-1": {"sprite_id": "sprite-1"}}
+        if (intent or {}).get("accepted_base"):
+            self.preset_drafts["base_title"] = {"description": "base"}
 
-    def snapshot(self):
+    def snapshot(self, **_options):
         """Return deterministic host facts for all three prompts."""
         return {"user_intent": self.intent, "sprites": sorted(self.saved_sprites)}
 
@@ -35,28 +46,23 @@ class FakeSession:
         """Resolve only the task's exact saved Sprite."""
         return self.saved_sprites[identifier]
 
-    async def validate_render(self, _request):
-        """Return a passing mount report so publication can proceed."""
-        return SimpleNamespace(passed=True)
-
-    def validation_for(self, _record):
-        """A saved Sprite has no render receipt until the host finalizer checks it."""
-        return None
-
     async def execute(self, name, args, _catalog):
-        """Record one deterministic business tool observation."""
-        return {"tool": name, "args": args.model_dump(mode="json")}
+        """Return one deterministic business tool observation."""
+        data = {"tool": name, "args": args.model_dump(mode="json")}
+        if name == "sprite.create":
+            identifier = f"sprite-{len(self.saved_sprites) + 1}"
+            self.saved_sprites[identifier] = {"sprite_id": identifier}
+            self.latest_sprite_id = identifier
+            data["sprite_id"] = identifier
+        elif name == "preset.modify":
+            data["draft_id"] = "preset_draft_1"
+        elif name in {"preset.create", "preset.search"} and getattr(args, "preset_id", "new") is not None:
+            data["preset"] = {"preset_id": getattr(args, "preset_id", None) or "preset-new"}
+        return data
 
 
-class SavingSession(FakeSession):
-    """Session whose every tool call saves one new Sprite, standing in for a successful sprite_create."""
-
-    async def execute(self, name, args, catalog):
-        """Save the next Sprite like sprite_create does, then return the usual observation."""
-        identifier = f"sprite-{len(self.saved_sprites) + 1}"
-        self.saved_sprites[identifier] = {"sprite_id": identifier}
-        self.latest_sprite_id = identifier
-        return await super().execute(name, args, catalog)
+class ScriptEnd(Exception):
+    """The scripted model turns ran out; a test that stops mid-task expects this."""
 
 
 class FakeHarness:
@@ -65,6 +71,7 @@ class FakeHarness:
     def __init__(self, responses):
         self.responses = iter(responses)
         self.roles = []
+        self.systems = {}
         self.settings = SimpleNamespace(
             max_steps=4,
             max_tooluse=3,
@@ -72,13 +79,17 @@ class FakeHarness:
             max_no_progress_turns=Settings.model_fields["max_no_progress_turns"].default,
         )
 
-    async def _turn(self, _system, _context, _tools, _budget, _images, *, phase):
+    async def _turn(self, system, _context, _tools, _budget, _images, *, phase):
         """Return the next scripted response for one exact model role."""
         self.roles.append(phase)
-        return next(self.responses)
+        self.systems.setdefault(phase, system)
+        try:
+            return next(self.responses)
+        except StopIteration:
+            raise ScriptEnd from None
 
     async def finalize_sprite(self, _session, identifier, _budget, _directory):
-        """Return a marker proving only Outer performed publication."""
+        """Return a marker proving the host published exactly this Sprite."""
         return {"published": identifier}
 
 
@@ -95,429 +106,507 @@ def call(identifier, name, arguments):
     )
 
 
-@pytest.mark.parametrize("response", [
-    AssistantMessage(content='{"action":"complete","sprite_id":"sprite-1"}'),
-    call("complete-1", "tools_plan_execute", {"action": "complete", "sprite_id": "sprite-1"}),
-], ids=["json", "tool"])
-def test_deferred_tools_are_hidden_and_completion_still_publishes(monkeypatch, tmp_path, response):
-    """Only implemented tools reach the model, and host publication needs no model receipts."""
-    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
-    harness = FakeHarness([response])
-    run = AgentRun(harness, None, Budget(), tmp_path, [], lambda *_: None)
-    names = {tool.name for tool in run._tools_for_layer()}
-    implemented = {item.name for item in registered_tools() if item.implemented}
-    assert names == implemented | {"tools.plan_execute"}
-    assert asyncio.run(run.plan_execute()) == {"published": "sprite-1"}
-    assert harness.roles == ["outer"]
+def delegate(identifier="outer-1"):
+    """The Outer's delegation of a generation task."""
+    return call(identifier, "tools_plan_execute", {"action": "delegate", "reason": "build it"})
 
 
-def test_outer_plan_executor_plan_outer_handoff(monkeypatch, tmp_path):
-    """A planned task must traverse every layer and publish only after Outer completion."""
-    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
-    plan = Plan(
-        goal="inspect",
-        steps=[
-            {
-                "id": "inspect",
-                "goal": "inspect a tool",
-                "tool_modules": ["tools"],
-                "done_when": "descriptor observed",
-            }
-        ],
-    )
-    harness = FakeHarness(
-        [
-            call("outer-1", "tools_plan_execute", {"action": "delegate", "plan": plan.model_dump()}),
-            call("plan-1", "tools_plan_execute", {"action": "update_plan", "plan": plan.model_dump()}),
-            call("exec-1", "tools_inspect", {"tool_name": "sprite.create"}),
-            AssistantMessage(content=json.dumps({"status": "step_done", "summary": "descriptor observed", "sprite_id": "sprite-1"})),
-            call("plan-2", "tools_plan_execute", {"action": "complete"}),
-            AssistantMessage(content=json.dumps({"action": "complete", "sprite_id": "sprite-1"})),
-        ]
-    )
-    run = AgentRun(harness, None, Budget(), tmp_path, [], lambda *_: None, intent={"original_request": {"description": "demo"}})
-    result = asyncio.run(run.plan_execute())
-    assert result == {"published": "sprite-1"}
-    assert harness.roles == ["outer", "plan", "executor", "executor", "plan", "outer"]
-    assert run.plan_context.messages() and run.executor_context.messages()
-    # Successful delegate/update_plan/complete controls must not accumulate towards no_progress.
-    assert run.stalled_turns == 0
+def report(identifier, status="step_done", summary="done"):
+    """The Executor's tools_report_step call."""
+    return call(identifier, "tools_report_step", {"status": status, "summary": summary})
 
 
-def test_every_layer_is_told_that_inspect_cannot_search_for_tools(monkeypatch, tmp_path):
-    """真实日志里 55% 的 tools_inspect 是在猜工具名：「只读已知名称的契约」这条规则必须进入三层的系统提示。"""
-    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
-    plan = Plan(goal="inspect", steps=[{"id": "inspect", "goal": "inspect a tool", "tool_modules": ["tools"], "done_when": "observed"}])
-    harness = FakeHarness([
-        call("outer-1", "tools_plan_execute", {"action": "delegate", "plan": plan.model_dump()}),
-        call("plan-1", "tools_plan_execute", {"action": "update_plan", "plan": plan.model_dump()}),
-        AssistantMessage(content=json.dumps({"status": "step_done", "summary": "observed", "sprite_id": "sprite-1"})),
-        call("plan-2", "tools_plan_execute", {"action": "complete"}),
-        AssistantMessage(content=json.dumps({"action": "complete", "sprite_id": "sprite-1"})),
-    ])
-    systems = {}
-
-    async def turn(system, _context, _tools, _budget, _images, *, phase):
-        """Remember the system prompt each role received before returning the scripted reply."""
-        systems.setdefault(phase, system)
-        harness.roles.append(phase)
-        return next(harness.responses)
-
-    harness._turn = turn
-    run = AgentRun(harness, None, Budget(), tmp_path, [], lambda *_: None, intent={"original_request": {"description": "demo"}})
-    assert asyncio.run(run.plan_execute()) == {"published": "sprite-1"}
-    assert set(systems) == {"outer", "plan", "executor"}
-    for role, system in systems.items():
-        assert "cannot search or list tools" in system, role
-    # compose only returns a draft: Plan must keep compose and save together, Executor must not claim a save it did not make
-    assert "compose and save in the SAME step" in systems["plan"]
-    assert "never report step_done from a draft" in systems["executor"]
+def compose(identifier):
+    """A sprite_compose call over one stored Preset."""
+    return call(identifier, "sprite_compose", {
+        "description": "滤镜",
+        "instances": [{
+            "instance_id": "filter",
+            "source": {"kind": "stored", "preset_id": "preset-1"},
+            "layout": {"x": 0, "y": 0, "width": 1080, "height": 1920, "z_index": 0},
+            "timing": {"start_frame": 0, "duration_frames": 150},
+        }],
+    })
 
 
 def watch_feedback(run, harness):
     """Record the steering the host showed before each model turn; the returned list grows as the run proceeds."""
     seen = []
+    scripted = harness._turn
 
-    async def turn(_system, _context, _tools, _budget, _images, *, phase):
+    async def turn(system, context, tools, budget, images, *, phase):
         """Record the feedback in force, then return the next scripted reply."""
         seen.append(list(run.session.feedback))
-        harness.roles.append(phase)
-        return next(harness.responses)
+        return await scripted(system, context, tools, budget, images, phase=phase)
 
     harness._turn = turn
     return seen
 
 
-def reply(**payload):
-    """A plain JSON protocol reply of the Executor, Plan or Outer."""
-    return AssistantMessage(content=json.dumps(payload))
+def new_run(monkeypatch, tmp_path, responses, intent=None, **settings):
+    """An AgentRun over the fake session and scripted harness; limits are read once, so pass them here."""
+    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
+    harness = FakeHarness(responses)
+    vars(harness.settings).update(settings)
+    run = AgentRun(harness, None, Budget(), tmp_path, [], lambda *_: None, intent=intent or {"original_request": {"description": "demo"}})
+    return run, harness
 
 
-def test_a_step_whose_sprite_a_later_step_needs_cannot_finish_without_saving_it(monkeypatch, tmp_path):
-    """真实失败（56 轮）：执行器没调 sprite_create 就报 step_done，计划之后无法重做该步；必须在执行器这一层拦下并让它补存。"""
-    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", SavingSession)
-    plan = Plan(goal="lighter", steps=[
-        {"id": "compose", "goal": "compose and save", "tool_modules": ["sprite"], "done_when": "saved"},
-        {"id": "verify", "goal": "check", "tool_modules": ["tools"], "done_when": "checked",
-         "input_refs": ["user_intent", "steps.compose.outputs.sprite"]},
+def test_a_delegation_runs_the_host_plan_without_the_plan_model(monkeypatch, tmp_path):
+    """回放暖色调滤镜请求：委派后宿主直接建立标准计划，执行层准备预设、组合并保存，宿主自动推进并发布，Plan 模型一次都不调用。"""
+    run, harness = new_run(monkeypatch, tmp_path, [
+        delegate(),
+        call("exec-1", "preset_search", {"preset_id": "preset-1"}),
+        report("exec-2", summary="预设已就绪"),
+        compose("exec-3"),
+        call("exec-4", "sprite_create", {"draft_id": "sprite_draft_1"}),
+        report("exec-5", summary="已保存"),
     ])
-    harness = FakeHarness([
-        call("outer-1", "tools_plan_execute", {"action": "delegate", "plan": plan.model_dump()}),
-        call("plan-1", "tools_plan_execute", {"action": "update_plan", "plan": plan.model_dump()}),
-        AssistantMessage(content=json.dumps({"status": "step_done", "summary": "composed a draft"})),
-        call("exec-1", "tools_inspect", {"tool_name": "sprite.create"}),
-        AssistantMessage(content=json.dumps({"status": "step_done", "summary": "saved", "sprite_id": "sprite-2"})),
-        call("plan-2", "tools_plan_execute", {"action": "advance"}),
-        AssistantMessage(content=json.dumps({"status": "step_done", "summary": "checked", "sprite_id": "sprite-2"})),
-        call("plan-3", "tools_plan_execute", {"action": "complete"}),
-        AssistantMessage(content=json.dumps({"action": "complete", "sprite_id": "sprite-2"})),
-    ])
-    run = AgentRun(harness, None, Budget(), tmp_path, [], lambda *_: None, intent={"original_request": {"description": "demo"}})
-    feedback_before_each_turn = []
-
-    async def turn(_system, _context, _tools, _budget, _images, *, phase):
-        """Record what the host told the model before each turn, then return the scripted reply."""
-        feedback_before_each_turn.append((phase, list(run.session.feedback)))
-        harness.roles.append(phase)
-        return next(harness.responses)
-
-    harness._turn = turn
+    assert [tool.name for tool in run._tools_for_layer()] == [PLAN_TOOL.name]
     assert asyncio.run(run.plan_execute()) == {"published": "sprite-2"}
-    # the first claim was refused in the Executor layer, so Executor ran three times before Plan saw a result
-    assert harness.roles == ["outer", "plan", "executor", "executor", "executor", "plan", "executor", "plan", "outer"]
-    refused = feedback_before_each_turn[3][1]
-    assert refused and "not done" in refused[0] and "sprite_create" in refused[0] and "verify" in refused[0]
+    assert harness.roles == ["outer"] + ["executor"] * 5
+    assert [step.id for step in run.state.plan.steps] == ["preset", "sprite"]
+    assert run.state.completed["preset"]["presets"] == [{"kind": "stored", "preset_id": "preset-1"}]
+    assert run.state.result["sprite_id"] == "sprite-2"
+    assert run.stalled_turns == 0
 
 
-def test_a_step_cannot_hand_a_later_step_a_sprite_an_earlier_step_saved(monkeypatch, tmp_path):
-    """审计复现：second 没调任何工具就把 first 保存的 sprite-2 当作自己的产物报 step_done，依赖它的步骤会拿到旧产物。"""
-    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", SavingSession)
-    plan = Plan(goal="two edits", steps=[
-        {"id": "first", "goal": "compose and save", "tool_modules": ["sprite"], "done_when": "saved"},
-        {"id": "second", "goal": "compose and save again", "tool_modules": ["sprite"], "done_when": "saved",
-         "input_refs": ["steps.first.outputs.sprite"]},
-        {"id": "verify", "goal": "check", "tool_modules": ["tools"], "done_when": "checked",
-         "input_refs": ["steps.second.outputs.sprite"]},
-    ])
-    harness = FakeHarness([
-        call("outer-1", "tools_plan_execute", {"action": "delegate", "plan": plan.model_dump()}),
-        call("plan-1", "tools_plan_execute", {"action": "update_plan", "plan": plan.model_dump()}),
-        call("first-1", "tools_inspect", {"tool_name": "sprite.create"}),
-        AssistantMessage(content=json.dumps({"status": "step_done", "summary": "saved", "sprite_id": "sprite-2"})),
-        call("plan-2", "tools_plan_execute", {"action": "advance"}),
-        AssistantMessage(content=json.dumps({"status": "step_done", "summary": "again", "sprite_id": "sprite-2"})),
-        call("second-1", "tools_inspect", {"tool_name": "sprite.create"}),
-        AssistantMessage(content=json.dumps({"status": "step_done", "summary": "again", "sprite_id": "sprite-3"})),
-        call("plan-3", "tools_plan_execute", {"action": "advance"}),
-        AssistantMessage(content=json.dumps({"status": "step_done", "summary": "checked", "sprite_id": "sprite-3"})),
-        call("plan-4", "tools_plan_execute", {"action": "complete"}),
-        AssistantMessage(content=json.dumps({"action": "complete", "sprite_id": "sprite-3"})),
-    ])
-    run = AgentRun(harness, None, Budget(), tmp_path, [], lambda *_: None, intent={"original_request": {"description": "demo"}})
-    feedback_before_each_turn = watch_feedback(run, harness)
-    assert asyncio.run(run.plan_execute()) == {"published": "sprite-3"}
-    assert run.step_sprites == {0: ["sprite-2"], 1: ["sprite-3"]}
-    # the stale claim kept the Executor on step second; it only finished after saving its own Sprite
-    assert harness.roles == ["outer", "plan", "executor", "executor", "plan", "executor", "executor", "executor", "plan", "executor", "plan", "outer"]
-    refused = feedback_before_each_turn[6]
-    assert refused and "not saved by this step" in refused[0] and "sprite-2" in refused[0] and "verify" in refused[0]
+def test_the_executor_window_offers_the_step_tools_and_report_step_only(monkeypatch, tmp_path):
+    """执行层只看到当前步骤模块的工具和 tools_report_step；计划控制不在其中，延后实现的工具也不出现。"""
+    run, _ = new_run(monkeypatch, tmp_path, [])
+    run.state.control(PlanAction(action="update_plan", plan=default_plan(edit=False)))
+    run.layer = Layer.EXECUTOR
+    names = {tool.name for tool in run._tools_for_layer()}
+    assert names == {"preset.create", "preset.search", "preset.modify", "tools.inspect", REPORT_TOOL.name}
 
 
-def test_a_step_that_cannot_save_a_sprite_is_not_asked_to(monkeypatch, tmp_path):
-    """审计复现：只读的 review 步骤把上一步的 Sprite 原样交给后续步骤，窗口里没有 sprite_create，不能被要求「先保存」。"""
-    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", SavingSession)
-    plan = Plan(goal="make, review, polish", steps=[
-        {"id": "make", "goal": "compose and save", "tool_modules": ["sprite"], "done_when": "saved"},
-        {"id": "review", "goal": "look at it", "tool_modules": ["tools"], "done_when": "reviewed",
-         "input_refs": ["steps.make.outputs.sprite"]},
-        {"id": "polish", "goal": "compose and save again", "tool_modules": ["sprite"], "done_when": "saved",
-         "input_refs": ["steps.review.outputs.sprite"]},
+def test_every_layer_is_told_the_protocol_it_must_follow(monkeypatch, tmp_path):
+    """三层系统提示都写明 inspect 不能搜索工具；Plan 知道组合与保存同在一步，执行层知道用 report_step 与句柄。"""
+    run, harness = new_run(monkeypatch, tmp_path, [
+        delegate(),
+        report("exec-1", "blocked", "缺少信息"),
+        call("plan-1", "tools_plan_execute", {"action": "complete"}),
     ])
-    harness = FakeHarness([
-        call("outer-1", "tools_plan_execute", {"action": "delegate", "plan": plan.model_dump()}),
-        call("plan-1", "tools_plan_execute", {"action": "update_plan", "plan": plan.model_dump()}),
-        call("make-1", "tools_inspect", {"tool_name": "sprite.create"}),
-        reply(status="step_done", summary="saved", sprite_id="sprite-2"),
-        call("plan-2", "tools_plan_execute", {"action": "advance"}),
-        reply(status="step_done", summary="reviewed, nothing to change", sprite_id="sprite-2"),
-        call("plan-3", "tools_plan_execute", {"action": "advance"}),
-        call("polish-1", "tools_inspect", {"tool_name": "sprite.create"}),
-        reply(status="step_done", summary="saved", sprite_id="sprite-3"),
-        call("plan-4", "tools_plan_execute", {"action": "complete"}),
-        reply(action="complete", sprite_id="sprite-3"),
-    ])
-    run = AgentRun(harness, None, Budget(), tmp_path, [], lambda *_: None, intent={"original_request": {"description": "demo"}})
-    watch_feedback(run, harness)
-    assert asyncio.run(run.plan_execute()) == {"published": "sprite-3"}
-    assert harness.roles == ["outer", "plan", "executor", "executor", "plan", "executor", "plan", "executor", "executor", "plan", "outer"]
+    assert asyncio.run(run.plan_execute()) == {"published": "sprite-1"}
+    assert set(harness.systems) == {"outer", "plan", "executor"}
+    for role, system in harness.systems.items():
+        assert "cannot search or list tools" in system, role
+    assert "compose AND save" in harness.systems["plan"]
+    assert "tools_report_step" in harness.systems["executor"]
+    assert "never re-send source" in harness.systems["executor"]
+    # The Executor gets one working Preset shape to imitate instead of guessing the contract.
+    assert "export default function WarmTint" in harness.systems["executor"]
+    # The Executor sees its current step; the counters it sees are remaining calls, not used/limit pairs.
+    assert '"current_step"' in harness.systems["executor"] and '"tool_calls_left_in_batch"' in harness.systems["executor"]
+    assert "actual_tooluse" not in harness.systems["executor"]
 
 
-def test_a_preset_only_step_referenced_as_a_sprite_is_left_to_the_plan_to_repair(monkeypatch, tmp_path):
-    """审计复现：只建 Preset 的步骤被后续步骤当作 Sprite 产出引用；它无法 sprite_create，由 Plan 按 input_refs 的修复提示改计划，而不是在执行器空转。"""
-    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", SavingSession)
-    wrong = Plan(goal="preset then sprite", steps=[
-        {"id": "preset", "goal": "create the Preset", "tool_modules": ["preset"], "done_when": "saved"},
-        {"id": "compose", "goal": "compose and save", "tool_modules": ["sprite"], "done_when": "saved",
-         "input_refs": ["steps.preset.outputs.sprite"]},
+def test_step_done_without_saving_the_sprite_is_refused_with_the_next_tool(monkeypatch, tmp_path):
+    """回放 bb0decec：组合后没保存就报完成，宿主拒绝并指明调用 sprite_create {draft_id}；保存后才发布。"""
+    run, harness = new_run(monkeypatch, tmp_path, [
+        delegate(),
+        call("exec-1", "preset_create", {"description": "暖色", "code": "export default function C(){return null}", "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": False}, "default_parameters": {}}),
+        report("exec-2"),
+        compose("exec-3"),
+        report("exec-4", summary="草稿已组合"),
+        call("exec-5", "sprite_create", {"draft_id": "sprite_draft_1"}),
+        report("exec-6"),
     ])
-    fixed = wrong.model_copy(deep=True)
-    fixed.steps[1].input_refs = ["user_intent"]
-    harness = FakeHarness([
-        call("outer-1", "tools_plan_execute", {"action": "delegate", "plan": wrong.model_dump()}),
-        call("plan-1", "tools_plan_execute", {"action": "update_plan", "plan": wrong.model_dump()}),
-        reply(status="step_done", summary="Preset saved"),
-        call("plan-2", "tools_plan_execute", {"action": "advance"}),
-        call("plan-3", "tools_plan_execute", {"action": "update_plan", "plan": fixed.model_dump()}),
-        call("compose-1", "tools_inspect", {"tool_name": "sprite.create"}),
-        reply(status="step_done", summary="saved", sprite_id="sprite-2"),
-        call("plan-4", "tools_plan_execute", {"action": "complete"}),
-        reply(action="complete", sprite_id="sprite-2"),
-    ])
-    run = AgentRun(harness, None, Budget(), tmp_path, [], lambda *_: None, intent={"original_request": {"description": "demo"}})
     feedback = watch_feedback(run, harness)
     assert asyncio.run(run.plan_execute()) == {"published": "sprite-2"}
-    # the Executor was not bounced: control went straight to Plan, which got the existing input_refs repair hint
-    assert harness.roles == ["outer", "plan", "executor", "plan", "plan", "executor", "executor", "plan", "outer"]
-    assert "without a saved Sprite output" in feedback[4][0]
-
-
-def test_a_step_reports_the_sprite_it_saved_last(monkeypatch, tmp_path):
-    """同一步骤保存过两个 Sprite 后报旧的那个，依赖步骤会拿到旧产物而 latest 指向新的；宿主要求报最后保存的那个，并在接受后清掉拒绝提示。"""
-    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", SavingSession)
-    plan = Plan(goal="make, check", steps=[
-        {"id": "make", "goal": "compose and save", "tool_modules": ["sprite"], "done_when": "saved"},
-        {"id": "check", "goal": "check", "tool_modules": ["tools"], "done_when": "checked",
-         "input_refs": ["steps.make.outputs.sprite"]},
-    ])
-    harness = FakeHarness([
-        call("outer-1", "tools_plan_execute", {"action": "delegate", "plan": plan.model_dump()}),
-        call("plan-1", "tools_plan_execute", {"action": "update_plan", "plan": plan.model_dump()}),
-        call("make-1", "tools_inspect", {"tool_name": "sprite.create"}),
-        call("make-2", "tools_inspect", {"tool_name": "sprite.create"}),
-        reply(status="step_done", summary="first try is fine", sprite_id="sprite-2"),
-        reply(status="step_done", summary="the second try", sprite_id="sprite-3"),
-        call("plan-2", "tools_plan_execute", {"action": "advance"}),
-        reply(status="step_done", summary="checked", sprite_id="sprite-3"),
-        call("plan-3", "tools_plan_execute", {"action": "complete"}),
-        reply(action="complete", sprite_id="sprite-3"),
-    ])
-    run = AgentRun(harness, None, Budget(), tmp_path, [], lambda *_: None, intent={"original_request": {"description": "demo"}})
-    feedback = watch_feedback(run, harness)
-    assert asyncio.run(run.plan_execute()) == {"published": "sprite-3"}
     refused = feedback[5]
-    assert refused and "saved last" in refused[0] and "report sprite-3" in refused[0]
-    # accepting the claim ends that steering: the Plan and Outer prompts that follow carry none of it
-    assert feedback[6:] == [[]] * len(feedback[6:])
+    assert refused and "not done" in refused[0] and "sprite_create" in refused[0] and "draft_id" in refused[0]
+    assert "plan" not in harness.roles
+    # Accepting the step ends that steering, so it cannot mislead what follows.
+    assert run.session.feedback == []
 
 
-def test_renaming_the_unfinished_step_keeps_the_sprites_it_already_saved(monkeypatch, tmp_path):
-    """工具上限打断后 Plan 把未完成步骤换了 id：它已保存的 Sprite 仍属于这个位置上的步骤，不能因此被拒绝或逼它重复保存。"""
-    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", SavingSession)
-    first = Plan(goal="make, check", steps=[
-        {"id": "compose", "goal": "compose and save", "tool_modules": ["sprite"], "done_when": "saved"},
-        {"id": "check", "goal": "check", "tool_modules": ["tools"], "done_when": "checked",
-         "input_refs": ["steps.compose.outputs.sprite"]},
+def test_a_preset_step_needs_a_ready_preset(monkeypatch, tmp_path):
+    """准备预设的步骤没有读取、创建或复制任何预设时不能报完成，拒绝信息给出可用的工具。"""
+    run, harness = new_run(monkeypatch, tmp_path, [
+        delegate(),
+        report("exec-1"),
+        call("exec-2", "preset_modify", {"preset_id": "preset-1", "changes": {"description": "更淡"}}),
+        report("exec-3"),
     ])
-    renamed = first.model_copy(deep=True)
-    renamed.steps[0].id = "compose_v2"
-    renamed.steps[1].input_refs = ["steps.compose_v2.outputs.sprite"]
-    harness = FakeHarness([
-        call("outer-1", "tools_plan_execute", {"action": "delegate", "plan": first.model_dump()}),
-        call("plan-1", "tools_plan_execute", {"action": "update_plan", "plan": first.model_dump()}),
-        call("compose-1", "tools_inspect", {"tool_name": "sprite.create"}),
-        call("compose-2", "tools_inspect", {"tool_name": "sprite.create"}),
-        call("compose-3", "tools_inspect", {"tool_name": "sprite.create"}),
-        call("plan-2", "tools_plan_execute", {"action": "update_plan", "plan": renamed.model_dump()}),
-        reply(status="step_done", summary="saved before the limit", sprite_id="sprite-4"),
-        call("plan-3", "tools_plan_execute", {"action": "advance"}),
-        reply(status="step_done", summary="checked", sprite_id="sprite-4"),
-        call("plan-4", "tools_plan_execute", {"action": "complete"}),
-        reply(action="complete", sprite_id="sprite-4"),
+    feedback = watch_feedback(run, harness)
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+    assert "no Preset is ready" in feedback[2][0] and "preset_search" in feedback[2][0]
+    assert run.state.completed["preset"]["presets"] == [{"kind": "draft", "draft_id": "preset_draft_1"}]
+    assert run.state.step.id == "sprite"
+    assert run.state.snapshot()["step_inputs"] == {"steps.preset.outputs.presets": [{"kind": "draft", "draft_id": "preset_draft_1"}]}
+
+
+def test_an_edit_can_reuse_the_base_drafts(monkeypatch, tmp_path):
+    """编辑任务只调整参数或编排时，基线草稿就是准备好的预设，预设步骤可直接完成并把它们交给组合步骤。"""
+    run, harness = new_run(monkeypatch, tmp_path, [delegate(), report("exec-1")], intent={
+        "original_request": {"description": "demo"}, "accepted_base": {"name": "old"},
+    })
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+    assert "accepted_base" in run.state.plan.steps[0].input_refs
+    assert run.state.completed["preset"]["presets"] == [{"kind": "draft", "draft_id": "base_title"}]
+
+
+def test_an_edit_of_a_legacy_base_is_told_to_write_a_preset(monkeypatch, tmp_path):
+    """旧版基线没有登记 base_* 草稿：委派后的标准计划不提复用草稿，而是按 legacy_code 写预设，预设步骤也不会凭空算作就绪。"""
+    run, harness = new_run(monkeypatch, tmp_path, [delegate(), report("exec-1")], intent={
+        "original_request": {"description": "demo"}, "accepted_base": {"name": "old"},
+    })
+    run.session.preset_drafts = {}
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+    goal = run.state.plan.steps[0].goal
+    assert "base.legacy_code" in goal and "base_*" not in goal
+    assert harness.roles == ["outer", "executor", "executor"]
+    assert run.state.index == 0 and "no Preset is ready" in run.session.feedback[0]
+
+
+def test_a_surplus_closing_brace_does_not_waste_the_call_and_is_audited(monkeypatch, tmp_path):
+    """回放 bb0decec：28k token 的 sprite_create 只因结尾多一个括号失败；现在照常执行，并在私有审计中记录被丢弃的文本。"""
+    trailing = AssistantMessage(tool_calls=[{
+        "id": "exec-2", "type": "function",
+        "function": {"name": "sprite_create", "arguments": '{"draft_id": "sprite_draft_1"}}'},
+    }])
+    run, _ = new_run(monkeypatch, tmp_path, [
+        delegate(),
+        call("exec-1", "preset_search", {"preset_id": "preset-1"}),
+        report("exec-x"),
+        trailing,
+        report("exec-3"),
     ])
-    run = AgentRun(harness, None, Budget(), tmp_path, [], lambda *_: None, intent={"original_request": {"description": "demo"}})
-    watch_feedback(run, harness)
-    assert asyncio.run(run.plan_execute()) == {"published": "sprite-4"}
-    assert run.step_sprites[0] == ["sprite-2", "sprite-3", "sprite-4"]
-    assert harness.roles == ["outer", "plan", "executor", "executor", "executor", "plan", "executor", "plan", "executor", "plan", "outer"]
+    run.budget.audit_path = tmp_path / "audit.jsonl"
+    assert asyncio.run(run.plan_execute()) == {"published": "sprite-2"}
+    events = [json.loads(line) for line in run.budget.audit_path.read_text().splitlines()]
+    assert [item["dropped"] for item in events if item["event"] == "tool_arguments_repaired"] == ["}"]
 
 
-def test_a_repeated_policy_violation_is_the_same_observation_wherever_it_sits(monkeypatch, tmp_path):
-    """审计复现：策略诊断的文字里带「(line N, column M)」，同一条违规换了行号就成了新观察，重复犯同一个错不再计入无进展。"""
-    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
-    run = AgentRun(FakeHarness([]), None, Budget(), tmp_path, [], lambda *_: None)
-
-    def refusal(capability, line):
-        """The tool error sprite.create returns for one policy violation at the given line."""
-        message = f"Unsupported capability: {capability} (line {line}, column 7)"
-        diagnostic = {"source": "contract", "severity": "error", "message": message,
-                      "range": {"start": {"line": line - 1, "character": 6}, "end": {"line": line - 1, "character": 11}}}
-        return {"code": "CODE_VALIDATION_FAILED", "message": "Sprite code validation failed.",
-                "details": {"validation": {"passed": False, "diagnostics": [diagnostic]}}}
-
-    key = run._receipt_key("error:sprite_create", refusal("fetch", 5))
-    assert run._receipt_key("error:sprite_create", refusal("fetch", 9)) == key
-    assert run._receipt_key("error:sprite_create", refusal("eval", 5)) != key
+def test_the_step_reports_the_sprite_it_saved_last(monkeypatch, tmp_path):
+    """同一步骤保存了两次：宿主记录最后保存的 Sprite 作为步骤产出并发布它，模型无需也无法指定 ID。"""
+    run, harness = new_run(monkeypatch, tmp_path, [
+        delegate(),
+        call("exec-1", "preset_search", {"preset_id": "preset-1"}),
+        report("exec-2"),
+        call("exec-3", "sprite_create", {"draft_id": "a"}),
+        call("exec-4", "sprite_create", {"draft_id": "b"}),
+        report("exec-5"),
+    ], max_tooluse=10)
+    assert asyncio.run(run.plan_execute()) == {"published": "sprite-3"}
+    assert run.step_sprites == {1: ["sprite-2", "sprite-3"]}
 
 
-def test_completion_refusal_says_when_the_task_saved_no_sprite(monkeypatch, tmp_path):
-    """Outer 反复提交基线版本的 Sprite ID 40 次：任务一个 Sprite 都没存时，拒绝原因要明说并给出下一步，而不是「必须引用最新 Sprite」。"""
-    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
-    run = AgentRun(FakeHarness([]), None, Budget(), tmp_path, [], lambda *_: None)
-    run.session.latest_sprite_id = None
-    with pytest.raises(ValueError, match="saved no Sprite yet") as refusal:
-        asyncio.run(run._finalize_outer("c2e32b55bdaa4e9a8e46e7a073fb2b3b"))
-    assert "sprite_create" in str(refusal.value)
-    run.session.latest_sprite_id = "sprite-2"
-    with pytest.raises(ValueError, match="latest task Sprite"):
-        asyncio.run(run._finalize_outer("sprite-1"))
+def test_a_progressing_step_continues_past_the_batch_limit_without_the_plan(monkeypatch, tmp_path):
+    """回放 2db032a4 的误判：批次用尽不是任务失败；本批有新观察时宿主自动续批，不唤醒 Plan。"""
+    run, harness = new_run(monkeypatch, tmp_path, [
+        delegate(),
+        call("exec-1", "preset_search", {"query": "暖"}),
+        call("exec-2", "preset_search", {"query": "filter"}),
+        call("exec-3", "preset_search", {"preset_id": "preset-1"}),
+        report("exec-4"),
+        compose("exec-5"),
+        call("exec-6", "sprite_create", {"draft_id": "sprite_draft_1"}),
+        report("exec-7"),
+    ], max_tooluse=2)
+    assert asyncio.run(run.plan_execute()) == {"published": "sprite-2"}
+    assert "plan" not in harness.roles
+    assert run.state.batches == 4
+
+
+def test_a_batch_without_new_evidence_wakes_the_plan(monkeypatch, tmp_path):
+    """整批都是重复调用时不自动续批，由 Plan 决定继续或停止。"""
+    same = {"tool_name": "sprite.create"}
+    run, harness = new_run(monkeypatch, tmp_path, [
+        delegate(),
+        call("exec-1", "tools_inspect", same),
+        call("exec-2", "tools_inspect", same),
+        call("exec-3", "tools_inspect", same),
+        call("exec-4", "tools_inspect", same),
+        call("exec-5", "tools_inspect", same),
+        call("exec-6", "tools_inspect", same),
+        call("plan-1", "tools_plan_execute", {"action": "stop", "reason": "无进展"}),
+        call("outer-2", "tools_plan_execute", {"action": "stop", "reason": "无进展"}),
+    ])
+    with pytest.raises(ExecutionFailure) as stopped:
+        asyncio.run(run.plan_execute())
+    assert stopped.value.code == "agent_stopped"
+    # The first batch saw a new descriptor and was continued; the second only repeated it.
+    assert harness.roles == ["outer"] + ["executor"] * 6 + ["plan", "outer"]
+    assert run.state.result["status"] == "tool_limit_reached"
+
+
+def test_repeating_a_draft_under_a_fresh_handle_is_no_new_evidence(monkeypatch, tmp_path):
+    """审计复现：每次 sprite_compose 都返回新的随机 draft_id，同样的组合曾被当成新证据，宿主一直自动续批直到硬额度；现在按内容摘要识别重复，整批重复就唤醒 Plan。"""
+    run, harness = new_run(monkeypatch, tmp_path, [
+        delegate(),
+        call("exec-1", "preset_search", {"preset_id": "preset-1"}),
+        report("exec-2"),
+        *[compose(f"exec-{index}") for index in range(3, 7)],
+        call("plan-1", "tools_plan_execute", {"action": "stop", "reason": "重复组合"}),
+        call("outer-2", "tools_plan_execute", {"action": "stop", "reason": "重复组合"}),
+    ], max_tooluse=2, max_steps=8)
+    execute = run.session.execute
+    handles = iter(range(100))
+
+    async def fresh_handles(name, args, catalog):
+        """Answer like the real compose: a new handle every call, the digest of the same content."""
+        if name == "sprite.compose":
+            return {"draft_id": f"sprite_draft_{next(handles)}", "digest": "3f2a9c1e5b7d4f60", "instances": []}
+        return await execute(name, args, catalog)
+
+    run.session.execute = fresh_handles
+    with pytest.raises(ExecutionFailure) as stopped:
+        asyncio.run(run.plan_execute())
+    assert stopped.value.code == "agent_stopped"
+    # The first compose batch saw one new draft and was continued; the next only repeated it.
+    assert harness.roles == ["outer"] + ["executor"] * 6 + ["plan", "outer"]
+
+
+def recorded_handoffs(run):
+    """The (source, destination, status) handoffs the no-progress guard has recorded so far."""
+    found = []
+    for key in run.observations:
+        if key.startswith("handoff:"):
+            item = json.loads(key.removeprefix("handoff:"))
+            found.append((item["source"], item["destination"], item["status"]))
+    return found
+
+
+def test_a_refused_advance_records_the_return_to_the_plan_not_an_advance(monkeypatch, tmp_path):
+    """审计复现：推进前就记下了 Executor→Executor 的 advance 交接；没有批次可开、推进失败退回 Plan 时，那次交接并不存在。"""
+    run, harness = new_run(monkeypatch, tmp_path, [
+        delegate(),
+        call("exec-1", "preset_search", {"preset_id": "preset-1"}),
+        report("exec-2"),
+    ], max_steps=1)
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+    assert harness.roles[-1] == "plan" and run.state.index == 0
+    handoffs = recorded_handoffs(run)
+    assert ("executor", "executor", "advance") not in handoffs
+    assert ("executor", "plan", "advance_refused") in handoffs
+
+
+def test_a_refused_publication_records_the_return_to_the_plan_not_a_publication(monkeypatch, tmp_path):
+    """审计复现：最后一步完成时先记下了交给 Outer 发布的交接；任务没有 Sprite、发布被拒退回 Plan 时，那次交接并不存在。"""
+    inspect = {"goal": "inspect", "steps": [{"id": "inspect", "goal": "inspect", "tool_modules": ["tools"], "done_when": "observed"}]}
+    run, harness = new_run(monkeypatch, tmp_path, [
+        delegate(),
+        report("exec-1", "blocked", "只需检查"),
+        call("plan-1", "tools_plan_execute", {"action": "update_plan", "plan": inspect}),
+        report("exec-2"),
+    ])
+    run.session.latest_sprite_id, run.session.saved_sprites = None, {}
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+    assert harness.roles[-1] == "plan"
+    # The host publishes without an ID, so the refusal must still say why and what to do next.
+    assert "saved no Sprite yet" in run.session.feedback[0] and "sprite_create" in run.session.feedback[0]
+    handoffs = recorded_handoffs(run)
+    assert ("executor", "outer", "publish") not in handoffs
+    assert ("executor", "plan", "publish_refused") in handoffs
+
+
+def test_the_plan_is_told_which_resent_steps_the_host_kept(monkeypatch, tmp_path):
+    """Plan 以同一 ID 重发已完成的 preset 步骤想重做它：回执列出被宿主保留的步骤 ID，并说明改用新 ID。"""
+    redo = {"goal": "重做", "steps": [
+        {"id": "preset", "goal": "重写预设", "tool_modules": ["preset"], "done_when": "saved"},
+        {"id": "sprite", "goal": "组合并保存", "input_refs": ["steps.preset.outputs.presets"], "tool_modules": ["preset", "sprite"], "done_when": "saved"},
+    ]}
+    run, harness = new_run(monkeypatch, tmp_path, [
+        delegate(),
+        call("exec-1", "preset_search", {"preset_id": "preset-1"}),
+        report("exec-2"),
+        report("exec-3", "blocked", "预设有问题"),
+        call("plan-1", "tools_plan_execute", {"action": "update_plan", "plan": redo}),
+    ])
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+    receipt = json.loads(run.plan_context.messages()[-1]["content"])
+    assert receipt["ok"] and receipt["data"]["ignored_step_ids"] == ["preset"]
+    assert "new step id" in receipt["data"]["note"]
+    assert run.state.step.id == "sprite"
+
+
+def test_a_blocked_step_wakes_the_plan_which_can_continue_it(monkeypatch, tmp_path):
+    """步骤受阻时才唤醒 Plan；Plan continue 后执行层在同一步骤上补齐产出并完成。"""
+    run, harness = new_run(monkeypatch, tmp_path, [
+        delegate(),
+        report("exec-1", "blocked", "找不到预设"),
+        call("plan-1", "tools_plan_execute", {"action": "continue", "reason": "换个关键词"}),
+        call("exec-2", "preset_search", {"preset_id": "preset-1"}),
+        report("exec-3"),
+        compose("exec-4"),
+        call("exec-5", "sprite_create", {"draft_id": "sprite_draft_1"}),
+        report("exec-6"),
+    ])
+    assert asyncio.run(run.plan_execute()) == {"published": "sprite-2"}
+    assert harness.roles == ["outer", "executor", "plan"] + ["executor"] * 5
+
+
+SAVED_THEN_BLOCKED = [
+    delegate(),
+    call("exec-1", "preset_search", {"preset_id": "preset-1"}),
+    report("exec-2"),
+    call("exec-3", "sprite_create", {"draft_id": "sprite_draft_1"}),
+    report("exec-4", "blocked", "不确定是否满足要求"),
+]
+
+
+@pytest.mark.parametrize("completion", [
+    call("plan-1", "tools_plan_execute", {"action": "complete"}),
+    AssistantMessage(content=json.dumps({"status": "plan_done", "summary": "已保存", "sprite_id": "sprite-2"})),
+])
+def test_a_plan_completion_is_published_by_the_host(monkeypatch, tmp_path, completion):
+    """审计复现：Plan complete 后原来交回 Outer，而 Outer 的规则里没有发布动作，只能重新委派或停止；现在宿主直接发布。"""
+    run, harness = new_run(monkeypatch, tmp_path, [*SAVED_THEN_BLOCKED, completion])
+    assert asyncio.run(run.plan_execute()) == {"published": "sprite-2"}
+    assert harness.roles[-1] == "plan" and harness.roles.count("outer") == 1
+    assert run.plan_result["status"] == "plan_done"
+
+
+def test_a_plan_completion_must_name_the_latest_task_sprite(monkeypatch, tmp_path):
+    """Plan 完成时点名的必须是本任务最新的 Sprite；更早的那个被拒绝，控制留在 Plan。"""
+    run, _ = new_run(monkeypatch, tmp_path, [
+        *SAVED_THEN_BLOCKED,
+        AssistantMessage(content=json.dumps({"status": "plan_done", "summary": "旧的", "sprite_id": "sprite-1"})),
+        call("plan-2", "tools_plan_execute", {"action": "complete", "sprite_id": "sprite-1"}),
+    ])
+    feedback = watch_feedback(run, run.harness)
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+    assert run.layer is Layer.PLAN
+    assert "latest task Sprite sprite-2" in feedback[-1][0]
+    assert "latest task Sprite sprite-2" in run.session.feedback[0]
+
+
+@pytest.mark.parametrize("ending", ["executor", "plan"])
+def test_a_spent_task_budget_publishes_the_sprite_the_task_saved(monkeypatch, tmp_path, ending):
+    """审计复现：任务额度用尽时 Outer 只被告知停止，已保存并通过校验的 Sprite 就此丢失；现在宿主直接发布它。
+
+    executor：保存后 tools_report_step 本身已无额度，也开不了新批次；plan：步骤受阻后 Plan 想继续，却开不了新批次。
+    """
+    responses = [
+        delegate(),
+        call("exec-1", "preset_search", {"preset_id": "preset-1"}),
+        report("exec-2"),
+        call("exec-3", "sprite_create", {"draft_id": "sprite_draft_1"}),
+    ]
+    if ending == "executor":
+        responses.append(report("exec-4"))
+        limits = {"max_steps": 2, "max_tooluse": 2}
+    else:
+        responses += [report("exec-4", "blocked", "想再调一下"), call("plan-1", "tools_plan_execute", {"action": "continue"})]
+        limits = {"max_steps": 2, "max_tooluse": 3}
+    run, harness = new_run(monkeypatch, tmp_path, responses, **limits)
+    assert asyncio.run(run.plan_execute()) == {"published": "sprite-2"}
+    assert "outer" not in harness.roles[1:]
+
+
+def test_outer_answers_and_asks_through_the_control_tool(monkeypatch, tmp_path):
+    """Outer 用 answer/ask 动作回答或澄清，不需要在文本里手写 JSON。"""
+    run, _ = new_run(monkeypatch, tmp_path, [call("outer-1", "tools_plan_execute", {"action": "answer", "answer": "可以制作暖色调滤镜。"})])
+    run.session.latest_sprite_id = None  # a new task has saved nothing yet
+    assert asyncio.run(run.plan_execute()).answer == "可以制作暖色调滤镜。"
+    run, _ = new_run(monkeypatch, tmp_path, [call("outer-1", "tools_plan_execute", {"action": "ask", "questions": ["要多暖？"]})])
+    assert asyncio.run(run.plan_execute()).questions == ["要多暖？"]
+
+
+def test_curly_quoted_protocol_json_is_still_understood(monkeypatch, tmp_path):
+    """回放 2db032a4：Outer 用中文弯引号写协议 JSON，宿主归一后照常解析。"""
+    run, _ = new_run(monkeypatch, tmp_path, [AssistantMessage(content="{“questions”:[“要多暖？”]}")])
+    assert asyncio.run(run.plan_execute()).questions == ["要多暖？"]
 
 
 def test_executor_cannot_call_plan_control(monkeypatch, tmp_path):
-    """An Executor orchestration call is rejected and does not advance the Plan."""
-    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
-    plan = Plan(
-        goal="inspect",
-        steps=[
-            {
-                "id": "inspect",
-                "goal": "inspect",
-                "tool_modules": ["tools"],
-                "done_when": "done",
-            }
-        ],
-    )
-    harness = FakeHarness(
-        [
-            call("outer-1", "tools_plan_execute", {"action": "delegate", "plan": plan.model_dump()}),
-            call("plan-1", "tools_plan_execute", {"action": "update_plan", "plan": plan.model_dump()}),
-            call("exec-1", "tools_plan_execute", {"action": "advance"}),
-            AssistantMessage(content=json.dumps({"status": "needs_input", "summary": "stop"})),
-            AssistantMessage(content=json.dumps({"status": "needs_input", "summary": "stop", "questions": ["需要更多输入"]})),
-            AssistantMessage(content=json.dumps({"questions": ["需要更多输入"]})),
-        ]
-    )
-    run = AgentRun(harness, None, Budget(), tmp_path, [], lambda *_: None, intent={"original_request": {"description": "demo"}})
+    """执行层调用计划控制会被拒绝且不推进计划。"""
+    run, _ = new_run(monkeypatch, tmp_path, [
+        delegate(),
+        call("exec-1", "tools_plan_execute", {"action": "advance"}),
+    ])
+    with pytest.raises(ScriptEnd):
+        asyncio.run(run.plan_execute())
+    assert run.layer is Layer.EXECUTOR and run.state.index == 0
+    assert "TOOL_NOT_FOUND" in json.dumps(run.executor_context.messages()[-1])
+
+
+def test_a_step_that_needs_input_goes_straight_to_outer_with_its_questions(monkeypatch, tmp_path):
+    """审计复现：needs_input 原来先交给 Plan，Plan 不能提问只能 stop，被记成 blocked，Outer 按规则停止，问题到不了用户；现在直接交给 Outer 提问。"""
+    asked = call("exec-2", "tools_report_step", {"status": "needs_input", "summary": "缺少颜色", "questions": ["要多暖？"]})
+    run, harness = new_run(monkeypatch, tmp_path, [
+        delegate(),
+        report("exec-1", "needs_input", "缺少颜色"),
+        asked,
+        call("outer-2", "tools_plan_execute", {"action": "ask", "questions": ["要多暖？"]}),
+    ])
+    feedback = watch_feedback(run, harness)
     result = asyncio.run(run.plan_execute())
-    assert result.questions == ["需要更多输入"]
-    assert run.state.index == 0
+    assert result.questions == ["要多暖？"]
+    assert harness.roles == ["outer", "executor", "executor", "outer"]
+    # A needs_input report without questions is refused: Outer would have nothing to ask.
+    assert "needs_input requires the questions" in feedback[2][0]
+    assert run.plan_result == {"status": "needs_input", "summary": "缺少颜色", "sprite_id": None, "questions": ["要多暖？"]}
+    handoffs = [item["content"] for item in run.outer.messages() if str(item.get("content", "")).startswith("Host handoff")]
+    assert "要多暖？" in handoffs[-1] and '"needs_input"' in handoffs[-1]
 
 
 def test_repeated_invalid_executor_replies_stop_the_run(monkeypatch, tmp_path):
-    """Prose that never yields a StepResult is a stall: the guard ends the run after the threshold."""
-    from server.remotion_templates.provider import ExecutionFailure
-
-    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
-    plan = Plan(goal="g", steps=[{"id": "s", "goal": "g", "tool_modules": ["tools"], "done_when": "d"}])
-    harness = FakeHarness(
-        [
-            call("outer-1", "tools_plan_execute", {"action": "delegate", "plan": plan.model_dump()}),
-            call("plan-1", "tools_plan_execute", {"action": "update_plan", "plan": plan.model_dump()}),
-            *[AssistantMessage(content="The step is complete, nothing more to do.") for _ in range(10)],
-        ]
-    )
+    """Prose that never reports the step is a stall: the guard ends the run after the threshold."""
+    run, harness = new_run(monkeypatch, tmp_path, [
+        delegate(),
+        *[AssistantMessage(content="The step is complete, nothing more to do.") for _ in range(10)],
+    ])
     harness.settings.enforce_no_progress = True
-    run = AgentRun(harness, None, Budget(), tmp_path, [], lambda *_: None, intent={"original_request": {"description": "demo"}})
     with pytest.raises(ExecutionFailure) as stopped:
         asyncio.run(run.plan_execute())
     assert stopped.value.code == "no_progress"
     assert harness.roles.count("executor") == harness.settings.max_no_progress_turns
 
 
-@pytest.mark.parametrize("loop", ["delegate", "continue", "update_plan"])
+@pytest.mark.parametrize("loop", ["continue", "update_plan", "delegate"])
 def test_repeated_valid_handoffs_stop_without_new_evidence(monkeypatch, tmp_path, loop):
     """重复合法交接仍须停止；改写说明、增加批次或计划版本不能伪装成进展。"""
-    from server.remotion_templates.provider import ExecutionFailure
-
-    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
-    plan = Plan(goal="inspect", steps=[{
-        "id": "inspect", "goal": "inspect", "tool_modules": ["tools"], "done_when": "observed",
-    }])
-    responses = []
-    if loop != "delegate":
-        responses = [
-            call("delegate", "tools_plan_execute", {"action": "delegate"}),
-            call("plan", "tools_plan_execute", {"action": "update_plan", "plan": plan.model_dump()}),
-        ]
+    steps = {"goal": "g", "steps": [{"id": "inspect", "goal": "inspect", "tool_modules": ["tools"], "done_when": "observed"}]}
+    responses = [delegate()]
     for index in range(12):
-        blocked = AssistantMessage(content=json.dumps({"status": "blocked", "summary": f"still blocked {index}"}))
+        blocked = report(f"blocked-{index}", "blocked", f"still blocked {index}")
+        if loop == "delegate":
+            responses.extend([
+                blocked,
+                call(f"stop-{index}", "tools_plan_execute", {"action": "stop", "reason": f"r{index}"}),
+                delegate(f"again-{index}"),
+                call(f"resume-{index}", "tools_plan_execute", {"action": "continue"}),
+            ])
+            continue
         arguments = {"action": loop, "reason": f"try again {index}"}
         if loop == "update_plan":
-            arguments["plan"] = plan.model_dump() | {"goal": f"revised wording {index}"}
-        control = call(f"retry-{index}", "tools_plan_execute", arguments)
-        responses.extend([control, blocked] if loop == "delegate" else [blocked, control])
-    harness = FakeHarness(responses)
-    harness.settings.enforce_no_progress = True
-    harness.settings.max_steps = 32
-    run = AgentRun(harness, None, Budget(), tmp_path, [], lambda *_: None)
+            arguments["plan"] = steps | {"goal": f"revised wording {index}"}
+        responses.extend([blocked, call(f"retry-{index}", "tools_plan_execute", arguments)])
+    run, harness = new_run(monkeypatch, tmp_path, responses, enforce_no_progress=True, max_steps=32)
     with pytest.raises(ExecutionFailure) as stopped:
         asyncio.run(run.plan_execute())
     assert stopped.value.code == "no_progress"
     assert run.stalled_turns == 6
-    assert len(harness.roles) <= 10
+    assert len(harness.roles) <= 12
     assert run.state.calls < run.state.total_limit
 
 
-def test_advancing_steps_with_valid_handoffs_can_finish(monkeypatch, tmp_path):
-    """跨步骤的正常交接超过阈值仍可完成，不把相同状态名一概当成空转。"""
-    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
-    plan = Plan(goal="inspect", steps=[{
+def test_advancing_plan_steps_can_finish_past_the_threshold(monkeypatch, tmp_path):
+    """Plan 改写后的多步骤计划由宿主逐步推进；跨步骤的正常交接超过阈值仍可完成。"""
+    plan = {"goal": "inspect", "steps": [{
         "id": f"inspect_{index}", "goal": "inspect", "tool_modules": ["tools"], "done_when": "observed",
-    } for index in range(4)])
+    } for index in range(4)]}
     responses = [
-        call("delegate", "tools_plan_execute", {"action": "delegate"}),
-        call("plan", "tools_plan_execute", {"action": "update_plan", "plan": plan.model_dump()}),
+        delegate(),
+        report("blocked", "blocked", "需要改计划"),
+        call("plan", "tools_plan_execute", {"action": "update_plan", "plan": plan}),
     ]
     for index in range(4):
         responses.extend([
-            call(f"inspect-{index}", "tools_inspect", {"tool_name": "sprite.create"}),
-            AssistantMessage(content='{"status":"step_done","summary":"observed"}'),
-            call(f"advance-{index}", "tools_plan_execute", {"action": "advance" if index < 3 else "complete"}),
+            call(f"inspect-{index}", "tools_inspect", {"tool_name": ["sprite.create", "preset.create", "preset.search", "sprite.compose"][index]}),
+            report(f"done-{index}"),
         ])
-    responses.append(AssistantMessage(content='{"action":"complete","sprite_id":"sprite-1"}'))
-    harness = FakeHarness(responses)
-    harness.settings.enforce_no_progress = True
-    harness.settings.max_tooluse = 10
-    run = AgentRun(harness, None, Budget(), tmp_path, [], lambda *_: None)
+    run, harness = new_run(monkeypatch, tmp_path, responses, enforce_no_progress=True, max_steps=8, max_tooluse=10)
     assert asyncio.run(run.plan_execute()) == {"published": "sprite-1"}
     assert run.state.index == 3
     assert len(harness.roles) > harness.settings.max_no_progress_turns
@@ -525,15 +614,14 @@ def test_advancing_steps_with_valid_handoffs_can_finish(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("layer,bad_name", [
-    (Layer.OUTER, "preset"),
+    (Layer.OUTER, "preset_create"),
     (Layer.EXECUTOR, "preset"),
-    (Layer.EXECUTOR, "sprite_compose"),
+    (Layer.EXECUTOR, "tools_plan_execute"),
     (Layer.PLAN, "preset_create"),
 ])
 def test_dispatch_reports_only_tools_the_current_layer_can_call(monkeypatch, tmp_path, layer, bad_name):
-    """真实分发回执包含纠错名称，同时保留 Executor 模块范围和 Plan 权限边界。"""
-    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
-    run = AgentRun(FakeHarness([]), None, Budget(), tmp_path, [], lambda *_: None)
+    """真实分发回执包含纠错名称，同时保留 Executor 模块范围和 Outer/Plan 只用控制工具的边界。"""
+    run, _ = new_run(monkeypatch, tmp_path, [])
     run.layer = layer
     if layer is Layer.EXECUTOR:
         plan = Plan(goal="preset", steps=[{
@@ -560,9 +648,10 @@ def test_failed_generation_tool_preserves_previous_generation_state(monkeypatch,
     """首次生成失败仍可解释问题；已经成功开始生成时，后续失败不能解除完成约束。"""
     from server.remotion_templates.tools.registry import ToolFault
 
-    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
-    run = AgentRun(FakeHarness([]), None, Budget(), tmp_path, [], lambda *_: None)
+    run, _ = new_run(monkeypatch, tmp_path, [])
     run.session.latest_sprite_id = None
+    run.state.control(PlanAction(action="update_plan", plan=default_plan(edit=False)))
+    run.layer = Layer.EXECUTOR
     arguments = {"description": "title", "code": "export default function C(){return null}",
                  "parameter_schema": {"type": "object", "properties": {}}, "default_parameters": {}}
     if earlier_success:
@@ -575,7 +664,8 @@ def test_failed_generation_tool_preserves_previous_generation_state(monkeypatch,
     monkeypatch.setattr(run.session, "execute", fail)
     asyncio.run(run._handle_layer_tools(call("failure", "preset_create", arguments)))
     assert run.generation_started is earlier_success
-    result = asyncio.run(run._handle_layer_message(AssistantMessage(content='{"answer":"代码校验失败，请调整需求。"}')))
+    run.layer = Layer.OUTER
+    result = asyncio.run(run._handle_layer_tools(call("answer", "tools_plan_execute", {"action": "answer", "answer": "代码校验失败，请调整需求。"})))
     if earlier_success:
         assert result is None
         assert "Generation has started" in run.session.feedback[0]
@@ -583,16 +673,13 @@ def test_failed_generation_tool_preserves_previous_generation_state(monkeypatch,
         assert result.answer == "代码校验失败，请调整需求。"
 
 
-@pytest.mark.parametrize("layer,status", [(Layer.EXECUTOR, "step_done"), (Layer.PLAN, "plan_done")])
-def test_unknown_sprite_reply_is_correctable_without_mutating_plan(monkeypatch, tmp_path, layer, status):
-    """模型捏造 Sprite ID 时保留当前层和计划，给出纠错后可接受有效回复。"""
+def test_unknown_sprite_in_a_plan_result_is_correctable_without_mutating_plan(monkeypatch, tmp_path):
+    """Plan 结果捏造 Sprite ID 时保留当前层和计划，给出纠错后可接受有效回复。"""
     from server.remotion_templates.tools.registry import ToolFault
 
-    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
-    run = AgentRun(FakeHarness([]), None, Budget(), tmp_path, [], lambda *_: None)
-    run.layer = layer
-    plan = Plan(goal="g", steps=[{"id": "s", "goal": "g", "tool_modules": ["preset"], "done_when": "d"}])
-    run.state.control(PlanAction(action="update_plan", plan=plan))
+    run, _ = new_run(monkeypatch, tmp_path, [])
+    run.layer = Layer.PLAN
+    run.state.control(PlanAction(action="update_plan", plan=default_plan(edit=False)))
     original = run.session.saved_sprite
 
     def saved_sprite(identifier):
@@ -604,17 +691,51 @@ def test_unknown_sprite_reply_is_correctable_without_mutating_plan(monkeypatch, 
     monkeypatch.setattr(run.session, "saved_sprite", saved_sprite)
     before = run.state.snapshot()
     asyncio.run(run._handle_layer_message(AssistantMessage(content=json.dumps({
-        "status": status, "summary": "done", "sprite_id": "unknown",
+        "status": "plan_done", "summary": "done", "sprite_id": "unknown",
     }))))
-    assert run.layer is layer and run.state.snapshot() == before
+    assert run.layer is Layer.PLAN and run.state.snapshot() == before
     assert run.plan_result is None
     assert run.stalled_turns == 1
     assert "Unknown task Sprite" in run.session.feedback[0]
-    asyncio.run(run._handle_layer_message(AssistantMessage(content=json.dumps({
-        "status": status, "summary": "done", "sprite_id": "sprite-1",
+    published = asyncio.run(run._handle_layer_message(AssistantMessage(content=json.dumps({
+        "status": "plan_done", "summary": "done", "sprite_id": "sprite-1",
     }))))
-    assert run.layer is (Layer.PLAN if layer is Layer.EXECUTOR else Layer.OUTER)
-    assert run.stalled_turns == 0
+    assert published == {"published": "sprite-1"}
+
+
+def test_a_repeated_policy_violation_is_the_same_observation_wherever_it_sits(monkeypatch, tmp_path):
+    """审计复现：策略诊断的文字里带「(line N, column M)」，同一条违规换了行号就成了新观察，重复犯同一个错不再计入无进展。"""
+    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
+    run = AgentRun(FakeHarness([]), None, Budget(), tmp_path, [], lambda *_: None)
+
+    def refusal(capability, line):
+        """The tool error sprite.create returns for one policy violation at the given line."""
+        message = f"Unsupported capability: {capability} (line {line}, column 7)"
+        diagnostic = {"source": "contract", "severity": "error", "message": message,
+                      "range": {"start": {"line": line - 1, "character": 6}, "end": {"line": line - 1, "character": 11}}}
+        return {"code": "CODE_VALIDATION_FAILED", "message": "Sprite code validation failed.",
+                "details": {"validation": {"passed": False, "diagnostics": [diagnostic]}}}
+
+    key = run._receipt_key("error:sprite_create", refusal("fetch", 5))
+    assert run._receipt_key("error:sprite_create", refusal("fetch", 9)) == key
+    assert run._receipt_key("error:sprite_create", refusal("eval", 5)) != key
+
+
+
+
+def test_completion_refusal_says_when_the_task_saved_no_sprite(monkeypatch, tmp_path):
+    """Outer 反复提交基线版本的 Sprite ID 40 次：任务一个 Sprite 都没存时，拒绝原因要明说并给出下一步，而不是「必须引用最新 Sprite」。"""
+    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
+    run = AgentRun(FakeHarness([]), None, Budget(), tmp_path, [], lambda *_: None)
+    run.session.latest_sprite_id = None
+    with pytest.raises(ValueError, match="saved no Sprite yet") as refusal:
+        asyncio.run(run._finalize_outer("c2e32b55bdaa4e9a8e46e7a073fb2b3b"))
+    assert "sprite_create" in str(refusal.value)
+    run.session.latest_sprite_id = "sprite-2"
+    with pytest.raises(ValueError, match="latest task Sprite"):
+        asyncio.run(run._finalize_outer("sprite-1"))
+
+
 
 
 def test_no_progress_threshold_counts_rounds_instead_of_tool_calls(monkeypatch, tmp_path):

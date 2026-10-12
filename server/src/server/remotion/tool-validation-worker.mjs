@@ -64,7 +64,13 @@ function sourcePolicy(code) {
   visit(source);
 }
 
-/** Build the public diagnostic for a thrown error; a policy violation also reports its zero-based range. */
+/** The trimmed source line a diagnostic points at, or an empty object when there is none. */
+function excerpt(lines, line) {
+  const text = Number.isInteger(line) ? lines?.[line]?.trim() : "";
+  return text ? { excerpt: text.slice(0, 200) } : {};
+}
+
+/** Build the public diagnostic for a thrown error; a policy violation also reports its zero-based range and line. */
 function diagnosticFromError(error, code = null) {
   const position = error?.position;
   return {
@@ -73,11 +79,20 @@ function diagnosticFromError(error, code = null) {
     message: String(error?.message ?? error),
     ...(code ? { code: String(code) } : {}),
     ...(position ? { range: { start: { line: position.line, character: position.character }, end: { line: position.end.line, character: position.end.character } } } : {}),
+    ...(position ? excerpt(String(request.code).split("\n"), position.line) : {}),
   };
 }
 
-/** Convert the existing language service shape into the public LSP-like shape. */
-function lspDiagnostics(items) {
+/**
+ * Convert the existing language service shape into the public LSP-like shape.
+ * Positions refer to the checked (formatted or host-generated) files, so each diagnostic also carries the
+ * line it points at; the author can find that text in its own submission even when line numbers differ.
+ */
+async function lspDiagnostics(items) {
+  const files = new Map();
+  for (const item of items) {
+    if (item.file && !files.has(item.file)) files.set(item.file, (await fs.readFile(`${root}/${path.basename(item.file)}`, "utf8").catch(() => "")).split("\n"));
+  }
   return items.map((item) => {
     const line = Number.isInteger(item.line) ? Math.max(0, item.line - 1) : null;
     const character = Number.isInteger(item.column) ? Math.max(0, item.column - 1) : null;
@@ -88,6 +103,7 @@ function lspDiagnostics(items) {
       ...(item.file ? { file: path.basename(item.file) } : {}),
       ...(item.code !== null && item.code !== undefined ? { code: String(item.code) } : {}),
       ...(line !== null && character !== null ? { range: { start: { line, character }, end: { line, character: character + 1 } } } : {}),
+      ...(item.file ? excerpt(files.get(item.file), line) : {}),
     };
   });
 }
@@ -118,7 +134,7 @@ async function prepareSource() {
   await fs.writeFile(`${root}/contract.tsx`, `/** Host-generated default props call site. */\nimport React from 'react';\nimport Template from './Template';\nimport Export from './Export';\nconst props = ${JSON.stringify(request.default_parameters)};\nconst element = <Template {...props} />;\nconst exported = <Export />;\n`, "utf8");
   await fs.symlink(`${rendererRoot}/node_modules`, `${root}/node_modules`).catch(() => undefined);
   const checked = languageDiagnostics(root);
-  if (checked.diagnostics.length) result.diagnostics.push(...lspDiagnostics(checked.diagnostics));
+  if (checked.diagnostics.length) result.diagnostics.push(...await lspDiagnostics(checked.diagnostics));
   checks.push({ name: "typescript", status: checked.diagnostics.some((item) => item.severity === "error") ? "failed" : "pass", message: checked.detail ? checked.detail.slice(0, 6000) : "TypeScript checks passed." });
   result.diagnostics = result.diagnostics.filter((item, index, all) => index === all.findIndex((other) => JSON.stringify(other) === JSON.stringify(item)));
   return checked.diagnostics.every((item) => item.severity !== "error");

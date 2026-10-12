@@ -11,7 +11,7 @@ from typing import get_type_hints
 import pytest
 from pydantic import BaseModel, TypeAdapter
 
-from server.remotion_templates.tools.catalog import PLAN_TOOL
+from server.remotion_templates.tools.catalog import PLAN_TOOL, REPORT_TOOL
 from server.remotion_templates.tools.registry import get_tool, registered_tools
 
 
@@ -47,7 +47,7 @@ def test_documented_input_and_output_match_registered_contract(published_contrac
     assert validation_schema(TypeAdapter(declared["return"]).json_schema()) == validation_schema(tool.describe()["output_schema"])
 
 
-@pytest.mark.parametrize("tool", [*registered_tools(), PLAN_TOOL], ids=lambda tool: tool.name)
+@pytest.mark.parametrize("tool", [*registered_tools(), PLAN_TOOL, REPORT_TOOL], ids=lambda tool: tool.name)
 def test_published_descriptor_accepts_actual_inspection(published_contract, tool):
     """所有公开名称（含宿主计划控制）返回的真实回执都能被文档消费者解析。"""
     response = asyncio.run(get_tool("tools.inspect").invoke(None, {"tool_name": tool.name}))

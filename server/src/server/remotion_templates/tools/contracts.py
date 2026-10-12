@@ -24,6 +24,10 @@ JsonObject = dict[str, JsonValue]
 JsonSchema = JsonObject
 PresetId = NonEmptyString
 SpriteId = NonEmptyString
+# 任务内草稿句柄：只在创建它的任务会话中有效。
+DraftId = NonEmptyString
+# 草稿内容摘要：内容相同则摘要相同，与每次随机生成的 draft_id 无关。
+DraftDigest = NonEmptyString
 Timestamp = NonEmptyString  # 输出还须符合下文的 UTC ISO 8601 约定。
 T = TypeVar("T")
 
@@ -204,10 +208,20 @@ class PresetModifyInput(ContractModel):
     changes: PresetChanges
 
 
-class PresetModifyOutput(ContractModel):
-    """完整副本，不含新记录 ID；source_preset_id 指向原记录。"""
+class PresetDraftSummary(ContractModel):
+    """宿主保存的预设副本摘要；完整源码不回传，由 draft_id 引用。"""
 
-    preset: PresetDraft
+    description: Description
+    parameter_names: list[str]
+    source_preset_id: Omittable[PresetId]
+
+
+class PresetModifyOutput(ContractModel):
+    """副本句柄与摘要，不含新记录 ID；source_preset_id 指向原记录。"""
+
+    draft_id: DraftId
+    digest: DraftDigest
+    preset: PresetDraftSummary
 
 
 class Composition(ContractModel):
@@ -244,10 +258,10 @@ class StoredPresetSource(ContractModel):
 
 
 class DraftPresetSource(ContractModel):
-    """直接携带完整预设副本。"""
+    """引用本任务内 preset.modify 返回或宿主登记（编辑基线）的预设副本。"""
 
     kind: Literal["draft"]
-    preset: PresetDraft
+    draft_id: DraftId
 
 
 PresetSource = Annotated[
@@ -296,23 +310,41 @@ class SpriteComposeInput(ContractModel):
     instances: list[PresetInstance] = Field(min_length=1)
 
 
+class InstanceSummary(ContractModel):
+    """组合结果中一个实例的来源、参数名和编排；不含预设源码。"""
+
+    instance_id: NonEmptyString
+    preset_id: Omittable[PresetId]
+    draft_id: Omittable[DraftId]
+    parameter_names: list[str]
+    layout: InstanceLayout
+    timing: InstanceTiming
+
+
 class SpriteComposeOutput(ContractModel):
-    """尚未保存的完整组合结果。"""
+    """宿主保存的组合草稿句柄与摘要；完整源码不回传，sprite.create 按 draft_id 保存。"""
 
-    sprite: SpriteDraft
-
+    draft_id: DraftId
+    digest: DraftDigest
+    description: Description
+    composition: Composition
+    instances: list[InstanceSummary]
+    default_parameters: JsonObject
+    code_bytes: NonNegativeInteger
 
 
 class SpriteCreateInput(ContractModel):
-    """接收 compose 返回的完整组合定义。"""
+    """compose 返回的草稿句柄。"""
 
-    sprite: SpriteDraft
+    draft_id: DraftId
 
 
 class SpriteCreateOutput(ContractModel):
-    """新 sprite 记录及入库代码校验报告。"""
+    """新 sprite 的 ID 与入库代码校验报告；完整记录由宿主保存。"""
 
-    sprite: SpriteRecord
+    sprite_id: SpriteId
+    created_at: Timestamp
+    composition: Composition
     validation: CodeValidationReport
 
 
@@ -341,6 +373,7 @@ class CodeDiagnostic(ContractModel):
     code: Omittable[str]
     range: Omittable[TextRange]
     field: Omittable[str]
+    excerpt: Omittable[str]
 
 
 class CodeValidationInput(ContractModel):
@@ -420,7 +453,7 @@ ToolName = Literal[
     "image.info", "image.resize", "image.crop",
     "preset.search", "preset.create", "preset.modify",
     "validate.code", "validate.render", "sprite.compose", "sprite.create",
-    "tools.inspect", "tools.plan_execute",
+    "tools.inspect", "tools.plan_execute", "tools.report_step",
 ]
 
 

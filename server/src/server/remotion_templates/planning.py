@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from .models import Contract
+from .models import Contract, Text
 from .provider import ExecutionFailure
 
 Module = Literal["tools", "image", "preset", "validate", "sprite"]
@@ -19,24 +19,37 @@ class Step(Contract):
         default_factory=lambda: ["user_intent"],
         max_length=32,
         description=(
-            "Accepted references only: user_intent, accepted_base, or "
-            "steps.<earlier_step_id>.outputs.sprite for a Sprite saved by an earlier step."
+            "Accepted references only: user_intent, accepted_base, "
+            "steps.<earlier_step_id>.outputs.sprite for the Sprite an earlier step with the sprite module saves, or "
+            "steps.<earlier_step_id>.outputs.presets for the Presets an earlier step with the preset module readies."
         ),
     )
     tool_modules: list[Module] = Field(min_length=1, max_length=5)
     done_when: str = Field(min_length=1, max_length=2000)
 
 
-class Plan(Contract):
-    """Model proposes ordered goals; revision and limits belong to the host."""
+# Each step output is produced by exactly one tool module; the host records it from tool receipts.
+OUTPUT_MODULES = {"sprite": "sprite", "presets": "preset"}
+REFERENCE_FORMS = (
+    "Inputs must reference user_intent, accepted_base, steps.<earlier_id>.outputs.sprite "
+    "or steps.<earlier_id>.outputs.presets"
+)
+
+
+class PlanDraft(Contract):
+    """Model-proposed goal and steps; update_plan sends only the steps that are not finished yet."""
 
     goal: str = Field(min_length=1, max_length=2000)
     steps: list[Step] = Field(min_length=1, max_length=32)
 
+
+class Plan(PlanDraft):
+    """The complete ordered Plan; revision and limits belong to the host."""
+
     @model_validator(mode="after")
     def ordered_inputs(self):
-        """Reject forward references, duplicate IDs and arbitrary filesystem-like inputs."""
-        seen = set()
+        """Reject forward references, duplicate IDs, outputs an earlier step cannot produce and other inputs."""
+        seen: dict[str, Step] = {}
         for step in self.steps:
             if step.id in seen:
                 raise ValueError("Plan step IDs must be unique")
@@ -48,46 +61,114 @@ class Plan(Contract):
                     len(parts) != 4
                     or parts[0] != "steps"
                     or parts[1] not in seen
-                    or parts[2:] != ["outputs", "sprite"]
+                    or parts[2] != "outputs"
+                    or parts[3] not in OUTPUT_MODULES
                 ):
+                    raise ValueError(REFERENCE_FORMS)
+                if OUTPUT_MODULES[parts[3]] not in seen[parts[1]].tool_modules:
                     raise ValueError(
-                        "Inputs must reference user_intent, accepted_base or steps.<earlier_id>.outputs.sprite"
+                        f"Step input {ref}: step {parts[1]} has no {OUTPUT_MODULES[parts[3]]} module, so it "
+                        f"produces no {parts[3]}. Compose and save a Sprite in the same step that has the sprite module."
                     )
-            seen.add(step.id)
+            seen[step.id] = step
         return self
 
 
+def default_plan(edit: bool, base_drafts: bool | None = None) -> Plan:
+    """The host's standard two-step pipeline, so the Plan model is only needed when something goes wrong.
+
+    ``base_drafts`` says whether the accepted base registered ``base_*`` Preset drafts (default: ``edit``);
+    a pre-Sprite base has one legacy component instead, which the edit rewrites as a Preset.
+    """
+    base_drafts = edit if base_drafts is None else base_drafts
+    if base_drafts:
+        edit_hint = "For this edit, reuse the base_* drafts listed in base, or save a changed copy with preset_create."
+    elif edit:
+        edit_hint = (
+            "For this edit, the accepted base is one legacy component (base.legacy_code), not reusable drafts: "
+            "write the Preset it needs with preset_create."
+        )
+    else:
+        edit_hint = ""
+    return Plan(
+        goal="Build and save the Sprite the user asked for.",
+        steps=[
+            Step(
+                id="preset",
+                goal=(
+                    "Get the Preset(s) the Sprite needs ready. Reuse a fitting stored Preset (read it with preset_search "
+                    "{preset_id}) instead of writing a near copy; otherwise write complete code with preset_create. "
+                    + edit_hint
+                ).strip(),
+                input_refs=["user_intent", *(["accepted_base"] if edit else [])],
+                tool_modules=["preset"],
+                done_when="The Presets the Sprite needs are saved, read or available as drafts; then call tools_report_step.",
+            ),
+            Step(
+                id="sprite",
+                goal=(
+                    f"Compose the Presets from step_inputs{' (or base_* drafts)' if base_drafts else ''} with sprite_compose, one instance per "
+                    "visual element (a filter is one full-canvas instance), then save it with sprite_create {draft_id}."
+                ),
+                input_refs=["user_intent", "steps.preset.outputs.presets"],
+                tool_modules=["preset", "sprite"],
+                done_when="sprite_create succeeded in this step; then call tools_report_step.",
+            ),
+        ],
+    )
+
+
 class PlanAction(Contract):
-    """Host-owned handoff control shared by Outer and Plan ReAct layers."""
+    """Host-owned control shared by Outer (answer/ask/delegate/stop) and Plan ReAct (step changes)."""
 
     action: Literal[
-        "delegate", "update_plan", "continue", "advance", "complete", "stop"
+        "answer", "ask", "delegate", "update_plan", "continue", "advance", "complete", "stop"
     ]
-    plan: Plan | None = None
+    plan: PlanDraft | None = Field(
+        default=None,
+        description="update_plan only: the goal and the steps that are not finished yet; completed steps are kept by the host.",
+    )
     sprite_id: str | None = Field(default=None, max_length=64)
     reason: str = Field(default="", max_length=2000)
+    answer: Text | None = Field(default=None, description="answer only: the reply to a factual question.")
+    questions: list[Text] = Field(default_factory=list, max_length=5, description="ask only: necessary clarification questions.")
 
     @model_validator(mode="after")
     def action_arguments(self):
         """Require exactly the payload consumed by the selected control transition."""
         if self.action == "update_plan" and self.plan is None:
             raise ValueError(f"{self.action} requires a plan")
-        if self.action not in {"delegate", "update_plan"} and self.plan is not None:
-            raise ValueError("Only delegate/update_plan accept a plan")
+        if self.action != "update_plan" and self.plan is not None:
+            # A delegation always starts the host's standard plan; a plan it carried would be silently ignored.
+            raise ValueError("Only update_plan accepts a plan; delegate {reason} starts the host's standard plan")
         if self.sprite_id is not None and self.action != "complete":
             raise ValueError(
                 f"sprite_id is only valid with action=complete; omit it for {self.action} "
                 "(Preset IDs are not Sprite IDs)"
             )
+        if (self.action == "answer") != (self.answer is not None):
+            raise ValueError("answer requires the answer text, and only answer accepts it")
+        if (self.action == "ask") != bool(self.questions):
+            raise ValueError("ask requires nonempty questions, and only ask accepts them")
         return self
 
 
 class StepResult(Contract):
-    """Executor observation, never proof that a requested artifact passed acceptance."""
+    """Executor report through tools_report_step; the host fills in the step's outputs from tool receipts."""
 
     status: Literal["step_done", "blocked", "needs_input"]
     summary: str = Field(min_length=1, max_length=2000)
-    sprite_id: str | None = Field(default=None, max_length=64)
+    questions: list[str] = Field(
+        default_factory=list, max_length=5,
+        description="needs_input only: the questions Outer relays to the user.",
+    )
+
+    @model_validator(mode="after")
+    def questions_for_input(self):
+        """needs_input goes straight to Outer, which can only ask the user what the report asks."""
+        if self.status == "needs_input" and not self.questions:
+            raise ValueError("needs_input requires the questions for the user")
+        return self
 
 
 class PlanResult(Contract):
@@ -126,18 +207,6 @@ class ExecutionState:
             else None
         )
 
-    def dependents(self) -> list[str]:
-        """IDs of later steps that take the current step's saved Sprite as their input.
-
-        Such a step is not finished until a Sprite was actually saved: the Plan cannot re-open a step
-        that was reported done, so the missing output has to be caught while the Executor can still
-        produce it.
-        """
-        if self.plan is None or self.step is None:
-            return []
-        reference = f"steps.{self.step.id}.outputs.sprite"
-        return [later.id for later in self.plan.steps[self.index + 1 :] if reference in later.input_refs]
-
     def begin_batch(self):
         """A continuation consumes a fresh batch; unused slots never transfer."""
         if (
@@ -172,26 +241,35 @@ class ExecutionState:
             )
         self.calls += 1
 
-    def control(self, action: PlanAction, *, start_batch=True):
-        """Update pending steps or dispatch exactly one batch while preserving completed work."""
+    def control(self, action: PlanAction, *, start_batch=True) -> list[str]:
+        """Update pending steps or dispatch exactly one batch while preserving completed work.
+
+        Returns the IDs of completed steps an update_plan resent: the host kept its own copies, and the
+        caller tells the Plan so, because a step it meant to redo under the same ID did not run again.
+        """
         proposed = self.plan.model_copy(deep=True) if self.plan else None
         index, revision, completed = self.index, self.revision, dict(self.completed)
+        ignored: list[str] = []
         if action.action == "delegate":
             raise ValueError("Delegation belongs to Outer; Plan owns step definitions")
         if action.action == "update_plan":
             done = bool(self.result and self.result["status"] == "step_done")
             count = index + int(done)
-            old = proposed.steps[:count] if proposed else []
-            if action.plan.steps[: len(old)] != old:
+            kept = proposed.steps[:count] if proposed else []
+            # Completed steps are the host's; a resent copy is recognised by ID and ignored, never compared as text.
+            finished = {step.id for step in kept}
+            pending = [step for step in action.plan.steps if step.id not in finished]
+            ignored = [step.id for step in action.plan.steps if step.id in finished]
+            if not pending:
                 raise ValueError(
-                    "Completed plan steps and their outputs must be preserved"
+                    f"Plan has no pending step: {', '.join(ignored)} already finished and the host keeps them. "
+                    "Give work to redo a new step id, or call complete."
                 )
-            if count >= len(action.plan.steps):
-                raise ValueError("Plan has no pending step; request completion instead")
             if done:
                 completed[self.step.id] = self.result
                 index += 1
-            proposed = action.plan.model_copy(deep=True)
+            # Building the whole Plan checks every reference now, before any step of it runs.
+            proposed = Plan(goal=action.plan.goal, steps=[*kept, *pending])
             revision += 1
         elif action.action == "advance":
             if (
@@ -212,17 +290,11 @@ class ExecutionState:
             ):
                 raise ValueError("Continue requires an unfinished current step")
         else:
-            raise ValueError("Completion and stop are host finalization decisions")
+            raise ValueError("Only update_plan, continue and advance change the Plan")
         for ref in proposed.steps[index].input_refs:
-            if ref.startswith("steps.") and not completed.get(
-                ref.split(".")[1], {}
-            ).get("sprite_id"):
-                usable = [key for key, value in completed.items() if value.get("sprite_id")]
-                raise ValueError(
-                    f"Step input {ref} refers to an earlier step without a saved Sprite output; "
-                    f"steps with a Sprite output: {usable or 'none'}. Drop input_refs for steps that only "
-                    "created a Preset, or reference user_intent instead"
-                )
+            if ref.startswith("steps.") and not self._output(completed, ref):
+                step_id, output = ref.split(".")[1], ref.split(".")[3]
+                raise ValueError(f"Step input {ref} is missing: step {step_id} finished without {output}.")
         if start_batch:
             self.begin_batch()
         else:
@@ -236,14 +308,13 @@ class ExecutionState:
         )
         self.executing = True
         self.result = None
+        return ignored
 
     def finish_batch(self, status: str, **details):
         """Return a batch result to the outer loop without marking a limit as step completion."""
         self.result = {
             "plan_revision": self.revision,
             "step_id": self.step.id if self.step else None,
-            "batch": self.batches,
-            "tool_calls": self.batch_calls,
             "status": status,
             **details,
         }
@@ -257,15 +328,20 @@ class ExecutionState:
             "step_id": self.step.id if self.step else None,
             "completed": {key: dict(value) for key, value in self.completed.items()},
             "step_inputs": {
-                ref: self.completed.get(ref.split(".")[1], {}).get("sprite_id")
+                ref: self._output(self.completed, ref)
                 for ref in self.step.input_refs
                 if ref.startswith("steps.")
             }
             if self.step
             else {},
             "last_batch": dict(self.result) if self.result else None,
-            "limits": {"max_steps": self.max_steps, "max_tooluse": self.max_tooluse},
-            "batches": self.batches,
-            "actual_tooluse": self.calls,
-            "total_tooluse": self.total_limit,
+            # Remaining counts only: raw used/limit pairs were misread as an exhausted budget.
+            "tool_calls_left_in_batch": max(self.max_tooluse - self.batch_calls, 0),
+            "tool_calls_left_in_task": max(self.total_limit - self.calls, 0),
         }
+
+    @staticmethod
+    def _output(completed: dict, ref: str):
+        """Resolve steps.<id>.outputs.<sprite|presets> to what that step recorded, or None."""
+        step_id, output = ref.split(".")[1], ref.split(".")[3]
+        return completed.get(step_id, {}).get("sprite_id" if output == "sprite" else "presets") or None

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from server.remotion_templates.models import TemplateCandidate
 from server.remotion_templates.provider import Budget
 from server.remotion_templates.settings import Settings
 from server.remotion_templates.tools.catalog import available
@@ -18,10 +19,13 @@ from server.remotion_templates.tools.contracts import (
     ComponentDefinition,
     Composition,
     PresetDraft,
+    PresetModifyInput,
     PresetRecord,
+    PresetSearchInput,
     RenderValidationReport,
     SpriteComposeInput,
     SpriteCreateInput,
+    SpriteDraft,
     SpriteRecord,
 )
 from server.remotion_templates.tools.registry import ToolFault, registered_tools
@@ -79,8 +83,8 @@ def draft() -> PresetDraft:
     )
 
 
-def saved_sprite(sprite_code: str, preset_code: str) -> SpriteRecord:
-    """构造一条带实例快照的 Sprite 记录，用于观察任务快照的体积收缩。"""
+def saved_sprite(sprite_code: str, preset_code: str, instance_ids=("title",)) -> SpriteRecord:
+    """构造一条带实例快照的 Sprite 记录，用于观察任务快照只给摘要。"""
     return SpriteRecord(
         sprite_id="saved-sprite",
         created_at="2026-09-30T00:00:00+00:00",
@@ -90,7 +94,7 @@ def saved_sprite(sprite_code: str, preset_code: str) -> SpriteRecord:
         default_parameters={"title": {"text": "今日灵感"}},
         composition={"width": 1080, "height": 1920, "fps": 30, "duration_frames": 30},
         instances=[{
-            "instance_id": "title",
+            "instance_id": instance_id,
             "preset": {
                 "description": "title",
                 "code": preset_code,
@@ -100,35 +104,66 @@ def saved_sprite(sprite_code: str, preset_code: str) -> SpriteRecord:
             "parameters": {"text": "今日灵感"},
             "layout": {"x": 0, "y": 0, "width": 1080, "height": 1920, "z_index": 0},
             "timing": {"start_frame": 0, "duration_frames": 30},
-        }],
+        } for instance_id in instance_ids],
     )
 
 
-def test_snapshot_drops_rebuildable_source_only_when_over_budget(tmp_path):
-    """快照超过请求预算时才丢弃可由记录重建的源码，结构、Schema 与默认值始终保留。
-
-    实例内的预设源码已包含在合成后的 Sprite 源码里，先丢它；仍超限才丢 Sprite 源码。
-    """
+def test_snapshot_lists_saved_sprites_without_source(tmp_path):
+    """已保存的 Sprite 只以 ID 与摘要进入快照：源码不随每次模型请求重复发送。"""
     current = session(tmp_path)
-    source = "export default function Sprite(){return null}"
     current.latest_sprite_id = "saved-sprite"
+    current.saved_sprites["saved-sprite"] = saved_sprite("x" * 50_000, "y" * 50_000)
+    snapshot = current.snapshot(with_code=True)
+    assert snapshot["saved_sprites"] == [{
+        "sprite_id": "saved-sprite", "description": "标题",
+        "composition": {"width": 1080, "height": 1920, "fps": 30, "duration_frames": 30},
+        "instance_ids": ["title"],
+    }]
+    assert "latest_sprite" not in snapshot and "x" * 100 not in json.dumps(snapshot)
 
-    current.saved_sprites["saved-sprite"] = saved_sprite(source, source)
+
+def test_edit_base_presets_become_drafts_and_only_the_coder_sees_their_source(tmp_path):
+    """编辑任务：基线实例的预设登记为 base_* 草稿；只有带源码的快照列出源码，相同源码只列一次。"""
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    # Runtime hands the session the accepted spec and that version's TemplateCandidate, as for a real edit.
+    spec = SimpleNamespace(sprite=saved_sprite("bundle", "preset-source", ("left", "right")), composition=Composition(width=1080, height=1920, fps=30, duration_frames=30), sprite_kind="filter_overlay")
+    base = TemplateCandidate(tsx_code="bundle", config_schema={"type": "object"}, default_config={})
+    current = ToolSession(SimpleNamespace(settings=settings, renderer=None), spec, base, Budget(), tmp_path / "run", [], lambda *_: None, {})
+    assert set(current.preset_drafts) == {"base_left", "base_right"}
     plain = current.snapshot()
-    assert plain["saved_sprites"][0]["code"] == source
-    assert plain["saved_sprites"][0]["instances"][0]["preset"]["code"] == source
+    assert [item["draft_id"] for item in plain["base"]["instances"]] == ["base_left", "base_right"]
+    assert "preset-source" not in json.dumps(plain) and "bundle" not in json.dumps(plain)
+    coded = current.snapshot(with_code=True)["base"]["presets"]
+    assert coded["base_left"]["code"] == "preset-source"
+    assert coded["base_right"] == {"same_code_as": "base_left"}
 
-    current.saved_sprites["saved-sprite"] = saved_sprite(source, "x" * 150_000)
-    trimmed = current.snapshot()
-    assert "code" not in trimmed["saved_sprites"][0]["instances"][0]["preset"]
-    assert trimmed["saved_sprites"][0]["code"] == source
 
-    current.saved_sprites["saved-sprite"] = saved_sprite("y" * 250_000, "x" * 150_000)
-    minimal = current.snapshot()
-    assert "code" not in minimal["saved_sprites"][0]
-    assert "code" not in minimal["latest_sprite"]
-    assert minimal["saved_sprites"][0]["parameter_schema"]["type"] == "object"
-    assert minimal["saved_sprites"][0]["default_parameters"] == {"title": {"text": "今日灵感"}}
+def test_a_large_edit_base_is_omitted_largest_first_to_fit_the_snapshot_budget(tmp_path):
+    """审计复现：快照体积上限被整体删掉后，Executor 快照里的基线源码不受限制，大基线会让请求超过提供方的 512000 字节上限。"""
+    from server.remotion_templates.tools.session import _SNAPSHOT_BYTE_BUDGET
+
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    harness = SimpleNamespace(settings=settings, renderer=None)
+    sprite = saved_sprite("bundle", "b" * 190_000, ("big",))
+    sprite.instances.append(saved_sprite("bundle", "s" * 30_000, ("small",)).instances[0])
+    spec = SimpleNamespace(sprite=sprite, composition=Composition(width=1080, height=1920, fps=30, duration_frames=30), sprite_kind="filter_overlay")
+    base = TemplateCandidate(tsx_code="bundle", config_schema={"type": "object"}, default_config={})
+    current = ToolSession(harness, spec, base, Budget(), tmp_path / "run", [], lambda *_: None, {})
+    snapshot = current.snapshot(with_code=True)
+    assert len(json.dumps(snapshot, ensure_ascii=False).encode()) <= _SNAPSHOT_BYTE_BUDGET
+    presets = snapshot["base"]["presets"]
+    assert "code" not in presets["base_big"] and "190000 bytes" in presets["base_big"]["code_omitted"]
+    assert presets["base_big"]["parameter_schema"] and presets["base_small"]["code"] == "s" * 30_000
+    # The handle still composes: the draft itself keeps its source.
+    assert current.preset_drafts["base_big"].code == "b" * 190_000
+    # A small base keeps every source, and a large legacy component is omitted the same way.
+    small_spec = SimpleNamespace(sprite=saved_sprite("bundle", "x" * 1000), composition=spec.composition, sprite_kind="filter_overlay")
+    small = ToolSession(harness, small_spec, base, Budget(), tmp_path / "small", [], lambda *_: None, {})
+    assert small.snapshot(with_code=True)["base"]["presets"]["base_title"]["code"] == "x" * 1000
+    # A legacy component holds at most 100000 characters, which only multi-byte text pushes past the budget.
+    legacy = TemplateCandidate(tsx_code="灯" * 100_000, config_schema={"type": "object"}, default_config={})
+    old = ToolSession(harness, SimpleNamespace(sprite=None, composition=spec.composition, sprite_kind="filter_overlay"), legacy, Budget(), tmp_path / "legacy", [], lambda *_: None, {}).snapshot(with_code=True)
+    assert "legacy_code" not in old["base"] and "300000 bytes" in old["base"]["legacy_code_omitted"]
 
 
 def test_full_catalog_is_registered_but_only_implemented_tools_are_public():
@@ -168,10 +203,190 @@ def test_creation_flow_persists_one_sprite_without_semantic_index(tmp_path):
             }),
             available(),
         )
-        saved = await current.execute("sprite.create", SpriteCreateInput.model_validate(composed), available())
-        assert saved["sprite"]["code"] == composed["sprite"]["code"]
+        # compose returns a handle and a summary; the model never sees or re-sends the bundled source.
+        assert "code" not in composed and composed["code_bytes"] > 0
+        assert composed["instances"][0]["preset_id"] == preset["preset"]["preset_id"]
+        saved = await current.execute("sprite.create", SpriteCreateInput(draft_id=composed["draft_id"]), available())
+        assert current.saved_sprite(saved["sprite_id"]).code == current.sprite_drafts[composed["draft_id"]].code
         assert len(current.saved_sprites) == 1
         assert len(current.catalog.read_sprites()) == 1
+
+    asyncio.run(run())
+
+
+def test_an_edit_can_modify_a_base_draft_by_its_handle(tmp_path):
+    """真实回放：编辑任务里模型直接对 base_* 草稿调用 preset_modify；按句柄复制，原草稿不变，未知 ID 的提示也列出草稿句柄。"""
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    spec = SimpleNamespace(sprite=saved_sprite("bundle", "export default function Label(){return <div>Title</div>}"), composition=Composition(width=1080, height=1920, fps=30, duration_frames=30), sprite_kind="filter_overlay")
+    base = TemplateCandidate(tsx_code="bundle", config_schema={"type": "object"}, default_config={})
+    current = ToolSession(SimpleNamespace(settings=settings, renderer=None), spec, base, Budget(), tmp_path / "run", [], lambda *_: None, {})
+    copy = current.modify_preset(PresetModifyInput(preset_id="base_title", changes={"description": "更淡"}))
+    assert current.preset_drafts[copy.draft_id].description == "更淡"
+    assert current.preset_drafts[copy.draft_id].code == "export default function Label(){return <div>Title</div>}"
+    assert current.preset_drafts["base_title"].description == "title"
+    assert "source_preset_id" not in copy.model_dump(exclude_unset=True)["preset"]
+    with pytest.raises(ToolFault) as missing:
+        current.modify_preset(PresetModifyInput(preset_id="base_unknown", changes={"description": "x"}))
+    assert "draft_ids in this task" in missing.value.error.message and "base_title" in missing.value.error.message
+    # Reading a draft handle as a stored Preset (seen in the replay) says where its source is and how to use it.
+    with pytest.raises(ToolFault) as draft_read:
+        current.search_presets(PresetSearchInput(preset_id="base_title"))
+    assert "is a draft of this task" in draft_read.value.error.message and "base.presets" in draft_read.value.error.message
+
+
+def test_draft_receipts_carry_a_digest_of_their_content(tmp_path):
+    """同样的修改每次得到新的 draft_id，但内容摘要相同；内容一变摘要就变，空转判断据此区分重复与修改。"""
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    spec = SimpleNamespace(sprite=saved_sprite("bundle", "export default function Label(){return <div>Title</div>}"), composition=Composition(width=1080, height=1920, fps=30, duration_frames=30), sprite_kind="filter_overlay")
+    base = TemplateCandidate(tsx_code="bundle", config_schema={"type": "object"}, default_config={})
+    current = ToolSession(SimpleNamespace(settings=settings, renderer=None), spec, base, Budget(), tmp_path / "run", [], lambda *_: None, {})
+    first = current.modify_preset(PresetModifyInput(preset_id="base_title", changes={"description": "更淡"}))
+    again = current.modify_preset(PresetModifyInput(preset_id="base_title", changes={"description": "更淡"}))
+    other = current.modify_preset(PresetModifyInput(preset_id="base_title", changes={"code": "export default function Label(){return <div>Other</div>}"}))
+    assert first.draft_id != again.draft_id
+    assert first.digest == again.digest
+    assert other.digest != first.digest
+
+
+@pytest.mark.skipif(not RENDERER_DEPS.exists(), reason="install locked Remotion renderer dependencies")
+def test_repeated_compose_returns_the_same_digest_under_a_new_handle(tmp_path):
+    """重复同一组合：draft_id 不同、digest 相同；换一个参数 digest 就变。"""
+    async def run():
+        current = session(tmp_path)
+        patch_validation(current)
+        preset = await current.execute("preset.create", draft(), available())
+        first = await current.execute("sprite.compose", title_instance(preset["preset"]["preset_id"]), available())
+        again = await current.execute("sprite.compose", title_instance(preset["preset"]["preset_id"]), available())
+        changed = title_instance(preset["preset"]["preset_id"]).model_dump(mode="json", exclude_unset=True)
+        changed["instances"][0]["timing"]["duration_frames"] = 60
+        moved = await current.execute("sprite.compose", SpriteComposeInput.model_validate(changed), available())
+        assert first["draft_id"] != again["draft_id"]
+        assert first["digest"] == again["digest"]
+        assert moved["digest"] != first["digest"]
+
+    asyncio.run(run())
+
+
+def test_create_checks_each_preset_source_once_and_does_not_bundle_again(tmp_path, monkeypatch):
+    """审计复现：create 收到的是宿主自己组合的草稿，却再打包一次来比对，并对同一预设的每个实例都跑一次沙箱类型检查；现在每种源码只查一次。"""
+    async def run():
+        current = session(tmp_path)
+        patch_validation(current)
+        checked = []
+
+        async def validate(component):
+            """Record which source the isolated validator was asked to check."""
+            checked.append(component.code)
+            return valid_report()
+
+        def bundle_again(_instances):
+            """The draft was bundled by compose already; a second bundle is wasted work."""
+            raise AssertionError("sprite.create bundled the host draft again")
+
+        current.validate_code = validate
+        monkeypatch.setattr("server.remotion_templates.tools.session.compose_source", bundle_again)
+        record = saved_sprite("bundle", "shared", ("a", "b", "c"))
+        record.instances.append(saved_sprite("bundle", "other", ("d",)).instances[0])
+        current.sprite_drafts["sprite_draft_1"] = SpriteDraft(**record.model_dump(mode="json", exclude={"sprite_id", "created_at"}, exclude_unset=True))
+        saved = await current.execute("sprite.create", SpriteCreateInput(draft_id="sprite_draft_1"), available())
+        assert checked == ["shared", "other", "bundle"]
+        assert current.saved_sprite(saved["sprite_id"]).code == "bundle"
+
+    asyncio.run(run())
+
+
+def test_refused_code_lists_located_errors_with_their_lines_and_fixed_hints(tmp_path):
+    """create 校验失败时，拒绝文本逐条给出位置、错误码与所在行源码，最多五条；常见错误附宿主固定的修复说明。"""
+    def lsp(line, code="2322", message="Type 'string' is not assignable to type 'number'."):
+        """One located TypeScript error in the checked component file."""
+        return {"source": "lsp", "severity": "error", "message": message, "file": "Template.tsx", "code": code,
+                "range": {"start": {"line": line, "character": 8}, "end": {"line": line, "character": 9}},
+                "excerpt": f"const n{line}: number = props.t;"}
+
+    async def run():
+        current = session(tmp_path)
+
+        async def failing(_component):
+            """Six type errors and one warning, as the isolated validator would report them."""
+            warning = {"source": "lsp", "severity": "warning", "message": "unused", "file": "Template.tsx"}
+            return CodeValidationReport.model_validate({"passed": False, "diagnostics": [lsp(line) for line in range(2, 8)] + [warning]})
+
+        current.validate_code = failing
+        with pytest.raises(ToolFault) as refused:
+            await current.execute("preset.create", draft(), available())
+        error = refused.value.error
+        lines = error.message.splitlines()
+        assert lines[0] == "Preset code validation failed."
+        assert lines[1] == "- Template.tsx 3:9 2322: Type 'string' is not assignable to type 'number'."
+        assert lines[2] == "  > const n2: number = props.t;"
+        assert lines[-1] == "- and 1 more in details.validation" and "unused" not in error.message
+        assert len(error.details["validation"]["diagnostics"]) == 7
+        assert [hint.split(":")[0] for hint in error.details["hints"]] == ["Props must match parameter_schema"]
+        assert current.catalog.read_presets() == []
+
+    asyncio.run(run())
+
+
+def test_invalid_instance_parameters_name_the_instance_field(tmp_path):
+    """实例参数不合 Schema 时，错误指向 /instances/N/parameters 并说明原因，而不是只说参数无效。"""
+    async def run():
+        current = session(tmp_path)
+        patch_validation(current)
+        stored = await current.execute("preset.create", PresetDraft(
+            description="text", code="export default function Label(props: {text: string}){return <div>{props.text}</div>}",
+            parameter_schema={"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"], "additionalProperties": False},
+            default_parameters={"text": "默认"},
+        ), available())
+        request = title_instance(stored["preset"]["preset_id"]).model_dump(mode="json", exclude_unset=True)
+        request["instances"][0]["parameters"] = {"text": 42}
+        with pytest.raises(ToolFault) as refused:
+            await current.execute("sprite.compose", SpriteComposeInput.model_validate(request), available())
+        assert refused.value.error.field == "/instances/0/parameters"
+        assert refused.value.error.message.startswith("Invalid parameters for title: ")
+
+    asyncio.run(run())
+
+
+def test_unknown_draft_handle_names_the_task_drafts(tmp_path):
+    """sprite.create 只接收本任务 compose 产生的句柄；未知句柄给出字段位置和已有句柄，便于下一次调用改正。"""
+    async def run():
+        current = session(tmp_path)
+        with pytest.raises(ToolFault) as unknown:
+            await current.execute("sprite.create", SpriteCreateInput(draft_id="made-up"), available())
+        assert unknown.value.error.code == "INVALID_ARGUMENT"
+        assert unknown.value.error.field == "/draft_id"
+        assert "drafts in this task: none" in unknown.value.error.message
+
+    asyncio.run(run())
+
+
+@pytest.mark.skipif(not RENDERER_DEPS.exists(), reason="install locked Remotion renderer dependencies")
+def test_modified_copy_composes_by_handle_and_a_shared_preset_is_bundled_once(tmp_path):
+    """回放 bb0decec：同一预设的多个实例只打包一份模块；modify 副本按 draft_id 参与组合，各实例参数独立。"""
+    marker = "SharedPresetMarker"
+    shared = PresetDraft(
+        description="text",
+        code=f"export default function Label(props: {{text: string}}){{return <div>{marker}{{props.text}}</div>}}",
+        parameter_schema={"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"], "additionalProperties": False},
+        default_parameters={"text": "默认"},
+    )
+
+    async def run():
+        current = session(tmp_path)
+        patch_validation(current)
+        stored = await current.execute("preset.create", shared, available())
+        copy = await current.execute("preset.modify", PresetModifyInput(preset_id=stored["preset"]["preset_id"], changes={"description": "副本"}), available())
+        layout = {"x": 0, "y": 0, "width": 1080, "height": 960, "z_index": 0}
+        composed = await current.execute("sprite.compose", SpriteComposeInput.model_validate({
+            "description": "两行文字",
+            "instances": [
+                {"instance_id": "top", "source": {"kind": "stored", "preset_id": stored["preset"]["preset_id"]}, "parameters": {"text": "上"}, "layout": layout, "timing": {"start_frame": 0, "duration_frames": 30}},
+                {"instance_id": "bottom", "source": {"kind": "draft", "draft_id": copy["draft_id"]}, "parameters": {"text": "下"}, "layout": {**layout, "y": 960}, "timing": {"start_frame": 0, "duration_frames": 30}},
+            ],
+        }), available())
+        assert composed["instances"][1]["draft_id"] == copy["draft_id"]
+        assert composed["default_parameters"] == {"top": {"text": "上"}, "bottom": {"text": "下"}}
+        assert current.sprite_drafts[composed["draft_id"]].code.count(marker) == 1
 
     asyncio.run(run())
 
@@ -207,7 +422,7 @@ def test_sprite_that_hides_the_video_is_refused_with_an_actionable_reason(tmp_pa
         preset = await current.execute("preset.create", draft(), available())
         composed = await current.execute("sprite.compose", title_instance(preset["preset"]["preset_id"]), available())
         with pytest.raises(ToolFault) as refused:
-            await current.execute("sprite.create", SpriteCreateInput.model_validate(composed), available())
+            await current.execute("sprite.create", SpriteCreateInput(draft_id=composed["draft_id"]), available())
         assert refused.value.error.code == "CODE_VALIDATION_FAILED"
         messages = [item["message"] for item in refused.value.error.details["validation"]["diagnostics"]]
         assert messages == [f"transparency: {reason}"]
@@ -237,8 +452,8 @@ def test_creation_mounts_the_sprite_once_and_completion_reuses_that_report(tmp_p
         current.validator = Validator()
         preset = await current.execute("preset.create", draft(), available())
         composed = await current.execute("sprite.compose", title_instance(preset["preset"]["preset_id"]), available())
-        saved = await current.execute("sprite.create", SpriteCreateInput.model_validate(composed), available())
-        record = current.saved_sprite(saved["sprite"]["sprite_id"])
+        saved = await current.execute("sprite.create", SpriteCreateInput(draft_id=composed["draft_id"]), available())
+        record = current.saved_sprite(saved["sprite_id"])
         assert calls == [True]
         assert current.validation_for(record) is not None and current.validation_for(record).passed
 
@@ -278,8 +493,8 @@ def test_real_creation_flow_builds_preview(tmp_path):
                 "timing": {"start_frame": 0, "duration_frames": 30},
             }],
         }), available())
-        saved = await current.execute("sprite.create", SpriteCreateInput.model_validate(composed), available())
-        result = await harness.finalize_sprite(current, saved["sprite"]["sprite_id"], Budget(), tmp_path)
+        saved = await current.execute("sprite.create", SpriteCreateInput(draft_id=composed["draft_id"]), available())
+        result = await harness.finalize_sprite(current, saved["sprite_id"], Budget(), tmp_path)
         assert (result[3] / "Export.tsx").stat().st_size > 0
         assert (result[3] / "interactive.js").stat().st_size > 0
 

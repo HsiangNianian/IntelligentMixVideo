@@ -1,25 +1,34 @@
 # Remotion Preset → Sprite
 
-This module runs the three-layer ReAct workflow: the Outer task loop plans, the
-Plan loop sequences steps, and the Executor loop calls tools for one step. The
-final delivery is a saved Sprite published as an isolated Player preview.
+This module runs the three-layer ReAct workflow. The Outer loop only answers,
+asks, delegates or stops through `tools_plan_execute`. A delegation starts the
+host's standard two-step plan directly: `preset` readies the Presets and
+`sprite` composes and saves the Sprite (a `plan` sent with `delegate` is refused;
+only `update_plan` takes one). The Executor loop calls the tools of one step and
+ends it with `tools_report_step`; the host checks the step's recorded outputs,
+starts the next step and publishes the saved Sprite after the last one. A step
+reported `needs_input` goes straight to Outer with its questions, since only
+Outer can ask the user. The Plan loop only runs to recover a step that is
+blocked or used a batch without new evidence. The final delivery is a saved
+Sprite published as an isolated Player preview.
 
 ## Tool catalog
 
 Eleven business tools are registered with their full input/output contracts.
-`tools.inspect` also describes the host-owned `tools.plan_execute` control by
-dotted ID or wire name, without executing it or changing role permissions.
+`tools.inspect` also describes the host-owned `tools.plan_execute` and
+`tools.report_step` controls by dotted ID or wire name, without executing them
+or changing role permissions.
 Six business tools have implementations in this build:
 
 | Tool | Status |
 | --- | --- |
 | `preset.create` | implemented — validates the Preset and saves it |
-| `sprite.compose` | implemented — deterministic combination of Preset instances |
-| `sprite.create` | implemented — consistency check, code validation, one browser mount that must leave the video visible, and save |
+| `sprite.compose` | implemented — deterministic combination of Preset instances; keeps the draft host-side and returns its `draft_id` and a code-free summary |
+| `sprite.create` | implemented — takes that `draft_id`; code validation (each distinct Preset source once, then the Sprite), one browser mount that must leave the video visible, and save |
 | `tools.inspect` | implemented — returns one tool descriptor by dotted ID or wire name; it reads a contract, it does not search or list tools |
 | `image.info` / `image.resize` / `image.crop` | contract only |
 | `preset.search` | implemented: plain listing with optional keyword; the agent picks what to recall |
-| `preset.modify` | implemented: returns an edited draft copy; save it with `preset.create` |
+| `preset.modify` | implemented: copies a stored Preset or a task draft (`base_*`, earlier `draft_id`), keeps the copy host-side and returns its `draft_id`; compose it with source `{kind: "draft", draft_id}` |
 | `validate.code` / `validate.render` | contract only |
 
 Deferred tools are marked `implemented=False` at registration and are filtered
@@ -131,20 +140,49 @@ Only a successful generation-starting tool sets `generation_started`. A failed
 first attempt may still be followed by an explanatory answer; failure after a
 successful generation attempt does not remove the completion requirement.
 
-Executor and Plan accept a single JSON object with ordinary prose or a markdown
-fence around it. They reject arrays, quoted JSON strings, multiple objects and
-objects nested inside malformed JSON. Unknown task Sprite IDs produce feedback
-without changing the active layer or Plan, so the next round can correct them.
-A step whose saved Sprite a later step takes as `steps.<id>.outputs.sprite`, and whose tool window
-offers `sprite_create`, cannot be reported `step_done` without the `sprite_id` that this very step
-saved last (a missing ID, one an earlier step saved, or an older one of its own counts as none): the
-host refuses the claim in the Executor layer and asks for `sprite_create`, because the Plan cannot
-re-open a step that was reported done and `sprite_compose` only returns a draft. Saved Sprites are
-tracked by plan position, so renaming the unfinished step after a tool limit keeps them, and an
-accepted `step_done` clears the refusal text. A Preset-only or read-only step has no `sprite_create`
-and is not held to this: the Plan's `input_refs` check tells it how to repair the reference. When the
-task has saved no Sprite at all, a completion request is refused with that fact and the way forward
-instead of a generic mismatch.
+Drafts are handles: neither the model nor the snapshot carries Sprite or draft source, so a large
+composition is never copied back verbatim. Presets of the same source are bundled once however many
+instances use them. For an edit, the accepted base's instances are registered as `base_<instance_id>`
+Preset drafts; only the Executor's snapshot shows their source, each distinct source once. The session
+snapshot stays within 200 KB: a base too large for it has its largest sources omitted first (`code_omitted`,
+`legacy_code_omitted`), while their handles still compose unchanged. The execution
+snapshot shows `tool_calls_left_in_batch` and `tool_calls_left_in_task` instead of used/limit pairs.
+Every call returns a fresh `draft_id`, so the no-progress guard ignores draft handles and compares the
+content `digest` that `preset_modify` and `sprite_compose` return: repeating the same draft is no new evidence.
+
+The host records each step's outputs from tool receipts: the Sprites `sprite_create` saved, and the Preset
+sources that `preset_create`, `preset_search {preset_id}` or `preset_modify` made ready. A step with the
+`sprite` module cannot be reported `step_done` before a `sprite_create` in that step succeeded, and a
+`preset` step needs at least one ready Preset (or, for an edit, the base drafts); the refusal names the tool
+to call next. A pre-Sprite base registers no base drafts: its edit plan says to write the Preset from
+`base.legacy_code` instead of reusing drafts. Plans reference `steps.<id>.outputs.presets` or `steps.<id>.outputs.sprite`, and a reference to
+an output the earlier step's modules cannot produce is refused when the Plan is built. `update_plan` takes
+only the unfinished steps; completed steps are kept by the host and a resent copy is ignored by ID, with
+the ignored IDs listed in the receipt (`ignored_step_ids`) so the Plan knows to redo work under a new ID. At the
+batch limit the host continues a step that observed something new in that batch and wakes the Plan
+otherwise.
+
+Outer has no publish action, so publication is the host's. Besides the last accepted step, a Plan
+`complete` (or a text `plan_done`) publishes the latest Sprite this task saved; a completion that names any
+other Sprite is refused. When the task budget allows no further batch or control call, the host publishes
+the latest task Sprite if there is one, and only otherwise returns `blocked` to Outer.
+A handoff counts for the no-progress guard only once it has happened: an automatic advance or a
+publication the host refuses is recorded as the return to the Plan, not as the transition it attempted.
+
+Call arguments are parsed by the host. Only surplus `}` or `]` after one complete JSON object are dropped
+(and recorded as `tool_arguments_repaired` in the private audit); any other invalid JSON is refused with the
+character position and the text around it, and schema errors give the first JSON Pointer as `field` and up
+to three located messages. A refused create lists up to five errors with file, line:column, code and the
+checked source line (`excerpt`, because the type check runs on a formatted copy whose line numbers can
+differ from the submission), and adds fixed host hints in `details.hints` for props/schema mismatches,
+disallowed imports or capabilities, the transparency gate and schema/default mismatches. The Executor's
+rules include one minimal Preset that passes code validation and the transparency mount.
+
+Text replies remain a fallback. Executor and Plan accept a single JSON object with ordinary prose or a
+markdown fence around it, and curly quotes used as JSON delimiters are straightened. They reject arrays,
+quoted JSON strings, multiple objects and objects nested inside malformed JSON. Unknown task Sprite IDs in
+a Plan result produce feedback without changing the active layer or Plan. When the task has saved no
+Sprite at all, publication is refused with that fact and control returns to the Plan.
 
 Every Outer → Plan → Executor turn appends one public round record through the
 `job.round` delta event on the same work stream as the phase timeline. A round

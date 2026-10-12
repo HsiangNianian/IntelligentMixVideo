@@ -376,7 +376,19 @@ def test_a_bare_exec_call_is_still_refused_and_located(tmp_path):
     assert report["diagnostics"] == [{
         "source": "contract", "severity": "error", "message": "Unsupported capability: exec (line 3, column 15)",
         "range": {"start": {"line": 2, "character": 14}, "end": {"line": 2, "character": 18}},
+        "excerpt": 'const out = exec("ls");',
     }]
+
+
+@needs_node
+def test_a_type_error_in_reformatted_code_quotes_the_checked_line(tmp_path):
+    """类型检查在格式化后的副本上进行，行号可能与提交源码不同；诊断带出所指行的源码，模型仍能在自己的代码里找到它。"""
+    code = 'import React from "react"; export default function T(props: { t: string }) { const n: number = props.t; return <div>{n}</div>; }'
+    report = run_code_worker(tmp_path, code, {"t": {"type": "string"}}, {"t": "x"})
+    assert report["passed"] is False
+    [error] = [item for item in report["diagnostics"] if item.get("code") == "2322" and item.get("file") == "Template.tsx"]
+    assert error["range"]["start"]["line"] > 0
+    assert error["excerpt"] == "const n: number = props.t;"
 
 
 @needs_node
