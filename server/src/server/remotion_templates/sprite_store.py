@@ -94,11 +94,22 @@ def replace_data(sprite_id: str, data: dict) -> None:
         connection.execute(update(sprites).where(sprites.c.sprite_id == sprite_id).values(data=data))
 
 
-def missing(sprite_ids: Iterable[str]) -> set[str]:
-    """Return those of the given Sprite IDs that no publication has, using one query that reads no JSON."""
+def canvases(sprite_ids: Iterable[str]) -> dict[str, tuple[int, int, int]]:
+    """Return (width, height, fps) of each given Sprite ID that has a publication; unknown IDs are left out.
+
+    The canvas is what an overlay render needs to be identical across the clips it stacks. A damaged record
+    without a readable canvas counts as (0, 0, 0), which differs from every real canvas.
+    """
     wanted = set(sprite_ids)
     if not wanted:
-        return set()
+        return {}
     with initialize_schema().connect() as connection:
-        found = set(connection.execute(select(sprites.c.sprite_id).where(sprites.c.sprite_id.in_(wanted))).scalars())
-    return wanted - found
+        rows = connection.execute(
+            select(sprites.c.sprite_id, sprites.c.data).where(sprites.c.sprite_id.in_(wanted))
+        ).all()
+    result = {}
+    for row in rows:
+        canvas = row.data.get("canvas") if isinstance(row.data, dict) else None
+        canvas = canvas if isinstance(canvas, dict) else {}
+        result[row.sprite_id] = tuple(canvas.get(name, 0) for name in ("width", "height", "fps"))
+    return result

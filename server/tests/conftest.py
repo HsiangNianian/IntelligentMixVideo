@@ -122,11 +122,13 @@ def remotion_track(track_id: str = "clip", **changes) -> dict:
             "start": 1, "duration": None, "editor": {}, **changes}
 
 
-def seed_sprite(sprite_id: str = SPRITE_ID) -> str:
-    """在当前共享库（替身或真实 MySQL）里放一条已发布 Sprite 记录并返回其 ID，供保存引用它的模板；需先启用 template_db 或真实库。"""
+def seed_sprite(sprite_id: str = SPRITE_ID, canvas: tuple[int, int, int] = (1080, 1920, 30)) -> str:
+    """在当前共享库（替身或真实 MySQL）里放一条已发布 Sprite 记录并返回其 ID，供保存引用它的模板；画布为（宽、高、帧率）。需先启用 template_db 或真实库。"""
+    width, height, fps = canvas
     sprite_store.insert(
         sprite_id=sprite_id, source_version_id=str(uuid4()), kind=1, text_prop="", keywords_prop="",
-        published_at=datetime.now(UTC), data={"sprite_id": sprite_id},
+        published_at=datetime.now(UTC),
+        data={"sprite_id": sprite_id, "canvas": {"width": width, "height": height, "fps": fps, "preview_frames": 90}},
     )
     return sprite_id
 

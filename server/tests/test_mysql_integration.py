@@ -133,7 +133,7 @@ def test_mysql_sprite_table_keeps_field_names_binary_and_selections_unique(mysql
     large = {"tsx_code": "路径🎬" * 100_000}
     sprite_store.replace_data(first, large)
     assert sprite_store.get(first) == large
-    assert sprite_store.missing([first, "unknown"]) == {"unknown"}
+    assert sprite_store.canvases([first, "unknown"]) == {first: (0, 0, 0)}  # 测试数据没有画布，未知 ID 不在结果里
     assert [sprite_id for sprite_id, _ in sprite_store.listing()].count(first) == 1
 
 

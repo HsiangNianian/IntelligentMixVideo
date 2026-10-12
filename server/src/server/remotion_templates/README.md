@@ -164,7 +164,7 @@ model protocol failures are explicitly marked. Snapshots carry all rounds, while
 `sprites/<id>/interactive.js` in this module's data folder), so deleting or editing the source work never changes a
 published Sprite. The table is created on first use like the template table and sits in the same database as the
 templates that reference its IDs, which is what lets a template save check its `remotion` tracks (422 when a
-`sprite_id` is not published). The preview bundle is a local file: a host that did not publish the Sprite lists it
+`sprite_id` is not published or the clips' Sprites do not share one width, height and fps, which an overlay render requires). The preview bundle is a local file: a host that did not publish the Sprite lists it
 but answers its preview with a 404, while overlay renders only need the stored TSX. Sprites published before this
 storage (the SQLite `sprites` table and the `sprites/<id>/` folders it pointed at) are neither read nor migrated and
 stay where they are: publish the accepted versions again.

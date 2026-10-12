@@ -71,11 +71,17 @@ def get_template(template_id: UUID) -> Template:
 def save_template(data: TemplateSave) -> Template:
     """原子创建或完整覆盖；锁定待更新行，并以数据库唯一约束处理并发重名。
 
-    Remotion 片段引用的 Sprite 必须已发布（422）。Sprite 只追加不删除，所以检查之后引用不会失效。
+    Remotion 片段引用的 Sprite 必须已发布，且画布尺寸与帧率一致（422）：叠加渲染要把它们叠成同一个视频，
+    不一致的模板到总线渲染时才会失败，所以在保存时拒绝。Sprite 只追加不删除，所以检查之后引用不会失效。
     """
     clip_ids = {str(track.sprite_id) for track in data.tracks if track.target == "remotion"}
-    if clip_ids and (unknown := sprite_store.missing(clip_ids)):
-        raise HTTPException(422, f"Remotion 资产尚未发布：{'、'.join(sorted(unknown))}")
+    if clip_ids:
+        found = sprite_store.canvases(clip_ids)
+        if unknown := clip_ids - found.keys():
+            raise HTTPException(422, f"Remotion 资产尚未发布：{'、'.join(sorted(unknown))}")
+        if len(set(found.values())) > 1:
+            sizes = "、".join(sorted(f"{width}x{height}@{fps}" for width, height, fps in set(found.values())))
+            raise HTTPException(422, f"Remotion 资产的画布尺寸或帧率不一致，无法叠成同一个视频：{sizes}")
     template_id = str(data.template_id or uuid4())
     catalog = effect_catalog()
     configuration = data.model_dump(mode="json", by_alias=True, exclude={"template_id", "name"})
