@@ -7,13 +7,18 @@ const input = JSON.parse(fs.readFileSync(0, "utf8"));
 const instances = Array.isArray(input.instances) ? input.instances : [];
 // Instances of the same Preset share one bundled module, so repeated instances do not repeat its source.
 const modules = [...new Set(instances.map((item) => item.code))];
+/** Pass each top-level parameter bound to this instance to its Preset prop, after the nested props so it wins. */
+function bound(item) {
+  const pairs = (item.bindings ?? []).map(({ name, parameter }) => `${JSON.stringify(parameter)}: props[${JSON.stringify(name)}]`);
+  return pairs.length ? ` {...{${pairs.join(", ")}}}` : "";
+}
 const entry = [
   'import React from "react";',
   'import {AbsoluteFill, Sequence} from "remotion";',
   ...modules.map((_, index) => `import Preset${index} from "imv:preset/${index}";`),
   `const __defaults = ${JSON.stringify(input.defaults ?? {})};`,
   `const __merge = (base, patch) => { if (patch === undefined || patch === null || typeof patch !== "object" || Array.isArray(patch)) return patch === undefined ? base : patch; const result = {...base}; for (const [key, value] of Object.entries(patch)) result[key] = value && typeof value === "object" && !Array.isArray(value) && result[key] && typeof result[key] === "object" && !Array.isArray(result[key]) ? __merge(result[key], value) : value; return result; };`,
-  `export default function Sprite(inputProps = {}) { const props = __merge(__defaults, inputProps); return <AbsoluteFill>${instances.map((item) => `<Sequence key={${JSON.stringify(item.instance_id)}} from={${item.timing.start_frame}} durationInFrames={${item.timing.duration_frames}} width={${item.layout.width}} height={${item.layout.height}} style={{position:"absolute",left:${item.layout.x},top:${item.layout.y},width:${item.layout.width},height:${item.layout.height},zIndex:${item.layout.z_index},overflow:"hidden"}}><div data-imv-instance={${JSON.stringify(item.instance_id)}} style={{width:"100%",height:"100%"}}><Preset${modules.indexOf(item.code)} {...props[${JSON.stringify(item.instance_id)}]} /></div></Sequence>`).join("")}</AbsoluteFill>; }`,
+  `export default function Sprite(inputProps = {}) { const props = __merge(__defaults, inputProps); return <AbsoluteFill>${instances.map((item) => `<Sequence key={${JSON.stringify(item.instance_id)}} from={${item.timing.start_frame}} durationInFrames={${item.timing.duration_frames}} width={${item.layout.width}} height={${item.layout.height}} style={{position:"absolute",left:${item.layout.x},top:${item.layout.y},width:${item.layout.width},height:${item.layout.height},zIndex:${item.layout.z_index},overflow:"hidden"}}><div data-imv-instance={${JSON.stringify(item.instance_id)}} style={{width:"100%",height:"100%"}}><Preset${modules.indexOf(item.code)} {...props[${JSON.stringify(item.instance_id)}]}${bound(item)} /></div></Sequence>`).join("")}</AbsoluteFill>; }`,
 ].join("\n");
 
 const result = await build({

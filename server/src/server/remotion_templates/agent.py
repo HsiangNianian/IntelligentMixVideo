@@ -51,14 +51,20 @@ The host records Preset IDs, draft IDs and the saved Sprite from tool results; a
 Handles: preset_modify and sprite_compose return a draft_id, so never re-send source. Compose instances with source {"kind":"stored","preset_id":"..."} or {"kind":"draft","draft_id":"..."} (base_* drafts are the accepted base's Presets) and save with sprite_create {"draft_id":"..."}.
 tool_calls_left_in_batch counts this batch, failed calls included; at 0 the host continues the step itself while it makes progress.
 A refused create lists each error with its line and the checked source line, plus fixed hints in details.hints: fix exactly those lines and resubmit.
+Kind and operator parameters: the code is a fixed sample and templates change it only through top-level parameters, so pass sprite_compose a kind and bind the kind's required parameters with "parameters" [{"name", "title" (short Chinese label), "targets": [{"instance_id", "parameter"}]}]:
+- text (字效, 花字, titles): text {"type":"string","minLength":1,"maxLength":40}, fontSize {"type":"number","minimum":24,"maximum":240}, fontWeight {"type":"integer","enum":[400,700]} (the only font is "Noto Sans CJK SC" 400/700), color {"type":"string","pattern":"^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$"}; optional keywords {"type":"array","items":{"type":"string","maxLength":100},"maxItems":20} whose literal hits in text the component highlights.
+- filter_overlay (滤镜): intensity {"type":"number","minimum":0,"maximum":1}, tintColor (colour pattern).
+- video_overlay (视频特效) and transition_overlay (转场): color (colour pattern), speed {"type":"number","minimum":0.25,"maximum":4}; drive animation by frame * speed.
+Recommended extras when the effect has them: text - strokeColor, strokeWidth, shadowColor, shadowBlur, gradientFrom, gradientTo, letterSpacing, lineHeight, align (enum left/center/right), highlightColor, animationIn/animationOut (enums); filter - grain, vignette, flicker, scanlines, lightLeak, borderStyle (enum); effects - direction (enum), intensity, particleCount, secondaryColor, easing (enum). Every bound number needs minimum and maximum, every bound string a colour pattern, enum or maxLength.
+Never implement position, scale, rotation or overall opacity for the whole Sprite: the host applies them around the instances' layout box, so keep text instances' layout tight around the text.
 Minimal Preset shape - props named and typed exactly as parameter_schema, imports only from react/remotion, and a root that stays see-through over the user's video (a full-frame colour only at low opacity):
 import {AbsoluteFill, useCurrentFrame, interpolate} from "remotion";
-export default function WarmTint(props: {color: string; strength: number}) {
+export default function WarmTint(props: {tintColor: string; intensity: number}) {
   const frame = useCurrentFrame();
-  const opacity = interpolate(frame, [0, 15], [0, props.strength], {extrapolateRight: "clamp"});
-  return <AbsoluteFill style={{backgroundColor: props.color, opacity}} />;
+  const opacity = interpolate(frame, [0, 15], [0, props.intensity * 0.6], {extrapolateRight: "clamp"});
+  return <AbsoluteFill style={{backgroundColor: props.tintColor, opacity}} />;
 }
-with parameter_schema {"type":"object","properties":{"color":{"type":"string"},"strength":{"type":"number","minimum":0,"maximum":0.6}},"required":["color","strength"],"additionalProperties":false} and default_parameters {"color":"#FF8A3D","strength":0.25}.
+with parameter_schema {"type":"object","properties":{"tintColor":{"type":"string","pattern":"^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$"},"intensity":{"type":"number","minimum":0,"maximum":1}},"required":["tintColor","intensity"],"additionalProperties":false} and default_parameters {"tintColor":"#FF8A3D","intensity":0.4}, composed with kind "filter_overlay" and parameters [{"name":"intensity","title":"强度","targets":[{"instance_id":"tint","parameter":"intensity"}]},{"name":"tintColor","title":"色调","targets":[{"instance_id":"tint","parameter":"tintColor"}]}].
 """
 def tool_receipt(status, *, data=None, error=None):
     """Build the registered PR76 ToolResult envelope used in every role window."""

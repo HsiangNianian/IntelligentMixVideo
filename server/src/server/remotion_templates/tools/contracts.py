@@ -289,12 +289,35 @@ class ResolvedPresetInstance(ContractModel):
     timing: InstanceTiming
 
 
+# 效果分类：text 为字效，filter_overlay 为滤镜，video_overlay 与 transition_overlay 合为转场与视频特效。
+SpriteKindName = Literal["text", "filter_overlay", "video_overlay", "transition_overlay"]
+# 顶层参数名：驼峰标识符，可安全用作 JSON 键和界面控件 ID。
+ParameterName = Annotated[StrictStr, StringConstraints(pattern=r"^[A-Za-z][A-Za-z0-9]{0,31}$")]
+
+
+class ParameterTarget(ContractModel):
+    """顶层参数写入的一个实例 prop。"""
+
+    instance_id: NonEmptyString
+    parameter: NonEmptyString
+
+
+class SpriteParameterBinding(ContractModel):
+    """把一个或多个实例的同名语义 prop 提升为 Sprite 顶层参数，供模板逐次摆放时修改。"""
+
+    name: ParameterName
+    title: Annotated[Description, Field(max_length=40)]
+    targets: list[ParameterTarget] = Field(min_length=1)
+
+
 class SpriteDraft(ComponentDefinition):
     """组合生成的源码、参数契约和实例快照。"""
 
     description: Description
     composition: Composition
     instances: list[ResolvedPresetInstance] = Field(min_length=1)
+    kind: Omittable[SpriteKindName]
+    bindings: list[SpriteParameterBinding] = Field(default_factory=list)
 
 
 class SpriteRecord(SpriteDraft):
@@ -304,10 +327,12 @@ class SpriteRecord(SpriteDraft):
     created_at: Timestamp
 
 class SpriteComposeInput(ContractModel):
-    """组合描述及显式编排的预设实例。"""
+    """组合描述、效果分类、显式编排的预设实例及提升为顶层的参数。"""
 
     description: Description
+    kind: SpriteKindName
     instances: list[PresetInstance] = Field(min_length=1)
+    parameters: list[SpriteParameterBinding] = Field(default_factory=list, max_length=32)
 
 
 class InstanceSummary(ContractModel):
@@ -328,7 +353,9 @@ class SpriteComposeOutput(ContractModel):
     digest: DraftDigest
     description: Description
     composition: Composition
+    kind: SpriteKindName
     instances: list[InstanceSummary]
+    parameter_names: list[str]
     default_parameters: JsonObject
     code_bytes: NonNegativeInteger
 

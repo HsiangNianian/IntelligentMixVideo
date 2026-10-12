@@ -20,6 +20,16 @@ the draft in the task session and returning its `draft_id`; it neither compiles 
 code nor writes the draft to the catalog. `sprite.compose` keeps its draft the same
 way and `sprite.create` takes only that `draft_id`.
 
+`sprite.compose` (contract v2) also takes the Sprite `kind` and `parameters`
+bindings. A binding lifts declared top-level Preset props into one required
+top-level Sprite parameter (`compose.py` checks the targets share one schema and
+one value, removes them from the instances' nested schemas and defaults, and
+`compose.mjs` passes the top-level value to every target). Bound parameters need
+bounded schemas (`categories.parameter_problems`). `sprite.create` refuses a
+Sprite without its kind's required parameters (`categories.REQUIRED`) with
+`CATEGORY_PARAMETERS_MISSING` before the browser mount, so the Executor fixes the
+bindings in its loop.
+
 `registry.get_tool` is the single name resolver: it accepts the dotted ID or the
 provider wire name (`wire_name`) and rejects everything else with the tool
 list and closest names from the supplied window. Agent dispatch and `resolve`

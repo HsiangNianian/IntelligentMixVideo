@@ -108,7 +108,8 @@ def default_plan(edit: bool, base_drafts: bool | None = None) -> Plan:
                 id="sprite",
                 goal=(
                     f"Compose the Presets from step_inputs{' (or base_* drafts)' if base_drafts else ''} with sprite_compose, one instance per "
-                    "visual element (a filter is one full-canvas instance), then save it with sprite_create {draft_id}."
+                    "visual element (a filter is one full-canvas instance), choosing its kind and binding the kind's required "
+                    "parameters, then save it with sprite_create {draft_id}."
                 ),
                 input_refs=["user_intent", "steps.preset.outputs.presets"],
                 tool_modules=["preset", "sprite"],

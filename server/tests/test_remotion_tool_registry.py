@@ -378,7 +378,7 @@ def test_schema_errors_list_up_to_three_located_fields():
     """结构错误带 JSON Pointer：field 为第一处，消息逐条写出前三处位置，其余给出数量。"""
     instance = {"instance_id": "a", "source": {"kind": "stored", "preset_id": "p"}, "layout": {"x": 0, "y": 0, "width": 0, "height": 0, "z_index": 0}, "timing": {"start_frame": -1, "duration_frames": 0}}
     with pytest.raises(ToolFault) as refused:
-        parse_arguments(SpriteComposeInput, json.dumps({"description": "x", "instances": [instance]}))
+        parse_arguments(SpriteComposeInput, json.dumps({"description": "x", "kind": "text", "instances": [instance]}))
     error = refused.value.error
     assert error.field == "/instances/0/layout/width"
     assert error.message.count("/instances/0/") == 3 and error.message.endswith("and 1 more")
