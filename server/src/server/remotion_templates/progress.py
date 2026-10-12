@@ -36,7 +36,7 @@ class ProgressStep(Contract):
 
 # Public summaries use host-authored vocabulary, never exception strings or model names.
 PUBLIC_TOOLS = {
-    "tools.plan_execute", "tools.inspect", "preset.create", "preset.modify",
+    "tools.plan_execute", "tools.report_step", "tools.inspect", "preset.create", "preset.modify",
     "preset.search", "sprite.compose", "sprite.create", "validate.code",
     "validate.render", "image.info", "image.resize", "image.crop",
 }

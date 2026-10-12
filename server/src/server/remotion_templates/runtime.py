@@ -273,8 +273,9 @@ class Runtime:
                     "instruction": inputs.instruction,
                     "parameters": patch,
                     "clarifications": inputs.clarifications,
-                    "accepted_base": base.spec.model_dump(mode="json", exclude_unset=True) if base else None,
-                    "current_component": base.candidate.model_dump(mode="json") if base else None,
+                    # Source stays out of the persisted Outer window; the tool session shows the base's
+                    # Presets to the layer that edits code.
+                    "accepted_base": base.spec.model_dump(mode="json", exclude_unset=True, exclude={"sprite"}) if base else None,
                     "reference_images": [{"asset_id": str(project.request.image.asset_id)}] if project.request.image else [],
                 }
                 if patch is None and base and base.source == "user_parameters":

@@ -2,8 +2,9 @@
 
 Covers: every registered tool resolves by dotted and wire name, inspection accepts both,
 visibility follows `implemented`, generation-starting tools are declared on the registry,
-unknown names fail with a correctable message, the search/modify tools behave, and the
-Plan contract errors seen in real task logs are actionable.
+unknown names fail with a correctable message, the search/modify tools behave, the
+Plan contract errors seen in real task logs are actionable, and call arguments tolerate only
+surplus closing brackets while every other JSON or schema error names where it is.
 Run: `uv run --locked pytest tests/test_remotion_tool_registry.py -v`.
 """
 
@@ -18,10 +19,13 @@ from server.remotion_templates.tools.catalog import available, resolve
 from server.remotion_templates.tools.contracts import (
     PresetModifyInput,
     PresetSearchInput,
+    SpriteComposeInput,
+    SpriteCreateInput,
 )
 from server.remotion_templates.tools.registry import (
     ToolFault,
     get_tool,
+    parse_arguments,
     registered_tools,
     wire_name,
 )
@@ -180,9 +184,13 @@ def test_modify_returns_a_copy_without_changing_the_original(tmp_path, monkeypat
     """Modify replaces whole fields in a draft, links the source, and rejects empty/unknown input."""
     session = make_session(tmp_path, monkeypatch)
     record = save_preset(session, "原描述")
-    draft = session.modify_preset(
+    result = session.modify_preset(
         PresetModifyInput(preset_id=record.preset_id, changes={"description": "新描述"})
-    ).preset
+    )
+    # The reply is a handle plus a code-free summary; the full copy stays in the task session.
+    assert "code" not in result.model_dump()["preset"]
+    assert result.preset.source_preset_id == record.preset_id
+    draft = session.preset_drafts[result.draft_id]
     assert draft.description == "新描述" and draft.code == record.code
     assert draft.source_preset_id == record.preset_id
     assert session.catalog.find_preset(record.preset_id).description == "原描述"
@@ -337,6 +345,40 @@ def test_modify_can_replace_schema_and_defaults_together(tmp_path, monkeypatch):
     result = session.modify_preset(PresetModifyInput(preset_id=stored.preset_id, changes={
         "parameter_schema": schema, "default_parameters": {"size": 42},
     }))
-    assert result.preset.parameter_schema == schema
-    assert result.preset.default_parameters == {"size": 42}
+    assert result.preset.parameter_names == ["size"]
+    draft = session.preset_drafts[result.draft_id]
+    assert draft.parameter_schema == schema
+    assert draft.default_parameters == {"size": 42}
     assert session.catalog.read_presets() == [stored]
+
+
+@pytest.mark.parametrize("surplus", ["}", " }}", "]\n"])
+def test_surplus_closing_brackets_after_the_arguments_are_dropped(surplus):
+    """回放 bb0decec：完整参数后多写的结尾括号被丢弃并告知调用方，不让一个括号作废整次调用。"""
+    request, dropped = parse_arguments(SpriteCreateInput, '{"draft_id": "sprite_draft_1"}' + surplus)
+    assert request.draft_id == "sprite_draft_1"
+    assert dropped == surplus.strip()
+    assert parse_arguments(SpriteCreateInput, '{"draft_id": "d"}') == (SpriteCreateInput(draft_id="d"), "")
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ('{"draft_id": "d"} trailing words', "Unexpected text after the JSON arguments at character 17"),
+    ('{"draft_id": "d"', "Arguments are not valid JSON"),
+    ('{"draft_id": "d"}{"draft_id": "e"}', "Unexpected text after the JSON arguments"),
+])
+def test_other_invalid_json_names_the_position_and_nearby_text(raw, expected):
+    """除结尾多余括号外的非法 JSON 一律拒绝，错误给出位置与附近文本，而不是笼统的解析异常。"""
+    with pytest.raises(ToolFault) as refused:
+        parse_arguments(SpriteCreateInput, raw)
+    assert refused.value.error.code == "INVALID_ARGUMENT"
+    assert expected in refused.value.error.message and "near" in refused.value.error.message
+
+
+def test_schema_errors_list_up_to_three_located_fields():
+    """结构错误带 JSON Pointer：field 为第一处，消息逐条写出前三处位置，其余给出数量。"""
+    instance = {"instance_id": "a", "source": {"kind": "stored", "preset_id": "p"}, "layout": {"x": 0, "y": 0, "width": 0, "height": 0, "z_index": 0}, "timing": {"start_frame": -1, "duration_frames": 0}}
+    with pytest.raises(ToolFault) as refused:
+        parse_arguments(SpriteComposeInput, json.dumps({"description": "x", "instances": [instance]}))
+    error = refused.value.error
+    assert error.field == "/instances/0/layout/width"
+    assert error.message.count("/instances/0/") == 3 and error.message.endswith("and 1 more")

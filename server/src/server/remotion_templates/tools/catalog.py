@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import TypeAdapter
 
-from ..planning import PlanAction
+from ..planning import PlanAction, StepResult
 from .contracts import (
     CodeValidationInput,
     CodeValidationReport,
@@ -85,12 +85,12 @@ async def preset_create(owner, request: PresetCreateInput) -> ToolResult[PresetC
     side_effects=["deterministic source generation; no catalog write"],
     error_codes=["INVALID_ARGUMENT", "PRESET_NOT_FOUND", "COMPOSITION_FAILED"],
     starts_generation=True,
-    examples=[{"input": {"description": "组合", "instances": [{"instance_id": "title", "source": {"kind": "draft", "preset": {"description": "文字", "code": "export default function Label(){return null}", "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": False}, "default_parameters": {}}}, "layout": {"x": 0.0, "y": 0.0, "width": 100, "height": 100, "z_index": 0}, "timing": {"start_frame": 0, "duration_frames": 1}}]}, "output": {"ok": False, "error": {"code": "COMPOSITION_FAILED", "message": "example"}}}],
+    examples=[{"input": {"description": "组合", "instances": [{"instance_id": "title", "source": {"kind": "stored", "preset_id": "preset_title_001"}, "layout": {"x": 0.0, "y": 0.0, "width": 1080, "height": 1920, "z_index": 0}, "timing": {"start_frame": 0, "duration_frames": 150}}]}, "output": {"ok": True, "data": {"draft_id": "sprite_draft_0123456789ab", "description": "组合", "composition": {"width": 1080, "height": 1920, "fps": 30, "duration_frames": 150}, "instances": [{"instance_id": "title", "preset_id": "preset_title_001", "parameter_names": ["text"], "layout": {"x": 0.0, "y": 0.0, "width": 1080, "height": 1920, "z_index": 0}, "timing": {"start_frame": 0, "duration_frames": 150}}], "default_parameters": {"title": {"text": "今日灵感"}}, "code_bytes": 2048}}}],
 )
 async def sprite_compose(owner, request: SpriteComposeInput) -> ToolResult[SpriteComposeOutput]:
-    """Resolve Presets and produce a complete immutable Sprite draft."""
+    """Resolve Presets (stored preset_id, or a task draft_id from preset_modify or the accepted base) and keep the composed Sprite as a host draft; returns its draft_id and a code-free summary."""
     try:
-        return _success({"sprite": (await owner.compose_sprite(request))["sprite"]})
+        return _success(await owner.compose_sprite(request))
     except Exception as exc:
         return _failure(exc, "COMPOSITION_FAILED")
 
@@ -98,32 +98,32 @@ async def sprite_compose(owner, request: SpriteComposeInput) -> ToolResult[Sprit
 @tool(
     "sprite.create",
     constraints=[
-        "Only a compose-produced SpriteDraft with consistent source and parameters may be saved.",
+        "Takes the draft_id that sprite.compose returned in this task; the host keeps the composed source, so it is never re-sent.",
         "The Sprite is mounted once in the browser and must leave the user's video visible: a canvas that is opaque in most sampled frames (4 of 5) is refused with CODE_VALIDATION_FAILED.",
     ],
     side_effects=["code validation, one browser mount with a transparency measurement, and sprite catalog write"],
     error_codes=["INVALID_ARGUMENT", "CODE_VALIDATION_FAILED", "VALIDATION_UNAVAILABLE", "SPRITE_STORE_FAILED"],
     starts_generation=True,
-    examples=[{"input": {"sprite": {"description": "组合", "code": "export default function Sprite(){return null}", "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": False}, "default_parameters": {}, "composition": {"width": 1080, "height": 1920, "fps": 30, "duration_frames": 1}, "instances": [{"instance_id": "title", "preset": {"description": "文字", "code": "export default function Label(){return null}", "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": False}, "default_parameters": {}}, "parameters": {}, "layout": {"x": 0.0, "y": 0.0, "width": 100, "height": 100, "z_index": 0}, "timing": {"start_frame": 0, "duration_frames": 1}}]}}, "output": {"ok": False, "error": {"code": "CODE_VALIDATION_FAILED", "message": "example"}}}],
+    examples=[{"input": {"draft_id": "sprite_draft_0123456789ab"}, "output": {"ok": False, "error": {"code": "INVALID_ARGUMENT", "message": "Unknown draft_id sprite_draft_0123456789ab; drafts in this task: none", "field": "/draft_id"}}}],
 )
 async def sprite_create(owner, request: SpriteCreateInput) -> ToolResult[SpriteCreateOutput]:
-    """Validate and persist one composed Sprite draft."""
+    """Validate and persist the composed Sprite a sprite.compose draft_id refers to."""
     try:
-        return _success(await owner.create_sprite(request.sprite))
+        return _success(await owner.create_sprite(owner.sprite_draft(request.draft_id)))
     except Exception as exc:
         return _failure(exc, "SPRITE_STORE_FAILED")
 
 
-def _inspectable(name: str) -> RegisteredTool | PlanTool:
+def _inspectable(name: str) -> RegisteredTool | HostTool:
     """Resolve one registered descriptor by dotted ID or by the wire name the model is shown.
 
-    Inspection stays contract-only: it includes host Plan control without granting
-    permission to invoke it. It accepts the same names the model sees in its own
+    Inspection stays contract-only: it includes the host control tools without granting
+    permission to invoke them. It accepts the same names the model sees in its own
     tool window. `resolve()` is not reused here because it hides tools that
     are registered with a contract but no implementation yet, and describing those
     contracts is exactly what this tool is for.
     """
-    return get_tool(name, (*registered_tools(), PLAN_TOOL))
+    return get_tool(name, (*registered_tools(), PLAN_TOOL, REPORT_TOOL))
 
 
 @tool(
@@ -202,7 +202,7 @@ async def preset_search(owner, request: PresetSearchInput) -> ToolResult[PresetS
 
 @tool(
     "preset.modify",
-    constraints=["Replaces whole fields only; the original record never changes and no new preset_id is created. Save the returned draft with preset.create."],
+    constraints=["Replaces whole fields only; the original record never changes and no new preset_id is created. preset_id may also be a task draft handle (base_* or an earlier draft_id). The copy is kept by the host: compose it with source {kind: \"draft\", draft_id}."],
     side_effects=["read-only copy of one stored Preset"],
     error_codes=["INVALID_ARGUMENT", "PRESET_NOT_FOUND", "PRESET_STORE_FAILED"],
     examples=[{"input": {"preset_id": "preset_title_001", "changes": {"description": "带描边的文字原子"}}, "output": {"ok": False, "error": {"code": "PRESET_NOT_FOUND", "message": "example"}}}],
@@ -241,39 +241,73 @@ async def validate_render(owner, request: RenderValidationInput) -> ToolResult[R
     return await _deferred("validate.render")(owner, request)
 
 @dataclass(frozen=True)
-class PlanTool:
-    """Host-owned orchestration control exposed to Outer and Plan ReAct."""
+class HostTool:
+    """Host-owned control exposed as a provider function; inspectable, never in the business registry."""
 
-    name: str = "tools.plan_execute"
-    input: type = PlanAction
+    name: str
+    input: type
+    description: str
+    constraints: tuple[str, ...]
+    error_codes: tuple[str, ...]
+    example: dict
 
     def wire(self) -> dict[str, Any]:
-        """Expose the Plan transition schema as a provider function."""
-        return {"type": "function", "function": {"name": wire_name(self.name), "description": "Create, continue, advance or finish the ordered Plan; never executes a business tool.", "parameters": self.input.model_json_schema()}}
+        """Expose the control schema as a provider function."""
+        return {"type": "function", "function": {"name": wire_name(self.name), "description": self.description, "parameters": self.input.model_json_schema()}}
 
     def describe(self) -> dict[str, Any]:
         """Return the same complete inspection contract as business tools, without changing state."""
         return ToolDescriptor(
             tool_name=self.name,
             contract_version=1,
-            description=self.wire()["function"]["description"],
+            description=self.description,
             input_schema=self.input.model_json_schema(),
             output_schema=TypeAdapter(ToolResult[JsonObject]).json_schema(),
-            constraints=[
-                "Only Outer and Plan may invoke this tool; Executor may only inspect it.",
-                "Outer delegates or completes; Plan owns ordered step changes.",
-                "Completion still requires host verification of a saved Sprite.",
-            ],
+            constraints=list(self.constraints),
             side_effects=["task-local Plan and execution state updates"],
-            error_codes=["INVALID_ARGUMENT", "tool_limit_reached", "tool_budget_exhausted", "agent_stopped"],
-            examples=[{
-                "input": {"action": "advance"},
-                "output": {"ok": False, "error": {"code": "INVALID_ARGUMENT", "message": "Advance requires a completed current step"}},
-            }],
+            error_codes=list(self.error_codes),
+            examples=[self.example],
         ).model_dump(mode="json", exclude_unset=True)
 
 
-PLAN_TOOL = PlanTool()
+PLAN_TOOL = HostTool(
+    name="tools.plan_execute",
+    input=PlanAction,
+    description=(
+        "Host control; never runs a business tool. Outer: answer, ask (clarification), delegate (the host then runs "
+        "its standard Preset -> Sprite plan) or stop. Plan: update_plan (send only the unfinished steps), continue, "
+        "advance, complete or stop."
+    ),
+    constraints=(
+        "Only Outer and Plan may invoke this tool; Executor may only inspect it.",
+        "Outer answers, asks, delegates or stops; Plan owns ordered step changes.",
+        "Completion still requires host verification of a saved Sprite.",
+    ),
+    error_codes=("INVALID_ARGUMENT", "tool_limit_reached", "tool_budget_exhausted", "agent_stopped"),
+    example={
+        "input": {"action": "advance"},
+        "output": {"ok": False, "error": {"code": "INVALID_ARGUMENT", "message": "Advance requires a completed current step"}},
+    },
+)
+
+REPORT_TOOL = HostTool(
+    name="tools.report_step",
+    input=StepResult,
+    description=(
+        "Executor: report the current step as step_done, blocked or needs_input; call it alone. The host checks "
+        "the step really produced its output (a sprite_create success in a step with the sprite module, a ready "
+        "Preset in a preset step) and then starts the next step or publishes the Sprite."
+    ),
+    constraints=(
+        "Only the Executor may invoke this tool; the host records the step's Presets and Sprite from tool receipts.",
+        "step_done is refused while the step's output is missing; the refusal names the tool to call next.",
+    ),
+    error_codes=("INVALID_ARGUMENT",),
+    example={
+        "input": {"status": "step_done", "summary": "已保存暖色调滤镜 Sprite"},
+        "output": {"ok": True, "data": {"status": "step_done", "next": "publishing"}},
+    },
+)
 
 
 def available(modules=None, *, executor=False):
@@ -283,7 +317,7 @@ def available(modules=None, *, executor=False):
     model while their implementations are absent, so a tool never appears here
     without a handler that can actually run it.
     """
-    tools: list[RegisteredTool | PlanTool] = []
+    tools: list[RegisteredTool | HostTool] = []
     if not executor and (modules is None or "tools" in modules):
         tools.append(PLAN_TOOL)
     for item in registered_tools():

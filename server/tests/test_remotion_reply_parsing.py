@@ -11,7 +11,7 @@ from server.remotion_templates.agent import STEP_RESULT_FORMAT, extract_json_obj
 from server.remotion_templates.planning import StepResult
 from server.remotion_templates.settings import Settings
 
-OBJECT = '{"status":"step_done","summary":"ok","sprite_id":null}'
+OBJECT = '{"status":"step_done","summary":"ok"}'
 
 
 @pytest.mark.parametrize("reply", [
@@ -52,7 +52,8 @@ def test_extracted_object_still_fails_strict_validation():
 
 
 def test_steer_text_states_the_exact_format():
-    """The correction names the single-object, no-fence rule and shows the shape."""
+    """The correction points to tools_report_step and still states the single-object, no-fence text fallback."""
+    assert "tools_report_step" in STEP_RESULT_FORMAT
     assert "no markdown fence" in STEP_RESULT_FORMAT and "step_done" in STEP_RESULT_FORMAT
 
 
