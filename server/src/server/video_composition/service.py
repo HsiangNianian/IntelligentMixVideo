@@ -48,6 +48,8 @@ def preflight(request: CompositionRequest, config: ClientSettings | None = None)
 
         if not asr_settings.dashscope_api_key.get_secret_value().strip():
             raise ValueError("缺少 ASR 配置")
+    elif request.title and request.title.strip():
+        SegmentationSettings()
     return settings
 
 
@@ -392,7 +394,7 @@ class Job:
             await self.render()
 
     async def prepare(self) -> None:
-        """模板读取后按模式准备字幕和总时长；纯素材直接进入组装，只有标准模式可能匹配。"""
+        """模板读取后按模式准备文字和总时长；无声只提标题词，只有标准模式可能匹配。"""
         config = self.runtime.client_configs.get(self.record["task_id"])
         request = CompositionRequest.model_validate(self.record["data"]["request"])
         await self.runtime.sync(preflight, request, config)
@@ -408,8 +410,13 @@ class Job:
         except Exception:
             raise CompositionError("template_error", "模板读取失败", "template") from None
         if request.composition_mode == "materials_silent":
-            await self.save("assembling", template=template.model_dump(mode="json", by_alias=True),
+            prepared = dict(template=template.model_dump(mode="json", by_alias=True),
                             duration_ms=request.process_rules.video_duration * 1000)
+            if request.title and request.title.strip():
+                await self.save("segmentation", **prepared)
+                segment_input = {"title": request.title}
+                prepared["segmentation"] = await self.runtime.step(self.record, "segmentation", lambda: self.runtime.sync(segment, segment_input), segment_input)
+            await self.save("assembling", **prepared)
             return
         await self.save("asr", template=template.model_dump(mode="json", by_alias=True))
         from ..asr import transcribe
@@ -422,7 +429,7 @@ class Job:
         segmented, segments = {"segments": []}, []
         if request.text:
             await self.save("segmentation", duration_ms=duration_ms)
-            segment_input = {"script": request.text, "asr_result": asr_result}
+            segment_input = {"title": request.title, "script": request.text, "asr_result": asr_result}
             segmented = await self.runtime.step(self.record, "segmentation", lambda: self.runtime.sync(segment, segment_input), segment_input)
             segments = TypeAdapter(list[Segment]).validate_python(segmented["segments"])
             validate_segments(segments, duration_ms)
@@ -497,6 +504,7 @@ class Job:
             await self.save("assembling", material_durations=durations)
             data = self.record["data"]
         inputs = dict(request=data["request"], template=data["template"], segments=data.get("segmentation", {}).get("segments", []),
+                      title_keyword=data.get("segmentation", {}).get("title_keyword", ""),
                       matches=data.get("matches", []), duration_ms=data["duration_ms"],
                       **{key: data["output"][key] for key in ("width", "height", "fps")})
         if request.composition_mode != "standard":

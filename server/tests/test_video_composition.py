@@ -68,14 +68,26 @@ def test_material_voice_uses_order_and_full_audio(upstreams, client, composition
 
 
 @pytest.mark.parametrize("music", [False, True])
-def test_material_silent_skips_voice_services_and_keeps_full_title(upstreams, client, composition_case, monkeypatch, music):
-    """无声模式无需 ASR/切片/匹配配置，标题覆盖模板时间并保留动画、多行长正文和可选音乐。"""
+@pytest.mark.parametrize("keyword", ["标题", ""])
+def test_material_silent_extracts_title_without_asr(upstreams, client, composition_case, monkeypatch, music, keyword):
+    """无声模式只调用一次真实标题提词，保留长标题、动画和音乐，关键词样式传至 IMS。"""
+    from unittest.mock import MagicMock
     from pydantic import SecretStr
     import server.asr.asr as asr_module
+    from server.segmentation import segment as real_segment, segmentation
 
     monkeypatch.setattr(asr_module.settings, "dashscope_api_key", SecretStr(""))
-    for key in ("SEGMENT_MATCH_BASE_URL", "IMV_LLM_API_KEY", "IMV_LLM_MODEL"):
-        monkeypatch.delenv(key)
+    monkeypatch.delenv("SEGMENT_MATCH_BASE_URL")
+    model = MagicMock()
+    model.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({"title_keyword": keyword})))])
+    factory = MagicMock()
+    factory.return_value.__enter__.return_value = model
+    monkeypatch.setattr(segmentation, "OpenAI", factory)
+    monkeypatch.setattr(service, "segment", real_segment)
+    template = composition_case["template"]
+    template["tracks"][1]["editor"].update(titleKeyword="长", titleKeywordBold=True)
+    assert post_template(client, {key: template[key] for key in ("template_id", "name", "tracks", "effect_ids")}).status_code == 200
     request = {"styleId": composition_case["request"]["styleId"],
                "title": "长标题保留标点！\n" * 10, "copy": "此模式不生成字幕", "processRules": {"videoDuration": 4.5},
                "materials": [{"fileUrl": f"https://media.test/{i}.jpg", "type": "image"} for i in range(3)],
@@ -92,15 +104,20 @@ def test_material_silent_skips_voice_services_and_keeps_full_title(upstreams, cl
     assert [(clip["TimelineIn"], clip["TimelineOut"]) for clip in clips] == [(0, 3), (3, 4.5)]
     assert [clip["Duration"] for clip in clips] == [3, 1.5]
     title = timeline["SubtitleTracks"][0]["SubtitleTrackClips"][0]
-    assert title["Content"] == request["title"] and (title["TimelineIn"], title["TimelineOut"]) == (0, 4.5)
+    expected = request["title"].replace("标题", r"{\b1}标题{\b0}", 1) if keyword else request["title"]
+    assert title["Content"] == expected and (title["TimelineIn"], title["TimelineOut"]) == (0, 4.5)
     assert title["AaiMotionIn"] == 0.5 and "AaiMotionInEffect" in title
     assert len(timeline["SubtitleTracks"]) == 2  # 标题和模板气泡，没有字幕。
     assert len(timeline["AudioTracks"]) == int(music)
     if music:
         assert timeline["AudioTracks"][0]["AudioTrackClips"][0]["LoopMode"] is True
     assert upstreams["asr_calls"] == upstreams["segment_calls"] == 0
+    model.chat.completions.create.assert_called_once()
+    assert model.chat.completions.create.call_args.kwargs["messages"][1]["content"] == request["title"]
+    assert factory.return_value.__exit__.call_count == 1
     assert upstreams["posts"] == upstreams["gets"] == []
-    assert "segmentation" not in data and "matches" not in data
+    assert data["segmentation"] == {"title_keyword": keyword} and "matches" not in data
+    assert json.loads(upstreams["submits"][0]["timeline"]) == timeline
     assert "compositionMode" not in data["request"]
     assert notified(task_id)["data"]["notification_status"] == "sent"
     assert upstreams["notifications"][0]["body"]["videoUrl"] == result["result"]["videoUrl"]
@@ -125,6 +142,24 @@ def test_material_silent_duration_requires_json_number(upstreams, client, compos
     data = store.get(task_id)["data"]
     assert data["request"]["processRules"]["videoDuration"] == duration
     assert data["timeline"]["VideoTracks"][0]["VideoTrackClips"][-1]["TimelineOut"] == duration
+
+
+@pytest.mark.parametrize("title,status", [(None, 200), (" \n\t", 200), ("散养土鸡", 503)])
+def test_silent_model_config_only_required_for_title(upstreams, client, composition_case, monkeypatch, title, status):
+    """无标题不依赖模型配置；有标题缺配置时受理前报错，均不调用 ASR 或提交提词。"""
+    monkeypatch.delenv("IMV_LLM_API_KEY")
+    response = client.post(BASE, json={
+        "styleId": composition_case["request"]["styleId"], "title": title,
+        "processRules": {"videoDuration": 3}, "materials": [{"fileUrl": "https://media.test/a.jpg", "type": "image"}],
+    })
+    assert response.status_code == status
+    if status == 200:
+        task_id = response.json()["data"]
+        assert finished(client, task_id)["status"] == "succeeded"
+        assert "segmentation" not in store.get(task_id)["data"]
+    else:
+        assert store.pending([], 100) == [] and upstreams["submits"] == []
+    assert upstreams["asr_calls"] == upstreams["segment_calls"] == 0
 
 
 @pytest.mark.parametrize("missing_tool", [True, False])
@@ -340,12 +375,15 @@ def upstreams(monkeypatch, composition_settings, composition_case):
         return raw
 
     def segment(body):
-        """检查完整 ASR 原对象直传，不接受仅提取的 sentences 或 HTTP 回环。"""
+        """仅标题请求不带 ASR；完整切片仍检查 ASR 原对象直传，不使用 HTTP 回环。"""
         state["segment_calls"] += 1
-        assert body["asr_result"] is raw
-        assert set(body) == {"script", "asr_result"}
         if state["failure"] == "segmentation":
             raise ValueError("private-key-should-never-appear")
+        if "asr_result" not in body:
+            assert set(body) == {"title"}
+            return {"title_keyword": ""}
+        assert body["asr_result"] is raw
+        assert set(body) == {"title", "script", "asr_result"}
         return {"segments": deepcopy(composition_case["segments"]), "warnings": [{"code": "example-warning"}], "trace": {"example": True}}
 
     async def handle(request):
@@ -813,6 +851,26 @@ async def test_recovery_uses_saved_handles_and_payload(upstreams, composition_ca
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("keyword_result,expected", [
+    ({"title_keyword": "标题"}, r"业务{\b1}标题{\b0}" + "\n保留换行"),
+    ({"title_keyword": ""}, "业务标题\n保留换行"),
+    ({}, "业务标题\n保留换行"),
+])
+async def test_title_keyword_recovery_uses_snapshot(upstreams, composition_case, composition_runtime, keyword_result, expected):
+    """恢复组装只消费已存标题词；旧快照缺失或空词不高亮，也不重跑切片。"""
+    store.initialize_schema()
+    composition_case["template"]["tracks"][1]["editor"].update(titleKeyword="业务", titleKeywordBold=True)
+    record = store.create(composition_case["request"], composition_runtime.settings.output())
+    record = store.advance(record, "assembling", template=composition_case["template"], duration_ms=8000,
+                           segmentation={"segments": composition_case["segments"], **keyword_result}, matches=composition_case["matches"])
+    await composition_runtime._execute(record)
+    result = store.get(record["task_id"])
+    assert result["status"] == "succeeded", result["data"].get("error")
+    assert result["data"]["timeline"]["SubtitleTracks"][1]["SubtitleTrackClips"][0]["Content"] == expected
+    assert upstreams["asr_calls"] == upstreams["segment_calls"] == 0
+
+
+@pytest.mark.anyio
 async def test_shutdown_waits_for_real_threads_before_database_close(template_db):
     """取消 await 不代表线程结束；退出确实等数据库工作完成且不再继续下一步。"""
     runtime = service.Runtime()
@@ -890,15 +948,30 @@ def test_remote_segmentation_response_reaches_render(upstreams, composition_case
     assert timeline["VideoTracks"][0]["VideoTrackClips"][0]["TimelineOut"] == 15.22
 
 
-def test_real_segmentation_with_model_stub(upstreams, composition_case, client, monkeypatch):
-    """实际执行本地字符对齐、毫秒投射和关键词逻辑，只有模型 SDK 与上游被替换。"""
+@pytest.mark.parametrize("mode", ["matching", "avatar", "materials_voice"])
+@pytest.mark.parametrize("title_keyword", ["标题", "", None])
+def test_real_segmentation_with_model_stub(upstreams, composition_case, client, monkeypatch, mode, title_keyword):
+    """真实切片将标题词保存并送至 IMS，空词不回退模板词，无标题时不提词；各有声路径一致。"""
     from unittest.mock import MagicMock
     from server.segmentation import segment as real_segment, segmentation
 
+    request = composition_case["request"]
+    if title_keyword is None:
+        request.pop("title")
+    if mode == "avatar":
+        request.pop("materials")
+    elif mode == "materials_voice":
+        request.update(videoUrl=None, materials=[{"fileUrl": f"https://media.test/{i}.jpg", "type": "image"} for i in range(3)])
+    template = composition_case["template"]
+    template["tracks"][1]["editor"].update(titleKeyword="业务", titleKeywordBold=True)
+    assert post_template(client, {key: template[key] for key in ("template_id", "name", "tracks", "effect_ids")}).status_code == 200
+    keywords = {"keywords": [["甲乙"]]}
+    if title_keyword is not None:
+        keywords["title_keyword"] = title_keyword
     model = MagicMock()
     model.chat.completions.create.side_effect = [
-        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"boundaries_after":[]}'))]),
-        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"keywords":[["甲乙"]]}'))]),
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(output)))])
+        for output in [{"boundaries_after": []}, keywords]
     ]
     factory = MagicMock()
     factory.return_value.__enter__.return_value = model
@@ -906,6 +979,7 @@ def test_real_segmentation_with_model_stub(upstreams, composition_case, client, 
 
     def cut(body):
         """按真实切片结果建立匹配替身响应，不复制切片算法作为预期值。"""
+        assert body["title"] == request.get("title")
         result = real_segment(body)
         composition_case["matches"] = [
             {"segment_id": item["segment_id"], "text": item["text"], "start_time": item["start_time"],
@@ -915,7 +989,7 @@ def test_real_segmentation_with_model_stub(upstreams, composition_case, client, 
         return result
 
     monkeypatch.setattr(service, "segment", cut)
-    task_id = client.post(BASE, json=composition_case["request"]).json()["data"]
+    task_id = client.post(BASE, json=request).json()["data"]
     assert finished(client, task_id)["status"] == "succeeded"
     snapshot = store.get(task_id)["data"]
     assert snapshot["segmentation"]["trace"]["edit_cost"] == 0
@@ -924,10 +998,23 @@ def test_real_segmentation_with_model_stub(upstreams, composition_case, client, 
         "segment_id": 1, "text": "甲乙丙丁。戊己庚辛。", "start_time": 1, "end_time": 6,
         "keyword": "甲乙", "level": 2, "group_id": [1, 1],
     }]
-    assert json.loads(upstreams["posts"][0]["llm"])["segments"] == snapshot["segmentation"]["segments"]
+    if mode == "matching":
+        assert json.loads(upstreams["posts"][0]["llm"])["segments"] == snapshot["segmentation"]["segments"]
+    else:
+        assert upstreams["posts"] == []
     assert [clip["Content"] for clip in snapshot["timeline"]["SubtitleTracks"][0]["SubtitleTrackClips"]] == [
         "甲乙丙丁戊己庚辛",
     ]
+    if title_keyword is None:
+        assert "title_keyword" not in snapshot["segmentation"]
+        assert len(snapshot["timeline"]["SubtitleTracks"]) == 2
+    else:
+        assert snapshot["segmentation"]["title_keyword"] == title_keyword
+        expected = r"业务{\b1}标题{\b0}" + "\n保留换行" if title_keyword else request["title"]
+        assert snapshot["timeline"]["SubtitleTracks"][1]["SubtitleTrackClips"][0]["Content"] == expected
+        messages = model.chat.completions.create.call_args.kwargs["messages"]
+        assert json.loads(messages[1]["content"])["title"] == request["title"]
+    assert json.loads(upstreams["submits"][0]["timeline"]) == snapshot["timeline"]
     assert model.chat.completions.create.call_count == 2 and factory.return_value.__exit__.call_count == 1
 
 

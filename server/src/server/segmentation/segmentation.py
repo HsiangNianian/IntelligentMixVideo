@@ -1,4 +1,4 @@
-"""文案切片：共用入口记录日志，业务完成字符对齐、模型切分与时间投射。"""
+"""文案切片与标题提词：无 ASR 时仅提取标题词，其余完成字符对齐、切分与时间投射。"""
 
 import bisect
 from collections import Counter
@@ -56,15 +56,49 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     显式 config 仅用于当前调用；省略时读取 server/.env 与 IMV_ 环境变量，SDK 在返回前关闭。
     返回 segments（整型 segment_id、秒制 start_time/end_time、group_id、字符串 keyword、level）、
     warnings 和 trace；原文保留标点，字幕去标点由下游合成处理。
-    可选 title 与片段共用关键词调用，提供非 null 标题时另返回 title_keyword；非法模型结果直接报错。
+    有 ASR 时 title 与片段共用关键词调用；无 ASR 时仅调用一次模型，返回 title_keyword，不校验提词内容。
     空内容或输出时间错误抛 ValueError，配置或模型输出错误抛
     RuntimeError，内部约束错误抛 AssertionError；ASR 嵌套读取和 SDK 异常原样传播。
     diagnostics 供共用入口记录已完成阶段的详细 trace；返回值只保留原有统计字段。
     """
     trace = diagnostics["trace"]
-    # 直接调用须提供约定字段；HTTP 类型校验由路由负责。标点不参与对齐，保留原始下标。
-    script = payload["script"]
+    # 客户端完整参数覆盖模型字段；服务端 HTTP 策略仍从环境读取，不修改共享状态。
+    diagnostics["stage"] = "config"
+    try:
+        config = Settings(**config.model_dump()) if config is not None else Settings()
+    except ValidationError:
+        raise RuntimeError("模型或切片配置缺失或不合法，请检查 IMV_ 配置。") from None
+    base_url, key, model = config.llm_base_url, config.llm_api_key, config.llm_model
+    try:
+        address = urlparse(base_url)
+    except ValueError:
+        raise RuntimeError("模型地址格式不合法。") from None
+    if (
+        address.scheme not in ("https", "http")
+        or not address.netloc
+        or (
+            address.scheme == "http"
+            and address.hostname not in ("localhost", "127.0.0.1", "::1")
+            and not config.allow_insecure_llm_http
+        )
+    ):
+        raise RuntimeError("模型地址必须有效，远程 HTTP 需要显式授权。")
     title = payload.get("title")
+    if payload.get("asr_result") is None and title is not None:
+        diagnostics["stage"] = "keywords"
+        with OpenAI(base_url=base_url, api_key=key, timeout=config.llm_timeout_seconds, max_retries=config.llm_max_retries) as client:
+            response = client.chat.completions.create(
+                model=model, temperature=0.2, response_format={"type": "json_object"},
+                messages=[{"role": "system", "content": '从标题中提取一个关键词，只返回 JSON：{"title_keyword":"关键词"}，无合适词时返回空字符串。'},
+                          {"role": "user", "content": title}],
+            )
+        try:
+            return {"title_keyword": json.loads(response.choices[0].message.content).get("title_keyword", "")}
+        except (AttributeError, IndexError, TypeError, ValueError):
+            raise RuntimeError("模型标题提词响应格式无效。") from None
+    diagnostics["stage"] = "input"
+    # HTTP 类型校验由路由负责；有 ASR 时仍须有效文案，标点不参与对齐。
+    script = payload.get("script") or ""
     chars = [
         (i, unicodedata.normalize("NFKC", c).lower())
         for i, c in enumerate(script)
@@ -72,6 +106,8 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     ]
     if not chars:
         raise ValueError("文案缺少有效字符。")
+    if payload.get("asr_result") is None:
+        raise ValueError("缺少 ASR 结果或标题。")
     # ponytail: MVP 信任上游 Fun-ASR 结构与词时间，只取第一音轨；接入其他来源时再扩展校验。
     sentences = payload["asr_result"]["transcripts"][0]["sentences"]
     # timeline_sentences 与 timeline 下标一一对应，记录每个字符所属的 ASR 句序号。
@@ -94,12 +130,6 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     if not timeline:
         raise ValueError("ASR 缺少有效发音字符。")
 
-    # 客户端完整参数覆盖模型字段；服务端 HTTP 策略仍从环境读取，不修改共享状态。
-    diagnostics["stage"] = "config"
-    try:
-        config = Settings(**config.model_dump()) if config is not None else Settings()
-    except ValidationError:
-        raise RuntimeError("模型或切片配置缺失或不合法，请检查 IMV_ 配置。") from None
     # 首次候选至少 2 秒；二次切分复用对齐字符计数，标点和空白不占长度。
     minimum, keyword_max_length, segment_max_length = 2000, 12, 8
     diagnostics["stage"] = "alignment"
@@ -250,22 +280,6 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     ]
     trace.update(candidate_clauses=listing, filtered_boundaries=filtered_boundaries,
                  selected_boundaries_after=[], keyword_candidates=[], model_elapsed_ms={})
-    diagnostics["stage"] = "config"
-    base_url, key, model = config.llm_base_url, config.llm_api_key, config.llm_model
-    try:
-        address = urlparse(base_url)
-    except ValueError:
-        raise RuntimeError("模型地址格式不合法。") from None
-    if (
-        address.scheme not in ("https", "http")
-        or not address.netloc
-        or (
-            address.scheme == "http"
-            and address.hostname not in ("localhost", "127.0.0.1", "::1")
-            and not config.allow_insecure_llm_http
-        )
-    ):
-        raise RuntimeError("模型地址必须有效，远程 HTTP 需要显式授权。")
     segments, rejected = [], 0
     # 先选切点、提关键词，仅有超长片段时追加语义切分；二次切分校验失败只反馈纠正一次。
     with OpenAI(base_url=base_url, api_key=key, timeout=config.llm_timeout_seconds, max_retries=config.llm_max_retries) as client:

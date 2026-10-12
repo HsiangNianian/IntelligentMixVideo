@@ -6,9 +6,9 @@ from .settings import ClientSettings
 
 
 class SegmentationRequest(BaseModel):
-    """校验业务输入及可选完整配置；ASR 内部结构由上游提供。"""
+    """无 ASR 时仅提取标题关键词；带 ASR 时由业务层检查有效文案。"""
 
     title: str | None = None
-    script: str
-    asr_result: dict
+    script: str | None = None
+    asr_result: dict | None = None
     config: ClientSettings | None = None

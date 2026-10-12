@@ -36,6 +36,8 @@
 
 纯数字人模式仍对 `audioUrl` 执行 ASR，以原始音频总时长确定时间线；字幕由输入文案与 ASR 对齐后的 segmentation 切片确定，并受模板字幕对象显示区间限制。模板效果、背景音乐、IMS 渲染、ZOS 视频与 PNG 转存、查询和终态通知沿用相同流程。此前省略 `materials` 也会匹配；需要保留该行为的调用方应显式传入 `[]`。已有任务按保存的请求字段和阶段恢复，不重新解释原始请求日志。
 
+调用 segmentation 时一并传入请求 `title`，返回的 `title_keyword` 随切片结果保存，组装及恢复时复用。标题关键词只使用该返回值，并按模板局部样式强调首次出现的位置；字段缺失或为空时仍显示完整标题，但不强调关键词，不使用模板 `titleKeyword` 或标题前两个字回退。旧快照没有该字段或有声模式无文案而跳过切片时，同样不强调标题关键词。完整切片中的标题提词复用现有模型调用；无声模式有非空标题时，通过同一 `segment` 函数仅调用一次模型提取标题词，不需要正文或 ASR。仅标题分支不做词长或原文匹配校验，完整切片仍保留原有校验。
+
 `materials[]` 字段：
 
 | 字段 | 类型 | 必填 | 说明 |
@@ -61,7 +63,7 @@ URL 不接受 Markdown 链接、空白、用户名密码或 `#fragment`，允许
 
 - `standard`：仍需非空文案、数字人视频和配音。省略 `materials` 跳过匹配，数字人铺满音频；显式数组保留匹配流程。保存请求时保留 `materials` 缺省状态，旧任务依据已保存字段恢复，不重新解释原始日志。
 - `materials_voice`：ASR 获取配音原始总时长（含静音）；有文案才进行字幕切片，没有文案不生成字幕。按素材顺序铺满完整配音，字幕间隙不影响画面，不调用素材匹配。
-- `materials_silent`：以 `processRules.videoDuration` 为总长，跳过 ASR、切片和匹配；始终不生成字幕，即使请求带了 `text/copy`。请求 `title` 使用模板标题样式，显示区间覆盖为 `0～videoDuration`，保留原文换行、标点和模板花字、关键词及动画。标题为空就不显示。
+- `materials_silent`：以 `processRules.videoDuration` 为总长，跳过 ASR、正文切片和匹配，有非空标题时只调用一次模型提取标题关键词；始终不生成字幕，即使请求带了 `text/copy`。请求 `title` 使用模板标题样式，显示区间覆盖为 `0～videoDuration`，保留原文换行、标点和模板花字及动画，按返回的 `title_keyword` 应用模板关键词样式。标题为空就不显示，也不调用提词模型。
 
 两个纯素材模式均使用后端 FFprobe 读取视频流实际时长，图片每张 3 秒。按顺序探测至足够覆盖目标，不访问后续未使用素材；不足报 `materials_duration_insufficient`，视频无法读取或缺少有效视频流时长报 `material_probe_failed`，不拿可能更长的容器音轨时长代替。POST 先返回任务 ID，以上错误通过查询与终态回调报告，不提交 IMS。超长时裁切最后实际使用的素材（图片也可裁短），相等则完整使用，不循环补足。素材时长快照保存后，恢复组装不再探测。
 
@@ -332,7 +334,7 @@ ZOS_FORCE_PATH_STYLE=false
 - `COMPOSITION_PUBLIC_BASE_URL` 可填 `http://公网IP:端口` 或 HTTPS 域名，可包含部署路径前缀；不要附加 `/api/v1/video-compositions`，不能包含查询参数。应确保生成的回调路径能到达该后端。
 - 任务已保存的回调地址和截止时间不会随 `.env` 修改而更新；本地超时也不代表云端任务已被取消。
 
-素材匹配使用 `SEGMENT_MATCH_BASE_URL` 和可选的 `SEGMENT_MATCH_AUTHORIZATION`，仅 standard 显式传 `materials` 时要求匹配地址。两个纯素材模式不依赖匹配配置；包含视频素材时服务端 PATH 还须有 `ffprobe`，单个探测使用 `COMPOSITION_HTTP_TIMEOUT_SECONDS` 超时，取消或超时回收子进程。FFprobe 白名单包含 HTTP 代理所需的 `httpproxy`；探测失败的退出码及脱敏 stderr 保存到 `timeline.json` 的 `error_log`，查询与回调仍返回固定错误摘要。无语音模式不依赖 ASR 和切片配置；有语音模式仍依赖 ASR，有文案才要求切片配置。所有模式仍需 IMS、ZOS、数据库和 FFmpeg；缺少所需配置或工具时受理返回 503。参见 `server/.env.example`。
+素材匹配使用 `SEGMENT_MATCH_BASE_URL` 和可选的 `SEGMENT_MATCH_AUTHORIZATION`，仅 standard 显式传 `materials` 时要求匹配地址。两个纯素材模式不依赖匹配配置；包含视频素材时服务端 PATH 还须有 `ffprobe`，单个探测使用 `COMPOSITION_HTTP_TIMEOUT_SECONDS` 超时，取消或超时回收子进程。FFprobe 白名单包含 HTTP 代理所需的 `httpproxy`；探测失败的退出码及脱敏 stderr 保存到 `timeline.json` 的 `error_log`，查询与回调仍返回固定错误摘要。无语音模式不依赖 ASR，有非空标题时需要切片模型配置；有语音模式仍依赖 ASR，有文案才要求切片配置。所有模式仍需 IMS、ZOS、数据库和 FFmpeg；缺少所需配置或工具时受理返回 503。参见 `server/.env.example`。
 
 ## 7. 可选的客户端 IMS 配置
 

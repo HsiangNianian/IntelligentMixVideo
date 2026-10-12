@@ -643,6 +643,40 @@ def test_no_title_keeps_response(model, client, extra):
     assert json.loads(request["messages"][1]["content"]) == ["甲乙丙丁"]
 
 
+@pytest.mark.parametrize("data,keyword", [
+    ({"title": "散养土鸡上新"}, "土鸡"),
+    ({"title": "散养土鸡上新", "asr_result": None}, "不在原标题内而且长度超过十二个字的模型结果"),
+    ({"title": "散养土鸡上新", "script": "不参与切分的文案", "asr_result": None}, ""),
+    ({"title": ""}, ""),
+])
+def test_title_only_calls_model_once(model, client, data, keyword):
+    """ASR 缺省或 null 时只提标题词，不切正文，不校验关键词的长度或原文匹配。"""
+    model[1].chat.completions.create.side_effect = None
+    model[1].chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({"title_keyword": keyword})))])
+    response = client.post("/segmentations", json=data)
+    assert response.status_code == 200
+    assert response.json() == {"title_keyword": keyword}
+    model[1].chat.completions.create.assert_called_once()
+    assert model[1].chat.completions.create.call_args.kwargs["messages"][1]["content"] == data["title"]
+    assert model[0].return_value.__exit__.call_count == 1
+
+
+@pytest.mark.parametrize("raw,status,expected", [
+    ('{}', 200, {"title_keyword": ""}),
+    ('{broken', 502, {"error": {"message": "模型标题提词响应格式无效。"}}),
+])
+def test_title_only_missing_keyword_and_broken_json(model, client, raw, status, expected):
+    """未返回标题词时保持空词；无法解析模型响应时明确失败且关闭客户端，不额外重试。"""
+    model[1].chat.completions.create.side_effect = None
+    model[1].chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=raw))])
+    response = client.post("/segmentations", json={"title": "散养土鸡上新"})
+    assert response.status_code == status and response.json() == expected
+    model[1].chat.completions.create.assert_called_once()
+    assert model[0].return_value.__exit__.call_count == 1
+
+
 @pytest.mark.parametrize("extra", [{}, {"title_keyword": None}, {"title_keyword": []},
                                     {"title_keyword": "不存在"}, {"title_keyword": "甲乙丙丁戊己庚辛壬癸子丑寅"}])
 def test_invalid_title_keyword_fails_without_fallback(model, client, extra):
@@ -669,20 +703,24 @@ def test_internal_error(client, monkeypatch):
 
 
 @pytest.mark.parametrize("data,field,error_type", [
-    ({"script": "甲"}, "asr_result", "missing"),
-    ({"asr_result": {}}, "script", "missing"),
     ({"script": 1, "asr_result": {}}, "script", "string_type"),
     ({"script": "甲", "asr_result": []}, "asr_result", "dict_type"),
-    ({"script": "甲", "asr_result": None}, "asr_result", "dict_type"),
 ])
 def test_required_field_types(model, client, data, field, error_type):
-    """Pydantic 在 HTTP 入口拒绝缺失、空值或错误类型，返回字段位置且不调用模型。"""
+    """Pydantic 在 HTTP 入口拒绝错误字段类型，返回字段位置且不调用模型。"""
     response = client.post("/segmentations", json=data)
     assert response.status_code == 422
     assert any(
         error["loc"] == ["body", field] and error["type"] == error_type
         for error in response.json()["detail"]
     )
+    model[0].assert_not_called()
+
+
+@pytest.mark.parametrize("data", [{}, {"script": "甲"}, {"script": "甲", "asr_result": None}, {"asr_result": {}}])
+def test_incomplete_segmentation_without_title(model, client, data):
+    """没有标题时不能进入提词分支，正文或 ASR 缺失仍报 422，不调用模型。"""
+    assert client.post("/segmentations", json=data).status_code == 422
     model[0].assert_not_called()
 
 
@@ -820,8 +858,8 @@ def test_invalid_client_configuration_never_falls_back(model, client, change):
 
 
 def test_client_credentials_are_not_echoed_in_top_level_errors(model, client):
-    """缺少 script 时框架的完整请求 input 不能把密钥回显出去。"""
-    response = client.post("/segmentations", json={"config": {
+    """script 类型错误时框架的完整请求 input 不能把密钥回显出去。"""
+    response = client.post("/segmentations", json={"script": 123, "config": {
         "llm_base_url": "https://client.test/v1", "llm_api_key": "client-secret", "llm_model": "client-model",
     }})
     assert response.status_code == 422

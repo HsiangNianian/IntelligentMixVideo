@@ -38,7 +38,7 @@ def test_material_defaults_use_business_text_without_modifying_template(composit
 
 @pytest.mark.parametrize("duration", [3, 2.99])
 def test_silent_skips_subtitle_timing_and_overrides_outside_title(composition_case, duration):
-    """无声不校验未输出字幕的动画时长；模板标题原在结尾外也须全程显示。"""
+    """无声不校验字幕动画，标题全程显示；跳过切片后不使用模板关键词高亮。"""
     case = composition_case
     case["request"].update(videoUrl=None, audioUrl=None, processRules={"videoDuration": duration},
                            materials=[{"fileUrl": "https://media.test/a.jpg", "type": "image"}])
@@ -47,6 +47,7 @@ def test_silent_skips_subtitle_timing_and_overrides_outside_title(composition_ca
     case["template"]["tracks"][0].update(duration=0.001)
     case["template"]["tracks"][0]["editor"]["subtitleIn"] = "in/fade_in"
     case["template"]["tracks"][1].update(start=100, duration=1)
+    case["template"]["tracks"][1]["editor"].update(titleKeyword="业务", titleKeywordBold=True)
     timeline, _ = build_timeline(**case)
     title = timeline["SubtitleTracks"][0]["SubtitleTrackClips"][0]
     assert title["Content"] == case["request"]["title"]
@@ -154,15 +155,21 @@ def test_subtitle_keyword_style_marks_first_matching_part(composition_case):
     assert [clip["Content"] for clip in subtitles] == [r"{\b1}甲乙{\b0}？", "甲乙丙丁", "戊己庚辛"]
 
 
-def test_title_keyword_styles_select_request_text_when_unset(composition_case):
-    """标题未指定关键词时自动标记请求标题的前两个字，重复内容只标记首次。"""
+@pytest.mark.parametrize("manual_keyword", ["", "重点"])
+@pytest.mark.parametrize("result,expected", [
+    ({"title_keyword": "内容"}, r"重点{\1c&34AB12&\fs72\b1}内容{\1c\fs\b0} 重点内容"),
+    ({"title_keyword": ""}, "重点内容 重点内容"),
+    ({}, "重点内容 重点内容"),
+])
+def test_title_keyword_styles_only_use_segmentation(composition_case, manual_keyword, result, expected):
+    """仅标记切片标题词首次出现的位置；缺失或空词不回退模板词或标题前两字。"""
     editor = composition_case["template"]["tracks"][1]["editor"]
-    editor.update(titleKeyword="", titleKeywordBold=True, titleKeywordColor="#12AB34", titleKeywordSize=72)
+    editor.update(titleKeyword=manual_keyword, titleKeywordBold=True, titleKeywordColor="#12AB34", titleKeywordSize=72)
     composition_case["request"]["title"] = "重点内容 重点内容"
-    timeline, _ = build_timeline(**composition_case)
-    assert timeline["SubtitleTracks"][1]["SubtitleTrackClips"][0]["Content"] == (
-        r"{\1c&34AB12&\fs72\b1}重点{\1c\fs\b0}内容 重点内容"
-    )
+    original = deepcopy(composition_case)
+    timeline, _ = build_timeline(**composition_case, **result)
+    assert timeline["SubtitleTracks"][1]["SubtitleTrackClips"][0]["Content"] == expected
+    assert composition_case == original
 
 
 @pytest.mark.parametrize("title", [None, "", " \n\t"])
