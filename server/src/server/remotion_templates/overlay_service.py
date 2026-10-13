@@ -1,7 +1,7 @@
 """Durable async tasks that render the Remotion placements of a request and publish the video to ZOS.
 
 Accepting a task validates the placements and stores them in the Remotion SQLite database; a background
-asyncio task renders (one at a time), uploads to ZOS, saves the result and notifies the callback.
+asyncio task renders (up to three at a time), uploads to ZOS, saves the result and notifies the callback.
 Unfinished tasks are re-run by `resume()` after a restart, and the terminal notification is retried
 with fixed delays. The rendering and planning rules live in `overlay_render.py`.
 """
@@ -46,12 +46,12 @@ TERMINAL = ("succeeded", "failed")
 
 
 class OverlayRenders:
-    """Own the task table rows, the single render slot and the background tasks of one runtime."""
+    """Own the task table rows, three shared render slots and the background tasks of one runtime."""
 
     def __init__(self, store: Store, renderer: Renderer, settings: Settings) -> None:
         """Create no tasks; `resume()` starts recovery."""
         self.store, self.renderer, self.settings = store, renderer, settings
-        self.slot = asyncio.Semaphore(1)
+        self.slot = asyncio.Semaphore(3)
         self.tasks: set[asyncio.Task] = set()
         self.resumed = False
 
@@ -213,7 +213,7 @@ class OverlayRenders:
     async def _execute(self, task_id: str, work: Path) -> None:
         """Resolve the duration, render the overlay and publish it to ZOS.
 
-        Only the render holds the single slot: the remote audio probe before it and the upload after it
+        Only the render holds a slot: the remote audio probe before it and the upload after it
         would otherwise keep every queued render waiting on the network.
         """
         _, data = self._read(task_id)
