@@ -27,14 +27,11 @@ from starlette.concurrency import run_in_threadpool
 from . import boundary, sprite_store
 from .categories import HEX_COLOR, category_problems, operator_message
 from .evidence import digest, verify_artifacts
+from .publication import current_bundle
 from .models import TemplateVersion
 from .store import Conflict, NotFound, Store
 
 PREVIEW_BUNDLE = "interactive.js"
-# 只有包含逐帧同步处理的预览包才能叠加到模板预览上；更早构建的包缺少此标记。
-SYNC_MARKER = b"imv-preview-sync"
-# 能读取页面注入的默认值与内容区域、接受参数覆盖和宿主变换的预览包带有此标记；更早构建的包需要重建。
-HOST_MARKER = b"imv-preview-host"
 # 同一来源与字段选择的发布轮流执行：重复点击等待首个完成后读取它保存的资产，不重复重建播放器包。
 # 值为弱引用，没有持有者和等待者后锁自动释放，字典不会随发布次数增长。
 _publishing: weakref.WeakValueDictionary[tuple, asyncio.Lock] = weakref.WeakValueDictionary()
@@ -242,17 +239,12 @@ async def _rebuild_bundle(service, version) -> bytes | None:
         }, ensure_ascii=False), encoding="utf-8")
         await service.harness.renderer.run_worker(work, worker="presentation-worker.mjs")
         data = (work / PREVIEW_BUNDLE).read_bytes()
-        return data if _current(data) else None
+        return data if current_bundle(data) else None
     except Exception:
         logging.getLogger(__name__).exception("Sprite preview rebuild failed: %s", version.id)
         return None
     finally:
         shutil.rmtree(work, ignore_errors=True)
-
-
-def _current(bundle: bytes) -> bool:
-    """Whether a player bundle can be scrubbed by the template editor and takes placement overrides."""
-    return SYNC_MARKER in bundle and HOST_MARKER in bundle
 
 
 def _store_bundle(store: Store, sprite: pb.PublishedSprite, data: bytes) -> None:
@@ -413,7 +405,7 @@ async def publish(service, request: pb.PublishSpriteRequest) -> pb.SpriteSummary
         version, sprite, bundle = await run_in_threadpool(_inspect, store, request)
         if sprite is None:
             await _sample(service, version, request.kind)
-        fresh = None if _current(bundle) else await _rebuild_bundle(service, version)
+        fresh = None if current_bundle(bundle) else await _rebuild_bundle(service, version)
         if sprite is None:
             return await run_in_threadpool(_create, store, request, version, fresh or bundle)
         if fresh:

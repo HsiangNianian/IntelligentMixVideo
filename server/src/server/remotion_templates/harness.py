@@ -95,15 +95,25 @@ class Harness:
         ))
 
     async def generate(self, spec, budget: Budget, directory: Path, images, on_stage, *, base=None, parameter_patch=None, context: Conversation | None = None, intent=None):
-        """PR74 manual patches use only runtime checks; natural-language work enters the three-layer loop."""
+        """Queued manual patches use only runtime checks; natural-language work enters the three-layer loop.
+
+        The runtime saves PR76 patches at once when the base's player bundle reads injected defaults; the ones that
+        reach this method are PR74 versions and PR76 versions whose older bundle has to be rebuilt.
+        """
         if budget.audit_path is None:
             budget.audit_path = directory / "audit.jsonl"
         if parameter_patch is not None:
             if base is None or spec is None:
                 raise ValueError("Parameter edits require an accepted version")
-            if spec.schema_version == "2":
-                raise ValueError("PR76 parameter revisions are saved instantly by the runtime, not rendered")
             candidate, revised = patch_parameters(base, spec, parameter_patch)
+            if revised.schema_version == "2" and revised.sprite is not None:
+                # The base bundle predates injected defaults: render the new defaults and rebuild the bundle.
+                from .tool_validation import ToolValidator
+                on_stage("validating", 1)
+                budget.progress("rendering")
+                component = ComponentDefinition(code=candidate.tsx_code, parameter_schema=candidate.config_schema, default_parameters=candidate.default_config)
+                validation = await ToolValidator(self.renderer, directory / "parameters").validate_render(RenderValidationInput(component=component, duration_frames=revised.composition.duration_in_frames))
+                return await self.presentation.build(revised.sprite, candidate.default_config, validation, directory / ("result-" + uuid4().hex))
             # Existing PR74 versions keep their explicit manual rendering path, without a model role.
             result, report = await self.renderer.validate(candidate, revised, directory / "attempt-1", preserve_code=True)
             if not report.render_passed:

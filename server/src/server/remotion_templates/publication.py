@@ -12,6 +12,28 @@ from .models import (
 from .parameters import patch_parameters
 from .tools.contracts import RenderValidationReport, SpriteDraft
 
+# 只有包含逐帧同步处理的预览包才能叠加到模板预览上；更早构建的包缺少此标记。
+SYNC_MARKER = b"imv-preview-sync"
+# 能读取页面注入的默认值与内容区域、接受参数覆盖和宿主变换的预览包带有此标记；更早构建的包需要重建。
+HOST_MARKER = b"imv-preview-host"
+
+
+def current_bundle(bundle: bytes) -> bool:
+    """Whether a player bundle can be scrubbed by the template editor and starts from page-injected defaults."""
+    return SYNC_MARKER in bundle and HOST_MARKER in bundle
+
+
+def revisable(accepted: Path) -> bool:
+    """Whether an accepted version's parameters can be revised instantly by reusing its player bundle.
+
+    Only a bundle that reads the defaults the page injects shows a revision's new defaults; an older one would keep
+    showing the defaults compiled into it, so such a version is revised by rebuilding in the sandbox instead.
+    """
+    try:
+        return current_bundle((accepted / "interactive.js").read_bytes())
+    except OSError:
+        return False
+
 
 class PresentationBuilder:
     """Publish an exact Sprite and parameter snapshot through the existing isolated worker boundary."""
@@ -75,6 +97,8 @@ class PresentationBuilder:
         regenerated, by parsing and formatting the sealed source on the host.
         """
         verify_artifacts(base.candidate, base.spec, base.validation, accepted)
+        if not revisable(accepted):
+            raise ValueError("The base player bundle cannot show new defaults; revise it in the sandbox")
         candidate, spec = patch_parameters(base.candidate, base.spec, patch)
         directory.mkdir(parents=True, exist_ok=False)
         for name in ("Template.tsx", "interactive.js"):

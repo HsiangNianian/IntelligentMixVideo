@@ -17,6 +17,7 @@ from .overlay_service import OverlayRenders
 from .models import DialogueOutput, EditTemplateRequest, JobError, JobInput, TaskMessage
 from .parameters import parameter_changes
 from .provider import Budget, ExecutionFailure, ModelFailure, Provider
+from .publication import revisable
 from .store import Conflict, Store
 from .tool_validation import ToolValidator, ValidationUnavailable
 from .tools.contracts import CodeValidationReport, ComponentDefinition
@@ -104,10 +105,12 @@ class Runtime:
     def _start(self, project_id: UUID, inputs: JobInput, base, config: ClientSettings | None, message_text: str | None = None):
         """Queue a job for the worker, or save a PR76 parameter revision at once outside the FIFO queue.
 
-        A parameter revision of a PR76 version only re-checks the schema and seals new defaults, so it must not
-        wait behind another work's generation; it is recorded as running so the one-active-job rule still holds.
+        A parameter revision of a PR76 version whose player bundle reads injected defaults only re-checks the schema
+        and seals new defaults, so it must not wait behind another work's generation; it is recorded as running so
+        the one-active-job rule still holds. An older bundle would keep showing its compiled defaults, so that
+        revision is queued and rebuilt in the sandbox.
         """
-        if inputs.mode == "parameters" and base is not None and base.spec.schema_version == "2":
+        if inputs.mode == "parameters" and base is not None and self.instant(base):
             job = self.store.enqueue(project_id, inputs, base.id, message_text=message_text, running=True)
             task = asyncio.create_task(self._save_parameters(job.id, base, inputs.parameters))
             self.saves[job.id] = task
@@ -116,6 +119,10 @@ class Runtime:
         job = self.store.enqueue(project_id, inputs, base.id if base else None, message_text=message_text)
         self.notify(job.id, config)
         return job
+
+    def instant(self, base) -> bool:
+        """Whether a parameter patch on this accepted version is saved at once instead of rendered in the sandbox."""
+        return base.spec.schema_version == "2" and revisable(self.store.root / "accepted" / str(base.id))
 
     async def _save_parameters(self, job_id: UUID, base, patch: dict) -> None:
         """Seal the revision off the event loop and publish it; failures are recorded on the job, never raised."""

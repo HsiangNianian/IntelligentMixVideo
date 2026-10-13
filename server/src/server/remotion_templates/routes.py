@@ -36,6 +36,7 @@ from .models import (
 )
 from .provider import ExecutionFailure
 from .runtime import Runtime
+from .publication import revisable
 from .store import NotFound
 from .stream import event_stream
 from .tool_validation import ValidationUnavailable
@@ -82,15 +83,19 @@ def require_sandbox(service: Runtime) -> None:
 
 
 def parameters_need_sandbox(service: Runtime, base_id: UUID | None, work_id: UUID | None = None) -> bool:
-    """Whether a parameter patch on this base renders in the sandbox; PR76 versions are revised instantly.
+    """Whether a parameter patch on this base renders in the sandbox.
 
-    Without an explicit base the work's current version is the base. A missing work or version needs the sandbox
-    check here and is then reported by the edit itself.
+    PR76 versions whose player bundle reads injected defaults are revised instantly; older ones are rebuilt in the
+    sandbox. Without an explicit base the work's current version is the base. A missing work or version needs the
+    sandbox check here and is then reported by the edit itself.
     """
     try:
         if base_id is None and work_id is not None:
             base_id = service.store.project(work_id).current_version_id
-        return base_id is None or service.store.version(base_id).spec.schema_version != "2"
+        if base_id is None:
+            return True
+        version = service.store.version(base_id)
+        return version.spec.schema_version != "2" or not revisable(service.store.root / "accepted" / str(version.id))
     except (NotFound, ValueError):
         return True
 
