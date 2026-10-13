@@ -718,12 +718,12 @@ description 非空，instances 非空。主画布配置和 sprite 总帧数均�
 
 | kind | 界面分类 | 必备顶层参数（Schema） | 宿主变换 |
 | --- | --- | --- | --- |
-| text | 字效 | text（string，minLength ≥ 1，maxLength ≤ 200）、fontSize（数字，范围在 8～400 内且覆盖 24～160）、fontWeight（enum 恰为 400、700）、color（颜色 pattern） | 位置、缩放、旋转、不透明度 |
+| text | 字效 | text（string，minLength ≥ 1，maxLength ≤ 200）、fontSize（数字，范围在 8～400 内且覆盖 24～160）、fontWeight（enum 恰为 400、700）、color（颜色 pattern），以及下文的七个关键词参数 | 位置、缩放、旋转、不透明度 |
 | filter_overlay | 滤镜 | intensity（数字 0～1）、tintColor（颜色 pattern） | 不透明度 |
 | video_overlay | 转场与视频特效 | color（颜色 pattern）、speed（数字 0.25～4） | 位置、缩放、旋转、不透明度 |
 | transition_overlay | 转场与视频特效 | color（颜色 pattern）、speed（数字 0.25～4） | 不透明度 |
 
-颜色 pattern 为 `^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$`。字效还必须绑定 `keywords`（字符串数组，maxItems ≤ 20，items.maxLength ≤ 100），由组件在文字里高亮每个关键词的首次字面命中。以及与总线 IMS 关键词选项同名同义的 `keywordBold`、`keywordItalic`、`keywordUnderline`、`keywordStrikeout`（布尔）、`keywordColor`（字符串，pattern 为 `^(?:|#[0-9A-Fa-f]{6})$`，空串沿用文字颜色）与 `keywordSize`（整数，minimum 0、maximum 300，0 沿用文字字号），它们都必须绑定、默认关闭（`[]`、false、空串、0，不用时保持原样式），只作用于关键词命中处。所有分类都是透明叠加层，不读取也不修改底片像素。
+颜色 pattern 为 `^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$`。字效还必须绑定 `keywords`（字符串数组，maxItems 为 1～20，items.maxLength 为 12～100，能容纳总线转发的切片关键词），由组件在文字里高亮每个关键词的首次字面命中；以及与总线 IMS 关键词选项同名同义的 `keywordBold`、`keywordItalic`、`keywordUnderline`、`keywordStrikeout`（布尔）、`keywordColor`（字符串，pattern 为 `^(?:|#[0-9A-Fa-f]{6})$`，空串沿用文字颜色）与 `keywordSize`（整数，minimum 0、maximum 300，0 沿用文字字号，否则是 12～300 像素；摆放覆盖拒绝 1～11），它们都必须绑定、默认关闭（`[]`、false、空串、0，不用时保持原样式；`sprite.create` 与发布都检查默认值），只作用于关键词命中处。所有分类都是透明叠加层，不读取也不修改底片像素。
 
 绑定规则：
 
@@ -731,7 +731,7 @@ description 非空，instances 非空。主画布配置和 sprite 总帧数均�
 2. 每个 target 必须是该实例预设顶层声明的 prop，且同一 prop 只能绑定一次；被绑定 prop 的 Schema 必须是对象形式（不能是 `true`/`false` 布尔子 Schema），也不能使用 `$ref`。
 3. 同一绑定的各 target 必须接受同样的值（忽略 title、description），且组合时取值相同；该值成为顶层默认值，`title` 成为界面控件名称。
 4. 绑定后的参数是 Sprite Schema 顶层的必填属性，并从对应实例的嵌套 Schema、required 与默认值中移除；生成的宿主把顶层值传给每个 target。
-5. 顶层参数必须有明确的取值范围：数字声明 minimum 与 maximum（或 enum；integer 的上下界须为整数），字符串使用颜色 pattern、enum 或 maxLength（maxLength 为 1～2000，即模板覆盖值的上限，且不小于 minLength），布尔不受限，数组只允许关键词形状。Schema 只能使用 type、title、description、default、minimum、maximum、enum、minLength、maxLength、颜色 pattern、maxItems 与 items.maxLength：发布时的边界抽样只认识这些约束，其他约束（如 multipleOf、exclusiveMaximum）会让两端取值漏抽。不满足时返回 `INVALID_ARGUMENT`。
+5. 顶层参数必须有明确的取值范围：数字声明 minimum 与 maximum（或 enum；integer 的上下界须为整数），字符串使用颜色 pattern（`keywordColor` 另可用允许空串的关键词颜色 pattern）、enum 或 maxLength（maxLength 为 1～2000，即模板覆盖值的上限，且不小于 minLength），布尔不受限，数组只允许关键词形状。Schema 只能使用 type、title、description、default、minimum、maximum、enum、minLength、maxLength、颜色 pattern、maxItems 与 items.maxLength：发布时的边界抽样只认识这些约束，其他约束（如 multipleOf、exclusiveMaximum）会让两端取值漏抽。不满足时返回 `INVALID_ARGUMENT`。
 6. 整个 Sprite 的位置、缩放、旋转与不透明度由宿主按实例 layout 的并集统一实现，不通过参数绑定，预设也不应自行实现。
 
 工具执行以下确定性组合：
@@ -743,7 +743,7 @@ description 非空，instances 非空。主画布配置和 sprite 总帧数均�
 5. 把绑定参数提升为顶层必填属性，其余参数按 instance_id 生成嵌套 Schema，并生成完整默认参数。
 6. 把完整 SpriteDraft（含 kind 与 bindings）保存在任务内并返回其 `draft_id`、内容摘要 `digest`（只由草稿内容决定，重复组合得到同一值）、分类、实例摘要、顶层参数名、完整默认参数与源码字节数，不回传源码，不保存 sprite，也不把 draft 来源自动写入 preset 库。
 
-组合后的 props 示例（对应下文输入示例：title 实例的 text、size、weight、color 绑定为顶层参数，glow 未绑定）：
+组合后的 props 示例（对应下文输入示例：title 实例的 text、size、weight、color 与七个关键词参数绑定为顶层参数，glow 未绑定）：
 
 ```json
 {
@@ -751,16 +751,23 @@ description 非空，instances 非空。主画布配置和 sprite 总帧数均�
   "fontSize": 96,
   "fontWeight": 700,
   "color": "#FFFFFF",
+  "keywords": [],
+  "keywordBold": false,
+  "keywordItalic": false,
+  "keywordUnderline": false,
+  "keywordStrikeout": false,
+  "keywordColor": "",
+  "keywordSize": 0,
   "title": {"glow": 0.4},
   "subtitle": {"text": "从一个小想法开始", "color": "#FFFF00"}
 }
 ```
 
-text、fontSize、fontWeight、color 是顶层参数；title、subtitle 分别对应实例 ID，其中只保留未绑定的参数，每组 Schema 来自对应预设。嵌入子 Schema 时必须保持内部引用指向正确位置，不得把某一预设的 `$ref` 意外解释为 sprite 的其他字段。
+text、fontSize、fontWeight、color 与 keyword* 是顶层参数；title、subtitle 分别对应实例 ID，其中只保留未绑定的参数，每组 Schema 来自对应预设。嵌入子 Schema 时必须保持内部引用指向正确位置，不得把某一预设的 `$ref` 意外解释为 sprite 的其他字段。
 
 默认参数来自 compose 时的实例实际参数；调用者可以按第 3.3 节规则覆盖。sprite 组件在空 props 下使用完整默认值，仍然可运行。布局和时间不暴露为这组参数，修改编排需再次 compose。
 
-输入示例，假设两个引用的预设都声明了 text、color 参数，标题预设还声明了 size、weight、glow，且默认值为 size 96、weight 700、glow 0.4：
+输入示例，假设两个引用的预设都声明了 text、color 参数，标题预设还声明了 size、weight、glow 与七个关键词 prop，且默认值为 size 96、weight 700、glow 0.4，关键词 prop 均为关闭：
 
 ```json
 {
@@ -770,7 +777,14 @@ text、fontSize、fontWeight、color 是顶层参数；title、subtitle 分别�
     {"name": "text", "title": "标题文字", "targets": [{"instance_id": "title", "parameter": "text"}]},
     {"name": "fontSize", "title": "字号", "targets": [{"instance_id": "title", "parameter": "size"}]},
     {"name": "fontWeight", "title": "字重", "targets": [{"instance_id": "title", "parameter": "weight"}]},
-    {"name": "color", "title": "颜色", "targets": [{"instance_id": "title", "parameter": "color"}]}
+    {"name": "color", "title": "颜色", "targets": [{"instance_id": "title", "parameter": "color"}]},
+    {"name": "keywords", "title": "关键词", "targets": [{"instance_id": "title", "parameter": "keywords"}]},
+    {"name": "keywordBold", "title": "关键词加粗", "targets": [{"instance_id": "title", "parameter": "keywordBold"}]},
+    {"name": "keywordItalic", "title": "关键词斜体", "targets": [{"instance_id": "title", "parameter": "keywordItalic"}]},
+    {"name": "keywordUnderline", "title": "关键词下划线", "targets": [{"instance_id": "title", "parameter": "keywordUnderline"}]},
+    {"name": "keywordStrikeout", "title": "关键词删除线", "targets": [{"instance_id": "title", "parameter": "keywordStrikeout"}]},
+    {"name": "keywordColor", "title": "关键词颜色", "targets": [{"instance_id": "title", "parameter": "keywordColor"}]},
+    {"name": "keywordSize", "title": "关键词字号", "targets": [{"instance_id": "title", "parameter": "keywordSize"}]}
   ],
   "instances": [
     {

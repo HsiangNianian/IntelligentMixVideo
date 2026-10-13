@@ -6,6 +6,7 @@ Agent 保存 Sprite 时据此在循环内修复，发布时据此拒绝缺少必
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Callable, get_args
 
@@ -13,6 +14,8 @@ from ..template.schema import OVERRIDE_STRING_MAX_LENGTH
 from .tools.contracts import SpriteKindName
 
 KINDS: tuple[SpriteKindName, ...] = get_args(SpriteKindName)
+# 关键词字号启用时的下限，与总线 IMS 模板的 *_keyword_size（0 或 12～300）一致。
+KEYWORD_SIZE_MIN = 12
 # 关键词颜色允许空串（沿用文字颜色）或 #RRGGBB，与总线 IMS 模板的 *_keyword_color 一致。
 KEYWORD_COLOR = "^(?:|#[0-9A-Fa-f]{6})$"
 # 颜色参数统一使用的 JSON Schema pattern；界面和宿主按它识别颜色控件。
@@ -22,6 +25,8 @@ TEXT_MAX_LENGTH = 200
 # 关键词列表的项数和逐项长度上限，与总线的关键词约束一致。
 KEYWORDS_MAX_ITEMS = 20
 KEYWORD_MAX_LENGTH = 100
+# 每项关键词至少要容纳的长度：总线转发切片返回的标题关键词（最多 12 字）与字幕片段关键词。
+KEYWORD_MIN_LENGTH = 12
 
 
 @dataclass(frozen=True)
@@ -32,6 +37,8 @@ class Rule:
     example: dict
     label: str
     accepts: Callable[[dict], bool]
+    # 必须使用的默认值（关键词参数默认不启用）；None 表示不限制默认值。
+    off: object = None
 
 
 def _number(definition: dict) -> bool:
@@ -110,6 +117,31 @@ def _boolean(definition: dict) -> bool:
     return definition.get("type") == "boolean"
 
 
+# 字效的关键词列表：组件只在文字里高亮每个关键词的首次字面命中（与总线一致）。
+KEYWORDS = Rule(
+    "keywords",
+    {"type": "array", "items": {"type": "string", "maxLength": KEYWORD_MAX_LENGTH}, "maxItems": KEYWORDS_MAX_ITEMS},
+    f"关键词列表，字符串数组，最多 {KEYWORDS_MAX_ITEMS} 项，每项的 maxLength 在 {KEYWORD_MIN_LENGTH}～{KEYWORD_MAX_LENGTH} 之间",
+    lambda definition: _keywords(definition) and definition["items"]["maxLength"] >= KEYWORD_MIN_LENGTH,
+    off=[],
+)
+# 关键词局部样式：与总线 IMS 模板的 title/subtitle 关键词字段同名同义，由总线按摆放覆盖。
+KEYWORD_STYLES = tuple(
+    Rule(f"keyword{name}", {"type": "boolean"}, f"关键词{label}开关，布尔值", _boolean, off=False)
+    for name, label in (("Bold", "加粗"), ("Italic", "斜体"), ("Underline", "下划线"), ("Strikeout", "删除线"))
+)
+KEYWORD_COLOR_RULE = Rule(
+    "keywordColor", {"type": "string", "pattern": KEYWORD_COLOR},
+    "关键词颜色，空字符串表示沿用文字颜色，否则是 #RRGGBB", _keyword_color, off="",
+)
+KEYWORD_SIZE_RULE = Rule(
+    "keywordSize", {"type": "integer", "minimum": 0, "maximum": 300},
+    f"关键词字号，整数，0 表示沿用文字字号，否则是 {KEYWORD_SIZE_MIN}～300 像素", _keyword_size, off=0,
+)
+# 字效的关键词参数：都是必备的，默认值必须是「不启用」（off），不用时保持原有样式。
+TEXT_KEYWORDS = (KEYWORDS, *KEYWORD_STYLES, KEYWORD_COLOR_RULE, KEYWORD_SIZE_RULE)
+
+
 _COLOR = {"type": "string", "pattern": HEX_COLOR}
 REQUIRED: dict[SpriteKindName, tuple[Rule, ...]] = {
     "text": (
@@ -117,6 +149,7 @@ REQUIRED: dict[SpriteKindName, tuple[Rule, ...]] = {
         Rule("fontSize", {"type": "number", "minimum": 24, "maximum": 240}, "字号，数字，范围在 8～400 像素之内且至少覆盖 24～160", _between(8, 400, 24, 160)),
         Rule("fontWeight", {"type": "integer", "enum": [400, 700]}, "字重，只能是 400 和 700 两个枚举值", _weight),
         Rule("color", _COLOR, "文字主色，十六进制颜色", _color),
+        *TEXT_KEYWORDS,
     ),
     "filter_overlay": (
         Rule("intensity", {"type": "number", "minimum": 0, "maximum": 1}, "强度，0～1 的数字", _exact(0, 1)),
@@ -131,29 +164,10 @@ REQUIRED: dict[SpriteKindName, tuple[Rule, ...]] = {
         Rule("speed", {"type": "number", "minimum": 0.25, "maximum": 4}, "速度倍率，0.25～4 的数字", _exact(0.25, 4)),
     ),
 }
-# 字效可选的关键词参数：声明时必须符合约定形状，组件只在文字里高亮每个关键词的首次字面命中（与总线一致）。
-KEYWORDS = Rule(
-    "keywords",
-    {"type": "array", "items": {"type": "string", "maxLength": KEYWORD_MAX_LENGTH}, "maxItems": KEYWORDS_MAX_ITEMS},
-    f"关键词列表，字符串数组，最多 {KEYWORDS_MAX_ITEMS} 项、每项不超过 {KEYWORD_MAX_LENGTH} 字",
-    _keywords,
-)
-# 关键词局部样式：与总线 IMS 模板的 title/subtitle 关键词字段同名同义，由总线按摆放覆盖。
-KEYWORD_STYLES = tuple(
-    Rule(f"keyword{name}", {"type": "boolean"}, f"关键词{label}开关，布尔值", _boolean)
-    for name, label in (("Bold", "加粗"), ("Italic", "斜体"), ("Underline", "下划线"), ("Strikeout", "删除线"))
-)
-KEYWORD_COLOR_RULE = Rule(
-    "keywordColor", {"type": "string", "pattern": KEYWORD_COLOR},
-    "关键词颜色，空字符串表示沿用文字颜色，否则是 #RRGGBB", _keyword_color,
-)
-KEYWORD_SIZE_RULE = Rule(
-    "keywordSize", {"type": "integer", "minimum": 0, "maximum": 300},
-    "关键词字号，整数，0 表示沿用文字字号，否则是像素值（最大 300）", _keyword_size,
-)
-# 字效的关键词参数：都是必备的，默认值应当「不启用」（空列表、false、空串、0），不用时保持原有样式。
-TEXT_KEYWORDS = (KEYWORDS, *KEYWORD_STYLES, KEYWORD_COLOR_RULE, KEYWORD_SIZE_RULE)
-REQUIRED["text"] += TEXT_KEYWORDS
+
+
+# 默认值未关闭的关键词参数的原因前缀；运营说明据此与缺少参数分开提示。
+DEFAULT_REASON = "must default to"
 
 
 @dataclass(frozen=True)
@@ -192,7 +206,7 @@ def _unsupported(definition: dict) -> list[str]:
     return sorted(extra)
 
 
-def parameter_problems(definition: object) -> str | None:
+def parameter_problems(definition: object, name: str) -> str | None:
     """顶层标准参数的通用约束：控件需要明确的取值范围，返回违反原因或 None。
 
     数字须声明上下界；字符串须是颜色、枚举或声明 maxLength；布尔不受限；数组只允许关键词形状。
@@ -213,11 +227,12 @@ def parameter_problems(definition: object) -> str | None:
         limit = definition.get("maxLength")
         if limit is not None and (not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= OVERRIDE_STRING_MAX_LENGTH):
             return f"a string maxLength must be between 1 and {OVERRIDE_STRING_MAX_LENGTH}"
-        if "pattern" in definition and not (_color(definition) or _keyword_color(definition)):
-            return f"a string pattern must be the colour pattern {HEX_COLOR} or the keyword colour pattern {KEYWORD_COLOR}"
+        keyword_color = name == KEYWORD_COLOR_RULE.name and _keyword_color(definition)
+        if "pattern" in definition and not (_color(definition) or keyword_color):
+            return f"a string pattern must be the colour pattern {HEX_COLOR} (only keywordColor may use {KEYWORD_COLOR})"
         if isinstance(definition.get("minLength"), int) and limit is not None and definition["minLength"] > limit:
             return "a string minLength must not exceed its maxLength"
-        if _color(definition) or _keyword_color(definition) or isinstance(definition.get("enum"), list) or limit is not None:
+        if _color(definition) or keyword_color or isinstance(definition.get("enum"), list) or limit is not None:
             return None
         return f"a string needs the colour pattern {HEX_COLOR}, an enum or a maxLength"
     if kind == "boolean":
@@ -227,19 +242,25 @@ def parameter_problems(definition: object) -> str | None:
     return "type must be number, integer, string, boolean or a keywords array"
 
 
-def category_problems(kind: str | None, schema: dict, bound: set[str]) -> list[Problem]:
-    """列出某分类缺少或不合规的必备参数；``bound`` 是作为顶层参数暴露的名称。"""
+def category_problems(kind: str | None, schema: dict, bound: set[str], defaults: dict) -> list[Problem]:
+    """列出某分类缺少、形状不符或默认值不合约定的必备参数；``bound`` 是作为顶层参数暴露的名称，``defaults`` 是默认参数。"""
     if kind not in REQUIRED:
         return [Problem("kind", None, f"kind must be one of {', '.join(KINDS)}")]
     properties = _properties(schema)
     problems = []
-    rules = REQUIRED[kind]
-    for rule in rules:
+    for rule in REQUIRED[kind]:
         if rule.name not in bound or rule.name not in properties:
             problems.append(Problem(rule.name, rule, "missing"))
         elif not rule.accepts(properties[rule.name]):
             problems.append(Problem(rule.name, rule, "has the wrong schema"))
+        elif rule.off is not None and (rule.name not in defaults or not _same(defaults[rule.name], rule.off)):
+            problems.append(Problem(rule.name, rule, f"{DEFAULT_REASON} {json.dumps(rule.off)} (off)"))
     return problems
+
+
+def _same(value: object, expected: object) -> bool:
+    """默认值与约定值相同；布尔与数字不互相等同（False 不等于 0），0.0 与 0 视为相同。"""
+    return isinstance(value, bool) == isinstance(expected, bool) and value == expected
 
 
 def agent_message(kind: str | None, problems: list[Problem]) -> str:
@@ -256,9 +277,15 @@ def agent_message(kind: str | None, problems: list[Problem]) -> str:
 
 
 def operator_message(problems: list[Problem]) -> str:
-    """给运营的中文说明：列出所选分类缺少或不合规的必备参数及应有形状。"""
-    parts = [f"{item.name}（{item.rule.label}）" for item in problems if item.rule is not None]
-    return f"所选分类缺少或不符合必备参数：{'；'.join(parts)}。请在聊天中让 Agent 补充后再保存到资产"
+    """给运营的中文说明：缺少或形状不符的必备参数要在聊天中补充，默认值未关闭的关键词参数要在参数面板恢复。"""
+    shape = [f"{item.name}（{item.rule.label}）" for item in problems if item.rule is not None and not item.reason.startswith(DEFAULT_REASON)]
+    on = [f"{item.name}（应为 {json.dumps(item.rule.off, ensure_ascii=False)}）" for item in problems if item.rule is not None and item.reason.startswith(DEFAULT_REASON)]
+    messages = []
+    if shape:
+        messages.append(f"所选分类缺少或不符合必备参数：{'；'.join(shape)}。请在聊天中让 Agent 补充后再保存到资产")
+    if on:
+        messages.append(f"关键词参数的默认值必须是关闭状态：{'；'.join(on)}。关键词样式由模板按摆放设置，请在参数面板把它们恢复为关闭后再保存到资产")
+    return "。".join(messages)
 
 
 # 宿主变换的取值范围（缩放、旋转、不透明度）；位置在 0 到画布宽高之间。

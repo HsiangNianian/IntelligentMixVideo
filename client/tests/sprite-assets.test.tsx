@@ -37,7 +37,7 @@ function summary(id = "sprite-1", kind = SpriteKind.VIDEO_OVERLAY, keywords = fa
   };
 }
 
-/** 字效资产：可改的文字、字号、颜色与关键词，只读的光晕。 */
+/** 字效资产：可改的文字、字号、颜色、关键词与全部关键词样式参数，只读的光晕。 */
 function textAsset(id = "sprite-t") {
   return { ...summary(id, SpriteKind.TEXT, true, [
     { key: "text", label: "标题文字", access: OperatorAccess.VISIBLE_EDITABLE, defaultValue: { value: { case: "stringValue", value: "标题" } }, minLength: 1, maxLength: 12 },
@@ -45,6 +45,9 @@ function textAsset(id = "sprite-t") {
     { key: "color", label: "颜色", access: OperatorAccess.VISIBLE_EDITABLE, defaultValue: { value: { case: "stringValue", value: "#FFFFFF" } }, format: SpriteParameterFormat.COLOR },
     { key: "keywords", label: "关键词", access: OperatorAccess.VISIBLE_EDITABLE, defaultValue: { value: { case: "stringListValue", value: { values: [] } } }, maxItems: 3, maxLength: 4 },
     { key: "keywordBold", label: "关键词加粗", access: OperatorAccess.VISIBLE_EDITABLE, defaultValue: { value: { case: "boolValue", value: false } } },
+    { key: "keywordItalic", label: "关键词斜体", access: OperatorAccess.VISIBLE_EDITABLE, defaultValue: { value: { case: "boolValue", value: false } } },
+    { key: "keywordUnderline", label: "关键词下划线", access: OperatorAccess.VISIBLE_EDITABLE, defaultValue: { value: { case: "boolValue", value: false } } },
+    { key: "keywordStrikeout", label: "关键词删除线", access: OperatorAccess.VISIBLE_EDITABLE, defaultValue: { value: { case: "boolValue", value: false } } },
     { key: "keywordColor", label: "关键词颜色", access: OperatorAccess.VISIBLE_EDITABLE, defaultValue: { value: { case: "stringValue", value: "" } } },
     { key: "keywordSize", label: "关键词字号", access: OperatorAccess.VISIBLE_EDITABLE, defaultValue: { value: { case: "numberValue", value: 0 } }, minimum: 0, maximum: 300, format: SpriteParameterFormat.INTEGER },
     { key: "glow", label: "光晕", access: OperatorAccess.VISIBLE_READ_ONLY, defaultValue: { value: { case: "numberValue", value: 0.5 } } },
@@ -353,6 +356,7 @@ test("关键词参数集中在「关键词设置」页签并随模板保存", as
   const panel = within(inspector).getByLabelText("关键词").closest("fieldset")!;
   expect(panel.hidden).toBe(false);
   expect(within(panel).queryByLabelText("标题文字")).toBeNull();
+  expect(within(panel).queryByText(/发布于关键词设置之前/)).toBeNull();
   fireEvent.click(within(panel).getByRole("button", { name: "加粗" }));
   fireEvent.change(within(panel).getByLabelText("关键词"), { target: { value: "新品" } });
   expect(within(panel).getByText("保持文字原色")).toBeTruthy();
@@ -379,11 +383,40 @@ test("只有字效显示「关键词设置」页签，旧字效提示重新生�
   fireEvent.click(await screen.findByRole("button", { name: "设置 Remotion 资产：霓虹标题" }));
   expect(screen.queryByRole("tab", { name: "关键词设置" })).toBeNull();
   cleanup();
-  sprites({ catalog: [summary("sprite-o", SpriteKind.TEXT, true, [textAsset().parameters[0]])], clips: [{ id: "clip-o", sprite_id: "sprite-o", start: 0, duration: 3, parameters: {}, transform: {} }] });
+  // 审计复现：只带 keywords 的旧字效曾不提示重新生成，只显示缺少样式控件的页签。
+  const text = textAsset().parameters;
+  for (const parameters of [[text[0]], text.filter((item) => item.key === "text" || item.key === "keywords")]) {
+    sprites({ catalog: [summary("sprite-o", SpriteKind.TEXT, true, parameters)], clips: [{ id: "clip-o", sprite_id: "sprite-o", start: 0, duration: 3, parameters: {}, transform: {} }] });
+    render(<TemplateWorkspace selection={{ environment: "cloud", templateId: savedTemplate().template_id }} onHome={() => {}} />);
+    fireEvent.click(await screen.findByRole("button", { name: "设置 Remotion 资产：霓虹标题" }));
+    expect(screen.getByRole("tab", { name: "关键词设置" })).toBeTruthy();
+    expect(screen.getByText(/发布于关键词设置之前/)).toBeTruthy();
+    cleanup();
+  }
+});
+
+// 场景：切换到另一个字效片段时页签回到「参数与变换」；非字效资产以 keyword 开头的参数留在参数区。
+test("切换片段重置页签，非字效的 keyword 参数不进入关键词页签", async () => {
+  const effect = summary("sprite-v", SpriteKind.VIDEO_OVERLAY, false, [
+    { key: "keywordGlow", label: "关键光晕", access: OperatorAccess.VISIBLE_EDITABLE, defaultValue: { value: { case: "numberValue", value: 0.5 } }, minimum: 0, maximum: 1 },
+  ]);
+  sprites({ catalog: [textAsset(), effect], clips: [
+    { id: "clip-a", sprite_id: "sprite-t", start: 0, duration: 3, parameters: {}, transform: {} },
+    { id: "clip-v", sprite_id: "sprite-v", start: 0, duration: 3, parameters: {}, transform: {} },
+    { id: "clip-b", sprite_id: "sprite-t", start: 1, duration: 3, parameters: {}, transform: {} },
+  ] });
   render(<TemplateWorkspace selection={{ environment: "cloud", templateId: savedTemplate().template_id }} onHome={() => {}} />);
-  fireEvent.click(await screen.findByRole("button", { name: "设置 Remotion 资产：霓虹标题" }));
-  expect(screen.getByRole("tab", { name: "关键词设置" })).toBeTruthy();
-  expect(screen.getByText(/发布于关键词设置之前/)).toBeTruthy();
+  const [first, second] = await screen.findAllByRole("button", { name: "设置 Remotion 资产：金色标题" });
+  fireEvent.click(first);
+  fireEvent.click(screen.getByRole("tab", { name: "关键词设置" }));
+  expect(screen.getByRole("tab", { name: "关键词设置" }).getAttribute("aria-selected")).toBe("true");
+  // 审计复现：右栏不随片段重建时，上一个片段选中的页签会带到下一个片段。
+  fireEvent.click(second);
+  expect(screen.getByRole("tab", { name: "参数与变换" }).getAttribute("aria-selected")).toBe("true");
+  fireEvent.click(screen.getByRole("button", { name: "设置 Remotion 资产：霓虹标题" }));
+  const inspector = screen.getByRole("region", { name: "Remotion 资产设置" });
+  expect(within(inspector).queryByRole("tab")).toBeNull();
+  expect(within(inspector).getByLabelText("关键光晕").closest("fieldset")!.hidden).toBe(false);
 });
 
 // 场景：已保存的覆盖随模板读回，控件显示覆盖值；滤镜只提供强度。

@@ -79,14 +79,32 @@ def test_identical_samples_are_rendered_once():
 
 
 def test_keyword_style_parameters_are_sampled_at_their_inherit_and_maximum_values():
-    """关键词颜色的低端是空串（沿用文字颜色）、高端是白色；字号低端 0（沿用）、高端 300；样式开关两端各取一次。"""
+    """关键词颜色两端为空串（沿用）与白色，字号为 0（沿用）与 300；另有 keywords:styled 样本让关键词全部命中且样式全开。"""
     schema = {"type": "object", "properties": {
+        "text": {"type": "string", "minLength": 1, "maxLength": 12},
+        "keywords": {"type": "array", "items": {"type": "string", "maxLength": 4}, "maxItems": 3},
         "keywordBold": {"type": "boolean"},
         "keywordColor": {"type": "string", "pattern": KEYWORD_COLOR},
         "keywordSize": {"type": "integer", "minimum": 0, "maximum": 300},
     }, "additionalProperties": False}
-    defaults = {"keywordBold": False, "keywordColor": "", "keywordSize": 0}
+    defaults = {"text": "标题", "keywords": [], "keywordBold": False, "keywordColor": "", "keywordSize": 0}
     found = by_name(samples(schema, defaults, list(defaults), "text", (1080, 1920)))
-    assert found["low"].values == defaults
-    assert found["high"].values == {"keywordBold": True, "keywordColor": "#FFFFFF", "keywordSize": 300}
+    assert list(found) == ["defaults", "low", "high", "keywords:styled"]
+    assert found["low"].values == {"text": FILLER * 12, "keywords": [FILLER] * 3, "keywordBold": False, "keywordColor": "", "keywordSize": 0}
+    assert found["high"].values == {"text": FILLER, "keywords": [], "keywordBold": True, "keywordColor": "#FFFFFF", "keywordSize": 300}
+    # Neither end renders a styled hit, so this sample does: every slot hits the longest text with every style on.
+    assert found["keywords:styled"].values == {"text": FILLER * 12, "keywords": [FILLER] * 3, "keywordBold": True, "keywordColor": "#FFFFFF", "keywordSize": 300}
+    assert found["keywords:styled"].transform == found["low"].transform
     assert unsampled(schema, defaults, list(defaults), list(found.values())) == []
+
+
+def test_only_sprites_with_keywords_and_styles_get_the_styled_sample():
+    """没有关键词列表或没有样式参数时不额外渲染。"""
+    for names in (["text", "keywordBold"], ["text", "keywords"]):
+        schema = {"type": "object", "properties": {
+            "text": {"type": "string", "minLength": 1, "maxLength": 12},
+            "keywords": {"type": "array", "items": {"type": "string", "maxLength": 4}, "maxItems": 3},
+            "keywordBold": {"type": "boolean"},
+        }, "additionalProperties": False}
+        defaults = {"text": "标题", "keywords": [], "keywordBold": False}
+        assert "keywords:styled" not in by_name(samples(schema, defaults, names, "text", (1080, 1920)))

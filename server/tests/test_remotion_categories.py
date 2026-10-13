@@ -34,6 +34,9 @@ BASE_TEXT = {
     "color": COLOR,
 }
 TEXT_PROPERTIES = {**BASE_TEXT, **KEYWORD_STYLES}
+# 关键词参数约定的关闭默认值。
+OFF = {"keywords": [], "keywordBold": False, "keywordItalic": False, "keywordUnderline": False, "keywordStrikeout": False,
+       "keywordColor": "", "keywordSize": 0}
 
 
 def schema(properties: dict) -> dict:
@@ -43,53 +46,71 @@ def schema(properties: dict) -> dict:
 
 def test_each_category_accepts_exactly_its_required_shapes():
     """四个 kind 各自的必备参数齐全且形状正确时没有问题；缺一个或形状不符时逐项列出。"""
-    assert category_problems("text", schema(TEXT_PROPERTIES), set(TEXT_PROPERTIES)) == []
+    assert category_problems("text", schema(TEXT_PROPERTIES), set(TEXT_PROPERTIES), OFF) == []
     filters = {"intensity": {"type": "number", "minimum": 0, "maximum": 1}, "tintColor": COLOR}
-    assert category_problems("filter_overlay", schema(filters), set(filters)) == []
+    assert category_problems("filter_overlay", schema(filters), set(filters), OFF) == []
     effects = {"color": COLOR, "speed": {"type": "number", "minimum": 0.25, "maximum": 4}}
     for kind in ("video_overlay", "transition_overlay"):
-        assert category_problems(kind, schema(effects), set(effects)) == []
+        assert category_problems(kind, schema(effects), set(effects), OFF) == []
     # A declared but unbound property is not an operator parameter.
-    assert [item.name for item in category_problems("text", schema(TEXT_PROPERTIES), set(TEXT_PROPERTIES) - {"fontWeight"})] == ["fontWeight"]
+    assert [item.name for item in category_problems("text", schema(TEXT_PROPERTIES), set(TEXT_PROPERTIES) - {"fontWeight"}, OFF)] == ["fontWeight"]
     wrong = {**TEXT_PROPERTIES, "color": {"type": "string"}, "fontWeight": {"type": "integer", "enum": [400, 500]}}
-    problems = category_problems("text", schema(wrong), set(wrong))
+    problems = category_problems("text", schema(wrong), set(wrong), OFF)
     assert [(item.name, item.reason) for item in problems] == [("fontWeight", "has the wrong schema"), ("color", "has the wrong schema")]
-    assert category_problems("filter_overlay", schema({**filters, "intensity": {"type": "number", "minimum": 0, "maximum": 2}}), set(filters))[0].name == "intensity"
+    assert category_problems("filter_overlay", schema({**filters, "intensity": {"type": "number", "minimum": 0, "maximum": 2}}), set(filters), OFF)[0].name == "intensity"
 
 
 def test_text_limits_and_keywords_are_checked():
     """文字须声明不超过 200 的 maxLength；关键词列表必须是受限的字符串数组。"""
     too_long = {**TEXT_PROPERTIES, "text": {"type": "string", "minLength": 1, "maxLength": 500}}
-    assert [item.name for item in category_problems("text", schema(too_long), set(too_long))] == ["text"]
+    assert [item.name for item in category_problems("text", schema(too_long), set(too_long), OFF)] == ["text"]
     unbounded = {**TEXT_PROPERTIES, "keywords": {"type": "array", "items": {"type": "string"}}}
-    assert [item.name for item in category_problems("text", schema(unbounded), set(unbounded))] == ["keywords"]
+    assert [item.name for item in category_problems("text", schema(unbounded), set(unbounded), OFF)] == ["keywords"]
 
 
 def test_text_requires_every_keyword_parameter():
     """字效必须声明全部关键词参数（不用时保持原样式），缺哪个就报哪个；其他分类不要求。"""
-    assert [item.name for item in category_problems("text", schema(BASE_TEXT), set(BASE_TEXT))] == list(KEYWORD_STYLES)
+    assert [item.name for item in category_problems("text", schema(BASE_TEXT), set(BASE_TEXT), OFF)] == list(KEYWORD_STYLES)
     partial = {key: value for key, value in TEXT_PROPERTIES.items() if key != "keywordSize"}
-    assert [item.name for item in category_problems("text", schema(partial), set(partial))] == ["keywordSize"]
+    assert [item.name for item in category_problems("text", schema(partial), set(partial), OFF)] == ["keywordSize"]
 
 
 def test_keyword_style_parameters_match_the_bus_options():
     """关键词样式参数与总线 IMS 模板同义：颜色允许空串，字号 0～300 整数，布尔为开关；形状不符时逐项列出。"""
     good = TEXT_PROPERTIES
-    assert category_problems("text", schema(good), set(good)) == []
+    assert category_problems("text", schema(good), set(good), OFF) == []
     for name, bad in (
         ("keywordColor", COLOR),
         ("keywordSize", {"type": "integer", "minimum": 12, "maximum": 300}),
         ("keywordBold", {"type": "string", "maxLength": 3}),
     ):
         broken = {**good, name: bad}
-        assert [item.name for item in category_problems("text", schema(broken), set(broken))] == [name]
-    assert parameter_problems(KEYWORD_STYLES["keywordColor"]) is None
-    assert parameter_problems({"type": "string", "pattern": "^a$"}) is not None
+        assert [item.name for item in category_problems("text", schema(broken), set(broken), OFF)] == [name]
+    assert parameter_problems(KEYWORD_STYLES["keywordColor"], "keywordColor") is None
+    assert parameter_problems({"type": "string", "pattern": "^a$"}, "label") is not None
+    # 审计复现：允许空串的关键词颜色 pattern 曾能用于任何字符串参数，模板里却发布成没有校验的文本框。
+    assert "only keywordColor" in parameter_problems(KEYWORD_STYLES["keywordColor"], "strokeColor")
+    # 审计复现：每项只能 4 字的关键词列表曾通过检查，总线转发的 6 字标题关键词随后在保存模板时被拒。
+    short = {**TEXT_PROPERTIES, "keywords": {"type": "array", "items": {"type": "string", "maxLength": 11}, "maxItems": 20}}
+    assert [item.name for item in category_problems("text", schema(short), set(short), OFF)] == ["keywords"]
+
+
+def test_keyword_parameters_must_default_to_off():
+    """审计复现：关键词参数默认开启（命中「标题」、四个样式开启、红色、80 号）的版本曾通过检查；现在每个非关闭默认值都被点名。"""
+    on = {"keywords": ["标题"], "keywordBold": True, "keywordItalic": True, "keywordUnderline": True, "keywordStrikeout": True,
+          "keywordColor": "#FF0000", "keywordSize": 80}
+    problems = category_problems("text", schema(TEXT_PROPERTIES), set(TEXT_PROPERTIES), on)
+    assert [item.name for item in problems] == list(KEYWORD_STYLES)
+    assert problems[0].reason == "must default to [] (off)" and problems[-1].reason == "must default to 0 (off)"
+    # A missing default and a number standing in for a boolean are not off either; 0.0 for the size is.
+    assert [item.name for item in category_problems("text", schema(TEXT_PROPERTIES), set(TEXT_PROPERTIES), {**OFF, "keywordBold": 0, "keywordSize": 0.0, "keywordColor": None})] == ["keywordBold", "keywordColor"]
+    missing = {key: value for key, value in OFF.items() if key != "keywords"}
+    assert [item.name for item in category_problems("text", schema(TEXT_PROPERTIES), set(TEXT_PROPERTIES), missing)] == ["keywords"]
 
 
 def test_a_missing_kind_is_reported_without_rules():
     """旧草稿没有 kind：只报告 kind 本身，不再猜测必备参数。"""
-    problems = category_problems(None, schema({}), set())
+    problems = category_problems(None, schema({}), set(), OFF)
     assert [(item.name, item.rule) for item in problems] == [("kind", None)]
 
 
@@ -114,7 +135,7 @@ def test_a_missing_kind_is_reported_without_rules():
     ({"type": "number", "minimum": 0, "maximum": 1, "exclusiveMaximum": 1}, "uses schema keywords the publish-time samples cannot cover: exclusiveMaximum"),
     ({"type": "number", "minimum": 0, "maximum": 10, "multipleOf": 3}, "uses schema keywords the publish-time samples cannot cover: multipleOf"),
     ({"type": "integer", "minimum": 0.5, "maximum": 10.5}, "an integer needs integer minimum and maximum"),
-    ({"type": "string", "maxLength": 9, "pattern": "^[A-Z]+$"}, f"a string pattern must be the colour pattern {HEX_COLOR} or the keyword colour pattern {KEYWORD_COLOR}"),
+    ({"type": "string", "maxLength": 9, "pattern": "^[A-Z]+$"}, f"a string pattern must be the colour pattern {HEX_COLOR} (only keywordColor may use {KEYWORD_COLOR})"),
     ({"type": "string", "minLength": 9, "maxLength": 3}, "a string minLength must not exceed its maxLength"),
     ({"type": "array", "items": {"type": "string", "maxLength": 9, "minLength": 2}, "maxItems": 3}, "uses schema keywords the publish-time samples cannot cover: items.minLength"),
     ({"type": "boolean", "title": "阴影", "default": False}, None),
@@ -122,7 +143,7 @@ def test_a_missing_kind_is_reported_without_rules():
 ])
 def test_top_level_parameters_need_bounded_values(definition, reason):
     """模板里的控件需要明确的取值范围：数字有上下界，字符串是颜色、枚举或限长。"""
-    assert parameter_problems(definition) == reason
+    assert parameter_problems(definition, "value") == reason
 
 
 def instance(instance_id: str, parameters: dict, properties: dict) -> dict:
@@ -210,7 +231,7 @@ def sprite(kind: str | None, bound: list[str]) -> SpriteDraft:
         "description": "标题",
         "code": "export default function Sprite(){return null}",
         "parameter_schema": schema({name: TEXT_PROPERTIES[name] for name in bound}),
-        "default_parameters": {},
+        "default_parameters": {name: OFF[name] for name in bound if name in OFF},
         "composition": {"width": 1080, "height": 1920, "fps": 30, "duration_frames": 30},
         "instances": [instance("title", {}, TEXT_PROPERTIES)],
         "bindings": [binding(name, ("title", name)) for name in bound],
@@ -221,7 +242,7 @@ def sprite(kind: str | None, bound: list[str]) -> SpriteDraft:
 def test_create_refuses_a_sprite_missing_its_category_parameters(tmp_path):
     """sprite.create 在挂载浏览器之前检查分类：缺少的参数和应有 Schema 写进回执，不保存。"""
     async def run():
-        """Create two drafts: one without fontWeight, one without a kind."""
+        """Create three drafts: one without fontWeight, one without a kind, one whose keywordBold defaults to on."""
         current = session(tmp_path)
         current.sprite_drafts["d"] = sprite("text", [name for name in TEXT_PROPERTIES if name != "fontWeight"])
         with pytest.raises(ToolFault) as refused:
@@ -233,6 +254,11 @@ def test_create_refuses_a_sprite_missing_its_category_parameters(tmp_path):
         with pytest.raises(ToolFault) as untyped:
             await current.execute("sprite.create", SpriteCreateInput(draft_id="old"), available())
         assert untyped.value.error.details["missing"] == [{"name": "kind", "reason": "kind must be one of text, filter_overlay, video_overlay, transition_overlay"}]
+        current.sprite_drafts["on"] = sprite("text", list(TEXT_PROPERTIES)).model_copy(update={"default_parameters": {**OFF, "keywordBold": True}})
+        with pytest.raises(ToolFault) as enabled:
+            await current.execute("sprite.create", SpriteCreateInput(draft_id="on"), available())
+        assert enabled.value.error.code == "CATEGORY_PARAMETERS_MISSING"
+        assert enabled.value.error.details["missing"] == [{"name": "keywordBold", "reason": "must default to false (off)", "schema": {"type": "boolean"}}]
         assert current.saved_sprites == {}
 
     asyncio.run(run())

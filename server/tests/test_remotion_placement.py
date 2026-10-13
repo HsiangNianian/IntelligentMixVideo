@@ -68,6 +68,15 @@ def test_bus_keyword_options_resolve_like_the_ims_template_fields():
         resolve(keyword_styled_sprite(), editor({"key": "keywordSize", "numberValue": 301}))
 
 
+@pytest.mark.parametrize("size", [1, 11])
+def test_keyword_sizes_the_ims_template_refuses_are_refused(size):
+    """审计复现：Schema 是 0～300，1～11 曾被叠加接口接受；IMS 模板只允许 0 或 12～300，摆放覆盖同样拒绝。"""
+    with pytest.raises(ValueError, match="只能是 0（沿用文字字号）或 12～300"):
+        resolve(keyword_styled_sprite(), editor({"key": "keywordSize", "numberValue": size}))
+    config, _ = resolve(keyword_styled_sprite(), editor({"key": "keywordSize", "numberValue": 12}))
+    assert config["keywordSize"] == 12
+
+
 @pytest.mark.parametrize("override, message", [
     ({"key": "missing", "stringValue": "x"}, "参数 missing 不存在"),
     ({"key": "glow", "numberValue": 0.2}, "参数 glow 不可修改"),

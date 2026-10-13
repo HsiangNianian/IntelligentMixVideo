@@ -220,8 +220,14 @@ Publishing re-verifies the sealed `accepted/` artifacts (409 when changed) and o
 with a kind and top-level parameter bindings (`spec.sprite.kind`/`bindings`); older versions are refused with a
 422 that asks for an edit in chat. The requested kind defaults to the agent's choice on the client but may be
 changed: the version must expose that kind's required parameters (`categories.REQUIRED`), otherwise the 422 lists
-them in Chinese. A text Sprite fixes `text_prop` to `text` and `keywords_prop` to `""` or `keywords` (only when the
-version binds a keywords parameter); other kinds leave both empty. Every bound top-level parameter, text and
+them in Chinese. A text Sprite's required parameters include the keyword options the bus forwards from the IMS
+title/subtitle keyword fields: `keywords`, `keywordBold`/`Italic`/`Underline`/`Strikeout`, `keywordColor` (`""`
+keeps the text colour) and `keywordSize` (0 keeps the font size, otherwise 12–300; placements refuse 1–11), with `keywords` items holding at least 12
+characters (the segmentation keywords the bus forwards). Their
+defaults must be off (`[]`, `false`, `""`, `0`), checked by `sprite.create` and again at publish (a keyword option turned on in the workspace parameter panel must be
+turned off again before saving to the asset library), so an unused keyword option keeps the plain text style. A text Sprite fixes `text_prop` to `text` and `keywords_prop` to `keywords` (text versions now always bind it;
+`""` remains only for versions without a keywords binding, which only re-saves of older publications reach); other
+kinds leave both empty. Every bound top-level parameter, text and
 keywords included, becomes a `VISIBLE_EDITABLE` control with its bounds, enum, colour or integer format (an
 `integer` schema is marked `SPRITE_PARAMETER_FORMAT_INTEGER`, since `number_value` cannot tell them apart, and
 overrides with a fraction are refused), string lengths and list size; the instances' remaining nested props stay internal. `content_box` records the union of the instances'
@@ -232,8 +238,9 @@ publication of the same kind counts, because its text field was a free dot path 
 A new publication first renders boundary samples (`boundary.py`, `ToolValidator.validate_samples`,
 the worker's `samples` mode): the defaults, every top-level parameter at its low and at its high end (numbers at
 their bounds, first and last enum values, colours black and white, text filled to `maxLength` with a CJK glyph or
-cut to `minLength`, keywords full or empty) combined with the host transform at its extremes, and the middle enum
-values. When the combined extreme breaks the schema (parameters that constrain each other), it is replaced by the
+cut to `minLength`, keywords full or empty, the keyword colour `""` or white) combined with the host transform at its
+extremes, and the middle enum values. A text Sprite also renders `keywords:styled`: the low end (longest text, every
+keyword slot filled with a hit) with every keyword style, colour and size at its high end, so a styled hit is rendered. When the combined extreme breaks the schema (parameters that constrain each other), it is replaced by the
 greedy combination of the extremes that still fit and by one sample per parameter extreme, each with the same end
 of the host transform. Each sample must render its first, middle and last frame without an error inside the shared
 host layer; a failure is a 422 naming the sample and frame, and a validator that cannot start is a 503 (the route

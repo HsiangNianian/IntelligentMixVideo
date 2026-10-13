@@ -14,18 +14,20 @@ import type { RemotionClip } from "./model";
 
 /** 关键词相关参数：键名以 keyword 开头（keywords、keywordColor、keywordBold……）。 */
 const isKeywordParameter = (key: string) => /^keyword/i.test(key);
+/** 字效必备的关键词样式参数，与服务端 `categories.TEXT_KEYWORDS` 一致；缺任何一个即为早于该契约发布的字效。 */
+const KEYWORD_STYLE_KEYS = ["keywordBold", "keywordItalic", "keywordUnderline", "keywordStrikeout", "keywordColor", "keywordSize"];
 /** 关键词颜色（空串沿用文字颜色）与字号（0 沿用文字字号）的开关打开时的初值与字号下限，与 IMV 模板一致。 */
 const KEYWORD_COLOR_ON = "#FFFF00";
 const KEYWORD_SIZE_MIN = 12;
-/** 关键词局部样式开关：参数键名匹配的布尔参数合并为一组切换按钮。 */
+/** 关键词局部样式开关：这四个布尔参数合并为一组切换按钮。 */
 const KEYWORD_STYLES = [
-  [/bold$/i, "加粗", Bold],
-  [/italic$/i, "斜体", Italic],
-  [/underline$/i, "下划线", Underline],
-  [/strike(out)?$/i, "删除线", Strikethrough],
+  ["keywordBold", "加粗", Bold],
+  ["keywordItalic", "斜体", Italic],
+  ["keywordUnderline", "下划线", Underline],
+  ["keywordStrikeout", "删除线", Strikethrough],
 ] as const;
 
-/** 选中片段的右栏；资产已不在目录中时只允许移除。 */
+/** 选中片段的右栏；资产已不在目录中时只允许移除。调用方按片段 ID 设 key，切换片段时页签回到「参数与变换」。 */
 export function SpriteClipInspector({ clip, asset, duration, onParameter, onTransform, onStart, onRemove, onClose }: {
   clip: RemotionClip;
   asset: SpriteAsset | undefined;
@@ -37,16 +39,19 @@ export function SpriteClipInspector({ clip, asset, duration, onParameter, onTran
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<"appearance" | "keyword">("appearance");
-  const keywordParameters = asset?.parameters.filter(({ field }) => isKeywordParameter(field.key)) ?? [];
+  const isText = asset?.kind === SpriteKind.TEXT;
+  // 只有字效把关键词参数移到单独页签；其他类型里以 keyword 开头的参数仍留在参数区。
+  const keywordParameters = asset && isText ? asset.parameters.filter(({ field }) => isKeywordParameter(field.key)) : [];
   const styleSwitches = keywordParameters.flatMap((item) => {
-    const style = KEYWORD_STYLES.find(([pattern]) => pattern.test(item.field.key));
+    const style = KEYWORD_STYLES.find(([key]) => key === item.field.key);
     return item.field.kind === "boolean" && style ? [{ ...item, label: style[1], Icon: style[2] }] : [];
   });
-  const colorItem = keywordParameters.find(({ field }) => /color$/i.test(field.key) && field.kind === "string");
-  const sizeItem = keywordParameters.find(({ field }) => /size$/i.test(field.key) && field.kind === "integer");
+  const colorItem = keywordParameters.find(({ field }) => field.key === "keywordColor" && field.kind === "string");
+  const sizeItem = keywordParameters.find(({ field }) => field.key === "keywordSize" && field.kind === "integer");
+  const legacyText = isText && KEYWORD_STYLE_KEYS.some((key) => !keywordParameters.some(({ field }) => field.key === key));
   const fontSize = asset?.parameters.find(({ field }) => field.key === "fontSize");
-  const hasKeywordTab = keywordParameters.length > 0 || asset?.kind === SpriteKind.TEXT;
-  const activeTab = hasKeywordTab ? tab : "appearance";
+  const appearanceParameters = asset?.parameters.filter((item) => !keywordParameters.includes(item)) ?? [];
+  const activeTab = isText ? tab : "appearance";
   /** 参数当前值：本次摆放的覆盖优先，否则取发布默认值。 */
   const valueOf = ({ field, defaultValue }: NonNullable<typeof asset>["parameters"][number]) => clip.parameters[field.key] ?? defaultValue;
   /** 写入参数覆盖；与发布默认值相同时清除覆盖。 */
@@ -67,13 +72,13 @@ export function SpriteClipInspector({ clip, asset, duration, onParameter, onTran
       <div className="min-w-0"><h2 className="truncate text-[13px] font-semibold leading-5">{asset?.name ?? "未找到的资产"}</h2><p className="mt-0.5 text-[11px] leading-3 text-muted-foreground">{category ?? "资产已不可用，保存前请移除"}</p></div>
       <Hint label="关闭资产设置"><Button type="button" variant="ghost" size="icon" className="size-6 shrink-0" aria-label="关闭资产设置" onClick={onClose}><X className="size-3.5" aria-hidden="true" /></Button></Hint>
     </div>
-    {asset && hasKeywordTab && <div role="tablist" aria-label="资产设置分类" className="grid grid-cols-2 border-b px-4">
+    {asset && isText && <div role="tablist" aria-label="资产设置分类" className="grid grid-cols-2 border-b px-4">
       {([["appearance", "参数与变换"], ["keyword", "关键词设置"]] as const).map(([value, label]) =>
         <button key={value} type="button" role="tab" aria-selected={activeTab === value} onClick={() => setTab(value)} className="border-b-2 border-transparent px-1 py-2.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring data-[selected=true]:border-primary data-[selected=true]:text-primary" data-selected={activeTab === value}>{label}</button>)}
     </div>}
-    {asset && hasKeywordTab && <fieldset hidden={activeTab !== "keyword"} className="space-y-3 px-4 py-3">
+    {asset && isText && <fieldset hidden={activeTab !== "keyword"} className="space-y-3 px-4 py-3">
       <legend className="sr-only">关键词设置</legend>
-      {!keywordParameters.length && <p className="text-[11px] text-muted-foreground">这个字效发布于关键词设置之前，没有关键词参数。请在字效工作区让 Agent 改出新版本并重新保存到资产。</p>}
+      {legacyText && <p className="text-[11px] text-muted-foreground">这个字效发布于关键词设置之前，缺少关键词样式参数。请在字效工作区让 Agent 改出新版本并重新保存到资产。</p>}
       {styleSwitches.length > 0 && <div className="space-y-2">
         <h3 className="text-xs font-medium">关键词样式</h3>
         {/* 四种局部样式可组合，按下即开启对应参数。 */}
@@ -112,8 +117,8 @@ export function SpriteClipInspector({ clip, asset, duration, onParameter, onTran
       <fieldset hidden={activeTab !== "appearance"} className="space-y-3 border-t px-4 py-3">
         <legend className="sr-only">资产参数</legend>
         <h3 className="text-xs font-medium">参数</h3>
-        {!asset.parameters.length && <p className="text-[11px] text-muted-foreground">这个资产没有可调整的参数。</p>}
-        {asset.parameters.filter(({ field }) => !(hasKeywordTab && isKeywordParameter(field.key))).map(parameterRow)}
+        {!appearanceParameters.length && <p className="text-[11px] text-muted-foreground">这个资产没有可调整的参数。</p>}
+        {appearanceParameters.map(parameterRow)}
       </fieldset>
       <fieldset hidden={activeTab !== "appearance"} className="space-y-3 border-t px-4 py-3">
         <legend className="sr-only">位置与变换</legend>

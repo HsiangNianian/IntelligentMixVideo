@@ -236,14 +236,15 @@ def _validated_request(request: pb.PublishSpriteRequest, version: TemplateVersio
     if version.spec.schema_version != "2" or sprite is None or sprite.kind is None:
         raise _invalid("该版本由旧版生成，没有效果分类和参数契约；请在聊天中继续修改，生成新版本后再保存到资产")
     bound = {item.name for item in sprite.bindings}
-    problems = category_problems(KIND_NAMES[request.kind], version.candidate.config_schema, bound)
+    problems = category_problems(KIND_NAMES[request.kind], version.candidate.config_schema, bound, version.candidate.default_config)
     if problems:
         raise _invalid(operator_message(problems))
     if request.kind == pb.SPRITE_KIND_TEXT:
         if request.text_prop != TEXT_PROP:
             raise _invalid(f"字效的 text_prop 必须是 {TEXT_PROP}")
-        if request.keywords_prop not in {"", KEYWORDS_PROP} or (request.keywords_prop and KEYWORDS_PROP not in bound):
-            raise _invalid(f"keywords_prop 只能为空，或在该版本声明了关键词参数时为 {KEYWORDS_PROP}")
+        # Text versions bind keywords now (category check above); "" stays for re-saves of older publications only.
+        if request.keywords_prop != (KEYWORDS_PROP if KEYWORDS_PROP in bound else ""):
+            raise _invalid(f"keywords_prop 在该版本声明了关键词参数时必须为 {KEYWORDS_PROP}，否则为空")
     elif request.text_prop or request.keywords_prop:
         raise _invalid("只有字效可以声明 text_prop 与 keywords_prop")
 

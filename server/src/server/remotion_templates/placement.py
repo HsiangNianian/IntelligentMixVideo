@@ -14,7 +14,7 @@ from copy import deepcopy
 from generated.imv.sprite.v1 import sprite_pb2 as pb
 
 from ..template.schema import RemotionTrackEditor, RemotionTransform
-from .categories import transform_fields, transform_ranges
+from .categories import KEYWORD_SIZE_MIN, transform_fields, transform_ranges
 from .sprites import KIND_NAMES, box_json, operator_parameters, sampled
 from .tools.schema import validate_parameters
 
@@ -70,6 +70,10 @@ def resolve(sprite: pb.PublishedSprite, editor: RemotionTrackEditor | None) -> t
             if isinstance(value, float) and value.is_integer() and isinstance(definition, dict) and definition.get("type") == "integer":
                 value = int(value)
             config[override.key] = value
+        # JSON Schema 表达不了「0 或 12～300」，与总线 IMS 模板一致的关键词字号下限在这里补查。
+        size = config.get("keywordSize")
+        if sprite.kind == pb.SPRITE_KIND_TEXT and isinstance(size, (int, float)) and not isinstance(size, bool) and 0 < size < KEYWORD_SIZE_MIN:
+            raise ValueError(f"参数 keywordSize 只能是 0（沿用文字字号）或 {KEYWORD_SIZE_MIN}～300")
         try:
             validate_parameters(schema, config)
         except Exception as exc:
