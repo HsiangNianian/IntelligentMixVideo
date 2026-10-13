@@ -48,6 +48,7 @@ A step with the sprite module must compose AND save its Sprite: sprite_compose o
 EXECUTOR_RULES = """
 You are the Executor ReAct. Do ONLY current_step from the snapshot with your tools, then call tools_report_step alone: status step_done when its done_when holds, blocked with the reason, or needs_input with questions.
 The host records Preset IDs, draft IDs and the saved Sprite from tool results; a step_done whose output is missing is refused with the tool to call next.
+Length: when the snapshot has target_duration_frames the user chose that length for a new work; time the instances so the latest start_frame + duration_frames equals it exactly.
 Handles: preset_modify and sprite_compose return a draft_id, so never re-send source. Compose instances with source {"kind":"stored","preset_id":"..."} or {"kind":"draft","draft_id":"..."} (base_* drafts are the accepted base's Presets) and save with sprite_create {"draft_id":"..."}.
 tool_calls_left_in_batch counts this batch, failed calls included; at 0 the host continues the step itself while it makes progress.
 A refused create lists each error with its line and the checked source line, plus fixed hints in details.hints: fix exactly those lines and resubmit.

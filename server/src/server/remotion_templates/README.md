@@ -77,7 +77,10 @@ only checks the contract and never starts the validator.
 
 The preview is built from the saved Sprite's exact code, schema and defaults.
 The main canvas is 1080×1920 at 30 FPS and the last instance's exclusive end
-determines the duration.
+determines the duration. A new work must last exactly the requested
+`composition.duration_in_frames`: the snapshot shows it as `target_duration_frames`
+and `sprite.compose` refuses any other length with `INVALID_ARGUMENT` on `/instances`.
+Edits start from the accepted version and keep deriving the length from the instances.
 
 For Linux renderer validation, install the locked Bun dependencies in
 `server/src/server/remotion`, then run:

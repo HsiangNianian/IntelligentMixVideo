@@ -283,6 +283,41 @@ def test_repeated_compose_returns_the_same_digest_under_a_new_handle(tmp_path):
     asyncio.run(run())
 
 
+@pytest.mark.skipif(not RENDERER_DEPS.exists(), reason="install locked Remotion renderer dependencies")
+def test_a_new_work_is_composed_exactly_as_long_as_the_user_chose(tmp_path):
+    """审计复现：用户选的时长只随请求存下，Agent 不知道也没有检查，选 10 秒也可能得到 1 秒；新作品现在必须恰好等于所选帧数。"""
+    async def run():
+        """Refuse a 30-frame Sprite for a 60-frame request, then accept the retimed one."""
+        settings = Settings(_env_file=None, data_dir=tmp_path)
+        intent = {"original_request": {"description": "标题", "composition": {"width": 1080, "height": 1920, "fps": 30, "duration_in_frames": 60}}}
+        current = ToolSession(SimpleNamespace(settings=settings, renderer=None), None, None, Budget(), tmp_path / "run", [], lambda *_: None, intent)
+        patch_validation(current)
+        assert current.snapshot()["target_duration_frames"] == 60
+        preset = await current.execute("preset.create", draft(), available())
+        request = title_instance(preset["preset"]["preset_id"])
+        with pytest.raises(ToolFault) as refused:
+            await current.execute("sprite.compose", request, available())
+        assert refused.value.error.field == "/instances"
+        assert "60 frames (2 s)" in refused.value.error.message and "ends at frame 30" in refused.value.error.message
+        retimed = request.model_dump(mode="json", exclude_unset=True)
+        retimed["instances"][0]["timing"]["duration_frames"] = 60
+        composed = await current.execute("sprite.compose", SpriteComposeInput.model_validate(retimed), available())
+        assert composed["composition"]["duration_frames"] == 60
+
+    asyncio.run(run())
+
+
+def test_an_edit_keeps_deriving_its_length_from_the_instances(tmp_path):
+    """编辑以已验收版本为基础：原始请求里的时长不再约束，快照也不给出目标帧数。"""
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    spec = SimpleNamespace(sprite=saved_sprite("bundle", "preset-source"), composition=Composition(width=1080, height=1920, fps=30, duration_frames=30), sprite_kind="filter_overlay")
+    base = TemplateCandidate(tsx_code="bundle", config_schema={"type": "object"}, default_config={})
+    intent = {"original_request": {"composition": {"width": 1080, "height": 1920, "fps": 30, "duration_in_frames": 150}}}
+    current = ToolSession(SimpleNamespace(settings=settings, renderer=None), spec, base, Budget(), tmp_path / "run", [], lambda *_: None, intent)
+    assert current.target_frames is None
+    assert "target_duration_frames" not in current.snapshot()
+
+
 def test_create_checks_each_preset_source_once_and_does_not_bundle_again(tmp_path, monkeypatch):
     """审计复现：create 收到的是宿主自己组合的草稿，却再打包一次来比对，并对同一预设的每个实例都跑一次沙箱类型检查；现在每种源码只查一次。"""
     async def run():

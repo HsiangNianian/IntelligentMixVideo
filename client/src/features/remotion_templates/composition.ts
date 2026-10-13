@@ -1,7 +1,7 @@
-/** 本链路固定的主画布规格；画布、帧率与初始时长由服务端契约决定，前端不提供选择。 */
+/** 本链路固定的主画布规格；画布与帧率由服务端契约决定，前端只提供生成前的时长选择。 */
 import type { Composition } from "./model";
 
-/** 主画布固定为竖屏 1080×1920、30 FPS；五秒只作为开始规划前的初始时长。 */
+/** 主画布固定为竖屏 1080×1920、30 FPS；五秒是默认时长。 */
 export const FIXED_COMPOSITION: Composition = {
   width: 1080,
   height: 1920,
@@ -9,9 +9,25 @@ export const FIXED_COMPOSITION: Composition = {
   duration_in_frames: 150,
 };
 
-/** 首次创建显式携带固定规格，避免客户端与服务端默认值漂移。 */
-export function defaultComposition(): Composition {
-  return { ...FIXED_COMPOSITION };
+/** 常用时长（秒）；其余时长通过自定义输入。 */
+export const DURATION_PRESETS = [3, 5, 8, 10, 15];
+/** 默认时长（秒），由 FIXED_COMPOSITION 的初始帧数换算，聊天面板的初始帧数与选择器默认项同源。 */
+export const DEFAULT_DURATION_SECONDS = FIXED_COMPOSITION.duration_in_frames / FIXED_COMPOSITION.fps;
+/** 自定义时长下限（秒），与输入框 min 及提示一致。 */
+export const MIN_DURATION_SECONDS = 0.1;
+/** 服务端允许的最长预览时长（秒）。 */
+export const MAX_DURATION_SECONDS = 30;
+
+/** 按原始秒数校验 0.1～30 秒（与输入框 min/max 一致），再四舍五入到整帧；范围外返回 null。 */
+export function durationFrames(seconds: number): number | null {
+  return Number.isFinite(seconds) && seconds >= MIN_DURATION_SECONDS && seconds <= MAX_DURATION_SECONDS
+    ? Math.round(seconds * FIXED_COMPOSITION.fps)
+    : null;
+}
+
+/** 首次创建显式携带固定规格与所选时长，避免客户端与服务端默认值漂移。 */
+export function defaultComposition(frames = FIXED_COMPOSITION.duration_in_frames): Composition {
+  return { ...FIXED_COMPOSITION, duration_in_frames: frames };
 }
 
 /** 说明固定主画布，供生成前提示使用。 */
