@@ -371,7 +371,8 @@ export function ChatPanel({
             {error}
           </motion.p>
         )}
-        <div className="mt-2 flex items-center justify-between">
+        {/* 窄聊天栏放不下时整行换行，发送按钮靠右另起一行，不被外层 overflow-hidden 裁掉。 */}
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-x-1 gap-y-2">
           <input
             ref={picker}
             disabled={!first || disabled}
@@ -385,7 +386,7 @@ export function ChatPanel({
               attach(file);
             }}
           />
-          <div className="flex items-center gap-1">
+          <div className="flex min-w-0 flex-wrap items-center gap-1">
             <Button
               type="button"
               variant="ghost"
@@ -399,7 +400,7 @@ export function ChatPanel({
             {first && <DurationPicker disabled={disabled} onChange={setFrames} />}
           </div>
           {busy && canStop ? (
-            <Button type="button" variant="outline" size="sm" onClick={onStop}>
+            <Button type="button" variant="outline" size="sm" className="ml-auto" onClick={onStop}>
               <Square />
               停止
             </Button>
@@ -407,6 +408,7 @@ export function ChatPanel({
             <Button
               type="submit"
               size="sm"
+              className="ml-auto"
               disabled={disabled || (!text.trim() && !image) || (first && frames === null)}
             >
               发送

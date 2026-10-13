@@ -25,7 +25,7 @@ export function DurationPicker({ disabled, onChange }: Props) {
     onChange(durationFrames(value === CUSTOM ? (custom === "" ? NaN : Number(custom)) : Number(value)));
   }
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex min-w-0 flex-wrap items-center gap-1">
       <Select value={choice} disabled={disabled} onValueChange={choose}>
         <SelectTrigger size="sm" aria-label="字效时长" className="h-8 w-24 border-none bg-transparent text-xs shadow-none">
           <SelectValue />
@@ -54,7 +54,7 @@ export function DurationPicker({ disabled, onChange }: Props) {
               onChange(event.target.value === "" ? null : durationFrames(Number(event.target.value)));
             }}
           />
-          {invalid && <span role="alert" className="text-xs text-destructive">请输入 0.1～{MAX_DURATION_SECONDS} 秒</span>}
+          {invalid && <span role="alert" className="basis-full text-xs text-destructive">请输入 0.1～{MAX_DURATION_SECONDS} 秒</span>}
         </>
       )}
     </div>

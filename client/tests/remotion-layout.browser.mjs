@@ -363,6 +363,25 @@ try {
   assert.equal(await page.getByRole("dialog").count(), 0);
   await page.getByRole("tab", { name: "聊天", exact: true }).click();
   await page.getByRole("heading", { name: "把想法变成字效" }).waitFor();
+  // 新会话的时长选择与自定义输入加宽了工具栏：窄屏与三栏桌面下发送按钮都须留在输入框内，不被裁掉。
+  await page.getByRole("combobox", { name: "字效时长" }).click();
+  await page.getByRole("option", { name: "自定义", exact: true }).click();
+  await page.getByLabel("自定义时长（秒）").fill("99");
+  for (const width of [390, 375, 1024]) {
+    await page.setViewportSize({ width, height: 844 });
+    const box = await page.evaluate(() => {
+      const send = [...document.querySelectorAll("button")].find((b) => b.textContent.includes("发送"));
+      const form = send.closest("form").getBoundingClientRect();
+      const button = send.getBoundingClientRect();
+      return { inside: button.left >= form.left && button.right <= form.right };
+    });
+    assert(box.inside, `发送按钮在 ${width}px 下溢出输入框`);
+  }
+  await page.screenshot({
+    path: join(screenshots, "imv-remotion-duration-1024.png"),
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
   // 损坏的本地偏好不能阻止打开工作区，也不能生成 NaN 或挤掉面板。
   await page.evaluate(() =>
     localStorage.setItem("imv.remotion.layout", '{"history":"bad"}'),
@@ -383,7 +402,7 @@ try {
   );
   assert.equal(errors.length, 0, errors.join("\n"));
   console.log(
-    "PASS: 预览尺寸、拖拽/键盘调宽、栏宽恢复、历史预览、未保存保护、新增聊天、桌面删除确认与窄屏删除清理及 390px 窄屏布局。截图：" +
+    "PASS: 预览尺寸、拖拽/键盘调宽、栏宽恢复、历史预览、未保存保护、新增聊天、桌面删除确认与窄屏删除清理、新会话时长工具栏不溢出及 390px 窄屏布局。截图：" +
       screenshots,
   );
 } finally {
