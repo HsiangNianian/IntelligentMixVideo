@@ -150,7 +150,9 @@ fills the `text` parameter with `测` up to its declared `maxLength` and, on the
 the text boxes of the layer: text cut off by an ancestor with `overflow: hidden|clip`, text outside the 1080x1920
 canvas, text lines shorter than 20px (the smallest `fontSize` is 24) and text of which only part is rendered (a
 slice of it, or some of it hidden) are problems; text in a node without a box (`display: none`), with
-`visibility: hidden` or faded out to opacity 0 is not shown. The `text_fit` check fails only when every frame that
+`visibility: hidden` or faded out to opacity 0 is not shown. Each line is measured as its line box (at least as tall
+as its font size), not as the font's whole ascent and descent, so a line in a mask exactly one line tall is not
+clipped (with Noto Sans CJK the ascent and descent span 1.448em and stick out of a `lineHeight` 1 or 1.2 line). The `text_fit` check fails only when every frame that
 shows the text has a problem, so a reveal mask or slide-in that hides text for a few frames is fine, while a
 fixed-size box that clips long text on every frame is not; it also fails when the filler text is never visibly
 rendered. A failure is refused with `CODE_VALIDATION_FAILED` (`text_fit: ...` with the clipped box or

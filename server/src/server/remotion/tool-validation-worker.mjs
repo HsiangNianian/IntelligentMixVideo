@@ -363,8 +363,10 @@ function hostPlacement(box, transform = {}) {
  * it, text lines too small to read, or only part of the text rendered (sliced, or partly hidden). The component is
  * mounted without the host transform: clipping and line height are measured in its own layout, and only the corners
  * of each line are mapped through the transform for the canvas. Only painted text counts: a node without a box
- * (`display: none`), with `visibility: hidden` or faded out to opacity 0 is not shown. Returns `null` when no part
- * of the text is shown at this frame (not yet shown), and an empty list when all of it is shown and fits.
+ * (`display: none`), with `visibility: hidden` or faded out to opacity 0 is not shown. A line is measured as its line
+ * box (at least its em box), not as the font's whole ascent and descent: with a lineHeight below about 1.45 the
+ * latter sticks out of a box that holds the line exactly, although no glyph is cut. Returns `null` when no part of
+ * the text is shown at this frame (not yet shown), and an empty list when all of it is shown and fits.
  */
 function textFitProblems(page, needle, placement) {
   return page.evaluate((needle, minLine, tolerance, placement) => {
@@ -386,6 +388,26 @@ function textFitProblems(page, needle, placement) {
       for (let item = element; item && layer.contains(item); item = item.parentElement) opacity *= Number(getComputedStyle(item).opacity);
       return opacity > 0.01;
     };
+    const ruler = document.createElement("canvas").getContext("2d");
+    /**
+     * The client rectangles of a text node's lines, each trimmed to its line box. A rectangle spans the font's ascent
+     * and descent (1.448em for Noto Sans CJK), and CSS centres the line box on it; the share above the line box is
+     * read in CSS pixels from the font and scaled to the rectangle, so the component's own transforms are respected.
+     */
+    const lineBoxes = (range, element) => {
+      const style = getComputedStyle(element);
+      ruler.font = style.font;
+      const metrics = ruler.measureText(needle.slice(0, 1) || "测");
+      const content = metrics.fontBoundingBoxAscent + metrics.fontBoundingBoxDescent;
+      const size = parseFloat(style.fontSize);
+      // `normal` line height already holds the whole ascent and descent.
+      const line = Math.max(parseFloat(style.lineHeight) || content, size);
+      const share = content > line ? (content - line) / 2 / content : 0;
+      return Array.from(range.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0).map((rect) => {
+        const inset = rect.height * share;
+        return { left: rect.left, right: rect.right, top: rect.top + inset, bottom: rect.bottom - inset, height: rect.height - 2 * inset };
+      });
+    };
     // Components may split the text into words or glyphs and drop the spaces between them.
     const compact = (value) => value.replace(/\s+/g, "");
     const wanted = compact(needle);
@@ -397,10 +419,13 @@ function textFitProblems(page, needle, placement) {
       if (!shown || !(wanted.includes(shown) || shown.includes(wanted)) || !node.parentElement || !painted(node.parentElement)) continue;
       const range = document.createRange();
       range.selectNodeContents(node);
-      const lines = Array.from(range.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0);
-      const bounds = range.getBoundingClientRect();
+      const lines = lineBoxes(range, node.parentElement);
       // Text without a box (display: none, an empty or collapsed element) is not shown.
       if (!lines.length) continue;
+      const bounds = {
+        left: Math.min(...lines.map((rect) => rect.left)), right: Math.max(...lines.map((rect) => rect.right)),
+        top: Math.min(...lines.map((rect) => rect.top)), bottom: Math.max(...lines.map((rect) => rect.bottom)),
+      };
       joined += shown;
       const smallest = Math.min(...lines.map((rect) => rect.height));
       if (smallest < minLine) problems.add(`its lines are only ${Math.round(smallest)}px tall, too small to read`);
@@ -451,8 +476,8 @@ async function measureTextFit(page, needle, frames = sampleFrames(request.compos
 /**
  * Mechanical check that a text effect shows its longest allowed text in full: the text parameter is filled to its
  * declared maxLength and the sampled frames are measured. The check fails only when every frame that shows the
- * text has a problem (a text cut to a slice of itself is one), and when the text is never visibly rendered. This is a geometric measurement of the text boxes,
- * not a visual review of how the result looks.
+ * text has a problem (a text cut to a slice of itself is one), and when the text is never visibly rendered. This is
+ * a geometric measurement of the text boxes, not a visual review of how the result looks.
  */
 async function textFitCheck(page) {
   const composition = request.composition;

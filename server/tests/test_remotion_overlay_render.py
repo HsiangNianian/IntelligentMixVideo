@@ -1678,3 +1678,27 @@ def test_real_browser_fits_text_where_the_host_transform_puts_it(tmp_path: Path)
     assert 60 <= sizes[1] <= 67
     assert 85 <= sizes[2] <= 96
     assert 24 <= sizes[3] <= 26
+
+
+# 一行标题放在恰好一行高（lineHeight 1）的 overflow hidden 遮罩里，常见于揭示动画的字效。
+LINE_MASK_TITLE = """import React from "react";
+import { AbsoluteFill } from "remotion";
+export default function Title(props: { text: string; fontSize: number }) {
+  return (
+    <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
+      <div style={{ width: 972, height: props.fontSize, overflow: "hidden", textAlign: "center" }}>
+        <div style={{ fontSize: props.fontSize, lineHeight: 1, whiteSpace: "nowrap", color: "#fff" }}>{props.text}</div>
+      </div>
+    </AbsoluteFill>
+  );
+}
+"""
+
+
+# 场景：真实浏览器里，遮罩只裁掉字体上下伸部的空白、不裁字形，短标题保持原字号；若按字体的上下伸部度量，
+# 任何字号都会被判为裁切，连两个字的标题也以 text_too_long 失败。
+@pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
+def test_real_browser_keeps_a_short_title_in_a_line_mask(tmp_path: Path) -> None:
+    """两个字的标题保持 128 的字号。"""
+    overlay = fit_for_real(tmp_path, LINE_MASK_TITLE, [titled("标题")], 1.0)
+    assert overlay.instances[0]["config"]["fontSize"] == 128

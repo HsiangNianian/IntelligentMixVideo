@@ -775,6 +775,19 @@ export default function Title(props: { text: string; fontSize: number }) {
 SLICED_TEXT = FITTING_TEXT.replace("{props.text}</div>", "{props.text.slice(0, 10)}</div>")
 HIDDEN_TEXT = FITTING_TEXT.replace('color: "#fff" }}>', 'color: "#fff", display: "none" }}>')
 PER_GLYPH_TEXT = FITTING_TEXT.replace("{props.text}</div>", '{props.text.split("").map((glyph, index) => <span key={index}>{glyph}</span>)}</div>')
+# 一行文字放在恰好一行高的 overflow hidden 遮罩里（lineHeight 1）：字形没有被裁，但字体的上下伸部超出行框。
+LINE_MASK_TEXT = """import React from "react";
+import { AbsoluteFill } from "remotion";
+export default function Title(props: { text: string; fontSize: number }) {
+  return (
+    <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
+      <div style={{ width: 972, height: props.fontSize, overflow: "hidden", textAlign: "center" }}>
+        <div style={{ fontSize: props.fontSize, lineHeight: 1, whiteSpace: "nowrap", color: "#fff" }}>{props.text}</div>
+      </div>
+    </AbsoluteFill>
+  );
+}
+"""
 IGNORES_TEXT = """import React from "react";
 import { AbsoluteFill } from "remotion";
 export default function Title(props: { text: string; fontSize: number }) {
@@ -811,10 +824,13 @@ def browser_text_validate(tmp_path: Path, code: str, max_length: int):
     (SLICED_TEXT, 100, False, "only part of it is rendered"),
     (HIDDEN_TEXT, 100, False, "never renders"),
     (PER_GLYPH_TEXT, 100, True, ""),
-], ids=["fixed-box-clips-long-title", "wrapped-and-shrunk", "reveal-mask-only-early", "ignores-text", "sliced-text", "display-none", "one-span-per-glyph"])
+    (LINE_MASK_TEXT, 4, True, ""),
+], ids=["fixed-box-clips-long-title", "wrapped-and-shrunk", "reveal-mask-only-early", "ignores-text", "sliced-text", "display-none", "one-span-per-glyph",
+        "line-height-1-mask"])
 def test_real_browser_requires_the_longest_text_to_be_shown_in_full(tmp_path, code, max_length, passed, reason):
     """issue #119：972x360 的 overflow hidden 固定框在 100 字标题下被裁切而被拒；按字数缩小字号并换行的写法、只在开头几帧被遮罩挡住的文字通过；
-    不显示 text 的组件被拒。只渲染一段截断的文字、或文字在 display: none 里没有排版框，都不算完整显示；逐字拆成 span 的完整文字仍算。"""
+    不显示 text 的组件被拒。只渲染一段截断的文字、或文字在 display: none 里没有排版框，都不算完整显示；逐字拆成 span 的完整文字仍算。
+    lineHeight 1 的一行文字放在恰好一行高的遮罩里不算裁切：按行框而不是字体的上下伸部度量。"""
     report = browser_text_validate(tmp_path, code, max_length)
     check = next(item for item in report.checks if item.name == "text_fit")
     assert (check.status == "passed") is passed, check.message
