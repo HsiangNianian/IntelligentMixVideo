@@ -85,7 +85,7 @@ async def preset_create(owner, request: PresetCreateInput) -> ToolResult[PresetC
     constraints=[
         "The host canvas is fixed at 1080x1920, 30 FPS; duration is derived from instances.",
         "Contract v2: kind is required (text, filter_overlay, video_overlay or transition_overlay) and parameters lifts Preset props to required top-level Sprite parameters that templates may change per placement.",
-        "Each binding targets declared top-level Preset props that share one schema and one value; a bound number needs minimum and maximum, a bound string a colour pattern, enum or maxLength.",
+        "Each binding targets declared top-level Preset props that share one object schema and one value; a bound number needs minimum and maximum (integers for an integer), a bound string a colour pattern, enum or maxLength of at most 2000; only type, title, description, default, minimum, maximum, enum, minLength, maxLength, the colour pattern, maxItems and items.maxLength are allowed.",
         "The host owns position, scale, rotation and opacity of the whole Sprite; do not bind or implement them.",
     ],
     side_effects=["deterministic source generation; no catalog write"],

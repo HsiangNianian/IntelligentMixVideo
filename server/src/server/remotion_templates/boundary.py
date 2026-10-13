@@ -70,6 +70,23 @@ def _transform(kind: str | None, canvas: tuple[int, int], high: bool) -> dict:
     return {name: ranges[name][1 if high else 0] for name in sorted(transform_fields(kind))}
 
 
+def unsampled(schema: dict, defaults: dict, names: list[str], drawn: list[Sample]) -> list[str]:
+    """Top-level parameters whose low or high end or one of whose enum values no sample renders.
+
+    Bound parameters only use constraints the extremes respect, so this only happens when root-level constraints
+    tie parameters together so tightly that even one parameter's extreme does not fit with the defaults.
+    """
+    properties = schema.get("properties", {})
+    missing = []
+    for name in names:
+        definition = properties.get(name, {})
+        wanted = [_extreme(definition, defaults.get(name), high) for high in (False, True)]
+        wanted += definition.get("enum") or []
+        if any(not any(item.values.get(name) == value for item in drawn) for value in wanted):
+            missing.append(name)
+    return missing
+
+
 def samples(schema: dict, defaults: dict, names: list[str], kind: str | None, canvas: tuple[int, int]) -> list[Sample]:
     """为版本的顶层参数 ``names`` 生成边界样本；第一个总是默认值。"""
     properties = schema.get("properties", {})

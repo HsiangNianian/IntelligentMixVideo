@@ -138,6 +138,27 @@ def _properties(schema: dict) -> dict:
     return properties if isinstance(properties, dict) else {}
 
 
+# 顶层参数允许的 Schema 关键字：发布时的边界抽样只认识这些约束，其他约束（如 multipleOf、exclusiveMaximum、
+# 非颜色 pattern）会让两端取值不合 Schema 而漏抽。title、description 与 default 只是说明。
+_LABELS = {"type", "title", "description", "default"}
+_ALLOWED = {
+    "number": _LABELS | {"minimum", "maximum", "enum"},
+    "integer": _LABELS | {"minimum", "maximum", "enum"},
+    "string": _LABELS | {"pattern", "enum", "minLength", "maxLength"},
+    "boolean": _LABELS,
+    "array": _LABELS | {"items", "maxItems"},
+}
+_ALLOWED_ITEMS = _LABELS | {"maxLength"}
+
+
+def _unsupported(definition: dict) -> list[str]:
+    """顶层参数里抽样无法处理的 Schema 关键字。"""
+    extra = set(definition) - _ALLOWED.get(definition.get("type"), _LABELS)
+    if definition.get("type") == "array" and isinstance(definition.get("items"), dict):
+        extra |= {f"items.{key}" for key in set(definition["items"]) - _ALLOWED_ITEMS}
+    return sorted(extra)
+
+
 def parameter_problems(definition: object) -> str | None:
     """顶层标准参数的通用约束：控件需要明确的取值范围，返回违反原因或 None。
 
@@ -148,13 +169,21 @@ def parameter_problems(definition: object) -> str | None:
         return "must be a JSON Schema object"
     if "$ref" in str(definition):
         return "must not use $ref"
+    if extra := _unsupported(definition):
+        return f"uses schema keywords the publish-time samples cannot cover: {', '.join(extra)}"
     kind = definition.get("type")
+    if kind == "integer" and any(isinstance(definition.get(bound), float) and not definition[bound].is_integer() for bound in ("minimum", "maximum")):
+        return "an integer needs integer minimum and maximum"
     if kind in {"number", "integer"}:
         return None if _number(definition) or isinstance(definition.get("enum"), list) else "a number needs minimum and maximum"
     if kind == "string":
         limit = definition.get("maxLength")
         if limit is not None and (not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= OVERRIDE_STRING_MAX_LENGTH):
             return f"a string maxLength must be between 1 and {OVERRIDE_STRING_MAX_LENGTH}"
+        if "pattern" in definition and not _color(definition):
+            return f"a string pattern must be the colour pattern {HEX_COLOR}"
+        if isinstance(definition.get("minLength"), int) and limit is not None and definition["minLength"] > limit:
+            return "a string minLength must not exceed its maxLength"
         if _color(definition) or isinstance(definition.get("enum"), list) or limit is not None:
             return None
         return f"a string needs the colour pattern {HEX_COLOR}, an enum or a maxLength"

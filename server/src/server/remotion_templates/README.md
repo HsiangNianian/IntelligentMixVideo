@@ -237,7 +237,10 @@ values. When the combined extreme breaks the schema (parameters that constrain e
 greedy combination of the extremes that still fit and by one sample per parameter extreme, each with the same end
 of the host transform. Each sample must render its first, middle and last frame without an error inside the shared
 host layer; a failure is a 422 naming the sample and frame, and a validator that cannot start is a 503 (the route
-checks the sandbox first). Template overrides are then checked against the schema only, without the sandbox. The
+checks the sandbox first). Bound parameters may only use constraints these extremes respect
+(`categories.parameter_problems`), and a version whose root-level constraints still keep some parameter's end or
+enum value out of every sample is refused (`boundary.unsampled`). Template overrides are then checked against the
+schema only, without the sandbox. The
 samples cover the extremes, not every combination: a placement that still fails to render fails its overlay task. The same source and field choice
 returns the original Sprite without sampling again. `animation_frames` and `static_frame` stay 0
 because composition versions carry no such evidence, and `preview_url` serves the sealed

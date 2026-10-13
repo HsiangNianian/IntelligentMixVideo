@@ -350,10 +350,13 @@ async def _sample(service, version: TemplateVersion, kind: int) -> None:
 
     candidate, composition = version.candidate, version.spec.composition
     box = _content_box(version)
-    samples = boundary.samples(
-        candidate.config_schema, candidate.default_config, _bound_names(version), KIND_NAMES[kind],
-        (composition.width, composition.height),
-    )
+    names = _bound_names(version)
+    samples = boundary.samples(candidate.config_schema, candidate.default_config, names, KIND_NAMES[kind], (composition.width, composition.height))
+    if missing := boundary.unsampled(candidate.config_schema, candidate.default_config, names, samples):
+        raise _invalid(
+            f"参数 {'、'.join(missing)} 的两端或枚举取值在其他参数取默认值时不合约束，无法检查；"
+            "请在聊天中让 Agent 简化参数之间的约束后再保存到资产"
+        )
     work = service.store.root / "sprites" / f".samples-{uuid4()}"
     try:
         checks = await ToolValidator(service.harness.renderer, work).validate_samples(

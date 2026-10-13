@@ -1,6 +1,6 @@
 """发布时边界样本的生成：默认值、两端取值、逐个参数的回退、中间枚举值和各分类的宿主变换。"""
 
-from server.remotion_templates.boundary import FILLER, samples
+from server.remotion_templates.boundary import FILLER, samples, unsampled
 from server.remotion_templates.categories import HEX_COLOR
 
 SCHEMA = {
@@ -58,6 +58,18 @@ def test_a_combined_extreme_that_breaks_the_schema_falls_back_to_single_paramete
     assert found["high:combined"].values == {**DEFAULTS, "text": FILLER * 2, "size": 90, "align": "justify", "color": "#FFFFFF"}
     assert found["high:combined"].transform == high
     assert "low" in found
+
+
+def test_values_no_sample_can_reach_are_reported():
+    """根级约束把参数绑得太紧、单个参数的一端在其他参数取默认值时都不合法时，该参数被列为无法检查，发布据此拒绝。
+
+    修复前这样的一端被静默跳过，模板却可以填入它，直到叠加渲染才失败。
+    """
+    defaults = {**DEFAULTS, "glow": True}
+    schema = {**SCHEMA, "if": {"properties": {"glow": {"const": True}}}, "then": {"properties": {"size": {"maximum": 50}}}}
+    drawn = samples(schema, defaults, NAMES, "text", (1080, 1920))
+    assert unsampled(schema, defaults, NAMES, drawn) == ["size"]
+    assert unsampled(SCHEMA, DEFAULTS, NAMES, samples(SCHEMA, DEFAULTS, NAMES, "text", (1080, 1920))) == []
 
 
 def test_identical_samples_are_rendered_once():

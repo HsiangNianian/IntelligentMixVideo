@@ -81,6 +81,14 @@ def test_a_missing_kind_is_reported_without_rules():
     ({"type": "boolean"}, None),
     ({"type": "array", "items": {"type": "number"}}, "only a keywords string array is supported"),
     ({"type": "object"}, "type must be number, integer, string, boolean or a keywords array"),
+    # Constraints the publish-time extremes would violate, so those ends would silently go unsampled.
+    ({"type": "number", "minimum": 0, "maximum": 1, "exclusiveMaximum": 1}, "uses schema keywords the publish-time samples cannot cover: exclusiveMaximum"),
+    ({"type": "number", "minimum": 0, "maximum": 10, "multipleOf": 3}, "uses schema keywords the publish-time samples cannot cover: multipleOf"),
+    ({"type": "integer", "minimum": 0.5, "maximum": 10.5}, "an integer needs integer minimum and maximum"),
+    ({"type": "string", "maxLength": 9, "pattern": "^[A-Z]+$"}, f"a string pattern must be the colour pattern {HEX_COLOR}"),
+    ({"type": "string", "minLength": 9, "maxLength": 3}, "a string minLength must not exceed its maxLength"),
+    ({"type": "array", "items": {"type": "string", "maxLength": 9, "minLength": 2}, "maxItems": 3}, "uses schema keywords the publish-time samples cannot cover: items.minLength"),
+    ({"type": "boolean", "title": "阴影", "default": False}, None),
     ({"$ref": "#/$defs/x"}, "must not use $ref"),
 ])
 def test_top_level_parameters_need_bounded_values(definition, reason):
