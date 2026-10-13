@@ -16,7 +16,7 @@ export function defaultKind(agentKind: SpriteKindName | undefined): SpriteKind {
   return PUBLISH_KINDS.find((item) => item.name === agentKind)?.kind ?? SpriteKind.VIDEO_OVERLAY;
 }
 
-/** 按所选类型生成发布请求：字效固定 text 字段，声明了关键词参数时同时发布 keywords。 */
+/** 按所选类型生成发布请求：字效固定 text 字段并发布 keywords；新字效都声明 keywords，没有该绑定的只剩重新保存的旧版本。 */
 export function publishChoice(version: Version, kind: SpriteKind): PublishChoice {
   if (kind !== SpriteKind.TEXT) return { kind, textProp: "", keywordsProp: "" };
   const keywords = (version.spec.sprite?.bindings ?? []).some((item) => item.name === "keywords");

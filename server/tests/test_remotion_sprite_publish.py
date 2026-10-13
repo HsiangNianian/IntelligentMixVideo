@@ -20,7 +20,7 @@ from sqlalchemy import Engine, select, update
 
 from server.app import app
 from server.remotion_templates import sprite_store, sprites
-from server.remotion_templates.categories import HEX_COLOR
+from server.remotion_templates.categories import HEX_COLOR, KEYWORD_COLOR
 from server.remotion_templates.harness import Harness
 from server.remotion_templates.models import GenerateTemplateRequest
 from server.remotion_templates.provider import Budget
@@ -29,6 +29,7 @@ from server.remotion_templates.sprite_router import sprite_runtime
 from server.remotion_templates.store import Store
 from server.remotion_templates.tools.contracts import SpriteDraft
 
+from .conftest import seed_sprite
 from .test_remotion_version_diagnostics import (
     CodeOnlyRenderer,
     OfflineRenderer,
@@ -38,12 +39,18 @@ from .test_remotion_version_diagnostics import (
 
 PROTOBUF = {"Content-Type": "application/x-protobuf"}
 COLOR = {"type": "string", "pattern": HEX_COLOR}
-# 一个字效版本的顶层参数：字效必备参数、可选关键词，再加视频特效必备的 speed，便于同一版本按多种类型发布。
+# 一个字效版本的顶层参数：字效必备参数、关键词参数，再加视频特效必备的 speed，便于同一版本按多种类型发布。
 SCHEMA = {
     "type": "object",
     "properties": {
         "text": {"type": "string", "minLength": 1, "maxLength": 40, "title": "标题文字"},
         "keywords": {"type": "array", "items": {"type": "string", "maxLength": 100}, "maxItems": 20, "title": "关键词"},
+        "keywordBold": {"type": "boolean", "title": "关键词加粗"},
+        "keywordItalic": {"type": "boolean", "title": "关键词斜体"},
+        "keywordUnderline": {"type": "boolean", "title": "关键词下划线"},
+        "keywordStrikeout": {"type": "boolean", "title": "关键词删除线"},
+        "keywordColor": {"type": "string", "pattern": KEYWORD_COLOR, "title": "关键词颜色"},
+        "keywordSize": {"type": "integer", "minimum": 0, "maximum": 300, "title": "关键词字号"},
         "fontSize": {"type": "number", "minimum": 24, "maximum": 240, "title": "字号"},
         "fontWeight": {"type": "integer", "enum": [400, 700], "title": "字重"},
         "color": {**COLOR, "title": "文字颜色"},
@@ -51,11 +58,11 @@ SCHEMA = {
         "shadow": {"type": "boolean", "title": "阴影"},
         "title": {"type": "object", "properties": {"glow": {"type": "number"}}, "additionalProperties": False},
     },
-    "required": ["text", "keywords", "fontSize", "fontWeight", "color", "speed", "shadow"],
+    "required": ["text", "keywords", "keywordBold", "keywordItalic", "keywordUnderline", "keywordStrikeout", "keywordColor", "keywordSize", "fontSize", "fontWeight", "color", "speed", "shadow"],
     "additionalProperties": False,
 }
-DEFAULTS = {"text": "标题", "keywords": [], "fontSize": 64, "fontWeight": 400, "color": "#FFFFFF", "speed": 1, "shadow": False, "title": {"glow": 0.5}}
-BOUND = ["text", "keywords", "fontSize", "fontWeight", "color", "speed", "shadow"]
+DEFAULTS = {"text": "标题", "keywords": [], "keywordBold": False, "keywordItalic": False, "keywordUnderline": False, "keywordStrikeout": False, "keywordColor": "", "keywordSize": 0, "fontSize": 64, "fontWeight": 400, "color": "#FFFFFF", "speed": 1, "shadow": False, "title": {"glow": 0.5}}
+BOUND = ["text", "keywords", "keywordBold", "keywordItalic", "keywordUnderline", "keywordStrikeout", "keywordColor", "keywordSize", "fontSize", "fontWeight", "color", "speed", "shadow"]
 CODE = 'import React from "react";\nexport default function Sprite(p: {text: string}) { return <div>{p.text}</div>; }\n'
 # 内容区域：唯一实例的布局，宿主变换绕它的中心。
 LAYOUT = {"x": 90, "y": 760, "width": 900, "height": 400, "z_index": 0}
@@ -212,19 +219,19 @@ def test_publications_are_rows_of_the_shared_database_not_of_the_remotion_sqlite
 
 def test_catalog_lists_the_newest_publication_first(client: TestClient, published) -> None:
     """目录按发布时间倒序：排序在应用里完成（MySQL 对带整个 JSON 的行排序可能超出排序缓冲区）。"""
-    first = published_sprite(client, published.version.id, keywords_prop="")
-    second = published_sprite(client, published.version.id)
+    first = published_sprite(client, published.version.id)
+    second = published_sprite(client, published.version.id, kind=pb.SPRITE_KIND_TRANSITION_OVERLAY, text_prop="", keywords_prop="")
     third = published_sprite(client, published.version.id, kind=pb.SPRITE_KIND_VIDEO_OVERLAY, text_prop="", keywords_prop="")
     listed = pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites
     assert [item.sprite_id for item in listed] == [third.sprite_id, second.sprite_id, first.sprite_id]
 
 
 def test_republishing_returns_the_original_sprite(client: TestClient, published) -> None:
-    """相同来源与字段选择重复发布幂等；不同字段选择产生独立资产。"""
+    """相同来源与字段选择重复发布幂等；改选分类（不同字段选择）产生独立资产。"""
     first = published_sprite(client, published.version.id)
     again = published_sprite(client, published.version.id)
-    other = published_sprite(client, published.version.id, keywords_prop="")
-    assert again.sprite_id == first.sprite_id
+    other = published_sprite(client, published.version.id, kind=pb.SPRITE_KIND_VIDEO_OVERLAY, text_prop="", keywords_prop="")
+    assert again.sprite_id == first.sprite_id and first.keywords_supported
     assert other.sprite_id != first.sprite_id and not other.keywords_supported
     assert len(pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites) == 2
 
@@ -270,7 +277,7 @@ def test_preview_is_unavailable_when_the_local_bundle_is_missing(client: TestCli
 @pytest.mark.parametrize(("fields", "detail"), [
     ({"kind": pb.SPRITE_KIND_UNSPECIFIED}, "kind 必须是"),
     ({"text_prop": "color"}, "text_prop 必须是 text"),
-    ({"keywords_prop": "text"}, "keywords_prop 只能为空"),
+    ({"keywords_prop": "text"}, "keywords_prop 在该版本声明了关键词参数时必须为 keywords"),
     ({"kind": pb.SPRITE_KIND_VIDEO_OVERLAY}, "只有字效可以声明"),
     ({"kind": pb.SPRITE_KIND_FILTER_OVERLAY, "text_prop": "", "keywords_prop": ""}, "intensity（强度，0～1 的数字）；tintColor（色调，十六进制颜色）"),
 ], ids=["no-kind", "other-text", "other-keywords", "visual-with-text-fields", "filter-without-its-parameters"])
@@ -281,14 +288,35 @@ def test_publish_rejects_invalid_field_choices(client: TestClient, published, fi
     assert client.get("/api/sprites").content == b""
 
 
-def test_keywords_need_a_declared_keywords_parameter(published) -> None:
-    """没有声明关键词参数的字效只能不带 keywords_prop 发布。"""
+def test_a_text_version_without_its_keyword_parameters_is_refused(published) -> None:
+    """字效必须声明关键词参数：缺少 keywords 绑定的版本在发布时被拒绝并点名缺少的参数。"""
     version = published.version.model_copy(deep=True)
     version.spec.sprite.bindings = [item for item in version.spec.sprite.bindings if item.name != "keywords"]
-    sprites._validated_request(publish_request(version.id, keywords_prop=""), version)
     with pytest.raises(HTTPException) as caught:
         sprites._validated_request(publish_request(version.id), version)
-    assert caught.value.status_code == 422 and "关键词" in caught.value.detail
+    assert caught.value.status_code == 422 and "keywords" in caught.value.detail
+
+
+def test_a_text_version_whose_keyword_options_default_to_on_is_refused(published) -> None:
+    """审计复现：关键词默认命中「标题」、样式开启、红色 80 号的版本曾能发布；现在 422 点名每个非关闭默认值。"""
+    version = published.version.model_copy(deep=True)
+    version.candidate.default_config.update(
+        keywords=["标题"], keywordBold=True, keywordItalic=True, keywordUnderline=True, keywordStrikeout=True, keywordColor="#FF0000", keywordSize=80,
+    )
+    with pytest.raises(HTTPException) as caught:
+        sprites._validated_request(publish_request(version.id), version)
+    assert caught.value.status_code == 422
+    # 审计复现：这条 422 曾说成「缺少必备参数」；现在说明默认值必须关闭，并指向参数面板而不是聊天。
+    detail = caught.value.detail
+    assert detail.startswith("关键词参数的默认值必须是关闭状态") and "缺少" not in detail and "参数面板" in detail
+    assert all(item in detail for item in ("keywords（应为 []）", "keywordBold（应为 false）", 'keywordColor（应为 ""）', "keywordSize（应为 0）"))
+
+
+def test_a_text_version_must_publish_its_keywords_field(published) -> None:
+    """审计复现：已绑定 keywords 的字效曾能以 keywords_prop="" 再发布一份 keywords_supported=false 的资产；现在必须是 keywords。"""
+    with pytest.raises(HTTPException) as caught:
+        sprites._validated_request(publish_request(published.version.id, keywords_prop=""), published.version)
+    assert caught.value.status_code == 422 and "keywords_prop" in caught.value.detail
 
 
 def test_a_version_composed_before_categories_must_be_edited_first(client: TestClient, legacy_published) -> None:
@@ -359,7 +387,8 @@ def test_catalog_skips_unreadable_records_and_keeps_the_rest(client: TestClient,
 
     MySQL 的 JSON 列保证内容是合法 JSON，所以损坏表现为形状不对：哈希对不上、字段类型错误或根本不是对象（如一个数字）。
     """
-    healthy = published_sprite(client, published.version.id, keywords_prop="")
+    # One version publishes as three kinds at most, so the fourth record is seeded directly.
+    healthy = SimpleNamespace(sprite_id=seed_sprite("0d3c7a51-6b2e-4f19-8a40-5e9c1b7d2f63"))
     tampered = published_sprite(client, published.version.id)
     malformed = published_sprite(client, published.version.id, kind=pb.SPRITE_KIND_TRANSITION_OVERLAY, text_prop="", keywords_prop="")
     not_an_object = published_sprite(client, published.version.id, kind=pb.SPRITE_KIND_VIDEO_OVERLAY, text_prop="", keywords_prop="")

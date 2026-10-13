@@ -477,7 +477,7 @@ class ToolSession:
         )
         if not validation.passed:
             raise _validation_fault("Sprite code validation failed.", validation)
-        problems = category_problems(sprite.kind, sprite.parameter_schema, {item.name for item in sprite.bindings})
+        problems = category_problems(sprite.kind, sprite.parameter_schema, {item.name for item in sprite.bindings}, sprite.default_parameters)
         if problems:
             raise ToolFault("CATEGORY_PARAMETERS_MISSING", agent_message(sprite.kind, problems), details={
                 "missing": [{"name": item.name, "reason": item.reason, **({"schema": item.rule.example} if item.rule else {})} for item in problems],
@@ -578,7 +578,7 @@ class ToolSession:
         # 打包器是同步子进程；放到线程里执行，避免阻塞同进程的 SSE 与其它请求。
         code, schema, defaults = await asyncio.to_thread(compose_source, resolved, bindings)
         for index, binding in enumerate(request.parameters):
-            reason = parameter_problems(schema["properties"][binding.name])
+            reason = parameter_problems(schema["properties"][binding.name], binding.name)
             if reason:
                 raise ToolFault("INVALID_ARGUMENT", f"Parameter {binding.name} {reason}: give the bound Preset prop a bounded schema", field=f"/parameters/{index}")
         sprite = SpriteDraft(

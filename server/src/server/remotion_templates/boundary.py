@@ -2,7 +2,8 @@
 
 通过后，模板里的修改只做即时的 Schema 校验，不再启动沙箱。抽样只覆盖边界，不是穷举证明：
 组合样本把所有参数和宿主变换同时推到一端；它不满足 Schema 时（参数之间互相约束），改为逐步加入仍合法的一端取值
-得到的组合，以及每个参数单独推到一端的样本，它们都带同一端的宿主变换。仍在实际渲染中出错的摆放，
+得到的组合，以及每个参数单独推到一端的样本，它们都带同一端的宿主变换。字效另渲染 ``keywords:styled``：
+低端（最长文字、关键词全部命中）再把关键词样式全部推到高端，覆盖「有命中且样式开启」的路径。仍在实际渲染中出错的摆放，
 由叠加渲染任务失败并报告。
 """
 
@@ -11,7 +12,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-from .categories import HEX_COLOR, transform_fields, transform_ranges
+from .categories import HEX_COLOR, KEYWORD_COLOR, TEXT_KEYWORDS, transform_fields, transform_ranges
 from .tools.schema import validate_parameters
 
 # 文字填充字符：CJK 字形最宽、最容易溢出，最能暴露排版问题。
@@ -20,6 +21,9 @@ FILLER = "测"
 MAX_SINGLE_SAMPLES = 12
 # 枚举最多再抽的中间取值个数。
 MAX_ENUM_SAMPLES = 4
+
+# 关键词样式参数（加粗等开关、颜色、字号），不含关键词列表本身。
+KEYWORD_STYLE_NAMES = {rule.name for rule in TEXT_KEYWORDS} - {"keywords"}
 
 
 @dataclass(frozen=True)
@@ -43,6 +47,8 @@ def _extreme(definition: dict, default, high: bool):
         return high
     if kind == "string":
         if "pattern" in definition:
+            if definition["pattern"] == KEYWORD_COLOR:
+                return "#FFFFFF" if high else ""
             return ("#FFFFFF" if high else "#000000") if definition["pattern"] == HEX_COLOR else default
         if isinstance(definition.get("maxLength"), int):
             return FILLER * (max(1, definition.get("minLength", 1)) if high else definition["maxLength"])
@@ -121,6 +127,17 @@ def samples(schema: dict, defaults: dict, names: list[str], kind: str | None, ca
         values = {**defaults, **changes}
         if _valid(schema, values):
             result.append(Sample(f"enum:{index}", values))
+    # "low" fills every keyword slot with the styles off and "high" turns the styles on without keywords, so neither
+    # renders a hit with its styling: render the low end again with every keyword style at its high end.
+    styled = [name for name in names if name in KEYWORD_STYLE_NAMES]
+    if "keywords" in names and styled:
+        values = {
+            **defaults,
+            **{name: _extreme(properties.get(name, {}), defaults.get(name), False) for name in names},
+            **{name: _extreme(properties.get(name, {}), defaults.get(name), True) for name in styled},
+        }
+        if _valid(schema, values):
+            result.append(Sample("keywords:styled", values, _transform(kind, canvas, False)))
     unique = {}
     for item in result:
         unique.setdefault(json.dumps([item.values, item.transform], sort_keys=True, ensure_ascii=False), item)
