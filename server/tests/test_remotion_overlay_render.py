@@ -237,7 +237,10 @@ class FakeRenderer:
         """校验 worker 名称，保存请求与沙箱 CPU 上限并产出文件；排版预检 worker 视为文字都放得下。"""
         if worker == "tool-validation-worker.mjs":
             request = json.loads((directory / "request.json").read_text())
-            return {"fits": [{"index": item["index"], "fits": True, "size": item["values"][item["size_key"]]} for item in request["fit"]]}
+            return {"fits": [
+                [{"index": item["index"], "fits": True, "size": item["values"][item["size_key"]]} for item in sprite["fit"]]
+                for sprite in request["sprites"]
+            ]}
         assert worker == "overlay-worker.mjs"
         self.cpu_seconds = cpu_seconds
         request = json.loads((directory / "request.json").read_text())
@@ -1414,12 +1417,15 @@ class FitRenderer:
         self.requests.append(request)
         self.limits.append((timeout_seconds, cpu_seconds))
         fits = []
-        for item in request["fit"]:
-            wanted = item["values"][item["size_key"]]
-            if self.capacity is None:
-                fits.append({"index": item["index"], "fits": False, "size": item["min"]})
-            else:
-                fits.append({"index": item["index"], "fits": True, "size": min(wanted, self.capacity)})
+        for sprite in request["sprites"]:
+            answers = []
+            for item in sprite["fit"]:
+                wanted = item["values"][item["size_key"]]
+                if self.capacity is None:
+                    answers.append({"index": item["index"], "fits": False, "size": item["min"]})
+                else:
+                    answers.append({"index": item["index"], "fits": True, "size": min(wanted, self.capacity)})
+            fits.append(answers)
         return {"fits": fits}
 
 
@@ -1439,7 +1445,8 @@ def test_text_that_does_not_fit_gets_a_smaller_font_size(tmp_path) -> None:
     assert overlay.instances[0]["config"]["fontSize"] == 72
     assert overlay.instances[0]["config"]["text"] == "测" * 40
     [request] = renderer.requests
-    [item] = request["fit"]
+    [sprite] = request["sprites"]
+    [item] = sprite["fit"]
     assert (item["text"], item["size_key"], item["min"]) == ("测" * 40, "fontSize", 24)
     assert request["composition"]["duration_frames"] == 90
 
@@ -1519,15 +1526,18 @@ def real_fit(tmp_path: Path, whitespace: str, text: str):
     return fit_for_real(tmp_path, FIXED_BOX.replace("WRAP", json.dumps(whitespace)), [titled(text)], 1.0)
 
 
-def titled(text: str, *, duration: float | None = None, font_size: int | None = None, **transform) -> OverlayPlacement:
-    """字效 t 从第 0 秒开始的一个摆放：覆盖文字，可选固定时长、字号与宿主变换。"""
+def titled(text: str, *, sprite_id: str = "t", duration: float | None = None, font_size: int | None = None, **transform) -> OverlayPlacement:
+    """字效 sprite_id（默认 t）从第 0 秒开始的一个摆放：覆盖文字，可选固定时长、字号与宿主变换。"""
     parameters = [{"key": "text", "stringValue": text}, *([{"key": "fontSize", "numberValue": font_size}] if font_size else [])]
     remotion = {"parameters": parameters, **({"transform": transform} if transform else {})}
-    return OverlayPlacement.model_validate({"spriteId": "t", "start": 0, **({"duration": duration} if duration else {}), "editor": {"remotion": remotion}})
+    return OverlayPlacement.model_validate({"spriteId": sprite_id, "start": 0, **({"duration": duration} if duration else {}), "editor": {"remotion": remotion}})
 
 
-def fit_for_real(tmp_path: Path, code: str, placements: list[OverlayPlacement], seconds: float):
-    """用真实沙箱和浏览器对字效 t（源码为 code，内容区域是整块画布）的这些摆放做排版预检，返回预检后的渲染计划。"""
+def fit_for_real(tmp_path: Path, codes: str | dict[str, str], placements: list[OverlayPlacement], seconds: float):
+    """用真实沙箱和浏览器对这些摆放做排版预检，返回预检后的渲染计划。
+
+    codes 是各字效的源码（Sprite ID 到源码；只给一份源码时就是字效 t），内容区域都是整块画布。
+    """
     configured = {
         name: Path(value)
         for name, value in (
@@ -1542,8 +1552,8 @@ def fit_for_real(tmp_path: Path, code: str, placements: list[OverlayPlacement], 
         "text": {"type": "string", "minLength": 1, "maxLength": 100},
         "fontSize": {"type": "number", "minimum": 24, "maximum": 240},
     }, "required": ["text", "fontSize"], "additionalProperties": False}
-    published = pb.PublishedSprite(
-        sprite_id="t", name="t", kind=pb.SPRITE_KIND_TEXT, tsx_code=code, text_prop="text",
+    published = {sprite_id: pb.PublishedSprite(
+        sprite_id=sprite_id, name=sprite_id, kind=pb.SPRITE_KIND_TEXT, tsx_code=code, text_prop="text",
         canvas=pb.SpriteCanvas(width=1080, height=1920, fps=30, preview_frames=30),
         config_schema_json=json.dumps(schema), default_config_json=json.dumps({"text": "标题", "fontSize": 128}, ensure_ascii=False),
         content_box=pb.SpriteBox(x=0, y=0, width=1080, height=1920),
@@ -1551,9 +1561,9 @@ def fit_for_real(tmp_path: Path, code: str, placements: list[OverlayPlacement], 
             pb.SpriteParameter(key="text", label="文字", access=pb.OPERATOR_ACCESS_VISIBLE_EDITABLE, default_value=pb.ScalarValue(string_value="标题"), min_length=1, max_length=100),
             pb.SpriteParameter(key="fontSize", label="字号", access=pb.OPERATOR_ACCESS_VISIBLE_EDITABLE, default_value=pb.ScalarValue(number_value=128), minimum=24, maximum=240),
         ],
-    )
-    overlay = plan_overlay(placements, {"t": published}, seconds, 120)
-    asyncio.run(overlay_render.fit_texts(Renderer(settings), overlay, {"t": published}, tmp_path / "fit"))
+    ) for sprite_id, code in ({"t": codes} if isinstance(codes, str) else codes).items()}
+    overlay = plan_overlay(placements, published, seconds, 120)
+    asyncio.run(overlay_render.fit_texts(Renderer(settings), overlay, published, tmp_path / "fit"))
     return overlay
 
 
@@ -1581,8 +1591,9 @@ def test_sprite_render_fits_each_distinct_cue_in_one_browser_run(tmp_path) -> No
     renderer = FitRenderer(capacity=40)
     asyncio.run(overlay_render.fit_texts(renderer, overlay, {"t": T}, tmp_path / "fit"))
     [request] = renderer.requests
+    [sprite] = request["sprites"]
     # Each item is mounted at the length its Sprite reads: the previewed 90 frames when held, otherwise its own.
-    assert [(item["text"], item["frames"], item["length"]) for item in request["fit"]] == [
+    assert [(item["text"], item["frames"], item["length"]) for item in sprite["fit"]] == [
         ("短句", [45], 90), ("测" * 30, [0, 24, 49, 74, 99], 100), ("够短", [0, 29, 59, 89, 119], 120)]
     assert request["composition"]["duration_frames"] == 120
     assert [item["config"]["fontSize"] for item in overlay.instances] == [40, 40, 40, 40]
@@ -1602,7 +1613,8 @@ def test_fit_mounts_each_content_at_the_length_it_plays(tmp_path) -> None:
     overlay = plan_overlay([clip("短标题", 1.0), clip("长一点的标题", 3.0)], PUBLICATIONS, 3.0, 120)
     asyncio.run(overlay_render.fit_texts(renderer, overlay, PUBLICATIONS, tmp_path / "fit"))
     [request] = renderer.requests
-    assert [(item["text"], item["length"]) for item in request["fit"]] == [("短标题", 30), ("长一点的标题", 90)]
+    [sprite] = request["sprites"]
+    assert [(item["text"], item["length"]) for item in sprite["fit"]] == [("短标题", 30), ("长一点的标题", 90)]
 
 
 # 场景：相同文字的摆放只差宿主变换（放大、移到边缘并旋转）时分别测量，每份带自己的变换和 Sprite 的内容区域；
@@ -1614,20 +1626,21 @@ def test_fit_measures_each_placement_where_its_transform_puts_it(tmp_path) -> No
     overlay = plan_overlay(placements, PUBLICATIONS, 3.0, 120)
     asyncio.run(overlay_render.fit_texts(renderer, overlay, PUBLICATIONS, tmp_path / "fit"))
     [request] = renderer.requests
-    assert [(item["index"], item["transform"]) for item in request["fit"]] == [(0, {}), (1, {"scale": 2}), (3, {"x": 100, "rotation": 90})]
-    assert request["box"] == {"x": 90, "y": 760, "width": 900, "height": 400}
+    [sprite] = request["sprites"]
+    assert [(item["index"], item["transform"]) for item in sprite["fit"]] == [(0, {}), (1, {"scale": 2}), (3, {"x": 100, "rotation": 90})]
+    assert sprite["box"] == {"x": 90, "y": 760, "width": 900, "height": 400}
 
 
 # 场景：大量不同字幕切片在一次浏览器运行里测量时，墙钟期限按切片数放宽，沙箱 CPU 上限随期限一起放宽，
 # 不会在期限之前先耗尽默认的 300 CPU 秒而以 render_failed 结束。
 def test_fit_cpu_cap_grows_with_its_deadline(tmp_path) -> None:
-    """100 个不同的定格切片：期限 500 秒，CPU 上限与叠加渲染同样按期限 × 核数计算。"""
+    """100 个不同的定格切片：期限 510 秒（每条 5 秒、每个 Sprite 10 秒），CPU 上限与叠加渲染同样按期限 × 核数计算。"""
     cues = [cue(f"第{index}句", index * 36, index * 36 + 30) for index in range(100)]
     overlay = plan_sprite_render(render_input(text="", keywords=[], effect_total_frames=3600, cues=cues), T)
     renderer = FitRenderer(capacity=240)
     asyncio.run(overlay_render.fit_texts(renderer, overlay, {"t": T}, tmp_path / "fit"))
-    assert renderer.limits == [(500, overlay_cpu_seconds(500))]
-    assert overlay_cpu_seconds(500) >= 500 > overlay_render.CPU_SECONDS
+    assert renderer.limits == [(510, overlay_cpu_seconds(510))]
+    assert overlay_cpu_seconds(510) >= 510 > overlay_render.CPU_SECONDS
 
 
 # 字幕框的宽度随 Sprite 读到的长度变化：超过 60 帧时是 300px 宽的 overflow hidden 窄框，否则是 972px 宽的框，都不换行。
@@ -1702,3 +1715,28 @@ def test_real_browser_keeps_a_short_title_in_a_line_mask(tmp_path: Path) -> None
     """两个字的标题保持 128 的字号。"""
     overlay = fit_for_real(tmp_path, LINE_MASK_TITLE, [titled("标题")], 1.0)
     assert overlay.instances[0]["config"]["fontSize"] == 128
+
+
+# 场景：一个模板里有两个不同的字效时，所有文字在一次浏览器运行里、一个期限内测量，不再每个 Sprite 启动一次浏览器；
+# 每个 Sprite 带自己的源码、内容区域与条目，结果写回各自的实例。
+def test_fit_measures_every_text_sprite_in_one_browser_run(tmp_path) -> None:
+    """字效 c 与 t 各一个摆放：worker 只运行一次，收到两个 Sprite，期限仍是默认的 180 秒；两个实例都缩到 48。"""
+    renderer = FitRenderer(capacity=48)
+    second = OverlayPlacement.model_validate({"spriteId": "t", "start": 0, "editor": {"remotion": {"parameters": [{"key": "text", "stringValue": "第二个标题"}]}}})
+    overlay = plan_overlay([clip("第一个标题"), second], PUBLICATIONS, 3.0, 120)
+    asyncio.run(overlay_render.fit_texts(renderer, overlay, PUBLICATIONS, tmp_path / "fit"))
+    [request] = renderer.requests
+    assert [[item["text"] for item in sprite["fit"]] for sprite in request["sprites"]] == [["第一个标题"], ["第二个标题"]]
+    assert renderer.limits == [(180, overlay_cpu_seconds(180))]
+    assert [item["config"]["fontSize"] for item in overlay.instances] == [48, 48]
+
+
+# 场景：真实浏览器里，一次运行先后加载两个不同的字效：t 是自动换行的标题，放大 2 倍后要缩小；u 是一行高的遮罩，短标题不变。
+# 每个摆放都按自己 Sprite 的组件测量。
+@pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
+def test_real_browser_fits_two_sprites_in_one_run(tmp_path: Path) -> None:
+    """t 不超过 67；u 保持 128。"""
+    placements = [titled("测" * 8, font_size=100, scale=2), titled("标题", sprite_id="u")]
+    sizes = [item["config"]["fontSize"] for item in fit_for_real(tmp_path, {"t": WRAPPED_TITLE, "u": LINE_MASK_TITLE}, placements, 1.0).instances]
+    assert 60 <= sizes[0] <= 67
+    assert sizes[1] == 128

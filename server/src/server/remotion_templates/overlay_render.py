@@ -221,8 +221,9 @@ async def fit_texts(renderer: Renderer, overlay: Overlay, sprites: dict[str, pb.
     and, when the text is cut off, leaves the canvas or is unreadably small, lowers the `fontSize` to the largest
     whole size (down to the published minimum) at which it fits. Text that already fits keeps the size it was given.
     Text that does not fit even at the smallest size fails the render with `text_too_long`, so the bus gets a clear
-    reason instead of a clipped text. Only effects with the required `text` and `fontSize` parameters take part, one
-    browser run per Sprite; a Sprite that cannot be mounted is left to the render, which reports its own failure.
+    reason instead of a clipped text. Only effects with the required `text` and `fontSize` parameters take part, all
+    of them in one browser run (the render slot waits for it, so its deadline grows with what it measures); a Sprite
+    that cannot be mounted is left to the render, which reports its own failure.
     """
     from .tool_validation import ToolValidator, ValidationUnavailable
     from .tools.contracts import ComponentDefinition
@@ -247,34 +248,39 @@ async def fit_texts(renderer: Renderer, overlay: Overlay, sprites: dict[str, pb.
             "index": index, "values": config, "text": text, "size_key": "fontSize", "min": math.ceil(size["minimum"]),
             "frames": frames, "length": length, "transform": transform,
         })
-    validator = ToolValidator(renderer, directory)
-    for sprite_id, distinct in groups.items():
-        sprite = sprites[sprite_id]
-        keys, items = list(distinct), list(distinct.values())
-        # Many distinct subtitles are measured in one browser run: leave a few seconds for each.
-        timeout = max(renderer.settings.render_timeout_seconds, 5 * len(items))
-        try:
-            fits = await validator.fit_texts(
-                ComponentDefinition(
-                    code=sprite.tsx_code, parameter_schema=json.loads(sprite.config_schema_json),
-                    default_parameters=json.loads(sprite.default_config_json),
-                ),
-                {"width": overlay.width, "height": overlay.height, "fps": overlay.fps, "duration_frames": max(item["length"] for item in items)},
-                overlay.instances[items[0]["index"]]["host"]["box"],
-                items,
-                # The CPU cap grows with the deadline, or a long run of binary searches ends on it before the timeout.
-                timeout_seconds=timeout, cpu_seconds=overlay_cpu_seconds(timeout),
-            )
-        except ValidationUnavailable as exc:
-            raise OverlayError("render_failed", "叠加视频渲染失败") from exc
-        for key, item, fit in zip(keys, items, fits):
+    if not groups:
+        return
+    measured = [(sprite_id, list(distinct), list(distinct.values())) for sprite_id, distinct in groups.items()]
+    items = [item for *_, group in measured for item in group]
+    # One browser run measures every distinct text: a few seconds for each, and for loading each Sprite.
+    timeout = max(renderer.settings.render_timeout_seconds, 5 * len(items) + 10 * len(measured))
+    try:
+        answers = await ToolValidator(renderer, directory).fit_texts(
+            [
+                (
+                    ComponentDefinition(
+                        code=sprites[sprite_id].tsx_code, parameter_schema=json.loads(sprites[sprite_id].config_schema_json),
+                        default_parameters=json.loads(sprites[sprite_id].default_config_json),
+                    ),
+                    overlay.instances[group[0]["index"]]["host"]["box"],
+                    group,
+                )
+                for sprite_id, _, group in measured
+            ],
+            {"width": overlay.width, "height": overlay.height, "fps": overlay.fps, "duration_frames": max(item["length"] for item in items)},
+            # The CPU cap grows with the deadline, or a long run of binary searches ends on it before the timeout.
+            timeout_seconds=timeout, cpu_seconds=overlay_cpu_seconds(timeout),
+        )
+    except ValidationUnavailable as exc:
+        raise OverlayError("render_failed", "叠加视频渲染失败") from exc
+    for (sprite_id, keys, group), fits in zip(measured, answers):
+        for key, item, fit in zip(keys, group, fits):
             if not fit["fits"]:
                 raise OverlayError("text_too_long", "文字过长：缩到最小字号仍无法完整显示，请缩短文字")
             if fit["size"] != item["values"]["fontSize"]:
                 logger.info("叠加渲染 Sprite %s 的文字（%d 字）字号 %s 缩小为 %s", sprite_id, len(item["text"]), item["values"]["fontSize"], fit["size"])
                 for index in members[(sprite_id, key)]:
                     overlay.instances[index]["config"] = {**item["values"], "fontSize": fit["size"]}
-
 
 async def probe_overlay(path: Path, overlay: Overlay) -> None:
     """Check size, rate, frame count and the alpha flag of the rendered file; raise on any mismatch."""

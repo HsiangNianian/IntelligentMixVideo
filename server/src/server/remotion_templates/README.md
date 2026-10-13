@@ -361,21 +361,22 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   `duration_too_long`.
 - **Text fit**: a generated text effect cannot know how long a title the bus will send, so the host fits the text a
   placement really carries (its `text` override, up to the published `maxLength`) before rendering. For every text
-  Sprite with `text` and `fontSize` parameters, inside the render slot, the isolated browser mounts the placement's own
-  values at the length its Sprite plays in the render (the length it reads as `durationInFrames`; a held text its
-  previewed length) and measures the text boxes the same way `sprite.create` does (cut off by an ancestor whose
-  overflow is not visible or that contains its paint, outside the canvas once the placement's host transform moves, scales and rotates it, lines
-  under 20px tall, or only part of the text shown). Placements that differ only in length or transform are measured
-  separately; the transform's opacity does not move text and is ignored. Like `text_fit`, a size fits when the text is
-  shown in full on one of the frames that show it at its full size. Text that already fits keeps its `fontSize`; otherwise the
+  Sprite with `text` and `fontSize` parameters, inside the render slot, the isolated browser mounts the placement's
+  own values at the length its Sprite plays in the render (the length it reads as `durationInFrames`; a held text its
+  previewed length) and measures the text boxes the same way `sprite.create` does: cut off by an ancestor whose
+  overflow is not visible or that contains its paint, outside the canvas once the placement's host transform moves,
+  scales and rotates it, lines under 20px tall, or only part of the text shown, judged on the frames that show the
+  text at its full size. Placements that differ only in length or transform are measured separately; the
+  transform's opacity does not move text and is ignored. Text that already fits keeps its `fontSize`; otherwise the
   host lowers `fontSize` to the largest whole size, down to the published minimum, at which it is shown in full
   (binary search; the size is logged, the template and the sealed source are untouched). Text that does not fit even
   at the minimum fails the task with `text_too_long` and a fixed message (the callback's `errorMessage`) so the bus can
   tell the user to shorten it, instead of publishing a clipped title. Other Sprites skip the pass, and a fit sandbox
   that cannot start fails the task as `render_failed`. `POST /api/sprites/render` runs the same pass on each distinct
-  text or cue (a held text is measured on its frozen frame), one browser run per Sprite. A run gets a few seconds per
-  distinct text beyond the default validation timeout, and its sandbox CPU cap grows with that deadline like an
-  overlay render's. It is a geometric measurement, not a visual review.
+  text or cue (a held text is measured on its frozen frame). All text Sprites of a render are measured in one browser
+  run, each loaded in turn on the same page, under one deadline: the default validation timeout, or 5 seconds per
+  distinct text plus 10 per Sprite when that is longer; the sandbox CPU cap grows with that deadline like an overlay
+  render's. It is a geometric measurement, not a visual review.
 - **Acceptance**: also a 503 when ZOS, ffprobe, bubblewrap, prlimit, Node, the browser or the managed fonts are
   missing (the isolated renderer is Linux-only), instead of accepting tasks that can only fail later. An empty
   `placements` (`no_placements`) or a `spriteId` that is not published (`sprite_missing`) is a 422.

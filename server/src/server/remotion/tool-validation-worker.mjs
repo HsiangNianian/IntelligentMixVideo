@@ -140,8 +140,13 @@ async function prepareSource() {
   return checked.diagnostics.every((item) => item.severity !== "error");
 }
 
-/** Build a page host with only the submitted component and immutable context. */
-async function bundleHost() {
+/** The host context of the submitted component: its parameters, canvas and, for boundary samples, content box. */
+function hostConfig() {
+  return { defaults: request.default_parameters, configured: request.parameters ?? request.default_parameters, parameter_schema: request.parameter_schema, composition: request.composition, ...(request.box ? { box: request.box } : {}) };
+}
+
+/** Build a page host with only the component in `Template.tsx` and the immutable context `config`. */
+async function bundleHost(config) {
   const output = await build({
     entryPoints: [`${rendererRoot}/tool-validation-host.tsx`], bundle: true, write: false,
     platform: "browser", format: "iife", target: "es2022", jsx: "automatic", minify: false,
@@ -151,7 +156,7 @@ async function bundleHost() {
       setup(builder) {
         builder.onResolve({ filter: /^imv:template$/ }, () => ({ path: `${root}/Template.tsx` }));
         builder.onResolve({ filter: /^imv:config$/ }, () => ({ path: "config", namespace: "imv" }));
-        builder.onLoad({ filter: /.*/, namespace: "imv" }, () => ({ contents: JSON.stringify({ defaults: request.default_parameters, configured: request.parameters ?? request.default_parameters, parameter_schema: request.parameter_schema, composition: request.composition, ...(request.box ? { box: request.box } : {}) }), loader: "json" }));
+        builder.onLoad({ filter: /.*/, namespace: "imv" }, () => ({ contents: JSON.stringify(config), loader: "json" }));
       },
     }],
   });
@@ -178,6 +183,19 @@ function serveBundle() {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", () => resolve({ server, url: `http://127.0.0.1:${server.address().port}/` }));
   });
+}
+
+/** Open the browser and its page at the canvas size, ready to load the host from `url`. */
+async function openPage(url) {
+  // Chromium creates its profile under the attempt-local temporary directory.
+  await fs.mkdir(os.tmpdir(), { recursive: true });
+  const browser = await openBrowser("chrome", { browserExecutable: request.browser, logLevel: "error", chromiumOptions: { gl: "swangle", enableMultiProcessOnLinux: true } });
+  const pages = await browser.pages();
+  const page = pages[0] ?? await browser.newPage({ context: () => null, logLevel: "error", indent: false, pageIndex: 0, onBrowserLog: null, onLog: () => undefined });
+  page.__imvUrl = url;
+  // The real overlay render opens its page at the composition size, so vw/vh, window.inner* and media queries must see that size here too.
+  await page.setViewport({ width: request.composition.width, height: request.composition.height, deviceScaleFactor: 1 });
+  return { browser, page };
 }
 
 /** Wait for the host bridge. Returns the error a component threw while loading, which keeps the host from ever mounting, else null. */
@@ -523,17 +541,18 @@ async function textFitCheck(page) {
 }
 
 /**
- * Host-side fit of the text a render really passes: for each item, the largest whole font size from `min` up to
+ * Host-side fit of the text a render really passes, for one Sprite (`sprite.fit` items, `sprite.box` content box):
+ * for each item, the largest whole font size from `min` up to
  * the requested one at which the text is shown in full on the item's own `frames`. Each item is mounted at the
  * `length` its Sprite plays in the render (which it reads as `durationInFrames`) and measured where its host
  * `transform` puts it on the canvas. The requested size is tried first, so text that already fits is untouched;
  * `fits: false` means even `min` does not fit. A component that throws, or never renders the text, is left alone
  * (the render reports its own failure). Sizes are assumed to fit monotonically, so a binary search.
  */
-async function fitTexts(page, loadError) {
+async function fitTexts(page, loadError, sprite) {
   if (loadError !== null) throw new Error(`Component runtime error: ${loadError}`);
   const { width, height } = request.composition;
-  const box = request.box ?? { x: 0, y: 0, width, height };
+  const box = sprite.box ?? { x: 0, y: 0, width, height };
   const fits = async (item, size) => {
     await page.evaluate(() => window.__imvTool.reset());
     await page.evaluate((frames) => window.__imvTool.setDuration(frames), item.length);
@@ -541,8 +560,8 @@ async function fitTexts(page, loadError) {
     const measured = await measureTextFit(page, item.text, item.frames, hostPlacement(box, item.transform));
     return measured.error !== null || measured.shown === 0 || measured.fits;
   };
-  result.fits = [];
-  for (const item of request.fit) {
+  const answers = [];
+  for (const item of sprite.fit) {
     const requested = item.values[item.size_key];
     let size = requested;
     let ok = await fits(item, requested);
@@ -559,7 +578,36 @@ async function fitTexts(page, loadError) {
         size = low;
       } else size = item.min;
     }
-    result.fits.push({ index: item.index, fits: ok, size });
+    answers.push({ index: item.index, fits: ok, size });
+  }
+  return answers;
+}
+
+/**
+ * Fit mode: the texts of every text Sprite of one render, measured in one browser under one deadline. Each Sprite's
+ * sealed source (type-checked when it was published) is policy-checked again, bundled into its own host and loaded
+ * on the same page in turn. `result.fits` holds one list of answers per Sprite, in request order.
+ */
+async function fitAll() {
+  await fs.symlink(`${rendererRoot}/node_modules`, `${root}/node_modules`).catch(() => undefined);
+  const { server, url } = await serveBundle();
+  let browser;
+  try {
+    const opened = await openPage(url);
+    browser = opened.browser;
+    result.fits = [];
+    for (const sprite of request.sprites) {
+      sourcePolicy(sprite.code);
+      await fs.writeFile(`${root}/Template.tsx`, sprite.code, "utf8");
+      await bundleHost({
+        defaults: sprite.default_parameters, configured: sprite.default_parameters, parameter_schema: sprite.parameter_schema,
+        composition: request.composition, ...(sprite.box ? { box: sprite.box } : {}),
+      });
+      result.fits.push(await fitTexts(opened.page, await waitReady(opened.page), sprite));
+    }
+  } finally {
+    if (browser) await browser.close({ silent: true });
+    await new Promise((resolve) => server.close(resolve));
   }
 }
 
@@ -613,28 +661,20 @@ async function sampleChecks(page, loadError) {
 }
 
 async function main() {
+  if (request.mode === "fit") return fitAll();
   const valid = await prepareSource();
   if (!valid) { result.passed = false; return; }
   if (request.mode === "code") { result.passed = checks.every((item) => item.status === "passed" || item.status === "pass"); return; }
-  await bundleHost();
+  await bundleHost(hostConfig());
   const { server, url } = await serveBundle();
   let browser;
   try {
-    // Chromium creates its profile under the attempt-local temporary directory.
-    await fs.mkdir(os.tmpdir(), { recursive: true });
-    browser = await openBrowser("chrome", { browserExecutable: request.browser, logLevel: "error", chromiumOptions: { gl: "swangle", enableMultiProcessOnLinux: true } });
-    const pages = await browser.pages();
-    const page = pages[0] ?? await browser.newPage({ context: () => null, logLevel: "error", indent: false, pageIndex: 0, onBrowserLog: null, onLog: () => undefined });
-    page.__imvUrl = url;
-    // The real overlay render opens its page at the composition size, so vw/vh, window.inner* and media queries must see that size here too.
-    await page.setViewport({ width: request.composition.width, height: request.composition.height, deviceScaleFactor: 1 });
+    const opened = await openPage(url);
+    browser = opened.browser;
+    const { page } = opened;
     const loadError = await waitReady(page);
     if (request.mode === "samples") {
       await sampleChecks(page, loadError);
-      return;
-    }
-    if (request.mode === "fit") {
-      await fitTexts(page, loadError);
       return;
     }
     let baseReady = true;

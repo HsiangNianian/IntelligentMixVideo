@@ -303,28 +303,32 @@ class ToolValidator:
         return RenderValidationReport(passed=passed, composition=composition, code_validation=code, checks=checks, tests=tests, custom_tests_executed=executed)
 
     async def fit_texts(
-        self, component: ComponentDefinition, composition: dict[str, int], box: dict[str, float], items: list[dict[str, Any]],
+        self, sprites: list[tuple[ComponentDefinition, dict[str, float], list[dict[str, Any]]]], composition: dict[str, int],
         timeout_seconds: float | None = None, cpu_seconds: int = CPU_SECONDS,
-    ) -> list[dict[str, Any]]:
+    ) -> list[list[dict[str, Any]]]:
         """Find, for each text a render really passes, the largest font size that shows it in full.
 
-        Each item carries complete ``values`` (including the text and the requested size), the ``text`` to look
-        for, the name of the size parameter (``size_key``), its ``min``, the ``frames`` to measure at the ``length``
-        its Sprite plays and the host ``transform`` that places it inside ``box`` on the canvas. The answer
-        per item is ``{index, fits, size}``: ``size`` is the requested size when the text already fits, otherwise
-        the largest smaller whole size that does; ``fits`` is false when even ``min`` does not. A worker that
-        cannot answer is an infrastructure failure, never a pass.
+        ``sprites`` lists, per text Sprite of the render, its component, its content ``box`` and its items; all of
+        them are measured in one browser run under one deadline. Each item carries complete ``values`` (including the
+        text and the requested size), the ``text`` to look for, the name of the size parameter (``size_key``), its
+        ``min``, the ``frames`` to measure at the ``length`` its Sprite plays and the host ``transform`` that places it
+        inside ``box`` on the canvas. The answer is one list per Sprite with ``{index, fits, size}`` per item:
+        ``size`` is the requested size when the text already fits, otherwise the largest smaller whole size that
+        does; ``fits`` is false when even ``min`` does not. A worker that cannot answer is an infrastructure failure,
+        never a pass.
         """
         try:
             directory = self._attempt("fit-texts")
             request = {
                 "mode": "fit",
-                "code": component.code,
-                "parameter_schema": component.parameter_schema,
-                "default_parameters": component.default_parameters,
                 "composition": composition,
-                "box": box,
-                "fit": items,
+                "sprites": [
+                    {
+                        "code": component.code, "parameter_schema": component.parameter_schema,
+                        "default_parameters": component.default_parameters, "box": box, "fit": items,
+                    }
+                    for component, box, items in sprites
+                ],
                 "browser": self.renderer.worker_browser_path(),
             }
             (directory / "request.json").write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8")
@@ -337,9 +341,11 @@ class ToolValidator:
             if item.get("name") == "runtime" and item.get("status") == "error":
                 raise ValidationUnavailable(str(item.get("message") or "Fit worker runtime error"))
         fits = payload.get("fits") if isinstance(payload, dict) else None
-        if (
-            not isinstance(fits, list) or [item.get("index") for item in fits if isinstance(item, dict)] != [item["index"] for item in items]
-            or not all(isinstance(item.get("fits"), bool) and isinstance(item.get("size"), (int, float)) for item in fits)
+        if not isinstance(fits, list) or len(fits) != len(sprites) or not all(
+            isinstance(answers, list)
+            and [answer.get("index") for answer in answers if isinstance(answer, dict)] == [item["index"] for item in items]
+            and all(isinstance(answer.get("fits"), bool) and isinstance(answer.get("size"), (int, float)) for answer in answers)
+            for answers, (_, _, items) in zip(fits, sprites)
         ):
             raise ValidationUnavailable("Text fit worker returned an incomplete report")
         return fits
