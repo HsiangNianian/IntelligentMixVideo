@@ -2,9 +2,10 @@
  * 新会话发送前的字效时长选择：常用秒数下拉加自定义输入，默认 5 秒。
  * 只在首次请求前显示；通过 `onChange` 上报整帧数，输入无效时上报 null，由聊天面板禁止发送。
  */
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { cn } from "@/lib/utils";
 import { DEFAULT_DURATION_SECONDS, DURATION_PRESETS, MAX_DURATION_SECONDS, MIN_DURATION_SECONDS, durationFrames } from "./composition";
 
 const CUSTOM = "custom";
@@ -14,14 +15,19 @@ interface Props {
   onChange: (frames: number | null) => void;
 }
 
-/** 下拉选常用时长或「自定义」；自定义输入按秒解析并换算为整帧，范围外显示提示。 */
+/** 下拉选常用时长或「自定义」；自定义输入按秒解析并换算为整帧。空输入时说明范围，范围外或无法解析时显示错误，不让发送按钮无故变灰。 */
 export function DurationPicker({ disabled, onChange }: Props) {
   const [choice, setChoice] = useState(String(DEFAULT_DURATION_SECONDS));
   const [custom, setCustom] = useState("");
-  const invalid = choice === CUSTOM && custom !== "" && durationFrames(Number(custom)) === null;
-  /** 选择预设时立即上报；切到自定义时按已输入内容上报，空输入视为无效。 */
+  // 浏览器对「-」「1e」等无法解析的数字输入只给出空值，需从 validity.badInput 区分「未填」和「填错」。
+  const [rejected, setRejected] = useState(false);
+  const hint = useId();
+  const invalid = choice === CUSTOM && (rejected || (custom !== "" && durationFrames(Number(custom)) === null));
+  const explained = invalid || custom === "";
+  /** 选择预设时立即上报；切到自定义时按已输入内容上报，空输入视为无效。重新挂载的输入框没有残留的错误输入。 */
   function choose(value: string) {
     setChoice(value);
+    setRejected(false);
     onChange(durationFrames(value === CUSTOM ? (custom === "" ? NaN : Number(custom)) : Number(value)));
   }
   return (
@@ -45,6 +51,7 @@ export function DurationPicker({ disabled, onChange }: Props) {
             step="any"
             aria-label="自定义时长（秒）"
             aria-invalid={invalid}
+            aria-describedby={explained ? hint : undefined}
             placeholder="秒"
             disabled={disabled}
             value={custom}
@@ -53,8 +60,13 @@ export function DurationPicker({ disabled, onChange }: Props) {
               setCustom(event.target.value);
               onChange(event.target.value === "" ? null : durationFrames(Number(event.target.value)));
             }}
+            onInput={(event) => setRejected(event.currentTarget.validity.badInput)}
           />
-          {invalid && <span role="alert" className="basis-full text-xs text-destructive">请输入 {MIN_DURATION_SECONDS}～{MAX_DURATION_SECONDS} 秒</span>}
+          {explained && (
+            <span id={hint} role={invalid ? "alert" : undefined} className={cn("basis-full text-xs", invalid ? "text-destructive" : "text-muted-foreground")}>
+              请输入 {MIN_DURATION_SECONDS}～{MAX_DURATION_SECONDS} 秒
+            </span>
+          )}
         </>
       )}
     </div>

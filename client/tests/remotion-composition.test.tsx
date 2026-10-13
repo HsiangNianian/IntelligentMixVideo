@@ -72,10 +72,14 @@ test("自定义时长换算整帧并拦截超限输入", async () => {
   fireEvent.change(screen.getByLabelText("字效描述"), { target: { value: "生成标题" } });
   const send = screen.getByRole<HTMLButtonElement>("button", { name: "发送" });
   expect(send.disabled).toBe(true);
+  // 审计复现：空输入时发送按钮曾无故变灰；现在输入框下说明范围，但不作为错误播报。
+  expect(screen.getByText("请输入 0.1～30 秒").getAttribute("role")).toBeNull();
+  expect(screen.getByLabelText("自定义时长（秒）").getAttribute("aria-describedby")).toBe(screen.getByText("请输入 0.1～30 秒").id);
   fireEvent.change(screen.getByLabelText("自定义时长（秒）"), { target: { value: "31" } });
   expect(screen.getByRole("alert").textContent).toContain("0.1～30");
   expect(send.disabled).toBe(true);
   fireEvent.change(screen.getByLabelText("自定义时长（秒）"), { target: { value: "2.55" } });
+  expect(screen.queryByText("请输入 0.1～30 秒")).toBeNull();
   expect(screen.getByRole<HTMLButtonElement>("button", { name: "发送" }).disabled).toBe(false);
   fireEvent.click(screen.getByRole("button", { name: "发送" }));
   await waitFor(() => expect(creations()).toHaveLength(1));
