@@ -64,6 +64,8 @@ enum SpriteParameterFormat {
   SPRITE_PARAMETER_FORMAT_UNSPECIFIED = 0;
   // 颜色字符串，格式为 #RRGGBB 或 #RRGGBBAA。
   SPRITE_PARAMETER_FORMAT_COLOR = 1;
+  // 整数：number_value 只取整数值，覆盖值不能带小数。
+  SPRITE_PARAMETER_FORMAT_INTEGER = 2;
 }
 
 // 已发布版本允许运营查看或修改的一个参数控件。

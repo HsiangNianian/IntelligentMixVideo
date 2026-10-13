@@ -222,8 +222,9 @@ with a kind and top-level parameter bindings (`spec.sprite.kind`/`bindings`); ol
 changed: the version must expose that kind's required parameters (`categories.REQUIRED`), otherwise the 422 lists
 them in Chinese. A text Sprite fixes `text_prop` to `text` and `keywords_prop` to `""` or `keywords` (only when the
 version binds a keywords parameter); other kinds leave both empty. Every bound top-level parameter, text and
-keywords included, becomes a `VISIBLE_EDITABLE` control with its bounds, enum, colour format, string lengths and
-list size; the instances' remaining nested props stay internal. `content_box` records the union of the instances'
+keywords included, becomes a `VISIBLE_EDITABLE` control with its bounds, enum, colour or integer format (an
+`integer` schema is marked `SPRITE_PARAMETER_FORMAT_INTEGER`, since `number_value` cannot tell them apart, and
+overrides with a fraction are refused), string lengths and list size; the instances' remaining nested props stay internal. `content_box` records the union of the instances'
 layout boxes clipped to the canvas, the pivot of the host transform; summaries of older publications report the
 whole canvas. A new publication first renders boundary samples (`boundary.py`, `ToolValidator.validate_samples`,
 the worker's `samples` mode): the defaults, every top-level parameter at its low and at its high end (numbers at

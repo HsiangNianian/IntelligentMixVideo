@@ -19,7 +19,7 @@ def editor(*parameters: dict, **transform) -> RemotionTrackEditor:
 def test_without_overrides_the_published_defaults_render_around_the_content_box():
     """没有 editor 时使用发布默认配置，宿主层只带内容区域。"""
     config, host = resolve(published_sprite(), None)
-    assert config == {"text": "标题", "fontSize": 64, "fontWeight": 400, "color": "#FFFFFF", "keywords": [], "glow": 0.5}
+    assert config == {"text": "标题", "fontSize": 64, "fontWeight": 400, "color": "#FFFFFF", "keywords": [], "glow": 0.5, "particleCount": 20}
     assert host == {"box": BOX, "transform": {}}
 
 
@@ -46,6 +46,7 @@ def test_overrides_merge_into_the_defaults_and_the_transform_is_kept():
     ({"key": "keywords", "stringListValue": {"values": ["词"] * 21}}, "最多 20 项"),
     ({"key": "keywords", "stringListValue": {"values": ["长" * 101]}}, "文字长度超出允许范围"),
     ({"key": "color", "stringValue": "red"}, "不符合发布契约"),
+    ({"key": "particleCount", "numberValue": 1.5}, "参数 particleCount 必须是整数"),
 ])
 def test_overrides_outside_the_published_contract_are_refused(override, message):
     """覆盖必须指向可编辑参数、类型相同、在范围与枚举内，合并后仍满足发布时的 Schema。"""

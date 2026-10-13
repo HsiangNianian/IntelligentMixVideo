@@ -78,7 +78,7 @@ export function assetParameter(parameter: SpriteParameter): AssetParameter | nul
     case "boolValue":
       return { field: { ...base, kind: "boolean" }, editable, defaultValue: value.value };
     case "numberValue":
-      return { field: { ...base, kind: "number" }, editable, defaultValue: value.value };
+      return { field: { ...base, kind: parameter.format === SpriteParameterFormat.INTEGER ? "integer" : "number" }, editable, defaultValue: value.value };
     default:
       return null;
   }

@@ -29,6 +29,7 @@ class SpriteParameterFormat(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     SPRITE_PARAMETER_FORMAT_UNSPECIFIED: _ClassVar[SpriteParameterFormat]
     SPRITE_PARAMETER_FORMAT_COLOR: _ClassVar[SpriteParameterFormat]
+    SPRITE_PARAMETER_FORMAT_INTEGER: _ClassVar[SpriteParameterFormat]
 SPRITE_KIND_UNSPECIFIED: SpriteKind
 SPRITE_KIND_TEXT: SpriteKind
 SPRITE_KIND_FILTER_OVERLAY: SpriteKind
@@ -40,6 +41,7 @@ OPERATOR_ACCESS_VISIBLE_EDITABLE: OperatorAccess
 OPERATOR_ACCESS_INTERNAL: OperatorAccess
 SPRITE_PARAMETER_FORMAT_UNSPECIFIED: SpriteParameterFormat
 SPRITE_PARAMETER_FORMAT_COLOR: SpriteParameterFormat
+SPRITE_PARAMETER_FORMAT_INTEGER: SpriteParameterFormat
 
 class StringList(_message.Message):
     __slots__ = ("values",)

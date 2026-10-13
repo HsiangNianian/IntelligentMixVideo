@@ -126,8 +126,8 @@ def remotion_track(track_id: str = "clip", **changes) -> dict:
 def published_sprite(sprite_id: str = SPRITE_ID, canvas: tuple[int, int, int] = (1080, 1920, 30), kind: int = 1):
     """一条完整的发布内容（`PublishedSprite`），画布为（宽、高、帧率）。
 
-    可编辑的 text（1～40 字）、fontSize（24～240）、fontWeight（400/700）、color（颜色）、keywords（最多 20 项），
-    一个只读的 glow，以及 (90, 760, 900, 400) 的内容区域。
+    可编辑的 text（1～40 字）、fontSize（24～240）、fontWeight（400/700）、color（颜色）、keywords（最多 20 项）、
+    整数 particleCount（1～200），一个只读的 glow，以及 (90, 760, 900, 400) 的内容区域。
     """
     from generated.imv.sprite.v1 import sprite_pb2 as sprite_pb
 
@@ -139,8 +139,9 @@ def published_sprite(sprite_id: str = SPRITE_ID, canvas: tuple[int, int, int] = 
         "color": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$"},
         "keywords": {"type": "array", "items": {"type": "string", "maxLength": 100}, "maxItems": 20},
         "glow": {"type": "number", "minimum": 0, "maximum": 1},
+        "particleCount": {"type": "integer", "minimum": 1, "maximum": 200},
     }, "additionalProperties": False}
-    defaults = {"text": "标题", "fontSize": 64, "fontWeight": 400, "color": "#FFFFFF", "keywords": [], "glow": 0.5}
+    defaults = {"text": "标题", "fontSize": 64, "fontWeight": 400, "color": "#FFFFFF", "keywords": [], "glow": 0.5, "particleCount": 20}
     editable = sprite_pb.OPERATOR_ACCESS_VISIBLE_EDITABLE
     number = lambda value: sprite_pb.ScalarValue(number_value=value)
     sprite = sprite_pb.PublishedSprite(
@@ -156,6 +157,7 @@ def published_sprite(sprite_id: str = SPRITE_ID, canvas: tuple[int, int, int] = 
             sprite_pb.SpriteParameter(key="color", label="颜色", access=editable, default_value=sprite_pb.ScalarValue(string_value="#FFFFFF"), format=sprite_pb.SPRITE_PARAMETER_FORMAT_COLOR),
             sprite_pb.SpriteParameter(key="keywords", label="关键词", access=editable, default_value=sprite_pb.ScalarValue(string_list_value=sprite_pb.StringList()), max_items=20, max_length=100),
             sprite_pb.SpriteParameter(key="glow", label="光晕", access=sprite_pb.OPERATOR_ACCESS_VISIBLE_READ_ONLY, default_value=number(0.5)),
+            sprite_pb.SpriteParameter(key="particleCount", label="粒子数", access=editable, default_value=number(20), minimum=1, maximum=200, format=sprite_pb.SPRITE_PARAMETER_FORMAT_INTEGER),
         ],
     )
     return sprite

@@ -50,6 +50,8 @@ def _checked(declared: pb.SpriteParameter, value):
     if expected != actual:
         raise ValueError(f"参数 {key} 的值类型与默认值不同")
     if actual == "number_value":
+        if declared.format == pb.SPRITE_PARAMETER_FORMAT_INTEGER and not value.is_integer():
+            raise ValueError(f"参数 {key} 必须是整数")
         if declared.HasField("minimum") and value < declared.minimum or declared.HasField("maximum") and value > declared.maximum:
             raise ValueError(f"参数 {key} 超出允许范围")
     items = value if actual == "string_list_value" else [value] if actual == "string_value" else []

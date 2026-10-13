@@ -178,6 +178,9 @@ def test_publish_copies_content_and_lists_summary_without_source(client: TestCli
     assert (parameters["color"].label, parameters["color"].format) == ("文字颜色", pb.SPRITE_PARAMETER_FORMAT_COLOR)
     assert (parameters["fontSize"].minimum, parameters["fontSize"].maximum) == (24, 240)
     assert [item.number_value for item in parameters["fontWeight"].allowed_values] == [400, 700]
+    # number_value cannot tell an integer from a number: the format keeps integer parameters integral.
+    assert parameters["fontWeight"].format == pb.SPRITE_PARAMETER_FORMAT_INTEGER
+    assert parameters["fontSize"].format == pb.SPRITE_PARAMETER_FORMAT_UNSPECIFIED
     assert (parameters["text"].default_value.string_value, parameters["text"].min_length, parameters["text"].max_length) == ("标题", 1, 40)
     keywords = parameters["keywords"]
     assert keywords.default_value.HasField("string_list_value") and list(keywords.default_value.string_list_value.values) == []

@@ -95,6 +95,9 @@ def _parameter(key: str, definition: dict, default) -> pb.SpriteParameter | None
         parameter.max_items = definition["maxItems"]
     if definition.get("pattern") == HEX_COLOR:
         parameter.format = pb.SPRITE_PARAMETER_FORMAT_COLOR
+    elif kind == "integer":
+        # number_value cannot tell an integer from a number; the format keeps controls and overrides integral.
+        parameter.format = pb.SPRITE_PARAMETER_FORMAT_INTEGER
     return parameter
 
 

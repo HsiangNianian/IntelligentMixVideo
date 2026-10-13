@@ -4,6 +4,7 @@ import { create } from "@bufbuild/protobuf";
 import { OperatorAccess, SpriteKind, SpriteParameterFormat, SpriteParameterSchema } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { SpriteAsset } from "@/features/sprites/model";
 import { assetParameter, categoryOf, overrideValues, transformFields } from "@/features/sprites/parameters";
+import { validParameter } from "@/components/ParameterControl";
 import { addClip, moveClip, removeClip, setClipParameter, setClipTransform } from "@/features/templates/clips";
 import { sampleDraft } from "./fixtures";
 
@@ -84,6 +85,11 @@ test("发布参数转换为控件，覆盖按点号路径展开", () => {
   const keywords = assetParameter(create(SpriteParameterSchema, { key: "keywords", access: OperatorAccess.VISIBLE_READ_ONLY, maxItems: 3, maxLength: 4, defaultValue: { value: { case: "stringListValue", value: { values: ["a"] } } } }));
   expect(keywords).toEqual({ field: { key: "keywords", label: "keywords", kind: "keywords", maxItems: 3, maxLength: 4 }, editable: false, defaultValue: ["a"] });
   expect(assetParameter(create(SpriteParameterSchema, { key: "secret", access: OperatorAccess.INTERNAL, defaultValue: { value: { case: "numberValue", value: 1 } } }))).toBeNull();
+  // number_value cannot tell an integer from a number; the format makes the control integral.
+  const count = assetParameter(create(SpriteParameterSchema, { key: "particleCount", access: OperatorAccess.VISIBLE_EDITABLE, minimum: 1, maximum: 200, format: SpriteParameterFormat.INTEGER, defaultValue: { value: { case: "numberValue", value: 20 } } }));
+  expect(count?.field.kind).toBe("integer");
+  expect(validParameter(count!.field, 1.5)).toBe(false);
+  expect(validParameter(count!.field, 2)).toBe(true);
   expect(overrideValues({ "title.size": 52, text: "新品" })).toEqual({ title: { size: 52 }, text: "新品" });
   expect(transformFields(SpriteKind.FILTER_OVERLAY)).toEqual(["opacity"]);
   expect(categoryOf(SpriteKind.TRANSITION_OVERLAY)).toBe("effect");
