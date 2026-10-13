@@ -271,4 +271,4 @@ HTTP 请求与轮询等待均为异步，不阻塞事件循环。等待预算必
 
 视频合成支持同一 `styleId` 下的 Remotion 动态字效；新 `text_target` 槽位沿用上游的 IMS 文字替代规则，旧独立用途快照继续兼容。保存接口接受仅有 `editor.remotion.businessTarget=title/subtitle` 的旧字效轨道，替换资产仍保留 IMS 与 Remotion 共存，不自动迁移为新槽位。使用方式、资产字段声明、旧资产适配、时长限制和联调清单见 [Remotion 接入说明](../docs/remotion-video-composition.md)。
 
-合成侧渲染失败会在 Remotion 数据目录的 `composition-overlay-failures/<task_id>/` 私有保留 `worker.log` 与异常链 `error.log`，临时视频和编译产物仍清理；公开错误保持稳定摘要，排障时读取私有日志。
+合成侧计划、时长适配打包、渲染或上传失败会在 Remotion 数据目录的 `composition-overlay-failures/<task_id>/` 私有保留 `worker.log` 与异常链 `error.log`（含子进程 stderr），临时视频和编译产物仍清理；公开错误保持稳定摘要，执行日志只记录根因的异常类型、代码位置与错误码，排障时读取私有日志。

@@ -290,4 +290,4 @@ git push origin v0.3.0
 - Remotion 叠加 worker 捕获错误后立即以非零状态退出，由 bubblewrap 清理残留进程、宿主保存失败并释放共享渲染名额；不能只设置 `process.exitCode`，否则 `openBrowser` 连接失败前产生的子进程可能使 Node 长期存活。私有 worker 日志记录浏览器启动/连接与稀疏帧进度，不包含业务正文；异步受理共用三个实际渲染名额，`video_composition` 总任务并发 `COMPOSITION_CONCURRENCY` 默认也为 3，对外的 `assembling` 包含等待名额、渲染及上传。
 - Remotion 字效生成提示与必备参数示例统一使用 `text` 的 `minLength: 1`、`maxLength: 100`；分类校验仍兼容已有合法范围，已发布资产及任务快照保留自己的封存 Schema，调整生成规则不会追溯改写，需通过新版本更新资产。
 - 模板保存兼容未填 `text_target` 但明确携带 `editor.remotion.businessTarget=title/subtitle` 的旧字效轨道，替换资产时保留两套文字共存；仍校验发布资产、画布、参数及禁止正文/关键词覆盖。新 `text_target` 保持 IMS 替代规则，客户端读取旧轨道不自动补写，右侧说明两套文字共存，显式重选作用对象才采用新槽位。
-- 合成侧 Remotion 渲染或上传失败在清理前私有保存 `composition-overlay-failures/<task_id>/worker.log` 与完整异常链 `error.log`（位于 Remotion 数据目录，任务诊断目录权限 0700）；公开七模块日志、GET 与回调仍只保留安全摘要。诊断写入失败不覆盖原任务错误，视频及编译目录照常清理。
+- 合成侧 Remotion 计划、时长适配打包、渲染或上传失败在清理前私有保存 `composition-overlay-failures/<task_id>/worker.log` 与完整异常链 `error.log`（附子进程 stderr；位于 Remotion 数据目录，任务诊断目录权限 0700）；公开七模块日志、GET 与回调仍只保留安全摘要，七模块日志另记根因的异常类型、代码位置与错误码，不含其文本。诊断写入失败不覆盖原任务错误，视频及编译目录照常清理。

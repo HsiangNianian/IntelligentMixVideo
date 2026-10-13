@@ -294,12 +294,36 @@ async def test_render_failure_keeps_private_cause_before_cleanup(composition_cas
         assert private.stat().st_mode & 0o777 == 0o700
 
 
+# 场景：渲染前的计划/时长适配打包失败时，公开错误只有固定摘要，打包器 stderr 等根因须进入私有诊断。
 @pytest.mark.anyio
-async def test_render_failure_is_terminal_not_sample_fallback(composition_case, monkeypatch):
+async def test_plan_failure_keeps_private_cause(composition_case, monkeypatch, tmp_path):
+    """打包失败不进入渲染名额，但异常链与子进程 stderr 仍私有保存，工作目录照常清理。"""
+    runtime = SimpleNamespace(settings=SimpleNamespace(overlay_max_seconds=120), store=SimpleNamespace(root=tmp_path))
+    async def get_runtime():
+        """使用隔离目录，不访问实际渲染服务。"""
+        return runtime
+    def fail(data, max_seconds, *, timeline=None):
+        """模拟时长适配打包器缺少依赖：原因只在 stderr 中。"""
+        try:
+            raise subprocess.CalledProcessError(1, ["node"], stderr="Cannot find module 'esbuild'")
+        except subprocess.CalledProcessError as cause:
+            raise ContentError("Remotion 合成时长适配打包失败") from cause
+    monkeypatch.setattr(remotion, "sprite_runtime", get_runtime)
+    monkeypatch.setattr(remotion, "plan", fail)
+    with pytest.raises(CompositionError) as caught:
+        await remotion.render("task", case(composition_case), 10)
+    assert caught.value.error["code"] == "remotion_asset_not_adapted"
+    detail = (tmp_path / "composition-overlay-failures" / "task" / "error.log").read_text()
+    assert "CalledProcessError" in detail and "Cannot find module 'esbuild'" in detail
+    assert not (tmp_path / "composition-overlays" / "task").exists()
+
+
+@pytest.mark.anyio
+async def test_render_failure_is_terminal_not_sample_fallback(composition_case, monkeypatch, tmp_path):
     """资产已适配但渲染环境不可用时整单失败，不提交无字效成片。"""
     async def runtime():
-        """仅提供计划所需配置，不提供可降级渲染器。"""
-        return SimpleNamespace(settings=SimpleNamespace(overlay_max_seconds=120))
+        """仅提供计划所需配置与私有诊断目录，不提供可降级渲染器。"""
+        return SimpleNamespace(settings=SimpleNamespace(overlay_max_seconds=120), store=SimpleNamespace(root=tmp_path))
     monkeypatch.setattr(remotion, "sprite_runtime", runtime)
     monkeypatch.setattr(remotion, "environment_problem", lambda settings: "unavailable")
     with pytest.raises(CompositionError) as error:
@@ -450,6 +474,26 @@ def test_render_exception_chain_does_not_leak_source():
         details = json.dumps(exception_details(error), ensure_ascii=False)
     assert "PRIVATE_SOURCE" not in details and "业务原文" not in details
     assert "Remotion 字效渲染或上传失败" in details
+
+
+# 场景：Remotion 错误只公开摘要，但执行日志仍须能定位根因的类型与代码位置，否则只能看到一句固定文案。
+def test_render_exception_chain_keeps_root_cause_location():
+    """根因保留类型、调用位置与错误码，不保留可能含源码或业务文字的文本。"""
+    from server.video_composition.execution_log import exception_details
+    def bundle():
+        """模拟打包子进程失败，其文本与输出均属私有。"""
+        raise subprocess.CalledProcessError(1, ["node", "PRIVATE_SOURCE"], stderr="PRIVATE_SOURCE")
+    try:
+        try:
+            bundle()
+        except subprocess.CalledProcessError as cause:
+            raise CompositionError("remotion_asset_not_adapted", "Remotion 合成时长适配打包失败", "assembling") from cause
+    except CompositionError as error:
+        details = exception_details(error)
+    root = details["exceptions"][-1]
+    assert root["type"] == "CalledProcessError" and "message" not in root
+    assert root["frames"][-1]["function"] == "bundle"
+    assert "PRIVATE_SOURCE" not in json.dumps(details, ensure_ascii=False)
 
 
 def test_new_category_preserves_style_transform_and_injects_business_copy(composition_case):

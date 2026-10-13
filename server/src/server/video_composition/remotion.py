@@ -35,10 +35,18 @@ logger = logging.getLogger(__name__)
 
 
 def preserve_failure(work: Path, error: Exception) -> None:
-    """清理前私有保存完整异常链和 worker 日志；不保留视频/源码，不进入公开七模块日志。"""
+    """清理前私有保存完整异常链、子进程 stderr 和 worker 日志；不保留视频，不进入公开七模块日志。"""
     destination = work.parent.parent / "composition-overlay-failures" / work.name
     destination.mkdir(parents=True, exist_ok=True, mode=0o700)
-    detail = sanitize("".join(traceback.format_exception(error)))
+    detail = "".join(traceback.format_exception(error))
+    cause, seen = error, set()
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        # 异常文本不含子进程输出，例如打包器缺少依赖或拒绝导入的原因只在 stderr 里。
+        if isinstance(stderr := getattr(cause, "stderr", None), str) and stderr:
+            detail += f"\n[{type(cause).__name__} stderr]\n{stderr[-20000:]}"
+        cause = cause.__cause__ or cause.__context__
+    detail = sanitize(detail)
     (destination / "error.log").write_text(detail, encoding="utf-8")
     if (work / "worker.log").is_file():
         shutil.copyfile(work / "worker.log", destination / "worker.log")
@@ -200,13 +208,14 @@ async def render(task_id: str, data: dict, timeout: float, *, timeline: dict | N
         return None
     try:
         service = await sprite_runtime()
-        overlay = await asyncio.to_thread(plan, data, service.settings.overlay_max_seconds, timeline=timeline)
-        if overlay is None:
-            return None
-        if environment_problem(service.settings):
-            raise OverlayError("render_environment_unavailable", "Remotion 渲染环境不可用")
         work = service.store.root / "composition-overlays" / task_id
+        # 计划与打包失败同样私有保存根因：公开错误只有固定摘要，打包器输出可能含资产源码。
         try:
+            overlay = await asyncio.to_thread(plan, data, service.settings.overlay_max_seconds, timeline=timeline)
+            if overlay is None:
+                return None
+            if environment_problem(service.settings):
+                raise OverlayError("render_environment_unavailable", "Remotion 渲染环境不可用")
             async with service.overlays.slot:
                 await asyncio.to_thread(shutil.rmtree, work, True)
                 output = await render_overlay(service.harness.renderer, overlay, work)
