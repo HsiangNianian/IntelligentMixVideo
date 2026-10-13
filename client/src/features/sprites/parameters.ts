@@ -83,15 +83,3 @@ export function assetParameter(parameter: SpriteParameter): AssetParameter | nul
       return null;
   }
 }
-
-/** 把以点号路径记录的覆盖展开为嵌套对象，供播放器合并到默认配置之上。 */
-export function overrideValues(parameters: Record<string, ParameterValue>): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(parameters)) {
-    const path = key.split(".");
-    let target = result;
-    for (const part of path.slice(0, -1)) target = (target[part] ??= {}) as Record<string, unknown>;
-    target[path.at(-1)!] = value;
-  }
-  return result;
-}

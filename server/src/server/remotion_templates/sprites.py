@@ -151,6 +151,29 @@ def content_box(sprite: pb.PublishedSprite) -> pb.SpriteBox:
     return pb.SpriteBox(x=0, y=0, width=sprite.canvas.width, height=sprite.canvas.height)
 
 
+def sampled(sprite: pb.PublishedSprite) -> bool:
+    """Whether the publication rendered boundary samples of its parameters.
+
+    Every publication made with samples records a content box; earlier ones have none, and their parameters were
+    never rendered away from their defaults.
+    """
+    return sprite.HasField("content_box")
+
+
+def operator_parameters(sprite: pb.PublishedSprite) -> list[pb.SpriteParameter]:
+    """The parameters operators see; an unsampled publication's editable ones become read-only."""
+    if sampled(sprite):
+        return list(sprite.parameters)
+    result = []
+    for parameter in sprite.parameters:
+        copy = pb.SpriteParameter()
+        copy.CopyFrom(parameter)
+        if copy.access == pb.OPERATOR_ACCESS_VISIBLE_EDITABLE:
+            copy.access = pb.OPERATOR_ACCESS_VISIBLE_READ_ONLY
+        result.append(copy)
+    return result
+
+
 def box_json(sprite: pb.PublishedSprite) -> dict:
     """The content box as the plain object the preview page and the overlay worker read."""
     box = content_box(sprite)
@@ -164,7 +187,7 @@ def summarize(sprite: pb.PublishedSprite) -> pb.SpriteSummary:
         name=sprite.name,
         kind=sprite.kind,
         canvas=sprite.canvas,
-        parameters=sprite.parameters,
+        parameters=operator_parameters(sprite),
         source_version_id=sprite.source_version_id,
         preview_url=f"/api/sprites/{sprite.sprite_id}/preview",
         keywords_supported=bool(sprite.keywords_prop),

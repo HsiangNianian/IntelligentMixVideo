@@ -249,7 +249,9 @@ failure. Where a Sprite is placed is not stored here: a placement is a `remotion
 (`sprite_id`, a seconds start, an optional duration and `editor.remotion` with parameter overrides and a host
 transform), saved with the template in one request; the save resolves every placement with `placement.resolve`
 (the override must name an editable parameter, keep its type, stay inside its bounds, enum, lengths and list size,
-and the merged configuration must still satisfy the published schema; filters and transitions only take opacity), so deleting a
+and the merged configuration must still satisfy the published schema; filters and transitions only take opacity;
+a publication made before boundary samples, recognisable by its missing `content_box`, lists its parameters as
+read-only and only takes the host transform, because its values were never rendered away from the defaults), so deleting a
 template removes its placements with it and the composition bus finds them with its single template lookup.
 There is no separate route for placements; the template save checks that every `sprite_id` is published. The
 SQLite `style_sprite_bindings` table and the `GET/POST /api/sprites/styles/{style_id}` routes of earlier versions

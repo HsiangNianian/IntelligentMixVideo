@@ -2,8 +2,8 @@
 
 覆盖值保存在模板 remotion 轨道的 `editor.remotion`（`imv.template.v1.RemotionTrackEditor`）。这里只按发布记录里的
 参数契约检查它们：参数存在且可编辑、类型与默认值相同、在声明的范围内，合并后的整份配置仍满足发布时的
-JSON Schema；宿主变换只能设置该分类允许的字段且不能超出范围。发布时的边界抽样已经覆盖这些取值，
-所以这里不再启动沙箱。
+JSON Schema；宿主变换只能设置该分类允许的字段且不能超出范围。发布时已经渲染过各参数与宿主变换的边界样本，
+所以这里不再启动沙箱；没有渲染过样本的早期发布只接受宿主变换（它在代码之外），参数只读。
 """
 
 from __future__ import annotations
@@ -15,26 +15,8 @@ from generated.imv.sprite.v1 import sprite_pb2 as pb
 
 from ..template.schema import RemotionTrackEditor, RemotionTransform
 from .categories import transform_fields, transform_ranges
-from .sprites import KIND_NAMES, box_json
+from .sprites import KIND_NAMES, box_json, operator_parameters, sampled
 from .tools.schema import validate_parameters
-
-
-def _definition(schema: dict, path: list[str]) -> dict:
-    """按点路径读取配置 Schema 中的属性定义；未声明时为空。"""
-    for part in path:
-        properties = schema.get("properties") if isinstance(schema, dict) else None
-        schema = properties.get(part, {}) if isinstance(properties, dict) else {}
-    return schema if isinstance(schema, dict) else {}
-
-
-def _assign(config: dict, path: list[str], value) -> None:
-    """按点路径写入配置；中间对象缺失时报错，而不是凭空创建。"""
-    target = config
-    for part in path[:-1]:
-        target = target.get(part) if isinstance(target, dict) else None
-        if not isinstance(target, dict):
-            raise ValueError(f"参数 {'.'.join(path)} 在默认配置中不存在")
-    target[path[-1]] = value
 
 
 def _checked(declared: pb.SpriteParameter, value):
@@ -71,7 +53,7 @@ def resolve(sprite: pb.PublishedSprite, editor: RemotionTrackEditor | None) -> t
     config = json.loads(sprite.default_config_json or "{}")
     schema = json.loads(sprite.config_schema_json or "{}")
     editor = editor or RemotionTrackEditor()
-    declared = {item.key: item for item in sprite.parameters}
+    declared = {item.key: item for item in operator_parameters(sprite)}
     if editor.parameters:
         config = deepcopy(config)
         for override in editor.parameters:
@@ -79,12 +61,15 @@ def resolve(sprite: pb.PublishedSprite, editor: RemotionTrackEditor | None) -> t
             if parameter is None:
                 raise ValueError(f"参数 {override.key} 不存在")
             if parameter.access != pb.OPERATOR_ACCESS_VISIBLE_EDITABLE:
+                if not sampled(sprite):
+                    raise ValueError(f"参数 {override.key} 不可修改：该资产发布于参数边界检查之前，请在字效工作区改出新版本后保存为新资产")
                 raise ValueError(f"参数 {override.key} 不可修改")
             value = _checked(parameter, override.value())
-            path = override.key.split(".")
-            if isinstance(value, float) and value.is_integer() and _definition(schema, path).get("type") == "integer":
+            # Overridable parameters are top-level (only sampled publications take overrides, and they bind top-level).
+            definition = schema.get("properties", {}).get(override.key, {})
+            if isinstance(value, float) and value.is_integer() and isinstance(definition, dict) and definition.get("type") == "integer":
                 value = int(value)
-            _assign(config, path, value)
+            config[override.key] = value
         try:
             validate_parameters(schema, config)
         except Exception as exc:

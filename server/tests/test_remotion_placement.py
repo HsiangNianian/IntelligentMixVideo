@@ -4,6 +4,7 @@ import pytest
 from generated.imv.sprite.v1 import sprite_pb2 as pb
 
 from server.remotion_templates.placement import resolve
+from server.remotion_templates.sprites import summarize
 from server.template.schema import RemotionTrackEditor
 
 from .conftest import published_sprite
@@ -69,12 +70,17 @@ def test_transform_fields_depend_on_the_kind_and_stay_in_range(kind, transform, 
     assert host["transform"] == {"opacity": 0.3}
 
 
-def test_historical_dot_path_parameters_still_resolve():
-    """更早的发布用点号路径声明嵌套参数，覆盖写入对应的嵌套位置。"""
+def test_publications_without_boundary_samples_keep_parameters_read_only():
+    """参数边界检查之前的发布从未在默认值之外渲染过：参数在目录里只读、覆盖被拒绝，宿主变换（在代码之外）仍可设置。
+
+    修复前它们的参数在模板里可编辑，且大多没有范围，-1e300 或 2000 字的覆盖要等总线渲染时才失败。
+    """
     sprite = published_sprite()
-    sprite.ClearField("parameters")
-    sprite.parameters.add(key="title.size", label="字号", access=pb.OPERATOR_ACCESS_VISIBLE_EDITABLE, default_value=pb.ScalarValue(number_value=40))
-    sprite.config_schema_json = '{"type":"object","properties":{"title":{"type":"object","properties":{"size":{"type":"integer"}}}}}'
-    sprite.default_config_json = '{"title":{"size":40}}'
-    config, _ = resolve(sprite, editor({"key": "title.size", "numberValue": 52}))
-    assert config == {"title": {"size": 52}}
+    sprite.ClearField("content_box")
+    with pytest.raises(ValueError, match="参数 fontSize 不可修改：该资产发布于参数边界检查之前"):
+        resolve(sprite, editor({"key": "fontSize", "numberValue": 96}))
+    config, host = resolve(sprite, editor(x=300, opacity=0.5))
+    assert config["fontSize"] == 64 and host["transform"] == {"x": 300, "opacity": 0.5}
+    assert host["box"] == {"x": 0, "y": 0, "width": 1080, "height": 1920}
+    assert {item.access for item in summarize(sprite).parameters} == {pb.OPERATOR_ACCESS_VISIBLE_READ_ONLY}
+    assert summarize(published_sprite()).parameters[0].access == pb.OPERATOR_ACCESS_VISIBLE_EDITABLE

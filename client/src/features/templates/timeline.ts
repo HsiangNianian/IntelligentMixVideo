@@ -61,7 +61,7 @@ export interface SpriteClip {
   name: string;
   start: number;
   end: number;
-  /** 这次摆放的参数覆盖（嵌套对象），播放器合并到资产默认值之上。 */
+  /** 这次摆放的参数覆盖（顶层参数），播放器合并到资产默认值之上。 */
   values?: Record<string, unknown>;
   /** 宿主变换，未设置的字段取默认值。 */
   transform?: ClipTransform;

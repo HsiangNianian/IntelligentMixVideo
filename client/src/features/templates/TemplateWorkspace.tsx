@@ -16,7 +16,7 @@ import { TemplatePreview } from "./TemplatePreview";
 import { SpriteCatalog, SpriteClips } from "./SpritePanels";
 import { SpriteClipInspector } from "./SpriteClipInspector";
 import { addClip, moveClip, removeClip, setClipParameter, setClipTransform } from "./clips";
-import { overrideValues, transformFields } from "@/features/sprites/parameters";
+import { transformFields } from "@/features/sprites/parameters";
 import { useSpriteCatalog } from "./useSpriteCatalog";
 import type { TemplateSelection } from "./TemplateHome";
 import "./template-workspace.css";
@@ -77,7 +77,7 @@ export function TemplateWorkspace({ selection = null, onHome }: {
       name: asset?.name ?? "Remotion 资产",
       start: clip.start,
       end: Math.min(previewLength, clip.start + (clip.duration ?? asset?.seconds ?? 0)),
-      values: overrideValues(clip.parameters),
+      values: clip.parameters,
       transform: clip.transform,
       canvas: asset ? { width: asset.width, height: asset.height, box: asset.box, movable: transformFields(asset.kind).includes("x") } : undefined,
     };

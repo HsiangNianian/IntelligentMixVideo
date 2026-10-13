@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import { create } from "@bufbuild/protobuf";
 import { OperatorAccess, SpriteKind, SpriteParameterFormat, SpriteParameterSchema } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { SpriteAsset } from "@/features/sprites/model";
-import { assetParameter, categoryOf, overrideValues, transformFields } from "@/features/sprites/parameters";
+import { assetParameter, categoryOf, transformFields } from "@/features/sprites/parameters";
 import { validParameter } from "@/components/ParameterControl";
 import { addClip, moveClip, removeClip, setClipParameter, setClipTransform } from "@/features/templates/clips";
 import { sampleDraft } from "./fixtures";
@@ -78,8 +78,8 @@ test("片段参数与宿主变换逐项修改与恢复", () => {
   expect(draft.clips[0]).toMatchObject({ parameters: {}, transform: {} });
 });
 
-// 场景：发布参数声明转换为控件：颜色格式、关键词项数、只读与内部参数；点号路径的覆盖展开为嵌套对象。
-test("发布参数转换为控件，覆盖按点号路径展开", () => {
+// 场景：发布参数声明转换为控件：颜色与整数格式、关键词项数、只读与内部参数。
+test("发布参数转换为控件", () => {
   const color = assetParameter(create(SpriteParameterSchema, { key: "color", label: "颜色", access: OperatorAccess.VISIBLE_EDITABLE, format: SpriteParameterFormat.COLOR, defaultValue: { value: { case: "stringValue", value: "#FFFFFF" } } }));
   expect(color).toEqual({ field: { key: "color", label: "颜色", kind: "color" }, editable: true, defaultValue: "#FFFFFF" });
   const keywords = assetParameter(create(SpriteParameterSchema, { key: "keywords", access: OperatorAccess.VISIBLE_READ_ONLY, maxItems: 3, maxLength: 4, defaultValue: { value: { case: "stringListValue", value: { values: ["a"] } } } }));
@@ -90,7 +90,6 @@ test("发布参数转换为控件，覆盖按点号路径展开", () => {
   expect(count?.field.kind).toBe("integer");
   expect(validParameter(count!.field, 1.5)).toBe(false);
   expect(validParameter(count!.field, 2)).toBe(true);
-  expect(overrideValues({ "title.size": 52, text: "新品" })).toEqual({ title: { size: 52 }, text: "新品" });
   expect(transformFields(SpriteKind.FILTER_OVERLAY)).toEqual(["opacity"]);
   expect(categoryOf(SpriteKind.TRANSITION_OVERLAY)).toBe("effect");
 });

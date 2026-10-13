@@ -779,6 +779,7 @@ export enum OperatorAccess {
 
   /**
    * 运营可见且可修改；覆盖值保存在模板 remotion 轨道的 editor.remotion.parameters 中。
+   * 发布时没有渲染参数边界样本的早期发布（没有 content_box）在目录中改为只读。
    *
    * @generated from enum value: OPERATOR_ACCESS_VISIBLE_EDITABLE = 2;
    */
