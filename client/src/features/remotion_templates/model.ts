@@ -79,6 +79,7 @@ export function schemaField(key: string, control: Control): ParameterField | nul
         options: control.enum as string[] | undefined,
         minLength: control.minLength,
         maxLength: control.maxLength,
+        ...(control.pattern !== undefined && control.pattern !== HEX_COLOR.source ? { pattern: control.pattern } : {}),
       };
     case "array":
       return control.items?.type === "string" ? { ...base, kind: "keywords", maxItems: control.maxItems, maxLength: control.items.maxLength } : null;

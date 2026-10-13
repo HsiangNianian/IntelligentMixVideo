@@ -26,6 +26,8 @@ export interface ParameterField {
   minLength?: number;
   maxLength?: number;
   maxItems?: number;
+  /** 字符串须匹配的 JSON Schema pattern（颜色之外，例如实例内部参数）。 */
+  pattern?: string;
 }
 
 /** 颜色参数统一使用 #RRGGBB 或 #RRGGBBAA。 */
@@ -48,6 +50,16 @@ function length(text: string): number {
   return Array.from(text).length;
 }
 
+/** 字符串是否匹配 JSON Schema pattern；无法编译的 pattern 交给服务端校验。 */
+function matches(pattern: string | undefined, value: string): boolean {
+  if (pattern === undefined) return true;
+  try {
+    return new RegExp(pattern, "u").test(value);
+  } catch {
+    return true;
+  }
+}
+
 /** 值是否满足字段声明的类型、范围、枚举、长度与项数。 */
 export function validParameter(field: ParameterField, value: ParameterValue): boolean {
   if (field.options && !field.options.some((option) => option === value)) return false;
@@ -61,7 +73,7 @@ export function validParameter(field: ParameterField, value: ParameterValue): bo
     case "color":
       return typeof value === "string" && HEX_COLOR.test(value);
     case "string":
-      return typeof value === "string" && fits(value);
+      return typeof value === "string" && fits(value) && matches(field.pattern, value);
     default:
       return (
         typeof value === "number" &&

@@ -163,3 +163,15 @@ test("超出范围、长度或项数的输入只留在表单并提示", () => {
     "请输入有效的标题文字。", "请输入有效的字号。", "请输入有效的关键词（最多 2 个）。",
   ]);
 });
+
+test("实例参数的 pattern 在本地检查，不合的输入不进入预览", () => {
+  const changes: [string, JsonValue][] = [];
+  const version = composedVersion();
+  version.candidate.config_schema.properties.title = { type: "object", properties: { code: { type: "string", title: "编号", maxLength: 6, pattern: "^[A-Z]+$" } } };
+  render(<ParametersPanel version={version} values={{ ...version.candidate.default_config, title: { code: "AB" } }} disabled={false} pending={false} dirty={false} saving={false}
+    onChange={(key, value) => changes.push([key, value])} onSave={() => {}} onDiscard={() => {}} />);
+  fireEvent.change(screen.getByLabelText("编号"), { target: { value: "ab" } });
+  expect(screen.getByRole("alert").textContent).toBe("请输入有效的编号。");
+  fireEvent.change(screen.getByLabelText("编号"), { target: { value: "XY" } });
+  expect(changes).toEqual([["title", { code: "XY" }]]);
+});
