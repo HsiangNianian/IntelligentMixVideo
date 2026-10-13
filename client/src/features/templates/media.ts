@@ -4,7 +4,7 @@ import type { MasterVideo, PreviewMedia } from "./model";
 /** 环境配置留空时使用内置视频，支持 HTTP(S) 直链和 public 资源路径。 */
 export function previewVideoUrl(index: 0 | 1 | 2 = 0): string {
   const configured = [
-    import.meta.env.VITE_PREVIEW_VIDEO_URL,
+    import.meta.env.VITE_PREVIEW_VIDEO_1_URL,
     import.meta.env.VITE_PREVIEW_VIDEO_2_URL,
     import.meta.env.VITE_PREVIEW_VIDEO_3_URL,
   ];

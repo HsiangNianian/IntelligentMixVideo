@@ -6,7 +6,7 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 // 禁止测试 iframe 导航访问真实服务，仍保留 contentWindow 供消息协议用例使用。
 GlobalRegistrator.register({ url: "http://localhost:1420", settings: {navigation: {disableChildFrameNavigation: true}} });
 process.env.VITE_API_URL = "http://api.test:8000/";
-process.env.VITE_PREVIEW_VIDEO_URL = "/sample.mp4";
+process.env.VITE_PREVIEW_VIDEO_1_URL = "/sample.mp4";
 
 // React DOM 必须在浏览器全局对象注册之后加载，保证事件与 screen 绑定正确。
 const { cleanup } = await import("@testing-library/react");

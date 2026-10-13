@@ -42,7 +42,7 @@ macOS 通过 `src-tauri/Info.plist` 的 `NSAllowsArbitraryLoadsInWebContent` 允
 在 `client/.env` 中设置：
 
 ```dotenv
-VITE_PREVIEW_VIDEO_URL=https://your-domain.example/preview.mp4
+VITE_PREVIEW_VIDEO_1_URL=https://your-domain.example/preview.mp4
 VITE_PREVIEW_VIDEO_2_URL=https://your-domain.example/preview-2.mp4
 VITE_PREVIEW_VIDEO_3_URL=https://your-domain.example/preview-3.mp4
 ```

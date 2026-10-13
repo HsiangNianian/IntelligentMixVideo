@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { previewVideos } from "@/features/templates/media";
 
-const keys = ["VITE_PREVIEW_VIDEO_URL", "VITE_PREVIEW_VIDEO_2_URL", "VITE_PREVIEW_VIDEO_3_URL"] as const;
+const keys = ["VITE_PREVIEW_VIDEO_1_URL", "VITE_PREVIEW_VIDEO_2_URL", "VITE_PREVIEW_VIDEO_3_URL"] as const;
 let previous: (string | undefined)[];
 
 beforeEach(() => {

@@ -74,7 +74,7 @@ bun run tauri dev
 
 浏览器开发使用 `bun run dev` 后打开 `http://localhost:1420`；Windows 安装包内置回环静态服务，以 `http://localhost:<动态端口>` 加载页面，预览沿用阿里云 SDK 5.2.2。IPC 仅允许本次绑定的精确 localhost URL 调用已有桌面命令；macOS / Linux 保留原有 Tauri 加载方式。
 本地草稿编辑与预览不依赖 Python API；共享模板读写需要服务端，SDK、字体与示例媒体仍需联网。
-示例视频可在 `client/.env` 中通过 `VITE_PREVIEW_VIDEO_URL` 配置，修改后重启前端；详见 [客户端说明](client/README.md#示例视频配置)。
+三个示例视频可在 `client/.env` 中分别通过 `VITE_PREVIEW_VIDEO_1_URL`、`VITE_PREVIEW_VIDEO_2_URL`、`VITE_PREVIEW_VIDEO_3_URL` 配置，修改后重启前端；详见 [客户端说明](client/README.md#示例视频配置)。
 客户端 API 地址通过 `client/.env` 中的 `VITE_API_URL` 配置，未配置或留空时默认 `http://localhost:20070`。
 
 客户端按页面、业务组件、基础 UI 和共享工具分层；结构见 [client/README.md](client/README.md)，
