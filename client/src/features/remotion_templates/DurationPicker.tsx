@@ -24,11 +24,11 @@ export function DurationPicker({ disabled, onChange }: Props) {
   const hint = useId();
   const invalid = choice === CUSTOM && (rejected || (custom !== "" && durationFrames(Number(custom)) === null));
   const explained = invalid || custom === "";
-  /** 选择预设时立即上报；切到自定义时按已输入内容上报，空输入视为无效。重新挂载的输入框没有残留的错误输入。 */
+  /** 选择预设时立即上报；切到自定义时按已输入内容上报，空输入按 0 秒视为无效。重新挂载的输入框没有残留的错误输入。 */
   function choose(value: string) {
     setChoice(value);
     setRejected(false);
-    onChange(durationFrames(value === CUSTOM ? (custom === "" ? NaN : Number(custom)) : Number(value)));
+    onChange(durationFrames(Number(value === CUSTOM ? custom : value)));
   }
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-1">
@@ -58,7 +58,7 @@ export function DurationPicker({ disabled, onChange }: Props) {
             className="h-8 w-20 text-xs"
             onChange={(event) => {
               setCustom(event.target.value);
-              onChange(event.target.value === "" ? null : durationFrames(Number(event.target.value)));
+              onChange(durationFrames(Number(event.target.value)));
             }}
             onInput={(event) => setRejected(event.currentTarget.validity.badInput)}
           />

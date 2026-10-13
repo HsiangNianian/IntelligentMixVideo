@@ -11,8 +11,8 @@ export const FIXED_COMPOSITION: Composition = {
 
 /** 常用时长（秒）；其余时长通过自定义输入。 */
 export const DURATION_PRESETS = [3, 5, 8, 10, 15];
-/** 默认时长（秒），与 FIXED_COMPOSITION 的初始帧数一致。 */
-export const DEFAULT_DURATION_SECONDS = 5;
+/** 默认时长（秒），由 FIXED_COMPOSITION 的初始帧数换算，聊天面板的初始帧数与选择器默认项同源。 */
+export const DEFAULT_DURATION_SECONDS = FIXED_COMPOSITION.duration_in_frames / FIXED_COMPOSITION.fps;
 /** 自定义时长下限（秒），与输入框 min 及提示一致。 */
 export const MIN_DURATION_SECONDS = 0.1;
 /** 服务端允许的最长预览时长（秒）。 */
