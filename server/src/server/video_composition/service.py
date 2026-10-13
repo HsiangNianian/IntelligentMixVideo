@@ -417,6 +417,8 @@ class Job:
             await self.runtime.log(self.record, "step_finished", step="remotion_snapshot",
                                    output={"revision": effects["revision"], "placements": effects["placements"]})
         template = self.record["data"]["template"]
+        # 恢复时同样复核：叠加渲染环境缺失要在 ASR 与切片模型产生成本前失败。
+        await remotion.require_environment(self.record["data"])
         if request.composition_mode == "materials_silent":
             prepared = dict(template=template,
                             duration_ms=request.process_rules.video_duration * 1000)

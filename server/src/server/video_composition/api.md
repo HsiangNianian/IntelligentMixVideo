@@ -363,4 +363,4 @@ AccessKey ID/Secret 必填，临时凭据填写 SecurityToken；地域与官方 
 
 ## Remotion 动态字效
 
-请求字段不变，`styleId` 读取统一模板，其中 `remotion` 轨道保存资产引用、`text_target` 文字槽位及 `transition_boundary` 转场交界处；旧 `editor.remotion.businessTarget` 仍可恢复，新字段优先。标题、字幕使用请求及 segmentation 数据替换示例内容，透明视频从 0 秒加入 IMS；新文字槽位沿用上游的替代规则，实际输出的 IMS 文字位于 Remotion 视频之上。上游固定时长资产由合成宿主将完整动画映射到字幕实际区间，无需额外动态声明或重新发布；生成、发布及编辑预览保持原样。完整契约、旧资产适配、错误码与真实联调清单见 [Remotion 接入说明](../../../../docs/remotion-video-composition.md)。
+请求字段不变，`styleId` 读取统一模板，其中 `remotion` 轨道保存资产引用、`text_target` 文字槽位及 `transition_boundary` 转场交界处；旧 `editor.remotion.businessTarget` 仍可恢复，新字段优先。标题、字幕使用请求及 segmentation 数据替换示例内容，透明视频从 0 秒加入 IMS；新文字槽位沿用上游的替代规则，实际输出的 IMS 文字位于 Remotion 视频之上。上游固定时长资产由合成宿主将完整动画映射到字幕实际区间，无需额外动态声明或重新发布；生成、发布及编辑预览保持原样。模板含会实际渲染的 Remotion 摆放而服务端缺少隔离渲染环境时，任务在 `template` 阶段以 `remotion_render_environment_unavailable` 失败，不产生 ASR 或切片调用。完整契约、旧资产适配、错误码与真实联调清单见 [Remotion 接入说明](../../../../docs/remotion-video-composition.md)。

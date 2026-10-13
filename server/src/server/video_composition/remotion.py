@@ -66,6 +66,46 @@ async def snapshot(template) -> dict:
         raise CompositionError("remotion_asset_unavailable", "Remotion 资产无法读取", "template") from exc
 
 
+def placement_target(placement: dict, sprite: pb.PublishedSprite) -> str:
+    """快照摆放的业务用途：新槽位优先，其次旧用途；视觉资产默认透明装饰，类型不符明确失败。"""
+    # 旧任务固定的私有快照仍可恢复，新任务只写模板轨道参数。
+    editor = RemotionTrackEditor.model_validate(placement.get("editor", {}))
+    legacy = {"SPRITE_TARGET_TITLE": "title", "SPRITE_TARGET_SUBTITLE": "subtitle",
+              "SPRITE_TARGET_FILTER": "decoration", "SPRITE_TARGET_VIDEO_EFFECT": "decoration"}
+    target = placement.get("text_target") or editor.business_target or legacy.get(placement.get("target"))
+    if target is None and sprite.kind in {pb.SPRITE_KIND_FILTER_OVERLAY, pb.SPRITE_KIND_VIDEO_OVERLAY,
+                                         pb.SPRITE_KIND_TRANSITION_OVERLAY}:
+        target = "decoration"
+    if target is None:
+        raise ContentError("请先为 Remotion 资产选择标题、字幕或透明装饰用途")
+    if (sprite.kind == pb.SPRITE_KIND_TEXT) != (target in {"title", "subtitle"}):
+        raise ContentError("字效请选择标题或字幕，视觉资产请选择透明装饰")
+    return target
+
+
+async def require_environment(data: dict) -> None:
+    """快照里有会实际渲染的摆放时，在付费 ASR／切片前确认隔离渲染环境；没有可显示内容时不要求。"""
+    saved = data.get("remotion") or {}
+    if not saved.get("placements"):
+        return
+    request = CompositionRequest.model_validate(data["request"])
+    try:
+        targets = {placement_target(placement, ParseDict(saved["assets"][placement["sprite_id"]], pb.PublishedSprite()))
+                   for placement in saved["placements"]}
+    except ContentError as exc:
+        raise CompositionError("remotion_asset_not_adapted", str(exc), "template") from exc
+    title = bool(request.title and request.title.strip())
+    subtitle = bool(request.text) and request.composition_mode != "materials_silent"
+    if not ("decoration" in targets or ("title" in targets and title) or ("subtitle" in targets and subtitle)):
+        return
+    try:
+        problem = environment_problem((await sprite_runtime()).settings)
+    except Exception as exc:
+        raise CompositionError("remotion_render_environment_unavailable", "Remotion 渲染环境不可用", "template") from exc
+    if problem:
+        raise CompositionError("remotion_render_environment_unavailable", "Remotion 渲染环境不可用", "template")
+
+
 def plan(data: dict, max_seconds: float, *, timeline: dict | None = None) -> Overlay | None:
     """根据已保存业务快照展开字幕；示例时长不限制字幕，空内容不产生实例。"""
     saved = data.get("remotion")
@@ -85,20 +125,10 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None) -> Ove
     instances = []
     timed_sources = {}
     for placement in sorted(saved["placements"], key=lambda item: item.get("order", 0)):
-        # 旧任务固定的私有快照仍可恢复，新任务只写模板轨道参数。
         editor = RemotionTrackEditor.model_validate(placement.get("editor", {}))
-        legacy = {"SPRITE_TARGET_TITLE": "title", "SPRITE_TARGET_SUBTITLE": "subtitle",
-                  "SPRITE_TARGET_FILTER": "decoration", "SPRITE_TARGET_VIDEO_EFFECT": "decoration"}
         sprite = publications[placement["sprite_id"]]
         text_target = placement.get("text_target")
-        target = text_target or editor.business_target or legacy.get(placement.get("target"))
-        if target is None and sprite.kind in {pb.SPRITE_KIND_FILTER_OVERLAY, pb.SPRITE_KIND_VIDEO_OVERLAY,
-                                             pb.SPRITE_KIND_TRANSITION_OVERLAY}:
-            target = "decoration"
-        if target is None:
-            raise ContentError("请先为 Remotion 资产选择标题、字幕或透明装饰用途")
-        if (sprite.kind == pb.SPRITE_KIND_TEXT) != (target in {"title", "subtitle"}):
-            raise ContentError("字效请选择标题或字幕，视觉资产请选择透明装饰")
+        target = placement_target(placement, sprite)
         if hashlib.sha256(sprite.tsx_code.encode()).hexdigest() != sprite.code_sha256:
             raise ContentError("Remotion 资产快照源码校验失败")
         try:

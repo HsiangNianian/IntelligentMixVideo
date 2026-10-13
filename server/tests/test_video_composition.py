@@ -732,6 +732,32 @@ def test_missing_template_fails_before_asr(upstreams, client, composition_case):
     assert upstreams["asr_calls"] == 0
 
 
+# 场景：模板含会渲染的 Remotion 摆放而主机缺少隔离渲染环境时，在模板阶段失败，不再先消耗 ASR 与切片模型。
+def test_missing_render_environment_fails_before_paid_steps(upstreams, client, composition_case, monkeypatch):
+    """快照落库后立即复核渲染环境；失败归因模板阶段，ASR、切片、匹配与 IMS 均未调用。"""
+    from google.protobuf.json_format import MessageToDict
+    from server.video_composition import remotion
+    from .conftest import published_sprite
+
+    sprite = published_sprite(kind=2)
+    effects = {"revision": 1, "placements": [{"id": "filter", "sprite_id": sprite.sprite_id, "start": 0, "duration": 2, "editor": {}}],
+               "assets": {sprite.sprite_id: MessageToDict(sprite, preserving_proto_field_name=True)}}
+    async def snapshot(template):
+        """固定一份滤镜快照，代替真实 MySQL 资产读取。"""
+        return effects
+    async def runtime():
+        """只提供环境检查所需的配置。"""
+        return SimpleNamespace(settings=SimpleNamespace())
+    monkeypatch.setattr(remotion, "snapshot", snapshot)
+    monkeypatch.setattr(remotion, "sprite_runtime", runtime)
+    monkeypatch.setattr(remotion, "environment_problem", lambda settings: "bwrap")
+    result = finished(client, client.post(BASE, json=composition_case["request"]).json()["data"])
+    assert result["status"] == "failed"
+    assert result["error"]["stage"] == "template" and result["error"]["code"] == "remotion_render_environment_unavailable"
+    assert upstreams["asr_calls"] == upstreams["segment_calls"] == 0
+    assert upstreams["posts"] == upstreams["submits"] == []
+
+
 def test_database_tracks_template_reaches_ims(upstreams, client, composition_case):
     """复现用户数据库配置：无顶层 editor，camelCase 样式与秒制轨道经真实读取进入 IMS。"""
     from server.template import store as template_store

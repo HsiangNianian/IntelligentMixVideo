@@ -307,6 +307,41 @@ async def test_render_failure_is_terminal_not_sample_fallback(composition_case, 
     assert error.value.error["code"] == "remotion_render_environment_unavailable"
 
 
+def visual_case(composition_case):
+    """一份只含透明滤镜摆放的快照：无论请求文字如何都会实际渲染。"""
+    data = case(composition_case, None)
+    sprite = asset()
+    sprite.kind = pb.SPRITE_KIND_FILTER_OVERLAY
+    sprite.config_schema_json, sprite.default_config_json = '{"type":"object","properties":{}}', '{}'
+    data["remotion"]["assets"] = {sprite.sprite_id: MessageToDict(sprite, preserving_proto_field_name=True)}
+    data["remotion"]["placements"][0]["sprite_id"] = sprite.sprite_id
+    return data
+
+
+# 场景：只有无内容可显示的文字绑定（例如请求没有标题）时不要求渲染环境，合成照常继续。
+@pytest.mark.anyio
+async def test_environment_check_skips_bindings_without_content(composition_case, monkeypatch):
+    """标题绑定遇空标题、字幕绑定遇无声模式都不会渲染，因此不读取 Remotion 运行时；滤镜总会渲染。"""
+    async def runtime():
+        """记录被调用，说明本单确实需要渲染环境。"""
+        called.append(True)
+        return SimpleNamespace(settings=SimpleNamespace())
+    called = []
+    monkeypatch.setattr(remotion, "sprite_runtime", runtime)
+    monkeypatch.setattr(remotion, "environment_problem", lambda settings: "bwrap")
+    title = case(composition_case, "title")
+    title["request"] = {**title["request"], "title": " "}
+    subtitle = case(composition_case, "subtitle")
+    subtitle["request"] = {**subtitle["request"], "audioUrl": None, "videoUrl": None, "processRules": {"videoDuration": 8},
+                           "materials": [{"fileUrl": "https://media.test/a.jpg", "type": "image"}]}
+    for data in (title, subtitle, {**title, "remotion": {"placements": []}}):
+        await remotion.require_environment(data)
+    assert called == []
+    with pytest.raises(CompositionError) as error:
+        await remotion.require_environment(visual_case(composition_case))
+    assert called == [True] and error.value.error["code"] == "remotion_render_environment_unavailable"
+
+
 @pytest.mark.anyio
 async def test_assemble_reuses_saved_overlay_and_keeps_ims_text(composition_case, composition_runtime, monkeypatch):
     """恢复组装复用已上传地址；叠加从 0 秒开始，IMS 字幕轨保留在其原位置。"""

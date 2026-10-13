@@ -35,7 +35,7 @@
 
 `IMV_OVERLAY_MAX_SECONDS` 默认 120，是限制而非默认片长；有实际字效的超限任务失败，不截断音频。`IMV_OVERLAY_RENDER_TIMEOUT_SECONDS` 默认 900 秒；共享渲染名额为 3，`COMPOSITION_CONCURRENCY` 默认也为 3。单个任务仍用一个绘制标签页，排队、成片校验与上传不计入渲染超时；复用既有浏览器、字体、bwrap、Node、FFmpeg 和 ZOS 配置，不新增秘密字段。没有可显示正文时跳过对应绑定，没有实际实例时跳过 Remotion 渲染。
 
-首次准备阶段从同一份 IMS 模板提取 Remotion 轨道，再把模板更新时间、发布源码及参数一起保存到私有任务快照；后续模板编辑不影响本单。上传结果保存到 `remotion_result` 后恢复直接复用；中断在结果保存之前可重跑本地确定性渲染。旧任务没有 Remotion 快照时沿用原行为，不读取新绑定。渲染或上传失败整单失败，不返回缺失字效的成功成片。
+首次准备阶段从同一份 IMS 模板提取 Remotion 轨道，再把模板更新时间、发布源码及参数一起保存到私有任务快照；后续模板编辑不影响本单。快照固定后（包括恢复时）只要有会实际渲染的摆放——视觉资产、遇非空标题的标题绑定、有声且有文案的字幕绑定——就先检查隔离渲染环境（bwrap、prlimit、Node、FFprobe、浏览器与字体）；缺失时在 `template` 阶段以 `remotion_render_environment_unavailable` 失败，不调用 ASR 与切片模型。没有可显示内容的绑定不要求该环境。上传结果保存到 `remotion_result` 后恢复直接复用；中断在结果保存之前可重跑本地确定性渲染。旧任务没有 Remotion 快照时沿用原行为，不读取新绑定。渲染或上传失败整单失败，不返回缺失字效的成功成片。
 
 日志仍只有七个模块，资产绑定摘要归 `template`，透明视频结果及最终 IMS Timeline 归 `timeline`；发布源码只进私有任务快照，不进入执行日志或 GET/回调。典型错误：`remotion_asset_not_adapted`、`remotion_duration_too_long`、`remotion_render_environment_unavailable`、`remotion_render_failed`。
 
