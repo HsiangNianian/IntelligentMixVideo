@@ -108,6 +108,24 @@ test("版本卡片按 Agent 判断的分类把成功版本保存为 Sprite 资�
   expect(request).toMatchObject({ sourceVersionId: "version-2", kind: SpriteKind.TEXT, textProp: "text", keywordsProp: "keywords" });
 });
 
+// 场景：用户改选的分类在版本列表刷新（同一版本换成新对象）后保留，发布请求使用它。
+test("改选的发布分类在版本对象刷新后保留", async () => {
+  let request: ReturnType<typeof fromBinary<typeof PublishSpriteRequestSchema>> | undefined;
+  fetchMock.mockImplementation((async (_url, init) => {
+    request = fromBinary(PublishSpriteRequestSchema, new Uint8Array(init!.body as Uint8Array));
+    return binary(PublishSpriteResponseSchema, create(PublishSpriteResponseSchema, { sprite: summary() }));
+  }) as typeof fetch);
+  const version = remotionVersion("version-2");
+  version.spec.sprite = { kind: "text", bindings: [{ name: "text", title: "文字" }] };
+  const { rerender } = render(<VersionCard version={version} selected={false} latest disabled={false} previewDisabled={false} onPreview={() => {}} />);
+  fireEvent.keyDown(screen.getByRole("combobox", { name: "资产分类" }), { key: "ArrowDown" });
+  fireEvent.keyDown(await screen.findByRole("option", { name: "滤镜" }), { key: "Enter" });
+  rerender(<VersionCard version={structuredClone(version)} selected={false} latest disabled={false} previewDisabled={false} onPreview={() => {}} />);
+  expect(screen.getByRole("combobox", { name: "资产分类" }).textContent).toContain("滤镜");
+  fireEvent.click(screen.getByRole("button", { name: "保存到资产" }));
+  await waitFor(() => expect(request).toMatchObject({ kind: SpriteKind.FILTER_OVERLAY, textProp: "" }));
+});
+
 // 场景：改选其他分类时不带文字字段；没有分类的旧版本默认视频特效，由服务端说明需要先在聊天中改出新版本。
 test("发布请求随所选分类变化，旧版本的拒绝原因原样显示", async () => {
   const version = remotionVersion("version-2");
@@ -115,7 +133,7 @@ test("发布请求随所选分类变化，旧版本的拒绝原因原样显示",
   expect(publishChoice(version, SpriteKind.TEXT)).toEqual({ kind: SpriteKind.TEXT, textProp: "text", keywordsProp: "" });
   expect(publishChoice(version, SpriteKind.FILTER_OVERLAY)).toEqual({ kind: SpriteKind.FILTER_OVERLAY, textProp: "", keywordsProp: "" });
   delete version.spec.sprite;
-  expect(defaultKind(version)).toBe(SpriteKind.VIDEO_OVERLAY);
+  expect(defaultKind(undefined)).toBe(SpriteKind.VIDEO_OVERLAY);
   fetchMock.mockResolvedValue(new Response(JSON.stringify({ detail: "该版本由旧版生成，没有效果分类和参数契约；请在聊天中继续修改，生成新版本后再保存到资产" }), { status: 422 }));
   const { rerender } = render(<VersionCard version={version} selected={false} latest disabled={false} previewDisabled={false} onPreview={() => {}} />);
   fireEvent.click(screen.getByRole("button", { name: "保存到资产" }));

@@ -47,9 +47,11 @@ export function VersionCard({
   const [notice, setNotice] = useState("");
   const [publishing, setPublishing] = useState(false);
   const [publishError, setPublishError] = useState("");
-  // 发布分类默认取 Agent 的判断；切换到别的版本时重新取默认值。
-  const [kind, setKind] = useState<SpriteKind>(() => defaultKind(version));
-  useEffect(() => setKind(defaultKind(version)), [version]);
+  // 发布分类默认取 Agent 的判断；只在换成另一个版本时重新取默认值。版本列表刷新会重建同一版本的对象，
+  // 按对象比较会把用户刚选的分类静默改回默认值。
+  const agentKind = version.spec.sprite?.kind;
+  const [kind, setKind] = useState<SpriteKind>(() => defaultKind(agentKind));
+  useEffect(() => setKind(defaultKind(agentKind)), [version.id, agentKind]);
   const [items, setItems] = useState<Diagnostic[]>([]);
   const [diagnosticsNotice, setDiagnosticsNotice] = useState("");
   const [diagnosticsFailed, setDiagnosticsFailed] = useState(false);

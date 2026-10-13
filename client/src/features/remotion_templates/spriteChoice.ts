@@ -11,9 +11,9 @@ export const PUBLISH_KINDS: { kind: SpriteKind; name: SpriteKindName; label: str
   { kind: SpriteKind.TRANSITION_OVERLAY, name: "transition_overlay", label: "转场" },
 ];
 
-/** Agent 记录的分类；没有记录的旧版本默认视频特效（服务端会要求先在聊天中改出新版本）。 */
-export function defaultKind(version: Version): SpriteKind {
-  return PUBLISH_KINDS.find((item) => item.name === version.spec.sprite?.kind)?.kind ?? SpriteKind.VIDEO_OVERLAY;
+/** Agent 记录的分类（`version.spec.sprite?.kind`）；没有记录的旧版本默认视频特效（服务端会要求先在聊天中改出新版本）。 */
+export function defaultKind(agentKind: SpriteKindName | undefined): SpriteKind {
+  return PUBLISH_KINDS.find((item) => item.name === agentKind)?.kind ?? SpriteKind.VIDEO_OVERLAY;
 }
 
 /** 按所选类型生成发布请求：字效固定 text 字段，声明了关键词参数时同时发布 keywords。 */
