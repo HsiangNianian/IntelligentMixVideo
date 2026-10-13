@@ -2,6 +2,7 @@
 import { expect, test } from "bun:test";
 import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { RemotionWorkspace } from "@/features/remotion_templates/RemotionWorkspace";
+import { durationFrames } from "@/features/remotion_templates/composition";
 import { useTemplateSession } from "@/features/remotion_templates/useTemplateSession";
 import { remotionServer } from "./remotion-server";
 import { remotionJob, remotionVersion } from "./remotion-fixtures";
@@ -79,6 +80,40 @@ test("自定义时长换算整帧并拦截超限输入", async () => {
   fireEvent.click(screen.getByRole("button", { name: "发送" }));
   await waitFor(() => expect(creations()).toHaveLength(1));
   expect(creations()[0].composition.duration_in_frames).toBe(77);
+});
+
+// 审计复现：先取整帧再判断范围时，0.02 秒成为 1 帧、30.001 秒成为 900 帧而被判有效，与输入框 min/max 和提示不一致。
+test("时长按原始秒数校验 0.1～30 秒", () => {
+  expect(durationFrames(0.02)).toBeNull();
+  expect(durationFrames(0.1)).toBe(3);
+  expect(durationFrames(30)).toBe(900);
+  expect(durationFrames(30.001)).toBeNull();
+});
+
+// 审计复现：超出 min/max 的值曾让发送按钮可用，点击被浏览器原生校验拦截，Enter 却直接创建请求；现在两条路径一致。
+test("超出范围的自定义时长既不能点击也不能按 Enter 发送", async () => {
+  remotionServer(path => path === "/works"
+    ? Response.json({ work: { id: "work-1" }, job: remotionJob("running") })
+    : undefined);
+  await act(async () => { render(<RemotionWorkspace />); });
+  await chooseDuration("自定义");
+  const description = screen.getByLabelText("字效描述");
+  fireEvent.change(description, { target: { value: "生成标题" } });
+  const input = screen.getByLabelText<HTMLInputElement>("自定义时长（秒）");
+  const send = screen.getByRole<HTMLButtonElement>("button", { name: "发送" });
+  for (const value of ["0.02", "30.001"]) {
+    fireEvent.change(input, { target: { value } });
+    expect(input.checkValidity()).toBe(false);
+    expect(send.disabled).toBe(true);
+    expect(screen.getByRole("alert").textContent).toContain("0.1～30");
+    fireEvent.keyDown(description, { key: "Enter" });
+  }
+  fireEvent.change(input, { target: { value: "30" } });
+  expect(input.checkValidity()).toBe(true);
+  expect(send.disabled).toBe(false);
+  fireEvent.keyDown(description, { key: "Enter" });
+  await waitFor(() => expect(creations()).toHaveLength(1));
+  expect(creations()[0].composition.duration_in_frames).toBe(900);
 });
 
 // 没有用户输入时不能创建任务；删除可变表单不绕过已有发送条件。

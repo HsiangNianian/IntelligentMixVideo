@@ -5,7 +5,7 @@
 import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { DEFAULT_DURATION_SECONDS, DURATION_PRESETS, MAX_DURATION_SECONDS, durationFrames } from "./composition";
+import { DEFAULT_DURATION_SECONDS, DURATION_PRESETS, MAX_DURATION_SECONDS, MIN_DURATION_SECONDS, durationFrames } from "./composition";
 
 const CUSTOM = "custom";
 
@@ -40,7 +40,7 @@ export function DurationPicker({ disabled, onChange }: Props) {
           <Input
             type="number"
             inputMode="decimal"
-            min={0.1}
+            min={MIN_DURATION_SECONDS}
             max={MAX_DURATION_SECONDS}
             step="any"
             aria-label="自定义时长（秒）"
@@ -54,7 +54,7 @@ export function DurationPicker({ disabled, onChange }: Props) {
               onChange(event.target.value === "" ? null : durationFrames(Number(event.target.value)));
             }}
           />
-          {invalid && <span role="alert" className="basis-full text-xs text-destructive">请输入 0.1～{MAX_DURATION_SECONDS} 秒</span>}
+          {invalid && <span role="alert" className="basis-full text-xs text-destructive">请输入 {MIN_DURATION_SECONDS}～{MAX_DURATION_SECONDS} 秒</span>}
         </>
       )}
     </div>

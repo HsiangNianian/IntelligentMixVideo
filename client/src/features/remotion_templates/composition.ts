@@ -13,13 +13,16 @@ export const FIXED_COMPOSITION: Composition = {
 export const DURATION_PRESETS = [3, 5, 8, 10, 15];
 /** 默认时长（秒），与 FIXED_COMPOSITION 的初始帧数一致。 */
 export const DEFAULT_DURATION_SECONDS = 5;
+/** 自定义时长下限（秒），与输入框 min 及提示一致。 */
+export const MIN_DURATION_SECONDS = 0.1;
 /** 服务端允许的最长预览时长（秒）。 */
 export const MAX_DURATION_SECONDS = 30;
 
-/** 秒数四舍五入到整帧；有限、至少一帧且不超过 30 秒才有效，否则返回 null。 */
+/** 按原始秒数校验 0.1～30 秒（与输入框 min/max 一致），再四舍五入到整帧；范围外返回 null。 */
 export function durationFrames(seconds: number): number | null {
-  const frames = Math.round(seconds * FIXED_COMPOSITION.fps);
-  return Number.isFinite(seconds) && frames >= 1 && frames <= MAX_DURATION_SECONDS * FIXED_COMPOSITION.fps ? frames : null;
+  return Number.isFinite(seconds) && seconds >= MIN_DURATION_SECONDS && seconds <= MAX_DURATION_SECONDS
+    ? Math.round(seconds * FIXED_COMPOSITION.fps)
+    : null;
 }
 
 /** 首次创建显式携带固定规格与所选时长，避免客户端与服务端默认值漂移。 */
