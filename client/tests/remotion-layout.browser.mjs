@@ -375,7 +375,7 @@ try {
   // Chrome 把「-」这类无法解析的数字输入报告为空值；必须显示错误，而不是只把发送按钮变灰。
   await page.getByLabel("自定义时长（秒）").press("-");
   assert.equal(await page.getByLabel("自定义时长（秒）").inputValue(), "");
-  await page.getByRole("alert").filter({ hasText: "请输入 0.1～30 秒" }).waitFor();
+  await page.getByRole("alert").filter({ hasText: "请输入不超过 30 秒、至少 1 帧的时长" }).waitFor();
   await page.getByLabel("自定义时长（秒）").fill("99");
   for (const width of [390, 375, 1024]) {
     await page.setViewportSize({ width, height: 844 });

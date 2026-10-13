@@ -13,16 +13,13 @@ export const FIXED_COMPOSITION: Composition = {
 export const DURATION_PRESETS = [3, 5, 8, 10, 15];
 /** 默认时长（秒），由 FIXED_COMPOSITION 的初始帧数换算，聊天面板的初始帧数与选择器默认项同源。 */
 export const DEFAULT_DURATION_SECONDS = FIXED_COMPOSITION.duration_in_frames / FIXED_COMPOSITION.fps;
-/** 自定义时长下限（秒），与输入框 min 及提示一致。 */
-export const MIN_DURATION_SECONDS = 0.1;
 /** 服务端允许的最长预览时长（秒）。 */
 export const MAX_DURATION_SECONDS = 30;
 
-/** 按原始秒数校验 0.1～30 秒（与输入框 min/max 一致），再四舍五入到整帧；范围外返回 null。 */
+/** 四舍五入到整帧后按服务端契约校验：至少 1 帧、不超过 30 秒的帧数；无法解析或范围外返回 null。 */
 export function durationFrames(seconds: number): number | null {
-  return Number.isFinite(seconds) && seconds >= MIN_DURATION_SECONDS && seconds <= MAX_DURATION_SECONDS
-    ? Math.round(seconds * FIXED_COMPOSITION.fps)
-    : null;
+  const frames = Math.round(seconds * FIXED_COMPOSITION.fps);
+  return Number.isFinite(frames) && frames >= 1 && frames <= MAX_DURATION_SECONDS * FIXED_COMPOSITION.fps ? frames : null;
 }
 
 /** 首次创建显式携带固定规格与所选时长，避免客户端与服务端默认值漂移。 */

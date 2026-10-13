@@ -12,15 +12,15 @@ from .models import (
 from .parameters import patch_parameters
 from .tools.contracts import RenderValidationReport, SpriteDraft
 
-# 只有包含逐帧同步处理的预览包才能叠加到模板预览上；更早构建的包缺少此标记。
-SYNC_MARKER = b"imv-preview-sync"
-# 能读取页面注入的默认值与内容区域、接受参数覆盖和宿主变换的预览包带有此标记；更早构建的包需要重建。
-HOST_MARKER = b"imv-preview-host"
+# 预览包首行声明的宿主协议版本（逐帧同步、读取页面注入的默认值与内容区域、接受参数覆盖和宿主变换），与
+# presentation.mjs 的 PREVIEW_PROTOCOL 一致；更早构建的包没有这一行，需要重建。只认首行：生成代码与默认参数
+# 也会打进包里，包内任意位置出现的协议字样都不可信。
+PREVIEW_PROTOCOL = b"/* imv-preview-protocol 1 */"
 
 
 def current_bundle(bundle: bytes) -> bool:
-    """Whether a player bundle can be scrubbed by the template editor and starts from page-injected defaults."""
-    return SYNC_MARKER in bundle and HOST_MARKER in bundle
+    """Whether a player bundle declares the current host protocol on its first line, which generated code cannot write."""
+    return bundle.startswith(PREVIEW_PROTOCOL + b"\n")
 
 
 def revisable(accepted: Path) -> bool:

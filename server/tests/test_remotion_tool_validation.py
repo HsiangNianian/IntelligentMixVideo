@@ -13,6 +13,7 @@ import pytest
 
 from server.remotion_templates.boundary import samples
 from server.remotion_templates.categories import KEYWORD_COLOR
+from server.remotion_templates.publication import PREVIEW_PROTOCOL, current_bundle
 from server.remotion_templates.renderer import Renderer
 from server.remotion_templates.settings import Settings
 from server.remotion_templates.tool_validation import ToolValidator, ValidationUnavailable, render_lengths
@@ -393,6 +394,23 @@ def test_a_type_error_in_reformatted_code_quotes_the_checked_line(tmp_path):
     [error] = [item for item in report["diagnostics"] if item.get("code") == "2322" and item.get("file") == "Template.tsx"]
     assert error["range"]["start"]["line"] > 0
     assert error["excerpt"] == "const n: number = props.t;"
+
+
+@needs_node
+def test_the_real_player_bundle_declares_the_host_protocol_on_its_first_line(tmp_path):
+    """真实 presentation-worker 构建的包以 publication.PREVIEW_PROTOCOL 开头，两端常量不会各改各的；默认文字里的协议字样只在包内出现。"""
+    root = tmp_path / "work"
+    root.mkdir()
+    text = "imv-preview-sync imv-preview-host " + PREVIEW_PROTOCOL.decode()
+    (root / "request.json").write_text(json.dumps({
+        "code": 'import React from "react"; export default function T(p: {text: string}) { return <div>{p.text}</div>; }',
+        "config": {"text": text}, "composition": {"width": 1080, "height": 1920, "fps": 30, "duration_in_frames": 30},
+    }), encoding="utf-8")
+    environment = {**os.environ, "IMV_WORK_ROOT": str(root), "IMV_RENDERER_ROOT": str(RENDERER_DIR)}
+    subprocess.run(["node", str(RENDERER_DIR / "presentation-worker.mjs")], cwd=RENDERER_DIR, env=environment, check=True, capture_output=True, timeout=120)
+    bundle = (root / "interactive.js").read_bytes()
+    assert current_bundle(bundle) and text.encode() in bundle
+    assert not current_bundle(bundle.split(b"\n", 1)[1])
 
 
 @needs_node

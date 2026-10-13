@@ -100,11 +100,16 @@ export default function ${prefix}(props: Partial<${prefix}React.ComponentProps<t
   );
 }
 
+// The host messaging protocol this bundle speaks (frame sync, injected defaults, placement overrides). It is the
+// first line of the bundle, where generated code cannot reach; `publication.PREVIEW_PROTOCOL` must match it.
+export const PREVIEW_PROTOCOL = "/* imv-preview-protocol 1 */";
+
 /** Bundle trusted Player hosting code plus accepted TSX into one sealed script, with no runtime compiler. */
 export async function buildPresentation(root, config, composition, keywords = []) {
   const rendererRoot = process.env.IMV_RENDERER_ROOT ?? "/renderer";
   const result = await build({
     entryPoints: [`${rendererRoot}/preview-host.tsx`],
+    banner: { js: PREVIEW_PROTOCOL },
     bundle: true,
     write: false,
     platform: "browser",
