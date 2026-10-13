@@ -128,11 +128,13 @@ def test_bound_parameters_become_required_top_level_props_passed_to_every_target
     ([binding("color", ("top", "tint")), binding("tone", ("top", "tint"))], "/parameters/1/targets/0", "already bound"),
     ([binding("color", ("top", "tint"), ("bottom", "tint"))], "/parameters/0/targets/1", "share one schema and one value"),
     ([binding("size", ("top", "size"))], "/parameters/0/targets/0", "uses $ref"),
+    ([binding("any", ("top", "any"))], "/parameters/0/targets/0", "has a boolean schema"),
 ])
 def test_invalid_bindings_name_the_offending_field(bindings, field, message):
-    """绑定冲突、未知目标、重复绑定、$ref 与取值不一致都在打包前按字段拒绝。"""
+    """绑定冲突、未知目标、重复绑定、$ref、布尔子 Schema 与取值不一致都在打包前按字段拒绝，而不是变成未结构化的异常。"""
     instances = [
-        instance("top", {"tint": "#FFFFFF", "size": 1}, {"tint": COLOR, "size": {"$ref": "#/$defs/size"}}),
+        # JSON Schema allows a boolean sub-schema (`true` accepts anything); the component contract accepts it too.
+        instance("top", {"tint": "#FFFFFF", "size": 1, "any": 1}, {"tint": COLOR, "size": {"$ref": "#/$defs/size"}, "any": True}),
         instance("bottom", {"tint": "#000000"}, {"tint": COLOR}),
     ]
     with pytest.raises(ToolFault) as refused:

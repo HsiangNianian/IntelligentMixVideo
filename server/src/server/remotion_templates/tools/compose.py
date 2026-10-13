@@ -73,6 +73,9 @@ def _lift(instances: list[dict[str, Any]], bindings: list[dict[str, Any]]) -> tu
                 raise ToolFault("INVALID_ARGUMENT", f"{target['instance_id']}.{prop} is already bound", field=where)
             bound.add((target["instance_id"], prop))
             definition = declared[prop]
+            if not isinstance(definition, dict):
+                # JSON Schema allows `true`/`false` here, but a template control needs a typed, bounded schema.
+                raise ToolFault("INVALID_ARGUMENT", f"{target['instance_id']}.{prop} has a boolean schema; give it a typed object schema to bind it", field=where)
             if "$ref" in json.dumps(definition):
                 raise ToolFault("INVALID_ARGUMENT", f"{target['instance_id']}.{prop} uses $ref; inline its schema to bind it", field=where)
             if accepted is None:
