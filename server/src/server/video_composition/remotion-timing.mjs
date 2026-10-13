@@ -15,8 +15,9 @@ export default function TimedSprite(props) {
   const frame = useCurrentFrame();
   const config = useVideoConfig();
   const contexts = Internals.useRemotionContexts();
+  // Remotion 只提供整数帧；资产可能按帧下标取字符或判断奇偶，映射结果取最近的发布帧。
   const sourceFrame = config.durationInFrames <= 2 ? ${still}
-    : Math.max(0, Math.min(${frames - 1}, frame * ${frames - 1} / (config.durationInFrames - 1)));
+    : Math.max(0, Math.min(${frames - 1}, Math.round(frame * ${frames - 1} / (config.durationInFrames - 1))));
   const sourceConfig = {...config, durationInFrames: ${frames}, fps: ${fps}};
   const clock = {
     ...contexts,

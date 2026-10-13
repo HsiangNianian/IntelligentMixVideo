@@ -551,6 +551,38 @@ def test_fixed_asset_rejects_invalid_metadata_and_unsafe_imports():
     assert "Unsupported Sprite import" in rejected.value.__cause__.stderr
 
 
+# 场景：业务区间与发布时长不成整数比时，映射到资产的帧号仍须是整数，按帧下标取值的资产不会取到 undefined。
+def test_fixed_clock_maps_to_whole_source_frames(tmp_path):
+    """用替身 React/Remotion 执行真实打包的时间宿主：每帧都是整数，首尾对齐发布首尾帧且单调不减。"""
+    sprite = asset()
+    sprite.canvas.preview_frames = 150
+    (tmp_path / "timed.mjs").write_text(retime_source(sprite))
+    stubs = {
+        "react/package.json": '{"name":"react","type":"module","exports":{".":"./index.js","./jsx-runtime":"./jsx-runtime.js"}}',
+        "react/index.js": "/** React 替身。 */ export default {};",
+        "react/jsx-runtime.js": "/** 元素即普通对象，便于读取上下文。 */ export const jsx = (type, props) => ({type, props}); export const jsxs = jsx;",
+        "remotion/package.json": '{"name":"remotion","type":"module","exports":"./index.js"}',
+        "remotion/index.js": """/** 由测试设置当前帧与业务区间长度的 Remotion 替身。 */
+export const useCurrentFrame = () => globalThis.frame;
+export const useVideoConfig = () => ({id: "overlay", fps: 30, durationInFrames: globalThis.length});
+export const Internals = {RemotionContextProvider: "provider",
+  useRemotionContexts: () => ({compositionManagerCtx: {}, timelineContext: {}, sequenceContext: {}})};""",
+    }
+    for name, content in stubs.items():
+        (tmp_path / "node_modules" / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "node_modules" / name).write_text(content)
+    (tmp_path / "probe.mjs").write_text("""/** 逐帧读取宿主交给资产的发布帧号。 */
+import TimedSprite from "./timed.mjs";
+globalThis.length = 60;
+const frames = [];
+for (globalThis.frame = 0; globalThis.frame < 60; globalThis.frame++) frames.push(TimedSprite({}).props.contexts.timelineContext.frame.overlay);
+console.log(JSON.stringify(frames));
+""")
+    frames = json.loads(subprocess.run(["node", "probe.mjs"], cwd=tmp_path, capture_output=True, text=True, check=True).stdout)
+    assert all(isinstance(frame, int) for frame in frames)
+    assert frames[0] == 0 and frames[-1] == 149 and frames == sorted(frames)
+
+
 @pytest.mark.skipif(not REAL_RENDER, reason="set IMV_TEST_RENDERER=1 for upstream clock regression")
 def test_real_upstream_sequences_keep_animation_at_short_long_and_single_frame_intervals(composition_case, tmp_path):
     """真实上游组合器生成固定 Sequence：短/长区间、非零起点、不同帧率、一帧和 Alpha 空隙。"""
