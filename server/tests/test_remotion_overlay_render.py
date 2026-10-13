@@ -220,6 +220,8 @@ def service(tmp_path, monkeypatch):
 
     monkeypatch.setattr(overlay_render, "probe_overlay", probed)
     monkeypatch.setattr(overlay_service, "environment_problem", lambda settings: None)
+    # 单 Sprite 渲染还要用 ffmpeg 拼接分块；CI 主机可能没有它，替身渲染器也不需要。
+    monkeypatch.setattr(overlay_service, "join_problem", lambda: None)
     monkeypatch.setattr(overlay_service, "upload_public", upload)
     monkeypatch.setattr(overlay_service, "ZosSettings", lambda: SimpleNamespace())
 
@@ -1186,7 +1188,6 @@ def test_sprite_render_task_joins_its_chunks(service, monkeypatch) -> None:
 
     monkeypatch.setattr(sprite_render.asyncio, "create_subprocess_exec", join)
     monkeypatch.setattr(sprite_render, "probe_overlay", lambda path, overlay: asyncio.sleep(0))
-    monkeypatch.setattr(overlay_service, "join_problem", lambda: None)
     message = render_input(text="", keywords=[], effect_total_frames=2100, cues=[cue("开头", 0, 30), cue("跨块", 890, 920)])
     task_id = run_sprite_task(overlays, message)
     assert [request["composition"]["frames"] for request in renderer.requests] == [900, 900, 300]
@@ -1231,7 +1232,6 @@ def post_render(client: TestClient, message: pb.SpriteRenderInput):
 def test_sprite_render_routes_accept_and_query(sprite_client, monkeypatch) -> None:
     """受理与查询都是 imv.sprite.v1 消息；422 说明原因，不创建任务行。"""
     client, overlays = sprite_client
-    monkeypatch.setattr(overlay_service, "join_problem", lambda: None)
     created = post_render(client, render_input())
     assert created.status_code == 200 and created.headers["content-type"] == "application/x-protobuf"
     task_id = pb.SpriteRenderAccepted.FromString(created.content).task_id
