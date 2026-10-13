@@ -10,8 +10,8 @@
 - 主画布固定为 **宽 1080、高 1920、9:16 竖屏、30 fps**。主画布宽高和帧率不是调用方可修改的配置。
 - preset 为单文件 TSX、参数 Schema 和默认参数构成的代码原子；sprite 组合多个 preset 实例。
 - preset.create 承接 Agent 已经写好的代码和描述。search 按描述关键词列出摘要，再按 ID 读取完整记录，不使用向量或语义检索。
-- preset.modify 承接 Agent 修改后的字段，返回副本，不修改原记录、不自动入库。需要长期复用时再调用 create。
-- sprite.compose 生成组合定义与代码，sprite.create 保存组合结果；本期不定义 sprite 嵌套组合。
+- preset.modify 承接 Agent 修改后的字段，副本由宿主保存在任务内，返回 `draft_id` 与摘要，不修改原记录、不自动入库。需要长期复用时再调用 create。
+- sprite.compose 生成组合定义与代码，草稿由宿主保存并返回 `draft_id` 与不含源码的摘要；sprite.create 按 `draft_id` 保存组合结果，调用方不回传源码。本期不定义 sprite 嵌套组合。
 - 两个 create 均在内部执行代码校验，通过后才入库。无需传入之前的校验回执，也不在工具内调用模型修复。
 - validate 提供代码检查和运行行为测试。工具提供统一测试上下文，Agent 编写自定义断言；不截图、不从视频抽帧、不做视觉 Judge。
 - 图片使用用户上传后由服务端登记的 `image.asset_id` 引用，不接收远程 URL。resize 强制缩放到目标宽高，**不保持比例**；crop 使用像素坐标。处理后返回新的素材引用，保留原图。
@@ -69,6 +69,8 @@ JsonObject = dict[str, JsonValue]
 JsonSchema = JsonObject
 PresetId = NonEmptyString
 SpriteId = NonEmptyString
+DraftId = NonEmptyString  # 任务内草稿句柄，只在创建它的任务中有效。
+DraftDigest = NonEmptyString  # 草稿内容摘要：内容相同则摘要相同，与随机的 draft_id 无关。
 Timestamp = NonEmptyString  # 输出还须符合下文的 UTC ISO 8601 约定。
 T = TypeVar("T")
 
@@ -157,7 +159,9 @@ type ToolResult[T] = Annotated[ToolSuccess[T] | ToolFailure, Field(discriminator
 }
 ```
 
-`field` 如有提供，使用输入模型的 JSON Pointer；错误不能伪装为可用结果。工具不自行决定上层是否重试，不返回模型编造的检查结论。
+`field` 如有提供，使用输入模型的 JSON Pointer；错误不能伪装为可用结果。结构校验失败时 `field` 为第一处错误的 JSON Pointer，`message` 逐条写出前三处位置与原因。
+
+模型调用参数由宿主解析：一个完整 JSON 对象之后只多出 `}` 或 `]` 时丢弃这些字符照常执行，并在私有审计中记录；其他非法 JSON（含对象后的其他文本）返回 `INVALID_ARGUMENT`，消息给出字符位置和附近文本。工具不自行决定上层是否重试，不返回模型编造的检查结论。
 
 ### 3.3 组件与参数契约
 
@@ -210,15 +214,16 @@ class PresetRecord(PresetDraft):
 | image.crop | ImageCropInput | ProcessedImage | 生成并存储新图片 |
 | preset.search | PresetSearchInput | PresetSearchOutput | v2 摘要列表、关键词过滤及按 ID 读取，只读 |
 | preset.create | PresetCreateInput | PresetCreateOutput | 代码校验、保存记录、建立可检索索引 |
-| preset.modify | PresetModifyInput | PresetModifyOutput | 读取原记录，返回内存副本；不入库 |
+| preset.modify | PresetModifyInput | PresetModifyOutput | 读取原记录，在任务内保存副本并返回 draft_id；不入库 |
 | validate.code | CodeValidationInput | CodeValidationReport | 执行契约及 LSP 检查 |
 | validate.render | RenderValidationInput | RenderValidationReport | 在测试环境运行组件与脚本 |
-| sprite.compose | SpriteComposeInput | SpriteComposeOutput | 读取引用，生成组合定义与代码；不保存 sprite |
-| sprite.create | SpriteCreateInput | SpriteCreateOutput | 代码校验并保存 sprite |
+| sprite.compose | SpriteComposeInput | SpriteComposeOutput | v2 选定分类并绑定顶层参数，读取引用，生成组合定义与代码并在任务内保存草稿；不保存 sprite |
+| sprite.create | SpriteCreateInput | SpriteCreateOutput | 代码校验、一次浏览器挂载的透明度检查并保存 sprite |
 | tools.inspect | ToolInspectInput | ToolDescriptor | 读取工具契约 |
-| tools.plan_execute（宿主控制） | PlanAction | JsonObject | 调整任务内的计划与执行状态 |
+| tools.plan_execute（宿主控制） | PlanAction | JsonObject | 回答、澄清、委派，或调整任务内的计划与执行状态 |
+| tools.report_step（宿主控制） | StepResult | JsonObject | 结束当前步骤；宿主核对步骤产出后进入下一步或发布 |
 
-目录包含 11 个业务工具和 1 个宿主控制入口。计划控制由宿主处理，不进入业务工具注册器；检查契约不会授予调用权限。没有 tools.find、自动写代码工具或预览发布工具。后面的函数签名使用下划线作为文档中的语言标识符，实际工具名称以本表的点号形式为准。
+目录包含 11 个业务工具和 2 个宿主控制入口。计划控制由宿主处理，不进入业务工具注册器；检查契约不会授予调用权限。没有 tools.find、自动写代码工具或预览发布工具。后面的函数签名使用下划线作为文档中的语言标识符，实际工具名称以本表的点号形式为准。
 
 ## 5. 图片工具
 
@@ -496,10 +501,20 @@ class PresetModifyInput(ContractModel):
     changes: PresetChanges
 
 
-class PresetModifyOutput(ContractModel):
-    """完整副本，不含新记录 ID；source_preset_id 指向原记录。"""
+class PresetDraftSummary(ContractModel):
+    """宿主保存的预设副本摘要；完整源码不回传，由 draft_id 引用。"""
 
-    preset: PresetDraft
+    description: Description
+    parameter_names: list[str]
+    source_preset_id: Omittable[PresetId]
+
+
+class PresetModifyOutput(ContractModel):
+    """副本句柄与摘要，不含新记录 ID；source_preset_id 指向原记录。"""
+
+    draft_id: DraftId
+    digest: DraftDigest
+    preset: PresetDraftSummary
 
 
 async def preset_modify(request: PresetModifyInput) -> ToolResult[PresetModifyOutput]:
@@ -507,13 +522,13 @@ async def preset_modify(request: PresetModifyInput) -> ToolResult[PresetModifyOu
     ...
 ```
 
-- preset_id 来自 search；工具读取该记录，changes 至少包含一个字段。
+- preset_id 来自 search；也可以是本任务的预设草稿句柄（编辑基线登记的 `base_<instance_id>` 或此前 modify 返回的 `draft_id`），此时以该草稿为底复制，source_preset_id 沿用草稿已有的来源（没有则省略）。工具读取该记录或草稿，changes 至少包含一个字段；未知 ID 返回 `PRESET_NOT_FOUND`，并列出近期 preset_id 与本任务草稿句柄。
 - changes.code 是 Agent **已经修改完的完整源码**，不是自然语言修改要求，也不是待工具应用的文本 diff。
 - changes 中每个字段整体替换原字段；未传字段保留原值。特别是 Schema 和 default_parameters 整体替换，不递归拼接旧字段。
-- 合并后检查数据结构、Schema 和默认参数的一致性，返回完整 PresetDraft，并令 source_preset_id 为输入 preset_id。
+- 合并后检查数据结构、Schema 和默认参数的一致性，把完整 PresetDraft（source_preset_id 为输入 preset_id）保存在任务内，返回 `draft_id`、内容摘要 `digest` 和不含源码的摘要；源码不回传给调用方。`draft_id` 每次调用都是新的，`digest` 只由草稿内容决定：同样的修改得到同样的 `digest`，宿主的空转判断据此识别重复调用。
 - 数据契约无效时返回 `INVALID_ARGUMENT`，`field` 为 `/changes`，`details.diagnostics` 指出具体字段；原记录保持不变。Schema 只允许文档内引用，不读取外部 URL。
 - 工具不执行模型调用、不写库、不创建新的 preset_id，不承诺 LSP 或行为检查已通过。可单独调用 validate 获取诊断。
-- 修改副本可以直接交给 compose；需要检索复用时，将完整副本交给 create。
+- 修改副本以 `{kind: "draft", draft_id}` 直接交给 compose；需要检索复用时，由调用方把完整定义交给 create。
 
 ```json
 {
@@ -566,10 +581,10 @@ class StoredPresetSource(ContractModel):
 
 
 class DraftPresetSource(ContractModel):
-    """直接携带完整预设副本。"""
+    """引用本任务内 preset.modify 返回或宿主登记（编辑基线）的预设副本。"""
 
     kind: Literal["draft"]
-    preset: PresetDraft
+    draft_id: DraftId
 
 
 PresetSource = Annotated[
@@ -597,12 +612,35 @@ class ResolvedPresetInstance(ContractModel):
     timing: InstanceTiming
 
 
+# 效果分类：text 为字效，filter_overlay 为滤镜，video_overlay 与 transition_overlay 合为转场与视频特效。
+SpriteKindName = Literal["text", "filter_overlay", "video_overlay", "transition_overlay"]
+# 顶层参数名：驼峰标识符，可安全用作 JSON 键和界面控件 ID。
+ParameterName = Annotated[StrictStr, StringConstraints(pattern=r"^[A-Za-z][A-Za-z0-9]{0,31}$")]
+
+
+class ParameterTarget(ContractModel):
+    """顶层参数写入的一个实例 prop。"""
+
+    instance_id: NonEmptyString
+    parameter: NonEmptyString
+
+
+class SpriteParameterBinding(ContractModel):
+    """把一个或多个实例的同名语义 prop 提升为 Sprite 顶层参数，供模板逐次摆放时修改。"""
+
+    name: ParameterName
+    title: Annotated[Description, Field(max_length=40)]
+    targets: list[ParameterTarget] = Field(min_length=1)
+
+
 class SpriteDraft(ComponentDefinition):
     """组合生成的源码、参数契约和实例快照。"""
 
     description: Description
     composition: Composition
     instances: list[ResolvedPresetInstance] = Field(min_length=1)
+    kind: Omittable[SpriteKindName]
+    bindings: list[SpriteParameterBinding] = Field(default_factory=list)
 
 
 class SpriteRecord(SpriteDraft):
@@ -615,7 +653,7 @@ class SpriteRecord(SpriteDraft):
 | 字段 | 约束 |
 | --- | --- |
 | instance_id | 非空，同一 sprite 内唯一；用作参数分组键，不作为可执行变量拼接；保留 `__proto__`、`prototype`、`constructor` 不可用 |
-| source | stored 引用已保存预设；draft 携带完整副本，两种不能混用 |
+| source | stored 引用已保存预设；draft 以 `draft_id` 引用本任务内的预设副本（preset.modify 返回，或编辑任务中宿主把成功基线的各实例预设登记为 `base_<instance_id>`），两种不能混用 |
 | parameters | 参数覆盖；省略时使用该预设默认值，按第 3.3 节规则合并后校验 |
 | layout.x / y | 主画布像素坐标，表示实例容器左上角；允许负值及部分出画，用于进出场 |
 | layout.width / height | 局部画布像素宽高，正整数；不是改变主画布规格 |
@@ -623,6 +661,8 @@ class SpriteRecord(SpriteDraft):
 | timing.start_frame | 非负整数，位于主时间轴 |
 | timing.duration_frames | 正整数；结束位置为 start_frame + duration_frames，结束帧不显示 |
 | composition.duration_frames | 工具计算的正整数，等于所有实例结束位置的最大值 |
+| kind | compose 时选定的效果分类；本契约之前保存的草稿没有此字段 |
+| bindings | compose 时提升为顶层参数的绑定，见 7.2 |
 
 实例之间可以同时显示和重叠；compose 不自动布局、避让、缩放时间或判断哪种构图好看。画布外内容不出现在成片中；实例容器以自身局部画布为显示边界。
 
@@ -634,16 +674,37 @@ class SpriteRecord(SpriteDraft):
 
 ```python
 class SpriteComposeInput(ContractModel):
-    """组合描述及显式编排的预设实例。"""
+    """组合描述、效果分类、显式编排的预设实例及提升为顶层的参数。"""
 
     description: Description
+    kind: SpriteKindName
     instances: list[PresetInstance] = Field(min_length=1)
+    parameters: list[SpriteParameterBinding] = Field(default_factory=list, max_length=32)
+
+
+class InstanceSummary(ContractModel):
+    """组合结果中一个实例的来源、参数名和编排；不含预设源码。"""
+
+    instance_id: NonEmptyString
+    preset_id: Omittable[PresetId]
+    draft_id: Omittable[DraftId]
+    parameter_names: list[str]
+    layout: InstanceLayout
+    timing: InstanceTiming
 
 
 class SpriteComposeOutput(ContractModel):
-    """尚未保存的完整组合结果。"""
+    """宿主保存的组合草稿句柄与摘要；完整源码不回传，sprite.create 按 draft_id 保存。"""
 
-    sprite: SpriteDraft
+    draft_id: DraftId
+    digest: DraftDigest
+    description: Description
+    composition: Composition
+    kind: SpriteKindName
+    instances: list[InstanceSummary]
+    parameter_names: list[str]
+    default_parameters: JsonObject
+    code_bytes: NonNegativeInteger
 
 
 async def sprite_compose(request: SpriteComposeInput) -> ToolResult[SpriteComposeOutput]:
@@ -653,33 +714,78 @@ async def sprite_compose(request: SpriteComposeInput) -> ToolResult[SpriteCompos
 
 description 非空，instances 非空。主画布配置和 sprite 总帧数均不作为输入；起点之前和实例之间未被内容覆盖的区间保持空画布。
 
+契约版本 2 新增 `kind` 与 `parameters`。代码只是确定的样例：模板里每次摆放只能通过顶层参数调整它，因而组合时必须选定效果分类，并把该分类必备的参数绑定为顶层参数。
+
+| kind | 界面分类 | 必备顶层参数（Schema） | 宿主变换 |
+| --- | --- | --- | --- |
+| text | 字效 | text（string，minLength ≥ 1，maxLength ≤ 200）、fontSize（数字，范围在 8～400 内且覆盖 24～160）、fontWeight（enum 恰为 400、700）、color（颜色 pattern），以及下文的七个关键词参数 | 位置、缩放、旋转、不透明度 |
+| filter_overlay | 滤镜 | intensity（数字 0～1）、tintColor（颜色 pattern） | 不透明度 |
+| video_overlay | 转场与视频特效 | color（颜色 pattern）、speed（数字 0.25～4） | 位置、缩放、旋转、不透明度 |
+| transition_overlay | 转场与视频特效 | color（颜色 pattern）、speed（数字 0.25～4） | 不透明度 |
+
+颜色 pattern 为 `^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$`。字效还必须绑定 `keywords`（字符串数组，maxItems 为 1～20，items.maxLength 为 12～100，能容纳总线转发的切片关键词），由组件在文字里高亮每个关键词的首次字面命中；以及与总线 IMS 关键词选项同名同义的 `keywordBold`、`keywordItalic`、`keywordUnderline`、`keywordStrikeout`（布尔）、`keywordColor`（字符串，pattern 为 `^(?:|#[0-9A-Fa-f]{6})$`，空串沿用文字颜色）与 `keywordSize`（整数，minimum 0、maximum 300，0 沿用文字字号，否则是 12～300 像素；摆放覆盖拒绝 1～11），它们都必须绑定、默认关闭（`[]`、false、空串、0，不用时保持原样式；`sprite.create` 与发布都检查默认值），只作用于关键词命中处。所有分类都是透明叠加层，不读取也不修改底片像素。
+
+绑定规则：
+
+1. `name` 是驼峰标识符，不能与其他绑定或任何 `instance_id` 相同。
+2. 每个 target 必须是该实例预设顶层声明的 prop，且同一 prop 只能绑定一次；被绑定 prop 的 Schema 必须是对象形式（不能是 `true`/`false` 布尔子 Schema），也不能使用 `$ref`。
+3. 同一绑定的各 target 必须接受同样的值（忽略 title、description），且组合时取值相同；该值成为顶层默认值，`title` 成为界面控件名称。
+4. 绑定后的参数是 Sprite Schema 顶层的必填属性，并从对应实例的嵌套 Schema、required 与默认值中移除；生成的宿主把顶层值传给每个 target。
+5. 顶层参数必须有明确的取值范围：数字声明 minimum 与 maximum（或 enum；integer 的上下界须为整数），字符串使用颜色 pattern（`keywordColor` 另可用允许空串的关键词颜色 pattern）、enum 或 maxLength（maxLength 为 1～2000，即模板覆盖值的上限，且不小于 minLength），布尔不受限，数组只允许关键词形状。Schema 只能使用 type、title、description、default、minimum、maximum、enum、minLength、maxLength、颜色 pattern、maxItems 与 items.maxLength：发布时的边界抽样只认识这些约束，其他约束（如 multipleOf、exclusiveMaximum）会让两端取值漏抽。不满足时返回 `INVALID_ARGUMENT`。
+6. 整个 Sprite 的位置、缩放、旋转与不透明度由宿主按实例 layout 的并集统一实现，不通过参数绑定，预设也不应自行实现。
+
 工具执行以下确定性组合：
 
-1. 解析库引用或完整副本，校验参数及编排。
+1. 解析库引用或任务内副本句柄，校验参数及编排。
 2. 在结果中保留每个实例完整预设快照和合并后的完整参数，避免后续依赖可变的搜索结果。
 3. 计算固定画布下的总帧数。
-4. 生成单文件 TSX，包含各预设实现和组合宿主；处理导入、组件名及辅助符号冲突，保持各预设原本逻辑。
-5. 按 instance_id 生成嵌套参数 Schema 和完整默认参数。
-6. 返回 SpriteDraft，不保存 sprite，也不把 draft 来源自动写入 preset 库。
+4. 生成单文件 TSX，包含各预设实现和组合宿主；源码相同的预设只打包一份模块，由多个实例复用；处理导入、组件名及辅助符号冲突，保持各预设原本逻辑。
+5. 把绑定参数提升为顶层必填属性，其余参数按 instance_id 生成嵌套 Schema，并生成完整默认参数。
+6. 把完整 SpriteDraft（含 kind 与 bindings）保存在任务内并返回其 `draft_id`、内容摘要 `digest`（只由草稿内容决定，重复组合得到同一值）、分类、实例摘要、顶层参数名、完整默认参数与源码字节数，不回传源码，不保存 sprite，也不把 draft 来源自动写入 preset 库。
 
-组合后的 props 示例：
+组合后的 props 示例（对应下文输入示例：title 实例的 text、size、weight、color 与七个关键词参数绑定为顶层参数，glow 未绑定）：
 
 ```json
 {
-  "title": {"text": "今日灵感", "color": "#FFFFFF"},
+  "text": "今日灵感",
+  "fontSize": 96,
+  "fontWeight": 700,
+  "color": "#FFFFFF",
+  "keywords": [],
+  "keywordBold": false,
+  "keywordItalic": false,
+  "keywordUnderline": false,
+  "keywordStrikeout": false,
+  "keywordColor": "",
+  "keywordSize": 0,
+  "title": {"glow": 0.4},
   "subtitle": {"text": "从一个小想法开始", "color": "#FFFF00"}
 }
 ```
 
-title、subtitle 分别对应实例 ID，每组 Schema 来自对应预设。嵌入子 Schema 时必须保持内部引用指向正确位置，不得把某一预设的 `$ref` 意外解释为 sprite 的其他字段。
+text、fontSize、fontWeight、color 与 keyword* 是顶层参数；title、subtitle 分别对应实例 ID，其中只保留未绑定的参数，每组 Schema 来自对应预设。嵌入子 Schema 时必须保持内部引用指向正确位置，不得把某一预设的 `$ref` 意外解释为 sprite 的其他字段。
 
 默认参数来自 compose 时的实例实际参数；调用者可以按第 3.3 节规则覆盖。sprite 组件在空 props 下使用完整默认值，仍然可运行。布局和时间不暴露为这组参数，修改编排需再次 compose。
 
-输入示例，假设两个引用的预设都声明了 text、color 参数：
+输入示例，假设两个引用的预设都声明了 text、color 参数，标题预设还声明了 size、weight、glow 与七个关键词 prop，且默认值为 size 96、weight 700、glow 0.4，关键词 prop 均为关闭：
 
 ```json
 {
   "description": "标题在上、说明在下的竖屏文字模板",
+  "kind": "text",
+  "parameters": [
+    {"name": "text", "title": "标题文字", "targets": [{"instance_id": "title", "parameter": "text"}]},
+    {"name": "fontSize", "title": "字号", "targets": [{"instance_id": "title", "parameter": "size"}]},
+    {"name": "fontWeight", "title": "字重", "targets": [{"instance_id": "title", "parameter": "weight"}]},
+    {"name": "color", "title": "颜色", "targets": [{"instance_id": "title", "parameter": "color"}]},
+    {"name": "keywords", "title": "关键词", "targets": [{"instance_id": "title", "parameter": "keywords"}]},
+    {"name": "keywordBold", "title": "关键词加粗", "targets": [{"instance_id": "title", "parameter": "keywordBold"}]},
+    {"name": "keywordItalic", "title": "关键词斜体", "targets": [{"instance_id": "title", "parameter": "keywordItalic"}]},
+    {"name": "keywordUnderline", "title": "关键词下划线", "targets": [{"instance_id": "title", "parameter": "keywordUnderline"}]},
+    {"name": "keywordStrikeout", "title": "关键词删除线", "targets": [{"instance_id": "title", "parameter": "keywordStrikeout"}]},
+    {"name": "keywordColor", "title": "关键词颜色", "targets": [{"instance_id": "title", "parameter": "keywordColor"}]},
+    {"name": "keywordSize", "title": "关键词字号", "targets": [{"instance_id": "title", "parameter": "keywordSize"}]}
+  ],
   "instances": [
     {
       "instance_id": "title",
@@ -699,25 +805,27 @@ title、subtitle 分别对应实例 ID，每组 Schema 来自对应预设。嵌�
 }
 ```
 
-输出中的 composition 必须为 `{"width":1080,"height":1920,"fps":30,"duration_frames":150}`，即 5 秒。主帧 30 时 subtitle 的局部帧为 0；主帧 90 时 title 不再显示；主时间轴最后可访问的帧是 149。
+输出中的 composition 必须为 `{"width":1080,"height":1920,"fps":30,"duration_frames":150}`，即 5 秒，并携带新的 `draft_id`。主帧 30 时 subtitle 的局部帧为 0；主帧 90 时 title 不再显示；主时间轴最后可访问的帧是 149。
 
-副本使用方式：把 modify 返回的 `data.preset` 完整放入 `source: {kind: "draft", preset: ...}`，无需先 create。
+副本使用方式：把 modify 返回的 `data.draft_id` 放入 `source: {kind: "draft", draft_id: ...}`，无需先 create，也不回传源码。
 
-错误：`INVALID_ARGUMENT`、`PRESET_NOT_FOUND`、`COMPOSITION_FAILED`。重复实例 ID、非法参数或时间属于输入错误；工具不能完成确定性代码组合时返回组合错误。compose 成功不等于行为测试通过。
+错误：`INVALID_ARGUMENT`、`PRESET_NOT_FOUND`、`COMPOSITION_FAILED`。重复实例 ID、未知副本句柄、非法参数或时间、不合规则的参数绑定属于输入错误；工具不能完成确定性代码组合时返回组合错误。compose 成功不等于行为测试通过。
 
 ### 7.3 create
 
 ```python
 class SpriteCreateInput(ContractModel):
-    """接收 compose 返回的完整组合定义。"""
+    """compose 返回的草稿句柄。"""
 
-    sprite: SpriteDraft
+    draft_id: DraftId
 
 
 class SpriteCreateOutput(ContractModel):
-    """新 sprite 记录及入库代码校验报告。"""
+    """新 sprite 的 ID 与入库代码校验报告；完整记录由宿主保存。"""
 
-    sprite: SpriteRecord
+    sprite_id: SpriteId
+    created_at: Timestamp
+    composition: Composition
     validation: CodeValidationReport
 
 
@@ -726,15 +834,15 @@ async def sprite_create(request: SpriteCreateInput) -> ToolResult[SpriteCreateOu
     ...
 ```
 
-接收 compose 的完整结果。验证固定宽高和帧率、自动计算时长、实例快照、参数结构及组合产物的一致性，并在内部执行代码校验；通过后保存新记录并返回 sprite_id。
+按 `draft_id` 读取本任务 compose 保存的完整结果。宽高、帧率、时长、实例快照、参数结构与组合产物由 compose 一次生成，彼此一致；create 在内部执行代码校验（每种不同的原始预设源码检查一次，再检查组合产物），再检查 7.2 表中该分类的必备顶层参数，缺少或形状不符时返回 `CATEGORY_PARAMETERS_MISSING`，`details.missing` 逐项列出名称、原因和应有的 Schema；Sprite 叠在用户自己的视频上，create 还会用默认参数在隔离浏览器中挂载一次，在首、尾及中间三帧度量不透明像素（alpha 不低于 242/255）的占比，至少 80% 的采样帧（5 帧中的 4 帧）有不低于 98% 的画面不透明时按 `CODE_VALIDATION_FAILED` 拒绝并说明做法，淡入或延后出现的整帧遮罩也在此列，只覆盖中间一两帧的转场仍通过。通过后保存新记录并返回 sprite_id。
 
-不能接受与实例定义脱节的任意改写产物。可重新组合或以等效方式核对 code、Schema、默认值与 instances 的一致性，不静默把传入内容改成另一份模板。修改预设实现或编排，应先得到新的 compose 结果。
+调用方不回传源码，因而无法提交与实例定义脱节的改写产物；草稿只由 compose 写入，create 不再重新打包比对。修改预设实现或编排，应先得到新的 compose 结果和新的 `draft_id`。
 
 存储完整快照，后续不因某个库记录或临时副本发生变化而改变已保存 sprite。不要求副本另行入 preset 库。不覆盖其他 sprite，不新增 sprite 搜索、更新或删除工具。
 
-输入来自 compose 成功回执的 data，即 `{"sprite": <完整 SpriteDraft>}`。成功输出增加 sprite_id、created_at，并附 CodeValidationReport。
+输入为 compose 成功回执中的句柄，即 `{"draft_id": "<data.draft_id>"}`；未知句柄返回 `INVALID_ARGUMENT`，`field` 为 `/draft_id` 并列出本任务已有句柄。成功输出 sprite_id、created_at、composition，并附 CodeValidationReport；完整 SpriteRecord 由宿主保存。
 
-错误：`INVALID_ARGUMENT`、`COMPOSITION_FAILED`、`CODE_VALIDATION_FAILED`、`VALIDATION_UNAVAILABLE`、`SPRITE_STORE_FAILED`、`TIMEOUT`。校验失败不保存；create 不运行自定义行为测试，也不声明视觉验收通过。
+错误：`INVALID_ARGUMENT`、`COMPOSITION_FAILED`、`CODE_VALIDATION_FAILED`、`CATEGORY_PARAMETERS_MISSING`、`VALIDATION_UNAVAILABLE`、`SPRITE_STORE_FAILED`、`TIMEOUT`。校验失败不保存；create 的挂载只度量画面是否遮住视频，不运行自定义行为测试，也不声明视觉验收通过。
 
 ## 8. 校验工具
 
@@ -765,6 +873,7 @@ class CodeDiagnostic(ContractModel):
     code: Omittable[str]
     range: Omittable[TextRange]
     field: Omittable[str]
+    excerpt: Omittable[str]
 
 
 class CodeValidationInput(ContractModel):
@@ -793,7 +902,9 @@ async def validate_code(request: CodeValidationInput) -> ToolResult[CodeValidati
 
 LSP 的具体服务实现不在本文规定。有效的代码输入产生 error 级诊断时，工具完成检查但 passed=false；warning/information/hint 不单独阻止通过。
 
-range 采用 LSP 的零基行号和 UTF-16 character 偏移，结束位置排他。file 是逻辑文件名，例如 Component.tsx 或宿主生成的调用点文件；不依赖实施方的本地绝对路径。field 指向输入中的契约字段。
+range 采用 LSP 的零基行号和 UTF-16 character 偏移，结束位置排他。file 是逻辑文件名，例如 Component.tsx 或宿主生成的调用点文件；不依赖实施方的本地绝对路径。field 指向输入中的契约字段。excerpt 是 range 起始行在实际被检查文件中的源码（去除首尾空白，最多 200 字符）；实施方检查的可能是格式化后的副本或宿主生成文件，行号不一定与提交源码一致，调用方据此在自己的源码中定位。
+
+create 因代码校验失败返回 `CODE_VALIDATION_FAILED` 时，`message` 先给一句概述，再逐行列出前 5 条错误的文件、行列、错误码、消息及 excerpt，其余条数写明见 `details.validation`；常见错误（props 与 Schema 不一致、非法导入、沙箱不允许的能力、透明度门禁、Schema 与默认值不一致）另在 `details.hints` 给出宿主固定的修复说明，不由模型生成。
 
 JSON 结构本身不合法返回 `INVALID_ARGUMENT`。能读取的 Schema、默认参数或源码不符合契约，返回 contract/lsp 诊断。服务没有启动或工具依赖不可用返回 `VALIDATION_UNAVAILABLE`，不能把环境故障描述成源码错误。
 
@@ -1060,7 +1171,7 @@ ToolName = Literal[
     "image.info", "image.resize", "image.crop",
     "preset.search", "preset.create", "preset.modify",
     "validate.code", "validate.render", "sprite.compose", "sprite.create",
-    "tools.inspect", "tools.plan_execute",
+    "tools.inspect", "tools.plan_execute", "tools.report_step",
 ]
 
 
@@ -1096,7 +1207,7 @@ async def tools_inspect(request: ToolInspectInput) -> ToolResult[ToolDescriptor]
     ...
 ```
 
-根据精确工具名返回真实契约，不做语义搜索、不执行被查询工具。未知名称返回 `TOOL_NOT_FOUND`。输入格式错误返回 `INVALID_ARGUMENT`。
+根据精确工具名返回真实契约，不做语义搜索、不执行被查询工具。未知名称返回 `TOOL_NOT_FOUND`，消息可附最多两个拼写相近的名称（`Closest:`）以便纠正拼写，但不会据此返回任何契约。输入格式错误返回 `INVALID_ARGUMENT`。
 
 描述符始终返回 `contract_version`；默认版本为 1，`preset.search` 的列表加 ID 查找结构为版本 2。调用方应先读取版本和 Schema，再选择对应的输入输出解析器，不把 v2 摘要当成旧 `matches` 完整记录。
 
@@ -1121,14 +1232,29 @@ constraints 必须包含像素坐标、时间单位、默认值、不可变性�
 - 可能返回第 5 节列出的相关错误。
 
 inspect 自身也可被查询。已知工具列表由集成方提供给 Agent；本期不通过 inspect 暗中实现 find、推荐工具或自动选择操作。
+只有契约、尚未实现的工具仍可被 inspect，其描述首句标明「当前不可调用」，且不出现在任何层的工具窗口中；Agent 只能调用自己工具列表里的工具。
 
 ### 9.1 宿主计划控制
 
 `tools.plan_execute` / `tools_plan_execute` 可被 inspect 查询，返回同一 ToolDescriptor，
 包括 [PlanAction](../server/src/server/remotion_templates/planning.py) 的完整输入 Schema、
 `ToolResult[JsonObject]` 输出 Schema、约束、副作用、错误码和示例。
-这个入口由宿主处理，Outer 负责委派或完成，Plan 负责步骤更新；Executor 只能检查其契约，
-不能执行计划控制。读取描述符不会修改计划，也不会发布 Sprite。
+这个入口由宿主处理：Outer 只做 `answer`（回答）、`ask`（必要澄清）、`delegate`（委派）或 `stop`；
+`plan` 只能随 `update_plan` 提交，`delegate` 携带 `plan` 会以 `INVALID_ARGUMENT` 拒绝，而不是接受后忽略；
+委派后宿主直接建立标准两步计划（`preset` 准备预设，`sprite` 组合并保存），Plan 只在步骤受阻或整批调用没有新进展时被唤醒（报告
+`needs_input` 的步骤带着 `questions` 直接交给 Outer 向用户提问，因为只有 Outer 能提问），`update_plan` 只发送未完成的步骤，已完成步骤由宿主保留（重发的已完成步骤按 ID 忽略，回执的 `ignored_step_ids`
+列出它们，提醒要重做的工作须换新的步骤 ID；只剩已完成步骤时直接拒绝并说明），
+`input_refs` 在建立计划时即校验产出模块（`steps.<id>.outputs.presets` 需 preset 模块，
+`steps.<id>.outputs.sprite` 需 sprite 模块）。Plan 的 `complete`（或文本回复 `plan_done`）只能指向本任务最新保存的
+Sprite，宿主随即直接发布它，不再交回 Outer（Outer 没有发布动作）；任务尚未保存 Sprite 时完成请求被拒绝，控制留在 Plan。
+任务总额度或批次用尽、无法再开新批次时，若本任务已保存 Sprite，宿主同样直接发布最新的那个；没有 Sprite 才以 blocked
+交回 Outer。Executor 只能检查其契约，不能执行计划控制。
+
+`tools.report_step` / `tools_report_step` 只供 Executor 调用，输入为
+[StepResult](../server/src/server/remotion_templates/planning.py)（`status`、`summary`、`questions`；`needs_input` 必须带至少一个问题）。
+步骤产出由宿主从工具回执登记：带 sprite 模块的步骤须在本步 `sprite_create` 成功，preset 步骤须至少准备好一个预设
+（或编辑任务已有基线草稿），否则 `step_done` 被拒绝并说明下一步应调用的工具；通过后宿主推进下一步，最后一步完成即发布最新 Sprite。
+批次用尽时，若本批有新观察，宿主自动继续当前步骤。读取描述符不会修改计划，也不会发布 Sprite。
 
 ## 10. 端到端数据流示例
 
@@ -1137,15 +1263,15 @@ inspect 自身也可被查询。已知工具列表由集成方提供给 Agent；
 1. Agent 调用 image.info 读取参考图信息；必要时调用 crop/resize 获取更适合观察的图片 URL。
 2. Agent 用可选关键词调用 preset.search，从 `presets` 摘要选择 ID，再用 `preset_id` 读取 `preset` 中的完整代码和参数契约；`has_more=true` 时缩小关键词范围。
 3. 已有预设满足需求时直接实例化并填参数，不调用 modify。
-4. 需要改变实现时，由 Agent 先写出修改后的代码，再调用 modify 返回完整副本；原预设不变。如果没有合适预设，Agent 编写完整定义，通过 create 校验后加入库。
-5. Agent 明确提供各实例的位置、尺寸、层级和时间，调用 compose。输入可以同时包含 stored 和 draft 两类来源。
-6. compose 返回完整 SpriteDraft，示例时间编排得到 150 帧、5 秒。
-7. Agent 把 SpriteDraft 的 code、parameter_schema、default_parameters 作为 component，composition.duration_frames 作为测试总帧数，连同需求断言交给 validate.render。
+4. 需要改变实现时，由 Agent 先写出修改后的代码，再调用 modify 取得副本的 `draft_id`；原预设不变。如果没有合适预设，Agent 编写完整定义，通过 create 校验后加入库。
+5. Agent 明确提供各实例的位置、尺寸、层级和时间，选定效果分类并绑定该分类的必备顶层参数，调用 compose。输入可以同时包含 stored 和 draft 两类来源。
+6. compose 在任务内保存完整 SpriteDraft，返回 `draft_id` 与摘要，示例时间编排得到 150 帧、5 秒。
+7. 宿主把 SpriteDraft 的 code、parameter_schema、default_parameters 作为 component，composition.duration_frames 作为测试总帧数，连同需求断言交给 validate.render（本期该工具不向模型开放）。
 8. 工具返回真实检查报告。上层 Agent 根据诊断修改预设副本、参数或编排，再次 compose 和校验；工具本身不实现修复循环。
-9. 满足调用方验收要求后，调用 sprite.create 保存。create 再执行入库代码校验，返回 SpriteRecord。
+9. 满足调用方验收要求后，以 `{draft_id}` 调用 sprite.create 保存。create 再执行入库代码校验和一次浏览器挂载的透明度检查，返回 sprite_id 与校验报告。
 10. 上层使用保存后的代码、默认参数和 composition 接入自己的预览流程；本契约不规定预览 UI 或下载方式。
 
-校验并不是隐式发布事务：sprite.create 不要求调用方提交行为测试回执，也不会声称已执行该测试。调用顺序和业务验收决策属于上层，工具入库门禁只保证其明确承诺的代码检查与数据一致性。
+校验并不是隐式发布事务：sprite.create 不要求调用方提交行为测试回执，也不会声称已执行该测试。调用顺序和业务验收决策属于上层，工具入库门禁只保证其明确承诺的代码检查、透明度检查与数据一致性。
 
 ## 11. 实施方验收用例
 
@@ -1163,7 +1289,7 @@ inspect 自身也可被查询。已知工具列表由集成方提供给 Agent；
 | 预设保存失败 | 不返回成功，不暴露半完成预设 |
 | search 无匹配结果 | 成功返回空 presets 和 has_more=false，不自动生成代码 |
 | search 超出数量或字节上限 | 返回有界摘要和 has_more=true；单条无法容纳时返回 RESOURCE_LIMIT_EXCEEDED |
-| modify 原预设 | 返回完整副本；原记录不变；副本没有新 preset_id |
+| modify 原预设 | 返回副本 draft_id 与不含源码的摘要；原记录不变；副本没有新 preset_id |
 | modify 只改代码 | 继承原 Schema 和默认值，来源指向原记录；编译结论留给 validate/create |
 | 副本直接参与 compose | 能形成完整 sprite，无需把副本加入 preset 库 |
 | 同一 preset 使用两次 | 实例 ID、参数和局部时间相互独立 |
@@ -1176,7 +1302,11 @@ inspect 自身也可被查询。已知工具列表由集成方提供给 Agent；
 | sprite 空 props 运行 | 使用 compose 时生成的完整默认参数 |
 | 只覆盖 title.text | 保留 title 的其他默认参数及其他实例参数 |
 | 修改布局或时间 | 通过再次 compose 产生新定义，不能靠参数覆盖改写编排 |
-| create 接收被篡改而不一致的 SpriteDraft | 拒绝保存，不静默改写为另一份模板 |
+| 字效缺少 fontWeight 绑定 | create 返回 CATEGORY_PARAMETERS_MISSING，details.missing 给出 fontWeight 的 Schema，不保存 |
+| 绑定两个取值不同的 target | compose 返回 INVALID_ARGUMENT，指向该 target |
+| 绑定参数后空 props 运行 | 顶层默认值传给每个 target，实例其余参数保持嵌套默认值 |
+| create 接收未知 draft_id | INVALID_ARGUMENT，field 为 /draft_id 并列出本任务句柄 |
+| 同一 preset 的多个实例 | 组合源码只包含一份该预设模块 |
 | validate.code 报编译错误 | ok=true、passed=false，带结构化诊断 |
 | validate 环境不可用 | ToolError，不把环境故障当作代码或行为失败 |
 | 测试脚本无断言 | 脚本为 error，整体不通过 |
@@ -1187,7 +1317,7 @@ inspect 自身也可被查询。已知工具列表由集成方提供给 Agent；
 | 自定义测试断言失败 | 返回失败项及实际值，原 preset/sprite 不变 |
 | 运行校验 | 不生成截图、不抽帧、不调用视觉 Judge；时间定位本身不输出图片 |
 | tools.inspect 已知工具 | 输出可解析的完整输入输出 Schema、规则和示例，不执行目标工具 |
-| tools.inspect 未知工具 | TOOL_NOT_FOUND，列出已注册的工具 ID 供纠正名称；不做模糊匹配、不推荐任务方案、不执行 find |
+| tools.inspect 未知工具 | TOOL_NOT_FOUND，列出已注册的工具 ID 供纠正名称，当前可调用的与仅有契约（不可调用）的分开列出；可附拼写相近的名称，但不按相近名称返回契约、不推荐任务方案、不执行 find |
 
 ## 12. 实施边界
 

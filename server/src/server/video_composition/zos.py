@@ -1,4 +1,4 @@
-"""将 IMS 临时成片和第 3 帧 PNG 转存到 ZOS，并核实公开读取。"""
+"""将 IMS 临时成片和第 3 帧 PNG 转存到 ZOS，并核实公开读取；`upload_public` 也供 Remotion 叠加视频复用。"""
 
 from contextlib import closing
 from pathlib import Path
@@ -24,12 +24,35 @@ def extract_third_frame(video: Path, image: Path, timeout: float) -> None:
         raise ValueError("IMS 成片不足三帧，无法生成封面")
 
 
+def upload_public(files: list[tuple[Path, str, str]], settings: ZosSettings, timeout: float) -> list[str]:
+    """逐个上传为 public-read，核对大小并匿名读取首字节；返回与输入同序的公开地址。"""
+    urls = [f"{settings.zos_web_url.rstrip('/')}/{key}" for _, key, _ in files]
+    storage = boto3.client(
+        "s3", endpoint_url=settings.zos_api_endpoint, region_name=settings.zos_region,
+        aws_access_key_id=settings.zos_access_key_id.get_secret_value(),
+        aws_secret_access_key=settings.zos_secret_access_key.get_secret_value(),
+        config=Config(s3={"addressing_style": "path" if settings.zos_force_path_style else "virtual"},
+                      connect_timeout=timeout, read_timeout=timeout, retries={"max_attempts": 1},
+                      request_checksum_calculation="when_required", response_checksum_validation="when_required"),
+    )
+    with closing(storage), httpx.Client(timeout=timeout, follow_redirects=False) as client:
+        for (path, object_key, content_type), url in zip(files, urls):
+            with path.open("rb") as file:
+                storage.upload_fileobj(file, settings.zos_bucket, object_key,
+                                       ExtraArgs={"ACL": "public-read", "ContentType": content_type})
+            if storage.head_object(Bucket=settings.zos_bucket, Key=object_key)["ContentLength"] != path.stat().st_size:
+                raise ValueError("ZOS 对象大小与本地文件不一致")
+            with client.stream("GET", url, headers={"Range": "bytes=0-0"}) as response:
+                response.raise_for_status()
+                if response.status_code not in (200, 206) or not next(response.iter_bytes(chunk_size=1), b""):
+                    raise ValueError("ZOS 对象尚不能匿名读取")
+    return urls
+
+
 def copy_video(source_url: str, task_id: str, settings: ZosSettings, timeout: float) -> tuple[str, str]:
     """同一次下载生成视频和公开 PNG；两者核验通过后只返回视频地址。"""
     key = f"imv/video_composition/{task_id}.mp4"
     image_key = f"imv/video_composition/{task_id}.png"
-    public_url = f"{settings.zos_web_url.rstrip('/')}/{key}"
-    image_url = f"{settings.zos_web_url.rstrip('/')}/{image_key}"
     with TemporaryDirectory() as directory, httpx.Client(timeout=timeout, follow_redirects=False) as client:
         video = Path(directory) / "video.mp4"
         image = Path(directory) / "frame.png"
@@ -45,26 +68,7 @@ def copy_video(source_url: str, task_id: str, settings: ZosSettings, timeout: fl
             if size == 0 or (declared is not None and size != int(declared)):
                 raise ValueError("IMS 成片下载不完整")
         extract_third_frame(video, image, timeout)
-        storage = boto3.client(
-            "s3", endpoint_url=settings.zos_api_endpoint, region_name=settings.zos_region,
-            aws_access_key_id=settings.zos_access_key_id.get_secret_value(),
-            aws_secret_access_key=settings.zos_secret_access_key.get_secret_value(),
-            config=Config(s3={"addressing_style": "path" if settings.zos_force_path_style else "virtual"},
-                          connect_timeout=timeout, read_timeout=timeout, retries={"max_attempts": 1},
-                          request_checksum_calculation="when_required", response_checksum_validation="when_required"),
+        public_url, _ = upload_public(
+            [(video, key, "video/mp4"), (image, image_key, "image/png")], settings, timeout,
         )
-        with closing(storage):
-            for path, object_key, url, content_type in (
-                (video, key, public_url, "video/mp4"),
-                (image, image_key, image_url, "image/png"),
-            ):
-                with path.open("rb") as file:
-                    storage.upload_fileobj(file, settings.zos_bucket, object_key,
-                                           ExtraArgs={"ACL": "public-read", "ContentType": content_type})
-                if storage.head_object(Bucket=settings.zos_bucket, Key=object_key)["ContentLength"] != path.stat().st_size:
-                    raise ValueError("ZOS 对象大小与本地文件不一致")
-                with client.stream("GET", url, headers={"Range": "bytes=0-0"}) as response:
-                    response.raise_for_status()
-                    if response.status_code not in (200, 206) or not next(response.iter_bytes(chunk_size=1), b""):
-                        raise ValueError("ZOS 对象尚不能匿名读取")
     return key, public_url

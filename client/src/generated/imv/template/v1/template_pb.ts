@@ -14,7 +14,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file imv/template/v1/template.proto.
  */
 export const file_imv_template_v1_template: GenFile = /*@__PURE__*/
-  fileDesc("Ch5pbXYvdGVtcGxhdGUvdjEvdGVtcGxhdGUucHJvdG8SD2ltdi50ZW1wbGF0ZS52MSLWAQoLRWZmZWN0QXNzZXQSCgoCaWQYASABKAkSEAoIY2F0ZWdvcnkYAiABKAkSDAoEbmFtZRgDIAEoCRIRCgllZmZlY3RfaWQYBCABKAkSQAoKcGFyYW1ldGVycxgFIAMoCzIsLmltdi50ZW1wbGF0ZS52MS5FZmZlY3RBc3NldC5QYXJhbWV0ZXJzRW50cnkSEwoLcHJldmlld191cmwYBiABKAkaMQoPUGFyYW1ldGVyc0VudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAEimQ4KFEVmZmVjdFRlbXBsYXRlRWRpdG9yEhIKBXRpdGxlGAEgASgJSACIAQESFQoIc3VidGl0bGUYAiABKAlIAYgBARIYCgtidWJibGVfdGV4dBgDIAEoCUgCiAEBEhcKCnRpdGxlX3NpemUYBCABKAVIA4gBARIaCg1zdWJ0aXRsZV9zaXplGAUgASgFSASIAQESGAoLYnViYmxlX3NpemUYBiABKAVIBYgBARIUCgd0aXRsZV94GAcgASgBSAaIAQESFAoHdGl0bGVfeRgIIAEoAUgHiAEBEhcKCnN1YnRpdGxlX3gYCSABKAFICIgBARIXCgpzdWJ0aXRsZV95GAogASgBSAmIAQESFQoIYnViYmxlX3gYCyABKAFICogBARIVCghidWJibGVfeRgMIAEoAUgLiAEBEhkKDHRpdGxlX2Zsb3dlchgNIAEoCUgMiAEBEhwKD3N1YnRpdGxlX2Zsb3dlchgOIAEoCUgNiAEBEhMKBmJ1YmJsZRgPIAEoCUgOiAEBEhMKBmZpbHRlchgQIAEoCUgPiAEBEhAKA3ZmeBgRIAEoCUgQiAEBEhcKCnRyYW5zaXRpb24YEiABKAlIEYgBARIVCgh0aXRsZV9pbhgTIAEoCUgSiAEBEhYKCXRpdGxlX291dBgUIAEoCUgTiAEBEhcKCnRpdGxlX2xvb3AYFSABKAlIFIgBARIYCgtzdWJ0aXRsZV9pbhgWIAEoCUgViAEBEhkKDHN1YnRpdGxlX291dBgXIAEoCUgWiAEBEhoKDXN1YnRpdGxlX2xvb3AYGCABKAlIF4gBARIWCglidWJibGVfaW4YGSABKAlIGIgBARIXCgpidWJibGVfb3V0GBogASgJSBmIAQESGAoLYnViYmxlX2xvb3AYGyABKAlIGogBARIeChF0aXRsZV9pbl9kdXJhdGlvbhgcIAEoAUgbiAEBEh8KEnRpdGxlX291dF9kdXJhdGlvbhgdIAEoAUgciAEBEiEKFHN1YnRpdGxlX2luX2R1cmF0aW9uGB4gASgBSB2IAQESIgoVc3VidGl0bGVfb3V0X2R1cmF0aW9uGB8gASgBSB6IAQESHwoSYnViYmxlX2luX2R1cmF0aW9uGCAgASgBSB+IAQESIAoTYnViYmxlX291dF9kdXJhdGlvbhghIAEoAUggiAEBEh0KFXN1YnRpdGxlX2tleXdvcmRfYm9sZBgiIAEoCBIfChdzdWJ0aXRsZV9rZXl3b3JkX2l0YWxpYxgjIAEoCBIiChpzdWJ0aXRsZV9rZXl3b3JkX3VuZGVybGluZRgkIAEoCBIiChpzdWJ0aXRsZV9rZXl3b3JkX3N0cmlrZW91dBglIAEoCBIeChZzdWJ0aXRsZV9rZXl3b3JkX2NvbG9yGCYgASgJEhUKDXRpdGxlX2tleXdvcmQYJyABKAkSGgoSdGl0bGVfa2V5d29yZF9ib2xkGCggASgIEhwKFHRpdGxlX2tleXdvcmRfaXRhbGljGCkgASgIEh8KF3RpdGxlX2tleXdvcmRfdW5kZXJsaW5lGCogASgIEh8KF3RpdGxlX2tleXdvcmRfc3RyaWtlb3V0GCsgASgIEhsKE3RpdGxlX2tleXdvcmRfY29sb3IYLCABKAkSGgoSdGl0bGVfa2V5d29yZF9zaXplGC0gASgFEh0KFXN1YnRpdGxlX2tleXdvcmRfc2l6ZRguIAEoBUIICgZfdGl0bGVCCwoJX3N1YnRpdGxlQg4KDF9idWJibGVfdGV4dEINCgtfdGl0bGVfc2l6ZUIQCg5fc3VidGl0bGVfc2l6ZUIOCgxfYnViYmxlX3NpemVCCgoIX3RpdGxlX3hCCgoIX3RpdGxlX3lCDQoLX3N1YnRpdGxlX3hCDQoLX3N1YnRpdGxlX3lCCwoJX2J1YmJsZV94QgsKCV9idWJibGVfeUIPCg1fdGl0bGVfZmxvd2VyQhIKEF9zdWJ0aXRsZV9mbG93ZXJCCQoHX2J1YmJsZUIJCgdfZmlsdGVyQgYKBF92ZnhCDQoLX3RyYW5zaXRpb25CCwoJX3RpdGxlX2luQgwKCl90aXRsZV9vdXRCDQoLX3RpdGxlX2xvb3BCDgoMX3N1YnRpdGxlX2luQg8KDV9zdWJ0aXRsZV9vdXRCEAoOX3N1YnRpdGxlX2xvb3BCDAoKX2J1YmJsZV9pbkINCgtfYnViYmxlX291dEIOCgxfYnViYmxlX2xvb3BCFAoSX3RpdGxlX2luX2R1cmF0aW9uQhUKE190aXRsZV9vdXRfZHVyYXRpb25CFwoVX3N1YnRpdGxlX2luX2R1cmF0aW9uQhgKFl9zdWJ0aXRsZV9vdXRfZHVyYXRpb25CFQoTX2J1YmJsZV9pbl9kdXJhdGlvbkIWChRfYnViYmxlX291dF9kdXJhdGlvbiK2AQoLRWZmZWN0VHJhY2sSCgoCaWQYASABKAkSDgoGdGFyZ2V0GAIgASgJEhIKCnN0YXJ0X21vZGUYAyABKAkSEgoFc3RhcnQYBCABKAFIAIgBARIVCghkdXJhdGlvbhgFIAEoAUgBiAEBEjUKBmVkaXRvchgGIAEoCzIlLmltdi50ZW1wbGF0ZS52MS5FZmZlY3RUZW1wbGF0ZUVkaXRvckIICgZfc3RhcnRCCwoJX2R1cmF0aW9uIjkKCVRyYWNrTGlzdBIsCgZ0cmFja3MYASADKAsyHC5pbXYudGVtcGxhdGUudjEuRWZmZWN0VHJhY2sigQIKE1NhdmVUZW1wbGF0ZVJlcXVlc3QSDAoEbmFtZRgBIAEoCRIYCgtkZXNjcmlwdGlvbhgCIAEoCUgAiAEBEhIKCmVmZmVjdF9pZHMYAyADKAkSKAobdHJhbnNpdGlvbl9kdXJhdGlvbl9zZWNvbmRzGAQgASgBSAGIAQESKgoGdHJhY2tzGAUgASgLMhouaW12LnRlbXBsYXRlLnYxLlRyYWNrTGlzdBIYCgt0ZW1wbGF0ZV9pZBgGIAEoCUgCiAEBQg4KDF9kZXNjcmlwdGlvbkIeChxfdHJhbnNpdGlvbl9kdXJhdGlvbl9zZWNvbmRzQg4KDF90ZW1wbGF0ZV9pZCK8AgoOVGVtcGxhdGVSZWNvcmQSDAoEbmFtZRgBIAEoCRITCgtkZXNjcmlwdGlvbhgCIAEoCRISCgplZmZlY3RfaWRzGAMgAygJEiMKG3RyYW5zaXRpb25fZHVyYXRpb25fc2Vjb25kcxgEIAEoARIqCgZ0cmFja3MYBSABKAsyGi5pbXYudGVtcGxhdGUudjEuVHJhY2tMaXN0EhMKC3RlbXBsYXRlX2lkGAYgASgJEi0KB2VmZmVjdHMYByADKAsyHC5pbXYudGVtcGxhdGUudjEuRWZmZWN0QXNzZXQSLgoKY3JlYXRlZF9hdBgIIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASLgoKdXBkYXRlZF9hdBgJIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXAiSwoVTGlzdFRlbXBsYXRlc1Jlc3BvbnNlEjIKCXRlbXBsYXRlcxgBIAMoCzIfLmltdi50ZW1wbGF0ZS52MS5UZW1wbGF0ZVJlY29yZCJIChNHZXRUZW1wbGF0ZVJlc3BvbnNlEjEKCHRlbXBsYXRlGAEgASgLMh8uaW12LnRlbXBsYXRlLnYxLlRlbXBsYXRlUmVjb3JkIkkKFFNhdmVUZW1wbGF0ZVJlc3BvbnNlEjEKCHRlbXBsYXRlGAEgASgLMh8uaW12LnRlbXBsYXRlLnYxLlRlbXBsYXRlUmVjb3JkYgZwcm90bzM", [file_google_protobuf_timestamp]);
+  fileDesc("Ch5pbXYvdGVtcGxhdGUvdjEvdGVtcGxhdGUucHJvdG8SD2ltdi50ZW1wbGF0ZS52MSLWAQoLRWZmZWN0QXNzZXQSCgoCaWQYASABKAkSEAoIY2F0ZWdvcnkYAiABKAkSDAoEbmFtZRgDIAEoCRIRCgllZmZlY3RfaWQYBCABKAkSQAoKcGFyYW1ldGVycxgFIAMoCzIsLmltdi50ZW1wbGF0ZS52MS5FZmZlY3RBc3NldC5QYXJhbWV0ZXJzRW50cnkSEwoLcHJldmlld191cmwYBiABKAkaMQoPUGFyYW1ldGVyc0VudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAEiJAoSUmVtb3Rpb25TdHJpbmdMaXN0Eg4KBnZhbHVlcxgBIAMoCSLoAQoZUmVtb3Rpb25QYXJhbWV0ZXJPdmVycmlkZRILCgNrZXkYASABKAkSGQoMc3RyaW5nX3ZhbHVlGAIgASgJSACIAQESGQoMbnVtYmVyX3ZhbHVlGAMgASgBSAGIAQESFwoKYm9vbF92YWx1ZRgEIAEoCEgCiAEBEj4KEXN0cmluZ19saXN0X3ZhbHVlGAUgASgLMiMuaW12LnRlbXBsYXRlLnYxLlJlbW90aW9uU3RyaW5nTGlzdEIPCg1fc3RyaW5nX3ZhbHVlQg8KDV9udW1iZXJfdmFsdWVCDQoLX2Jvb2xfdmFsdWUiowEKEVJlbW90aW9uVHJhbnNmb3JtEg4KAXgYASABKAFIAIgBARIOCgF5GAIgASgBSAGIAQESEgoFc2NhbGUYAyABKAFIAogBARIVCghyb3RhdGlvbhgEIAEoAUgDiAEBEhQKB29wYWNpdHkYBSABKAFIBIgBAUIECgJfeEIECgJfeUIICgZfc2NhbGVCCwoJX3JvdGF0aW9uQgoKCF9vcGFjaXR5IowBChNSZW1vdGlvblRyYWNrRWRpdG9yEj4KCnBhcmFtZXRlcnMYASADKAsyKi5pbXYudGVtcGxhdGUudjEuUmVtb3Rpb25QYXJhbWV0ZXJPdmVycmlkZRI1Cgl0cmFuc2Zvcm0YAiABKAsyIi5pbXYudGVtcGxhdGUudjEuUmVtb3Rpb25UcmFuc2Zvcm0i0Q4KFEVmZmVjdFRlbXBsYXRlRWRpdG9yEhIKBXRpdGxlGAEgASgJSACIAQESFQoIc3VidGl0bGUYAiABKAlIAYgBARIYCgtidWJibGVfdGV4dBgDIAEoCUgCiAEBEhcKCnRpdGxlX3NpemUYBCABKAVIA4gBARIaCg1zdWJ0aXRsZV9zaXplGAUgASgFSASIAQESGAoLYnViYmxlX3NpemUYBiABKAVIBYgBARIUCgd0aXRsZV94GAcgASgBSAaIAQESFAoHdGl0bGVfeRgIIAEoAUgHiAEBEhcKCnN1YnRpdGxlX3gYCSABKAFICIgBARIXCgpzdWJ0aXRsZV95GAogASgBSAmIAQESFQoIYnViYmxlX3gYCyABKAFICogBARIVCghidWJibGVfeRgMIAEoAUgLiAEBEhkKDHRpdGxlX2Zsb3dlchgNIAEoCUgMiAEBEhwKD3N1YnRpdGxlX2Zsb3dlchgOIAEoCUgNiAEBEhMKBmJ1YmJsZRgPIAEoCUgOiAEBEhMKBmZpbHRlchgQIAEoCUgPiAEBEhAKA3ZmeBgRIAEoCUgQiAEBEhcKCnRyYW5zaXRpb24YEiABKAlIEYgBARIVCgh0aXRsZV9pbhgTIAEoCUgSiAEBEhYKCXRpdGxlX291dBgUIAEoCUgTiAEBEhcKCnRpdGxlX2xvb3AYFSABKAlIFIgBARIYCgtzdWJ0aXRsZV9pbhgWIAEoCUgViAEBEhkKDHN1YnRpdGxlX291dBgXIAEoCUgWiAEBEhoKDXN1YnRpdGxlX2xvb3AYGCABKAlIF4gBARIWCglidWJibGVfaW4YGSABKAlIGIgBARIXCgpidWJibGVfb3V0GBogASgJSBmIAQESGAoLYnViYmxlX2xvb3AYGyABKAlIGogBARIeChF0aXRsZV9pbl9kdXJhdGlvbhgcIAEoAUgbiAEBEh8KEnRpdGxlX291dF9kdXJhdGlvbhgdIAEoAUgciAEBEiEKFHN1YnRpdGxlX2luX2R1cmF0aW9uGB4gASgBSB2IAQESIgoVc3VidGl0bGVfb3V0X2R1cmF0aW9uGB8gASgBSB6IAQESHwoSYnViYmxlX2luX2R1cmF0aW9uGCAgASgBSB+IAQESIAoTYnViYmxlX291dF9kdXJhdGlvbhghIAEoAUggiAEBEh0KFXN1YnRpdGxlX2tleXdvcmRfYm9sZBgiIAEoCBIfChdzdWJ0aXRsZV9rZXl3b3JkX2l0YWxpYxgjIAEoCBIiChpzdWJ0aXRsZV9rZXl3b3JkX3VuZGVybGluZRgkIAEoCBIiChpzdWJ0aXRsZV9rZXl3b3JkX3N0cmlrZW91dBglIAEoCBIeChZzdWJ0aXRsZV9rZXl3b3JkX2NvbG9yGCYgASgJEhUKDXRpdGxlX2tleXdvcmQYJyABKAkSGgoSdGl0bGVfa2V5d29yZF9ib2xkGCggASgIEhwKFHRpdGxlX2tleXdvcmRfaXRhbGljGCkgASgIEh8KF3RpdGxlX2tleXdvcmRfdW5kZXJsaW5lGCogASgIEh8KF3RpdGxlX2tleXdvcmRfc3RyaWtlb3V0GCsgASgIEhsKE3RpdGxlX2tleXdvcmRfY29sb3IYLCABKAkSGgoSdGl0bGVfa2V5d29yZF9zaXplGC0gASgFEh0KFXN1YnRpdGxlX2tleXdvcmRfc2l6ZRguIAEoBRI2CghyZW1vdGlvbhgvIAEoCzIkLmltdi50ZW1wbGF0ZS52MS5SZW1vdGlvblRyYWNrRWRpdG9yQggKBl90aXRsZUILCglfc3VidGl0bGVCDgoMX2J1YmJsZV90ZXh0Qg0KC190aXRsZV9zaXplQhAKDl9zdWJ0aXRsZV9zaXplQg4KDF9idWJibGVfc2l6ZUIKCghfdGl0bGVfeEIKCghfdGl0bGVfeUINCgtfc3VidGl0bGVfeEINCgtfc3VidGl0bGVfeUILCglfYnViYmxlX3hCCwoJX2J1YmJsZV95Qg8KDV90aXRsZV9mbG93ZXJCEgoQX3N1YnRpdGxlX2Zsb3dlckIJCgdfYnViYmxlQgkKB19maWx0ZXJCBgoEX3ZmeEINCgtfdHJhbnNpdGlvbkILCglfdGl0bGVfaW5CDAoKX3RpdGxlX291dEINCgtfdGl0bGVfbG9vcEIOCgxfc3VidGl0bGVfaW5CDwoNX3N1YnRpdGxlX291dEIQCg5fc3VidGl0bGVfbG9vcEIMCgpfYnViYmxlX2luQg0KC19idWJibGVfb3V0Qg4KDF9idWJibGVfbG9vcEIUChJfdGl0bGVfaW5fZHVyYXRpb25CFQoTX3RpdGxlX291dF9kdXJhdGlvbkIXChVfc3VidGl0bGVfaW5fZHVyYXRpb25CGAoWX3N1YnRpdGxlX291dF9kdXJhdGlvbkIVChNfYnViYmxlX2luX2R1cmF0aW9uQhYKFF9idWJibGVfb3V0X2R1cmF0aW9uIq0CCgtFZmZlY3RUcmFjaxIKCgJpZBgBIAEoCRIOCgZ0YXJnZXQYAiABKAkSEgoKc3RhcnRfbW9kZRgDIAEoCRISCgVzdGFydBgEIAEoAUgAiAEBEhUKCGR1cmF0aW9uGAUgASgBSAGIAQESNQoGZWRpdG9yGAYgASgLMiUuaW12LnRlbXBsYXRlLnYxLkVmZmVjdFRlbXBsYXRlRWRpdG9yEhEKCXNwcml0ZV9pZBgHIAEoCRIgChN0cmFuc2l0aW9uX2JvdW5kYXJ5GAggASgNSAKIAQESGAoLdGV4dF90YXJnZXQYCSABKAlIA4gBAUIICgZfc3RhcnRCCwoJX2R1cmF0aW9uQhYKFF90cmFuc2l0aW9uX2JvdW5kYXJ5Qg4KDF90ZXh0X3RhcmdldCI5CglUcmFja0xpc3QSLAoGdHJhY2tzGAEgAygLMhwuaW12LnRlbXBsYXRlLnYxLkVmZmVjdFRyYWNrIoECChNTYXZlVGVtcGxhdGVSZXF1ZXN0EgwKBG5hbWUYASABKAkSGAoLZGVzY3JpcHRpb24YAiABKAlIAIgBARISCgplZmZlY3RfaWRzGAMgAygJEigKG3RyYW5zaXRpb25fZHVyYXRpb25fc2Vjb25kcxgEIAEoAUgBiAEBEioKBnRyYWNrcxgFIAEoCzIaLmltdi50ZW1wbGF0ZS52MS5UcmFja0xpc3QSGAoLdGVtcGxhdGVfaWQYBiABKAlIAogBAUIOCgxfZGVzY3JpcHRpb25CHgocX3RyYW5zaXRpb25fZHVyYXRpb25fc2Vjb25kc0IOCgxfdGVtcGxhdGVfaWQivAIKDlRlbXBsYXRlUmVjb3JkEgwKBG5hbWUYASABKAkSEwoLZGVzY3JpcHRpb24YAiABKAkSEgoKZWZmZWN0X2lkcxgDIAMoCRIjCht0cmFuc2l0aW9uX2R1cmF0aW9uX3NlY29uZHMYBCABKAESKgoGdHJhY2tzGAUgASgLMhouaW12LnRlbXBsYXRlLnYxLlRyYWNrTGlzdBITCgt0ZW1wbGF0ZV9pZBgGIAEoCRItCgdlZmZlY3RzGAcgAygLMhwuaW12LnRlbXBsYXRlLnYxLkVmZmVjdEFzc2V0Ei4KCmNyZWF0ZWRfYXQYCCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEi4KCnVwZGF0ZWRfYXQYCSABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wIo4CCg9UZW1wbGF0ZVN1bW1hcnkSEwoLdGVtcGxhdGVfaWQYASABKAkSDAoEbmFtZRgCIAEoCRITCgtkZXNjcmlwdGlvbhgDIAEoCRIuCgpjcmVhdGVkX2F0GAQgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIuCgp1cGRhdGVkX2F0GAUgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBINCgV0aXRsZRgGIAEoCRIQCghzdWJ0aXRsZRgHIAEoCRIYCgt0cmFja19jb3VudBgIIAEoDUgAiAEBEhgKEHZhbGlkYXRpb25fZXJyb3IYCSABKAlCDgoMX3RyYWNrX2NvdW50IkwKFUxpc3RUZW1wbGF0ZXNSZXNwb25zZRIzCgl0ZW1wbGF0ZXMYASADKAsyIC5pbXYudGVtcGxhdGUudjEuVGVtcGxhdGVTdW1tYXJ5IkgKE0dldFRlbXBsYXRlUmVzcG9uc2USMQoIdGVtcGxhdGUYASABKAsyHy5pbXYudGVtcGxhdGUudjEuVGVtcGxhdGVSZWNvcmQiSQoUU2F2ZVRlbXBsYXRlUmVzcG9uc2USMQoIdGVtcGxhdGUYASABKAsyHy5pbXYudGVtcGxhdGUudjEuVGVtcGxhdGVSZWNvcmRiBnByb3RvMw", [file_google_protobuf_timestamp]);
 
 /**
  * 服务端保存的效果信息。
@@ -71,6 +71,155 @@ export type EffectAsset = Message<"imv.template.v1.EffectAsset"> & {
  */
 export const EffectAssetSchema: GenMessage<EffectAsset> = /*@__PURE__*/
   messageDesc(file_imv_template_v1_template, 0);
+
+/**
+ * Remotion 片段关键词等字符串列表参数的值。
+ *
+ * @generated from message imv.template.v1.RemotionStringList
+ */
+export type RemotionStringList = Message<"imv.template.v1.RemotionStringList"> & {
+  /**
+   * 按声明顺序保存的字符串；空列表是有效值。
+   *
+   * @generated from field: repeated string values = 1;
+   */
+  values: string[];
+};
+
+/**
+ * Describes the message imv.template.v1.RemotionStringList.
+ * Use `create(RemotionStringListSchema)` to create a new message.
+ */
+export const RemotionStringListSchema: GenMessage<RemotionStringList> = /*@__PURE__*/
+  messageDesc(file_imv_template_v1_template, 1);
+
+/**
+ * Remotion 片段一次摆放的参数覆盖；恰好设置一个值字段，类型须与所引用 Sprite 的参数默认值一致。
+ * 与 imv.sprite.v1.SpriteParameterOverride 含义相同；本包不引用 Sprite 包，以免生成代码跨包依赖。
+ *
+ * @generated from message imv.template.v1.RemotionParameterOverride
+ */
+export type RemotionParameterOverride = Message<"imv.template.v1.RemotionParameterOverride"> & {
+  /**
+   * 已发布 Sprite 的可编辑参数 key。
+   *
+   * @generated from field: string key = 1;
+   */
+  key: string;
+
+  /**
+   * 字符串参数的值。
+   *
+   * @generated from field: optional string string_value = 2;
+   */
+  stringValue?: string | undefined;
+
+  /**
+   * 有限数字参数的值。
+   *
+   * @generated from field: optional double number_value = 3;
+   */
+  numberValue?: number | undefined;
+
+  /**
+   * 开关参数的值。
+   *
+   * @generated from field: optional bool bool_value = 4;
+   */
+  boolValue?: boolean | undefined;
+
+  /**
+   * 字符串列表参数（关键词）的值。
+   *
+   * @generated from field: imv.template.v1.RemotionStringList string_list_value = 5;
+   */
+  stringListValue?: RemotionStringList | undefined;
+};
+
+/**
+ * Describes the message imv.template.v1.RemotionParameterOverride.
+ * Use `create(RemotionParameterOverrideSchema)` to create a new message.
+ */
+export const RemotionParameterOverrideSchema: GenMessage<RemotionParameterOverride> = /*@__PURE__*/
+  messageDesc(file_imv_template_v1_template, 2);
+
+/**
+ * 宿主对整个 Sprite 的变换；未提供的字段取默认值：x、y 为内容区域中心，scale 为 1，rotation 为 0，opacity 为 1。
+ * 字效和视频特效可设置全部字段；滤镜和转场只能设置 opacity（强度）。
+ *
+ * @generated from message imv.template.v1.RemotionTransform
+ */
+export type RemotionTransform = Message<"imv.template.v1.RemotionTransform"> & {
+  /**
+   * 内容区域中心的横坐标，单位为画布像素，范围为 0～画布宽度。
+   *
+   * @generated from field: optional double x = 1;
+   */
+  x?: number | undefined;
+
+  /**
+   * 内容区域中心的纵坐标，单位为画布像素，范围为 0～画布高度。
+   *
+   * @generated from field: optional double y = 2;
+   */
+  y?: number | undefined;
+
+  /**
+   * 绕内容区域中心的缩放倍数，范围为 0.25～4。
+   *
+   * @generated from field: optional double scale = 3;
+   */
+  scale?: number | undefined;
+
+  /**
+   * 绕内容区域中心的顺时针旋转角度，单位为度，范围为 -180～180。
+   *
+   * @generated from field: optional double rotation = 4;
+   */
+  rotation?: number | undefined;
+
+  /**
+   * 整体不透明度，范围为 0～1。
+   *
+   * @generated from field: optional double opacity = 5;
+   */
+  opacity?: number | undefined;
+};
+
+/**
+ * Describes the message imv.template.v1.RemotionTransform.
+ * Use `create(RemotionTransformSchema)` to create a new message.
+ */
+export const RemotionTransformSchema: GenMessage<RemotionTransform> = /*@__PURE__*/
+  messageDesc(file_imv_template_v1_template, 3);
+
+/**
+ * Remotion 片段这一次摆放的参数；未覆盖的参数沿用 Sprite 发布时的默认值。
+ *
+ * @generated from message imv.template.v1.RemotionTrackEditor
+ */
+export type RemotionTrackEditor = Message<"imv.template.v1.RemotionTrackEditor"> & {
+  /**
+   * 参数覆盖，key 不能重复。
+   *
+   * @generated from field: repeated imv.template.v1.RemotionParameterOverride parameters = 1;
+   */
+  parameters: RemotionParameterOverride[];
+
+  /**
+   * 宿主变换；未提供表示全部取默认值。
+   *
+   * @generated from field: imv.template.v1.RemotionTransform transform = 2;
+   */
+  transform?: RemotionTransform | undefined;
+};
+
+/**
+ * Describes the message imv.template.v1.RemotionTrackEditor.
+ * Use `create(RemotionTrackEditorSchema)` to create a new message.
+ */
+export const RemotionTrackEditorSchema: GenMessage<RemotionTrackEditor> = /*@__PURE__*/
+  messageDesc(file_imv_template_v1_template, 4);
 
 /**
  * 单个画面对象的编辑参数，未提供的字段由业务模块补齐默认值。
@@ -399,6 +548,13 @@ export type EffectTemplateEditor = Message<"imv.template.v1.EffectTemplateEditor
    * @generated from field: int32 subtitle_keyword_size = 46;
    */
   subtitleKeywordSize: number;
+
+  /**
+   * Remotion 片段的参数覆盖与宿主变换；只有 target 为 remotion 的轨道可以设置，且该轨道只能设置此字段。
+   *
+   * @generated from field: imv.template.v1.RemotionTrackEditor remotion = 47;
+   */
+  remotion?: RemotionTrackEditor | undefined;
 };
 
 /**
@@ -406,7 +562,7 @@ export type EffectTemplateEditor = Message<"imv.template.v1.EffectTemplateEditor
  * Use `create(EffectTemplateEditorSchema)` to create a new message.
  */
 export const EffectTemplateEditorSchema: GenMessage<EffectTemplateEditor> = /*@__PURE__*/
-  messageDesc(file_imv_template_v1_template, 1);
+  messageDesc(file_imv_template_v1_template, 5);
 
 /**
  * 画面对象及其时间规则。
@@ -415,21 +571,21 @@ export const EffectTemplateEditorSchema: GenMessage<EffectTemplateEditor> = /*@_
  */
 export type EffectTrack = Message<"imv.template.v1.EffectTrack"> & {
   /**
-   * 模板内唯一的对象实例 ID。
+   * 模板内唯一的对象实例 ID；Remotion 片段也用它标识这一次摆放，同一个 Sprite 可以摆放多次。
    *
    * @generated from field: string id = 1;
    */
   id: string;
 
   /**
-   * 效果作用对象，可选值为 title、subtitle、bubble、filter、vfx 或 transition。
+   * 效果作用对象，可选值为 title、subtitle、bubble、filter、vfx、transition 或 remotion。
    *
    * @generated from field: string target = 2;
    */
   target: string;
 
   /**
-   * 开始位置的计量方式，可选值为 seconds 或 percent。
+   * 开始位置的计量方式，可选值为 seconds 或 percent；remotion 片段只能使用 seconds。
    *
    * @generated from field: string start_mode = 3;
    */
@@ -443,18 +599,42 @@ export type EffectTrack = Message<"imv.template.v1.EffectTrack"> & {
   start?: number | undefined;
 
   /**
-   * 固定持续时间，单位为秒；未提供时表示持续到成片结束，转场对象必须提供。
+   * 固定持续时间，单位为秒；未提供时表示持续到成片结束，转场对象必须提供；
+   * remotion 片段未提供时使用所引用 Sprite 自身的时长。
    *
    * @generated from field: optional double duration = 5;
    */
   duration?: number | undefined;
 
   /**
-   * 当前对象的文字、位置、效果选择和动画时长。
+   * 当前对象的文字、位置、效果选择和动画时长；remotion 片段只能设置 remotion 字段，可以是空消息。
    *
    * @generated from field: imv.template.v1.EffectTemplateEditor editor = 6;
    */
   editor?: EffectTemplateEditor | undefined;
+
+  /**
+   * remotion 片段引用的已发布 Sprite ID；其他对象必须留空。
+   *
+   * @generated from field: string sprite_id = 7;
+   */
+  spriteId: string;
+
+  /**
+   * 转场所属的视频交界处，1 或 2。IMS 转场必须设置且不设置 start/start_mode；Remotion 转场片段也设置，
+   * 以交界处为中心播放；其他对象禁止设置。每个交界处只能有一个转场（IMS 与 Remotion 合计）。
+   *
+   * @generated from field: optional uint32 transition_boundary = 8;
+   */
+  transitionBoundary?: number | undefined;
+
+  /**
+   * Remotion 字效作用的文字对象，title 或 subtitle；仅 remotion 字效片段设置，每个文字对象最多一个。
+   * 设置后该文字不再由 IMS 渲染，片段的时间跟随该对象，文字与关键词在合成时按该对象填入。
+   *
+   * @generated from field: optional string text_target = 9;
+   */
+  textTarget?: string | undefined;
 };
 
 /**
@@ -462,7 +642,7 @@ export type EffectTrack = Message<"imv.template.v1.EffectTrack"> & {
  * Use `create(EffectTrackSchema)` to create a new message.
  */
 export const EffectTrackSchema: GenMessage<EffectTrack> = /*@__PURE__*/
-  messageDesc(file_imv_template_v1_template, 2);
+  messageDesc(file_imv_template_v1_template, 6);
 
 /**
  * 包装数组以保留“提供了空轨道列表”的含义。
@@ -483,7 +663,7 @@ export type TrackList = Message<"imv.template.v1.TrackList"> & {
  * Use `create(TrackListSchema)` to create a new message.
  */
 export const TrackListSchema: GenMessage<TrackList> = /*@__PURE__*/
-  messageDesc(file_imv_template_v1_template, 3);
+  messageDesc(file_imv_template_v1_template, 7);
 
 /**
  * 创建或完整更新模板；提供 template_id 时更新。
@@ -539,7 +719,7 @@ export type SaveTemplateRequest = Message<"imv.template.v1.SaveTemplateRequest">
  * Use `create(SaveTemplateRequestSchema)` to create a new message.
  */
 export const SaveTemplateRequestSchema: GenMessage<SaveTemplateRequest> = /*@__PURE__*/
-  messageDesc(file_imv_template_v1_template, 4);
+  messageDesc(file_imv_template_v1_template, 8);
 
 /**
  * 已保存的模板及效果快照。
@@ -616,7 +796,66 @@ export type TemplateRecord = Message<"imv.template.v1.TemplateRecord"> & {
  * Use `create(TemplateRecordSchema)` to create a new message.
  */
 export const TemplateRecordSchema: GenMessage<TemplateRecord> = /*@__PURE__*/
-  messageDesc(file_imv_template_v1_template, 5);
+  messageDesc(file_imv_template_v1_template, 9);
+
+/**
+ * 模板列表只返回摘要；无效记录保留标识与原因，不能用于预览和合成。
+ *
+ * @generated from message imv.template.v1.TemplateSummary
+ */
+export type TemplateSummary = Message<"imv.template.v1.TemplateSummary"> & {
+  /**
+   * @generated from field: string template_id = 1;
+   */
+  templateId: string;
+
+  /**
+   * @generated from field: string name = 2;
+   */
+  name: string;
+
+  /**
+   * @generated from field: string description = 3;
+   */
+  description: string;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp created_at = 4;
+   */
+  createdAt?: Timestamp | undefined;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp updated_at = 5;
+   */
+  updatedAt?: Timestamp | undefined;
+
+  /**
+   * @generated from field: string title = 6;
+   */
+  title: string;
+
+  /**
+   * @generated from field: string subtitle = 7;
+   */
+  subtitle: string;
+
+  /**
+   * @generated from field: optional uint32 track_count = 8;
+   */
+  trackCount?: number | undefined;
+
+  /**
+   * @generated from field: string validation_error = 9;
+   */
+  validationError: string;
+};
+
+/**
+ * Describes the message imv.template.v1.TemplateSummary.
+ * Use `create(TemplateSummarySchema)` to create a new message.
+ */
+export const TemplateSummarySchema: GenMessage<TemplateSummary> = /*@__PURE__*/
+  messageDesc(file_imv_template_v1_template, 10);
 
 /**
  * 模板列表及单个模板的响应。
@@ -625,11 +864,11 @@ export const TemplateRecordSchema: GenMessage<TemplateRecord> = /*@__PURE__*/
  */
 export type ListTemplatesResponse = Message<"imv.template.v1.ListTemplatesResponse"> & {
   /**
-   * 当前共享模板库中的模板记录。
+   * 当前共享模板库中的模板摘要。
    *
-   * @generated from field: repeated imv.template.v1.TemplateRecord templates = 1;
+   * @generated from field: repeated imv.template.v1.TemplateSummary templates = 1;
    */
-  templates: TemplateRecord[];
+  templates: TemplateSummary[];
 };
 
 /**
@@ -637,7 +876,7 @@ export type ListTemplatesResponse = Message<"imv.template.v1.ListTemplatesRespon
  * Use `create(ListTemplatesResponseSchema)` to create a new message.
  */
 export const ListTemplatesResponseSchema: GenMessage<ListTemplatesResponse> = /*@__PURE__*/
-  messageDesc(file_imv_template_v1_template, 6);
+  messageDesc(file_imv_template_v1_template, 11);
 
 /**
  * @generated from message imv.template.v1.GetTemplateResponse
@@ -656,7 +895,7 @@ export type GetTemplateResponse = Message<"imv.template.v1.GetTemplateResponse">
  * Use `create(GetTemplateResponseSchema)` to create a new message.
  */
 export const GetTemplateResponseSchema: GenMessage<GetTemplateResponse> = /*@__PURE__*/
-  messageDesc(file_imv_template_v1_template, 7);
+  messageDesc(file_imv_template_v1_template, 12);
 
 /**
  * @generated from message imv.template.v1.SaveTemplateResponse
@@ -675,4 +914,4 @@ export type SaveTemplateResponse = Message<"imv.template.v1.SaveTemplateResponse
  * Use `create(SaveTemplateResponseSchema)` to create a new message.
  */
 export const SaveTemplateResponseSchema: GenMessage<SaveTemplateResponse> = /*@__PURE__*/
-  messageDesc(file_imv_template_v1_template, 8);
+  messageDesc(file_imv_template_v1_template, 13);

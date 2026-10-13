@@ -1,4 +1,5 @@
 /** 将模板草稿转换为 SDK 5.2.2 母版、文字和特效轨道，并生成时间轴展示数据。 */
+import type { ClipTransform, ContentBox } from "@/features/sprites/parameters";
 import {
   effectGroups,
   type Draft,
@@ -6,12 +7,13 @@ import {
   type EffectAsset,
   type EffectKey,
   type TextRole,
-  type MasterVideo,
+  type PreviewMedia,
 } from "./model";
 import type { TimelineAction, TimelineRow } from "@xzdarcy/timeline-engine";
-import { isTextTarget, type EffectTarget } from "./effects";
-import { previewDuration, resolveTrack, trackLabel } from "./tracks";
-import { previewVideoUrl } from "./media";
+import { effectTargets, isTextTarget, type EffectTarget } from "./effects";
+import { trackLabel, trackLayers, type ResolvedTimeline } from "./tracks";
+import { previewVideos } from "./media";
+import type { ClipSlot } from "./clips";
 
 /** 预览轨道保留源素材范围，缩略图采样使用源时间，游标使用预览时间。 */
 export interface PreviewClip extends TimelineAction {
@@ -22,37 +24,38 @@ export interface PreviewClip extends TimelineAction {
   sourceOut: number;
   transition?: { start: number; end: number };
   targetId?: string;
+  /** 视频来源编号在排列变化后保持不变。 */
+  videoSource?: number;
 }
 
-/** 轨道从已经应用的 SDK Timeline 派生；重叠片段分行展示，保持实际时间范围。 */
+/** 轨道从已经应用的 SDK Timeline 派生；三个视频放在同一行，效果按图层排列。 */
 export function buildPreviewRows(timeline: ReturnType<typeof buildTimeline>): (Omit<TimelineRow, "actions"> & { actions: PreviewClip[] })[] {
-  return [...timeline.VideoTracks.flatMap((track, trackIndex) =>
-    track.VideoTrackClips.map((clip, index) => {
+  return [...[...timeline.previewRows].sort((a, b) => trackLayers[a.actions[0].effectId as EffectTarget] - trackLayers[b.actions[0].effectId as EffectTarget]), ...timeline.VideoTracks.map((track, trackIndex) => ({
+    id: `video-${trackIndex}`,
+    actions: track.VideoTrackClips.map((clip, index) => {
       const next = track.VideoTrackClips[index + 1];
       const transition = clip.Effects.some((item) => item.Type === "Transition") && next
         ? { start: Math.max(clip.TimelineIn, next.TimelineIn), end: Math.min(clip.TimelineOut, next.TimelineOut) }
         : undefined;
       return {
-        id: `video-${trackIndex}-${index}`,
-        actions: [{
-          id: `clip-${trackIndex}-${index}`,
+          id: `video-${clip.source}`,
           effectId: "video",
           start: clip.TimelineIn,
           end: clip.TimelineOut,
-          movable: false,
+          movable: true,
           flexible: false,
-          label: `母版视频片段 ${index + 1}`,
+          label: `视频 ${clip.source + 1}`,
+          videoSource: clip.source,
           url: clip.MediaURL,
           sourceIn: clip.In,
           sourceOut: clip.Out,
           transition: transition && transition.end > transition.start ? transition : undefined,
-        }],
       };
     }),
-  ), ...timeline.previewRows];
+  }))];
 }
 
-/** 时间轴上的 Remotion 资产片段：固定长度，只能整体移动。 */
+/** 时间轴上的 Remotion 资产片段：固定长度，按所占对象放进对应的行。 */
 export interface SpriteClip {
   id: string;
   spriteId: string;
@@ -60,26 +63,48 @@ export interface SpriteClip {
   name: string;
   start: number;
   end: number;
+  /** 这次摆放的完整时长（秒）：Sprite 按它排布与播放，end 只是被预览视频截短后的显示终点。 */
+  length: number;
+  /** 占用的模板对象；字效尚未选择文字对象或资产不在目录中时为空，单独成行提示。 */
+  slot?: ClipSlot;
+  /** 转场所在的视频交界处。 */
+  boundary?: number;
+  /** 这次摆放的参数覆盖（顶层参数），播放器合并到资产默认值之上。 */
+  values?: Record<string, unknown>;
+  /** 宿主变换，未设置的字段取默认值。 */
+  transform?: ClipTransform;
+  /** 资产画布与内容区域，用于在预览上拖动位置；movable 为 false 的分类只能调整强度。 */
+  canvas?: { width: number; height: number; box: ContentBox; movable: boolean };
 }
 
-/** 每个 Remotion 资产独占一行；它不属于 SDK 时间线，仅在时间轴上占位并可拖动。 */
-export function spriteRows(clips: SpriteClip[]): (Omit<TimelineRow, "actions"> & { actions: PreviewClip[] })[] {
-  return clips.map((clip) => ({
+/** 作用于文字的 Remotion 字效所替换的 IMS 文字对象。 */
+export function remotionTexts(draft: Pick<Draft, "clips">): Set<TextRole> {
+  return new Set(draft.clips.flatMap((clip) => clip.text_target ? [clip.text_target] : []));
+}
+
+/**
+ * 把 Remotion 片段并入 IMS 对象的行，不为每个资产另开一行：字效标在所作用的标题或字幕行上，
+ * 转场、画面特效与滤镜按图层插入同类对象之间；未确定对象的片段排在视频之前单独提示。
+ */
+export function mergeSpriteRows(rows: ReturnType<typeof buildPreviewRows>, clips: SpriteClip[]): ReturnType<typeof buildPreviewRows> {
+  const merged = rows.map((row) => {
+    const text = clips.find((clip) => clip.slot === row.actions[0]?.effectId && isTextTarget(clip.slot));
+    return text ? { ...row, actions: row.actions.map((action) => ({ ...action, effectName: `Remotion · ${text.name}` })) } : row;
+  });
+  const added = clips.filter((clip) => !clip.slot || !isTextTarget(clip.slot)).map((clip) => ({
     id: `row-${clip.id}`,
     actions: [{
-      id: clip.id,
-      effectId: "remotion",
-      start: clip.start,
-      end: clip.end,
-      movable: true,
-      flexible: false,
-      label: clip.name,
-      url: "",
-      sourceIn: 0,
-      sourceOut: 0,
-      targetId: clip.id,
+      id: clip.id, effectId: clip.slot ?? "remotion", start: clip.start, end: clip.end, movable: false, flexible: false,
+      // 读回的转场片段可能还没有选择交界处，此时只显示对象名称。
+      label: clip.slot === "transition" ? `镜头转场 ${clip.boundary ?? ""}`.trim() : clip.slot ? effectTargets[clip.slot] : "Remotion 资产",
+      effectName: `Remotion · ${clip.name}`, url: "", sourceIn: 0, sourceOut: 0, targetId: clip.id,
     }],
   }));
+  const layer = (row: (typeof merged)[number]) => {
+    const effect = row.actions[0]?.effectId;
+    return effect === "video" ? Infinity : effect === "remotion" ? 99 : trackLayers[effect as EffectTarget];
+  };
+  return [...merged, ...added].sort((a, b) => layer(a) - layer(b));
 }
 
 /** 每秒约取一张源素材缩略图，使用区间中心，避免在片段结束边界采样。 */
@@ -93,6 +118,13 @@ export function thumbnailTimes(clip: Pick<PreviewClip, "sourceIn" | "sourceOut">
 
 /** SDK 效果允许混合文字、数值参数；仅从可信目录和经过范围校验的配置生成。 */
 type Effect = Record<string, string | number>;
+
+/** 预览示例文字中强调的关键词：标题优先使用指定关键词，否则取首段前两个字；字幕取第一个词语。合成时改用切片结果。 */
+export function exampleKeyword(config: Editor, role: "title" | "subtitle"): string {
+  return role === "title"
+    ? config.titleKeyword || (config.title.match(/[\p{L}\p{N}]{1,2}/u)?.[0] ?? "")
+    : [...new Intl.Segmenter("zh", { granularity: "word" }).segment(config.subtitle)].find((part) => part.isWordLike)?.segment ?? "";
+}
 
 /** 校验数值输入，不让空值、NaN 或越界参数进入 SDK。 */
 function number(
@@ -130,11 +162,7 @@ function buildTrackContent(config: Editor, catalog: EffectAsset[], target: Effec
   const text = (role: TextRole) => {
     const content = role === "bubble" ? config.bubbleText : config[role];
     const size = number(config[`${role}Size`], 12, 300, "字号", true);
-    const previewKeyword = role === "title"
-      ? config.titleKeyword || (content.match(/[\p{L}\p{N}]{1,2}/u)?.[0] ?? "")
-      : role === "subtitle"
-        ? ([...new Intl.Segmenter("zh", { granularity: "word" }).segment(content)].find((part) => part.isWordLike)?.segment ?? "")
-        : "";
+    const previewKeyword = role === "bubble" ? "" : exampleKeyword(config, role);
     if (
       config[`${role}Loop`] &&
       (config[`${role}In`] || config[`${role}Out`])
@@ -183,29 +211,30 @@ function buildTrackContent(config: Editor, catalog: EffectAsset[], target: Effec
 }
 
 /** 母版、文字和全画面效果从同一份实例数据生成，SDK 自动转换后端 Timeline 格式。 */
-export function buildTimeline(draft: Draft, catalog: EffectAsset[], media?: MasterVideo) {
+export function buildTimeline(draft: Draft, catalog: EffectAsset[], media: PreviewMedia, resolvedTimeline: ResolvedTimeline, order = [0, 1, 2]) {
   const previewRows: (Omit<TimelineRow, "actions"> & { actions: PreviewClip[] })[] = [];
   const EffectTracks: { EffectTrackItems: Effect[] }[] = [];
-  const notices: string[] = [];
+  const notices = resolvedTimeline.notices;
   if ("editor" in draft || !Array.isArray(draft.tracks)) throw new Error("模板格式不支持，请重新创建模板");
-  const duration = previewDuration(draft, media);
-  const canvas = { Width: media?.width ?? 1920, Height: media?.height ?? 1080 };
-  const video = {
-    Type: "Video", MediaURL: media?.url ?? previewVideoUrl(),
-    In: 0, Out: media?.duration ?? 10, TimelineIn: 0, TimelineOut: duration,
-    Width: 0.9999, Height: 0.9999, AdaptMode: "Cover",
-    Effects: [{ Type: "Volume", Gain: 0 }] as Effect[],
-  };
+  const canvas = { Width: media[0].width, Height: media[0].height };
+  const sources = previewVideos(media);
+  const ranges = resolvedTimeline.clips.map((range, index) => ({ ...range, source: order[index], video: sources[order[index]] }));
   const timeline = {
-    VideoTracks: [{ VideoTrackClips: [video] }],
+    VideoTracks: [{ VideoTrackClips: ranges.map(({ source, video, start, end }) => ({
+      source, Type: "Video", MediaURL: video.url,
+      In: 0, Out: video.duration, TimelineIn: start, TimelineOut: end,
+      Width: 0.9999, Height: 0.9999, AdaptMode: "Contain",
+      Effects: [{ Type: "Volume", Gain: 0 }] as Effect[],
+    })) }],
     SubtitleTracks: [] as { SubtitleTrackClips: NonNullable<ReturnType<typeof buildTrackContent>["text"]>[] }[],
     AudioTracks: [], AspectRatio: `${canvas.Width}:${canvas.Height}`, FECanvas: canvas,
   };
   const seen = new Set<string>();
-  let transitionCount = 0;
-  for (const source of draft.tracks) {
-    const applied = resolveTrack(source, duration);
-    if (applied.notice) notices.push(`${trackLabel(source, draft.tracks)}：${applied.notice}`);
+  // 改由 Remotion 字效显示的文字仍保留时间轴行，但不交给 SDK 渲染。
+  const replaced = remotionTexts(draft);
+  for (const source of [...draft.tracks].sort((a, b) => trackLayers[a.target] - trackLayers[b.target])) {
+    const applied = resolvedTimeline.tracks[source.id];
+    if (!applied) throw new Error("对象缺少时间计算结果");
     const track = { ...source, ...applied };
     if (!track.id || seen.has(track.id)) throw new Error("特效轨道 ID 必须唯一");
     seen.add(track.id);
@@ -214,17 +243,12 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media?: Mast
     if (isTextTarget(track.target)) {
       const text = resolved.text;
       if (!text?.Content.trim()) throw new Error("文字轨道内容不能为空");
-      timeline.SubtitleTracks.push({ SubtitleTrackClips: [{ ...text, TimelineIn: track.start, TimelineOut: track.end }] });
+      if (!replaced.has(track.target)) timeline.SubtitleTracks.push({ SubtitleTrackClips: [{ ...text, TimelineIn: track.start, TimelineOut: track.end }] });
     } else if (track.target === "transition") {
-      if (++transitionCount > 1) throw new Error("当前母版的两个片段只允许一个转场");
       const effect = resolved.effect;
       if (!effect) throw new Error("转场轨道缺少效果");
       effect.Duration = Math.round((track.end - track.start) * 30) / 30;
-      // 源素材首尾相接，播放区间重叠；第二个片段在合成结束时读到源素材末尾。
-      timeline.VideoTracks[0].VideoTrackClips = [
-        { ...video, Effects: [...video.Effects, effect], Out: track.end, TimelineOut: track.end },
-        { ...video, In: track.end, TimelineIn: track.start, Effects: [...video.Effects] },
-      ];
+      timeline.VideoTracks[0].VideoTrackClips[source.transition_boundary! - 1].Effects.push(effect);
     } else {
       const effect = resolved.effect;
       if (!effect) throw new Error("特效轨道缺少效果");
@@ -234,11 +258,23 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media?: Mast
     const effectName = catalog.find((item) => item.id === effectId)?.name ?? (effectId ? effectId.split("/").at(-1) : undefined);
     previewRows.push({ id: track.id, actions: [{
       id: track.id, targetId: track.id, effectId: track.target,
-      start: track.start, end: track.end, movable: true, flexible: true,
+      start: track.start, end: track.end, movable: false, flexible: false,
       label: trackLabel(track, draft.tracks), effectName, url: "", sourceIn: 0, sourceOut: 0,
     }] });
   }
   return { ...timeline, EffectTracks, previewRows, notices };
+}
+
+/** SDK 将专用轨道追加到视频之后；统一传入从下到上的图层，保证文字位于滤镜和 VFX 上方。 */
+export function playerTimeline(timeline: ReturnType<typeof buildTimeline>) {
+  return {
+    AspectRatio: timeline.AspectRatio, FECanvas: timeline.FECanvas, AudioTracks: timeline.AudioTracks,
+    VideoTracks: [
+      ...timeline.VideoTracks.map((row) => ({ VideoTrackClips: row.VideoTrackClips.map(({ source: _source, ...clip }) => clip) })),
+      ...[...timeline.EffectTracks].reverse().map((row) => ({ Type: "Effect", VideoTrackClips: row.EffectTrackItems })),
+      ...[...timeline.SubtitleTracks].reverse().map((row) => ({ Type: "Subtitle", VideoTrackClips: row.SubtitleTrackClips })),
+    ],
+  };
 }
 
 /** 将启用的局部样式包在首次出现的关键词两侧；无关键词时保留原文字。 */

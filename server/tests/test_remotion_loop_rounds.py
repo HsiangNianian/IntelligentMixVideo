@@ -15,7 +15,7 @@ from pydantic import ValidationError
 from server.remotion_templates.agent import AgentRun, Layer
 from server.remotion_templates.context import AssistantMessage
 from server.remotion_templates.models import GenerateTemplateRequest
-from server.remotion_templates.planning import Plan
+from server.remotion_templates.planning import PlanAction, default_plan
 from server.remotion_templates.progress import LoopRound
 from server.remotion_templates.provider import Budget, ModelContractFailure
 from server.remotion_templates.store import Store
@@ -130,7 +130,7 @@ class FakeSession:
         self.latest_sprite_id = "sprite-1"
         self.saved_sprites = {"sprite-1": {"sprite_id": "sprite-1"}}
 
-    def snapshot(self):
+    def snapshot(self, **_options):
         """返回确定性的宿主快照。"""
         return {"user_intent": self.intent, "sprites": sorted(self.saved_sprites)}
 
@@ -139,8 +139,12 @@ class FakeSession:
         return self.saved_sprites[identifier]
 
     async def execute(self, name, args, _catalog):
-        """记录一次确定性的业务工具观察。"""
-        return {"tool": name, "args": args.model_dump(mode="json")}
+        """记录一次确定性的业务工具观察；读取预设回执带 preset_id，sprite_create 像真实工具一样保存新 Sprite。"""
+        if name == "sprite.create":
+            identifier = f"sprite-{len(self.saved_sprites) + 1}"
+            self.saved_sprites[identifier] = {"sprite_id": identifier}
+            self.latest_sprite_id = identifier
+        return {"tool": name, "args": args.model_dump(mode="json"), "preset": {"preset_id": "preset-1"}}
 
 
 class FailingSession(FakeSession):
@@ -194,38 +198,21 @@ def call(identifier, name, arguments):
     )
 
 
-def plan_for_inspect():
-    """构造只观察一个工具的单步计划。"""
-    return Plan(
-        goal="inspect",
-        steps=[
-            {"id": "inspect", "goal": "观察一个工具", "tool_modules": ["tools"], "done_when": "已观察"},
-        ],
-    )
-
-
-def plan_for_saving():
-    """构造保存一个预设的单步计划；Executor 只能看到该步骤声明的模块。"""
-    return Plan(
-        goal="save",
-        steps=[
-            {"id": "save", "goal": "保存预设", "tool_modules": ["preset"], "done_when": "已保存"},
-        ],
-    )
+def report(identifier, status="step_done", summary="已完成"):
+    """构造 Executor 的 tools_report_step 调用。"""
+    return call(identifier, "tools_report_step", {"status": status, "summary": summary})
 
 
 def test_real_loop_records_every_turn_with_its_tools(monkeypatch, tmp_path):
-    """真实三层循环每轮都留一条记录，带该轮实际调用的工具与结论。"""
+    """真实三层循环每轮都留一条记录，带该轮实际调用的工具与结论；标准计划无需 Plan 模型参与。"""
     monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
-    plan = plan_for_inspect()
     harness = FakeHarness(
         [
-            call("outer-1", "tools_plan_execute", {"action": "delegate", "plan": plan.model_dump()}),
-            call("plan-1", "tools_plan_execute", {"action": "update_plan", "plan": plan.model_dump()}),
-            call("exec-1", "tools_inspect", {"tool_name": "sprite.create"}),
-            AssistantMessage(content=json.dumps({"status": "step_done", "summary": "已观察", "sprite_id": "sprite-1"})),
-            call("plan-2", "tools_plan_execute", {"action": "complete"}),
-            AssistantMessage(content=json.dumps({"action": "complete", "sprite_id": "sprite-1"})),
+            call("outer-1", "tools_plan_execute", {"action": "delegate", "reason": "暖色调滤镜"}),
+            call("exec-1", "preset_search", {"preset_id": "preset-1"}),
+            AssistantMessage(content=json.dumps({"status": "step_done", "summary": "预设已就绪"})),
+            call("exec-2", "sprite_create", {"draft_id": "PRIVATE_DRAFT"}),
+            report("exec-3"),
         ]
     )
     seen: list[dict] = []
@@ -233,30 +220,28 @@ def test_real_loop_records_every_turn_with_its_tools(monkeypatch, tmp_path):
         harness, None, Budget(on_round=seen.append), tmp_path, [], lambda *_: None,
         intent={"original_request": {"description": "demo"}},
     )
-    assert asyncio.run(run.plan_execute()) == {"published": "sprite-1"}
+    assert asyncio.run(run.plan_execute()) == {"published": "sprite-2"}
     assert [(item["layer"], item["turn"]) for item in seen] == [
-        ("outer", 1), ("plan", 2), ("executor", 3), ("executor", 4), ("plan", 5), ("outer", 6),
+        ("outer", 1), ("executor", 2), ("executor", 3), ("executor", 4), ("executor", 5),
     ]
     # 控制工具与业务工具都按契约里的点号 ID 记录，而不是模型侧的调用名。
     assert seen[0]["calls"] == [{"tool": "tools.plan_execute", "status": "pass"}]
-    assert seen[2]["calls"] == [{"tool": "tools.inspect", "status": "pass"}]
+    assert seen[1]["calls"] == [{"tool": "preset.search", "status": "pass"}]
+    assert seen[4]["calls"] == [{"tool": "tools.report_step", "status": "pass"}]
     # 只回消息、没有调用工具的轮次记录为空列表，不编造不存在的调用。
-    assert seen[3]["calls"] == []
-    assert seen[5]["calls"] == []
-    # 计划目标与工具参数都是模型输入，不能随公开记录一起上报。
+    assert seen[2]["calls"] == []
+    # 计划目标与工具参数都是宿主或模型输入，不能随公开记录一起上报。
     leaked = json.dumps(seen, ensure_ascii=False)
-    assert "观察一个工具" not in leaked
-    assert "sprite.create" not in leaked
+    assert "Reuse a fitting stored Preset" not in leaked
+    assert "PRIVATE_DRAFT" not in leaked
 
 
 def test_failed_call_is_recorded_with_its_error_code(monkeypatch, tmp_path):
     """失败的工具调用按轮记录错误码与说明，而不是只标一个失败。"""
     monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FailingSession)
-    plan = plan_for_saving()
     harness = FakeHarness(
         [
-            call("outer-1", "tools_plan_execute", {"action": "delegate", "plan": plan.model_dump()}),
-            call("plan-1", "tools_plan_execute", {"action": "update_plan", "plan": plan.model_dump()}),
+            call("outer-1", "tools_plan_execute", {"action": "delegate", "reason": "标题"}),
             call(
                 "exec-1",
                 "preset_create",
@@ -267,9 +252,8 @@ def test_failed_call_is_recorded_with_its_error_code(monkeypatch, tmp_path):
                     "default_parameters": {},
                 },
             ),
-            AssistantMessage(content=json.dumps({"status": "step_done", "summary": "保存失败", "sprite_id": "sprite-1"})),
-            call("plan-2", "tools_plan_execute", {"action": "complete"}),
-            AssistantMessage(content=json.dumps({"action": "complete", "sprite_id": "sprite-1"})),
+            report("exec-2", "blocked", "保存失败"),
+            call("plan-1", "tools_plan_execute", {"action": "complete"}),
         ]
     )
     seen: list[dict] = []
@@ -278,8 +262,8 @@ def test_failed_call_is_recorded_with_its_error_code(monkeypatch, tmp_path):
         intent={"original_request": {"description": "demo"}},
     )
     asyncio.run(run.plan_execute())
-    failed = seen[2]
-    assert failed["layer"] == "executor" and failed["turn"] == 3
+    failed = seen[1]
+    assert failed["layer"] == "executor" and failed["turn"] == 2
     assert failed["calls"] == [
         {
             "tool": "preset.create",
@@ -316,7 +300,7 @@ def test_invalid_model_turn_is_recorded_before_recovery(monkeypatch, tmp_path, r
     monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
     work, job = running_job(round_store)
     harness = FakeHarness([
-        call("inspect", "tools_inspect", {"tool_name": "sprite.create"}),
+        call("ask-wrong-layer", "tools_inspect", {"tool_name": "sprite.create"}),
         ModelContractFailure("private model text"),
         AssistantMessage(content=json.dumps({"action": "complete", "sprite_id": "sprite-1"})),
     ])
@@ -338,17 +322,21 @@ def test_unresolved_names_do_not_break_rounds(monkeypatch, tmp_path, round_store
     calls += [call(f"unknown-{i}", "PRIVATE_TOOL_" * 6, {}).tool_calls[0] for i in range(2)]
     harness = FakeHarness([
         AssistantMessage(tool_calls=calls),
-        AssistantMessage(content=json.dumps({"action": "complete", "sprite_id": "sprite-1"})),
+        report("blocked", "blocked", "无法继续"),
+        call("plan-stop", "tools_plan_execute", {"action": "complete"}),
     ])
     harness.settings.max_tooluse = 10
     run = AgentRun(harness, None, Budget(on_round=lambda record: round_store.round(job.id, record)), tmp_path, [], lambda *_: None)
+    # Business tools run only in the Executor; start the host's standard plan as a delegation would.
+    run.state.control(PlanAction(action="update_plan", plan=default_plan(edit=False)))
+    run.layer = Layer.EXECUTOR
     asyncio.run(run.plan_execute())
     rounds = round_store.session(work.id).job.rounds
     assert len(rounds[0].calls) == 4
     assert rounds[0].calls[0].status == "pass"
     assert rounds[0].calls[1].error_code == "INVALID_ARGUMENT"
     assert all(item.tool == "unknown" for item in rounds[0].calls[2:])
-    assert "PRIVATE_SOURCE" in run.outer.serialize()
+    assert "PRIVATE_SOURCE" in run.executor_context.serialize()
     public = round_store.session(work.id).model_dump_json()
     assert "PRIVATE_SOURCE" not in public and "PRIVATE_TOOL_" not in public
 

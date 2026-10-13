@@ -1,18 +1,15 @@
-/** Sprite 资产 HTTP 边界：发布、目录与 Remotion 片段保存均使用 Protobuf 二进制；写入失败不自动重试。 */
+/** Sprite 资产 HTTP 边界：发布与目录使用 Protobuf 二进制；写入失败不自动重试。片段随云端模板保存，不在这里。 */
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { apiBase } from "@/lib/api-base";
 import {
-  GetStyleSpritesResponseSchema,
   ListSpritesResponseSchema,
   PublishSpriteRequestSchema,
   PublishSpriteResponseSchema,
-  SaveStyleSpritesRequestSchema,
-  SaveStyleSpritesResponseSchema,
   type SpriteKind,
   type SpriteSummary,
-  type StyleSpriteBindings,
 } from "@/generated/imv/sprite/v1/sprite_pb";
-import type { Placement, SpriteAsset } from "./model";
+import type { SpriteAsset } from "./model";
+import { assetParameter } from "./parameters";
 
 /** 一次发布选择：文字类型必须指明接收业务文字（和可选关键词）的参数字段。 */
 export interface PublishChoice {
@@ -21,17 +18,14 @@ export interface PublishChoice {
   keywordsProp: string;
 }
 
-/** 已保存的 Remotion 片段与其乐观锁版本。 */
-export interface Bindings {
-  placements: Placement[];
-  revision: bigint;
-}
+/** 发布要在隔离浏览器里渲染参数边界样本，比目录读取慢得多。 */
+const PUBLISH_TIMEOUT_MS = 180_000;
 
 /** 有界请求：调用方取消优先，超时给出可重试提示；HTTP 错误展示服务端 detail。 */
-async function request(path: string, method: "GET" | "POST", signal?: AbortSignal, body?: Uint8Array): Promise<Uint8Array> {
+async function request(path: string, method: "GET" | "POST", signal?: AbortSignal, body?: Uint8Array, timeoutMs = 20_000): Promise<Uint8Array> {
   const controller = new AbortController();
   let timedOut = false;
-  const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, 20_000);
+  const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
   const abort = () => controller.abort();
   signal?.addEventListener("abort", abort, { once: true });
   if (signal?.aborted) controller.abort();
@@ -66,6 +60,13 @@ function toAsset(summary: SpriteSummary): SpriteAsset {
     kind: summary.kind,
     seconds: summary.canvas && summary.canvas.fps ? summary.canvas.previewFrames / summary.canvas.fps : 0,
     aspect: summary.canvas && summary.canvas.height ? summary.canvas.width / summary.canvas.height : 9 / 16,
+    width: summary.canvas?.width ?? 0,
+    height: summary.canvas?.height ?? 0,
+    fps: summary.canvas?.fps ?? 0,
+    box: summary.contentBox && summary.contentBox.width > 0 && summary.contentBox.height > 0
+      ? { x: summary.contentBox.x, y: summary.contentBox.y, width: summary.contentBox.width, height: summary.contentBox.height }
+      : { x: 0, y: 0, width: summary.canvas?.width ?? 0, height: summary.canvas?.height ?? 0 },
+    parameters: summary.parameters.map(assetParameter).filter((item) => item !== null),
   };
 }
 
@@ -74,48 +75,10 @@ export async function listSprites(signal?: AbortSignal): Promise<SpriteAsset[]> 
   return fromBinary(ListSpritesResponseSchema, await request("/api/sprites", "GET", signal)).sprites.map(toAsset);
 }
 
-/** 把成功版本保存为资产；相同选择重复调用返回原资产。 */
+/** 把成功版本保存为资产（服务端先渲染参数边界样本）；相同选择重复调用返回原资产。 */
 export async function publishSprite(versionId: string, choice: PublishChoice): Promise<SpriteAsset> {
   const body = toBinary(PublishSpriteRequestSchema, create(PublishSpriteRequestSchema, { sourceVersionId: versionId, ...choice }));
-  const { sprite } = fromBinary(PublishSpriteResponseSchema, await request("/api/sprites/publish", "POST", undefined, body));
+  const { sprite } = fromBinary(PublishSpriteResponseSchema, await request("/api/sprites/publish", "POST", undefined, body, PUBLISH_TIMEOUT_MS));
   if (!sprite) throw new Error("发布响应缺少内容");
   return toAsset(sprite);
-}
-
-/** 还原已保存的片段；服务端按 order 保存的顺序即数组顺序。 */
-function toBindings(message: StyleSpriteBindings | undefined): Bindings {
-  if (!message) throw new Error("绑定响应缺少内容");
-  return {
-    revision: message.revision,
-    placements: [...message.placements].sort((a, b) => a.order - b.order).map((item) => ({
-      id: item.id,
-      spriteId: item.spriteId,
-      start: item.start,
-      duration: item.duration ?? 0,
-    })),
-  };
-}
-
-/** 读取 style_id 下的 Remotion 片段；从未保存过时为空列表和版本 0。 */
-export async function getBindings(styleId: string, signal?: AbortSignal): Promise<Bindings> {
-  const data = await request(`/api/sprites/styles/${encodeURIComponent(styleId)}`, "GET", signal);
-  return toBindings(fromBinary(GetStyleSpritesResponseSchema, data).bindings);
-}
-
-/** 整体替换 style_id 下的 Remotion 片段，只写资产、秒起点、固定时长与顺序；expectedRevision 过期时服务端返回冲突。 */
-export async function saveBindings(styleId: string, placements: Placement[], expectedRevision: bigint): Promise<Bindings> {
-  const message = create(SaveStyleSpritesRequestSchema, {
-    styleId,
-    expectedRevision,
-    placements: placements.map((item, order) => ({
-      id: item.id,
-      spriteId: item.spriteId,
-      startMode: "seconds",
-      start: item.start,
-      duration: item.duration,
-      order,
-    })),
-  });
-  const data = await request(`/api/sprites/styles/${encodeURIComponent(styleId)}`, "POST", undefined, toBinary(SaveStyleSpritesRequestSchema, message));
-  return toBindings(fromBinary(SaveStyleSpritesResponseSchema, data).bindings);
 }

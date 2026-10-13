@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import TypeAdapter
 
-from ..planning import PlanAction
+from ..planning import PlanAction, StepResult
 from .contracts import (
     CodeValidationInput,
     CodeValidationReport,
@@ -67,7 +67,7 @@ def _deferred(name: str):
     "preset.create",
     constraints=["The complete source, parameter schema and defaults are saved as a new immutable record."],
     side_effects=["code validation and preset catalog write"],
-    error_codes=["INVALID_ARGUMENT", "CODE_VALIDATION_FAILED", "PRESET_STORE_FAILED"],
+    error_codes=["INVALID_ARGUMENT", "CODE_VALIDATION_FAILED", "VALIDATION_UNAVAILABLE", "PRESET_STORE_FAILED"],
     starts_generation=True,
     examples=[{"input": {"description": "静态文字", "code": "export default function Label(){return null}", "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": False}, "default_parameters": {}}, "output": {"ok": False, "error": {"code": "CODE_VALIDATION_FAILED", "message": "example"}}}],
 )
@@ -81,46 +81,56 @@ async def preset_create(owner, request: PresetCreateInput) -> ToolResult[PresetC
 
 @tool(
     "sprite.compose",
-    constraints=["The host canvas is fixed at 1080x1920, 30 FPS; duration is derived from instances."],
+    contract_version=2,
+    constraints=[
+        "The host canvas is fixed at 1080x1920, 30 FPS; duration is derived from instances. When the snapshot has target_duration_frames (a new work), the last instance must end exactly there, otherwise the call is refused.",
+        "Contract v2: kind is required (text, filter_overlay, video_overlay or transition_overlay) and parameters lifts Preset props to required top-level Sprite parameters that templates may change per placement.",
+        "Each binding targets declared top-level Preset props that share one object schema and one value; a bound number needs minimum and maximum (integers for an integer), a bound string a colour pattern, enum or maxLength of at most 2000; only type, title, description, default, minimum, maximum, enum, minLength, maxLength, the colour pattern (or the keywordColor pattern), maxItems and items.maxLength are allowed.",
+        "The host owns position, scale, rotation and opacity of the whole Sprite; do not bind or implement them.",
+    ],
     side_effects=["deterministic source generation; no catalog write"],
     error_codes=["INVALID_ARGUMENT", "PRESET_NOT_FOUND", "COMPOSITION_FAILED"],
     starts_generation=True,
-    examples=[{"input": {"description": "组合", "instances": [{"instance_id": "title", "source": {"kind": "draft", "preset": {"description": "文字", "code": "export default function Label(){return null}", "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": False}, "default_parameters": {}}}, "layout": {"x": 0.0, "y": 0.0, "width": 100, "height": 100, "z_index": 0}, "timing": {"start_frame": 0, "duration_frames": 1}}]}, "output": {"ok": False, "error": {"code": "COMPOSITION_FAILED", "message": "example"}}}],
+    examples=[{"input": {"description": "暖色标题", "kind": "text", "instances": [{"instance_id": "title", "source": {"kind": "stored", "preset_id": "preset_title_001"}, "layout": {"x": 90.0, "y": 760.0, "width": 900, "height": 400, "z_index": 0}, "timing": {"start_frame": 0, "duration_frames": 150}}], "parameters": [{"name": "text", "title": "文字", "targets": [{"instance_id": "title", "parameter": "text"}]}, {"name": "fontSize", "title": "字号", "targets": [{"instance_id": "title", "parameter": "size"}]}, {"name": "fontWeight", "title": "字重", "targets": [{"instance_id": "title", "parameter": "weight"}]}, {"name": "color", "title": "颜色", "targets": [{"instance_id": "title", "parameter": "color"}]}, {"name": "keywords", "title": "关键词", "targets": [{"instance_id": "title", "parameter": "keywords"}]}, {"name": "keywordBold", "title": "关键词加粗", "targets": [{"instance_id": "title", "parameter": "keywordBold"}]}, {"name": "keywordItalic", "title": "关键词斜体", "targets": [{"instance_id": "title", "parameter": "keywordItalic"}]}, {"name": "keywordUnderline", "title": "关键词下划线", "targets": [{"instance_id": "title", "parameter": "keywordUnderline"}]}, {"name": "keywordStrikeout", "title": "关键词删除线", "targets": [{"instance_id": "title", "parameter": "keywordStrikeout"}]}, {"name": "keywordColor", "title": "关键词颜色", "targets": [{"instance_id": "title", "parameter": "keywordColor"}]}, {"name": "keywordSize", "title": "关键词字号", "targets": [{"instance_id": "title", "parameter": "keywordSize"}]}]}, "output": {"ok": True, "data": {"draft_id": "sprite_draft_0123456789ab", "digest": "3f2a9c1e5b7d4f60", "description": "暖色标题", "composition": {"width": 1080, "height": 1920, "fps": 30, "duration_frames": 150}, "kind": "text", "instances": [{"instance_id": "title", "preset_id": "preset_title_001", "parameter_names": ["text", "size", "weight", "color", "glow", "keywords", "keywordBold", "keywordItalic", "keywordUnderline", "keywordStrikeout", "keywordColor", "keywordSize"], "layout": {"x": 90.0, "y": 760.0, "width": 900, "height": 400, "z_index": 0}, "timing": {"start_frame": 0, "duration_frames": 150}}], "parameter_names": ["text", "fontSize", "fontWeight", "color", "keywords", "keywordBold", "keywordItalic", "keywordUnderline", "keywordStrikeout", "keywordColor", "keywordSize"], "default_parameters": {"text": "今日灵感", "fontSize": 96, "fontWeight": 700, "color": "#FFFFFF", "keywords": [], "keywordBold": False, "keywordItalic": False, "keywordUnderline": False, "keywordStrikeout": False, "keywordColor": "", "keywordSize": 0, "title": {"glow": 0.4}}, "code_bytes": 2048}}}],
 )
 async def sprite_compose(owner, request: SpriteComposeInput) -> ToolResult[SpriteComposeOutput]:
-    """Resolve Presets and produce a complete immutable Sprite draft."""
+    """Resolve Presets (stored preset_id, or a task draft_id from preset_modify or the accepted base) and keep the composed Sprite as a host draft; returns its draft_id and a code-free summary."""
     try:
-        return _success({"sprite": (await owner.compose_sprite(request))["sprite"]})
+        return _success(await owner.compose_sprite(request))
     except Exception as exc:
         return _failure(exc, "COMPOSITION_FAILED")
 
 
 @tool(
     "sprite.create",
-    constraints=["Only a compose-produced SpriteDraft with consistent source and parameters may be saved."],
-    side_effects=["code validation and sprite catalog write"],
-    error_codes=["INVALID_ARGUMENT", "CODE_VALIDATION_FAILED", "SPRITE_STORE_FAILED"],
+    constraints=[
+        "Takes the draft_id that sprite.compose returned in this task; the host keeps the composed source, so it is never re-sent.",
+        "The Sprite is mounted once in the browser and must leave the user's video visible: a canvas that is opaque in most sampled frames (4 of 5) is refused with CODE_VALIDATION_FAILED.",
+        "The Sprite must expose its kind's required top-level parameters (text: text, fontSize, fontWeight, color, keywords, keywordBold, keywordItalic, keywordUnderline, keywordStrikeout, keywordColor, keywordSize, with every keyword option defaulting to off; filter_overlay: intensity, tintColor; video_overlay and transition_overlay: color, speed), otherwise CATEGORY_PARAMETERS_MISSING lists what to bind.",
+    ],
+    side_effects=["code validation, one browser mount with a transparency measurement, and sprite catalog write"],
+    error_codes=["INVALID_ARGUMENT", "CODE_VALIDATION_FAILED", "CATEGORY_PARAMETERS_MISSING", "VALIDATION_UNAVAILABLE", "SPRITE_STORE_FAILED"],
     starts_generation=True,
-    examples=[{"input": {"sprite": {"description": "组合", "code": "export default function Sprite(){return null}", "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": False}, "default_parameters": {}, "composition": {"width": 1080, "height": 1920, "fps": 30, "duration_frames": 1}, "instances": [{"instance_id": "title", "preset": {"description": "文字", "code": "export default function Label(){return null}", "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": False}, "default_parameters": {}}, "parameters": {}, "layout": {"x": 0.0, "y": 0.0, "width": 100, "height": 100, "z_index": 0}, "timing": {"start_frame": 0, "duration_frames": 1}}]}}, "output": {"ok": False, "error": {"code": "CODE_VALIDATION_FAILED", "message": "example"}}}],
+    examples=[{"input": {"draft_id": "sprite_draft_0123456789ab"}, "output": {"ok": False, "error": {"code": "INVALID_ARGUMENT", "message": "Unknown draft_id sprite_draft_0123456789ab; drafts in this task: none", "field": "/draft_id"}}}],
 )
 async def sprite_create(owner, request: SpriteCreateInput) -> ToolResult[SpriteCreateOutput]:
-    """Validate and persist one composed Sprite draft."""
+    """Validate and persist the composed Sprite a sprite.compose draft_id refers to."""
     try:
-        return _success(await owner.create_sprite(request.sprite))
+        return _success(await owner.create_sprite(request.draft_id))
     except Exception as exc:
         return _failure(exc, "SPRITE_STORE_FAILED")
 
 
-def _inspectable(name: str) -> RegisteredTool | PlanTool:
+def _inspectable(name: str) -> RegisteredTool | HostTool:
     """Resolve one registered descriptor by dotted ID or by the wire name the model is shown.
 
-    Inspection stays contract-only: it includes host Plan control without granting
-    permission to invoke it. It accepts the same names the model sees in its own
+    Inspection stays contract-only: it includes the host control tools without granting
+    permission to invoke them. It accepts the same names the model sees in its own
     tool window. `resolve()` is not reused here because it hides tools that
     are registered with a contract but no implementation yet, and describing those
     contracts is exactly what this tool is for.
     """
-    return get_tool(name, (*registered_tools(), PLAN_TOOL))
+    return get_tool(name, (*registered_tools(), PLAN_TOOL, REPORT_TOOL))
 
 
 @tool(
@@ -133,8 +143,8 @@ def _inspectable(name: str) -> RegisteredTool | PlanTool:
 async def tools_inspect(owner, request: ToolInspectInput) -> ToolResult[ToolDescriptor]:
     """Return one registered tool descriptor by dotted ID or by the wire name this window shows.
 
-    An unknown name reports every registered ID, so a model that guesses a name
-    learns the real one instead of retrying blind.
+    It reads the contract of a name the caller already has and does not search; the IDs listed in an
+    unknown-name error only correct a typo.
     """
     try:
         return _success(_inspectable(request.tool_name).describe())
@@ -199,7 +209,7 @@ async def preset_search(owner, request: PresetSearchInput) -> ToolResult[PresetS
 
 @tool(
     "preset.modify",
-    constraints=["Replaces whole fields only; the original record never changes and no new preset_id is created. Save the returned draft with preset.create."],
+    constraints=["Replaces whole fields only; the original record never changes and no new preset_id is created. preset_id may also be a task draft handle (base_* or an earlier draft_id). The copy is kept by the host: compose it with source {kind: \"draft\", draft_id}."],
     side_effects=["read-only copy of one stored Preset"],
     error_codes=["INVALID_ARGUMENT", "PRESET_NOT_FOUND", "PRESET_STORE_FAILED"],
     examples=[{"input": {"preset_id": "preset_title_001", "changes": {"description": "带描边的文字原子"}}, "output": {"ok": False, "error": {"code": "PRESET_NOT_FOUND", "message": "example"}}}],
@@ -238,39 +248,74 @@ async def validate_render(owner, request: RenderValidationInput) -> ToolResult[R
     return await _deferred("validate.render")(owner, request)
 
 @dataclass(frozen=True)
-class PlanTool:
-    """Host-owned orchestration control exposed to Outer and Plan ReAct."""
+class HostTool:
+    """Host-owned control exposed as a provider function; inspectable, never in the business registry."""
 
-    name: str = "tools.plan_execute"
-    input: type = PlanAction
+    name: str
+    input: type
+    description: str
+    constraints: tuple[str, ...]
+    error_codes: tuple[str, ...]
+    example: dict
 
     def wire(self) -> dict[str, Any]:
-        """Expose the Plan transition schema as a provider function."""
-        return {"type": "function", "function": {"name": wire_name(self.name), "description": "Create, continue, advance or finish the ordered Plan; never executes a business tool.", "parameters": self.input.model_json_schema()}}
+        """Expose the control schema as a provider function."""
+        return {"type": "function", "function": {"name": wire_name(self.name), "description": self.description, "parameters": self.input.model_json_schema()}}
 
     def describe(self) -> dict[str, Any]:
         """Return the same complete inspection contract as business tools, without changing state."""
         return ToolDescriptor(
             tool_name=self.name,
             contract_version=1,
-            description=self.wire()["function"]["description"],
+            description=self.description,
             input_schema=self.input.model_json_schema(),
             output_schema=TypeAdapter(ToolResult[JsonObject]).json_schema(),
-            constraints=[
-                "Only Outer and Plan may invoke this tool; Executor may only inspect it.",
-                "Outer delegates or completes; Plan owns ordered step changes.",
-                "Completion still requires host verification of a saved Sprite.",
-            ],
+            constraints=list(self.constraints),
             side_effects=["task-local Plan and execution state updates"],
-            error_codes=["INVALID_ARGUMENT", "tool_limit_reached", "tool_budget_exhausted", "agent_stopped"],
-            examples=[{
-                "input": {"action": "advance"},
-                "output": {"ok": False, "error": {"code": "INVALID_ARGUMENT", "message": "Advance requires a completed current step"}},
-            }],
+            error_codes=list(self.error_codes),
+            examples=[self.example],
         ).model_dump(mode="json", exclude_unset=True)
 
 
-PLAN_TOOL = PlanTool()
+PLAN_TOOL = HostTool(
+    name="tools.plan_execute",
+    input=PlanAction,
+    description=(
+        "Host control; never runs a business tool. Outer: answer, ask (clarification), delegate (the host then runs "
+        "its standard Preset -> Sprite plan) or stop. Plan: update_plan (send only the unfinished steps), continue, "
+        "advance, complete (the host publishes the latest Sprite this task saved) or stop."
+    ),
+    constraints=(
+        "Only Outer and Plan may invoke this tool; Executor may only inspect it.",
+        "Outer answers, asks, delegates or stops; Plan owns ordered step changes.",
+        "Completion still requires host verification of a saved Sprite; the host, not Outer, publishes it.",
+    ),
+    error_codes=("INVALID_ARGUMENT", "tool_limit_reached", "tool_budget_exhausted", "agent_stopped"),
+    example={
+        "input": {"action": "advance"},
+        "output": {"ok": False, "error": {"code": "INVALID_ARGUMENT", "message": "Advance requires a completed current step"}},
+    },
+)
+
+REPORT_TOOL = HostTool(
+    name="tools.report_step",
+    input=StepResult,
+    description=(
+        "Executor: report the current step as step_done, blocked or needs_input; call it alone. The host checks "
+        "the step really produced its output (a sprite_create success in a step with the sprite module, a ready "
+        "Preset in a preset step) and then starts the next step or publishes the Sprite. needs_input takes the questions "
+        "for the user, which Outer asks."
+    ),
+    constraints=(
+        "Only the Executor may invoke this tool; the host records the step's Presets and Sprite from tool receipts.",
+        "step_done is refused while the step's output is missing; the refusal names the tool to call next.",
+    ),
+    error_codes=("INVALID_ARGUMENT",),
+    example={
+        "input": {"status": "step_done", "summary": "已保存暖色调滤镜 Sprite"},
+        "output": {"ok": True, "data": {"status": "step_done", "next": "publishing"}},
+    },
+)
 
 
 def available(modules=None, *, executor=False):
@@ -280,7 +325,7 @@ def available(modules=None, *, executor=False):
     model while their implementations are absent, so a tool never appears here
     without a handler that can actually run it.
     """
-    tools: list[RegisteredTool | PlanTool] = []
+    tools: list[RegisteredTool | HostTool] = []
     if not executor and (modules is None or "tools" in modules):
         tools.append(PLAN_TOOL)
     for item in registered_tools():

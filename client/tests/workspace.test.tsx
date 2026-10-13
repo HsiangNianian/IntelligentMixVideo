@@ -7,7 +7,7 @@ import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
 import { TemplateCollection, type TemplateSelection } from "@/features/templates/TemplateHome";
 import { Toaster } from "@/components/ui/sonner";
 import { fetchMock } from "./setup";
-import { protobufTemplateResponse, savedTemplate } from "./fixtures";
+import { protobufTemplateResponse, savedTemplate, templateSummary } from "./fixtures";
 
 /** 生成独立的主页新建输入，不包含服务端响应或存储数据。 */
 function creation(name = "旅行模板", environment: "cloud" | "local" = "cloud"): TemplateSelection {
@@ -24,51 +24,65 @@ async function addText(label = "顶部标题") {
   fireEvent.click(screen.getByRole("tab", { name: "外观与效果" }));
 }
 
-// 场景：云端和本地新模板均为空；选择作用对象不会添加，点击资产才创建独立对象。
-test.each(["cloud", "local"] as const)("%s 新模板通过左侧资产创建画面对象", async (environment) => {
+// 场景：云端和本地新模板自带固定文字，重复应用样式保持数量及文字内容。
+test.each(["cloud", "local"] as const)("%s 新模板保留唯一标题和字幕", async (environment) => {
   render(<TemplateWorkspace selection={creation("空白模板", environment)} onHome={() => {}} />);
   const applied = await screen.findByRole("region", { name: "已添加特效" });
-  expect(within(applied).queryAllByRole("button")).toHaveLength(0);
-  expect(within(applied).getByText("从左侧特效资产选择并添加效果。")).toBeTruthy();
-  expect(screen.queryByRole("region", { name: "特效设置" })).toBeNull();
-  expect(screen.queryByLabelText("轨道时间设置")).toBeNull();
+  expect(within(applied).queryAllByRole("button")).toHaveLength(2);
   fireEvent.keyDown(screen.getByRole("combobox", { name: "应用到" }), { key: "ArrowDown" });
   fireEvent.click(screen.getByRole("option", { name: "底部字幕" }));
-  expect(within(applied).queryAllByRole("button")).toHaveLength(0);
+  expect(within(applied).queryAllByRole("button")).toHaveLength(2);
   await addText("底部字幕");
-  expect(within(applied).getAllByRole("button")).toHaveLength(1);
+  expect(within(applied).getAllByRole("button")).toHaveLength(2);
   expect(within(applied).getByRole("button", { name: "编辑底部字幕", pressed: true })).toBeTruthy();
   fireEvent.change(screen.getByLabelText("示例文字"), { target: { value: "手动添加的字幕" } });
   await addText();
   expect(within(applied).getAllByRole("button")).toHaveLength(2);
   fireEvent.click(within(applied).getByRole("button", { name: "编辑底部字幕" }));
   expect(screen.getByLabelText<HTMLInputElement>("示例文字").value).toBe("手动添加的字幕");
-  fireEvent.click(screen.getByRole("button", { name: "移除当前画面对象" }));
+  expect(screen.queryByRole("button", { name: "移除当前画面对象" })).toBeNull();
+  expect(screen.queryByRole("tab", { name: "时间设置" })).toBeNull();
+  expect(screen.queryByLabelText("轨道时间设置")).toBeNull();
   fireEvent.click(within(applied).getByRole("button", { name: "编辑顶部标题" }));
-  fireEvent.click(screen.getByRole("button", { name: "移除当前画面对象" }));
-  expect(within(applied).queryAllByRole("button")).toHaveLength(0);
+  expect(screen.queryByRole("button", { name: "移除当前画面对象" })).toBeNull();
+  expect(within(applied).queryAllByRole("button")).toHaveLength(2);
 });
 
-// 场景：从文字外观切换到转场时只显示时间设置，修改时长后仍可移除转场。
-test("转场仅提供时间设置并保留移除操作", async () => {
+// 场景：连续添加自动分配两个交界处，右侧独立修改，达到数量上限后拒绝添加。
+test("转场按添加顺序连接三个视频", async () => {
   render(<TemplateWorkspace selection={creation()} onHome={() => {}} />);
   await addText();
   const assets = screen.getByRole("region", { name: "特效资产" });
+  expect(screen.queryByLabelText("视频交界处")).toBeNull();
   fireEvent.click(within(assets).getByRole("radio", { name: "转场" }));
   fireEvent.click(within(assets).getAllByRole("button", { name: /^应用转场：/ })[0]);
-  const inspector = screen.getByRole("region", { name: "画面对象设置" });
-  expect(within(inspector).getAllByRole("tab")).toHaveLength(1);
-  expect(within(inspector).getByRole("tab", { name: "时间设置", selected: true })).toBeTruthy();
-  expect(within(inspector).queryByRole("tab", { name: "外观与效果" })).toBeNull();
-  expect(within(inspector).queryByRole("searchbox", { name: "搜索转场", hidden: true })).toBeNull();
-  fireEvent.change(within(inspector).getByLabelText("持续时间 / 秒"), { target: { value: "2" } });
+  expect(screen.getByRole("button", { name: "编辑镜头转场 1", pressed: true })).toBeTruthy();
+  expect(within(screen.getByRole("region", { name: "转场设置" })).getByText("等待预览时间")).toBeTruthy();
+  fireEvent.click(within(assets).getAllByRole("button", { name: /^应用转场：/ })[1]);
+  expect(screen.getByRole("button", { name: "编辑镜头转场 2", pressed: true })).toBeTruthy();
+  const inspector = screen.getByRole("region", { name: "转场设置" });
+  fireEvent.change(within(inspector).getByLabelText("转场持续时间 / 秒"), { target: { value: "2" } });
   fireEvent.click(screen.getByRole("button", { name: "编辑顶部标题" }));
   expect(screen.getByRole("tab", { name: "外观与效果" })).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "编辑镜头转场" }));
-  expect(screen.getByLabelText<HTMLInputElement>("持续时间 / 秒").value).toBe("2");
-  fireEvent.click(screen.getByRole("button", { name: "移除当前画面对象" }));
-  expect(screen.queryByRole("button", { name: "编辑镜头转场" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "编辑镜头转场 2" }));
+  expect(screen.getByLabelText<HTMLInputElement>("转场持续时间 / 秒").value).toBe("2");
+  expect(within(inspector).getByText("等待预览时间")).toBeTruthy();
+  fireEvent.click(within(assets).getAllByRole("button", { name: /^应用转场：/ })[2]);
+  const limitDialog = screen.getByRole("dialog", { name: "无法添加特效" });
+  expect(within(limitDialog).getByText("最多添加两个转场，请在右侧修改已有转场")).toBeTruthy();
+  expect(screen.getByText("最多添加两个转场，请在右侧修改已有转场").closest('[role="alert"]')).toBeNull();
+  fireEvent.click(within(limitDialog).getByRole("button", { name: "知道了" }));
+  expect(screen.queryByRole("dialog", { name: "无法添加特效" })).toBeNull();
+  expect(screen.queryByText("最多添加两个转场，请在右侧修改已有转场")).toBeNull();
+  expect(within(screen.getByRole("region", { name: "已添加特效" })).getAllByRole("button", { name: /编辑镜头转场/ })).toHaveLength(2);
+  expect(screen.getByLabelText<HTMLInputElement>("转场持续时间 / 秒").value).toBe("2");
+  fireEvent.click(screen.getByRole("combobox", { name: "转场效果" }));
+  fireEvent.click(screen.getByRole("option", { name: "无转场" }));
+  expect(screen.queryByRole("button", { name: "编辑镜头转场 2" })).toBeNull();
   expect(screen.queryByRole("region", { name: "画面对象设置" })).toBeNull();
+  expect(screen.queryByRole("region", { name: "转场设置" })).toBeNull();
+  fireEvent.click(within(assets).getAllByRole("button", { name: /^应用转场：/ })[1]);
+  expect(screen.getByRole("button", { name: "编辑镜头转场 2", pressed: true })).toBeTruthy();
 });
 
 // 场景：时间输入尚未完整时停止保存；修正后使用最新草稿继续执行模板校验。
@@ -86,8 +100,6 @@ test("空白时间阻止保存，修正后恢复保存流程", async () => {
   expect(screen.queryByText("请至少选择一个效果")).toBeNull();
   fireEvent.change(input, { target: { value: "2" } });
   expect(screen.queryByText(error)).toBeNull();
-  fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
-  await screen.findByText("请至少选择一个效果");
   fireEvent.click(screen.getByRole("button", { name: "关闭特效设置" }));
   fireEvent.click(screen.getByRole("button", { name: "编辑顶部标题" }));
   expect(screen.getByLabelText<HTMLInputElement>("开始时间 / 秒").value).toBe("2");
@@ -104,9 +116,6 @@ test("跨越布局断点保留输入草稿和时间校验", async () => {
     fireEvent.click(screen.getByRole("tab", { name: "时间设置" }));
     const start = screen.getByLabelText<HTMLInputElement>("开始时间 / 秒");
     fireEvent.change(start, { target: { value: "" } });
-    fireEvent.click(screen.getByRole("button", { name: "加载预览视频" }));
-    const video = screen.getByRole<HTMLInputElement>("textbox", { name: "预览视频地址" });
-    fireEvent.change(video, { target: { value: "/unfinished-video.mp4" } });
     const preview = screen.getByRole("region", { name: "实时预览" });
     const error = "开始时间须为非负秒数，或 0% 至小于 100% 的百分比";
     start.focus();
@@ -117,8 +126,6 @@ test("跨越布局断点保留输入草稿和时间校验", async () => {
       expect(screen.getByLabelText("开始时间 / 秒")).toBe(start);
       expect(start.value).toBe("");
       expect(document.activeElement).toBe(start);
-      expect(screen.getByRole("textbox", { name: "预览视频地址" })).toBe(video);
-      expect(video.value).toBe("/unfinished-video.mp4");
       expect(screen.getByRole("region", { name: "实时预览" })).toBe(preview);
       fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
       expect(screen.getByText(error)).toBeTruthy();
@@ -127,8 +134,7 @@ test("跨越布局断点保留输入草稿和时间校验", async () => {
 
     fireEvent.change(start, { target: { value: "2" } });
     expect(screen.queryByText(error)).toBeNull();
-    fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
-    await screen.findByText("请至少选择一个效果");
+    expect(start.value).toBe("2");
   } finally {
     view.unmount();
     Reflect.set(window, "innerWidth", originalWidth);
@@ -141,23 +147,23 @@ test("重复添加特效后分别设置时间并删除指定实例", async () =>
   render(<TemplateWorkspace selection={creation()} onHome={() => {}} />);
   await screen.findByRole("region", { name: "特效资产" });
   const assets = screen.getByRole("region", { name: "特效资产" });
-  fireEvent.click(within(assets).getByRole("radio", { name: "画面特效" }));
-  const asset = within(assets).getAllByRole("button", { name: /^应用画面特效：/ })[0];
+  fireEvent.click(within(assets).getByRole("radio", { name: "滤镜" }));
+  const asset = within(assets).getAllByRole("button", { name: /^应用滤镜：/ })[0];
   fireEvent.click(asset);
   fireEvent.change(screen.getByLabelText("开始时间 / 秒"), { target: { value: "2" } });
   fireEvent.keyDown(screen.getByRole("combobox", { name: "持续方式" }), { key: "ArrowDown" });
   fireEvent.click(screen.getByRole("option", { name: "固定时长" }));
   fireEvent.change(screen.getByLabelText("持续时间 / 秒"), { target: { value: "3" } });
   fireEvent.click(asset);
-  expect(screen.getByRole("button", { name: "编辑画面特效 2", pressed: true })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "编辑视频滤镜 2", pressed: true })).toBeTruthy();
   expect(screen.getByLabelText<HTMLInputElement>("开始时间 / 秒").value).toBe("0");
-  fireEvent.click(screen.getByRole("button", { name: "编辑画面特效 1" }));
+  fireEvent.click(screen.getByRole("button", { name: "编辑视频滤镜 1" }));
   expect(screen.getByLabelText<HTMLInputElement>("开始时间 / 秒").value).toBe("2");
   fireEvent.change(screen.getByLabelText("持续时间 / 秒"), { target: { value: "0" } });
   expect(screen.getByText("持续时间须大于零")).toBeTruthy();
   fireEvent.click(screen.getByRole("tab", { name: "外观与效果" }));
   fireEvent.click(screen.getByRole("button", { name: "移除当前画面对象" }));
-  fireEvent.click(screen.getByRole("button", { name: "编辑画面特效" }));
+  fireEvent.click(screen.getByRole("button", { name: "编辑视频滤镜" }));
   fireEvent.click(screen.getByRole("tab", { name: "时间设置" }));
   expect(screen.getByLabelText<HTMLInputElement>("开始时间 / 秒").value).toBe("0");
   expect(screen.getByRole("combobox", { name: "持续方式" }).textContent).toBe("持续到视频结束");
@@ -180,15 +186,13 @@ test("设置关闭时仍保护模板切换，放弃后恢复新模板的编辑�
   fireEvent.click(screen.getByRole("button", { name: "关闭特效设置" }));
   view.rerender(<TemplateWorkspace selection={creation("另一模板")} onHome={() => {}} />);
   dialog = await screen.findByRole("dialog");
-  fireEvent.click(within(dialog).getByRole("button", { name: "保存并切换" }));
-  await within(dialog).findByText("请至少选择一个效果");
   expect(screen.getByLabelText("模板名称").textContent).toBe("旅行模板");
   expect(screen.queryByLabelText("示例文字")).toBeNull();
   fireEvent.click(within(dialog).getByRole("button", { name: "放弃修改" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(screen.getByLabelText("模板名称").textContent).toBe("另一模板");
-  expect(screen.queryByLabelText("示例文字")).toBeNull();
-  expect(within(screen.getByRole("region", { name: "已添加特效" })).queryAllByRole("button")).toHaveLength(0);
+  expect(screen.getByLabelText<HTMLInputElement>("示例文字").value).toBe("让每一帧 都有风格");
+  expect(within(screen.getByRole("region", { name: "已添加特效" })).queryAllByRole("button")).toHaveLength(2);
 });
 
 // 场景：关闭字幕设置后应用文字资产仍使用最近的文字对象，重新打开时保留字幕参数和标题内容。
@@ -210,7 +214,7 @@ test("关闭设置后应用资产沿用最近选择的字幕对象", async () =>
   expect(screen.getByRole("combobox", { name: "花字样式" }).textContent).toBe("无效果");
 });
 
-// 场景：标题和字幕的关键词设置独立保存于各自的画面对象，其他类别不显示该页签。
+// 场景：标题和字幕的关键词设置独立保存于各自的画面对象。
 test("关键词页签分别编辑标题和字幕", async () => {
   render(<TemplateWorkspace selection={creation()} onHome={() => {}} />);
   await addText();
@@ -230,21 +234,46 @@ test("关键词页签分别编辑标题和字幕", async () => {
   expect(screen.getByRole("button", { name: "斜体" }).getAttribute("aria-pressed")).toBe("false");
 });
 
-// 场景：预览视频入口位于播放控制区，展开后保留地址输入与加载操作。
-test("播放控制栏展开预览视频地址", async () => {
+// 场景：从标题时间页切换到字幕时显示外观页，字幕保留关键词页，返回标题后仍可编辑时间。
+test("底部字幕仅提供外观与关键词页签", async () => {
+  render(<TemplateWorkspace selection={creation()} onHome={() => {}} />);
+  await screen.findByRole("region", { name: "画面对象设置" });
+  expect(screen.getByRole("tab", { name: "时间设置", selected: true })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "编辑底部字幕" }));
+  expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["外观与效果", "关键词设置"]);
+  expect(screen.getByRole("tab", { name: "外观与效果", selected: true })).toBeTruthy();
+  expect(screen.getByLabelText("示例文字")).toBeTruthy();
+  expect(screen.queryByLabelText("轨道时间设置")).toBeNull();
+  fireEvent.click(screen.getByRole("tab", { name: "关键词设置" }));
+  expect(screen.getByRole("button", { name: "加粗" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "编辑顶部标题" }));
+  fireEvent.click(screen.getByRole("tab", { name: "时间设置" }));
+  expect(screen.getByLabelText("开始时间 / 秒")).toBeTruthy();
+});
+
+// 场景：弹窗同时提供三个来源地址，取消后保留当前来源，空地址加载失败时保留输入。
+test("播放控制栏弹窗设置三个预览视频", async () => {
   render(<TemplateWorkspace selection={creation()} onHome={() => {}} />);
   await screen.findByRole("region", { name: "实时预览" });
   const trigger = screen.getByRole("button", { name: "加载预览视频" });
   expect(trigger.getAttribute("aria-expanded")).toBe("false");
-  expect(screen.queryByRole("textbox", { name: "预览视频地址" })).toBeNull();
+  expect(screen.queryByRole("dialog", { name: "加载预览视频" })).toBeNull();
   fireEvent.click(trigger);
   expect(trigger.getAttribute("aria-expanded")).toBe("true");
-  const input = screen.getByRole<HTMLInputElement>("textbox", { name: "预览视频地址" });
-  fireEvent.change(input, { target: { value: "/video.mp4" } });
-  expect(input.value).toBe("/video.mp4");
-  expect(screen.getByRole("button", { name: /^加载$/ })).toBeTruthy();
+  const dialog = screen.getByRole("dialog", { name: "加载预览视频" });
+  const inputs = [1, 2, 3].map((index) => within(dialog).getByRole<HTMLInputElement>("textbox", { name: `视频 ${index} URL` }));
+  const original = inputs.map((input) => input.value);
+  expect(original.every(Boolean)).toBe(true);
+  inputs.forEach((input, index) => fireEvent.change(input, { target: { value: `/video-${index}.mp4` } }));
+  fireEvent.change(inputs[1], { target: { value: "" } });
+  fireEvent.click(within(dialog).getByRole("button", { name: "加载" }));
+  await waitFor(() => expect(within(dialog).getByRole("alert").textContent).toBe("请输入视频 2 的 URL"));
+  expect(inputs[0].value).toBe("/video-0.mp4");
+  expect(inputs[2].value).toBe("/video-2.mp4");
+  fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+  expect(screen.queryByRole("dialog", { name: "加载预览视频" })).toBeNull();
   fireEvent.click(trigger);
-  expect(screen.queryByRole("textbox", { name: "预览视频地址" })).toBeNull();
+  expect([1, 2, 3].map((index) => screen.getByRole<HTMLInputElement>("textbox", { name: `视频 ${index} URL` }).value)).toEqual(original);
 });
 
 // 场景：未保存保护在设置关闭后仍然生效，卸载工作区会移除页面退出监听。
@@ -343,7 +372,7 @@ test.each(["cloud", "local"] as const)("%s 模板整行选择保留来源与 ID"
   const template = { ...savedTemplate(), description: "用于产品视频的文字效果" };
   const selections: TemplateSelection[] = [];
   render(<TemplateCollection environment={environment}
-    collection={{ templates: [template], loading: false, error: "", unavailable: false, refresh: () => {} }}
+    collection={{ templates: [templateSummary(template)], loading: false, error: "", unavailable: false, refresh: () => {} }}
     onSelect={(selection) => selections.push(selection)} />);
   const row = screen.getByRole("button", { name: `选择模板：${template.name}` });
   expect(screen.getAllByRole("listitem")).toHaveLength(1);
@@ -360,15 +389,14 @@ test.each(["cloud", "local"] as const)("%s 新草稿在 StrictMode 中保留来�
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
-// 场景：添加文字后清除样式，保存校验失败仍保留创建信息与文字草稿。
-test("保存前校验效果，失败保留全部草稿", async () => {
+// 场景：空白文字不能保存，输入草稿和模板信息保留。
+test("保存前校验文字内容，失败保留全部草稿", async () => {
   render(<TemplateWorkspace selection={creation()} onHome={() => {}} />);
   await addText();
   fireEvent.click(screen.getByRole("button", { name: "重置特效设置" }));
-  fireEvent.change(screen.getByLabelText("示例文字"), { target: { value: "需要保留的标题" } });
+  fireEvent.change(screen.getByLabelText("示例文字"), { target: { value: "   " } });
   fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
-  await screen.findByText("请至少选择一个效果");
-  expect(screen.getByLabelText<HTMLInputElement>("示例文字").value).toBe("需要保留的标题");
+  await screen.findByText("文字轨道内容不能为空");
   expect(screen.getByLabelText("模板名称").textContent).toBe("旅行模板");
   expect(screen.getByText("新模板 · 尚未保存")).toBeTruthy();
 });

@@ -1,13 +1,17 @@
-"""模板保存对象时间规则和可信效果快照，视频信息由应用时提供。"""
+"""模板保存对象时间规则和可信效果快照，视频信息由应用时提供；Remotion 片段只保存对已发布 Sprite 的引用和秒数起点。"""
 
 import json
+import math
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel, ConfigDict, Field, SerializerFunctionWrapHandler, StrictBool, StrictStr, field_serializer,
+    field_validator, model_validator,
+)
 from pydantic.alias_generators import to_camel
 
 EffectCategory = Literal[
@@ -47,6 +51,92 @@ class EffectAsset(BaseModel):
     )
     parameters: dict[str, str]
     preview_url: str = ""
+
+
+class _RemotionModel(BaseModel):
+    """Remotion 摆放参数：模板 JSON（驼峰）与 Protobuf 转出的字典（下划线）都能解析；未知字段拒绝。"""
+
+    model_config = ConfigDict(extra="forbid", alias_generator=to_camel, populate_by_name=True)
+
+
+def _finite(value):
+    """数字字段只接受有限的 JSON 数字：布尔值、字符串、NaN 与无穷都拒绝。"""
+    if value is None:
+        return value
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError("必须是有限数字")
+    return float(value)
+
+
+# 一个字符串覆盖值的长度上限；Sprite 发布时可绑定的字符串参数 maxLength 也不能超过它。
+OVERRIDE_STRING_MAX_LENGTH = 2000
+
+
+class RemotionStringList(_RemotionModel):
+    """字符串列表参数（关键词）的值。"""
+
+    values: list[StrictStr] = Field(default_factory=list, max_length=100)
+
+
+class RemotionParameterOverride(_RemotionModel):
+    """一个参数覆盖；恰好设置一个值字段。"""
+
+    key: StrictStr = Field(min_length=1, max_length=255)
+    string_value: StrictStr | None = Field(default=None, max_length=OVERRIDE_STRING_MAX_LENGTH)
+    number_value: float | None = None
+    bool_value: StrictBool | None = None
+    string_list_value: RemotionStringList | None = None
+
+    @field_validator("number_value", mode="before")
+    @classmethod
+    def finite_value(cls, value):
+        """数字值必须是有限的 JSON 数字。"""
+        return _finite(value)
+
+    @model_validator(mode="after")
+    def one_value(self) -> "RemotionParameterOverride":
+        """覆盖必须恰好给出一个值。"""
+        given = [self.string_value, self.number_value, self.bool_value, self.string_list_value]
+        if sum(item is not None for item in given) != 1:
+            raise ValueError(f"参数 {self.key} 必须恰好给出一个值")
+        return self
+
+    def value(self):
+        """覆盖值的 JSON 形式。"""
+        if self.string_list_value is not None:
+            return list(self.string_list_value.values)
+        return next(item for item in (self.string_value, self.number_value, self.bool_value) if item is not None)
+
+
+class RemotionTransform(_RemotionModel):
+    """宿主变换；未设置的字段取默认值。"""
+
+    x: float | None = None
+    y: float | None = None
+    scale: float | None = None
+    rotation: float | None = None
+    opacity: float | None = None
+
+    @field_validator("x", "y", "scale", "rotation", "opacity", mode="before")
+    @classmethod
+    def finite_values(cls, value):
+        """变换字段必须是有限的 JSON 数字。"""
+        return _finite(value)
+
+
+class RemotionTrackEditor(_RemotionModel):
+    """一次摆放的参数覆盖与宿主变换。"""
+
+    parameters: list[RemotionParameterOverride] = Field(default_factory=list, max_length=64)
+    transform: RemotionTransform | None = None
+
+    @model_validator(mode="after")
+    def unique_keys(self) -> "RemotionTrackEditor":
+        """同一参数只能覆盖一次。"""
+        keys = [item.key for item in self.parameters]
+        if len(keys) != len(set(keys)):
+            raise ValueError("参数覆盖的 key 不能重复")
+        return self
 
 
 class EffectTemplateEditor(BaseModel):
@@ -100,6 +190,8 @@ class EffectTemplateEditor(BaseModel):
     subtitle_keyword_strikeout: bool = Field(default=False, strict=True)
     subtitle_keyword_color: str = Field(default="", pattern=r"^(?:|#[0-9A-Fa-f]{6})$")
     subtitle_keyword_size: int = Field(default=0, ge=0, le=300, strict=True)
+    # 仅 Remotion 片段使用：参数覆盖与宿主变换；IMS 对象不输出该字段，JSON 与引入前保持一致。
+    remotion: RemotionTrackEditor | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @field_validator("title_keyword_size", "subtitle_keyword_size")
     @classmethod
@@ -141,19 +233,62 @@ class EffectTemplateEditor(BaseModel):
 
 
 class EffectTrack(BaseModel):
-    """独立特效实例，文字动画归属于该实例的参数。"""
+    """独立特效实例，文字动画归属于该实例的参数；`remotion` 是引用已发布 Sprite 的片段。"""
 
     model_config = ConfigDict(extra="forbid")
     id: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
-    target: Literal["title", "subtitle", "bubble", "filter", "vfx", "transition"]
-    start_mode: Literal["seconds", "percent"]
-    start: float = Field(ge=0, allow_inf_nan=False)
+    target: Literal["title", "subtitle", "bubble", "filter", "vfx", "transition", "remotion"]
+    start_mode: Literal["seconds", "percent"] | None = Field(default=None, exclude_if=lambda value: value is None)
+    start: float | None = Field(default=None, ge=0, allow_inf_nan=False, exclude_if=lambda value: value is None)
     duration: float | None = Field(gt=0, allow_inf_nan=False)
     editor: EffectTemplateEditor
+    # 仅 Remotion 片段引用 Sprite；为空时不输出，其余对象的 JSON 与引入该字段前保持一致。
+    sprite_id: UUID | None = Field(default=None, exclude_if=lambda value: value is None)
+    # 转场与 Remotion 转场片段绑定视频交界处，开始秒数仅由本次视频计算。
+    transition_boundary: int | None = Field(default=None, ge=1, le=2, strict=True, exclude_if=lambda value: value is None)
+    # Remotion 字效作用的文字对象；该文字不再由 IMS 渲染，片段时间跟随它。分类是否相符由保存时按 Sprite 检查。
+    text_target: Literal["title", "subtitle"] | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    @field_serializer("editor", mode="wrap")
+    def serialize_editor(self, editor: EffectTemplateEditor, handler: SerializerFunctionWrapHandler) -> dict:
+        """Remotion 片段只输出它的参数覆盖与宿主变换（没有时为空对象），而不是一整套 IMS 默认值；其余对象沿用原序列化。"""
+        if self.target != "remotion":
+            return handler(editor)
+        if editor.remotion is None:
+            return {}
+        return {"remotion": editor.remotion.model_dump(mode="json", by_alias=True, exclude_none=True)}
 
     @model_validator(mode="after")
     def validate_instance(self) -> "EffectTrack":
         """检查时间规则和对象内容；应用视频时计算实际区间与动画时长。"""
+        if self.transition_boundary is not None and self.target not in ("transition", "remotion"):
+            raise ValueError("只有转场可以设置视频交界处")
+        if self.target == "transition":
+            if self.transition_boundary is None:
+                raise ValueError("转场必须指定视频交界处")
+            if {"start", "start_mode"} & self.model_fields_set:
+                raise ValueError("转场只保存交界处与持续时间")
+            if self.duration is None or not 0.1 <= self.duration <= 3:
+                raise ValueError("转场持续时间必须为 0.1～3 秒")
+        elif self.start is None or self.start_mode is None:
+            raise ValueError("对象缺少开始时间或方式")
+        if self.text_target is not None and self.target != "remotion":
+            raise ValueError("只有 Remotion 字效可以设置作用的文字对象")
+        if self.target == "remotion":
+            if self.text_target is not None and self.transition_boundary is not None:
+                raise ValueError("Remotion 片段不能同时作用于文字和视频交界处")
+            # 文字和效果规则只适用于 IMS 对象；片段只需要指向 Sprite 的秒数起点，时长缺省取 Sprite 自身。
+            if self.sprite_id is None:
+                raise ValueError("Remotion 片段缺少 sprite_id")
+            if self.start_mode != "seconds":
+                raise ValueError("Remotion 片段只能使用秒数起点")
+            if self.editor.model_fields_set - {"remotion"}:
+                raise ValueError("Remotion 片段只能携带参数覆盖与宿主变换")
+            return self
+        if self.sprite_id is not None:
+            raise ValueError("只有 Remotion 片段可以引用 Sprite")
+        if self.editor.remotion is not None:
+            raise ValueError("只有 Remotion 片段可以设置参数覆盖与宿主变换")
         if self.start_mode == "percent" and self.start >= 100:
             raise ValueError("开始百分比须小于 100")
         text = self.target in ("title", "subtitle", "bubble")
@@ -183,8 +318,6 @@ class EffectTrack(BaseModel):
                 raise ValueError("文字轨道内容不能为空")
         if not text and not getattr(self.editor, self.target):
             raise ValueError("轨道缺少效果")
-        if self.target == "transition" and (self.start <= 0 or self.duration is None or not 0.1 <= self.duration <= 3):
-            raise ValueError("转场位置或时长无效")
         return self
 
 
@@ -194,7 +327,7 @@ class TemplateData(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     name: str = Field(min_length=1, max_length=100)
     description: str = Field(default="", max_length=1000)
-    # 可以为空：只放 Remotion 片段的模板没有 IMS 效果；效果与对象是否一致仍由 TemplateSave 校验。
+    # 未选择样式的文字模板允许空效果列表；效果与对象是否一致由 TemplateSave 校验。
     # Protobuf 转字典会省略空数组，所以缺失按空列表处理。
     effect_ids: list[str] = Field(default_factory=list, max_length=500)
     transition_duration_seconds: float = Field(default=1, ge=0.1, le=3, allow_inf_nan=False)
@@ -202,11 +335,21 @@ class TemplateData(BaseModel):
 
     @model_validator(mode="after")
     def validate_tracks(self) -> "TemplateData":
-        """对象 ID 唯一，转场保留单个切换位置；时间规则独立于视频。"""
+        """检查对象数量、固定字幕时间及两个视频交界处；Remotion 转场与字效和 IMS 对象共用这些名额。"""
         if len({track.id for track in self.tracks}) != len(self.tracks):
             raise ValueError("轨道 ID 重复")
-        if sum(track.target == "transition" for track in self.tracks) > 1:
-            raise ValueError("两个母版片段只允许一个转场")
+        for target in ("title", "subtitle", "vfx"):
+            if sum(track.target == target for track in self.tracks) > 1:
+                raise ValueError(f"{target} 最多只能有一个")
+        for track in self.tracks:
+            if track.target == "subtitle" and (track.start_mode != "seconds" or track.start != 0 or track.duration is not None):
+                raise ValueError("底部字幕固定覆盖整个视频")
+        transitions = [track.transition_boundary for track in self.tracks if track.transition_boundary is not None]
+        if len(transitions) > 2 or len(set(transitions)) != len(transitions):
+            raise ValueError("每个视频交界处最多一个转场")
+        texts = [track.text_target for track in self.tracks if track.text_target is not None]
+        if len(set(texts)) != len(texts):
+            raise ValueError("每个标题或字幕最多一个 Remotion 字效")
         return self
 
 
@@ -243,6 +386,27 @@ class Template(TemplateData):
     effects: list[EffectAsset]
     created_at: datetime
     updated_at: datetime
+
+
+class TemplateSummary(BaseModel):
+    """列表展示元数据与校验状态，错误记录保留可操作的标识。"""
+
+    template_id: UUID
+    name: str
+    description: str = ""
+    created_at: datetime
+    updated_at: datetime
+    title: str = ""
+    subtitle: str = ""
+    track_count: int | None = None
+    validation_error: str = ""
+
+
+def completeness_error(template: TemplateData) -> str:
+    """保存及存储读取共用必需对象检查，不依赖预览媒体。"""
+    if any(sum(track.target == target for track in template.tracks) != 1 for target in ("title", "subtitle")):
+        return "保存模板需要标题和底部字幕各一个"
+    return ""
 
 
 @lru_cache(maxsize=1)

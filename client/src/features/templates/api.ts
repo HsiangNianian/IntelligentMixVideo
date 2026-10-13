@@ -11,7 +11,9 @@ import {
   SaveTemplateResponseSchema,
   type TemplateRecord,
 } from "@/generated/imv/template/v1/template_pb";
-import { defaultEditor, draftEffects, type Category, type Draft, type Editor, type EffectTrack, type Template } from "./model";
+import { defaultEditor, draftEffects, type Category, type Draft, type Editor, type EffectTrack, type RemotionClip, type Template, type TemplateSummary } from "./model";
+import { validateTemplateTracks } from "./tracks";
+import { validateClipSlots } from "./clips";
 
 /** 当前模板库的存储位置，每次操作显式传递，避免切换后写入错误环境。 */
 export type Environment = "local" | "cloud";
@@ -26,10 +28,11 @@ async function local<T>(operation: string, id?: string, draft?: number[], librar
   }
 }
 
-/** 还原现有模板视图的字段名称、可空时长及 UTC 时间。 */
+/** 还原现有模板视图的字段名称、可空时长及 UTC 时间；`remotion` 轨道拆成独立的片段列表，不进入 IMS 对象。 */
 function toTemplate(record: TemplateRecord): Template {
   if (!record.tracks || !record.createdAt || !record.updatedAt)
     throw new Error("模板响应缺少必要字段");
+  const wireTracks = record.tracks.tracks;
   return {
     name: record.name,
     description: record.description,
@@ -46,8 +49,8 @@ function toTemplate(record: TemplateRecord): Template {
       parameters: effect.parameters,
       preview_url: effect.previewUrl,
     })),
-    tracks: record.tracks.tracks.map((track): EffectTrack => {
-      if (track.start === undefined || !track.editor)
+    tracks: wireTracks.filter((track) => track.target !== "remotion").map((track): EffectTrack => {
+      if ((track.target !== "transition" && track.start === undefined) || !track.editor)
         throw new Error("模板对象缺少必要字段");
       const received = toJson(EffectTemplateEditorSchema, track.editor) as Partial<Editor>;
       if (Object.keys(defaultEditor).some((key) => !key.startsWith("subtitleKeyword") && !key.startsWith("titleKeyword") && !Object.prototype.hasOwnProperty.call(received, key)))
@@ -56,10 +59,31 @@ function toTemplate(record: TemplateRecord): Template {
       return {
         id: track.id,
         target: track.target as EffectTrack["target"],
-        start_mode: track.startMode as EffectTrack["start_mode"],
-        start: track.start,
+        ...(track.startMode ? { start_mode: track.startMode as EffectTrack["start_mode"] } : {}),
+        ...(track.start !== undefined ? { start: track.start } : {}),
         duration: track.duration ?? null,
+        ...(track.transitionBoundary !== undefined ? { transition_boundary: track.transitionBoundary } : {}),
         editor,
+      };
+    }),
+    clips: wireTracks.filter((track) => track.target === "remotion").map((track): RemotionClip => {
+      if (track.start === undefined || !track.spriteId)
+        throw new Error("模板对象缺少必要字段");
+      const remotion = track.editor?.remotion;
+      const parameters: RemotionClip["parameters"] = {};
+      for (const item of remotion?.parameters ?? []) {
+        const value = item.stringListValue ? [...item.stringListValue.values] : item.stringValue ?? item.numberValue ?? item.boolValue;
+        if (value !== undefined) parameters[item.key] = value;
+      }
+      const transform: RemotionClip["transform"] = {};
+      for (const name of ["x", "y", "scale", "rotation", "opacity"] as const) {
+        const value = remotion?.transform?.[name];
+        if (value !== undefined) transform[name] = value;
+      }
+      return {
+        id: track.id, sprite_id: track.spriteId, start: track.start, duration: track.duration ?? null, parameters, transform,
+        ...(track.textTarget === "title" || track.textTarget === "subtitle" ? { text_target: track.textTarget } : {}),
+        ...(track.transitionBoundary !== undefined ? { transition_boundary: track.transitionBoundary } : {}),
       };
     }),
   };
@@ -125,12 +149,17 @@ async function cloudRequest(path: string, method: "GET" | "POST" | "DELETE", sig
 }
 
 /** 获取共享模板列表；组件卸载时取消请求。 */
-export function listTemplates(signal?: AbortSignal, environment: Environment = "cloud"): Promise<Template[]> {
+export function listTemplates(signal?: AbortSignal, environment: Environment = "cloud"): Promise<TemplateSummary[]> {
   return environment === "local" ? local("list") : cloud(
     async (requestSignal) => {
       const response = await cloudRequest("/template", "GET", requestSignal);
       return fromBinary(ListTemplatesResponseSchema, new Uint8Array(await response.arrayBuffer()))
-        .templates.map(toTemplate);
+        .templates.map((record) => {
+          if (!record.createdAt || !record.updatedAt) throw new Error("模板摘要缺少时间");
+          return { template_id: record.templateId, name: record.name, description: record.description,
+            created_at: timestampDate(record.createdAt).toISOString(), updated_at: timestampDate(record.updatedAt).toISOString(),
+            title: record.title, subtitle: record.subtitle, track_count: record.trackCount, validation_error: record.validationError };
+        });
     },
     signal,
   );
@@ -146,29 +175,63 @@ export function getTemplate(id: string, environment: Environment = "cloud", sign
   }, signal);
 }
 
+/** 一次摆放的 editor：只在有参数覆盖或宿主变换时设置 remotion，每个覆盖恰好一个值字段。 */
+function clipEditor(clip: RemotionClip) {
+  const parameters = Object.entries(clip.parameters).map(([key, value]) => ({
+    key,
+    ...(Array.isArray(value) ? { stringListValue: { values: value } }
+      : typeof value === "string" ? { stringValue: value }
+        : typeof value === "number" ? { numberValue: value }
+          : { boolValue: value }),
+  }));
+  const transform = Object.keys(clip.transform).length ? clip.transform : undefined;
+  return parameters.length || transform ? { remotion: { parameters, transform } } : {};
+}
+
 /**
  * 统一创建、更新及另存为；只有调用方明确传 ID 时才覆盖已有模板，本地更新携带打开时所属的库。
- * `allowEmpty` 由调用方在模板已放入 Remotion 片段时声明，此时可以没有 IMS 效果；否则仍至少需要一个效果。
+ * 保存要求标题和底部字幕各一个，基础文字允许不选择效果。
+ * 片段在线路上是 `remotion` 轨道，排在 IMS 对象之后，与模板在同一次请求里原子保存；本地模板不支持，带片段的草稿直接拒绝。
  */
-export function saveTemplate(draft: Draft, id?: string, environment: Environment = "cloud", library?: string, allowEmpty = false): Promise<Template> {
+export async function saveTemplate(draft: Draft, id?: string, environment: Environment = "cloud", library?: string): Promise<Template> {
   if (!draft.name.trim()) return Promise.reject(new Error("请输入模板名称"));
+  if (environment === "local" && draft.clips.length)
+    return Promise.reject(new Error("本地模板不支持 Remotion 资产"));
+  validateTemplateTracks(draft.tracks);
+  validateClipSlots(draft);
+  for (const target of ["title", "subtitle"])
+    if (draft.tracks.filter((track) => track.target === target).length !== 1)
+      throw new Error("保存模板需要标题和底部字幕各一个");
   const effect_ids = draftEffects(draft);
-  if (!effect_ids.length && !allowEmpty)
-    return Promise.reject(new Error("请至少选择一个效果"));
   const message = create(SaveTemplateRequestSchema, {
     name: draft.name.trim(),
     description: draft.description.trim(),
     effectIds: effect_ids,
     transitionDurationSeconds: draft.transition_duration_seconds,
     tracks: {
-      tracks: draft.tracks.map((track) => ({
-        id: track.id,
-        target: track.target,
-        startMode: track.start_mode,
-        start: track.start,
-        duration: track.duration ?? undefined,
-        editor: track.editor,
-      })),
+      tracks: [
+        ...draft.tracks.map((track) => ({
+          id: track.id,
+          target: track.target,
+          startMode: track.start_mode,
+          start: track.start,
+          duration: track.duration ?? undefined,
+          transitionBoundary: track.transition_boundary,
+          editor: track.editor,
+        })),
+        // 片段的 editor 只带这次摆放的参数覆盖与宿主变换；没有修改时必须是空消息而不是缺省。
+        ...draft.clips.map((clip) => ({
+          id: clip.id,
+          target: "remotion",
+          startMode: "seconds",
+          start: clip.start,
+          duration: clip.duration ?? undefined,
+          editor: clipEditor(clip),
+          spriteId: clip.sprite_id,
+          textTarget: clip.text_target,
+          transitionBoundary: clip.transition_boundary,
+        })),
+      ],
     },
     templateId: id,
   });
@@ -183,8 +246,8 @@ export function saveTemplate(draft: Draft, id?: string, environment: Environment
 }
 
 /** 删除单个模板；成功后由调用方更新列表。 */
-export function deleteTemplate(id: string, environment: Environment = "cloud"): Promise<void> {
-  return environment === "local" ? local("delete", id) : cloud(async (requestSignal) => {
+export function deleteTemplate(id: string, environment: Environment = "cloud", library?: string): Promise<void> {
+  return environment === "local" ? local("delete", id, undefined, library) : cloud(async (requestSignal) => {
     await cloudRequest(`/template/${encodeURIComponent(id)}`, "DELETE", requestSignal);
   });
 }

@@ -5,9 +5,10 @@ import { Player, type PlayerRef } from "@remotion/player";
 import { AbsoluteFill, Html5Video } from "remotion";
 import Template from "imv:template";
 import initial from "imv:config";
+import { HostLayer, type HostBox, type HostTransform } from "./host-layer";
 
 const channel = window.location.hash.slice(1);
-/** Sync mode (`?sync=1`): no controls or loop; the parent scrubs the Player with `imv-preview-sync` times. */
+/** Sync mode (`?sync=1`): no controls or loop; the parent scrubs the Player with `imv-preview-sync` times and an optional clip length. */
 const sync = new URLSearchParams(window.location.search).get("sync") === "1";
 type JsonValue = null | string | number | boolean | JsonValue[] | {[key: string]: JsonValue};
 type Values = Record<string, JsonValue>;
@@ -19,6 +20,45 @@ function jsonValue(value: unknown, depth = 0): value is JsonValue {
  if (Array.isArray(value)) return value.length < 10000 && value.every(item => jsonValue(item, depth + 1));
  return typeof value === "object" && Object.values(value).every(item => jsonValue(item, depth + 1));
 }
+/** A plain JSON object, as opposed to an array or a scalar. */
+function isObject(value: unknown): value is Values {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+/** Overlay a parameter snapshot on the defaults: objects merge key by key, arrays and scalars replace. */
+function merge(base: Values, patch: Values): Values {
+  const out: Values = { ...base };
+  for (const [key, value] of Object.entries(patch))
+    out[key] = isObject(out[key]) && isObject(value) ? merge(out[key] as Values, value) : value;
+  return out;
+}
+/** A non-empty rectangle of finite numbers. */
+function isBox(value: unknown): value is HostBox {
+  return isObject(value) && ["x", "y", "width", "height"].every((key) => typeof value[key] === "number" && Number.isFinite(value[key]))
+    && (value.width as number) > 0 && (value.height as number) > 0;
+}
+/** A transform whose present fields are all finite numbers; unknown fields are refused. */
+function isTransform(value: unknown): value is HostTransform {
+  return isObject(value) && Object.entries(value).every(([key, item]) =>
+    ["x", "y", "scale", "rotation", "opacity"].includes(key) && typeof item === "number" && Number.isFinite(item));
+}
+/**
+ * Defaults and content box the serving page injects (`#imv-preview-host`). A published Sprite and a version saved
+ * without rebuilding its bundle start from these, so the bundle's own `imv:config` is only the fallback.
+ */
+function pageData(): { config: Values; box: HostBox } {
+  const c = initial.composition;
+  const canvas = { x: 0, y: 0, width: c.width, height: c.height };
+  try {
+    const data = JSON.parse(document.getElementById("imv-preview-host")?.textContent ?? "null");
+    return {
+      config: isObject(data?.config) && jsonValue(data.config) ? data.config : initial.config,
+      box: isBox(data?.box) ? data.box : canvas,
+    };
+  } catch {
+    return { config: initial.config, box: canvas };
+  }
+}
+const page = pageData();
 /** Match the server's code-point ranges whenever the operator edits sample subtitle copy. */
 function literalRanges(text: string, keywords: string[]): [number, number][] {
   const chars = Array.from(text);
@@ -42,17 +82,24 @@ function literalRanges(text: string, keywords: string[]): [number, number][] {
 /** A revision identifies one parameter/background update, independently of playback frames. */
 interface PreviewProps {
   values: Values;
+  transform: HostTransform;
   background: string;
   requestId: number;
 }
 
-/** Send only protocol notifications; `sync` tells the parent whether this bundle understands scrub messages. */
+/** The longest length the bus renders a Sprite at; a longer clip length in a sync message is clamped to it. */
+const MAX_LENGTH_SECONDS = 120;
+
+/**
+ * Send only protocol notifications; `sync` tells the parent whether this bundle understands scrub messages and
+ * `host` that it accepts partial values and a placement transform.
+ */
 function notify(type: string, message?: string, requestId?: number) {
-  window.parent.postMessage({ type, channel, message, requestId, sync }, "*");
+  window.parent.postMessage({ type, channel, message, requestId, sync, host: true }, "*");
 }
 
 /** Keep both layers on Remotion's frame clock; failed background media leaves the typography visible. */
-function Composition({ values, background, requestId }: PreviewProps) {
+function Composition({ values, transform, background, requestId }: PreviewProps) {
   const [failed, setFailed] = useState("");
   const video = useRef<HTMLVideoElement>(null);
   const [loaded, setLoaded] = useState("");
@@ -100,22 +147,36 @@ function Composition({ values, background, requestId }: PreviewProps) {
           }}
         />
       )}
-      <AbsoluteFill>
+      <HostLayer box={page.box} transform={transform}>
         <Template {...values} {...highlights} />
-      </AbsoluteFill>
+      </HostLayer>
     </AbsoluteFill>
   );
 }
 
-/** Accept complete scalar parameter snapshots only from this iframe's parent. */
+/** Accept parameter snapshots (merged over the defaults) and placement transforms only from this iframe's parent. */
 function App() {
   const [props, setProps] = useState<PreviewProps>({
-    values: initial.config,
+    values: page.config,
+    transform: {},
     background: "",
     requestId: 0,
   });
   const player = useRef<PlayerRef>(null);
   const c = initial.composition;
+  // The bus renders a Sprite at the final video's length; in sync mode the parent passes the clip's length and the
+  // composed Sprite lays itself out against it, like the real render. A seek waits until a new length is applied.
+  const [length, setLength] = useState(c.duration_in_frames);
+  // The requested length (set as messages arrive) and the one the Player has committed.
+  const lengthRef = useRef(length);
+  const committedRef = useRef(length);
+  const pendingSeek = useRef<number | null>(null);
+  useEffect(() => {
+    committedRef.current = length;
+    if (pendingSeek.current === null) return;
+    player.current?.seekTo(Math.min(length - 1, pendingSeek.current));
+    pendingSeek.current = null;
+  }, [length]);
   useEffect(() => {
     function receive(event: MessageEvent) {
       const data = event.data;
@@ -123,8 +184,22 @@ function App() {
       if (data?.type === "imv-preview-sync") {
         // Scrub to the parent's clock; frames are derived here so the parent needs no fps.
         if (!sync || typeof data.time !== "number" || !Number.isFinite(data.time)) return;
+        // A malformed length is ignored, not the seek; an over-long one is clamped.
+        const duration = data.duration;
+        const valid = typeof duration === "number" && duration > 0;
+        const frames = valid ? Math.max(1, Math.round(Math.min(duration, MAX_LENGTH_SECONDS) * c.fps)) : lengthRef.current;
+        const frame = Math.max(0, Math.round(data.time * c.fps));
         player.current?.pause();
-        player.current?.seekTo(Math.min(c.duration_in_frames - 1, Math.max(0, Math.round(data.time * c.fps))));
+        if (frames !== lengthRef.current) {
+          lengthRef.current = frames;
+          setLength(frames);
+        }
+        // While a new length is being applied the seek waits for it, and a later message replaces the waiting frame.
+        if (frames !== committedRef.current) pendingSeek.current = frame;
+        else {
+          pendingSeek.current = null;
+          player.current?.seekTo(Math.min(frames - 1, frame));
+        }
         return;
       }
       if (data?.type !== "imv-preview-update") return;
@@ -141,8 +216,11 @@ function App() {
       )
         return;
       if (!Number.isSafeInteger(data.requestId) || data.requestId < 1) return;
+      const transform = data.host?.transform ?? {};
+      if (data.host !== undefined && (!isObject(data.host) || !isTransform(transform))) return;
       setProps({
-        values,
+        values: merge(page.config, values),
+        transform,
         background: data.background,
         requestId: data.requestId,
       });
@@ -158,7 +236,7 @@ function App() {
       inputProps={props}
       compositionWidth={c.width}
       compositionHeight={c.height}
-      durationInFrames={c.duration_in_frames}
+      durationInFrames={length}
       fps={c.fps}
       controls={!sync}
       loop={!sync}

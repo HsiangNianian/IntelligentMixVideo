@@ -36,7 +36,7 @@ class ProgressStep(Contract):
 
 # Public summaries use host-authored vocabulary, never exception strings or model names.
 PUBLIC_TOOLS = {
-    "tools.plan_execute", "tools.inspect", "preset.create", "preset.modify",
+    "tools.plan_execute", "tools.report_step", "tools.inspect", "preset.create", "preset.modify",
     "preset.search", "sprite.compose", "sprite.create", "validate.code",
     "validate.render", "image.info", "image.resize", "image.crop",
 }
@@ -48,7 +48,7 @@ PUBLIC_ERRORS = {
     "PRESET_STORE_FAILED": "预设保存失败。",
     "SPRITE_STORE_FAILED": "字效保存失败。",
     "PRESET_NOT_FOUND": "预设不存在。",
-    "VALIDATION_UNAVAILABLE": "校验服务暂不可用。",
+    "VALIDATION_UNAVAILABLE": "校验环境暂不可用，请检查服务端校验环境。",
     "RESOURCE_LIMIT_EXCEEDED": "已达到资源限制。",
     "TIMEOUT": "工具执行超时。",
     "NOT_IMPLEMENTED": "工具尚不可用。",

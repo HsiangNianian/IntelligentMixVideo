@@ -11,9 +11,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from server.remotion_templates.harness import Harness
-from server.remotion_templates.models import GenerateTemplateRequest, JobInput
+from server.remotion_templates.models import EditTemplateRequest, GenerateTemplateRequest, JobInput
 from server.remotion_templates.provider import Budget
-from server.remotion_templates.publication import PresentationBuilder
+from server.remotion_templates.publication import PREVIEW_PROTOCOL, PresentationBuilder, current_bundle, revisable
 from server.remotion_templates.routes import router
 from server.remotion_templates.runtime import Runtime
 from server.remotion_templates.settings import Settings
@@ -39,6 +39,9 @@ class OfflinePresentationRenderer:
     def __init__(self, settings):
         """Inject temporary fonts and real managed source paths without a running browser."""
         self.settings = settings
+        # A current bundle reads injected defaults and says so on its first line; clearing this stands in for one
+        # built before that support.
+        self.protocol = PREVIEW_PROTOCOL.decode() + "\n"
 
     async def run_worker(self, directory, *, worker):
         """Materialize deterministic stand-in artifacts from the exact host request."""
@@ -46,7 +49,7 @@ class OfflinePresentationRenderer:
         request = json.loads((directory / "request.json").read_text())
         (directory / "Template.tsx").write_text(request["code"])
         (directory / "Export.tsx").write_text(request["code"] + "\n// " + json.dumps(request["config"]))
-        (directory / "interactive.js").write_text("// offline Player fixture")
+        (directory / "interactive.js").write_text(self.protocol + "// offline Player fixture")
         return {"checks": [{"name": "export_source", "status": "pass"}, {"name": "presentation_bundle", "status": "pass"}]}
 
 
@@ -87,49 +90,180 @@ def test_finalization_requires_validation_and_seals_exact_sprite(harness, sprite
     assert "interactive.js" in report.artifacts and "Export.tsx" in report.artifacts
 
 
-def test_parameter_revision_and_http_preview_preserve_source(harness, sprite, tmp_path, monkeypatch):
-    """Real Runtime saves nested parameter changes without a model call and exposes only sealed artifacts."""
+RENDERER_DEPS = Path(__file__).parents[1] / "src" / "server" / "remotion" / "node_modules" / "prettier"
+
+
+def accepted_version(harness, sprite):
+    """Publish one accepted composition version through the real store and return the store, work and version."""
     store = Store(harness.settings.data_dir)
     store.initialize()
     work, first = store.create(GenerateTemplateRequest(description="标题"))
     store.claim()
     result = asyncio.run(harness.finalize_sprite(session_for(sprite, runtime_report(sprite)), "saved", Budget(), store.job_dir(first.id)))
-    initial = store.publish(first.id, *result)
-    assert store.version(initial.id).spec.sprite == sprite
-    seen = []
+    return store, work, store.publish(first.id, *result)
 
-    class Validator:
-        """Model-free runtime boundary records the real nested patched parameters."""
-        def __init__(self, *args):
-            """Accept the production validator injection signature."""
-        async def validate_render(self, request):
-            """Return an explicit offline report after recording input."""
-            seen.append(request.component.default_parameters)
-            return runtime_report(sprite)
 
-    monkeypatch.setattr("server.remotion_templates.tool_validation.ToolValidator", Validator)
+def save_parameters(service: Runtime, work, initial, parameters: dict):
+    """Submit a parameter patch through the runtime and wait for the instant revision to finish."""
+    async def scenario():
+        """The revision runs as a task outside the FIFO queue; wait for it like the event stream would."""
+        job = service.edit(work.id, EditTemplateRequest(parameters=parameters, base_version_id=initial.id))
+        await asyncio.gather(*service.saves.values())
+        return job
+
+    return asyncio.run(scenario())
+
+
+def test_parameter_revision_is_saved_at_once_without_the_sandbox(harness, sprite, monkeypatch):
+    """组合版本的参数修改只做 Schema 校验并立即封存：不进队列、不启动沙箱或浏览器、不重新打包，预览页带上新默认值。
+
+    修复前每次保存配置都排队渲染并重建播放器包，慢且依赖本机校验环境。
+    """
+    store, work, initial = accepted_version(harness, sprite)
+    exports = []
+
+    def export(command, *, input, **options):
+        """Stand in for the host export script: record the request and return a formatted export."""
+        exports.append(json.loads(input))
+        return SimpleNamespace(stdout=json.dumps({"code": "// export " + json.dumps(json.loads(input)["config"], ensure_ascii=False)}))
+
+    async def no_worker(*args, **kwargs):
+        """A parameter revision must not start any isolated worker."""
+        raise AssertionError("parameter revision started a worker")
+
+    monkeypatch.setattr("server.remotion_templates.publication.subprocess.run", export)
+    monkeypatch.setattr(harness.renderer, "run_worker", no_worker)
+    monkeypatch.setattr(harness.renderer, "sandbox_problem", lambda: "bwrap is not installed", raising=False)
     service = Runtime(store, harness, harness.settings)
-    job = store.enqueue(work.id, JobInput(mode="parameters", parameters={"title": {"text": "新标题"}}), initial.id)
-    store.claim()
-    asyncio.run(service._execute(job.id))
-    assert store.job(job.id).status == "succeeded", store.job(job.id).error
-    revised = store.version(store.job(job.id).result_version_id)
-    assert seen == [{"title": {"text": "新标题"}}]
+    job = save_parameters(service, work, initial, {"title": {"text": "新标题"}})
+    final = store.job(job.id)
+    assert final.status == "succeeded", final.error
+    assert service.worker is None
+    revised = store.version(final.result_version_id)
+    assert revised.candidate.default_config == {"title": {"text": "新标题"}}
     assert revised.candidate.tsx_code == initial.candidate.tsx_code
     assert revised.source == "user_parameters" and revised.agent_base_version_id == initial.id
+    assert revised.validation.render_passed
+    accepted = store.root / "accepted"
+    assert (accepted / str(revised.id) / "interactive.js").read_bytes() == (accepted / str(initial.id) / "interactive.js").read_bytes()
+    assert '"新标题"' in (accepted / str(revised.id) / "Export.tsx").read_text()
+    assert exports[0]["code"] == initial.candidate.tsx_code and exports[0]["composition"]["duration_in_frames"] == 30
+    inherited = json.loads((accepted / str(revised.id) / "tool-validation.json").read_text())
+    assert inherited["inherited_from"] == str(initial.id) and inherited["component"]["default_parameters"] == {"title": {"text": "新标题"}}
     assert not store.conversation(work.id).messages()
     application = FastAPI()
     application.include_router(router, prefix="/api/templates")
     application.state.runtime = service
     with TestClient(application) as client:
         response = client.get(f"/api/templates/versions/{revised.id}/preview")
-        assert response.status_code == 200
-        assert "sandbox allow-scripts" in response.headers["content-security-policy"]
-        payload = client.get(f"/api/templates/versions/{revised.id}").json()
-        assert payload["candidate"]["default_config"] == seen[0]
-        assert "source_preset_id" not in payload["spec"]["sprite"]["instances"][0]["preset"]
+        assert response.status_code == 200 and "sandbox allow-scripts" in response.headers["content-security-policy"]
+        data = response.text.split('<script type="application/json" id="imv-preview-host">', 1)[1].split("</script>", 1)[0]
+        assert json.loads(data) == {"config": {"title": {"text": "新标题"}}}
+        # Without a sandbox the instant revision is still accepted over HTTP.
+        accepted_job = client.post(f"/api/templates/works/{work.id}/messages", json={"parameters": {"title": {"text": "第三版"}}, "base_version_id": str(revised.id)})
+        assert accepted_job.status_code == 202
         (store.root / "accepted" / str(revised.id) / "interactive.js").write_text("tampered")
         assert client.get(f"/api/templates/versions/{revised.id}/preview").status_code == 404
+
+
+def test_a_bundle_without_injected_defaults_is_rebuilt_in_the_sandbox(harness, sprite, monkeypatch):
+    """基线播放器包早于默认值注入时，复用它会让版本预览继续显示旧参数：这样的修订排队渲染并重建播放器包，路由也要求沙箱。
+
+    修复前即时修订对所有组合版本都复制基线包，新版本已保存而独立打开的预览仍是旧默认值。
+    """
+    harness.renderer.protocol = ""
+    store, work, initial = accepted_version(harness, sprite)
+    seen = []
+
+    class Validator:
+        """Model-free runtime boundary records the patched defaults it renders."""
+
+        def __init__(self, *args):
+            """Accept the production validator injection signature."""
+
+        async def validate_render(self, request):
+            """Return an explicit offline report after recording the rendered defaults."""
+            seen.append(request.component.default_parameters)
+            return runtime_report(sprite)
+
+    monkeypatch.setattr("server.remotion_templates.tool_validation.ToolValidator", Validator)
+    service = Runtime(store, harness, harness.settings)
+    harness.renderer.protocol = PREVIEW_PROTOCOL.decode() + "\n"
+    application = FastAPI()
+    application.include_router(router, prefix="/api/templates")
+    application.state.runtime = service
+    monkeypatch.setattr(harness.renderer, "sandbox_problem", lambda: "bwrap is not installed", raising=False)
+    with TestClient(application) as client:
+        refused = client.post(f"/api/templates/works/{work.id}/messages", json={"parameters": {"title": {"text": "新标题"}}, "base_version_id": str(initial.id)})
+        assert refused.status_code == 503
+    job = store.enqueue(work.id, JobInput(mode="parameters", parameters={"title": {"text": "新标题"}}), initial.id)
+    store.claim()
+    asyncio.run(service._execute(job.id))
+    final = store.job(job.id)
+    assert final.status == "succeeded", final.error
+    revised = store.version(final.result_version_id)
+    assert seen == [{"title": {"text": "新标题"}}]
+    assert current_bundle((store.root / "accepted" / str(revised.id) / "interactive.js").read_bytes()) and service.instant(revised)
+    with pytest.raises(ValueError, match="cannot show new defaults"):
+        harness.presentation.revise(initial, store.root / "accepted" / str(initial.id), {"title": {"text": "x"}}, store.root / "direct")
+
+
+def test_protocol_words_inside_an_older_bundle_do_not_allow_an_instant_revision(tmp_path):
+    """只有首行的协议声明算数：生成代码与默认参数也打进包里，旧同步包的默认文字恰为 imv-preview-host 时仍要进沙箱重建。
+
+    PR #111 审查复现：曾在整个包里搜索两个标记，这样的旧包被即时修订，预览继续显示编译进包的旧默认值。
+    """
+    bundle = tmp_path / "interactive.js"
+    bundle.write_text('// imv-preview-sync\nvar config={"text":"imv-preview-host ' + PREVIEW_PROTOCOL.decode() + '"};')
+    assert not revisable(tmp_path)
+    bundle.write_text(PREVIEW_PROTOCOL.decode() + "\n(()=>{})();")
+    assert revisable(tmp_path)
+
+
+def test_invalid_parameters_and_a_busy_work_are_refused(harness, sprite):
+    """不合 Schema 的参数在入队前拒绝；已有运行中的修订时同一作品的第二次保存返回冲突。"""
+    store, work, initial = accepted_version(harness, sprite)
+    service = Runtime(store, harness, harness.settings)
+    with pytest.raises(ValueError, match="invalid parameter value: 1 is not of type 'string'"):
+        service.edit(work.id, EditTemplateRequest(parameters={"title": {"text": 1}}, base_version_id=initial.id))
+    application = FastAPI()
+    application.include_router(router, prefix="/api/templates")
+    application.state.runtime = service
+    with TestClient(application, raise_server_exceptions=False) as client:
+        # Regression: the schema error escaped as an HTTP 500 instead of a 422 the client can show.
+        response = client.post(f"/api/templates/works/{work.id}/messages", json={"parameters": {"title": {"text": 1}}, "base_version_id": str(initial.id)})
+    assert response.status_code == 422 and "invalid parameter value" in response.json()["detail"]
+    store.enqueue(work.id, JobInput(mode="parameters", parameters={"title": {"text": "x"}}), initial.id, running=True)
+    with pytest.raises(Conflict):
+        service.edit(work.id, EditTemplateRequest(parameters={"title": {"text": "y"}}, base_version_id=initial.id))
+
+
+def test_a_failed_revision_is_reported_on_its_job(harness, sprite, monkeypatch):
+    """导出无法重新生成时任务以 execution_failed 结束，不产生版本。"""
+    store, work, initial = accepted_version(harness, sprite)
+
+    def broken(*args, **kwargs):
+        """The host export script is unavailable."""
+        raise OSError("node is not installed")
+
+    monkeypatch.setattr("server.remotion_templates.publication.subprocess.run", broken)
+    service = Runtime(store, harness, harness.settings)
+    job = save_parameters(service, work, initial, {"title": {"text": "新标题"}})
+    final = store.job(job.id)
+    assert (final.status, final.error.code, final.result_version_id) == ("failed", "execution_failed", None)
+    assert "Standalone export" in final.error.message
+
+
+@pytest.mark.skipif(not RENDERER_DEPS.exists(), reason="install locked Remotion renderer dependencies")
+def test_the_host_export_script_embeds_the_new_defaults(harness, sprite):
+    """真实的 export.mjs 只解析和格式化封存源码，导出文件带上新的默认值。"""
+    store, work, initial = accepted_version(harness, sprite)
+    service = Runtime(store, harness, harness.settings)
+    job = save_parameters(service, work, initial, {"title": {"text": "新标题"}})
+    revised = store.version(store.job(job.id).result_version_id)
+    exported = (store.root / "accepted" / str(revised.id) / "Export.tsx").read_text()
+    assert '{ title: { text: "新标题" } }' in exported or '"新标题"' in exported
+    assert "export default function" in exported
 
 
 def test_cancellation_wins_over_ready_artifacts(harness, sprite):

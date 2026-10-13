@@ -1,4 +1,4 @@
-/** 根据成功版本 schema 生成按图层分组的表单；控件草稿校验后才影响实时预览。 */
+/** 根据成功版本 schema 生成表单：组合版本分为模板可调的顶层参数与各实例参数，旧版本按图层分组；控件草稿校验后才影响实时预览。 */
 import { cn } from "@/lib/utils";
 import { useEffect, useId, useState } from "react";
 import { SlidersHorizontal } from "lucide-react";
@@ -13,11 +13,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { ParameterControl, type ParameterValue } from "@/components/ParameterControl";
 import {
   controlLabel,
   isJsonValue,
   sameJson,
   numericRules,
+  schemaGroups,
   validValue,
   type Control,
   type Scalar,
@@ -224,7 +226,7 @@ export function ParametersPanel({
             {readOnly
               ? "历史版本 · 只读"
               : saving
-                ? "正在保存并检查…"
+                ? version?.spec.schema_version === "2" ? "正在保存…" : "正在保存并检查…"
                 : pending
                   ? "正在加载 · 暂不可修改"
                   : dirty
@@ -260,14 +262,8 @@ export function ParametersPanel({
           模板生成后，在这里调整文字、颜色和位置。
         </p>
       ) : version.spec.schema_version === "2" ? (
-        <div className="space-y-4 py-3">
-          <p className="text-xs text-muted-foreground">每个实例的参数可独立调整；保存时会检查参数和运行结果。布局与时间修改请通过聊天描述。</p>
-          {Object.entries(values).map(([key, value]) => (
-            <JsonParameter key={key} label={key} value={value} disabled={disabled}
-              onChange={(next) => onChange(key, next)}
-              onValidity={(bad) => setInvalid(previous => ({...previous, [key]: bad}))} />
-          ))}
-        </div>
+        <ComposedParameters version={version} values={values} disabled={disabled} onChange={onChange}
+          onValidity={(key, bad) => setInvalid(previous => ({...previous, [key]: bad}))} />
       ) : (
         version.spec.text_layers.map((layer, index) => (
           <details
@@ -305,6 +301,43 @@ export function ParametersPanel({
       )}
     </section>
   );
+}
+
+/**
+ * 组合版本的参数：顶层参数是代码样例对外的参数（模板里每次摆放都能修改），各实例参数只在这里调整默认值。
+ * 保存只检查参数 Schema 并立即生成新版本；无法逐项编辑的实例回退为 JSON 文本域。
+ */
+function ComposedParameters({version, values, disabled, onChange, onValidity}: {
+  version: Version; values: Values; disabled: boolean;
+  onChange: (key: string, value: JsonValue) => void; onValidity: (key: string, invalid: boolean) => void;
+}) {
+  const groups = schemaGroups(version.candidate.config_schema.properties ?? {});
+  const top = groups.top.filter((field) => values[field.key] !== undefined);
+  return <div className="space-y-4 py-3">
+    <p className="text-xs text-muted-foreground">模板参数会在云端模板里逐次摆放修改；保存只检查参数范围，立即生成新版本。布局与时间修改请通过聊天描述。</p>
+    {top.length > 0 && <fieldset className="space-y-3">
+      <legend className="text-sm font-medium">模板参数</legend>
+      <div className="grid gap-4 @min-[420px]:grid-cols-2">
+        {top.map((field) => <ParameterControl key={field.key} field={field} value={values[field.key] as ParameterValue} disabled={disabled}
+          className={cn(field.kind === "string" && "@min-[420px]:col-span-2")}
+          onChange={(next) => onChange(field.key, next)} />)}
+      </div>
+    </fieldset>}
+    {groups.instances.filter(({id}) => values[id] !== undefined).map(({id, fields}) => fields ? (
+      <details key={id} className="border-t pt-3">
+        <summary className="cursor-pointer text-sm font-medium">实例 · {id}</summary>
+        <div className="grid gap-4 pt-3 @min-[420px]:grid-cols-2">
+          {fields.filter((field) => (values[id] as Values)[field.key] !== undefined).map((field) => (
+            <ParameterControl key={field.key} field={field} value={(values[id] as Values)[field.key] as ParameterValue} disabled={disabled}
+              onChange={(next) => onChange(id, {...(values[id] as Values), [field.key]: next})} />
+          ))}
+        </div>
+      </details>
+    ) : (
+      <JsonParameter key={id} label={id} value={values[id]!} disabled={disabled}
+        onChange={(next) => onChange(id, next)} onValidity={(bad) => onValidity(id, bad)} />
+    ))}
+  </div>;
 }
 
 /** 编辑任意 JSON 参数；保留非法中间输入并阻止保存，具体 Schema 约束由服务端检查。 */

@@ -8,6 +8,7 @@ the API process; the worker bundles them and drives a fixed Chromium Player.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -37,21 +38,42 @@ class ValidationUnavailable(RuntimeError):
 # worker 按这个顺序执行检查，任一阶段失败或无法继续即停止，报告只会是它的前缀。
 _CODE_CHECKS = ("source_policy", "export_source", "typescript")
 _RENDER_CHECKS = _CODE_CHECKS + ("default_render", "configured_render")
+# 调用方要求透明度度量时，worker 在两次基础渲染之后追加这一阶段。
+_TRANSPARENCY_CHECKS = _RENDER_CHECKS + ("transparency",)
 _FAILED_STATUSES = {"failed", "fail", "error"}
+
+# 总线渲染 Sprite 时传入的时长范围（秒）；Agent 生成时选的时长只用于预览，最终时长由合成决定。
+MIN_RENDER_SECONDS = 0.5
+MAX_RENDER_SECONDS = 120
+# 字效（标题、字幕）显示不足这个时长时不播出入场，定格在预览长度的中间帧（见 sprite_render）：出入场通常共需
+# 0.6～1.3 秒，更短的字幕几乎看不到完整画面，还会闪烁。所以字效从不按更短的长度播放。
+STATIC_TEXT_SECONDS = 1.5
+
+
+def render_lengths(fps: int, *, text: bool = False) -> list[int]:
+    """Sprite 可能按自身长度播放的最短与最长帧数，秒转帧与叠加渲染一致（半帧向后取整）；生成与发布在预览长度之外也挂载它们。
+
+    字效更短时会被定格，所以它的最短长度是 `STATIC_TEXT_SECONDS`，其他分类是 `MIN_RENDER_SECONDS`。
+    """
+    shortest = STATIC_TEXT_SECONDS if text else MIN_RENDER_SECONDS
+    return [max(1, math.floor(seconds * fps + 0.5)) for seconds in (shortest, MAX_RENDER_SECONDS)]
 
 
 def _reported_stages(checks: list[Any], stages: tuple[str, ...]) -> tuple[str, ...] | None:
     """Return the reported stage names when they form a usable prefix of ``stages``.
 
-    A worker that stops early always names the failing stage last, so a strict
-    prefix ending in a failure is a complete negative report.  Anything else is
-    a missing report and must not be read as one.
+    A worker that stops early names the failing stage last, optionally followed by the stages it
+    records as ``not_run`` (a failed default render still lists the configured render), so a strict
+    prefix whose last executed stage failed is a complete negative report.  Anything else is a
+    missing report and must not be read as one.
     """
     names = [str(item.get("name")) for item in checks]
     if not names or names != list(stages[: len(names)]):
         return None
-    if len(names) < len(stages) and str(checks[-1].get("status")) not in _FAILED_STATUSES:
-        return None
+    if len(names) < len(stages):
+        executed = [item for item in checks if str(item.get("status")) != "not_run"]
+        if not executed or str(executed[-1].get("status")) not in _FAILED_STATUSES:
+            return None
     return tuple(names)
 
 
@@ -164,15 +186,27 @@ class ToolValidator:
             raise ValidationUnavailable("Code validation worker returned invalid diagnostics") from exc
         for check in checks:
             if check.get("status") in _FAILED_STATUSES and check.get("name") not in {"typescript"}:
-                diagnostics.append(CodeDiagnostic(source="contract", severity="error", message=str(check.get("message") or "Code check failed")))
+                message = str(check.get("message") or "Code check failed")
+                # The worker normally reported this failure as a diagnostic already, with its position.
+                if not any(item.message == message for item in diagnostics):
+                    diagnostics.append(CodeDiagnostic(source="contract", severity="error", message=message))
         has_errors = any(item.severity == "error" for item in diagnostics)
         worker_passed = payload.get("passed") is not False and all(
             check.get("status") in {"pass", "passed"} for check in checks
         )
         return CodeValidationReport(passed=worker_passed and not has_errors, diagnostics=diagnostics)
 
-    async def validate_render(self, request: RenderValidationInput) -> RenderValidationReport:
-        """Run fixed-canvas default/configured mounts and each independent behavior script."""
+    async def validate_render(
+        self, request: RenderValidationInput, *, transparency: bool = False, lengths: list[int] | None = None,
+    ) -> RenderValidationReport:
+        """Run fixed-canvas default/configured mounts and each independent behavior script.
+
+        With ``transparency`` the worker also measures, on sampled frames, whether the canvas stays see-through
+        and fails the ``transparency`` check when most sampled frames are opaque almost everywhere. With ``lengths``
+        it then mounts the first, middle and last frame at each of those render lengths (frames) and fails the
+        ``render_lengths`` check when the component throws. Only the generation path asks for these: a user's own
+        parameter edits are never blocked by them.
+        """
         if request.duration_frames > 216000:
             raise ValueError("duration_frames exceeds the validation resource limit")
         names = [test.name for test in request.tests]
@@ -210,7 +244,10 @@ class ToolValidator:
             "composition": composition.model_dump(mode="json"),
             "tests": [test.model_dump(mode="json") for test in request.tests],
             "browser": self.renderer.worker_browser_path(),
+            "transparency": transparency,
         }
+        if lengths:
+            payload_request["lengths"] = lengths
         (directory / "request.json").write_text(json.dumps(payload_request), encoding="utf-8")
         try:
             payload = await self.renderer.run_worker(directory, worker="tool-validation-worker.mjs")
@@ -223,7 +260,8 @@ class ToolValidator:
         for item in raw_checks:
             if isinstance(item, dict) and item.get("name") == "runtime" and item.get("status") == "error":
                 raise ValidationUnavailable(str(item.get("message") or "Render validation worker runtime error"))
-        if _reported_stages(raw_checks, _RENDER_CHECKS) is None:
+        stages = (_TRANSPARENCY_CHECKS if transparency else _RENDER_CHECKS) + (("render_lengths",) if lengths else ())
+        if _reported_stages(raw_checks, stages) is None:
             raise ValidationUnavailable("Render validation worker returned an incomplete report")
         expected_tests = [test.name for test in request.tests]
         raw_tests = payload.get("tests")
@@ -257,3 +295,49 @@ class ToolValidator:
         executed = int(payload.get("custom_tests_executed", len(tests)))
         passed = bool(payload.get("passed", False)) and all(check.status == "passed" for check in checks) and all(test.status == "passed" for test in tests)
         return RenderValidationReport(passed=passed, composition=composition, code_validation=code, checks=checks, tests=tests, custom_tests_executed=executed)
+
+    async def validate_samples(
+        self, component: ComponentDefinition, composition: dict[str, int], box: dict[str, float], samples: list[dict[str, Any]],
+        *, text: bool = False,
+    ) -> list[CheckResult]:
+        """Mount publish-time boundary samples in one isolated browser and report one check per sample.
+
+        ``composition`` is the version canvas (width, height, fps, duration_frames); each sample carries complete
+        ``values`` and a host ``transform`` applied around ``box``, and is mounted at the preview length and at the
+        shortest and longest render length (a ``text`` effect's shortest is the static threshold, see `render_lengths`). A failed code stage is reported as that check alone; a report that
+        cannot be read at all is an infrastructure failure.
+        """
+        try:
+            directory = self._attempt("validate-samples")
+            request = {
+                "mode": "samples",
+                "code": component.code,
+                "parameter_schema": component.parameter_schema,
+                "default_parameters": component.default_parameters,
+                "composition": composition,
+                "box": box,
+                "samples": samples,
+                "lengths": render_lengths(composition["fps"], text=text),
+                "browser": self.renderer.worker_browser_path(),
+            }
+            (directory / "request.json").write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8")
+            payload = await self.renderer.run_worker(directory, worker="tool-validation-worker.mjs")
+        except (OSError, RuntimeError, TimeoutError) as exc:
+            raise ValidationUnavailable(str(exc)) from exc
+        raw = payload.get("checks") if isinstance(payload, dict) else None
+        if not isinstance(raw, list) or not all(isinstance(item, dict) for item in raw):
+            raise ValidationUnavailable("Sample validation worker returned no checks")
+        for item in raw:
+            if item.get("name") == "runtime" and item.get("status") == "error":
+                raise ValidationUnavailable(str(item.get("message") or "Sample validation worker runtime error"))
+        code = [item for item in raw if item.get("name") in _CODE_CHECKS]
+        if any(item.get("status") in _FAILED_STATUSES for item in code):
+            failed = next(item for item in code if item.get("status") in _FAILED_STATUSES)
+            return [CheckResult(name=str(failed["name"]), status="failed", message=str(failed.get("message") or "Code check failed")[:6000])]
+        reported = [item for item in raw if str(item.get("name", "")).startswith("sample:")]
+        if [item["name"] for item in reported] != [f"sample:{item['name']}" for item in samples]:
+            raise ValidationUnavailable("Sample validation worker returned an incomplete report")
+        return [
+            CheckResult(name=str(item["name"]), status=_check_status(item.get("status")), **({"message": str(item["message"])[:6000]} if item.get("message") else {}))
+            for item in reported
+        ]

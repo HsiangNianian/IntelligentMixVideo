@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { cn } from "@/lib/utils";
 import { defaultEditor, textRoles, type Category, type Draft, type Editor, type EffectAsset, type TextRole } from "./model";
 import { assetCategories, assetField, type EffectTarget } from "./effects";
-import { trackLabel } from "./tracks";
+import { trackLabel, trackLayers } from "./tracks";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 
 /** 目录封面失败时展示明确占位，保留名称和选择入口。 */
@@ -101,18 +101,18 @@ export function EffectAssets({ editor = defaultEditor, catalog, textTarget, onTe
 }
 
 /** 从保存字段派生对象列表；每行显示类型、效果和当前预览区间。 */
-export function AppliedEffects({ draft, catalog, duration, selected, onSelect }: {
-  draft: Draft; catalog: EffectAsset[]; duration: number; selected: string | null; onSelect: (target: string) => void;
+export function AppliedEffects({ draft, catalog, resolved, selected, onSelect }: {
+  draft: Draft; catalog: EffectAsset[]; resolved?: import("./tracks").ResolvedTimeline; selected: string | null; onSelect: (target: string) => void;
 }) {
   return <section aria-label="已添加特效" className="space-y-3 border-b p-4">
     <div className="flex items-center justify-between"><h2 className="text-[13px] font-semibold">画面对象</h2><span className="text-[11px] tabular-nums text-muted-foreground">{draft.tracks.length}</span></div>
-    <div className="space-y-0.5">{draft.tracks.map((track) => {
+    <div className="space-y-0.5">{[...draft.tracks].sort((a, b) => trackLayers[a.target] - trackLayers[b.target]).map((track) => {
       const effectId = { title: track.editor.titleFlower, subtitle: track.editor.subtitleFlower, bubble: track.editor.bubble, filter: track.editor.filter, vfx: track.editor.vfx, transition: track.editor.transition }[track.target];
       const effect = catalog.find((item) => item.id === effectId)?.name ?? (effectId ? effectId.split("/").at(-1) : "未设置效果");
-      const start = track.start_mode === "percent" ? track.start * duration / 100 : track.start;
-      const end = Math.min(duration, track.duration === null ? duration : start + track.duration);
+      const timing = resolved?.tracks[track.id];
+      const interval = timing ? timing.end > timing.start ? `${Number(timing.start.toFixed(1))}～${Number(timing.end.toFixed(1))} 秒` : "当前视频未应用" : "等待预览时间";
       return <Button key={track.id} type="button" variant="ghost" data-object={track.target} className="template-object-row h-auto w-full min-w-0 justify-start gap-2.5 rounded-md px-2 py-2 text-left" aria-pressed={selected === track.id} aria-label={`编辑${trackLabel(track, draft.tracks)}`} onClick={() => onSelect(track.id)}>
-        <ObjectIcon target={track.target} /><span className="min-w-0 flex-1"><span className="block truncate text-[13px] font-medium leading-5">{trackLabel(track, draft.tracks)}</span><span className="block truncate text-[11px] leading-4 tabular-nums text-muted-foreground">{effect} · {Number(start.toFixed(1))}～{Number(end.toFixed(1))} 秒</span></span>
+        <ObjectIcon target={track.target} /><span className="min-w-0 flex-1"><span className="block truncate text-[13px] font-medium leading-5">{trackLabel(track, draft.tracks)}</span><span className="block truncate text-[11px] leading-4 tabular-nums text-muted-foreground">{effect} · {interval}</span></span>
       </Button>;
     })}</div>
     {!draft.tracks.length && <Empty className="border p-5 md:p-5"><EmptyHeader><EmptyMedia variant="icon"><Layers className="size-5" aria-hidden="true" /></EmptyMedia><EmptyTitle className="text-sm">还没有画面对象</EmptyTitle><EmptyDescription className="text-xs">从左侧特效资产选择并添加效果。</EmptyDescription></EmptyHeader></Empty>}

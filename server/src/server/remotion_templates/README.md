@@ -1,31 +1,42 @@
 # Remotion Preset → Sprite
 
-This module runs the three-layer ReAct workflow: the Outer task loop plans, the
-Plan loop sequences steps, and the Executor loop calls tools for one step. The
-final delivery is a saved Sprite published as an isolated Player preview.
+This module runs the three-layer ReAct workflow. The Outer loop only answers,
+asks, delegates or stops through `tools_plan_execute`. A delegation starts the
+host's standard two-step plan directly: `preset` readies the Presets and
+`sprite` composes and saves the Sprite (a `plan` sent with `delegate` is refused;
+only `update_plan` takes one). The Executor loop calls the tools of one step and
+ends it with `tools_report_step`; the host checks the step's recorded outputs,
+starts the next step and publishes the saved Sprite after the last one. A step
+reported `needs_input` goes straight to Outer with its questions, since only
+Outer can ask the user. The Plan loop only runs to recover a step that is
+blocked or used a batch without new evidence. The final delivery is a saved
+Sprite published as an isolated Player preview.
 
 ## Tool catalog
 
 Eleven business tools are registered with their full input/output contracts.
-`tools.inspect` also describes the host-owned `tools.plan_execute` control by
-dotted ID or wire name, without executing it or changing role permissions.
+`tools.inspect` also describes the host-owned `tools.plan_execute` and
+`tools.report_step` controls by dotted ID or wire name, without executing them
+or changing role permissions.
 Six business tools have implementations in this build:
 
 | Tool | Status |
 | --- | --- |
 | `preset.create` | implemented — validates the Preset and saves it |
-| `sprite.compose` | implemented — deterministic combination of Preset instances |
-| `sprite.create` | implemented — consistency check, code validation and save |
-| `tools.inspect` | implemented — returns one tool descriptor by dotted ID or wire name |
+| `sprite.compose` | implemented — deterministic combination of Preset instances; keeps the draft host-side and returns its `draft_id` and a code-free summary |
+| `sprite.create` | implemented — takes that `draft_id`; code validation (each distinct Preset source once, then the Sprite), one browser mount that must leave the video visible, and save |
+| `tools.inspect` | implemented — returns one tool descriptor by dotted ID or wire name; it reads a contract, it does not search or list tools |
 | `image.info` / `image.resize` / `image.crop` | contract only |
 | `preset.search` | implemented: plain listing with optional keyword; the agent picks what to recall |
-| `preset.modify` | implemented: returns an edited draft copy; save it with `preset.create` |
+| `preset.modify` | implemented: copies a stored Preset or a task draft (`base_*`, earlier `draft_id`), keeps the copy host-side and returns its `draft_id`; compose it with source `{kind: "draft", draft_id}` |
 | `validate.code` / `validate.render` | contract only |
 
 Deferred tools are marked `implemented=False` at registration and are filtered
 out of every layer's tool window, so the model is never offered a tool that
 cannot run. Calling one directly returns `NOT_IMPLEMENTED` rather than a
-fabricated result. The host still performs the code, parameter and browser
+fabricated result. `tools.inspect` still describes them and says so in the first
+words of the description (`[Not callable in this build ...]`); an unknown name
+lists callable tools and contract-only tools apart. The host still performs the code, parameter and browser
 checks needed to build a preview; those are not model-facing tools.
 
 Image tools read the reference image the user already uploaded and the server
@@ -57,13 +68,19 @@ contract as version 2, replacing the previously unimplemented `matches` shape.
 bytes including JSON string escaping. `has_more` marks omitted summaries;
 oversized individual summaries or full records return `RESOURCE_LIMIT_EXCEEDED`
 without truncating source. Search and modify declare `PRESET_STORE_FAILED` for
-storage errors.
+storage errors only. `preset.create` and `sprite.create` run the isolated validator
+before storing: when it cannot start (for example `bwrap` is missing) they return
+`VALIDATION_UNAVAILABLE` with the original error and store nothing. `preset.modify`
+only checks the contract and never starts the validator.
 
 ## Preview
 
 The preview is built from the saved Sprite's exact code, schema and defaults.
 The main canvas is 1080×1920 at 30 FPS and the last instance's exclusive end
-determines the duration.
+determines the duration. A new work must last exactly the requested
+`composition.duration_in_frames`: the snapshot shows it as `target_duration_frames`
+and `sprite.compose` refuses any other length with `INVALID_ARGUMENT` on `/instances`.
+Edits start from the accepted version and keep deriving the length from the instances.
 
 For Linux renderer validation, install the locked Bun dependencies in
 `server/src/server/remotion`, then run:
@@ -73,8 +90,54 @@ IMV_TEST_RENDERER=1 uv run --locked --project server pytest server/tests/test_re
 ```
 
 The browser path requires Chromium, Noto CJK fonts, bubblewrap and util-linux.
+The isolation is Linux-only: `POST /works`, a parameter patch on a pre-composition
+(PR74) version or on a composed version whose player bundle predates injected defaults
+(no `/* imv-preview-protocol 1 */` first line) sent to `POST /works/{id}/messages`, the retry of such a parameter job and
+`POST /api/sprites/publish` return 503 naming the unsupported platform or the missing
+`bwrap`, `prlimit` or `node` before anything is queued, so on macOS the service starts but
+cannot generate templates. A parameter patch on a composed (PR76) version whose bundle
+reads injected defaults never needs the sandbox (`publication.revisable`; an older bundle
+would keep showing its compiled defaults, so that patch is queued, rendered and its bundle
+rebuilt, after which later patches are instant): `Runtime` records the job as running outside the FIFO queue and
+`PresentationBuilder.revise` checks the patch against the parameter schema, reuses the
+base's `Template.tsx`, player bundle and runtime evidence (`tool-validation.json` names the
+base in `inherited_from`), regenerates `Export.tsx` with the host-side `export.mjs` (parse
+and format only) and seals a `user_parameters` version at once; the version preview page
+injects that version's own defaults, and publishing later renders the boundary samples. Questions,
+clarification replies, free-text edits and other retries are not refused up front,
+because the model may answer without a validator; if it does need one, the tool call
+returns `VALIDATION_UNAVAILABLE`.
+For local development on macOS only, `IMV_ALLOW_UNSANDBOXED_WORKER=true` runs the
+generation workers (`tool-validation-worker.mjs`, `presentation-worker.mjs` and
+`worker.mjs`) as plain Node instead, and only `node` is required: generated code then
+runs with no isolation and a warning is logged at startup. The switch is off by
+default and ignored on every other system, so Linux and deployed servers always use
+the sandbox. `overlay-worker.mjs` is not on that list: overlay rendering, including
+the recovery of pending overlay tasks after a restart, always needs the Linux
+sandbox and returns 503 at acceptance.
 Offline tests cover tool registration, deferred-tool behaviour, immutable
 storage and source consistency without a model or semantic index.
+
+## Creating a Sprite
+
+A Sprite is composited over the user's own video, so `sprite.create` must leave that video visible. After code
+validation it mounts the composed Sprite once in the isolated browser and, on the first, last and three
+in-between frames, measures how much of the canvas is nearly opaque (alpha of 242/255 or more, from a screenshot
+taken without a page background). When at least 80% of the sampled frames (4 of 5) are opaque on 98% or more of
+the canvas the Sprite is refused with `CODE_VALIDATION_FAILED`, the reason names the frames and what to do, and
+nothing is saved. One clear frame is not enough, because a cover that fades in or starts late is clear on the
+first frame and hides the video afterwards; a transition that covers the screen only for a moment is not
+affected. Sampling stops once the verdict is settled. The page is opened at the canvas size (1080x1920), as the real overlay render does, so
+`100vw`/`100vh`, `window.innerWidth`/`innerHeight` and media queries see the canvas. The mount is cached under
+the key the host's final check reads, so completing the task does not mount the Sprite a second time. A component that throws on a sampled frame, or while its
+module loads, fails the `transparency` (with the frame) or `default_render` check with its own error, so
+the model gets `CODE_VALIDATION_FAILED` and the cause rather than `VALIDATION_UNAVAILABLE`. Only
+generation asks for the measurement; a user's manual parameter edits and already published versions are
+never blocked by it.
+
+Contract diagnostics carry the position of a violation (line, column and range in the submitted code).
+`exec` and `spawn` are refused only as bare identifiers; as member names, such as `RegExp.prototype.exec`,
+they are ordinary methods.
 
 ## Loop rounds
 
@@ -90,10 +153,49 @@ Only a successful generation-starting tool sets `generation_started`. A failed
 first attempt may still be followed by an explanatory answer; failure after a
 successful generation attempt does not remove the completion requirement.
 
-Executor and Plan accept a single JSON object with ordinary prose or a markdown
-fence around it. They reject arrays, quoted JSON strings, multiple objects and
-objects nested inside malformed JSON. Unknown task Sprite IDs produce feedback
-without changing the active layer or Plan, so the next round can correct them.
+Drafts are handles: neither the model nor the snapshot carries Sprite or draft source, so a large
+composition is never copied back verbatim. Presets of the same source are bundled once however many
+instances use them. For an edit, the accepted base's instances are registered as `base_<instance_id>`
+Preset drafts; only the Executor's snapshot shows their source, each distinct source once. The session
+snapshot stays within 200 KB: a base too large for it has its largest sources omitted first (`code_omitted`,
+`legacy_code_omitted`), while their handles still compose unchanged. The execution
+snapshot shows `tool_calls_left_in_batch` and `tool_calls_left_in_task` instead of used/limit pairs.
+Every call returns a fresh `draft_id`, so the no-progress guard ignores draft handles and compares the
+content `digest` that `preset_modify` and `sprite_compose` return: repeating the same draft is no new evidence.
+
+The host records each step's outputs from tool receipts: the Sprites `sprite_create` saved, and the Preset
+sources that `preset_create`, `preset_search {preset_id}` or `preset_modify` made ready. A step with the
+`sprite` module cannot be reported `step_done` before a `sprite_create` in that step succeeded, and a
+`preset` step needs at least one ready Preset (or, for an edit, the base drafts); the refusal names the tool
+to call next. A pre-Sprite base registers no base drafts: its edit plan says to write the Preset from
+`base.legacy_code` instead of reusing drafts. Plans reference `steps.<id>.outputs.presets` or `steps.<id>.outputs.sprite`, and a reference to
+an output the earlier step's modules cannot produce is refused when the Plan is built. `update_plan` takes
+only the unfinished steps; completed steps are kept by the host and a resent copy is ignored by ID, with
+the ignored IDs listed in the receipt (`ignored_step_ids`) so the Plan knows to redo work under a new ID. At the
+batch limit the host continues a step that observed something new in that batch and wakes the Plan
+otherwise.
+
+Outer has no publish action, so publication is the host's. Besides the last accepted step, a Plan
+`complete` (or a text `plan_done`) publishes the latest Sprite this task saved; a completion that names any
+other Sprite is refused. When the task budget allows no further batch or control call, the host publishes
+the latest task Sprite if there is one, and only otherwise returns `blocked` to Outer.
+A handoff counts for the no-progress guard only once it has happened: an automatic advance or a
+publication the host refuses is recorded as the return to the Plan, not as the transition it attempted.
+
+Call arguments are parsed by the host. Only surplus `}` or `]` after one complete JSON object are dropped
+(and recorded as `tool_arguments_repaired` in the private audit); any other invalid JSON is refused with the
+character position and the text around it, and schema errors give the first JSON Pointer as `field` and up
+to three located messages. A refused create lists up to five errors with file, line:column, code and the
+checked source line (`excerpt`, because the type check runs on a formatted copy whose line numbers can
+differ from the submission), and adds fixed host hints in `details.hints` for props/schema mismatches,
+disallowed imports or capabilities, the transparency gate and schema/default mismatches. The Executor's
+rules include one minimal Preset that passes code validation and the transparency mount.
+
+Text replies remain a fallback. Executor and Plan accept a single JSON object with ordinary prose or a
+markdown fence around it, and curly quotes used as JSON delimiters are straightened. They reject arrays,
+quoted JSON strings, multiple objects and objects nested inside malformed JSON. Unknown task Sprite IDs in
+a Plan result produce feedback without changing the active layer or Plan. When the task has saved no
+Sprite at all, publication is refused with that fact and control returns to the Plan.
 
 Every Outer → Plan → Executor turn appends one public round record through the
 `job.round` delta event on the same work stream as the phase timeline. A round
@@ -109,35 +211,154 @@ model protocol failures are explicitly marked. Snapshots carry all rounds, while
 ## Sprite assets
 
 `POST /api/sprites/publish` copies an accepted version into an immutable
-`imv.sprite.v1.PublishedSprite` (SQLite `sprites` table plus `sprites/<id>/interactive.js`),
-so deleting or editing the source work never changes a published Sprite.
-Publishing re-verifies the sealed `accepted/` artifacts (409 when changed), requires the
-declared kind to match a version-fixed kind (composition versions choose it), and for text
-Sprites requires `text_prop` to be a string parameter. Parameters are addressed by dot path
-(`title_main.title`), so composed Sprites with nested objects work. Scalar leaves at any depth become
-`VISIBLE_EDITABLE` controls; text and keyword fields stay with the composition bus. The same
-source and field choice returns the original Sprite. `animation_frames` and `static_frame` stay 0
+`imv.sprite.v1.PublishedSprite` (a row of the shared MySQL table `remotion_sprites`, `sprite_store.py`, plus
+`sprites/<id>/interactive.js` in this module's data folder), so deleting or editing the source work never changes a
+published Sprite. The table is created on first use like the template table and sits in the same database as the
+templates that reference its IDs, which is what lets a template save check its `remotion` tracks (422 when a
+`sprite_id` is not published or the clips' Sprites do not share one width, height and fps, which an overlay render requires). The preview bundle is a local file: a host that did not publish the Sprite lists it
+but answers its preview with a 404, while overlay renders only need the stored TSX. Sprites published before this
+storage (the SQLite `sprites` table and the `sprites/<id>/` folders it pointed at) are neither read nor migrated and
+stay where they are: publish the accepted versions again.
+Publishing re-verifies the sealed `accepted/` artifacts (409 when changed) and only accepts versions composed
+with a kind and top-level parameter bindings (`spec.sprite.kind`/`bindings`); older versions are refused with a
+422 that asks for an edit in chat. The requested kind defaults to the agent's choice on the client but may be
+changed: the version must expose that kind's required parameters (`categories.REQUIRED`), otherwise the 422 lists
+them in Chinese. A text Sprite's required parameters include the keyword options the bus forwards from the IMS
+title/subtitle keyword fields: `keywords`, `keywordBold`/`Italic`/`Underline`/`Strikeout`, `keywordColor` (`""`
+keeps the text colour) and `keywordSize` (0 keeps the font size, otherwise 12–300; placements refuse 1–11), with `keywords` items holding at least 12
+characters (the segmentation keywords the bus forwards). Their
+defaults must be off (`[]`, `false`, `""`, `0`), checked by `sprite.create` and again at publish (a keyword option turned on in the workspace parameter panel must be
+turned off again before saving to the asset library), so an unused keyword option keeps the plain text style. A text Sprite fixes `text_prop` to `text` and `keywords_prop` to `keywords` (text versions now always bind it;
+`""` remains only for versions without a keywords binding, which only re-saves of older publications reach); other
+kinds leave both empty. Every bound top-level parameter, text and
+keywords included, becomes a `VISIBLE_EDITABLE` control with its bounds, enum, colour or integer format (an
+`integer` schema is marked `SPRITE_PARAMETER_FORMAT_INTEGER`, since `number_value` cannot tell them apart, and
+overrides with a fraction are refused), string lengths and list size; the instances' remaining nested props stay internal. `content_box` records the union of the instances'
+layout boxes clipped to the canvas, the pivot of the host transform; summaries of older publications report the
+whole canvas. Re-saving looks up the existing publication before any of these rules, so a publication made before
+effect categories can still be re-saved to refresh its player bundle; for a version without a kind any earlier
+publication of the same kind counts, because its text field was a free dot path the client no longer sends.
+A new publication first renders boundary samples (`boundary.py`, `ToolValidator.validate_samples`,
+the worker's `samples` mode): the defaults, every top-level parameter at its low and at its high end (numbers at
+their bounds, first and last enum values, colours black and white, text filled to `maxLength` with a CJK glyph or
+cut to `minLength`, keywords full or empty, the keyword colour `""` or white) combined with the host transform at its
+extremes, and the middle enum values. A text Sprite also renders `keywords:styled`: the low end (longest text, every
+keyword slot filled with a hit) with every keyword style, colour and size at its high end, so a styled hit is rendered. When the combined extreme breaks the schema (parameters that constrain each other), it is replaced by the
+greedy combination of the extremes that still fit and by one sample per parameter extreme, each with the same end
+of the host transform. Each sample must render its first, middle and last frame without an error inside the shared
+host layer; a failure is a 422 naming the sample and frame, and a validator that cannot start is a 503 (the route
+checks the sandbox first). Bound parameters may only use constraints these extremes respect
+(`categories.parameter_problems`), and a version whose root-level constraints still keep some parameter's end or
+enum value out of every sample is refused (`boundary.unsampled`). Template overrides are then checked against the
+schema only, without the sandbox. The
+samples cover the extremes, not every combination: a placement that still fails to render fails its overlay task. The same source and field choice
+returns the original Sprite without sampling again. `animation_frames` and `static_frame` stay 0
 because composition versions carry no such evidence, and `preview_url` serves the sealed
 interactive player page rather than an MP4.
 
 `GET /api/sprites` lists summaries (no TSX). A record that cannot be parsed or fails its hash check is
 logged and left out, so one damaged row never hides the library; reading it by ID still reports the
-failure. `GET/POST /api/sprites/styles/{style_id}` read and replace the Remotion clips placed under one
-style ID in this module's own SQLite database (`style_sprite_bindings`) with an `expected_revision` lock (409);
-the check and the write share one immediate transaction. The ID only associates clips with a cloud template:
-it is never looked up in the IMS template library, so no IMS template has to exist, saving or deleting a
-template does not touch the clips (clips of a deleted template stay unread), and IMS rules and tables never
-enter this module. Saving validates only what Remotion owns: referenced assets exist, clips are fixed
-(`start_mode` seconds, a finite start of at least 0, an optional positive duration, contiguous `order`, unique
-IDs, at most 100); object targets and style overrides are refused. The router lives in `sprite_router.py` on the
-main app and borrows the Remotion runtime; `/api/sprites/render` is not implemented.
+failure. Where a Sprite is placed is not stored here: a placement is a `remotion` track of the cloud template
+(`sprite_id`, a seconds start, an optional duration and `editor.remotion` with parameter overrides and a host
+transform), saved with the template in one request; the save resolves every placement with `placement.resolve`
+(the override must name an editable parameter, keep its type, stay inside its bounds, enum, lengths and list size,
+and the merged configuration must still satisfy the published schema; filters and transitions only take opacity;
+a publication made before boundary samples, recognisable by its missing `content_box`, lists its parameters as
+read-only and only takes the host transform, because its values were never rendered away from the defaults), so deleting a
+template removes its placements with it and the composition bus finds them with its single template lookup.
+There is no separate route for placements; the template save checks that every `sprite_id` is published. The
+SQLite `style_sprite_bindings` table and the `GET/POST /api/sprites/styles/{style_id}` routes of earlier versions
+are gone: bindings saved there are neither read nor migrated, and an existing table is left in place. The router
+lives in `sprite_router.py` on the main app and borrows the Remotion runtime.
+
+`POST /api/sprites/render` (`imv.sprite.v1.SpriteRenderInput`, Protobuf) renders one Sprite for the bus as one complete
+video. A Sprite is a fixed style (the sealed code plus `resolved_style` and `transform`, the placement's editor) with
+its content: one `text` with `keywords` for the whole effect (a title), or the bus's subtitle `cues` (text, keywords
+and a frame range each; ordered, non-overlapping, at least one frame), each shown once by the same Sprite in its own
+frames so the Sprite reads the cue's length as `durationInFrames`, transparent in between. A text effect shown for
+less than 1.5 s (`STATIC_TEXT_SECONDS`, most subtitle cues) plays no entrance or exit: it is frozen (`Freeze`) on the
+middle frame of the published preview length, which the Sprite still reads as its length, and shows only its own
+frames, so short subtitles neither flicker nor run animation code in fewer frames than it was accepted at. The time is
+`effect_total_frames`, 0.5 to 120 seconds and the output's frame count, whatever length was previewed when the Sprite
+was generated. `sprite_render.py` renders the effect in one overlay worker run that writes consecutive chunks of at
+most 30 seconds as frame ranges of the same composition (instances keep their absolute timing, so animations continue
+across a boundary) and joins them with `ffmpeg -c copy`, then re-probes the frame count and alpha flag; the bus never
+splits a request. Text effects need `text` or `cues`, other
+kinds take no content, keywords need a Sprite that publishes them, and content cannot be passed as a style override;
+every refusal, a canvas other than the publication's or an unknown Sprite is a 422 at acceptance
+(`SpriteRenderAccepted {task_id}`), and the overlay render's environment checks, plus `ffmpeg` when an effect needs joining, are 503s. The task
+shares the overlay renders' table, render slot, recovery and callback body below, uploads to ZOS
+`imv/sprite_render/{taskId}.webm`, and is read with `GET /api/sprites/render/{taskId}` (`SpriteRenderTask`); each
+query endpoint only finds its own kind of task. The overlay worker bundles each distinct Sprite module once, however
+many instances use it.
 `GET /api/sprites/{id}/preview?overlay=true&sync=1` serves the sealed player on a transparent page for the template editor;
-a sync-mode bundle has no controls or loop and seeks on `imv-preview-sync {time}` messages, reporting `sync: true` in its
-ready message. Publishing rebuilds the bundle from the sealed source in the isolated worker when the sealed one lacks
-the marker (and refreshes an existing publication on re-save); a failed rebuild still saves the asset, just without overlay preview.
+a sync-mode bundle has no controls or loop and seeks on `imv-preview-sync {time, duration?}` messages (`duration` is the
+placement's full length in seconds, up to 120; the Player takes it as its length, so a composed Sprite lays itself out
+like in the bus render), reporting `sync: true` in its
+ready message. The page injects the published defaults and content box as a JSON element (`#imv-preview-host`, with
+`<`, `>`, `&` and line separators escaped); the player starts from them, merges `imv-preview-update` values over
+them (objects key by key, arrays and scalars replace) and applies an optional `host: {transform}` through
+`remotion/host-layer.tsx`, the wrapper the overlay render uses too. Such a bundle reports `host: true` when ready.
+`presentation.mjs` writes the host protocol it speaks as the bundle's first line (`/* imv-preview-protocol 1 */`,
+`publication.PREVIEW_PROTOCOL`); only that line counts, because the generated code and its defaults are bundled too and
+can contain any text. Publishing rebuilds the bundle from the sealed source in the isolated worker when the sealed one
+lacks that line and refreshes an existing publication on re-save; a failed rebuild still saves the asset, just without overlay preview.
 A refresh stages the new bundle and records its hash before replacing the copy, so a failed update keeps the
 previous copy working and publishing again retries it. Identical publish requests (same version and field
 choice) take turns, so a double click rebuilds once.
+
+## Overlay renders for the bus
+
+`POST /api/v1/overlay-renders` (`overlay_router.py`) renders **the Remotion clips of a request**
+into one transparent VP9 alpha WebM, uploads it to ZOS (`imv/overlay_render/{taskId}.webm`, public-read) and
+returns/notifies the public URL. Body (camelCase): `placements` (at most 100, bottom layer first, each
+`{spriteId, start, duration?, editor?}`: `start` is a finite number of seconds from 0 and `duration` a number above 0, both
+strict like the top-level `duration`; `editor` is the track's editor forwarded as is and may only hold `remotion`
+overrides and a host transform, resolved by `placement.py` against the published parameter contract (422 at
+acceptance when outside it; without it the Sprite renders its published defaults); the bus reads them from the
+template's `remotion` tracks, so a template is looked up once and this module never reads the IMS template library), optional `audioUrl`, `duration` (seconds),
+`callbackUrl`. `GET /api/v1/overlay-renders/{taskId}` returns `{taskId, status, result:{videoUrl}, error}`
+(`queued/rendering/uploading/succeeded/failed`); the callback body is `{taskId, status: succeed|failed,
+videoUrl, errorMessage}`, retried after 5/15/45 s; each attempt has a 30 s overall deadline, and a non-2xx answer, an
+error (including an address httpx cannot parse) or giving up after the fourth attempt is logged. Once delivered or
+given up the row is marked `notified` (a restart re-sends only unnotified terminal tasks) and the result is never
+touched. A failure publishes only a stable `error.code` and a fixed
+message (also the callback's `errorMessage`); the renderer's output and other root causes go to the server log.
+
+- **Length**: TTS `audioUrl` (full ffprobe duration) wins; otherwise `duration` (a JSON number above 0, strict like
+  the composition API's `videoDuration`: booleans and numeric strings are a 422); otherwise the latest clip end.
+  Longer than `IMV_OVERLAY_MAX_SECONDS` (120) is a 422 at acceptance when the length is already known (`duration`
+  or the clips' end); an `audioUrl` is only probed while rendering, so an over-long one fails the task with
+  `duration_too_long`.
+- **Acceptance**: also a 503 when ZOS, ffprobe, bubblewrap, prlimit, Node, the browser or the managed fonts are
+  missing (the isolated renderer is Linux-only), instead of accepting tasks that can only fail later. An empty
+  `placements` (`no_placements`) or a `spriteId` that is not published (`sprite_missing`) is a 422.
+- **Layout**: every asset must share width/height/fps. Clips are stacked in request order on one canvas (the first
+  is the bottom layer), each inside the shared host layer (`remotion/host-layer.tsx`) that pivots around the
+  Sprite's content box; each plays for its `duration` (or its own `preview_frames / fps`), which its Sprite reads as `durationInFrames`;
+  the composed Sprite lays its instances out against that length (`compose.mjs`), so a longer clip keeps them
+  running to its end instead of leaving the canvas blank after the preview length. Each keeps that full length when the total cuts it (so its internal animation ranges are
+  unchanged), and is dropped when it starts later. Seconds become frames with half a frame rounding up, like the
+  template timing, and a clip is at most `IMV_OVERLAY_MAX_SECONDS` long. Remotion clamps a Sequence to its
+  composition, so the worker declares the composition up to the latest clip end and renders only the first `total`
+  frames of it.
+- **Output**: no audio; the bus/IMS keeps its own audio track and overlays the WebM. The host re-probes the file
+  (VP9, size, fps, frame count, alpha tag) before uploading.
+- **Execution**: `overlay_render.py` plans, `remotion/overlay-worker.mjs` renders in the bwrap sandbox
+  (`IMV_OVERLAY_RENDER_TIMEOUT_SECONDS`, 3600), `overlay_service.py` owns the SQLite `overlay_renders` task table,
+  one render at a time (the slot covers only the render: the remote audio probe before it and the ZOS upload after it
+  run outside, so a slow network never delays queued renders), recovery of unfinished tasks and pending notifications
+  when the runtime is first built
+  (`routes.runtime_for`, oldest first; a damaged row is logged and skipped, and the overlay routes retry if the table
+  could not be read), and ZOS upload via `video_composition.zos.upload_public`. The placements are stored with the
+  task, so a recovered task renders exactly what was accepted and only re-reads the published Sprites. State writes retry a locked database
+  three times; if it stays unwritable the row keeps its previous state (never rewritten as a failure) and the next
+  start re-runs it. Sealed sources are not re-policy-checked in this worker.
+- **Cost**: a 1080×1920 frame takes about 0.4–1 s on one Chrome tab (software GL), so a 120 s overlay at 30 FPS needs
+  roughly 25–60 minutes: size `IMV_OVERLAY_RENDER_TIMEOUT_SECONDS` (at most 3600) for `IMV_OVERLAY_MAX_SECONDS` × FPS
+  × seconds per frame, or lower the length. The single VP9 encoder process and Chrome's GL process each need about
+  0.9 CPU seconds per frame, so the sandbox's per-process CPU cap is the render timeout times the host's cores
+  (never below the 300 s of the short validation workers) instead of a fixed 300 s.
 
 ## Code diagnostics
 

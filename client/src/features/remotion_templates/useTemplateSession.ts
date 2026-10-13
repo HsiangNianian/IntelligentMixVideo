@@ -445,8 +445,10 @@ export function useTemplateSession(onHistoryChange: () => void) {
       return;
     const key = latest.current.key;
     publish({ busy: kind, error: "", retryMode: null });
+    let queued = false;
     try {
       const job = await start();
+      queued = true;
       if (!current(key)) {
         if (alive.current) changed.current();
         return;
@@ -458,7 +460,11 @@ export function useTemplateSession(onHistoryChange: () => void) {
       if (current(key))
         publish({
           busy: null,
-          error: `${error instanceof Error ? error.message : "请求未完成。"} 请先检查历史会话，确认任务是否已创建。`,
+          // 服务端在入队前以 503 拒绝时任务不存在，不需要提示检查历史会话。
+          error:
+            !queued && error instanceof api.ApiError && error.status === 503
+              ? error.message
+              : `${error instanceof Error ? error.message : "请求未完成。"} 请先检查历史会话，确认任务是否已创建。`,
           retryMode: latest.current.workId ? "read" : null,
           navigation: latest.current.navigation
             ? { ...latest.current.navigation, saving: false }
@@ -468,7 +474,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
     }
   }
   /** 首轮图片可上传；后续输入绑定最近成功版本，澄清明确绑定提问任务。 */
-  function send(text: string, image?: File) {
+  function send(text: string, image?: File, durationInFrames?: number) {
     const s = latest.current;
     if (
       s.deleting ||
@@ -490,7 +496,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
       if (!s.workId) {
         const asset = image ? await api.upload(image) : undefined;
         if (!current(s.key)) throw new DOMException("Aborted", "AbortError");
-        return (await api.create(text, asset?.id, defaultComposition()))
+        return (await api.create(text, asset?.id, defaultComposition(durationInFrames)))
           .job;
       }
       return api.message(s.workId, {

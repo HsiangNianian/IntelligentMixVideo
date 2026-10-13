@@ -29,7 +29,7 @@ uv run --locked server
 
 默认监听 `0.0.0.0:20070`（所有 IPv4 接口），本机交互文档为 `http://127.0.0.1:20070/docs`。
 远程访问使用 `http://<服务器 IP 或域名>:20070`，服务器防火墙或云安全组需允许对应端口；客户端 `VITE_API_URL` 配置为实际服务地址。
-仓库根目录可执行 `uv run --locked --project server server`。首次模板请求自动创建缺失的 `templates` 表，不执行旧数据迁移。
+仓库根目录可执行 `uv run --locked --project server server`。首次模板请求自动创建缺失的 `templates` 表，不执行旧数据迁移；Remotion 已发布 Sprite 的 `remotion_sprites` 表在首次访问资产目录、发布，或保存含 Remotion 片段的模板时创建。
 应用启动后数据库暂时不可用时，模板接口返回 503，恢复后可重试；首页和用户示例接口本身不查询数据库。
 
 `uv run server` 与 `uv run python -m server` 均读取固定的 `server/.env` 中的 `PORT`，进程环境变量优先。未设置时默认 `20070`；端口须为 1～65535 的整数，空值、非整数或越界值会阻止启动。修改后重启服务。
@@ -57,12 +57,19 @@ PORT=8010 uv run --locked server
 GET 成功响应与 POST 请求、成功响应均使用 `application/x-protobuf`。POST 的 JSON 请求返回 415；损坏的 Protobuf 消息返回 400。创建返回 201，更新返回 200。名称重复返回 409，模板不存在返回 404，非法 ID 或配置返回 422。错误响应仍使用 JSON。
 重命名使用携带 ID 的 POST；另存为使用不携带 ID 的 POST。不存在的 ID 不会自动变成创建。
 
+列表返回逐条校验的 `TemplateSummary`，包含名称、ID、更新时间、有效模板的标题/字幕及对象数量，无效记录通过 `validation_error` 说明原因。无效记录的详情读取返回 409，删除仍按 ID 执行，不影响同库有效模板。保存必须包含标题和底部字幕各一个。列表消息与转场字段需要客户端、服务端一起升级；已有记录不自动转换。
+
 `SaveTemplateRequest.tracks` 必须提供，通过 `TrackList.tracks[].editor` 保存参数；缺省参数由业务校验补齐。模板更新完整替换配置。名称去除首尾空白后为 1～100 字符；说明最多 1000 字符；标题、字幕、气泡示例文字最多 60、100、40 字符；字号 12～300 整数；位置 0～100%；动画和转场时长 0.1～3 秒。
 
-顶部标题对象的 `titleKeywordBold`、`titleKeywordItalic`、`titleKeywordUnderline`、`titleKeywordStrikeout` 可组合使用，`titleKeywordColor` 设置局部颜色，`titleKeywordSize` 设置局部字号；合成时优先在请求标题中查找已有的 `titleKeyword`，空值时自动选取请求标题首段连续文字的前两个字，只标记首次出现的位置。底部字幕对象独立保存 `subtitleKeywordBold`、`subtitleKeywordItalic`、`subtitleKeywordUnderline`、`subtitleKeywordStrikeout`、`subtitleKeywordColor` 和 `subtitleKeywordSize`，作用于原切片中首次包含 `keyword` 的字幕短句，空关键词保留原文。颜色为空字符串或 `#RRGGBB`，空字符串表示保持文字原色；合成时转换为 IMS 要求的 BGR 顺序。局部字号为 0（沿用原字号）或 12～300 的整数，合成时使用 IMS `\fs` 指令设置并恢复。模板响应在对应对象的 `tracks[].editor` 返回这些值。 视频合成按气泡对象自身时间区间显示其 `bubbleText` 示例文字一次，不使用切片关键词；有气泡对象但未选气泡样式时仍显示文字，无气泡对象则不生成。关键词继续通过标题和字幕的局部样式强调。
+顶部标题对象的 `titleKeywordBold`、`titleKeywordItalic`、`titleKeywordUnderline`、`titleKeywordStrikeout` 可组合使用，`titleKeywordColor` 设置局部颜色，`titleKeywordSize` 设置局部字号；合成调用切片时传入请求 `title`，标题局部样式仅作用于返回的 `title_keyword` 首次出现的位置；返回值缺失或为空时保留标题原文，不回退模板 `titleKeyword` 或标题前两个字。旧快照缺少标题词时不高亮；无声模式通过仅标题提词取得关键词；模板预览仍沿用原规则。底部字幕对象独立保存 `subtitleKeywordBold`、`subtitleKeywordItalic`、`subtitleKeywordUnderline`、`subtitleKeywordStrikeout`、`subtitleKeywordColor` 和 `subtitleKeywordSize`，作用于原切片中首次包含 `keyword` 的字幕短句，空关键词保留原文。颜色为空字符串或 `#RRGGBB`，空字符串表示保持文字原色；合成时转换为 IMS 要求的 BGR 顺序。局部字号为 0（沿用原字号）或 12～300 的整数，合成时使用 IMS `\fs` 指令设置并恢复。模板响应在对应对象的 `tracks[].editor` 返回这些值。 视频合成按气泡对象自身时间区间显示其 `bubbleText` 示例文字一次，不使用切片关键词；有气泡对象但未选气泡样式时仍显示文字，无气泡对象则不生成。关键词继续通过标题和字幕的局部样式强调。
 
-独立对象通过 `tracks` 保存，每项包含 `id`、`target`、`start_mode`、`start`、`duration` 和 `editor`。`start_mode` 支持 `seconds` 和 `percent`；百分比范围为 0 至小于 100，`duration` 为正秒数或 `null`（持续到视频结束）。模板不保存视频信息，保存校验不依赖预览时长。应用视频时按输出帧率计算区间：结尾以外不显示、结束越界时截短，动画按有效帧数缩短并记录说明，无法容纳所选动画时明确失败。文案合成逐个应用对象，标题使用请求文字，字幕和关键词采用文案时间与对象区间的交集；合成时转场忽略模板开始与持续时间，仅取特效类型并应用于实际素材边界，音频总长保持不变。
-同一文字角色的循环动画与入场、出场互斥。效果可以为空（只放 Remotion 片段的模板），最多 500 个不同效果 ID。
+独立对象通过 `tracks` 保存，普通对象包含 `id`、`target`、`start_mode`、`start`、`duration` 和 `editor`。标题、字幕、VFX 最多各一个，滤镜可多个；字幕固定 `seconds`、0、null，覆盖整个视频。其他普通对象的 `start_mode` 支持 `seconds` 和 `percent`，百分比小于 100，`duration` 为正秒数或 `null`（持续到视频结束）。转场必须指定 `transition_boundary: 1 | 2` 和持续时间，禁止 `start`、`start_mode`，每个交界处最多一个。模板不保存预览视频信息。`resolve_template` 根据模板规则和 `TimelineContext` 计算完整时间结果：`sequence` 按帧累计扣除重叠；`fixed` 保留实际素材起止和目标总长，供正式合成使用。转场最多使用相邻片段各自长度的一半；不足 0.1 秒或缺少交界处时跳过并返回原因。普通对象按输出帧率计算区间：结尾以外不显示、结束越界时截短，动画按有效帧数缩短，帧数不足时明确失败。标题使用请求文字及模板时间，字幕按文案切片显示，音频总长保持不变。
+创建和更新在写入前强制检查标题、底部字幕各一个，缺少任意一个返回 422，已有记录保持不变。同一文字角色的循环动画与入场、出场互斥。模板允许空效果列表，最多 500 个不同效果 ID。
+
+Remotion 片段也保存在 `tracks` 里：`target` 为 `remotion`，`sprite_id` 引用已发布的 Sprite；`id` 仍是模板内唯一的摆放 ID，所以同一个 Sprite 可以摆放多次。
+`start_mode` 只能是 `seconds`，`duration` 为 `null`（取 Sprite 自身时长）或正秒数；`editor` 只能设置 `remotion`（这次摆放的参数覆盖 `parameters` 与宿主变换 `transform`，没有时响应里为 `{}`），IMS 对象不能设置它；其他对象不能带 `sprite_id`。保存时引用的 Sprite 都必须已在 `remotion_sprites` 发布，且画布宽、高、帧率一致（叠加渲染要把它们叠成同一个视频），每个片段的覆盖须指向可编辑参数、类型与默认值相同、在声明范围内且合并后满足发布 Schema，变换只能设置该分类允许的字段（滤镜与转场只有 `opacity`）并在范围内，否则返回 422。
+Sprite 分为字效（TEXT）、滤镜（FILTER_OVERLAY）与转场和视频特效（VIDEO_OVERLAY、TRANSITION_OVERLAY），都是不读取底片像素的透明叠加层；分类、必备参数与发布时的边界抽样见 `src/server/remotion_templates/README.md`。
+片段与 IMS 对象共用 100 条上限，也不产生 `effect_ids`。视频合成的 IMS 时间线跳过这些轨道，不为它们生成任何文字或效果；层级为它们在 `tracks` 中的先后（先者在下）。
 
 响应补充 UUID、UTC 创建/更新时间和 `effects` 参数快照。服务端通过固定 SDK 5.2.2 白名单解析效果，
 拒绝未知 ID、错误分类和全部 `tracks[].editor` 中的效果与 `effect_ids` 不一致；客户端不能提交渲染参数。
@@ -75,7 +82,7 @@ MySQL 单独列保存唯一名称、ID 和时间，JSON 保存完整编辑配置
 
 所有模式均接受 `packRules.backgroundMusic: null`，表示不使用背景音乐，等同于省略该字段或传 `audioSwitch: false`。
 
-统一入口根据现有字段自动确定内部模式：有 `videoUrl` 为 standard；没有 `videoUrl`、有顶层 `audioUrl` 为 materials_voice；两者都没有为 materials_silent。地址缺省或 null 均视为没有，背景音乐不参与分流；请求不包含 `compositionMode`。standard 省略 `materials` 为纯数字人，显式数组才匹配；两个纯素材模式要求非空素材数组，严格按顺序拼接且不调用匹配。视频使用 FFprobe 获取实际视频流时长，图片每张 3 秒，超长裁尾、不足异步失败。非空 `text` 优先，否则读取 `copy`；有语音以 ASR 配音总长合成，有文案才切片生成字幕。无语音以 `processRules.videoDuration`（有限正数秒，可为小数，不接受布尔值或数字字符串）合成，始终无字幕，`title` 使用模板标题样式及动画并全程显示。纯素材缺少文字对象时回退内置默认样式，正文仍取请求，不保存回模板。素材原声静音，背景音乐仍可选。无语音不依赖 ASR／切片／匹配配置；纯素材含视频时 PATH 需有 `ffprobe`；探测白名单包含 HTTP 代理所需的 `httpproxy`，失败的退出码与脱敏诊断写入 `timeline.json`。字段矩阵和完整请求示例见 [视频合成 API 文档](src/server/video_composition/api.md#三种模式)。
+统一入口根据现有字段自动确定内部模式：有 `videoUrl` 为 standard；没有 `videoUrl`、有顶层 `audioUrl` 为 materials_voice；两者都没有为 materials_silent。地址缺省或 null 均视为没有，背景音乐不参与分流；请求不包含 `compositionMode`。standard 省略 `materials` 为纯数字人，显式数组才匹配；两个纯素材模式要求非空素材数组，严格按顺序拼接且不调用匹配。视频使用 FFprobe 获取实际视频流时长，图片每张 3 秒，超长裁尾、不足异步失败。非空 `text` 优先，否则读取 `copy`；有语音以 ASR 配音总长合成，有文案才切片生成字幕。无语音以 `processRules.videoDuration`（有限正数秒，可为小数，不接受布尔值或数字字符串）合成，始终无字幕，`title` 使用模板标题样式、动画与时间区间。纯素材缺少文字对象时回退内置默认样式，正文仍取请求，不保存回模板。素材原声静音，背景音乐仍可选。无语音不依赖 ASR／匹配配置，有非空标题时需要切片模型配置并仅提取标题关键词；纯素材含视频时 PATH 需有 `ffprobe`；探测白名单包含 HTTP 代理所需的 `httpproxy`，失败的退出码与脱敏诊断写入 `timeline.json`。字段矩阵和完整请求示例见 [视频合成 API 文档](src/server/video_composition/api.md#三种模式)。
 
 standard 模式中，请求不包含 `materials` 时为纯数字人：跳过素材匹配，以 `audioUrl` 的 ASR 原始总时长铺满数字人视频，字幕继续按文案切片和模板时间规则显示。显式 `materials: []` 保留素材匹配但不指定候选，非空数组携带候选匹配，`null` 返回 422。需要保留此前缺省字段也匹配的行为时，调用方须改为显式传入 `[]`；已有任务继续按已保存的请求和阶段恢复。
 
@@ -191,7 +198,7 @@ uv sync --locked --default-index https://pypi.org/simple
 uv run --locked --project server server
 ```
 
-HTTP 请求体必填 `script`（正确文案字符串）和 `asr_result`（Fun-ASR 原始结果对象），可选 `title`（标题字符串，可省略或为 null），由 Pydantic 校验字段类型。也可在代码中读取 ASR 输出文件并调用：
+HTTP 请求体的 `script`、`asr_result`、`title` 均可省略或为 null，字段类型仍由 Pydantic 校验。提供 ASR 时仍须有效 `script`；`asr_result` 省略或为 null 且提供 `title` 时，只调用一次模型提取标题关键词，忽略 `script`，仅返回 `{"title_keyword":"关键词"}`。例如请求 `{"title":"散养土鸡上新"}` 即可；这一分支不校验词长或原文匹配，缺少返回字段或返回非字符串时按空字符串处理。也可在代码中读取 ASR 输出文件并调用：
 
 ```python
 import json
@@ -206,11 +213,11 @@ result = segment({
 ```
 
 使用 ASR 第一音轨的词级时间（毫秒），返回 `segments`、`warnings` 和 `trace`；片段包含保留标点的原文、秒制时间、分组和关键词。
-提供非 null 的 `title` 时，在现有关键词模型调用中同时提取一个标题关键词，响应新增同级 `title_keyword` 字符串；关键词须在标题中连续出现且最多 12 字。标题为空或无合适关键词时由模型返回空字符串；省略或传 null 时不返回此字段。模型结果缺失或非法直接报错，不增加兜底或额外重试。
-首次切分和关键词提取后，超过 8 个有效字（不计标点和空白）的片段批量进行语义切分。二次切分结果的 JSON、切点、子段字数或关键词完整性校验失败时，将失败输出和具体错误反馈给模型，最多修正一次；再次失败直接报错，全部通过后才应用结果。网络错误沿用 SDK 策略，不触发此校验重试。
+带 ASR 的切片请求提供非 null 的 `title` 时，在现有关键词模型调用中同时提取一个标题关键词，响应新增同级 `title_keyword` 字符串；关键词须在标题中连续出现且最多 12 字。标题为空或无合适关键词时由模型返回空字符串；省略或传 null 时不返回此字段。模型结果缺失或非法直接报错，不增加兜底或额外重试。
+首次切分和关键词提取后，超过 8 个有效字（不计标点和空白）的片段由代码从有效字中点二分，奇数左短右长，仍超长则继续二分，直到每段最多 8 字。例如 20 字依次切成 10+10、5+5+5+5。保留原文和 ASR 时间，英文、数字和关键词也允许拆开；关键词仅由完整包含其首次出现位置的子段继承，被拆开的词不再高亮，标题关键词不受影响。二次切分不调用模型；完整切片仅首次切分和提词两次模型调用，不做结果纠错重试，网络错误仍沿用 SDK 策略。
 切片不调用 ASR，不生成字幕子段；最终去标点由下游合成负责。
 
-HTTP 与视频合成调用均在 FastAPI 终端记录阶段、切点、关键词与模型耗时，桌面日志写入 `backend/server.log`。
+HTTP 与视频合成共用成功／失败日志入口，完整切片记录阶段、切点、关键词与模型耗时；仅标题分支不生成切片诊断。桌面日志写入 `backend/server.log`。
 日志包含文案，请按敏感数据管理；请求字段校验失败仍返回 422，不进入切片日志。
 
 请求可另带 `config` 对象：`llm_base_url`、`llm_api_key`、`llm_model` 必填，`llm_timeout_seconds` 默认 120，`llm_max_retries` 默认 1（0～3）。客户端参数仅用于该次切片，完整连接参数不与服务端密钥混用；省略 `config` 仍使用原服务端配置。独立 Python 调用可传 `segment(payload, config=ClientSettings(...))`，模型定义位于 `server.segmentation.settings`。`allow_insecure_llm_http` 仍由服务端决定，不接受客户端覆盖；错误响应不回显请求输入。

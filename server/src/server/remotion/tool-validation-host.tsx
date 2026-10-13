@@ -1,7 +1,7 @@
 /**
  * Browser host for PR76 behavior validation.  It mounts one accepted component
- * in a fixed-size Remotion Player and exposes only frame/parameter operations
- * and DOM snapshots to the worker's test-context bridge.
+ * in a fixed-size Remotion Player and exposes only frame, length and parameter
+ * operations and DOM snapshots to the worker's test-context bridge.
  */
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -10,6 +10,7 @@ import { Player, type PlayerRef } from "@remotion/player";
 import Template from "imv:template";
 import initial from "imv:config";
 import Ajv2020 from "ajv/dist/2020.js";
+import { HostLayer, type HostBox, type HostTransform } from "./host-layer";
 
 type JsonValue = null | boolean | number | string | JsonValue[] | JsonObject;
 type JsonObject = { [key: string]: JsonValue };
@@ -18,6 +19,8 @@ type Config = {
   configured: JsonObject;
   parameter_schema: JsonObject;
   composition: { width: number; height: number; fps: number; duration_frames: number };
+  /** Content box of a publish-time boundary sample; generation checks mount over the whole canvas. */
+  box?: HostBox;
 };
 type Snapshot = {
   text: string;
@@ -26,6 +29,7 @@ type Snapshot = {
 };
 
 const config = initial as Config;
+const box: HostBox = config.box ?? { x: 0, y: 0, width: config.composition.width, height: config.composition.height };
 const parameterValidator = new Ajv2020({ strict: false, allErrors: true, validateFormats: false }).compile(config.parameter_schema);
 
 // Keep component exceptions observable to the worker without exposing browser
@@ -90,17 +94,30 @@ function querySnapshot(selector: string, all: boolean): Snapshot[] {
 function App() {
   const player = useRef<PlayerRef>(null);
   const [values, setValues] = useState<JsonObject>(config.defaults);
+  const [transform, setTransform] = useState<HostTransform>({});
   const [mountVersion, setMountVersion] = useState(0);
   const [ready, setReady] = useState(false);
+  // The bus renders a Sprite at whatever length it passes, so the worker can mount other lengths than the preview.
+  const [duration, setDurationFrames] = useState(config.composition.duration_frames);
   const valuesRef = useRef(values);
   valuesRef.current = values;
+  const durationRef = useRef(duration);
+  durationRef.current = duration;
   useEffect(() => {
     const tool = {
       composition: Object.freeze({ ...config.composition }),
       ready: false,
       async setFrame(frame: number) {
-        if (!Number.isSafeInteger(frame) || frame < 0 || frame >= config.composition.duration_frames) throw new Error("frame is outside composition");
+        if (!Number.isSafeInteger(frame) || frame < 0 || frame >= durationRef.current) throw new Error("frame is outside composition");
         player.current?.seekTo(frame);
+        await nextFrame();
+        await waitResources();
+      },
+      /** Mount the component at another render length; frames are then checked against that length. */
+      async setDuration(frames: number) {
+        if (!Number.isSafeInteger(frames) || frames < 1) throw new Error("duration must be a positive frame count");
+        durationRef.current = frames;
+        setDurationFrames(frames);
         await nextFrame();
         await waitResources();
       },
@@ -111,9 +128,18 @@ function App() {
         await nextFrame();
         await waitResources();
       },
+      /** Mount one complete boundary sample: schema-checked values plus a host transform. */
+      async setSample(sample: JsonObject, placement: HostTransform) {
+        if (!parameterValidator(sample)) throw new Error(JSON.stringify(parameterValidator.errors));
+        setValues(sample);
+        setTransform(placement);
+        await nextFrame();
+        await waitResources();
+      },
       async reset() {
         delete (window as any).__imvRuntimeError;
         setValues(config.configured);
+        setTransform({});
         setMountVersion((version) => version + 1);
         await nextFrame();
         await waitResources();
@@ -179,10 +205,10 @@ function App() {
       key={mountVersion}
       ref={player}
       component={Composition}
-      inputProps={{ values }}
+      inputProps={{ values, transform }}
       compositionWidth={config.composition.width}
       compositionHeight={config.composition.height}
-      durationInFrames={config.composition.duration_frames}
+      durationInFrames={duration}
       fps={config.composition.fps}
       initiallyPaused
       controls={false}
@@ -191,8 +217,8 @@ function App() {
   </div>;
 }
 
-function Composition({ values }: { values: JsonObject }) {
-  return <AbsoluteFill data-imv-validation-canvas><RuntimeBoundary><Template {...values} /></RuntimeBoundary></AbsoluteFill>;
+function Composition({ values, transform }: { values: JsonObject; transform: HostTransform }) {
+  return <AbsoluteFill data-imv-validation-canvas><HostLayer box={box} transform={transform}><RuntimeBoundary><Template {...values} /></RuntimeBoundary></HostLayer></AbsoluteFill>;
 }
 
 /** Convert render-time component exceptions into an observable validation error. */

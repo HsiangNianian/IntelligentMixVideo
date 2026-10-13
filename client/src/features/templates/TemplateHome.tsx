@@ -10,8 +10,8 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { listTemplates, type Environment } from "./api";
-import type { Template } from "./model";
+import { deleteTemplate, listTemplates, type Environment } from "./api";
+import type { TemplateSummary } from "./model";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 
@@ -28,7 +28,7 @@ interface Props {
 
 /** 两个模板库分别读取和重试；卸载取消 HTTP，并忽略迟到的本地 IPC 结果。 */
 function useTemplateCollection(environment: Environment) {
-  const [templates, setTemplates] = useState<Template[]>([]);
+  const [templates, setTemplates] = useState<TemplateSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
@@ -65,10 +65,9 @@ function coverHue(id: string): number {
 }
 
 /** 封面模拟一帧成片：渐变背景上按模板自身的标题与字幕文字排版，没有文字对象时显示模板名称。 */
-function TemplateCover({ template }: { template: Template }) {
+function TemplateCover({ template }: { template: TemplateSummary }) {
   const hue = coverHue(template.template_id);
-  const title = template.tracks.find((track) => track.target === "title")?.editor.title;
-  const subtitle = template.tracks.find((track) => track.target === "subtitle")?.editor.subtitle;
+  const { title, subtitle } = template;
   return (
     <span aria-hidden="true" className="relative flex aspect-video w-full flex-col items-center justify-between overflow-hidden rounded-lg px-3 py-3 text-center ring-1 ring-border transition duration-200 group-hover:ring-2 group-hover:ring-primary motion-reduce:transition-none"
       style={{ background: `radial-gradient(110% 100% at 15% 0%, oklch(0.62 0.14 ${hue}) 0%, transparent 62%), radial-gradient(90% 90% at 100% 100%, oklch(0.5 0.15 ${(hue + 50) % 360}) 0%, transparent 70%), oklch(0.27 0.06 ${hue})` }}>
@@ -78,7 +77,7 @@ function TemplateCover({ template }: { template: Template }) {
         <span className="flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground shadow-lg"><SquarePen className="size-3.5" />打开编辑</span>
       </span>
       <span className="absolute right-2 top-2 flex items-center gap-1 rounded bg-black/55 px-1.5 py-0.5 font-mono text-[10px] text-white/85 group-hover:opacity-0">
-        <Layers className="size-3" />{template.tracks.length}
+        <Layers className="size-3" />{template.track_count ?? "无效"}
       </span>
     </span>
   );
@@ -93,9 +92,23 @@ export function TemplateCollection({ environment, collection, onSelect }: Props 
   collection: ReturnType<typeof useTemplateCollection>;
 }) {
   const headingId = useId();
+  const [deleting, setDeleting] = useState<TemplateSummary | null>(null);
+  const [removing, setRemoving] = useState(false);
+  const [removeError, setRemoveError] = useState("");
   const { templates, loading, error, unavailable, refresh } = collection;
   const title = environment === "cloud" ? "云端模板" : "本地模板";
   const Icon = environment === "cloud" ? Cloud : FolderOpen;
+
+  /** 仅删除已确认的无效记录，失败时保留选择和原因供用户重试。 */
+  async function removeInvalid() {
+    if (!deleting || removing) return;
+    setRemoving(true); setRemoveError("");
+    try {
+      await deleteTemplate(deleting.template_id, environment, deleting.library);
+      setDeleting(null); collection.refresh();
+    } catch (reason) { setRemoveError(reason instanceof Error ? reason.message : "删除模板失败"); }
+    finally { setRemoving(false); }
+  }
 
   return (
     <section aria-labelledby={headingId} className="space-y-3">
@@ -146,6 +159,7 @@ export function TemplateCollection({ environment, collection, onSelect }: Props 
                 type="button"
                 className="group flex w-full cursor-pointer flex-col gap-2.5 rounded-lg text-left outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
                 aria-label={`选择模板：${template.name}`}
+                disabled={!!template.validation_error}
                 onClick={() => onSelect({ environment, templateId: template.template_id })}
               >
                 <TemplateCover template={template} />
@@ -157,10 +171,22 @@ export function TemplateCollection({ environment, collection, onSelect }: Props 
                   <span className="mt-0.5 block truncate text-xs text-muted-foreground">{template.description || "暂无模板说明"}</span>
                 </span>
               </button>
+              {template.validation_error && <div className="mt-2 space-y-2 rounded-md border border-destructive/30 p-3 text-xs">
+                <p className="font-medium text-destructive">模板不符合当前规则</p>
+                <p className="break-all text-muted-foreground">ID：{template.template_id}</p>
+                <p className="break-words text-destructive">{template.validation_error}</p>
+                <Button type="button" size="sm" variant="outline" onClick={() => { setDeleting(template); setRemoveError(""); }}>删除无效模板</Button>
+              </div>}
             </li>
           ))}
         </ul>
       )}
+      <Dialog open={deleting !== null} onOpenChange={(open) => { if (!open && !removing) setDeleting(null); }}>
+        <DialogContent><DialogHeader><DialogTitle>删除无效模板</DialogTitle><DialogDescription>将永久删除模板「{deleting?.name}」（{deleting?.template_id}）。</DialogDescription></DialogHeader>
+          {removeError && <p role="alert" className="text-sm text-destructive">{removeError}</p>}
+          <DialogFooter><Button type="button" variant="outline" disabled={removing} onClick={() => setDeleting(null)}>取消</Button><Button type="button" variant="destructive" disabled={removing} onClick={() => void removeInvalid()}>{removing ? "正在删除…" : "确认删除"}</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }

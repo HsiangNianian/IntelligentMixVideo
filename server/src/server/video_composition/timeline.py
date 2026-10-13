@@ -1,13 +1,12 @@
 """由业务快照生成 IMS Timeline；纯素材按序裁尾，无声标题铺满全片，其余对象沿用模板规则。"""
 
 from math import floor
-import re
 
 from pydantic import TypeAdapter
 
 from ..segmentation.segmentation import SUBTITLE_PUNCTUATION
 from ..template.schema import CATEGORY_PARAMETERS, EffectTemplateEditor, EffectTrack, Template
-from ..template.timing import resolve_track
+from ..template.timing import ClipContext, TimelineContext, resolve_template, resolve_track
 from .schema import CompositionRequest, MatchedSegment, PositiveSeconds, Segment
 
 
@@ -42,12 +41,6 @@ def format_subtitle_keyword(content: str, keyword: str, config: EffectTemplateEd
     return format_keyword(content, keyword, config, "subtitle")
 
 
-def first_title_keyword(content: str) -> str:
-    """从请求标题首段连续文字取前两个字，供没有手动关键词的标题样式使用。"""
-    match = re.search(r"[^\W_]{1,2}", content)
-    return match.group() if match else ""
-
-
 def format_keyword(content: str, keyword: str, config: EffectTemplateEditor, role: str) -> str:
     """为标题或字幕的首个匹配词语添加局部样式；标题缺少该词语时保留原文。"""
     color = getattr(config, f"{role}_keyword_color")
@@ -75,9 +68,9 @@ def format_keyword(content: str, keyword: str, config: EffectTemplateEditor, rol
 def build_timeline(
     request: dict, template: dict, segments: list[dict], matches: list[dict],
     duration_ms: int | float, *, width: int, height: int, fps: int,
-    material_durations: list[float] | None = None,
+    material_durations: list[float] | None = None, title_keyword: str = "",
 ) -> tuple[dict, list[str]]:
-    """返回时间线及转场调整说明；无网络、模型、随机值或对输入快照的修改。"""
+    """返回时间线及转场说明；标题关键词仅取切片返回值，缺失不强调，不修改输入快照。"""
     request = CompositionRequest.model_validate(request)
     template = Template.model_validate(template)
     standard = request.composition_mode == "standard"
@@ -196,35 +189,35 @@ def build_timeline(
     timeline = {"VideoTracks": [{"VideoTrackClips": clips}], "AudioTracks": audio_tracks,
                 "SubtitleTracks": subtitle_tracks}
     effects = []
-    tracks = list(template.tracks)
+    # Remotion 片段由叠加视频服务渲染，不属于 IMS 时间线，也没有 IMS 效果可校验；
+    # 使用 Remotion 字效的标题或字幕同样由叠加视频显示，IMS 不再渲染这段文字。
+    remotion_texts = {track.text_target for track in template.tracks if track.text_target is not None}
+    tracks = [track for track in template.tracks if track.target != "remotion" and track.target not in remotion_texts]
     if not standard:
+        tracks = [track for track in tracks
+                  if not ((track.target == "subtitle" and not source) or (track.target == "title" and not request.title))]
         # 缺少对象时只补本次合成的默认样式，不保存模板，也不使用编辑器示例文字。
         for target, content in (("title", request.title), ("subtitle", source)):
-            if content and not any(track.target == target for track in tracks):
+            if content and target not in remotion_texts and not any(track.target == target for track in tracks):
                 tracks.append(EffectTrack(id=f"composition-{target}", target=target, start_mode="seconds",
                                           start=0, duration=None, editor=EffectTemplateEditor(**{
                                               key: "" for key in ("title", "subtitle", "bubble_text") if key != target
                                           })))
-    for track in tracks:
-        if not standard:
-            if (track.target == "subtitle" and not source) or (track.target == "title" and not request.title):
-                continue
-            if track.target == "title" and request.composition_mode == "materials_silent":
-                track = track.model_copy(update={"start_mode": "seconds", "start": 0, "duration": None})
+    layers = {"title": 0, "subtitle": 1, "bubble": 2, "transition": 3, "vfx": 4, "filter": 5}
+    resolved = resolve_template(template.model_copy(update={"tracks": tracks}), TimelineContext(
+        layout="fixed", fps=fps, duration=duration,
+        clips=[ClipContext(start=clip["TimelineIn"], duration=clip["TimelineOut"] - clip["TimelineIn"]) for clip in clips],
+    ))
+    warnings.extend(resolved.notices)
+    for track in sorted(tracks, key=lambda item: layers[item.target]):
         track_parameters = parameters_for(track.editor)
+        applied = resolved.tracks[track.id]
         if track.target == "transition":
-            # 忽略模板转场时间，默认一秒；每侧最多占半段，避免同一片段的入出转场重叠。
-            for clip, following in zip(clips, clips[1:]):
-                seconds = floor(min(1, (clip["TimelineOut"] - clip["TimelineIn"]) / 2,
-                                    (following["TimelineOut"] - following["TimelineIn"]) / 2) * fps + 1e-8) / fps
-                if seconds < 0.1:
-                    warnings.append(f"转场对象 {track.id}：{clip['TimelineOut']:g} 秒处片段过短，已跳过转场")
-                    continue
-                clip["Effects"].append({"Type": "DLTransition", **track_parameters["transition"], "Duration": seconds})
+            if applied.end > applied.start:
+                clips[track.transition_boundary - 1]["Effects"].append({
+                    "Type": "DLTransition", **track_parameters["transition"], "Duration": round(applied.end - applied.start, 10),
+                })
             continue
-        applied = resolve_track(track, duration, fps)
-        if applied.notice:
-            warnings.append(f"对象 {track.id}：{applied.notice}")
         if applied.end <= applied.start:
             continue
         if track.target in ("filter", "vfx"):
@@ -233,10 +226,10 @@ def build_timeline(
                 **track_parameters[track.target], "TimelineIn": applied.start, "TimelineOut": applied.end,
             }]})
         else:
-            # 标题使用请求文字；字幕沿用切片关键词；气泡按对象区间显示模板文字一次。
+            # 标题使用请求文字，标题与字幕关键词均取切片结果；气泡显示模板文字一次。
             contents = []
             if track.target == "title":
-                contents.append((request.title, "", applied.start, applied.end))
+                contents.append((request.title, title_keyword, applied.start, applied.end))
             elif track.target == "subtitle":
                 for item in source:
                     keyword_used = False
@@ -258,11 +251,9 @@ def build_timeline(
                     warnings.append(f"对象 {track.id}：{segment.notice}")
                 if segment.end > segment.start:
                     if track.target in ("title", "subtitle"):
-                        content = format_keyword(content, (segment.editor.title_keyword or first_title_keyword(content))
-                                                 if track.target == "title" else keyword,
-                                                 segment.editor, track.target)
-                    # 固定标题覆盖到请求终点，避免非整帧时长留下没有标题的尾部画面。
-                    end = duration if request.composition_mode == "materials_silent" and track.target == "title" else segment.end
+                        content = format_keyword(content, keyword, segment.editor, track.target)
+                    # 持续到结束的标题覆盖请求终点，固定时长标题遵循用户设置。
+                    end = duration if track.target == "title" and track.duration is None else segment.end
                     text_clips.append(text(track.target, content, segment.start, end, segment.editor, track_parameters))
             if text_clips:
                 timeline["SubtitleTracks"].append({"SubtitleTrackClips": text_clips})

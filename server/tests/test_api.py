@@ -111,7 +111,9 @@ def test_api_documentation(client: TestClient) -> None:
         "/api/v1/video-compositions", "/api/v1/video-compositions/{task_id}",
         "/api/v1/video-compositions/{task_id}/segment-match-callback",
         "/api/settings/plugins",
-        "/api/sprites", "/api/sprites/publish", "/api/sprites/styles/{style_id}", "/api/sprites/{sprite_id}/preview", "/api/sprites/{sprite_id}/fonts/{weight}",
+        "/api/sprites", "/api/sprites/publish", "/api/sprites/{sprite_id}/preview", "/api/sprites/{sprite_id}/fonts/{weight}",
+        "/api/sprites/render", "/api/sprites/render/{task_id}",
+        "/api/v1/overlay-renders", "/api/v1/overlay-renders/{task_id}",
     }
     parameter = schema["paths"]["/users/{user_id}"]["get"]["parameters"][0]
     assert parameter["name"] == "user_id"

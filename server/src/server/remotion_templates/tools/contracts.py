@@ -24,6 +24,10 @@ JsonObject = dict[str, JsonValue]
 JsonSchema = JsonObject
 PresetId = NonEmptyString
 SpriteId = NonEmptyString
+# 任务内草稿句柄：只在创建它的任务会话中有效。
+DraftId = NonEmptyString
+# 草稿内容摘要：内容相同则摘要相同，与每次随机生成的 draft_id 无关。
+DraftDigest = NonEmptyString
 Timestamp = NonEmptyString  # 输出还须符合下文的 UTC ISO 8601 约定。
 T = TypeVar("T")
 
@@ -204,10 +208,20 @@ class PresetModifyInput(ContractModel):
     changes: PresetChanges
 
 
-class PresetModifyOutput(ContractModel):
-    """完整副本，不含新记录 ID；source_preset_id 指向原记录。"""
+class PresetDraftSummary(ContractModel):
+    """宿主保存的预设副本摘要；完整源码不回传，由 draft_id 引用。"""
 
-    preset: PresetDraft
+    description: Description
+    parameter_names: list[str]
+    source_preset_id: Omittable[PresetId]
+
+
+class PresetModifyOutput(ContractModel):
+    """副本句柄与摘要，不含新记录 ID；source_preset_id 指向原记录。"""
+
+    draft_id: DraftId
+    digest: DraftDigest
+    preset: PresetDraftSummary
 
 
 class Composition(ContractModel):
@@ -244,10 +258,10 @@ class StoredPresetSource(ContractModel):
 
 
 class DraftPresetSource(ContractModel):
-    """直接携带完整预设副本。"""
+    """引用本任务内 preset.modify 返回或宿主登记（编辑基线）的预设副本。"""
 
     kind: Literal["draft"]
-    preset: PresetDraft
+    draft_id: DraftId
 
 
 PresetSource = Annotated[
@@ -275,12 +289,35 @@ class ResolvedPresetInstance(ContractModel):
     timing: InstanceTiming
 
 
+# 效果分类：text 为字效，filter_overlay 为滤镜，video_overlay 与 transition_overlay 合为转场与视频特效。
+SpriteKindName = Literal["text", "filter_overlay", "video_overlay", "transition_overlay"]
+# 顶层参数名：驼峰标识符，可安全用作 JSON 键和界面控件 ID。
+ParameterName = Annotated[StrictStr, StringConstraints(pattern=r"^[A-Za-z][A-Za-z0-9]{0,31}$")]
+
+
+class ParameterTarget(ContractModel):
+    """顶层参数写入的一个实例 prop。"""
+
+    instance_id: NonEmptyString
+    parameter: NonEmptyString
+
+
+class SpriteParameterBinding(ContractModel):
+    """把一个或多个实例的同名语义 prop 提升为 Sprite 顶层参数，供模板逐次摆放时修改。"""
+
+    name: ParameterName
+    title: Annotated[Description, Field(max_length=40)]
+    targets: list[ParameterTarget] = Field(min_length=1)
+
+
 class SpriteDraft(ComponentDefinition):
     """组合生成的源码、参数契约和实例快照。"""
 
     description: Description
     composition: Composition
     instances: list[ResolvedPresetInstance] = Field(min_length=1)
+    kind: Omittable[SpriteKindName]
+    bindings: list[SpriteParameterBinding] = Field(default_factory=list)
 
 
 class SpriteRecord(SpriteDraft):
@@ -290,29 +327,51 @@ class SpriteRecord(SpriteDraft):
     created_at: Timestamp
 
 class SpriteComposeInput(ContractModel):
-    """组合描述及显式编排的预设实例。"""
+    """组合描述、效果分类、显式编排的预设实例及提升为顶层的参数。"""
 
     description: Description
+    kind: SpriteKindName
     instances: list[PresetInstance] = Field(min_length=1)
+    parameters: list[SpriteParameterBinding] = Field(default_factory=list, max_length=32)
+
+
+class InstanceSummary(ContractModel):
+    """组合结果中一个实例的来源、参数名和编排；不含预设源码。"""
+
+    instance_id: NonEmptyString
+    preset_id: Omittable[PresetId]
+    draft_id: Omittable[DraftId]
+    parameter_names: list[str]
+    layout: InstanceLayout
+    timing: InstanceTiming
 
 
 class SpriteComposeOutput(ContractModel):
-    """尚未保存的完整组合结果。"""
+    """宿主保存的组合草稿句柄与摘要；完整源码不回传，sprite.create 按 draft_id 保存。"""
 
-    sprite: SpriteDraft
-
+    draft_id: DraftId
+    digest: DraftDigest
+    description: Description
+    composition: Composition
+    kind: SpriteKindName
+    instances: list[InstanceSummary]
+    parameter_names: list[str]
+    default_parameters: JsonObject
+    code_bytes: NonNegativeInteger
 
 
 class SpriteCreateInput(ContractModel):
-    """接收 compose 返回的完整组合定义。"""
+    """compose 返回的草稿句柄。"""
 
-    sprite: SpriteDraft
+    draft_id: DraftId
 
 
 class SpriteCreateOutput(ContractModel):
-    """新 sprite 记录及入库代码校验报告。"""
+    """新 sprite 的 ID 与入库代码校验报告；完整记录由宿主保存。"""
 
-    sprite: SpriteRecord
+    sprite_id: SpriteId
+    created_at: Timestamp
+    composition: Composition
     validation: CodeValidationReport
 
 
@@ -341,6 +400,7 @@ class CodeDiagnostic(ContractModel):
     code: Omittable[str]
     range: Omittable[TextRange]
     field: Omittable[str]
+    excerpt: Omittable[str]
 
 
 class CodeValidationInput(ContractModel):
@@ -420,7 +480,7 @@ ToolName = Literal[
     "image.info", "image.resize", "image.crop",
     "preset.search", "preset.create", "preset.modify",
     "validate.code", "validate.render", "sprite.compose", "sprite.create",
-    "tools.inspect", "tools.plan_execute",
+    "tools.inspect", "tools.plan_execute", "tools.report_step",
 ]
 
 

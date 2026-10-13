@@ -1,6 +1,7 @@
 """HTTP contracts for local template works, durable job events, uploads and bounded artifacts."""
 
 import hashlib
+import json
 import re
 import sqlite3
 from pathlib import Path
@@ -35,6 +36,7 @@ from .models import (
 )
 from .provider import ExecutionFailure
 from .runtime import Runtime
+from .publication import revisable
 from .store import NotFound
 from .stream import event_stream
 from .tool_validation import ValidationUnavailable
@@ -56,6 +58,8 @@ async def runtime_for(state) -> Runtime:
                 "Template runtime requires a writable local data folder owned by one process.",
             ) from exc
         state.runtime = service
+        # Overlay tasks left unfinished by the previous process continue as soon as the runtime exists.
+        service.overlays.resume()
     return state.runtime
 
 
@@ -65,6 +69,35 @@ async def runtime(request: Request) -> Runtime:
 
 
 Service = Annotated[Runtime, Depends(runtime)]
+
+
+def require_sandbox(service: Runtime) -> None:
+    """Refuse work that needs the isolated validator on a host that cannot start it, before anything is queued.
+
+    Only call this where rendering is certain: a model turn may still just answer or ask a question, which
+    needs no validator, so free-text messages are left to fail at the tool call with VALIDATION_UNAVAILABLE.
+    """
+    problem = service.sandbox_problem()
+    if problem is not None:
+        raise HTTPException(503, f"校验环境不可用：{problem}")
+
+
+def parameters_need_sandbox(service: Runtime, base_id: UUID | None, work_id: UUID | None = None) -> bool:
+    """Whether a parameter patch on this base renders in the sandbox.
+
+    PR76 versions whose player bundle reads injected defaults are revised instantly; older ones are rebuilt in the
+    sandbox. Without an explicit base the work's current version is the base. A missing work or version needs the
+    sandbox check here and is then reported by the edit itself.
+    """
+    try:
+        if base_id is None and work_id is not None:
+            base_id = service.store.project(work_id).current_version_id
+        if base_id is None:
+            return True
+        version = service.store.version(base_id)
+        return version.spec.schema_version != "2" or not revisable(service.store.root / "accepted" / str(version.id))
+    except (NotFound, ValueError):
+        return True
 
 
 def client_config(value: Annotated[str | None, Header(alias="X-Remotion-Config")] = None) -> ClientSettings | None:
@@ -128,6 +161,7 @@ async def create(
     settings = service.settings.model_copy(update=config.model_dump()) if config is not None else service.settings
     if not settings.models_configured:
         raise HTTPException(503, "请配置 Agent 模型及密钥")
+    require_sandbox(service)
     if request.image:
         service.store.asset(request.image.asset_id)
     project, job = service.store.create(request)
@@ -186,11 +220,15 @@ async def edit(work_id: UUID, request: TaskMessage, service: Service, config: Co
 
     默认基于当前成功版本，也可用 `base_version_id` 指定历史成功版本。
     回答问题时用 instruction 提交答案，并用 reply_to_job_id 绑定提出问题的任务。
-    参数修改保留 TSX，经参数合法性与渲染可用性检查后保存，不调用 Actor 或 Judge。
+    参数修改保留 TSX：组合版本（PR76）只做参数 Schema 校验并立即封存新默认值，不进入任务队列、不启动沙箱、不重新打包；
+    更早的版本仍经渲染检查后保存。都不调用 Actor 或 Judge。
     手动修订成为后续自然语言修改的基线；问题已过期或已有运行任务时返回 409。
+    更早版本的参数修改在入队前检查校验环境，缺失时返回 503；提问、澄清回复与自然语言修改不需要校验器即可回答，不受此限制。
     纯问答或明确保持现状时返回 answered 终态，回答通过 message 和会话历史提供，不产生新版本。
     尚无成功版本的会话也可继续提问或描述生成需求；参数修改仍须已有成功版本。
     """
+    if request.parameters is not None and parameters_need_sandbox(service, request.base_version_id, work_id):
+        require_sandbox(service)
     try:
         return PublicJob.from_job(service.message(work_id, request, config))
     except ValueError as exc:
@@ -289,7 +327,10 @@ async def retry(job_id: UUID, service: Service, config: Config) -> PublicJob:
     """为失败、已取消或中断的任务创建一次新的执行，返回新的任务 ID。
 
     保留原任务记录及产物，不从中断位置续跑；不符合重试条件时返回 409。
+    更早版本的参数修订任务重试需要渲染校验环境，缺失时返回 503；组合版本的参数修订与对话类任务仍可重试，环境问题在校验工具调用时报告。
     """
+    if service.store.inputs(job_id).mode == "parameters" and parameters_need_sandbox(service, service.store.job(job_id).base_version_id):
+        require_sandbox(service)
     return PublicJob.from_job(service.retry(job_id, config=config))
 
 
@@ -381,10 +422,20 @@ def download(version_id: UUID, filename: str, service: Service) -> FileResponse:
     return FileResponse(artifact_path(service, version_id, filename), filename=filename)
 
 
-def player_page(script: str, *, overlay: bool = False) -> HTMLResponse:
+def _json_script(value: dict) -> str:
+    """Serialize page data for a JSON script element; ``<``, ``>``, ``&`` and line separators cannot end it early."""
+    text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    for character, escaped in (("<", "\\u003c"), (">", "\\u003e"), ("&", "\\u0026"), ("\u2028", "\\u2028"), ("\u2029", "\\u2029")):
+        text = text.replace(character, escaped)
+    return text
+
+
+def player_page(script: str, *, overlay: bool = False, host: dict | None = None) -> HTMLResponse:
     """Wrap a sealed interactive bundle in the sandboxed player document shared by versions and sprites.
 
-    `overlay` drops the inspection checkerboard so the page can sit transparently over other video.
+    `overlay` drops the inspection checkerboard so the page can sit transparently over other video. `host`
+    (defaults ``config`` and content ``box``) is injected as JSON the player reads at start-up instead of the
+    defaults built into the bundle.
     """
     script = script.replace("</", "<\\/")
     return HTMLResponse(
@@ -392,7 +443,9 @@ def player_page(script: str, *, overlay: bool = False) -> HTMLResponse:
         "<title>Remotion 字效预览</title><style>html,body,#root{margin:0;width:100%;height:100%;overflow:hidden}"
         + (":root{color-scheme:light}html,body{background:transparent}body{color:#fff;font-family:sans-serif}</style>" if overlay else "body{color:#fff;background-color:#25252b;background-image:conic-gradient(#35353d 25%,transparent 0 50%,#35353d 0 75%,transparent 0);background-size:24px 24px;font-family:sans-serif}</style>")
         +
-        '<body><div id="root"></div><script>' + script + "</script></body></html>",
+        '<body><div id="root"></div>'
+        + (f'<script type="application/json" id="imv-preview-host">{_json_script(host)}</script>' if host is not None else "")
+        + "<script>" + script + "</script></body></html>",
         headers={
             "Content-Security-Policy": "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src http: https:; media-src http: https: data:; img-src http: https: data:; connect-src 'none'; base-uri 'none'; form-action 'none'",
             "Cache-Control": "no-store",
@@ -413,7 +466,8 @@ def preview(version_id: UUID, service: Service) -> HTMLResponse:
     父页面以 iframe 加载，使用 URL fragment 作为消息通道标识；只交换参数、背景链接及就绪通知。
     """
     script = artifact_path(service, version_id, "interactive.js").read_text()
-    return player_page(script)
+    # A parameter revision reuses its base's bundle, so the page supplies this version's own defaults.
+    return player_page(script, host={"config": service.store.version(version_id).candidate.default_config})
 
 
 @router.get(

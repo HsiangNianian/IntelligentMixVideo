@@ -112,3 +112,66 @@ test("键序不同但等价的 JSON 不产生净变化", async () => {
   expect(result.current.saveParameters()).toBe(false);
   expect(parameterPosts()).toEqual([]);
 });
+
+/** 组合版本：顶层参数有颜色、字号、字重与关键词，实例 title 只剩一个数字参数。 */
+function composedVersion() {
+  const version = remotionNestedVersion();
+  version.candidate.default_config = { text: "今日灵感", color: "#FFFFFF", fontSize: 64, fontWeight: 400, keywords: [], title: { glow: 0.4 } };
+  version.candidate.config_schema = {
+    properties: {
+      text: { type: "string", title: "标题文字", minLength: 1, maxLength: 12 },
+      color: { type: "string", title: "颜色", pattern: "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$" },
+      fontSize: { type: "number", title: "字号", minimum: 24, maximum: 240 },
+      fontWeight: { type: "integer", title: "字重", enum: [400, 700] },
+      keywords: { type: "array", title: "关键词", items: { type: "string", maxLength: 4 }, maxItems: 2 },
+      title: { type: "object", properties: { glow: { type: "number", title: "光晕", minimum: 0, maximum: 1 } } },
+    },
+  };
+  return version;
+}
+
+/** 渲染组合版本的面板并记录回传的参数变化。 */
+function renderComposed(changes: [string, JsonValue][]) {
+  const version = composedVersion();
+  render(<ParametersPanel version={version} values={version.candidate.default_config} disabled={false} pending={false} dirty={false} saving={false}
+    onChange={(key, value) => changes.push([key, value])} onSave={() => {}} onDiscard={() => {}} />);
+}
+
+test("组合版本按 Schema 生成类型化控件，实例参数整体回传", () => {
+  const changes: [string, JsonValue][] = [];
+  renderComposed(changes);
+  expect(screen.getByRole("group", { name: "模板参数" })).toBeTruthy();
+  fireEvent.change(screen.getByLabelText("标题文字"), { target: { value: "新品上市" } });
+  fireEvent.change(screen.getByLabelText("颜色选择器"), { target: { value: "#ff0000" } });
+  fireEvent.change(screen.getByLabelText("字号"), { target: { value: "96" } });
+  fireEvent.change(screen.getByLabelText("关键词"), { target: { value: "新品，上市" } });
+  fireEvent.change(screen.getByLabelText("光晕"), { target: { value: "0.8" } });
+  expect(changes).toEqual([
+    ["text", "新品上市"], ["color", "#ff0000"], ["fontSize", 96], ["keywords", ["新品", "上市"]], ["title", { glow: 0.8 }],
+  ]);
+  expect(screen.queryByLabelText("实例参数 · title")).toBeNull();
+});
+
+test("超出范围、长度或项数的输入只留在表单并提示", () => {
+  const changes: [string, JsonValue][] = [];
+  renderComposed(changes);
+  fireEvent.change(screen.getByLabelText("字号"), { target: { value: "999" } });
+  fireEvent.change(screen.getByLabelText("标题文字"), { target: { value: "" } });
+  fireEvent.change(screen.getByLabelText("关键词"), { target: { value: "一，二，三" } });
+  expect(changes).toEqual([]);
+  expect(screen.getAllByRole("alert").map((item) => item.textContent)).toEqual([
+    "请输入有效的标题文字。", "请输入有效的字号。", "请输入有效的关键词（最多 2 个）。",
+  ]);
+});
+
+test("实例参数的 pattern 在本地检查，不合的输入不进入预览", () => {
+  const changes: [string, JsonValue][] = [];
+  const version = composedVersion();
+  version.candidate.config_schema.properties.title = { type: "object", properties: { code: { type: "string", title: "编号", maxLength: 6, pattern: "^[A-Z]+$" } } };
+  render(<ParametersPanel version={version} values={{ ...version.candidate.default_config, title: { code: "AB" } }} disabled={false} pending={false} dirty={false} saving={false}
+    onChange={(key, value) => changes.push([key, value])} onSave={() => {}} onDiscard={() => {}} />);
+  fireEvent.change(screen.getByLabelText("编号"), { target: { value: "ab" } });
+  expect(screen.getByRole("alert").textContent).toBe("请输入有效的编号。");
+  fireEvent.change(screen.getByLabelText("编号"), { target: { value: "XY" } });
+  expect(changes).toEqual([["title", { code: "XY" }]]);
+});

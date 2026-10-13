@@ -2,6 +2,7 @@
 import { expect, test } from "bun:test";
 import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { RemotionWorkspace } from "@/features/remotion_templates/RemotionWorkspace";
+import { durationFrames } from "@/features/remotion_templates/composition";
 import { useTemplateSession } from "@/features/remotion_templates/useTemplateSession";
 import { remotionServer } from "./remotion-server";
 import { remotionJob, remotionVersion } from "./remotion-fixtures";
@@ -14,7 +15,7 @@ function creations() {
     .map(([, options]) => JSON.parse(String(options?.body)));
 }
 
-// 画布直接钉死：不提供任何画布、帧率或时长入口，只显示固定规格说明。
+// 画布直接钉死：不提供画布或帧率入口，只显示固定规格说明；时长默认 5 秒。
 test("新会话钉死固定画布并发送固定初始配置", async () => {
   remotionServer(path => path === "/works"
     ? Response.json({ work: { id: "work-1" }, job: remotionJob("running") })
@@ -24,7 +25,7 @@ test("新会话钉死固定画布并发送固定初始配置", async () => {
   for (const name of ["画布", "帧率", "Sprite 类型"]) {
     expect(screen.queryByRole("combobox", { name })).toBeNull();
   }
-  expect(screen.queryByLabelText("字效时长（秒）")).toBeNull();
+  expect(screen.getByRole("combobox", { name: "预览时长" }).textContent).toContain("5 秒");
   expect(screen.queryByLabelText("画布宽度（像素）")).toBeNull();
   expect(screen.queryByLabelText("画布高度（像素）")).toBeNull();
   fireEvent.change(screen.getByLabelText("字效描述"), { target: { value: "生成标题" } });
@@ -38,6 +39,89 @@ test("新会话钉死固定画布并发送固定初始配置", async () => {
   expect(screen.queryByRole("button", { name: "发送" })).toBeNull();
   expect(screen.getByRole("button", { name: "停止" })).toBeTruthy();
   expect(screen.getByRole<HTMLButtonElement>("button", { name: "图片" }).disabled).toBe(true);
+});
+
+/** 选择下拉中的一项（Radix Select 通过键盘事件操作）。 */
+async function chooseDuration(option: string) {
+  fireEvent.keyDown(screen.getByRole("combobox", { name: "预览时长" }), { key: "ArrowDown" });
+  fireEvent.keyDown(await screen.findByRole("option", { name: option }), { key: "Enter" });
+}
+
+// 常用时长：选 10 秒后首次请求携带 300 帧，帧率与画布不变。
+test("选择常用时长后按整帧发送", async () => {
+  remotionServer(path => path === "/works"
+    ? Response.json({ work: { id: "work-1" }, job: remotionJob("running") })
+    : undefined);
+  await act(async () => { render(<RemotionWorkspace />); });
+  await chooseDuration("10 秒");
+  fireEvent.change(screen.getByLabelText("字效描述"), { target: { value: "生成标题" } });
+  fireEvent.click(screen.getByRole("button", { name: "发送" }));
+  await waitFor(() => expect(creations()).toHaveLength(1));
+  expect(creations()[0].composition).toEqual({ width: 1080, height: 1920, fps: 30, duration_in_frames: 300 });
+  // 会话创建后时长固定，选择入口随之消失。
+  await waitFor(() => expect(screen.queryByRole("combobox", { name: "预览时长" })).toBeNull());
+});
+
+// 自定义时长：小数秒四舍五入到整帧；超过 30 秒或无效时禁止发送并提示，修正后恢复。
+test("自定义时长换算整帧并拦截超限输入", async () => {
+  remotionServer(path => path === "/works"
+    ? Response.json({ work: { id: "work-1" }, job: remotionJob("running") })
+    : undefined);
+  await act(async () => { render(<RemotionWorkspace />); });
+  await chooseDuration("自定义");
+  fireEvent.change(screen.getByLabelText("字效描述"), { target: { value: "生成标题" } });
+  const send = screen.getByRole<HTMLButtonElement>("button", { name: "发送" });
+  expect(send.disabled).toBe(true);
+  // 审计复现：空输入时发送按钮曾无故变灰；现在输入框下说明范围，但不作为错误播报。
+  expect(screen.getByText("请输入不超过 30 秒、至少 1 帧的时长").getAttribute("role")).toBeNull();
+  expect(screen.getByLabelText("自定义预览时长（秒）").getAttribute("aria-describedby")).toBe(screen.getByText("请输入不超过 30 秒、至少 1 帧的时长").id);
+  fireEvent.change(screen.getByLabelText("自定义预览时长（秒）"), { target: { value: "31" } });
+  expect(screen.getByRole("alert").textContent).toBe("请输入不超过 30 秒、至少 1 帧的时长");
+  expect(send.disabled).toBe(true);
+  fireEvent.change(screen.getByLabelText("自定义预览时长（秒）"), { target: { value: "2.55" } });
+  expect(screen.queryByText("请输入不超过 30 秒、至少 1 帧的时长")).toBeNull();
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "发送" }).disabled).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "发送" }));
+  await waitFor(() => expect(creations()).toHaveLength(1));
+  expect(creations()[0].composition.duration_in_frames).toBe(77);
+});
+
+// PR #111 审查复现：曾另设 0.1 秒下限，服务端接受的 1～2 帧时长（30 FPS 下 0.02、0.05 秒）被拒绝；现在按取整后的帧数校验 1～900 帧。
+test("时长按取整后的帧数校验 1 帧～30 秒", () => {
+  expect(durationFrames(0.02)).toBe(1);
+  expect(durationFrames(0.05)).toBe(2);
+  expect(durationFrames(0.01)).toBeNull();
+  expect(durationFrames(30)).toBe(900);
+  expect(durationFrames(30.01)).toBe(900);
+  expect(durationFrames(30.02)).toBeNull();
+  expect(durationFrames(Number.NaN)).toBeNull();
+  expect(durationFrames(Number.POSITIVE_INFINITY)).toBeNull();
+});
+
+// 审计复现：超出范围的值曾让发送按钮可用，点击被浏览器原生校验拦截，Enter 却直接创建请求；现在两条路径一致，
+// 范围内的短时长也不被原生 min/max 拦下点击。
+test("超出范围的自定义时长既不能点击也不能按 Enter 发送", async () => {
+  remotionServer(path => path === "/works"
+    ? Response.json({ work: { id: "work-1" }, job: remotionJob("running") })
+    : undefined);
+  await act(async () => { render(<RemotionWorkspace />); });
+  await chooseDuration("自定义");
+  const description = screen.getByLabelText("字效描述");
+  fireEvent.change(description, { target: { value: "生成标题" } });
+  const input = screen.getByLabelText<HTMLInputElement>("自定义预览时长（秒）");
+  const send = screen.getByRole<HTMLButtonElement>("button", { name: "发送" });
+  for (const value of ["0.01", "30.02"]) {
+    fireEvent.change(input, { target: { value } });
+    expect(send.disabled).toBe(true);
+    expect(screen.getByRole("alert").textContent).toBe("请输入不超过 30 秒、至少 1 帧的时长");
+    fireEvent.keyDown(description, { key: "Enter" });
+  }
+  fireEvent.change(input, { target: { value: "0.05" } });
+  expect(input.checkValidity()).toBe(true);
+  expect(send.disabled).toBe(false);
+  fireEvent.keyDown(description, { key: "Enter" });
+  await waitFor(() => expect(creations()).toHaveLength(1));
+  expect(creations()[0].composition.duration_in_frames).toBe(2);
 });
 
 // 没有用户输入时不能创建任务；删除可变表单不绕过已有发送条件。

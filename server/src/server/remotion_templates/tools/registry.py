@@ -1,5 +1,6 @@
 """PR76 decorator registry: derive strict schemas and dispatch only declared handlers."""
 
+import json
 from dataclasses import dataclass
 from difflib import get_close_matches
 from inspect import signature
@@ -66,17 +67,46 @@ class RegisteredTool:
                     else self.input_model.model_validate(payload)
                 )
             except ValidationError as exc:
-                error = exc.errors(include_input=False, include_context=False)[0]
-                pointer = "/" + "/".join(
-                    str(part).replace("~", "~0").replace("/", "~1")
-                    for part in error["loc"]
-                )
-                raise ToolFault("INVALID_ARGUMENT", error["msg"], field=pointer) from exc
+                raise argument_fault(exc) from exc
             result = await self.function(owner, request)
         except ToolFault as exc:
             result = ToolFailure(ok=False, error=exc.error)
         validated = self.output.validate_python(result)
         return self.output.dump_python(validated, mode="json", exclude_unset=True)
+
+
+def argument_fault(exc: ValidationError) -> ToolFault:
+    """Turn a validation error into INVALID_ARGUMENT: the first JSON Pointer as field, up to three located messages."""
+    errors = exc.errors(include_input=False, include_context=False)
+    pointers = [
+        "/" + "/".join(str(part).replace("~", "~0").replace("/", "~1") for part in error["loc"])
+        for error in errors
+    ]
+    message = "; ".join(f"{pointer}: {error['msg']}" for pointer, error in zip(pointers[:3], errors))
+    if len(errors) > 3:
+        message += f"; and {len(errors) - 3} more"
+    return ToolFault("INVALID_ARGUMENT", message, field=pointers[0])
+
+
+def parse_arguments(model: type[BaseModel], raw: str) -> tuple[BaseModel, str]:
+    """Validate provider call arguments; returns the request and any extra closing brackets that were dropped.
+
+    Only surplus `}` or `]` after one complete JSON object are tolerated: weak models add them at the end of
+    long payloads. Anything else stays an error that names the position and the text around it.
+    """
+    text = raw.strip()
+    try:
+        value, end = json.JSONDecoder().raw_decode(text)
+    except json.JSONDecodeError as exc:
+        raise ToolFault("INVALID_ARGUMENT", f"Arguments are not valid JSON: {exc.msg} at character {exc.pos}, near {text[max(exc.pos - 40, 0):exc.pos + 40]!r}") from exc
+    rest = text[end:]
+    if rest.strip(" \t\r\n}]"):
+        raise ToolFault("INVALID_ARGUMENT", f"Unexpected text after the JSON arguments at character {end}, near {text[max(end - 40, 0):end + 40]!r}")
+    try:
+        # Validate in JSON mode, exactly as for the original string, so strict types keep their JSON rules.
+        return model.model_validate_json(json.dumps(value)), rest.strip()
+    except ValidationError as exc:
+        raise argument_fault(exc) from exc
 
 
 _TOOLS: dict[str, RegisteredTool] = {}
@@ -111,10 +141,14 @@ def tool(
         for example in examples:
             model.model_validate(example["input"])
             output.validate_python(example["output"])
+        description = (function.__doc__ or "").strip() or name
+        if not implemented:
+            # Deferred contracts stay inspectable, but no layer's window offers them; say that before the rest.
+            description = f"[Not callable in this build: contract only, no tool window offers it.] {description}"
         descriptor = ToolDescriptor(
             tool_name=name,
             contract_version=contract_version,
-            description=(function.__doc__ or "").strip() or name,
+            description=description,
             input_schema=model.model_json_schema(),
             output_schema=output.json_schema(),
             constraints=list(constraints),
@@ -151,5 +185,11 @@ def get_tool(name: str, candidates=None):
             return item
     close = get_close_matches(str(name), [wire_name(item.name) for item in candidates], n=2, cutoff=0.5)
     hint = f" Closest: {', '.join(close)}." if close else ""
-    known = ", ".join(item.name for item in candidates) or "none"
-    raise ToolFault("TOOL_NOT_FOUND", f"Unknown or out-of-scope tool: {name}.{hint} Available tools: {known}")
+    # A dispatch window only holds implemented tools. Inspection also holds contract-only ones, which can be
+    # read but never called, so they are listed apart instead of being offered as available.
+    known = ", ".join(item.name for item in candidates if getattr(item, "implemented", True)) or "none"
+    reference = [item.name for item in candidates if not getattr(item, "implemented", True)]
+    message = f"Unknown or out-of-scope tool: {name}.{hint} Available tools: {known}"
+    if reference:
+        message += f". Contract-only, not callable: {', '.join(reference)}"
+    raise ToolFault("TOOL_NOT_FOUND", message)

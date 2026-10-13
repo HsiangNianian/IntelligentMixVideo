@@ -60,6 +60,10 @@ class Settings(ClientSettings, CommonSettings):
     data_dir: Path = Path(".data")
     job_timeout_seconds: int = Field(default=600, ge=1, le=3600)
     render_timeout_seconds: int = Field(default=180, ge=1, le=600)
+    # 总线请求的整段透明叠加视频：时长上限与独立的渲染超时。1080×1920 约每帧 0.4～1 秒，
+    # 所以 30 FPS 的 120 秒需要约 25～60 分钟；超时须按“上限秒数 × 帧率 × 每帧秒数”配置，默认取最大值。
+    overlay_max_seconds: int = Field(default=120, ge=1, le=600)
+    overlay_render_timeout_seconds: int = Field(default=3600, ge=1, le=3600)
     # 瞬时传输故障与上游限流/不可用会等待后重试；等待按次数翻倍，上限 30 秒。
     model_retries: int = Field(default=2, ge=0, le=5)
     model_retry_delay_seconds: float = Field(default=2.0, ge=0.1, le=30.0)
@@ -86,6 +90,8 @@ class Settings(ClientSettings, CommonSettings):
     max_image_pixels: int = Field(default=20_000_000, gt=0)
     renderer_dir: Path = Path(__file__).parent.parent / "remotion"
     runtime_lib_dir: Path | None = None
+    # 开发专用：macOS 没有 bubblewrap，开启后直接用 Node 运行 worker，生成的代码不受隔离；其他系统忽略此开关。
+    allow_unsandboxed_worker: bool = False
     browser_executable: Path = Field(default_factory=default_browser_executable)
     font_regular: Path = Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc")
     font_bold: Path = Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc")

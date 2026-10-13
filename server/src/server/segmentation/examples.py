@@ -28,7 +28,7 @@ SEGMENTATION_REQUEST_EXAMPLE = {
     },
 }
 
-# 文档成功响应示例：二次切分后每段至多 8 个有效字，原文标点保留给下游。
+# 文档成功响应示例：超长片段按有效字中点二分至最多 8 字，原文标点保留给下游。
 # warnings 非空时元素为 {"code", "message"}，此处展示正常对齐情况所以为空数组。
 SEGMENTATION_RESPONSE_EXAMPLE = {
     "title_keyword": "散养土鸡",
@@ -36,17 +36,17 @@ SEGMENTATION_RESPONSE_EXAMPLE = {
         {
             "segment_id": 1,
             "group_id": [1, 4],
-            "text": "大家好，",
+            "text": "大家好，欢迎",
             "start_time": 0.0,
-            "end_time": 0.6,
+            "end_time": 1.0,
             "keyword": "",
             "level": 1,
         },
         {
             "segment_id": 2,
             "group_id": [2, 4],
-            "text": "欢迎来到直播间。",
-            "start_time": 0.6,
+            "text": "来到直播间。",
+            "start_time": 1.0,
             "end_time": 2.0,
             "keyword": "",
             "level": 1,

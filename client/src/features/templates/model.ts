@@ -1,4 +1,6 @@
 /** 模板配置和初始草稿；对象保存时间规则，预览媒体由工作区独立持有。 */
+import type { ParameterValue } from "@/components/ParameterControl";
+import type { ClipTransform } from "@/features/sprites/parameters";
 
 /** IMS Transition 与 DLTransition 的默认持续时间，单位为秒。 */
 export const defaultTransitionDuration = 1;
@@ -101,12 +103,32 @@ export interface EffectAsset {
   preview_url: string;
 }
 
+/** 模板里的一次 Remotion 片段摆放：引用已发布的 Sprite，起点为秒；列表先后决定叠放层级，先者在下。 */
+export interface RemotionClip {
+  /** 模板内唯一的摆放 ID，同一个 Sprite 可以摆放多次。 */
+  id: string;
+  sprite_id: string;
+  start: number;
+  /** 秒数；null 表示沿用 Sprite 自身的时长。 */
+  duration: number | null;
+  /** 这次摆放修改过的参数（key 为发布参数名）；未列出的参数沿用资产默认值。 */
+  parameters: Record<string, ParameterValue>;
+  /** 宿主变换：内容中心位置、缩放、旋转与不透明度；未设置的字段取默认值。 */
+  transform: ClipTransform;
+  /** 字效作用的文字对象：该文字改由这个片段显示，起点与时长跟随它。 */
+  text_target?: "title" | "subtitle";
+  /** 转场占用的视频交界处，片段以交界处为中心播放。 */
+  transition_boundary?: number;
+}
+
 /** 用户可修改的完整配置，不包含服务端标识和时间。 */
 export interface Draft {
   name: string;
   description: string;
   transition_duration_seconds: number;
   tracks: EffectTrack[];
+  /** Remotion 片段不进入 IMS 效果与 SDK 预览，按分类占用文字对象、视频交界处或特效名额，随模板一并保存。 */
+  clips: RemotionClip[];
 }
 
 /** 单个对象的参数面板输入，只在编辑期间使用，不作为模板保存。 */
@@ -123,18 +145,39 @@ export interface MasterVideo {
   height: number;
 }
 
+/** 三个预览来源按视频编号保存，排列由工作区独立管理。 */
+export type PreviewMedia = readonly [MasterVideo, MasterVideo, MasterVideo];
+
 /** 每个特效实例拥有独立时间和参数；文字动画保存在所属文字实例内。 */
 export interface EffectTrack {
   id: string;
   target: TextRole | "filter" | "vfx" | "transition";
-  start_mode: "seconds" | "percent";
-  start: number;
+  start_mode?: "seconds" | "percent";
+  start?: number;
   duration: number | null;
   editor: Editor;
+  /** 转场必须指定交界处，且不保存 start/start_mode；其他对象省略此字段。 */
+  transition_boundary?: number;
+}
+
+/** 列表只携带展示信息与校验结果，无效记录可以定位和删除。 */
+export interface TemplateSummary {
+  template_id: string;
+  name: string;
+  description: string;
+  created_at: string;
+  updated_at: string;
+  title: string;
+  subtitle: string;
+  track_count?: number;
+  validation_error: string;
+  library?: string;
 }
 
 /** 后端返回的完整模板，effects 为保存时的可信快照。 */
-export interface Template extends Draft {
+export interface Template extends Omit<Draft, "clips"> {
+  /** 旧版本地模板文件没有该字段，按空列表处理。 */
+  clips?: RemotionClip[];
   template_id: string;
   /** 本地模板所属文件路径，由桌面端返回；保存时传回，路径已变更则拒绝写入。 */
   library?: string;
@@ -149,7 +192,11 @@ export function newDraft(): Draft {
   return {
     name: "",
     description: "",
-    tracks: [],
+    tracks: (["title", "subtitle"] as const).map((target) => ({
+      id: target, target, start_mode: "seconds", start: 0, duration: null,
+      editor: { ...defaultEditor, title: "", subtitle: "", bubbleText: "", [target]: defaultEditor[target] },
+    })),
+    clips: [],
     transition_duration_seconds: defaultTransitionDuration,
   };
 }
@@ -163,6 +210,7 @@ export function toDraft(template: Template): Draft {
     description: template.description,
     transition_duration_seconds: template.transition_duration_seconds,
     tracks: structuredClone(template.tracks),
+    clips: structuredClone(template.clips ?? []),
   };
 }
 
