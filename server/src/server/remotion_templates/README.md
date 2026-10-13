@@ -284,7 +284,9 @@ environment checks are the overlay render's 503s. The task shares the overlay re
 recovery and callback body below, uploads to ZOS `imv/sprite_render/{taskId}.webm`, and is read with
 `GET /api/sprites/render/{taskId}` (`SpriteRenderTask`); each query endpoint only finds its own kind of task.
 `GET /api/sprites/{id}/preview?overlay=true&sync=1` serves the sealed player on a transparent page for the template editor;
-a sync-mode bundle has no controls or loop and seeks on `imv-preview-sync {time}` messages, reporting `sync: true` in its
+a sync-mode bundle has no controls or loop and seeks on `imv-preview-sync {time, duration?}` messages (`duration` is the
+placement's full length in seconds, up to 120; the Player takes it as its length, so a composed Sprite lays itself out
+like in the bus render), reporting `sync: true` in its
 ready message. The page injects the published defaults and content box as a JSON element (`#imv-preview-host`, with
 `<`, `>`, `&` and line separators escaped); the player starts from them, merges `imv-preview-update` values over
 them (objects key by key, arrays and scalars replace) and applies an optional `host: {transform}` through

@@ -2,7 +2,7 @@
 import type { SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { AssetParameter, ContentBox } from "./parameters";
 
-/** 公开目录条目；seconds 是资产自身的播放时长，片段摆放时直接使用。 */
+/** 公开目录条目；seconds 是生成时的预览长度，只作为片段的默认时长，渲染时长由摆放或总线决定。 */
 export interface SpriteAsset {
   id: string;
   name: string;

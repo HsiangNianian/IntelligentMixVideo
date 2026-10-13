@@ -63,6 +63,8 @@ export interface SpriteClip {
   name: string;
   start: number;
   end: number;
+  /** 这次摆放的完整时长（秒）：Sprite 按它排布与播放，end 只是被预览视频截短后的显示终点。 */
+  length: number;
   /** 占用的模板对象；字效尚未选择文字对象或资产不在目录中时为空，单独成行提示。 */
   slot?: ClipSlot;
   /** 转场所在的视频交界处。 */

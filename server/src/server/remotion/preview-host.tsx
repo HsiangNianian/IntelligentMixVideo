@@ -8,7 +8,7 @@ import initial from "imv:config";
 import { HostLayer, type HostBox, type HostTransform } from "./host-layer";
 
 const channel = window.location.hash.slice(1);
-/** Sync mode (`?sync=1`): no controls or loop; the parent scrubs the Player with `imv-preview-sync` times. */
+/** Sync mode (`?sync=1`): no controls or loop; the parent scrubs the Player with `imv-preview-sync` times and an optional clip length. */
 const sync = new URLSearchParams(window.location.search).get("sync") === "1";
 type JsonValue = null | string | number | boolean | JsonValue[] | {[key: string]: JsonValue};
 type Values = Record<string, JsonValue>;
@@ -91,6 +91,9 @@ interface PreviewProps {
  * Send only protocol notifications; `sync` tells the parent whether this bundle understands scrub messages and
  * `host` that it accepts partial values and a placement transform.
  */
+/** The longest length the bus renders a Sprite at; a longer sync request is ignored. */
+const MAX_LENGTH_SECONDS = 120;
+
 function notify(type: string, message?: string, requestId?: number) {
   window.parent.postMessage({ type, channel, message, requestId, sync, host: true }, "*");
 }
@@ -161,6 +164,16 @@ function App() {
   });
   const player = useRef<PlayerRef>(null);
   const c = initial.composition;
+  // The bus renders a Sprite at the final video's length; in sync mode the parent passes the clip's length and the
+  // composed Sprite lays itself out against it, like the real render. A seek waits until a new length is applied.
+  const [length, setLength] = useState(c.duration_in_frames);
+  const lengthRef = useRef(length);
+  const pendingSeek = useRef<number | null>(null);
+  useEffect(() => {
+    if (pendingSeek.current === null) return;
+    player.current?.seekTo(Math.min(length - 1, pendingSeek.current));
+    pendingSeek.current = null;
+  }, [length]);
   useEffect(() => {
     function receive(event: MessageEvent) {
       const data = event.data;
@@ -168,8 +181,17 @@ function App() {
       if (data?.type === "imv-preview-sync") {
         // Scrub to the parent's clock; frames are derived here so the parent needs no fps.
         if (!sync || typeof data.time !== "number" || !Number.isFinite(data.time)) return;
+        const duration = data.duration;
+        if (duration !== undefined && (typeof duration !== "number" || !(duration > 0) || duration > MAX_LENGTH_SECONDS)) return;
+        const frames = duration === undefined ? lengthRef.current : Math.max(1, Math.round(duration * c.fps));
+        const frame = Math.max(0, Math.round(data.time * c.fps));
         player.current?.pause();
-        player.current?.seekTo(Math.min(c.duration_in_frames - 1, Math.max(0, Math.round(data.time * c.fps))));
+        if (frames === lengthRef.current) player.current?.seekTo(Math.min(frames - 1, frame));
+        else {
+          lengthRef.current = frames;
+          pendingSeek.current = frame;
+          setLength(frames);
+        }
         return;
       }
       if (data?.type !== "imv-preview-update") return;
@@ -206,7 +228,7 @@ function App() {
       inputProps={props}
       compositionWidth={c.width}
       compositionHeight={c.height}
-      durationInFrames={c.duration_in_frames}
+      durationInFrames={length}
       fps={c.fps}
       controls={!sync}
       loop={!sync}

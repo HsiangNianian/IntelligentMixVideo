@@ -95,6 +95,7 @@ export function TemplateWorkspace({ selection = null, onHome }: {
       name: asset?.name ?? "Remotion 资产",
       start: clip.start,
       end: Math.min(previewLength, clip.start + (clip.duration ?? asset?.seconds ?? 0)),
+      length: clip.duration ?? asset?.seconds ?? 0,
       slot: clipSlot(clip, asset),
       boundary: clip.transition_boundary,
       values: text && clip.text_target ? { ...clip.parameters, text: text.editor[clip.text_target], keywords: [exampleKeyword(text.editor, clip.text_target)].filter(Boolean) } : clip.parameters,

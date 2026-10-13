@@ -1,6 +1,6 @@
 /**
- * 新会话发送前的字效时长选择：常用秒数下拉加自定义输入，默认 5 秒。
- * 只在首次请求前显示；通过 `onChange` 上报整帧数，输入无效时上报 null，由聊天面板禁止发送。
+ * 新会话发送前的预览时长选择：常用秒数下拉加自定义输入，默认 5 秒。字效的最终时长由合成时的渲染请求决定，
+ * 这里只决定生成与预览的长度。只在首次请求前显示；通过 `onChange` 上报整帧数，输入无效时上报 null，由聊天面板禁止发送。
  */
 import { useId, useState } from "react";
 import { Input } from "@/components/ui/input";
@@ -33,7 +33,7 @@ export function DurationPicker({ disabled, onChange }: Props) {
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-1">
       <Select value={choice} disabled={disabled} onValueChange={choose}>
-        <SelectTrigger size="sm" aria-label="字效时长" className="h-8 w-24 border-none bg-transparent text-xs shadow-none">
+        <SelectTrigger size="sm" aria-label="预览时长" title="只用于生成与预览，最终时长由合成决定" className="h-8 w-24 border-none bg-transparent text-xs shadow-none">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -49,7 +49,7 @@ export function DurationPicker({ disabled, onChange }: Props) {
             min={MIN_DURATION_SECONDS}
             max={MAX_DURATION_SECONDS}
             step="any"
-            aria-label="自定义时长（秒）"
+            aria-label="自定义预览时长（秒）"
             aria-invalid={invalid}
             aria-describedby={explained ? hint : undefined}
             placeholder="秒"

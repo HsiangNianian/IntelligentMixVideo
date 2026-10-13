@@ -61,7 +61,8 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
       if (!frame) continue;
       const active = supported.current.has(clip.id) && time.current >= clip.start && time.current < clip.end;
       frame.style.visibility = active ? "visible" : "hidden";
-      if (active) frame.contentWindow?.postMessage({ type: "imv-preview-sync", channel: channels.current.get(clip.id), time: time.current - clip.start }, "*");
+      // 带上摆放的完整时长：Sprite 按它排布，与总线渲染时一致，而不是停在资产的预览长度。
+      if (active) frame.contentWindow?.postMessage({ type: "imv-preview-sync", channel: channels.current.get(clip.id), time: time.current - clip.start, duration: clip.length }, "*");
     }
   }
   /** 合并同一浏览器帧内的更新，回调只读取当前 refs，避免捕获旧通道。 */

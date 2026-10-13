@@ -25,7 +25,7 @@ test("新会话钉死固定画布并发送固定初始配置", async () => {
   for (const name of ["画布", "帧率", "Sprite 类型"]) {
     expect(screen.queryByRole("combobox", { name })).toBeNull();
   }
-  expect(screen.getByRole("combobox", { name: "字效时长" }).textContent).toContain("5 秒");
+  expect(screen.getByRole("combobox", { name: "预览时长" }).textContent).toContain("5 秒");
   expect(screen.queryByLabelText("画布宽度（像素）")).toBeNull();
   expect(screen.queryByLabelText("画布高度（像素）")).toBeNull();
   fireEvent.change(screen.getByLabelText("字效描述"), { target: { value: "生成标题" } });
@@ -43,7 +43,7 @@ test("新会话钉死固定画布并发送固定初始配置", async () => {
 
 /** 选择下拉中的一项（Radix Select 通过键盘事件操作）。 */
 async function chooseDuration(option: string) {
-  fireEvent.keyDown(screen.getByRole("combobox", { name: "字效时长" }), { key: "ArrowDown" });
+  fireEvent.keyDown(screen.getByRole("combobox", { name: "预览时长" }), { key: "ArrowDown" });
   fireEvent.keyDown(await screen.findByRole("option", { name: option }), { key: "Enter" });
 }
 
@@ -59,7 +59,7 @@ test("选择常用时长后按整帧发送", async () => {
   await waitFor(() => expect(creations()).toHaveLength(1));
   expect(creations()[0].composition).toEqual({ width: 1080, height: 1920, fps: 30, duration_in_frames: 300 });
   // 会话创建后时长固定，选择入口随之消失。
-  await waitFor(() => expect(screen.queryByRole("combobox", { name: "字效时长" })).toBeNull());
+  await waitFor(() => expect(screen.queryByRole("combobox", { name: "预览时长" })).toBeNull());
 });
 
 // 自定义时长：小数秒四舍五入到整帧；超过 30 秒或无效时禁止发送并提示，修正后恢复。
@@ -74,11 +74,11 @@ test("自定义时长换算整帧并拦截超限输入", async () => {
   expect(send.disabled).toBe(true);
   // 审计复现：空输入时发送按钮曾无故变灰；现在输入框下说明范围，但不作为错误播报。
   expect(screen.getByText("请输入 0.1～30 秒").getAttribute("role")).toBeNull();
-  expect(screen.getByLabelText("自定义时长（秒）").getAttribute("aria-describedby")).toBe(screen.getByText("请输入 0.1～30 秒").id);
-  fireEvent.change(screen.getByLabelText("自定义时长（秒）"), { target: { value: "31" } });
+  expect(screen.getByLabelText("自定义预览时长（秒）").getAttribute("aria-describedby")).toBe(screen.getByText("请输入 0.1～30 秒").id);
+  fireEvent.change(screen.getByLabelText("自定义预览时长（秒）"), { target: { value: "31" } });
   expect(screen.getByRole("alert").textContent).toContain("0.1～30");
   expect(send.disabled).toBe(true);
-  fireEvent.change(screen.getByLabelText("自定义时长（秒）"), { target: { value: "2.55" } });
+  fireEvent.change(screen.getByLabelText("自定义预览时长（秒）"), { target: { value: "2.55" } });
   expect(screen.queryByText("请输入 0.1～30 秒")).toBeNull();
   expect(screen.getByRole<HTMLButtonElement>("button", { name: "发送" }).disabled).toBe(false);
   fireEvent.click(screen.getByRole("button", { name: "发送" }));
@@ -103,7 +103,7 @@ test("超出范围的自定义时长既不能点击也不能按 Enter 发送", a
   await chooseDuration("自定义");
   const description = screen.getByLabelText("字效描述");
   fireEvent.change(description, { target: { value: "生成标题" } });
-  const input = screen.getByLabelText<HTMLInputElement>("自定义时长（秒）");
+  const input = screen.getByLabelText<HTMLInputElement>("自定义预览时长（秒）");
   const send = screen.getByRole<HTMLButtonElement>("button", { name: "发送" });
   for (const value of ["0.02", "30.001"]) {
     fireEvent.change(input, { target: { value } });
