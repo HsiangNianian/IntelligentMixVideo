@@ -445,15 +445,17 @@ async function textFitCheck(page) {
 
 /**
  * Host-side fit of the text a render really passes: for each item, the largest whole font size from `min` up to
- * the requested one at which the text is shown in full on the item's own `frames`. The requested size is tried
- * first, so text that already fits is untouched; `fits: false` means even `min` does not fit. A component that
- * throws, or never renders the text, is left alone (the render reports its own failure). Sizes are assumed to
- * fit monotonically, so a binary search.
+ * the requested one at which the text is shown in full on the item's own `frames`. Each item is mounted at the
+ * `length` its Sprite plays in the render, which it reads as `durationInFrames`. The requested size is tried first,
+ * so text that already fits is untouched; `fits: false` means even `min` does not fit. A component that throws, or
+ * never renders the text, is left alone (the render reports its own failure). Sizes are assumed to fit
+ * monotonically, so a binary search.
  */
 async function fitTexts(page, loadError) {
   if (loadError !== null) throw new Error(`Component runtime error: ${loadError}`);
   const fits = async (item, size) => {
     await page.evaluate(() => window.__imvTool.reset());
+    await page.evaluate((frames) => window.__imvTool.setDuration(frames), item.length);
     await page.evaluate((values) => window.__imvTool.setSample(values, {}), { ...item.values, [item.size_key]: size });
     const measured = await measureTextFit(page, item.text, item.frames);
     return measured.error !== null || measured.shown === 0 || measured.failing < measured.shown;

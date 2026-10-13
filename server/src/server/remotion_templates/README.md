@@ -356,8 +356,10 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
 - **Text fit**: a generated text effect cannot know how long a title the bus will send, so the host fits the text a
   placement really carries (its `text` override, up to the published `maxLength`) before rendering. For every text
   Sprite with `text` and `fontSize` parameters, inside the render slot, the isolated browser mounts the placement's own
-  values and measures the text boxes the same way `sprite.create` does (cut off by an `overflow: hidden|clip`
-  ancestor, outside the canvas, or lines under 20px tall). Text that already fits keeps its `fontSize`; otherwise the
+  values at the length its Sprite plays in the render (the length it reads as `durationInFrames`; a held text its
+  previewed length) and measures the text boxes the same way `sprite.create` does (cut off by an `overflow:
+  hidden|clip` ancestor, outside the canvas, or lines under 20px tall). Placements that differ only in length are
+  measured separately. Text that already fits keeps its `fontSize`; otherwise the
   host lowers `fontSize` to the largest whole size, down to the published minimum, at which it is shown in full
   (binary search; the size is logged, the template and the sealed source are untouched). Text that does not fit even
   at the minimum fails the task with `text_too_long` and a fixed message (the callback's `errorMessage`) so the bus can
