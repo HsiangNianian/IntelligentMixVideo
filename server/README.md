@@ -166,7 +166,10 @@ standard 模式中，请求不包含 `materials` 时为纯数字人：跳过素�
 
 ## 验证与打包
 
+常规合成测试会调用 Node 打包封存资产并验证导入边界，需要 Node 24 与仓库指定的 Bun；在 `server/` 下先安装锁定的 Remotion 依赖。浏览器、FFmpeg 和数据库真实集成仍按各测试的开关启用。
+
 ```sh
+(cd src/server/remotion && bun install --frozen-lockfile)
 uv run --locked pytest -v
 uv build --out-dir dist
 ```
