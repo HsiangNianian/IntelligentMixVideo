@@ -1,7 +1,7 @@
-/** 本链路固定的主画布规格；画布、帧率与初始时长由服务端契约决定，前端不提供选择。 */
+/** 本链路固定的主画布规格；画布与帧率由服务端契约决定，前端只提供生成前的时长选择。 */
 import type { Composition } from "./model";
 
-/** 主画布固定为竖屏 1080×1920、30 FPS；五秒只作为开始规划前的初始时长。 */
+/** 主画布固定为竖屏 1080×1920、30 FPS；五秒是默认时长。 */
 export const FIXED_COMPOSITION: Composition = {
   width: 1080,
   height: 1920,
@@ -9,9 +9,22 @@ export const FIXED_COMPOSITION: Composition = {
   duration_in_frames: 150,
 };
 
-/** 首次创建显式携带固定规格，避免客户端与服务端默认值漂移。 */
-export function defaultComposition(): Composition {
-  return { ...FIXED_COMPOSITION };
+/** 常用时长（秒）；其余时长通过自定义输入。 */
+export const DURATION_PRESETS = [3, 5, 8, 10, 15];
+/** 默认时长（秒），与 FIXED_COMPOSITION 的初始帧数一致。 */
+export const DEFAULT_DURATION_SECONDS = 5;
+/** 服务端允许的最长预览时长（秒）。 */
+export const MAX_DURATION_SECONDS = 30;
+
+/** 秒数四舍五入到整帧；有限、至少一帧且不超过 30 秒才有效，否则返回 null。 */
+export function durationFrames(seconds: number): number | null {
+  const frames = Math.round(seconds * FIXED_COMPOSITION.fps);
+  return Number.isFinite(seconds) && frames >= 1 && frames <= MAX_DURATION_SECONDS * FIXED_COMPOSITION.fps ? frames : null;
+}
+
+/** 首次创建显式携带固定规格与所选时长，避免客户端与服务端默认值漂移。 */
+export function defaultComposition(frames = FIXED_COMPOSITION.duration_in_frames): Composition {
+  return { ...FIXED_COMPOSITION, duration_in_frames: frames };
 }
 
 /** 说明固定主画布，供生成前提示使用。 */

@@ -474,7 +474,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
     }
   }
   /** 首轮图片可上传；后续输入绑定最近成功版本，澄清明确绑定提问任务。 */
-  function send(text: string, image?: File) {
+  function send(text: string, image?: File, durationInFrames?: number) {
     const s = latest.current;
     if (
       s.deleting ||
@@ -496,7 +496,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
       if (!s.workId) {
         const asset = image ? await api.upload(image) : undefined;
         if (!current(s.key)) throw new DOMException("Aborted", "AbortError");
-        return (await api.create(text, asset?.id, defaultComposition()))
+        return (await api.create(text, asset?.id, defaultComposition(durationInFrames)))
           .job;
       }
       return api.message(s.workId, {

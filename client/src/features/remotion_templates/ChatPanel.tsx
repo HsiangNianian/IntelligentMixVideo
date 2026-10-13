@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Hint } from "@/components/Hint";
 import { Textarea } from "@/components/ui/textarea";
 import { apiUrl } from "./api";
+import { FIXED_COMPOSITION } from "./composition";
+import { DurationPicker } from "./DurationPicker";
 import { LoopRounds } from "./LoopRounds";
 import { TaskStatus } from "./TaskStatus";
 import { VersionCard } from "./VersionCard";
@@ -38,7 +40,7 @@ interface Props {
   disabled: boolean;
   canStop: boolean;
   first: boolean;
-  onSend: (text: string, image?: File) => void;
+  onSend: (text: string, image?: File, durationInFrames?: number) => void;
   onStop: () => void;
   job?: Job | SessionJob | null;
   jobs?: Record<string, SessionJob>;
@@ -82,6 +84,7 @@ export function ChatPanel({
   const [text, setText] = useState("");
   const [image, setImage] = useState<File>();
   const [error, setError] = useState("");
+  const [frames, setFrames] = useState<number | null>(FIXED_COMPOSITION.duration_in_frames);
   const [dragging, setDragging] = useState(false);
   const end = useRef<HTMLDivElement>(null);
   const following = useRef(true);
@@ -134,8 +137,8 @@ export function ChatPanel({
   }, [job?.id, phaseCount, versions.at(-1)?.id, versions.length]);
   /** 按钮与 Enter 共用防重复入口；等待期间保留文字草稿。 */
   function send() {
-    if (disabled || (!text.trim() && !image)) return;
-    onSend(text, image);
+    if (disabled || (!text.trim() && !image) || (first && frames === null)) return;
+    onSend(text, image, first ? frames! : undefined);
     setText("");
     setImage(undefined);
     setError("");
@@ -382,16 +385,19 @@ export function ChatPanel({
               attach(file);
             }}
           />
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            disabled={!first || disabled}
-            onClick={() => picker.current?.click()}
-          >
-            <ImagePlus />
-            图片
-          </Button>
+          <div className="flex items-center gap-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={!first || disabled}
+              onClick={() => picker.current?.click()}
+            >
+              <ImagePlus />
+              图片
+            </Button>
+            {first && <DurationPicker disabled={disabled} onChange={setFrames} />}
+          </div>
           {busy && canStop ? (
             <Button type="button" variant="outline" size="sm" onClick={onStop}>
               <Square />
@@ -401,7 +407,7 @@ export function ChatPanel({
             <Button
               type="submit"
               size="sm"
-              disabled={disabled || (!text.trim() && !image)}
+              disabled={disabled || (!text.trim() && !image) || (first && frames === null)}
             >
               发送
               <ArrowUp />
