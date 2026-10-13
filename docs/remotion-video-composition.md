@@ -11,7 +11,7 @@
 3. 标题使用请求 `title` 和 segmentation 的 `title_keyword`。新字效绑定采用对应标题对象的实际显示区间，旧用途快照沿用自身摆放区间，均裁到成片以内；IMS 标题继续遵循模板区间，包括无声模式。
 4. 字幕使用 segmentation 二次切分后的正文、起止时间和继承关键词；兼容历史 `subtitle_parts`。清理标点的规则与 IMS 共用，保留中英文问号。仅使用当前切片继承的关键词，空词或不匹配时清空高亮。新发布按上游契约接收关键词字符串列表，组件负责文字内高亮；历史码点区间契约仍只传首次命中区间。
 5. 有声任务以 ASR 返回的完整音频时长为总长，保留首尾静音；无声任务以 `processRules.videoDuration` 为总长且不生成字幕。无正文有声模式若有标题，单独执行一次仅标题提词。
-6. 所有实例按绑定顺序叠放，使用共享渲染名额、隔离 Chrome 和 FFmpeg 输出无音频 VP9 Alpha WebM。资产画布按 Cover 缩放至合成画布。透明视频上传 `imv/video_composition/{task_id}/overlay.webm`，核对公共读取后直接加入 IMS 最后一条视频轨，从 0 秒对齐。
+6. 所有实例按绑定顺序叠放，使用共享渲染名额、隔离 Chrome 和 FFmpeg 输出无音频 VP9 Alpha WebM。资产画布按 Cover 缩放至合成画布。渲染前在同一名额内做排版预检（见 `remotion_templates/README.md` 的 Text fit）：带 `text`、`fontSize` 参数的字效按实际标题、字幕和实际运行的源码测量，被裁切、超出成片里看得到的画布部分或只显示一部分时把 `fontSize` 缩到放得下的最大值；缩到发布的最小字号仍放不下时以 `remotion_text_too_long` 失败，不输出被裁切的文字。没有这两个参数的旧资产不参与。透明视频上传 `imv/video_composition/{task_id}/overlay.webm`，核对公共读取后直接加入 IMS 最后一条视频轨，从 0 秒对齐。
 
 本次同步保留 #113 的槽位行为：设置 `text_target` 后对应 IMS 文字由 Remotion 替代；旧的独立用途快照仍可两套并存。**实际仍输出的 IMS 文字在 Remotion 视频之上**；不增加 FFmpeg 后置编码。底片滤镜继续交给 IMS；Remotion 只提供字效及透明装饰。编辑器目前以透明 iframe 叠在 SDK 画面上，重叠区域的前后关系以真实成片为准，界面已提示；该预览不是云端 IMS 合成结果。
 
@@ -37,7 +37,7 @@
 
 首次准备阶段从同一份 IMS 模板提取 Remotion 轨道，再把模板更新时间、发布源码及参数一起保存到私有任务快照；后续模板编辑不影响本单。快照固定后（包括恢复时）只要有会实际渲染的摆放——视觉资产、遇非空标题的标题绑定、有声且有文案的字幕绑定——就先检查隔离渲染环境（bwrap、prlimit、Node、FFprobe、浏览器与字体）；缺失时在 `template` 阶段以 `remotion_render_environment_unavailable` 失败，不调用 ASR 与切片模型。没有可显示内容的绑定不要求该环境。上传结果保存到 `remotion_result` 后恢复直接复用；中断在结果保存之前可重跑本地确定性渲染。旧任务没有 Remotion 快照时沿用原行为，不读取新绑定。渲染或上传失败整单失败，不返回缺失字效的成功成片。
 
-日志仍只有七个模块，资产绑定摘要归 `template`，透明视频结果及最终 IMS Timeline 归 `timeline`；发布源码只进私有任务快照，不进入执行日志或 GET/回调。典型错误：`remotion_asset_not_adapted`、`remotion_duration_too_long`、`remotion_render_environment_unavailable`、`remotion_render_failed`。
+日志仍只有七个模块，资产绑定摘要归 `template`，透明视频结果及最终 IMS Timeline 归 `timeline`；发布源码只进私有任务快照，不进入执行日志或 GET/回调。典型错误：`remotion_asset_not_adapted`、`remotion_duration_too_long`、`remotion_render_environment_unavailable`、`remotion_text_too_long`、`remotion_render_failed`。
 
 计划、时长适配打包、渲染或叠加视频上传失败时，清理工作目录前将 `worker.log` 与完整异常链 `error.log`（附子进程 stderr，例如打包器缺少依赖的原因）保存到 Remotion 数据目录的 `composition-overlay-failures/<task_id>/`（私有目录权限 0700）；不保留视频及编译产物，也不进入公开错误、七模块日志或回调；七模块日志只保留根因的异常类型、代码位置与错误码，不含其文本。诊断写入失败只记日志，不覆盖原始任务错误。成功仍清理整个临时工作目录。
 

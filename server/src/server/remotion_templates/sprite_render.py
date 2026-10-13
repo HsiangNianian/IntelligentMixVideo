@@ -118,7 +118,7 @@ def plan_sprite_render(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite
             config, host = resolve(sprite, _editor(message, sprite, text, keywords))
         except ValueError as exc:
             raise OverlayError("placement_invalid", f"样式或内容不符合发布契约：{exc}") from None
-        instance = {"code": sprite.tsx_code, "config": config, "host": host, "start_frame": start, "duration_frames": length}
+        instance = {"sprite_id": message.sprite_id, "code": sprite.tsx_code, "config": config, "host": host, "start_frame": start, "duration_frames": length}
         if length < static:
             instance.update(duration_frames=max(preview, length), hold={"frame": preview // 2, "frames": length, "length": preview})
         instances.append(instance)

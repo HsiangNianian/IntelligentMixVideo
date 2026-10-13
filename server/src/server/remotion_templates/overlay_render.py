@@ -186,6 +186,7 @@ def plan_overlay(
         length = max(1, to_frames(min(placement_seconds(sprite, placement), max_seconds), fps))
         config, host = placement.resolved(sprite)
         instances.append({
+            "sprite_id": placement.sprite_id,
             "code": sprite.tsx_code,
             "config": config,
             # The host layer moves, scales, rotates and fades the Sprite around its published content box.
@@ -196,6 +197,100 @@ def plan_overlay(
     if not instances:
         raise OverlayError("no_placements", "所有 Remotion 资产的起点都晚于成片结尾")
     return Overlay(width, height, fps, frames, instances)
+
+
+def _fit_frames(instance: dict, end: int) -> tuple[list[int], int]:
+    """The frames at which a placement's text is shown, and the length its Sprite plays at.
+
+    A held text (shown for less than the static threshold) is frozen on one frame of its previewed length; any other
+    one plays its own length and is measured on the first, last and three frames in between of the part that is
+    rendered: a clip running past the video's `end` frame keeps its length, but its frames after `end` never show.
+    """
+    hold = instance.get("hold")
+    if hold:
+        return [hold["frame"]], hold["length"]
+    length = instance["duration_frames"]
+    shown = max(1, min(length, end - instance["start_frame"]))
+    return sorted({min(shown - 1, math.floor((shown - 1) * ratio)) for ratio in (0, 0.25, 0.5, 0.75, 1)}), length
+
+
+async def fit_texts(renderer: Renderer, overlay: Overlay, sprites: dict[str, pb.PublishedSprite], directory: Path) -> None:
+    """Make every text effect show the text a render really passes, whatever its length.
+
+    A generated effect cannot know how long a title or subtitle the bus will send, so the host measures it: for each
+    text Sprite the isolated browser mounts each distinct content with its own values, at the length its Sprite plays
+    (which it reads as `durationInFrames`) and where its host transform moves, scales and rotates it on the canvas,
+    and, when the text is cut off, leaves the canvas or is unreadably small, lowers the `fontSize` to the largest
+    whole size (down to the published minimum) at which it fits. Text that already fits keeps the size it was given.
+    Text that does not fit even at the smallest size fails the render with `text_too_long`, so the bus gets a clear
+    reason instead of a clipped text. Only effects with the required `text` and `fontSize` parameters take part, all
+    of them in one browser run (the render slot waits for it, so its deadline grows with what it measures); a Sprite
+    that cannot be mounted is left to the render, which reports its own failure.
+
+    Instances name their Sprite with `sprite_id` (others are not measured) and are measured with the `code` the render
+    runs, on their own canvas (`width`, `height`, which the video scales to cover) when they have one. The text is the
+    instance's `text` when it carries one (a video composition fills it into several parameter paths), otherwise the
+    Sprite's text parameter.
+    """
+    from .tool_validation import FitSprite, ToolValidator, ValidationUnavailable
+    from .tools.contracts import ComponentDefinition
+
+    groups: dict[tuple[str, str], dict[str, dict]] = {}  # (sprite, code) -> distinct values -> item
+    members: dict[tuple[tuple[str, str], str], list[int]] = {}  # ((sprite, code), distinct values) -> instance indexes
+    for index, instance in enumerate(overlay.instances):
+        sprite = sprites.get(instance.get("sprite_id", ""))
+        if sprite is None or sprite.kind != pb.SPRITE_KIND_TEXT:
+            continue
+        config = instance["config"]
+        size = json.loads(sprite.config_schema_json).get("properties", {}).get("fontSize", {})
+        text = instance["text"] if "text" in instance else config.get(sprite.text_prop or "text")
+        if not isinstance(text, str) or not text.strip() or not isinstance(config.get("fontSize"), (int, float)) or "minimum" not in size:
+            continue
+        frames, length = _fit_frames(instance, overlay.frames)
+        # Opacity does not move the text; every other transform field does, so it tells contents apart.
+        transform = {name: value for name, value in instance["host"]["transform"].items() if name != "opacity"}
+        group = (instance["sprite_id"], instance["code"])
+        key = json.dumps([config, frames, length, transform], sort_keys=True, ensure_ascii=False)
+        members.setdefault((group, key), []).append(index)
+        groups.setdefault(group, {}).setdefault(key, {
+            "index": index, "values": config, "text": text, "size_key": "fontSize", "min": math.ceil(size["minimum"]),
+            "frames": frames, "length": length, "transform": transform,
+        })
+    if not groups:
+        return
+    measured = [(group, list(distinct), list(distinct.values())) for group, distinct in groups.items()]
+    items = [item for *_, distinct in measured for item in distinct]
+    # One browser run measures every distinct text: a few seconds for each, and for loading each Sprite.
+    timeout = max(renderer.settings.render_timeout_seconds, 5 * len(items) + 10 * len(measured))
+    fit_sprites = []
+    for (sprite_id, code), _, distinct in measured:
+        first = overlay.instances[distinct[0]["index"]]
+        fit_sprites.append(FitSprite(
+            ComponentDefinition(
+                code=code, parameter_schema=json.loads(sprites[sprite_id].config_schema_json),
+                default_parameters=json.loads(sprites[sprite_id].default_config_json),
+            ),
+            {"width": first.get("width", overlay.width), "height": first.get("height", overlay.height)},
+            first["host"]["box"],
+            distinct,
+        ))
+    try:
+        answers = await ToolValidator(renderer, directory).fit_texts(
+            fit_sprites,
+            {"width": overlay.width, "height": overlay.height, "fps": overlay.fps, "duration_frames": max(item["length"] for item in items)},
+            # The CPU cap grows with the deadline, or a long run of binary searches ends on it before the timeout.
+            timeout_seconds=timeout, cpu_seconds=overlay_cpu_seconds(timeout),
+        )
+    except ValidationUnavailable as exc:
+        raise OverlayError("render_failed", "叠加视频渲染失败") from exc
+    for (group, keys, distinct), fits in zip(measured, answers):
+        for key, item, fit in zip(keys, distinct, fits):
+            if not fit["fits"]:
+                raise OverlayError("text_too_long", "文字过长：缩到最小字号仍无法完整显示，请缩短文字")
+            if fit["size"] != item["values"]["fontSize"]:
+                logger.info("叠加渲染 Sprite %s 的文字（%d 字）字号 %s 缩小为 %s", group[0], len(item["text"]), item["values"]["fontSize"], fit["size"])
+                for index in members[(group, key)]:
+                    overlay.instances[index]["config"] = {**item["values"], "fontSize": fit["size"]}
 
 
 async def probe_overlay(path: Path, overlay: Overlay) -> None:

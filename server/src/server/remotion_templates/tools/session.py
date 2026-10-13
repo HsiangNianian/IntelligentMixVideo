@@ -89,6 +89,9 @@ _HINTS = (
     (lambda item: item.message.startswith("transparency"),
      "Keep the canvas see-through over the user's video: no opaque full-frame background; build tints from translucent "
      "layers, gradients, vignettes or grain."),
+    (lambda item: item.message.startswith("text_fit"),
+     "Lay the text out from its content: wrap it onto several lines inside a bounded width, no fixed-height box with "
+     "overflow hidden, and shrink the font size for long text so all text up to its maxLength stays visible."),
     (lambda item: item.source == "contract" and item.field is not None,
      "parameter_schema must be a self-contained object schema with additionalProperties false, and default_parameters "
      "must satisfy it."),
@@ -345,19 +348,23 @@ class ToolSession:
             raise ToolFault("VALIDATION_UNAVAILABLE", f"The isolated TypeScript validator is unavailable: {exc}"[:3000]) from exc
 
     async def validate_render(
-        self, request: RenderValidationInput, *, transparency: bool = False, lengths: list[int] | None = None,
+        self, request: RenderValidationInput, *, transparency: bool = False, lengths: list[int] | None = None, text_fit: bool = False,
     ) -> RenderValidationReport:
         """Run the isolated component behavior runner and cache the exact report.
 
-        ``transparency`` adds the canvas-coverage measurement and ``lengths`` a mount at those render lengths
-        (frames). The options are only forwarded when asked for, so a validator that predates them keeps working.
+        ``transparency`` adds the canvas-coverage measurement, ``lengths`` a mount at those render lengths (frames)
+        and ``text_fit`` the longest-text layout measurement of a text effect. The options are only forwarded when
+        asked for, so a validator that predates them keeps working.
         """
         if self.validator is None:
             raise ToolFault("VALIDATION_UNAVAILABLE", "The isolated behavior validator is unavailable.")
         from ..tool_validation import ValidationUnavailable
 
         try:
-            options = {**({"transparency": True} if transparency else {}), **({"lengths": lengths} if lengths else {})}
+            options = {
+                **({"transparency": True} if transparency else {}), **({"lengths": lengths} if lengths else {}),
+                **({"text_fit": True} if text_fit else {}),
+            }
             report = await self.validator.validate_render(request, **options)
         except ValidationUnavailable as exc:
             raise ToolFault("VALIDATION_UNAVAILABLE", f"The isolated behavior validator is unavailable: {exc}"[:3000]) from exc
@@ -518,6 +525,7 @@ class ToolSession:
             # The bus renders a Sprite at the final video's length; a text effect shorter than the static threshold is
             # frozen at its preview length instead, so its shortest played length is that threshold.
             lengths=render_lengths(sprite.composition.fps, text=sprite.kind == "text"),
+            text_fit=sprite.kind == "text",
         )
         if report.passed:
             return

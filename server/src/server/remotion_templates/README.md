@@ -145,6 +145,23 @@ the model gets `CODE_VALIDATION_FAILED` and the cause rather than `VALIDATION_UN
 generation asks for the measurement; a user's manual parameter edits and already published versions are
 never blocked by it.
 
+A text effect (`kind=text`) must also show its longest allowed text in full. In the same mount `sprite.create`
+fills the `text` parameter with `测` up to its declared `maxLength` and, on the same five sampled frames, measures
+the text boxes of the layer: text cut off by an ancestor whose overflow is not visible (`hidden`, `clip`, `auto` or `scroll`: the
+video never scrolls) or with `contain: paint`, text outside the 1080x1920 canvas, text lines shorter than 20px (the smallest `fontSize` is 24) and text of which only part is rendered (a
+slice of it, or some of it hidden) are problems; text in a node without a box (`display: none`), with
+`visibility: hidden` or faded out to opacity 0 is not shown. Each line is measured as its line box (at least as tall
+as its font size), not as the font's whole ascent and descent, so a line in a mask exactly one line tall is not
+clipped (with Noto Sans CJK the ascent and descent span 1.448em and stick out of a `lineHeight` 1 or 1.2 line).
+The text is judged on the frames that show it at its full size (by the area of its lines, within 2% of the
+largest): entrance and exit animations show it smaller, scaled down or typed in, and must not hide a layout that
+clips it while it holds. The `text_fit` check fails when every one of those frames has a problem, so a reveal mask
+or slide-in that moves the full-size text out of view for a few frames is fine, while a fixed-size box that clips
+long text whenever it is shown at full size is not; it also fails when the filler text is never visibly rendered. A failure is refused with `CODE_VALIDATION_FAILED` (`text_fit: ...` with the clipped box or
+size and the fix: wrap the text inside a bounded width, no fixed-height `overflow: hidden` box, shrink the font
+for long text, never below 24px; text that cannot fit even then means the declared `maxLength` is too large and must be lowered, and input beyond it is refused by the parameter Schema). It is a geometric measurement, not a visual review; like the transparency
+measurement it only applies to generation, and already published versions are not re-checked.
+
 Contract diagnostics carry the position of a violation (line, column and range in the submitted code).
 `exec` and `spawn` are refused only as bare identifiers; as member names, such as `RegExp.prototype.exec`,
 they are ordinary methods.
@@ -342,6 +359,28 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   Longer than `IMV_OVERLAY_MAX_SECONDS` (120) is a 422 at acceptance when the length is already known (`duration`
   or the clips' end); an `audioUrl` is only probed while rendering, so an over-long one fails the task with
   `duration_too_long`.
+- **Text fit**: a generated text effect cannot know how long a title the bus will send, so the host fits the text a
+  placement really carries (its `text` override, up to the published `maxLength`) before rendering. For every text
+  Sprite with `text` and `fontSize` parameters, inside the render slot, the isolated browser mounts the placement's
+  own values at the length its Sprite plays in the render (the length it reads as `durationInFrames`; a held text its
+  previewed length; a clip cut by the video's end is measured only on its rendered frames) and measures the text
+  boxes the same way `sprite.create` does: cut off by an ancestor whose
+  overflow is not visible or that contains its paint, outside the canvas once the placement's host transform moves,
+  scales and rotates it, lines under 20px tall, or only part of the text shown, judged on the frames that show the
+  text at its full size. Placements that differ only in length or transform are measured separately; the
+  transform's opacity does not move text and is ignored. Text that already fits keeps its `fontSize`; otherwise the
+  host lowers `fontSize` to the largest whole size, down to the published minimum, at which it is shown in full
+  (binary search; the size is logged, the template and the sealed source are untouched). Text that does not fit even
+  at the minimum fails the task with `text_too_long` and a fixed message (the callback's `errorMessage`) so the bus can
+  tell the user to shorten it, instead of publishing a clipped title. Other Sprites skip the pass, and a fit sandbox
+  that cannot start fails the task as `render_failed`. `POST /api/sprites/render` runs the same pass on each distinct
+  text or cue (a held text is measured on its frozen frame), and a video composition (`video_composition/remotion.py`)
+  on its titles and subtitles: it measures the code it renders (the timing wrapper of a fixed-clock asset) on the
+  asset's own canvas, and only the part of that canvas the video shows after scaling it to cover counts as on the
+  canvas; the failure there is `remotion_text_too_long`. All text Sprites of a render are measured in one browser
+  run, each loaded in turn on the same page, under one deadline: the default validation timeout, or 5 seconds per
+  distinct text plus 10 per Sprite when that is longer; the sandbox CPU cap grows with that deadline like an overlay
+  render's. It is a geometric measurement, not a visual review.
 - **Acceptance**: also a 503 when ZOS, ffprobe, bubblewrap, prlimit, Node, the browser or the managed fonts are
   missing (the isolated renderer is Linux-only), instead of accepting tasks that can only fail later. An empty
   `placements` (`no_placements`) or a `spriteId` that is not published (`sprite_missing`) is a 422.
