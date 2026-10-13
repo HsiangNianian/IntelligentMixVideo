@@ -16,7 +16,8 @@ const request = JSON.parse(await fs.readFile(`${root}/request.json`, "utf8"));
 const { composition, instances } = request;
 
 /**
- * Generate the trusted entry: managed fonts, then one Sequence per placement in bottom-to-top order.
+ * Generate the trusted entry: managed fonts, then one Sequence per placement in bottom-to-top order, each Sprite
+ * inside the shared host layer that applies its placement transform around its content box.
  * A Sprite reads useVideoConfig().durationInFrames from its own Sequence, exactly as when it was accepted
  * standalone, so its source runs unmodified. Remotion clamps a Sequence to its composition, so the
  * composition spans the latest clip end (`duration_in_frames`) and only `frames` of it are rendered.
@@ -24,11 +25,12 @@ const { composition, instances } = request;
 function entrypoint() {
   const imports = instances.map((_, index) => `import Sprite${index} from './Sprite${index}';`).join("\n");
   const placed = instances.map((item, index) =>
-    `<Sequence key={${index}} from={${item.start_frame}} durationInFrames={${item.duration_frames}}><Sprite${index} {...${JSON.stringify(item.config)}} /></Sequence>`,
+    `<Sequence key={${index}} from={${item.start_frame}} durationInFrames={${item.duration_frames}}><HostLayer box={${JSON.stringify(item.host.box)}} transform={${JSON.stringify(item.host.transform)}}><Sprite${index} {...${JSON.stringify(item.config)}} /></HostLayer></Sequence>`,
   ).join("");
   return `/** Trusted overlay host waits for both managed font weights. */
 import React from 'react';
 import {AbsoluteFill, Composition, Sequence, registerRoot, delayRender, continueRender, cancelRender, staticFile} from 'remotion';
+import {HostLayer} from './host-layer';
 ${imports}
 const handle = delayRender('managed fonts');
 Promise.all([400,700].map(async weight => {
@@ -45,6 +47,7 @@ registerRoot(Root);
 let browser;
 try {
   await fs.symlink(`${rendererRoot}/node_modules`, `${root}/node_modules`);
+  await fs.copyFile(`${rendererRoot}/host-layer.tsx`, `${root}/host-layer.tsx`);
   for (const [index, item] of instances.entries()) {
     await fs.writeFile(`${root}/Sprite${index}.tsx`, item.code);
   }

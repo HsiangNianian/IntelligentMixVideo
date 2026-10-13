@@ -294,15 +294,15 @@ class Store:
             self._insert_job(db, job, JobInput())
         return project, job
 
-    def _new_job(self, project_id: UUID, base: UUID | None) -> GenerationJob:
-        """Assign execution identity before it enters the shared FIFO queue."""
+    def _new_job(self, project_id: UUID, base: UUID | None, running: bool = False) -> GenerationJob:
+        """Assign execution identity before it enters the shared FIFO queue, or as already running when it bypasses it."""
         stamp = now()
         return GenerationJob(
             id=uuid4(),
             project_id=project_id,
             base_version_id=base,
-            status="queued",
-            stage="queued",
+            status="running" if running else "queued",
+            stage="validating" if running else "queued",
             created_at=stamp,
             updated_at=stamp,
         )
@@ -336,12 +336,17 @@ class Store:
         base: UUID | None,
         *,
         message_text: str | None = None,
+        running: bool = False,
     ) -> GenerationJob:
-        """Reject concurrent edits and foreign version IDs before enqueueing any work."""
+        """Reject concurrent edits and foreign version IDs before enqueueing any work.
+
+        ``running`` records a job the caller executes itself at once (an instant parameter revision); the FIFO
+        worker only claims queued jobs, and the one-active-job rule still applies.
+        """
         self.project(project_id)
         if base is not None and self.version(base).project_id != project_id:
             raise Conflict("base version belongs to another work")
-        job = self._new_job(project_id, base)
+        job = self._new_job(project_id, base, running)
         try:
             with self.connection() as db:
                 db.execute("BEGIN IMMEDIATE")

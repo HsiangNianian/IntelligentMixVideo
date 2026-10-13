@@ -1,4 +1,6 @@
 /** 模板配置和初始草稿；对象保存时间规则，预览媒体由工作区独立持有。 */
+import type { ParameterValue } from "@/components/ParameterControl";
+import type { ClipTransform } from "@/features/sprites/parameters";
 
 /** IMS Transition 与 DLTransition 的默认持续时间，单位为秒。 */
 export const defaultTransitionDuration = 1;
@@ -109,6 +111,10 @@ export interface RemotionClip {
   start: number;
   /** 秒数；null 表示沿用 Sprite 自身的时长。 */
   duration: number | null;
+  /** 这次摆放修改过的参数（key 为发布参数名）；未列出的参数沿用资产默认值。 */
+  parameters: Record<string, ParameterValue>;
+  /** 宿主变换：内容中心位置、缩放、旋转与不透明度；未设置的字段取默认值。 */
+  transform: ClipTransform;
 }
 
 /** 用户可修改的完整配置，不包含服务端标识和时间。 */

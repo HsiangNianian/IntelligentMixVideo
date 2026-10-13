@@ -16,7 +16,7 @@ from starlette.concurrency import run_in_threadpool
 
 from . import sprites
 from .api import app as remotion_templates_app
-from .routes import player_page, runtime_for
+from .routes import player_page, require_sandbox, runtime_for
 from .store import NotFound
 from .runtime import Runtime
 
@@ -61,7 +61,11 @@ async def list_sprites(service: Service) -> Response:
     responses={200: {"content": PROTOBUF_CONTENT}}, summary="把成功版本保存为 Sprite 资产",
 )
 async def publish_sprite(request: Request, service: Service) -> Response:
-    """复制已验收版本的源码、参数契约与预览；相同来源与字段选择重复发布返回原 Sprite。"""
+    """复制已验收版本的源码、参数契约与预览；相同来源与字段选择重复发布返回原 Sprite。
+
+    新发布要在隔离浏览器里渲染参数边界样本，校验环境不可用时先以 503 拒绝。
+    """
+    require_sandbox(service)
     message = pb.PublishSpriteRequest()
     await _body(request, message)
     summary = await sprites.publish(service, message)
@@ -75,8 +79,8 @@ async def sprite_preview(sprite_id: str, service: Service, overlay: bool = False
     `overlay=true` 使用透明背景，供模板编辑把资产叠在预览画面上；再加页面参数 `sync=1`
     （新生成的资产支持）即由父页面通过消息逐帧驱动，无控制条和循环。
     """
-    script = await run_in_threadpool(sprites.preview_script, service.store, sprite_id)
-    return player_page(script, overlay=overlay)
+    script, host = await run_in_threadpool(sprites.preview_script, service.store, sprite_id)
+    return player_page(script, overlay=overlay, host=host)
 
 
 @router.get("/{sprite_id}/fonts/{weight}", summary="读取预览字体")

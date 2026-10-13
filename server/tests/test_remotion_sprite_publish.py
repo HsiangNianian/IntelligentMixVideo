@@ -20,6 +20,7 @@ from sqlalchemy import Engine, select, update
 
 from server.app import app
 from server.remotion_templates import sprite_store, sprites
+from server.remotion_templates.categories import HEX_COLOR
 from server.remotion_templates.harness import Harness
 from server.remotion_templates.models import GenerateTemplateRequest
 from server.remotion_templates.provider import Budget
@@ -36,73 +37,81 @@ from .test_remotion_version_diagnostics import (
 )
 
 PROTOBUF = {"Content-Type": "application/x-protobuf"}
+COLOR = {"type": "string", "pattern": HEX_COLOR}
+# 一个字效版本的顶层参数：字效必备参数、可选关键词，再加视频特效必备的 speed，便于同一版本按多种类型发布。
 SCHEMA = {
     "type": "object",
     "properties": {
-        "text": {"type": "string"},
-        "keywords": {"type": "string"},
-        "color": {"type": "string", "title": "文字颜色"},
-        "size": {"type": "number", "minimum": 12, "maximum": 300},
-        "weight": {"type": "integer", "enum": [400, 700]},
-        "shadow": {"type": "boolean"},
+        "text": {"type": "string", "minLength": 1, "maxLength": 40, "title": "标题文字"},
+        "keywords": {"type": "array", "items": {"type": "string", "maxLength": 100}, "maxItems": 20, "title": "关键词"},
+        "fontSize": {"type": "number", "minimum": 24, "maximum": 240, "title": "字号"},
+        "fontWeight": {"type": "integer", "enum": [400, 700], "title": "字重"},
+        "color": {**COLOR, "title": "文字颜色"},
+        "speed": {"type": "number", "minimum": 0.25, "maximum": 4, "title": "速度"},
+        "shadow": {"type": "boolean", "title": "阴影"},
+        "title": {"type": "object", "properties": {"glow": {"type": "number"}}, "additionalProperties": False},
     },
-    "required": ["text", "keywords", "color", "size", "weight", "shadow"],
+    "required": ["text", "keywords", "fontSize", "fontWeight", "color", "speed", "shadow"],
     "additionalProperties": False,
 }
-DEFAULTS = {"text": "标题", "keywords": "", "color": "#ffffff", "size": 64, "weight": 400, "shadow": False}
+DEFAULTS = {"text": "标题", "keywords": [], "fontSize": 64, "fontWeight": 400, "color": "#FFFFFF", "speed": 1, "shadow": False, "title": {"glow": 0.5}}
+BOUND = ["text", "keywords", "fontSize", "fontWeight", "color", "speed", "shadow"]
 CODE = 'import React from "react";\nexport default function Sprite(p: {text: string}) { return <div>{p.text}</div>; }\n'
+# 内容区域：唯一实例的布局，宿主变换绕它的中心。
+LAYOUT = {"x": 90, "y": 760, "width": 900, "height": 400, "z_index": 0}
 
 
 class BundleRebuilder:
-    """记录重建请求的渲染替身：写出带同步标记的新预览包，或按要求失败；不执行真实浏览器或沙箱。"""
+    """记录重建与边界抽样请求的渲染替身：写出带标记的新预览包、报告各样本通过，或按要求失败；不执行真实浏览器或沙箱。"""
 
     def __init__(self):
-        """默认成功，requests 保存宿主写给 worker 的请求。"""
+        """默认成功；requests 保存重建请求，samples 保存抽样请求。"""
         self.requests: list[dict] = []
+        self.samples: list[dict] = []
         self.failure: Exception | None = None
+        self.sample_failure: Exception | None = None
+        self.failing_sample: str | None = None
+
+    def worker_browser_path(self):
+        """抽样请求记录的浏览器路径；替身不启动浏览器。"""
+        return "/usr/bin/chromium"
 
     async def run_worker(self, directory, *, worker=None, timeout_seconds=None):
-        """只接受预览包构建；失败时不写任何文件。"""
+        """预览包构建写出新包；边界抽样逐个报告样本结果。失败时不写任何文件。"""
+        request = json.loads((directory / "request.json").read_text())
+        if worker == "tool-validation-worker.mjs":
+            assert request["mode"] == "samples"
+            self.samples.append(request)
+            if self.sample_failure:
+                raise self.sample_failure
+            return {"passed": True, "checks": [
+                {"name": name, "status": "pass"} for name in ("source_policy", "export_source", "typescript")
+            ] + [
+                {"name": f"sample:{item['name']}", "status": "failed" if item["name"] == self.failing_sample else "passed", "message": "frame 15: boom"}
+                for item in request["samples"]
+            ]}
         assert worker == "presentation-worker.mjs"
-        self.requests.append(json.loads((directory / "request.json").read_text()))
+        self.requests.append(request)
         if self.failure:
             raise self.failure
-        (directory / "interactive.js").write_text("// rebuilt imv-preview-sync")
+        (directory / "interactive.js").write_text("// rebuilt imv-preview-sync imv-preview-host")
         return {}
-
-
-NESTED_SCHEMA = {
-    "type": "object",
-    "properties": {"title_main": {
-        "type": "object",
-        "properties": {
-            "title": {"type": "string", "title": "标题文字"},
-            "fontSize": {"type": "number", "title": "字号", "minimum": 8, "maximum": 500},
-            "textColor": {"type": "string", "title": "文字颜色"},
-        },
-        "required": ["title", "fontSize", "textColor"],
-        "additionalProperties": False,
-    }},
-    "required": ["title_main"],
-    "additionalProperties": False,
-}
-NESTED_DEFAULTS = {"title_main": {"title": "今日灵感", "fontSize": 160, "textColor": "#FFD400"}}
 
 
 @pytest.fixture
 def published(tmp_path, template_db):
-    """发布一个带扁平标量参数的成功版本，并让主应用的 Sprite 路由使用同一份临时数据；发布记录写入共享库替身。"""
-    yield from published_version(tmp_path, SCHEMA, DEFAULTS)
+    """发布一个带分类与顶层参数的字效版本，并让主应用的 Sprite 路由使用同一份临时数据；发布记录写入共享库替身。"""
+    yield from published_version(tmp_path, SCHEMA, DEFAULTS, "text", BOUND)
 
 
 @pytest.fixture
-def nested_published(tmp_path, template_db):
-    """发布组合 Sprite 常见的嵌套参数版本：业务文字位于 title_main.title。"""
-    yield from published_version(tmp_path, NESTED_SCHEMA, NESTED_DEFAULTS)
+def legacy_published(tmp_path, template_db):
+    """本次改动之前组合的版本：没有效果分类，也没有顶层参数绑定。"""
+    yield from published_version(tmp_path, SCHEMA, DEFAULTS, None, [])
 
 
-def published_version(tmp_path, schema, defaults):
-    """用离线渲染替身封存一个成功版本，并在使用结束后恢复路由依赖。"""
+def published_version(tmp_path, schema, defaults, kind, bound):
+    """用离线渲染替身封存一个成功版本（``kind`` 为空表示旧版组合），并在使用结束后恢复路由依赖。"""
     font = tmp_path / "font.ttc"
     font.write_bytes(b"fixture-font")
     settings = Settings(_env_file=None, data_dir=tmp_path / "state", font_regular=font, font_bold=font)
@@ -119,9 +128,11 @@ def published_version(tmp_path, schema, defaults):
             "instance_id": "title",
             "preset": {"code": CODE, "parameter_schema": schema, "default_parameters": defaults, "description": "标题"},
             "parameters": defaults,
-            "layout": {"x": 0, "y": 0, "width": 1080, "height": 1920, "z_index": 0},
+            "layout": LAYOUT,
             "timing": {"start_frame": 0, "duration_frames": 30},
         }],
+        bindings=[{"name": name, "title": name, "targets": [{"instance_id": "title", "parameter": name}]} for name in bound],
+        **({"kind": kind} if kind else {}),
     )
     _work, job = store.create(GenerateTemplateRequest(description="标题"))
     store.claim()
@@ -131,7 +142,7 @@ def published_version(tmp_path, schema, defaults):
     ))
     version = store.publish(job.id, *result)
     renderer = BundleRebuilder()
-    service = SimpleNamespace(store=store, settings=settings, harness=SimpleNamespace(renderer=renderer))
+    service = SimpleNamespace(store=store, settings=settings, harness=SimpleNamespace(renderer=renderer), sandbox_problem=lambda: None)
     app.dependency_overrides[sprite_runtime] = lambda: service
     yield SimpleNamespace(store=store, version=version, renderer=renderer, service=service)
     app.dependency_overrides.pop(sprite_runtime)
@@ -156,16 +167,25 @@ def published_sprite(client: TestClient, version_id, **fields) -> pb.SpriteSumma
 
 
 def test_publish_copies_content_and_lists_summary_without_source(client: TestClient, published) -> None:
-    """发布后目录只含摘要与可编辑参数；文字与关键词字段归总线，不进入参数。"""
+    """发布后目录只含摘要：顶层参数（含文字与关键词）都是可编辑控件，实例内部参数不暴露；记录内容区域。"""
     summary = published_sprite(client, published.version.id)
     assert (summary.name, summary.kind, summary.keywords_supported) == ("标题字效", pb.SPRITE_KIND_TEXT, True)
     assert (summary.canvas.width, summary.canvas.height, summary.canvas.fps, summary.canvas.preview_frames) == (1080, 1920, 30, 30)
     assert summary.source_version_id == str(published.version.id)
+    assert (summary.content_box.x, summary.content_box.y, summary.content_box.width, summary.content_box.height) == (90, 760, 900, 400)
     parameters = {item.key: item for item in summary.parameters}
-    assert set(parameters) == {"color", "size", "weight", "shadow"}
-    assert parameters["color"].label == "文字颜色"
-    assert (parameters["size"].minimum, parameters["size"].maximum) == (12, 300)
-    assert [item.number_value for item in parameters["weight"].allowed_values] == [400, 700]
+    assert list(parameters) == BOUND
+    assert (parameters["color"].label, parameters["color"].format) == ("文字颜色", pb.SPRITE_PARAMETER_FORMAT_COLOR)
+    assert (parameters["fontSize"].minimum, parameters["fontSize"].maximum) == (24, 240)
+    assert [item.number_value for item in parameters["fontWeight"].allowed_values] == [400, 700]
+    # number_value cannot tell an integer from a number: the format keeps integer parameters integral.
+    assert parameters["fontWeight"].format == pb.SPRITE_PARAMETER_FORMAT_INTEGER
+    assert parameters["fontSize"].format == pb.SPRITE_PARAMETER_FORMAT_UNSPECIFIED
+    assert (parameters["text"].default_value.string_value, parameters["text"].min_length, parameters["text"].max_length) == ("标题", 1, 40)
+    keywords = parameters["keywords"]
+    assert keywords.default_value.HasField("string_list_value") and list(keywords.default_value.string_list_value.values) == []
+    assert (keywords.max_items, keywords.max_length) == (20, 100)
+    assert parameters["shadow"].default_value.bool_value is False and parameters["shadow"].default_value.HasField("bool_value")
     assert all(item.access == pb.OPERATOR_ACCESS_VISIBLE_EDITABLE for item in parameters.values())
 
     listed = client.get("/api/sprites")
@@ -194,7 +214,7 @@ def test_catalog_lists_the_newest_publication_first(client: TestClient, publishe
     """目录按发布时间倒序：排序在应用里完成（MySQL 对带整个 JSON 的行排序可能超出排序缓冲区）。"""
     first = published_sprite(client, published.version.id, keywords_prop="")
     second = published_sprite(client, published.version.id)
-    third = published_sprite(client, published.version.id, text_prop="color", keywords_prop="")
+    third = published_sprite(client, published.version.id, kind=pb.SPRITE_KIND_VIDEO_OVERLAY, text_prop="", keywords_prop="")
     listed = pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites
     assert [item.sprite_id for item in listed] == [third.sprite_id, second.sprite_id, first.sprite_id]
 
@@ -231,12 +251,11 @@ def test_losing_a_publish_race_returns_the_winner_and_cleans_up(published) -> No
     assert [item.name for item in (published.store.root / "sprites").iterdir()] == [first.sprite_id]
 
 
-def test_field_names_longer_than_the_column_are_a_422() -> None:
-    """text_prop 与 keywords_prop 受列宽限制：即使 schema 真有这么长的属性名，也在写库之前以 422 拒绝。"""
+def test_field_names_longer_than_the_column_are_a_422(published) -> None:
+    """text_prop 与 keywords_prop 受列宽限制，在写库之前以 422 拒绝。"""
     name = "n" * (sprite_store.NAME_LENGTH + 1)
-    schema = {"type": "object", "properties": {name: {"type": "string"}}}
     with pytest.raises(HTTPException) as caught:
-        sprites._validated_request(pb.PublishSpriteRequest(kind=pb.SPRITE_KIND_TEXT, text_prop=name), schema, "composition")
+        sprites._validated_request(pb.PublishSpriteRequest(kind=pb.SPRITE_KIND_TEXT, text_prop=name), published.version)
     assert caught.value.status_code == 422 and str(sprite_store.NAME_LENGTH) in caught.value.detail
 
 
@@ -248,19 +267,40 @@ def test_preview_is_unavailable_when_the_local_bundle_is_missing(client: TestCli
     assert [item.sprite_id for item in pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites] == [summary.sprite_id]
 
 
-@pytest.mark.parametrize(("fields", "status"), [
-    ({"kind": pb.SPRITE_KIND_UNSPECIFIED}, 422),
-    ({"text_prop": "size"}, 422),
-    ({"text_prop": "missing"}, 422),
-    ({"keywords_prop": "text"}, 422),
-    ({"keywords_prop": "missing"}, 422),
-    ({"kind": pb.SPRITE_KIND_VIDEO_OVERLAY}, 422),
-], ids=["no-kind", "non-string-text", "unknown-text", "same-keywords", "unknown-keywords", "visual-with-text-fields"])
-def test_publish_rejects_invalid_field_choices(client: TestClient, published, fields, status) -> None:
-    """类型必须明确，文字字段必须是字符串参数，视觉类型不能声明文字字段。"""
+@pytest.mark.parametrize(("fields", "detail"), [
+    ({"kind": pb.SPRITE_KIND_UNSPECIFIED}, "kind 必须是"),
+    ({"text_prop": "color"}, "text_prop 必须是 text"),
+    ({"keywords_prop": "text"}, "keywords_prop 只能为空"),
+    ({"kind": pb.SPRITE_KIND_VIDEO_OVERLAY}, "只有字效可以声明"),
+    ({"kind": pb.SPRITE_KIND_FILTER_OVERLAY, "text_prop": "", "keywords_prop": ""}, "intensity（强度，0～1 的数字）；tintColor（色调，十六进制颜色）"),
+], ids=["no-kind", "other-text", "other-keywords", "visual-with-text-fields", "filter-without-its-parameters"])
+def test_publish_rejects_invalid_field_choices(client: TestClient, published, fields, detail) -> None:
+    """类型必须明确；字效的文字与关键词字段名固定；改选的分类缺少必备参数时说明缺什么，并提示回到聊天补充。"""
     response = publish(client, publish_request(published.version.id, **fields))
-    assert response.status_code == status
+    assert response.status_code == 422 and detail in response.json()["detail"]
     assert client.get("/api/sprites").content == b""
+
+
+def test_keywords_need_a_declared_keywords_parameter(published) -> None:
+    """没有声明关键词参数的字效只能不带 keywords_prop 发布。"""
+    version = published.version.model_copy(deep=True)
+    version.spec.sprite.bindings = [item for item in version.spec.sprite.bindings if item.name != "keywords"]
+    sprites._validated_request(publish_request(version.id, keywords_prop=""), version)
+    with pytest.raises(HTTPException) as caught:
+        sprites._validated_request(publish_request(version.id), version)
+    assert caught.value.status_code == 422 and "关键词" in caught.value.detail
+
+
+def test_a_version_composed_before_categories_must_be_edited_first(client: TestClient, legacy_published) -> None:
+    """旧版组合没有分类和参数绑定：不能直接保存到资产，提示在聊天中改出新版本。"""
+    response = publish(client, publish_request(legacy_published.version.id))
+    assert response.status_code == 422 and "请在聊天中继续修改" in response.json()["detail"]
+
+
+def test_publications_without_a_content_box_transform_around_the_whole_canvas() -> None:
+    """本次改动之前的发布记录没有内容区域：摘要按整块画布给出，模板编辑与渲染据此计算默认位置。"""
+    summary = sprites.summarize(pb.PublishedSprite(sprite_id="s", canvas=pb.SpriteCanvas(width=1080, height=1920, fps=30, preview_frames=30)))
+    assert (summary.content_box.x, summary.content_box.y, summary.content_box.width, summary.content_box.height) == (0, 0, 1080, 1920)
 
 
 def test_publish_rejects_unknown_malformed_or_tampered_sources(client: TestClient, published) -> None:
@@ -278,21 +318,6 @@ def test_style_binding_routes_are_gone(client: TestClient) -> None:
     style_id = uuid4()
     assert client.get(f"/api/sprites/styles/{style_id}").status_code == 404
     assert client.post(f"/api/sprites/styles/{style_id}", content=b"", headers=PROTOBUF).status_code == 404
-
-
-def test_nested_parameters_publish_with_dot_paths(client: TestClient, nested_published) -> None:
-    """组合 Sprite 的业务文字在嵌套对象里：用点号路径发布，文字字段不入样式参数。"""
-    summary = published_sprite(client, nested_published.version.id, text_prop="title_main.title", keywords_prop="")
-    assert {item.key for item in summary.parameters} == {"title_main.fontSize", "title_main.textColor"}
-    size = next(item for item in summary.parameters if item.key == "title_main.fontSize")
-    assert (size.minimum, size.maximum, size.default_value.number_value) == (8, 500, 160)
-
-
-
-@pytest.mark.parametrize("text_prop", ["title", "title_main", "title_main.missing", "title_main.fontSize"], ids=["flat-name-of-nested", "object", "unknown-path", "non-string"])
-def test_nested_publish_rejects_wrong_text_paths(client: TestClient, nested_published, text_prop) -> None:
-    """文字字段必须是真实存在的嵌套字符串叶子，顶层同名、对象或数字字段都被拒绝。"""
-    assert publish(client, publish_request(nested_published.version.id, text_prop=text_prop, keywords_prop="")).status_code == 422
 
 
 def test_overlay_preview_is_transparent_and_serves_managed_fonts(client: TestClient, published) -> None:
@@ -336,7 +361,7 @@ def test_catalog_skips_unreadable_records_and_keeps_the_rest(client: TestClient,
     """
     healthy = published_sprite(client, published.version.id, keywords_prop="")
     tampered = published_sprite(client, published.version.id)
-    malformed = published_sprite(client, published.version.id, text_prop="color", keywords_prop="")
+    malformed = published_sprite(client, published.version.id, kind=pb.SPRITE_KIND_TRANSITION_OVERLAY, text_prop="", keywords_prop="")
     not_an_object = published_sprite(client, published.version.id, kind=pb.SPRITE_KIND_VIDEO_OVERLAY, text_prop="", keywords_prop="")
     table = sprite_store.sprites
     with template_db.begin() as connection:
@@ -370,7 +395,7 @@ def test_stale_player_bundle_is_rebuilt_from_sealed_source(client: TestClient, p
 
 def test_current_sealed_bundle_is_copied_without_rebuilding(client: TestClient, published) -> None:
     """封存包已含同步支持时直接复制，不启动任何构建。"""
-    (published.store.root / "accepted" / str(published.version.id) / "interactive.js").write_text("// imv-preview-sync")
+    (published.store.root / "accepted" / str(published.version.id) / "interactive.js").write_text("// imv-preview-sync imv-preview-host")
     from server.remotion_templates.evidence import digest
     published.version.validation.artifacts["interactive.js"] = digest(published.store.root / "accepted" / str(published.version.id) / "interactive.js")
     with published.store.connection() as db:
@@ -378,6 +403,38 @@ def test_current_sealed_bundle_is_copied_without_rebuilding(client: TestClient, 
     summary = published_sprite(client, published.version.id)
     assert published.renderer.requests == []
     assert client.get(summary.preview_url).text.count("imv-preview-sync") == 1
+
+
+def test_a_bundle_without_placement_support_is_rebuilt(client: TestClient, published) -> None:
+    """可逐帧同步但不认识参数覆盖与宿主变换的旧包（缺少 imv-preview-host 标记）同样在发布时重建。"""
+    accepted = published.store.root / "accepted" / str(published.version.id) / "interactive.js"
+    accepted.write_text("// imv-preview-sync")
+    from server.remotion_templates.evidence import digest
+    published.version.validation.artifacts["interactive.js"] = digest(accepted)
+    with published.store.connection() as db:
+        db.execute("UPDATE versions SET data=? WHERE id=?", (published.version.model_dump_json(), str(published.version.id)))
+    summary = published_sprite(client, published.version.id)
+    assert len(published.renderer.requests) == 1
+    assert "rebuilt imv-preview-sync imv-preview-host" in client.get(summary.preview_url).text
+
+
+def test_preview_page_injects_the_published_defaults_and_content_box(client: TestClient, published) -> None:
+    """资产预览页把发布时的默认参数与内容区域写成 JSON 数据块，播放器据此起步；脚本无法借数据提前结束标签。"""
+    summary = published_sprite(client, published.version.id)
+    page = client.get(summary.preview_url, params={"overlay": "true"}).text
+    data = page.split('<script type="application/json" id="imv-preview-host">', 1)[1].split("</script>", 1)[0]
+    assert json.loads(data) == {"config": DEFAULTS, "box": {"x": 90, "y": 760, "width": 900, "height": 400}}
+
+
+def test_page_data_cannot_close_its_script_element() -> None:
+    """注入的数据含 </script>、& 与行分隔符时全部转义，解析结果不变。"""
+    from server.remotion_templates.routes import player_page
+
+    value = {"config": {"text": "</script><script>alert(1)</script>&\u2028\u2029"}}
+    page = player_page("void 0", overlay=True, host=value).body.decode()
+    data = page.split('id="imv-preview-host">', 1)[1].split("</script>", 1)[0]
+    assert "<" not in data and "&" not in data and "\u2028" not in data
+    assert json.loads(data) == value
 
 
 def test_rebuild_failure_still_saves_and_republishing_refreshes_the_old_copy(client: TestClient, published) -> None:
@@ -388,7 +445,7 @@ def test_rebuild_failure_still_saves_and_republishing_refreshes_the_old_copy(cli
     published.renderer.failure = None
     again = published_sprite(client, published.version.id)
     assert again.sprite_id == first.sprite_id
-    assert "rebuilt imv-preview-sync" in client.get(first.preview_url).text
+    assert "rebuilt imv-preview-sync imv-preview-host" in client.get(first.preview_url).text
     assert len(pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites) == 1
 
 
@@ -427,3 +484,68 @@ def test_concurrent_identical_publishes_build_the_player_once(published) -> None
     first, second = asyncio.run(twice())
     assert first.sprite_id == second.sprite_id
     assert len(published.renderer.requests) == 1
+
+
+def test_a_new_publication_renders_its_boundary_samples_once(client: TestClient, published) -> None:
+    """新发布先在隔离浏览器里渲染边界样本（默认值、两端取值和宿主变换），重复保存同一资产不再抽样。"""
+    first = published_sprite(client, published.version.id)
+    [request] = published.renderer.samples
+    names = [item["name"] for item in request["samples"]]
+    assert names[:3] == ["defaults", "low", "high"]
+    assert request["box"] == {"x": 90, "y": 760, "width": 900, "height": 400}
+    assert request["composition"] == {"width": 1080, "height": 1920, "fps": 30, "duration_frames": 30}
+    low = request["samples"][1]
+    assert low["values"]["text"] == "测" * 40 and low["values"]["keywords"] == ["测"] * 20 and low["values"]["color"] == "#000000"
+    assert low["transform"] == {"x": 0, "y": 0, "scale": 0.25, "rotation": -180, "opacity": 0}
+    assert published_sprite(client, published.version.id).sprite_id == first.sprite_id
+    assert len(published.renderer.samples) == 1
+    assert not [item for item in (published.store.root / "sprites").iterdir() if item.name.startswith(".samples-")]
+
+
+def test_a_failed_boundary_sample_refuses_the_publication(client: TestClient, published) -> None:
+    """任一边界样本渲染出错时不保存资产，422 说明是哪一个样本和第几帧。"""
+    published.renderer.failing_sample = "high"
+    response = publish(client, publish_request(published.version.id))
+    assert response.status_code == 422
+    assert "参数边界检查未通过（high）：frame 15: boom" in response.json()["detail"]
+    assert client.get("/api/sprites").content == b""
+
+
+def test_publishing_needs_the_isolated_validator(client: TestClient, published) -> None:
+    """校验环境缺失时先以 503 拒绝；运行中校验器无法启动同样是 503，且不保存资产。"""
+    published.service.sandbox_problem = lambda: "bwrap is not installed"
+    response = publish(client, publish_request(published.version.id))
+    assert response.status_code == 503 and "bwrap" in response.json()["detail"]
+    published.service.sandbox_problem = lambda: None
+    published.renderer.sample_failure = RuntimeError("worker crashed")
+    assert publish(client, publish_request(published.version.id)).status_code == 503
+    assert client.get("/api/sprites").content == b""
+
+
+def test_publications_made_before_categories_can_still_be_re_saved(client: TestClient, legacy_published, monkeypatch) -> None:
+    """旧版组合发布过的资产仍能「重新保存到资产」来刷新播放器包：命中已有发布时不再套用新的发布规则，旧的文字字段路径也能命中。
+
+    修复前先做新规则校验，旧版本一律 422，叠加预览里「请重新保存到资产」的提示无法照做，旧资产永远拿不到新的播放器包。
+    """
+    def bypass(request, version):
+        """Stand in for the publish rules before this change, which accepted any field choice."""
+
+    async def no_samples(*args, **kwargs):
+        """Publications before this change rendered no boundary samples."""
+
+    with monkeypatch.context() as patch:
+        patch.setattr(sprites, "_validated_request", bypass)
+        patch.setattr(sprites, "_sample", no_samples)
+        visual = published_sprite(client, legacy_published.version.id, kind=pb.SPRITE_KIND_VIDEO_OVERLAY, text_prop="", keywords_prop="")
+        text = published_sprite(client, legacy_published.version.id, text_prop="title.glow", keywords_prop="")
+    for sprite_id in (visual.sprite_id, text.sprite_id):
+        (legacy_published.store.root / "sprites" / sprite_id / "interactive.js").write_text("// stale imv-preview-sync")
+    legacy_published.renderer.requests.clear()
+    again = published_sprite(client, legacy_published.version.id, kind=pb.SPRITE_KIND_VIDEO_OVERLAY, text_prop="", keywords_prop="")
+    # Today's client sends the fixed text field; the old dot-path publication of the same kind is the one refreshed.
+    text_again = published_sprite(client, legacy_published.version.id, text_prop="text", keywords_prop="")
+    assert (again.sprite_id, text_again.sprite_id) == (visual.sprite_id, text.sprite_id)
+    assert legacy_published.renderer.samples == [] and len(legacy_published.renderer.requests) == 2
+    assert "imv-preview-host" in client.get(again.preview_url).text
+    # A kind that was never published from this version is a new publication and gets the new rules.
+    assert publish(client, publish_request(legacy_published.version.id, kind=pb.SPRITE_KIND_FILTER_OVERLAY, text_prop="", keywords_prop="")).status_code == 422

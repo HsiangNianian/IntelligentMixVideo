@@ -1,5 +1,6 @@
 // Remotion Sprite 的发布、目录和合成输入协议。
-// Sprite 保存已经验收的外观与动画；业务文字、关键词、素材边界和最终时间由合成总线提供。
+// Sprite 保存已经验收的外观与动画；代码只是确定的样例，文字、颜色、位置等由发布时抽出的参数调整，
+// 模板里每次摆放的参数覆盖保存在 remotion 轨道的 editor.remotion 中。
 // Sprite 在云端模板里的使用不在本包：它是 imv.template.v1.EffectTrack 的一条 remotion 轨道，
 // 以 sprite_id 引用这里发布的 Sprite，同一个 Sprite 可以在同一模板里摆放多次。
 
@@ -17,10 +18,31 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file imv/sprite/v1/sprite.proto.
  */
 export const file_imv_sprite_v1_sprite: GenFile = /*@__PURE__*/
-  fileDesc("ChppbXYvc3ByaXRlL3YxL3Nwcml0ZS5wcm90bxINaW12LnNwcml0ZS52MSJcCgtTY2FsYXJWYWx1ZRIWCgxzdHJpbmdfdmFsdWUYASABKAlIABIWCgxudW1iZXJfdmFsdWUYAiABKAFIABIUCgpib29sX3ZhbHVlGAMgASgISABCBwoFdmFsdWUihwIKD1Nwcml0ZVBhcmFtZXRlchILCgNrZXkYASABKAkSDQoFbGFiZWwYAiABKAkSLQoGYWNjZXNzGAMgASgOMh0uaW12LnNwcml0ZS52MS5PcGVyYXRvckFjY2VzcxIxCg1kZWZhdWx0X3ZhbHVlGAQgASgLMhouaW12LnNwcml0ZS52MS5TY2FsYXJWYWx1ZRIUCgdtaW5pbXVtGAUgASgBSACIAQESFAoHbWF4aW11bRgGIAEoAUgBiAEBEjIKDmFsbG93ZWRfdmFsdWVzGAcgAygLMhouaW12LnNwcml0ZS52MS5TY2FsYXJWYWx1ZUIKCghfbWluaW11bUIKCghfbWF4aW11bSJSCgxTcHJpdGVDYW52YXMSDQoFd2lkdGgYASABKA0SDgoGaGVpZ2h0GAIgASgNEgsKA2ZwcxgDIAEoDRIWCg5wcmV2aWV3X2ZyYW1lcxgEIAEoDSKuBAoPUHVibGlzaGVkU3ByaXRlEhEKCXNwcml0ZV9pZBgBIAEoCRIZChFzb3VyY2VfdmVyc2lvbl9pZBgCIAEoCRIMCgRuYW1lGAMgASgJEicKBGtpbmQYBCABKA4yGS5pbXYuc3ByaXRlLnYxLlNwcml0ZUtpbmQSKwoGY2FudmFzGAUgASgLMhsuaW12LnNwcml0ZS52MS5TcHJpdGVDYW52YXMSEAoIdHN4X2NvZGUYBiABKAkSEwoLY29kZV9zaGEyNTYYByABKAkSMgoKcGFyYW1ldGVycxgIIAMoCzIeLmltdi5zcHJpdGUudjEuU3ByaXRlUGFyYW1ldGVyEhEKCXRleHRfcHJvcBgJIAEoCRIVCg1rZXl3b3Jkc19wcm9wGAogASgJEjAKDHB1Ymxpc2hlZF9hdBgLIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASFgoOcHJldmlld19zaGEyNTYYDCABKAkSGgoSY29uZmlnX3NjaGVtYV9qc29uGA0gASgJEhsKE2RlZmF1bHRfY29uZmlnX2pzb24YDiABKAkSGAoQYW5pbWF0aW9uX2ZyYW1lcxgPIAEoDRIUCgxzdGF0aWNfZnJhbWUYECABKA0SGAoQYnViYmxlX2Fzc2V0X3VybBgRIAEoCRIaChJidWJibGVfYXNzZXRfd2lkdGgYEiABKA0SGwoTYnViYmxlX2Fzc2V0X2hlaWdodBgTIAEoDSKGAgoNU3ByaXRlU3VtbWFyeRIRCglzcHJpdGVfaWQYASABKAkSDAoEbmFtZRgCIAEoCRInCgRraW5kGAMgASgOMhkuaW12LnNwcml0ZS52MS5TcHJpdGVLaW5kEisKBmNhbnZhcxgEIAEoCzIbLmltdi5zcHJpdGUudjEuU3ByaXRlQ2FudmFzEjIKCnBhcmFtZXRlcnMYBSADKAsyHi5pbXYuc3ByaXRlLnYxLlNwcml0ZVBhcmFtZXRlchIZChFzb3VyY2VfdmVyc2lvbl9pZBgGIAEoCRITCgtwcmV2aWV3X3VybBgHIAEoCRIaChJrZXl3b3Jkc19zdXBwb3J0ZWQYCCABKAgiRAoTTGlzdFNwcml0ZXNSZXNwb25zZRItCgdzcHJpdGVzGAEgAygLMhwuaW12LnNwcml0ZS52MS5TcHJpdGVTdW1tYXJ5IoQBChRQdWJsaXNoU3ByaXRlUmVxdWVzdBIZChFzb3VyY2VfdmVyc2lvbl9pZBgBIAEoCRInCgRraW5kGAIgASgOMhkuaW12LnNwcml0ZS52MS5TcHJpdGVLaW5kEhEKCXRleHRfcHJvcBgDIAEoCRIVCg1rZXl3b3Jkc19wcm9wGAQgASgJIkUKFVB1Ymxpc2hTcHJpdGVSZXNwb25zZRIsCgZzcHJpdGUYASABKAsyHC5pbXYuc3ByaXRlLnYxLlNwcml0ZVN1bW1hcnkiUQoXU3ByaXRlUGFyYW1ldGVyT3ZlcnJpZGUSCwoDa2V5GAEgASgJEikKBXZhbHVlGAIgASgLMhouaW12LnNwcml0ZS52MS5TY2FsYXJWYWx1ZSKgAgoRU3ByaXRlUmVuZGVySW5wdXQSEQoJc3ByaXRlX2lkGAEgASgJEhQKDHBsYWNlbWVudF9pZBgCIAEoCRIrCgZvdXRwdXQYAyABKAsyGy5pbXYuc3ByaXRlLnYxLlNwcml0ZUNhbnZhcxIcChRlZmZlY3Rfb2Zmc2V0X2ZyYW1lcxgEIAEoBBIaChJyZW5kZXJfZnJhbWVfY291bnQYBSABKAQSDAoEdGV4dBgGIAEoCRIQCghrZXl3b3JkcxgHIAMoCRI+Cg5yZXNvbHZlZF9zdHlsZRgIIAMoCzImLmltdi5zcHJpdGUudjEuU3ByaXRlUGFyYW1ldGVyT3ZlcnJpZGUSGwoTZWZmZWN0X3RvdGFsX2ZyYW1lcxgJIAEoBCqiAQoKU3ByaXRlS2luZBIbChdTUFJJVEVfS0lORF9VTlNQRUNJRklFRBAAEhQKEFNQUklURV9LSU5EX1RFWFQQARIeChpTUFJJVEVfS0lORF9GSUxURVJfT1ZFUkxBWRACEh0KGVNQUklURV9LSU5EX1ZJREVPX09WRVJMQVkQAxIiCh5TUFJJVEVfS0lORF9UUkFOU0lUSU9OX09WRVJMQVkQBCqcAQoOT3BlcmF0b3JBY2Nlc3MSHwobT1BFUkFUT1JfQUNDRVNTX1VOU1BFQ0lGSUVEEAASJQohT1BFUkFUT1JfQUNDRVNTX1ZJU0lCTEVfUkVBRF9PTkxZEAESJAogT1BFUkFUT1JfQUNDRVNTX1ZJU0lCTEVfRURJVEFCTEUQAhIcChhPUEVSQVRPUl9BQ0NFU1NfSU5URVJOQUwQA2IGcHJvdG8z", [file_google_protobuf_timestamp]);
+  fileDesc("ChppbXYvc3ByaXRlL3YxL3Nwcml0ZS5wcm90bxINaW12LnNwcml0ZS52MSIcCgpTdHJpbmdMaXN0Eg4KBnZhbHVlcxgBIAMoCSKUAQoLU2NhbGFyVmFsdWUSFgoMc3RyaW5nX3ZhbHVlGAEgASgJSAASFgoMbnVtYmVyX3ZhbHVlGAIgASgBSAASFAoKYm9vbF92YWx1ZRgDIAEoCEgAEjYKEXN0cmluZ19saXN0X3ZhbHVlGAQgASgLMhkuaW12LnNwcml0ZS52MS5TdHJpbmdMaXN0SABCBwoFdmFsdWUiswMKD1Nwcml0ZVBhcmFtZXRlchILCgNrZXkYASABKAkSDQoFbGFiZWwYAiABKAkSLQoGYWNjZXNzGAMgASgOMh0uaW12LnNwcml0ZS52MS5PcGVyYXRvckFjY2VzcxIxCg1kZWZhdWx0X3ZhbHVlGAQgASgLMhouaW12LnNwcml0ZS52MS5TY2FsYXJWYWx1ZRIUCgdtaW5pbXVtGAUgASgBSACIAQESFAoHbWF4aW11bRgGIAEoAUgBiAEBEjIKDmFsbG93ZWRfdmFsdWVzGAcgAygLMhouaW12LnNwcml0ZS52MS5TY2FsYXJWYWx1ZRI0CgZmb3JtYXQYCCABKA4yJC5pbXYuc3ByaXRlLnYxLlNwcml0ZVBhcmFtZXRlckZvcm1hdBIXCgptaW5fbGVuZ3RoGAkgASgNSAKIAQESFwoKbWF4X2xlbmd0aBgKIAEoDUgDiAEBEhYKCW1heF9pdGVtcxgLIAEoDUgEiAEBQgoKCF9taW5pbXVtQgoKCF9tYXhpbXVtQg0KC19taW5fbGVuZ3RoQg0KC19tYXhfbGVuZ3RoQgwKCl9tYXhfaXRlbXMiQAoJU3ByaXRlQm94EgkKAXgYASABKAESCQoBeRgCIAEoARINCgV3aWR0aBgDIAEoARIOCgZoZWlnaHQYBCABKAEiUgoMU3ByaXRlQ2FudmFzEg0KBXdpZHRoGAEgASgNEg4KBmhlaWdodBgCIAEoDRILCgNmcHMYAyABKA0SFgoOcHJldmlld19mcmFtZXMYBCABKA0i3QQKD1B1Ymxpc2hlZFNwcml0ZRIRCglzcHJpdGVfaWQYASABKAkSGQoRc291cmNlX3ZlcnNpb25faWQYAiABKAkSDAoEbmFtZRgDIAEoCRInCgRraW5kGAQgASgOMhkuaW12LnNwcml0ZS52MS5TcHJpdGVLaW5kEisKBmNhbnZhcxgFIAEoCzIbLmltdi5zcHJpdGUudjEuU3ByaXRlQ2FudmFzEhAKCHRzeF9jb2RlGAYgASgJEhMKC2NvZGVfc2hhMjU2GAcgASgJEjIKCnBhcmFtZXRlcnMYCCADKAsyHi5pbXYuc3ByaXRlLnYxLlNwcml0ZVBhcmFtZXRlchIRCgl0ZXh0X3Byb3AYCSABKAkSFQoNa2V5d29yZHNfcHJvcBgKIAEoCRIwCgxwdWJsaXNoZWRfYXQYCyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhYKDnByZXZpZXdfc2hhMjU2GAwgASgJEhoKEmNvbmZpZ19zY2hlbWFfanNvbhgNIAEoCRIbChNkZWZhdWx0X2NvbmZpZ19qc29uGA4gASgJEhgKEGFuaW1hdGlvbl9mcmFtZXMYDyABKA0SFAoMc3RhdGljX2ZyYW1lGBAgASgNEhgKEGJ1YmJsZV9hc3NldF91cmwYESABKAkSGgoSYnViYmxlX2Fzc2V0X3dpZHRoGBIgASgNEhsKE2J1YmJsZV9hc3NldF9oZWlnaHQYEyABKA0SLQoLY29udGVudF9ib3gYFCABKAsyGC5pbXYuc3ByaXRlLnYxLlNwcml0ZUJveCK1AgoNU3ByaXRlU3VtbWFyeRIRCglzcHJpdGVfaWQYASABKAkSDAoEbmFtZRgCIAEoCRInCgRraW5kGAMgASgOMhkuaW12LnNwcml0ZS52MS5TcHJpdGVLaW5kEisKBmNhbnZhcxgEIAEoCzIbLmltdi5zcHJpdGUudjEuU3ByaXRlQ2FudmFzEjIKCnBhcmFtZXRlcnMYBSADKAsyHi5pbXYuc3ByaXRlLnYxLlNwcml0ZVBhcmFtZXRlchIZChFzb3VyY2VfdmVyc2lvbl9pZBgGIAEoCRITCgtwcmV2aWV3X3VybBgHIAEoCRIaChJrZXl3b3Jkc19zdXBwb3J0ZWQYCCABKAgSLQoLY29udGVudF9ib3gYCSABKAsyGC5pbXYuc3ByaXRlLnYxLlNwcml0ZUJveCJEChNMaXN0U3ByaXRlc1Jlc3BvbnNlEi0KB3Nwcml0ZXMYASADKAsyHC5pbXYuc3ByaXRlLnYxLlNwcml0ZVN1bW1hcnkihAEKFFB1Ymxpc2hTcHJpdGVSZXF1ZXN0EhkKEXNvdXJjZV92ZXJzaW9uX2lkGAEgASgJEicKBGtpbmQYAiABKA4yGS5pbXYuc3ByaXRlLnYxLlNwcml0ZUtpbmQSEQoJdGV4dF9wcm9wGAMgASgJEhUKDWtleXdvcmRzX3Byb3AYBCABKAkiRQoVUHVibGlzaFNwcml0ZVJlc3BvbnNlEiwKBnNwcml0ZRgBIAEoCzIcLmltdi5zcHJpdGUudjEuU3ByaXRlU3VtbWFyeSJRChdTcHJpdGVQYXJhbWV0ZXJPdmVycmlkZRILCgNrZXkYASABKAkSKQoFdmFsdWUYAiABKAsyGi5pbXYuc3ByaXRlLnYxLlNjYWxhclZhbHVlIqACChFTcHJpdGVSZW5kZXJJbnB1dBIRCglzcHJpdGVfaWQYASABKAkSFAoMcGxhY2VtZW50X2lkGAIgASgJEisKBm91dHB1dBgDIAEoCzIbLmltdi5zcHJpdGUudjEuU3ByaXRlQ2FudmFzEhwKFGVmZmVjdF9vZmZzZXRfZnJhbWVzGAQgASgEEhoKEnJlbmRlcl9mcmFtZV9jb3VudBgFIAEoBBIMCgR0ZXh0GAYgASgJEhAKCGtleXdvcmRzGAcgAygJEj4KDnJlc29sdmVkX3N0eWxlGAggAygLMiYuaW12LnNwcml0ZS52MS5TcHJpdGVQYXJhbWV0ZXJPdmVycmlkZRIbChNlZmZlY3RfdG90YWxfZnJhbWVzGAkgASgEKqIBCgpTcHJpdGVLaW5kEhsKF1NQUklURV9LSU5EX1VOU1BFQ0lGSUVEEAASFAoQU1BSSVRFX0tJTkRfVEVYVBABEh4KGlNQUklURV9LSU5EX0ZJTFRFUl9PVkVSTEFZEAISHQoZU1BSSVRFX0tJTkRfVklERU9fT1ZFUkxBWRADEiIKHlNQUklURV9LSU5EX1RSQU5TSVRJT05fT1ZFUkxBWRAEKpwBCg5PcGVyYXRvckFjY2VzcxIfChtPUEVSQVRPUl9BQ0NFU1NfVU5TUEVDSUZJRUQQABIlCiFPUEVSQVRPUl9BQ0NFU1NfVklTSUJMRV9SRUFEX09OTFkQARIkCiBPUEVSQVRPUl9BQ0NFU1NfVklTSUJMRV9FRElUQUJMRRACEhwKGE9QRVJBVE9SX0FDQ0VTU19JTlRFUk5BTBADKogBChVTcHJpdGVQYXJhbWV0ZXJGb3JtYXQSJwojU1BSSVRFX1BBUkFNRVRFUl9GT1JNQVRfVU5TUEVDSUZJRUQQABIhCh1TUFJJVEVfUEFSQU1FVEVSX0ZPUk1BVF9DT0xPUhABEiMKH1NQUklURV9QQVJBTUVURVJfRk9STUFUX0lOVEVHRVIQAmIGcHJvdG8z", [file_google_protobuf_timestamp]);
 
 /**
- * 单个样式标量。oneof 保留字符串、数字或布尔值的类型，
+ * 字符串列表值，目前只用于字效的 keywords 参数。
+ *
+ * @generated from message imv.sprite.v1.StringList
+ */
+export type StringList = Message<"imv.sprite.v1.StringList"> & {
+  /**
+   * 按声明顺序保存的字符串；空列表是有效值。
+   *
+   * @generated from field: repeated string values = 1;
+   */
+  values: string[];
+};
+
+/**
+ * Describes the message imv.sprite.v1.StringList.
+ * Use `create(StringListSchema)` to create a new message.
+ */
+export const StringListSchema: GenMessage<StringList> = /*@__PURE__*/
+  messageDesc(file_imv_sprite_v1_sprite, 0);
+
+/**
+ * 单个参数值。oneof 保留字符串、数字、布尔值或字符串列表的类型，
  * 覆盖值必须与发布默认值同型，并满足发布时保存的参数约束。
  *
  * @generated from message imv.sprite.v1.ScalarValue
@@ -31,7 +53,7 @@ export type ScalarValue = Message<"imv.sprite.v1.ScalarValue"> & {
    */
   value: {
     /**
-     * 字符串样式值；是否允许运营编辑由参数声明决定。
+     * 字符串值；可再受 SpriteParameter.min_length/max_length 约束。
      *
      * @generated from field: string string_value = 1;
      */
@@ -53,6 +75,14 @@ export type ScalarValue = Message<"imv.sprite.v1.ScalarValue"> & {
      */
     value: boolean;
     case: "boolValue";
+  } | {
+    /**
+     * 字符串列表；可再受 SpriteParameter.max_items 与 max_length（逐项）约束。
+     *
+     * @generated from field: imv.sprite.v1.StringList string_list_value = 4;
+     */
+    value: StringList;
+    case: "stringListValue";
   } | { case: undefined; value?: undefined };
 };
 
@@ -61,17 +91,18 @@ export type ScalarValue = Message<"imv.sprite.v1.ScalarValue"> & {
  * Use `create(ScalarValueSchema)` to create a new message.
  */
 export const ScalarValueSchema: GenMessage<ScalarValue> = /*@__PURE__*/
-  messageDesc(file_imv_sprite_v1_sprite, 0);
+  messageDesc(file_imv_sprite_v1_sprite, 1);
 
 /**
- * 已发布版本允许运营查看或修改的一个样式控件。
- * key 对应验收代码中的配置字段；字段只能表示样式，不能表示业务文案或绝对时间。
+ * 已发布版本允许运营查看或修改的一个参数控件。
+ * key 对应验收代码中的配置字段；字段不能表示绝对时间。
  *
  * @generated from message imv.sprite.v1.SpriteParameter
  */
 export type SpriteParameter = Message<"imv.sprite.v1.SpriteParameter"> & {
   /**
    * 配置字段名，覆盖值通过同名 key 找到该参数。
+   * 新发布只暴露配置顶层的参数；历史发布可能使用以点分隔的嵌套路径。
    *
    * @generated from field: string key = 1;
    */
@@ -119,6 +150,34 @@ export type SpriteParameter = Message<"imv.sprite.v1.SpriteParameter"> & {
    * @generated from field: repeated imv.sprite.v1.ScalarValue allowed_values = 7;
    */
   allowedValues: ScalarValue[];
+
+  /**
+   * 展示格式，例如颜色。
+   *
+   * @generated from field: imv.sprite.v1.SpriteParameterFormat format = 8;
+   */
+  format: SpriteParameterFormat;
+
+  /**
+   * 可选字符串长度下界，按 Unicode 码点计数；对字符串列表逐项生效。
+   *
+   * @generated from field: optional uint32 min_length = 9;
+   */
+  minLength?: number | undefined;
+
+  /**
+   * 可选字符串长度上界，按 Unicode 码点计数；对字符串列表逐项生效。
+   *
+   * @generated from field: optional uint32 max_length = 10;
+   */
+  maxLength?: number | undefined;
+
+  /**
+   * 可选字符串列表的最大项数。
+   *
+   * @generated from field: optional uint32 max_items = 11;
+   */
+  maxItems?: number | undefined;
 };
 
 /**
@@ -126,7 +185,49 @@ export type SpriteParameter = Message<"imv.sprite.v1.SpriteParameter"> & {
  * Use `create(SpriteParameterSchema)` to create a new message.
  */
 export const SpriteParameterSchema: GenMessage<SpriteParameter> = /*@__PURE__*/
-  messageDesc(file_imv_sprite_v1_sprite, 1);
+  messageDesc(file_imv_sprite_v1_sprite, 2);
+
+/**
+ * 画布上的矩形区域，单位为画布像素，原点在左上角。
+ *
+ * @generated from message imv.sprite.v1.SpriteBox
+ */
+export type SpriteBox = Message<"imv.sprite.v1.SpriteBox"> & {
+  /**
+   * 左边缘横坐标。
+   *
+   * @generated from field: double x = 1;
+   */
+  x: number;
+
+  /**
+   * 上边缘纵坐标。
+   *
+   * @generated from field: double y = 2;
+   */
+  y: number;
+
+  /**
+   * 宽度，大于零。
+   *
+   * @generated from field: double width = 3;
+   */
+  width: number;
+
+  /**
+   * 高度，大于零。
+   *
+   * @generated from field: double height = 4;
+   */
+  height: number;
+};
+
+/**
+ * Describes the message imv.sprite.v1.SpriteBox.
+ * Use `create(SpriteBoxSchema)` to create a new message.
+ */
+export const SpriteBoxSchema: GenMessage<SpriteBox> = /*@__PURE__*/
+  messageDesc(file_imv_sprite_v1_sprite, 3);
 
 /**
  * Sprite 发布时固定的画布和帧率，也是 SpriteRenderInput 帧数的计量基准。
@@ -170,7 +271,7 @@ export type SpriteCanvas = Message<"imv.sprite.v1.SpriteCanvas"> & {
  * Use `create(SpriteCanvasSchema)` to create a new message.
  */
 export const SpriteCanvasSchema: GenMessage<SpriteCanvas> = /*@__PURE__*/
-  messageDesc(file_imv_sprite_v1_sprite, 2);
+  messageDesc(file_imv_sprite_v1_sprite, 4);
 
 /**
  * 一次不可变发布。服务端复制已通过验收的代码、参数契约和预览，
@@ -230,22 +331,22 @@ export type PublishedSprite = Message<"imv.sprite.v1.PublishedSprite"> & {
   codeSha256: string;
 
   /**
-   * 运营可见或内部使用的已验收样式参数声明，不包含业务文字参数。
+   * 运营可见或内部使用的已验收参数声明；新发布的字效包含可编辑的文字参数。
    *
    * @generated from field: repeated imv.sprite.v1.SpriteParameter parameters = 8;
    */
   parameters: SpriteParameter[];
 
   /**
-   * 文字 Sprite 接收总线标题或字幕的配置字段名；视觉 Sprite 留空。
+   * 字效保存文字内容的配置字段名，新发布固定为 text；视觉 Sprite 留空。
    *
    * @generated from field: string text_prop = 9;
    */
   textProp: string;
 
   /**
-   * 字幕 Sprite 接收关键词命中区间的配置字段名；不支持高亮时留空。
-   * 服务端按业务文字计算所有字面命中，传入以 Unicode 码点计数的半开区间。
+   * 字效保存高亮关键词列表的配置字段名，新发布声明了关键词时为 keywords，否则留空。
+   * 组件自行在文字内查找各关键词的字面命中并高亮。
    *
    * @generated from field: string keywords_prop = 10;
    */
@@ -314,6 +415,14 @@ export type PublishedSprite = Message<"imv.sprite.v1.PublishedSprite"> & {
    * @generated from field: uint32 bubble_asset_height = 19;
    */
   bubbleAssetHeight: number;
+
+  /**
+   * 内容区域：发布时各实例布局的并集与画布求交；宿主的位置、缩放和旋转以其中心为原点。
+   * 历史发布未记录时视为整块画布。
+   *
+   * @generated from field: imv.sprite.v1.SpriteBox content_box = 20;
+   */
+  contentBox?: SpriteBox | undefined;
 };
 
 /**
@@ -321,7 +430,7 @@ export type PublishedSprite = Message<"imv.sprite.v1.PublishedSprite"> & {
  * Use `create(PublishedSpriteSchema)` to create a new message.
  */
 export const PublishedSpriteSchema: GenMessage<PublishedSprite> = /*@__PURE__*/
-  messageDesc(file_imv_sprite_v1_sprite, 3);
+  messageDesc(file_imv_sprite_v1_sprite, 5);
 
 /**
  * 公开目录使用的发布摘要；只包含运营选择与预览需要的信息，不返回 TSX 源码。
@@ -385,6 +494,13 @@ export type SpriteSummary = Message<"imv.sprite.v1.SpriteSummary"> & {
    * @generated from field: bool keywords_supported = 8;
    */
   keywordsSupported: boolean;
+
+  /**
+   * 内容区域，与 PublishedSprite.content_box 相同；模板编辑器据此计算默认位置和拖动范围。
+   *
+   * @generated from field: imv.sprite.v1.SpriteBox content_box = 9;
+   */
+  contentBox?: SpriteBox | undefined;
 };
 
 /**
@@ -392,7 +508,7 @@ export type SpriteSummary = Message<"imv.sprite.v1.SpriteSummary"> & {
  * Use `create(SpriteSummarySchema)` to create a new message.
  */
 export const SpriteSummarySchema: GenMessage<SpriteSummary> = /*@__PURE__*/
-  messageDesc(file_imv_sprite_v1_sprite, 4);
+  messageDesc(file_imv_sprite_v1_sprite, 6);
 
 /**
  * GET /api/sprites 的响应，返回可供运营选择的不可变发布条目。
@@ -413,7 +529,7 @@ export type ListSpritesResponse = Message<"imv.sprite.v1.ListSpritesResponse"> &
  * Use `create(ListSpritesResponseSchema)` to create a new message.
  */
 export const ListSpritesResponseSchema: GenMessage<ListSpritesResponse> = /*@__PURE__*/
-  messageDesc(file_imv_sprite_v1_sprite, 5);
+  messageDesc(file_imv_sprite_v1_sprite, 7);
 
 /**
  * POST /api/sprites/publish 的请求；源版本必须已完整通过验收。
@@ -429,21 +545,21 @@ export type PublishSpriteRequest = Message<"imv.sprite.v1.PublishSpriteRequest">
   sourceVersionId: string;
 
   /**
-   * 必须与源版本创建时固定的类型一致。
+   * 发布类型，默认取 Agent 判断的分类，用户可以改选；服务端按此类型检查必备参数。
    *
    * @generated from field: imv.sprite.v1.SpriteKind kind = 2;
    */
   kind: SpriteKind;
 
   /**
-   * 文字 Sprite 的唯一业务文字配置字段；视觉 Sprite 留空。
+   * 字效的文字配置字段，新版本必须为 text；视觉 Sprite 留空。
    *
    * @generated from field: string text_prop = 3;
    */
   textProp: string;
 
   /**
-   * 字幕高亮使用的配置字段；标题和视觉 Sprite 留空。
+   * 字效的关键词配置字段，新版本声明了关键词时为 keywords，否则留空。
    *
    * @generated from field: string keywords_prop = 4;
    */
@@ -455,7 +571,7 @@ export type PublishSpriteRequest = Message<"imv.sprite.v1.PublishSpriteRequest">
  * Use `create(PublishSpriteRequestSchema)` to create a new message.
  */
 export const PublishSpriteRequestSchema: GenMessage<PublishSpriteRequest> = /*@__PURE__*/
-  messageDesc(file_imv_sprite_v1_sprite, 6);
+  messageDesc(file_imv_sprite_v1_sprite, 8);
 
 /**
  * 发布结果只返回可公开的摘要；相同源版本和参数重复发布返回原 Sprite。
@@ -474,10 +590,10 @@ export type PublishSpriteResponse = Message<"imv.sprite.v1.PublishSpriteResponse
  * Use `create(PublishSpriteResponseSchema)` to create a new message.
  */
 export const PublishSpriteResponseSchema: GenMessage<PublishSpriteResponse> = /*@__PURE__*/
-  messageDesc(file_imv_sprite_v1_sprite, 7);
+  messageDesc(file_imv_sprite_v1_sprite, 9);
 
 /**
- * 一个运营样式覆盖；key 必须对应已发布 Sprite 的 VISIBLE_EDITABLE 参数。
+ * 一个运营参数覆盖；key 必须对应已发布 Sprite 的 VISIBLE_EDITABLE 参数。
  *
  * @generated from message imv.sprite.v1.SpriteParameterOverride
  */
@@ -502,7 +618,7 @@ export type SpriteParameterOverride = Message<"imv.sprite.v1.SpriteParameterOver
  * Use `create(SpriteParameterOverrideSchema)` to create a new message.
  */
 export const SpriteParameterOverrideSchema: GenMessage<SpriteParameterOverride> = /*@__PURE__*/
-  messageDesc(file_imv_sprite_v1_sprite, 8);
+  messageDesc(file_imv_sprite_v1_sprite, 10);
 
 /**
  * POST /api/sprites/render 的一次实际渲染输入，由总线在切片、素材匹配与时间对齐后生成。
@@ -589,11 +705,12 @@ export type SpriteRenderInput = Message<"imv.sprite.v1.SpriteRenderInput"> & {
  * Use `create(SpriteRenderInputSchema)` to create a new message.
  */
 export const SpriteRenderInputSchema: GenMessage<SpriteRenderInput> = /*@__PURE__*/
-  messageDesc(file_imv_sprite_v1_sprite, 9);
+  messageDesc(file_imv_sprite_v1_sprite, 11);
 
 /**
  * 发布版本的内容类型；发布后不能把同一个 Sprite 改成另一种类型。
- * 字效和字幕共用 TEXT；实际作用对象留给合成总线决定，Remotion 片段保存时不记录。
+ * 界面分为三类：TEXT 为「字效」，FILTER_OVERLAY 为「滤镜」，VIDEO_OVERLAY 与 TRANSITION_OVERLAY 合为「转场与视频特效」。
+ * 所有类型都是透明叠加层，不读取也不修改底片像素；类型决定发布时必备的参数和宿主可调的变换。
  *
  * @generated from enum imv.sprite.v1.SpriteKind
  */
@@ -606,28 +723,28 @@ export enum SpriteKind {
   UNSPECIFIED = 0,
 
   /**
-   * 透明背景文字层，可绑定标题或支持关键词高亮的字幕。
+   * 字效：透明背景文字层，必备 text、fontSize、fontWeight、color；宿主可调位置、缩放、旋转和不透明度。
    *
    * @generated from enum value: SPRITE_KIND_TEXT = 1;
    */
   TEXT = 1,
 
   /**
-   * 亮度、对比度、饱和度等视觉叠加层；不读取或逐像素修改业务原视频。
+   * 滤镜：调色蒙层、颗粒、暗角等整画面叠加层，必备 intensity、tintColor；宿主只调不透明度。
    *
    * @generated from enum value: SPRITE_KIND_FILTER_OVERLAY = 2;
    */
   FILTER_OVERLAY = 2,
 
   /**
-   * 覆盖在底片上的视频动效，可用于整段、片段入场或片段出场。
+   * 视频特效：覆盖在底片上的动效，必备 color、speed；宿主可调位置、缩放、旋转和不透明度。
    *
    * @generated from enum value: SPRITE_KIND_VIDEO_OVERLAY = 3;
    */
   VIDEO_OVERLAY = 3,
 
   /**
-   * 在相邻素材片段的实际边界播放的透明转场叠加层。
+   * 转场：按秒摆放在切点附近的闪白、漏光、色块擦除等叠加层，必备 color、speed；宿主只调不透明度。
    *
    * @generated from enum value: SPRITE_KIND_TRANSITION_OVERLAY = 4;
    */
@@ -641,8 +758,7 @@ export const SpriteKindSchema: GenEnum<SpriteKind> = /*@__PURE__*/
   enumDesc(file_imv_sprite_v1_sprite, 0);
 
 /**
- * 参数在运营界面的展示与编辑权限，仅约束发布版本的样式参数。
- * 无论权限为何值，运营都不能用参数覆盖总线负责的业务文字、关键词或真实时间。
+ * 参数在运营界面的展示与编辑权限；运营不能用参数覆盖源码或真实时间。
  *
  * @generated from enum imv.sprite.v1.OperatorAccess
  */
@@ -662,7 +778,8 @@ export enum OperatorAccess {
   VISIBLE_READ_ONLY = 1,
 
   /**
-   * 运营可见且可修改；覆盖值由合成总线保存，Remotion 片段目前不保存覆盖。
+   * 运营可见且可修改；覆盖值保存在模板 remotion 轨道的 editor.remotion.parameters 中。
+   * 发布时没有渲染参数边界样本的早期发布（没有 content_box）在目录中改为只读。
    *
    * @generated from enum value: OPERATOR_ACCESS_VISIBLE_EDITABLE = 2;
    */
@@ -681,3 +798,37 @@ export enum OperatorAccess {
  */
 export const OperatorAccessSchema: GenEnum<OperatorAccess> = /*@__PURE__*/
   enumDesc(file_imv_sprite_v1_sprite, 1);
+
+/**
+ * 参数的展示格式；未指定时按值的类型选择控件。
+ *
+ * @generated from enum imv.sprite.v1.SpriteParameterFormat
+ */
+export enum SpriteParameterFormat {
+  /**
+   * 未指定格式。
+   *
+   * @generated from enum value: SPRITE_PARAMETER_FORMAT_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * 颜色字符串，格式为 #RRGGBB 或 #RRGGBBAA。
+   *
+   * @generated from enum value: SPRITE_PARAMETER_FORMAT_COLOR = 1;
+   */
+  COLOR = 1,
+
+  /**
+   * 整数：number_value 只取整数值，覆盖值不能带小数。
+   *
+   * @generated from enum value: SPRITE_PARAMETER_FORMAT_INTEGER = 2;
+   */
+  INTEGER = 2,
+}
+
+/**
+ * Describes the enum imv.sprite.v1.SpriteParameterFormat.
+ */
+export const SpriteParameterFormatSchema: GenEnum<SpriteParameterFormat> = /*@__PURE__*/
+  enumDesc(file_imv_sprite_v1_sprite, 2);

@@ -32,8 +32,50 @@ class EffectAsset(_message.Message):
     preview_url: str
     def __init__(self, id: _Optional[str] = ..., category: _Optional[str] = ..., name: _Optional[str] = ..., effect_id: _Optional[str] = ..., parameters: _Optional[_Mapping[str, str]] = ..., preview_url: _Optional[str] = ...) -> None: ...
 
+class RemotionStringList(_message.Message):
+    __slots__ = ("values",)
+    VALUES_FIELD_NUMBER: _ClassVar[int]
+    values: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, values: _Optional[_Iterable[str]] = ...) -> None: ...
+
+class RemotionParameterOverride(_message.Message):
+    __slots__ = ("key", "string_value", "number_value", "bool_value", "string_list_value")
+    KEY_FIELD_NUMBER: _ClassVar[int]
+    STRING_VALUE_FIELD_NUMBER: _ClassVar[int]
+    NUMBER_VALUE_FIELD_NUMBER: _ClassVar[int]
+    BOOL_VALUE_FIELD_NUMBER: _ClassVar[int]
+    STRING_LIST_VALUE_FIELD_NUMBER: _ClassVar[int]
+    key: str
+    string_value: str
+    number_value: float
+    bool_value: bool
+    string_list_value: RemotionStringList
+    def __init__(self, key: _Optional[str] = ..., string_value: _Optional[str] = ..., number_value: _Optional[float] = ..., bool_value: _Optional[bool] = ..., string_list_value: _Optional[_Union[RemotionStringList, _Mapping]] = ...) -> None: ...
+
+class RemotionTransform(_message.Message):
+    __slots__ = ("x", "y", "scale", "rotation", "opacity")
+    X_FIELD_NUMBER: _ClassVar[int]
+    Y_FIELD_NUMBER: _ClassVar[int]
+    SCALE_FIELD_NUMBER: _ClassVar[int]
+    ROTATION_FIELD_NUMBER: _ClassVar[int]
+    OPACITY_FIELD_NUMBER: _ClassVar[int]
+    x: float
+    y: float
+    scale: float
+    rotation: float
+    opacity: float
+    def __init__(self, x: _Optional[float] = ..., y: _Optional[float] = ..., scale: _Optional[float] = ..., rotation: _Optional[float] = ..., opacity: _Optional[float] = ...) -> None: ...
+
+class RemotionTrackEditor(_message.Message):
+    __slots__ = ("parameters", "transform")
+    PARAMETERS_FIELD_NUMBER: _ClassVar[int]
+    TRANSFORM_FIELD_NUMBER: _ClassVar[int]
+    parameters: _containers.RepeatedCompositeFieldContainer[RemotionParameterOverride]
+    transform: RemotionTransform
+    def __init__(self, parameters: _Optional[_Iterable[_Union[RemotionParameterOverride, _Mapping]]] = ..., transform: _Optional[_Union[RemotionTransform, _Mapping]] = ...) -> None: ...
+
 class EffectTemplateEditor(_message.Message):
-    __slots__ = ("title", "subtitle", "bubble_text", "title_size", "subtitle_size", "bubble_size", "title_x", "title_y", "subtitle_x", "subtitle_y", "bubble_x", "bubble_y", "title_flower", "subtitle_flower", "bubble", "filter", "vfx", "transition", "title_in", "title_out", "title_loop", "subtitle_in", "subtitle_out", "subtitle_loop", "bubble_in", "bubble_out", "bubble_loop", "title_in_duration", "title_out_duration", "subtitle_in_duration", "subtitle_out_duration", "bubble_in_duration", "bubble_out_duration", "subtitle_keyword_bold", "subtitle_keyword_italic", "subtitle_keyword_underline", "subtitle_keyword_strikeout", "subtitle_keyword_color", "title_keyword", "title_keyword_bold", "title_keyword_italic", "title_keyword_underline", "title_keyword_strikeout", "title_keyword_color", "title_keyword_size", "subtitle_keyword_size")
+    __slots__ = ("title", "subtitle", "bubble_text", "title_size", "subtitle_size", "bubble_size", "title_x", "title_y", "subtitle_x", "subtitle_y", "bubble_x", "bubble_y", "title_flower", "subtitle_flower", "bubble", "filter", "vfx", "transition", "title_in", "title_out", "title_loop", "subtitle_in", "subtitle_out", "subtitle_loop", "bubble_in", "bubble_out", "bubble_loop", "title_in_duration", "title_out_duration", "subtitle_in_duration", "subtitle_out_duration", "bubble_in_duration", "bubble_out_duration", "subtitle_keyword_bold", "subtitle_keyword_italic", "subtitle_keyword_underline", "subtitle_keyword_strikeout", "subtitle_keyword_color", "title_keyword", "title_keyword_bold", "title_keyword_italic", "title_keyword_underline", "title_keyword_strikeout", "title_keyword_color", "title_keyword_size", "subtitle_keyword_size", "remotion")
     TITLE_FIELD_NUMBER: _ClassVar[int]
     SUBTITLE_FIELD_NUMBER: _ClassVar[int]
     BUBBLE_TEXT_FIELD_NUMBER: _ClassVar[int]
@@ -80,6 +122,7 @@ class EffectTemplateEditor(_message.Message):
     TITLE_KEYWORD_COLOR_FIELD_NUMBER: _ClassVar[int]
     TITLE_KEYWORD_SIZE_FIELD_NUMBER: _ClassVar[int]
     SUBTITLE_KEYWORD_SIZE_FIELD_NUMBER: _ClassVar[int]
+    REMOTION_FIELD_NUMBER: _ClassVar[int]
     title: str
     subtitle: str
     bubble_text: str
@@ -126,7 +169,8 @@ class EffectTemplateEditor(_message.Message):
     title_keyword_color: str
     title_keyword_size: int
     subtitle_keyword_size: int
-    def __init__(self, title: _Optional[str] = ..., subtitle: _Optional[str] = ..., bubble_text: _Optional[str] = ..., title_size: _Optional[int] = ..., subtitle_size: _Optional[int] = ..., bubble_size: _Optional[int] = ..., title_x: _Optional[float] = ..., title_y: _Optional[float] = ..., subtitle_x: _Optional[float] = ..., subtitle_y: _Optional[float] = ..., bubble_x: _Optional[float] = ..., bubble_y: _Optional[float] = ..., title_flower: _Optional[str] = ..., subtitle_flower: _Optional[str] = ..., bubble: _Optional[str] = ..., filter: _Optional[str] = ..., vfx: _Optional[str] = ..., transition: _Optional[str] = ..., title_in: _Optional[str] = ..., title_out: _Optional[str] = ..., title_loop: _Optional[str] = ..., subtitle_in: _Optional[str] = ..., subtitle_out: _Optional[str] = ..., subtitle_loop: _Optional[str] = ..., bubble_in: _Optional[str] = ..., bubble_out: _Optional[str] = ..., bubble_loop: _Optional[str] = ..., title_in_duration: _Optional[float] = ..., title_out_duration: _Optional[float] = ..., subtitle_in_duration: _Optional[float] = ..., subtitle_out_duration: _Optional[float] = ..., bubble_in_duration: _Optional[float] = ..., bubble_out_duration: _Optional[float] = ..., subtitle_keyword_bold: _Optional[bool] = ..., subtitle_keyword_italic: _Optional[bool] = ..., subtitle_keyword_underline: _Optional[bool] = ..., subtitle_keyword_strikeout: _Optional[bool] = ..., subtitle_keyword_color: _Optional[str] = ..., title_keyword: _Optional[str] = ..., title_keyword_bold: _Optional[bool] = ..., title_keyword_italic: _Optional[bool] = ..., title_keyword_underline: _Optional[bool] = ..., title_keyword_strikeout: _Optional[bool] = ..., title_keyword_color: _Optional[str] = ..., title_keyword_size: _Optional[int] = ..., subtitle_keyword_size: _Optional[int] = ...) -> None: ...
+    remotion: RemotionTrackEditor
+    def __init__(self, title: _Optional[str] = ..., subtitle: _Optional[str] = ..., bubble_text: _Optional[str] = ..., title_size: _Optional[int] = ..., subtitle_size: _Optional[int] = ..., bubble_size: _Optional[int] = ..., title_x: _Optional[float] = ..., title_y: _Optional[float] = ..., subtitle_x: _Optional[float] = ..., subtitle_y: _Optional[float] = ..., bubble_x: _Optional[float] = ..., bubble_y: _Optional[float] = ..., title_flower: _Optional[str] = ..., subtitle_flower: _Optional[str] = ..., bubble: _Optional[str] = ..., filter: _Optional[str] = ..., vfx: _Optional[str] = ..., transition: _Optional[str] = ..., title_in: _Optional[str] = ..., title_out: _Optional[str] = ..., title_loop: _Optional[str] = ..., subtitle_in: _Optional[str] = ..., subtitle_out: _Optional[str] = ..., subtitle_loop: _Optional[str] = ..., bubble_in: _Optional[str] = ..., bubble_out: _Optional[str] = ..., bubble_loop: _Optional[str] = ..., title_in_duration: _Optional[float] = ..., title_out_duration: _Optional[float] = ..., subtitle_in_duration: _Optional[float] = ..., subtitle_out_duration: _Optional[float] = ..., bubble_in_duration: _Optional[float] = ..., bubble_out_duration: _Optional[float] = ..., subtitle_keyword_bold: _Optional[bool] = ..., subtitle_keyword_italic: _Optional[bool] = ..., subtitle_keyword_underline: _Optional[bool] = ..., subtitle_keyword_strikeout: _Optional[bool] = ..., subtitle_keyword_color: _Optional[str] = ..., title_keyword: _Optional[str] = ..., title_keyword_bold: _Optional[bool] = ..., title_keyword_italic: _Optional[bool] = ..., title_keyword_underline: _Optional[bool] = ..., title_keyword_strikeout: _Optional[bool] = ..., title_keyword_color: _Optional[str] = ..., title_keyword_size: _Optional[int] = ..., subtitle_keyword_size: _Optional[int] = ..., remotion: _Optional[_Union[RemotionTrackEditor, _Mapping]] = ...) -> None: ...
 
 class EffectTrack(_message.Message):
     __slots__ = ("id", "target", "start_mode", "start", "duration", "editor", "sprite_id")

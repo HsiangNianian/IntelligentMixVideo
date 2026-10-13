@@ -19,8 +19,10 @@ from generated.imv.sprite.v1 import sprite_pb2 as pb
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
+from ..template.schema import RemotionTrackEditor
 from ..video_composition.media import ffprobe_json
 from ..video_composition.schema import PositiveSeconds
+from .placement import resolve
 from .renderer import CPU_SECONDS, Renderer
 from .settings import Settings
 
@@ -41,12 +43,21 @@ class OverlayError(Exception):
         self.code, self.message = code, message
 
 
+class PlacementEditor(BaseModel):
+    """The `editor` of a template's `remotion` track, forwarded as is by the bus; only `remotion` may be set."""
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
+
+    remotion: RemotionTrackEditor | None = None
+
+
 class OverlayPlacement(BaseModel):
-    """One clip of the overlay: a published Sprite, the second it starts and an optional fixed length.
+    """One clip of the overlay: a published Sprite, the second it starts, an optional fixed length and its overrides.
 
     The request, the stored task and the planner share this model, so a recovered task renders exactly
     what was accepted. Placements are listed bottom layer first, like a template's `remotion` tracks.
-    Numbers are strict like the composition API's: booleans and numeric strings are refused.
+    Numbers are strict like the composition API's: booleans and numeric strings are refused. `editor` holds the
+    track's parameter overrides and host transform; without it the Sprite renders its published defaults.
     """
 
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
@@ -54,6 +65,15 @@ class OverlayPlacement(BaseModel):
     sprite_id: str = Field(min_length=1, max_length=64)
     start: float = Field(ge=0, allow_inf_nan=False, strict=True)
     duration: PositiveSeconds | None = Field(default=None, strict=True)
+    # Without overrides the stored task keeps the shape it had before placements could carry them.
+    editor: PlacementEditor | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    def resolved(self, sprite: pb.PublishedSprite) -> tuple[dict, dict]:
+        """The merged configuration and host layer of this clip; an override outside the contract is `placement_invalid`."""
+        try:
+            return resolve(sprite, self.editor.remotion if self.editor else None)
+        except ValueError as exc:
+            raise OverlayError("placement_invalid", f"Sprite {self.sprite_id} 的参数覆盖无效：{exc}") from None
 
 
 @dataclass(frozen=True)
@@ -164,9 +184,12 @@ def plan_overlay(
         if start_frame >= frames:
             continue
         length = max(1, to_frames(min(placement_seconds(sprite, placement), max_seconds), fps))
+        config, host = placement.resolved(sprite)
         instances.append({
             "code": sprite.tsx_code,
-            "config": json.loads(sprite.default_config_json),
+            "config": config,
+            # The host layer moves, scales, rotates and fades the Sprite around its published content box.
+            "host": host,
             "start_frame": start_frame,
             "duration_frames": length,
         })

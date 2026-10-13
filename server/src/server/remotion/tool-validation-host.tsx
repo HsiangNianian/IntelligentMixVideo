@@ -10,6 +10,7 @@ import { Player, type PlayerRef } from "@remotion/player";
 import Template from "imv:template";
 import initial from "imv:config";
 import Ajv2020 from "ajv/dist/2020.js";
+import { HostLayer, type HostBox, type HostTransform } from "./host-layer";
 
 type JsonValue = null | boolean | number | string | JsonValue[] | JsonObject;
 type JsonObject = { [key: string]: JsonValue };
@@ -18,6 +19,8 @@ type Config = {
   configured: JsonObject;
   parameter_schema: JsonObject;
   composition: { width: number; height: number; fps: number; duration_frames: number };
+  /** Content box of a publish-time boundary sample; generation checks mount over the whole canvas. */
+  box?: HostBox;
 };
 type Snapshot = {
   text: string;
@@ -26,6 +29,7 @@ type Snapshot = {
 };
 
 const config = initial as Config;
+const box: HostBox = config.box ?? { x: 0, y: 0, width: config.composition.width, height: config.composition.height };
 const parameterValidator = new Ajv2020({ strict: false, allErrors: true, validateFormats: false }).compile(config.parameter_schema);
 
 // Keep component exceptions observable to the worker without exposing browser
@@ -90,6 +94,7 @@ function querySnapshot(selector: string, all: boolean): Snapshot[] {
 function App() {
   const player = useRef<PlayerRef>(null);
   const [values, setValues] = useState<JsonObject>(config.defaults);
+  const [transform, setTransform] = useState<HostTransform>({});
   const [mountVersion, setMountVersion] = useState(0);
   const [ready, setReady] = useState(false);
   const valuesRef = useRef(values);
@@ -111,9 +116,18 @@ function App() {
         await nextFrame();
         await waitResources();
       },
+      /** Mount one complete boundary sample: schema-checked values plus a host transform. */
+      async setSample(sample: JsonObject, placement: HostTransform) {
+        if (!parameterValidator(sample)) throw new Error(JSON.stringify(parameterValidator.errors));
+        setValues(sample);
+        setTransform(placement);
+        await nextFrame();
+        await waitResources();
+      },
       async reset() {
         delete (window as any).__imvRuntimeError;
         setValues(config.configured);
+        setTransform({});
         setMountVersion((version) => version + 1);
         await nextFrame();
         await waitResources();
@@ -179,7 +193,7 @@ function App() {
       key={mountVersion}
       ref={player}
       component={Composition}
-      inputProps={{ values }}
+      inputProps={{ values, transform }}
       compositionWidth={config.composition.width}
       compositionHeight={config.composition.height}
       durationInFrames={config.composition.duration_frames}
@@ -191,8 +205,8 @@ function App() {
   </div>;
 }
 
-function Composition({ values }: { values: JsonObject }) {
-  return <AbsoluteFill data-imv-validation-canvas><RuntimeBoundary><Template {...values} /></RuntimeBoundary></AbsoluteFill>;
+function Composition({ values, transform }: { values: JsonObject; transform: HostTransform }) {
+  return <AbsoluteFill data-imv-validation-canvas><HostLayer box={box} transform={transform}><RuntimeBoundary><Template {...values} /></RuntimeBoundary></HostLayer></AbsoluteFill>;
 }
 
 /** Convert render-time component exceptions into an observable validation error. */

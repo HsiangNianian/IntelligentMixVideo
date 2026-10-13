@@ -9,6 +9,7 @@ import {
   type SpriteSummary,
 } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { SpriteAsset } from "./model";
+import { assetParameter } from "./parameters";
 
 /** 一次发布选择：文字类型必须指明接收业务文字（和可选关键词）的参数字段。 */
 export interface PublishChoice {
@@ -17,11 +18,14 @@ export interface PublishChoice {
   keywordsProp: string;
 }
 
+/** 发布要在隔离浏览器里渲染参数边界样本，比目录读取慢得多。 */
+const PUBLISH_TIMEOUT_MS = 180_000;
+
 /** 有界请求：调用方取消优先，超时给出可重试提示；HTTP 错误展示服务端 detail。 */
-async function request(path: string, method: "GET" | "POST", signal?: AbortSignal, body?: Uint8Array): Promise<Uint8Array> {
+async function request(path: string, method: "GET" | "POST", signal?: AbortSignal, body?: Uint8Array, timeoutMs = 20_000): Promise<Uint8Array> {
   const controller = new AbortController();
   let timedOut = false;
-  const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, 20_000);
+  const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
   const abort = () => controller.abort();
   signal?.addEventListener("abort", abort, { once: true });
   if (signal?.aborted) controller.abort();
@@ -59,6 +63,10 @@ function toAsset(summary: SpriteSummary): SpriteAsset {
     width: summary.canvas?.width ?? 0,
     height: summary.canvas?.height ?? 0,
     fps: summary.canvas?.fps ?? 0,
+    box: summary.contentBox && summary.contentBox.width > 0 && summary.contentBox.height > 0
+      ? { x: summary.contentBox.x, y: summary.contentBox.y, width: summary.contentBox.width, height: summary.contentBox.height }
+      : { x: 0, y: 0, width: summary.canvas?.width ?? 0, height: summary.canvas?.height ?? 0 },
+    parameters: summary.parameters.map(assetParameter).filter((item) => item !== null),
   };
 }
 
@@ -67,10 +75,10 @@ export async function listSprites(signal?: AbortSignal): Promise<SpriteAsset[]> 
   return fromBinary(ListSpritesResponseSchema, await request("/api/sprites", "GET", signal)).sprites.map(toAsset);
 }
 
-/** 把成功版本保存为资产；相同选择重复调用返回原资产。 */
+/** 把成功版本保存为资产（服务端先渲染参数边界样本）；相同选择重复调用返回原资产。 */
 export async function publishSprite(versionId: string, choice: PublishChoice): Promise<SpriteAsset> {
   const body = toBinary(PublishSpriteRequestSchema, create(PublishSpriteRequestSchema, { sourceVersionId: versionId, ...choice }));
-  const { sprite } = fromBinary(PublishSpriteResponseSchema, await request("/api/sprites/publish", "POST", undefined, body));
+  const { sprite } = fromBinary(PublishSpriteResponseSchema, await request("/api/sprites/publish", "POST", undefined, body, PUBLISH_TIMEOUT_MS));
   if (!sprite) throw new Error("发布响应缺少内容");
   return toAsset(sprite);
 }

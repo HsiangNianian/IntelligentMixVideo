@@ -81,11 +81,17 @@ async def preset_create(owner, request: PresetCreateInput) -> ToolResult[PresetC
 
 @tool(
     "sprite.compose",
-    constraints=["The host canvas is fixed at 1080x1920, 30 FPS; duration is derived from instances."],
+    contract_version=2,
+    constraints=[
+        "The host canvas is fixed at 1080x1920, 30 FPS; duration is derived from instances.",
+        "Contract v2: kind is required (text, filter_overlay, video_overlay or transition_overlay) and parameters lifts Preset props to required top-level Sprite parameters that templates may change per placement.",
+        "Each binding targets declared top-level Preset props that share one object schema and one value; a bound number needs minimum and maximum (integers for an integer), a bound string a colour pattern, enum or maxLength of at most 2000; only type, title, description, default, minimum, maximum, enum, minLength, maxLength, the colour pattern, maxItems and items.maxLength are allowed.",
+        "The host owns position, scale, rotation and opacity of the whole Sprite; do not bind or implement them.",
+    ],
     side_effects=["deterministic source generation; no catalog write"],
     error_codes=["INVALID_ARGUMENT", "PRESET_NOT_FOUND", "COMPOSITION_FAILED"],
     starts_generation=True,
-    examples=[{"input": {"description": "组合", "instances": [{"instance_id": "title", "source": {"kind": "stored", "preset_id": "preset_title_001"}, "layout": {"x": 0.0, "y": 0.0, "width": 1080, "height": 1920, "z_index": 0}, "timing": {"start_frame": 0, "duration_frames": 150}}]}, "output": {"ok": True, "data": {"draft_id": "sprite_draft_0123456789ab", "digest": "3f2a9c1e5b7d4f60", "description": "组合", "composition": {"width": 1080, "height": 1920, "fps": 30, "duration_frames": 150}, "instances": [{"instance_id": "title", "preset_id": "preset_title_001", "parameter_names": ["text"], "layout": {"x": 0.0, "y": 0.0, "width": 1080, "height": 1920, "z_index": 0}, "timing": {"start_frame": 0, "duration_frames": 150}}], "default_parameters": {"title": {"text": "今日灵感"}}, "code_bytes": 2048}}}],
+    examples=[{"input": {"description": "暖色标题", "kind": "text", "instances": [{"instance_id": "title", "source": {"kind": "stored", "preset_id": "preset_title_001"}, "layout": {"x": 90.0, "y": 760.0, "width": 900, "height": 400, "z_index": 0}, "timing": {"start_frame": 0, "duration_frames": 150}}], "parameters": [{"name": "text", "title": "文字", "targets": [{"instance_id": "title", "parameter": "text"}]}, {"name": "fontSize", "title": "字号", "targets": [{"instance_id": "title", "parameter": "size"}]}, {"name": "fontWeight", "title": "字重", "targets": [{"instance_id": "title", "parameter": "weight"}]}, {"name": "color", "title": "颜色", "targets": [{"instance_id": "title", "parameter": "color"}]}]}, "output": {"ok": True, "data": {"draft_id": "sprite_draft_0123456789ab", "digest": "3f2a9c1e5b7d4f60", "description": "暖色标题", "composition": {"width": 1080, "height": 1920, "fps": 30, "duration_frames": 150}, "kind": "text", "instances": [{"instance_id": "title", "preset_id": "preset_title_001", "parameter_names": ["text", "size", "weight", "color", "glow"], "layout": {"x": 90.0, "y": 760.0, "width": 900, "height": 400, "z_index": 0}, "timing": {"start_frame": 0, "duration_frames": 150}}], "parameter_names": ["text", "fontSize", "fontWeight", "color"], "default_parameters": {"text": "今日灵感", "fontSize": 96, "fontWeight": 700, "color": "#FFFFFF", "title": {"glow": 0.4}}, "code_bytes": 2048}}}],
 )
 async def sprite_compose(owner, request: SpriteComposeInput) -> ToolResult[SpriteComposeOutput]:
     """Resolve Presets (stored preset_id, or a task draft_id from preset_modify or the accepted base) and keep the composed Sprite as a host draft; returns its draft_id and a code-free summary."""
@@ -100,9 +106,10 @@ async def sprite_compose(owner, request: SpriteComposeInput) -> ToolResult[Sprit
     constraints=[
         "Takes the draft_id that sprite.compose returned in this task; the host keeps the composed source, so it is never re-sent.",
         "The Sprite is mounted once in the browser and must leave the user's video visible: a canvas that is opaque in most sampled frames (4 of 5) is refused with CODE_VALIDATION_FAILED.",
+        "The Sprite must expose its kind's required top-level parameters (text: text, fontSize, fontWeight, color; filter_overlay: intensity, tintColor; video_overlay and transition_overlay: color, speed), otherwise CATEGORY_PARAMETERS_MISSING lists what to bind.",
     ],
     side_effects=["code validation, one browser mount with a transparency measurement, and sprite catalog write"],
-    error_codes=["INVALID_ARGUMENT", "CODE_VALIDATION_FAILED", "VALIDATION_UNAVAILABLE", "SPRITE_STORE_FAILED"],
+    error_codes=["INVALID_ARGUMENT", "CODE_VALIDATION_FAILED", "CATEGORY_PARAMETERS_MISSING", "VALIDATION_UNAVAILABLE", "SPRITE_STORE_FAILED"],
     starts_generation=True,
     examples=[{"input": {"draft_id": "sprite_draft_0123456789ab"}, "output": {"ok": False, "error": {"code": "INVALID_ARGUMENT", "message": "Unknown draft_id sprite_draft_0123456789ab; drafts in this task: none", "field": "/draft_id"}}}],
 )

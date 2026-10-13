@@ -14,6 +14,7 @@ import json
 import logging
 import shutil
 import weakref
+from dataclasses import asdict
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -23,31 +24,28 @@ from google.protobuf.json_format import MessageToDict, ParseDict, ParseError
 from sqlalchemy.exc import IntegrityError
 from starlette.concurrency import run_in_threadpool
 
-from . import sprite_store
+from . import boundary, sprite_store
+from .categories import HEX_COLOR, category_problems, operator_message
 from .evidence import digest, verify_artifacts
+from .publication import current_bundle
 from .models import TemplateVersion
 from .store import Conflict, NotFound, Store
 
 PREVIEW_BUNDLE = "interactive.js"
-# 只有包含逐帧同步处理的预览包才能叠加到模板预览上；更早构建的包缺少此标记。
-SYNC_MARKER = b"imv-preview-sync"
 # 同一来源与字段选择的发布轮流执行：重复点击等待首个完成后读取它保存的资产，不重复重建播放器包。
 # 值为弱引用，没有持有者和等待者后锁自动释放，字典不会随发布次数增长。
 _publishing: weakref.WeakValueDictionary[tuple, asyncio.Lock] = weakref.WeakValueDictionary()
 
-# 版本创建时的内容类型与发布类型的对应；composition 版本不固定类型，由发布请求选择。
-_VERSION_KINDS = {
-    "text": pb.SPRITE_KIND_TEXT,
-    "subtitle": pb.SPRITE_KIND_TEXT,
-    "filter_overlay": pb.SPRITE_KIND_FILTER_OVERLAY,
-    "video_overlay": pb.SPRITE_KIND_VIDEO_OVERLAY,
-    "transition_overlay": pb.SPRITE_KIND_TRANSITION_OVERLAY,
+# 发布类型与效果分类的对应；视频特效与转场在界面上合为第三类，但必备参数和宿主变换按各自类型检查。
+KIND_NAMES = {
+    pb.SPRITE_KIND_TEXT: "text",
+    pb.SPRITE_KIND_FILTER_OVERLAY: "filter_overlay",
+    pb.SPRITE_KIND_VIDEO_OVERLAY: "video_overlay",
+    pb.SPRITE_KIND_TRANSITION_OVERLAY: "transition_overlay",
 }
-# 发布时允许声明的内容类型；它只描述资产自身，与 IMS 模板里的对象无关。
-_PUBLISH_KINDS = {
-    pb.SPRITE_KIND_TEXT, pb.SPRITE_KIND_FILTER_OVERLAY,
-    pb.SPRITE_KIND_VIDEO_OVERLAY, pb.SPRITE_KIND_TRANSITION_OVERLAY,
-}
+# 字效固定的文字与关键词参数名；关键词可选。
+TEXT_PROP = "text"
+KEYWORDS_PROP = "keywords"
 
 
 def _invalid(message: str) -> HTTPException:
@@ -66,66 +64,67 @@ def _scalar(kind: str, value) -> pb.ScalarValue | None:
     return None
 
 
-def _nodes(schema: dict, prefix: str = ""):
-    """Yield (dot path, definition) for every declared property, descending through nested objects.
-
-    Property names containing a dot cannot be addressed unambiguously and are skipped.
-    """
-    for name, definition in schema.get("properties", {}).items():
-        if "." in name or not isinstance(definition, dict):
-            continue
-        path = f"{prefix}{name}"
-        yield path, definition
-        if definition.get("type") == "object":
-            yield from _nodes(definition, f"{path}.")
-
-
-def _definition(schema: dict, path: str) -> dict | None:
-    """Resolve one dot path to its schema definition, or None when it is not declared."""
-    return next((definition for found, definition in _nodes(schema) if found == path), None)
-
-
-def _lookup(values: dict, path: str):
-    """Read a dot path from nested configuration; a missing step yields None."""
-    for part in path.split("."):
-        if not isinstance(values, dict) or part not in values:
+def _parameter(key: str, definition: dict, default) -> pb.SpriteParameter | None:
+    """Describe one top-level parameter as an editable control; None when its default does not match its type."""
+    kind = definition.get("type")
+    if kind == "array":
+        if not isinstance(default, list) or not all(isinstance(item, str) for item in default):
             return None
-        values = values[part]
-    return values
+        value = pb.ScalarValue(string_list_value=pb.StringList(values=default))
+    elif (value := _scalar(kind, default)) is None:
+        return None
+    parameter = pb.SpriteParameter(
+        key=key,
+        label=str(definition.get("title") or key)[:100],
+        access=pb.OPERATOR_ACCESS_VISIBLE_EDITABLE,
+        default_value=value,
+    )
+    if kind in {"number", "integer"}:
+        for bound in ("minimum", "maximum"):
+            if isinstance(definition.get(bound), (int, float)) and not isinstance(definition[bound], bool):
+                setattr(parameter, bound, float(definition[bound]))
+    for item in definition.get("enum", []):
+        allowed = _scalar(kind, item)
+        if allowed is not None:
+            parameter.allowed_values.append(allowed)
+    lengths = definition.get("items", {}) if kind == "array" else definition
+    for field, bound in (("min_length", "minLength"), ("max_length", "maxLength")):
+        if isinstance(lengths.get(bound), int) and not isinstance(lengths[bound], bool):
+            setattr(parameter, field, lengths[bound])
+    if kind == "array" and isinstance(definition.get("maxItems"), int):
+        parameter.max_items = definition["maxItems"]
+    if definition.get("pattern") == HEX_COLOR:
+        parameter.format = pb.SPRITE_PARAMETER_FORMAT_COLOR
+    elif kind == "integer":
+        # number_value cannot tell an integer from a number; the format keeps controls and overrides integral.
+        parameter.format = pb.SPRITE_PARAMETER_FORMAT_INTEGER
+    return parameter
 
 
-def _parameters(schema: dict, defaults: dict, reserved: set[str]) -> list[pb.SpriteParameter]:
-    """Expose scalar controls at any depth as editable parameters keyed by dot path.
+def _parameters(schema: dict, defaults: dict, names: list[str]) -> list[pb.SpriteParameter]:
+    """Expose the version's top-level parameters, text and keywords included, as editable controls.
 
-    Bus-owned fields (text, keywords) and structured values are skipped.
+    Each Preset instance's remaining props stay nested and internal: the code is a fixed sample that templates
+    change only through these parameters.
     """
-    result = []
-    for key, definition in _nodes(schema):
-        if key in reserved:
-            continue
-        kind = definition.get("type")
-        default = _scalar(kind, _lookup(defaults, key))
-        if default is None:
-            continue
-        parameter = pb.SpriteParameter(
-            key=key,
-            label=str(definition.get("title") or key)[:100],
-            access=pb.OPERATOR_ACCESS_VISIBLE_EDITABLE,
-            default_value=default,
-        )
-        if kind in {"number", "integer"}:
-            for bound in ("minimum", "maximum"):
-                if isinstance(definition.get(bound), (int, float)) and not isinstance(definition[bound], bool):
-                    setattr(parameter, bound, float(definition[bound]))
-        for item in definition.get("enum", []):
-            allowed = _scalar(kind, item)
-            if allowed is not None:
-                parameter.allowed_values.append(allowed)
-        result.append(parameter)
-    return result
+    properties = schema.get("properties", {})
+    return [item for name in names if (item := _parameter(name, properties.get(name, {}), defaults.get(name))) is not None]
 
 
-def _sprite_from(data: dict) -> pb.PublishedSprite:
+def _content_box(version: TemplateVersion) -> pb.SpriteBox:
+    """The union of the instances' layout boxes clipped to the canvas; the whole canvas when nothing is visible."""
+    composition = version.spec.composition
+    layouts = [item.layout for item in version.spec.sprite.instances]
+    left = max(0.0, min(item.x for item in layouts))
+    top = max(0.0, min(item.y for item in layouts))
+    right = min(float(composition.width), max(item.x + item.width for item in layouts))
+    bottom = min(float(composition.height), max(item.y + item.height for item in layouts))
+    if right <= left or bottom <= top:
+        return pb.SpriteBox(x=0, y=0, width=composition.width, height=composition.height)
+    return pb.SpriteBox(x=left, y=top, width=right - left, height=bottom - top)
+
+
+def published_from(data: dict) -> pb.PublishedSprite:
     """Restore a stored publication and refuse source bytes that no longer match their hash."""
     sprite = ParseDict(data, pb.PublishedSprite())
     if hashlib.sha256(sprite.tsx_code.encode()).hexdigest() != sprite.code_sha256:
@@ -142,7 +141,43 @@ def get(sprite_id: str) -> pb.PublishedSprite:
     data = sprite_store.get(identifier)
     if data is None:
         raise NotFound("sprite not found")
-    return _sprite_from(data)
+    return published_from(data)
+
+
+def content_box(sprite: pb.PublishedSprite) -> pb.SpriteBox:
+    """The pivot box of the host transform; publications made before boxes were recorded use the whole canvas."""
+    if sprite.HasField("content_box"):
+        return sprite.content_box
+    return pb.SpriteBox(x=0, y=0, width=sprite.canvas.width, height=sprite.canvas.height)
+
+
+def sampled(sprite: pb.PublishedSprite) -> bool:
+    """Whether the publication rendered boundary samples of its parameters.
+
+    Every publication made with samples records a content box; earlier ones have none, and their parameters were
+    never rendered away from their defaults.
+    """
+    return sprite.HasField("content_box")
+
+
+def operator_parameters(sprite: pb.PublishedSprite) -> list[pb.SpriteParameter]:
+    """The parameters operators see; an unsampled publication's editable ones become read-only."""
+    if sampled(sprite):
+        return list(sprite.parameters)
+    result = []
+    for parameter in sprite.parameters:
+        copy = pb.SpriteParameter()
+        copy.CopyFrom(parameter)
+        if copy.access == pb.OPERATOR_ACCESS_VISIBLE_EDITABLE:
+            copy.access = pb.OPERATOR_ACCESS_VISIBLE_READ_ONLY
+        result.append(copy)
+    return result
+
+
+def box_json(sprite: pb.PublishedSprite) -> dict:
+    """The content box as the plain object the preview page and the overlay worker read."""
+    box = content_box(sprite)
+    return {"x": box.x, "y": box.y, "width": box.width, "height": box.height}
 
 
 def summarize(sprite: pb.PublishedSprite) -> pb.SpriteSummary:
@@ -152,10 +187,11 @@ def summarize(sprite: pb.PublishedSprite) -> pb.SpriteSummary:
         name=sprite.name,
         kind=sprite.kind,
         canvas=sprite.canvas,
-        parameters=sprite.parameters,
+        parameters=operator_parameters(sprite),
         source_version_id=sprite.source_version_id,
         preview_url=f"/api/sprites/{sprite.sprite_id}/preview",
         keywords_supported=bool(sprite.keywords_prop),
+        content_box=content_box(sprite),
     )
 
 
@@ -168,45 +204,48 @@ def catalog() -> list[pb.SpriteSummary]:
     items = []
     for sprite_id, data in sprite_store.listing():
         try:
-            items.append(summarize(_sprite_from(data)))
+            items.append(summarize(published_from(data)))
         except (Conflict, ValueError, ParseError, TypeError) as exc:
             logging.getLogger(__name__).warning("Skipping unreadable Sprite %s: %s", sprite_id, exc)
     return items
 
 
-def preview_script(store: Store, sprite_id: str) -> str:
-    """Read the sprite's own copy of the player bundle after checking it against the published hash."""
+def preview_script(store: Store, sprite_id: str) -> tuple[str, dict]:
+    """Read the sprite's own copy of the player bundle after checking it against the published hash.
+
+    Also returns what the page injects for the player: the published defaults and the content box.
+    """
     sprite = get(sprite_id)
     path = store.root / "sprites" / sprite.sprite_id / PREVIEW_BUNDLE
     try:
         if digest(path) != sprite.preview_sha256:
             raise ValueError("preview changed")
-        return path.read_text(encoding="utf-8")
+        script = path.read_text(encoding="utf-8")
     except (OSError, ValueError) as exc:
         raise NotFound("sprite preview unavailable") from exc
+    return script, {"config": json.loads(sprite.default_config_json or "{}"), "box": box_json(sprite)}
 
 
-def _validated_request(request: pb.PublishSpriteRequest, schema: dict, version_kind: str) -> None:
-    """Check the declared kind and the text/keyword field names against the sealed schema."""
+def _validated_request(request: pb.PublishSpriteRequest, version: TemplateVersion) -> None:
+    """Check the chosen kind against the version's category parameters and the fixed text/keyword names."""
     if max(len(request.text_prop), len(request.keywords_prop)) > sprite_store.NAME_LENGTH:
         raise _invalid(f"text_prop 与 keywords_prop 不能超过 {sprite_store.NAME_LENGTH} 个字符")
-    if request.kind not in _PUBLISH_KINDS:
-        raise _invalid("kind 必须是文字、滤镜叠加、视频叠加或转场叠加")
-    expected = _VERSION_KINDS.get(version_kind)
-    if expected is not None and expected != request.kind:
-        raise _invalid("kind 与该版本创建时的类型不一致")
+    if request.kind not in KIND_NAMES:
+        raise _invalid("kind 必须是字效、滤镜、视频特效或转场")
+    sprite = version.spec.sprite
+    if version.spec.schema_version != "2" or sprite is None or sprite.kind is None:
+        raise _invalid("该版本由旧版生成，没有效果分类和参数契约；请在聊天中继续修改，生成新版本后再保存到资产")
+    bound = {item.name for item in sprite.bindings}
+    problems = category_problems(KIND_NAMES[request.kind], version.candidate.config_schema, bound)
+    if problems:
+        raise _invalid(operator_message(problems))
     if request.kind == pb.SPRITE_KIND_TEXT:
-        text = _definition(schema, request.text_prop)
-        if text is None or text.get("type") != "string":
-            raise _invalid("text_prop 必须是该版本参数中的字符串字段（嵌套字段用点号，如 title_main.title）")
-        if request.keywords_prop and (
-            _definition(schema, request.keywords_prop) is None
-            or request.keywords_prop == request.text_prop
-            or _definition(schema, request.keywords_prop).get("type") == "object"
-        ):
-            raise _invalid("keywords_prop 必须是该版本参数中不同于 text_prop 的非对象字段")
+        if request.text_prop != TEXT_PROP:
+            raise _invalid(f"字效的 text_prop 必须是 {TEXT_PROP}")
+        if request.keywords_prop not in {"", KEYWORDS_PROP} or (request.keywords_prop and KEYWORDS_PROP not in bound):
+            raise _invalid(f"keywords_prop 只能为空，或在该版本声明了关键词参数时为 {KEYWORDS_PROP}")
     elif request.text_prop or request.keywords_prop:
-        raise _invalid("只有文字 Sprite 可以声明 text_prop 与 keywords_prop")
+        raise _invalid("只有字效可以声明 text_prop 与 keywords_prop")
 
 
 async def _rebuild_bundle(service, version) -> bytes | None:
@@ -226,7 +265,7 @@ async def _rebuild_bundle(service, version) -> bytes | None:
         }, ensure_ascii=False), encoding="utf-8")
         await service.harness.renderer.run_worker(work, worker="presentation-worker.mjs")
         data = (work / PREVIEW_BUNDLE).read_bytes()
-        return data if SYNC_MARKER in data else None
+        return data if current_bundle(data) else None
     except Exception:
         logging.getLogger(__name__).exception("Sprite preview rebuild failed: %s", version.id)
         return None
@@ -253,8 +292,16 @@ def _store_bundle(store: Store, sprite: pb.PublishedSprite, data: bytes) -> None
 
 
 def _existing(version: TemplateVersion, request: pb.PublishSpriteRequest) -> dict | None:
-    """Look up the publication JSON that this exact source and field choice already produced."""
-    return sprite_store.find(str(version.id), request.kind, request.text_prop, request.keywords_prop)
+    """Look up the publication JSON that this source and field choice already produced.
+
+    A version composed before effect categories cannot be published again, but its earlier publications must stay
+    re-savable so their player bundle can be refreshed. Their text fields were free dot paths that today's client
+    no longer sends, so for such a version any publication of the same kind counts.
+    """
+    data = sprite_store.find(str(version.id), request.kind, request.text_prop, request.keywords_prop)
+    if data is None and (version.spec.sprite is None or version.spec.sprite.kind is None):
+        data = sprite_store.find_any(str(version.id), request.kind)
+    return data
 
 
 def _inspect(store: Store, request: pb.PublishSpriteRequest) -> tuple[TemplateVersion, pb.PublishedSprite | None, bytes]:
@@ -276,11 +323,59 @@ def _inspect(store: Store, request: pb.PublishSpriteRequest) -> tuple[TemplateVe
         raise Conflict("accepted artifact unavailable") from exc
     if PREVIEW_BUNDLE not in version.validation.artifacts:
         raise Conflict("该版本没有可发布的交互预览")
-    _validated_request(request, version.candidate.config_schema, version.spec.sprite_kind)
+    if max(len(request.text_prop), len(request.keywords_prop)) > sprite_store.NAME_LENGTH:
+        raise _invalid(f"text_prop 与 keywords_prop 不能超过 {sprite_store.NAME_LENGTH} 个字符")
+    # Re-saving an existing publication only refreshes its player; the rules for new publications do not apply to it.
     if (data := _existing(version, request)) is None:
+        _validated_request(request, version)
         return version, None, (accepted / PREVIEW_BUNDLE).read_bytes()
-    sprite = _sprite_from(data)
+    sprite = published_from(data)
     return version, sprite, (store.root / "sprites" / sprite.sprite_id / PREVIEW_BUNDLE).read_bytes()
+
+
+def _bound_names(version: TemplateVersion) -> list[str]:
+    """The version's top-level parameters in schema order."""
+    bound = {item.name for item in version.spec.sprite.bindings}
+    return [name for name in version.candidate.config_schema.get("properties", {}) if name in bound]
+
+
+async def _sample(service, version: TemplateVersion, kind: int) -> None:
+    """Render the version's boundary samples in the isolated browser before it becomes an asset.
+
+    After this passes, any template value inside the published parameter contract only needs the instant schema
+    check. A sample that fails is a 422 naming it; a validator that cannot start is a 503.
+    """
+    from .tool_validation import ToolValidator, ValidationUnavailable
+    from .tools.contracts import ComponentDefinition
+
+    candidate, composition = version.candidate, version.spec.composition
+    box = _content_box(version)
+    names = _bound_names(version)
+    samples = boundary.samples(candidate.config_schema, candidate.default_config, names, KIND_NAMES[kind], (composition.width, composition.height))
+    if missing := boundary.unsampled(candidate.config_schema, candidate.default_config, names, samples):
+        raise _invalid(
+            f"参数 {'、'.join(missing)} 的两端或枚举取值在其他参数取默认值时不合约束，无法检查；"
+            "请在聊天中让 Agent 简化参数之间的约束后再保存到资产"
+        )
+    work = service.store.root / "sprites" / f".samples-{uuid4()}"
+    try:
+        checks = await ToolValidator(service.harness.renderer, work).validate_samples(
+            ComponentDefinition(code=candidate.tsx_code, parameter_schema=candidate.config_schema, default_parameters=candidate.default_config),
+            {"width": composition.width, "height": composition.height, "fps": round(composition.fps), "duration_frames": composition.duration_in_frames},
+            {"x": box.x, "y": box.y, "width": box.width, "height": box.height},
+            [asdict(item) for item in samples],
+        )
+    except ValidationUnavailable as exc:
+        logging.getLogger(__name__).warning("Sprite boundary samples unavailable for %s: %s", version.id, exc)
+        raise HTTPException(503, "参数边界检查环境不可用，请稍后重试") from None
+    finally:
+        await run_in_threadpool(shutil.rmtree, work, True)
+    failed = next((item for item in checks if item.status != "passed"), None)
+    if failed is not None:
+        raise _invalid(
+            f"参数边界检查未通过（{failed.name.removeprefix('sample:')}）：{(failed.message or '')[:300]}。"
+            "请在聊天中让 Agent 修复后再保存到资产"
+        )
 
 
 def _create(store: Store, request: pb.PublishSpriteRequest, version: TemplateVersion, bundle: bytes) -> pb.SpriteSummary:
@@ -306,12 +401,13 @@ def _create(store: Store, request: pb.PublishSpriteRequest, version: TemplateVer
             ),
             tsx_code=version.candidate.tsx_code,
             code_sha256=hashlib.sha256(version.candidate.tsx_code.encode()).hexdigest(),
-            parameters=_parameters(schema, version.candidate.default_config, {request.text_prop, request.keywords_prop}),
+            parameters=_parameters(schema, version.candidate.default_config, _bound_names(version)),
             text_prop=request.text_prop,
             keywords_prop=request.keywords_prop,
             preview_sha256=hashlib.sha256(bundle).hexdigest(),
             config_schema_json=json.dumps(schema, ensure_ascii=False),
             default_config_json=json.dumps(version.candidate.default_config, ensure_ascii=False),
+            content_box=_content_box(version),
         )
         sprite.published_at.FromDatetime(published_at)
         sprite_store.insert(
@@ -324,7 +420,7 @@ def _create(store: Store, request: pb.PublishSpriteRequest, version: TemplateVer
         # Only a duplicate key means an identical publication won the race; other integrity errors are real.
         if exc.orig.args[0] != 1062 or (data := _existing(version, request)) is None:
             raise
-        return summarize(_sprite_from(data))
+        return summarize(published_from(data))
     except BaseException:
         shutil.rmtree(directory, ignore_errors=True)
         raise
@@ -334,10 +430,12 @@ def _create(store: Store, request: pb.PublishSpriteRequest, version: TemplateVer
 async def publish(service, request: pb.PublishSpriteRequest) -> pb.SpriteSummary:
     """Copy a verified accepted version into an immutable publication; repeating returns the original.
 
-    The player bundle is rebuilt with the current host code when the sealed one predates frame-synchronised
-    previews, so older versions can still be previewed over a template after saving. Hashing, copying and
-    database work run in worker threads and only the rebuild is awaited, so the event loop stays free;
-    identical publications take turns, so a double click rebuilds once.
+    A new publication first renders its boundary samples (`boundary.py`), so later template overrides inside its
+    parameter contract need no sandbox. The player bundle is rebuilt with the current host code when the sealed
+    one predates frame-synchronised previews or placement overrides, so older versions can still be previewed
+    over a template after saving. Hashing, copying and database work run in worker threads and only the browser
+    work is awaited, so the event loop stays free; identical publications take turns, so a double click samples
+    and rebuilds once.
     """
     store = service.store
     lock = _publishing.setdefault(
@@ -345,7 +443,9 @@ async def publish(service, request: pb.PublishSpriteRequest) -> pb.SpriteSummary
     )
     async with lock:
         version, sprite, bundle = await run_in_threadpool(_inspect, store, request)
-        fresh = None if SYNC_MARKER in bundle else await _rebuild_bundle(service, version)
+        if sprite is None:
+            await _sample(service, version, request.kind)
+        fresh = None if current_bundle(bundle) else await _rebuild_bundle(service, version)
         if sprite is None:
             return await run_in_threadpool(_create, store, request, version, fresh or bundle)
         if fresh:

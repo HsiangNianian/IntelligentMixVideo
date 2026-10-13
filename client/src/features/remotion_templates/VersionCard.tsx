@@ -12,7 +12,15 @@ import { diagnostics as readDiagnostics, exported } from "./api";
 import { CodeBlock } from "./CodeBlock";
 import type { Diagnostic, Version } from "./model";
 import { publishSprite } from "@/features/sprites/api";
-import { publishChoice } from "./spriteChoice";
+import type { SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { PUBLISH_KINDS, defaultKind, publishChoice } from "./spriteChoice";
 
 /** 每张卡片只拥有本版本的读取与提示，卸载取消请求，不展示未经确认的参数草稿。 */
 export function VersionCard({
@@ -39,6 +47,11 @@ export function VersionCard({
   const [notice, setNotice] = useState("");
   const [publishing, setPublishing] = useState(false);
   const [publishError, setPublishError] = useState("");
+  // 发布分类默认取 Agent 的判断；只在换成另一个版本时重新取默认值。版本列表刷新会重建同一版本的对象，
+  // 按对象比较会把用户刚选的分类静默改回默认值。
+  const agentKind = version.spec.sprite?.kind;
+  const [kind, setKind] = useState<SpriteKind>(() => defaultKind(agentKind));
+  useEffect(() => setKind(defaultKind(agentKind)), [version.id, agentKind]);
   const [items, setItems] = useState<Diagnostic[]>([]);
   const [diagnosticsNotice, setDiagnosticsNotice] = useState("");
   const [diagnosticsFailed, setDiagnosticsFailed] = useState(false);
@@ -125,7 +138,7 @@ export function VersionCard({
     setNotice("");
     setPublishError("");
     try {
-      const asset = await publishSprite(version.id, publishChoice(version));
+      const asset = await publishSprite(version.id, publishChoice(version, kind));
       if (!scope.current.signal.aborted) setNotice(`已保存到资产「${asset.name}」，可在云端模板的 Remotion 资产中添加。`);
     } catch (reason) {
       if (!scope.current.signal.aborted) setPublishError(reason instanceof Error ? reason.message : "保存到资产失败，请重试");
@@ -216,6 +229,14 @@ export function VersionCard({
           </Button>
         </CollapsibleTrigger>
         <div className="flex items-center">
+          <Select value={String(kind)} disabled={disabled || publishing} onValueChange={(value) => setKind(Number(value) as SpriteKind)}>
+            <SelectTrigger size="sm" aria-label="资产分类" className="h-8 w-24 border-none bg-transparent text-xs shadow-none">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {PUBLISH_KINDS.map((item) => <SelectItem key={item.kind} value={String(item.kind)}>{item.label}</SelectItem>)}
+            </SelectContent>
+          </Select>
           <Button variant="ghost" size="sm" disabled={disabled || publishing} onClick={() => void saveAsset()}>
             <Wand2 />
             {publishing ? "保存中…" : "保存到资产"}

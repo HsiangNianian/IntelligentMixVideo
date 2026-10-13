@@ -120,6 +120,7 @@ def compose(identifier):
     """A sprite_compose call over one stored Preset."""
     return call(identifier, "sprite_compose", {
         "description": "滤镜",
+        "kind": "filter_overlay",
         "instances": [{
             "instance_id": "filter",
             "source": {"kind": "stored", "preset_id": "preset-1"},

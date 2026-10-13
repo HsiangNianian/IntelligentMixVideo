@@ -118,6 +118,7 @@ class Renderer:
             "probes": Path(__file__).with_name("probes.py"),
             "presentation": self.settings.renderer_dir / "presentation.mjs",
             "preview_host": self.settings.renderer_dir / "preview-host.tsx",
+            "host_layer": self.settings.renderer_dir / "host-layer.tsx",
             "dependencies": self.settings.renderer_dir / "bun.lock",
             "browser": self.settings.browser_executable,
             "node_binary": Path(shutil.which("node") or "/usr/bin/node").resolve(),
@@ -381,6 +382,9 @@ class Renderer:
             )
             report.runtime["preview_host"] = digest(
                 settings.renderer_dir / "preview-host.tsx"
+            )
+            report.runtime["host_layer"] = digest(
+                settings.renderer_dir / "host-layer.tsx"
             )
             report.runtime["dependencies"] = hashlib.sha256(
                 (settings.renderer_dir / "bun.lock").read_bytes()

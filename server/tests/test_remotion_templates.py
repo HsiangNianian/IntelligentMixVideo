@@ -73,14 +73,41 @@ def patch_validation(current: ToolSession) -> None:
     current.validate_render = mount
 
 
+# 滤镜分类的两个必备参数：可以组合成能通过 sprite.create 分类检查的最小 Sprite。
+FILTER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "tintColor": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$"},
+        "intensity": {"type": "number", "minimum": 0, "maximum": 1},
+    },
+    "required": ["tintColor", "intensity"],
+    "additionalProperties": False,
+}
+FILTER_BINDINGS = [
+    {"name": "intensity", "title": "强度", "targets": [{"instance_id": "title", "parameter": "intensity"}]},
+    {"name": "tintColor", "title": "色调", "targets": [{"instance_id": "title", "parameter": "tintColor"}]},
+]
+
+
 def draft() -> PresetDraft:
-    """Return a minimal valid title Preset."""
+    """Return a minimal valid Preset that declares the filter category's required parameters."""
     return PresetDraft(
         description="title",
-        code="export default function Label(){return <div>Title</div>}",
-        parameter_schema={"type": "object", "properties": {}, "additionalProperties": False},
-        default_parameters={},
+        code="export default function Tint(props: {tintColor: string; intensity: number}){return <div style={{background: props.tintColor, opacity: props.intensity}} />}",
+        parameter_schema=FILTER_SCHEMA,
+        default_parameters={"tintColor": "#FF8A3D", "intensity": 0.4},
     )
+
+
+def categorized(record: SpriteRecord) -> SpriteDraft:
+    """Turn a saved-Sprite fixture into a draft that exposes the filter category's required top-level parameters."""
+    data = record.model_dump(mode="json", exclude={"sprite_id", "created_at"}, exclude_unset=True)
+    data["parameter_schema"]["properties"].update(FILTER_SCHEMA["properties"])
+    data["default_parameters"].update({"tintColor": "#FF8A3D", "intensity": 0.4})
+    return SpriteDraft(**data, kind="filter_overlay", bindings=[
+        {**binding, "targets": [{"instance_id": data["instances"][0]["instance_id"], "parameter": binding["name"]}]}
+        for binding in FILTER_BINDINGS
+    ])
 
 
 def saved_sprite(sprite_code: str, preset_code: str, instance_ids=("title",)) -> SpriteRecord:
@@ -190,21 +217,10 @@ def test_creation_flow_persists_one_sprite_without_semantic_index(tmp_path):
         current = session(tmp_path)
         patch_validation(current)
         preset = await current.execute("preset.create", draft(), available())
-        composed = await current.execute(
-            "sprite.compose",
-            SpriteComposeInput.model_validate({
-                "description": "title preview",
-                "instances": [{
-                    "instance_id": "title",
-                    "source": {"kind": "stored", "preset_id": preset["preset"]["preset_id"]},
-                    "layout": {"x": 0, "y": 0, "width": 1080, "height": 1920, "z_index": 0},
-                    "timing": {"start_frame": 0, "duration_frames": 30},
-                }],
-            }),
-            available(),
-        )
+        composed = await current.execute("sprite.compose", title_instance(preset["preset"]["preset_id"]), available())
         # compose returns a handle and a summary; the model never sees or re-sends the bundled source.
         assert "code" not in composed and composed["code_bytes"] > 0
+        assert composed["kind"] == "filter_overlay" and composed["parameter_names"] == ["intensity", "tintColor"]
         assert composed["instances"][0]["preset_id"] == preset["preset"]["preset_id"]
         saved = await current.execute("sprite.create", SpriteCreateInput(draft_id=composed["draft_id"]), available())
         assert current.saved_sprite(saved["sprite_id"]).code == current.sprite_drafts[composed["draft_id"]].code
@@ -287,7 +303,7 @@ def test_create_checks_each_preset_source_once_and_does_not_bundle_again(tmp_pat
         monkeypatch.setattr("server.remotion_templates.tools.session.compose_source", bundle_again)
         record = saved_sprite("bundle", "shared", ("a", "b", "c"))
         record.instances.append(saved_sprite("bundle", "other", ("d",)).instances[0])
-        current.sprite_drafts["sprite_draft_1"] = SpriteDraft(**record.model_dump(mode="json", exclude={"sprite_id", "created_at"}, exclude_unset=True))
+        current.sprite_drafts["sprite_draft_1"] = categorized(record)
         saved = await current.execute("sprite.create", SpriteCreateInput(draft_id="sprite_draft_1"), available())
         assert checked == ["shared", "other", "bundle"]
         assert current.saved_sprite(saved["sprite_id"]).code == "bundle"
@@ -379,6 +395,7 @@ def test_modified_copy_composes_by_handle_and_a_shared_preset_is_bundled_once(tm
         layout = {"x": 0, "y": 0, "width": 1080, "height": 960, "z_index": 0}
         composed = await current.execute("sprite.compose", SpriteComposeInput.model_validate({
             "description": "两行文字",
+            "kind": "text",
             "instances": [
                 {"instance_id": "top", "source": {"kind": "stored", "preset_id": stored["preset"]["preset_id"]}, "parameters": {"text": "上"}, "layout": layout, "timing": {"start_frame": 0, "duration_frames": 30}},
                 {"instance_id": "bottom", "source": {"kind": "draft", "draft_id": copy["draft_id"]}, "parameters": {"text": "下"}, "layout": {**layout, "y": 960}, "timing": {"start_frame": 0, "duration_frames": 30}},
@@ -395,12 +412,14 @@ def title_instance(preset_id: str) -> SpriteComposeInput:
     """One full-canvas instance of a stored Preset, ready for sprite.compose."""
     return SpriteComposeInput.model_validate({
         "description": "title preview",
+        "kind": "filter_overlay",
         "instances": [{
             "instance_id": "title",
             "source": {"kind": "stored", "preset_id": preset_id},
             "layout": {"x": 0, "y": 0, "width": 1080, "height": 1920, "z_index": 0},
             "timing": {"start_frame": 0, "duration_frames": 30},
         }],
+        "parameters": FILTER_BINDINGS,
     })
 
 
@@ -484,15 +503,7 @@ def test_real_creation_flow_builds_preview(tmp_path):
     async def run():
         current = ToolSession(harness, None, None, Budget(), tmp_path / "run", [], lambda *_: None, {})
         preset = await current.execute("preset.create", draft(), available())
-        composed = await current.execute("sprite.compose", SpriteComposeInput.model_validate({
-            "description": "title preview",
-            "instances": [{
-                "instance_id": "title",
-                "source": {"kind": "stored", "preset_id": preset["preset"]["preset_id"]},
-                "layout": {"x": 0, "y": 0, "width": 1080, "height": 1920, "z_index": 0},
-                "timing": {"start_frame": 0, "duration_frames": 30},
-            }],
-        }), available())
+        composed = await current.execute("sprite.compose", title_instance(preset["preset"]["preset_id"]), available())
         saved = await current.execute("sprite.create", SpriteCreateInput(draft_id=composed["draft_id"]), available())
         result = await harness.finalize_sprite(current, saved["sprite_id"], Budget(), tmp_path)
         assert (result[3] / "Export.tsx").stat().st_size > 0

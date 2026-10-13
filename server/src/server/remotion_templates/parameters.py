@@ -149,7 +149,11 @@ def patch_parameters(
     if spec.schema_version == "2":
         from .tools.schema import merge_parameters, validate_parameters
         config = merge_parameters(candidate.default_config, patch)
-        validate_parameters(candidate.config_schema, config)
+        try:
+            validate_parameters(candidate.config_schema, config)
+        except ValidationError as exc:
+            # Callers map ValueError to a 422 or a failed job; a raw ValidationError surfaced as an HTTP 500.
+            raise ValueError(f"invalid parameter value: {exc.message}") from exc
         return candidate.model_copy(update={"default_config": config}), spec.model_copy(deep=True)
     unknown = set(patch) - set(candidate.default_config)
     if unknown:

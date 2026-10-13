@@ -217,7 +217,7 @@ class PresetRecord(PresetDraft):
 | preset.modify | PresetModifyInput | PresetModifyOutput | 读取原记录，在任务内保存副本并返回 draft_id；不入库 |
 | validate.code | CodeValidationInput | CodeValidationReport | 执行契约及 LSP 检查 |
 | validate.render | RenderValidationInput | RenderValidationReport | 在测试环境运行组件与脚本 |
-| sprite.compose | SpriteComposeInput | SpriteComposeOutput | 读取引用，生成组合定义与代码并在任务内保存草稿；不保存 sprite |
+| sprite.compose | SpriteComposeInput | SpriteComposeOutput | v2 选定分类并绑定顶层参数，读取引用，生成组合定义与代码并在任务内保存草稿；不保存 sprite |
 | sprite.create | SpriteCreateInput | SpriteCreateOutput | 代码校验、一次浏览器挂载的透明度检查并保存 sprite |
 | tools.inspect | ToolInspectInput | ToolDescriptor | 读取工具契约 |
 | tools.plan_execute（宿主控制） | PlanAction | JsonObject | 回答、澄清、委派，或调整任务内的计划与执行状态 |
@@ -612,12 +612,35 @@ class ResolvedPresetInstance(ContractModel):
     timing: InstanceTiming
 
 
+# 效果分类：text 为字效，filter_overlay 为滤镜，video_overlay 与 transition_overlay 合为转场与视频特效。
+SpriteKindName = Literal["text", "filter_overlay", "video_overlay", "transition_overlay"]
+# 顶层参数名：驼峰标识符，可安全用作 JSON 键和界面控件 ID。
+ParameterName = Annotated[StrictStr, StringConstraints(pattern=r"^[A-Za-z][A-Za-z0-9]{0,31}$")]
+
+
+class ParameterTarget(ContractModel):
+    """顶层参数写入的一个实例 prop。"""
+
+    instance_id: NonEmptyString
+    parameter: NonEmptyString
+
+
+class SpriteParameterBinding(ContractModel):
+    """把一个或多个实例的同名语义 prop 提升为 Sprite 顶层参数，供模板逐次摆放时修改。"""
+
+    name: ParameterName
+    title: Annotated[Description, Field(max_length=40)]
+    targets: list[ParameterTarget] = Field(min_length=1)
+
+
 class SpriteDraft(ComponentDefinition):
     """组合生成的源码、参数契约和实例快照。"""
 
     description: Description
     composition: Composition
     instances: list[ResolvedPresetInstance] = Field(min_length=1)
+    kind: Omittable[SpriteKindName]
+    bindings: list[SpriteParameterBinding] = Field(default_factory=list)
 
 
 class SpriteRecord(SpriteDraft):
@@ -638,6 +661,8 @@ class SpriteRecord(SpriteDraft):
 | timing.start_frame | 非负整数，位于主时间轴 |
 | timing.duration_frames | 正整数；结束位置为 start_frame + duration_frames，结束帧不显示 |
 | composition.duration_frames | 工具计算的正整数，等于所有实例结束位置的最大值 |
+| kind | compose 时选定的效果分类；本契约之前保存的草稿没有此字段 |
+| bindings | compose 时提升为顶层参数的绑定，见 7.2 |
 
 实例之间可以同时显示和重叠；compose 不自动布局、避让、缩放时间或判断哪种构图好看。画布外内容不出现在成片中；实例容器以自身局部画布为显示边界。
 
@@ -649,10 +674,12 @@ class SpriteRecord(SpriteDraft):
 
 ```python
 class SpriteComposeInput(ContractModel):
-    """组合描述及显式编排的预设实例。"""
+    """组合描述、效果分类、显式编排的预设实例及提升为顶层的参数。"""
 
     description: Description
+    kind: SpriteKindName
     instances: list[PresetInstance] = Field(min_length=1)
+    parameters: list[SpriteParameterBinding] = Field(default_factory=list, max_length=32)
 
 
 class InstanceSummary(ContractModel):
@@ -673,7 +700,9 @@ class SpriteComposeOutput(ContractModel):
     digest: DraftDigest
     description: Description
     composition: Composition
+    kind: SpriteKindName
     instances: list[InstanceSummary]
+    parameter_names: list[str]
     default_parameters: JsonObject
     code_bytes: NonNegativeInteger
 
@@ -685,33 +714,64 @@ async def sprite_compose(request: SpriteComposeInput) -> ToolResult[SpriteCompos
 
 description 非空，instances 非空。主画布配置和 sprite 总帧数均不作为输入；起点之前和实例之间未被内容覆盖的区间保持空画布。
 
+契约版本 2 新增 `kind` 与 `parameters`。代码只是确定的样例：模板里每次摆放只能通过顶层参数调整它，因而组合时必须选定效果分类，并把该分类必备的参数绑定为顶层参数。
+
+| kind | 界面分类 | 必备顶层参数（Schema） | 宿主变换 |
+| --- | --- | --- | --- |
+| text | 字效 | text（string，minLength ≥ 1，maxLength ≤ 200）、fontSize（数字，范围在 8～400 内且覆盖 24～160）、fontWeight（enum 恰为 400、700）、color（颜色 pattern） | 位置、缩放、旋转、不透明度 |
+| filter_overlay | 滤镜 | intensity（数字 0～1）、tintColor（颜色 pattern） | 不透明度 |
+| video_overlay | 转场与视频特效 | color（颜色 pattern）、speed（数字 0.25～4） | 位置、缩放、旋转、不透明度 |
+| transition_overlay | 转场与视频特效 | color（颜色 pattern）、speed（数字 0.25～4） | 不透明度 |
+
+颜色 pattern 为 `^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$`。字效可以另外绑定 `keywords`（字符串数组，maxItems ≤ 20，items.maxLength ≤ 100），由组件在文字里查找各关键词的字面命中并高亮。所有分类都是透明叠加层，不读取也不修改底片像素。
+
+绑定规则：
+
+1. `name` 是驼峰标识符，不能与其他绑定或任何 `instance_id` 相同。
+2. 每个 target 必须是该实例预设顶层声明的 prop，且同一 prop 只能绑定一次；被绑定 prop 的 Schema 必须是对象形式（不能是 `true`/`false` 布尔子 Schema），也不能使用 `$ref`。
+3. 同一绑定的各 target 必须接受同样的值（忽略 title、description），且组合时取值相同；该值成为顶层默认值，`title` 成为界面控件名称。
+4. 绑定后的参数是 Sprite Schema 顶层的必填属性，并从对应实例的嵌套 Schema、required 与默认值中移除；生成的宿主把顶层值传给每个 target。
+5. 顶层参数必须有明确的取值范围：数字声明 minimum 与 maximum（或 enum；integer 的上下界须为整数），字符串使用颜色 pattern、enum 或 maxLength（maxLength 为 1～2000，即模板覆盖值的上限，且不小于 minLength），布尔不受限，数组只允许关键词形状。Schema 只能使用 type、title、description、default、minimum、maximum、enum、minLength、maxLength、颜色 pattern、maxItems 与 items.maxLength：发布时的边界抽样只认识这些约束，其他约束（如 multipleOf、exclusiveMaximum）会让两端取值漏抽。不满足时返回 `INVALID_ARGUMENT`。
+6. 整个 Sprite 的位置、缩放、旋转与不透明度由宿主按实例 layout 的并集统一实现，不通过参数绑定，预设也不应自行实现。
+
 工具执行以下确定性组合：
 
 1. 解析库引用或任务内副本句柄，校验参数及编排。
 2. 在结果中保留每个实例完整预设快照和合并后的完整参数，避免后续依赖可变的搜索结果。
 3. 计算固定画布下的总帧数。
 4. 生成单文件 TSX，包含各预设实现和组合宿主；源码相同的预设只打包一份模块，由多个实例复用；处理导入、组件名及辅助符号冲突，保持各预设原本逻辑。
-5. 按 instance_id 生成嵌套参数 Schema 和完整默认参数。
-6. 把完整 SpriteDraft 保存在任务内并返回其 `draft_id`、内容摘要 `digest`（只由草稿内容决定，重复组合得到同一值）、实例摘要、完整默认参数与源码字节数，不回传源码，不保存 sprite，也不把 draft 来源自动写入 preset 库。
+5. 把绑定参数提升为顶层必填属性，其余参数按 instance_id 生成嵌套 Schema，并生成完整默认参数。
+6. 把完整 SpriteDraft（含 kind 与 bindings）保存在任务内并返回其 `draft_id`、内容摘要 `digest`（只由草稿内容决定，重复组合得到同一值）、分类、实例摘要、顶层参数名、完整默认参数与源码字节数，不回传源码，不保存 sprite，也不把 draft 来源自动写入 preset 库。
 
-组合后的 props 示例：
+组合后的 props 示例（对应下文输入示例：title 实例的 text、size、weight、color 绑定为顶层参数，glow 未绑定）：
 
 ```json
 {
-  "title": {"text": "今日灵感", "color": "#FFFFFF"},
+  "text": "今日灵感",
+  "fontSize": 96,
+  "fontWeight": 700,
+  "color": "#FFFFFF",
+  "title": {"glow": 0.4},
   "subtitle": {"text": "从一个小想法开始", "color": "#FFFF00"}
 }
 ```
 
-title、subtitle 分别对应实例 ID，每组 Schema 来自对应预设。嵌入子 Schema 时必须保持内部引用指向正确位置，不得把某一预设的 `$ref` 意外解释为 sprite 的其他字段。
+text、fontSize、fontWeight、color 是顶层参数；title、subtitle 分别对应实例 ID，其中只保留未绑定的参数，每组 Schema 来自对应预设。嵌入子 Schema 时必须保持内部引用指向正确位置，不得把某一预设的 `$ref` 意外解释为 sprite 的其他字段。
 
 默认参数来自 compose 时的实例实际参数；调用者可以按第 3.3 节规则覆盖。sprite 组件在空 props 下使用完整默认值，仍然可运行。布局和时间不暴露为这组参数，修改编排需再次 compose。
 
-输入示例，假设两个引用的预设都声明了 text、color 参数：
+输入示例，假设两个引用的预设都声明了 text、color 参数，标题预设还声明了 size、weight、glow，且默认值为 size 96、weight 700、glow 0.4：
 
 ```json
 {
   "description": "标题在上、说明在下的竖屏文字模板",
+  "kind": "text",
+  "parameters": [
+    {"name": "text", "title": "标题文字", "targets": [{"instance_id": "title", "parameter": "text"}]},
+    {"name": "fontSize", "title": "字号", "targets": [{"instance_id": "title", "parameter": "size"}]},
+    {"name": "fontWeight", "title": "字重", "targets": [{"instance_id": "title", "parameter": "weight"}]},
+    {"name": "color", "title": "颜色", "targets": [{"instance_id": "title", "parameter": "color"}]}
+  ],
   "instances": [
     {
       "instance_id": "title",
@@ -735,7 +795,7 @@ title、subtitle 分别对应实例 ID，每组 Schema 来自对应预设。嵌�
 
 副本使用方式：把 modify 返回的 `data.draft_id` 放入 `source: {kind: "draft", draft_id: ...}`，无需先 create，也不回传源码。
 
-错误：`INVALID_ARGUMENT`、`PRESET_NOT_FOUND`、`COMPOSITION_FAILED`。重复实例 ID、未知副本句柄、非法参数或时间属于输入错误；工具不能完成确定性代码组合时返回组合错误。compose 成功不等于行为测试通过。
+错误：`INVALID_ARGUMENT`、`PRESET_NOT_FOUND`、`COMPOSITION_FAILED`。重复实例 ID、未知副本句柄、非法参数或时间、不合规则的参数绑定属于输入错误；工具不能完成确定性代码组合时返回组合错误。compose 成功不等于行为测试通过。
 
 ### 7.3 create
 
@@ -760,7 +820,7 @@ async def sprite_create(request: SpriteCreateInput) -> ToolResult[SpriteCreateOu
     ...
 ```
 
-按 `draft_id` 读取本任务 compose 保存的完整结果。宽高、帧率、时长、实例快照、参数结构与组合产物由 compose 一次生成，彼此一致；create 在内部执行代码校验（每种不同的原始预设源码检查一次，再检查组合产物）；Sprite 叠在用户自己的视频上，create 还会用默认参数在隔离浏览器中挂载一次，在首、尾及中间三帧度量不透明像素（alpha 不低于 242/255）的占比，至少 80% 的采样帧（5 帧中的 4 帧）有不低于 98% 的画面不透明时按 `CODE_VALIDATION_FAILED` 拒绝并说明做法，淡入或延后出现的整帧遮罩也在此列，只覆盖中间一两帧的转场仍通过。通过后保存新记录并返回 sprite_id。
+按 `draft_id` 读取本任务 compose 保存的完整结果。宽高、帧率、时长、实例快照、参数结构与组合产物由 compose 一次生成，彼此一致；create 在内部执行代码校验（每种不同的原始预设源码检查一次，再检查组合产物），再检查 7.2 表中该分类的必备顶层参数，缺少或形状不符时返回 `CATEGORY_PARAMETERS_MISSING`，`details.missing` 逐项列出名称、原因和应有的 Schema；Sprite 叠在用户自己的视频上，create 还会用默认参数在隔离浏览器中挂载一次，在首、尾及中间三帧度量不透明像素（alpha 不低于 242/255）的占比，至少 80% 的采样帧（5 帧中的 4 帧）有不低于 98% 的画面不透明时按 `CODE_VALIDATION_FAILED` 拒绝并说明做法，淡入或延后出现的整帧遮罩也在此列，只覆盖中间一两帧的转场仍通过。通过后保存新记录并返回 sprite_id。
 
 调用方不回传源码，因而无法提交与实例定义脱节的改写产物；草稿只由 compose 写入，create 不再重新打包比对。修改预设实现或编排，应先得到新的 compose 结果和新的 `draft_id`。
 
@@ -768,7 +828,7 @@ async def sprite_create(request: SpriteCreateInput) -> ToolResult[SpriteCreateOu
 
 输入为 compose 成功回执中的句柄，即 `{"draft_id": "<data.draft_id>"}`；未知句柄返回 `INVALID_ARGUMENT`，`field` 为 `/draft_id` 并列出本任务已有句柄。成功输出 sprite_id、created_at、composition，并附 CodeValidationReport；完整 SpriteRecord 由宿主保存。
 
-错误：`INVALID_ARGUMENT`、`COMPOSITION_FAILED`、`CODE_VALIDATION_FAILED`、`VALIDATION_UNAVAILABLE`、`SPRITE_STORE_FAILED`、`TIMEOUT`。校验失败不保存；create 的挂载只度量画面是否遮住视频，不运行自定义行为测试，也不声明视觉验收通过。
+错误：`INVALID_ARGUMENT`、`COMPOSITION_FAILED`、`CODE_VALIDATION_FAILED`、`CATEGORY_PARAMETERS_MISSING`、`VALIDATION_UNAVAILABLE`、`SPRITE_STORE_FAILED`、`TIMEOUT`。校验失败不保存；create 的挂载只度量画面是否遮住视频，不运行自定义行为测试，也不声明视觉验收通过。
 
 ## 8. 校验工具
 
@@ -1190,7 +1250,7 @@ Sprite，宿主随即直接发布它，不再交回 Outer（Outer 没有发布�
 2. Agent 用可选关键词调用 preset.search，从 `presets` 摘要选择 ID，再用 `preset_id` 读取 `preset` 中的完整代码和参数契约；`has_more=true` 时缩小关键词范围。
 3. 已有预设满足需求时直接实例化并填参数，不调用 modify。
 4. 需要改变实现时，由 Agent 先写出修改后的代码，再调用 modify 取得副本的 `draft_id`；原预设不变。如果没有合适预设，Agent 编写完整定义，通过 create 校验后加入库。
-5. Agent 明确提供各实例的位置、尺寸、层级和时间，调用 compose。输入可以同时包含 stored 和 draft 两类来源。
+5. Agent 明确提供各实例的位置、尺寸、层级和时间，选定效果分类并绑定该分类的必备顶层参数，调用 compose。输入可以同时包含 stored 和 draft 两类来源。
 6. compose 在任务内保存完整 SpriteDraft，返回 `draft_id` 与摘要，示例时间编排得到 150 帧、5 秒。
 7. 宿主把 SpriteDraft 的 code、parameter_schema、default_parameters 作为 component，composition.duration_frames 作为测试总帧数，连同需求断言交给 validate.render（本期该工具不向模型开放）。
 8. 工具返回真实检查报告。上层 Agent 根据诊断修改预设副本、参数或编排，再次 compose 和校验；工具本身不实现修复循环。
@@ -1228,6 +1288,9 @@ Sprite，宿主随即直接发布它，不再交回 Outer（Outer 没有发布�
 | sprite 空 props 运行 | 使用 compose 时生成的完整默认参数 |
 | 只覆盖 title.text | 保留 title 的其他默认参数及其他实例参数 |
 | 修改布局或时间 | 通过再次 compose 产生新定义，不能靠参数覆盖改写编排 |
+| 字效缺少 fontWeight 绑定 | create 返回 CATEGORY_PARAMETERS_MISSING，details.missing 给出 fontWeight 的 Schema，不保存 |
+| 绑定两个取值不同的 target | compose 返回 INVALID_ARGUMENT，指向该 target |
+| 绑定参数后空 props 运行 | 顶层默认值传给每个 target，实例其余参数保持嵌套默认值 |
 | create 接收未知 draft_id | INVALID_ARGUMENT，field 为 /draft_id 并列出本任务句柄 |
 | 同一 preset 的多个实例 | 组合源码只包含一份该预设模块 |
 | validate.code 报编译错误 | ok=true、passed=false，带结构化诊断 |

@@ -39,6 +39,8 @@ from server.remotion_templates.store import NotFound, Store
 from server.video_composition import media
 from server.video_composition.schema import MediaURL
 
+from .conftest import published_sprite
+
 CODE = "export default function Sprite() { return null; }"
 # 自动隔离夹具会清除 IMV_*，所以在导入时读取本次运行配置的渲染器位置。
 RENDERER_PATHS = {name: os.environ.get(name) for name in ("IMV_BROWSER_EXECUTABLE", "IMV_FONT_REGULAR", "IMV_FONT_BOLD")}
@@ -60,7 +62,9 @@ def placement(sprite_id: str, *, start=0.0, duration=None) -> OverlayPlacement:
 
 
 A, B = sprite("a"), sprite("b")
-PUBLICATIONS = {"a": A, "b": B}
+# c 带可编辑参数与内容区域（见 conftest.published_sprite），用于参数覆盖与宿主变换。
+C = published_sprite("c")
+PUBLICATIONS = {"a": A, "b": B, "c": C}
 # 默认请求：a 从 0 秒、b 从 1 秒开始（各 2 秒），b 叠在 a 上；WIRE 是同一份请求的 HTTP 形式。
 PLACED = [placement("a", start=0), placement("b", start=1)]
 WIRE = [{"spriteId": "a", "start": 0}, {"spriteId": "b", "start": 1}]
@@ -105,7 +109,9 @@ def test_plan_keeps_list_order_and_clips_placements() -> None:
     overlay = plan_overlay(placements, PUBLICATIONS, 6, 120)
     assert (overlay.width, overlay.height, overlay.fps, overlay.frames) == (1080, 1920, 30, 180)
     assert [(i["start_frame"], i["duration_frames"]) for i in overlay.instances] == [(144, 60), (0, 60)]
-    assert all(set(item) == {"code", "config", "start_frame", "duration_frames"} for item in overlay.instances)
+    assert all(set(item) == {"code", "config", "host", "start_frame", "duration_frames"} for item in overlay.instances)
+    # Publications without a recorded content box pivot around the whole canvas; no placement transform yet.
+    assert overlay.instances[0]["host"] == {"box": {"x": 0, "y": 0, "width": 1080, "height": 1920}, "transform": {}}
     assert overlay.span == 204  # 144 + 60：合成必须覆盖最晚片段结尾，否则该片段的 Sequence 会被截短
 
 
@@ -986,3 +992,42 @@ def test_real_overlay_keeps_nested_sequence_timing(tmp_path: Path) -> None:
     video = asyncio.run(render_overlay(Renderer(settings), overlay, tmp_path / "job"))
     for frame, expected in ((112, 0.8), (115, 0.5), (119, 0.1)):  # 标题从第 60 帧开始
         assert decoded_alpha(video, frame) == pytest.approx(expected, abs=0.05)
+
+
+# 场景：总线原样转发模板轨道的 editor：参数覆盖合并进配置，宿主变换绕内容区域，二者都进入 worker 请求。
+def test_plan_applies_the_placement_overrides_and_transform() -> None:
+    """渲染计划里每个片段带合并后的配置与宿主层；没有 editor 的片段保持发布默认值。"""
+    edited = OverlayPlacement.model_validate({"spriteId": "c", "start": 0, "editor": {"remotion": {
+        "parameters": [{"key": "text", "stringValue": "新品"}], "transform": {"x": 540, "scale": 2},
+    }}})
+    overlay = plan_overlay([placement("c", start=1), edited], PUBLICATIONS, 3, 120)
+    plain, changed = overlay.instances
+    assert plain["config"]["text"] == "标题" and plain["host"]["transform"] == {}
+    assert changed["config"]["text"] == "新品" and changed["config"]["fontSize"] == 64
+    assert changed["host"] == {"box": {"x": 90, "y": 760, "width": 900, "height": 400}, "transform": {"x": 540, "scale": 2}}
+
+
+# 场景：不符合发布参数契约的覆盖在受理阶段就是 422，不创建任务；editor 只能带 remotion。
+def test_accept_rejects_overrides_outside_the_contract(overlay_client) -> None:
+    """超出范围的覆盖说明是哪个 Sprite 与原因；editor 里的 IMS 字段同样拒绝。"""
+    client, overlays = overlay_client
+    bad = {"spriteId": "c", "start": 0, "editor": {"remotion": {"parameters": [{"key": "fontSize", "numberValue": 999}]}}}
+    response = client.post("/api/v1/overlay-renders", json={"placements": [bad], "duration": 3})
+    assert response.status_code == 422 and "Sprite c 的参数覆盖无效：参数 fontSize 超出允许范围" in response.json()["detail"]
+    ims = {"spriteId": "c", "start": 0, "editor": {"title": "标题"}}
+    assert client.post("/api/v1/overlay-renders", json={"placements": [ims], "duration": 3}).status_code == 422
+    assert task_rows(overlays) == 0
+
+
+# 场景：受理时 editor 随摆放存进任务行，重启恢复后按保存的覆盖渲染。
+def test_stored_overrides_survive_recovery(service) -> None:
+    """任务行保存 editor；恢复的任务把同样的配置和变换交给 worker。"""
+    overlays, renderer, _ = service
+    edited = OverlayPlacement.model_validate({"spriteId": "c", "start": 0, "editor": {"remotion": {
+        "parameters": [{"key": "fontWeight", "numberValue": 700}], "transform": {"opacity": 0.5},
+    }}})
+    request = stored_request(placements=[edited.model_dump(mode="json")])
+    overlays._insert("22222222-2222-2222-2222-222222222222", {"request": request})
+    run_resume(overlays)
+    [instance] = renderer.requests[0]["instances"]
+    assert instance["config"]["fontWeight"] == 700 and instance["host"]["transform"] == {"opacity": 0.5}

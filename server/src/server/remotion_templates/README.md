@@ -87,10 +87,20 @@ IMV_TEST_RENDERER=1 uv run --locked --project server pytest server/tests/test_re
 ```
 
 The browser path requires Chromium, Noto CJK fonts, bubblewrap and util-linux.
-The isolation is Linux-only: `POST /works`, a parameter patch sent to
-`POST /works/{id}/messages` and the retry of a parameter job return 503 naming the
-unsupported platform or the missing `bwrap`, `prlimit` or `node` before anything is
-queued, so on macOS the service starts but cannot generate templates. Questions,
+The isolation is Linux-only: `POST /works`, a parameter patch on a pre-composition
+(PR74) version or on a composed version whose player bundle predates injected defaults
+(no `imv-preview-host` marker) sent to `POST /works/{id}/messages`, the retry of such a parameter job and
+`POST /api/sprites/publish` return 503 naming the unsupported platform or the missing
+`bwrap`, `prlimit` or `node` before anything is queued, so on macOS the service starts but
+cannot generate templates. A parameter patch on a composed (PR76) version whose bundle
+reads injected defaults never needs the sandbox (`publication.revisable`; an older bundle
+would keep showing its compiled defaults, so that patch is queued, rendered and its bundle
+rebuilt, after which later patches are instant): `Runtime` records the job as running outside the FIFO queue and
+`PresentationBuilder.revise` checks the patch against the parameter schema, reuses the
+base's `Template.tsx`, player bundle and runtime evidence (`tool-validation.json` names the
+base in `inherited_from`), regenerates `Export.tsx` with the host-side `export.mjs` (parse
+and format only) and seals a `user_parameters` version at once; the version preview page
+injects that version's own defaults, and publishing later renders the boundary samples. Questions,
 clarification replies, free-text edits and other retries are not refused up front,
 because the model may answer without a validator; if it does need one, the tool call
 returns `VALIDATION_UNAVAILABLE`.
@@ -206,19 +216,45 @@ templates that reference its IDs, which is what lets a template save check its `
 but answers its preview with a 404, while overlay renders only need the stored TSX. Sprites published before this
 storage (the SQLite `sprites` table and the `sprites/<id>/` folders it pointed at) are neither read nor migrated and
 stay where they are: publish the accepted versions again.
-Publishing re-verifies the sealed `accepted/` artifacts (409 when changed), requires the
-declared kind to match a version-fixed kind (composition versions choose it), and for text
-Sprites requires `text_prop` to be a string parameter. Parameters are addressed by dot path
-(`title_main.title`), so composed Sprites with nested objects work. Scalar leaves at any depth become
-`VISIBLE_EDITABLE` controls; text and keyword fields stay with the composition bus. The same
-source and field choice returns the original Sprite. `animation_frames` and `static_frame` stay 0
+Publishing re-verifies the sealed `accepted/` artifacts (409 when changed) and only accepts versions composed
+with a kind and top-level parameter bindings (`spec.sprite.kind`/`bindings`); older versions are refused with a
+422 that asks for an edit in chat. The requested kind defaults to the agent's choice on the client but may be
+changed: the version must expose that kind's required parameters (`categories.REQUIRED`), otherwise the 422 lists
+them in Chinese. A text Sprite fixes `text_prop` to `text` and `keywords_prop` to `""` or `keywords` (only when the
+version binds a keywords parameter); other kinds leave both empty. Every bound top-level parameter, text and
+keywords included, becomes a `VISIBLE_EDITABLE` control with its bounds, enum, colour or integer format (an
+`integer` schema is marked `SPRITE_PARAMETER_FORMAT_INTEGER`, since `number_value` cannot tell them apart, and
+overrides with a fraction are refused), string lengths and list size; the instances' remaining nested props stay internal. `content_box` records the union of the instances'
+layout boxes clipped to the canvas, the pivot of the host transform; summaries of older publications report the
+whole canvas. Re-saving looks up the existing publication before any of these rules, so a publication made before
+effect categories can still be re-saved to refresh its player bundle; for a version without a kind any earlier
+publication of the same kind counts, because its text field was a free dot path the client no longer sends.
+A new publication first renders boundary samples (`boundary.py`, `ToolValidator.validate_samples`,
+the worker's `samples` mode): the defaults, every top-level parameter at its low and at its high end (numbers at
+their bounds, first and last enum values, colours black and white, text filled to `maxLength` with a CJK glyph or
+cut to `minLength`, keywords full or empty) combined with the host transform at its extremes, and the middle enum
+values. When the combined extreme breaks the schema (parameters that constrain each other), it is replaced by the
+greedy combination of the extremes that still fit and by one sample per parameter extreme, each with the same end
+of the host transform. Each sample must render its first, middle and last frame without an error inside the shared
+host layer; a failure is a 422 naming the sample and frame, and a validator that cannot start is a 503 (the route
+checks the sandbox first). Bound parameters may only use constraints these extremes respect
+(`categories.parameter_problems`), and a version whose root-level constraints still keep some parameter's end or
+enum value out of every sample is refused (`boundary.unsampled`). Template overrides are then checked against the
+schema only, without the sandbox. The
+samples cover the extremes, not every combination: a placement that still fails to render fails its overlay task. The same source and field choice
+returns the original Sprite without sampling again. `animation_frames` and `static_frame` stay 0
 because composition versions carry no such evidence, and `preview_url` serves the sealed
 interactive player page rather than an MP4.
 
 `GET /api/sprites` lists summaries (no TSX). A record that cannot be parsed or fails its hash check is
 logged and left out, so one damaged row never hides the library; reading it by ID still reports the
 failure. Where a Sprite is placed is not stored here: a placement is a `remotion` track of the cloud template
-(`sprite_id`, a seconds start, an optional duration), saved with the template in one request, so deleting a
+(`sprite_id`, a seconds start, an optional duration and `editor.remotion` with parameter overrides and a host
+transform), saved with the template in one request; the save resolves every placement with `placement.resolve`
+(the override must name an editable parameter, keep its type, stay inside its bounds, enum, lengths and list size,
+and the merged configuration must still satisfy the published schema; filters and transitions only take opacity;
+a publication made before boundary samples, recognisable by its missing `content_box`, lists its parameters as
+read-only and only takes the host transform, because its values were never rendered away from the defaults), so deleting a
 template removes its placements with it and the composition bus finds them with its single template lookup.
 There is no separate route for placements; the template save checks that every `sprite_id` is published. The
 SQLite `style_sprite_bindings` table and the `GET/POST /api/sprites/styles/{style_id}` routes of earlier versions
@@ -227,8 +263,12 @@ lives in `sprite_router.py` on the main app and borrows the Remotion runtime; `/
 by the overlay renders below.
 `GET /api/sprites/{id}/preview?overlay=true&sync=1` serves the sealed player on a transparent page for the template editor;
 a sync-mode bundle has no controls or loop and seeks on `imv-preview-sync {time}` messages, reporting `sync: true` in its
-ready message. Publishing rebuilds the bundle from the sealed source in the isolated worker when the sealed one lacks
-the marker (and refreshes an existing publication on re-save); a failed rebuild still saves the asset, just without overlay preview.
+ready message. The page injects the published defaults and content box as a JSON element (`#imv-preview-host`, with
+`<`, `>`, `&` and line separators escaped); the player starts from them, merges `imv-preview-update` values over
+them (objects key by key, arrays and scalars replace) and applies an optional `host: {transform}` through
+`remotion/host-layer.tsx`, the wrapper the overlay render uses too. Such a bundle reports `host: true` when ready.
+Publishing rebuilds the bundle from the sealed source in the isolated worker when the sealed one lacks either
+marker (`imv-preview-sync`, `imv-preview-host`) and refreshes an existing publication on re-save; a failed rebuild still saves the asset, just without overlay preview.
 A refresh stages the new bundle and records its hash before replacing the copy, so a failed update keeps the
 previous copy working and publishing again retries it. Identical publish requests (same version and field
 choice) take turns, so a double click rebuilds once.
@@ -238,9 +278,11 @@ choice) take turns, so a double click rebuilds once.
 `POST /api/v1/overlay-renders` (`overlay_router.py`) renders **the Remotion clips of a request**
 into one transparent VP9 alpha WebM, uploads it to ZOS (`imv/overlay_render/{taskId}.webm`, public-read) and
 returns/notifies the public URL. Body (camelCase): `placements` (at most 100, bottom layer first, each
-`{spriteId, start, duration?}`: `start` is a finite number of seconds from 0 and `duration` a number above 0, both
-strict like the top-level `duration`; the bus reads them from the template's `remotion` tracks, so a template is
-looked up once and this module never reads the IMS template library), optional `audioUrl`, `duration` (seconds),
+`{spriteId, start, duration?, editor?}`: `start` is a finite number of seconds from 0 and `duration` a number above 0, both
+strict like the top-level `duration`; `editor` is the track's editor forwarded as is and may only hold `remotion`
+overrides and a host transform, resolved by `placement.py` against the published parameter contract (422 at
+acceptance when outside it; without it the Sprite renders its published defaults); the bus reads them from the
+template's `remotion` tracks, so a template is looked up once and this module never reads the IMS template library), optional `audioUrl`, `duration` (seconds),
 `callbackUrl`. `GET /api/v1/overlay-renders/{taskId}` returns `{taskId, status, result:{videoUrl}, error}`
 (`queued/rendering/uploading/succeeded/failed`); the callback body is `{taskId, status: succeed|failed,
 videoUrl, errorMessage}`, retried after 5/15/45 s; each attempt has a 30 s overall deadline, and a non-2xx answer, an
@@ -258,7 +300,8 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   missing (the isolated renderer is Linux-only), instead of accepting tasks that can only fail later. An empty
   `placements` (`no_placements`) or a `spriteId` that is not published (`sprite_missing`) is a 422.
 - **Layout**: every asset must share width/height/fps. Clips are stacked in request order on one canvas (the first
-  is the bottom layer); each plays for its `duration` (or its own `preview_frames / fps`), which its Sprite reads as `durationInFrames` just like in
+  is the bottom layer), each inside the shared host layer (`remotion/host-layer.tsx`) that pivots around the
+  Sprite's content box; each plays for its `duration` (or its own `preview_frames / fps`), which its Sprite reads as `durationInFrames` just like in
   its accepted preview, keeps that full length when the total cuts it (so its internal animation ranges are
   unchanged), and is dropped when it starts later. Seconds become frames with half a frame rounding up, like the
   template timing, and a clip is at most `IMV_OVERLAY_MAX_SECONDS` long. Remotion clamps a Sequence to its

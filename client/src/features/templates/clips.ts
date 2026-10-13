@@ -1,5 +1,7 @@
 /** 模板里 Remotion 片段的编辑操作：纯函数，返回新草稿且不修改输入；`tracks` 引用保持不变，所以不会重建 SDK 预览。 */
+import type { ParameterValue } from "@/components/ParameterControl";
 import type { SpriteAsset } from "@/features/sprites/model";
+import type { ClipTransform, TransformField } from "@/features/sprites/parameters";
 import type { Draft, RemotionClip } from "./model";
 
 /** 片段与 IMS 对象共用的轨道上限，与服务端和本地文件一致。 */
@@ -25,6 +27,8 @@ export function addClip(draft: Draft, asset: SpriteAsset, known: SpriteAsset[]):
     sprite_id: asset.id,
     start: 0,
     duration: asset.seconds > 0 ? asset.seconds : null,
+    parameters: {},
+    transform: {},
   };
   return { ...draft, clips: [...draft.clips, clip] };
 }
@@ -37,4 +41,28 @@ export function moveClip(draft: Draft, id: string, start: number): Draft {
 /** 移除一次摆放，其余片段的先后（叠放层级）不变。 */
 export function removeClip(draft: Draft, id: string): Draft {
   return { ...draft, clips: draft.clips.filter((clip) => clip.id !== id) };
+}
+
+/** 修改这次摆放的一个参数；undefined 表示恢复资产默认值。 */
+export function setClipParameter(draft: Draft, id: string, key: string, value: ParameterValue | undefined): Draft {
+  return { ...draft, clips: draft.clips.map((clip) => {
+    if (clip.id !== id) return clip;
+    const parameters = { ...clip.parameters };
+    if (value === undefined) delete parameters[key];
+    else parameters[key] = value;
+    return { ...clip, parameters };
+  }) };
+}
+
+/** 合并宿主变换；字段为 undefined 时恢复默认值。 */
+export function setClipTransform(draft: Draft, id: string, patch: Partial<Record<TransformField, number | undefined>>): Draft {
+  return { ...draft, clips: draft.clips.map((clip) => {
+    if (clip.id !== id) return clip;
+    const transform: ClipTransform = { ...clip.transform };
+    for (const [name, value] of Object.entries(patch) as [TransformField, number | undefined][]) {
+      if (value === undefined) delete transform[name];
+      else transform[name] = value;
+    }
+    return { ...clip, transform };
+  }) };
 }

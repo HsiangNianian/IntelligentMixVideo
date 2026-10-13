@@ -5,12 +5,14 @@ from threading import Lock
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException
+from google.protobuf.json_format import ParseError
 from sqlalchemy import JSON, Column, MetaData, String, Table, delete, select
 from sqlalchemy.dialects.mysql import DATETIME
 from sqlalchemy.exc import IntegrityError
 
 from ..database import get_engine
-from ..remotion_templates import sprite_store
+from ..remotion_templates import placement, sprite_store, sprites
+from ..remotion_templates.store import Conflict
 from .schema import Template, TemplateSave, effect_catalog
 
 # 模板元数据用于查询和约束，配置 JSON 保留完整编辑字段与可信效果快照。
@@ -72,16 +74,30 @@ def save_template(data: TemplateSave) -> Template:
     """原子创建或完整覆盖；锁定待更新行，并以数据库唯一约束处理并发重名。
 
     Remotion 片段引用的 Sprite 必须已发布，且画布尺寸与帧率一致（422）：叠加渲染要把它们叠成同一个视频，
-    不一致的模板到总线渲染时才会失败，所以在保存时拒绝。Sprite 只追加不删除，所以检查之后引用不会失效。
+    不一致的模板到总线渲染时才会失败，所以在保存时拒绝。每个片段的参数覆盖与宿主变换也按所引用 Sprite 的
+    发布参数契约检查（422）。Sprite 只追加不删除，所以检查之后引用不会失效。
     """
-    clip_ids = {str(track.sprite_id) for track in data.tracks if track.target == "remotion"}
+    clips = [track for track in data.tracks if track.target == "remotion"]
+    clip_ids = {str(track.sprite_id) for track in clips}
     if clip_ids:
-        found = sprite_store.canvases(clip_ids)
+        found = sprite_store.records(clip_ids)
         if unknown := clip_ids - found.keys():
             raise HTTPException(422, f"Remotion 资产尚未发布：{'、'.join(sorted(unknown))}")
-        if len(set(found.values())) > 1:
-            sizes = "、".join(sorted(f"{width}x{height}@{fps}" for width, height, fps in set(found.values())))
+        published = {}
+        for sprite_id, record in found.items():
+            try:
+                published[sprite_id] = sprites.published_from(record)
+            except (Conflict, ValueError, ParseError, TypeError):
+                raise HTTPException(422, f"Remotion 资产记录已损坏：{sprite_id}") from None
+        canvases = {(item.canvas.width, item.canvas.height, item.canvas.fps) for item in published.values()}
+        if len(canvases) > 1:
+            sizes = "、".join(sorted(f"{width}x{height}@{fps}" for width, height, fps in canvases))
             raise HTTPException(422, f"Remotion 资产的画布尺寸或帧率不一致，无法叠成同一个视频：{sizes}")
+        for track in clips:
+            try:
+                placement.resolve(published[str(track.sprite_id)], track.editor.remotion)
+            except ValueError as exc:
+                raise HTTPException(422, f"Remotion 片段「{track.id}」：{exc}") from None
     template_id = str(data.template_id or uuid4())
     catalog = effect_catalog()
     configuration = data.model_dump(mode="json", by_alias=True, exclude={"template_id", "name"})

@@ -60,8 +60,8 @@ test("读取与删除遵循接口契约", async () => {
 
 const spriteId = "6f1c8a52-3d94-4b7e-9a10-2c5e8d7b4f31";
 const clips: RemotionClip[] = [
-  { id: "clip-a", sprite_id: spriteId, start: 2.5, duration: 3 },
-  { id: "clip-b", sprite_id: spriteId, start: 0, duration: null },
+  { id: "clip-a", sprite_id: spriteId, start: 2.5, duration: 3, parameters: {}, transform: {} },
+  { id: "clip-b", sprite_id: spriteId, start: 0, duration: null, parameters: {}, transform: {} },
 ];
 
 // 测试含 Remotion 片段的模板（片段轨道的 editor 为空消息）可以正常读取：片段与 IMS 对象分开，且不会拖垮整个列表。

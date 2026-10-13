@@ -66,7 +66,18 @@ function toTemplate(record: TemplateRecord): Template {
     clips: wireTracks.filter((track) => track.target === "remotion").map((track): RemotionClip => {
       if (track.start === undefined || !track.spriteId)
         throw new Error("模板对象缺少必要字段");
-      return { id: track.id, sprite_id: track.spriteId, start: track.start, duration: track.duration ?? null };
+      const remotion = track.editor?.remotion;
+      const parameters: RemotionClip["parameters"] = {};
+      for (const item of remotion?.parameters ?? []) {
+        const value = item.stringListValue ? [...item.stringListValue.values] : item.stringValue ?? item.numberValue ?? item.boolValue;
+        if (value !== undefined) parameters[item.key] = value;
+      }
+      const transform: RemotionClip["transform"] = {};
+      for (const name of ["x", "y", "scale", "rotation", "opacity"] as const) {
+        const value = remotion?.transform?.[name];
+        if (value !== undefined) transform[name] = value;
+      }
+      return { id: track.id, sprite_id: track.spriteId, start: track.start, duration: track.duration ?? null, parameters, transform };
     }),
   };
 }
@@ -152,6 +163,19 @@ export function getTemplate(id: string, environment: Environment = "cloud", sign
   }, signal);
 }
 
+/** 一次摆放的 editor：只在有参数覆盖或宿主变换时设置 remotion，每个覆盖恰好一个值字段。 */
+function clipEditor(clip: RemotionClip) {
+  const parameters = Object.entries(clip.parameters).map(([key, value]) => ({
+    key,
+    ...(Array.isArray(value) ? { stringListValue: { values: value } }
+      : typeof value === "string" ? { stringValue: value }
+        : typeof value === "number" ? { numberValue: value }
+          : { boolValue: value }),
+  }));
+  const transform = Object.keys(clip.transform).length ? clip.transform : undefined;
+  return parameters.length || transform ? { remotion: { parameters, transform } } : {};
+}
+
 /**
  * 统一创建、更新及另存为；只有调用方明确传 ID 时才覆盖已有模板，本地更新携带打开时所属的库。
  * 草稿带有 Remotion 片段时可以没有 IMS 效果；否则至少需要一个效果。
@@ -179,14 +203,14 @@ export function saveTemplate(draft: Draft, id?: string, environment: Environment
           duration: track.duration ?? undefined,
           editor: track.editor,
         })),
-        // 片段只带引用和秒数起点，editor 必须是空消息而不是缺省。
+        // 片段的 editor 只带这次摆放的参数覆盖与宿主变换；没有修改时必须是空消息而不是缺省。
         ...draft.clips.map((clip) => ({
           id: clip.id,
           target: "remotion",
           startMode: "seconds",
           start: clip.start,
           duration: clip.duration ?? undefined,
-          editor: {},
+          editor: clipEditor(clip),
           spriteId: clip.sprite_id,
         })),
       ],

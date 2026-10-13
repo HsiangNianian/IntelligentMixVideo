@@ -203,8 +203,8 @@ def test_template_may_contain_only_remotion_tracks() -> None:
 @pytest.mark.parametrize(("change", "reason"), [
     ({"sprite_id": None}, "缺少 sprite_id"), ({"sprite_id": "not-a-uuid"}, "valid UUID"),
     ({"start_mode": "percent"}, "只能使用秒数起点"), ({"start": -1}, "greater than or equal to 0"),
-    ({"duration": 0}, "greater than 0"), ({"editor": {"title": ""}}, "不能携带编辑参数"),
-    ({"editor": {"vfx": "vfx/normal/unknown"}}, "不能携带编辑参数"), ({"id": "effect-a"}, "轨道 ID 重复"),
+    ({"duration": 0}, "greater than 0"), ({"editor": {"title": ""}}, "只能携带参数覆盖与宿主变换"),
+    ({"editor": {"vfx": "vfx/normal/unknown"}}, "只能携带参数覆盖与宿主变换"), ({"id": "effect-a"}, "轨道 ID 重复"),
 ], ids=["no-sprite", "bad-sprite", "percent", "negative-start", "zero-duration",
         "explicit-editor", "editor-effect", "duplicate-id"])
 def test_invalid_remotion_tracks_are_validation_errors(change: dict, reason: str) -> None:

@@ -1,16 +1,20 @@
 /** Remotion 资产核心测试：版本卡片保存到资产，以及云端模板编辑中的资产目录、片段编辑与随模板的原子保存；执行 bun run test。 */
 import { expect, test } from "bun:test";
-import { create, fromBinary, toBinary, toJson } from "@bufbuild/protobuf";
+import { create, fromBinary, toBinary, toJson, type MessageInitShape } from "@bufbuild/protobuf";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { VersionCard } from "@/features/remotion_templates/VersionCard";
+import { defaultKind, publishChoice } from "@/features/remotion_templates/spriteChoice";
 import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
 import type { RemotionClip } from "@/features/templates/model";
 import { EffectTemplateEditorSchema, SaveTemplateRequestSchema } from "@/generated/imv/template/v1/template_pb";
 import {
   ListSpritesResponseSchema,
+  OperatorAccess,
   PublishSpriteRequestSchema,
   PublishSpriteResponseSchema,
   SpriteKind,
+  SpriteParameterFormat,
+  SpriteParameterSchema,
 } from "@/generated/imv/sprite/v1/sprite_pb";
 import { Toaster } from "@/components/ui/sonner";
 import { remotionVersion } from "./remotion-fixtures";
@@ -19,8 +23,8 @@ import { protobufTemplateResponse, savedTemplate } from "./fixtures";
 
 const HEADERS = { "Content-Type": "application/x-protobuf" };
 
-/** 一个 3 秒（90 帧、30 FPS）的资产摘要。 */
-function summary(id = "sprite-1", kind = SpriteKind.VIDEO_OVERLAY, keywords = false) {
+/** 一个 3 秒（90 帧、30 FPS）的资产摘要；parameters 为发布时的参数声明。 */
+function summary(id = "sprite-1", kind = SpriteKind.VIDEO_OVERLAY, keywords = false, parameters: MessageInitShape<typeof SpriteParameterSchema>[] = []) {
   return {
     spriteId: id,
     name: "霓虹标题",
@@ -28,7 +32,21 @@ function summary(id = "sprite-1", kind = SpriteKind.VIDEO_OVERLAY, keywords = fa
     keywordsSupported: keywords,
     previewUrl: `/api/sprites/${id}/preview`,
     canvas: { width: 1080, height: 1920, fps: 30, previewFrames: 90 },
+    contentBox: { x: 90, y: 760, width: 900, height: 400 },
+    parameters,
   };
+}
+
+/** 字效资产：可改的文字、字号、颜色与关键词，只读的光晕。 */
+function textAsset(id = "sprite-t") {
+  return { ...summary(id, SpriteKind.TEXT, true, [
+    { key: "text", label: "标题文字", access: OperatorAccess.VISIBLE_EDITABLE, defaultValue: { value: { case: "stringValue", value: "标题" } }, minLength: 1, maxLength: 12 },
+    { key: "fontSize", label: "字号", access: OperatorAccess.VISIBLE_EDITABLE, defaultValue: { value: { case: "numberValue", value: 64 } }, minimum: 24, maximum: 240 },
+    { key: "color", label: "颜色", access: OperatorAccess.VISIBLE_EDITABLE, defaultValue: { value: { case: "stringValue", value: "#FFFFFF" } }, format: SpriteParameterFormat.COLOR },
+    { key: "keywords", label: "关键词", access: OperatorAccess.VISIBLE_EDITABLE, defaultValue: { value: { case: "stringListValue", value: { values: [] } } }, maxItems: 3, maxLength: 4 },
+    { key: "glow", label: "光晕", access: OperatorAccess.VISIBLE_READ_ONLY, defaultValue: { value: { case: "numberValue", value: 0.5 } } },
+    { key: "secret", label: "内部", access: OperatorAccess.INTERNAL, defaultValue: { value: { case: "numberValue", value: 1 } } },
+  ]), name: "金色标题" };
 }
 
 /** 构造二进制响应。 */
@@ -52,7 +70,11 @@ function sprites(options: { clips?: RemotionClip[]; saveStatus?: number; saveDet
       if (options.saveStatus)
         return new Response(JSON.stringify({ detail: options.saveDetail ?? "保存失败" }), { status: options.saveStatus });
       const clips = request.tracks!.tracks.filter((track) => track.target === "remotion")
-        .map((track): RemotionClip => ({ id: track.id, sprite_id: track.spriteId, start: track.start ?? 0, duration: track.duration ?? null }));
+        .map((track): RemotionClip => ({
+          id: track.id, sprite_id: track.spriteId, start: track.start ?? 0, duration: track.duration ?? null,
+          parameters: Object.fromEntries((track.editor?.remotion?.parameters ?? []).map((item) => [item.key, item.stringListValue ? [...item.stringListValue.values] : (item.stringValue ?? item.numberValue ?? item.boolValue)!])),
+          transform: { ...(track.editor?.remotion?.transform ?? {}) },
+        }));
       return protobufTemplateResponse({ ...template, clips }, "save", 201);
     }
     return protobufTemplateResponse(template, "get");
@@ -67,8 +89,8 @@ async function addTitleEffect() {
   fireEvent.click(within(assets).getAllByRole("button", { name: /^应用花字：/ })[0]);
 }
 
-// 场景：新生成的组合版本一键保存为资产，不弹窗、不要求选择；请求只带版本和视频叠加类型。
-test("版本卡片一键把成功版本保存为 Sprite 资产", async () => {
+// 场景：保存到资产时默认使用 Agent 判断的分类；字效固定 text 字段，声明了关键词参数时同时发布 keywords。
+test("版本卡片按 Agent 判断的分类把成功版本保存为 Sprite 资产", async () => {
   let request: ReturnType<typeof fromBinary<typeof PublishSpriteRequestSchema>> | undefined;
   fetchMock.mockImplementation((async (url, init) => {
     expect(new URL(String(url)).pathname).toBe("/api/sprites/publish");
@@ -77,24 +99,45 @@ test("版本卡片一键把成功版本保存为 Sprite 资产", async () => {
   }) as typeof fetch);
   const version = remotionVersion("version-2");
   version.spec.sprite_kind = "composition";
+  version.spec.sprite = { kind: "text", bindings: [{ name: "text", title: "文字" }, { name: "keywords", title: "关键词" }] };
   render(<VersionCard version={version} selected={false} latest disabled={false} previewDisabled={false} onPreview={() => {}} />);
+  expect(screen.getByRole("combobox", { name: "资产分类" }).textContent).toContain("字效");
   fireEvent.click(screen.getByRole("button", { name: "保存到资产" }));
   await screen.findByText("已保存到资产「霓虹标题」，可在云端模板的 Remotion 资产中添加。");
   expect(screen.queryByRole("dialog")).toBeNull();
-  expect(request).toMatchObject({ sourceVersionId: "version-2", kind: SpriteKind.VIDEO_OVERLAY, textProp: "", keywordsProp: "" });
+  expect(request).toMatchObject({ sourceVersionId: "version-2", kind: SpriteKind.TEXT, textProp: "text", keywordsProp: "keywords" });
 });
 
-// 场景：旧的文字版本沿用文字类型并自动取嵌套的标题字段；失败显示服务端原因，未保存参数时入口禁用。
-test("旧文字版本自动选择文字字段，失败显示原因，未保存参数时禁用", async () => {
-  fetchMock.mockResolvedValue(new Response(JSON.stringify({ detail: "accepted artifact unavailable" }), { status: 409 }));
+// 场景：用户改选的分类在版本列表刷新（同一版本换成新对象）后保留，发布请求使用它。
+test("改选的发布分类在版本对象刷新后保留", async () => {
+  let request: ReturnType<typeof fromBinary<typeof PublishSpriteRequestSchema>> | undefined;
+  fetchMock.mockImplementation((async (_url, init) => {
+    request = fromBinary(PublishSpriteRequestSchema, new Uint8Array(init!.body as Uint8Array));
+    return binary(PublishSpriteResponseSchema, create(PublishSpriteResponseSchema, { sprite: summary() }));
+  }) as typeof fetch);
   const version = remotionVersion("version-2");
-  version.spec.sprite_kind = "text";
-  version.candidate.config_schema = { properties: { title_main: { type: "object", properties: { title: { type: "string" }, fontSize: { type: "number" } } } } };
+  version.spec.sprite = { kind: "text", bindings: [{ name: "text", title: "文字" }] };
+  const { rerender } = render(<VersionCard version={version} selected={false} latest disabled={false} previewDisabled={false} onPreview={() => {}} />);
+  fireEvent.keyDown(screen.getByRole("combobox", { name: "资产分类" }), { key: "ArrowDown" });
+  fireEvent.keyDown(await screen.findByRole("option", { name: "滤镜" }), { key: "Enter" });
+  rerender(<VersionCard version={structuredClone(version)} selected={false} latest disabled={false} previewDisabled={false} onPreview={() => {}} />);
+  expect(screen.getByRole("combobox", { name: "资产分类" }).textContent).toContain("滤镜");
+  fireEvent.click(screen.getByRole("button", { name: "保存到资产" }));
+  await waitFor(() => expect(request).toMatchObject({ kind: SpriteKind.FILTER_OVERLAY, textProp: "" }));
+});
+
+// 场景：改选其他分类时不带文字字段；没有分类的旧版本默认视频特效，由服务端说明需要先在聊天中改出新版本。
+test("发布请求随所选分类变化，旧版本的拒绝原因原样显示", async () => {
+  const version = remotionVersion("version-2");
+  version.spec.sprite = { kind: "text", bindings: [{ name: "text", title: "文字" }] };
+  expect(publishChoice(version, SpriteKind.TEXT)).toEqual({ kind: SpriteKind.TEXT, textProp: "text", keywordsProp: "" });
+  expect(publishChoice(version, SpriteKind.FILTER_OVERLAY)).toEqual({ kind: SpriteKind.FILTER_OVERLAY, textProp: "", keywordsProp: "" });
+  delete version.spec.sprite;
+  expect(defaultKind(undefined)).toBe(SpriteKind.VIDEO_OVERLAY);
+  fetchMock.mockResolvedValue(new Response(JSON.stringify({ detail: "该版本由旧版生成，没有效果分类和参数契约；请在聊天中继续修改，生成新版本后再保存到资产" }), { status: 422 }));
   const { rerender } = render(<VersionCard version={version} selected={false} latest disabled={false} previewDisabled={false} onPreview={() => {}} />);
   fireEvent.click(screen.getByRole("button", { name: "保存到资产" }));
-  expect((await screen.findByText("accepted artifact unavailable")).getAttribute("role")).toBe("alert");
-  const body = fetchMock.mock.calls[0][1]!.body as Uint8Array;
-  expect(fromBinary(PublishSpriteRequestSchema, new Uint8Array(body))).toMatchObject({ kind: SpriteKind.TEXT, textProp: "title_main.title" });
+  expect((await screen.findByText(/请在聊天中继续修改/)).getAttribute("role")).toBe("alert");
   rerender(<VersionCard version={version} selected={false} latest disabled previewDisabled={false} onPreview={() => {}} />);
   expect(screen.getByRole<HTMLButtonElement>("button", { name: "保存到资产" }).disabled).toBe(true);
 });
@@ -107,7 +150,7 @@ function wireClips(request: ReturnType<typeof fromBinary<typeof SaveTemplateRequ
 
 // 场景：已有片段随模板读取后在右侧列出名称与时间；移除后随模板一次保存，请求里不再有 remotion 轨道，也没有任何绑定请求。
 test("已有片段显示在列表中，移除后随模板保存", async () => {
-  const { template, saved, posts } = sprites({ clips: [{ id: "sprite-p1", sprite_id: "sprite-1", start: 2, duration: 3 }] });
+  const { template, saved, posts } = sprites({ clips: [{ id: "sprite-p1", sprite_id: "sprite-1", start: 2, duration: 3, parameters: {}, transform: {} }] });
   render(<><TemplateWorkspace selection={{ environment: "cloud", templateId: template.template_id }} onHome={() => {}} /><Toaster /></>);
   const clips = await screen.findByRole("region", { name: "已添加 Remotion 资产" });
   const item = await within(clips).findByRole("listitem", { name: "Remotion 资产：霓虹标题" });
@@ -162,7 +205,7 @@ test("同一个资产可以添加多次", async () => {
 test("保存被拒绝时提示原因并保留修改", async () => {
   const { template, posts } = sprites({
     saveStatus: 422, saveDetail: "Remotion 资产尚未发布：sprite-1",
-    clips: [{ id: "sprite-p1", sprite_id: "sprite-1", start: 0, duration: 3 }],
+    clips: [{ id: "sprite-p1", sprite_id: "sprite-1", start: 0, duration: 3, parameters: {}, transform: {} }],
   });
   render(<TemplateWorkspace selection={{ environment: "cloud", templateId: template.template_id }} onHome={() => {}} />);
   const item = await screen.findByRole("listitem", { name: "Remotion 资产：霓虹标题" });
@@ -216,7 +259,7 @@ test("新模板的效果和 Remotion 片段在同一次请求里保存", async (
 
 // 场景：模板里的片段引用的资产已不在目录里：显示"未找到"并提示保存前移除，因为服务端会拒绝未发布的资产。
 test("目录里找不到的资产提示先移除", async () => {
-  const { template } = sprites({ clips: [{ id: "sprite-p1", sprite_id: "sprite-gone", start: 0, duration: 3 }] });
+  const { template } = sprites({ clips: [{ id: "sprite-p1", sprite_id: "sprite-gone", start: 0, duration: 3, parameters: {}, transform: {} }] });
   render(<TemplateWorkspace selection={{ environment: "cloud", templateId: template.template_id }} onHome={() => {}} />);
   const item = await screen.findByRole("listitem", { name: "Remotion 资产：未找到的资产" });
   await waitFor(() => expect(item.textContent).toContain("资产已不可用，保存前请移除"));
@@ -245,4 +288,71 @@ test("添加画布不一致的资产时提示原因", async () => {
   fireEvent.click(await within(catalog).findByRole("button", { name: "添加 Remotion 资产：横版标题" }));
   await screen.findByText(/「横版标题」的画布（1920×1080 @ 30 FPS）与已添加的「霓虹标题」（1080×1920 @ 30 FPS）不一致/);
   expect(screen.getAllByRole("listitem", { name: /^Remotion 资产：/ })).toHaveLength(1);
+});
+
+
+/** 打开带一个字效片段的已保存模板，并选中该片段。 */
+async function openTextClip(clip: Partial<RemotionClip> = {}) {
+  const fixture = sprites({
+    catalog: [textAsset(), summary("sprite-f", SpriteKind.FILTER_OVERLAY), summary("sprite-v")],
+    clips: [{ id: "clip-t", sprite_id: "sprite-t", start: 0, duration: 3, parameters: {}, transform: {}, ...clip }],
+  });
+  render(<><TemplateWorkspace selection={{ environment: "cloud", templateId: fixture.template.template_id }} onHome={() => {}} /><Toaster /></>);
+  const item = await screen.findByRole("listitem", { name: "Remotion 资产：金色标题" });
+  fireEvent.click(within(item).getByRole("button", { name: "设置 Remotion 资产：金色标题" }));
+  const inspector = await screen.findByRole("region", { name: "Remotion 资产设置" });
+  return { ...fixture, inspector };
+}
+
+// 场景：资产库按字效、滤镜、转场与视频特效分类，显示各类数量，默认打开第一个有资产的分类。
+test("Remotion 资产目录按三类分栏", async () => {
+  sprites({ catalog: [textAsset(), summary("sprite-f", SpriteKind.FILTER_OVERLAY), summary("sprite-v"), summary("sprite-x", SpriteKind.TRANSITION_OVERLAY)] });
+  render(<TemplateWorkspace selection={{ environment: "cloud", templateId: null, name: "新模板", description: "" }} onHome={() => {}} />);
+  const catalog = await screen.findByRole("region", { name: "Remotion 资产" });
+  fireEvent.click(within(catalog).getByRole("button", { name: "展开" }));
+  const tabs = await within(catalog).findByRole("radiogroup", { name: "Remotion 资产分类" });
+  expect(within(tabs).getAllByRole("radio").map((item) => item.textContent)).toEqual(["字效 1", "滤镜 1", "转场与视频特效 2"]);
+  expect(within(catalog).getByRole("button", { name: "添加 Remotion 资产：金色标题" })).toBeTruthy();
+  fireEvent.click(within(tabs).getByRole("radio", { name: /转场与视频特效/ }));
+  expect(within(catalog).getAllByRole("button", { name: "添加 Remotion 资产：霓虹标题" })).toHaveLength(2);
+  expect(within(catalog).queryByRole("button", { name: "添加 Remotion 资产：金色标题" })).toBeNull();
+});
+
+// 场景：选中片段后调整参数与位置，随模板保存为 editor.remotion；恢复默认的参数不再出现在请求里，内部参数不显示，只读参数不可改。
+test("选中片段调整参数与宿主变换并随模板保存", async () => {
+  const { saved, inspector } = await openTextClip();
+  expect(within(inspector).queryByText("内部")).toBeNull();
+  expect(within(inspector).getByLabelText<HTMLInputElement>("光晕").disabled).toBe(true);
+  expect(within(inspector).getByLabelText<HTMLInputElement>("横向位置").value).toBe("540");
+  fireEvent.change(within(inspector).getByLabelText("标题文字"), { target: { value: "新品上市" } });
+  fireEvent.change(within(inspector).getByLabelText("字号"), { target: { value: "96" } });
+  fireEvent.change(within(inspector).getByLabelText("关键词"), { target: { value: "新品" } });
+  fireEvent.click(within(inspector).getByRole("button", { name: "恢复默认：字号" }));
+  fireEvent.change(within(inspector).getByLabelText("缩放"), { target: { value: "2" } });
+  fireEvent.change(within(inspector).getByLabelText("不透明度"), { target: { value: "0.5" } });
+  expect(within(screen.getByRole("listitem", { name: "Remotion 资产：金色标题" })).getByText(/已调整参数/)).toBeTruthy();
+  fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
+  await waitFor(() => expect(saved).toHaveLength(1));
+  const [clip] = wireClips(saved[0]);
+  expect(toJson(EffectTemplateEditorSchema, clip.editor!)).toEqual({ remotion: {
+    parameters: [{ key: "text", stringValue: "新品上市" }, { key: "keywords", stringListValue: { values: ["新品"] } }],
+    transform: { scale: 2, opacity: 0.5 },
+  } });
+});
+
+// 场景：已保存的覆盖随模板读回，控件显示覆盖值；滤镜只提供强度。
+test("读回片段的覆盖值，滤镜只调整强度", async () => {
+  const { inspector } = await openTextClip({ parameters: { text: "已保存" }, transform: { x: 300, y: 500 } });
+  expect(within(inspector).getByLabelText<HTMLInputElement>("标题文字").value).toBe("已保存");
+  expect(within(inspector).getByLabelText<HTMLInputElement>("横向位置").value).toBe("300");
+  fireEvent.click(within(inspector).getByRole("button", { name: "关闭资产设置" }));
+  const catalog = screen.getByRole("region", { name: "Remotion 资产" });
+  fireEvent.click(within(catalog).getByRole("button", { name: "展开" }));
+  fireEvent.click(await within(catalog).findByRole("radio", { name: /滤镜/ }));
+  fireEvent.click(within(catalog).getByRole("button", { name: "添加 Remotion 资产：霓虹标题" }));
+  const added = (await screen.findAllByRole("button", { name: "设置 Remotion 资产：霓虹标题" }))[0];
+  fireEvent.click(added);
+  const filter = await screen.findByRole("region", { name: "Remotion 资产设置" });
+  expect(within(filter).getByLabelText("强度")).toBeTruthy();
+  expect(within(filter).queryByLabelText("横向位置")).toBeNull();
 });

@@ -75,6 +75,18 @@ def find(source_version_id: str, kind: int, text_prop: str, keywords_prop: str) 
         )).scalar()
 
 
+def find_any(source_version_id: str, kind: int) -> dict | None:
+    """Return the oldest publication of this source and kind whatever its text/keyword fields, or None.
+
+    Only the identifying columns are sorted (sorting whole JSON rows exhausts MySQL's sort buffer).
+    """
+    with initialize_schema().connect() as connection:
+        sprite_id = connection.execute(select(sprites.c.sprite_id).where(
+            sprites.c.source_version_id == source_version_id, sprites.c.kind == kind,
+        ).order_by(sprites.c.published_at, sprites.c.sprite_id).limit(1)).scalar()
+    return get(sprite_id) if sprite_id is not None else None
+
+
 def insert(
     *, sprite_id: str, source_version_id: str, kind: int, text_prop: str, keywords_prop: str,
     published_at: datetime, data: dict,
@@ -94,11 +106,10 @@ def replace_data(sprite_id: str, data: dict) -> None:
         connection.execute(update(sprites).where(sprites.c.sprite_id == sprite_id).values(data=data))
 
 
-def canvases(sprite_ids: Iterable[str]) -> dict[str, tuple[int, int, int]]:
-    """Return (width, height, fps) of each given Sprite ID that has a publication; unknown IDs are left out.
+def records(sprite_ids: Iterable[str]) -> dict[str, object]:
+    """Return the stored publication JSON of each given Sprite ID that has one; unknown IDs are left out.
 
-    The canvas is what an overlay render needs to be identical across the clips it stacks. A damaged record
-    without a readable canvas counts as (0, 0, 0), which differs from every real canvas.
+    A template save reads them to check the clips' shared canvas and every placement's overrides.
     """
     wanted = set(sprite_ids)
     if not wanted:
@@ -107,9 +118,4 @@ def canvases(sprite_ids: Iterable[str]) -> dict[str, tuple[int, int, int]]:
         rows = connection.execute(
             select(sprites.c.sprite_id, sprites.c.data).where(sprites.c.sprite_id.in_(wanted))
         ).all()
-    result = {}
-    for row in rows:
-        canvas = row.data.get("canvas") if isinstance(row.data, dict) else None
-        canvas = canvas if isinstance(canvas, dict) else {}
-        result[row.sprite_id] = tuple(canvas.get(name, 0) for name in ("width", "height", "fps"))
-    return result
+    return {row.sprite_id: row.data for row in rows}

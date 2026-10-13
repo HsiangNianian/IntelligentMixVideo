@@ -3,6 +3,7 @@
 路由仍调用真实 schema/store；仅适配排序规则和唯一约束错误码，不模拟 MySQL 行锁或建库。
 """
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -122,13 +123,54 @@ def remotion_track(track_id: str = "clip", **changes) -> dict:
             "start": 1, "duration": None, "editor": {}, **changes}
 
 
-def seed_sprite(sprite_id: str = SPRITE_ID, canvas: tuple[int, int, int] = (1080, 1920, 30)) -> str:
-    """在当前共享库（替身或真实 MySQL）里放一条已发布 Sprite 记录并返回其 ID，供保存引用它的模板；画布为（宽、高、帧率）。需先启用 template_db 或真实库。"""
+def published_sprite(sprite_id: str = SPRITE_ID, canvas: tuple[int, int, int] = (1080, 1920, 30), kind: int = 1):
+    """一条完整的发布内容（`PublishedSprite`），画布为（宽、高、帧率）。
+
+    可编辑的 text（1～40 字）、fontSize（24～240）、fontWeight（400/700）、color（颜色）、keywords（最多 20 项）、
+    整数 particleCount（1～200），一个只读的 glow，以及 (90, 760, 900, 400) 的内容区域。
+    """
+    from generated.imv.sprite.v1 import sprite_pb2 as sprite_pb
+
     width, height, fps = canvas
+    schema = {"type": "object", "properties": {
+        "text": {"type": "string", "minLength": 1, "maxLength": 40},
+        "fontSize": {"type": "number", "minimum": 24, "maximum": 240},
+        "fontWeight": {"type": "integer", "enum": [400, 700]},
+        "color": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$"},
+        "keywords": {"type": "array", "items": {"type": "string", "maxLength": 100}, "maxItems": 20},
+        "glow": {"type": "number", "minimum": 0, "maximum": 1},
+        "particleCount": {"type": "integer", "minimum": 1, "maximum": 200},
+    }, "additionalProperties": False}
+    defaults = {"text": "标题", "fontSize": 64, "fontWeight": 400, "color": "#FFFFFF", "keywords": [], "glow": 0.5, "particleCount": 20}
+    editable = sprite_pb.OPERATOR_ACCESS_VISIBLE_EDITABLE
+    number = lambda value: sprite_pb.ScalarValue(number_value=value)
+    sprite = sprite_pb.PublishedSprite(
+        sprite_id=sprite_id, name="标题", kind=kind,
+        canvas=sprite_pb.SpriteCanvas(width=width, height=height, fps=fps, preview_frames=90),
+        tsx_code="", code_sha256=hashlib.sha256(b"").hexdigest(),
+        config_schema_json=json.dumps(schema), default_config_json=json.dumps(defaults, ensure_ascii=False),
+        content_box=sprite_pb.SpriteBox(x=90, y=760, width=900, height=400),
+        parameters=[
+            sprite_pb.SpriteParameter(key="text", label="文字", access=editable, default_value=sprite_pb.ScalarValue(string_value="标题"), min_length=1, max_length=40),
+            sprite_pb.SpriteParameter(key="fontSize", label="字号", access=editable, default_value=number(64), minimum=24, maximum=240),
+            sprite_pb.SpriteParameter(key="fontWeight", label="字重", access=editable, default_value=number(400), allowed_values=[number(400), number(700)]),
+            sprite_pb.SpriteParameter(key="color", label="颜色", access=editable, default_value=sprite_pb.ScalarValue(string_value="#FFFFFF"), format=sprite_pb.SPRITE_PARAMETER_FORMAT_COLOR),
+            sprite_pb.SpriteParameter(key="keywords", label="关键词", access=editable, default_value=sprite_pb.ScalarValue(string_list_value=sprite_pb.StringList()), max_items=20, max_length=100),
+            sprite_pb.SpriteParameter(key="glow", label="光晕", access=sprite_pb.OPERATOR_ACCESS_VISIBLE_READ_ONLY, default_value=number(0.5)),
+            sprite_pb.SpriteParameter(key="particleCount", label="粒子数", access=editable, default_value=number(20), minimum=1, maximum=200, format=sprite_pb.SPRITE_PARAMETER_FORMAT_INTEGER),
+        ],
+    )
+    return sprite
+
+
+def seed_sprite(sprite_id: str = SPRITE_ID, canvas: tuple[int, int, int] = (1080, 1920, 30), kind: int = 1) -> str:
+    """在当前共享库（替身或真实 MySQL）里放一条 `published_sprite` 发布记录并返回其 ID，供保存引用它的模板。需先启用 template_db 或真实库。"""
+    from google.protobuf.json_format import MessageToDict
+
+    sprite = published_sprite(sprite_id, canvas, kind)
     sprite_store.insert(
-        sprite_id=sprite_id, source_version_id=str(uuid4()), kind=1, text_prop="", keywords_prop="",
-        published_at=datetime.now(UTC),
-        data={"sprite_id": sprite_id, "canvas": {"width": width, "height": height, "fps": fps, "preview_frames": 90}},
+        sprite_id=sprite_id, source_version_id=str(uuid4()), kind=kind, text_prop="", keywords_prop="",
+        published_at=datetime.now(UTC), data=MessageToDict(sprite, preserving_proto_field_name=True),
     )
     return sprite_id
 

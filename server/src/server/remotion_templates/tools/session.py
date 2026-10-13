@@ -30,6 +30,7 @@ from .contracts import (
     SpriteRecord,
     SpriteCreateOutput,
 )
+from ..categories import agent_message, category_problems, parameter_problems
 from .catalog_store import CatalogStore
 from .registry import ToolFault
 from .schema import merge_parameters, validate_component_contract, validate_parameters
@@ -212,6 +213,9 @@ class ToolSession:
         summary = {
             "description": sprite.description,
             "composition": sprite.composition.model_dump(mode="json"),
+            # Re-composing an edit must keep the category and the operator parameters the accepted base exposed.
+            **({"kind": sprite.kind} if sprite.kind is not None else {}),
+            "parameters": [item.model_dump(mode="json") for item in sprite.bindings],
             "instances": [
                 {
                     "instance_id": item.instance_id,
@@ -470,6 +474,11 @@ class ToolSession:
         )
         if not validation.passed:
             raise _validation_fault("Sprite code validation failed.", validation)
+        problems = category_problems(sprite.kind, sprite.parameter_schema, {item.name for item in sprite.bindings})
+        if problems:
+            raise ToolFault("CATEGORY_PARAMETERS_MISSING", agent_message(sprite.kind, problems), details={
+                "missing": [{"name": item.name, "reason": item.reason, **({"schema": item.rule.example} if item.rule else {})} for item in problems],
+            })
         await self._require_visible_video(sprite)
         record = SpriteRecord(
             sprite_id=uuid4().hex,
@@ -555,8 +564,13 @@ class ToolSession:
                 layout=instance.layout,
                 timing=instance.timing,
             ))
+        bindings = [item.model_dump(mode="json") for item in request.parameters]
         # 打包器是同步子进程；放到线程里执行，避免阻塞同进程的 SSE 与其它请求。
-        code, schema, defaults = await asyncio.to_thread(compose_source, resolved)
+        code, schema, defaults = await asyncio.to_thread(compose_source, resolved, bindings)
+        for index, binding in enumerate(request.parameters):
+            reason = parameter_problems(schema["properties"][binding.name])
+            if reason:
+                raise ToolFault("INVALID_ARGUMENT", f"Parameter {binding.name} {reason}: give the bound Preset prop a bounded schema", field=f"/parameters/{index}")
         sprite = SpriteDraft(
             description=request.description,
             code=code,
@@ -564,6 +578,8 @@ class ToolSession:
             default_parameters=defaults,
             composition={"width": 1080, "height": 1920, "fps": 30, "duration_frames": duration},
             instances=resolved,
+            kind=request.kind,
+            bindings=bindings,
         )
         draft_id = "sprite_draft_" + uuid4().hex[:12]
         self.sprite_drafts[draft_id] = sprite
@@ -572,7 +588,9 @@ class ToolSession:
             digest=_digest(sprite),
             description=sprite.description,
             composition=sprite.composition,
+            kind=request.kind,
             instances=summaries,
+            parameter_names=[item.name for item in request.parameters],
             default_parameters=defaults,
             code_bytes=len(code.encode()),
         )

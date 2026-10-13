@@ -307,7 +307,7 @@ test("重置文字实例保留轨道", () => {
 // 场景：Remotion 片段与 IMS 对象共用 100 条上限，片段占满后不能再添加对象。
 test("片段与对象共用轨道上限", () => {
   const draft = sampleDraft();
-  draft.clips = Array.from({ length: 98 }, (_, index) => ({ id: `clip-${index}`, sprite_id: "sprite", start: 0, duration: null }));
+  draft.clips = Array.from({ length: 98 }, (_, index) => ({ id: `clip-${index}`, sprite_id: "sprite", start: 0, duration: null, parameters: {}, transform: {} }));
   expect(() => addTrack(draft, vfx, "title")).toThrow("轨道数量不能超过 100");
   draft.clips.pop();
   expect(addTrack(draft, vfx, "title").draft.tracks).toHaveLength(3);

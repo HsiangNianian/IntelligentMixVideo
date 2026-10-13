@@ -21,6 +21,50 @@ message EffectAsset {
   string preview_url = 6;
 }
 
+// Remotion 片段关键词等字符串列表参数的值。
+message RemotionStringList {
+  // 按声明顺序保存的字符串；空列表是有效值。
+  repeated string values = 1;
+}
+
+// Remotion 片段一次摆放的参数覆盖；恰好设置一个值字段，类型须与所引用 Sprite 的参数默认值一致。
+// 与 imv.sprite.v1.SpriteParameterOverride 含义相同；本包不引用 Sprite 包，以免生成代码跨包依赖。
+message RemotionParameterOverride {
+  // 已发布 Sprite 的可编辑参数 key。
+  string key = 1;
+  // 字符串参数的值。
+  optional string string_value = 2;
+  // 有限数字参数的值。
+  optional double number_value = 3;
+  // 开关参数的值。
+  optional bool bool_value = 4;
+  // 字符串列表参数（关键词）的值。
+  RemotionStringList string_list_value = 5;
+}
+
+// 宿主对整个 Sprite 的变换；未提供的字段取默认值：x、y 为内容区域中心，scale 为 1，rotation 为 0，opacity 为 1。
+// 字效和视频特效可设置全部字段；滤镜和转场只能设置 opacity（强度）。
+message RemotionTransform {
+  // 内容区域中心的横坐标，单位为画布像素，范围为 0～画布宽度。
+  optional double x = 1;
+  // 内容区域中心的纵坐标，单位为画布像素，范围为 0～画布高度。
+  optional double y = 2;
+  // 绕内容区域中心的缩放倍数，范围为 0.25～4。
+  optional double scale = 3;
+  // 绕内容区域中心的顺时针旋转角度，单位为度，范围为 -180～180。
+  optional double rotation = 4;
+  // 整体不透明度，范围为 0～1。
+  optional double opacity = 5;
+}
+
+// Remotion 片段这一次摆放的参数；未覆盖的参数沿用 Sprite 发布时的默认值。
+message RemotionTrackEditor {
+  // 参数覆盖，key 不能重复。
+  repeated RemotionParameterOverride parameters = 1;
+  // 宿主变换；未提供表示全部取默认值。
+  RemotionTransform transform = 2;
+}
+
 // 单个画面对象的编辑参数，未提供的字段由业务模块补齐默认值。
 message EffectTemplateEditor {
   // 顶部标题的示例文字。
@@ -115,6 +159,8 @@ message EffectTemplateEditor {
   int32 title_keyword_size = 45;
   // 底部字幕关键词的局部字号，0 表示保持字幕字号，其他值为 12～300 像素。
   int32 subtitle_keyword_size = 46;
+  // Remotion 片段的参数覆盖与宿主变换；只有 target 为 remotion 的轨道可以设置，且该轨道只能设置此字段。
+  RemotionTrackEditor remotion = 47;
 }
 
 // 画面对象及其时间规则。
@@ -130,7 +176,7 @@ message EffectTrack {
   // 固定持续时间，单位为秒；未提供时表示持续到成片结束，转场对象必须提供；
   // remotion 片段未提供时使用所引用 Sprite 自身的时长。
   optional double duration = 5;
-  // 当前对象的文字、位置、效果选择和动画时长；remotion 片段必须提供空消息。
+  // 当前对象的文字、位置、效果选择和动画时长；remotion 片段只能设置 remotion 字段，可以是空消息。
   EffectTemplateEditor editor = 6;
   // remotion 片段引用的已发布 Sprite ID；其他对象必须留空。
   string sprite_id = 7;

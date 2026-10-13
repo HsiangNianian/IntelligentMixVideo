@@ -24,6 +24,12 @@ class OperatorAccess(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     OPERATOR_ACCESS_VISIBLE_READ_ONLY: _ClassVar[OperatorAccess]
     OPERATOR_ACCESS_VISIBLE_EDITABLE: _ClassVar[OperatorAccess]
     OPERATOR_ACCESS_INTERNAL: _ClassVar[OperatorAccess]
+
+class SpriteParameterFormat(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    SPRITE_PARAMETER_FORMAT_UNSPECIFIED: _ClassVar[SpriteParameterFormat]
+    SPRITE_PARAMETER_FORMAT_COLOR: _ClassVar[SpriteParameterFormat]
+    SPRITE_PARAMETER_FORMAT_INTEGER: _ClassVar[SpriteParameterFormat]
 SPRITE_KIND_UNSPECIFIED: SpriteKind
 SPRITE_KIND_TEXT: SpriteKind
 SPRITE_KIND_FILTER_OVERLAY: SpriteKind
@@ -33,19 +39,30 @@ OPERATOR_ACCESS_UNSPECIFIED: OperatorAccess
 OPERATOR_ACCESS_VISIBLE_READ_ONLY: OperatorAccess
 OPERATOR_ACCESS_VISIBLE_EDITABLE: OperatorAccess
 OPERATOR_ACCESS_INTERNAL: OperatorAccess
+SPRITE_PARAMETER_FORMAT_UNSPECIFIED: SpriteParameterFormat
+SPRITE_PARAMETER_FORMAT_COLOR: SpriteParameterFormat
+SPRITE_PARAMETER_FORMAT_INTEGER: SpriteParameterFormat
+
+class StringList(_message.Message):
+    __slots__ = ("values",)
+    VALUES_FIELD_NUMBER: _ClassVar[int]
+    values: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, values: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class ScalarValue(_message.Message):
-    __slots__ = ("string_value", "number_value", "bool_value")
+    __slots__ = ("string_value", "number_value", "bool_value", "string_list_value")
     STRING_VALUE_FIELD_NUMBER: _ClassVar[int]
     NUMBER_VALUE_FIELD_NUMBER: _ClassVar[int]
     BOOL_VALUE_FIELD_NUMBER: _ClassVar[int]
+    STRING_LIST_VALUE_FIELD_NUMBER: _ClassVar[int]
     string_value: str
     number_value: float
     bool_value: bool
-    def __init__(self, string_value: _Optional[str] = ..., number_value: _Optional[float] = ..., bool_value: _Optional[bool] = ...) -> None: ...
+    string_list_value: StringList
+    def __init__(self, string_value: _Optional[str] = ..., number_value: _Optional[float] = ..., bool_value: _Optional[bool] = ..., string_list_value: _Optional[_Union[StringList, _Mapping]] = ...) -> None: ...
 
 class SpriteParameter(_message.Message):
-    __slots__ = ("key", "label", "access", "default_value", "minimum", "maximum", "allowed_values")
+    __slots__ = ("key", "label", "access", "default_value", "minimum", "maximum", "allowed_values", "format", "min_length", "max_length", "max_items")
     KEY_FIELD_NUMBER: _ClassVar[int]
     LABEL_FIELD_NUMBER: _ClassVar[int]
     ACCESS_FIELD_NUMBER: _ClassVar[int]
@@ -53,6 +70,10 @@ class SpriteParameter(_message.Message):
     MINIMUM_FIELD_NUMBER: _ClassVar[int]
     MAXIMUM_FIELD_NUMBER: _ClassVar[int]
     ALLOWED_VALUES_FIELD_NUMBER: _ClassVar[int]
+    FORMAT_FIELD_NUMBER: _ClassVar[int]
+    MIN_LENGTH_FIELD_NUMBER: _ClassVar[int]
+    MAX_LENGTH_FIELD_NUMBER: _ClassVar[int]
+    MAX_ITEMS_FIELD_NUMBER: _ClassVar[int]
     key: str
     label: str
     access: OperatorAccess
@@ -60,7 +81,23 @@ class SpriteParameter(_message.Message):
     minimum: float
     maximum: float
     allowed_values: _containers.RepeatedCompositeFieldContainer[ScalarValue]
-    def __init__(self, key: _Optional[str] = ..., label: _Optional[str] = ..., access: _Optional[_Union[OperatorAccess, str]] = ..., default_value: _Optional[_Union[ScalarValue, _Mapping]] = ..., minimum: _Optional[float] = ..., maximum: _Optional[float] = ..., allowed_values: _Optional[_Iterable[_Union[ScalarValue, _Mapping]]] = ...) -> None: ...
+    format: SpriteParameterFormat
+    min_length: int
+    max_length: int
+    max_items: int
+    def __init__(self, key: _Optional[str] = ..., label: _Optional[str] = ..., access: _Optional[_Union[OperatorAccess, str]] = ..., default_value: _Optional[_Union[ScalarValue, _Mapping]] = ..., minimum: _Optional[float] = ..., maximum: _Optional[float] = ..., allowed_values: _Optional[_Iterable[_Union[ScalarValue, _Mapping]]] = ..., format: _Optional[_Union[SpriteParameterFormat, str]] = ..., min_length: _Optional[int] = ..., max_length: _Optional[int] = ..., max_items: _Optional[int] = ...) -> None: ...
+
+class SpriteBox(_message.Message):
+    __slots__ = ("x", "y", "width", "height")
+    X_FIELD_NUMBER: _ClassVar[int]
+    Y_FIELD_NUMBER: _ClassVar[int]
+    WIDTH_FIELD_NUMBER: _ClassVar[int]
+    HEIGHT_FIELD_NUMBER: _ClassVar[int]
+    x: float
+    y: float
+    width: float
+    height: float
+    def __init__(self, x: _Optional[float] = ..., y: _Optional[float] = ..., width: _Optional[float] = ..., height: _Optional[float] = ...) -> None: ...
 
 class SpriteCanvas(_message.Message):
     __slots__ = ("width", "height", "fps", "preview_frames")
@@ -75,7 +112,7 @@ class SpriteCanvas(_message.Message):
     def __init__(self, width: _Optional[int] = ..., height: _Optional[int] = ..., fps: _Optional[int] = ..., preview_frames: _Optional[int] = ...) -> None: ...
 
 class PublishedSprite(_message.Message):
-    __slots__ = ("sprite_id", "source_version_id", "name", "kind", "canvas", "tsx_code", "code_sha256", "parameters", "text_prop", "keywords_prop", "published_at", "preview_sha256", "config_schema_json", "default_config_json", "animation_frames", "static_frame", "bubble_asset_url", "bubble_asset_width", "bubble_asset_height")
+    __slots__ = ("sprite_id", "source_version_id", "name", "kind", "canvas", "tsx_code", "code_sha256", "parameters", "text_prop", "keywords_prop", "published_at", "preview_sha256", "config_schema_json", "default_config_json", "animation_frames", "static_frame", "bubble_asset_url", "bubble_asset_width", "bubble_asset_height", "content_box")
     SPRITE_ID_FIELD_NUMBER: _ClassVar[int]
     SOURCE_VERSION_ID_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
@@ -95,6 +132,7 @@ class PublishedSprite(_message.Message):
     BUBBLE_ASSET_URL_FIELD_NUMBER: _ClassVar[int]
     BUBBLE_ASSET_WIDTH_FIELD_NUMBER: _ClassVar[int]
     BUBBLE_ASSET_HEIGHT_FIELD_NUMBER: _ClassVar[int]
+    CONTENT_BOX_FIELD_NUMBER: _ClassVar[int]
     sprite_id: str
     source_version_id: str
     name: str
@@ -114,10 +152,11 @@ class PublishedSprite(_message.Message):
     bubble_asset_url: str
     bubble_asset_width: int
     bubble_asset_height: int
-    def __init__(self, sprite_id: _Optional[str] = ..., source_version_id: _Optional[str] = ..., name: _Optional[str] = ..., kind: _Optional[_Union[SpriteKind, str]] = ..., canvas: _Optional[_Union[SpriteCanvas, _Mapping]] = ..., tsx_code: _Optional[str] = ..., code_sha256: _Optional[str] = ..., parameters: _Optional[_Iterable[_Union[SpriteParameter, _Mapping]]] = ..., text_prop: _Optional[str] = ..., keywords_prop: _Optional[str] = ..., published_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., preview_sha256: _Optional[str] = ..., config_schema_json: _Optional[str] = ..., default_config_json: _Optional[str] = ..., animation_frames: _Optional[int] = ..., static_frame: _Optional[int] = ..., bubble_asset_url: _Optional[str] = ..., bubble_asset_width: _Optional[int] = ..., bubble_asset_height: _Optional[int] = ...) -> None: ...
+    content_box: SpriteBox
+    def __init__(self, sprite_id: _Optional[str] = ..., source_version_id: _Optional[str] = ..., name: _Optional[str] = ..., kind: _Optional[_Union[SpriteKind, str]] = ..., canvas: _Optional[_Union[SpriteCanvas, _Mapping]] = ..., tsx_code: _Optional[str] = ..., code_sha256: _Optional[str] = ..., parameters: _Optional[_Iterable[_Union[SpriteParameter, _Mapping]]] = ..., text_prop: _Optional[str] = ..., keywords_prop: _Optional[str] = ..., published_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., preview_sha256: _Optional[str] = ..., config_schema_json: _Optional[str] = ..., default_config_json: _Optional[str] = ..., animation_frames: _Optional[int] = ..., static_frame: _Optional[int] = ..., bubble_asset_url: _Optional[str] = ..., bubble_asset_width: _Optional[int] = ..., bubble_asset_height: _Optional[int] = ..., content_box: _Optional[_Union[SpriteBox, _Mapping]] = ...) -> None: ...
 
 class SpriteSummary(_message.Message):
-    __slots__ = ("sprite_id", "name", "kind", "canvas", "parameters", "source_version_id", "preview_url", "keywords_supported")
+    __slots__ = ("sprite_id", "name", "kind", "canvas", "parameters", "source_version_id", "preview_url", "keywords_supported", "content_box")
     SPRITE_ID_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
     KIND_FIELD_NUMBER: _ClassVar[int]
@@ -126,6 +165,7 @@ class SpriteSummary(_message.Message):
     SOURCE_VERSION_ID_FIELD_NUMBER: _ClassVar[int]
     PREVIEW_URL_FIELD_NUMBER: _ClassVar[int]
     KEYWORDS_SUPPORTED_FIELD_NUMBER: _ClassVar[int]
+    CONTENT_BOX_FIELD_NUMBER: _ClassVar[int]
     sprite_id: str
     name: str
     kind: SpriteKind
@@ -134,7 +174,8 @@ class SpriteSummary(_message.Message):
     source_version_id: str
     preview_url: str
     keywords_supported: bool
-    def __init__(self, sprite_id: _Optional[str] = ..., name: _Optional[str] = ..., kind: _Optional[_Union[SpriteKind, str]] = ..., canvas: _Optional[_Union[SpriteCanvas, _Mapping]] = ..., parameters: _Optional[_Iterable[_Union[SpriteParameter, _Mapping]]] = ..., source_version_id: _Optional[str] = ..., preview_url: _Optional[str] = ..., keywords_supported: _Optional[bool] = ...) -> None: ...
+    content_box: SpriteBox
+    def __init__(self, sprite_id: _Optional[str] = ..., name: _Optional[str] = ..., kind: _Optional[_Union[SpriteKind, str]] = ..., canvas: _Optional[_Union[SpriteCanvas, _Mapping]] = ..., parameters: _Optional[_Iterable[_Union[SpriteParameter, _Mapping]]] = ..., source_version_id: _Optional[str] = ..., preview_url: _Optional[str] = ..., keywords_supported: _Optional[bool] = ..., content_box: _Optional[_Union[SpriteBox, _Mapping]] = ...) -> None: ...
 
 class ListSpritesResponse(_message.Message):
     __slots__ = ("sprites",)
