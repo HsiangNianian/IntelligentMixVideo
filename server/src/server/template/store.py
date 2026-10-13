@@ -113,10 +113,16 @@ def get_template(template_id: UUID) -> Template:
 
 
 def check_slot(track: EffectTrack, kind: int) -> None:
-    """片段占用的模板对象须与 Sprite 分类相符：字效作用于标题或字幕，转场占用视频交界处，其他分类两者都不设置（422）。"""
+    """片段占用的模板对象须与 Sprite 分类相符：字效作用于标题或字幕，转场占用视频交界处，其他分类两者都不设置（422）。
+
+    作用于文字的字效由该文字对象提供文字与关键词（合成时由总线填入），所以不能再覆盖这两个参数（422）。
+    """
     if kind == sprite_pb.SPRITE_KIND_TEXT:
         if track.text_target is None:
             raise HTTPException(422, f"Remotion 字效「{track.id}」须作用于标题或底部字幕")
+        overrides = {item.key for item in track.editor.remotion.parameters} if track.editor.remotion else set()
+        if bound := sorted(overrides & {sprites.TEXT_PROP, sprites.KEYWORDS_PROP}):
+            raise HTTPException(422, f"Remotion 字效「{track.id}」的文字与关键词取自所作用的对象，不能覆盖 {'、'.join(bound)}")
     elif track.text_target is not None:
         raise HTTPException(422, f"Remotion 片段「{track.id}」不是字效，不能作用于文字")
     if kind == sprite_pb.SPRITE_KIND_TRANSITION_OVERLAY:
@@ -131,7 +137,7 @@ def save_template(data: TemplateSave) -> Template:
 
     Remotion 片段引用的 Sprite 必须已发布，且画布尺寸与帧率一致（422）：叠加渲染要把它们叠成同一个视频，
     不一致的模板到总线渲染时才会失败，所以在保存时拒绝。每个片段的参数覆盖与宿主变换也按所引用 Sprite 的
-    发布参数契约检查（422）。片段按分类占用模板对象：字效作用于标题或字幕、转场占用视频交界处，
+    发布参数契约检查（422）。片段按分类占用模板对象：字效作用于标题或字幕（不再覆盖文字与关键词）、转场占用视频交界处，
     Remotion 视频特效与 IMS VFX 合计最多一个（422）。Sprite 只追加不删除，所以检查之后引用不会失效。
     """
     # 创建和更新都检查必需文字对象，检查通过后才访问资产及模板数据库。

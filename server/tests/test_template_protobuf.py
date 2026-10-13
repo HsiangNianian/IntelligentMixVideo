@@ -362,9 +362,12 @@ def test_remotion_tracks_must_share_one_canvas(client: TestClient, template_payl
 @pytest.mark.parametrize(("kind", "slot", "reason"), [
     (1, {}, "须作用于标题或底部字幕"), (2, {"text_target": "title"}, "不是字效，不能作用于文字"),
     (4, {}, "须指定视频交界处"), (3, {"transition_boundary": 1}, "不是转场，不能占用视频交界处"),
-], ids=["text-unbound", "filter-on-text", "transition-unbound", "effect-on-boundary"])
+    (1, {"text_target": "title", "editor": {"remotion": {"parameters": [{"key": "text", "stringValue": "旧文字"}]}}}, "不能覆盖 text"),
+    (1, {"text_target": "subtitle", "editor": {"remotion": {"parameters": [{"key": "keywords", "stringListValue": {"values": ["新品"]}}]}}},
+     "不能覆盖 keywords"),
+], ids=["text-unbound", "filter-on-text", "transition-unbound", "effect-on-boundary", "bound-text-override", "bound-keywords-override"])
 def test_remotion_slot_must_match_sprite_kind(client: TestClient, template_payload: dict, kind: int, slot: dict, reason: str) -> None:
-    """片段按 Sprite 分类占用模板对象：字效作用于文字、转场占用交界处，其他分类两者都不占用；不符时 422 且不写库。"""
+    """片段按 Sprite 分类占用模板对象：字效作用于文字且不覆盖文字与关键词、转场占用交界处，其他分类两者都不占用；不符时 422 且不写库。"""
     seed_sprite(kind=kind)
     response = _post(client, {**template_payload, "tracks": [*template_payload["tracks"], remotion_track("clip-a", **slot)]})
     assert response.status_code == 422 and reason in response.json()["detail"]
@@ -451,7 +454,8 @@ def test_template_protobuf_requires_tracks_message(client: TestClient) -> None:
 
 def test_remotion_overrides_and_transform_roundtrip_through_protobuf(client: TestClient, template_payload: dict, template_db: Engine) -> None:
     """片段的参数覆盖与宿主变换随模板保存、读回不变，库里的配置以驼峰 JSON 存在 editor.remotion 下。"""
-    seed_sprite()
+    # 视频特效不作用于文字，可以覆盖 text 与 keywords；字效的这两个参数取自所作用的对象。
+    seed_sprite(kind=3)
     remotion = {
         "parameters": [
             {"key": "text", "stringValue": "新品上市"},
@@ -460,7 +464,7 @@ def test_remotion_overrides_and_transform_roundtrip_through_protobuf(client: Tes
         ],
         "transform": {"x": 540, "y": 300, "scale": 1.5, "opacity": 0.8},
     }
-    created = _post(client, {**template_payload, "tracks": [*template_payload["tracks"], remotion_track("clip-a", editor={"remotion": remotion}, text_target="title")]})
+    created = _post(client, {**template_payload, "tracks": [*template_payload["tracks"], remotion_track("clip-a", editor={"remotion": remotion})]})
     assert created.status_code == 201
     record = pb.SaveTemplateResponse.FromString(created.content).template
     clip = record.tracks.tracks[2].editor.remotion
