@@ -182,8 +182,8 @@ export function RemotionWorkspace() {
                 </p>
               ) : undefined
             }
-            onSend={(text, image) => {
-              if (!locked && !session.dirty) session.send(text, image);
+            onSend={(text, image, frames) => {
+              if (!locked && !session.dirty) session.send(text, image, frames);
             }}
             onStop={() => void session.stop()}
           />

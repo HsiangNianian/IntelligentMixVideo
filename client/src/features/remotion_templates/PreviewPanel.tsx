@@ -22,7 +22,9 @@ export function PreviewPanel({
   const [link, setLink] = useState("");
   const [background, setBackground] = useState("");
   const [error, setError] = useState("");
-  const [ready, setReady] = useState(false);
+  // 已就绪的通道而不是布尔值：切换版本时 iframe 若在清空渲染前就回报就绪，false→true 会被合并成未变化，
+  // 参数不再下发，预览锁到超时；每次加载的通道都不同，就绪必然触发一次下发。
+  const [ready, setReady] = useState("");
   const [rendering, setRendering] = useState(false);
   const [reload, setReload] = useState(0);
   const frame = useRef<HTMLIFrameElement>(null);
@@ -31,7 +33,6 @@ export function PreviewPanel({
   const timer = useRef<number | undefined>(undefined);
   const blocking = useRef(false);
   const rendered = useRef(false);
-  const readyChannel = useRef("");
   const previousBackground = useRef("");
   /** 每次加载都有超时出口；播放本身不触发锁定。 */
   function begin(lock = true) {
@@ -61,8 +62,7 @@ export function PreviewPanel({
     const token = crypto.randomUUID();
     channel.current = token;
     rendered.current = false;
-    readyChannel.current = "";
-    setReady(false);
+    setReady("");
     setError("");
     begin();
     function receive(event: MessageEvent) {
@@ -72,8 +72,7 @@ export function PreviewPanel({
       )
         return;
       if (event.data.type === "imv-preview-ready") {
-        readyChannel.current = token;
-        setReady(true);
+        setReady(token);
         setError("");
       } else if (
         event.data.type === "imv-preview-rendered" &&
@@ -107,7 +106,7 @@ export function PreviewPanel({
     };
   }, [version?.id, reload, onBusyChange]);
   useEffect(() => {
-    if (ready && readyChannel.current === channel.current) {
+    if (ready && ready === channel.current) {
       // 参数草稿更新不遮挡画面或锁控件；首帧与背景加载仍保持原有互斥。
       begin(
         blocking.current ||

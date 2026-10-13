@@ -6,10 +6,13 @@ import os
 import shutil
 import subprocess
 from copy import deepcopy
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
 
+from server.remotion_templates.boundary import samples
+from server.remotion_templates.categories import KEYWORD_COLOR
 from server.remotion_templates.renderer import Renderer
 from server.remotion_templates.settings import Settings
 from server.remotion_templates.tool_validation import ToolValidator, ValidationUnavailable
@@ -530,3 +533,62 @@ def test_real_browser_reports_an_error_thrown_while_loading_as_a_failed_default_
     assert report.passed is False
     assert checks["default_render"].status == "failed" and "Cannot read properties of null" in checks["default_render"].message
     assert checks["configured_render"].status == "not_run"
+
+
+# 一个带全部关键词参数的字效：命中关键词处按样式渲染；FAIL 为 true 时只在「有命中且样式开启」时抛错。
+KEYWORD_TITLE = """import React from "react";
+import { AbsoluteFill } from "remotion";
+type Props = { text: string; keywords: string[]; keywordBold: boolean; keywordItalic: boolean; keywordUnderline: boolean;
+  keywordStrikeout: boolean; keywordColor: string; keywordSize: number };
+export default function Title(p: Props) {
+  const word = p.keywords.find((item) => item !== "" && p.text.includes(item));
+  const at = word === undefined ? -1 : p.text.indexOf(word);
+  const styled = p.keywordBold || p.keywordItalic || p.keywordUnderline || p.keywordStrikeout || p.keywordColor !== "" || p.keywordSize !== 0;
+  if (FAIL && at >= 0 && styled) throw new Error("styled keyword hit");
+  const lines = [p.keywordUnderline ? "underline" : "", p.keywordStrikeout ? "line-through" : ""].filter(Boolean).join(" ");
+  return <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
+    <div style={{ fontSize: 64, color: "#FFFFFF" }}>
+      {at < 0 ? p.text : <>{p.text.slice(0, at)}<span style={{ fontWeight: p.keywordBold ? 700 : 400, fontStyle: p.keywordItalic ? "italic" : "normal",
+        textDecoration: lines || "none", color: p.keywordColor || undefined, fontSize: p.keywordSize || undefined }}>{word}</span>{p.text.slice(at + word!.length)}</>}
+    </div>
+  </AbsoluteFill>;
+}
+"""
+KEYWORD_SCHEMA = {"type": "object", "properties": {
+    "text": {"type": "string", "minLength": 1, "maxLength": 12},
+    "keywords": {"type": "array", "items": {"type": "string", "maxLength": 4}, "maxItems": 3},
+    "keywordBold": {"type": "boolean"}, "keywordItalic": {"type": "boolean"},
+    "keywordUnderline": {"type": "boolean"}, "keywordStrikeout": {"type": "boolean"},
+    "keywordColor": {"type": "string", "pattern": KEYWORD_COLOR},
+    "keywordSize": {"type": "integer", "minimum": 0, "maximum": 300},
+}, "additionalProperties": False}
+KEYWORD_DEFAULTS = {"text": "今日灵感", "keywords": [], "keywordBold": False, "keywordItalic": False, "keywordUnderline": False,
+                    "keywordStrikeout": False, "keywordColor": "", "keywordSize": 0}
+
+
+def sample_checks(tmp_path: Path, fail: bool) -> dict[str, str]:
+    """Render the publish-time boundary samples of the keyword title in the real sandboxed browser."""
+    settings = Settings(_env_file=None, data_dir=tmp_path, **BROWSER)
+    code = KEYWORD_TITLE.replace("FAIL", "true" if fail else "false")
+    drawn = samples(KEYWORD_SCHEMA, KEYWORD_DEFAULTS, list(KEYWORD_DEFAULTS), "text", (1080, 1920))
+    checks = asyncio.run(ToolValidator(Renderer(settings), tmp_path).validate_samples(
+        ComponentDefinition(code=code, parameter_schema=KEYWORD_SCHEMA, default_parameters=KEYWORD_DEFAULTS),
+        {"width": 1080, "height": 1920, "fps": 30, "duration_frames": 30},
+        {"x": 90, "y": 760, "width": 900, "height": 400},
+        [asdict(item) for item in drawn],
+    ))
+    return {item.name: item.status for item in checks}
+
+
+@needs_node
+@needs_browser
+def test_real_boundary_samples_render_a_styled_keyword_hit(tmp_path):
+    """审计复现：low 只有关键词、high 只有样式，组件在「命中且样式开启」时崩溃也能发布；keywords:styled 样本现在真实渲染这条路径并拦下它。"""
+    assert sample_checks(tmp_path / "ok", fail=False) == {
+        "sample:defaults": "passed", "sample:low": "passed", "sample:high": "passed", "sample:keywords:styled": "passed",
+    }
+    broken = sample_checks(tmp_path / "broken", fail=True)
+    assert broken["sample:keywords:styled"] == "failed"
+    assert {name: status for name, status in broken.items() if name != "sample:keywords:styled"} == {
+        "sample:defaults": "passed", "sample:low": "passed", "sample:high": "passed",
+    }

@@ -1,7 +1,7 @@
 """发布时边界样本的生成：默认值、两端取值、逐个参数的回退、中间枚举值和各分类的宿主变换。"""
 
 from server.remotion_templates.boundary import FILLER, samples, unsampled
-from server.remotion_templates.categories import HEX_COLOR
+from server.remotion_templates.categories import HEX_COLOR, KEYWORD_COLOR
 
 SCHEMA = {
     "type": "object",
@@ -76,3 +76,35 @@ def test_identical_samples_are_rendered_once():
     """没有可推的参数时，两端样本与默认值相同的部分去重。"""
     found = samples({"type": "object", "properties": {}}, {}, [], "filter_overlay", (1080, 1920))
     assert [item.name for item in found] == ["defaults", "low", "high"]
+
+
+def test_keyword_style_parameters_are_sampled_at_their_inherit_and_maximum_values():
+    """关键词颜色两端为空串（沿用）与白色，字号为 0（沿用）与 300；另有 keywords:styled 样本让关键词全部命中且样式全开。"""
+    schema = {"type": "object", "properties": {
+        "text": {"type": "string", "minLength": 1, "maxLength": 12},
+        "keywords": {"type": "array", "items": {"type": "string", "maxLength": 4}, "maxItems": 3},
+        "keywordBold": {"type": "boolean"},
+        "keywordColor": {"type": "string", "pattern": KEYWORD_COLOR},
+        "keywordSize": {"type": "integer", "minimum": 0, "maximum": 300},
+    }, "additionalProperties": False}
+    defaults = {"text": "标题", "keywords": [], "keywordBold": False, "keywordColor": "", "keywordSize": 0}
+    found = by_name(samples(schema, defaults, list(defaults), "text", (1080, 1920)))
+    assert list(found) == ["defaults", "low", "high", "keywords:styled"]
+    assert found["low"].values == {"text": FILLER * 12, "keywords": [FILLER] * 3, "keywordBold": False, "keywordColor": "", "keywordSize": 0}
+    assert found["high"].values == {"text": FILLER, "keywords": [], "keywordBold": True, "keywordColor": "#FFFFFF", "keywordSize": 300}
+    # Neither end renders a styled hit, so this sample does: every slot hits the longest text with every style on.
+    assert found["keywords:styled"].values == {"text": FILLER * 12, "keywords": [FILLER] * 3, "keywordBold": True, "keywordColor": "#FFFFFF", "keywordSize": 300}
+    assert found["keywords:styled"].transform == found["low"].transform
+    assert unsampled(schema, defaults, list(defaults), list(found.values())) == []
+
+
+def test_only_sprites_with_keywords_and_styles_get_the_styled_sample():
+    """没有关键词列表或没有样式参数时不额外渲染。"""
+    for names in (["text", "keywordBold"], ["text", "keywords"]):
+        schema = {"type": "object", "properties": {
+            "text": {"type": "string", "minLength": 1, "maxLength": 12},
+            "keywords": {"type": "array", "items": {"type": "string", "maxLength": 4}, "maxItems": 3},
+            "keywordBold": {"type": "boolean"},
+        }, "additionalProperties": False}
+        defaults = {"text": "标题", "keywords": [], "keywordBold": False}
+        assert "keywords:styled" not in by_name(samples(schema, defaults, names, "text", (1080, 1920)))
