@@ -152,10 +152,12 @@ canvas, text lines shorter than 20px (the smallest `fontSize` is 24) and text of
 slice of it, or some of it hidden) are problems; text in a node without a box (`display: none`), with
 `visibility: hidden` or faded out to opacity 0 is not shown. Each line is measured as its line box (at least as tall
 as its font size), not as the font's whole ascent and descent, so a line in a mask exactly one line tall is not
-clipped (with Noto Sans CJK the ascent and descent span 1.448em and stick out of a `lineHeight` 1 or 1.2 line). The `text_fit` check fails only when every frame that
-shows the text has a problem, so a reveal mask or slide-in that hides text for a few frames is fine, while a
-fixed-size box that clips long text on every frame is not; it also fails when the filler text is never visibly
-rendered. A failure is refused with `CODE_VALIDATION_FAILED` (`text_fit: ...` with the clipped box or
+clipped (with Noto Sans CJK the ascent and descent span 1.448em and stick out of a `lineHeight` 1 or 1.2 line).
+The text is judged on the frames that show it at its full size (by the area of its lines, within 2% of the
+largest): entrance and exit animations show it smaller, scaled down or typed in, and must not hide a layout that
+clips it while it holds. The `text_fit` check fails when every one of those frames has a problem, so a reveal mask
+or slide-in that moves the full-size text out of view for a few frames is fine, while a fixed-size box that clips
+long text whenever it is shown at full size is not; it also fails when the filler text is never visibly rendered. A failure is refused with `CODE_VALIDATION_FAILED` (`text_fit: ...` with the clipped box or
 size and the fix: wrap the text inside a bounded width, no fixed-height `overflow: hidden` box, shrink the font
 for long text, never below 24px; text that cannot fit even then means the declared `maxLength` is too large and must be lowered, and input beyond it is refused by the parameter Schema). It is a geometric measurement, not a visual review; like the transparency
 measurement it only applies to generation, and already published versions are not re-checked.
@@ -364,7 +366,8 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   previewed length) and measures the text boxes the same way `sprite.create` does (cut off by an `overflow:
   hidden|clip` ancestor, outside the canvas once the placement's host transform moves, scales and rotates it, lines
   under 20px tall, or only part of the text shown). Placements that differ only in length or transform are measured
-  separately; the transform's opacity does not move text and is ignored. Text that already fits keeps its `fontSize`; otherwise the
+  separately; the transform's opacity does not move text and is ignored. Like `text_fit`, a size fits when the text is
+  shown in full on one of the frames that show it at its full size. Text that already fits keeps its `fontSize`; otherwise the
   host lowers `fontSize` to the largest whole size, down to the published minimum, at which it is shown in full
   (binary search; the size is logged, the template and the sealed source are untouched). Text that does not fit even
   at the minimum fails the task with `text_too_long` and a fixed message (the callback's `errorMessage`) so the bus can

@@ -344,6 +344,8 @@ const TEXT_FILLER = "测";
 const MIN_LINE_HEIGHT = 20;
 /** Sub-pixel tolerance when comparing a text rectangle with a box. */
 const FIT_TOLERANCE = 2;
+/** Frames whose text area is at least this share of the largest one show the text at its full size. */
+const FULL_SIZE_SHARE = 0.98;
 
 /**
  * The host transform of one placement as `host-layer.tsx` applies it: the content box centre (cx, cy) is moved to
@@ -366,7 +368,8 @@ function hostPlacement(box, transform = {}) {
  * (`display: none`), with `visibility: hidden` or faded out to opacity 0 is not shown. A line is measured as its line
  * box (at least its em box), not as the font's whole ascent and descent: with a lineHeight below about 1.45 the
  * latter sticks out of a box that holds the line exactly, although no glyph is cut. Returns `null` when no part of
- * the text is shown at this frame (not yet shown), and an empty list when all of it is shown and fits.
+ * the text is shown at this frame (not yet shown), otherwise the `problems` (empty when all of it is shown and fits)
+ * and the `area` of the shown lines, which tells the frames that show the text at its full size.
  */
 function textFitProblems(page, needle, placement) {
   return page.evaluate((needle, minLine, tolerance, placement) => {
@@ -414,6 +417,7 @@ function textFitProblems(page, needle, placement) {
     const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT);
     const problems = new Set();
     let joined = "";
+    let area = 0;
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
       const shown = compact(node.nodeValue);
       if (!shown || !(wanted.includes(shown) || shown.includes(wanted)) || !node.parentElement || !painted(node.parentElement)) continue;
@@ -427,6 +431,7 @@ function textFitProblems(page, needle, placement) {
         top: Math.min(...lines.map((rect) => rect.top)), bottom: Math.max(...lines.map((rect) => rect.bottom)),
       };
       joined += shown;
+      area += lines.reduce((sum, rect) => sum + (rect.right - rect.left) * rect.height, 0);
       const smallest = Math.min(...lines.map((rect) => rect.height));
       if (smallest < minLine) problems.add(`its lines are only ${Math.round(smallest)}px tall, too small to read`);
       const corners = lines.flatMap((rect) => [place(rect.left, rect.top), place(rect.right, rect.top), place(rect.left, rect.bottom), place(rect.right, rect.bottom)]);
@@ -446,7 +451,7 @@ function textFitProblems(page, needle, placement) {
     }
     if (!joined) return null;
     if (!joined.includes(wanted)) problems.add(`only part of it is rendered, not all ${wanted.length} characters`);
-    return [...problems];
+    return { problems: [...problems], area };
   }, needle, MIN_LINE_HEIGHT, FIT_TOLERANCE, placement);
 }
 
@@ -455,29 +460,32 @@ const UNPLACED = Object.freeze({ cx: 0, cy: 0, x: 0, y: 0, scale: 1, rotation: 0
 
 /**
  * Measure the text `needle` on `frames` (default: the sampled frames of the composition) of the currently mounted
- * values, placed on the canvas by `placement`. `shown` counts the frames that display it and `failing` those where
- * it is clipped, off the canvas or too small; `error` is a runtime error thrown at `frame`. A fit problem that
- * persists on every frame that shows the text is real, while a reveal mask or slide-in that hides the text for a
- * few frames leaves a frame without one.
+ * values, placed on the canvas by `placement`. `shown` counts the frames that display it; `error` is a runtime error
+ * thrown at `frame`. The text is judged on the frames that show it at its full size (`full`, by the area of its
+ * lines): entrance and exit animations show it smaller, scaled down or typed in, and would hide a layout that clips
+ * it while it holds. It `fits` when one of those frames has no problem, so a reveal mask or slide-in that moves the
+ * full-size text out of view for a few frames is fine; `problems` are those of the full-size frames otherwise.
  */
 async function measureTextFit(page, needle, frames = sampleFrames(request.composition.duration_frames), placement = UNPLACED) {
   const verdicts = [];
   for (const frame of frames) {
     await page.evaluate((target) => window.__imvTool.setFrame(target), frame);
     const error = await page.evaluate(() => window.__imvRuntimeError ?? null);
-    if (error) return { error, frame, shown: verdicts.length, failing: 0, problems: [] };
-    const problems = await textFitProblems(page, needle, placement);
-    if (problems) verdicts.push(problems);
+    if (error) return { error, frame, shown: verdicts.length, full: 0, fits: false, problems: [] };
+    const verdict = await textFitProblems(page, needle, placement);
+    if (verdict) verdicts.push(verdict);
   }
-  const failing = verdicts.filter((problems) => problems.length);
-  return { error: null, shown: verdicts.length, failing: failing.length, problems: [...new Set(failing.flat())] };
+  const largest = Math.max(0, ...verdicts.map((verdict) => verdict.area));
+  const full = verdicts.filter((verdict) => verdict.area >= largest * FULL_SIZE_SHARE);
+  const fits = full.some((verdict) => !verdict.problems.length);
+  return { error: null, shown: verdicts.length, full: full.length, fits, problems: fits ? [] : [...new Set(full.flatMap((verdict) => verdict.problems))] };
 }
 
 /**
  * Mechanical check that a text effect shows its longest allowed text in full: the text parameter is filled to its
- * declared maxLength and the sampled frames are measured. The check fails only when every frame that shows the
- * text has a problem (a text cut to a slice of itself is one), and when the text is never visibly rendered. This is
- * a geometric measurement of the text boxes, not a visual review of how the result looks.
+ * declared maxLength and the sampled frames are measured. The check fails when every frame that shows the text at
+ * its full size has a problem (a text cut to a slice of itself is one), and when the text is never visibly rendered.
+ * This is a geometric measurement of the text boxes, not a visual review of how the result looks.
  */
 async function textFitCheck(page) {
   const composition = request.composition;
@@ -498,8 +506,8 @@ async function textFitCheck(page) {
     return { name: "text_fit", status: "failed", message: `The component throws at frame ${measured.frame} with the text filled to maxLength ${length}: ${measured.error}`.slice(0, 6000) };
   if (!measured.shown)
     return { name: "text_fit", status: "failed", message: `With text filled to its maxLength (${length} characters) the component never renders any of that text visibly. The text parameter must be displayed as given.` };
-  if (measured.failing < measured.shown)
-    return { name: "text_fit", status: "passed", message: `The ${length}-character text is shown in full in ${measured.shown - measured.failing} of ${measured.shown} frames that display it.` };
+  if (measured.fits)
+    return { name: "text_fit", status: "passed", message: `The ${length}-character text is shown in full (measured on the ${measured.full} of ${measured.shown} frames that show it at its full size).` };
   return {
     name: "text_fit",
     status: "failed",
@@ -528,7 +536,7 @@ async function fitTexts(page, loadError) {
     await page.evaluate((frames) => window.__imvTool.setDuration(frames), item.length);
     await page.evaluate((values) => window.__imvTool.setSample(values, {}), { ...item.values, [item.size_key]: size });
     const measured = await measureTextFit(page, item.text, item.frames, hostPlacement(box, item.transform));
-    return measured.error !== null || measured.shown === 0 || measured.failing < measured.shown;
+    return measured.error !== null || measured.shown === 0 || measured.fits;
   };
   result.fits = [];
   for (const item of request.fit) {

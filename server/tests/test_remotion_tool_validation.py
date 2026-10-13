@@ -788,6 +788,25 @@ export default function Title(props: { text: string; fontSize: number }) {
   );
 }
 """
+# 972x360 的固定框裁掉长文字，只在最后两帧把文字缩到 30% 退场（20 字时 768px 宽，仍可读）；以及先逐字打出、后半段完整显示的打字机效果。
+SCALE_EXIT_TEXT = """import React from "react";
+import { AbsoluteFill, useCurrentFrame, useVideoConfig } from "remotion";
+export default function Title(props: { text: string; fontSize: number }) {
+  const frame = useCurrentFrame();
+  const { durationInFrames } = useVideoConfig();
+  const scale = frame >= durationInFrames - 2 ? 0.3 : 1;
+  return (
+    <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
+      <div style={{ width: 972, height: 360, overflow: "hidden" }}>
+        <span style={{ display: "inline-block", fontSize: props.fontSize, whiteSpace: "nowrap", color: "#fff", transformOrigin: "left center", transform: `scale(${scale})` }}>{props.text}</span>
+      </div>
+    </AbsoluteFill>
+  );
+}
+"""
+TYPEWRITER_TEXT = FITTING_TEXT.replace(
+    "{props.text}</div>", "{props.text.slice(0, Math.ceil((props.text.length * (useCurrentFrame() + 1)) / 15))}</div>",
+).replace('import { AbsoluteFill } from "remotion";', 'import { AbsoluteFill, useCurrentFrame } from "remotion";')
 IGNORES_TEXT = """import React from "react";
 import { AbsoluteFill } from "remotion";
 export default function Title(props: { text: string; fontSize: number }) {
@@ -825,12 +844,15 @@ def browser_text_validate(tmp_path: Path, code: str, max_length: int):
     (HIDDEN_TEXT, 100, False, "never renders"),
     (PER_GLYPH_TEXT, 100, True, ""),
     (LINE_MASK_TEXT, 4, True, ""),
+    (SCALE_EXIT_TEXT, 20, False, "overflow"),
+    (TYPEWRITER_TEXT, 100, True, ""),
 ], ids=["fixed-box-clips-long-title", "wrapped-and-shrunk", "reveal-mask-only-early", "ignores-text", "sliced-text", "display-none", "one-span-per-glyph",
-        "line-height-1-mask"])
+        "line-height-1-mask", "clipped-until-scaled-out", "typewriter"])
 def test_real_browser_requires_the_longest_text_to_be_shown_in_full(tmp_path, code, max_length, passed, reason):
     """issue #119：972x360 的 overflow hidden 固定框在 100 字标题下被裁切而被拒；按字数缩小字号并换行的写法、只在开头几帧被遮罩挡住的文字通过；
     不显示 text 的组件被拒。只渲染一段截断的文字、或文字在 display: none 里没有排版框，都不算完整显示；逐字拆成 span 的完整文字仍算。
-    lineHeight 1 的一行文字放在恰好一行高的遮罩里不算裁切：按行框而不是字体的上下伸部度量。"""
+    lineHeight 1 的一行文字放在恰好一行高的遮罩里不算裁切：按行框而不是字体的上下伸部度量。
+    文字只在退场缩小时才放得下仍被拒：按文字显示最大的帧判断；逐字打出的文字按完整显示的帧判断，通过。"""
     report = browser_text_validate(tmp_path, code, max_length)
     check = next(item for item in report.checks if item.name == "text_fit")
     assert (check.status == "passed") is passed, check.message
