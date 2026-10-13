@@ -706,7 +706,8 @@ export type SpriteRenderInput = Message<"imv.sprite.v1.SpriteRenderInput"> & {
   /**
    * content：字幕的切片，按起点排列、互不重叠，都在效果时长之内；与 text 二选一。
    * 每个切片用同一个 Sprite 在自己的区间里显示一次，Sprite 读到的 durationInFrames 是切片的帧数，
-   * 切片之间与之外的帧保持透明。
+   * 切片之间与之外的帧保持透明。显示不足 1.5 秒的字效（短字幕或短标题）不播出入场：按发布的预览长度
+   * 定格在其中间帧，只显示自己的帧数，避免闪烁。
    *
    * @generated from field: repeated imv.sprite.v1.SpriteCue cues = 12;
    */
@@ -749,7 +750,7 @@ export type SpriteCue = Message<"imv.sprite.v1.SpriteCue"> & {
   startFrame: bigint;
 
   /**
-   * 切片结束帧（不含）；切片至少 0.2 秒（30 FPS 时 6 帧）。
+   * 切片结束帧（不含），必须晚于开始帧。
    *
    * @generated from field: uint64 end_frame = 4;
    */

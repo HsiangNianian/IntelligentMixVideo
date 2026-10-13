@@ -266,7 +266,8 @@ message SpriteRenderInput {
   SpriteHostTransform transform = 11;
   // content：字幕的切片，按起点排列、互不重叠，都在效果时长之内；与 text 二选一。
   // 每个切片用同一个 Sprite 在自己的区间里显示一次，Sprite 读到的 durationInFrames 是切片的帧数，
-  // 切片之间与之外的帧保持透明。
+  // 切片之间与之外的帧保持透明。显示不足 1.5 秒的字效（短字幕或短标题）不播出入场：按发布的预览长度
+  // 定格在其中间帧，只显示自己的帧数，避免闪烁。
   repeated SpriteCue cues = 12;
 }
 
@@ -279,7 +280,7 @@ message SpriteCue {
   repeated string keywords = 2;
   // 切片开始帧（含），从效果起点算起。
   uint64 start_frame = 3;
-  // 切片结束帧（不含）；切片至少 0.2 秒（30 FPS 时 6 帧）。
+  // 切片结束帧（不含），必须晚于开始帧。
   uint64 end_frame = 4;
 }
 

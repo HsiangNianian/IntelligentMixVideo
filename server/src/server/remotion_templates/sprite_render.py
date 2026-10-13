@@ -2,7 +2,9 @@
 
 The Sprite's style is its accepted code plus the editable style overrides and host transform of the placement.
 The content is either one `text` with `keywords` shown for the whole effect (a title) or timed `cues` (subtitles,
-each shown once in its own frames, so the Sprite reads the cue's length as `durationInFrames`). The time is
+each shown once in its own frames, so the Sprite reads the cue's length as `durationInFrames`). A text shown for
+less than `STATIC_TEXT_SECONDS` plays no entrance or exit: the Sprite runs at its previewed length, frozen on the
+middle frame, for the text's frames, which avoids flicker and code that cannot animate in so few frames. The time is
 `effect_total_frames`, 0.5 to 120 seconds, whatever length the user previewed when generating the Sprite.
 `plan_sprite_render` checks the request and places the instances on the whole effect; `render_sprite` renders it
 in chunks of at most 30 seconds in the overlay worker, each instance keeping its full length across chunks so
@@ -24,12 +26,15 @@ from ..template.schema import RemotionTrackEditor
 from .overlay_render import Overlay, OverlayError, probe_overlay, render_overlay, to_frames
 from .placement import resolve
 from .renderer import Renderer
-from .tool_validation import MAX_RENDER_SECONDS, MIN_CUE_SECONDS, MIN_RENDER_SECONDS
+from .tool_validation import MAX_RENDER_SECONDS, MIN_RENDER_SECONDS
 
 # The worker renders at most this much in one run; longer effects are rendered chunk by chunk and joined.
 CHUNK_SECONDS = 30
 # Joining copies the encoded chunks without re-encoding, so it is quick even for the longest effect.
 JOIN_SECONDS = 120
+# A text effect shown for less than this holds still instead of animating in and out: an entrance plus an exit
+# usually take 0.6 to 1.3 seconds, so a shorter subtitle would hardly be fully visible and would flicker.
+STATIC_TEXT_SECONDS = 1.5
 
 
 def _editor(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite, text: str, keywords: list[str]) -> RemotionTrackEditor:
@@ -61,8 +66,8 @@ def _editor(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite, text: str
 def _contents(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite, total: int) -> list[tuple[int, int, str, list[str]]]:
     """The shown contents as (start frame, frames, text, keywords) on the whole effect.
 
-    A text effect takes `text` for the whole effect or ordered, non-overlapping `cues` of at least
-    `MIN_CUE_SECONDS`; other kinds take no content and render once over the whole effect.
+    A text effect takes `text` for the whole effect or ordered, non-overlapping, non-empty `cues`; other kinds take
+    no content and render once over the whole effect.
     """
     if sprite.kind != pb.SPRITE_KIND_TEXT:
         if message.text or message.keywords or message.cues:
@@ -75,15 +80,14 @@ def _contents(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite, total: 
     else:
         if message.keywords:
             raise OverlayError("content_invalid", "使用 cues 时关键词放在各切片里")
-        shortest = max(1, to_frames(MIN_CUE_SECONDS, sprite.canvas.fps))
         contents, end = [], 0
         for index, cue in enumerate(message.cues, start=1):
             if not cue.text:
                 raise OverlayError("content_invalid", f"第 {index} 个切片没有文字")
             if cue.start_frame < end:
                 raise OverlayError("content_invalid", f"第 {index} 个切片与前一个重叠或没有按起点排列")
-            if cue.end_frame < cue.start_frame + shortest:
-                raise OverlayError("content_invalid", f"第 {index} 个切片短于 {MIN_CUE_SECONDS:g} 秒")
+            if cue.end_frame <= cue.start_frame:
+                raise OverlayError("content_invalid", f"第 {index} 个切片的结束帧必须晚于开始帧")
             if cue.end_frame > total:
                 raise OverlayError("content_invalid", f"第 {index} 个切片超出了效果时长")
             contents.append((cue.start_frame, cue.end_frame - cue.start_frame, cue.text, list(cue.keywords)))
@@ -96,7 +100,9 @@ def _contents(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite, total: 
 def plan_sprite_render(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite) -> Overlay:
     """Check the canvas, time, content and style, and place one instance per content on the whole effect.
 
-    Every refusal is an `OverlayError` with a stable code; acceptance turns it into a 422.
+    A text shown for less than `STATIC_TEXT_SECONDS` gets a `hold`: its instance lasts the previewed length the
+    Sprite was accepted at and is frozen on its middle frame for the text's frames. Every refusal is an
+    `OverlayError` with a stable code; acceptance turns it into a 422.
     """
     canvas = sprite.canvas
     fps = canvas.fps
@@ -107,14 +113,24 @@ def plan_sprite_render(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite
         raise OverlayError("duration_invalid", f"效果时长不能短于 {MIN_RENDER_SECONDS:g} 秒")
     if total > to_frames(MAX_RENDER_SECONDS, fps):
         raise OverlayError("duration_too_long", f"效果时长不能超过 {MAX_RENDER_SECONDS:g} 秒")
+    static = to_frames(STATIC_TEXT_SECONDS, fps) if sprite.kind == pb.SPRITE_KIND_TEXT else 0
+    preview = max(1, canvas.preview_frames)
     instances = []
     for start, length, text, keywords in _contents(message, sprite, total):
         try:
             config, host = resolve(sprite, _editor(message, sprite, text, keywords))
         except ValueError as exc:
             raise OverlayError("placement_invalid", f"样式或内容不符合发布契约：{exc}") from None
-        instances.append({"code": sprite.tsx_code, "config": config, "host": host, "start_frame": start, "duration_frames": length})
+        instance = {"code": sprite.tsx_code, "config": config, "host": host, "start_frame": start, "duration_frames": length}
+        if length < static:
+            instance.update(duration_frames=preview, hold={"frame": preview // 2, "frames": length})
+        instances.append(instance)
     return Overlay(canvas.width, canvas.height, fps, total, instances)
+
+
+def shown_frames(instance: dict) -> int:
+    """How many frames an instance is visible: its held frames, otherwise its whole length."""
+    return instance["hold"]["frames"] if "hold" in instance else instance["duration_frames"]
 
 
 def chunks(overlay: Overlay) -> list[Overlay]:
@@ -122,7 +138,7 @@ def chunks(overlay: Overlay) -> list[Overlay]:
 
     Each chunk keeps the instances that show in it at their full length, shifted to the chunk's first frame (an
     instance that began earlier starts before it), so an animation continues across chunks instead of restarting.
-    A chunk without any instance renders transparent frames.
+    A held instance shows only its `hold` frames. A chunk without any instance renders transparent frames.
     """
     size = max(1, to_frames(CHUNK_SECONDS, overlay.fps))
     parts = []
@@ -131,7 +147,7 @@ def chunks(overlay: Overlay) -> list[Overlay]:
         shown = [
             {**item, "start_frame": item["start_frame"] - first}
             for item in overlay.instances
-            if item["start_frame"] < first + count and item["start_frame"] + item["duration_frames"] > first
+            if item["start_frame"] < first + count and item["start_frame"] + shown_frames(item) > first
         ]
         parts.append(replace(overlay, frames=count, instances=shown))
     return parts

@@ -274,8 +274,11 @@ lives in `sprite_router.py` on the main app and borrows the Remotion runtime.
 `POST /api/sprites/render` (`imv.sprite.v1.SpriteRenderInput`, Protobuf) renders one Sprite for the bus as one complete
 video. A Sprite is a fixed style (the sealed code plus `resolved_style` and `transform`, the placement's editor) with
 its content: one `text` with `keywords` for the whole effect (a title), or the bus's subtitle `cues` (text, keywords
-and a frame range each; ordered, non-overlapping, at least 0.2 s), each shown once by the same Sprite in its own
-frames so the Sprite reads the cue's length as `durationInFrames`, transparent in between. The time is
+and a frame range each; ordered, non-overlapping, at least one frame), each shown once by the same Sprite in its own
+frames so the Sprite reads the cue's length as `durationInFrames`, transparent in between. A text effect shown for
+less than 1.5 s (`STATIC_TEXT_SECONDS`, most subtitle cues) plays no entrance or exit: its instance lasts the
+published preview length, is frozen on the middle frame (`Freeze`) and shows only its own frames, so short
+subtitles neither flicker nor run animation code in fewer frames than it was accepted at. The time is
 `effect_total_frames`, 0.5 to 120 seconds and the output's frame count, whatever length was previewed when the Sprite
 was generated. `sprite_render.py` renders the effect in chunks of at most 30 seconds in the overlay worker (each
 instance keeps its full length across chunks, so animations continue) and joins them with `ffmpeg -c copy`, then

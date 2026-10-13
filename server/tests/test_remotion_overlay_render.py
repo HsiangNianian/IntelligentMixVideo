@@ -1070,37 +1070,54 @@ def test_sprite_render_shows_one_text_for_the_whole_effect() -> None:
     assert instance["config"]["fontWeight"] == 700 and instance["host"]["transform"] == {"x": 540, "scale": 2}
 
 
-# 场景：字幕按总线切分的时间逐条显示：每个切片一个实例，Sprite 读到的时长是切片长度，切片之间透明。
+# 场景：字幕按总线切分的时间逐条显示：每个切片一个实例、各带文字与关键词；切片之间透明。
+# 不短于 1.5 秒（45 帧）的切片按自身长度播放，Sprite 读到的时长就是切片长度；更短的切片不播出入场，
+# 按资产的预览长度（90 帧）挂载并定格在中间帧，只显示切片自己的帧数。
 def test_sprite_render_shows_each_subtitle_cue_in_its_own_frames() -> None:
-    """三条切片各自带文字与关键词，实例的起点与长度就是切片的帧区间，配置不互相影响。"""
-    message = render_input(text="", keywords=[], effect_total_frames=120,
-                           cues=[cue("看新闻了吗", 7, 25), cue("AI把数学圈", 52, 74, "数学圈"), cue("搞炸了", 74, 88)])
+    """60 帧的切片按自身长度播放；18 帧与 14 帧的切片定格在预览第 45 帧，各显示 18、14 帧。"""
+    message = render_input(text="", keywords=[], effect_total_frames=200,
+                           cues=[cue("看新闻了吗", 7, 25), cue("AI把数学圈", 52, 112, "数学圈"), cue("搞炸了", 112, 126)])
     overlay = plan_sprite_render(message, T)
-    assert overlay.frames == 120
-    assert [(item["start_frame"], item["duration_frames"], item["config"]["text"], item["config"]["keywords"]) for item in overlay.instances] == [
-        (7, 18, "看新闻了吗", []), (52, 22, "AI把数学圈", ["数学圈"]), (74, 14, "搞炸了", []),
+    assert overlay.frames == 200
+    assert [(item["start_frame"], item["duration_frames"], item.get("hold"), item["config"]["text"], item["config"]["keywords"]) for item in overlay.instances] == [
+        (7, 90, {"frame": 45, "frames": 18}, "看新闻了吗", []),
+        (52, 60, None, "AI把数学圈", ["数学圈"]),
+        (112, 90, {"frame": 45, "frames": 14}, "搞炸了", []),
     ]
+
+
+# 场景：定格只针对字效：显示不足 1.5 秒的标题同样定格；滤镜等视觉 Sprite 本身就是动画，再短也按自身长度播放。
+def test_only_short_text_effects_hold_still() -> None:
+    """1 秒的标题定格；1 秒的滤镜按 30 帧播放；正好 1.5 秒的标题按自身长度播放。"""
+    [title] = plan_sprite_render(render_input(effect_total_frames=30), T).instances
+    assert (title["duration_frames"], title["hold"]) == (90, {"frame": 45, "frames": 30})
+    [tint] = plan_sprite_render(render_input(sprite_id="f", text="", keywords=[], effect_total_frames=30), F).instances
+    assert (tint["duration_frames"], "hold" in tint) == (30, False)
+    [long] = plan_sprite_render(render_input(effect_total_frames=45), T).instances
+    assert (long["duration_frames"], "hold" in long) == (45, False)
 
 
 # 场景：服务端按 30 秒切块渲染：跨块的实例在后一块从块首之前开始、保持完整长度，动画接续；没有切片的块是透明的。
 def test_long_effects_render_in_thirty_second_chunks() -> None:
-    """70 秒（2100 帧）切成 900、900、300 帧三块；跨第一块边界的切片在第二块从 -10 帧开始，第三块没有切片。"""
-    message = render_input(text="", keywords=[], effect_total_frames=2100, cues=[cue("开头", 0, 30), cue("跨块", 890, 920)])
+    """70 秒（2100 帧）切成 900、900、300 帧三块；跨第一块边界的切片在第二块从 -20 帧开始，第三块没有切片。
+    定格的切片按显示的帧数判断落在哪块：第 850～880 帧的短切片只在第一块。"""
+    message = render_input(text="", keywords=[], effect_total_frames=2100,
+                           cues=[cue("开头", 0, 60), cue("短句", 850, 880), cue("跨块", 880, 940)])
     parts = chunks(plan_sprite_render(message, T))
     assert [part.frames for part in parts] == [900, 900, 300]
     assert [[(item["start_frame"], item["duration_frames"]) for item in part.instances] for part in parts] == [
-        [(0, 30), (890, 30)], [(-10, 30)], [],
+        [(0, 60), (850, 90), (880, 60)], [(-20, 60)], [],
     ]
 
 
-# 场景：时长 0.5～120 秒；字效带 text 或 cues 之一，切片按起点排列、互不重叠、至少 0.2 秒且在时长之内；其他分类不接收内容；内容不能伪装成样式覆盖。
+# 场景：时长 0.5～120 秒；字效带 text 或 cues 之一，切片按起点排列、互不重叠、至少一帧且在时长之内；其他分类不接收内容；内容不能伪装成样式覆盖。
 @pytest.mark.parametrize(("sprite_id", "changes", "code"), [
     ("t", {"effect_total_frames": 14}, "duration_invalid"),
     ("t", {"effect_total_frames": 3601}, "duration_too_long"),
     ("t", {"text": ""}, "content_invalid"),
     ("t", {"cues": [cue("字幕", 0, 30)]}, "content_invalid"),
     ("t", {"text": "", "keywords": [], "cues": [cue("一", 0, 30), cue("二", 20, 50)]}, "content_invalid"),
-    ("t", {"text": "", "keywords": [], "cues": [cue("短", 0, 5)]}, "content_invalid"),
+    ("t", {"text": "", "keywords": [], "cues": [cue("零帧", 10, 10)]}, "content_invalid"),
     ("t", {"text": "", "keywords": [], "cues": [cue("出界", 290, 301)]}, "content_invalid"),
     ("t", {"text": "", "keywords": [], "cues": [cue("", 0, 30)]}, "content_invalid"),
     ("t", {"text": "", "cues": [cue("字幕", 0, 30)]}, "content_invalid"),
@@ -1111,7 +1128,7 @@ def test_long_effects_render_in_thirty_second_chunks() -> None:
     ("t", {"text": "超" * 41}, "placement_invalid"),
     ("t", {"transform": pb.SpriteHostTransform(rotation=270)}, "placement_invalid"),
     ("t", {"output": pb.SpriteCanvas(width=1920, height=1080, fps=30)}, "canvas_mismatch"),
-], ids=["too-short", "too-long", "text-effect-without-content", "text-and-cues", "overlapping-cues", "cue-under-0.2s",
+], ids=["too-short", "too-long", "text-effect-without-content", "text-and-cues", "overlapping-cues", "cue-without-frames",
         "cue-past-end", "empty-cue", "keywords-outside-cues", "filter-with-text", "no-keyword-parameter",
         "content-as-style", "style-out-of-range", "text-over-limit", "transform-out-of-range", "other-canvas"])
 def test_sprite_render_refuses_inputs_outside_the_contract(sprite_id, changes, code) -> None:
@@ -1269,3 +1286,35 @@ def test_real_sprite_render_joins_chunks_into_one_continuous_video(tmp_path: Pat
     assert video.name == "sprite.webm"
     for frame, expected in ((0, 0.0), (60, 1.0), (115, 0.5), (119, 0.1)):
         assert decoded_alpha(video, frame) == pytest.approx(expected, abs=0.05)
+
+
+def still_title(code: str) -> pb.PublishedSprite:
+    """一个 30 帧预览的字效：只声明可编辑的 text，内容区域为整块 180×320 画布。"""
+    return pb.PublishedSprite(
+        sprite_id="still", name="still", kind=pb.SPRITE_KIND_TEXT, tsx_code=code, text_prop="text",
+        canvas=pb.SpriteCanvas(width=180, height=320, fps=30, preview_frames=30),
+        content_box=pb.SpriteBox(x=0, y=0, width=180, height=320),
+        config_schema_json=json.dumps({"type": "object", "properties": {"text": {"type": "string", "minLength": 1}}}),
+        default_config_json=json.dumps({"text": "字"}),
+        parameters=[pb.SpriteParameter(key="text", access=pb.OPERATOR_ACCESS_VISIBLE_EDITABLE, default_value=pb.ScalarValue(string_value="字"))],
+    )
+
+
+# 场景：真实沙箱里，0.4 秒的短字幕定格在预览中间帧、整段全亮且结束后透明，不淡入淡出；2 秒的字幕照常按自身长度淡入。
+@pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
+def test_real_short_subtitles_hold_still(tmp_path: Path) -> None:
+    """切片 0～12 帧：第 0/11 帧 alpha 1、第 12 帧 0；切片 30～90 帧：第 30 帧 alpha 0（淡入开始）、第 60 帧 1。"""
+    configured = {
+        name: Path(value)
+        for name, value in (
+            ("browser_executable", RENDERER_PATHS["IMV_BROWSER_EXECUTABLE"]),
+            ("font_regular", RENDERER_PATHS["IMV_FONT_REGULAR"]),
+            ("font_bold", RENDERER_PATHS["IMV_FONT_BOLD"]),
+        )
+        if value
+    }
+    settings = Settings(_env_file=None, data_dir=tmp_path / "state", **configured)
+    message = pb.SpriteRenderInput(sprite_id="still", effect_total_frames=120, cues=[cue("短句", 0, 12), cue("长句", 30, 90)])
+    video = asyncio.run(sprite_render.render_sprite(Renderer(settings), plan_sprite_render(message, still_title(EDGE_FADE)), tmp_path / "job"))
+    for frame, expected in ((0, 1.0), (11, 1.0), (12, 0.0), (30, 0.0), (60, 1.0)):
+        assert decoded_alpha(video, frame) == pytest.approx(expected, abs=0.05), frame

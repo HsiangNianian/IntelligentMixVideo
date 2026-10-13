@@ -43,16 +43,14 @@ _TRANSPARENCY_CHECKS = _RENDER_CHECKS + ("transparency",)
 _FAILED_STATUSES = {"failed", "fail", "error"}
 
 # 总线渲染 Sprite 时传入的时长范围（秒）；Agent 生成时选的时长只用于预览，最终时长由合成决定。
+# 更短的字幕切片不按自身长度播放，而是定格在预览长度的中间帧（见 sprite_render.STATIC_TEXT_SECONDS）。
 MIN_RENDER_SECONDS = 0.5
 MAX_RENDER_SECONDS = 120
-# 字幕切片的最短时长（秒）：Sprite 在每个切片里显示一次，读到的时长就是切片长度，总线切出的短句可短到约 0.3 秒。
-MIN_CUE_SECONDS = 0.2
 
 
 def render_lengths(fps: int) -> list[int]:
-    """Sprite 可能被渲染的最短（一个字幕切片）与最长（整个效果）帧数，秒转帧与叠加渲染一致（半帧向后取整）；
-    生成与发布在预览长度之外也挂载它们。"""
-    return [max(1, math.floor(seconds * fps + 0.5)) for seconds in (MIN_CUE_SECONDS, MAX_RENDER_SECONDS)]
+    """Sprite 可能被渲染的最短与最长帧数，秒转帧与叠加渲染一致（半帧向后取整）；生成与发布在预览长度之外也挂载它们。"""
+    return [max(1, math.floor(seconds * fps + 0.5)) for seconds in (MIN_RENDER_SECONDS, MAX_RENDER_SECONDS)]
 
 
 def _reported_stages(checks: list[Any], stages: tuple[str, ...]) -> tuple[str, ...] | None:
