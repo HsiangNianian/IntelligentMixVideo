@@ -93,7 +93,8 @@ export function mergeSpriteRows(rows: ReturnType<typeof buildPreviewRows>, clips
     id: `row-${clip.id}`,
     actions: [{
       id: clip.id, effectId: clip.slot ?? "remotion", start: clip.start, end: clip.end, movable: false, flexible: false,
-      label: clip.slot === "transition" ? `镜头转场 ${clip.boundary}` : clip.slot ? effectTargets[clip.slot] : "Remotion 资产",
+      // 读回的转场片段可能还没有选择交界处，此时只显示对象名称。
+      label: clip.slot === "transition" ? `镜头转场 ${clip.boundary ?? ""}`.trim() : clip.slot ? effectTargets[clip.slot] : "Remotion 资产",
       effectName: `Remotion · ${clip.name}`, url: "", sourceIn: 0, sourceOut: 0, targetId: clip.id,
     }],
   }));
