@@ -99,6 +99,7 @@ fn draft_from_protobuf(bytes: &[u8], id: Option<&str>) -> Result<Value, String> 
         list.tracks.iter().any(|track| {
             track.target == "remotion"
                 || !track.sprite_id.is_empty()
+                || track.text_target.is_some()
                 || track
                     .editor
                     .as_ref()
@@ -945,6 +946,7 @@ mod tests {
                         editor: Some(editor),
                         sprite_id: String::new(),
                         transition_boundary: None,
+                        text_target: None,
                     },
                     generated::EffectTrack {
                         id: "subtitle".into(),

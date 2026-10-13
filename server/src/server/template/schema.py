@@ -244,8 +244,10 @@ class EffectTrack(BaseModel):
     editor: EffectTemplateEditor
     # 仅 Remotion 片段引用 Sprite；为空时不输出，其余对象的 JSON 与引入该字段前保持一致。
     sprite_id: UUID | None = Field(default=None, exclude_if=lambda value: value is None)
-    # 转场必须绑定交界处，开始秒数仅由本次视频计算。
+    # 转场与 Remotion 转场片段绑定视频交界处，开始秒数仅由本次视频计算。
     transition_boundary: int | None = Field(default=None, ge=1, le=2, strict=True, exclude_if=lambda value: value is None)
+    # Remotion 字效作用的文字对象；该文字不再由 IMS 渲染，片段时间跟随它。分类是否相符由保存时按 Sprite 检查。
+    text_target: Literal["title", "subtitle"] | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @field_serializer("editor", mode="wrap")
     def serialize_editor(self, editor: EffectTemplateEditor, handler: SerializerFunctionWrapHandler) -> dict:
@@ -259,7 +261,7 @@ class EffectTrack(BaseModel):
     @model_validator(mode="after")
     def validate_instance(self) -> "EffectTrack":
         """检查时间规则和对象内容；应用视频时计算实际区间与动画时长。"""
-        if self.transition_boundary is not None and self.target != "transition":
+        if self.transition_boundary is not None and self.target not in ("transition", "remotion"):
             raise ValueError("只有转场可以设置视频交界处")
         if self.target == "transition":
             if self.transition_boundary is None:
@@ -270,7 +272,11 @@ class EffectTrack(BaseModel):
                 raise ValueError("转场持续时间必须为 0.1～3 秒")
         elif self.start is None or self.start_mode is None:
             raise ValueError("对象缺少开始时间或方式")
+        if self.text_target is not None and self.target != "remotion":
+            raise ValueError("只有 Remotion 字效可以设置作用的文字对象")
         if self.target == "remotion":
+            if self.text_target is not None and self.transition_boundary is not None:
+                raise ValueError("Remotion 片段不能同时作用于文字和视频交界处")
             # 文字和效果规则只适用于 IMS 对象；片段只需要指向 Sprite 的秒数起点，时长缺省取 Sprite 自身。
             if self.sprite_id is None:
                 raise ValueError("Remotion 片段缺少 sprite_id")
@@ -329,7 +335,7 @@ class TemplateData(BaseModel):
 
     @model_validator(mode="after")
     def validate_tracks(self) -> "TemplateData":
-        """检查对象数量、固定字幕时间及两个视频交界处。"""
+        """检查对象数量、固定字幕时间及两个视频交界处；Remotion 转场与字效和 IMS 对象共用这些名额。"""
         if len({track.id for track in self.tracks}) != len(self.tracks):
             raise ValueError("轨道 ID 重复")
         for target in ("title", "subtitle", "vfx"):
@@ -338,9 +344,12 @@ class TemplateData(BaseModel):
         for track in self.tracks:
             if track.target == "subtitle" and (track.start_mode != "seconds" or track.start != 0 or track.duration is not None):
                 raise ValueError("底部字幕固定覆盖整个视频")
-        transitions = [track.transition_boundary for track in self.tracks if track.target == "transition"]
+        transitions = [track.transition_boundary for track in self.tracks if track.transition_boundary is not None]
         if len(transitions) > 2 or len(set(transitions)) != len(transitions):
             raise ValueError("每个视频交界处最多一个转场")
+        texts = [track.text_target for track in self.tracks if track.text_target is not None]
+        if len(set(texts)) != len(texts):
+            raise ValueError("每个标题或字幕最多一个 Remotion 字效")
         return self
 
 

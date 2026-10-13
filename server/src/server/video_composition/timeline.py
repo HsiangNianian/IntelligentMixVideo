@@ -189,14 +189,16 @@ def build_timeline(
     timeline = {"VideoTracks": [{"VideoTrackClips": clips}], "AudioTracks": audio_tracks,
                 "SubtitleTracks": subtitle_tracks}
     effects = []
-    # Remotion 片段由叠加视频服务渲染，不属于 IMS 时间线，也没有 IMS 效果可校验。
-    tracks = [track for track in template.tracks if track.target != "remotion"]
+    # Remotion 片段由叠加视频服务渲染，不属于 IMS 时间线，也没有 IMS 效果可校验；
+    # 使用 Remotion 字效的标题或字幕同样由叠加视频显示，IMS 不再渲染这段文字。
+    remotion_texts = {track.text_target for track in template.tracks if track.text_target is not None}
+    tracks = [track for track in template.tracks if track.target != "remotion" and track.target not in remotion_texts]
     if not standard:
         tracks = [track for track in tracks
                   if not ((track.target == "subtitle" and not source) or (track.target == "title" and not request.title))]
         # 缺少对象时只补本次合成的默认样式，不保存模板，也不使用编辑器示例文字。
         for target, content in (("title", request.title), ("subtitle", source)):
-            if content and not any(track.target == target for track in tracks):
+            if content and target not in remotion_texts and not any(track.target == target for track in tracks):
                 tracks.append(EffectTrack(id=f"composition-{target}", target=target, start_mode="seconds",
                                           start=0, duration=None, editor=EffectTemplateEditor(**{
                                               key: "" for key in ("title", "subtitle", "bubble_text") if key != target
