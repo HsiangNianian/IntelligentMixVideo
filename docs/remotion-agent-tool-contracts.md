@@ -723,7 +723,7 @@ description 非空，instances 非空。主画布配置和 sprite 总帧数均�
 | video_overlay | 转场与视频特效 | color（颜色 pattern）、speed（数字 0.25～4） | 位置、缩放、旋转、不透明度 |
 | transition_overlay | 转场与视频特效 | color（颜色 pattern）、speed（数字 0.25～4） | 不透明度 |
 
-颜色 pattern 为 `^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$`。字效可以另外绑定 `keywords`（字符串数组，maxItems ≤ 20，items.maxLength ≤ 100），由组件在文字里查找各关键词的字面命中并高亮。所有分类都是透明叠加层，不读取也不修改底片像素。
+颜色 pattern 为 `^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$`。字效还必须绑定 `keywords`（字符串数组，maxItems ≤ 20，items.maxLength ≤ 100），由组件在文字里高亮每个关键词的首次字面命中。以及与总线 IMS 关键词选项同名同义的 `keywordBold`、`keywordItalic`、`keywordUnderline`、`keywordStrikeout`（布尔）、`keywordColor`（字符串，pattern 为 `^(?:|#[0-9A-Fa-f]{6})$`，空串沿用文字颜色）与 `keywordSize`（整数，minimum 0、maximum 300，0 沿用文字字号），它们都必须绑定、默认关闭（`[]`、false、空串、0，不用时保持原样式），只作用于关键词命中处。所有分类都是透明叠加层，不读取也不修改底片像素。
 
 绑定规则：
 

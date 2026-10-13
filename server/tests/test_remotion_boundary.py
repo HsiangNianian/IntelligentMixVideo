@@ -1,7 +1,7 @@
 """发布时边界样本的生成：默认值、两端取值、逐个参数的回退、中间枚举值和各分类的宿主变换。"""
 
 from server.remotion_templates.boundary import FILLER, samples, unsampled
-from server.remotion_templates.categories import HEX_COLOR
+from server.remotion_templates.categories import HEX_COLOR, KEYWORD_COLOR
 
 SCHEMA = {
     "type": "object",
@@ -76,3 +76,17 @@ def test_identical_samples_are_rendered_once():
     """没有可推的参数时，两端样本与默认值相同的部分去重。"""
     found = samples({"type": "object", "properties": {}}, {}, [], "filter_overlay", (1080, 1920))
     assert [item.name for item in found] == ["defaults", "low", "high"]
+
+
+def test_keyword_style_parameters_are_sampled_at_their_inherit_and_maximum_values():
+    """关键词颜色的低端是空串（沿用文字颜色）、高端是白色；字号低端 0（沿用）、高端 300；样式开关两端各取一次。"""
+    schema = {"type": "object", "properties": {
+        "keywordBold": {"type": "boolean"},
+        "keywordColor": {"type": "string", "pattern": KEYWORD_COLOR},
+        "keywordSize": {"type": "integer", "minimum": 0, "maximum": 300},
+    }, "additionalProperties": False}
+    defaults = {"keywordBold": False, "keywordColor": "", "keywordSize": 0}
+    found = by_name(samples(schema, defaults, list(defaults), "text", (1080, 1920)))
+    assert found["low"].values == defaults
+    assert found["high"].values == {"keywordBold": True, "keywordColor": "#FFFFFF", "keywordSize": 300}
+    assert unsampled(schema, defaults, list(defaults), list(found.values())) == []

@@ -1,8 +1,11 @@
 """一次 Remotion 摆放的参数覆盖与宿主变换：按发布参数契约合并、校验，并给出宿主层。"""
 
+import json
+
 import pytest
 from generated.imv.sprite.v1 import sprite_pb2 as pb
 
+from server.remotion_templates.categories import KEYWORD_COLOR
 from server.remotion_templates.placement import resolve
 from server.remotion_templates.sprites import summarize
 from server.template.schema import RemotionTrackEditor
@@ -34,6 +37,35 @@ def test_overrides_merge_into_the_defaults_and_the_transform_is_kept():
     assert config["text"] == "新品上市" and config["fontWeight"] == 700 and isinstance(config["fontWeight"], int)
     assert config["keywords"] == ["新品"] and config["color"] == "#FF0000AA" and config["glow"] == 0.5
     assert host == {"box": BOX, "transform": {"x": 540, "y": 300, "scale": 1.5, "rotation": -10, "opacity": 0.8}}
+
+
+def keyword_styled_sprite():
+    """在标准测试资产上再声明关键词颜色（允许空串）与字号（0～300）两个可编辑参数。"""
+    sprite = published_sprite()
+    schema = json.loads(sprite.config_schema_json)
+    schema["properties"]["keywordColor"] = {"type": "string", "pattern": KEYWORD_COLOR}
+    schema["properties"]["keywordSize"] = {"type": "integer", "minimum": 0, "maximum": 300}
+    sprite.config_schema_json = json.dumps(schema)
+    sprite.default_config_json = json.dumps({**json.loads(sprite.default_config_json), "keywordColor": "", "keywordSize": 0})
+    editable = pb.OPERATOR_ACCESS_VISIBLE_EDITABLE
+    sprite.parameters.add(key="keywordColor", label="关键词颜色", access=editable, default_value=pb.ScalarValue(string_value=""))
+    sprite.parameters.add(key="keywordSize", label="关键词字号", access=editable, default_value=pb.ScalarValue(number_value=0),
+                          minimum=0, maximum=300, format=pb.SPRITE_PARAMETER_FORMAT_INTEGER)
+    return sprite
+
+
+def test_bus_keyword_options_resolve_like_the_ims_template_fields():
+    """总线按 IMS 字段名传来的关键词颜色/字号覆盖被接受（整数字号保持整数），空串与 0 即「沿用」。"""
+    config, _ = resolve(keyword_styled_sprite(), editor(
+        {"key": "keywordColor", "stringValue": "#FFFF00"}, {"key": "keywordSize", "numberValue": 80},
+    ))
+    assert config["keywordColor"] == "#FFFF00" and config["keywordSize"] == 80 and isinstance(config["keywordSize"], int)
+    config, _ = resolve(keyword_styled_sprite(), editor({"key": "keywordColor", "stringValue": ""}, {"key": "keywordSize", "numberValue": 0}))
+    assert config["keywordColor"] == "" and config["keywordSize"] == 0
+    with pytest.raises(ValueError, match="不符合发布契约"):
+        resolve(keyword_styled_sprite(), editor({"key": "keywordColor", "stringValue": "yellow"}))
+    with pytest.raises(ValueError, match="超出允许范围"):
+        resolve(keyword_styled_sprite(), editor({"key": "keywordSize", "numberValue": 301}))
 
 
 @pytest.mark.parametrize("override, message", [

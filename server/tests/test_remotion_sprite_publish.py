@@ -20,7 +20,7 @@ from sqlalchemy import Engine, select, update
 
 from server.app import app
 from server.remotion_templates import sprite_store, sprites
-from server.remotion_templates.categories import HEX_COLOR
+from server.remotion_templates.categories import HEX_COLOR, KEYWORD_COLOR
 from server.remotion_templates.harness import Harness
 from server.remotion_templates.models import GenerateTemplateRequest
 from server.remotion_templates.provider import Budget
@@ -38,12 +38,18 @@ from .test_remotion_version_diagnostics import (
 
 PROTOBUF = {"Content-Type": "application/x-protobuf"}
 COLOR = {"type": "string", "pattern": HEX_COLOR}
-# 一个字效版本的顶层参数：字效必备参数、可选关键词，再加视频特效必备的 speed，便于同一版本按多种类型发布。
+# 一个字效版本的顶层参数：字效必备参数、关键词参数，再加视频特效必备的 speed，便于同一版本按多种类型发布。
 SCHEMA = {
     "type": "object",
     "properties": {
         "text": {"type": "string", "minLength": 1, "maxLength": 40, "title": "标题文字"},
         "keywords": {"type": "array", "items": {"type": "string", "maxLength": 100}, "maxItems": 20, "title": "关键词"},
+        "keywordBold": {"type": "boolean", "title": "关键词加粗"},
+        "keywordItalic": {"type": "boolean", "title": "关键词斜体"},
+        "keywordUnderline": {"type": "boolean", "title": "关键词下划线"},
+        "keywordStrikeout": {"type": "boolean", "title": "关键词删除线"},
+        "keywordColor": {"type": "string", "pattern": KEYWORD_COLOR, "title": "关键词颜色"},
+        "keywordSize": {"type": "integer", "minimum": 0, "maximum": 300, "title": "关键词字号"},
         "fontSize": {"type": "number", "minimum": 24, "maximum": 240, "title": "字号"},
         "fontWeight": {"type": "integer", "enum": [400, 700], "title": "字重"},
         "color": {**COLOR, "title": "文字颜色"},
@@ -51,11 +57,11 @@ SCHEMA = {
         "shadow": {"type": "boolean", "title": "阴影"},
         "title": {"type": "object", "properties": {"glow": {"type": "number"}}, "additionalProperties": False},
     },
-    "required": ["text", "keywords", "fontSize", "fontWeight", "color", "speed", "shadow"],
+    "required": ["text", "keywords", "keywordBold", "keywordItalic", "keywordUnderline", "keywordStrikeout", "keywordColor", "keywordSize", "fontSize", "fontWeight", "color", "speed", "shadow"],
     "additionalProperties": False,
 }
-DEFAULTS = {"text": "标题", "keywords": [], "fontSize": 64, "fontWeight": 400, "color": "#FFFFFF", "speed": 1, "shadow": False, "title": {"glow": 0.5}}
-BOUND = ["text", "keywords", "fontSize", "fontWeight", "color", "speed", "shadow"]
+DEFAULTS = {"text": "标题", "keywords": [], "keywordBold": False, "keywordItalic": False, "keywordUnderline": False, "keywordStrikeout": False, "keywordColor": "", "keywordSize": 0, "fontSize": 64, "fontWeight": 400, "color": "#FFFFFF", "speed": 1, "shadow": False, "title": {"glow": 0.5}}
+BOUND = ["text", "keywords", "keywordBold", "keywordItalic", "keywordUnderline", "keywordStrikeout", "keywordColor", "keywordSize", "fontSize", "fontWeight", "color", "speed", "shadow"]
 CODE = 'import React from "react";\nexport default function Sprite(p: {text: string}) { return <div>{p.text}</div>; }\n'
 # 内容区域：唯一实例的布局，宿主变换绕它的中心。
 LAYOUT = {"x": 90, "y": 760, "width": 900, "height": 400, "z_index": 0}
@@ -281,14 +287,13 @@ def test_publish_rejects_invalid_field_choices(client: TestClient, published, fi
     assert client.get("/api/sprites").content == b""
 
 
-def test_keywords_need_a_declared_keywords_parameter(published) -> None:
-    """没有声明关键词参数的字效只能不带 keywords_prop 发布。"""
+def test_a_text_version_without_its_keyword_parameters_is_refused(published) -> None:
+    """字效必须声明关键词参数：缺少 keywords 绑定的版本在发布时被拒绝并点名缺少的参数。"""
     version = published.version.model_copy(deep=True)
     version.spec.sprite.bindings = [item for item in version.spec.sprite.bindings if item.name != "keywords"]
-    sprites._validated_request(publish_request(version.id, keywords_prop=""), version)
     with pytest.raises(HTTPException) as caught:
         sprites._validated_request(publish_request(version.id), version)
-    assert caught.value.status_code == 422 and "关键词" in caught.value.detail
+    assert caught.value.status_code == 422 and "keywords" in caught.value.detail
 
 
 def test_a_version_composed_before_categories_must_be_edited_first(client: TestClient, legacy_published) -> None:

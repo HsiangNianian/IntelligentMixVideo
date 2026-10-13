@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from server.remotion_templates.categories import HEX_COLOR, category_problems, parameter_problems
+from server.remotion_templates.categories import HEX_COLOR, KEYWORD_COLOR, category_problems, parameter_problems
 from server.remotion_templates.models import TemplateCandidate
 from server.remotion_templates.provider import Budget
 from server.remotion_templates.settings import Settings
@@ -18,12 +18,22 @@ from server.remotion_templates.tools.session import ToolSession
 
 RENDERER_DEPS = Path(__file__).parents[1] / "src" / "server" / "remotion" / "node_modules" / "esbuild"
 COLOR = {"type": "string", "pattern": HEX_COLOR}
-TEXT_PROPERTIES = {
+KEYWORD_STYLES = {
+    "keywords": {"type": "array", "items": {"type": "string", "maxLength": 100}, "maxItems": 20},
+    "keywordBold": {"type": "boolean"},
+    "keywordItalic": {"type": "boolean"},
+    "keywordUnderline": {"type": "boolean"},
+    "keywordStrikeout": {"type": "boolean"},
+    "keywordColor": {"type": "string", "pattern": KEYWORD_COLOR},
+    "keywordSize": {"type": "integer", "minimum": 0, "maximum": 300},
+}
+BASE_TEXT = {
     "text": {"type": "string", "minLength": 1, "maxLength": 40},
     "fontSize": {"type": "number", "minimum": 24, "maximum": 240},
     "fontWeight": {"type": "integer", "enum": [400, 700]},
     "color": COLOR,
 }
+TEXT_PROPERTIES = {**BASE_TEXT, **KEYWORD_STYLES}
 
 
 def schema(properties: dict) -> dict:
@@ -40,22 +50,41 @@ def test_each_category_accepts_exactly_its_required_shapes():
     for kind in ("video_overlay", "transition_overlay"):
         assert category_problems(kind, schema(effects), set(effects)) == []
     # A declared but unbound property is not an operator parameter.
-    assert [item.name for item in category_problems("text", schema(TEXT_PROPERTIES), {"text", "fontSize", "color"})] == ["fontWeight"]
+    assert [item.name for item in category_problems("text", schema(TEXT_PROPERTIES), set(TEXT_PROPERTIES) - {"fontWeight"})] == ["fontWeight"]
     wrong = {**TEXT_PROPERTIES, "color": {"type": "string"}, "fontWeight": {"type": "integer", "enum": [400, 500]}}
     problems = category_problems("text", schema(wrong), set(wrong))
     assert [(item.name, item.reason) for item in problems] == [("fontWeight", "has the wrong schema"), ("color", "has the wrong schema")]
     assert category_problems("filter_overlay", schema({**filters, "intensity": {"type": "number", "minimum": 0, "maximum": 2}}), set(filters))[0].name == "intensity"
 
 
-def test_text_limits_and_optional_keywords_are_checked():
-    """文字须声明不超过 200 的 maxLength；字效声明了 keywords 时它也必须是受限的字符串数组。"""
+def test_text_limits_and_keywords_are_checked():
+    """文字须声明不超过 200 的 maxLength；关键词列表必须是受限的字符串数组。"""
     too_long = {**TEXT_PROPERTIES, "text": {"type": "string", "minLength": 1, "maxLength": 500}}
     assert [item.name for item in category_problems("text", schema(too_long), set(too_long))] == ["text"]
-    keywords = {"type": "array", "items": {"type": "string", "maxLength": 100}, "maxItems": 20}
-    good = {**TEXT_PROPERTIES, "keywords": keywords}
-    assert category_problems("text", schema(good), set(good)) == []
     unbounded = {**TEXT_PROPERTIES, "keywords": {"type": "array", "items": {"type": "string"}}}
     assert [item.name for item in category_problems("text", schema(unbounded), set(unbounded))] == ["keywords"]
+
+
+def test_text_requires_every_keyword_parameter():
+    """字效必须声明全部关键词参数（不用时保持原样式），缺哪个就报哪个；其他分类不要求。"""
+    assert [item.name for item in category_problems("text", schema(BASE_TEXT), set(BASE_TEXT))] == list(KEYWORD_STYLES)
+    partial = {key: value for key, value in TEXT_PROPERTIES.items() if key != "keywordSize"}
+    assert [item.name for item in category_problems("text", schema(partial), set(partial))] == ["keywordSize"]
+
+
+def test_keyword_style_parameters_match_the_bus_options():
+    """关键词样式参数与总线 IMS 模板同义：颜色允许空串，字号 0～300 整数，布尔为开关；形状不符时逐项列出。"""
+    good = TEXT_PROPERTIES
+    assert category_problems("text", schema(good), set(good)) == []
+    for name, bad in (
+        ("keywordColor", COLOR),
+        ("keywordSize", {"type": "integer", "minimum": 12, "maximum": 300}),
+        ("keywordBold", {"type": "string", "maxLength": 3}),
+    ):
+        broken = {**good, name: bad}
+        assert [item.name for item in category_problems("text", schema(broken), set(broken))] == [name]
+    assert parameter_problems(KEYWORD_STYLES["keywordColor"]) is None
+    assert parameter_problems({"type": "string", "pattern": "^a$"}) is not None
 
 
 def test_a_missing_kind_is_reported_without_rules():
@@ -85,7 +114,7 @@ def test_a_missing_kind_is_reported_without_rules():
     ({"type": "number", "minimum": 0, "maximum": 1, "exclusiveMaximum": 1}, "uses schema keywords the publish-time samples cannot cover: exclusiveMaximum"),
     ({"type": "number", "minimum": 0, "maximum": 10, "multipleOf": 3}, "uses schema keywords the publish-time samples cannot cover: multipleOf"),
     ({"type": "integer", "minimum": 0.5, "maximum": 10.5}, "an integer needs integer minimum and maximum"),
-    ({"type": "string", "maxLength": 9, "pattern": "^[A-Z]+$"}, f"a string pattern must be the colour pattern {HEX_COLOR}"),
+    ({"type": "string", "maxLength": 9, "pattern": "^[A-Z]+$"}, f"a string pattern must be the colour pattern {HEX_COLOR} or the keyword colour pattern {KEYWORD_COLOR}"),
     ({"type": "string", "minLength": 9, "maxLength": 3}, "a string minLength must not exceed its maxLength"),
     ({"type": "array", "items": {"type": "string", "maxLength": 9, "minLength": 2}, "maxItems": 3}, "uses schema keywords the publish-time samples cannot cover: items.minLength"),
     ({"type": "boolean", "title": "阴影", "default": False}, None),
@@ -194,7 +223,7 @@ def test_create_refuses_a_sprite_missing_its_category_parameters(tmp_path):
     async def run():
         """Create two drafts: one without fontWeight, one without a kind."""
         current = session(tmp_path)
-        current.sprite_drafts["d"] = sprite("text", ["text", "fontSize", "color"])
+        current.sprite_drafts["d"] = sprite("text", [name for name in TEXT_PROPERTIES if name != "fontWeight"])
         with pytest.raises(ToolFault) as refused:
             await current.execute("sprite.create", SpriteCreateInput(draft_id="d"), available())
         assert refused.value.error.code == "CATEGORY_PARAMETERS_MISSING"

@@ -13,6 +13,8 @@ from ..template.schema import OVERRIDE_STRING_MAX_LENGTH
 from .tools.contracts import SpriteKindName
 
 KINDS: tuple[SpriteKindName, ...] = get_args(SpriteKindName)
+# 关键词颜色允许空串（沿用文字颜色）或 #RRGGBB，与总线 IMS 模板的 *_keyword_color 一致。
+KEYWORD_COLOR = "^(?:|#[0-9A-Fa-f]{6})$"
 # 颜色参数统一使用的 JSON Schema pattern；界面和宿主按它识别颜色控件。
 HEX_COLOR = "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$"
 # 文字参数的长度上限；更长的文字无法在固定画布内可靠排版。
@@ -93,6 +95,21 @@ def _keywords(definition: dict) -> bool:
     )
 
 
+def _keyword_color(definition: dict) -> bool:
+    """关键词颜色参数：字符串且使用允许空串的 pattern。"""
+    return definition.get("type") == "string" and definition.get("pattern") == KEYWORD_COLOR
+
+
+def _keyword_size(definition: dict) -> bool:
+    """关键词字号参数：整数，范围恰好是 0（沿用文字字号）到 300。"""
+    return definition.get("type") == "integer" and _exact(0, 300)(definition)
+
+
+def _boolean(definition: dict) -> bool:
+    """开关参数：布尔值。"""
+    return definition.get("type") == "boolean"
+
+
 _COLOR = {"type": "string", "pattern": HEX_COLOR}
 REQUIRED: dict[SpriteKindName, tuple[Rule, ...]] = {
     "text": (
@@ -114,13 +131,29 @@ REQUIRED: dict[SpriteKindName, tuple[Rule, ...]] = {
         Rule("speed", {"type": "number", "minimum": 0.25, "maximum": 4}, "速度倍率，0.25～4 的数字", _exact(0.25, 4)),
     ),
 }
-# 字效可选的关键词参数：声明时必须符合约定形状，组件自行在文字里查找字面命中并高亮。
+# 字效可选的关键词参数：声明时必须符合约定形状，组件只在文字里高亮每个关键词的首次字面命中（与总线一致）。
 KEYWORDS = Rule(
     "keywords",
     {"type": "array", "items": {"type": "string", "maxLength": KEYWORD_MAX_LENGTH}, "maxItems": KEYWORDS_MAX_ITEMS},
     f"关键词列表，字符串数组，最多 {KEYWORDS_MAX_ITEMS} 项、每项不超过 {KEYWORD_MAX_LENGTH} 字",
     _keywords,
 )
+# 关键词局部样式：与总线 IMS 模板的 title/subtitle 关键词字段同名同义，由总线按摆放覆盖。
+KEYWORD_STYLES = tuple(
+    Rule(f"keyword{name}", {"type": "boolean"}, f"关键词{label}开关，布尔值", _boolean)
+    for name, label in (("Bold", "加粗"), ("Italic", "斜体"), ("Underline", "下划线"), ("Strikeout", "删除线"))
+)
+KEYWORD_COLOR_RULE = Rule(
+    "keywordColor", {"type": "string", "pattern": KEYWORD_COLOR},
+    "关键词颜色，空字符串表示沿用文字颜色，否则是 #RRGGBB", _keyword_color,
+)
+KEYWORD_SIZE_RULE = Rule(
+    "keywordSize", {"type": "integer", "minimum": 0, "maximum": 300},
+    "关键词字号，整数，0 表示沿用文字字号，否则是像素值（最大 300）", _keyword_size,
+)
+# 字效的关键词参数：都是必备的，默认值应当「不启用」（空列表、false、空串、0），不用时保持原有样式。
+TEXT_KEYWORDS = (KEYWORDS, *KEYWORD_STYLES, KEYWORD_COLOR_RULE, KEYWORD_SIZE_RULE)
+REQUIRED["text"] += TEXT_KEYWORDS
 
 
 @dataclass(frozen=True)
@@ -180,11 +213,11 @@ def parameter_problems(definition: object) -> str | None:
         limit = definition.get("maxLength")
         if limit is not None and (not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= OVERRIDE_STRING_MAX_LENGTH):
             return f"a string maxLength must be between 1 and {OVERRIDE_STRING_MAX_LENGTH}"
-        if "pattern" in definition and not _color(definition):
-            return f"a string pattern must be the colour pattern {HEX_COLOR}"
+        if "pattern" in definition and not (_color(definition) or _keyword_color(definition)):
+            return f"a string pattern must be the colour pattern {HEX_COLOR} or the keyword colour pattern {KEYWORD_COLOR}"
         if isinstance(definition.get("minLength"), int) and limit is not None and definition["minLength"] > limit:
             return "a string minLength must not exceed its maxLength"
-        if _color(definition) or isinstance(definition.get("enum"), list) or limit is not None:
+        if _color(definition) or _keyword_color(definition) or isinstance(definition.get("enum"), list) or limit is not None:
             return None
         return f"a string needs the colour pattern {HEX_COLOR}, an enum or a maxLength"
     if kind == "boolean":
@@ -200,7 +233,7 @@ def category_problems(kind: str | None, schema: dict, bound: set[str]) -> list[P
         return [Problem("kind", None, f"kind must be one of {', '.join(KINDS)}")]
     properties = _properties(schema)
     problems = []
-    rules = REQUIRED[kind] + ((KEYWORDS,) if kind == "text" and "keywords" in bound else ())
+    rules = REQUIRED[kind]
     for rule in rules:
         if rule.name not in bound or rule.name not in properties:
             problems.append(Problem(rule.name, rule, "missing"))

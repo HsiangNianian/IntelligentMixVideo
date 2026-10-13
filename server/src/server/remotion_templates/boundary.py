@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-from .categories import HEX_COLOR, transform_fields, transform_ranges
+from .categories import HEX_COLOR, KEYWORD_COLOR, transform_fields, transform_ranges
 from .tools.schema import validate_parameters
 
 # 文字填充字符：CJK 字形最宽、最容易溢出，最能暴露排版问题。
@@ -43,6 +43,8 @@ def _extreme(definition: dict, default, high: bool):
         return high
     if kind == "string":
         if "pattern" in definition:
+            if definition["pattern"] == KEYWORD_COLOR:
+                return "#FFFFFF" if high else ""
             return ("#FFFFFF" if high else "#000000") if definition["pattern"] == HEX_COLOR else default
         if isinstance(definition.get("maxLength"), int):
             return FILLER * (max(1, definition.get("minLength", 1)) if high else definition["maxLength"])
