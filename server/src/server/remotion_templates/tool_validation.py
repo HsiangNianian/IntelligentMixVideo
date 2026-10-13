@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from .renderer import Renderer
+from .renderer import CPU_SECONDS, Renderer
 from .tools.contracts import (
     AssertionResult,
     CheckResult,
@@ -304,7 +304,7 @@ class ToolValidator:
 
     async def fit_texts(
         self, component: ComponentDefinition, composition: dict[str, int], box: dict[str, float], items: list[dict[str, Any]],
-        timeout_seconds: float | None = None,
+        timeout_seconds: float | None = None, cpu_seconds: int = CPU_SECONDS,
     ) -> list[dict[str, Any]]:
         """Find, for each text a render really passes, the largest font size that shows it in full.
 
@@ -328,7 +328,9 @@ class ToolValidator:
                 "browser": self.renderer.worker_browser_path(),
             }
             (directory / "request.json").write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8")
-            payload = await self.renderer.run_worker(directory, worker="tool-validation-worker.mjs", timeout_seconds=timeout_seconds)
+            payload = await self.renderer.run_worker(
+                directory, worker="tool-validation-worker.mjs", timeout_seconds=timeout_seconds, cpu_seconds=cpu_seconds,
+            )
         except (OSError, RuntimeError, TimeoutError) as exc:
             raise ValidationUnavailable(str(exc)) from exc
         for item in payload.get("checks", []) if isinstance(payload, dict) else []:

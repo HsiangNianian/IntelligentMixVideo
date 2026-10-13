@@ -251,6 +251,8 @@ async def fit_texts(renderer: Renderer, overlay: Overlay, sprites: dict[str, pb.
     for sprite_id, distinct in groups.items():
         sprite = sprites[sprite_id]
         keys, items = list(distinct), list(distinct.values())
+        # Many distinct subtitles are measured in one browser run: leave a few seconds for each.
+        timeout = max(renderer.settings.render_timeout_seconds, 5 * len(items))
         try:
             fits = await validator.fit_texts(
                 ComponentDefinition(
@@ -260,8 +262,8 @@ async def fit_texts(renderer: Renderer, overlay: Overlay, sprites: dict[str, pb.
                 {"width": overlay.width, "height": overlay.height, "fps": overlay.fps, "duration_frames": max(item["length"] for item in items)},
                 overlay.instances[items[0]["index"]]["host"]["box"],
                 items,
-                # Many distinct subtitles are measured in one browser run: leave a few seconds for each.
-                timeout_seconds=max(renderer.settings.render_timeout_seconds, 5 * len(items)),
+                # The CPU cap grows with the deadline, or a long run of binary searches ends on it before the timeout.
+                timeout_seconds=timeout, cpu_seconds=overlay_cpu_seconds(timeout),
             )
         except ValidationUnavailable as exc:
             raise OverlayError("render_failed", "叠加视频渲染失败") from exc

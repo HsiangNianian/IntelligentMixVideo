@@ -366,8 +366,9 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   at the minimum fails the task with `text_too_long` and a fixed message (the callback's `errorMessage`) so the bus can
   tell the user to shorten it, instead of publishing a clipped title. Other Sprites skip the pass, and a fit sandbox
   that cannot start fails the task as `render_failed`. `POST /api/sprites/render` runs the same pass on each distinct
-  text or cue (a held text is measured on its frozen frame), one browser run per Sprite. It is a geometric measurement,
-  not a visual review.
+  text or cue (a held text is measured on its frozen frame), one browser run per Sprite. A run gets a few seconds per
+  distinct text beyond the default validation timeout, and its sandbox CPU cap grows with that deadline like an
+  overlay render's. It is a geometric measurement, not a visual review.
 - **Acceptance**: also a 503 when ZOS, ffprobe, bubblewrap, prlimit, Node, the browser or the managed fonts are
   missing (the isolated renderer is Linux-only), instead of accepting tasks that can only fail later. An empty
   `placements` (`no_placements`) or a `spriteId` that is not published (`sprite_missing`) is a 422.

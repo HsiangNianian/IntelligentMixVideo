@@ -1401,16 +1401,18 @@ class FitRenderer:
         self.capacity = capacity
         self.settings = SimpleNamespace(render_timeout_seconds=180)
         self.requests: list[dict] = []
+        self.limits: list[tuple] = []
 
     def worker_browser_path(self) -> str:
         """返回固定浏览器路径。"""
         return "/browser"
 
     async def run_worker(self, directory: Path, *, worker=None, timeout_seconds=None, cpu_seconds=None) -> dict:
-        """按 capacity 为每个条目给出与真实 worker 相同形状的答案。"""
+        """按 capacity 为每个条目给出与真实 worker 相同形状的答案，并记录墙钟期限与 CPU 上限。"""
         assert worker == "tool-validation-worker.mjs"
         request = json.loads((directory / "request.json").read_text())
         self.requests.append(request)
+        self.limits.append((timeout_seconds, cpu_seconds))
         fits = []
         for item in request["fit"]:
             wanted = item["values"][item["size_key"]]
@@ -1614,6 +1616,18 @@ def test_fit_measures_each_placement_where_its_transform_puts_it(tmp_path) -> No
     [request] = renderer.requests
     assert [(item["index"], item["transform"]) for item in request["fit"]] == [(0, {}), (1, {"scale": 2}), (3, {"x": 100, "rotation": 90})]
     assert request["box"] == {"x": 90, "y": 760, "width": 900, "height": 400}
+
+
+# 场景：大量不同字幕切片在一次浏览器运行里测量时，墙钟期限按切片数放宽，沙箱 CPU 上限随期限一起放宽，
+# 不会在期限之前先耗尽默认的 300 CPU 秒而以 render_failed 结束。
+def test_fit_cpu_cap_grows_with_its_deadline(tmp_path) -> None:
+    """100 个不同的定格切片：期限 500 秒，CPU 上限与叠加渲染同样按期限 × 核数计算。"""
+    cues = [cue(f"第{index}句", index * 36, index * 36 + 30) for index in range(100)]
+    overlay = plan_sprite_render(render_input(text="", keywords=[], effect_total_frames=3600, cues=cues), T)
+    renderer = FitRenderer(capacity=240)
+    asyncio.run(overlay_render.fit_texts(renderer, overlay, {"t": T}, tmp_path / "fit"))
+    assert renderer.limits == [(500, overlay_cpu_seconds(500))]
+    assert overlay_cpu_seconds(500) >= 500 > overlay_render.CPU_SECONDS
 
 
 # 字幕框的宽度随 Sprite 读到的长度变化：超过 60 帧时是 300px 宽的 overflow hidden 窄框，否则是 972px 宽的框，都不换行。
