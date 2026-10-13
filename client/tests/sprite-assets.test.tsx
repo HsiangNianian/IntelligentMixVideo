@@ -5,6 +5,8 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { VersionCard } from "@/features/remotion_templates/VersionCard";
 import { defaultKind, publishChoice } from "@/features/remotion_templates/spriteChoice";
 import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
+import { SpriteClips } from "@/features/templates/SpritePanels";
+import type { SpriteAsset } from "@/features/sprites/model";
 import type { RemotionClip } from "@/features/templates/model";
 import { EffectTemplateEditorSchema, SaveTemplateRequestSchema } from "@/generated/imv/template/v1/template_pb";
 import {
@@ -315,6 +317,17 @@ test("字效作用于文字对象并可改为字幕", async () => {
   fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
   await waitFor(() => expect(saved).toHaveLength(1));
   expect(wireClips(saved[0]).map((clip) => [clip.textTarget, clip.transitionBoundary])).toEqual([["subtitle", undefined]]);
+});
+
+// 场景：字效作用的标题在当前预览里没有显示时间，标题被隐藏，列表里的字效也标为未应用，不显示原有区间。
+test("所作用文字不在预览内时字效标为未应用", () => {
+  const asset: SpriteAsset = { id: "sprite-t", name: "金色标题", kind: SpriteKind.TEXT, seconds: 3, aspect: 9 / 16, width: 1080, height: 1920, fps: 30, box: { x: 0, y: 0, width: 1080, height: 1920 }, parameters: [] };
+  const clip: RemotionClip = { id: "clip-t", sprite_id: "sprite-t", start: 0, duration: 3, parameters: {}, transform: {}, text_target: "title" };
+  const props: Parameters<typeof SpriteClips>[0] = { environment: "cloud", clips: [clip], catalog: { assets: [asset], error: "", refresh: () => {} }, duration: 30, selected: null, onSelect: () => {}, onRemove: () => {} };
+  const { rerender } = render(<SpriteClips {...props} />);
+  expect(screen.getByRole("listitem", { name: "Remotion 资产：金色标题" }).textContent).toContain("顶部标题字效 · 0～3 秒");
+  rerender(<SpriteClips {...props} hidden={new Set([clip.id])} />);
+  expect(screen.getByRole("listitem", { name: "Remotion 资产：金色标题" }).textContent).toContain("顶部标题字效 · 当前视频未应用");
 });
 
 /** 打开带一个字效片段的已保存模板，并选中该片段。 */

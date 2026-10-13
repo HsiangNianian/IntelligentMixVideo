@@ -108,9 +108,18 @@ export function validateClipSlots(draft: Draft): void {
   }
 }
 
+/** 作用于文字、但该文字在本次预览中没有可显示时间的字效：IMS 文字已隐藏，字效也不显示，列表标为未应用。 */
+export function hiddenTextClips(draft: Draft, resolved: ResolvedTimeline): Set<string> {
+  return new Set(draft.clips.filter((clip) => {
+    const text = clip.text_target && draft.tracks.find((track) => track.target === clip.text_target);
+    const shown = text ? resolved.tracks[text.id] : undefined;
+    return !!text && !(shown && shown.end > shown.start);
+  }).map((clip) => clip.id));
+}
+
 /**
  * 把本次预览算出的秒数写入占用对象的片段，供右侧列表、时间轴、叠加预览和保存数据使用：字效采用所作用文字的显示区间，
- * Remotion 转场以交界处为中心。模板规则保持不变，合成时由总线按实际素材重新计算；没有变化的片段与列表保持原引用。
+ * Remotion 转场以交界处为中心；所作用文字不显示时保留原值（见 `hiddenTextClips`）。模板规则保持不变，合成时由总线按实际素材重新计算；没有变化的片段与列表保持原引用。
  */
 export function timeClips(draft: Draft, resolved: ResolvedTimeline): Draft {
   const round = (seconds: number) => Math.round(seconds * 1000) / 1000;

@@ -5,7 +5,7 @@ import { OperatorAccess, SpriteKind, SpriteParameterFormat, SpriteParameterSchem
 import type { SpriteAsset } from "@/features/sprites/model";
 import { assetParameter, categoryOf, transformFields } from "@/features/sprites/parameters";
 import { validParameter } from "@/components/ParameterControl";
-import { addClip, bindClip, moveClip, removeClip, setClipParameter, setClipTransform, timeClips, validateClipSlots } from "@/features/templates/clips";
+import { addClip, bindClip, hiddenTextClips, moveClip, removeClip, setClipParameter, setClipTransform, timeClips, validateClipSlots } from "@/features/templates/clips";
 import { addTrack, previewContext, resolveTemplate, setTrackTiming } from "@/features/templates/tracks";
 import type { Draft } from "@/features/templates/model";
 import { catalog, sampleDraft, sampleMedia } from "./fixtures";
@@ -129,6 +129,17 @@ test("片段时间跟随所占对象", () => {
   expect(result.clips.map(({ start, duration, transition_boundary }) => [start, duration, transition_boundary])).toEqual([[2, 3, undefined], [18.5, 1, 2]]);
   expect(draft.clips.map(({ start }) => start)).toEqual([0, 0]);
   expect(timed(result)).toBe(result);
+});
+
+// 场景：所作用的标题在 30 秒预览里没有显示时间，字效同样不显示且保留原有区间；标题回到预览内后字效重新跟随它，滤镜不受影响。
+test("所作用文字不显示时字效也不显示", () => {
+  const text = { ...asset, id: "text", kind: SpriteKind.TEXT };
+  const late = addClip(addClip(setTrackTiming(sampleDraft(), "title", { start_mode: "seconds", start: 40, duration: null }), text, [text], "title"), asset, [text, asset]);
+  const resolved = resolveTemplate(late, previewContext(sampleMedia));
+  expect([...hiddenTextClips(late, resolved)]).toEqual([late.clips[0].id]);
+  expect(timeClips(late, resolved)).toBe(late);
+  const shown = setTrackTiming(late, "title", { start_mode: "seconds", start: 2, duration: 3 });
+  expect(hiddenTextClips(shown, resolveTemplate(shown, previewContext(sampleMedia))).size).toBe(0);
 });
 
 // 场景：参数覆盖与宿主变换逐项修改；undefined 恢复默认值，其他片段与输入草稿不变。

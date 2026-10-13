@@ -56,8 +56,10 @@ export function SpriteCatalog({ environment, catalog, onAdd }: { environment: En
 }
 
 /** 右侧片段列表：显示名称、时间与是否改过参数，点选打开参数设置，可移除；本地模板不显示。资产已不可用时提示先移除，否则服务端会拒绝保存。 */
-export function SpriteClips({ environment, clips, catalog, duration, selected, onSelect, onRemove }: {
+export function SpriteClips({ environment, clips, catalog, duration, hidden, selected, onSelect, onRemove }: {
   environment: Environment; clips: RemotionClip[]; catalog: Catalog; duration: number | undefined;
+  /** 所作用文字在当前预览中不显示的字效，与文字一起标为未应用。 */
+  hidden?: ReadonlySet<string>;
   selected: string | null; onSelect: (id: string) => void; onRemove: (id: string) => void;
 }) {
   if (environment !== "cloud") return null;
@@ -72,7 +74,7 @@ export function SpriteClips({ environment, clips, catalog, duration, selected, o
           const asset = assets?.find((item) => item.id === clip.sprite_id);
           const name = asset?.name ?? (assets ? "未找到的资产" : "读取中…");
           const end = duration === undefined ? undefined : Math.min(duration, clip.start + (clip.duration ?? asset?.seconds ?? 0));
-          const timing = end === undefined ? "等待预览时间" : end <= clip.start ? "当前视频未应用" : `${Number(clip.start.toFixed(1))}～${Number(end.toFixed(1))} 秒`;
+          const timing = end === undefined ? "等待预览时间" : end <= clip.start || hidden?.has(clip.id) ? "当前视频未应用" : `${Number(clip.start.toFixed(1))}～${Number(end.toFixed(1))} 秒`;
           const edited = Object.keys(clip.parameters).length + Object.keys(clip.transform).length > 0;
           const slot = clipSlot(clip, asset);
           const place = slot === "title" || slot === "subtitle" ? `${textRoles[slot]}字效` : slot === "transition" ? `镜头转场 ${clip.transition_boundary ?? ""}`.trim() : slot ? effectTargets[slot] : asset ? "未选择作用对象" : "";

@@ -16,7 +16,7 @@ import { TemplateInspector, TransitionInspector, type InspectorTab } from "./Tem
 import { TemplatePreview } from "./TemplatePreview";
 import { SpriteCatalog, SpriteClips } from "./SpritePanels";
 import { SpriteClipInspector } from "./SpriteClipInspector";
-import { addClip, bindClip, clipSlot, moveClip, removeClip, setClipParameter, setClipTransform, timeClips } from "./clips";
+import { addClip, bindClip, clipSlot, hiddenTextClips, moveClip, removeClip, setClipParameter, setClipTransform, timeClips } from "./clips";
 import { exampleKeyword } from "./timeline";
 import { transformFields } from "@/features/sprites/parameters";
 import { useSpriteCatalog } from "./useSpriteCatalog";
@@ -81,6 +81,8 @@ export function TemplateWorkspace({ selection = null, onHome }: {
   // 占用文字或交界处的片段按本次预览计算区间，展示与保存共用，不改变草稿。
   const timedDraft = useMemo(() => draft && preview.timeline ? timeClips(draft, preview.timeline) : draft, [draft, preview.timeline]);
   const timedClips = timedDraft?.clips;
+  // 所作用文字在当前预览中不显示时，字效也不显示，避免按原有时间出现在画面上。
+  const hiddenClips = useMemo(() => draft && preview.timeline ? hiddenTextClips(draft, preview.timeline) : new Set<string>(), [draft, preview.timeline]);
   const draftTracks = draft?.tracks;
   const spriteClips = useMemo(() => (timedClips ?? []).map((clip) => {
     const asset = spriteCatalog.assets?.find((item) => item.id === clip.sprite_id);
@@ -99,7 +101,7 @@ export function TemplateWorkspace({ selection = null, onHome }: {
       transform: clip.transform,
       canvas: asset ? { width: asset.width, height: asset.height, box: asset.box, movable: transformFields(asset.kind).includes("x") } : undefined,
     };
-  }).filter((clip) => clip.end > clip.start), [timedClips, draftTracks, spriteCatalog.assets, previewLength]);
+  }).filter((clip) => clip.end > clip.start && !hiddenClips.has(clip.id)), [timedClips, hiddenClips, draftTracks, spriteCatalog.assets, previewLength]);
   const dirty = draft !== null && (current === null || JSON.stringify(draft) !== baseline);
   const selectedTrack = draft?.tracks.find((track) => track.id === target);
   const assetTrack = selectedTrack ?? draft?.tracks.find((track) => track.id === lastTextTrack.current);
@@ -286,7 +288,7 @@ export function TemplateWorkspace({ selection = null, onHome }: {
                   }} />
               </main>}
               inspector={<aside className="template-workspace-inspector h-full min-w-0 overflow-y-auto xl:border-l"><AppliedEffects draft={draft} catalog={catalog} resolved={preview.timeline} selected={target} onSelect={selectTarget} />
-                <SpriteClips environment={environment} clips={timedClips ?? []} catalog={spriteCatalog} duration={preview.timeline?.duration} selected={selectedClip?.id ?? null} onSelect={selectTarget} onRemove={(id) => editTrack(() => removeClip(draft, id))} />
+                <SpriteClips environment={environment} clips={timedClips ?? []} catalog={spriteCatalog} duration={preview.timeline?.duration} hidden={hiddenClips} selected={selectedClip?.id ?? null} onSelect={selectTarget} onRemove={(id) => editTrack(() => removeClip(draft, id))} />
                 {selectedClip && <SpriteClipInspector key={selectedClip.id} clip={selectedClip} asset={spriteCatalog.assets?.find((item) => item.id === selectedClip.sprite_id)} duration={preview.timeline?.duration}
                   onParameter={(key, value) => editTrack(() => setClipParameter(draft, selectedClip.id, key, value))}
                   onTransform={(patch) => editTrack(() => setClipTransform(draft, selectedClip.id, patch))}
