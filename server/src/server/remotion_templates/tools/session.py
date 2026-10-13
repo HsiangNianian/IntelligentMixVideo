@@ -143,7 +143,9 @@ class ToolSession:
         self.directory, self.images = directory, images
         self.on_stage, self.intent = on_stage, intent or {}
         request = self.intent.get("original_request") or {}
-        self.composition = spec.composition.model_dump() if spec else request.get("composition")
+        # A new work must last exactly as long as the user chose; an edit starts from an accepted version
+        # and keeps deriving its length from the instances.
+        self.target_frames = None if spec else (request.get("composition") or {}).get("duration_in_frames")
         self.kind = spec.sprite_kind if spec else request.get("sprite_kind")
         root = harness.settings.data_dir
         if not root.is_absolute():
@@ -184,6 +186,7 @@ class ToolSession:
         """
         return _bounded_snapshot({
             "latest_sprite_id": self.latest_sprite_id,
+            **({"target_duration_frames": self.target_frames} if self.target_frames else {}),
             "saved_sprites": [
                 {
                     "sprite_id": item.sprite_id,
@@ -564,6 +567,13 @@ class ToolSession:
                 layout=instance.layout,
                 timing=instance.timing,
             ))
+        if self.target_frames and duration != self.target_frames:
+            raise ToolFault(
+                "INVALID_ARGUMENT",
+                f"The user chose {self.target_frames} frames ({self.target_frames / 30:g} s) but the last instance ends at frame {duration}: "
+                f"retime the instances so the latest start_frame + duration_frames is exactly {self.target_frames}.",
+                field="/instances",
+            )
         bindings = [item.model_dump(mode="json") for item in request.parameters]
         # 打包器是同步子进程；放到线程里执行，避免阻塞同进程的 SSE 与其它请求。
         code, schema, defaults = await asyncio.to_thread(compose_source, resolved, bindings)
