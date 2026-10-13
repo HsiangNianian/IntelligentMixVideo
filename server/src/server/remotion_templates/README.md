@@ -148,10 +148,12 @@ never blocked by it.
 A text effect (`kind=text`) must also show its longest allowed text in full. In the same mount `sprite.create`
 fills the `text` parameter with `测` up to its declared `maxLength` and, on the same five sampled frames, measures
 the text boxes of the layer: text cut off by an ancestor with `overflow: hidden|clip`, text outside the 1080x1920
-canvas and text lines shorter than 20px (the smallest `fontSize` is 24) are problems. The `text_fit` check fails
-only when every frame that shows the text has a problem, so a reveal mask or slide-in that hides text for a few
-frames is fine, while a fixed-size box that clips long text on every frame is not; it also fails when the filler
-text is never rendered. A failure is refused with `CODE_VALIDATION_FAILED` (`text_fit: ...` with the clipped box or
+canvas, text lines shorter than 20px (the smallest `fontSize` is 24) and text of which only part is rendered (a
+slice of it, or some of it hidden) are problems; text in a node without a box (`display: none`), with
+`visibility: hidden` or faded out to opacity 0 is not shown. The `text_fit` check fails only when every frame that
+shows the text has a problem, so a reveal mask or slide-in that hides text for a few frames is fine, while a
+fixed-size box that clips long text on every frame is not; it also fails when the filler text is never visibly
+rendered. A failure is refused with `CODE_VALIDATION_FAILED` (`text_fit: ...` with the clipped box or
 size and the fix: wrap the text inside a bounded width, no fixed-height `overflow: hidden` box, shrink the font
 for long text, never below 24px; text that cannot fit even then means the declared `maxLength` is too large and must be lowered, and input beyond it is refused by the parameter Schema). It is a geometric measurement, not a visual review; like the transparency
 measurement it only applies to generation, and already published versions are not re-checked.
@@ -358,8 +360,8 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   Sprite with `text` and `fontSize` parameters, inside the render slot, the isolated browser mounts the placement's own
   values at the length its Sprite plays in the render (the length it reads as `durationInFrames`; a held text its
   previewed length) and measures the text boxes the same way `sprite.create` does (cut off by an `overflow:
-  hidden|clip` ancestor, outside the canvas once the placement's host transform moves, scales and rotates it, or lines
-  under 20px tall). Placements that differ only in length or transform are measured
+  hidden|clip` ancestor, outside the canvas once the placement's host transform moves, scales and rotates it, lines
+  under 20px tall, or only part of the text shown). Placements that differ only in length or transform are measured
   separately; the transform's opacity does not move text and is ignored. Text that already fits keeps its `fontSize`; otherwise the
   host lowers `fontSize` to the largest whole size, down to the published minimum, at which it is shown in full
   (binary search; the size is logged, the template and the sealed source are untouched). Text that does not fit even

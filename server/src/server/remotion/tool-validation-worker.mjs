@@ -360,10 +360,11 @@ function hostPlacement(box, transform = {}) {
 /**
  * Describe, for the frame currently mounted, how the text `needle` does not fit: text clipped by an ancestor with
  * `overflow: hidden|clip`, text outside the canvas once `placement` (see `hostPlacement`) moves, rotates and scales
- * it, or text lines too small to read. The component is mounted without the host transform: clipping and line height
- * are measured in its own layout, and only the corners of each line are mapped through the transform for the canvas.
- * Returns `null` when the component renders none of the text at this frame (not yet shown), and an empty list when
- * every line fits.
+ * it, text lines too small to read, or only part of the text rendered (sliced, or partly hidden). The component is
+ * mounted without the host transform: clipping and line height are measured in its own layout, and only the corners
+ * of each line are mapped through the transform for the canvas. Only painted text counts: a node without a box
+ * (`display: none`), with `visibility: hidden` or faded out to opacity 0 is not shown. Returns `null` when no part
+ * of the text is shown at this frame (not yet shown), and an empty list when all of it is shown and fits.
  */
 function textFitProblems(page, needle, placement) {
   return page.evaluate((needle, minLine, tolerance, placement) => {
@@ -378,18 +379,29 @@ function textFitProblems(page, needle, placement) {
       const [dx, dy] = [left - canvas.left - placement.cx, top - canvas.top - placement.cy];
       return [placement.x + dx * cos - dy * sin, placement.y + dx * sin + dy * cos];
     };
+    /** Whether `element` is painted: not `visibility: hidden` and not faded out by its own or an ancestor's opacity. */
+    const painted = (element) => {
+      if (getComputedStyle(element).visibility !== "visible") return false;
+      let opacity = 1;
+      for (let item = element; item && layer.contains(item); item = item.parentElement) opacity *= Number(getComputedStyle(item).opacity);
+      return opacity > 0.01;
+    };
+    // Components may split the text into words or glyphs and drop the spaces between them.
+    const compact = (value) => value.replace(/\s+/g, "");
+    const wanted = compact(needle);
     const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT);
     const problems = new Set();
-    let found = false;
+    let joined = "";
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      const shown = node.nodeValue.trim();
-      if (!shown || !needle.includes(shown)) continue;
-      found = true;
+      const shown = compact(node.nodeValue);
+      if (!shown || !(wanted.includes(shown) || shown.includes(wanted)) || !node.parentElement || !painted(node.parentElement)) continue;
       const range = document.createRange();
       range.selectNodeContents(node);
       const lines = Array.from(range.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0);
       const bounds = range.getBoundingClientRect();
+      // Text without a box (display: none, an empty or collapsed element) is not shown.
       if (!lines.length) continue;
+      joined += shown;
       const smallest = Math.min(...lines.map((rect) => rect.height));
       if (smallest < minLine) problems.add(`its lines are only ${Math.round(smallest)}px tall, too small to read`);
       const corners = lines.flatMap((rect) => [place(rect.left, rect.top), place(rect.right, rect.top), place(rect.left, rect.bottom), place(rect.right, rect.bottom)]);
@@ -407,7 +419,9 @@ function textFitProblems(page, needle, placement) {
           problems.add(`it is cut off by a ${Math.round(box.width)}x${Math.round(box.height)} box with overflow hidden`);
       }
     }
-    return found ? [...problems] : null;
+    if (!joined) return null;
+    if (!joined.includes(wanted)) problems.add(`only part of it is rendered, not all ${wanted.length} characters`);
+    return [...problems];
   }, needle, MIN_LINE_HEIGHT, FIT_TOLERANCE, placement);
 }
 
@@ -437,7 +451,7 @@ async function measureTextFit(page, needle, frames = sampleFrames(request.compos
 /**
  * Mechanical check that a text effect shows its longest allowed text in full: the text parameter is filled to its
  * declared maxLength and the sampled frames are measured. The check fails only when every frame that shows the
- * text has a problem, and when the text is never rendered. This is a geometric measurement of the text boxes,
+ * text has a problem (a text cut to a slice of itself is one), and when the text is never visibly rendered. This is a geometric measurement of the text boxes,
  * not a visual review of how the result looks.
  */
 async function textFitCheck(page) {
@@ -458,7 +472,7 @@ async function textFitCheck(page) {
   if (measured.error)
     return { name: "text_fit", status: "failed", message: `The component throws at frame ${measured.frame} with the text filled to maxLength ${length}: ${measured.error}`.slice(0, 6000) };
   if (!measured.shown)
-    return { name: "text_fit", status: "failed", message: `With text filled to its maxLength (${length} characters) the component never renders that text. The text parameter must be displayed as given.` };
+    return { name: "text_fit", status: "failed", message: `With text filled to its maxLength (${length} characters) the component never renders any of that text visibly. The text parameter must be displayed as given.` };
   if (measured.failing < measured.shown)
     return { name: "text_fit", status: "passed", message: `The ${length}-character text is shown in full in ${measured.shown - measured.failing} of ${measured.shown} frames that display it.` };
   return {

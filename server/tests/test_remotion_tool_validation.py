@@ -771,6 +771,10 @@ export default function Title(props: { text: string; fontSize: number }) {
   );
 }
 """
+# 与 FITTING_TEXT 同样换行缩字号，但只渲染前 10 个字（截断）、把文字放进 display: none 的元素，或把每个字拆成一个 span。
+SLICED_TEXT = FITTING_TEXT.replace("{props.text}</div>", "{props.text.slice(0, 10)}</div>")
+HIDDEN_TEXT = FITTING_TEXT.replace('color: "#fff" }}>', 'color: "#fff", display: "none" }}>')
+PER_GLYPH_TEXT = FITTING_TEXT.replace("{props.text}</div>", '{props.text.split("").map((glyph, index) => <span key={index}>{glyph}</span>)}</div>')
 IGNORES_TEXT = """import React from "react";
 import { AbsoluteFill } from "remotion";
 export default function Title(props: { text: string; fontSize: number }) {
@@ -804,9 +808,13 @@ def browser_text_validate(tmp_path: Path, code: str, max_length: int):
     (FITTING_TEXT, 100, True, ""),
     (REVEAL_MASK_TEXT, 4, True, ""),
     (IGNORES_TEXT, 100, False, "never renders"),
-], ids=["fixed-box-clips-long-title", "wrapped-and-shrunk", "reveal-mask-only-early", "ignores-text"])
+    (SLICED_TEXT, 100, False, "only part of it is rendered"),
+    (HIDDEN_TEXT, 100, False, "never renders"),
+    (PER_GLYPH_TEXT, 100, True, ""),
+], ids=["fixed-box-clips-long-title", "wrapped-and-shrunk", "reveal-mask-only-early", "ignores-text", "sliced-text", "display-none", "one-span-per-glyph"])
 def test_real_browser_requires_the_longest_text_to_be_shown_in_full(tmp_path, code, max_length, passed, reason):
-    """issue #119：972x360 的 overflow hidden 固定框在 100 字标题下被裁切而被拒；按字数缩小字号并换行的写法、只在开头几帧被遮罩挡住的文字通过；不显示 text 的组件被拒。"""
+    """issue #119：972x360 的 overflow hidden 固定框在 100 字标题下被裁切而被拒；按字数缩小字号并换行的写法、只在开头几帧被遮罩挡住的文字通过；
+    不显示 text 的组件被拒。只渲染一段截断的文字、或文字在 display: none 里没有排版框，都不算完整显示；逐字拆成 span 的完整文字仍算。"""
     report = browser_text_validate(tmp_path, code, max_length)
     check = next(item for item in report.checks if item.name == "text_fit")
     assert (check.status == "passed") is passed, check.message
