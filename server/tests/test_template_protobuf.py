@@ -385,11 +385,14 @@ def test_remotion_tracks_must_share_one_canvas(client: TestClient, template_payl
     (1, {"editor": {"remotion": {"businessTarget": "decoration"}}}, "须作用于标题或底部字幕"),
     (1, {"editor": {"remotion": {"businessTarget": "title", "parameters": [{"key": "text", "stringValue": "旧文字"}]}}}, "不能覆盖 text"),
     (1, {"editor": {"remotion": {"businessTarget": "subtitle", "parameters": [{"key": "keywords", "stringListValue": {"values": ["新品"]}}]}}}, "不能覆盖 keywords"),
+    (2, {"editor": {"remotion": {"businessTarget": "title"}}}, "不是字效，不能作用于文字"),
+    (3, {"editor": {"remotion": {"businessTarget": "subtitle"}}}, "不是字效，不能作用于文字"),
     (4, {}, "须指定视频交界处"), (3, {"transition_boundary": 1}, "不是转场，不能占用视频交界处"),
     (1, {"text_target": "title", "editor": {"remotion": {"parameters": [{"key": "text", "stringValue": "旧文字"}]}}}, "不能覆盖 text"),
     (1, {"text_target": "subtitle", "editor": {"remotion": {"parameters": [{"key": "keywords", "stringListValue": {"values": ["新品"]}}]}}},
      "不能覆盖 keywords"),
-], ids=["text-unbound", "filter-on-text", "legacy-decoration", "legacy-text-override", "legacy-keywords-override", "transition-unbound", "effect-on-boundary", "bound-text-override", "bound-keywords-override"])
+], ids=["text-unbound", "filter-on-text", "legacy-decoration", "legacy-text-override", "legacy-keywords-override", "legacy-title-on-filter",
+         "legacy-subtitle-on-effect", "transition-unbound", "effect-on-boundary", "bound-text-override", "bound-keywords-override"])
 def test_remotion_slot_must_match_sprite_kind(client: TestClient, template_payload: dict, kind: int, slot: dict, reason: str) -> None:
     """片段按 Sprite 分类占用模板对象：字效作用于文字且不覆盖文字与关键词、转场占用交界处，其他分类两者都不占用；不符时 422 且不写库。"""
     seed_sprite(kind=kind)
