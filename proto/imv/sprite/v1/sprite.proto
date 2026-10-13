@@ -227,34 +227,93 @@ message SpriteParameterOverride {
   ScalarValue value = 2;
 }
 
-// POST /api/sprites/render 的一次实际渲染输入，由总线在切片、素材匹配与时间对齐后生成。
-// 一个请求只渲染一个连续区间，最长 30 秒且不超过 1800 帧；长效果分成相邻请求。
-// 效果内的帧数都按 output.fps 计数，与最终 IMS 成片的时间轴位置无关；返回临时 VP9 Alpha WebM。
-// 服务端只渲染透明叠加视频；总线负责上传可公开读取的素材并放入 IMS VideoTrack。
+// POST /api/sprites/render 的一次渲染输入（application/x-protobuf），由总线在切片、素材匹配与时间对齐后生成。
+// Sprite 是固定的 style 加 content：style 是已验收的代码与样式参数（resolved_style、transform），
+// content 是文字与关键词——标题这样整段一条文字用 text 与 keywords，字幕用按时间排列的 cues；
+// time 是 effect_total_frames；Agent 生成时选的时长只用于预览。
+// 一个请求得到整个效果的一个完整视频（0.5～120 秒）：服务端按 30 秒一块依次渲染再无损拼接，
+// 每块里 Sprite 都读到完整时长，动画跨块连续，总线不需要分段。效果内的帧数都按发布画布的 fps 计数，
+// 与最终 IMS 成片的时间轴位置无关。服务端受理后异步渲染透明 VP9 Alpha WebM，转存为可公开读取的对象后回调；
+// 总线把它放入 IMS VideoTrack。
 message SpriteRenderInput {
+  // 早期设计里由总线分段的偏移与帧数；现在由服务端切块，字段号保留不再使用。
+  reserved 4, 5;
+  reserved "effect_offset_frames", "render_frame_count";
   // 需要渲染的不可变发布 ID；服务端据此读取已验收源码与默认配置。
   string sprite_id = 1;
   // 触发本次渲染的摆放实例 ID（模板里 remotion 轨道的 id），供总线关联和诊断；渲染器不会据此重新读取模板。
   string placement_id = 2;
-  // width、height、fps 必须与发布画布一致；preview_frames 不决定本次渲染时长。
+  // 可省略；提供时 width、height、fps 必须与发布画布一致，preview_frames 不决定本次渲染时长。
   // IMS 可在加入时间线后通过 Cover 把输出缩放到最终成片画布。
   SpriteCanvas output = 3;
-  // 本段从效果起点算起的零基帧偏移；首段为 0，后续段等于此前各段帧数之和。
-  // 与业务字幕或最终成片的开始时间无关；由总线另行决定 IMS TimelineIn。
-  uint64 effect_offset_frames = 4;
-  // 本段要输出的帧数，必须大于零，且偏移加帧数不得超过完整效果总帧数。
-  // 单段最多 30 秒、1800 帧；总线用此值计算 IMS 放置区间的实际时长。
-  uint64 render_frame_count = 5;
-  // 标题取请求 title，字幕取当前短句清理后的正文；视觉 Sprite 留空。
-  // 服务端最多使用前 2000 个字符，过长内容直接截断。
+  // content：整段只有一条文字时使用，例如标题取请求 title，Sprite 在整个效果时长内显示它。
+  // 字效必须给出 text 或 cues 之一，视觉 Sprite 两者都留空；必须满足字效文字参数发布时的长度限制，否则拒绝受理。
   string text = 6;
-  // 字幕关键词来自当前短句所属原切片；服务端在 text 内计算全部字面命中并高亮。
-  // 不支持关键词的 Sprite 不接收非空数组；当前最多 20 个词，每词最多 100 字符。
+  // content：与 text 一起使用的关键词；组件在 text 内查找各词的字面命中并高亮。
+  // 不支持关键词的 Sprite 不接收非空数组；数量与每词长度受发布时的关键词参数限制。
   repeated string keywords = 7;
-  // 总线取出的可编辑样式覆盖；不允许在此覆盖文字、时间、只读字段或源码。
-  // 未列出的字段沿用发布默认值，渲染服务会再按发布参数契约校验。
+  // style：总线取出的可编辑样式覆盖（模板 remotion 轨道 editor.remotion.parameters）；
+  // 不允许在此覆盖文字、关键词、只读字段或源码。未列出的字段沿用发布默认值，渲染服务按发布参数契约校验。
   repeated SpriteParameterOverride resolved_style = 8;
-  // 完整逻辑效果的总帧数，必须大于零；长效果分段时每段传相同值。
-  // 当前上限为 216000 帧，渲染器以此决定完整动画进度，避免分段处重新播放。
+  // time：完整效果的总帧数，0.5～120 秒，也是输出视频的帧数；不带字幕切片时 Sprite 按这个长度排布与播放。
+  // 由秒数半帧向后取整得到（floor(秒 × fps + 0.5)），与叠加渲染一致。
   uint64 effect_total_frames = 9;
+  // 终态通知地址（HTTP/HTTPS）；可省略，总线也可以查询任务。回调体与叠加渲染相同：
+  // taskId、status（succeed 或 failed）、videoUrl、errorMessage。
+  string callback_url = 10;
+  // style：摆放的宿主变换（模板 remotion 轨道 editor.remotion.transform），未设置的字段取默认值；
+  // 只能设置该分类允许的字段，范围与模板保存时相同。
+  SpriteHostTransform transform = 11;
+  // content：字幕的切片，按起点排列、互不重叠，都在效果时长之内；与 text 二选一。
+  // 每个切片用同一个 Sprite 在自己的区间里显示一次，Sprite 读到的 durationInFrames 是切片的帧数，
+  // 切片之间与之外的帧保持透明。显示不足 1.5 秒的字效（短字幕或短标题）不播出入场：按发布的预览长度
+  // 定格在其中间帧，只显示自己的帧数，避免闪烁。
+  repeated SpriteCue cues = 12;
+}
+
+// 一条字幕切片：文字、关键词与它在效果时间轴上的区间。帧号按发布画布的 fps 计数，
+// 由切片秒数半帧向后取整得到（floor(秒 × fps + 0.5)），与叠加渲染一致。
+message SpriteCue {
+  // 切片正文（总线清理后的短句，通常不超过 8 个字），必须满足字效文字参数的长度限制。
+  string text = 1;
+  // 切片关键词；不支持关键词的 Sprite 不接收非空数组。
+  repeated string keywords = 2;
+  // 切片开始帧（含），从效果起点算起。
+  uint64 start_frame = 3;
+  // 切片结束帧（不含），必须晚于开始帧。
+  uint64 end_frame = 4;
+}
+
+// 宿主变换：内容区域中心在画布上的位置（像素）、缩放、旋转（度）与不透明度。
+message SpriteHostTransform {
+  // 内容中心横坐标，0～画布宽。
+  optional double x = 1;
+  // 内容中心纵坐标，0～画布高。
+  optional double y = 2;
+  // 缩放，0.25～4。
+  optional double scale = 3;
+  // 旋转角度，-180～180。
+  optional double rotation = 4;
+  // 不透明度，0～1。
+  optional double opacity = 5;
+}
+
+// POST /api/sprites/render 的受理结果。
+message SpriteRenderAccepted {
+  // 渲染任务 ID，用于 GET /api/sprites/render/{task_id} 与回调关联。
+  string task_id = 1;
+}
+
+// GET /api/sprites/render/{task_id} 的任务状态；失败仍为 200 并携带脱敏错误。
+message SpriteRenderTask {
+  // 渲染任务 ID。
+  string task_id = 1;
+  // queued、rendering、uploading、succeeded 或 failed。
+  string status = 2;
+  // 成功后的可公开读取 WebM 地址；其他状态为空。
+  string video_url = 3;
+  // 失败时的稳定错误码；其他状态为空。
+  string error_code = 4;
+  // 失败时的固定说明，不含本机路径或渲染器输出；其他状态为空。
+  string error_message = 5;
 }

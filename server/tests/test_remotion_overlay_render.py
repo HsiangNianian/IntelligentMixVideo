@@ -1,4 +1,4 @@
-"""Remotion 叠加视频：时长优先级、摆放规划、任务流转、ZOS 转存与回调的离线回归。
+"""Remotion 叠加视频与单个 Sprite 渲染：时长优先级、摆放与分段规划、任务流转、ZOS 转存与回调的离线回归。
 
 默认不启动浏览器、ffprobe 或 ZOS：渲染器、探测与上传由替身承担，任务表使用临时 SQLite。
 `real_` 用例在 Linux 上经隔离沙箱真实渲染，需 IMV_TEST_RENDERER=1（见 backend-integration 工作流）。
@@ -37,6 +37,9 @@ from server.remotion_templates.overlay_service import OverlayRenders
 from server.remotion_templates.renderer import Renderer
 from server.remotion_templates.routes import runtime_for
 from server.remotion_templates.settings import Settings
+from server.remotion_templates import sprite_render
+from server.remotion_templates.sprite_render import chunk_ranges, join_problem, plan_sprite_render
+from server.remotion_templates.sprite_router import sprite_runtime
 from server.remotion_templates.store import NotFound, Store
 from server.video_composition import media
 from server.video_composition.schema import MediaURL
@@ -234,10 +237,13 @@ class FakeRenderer:
         """校验 worker 名称，保存请求与沙箱 CPU 上限并产出文件。"""
         assert worker == "overlay-worker.mjs"
         self.cpu_seconds = cpu_seconds
-        self.requests.append(json.loads((directory / "request.json").read_text()))
+        request = json.loads((directory / "request.json").read_text())
+        self.requests.append(request)
         if self.failure:
             raise self.failure
-        (directory / "overlay.webm").write_bytes(b"webm")
+        # A chunked single Sprite render writes one file per requested frame range.
+        for name in [f"chunk-{index}.webm" for index in range(len(request["ranges"]))] if "ranges" in request else ["overlay.webm"]:
+            (directory / name).write_bytes(b"webm")
         return {}
 
 
@@ -262,6 +268,8 @@ def service(tmp_path, monkeypatch):
 
     monkeypatch.setattr(overlay_render, "probe_overlay", probed)
     monkeypatch.setattr(overlay_service, "environment_problem", lambda settings: None)
+    # 单 Sprite 渲染还要用 ffmpeg 拼接分块；CI 主机可能没有它，替身渲染器也不需要。
+    monkeypatch.setattr(overlay_service, "join_problem", lambda overlay: None)
     monkeypatch.setattr(overlay_service, "upload_public", upload)
     monkeypatch.setattr(overlay_service, "ZosSettings", lambda: SimpleNamespace())
 
@@ -1091,3 +1099,292 @@ def test_stored_overrides_survive_recovery(service) -> None:
     run_resume(overlays)
     [instance] = renderer.requests[0]["instances"]
     assert instance["config"]["fontWeight"] == 700 and instance["host"]["transform"] == {"opacity": 0.5}
+
+
+# ---- 单个 Sprite 渲染（POST /api/sprites/render）：style + content + time，一个请求得到一个完整视频 ----
+# 字效 T 带 text/keywords 内容参数（发布时固定为这两个字段名）；滤镜 F 不接收内容。
+T = pb.PublishedSprite()
+T.CopyFrom(published_sprite("t"))
+T.text_prop, T.keywords_prop = "text", "keywords"
+F = sprite("f")
+F.kind = pb.SPRITE_KIND_FILTER_OVERLAY
+PUBLICATIONS.update({"t": T, "f": F})
+
+
+def cue(text: str, start: int, end: int, *keywords: str) -> pb.SpriteCue:
+    """一条字幕切片：文字、帧区间与关键词。"""
+    return pb.SpriteCue(text=text, start_frame=start, end_frame=end, keywords=list(keywords))
+
+
+def render_input(**changes) -> pb.SpriteRenderInput:
+    """默认请求：字效 t 的 10 秒标题，带文字与关键词。"""
+    values = {"sprite_id": "t", "text": "新品上市", "keywords": ["新品"], "effect_total_frames": 300, **changes}
+    return pb.SpriteRenderInput(**values)
+
+
+# 场景：标题整段一条文字：Sprite 读到完整效果时长；content 写入文字与关键词，style 覆盖与宿主变换照常合并。
+def test_sprite_render_shows_one_text_for_the_whole_effect() -> None:
+    """一个实例从第 0 帧持续 300 帧（Sprite 读到的 durationInFrames），输出也是 300 帧。"""
+    message = render_input(resolved_style=[pb.SpriteParameterOverride(key="fontWeight", value=pb.ScalarValue(number_value=700))],
+                           transform=pb.SpriteHostTransform(x=540, scale=2))
+    overlay = plan_sprite_render(message, T)
+    assert (overlay.width, overlay.height, overlay.fps, overlay.frames) == (1080, 1920, 30, 300)
+    [instance] = overlay.instances
+    assert (instance["start_frame"], instance["duration_frames"]) == (0, 300)
+    assert instance["config"]["text"] == "新品上市" and instance["config"]["keywords"] == ["新品"]
+    assert instance["config"]["fontWeight"] == 700 and instance["host"]["transform"] == {"x": 540, "scale": 2}
+
+
+# 场景：字幕按总线切分的时间逐条显示：每个切片一个实例、各带文字与关键词；切片之间透明。
+# 不短于 1.5 秒（45 帧）的切片按自身长度播放，Sprite 读到的时长就是切片长度；更短的切片不播出入场，
+# 按资产的预览长度（90 帧）定格在中间帧，只显示切片自己的帧数。
+def test_sprite_render_shows_each_subtitle_cue_in_its_own_frames() -> None:
+    """60 帧的切片按自身长度播放；18 帧与 14 帧的切片定格在 90 帧预览的第 45 帧，各显示 18、14 帧。"""
+    message = render_input(text="", keywords=[], effect_total_frames=200,
+                           cues=[cue("看新闻了吗", 7, 25), cue("AI把数学圈", 52, 112, "数学圈"), cue("搞炸了", 112, 126)])
+    overlay = plan_sprite_render(message, T)
+    assert overlay.frames == 200
+    assert [(item["start_frame"], item["duration_frames"], item.get("hold"), item["config"]["text"], item["config"]["keywords"]) for item in overlay.instances] == [
+        (7, 90, {"frame": 45, "frames": 18, "length": 90}, "看新闻了吗", []),
+        (52, 60, None, "AI把数学圈", ["数学圈"]),
+        (112, 90, {"frame": 45, "frames": 14, "length": 90}, "搞炸了", []),
+    ]
+
+
+# 场景：定格只针对字效：显示不足 1.5 秒的标题同样定格；滤镜等视觉 Sprite 本身就是动画，再短也按自身长度播放。
+def test_only_short_text_effects_hold_still() -> None:
+    """1 秒的标题定格；1 秒的滤镜按 30 帧播放；正好 1.5 秒的标题按自身长度播放。
+    预览比字幕还短时，实例持续字幕的帧数，Sprite 仍读到预览长度，字幕不会提前消失。"""
+    [title] = plan_sprite_render(render_input(effect_total_frames=30), T).instances
+    assert (title["duration_frames"], title["hold"]) == (90, {"frame": 45, "frames": 30, "length": 90})
+    brief = pb.PublishedSprite()
+    brief.CopyFrom(T)
+    brief.canvas.preview_frames = 9
+    [held] = plan_sprite_render(render_input(effect_total_frames=36), brief).instances
+    assert (held["duration_frames"], held["hold"]) == (36, {"frame": 4, "frames": 36, "length": 9})
+    [tint] = plan_sprite_render(render_input(sprite_id="f", text="", keywords=[], effect_total_frames=30), F).instances
+    assert (tint["duration_frames"], "hold" in tint) == (30, False)
+    [long] = plan_sprite_render(render_input(effect_total_frames=45), T).instances
+    assert (long["duration_frames"], "hold" in long) == (45, False)
+
+
+# 场景：服务端按 30 秒切块输出：70 秒（2100 帧）是 900、900、300 帧三段；不超过 30 秒只有一段，不需要拼接，也就不需要 ffmpeg。
+def test_long_effects_render_in_thirty_second_chunks(monkeypatch) -> None:
+    """分块是同一合成的连续帧区间（含两端），实例保持绝对时间；没有 ffmpeg 的主机只拒绝需要拼接的效果。"""
+    assert chunk_ranges(2100, 30) == [[0, 899], [900, 1799], [1800, 2099]]
+    assert chunk_ranges(900, 30) == [[0, 899]]
+    monkeypatch.setattr(sprite_render.shutil, "which", lambda name: None)
+    assert join_problem(plan_sprite_render(render_input(effect_total_frames=900), T)) is None
+    assert join_problem(plan_sprite_render(render_input(effect_total_frames=901), T)) == "ffmpeg"
+
+
+# 场景：时长 0.5～120 秒；字效带 text 或 cues 之一，切片按起点排列、互不重叠、至少一帧且在时长之内；其他分类不接收内容；内容不能伪装成样式覆盖。
+@pytest.mark.parametrize(("sprite_id", "changes", "code"), [
+    ("t", {"effect_total_frames": 14}, "duration_invalid"),
+    ("t", {"effect_total_frames": 3601}, "duration_too_long"),
+    ("t", {"text": ""}, "content_invalid"),
+    ("t", {"cues": [cue("字幕", 0, 30)]}, "content_invalid"),
+    ("t", {"text": "", "keywords": [], "cues": [cue("一", 0, 30), cue("二", 20, 50)]}, "content_invalid"),
+    ("t", {"text": "", "keywords": [], "cues": [cue("零帧", 10, 10)]}, "content_invalid"),
+    ("t", {"text": "", "keywords": [], "cues": [cue("出界", 290, 301)]}, "content_invalid"),
+    ("t", {"text": "", "keywords": [], "cues": [cue("", 0, 30)]}, "content_invalid"),
+    ("t", {"text": "", "cues": [cue("字幕", 0, 30)]}, "content_invalid"),
+    ("f", {}, "content_invalid"),
+    ("a", {"keywords": ["标题"]}, "content_invalid"),
+    ("t", {"resolved_style": [pb.SpriteParameterOverride(key="text", value=pb.ScalarValue(string_value="别的"))]}, "placement_invalid"),
+    ("t", {"resolved_style": [pb.SpriteParameterOverride(key="fontSize", value=pb.ScalarValue(number_value=999))]}, "placement_invalid"),
+    ("t", {"text": "超" * 41}, "placement_invalid"),
+    ("t", {"transform": pb.SpriteHostTransform(rotation=270)}, "placement_invalid"),
+    ("t", {"output": pb.SpriteCanvas(width=1920, height=1080, fps=30)}, "canvas_mismatch"),
+], ids=["too-short", "too-long", "text-effect-without-content", "text-and-cues", "overlapping-cues", "cue-without-frames",
+        "cue-past-end", "empty-cue", "keywords-outside-cues", "filter-with-text", "no-keyword-parameter",
+        "content-as-style", "style-out-of-range", "text-over-limit", "transform-out-of-range", "other-canvas"])
+def test_sprite_render_refuses_inputs_outside_the_contract(sprite_id, changes, code) -> None:
+    """每种拒绝都是带稳定错误码的 OverlayError，受理阶段转成 422。"""
+    message = render_input(sprite_id=sprite_id, **changes)
+    with pytest.raises(OverlayError) as caught:
+        plan_sprite_render(message, PUBLICATIONS[sprite_id])
+    assert caught.value.code == code, caught.value.message
+
+
+def run_sprite_task(overlays: OverlayRenders, message: pb.SpriteRenderInput) -> str:
+    """受理一次单 Sprite 渲染并等待渲染、上传和通知结束；返回任务 ID。"""
+    async def scenario():
+        """受理后等待后台协程。"""
+        task_id = await overlays.accept_sprite(message)
+        await finish(overlays)
+        return task_id
+
+    return asyncio.run(scenario())
+
+
+# 场景：单 Sprite 渲染与叠加渲染共用任务表与渲染名额，转存到独立的对象路径并发送同样的四字段回调；两种任务互不可查。
+def test_sprite_render_task_renders_uploads_and_notifies(service, callbacks) -> None:
+    """worker 收到整段效果；查询返回 ZOS 地址；叠加渲染的查询接口查不到它。"""
+    overlays, renderer, uploads = service
+    task_id = run_sprite_task(overlays, render_input(callback_url="https://bus.example/cb"))
+    key = f"imv/sprite_render/{task_id}.webm"
+    assert overlays.get_sprite(task_id) == pb.SpriteRenderTask(task_id=task_id, status="succeeded", video_url=f"https://zos.example/{key}")
+    assert uploads == [(key, "video/webm", b"webm")]
+    assert renderer.requests[0]["composition"] == {"width": 1080, "height": 1920, "fps": 30, "duration_in_frames": 300, "frames": 300}
+    assert [(item["start_frame"], item["duration_frames"]) for item in renderer.requests[0]["instances"]] == [(0, 300)]
+    assert callbacks.posted == [("https://bus.example/cb", {
+        "taskId": task_id, "status": "succeed", "videoUrl": f"https://zos.example/{key}", "errorMessage": None,
+    })]
+    with pytest.raises(HTTPException) as missing:
+        overlays.get(task_id)
+    assert missing.value.status_code == 404
+    overlay_task = run_task(overlays)
+    with pytest.raises(HTTPException):
+        overlays.get_sprite(overlay_task)
+
+
+# 场景：长效果在一个任务里一次 worker 运行输出各块再拼接成一个视频：同一份合成、按块的帧区间，上传的是拼接后的文件。
+def test_sprite_render_task_joins_its_chunks(service, monkeypatch) -> None:
+    """70 秒的字幕只启动一次 worker，按三个帧区间输出，跨块的切片保持绝对起点；拼接列表按块顺序，转存的只有一个文件。"""
+    overlays, renderer, uploads = service
+    joined: list[list[str]] = []
+
+    async def join(*command, **_):
+        """替身 ffmpeg：记录拼接列表并写出成片。"""
+        listing = Path(command[command.index("-i") + 1])
+        joined.append([line.split("/")[-1].rstrip("'") for line in listing.read_text().splitlines()])
+        Path(command[-1]).write_bytes(b"joined")
+        return SimpleNamespace(returncode=0, communicate=lambda: asyncio.sleep(0, (b"", b"")))
+
+    monkeypatch.setattr(sprite_render.asyncio, "create_subprocess_exec", join)
+    monkeypatch.setattr(sprite_render, "probe_overlay", lambda path, overlay: asyncio.sleep(0))
+    message = render_input(text="", keywords=[], effect_total_frames=2100, cues=[cue("开头", 0, 30), cue("跨块", 890, 920)])
+    task_id = run_sprite_task(overlays, message)
+    [request] = renderer.requests
+    assert request["ranges"] == [[0, 899], [900, 1799], [1800, 2099]] and request["composition"]["frames"] == 2100
+    assert [(item["start_frame"], item["duration_frames"]) for item in request["instances"]] == [(0, 90), (890, 90)]
+    assert joined == [["chunk-0.webm", "chunk-1.webm", "chunk-2.webm"]]
+    assert uploads == [(f"imv/sprite_render/{task_id}.webm", "video/webm", b"joined")]
+
+
+# 场景：重启后恢复的单 Sprite 渲染按保存的输入渲染；渲染失败以稳定错误码与固定说明公开。
+def test_sprite_render_recovers_and_reports_failures(service, callbacks) -> None:
+    """未完成的任务行按保存的输入重新渲染；渲染器失败时任务失败、错误不含渲染器输出。"""
+    overlays, renderer, _ = service
+    stored = {"sprite_render": {"sprite_id": "t", "text": "恢复", "effect_total_frames": "60"}, "callback_url": None}
+    overlays._insert("33333333-3333-3333-3333-333333333333", {"request": stored})
+    run_resume(overlays)
+    assert overlays.get_sprite("33333333-3333-3333-3333-333333333333").status == "succeeded"
+    assert renderer.requests[0]["instances"][0]["config"]["text"] == "恢复"
+    renderer.failure = RuntimeError("worker log /private/path")
+    failed = overlays.get_sprite(run_sprite_task(overlays, render_input()))
+    assert (failed.status, failed.error_code, failed.error_message) == ("failed", "render_failed", "叠加视频渲染失败")
+
+
+@pytest.fixture
+def sprite_client(service, client: TestClient):
+    """让 /api/sprites 路由使用测试里的任务服务；返回测试客户端与服务，结束时还原依赖覆盖。"""
+    overlays, _, _ = service
+
+    async def provide():
+        """依赖替身：只暴露渲染任务服务。"""
+        return SimpleNamespace(overlays=overlays)
+
+    app.dependency_overrides[sprite_runtime] = provide
+    yield client, overlays
+    app.dependency_overrides.pop(sprite_runtime, None)
+
+
+def post_render(client: TestClient, message: pb.SpriteRenderInput):
+    """以 Protobuf 二进制发送一次渲染请求。"""
+    return client.post("/api/sprites/render", content=message.SerializeToString(), headers={"Content-Type": "application/x-protobuf"})
+
+
+# 场景：HTTP 契约——Protobuf 受理返回任务 ID，查询返回任务状态；不合契约、回调地址无效或不存在的 Sprite 为 422 且不建任务；缺少拼接工具为 503；未知任务 404。
+def test_sprite_render_routes_accept_and_query(sprite_client, monkeypatch) -> None:
+    """受理与查询都是 imv.sprite.v1 消息；422 说明原因，不创建任务行。"""
+    client, overlays = sprite_client
+    created = post_render(client, render_input())
+    assert created.status_code == 200 and created.headers["content-type"] == "application/x-protobuf"
+    task_id = pb.SpriteRenderAccepted.FromString(created.content).task_id
+    queried = client.get(f"/api/sprites/render/{task_id}")
+    assert pb.SpriteRenderTask.FromString(queried.content).task_id == task_id
+    rows = task_rows(overlays)
+    for message, detail in (
+        (render_input(effect_total_frames=3601), "效果时长不能超过 120 秒"),
+        (render_input(callback_url="ftp://bus.example/cb"), "callback_url"),
+        (render_input(sprite_id="missing"), "Sprite missing 不存在"),
+    ):
+        response = post_render(client, message)
+        assert response.status_code == 422 and detail in response.json()["detail"]
+    monkeypatch.setattr(overlay_service, "join_problem", lambda overlay: "ffmpeg")
+    assert post_render(client, render_input()).status_code == 503
+    assert task_rows(overlays) == rows
+    assert client.get(f"/api/sprites/render/{uuid4()}").status_code == 404
+    assert client.post("/api/sprites/render", json={"spriteId": "t"}).status_code == 415
+
+
+# 一个整段淡入、末 10 帧淡出的组件：淡出终点取自 durationInFrames。
+EDGE_FADE = """import React from 'react';
+import {AbsoluteFill, useCurrentFrame, useVideoConfig, interpolate} from 'remotion';
+export default function Sprite() {
+  const frame = useCurrentFrame();
+  const {durationInFrames: d} = useVideoConfig();
+  const opacity = interpolate(frame, [0, 10, d - 10, d], [0, 1, 1, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'});
+  return <AbsoluteFill style={{background: '#ff0000', opacity}} />;
+}
+"""
+
+
+# 场景：真实沙箱里把 4 秒效果按 2 秒切块渲染再拼接：第二块开头仍是全亮（不重新淡入），末尾按完整时长淡出，拼接后保留透明通道。
+@pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
+def test_real_sprite_render_joins_chunks_into_one_continuous_video(tmp_path: Path, monkeypatch) -> None:
+    """120 帧效果按 60 帧切成两块：成片第 0/60/115/119 帧的 alpha 为 0/1/0.5/0.1，共 120 帧。"""
+    configured = {
+        name: Path(value)
+        for name, value in (
+            ("browser_executable", RENDERER_PATHS["IMV_BROWSER_EXECUTABLE"]),
+            ("font_regular", RENDERER_PATHS["IMV_FONT_REGULAR"]),
+            ("font_bold", RENDERER_PATHS["IMV_FONT_BOLD"]),
+        )
+        if value
+    }
+    settings = Settings(_env_file=None, data_dir=tmp_path / "state", **configured)
+    edge = sprite("edge", width=180, height=320, frames=30, code=EDGE_FADE)
+    edge.kind = pb.SPRITE_KIND_FILTER_OVERLAY
+    monkeypatch.setattr(sprite_render, "CHUNK_SECONDS", 2)
+    overlay = plan_sprite_render(pb.SpriteRenderInput(sprite_id="edge", effect_total_frames=120), edge)
+    video = asyncio.run(sprite_render.render_sprite(Renderer(settings), overlay, tmp_path / "job"))
+    assert video.name == "sprite.webm"
+    for frame, expected in ((0, 0.0), (60, 1.0), (115, 0.5), (119, 0.1)):
+        assert decoded_alpha(video, frame) == pytest.approx(expected, abs=0.05)
+
+
+def still_title(code: str) -> pb.PublishedSprite:
+    """一个 30 帧预览的字效：只声明可编辑的 text，内容区域为整块 180×320 画布。"""
+    return pb.PublishedSprite(
+        sprite_id="still", name="still", kind=pb.SPRITE_KIND_TEXT, tsx_code=code, text_prop="text",
+        canvas=pb.SpriteCanvas(width=180, height=320, fps=30, preview_frames=30),
+        content_box=pb.SpriteBox(x=0, y=0, width=180, height=320),
+        config_schema_json=json.dumps({"type": "object", "properties": {"text": {"type": "string", "minLength": 1}}}),
+        default_config_json=json.dumps({"text": "字"}),
+        parameters=[pb.SpriteParameter(key="text", access=pb.OPERATOR_ACCESS_VISIBLE_EDITABLE, default_value=pb.ScalarValue(string_value="字"))],
+    )
+
+
+# 场景：真实沙箱里，0.4 秒的短字幕定格在预览中间帧、整段全亮且结束后透明，不淡入淡出；2 秒的字幕照常按自身长度淡入；
+# 比 1 秒预览更长的 1.33 秒短字幕也显示满自己的帧数，不会在预览长度处消失。
+@pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
+def test_real_short_subtitles_hold_still(tmp_path: Path) -> None:
+    """切片 0～12 帧：第 0/11 帧 alpha 1、第 12 帧 0；切片 30～90 帧：第 30 帧 alpha 0（淡入开始）、第 60 帧 1；
+    切片 100～140 帧：第 135 帧 alpha 1、第 140 帧 0。"""
+    configured = {
+        name: Path(value)
+        for name, value in (
+            ("browser_executable", RENDERER_PATHS["IMV_BROWSER_EXECUTABLE"]),
+            ("font_regular", RENDERER_PATHS["IMV_FONT_REGULAR"]),
+            ("font_bold", RENDERER_PATHS["IMV_FONT_BOLD"]),
+        )
+        if value
+    }
+    settings = Settings(_env_file=None, data_dir=tmp_path / "state", **configured)
+    message = pb.SpriteRenderInput(sprite_id="still", effect_total_frames=150, cues=[cue("短句", 0, 12), cue("长句", 30, 90), cue("长于预览", 100, 140)])
+    video = asyncio.run(sprite_render.render_sprite(Renderer(settings), plan_sprite_render(message, still_title(EDGE_FADE)), tmp_path / "job"))
+    for frame, expected in ((0, 1.0), (11, 1.0), (12, 0.0), (30, 0.0), (60, 1.0), (135, 1.0), (140, 0.0)):
+        assert decoded_alpha(video, frame) == pytest.approx(expected, abs=0.05), frame

@@ -102,7 +102,7 @@ and rendering; this change does not alter per-frame render timeouts.
 
 The isolation is Linux-only: `POST /works`, a parameter patch on a pre-composition
 (PR74) version or on a composed version whose player bundle predates injected defaults
-(no `imv-preview-host` marker) sent to `POST /works/{id}/messages`, the retry of such a parameter job and
+(no `/* imv-preview-protocol 1 */` first line) sent to `POST /works/{id}/messages`, the retry of such a parameter job and
 `POST /api/sprites/publish` return 503 naming the unsupported platform or the missing
 `bwrap`, `prlimit` or `node` before anything is queued, so on macOS the service starts but
 cannot generate templates. A parameter patch on a composed (PR76) version whose bundle
@@ -281,16 +281,40 @@ template removes its placements with it and the composition bus finds them with 
 There is no separate route for placements; the template save checks that every `sprite_id` is published. The
 SQLite `style_sprite_bindings` table and the `GET/POST /api/sprites/styles/{style_id}` routes of earlier versions
 are gone: bindings saved there are neither read nor migrated, and an existing table is left in place. The router
-lives in `sprite_router.py` on the main app and borrows the Remotion runtime; `/api/sprites/render` is superseded
-by the overlay renders below.
+lives in `sprite_router.py` on the main app and borrows the Remotion runtime.
+
+`POST /api/sprites/render` (`imv.sprite.v1.SpriteRenderInput`, Protobuf) renders one Sprite for the bus as one complete
+video. A Sprite is a fixed style (the sealed code plus `resolved_style` and `transform`, the placement's editor) with
+its content: one `text` with `keywords` for the whole effect (a title), or the bus's subtitle `cues` (text, keywords
+and a frame range each; ordered, non-overlapping, at least one frame), each shown once by the same Sprite in its own
+frames so the Sprite reads the cue's length as `durationInFrames`, transparent in between. A text effect shown for
+less than 1.5 s (`STATIC_TEXT_SECONDS`, most subtitle cues) plays no entrance or exit: it is frozen (`Freeze`) on the
+middle frame of the published preview length, which the Sprite still reads as its length, and shows only its own
+frames, so short subtitles neither flicker nor run animation code in fewer frames than it was accepted at. The time is
+`effect_total_frames`, 0.5 to 120 seconds and the output's frame count, whatever length was previewed when the Sprite
+was generated. `sprite_render.py` renders the effect in one overlay worker run that writes consecutive chunks of at
+most 30 seconds as frame ranges of the same composition (instances keep their absolute timing, so animations continue
+across a boundary) and joins them with `ffmpeg -c copy`, then re-probes the frame count and alpha flag; the bus never
+splits a request. Text effects need `text` or `cues`, other
+kinds take no content, keywords need a Sprite that publishes them, and content cannot be passed as a style override;
+every refusal, a canvas other than the publication's or an unknown Sprite is a 422 at acceptance
+(`SpriteRenderAccepted {task_id}`), and the overlay render's environment checks, plus `ffmpeg` when an effect needs joining, are 503s. The task
+shares the overlay renders' table, render slot, recovery and callback body below, uploads to ZOS
+`imv/sprite_render/{taskId}.webm`, and is read with `GET /api/sprites/render/{taskId}` (`SpriteRenderTask`); each
+query endpoint only finds its own kind of task. The overlay worker bundles each distinct Sprite module once, however
+many instances use it.
 `GET /api/sprites/{id}/preview?overlay=true&sync=1` serves the sealed player on a transparent page for the template editor;
-a sync-mode bundle has no controls or loop and seeks on `imv-preview-sync {time}` messages, reporting `sync: true` in its
+a sync-mode bundle has no controls or loop and seeks on `imv-preview-sync {time, duration?}` messages (`duration` is the
+placement's full length in seconds, up to 120; the Player takes it as its length, so a composed Sprite lays itself out
+like in the bus render), reporting `sync: true` in its
 ready message. The page injects the published defaults and content box as a JSON element (`#imv-preview-host`, with
 `<`, `>`, `&` and line separators escaped); the player starts from them, merges `imv-preview-update` values over
 them (objects key by key, arrays and scalars replace) and applies an optional `host: {transform}` through
 `remotion/host-layer.tsx`, the wrapper the overlay render uses too. Such a bundle reports `host: true` when ready.
-Publishing rebuilds the bundle from the sealed source in the isolated worker when the sealed one lacks either
-marker (`imv-preview-sync`, `imv-preview-host`) and refreshes an existing publication on re-save; a failed rebuild still saves the asset, just without overlay preview.
+`presentation.mjs` writes the host protocol it speaks as the bundle's first line (`/* imv-preview-protocol 1 */`,
+`publication.PREVIEW_PROTOCOL`); only that line counts, because the generated code and its defaults are bundled too and
+can contain any text. Publishing rebuilds the bundle from the sealed source in the isolated worker when the sealed one
+lacks that line and refreshes an existing publication on re-save; a failed rebuild still saves the asset, just without overlay preview.
 A refresh stages the new bundle and records its hash before replacing the copy, so a failed update keeps the
 previous copy working and publishing again retries it. Identical publish requests (same version and field
 choice) take turns, so a double click rebuilds once.
@@ -323,8 +347,9 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   `placements` (`no_placements`) or a `spriteId` that is not published (`sprite_missing`) is a 422.
 - **Layout**: every asset must share width/height/fps. Clips are stacked in request order on one canvas (the first
   is the bottom layer), each inside the shared host layer (`remotion/host-layer.tsx`) that pivots around the
-  Sprite's content box; each plays for its `duration` (or its own `preview_frames / fps`), which its Sprite reads as `durationInFrames` just like in
-  its accepted preview, keeps that full length when the total cuts it (so its internal animation ranges are
+  Sprite's content box; each plays for its `duration` (or its own `preview_frames / fps`), which its Sprite reads as `durationInFrames`;
+  the composed Sprite lays its instances out against that length (`compose.mjs`), so a longer clip keeps them
+  running to its end instead of leaving the canvas blank after the preview length. Each keeps that full length when the total cuts it (so its internal animation ranges are
   unchanged), and is dropped when it starts later. Seconds become frames with half a frame rounding up, like the
   template timing, and a clip is at most `IMV_OVERLAY_MAX_SECONDS` long. Remotion clamps a Sequence to its
   composition, so the worker declares the composition up to the latest clip end and renders only the first `total`

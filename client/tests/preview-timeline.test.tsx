@@ -84,7 +84,7 @@ test("Remotion 字效替换的文字不进入 SDK 时间线", () => {
 
 // Remotion 资产并入 IMS 对象的行：字效标在所作用的标题行上，转场、画面特效和滤镜按图层插入，不再每个资产独占一行；读回的转场尚未选择交界处时只显示对象名称。
 test("Remotion 资产按所占对象并入时间轴行", () => {
-  const clip = { spriteId: "s1", aspect: 9 / 16, start: 1, end: 4 };
+  const clip = { spriteId: "s1", aspect: 9 / 16, start: 1, end: 4, length: 3 };
   const rows = mergeSpriteRows(buildPreviewRows(buildTimeline(newDraft(), readCatalog())), [
     { ...clip, id: "text", name: "霓虹标题", slot: "title" },
     { ...clip, id: "filter", name: "暖色", slot: "filter" },

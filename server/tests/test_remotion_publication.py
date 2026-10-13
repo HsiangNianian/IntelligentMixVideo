@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from server.remotion_templates.harness import Harness
 from server.remotion_templates.models import EditTemplateRequest, GenerateTemplateRequest, JobInput
 from server.remotion_templates.provider import Budget
-from server.remotion_templates.publication import PresentationBuilder
+from server.remotion_templates.publication import PREVIEW_PROTOCOL, PresentationBuilder, current_bundle, revisable
 from server.remotion_templates.routes import router
 from server.remotion_templates.runtime import Runtime
 from server.remotion_templates.settings import Settings
@@ -39,8 +39,9 @@ class OfflinePresentationRenderer:
     def __init__(self, settings):
         """Inject temporary fonts and real managed source paths without a running browser."""
         self.settings = settings
-        # A current bundle reads injected defaults; clearing this stands in for one built before that support.
-        self.markers = "imv-preview-sync imv-preview-host"
+        # A current bundle reads injected defaults and says so on its first line; clearing this stands in for one
+        # built before that support.
+        self.protocol = PREVIEW_PROTOCOL.decode() + "\n"
 
     async def run_worker(self, directory, *, worker):
         """Materialize deterministic stand-in artifacts from the exact host request."""
@@ -48,7 +49,7 @@ class OfflinePresentationRenderer:
         request = json.loads((directory / "request.json").read_text())
         (directory / "Template.tsx").write_text(request["code"])
         (directory / "Export.tsx").write_text(request["code"] + "\n// " + json.dumps(request["config"]))
-        (directory / "interactive.js").write_text("// offline Player fixture " + self.markers)
+        (directory / "interactive.js").write_text(self.protocol + "// offline Player fixture")
         return {"checks": [{"name": "export_source", "status": "pass"}, {"name": "presentation_bundle", "status": "pass"}]}
 
 
@@ -170,7 +171,7 @@ def test_a_bundle_without_injected_defaults_is_rebuilt_in_the_sandbox(harness, s
 
     修复前即时修订对所有组合版本都复制基线包，新版本已保存而独立打开的预览仍是旧默认值。
     """
-    harness.renderer.markers = ""
+    harness.renderer.protocol = ""
     store, work, initial = accepted_version(harness, sprite)
     seen = []
 
@@ -187,7 +188,7 @@ def test_a_bundle_without_injected_defaults_is_rebuilt_in_the_sandbox(harness, s
 
     monkeypatch.setattr("server.remotion_templates.tool_validation.ToolValidator", Validator)
     service = Runtime(store, harness, harness.settings)
-    harness.renderer.markers = "imv-preview-sync imv-preview-host"
+    harness.renderer.protocol = PREVIEW_PROTOCOL.decode() + "\n"
     application = FastAPI()
     application.include_router(router, prefix="/api/templates")
     application.state.runtime = service
@@ -202,10 +203,21 @@ def test_a_bundle_without_injected_defaults_is_rebuilt_in_the_sandbox(harness, s
     assert final.status == "succeeded", final.error
     revised = store.version(final.result_version_id)
     assert seen == [{"title": {"text": "新标题"}}]
-    bundle = (store.root / "accepted" / str(revised.id) / "interactive.js").read_text()
-    assert "imv-preview-host" in bundle and service.instant(revised)
+    assert current_bundle((store.root / "accepted" / str(revised.id) / "interactive.js").read_bytes()) and service.instant(revised)
     with pytest.raises(ValueError, match="cannot show new defaults"):
         harness.presentation.revise(initial, store.root / "accepted" / str(initial.id), {"title": {"text": "x"}}, store.root / "direct")
+
+
+def test_protocol_words_inside_an_older_bundle_do_not_allow_an_instant_revision(tmp_path):
+    """只有首行的协议声明算数：生成代码与默认参数也打进包里，旧同步包的默认文字恰为 imv-preview-host 时仍要进沙箱重建。
+
+    PR #111 审查复现：曾在整个包里搜索两个标记，这样的旧包被即时修订，预览继续显示编译进包的旧默认值。
+    """
+    bundle = tmp_path / "interactive.js"
+    bundle.write_text('// imv-preview-sync\nvar config={"text":"imv-preview-host ' + PREVIEW_PROTOCOL.decode() + '"};')
+    assert not revisable(tmp_path)
+    bundle.write_text(PREVIEW_PROTOCOL.decode() + "\n(()=>{})();")
+    assert revisable(tmp_path)
 
 
 def test_invalid_parameters_and_a_busy_work_are_refused(harness, sprite):

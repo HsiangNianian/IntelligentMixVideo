@@ -279,7 +279,7 @@ def _store_bundle(store: Store, sprite: pb.PublishedSprite, data: bytes) -> None
 
     The new bytes are staged beside the copy and the hash is recorded before they take its place, so a failed
     write or database update leaves the old copy matching its hash. A swap that never completes leaves the old
-    copy, which still lacks the synchronisation marker, so publishing again retries it.
+    copy, which still lacks the protocol line, so publishing again retries it.
     """
     target = store.root / "sprites" / sprite.sprite_id / PREVIEW_BUNDLE
     staged = target.with_name(f"{PREVIEW_BUNDLE}.{uuid4().hex}.tmp")
@@ -365,6 +365,7 @@ async def _sample(service, version: TemplateVersion, kind: int) -> None:
             {"width": composition.width, "height": composition.height, "fps": round(composition.fps), "duration_frames": composition.duration_in_frames},
             {"x": box.x, "y": box.y, "width": box.width, "height": box.height},
             [asdict(item) for item in samples],
+            text=kind == pb.SPRITE_KIND_TEXT,
         )
     except ValidationUnavailable as exc:
         logging.getLogger(__name__).warning("Sprite boundary samples unavailable for %s: %s", version.id, exc)

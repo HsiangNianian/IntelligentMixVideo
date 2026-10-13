@@ -1,12 +1,12 @@
 /**
- * 新会话发送前的字效时长选择：常用秒数下拉加自定义输入，默认 5 秒。
- * 只在首次请求前显示；通过 `onChange` 上报整帧数，输入无效时上报 null，由聊天面板禁止发送。
+ * 新会话发送前的预览时长选择：常用秒数下拉加自定义输入，默认 5 秒。字效的最终时长由合成时的渲染请求决定，
+ * 这里只决定生成与预览的长度。只在首次请求前显示；通过 `onChange` 上报整帧数，输入无效时上报 null，由聊天面板禁止发送。
  */
 import { useId, useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { DEFAULT_DURATION_SECONDS, DURATION_PRESETS, MAX_DURATION_SECONDS, MIN_DURATION_SECONDS, durationFrames } from "./composition";
+import { DEFAULT_DURATION_SECONDS, DURATION_PRESETS, MAX_DURATION_SECONDS, durationFrames } from "./composition";
 
 const CUSTOM = "custom";
 
@@ -15,7 +15,10 @@ interface Props {
   onChange: (frames: number | null) => void;
 }
 
-/** 下拉选常用时长或「自定义」；自定义输入按秒解析并换算为整帧。空输入时说明范围，范围外或无法解析时显示错误，不让发送按钮无故变灰。 */
+/**
+ * 下拉选常用时长或「自定义」；自定义输入按秒解析并换算为整帧。空输入时说明范围，范围外或无法解析时显示错误，不让发送按钮无故变灰。
+ * 输入框不设原生 min/max：范围按取整后的帧数判断，原生界限会与它不一致，让点击发送被浏览器拦下而 Enter 照常发送。
+ */
 export function DurationPicker({ disabled, onChange }: Props) {
   const [choice, setChoice] = useState(String(DEFAULT_DURATION_SECONDS));
   const [custom, setCustom] = useState("");
@@ -33,7 +36,7 @@ export function DurationPicker({ disabled, onChange }: Props) {
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-1">
       <Select value={choice} disabled={disabled} onValueChange={choose}>
-        <SelectTrigger size="sm" aria-label="字效时长" className="h-8 w-24 border-none bg-transparent text-xs shadow-none">
+        <SelectTrigger size="sm" aria-label="预览时长" title="只用于生成与预览，最终时长由合成决定" className="h-8 w-24 border-none bg-transparent text-xs shadow-none">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -46,10 +49,8 @@ export function DurationPicker({ disabled, onChange }: Props) {
           <Input
             type="number"
             inputMode="decimal"
-            min={MIN_DURATION_SECONDS}
-            max={MAX_DURATION_SECONDS}
             step="any"
-            aria-label="自定义时长（秒）"
+            aria-label="自定义预览时长（秒）"
             aria-invalid={invalid}
             aria-describedby={explained ? hint : undefined}
             placeholder="秒"
@@ -64,7 +65,7 @@ export function DurationPicker({ disabled, onChange }: Props) {
           />
           {explained && (
             <span id={hint} role={invalid ? "alert" : undefined} className={cn("basis-full text-xs", invalid ? "text-destructive" : "text-muted-foreground")}>
-              请输入 {MIN_DURATION_SECONDS}～{MAX_DURATION_SECONDS} 秒
+              请输入不超过 {MAX_DURATION_SECONDS} 秒、至少 1 帧的时长
             </span>
           )}
         </>
