@@ -157,7 +157,7 @@ def test_plan_keeps_list_order_and_clips_placements() -> None:
     overlay = plan_overlay(placements, PUBLICATIONS, 6, 120)
     assert (overlay.width, overlay.height, overlay.fps, overlay.frames) == (1080, 1920, 30, 180)
     assert [(i["start_frame"], i["duration_frames"]) for i in overlay.instances] == [(144, 60), (0, 60)]
-    assert all(set(item) == {"code", "config", "host", "start_frame", "duration_frames"} for item in overlay.instances)
+    assert all(set(item) == {"sprite_id", "code", "config", "host", "start_frame", "duration_frames"} for item in overlay.instances)
     # Publications without a recorded content box pivot around the whole canvas; no placement transform yet.
     assert overlay.instances[0]["host"] == {"box": {"x": 0, "y": 0, "width": 1080, "height": 1920}, "transform": {}}
     assert overlay.span == 204  # 144 + 60：合成必须覆盖最晚片段结尾，否则该片段的 Sequence 会被截短
@@ -234,7 +234,10 @@ class FakeRenderer:
         return "/browser"
 
     async def run_worker(self, directory: Path, *, worker=None, timeout_seconds=None, cpu_seconds=None) -> dict:
-        """校验 worker 名称，保存请求与沙箱 CPU 上限并产出文件。"""
+        """校验 worker 名称，保存请求与沙箱 CPU 上限并产出文件；排版预检 worker 视为文字都放得下。"""
+        if worker == "tool-validation-worker.mjs":
+            request = json.loads((directory / "request.json").read_text())
+            return {"fits": [{"index": item["index"], "fits": True, "size": item["values"][item["size_key"]]} for item in request["fit"]]}
         assert worker == "overlay-worker.mjs"
         self.cpu_seconds = cpu_seconds
         request = json.loads((directory / "request.json").read_text())
@@ -1388,3 +1391,184 @@ def test_real_short_subtitles_hold_still(tmp_path: Path) -> None:
     video = asyncio.run(sprite_render.render_sprite(Renderer(settings), plan_sprite_render(message, still_title(EDGE_FADE)), tmp_path / "job"))
     for frame, expected in ((0, 1.0), (11, 1.0), (12, 0.0), (30, 0.0), (60, 1.0), (135, 1.0), (140, 0.0)):
         assert decoded_alpha(video, frame) == pytest.approx(expected, abs=0.05), frame
+
+
+class FitRenderer:
+    """排版预检 worker 的替身：只有不超过 `capacity` 的字号才放得下，并记录每次请求。"""
+
+    def __init__(self, capacity: int | None) -> None:
+        """capacity 为能完整显示文字的最大字号；None 表示连最小字号也放不下。"""
+        self.capacity = capacity
+        self.settings = SimpleNamespace(render_timeout_seconds=180)
+        self.requests: list[dict] = []
+
+    def worker_browser_path(self) -> str:
+        """返回固定浏览器路径。"""
+        return "/browser"
+
+    async def run_worker(self, directory: Path, *, worker=None, timeout_seconds=None, cpu_seconds=None) -> dict:
+        """按 capacity 为每个条目给出与真实 worker 相同形状的答案。"""
+        assert worker == "tool-validation-worker.mjs"
+        request = json.loads((directory / "request.json").read_text())
+        self.requests.append(request)
+        fits = []
+        for item in request["fit"]:
+            wanted = item["values"][item["size_key"]]
+            if self.capacity is None:
+                fits.append({"index": item["index"], "fits": False, "size": item["min"]})
+            else:
+                fits.append({"index": item["index"], "fits": True, "size": min(wanted, self.capacity)})
+        return {"fits": fits}
+
+
+def title_overlay(text: str, font_size: int = 128):
+    """一个 text/fontSize 可编辑的字效摆放，并按总线的方式覆盖文字与字号后规划出渲染计划。"""
+    editor = {"remotion": {"parameters": [{"key": "text", "stringValue": text}, {"key": "fontSize", "numberValue": font_size}]}}
+    placed = OverlayPlacement.model_validate({"spriteId": "c", "start": 0, "editor": editor})
+    return plan_overlay([placed], PUBLICATIONS, 3.0, 120)
+
+
+# 场景（issue #119）：总线传来的长标题在默认字号下放不下，宿主按这次真正的文字把字号缩到放得下的最大值，文字本身不变。
+def test_text_that_does_not_fit_gets_a_smaller_font_size(tmp_path) -> None:
+    """放得下的最大字号是 72：128 的请求缩成 72，其余配置不动；预检请求带着真实文字、字号参数名与发布的最小字号。"""
+    renderer = FitRenderer(capacity=72)
+    overlay = title_overlay("测" * 40)
+    asyncio.run(overlay_render.fit_texts(renderer, overlay, PUBLICATIONS, tmp_path / "fit"))
+    assert overlay.instances[0]["config"]["fontSize"] == 72
+    assert overlay.instances[0]["config"]["text"] == "测" * 40
+    [request] = renderer.requests
+    [item] = request["fit"]
+    assert (item["text"], item["size_key"], item["min"]) == ("测" * 40, "fontSize", 24)
+    assert request["composition"]["duration_frames"] == 90
+
+
+# 场景：文字本来就放得下时保持用户设置的字号。
+def test_text_that_fits_keeps_its_requested_size(tmp_path) -> None:
+    """容量足够时字号不变。"""
+    overlay = title_overlay("标题", 96)
+    asyncio.run(overlay_render.fit_texts(FitRenderer(capacity=240), overlay, PUBLICATIONS, tmp_path / "fit"))
+    assert overlay.instances[0]["config"]["fontSize"] == 96
+
+
+# 场景：缩到最小字号也放不下时不渲染被裁切的标题，任务以稳定错误码失败，总线据此提示。
+def test_text_that_cannot_fit_at_the_smallest_size_fails_with_a_stable_code(tmp_path) -> None:
+    """text_too_long 与固定说明，不含本地路径。"""
+    overlay = title_overlay("测" * 40)
+    with pytest.raises(OverlayError) as failure:
+        asyncio.run(overlay_render.fit_texts(FitRenderer(capacity=None), overlay, PUBLICATIONS, tmp_path / "fit"))
+    assert failure.value.code == "text_too_long" and "缩短文字" in failure.value.message
+
+
+# 场景：不是字效、或没有文字与字号参数的 Sprite 不参与预检，也不启动浏览器。
+def test_sprites_without_text_are_not_measured(tmp_path) -> None:
+    """a 没有任何参数，预检不向 worker 发请求。"""
+    renderer = FitRenderer(capacity=1)
+    overlay = plan_overlay([placement("a")], PUBLICATIONS, 3.0, 120)
+    asyncio.run(overlay_render.fit_texts(renderer, overlay, PUBLICATIONS, tmp_path / "fit"))
+    assert renderer.requests == []
+
+
+# 场景：预检环境不可用时任务以渲染失败收尾，而不是带着被裁切的文字继续。
+def test_unavailable_fit_check_fails_the_render(tmp_path) -> None:
+    """worker 抛出沙箱错误时是 render_failed，原因只保留在 __cause__。"""
+    class Broken(FitRenderer):
+        """Fail the sandbox run."""
+
+        async def run_worker(self, directory: Path, **options) -> dict:
+            """Simulate a sandbox that cannot start."""
+            raise RuntimeError("bwrap: no permission")
+
+    with pytest.raises(OverlayError) as failure:
+        asyncio.run(overlay_render.fit_texts(Broken(1), title_overlay("标题"), PUBLICATIONS, tmp_path / "fit"))
+    assert failure.value.code == "render_failed" and "bwrap" not in failure.value.message and failure.value.__cause__ is not None
+
+
+# 场景：任务流转中，预检判定放不下时任务以 text_too_long 失败，公开错误只有稳定错误码与固定说明，不渲染也不上传。
+def test_task_fails_with_text_too_long_when_the_title_cannot_fit(service, monkeypatch) -> None:
+    """失败任务没有视频与上传，渲染器没有被调用。"""
+    overlays, renderer, uploads = service
+
+    async def refuse(*args) -> None:
+        """Report the text as impossible to fit."""
+        raise OverlayError("text_too_long", "文字过长：缩到最小字号仍无法完整显示，请缩短文字")
+
+    monkeypatch.setattr(overlay_service, "fit_texts", refuse)
+    task_id = run_task(overlays)
+    task = overlays.get(task_id)
+    assert task["status"] == "failed" and task["error"]["code"] == "text_too_long"
+    assert renderer.requests == [] and uploads == []
+
+
+# issue #119 的组件写法：972x360 的固定框 + overflow hidden，换行或不换行。
+FIXED_BOX = """import React from "react";
+import { AbsoluteFill } from "remotion";
+export default function Title(props: { text: string; fontSize: number }) {
+  return (
+    <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
+      <div style={{ width: 972, height: 360, overflow: "hidden", textAlign: "center", fontSize: props.fontSize, lineHeight: 1.2, wordBreak: "break-all", whiteSpace: WRAP, color: "#fff" }}>{props.text}</div>
+    </AbsoluteFill>
+  );
+}
+"""
+
+
+def real_fit(tmp_path: Path, whitespace: str, text: str):
+    """用真实沙箱和浏览器对一个固定框字效做排版预检，返回预检后的渲染计划。"""
+    configured = {
+        name: Path(value)
+        for name, value in (
+            ("browser_executable", RENDERER_PATHS["IMV_BROWSER_EXECUTABLE"]),
+            ("font_regular", RENDERER_PATHS["IMV_FONT_REGULAR"]),
+            ("font_bold", RENDERER_PATHS["IMV_FONT_BOLD"]),
+        )
+        if value
+    }
+    settings = Settings(_env_file=None, data_dir=tmp_path / "state", **configured)
+    schema = {"type": "object", "properties": {
+        "text": {"type": "string", "minLength": 1, "maxLength": 100},
+        "fontSize": {"type": "number", "minimum": 24, "maximum": 240},
+    }, "required": ["text", "fontSize"], "additionalProperties": False}
+    published = pb.PublishedSprite(
+        sprite_id="t", name="t", kind=pb.SPRITE_KIND_TEXT, tsx_code=FIXED_BOX.replace("WRAP", json.dumps(whitespace)), text_prop="text",
+        canvas=pb.SpriteCanvas(width=1080, height=1920, fps=30, preview_frames=30),
+        config_schema_json=json.dumps(schema), default_config_json=json.dumps({"text": "标题", "fontSize": 128}, ensure_ascii=False),
+        content_box=pb.SpriteBox(x=0, y=0, width=1080, height=1920),
+        parameters=[
+            pb.SpriteParameter(key="text", label="文字", access=pb.OPERATOR_ACCESS_VISIBLE_EDITABLE, default_value=pb.ScalarValue(string_value="标题"), min_length=1, max_length=100),
+            pb.SpriteParameter(key="fontSize", label="字号", access=pb.OPERATOR_ACCESS_VISIBLE_EDITABLE, default_value=pb.ScalarValue(number_value=128), minimum=24, maximum=240),
+        ],
+    )
+    editor = {"remotion": {"parameters": [{"key": "text", "stringValue": text}]}}
+    overlay = plan_overlay([OverlayPlacement.model_validate({"spriteId": "t", "start": 0, "editor": editor})], {"t": published}, 1.0, 120)
+    asyncio.run(overlay_render.fit_texts(Renderer(settings), overlay, {"t": published}, tmp_path / "fit"))
+    return overlay
+
+
+# 场景（issue #119）：真实浏览器里，100 字标题放进 972x360 的固定框时，宿主把 128 的字号缩到放得下的最大值；短标题不动；
+# 一个不换行的组件缩到最小字号也放不下，任务以 text_too_long 失败。
+@pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
+def test_real_browser_fits_a_long_title_into_the_fixed_box(tmp_path: Path) -> None:
+    """换行的固定框：长标题字号落在 24～52（每行 18～20 字、5 行以内），短标题保持 128；不换行的组件失败。"""
+    long_title = real_fit(tmp_path / "long", "normal", "测" * 100)
+    assert 24 <= long_title.instances[0]["config"]["fontSize"] <= 52
+    short_title = real_fit(tmp_path / "short", "normal", "标题")
+    assert short_title.instances[0]["config"]["fontSize"] == 128
+    with pytest.raises(OverlayError) as failure:
+        real_fit(tmp_path / "nowrap", "nowrap", "测" * 100)
+    assert failure.value.code == "text_too_long"
+
+
+# 场景：单 Sprite 渲染的字幕：相同内容只测一次并共用结果；定格的切片只在定格帧上量，按自身长度播放的切片量首、尾和中间帧；
+# 一个 Sprite 只启动一次浏览器运行，缩小结果写回所有相同内容的实例。
+def test_sprite_render_fits_each_distinct_cue_in_one_browser_run(tmp_path) -> None:
+    """四个切片里两个文字相同、一个定格：worker 只收到 3 个条目；缩小结果写回所有相同内容的实例。"""
+    message = render_input(text="", keywords=[], effect_total_frames=300, cues=[
+        cue("短句", 0, 20), cue("短句", 30, 50), cue("测" * 30, 60, 160), cue("够短", 170, 290)])
+    overlay = plan_sprite_render(message, T)
+    renderer = FitRenderer(capacity=40)
+    asyncio.run(overlay_render.fit_texts(renderer, overlay, {"t": T}, tmp_path / "fit"))
+    [request] = renderer.requests
+    assert [(item["text"], item["frames"]) for item in request["fit"]] == [
+        ("短句", [45]), ("测" * 30, [0, 24, 49, 74, 99]), ("够短", [0, 29, 59, 89, 119])]
+    assert request["composition"]["duration_frames"] == 120
+    assert [item["config"]["fontSize"] for item in overlay.instances] == [40, 40, 40, 40]

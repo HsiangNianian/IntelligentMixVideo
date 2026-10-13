@@ -40,6 +40,8 @@ _CODE_CHECKS = ("source_policy", "export_source", "typescript")
 _RENDER_CHECKS = _CODE_CHECKS + ("default_render", "configured_render")
 # 调用方要求透明度度量时，worker 在两次基础渲染之后追加这一阶段。
 _TRANSPARENCY_CHECKS = _RENDER_CHECKS + ("transparency",)
+# 字效另要求最长文字排版检查，位于其余可选阶段之后。
+_TEXT_FIT_CHECK = "text_fit"
 _FAILED_STATUSES = {"failed", "fail", "error"}
 
 # 总线渲染 Sprite 时传入的时长范围（秒）；Agent 生成时选的时长只用于预览，最终时长由合成决定。
@@ -197,15 +199,17 @@ class ToolValidator:
         return CodeValidationReport(passed=worker_passed and not has_errors, diagnostics=diagnostics)
 
     async def validate_render(
-        self, request: RenderValidationInput, *, transparency: bool = False, lengths: list[int] | None = None,
+        self, request: RenderValidationInput, *, transparency: bool = False, lengths: list[int] | None = None, text_fit: bool = False,
     ) -> RenderValidationReport:
         """Run fixed-canvas default/configured mounts and each independent behavior script.
 
         With ``transparency`` the worker also measures, on sampled frames, whether the canvas stays see-through
         and fails the ``transparency`` check when most sampled frames are opaque almost everywhere. With ``lengths``
         it then mounts the first, middle and last frame at each of those render lengths (frames) and fails the
-        ``render_lengths`` check when the component throws. Only the generation path asks for these: a user's own
-        parameter edits are never blocked by them.
+        ``render_lengths`` check when the component throws. With ``text_fit`` (text effects) it fills the ``text``
+        parameter to its ``maxLength`` and fails the ``text_fit`` check when that text is clipped, leaves the canvas or
+        is too small to read. Only the generation path asks for these: a user's own parameter edits are never blocked
+        by them.
         """
         if request.duration_frames > 216000:
             raise ValueError("duration_frames exceeds the validation resource limit")
@@ -245,6 +249,7 @@ class ToolValidator:
             "tests": [test.model_dump(mode="json") for test in request.tests],
             "browser": self.renderer.worker_browser_path(),
             "transparency": transparency,
+            "text_fit": text_fit,
         }
         if lengths:
             payload_request["lengths"] = lengths
@@ -261,6 +266,7 @@ class ToolValidator:
             if isinstance(item, dict) and item.get("name") == "runtime" and item.get("status") == "error":
                 raise ValidationUnavailable(str(item.get("message") or "Render validation worker runtime error"))
         stages = (_TRANSPARENCY_CHECKS if transparency else _RENDER_CHECKS) + (("render_lengths",) if lengths else ())
+        stages += (_TEXT_FIT_CHECK,) if text_fit else ()
         if _reported_stages(raw_checks, stages) is None:
             raise ValidationUnavailable("Render validation worker returned an incomplete report")
         expected_tests = [test.name for test in request.tests]
@@ -295,6 +301,45 @@ class ToolValidator:
         executed = int(payload.get("custom_tests_executed", len(tests)))
         passed = bool(payload.get("passed", False)) and all(check.status == "passed" for check in checks) and all(test.status == "passed" for test in tests)
         return RenderValidationReport(passed=passed, composition=composition, code_validation=code, checks=checks, tests=tests, custom_tests_executed=executed)
+
+    async def fit_texts(
+        self, component: ComponentDefinition, composition: dict[str, int], box: dict[str, float], items: list[dict[str, Any]],
+        timeout_seconds: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """Find, for each text a render really passes, the largest font size that shows it in full.
+
+        Each item carries complete ``values`` (including the text and the requested size), the ``text`` to look
+        for, the name of the size parameter (``size_key``), its ``min`` and the ``frames`` to measure. The answer
+        per item is ``{index, fits, size}``: ``size`` is the requested size when the text already fits, otherwise
+        the largest smaller whole size that does; ``fits`` is false when even ``min`` does not. A worker that
+        cannot answer is an infrastructure failure, never a pass.
+        """
+        try:
+            directory = self._attempt("fit-texts")
+            request = {
+                "mode": "fit",
+                "code": component.code,
+                "parameter_schema": component.parameter_schema,
+                "default_parameters": component.default_parameters,
+                "composition": composition,
+                "box": box,
+                "fit": items,
+                "browser": self.renderer.worker_browser_path(),
+            }
+            (directory / "request.json").write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8")
+            payload = await self.renderer.run_worker(directory, worker="tool-validation-worker.mjs", timeout_seconds=timeout_seconds)
+        except (OSError, RuntimeError, TimeoutError) as exc:
+            raise ValidationUnavailable(str(exc)) from exc
+        for item in payload.get("checks", []) if isinstance(payload, dict) else []:
+            if item.get("name") == "runtime" and item.get("status") == "error":
+                raise ValidationUnavailable(str(item.get("message") or "Fit worker runtime error"))
+        fits = payload.get("fits") if isinstance(payload, dict) else None
+        if (
+            not isinstance(fits, list) or [item.get("index") for item in fits if isinstance(item, dict)] != [item["index"] for item in items]
+            or not all(isinstance(item.get("fits"), bool) and isinstance(item.get("size"), (int, float)) for item in fits)
+        ):
+            raise ValidationUnavailable("Text fit worker returned an incomplete report")
+        return fits
 
     async def validate_samples(
         self, component: ComponentDefinition, composition: dict[str, int], box: dict[str, float], samples: list[dict[str, Any]],

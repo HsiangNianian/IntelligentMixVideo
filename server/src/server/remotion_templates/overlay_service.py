@@ -30,6 +30,7 @@ from .overlay_render import (
     OverlayError,
     OverlayPlacement,
     environment_problem,
+    fit_texts,
     fixed_end_seconds,
     plan_overlay,
     render_overlay,
@@ -267,7 +268,8 @@ class OverlayRenders:
         # The accepted input is rendered as stored; only the published Sprites are read again.
         if "sprite_render" in request:
             message = ParseDict(request["sprite_render"], pb.SpriteRenderInput())
-            overlay = plan_sprite_render(message, await asyncio.to_thread(self._publication, message.sprite_id))
+            publications = {message.sprite_id: await asyncio.to_thread(self._publication, message.sprite_id)}
+            overlay = plan_sprite_render(message, publications[message.sprite_id])
             render, key = render_sprite, f"imv/sprite_render/{task_id}.webm"
         else:
             placements = [OverlayPlacement.model_validate(item) for item in request["placements"]]
@@ -280,6 +282,7 @@ class OverlayRenders:
         async with self.slot:
             await self._persist(task_id, "rendering")
             shutil.rmtree(work, ignore_errors=True)
+            await fit_texts(self.renderer, overlay, publications, work / "fit")
             output = await render(self.renderer, overlay, work)
         await self._persist(task_id, "uploading")
         urls = await asyncio.to_thread(

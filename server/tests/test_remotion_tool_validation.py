@@ -703,3 +703,112 @@ def test_real_browser_lays_out_composed_instances_at_the_render_length(tmp_path,
         component=ComponentDefinition(**composed_instances()), duration_frames=length, tests=[TestScript(name="layout", code=script)],
     )))
     assert report.passed is True, [*report.checks, *report.tests]
+
+
+def test_text_fit_is_requested_and_its_stage_is_required_only_for_text_effects(tmp_path):
+    """文字检查只在调用方要求时下发到 worker；要求了却没有该阶段的报告是验证服务故障，不能当作通过。"""
+    class Renderer(FakeRenderer):
+        """Record requests and append the text_fit stage when asked for, as the real worker does."""
+
+        requests: list[dict] = []
+
+        async def run_worker(self, directory: Path, *, worker: str, timeout_seconds=None):
+            """Return the base report plus a failed text_fit check."""
+            payload = await super().run_worker(directory, worker=worker, timeout_seconds=timeout_seconds)
+            request = json.loads((directory / "request.json").read_text())
+            self.requests.append(request)
+            if request["mode"] == "render" and request.get("text_fit"):
+                payload["checks"].append({"name": "text_fit", "status": "failed", "message": "the text is cut off"})
+                payload["passed"] = False
+            return payload
+
+    renderer = Renderer()
+    plain = asyncio.run(ToolValidator(renderer, tmp_path).validate_render(small_request()))
+    assert plain.passed is True and "text_fit" not in [item.name for item in plain.checks]
+    fitted = asyncio.run(ToolValidator(renderer, tmp_path).validate_render(small_request(), text_fit=True))
+    assert [request["text_fit"] for request in renderer.requests if request["mode"] == "render"] == [False, True]
+    assert fitted.passed is False
+    assert next(item for item in fitted.checks if item.name == "text_fit").message == "the text is cut off"
+    with pytest.raises(ValidationUnavailable, match="incomplete report"):
+        asyncio.run(ToolValidator(FakeRenderer(), tmp_path).validate_render(small_request(), text_fit=True))
+
+
+# 带 text 与 fontSize 的字效：972x360 固定框 + overflow hidden（issue #119 的写法）、按字数缩字号并自动换行的写法，
+# 只在前几帧被 overflow 遮罩挡住的短文字，以及完全不显示 text 的组件。
+FIXED_BOX_TEXT = """import React from "react";
+import { AbsoluteFill } from "remotion";
+export default function Title(props: { text: string; fontSize: number }) {
+  return (
+    <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
+      <div style={{ width: 972, height: 360, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center" }}>
+        <span style={{ fontSize: props.fontSize, whiteSpace: "nowrap", color: "#fff" }}>{props.text}</span>
+      </div>
+    </AbsoluteFill>
+  );
+}
+"""
+FITTING_TEXT = """import React from "react";
+import { AbsoluteFill } from "remotion";
+export default function Title(props: { text: string; fontSize: number }) {
+  const size = Math.max(24, Math.min(props.fontSize, Math.floor(Math.sqrt((972 * 1000) / (1.3 * props.text.length)))));
+  return (
+    <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
+      <div style={{ width: 972, textAlign: "center", fontSize: size, lineHeight: 1.2, whiteSpace: "normal", wordBreak: "break-all", color: "#fff" }}>{props.text}</div>
+    </AbsoluteFill>
+  );
+}
+"""
+REVEAL_MASK_TEXT = """import React from "react";
+import { AbsoluteFill, useCurrentFrame } from "remotion";
+export default function Title(props: { text: string; fontSize: number }) {
+  const frame = useCurrentFrame();
+  return (
+    <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
+      <div style={{ width: 972, height: 200, overflow: "hidden", textAlign: "center" }}>
+        <div style={{ fontSize: props.fontSize, lineHeight: "200px", color: "#fff", transform: `translateY(${frame < 10 ? 300 : 0}px)` }}>{props.text}</div>
+      </div>
+    </AbsoluteFill>
+  );
+}
+"""
+IGNORES_TEXT = """import React from "react";
+import { AbsoluteFill } from "remotion";
+export default function Title(props: { text: string; fontSize: number }) {
+  return <AbsoluteFill style={{ justifyContent: "center", alignItems: "center", fontSize: props.fontSize, color: "#fff" }}>fixed</AbsoluteFill>;
+}
+"""
+
+
+def browser_text_validate(tmp_path: Path, code: str, max_length: int):
+    """Mount a text effect with the generation-path measurements in the real sandboxed browser."""
+    settings = Settings(_env_file=None, data_dir=tmp_path, **BROWSER)
+    component_ = ComponentDefinition(
+        code=code,
+        parameter_schema={
+            "type": "object",
+            "properties": {"text": {"type": "string", "minLength": 1, "maxLength": max_length}, "fontSize": {"type": "number", "minimum": 24, "maximum": 240}},
+            "required": ["text", "fontSize"],
+            "additionalProperties": False,
+        },
+        default_parameters={"text": "标题", "fontSize": 128},
+    )
+    validator = ToolValidator(Renderer(settings), tmp_path)
+    request = RenderValidationInput(component=component_, duration_frames=30)
+    return asyncio.run(validator.validate_render(request, transparency=True, text_fit=True))
+
+
+@needs_node
+@needs_browser
+@pytest.mark.parametrize(("code", "max_length", "passed", "reason"), [
+    (FIXED_BOX_TEXT, 100, False, "overflow hidden"),
+    (FITTING_TEXT, 100, True, ""),
+    (REVEAL_MASK_TEXT, 4, True, ""),
+    (IGNORES_TEXT, 100, False, "never renders"),
+], ids=["fixed-box-clips-long-title", "wrapped-and-shrunk", "reveal-mask-only-early", "ignores-text"])
+def test_real_browser_requires_the_longest_text_to_be_shown_in_full(tmp_path, code, max_length, passed, reason):
+    """issue #119：972x360 的 overflow hidden 固定框在 100 字标题下被裁切而被拒；按字数缩小字号并换行的写法、只在开头几帧被遮罩挡住的文字通过；不显示 text 的组件被拒。"""
+    report = browser_text_validate(tmp_path, code, max_length)
+    check = next(item for item in report.checks if item.name == "text_fit")
+    assert (check.status == "passed") is passed, check.message
+    assert reason in check.message
+    assert report.passed is passed

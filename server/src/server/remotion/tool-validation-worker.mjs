@@ -338,6 +338,148 @@ async function lengthsCheck(page) {
   }
 }
 
+/** Filler glyph for the longest-text check: CJK glyphs are the widest, so they expose layout problems first. */
+const TEXT_FILLER = "测";
+/** A rendered text line shorter than this is unreadable on the 1080x1920 canvas (the smallest supported fontSize is 24). */
+const MIN_LINE_HEIGHT = 20;
+/** Sub-pixel tolerance when comparing a text rectangle with a box. */
+const FIT_TOLERANCE = 2;
+
+/**
+ * Describe, for the frame currently mounted, how the text `needle` does not fit: text clipped by an ancestor with
+ * `overflow: hidden|clip`, text outside the canvas, or text lines too small to read. Returns `null` when the
+ * component renders none of the text at this frame (not yet shown), and an empty list when every line fits.
+ */
+function textFitProblems(page, needle) {
+  return page.evaluate((needle, minLine, tolerance) => {
+    const canvasNode = document.querySelector("[data-imv-validation-canvas]");
+    const layer = document.querySelector("[data-imv-host-layer]")?.firstElementChild;
+    if (!canvasNode || !layer) return null;
+    const canvas = canvasNode.getBoundingClientRect();
+    const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT);
+    const problems = new Set();
+    let found = false;
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const shown = node.nodeValue.trim();
+      if (!shown || !needle.includes(shown)) continue;
+      found = true;
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const lines = Array.from(range.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0);
+      const bounds = range.getBoundingClientRect();
+      if (!lines.length) continue;
+      const smallest = Math.min(...lines.map((rect) => rect.height));
+      if (smallest < minLine) problems.add(`its lines are only ${Math.round(smallest)}px tall, too small to read`);
+      if (bounds.left < canvas.left - tolerance || bounds.right > canvas.right + tolerance || bounds.top < canvas.top - tolerance || bounds.bottom > canvas.bottom + tolerance)
+        problems.add(`it extends beyond the ${Math.round(canvas.width)}x${Math.round(canvas.height)} canvas (text box ${Math.round(bounds.left - canvas.left)},${Math.round(bounds.top - canvas.top)} to ${Math.round(bounds.right - canvas.left)},${Math.round(bounds.bottom - canvas.top)})`);
+      for (let element = node.parentElement; element && layer.contains(element); element = element.parentElement) {
+        const style = getComputedStyle(element);
+        const clipsX = style.overflowX === "hidden" || style.overflowX === "clip";
+        const clipsY = style.overflowY === "hidden" || style.overflowY === "clip";
+        if (!clipsX && !clipsY) continue;
+        const box = element.getBoundingClientRect();
+        if ((clipsX && (bounds.left < box.left - tolerance || bounds.right > box.right + tolerance)) || (clipsY && (bounds.top < box.top - tolerance || bounds.bottom > box.bottom + tolerance)))
+          problems.add(`it is cut off by a ${Math.round(box.width)}x${Math.round(box.height)} box with overflow hidden`);
+      }
+    }
+    return found ? [...problems] : null;
+  }, needle, MIN_LINE_HEIGHT, FIT_TOLERANCE);
+}
+
+/**
+ * Measure the text `needle` on `frames` (default: the sampled frames of the composition) of the currently mounted
+ * values. `shown` counts the frames that display it and `failing` those where it is clipped, off the canvas or too
+ * small; `error` is a runtime error thrown at `frame`. A fit problem that persists on every frame that shows the
+ * text is real, while a reveal mask or slide-in that hides the text for a few frames leaves a frame without one.
+ */
+async function measureTextFit(page, needle, frames = sampleFrames(request.composition.duration_frames)) {
+  const verdicts = [];
+  for (const frame of frames) {
+    await page.evaluate((target) => window.__imvTool.setFrame(target), frame);
+    const error = await page.evaluate(() => window.__imvRuntimeError ?? null);
+    if (error) return { error, frame, shown: verdicts.length, failing: 0, problems: [] };
+    const problems = await textFitProblems(page, needle);
+    if (problems) verdicts.push(problems);
+  }
+  const failing = verdicts.filter((problems) => problems.length);
+  return { error: null, shown: verdicts.length, failing: failing.length, problems: [...new Set(failing.flat())] };
+}
+
+/**
+ * Mechanical check that a text effect shows its longest allowed text in full: the text parameter is filled to its
+ * declared maxLength and the sampled frames are measured. The check fails only when every frame that shows the
+ * text has a problem, and when the text is never rendered. This is a geometric measurement of the text boxes,
+ * not a visual review of how the result looks.
+ */
+async function textFitCheck(page) {
+  const composition = request.composition;
+  const length = request.parameter_schema?.properties?.text?.maxLength;
+  if (!Number.isInteger(length) || length < 1)
+    return { name: "text_fit", status: "failed", message: "A text effect must declare a text parameter with an integer maxLength." };
+  const text = TEXT_FILLER.repeat(length);
+  await page.evaluate((patch) => window.__imvTool.setParameters(patch), { text });
+  let measured;
+  try {
+    measured = await measureTextFit(page, text);
+  } finally {
+    // Later tests and the cached report must see the configured parameters again.
+    await page.evaluate((values) => window.__imvTool.setParameters(values), request.parameters ?? {});
+    await page.evaluate(() => window.__imvTool.setFrame(0));
+  }
+  if (measured.error)
+    return { name: "text_fit", status: "failed", message: `The component throws at frame ${measured.frame} with the text filled to maxLength ${length}: ${measured.error}`.slice(0, 6000) };
+  if (!measured.shown)
+    return { name: "text_fit", status: "failed", message: `With text filled to its maxLength (${length} characters) the component never renders that text. The text parameter must be displayed as given.` };
+  if (measured.failing < measured.shown)
+    return { name: "text_fit", status: "passed", message: `The ${length}-character text is shown in full in ${measured.shown - measured.failing} of ${measured.shown} frames that display it.` };
+  return {
+    name: "text_fit",
+    status: "failed",
+    message: `With text filled to its maxLength (${length} characters) the text is not shown in full: ${measured.problems.join("; ")}. `
+      + `Long text must fit on the ${composition.width}x${composition.height} canvas at any length up to maxLength: lay it out from its content, wrapping onto several lines `
+      + "(a bounded width with whiteSpace normal and wordBreak break-all for CJK, no fixed-height box with overflow hidden), and reduce the font size as the text gets longer "
+      + "(derive it from the character count, never below 24px) while short text keeps the fontSize parameter. Fit as much text as possible; "
+      + "if it cannot fit even at 24px, lower the text parameter's maxLength to what really fits instead of clipping.",
+  };
+}
+
+/**
+ * Host-side fit of the text a render really passes: for each item, the largest whole font size from `min` up to
+ * the requested one at which the text is shown in full on the item's own `frames`. The requested size is tried
+ * first, so text that already fits is untouched; `fits: false` means even `min` does not fit. A component that
+ * throws, or never renders the text, is left alone (the render reports its own failure). Sizes are assumed to
+ * fit monotonically, so a binary search.
+ */
+async function fitTexts(page, loadError) {
+  if (loadError !== null) throw new Error(`Component runtime error: ${loadError}`);
+  const fits = async (item, size) => {
+    await page.evaluate(() => window.__imvTool.reset());
+    await page.evaluate((values) => window.__imvTool.setSample(values, {}), { ...item.values, [item.size_key]: size });
+    const measured = await measureTextFit(page, item.text, item.frames);
+    return measured.error !== null || measured.shown === 0 || measured.failing < measured.shown;
+  };
+  result.fits = [];
+  for (const item of request.fit) {
+    const requested = item.values[item.size_key];
+    let size = requested;
+    let ok = await fits(item, requested);
+    if (!ok) {
+      ok = requested > item.min && await fits(item, item.min);
+      if (ok) {
+        // `low` fits: the answer lies in [low, requested - 1].
+        let low = item.min;
+        let high = requested - 1;
+        while (low < high) {
+          const middle = Math.ceil((low + high) / 2);
+          if (await fits(item, middle)) low = middle; else high = middle - 1;
+        }
+        size = low;
+      } else size = item.min;
+    }
+    result.fits.push({ index: item.index, fits: ok, size });
+  }
+}
+
 function scriptPolicy(code) {
   if (/\b(?:import|export\s+(?!default))\b|\b(?:require|process|globalThis|self|window|document|navigator|location|fetch|XMLHttpRequest|WebSocket|Worker|importScripts|postMessage|Function|eval)\b/.test(code)) throw new Error("Test scripts may only use TestContext.");
 }
@@ -408,6 +550,10 @@ async function main() {
       await sampleChecks(page, loadError);
       return;
     }
+    if (request.mode === "fit") {
+      await fitTexts(page, loadError);
+      return;
+    }
     let baseReady = true;
     try {
       if (loadError !== null) throw new Error(`Component runtime error: ${loadError}`);
@@ -433,6 +579,7 @@ async function main() {
     }
     if (baseReady && request.transparency === true) checks.push(await transparencyCheck(page));
     if (baseReady && Array.isArray(request.lengths)) checks.push(await lengthsCheck(page));
+    if (baseReady && request.text_fit === true) checks.push(await textFitCheck(page));
     if (!baseReady) {
       result.tests = (request.tests ?? []).map((test) => ({ name: test.name, status: "not_run", message: "Base render failed.", assertions: [] }));
       result.custom_tests_executed = 0;

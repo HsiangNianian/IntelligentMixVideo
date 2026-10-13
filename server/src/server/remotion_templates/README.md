@@ -145,6 +145,17 @@ the model gets `CODE_VALIDATION_FAILED` and the cause rather than `VALIDATION_UN
 generation asks for the measurement; a user's manual parameter edits and already published versions are
 never blocked by it.
 
+A text effect (`kind=text`) must also show its longest allowed text in full. In the same mount `sprite.create`
+fills the `text` parameter with `测` up to its declared `maxLength` and, on the same five sampled frames, measures
+the text boxes of the layer: text cut off by an ancestor with `overflow: hidden|clip`, text outside the 1080x1920
+canvas and text lines shorter than 20px (the smallest `fontSize` is 24) are problems. The `text_fit` check fails
+only when every frame that shows the text has a problem, so a reveal mask or slide-in that hides text for a few
+frames is fine, while a fixed-size box that clips long text on every frame is not; it also fails when the filler
+text is never rendered. A failure is refused with `CODE_VALIDATION_FAILED` (`text_fit: ...` with the clipped box or
+size and the fix: wrap the text inside a bounded width, no fixed-height `overflow: hidden` box, shrink the font
+for long text, never below 24px; text that cannot fit even then means the declared `maxLength` is too large and must be lowered, and input beyond it is refused by the parameter Schema). It is a geometric measurement, not a visual review; like the transparency
+measurement it only applies to generation, and already published versions are not re-checked.
+
 Contract diagnostics carry the position of a violation (line, column and range in the submitted code).
 `exec` and `spawn` are refused only as bare identifiers; as member names, such as `RegExp.prototype.exec`,
 they are ordinary methods.
@@ -342,6 +353,18 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   Longer than `IMV_OVERLAY_MAX_SECONDS` (120) is a 422 at acceptance when the length is already known (`duration`
   or the clips' end); an `audioUrl` is only probed while rendering, so an over-long one fails the task with
   `duration_too_long`.
+- **Text fit**: a generated text effect cannot know how long a title the bus will send, so the host fits the text a
+  placement really carries (its `text` override, up to the published `maxLength`) before rendering. For every text
+  Sprite with `text` and `fontSize` parameters, inside the render slot, the isolated browser mounts the placement's own
+  values and measures the text boxes the same way `sprite.create` does (cut off by an `overflow: hidden|clip`
+  ancestor, outside the canvas, or lines under 20px tall). Text that already fits keeps its `fontSize`; otherwise the
+  host lowers `fontSize` to the largest whole size, down to the published minimum, at which it is shown in full
+  (binary search; the size is logged, the template and the sealed source are untouched). Text that does not fit even
+  at the minimum fails the task with `text_too_long` and a fixed message (the callback's `errorMessage`) so the bus can
+  tell the user to shorten it, instead of publishing a clipped title. Other Sprites skip the pass, and a fit sandbox
+  that cannot start fails the task as `render_failed`. `POST /api/sprites/render` runs the same pass on each distinct
+  text or cue (a held text is measured on its frozen frame), one browser run per Sprite. It is a geometric measurement,
+  not a visual review.
 - **Acceptance**: also a 503 when ZOS, ffprobe, bubblewrap, prlimit, Node, the browser or the managed fonts are
   missing (the isolated renderer is Linux-only), instead of accepting tasks that can only fail later. An empty
   `placements` (`no_placements`) or a `spriteId` that is not published (`sprite_missing`) is a 422.
