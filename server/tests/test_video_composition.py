@@ -28,7 +28,7 @@ BASE = "/api/v1/video-compositions"
 
 @pytest.mark.parametrize("with_text", [True, False])
 def test_material_voice_uses_order_and_full_audio(upstreams, client, composition_case, monkeypatch, with_text):
-    """有声纯素材跨字幕空隙连续铺满音频，混排裁尾，文案缺省跳过切片且从不匹配。"""
+    """有声纯素材跨字幕空隙连续铺满音频，混排裁尾，文案缺省时仅提取标题词且从不匹配。"""
     seen = []
 
     async def duration(url, timeout):
@@ -44,8 +44,7 @@ def test_material_voice_uses_order_and_full_audio(upstreams, client, composition
     request.pop("text")
     if with_text:
         request["copy"] = composition_case["request"]["text"]
-    else:
-        monkeypatch.delenv("IMV_LLM_API_KEY")
+    # 没有正文但有标题时仍需要一次仅标题的关键词提取。
     response = client.post(BASE, json=request)
     assert response.status_code == 200
     task_id = response.json()["data"]
@@ -61,7 +60,7 @@ def test_material_voice_uses_order_and_full_audio(upstreams, client, composition
     assert seen == [request["materials"][i]["fileUrl"] for i in (0, 2)]
     assert data["material_durations"] == [2.5, 3, 4]
     assert data["timeline"]["AudioTracks"][0]["AudioTrackClips"][0]["TimelineOut"] == 8
-    assert upstreams["asr_calls"] == 1 and upstreams["segment_calls"] == int(with_text)
+    assert upstreams["asr_calls"] == 1 and upstreams["segment_calls"] == 1
     assert upstreams["posts"] == [] and upstreams["gets"] == [] and "match_request" not in data
     assert len(data["timeline"]["SubtitleTracks"]) == (3 if with_text else 2)
     assert "copy" not in data["request"] and "compositionMode" not in data["request"]
@@ -711,8 +710,8 @@ def test_template_snapshot_must_persist_before_asr(upstreams, client, compositio
     advance = store.advance
 
     def fail_asr_transition(record, stage, **data):
-        """仅拒绝模板快照与 asr 阶段的原子写入，允许保存失败终态。"""
-        if stage == "asr":
+        """仅拒绝两份模板快照的原子写入，允许保存失败终态。"""
+        if stage == "template" and "template" in data:
             raise OperationalError("private SQL", {}, Exception("private connection"))
         return advance(record, stage, **data)
 
@@ -1626,7 +1625,7 @@ def test_execution_logs_cover_inputs_outputs_and_notification(upstreams, client,
     rows = composition_logs(task_id)
     started = {row["details"]["step"]: row["details"]["input"] for row in rows if row["event"] == "step_started"}
     outputs = {row["details"]["step"]: row["details"].get("output") for row in rows if row["event"] == "step_finished"}
-    assert set(started) == set(outputs) == {"template", "asr", "segmentation", "match_submit", "assembling", "ims_storage", "ims_submit", "ims_query", "playback", "zos_upload"}
+    assert set(started) == set(outputs) == {"template", "remotion_snapshot", "remotion_render", "asr", "segmentation", "match_submit", "assembling", "ims_storage", "ims_submit", "ims_query", "playback", "zos_upload"}
     assert started["template"] == {"style_id": request["styleId"]}
     assert outputs["template"] == composition_case["template"]
     assert outputs["asr"] == upstreams["raw"] == started["segmentation"]["asr_result"]

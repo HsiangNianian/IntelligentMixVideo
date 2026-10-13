@@ -17,6 +17,8 @@ from urllib.parse import urlsplit, urlunsplit
 from pydantic import BaseModel, ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
+from .errors import CompositionError
+
 
 def sanitize(value, *, media_url: bool = False):
     """递归清理日志数据中的凭证字段和 URL 鉴权；不修改原始业务数据。"""
@@ -76,8 +78,9 @@ def exception_details(exc: Exception) -> dict:
             if isinstance(value, (str, int)):
                 item[key] = value
         chain.append(item)
-        # SQL 异常链可能含原始语句和参数，不递归记录数据库驱动异常。
-        exc = None if isinstance(exc, SQLAlchemyError) else exc.__cause__ or exc.__context__
+        # SQL 与 Remotion 渲染异常链可能带语句、源码或完整业务参数，只记录安全摘要。
+        private_source = isinstance(exc, CompositionError) and exc.error["code"].startswith("remotion_")
+        exc = None if isinstance(exc, SQLAlchemyError) or private_source else exc.__cause__ or exc.__context__
     return sanitize({"exceptions": chain})
 
 
@@ -121,7 +124,8 @@ def error_message(details: dict) -> str:
 # 七个模块文件即持久化契约；未执行的模块保留四个空数组。
 MODULES = ("request", "template", "asr", "segmentation", "matching", "timeline", "zos")
 GROUPS = {
-    "template": "template", "asr": "asr", "segmentation": "segmentation",
+    "template": "template", "remotion_snapshot": "template", "remotion_render": "timeline",
+    "asr": "asr", "segmentation": "segmentation",
     "matching": "matching", "match_submit": "matching", "match_query": "matching",
     "assembling": "timeline", "material_probe": "timeline", "ims_storage": "timeline", "submitting": "timeline", "ims_submit": "timeline",
     "rendering": "zos", "ims_query": "zos", "playback": "zos", "zos_upload": "zos",
