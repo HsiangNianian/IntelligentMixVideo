@@ -43,13 +43,20 @@ def test_full_frame_kinds_only_sample_opacity():
 
 
 def test_a_combined_extreme_that_breaks_the_schema_falls_back_to_single_parameters():
-    """参数之间互相约束、组合样本不合 Schema 时，改为逐个参数推到一端，宿主变换单独成样本。"""
+    """参数之间互相约束、组合样本不合 Schema 时，改为逐步组合仍合法的一端取值，并逐个参数推到一端；每个样本都带同一端的宿主变换。
+
+    修复前逐个参数的样本不带宿主变换，宿主变换只与默认参数一起渲染：例如只在 glow=true 且 scale=4 时出错的组件可以通过发布。
+    """
     schema = {**SCHEMA, "if": {"properties": {"glow": {"const": True}}}, "then": {"properties": {"size": {"maximum": 50}}}}
     found = by_name(samples(schema, DEFAULTS, NAMES, "text", (1080, 1920)))
-    assert "high" not in found
-    assert found["high:size"].values == {**DEFAULTS, "size": 90}
-    assert found["high:glow"].values == {**DEFAULTS, "glow": True}
-    assert found["high:transform"].values == DEFAULTS and found["high:transform"].transform["scale"] == 4.0
+    assert any(item.values.get("glow") is True and item.transform.get("scale") == 4.0 for item in found.values())
+    assert "high" not in found and "high:transform" not in found
+    high = {"x": 1080, "y": 1920, "scale": 4.0, "rotation": 180.0, "opacity": 1.0}
+    assert found["high:size"].values == {**DEFAULTS, "size": 90} and found["high:size"].transform == high
+    assert found["high:glow"].values == {**DEFAULTS, "glow": True} and found["high:glow"].transform == high
+    # The greedy combination keeps every extreme that still fits: size 90 first, so glow stays false.
+    assert found["high:combined"].values == {**DEFAULTS, "text": FILLER * 2, "size": 90, "align": "justify", "color": "#FFFFFF"}
+    assert found["high:combined"].transform == high
     assert "low" in found
 
 

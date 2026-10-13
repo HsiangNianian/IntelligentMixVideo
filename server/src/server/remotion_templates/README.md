@@ -228,11 +228,13 @@ layout boxes clipped to the canvas, the pivot of the host transform; summaries o
 whole canvas. A new publication first renders boundary samples (`boundary.py`, `ToolValidator.validate_samples`,
 the worker's `samples` mode): the defaults, every top-level parameter at its low and at its high end (numbers at
 their bounds, first and last enum values, colours black and white, text filled to `maxLength` with a CJK glyph or
-cut to `minLength`, keywords full or empty) combined with the host transform at its extremes, the middle enum
-values, and single-parameter samples when a combined one breaks the schema. Each sample must render its first,
-middle and last frame without an error inside the shared host layer; a failure is a 422 naming the sample and
-frame, and a validator that cannot start is a 503 (the route checks the sandbox first). Templates may then change
-any value inside the published contract with only an instant schema check. The same source and field choice
+cut to `minLength`, keywords full or empty) combined with the host transform at its extremes, and the middle enum
+values. When the combined extreme breaks the schema (parameters that constrain each other), it is replaced by the
+greedy combination of the extremes that still fit and by one sample per parameter extreme, each with the same end
+of the host transform. Each sample must render its first, middle and last frame without an error inside the shared
+host layer; a failure is a 422 naming the sample and frame, and a validator that cannot start is a 503 (the route
+checks the sandbox first). Template overrides are then checked against the schema only, without the sandbox. The
+samples cover the extremes, not every combination: a placement that still fails to render fails its overlay task. The same source and field choice
 returns the original Sprite without sampling again. `animation_frames` and `static_frame` stay 0
 because composition versions carry no such evidence, and `preview_url` serves the sealed
 interactive player page rather than an MP4.

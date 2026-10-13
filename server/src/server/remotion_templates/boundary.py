@@ -1,7 +1,9 @@
 """发布时的边界抽样：用默认值、各参数的两端取值、中间枚举值和宿主变换的两端，在隔离浏览器里各渲染几帧。
 
-通过后，模板里在发布参数契约范围内的任何修改都只需即时的 Schema 校验，不再启动沙箱。
-组合样本把所有参数同时推到一端；它不满足 Schema 时（参数之间互相约束）退回逐个参数的样本。
+通过后，模板里的修改只做即时的 Schema 校验，不再启动沙箱。抽样只覆盖边界，不是穷举证明：
+组合样本把所有参数和宿主变换同时推到一端；它不满足 Schema 时（参数之间互相约束），改为逐步加入仍合法的一端取值
+得到的组合，以及每个参数单独推到一端的样本，它们都带同一端的宿主变换。仍在实际渲染中出错的摆放，
+由叠加渲染任务失败并报告。
 """
 
 from __future__ import annotations
@@ -78,13 +80,20 @@ def samples(schema: dict, defaults: dict, names: list[str], kind: str | None, ca
         if _valid(schema, combined):
             result.append(Sample(label, combined, _transform(kind, canvas, high)))
             continue
+        # Parameters constrain each other: keep every extreme that still fits, then each extreme on its own. All of
+        # them carry the same end of the host transform, so no parameter extreme is only rendered untransformed.
+        transform = _transform(kind, canvas, high)
+        greedy = dict(defaults)
+        for name, value in changes.items():
+            if _valid(schema, trial := {**greedy, name: value}):
+                greedy = trial
+        result.append(Sample(f"{label}:combined", greedy, transform))
         singles = 0
         for name, value in changes.items():
             single = {**defaults, name: value}
             if value != defaults.get(name) and _valid(schema, single) and singles < MAX_SINGLE_SAMPLES:
-                result.append(Sample(f"{label}:{name}", single))
+                result.append(Sample(f"{label}:{name}", single, transform))
                 singles += 1
-        result.append(Sample(f"{label}:transform", defaults, _transform(kind, canvas, high)))
     longest = max((len(properties.get(name, {}).get("enum") or []) for name in names), default=0)
     for index in range(1, min(longest - 1, MAX_ENUM_SAMPLES + 1)):
         changes = {
