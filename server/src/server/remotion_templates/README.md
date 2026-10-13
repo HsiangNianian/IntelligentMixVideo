@@ -363,7 +363,8 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   placement really carries (its `text` override, up to the published `maxLength`) before rendering. For every text
   Sprite with `text` and `fontSize` parameters, inside the render slot, the isolated browser mounts the placement's
   own values at the length its Sprite plays in the render (the length it reads as `durationInFrames`; a held text its
-  previewed length) and measures the text boxes the same way `sprite.create` does: cut off by an ancestor whose
+  previewed length; a clip cut by the video's end is measured only on its rendered frames) and measures the text
+  boxes the same way `sprite.create` does: cut off by an ancestor whose
   overflow is not visible or that contains its paint, outside the canvas once the placement's host transform moves,
   scales and rotates it, lines under 20px tall, or only part of the text shown, judged on the frames that show the
   text at its full size. Placements that differ only in length or transform are measured separately; the

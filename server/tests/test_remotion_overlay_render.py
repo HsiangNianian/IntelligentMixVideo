@@ -1740,3 +1740,15 @@ def test_real_browser_fits_two_sprites_in_one_run(tmp_path: Path) -> None:
     sizes = [item["config"]["fontSize"] for item in fit_for_real(tmp_path, {"t": WRAPPED_TITLE, "u": LINE_MASK_TITLE}, placements, 1.0).instances]
     assert 60 <= sizes[0] <= 67
     assert sizes[1] == 128
+
+
+# 场景：3 秒的摆放放进 1 秒的成片时被总长截断，Sprite 仍读到 90 帧，但只量成片里出现的前 30 帧；
+# 截断之后的帧不会出现在视频里，不能让它们替被裁切的文字通过预检。
+def test_fit_measures_only_the_frames_that_are_rendered(tmp_path) -> None:
+    """条目长度 90 帧，采样帧落在 0～29。"""
+    renderer = FitRenderer(capacity=240)
+    overlay = plan_overlay([clip("标题", 3.0)], PUBLICATIONS, 1.0, 120)
+    asyncio.run(overlay_render.fit_texts(renderer, overlay, PUBLICATIONS, tmp_path / "fit"))
+    [request] = renderer.requests
+    [sprite] = request["sprites"]
+    assert [(item["frames"], item["length"]) for item in sprite["fit"]] == [([0, 7, 14, 21, 29], 90)]

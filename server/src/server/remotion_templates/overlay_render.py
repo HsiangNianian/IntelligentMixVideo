@@ -199,17 +199,19 @@ def plan_overlay(
     return Overlay(width, height, fps, frames, instances)
 
 
-def _fit_frames(instance: dict) -> tuple[list[int], int]:
+def _fit_frames(instance: dict, end: int) -> tuple[list[int], int]:
     """The frames at which a placement's text is shown, and the length its Sprite plays at.
 
     A held text (shown for less than the static threshold) is frozen on one frame of its previewed length; any other
-    one plays its own length, measured on its first, last and three frames in between.
+    one plays its own length and is measured on the first, last and three frames in between of the part that is
+    rendered: a clip running past the video's `end` frame keeps its length, but its frames after `end` never show.
     """
     hold = instance.get("hold")
     if hold:
         return [hold["frame"]], hold["length"]
     length = instance["duration_frames"]
-    return sorted({min(length - 1, math.floor((length - 1) * ratio)) for ratio in (0, 0.25, 0.5, 0.75, 1)}), length
+    shown = max(1, min(length, end - instance["start_frame"]))
+    return sorted({min(shown - 1, math.floor((shown - 1) * ratio)) for ratio in (0, 0.25, 0.5, 0.75, 1)}), length
 
 
 async def fit_texts(renderer: Renderer, overlay: Overlay, sprites: dict[str, pb.PublishedSprite], directory: Path) -> None:
@@ -239,7 +241,7 @@ async def fit_texts(renderer: Renderer, overlay: Overlay, sprites: dict[str, pb.
         text = config.get(sprite.text_prop or "text")
         if not isinstance(text, str) or not text.strip() or not isinstance(config.get("fontSize"), (int, float)) or "minimum" not in size:
             continue
-        frames, length = _fit_frames(instance)
+        frames, length = _fit_frames(instance, overlay.frames)
         # Opacity does not move the text; every other transform field does, so it tells contents apart.
         transform = {name: value for name, value in instance["host"]["transform"].items() if name != "opacity"}
         key = json.dumps([config, frames, length, transform], sort_keys=True, ensure_ascii=False)
