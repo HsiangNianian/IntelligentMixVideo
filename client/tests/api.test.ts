@@ -4,7 +4,7 @@ import { fromBinary, toBinary, toJson } from "@bufbuild/protobuf";
 import { EffectTemplateEditorSchema, GetTemplateResponseSchema, SaveTemplateRequestSchema } from "@/generated/imv/template/v1/template_pb";
 import { deleteTemplate, getTemplate, listTemplates, saveTemplate } from "@/features/templates/api";
 import { newDraft, toDraft, type RemotionClip } from "@/features/templates/model";
-import { protobufListResponse, protobufTemplateResponse, savedTemplate } from "./fixtures";
+import { protobufListResponse, protobufTemplateResponse, savedTemplate, templateSummary } from "./fixtures";
 import { fetchMock, mockDesktop } from "./setup";
 
 // 测试创建和更新都使用 POST /template，只有更新带 ID，名称说明被修剪且效果去重。
@@ -59,7 +59,7 @@ test("读取与删除遵循接口契约", async () => {
   saved.tracks[0].editor.titleKeywordSize = 72;
   saved.tracks[1].editor.subtitleKeywordSize = 48;
   fetchMock.mockResolvedValueOnce(protobufListResponse([saved]));
-  expect(await listTemplates()).toEqual([saved]);
+  expect(await listTemplates()).toEqual([templateSummary(saved)]);
   fetchMock.mockResolvedValueOnce(protobufTemplateResponse(saved, "get"));
   expect(await getTemplate("id/with space")).toEqual(saved);
   expect(fetchMock.mock.calls[1][0]).toBe("http://api.test:8000/template/id%2Fwith%20space");
@@ -80,8 +80,8 @@ test("读取含 Remotion 片段的模板", async () => {
   const withClips = { ...savedTemplate(), template_id: "00000000-0000-4000-8000-000000000002", clips };
   fetchMock.mockResolvedValueOnce(protobufListResponse([savedTemplate(), withClips]));
   const listed = await listTemplates();
-  expect(listed).toEqual([savedTemplate(), withClips]);
-  expect(listed[1].tracks.map((track) => track.target)).toEqual(["title", "subtitle"]);
+  expect(listed).toEqual([templateSummary(savedTemplate()), templateSummary(withClips)]);
+  expect(listed[1].track_count).toBe(4);
   fetchMock.mockResolvedValueOnce(protobufTemplateResponse(withClips, "get"));
   expect(await getTemplate(withClips.template_id)).toEqual(withClips);
 });
@@ -195,14 +195,14 @@ test("本地和云端存储严格分流", async () => {
   const { mock } = await import("bun:test");
   const saved = savedTemplate();
   const invoke = mock(async (_command: string, args: Record<string, unknown>): Promise<unknown> => {
-    if (args.operation === "list") return [saved];
+    if (args.operation === "list") return [templateSummary(saved)];
     if (args.operation === "delete") return null;
     return saved;
   });
   const restoreDesktop = mockDesktop(invoke);
   try {
     expect(window).not.toHaveProperty("__TAURI__");
-    expect(await listTemplates(undefined, "local")).toEqual([saved]);
+    expect(await listTemplates(undefined, "local")).toEqual([templateSummary(saved)]);
     expect(await getTemplate(saved.template_id, "local")).toEqual(saved);
     expect(await saveTemplate(toDraft(saved), undefined, "local")).toEqual(saved);
     await deleteTemplate(saved.template_id, "local");

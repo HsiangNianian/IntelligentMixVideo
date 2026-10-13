@@ -1,0 +1,66 @@
+[
+  {
+    "name": "两个转场累计扣除重叠",
+    "context": {"layout": "sequence", "fps": 30, "clips": [{"duration": 10}, {"duration": 10}, {"duration": 10}]},
+    "transitions": [{"boundary": 1, "duration": 1}, {"boundary": 2, "duration": 1}],
+    "duration": 28,
+    "clips": [[0, 10], [9, 19], [18, 28]],
+    "ranges": [[9, 10], [18, 19]],
+    "notices": ["", ""]
+  },
+  {
+    "name": "短视频使用真实长度",
+    "context": {"layout": "sequence", "fps": 30, "clips": [{"duration": 2}, {"duration": 3}, {"duration": 10}]},
+    "transitions": [{"boundary": 1, "duration": 1}, {"boundary": 2, "duration": 1}],
+    "duration": 13,
+    "clips": [[0, 2], [1, 4], [3, 13]],
+    "ranges": [[1, 2], [3, 4]],
+    "notices": ["", ""]
+  },
+  {
+    "name": "固定片段保持语音总长及后续交界处",
+    "context": {"layout": "fixed", "fps": 30, "duration": 40, "clips": [{"duration": 10, "start": 0}, {"duration": 10, "start": 10}, {"duration": 10, "start": 20}, {"duration": 10, "start": 30}]},
+    "transitions": [{"boundary": 1, "duration": 1}, {"boundary": 2, "duration": 1}],
+    "duration": 40,
+    "clips": [[0, 10], [10, 20], [20, 30], [30, 40]],
+    "ranges": [[9, 10], [19, 20]],
+    "notices": ["", ""]
+  },
+  {
+    "name": "交界处缺失返回未应用原因",
+    "context": {"layout": "fixed", "fps": 30, "duration": 20, "clips": [{"duration": 10, "start": 0}, {"duration": 10, "start": 10}]},
+    "transitions": [{"boundary": 2, "duration": 1}],
+    "duration": 20,
+    "clips": [[0, 10], [10, 20]],
+    "ranges": [[20, 20]],
+    "notices": ["交界处 2 不存在，未应用转场"]
+  },
+  {
+    "name": "固定片段保留非整帧起止时间",
+    "context": {"layout": "fixed", "fps": 30, "duration": 2.99, "clips": [{"duration": 1.01, "start": 0}, {"duration": 1.98, "start": 1.01}]},
+    "transitions": [{"boundary": 1, "duration": 0.5}],
+    "duration": 2.99,
+    "subtitle_end": 2.966666666666667,
+    "clips": [[0, 1.01], [1.01, 2.99]],
+    "ranges": [[0.51, 1.01]],
+    "notices": [""]
+  },
+  {
+    "name": "相邻片段限制可用转场长度",
+    "context": {"layout": "sequence", "fps": 30, "clips": [{"duration": 1}, {"duration": 10}, {"duration": 10}]},
+    "transitions": [{"boundary": 1, "duration": 2}],
+    "duration": 20.5,
+    "clips": [[0, 1], [0.5, 10.5], [10.5, 20.5]],
+    "ranges": [[0.5, 1]],
+    "notices": ["转场已按相邻片段可用时间缩短"]
+  },
+  {
+    "name": "不足最短转场时间时保留视频",
+    "context": {"layout": "sequence", "fps": 30, "clips": [{"duration": 0.1}, {"duration": 10}, {"duration": 10}]},
+    "transitions": [{"boundary": 1, "duration": 1}],
+    "duration": 20.1,
+    "clips": [[0, 0.1], [0.1, 10.1], [10.1, 20.1]],
+    "ranges": [[0.1, 0.1]],
+    "notices": ["相邻片段过短，未应用转场"]
+  }
+]

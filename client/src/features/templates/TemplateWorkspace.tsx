@@ -10,8 +10,8 @@ import { readCatalog } from "./sdk";
 import { newDraft, toDraft, type Draft, type EffectAsset, type Template, type TextRole, type PreviewMedia } from "./model";
 import { AppliedEffects, EffectAssets } from "./EffectAssets";
 import { isTextTarget } from "./effects";
-import { addTrack, previewDuration, previewVideoRanges, syncTransitionTiming, removeTrack, setTrackTiming, trackDraft, updateTrack } from "./tracks";
-import { reorderVideos } from "./media";
+import { addTrack, previewContext, resolveTemplate, removeTrack, setTrackTiming, trackDraft, updateTrack } from "./tracks";
+import { previewUrls, readPreviewVideos, reorderVideos } from "./media";
 import { TemplateInspector, TransitionInspector, type InspectorTab } from "./TemplateInspector";
 import { TemplatePreview } from "./TemplatePreview";
 import { SpriteCatalog, SpriteClips } from "./SpritePanels";
@@ -50,6 +50,8 @@ export function TemplateWorkspace({ selection = null, onHome }: {
   const [current, setCurrent] = useState<Template | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [media, setMedia] = useState<PreviewMedia>();
+  const [mediaError, setMediaError] = useState("");
+  const [mediaAttempt, setMediaAttempt] = useState(0);
   const [videoOrder, setVideoOrder] = useState([0, 1, 2]);
   const [baseline, setBaseline] = useState("");
   const [catalog, setCatalog] = useState<EffectAsset[]>(() => readCatalog());
@@ -69,7 +71,12 @@ export function TemplateWorkspace({ selection = null, onHome }: {
   const mounted = useRef(false);
   const handledSelection = useRef<TemplateSelection | null>(null);
   const spriteCatalog = useSpriteCatalog(environment, (draft?.clips.length ?? 0) > 0);
-  const previewLength = draft ? Math.max(0, previewDuration(draft, media, videoOrder)) : 0;
+  const preview = useMemo(() => {
+    if (!draft || !media) return { timeline: undefined, error: "" };
+    try { return { timeline: resolveTemplate(draft, previewContext(media, videoOrder)), error: "" }; }
+    catch (reason) { return { timeline: undefined, error: reason instanceof Error ? reason.message : "时间规则无法应用到当前视频" }; }
+  }, [draft, media, videoOrder]);
+  const previewLength = preview.timeline?.duration ?? 0;
   const draftClips = draft?.clips;
   const spriteClips = useMemo(() => (draftClips ?? []).map((clip) => {
     const asset = spriteCatalog.assets?.find((item) => item.id === clip.sprite_id);
@@ -90,7 +97,7 @@ export function TemplateWorkspace({ selection = null, onHome }: {
   const assetTrack = selectedTrack ?? draft?.tracks.find((track) => track.id === lastTextTrack.current);
   const selectedDraft = draft && selectedTrack ? trackDraft(draft, selectedTrack) : null;
   const selectedTransition = selectedTrack?.target === "transition" ? selectedTrack : undefined;
-  const selectedBoundary = selectedTransition?.transition_boundary ?? 1;
+  const selectedBoundary = selectedTransition?.transition_boundary;
   // IMS 对象与 Remotion 片段共用一个选中状态，右栏只显示其中一种设置。
   const selectedClip = draft?.clips.find((clip) => clip.id === target);
 
@@ -98,6 +105,19 @@ export function TemplateWorkspace({ selection = null, onHome }: {
     mounted.current = true;
     return () => { mounted.current = false; };
   }, []);
+
+  // 默认地址与弹窗均读取真实元数据；已选择来源时不再启动默认读取。
+  useEffect(() => {
+    if (!draft || media) return;
+    const controller = new AbortController();
+    setMediaError("");
+    void readPreviewVideos(previewUrls(), controller.signal).then((sources) => {
+      if (!controller.signal.aborted) setMedia(sources);
+    }).catch((reason: unknown) => {
+      if (!controller.signal.aborted) setMediaError(reason instanceof Error ? reason.message : "预览视频读取失败");
+    });
+    return () => controller.abort();
+  }, [!!draft, draft?.name, current?.template_id, environment, media, mediaAttempt]);
 
   useEffect(() => {
     if (!dirty) return;
@@ -165,7 +185,7 @@ export function TemplateWorkspace({ selection = null, onHome }: {
 
   /** 添加资产失败时使用提示框；参数错误显示在工作区，失败时保留当前草稿。 */
   function editTrack(change: () => Draft, addingAsset = false) {
-    try { setDraft(syncTransitionTiming(change(), media, videoOrder)); setError(""); }
+    try { setDraft(change()); setError(""); }
     catch (reason) {
       const message = reason instanceof Error ? reason.message : "轨道修改失败";
       if (addingAsset) setAssetError(message);
@@ -247,28 +267,27 @@ export function TemplateWorkspace({ selection = null, onHome }: {
                 <SpriteCatalog environment={environment} catalog={spriteCatalog} onAdd={(asset) => editTrack(() => addClip(draft, asset, spriteCatalog.assets ?? []))} />
               </aside>}
               canvas={<main className="template-workspace-canvas h-full min-w-0 overflow-y-auto border-b xl:border-b-0">
-                <TemplatePreview draft={draft} media={media} onMediaChange={(next) => { const updated = syncTransitionTiming(draft, next, videoOrder); setMedia(next); setDraft(updated); }} videoInputKey={`${environment}:${current?.template_id ?? draft.name}`} onCatalog={setCatalog} selectedId={target} onSelect={(id) => { if (draft.tracks.some((track) => track.id === id) || draft.clips.some((clip) => clip.id === id)) selectTarget(id); }} sprites={spriteClips} onSpriteMove={(id, x, y) => editTrack(() => setClipTransform(draft, id, { x, y }))}
+                <TemplatePreview draft={draft} media={media} resolved={preview.timeline} mediaError={mediaError || preview.error} onRetryMedia={() => setMediaAttempt((value) => value + 1)} onMediaChange={(next) => { setMedia(next); setMediaError(""); }} videoInputKey={`${environment}:${current?.template_id ?? draft.name}`} onCatalog={setCatalog} selectedId={target} onSelect={(id) => { if (draft.tracks.some((track) => track.id === id) || draft.clips.some((clip) => clip.id === id)) selectTarget(id); }} sprites={spriteClips} onSpriteMove={(id, x, y) => editTrack(() => setClipTransform(draft, id, { x, y }))}
                   videoOrder={videoOrder} onVideoMove={(source, destination) => {
                     try {
                       const next = reorderVideos(videoOrder, source, destination);
-                      const updated = syncTransitionTiming(draft, media, next);
-                      setDraft(updated); setVideoOrder(next); setError("");
+                      setVideoOrder(next); setError("");
                     } catch (reason) { setError(reason instanceof Error ? reason.message : "视频排列修改失败"); }
                   }} />
               </main>}
-              inspector={<aside className="template-workspace-inspector h-full min-w-0 overflow-y-auto xl:border-l"><AppliedEffects draft={draft} catalog={catalog} duration={previewLength} selected={target} onSelect={selectTarget} />
-                <SpriteClips environment={environment} clips={draft.clips} catalog={spriteCatalog} duration={previewLength} selected={selectedClip?.id ?? null} onSelect={selectTarget} onRemove={(id) => editTrack(() => removeClip(draft, id))} />
-                {selectedClip && <SpriteClipInspector clip={selectedClip} asset={spriteCatalog.assets?.find((item) => item.id === selectedClip.sprite_id)} duration={previewLength}
+              inspector={<aside className="template-workspace-inspector h-full min-w-0 overflow-y-auto xl:border-l"><AppliedEffects draft={draft} catalog={catalog} resolved={preview.timeline} selected={target} onSelect={selectTarget} />
+                <SpriteClips environment={environment} clips={draft.clips} catalog={spriteCatalog} duration={preview.timeline?.duration} selected={selectedClip?.id ?? null} onSelect={selectTarget} onRemove={(id) => editTrack(() => removeClip(draft, id))} />
+                {selectedClip && <SpriteClipInspector clip={selectedClip} asset={spriteCatalog.assets?.find((item) => item.id === selectedClip.sprite_id)} duration={preview.timeline?.duration}
                   onParameter={(key, value) => editTrack(() => setClipParameter(draft, selectedClip.id, key, value))}
                   onTransform={(patch) => editTrack(() => setClipTransform(draft, selectedClip.id, patch))}
                   onStart={(start) => editTrack(() => moveClip(draft, selectedClip.id, start))}
                   onRemove={() => { editTrack(() => removeClip(draft, selectedClip.id)); setTarget(null); }}
                   onClose={() => setTarget(null)} />}
-                {selectedTransition && <TransitionInspector boundary={selectedBoundary} track={selectedTransition} catalog={catalog} end={previewVideoRanges(draft, media, videoOrder)[selectedBoundary - 1].end}
+                {selectedTransition && <TransitionInspector boundary={selectedBoundary!} track={selectedTransition} catalog={catalog} resolved={preview.timeline?.tracks[selectedTransition.id]}
                   onChoose={(asset) => editTrack(() => { if (asset) return addTrack(draft, asset, "transition", undefined, selectedBoundary).draft; setTarget(null); return removeTrack(draft, selectedTransition.id); })}
                   onDuration={(seconds) => editTrack(() => updateTrack(draft, selectedTransition.id, { editor: selectedTransition.editor, transition_duration_seconds: seconds }))}
                   onClose={() => setTarget(null)} />}
-                {selectedTrack && selectedTrack.target !== "transition" && <TemplateInspector track={selectedTrack} draft={selectedDraft!} catalog={catalog} duration={previewLength} tab={inspectorTab} onTabChange={setInspectorTab} onTimingChange={(timing) => editTrack(() => setTrackTiming(draft, selectedTrack.id, timing))} onEffectChange={(next) => editTrack(() => updateTrack(draft, selectedTrack.id, next))} onRemove={() => editTrack(() => removeTrack(draft, selectedTrack.id))} onClose={() => setTarget(null)} />}
+                {selectedTrack && selectedTrack.target !== "transition" && <TemplateInspector track={selectedTrack} draft={selectedDraft!} catalog={catalog} duration={previewLength} resolved={preview.timeline?.tracks[selectedTrack.id]} tab={inspectorTab} onTabChange={setInspectorTab} onTimingChange={(timing) => editTrack(() => setTrackTiming(draft, selectedTrack.id, timing))} onEffectChange={(next) => editTrack(() => updateTrack(draft, selectedTrack.id, next))} onRemove={() => editTrack(() => removeTrack(draft, selectedTrack.id))} onClose={() => setTarget(null)} />}
               </aside>}
             />
           </fieldset>

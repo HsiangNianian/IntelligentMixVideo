@@ -148,12 +148,26 @@ export type PreviewMedia = readonly [MasterVideo, MasterVideo, MasterVideo];
 export interface EffectTrack {
   id: string;
   target: TextRole | "filter" | "vfx" | "transition";
-  start_mode: "seconds" | "percent";
-  start: number;
+  start_mode?: "seconds" | "percent";
+  start?: number;
   duration: number | null;
   editor: Editor;
-  /** 转场所属的视频交界处，从 1 开始；其他对象省略。 */
+  /** 转场必须指定交界处，且不保存 start/start_mode；其他对象省略此字段。 */
   transition_boundary?: number;
+}
+
+/** 列表只携带展示信息与校验结果，无效记录可以定位和删除。 */
+export interface TemplateSummary {
+  template_id: string;
+  name: string;
+  description: string;
+  created_at: string;
+  updated_at: string;
+  title: string;
+  subtitle: string;
+  track_count?: number;
+  validation_error: string;
+  library?: string;
 }
 
 /** 后端返回的完整模板，effects 为保存时的可信快照。 */

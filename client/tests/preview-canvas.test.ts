@@ -2,9 +2,7 @@
 import { expect, test } from "bun:test";
 import { newDraft } from "@/features/templates/model";
 import { readCatalog } from "@/features/templates/sdk";
-import { buildTimeline } from "@/features/templates/timeline";
-import { previewVideos } from "@/features/templates/media";
-import { sampleDraft } from "./fixtures";
+import { sampleDraft, sampleMedia, buildTestTimeline as buildTimeline } from "./fixtures";
 
 const catalog = readCatalog();
 
@@ -17,7 +15,7 @@ test.each([[1920, 1080], [1080, 1920], [1080, 1080], [2560, 1080]])(
     draft.tracks[0].editor.titleX = 25;
     draft.tracks[0].editor.titleY = 75;
     const original = structuredClone(draft);
-    const defaults = previewVideos();
+    const defaults = sampleMedia;
     const timeline = buildTimeline(draft, catalog, [{
       url: "https://example.com/video.mp4", width, height, duration: 12,
     }, defaults[1], defaults[2]]);

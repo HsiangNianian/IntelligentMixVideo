@@ -7,12 +7,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
 import type { PreviewMedia } from "./model";
-import { previewVideos, readPreviewVideos } from "./media";
+import { previewUrls, readPreviewVideos } from "./media";
 
 /** 视频编号与来源编号一致；取消不提交地址，加载成功后一次更新三个来源。 */
 export function MasterVideoInput({ media, onChange }: { media?: PreviewMedia; onChange: (media: PreviewMedia) => void }) {
   const id = useId();
-  const [urls, setUrls] = useState(() => previewVideos(media).map((video) => video.url));
+  const [urls, setUrls] = useState(() => previewUrls(media));
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -24,7 +24,7 @@ export function MasterVideoInput({ media, onChange }: { media?: PreviewMedia; on
     controller.current?.abort();
     setLoading(false);
     setError("");
-    if (value) setUrls(previewVideos(media).map((video) => video.url));
+    if (value) setUrls(previewUrls(media));
     setOpen(value);
   }
 

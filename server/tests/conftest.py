@@ -107,8 +107,8 @@ def template_track(target: str = "title", **editor) -> dict:
     content = {"title": "", "subtitle": "", "bubbleText": ""}
     if target in ("title", "subtitle", "bubble"):
         content["bubbleText" if target == "bubble" else target] = "示例文字"
-    return {"id": target, "target": target, "start_mode": "seconds",
-            "start": 1 if target == "transition" else 0,
+    return {"id": target, "target": target,
+            **({"transition_boundary": 1} if target == "transition" else {"start_mode": "seconds", "start": 0}),
             "duration": 0.5 if target == "transition" else None,
             "editor": {**content, **editor}}
 

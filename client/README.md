@@ -48,7 +48,7 @@ VITE_PREVIEW_VIDEO_3_URL=https://your-domain.example/preview-3.mp4
 ```
 
 以上配置分别对应视频 1、视频 2、视频 3，均支持 HTTP(S) 直链和 public 资源路径。例如将视频放入 `client/public/preview-2.mp4`，填写 `VITE_PREVIEW_VIDEO_2_URL=/preview-2.mp4`。
-每个地址未配置或留空时使用对应的内置示例。工作区的预览视频与模板独立，保存模板只保存对象配置和时间规则。
+每个地址未配置或留空时使用对应的内置示例。默认来源与弹窗填写的 URL 均由工作区读取真实时长和尺寸，读取失败可以重试，读取完成前不计算预览时间。工作区的预览视频与模板独立，保存模板只保存对象配置和时间规则。
 
 时间输入和开始、持续方式的选择立即更新内存草稿及预览；点击「保存模板」才写入存储。空值或非法时间会提示错误，修正后继续编辑。
 
@@ -75,9 +75,9 @@ VITE_PREVIEW_VIDEO_3_URL=https://your-domain.example/preview-3.mp4
 - 视频下方的「画面对象与已添加特效」展示已有对象，点击对象打开右侧参数。添加效果统一通过左侧「特效资产」进行，移除对象后也通过资产重新添加，其他对象保持不变。
 - 循环动画与入场、出场动画互斥，实际应用时按文字显示时间调整入场和出场时长。每次修改自动应用到 SDK，播放器从下到上叠加视频、滤镜、VFX 和文字。
 - 画面下方使用 `@xzdarcy/react-timeline-editor`，从上到下排列标题、字幕、气泡、转场、VFX、滤镜和视频。三个视频各取前 10 秒，在同一行拖动调整排列。其他对象仅通过右侧设置时间，轨道同步变化；底部字幕固定一个，从零持续到视频结束，不能修改时间。标题、气泡、VFX、滤镜支持秒数或百分比起点、固定秒数或持续到结束。实例上限为 100，轨道允许重叠。SDK 驱动游标，拖动游标暂停并定位，确认定位后可以继续播放。方向键移动 0.1 秒，Home/End 定位首尾，修改效果后回到开头。
-- 缩略图由独立视频元素提取，最多缓存 48 张，卸载或素材变化时取消任务。`tracks` 保存 `id`、`target`、`start_mode`、`start`、`duration` 和 `editor`；`start_mode` 为 `seconds` 或 `percent`，百分比范围为 0 至小于 100，`duration: null` 表示持续到结束。云端和桌面本地按相同规则校验，模板不保存 `media`。预览按 30 FPS 计算帧区间；超过结尾的对象不显示，结束越界时截短，动画按可用帧数缩短并展示说明，帧数不足以表达所选动画时明确报错。转场使用固定持续时间，按合成时长计算开始位置，实际应用时要求前后片段有效。
+- 缩略图由独立视频元素提取，最多缓存 48 张，卸载或素材变化时取消任务。普通对象保存 `id`、`target`、`start_mode`、`start`、`duration` 和 `editor`；`start_mode` 为 `seconds` 或 `percent`，百分比范围为 0 至小于 100，`duration: null` 表示持续到结束。转场保存 `id`、`target`、`transition_boundary`、`duration` 和 `editor`，禁止设置 `start`、`start_mode`。云端和桌面本地按相同规则校验，模板不保存 `media`。`resolveTemplate` 根据规则与真实片段生成总长、视频区间、对象区间和提示，预览、时间轴与右侧面板共用结果。预览按 30 FPS 计算帧区间；超过结尾的对象不显示，结束越界时截短，动画按可用帧数缩短并展示说明，帧数不足以表达所选动画时明确报错。
 - 左侧依次添加转场，第一个连接视频 1 → 视频 2，第二个连接视频 2 → 视频 3，最多两个。添加资产失败时弹出提示框，点击「知道了」或关闭按钮后继续编辑。右侧修改已有转场效果或选择「无转场」移除，持续时间支持 0.1～3 秒，默认 1 秒；再次添加时按顺序填充空闲交界处。起点由相邻视频计算，预览总长为三个视频时长之和减去重叠时间。转场保存 `transition_boundary: 1 | 2`，视频排列仅用于预览。修改转场后字幕自动跟随总长，其他对象保留时间规则。
-- 模板保存结构要求 `tracks` 数组，参数仅保存在 `tracks[].editor`。新建草稿自动包含标题和字幕，基础文字无需选择效果即可保存。参数面板使用选中对象的临时视图。云端与桌面读取、保存均拒绝缺少 `tracks`、`tracks: null` 或包含顶层 `editor` 的数据；已有文件和数据库记录不自动转换。
+- 模板保存结构要求 `tracks` 数组，参数仅保存在 `tracks[].editor`。新建草稿自动包含标题和字幕，基础文字无需选择效果即可保存。参数面板使用选中对象的临时视图。云端与桌面保存、详情读取均校验完整规则；模板列表返回 `TemplateSummary`，无效记录显示 ID、原因和「删除无效模板」入口，经确认只删除选定记录。有效模板仍可使用。已有记录不自动转换；整个本地 JSON 文件无法解析时明确报错。列表消息与转场字段需要客户端、服务端一起升级。
 - Remotion 片段在线路上使用 `target: remotion`，读取到 `Draft.clips`，保存时追加在 IMS 对象之后；两者共用 100 条上限，允许模板没有 IMS 效果。本地模板不支持。云端模板左侧「Remotion 资产」通过 `addClip` 从目录添加，同一资产可重复摆放，画布宽、高、帧率必须一致。右侧设置开始时间、参数与位置，时间轴展示对应区间；片段与模板在同一次请求里保存。`api.test.ts`、`sprite-assets.test.tsx`、`clips.test.ts` 覆盖通信、编辑与保存规则。
 - 「重置特效设置」清除当前文字对象的样式和动画，并将示例文字、字号、水平位置、垂直位置和入出场动画时长恢复为新建模板的默认值；其他对象和模板信息保持不变。
 
@@ -146,7 +146,7 @@ bun run build
 `preview-timeline.test.tsx` 检查轨道数据转换、缩略图源时间采样、播放时间同步和键盘定位边界。
 `preview-canvas.test.ts` 检查横屏、竖屏、方形和超宽视频的原始画布尺寸，以及文字参数和三个各十秒的默认片段。
 画布的真实浏览器回归执行 `bun tests/preview-canvas.browser.mjs`，需要 Chrome、FFmpeg 和联网访问 SDK、字体。脚本自动启动独立 Vite 服务，生成本地视频，验证 Canvas 像素、横竖屏切换、实际播放、数字时间更新频率、窄屏比例、标题和字幕原文与卸载清理；不访问业务后端。中间文件保存在已忽略的 `node_modules/.cache/preview-canvas-tests/`，结束时关闭浏览器和测试服务。
-`effect-tracks.test.ts` 覆盖独立对象增删、时间规则、视频替换、动画帧数、SDK 数据转换和序列化；`track-timing.test.tsx` 验证输入自动更新、单位换算、非法输入恢复和对象切换。前后端共同使用 `server/tests/template_timing_cases.json`，其中 `purpose` 说明场景，预期结果包含区间和提示，并检查计算过程保留原始规则。
+`effect-tracks.test.ts` 覆盖独立对象增删、时间规则、视频替换、动画帧数、SDK 数据转换和序列化；`track-timing.test.tsx` 验证输入自动更新、单位换算、非法输入恢复和对象切换。前后端共同使用 `server/tests/template_timing_cases.json` 和 `server/tests/template_sequence_cases.json`，后者覆盖累计重叠、短视频、固定语音时间、转场缩短与缺失交界处；预期结果包含区间和提示，并检查计算过程保留原始规则。
 
 服务端核心验证执行 `uv run --locked --project server pytest server/tests/test_template_tracks.py server/tests/test_template_protobuf.py server/tests/test_template_validation.py server/tests/test_video_composition_timeline.py`（仓库根目录）。现有文案合成按成片时长应用每个对象：标题使用请求文字，字幕及关键词与文案时间取交集，重复实例保留独立参数；转场在指定位置连接片段，音频总长保持不变。桌面存储验证执行 `cargo test --locked --manifest-path src-tauri/Cargo.toml --lib templates::tests`（client 目录），使用真实文件检查规则保存与失败保护。通过 `TMPDIR` 和 pytest 的 `--basetemp` 将中间文件指向已忽略的缓存目录。
 `server/tests/test_template_tracks.py` 直接校验 Schema、默认参数、时间计算和序列化；`test_video_composition_timeline.py` 检查对象规则生成的合成时间线。

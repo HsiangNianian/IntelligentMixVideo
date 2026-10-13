@@ -57,11 +57,13 @@ PORT=8010 uv run --locked server
 GET 成功响应与 POST 请求、成功响应均使用 `application/x-protobuf`。POST 的 JSON 请求返回 415；损坏的 Protobuf 消息返回 400。创建返回 201，更新返回 200。名称重复返回 409，模板不存在返回 404，非法 ID 或配置返回 422。错误响应仍使用 JSON。
 重命名使用携带 ID 的 POST；另存为使用不携带 ID 的 POST。不存在的 ID 不会自动变成创建。
 
+列表返回逐条校验的 `TemplateSummary`，包含名称、ID、更新时间、有效模板的标题/字幕及对象数量，无效记录通过 `validation_error` 说明原因。无效记录的详情读取返回 409，删除仍按 ID 执行，不影响同库有效模板。保存必须包含标题和底部字幕各一个。列表消息与转场字段需要客户端、服务端一起升级；已有记录不自动转换。
+
 `SaveTemplateRequest.tracks` 必须提供，通过 `TrackList.tracks[].editor` 保存参数；缺省参数由业务校验补齐。模板更新完整替换配置。名称去除首尾空白后为 1～100 字符；说明最多 1000 字符；标题、字幕、气泡示例文字最多 60、100、40 字符；字号 12～300 整数；位置 0～100%；动画和转场时长 0.1～3 秒。
 
 顶部标题对象的 `titleKeywordBold`、`titleKeywordItalic`、`titleKeywordUnderline`、`titleKeywordStrikeout` 可组合使用，`titleKeywordColor` 设置局部颜色，`titleKeywordSize` 设置局部字号；合成调用切片时传入请求 `title`，标题局部样式仅作用于返回的 `title_keyword` 首次出现的位置；返回值缺失或为空时保留标题原文，不回退模板 `titleKeyword` 或标题前两个字。旧快照缺少标题词时不高亮；无声模式通过仅标题提词取得关键词；模板预览仍沿用原规则。底部字幕对象独立保存 `subtitleKeywordBold`、`subtitleKeywordItalic`、`subtitleKeywordUnderline`、`subtitleKeywordStrikeout`、`subtitleKeywordColor` 和 `subtitleKeywordSize`，作用于原切片中首次包含 `keyword` 的字幕短句，空关键词保留原文。颜色为空字符串或 `#RRGGBB`，空字符串表示保持文字原色；合成时转换为 IMS 要求的 BGR 顺序。局部字号为 0（沿用原字号）或 12～300 的整数，合成时使用 IMS `\fs` 指令设置并恢复。模板响应在对应对象的 `tracks[].editor` 返回这些值。 视频合成按气泡对象自身时间区间显示其 `bubbleText` 示例文字一次，不使用切片关键词；有气泡对象但未选气泡样式时仍显示文字，无气泡对象则不生成。关键词继续通过标题和字幕的局部样式强调。
 
-独立对象通过 `tracks` 保存，每项包含 `id`、`target`、`start_mode`、`start`、`duration` 和 `editor`。标题、字幕、VFX 最多各一个，滤镜可多个；字幕固定 `seconds`、0、null，覆盖整个视频。其他对象的 `start_mode` 支持 `seconds` 和 `percent`，百分比小于 100，`duration` 为正秒数或 `null`（持续到视频结束）。模板不保存预览视频信息。应用视频时按输出帧率计算区间：结尾以外不显示、结束越界时截短，动画按有效帧数缩短，帧数不足时明确失败。标题使用请求文字及模板时间，字幕按文案切片显示。转场通过 `transition_boundary: 1 | 2` 对应两个素材交界处，每处最多一个；合成使用保存的时长并限制在相邻片段可用区间，音频总长保持不变。未指定交界处的已有转场记录继续应用于全部素材边界。
+独立对象通过 `tracks` 保存，普通对象包含 `id`、`target`、`start_mode`、`start`、`duration` 和 `editor`。标题、字幕、VFX 最多各一个，滤镜可多个；字幕固定 `seconds`、0、null，覆盖整个视频。其他普通对象的 `start_mode` 支持 `seconds` 和 `percent`，百分比小于 100，`duration` 为正秒数或 `null`（持续到视频结束）。转场必须指定 `transition_boundary: 1 | 2` 和持续时间，禁止 `start`、`start_mode`，每个交界处最多一个。模板不保存预览视频信息。`resolve_template` 根据模板规则和 `TimelineContext` 计算完整时间结果：`sequence` 按帧累计扣除重叠；`fixed` 保留实际素材起止和目标总长，供正式合成使用。转场最多使用相邻片段各自长度的一半；不足 0.1 秒或缺少交界处时跳过并返回原因。普通对象按输出帧率计算区间：结尾以外不显示、结束越界时截短，动画按有效帧数缩短，帧数不足时明确失败。标题使用请求文字及模板时间，字幕按文案切片显示，音频总长保持不变。
 创建和更新在写入前强制检查标题、底部字幕各一个，缺少任意一个返回 422，已有记录保持不变。同一文字角色的循环动画与入场、出场互斥。模板允许空效果列表，最多 500 个不同效果 ID。
 
 Remotion 片段也保存在 `tracks` 里：`target` 为 `remotion`，`sprite_id` 引用已发布的 Sprite；`id` 仍是模板内唯一的摆放 ID，所以同一个 Sprite 可以摆放多次。

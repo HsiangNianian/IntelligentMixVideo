@@ -114,11 +114,15 @@ fn draft_from_protobuf(bytes: &[u8], id: Option<&str>) -> Result<Value, String> 
                 let mut value = json!({
                     "id": track.id,
                     "target": track.target,
-                    "start_mode": track.start_mode,
-                    "start": track.start,
                     "duration": track.duration,
                     "editor": track.editor.map(editor_from_protobuf),
                 });
+                if !track.start_mode.is_empty() {
+                    value["start_mode"] = json!(track.start_mode);
+                }
+                if let Some(start) = track.start {
+                    value["start"] = json!(start);
+                }
                 if let Some(boundary) = track.transition_boundary {
                     value["transition_boundary"] = json!(boundary);
                 }
@@ -317,7 +321,12 @@ fn validate(mut draft: Value) -> Result<Value, String> {
         let mut singletons = std::collections::HashSet::new();
         for track in items {
             if track.as_object().is_none_or(|fields| {
-                fields.len() != 6 + usize::from(fields.contains_key("transition_boundary"))
+                fields.len()
+                    != if track["target"] == "transition" {
+                        5
+                    } else {
+                        6
+                    }
                     || !fields.contains_key("duration")
             }) {
                 return Err("轨道字段不完整".into());
@@ -342,33 +351,35 @@ fn validate(mut draft: Value) -> Result<Value, String> {
             if !["title", "subtitle", "bubble", "filter", "vfx", "transition"].contains(&target) {
                 return Err("轨道对象无效".into());
             }
-            number(&track["start"], 0., f64::MAX, false)?;
-            let start = track["start"].as_f64().ok_or("轨道时间无效")?;
-            let mode = track["start_mode"].as_str().ok_or("开始方式无效")?;
-            if !["seconds", "percent"].contains(&mode) || (mode == "percent" && start >= 100.) {
-                return Err("开始方式或百分比无效".into());
-            }
             if !track["duration"].is_null() {
                 number(&track["duration"], f64::MIN_POSITIVE, f64::MAX, false)?;
             }
             if target == "transition" {
-                let boundary = match track.get("transition_boundary") {
-                    Some(value) => value.as_u64().ok_or("转场交界处无效")?,
-                    None => 1,
-                };
+                if track.get("start").is_some() || track.get("start_mode").is_some() {
+                    return Err("转场只保存交界处与持续时间".into());
+                }
+                let boundary = track["transition_boundary"]
+                    .as_u64()
+                    .ok_or("转场必须指定视频交界处")?;
                 let length = track["duration"].as_f64().ok_or("转场需要固定持续时间")?;
                 if !(1..=2).contains(&boundary)
                     || !transitions.insert(boundary)
-                    || start <= 0.
                     || !(0.1..=3.).contains(&length)
                 {
                     return Err("转场位置、时长或数量无效".into());
                 }
-            }
-            if target == "subtitle"
-                && (mode != "seconds" || start != 0. || !track["duration"].is_null())
-            {
-                return Err("底部字幕固定覆盖整个视频".into());
+            } else {
+                number(&track["start"], 0., f64::MAX, false)?;
+                let start = track["start"].as_f64().ok_or("轨道时间无效")?;
+                let mode = track["start_mode"].as_str().ok_or("开始方式无效")?;
+                if !["seconds", "percent"].contains(&mode) || (mode == "percent" && start >= 100.) {
+                    return Err("开始方式或百分比无效".into());
+                }
+                if target == "subtitle"
+                    && (mode != "seconds" || start != 0. || !track["duration"].is_null())
+                {
+                    return Err("底部字幕固定覆盖整个视频".into());
+                }
             }
             let editor = &track["editor"];
             let validated = validate_editor(editor)?;
@@ -459,18 +470,18 @@ fn number(value: &Value, min: f64, max: f64, integer: bool) -> Result<(), String
     }
 }
 
-/// 从磁盘读取后检查结构；损坏时明确失败，不能当成空库覆盖。
+/// 读取完整文件并校验记录标识，业务规则按操作检查指定记录。
 fn read(path: &Path) -> Result<Vec<Value>, String> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(format!("读取本地模板失败：{error}")),
     };
-    let mut records: Vec<Value> =
+    let records: Vec<Value> =
         serde_json::from_slice(&bytes).map_err(|_| "本地模板文件损坏，请先恢复备份")?;
     let mut ids = std::collections::HashSet::new();
     let mut names = std::collections::HashSet::new();
-    for record in &mut records {
+    for record in &records {
         let id = record["template_id"]
             .as_str()
             .ok_or("本地模板 ID 缺失")?
@@ -480,49 +491,91 @@ fn read(path: &Path) -> Result<Vec<Value>, String> {
             chrono::DateTime::parse_from_rfc3339(record[key].as_str().ok_or("本地模板时间缺失")?)
                 .map_err(|_| "本地模板时间无效")?;
         }
-        // 旧模板需要用户清理文件，读取期间保留原始数据。
-        if !record["tracks"].is_array() || record.get("editor").is_some() {
-            return Err(format!(
-                "本地模板字段已变化，原有模板无法读取。请删除旧模板文件后重试（将清除全部本地模板）：{}",
-                path.display()
-            ));
-        }
-        // 旧记录缺少新增开关时补充内存视图，读取操作不改写文件。
-        for track in record["tracks"].as_array_mut().ok_or("轨道须为数组")? {
-            if let Some(editor) = track["editor"].as_object_mut() {
-                for key in SUBTITLE_KEYWORD_FIELDS {
-                    editor.entry(key).or_insert(json!(false));
-                }
-                editor.entry("subtitleKeywordColor").or_insert(json!(""));
-                editor.entry("subtitleKeywordSize").or_insert(json!(0));
-                for key in TITLE_KEYWORD_FIELDS {
-                    editor.entry(key).or_insert(json!(false));
-                }
-                editor.entry("titleKeyword").or_insert(json!(""));
-                editor.entry("titleKeywordColor").or_insert(json!(""));
-                editor.entry("titleKeywordSize").or_insert(json!(0));
-            }
-        }
-        let mut draft = record.clone();
-        for key in [
-            "template_id",
-            "created_at",
-            "updated_at",
-            "effects",
-            "effect_ids",
-        ] {
-            draft.as_object_mut().ok_or("本地模板损坏")?.remove(key);
-        }
-        let validated = validate(draft)?;
-        if record["effects"] != validated["effects"]
-            || record["effect_ids"] != validated["effect_ids"]
-            || !ids.insert(id)
-            || !names.insert(record["name"].as_str().ok_or("本地模板名称无效")?)
+        if !ids.insert(id) || !names.insert(record["name"].as_str().ok_or("本地模板名称无效")?)
         {
             return Err("本地模板文件存在重复或无效数据，请先恢复备份".into());
         }
     }
     Ok(records)
+}
+
+/// 保存和读取有效模板共用必需对象检查。
+fn require_complete(record: &Value) -> Result<(), String> {
+    let tracks = record["tracks"].as_array().ok_or("轨道须为数组")?;
+    if ["title", "subtitle"].iter().any(|target| {
+        tracks
+            .iter()
+            .filter(|track| track["target"] == *target)
+            .count()
+            != 1
+    }) {
+        return Err("保存模板需要标题和底部字幕各一个".into());
+    }
+    Ok(())
+}
+
+/// 验证单条配置和可信效果快照，调用者决定返回详情错误或列表状态。
+fn validate_record(record: &Value) -> Result<Value, String> {
+    let mut record = record.clone();
+    // 样式开关的缺省值与 Python 字段声明一致，补充只发生在返回视图中。
+    if let Some(tracks) = record["tracks"].as_array_mut() {
+        for track in tracks {
+            if let Some(editor) = track["editor"].as_object_mut() {
+                for key in SUBTITLE_KEYWORD_FIELDS
+                    .into_iter()
+                    .chain(TITLE_KEYWORD_FIELDS)
+                {
+                    editor.entry(key).or_insert(json!(false));
+                }
+                for key in ["titleKeyword", "titleKeywordColor", "subtitleKeywordColor"] {
+                    editor.entry(key).or_insert(json!(""));
+                }
+                for key in ["titleKeywordSize", "subtitleKeywordSize"] {
+                    editor.entry(key).or_insert(json!(0));
+                }
+            }
+        }
+    }
+    let mut draft = record.clone();
+    for key in [
+        "template_id",
+        "created_at",
+        "updated_at",
+        "effects",
+        "effect_ids",
+    ] {
+        draft.as_object_mut().ok_or("本地模板损坏")?.remove(key);
+    }
+    let validated = validate(draft)?;
+    require_complete(&validated)?;
+    if record["effects"] != validated["effects"] || record["effect_ids"] != validated["effect_ids"]
+    {
+        return Err("模板效果快照与配置不一致".into());
+    }
+    Ok(record)
+}
+
+/// 每条记录独立生成摘要，无效配置保留标识及原因，不修改原文件。
+fn summarize(record: &Value) -> Value {
+    let mut summary = json!({
+        "template_id": record["template_id"], "name": record["name"],
+        "created_at": record["created_at"], "updated_at": record["updated_at"],
+        "description": "", "title": "", "subtitle": "", "validation_error": "",
+    });
+    match validate_record(record) {
+        Err(error) => summary["validation_error"] = json!(error),
+        Ok(record) => {
+            summary["description"] = record["description"].clone();
+            let tracks = record["tracks"].as_array().expect("已经校验轨道数组");
+            summary["track_count"] = json!(tracks.len());
+            for track in tracks {
+                if let Some(target @ ("title" | "subtitle")) = track["target"].as_str() {
+                    summary[target] = track["editor"][target].clone();
+                }
+            }
+        }
+    }
+    summary
 }
 
 /// 所有操作在同一文件锁下执行；临时文件刷盘后替换，失败保留原文件且允许重试。
@@ -558,8 +611,13 @@ fn operate(
         return Err("模板不存在".into());
     }
     let result = match operation {
-        "list" => return Ok(json!(records)),
-        "get" => return Ok(records[index.ok_or("模板不存在")?].clone()),
+        "list" => return Ok(json!(records.iter().map(summarize).collect::<Vec<_>>())),
+        "get" => {
+            let record = &records[index.ok_or("模板不存在")?];
+            return validate_record(record).map_err(|error| {
+                format!("模板 {} 不符合当前规则：{error}", id.expect("已校验 ID"))
+            });
+        }
         "delete" => {
             records.remove(index.ok_or("模板不存在")?);
             Value::Null
@@ -567,16 +625,7 @@ fn operate(
         "save" => {
             let mut saved = validate(draft.ok_or("缺少模板配置")?)?;
             // 创建与更新均要求两个固定文字对象，校验失败保留已有文件。
-            let tracks = saved["tracks"].as_array().ok_or("轨道须为数组")?;
-            if ["title", "subtitle"].iter().any(|target| {
-                tracks
-                    .iter()
-                    .filter(|track| track["target"] == *target)
-                    .count()
-                    != 1
-            }) {
-                return Err("保存模板需要标题和底部字幕各一个".into());
-            }
+            require_complete(&saved)?;
             if records
                 .iter()
                 .enumerate()
@@ -663,6 +712,11 @@ fn run(
     // 单条记录附带所属库供编辑器保存时校验，不写入模板文件。
     if let Some(record) = result.as_object_mut() {
         record.insert("library".into(), json!(current));
+    }
+    if let Some(records) = result.as_array_mut() {
+        for record in records {
+            record["library"] = json!(current);
+        }
     }
     Ok(result)
 }
@@ -915,7 +969,8 @@ mod tests {
         let text_tracks = request.tracks.as_ref().unwrap().tracks.clone();
         track.id = "transition-1".into();
         track.target = "transition".into();
-        track.start = Some(9.);
+        track.start = None;
+        track.start_mode = String::new();
         track.duration = Some(1.);
         track.transition_boundary = Some(1);
         let editor = track.editor.as_mut().unwrap();
@@ -924,7 +979,6 @@ mod tests {
         editor.transition = Some("transition/normal/directional".into());
         let mut second = track.clone();
         second.id = "transition-2".into();
-        second.start = Some(18.);
         second.transition_boundary = Some(2);
         request.effect_ids = vec!["transition/normal/directional".into(), "in/fade_in".into()];
         request.tracks.as_mut().unwrap().tracks = vec![track, second];
@@ -935,6 +989,16 @@ mod tests {
         assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), saved);
         assert_eq!(saved["tracks"][0]["transition_boundary"], json!(1));
         assert_eq!(saved["tracks"][1]["transition_boundary"], json!(2));
+        assert!(saved["tracks"][0].get("start").is_none());
+        let mut missing = value.clone();
+        missing["tracks"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("transition_boundary");
+        assert!(operate(&dir.0, "save", None, Some(missing)).is_err());
+        let mut positioned = value.clone();
+        positioned["tracks"][0]["start"] = json!(9);
+        assert!(operate(&dir.0, "save", None, Some(positioned)).is_err());
         for boundary in [json!(0), json!(1), json!(3), json!(true)] {
             let mut invalid = value.clone();
             invalid["tracks"][1]["transition_boundary"] = boundary;
@@ -1147,16 +1211,19 @@ mod tests {
         assert_eq!(updated["created_at"], first["created_at"]);
         let copy = operate(&dir.0, "save", None, Some(draft("副本"))).unwrap();
         assert_ne!(copy["template_id"], first["template_id"]);
-        assert_eq!(
-            operate(&dir.0, "list", None, None).unwrap(),
-            json!([copy, updated])
-        );
+        let listed = operate(&dir.0, "list", None, None).unwrap();
+        assert_eq!(listed[0]["template_id"], copy["template_id"]);
+        assert_eq!(listed[1]["name"], updated["name"]);
+        assert_eq!(listed[0]["track_count"], 2);
+        assert_eq!(listed[0]["validation_error"], "");
         assert!(operate(&dir.0, "save", Some(id), Some(draft("副本"))).is_err());
         operate(&dir.0, "delete", Some(id), None).unwrap();
         assert!(operate(&dir.0, "delete", Some(id), None).is_err());
         assert!(operate(&dir.0, "get", Some(id), None).is_err());
         assert!(operate(&dir.0, "save", Some(id), Some(draft("不能重建"))).is_err());
-        assert_eq!(operate(&dir.0, "list", None, None).unwrap(), json!([copy]));
+        let listed = operate(&dir.0, "list", None, None).unwrap();
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+        assert_eq!(listed[0]["template_id"], copy["template_id"]);
         assert!(fs::read_dir(&dir.0).unwrap().all(|entry| !entry
             .unwrap()
             .file_name()
@@ -1276,7 +1343,10 @@ mod tests {
         assert!(operate(&dir.0, "get", Some("../../other"), None).is_err());
         assert!(operate(&dir.0, "delete", None, None).is_err());
         assert!(operate(&dir.0, "unknown", None, None).is_err());
-        assert_eq!(operate(&dir.0, "list", None, None).unwrap(), json!([saved]));
+        let listed = operate(&dir.0, "list", None, None).unwrap();
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+        assert_eq!(listed[0]["template_id"], saved["template_id"]);
+        assert_eq!(listed[0]["validation_error"], "");
         let mut boundary = draft("边界");
         boundary["tracks"][0]["editor"]["titleSize"] = json!(12);
         boundary["tracks"][0]["editor"]["titleX"] = json!(100);
@@ -1326,7 +1396,7 @@ mod tests {
     }
 
     #[test]
-    /// 旧格式读取显示清理提示与文件路径，保留原文件，删除后恢复空列表。
+    /// 无效记录出现在列表并报告原因，不能读取详情，可以按 ID 覆盖或删除。
     fn rejects_unsupported_template_format() {
         let dir = Directory::new();
         let value = draft("对象模板");
@@ -1354,20 +1424,50 @@ mod tests {
                 .extend(rejected.as_object().unwrap().clone());
             let bytes = serde_json::to_vec(&json!([invalid_record])).unwrap();
             fs::write(&path, &bytes).unwrap();
-            assert_eq!(
-                operate(&dir.0, "list", None, None).unwrap_err(),
-                format!(
-                    "本地模板字段已变化，原有模板无法读取。请删除旧模板文件后重试（将清除全部本地模板）：{}",
-                    path.display()
-                )
-            );
-            assert!(operate(&dir.0, "save", Some(id), Some(value.clone())).is_err());
+            let listed = operate(&dir.0, "list", None, None).unwrap();
+            assert_eq!(listed[0]["template_id"], id);
+            assert!(!listed[0]["validation_error"].as_str().unwrap().is_empty());
+            assert!(operate(&dir.0, "get", Some(id), None)
+                .unwrap_err()
+                .contains(id));
             assert_eq!(fs::read(&path).unwrap(), bytes);
+            assert!(operate(&dir.0, "save", Some(id), Some(value.clone())).is_ok());
             fs::write(&path, &original).unwrap();
         }
         assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), saved);
-        fs::remove_file(&path).unwrap();
+        operate(&dir.0, "delete", Some(id), None).unwrap();
         assert_eq!(operate(&dir.0, "list", None, None).unwrap(), json!([]));
+    }
+
+    #[test]
+    /// 同库无效配置逐条报告，删除指定记录后有效模板仍可读取，列表不改写文件。
+    fn invalid_records_can_be_deleted_independently() {
+        let dir = Directory::new();
+        let valid = operate(&dir.0, "save", None, Some(draft("有效模板"))).unwrap();
+        let invalid = operate(&dir.0, "save", None, Some(draft("无效模板"))).unwrap();
+        let mut damaged = invalid.clone();
+        damaged["tracks"].as_array_mut().unwrap().remove(1);
+        let path = dir.0.join("templates.json");
+        let original = serde_json::to_vec(&json!([valid, damaged])).unwrap();
+        fs::write(&path, &original).unwrap();
+        let summaries = operate(&dir.0, "list", None, None).unwrap();
+        assert_eq!(summaries.as_array().unwrap().len(), 2);
+        assert_eq!(summaries[0]["validation_error"], "");
+        assert!(!summaries[1]["validation_error"]
+            .as_str()
+            .unwrap()
+            .is_empty());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        let valid_id = valid["template_id"].as_str();
+        let invalid_id = invalid["template_id"].as_str();
+        assert_eq!(operate(&dir.0, "get", valid_id, None).unwrap(), valid);
+        assert!(operate(&dir.0, "get", invalid_id, None).is_err());
+        operate(&dir.0, "delete", invalid_id, None).unwrap();
+        assert_eq!(operate(&dir.0, "get", valid_id, None).unwrap(), valid);
+        assert_eq!(
+            operate(&dir.0, "list", None, None).unwrap(),
+            json!([summaries[0]])
+        );
     }
 
     #[test]

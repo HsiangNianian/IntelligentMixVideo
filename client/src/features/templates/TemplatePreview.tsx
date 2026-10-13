@@ -9,14 +9,16 @@ import { loadSDK, loadPreviewFont, readCatalog, type Player } from "./sdk";
 import { buildTimeline, buildPreviewRows, playerTimeline, spriteRows, type SpriteClip } from "./timeline";
 import { PreviewTimeline, type PreviewTimelineHandle } from "./PreviewTimeline";
 import { SpriteOverlay, type SpriteOverlayHandle } from "./SpriteOverlay";
-import { previewDuration } from "./tracks";
-import { previewVideos, readPreviewVideos } from "./media";
+import type { ResolvedTimeline } from "./tracks";
 import { MasterVideoInput } from "./MasterVideoInput";
 
 /** 编辑状态由父组件持有；目录只在 SDK 初始化成功后回传。 */
 interface Props {
   draft: Draft;
   media?: PreviewMedia;
+  resolved?: ResolvedTimeline;
+  mediaError?: string;
+  onRetryMedia?: () => void;
   onMediaChange: (media: PreviewMedia) => void;
   videoInputKey: string;
   onCatalog: (catalog: EffectAsset[]) => void;
@@ -35,14 +37,15 @@ function TimelineMark() {
 }
 
 /** 每次修改全量更新时间线并回到开头；串行处理，快速修改只应用最新草稿。 */
-export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, onCatalog, selectedId, onSelect, sprites = [], onSpriteMove, videoOrder = defaultVideoOrder, onVideoMove }: Props) {
-  const duration = Math.max(0, previewDuration(draft, media, videoOrder));
+export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMedia, onMediaChange, videoInputKey, onCatalog, selectedId, onSelect, sprites = [], onSpriteMove, videoOrder = defaultVideoOrder, onVideoMove }: Props) {
+  const duration = resolved?.duration ?? 0;
   const stage = useRef<HTMLDivElement>(null);
   const container = useRef<HTMLDivElement>(null);
   const player = useRef<Player | null>(null);
   const latest = useRef(draft);
   const latestMedia = useRef(media);
   const latestOrder = useRef(videoOrder);
+  const latestResolved = useRef(resolved);
   const apply = useRef<(() => void) | null>(null);
   const catalogCallback = useRef(onCatalog);
   const playAction = useRef<((start: number) => void) | null>(null);
@@ -64,6 +67,7 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
   latest.current = draft;
   latestMedia.current = media;
   latestOrder.current = videoOrder;
+  latestResolved.current = resolved;
   catalogCallback.current = onCatalog;
 
   useEffect(() => {
@@ -72,7 +76,6 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
     let revision = 0;
     let instance: Player | null = null;
     let frame: HTMLIFrameElement | undefined;
-    let exampleMedia: PreviewMedia | undefined;
     const controller = new AbortController();
     let catalog: EffectAsset[] = [];
     let appliedTracks: Draft["tracks"] | undefined;
@@ -88,6 +91,7 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
     setReady(false);
     setFailed(false);
     setStatus("正在加载预览组件…");
+    if (!media) { setStatus("正在读取预览视频…"); return; }
 
     /** 取消尚未完成的定位与播放，暂停、更新和卸载共用此清理入口。 */
     const cancel = () => {
@@ -143,7 +147,9 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
           const currentDraft = latest.current;
           const currentMedia = latestMedia.current;
           const currentOrder = latestOrder.current;
-          const timeline = buildTimeline(currentDraft, catalog, currentMedia ?? exampleMedia, currentOrder);
+          const currentResolved = latestResolved.current;
+          if (!currentMedia || !currentResolved) { instance.pause(); return; }
+          const timeline = buildTimeline(currentDraft, catalog, currentMedia, currentResolved, currentOrder);
           if (disposed) return;
           instance.pause();
           instance.aspectRatio = timeline.AspectRatio;
@@ -184,18 +190,14 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
       revision++;
       void update();
     };
-    // 示例也读取真实尺寸，但保留十秒预览区间；每种尺寸使用独立 SDK 文档。
+    // 工作区已读取真实媒体信息，每种尺寸使用独立 SDK 文档。
     void Promise.all([
-      media ? Promise.resolve(media) : readPreviewVideos(previewVideos().map((video) => video.url), controller.signal),
+      Promise.resolve(media),
       loadPreviewFont(),
     ])
       .then(async ([sources]) => {
         if (disposed || !container.current) return;
         const source = sources[0];
-        if (!media) {
-          if (sources.some((video) => video.duration < 10)) throw new Error("预览视频不足所需片段时长");
-          exampleMedia = sources;
-        }
         setCanvas({ width: source.width, height: source.height });
         frame = document.createElement("iframe");
         frame.title = "模板预览播放器";
@@ -239,7 +241,11 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
             ? { width: source.width } : { height: source.height },
           getMediaInfo: async (id, _type, _origin, url) => url || id,
           getTimelineMaterials: async (materials) =>
-            materials.map((item) => ({ ...item, video: { duration: 10 } })),
+            materials.map((item) => {
+              const video = sources.find((source) => source.url === item.mediaId);
+              if (!video) throw new Error("预览素材缺少真实媒体信息");
+              return { ...item, video: { duration: video.duration } };
+            }),
         });
         // SDK 在初始化 Promise 中应用场景尺寸，等待该过程后设置 Timeline。
         await Promise.resolve();
@@ -263,14 +269,14 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
           overlay.current?.setTime(current);
           // SDK 仍逐帧驱动播放控制，界面时间最多每 0.1 秒渲染一次。
           const nextDecisecond = Math.min(
-            previewDuration(latest.current, latestMedia.current, latestOrder.current) * 10,
+            (latestResolved.current?.duration ?? 0) * 10,
             Math.max(0, Math.round(current * 10)),
           );
           if (nextDecisecond !== displayedDecisecond) {
             displayedDecisecond = nextDecisecond;
             setTime(nextDecisecond / 10);
           }
-          if (current >= previewDuration(latest.current, latestMedia.current, latestOrder.current)) {
+          if (current >= (latestResolved.current?.duration ?? 0)) {
             setStatus("预览结束，点击播放可重播");
           }
         });
@@ -303,7 +309,7 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
       const wasSeeking = seekTarget !== null;
       cancel();
       instance.pause();
-      const target = Math.min(previewDuration(latest.current, latestMedia.current, latestOrder.current), Math.max(0, value));
+      const target = Math.min(latestResolved.current?.duration ?? 0, Math.max(0, value));
       seekTarget = target;
       displayedDecisecond = Math.round(target * 10);
       setTime(target);
@@ -337,7 +343,7 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
   useEffect(() => {
     const timer = window.setTimeout(() => apply.current?.(), 250);
     return () => window.clearTimeout(timer);
-  }, [draft.tracks, media, videoOrder]);
+  }, [draft.tracks, media, videoOrder, resolved]);
 
   return <section aria-label="实时预览" className="flex min-h-full min-w-0 flex-col">
     <div className="template-preview-stage border-b px-4 pb-3 pt-4 lg:px-7 lg:pt-5"><div className="mx-auto max-w-[900px]">
@@ -355,7 +361,8 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
         <span className="min-w-20 text-right text-[11px] font-medium tabular-nums">{time.toFixed(1)} <span className="font-normal text-muted-foreground">/ {duration.toFixed(1)} 秒</span></span>
         <MasterVideoInput key={videoInputKey} media={media} onChange={onMediaChange} />
       </div>
-      <p role={failed ? "alert" : "status"} className={failed ? "text-xs text-destructive" : ready ? "sr-only" : "text-[11px] text-muted-foreground"}>{status}</p>
+      <p role={failed || mediaError ? "alert" : "status"} className={failed || mediaError ? "text-xs text-destructive" : ready ? "sr-only" : "text-[11px] text-muted-foreground"}>{mediaError || status}</p>
+      {mediaError && !media && <Button type="button" variant="outline" onClick={onRetryMedia}>重试读取视频</Button>}
       {failed && <Button type="button" variant="outline" onClick={() => setAttempt((value) => value + 1)}>重试预览</Button>}
       {notices.length > 0 && <ul aria-label="时间调整说明" className="space-y-1 text-xs text-muted-foreground">{notices.map((notice, index) => <li key={index}>{notice}</li>)}</ul>}
     </div></div>

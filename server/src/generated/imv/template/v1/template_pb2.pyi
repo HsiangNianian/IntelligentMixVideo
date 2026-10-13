@@ -236,11 +236,33 @@ class TemplateRecord(_message.Message):
     updated_at: _timestamp_pb2.Timestamp
     def __init__(self, name: _Optional[str] = ..., description: _Optional[str] = ..., effect_ids: _Optional[_Iterable[str]] = ..., transition_duration_seconds: _Optional[float] = ..., tracks: _Optional[_Union[TrackList, _Mapping]] = ..., template_id: _Optional[str] = ..., effects: _Optional[_Iterable[_Union[EffectAsset, _Mapping]]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., updated_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
 
+class TemplateSummary(_message.Message):
+    __slots__ = ("template_id", "name", "description", "created_at", "updated_at", "title", "subtitle", "track_count", "validation_error")
+    TEMPLATE_ID_FIELD_NUMBER: _ClassVar[int]
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
+    CREATED_AT_FIELD_NUMBER: _ClassVar[int]
+    UPDATED_AT_FIELD_NUMBER: _ClassVar[int]
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    SUBTITLE_FIELD_NUMBER: _ClassVar[int]
+    TRACK_COUNT_FIELD_NUMBER: _ClassVar[int]
+    VALIDATION_ERROR_FIELD_NUMBER: _ClassVar[int]
+    template_id: str
+    name: str
+    description: str
+    created_at: _timestamp_pb2.Timestamp
+    updated_at: _timestamp_pb2.Timestamp
+    title: str
+    subtitle: str
+    track_count: int
+    validation_error: str
+    def __init__(self, template_id: _Optional[str] = ..., name: _Optional[str] = ..., description: _Optional[str] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., updated_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., title: _Optional[str] = ..., subtitle: _Optional[str] = ..., track_count: _Optional[int] = ..., validation_error: _Optional[str] = ...) -> None: ...
+
 class ListTemplatesResponse(_message.Message):
     __slots__ = ("templates",)
     TEMPLATES_FIELD_NUMBER: _ClassVar[int]
-    templates: _containers.RepeatedCompositeFieldContainer[TemplateRecord]
-    def __init__(self, templates: _Optional[_Iterable[_Union[TemplateRecord, _Mapping]]] = ...) -> None: ...
+    templates: _containers.RepeatedCompositeFieldContainer[TemplateSummary]
+    def __init__(self, templates: _Optional[_Iterable[_Union[TemplateSummary, _Mapping]]] = ...) -> None: ...
 
 class GetTemplateResponse(_message.Message):
     __slots__ = ("template",)

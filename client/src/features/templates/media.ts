@@ -20,14 +20,14 @@ export function previewVideoUrl(index: 0 | 1 | 2 = 0): string {
 }
 
 /** 三个来源各使用前十秒，不足十秒时使用完整区间。 */
-export function previewVideos(media?: PreviewMedia): PreviewMedia {
-  const sources = media ?? [
-    { url: previewVideoUrl(), duration: 10, width: 1080, height: 1920 },
-    { url: previewVideoUrl(1), duration: 10, width: 1080, height: 1920 },
-    { url: previewVideoUrl(2), duration: 10, width: 1080, height: 1920 },
-  ];
+export function previewVideos(sources: PreviewMedia): PreviewMedia {
   const clip = (video: MasterVideo) => ({ ...video, duration: Math.min(10, video.duration) });
   return [clip(sources[0]), clip(sources[1]), clip(sources[2])];
+}
+
+/** 加载入口共用默认地址；元数据必须通过 readPreviewVideos 读取。 */
+export function previewUrls(media?: PreviewMedia): string[] {
+  return media ? media.map((video) => video.url) : [previewVideoUrl(0), previewVideoUrl(1), previewVideoUrl(2)];
 }
 
 /** 同时读取三个真实视频；任何来源失败时取消剩余读取，全部成功才返回。 */

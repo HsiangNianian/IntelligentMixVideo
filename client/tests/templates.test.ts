@@ -2,8 +2,7 @@
 import { expect, test } from "bun:test";
 import { defaultEditor, newDraft, draftEffects, toDraft } from "@/features/templates/model";
 import { trackEditor } from "@/features/templates/tracks";
-import { buildTimeline } from "@/features/templates/timeline";
-import { catalog, sampleDraft, savedTemplate } from "./fixtures";
+import { catalog, sampleDraft, savedTemplate, buildTestTimeline as buildTimeline } from "./fixtures";
 
 // 测试新建和从已保存模板转换的草稿互相独立，编辑不会修改默认值或原记录。
 test("草稿不共享编辑配置，也不携带服务端只读字段", () => {
@@ -44,7 +43,7 @@ test("基础预览时间线使用配置的视频并过滤空字幕", () => {
       TimelineIn,
       TimelineOut,
     ]),
-  ).toEqual([["http://localhost:1420/sample.mp4", 0, 10, 0, 10]]);
+  ).toEqual([["https://media.example/one.mp4", 0, 10, 0, 10]]);
   expect(clips.map((clip) => [clip.In, clip.Out, clip.TimelineIn, clip.TimelineOut])).toEqual([[0, 10, 0, 10], [0, 10, 10, 20], [0, 10, 20, 30]]);
   expect(clips[0].Effects).toEqual([{ Type: "Volume", Gain: 0 }]);
   expect(timeline.SubtitleTracks[0].SubtitleTrackClips.map((clip) => clip.Content)).toEqual(["字幕"]);
@@ -55,7 +54,7 @@ test("动画和转场转换为正确的 SDK 配置", () => {
   const draft = toDraft(savedTemplate());
   draft.tracks[0].editor.titleInDuration = 1;
   draft.tracks[0].editor.titleX = 100;
-  draft.tracks.push({ id: "transition", target: "transition", start_mode: "seconds", start: 5, duration: 2,
+  draft.tracks.push({ id: "transition", target: "transition", transition_boundary: 1, duration: 2,
     editor: trackEditor({ ...defaultEditor, transition: "transition/normal/directional" }, "transition") });
   const timeline = buildTimeline(draft, catalog);
   const [first, second] = timeline.VideoTracks[0].VideoTrackClips;

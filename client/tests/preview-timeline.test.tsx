@@ -3,11 +3,11 @@ import { expect, test } from "bun:test";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { createRef } from "react";
 import { PreviewTimeline, type PreviewTimelineHandle } from "@/features/templates/PreviewTimeline";
-import { buildPreviewRows, buildTimeline, spriteRows, thumbnailTimes } from "@/features/templates/timeline";
+import { buildPreviewRows, spriteRows, thumbnailTimes } from "@/features/templates/timeline";
 import { defaultEditor, newDraft } from "@/features/templates/model";
 import { trackEditor } from "@/features/templates/tracks";
 import { readCatalog } from "@/features/templates/sdk";
-import { sampleDraft } from "./fixtures";
+import { sampleDraft, buildTestTimeline as buildTimeline } from "./fixtures";
 
 // 使用真实目录与草稿生成轨道，检查三个来源、转场重叠和拖动权限。
 test("普通与转场轨道保留实际时间范围", () => {
@@ -18,7 +18,7 @@ test("普通与转场轨道保留实际时间范围", () => {
   expect(ordinary[2].actions).toHaveLength(3);
   expect(ordinary[2].actions[0]).toMatchObject({ start: 0, end: 10, sourceIn: 0, sourceOut: 10, movable: true, flexible: false });
   expect(ordinary[2].actions[0].transition).toBeUndefined();
-  draft.tracks.push({ id: "transition", target: "transition", start_mode: "seconds", start: 5, duration: 2,
+  draft.tracks.push({ id: "transition", target: "transition", transition_boundary: 1, duration: 2,
     editor: trackEditor({ ...defaultEditor, transition: "transition/normal/directional" }, "transition") });
   const rows = buildPreviewRows(buildTimeline(draft, catalog));
   expect(rows).toHaveLength(4);

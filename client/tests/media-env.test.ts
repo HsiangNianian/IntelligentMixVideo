@@ -1,6 +1,6 @@
 /** 验证三个默认视频的环境配置、资源路径及用户选择的优先级；每例结束恢复环境。 */
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { previewVideos } from "@/features/templates/media";
+import { previewVideos, previewUrls } from "@/features/templates/media";
 
 const keys = ["VITE_PREVIEW_VIDEO_1_URL", "VITE_PREVIEW_VIDEO_2_URL", "VITE_PREVIEW_VIDEO_3_URL"] as const;
 let previous: (string | undefined)[];
@@ -23,12 +23,12 @@ test("三个视频分别读取环境地址，并清除首尾空白", () => {
     process.env[key] = `  ${url}  `;
     return url;
   });
-  expect(previewVideos().map((video) => video.url)).toEqual(urls);
+  expect(previewUrls()).toEqual(urls);
 });
 
 test("三个视频均支持 public 资源路径", () => {
   keys.forEach((key, index) => { process.env[key] = `/preview-${index + 1}.mp4`; });
-  expect(previewVideos().map((video) => video.url)).toEqual(
+  expect(previewUrls()).toEqual(
     [1, 2, 3].map((index) => `${window.location.origin}/preview-${index}.mp4`),
   );
 });
@@ -36,7 +36,7 @@ test("三个视频均支持 public 资源路径", () => {
 test("未配置、空字符串与空白分别使用对应内置示例", () => {
   process.env.VITE_PREVIEW_VIDEO_2_URL = "";
   process.env.VITE_PREVIEW_VIDEO_3_URL = "  ";
-  expect(previewVideos().map((video) => video.url)).toEqual([
+  expect(previewUrls()).toEqual([
     "https://oss.joyfile.net/source/2026/09/14/RC202609141904000001/01c1b9a1e9f747408d6522f7ec4cee61.mp4",
     "https://oss.oemi.jdword.com/api/clip/2026-10-13/99083fe0c1d04947b523b0439401a0ee.mp4",
     "https://oss.oemi.jdword.com/api/clip/2026-10-13/80ea1f518457424986fb425bf6da5b36.mp4",

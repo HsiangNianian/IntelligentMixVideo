@@ -7,7 +7,7 @@ import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
 import { TemplateCollection, type TemplateSelection } from "@/features/templates/TemplateHome";
 import { Toaster } from "@/components/ui/sonner";
 import { fetchMock } from "./setup";
-import { protobufTemplateResponse, savedTemplate } from "./fixtures";
+import { protobufTemplateResponse, savedTemplate, templateSummary } from "./fixtures";
 
 /** 生成独立的主页新建输入，不包含服务端响应或存储数据。 */
 function creation(name = "旅行模板", environment: "cloud" | "local" = "cloud"): TemplateSelection {
@@ -57,7 +57,7 @@ test("转场按添加顺序连接三个视频", async () => {
   fireEvent.click(within(assets).getByRole("radio", { name: "转场" }));
   fireEvent.click(within(assets).getAllByRole("button", { name: /^应用转场：/ })[0]);
   expect(screen.getByRole("button", { name: "编辑镜头转场 1", pressed: true })).toBeTruthy();
-  expect(screen.getByText("当前预览：9～10 秒")).toBeTruthy();
+  expect(within(screen.getByRole("region", { name: "转场设置" })).getByText("等待预览时间")).toBeTruthy();
   fireEvent.click(within(assets).getAllByRole("button", { name: /^应用转场：/ })[1]);
   expect(screen.getByRole("button", { name: "编辑镜头转场 2", pressed: true })).toBeTruthy();
   const inspector = screen.getByRole("region", { name: "转场设置" });
@@ -66,7 +66,7 @@ test("转场按添加顺序连接三个视频", async () => {
   expect(screen.getByRole("tab", { name: "外观与效果" })).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "编辑镜头转场 2" }));
   expect(screen.getByLabelText<HTMLInputElement>("转场持续时间 / 秒").value).toBe("2");
-  expect(screen.getByText("当前预览：17～19 秒")).toBeTruthy();
+  expect(within(inspector).getByText("等待预览时间")).toBeTruthy();
   fireEvent.click(within(assets).getAllByRole("button", { name: /^应用转场：/ })[2]);
   const limitDialog = screen.getByRole("dialog", { name: "无法添加特效" });
   expect(within(limitDialog).getByText("最多添加两个转场，请在右侧修改已有转场")).toBeTruthy();
@@ -372,7 +372,7 @@ test.each(["cloud", "local"] as const)("%s 模板整行选择保留来源与 ID"
   const template = { ...savedTemplate(), description: "用于产品视频的文字效果" };
   const selections: TemplateSelection[] = [];
   render(<TemplateCollection environment={environment}
-    collection={{ templates: [template], loading: false, error: "", unavailable: false, refresh: () => {} }}
+    collection={{ templates: [templateSummary(template)], loading: false, error: "", unavailable: false, refresh: () => {} }}
     onSelect={(selection) => selections.push(selection)} />);
   const row = screen.getByRole("button", { name: `选择模板：${template.name}` });
   expect(screen.getAllByRole("listitem")).toHaveLength(1);

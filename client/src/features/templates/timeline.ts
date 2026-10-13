@@ -11,7 +11,8 @@ import {
 } from "./model";
 import type { TimelineAction, TimelineRow } from "@xzdarcy/timeline-engine";
 import { isTextTarget, type EffectTarget } from "./effects";
-import { previewDuration, previewVideoRanges, resolveTrack, trackLabel, trackLayers, validateTemplateTracks } from "./tracks";
+import { trackLabel, trackLayers, type ResolvedTimeline } from "./tracks";
+import { previewVideos } from "./media";
 
 /** 预览轨道保留源素材范围，缩略图采样使用源时间，游标使用预览时间。 */
 export interface PreviewClip extends TimelineAction {
@@ -190,15 +191,14 @@ function buildTrackContent(config: Editor, catalog: EffectAsset[], target: Effec
 }
 
 /** 母版、文字和全画面效果从同一份实例数据生成，SDK 自动转换后端 Timeline 格式。 */
-export function buildTimeline(draft: Draft, catalog: EffectAsset[], media?: PreviewMedia, order = [0, 1, 2]) {
+export function buildTimeline(draft: Draft, catalog: EffectAsset[], media: PreviewMedia, resolvedTimeline: ResolvedTimeline, order = [0, 1, 2]) {
   const previewRows: (Omit<TimelineRow, "actions"> & { actions: PreviewClip[] })[] = [];
   const EffectTracks: { EffectTrackItems: Effect[] }[] = [];
-  const notices: string[] = [];
+  const notices = resolvedTimeline.notices;
   if ("editor" in draft || !Array.isArray(draft.tracks)) throw new Error("模板格式不支持，请重新创建模板");
-  validateTemplateTracks(draft.tracks);
-  const duration = previewDuration(draft, media, order);
-  const canvas = { Width: media?.[0].width ?? 1080, Height: media?.[0].height ?? 1920 };
-  const ranges = previewVideoRanges(draft, media, order);
+  const canvas = { Width: media[0].width, Height: media[0].height };
+  const sources = previewVideos(media);
+  const ranges = resolvedTimeline.clips.map((range, index) => ({ ...range, source: order[index], video: sources[order[index]] }));
   const timeline = {
     VideoTracks: [{ VideoTrackClips: ranges.map(({ source, video, start, end }) => ({
       source, Type: "Video", MediaURL: video.url,
@@ -211,9 +211,8 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media?: Prev
   };
   const seen = new Set<string>();
   for (const source of [...draft.tracks].sort((a, b) => trackLayers[a.target] - trackLayers[b.target])) {
-    const boundary = source.target === "transition" ? ranges[(source.transition_boundary ?? 1) - 1] : undefined;
-    const applied = boundary ? { start: boundary.end - boundary.overlap, end: boundary.end, editor: source.editor, notice: "" } : resolveTrack(source, duration);
-    if (applied.notice) notices.push(`${trackLabel(source, draft.tracks)}：${applied.notice}`);
+    const applied = resolvedTimeline.tracks[source.id];
+    if (!applied) throw new Error("对象缺少时间计算结果");
     const track = { ...source, ...applied };
     if (!track.id || seen.has(track.id)) throw new Error("特效轨道 ID 必须唯一");
     seen.add(track.id);
@@ -227,7 +226,7 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media?: Prev
       const effect = resolved.effect;
       if (!effect) throw new Error("转场轨道缺少效果");
       effect.Duration = Math.round((track.end - track.start) * 30) / 30;
-      timeline.VideoTracks[0].VideoTrackClips[(source.transition_boundary ?? 1) - 1].Effects.push(effect);
+      timeline.VideoTracks[0].VideoTrackClips[source.transition_boundary! - 1].Effects.push(effect);
     } else {
       const effect = resolved.effect;
       if (!effect) throw new Error("特效轨道缺少效果");

@@ -18,18 +18,23 @@ export interface ResolvedTrack {
 export function validateTrack(track: EffectTrack): void {
   if (track.target === "subtitle" && (track.start_mode !== "seconds" || track.start !== 0 || track.duration !== null))
     throw new Error("底部字幕固定覆盖整个视频，不能修改时间");
-  if (track.transition_boundary !== undefined && (track.target !== "transition" || ![1, 2].includes(track.transition_boundary)))
+  if (track.target === "transition") {
+    if (track.transition_boundary === undefined || ![1, 2].includes(track.transition_boundary)) throw new Error("转场交界处必须为 1 或 2");
+    if (track.start !== undefined || track.start_mode !== undefined) throw new Error("转场只保存交界处与持续时间");
+    if (track.duration === null || !Number.isFinite(track.duration) || track.duration < 0.1 || track.duration > 3) throw new Error("转场持续时间为 0.1～3 秒");
+    return;
+  }
+  if (track.transition_boundary !== undefined)
     throw new Error("转场交界处必须为 1 或 2");
-  if (!["seconds", "percent"].includes(track.start_mode) || !Number.isFinite(track.start) || track.start < 0 || (track.start_mode === "percent" && track.start >= 100))
+  if (!track.start_mode || !["seconds", "percent"].includes(track.start_mode) || track.start === undefined || !Number.isFinite(track.start) || track.start < 0 || (track.start_mode === "percent" && track.start >= 100))
     throw new Error("开始时间须为非负秒数，或 0% 至小于 100% 的百分比");
   if (track.duration !== null && (!Number.isFinite(track.duration) || track.duration <= 0))
     throw new Error("持续时间须大于零");
-  if (track.target === "transition" && (track.start <= 0 || track.duration === null || track.duration < 0.1 || track.duration > 3))
-    throw new Error("转场开始位置须大于零，持续时间为 0.1～3 秒");
 }
 
 /** 预览和提交共用数量校验，防止无效对象进入播放器或存储请求。 */
 export function validateTemplateTracks(tracks: EffectTrack[]): void {
+  if (!Array.isArray(tracks)) throw new Error("模板格式不支持，请重新创建模板");
   const ids = new Set<string>();
   const singletons = new Set<string>();
   const boundaries = new Set<number>();
@@ -44,7 +49,7 @@ export function validateTemplateTracks(tracks: EffectTrack[]): void {
       singletons.add(track.target);
     }
     if (track.target === "transition") {
-      const boundary = track.transition_boundary ?? 1;
+      const boundary = track.transition_boundary!;
       if (boundaries.has(boundary)) throw new Error("每个视频交界处最多一个转场");
       boundaries.add(boundary);
     }
@@ -54,15 +59,14 @@ export function validateTemplateTracks(tracks: EffectTrack[]): void {
 /** 按输出帧率计算区间；结尾以外的对象不显示，动画按可用时间等比缩短。 */
 export function resolveTrack(track: EffectTrack, duration: number, fps = 30): ResolvedTrack {
   validateTrack(track);
+  if (track.target === "transition") throw new Error("转场需要视频片段信息");
   if (!Number.isFinite(duration) || duration <= 0 || !Number.isInteger(fps) || fps <= 0)
     throw new Error("视频时长或帧率无效");
-  const start = track.start_mode === "percent" ? duration * track.start / 100 : track.start;
+  const start = track.start_mode === "percent" ? duration * track.start! / 100 : track.start!;
   const end = track.duration === null ? duration : start + track.duration;
   const first = Math.round(start * fps);
-  const last = Math.min(Math.floor(duration * fps + 1e-8), track.target === "transition" ? first + Math.round(track.duration! * fps) : Math.round(end * fps));
+  const last = Math.min(Math.floor(duration * fps + 1e-8), Math.round(end * fps));
   const editor = { ...track.editor };
-  if (track.target === "transition" && (first <= 0 || last >= Math.floor(duration * fps + 1e-8) || end > duration))
-    throw new Error("转场须位于两个非空视频片段之间");
   if (first >= last) return { start: first / fps, end: first / fps, editor, notice: "当前视频中没有可显示的时间" };
   let notice = end > duration + 1e-8 ? "持续时间已缩短至视频结束" : "";
   if (isTextTarget(track.target)) {
@@ -83,42 +87,85 @@ export function resolveTrack(track: EffectTrack, duration: number, fps = 30): Re
   return { start: first / fps, end: last / fps, editor, notice };
 }
 
-/** 预览转场连接连续源片段，合成时长扣除按帧计算的重叠时间。 */
-export function previewDuration(draft: Draft, media?: PreviewMedia, order = [0, 1, 2]): number {
-  return previewVideoRanges(draft, media, order).at(-1)!.end;
+/** 片段来源已经确定；顺序拼接计算重叠，固定时间保留语音及素材位置。 */
+export interface TimelineContext {
+  layout: "sequence" | "fixed";
+  clips: readonly { duration: number; start?: number }[];
+  fps: number;
+  duration?: number;
 }
 
-/** 按交界处计算两个重叠区间，视频重排只改变素材来源。 */
-export function previewVideoRanges(draft: Draft, media?: PreviewMedia, order = [0, 1, 2]) {
+/** 本次应用的完整时间结果，展示与渲染共用，不写回模板。 */
+export interface ResolvedTimeline {
+  duration: number;
+  clips: { start: number; end: number }[];
+  tracks: Record<string, ResolvedTrack>;
+  notices: string[];
+}
+
+/** 将已读取的三个来源按当前排列转换为顺序拼接输入。 */
+export function previewContext(media: PreviewMedia, order = [0, 1, 2]): TimelineContext {
   if (order.length !== 3 || new Set(order).size !== 3 || order.some((value) => ![0, 1, 2].includes(value))) throw new Error("视频排列无效");
   const sources = previewVideos(media);
-  const transitions = draft.tracks.filter((track) => track.target === "transition");
-  if (transitions.length > 2 || new Set(transitions.map((track) => track.transition_boundary ?? 1)).size !== transitions.length)
-    throw new Error("每个视频交界处最多一个转场");
-  transitions.forEach(validateTrack);
-  let end = 0;
-  let previousOverlap = 0;
-  return order.map((source, index) => {
-    const video = sources[source];
-    const transition = transitions.find((track) => (track.transition_boundary ?? 1) === index + 1);
-    const overlap = transition ? Math.round(transition.duration! * 30) / 30 : 0;
-    if (previousOverlap + overlap >= video.duration || (overlap && overlap >= sources[order[index + 1]].duration))
-      throw new Error("视频片段时长不足以容纳转场");
-    const start = end - previousOverlap;
-    end = start + video.duration;
-    previousOverlap = overlap;
-    return { source, video, start, end, transition, overlap };
-  });
+  return { layout: "sequence", fps: 30, clips: order.map((source) => ({ duration: sources[source].duration })) };
 }
 
-/** 将交界处的当前秒数写回转场，供右侧列表和保存数据使用。 */
-export function syncTransitionTiming(draft: Draft, media?: PreviewMedia, order = [0, 1, 2]): Draft {
-  const ranges = previewVideoRanges(draft, media, order);
-  return { ...draft, tracks: draft.tracks.map((track) => {
-    if (track.target !== "transition") return track;
-    const range = ranges[(track.transition_boundary ?? 1) - 1];
-    return { ...track, transition_boundary: track.transition_boundary ?? 1, start_mode: "seconds", start: range.end - range.overlap };
-  }) };
+/** 校验规则后统一计算帧区间；缺少交界处或素材过短均产生明确的应用说明。 */
+export function resolveTemplate(draft: Pick<Draft, "tracks">, context: TimelineContext): ResolvedTimeline {
+  validateTemplateTracks(draft.tracks);
+  const { fps, layout } = context;
+  if (!["sequence", "fixed"].includes(layout) || !Number.isInteger(fps) || fps <= 0 || fps > 60 || !context.clips.length)
+    throw new Error("视频时间信息无效");
+  const lengths = context.clips.map((clip) => {
+    if (!Number.isFinite(clip.duration) || clip.duration <= 0) throw new Error("视频片段时长无效");
+    const frames = Math.floor(clip.duration * fps + 1e-8);
+    if (!frames && layout === "sequence") throw new Error("视频片段不足一帧");
+    return frames;
+  });
+  const overlaps = lengths.map(() => 0);
+  const transitionNotices = new Map<string, string>();
+  for (const track of draft.tracks.filter((item) => item.target === "transition")) {
+    const index = track.transition_boundary! - 1;
+    if (index + 1 >= lengths.length) {
+      transitionNotices.set(track.id, `交界处 ${index + 1} 不存在，未应用转场`);
+      continue;
+    }
+    const requested = Math.round(track.duration! * fps);
+    const frames = Math.min(requested, Math.floor(lengths[index] / 2), Math.floor(lengths[index + 1] / 2));
+    if (frames < Math.ceil(0.1 * fps)) transitionNotices.set(track.id, "相邻片段过短，未应用转场");
+    else {
+      overlaps[index] = frames;
+      if (frames < requested) transitionNotices.set(track.id, "转场已按相邻片段可用时间缩短");
+    }
+  }
+  let end = 0;
+  const clips = lengths.map((frames, index) => {
+    const fixedStart = context.clips[index].start;
+    if (layout === "fixed" && (fixedStart === undefined || !Number.isFinite(fixedStart) || fixedStart < 0)) throw new Error("固定片段缺少开始时间");
+    if (layout === "fixed") {
+      if (fixedStart! + 1e-8 < end) throw new Error("固定片段时间重叠");
+      end = fixedStart! + context.clips[index].duration;
+      return { start: fixedStart!, end };
+    }
+    const start = end - (overlaps[index - 1] ?? 0);
+    end = start + frames;
+    return { start: start / fps, end: end / fps };
+  });
+  const duration = layout === "sequence" ? end / fps : context.duration;
+  if (duration === undefined || !Number.isFinite(duration) || duration <= 0 || clips.at(-1)!.end > duration + 1e-8) throw new Error("视频总时长无效");
+  const tracks: ResolvedTimeline["tracks"] = {};
+  const notices: string[] = [];
+  for (const track of draft.tracks) {
+    const index = track.transition_boundary! - 1;
+    const boundaryEnd = clips[index]?.end ?? 0;
+    const overlap = (overlaps[index] ?? 0) / fps;
+    const resolved = track.target === "transition"
+      ? { start: boundaryEnd - overlap, end: boundaryEnd, editor: track.editor, notice: transitionNotices.get(track.id) ?? "" }
+      : resolveTrack(track, duration, fps);
+    tracks[track.id] = resolved;
+    if (resolved.notice) notices.push(`${trackLabel(track, draft.tracks)}：${resolved.notice}`);
+  }
+  return { duration, clips, tracks, notices };
 }
 
 /** 提取当前对象参数，供参数面板和 SDK 转换共用。 */
@@ -186,10 +233,10 @@ export function addTrack(draft: Draft, asset: EffectAsset, target: EffectTarget,
   }
   const role = isTextTarget(target) ? target : "title";
   if (asset.category === "transition/normal" && boundary === undefined) {
-    boundary = [1, 2].find((value) => !draft.tracks.some((track) => track.target === "transition" && (track.transition_boundary ?? 1) === value));
+    boundary = [1, 2].find((value) => !draft.tracks.some((track) => track.target === "transition" && track.transition_boundary === value));
     if (boundary === undefined) throw new Error("最多添加两个转场，请在右侧修改已有转场");
   }
-  const transition = asset.category === "transition/normal" ? draft.tracks.find((track) => track.target === "transition" && (track.transition_boundary ?? 1) === boundary) : undefined;
+  const transition = asset.category === "transition/normal" ? draft.tracks.find((track) => track.target === "transition" && track.transition_boundary === boundary) : undefined;
   if (transition) {
     const applied = applyAsset(trackDraft(draft, transition), asset, role);
     return { draft: updateTrack(draft, transition.id, applied.draft), id: transition.id };
@@ -204,8 +251,7 @@ export function addTrack(draft: Draft, asset: EffectAsset, target: EffectTarget,
   const applied = applyAsset({ transition_duration_seconds: draft.transition_duration_seconds, editor: { ...defaultEditor } }, asset, role);
   const track: EffectTrack = {
     id: crypto.randomUUID(), target: applied.target,
-    start_mode: "seconds",
-    start: applied.target === "transition" ? boundary! * 10 - draft.transition_duration_seconds : 0,
+    ...(applied.target === "transition" ? {} : { start_mode: "seconds" as const, start: 0 }),
     duration: applied.target === "transition" ? draft.transition_duration_seconds : null,
     ...(applied.target === "transition" ? { transition_boundary: boundary } : {}),
     editor: trackEditor(applied.draft.editor, applied.target),
@@ -228,7 +274,7 @@ export function setTrackTiming(draft: Draft, id: string, timing: Pick<EffectTrac
 
 /** 同类对象显示实例序号。 */
 export function trackLabel(track: EffectTrack, tracks: EffectTrack[]): string {
-  if (track.target === "transition") return `镜头转场 ${track.transition_boundary ?? 1}`;
+  if (track.target === "transition") return `镜头转场 ${track.transition_boundary}`;
   const siblings = tracks.filter((item) => item.target === track.target);
   return siblings.length === 1 ? effectTargets[track.target] : `${effectTargets[track.target]} ${siblings.findIndex((item) => item.id === track.id) + 1}`;
 }

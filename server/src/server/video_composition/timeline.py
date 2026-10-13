@@ -6,7 +6,7 @@ from pydantic import TypeAdapter
 
 from ..segmentation.segmentation import SUBTITLE_PUNCTUATION
 from ..template.schema import CATEGORY_PARAMETERS, EffectTemplateEditor, EffectTrack, Template
-from ..template.timing import resolve_track
+from ..template.timing import ClipContext, TimelineContext, resolve_template, resolve_track
 from .schema import CompositionRequest, MatchedSegment, PositiveSeconds, Segment
 
 
@@ -192,6 +192,8 @@ def build_timeline(
     # Remotion 片段由叠加视频服务渲染，不属于 IMS 时间线，也没有 IMS 效果可校验。
     tracks = [track for track in template.tracks if track.target != "remotion"]
     if not standard:
+        tracks = [track for track in tracks
+                  if not ((track.target == "subtitle" and not source) or (track.target == "title" and not request.title))]
         # 缺少对象时只补本次合成的默认样式，不保存模板，也不使用编辑器示例文字。
         for target, content in (("title", request.title), ("subtitle", source)):
             if content and not any(track.target == target for track in tracks):
@@ -200,26 +202,20 @@ def build_timeline(
                                               key: "" for key in ("title", "subtitle", "bubble_text") if key != target
                                           })))
     layers = {"title": 0, "subtitle": 1, "bubble": 2, "transition": 3, "vfx": 4, "filter": 5}
+    resolved = resolve_template(template.model_copy(update={"tracks": tracks}), TimelineContext(
+        layout="fixed", fps=fps, duration=duration,
+        clips=[ClipContext(start=clip["TimelineIn"], duration=clip["TimelineOut"] - clip["TimelineIn"]) for clip in clips],
+    ))
+    warnings.extend(resolved.notices)
     for track in sorted(tracks, key=lambda item: layers[item.target]):
-        if not standard:
-            if (track.target == "subtitle" and not source) or (track.target == "title" and not request.title):
-                continue
         track_parameters = parameters_for(track.editor)
+        applied = resolved.tracks[track.id]
         if track.target == "transition":
-            # 新转场只应用于指定交界处；未指定交界处的已有模板继续沿用全部素材边界。
-            for boundary, (clip, following) in enumerate(zip(clips, clips[1:]), start=1):
-                if track.transition_boundary is not None and boundary != track.transition_boundary:
-                    continue
-                seconds = floor(min(track.duration if track.transition_boundary is not None else 1, (clip["TimelineOut"] - clip["TimelineIn"]) / 2,
-                                    (following["TimelineOut"] - following["TimelineIn"]) / 2) * fps + 1e-8) / fps
-                if seconds < 0.1:
-                    warnings.append(f"转场对象 {track.id}：{clip['TimelineOut']:g} 秒处片段过短，已跳过转场")
-                    continue
-                clip["Effects"].append({"Type": "DLTransition", **track_parameters["transition"], "Duration": seconds})
+            if applied.end > applied.start:
+                clips[track.transition_boundary - 1]["Effects"].append({
+                    "Type": "DLTransition", **track_parameters["transition"], "Duration": round(applied.end - applied.start, 10),
+                })
             continue
-        applied = resolve_track(track, duration, fps)
-        if applied.notice:
-            warnings.append(f"对象 {track.id}：{applied.notice}")
         if applied.end <= applied.start:
             continue
         if track.target in ("filter", "vfx"):

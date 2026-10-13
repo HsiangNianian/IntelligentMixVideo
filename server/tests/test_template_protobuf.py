@@ -25,9 +25,59 @@ def test_two_transition_boundaries_roundtrip(client: TestClient):
     assert created.status_code == 201
     record = pb.SaveTemplateResponse.FromString(created.content).template
     assert [track.transition_boundary for track in record.tracks.tracks[:2]] == [1, 2]
+    assert all(not track.HasField("start") and not track.start_mode for track in record.tracks.tracks[:2])
     assert pb.GetTemplateResponse.FromString(client.get(f"/template/{record.template_id}").content).template == record
     tracks[1]["transition_boundary"] = 1
     assert _post(client, {"name": "重复交界处", "effect_ids": [asset.id], "tracks": tracks}).status_code == 422
+
+
+@pytest.mark.parametrize("change", ["missing-boundary", "start", "start_mode"])
+def test_transition_requires_only_boundary_timing(client: TestClient, change):
+    """真实保存路由拒绝缺失交界处及携带计算秒数的转场。"""
+    from server.template.schema import effect_catalog
+
+    asset = next(item for item in effect_catalog().values() if item.category == "transition/normal")
+    transition = template_track("transition", transition=asset.id)
+    if change == "missing-boundary":
+        del transition["transition_boundary"]
+    else:
+        transition[change] = 9 if change == "start" else "seconds"
+    response = _post(client, {"name": "转场校验", "effect_ids": [asset.id],
+                              "tracks": [template_track("title"), template_track("subtitle"), transition]})
+    assert response.status_code == 422
+    assert not pb.ListTemplatesResponse.FromString(client.get("/template").content).templates
+
+
+@pytest.mark.parametrize("change", ["subtitle-time", "duplicate-title", "invalid-structure", "metadata-in-config"])
+def test_invalid_record_does_not_block_collection(client: TestClient, template_db: Engine, template_payload: dict, change):
+    """真实存储中混合有效与无效记录，列表逐条报告、详情拒绝、删除只影响目标。"""
+    valid = pb.SaveTemplateResponse.FromString(_post(client, template_payload).content).template
+    invalid = pb.SaveTemplateResponse.FromString(_post(client, {**template_payload, "name": "待处理模板"}).content).template
+    with template_db.begin() as connection:
+        row = connection.execute(select(store.templates).where(store.templates.c.template_id == invalid.template_id)).one()
+        config = dict(row.configuration)
+        if change == "subtitle-time":
+            next(track for track in config["tracks"] if track["target"] == "subtitle")["duration"] = 10
+        elif change == "duplicate-title":
+            title = next(track for track in config["tracks"] if track["target"] == "title")
+            config["tracks"].append({**title, "id": "second-title"})
+        elif change == "metadata-in-config":
+            config["name"] = "重复元数据"
+        else:
+            config["tracks"] = None
+        connection.execute(store.templates.update().where(store.templates.c.template_id == invalid.template_id).values(configuration=config))
+    listed = client.get("/template")
+    assert listed.status_code == 200
+    summaries = {item.template_id: item for item in pb.ListTemplatesResponse.FromString(listed.content).templates}
+    assert summaries[valid.template_id].validation_error == ""
+    assert summaries[invalid.template_id].validation_error
+    assert not summaries[invalid.template_id].HasField("track_count")
+    detail = client.get(f"/template/{invalid.template_id}")
+    assert detail.status_code == 409 and invalid.template_id in detail.json()["detail"]
+    assert client.get(f"/template/{valid.template_id}").status_code == 200
+    assert client.delete(f"/template/{invalid.template_id}").status_code == 204
+    remaining = pb.ListTemplatesResponse.FromString(client.get("/template").content).templates
+    assert [item.template_id for item in remaining] == [valid.template_id]
 
 
 @pytest.mark.parametrize(("path", "method", "status"), [
@@ -83,7 +133,10 @@ def test_template_protobuf_create_read_update_delete(
     assert pb.GetTemplateResponse.FromString(detail.content).template == record
     listed = client.get("/template")
     assert listed.headers["content-type"] == "application/x-protobuf"
-    assert pb.ListTemplatesResponse.FromString(listed.content).templates == [record]
+    summary, = pb.ListTemplatesResponse.FromString(listed.content).templates
+    assert (summary.template_id, summary.name, summary.track_count, summary.validation_error) == (record.template_id, record.name, 2, "")
+    assert summary.title == record.tracks.tracks[0].editor.title
+    assert summary.subtitle == record.tracks.tracks[1].editor.subtitle
 
     updated = _post(client, {**template_payload, "template_id": record.template_id, "name": "修改后的模板"})
     assert updated.status_code == 200

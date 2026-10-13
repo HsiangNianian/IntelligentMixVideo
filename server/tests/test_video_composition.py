@@ -743,7 +743,9 @@ def test_database_tracks_template_reaches_ims(upstreams, client, composition_cas
         "tracks": [{"id": "5da2edc2-38d4-48cd-acae-ff9814ca9485", "target": "title",
                     "start_mode": "seconds", "start": 1.7494356659142214, "duration": 1.0,
                     "editor": EffectTemplateEditor(subtitle="", bubble_text="", title_flower=ids[0],
-                                                   title_in=ids[1], title_out=ids[2]).model_dump(by_alias=True)}],
+                                                   title_in=ids[1], title_out=ids[2]).model_dump(by_alias=True)},
+                   {"id": "fixed-subtitle", "target": "subtitle", "start_mode": "seconds", "start": 0, "duration": None,
+                    "editor": EffectTemplateEditor(title="", bubble_text="").model_dump(by_alias=True)}],
         "effects": [effect_catalog()[key].model_dump(mode="json") for key in ids],
         "effect_ids": ids, "description": "", "transition_duration_seconds": 1.0,
     }
@@ -755,7 +757,7 @@ def test_database_tracks_template_reaches_ims(upstreams, client, composition_cas
     assert finished(client, task_id)["status"] == "succeeded"
     timeline = store.get(task_id)["data"]["timeline"]
     assert json.loads(upstreams["submits"][0]["timeline"]) == timeline
-    track, = timeline["SubtitleTracks"]
+    track = timeline["SubtitleTracks"][0]
     title, = track["SubtitleTrackClips"]
     assert title["Content"] == composition_case["request"]["title"]
     assert (title["TimelineIn"], title["TimelineOut"]) == (52 / 30, 82 / 30)

@@ -11,7 +11,7 @@ import {
   SaveTemplateResponseSchema,
   type TemplateRecord,
 } from "@/generated/imv/template/v1/template_pb";
-import { defaultEditor, draftEffects, type Category, type Draft, type Editor, type EffectTrack, type RemotionClip, type Template } from "./model";
+import { defaultEditor, draftEffects, type Category, type Draft, type Editor, type EffectTrack, type RemotionClip, type Template, type TemplateSummary } from "./model";
 import { validateTemplateTracks } from "./tracks";
 
 /** 当前模板库的存储位置，每次操作显式传递，避免切换后写入错误环境。 */
@@ -49,7 +49,7 @@ function toTemplate(record: TemplateRecord): Template {
       preview_url: effect.previewUrl,
     })),
     tracks: wireTracks.filter((track) => track.target !== "remotion").map((track): EffectTrack => {
-      if (track.start === undefined || !track.editor)
+      if ((track.target !== "transition" && track.start === undefined) || !track.editor)
         throw new Error("模板对象缺少必要字段");
       const received = toJson(EffectTemplateEditorSchema, track.editor) as Partial<Editor>;
       if (Object.keys(defaultEditor).some((key) => !key.startsWith("subtitleKeyword") && !key.startsWith("titleKeyword") && !Object.prototype.hasOwnProperty.call(received, key)))
@@ -58,8 +58,8 @@ function toTemplate(record: TemplateRecord): Template {
       return {
         id: track.id,
         target: track.target as EffectTrack["target"],
-        start_mode: track.startMode as EffectTrack["start_mode"],
-        start: track.start,
+        ...(track.startMode ? { start_mode: track.startMode as EffectTrack["start_mode"] } : {}),
+        ...(track.start !== undefined ? { start: track.start } : {}),
         duration: track.duration ?? null,
         ...(track.transitionBoundary !== undefined ? { transition_boundary: track.transitionBoundary } : {}),
         editor,
@@ -144,12 +144,17 @@ async function cloudRequest(path: string, method: "GET" | "POST" | "DELETE", sig
 }
 
 /** 获取共享模板列表；组件卸载时取消请求。 */
-export function listTemplates(signal?: AbortSignal, environment: Environment = "cloud"): Promise<Template[]> {
+export function listTemplates(signal?: AbortSignal, environment: Environment = "cloud"): Promise<TemplateSummary[]> {
   return environment === "local" ? local("list") : cloud(
     async (requestSignal) => {
       const response = await cloudRequest("/template", "GET", requestSignal);
       return fromBinary(ListTemplatesResponseSchema, new Uint8Array(await response.arrayBuffer()))
-        .templates.map(toTemplate);
+        .templates.map((record) => {
+          if (!record.createdAt || !record.updatedAt) throw new Error("模板摘要缺少时间");
+          return { template_id: record.templateId, name: record.name, description: record.description,
+            created_at: timestampDate(record.createdAt).toISOString(), updated_at: timestampDate(record.updatedAt).toISOString(),
+            title: record.title, subtitle: record.subtitle, track_count: record.trackCount, validation_error: record.validationError };
+        });
     },
     signal,
   );
@@ -233,8 +238,8 @@ export async function saveTemplate(draft: Draft, id?: string, environment: Envir
 }
 
 /** 删除单个模板；成功后由调用方更新列表。 */
-export function deleteTemplate(id: string, environment: Environment = "cloud"): Promise<void> {
-  return environment === "local" ? local("delete", id) : cloud(async (requestSignal) => {
+export function deleteTemplate(id: string, environment: Environment = "cloud", library?: string): Promise<void> {
+  return environment === "local" ? local("delete", id, undefined, library) : cloud(async (requestSignal) => {
     await cloudRequest(`/template/${encodeURIComponent(id)}`, "DELETE", requestSignal);
   });
 }

@@ -4,13 +4,13 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { TrackTiming } from "@/features/templates/TrackTiming";
 import { sampleDraft } from "./fixtures";
-import { setTrackTiming } from "@/features/templates/tracks";
+import { resolveTrack, setTrackTiming } from "@/features/templates/tracks";
 
 /** 使用真实编辑函数保存表单规则，输出模板供断言检查。 */
 function TimingEditor() {
   const [draft, setDraft] = useState(sampleDraft);
   const [error, setError] = useState("");
-  return <><TrackTiming track={draft.tracks[0]} duration={20} onChange={(timing) => {
+  return <><TrackTiming track={draft.tracks[0]} duration={20} resolved={resolveTrack(draft.tracks[0], 20)} onChange={(timing) => {
     try { setDraft(setTrackTiming(draft, "title", timing)); setError(""); }
     catch (reason) { setError((reason as Error).message); }
   }} /><output data-testid="draft">{JSON.stringify(draft.tracks[0])}</output>{error && <p role="alert">{error}</p>}</>;
@@ -83,12 +83,12 @@ test("切换对象和预览时长保留各自时间规则", () => {
   const draft = sampleDraft();
   const selected = { ...draft.tracks[0], id: "other-title", start_mode: "percent" as const, start: 50, duration: null };
   const changes: unknown[] = [];
-  const view = render(<TrackTiming track={draft.tracks[0]} duration={20} onChange={(value) => changes.push(value)} />);
+  const view = render(<TrackTiming track={draft.tracks[0]} duration={20} resolved={resolveTrack(draft.tracks[0], 20)} onChange={(value) => changes.push(value)} />);
   fireEvent.change(screen.getByLabelText("开始时间 / 秒"), { target: { value: "7" } });
-  view.rerender(<TrackTiming track={selected} duration={20} onChange={(value) => changes.push(value)} />);
+  view.rerender(<TrackTiming track={selected} duration={20} resolved={resolveTrack(selected, 20)} onChange={(value) => changes.push(value)} />);
   expect(screen.getByLabelText<HTMLInputElement>("开始位置 / %").value).toBe("50");
   expect(screen.getByRole("status").textContent).toContain("第 10～20 秒");
-  view.rerender(<TrackTiming track={selected} duration={60} onChange={(value) => changes.push(value)} />);
+  view.rerender(<TrackTiming track={selected} duration={60} resolved={resolveTrack(selected, 60)} onChange={(value) => changes.push(value)} />);
   expect(screen.getByRole("status").textContent).toContain("第 30～60 秒");
   expect(changes).toEqual([{ start_mode: "seconds", start: 7, duration: null }]);
 });
