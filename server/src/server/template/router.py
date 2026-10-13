@@ -41,7 +41,7 @@ def list_templates() -> Response:
     """返回共享模板库的 Protobuf 列表，空库返回空消息。"""
     templates = store.list_templates()
     return _protobuf_response(pb.ListTemplatesResponse(
-        templates=[_template_message(template) for template in templates],
+        templates=[ParseDict(template.model_dump(mode="json", exclude_none=True), pb.TemplateSummary()) for template in templates],
     ))
 
 

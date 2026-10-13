@@ -173,7 +173,7 @@ class EffectTemplateEditor(_message.Message):
     def __init__(self, title: _Optional[str] = ..., subtitle: _Optional[str] = ..., bubble_text: _Optional[str] = ..., title_size: _Optional[int] = ..., subtitle_size: _Optional[int] = ..., bubble_size: _Optional[int] = ..., title_x: _Optional[float] = ..., title_y: _Optional[float] = ..., subtitle_x: _Optional[float] = ..., subtitle_y: _Optional[float] = ..., bubble_x: _Optional[float] = ..., bubble_y: _Optional[float] = ..., title_flower: _Optional[str] = ..., subtitle_flower: _Optional[str] = ..., bubble: _Optional[str] = ..., filter: _Optional[str] = ..., vfx: _Optional[str] = ..., transition: _Optional[str] = ..., title_in: _Optional[str] = ..., title_out: _Optional[str] = ..., title_loop: _Optional[str] = ..., subtitle_in: _Optional[str] = ..., subtitle_out: _Optional[str] = ..., subtitle_loop: _Optional[str] = ..., bubble_in: _Optional[str] = ..., bubble_out: _Optional[str] = ..., bubble_loop: _Optional[str] = ..., title_in_duration: _Optional[float] = ..., title_out_duration: _Optional[float] = ..., subtitle_in_duration: _Optional[float] = ..., subtitle_out_duration: _Optional[float] = ..., bubble_in_duration: _Optional[float] = ..., bubble_out_duration: _Optional[float] = ..., subtitle_keyword_bold: _Optional[bool] = ..., subtitle_keyword_italic: _Optional[bool] = ..., subtitle_keyword_underline: _Optional[bool] = ..., subtitle_keyword_strikeout: _Optional[bool] = ..., subtitle_keyword_color: _Optional[str] = ..., title_keyword: _Optional[str] = ..., title_keyword_bold: _Optional[bool] = ..., title_keyword_italic: _Optional[bool] = ..., title_keyword_underline: _Optional[bool] = ..., title_keyword_strikeout: _Optional[bool] = ..., title_keyword_color: _Optional[str] = ..., title_keyword_size: _Optional[int] = ..., subtitle_keyword_size: _Optional[int] = ..., remotion: _Optional[_Union[RemotionTrackEditor, _Mapping]] = ...) -> None: ...
 
 class EffectTrack(_message.Message):
-    __slots__ = ("id", "target", "start_mode", "start", "duration", "editor", "sprite_id")
+    __slots__ = ("id", "target", "start_mode", "start", "duration", "editor", "sprite_id", "transition_boundary")
     ID_FIELD_NUMBER: _ClassVar[int]
     TARGET_FIELD_NUMBER: _ClassVar[int]
     START_MODE_FIELD_NUMBER: _ClassVar[int]
@@ -181,6 +181,7 @@ class EffectTrack(_message.Message):
     DURATION_FIELD_NUMBER: _ClassVar[int]
     EDITOR_FIELD_NUMBER: _ClassVar[int]
     SPRITE_ID_FIELD_NUMBER: _ClassVar[int]
+    TRANSITION_BOUNDARY_FIELD_NUMBER: _ClassVar[int]
     id: str
     target: str
     start_mode: str
@@ -188,7 +189,8 @@ class EffectTrack(_message.Message):
     duration: float
     editor: EffectTemplateEditor
     sprite_id: str
-    def __init__(self, id: _Optional[str] = ..., target: _Optional[str] = ..., start_mode: _Optional[str] = ..., start: _Optional[float] = ..., duration: _Optional[float] = ..., editor: _Optional[_Union[EffectTemplateEditor, _Mapping]] = ..., sprite_id: _Optional[str] = ...) -> None: ...
+    transition_boundary: int
+    def __init__(self, id: _Optional[str] = ..., target: _Optional[str] = ..., start_mode: _Optional[str] = ..., start: _Optional[float] = ..., duration: _Optional[float] = ..., editor: _Optional[_Union[EffectTemplateEditor, _Mapping]] = ..., sprite_id: _Optional[str] = ..., transition_boundary: _Optional[int] = ...) -> None: ...
 
 class TrackList(_message.Message):
     __slots__ = ("tracks",)
@@ -234,11 +236,33 @@ class TemplateRecord(_message.Message):
     updated_at: _timestamp_pb2.Timestamp
     def __init__(self, name: _Optional[str] = ..., description: _Optional[str] = ..., effect_ids: _Optional[_Iterable[str]] = ..., transition_duration_seconds: _Optional[float] = ..., tracks: _Optional[_Union[TrackList, _Mapping]] = ..., template_id: _Optional[str] = ..., effects: _Optional[_Iterable[_Union[EffectAsset, _Mapping]]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., updated_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
 
+class TemplateSummary(_message.Message):
+    __slots__ = ("template_id", "name", "description", "created_at", "updated_at", "title", "subtitle", "track_count", "validation_error")
+    TEMPLATE_ID_FIELD_NUMBER: _ClassVar[int]
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
+    CREATED_AT_FIELD_NUMBER: _ClassVar[int]
+    UPDATED_AT_FIELD_NUMBER: _ClassVar[int]
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    SUBTITLE_FIELD_NUMBER: _ClassVar[int]
+    TRACK_COUNT_FIELD_NUMBER: _ClassVar[int]
+    VALIDATION_ERROR_FIELD_NUMBER: _ClassVar[int]
+    template_id: str
+    name: str
+    description: str
+    created_at: _timestamp_pb2.Timestamp
+    updated_at: _timestamp_pb2.Timestamp
+    title: str
+    subtitle: str
+    track_count: int
+    validation_error: str
+    def __init__(self, template_id: _Optional[str] = ..., name: _Optional[str] = ..., description: _Optional[str] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., updated_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., title: _Optional[str] = ..., subtitle: _Optional[str] = ..., track_count: _Optional[int] = ..., validation_error: _Optional[str] = ...) -> None: ...
+
 class ListTemplatesResponse(_message.Message):
     __slots__ = ("templates",)
     TEMPLATES_FIELD_NUMBER: _ClassVar[int]
-    templates: _containers.RepeatedCompositeFieldContainer[TemplateRecord]
-    def __init__(self, templates: _Optional[_Iterable[_Union[TemplateRecord, _Mapping]]] = ...) -> None: ...
+    templates: _containers.RepeatedCompositeFieldContainer[TemplateSummary]
+    def __init__(self, templates: _Optional[_Iterable[_Union[TemplateSummary, _Mapping]]] = ...) -> None: ...
 
 class GetTemplateResponse(_message.Message):
     __slots__ = ("template",)

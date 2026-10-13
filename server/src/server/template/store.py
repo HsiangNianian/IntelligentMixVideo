@@ -1,10 +1,11 @@
-"""MySQL 模板存储：唯一名称、完整 JSON 快照和事务更新；不迁移旧项目数据。"""
+# MySQL 模板存储：列表保留每条记录的校验结果，详情只返回有效模板，事务保护写入。
 
 from datetime import UTC, datetime
 from threading import Lock
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 from google.protobuf.json_format import ParseError
 from sqlalchemy import JSON, Column, MetaData, String, Table, delete, select
 from sqlalchemy.dialects.mysql import DATETIME
@@ -13,7 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from ..database import get_engine
 from ..remotion_templates import placement, sprite_store, sprites
 from ..remotion_templates.store import Conflict
-from .schema import Template, TemplateSave, effect_catalog
+from .schema import Template, TemplateSave, TemplateSummary, completeness_error, effect_catalog
 
 # 模板元数据用于查询和约束，配置 JSON 保留完整编辑字段与可信效果快照。
 metadata = MetaData()
@@ -43,20 +44,54 @@ def initialize_schema():
 
 def to_template(row) -> Template:
     """将 MySQL 的无时区 UTC 字段恢复为带时区的 API 响应。"""
-    return Template(
+    if not isinstance(row.configuration, dict):
+        raise ValueError("模板配置必须为对象")
+    if {"template_id", "name", "created_at", "updated_at"} & row.configuration.keys():
+        raise ValueError("模板配置不能包含存储元数据")
+    template = Template(
         **row.configuration, template_id=row.template_id, name=row.name,
         created_at=row.created_at.replace(tzinfo=UTC),
         updated_at=row.updated_at.replace(tzinfo=UTC),
     )
+    issue = completeness_error(template)
+    if issue:
+        raise ValueError(issue)
+    return template
 
 
-def list_templates() -> list[Template]:
+def validation_message(error: ValueError) -> str:
+    """业务错误只返回字段位置和原因，不回显整条模板内容。"""
+    if isinstance(error, ValidationError):
+        return "；".join(f"{'.'.join(map(str, item['loc'])) or 'template'}：{item['msg']}"
+                        for item in error.errors(include_input=False, include_url=False))
+    return str(error)
+
+
+def summarize(row) -> TemplateSummary:
+    """单条业务校验失败保留摘要；数据库及元数据损坏继续直接报错。"""
+    summary = TemplateSummary(
+        template_id=row.template_id, name=row.name,
+        created_at=row.created_at.replace(tzinfo=UTC), updated_at=row.updated_at.replace(tzinfo=UTC),
+    )
+    try:
+        template = to_template(row)
+    except ValueError as error:
+        summary.validation_error = validation_message(error)
+        return summary
+    summary.description = template.description
+    summary.track_count = len(template.tracks)
+    summary.title = next(track.editor.title for track in template.tracks if track.target == "title")
+    summary.subtitle = next(track.editor.subtitle for track in template.tracks if track.target == "subtitle")
+    return summary
+
+
+def list_templates() -> list[TemplateSummary]:
     """按最近更新优先返回模板；同一时间使用 ID 稳定排序。"""
     with initialize_schema().connect() as connection:
         rows = connection.execute(select(templates).order_by(
             templates.c.updated_at.desc(), templates.c.template_id,
         ))
-        return [to_template(row) for row in rows]
+        return [summarize(row) for row in rows]
 
 
 def get_template(template_id: UUID) -> Template:
@@ -67,7 +102,10 @@ def get_template(template_id: UUID) -> Template:
         )).first()
         if row is None:
             raise HTTPException(404, "模板不存在")
-        return to_template(row)
+        try:
+            return to_template(row)
+        except ValueError as error:
+            raise HTTPException(409, f"模板 {template_id} 不符合当前规则：{validation_message(error)}") from error
 
 
 def save_template(data: TemplateSave) -> Template:
@@ -77,6 +115,9 @@ def save_template(data: TemplateSave) -> Template:
     不一致的模板到总线渲染时才会失败，所以在保存时拒绝。每个片段的参数覆盖与宿主变换也按所引用 Sprite 的
     发布参数契约检查（422）。Sprite 只追加不删除，所以检查之后引用不会失效。
     """
+    # 创建和更新都检查必需文字对象，检查通过后才访问资产及模板数据库。
+    if issue := completeness_error(data):
+        raise HTTPException(422, issue)
     clips = [track for track in data.tracks if track.target == "remotion"]
     clip_ids = {str(track.sprite_id) for track in clips}
     if clip_ids:

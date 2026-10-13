@@ -8,7 +8,42 @@ from pydantic import ValidationError
 from server.template.schema import EffectTemplateEditor, TemplateSave, effect_catalog
 from server.template.timing import resolve_track
 
-from .conftest import SPRITE_ID, remotion_track
+from .conftest import SPRITE_ID, remotion_track, template_track
+
+
+@pytest.mark.parametrize("target", ["title", "subtitle", "vfx"])
+def test_singleton_objects_reject_duplicate_tracks(target):
+    """单个对象允许保存，第二个同类对象被拒绝。"""
+    asset = next(item for item in effect_catalog().values() if item.category == "vfx/normal")
+    track = template_track(target, **({"vfx": asset.id} if target == "vfx" else {}))
+    payload = {"name": "数量校验", "effect_ids": [asset.id] if target == "vfx" else [], "tracks": [track]}
+    TemplateSave.model_validate(payload)
+    payload["tracks"].append({**track, "id": "second"})
+    with pytest.raises(ValidationError, match="最多只能有一个"):
+        TemplateSave.model_validate(payload)
+
+
+@pytest.mark.parametrize("change", [{"start": 1}, {"duration": 10}, {"start_mode": "percent"}])
+def test_subtitle_timing_is_fixed(change):
+    """字幕时间固定为从零持续到视频结束。"""
+    track = template_track("subtitle")
+    payload = {"name": "字幕时间", "tracks": [track]}
+    TemplateSave.model_validate(payload)
+    track.update(change)
+    with pytest.raises(ValidationError, match="固定覆盖整个视频"):
+        TemplateSave.model_validate(payload)
+
+
+def test_transition_boundaries_are_independent_and_unique():
+    """两个交界处可分别设置，重复交界处及越界值均被拒绝。"""
+    asset = next(item for item in effect_catalog().values() if item.category == "transition/normal")
+    tracks = [{**template_track("transition", transition=asset.id), "id": f"boundary-{boundary}", "transition_boundary": boundary} for boundary in (1, 2)]
+    payload = {"name": "两个转场", "tracks": tracks, "effect_ids": [asset.id]}
+    assert [track.transition_boundary for track in TemplateSave.model_validate(payload).tracks] == [1, 2]
+    for boundary in (0, 1, 3, True, 1.5):
+        tracks[1]["transition_boundary"] = boundary
+        with pytest.raises(ValidationError):
+            TemplateSave.model_validate(payload)
 
 
 @pytest.mark.parametrize("case", json.loads(Path(__file__).with_name("template_timing_cases.json").read_text()), ids=lambda case: case["purpose"])
@@ -26,13 +61,13 @@ def test_shared_timing_cases(case: dict) -> None:
 
 def track_payload() -> dict:
     """使用随包真实目录建立两个独立同类效果实例。"""
-    asset = next(item for item in effect_catalog().values() if item.category == "vfx/normal")
-    editor = EffectTemplateEditor(title="", subtitle="", bubble_text="", vfx=asset.id)
+    asset = next(item for item in effect_catalog().values() if item.category == "filter")
+    editor = EffectTemplateEditor(title="", subtitle="", bubble_text="", filter=asset.id)
     return {
         "name": "多轨模板",
         "effect_ids": [asset.id], "tracks": [
-            {"id": "effect-a", "target": "vfx", "start_mode": "percent", "start": 25, "duration": 3, "editor": editor.model_dump(by_alias=True)},
-            {"id": "effect-b", "target": "vfx", "start_mode": "seconds", "start": 200, "duration": None, "editor": editor.model_dump(by_alias=True)},
+            {"id": "effect-a", "target": "filter", "start_mode": "percent", "start": 25, "duration": 3, "editor": editor.model_dump(by_alias=True)},
+            {"id": "effect-b", "target": "filter", "start_mode": "seconds", "start": 200, "duration": None, "editor": editor.model_dump(by_alias=True)},
         ],
     }
 
@@ -88,7 +123,8 @@ def test_keyword_style_belongs_to_subtitle_track() -> None:
     with pytest.raises(ValidationError, match="只有底部字幕"):
         TemplateSave.model_validate(payload)
     payload["tracks"][0]["target"] = "subtitle"
-    payload["tracks"][0]["editor"].update(title="", subtitle="示例字幕", vfx="", subtitleIn="in/fade_in", subtitleKeywordBold=True, subtitleKeywordColor="#12AB34")
+    payload["tracks"][0].update(start_mode="seconds", start=0, duration=None)
+    payload["tracks"][0]["editor"].update(title="", subtitle="示例字幕", filter="", subtitleIn="in/fade_in", subtitleKeywordBold=True, subtitleKeywordColor="#12AB34")
     payload["effect_ids"] = ["in/fade_in"]
     saved = TemplateSave.model_validate(payload)
     assert saved.tracks[0].editor.subtitle_keyword_bold
@@ -117,7 +153,7 @@ def test_title_keyword_style_belongs_to_title_track() -> None:
     with pytest.raises(ValidationError, match="只有顶部标题"):
         TemplateSave.model_validate(payload)
     payload["tracks"][0]["target"] = "title"
-    editor.update(title="标题示例", vfx="", titleIn="in/fade_in", titleKeywordBold=True, titleKeywordColor="#12AB34")
+    editor.update(title="标题示例", filter="", titleIn="in/fade_in", titleKeywordBold=True, titleKeywordColor="#12AB34")
     payload["effect_ids"] = ["in/fade_in"]
     saved = TemplateSave.model_validate(payload)
     assert saved.tracks[0].editor.title_keyword_bold

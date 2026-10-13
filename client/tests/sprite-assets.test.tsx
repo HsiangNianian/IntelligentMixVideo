@@ -160,7 +160,7 @@ test("已有片段显示在列表中，移除后随模板保存", async () => {
   render(<><TemplateWorkspace selection={{ environment: "cloud", templateId: template.template_id }} onHome={() => {}} /><Toaster /></>);
   const clips = await screen.findByRole("region", { name: "已添加 Remotion 资产" });
   const item = await within(clips).findByRole("listitem", { name: "Remotion 资产：霓虹标题" });
-  expect(item.textContent).toContain("2～5 秒");
+  expect(item.textContent).toContain("等待预览时间");
   fireEvent.click(within(item).getByRole("button", { name: "移除 Remotion 资产：霓虹标题" }));
   expect(screen.getByText("有未保存的修改")).toBeTruthy();
   fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
@@ -180,7 +180,7 @@ test("从目录添加资产无需配置，按资产自身长度随模板保存",
   const item = await screen.findByRole("listitem", { name: "Remotion 资产：霓虹标题" });
   expect(within(item).queryAllByRole("textbox")).toHaveLength(0);
   expect(within(item).queryAllByRole("spinbutton")).toHaveLength(0);
-  expect(item.textContent).toContain("0～3 秒");
+  expect(item.textContent).toContain("等待预览时间");
   fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
   await waitFor(() => expect(saved).toHaveLength(1));
   const [clip] = wireClips(saved[0]);
@@ -237,14 +237,13 @@ test("新模板只放 Remotion 片段也能保存", async () => {
   expect(posts).toEqual(["/template"]);
 });
 
-// 场景：既没有 IMS 效果也没有 Remotion 片段的新模板仍然不能保存，不发出任何写请求。
-test("没有效果也没有 Remotion 片段时仍不能保存", async () => {
+// 场景：新模板自带基础文字，无附加效果时也可以保存。
+test("基础文字模板可以直接保存", async () => {
   const { posts } = sprites();
   render(<TemplateWorkspace selection={{ environment: "cloud", templateId: null, name: "空模板", description: "" }} onHome={() => {}} />);
   await screen.findByRole("region", { name: "Remotion 资产" });
   fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
-  await screen.findByText("请至少选择一个效果");
-  expect(posts).toEqual([]);
+  await waitFor(() => expect(posts).toEqual(["/template"]));
 });
 
 // 场景：新模板同时有 IMS 效果和 Remotion 片段：只发一次保存请求（原子），IMS 对象在前、片段在后。

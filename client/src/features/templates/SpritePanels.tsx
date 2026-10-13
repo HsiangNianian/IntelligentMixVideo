@@ -55,7 +55,7 @@ export function SpriteCatalog({ environment, catalog, onAdd }: { environment: En
 
 /** 右侧片段列表：显示名称、时间与是否改过参数，点选打开参数设置，可移除；本地模板不显示。资产已不可用时提示先移除，否则服务端会拒绝保存。 */
 export function SpriteClips({ environment, clips, catalog, duration, selected, onSelect, onRemove }: {
-  environment: Environment; clips: RemotionClip[]; catalog: Catalog; duration: number;
+  environment: Environment; clips: RemotionClip[]; catalog: Catalog; duration: number | undefined;
   selected: string | null; onSelect: (id: string) => void; onRemove: (id: string) => void;
 }) {
   if (environment !== "cloud") return null;
@@ -63,16 +63,17 @@ export function SpriteClips({ environment, clips, catalog, duration, selected, o
   return (
     <section aria-label="已添加 Remotion 资产" className="space-y-2 border-b p-4">
       <div className="flex items-center justify-between"><h2 className="text-[13px] font-semibold">Remotion 资产</h2><span className="text-[11px] tabular-nums text-muted-foreground">{clips.length}</span></div>
-      {!clips.length && <p className="text-[11px] text-muted-foreground">从左侧 Remotion 资产添加，在时间轴上拖动调整时间，点选后调整参数与位置。</p>}
+      {!clips.length && <p className="text-[11px] text-muted-foreground">从左侧 Remotion 资产添加，点选后在右侧调整时间、参数与位置。</p>}
       {catalog.error && <p role="alert" className="text-[11px] text-destructive">{catalog.error}</p>}
       <ul className="space-y-1">
         {clips.map((clip) => {
           const asset = assets?.find((item) => item.id === clip.sprite_id);
           const name = asset?.name ?? (assets ? "未找到的资产" : "读取中…");
-          const end = Math.min(duration, clip.start + (clip.duration ?? asset?.seconds ?? 0));
+          const end = duration === undefined ? undefined : Math.min(duration, clip.start + (clip.duration ?? asset?.seconds ?? 0));
+          const timing = end === undefined ? "等待预览时间" : end <= clip.start ? "当前视频未应用" : `${Number(clip.start.toFixed(1))}～${Number(end.toFixed(1))} 秒`;
           const edited = Object.keys(clip.parameters).length + Object.keys(clip.transform).length > 0;
           return <li key={clip.id} aria-label={`Remotion 资产：${name}`} className={cn("flex items-center justify-between gap-2 rounded-md border px-2 py-1.5", selected === clip.id && "border-primary ring-1 ring-primary/20")}>
-            <button type="button" className="min-w-0 flex-1 text-left" aria-pressed={selected === clip.id} aria-label={`设置 Remotion 资产：${name}`} onClick={() => onSelect(clip.id)}><span className="block truncate text-[12px] font-medium">{name}</span><span className="block text-[11px] tabular-nums text-muted-foreground">{Number(clip.start.toFixed(1))}～{Number(end.toFixed(1))} 秒{edited && " · 已调整参数"}{assets && !asset && " · 资产已不可用，保存前请移除"}</span></button>
+            <button type="button" className="min-w-0 flex-1 text-left" aria-pressed={selected === clip.id} aria-label={`设置 Remotion 资产：${name}`} onClick={() => onSelect(clip.id)}><span className="block truncate text-[12px] font-medium">{name}</span><span className="block text-[11px] tabular-nums text-muted-foreground">{timing}{edited && " · 已调整参数"}{assets && !asset && " · 资产已不可用，保存前请移除"}</span></button>
             <Button type="button" variant="ghost" size="icon" className="size-6" aria-label={`移除 Remotion 资产：${name}`} onClick={() => onRemove(clip.id)}><Trash2 className="size-3.5" aria-hidden="true" /></Button>
           </li>;
         })}

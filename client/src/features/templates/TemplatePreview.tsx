@@ -4,25 +4,28 @@ import { Maximize2, Pause, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Hint } from "@/components/Hint";
 import { Spinner } from "@/components/ui/spinner";
-import type { Draft, EffectAsset, MasterVideo } from "./model";
+import type { Draft, EffectAsset, MasterVideo, PreviewMedia } from "./model";
 import { loadSDK, loadPreviewFont, readCatalog, type Player } from "./sdk";
-import { buildTimeline, buildPreviewRows, spriteRows, type SpriteClip } from "./timeline";
+import { buildTimeline, buildPreviewRows, playerTimeline, spriteRows, type SpriteClip } from "./timeline";
 import { PreviewTimeline, type PreviewTimelineHandle } from "./PreviewTimeline";
 import { SpriteOverlay, type SpriteOverlayHandle } from "./SpriteOverlay";
-import { previewDuration } from "./tracks";
-import { previewVideoUrl, readMasterVideo } from "./media";
+import type { ResolvedTimeline } from "./tracks";
 import { MasterVideoInput } from "./MasterVideoInput";
 
 /** 编辑状态由父组件持有；目录只在 SDK 初始化成功后回传。 */
 interface Props {
   draft: Draft;
-  media?: MasterVideo;
-  onMediaChange: (media: MasterVideo) => void;
+  media?: PreviewMedia;
+  resolved?: ResolvedTimeline;
+  mediaError?: string;
+  onRetryMedia?: () => void;
+  onMediaChange: (media: PreviewMedia) => void;
   videoInputKey: string;
   onCatalog: (catalog: EffectAsset[]) => void;
   selectedId?: string | null;
   onSelect?: (id: string) => void;
-  onRangeChange?: (id: string, start: number, end: number) => void;
+  videoOrder?: number[];
+  onVideoMove?: (source: number, destination: number) => void;
   sprites?: SpriteClip[];
   /** 在画面上拖动所选 Remotion 资产时回报新的内容中心坐标（画布像素）。 */
   onSpriteMove?: (id: string, x: number, y: number) => void;
@@ -34,16 +37,18 @@ function TimelineMark() {
 }
 
 /** 每次修改全量更新时间线并回到开头；串行处理，快速修改只应用最新草稿。 */
-export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, onCatalog, selectedId, onSelect, onRangeChange, sprites = [], onSpriteMove }: Props) {
-  const duration = Math.max(0, previewDuration(draft, media));
+export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMedia, onMediaChange, videoInputKey, onCatalog, selectedId, onSelect, sprites = [], onSpriteMove, videoOrder = defaultVideoOrder, onVideoMove }: Props) {
+  const duration = resolved?.duration ?? 0;
   const stage = useRef<HTMLDivElement>(null);
   const container = useRef<HTMLDivElement>(null);
   const player = useRef<Player | null>(null);
   const latest = useRef(draft);
   const latestMedia = useRef(media);
+  const latestOrder = useRef(videoOrder);
+  const latestResolved = useRef(resolved);
   const apply = useRef<(() => void) | null>(null);
   const catalogCallback = useRef(onCatalog);
-  const playAction = useRef<((start: number, end?: number) => void) | null>(null);
+  const playAction = useRef<((start: number) => void) | null>(null);
   const cancelPlaybackAction = useRef<(() => void) | null>(null);
   const seekAction = useRef<((time: number) => void) | null>(null);
   const track = useRef<PreviewTimelineHandle>(null);
@@ -51,7 +56,6 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
   const [rows, setRows] = useState<ReturnType<typeof buildPreviewRows>>([]);
   const timelineRows = useMemo(() => [...rows, ...spriteRows(sprites)], [rows, sprites]);
   const [notices, setNotices] = useState<string[]>([]);
-  const transition = rows.flatMap((row) => row.actions).find((item) => item.effectId === "transition");
   const [attempt, setAttempt] = useState(0);
   const [status, setStatus] = useState("正在加载预览组件…");
   const [ready, setReady] = useState(false);
@@ -59,9 +63,11 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
   const [seeking, setSeeking] = useState(false);
   const [time, setTime] = useState(0);
   const [canvas, setCanvas] = useState<Pick<MasterVideo, "width" | "height"> | null>(null);
-  const playing = status === "正在播放预览…" || status === "正在预览转场…";
+  const playing = status === "正在播放预览…";
   latest.current = draft;
   latestMedia.current = media;
+  latestOrder.current = videoOrder;
+  latestResolved.current = resolved;
   catalogCallback.current = onCatalog;
 
   useEffect(() => {
@@ -70,28 +76,27 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
     let revision = 0;
     let instance: Player | null = null;
     let frame: HTMLIFrameElement | undefined;
-    let exampleMedia: MasterVideo | undefined;
     const controller = new AbortController();
     let catalog: EffectAsset[] = [];
     let appliedTracks: Draft["tracks"] | undefined;
-    let appliedMedia: MasterVideo | undefined;
+    let appliedMedia: PreviewMedia | undefined;
+    let appliedOrder: number[] | undefined;
     let subscription: { unsubscribe(): void } | undefined;
     let seekTarget: number | null = null;
     let resumeAfterSeek = false;
     let seekFrame: number | undefined;
     let seekTimer: ReturnType<typeof setTimeout> | undefined;
-    let transitionEnd = 0;
     let displayedDecisecond = 0;
     let playTimer: ReturnType<typeof setTimeout> | undefined;
     setReady(false);
     setFailed(false);
     setStatus("正在加载预览组件…");
+    if (!media) { setStatus("正在读取预览视频…"); return; }
 
     /** 取消尚未完成的定位与播放，暂停、更新和卸载共用此清理入口。 */
     const cancel = () => {
       seekTarget = null;
       resumeAfterSeek = false;
-      transitionEnd = 0;
       clearTimeout(playTimer);
       clearTimeout(seekTimer);
       if (seekFrame !== undefined) cancelAnimationFrame(seekFrame);
@@ -122,7 +127,7 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
         playTimer = setTimeout(() => {
           if (!disposed) {
             instance?.play();
-            setStatus(transitionEnd ? "正在预览转场…" : "正在播放预览…");
+            setStatus("正在播放预览…");
           }
         }, 0);
       } else setStatus("预览已暂停");
@@ -141,20 +146,23 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
           cancel();
           const currentDraft = latest.current;
           const currentMedia = latestMedia.current;
-          const timeline = buildTimeline(currentDraft, catalog, currentMedia ?? exampleMedia);
+          const currentOrder = latestOrder.current;
+          const currentResolved = latestResolved.current;
+          if (!currentMedia || !currentResolved) { instance.pause(); return; }
+          const timeline = buildTimeline(currentDraft, catalog, currentMedia, currentResolved, currentOrder);
           if (disposed) return;
           instance.pause();
           instance.aspectRatio = timeline.AspectRatio;
           setStatus("正在应用效果并加载媒体…");
-          const { previewRows: _rows, notices: adjustments, ...sdkTimeline } = timeline;
           // 清空 SDK 缓存的旧时间线，确保文字更新后只显示当前内容。
           instance.timeline = {};
-          await instance.setTimeline(sdkTimeline);
+          await instance.setTimeline(playerTimeline(timeline));
           if (!disposed && applied === revision) {
             appliedTracks = currentDraft.tracks;
             appliedMedia = currentMedia;
+            appliedOrder = currentOrder;
             setRows(buildPreviewRows(timeline));
-            setNotices(adjustments);
+            setNotices(timeline.notices);
           }
         } while (!disposed && applied !== revision);
         if (!disposed) {
@@ -178,18 +186,18 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
     };
     apply.current = () => {
       // 初始化已应用相同输入时，延迟通知无需再次重置播放位置。
-      if (appliedTracks === latest.current.tracks && appliedMedia === latestMedia.current) return;
+      if (appliedTracks === latest.current.tracks && appliedMedia === latestMedia.current && appliedOrder === latestOrder.current) return;
       revision++;
       void update();
     };
-    // 示例也读取真实尺寸，但保留十秒预览区间；每种尺寸使用独立 SDK 文档。
+    // 工作区已读取真实媒体信息，每种尺寸使用独立 SDK 文档。
     void Promise.all([
-      media ? Promise.resolve(media) : readMasterVideo(previewVideoUrl(), controller.signal),
+      Promise.resolve(media),
       loadPreviewFont(),
     ])
-      .then(async ([source]) => {
+      .then(async ([sources]) => {
         if (disposed || !container.current) return;
-        if (!media) exampleMedia = { ...source, duration: 10 };
+        const source = sources[0];
         setCanvas({ width: source.width, height: source.height });
         frame = document.createElement("iframe");
         frame.title = "模板预览播放器";
@@ -233,7 +241,11 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
             ? { width: source.width } : { height: source.height },
           getMediaInfo: async (id, _type, _origin, url) => url || id,
           getTimelineMaterials: async (materials) =>
-            materials.map((item) => ({ ...item, video: { duration: latestMedia.current?.duration ?? exampleMedia?.duration ?? 10 } })),
+            materials.map((item) => {
+              const video = sources.find((source) => source.url === item.mediaId);
+              if (!video) throw new Error("预览素材缺少真实媒体信息");
+              return { ...item, video: { duration: video.duration } };
+            }),
         });
         // SDK 在初始化 Promise 中应用场景尺寸，等待该过程后设置 Timeline。
         await Promise.resolve();
@@ -257,18 +269,14 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
           overlay.current?.setTime(current);
           // SDK 仍逐帧驱动播放控制，界面时间最多每 0.1 秒渲染一次。
           const nextDecisecond = Math.min(
-            previewDuration(latest.current, latestMedia.current) * 10,
+            (latestResolved.current?.duration ?? 0) * 10,
             Math.max(0, Math.round(current * 10)),
           );
           if (nextDecisecond !== displayedDecisecond) {
             displayedDecisecond = nextDecisecond;
             setTime(nextDecisecond / 10);
           }
-          if (transitionEnd && current >= transitionEnd) {
-            instance.pause();
-            transitionEnd = 0;
-            setStatus("转场预览结束");
-          } else if (current >= previewDuration(latest.current, latestMedia.current)) {
+          if (current >= (latestResolved.current?.duration ?? 0)) {
             setStatus("预览结束，点击播放可重播");
           }
         });
@@ -280,13 +288,12 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
           setFailed(true);
         }
       });
-    // 普通重播与转场共用定位后播放；暂停、更新或卸载时取消尚未开始的播放。
-    playAction.current = (start, end = 0) => {
+    // 定位完成后播放；暂停、更新或卸载时取消尚未开始的播放。
+    playAction.current = (start) => {
       if (!instance || active || disposed) return;
       cancel();
       seekTarget = start;
       resumeAfterSeek = true;
-      transitionEnd = end;
       setStatus("正在定位播放位置…");
       if (Math.abs(instance.currentTime - start) < 0.001) finishSeek();
       else {
@@ -302,7 +309,7 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
       const wasSeeking = seekTarget !== null;
       cancel();
       instance.pause();
-      const target = Math.min(previewDuration(latest.current, latestMedia.current), Math.max(0, value));
+      const target = Math.min(latestResolved.current?.duration ?? 0, Math.max(0, value));
       seekTarget = target;
       displayedDecisecond = Math.round(target * 10);
       setTime(target);
@@ -331,12 +338,12 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
       instance?.destroy();
       frame?.remove();
     };
-  }, [attempt, media?.width, media?.height]);
+  }, [attempt, media]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => apply.current?.(), 250);
     return () => window.clearTimeout(timer);
-  }, [draft.tracks, media]);
+  }, [draft.tracks, media, videoOrder, resolved]);
 
   return <section aria-label="实时预览" className="flex min-h-full min-w-0 flex-col">
     <div className="template-preview-stage border-b px-4 pb-3 pt-4 lg:px-7 lg:pt-5"><div className="mx-auto max-w-[900px]">
@@ -354,10 +361,15 @@ export function TemplatePreview({ draft, media, onMediaChange, videoInputKey, on
         <span className="min-w-20 text-right text-[11px] font-medium tabular-nums">{time.toFixed(1)} <span className="font-normal text-muted-foreground">/ {duration.toFixed(1)} 秒</span></span>
         <MasterVideoInput key={videoInputKey} media={media} onChange={onMediaChange} />
       </div>
-      <p role={failed ? "alert" : "status"} className={failed ? "text-xs text-destructive" : ready ? "sr-only" : "text-[11px] text-muted-foreground"}>{status}</p>
+      <p role={failed || mediaError ? "alert" : "status"} className={failed || mediaError ? "text-xs text-destructive" : ready ? "sr-only" : "text-[11px] text-muted-foreground"}>{mediaError || status}</p>
+      {mediaError && !media && <Button type="button" variant="outline" onClick={onRetryMedia}>重试读取视频</Button>}
       {failed && <Button type="button" variant="outline" onClick={() => setAttempt((value) => value + 1)}>重试预览</Button>}
       {notices.length > 0 && <ul aria-label="时间调整说明" className="space-y-1 text-xs text-muted-foreground">{notices.map((notice, index) => <li key={index}>{notice}</li>)}</ul>}
     </div></div>
-    <div className="template-preview-timeline flex-1 px-4 pb-5 pt-4 lg:px-7"><div className="mx-auto max-w-[900px]"><div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><TimelineMark /><h2 className="text-[13px] font-semibold">时间轴</h2>{transition && <Button type="button" variant="ghost" size="sm" disabled={!ready || seeking} onClick={() => playAction.current?.(Math.max(0, transition.start - 1), Math.min(duration, transition.end + 1))} className="template-preview-transition h-7 px-2 text-[11px]">预览转场</Button>}</div><div className="flex items-center gap-3 text-[11px] tabular-nums text-muted-foreground"><span className="font-semibold text-foreground">{time.toFixed(1)} / {duration.toFixed(1)} 秒</span><span>{draft.tracks.length} 个对象</span></div></div><PreviewTimeline ref={track} rows={timelineRows} disabled={!ready} time={time} duration={duration} selectedId={selectedId} onSelect={onSelect} onRangeChange={onRangeChange} onSeek={(value) => seekAction.current?.(value)} /></div></div>
+    <div className="template-preview-timeline flex-1 px-4 pb-5 pt-4 lg:px-7"><div className="mx-auto max-w-[900px]"><div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><TimelineMark /><h2 className="text-[13px] font-semibold">时间轴</h2></div><div className="flex items-center gap-3 text-[11px] tabular-nums text-muted-foreground"><span className="font-semibold text-foreground">{time.toFixed(1)} / {duration.toFixed(1)} 秒</span><span>{draft.tracks.length} 个对象</span></div></div><PreviewTimeline ref={track} rows={timelineRows} disabled={!ready} time={time} duration={duration} selectedId={selectedId} onSelect={onSelect} onVideoMove={onVideoMove} onSeek={(value) => seekAction.current?.(value)} />
+    </div></div>
   </section>;
 }
+
+/** 默认顺序使用稳定引用，播放器只在实际排序变化时更新时间线。 */
+const defaultVideoOrder = [0, 1, 2];

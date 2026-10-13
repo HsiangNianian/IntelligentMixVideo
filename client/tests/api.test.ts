@@ -4,7 +4,7 @@ import { fromBinary, toBinary, toJson } from "@bufbuild/protobuf";
 import { EffectTemplateEditorSchema, GetTemplateResponseSchema, SaveTemplateRequestSchema } from "@/generated/imv/template/v1/template_pb";
 import { deleteTemplate, getTemplate, listTemplates, saveTemplate } from "@/features/templates/api";
 import { newDraft, toDraft, type RemotionClip } from "@/features/templates/model";
-import { protobufListResponse, protobufTemplateResponse, savedTemplate } from "./fixtures";
+import { protobufListResponse, protobufTemplateResponse, savedTemplate, templateSummary } from "./fixtures";
 import { fetchMock, mockDesktop } from "./setup";
 
 // 测试创建和更新都使用 POST /template，只有更新带 ID，名称说明被修剪且效果去重。
@@ -33,12 +33,23 @@ test.each([undefined, "existing-id"])("保存请求正确区分创建与更新�
   expect(draft.name).toBe("  我的模板  ");
 });
 
-// 测试名称为空或没有选择效果时直接提示，不发送无效请求。
-test("保存前检查名称和所选效果", async () => {
+// 测试名称为空或缺少全部对象时直接提示，不发送无效请求。
+test("保存前检查名称和画面对象", async () => {
   const draft = newDraft();
   await expect(saveTemplate(draft)).rejects.toThrow("请输入模板名称");
   draft.name = "新模板";
-  await expect(saveTemplate(draft)).rejects.toThrow("请至少选择一个效果");
+  draft.tracks = [];
+  await expect(saveTemplate(draft)).rejects.toThrow("保存模板需要标题和底部字幕各一个");
+  expect(fetchMock).not.toHaveBeenCalled();
+});
+
+test.each(["cloud", "local"] as const)("%s 创建和更新均拒绝缺少固定文字对象", async (environment) => {
+  for (const id of [undefined, "existing-id"])
+    for (const missing of [["title"], ["subtitle"], ["title", "subtitle"]]) {
+      const draft = { ...newDraft(), name: "数量验证" };
+      draft.tracks = draft.tracks.filter((track) => !missing.includes(track.target));
+      await expect(saveTemplate(draft, id, environment)).rejects.toThrow("保存模板需要标题和底部字幕各一个");
+    }
   expect(fetchMock).not.toHaveBeenCalled();
 });
 
@@ -48,7 +59,7 @@ test("读取与删除遵循接口契约", async () => {
   saved.tracks[0].editor.titleKeywordSize = 72;
   saved.tracks[1].editor.subtitleKeywordSize = 48;
   fetchMock.mockResolvedValueOnce(protobufListResponse([saved]));
-  expect(await listTemplates()).toEqual([saved]);
+  expect(await listTemplates()).toEqual([templateSummary(saved)]);
   fetchMock.mockResolvedValueOnce(protobufTemplateResponse(saved, "get"));
   expect(await getTemplate("id/with space")).toEqual(saved);
   expect(fetchMock.mock.calls[1][0]).toBe("http://api.test:8000/template/id%2Fwith%20space");
@@ -69,24 +80,24 @@ test("读取含 Remotion 片段的模板", async () => {
   const withClips = { ...savedTemplate(), template_id: "00000000-0000-4000-8000-000000000002", clips };
   fetchMock.mockResolvedValueOnce(protobufListResponse([savedTemplate(), withClips]));
   const listed = await listTemplates();
-  expect(listed).toEqual([savedTemplate(), withClips]);
-  expect(listed[1].tracks.map((track) => track.target)).toEqual(["title", "subtitle"]);
+  expect(listed).toEqual([templateSummary(savedTemplate()), templateSummary(withClips)]);
+  expect(listed[1].track_count).toBe(4);
   fetchMock.mockResolvedValueOnce(protobufTemplateResponse(withClips, "get"));
   expect(await getTemplate(withClips.template_id)).toEqual(withClips);
 });
 
-// 测试保存时片段排在 IMS 对象之后，作为 remotion 轨道带上引用、秒数起点和空 editor 消息；只含片段的模板不需要 IMS 效果。
+// 测试保存时片段排在固定文字对象之后，片段带上引用、秒数起点和空 editor 消息。
 test("保存 Remotion 片段", async () => {
-  const draft = { ...newDraft(), name: "只有片段", clips };
+  const draft = { ...newDraft(), name: "文字与片段", clips };
   fetchMock.mockResolvedValueOnce(protobufTemplateResponse({ ...savedTemplate(), clips }, "save", 201));
   await saveTemplate(draft);
   const body = fromBinary(SaveTemplateRequestSchema, new Uint8Array(fetchMock.mock.calls[0][1]?.body as Uint8Array));
   expect(body.effectIds).toEqual([]);
-  expect(body.tracks?.tracks.map((track) => [track.id, track.target, track.startMode, track.start, track.duration, track.spriteId])).toEqual([
+  expect(body.tracks?.tracks.slice(2).map((track) => [track.id, track.target, track.startMode, track.start, track.duration, track.spriteId])).toEqual([
     ["clip-a", "remotion", "seconds", 2.5, 3, spriteId],
     ["clip-b", "remotion", "seconds", 0, undefined, spriteId],
   ]);
-  expect(body.tracks?.tracks.map((track) => track.editor && toJson(EffectTemplateEditorSchema, track.editor))).toEqual([{}, {}]);
+  expect(body.tracks?.tracks.slice(2).map((track) => track.editor && toJson(EffectTemplateEditorSchema, track.editor))).toEqual([{}, {}]);
   const mixed = { ...toDraft(savedTemplate()), clips };
   fetchMock.mockResolvedValueOnce(protobufTemplateResponse({ ...savedTemplate(), clips }, "save", 201));
   await saveTemplate(mixed);
@@ -184,14 +195,14 @@ test("本地和云端存储严格分流", async () => {
   const { mock } = await import("bun:test");
   const saved = savedTemplate();
   const invoke = mock(async (_command: string, args: Record<string, unknown>): Promise<unknown> => {
-    if (args.operation === "list") return [saved];
+    if (args.operation === "list") return [templateSummary(saved)];
     if (args.operation === "delete") return null;
     return saved;
   });
   const restoreDesktop = mockDesktop(invoke);
   try {
     expect(window).not.toHaveProperty("__TAURI__");
-    expect(await listTemplates(undefined, "local")).toEqual([saved]);
+    expect(await listTemplates(undefined, "local")).toEqual([templateSummary(saved)]);
     expect(await getTemplate(saved.template_id, "local")).toEqual(saved);
     expect(await saveTemplate(toDraft(saved), undefined, "local")).toEqual(saved);
     await deleteTemplate(saved.template_id, "local");

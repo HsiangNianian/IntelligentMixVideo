@@ -14,6 +14,72 @@ from .conftest import SPRITE_ID, remotion_track, seed_sprite, template_track
 from .template_wire import post_template as _post
 
 
+def test_two_transition_boundaries_roundtrip(client: TestClient):
+    """两个转场的交界处编号经 Protobuf 与数据库保存后保持不变。"""
+    from server.template.schema import effect_catalog
+
+    asset = next(item for item in effect_catalog().values() if item.category == "transition/normal")
+    tracks = [{**template_track("transition", transition=asset.id), "id": f"transition-{boundary}", "transition_boundary": boundary} for boundary in (1, 2)]
+    tracks.extend([template_track("title"), template_track("subtitle")])
+    created = _post(client, {"name": "两个交界处", "effect_ids": [asset.id], "tracks": tracks})
+    assert created.status_code == 201
+    record = pb.SaveTemplateResponse.FromString(created.content).template
+    assert [track.transition_boundary for track in record.tracks.tracks[:2]] == [1, 2]
+    assert all(not track.HasField("start") and not track.start_mode for track in record.tracks.tracks[:2])
+    assert pb.GetTemplateResponse.FromString(client.get(f"/template/{record.template_id}").content).template == record
+    tracks[1]["transition_boundary"] = 1
+    assert _post(client, {"name": "重复交界处", "effect_ids": [asset.id], "tracks": tracks}).status_code == 422
+
+
+@pytest.mark.parametrize("change", ["missing-boundary", "start", "start_mode"])
+def test_transition_requires_only_boundary_timing(client: TestClient, change):
+    """真实保存路由拒绝缺失交界处及携带计算秒数的转场。"""
+    from server.template.schema import effect_catalog
+
+    asset = next(item for item in effect_catalog().values() if item.category == "transition/normal")
+    transition = template_track("transition", transition=asset.id)
+    if change == "missing-boundary":
+        del transition["transition_boundary"]
+    else:
+        transition[change] = 9 if change == "start" else "seconds"
+    response = _post(client, {"name": "转场校验", "effect_ids": [asset.id],
+                              "tracks": [template_track("title"), template_track("subtitle"), transition]})
+    assert response.status_code == 422
+    assert not pb.ListTemplatesResponse.FromString(client.get("/template").content).templates
+
+
+@pytest.mark.parametrize("change", ["subtitle-time", "duplicate-title", "invalid-structure", "metadata-in-config"])
+def test_invalid_record_does_not_block_collection(client: TestClient, template_db: Engine, template_payload: dict, change):
+    """真实存储中混合有效与无效记录，列表逐条报告、详情拒绝、删除只影响目标。"""
+    valid = pb.SaveTemplateResponse.FromString(_post(client, template_payload).content).template
+    invalid = pb.SaveTemplateResponse.FromString(_post(client, {**template_payload, "name": "待处理模板"}).content).template
+    with template_db.begin() as connection:
+        row = connection.execute(select(store.templates).where(store.templates.c.template_id == invalid.template_id)).one()
+        config = dict(row.configuration)
+        if change == "subtitle-time":
+            next(track for track in config["tracks"] if track["target"] == "subtitle")["duration"] = 10
+        elif change == "duplicate-title":
+            title = next(track for track in config["tracks"] if track["target"] == "title")
+            config["tracks"].append({**title, "id": "second-title"})
+        elif change == "metadata-in-config":
+            config["name"] = "重复元数据"
+        else:
+            config["tracks"] = None
+        connection.execute(store.templates.update().where(store.templates.c.template_id == invalid.template_id).values(configuration=config))
+    listed = client.get("/template")
+    assert listed.status_code == 200
+    summaries = {item.template_id: item for item in pb.ListTemplatesResponse.FromString(listed.content).templates}
+    assert summaries[valid.template_id].validation_error == ""
+    assert summaries[invalid.template_id].validation_error
+    assert not summaries[invalid.template_id].HasField("track_count")
+    detail = client.get(f"/template/{invalid.template_id}")
+    assert detail.status_code == 409 and invalid.template_id in detail.json()["detail"]
+    assert client.get(f"/template/{valid.template_id}").status_code == 200
+    assert client.delete(f"/template/{invalid.template_id}").status_code == 204
+    remaining = pb.ListTemplatesResponse.FromString(client.get("/template").content).templates
+    assert [item.template_id for item in remaining] == [valid.template_id]
+
+
 @pytest.mark.parametrize(("path", "method", "status"), [
     ("/template", "get", "200"),
     ("/template", "post", "200"),
@@ -67,7 +133,10 @@ def test_template_protobuf_create_read_update_delete(
     assert pb.GetTemplateResponse.FromString(detail.content).template == record
     listed = client.get("/template")
     assert listed.headers["content-type"] == "application/x-protobuf"
-    assert pb.ListTemplatesResponse.FromString(listed.content).templates == [record]
+    summary, = pb.ListTemplatesResponse.FromString(listed.content).templates
+    assert (summary.template_id, summary.name, summary.track_count, summary.validation_error) == (record.template_id, record.name, 2, "")
+    assert summary.title == record.tracks.tracks[0].editor.title
+    assert summary.subtitle == record.tracks.tracks[1].editor.subtitle
 
     updated = _post(client, {**template_payload, "template_id": record.template_id, "name": "修改后的模板"})
     assert updated.status_code == 200
@@ -122,7 +191,7 @@ def test_template_protobuf_update_preserves_identity_and_restores_defaults(
         "effect_ids": ["in/blur_in"],
         "tracks": [template_track("subtitle", subtitleIn="in/blur_in", subtitleKeywordBold=True,
                                   subtitleKeywordUnderline=True, subtitleKeywordColor="#12AB34",
-                                  subtitleKeywordSize=64)],
+                                  subtitleKeywordSize=64), template_track("title")],
     })
     assert changed.status_code == 200
     revised = pb.SaveTemplateResponse.FromString(changed.content).template
@@ -149,7 +218,7 @@ def test_title_keyword_style_roundtrips_through_protobuf(client: TestClient, tem
     """标题关键词配置经过真实二进制保存、详情读取及服务端校验。"""
     payload = {**template_payload, "tracks": [template_track(
         titleIn="in/fade_in", titleKeywordBold=True, titleKeywordColor="#12AB34", titleKeywordSize=72,
-    )]}
+    ), template_track("subtitle")]}
     response = _post(client, payload)
     assert response.status_code == 201
     record = pb.SaveTemplateResponse.FromString(response.content).template
@@ -199,8 +268,8 @@ def test_remotion_tracks_roundtrip_through_protobuf(client: TestClient, template
     created = _post(client, {**template_payload, "tracks": tracks})
     assert created.status_code == 201
     record = pb.SaveTemplateResponse.FromString(created.content).template
-    ims, *clips = record.tracks.tracks
-    assert ims.sprite_id == ""
+    title, subtitle, *clips = record.tracks.tracks
+    assert title.sprite_id == subtitle.sprite_id == ""
     assert [(clip.id, clip.sprite_id, clip.start_mode, clip.start) for clip in clips] == [
         ("clip-a", SPRITE_ID, "seconds", 2.5), ("clip-b", SPRITE_ID, "seconds", 1),
     ]
@@ -245,23 +314,24 @@ def test_templates_without_clips_never_touch_the_sprite_table(client: TestClient
     assert not inspect(template_db).has_table("remotion_sprites")
 
 
-def test_clips_only_template_roundtrips_over_http(client: TestClient, template_payload: dict) -> None:
-    """HTTP 层真正只放 Remotion 片段的模板：已发布 Sprite、单个片段、空效果列表，可以创建、读取、出现在列表中并更新。"""
+def test_text_and_clips_template_roundtrips_over_http(client: TestClient, template_payload: dict) -> None:
+    """固定文字与已发布片段采用空效果列表，支持创建、读取、列表和更新。"""
     seed_sprite()
-    payload = {**template_payload, "effect_ids": [], "tracks": [remotion_track("clip-a", start=1.5)]}
+    texts = [template_track("title"), template_track("subtitle")]
+    payload = {**template_payload, "effect_ids": [], "tracks": [*texts, remotion_track("clip-a", start=1.5)]}
     created = _post(client, payload)
     assert created.status_code == 201
     record = pb.SaveTemplateResponse.FromString(created.content).template
     assert list(record.effect_ids) == [] and list(record.effects) == []
-    assert [(item.id, item.target, item.sprite_id, item.start) for item in record.tracks.tracks] == [("clip-a", "remotion", SPRITE_ID, 1.5)]
+    assert [(item.id, item.target, item.sprite_id, item.start) for item in record.tracks.tracks[2:]] == [("clip-a", "remotion", SPRITE_ID, 1.5)]
     detail = pb.GetTemplateResponse.FromString(client.get(f"/template/{record.template_id}").content).template
     assert detail == record
     listed = pb.ListTemplatesResponse.FromString(client.get("/template").content).templates
     assert [item.template_id for item in listed] == [record.template_id]
-    updated = _post(client, {**payload, "template_id": record.template_id, "tracks": [remotion_track("clip-a", start=4), remotion_track("clip-b", start=6)]})
+    updated = _post(client, {**payload, "template_id": record.template_id, "tracks": [*texts, remotion_track("clip-a", start=4), remotion_track("clip-b", start=6)]})
     assert updated.status_code == 200
     again = pb.GetTemplateResponse.FromString(client.get(f"/template/{record.template_id}").content).template
-    assert [(item.id, item.start) for item in again.tracks.tracks] == [("clip-a", 4), ("clip-b", 6)]
+    assert [(item.id, item.start) for item in again.tracks.tracks[2:]] == [("clip-a", 4), ("clip-b", 6)]
     assert list(again.effect_ids) == []
 
 
@@ -272,7 +342,7 @@ def test_remotion_tracks_must_share_one_canvas(client: TestClient, template_payl
     seed_sprite(same)
     seed_sprite(landscape, (1920, 1080, 30))
     seed_sprite(other_fps, (1080, 1920, 60))
-    clips = lambda *ids: [remotion_track(f"clip-{index}", sprite_id=item) for index, item in enumerate(ids)]
+    clips = lambda *ids: [template_track("title"), template_track("subtitle"), *[remotion_track(f"clip-{index}", sprite_id=item) for index, item in enumerate(ids)]]
     for mismatched in ((SPRITE_ID, landscape), (SPRITE_ID, other_fps)):
         rejected = _post(client, {**template_payload, "effect_ids": [], "tracks": clips(*mismatched)})
         assert rejected.status_code == 422
@@ -285,17 +355,24 @@ def test_remotion_tracks_must_share_one_canvas(client: TestClient, template_payl
     assert updated.status_code == 422
 
 
-def test_template_without_clips_or_effects_can_be_saved_and_read_back(client: TestClient, template_payload: dict) -> None:
-    """没有任何对象的空模板（空效果、空轨道）也可以创建、读取并出现在列表中；只放片段的情形见 test_clips_only_template_roundtrips_over_http。"""
-    created = _post(client, {**template_payload, "effect_ids": [], "tracks": []})
+@pytest.mark.parametrize("missing", [("title",), ("subtitle",), ("title", "subtitle")])
+def test_missing_fixed_text_rejected_on_create_and_update(client: TestClient, template_payload: dict, missing) -> None:
+    """缺少固定文字时创建和更新都返回 422，更新失败完整保留已有记录。"""
+    payload = {**template_payload, "effect_ids": [], "tracks": [template_track("title"), template_track("subtitle")]}
+    invalid = {**payload, "tracks": [track for track in payload["tracks"] if track["target"] not in missing]}
+    rejected = _post(client, invalid)
+    assert rejected.status_code == 422
+    assert rejected.json()["detail"] == "保存模板需要标题和底部字幕各一个"
+    assert pb.ListTemplatesResponse.FromString(client.get("/template").content).templates == []
+    created = _post(client, payload)
     assert created.status_code == 201
     record = pb.SaveTemplateResponse.FromString(created.content).template
-    assert list(record.effect_ids) == [] and list(record.effects) == [] and list(record.tracks.tracks) == []
+    rejected = _post(client, {**invalid, "template_id": record.template_id})
+    assert rejected.status_code == 422
+    assert rejected.json()["detail"] == "保存模板需要标题和底部字幕各一个"
     detail = client.get(f"/template/{record.template_id}")
     assert detail.status_code == 200
-    assert list(pb.GetTemplateResponse.FromString(detail.content).template.effect_ids) == []
-    listed = pb.ListTemplatesResponse.FromString(client.get("/template").content).templates
-    assert [item.template_id for item in listed] == [record.template_id]
+    assert pb.GetTemplateResponse.FromString(detail.content).template == record
 
 
 @pytest.mark.parametrize("field,value", [
@@ -344,7 +421,7 @@ def test_remotion_overrides_and_transform_roundtrip_through_protobuf(client: Tes
     created = _post(client, {**template_payload, "tracks": [*template_payload["tracks"], remotion_track("clip-a", editor={"remotion": remotion})]})
     assert created.status_code == 201
     record = pb.SaveTemplateResponse.FromString(created.content).template
-    clip = record.tracks.tracks[1].editor.remotion
+    clip = record.tracks.tracks[2].editor.remotion
     assert [item.key for item in clip.parameters] == ["text", "fontWeight", "keywords"]
     assert clip.parameters[0].string_value == "新品上市" and clip.parameters[1].number_value == 700
     assert list(clip.parameters[2].string_list_value.values) == ["新品"]
@@ -353,7 +430,7 @@ def test_remotion_overrides_and_transform_roundtrip_through_protobuf(client: Tes
     with template_db.connect() as connection:
         stored = connection.exec_driver_sql("SELECT configuration FROM templates").scalar_one()
     stored = stored if isinstance(stored, dict) else json.loads(stored)
-    assert stored["tracks"][1]["editor"] == {"remotion": {
+    assert stored["tracks"][2]["editor"] == {"remotion": {
         "parameters": [
             {"key": "text", "stringValue": "新品上市"}, {"key": "fontWeight", "numberValue": 700.0},
             {"key": "keywords", "stringListValue": {"values": ["新品"]}},

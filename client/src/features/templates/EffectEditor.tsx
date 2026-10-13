@@ -341,7 +341,7 @@ export function EffectEditor({
           }
         />
       </div>}
-      <Button type="button" variant="outline" className="template-inspector-remove w-full" onClick={() => { if (onRemove) onRemove(); else onChange(removeTarget(draft, target)); onClose(); }}>移除当前画面对象</Button>
+      {target !== "title" && target !== "subtitle" && <Button type="button" variant="outline" className="template-inspector-remove w-full" onClick={() => { if (onRemove) onRemove(); else onChange(removeTarget(draft, target)); onClose(); }}>移除当前画面对象</Button>}
     </section>
   );
 }

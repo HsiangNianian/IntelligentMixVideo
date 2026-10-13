@@ -1,15 +1,31 @@
 /** 多轨核心测试：真实目录、草稿变更、SDK 时间范围和保存数据；执行 bun run test。 */
 import { expect, test } from "bun:test";
 import { defaultEditor, draftEffects, newDraft, toDraft, type Template, type EffectTrack } from "@/features/templates/model";
-import { sampleDraft } from "./fixtures";
+import { sampleDraft, sampleMedia, buildTestTimeline as buildTimeline } from "./fixtures";
 import { readCatalog } from "@/features/templates/sdk";
-import { addTrack, previewDuration, removeTrack, resolveTrack, setTrackRange, setTrackTiming, trackDraft, updateTrack } from "@/features/templates/tracks";
+import { addTrack, previewContext, resolveTemplate, removeTrack, resolveTrack, setTrackTiming, trackDraft, updateTrack } from "@/features/templates/tracks";
+import { reorderVideos } from "@/features/templates/media";
 import { removeTarget, resetTextTarget } from "@/features/templates/effects";
-import { buildPreviewRows, buildTimeline, formatKeyword, formatSubtitleKeyword } from "@/features/templates/timeline";
+import { buildPreviewRows, formatKeyword, formatSubtitleKeyword, playerTimeline } from "@/features/templates/timeline";
 import timingCases from "../../server/tests/template_timing_cases.json";
 
 const catalog = readCatalog();
 const vfx = catalog.find((asset) => asset.category === "vfx/normal")!;
+const filter = catalog.find((asset) => asset.category === "filter")!;
+
+test("播放器从视频向上叠加滤镜、VFX、字幕和标题", () => {
+  let draft = addTrack(newDraft(), vfx, "vfx").draft;
+  draft = addTrack(draft, filter, "filter").draft;
+  const timeline = buildTimeline(draft, catalog);
+  const applied = playerTimeline(timeline);
+  expect(applied.VideoTracks.map((row) => row.VideoTrackClips[0].Type)).toEqual(["Video", "Filter", "VFX", "Text", "Text"]);
+  expect(applied.VideoTracks.slice(-2).map((row) => {
+    const clip = row.VideoTrackClips[0];
+    return "Content" in clip ? clip.Content : undefined;
+  })).toEqual([defaultEditor.subtitle, defaultEditor.title]);
+  expect(applied.VideoTracks[0].VideoTrackClips).toHaveLength(3);
+  expect(timeline.VideoTracks[0].VideoTrackClips[0].source).toBe(0);
+});
 
 // 场景：字幕关键词组合样式只包围首次匹配文字，关闭后保持原文，重置清除全部选项。
 test("字幕关键词样式生成局部指令并随对象重置", () => {
@@ -78,27 +94,29 @@ test("新对象采用 IMS 时间默认值并保留已设置的时长", () => {
       expect(track.editor[`${role}OutDuration`]).toBe(0.5);
     }
   }
-  const custom = setTrackTiming(added.draft, added.id, { start_mode: "seconds", start: 2, duration: 0.5 });
-  expect(addTrack(custom, transition, "title").draft.tracks![0]).toMatchObject({ start: 2, duration: 0.5 });
+  const custom = updateTrack(added.draft, added.id, { ...trackDraft(added.draft, added.draft.tracks[0]), transition_duration_seconds: 0.5 });
+  expect(addTrack(custom, transition, "title", undefined, 1).draft.tracks![0]).toMatchObject({ transition_boundary: 1, duration: 0.5 });
+  expect(custom.tracks[0]).not.toHaveProperty("start");
 });
 
-// 场景：空对象列表经过初始化和 SDK 转换仍为空；添加及序列化只包含用户选择的效果。
-test("空模板预览和保存配置只包含手动添加的对象", () => {
+// 场景：新模板自带两个独立文字对象，效果添加和移除保留基础文字。
+test("新模板固定包含标题和字幕", () => {
   const empty = newDraft();
   expect(empty).not.toHaveProperty("editor");
-  expect(empty.tracks).toEqual([]);
+  expect(empty.tracks.map((track) => track.target)).toEqual(["title", "subtitle"]);
   expect(draftEffects(empty)).toEqual([]);
   const preview = buildTimeline(empty, catalog);
-  expect(preview.SubtitleTracks).toEqual([]);
+  expect(preview.SubtitleTracks).toHaveLength(2);
   expect(preview.EffectTracks).toEqual([]);
-  expect(buildPreviewRows(preview)).toHaveLength(1);
+  expect(buildPreviewRows(preview)).toHaveLength(3);
   const added = addTrack(empty, vfx, "title");
-  expect(added.draft.tracks?.map((track) => track.target)).toEqual(["vfx"]);
+  expect(added.draft.tracks?.map((track) => track.target)).toEqual(["title", "subtitle", "vfx"]);
   const restored = JSON.parse(JSON.stringify(added.draft));
   expect(restored.tracks).toEqual(added.draft.tracks!);
   expect(draftEffects(restored)).toEqual([vfx.id]);
-  expect(removeTrack(restored, added.id).tracks).toEqual([]);
-  expect(empty.tracks).toEqual([]);
+  expect(removeTrack(restored, added.id).tracks).toEqual(empty.tracks);
+  for (const target of ["title", "subtitle"]) expect(() => removeTrack(empty, target)).toThrow("固定对象");
+  expect(() => setTrackTiming(empty, "subtitle", { start_mode: "seconds", start: 1, duration: null })).toThrow("不能修改时间");
 });
 
 // 场景：前后端共用区间和提示预期，检查帧取整及输入规则保持不变。
@@ -125,28 +143,28 @@ test("动画副本按可用帧数缩短并拒绝无法容纳的区间", () => {
 });
 
 // 场景：重复添加同类特效保留独立 ID、时间和 SDK 效果轨，目录 ID 只保存一次。
-test("重复特效独立存在并按指定范围进入 SDK", () => {
-  const first = addTrack(sampleDraft(), vfx, "title");
-  const second = addTrack(first.draft, vfx, "title");
+test("多个滤镜独立存在并按指定范围进入 SDK", () => {
+  const first = addTrack(sampleDraft(), filter, "title");
+  const second = addTrack(first.draft, filter, "title");
   expect(first.id).not.toBe(second.id);
-  const draft = setTrackRange(setTrackRange(second.draft, first.id, 1, 4), second.id, 3, 8);
+  const draft = setTrackTiming(setTrackTiming(second.draft, first.id, { start_mode: "seconds", start: 1, duration: 3 }), second.id, { start_mode: "seconds", start: 3, duration: 5 });
   const timeline = buildTimeline(draft, catalog);
   expect(timeline.EffectTracks.map((track) => track.EffectTrackItems[0])).toEqual([
-    { Type: "VFX", ...vfx.parameters, TimelineIn: 1, TimelineOut: 4 },
-    { Type: "VFX", ...vfx.parameters, TimelineIn: 3, TimelineOut: 8 },
+    { Type: "Filter", ...filter.parameters, TimelineIn: 1, TimelineOut: 4 },
+    { Type: "Filter", ...filter.parameters, TimelineIn: 3, TimelineOut: 8 },
   ]);
-  expect(buildPreviewRows(timeline).filter((row) => row.actions[0].effectId === "vfx").map((row) => row.actions[0].start)).toEqual([1, 3]);
+  expect(buildPreviewRows(timeline).filter((row) => row.actions[0].effectId === "filter").map((row) => row.actions[0].start)).toEqual([1, 3]);
   expect(timeline.VideoTracks[0].VideoTrackClips[0].Effects).toEqual([{ Type: "Volume", Gain: 0 }]);
-  expect(draftEffects(draft)).toEqual([vfx.id]);
+  expect(draftEffects(draft)).toEqual([filter.id]);
 });
 
 // 场景：参数编辑和删除只作用于指定实例，先前草稿和其他对象保持不变。
 test("删除实例不会清除其他同类效果", () => {
-  const first = addTrack(sampleDraft(), vfx, "title");
-  const second = addTrack(first.draft, vfx, "title");
+  const first = addTrack(sampleDraft(), filter, "title");
+  const second = addTrack(first.draft, filter, "title");
   const current = second.draft.tracks!.find((track) => track.id === first.id)!;
   const before = JSON.stringify(second.draft);
-  const next = updateTrack(second.draft, first.id, removeTarget(trackDraft(second.draft, current), "vfx"));
+  const next = updateTrack(second.draft, first.id, removeTarget(trackDraft(second.draft, current), "filter"));
   expect(next.tracks!.map((track) => track.id)).not.toContain(first.id);
   expect(next.tracks!.find((track) => track.id === second.id)).toEqual(second.draft.tracks!.find((track) => track.id === second.id));
   expect(JSON.stringify(second.draft)).toBe(before);
@@ -157,10 +175,10 @@ test("时间边界和动画时长在 SDK 更新前校验", () => {
   const draft = sampleDraft();
   const motion = catalog.find((asset) => asset.id === "in/fade_in")!;
   const animated = addTrack(draft, motion, "title", "title").draft;
-  for (const [start, end] of [[NaN, 3], [3, 2], [-1, 2], [0, 11]])
-    expect(() => setTrackRange(animated, "title", start, end)).toThrow();
-  expect(setTrackRange(animated, "title", 0, 0.5).tracks![0].duration).toBe(0.5);
-  const short = setTrackRange(animated, "title", 1, 1.1).tracks![0];
+  for (const [start, duration] of [[NaN, 3], [3, -1], [-1, 2], [0, 0]])
+    expect(() => setTrackTiming(animated, "title", { start_mode: "seconds", start, duration })).toThrow();
+  expect(setTrackTiming(animated, "title", { start_mode: "seconds", start: 0, duration: 0.5 }).tracks![0].duration).toBe(0.5);
+  const short = setTrackTiming(animated, "title", { start_mode: "seconds", start: 1, duration: 0.1 }).tracks![0];
   expect(short.editor.titleInDuration).toBe(0.5);
   expect(resolveTrack(short, 10).editor.titleInDuration).toBe(0.1);
   expect(() => addTrack(draft, motion, "title")).toThrow("请选择");
@@ -176,99 +194,124 @@ test("多轨序列化与预览媒体相互独立", () => {
   expect(restored).toEqual(draft);
   restored.tracks![0].editor.title = "修改后的文字";
   expect(saved.tracks![0].editor.title).not.toBe("修改后的文字");
-  const timeline = buildTimeline(draft, catalog, media);
+  const timeline = buildTimeline(draft, catalog, [media, sampleMedia[1], sampleMedia[2]]);
   expect(JSON.stringify(saved)).not.toContain("media");
-  expect(timeline.VideoTracks[0].VideoTrackClips[0]).toMatchObject({ Out: 24, TimelineOut: 24, MediaURL: media.url });
+  expect(timeline.VideoTracks[0].VideoTrackClips[0]).toMatchObject({ Out: 10, TimelineOut: 10, MediaURL: media.url });
   expect(timeline.SubtitleTracks[0].SubtitleTrackClips[0]).toMatchObject({ TimelineIn: 12, TimelineOut: 20 });
   expect(timeline.FECanvas).toEqual({ Width: 1080, Height: 1920 });
 });
 
-// 场景：转场范围对应母版两个片段的重叠时间，替换转场保留唯一切换位置。
-test("转场对应两个母版片段", () => {
+// 场景：两个交界处各自选择转场，替换或移除只影响对应交界处。
+test("两个转场独立选择并按各自时长生成重叠", () => {
   const transition = catalog.find((asset) => asset.category === "transition/normal")!;
   const added = addTrack(sampleDraft(), transition, "title");
-  const draft = setTrackTiming(added.draft, added.id, { start_mode: "seconds", start: 3, duration: 1 });
+  const second = addTrack(added.draft, transition, "title");
+  expect(added.draft.tracks.find((track) => track.id === added.id)?.transition_boundary).toBe(1);
+  expect(second.draft.tracks.find((track) => track.id === second.id)?.transition_boundary).toBe(2);
+  const draft = updateTrack(second.draft, second.id, { ...trackDraft(second.draft, second.draft.tracks.at(-1)!), transition_duration_seconds: 2 });
   const timeline = buildTimeline(draft, catalog);
-  expect(timeline.VideoTracks[0].VideoTrackClips.map((clip) => [clip.In, clip.Out, clip.TimelineIn, clip.TimelineOut])).toEqual([[0, 4, 0, 4], [4, 10, 3, 9]]);
+  expect(timeline.VideoTracks[0].VideoTrackClips.map((clip) => [clip.In, clip.Out, clip.TimelineIn, clip.TimelineOut])).toEqual([[0, 10, 0, 10], [0, 10, 9, 19], [0, 10, 17, 27]]);
   expect(timeline.VideoTracks[0].VideoTrackClips[0].Effects.at(-1)).toMatchObject({ Type: "Transition", Duration: 1 });
-  const replaced = addTrack(draft, transition, "title");
-  expect(replaced.id).toBe(added.id);
-  expect(replaced.draft.tracks!.filter((track) => track.target === "transition")).toMatchObject([{ start: 3, duration: 1 }]);
-  const boundary = buildTimeline(setTrackRange(draft, added.id, 4, 4.1), catalog);
-  expect(boundary.VideoTracks[0].VideoTrackClips[0].Effects.at(-1)?.Duration).toBe(0.1);
+  expect(timeline.VideoTracks[0].VideoTrackClips[1].Effects.at(-1)).toMatchObject({ Type: "Transition", Duration: 2 });
+  const replaced = addTrack(draft, transition, "title", undefined, 2);
+  expect(replaced.id).toBe(second.id);
+  expect(replaced.draft.tracks.filter((track) => track.target === "transition")).toHaveLength(2);
+  expect(() => addTrack(draft, transition, "title", undefined, 3)).toThrow("交界处");
+  expect(() => addTrack(draft, transition, "title")).toThrow("最多添加两个转场");
+  expect(resolveTemplate(removeTrack(draft, added.id), previewContext(sampleMedia)).duration).toBe(28);
+  expect(buildTimeline(removeTrack(draft, added.id), catalog).VideoTracks[0].VideoTrackClips[0].Effects).toEqual([{ Type: "Volume", Gain: 0 }]);
+  const refilled = addTrack(removeTrack(draft, added.id), transition, "title");
+  expect(refilled.draft.tracks.find((track) => track.id === refilled.id)?.transition_boundary).toBe(1);
+  expect(refilled.draft.tracks.find((track) => track.id === second.id)).toEqual(draft.tracks.find((track) => track.id === second.id));
 });
 
-// 场景：转场连接连续源片段，调整持续时间只改变应用结果，全长对象规则始终保留。
-test("转场使用不同源画面并按重叠时长缩短合成", () => {
+// 场景：重排保持三个独立来源，转场绑定交界处，字幕覆盖新总时长。
+test("视频重排保留三个来源及两处转场", () => {
   const transition = catalog.find((asset) => asset.id === "transition/normal/angular")!;
   const original = sampleDraft();
-  const media = { url: "https://example.com/master.mp4", duration: 10, width: 1920, height: 1080 };
   const added = addTrack(original, transition, "title");
-  const draft = setTrackTiming(added.draft, added.id, { start_mode: "seconds", start: 5, duration: 1 });
-  const timeline = buildTimeline(draft, catalog, media);
-  const [first, second] = timeline.VideoTracks[0].VideoTrackClips;
-  expect(first.MediaURL).toBe(second.MediaURL);
-  expect(first.Out).toBe(second.In);
+  const draft = addTrack(added.draft, transition, "title", undefined, 2).draft;
+  const order = reorderVideos([0, 1, 2], 2, 0);
+  const timeline = buildTimeline(draft, catalog, undefined, order);
+  const [first, second, third] = timeline.VideoTracks[0].VideoTrackClips;
+  expect(order).toEqual([2, 0, 1]);
+  expect([first.MediaURL, second.MediaURL, third.MediaURL]).toEqual([2, 0, 1].map((index) => sampleMedia[index].url));
+  expect(new Set([first.MediaURL, second.MediaURL, third.MediaURL]).size).toBe(3);
   expect(first.Effects.at(-1)).toEqual({ Type: "Transition", Duration: 1, SubType: "angular" });
-  expect(first.In + 5.3 - first.TimelineIn).toBeCloseTo(5.3);
-  expect(second.In + 5.3 - second.TimelineIn).toBeCloseTo(6.3);
-  expect(second.Out).toBe(10);
-  expect(second.TimelineOut).toBe(9);
-  expect(previewDuration(draft)).toBe(9);
+  expect(resolveTemplate(draft, previewContext(sampleMedia)).duration).toBe(28);
   expect(draft.tracks!.slice(0, 2)).toEqual(original.tracks);
-  expect(timeline.SubtitleTracks.flatMap((track) => track.SubtitleTrackClips).map((clip) => clip.TimelineOut)).toEqual([9, 9]);
-  expect(buildPreviewRows(timeline)[1].actions[0]).toMatchObject({ sourceIn: 6, sourceOut: 10, start: 5, end: 9 });
-  expect(() => setTrackRange(draft, "title", 8, 9.1)).toThrow();
-  const ranged = setTrackTiming(draft, "title", { start_mode: "seconds", start: 7, duration: 2 });
-  const changed = setTrackTiming(ranged, added.id, { start_mode: "seconds", start: 5, duration: 2 });
-  expect(buildTimeline(changed, catalog).SubtitleTracks[0].SubtitleTrackClips[0].TimelineOut).toBe(8);
-  expect(ranged.tracks!.find((track) => track.id === "title")).toMatchObject({ start: 7, duration: 2 });
+  expect(timeline.SubtitleTracks.flatMap((track) => track.SubtitleTrackClips).map((clip) => clip.TimelineOut)).toEqual([28, 28]);
+  expect(buildPreviewRows(timeline).at(-1)!.actions.map((clip) => clip.videoSource)).toEqual(order);
   const selected = draft.tracks!.find((track) => track.id === added.id)!;
   const edited = updateTrack(draft, added.id, { ...trackDraft(draft, selected), transition_duration_seconds: 0.9707 });
-  expect(previewDuration(edited)).toBeCloseTo(10 - 29 / 30);
-  const longer = { ...media, duration: 20 };
-  expect(previewDuration(draft, longer)).toBe(19);
-  expect(buildTimeline(draft, catalog, longer).VideoTracks[0].VideoTrackClips[1]).toMatchObject({ In: 6, Out: 20, TimelineIn: 5, TimelineOut: 19 });
-  expect(previewDuration(removeTrack(draft, added.id))).toBe(10);
-  expect(removeTrack(draft, added.id).tracks).toEqual(original.tracks);
+  expect(resolveTemplate(edited, previewContext(sampleMedia)).duration).toBeCloseTo(29 - 29 / 30);
+  expect(() => reorderVideos([0, 0, 2], 2, 0)).toThrow("排列无效");
+  const short = buildTimeline(draft, catalog, [{ ...sampleMedia[0], duration: 0.5 }, sampleMedia[1], sampleMedia[2]]);
+  expect(short.VideoTracks[0].VideoTrackClips[0].Effects.at(-1)?.Duration).toBeCloseTo(7 / 30);
+  expect(short.notices).toContain("镜头转场 1：转场已按相邻片段可用时间缩短");
 });
 
 // 场景：短视频截短有效对象并跳过结尾以外的对象；更换视频不修改任何模板规则。
 test("更换预览视频只重新计算显示区间", () => {
-  const media = { url: "https://example.com/short.mp4", duration: 4, width: 1080, height: 1920 };
+  const media = [{ url: "https://example.com/short.mp4", duration: 4, width: 1080, height: 1920 }, sampleMedia[1], sampleMedia[2]] as const;
   const draft = sampleDraft();
-  expect(buildTimeline(draft, catalog, media).SubtitleTracks.map((row) => row.SubtitleTrackClips[0].TimelineOut)).toEqual([4, 4]);
-  const ranged = setTrackRange(draft, "title", 2, 6);
+  expect(buildTimeline(draft, catalog, media).SubtitleTracks.map((row) => row.SubtitleTrackClips[0].TimelineOut)).toEqual([24, 24]);
+  const ranged = setTrackTiming(draft, "title", { start_mode: "seconds", start: 22, duration: 4 });
   const original = JSON.stringify(ranged);
   const timeline = buildTimeline(ranged, catalog, media);
-  expect(timeline.SubtitleTracks[0].SubtitleTrackClips[0]).toMatchObject({ TimelineIn: 2, TimelineOut: 4 });
+  expect(timeline.SubtitleTracks[0].SubtitleTrackClips[0]).toMatchObject({ TimelineIn: 22, TimelineOut: 24 });
   expect(timeline.notices[0]).toContain("缩短");
-  expect(buildTimeline(ranged, catalog, { ...media, duration: 1 }).SubtitleTracks).toHaveLength(1);
+  expect(buildTimeline(ranged, catalog, [{ ...media[0], duration: 1 }, media[1], media[2]]).SubtitleTracks).toHaveLength(1);
   expect(JSON.stringify(ranged)).toBe(original);
 });
 
-// 场景：百分比随视频时长变化，时间轴移动保留百分比方式和固定持续秒数。
-test("百分比规则与时间轴修改可以往返计算", () => {
+// 场景：三个自定义来源按各自长度截取，排列、转场、字幕和画布使用同一组媒体。
+test("三个预览视频的地址与时长共同驱动时间轴", () => {
+  const media = [
+    { url: "https://example.com/one.mp4", duration: 12, width: 800, height: 600 },
+    { url: "https://example.com/two.mp4", duration: 4, width: 600, height: 800 },
+    { url: "https://example.com/three.mp4", duration: 6, width: 500, height: 500 },
+  ] as const;
+  const asset = catalog.find((item) => item.category === "transition/normal")!;
+  const first = addTrack(newDraft(), asset, "title");
+  const second = addTrack(first.draft, asset, "title");
+  const draft = updateTrack(second.draft, second.id, { ...trackDraft(second.draft, second.draft.tracks.at(-1)!), transition_duration_seconds: 2 });
+  const timeline = buildTimeline(draft, catalog, media);
+  expect(timeline.VideoTracks[0].VideoTrackClips.map((clip) => [clip.MediaURL, clip.Out, clip.TimelineIn, clip.TimelineOut])).toEqual([
+    [media[0].url, 10, 0, 10], [media[1].url, 4, 9, 13], [media[2].url, 6, 11, 17],
+  ]);
+  expect(timeline.FECanvas).toEqual({ Width: 800, Height: 600 });
+  expect(timeline.SubtitleTracks.flatMap((row) => row.SubtitleTrackClips).map((clip) => clip.TimelineOut)).toEqual([17, 17]);
+  const reordered = resolveTemplate(draft, previewContext(media, [2, 0, 1]));
+  expect([reordered.tracks[first.id].start, reordered.tracks[second.id].start]).toEqual([5, 13]);
+  expect(buildTimeline(draft, catalog, media, [2, 0, 1]).VideoTracks[0].VideoTrackClips.map((clip) => clip.MediaURL)).toEqual([media[2].url, media[0].url, media[1].url]);
+  const short = [media[0], { ...media[1], duration: 1.5 }, media[2]] as const;
+  expect(resolveTemplate(first.draft, previewContext(short)).notices).toHaveLength(1);
+  expect(resolveTemplate(draft, previewContext(short)).notices).toHaveLength(2);
+  expect(resolveTemplate(first.draft, previewContext(short, [0, 2, 1])).duration).toBe(16.5);
+});
+
+// 场景：右侧修改百分比与持续时间后，时间轴显示对应区间。
+test("百分比规则随右侧修改进入时间轴", () => {
   const draft = setTrackTiming(sampleDraft(), "title", { start_mode: "percent", start: 25, duration: 3 });
   for (const [duration, start] of [[20, 5], [60, 15], [120, 30]])
     expect(resolveTrack(draft.tracks![0], duration)).toMatchObject({ start, end: start + 3 });
-  const moved = setTrackRange(draft, "title", 6, 9, { url: "https://example.com/video.mp4", duration: 20, width: 1920, height: 1080 });
-  expect(moved.tracks![0]).toMatchObject({ start_mode: "percent", start: 30, duration: 3 });
-  expect(resolveTrack(moved.tracks![0], 60)).toMatchObject({ start: 18, end: 21 });
+  const changed = setTrackTiming(draft, "title", { start_mode: "percent", start: 20, duration: 3 });
+  expect(buildPreviewRows(buildTimeline(changed, catalog))[0].actions[0]).toMatchObject({ start: 6, end: 9, movable: false, flexible: false });
 });
 
-// 场景：调整持续到结束对象的左侧位置保留结束规则，缩短右侧位置改为固定持续时间。
-test("时间轴分别处理开始位置和结束位置", () => {
-  const draft = sampleDraft();
-  const left = setTrackRange(draft, "title", 2, 10);
-  expect(left.tracks![0]).toMatchObject({ start: 2, duration: null });
-  expect(setTrackRange(left, "title", 2, 8).tracks![0]).toMatchObject({ start: 2, duration: 6 });
+// 场景：添加顺序不影响图层，VFX 重复选择只修改同一对象。
+test("图层顺序固定且 VFX 唯一", () => {
+  const first = addTrack(sampleDraft(), filter, "title");
+  const added = addTrack(first.draft, vfx, "title");
+  const replacement = catalog.find((asset) => asset.category === "vfx/normal" && asset.id !== vfx.id)!;
+  const replaced = addTrack(added.draft, replacement, "title");
+  expect(replaced.id).toBe(added.id);
+  expect(replaced.draft.tracks.filter((track) => track.target === "vfx")).toHaveLength(1);
   const transition = catalog.find((asset) => asset.id === "transition/normal/angular")!;
-  const added = addTrack(draft, transition, "title");
-  const resized = setTrackRange(added.draft, added.id, 3, 4);
-  const track = resized.tracks!.find((item) => item.id === added.id)!;
-  expect(track.start_mode).toBe("percent");
-  expect(resolveTrack(track, previewDuration(resized))).toMatchObject({ start: 3, end: 4 });
+  const rows = buildPreviewRows(buildTimeline(addTrack(replaced.draft, transition, "title").draft, catalog));
+  expect(rows.map((row) => row.actions[0].effectId)).toEqual(["title", "subtitle", "transition", "vfx", "filter", "video"]);
+  expect(rows.slice(0, -1).every((row) => !row.actions[0].movable && !row.actions[0].flexible)).toBe(true);
 });
 
 // 场景：非法百分比、持续时间和数值直接报错；固定秒数允许超过预览时长。
@@ -313,12 +356,13 @@ test("片段与对象共用轨道上限", () => {
   expect(addTrack(draft, vfx, "title").draft.tracks).toHaveLength(3);
 });
 
-// 场景：移除文字后通过花字资产重新添加获得独立实例，其余文字参数保留。
-test("文字通过资产重新添加并保留其他对象", () => {
+// 场景：反复选择花字只修改固定文字对象，其他文字保留。
+test("文字样式替换保留唯一对象", () => {
   const draft = sampleDraft();
   const asset = catalog.find((item) => item.category === "flower")!;
-  const added = addTrack(removeTrack(draft, "title"), asset, "title");
-  expect(added.id).not.toBe("title");
+  const added = addTrack(addTrack(draft, asset, "title").draft, asset, "title");
+  expect(added.id).toBe("title");
+  expect(added.draft.tracks).toHaveLength(2);
   expect(added.draft.tracks!.find((track) => track.id === "subtitle")).toEqual(draft.tracks[1]);
   expect(added.draft.tracks!.find((track) => track.id === added.id)?.editor.title).toBe(defaultEditor.title);
   expect(added.draft.tracks!.find((track) => track.id === added.id)?.editor.titleFlower).toBe(asset.id);

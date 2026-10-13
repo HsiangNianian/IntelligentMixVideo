@@ -34,7 +34,7 @@ IntelligentMixVideo connects desktop template editing, server-side media process
 | Page | Purpose |
 | --- | --- |
 | Home | Browse local and cloud templates, create templates, and open existing work |
-| Template editor | Select assets on the left, preview in the center, edit object parameters on the right, and adjust visibility intervals on the timeline below |
+| Template editor | Select assets on the left, preview in the center, edit object parameters and timing on the right, and reorder videos on the timeline below |
 | Remotion effects | Request new effects, view successful versions and history, adjust parameters, and save assets |
 | Settings | Manage the backend URL, local template path, and available model, IMS, and other settings |
 
@@ -156,13 +156,17 @@ Then visit [http://localhost:1420](http://localhost:1420). Browser mode does not
 ### Creating and Saving a Template
 
 1. On Home, create a local or cloud template and enter its name and description.
-2. In the template editor, add text or effects from the asset panel on the left. A new template needs an object before its parameters can be edited.
+2. A new template includes one title and one subtitle. Select styles and effects from the asset panel on the left; VFX is limited to one object, and multiple filters are allowed.
 3. Select an object and adjust its text, font size, position, style, and animation on the right.
-4. Set its start time and duration on the timeline or in the timing settings, and preview it in the center.
+4. Set object timing in the inspector on the right and preview it in the center. The subtitle always covers the full video. Drag video clips on the timeline to change their order.
 5. Click Save. The first save creates the template record; later saves update the same template.
 6. Return to Home and confirm that the template appears in the appropriate local or cloud library.
 
 Local and cloud templates do not sync automatically. Switching templates or creating a new one prompts you to handle unsaved changes. Editing does not provide autosave or crash recovery.
+
+The preview uses the first ten seconds of each of three videos, or the full source when it is shorter. Load all three URLs through the preview dialog. The first transition connects videos 1 and 2; the second connects videos 2 and 3. Edit their effects and durations in the inspector. The timeline lists title, subtitle, bubbles, transitions, VFX, filters, and videos from top to bottom. Preview sources and video order are independent of saved templates.
+
+Default and custom sources both use their actual media durations. Template rules and media information produce a shared timing result: preview duration subtracts transition overlaps, while composition preserves the fixed audio and material timing. Transitions require a boundary and duration; unavailable boundaries produce an explanation. Cloud and local saves enforce the same object counts and timing rules. Invalid stored templates remain visible with their ID, validation reason, and individual delete action; valid templates remain usable. Upgrade the client and server together.
 
 See [template behavior](client/README.md#模板行为) for timing rules, asset operations, and save constraints.
 
@@ -229,7 +233,7 @@ Query the status with `GET /api/v1/overlay-renders/{taskId}`. This API always re
 | Configuration | Location | Purpose and defaults |
 | --- | --- | --- |
 | `VITE_API_URL` | `client/.env` | Default API URL for source development and builds; defaults to `http://localhost:20070` when empty |
-| `VITE_PREVIEW_VIDEO_URL` | `client/.env` | Sample video URL; leave empty for the built-in sample, or use a resource path under `public/` |
+| `VITE_PREVIEW_VIDEO_1_URL`, `VITE_PREVIEW_VIDEO_2_URL`, `VITE_PREVIEW_VIDEO_3_URL` | `client/.env` | Default URLs for videos 1, 2, and 3; leave empty for the corresponding built-in sample, or use a resource path under `public/` |
 | `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` | `server/.env` | MySQL connection settings; configure before using the server |
 | `PORT` | `server/.env` or process environment | API listening port; defaults to `20070`, with a valid range of 1–65535 |
 | `DASHSCOPE_API_KEY` | `server/.env` | API key for Fun-ASR transcription in the Beijing region |

@@ -141,14 +141,33 @@ export interface MasterVideo {
   height: number;
 }
 
+/** 三个预览来源按视频编号保存，排列由工作区独立管理。 */
+export type PreviewMedia = readonly [MasterVideo, MasterVideo, MasterVideo];
+
 /** 每个特效实例拥有独立时间和参数；文字动画保存在所属文字实例内。 */
 export interface EffectTrack {
   id: string;
   target: TextRole | "filter" | "vfx" | "transition";
-  start_mode: "seconds" | "percent";
-  start: number;
+  start_mode?: "seconds" | "percent";
+  start?: number;
   duration: number | null;
   editor: Editor;
+  /** 转场必须指定交界处，且不保存 start/start_mode；其他对象省略此字段。 */
+  transition_boundary?: number;
+}
+
+/** 列表只携带展示信息与校验结果，无效记录可以定位和删除。 */
+export interface TemplateSummary {
+  template_id: string;
+  name: string;
+  description: string;
+  created_at: string;
+  updated_at: string;
+  title: string;
+  subtitle: string;
+  track_count?: number;
+  validation_error: string;
+  library?: string;
 }
 
 /** 后端返回的完整模板，effects 为保存时的可信快照。 */
@@ -169,7 +188,10 @@ export function newDraft(): Draft {
   return {
     name: "",
     description: "",
-    tracks: [],
+    tracks: (["title", "subtitle"] as const).map((target) => ({
+      id: target, target, start_mode: "seconds", start: 0, duration: null,
+      editor: { ...defaultEditor, title: "", subtitle: "", bubbleText: "", [target]: defaultEditor[target] },
+    })),
     clips: [],
     transition_duration_seconds: defaultTransitionDuration,
   };

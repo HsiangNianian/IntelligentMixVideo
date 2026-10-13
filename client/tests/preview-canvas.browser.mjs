@@ -29,14 +29,14 @@ const root=createRoot(document.getElementById('root'));
 const draft=newDraft();
 window.mountPreview=async(name)=>{
  const media=await readMasterVideo('/node_modules/.cache/preview-canvas-tests/'+name+'.mp4',new AbortController().signal);
- root.render(React.createElement(TemplatePreview,{draft,media,onCatalog:()=>{}}));
+ root.render(React.createElement(TemplatePreview,{draft,media:[media,media,media],videoInputKey:name,onMediaChange:()=>{},onCatalog:()=>{}}));
  return media;
 };
 window.unmountPreview=()=>root.unmount();
 window.checkTextContent=async()=>{
  const editor={...(await import('/src/features/templates/model.ts')).defaultEditor,title:'画布文字宽度验证'.repeat(20),subtitle:'字幕宽度验证'.repeat(20),titleSize:100,subtitleSize:100};
  const textDraft={...draft,tracks:['title','subtitle'].map(target=>({id:target,target,start_mode:'seconds',start:0,duration:null,editor}))};
- return [1920,1080].map(width=>buildTimeline(textDraft,readCatalog(),{url:location.origin+'/node_modules/.cache/preview-canvas-tests/landscape.mp4',width,height:1080,duration:2}).SubtitleTracks.map(track=>track.SubtitleTrackClips[0].Content));
+ return [1920,1080].map(width=>{const media={url:location.origin+'/node_modules/.cache/preview-canvas-tests/landscape.mp4',width,height:1080,duration:2};return buildTimeline(textDraft,readCatalog(),[media,media,media]).SubtitleTracks.map(track=>track.SubtitleTrackClips[0].Content);});
 };
 </script></body></html>`;
 const server = await createServer({ server: { host: "localhost", port: 0, open: false }, plugins: [{
@@ -65,7 +65,7 @@ try {
   for (const [name, width, height] of [["landscape", 1920, 1080], ["portrait", 1080, 1920], ["landscape", 1920, 1080]]) {
     const media = await page.evaluate(name => window.mountPreview(name), name);
     assert.deepEqual([media.width, media.height], [width, height]);
-    await page.getByText(`${width} × ${height} · 0.0 / 2 秒`, { exact: true }).waitFor();
+    await page.getByText(`${width} × ${height}`, { exact: true }).waitFor();
     await page.getByText("预览已就绪，点击播放查看效果", { exact: true }).waitFor();
     if (previous) {
       assert.equal(await previous.evaluate(frame => frame.isConnected), false);
@@ -84,15 +84,15 @@ try {
 
     // 实际播放推进后暂停，验证更换尺寸后的播放器仍可工作。
     await page.evaluate(() => {
-      const label = document.querySelector('section[aria-label="实时预览"] span');
+      const label = document.querySelector('.template-preview-controls .tabular-nums');
       window.displayTimes = [];
       window.timeObserver = new MutationObserver(() => {
-        window.displayTimes.push(Number(label.textContent.split(" · ")[1].split(" / ")[0]));
+        window.displayTimes.push(Number(document.querySelector('input[aria-label="预览进度"]').value));
       });
       window.timeObserver.observe(label, { characterData: true, childList: true, subtree: true });
     });
     await page.getByRole("button", { name: "播放", exact: true }).click();
-    await page.getByText(new RegExp(`${width} × ${height} · [1-2]\\.[0-9] / 2 秒`)).waitFor();
+    await page.waitForFunction(() => Number(document.querySelector('input[aria-label="预览进度"]').value) >= 1);
     await page.getByRole("button", { name: "暂停", exact: true }).click();
     // 数字时间仅在十分之一秒发生变化时更新，不随重复视频帧反复更新。
     const times = await page.evaluate(() => {

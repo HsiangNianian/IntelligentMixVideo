@@ -5,5 +5,7 @@
 interface ImportMetaEnv {
   readonly IMV_DEBUG?: string;
   readonly VITE_API_URL?: string;
-  readonly VITE_PREVIEW_VIDEO_URL?: string;
+  readonly VITE_PREVIEW_VIDEO_1_URL?: string;
+  readonly VITE_PREVIEW_VIDEO_2_URL?: string;
+  readonly VITE_PREVIEW_VIDEO_3_URL?: string;
 }

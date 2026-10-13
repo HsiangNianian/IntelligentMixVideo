@@ -4,12 +4,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { EffectTrack } from "./model";
-import { resolveTrack } from "./tracks";
+import type { ResolvedTrack } from "./tracks";
 
 /** 切换开始方式按当前视频换算；非法预览区间显示说明，仍允许编辑模板规则。 */
-export function TrackTiming({ track, duration, onChange }: {
+export function TrackTiming({ track, duration, resolved, onChange }: {
   track: EffectTrack;
   duration: number;
+  resolved?: ResolvedTrack;
   onChange: (timing: Pick<EffectTrack, "start_mode" | "start" | "duration">) => void;
 }) {
   const id = useId();
@@ -21,11 +22,7 @@ export function TrackTiming({ track, duration, onChange }: {
     setMode(track.start_mode); setStart(String(track.start));
     setLength(track.duration === null ? "" : String(track.duration)); setUntilEnd(track.duration === null);
   }, [track.id, track.start_mode, track.start, track.duration]);
-  let result: string;
-  try {
-    const resolved = resolveTrack(track, duration);
-    result = resolved.end > resolved.start ? `当前预览：第 ${Number(resolved.start.toFixed(3))}～${Number(resolved.end.toFixed(3))} 秒${resolved.notice ? `；${resolved.notice}` : ""}` : resolved.notice;
-  } catch (error) { result = error instanceof Error ? error.message : "时间规则无法应用到当前视频"; }
+  const result = resolved ? resolved.end > resolved.start ? `当前预览：第 ${Number(resolved.start.toFixed(3))}～${Number(resolved.end.toFixed(3))} 秒${resolved.notice ? `；${resolved.notice}` : ""}` : resolved.notice : "等待预览时间";
 
   /** 将当前输入交给工作区校验并更新内存；空输入保留为无效数值。 */
   function updateTiming(nextMode = mode, nextStart = start, nextLength = length, nextUntilEnd = untilEnd) {
@@ -52,15 +49,16 @@ export function TrackTiming({ track, duration, onChange }: {
     updateTiming(mode, start, nextLength, nextUntilEnd);
   }
 
+  if (track.target === "subtitle") return <div className="space-y-3 border-b p-4" aria-label="轨道时间设置"><p className="text-xs text-muted-foreground">底部字幕覆盖整个视频，时间不可修改。</p><p role="status" className="text-xs">0～{Number(duration.toFixed(3))} 秒</p></div>;
   return <div className="template-inspector-timing space-y-3 border-b p-4" aria-label="轨道时间设置" onKeyDown={(event) => { if (event.key === "Enter" && event.target instanceof HTMLInputElement) event.preventDefault(); }}>
     <div className="space-y-1.5"><Label htmlFor={`${id}-mode`}>开始方式</Label>
       <Select value={mode} onValueChange={changeMode}><SelectTrigger id={`${id}-mode`} className="w-full"><SelectValue /></SelectTrigger><SelectContent className="template-inspector-select"><SelectItem value="seconds">指定秒数</SelectItem><SelectItem value="percent">视频时长百分比</SelectItem></SelectContent></Select>
     </div>
-    <div className="space-y-1.5"><Label htmlFor={`${id}-start`}>开始{mode === "percent" ? "位置 / %" : "时间 / 秒"}</Label><Input id={`${id}-start`} type="number" required min={track.target === "transition" ? Number.MIN_VALUE : 0} max={mode === "percent" ? 99.999999 : undefined} step="any" value={start} onChange={(event) => { setStart(event.target.value); updateTiming(mode, event.target.value); }} /></div>
+    <div className="space-y-1.5"><Label htmlFor={`${id}-start`}>开始{mode === "percent" ? "位置 / %" : "时间 / 秒"}</Label><Input id={`${id}-start`} type="number" required min={0} max={mode === "percent" ? 99.999999 : undefined} step="any" value={start} onChange={(event) => { setStart(event.target.value); updateTiming(mode, event.target.value); }} /></div>
     <div className="space-y-1.5"><Label htmlFor={`${id}-duration-mode`}>持续方式</Label>
-      <Select value={untilEnd ? "end" : "seconds"} onValueChange={changeDurationMode}><SelectTrigger id={`${id}-duration-mode`} className="w-full"><SelectValue /></SelectTrigger><SelectContent className="template-inspector-select"><SelectItem value="seconds">固定时长</SelectItem>{track.target !== "transition" && <SelectItem value="end">持续到视频结束</SelectItem>}</SelectContent></Select>
+      <Select value={untilEnd ? "end" : "seconds"} onValueChange={changeDurationMode}><SelectTrigger id={`${id}-duration-mode`} className="w-full"><SelectValue /></SelectTrigger><SelectContent className="template-inspector-select"><SelectItem value="seconds">固定时长</SelectItem><SelectItem value="end">持续到视频结束</SelectItem></SelectContent></Select>
     </div>
-    {!untilEnd && <div className="space-y-1.5"><Label htmlFor={`${id}-length`}>持续时间 / 秒</Label><Input id={`${id}-length`} type="number" required min={track.target === "transition" ? 0.1 : Number.MIN_VALUE} max={track.target === "transition" ? 3 : undefined} step="any" value={length} onChange={(event) => { setLength(event.target.value); updateTiming(mode, start, event.target.value); }} /></div>}
+    {!untilEnd && <div className="space-y-1.5"><Label htmlFor={`${id}-length`}>持续时间 / 秒</Label><Input id={`${id}-length`} type="number" required min={Number.MIN_VALUE} step="any" value={length} onChange={(event) => { setLength(event.target.value); updateTiming(mode, start, event.target.value); }} /></div>}
     <p className="text-xs text-muted-foreground" role="status">{result}</p>
   </div>;
 }

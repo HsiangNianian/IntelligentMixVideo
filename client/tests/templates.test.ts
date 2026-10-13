@@ -2,8 +2,7 @@
 import { expect, test } from "bun:test";
 import { defaultEditor, newDraft, draftEffects, toDraft } from "@/features/templates/model";
 import { trackEditor } from "@/features/templates/tracks";
-import { buildTimeline } from "@/features/templates/timeline";
-import { catalog, sampleDraft, savedTemplate } from "./fixtures";
+import { catalog, sampleDraft, savedTemplate, buildTestTimeline as buildTimeline } from "./fixtures";
 
 // 测试新建和从已保存模板转换的草稿互相独立，编辑不会修改默认值或原记录。
 test("草稿不共享编辑配置，也不携带服务端只读字段", () => {
@@ -14,7 +13,7 @@ test("草稿不共享编辑配置，也不携带服务端只读字段", () => {
   fresh.tracks[0].editor.title = "另一个标题";
   expect(original.tracks[0].editor.title).toBe(defaultEditor.title);
   expect(sampleDraft().tracks[0].editor.title).not.toBe(fresh.tracks[0].editor.title);
-  expect(newDraft().tracks).toEqual([]);
+  expect(newDraft().tracks.map((track) => track.target)).toEqual(["title", "subtitle"]);
   expect(draft).not.toHaveProperty("editor");
   expect(draft).not.toHaveProperty("template_id");
   expect(draft).not.toHaveProperty("effects");
@@ -29,7 +28,7 @@ test("所选效果去重并忽略非效果字段", () => {
   expect(draftEffects(draft)).toEqual(["in/fade_in"]);
 });
 
-// 回归 #35：无转场时只创建一个十秒视频素材，避免 SDK 同时上传两份视频纹理。
+// 三个独立视频各使用前十秒，文字根据保存的对象生成。
 test("基础预览时间线使用配置的视频并过滤空字幕", () => {
   const draft = sampleDraft();
   draft.tracks.shift();
@@ -37,14 +36,15 @@ test("基础预览时间线使用配置的视频并过滤空字幕", () => {
   const timeline = buildTimeline(draft, []);
   const clips = timeline.VideoTracks[0].VideoTrackClips;
   expect(
-    clips.map(({ MediaURL, In, Out, TimelineIn, TimelineOut }) => [
+    clips.slice(0, 1).map(({ MediaURL, In, Out, TimelineIn, TimelineOut }) => [
       MediaURL,
       In,
       Out,
       TimelineIn,
       TimelineOut,
     ]),
-  ).toEqual([["http://localhost:1420/sample.mp4", 0, 10, 0, 10]]);
+  ).toEqual([["https://media.example/one.mp4", 0, 10, 0, 10]]);
+  expect(clips.map((clip) => [clip.In, clip.Out, clip.TimelineIn, clip.TimelineOut])).toEqual([[0, 10, 0, 10], [0, 10, 10, 20], [0, 10, 20, 30]]);
   expect(clips[0].Effects).toEqual([{ Type: "Volume", Gain: 0 }]);
   expect(timeline.SubtitleTracks[0].SubtitleTrackClips.map((clip) => clip.Content)).toEqual(["字幕"]);
 });
@@ -54,15 +54,15 @@ test("动画和转场转换为正确的 SDK 配置", () => {
   const draft = toDraft(savedTemplate());
   draft.tracks[0].editor.titleInDuration = 1;
   draft.tracks[0].editor.titleX = 100;
-  draft.tracks.push({ id: "transition", target: "transition", start_mode: "seconds", start: 5, duration: 2,
+  draft.tracks.push({ id: "transition", target: "transition", transition_boundary: 1, duration: 2,
     editor: trackEditor({ ...defaultEditor, transition: "transition/normal/directional" }, "transition") });
   const timeline = buildTimeline(draft, catalog);
   const [first, second] = timeline.VideoTracks[0].VideoTrackClips;
   expect([first.In, first.Out, first.TimelineIn, first.TimelineOut]).toEqual([
-    0, 7, 0, 7,
+    0, 10, 0, 10,
   ]);
   expect([second.In, second.Out, second.TimelineIn, second.TimelineOut]).toEqual([
-    7, 10, 5, 8,
+    0, 10, 8, 18,
   ]);
   expect(first.Effects).toContainEqual({ Type: "Transition", Duration: 2, SubType: "directional" });
   expect(timeline.SubtitleTracks[0].SubtitleTrackClips[0]).toMatchObject({

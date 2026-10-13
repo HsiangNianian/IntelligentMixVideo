@@ -15,6 +15,11 @@ function Dialog({
   return <DialogPrimitive.Root data-slot="dialog" {...props} />;
 }
 
+/** 弹窗触发器负责打开状态、无障碍关联及关闭后的焦点恢复。 */
+function DialogTrigger(props: React.ComponentProps<typeof DialogPrimitive.Trigger>) {
+  return <DialogPrimitive.Trigger data-slot="dialog-trigger" {...props} />;
+}
+
 /** DialogPortal 组合 Radix 原语与主题样式，交互和焦点管理由原语负责。 */
 function DialogPortal({
   ...props
@@ -143,6 +148,7 @@ function DialogDescription({
 
 export {
   Dialog,
+  DialogTrigger,
   DialogContent,
   DialogDescription,
   DialogFooter,

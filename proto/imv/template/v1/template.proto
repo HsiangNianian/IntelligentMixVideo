@@ -180,6 +180,8 @@ message EffectTrack {
   EffectTemplateEditor editor = 6;
   // remotion 片段引用的已发布 Sprite ID；其他对象必须留空。
   string sprite_id = 7;
+  // 转场必须指定交界处 1 或 2，且不设置 start/start_mode；其他对象禁止设置。
+  optional uint32 transition_boundary = 8;
 }
 
 // 包装数组以保留“提供了空轨道列表”的含义。
@@ -226,10 +228,23 @@ message TemplateRecord {
   google.protobuf.Timestamp updated_at = 9;
 }
 
+// 模板列表只返回摘要；无效记录保留标识与原因，不能用于预览和合成。
+message TemplateSummary {
+  string template_id = 1;
+  string name = 2;
+  string description = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp updated_at = 5;
+  string title = 6;
+  string subtitle = 7;
+  optional uint32 track_count = 8;
+  string validation_error = 9;
+}
+
 // 模板列表及单个模板的响应。
 message ListTemplatesResponse {
-  // 当前共享模板库中的模板记录。
-  repeated TemplateRecord templates = 1;
+  // 当前共享模板库中的模板摘要。
+  repeated TemplateSummary templates = 1;
 }
 
 message GetTemplateResponse {

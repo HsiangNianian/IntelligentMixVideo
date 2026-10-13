@@ -31,7 +31,7 @@ const KEYWORD_STYLES = [
 export function SpriteClipInspector({ clip, asset, duration, onParameter, onTransform, onStart, onRemove, onClose }: {
   clip: RemotionClip;
   asset: SpriteAsset | undefined;
-  duration: number;
+  duration: number | undefined;
   onParameter: (key: string, value: ParameterValue | undefined) => void;
   onTransform: (patch: Partial<Record<TransformField, number | undefined>>) => void;
   onStart: (start: number) => void;
@@ -134,7 +134,7 @@ export function SpriteClipInspector({ clip, asset, duration, onParameter, onTran
       </fieldset>
     </>}
     <div className="space-y-3 border-t px-4 py-3">
-      <ParameterControl field={{ key: "start", label: "开始时间（秒）", kind: "number", minimum: 0, maximum: Math.max(0, duration) }} value={clip.start} disabled={false}
+      <ParameterControl field={{ key: "start", label: "开始时间（秒）", kind: "number", minimum: 0, maximum: duration }} value={clip.start} disabled={false}
         onChange={(value) => onStart(value as number)} />
       <Button type="button" variant="outline" className="w-full gap-1.5" onClick={onRemove}><Trash2 className="size-3.5" aria-hidden="true" />移除这个资产</Button>
     </div>

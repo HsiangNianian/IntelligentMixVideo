@@ -107,8 +107,8 @@ def template_track(target: str = "title", **editor) -> dict:
     content = {"title": "", "subtitle": "", "bubbleText": ""}
     if target in ("title", "subtitle", "bubble"):
         content["bubbleText" if target == "bubble" else target] = "示例文字"
-    return {"id": target, "target": target, "start_mode": "seconds",
-            "start": 1 if target == "transition" else 0,
+    return {"id": target, "target": target,
+            **({"transition_boundary": 1} if target == "transition" else {"start_mode": "seconds", "start": 0}),
             "duration": 0.5 if target == "transition" else None,
             "editor": {**content, **editor}}
 
@@ -181,7 +181,7 @@ def template_payload() -> dict:
     return {
         "name": "测试模板",
         "description": "标题淡入",
-        "tracks": [template_track(titleIn="in/fade_in")],
+        "tracks": [template_track(titleIn="in/fade_in"), template_track("subtitle")],
         "effect_ids": ["in/fade_in"],
         "transition_duration_seconds": 0.5,
     }
