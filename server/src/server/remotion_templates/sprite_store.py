@@ -75,6 +75,18 @@ def find(source_version_id: str, kind: int, text_prop: str, keywords_prop: str) 
         )).scalar()
 
 
+def find_any(source_version_id: str, kind: int) -> dict | None:
+    """Return the oldest publication of this source and kind whatever its text/keyword fields, or None.
+
+    Only the identifying columns are sorted (sorting whole JSON rows exhausts MySQL's sort buffer).
+    """
+    with initialize_schema().connect() as connection:
+        sprite_id = connection.execute(select(sprites.c.sprite_id).where(
+            sprites.c.source_version_id == source_version_id, sprites.c.kind == kind,
+        ).order_by(sprites.c.published_at, sprites.c.sprite_id).limit(1)).scalar()
+    return get(sprite_id) if sprite_id is not None else None
+
+
 def insert(
     *, sprite_id: str, source_version_id: str, kind: int, text_prop: str, keywords_prop: str,
     published_at: datetime, data: dict,

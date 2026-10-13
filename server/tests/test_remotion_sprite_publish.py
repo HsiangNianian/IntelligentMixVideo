@@ -520,3 +520,32 @@ def test_publishing_needs_the_isolated_validator(client: TestClient, published) 
     published.renderer.sample_failure = RuntimeError("worker crashed")
     assert publish(client, publish_request(published.version.id)).status_code == 503
     assert client.get("/api/sprites").content == b""
+
+
+def test_publications_made_before_categories_can_still_be_re_saved(client: TestClient, legacy_published, monkeypatch) -> None:
+    """旧版组合发布过的资产仍能「重新保存到资产」来刷新播放器包：命中已有发布时不再套用新的发布规则，旧的文字字段路径也能命中。
+
+    修复前先做新规则校验，旧版本一律 422，叠加预览里「请重新保存到资产」的提示无法照做，旧资产永远拿不到新的播放器包。
+    """
+    def bypass(request, version):
+        """Stand in for the publish rules before this change, which accepted any field choice."""
+
+    async def no_samples(*args, **kwargs):
+        """Publications before this change rendered no boundary samples."""
+
+    with monkeypatch.context() as patch:
+        patch.setattr(sprites, "_validated_request", bypass)
+        patch.setattr(sprites, "_sample", no_samples)
+        visual = published_sprite(client, legacy_published.version.id, kind=pb.SPRITE_KIND_VIDEO_OVERLAY, text_prop="", keywords_prop="")
+        text = published_sprite(client, legacy_published.version.id, text_prop="title.glow", keywords_prop="")
+    for sprite_id in (visual.sprite_id, text.sprite_id):
+        (legacy_published.store.root / "sprites" / sprite_id / "interactive.js").write_text("// stale imv-preview-sync")
+    legacy_published.renderer.requests.clear()
+    again = published_sprite(client, legacy_published.version.id, kind=pb.SPRITE_KIND_VIDEO_OVERLAY, text_prop="", keywords_prop="")
+    # Today's client sends the fixed text field; the old dot-path publication of the same kind is the one refreshed.
+    text_again = published_sprite(client, legacy_published.version.id, text_prop="text", keywords_prop="")
+    assert (again.sprite_id, text_again.sprite_id) == (visual.sprite_id, text.sprite_id)
+    assert legacy_published.renderer.samples == [] and len(legacy_published.renderer.requests) == 2
+    assert "imv-preview-host" in client.get(again.preview_url).text
+    # A kind that was never published from this version is a new publication and gets the new rules.
+    assert publish(client, publish_request(legacy_published.version.id, kind=pb.SPRITE_KIND_FILTER_OVERLAY, text_prop="", keywords_prop="")).status_code == 422

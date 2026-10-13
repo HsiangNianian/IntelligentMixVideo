@@ -269,8 +269,16 @@ def _store_bundle(store: Store, sprite: pb.PublishedSprite, data: bytes) -> None
 
 
 def _existing(version: TemplateVersion, request: pb.PublishSpriteRequest) -> dict | None:
-    """Look up the publication JSON that this exact source and field choice already produced."""
-    return sprite_store.find(str(version.id), request.kind, request.text_prop, request.keywords_prop)
+    """Look up the publication JSON that this source and field choice already produced.
+
+    A version composed before effect categories cannot be published again, but its earlier publications must stay
+    re-savable so their player bundle can be refreshed. Their text fields were free dot paths that today's client
+    no longer sends, so for such a version any publication of the same kind counts.
+    """
+    data = sprite_store.find(str(version.id), request.kind, request.text_prop, request.keywords_prop)
+    if data is None and (version.spec.sprite is None or version.spec.sprite.kind is None):
+        data = sprite_store.find_any(str(version.id), request.kind)
+    return data
 
 
 def _inspect(store: Store, request: pb.PublishSpriteRequest) -> tuple[TemplateVersion, pb.PublishedSprite | None, bytes]:
@@ -292,8 +300,11 @@ def _inspect(store: Store, request: pb.PublishSpriteRequest) -> tuple[TemplateVe
         raise Conflict("accepted artifact unavailable") from exc
     if PREVIEW_BUNDLE not in version.validation.artifacts:
         raise Conflict("该版本没有可发布的交互预览")
-    _validated_request(request, version)
+    if max(len(request.text_prop), len(request.keywords_prop)) > sprite_store.NAME_LENGTH:
+        raise _invalid(f"text_prop 与 keywords_prop 不能超过 {sprite_store.NAME_LENGTH} 个字符")
+    # Re-saving an existing publication only refreshes its player; the rules for new publications do not apply to it.
     if (data := _existing(version, request)) is None:
+        _validated_request(request, version)
         return version, None, (accepted / PREVIEW_BUNDLE).read_bytes()
     sprite = published_from(data)
     return version, sprite, (store.root / "sprites" / sprite.sprite_id / PREVIEW_BUNDLE).read_bytes()

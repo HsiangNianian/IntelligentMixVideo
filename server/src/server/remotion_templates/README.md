@@ -226,7 +226,10 @@ keywords included, becomes a `VISIBLE_EDITABLE` control with its bounds, enum, c
 `integer` schema is marked `SPRITE_PARAMETER_FORMAT_INTEGER`, since `number_value` cannot tell them apart, and
 overrides with a fraction are refused), string lengths and list size; the instances' remaining nested props stay internal. `content_box` records the union of the instances'
 layout boxes clipped to the canvas, the pivot of the host transform; summaries of older publications report the
-whole canvas. A new publication first renders boundary samples (`boundary.py`, `ToolValidator.validate_samples`,
+whole canvas. Re-saving looks up the existing publication before any of these rules, so a publication made before
+effect categories can still be re-saved to refresh its player bundle; for a version without a kind any earlier
+publication of the same kind counts, because its text field was a free dot path the client no longer sends.
+A new publication first renders boundary samples (`boundary.py`, `ToolValidator.validate_samples`,
 the worker's `samples` mode): the defaults, every top-level parameter at its low and at its high end (numbers at
 their bounds, first and last enum values, colours black and white, text filled to `maxLength` with a CJK glyph or
 cut to `minLength`, keywords full or empty) combined with the host transform at its extremes, and the middle enum
