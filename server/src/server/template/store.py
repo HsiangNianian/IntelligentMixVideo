@@ -77,6 +77,9 @@ def save_template(data: TemplateSave) -> Template:
     不一致的模板到总线渲染时才会失败，所以在保存时拒绝。每个片段的参数覆盖与宿主变换也按所引用 Sprite 的
     发布参数契约检查（422）。Sprite 只追加不删除，所以检查之后引用不会失效。
     """
+    # 创建和更新都检查必需文字对象，检查通过后才访问资产及模板数据库。
+    if any(sum(track.target == target for track in data.tracks) != 1 for target in ("title", "subtitle")):
+        raise HTTPException(422, "保存模板需要标题和底部字幕各一个")
     clips = [track for track in data.tracks if track.target == "remotion"]
     clip_ids = {str(track.sprite_id) for track in clips}
     if clip_ids:

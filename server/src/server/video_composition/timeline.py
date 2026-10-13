@@ -199,17 +199,18 @@ def build_timeline(
                                           start=0, duration=None, editor=EffectTemplateEditor(**{
                                               key: "" for key in ("title", "subtitle", "bubble_text") if key != target
                                           })))
-    for track in tracks:
+    layers = {"title": 0, "subtitle": 1, "bubble": 2, "transition": 3, "vfx": 4, "filter": 5}
+    for track in sorted(tracks, key=lambda item: layers[item.target]):
         if not standard:
             if (track.target == "subtitle" and not source) or (track.target == "title" and not request.title):
                 continue
-            if track.target == "title" and request.composition_mode == "materials_silent":
-                track = track.model_copy(update={"start_mode": "seconds", "start": 0, "duration": None})
         track_parameters = parameters_for(track.editor)
         if track.target == "transition":
-            # 忽略模板转场时间，默认一秒；每侧最多占半段，避免同一片段的入出转场重叠。
-            for clip, following in zip(clips, clips[1:]):
-                seconds = floor(min(1, (clip["TimelineOut"] - clip["TimelineIn"]) / 2,
+            # 新转场只应用于指定交界处；未指定交界处的已有模板继续沿用全部素材边界。
+            for boundary, (clip, following) in enumerate(zip(clips, clips[1:]), start=1):
+                if track.transition_boundary is not None and boundary != track.transition_boundary:
+                    continue
+                seconds = floor(min(track.duration if track.transition_boundary is not None else 1, (clip["TimelineOut"] - clip["TimelineIn"]) / 2,
                                     (following["TimelineOut"] - following["TimelineIn"]) / 2) * fps + 1e-8) / fps
                 if seconds < 0.1:
                     warnings.append(f"转场对象 {track.id}：{clip['TimelineOut']:g} 秒处片段过短，已跳过转场")
@@ -253,8 +254,8 @@ def build_timeline(
                 if segment.end > segment.start:
                     if track.target in ("title", "subtitle"):
                         content = format_keyword(content, keyword, segment.editor, track.target)
-                    # 固定标题覆盖到请求终点，避免非整帧时长留下没有标题的尾部画面。
-                    end = duration if request.composition_mode == "materials_silent" and track.target == "title" else segment.end
+                    # 持续到结束的标题覆盖请求终点，固定时长标题遵循用户设置。
+                    end = duration if track.target == "title" and track.duration is None else segment.end
                     text_clips.append(text(track.target, content, segment.start, end, segment.editor, track_parameters))
             if text_clips:
                 timeline["SubtitleTracks"].append({"SubtitleTrackClips": text_clips})

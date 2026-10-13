@@ -180,6 +180,8 @@ message EffectTrack {
   EffectTemplateEditor editor = 6;
   // remotion 片段引用的已发布 Sprite ID；其他对象必须留空。
   string sprite_id = 7;
+  // 转场所属的视频交界处，1 或 2；仅转场设置。旧记录未提供时使用第一个交界处。
+  optional uint32 transition_boundary = 8;
 }
 
 // 包装数组以保留“提供了空轨道列表”的含义。

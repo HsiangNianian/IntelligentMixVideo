@@ -37,21 +37,23 @@ def test_material_defaults_use_business_text_without_modifying_template(composit
 
 
 @pytest.mark.parametrize("duration", [3, 2.99])
-def test_silent_skips_subtitle_timing_and_overrides_outside_title(composition_case, duration):
-    """无声不校验字幕动画，标题全程显示；跳过切片后不使用模板关键词高亮。"""
+def test_silent_respects_title_timing(composition_case, duration):
+    """无声模式遵循标题时间，使用持续到结束时覆盖完整终点。"""
     case = composition_case
     case["request"].update(videoUrl=None, audioUrl=None, processRules={"videoDuration": duration},
                            materials=[{"fileUrl": "https://media.test/a.jpg", "type": "image"}])
     case["duration_ms"] = duration * 1000
     case["material_durations"] = [3]
-    case["template"]["tracks"][0].update(duration=0.001)
     case["template"]["tracks"][0]["editor"]["subtitleIn"] = "in/fade_in"
-    case["template"]["tracks"][1].update(start=100, duration=1)
+    case["template"]["tracks"][1].update(start=0, duration=None)
     case["template"]["tracks"][1]["editor"].update(titleKeyword="业务", titleKeywordBold=True)
     timeline, _ = build_timeline(**case)
     title = timeline["SubtitleTracks"][0]["SubtitleTrackClips"][0]
     assert title["Content"] == case["request"]["title"]
     assert (title["TimelineIn"], title["TimelineOut"]) == (0, duration)
+    case["template"]["tracks"][1].update(start=1, duration=1)
+    title = build_timeline(**case)[0]["SubtitleTracks"][0]["SubtitleTrackClips"][0]
+    assert (title["TimelineIn"], title["TimelineOut"]) == (1, 2)
 
 
 def choose(case, key, catalog_id):
@@ -82,7 +84,7 @@ def test_unmatched_timeline_uses_business_text_and_full_tts(composition_case):
     assert clips[0]["Width"] == 1080 and clips[0]["Height"] == 1920
     assert clips[0]["AdaptMode"] == "Contain"
     assert timeline["AudioTracks"][0]["AudioTrackClips"][0]["Out"] == 8
-    subtitles, title, bubbles = [track["SubtitleTrackClips"] for track in timeline["SubtitleTracks"]]
+    title, subtitles, bubbles = [track["SubtitleTrackClips"] for track in timeline["SubtitleTracks"]]
     assert [s["Content"] for s in subtitles] == ["甲乙丙丁", "戊己庚辛"]
     assert [(s["TimelineIn"], s["TimelineOut"]) for s in subtitles] == [(1, 3), (4, 6)]
     assert title[0]["Content"] == composition_case["request"]["title"]
@@ -105,7 +107,7 @@ def test_subtitle_parts_keep_adjacent_times_without_changing_other_text(composit
         {"text": "丙丁?。", "start_time": 2, "end_time": 3},
     ]
     timeline, _ = build_timeline(**composition_case)
-    subtitles, title, bubbles = [track["SubtitleTrackClips"] for track in timeline["SubtitleTracks"]]
+    title, subtitles, bubbles = [track["SubtitleTrackClips"] for track in timeline["SubtitleTracks"]]
     assert [(clip["Content"], clip["TimelineIn"], clip["TimelineOut"]) for clip in subtitles] == [
         ("甲乙？", 1, 2), ("丙丁?", 2, 3), ("戊己庚辛?", 4, 6),
     ]
@@ -123,7 +125,7 @@ def test_subtitle_keyword_styles_apply_only_to_matching_text(composition_case):
         subtitleKeywordSize=64,
     )
     timeline, _ = build_timeline(**composition_case)
-    subtitles, title, bubbles = [row["SubtitleTrackClips"] for row in timeline["SubtitleTracks"]]
+    title, subtitles, bubbles = [row["SubtitleTrackClips"] for row in timeline["SubtitleTracks"]]
     assert subtitles[0]["Content"] == r"{\1c&34AB12&\fs64\b1\i1\u1\s1}甲乙{\1c\fs\b0\i0\u0\s0}丙丁"
     assert subtitles[1]["Content"] == "戊己庚辛"
     assert [clip["Content"] for clip in bubbles] == [composition_case["template"]["tracks"][2]["editor"]["bubbleText"]]
@@ -151,7 +153,7 @@ def test_subtitle_keyword_style_marks_first_matching_part(composition_case):
     ]
     composition_case["template"]["tracks"][0]["editor"]["subtitleKeywordBold"] = True
     timeline, _ = build_timeline(**composition_case)
-    subtitles = timeline["SubtitleTracks"][0]["SubtitleTrackClips"]
+    subtitles = timeline["SubtitleTracks"][1]["SubtitleTrackClips"]
     assert [clip["Content"] for clip in subtitles] == [r"{\b1}甲乙{\b0}？", "甲乙丙丁", "戊己庚辛"]
 
 
@@ -168,7 +170,7 @@ def test_title_keyword_styles_only_use_segmentation(composition_case, manual_key
     composition_case["request"]["title"] = "重点内容 重点内容"
     original = deepcopy(composition_case)
     timeline, _ = build_timeline(**composition_case, **result)
-    assert timeline["SubtitleTracks"][1]["SubtitleTrackClips"][0]["Content"] == expected
+    assert timeline["SubtitleTracks"][0]["SubtitleTrackClips"][0]["Content"] == expected
     assert composition_case == original
 
 
@@ -260,9 +262,9 @@ def test_selected_global_effects_apply_once(composition_case):
     composition_case["template"]["effects"].append(extra.model_dump(mode="json"))
     original = deepcopy(composition_case)
     timeline, _ = build_timeline(**composition_case)
-    assert [track["EffectTrackItems"][0]["Type"] for track in timeline["EffectTracks"]] == ["Filter", "VFX"]
+    assert [track["EffectTrackItems"][0]["Type"] for track in timeline["EffectTracks"]] == ["VFX", "Filter"]
     assert all(track["EffectTrackItems"][0]["TimelineOut"] == 8 for track in timeline["EffectTracks"])
-    subtitles = timeline["SubtitleTracks"][0]["SubtitleTrackClips"]
+    subtitles = timeline["SubtitleTracks"][1]["SubtitleTrackClips"]
     assert all("EffectColorStyle" in clip for clip in subtitles)
     subtitles[0]["EffectColorStyle"] = "仅修改第一个字幕"
     assert subtitles[1]["EffectColorStyle"] != subtitles[0]["EffectColorStyle"]
@@ -276,7 +278,7 @@ def test_short_text_motions_share_duration_and_position_bounds(composition_case)
     choose(composition_case, "titleOut", "out/fade_out")
     composition_case["template"]["tracks"][1]["editor"].update(titleInDuration=3, titleOutDuration=1, titleX=100)
     timeline, _ = build_timeline(**composition_case)
-    title = timeline["SubtitleTracks"][1]["SubtitleTrackClips"][0]
+    title = timeline["SubtitleTracks"][0]["SubtitleTrackClips"][0]
     assert (title["AaiMotionIn"], title["AaiMotionOut"]) == (1.5, 0.5)
     assert title["X"] == 0.9999
 
@@ -350,13 +352,13 @@ def apply_tracks(case: dict, tracks: list[dict]) -> None:
 
 
 def test_independent_effect_rules_reach_composition(composition_case):
-    """重复画面特效分别应用百分比和秒数，越界截短且完整保留输入快照。"""
-    asset = next(item for item in effect_catalog().values() if item.category == "vfx/normal")
-    editor = EffectTemplateEditor(title="", subtitle="", bubble_text="", vfx=asset.id).model_dump(by_alias=True)
+    """多个滤镜分别应用百分比和秒数，越界截短且完整保留输入快照。"""
+    asset = next(item for item in effect_catalog().values() if item.category == "filter")
+    editor = EffectTemplateEditor(title="", subtitle="", bubble_text="", filter=asset.id).model_dump(by_alias=True)
     apply_tracks(composition_case, [
-        {"id": "effect-a", "target": "vfx", "start_mode": "percent", "start": 25, "duration": 3, "editor": editor},
-        {"id": "effect-b", "target": "vfx", "start_mode": "seconds", "start": 6, "duration": 5, "editor": editor},
-        {"id": "effect-c", "target": "vfx", "start_mode": "seconds", "start": 20, "duration": None, "editor": editor},
+        {"id": "effect-a", "target": "filter", "start_mode": "percent", "start": 25, "duration": 3, "editor": editor},
+        {"id": "effect-b", "target": "filter", "start_mode": "seconds", "start": 6, "duration": 5, "editor": editor},
+        {"id": "effect-c", "target": "filter", "start_mode": "seconds", "start": 20, "duration": None, "editor": editor},
     ])
     original = deepcopy(composition_case)
     timeline, warnings = build_timeline(**composition_case)
@@ -376,21 +378,19 @@ def test_remotion_tracks_do_not_enter_the_ims_timeline(composition_case):
 
 
 def test_text_rules_keep_business_content_and_separate_styles(composition_case):
-    """标题采用指定区间，字幕与文案时间取交集，同类字幕保留独立位置和文字来源。"""
+    """标题采用指定区间，唯一字幕使用完整文案时间并保留样式。"""
     title = EffectTemplateEditor(title="示例标题", subtitle="", bubble_text="", title_in="in/fade_in")
     subtitle = EffectTemplateEditor(title="", subtitle="示例字幕", bubble_text="", subtitle_in="in/fade_in")
     apply_tracks(composition_case, [
         {"id": "title", "target": "title", "start_mode": "percent", "start": 50, "duration": 2, "editor": title.model_dump(by_alias=True)},
-        {"id": "subtitle-a", "target": "subtitle", "start_mode": "seconds", "start": 2, "duration": 3, "editor": subtitle.model_dump(by_alias=True)},
-        {"id": "subtitle-b", "target": "subtitle", "start_mode": "seconds", "start": 0, "duration": None, "editor": subtitle.model_copy(update={"subtitle_y": 50}).model_dump(by_alias=True)},
+        {"id": "subtitle", "target": "subtitle", "start_mode": "seconds", "start": 0, "duration": None, "editor": subtitle.model_dump(by_alias=True)},
     ])
     timeline, _ = build_timeline(**composition_case)
-    title_clips, first, second = [row["SubtitleTrackClips"] for row in timeline["SubtitleTracks"]]
+    title_clips, first = [row["SubtitleTrackClips"] for row in timeline["SubtitleTracks"]]
     assert (title_clips[0]["TimelineIn"], title_clips[0]["TimelineOut"]) == (4, 6)
     assert title_clips[0]["Content"] == composition_case["request"]["title"]
-    assert [(item["TimelineIn"], item["TimelineOut"]) for item in first] == [(2, 3), (4, 5)]
-    assert [(item["TimelineIn"], item["TimelineOut"]) for item in second] == [(1, 3), (4, 6)]
-    assert first[0]["Y"] == 0.82 and second[0]["Y"] == 0.5
+    assert [(item["TimelineIn"], item["TimelineOut"]) for item in first] == [(1, 3), (4, 6)]
+    assert first[0]["Y"] == 0.82
     assert [item["Content"] for item in first] == ["甲乙丙丁", "戊己庚辛"]
     assert "示例" not in str(timeline)
 
@@ -421,6 +421,20 @@ def test_transition_uses_actual_boundaries_and_ignores_template_timing(compositi
         composition_case["template"]["tracks"][0].update(start_mode=start_mode, start=start, duration=duration)
         composition_case["template"]["transition_duration_seconds"] = duration
         assert build_timeline(**composition_case)[0] == timeline
+
+
+def test_transition_uses_only_selected_boundaries(composition_case):
+    """两个交界处分别应用保存的效果与时长，其他交界处保持直接切换。"""
+    asset = next(item for item in effect_catalog().values() if item.category == "transition/normal")
+    tracks = [{**template_track("transition", transition=asset.id), "id": f"transition-{boundary}", "transition_boundary": boundary, "duration": seconds} for boundary, seconds in ((1, 0.2), (2, 0.4))]
+    apply_tracks(composition_case, tracks)
+    for index, match in enumerate(composition_case["matches"]):
+        match.update(matched_candidate_url=f"https://media.example.test/{index}", matched_candidate_type="video")
+    clips = build_timeline(**composition_case)[0]["VideoTracks"][0]["VideoTrackClips"]
+    assert [[item["Duration"] for item in clip["Effects"] if item["Type"] == "DLTransition"] for clip in clips] == [[0.2], [0.4], [], [], []]
+    apply_tracks(composition_case, tracks[1:])
+    clips = build_timeline(**composition_case)[0]["VideoTracks"][0]["VideoTrackClips"]
+    assert [[item["Duration"] for item in clip["Effects"] if item["Type"] == "DLTransition"] for clip in clips] == [[], [0.4], [], [], []]
 
 
 def test_transition_does_not_split_single_clip_and_still_validates_effect(composition_case):

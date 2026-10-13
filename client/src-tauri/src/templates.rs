@@ -111,14 +111,18 @@ fn draft_from_protobuf(bytes: &[u8], id: Option<&str>) -> Result<Value, String> 
         list.tracks
             .into_iter()
             .map(|track| {
-                json!({
+                let mut value = json!({
                     "id": track.id,
                     "target": track.target,
                     "start_mode": track.start_mode,
                     "start": track.start,
                     "duration": track.duration,
                     "editor": track.editor.map(editor_from_protobuf),
-                })
+                });
+                if let Some(boundary) = track.transition_boundary {
+                    value["transition_boundary"] = json!(boundary);
+                }
+                value
             })
             .collect::<Vec<_>>()
     });
@@ -309,12 +313,13 @@ fn validate(mut draft: Value) -> Result<Value, String> {
         }
         let mut ids = std::collections::HashSet::new();
         let mut effects: Vec<Value> = Vec::new();
-        let mut transitions = 0;
+        let mut transitions = std::collections::HashSet::new();
+        let mut singletons = std::collections::HashSet::new();
         for track in items {
-            if track
-                .as_object()
-                .is_none_or(|fields| fields.len() != 6 || !fields.contains_key("duration"))
-            {
+            if track.as_object().is_none_or(|fields| {
+                fields.len() != 6 + usize::from(fields.contains_key("transition_boundary"))
+                    || !fields.contains_key("duration")
+            }) {
                 return Err("轨道字段不完整".into());
             }
             let id = track["id"].as_str().ok_or("轨道 ID 无效")?;
@@ -328,6 +333,12 @@ fn validate(mut draft: Value) -> Result<Value, String> {
                 return Err("轨道 ID 无效或重复".into());
             }
             let target = track["target"].as_str().ok_or("轨道对象无效")?;
+            if ["title", "subtitle", "vfx"].contains(&target) && !singletons.insert(target) {
+                return Err("标题、字幕和 VFX 最多各一个".into());
+            }
+            if target != "transition" && track.get("transition_boundary").is_some() {
+                return Err("只有转场可以设置视频交界处".into());
+            }
             if !["title", "subtitle", "bubble", "filter", "vfx", "transition"].contains(&target) {
                 return Err("轨道对象无效".into());
             }
@@ -341,11 +352,23 @@ fn validate(mut draft: Value) -> Result<Value, String> {
                 number(&track["duration"], f64::MIN_POSITIVE, f64::MAX, false)?;
             }
             if target == "transition" {
-                transitions += 1;
+                let boundary = match track.get("transition_boundary") {
+                    Some(value) => value.as_u64().ok_or("转场交界处无效")?,
+                    None => 1,
+                };
                 let length = track["duration"].as_f64().ok_or("转场需要固定持续时间")?;
-                if transitions > 1 || start <= 0. || !(0.1..=3.).contains(&length) {
+                if !(1..=2).contains(&boundary)
+                    || !transitions.insert(boundary)
+                    || start <= 0.
+                    || !(0.1..=3.).contains(&length)
+                {
                     return Err("转场位置、时长或数量无效".into());
                 }
+            }
+            if target == "subtitle"
+                && (mode != "seconds" || start != 0. || !track["duration"].is_null())
+            {
+                return Err("底部字幕固定覆盖整个视频".into());
             }
             let editor = &track["editor"];
             let validated = validate_editor(editor)?;
@@ -418,8 +441,8 @@ fn validate(mut draft: Value) -> Result<Value, String> {
                 }
             }
         }
-        if effects.is_empty() {
-            return Err("请至少选择一个效果".into());
+        if items.is_empty() {
+            return Err("请至少保留一个画面对象".into());
         }
         effects
     };
@@ -543,6 +566,17 @@ fn operate(
         }
         "save" => {
             let mut saved = validate(draft.ok_or("缺少模板配置")?)?;
+            // 创建与更新均要求两个固定文字对象，校验失败保留已有文件。
+            let tracks = saved["tracks"].as_array().ok_or("轨道须为数组")?;
+            if ["title", "subtitle"].iter().any(|target| {
+                tracks
+                    .iter()
+                    .filter(|track| track["target"] == *target)
+                    .count()
+                    != 1
+            }) {
+                return Err("保存模板需要标题和底部字幕各一个".into());
+            }
             if records
                 .iter()
                 .enumerate()
@@ -776,8 +810,13 @@ mod tests {
             }
         }
         editor["titleIn"] = json!("in/fade_in");
+        let mut subtitle = editor.clone();
+        subtitle["title"] = json!("");
+        subtitle["titleIn"] = json!("");
+        subtitle["subtitle"] = json!("字幕");
         json!({"name": name, "description": "  说明  ", "tracks": [
-            {"id": "title", "target": "title", "start_mode": "seconds", "start": 0, "duration": null, "editor": editor}
+            {"id": "title", "target": "title", "start_mode": "seconds", "start": 0, "duration": null, "editor": editor},
+            {"id": "subtitle", "target": "subtitle", "start_mode": "seconds", "start": 0, "duration": null, "editor": subtitle}
         ], "transition_duration_seconds": 0.5})
     }
 
@@ -832,23 +871,129 @@ mod tests {
             title_keyword_size: 0,
             remotion: None,
         };
+        let mut subtitle = editor.clone();
+        subtitle.title = Some(String::new());
+        subtitle.title_in = Some(String::new());
+        subtitle.subtitle = Some("字幕".into());
         generated::SaveTemplateRequest {
             name: "  模板  ".into(),
             description: Some("  说明  ".into()),
             effect_ids: vec!["in/fade_in".into()],
             transition_duration_seconds: Some(0.5),
             tracks: Some(generated::TrackList {
-                tracks: vec![generated::EffectTrack {
-                    id: "title".into(),
-                    target: "title".into(),
-                    start_mode: "seconds".into(),
-                    start: Some(0.),
-                    duration: None,
-                    editor: Some(editor),
-                    sprite_id: String::new(),
-                }],
+                tracks: vec![
+                    generated::EffectTrack {
+                        id: "title".into(),
+                        target: "title".into(),
+                        start_mode: "seconds".into(),
+                        start: Some(0.),
+                        duration: None,
+                        editor: Some(editor),
+                        sprite_id: String::new(),
+                        transition_boundary: None,
+                    },
+                    generated::EffectTrack {
+                        id: "subtitle".into(),
+                        target: "subtitle".into(),
+                        start_mode: "seconds".into(),
+                        start: Some(0.),
+                        editor: Some(subtitle),
+                        ..Default::default()
+                    },
+                ],
             }),
             template_id: None,
+        }
+    }
+
+    #[test]
+    /// 两个交界处通过 Protobuf 和真实文件保存，重复交界处不写入。
+    fn transition_boundaries_survive_protobuf_and_file() {
+        let dir = Directory::new();
+        let mut request = protobuf_request();
+        let mut track = request.tracks.as_ref().unwrap().tracks[0].clone();
+        let text_tracks = request.tracks.as_ref().unwrap().tracks.clone();
+        track.id = "transition-1".into();
+        track.target = "transition".into();
+        track.start = Some(9.);
+        track.duration = Some(1.);
+        track.transition_boundary = Some(1);
+        let editor = track.editor.as_mut().unwrap();
+        editor.title = Some(String::new());
+        editor.title_in = Some(String::new());
+        editor.transition = Some("transition/normal/directional".into());
+        let mut second = track.clone();
+        second.id = "transition-2".into();
+        second.start = Some(18.);
+        second.transition_boundary = Some(2);
+        request.effect_ids = vec!["transition/normal/directional".into(), "in/fade_in".into()];
+        request.tracks.as_mut().unwrap().tracks = vec![track, second];
+        request.tracks.as_mut().unwrap().tracks.extend(text_tracks);
+        let value = draft_from_protobuf(&request.encode_to_vec(), None).unwrap();
+        let saved = operate(&dir.0, "save", None, Some(value.clone())).unwrap();
+        let id = saved["template_id"].as_str().unwrap();
+        assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), saved);
+        assert_eq!(saved["tracks"][0]["transition_boundary"], json!(1));
+        assert_eq!(saved["tracks"][1]["transition_boundary"], json!(2));
+        for boundary in [json!(0), json!(1), json!(3), json!(true)] {
+            let mut invalid = value.clone();
+            invalid["tracks"][1]["transition_boundary"] = boundary;
+            assert!(operate(&dir.0, "save", Some(id), Some(invalid)).is_err());
+            assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), saved);
+        }
+    }
+
+    #[test]
+    /// 标题和字幕仅允许一个，字幕必须覆盖全程，无效更新保留真实文件。
+    fn singleton_and_subtitle_time_validation() {
+        let dir = Directory::new();
+        for target in ["title", "subtitle"] {
+            let mut value = draft(target);
+            if target == "subtitle" {
+                value["tracks"].as_array_mut().unwrap().swap(0, 1);
+            }
+            let saved = operate(&dir.0, "save", None, Some(value.clone())).unwrap();
+            let id = saved["template_id"].as_str().unwrap();
+            let mut duplicate = value["tracks"][0].clone();
+            duplicate["id"] = json!("duplicate");
+            let mut invalid = value.clone();
+            invalid["tracks"].as_array_mut().unwrap().push(duplicate);
+            assert!(operate(&dir.0, "save", Some(id), Some(invalid)).is_err());
+            if target == "subtitle" {
+                for (field, input) in [
+                    ("start", json!(1)),
+                    ("duration", json!(10)),
+                    ("start_mode", json!("percent")),
+                ] {
+                    let mut invalid = value.clone();
+                    invalid["tracks"][0][field] = input;
+                    assert!(operate(&dir.0, "save", Some(id), Some(invalid)).is_err());
+                }
+            }
+            assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), saved);
+        }
+    }
+
+    #[test]
+    /// 缺少标题、字幕或两者时拒绝创建与更新，已有文件内容逐字节保持不变。
+    fn save_requires_both_text_tracks() {
+        let dir = Directory::new();
+        let value = draft("固定文字");
+        let saved = operate(&dir.0, "save", None, Some(value.clone())).unwrap();
+        let id = saved["template_id"].as_str().unwrap();
+        let path = dir.0.join("templates.json");
+        let original = fs::read(&path).unwrap();
+        for missing in [vec!["title"], vec!["subtitle"], vec!["title", "subtitle"]] {
+            let mut invalid = value.clone();
+            invalid["tracks"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|track| !missing.contains(&track["target"].as_str().unwrap()));
+            for existing in [None, Some(id)] {
+                assert!(operate(&dir.0, "save", existing, Some(invalid.clone())).is_err());
+                assert_eq!(fs::read(&path).unwrap(), original);
+                assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), saved);
+            }
         }
     }
 
@@ -864,10 +1009,12 @@ mod tests {
         let bytes = request.encode_to_vec();
         let converted = draft_from_protobuf(&bytes, None).unwrap();
         let mut expected = draft("  模板  ");
-        expected["tracks"][0]["start"] = json!(0.0);
         expected["tracks"][0]["editor"]["titleKeywordSize"] = json!(72);
-        for role in ["title", "subtitle", "bubble"] {
-            expected["tracks"][0]["editor"][format!("{role}Size")] = json!(40);
+        for track in expected["tracks"].as_array_mut().unwrap() {
+            track["start"] = json!(0.0);
+            for role in ["title", "subtitle", "bubble"] {
+                track["editor"][format!("{role}Size")] = json!(40);
+            }
         }
         assert_eq!(converted, expected);
         let dir = Directory::new();
@@ -952,12 +1099,20 @@ mod tests {
     fn protobuf_accepts_reordered_and_shared_effect_ids() {
         let mut request = protobuf_request();
         let tracks = &mut request.tracks.as_mut().unwrap().tracks;
+        let title = tracks[0].clone();
+        tracks[0].id = "bubble-a".into();
+        tracks[0].target = "bubble".into();
+        let editor = tracks[0].editor.as_mut().unwrap();
+        editor.bubble_text = editor.title.take();
+        editor.title = Some(String::new());
+        editor.bubble_in = editor.title_in.take();
+        editor.title_in = Some(String::new());
         let mut second = tracks[0].clone();
-        second.id = "title-b".into();
-        second.editor.as_mut().unwrap().title_in = Some("in/blur_in".into());
+        second.id = "bubble-b".into();
+        second.editor.as_mut().unwrap().bubble_in = Some("in/blur_in".into());
         let mut third = tracks[0].clone();
-        third.id = "title-c".into();
-        tracks.extend([second, third]);
+        third.id = "bubble-c".into();
+        tracks.extend([second, third, title]);
         request.effect_ids = vec!["in/blur_in".into(), "in/fade_in".into()];
 
         let converted = draft_from_protobuf(&request.encode_to_vec(), None).unwrap();
@@ -966,7 +1121,7 @@ mod tests {
         let dir = Directory::new();
         let saved = operate(&dir.0, "save", None, Some(converted)).unwrap();
         assert_eq!(saved["effect_ids"], json!(["in/fade_in", "in/blur_in"]));
-        assert_eq!(saved["tracks"].as_array().unwrap().len(), 3);
+        assert_eq!(saved["tracks"].as_array().unwrap().len(), 5);
         let id = saved["template_id"].as_str().unwrap();
         assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), saved);
     }
@@ -1014,7 +1169,7 @@ mod tests {
     fn subtitle_keyword_style_survives_reload_and_old_records() {
         let dir = Directory::new();
         let mut styled = draft("关键词模板");
-        styled["tracks"][0]["target"] = json!("subtitle");
+        styled["tracks"].as_array_mut().unwrap().swap(0, 1);
         styled["tracks"][0]["editor"]["title"] = json!("");
         styled["tracks"][0]["editor"]["subtitle"] = json!("示例字幕");
         styled["tracks"][0]["editor"]["titleIn"] = json!("");
@@ -1134,10 +1289,15 @@ mod tests {
     fn multiple_tracks_survive_reload() {
         let dir = Directory::new();
         let mut value = draft("多轨模板");
-        let editor = value["tracks"][0]["editor"].clone();
+        let mut editor = value["tracks"][0]["editor"].clone();
+        editor["bubbleText"] = editor["title"].clone();
+        editor["title"] = json!("");
+        editor["bubbleIn"] = editor["titleIn"].clone();
+        editor["titleIn"] = json!("");
         value["tracks"] = json!([
-            {"id": "title-a", "target": "title", "start_mode": "percent", "start": 25, "duration": 3, "editor": editor},
-            {"id": "title-b", "target": "title", "start_mode": "seconds", "start": 200, "duration": null, "editor": editor}
+            {"id": "bubble-a", "target": "bubble", "start_mode": "percent", "start": 25, "duration": 3, "editor": editor},
+            {"id": "bubble-b", "target": "bubble", "start_mode": "seconds", "start": 200, "duration": null, "editor": editor},
+            value["tracks"][0], value["tracks"][1]
         ]);
         let saved = operate(&dir.0, "save", None, Some(value.clone())).unwrap();
         let id = saved["template_id"].as_str().unwrap();
@@ -1150,7 +1310,7 @@ mod tests {
             ("duration", json!(0)),
             ("start", json!(100)),
             ("start_mode", json!("frames")),
-            ("id", json!("title-b")),
+            ("id", json!("bubble-b")),
             ("media", json!({})),
         ] {
             let mut rejected = value.clone();
@@ -1160,8 +1320,8 @@ mod tests {
         }
         value["tracks"].as_array_mut().unwrap().remove(0);
         let updated = operate(&dir.0, "save", Some(id), Some(value)).unwrap();
-        assert_eq!(updated["tracks"].as_array().unwrap().len(), 1);
-        assert_eq!(updated["tracks"][0]["id"], "title-b");
+        assert_eq!(updated["tracks"].as_array().unwrap().len(), 3);
+        assert_eq!(updated["tracks"][0]["id"], "bubble-b");
         assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), updated);
     }
 

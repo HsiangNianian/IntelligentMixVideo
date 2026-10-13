@@ -240,6 +240,9 @@ pub struct EffectTrack {
     /// remotion 片段引用的已发布 Sprite ID；其他对象必须留空。
     #[prost(string, tag="7")]
     pub sprite_id: ::prost::alloc::string::String,
+    /// 转场所属的视频交界处，1 或 2；仅转场设置。旧记录未提供时使用第一个交界处。
+    #[prost(uint32, optional, tag="8")]
+    pub transition_boundary: ::core::option::Option<u32>,
 }
 /// 包装数组以保留“提供了空轨道列表”的含义。
 #[derive(::serde::Serialize)]

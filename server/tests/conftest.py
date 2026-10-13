@@ -181,7 +181,7 @@ def template_payload() -> dict:
     return {
         "name": "测试模板",
         "description": "标题淡入",
-        "tracks": [template_track(titleIn="in/fade_in")],
+        "tracks": [template_track(titleIn="in/fade_in"), template_track("subtitle")],
         "effect_ids": ["in/fade_in"],
         "transition_duration_seconds": 0.5,
     }

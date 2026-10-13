@@ -244,6 +244,8 @@ class EffectTrack(BaseModel):
     editor: EffectTemplateEditor
     # 仅 Remotion 片段引用 Sprite；为空时不输出，其余对象的 JSON 与引入该字段前保持一致。
     sprite_id: UUID | None = Field(default=None, exclude_if=lambda value: value is None)
+    # 转场绑定视频交界处；省略字段的旧记录使用第一个交界处。
+    transition_boundary: int | None = Field(default=None, ge=1, le=2, strict=True, exclude_if=lambda value: value is None)
 
     @field_serializer("editor", mode="wrap")
     def serialize_editor(self, editor: EffectTemplateEditor, handler: SerializerFunctionWrapHandler) -> dict:
@@ -257,6 +259,8 @@ class EffectTrack(BaseModel):
     @model_validator(mode="after")
     def validate_instance(self) -> "EffectTrack":
         """检查时间规则和对象内容；应用视频时计算实际区间与动画时长。"""
+        if self.transition_boundary is not None and self.target != "transition":
+            raise ValueError("只有转场可以设置视频交界处")
         if self.target == "remotion":
             # 文字和效果规则只适用于 IMS 对象；片段只需要指向 Sprite 的秒数起点，时长缺省取 Sprite 自身。
             if self.sprite_id is None:
@@ -310,7 +314,7 @@ class TemplateData(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     name: str = Field(min_length=1, max_length=100)
     description: str = Field(default="", max_length=1000)
-    # 可以为空：只放 Remotion 片段的模板没有 IMS 效果；效果与对象是否一致仍由 TemplateSave 校验。
+    # 未选择样式的文字模板允许空效果列表；效果与对象是否一致由 TemplateSave 校验。
     # Protobuf 转字典会省略空数组，所以缺失按空列表处理。
     effect_ids: list[str] = Field(default_factory=list, max_length=500)
     transition_duration_seconds: float = Field(default=1, ge=0.1, le=3, allow_inf_nan=False)
@@ -318,11 +322,18 @@ class TemplateData(BaseModel):
 
     @model_validator(mode="after")
     def validate_tracks(self) -> "TemplateData":
-        """对象 ID 唯一，转场保留单个切换位置；时间规则独立于视频。"""
+        """检查对象数量、固定字幕时间及两个视频交界处。"""
         if len({track.id for track in self.tracks}) != len(self.tracks):
             raise ValueError("轨道 ID 重复")
-        if sum(track.target == "transition" for track in self.tracks) > 1:
-            raise ValueError("两个母版片段只允许一个转场")
+        for target in ("title", "subtitle", "vfx"):
+            if sum(track.target == target for track in self.tracks) > 1:
+                raise ValueError(f"{target} 最多只能有一个")
+        for track in self.tracks:
+            if track.target == "subtitle" and (track.start_mode != "seconds" or track.start != 0 or track.duration is not None):
+                raise ValueError("底部字幕固定覆盖整个视频")
+        transitions = [track.transition_boundary or 1 for track in self.tracks if track.target == "transition"]
+        if len(transitions) > 2 or len(set(transitions)) != len(transitions):
+            raise ValueError("每个视频交界处最多一个转场")
         return self
 
 
