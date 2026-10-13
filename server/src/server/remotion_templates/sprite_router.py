@@ -2,11 +2,13 @@
 
 The router belongs to the main app (the Remotion app is mounted at /api/templates) and borrows the
 Remotion runtime for the published Sprites. Where a Sprite is placed is part of the cloud template (its
-`remotion` tracks), so there is no route for that here.
+`remotion` tracks), so there is no route for that here. `/render` lets the bus render one Sprite with its
+content and time as an async task that shares the overlay renders' service.
 Request and response bodies are `imv.sprite.v1` messages, mirroring the template router's framing.
 """
 
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse
@@ -70,6 +72,30 @@ async def publish_sprite(request: Request, service: Service) -> Response:
     await _body(request, message)
     summary = await sprites.publish(service, message)
     return _response(pb.PublishSpriteResponse(sprite=summary))
+
+
+@router.post(
+    "/render", response_class=Response, openapi_extra=_REQUEST_BODY,
+    responses={200: {"content": PROTOBUF_CONTENT}}, summary="受理单个 Sprite 的渲染",
+)
+async def render_sprite(request: Request, service: Service) -> Response:
+    """按 SpriteRenderInput 的 content（文字、关键词）、style 覆盖与 time 异步渲染一段透明 WebM，转存 ZOS 后回调。
+
+    输入不合发布契约、时长或分段返回 422，ZOS 或隔离渲染环境不可用返回 503；超过 30 秒的效果由总线分段请求。
+    """
+    message = pb.SpriteRenderInput()
+    await _body(request, message)
+    overlays = service.overlays
+    overlays.resume()
+    return _response(pb.SpriteRenderAccepted(task_id=await overlays.accept_sprite(message)))
+
+
+@router.get("/render/{task_id}", response_class=Response, responses={200: {"content": PROTOBUF_CONTENT}}, summary="查询单个 Sprite 的渲染任务")
+async def get_sprite_render(task_id: UUID, service: Service) -> Response:
+    """成功时带 ZOS 公开地址；失败仍为 200 并携带稳定错误码与脱敏说明。"""
+    overlays = service.overlays
+    overlays.resume()
+    return _response(await run_in_threadpool(overlays.get_sprite, str(task_id)))
 
 
 @router.get("/{sprite_id}/preview", response_class=HTMLResponse, summary="打开已发布 Sprite 的交互预览")

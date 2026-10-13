@@ -1,9 +1,11 @@
-"""Durable async tasks that render the Remotion placements of a request and publish the video to ZOS.
+"""Durable async tasks that render Remotion overlays and publish the video to ZOS.
 
-Accepting a task validates the placements and stores them in the Remotion SQLite database; a background
-asyncio task renders (one at a time), uploads to ZOS, saves the result and notifies the callback.
-Unfinished tasks are re-run by `resume()` after a restart, and the terminal notification is retried
-with fixed delays. The rendering and planning rules live in `overlay_render.py`.
+Two kinds of task share one table, one render slot and one recovery: a template overlay (the placements of
+`/api/v1/overlay-renders`) and a single Sprite render (one `SpriteRenderInput` of `/api/sprites/render`).
+Accepting a task validates its input and stores it in the Remotion SQLite database; a background asyncio
+task renders (one at a time), uploads to ZOS, saves the result and notifies the callback. Unfinished tasks
+are re-run by `resume()` after a restart, and the terminal notification is retried with fixed delays. The
+planning rules live in `overlay_render.py` and `sprite_render.py`.
 """
 
 import asyncio
@@ -18,7 +20,9 @@ from uuid import uuid4
 import httpx
 from fastapi import HTTPException
 from generated.imv.sprite.v1 import sprite_pb2 as pb
+from google.protobuf.json_format import MessageToDict, ParseDict
 
+from ..video_composition.schema import media_url
 from ..video_composition.settings import ZosSettings
 from ..video_composition.zos import upload_public
 from . import sprites
@@ -34,6 +38,7 @@ from .overlay_render import (
 )
 from .renderer import Renderer
 from .settings import Settings
+from .sprite_render import plan_sprite_render
 from .store import NotFound, Store
 
 logger = logging.getLogger(__name__)
@@ -55,16 +60,17 @@ class OverlayRenders:
         self.tasks: set[asyncio.Task] = set()
         self.resumed = False
 
+    @staticmethod
+    def _publication(sprite_id: str) -> pb.PublishedSprite:
+        """Read one published Sprite; an unknown one is `sprite_missing`."""
+        try:
+            return sprites.get(sprite_id)
+        except NotFound:
+            raise OverlayError("sprite_missing", f"Sprite {sprite_id} 不存在") from None
+
     def _publications(self, placements: list[OverlayPlacement]) -> dict[str, pb.PublishedSprite]:
-        """Read the published Sprite of every distinct placement; an unknown one is `sprite_missing`."""
-        publications: dict[str, pb.PublishedSprite] = {}
-        for item in placements:
-            if item.sprite_id not in publications:
-                try:
-                    publications[item.sprite_id] = sprites.get(item.sprite_id)
-                except NotFound:
-                    raise OverlayError("sprite_missing", f"Sprite {item.sprite_id} 不存在") from None
-        return publications
+        """Read the published Sprite of every distinct placement."""
+        return {sprite_id: self._publication(sprite_id) for sprite_id in dict.fromkeys(item.sprite_id for item in placements)}
 
     def _insert(self, task_id: str, data: dict) -> None:
         """Persist a new queued task."""
@@ -85,13 +91,14 @@ class OverlayRenders:
             )
         return data
 
-    def _read(self, task_id: str) -> tuple[str, dict]:
-        """Return one task's status and data; an unknown ID is a 404."""
+    def _read(self, task_id: str, *, sprite: bool | None = None) -> tuple[str, dict]:
+        """Return one task's status and data; an unknown ID, or one of the other kind when `sprite` is given, is a 404."""
         with self.store.connection() as db:
             row = db.execute("SELECT status, data FROM overlay_renders WHERE id=?", (task_id,)).fetchone()
-        if row is None:
-            raise HTTPException(404, "叠加渲染任务不存在")
-        return row["status"], json.loads(row["data"])
+        data = json.loads(row["data"]) if row is not None else None
+        if data is None or sprite is not None and ("sprite_render" in data["request"]) != sprite:
+            raise HTTPException(404, "渲染任务不存在" if sprite else "叠加渲染任务不存在")
+        return row["status"], data
 
     async def _persist(self, task_id: str, status: str, **changes) -> None:
         """Write a state change on a worker thread, retrying a locked or full database a few times.
@@ -109,8 +116,8 @@ class OverlayRenders:
                 await asyncio.sleep(PERSIST_DELAY_SECONDS)
 
     def get(self, task_id: str) -> dict:
-        """Return the public view of one task; unknown IDs are a 404."""
-        status, data = self._read(task_id)
+        """Return the public view of one template overlay task; unknown IDs are a 404."""
+        status, data = self._read(task_id, sprite=False)
         return {
             "taskId": task_id, "status": status,
             "result": {"videoUrl": data["video_url"]} if data.get("video_url") else None,
@@ -125,14 +132,7 @@ class OverlayRenders:
         either input, the clips' own end. A TTS audio length is only known once it is probed, so an
         over-long audio fails the task later with `duration_too_long`.
         """
-        try:
-            ZosSettings()
-        except ValueError:
-            raise HTTPException(503, "ZOS 配置不可用，请检查服务端环境") from None
-        missing = environment_problem(self.settings)
-        if missing:
-            logger.error("叠加渲染环境缺少 %s，拒绝受理", missing)
-            raise HTTPException(503, "叠加渲染环境不可用，请检查服务端环境")
+        self._require_environment()
         try:
             publications = await asyncio.to_thread(self._publications, placements)
             shared_canvas(placements, publications)
@@ -151,6 +151,44 @@ class OverlayRenders:
         }})
         self._spawn(self._run(task_id))
         return task_id
+
+    def get_sprite(self, task_id: str) -> pb.SpriteRenderTask:
+        """Return the public view of one single Sprite render; unknown IDs are a 404."""
+        status, data = self._read(task_id, sprite=True)
+        error = data.get("error") or {}
+        return pb.SpriteRenderTask(
+            task_id=task_id, status=status, video_url=data.get("video_url") or "",
+            error_code=error.get("code", ""), error_message=error.get("message", ""),
+        )
+
+    async def accept_sprite(self, message: pb.SpriteRenderInput) -> str:
+        """Validate one Sprite render completely (it needs no network probe), persist it and start it."""
+        try:
+            callback_url = media_url(message.callback_url) if message.callback_url else None
+        except ValueError:
+            raise HTTPException(422, "callback_url 必须是不含空白、用户信息或片段的 HTTP(S) 地址") from None
+        self._require_environment()
+        try:
+            plan_sprite_render(message, await asyncio.to_thread(self._publication, message.sprite_id))
+        except OverlayError as exc:
+            raise HTTPException(422, exc.message) from None
+        task_id = str(uuid4())
+        await asyncio.to_thread(self._insert, task_id, {"request": {
+            "sprite_render": MessageToDict(message, preserving_proto_field_name=True), "callback_url": callback_url,
+        }})
+        self._spawn(self._run(task_id))
+        return task_id
+
+    def _require_environment(self) -> None:
+        """Refuse with a 503 when ZOS is not configured or the isolated renderer lacks a tool or file."""
+        try:
+            ZosSettings()
+        except ValueError:
+            raise HTTPException(503, "ZOS 配置不可用，请检查服务端环境") from None
+        missing = environment_problem(self.settings)
+        if missing:
+            logger.error("叠加渲染环境缺少 %s，拒绝受理", missing)
+            raise HTTPException(503, "叠加渲染环境不可用，请检查服务端环境")
 
     def _spawn(self, coroutine) -> None:
         """Keep a strong reference to a background task until it ends."""
@@ -211,27 +249,34 @@ class OverlayRenders:
         await self._notify(task_id)
 
     async def _execute(self, task_id: str, work: Path) -> None:
-        """Resolve the duration, render the overlay and publish it to ZOS.
+        """Plan the task, render it and publish it to ZOS.
 
-        Only the render holds the single slot: the remote audio probe before it and the upload after it
-        would otherwise keep every queued render waiting on the network.
+        A template overlay first resolves its duration; a single Sprite render carries its time. Only the render
+        holds the single slot: the remote audio probe before it and the upload after it would otherwise keep
+        every queued render waiting on the network.
         """
         _, data = self._read(task_id)
         request = data["request"]
-        # The accepted placements are rendered as stored; only the published Sprites are read again.
-        placements = [OverlayPlacement.model_validate(item) for item in request["placements"]]
-        publications = await asyncio.to_thread(self._publications, placements)
-        total = await resolve_total_seconds(
-            request["audio_url"], request["duration"], placements, publications, HTTP_TIMEOUT_SECONDS,
-        )
-        overlay = plan_overlay(placements, publications, total, self.settings.overlay_max_seconds)
+        # The accepted input is rendered as stored; only the published Sprites are read again.
+        if "sprite_render" in request:
+            message = ParseDict(request["sprite_render"], pb.SpriteRenderInput())
+            overlay = plan_sprite_render(message, await asyncio.to_thread(self._publication, message.sprite_id))
+            key = f"imv/sprite_render/{task_id}.webm"
+        else:
+            placements = [OverlayPlacement.model_validate(item) for item in request["placements"]]
+            publications = await asyncio.to_thread(self._publications, placements)
+            total = await resolve_total_seconds(
+                request["audio_url"], request["duration"], placements, publications, HTTP_TIMEOUT_SECONDS,
+            )
+            overlay = plan_overlay(placements, publications, total, self.settings.overlay_max_seconds)
+            key = f"imv/overlay_render/{task_id}.webm"
         async with self.slot:
             await self._persist(task_id, "rendering")
             shutil.rmtree(work, ignore_errors=True)
             output = await render_overlay(self.renderer, overlay, work)
         await self._persist(task_id, "uploading")
         urls = await asyncio.to_thread(
-            upload_public, [(output, f"imv/overlay_render/{task_id}.webm", "video/webm")], ZosSettings(),
+            upload_public, [(output, key, "video/webm")], ZosSettings(),
             HTTP_TIMEOUT_SECONDS,
         )
         await self._persist(task_id, "succeeded", video_url=urls[0])

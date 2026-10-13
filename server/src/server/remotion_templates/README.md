@@ -269,8 +269,20 @@ template removes its placements with it and the composition bus finds them with 
 There is no separate route for placements; the template save checks that every `sprite_id` is published. The
 SQLite `style_sprite_bindings` table and the `GET/POST /api/sprites/styles/{style_id}` routes of earlier versions
 are gone: bindings saved there are neither read nor migrated, and an existing table is left in place. The router
-lives in `sprite_router.py` on the main app and borrows the Remotion runtime; `/api/sprites/render` is superseded
-by the overlay renders below.
+lives in `sprite_router.py` on the main app and borrows the Remotion runtime.
+
+`POST /api/sprites/render` (`imv.sprite.v1.SpriteRenderInput`, Protobuf) renders one Sprite for the bus: a Sprite is
+a fixed style (the sealed code plus `resolved_style` and `transform`, the placement's editor) with one content
+(`text`, `keywords`), and the time is `effect_total_frames`, 0.5 to 120 seconds, whatever length was previewed when
+it was generated. One request renders one segment of at most 30 seconds (`effect_offset_frames`,
+`render_frame_count`); the bus splits a longer effect into adjacent requests with the same total, and the Sprite sees
+the whole effect length in each, so a segment continues the animation instead of restarting it
+(`sprite_render.py` places it at `from = -offset`). Text effects need `text`, other kinds take no content, keywords
+need a Sprite that publishes them, and content cannot be passed as a style override; every refusal, a canvas other
+than the publication's or an unknown Sprite is a 422 at acceptance (`SpriteRenderAccepted {task_id}`), and the
+environment checks are the overlay render's 503s. The task shares the overlay renders' table, render slot,
+recovery and callback body below, uploads to ZOS `imv/sprite_render/{taskId}.webm`, and is read with
+`GET /api/sprites/render/{taskId}` (`SpriteRenderTask`); each query endpoint only finds its own kind of task.
 `GET /api/sprites/{id}/preview?overlay=true&sync=1` serves the sealed player on a transparent page for the template editor;
 a sync-mode bundle has no controls or loop and seeks on `imv-preview-sync {time}` messages, reporting `sync: true` in its
 ready message. The page injects the published defaults and content box as a JSON element (`#imv-preview-host`, with

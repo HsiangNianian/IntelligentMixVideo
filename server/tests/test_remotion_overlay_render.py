@@ -1,4 +1,4 @@
-"""Remotion 叠加视频：时长优先级、摆放规划、任务流转、ZOS 转存与回调的离线回归。
+"""Remotion 叠加视频与单个 Sprite 渲染：时长优先级、摆放与分段规划、任务流转、ZOS 转存与回调的离线回归。
 
 默认不启动浏览器、ffprobe 或 ZOS：渲染器、探测与上传由替身承担，任务表使用临时 SQLite。
 `real_` 用例在 Linux 上经隔离沙箱真实渲染，需 IMV_TEST_RENDERER=1（见 backend-integration 工作流）。
@@ -35,6 +35,8 @@ from server.remotion_templates.overlay_service import OverlayRenders
 from server.remotion_templates.renderer import Renderer
 from server.remotion_templates.routes import runtime_for
 from server.remotion_templates.settings import Settings
+from server.remotion_templates.sprite_render import plan_sprite_render
+from server.remotion_templates.sprite_router import sprite_runtime
 from server.remotion_templates.store import NotFound, Store
 from server.video_composition import media
 from server.video_composition.schema import MediaURL
@@ -1031,3 +1033,182 @@ def test_stored_overrides_survive_recovery(service) -> None:
     run_resume(overlays)
     [instance] = renderer.requests[0]["instances"]
     assert instance["config"]["fontWeight"] == 700 and instance["host"]["transform"] == {"opacity": 0.5}
+
+
+# ---- 单个 Sprite 渲染（POST /api/sprites/render）：style + content + time ----
+# 字效 T 带 text/keywords 内容参数（发布时固定为这两个字段名）；滤镜 F 不接收内容。
+T = pb.PublishedSprite()
+T.CopyFrom(published_sprite("t"))
+T.text_prop, T.keywords_prop = "text", "keywords"
+F = sprite("f")
+F.kind = pb.SPRITE_KIND_FILTER_OVERLAY
+PUBLICATIONS.update({"t": T, "f": F})
+
+
+def render_input(**changes) -> pb.SpriteRenderInput:
+    """默认请求：字效 t，10 秒效果的第 4～7 秒一段，带文字与关键词。"""
+    values = {"sprite_id": "t", "text": "新品上市", "keywords": ["新品"], "effect_total_frames": 300,
+              "effect_offset_frames": 120, "render_frame_count": 90, **changes}
+    return pb.SpriteRenderInput(**values)
+
+
+# 场景：Sprite 看到完整效果时长，输出只取这一段；content 写入文字与关键词，style 覆盖与宿主变换照常合并。
+def test_sprite_render_cuts_one_segment_out_of_the_whole_effect() -> None:
+    """实例从输出前 120 帧开始、持续 300 帧（Sprite 读到的 durationInFrames），输出 90 帧；分段之间动画连续而不是各自从头播放。"""
+    message = render_input(resolved_style=[pb.SpriteParameterOverride(key="fontWeight", value=pb.ScalarValue(number_value=700))],
+                           transform=pb.SpriteHostTransform(x=540, scale=2))
+    overlay = plan_sprite_render(message, T)
+    assert (overlay.width, overlay.height, overlay.fps, overlay.frames, overlay.span) == (1080, 1920, 30, 90, 180)
+    [instance] = overlay.instances
+    assert (instance["start_frame"], instance["duration_frames"]) == (-120, 300)
+    assert instance["config"]["text"] == "新品上市" and instance["config"]["keywords"] == ["新品"]
+    assert instance["config"]["fontWeight"] == 700 and instance["host"]["transform"] == {"x": 540, "scale": 2}
+
+
+# 场景：时长 0.5～120 秒、每段最多 30 秒、分段不超出效果；字效必须带文字，其他分类不接收内容；内容不能伪装成样式覆盖。
+@pytest.mark.parametrize(("sprite_id", "changes", "code"), [
+    ("t", {"effect_total_frames": 14, "effect_offset_frames": 0, "render_frame_count": 14}, "duration_invalid"),
+    ("t", {"effect_total_frames": 3601, "effect_offset_frames": 0}, "duration_too_long"),
+    ("t", {"effect_total_frames": 3600, "effect_offset_frames": 0, "render_frame_count": 901}, "segment_invalid"),
+    ("t", {"render_frame_count": 0}, "segment_invalid"),
+    ("t", {"effect_offset_frames": 211}, "segment_invalid"),
+    ("t", {"text": ""}, "content_invalid"),
+    ("f", {"keywords": []}, "content_invalid"),
+    ("a", {"text": "标题"}, "content_invalid"),
+    ("t", {"resolved_style": [pb.SpriteParameterOverride(key="text", value=pb.ScalarValue(string_value="别的"))]}, "placement_invalid"),
+    ("t", {"resolved_style": [pb.SpriteParameterOverride(key="fontSize", value=pb.ScalarValue(number_value=999))]}, "placement_invalid"),
+    ("t", {"text": "超" * 41}, "placement_invalid"),
+    ("t", {"transform": pb.SpriteHostTransform(rotation=270)}, "placement_invalid"),
+    ("t", {"output": pb.SpriteCanvas(width=1920, height=1080, fps=30)}, "canvas_mismatch"),
+], ids=["too-short", "too-long", "segment-over-30s", "empty-segment", "segment-past-end", "text-effect-without-text",
+        "filter-with-text", "no-keyword-parameter", "content-as-style", "style-out-of-range", "text-over-limit",
+        "transform-out-of-range", "other-canvas"])
+def test_sprite_render_refuses_inputs_outside_the_contract(sprite_id, changes, code) -> None:
+    """每种拒绝都是带稳定错误码的 OverlayError，受理阶段转成 422。"""
+    if sprite_id == "f":
+        changes = {"text": "滤镜文字", **changes}
+    message = render_input(sprite_id=sprite_id, **changes)
+    with pytest.raises(OverlayError) as caught:
+        plan_sprite_render(message, PUBLICATIONS[sprite_id])
+    assert caught.value.code == code, caught.value.message
+
+
+def run_sprite_task(overlays: OverlayRenders, message: pb.SpriteRenderInput) -> str:
+    """受理一次单 Sprite 渲染并等待渲染、上传和通知结束；返回任务 ID。"""
+    async def scenario():
+        """受理后等待后台协程。"""
+        task_id = await overlays.accept_sprite(message)
+        await finish(overlays)
+        return task_id
+
+    return asyncio.run(scenario())
+
+
+# 场景：单 Sprite 渲染与叠加渲染共用任务表与渲染名额，转存到独立的对象路径并发送同样的四字段回调；两种任务互不可查。
+def test_sprite_render_task_renders_uploads_and_notifies(service, callbacks) -> None:
+    """worker 收到一段的帧数与完整效果时长；查询返回 ZOS 地址；叠加渲染的查询接口查不到它。"""
+    overlays, renderer, uploads = service
+    task_id = run_sprite_task(overlays, render_input(callback_url="https://bus.example/cb"))
+    key = f"imv/sprite_render/{task_id}.webm"
+    assert overlays.get_sprite(task_id) == pb.SpriteRenderTask(task_id=task_id, status="succeeded", video_url=f"https://zos.example/{key}")
+    assert uploads == [(key, "video/webm", b"webm")]
+    assert renderer.requests[0]["composition"] == {"width": 1080, "height": 1920, "fps": 30, "duration_in_frames": 180, "frames": 90}
+    assert [(item["start_frame"], item["duration_frames"]) for item in renderer.requests[0]["instances"]] == [(-120, 300)]
+    assert callbacks.posted == [("https://bus.example/cb", {
+        "taskId": task_id, "status": "succeed", "videoUrl": f"https://zos.example/{key}", "errorMessage": None,
+    })]
+    with pytest.raises(HTTPException) as missing:
+        overlays.get(task_id)
+    assert missing.value.status_code == 404
+    overlay_task = run_task(overlays)
+    with pytest.raises(HTTPException):
+        overlays.get_sprite(overlay_task)
+
+
+# 场景：重启后恢复的单 Sprite 渲染按保存的输入渲染；渲染失败以稳定错误码与固定说明公开。
+def test_sprite_render_recovers_and_reports_failures(service, callbacks) -> None:
+    """未完成的任务行按保存的输入重新渲染；渲染器失败时任务失败、错误不含渲染器输出。"""
+    overlays, renderer, _ = service
+    stored = {"sprite_render": {"sprite_id": "t", "text": "恢复", "effect_total_frames": "60", "render_frame_count": "60"}, "callback_url": None}
+    overlays._insert("33333333-3333-3333-3333-333333333333", {"request": stored})
+    run_resume(overlays)
+    assert overlays.get_sprite("33333333-3333-3333-3333-333333333333").status == "succeeded"
+    assert renderer.requests[0]["instances"][0]["config"]["text"] == "恢复"
+    renderer.failure = RuntimeError("worker log /private/path")
+    failed = overlays.get_sprite(run_sprite_task(overlays, render_input()))
+    assert (failed.status, failed.error_code, failed.error_message) == ("failed", "render_failed", "叠加视频渲染失败")
+
+
+@pytest.fixture
+def sprite_client(service, client: TestClient):
+    """让 /api/sprites 路由使用测试里的任务服务；返回测试客户端与服务，结束时还原依赖覆盖。"""
+    overlays, _, _ = service
+
+    async def provide():
+        """依赖替身：只暴露渲染任务服务。"""
+        return SimpleNamespace(overlays=overlays)
+
+    app.dependency_overrides[sprite_runtime] = provide
+    yield client, overlays
+    app.dependency_overrides.pop(sprite_runtime, None)
+
+
+def post_render(client: TestClient, message: pb.SpriteRenderInput):
+    """以 Protobuf 二进制发送一次渲染请求。"""
+    return client.post("/api/sprites/render", content=message.SerializeToString(), headers={"Content-Type": "application/x-protobuf"})
+
+
+# 场景：HTTP 契约——Protobuf 受理返回任务 ID，查询返回任务状态；不合契约、回调地址无效或不存在的 Sprite 为 422 且不建任务，未知任务 404。
+def test_sprite_render_routes_accept_and_query(sprite_client) -> None:
+    """受理与查询都是 imv.sprite.v1 消息；422 说明原因，不创建任务行。"""
+    client, overlays = sprite_client
+    created = post_render(client, render_input())
+    assert created.status_code == 200 and created.headers["content-type"] == "application/x-protobuf"
+    task_id = pb.SpriteRenderAccepted.FromString(created.content).task_id
+    queried = client.get(f"/api/sprites/render/{task_id}")
+    assert pb.SpriteRenderTask.FromString(queried.content).task_id == task_id
+    rows = task_rows(overlays)
+    for message, detail in (
+        (render_input(effect_total_frames=3601, effect_offset_frames=0), "效果时长不能超过 120 秒"),
+        (render_input(callback_url="ftp://bus.example/cb"), "callback_url"),
+        (render_input(sprite_id="missing"), "Sprite missing 不存在"),
+    ):
+        response = post_render(client, message)
+        assert response.status_code == 422 and detail in response.json()["detail"]
+    assert task_rows(overlays) == rows
+    assert client.get(f"/api/sprites/render/{uuid4()}").status_code == 404
+    assert client.post("/api/sprites/render", json={"spriteId": "t"}).status_code == 415
+
+
+# 一个整段淡入、末 10 帧淡出的组件：淡出终点取自 durationInFrames。
+EDGE_FADE = """import React from 'react';
+import {AbsoluteFill, useCurrentFrame, useVideoConfig, interpolate} from 'remotion';
+export default function Sprite() {
+  const frame = useCurrentFrame();
+  const {durationInFrames: d} = useVideoConfig();
+  const opacity = interpolate(frame, [0, 10, d - 10, d], [0, 1, 1, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'});
+  return <AbsoluteFill style={{background: '#ff0000', opacity}} />;
+}
+"""
+
+
+# 场景：真实沙箱渲染效果的后半段：Sprite 读到完整的 120 帧，输出第 0 帧仍是全亮（不重新淡入），末尾按完整时长淡出。
+@pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
+def test_real_sprite_render_continues_the_effect_in_a_later_segment(tmp_path: Path) -> None:
+    """120 帧效果的第 60～119 帧：输出第 0 帧 alpha 为 1，第 55/59 帧（效果第 115/119 帧）为 0.5/0.1。"""
+    configured = {
+        name: Path(value)
+        for name, value in (
+            ("browser_executable", RENDERER_PATHS["IMV_BROWSER_EXECUTABLE"]),
+            ("font_regular", RENDERER_PATHS["IMV_FONT_REGULAR"]),
+            ("font_bold", RENDERER_PATHS["IMV_FONT_BOLD"]),
+        )
+        if value
+    }
+    settings = Settings(_env_file=None, data_dir=tmp_path / "state", **configured)
+    edge = sprite("edge", width=180, height=320, frames=30, code=EDGE_FADE)
+    edge.kind = pb.SPRITE_KIND_FILTER_OVERLAY
+    message = pb.SpriteRenderInput(sprite_id="edge", effect_total_frames=120, effect_offset_frames=60, render_frame_count=60)
+    video = asyncio.run(render_overlay(Renderer(settings), plan_sprite_render(message, edge), tmp_path / "job"))
+    for frame, expected in ((0, 1.0), (55, 0.5), (59, 0.1)):
+        assert decoded_alpha(video, frame) == pytest.approx(expected, abs=0.05)

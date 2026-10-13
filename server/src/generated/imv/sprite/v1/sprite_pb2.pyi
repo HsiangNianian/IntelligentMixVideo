@@ -210,7 +210,7 @@ class SpriteParameterOverride(_message.Message):
     def __init__(self, key: _Optional[str] = ..., value: _Optional[_Union[ScalarValue, _Mapping]] = ...) -> None: ...
 
 class SpriteRenderInput(_message.Message):
-    __slots__ = ("sprite_id", "placement_id", "output", "effect_offset_frames", "render_frame_count", "text", "keywords", "resolved_style", "effect_total_frames")
+    __slots__ = ("sprite_id", "placement_id", "output", "effect_offset_frames", "render_frame_count", "text", "keywords", "resolved_style", "effect_total_frames", "callback_url", "transform")
     SPRITE_ID_FIELD_NUMBER: _ClassVar[int]
     PLACEMENT_ID_FIELD_NUMBER: _ClassVar[int]
     OUTPUT_FIELD_NUMBER: _ClassVar[int]
@@ -220,6 +220,8 @@ class SpriteRenderInput(_message.Message):
     KEYWORDS_FIELD_NUMBER: _ClassVar[int]
     RESOLVED_STYLE_FIELD_NUMBER: _ClassVar[int]
     EFFECT_TOTAL_FRAMES_FIELD_NUMBER: _ClassVar[int]
+    CALLBACK_URL_FIELD_NUMBER: _ClassVar[int]
+    TRANSFORM_FIELD_NUMBER: _ClassVar[int]
     sprite_id: str
     placement_id: str
     output: SpriteCanvas
@@ -229,4 +231,40 @@ class SpriteRenderInput(_message.Message):
     keywords: _containers.RepeatedScalarFieldContainer[str]
     resolved_style: _containers.RepeatedCompositeFieldContainer[SpriteParameterOverride]
     effect_total_frames: int
-    def __init__(self, sprite_id: _Optional[str] = ..., placement_id: _Optional[str] = ..., output: _Optional[_Union[SpriteCanvas, _Mapping]] = ..., effect_offset_frames: _Optional[int] = ..., render_frame_count: _Optional[int] = ..., text: _Optional[str] = ..., keywords: _Optional[_Iterable[str]] = ..., resolved_style: _Optional[_Iterable[_Union[SpriteParameterOverride, _Mapping]]] = ..., effect_total_frames: _Optional[int] = ...) -> None: ...
+    callback_url: str
+    transform: SpriteHostTransform
+    def __init__(self, sprite_id: _Optional[str] = ..., placement_id: _Optional[str] = ..., output: _Optional[_Union[SpriteCanvas, _Mapping]] = ..., effect_offset_frames: _Optional[int] = ..., render_frame_count: _Optional[int] = ..., text: _Optional[str] = ..., keywords: _Optional[_Iterable[str]] = ..., resolved_style: _Optional[_Iterable[_Union[SpriteParameterOverride, _Mapping]]] = ..., effect_total_frames: _Optional[int] = ..., callback_url: _Optional[str] = ..., transform: _Optional[_Union[SpriteHostTransform, _Mapping]] = ...) -> None: ...
+
+class SpriteHostTransform(_message.Message):
+    __slots__ = ("x", "y", "scale", "rotation", "opacity")
+    X_FIELD_NUMBER: _ClassVar[int]
+    Y_FIELD_NUMBER: _ClassVar[int]
+    SCALE_FIELD_NUMBER: _ClassVar[int]
+    ROTATION_FIELD_NUMBER: _ClassVar[int]
+    OPACITY_FIELD_NUMBER: _ClassVar[int]
+    x: float
+    y: float
+    scale: float
+    rotation: float
+    opacity: float
+    def __init__(self, x: _Optional[float] = ..., y: _Optional[float] = ..., scale: _Optional[float] = ..., rotation: _Optional[float] = ..., opacity: _Optional[float] = ...) -> None: ...
+
+class SpriteRenderAccepted(_message.Message):
+    __slots__ = ("task_id",)
+    TASK_ID_FIELD_NUMBER: _ClassVar[int]
+    task_id: str
+    def __init__(self, task_id: _Optional[str] = ...) -> None: ...
+
+class SpriteRenderTask(_message.Message):
+    __slots__ = ("task_id", "status", "video_url", "error_code", "error_message")
+    TASK_ID_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    VIDEO_URL_FIELD_NUMBER: _ClassVar[int]
+    ERROR_CODE_FIELD_NUMBER: _ClassVar[int]
+    ERROR_MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    task_id: str
+    status: str
+    video_url: str
+    error_code: str
+    error_message: str
+    def __init__(self, task_id: _Optional[str] = ..., status: _Optional[str] = ..., video_url: _Optional[str] = ..., error_code: _Optional[str] = ..., error_message: _Optional[str] = ...) -> None: ...
