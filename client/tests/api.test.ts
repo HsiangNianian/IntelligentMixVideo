@@ -71,8 +71,8 @@ test("读取与删除遵循接口契约", async () => {
 
 const spriteId = "6f1c8a52-3d94-4b7e-9a10-2c5e8d7b4f31";
 const clips: RemotionClip[] = [
-  { id: "clip-a", sprite_id: spriteId, start: 2.5, duration: 3, parameters: {}, transform: {} },
-  { id: "clip-b", sprite_id: spriteId, start: 0, duration: null, parameters: {}, transform: {} },
+  { id: "clip-a", sprite_id: spriteId, start: 2.5, duration: 3, parameters: {}, transform: {}, text_target: "title" },
+  { id: "clip-b", sprite_id: spriteId, start: 0, duration: null, parameters: {}, transform: {}, transition_boundary: 2 },
 ];
 
 // 测试含 Remotion 片段的模板（片段轨道的 editor 为空消息）可以正常读取：片段与 IMS 对象分开，且不会拖垮整个列表。
@@ -86,16 +86,16 @@ test("读取含 Remotion 片段的模板", async () => {
   expect(await getTemplate(withClips.template_id)).toEqual(withClips);
 });
 
-// 测试保存时片段排在固定文字对象之后，片段带上引用、秒数起点和空 editor 消息。
+// 测试保存时片段排在固定文字对象之后，片段带上引用、秒数起点、所占的文字对象或交界处和空 editor 消息。
 test("保存 Remotion 片段", async () => {
   const draft = { ...newDraft(), name: "文字与片段", clips };
   fetchMock.mockResolvedValueOnce(protobufTemplateResponse({ ...savedTemplate(), clips }, "save", 201));
   await saveTemplate(draft);
   const body = fromBinary(SaveTemplateRequestSchema, new Uint8Array(fetchMock.mock.calls[0][1]?.body as Uint8Array));
   expect(body.effectIds).toEqual([]);
-  expect(body.tracks?.tracks.slice(2).map((track) => [track.id, track.target, track.startMode, track.start, track.duration, track.spriteId])).toEqual([
-    ["clip-a", "remotion", "seconds", 2.5, 3, spriteId],
-    ["clip-b", "remotion", "seconds", 0, undefined, spriteId],
+  expect(body.tracks?.tracks.slice(2).map((track) => [track.id, track.target, track.startMode, track.start, track.duration, track.spriteId, track.textTarget, track.transitionBoundary])).toEqual([
+    ["clip-a", "remotion", "seconds", 2.5, 3, spriteId, "title", undefined],
+    ["clip-b", "remotion", "seconds", 0, undefined, spriteId, undefined, 2],
   ]);
   expect(body.tracks?.tracks.slice(2).map((track) => track.editor && toJson(EffectTemplateEditorSchema, track.editor))).toEqual([{}, {}]);
   const mixed = { ...toDraft(savedTemplate()), clips };

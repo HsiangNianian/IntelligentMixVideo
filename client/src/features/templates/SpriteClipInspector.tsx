@@ -1,4 +1,7 @@
-/** 模板里一次 Remotion 摆放的设置：资产对外的参数（可逐项恢复默认值）、宿主变换与起点；修改只进入草稿，随模板保存时服务端再按发布契约检查。 */
+/**
+ * 模板里一次 Remotion 摆放的设置：资产对外的参数（可逐项恢复默认值）、宿主变换，以及所占的模板对象或起点；
+ * 字效选择作用的标题或字幕，转场选择视频交界处，两者的时间跟随所占对象；滤镜与视频特效设置起点。修改只进入草稿，随模板保存时服务端再按发布契约检查。
+ */
 import { useState } from "react";
 import { Bold, Italic, RotateCcw, Strikethrough, Trash2, Underline, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -10,7 +13,8 @@ import { ParameterControl, type ParameterValue } from "@/components/ParameterCon
 import { SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { SpriteAsset } from "@/features/sprites/model";
 import { CATEGORIES, categoryOf, transformField, transformFields, type TransformField } from "@/features/sprites/parameters";
-import type { RemotionClip } from "./model";
+import { textRoles, type RemotionClip } from "./model";
+import { BOUND_TEXT_PARAMETERS, type bindClip } from "./clips";
 
 /** 关键词相关参数：键名以 keyword 开头（keywords、keywordColor、keywordBold……）。 */
 const isKeywordParameter = (key: string) => /^keyword/i.test(key);
@@ -28,20 +32,24 @@ const KEYWORD_STYLES = [
 ] as const;
 
 /** 选中片段的右栏；资产已不在目录中时只允许移除。调用方按片段 ID 设 key，切换片段时页签回到「参数与变换」。 */
-export function SpriteClipInspector({ clip, asset, duration, onParameter, onTransform, onStart, onRemove, onClose }: {
+export function SpriteClipInspector({ clip, asset, duration, onParameter, onTransform, onStart, onBind, onRemove, onClose }: {
   clip: RemotionClip;
   asset: SpriteAsset | undefined;
   duration: number | undefined;
   onParameter: (key: string, value: ParameterValue | undefined) => void;
   onTransform: (patch: Partial<Record<TransformField, number | undefined>>) => void;
   onStart: (start: number) => void;
+  onBind: (binding: Parameters<typeof bindClip>[2]) => void;
   onRemove: () => void;
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<"appearance" | "keyword">("appearance");
   const isText = asset?.kind === SpriteKind.TEXT;
+  const isTransition = asset?.kind === SpriteKind.TRANSITION_OVERLAY;
+  // 作用于文字时，文字与关键词由该文字对象提供，不在这里单独设置。
+  const shown = (key: string) => !clip.text_target || !BOUND_TEXT_PARAMETERS.includes(key);
   // 只有字效把关键词参数移到单独页签；其他类型里以 keyword 开头的参数仍留在参数区。
-  const keywordParameters = asset && isText ? asset.parameters.filter(({ field }) => isKeywordParameter(field.key)) : [];
+  const keywordParameters = asset && isText ? asset.parameters.filter(({ field }) => isKeywordParameter(field.key) && shown(field.key)) : [];
   const styleSwitches = keywordParameters.flatMap((item) => {
     const style = KEYWORD_STYLES.find(([key]) => key === item.field.key);
     return item.field.kind === "boolean" && style ? [{ ...item, label: style[1], Icon: style[2] }] : [];
@@ -50,7 +58,7 @@ export function SpriteClipInspector({ clip, asset, duration, onParameter, onTran
   const sizeItem = keywordParameters.find(({ field }) => field.key === "keywordSize" && field.kind === "integer");
   const legacyText = isText && KEYWORD_STYLE_KEYS.some((key) => !keywordParameters.some(({ field }) => field.key === key));
   const fontSize = asset?.parameters.find(({ field }) => field.key === "fontSize");
-  const appearanceParameters = asset?.parameters.filter((item) => !keywordParameters.includes(item)) ?? [];
+  const appearanceParameters = asset?.parameters.filter((item) => !keywordParameters.includes(item) && shown(item.field.key)) ?? [];
   const activeTab = isText ? tab : "appearance";
   /** 参数当前值：本次摆放的覆盖优先，否则取发布默认值。 */
   const valueOf = ({ field, defaultValue }: NonNullable<typeof asset>["parameters"][number]) => clip.parameters[field.key] ?? defaultValue;
@@ -134,8 +142,22 @@ export function SpriteClipInspector({ clip, asset, duration, onParameter, onTran
       </fieldset>
     </>}
     <div className="space-y-3 border-t px-4 py-3">
-      <ParameterControl field={{ key: "start", label: "开始时间（秒）", kind: "number", minimum: 0, maximum: duration }} value={clip.start} disabled={false}
-        onChange={(value) => onStart(value as number)} />
+      {isText ? <div className="space-y-2">
+        <h3 className="text-xs font-medium">作用对象</h3>
+        <ToggleGroup type="single" variant="outline" size="sm" className="w-full" aria-label="字效作用对象" value={clip.text_target ?? ""}
+          onValueChange={(value) => { if (value === "title" || value === "subtitle") onBind({ text_target: value }); }}>
+          {(["title", "subtitle"] as const).map((role) => <ToggleGroupItem key={role} value={role} className="flex-1 text-xs">{textRoles[role]}</ToggleGroupItem>)}
+        </ToggleGroup>
+        <p className="text-[11px] text-muted-foreground">{clip.text_target ? `由这个字效显示${textRoles[clip.text_target]}：文字与关键词取自${textRoles[clip.text_target]}，时间跟随它。` : "请选择作用的标题或底部字幕，否则无法保存模板。"}</p>
+      </div> : isTransition ? <div className="space-y-2">
+        <h3 className="text-xs font-medium">视频交界处</h3>
+        <ToggleGroup type="single" variant="outline" size="sm" className="w-full" aria-label="转场所在的视频交界处" value={clip.transition_boundary ? String(clip.transition_boundary) : ""}
+          onValueChange={(value) => { if (value) onBind({ transition_boundary: Number(value) }); }}>
+          {[1, 2].map((boundary) => <ToggleGroupItem key={boundary} value={String(boundary)} className="flex-1 text-xs">视频 {boundary} → {boundary + 1}</ToggleGroupItem>)}
+        </ToggleGroup>
+        <p className="text-[11px] text-muted-foreground">{clip.transition_boundary ? "转场以视频交界处为中心播放。" : "请选择转场所在的视频交界处，否则无法保存模板。"}</p>
+      </div> : <ParameterControl field={{ key: "start", label: "开始时间（秒）", kind: "number", minimum: 0, maximum: duration }} value={clip.start} disabled={false}
+        onChange={(value) => onStart(value as number)} />}
       <Button type="button" variant="outline" className="w-full gap-1.5" onClick={onRemove}><Trash2 className="size-3.5" aria-hidden="true" />移除这个资产</Button>
     </div>
   </section>;

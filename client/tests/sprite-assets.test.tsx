@@ -5,6 +5,8 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { VersionCard } from "@/features/remotion_templates/VersionCard";
 import { defaultKind, publishChoice } from "@/features/remotion_templates/spriteChoice";
 import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
+import { SpriteClips } from "@/features/templates/SpritePanels";
+import type { SpriteAsset } from "@/features/sprites/model";
 import type { RemotionClip } from "@/features/templates/model";
 import { EffectTemplateEditorSchema, SaveTemplateRequestSchema } from "@/generated/imv/template/v1/template_pb";
 import {
@@ -190,9 +192,9 @@ test("从目录添加资产无需配置，按资产自身长度随模板保存",
   expect(posts).toEqual(["/template"]);
 });
 
-// 场景：同一个资产可以多次添加：每次都是独立的摆放（不同的轨道 ID），列表和保存请求里各有一条。
+// 场景：不占用模板对象的资产（滤镜）可以多次添加：每次都是独立的摆放（不同的轨道 ID），列表和保存请求里各有一条。
 test("同一个资产可以添加多次", async () => {
-  const { template, saved } = sprites();
+  const { template, saved } = sprites({ catalog: [summary("sprite-1", SpriteKind.FILTER_OVERLAY)] });
   render(<TemplateWorkspace selection={{ environment: "cloud", templateId: template.template_id }} onHome={() => {}} />);
   const catalog = await screen.findByRole("region", { name: "Remotion 资产" });
   fireEvent.click(within(catalog).getByRole("button", { name: "展开" }));
@@ -292,9 +294,41 @@ test("添加画布不一致的资产时提示原因", async () => {
   fireEvent.click(await within(catalog).findByRole("button", { name: "添加 Remotion 资产：霓虹标题" }));
   fireEvent.click(await within(catalog).findByRole("button", { name: "添加 Remotion 资产：横版标题" }));
   await screen.findByText(/「横版标题」的画布（1920×1080 @ 30 FPS）与已添加的「霓虹标题」（1080×1920 @ 30 FPS）不一致/);
+  fireEvent.click(screen.getByRole("button", { name: "知道了" }));
   expect(screen.getAllByRole("listitem", { name: /^Remotion 资产：/ })).toHaveLength(1);
 });
 
+
+// 场景：字效作用于当前选择的文字对象（默认标题），不另开时间轴行：列表注明作用对象，设置里不再单独提供文字与关键词；改为作用于底部字幕后随模板保存。
+test("字效作用于文字对象并可改为字幕", async () => {
+  const { template, saved } = sprites({ catalog: [textAsset()] });
+  render(<TemplateWorkspace selection={{ environment: "cloud", templateId: template.template_id }} onHome={() => {}} />);
+  const catalog = await screen.findByRole("region", { name: "Remotion 资产" });
+  fireEvent.click(within(catalog).getByRole("button", { name: "展开" }));
+  fireEvent.click(await within(catalog).findByRole("button", { name: "添加 Remotion 资产：金色标题" }));
+  const item = await screen.findByRole("listitem", { name: "Remotion 资产：金色标题" });
+  expect(item.textContent).toContain("顶部标题字效");
+  fireEvent.click(within(item).getByRole("button", { name: "设置 Remotion 资产：金色标题" }));
+  const inspector = await screen.findByRole("region", { name: "Remotion 资产设置" });
+  expect(within(inspector).queryByLabelText("标题文字")).toBeNull();
+  expect(within(inspector).getByLabelText("字号")).toBeTruthy();
+  fireEvent.click(within(inspector).getByRole("radio", { name: "底部字幕" }));
+  await waitFor(() => expect(screen.getByRole("listitem", { name: "Remotion 资产：金色标题" }).textContent).toContain("底部字幕字效"));
+  fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
+  await waitFor(() => expect(saved).toHaveLength(1));
+  expect(wireClips(saved[0]).map((clip) => [clip.textTarget, clip.transitionBoundary])).toEqual([["subtitle", undefined]]);
+});
+
+// 场景：字效作用的标题在当前预览里没有显示时间，标题被隐藏，列表里的字效也标为未应用，不显示原有区间。
+test("所作用文字不在预览内时字效标为未应用", () => {
+  const asset: SpriteAsset = { id: "sprite-t", name: "金色标题", kind: SpriteKind.TEXT, seconds: 3, aspect: 9 / 16, width: 1080, height: 1920, fps: 30, box: { x: 0, y: 0, width: 1080, height: 1920 }, parameters: [] };
+  const clip: RemotionClip = { id: "clip-t", sprite_id: "sprite-t", start: 0, duration: 3, parameters: {}, transform: {}, text_target: "title" };
+  const props: Parameters<typeof SpriteClips>[0] = { environment: "cloud", clips: [clip], catalog: { assets: [asset], error: "", refresh: () => {} }, duration: 30, selected: null, onSelect: () => {}, onRemove: () => {} };
+  const { rerender } = render(<SpriteClips {...props} />);
+  expect(screen.getByRole("listitem", { name: "Remotion 资产：金色标题" }).textContent).toContain("顶部标题字效 · 0～3 秒");
+  rerender(<SpriteClips {...props} hidden={new Set([clip.id])} />);
+  expect(screen.getByRole("listitem", { name: "Remotion 资产：金色标题" }).textContent).toContain("顶部标题字效 · 当前视频未应用");
+});
 
 /** 打开带一个字效片段的已保存模板，并选中该片段。 */
 async function openTextClip(clip: Partial<RemotionClip> = {}) {

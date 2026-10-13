@@ -262,14 +262,16 @@ def test_template_protobuf_rejects_loop_conflict(
 
 
 def test_remotion_tracks_roundtrip_through_protobuf(client: TestClient, template_payload: dict) -> None:
-    """片段轨道经 Protobuf 保存、读取后保持引用、秒数起点和空 editor，IMS 对象不带 sprite_id。"""
+    """片段轨道经 Protobuf 保存、读取后保持引用、秒数起点、作用的文字对象和空 editor，IMS 对象不带 sprite_id。"""
     seed_sprite()
-    tracks = [*template_payload["tracks"], remotion_track("clip-a", start=2.5, duration=3), remotion_track("clip-b")]
+    tracks = [*template_payload["tracks"], remotion_track("clip-a", start=2.5, duration=3, text_target="title"),
+              remotion_track("clip-b", text_target="subtitle")]
     created = _post(client, {**template_payload, "tracks": tracks})
     assert created.status_code == 201
     record = pb.SaveTemplateResponse.FromString(created.content).template
     title, subtitle, *clips = record.tracks.tracks
     assert title.sprite_id == subtitle.sprite_id == ""
+    assert not title.HasField("text_target") and [clip.text_target for clip in clips] == ["title", "subtitle"]
     assert [(clip.id, clip.sprite_id, clip.start_mode, clip.start) for clip in clips] == [
         ("clip-a", SPRITE_ID, "seconds", 2.5), ("clip-b", SPRITE_ID, "seconds", 1),
     ]
@@ -295,7 +297,7 @@ def test_invalid_remotion_tracks_return_422_without_writing(
 
 def test_remotion_tracks_must_reference_published_sprites(client: TestClient, template_payload: dict) -> None:
     """引用未发布的 Sprite 返回 422 且不写库；发布后同一个 Sprite 摆放两次可以保存，更新时引用新的未发布 Sprite 仍被拒绝。"""
-    tracks = [*template_payload["tracks"], remotion_track("clip-a"), remotion_track("clip-b", start=2)]
+    tracks = [*template_payload["tracks"], remotion_track("clip-a", text_target="title"), remotion_track("clip-b", start=2, text_target="subtitle")]
     rejected = _post(client, {**template_payload, "tracks": tracks})
     assert rejected.status_code == 422 and SPRITE_ID in rejected.text
     assert pb.ListTemplatesResponse.FromString(client.get("/template").content).templates == []
@@ -318,7 +320,7 @@ def test_text_and_clips_template_roundtrips_over_http(client: TestClient, templa
     """固定文字与已发布片段采用空效果列表，支持创建、读取、列表和更新。"""
     seed_sprite()
     texts = [template_track("title"), template_track("subtitle")]
-    payload = {**template_payload, "effect_ids": [], "tracks": [*texts, remotion_track("clip-a", start=1.5)]}
+    payload = {**template_payload, "effect_ids": [], "tracks": [*texts, remotion_track("clip-a", start=1.5, text_target="title")]}
     created = _post(client, payload)
     assert created.status_code == 201
     record = pb.SaveTemplateResponse.FromString(created.content).template
@@ -328,7 +330,7 @@ def test_text_and_clips_template_roundtrips_over_http(client: TestClient, templa
     assert detail == record
     listed = pb.ListTemplatesResponse.FromString(client.get("/template").content).templates
     assert [item.template_id for item in listed] == [record.template_id]
-    updated = _post(client, {**payload, "template_id": record.template_id, "tracks": [*texts, remotion_track("clip-a", start=4), remotion_track("clip-b", start=6)]})
+    updated = _post(client, {**payload, "template_id": record.template_id, "tracks": [*texts, remotion_track("clip-a", start=4, text_target="title"), remotion_track("clip-b", start=6, text_target="subtitle")]})
     assert updated.status_code == 200
     again = pb.GetTemplateResponse.FromString(client.get(f"/template/{record.template_id}").content).template
     assert [(item.id, item.start) for item in again.tracks.tracks[2:]] == [("clip-a", 4), ("clip-b", 6)]
@@ -338,10 +340,12 @@ def test_text_and_clips_template_roundtrips_over_http(client: TestClient, templa
 def test_remotion_tracks_must_share_one_canvas(client: TestClient, template_payload: dict) -> None:
     """叠加渲染要求片段画布一致：宽高或帧率不同的 Sprite 放进同一个模板时保存即 422 并列出各画布，且不写库；画布相同的不同 Sprite 可以一起保存。"""
     same, landscape, other_fps = (str(uuid4()) for _ in range(3))
-    seed_sprite(SPRITE_ID)
-    seed_sprite(same)
-    seed_sprite(landscape, (1920, 1080, 30))
-    seed_sprite(other_fps, (1080, 1920, 60))
+    # 滤镜不占用模板对象，同一模板可以摆放多个。
+    filter_kind = 2
+    seed_sprite(SPRITE_ID, kind=filter_kind)
+    seed_sprite(same, kind=filter_kind)
+    seed_sprite(landscape, (1920, 1080, 30), filter_kind)
+    seed_sprite(other_fps, (1080, 1920, 60), filter_kind)
     clips = lambda *ids: [template_track("title"), template_track("subtitle"), *[remotion_track(f"clip-{index}", sprite_id=item) for index, item in enumerate(ids)]]
     for mismatched in ((SPRITE_ID, landscape), (SPRITE_ID, other_fps)):
         rejected = _post(client, {**template_payload, "effect_ids": [], "tracks": clips(*mismatched)})
@@ -353,6 +357,47 @@ def test_remotion_tracks_must_share_one_canvas(client: TestClient, template_payl
     template_id = pb.SaveTemplateResponse.FromString(created.content).template.template_id
     updated = _post(client, {**template_payload, "template_id": template_id, "effect_ids": [], "tracks": clips(SPRITE_ID, landscape)})
     assert updated.status_code == 422
+
+
+@pytest.mark.parametrize(("kind", "slot", "reason"), [
+    (1, {}, "须作用于标题或底部字幕"), (2, {"text_target": "title"}, "不是字效，不能作用于文字"),
+    (4, {}, "须指定视频交界处"), (3, {"transition_boundary": 1}, "不是转场，不能占用视频交界处"),
+    (1, {"text_target": "title", "editor": {"remotion": {"parameters": [{"key": "text", "stringValue": "旧文字"}]}}}, "不能覆盖 text"),
+    (1, {"text_target": "subtitle", "editor": {"remotion": {"parameters": [{"key": "keywords", "stringListValue": {"values": ["新品"]}}]}}},
+     "不能覆盖 keywords"),
+], ids=["text-unbound", "filter-on-text", "transition-unbound", "effect-on-boundary", "bound-text-override", "bound-keywords-override"])
+def test_remotion_slot_must_match_sprite_kind(client: TestClient, template_payload: dict, kind: int, slot: dict, reason: str) -> None:
+    """片段按 Sprite 分类占用模板对象：字效作用于文字且不覆盖文字与关键词、转场占用交界处，其他分类两者都不占用；不符时 422 且不写库。"""
+    seed_sprite(kind=kind)
+    response = _post(client, {**template_payload, "tracks": [*template_payload["tracks"], remotion_track("clip-a", **slot)]})
+    assert response.status_code == 422 and reason in response.json()["detail"]
+    assert pb.ListTemplatesResponse.FromString(client.get("/template").content).templates == []
+
+
+def test_remotion_transitions_and_effects_share_ims_limits(client: TestClient, template_payload: dict) -> None:
+    """Remotion 转场与 IMS 转场共用两个交界处，Remotion 视频特效与 IMS VFX 合计最多一个；不冲突时一起保存，交界处随模板读回。"""
+    from server.template.schema import effect_catalog
+
+    transition, effect = str(uuid4()), str(uuid4())
+    seed_sprite(transition, kind=4)
+    seed_sprite(effect, kind=3)
+    ims_transition = next(item for item in effect_catalog().values() if item.category == "transition/normal")
+    ims_vfx = next(item for item in effect_catalog().values() if item.category == "vfx/normal")
+    clip = remotion_track("remotion-transition", sprite_id=transition, transition_boundary=1)
+    tracks = [*template_payload["tracks"], {**template_track("transition", transition=ims_transition.id), "id": "ims-transition", "transition_boundary": 1}, clip]
+    payload = {**template_payload, "effect_ids": [*template_payload["effect_ids"], ims_transition.id], "tracks": tracks}
+    rejected = _post(client, payload)
+    assert rejected.status_code == 422 and "每个视频交界处最多一个转场" in rejected.text
+    clip["transition_boundary"] = 2
+    created = _post(client, payload)
+    assert created.status_code == 201
+    record = pb.SaveTemplateResponse.FromString(created.content).template
+    assert [(track.id, track.transition_boundary) for track in record.tracks.tracks[2:]] == [("ims-transition", 1), ("remotion-transition", 2)]
+    with_vfx = {**payload, "template_id": record.template_id, "effect_ids": [*payload["effect_ids"], ims_vfx.id],
+                "tracks": [*tracks, template_track("vfx", vfx=ims_vfx.id), remotion_track("remotion-effect", sprite_id=effect)]}
+    rejected = _post(client, with_vfx)
+    assert rejected.status_code == 422 and rejected.json()["detail"] == "VFX 最多一个，Remotion 视频特效也占用这个名额"
+    assert pb.GetTemplateResponse.FromString(client.get(f"/template/{record.template_id}").content).template == record
 
 
 @pytest.mark.parametrize("missing", [("title",), ("subtitle",), ("title", "subtitle")])
@@ -409,7 +454,8 @@ def test_template_protobuf_requires_tracks_message(client: TestClient) -> None:
 
 def test_remotion_overrides_and_transform_roundtrip_through_protobuf(client: TestClient, template_payload: dict, template_db: Engine) -> None:
     """片段的参数覆盖与宿主变换随模板保存、读回不变，库里的配置以驼峰 JSON 存在 editor.remotion 下。"""
-    seed_sprite()
+    # 视频特效不作用于文字，可以覆盖 text 与 keywords；字效的这两个参数取自所作用的对象。
+    seed_sprite(kind=3)
     remotion = {
         "parameters": [
             {"key": "text", "stringValue": "新品上市"},

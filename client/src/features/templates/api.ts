@@ -13,6 +13,7 @@ import {
 } from "@/generated/imv/template/v1/template_pb";
 import { defaultEditor, draftEffects, type Category, type Draft, type Editor, type EffectTrack, type RemotionClip, type Template, type TemplateSummary } from "./model";
 import { validateTemplateTracks } from "./tracks";
+import { validateClipSlots } from "./clips";
 
 /** 当前模板库的存储位置，每次操作显式传递，避免切换后写入错误环境。 */
 export type Environment = "local" | "cloud";
@@ -79,7 +80,11 @@ function toTemplate(record: TemplateRecord): Template {
         const value = remotion?.transform?.[name];
         if (value !== undefined) transform[name] = value;
       }
-      return { id: track.id, sprite_id: track.spriteId, start: track.start, duration: track.duration ?? null, parameters, transform };
+      return {
+        id: track.id, sprite_id: track.spriteId, start: track.start, duration: track.duration ?? null, parameters, transform,
+        ...(track.textTarget === "title" || track.textTarget === "subtitle" ? { text_target: track.textTarget } : {}),
+        ...(track.transitionBoundary !== undefined ? { transition_boundary: track.transitionBoundary } : {}),
+      };
     }),
   };
 }
@@ -193,6 +198,7 @@ export async function saveTemplate(draft: Draft, id?: string, environment: Envir
   if (environment === "local" && draft.clips.length)
     return Promise.reject(new Error("本地模板不支持 Remotion 资产"));
   validateTemplateTracks(draft.tracks);
+  validateClipSlots(draft);
   for (const target of ["title", "subtitle"])
     if (draft.tracks.filter((track) => track.target === target).length !== 1)
       throw new Error("保存模板需要标题和底部字幕各一个");
@@ -222,6 +228,8 @@ export async function saveTemplate(draft: Draft, id?: string, environment: Envir
           duration: clip.duration ?? undefined,
           editor: clipEditor(clip),
           spriteId: clip.sprite_id,
+          textTarget: clip.text_target,
+          transitionBoundary: clip.transition_boundary,
         })),
       ],
     },

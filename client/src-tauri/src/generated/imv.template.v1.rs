@@ -240,9 +240,14 @@ pub struct EffectTrack {
     /// remotion 片段引用的已发布 Sprite ID；其他对象必须留空。
     #[prost(string, tag="7")]
     pub sprite_id: ::prost::alloc::string::String,
-    /// 转场必须指定交界处 1 或 2，且不设置 start/start_mode；其他对象禁止设置。
+    /// 转场所属的视频交界处，1 或 2。IMS 转场必须设置且不设置 start/start_mode；Remotion 转场片段也设置，
+    /// 以交界处为中心播放；其他对象禁止设置。每个交界处只能有一个转场（IMS 与 Remotion 合计）。
     #[prost(uint32, optional, tag="8")]
     pub transition_boundary: ::core::option::Option<u32>,
+    /// Remotion 字效作用的文字对象，title 或 subtitle；仅 remotion 字效片段设置，每个文字对象最多一个。
+    /// 设置后该文字不再由 IMS 渲染，片段的时间跟随该对象，文字与关键词在合成时按该对象填入。
+    #[prost(string, optional, tag="9")]
+    pub text_target: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// 包装数组以保留“提供了空轨道列表”的含义。
 #[derive(::serde::Serialize)]

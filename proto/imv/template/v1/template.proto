@@ -180,8 +180,12 @@ message EffectTrack {
   EffectTemplateEditor editor = 6;
   // remotion 片段引用的已发布 Sprite ID；其他对象必须留空。
   string sprite_id = 7;
-  // 转场必须指定交界处 1 或 2，且不设置 start/start_mode；其他对象禁止设置。
+  // 转场所属的视频交界处，1 或 2。IMS 转场必须设置且不设置 start/start_mode；Remotion 转场片段也设置，
+  // 以交界处为中心播放；其他对象禁止设置。每个交界处只能有一个转场（IMS 与 Remotion 合计）。
   optional uint32 transition_boundary = 8;
+  // Remotion 字效作用的文字对象，title 或 subtitle；仅 remotion 字效片段设置，每个文字对象最多一个。
+  // 设置后该文字不再由 IMS 渲染，片段的时间跟随该对象，文字与关键词在合成时按该对象填入。
+  optional string text_target = 9;
 }
 
 // 包装数组以保留“提供了空轨道列表”的含义。

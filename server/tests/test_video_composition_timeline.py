@@ -392,6 +392,17 @@ def test_remotion_tracks_do_not_enter_the_ims_timeline(composition_case):
     assert build_timeline(**composition_case) == expected
 
 
+@pytest.mark.parametrize(("role", "layer"), [("title", 0), ("subtitle", 1)])
+def test_remotion_text_effect_replaces_the_ims_text(composition_case, role, layer):
+    """使用 Remotion 字效的标题或字幕由叠加视频显示：IMS 时间线去掉这段文字，其他文字对象保持不变。"""
+    expected, _ = build_timeline(**deepcopy(composition_case))
+    composition_case["template"]["tracks"].append(remotion_track("clip", text_target=role))
+    timeline, _ = build_timeline(**composition_case)
+    assert timeline["SubtitleTracks"] == [row for index, row in enumerate(expected["SubtitleTracks"]) if index != layer]
+    assert {key: value for key, value in timeline.items() if key != "SubtitleTracks"} == \
+        {key: value for key, value in expected.items() if key != "SubtitleTracks"}
+
+
 def test_text_rules_keep_business_content_and_separate_styles(composition_case):
     """标题采用指定区间，唯一字幕使用完整文案时间并保留样式。"""
     title = EffectTemplateEditor(title="示例标题", subtitle="", bubble_text="", title_in="in/fade_in")

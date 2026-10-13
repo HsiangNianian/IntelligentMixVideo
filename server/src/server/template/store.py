@@ -11,10 +11,12 @@ from sqlalchemy import JSON, Column, MetaData, String, Table, delete, select
 from sqlalchemy.dialects.mysql import DATETIME
 from sqlalchemy.exc import IntegrityError
 
+from generated.imv.sprite.v1 import sprite_pb2 as sprite_pb
+
 from ..database import get_engine
 from ..remotion_templates import placement, sprite_store, sprites
 from ..remotion_templates.store import Conflict
-from .schema import Template, TemplateSave, TemplateSummary, completeness_error, effect_catalog
+from .schema import EffectTrack, Template, TemplateSave, TemplateSummary, completeness_error, effect_catalog
 
 # 模板元数据用于查询和约束，配置 JSON 保留完整编辑字段与可信效果快照。
 metadata = MetaData()
@@ -29,6 +31,8 @@ templates = Table(
 )
 _schema_lock = Lock()
 _ready_engine = None
+# 占用 VFX 名额的 Sprite 分类；未指定类型的历史资产按视频特效处理，与资产库分类一致。
+VFX_KINDS = {sprite_pb.SPRITE_KIND_VIDEO_OVERLAY, sprite_pb.SPRITE_KIND_UNSPECIFIED}
 
 
 def initialize_schema():
@@ -108,12 +112,33 @@ def get_template(template_id: UUID) -> Template:
             raise HTTPException(409, f"模板 {template_id} 不符合当前规则：{validation_message(error)}") from error
 
 
+def check_slot(track: EffectTrack, kind: int) -> None:
+    """片段占用的模板对象须与 Sprite 分类相符：字效作用于标题或字幕，转场占用视频交界处，其他分类两者都不设置（422）。
+
+    作用于文字的字效由该文字对象提供文字与关键词（合成时由总线填入），所以不能再覆盖这两个参数（422）。
+    """
+    if kind == sprite_pb.SPRITE_KIND_TEXT:
+        if track.text_target is None:
+            raise HTTPException(422, f"Remotion 字效「{track.id}」须作用于标题或底部字幕")
+        overrides = {item.key for item in track.editor.remotion.parameters} if track.editor.remotion else set()
+        if bound := sorted(overrides & {sprites.TEXT_PROP, sprites.KEYWORDS_PROP}):
+            raise HTTPException(422, f"Remotion 字效「{track.id}」的文字与关键词取自所作用的对象，不能覆盖 {'、'.join(bound)}")
+    elif track.text_target is not None:
+        raise HTTPException(422, f"Remotion 片段「{track.id}」不是字效，不能作用于文字")
+    if kind == sprite_pb.SPRITE_KIND_TRANSITION_OVERLAY:
+        if track.transition_boundary is None:
+            raise HTTPException(422, f"Remotion 转场「{track.id}」须指定视频交界处")
+    elif track.transition_boundary is not None:
+        raise HTTPException(422, f"Remotion 片段「{track.id}」不是转场，不能占用视频交界处")
+
+
 def save_template(data: TemplateSave) -> Template:
     """原子创建或完整覆盖；锁定待更新行，并以数据库唯一约束处理并发重名。
 
     Remotion 片段引用的 Sprite 必须已发布，且画布尺寸与帧率一致（422）：叠加渲染要把它们叠成同一个视频，
     不一致的模板到总线渲染时才会失败，所以在保存时拒绝。每个片段的参数覆盖与宿主变换也按所引用 Sprite 的
-    发布参数契约检查（422）。Sprite 只追加不删除，所以检查之后引用不会失效。
+    发布参数契约检查（422）。片段按分类占用模板对象：字效作用于标题或字幕（不再覆盖文字与关键词）、转场占用视频交界处，
+    Remotion 视频特效与 IMS VFX 合计最多一个（422）。Sprite 只追加不删除，所以检查之后引用不会失效。
     """
     # 创建和更新都检查必需文字对象，检查通过后才访问资产及模板数据库。
     if issue := completeness_error(data):
@@ -139,6 +164,10 @@ def save_template(data: TemplateSave) -> Template:
                 placement.resolve(published[str(track.sprite_id)], track.editor.remotion)
             except ValueError as exc:
                 raise HTTPException(422, f"Remotion 片段「{track.id}」：{exc}") from None
+            check_slot(track, published[str(track.sprite_id)].kind)
+        effects = sum(published[str(track.sprite_id)].kind in VFX_KINDS for track in clips)
+        if effects + sum(track.target == "vfx" for track in data.tracks) > 1:
+            raise HTTPException(422, "VFX 最多一个，Remotion 视频特效也占用这个名额")
     template_id = str(data.template_id or uuid4())
     catalog = effect_catalog()
     configuration = data.model_dump(mode="json", by_alias=True, exclude={"template_id", "name"})

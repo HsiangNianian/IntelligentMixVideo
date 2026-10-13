@@ -115,6 +115,10 @@ export interface RemotionClip {
   parameters: Record<string, ParameterValue>;
   /** 宿主变换：内容中心位置、缩放、旋转与不透明度；未设置的字段取默认值。 */
   transform: ClipTransform;
+  /** 字效作用的文字对象：该文字改由这个片段显示，起点与时长跟随它。 */
+  text_target?: "title" | "subtitle";
+  /** 转场占用的视频交界处，片段以交界处为中心播放。 */
+  transition_boundary?: number;
 }
 
 /** 用户可修改的完整配置，不包含服务端标识和时间。 */
@@ -123,7 +127,7 @@ export interface Draft {
   description: string;
   transition_duration_seconds: number;
   tracks: EffectTrack[];
-  /** Remotion 片段不是 IMS 对象，不进入效果与预览，随模板一并保存。 */
+  /** Remotion 片段不进入 IMS 效果与 SDK 预览，按分类占用文字对象、视频交界处或特效名额，随模板一并保存。 */
   clips: RemotionClip[];
 }
 

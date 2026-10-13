@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { createRef } from "react";
 import { PreviewTimeline, type PreviewTimelineHandle } from "@/features/templates/PreviewTimeline";
-import { buildPreviewRows, spriteRows, thumbnailTimes } from "@/features/templates/timeline";
+import { buildPreviewRows, mergeSpriteRows, thumbnailTimes } from "@/features/templates/timeline";
 import { defaultEditor, newDraft } from "@/features/templates/model";
 import { trackEditor } from "@/features/templates/tracks";
 import { readCatalog } from "@/features/templates/sdk";
@@ -73,10 +73,31 @@ test("时间轴显示轨道图标与名称", () => {
   view.unmount();
 });
 
-// Remotion 资产在时间轴上独占一行，时间由右侧设置，标签使用资产名称。
-test("Remotion 资产行只读并显示在轨道标签中", () => {
-  const rows = [...buildPreviewRows(buildTimeline(newDraft(), readCatalog())), ...spriteRows([{ id: "sprite-a", spriteId: "s1", aspect: 9 / 16, name: "霓虹标题", start: 1, end: 4 }])];
-  expect(rows.at(-1)!.actions[0]).toMatchObject({ id: "sprite-a", effectId: "remotion", start: 1, end: 4, movable: false, flexible: false, targetId: "sprite-a" });
+// 改由 Remotion 字效显示的标题不交给 SDK 渲染，但保留时间轴行供选择和设置时间。
+test("Remotion 字效替换的文字不进入 SDK 时间线", () => {
+  const draft = newDraft();
+  const before = buildTimeline(draft, readCatalog());
+  const timeline = buildTimeline({ ...draft, clips: [{ id: "c", sprite_id: "s", start: 0, duration: 3, parameters: {}, transform: {}, text_target: "title" }] }, readCatalog());
+  expect(timeline.SubtitleTracks).toEqual(before.SubtitleTracks.slice(1));
+  expect(buildPreviewRows(timeline).map((row) => row.actions[0].effectId)).toEqual(["title", "subtitle", "video"]);
+});
+
+// Remotion 资产并入 IMS 对象的行：字效标在所作用的标题行上，转场、画面特效和滤镜按图层插入，不再每个资产独占一行；读回的转场尚未选择交界处时只显示对象名称。
+test("Remotion 资产按所占对象并入时间轴行", () => {
+  const clip = { spriteId: "s1", aspect: 9 / 16, start: 1, end: 4 };
+  const rows = mergeSpriteRows(buildPreviewRows(buildTimeline(newDraft(), readCatalog())), [
+    { ...clip, id: "text", name: "霓虹标题", slot: "title" },
+    { ...clip, id: "filter", name: "暖色", slot: "filter" },
+    { ...clip, id: "cut", name: "闪白", slot: "transition", boundary: 2 },
+    { ...clip, id: "glow", name: "光斑", slot: "vfx" },
+    { ...clip, id: "legacy", name: "旧字效" },
+    { ...clip, id: "unbound", name: "旧转场", slot: "transition" },
+  ]);
+  expect(rows.map((row) => row.actions[0].effectId)).toEqual(["title", "subtitle", "transition", "transition", "vfx", "filter", "remotion", "video"]);
+  expect(rows[3].actions[0]).toMatchObject({ id: "unbound", label: "镜头转场" });
+  expect(rows[0].actions[0]).toMatchObject({ effectId: "title", effectName: "Remotion · 霓虹标题" });
+  expect(rows[2].actions[0]).toMatchObject({ id: "cut", label: "镜头转场 2", effectName: "Remotion · 闪白", start: 1, end: 4, movable: false, targetId: "cut" });
   render(<PreviewTimeline ref={createRef()} rows={rows} disabled={false} time={0} onSeek={() => {}} />);
-  expect(screen.getByLabelText("时间轴轨道标签").textContent).toContain("霓虹标题");
+  expect([...screen.getByLabelText("时间轴轨道标签").querySelectorAll("[data-object]")].map((label) => label.textContent))
+    .toEqual(["顶部标题", "底部字幕", "镜头转场 2", "镜头转场", "画面特效", "视频滤镜", "Remotion 资产", "视频"]);
 });

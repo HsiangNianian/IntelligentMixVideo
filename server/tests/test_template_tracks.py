@@ -279,3 +279,16 @@ def test_ims_timing_defaults(duration: float | None) -> None:
     for role in ("title", "subtitle", "bubble"):
         assert getattr(saved.tracks[0].editor, f"{role}_in_duration") == 0.5
         assert getattr(saved.tracks[0].editor, f"{role}_out_duration") == 0.5
+
+
+@pytest.mark.parametrize(("tracks", "reason"), [
+    ([remotion_track("a", text_target="title"), remotion_track("b", text_target="title")], "每个标题或字幕最多一个 Remotion 字效"),
+    ([remotion_track("a", transition_boundary=2), remotion_track("b", transition_boundary=2)], "每个视频交界处最多一个转场"),
+    ([remotion_track("a", text_target="title", transition_boundary=1)], "不能同时作用于文字和视频交界处"),
+    ([{**template_track("title"), "text_target": "title"}], "只有 Remotion 字效可以设置作用的文字对象"),
+    ([{**template_track("title"), "transition_boundary": 1}], "只有转场可以设置视频交界处"),
+], ids=["same-text", "same-boundary", "both-slots", "ims-text-target", "ims-boundary"])
+def test_remotion_slots_are_unique_template_objects(tracks: list, reason: str) -> None:
+    """Remotion 片段占用的文字对象和视频交界处与 IMS 对象一样唯一，片段只占一类对象，IMS 对象不能设置作用的文字对象。"""
+    with pytest.raises(ValidationError, match=reason):
+        TemplateSave.model_validate({"name": "占用", "effect_ids": [], "tracks": tracks})
