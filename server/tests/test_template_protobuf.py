@@ -281,6 +281,27 @@ def test_remotion_tracks_roundtrip_through_protobuf(client: TestClient, template
     assert pb.GetTemplateResponse.FromString(detail.content).template == record
 
 
+def test_legacy_text_binding_can_replace_asset_without_replacing_ims(client: TestClient, template_payload: dict) -> None:
+    """旧用途字效更新资产后仍保留独立叠加标记及原 IMS 文字，不自动迁移为替代槽位。"""
+    seed_sprite()
+    tracks = [*template_payload["tracks"], *[
+        remotion_track(f"clip-{target}", editor={"remotion": {"businessTarget": target}})
+        for target in ("title", "subtitle")
+    ]]
+    created = _post(client, {**template_payload, "tracks": tracks})
+    assert created.status_code == 201
+    original = pb.SaveTemplateResponse.FromString(created.content).template
+    replacement = seed_sprite(str(uuid4()))
+    for track in tracks[2:]:
+        track["sprite_id"] = replacement
+    updated = _post(client, {**template_payload, "template_id": original.template_id, "tracks": tracks})
+    assert updated.status_code == 200
+    record = pb.GetTemplateResponse.FromString(client.get(f"/template/{original.template_id}").content).template
+    assert record.tracks.tracks[:2] == original.tracks.tracks[:2]
+    assert [clip.editor.remotion.business_target for clip in record.tracks.tracks[2:]] == ["title", "subtitle"]
+    assert all(clip.sprite_id == replacement and not clip.HasField("text_target") for clip in record.tracks.tracks[2:])
+
+
 @pytest.mark.parametrize(("change", "reason"), [
     ({"sprite_id": ""}, "缺少 sprite_id"), ({"sprite_id": "not-a-uuid"}, "valid UUID"),
     ({"editor": {"title": "不允许"}}, "只能携带参数覆盖与宿主变换"), ({"editor": None}, "Field required"),
@@ -361,11 +382,14 @@ def test_remotion_tracks_must_share_one_canvas(client: TestClient, template_payl
 
 @pytest.mark.parametrize(("kind", "slot", "reason"), [
     (1, {}, "须作用于标题或底部字幕"), (2, {"text_target": "title"}, "不是字效，不能作用于文字"),
+    (1, {"editor": {"remotion": {"businessTarget": "decoration"}}}, "须作用于标题或底部字幕"),
+    (1, {"editor": {"remotion": {"businessTarget": "title", "parameters": [{"key": "text", "stringValue": "旧文字"}]}}}, "不能覆盖 text"),
+    (1, {"editor": {"remotion": {"businessTarget": "subtitle", "parameters": [{"key": "keywords", "stringListValue": {"values": ["新品"]}}]}}}, "不能覆盖 keywords"),
     (4, {}, "须指定视频交界处"), (3, {"transition_boundary": 1}, "不是转场，不能占用视频交界处"),
     (1, {"text_target": "title", "editor": {"remotion": {"parameters": [{"key": "text", "stringValue": "旧文字"}]}}}, "不能覆盖 text"),
     (1, {"text_target": "subtitle", "editor": {"remotion": {"parameters": [{"key": "keywords", "stringListValue": {"values": ["新品"]}}]}}},
      "不能覆盖 keywords"),
-], ids=["text-unbound", "filter-on-text", "transition-unbound", "effect-on-boundary", "bound-text-override", "bound-keywords-override"])
+], ids=["text-unbound", "filter-on-text", "legacy-decoration", "legacy-text-override", "legacy-keywords-override", "transition-unbound", "effect-on-boundary", "bound-text-override", "bound-keywords-override"])
 def test_remotion_slot_must_match_sprite_kind(client: TestClient, template_payload: dict, kind: int, slot: dict, reason: str) -> None:
     """片段按 Sprite 分类占用模板对象：字效作用于文字且不覆盖文字与关键词、转场占用交界处，其他分类两者都不占用；不符时 422 且不写库。"""
     seed_sprite(kind=kind)

@@ -67,12 +67,14 @@ class RemotionTransform(_message.Message):
     def __init__(self, x: _Optional[float] = ..., y: _Optional[float] = ..., scale: _Optional[float] = ..., rotation: _Optional[float] = ..., opacity: _Optional[float] = ...) -> None: ...
 
 class RemotionTrackEditor(_message.Message):
-    __slots__ = ("parameters", "transform")
+    __slots__ = ("parameters", "transform", "business_target")
     PARAMETERS_FIELD_NUMBER: _ClassVar[int]
     TRANSFORM_FIELD_NUMBER: _ClassVar[int]
+    BUSINESS_TARGET_FIELD_NUMBER: _ClassVar[int]
     parameters: _containers.RepeatedCompositeFieldContainer[RemotionParameterOverride]
     transform: RemotionTransform
-    def __init__(self, parameters: _Optional[_Iterable[_Union[RemotionParameterOverride, _Mapping]]] = ..., transform: _Optional[_Union[RemotionTransform, _Mapping]] = ...) -> None: ...
+    business_target: str
+    def __init__(self, parameters: _Optional[_Iterable[_Union[RemotionParameterOverride, _Mapping]]] = ..., transform: _Optional[_Union[RemotionTransform, _Mapping]] = ..., business_target: _Optional[str] = ...) -> None: ...
 
 class EffectTemplateEditor(_message.Message):
     __slots__ = ("title", "subtitle", "bubble_text", "title_size", "subtitle_size", "bubble_size", "title_x", "title_y", "subtitle_x", "subtitle_y", "bubble_x", "bubble_y", "title_flower", "subtitle_flower", "bubble", "filter", "vfx", "transition", "title_in", "title_out", "title_loop", "subtitle_in", "subtitle_out", "subtitle_loop", "bubble_in", "bubble_out", "bubble_loop", "title_in_duration", "title_out_duration", "subtitle_in_duration", "subtitle_out_duration", "bubble_in_duration", "bubble_out_duration", "subtitle_keyword_bold", "subtitle_keyword_italic", "subtitle_keyword_underline", "subtitle_keyword_strikeout", "subtitle_keyword_color", "title_keyword", "title_keyword_bold", "title_keyword_italic", "title_keyword_underline", "title_keyword_strikeout", "title_keyword_color", "title_keyword_size", "subtitle_keyword_size", "remotion")

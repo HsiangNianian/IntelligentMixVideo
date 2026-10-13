@@ -46,8 +46,9 @@ export function SpriteClipInspector({ clip, asset, duration, onParameter, onTran
   const [tab, setTab] = useState<"appearance" | "keyword">("appearance");
   const isText = asset?.kind === SpriteKind.TEXT;
   const isTransition = asset?.kind === SpriteKind.TRANSITION_OVERLAY;
+  const legacyTextTarget = clip.business_target === "title" || clip.business_target === "subtitle" ? clip.business_target : undefined;
   // 作用于文字时，文字与关键词由该文字对象提供，不在这里单独设置。
-  const shown = (key: string) => !clip.text_target || !BOUND_TEXT_PARAMETERS.includes(key);
+  const shown = (key: string) => !(clip.text_target || legacyTextTarget) || !BOUND_TEXT_PARAMETERS.includes(key);
   // 只有字效把关键词参数移到单独页签；其他类型里以 keyword 开头的参数仍留在参数区。
   const keywordParameters = asset && isText ? asset.parameters.filter(({ field }) => isKeywordParameter(field.key) && shown(field.key)) : [];
   const styleSwitches = keywordParameters.flatMap((item) => {
@@ -148,7 +149,7 @@ export function SpriteClipInspector({ clip, asset, duration, onParameter, onTran
           onValueChange={(value) => { if (value === "title" || value === "subtitle") onBind({ text_target: value }); }}>
           {(["title", "subtitle"] as const).map((role) => <ToggleGroupItem key={role} value={role} className="flex-1 text-xs">{textRoles[role]}</ToggleGroupItem>)}
         </ToggleGroup>
-        <p className="text-[11px] text-muted-foreground">{clip.text_target ? `由这个字效显示${textRoles[clip.text_target]}：文字与关键词取自${textRoles[clip.text_target]}，时间跟随它。` : "请选择作用的标题或底部字幕，否则无法保存模板。"}</p>
+        <p className="text-[11px] text-muted-foreground">{clip.text_target ? `由这个字效显示${textRoles[clip.text_target]}：文字与关键词取自${textRoles[clip.text_target]}，时间跟随它。` : legacyTextTarget ? `当前与 IMS ${textRoles[legacyTextTarget]}同时显示。重新选择作用对象后，将改为仅显示 Remotion 字效。` : "请选择作用的标题或底部字幕，否则无法保存模板。"}</p>
       </div> : isTransition ? <div className="space-y-2">
         <h3 className="text-xs font-medium">视频交界处</h3>
         <ToggleGroup type="single" variant="outline" size="sm" className="w-full" aria-label="转场所在的视频交界处" value={clip.transition_boundary ? String(clip.transition_boundary) : ""}
