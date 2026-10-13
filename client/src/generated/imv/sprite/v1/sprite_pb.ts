@@ -18,7 +18,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file imv/sprite/v1/sprite.proto.
  */
 export const file_imv_sprite_v1_sprite: GenFile = /*@__PURE__*/
-  fileDesc("ChppbXYvc3ByaXRlL3YxL3Nwcml0ZS5wcm90bxINaW12LnNwcml0ZS52MSIcCgpTdHJpbmdMaXN0Eg4KBnZhbHVlcxgBIAMoCSKUAQoLU2NhbGFyVmFsdWUSFgoMc3RyaW5nX3ZhbHVlGAEgASgJSAASFgoMbnVtYmVyX3ZhbHVlGAIgASgBSAASFAoKYm9vbF92YWx1ZRgDIAEoCEgAEjYKEXN0cmluZ19saXN0X3ZhbHVlGAQgASgLMhkuaW12LnNwcml0ZS52MS5TdHJpbmdMaXN0SABCBwoFdmFsdWUiswMKD1Nwcml0ZVBhcmFtZXRlchILCgNrZXkYASABKAkSDQoFbGFiZWwYAiABKAkSLQoGYWNjZXNzGAMgASgOMh0uaW12LnNwcml0ZS52MS5PcGVyYXRvckFjY2VzcxIxCg1kZWZhdWx0X3ZhbHVlGAQgASgLMhouaW12LnNwcml0ZS52MS5TY2FsYXJWYWx1ZRIUCgdtaW5pbXVtGAUgASgBSACIAQESFAoHbWF4aW11bRgGIAEoAUgBiAEBEjIKDmFsbG93ZWRfdmFsdWVzGAcgAygLMhouaW12LnNwcml0ZS52MS5TY2FsYXJWYWx1ZRI0CgZmb3JtYXQYCCABKA4yJC5pbXYuc3ByaXRlLnYxLlNwcml0ZVBhcmFtZXRlckZvcm1hdBIXCgptaW5fbGVuZ3RoGAkgASgNSAKIAQESFwoKbWF4X2xlbmd0aBgKIAEoDUgDiAEBEhYKCW1heF9pdGVtcxgLIAEoDUgEiAEBQgoKCF9taW5pbXVtQgoKCF9tYXhpbXVtQg0KC19taW5fbGVuZ3RoQg0KC19tYXhfbGVuZ3RoQgwKCl9tYXhfaXRlbXMiQAoJU3ByaXRlQm94EgkKAXgYASABKAESCQoBeRgCIAEoARINCgV3aWR0aBgDIAEoARIOCgZoZWlnaHQYBCABKAEiUgoMU3ByaXRlQ2FudmFzEg0KBXdpZHRoGAEgASgNEg4KBmhlaWdodBgCIAEoDRILCgNmcHMYAyABKA0SFgoOcHJldmlld19mcmFtZXMYBCABKA0i3QQKD1B1Ymxpc2hlZFNwcml0ZRIRCglzcHJpdGVfaWQYASABKAkSGQoRc291cmNlX3ZlcnNpb25faWQYAiABKAkSDAoEbmFtZRgDIAEoCRInCgRraW5kGAQgASgOMhkuaW12LnNwcml0ZS52MS5TcHJpdGVLaW5kEisKBmNhbnZhcxgFIAEoCzIbLmltdi5zcHJpdGUudjEuU3ByaXRlQ2FudmFzEhAKCHRzeF9jb2RlGAYgASgJEhMKC2NvZGVfc2hhMjU2GAcgASgJEjIKCnBhcmFtZXRlcnMYCCADKAsyHi5pbXYuc3ByaXRlLnYxLlNwcml0ZVBhcmFtZXRlchIRCgl0ZXh0X3Byb3AYCSABKAkSFQoNa2V5d29yZHNfcHJvcBgKIAEoCRIwCgxwdWJsaXNoZWRfYXQYCyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhYKDnByZXZpZXdfc2hhMjU2GAwgASgJEhoKEmNvbmZpZ19zY2hlbWFfanNvbhgNIAEoCRIbChNkZWZhdWx0X2NvbmZpZ19qc29uGA4gASgJEhgKEGFuaW1hdGlvbl9mcmFtZXMYDyABKA0SFAoMc3RhdGljX2ZyYW1lGBAgASgNEhgKEGJ1YmJsZV9hc3NldF91cmwYESABKAkSGgoSYnViYmxlX2Fzc2V0X3dpZHRoGBIgASgNEhsKE2J1YmJsZV9hc3NldF9oZWlnaHQYEyABKA0SLQoLY29udGVudF9ib3gYFCABKAsyGC5pbXYuc3ByaXRlLnYxLlNwcml0ZUJveCK1AgoNU3ByaXRlU3VtbWFyeRIRCglzcHJpdGVfaWQYASABKAkSDAoEbmFtZRgCIAEoCRInCgRraW5kGAMgASgOMhkuaW12LnNwcml0ZS52MS5TcHJpdGVLaW5kEisKBmNhbnZhcxgEIAEoCzIbLmltdi5zcHJpdGUudjEuU3ByaXRlQ2FudmFzEjIKCnBhcmFtZXRlcnMYBSADKAsyHi5pbXYuc3ByaXRlLnYxLlNwcml0ZVBhcmFtZXRlchIZChFzb3VyY2VfdmVyc2lvbl9pZBgGIAEoCRITCgtwcmV2aWV3X3VybBgHIAEoCRIaChJrZXl3b3Jkc19zdXBwb3J0ZWQYCCABKAgSLQoLY29udGVudF9ib3gYCSABKAsyGC5pbXYuc3ByaXRlLnYxLlNwcml0ZUJveCJEChNMaXN0U3ByaXRlc1Jlc3BvbnNlEi0KB3Nwcml0ZXMYASADKAsyHC5pbXYuc3ByaXRlLnYxLlNwcml0ZVN1bW1hcnkihAEKFFB1Ymxpc2hTcHJpdGVSZXF1ZXN0EhkKEXNvdXJjZV92ZXJzaW9uX2lkGAEgASgJEicKBGtpbmQYAiABKA4yGS5pbXYuc3ByaXRlLnYxLlNwcml0ZUtpbmQSEQoJdGV4dF9wcm9wGAMgASgJEhUKDWtleXdvcmRzX3Byb3AYBCABKAkiRQoVUHVibGlzaFNwcml0ZVJlc3BvbnNlEiwKBnNwcml0ZRgBIAEoCzIcLmltdi5zcHJpdGUudjEuU3ByaXRlU3VtbWFyeSJRChdTcHJpdGVQYXJhbWV0ZXJPdmVycmlkZRILCgNrZXkYASABKAkSKQoFdmFsdWUYAiABKAsyGi5pbXYuc3ByaXRlLnYxLlNjYWxhclZhbHVlIu0CChFTcHJpdGVSZW5kZXJJbnB1dBIRCglzcHJpdGVfaWQYASABKAkSFAoMcGxhY2VtZW50X2lkGAIgASgJEisKBm91dHB1dBgDIAEoCzIbLmltdi5zcHJpdGUudjEuU3ByaXRlQ2FudmFzEhwKFGVmZmVjdF9vZmZzZXRfZnJhbWVzGAQgASgEEhoKEnJlbmRlcl9mcmFtZV9jb3VudBgFIAEoBBIMCgR0ZXh0GAYgASgJEhAKCGtleXdvcmRzGAcgAygJEj4KDnJlc29sdmVkX3N0eWxlGAggAygLMiYuaW12LnNwcml0ZS52MS5TcHJpdGVQYXJhbWV0ZXJPdmVycmlkZRIbChNlZmZlY3RfdG90YWxfZnJhbWVzGAkgASgEEhQKDGNhbGxiYWNrX3VybBgKIAEoCRI1Cgl0cmFuc2Zvcm0YCyABKAsyIi5pbXYuc3ByaXRlLnYxLlNwcml0ZUhvc3RUcmFuc2Zvcm0ipQEKE1Nwcml0ZUhvc3RUcmFuc2Zvcm0SDgoBeBgBIAEoAUgAiAEBEg4KAXkYAiABKAFIAYgBARISCgVzY2FsZRgDIAEoAUgCiAEBEhUKCHJvdGF0aW9uGAQgASgBSAOIAQESFAoHb3BhY2l0eRgFIAEoAUgEiAEBQgQKAl94QgQKAl95QggKBl9zY2FsZUILCglfcm90YXRpb25CCgoIX29wYWNpdHkiJwoUU3ByaXRlUmVuZGVyQWNjZXB0ZWQSDwoHdGFza19pZBgBIAEoCSJxChBTcHJpdGVSZW5kZXJUYXNrEg8KB3Rhc2tfaWQYASABKAkSDgoGc3RhdHVzGAIgASgJEhEKCXZpZGVvX3VybBgDIAEoCRISCgplcnJvcl9jb2RlGAQgASgJEhUKDWVycm9yX21lc3NhZ2UYBSABKAkqogEKClNwcml0ZUtpbmQSGwoXU1BSSVRFX0tJTkRfVU5TUEVDSUZJRUQQABIUChBTUFJJVEVfS0lORF9URVhUEAESHgoaU1BSSVRFX0tJTkRfRklMVEVSX09WRVJMQVkQAhIdChlTUFJJVEVfS0lORF9WSURFT19PVkVSTEFZEAMSIgoeU1BSSVRFX0tJTkRfVFJBTlNJVElPTl9PVkVSTEFZEAQqnAEKDk9wZXJhdG9yQWNjZXNzEh8KG09QRVJBVE9SX0FDQ0VTU19VTlNQRUNJRklFRBAAEiUKIU9QRVJBVE9SX0FDQ0VTU19WSVNJQkxFX1JFQURfT05MWRABEiQKIE9QRVJBVE9SX0FDQ0VTU19WSVNJQkxFX0VESVRBQkxFEAISHAoYT1BFUkFUT1JfQUNDRVNTX0lOVEVSTkFMEAMqiAEKFVNwcml0ZVBhcmFtZXRlckZvcm1hdBInCiNTUFJJVEVfUEFSQU1FVEVSX0ZPUk1BVF9VTlNQRUNJRklFRBAAEiEKHVNQUklURV9QQVJBTUVURVJfRk9STUFUX0NPTE9SEAESIwofU1BSSVRFX1BBUkFNRVRFUl9GT1JNQVRfSU5URUdFUhACYgZwcm90bzM", [file_google_protobuf_timestamp]);
+  fileDesc("ChppbXYvc3ByaXRlL3YxL3Nwcml0ZS5wcm90bxINaW12LnNwcml0ZS52MSIcCgpTdHJpbmdMaXN0Eg4KBnZhbHVlcxgBIAMoCSKUAQoLU2NhbGFyVmFsdWUSFgoMc3RyaW5nX3ZhbHVlGAEgASgJSAASFgoMbnVtYmVyX3ZhbHVlGAIgASgBSAASFAoKYm9vbF92YWx1ZRgDIAEoCEgAEjYKEXN0cmluZ19saXN0X3ZhbHVlGAQgASgLMhkuaW12LnNwcml0ZS52MS5TdHJpbmdMaXN0SABCBwoFdmFsdWUiswMKD1Nwcml0ZVBhcmFtZXRlchILCgNrZXkYASABKAkSDQoFbGFiZWwYAiABKAkSLQoGYWNjZXNzGAMgASgOMh0uaW12LnNwcml0ZS52MS5PcGVyYXRvckFjY2VzcxIxCg1kZWZhdWx0X3ZhbHVlGAQgASgLMhouaW12LnNwcml0ZS52MS5TY2FsYXJWYWx1ZRIUCgdtaW5pbXVtGAUgASgBSACIAQESFAoHbWF4aW11bRgGIAEoAUgBiAEBEjIKDmFsbG93ZWRfdmFsdWVzGAcgAygLMhouaW12LnNwcml0ZS52MS5TY2FsYXJWYWx1ZRI0CgZmb3JtYXQYCCABKA4yJC5pbXYuc3ByaXRlLnYxLlNwcml0ZVBhcmFtZXRlckZvcm1hdBIXCgptaW5fbGVuZ3RoGAkgASgNSAKIAQESFwoKbWF4X2xlbmd0aBgKIAEoDUgDiAEBEhYKCW1heF9pdGVtcxgLIAEoDUgEiAEBQgoKCF9taW5pbXVtQgoKCF9tYXhpbXVtQg0KC19taW5fbGVuZ3RoQg0KC19tYXhfbGVuZ3RoQgwKCl9tYXhfaXRlbXMiQAoJU3ByaXRlQm94EgkKAXgYASABKAESCQoBeRgCIAEoARINCgV3aWR0aBgDIAEoARIOCgZoZWlnaHQYBCABKAEiUgoMU3ByaXRlQ2FudmFzEg0KBXdpZHRoGAEgASgNEg4KBmhlaWdodBgCIAEoDRILCgNmcHMYAyABKA0SFgoOcHJldmlld19mcmFtZXMYBCABKA0i3QQKD1B1Ymxpc2hlZFNwcml0ZRIRCglzcHJpdGVfaWQYASABKAkSGQoRc291cmNlX3ZlcnNpb25faWQYAiABKAkSDAoEbmFtZRgDIAEoCRInCgRraW5kGAQgASgOMhkuaW12LnNwcml0ZS52MS5TcHJpdGVLaW5kEisKBmNhbnZhcxgFIAEoCzIbLmltdi5zcHJpdGUudjEuU3ByaXRlQ2FudmFzEhAKCHRzeF9jb2RlGAYgASgJEhMKC2NvZGVfc2hhMjU2GAcgASgJEjIKCnBhcmFtZXRlcnMYCCADKAsyHi5pbXYuc3ByaXRlLnYxLlNwcml0ZVBhcmFtZXRlchIRCgl0ZXh0X3Byb3AYCSABKAkSFQoNa2V5d29yZHNfcHJvcBgKIAEoCRIwCgxwdWJsaXNoZWRfYXQYCyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhYKDnByZXZpZXdfc2hhMjU2GAwgASgJEhoKEmNvbmZpZ19zY2hlbWFfanNvbhgNIAEoCRIbChNkZWZhdWx0X2NvbmZpZ19qc29uGA4gASgJEhgKEGFuaW1hdGlvbl9mcmFtZXMYDyABKA0SFAoMc3RhdGljX2ZyYW1lGBAgASgNEhgKEGJ1YmJsZV9hc3NldF91cmwYESABKAkSGgoSYnViYmxlX2Fzc2V0X3dpZHRoGBIgASgNEhsKE2J1YmJsZV9hc3NldF9oZWlnaHQYEyABKA0SLQoLY29udGVudF9ib3gYFCABKAsyGC5pbXYuc3ByaXRlLnYxLlNwcml0ZUJveCK1AgoNU3ByaXRlU3VtbWFyeRIRCglzcHJpdGVfaWQYASABKAkSDAoEbmFtZRgCIAEoCRInCgRraW5kGAMgASgOMhkuaW12LnNwcml0ZS52MS5TcHJpdGVLaW5kEisKBmNhbnZhcxgEIAEoCzIbLmltdi5zcHJpdGUudjEuU3ByaXRlQ2FudmFzEjIKCnBhcmFtZXRlcnMYBSADKAsyHi5pbXYuc3ByaXRlLnYxLlNwcml0ZVBhcmFtZXRlchIZChFzb3VyY2VfdmVyc2lvbl9pZBgGIAEoCRITCgtwcmV2aWV3X3VybBgHIAEoCRIaChJrZXl3b3Jkc19zdXBwb3J0ZWQYCCABKAgSLQoLY29udGVudF9ib3gYCSABKAsyGC5pbXYuc3ByaXRlLnYxLlNwcml0ZUJveCJEChNMaXN0U3ByaXRlc1Jlc3BvbnNlEi0KB3Nwcml0ZXMYASADKAsyHC5pbXYuc3ByaXRlLnYxLlNwcml0ZVN1bW1hcnkihAEKFFB1Ymxpc2hTcHJpdGVSZXF1ZXN0EhkKEXNvdXJjZV92ZXJzaW9uX2lkGAEgASgJEicKBGtpbmQYAiABKA4yGS5pbXYuc3ByaXRlLnYxLlNwcml0ZUtpbmQSEQoJdGV4dF9wcm9wGAMgASgJEhUKDWtleXdvcmRzX3Byb3AYBCABKAkiRQoVUHVibGlzaFNwcml0ZVJlc3BvbnNlEiwKBnNwcml0ZRgBIAEoCzIcLmltdi5zcHJpdGUudjEuU3ByaXRlU3VtbWFyeSJRChdTcHJpdGVQYXJhbWV0ZXJPdmVycmlkZRILCgNrZXkYASABKAkSKQoFdmFsdWUYAiABKAsyGi5pbXYuc3ByaXRlLnYxLlNjYWxhclZhbHVlIpEDChFTcHJpdGVSZW5kZXJJbnB1dBIRCglzcHJpdGVfaWQYASABKAkSFAoMcGxhY2VtZW50X2lkGAIgASgJEisKBm91dHB1dBgDIAEoCzIbLmltdi5zcHJpdGUudjEuU3ByaXRlQ2FudmFzEgwKBHRleHQYBiABKAkSEAoIa2V5d29yZHMYByADKAkSPgoOcmVzb2x2ZWRfc3R5bGUYCCADKAsyJi5pbXYuc3ByaXRlLnYxLlNwcml0ZVBhcmFtZXRlck92ZXJyaWRlEhsKE2VmZmVjdF90b3RhbF9mcmFtZXMYCSABKAQSFAoMY2FsbGJhY2tfdXJsGAogASgJEjUKCXRyYW5zZm9ybRgLIAEoCzIiLmltdi5zcHJpdGUudjEuU3ByaXRlSG9zdFRyYW5zZm9ybRImCgRjdWVzGAwgAygLMhguaW12LnNwcml0ZS52MS5TcHJpdGVDdWVKBAgEEAVKBAgFEAZSFGVmZmVjdF9vZmZzZXRfZnJhbWVzUhJyZW5kZXJfZnJhbWVfY291bnQiUwoJU3ByaXRlQ3VlEgwKBHRleHQYASABKAkSEAoIa2V5d29yZHMYAiADKAkSEwoLc3RhcnRfZnJhbWUYAyABKAQSEQoJZW5kX2ZyYW1lGAQgASgEIqUBChNTcHJpdGVIb3N0VHJhbnNmb3JtEg4KAXgYASABKAFIAIgBARIOCgF5GAIgASgBSAGIAQESEgoFc2NhbGUYAyABKAFIAogBARIVCghyb3RhdGlvbhgEIAEoAUgDiAEBEhQKB29wYWNpdHkYBSABKAFIBIgBAUIECgJfeEIECgJfeUIICgZfc2NhbGVCCwoJX3JvdGF0aW9uQgoKCF9vcGFjaXR5IicKFFNwcml0ZVJlbmRlckFjY2VwdGVkEg8KB3Rhc2tfaWQYASABKAkicQoQU3ByaXRlUmVuZGVyVGFzaxIPCgd0YXNrX2lkGAEgASgJEg4KBnN0YXR1cxgCIAEoCRIRCgl2aWRlb191cmwYAyABKAkSEgoKZXJyb3JfY29kZRgEIAEoCRIVCg1lcnJvcl9tZXNzYWdlGAUgASgJKqIBCgpTcHJpdGVLaW5kEhsKF1NQUklURV9LSU5EX1VOU1BFQ0lGSUVEEAASFAoQU1BSSVRFX0tJTkRfVEVYVBABEh4KGlNQUklURV9LSU5EX0ZJTFRFUl9PVkVSTEFZEAISHQoZU1BSSVRFX0tJTkRfVklERU9fT1ZFUkxBWRADEiIKHlNQUklURV9LSU5EX1RSQU5TSVRJT05fT1ZFUkxBWRAEKpwBCg5PcGVyYXRvckFjY2VzcxIfChtPUEVSQVRPUl9BQ0NFU1NfVU5TUEVDSUZJRUQQABIlCiFPUEVSQVRPUl9BQ0NFU1NfVklTSUJMRV9SRUFEX09OTFkQARIkCiBPUEVSQVRPUl9BQ0NFU1NfVklTSUJMRV9FRElUQUJMRRACEhwKGE9QRVJBVE9SX0FDQ0VTU19JTlRFUk5BTBADKogBChVTcHJpdGVQYXJhbWV0ZXJGb3JtYXQSJwojU1BSSVRFX1BBUkFNRVRFUl9GT1JNQVRfVU5TUEVDSUZJRUQQABIhCh1TUFJJVEVfUEFSQU1FVEVSX0ZPUk1BVF9DT0xPUhABEiMKH1NQUklURV9QQVJBTUVURVJfRk9STUFUX0lOVEVHRVIQAmIGcHJvdG8z", [file_google_protobuf_timestamp]);
 
 /**
  * 字符串列表值，目前只用于字效的 keywords 参数。
@@ -622,12 +622,13 @@ export const SpriteParameterOverrideSchema: GenMessage<SpriteParameterOverride> 
 
 /**
  * POST /api/sprites/render 的一次渲染输入（application/x-protobuf），由总线在切片、素材匹配与时间对齐后生成。
- * Sprite 是固定的 style 加一次 content：style 是已验收的代码与样式参数（resolved_style、transform），
- * content 是本次的 text 与 keywords，time 是 effect_total_frames；Agent 生成时选的时长只用于预览。
- * 完整效果时长为 0.5～120 秒；一个请求只渲染一个连续区间，最长 30 秒，超过 30 秒的效果由总线
- * 按 30 秒一段切分为相邻请求，各段传相同的 effect_total_frames 与递增的 effect_offset_frames。
- * 效果内的帧数都按发布画布的 fps 计数，与最终 IMS 成片的时间轴位置无关。服务端受理后异步渲染透明
- * VP9 Alpha WebM，转存为可公开读取的对象后回调；总线把它放入 IMS VideoTrack。
+ * Sprite 是固定的 style 加 content：style 是已验收的代码与样式参数（resolved_style、transform），
+ * content 是文字与关键词——标题这样整段一条文字用 text 与 keywords，字幕用按时间排列的 cues；
+ * time 是 effect_total_frames；Agent 生成时选的时长只用于预览。
+ * 一个请求得到整个效果的一个完整视频（0.5～120 秒）：服务端按 30 秒一块依次渲染再无损拼接，
+ * 每块里 Sprite 都读到完整时长，动画跨块连续，总线不需要分段。效果内的帧数都按发布画布的 fps 计数，
+ * 与最终 IMS 成片的时间轴位置无关。服务端受理后异步渲染透明 VP9 Alpha WebM，转存为可公开读取的对象后回调；
+ * 总线把它放入 IMS VideoTrack。
  *
  * @generated from message imv.sprite.v1.SpriteRenderInput
  */
@@ -655,31 +656,15 @@ export type SpriteRenderInput = Message<"imv.sprite.v1.SpriteRenderInput"> & {
   output?: SpriteCanvas | undefined;
 
   /**
-   * 本段从效果起点算起的零基帧偏移；首段为 0，后续段等于此前各段帧数之和。
-   * 与业务字幕或最终成片的开始时间无关；由总线另行决定 IMS TimelineIn。
-   *
-   * @generated from field: uint64 effect_offset_frames = 4;
-   */
-  effectOffsetFrames: bigint;
-
-  /**
-   * 本段要输出的帧数，必须大于零，且偏移加帧数不得超过完整效果总帧数。
-   * 单段最多 30 秒（30 FPS 时 900 帧）；总线用此值计算 IMS 放置区间的实际时长。
-   *
-   * @generated from field: uint64 render_frame_count = 5;
-   */
-  renderFrameCount: bigint;
-
-  /**
-   * content：标题取请求 title，字幕取当前短句清理后的正文；字效必填，视觉 Sprite 留空。
-   * 必须满足字效文字参数发布时的长度限制，否则拒绝受理。
+   * content：整段只有一条文字时使用，例如标题取请求 title，Sprite 在整个效果时长内显示它。
+   * 字效必须给出 text 或 cues 之一，视觉 Sprite 两者都留空；必须满足字效文字参数发布时的长度限制，否则拒绝受理。
    *
    * @generated from field: string text = 6;
    */
   text: string;
 
   /**
-   * content：字幕关键词来自当前短句所属原切片；组件在 text 内查找各词的字面命中并高亮。
+   * content：与 text 一起使用的关键词；组件在 text 内查找各词的字面命中并高亮。
    * 不支持关键词的 Sprite 不接收非空数组；数量与每词长度受发布时的关键词参数限制。
    *
    * @generated from field: repeated string keywords = 7;
@@ -695,8 +680,8 @@ export type SpriteRenderInput = Message<"imv.sprite.v1.SpriteRenderInput"> & {
   resolvedStyle: SpriteParameterOverride[];
 
   /**
-   * time：完整效果的总帧数，0.5～120 秒；分段时每段传相同值。
-   * Sprite 按这个长度排布与播放动画，分段处不会重新开始。
+   * time：完整效果的总帧数，0.5～120 秒，也是输出视频的帧数；不带字幕切片时 Sprite 按这个长度排布与播放。
+   * 由秒数半帧向后取整得到（floor(秒 × fps + 0.5)），与叠加渲染一致。
    *
    * @generated from field: uint64 effect_total_frames = 9;
    */
@@ -717,6 +702,15 @@ export type SpriteRenderInput = Message<"imv.sprite.v1.SpriteRenderInput"> & {
    * @generated from field: imv.sprite.v1.SpriteHostTransform transform = 11;
    */
   transform?: SpriteHostTransform | undefined;
+
+  /**
+   * content：字幕的切片，按起点排列、互不重叠，都在效果时长之内；与 text 二选一。
+   * 每个切片用同一个 Sprite 在自己的区间里显示一次，Sprite 读到的 durationInFrames 是切片的帧数，
+   * 切片之间与之外的帧保持透明。
+   *
+   * @generated from field: repeated imv.sprite.v1.SpriteCue cues = 12;
+   */
+  cues: SpriteCue[];
 };
 
 /**
@@ -725,6 +719,49 @@ export type SpriteRenderInput = Message<"imv.sprite.v1.SpriteRenderInput"> & {
  */
 export const SpriteRenderInputSchema: GenMessage<SpriteRenderInput> = /*@__PURE__*/
   messageDesc(file_imv_sprite_v1_sprite, 11);
+
+/**
+ * 一条字幕切片：文字、关键词与它在效果时间轴上的区间。帧号按发布画布的 fps 计数，
+ * 由切片秒数半帧向后取整得到（floor(秒 × fps + 0.5)），与叠加渲染一致。
+ *
+ * @generated from message imv.sprite.v1.SpriteCue
+ */
+export type SpriteCue = Message<"imv.sprite.v1.SpriteCue"> & {
+  /**
+   * 切片正文（总线清理后的短句，通常不超过 8 个字），必须满足字效文字参数的长度限制。
+   *
+   * @generated from field: string text = 1;
+   */
+  text: string;
+
+  /**
+   * 切片关键词；不支持关键词的 Sprite 不接收非空数组。
+   *
+   * @generated from field: repeated string keywords = 2;
+   */
+  keywords: string[];
+
+  /**
+   * 切片开始帧（含），从效果起点算起。
+   *
+   * @generated from field: uint64 start_frame = 3;
+   */
+  startFrame: bigint;
+
+  /**
+   * 切片结束帧（不含）；切片至少 0.2 秒（30 FPS 时 6 帧）。
+   *
+   * @generated from field: uint64 end_frame = 4;
+   */
+  endFrame: bigint;
+};
+
+/**
+ * Describes the message imv.sprite.v1.SpriteCue.
+ * Use `create(SpriteCueSchema)` to create a new message.
+ */
+export const SpriteCueSchema: GenMessage<SpriteCue> = /*@__PURE__*/
+  messageDesc(file_imv_sprite_v1_sprite, 12);
 
 /**
  * 宿主变换：内容区域中心在画布上的位置（像素）、缩放、旋转（度）与不透明度。
@@ -773,7 +810,7 @@ export type SpriteHostTransform = Message<"imv.sprite.v1.SpriteHostTransform"> &
  * Use `create(SpriteHostTransformSchema)` to create a new message.
  */
 export const SpriteHostTransformSchema: GenMessage<SpriteHostTransform> = /*@__PURE__*/
-  messageDesc(file_imv_sprite_v1_sprite, 12);
+  messageDesc(file_imv_sprite_v1_sprite, 13);
 
 /**
  * POST /api/sprites/render 的受理结果。
@@ -794,7 +831,7 @@ export type SpriteRenderAccepted = Message<"imv.sprite.v1.SpriteRenderAccepted">
  * Use `create(SpriteRenderAcceptedSchema)` to create a new message.
  */
 export const SpriteRenderAcceptedSchema: GenMessage<SpriteRenderAccepted> = /*@__PURE__*/
-  messageDesc(file_imv_sprite_v1_sprite, 13);
+  messageDesc(file_imv_sprite_v1_sprite, 14);
 
 /**
  * GET /api/sprites/render/{task_id} 的任务状态；失败仍为 200 并携带脱敏错误。
@@ -843,7 +880,7 @@ export type SpriteRenderTask = Message<"imv.sprite.v1.SpriteRenderTask"> & {
  * Use `create(SpriteRenderTaskSchema)` to create a new message.
  */
 export const SpriteRenderTaskSchema: GenMessage<SpriteRenderTask> = /*@__PURE__*/
-  messageDesc(file_imv_sprite_v1_sprite, 14);
+  messageDesc(file_imv_sprite_v1_sprite, 15);
 
 /**
  * 发布版本的内容类型；发布后不能把同一个 Sprite 改成另一种类型。

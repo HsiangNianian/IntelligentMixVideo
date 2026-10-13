@@ -271,18 +271,22 @@ SQLite `style_sprite_bindings` table and the `GET/POST /api/sprites/styles/{styl
 are gone: bindings saved there are neither read nor migrated, and an existing table is left in place. The router
 lives in `sprite_router.py` on the main app and borrows the Remotion runtime.
 
-`POST /api/sprites/render` (`imv.sprite.v1.SpriteRenderInput`, Protobuf) renders one Sprite for the bus: a Sprite is
-a fixed style (the sealed code plus `resolved_style` and `transform`, the placement's editor) with one content
-(`text`, `keywords`), and the time is `effect_total_frames`, 0.5 to 120 seconds, whatever length was previewed when
-it was generated. One request renders one segment of at most 30 seconds (`effect_offset_frames`,
-`render_frame_count`); the bus splits a longer effect into adjacent requests with the same total, and the Sprite sees
-the whole effect length in each, so a segment continues the animation instead of restarting it
-(`sprite_render.py` places it at `from = -offset`). Text effects need `text`, other kinds take no content, keywords
-need a Sprite that publishes them, and content cannot be passed as a style override; every refusal, a canvas other
-than the publication's or an unknown Sprite is a 422 at acceptance (`SpriteRenderAccepted {task_id}`), and the
-environment checks are the overlay render's 503s. The task shares the overlay renders' table, render slot,
-recovery and callback body below, uploads to ZOS `imv/sprite_render/{taskId}.webm`, and is read with
-`GET /api/sprites/render/{taskId}` (`SpriteRenderTask`); each query endpoint only finds its own kind of task.
+`POST /api/sprites/render` (`imv.sprite.v1.SpriteRenderInput`, Protobuf) renders one Sprite for the bus as one complete
+video. A Sprite is a fixed style (the sealed code plus `resolved_style` and `transform`, the placement's editor) with
+its content: one `text` with `keywords` for the whole effect (a title), or the bus's subtitle `cues` (text, keywords
+and a frame range each; ordered, non-overlapping, at least 0.2 s), each shown once by the same Sprite in its own
+frames so the Sprite reads the cue's length as `durationInFrames`, transparent in between. The time is
+`effect_total_frames`, 0.5 to 120 seconds and the output's frame count, whatever length was previewed when the Sprite
+was generated. `sprite_render.py` renders the effect in chunks of at most 30 seconds in the overlay worker (each
+instance keeps its full length across chunks, so animations continue) and joins them with `ffmpeg -c copy`, then
+re-probes the frame count and alpha flag; the bus never splits a request. Text effects need `text` or `cues`, other
+kinds take no content, keywords need a Sprite that publishes them, and content cannot be passed as a style override;
+every refusal, a canvas other than the publication's or an unknown Sprite is a 422 at acceptance
+(`SpriteRenderAccepted {task_id}`), and the overlay render's environment checks plus `ffmpeg` are 503s. The task
+shares the overlay renders' table, render slot, recovery and callback body below, uploads to ZOS
+`imv/sprite_render/{taskId}.webm`, and is read with `GET /api/sprites/render/{taskId}` (`SpriteRenderTask`); each
+query endpoint only finds its own kind of task. The overlay worker bundles each distinct Sprite module once, however
+many instances use it.
 `GET /api/sprites/{id}/preview?overlay=true&sync=1` serves the sealed player on a transparent page for the template editor;
 a sync-mode bundle has no controls or loop and seeks on `imv-preview-sync {time, duration?}` messages (`duration` is the
 placement's full length in seconds, up to 120; the Player takes it as its length, so a composed Sprite lays itself out

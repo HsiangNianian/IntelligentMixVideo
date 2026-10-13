@@ -38,7 +38,7 @@ from .overlay_render import (
 )
 from .renderer import Renderer
 from .settings import Settings
-from .sprite_render import plan_sprite_render
+from .sprite_render import join_problem, plan_sprite_render, render_sprite
 from .store import NotFound, Store
 
 logger = logging.getLogger(__name__)
@@ -162,12 +162,18 @@ class OverlayRenders:
         )
 
     async def accept_sprite(self, message: pb.SpriteRenderInput) -> str:
-        """Validate one Sprite render completely (it needs no network probe), persist it and start it."""
+        """Validate one Sprite render completely (it needs no network probe), persist it and start it.
+
+        Besides the overlay renderer it needs ffmpeg to join the chunks of a long effect, so a host without it is a 503.
+        """
         try:
             callback_url = media_url(message.callback_url) if message.callback_url else None
         except ValueError:
             raise HTTPException(422, "callback_url 必须是不含空白、用户信息或片段的 HTTP(S) 地址") from None
         self._require_environment()
+        if missing := join_problem():
+            logger.error("单 Sprite 渲染环境缺少 %s，拒绝受理", missing)
+            raise HTTPException(503, "叠加渲染环境不可用，请检查服务端环境")
         try:
             plan_sprite_render(message, await asyncio.to_thread(self._publication, message.sprite_id))
         except OverlayError as exc:
@@ -261,7 +267,7 @@ class OverlayRenders:
         if "sprite_render" in request:
             message = ParseDict(request["sprite_render"], pb.SpriteRenderInput())
             overlay = plan_sprite_render(message, await asyncio.to_thread(self._publication, message.sprite_id))
-            key = f"imv/sprite_render/{task_id}.webm"
+            render, key = render_sprite, f"imv/sprite_render/{task_id}.webm"
         else:
             placements = [OverlayPlacement.model_validate(item) for item in request["placements"]]
             publications = await asyncio.to_thread(self._publications, placements)
@@ -269,11 +275,11 @@ class OverlayRenders:
                 request["audio_url"], request["duration"], placements, publications, HTTP_TIMEOUT_SECONDS,
             )
             overlay = plan_overlay(placements, publications, total, self.settings.overlay_max_seconds)
-            key = f"imv/overlay_render/{task_id}.webm"
+            render, key = render_overlay, f"imv/overlay_render/{task_id}.webm"
         async with self.slot:
             await self._persist(task_id, "rendering")
             shutil.rmtree(work, ignore_errors=True)
-            output = await render_overlay(self.renderer, overlay, work)
+            output = await render(self.renderer, overlay, work)
         await self._persist(task_id, "uploading")
         urls = await asyncio.to_thread(
             upload_public, [(output, key, "video/webm")], ZosSettings(),

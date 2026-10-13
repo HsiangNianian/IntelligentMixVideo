@@ -14,6 +14,8 @@ const rendererRoot = process.env.IMV_RENDERER_ROOT ?? "/renderer";
 os.tmpdir = () => `${root}/.tmp`;
 const request = JSON.parse(await fs.readFile(`${root}/request.json`, "utf8"));
 const { composition, instances } = request;
+// Instances of the same Sprite (repeated placements, subtitle cues) share one module, so its source is bundled once.
+const codes = [...new Set(instances.map((item) => item.code))];
 
 /**
  * Generate the trusted entry: managed fonts, then one Sequence per placement in bottom-to-top order, each Sprite
@@ -23,9 +25,9 @@ const { composition, instances } = request;
  * composition spans the latest clip end (`duration_in_frames`) and only `frames` of it are rendered.
  */
 function entrypoint() {
-  const imports = instances.map((_, index) => `import Sprite${index} from './Sprite${index}';`).join("\n");
+  const imports = codes.map((_, index) => `import Sprite${index} from './Sprite${index}';`).join("\n");
   const placed = instances.map((item, index) =>
-    `<Sequence key={${index}} from={${item.start_frame}} durationInFrames={${item.duration_frames}}><HostLayer box={${JSON.stringify(item.host.box)}} transform={${JSON.stringify(item.host.transform)}}><Sprite${index} {...${JSON.stringify(item.config)}} /></HostLayer></Sequence>`,
+    `<Sequence key={${index}} from={${item.start_frame}} durationInFrames={${item.duration_frames}}><HostLayer box={${JSON.stringify(item.host.box)}} transform={${JSON.stringify(item.host.transform)}}><Sprite${codes.indexOf(item.code)} {...${JSON.stringify(item.config)}} /></HostLayer></Sequence>`,
   ).join("");
   return `/** Trusted overlay host waits for both managed font weights. */
 import React from 'react';
@@ -48,8 +50,8 @@ let browser;
 try {
   await fs.symlink(`${rendererRoot}/node_modules`, `${root}/node_modules`);
   await fs.copyFile(`${rendererRoot}/host-layer.tsx`, `${root}/host-layer.tsx`);
-  for (const [index, item] of instances.entries()) {
-    await fs.writeFile(`${root}/Sprite${index}.tsx`, item.code);
+  for (const [index, code] of codes.entries()) {
+    await fs.writeFile(`${root}/Sprite${index}.tsx`, code);
   }
   await fs.writeFile(`${root}/entry.tsx`, entrypoint());
   const serveUrl = await bundle({

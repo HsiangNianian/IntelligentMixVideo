@@ -595,7 +595,7 @@ def test_real_boundary_samples_render_a_styled_keyword_hit(tmp_path):
     }
 
 
-# 按预览长度写出入场与出场的字效：时长短于 30 帧时 interpolate 的输入区间不再递增而抛错。
+# 按固定帧数写出入场与出场的字效：时长短于 30 帧（例如一条 0.2 秒的字幕切片）时 interpolate 的输入区间不再递增而抛错。
 EDGES_BY_LENGTH = """import React from "react";
 import { AbsoluteFill, interpolate, useCurrentFrame, useVideoConfig } from "remotion";
 export default function Edges(props: { tint: string }) {
@@ -616,7 +616,7 @@ EDGES_SCALED = EDGES_BY_LENGTH.replace(
 @needs_browser
 @pytest.mark.parametrize(("code", "passed"), [(EDGES_BY_LENGTH, False), (EDGES_SCALED, True)], ids=["fixed-edges", "scaled-edges"])
 def test_real_browser_mounts_the_shortest_and_longest_render_length(tmp_path, code, passed):
-    """总线按成片时长渲染（0.5～120 秒），不是按预览长度：生成检查在 15 帧与 3600 帧各挂载首、中、尾帧，只在预览长度下成立的写法以 render_lengths 失败并说明长度与帧号。"""
+    """总线按切片或成片的时长渲染（一条字幕切片短至 0.2 秒，整段最长 120 秒），不是按预览长度：生成检查在 6 帧与 3600 帧各挂载首、中、尾帧，只在预览长度下成立的写法以 render_lengths 失败并说明长度与帧号。"""
     settings = Settings(_env_file=None, data_dir=tmp_path, **BROWSER)
     component_ = ComponentDefinition(
         code=code,
@@ -627,10 +627,10 @@ def test_real_browser_mounts_the_shortest_and_longest_render_length(tmp_path, co
         RenderValidationInput(component=component_, duration_frames=150), transparency=True, lengths=render_lengths(30),
     ))
     check = next(item for item in report.checks if item.name == "render_lengths")
-    assert render_lengths(30) == [15, 3600]
+    assert render_lengths(30) == [6, 3600]
     assert report.passed is passed and (check.status == "passed") is passed, check.message
     if not passed:
-        assert "Rendered 15 frames long (0.5 s)" in check.message and "at frame 0" in check.message
+        assert "Rendered 6 frames long (0.2 s)" in check.message and "at frame 0" in check.message
 
 
 def composed_instances() -> dict:
