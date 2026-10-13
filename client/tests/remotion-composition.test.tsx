@@ -29,7 +29,8 @@ test("新会话钉死固定画布并发送固定初始配置", async () => {
   expect(screen.queryByLabelText("画布宽度（像素）")).toBeNull();
   expect(screen.queryByLabelText("画布高度（像素）")).toBeNull();
   fireEvent.change(screen.getByLabelText("字效描述"), { target: { value: "生成标题" } });
-  fireEvent.click(screen.getByRole("button", { name: "发送" }));
+  // 等待创建响应更新会话；请求已发出不代表 React 已完成状态更新。
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "发送" })); });
   await waitFor(() => expect(creations()).toHaveLength(1));
   expect(creations()[0]).toEqual({
     description: "生成标题",
