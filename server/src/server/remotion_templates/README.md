@@ -92,7 +92,7 @@ IMV_TEST_RENDERER=1 uv run --locked --project server pytest server/tests/test_re
 The browser path requires Chromium, Noto CJK fonts, bubblewrap and util-linux.
 The isolation is Linux-only: `POST /works`, a parameter patch on a pre-composition
 (PR74) version or on a composed version whose player bundle predates injected defaults
-(no `imv-preview-host` marker) sent to `POST /works/{id}/messages`, the retry of such a parameter job and
+(no `/* imv-preview-protocol 1 */` first line) sent to `POST /works/{id}/messages`, the retry of such a parameter job and
 `POST /api/sprites/publish` return 503 naming the unsupported platform or the missing
 `bwrap`, `prlimit` or `node` before anything is queued, so on macOS the service starts but
 cannot generate templates. A parameter patch on a composed (PR76) version whose bundle
@@ -299,8 +299,10 @@ ready message. The page injects the published defaults and content box as a JSON
 `<`, `>`, `&` and line separators escaped); the player starts from them, merges `imv-preview-update` values over
 them (objects key by key, arrays and scalars replace) and applies an optional `host: {transform}` through
 `remotion/host-layer.tsx`, the wrapper the overlay render uses too. Such a bundle reports `host: true` when ready.
-Publishing rebuilds the bundle from the sealed source in the isolated worker when the sealed one lacks either
-marker (`imv-preview-sync`, `imv-preview-host`) and refreshes an existing publication on re-save; a failed rebuild still saves the asset, just without overlay preview.
+`presentation.mjs` writes the host protocol it speaks as the bundle's first line (`/* imv-preview-protocol 1 */`,
+`publication.PREVIEW_PROTOCOL`); only that line counts, because the generated code and its defaults are bundled too and
+can contain any text. Publishing rebuilds the bundle from the sealed source in the isolated worker when the sealed one
+lacks that line and refreshes an existing publication on re-save; a failed rebuild still saves the asset, just without overlay preview.
 A refresh stages the new bundle and records its hash before replacing the copy, so a failed update keeps the
 previous copy working and publishing again retries it. Identical publish requests (same version and field
 choice) take turns, so a double click rebuilds once.

@@ -279,7 +279,7 @@ def _store_bundle(store: Store, sprite: pb.PublishedSprite, data: bytes) -> None
 
     The new bytes are staged beside the copy and the hash is recorded before they take its place, so a failed
     write or database update leaves the old copy matching its hash. A swap that never completes leaves the old
-    copy, which still lacks the synchronisation marker, so publishing again retries it.
+    copy, which still lacks the protocol line, so publishing again retries it.
     """
     target = store.root / "sprites" / sprite.sprite_id / PREVIEW_BUNDLE
     staged = target.with_name(f"{PREVIEW_BUNDLE}.{uuid4().hex}.tmp")
