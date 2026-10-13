@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, get_args
 
+from ..template.schema import OVERRIDE_STRING_MAX_LENGTH
 from .tools.contracts import SpriteKindName
 
 KINDS: tuple[SpriteKindName, ...] = get_args(SpriteKindName)
@@ -141,6 +142,7 @@ def parameter_problems(definition: object) -> str | None:
     """顶层标准参数的通用约束：控件需要明确的取值范围，返回违反原因或 None。
 
     数字须声明上下界；字符串须是颜色、枚举或声明 maxLength；布尔不受限；数组只允许关键词形状。
+    字符串的 maxLength 不能超过模板覆盖值的上限：否则控件允许的文字保存不了，发布时的长文字样本也会无限膨胀。
     """
     if not isinstance(definition, dict):
         return "must be a JSON Schema object"
@@ -150,7 +152,10 @@ def parameter_problems(definition: object) -> str | None:
     if kind in {"number", "integer"}:
         return None if _number(definition) or isinstance(definition.get("enum"), list) else "a number needs minimum and maximum"
     if kind == "string":
-        if _color(definition) or isinstance(definition.get("enum"), list) or isinstance(definition.get("maxLength"), int):
+        limit = definition.get("maxLength")
+        if limit is not None and (not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= OVERRIDE_STRING_MAX_LENGTH):
+            return f"a string maxLength must be between 1 and {OVERRIDE_STRING_MAX_LENGTH}"
+        if _color(definition) or isinstance(definition.get("enum"), list) or limit is not None:
             return None
         return f"a string needs the colour pattern {HEX_COLOR}, an enum or a maxLength"
     if kind == "boolean":

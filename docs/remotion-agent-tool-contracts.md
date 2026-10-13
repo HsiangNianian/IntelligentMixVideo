@@ -731,7 +731,7 @@ description 非空，instances 非空。主画布配置和 sprite 总帧数均�
 2. 每个 target 必须是该实例预设顶层声明的 prop，且同一 prop 只能绑定一次；被绑定 prop 的 Schema 必须是对象形式（不能是 `true`/`false` 布尔子 Schema），也不能使用 `$ref`。
 3. 同一绑定的各 target 必须接受同样的值（忽略 title、description），且组合时取值相同；该值成为顶层默认值，`title` 成为界面控件名称。
 4. 绑定后的参数是 Sprite Schema 顶层的必填属性，并从对应实例的嵌套 Schema、required 与默认值中移除；生成的宿主把顶层值传给每个 target。
-5. 顶层参数必须有明确的取值范围：数字声明 minimum 与 maximum（或 enum），字符串使用颜色 pattern、enum 或 maxLength，布尔不受限，数组只允许关键词形状；否则返回 `INVALID_ARGUMENT`。
+5. 顶层参数必须有明确的取值范围：数字声明 minimum 与 maximum（或 enum），字符串使用颜色 pattern、enum 或 maxLength（maxLength 为 1～2000，即模板覆盖值的上限），布尔不受限，数组只允许关键词形状；否则返回 `INVALID_ARGUMENT`。
 6. 整个 Sprite 的位置、缩放、旋转与不透明度由宿主按实例 layout 的并集统一实现，不通过参数绑定，预设也不应自行实现。
 
 工具执行以下确定性组合：

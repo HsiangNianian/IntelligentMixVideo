@@ -71,6 +71,12 @@ def test_a_missing_kind_is_reported_without_rules():
     (COLOR, None),
     ({"type": "string", "enum": ["left", "right"]}, None),
     ({"type": "string", "maxLength": 20}, None),
+    ({"type": "string", "maxLength": 2000}, None),
+    # Longer than a template override may be (2000): the control would accept text the template save refuses, the
+    # long-text boundary sample would grow with it, and 2**32 does not even fit the published uint32 field.
+    ({"type": "string", "maxLength": 2001}, "a string maxLength must be between 1 and 2000"),
+    ({"type": "string", "maxLength": 2**32}, "a string maxLength must be between 1 and 2000"),
+    ({"type": "string", "enum": ["a"], "maxLength": 0}, "a string maxLength must be between 1 and 2000"),
     ({"type": "string"}, f"a string needs the colour pattern {HEX_COLOR}, an enum or a maxLength"),
     ({"type": "boolean"}, None),
     ({"type": "array", "items": {"type": "number"}}, "only a keywords string array is supported"),

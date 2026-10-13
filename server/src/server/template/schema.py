@@ -68,6 +68,10 @@ def _finite(value):
     return float(value)
 
 
+# 一个字符串覆盖值的长度上限；Sprite 发布时可绑定的字符串参数 maxLength 也不能超过它。
+OVERRIDE_STRING_MAX_LENGTH = 2000
+
+
 class RemotionStringList(_RemotionModel):
     """字符串列表参数（关键词）的值。"""
 
@@ -78,7 +82,7 @@ class RemotionParameterOverride(_RemotionModel):
     """一个参数覆盖；恰好设置一个值字段。"""
 
     key: StrictStr = Field(min_length=1, max_length=255)
-    string_value: StrictStr | None = Field(default=None, max_length=2000)
+    string_value: StrictStr | None = Field(default=None, max_length=OVERRIDE_STRING_MAX_LENGTH)
     number_value: float | None = None
     bool_value: StrictBool | None = None
     string_list_value: RemotionStringList | None = None
