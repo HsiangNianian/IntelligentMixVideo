@@ -216,6 +216,8 @@ Terminal callbacks contain `taskId`, `status`, `videoUrl`, and `errorMessage`. A
 
 Required fields, external services, and subtitle behavior differ by mode. Before submitting a request, read the [video composition API documentation](server/src/server/video_composition/api.md), especially the distinction between omitting `materials`, supplying an empty array, and supplying a non-empty array.
 
+The composition integration also renders dynamic Remotion titles and subtitles into one transparent video and adds it to the IMS Timeline. See the [integration and validation notes](docs/remotion-video-composition.md) for the current template-slot behavior and compatibility limits.
+
 ### Rendering Transparent Overlays
 
 `POST /api/v1/overlay-renders` renders the fixed Remotion clips saved under a given `styleId` into one transparent VP9 Alpha WebM, using their timing and stacking order. The output contains no audio, and an accessible URL is returned after upload to ZOS.

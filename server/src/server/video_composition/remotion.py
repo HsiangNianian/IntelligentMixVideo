@@ -1,0 +1,254 @@
+"""合成任务的 Remotion 适配：固定资产快照 → 业务实例 → 整段透明视频。
+
+任务状态由 video_composition 保存；共享 Remotion 的隔离渲染器与名额，不建立第二套任务。
+"""
+import asyncio
+import hashlib
+import json
+import logging
+import math
+import shutil
+import traceback
+from pathlib import Path
+from uuid import UUID
+
+from generated.imv.sprite.v1 import sprite_pb2 as pb
+from google.protobuf.json_format import MessageToDict, ParseDict
+from pydantic import TypeAdapter
+
+from ..remotion_templates import sprites
+from ..remotion_templates.placement import resolve as resolve_placement
+from ..template.schema import EffectTrack, RemotionTrackEditor
+from ..template.timing import resolve_track
+from .remotion_content import ContentError, dynamic_duration, resolve_config, roles
+from .remotion_timing import retime_source
+from ..remotion_templates.overlay_render import Overlay, OverlayError, environment_problem, render_overlay, to_frames
+from ..remotion_templates.sprite_router import sprite_runtime
+from .errors import CompositionError
+from .execution_log import sanitize
+from .schema import CompositionRequest, Segment
+from .settings import ZosSettings
+from .text_events import subtitle_events
+from .zos import upload_public
+
+logger = logging.getLogger(__name__)
+
+
+def preserve_failure(work: Path, error: Exception) -> None:
+    """清理前私有保存完整异常链、子进程 stderr 和 worker 日志；不保留视频，不进入公开七模块日志。"""
+    destination = work.parent.parent / "composition-overlay-failures" / work.name
+    destination.mkdir(parents=True, exist_ok=True, mode=0o700)
+    detail = "".join(traceback.format_exception(error))
+    cause, seen = error, set()
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        # 异常文本不含子进程输出，例如打包器缺少依赖或拒绝导入的原因只在 stderr 里。
+        if isinstance(stderr := getattr(cause, "stderr", None), str) and stderr:
+            detail += f"\n[{type(cause).__name__} stderr]\n{stderr[-20000:]}"
+        cause = cause.__cause__ or cause.__context__
+    detail = sanitize(detail)
+    (destination / "error.log").write_text(detail, encoding="utf-8")
+    if (work / "worker.log").is_file():
+        shutil.copyfile(work / "worker.log", destination / "worker.log")
+
+
+async def snapshot(template) -> dict:
+    """从本单 IMS 模板的 remotion 轨道固定引用和 MySQL 发布副本，恢复时不重读。"""
+    def read():
+        """数据库和源码校验在工作线程内执行；空模板不初始化 Remotion 运行时。"""
+        placements, publications = [], {}
+        for track in template.tracks:
+            if track.target != "remotion":
+                continue
+            asset_id = str(track.sprite_id)
+            if asset_id not in publications:
+                publications[asset_id] = MessageToDict(sprites.get(asset_id), preserving_proto_field_name=True)
+            placements.append({"id": track.id, "sprite_id": asset_id, "start": track.start,
+                               "duration": track.duration, "text_target": track.text_target,
+                               "transition_boundary": track.transition_boundary,
+                               "editor": track.editor.remotion.model_dump(mode="json", exclude_none=True) if track.editor.remotion else {}})
+        return {"revision": template.updated_at.isoformat(), "placements": placements, "assets": publications}
+    try:
+        return await asyncio.to_thread(read)
+    except Exception as exc:
+        raise CompositionError("remotion_asset_unavailable", "Remotion 资产无法读取", "template") from exc
+
+
+def placement_target(placement: dict, sprite: pb.PublishedSprite) -> str:
+    """快照摆放的业务用途：新槽位优先，其次旧用途；视觉资产默认透明装饰，类型不符明确失败。"""
+    # 旧任务固定的私有快照仍可恢复，新任务只写模板轨道参数。
+    editor = RemotionTrackEditor.model_validate(placement.get("editor", {}))
+    legacy = {"SPRITE_TARGET_TITLE": "title", "SPRITE_TARGET_SUBTITLE": "subtitle",
+              "SPRITE_TARGET_FILTER": "decoration", "SPRITE_TARGET_VIDEO_EFFECT": "decoration"}
+    target = placement.get("text_target") or editor.business_target or legacy.get(placement.get("target"))
+    if target is None and sprite.kind in {pb.SPRITE_KIND_FILTER_OVERLAY, pb.SPRITE_KIND_VIDEO_OVERLAY,
+                                         pb.SPRITE_KIND_TRANSITION_OVERLAY}:
+        target = "decoration"
+    if target is None:
+        raise ContentError("请先为 Remotion 资产选择标题、字幕或透明装饰用途")
+    if (sprite.kind == pb.SPRITE_KIND_TEXT) != (target in {"title", "subtitle"}):
+        raise ContentError("字效请选择标题或字幕，视觉资产请选择透明装饰")
+    return target
+
+
+async def require_environment(data: dict) -> None:
+    """快照里有会实际渲染的摆放时，在付费 ASR／切片前确认隔离渲染环境；没有可显示内容时不要求。"""
+    saved = data.get("remotion") or {}
+    if not saved.get("placements"):
+        return
+    request = CompositionRequest.model_validate(data["request"])
+    try:
+        targets = {placement_target(placement, ParseDict(saved["assets"][placement["sprite_id"]], pb.PublishedSprite()))
+                   for placement in saved["placements"]}
+    except ContentError as exc:
+        raise CompositionError("remotion_asset_not_adapted", str(exc), "template") from exc
+    title = bool(request.title and request.title.strip())
+    subtitle = bool(request.text) and request.composition_mode != "materials_silent"
+    if not ("decoration" in targets or ("title" in targets and title) or ("subtitle" in targets and subtitle)):
+        return
+    try:
+        problem = environment_problem((await sprite_runtime()).settings)
+    except Exception as exc:
+        raise CompositionError("remotion_render_environment_unavailable", "Remotion 渲染环境不可用", "template") from exc
+    if problem:
+        raise CompositionError("remotion_render_environment_unavailable", "Remotion 渲染环境不可用", "template")
+
+
+def plan(data: dict, max_seconds: float, *, timeline: dict | None = None) -> Overlay | None:
+    """根据已保存业务快照展开字幕；示例时长不限制字幕，空内容不产生实例。"""
+    saved = data.get("remotion")
+    # 历史任务没有快照时延续原流程，不能恢复时偷偷读取新的模板绑定。
+    if not saved or not saved["placements"]:
+        return None
+    request = CompositionRequest.model_validate(data["request"])
+    duration = data["duration_ms"] / 1000
+    if not math.isfinite(duration) or duration <= 0:
+        raise OverlayError("duration_invalid", "成片时长无效")
+    width, height, fps = (data["output"][key] for key in ("width", "height", "fps"))
+    frames = max(1, math.ceil(duration * fps - 1e-8))
+    publications = {key: ParseDict(value, pb.PublishedSprite()) for key, value in saved["assets"].items()}
+    segments = TypeAdapter(list[Segment]).validate_python(data.get("segmentation", {}).get("segments", []))
+    events = subtitle_events(segments) if request.composition_mode != "materials_silent" and request.text else []
+    title_keyword = data.get("segmentation", {}).get("title_keyword", "")
+    instances = []
+    timed_sources = {}
+    for placement in sorted(saved["placements"], key=lambda item: item.get("order", 0)):
+        editor = RemotionTrackEditor.model_validate(placement.get("editor", {}))
+        sprite = publications[placement["sprite_id"]]
+        text_target = placement.get("text_target")
+        target = placement_target(placement, sprite)
+        if hashlib.sha256(sprite.tsx_code.encode()).hexdigest() != sprite.code_sha256:
+            raise ContentError("Remotion 资产快照源码校验失败")
+        try:
+            config, host = resolve_placement(sprite, editor)
+        except ValueError as exc:
+            raise ContentError(str(exc)) from exc
+        dynamic = target in {"title", "subtitle"}
+        fixed_clock = dynamic and not dynamic_duration(json.loads(sprite.config_schema_json))
+        start = placement.get("start", 0)
+        length_seconds = placement.get("duration") or sprite.canvas.preview_frames / sprite.canvas.fps
+        if text_target:
+            # 新槽位跟随文字对象的实际区间；IMS 动画不参与 Remotion 字效的时长校验。
+            text_track = next((track for track in data.get("template", {}).get("tracks", [])
+                               if track.get("target") == text_target), None)
+            if text_track is None:
+                raise ContentError("Remotion 字效缺少所作用的文字对象")
+            track = EffectTrack.model_validate(text_track).model_copy(update={"target": "remotion"})
+            applied = resolve_track(track, duration, fps)
+            end = duration if text_target == "title" and track.duration is None and applied.end > applied.start else applied.end
+            start, length_seconds = applied.start, end - applied.start
+        boundary = placement.get("transition_boundary")
+        if boundary is not None:
+            if sprite.kind != pb.SPRITE_KIND_TRANSITION_OVERLAY:
+                raise ContentError("只有 Remotion 转场可以指定视频交界处")
+            if timeline is None:
+                raise ContentError("Remotion 转场缺少最终素材时间线")
+            clips = timeline["VideoTracks"][0]["VideoTrackClips"]
+            if boundary >= len(clips):
+                continue
+            # 沿用上游预览规则，仅将已绑定的转场居中放在指定切点，不自动扩展至所有切点。
+            start = max(0, clips[boundary - 1]["TimelineOut"] - length_seconds / 2)
+        if target == "subtitle":
+            contents = [(text, keyword, max(begin, start), min(end, start + length_seconds))
+                        for text, keyword, begin, end in events] if text_target else events
+        elif target == "title":
+            contents = [(request.title, title_keyword, start, start + length_seconds)] if request.title and request.title.strip() else []
+        else:
+            if sprite.kind == pb.SPRITE_KIND_TEXT or roles(json.loads(sprite.config_schema_json))["text"]:
+                raise ContentError("文字资产必须选择标题或字幕，不能作为装饰渲染示例文案")
+            contents = [("", "", start, start + length_seconds)]
+        for text, keyword, start, end in contents:
+            start, end = max(0, start), min(duration, end)
+            if end <= start:
+                continue
+            first = min(frames - 1, to_frames(start, fps))
+            last = min(frames, max(first + 1, to_frames(end, fps)))
+            count = last - first
+            values = resolve_config(sprite, text, keyword, sprite.canvas.preview_frames if fixed_clock else count,
+                                    placement.get("text_prop", ""), placement.get("keywords_prop", ""), config=config) if dynamic else config
+            code = sprite.tsx_code
+            if fixed_clock:
+                if sprite.sprite_id not in timed_sources:
+                    timed_sources[sprite.sprite_id] = retime_source(sprite)
+                code = timed_sources[sprite.sprite_id]
+            # 装饰保留完整动画区间，由成片总长裁尾；动态正文使用实际可见区间。
+            length = count if dynamic else max(1, to_frames(min(length_seconds, max_seconds), fps))
+            instances.append({"code": code, "config": values, "host": host, "start_frame": first,
+                              "duration_frames": length, "width": sprite.canvas.width, "height": sprite.canvas.height})
+    if not instances:
+        return None
+    if duration > max_seconds:
+        raise OverlayError("duration_too_long", f"成片时长超过 Remotion 上限 {max_seconds:g} 秒")
+    return Overlay(width, height, fps, frames, instances)
+
+
+async def render(task_id: str, data: dict, timeout: float, *, timeline: dict | None = None) -> dict | None:
+    """使用共享渲染名额输出整段视频并上传；返回后由合成任务保存，失败不降级。"""
+    if not data.get("remotion", {}).get("placements"):
+        return None
+    try:
+        service = await sprite_runtime()
+        work = service.store.root / "composition-overlays" / task_id
+        # 计划与打包失败同样私有保存根因：公开错误只有固定摘要，打包器输出可能含资产源码。
+        try:
+            overlay = await asyncio.to_thread(plan, data, service.settings.overlay_max_seconds, timeline=timeline)
+            if overlay is None:
+                return None
+            if environment_problem(service.settings):
+                raise OverlayError("render_environment_unavailable", "Remotion 渲染环境不可用")
+            async with service.overlays.slot:
+                await asyncio.to_thread(shutil.rmtree, work, True)
+                output = await render_overlay(service.harness.renderer, overlay, work)
+            # 文件必须存活到上传线程收尾；取消任务不保存迟到结果。
+            upload = asyncio.create_task(asyncio.to_thread(upload_public,
+                [(output, f"imv/video_composition/{task_id}/overlay.webm", "video/webm")], ZosSettings(), timeout))
+            try:
+                urls = await asyncio.shield(upload)
+            finally:
+                await asyncio.gather(upload, return_exceptions=True)
+            return {"video_url": urls[0], "duration": data["duration_ms"] / 1000,
+                    "width": overlay.width, "height": overlay.height, "fps": overlay.fps, "frames": overlay.frames}
+        except Exception as exc:
+            try:
+                await asyncio.to_thread(preserve_failure, work, exc)
+            except OSError as diagnostic_error:
+                logger.error("合成任务 %s 私有渲染诊断保存失败：%s", task_id, type(diagnostic_error).__name__)
+            raise
+        finally:
+            await asyncio.to_thread(shutil.rmtree, work, True)
+    except ContentError as exc:
+        raise CompositionError("remotion_asset_not_adapted", str(exc), "assembling") from exc
+    except OverlayError as exc:
+        raise CompositionError("remotion_" + exc.code, exc.message, "assembling") from exc
+    except Exception as exc:
+        raise CompositionError("remotion_render_failed", "Remotion 字效渲染或上传失败", "assembling") from exc
+
+
+def append_track(timeline: dict, result: dict | None, output: dict) -> None:
+    """直接加入最后视频轨；IMS 文字位于其上层，透明视频从 0 秒与音频对齐。"""
+    if result:
+        timeline["VideoTracks"].append({"VideoTrackClips": [{
+            "Type": "Video", "MediaURL": result["video_url"], "In": 0, "Out": result["duration"],
+            "TimelineIn": 0, "TimelineOut": result["duration"], "Width": output["width"],
+            "Height": output["height"], "AdaptMode": "Cover",
+        }]})

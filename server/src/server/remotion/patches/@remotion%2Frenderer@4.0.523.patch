@@ -1,0 +1,26 @@
+diff --git a/dist/esm/index.mjs b/dist/esm/index.mjs
+index b1366ce82995bba6c1f680432563586b2851e49b..db16b83c495729edf2e3fb24721779f8e17e243a 100644
+--- a/dist/esm/index.mjs
++++ b/dist/esm/index.mjs
+@@ -7248,7 +7248,7 @@ var internalOpenBrowser = async ({
+     logLevel,
+     indent,
+     userDataDir,
+-    timeout: 25000,
++    timeout: 90000,
+     args: [
+       "about:blank",
+       "--allow-pre-commit-input",
+diff --git a/dist/open-browser.js b/dist/open-browser.js
+index f262fed4b590131ccb6a541bf7e86eaba2dfa2c7..12427b5dac20459082180f558639df1912423298 100644
+--- a/dist/open-browser.js
++++ b/dist/open-browser.js
+@@ -101,7 +101,7 @@ const internalOpenBrowser = async ({ browser, browserExecutable, chromiumOptions
+         logLevel,
+         indent,
+         userDataDir,
+-        timeout: 25000,
++        timeout: 90000,
+         args: [
+             'about:blank',
+             '--allow-pre-commit-input',

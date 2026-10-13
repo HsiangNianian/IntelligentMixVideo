@@ -6,9 +6,11 @@ import { VersionCard } from "@/features/remotion_templates/VersionCard";
 import { defaultKind, publishChoice } from "@/features/remotion_templates/spriteChoice";
 import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
 import { SpriteClips } from "@/features/templates/SpritePanels";
+import { getTemplate, saveTemplate } from "@/features/templates/api";
+import { bindClip } from "@/features/templates/clips";
 import type { SpriteAsset } from "@/features/sprites/model";
-import type { RemotionClip } from "@/features/templates/model";
-import { EffectTemplateEditorSchema, SaveTemplateRequestSchema } from "@/generated/imv/template/v1/template_pb";
+import { toDraft, type RemotionClip } from "@/features/templates/model";
+import { EffectTemplateEditorSchema, GetTemplateResponseSchema, SaveTemplateRequestSchema, SaveTemplateResponseSchema } from "@/generated/imv/template/v1/template_pb";
 import {
   ListSpritesResponseSchema,
   OperatorAccess,
@@ -155,6 +157,47 @@ test("发布请求随所选分类变化，旧版本的拒绝原因原样显示",
 function wireClips(request: ReturnType<typeof fromBinary<typeof SaveTemplateRequestSchema>>) {
   return request.tracks!.tracks.filter((track) => track.target === "remotion");
 }
+
+// 旧用途原样往返不会隐式改成替代槽位；显式选择槽位后才采用新语义。
+test.each([
+  ["title", undefined, undefined],
+  ["subtitle", undefined, undefined],
+  ["subtitle", "title", "title"],
+  ["decoration", undefined, undefined],
+  [undefined, "subtitle", "subtitle"],
+] as const)("旧用途 %s 与文字槽位 %s 往返保存时以槽位为准", async (purpose, textTarget, expectedTarget) => {
+  const template = { ...savedTemplate(), clips: [{ id: "legacy", sprite_id: "sprite-1", start: 0, duration: 3, parameters: {}, transform: {} }] };
+  const response = protobufTemplateResponse(template, "get");
+  const message = fromBinary(GetTemplateResponseSchema, new Uint8Array(await response.arrayBuffer()));
+  const track = message.template!.tracks!.tracks.find((item) => item.target === "remotion")!;
+  track.textTarget = textTarget;
+  track.editor = create(EffectTemplateEditorSchema, { remotion: {
+    businessTarget: purpose,
+    parameters: purpose === "title" || purpose === "subtitle" ? [
+      { key: "text", stringValue: "旧示例文字" },
+      { key: "keywords", stringListValue: { values: ["旧词"] } },
+      { key: "color", stringValue: "#FFFFFF" },
+    ] : [],
+  } });
+  let saved: ReturnType<typeof fromBinary<typeof SaveTemplateRequestSchema>> | undefined;
+  fetchMock.mockImplementation((async (_url, init) => {
+    if (init?.method === "POST") {
+      saved = fromBinary(SaveTemplateRequestSchema, new Uint8Array(init.body as Uint8Array));
+      return binary(SaveTemplateResponseSchema, create(SaveTemplateResponseSchema, { template: message.template }));
+    }
+    return binary(GetTemplateResponseSchema, message);
+  }) as typeof fetch);
+  const loaded = await getTemplate(template.template_id);
+  expect(loaded.clips![0].text_target).toBe(expectedTarget);
+  expect(loaded.clips![0].business_target).toBe(purpose);
+  if (purpose === "title" || purpose === "subtitle") expect(loaded.clips![0].parameters).toEqual({ color: "#FFFFFF" });
+  const rebound = expectedTarget === "title" ? "subtitle" : expectedTarget === "subtitle" ? "title" : undefined;
+  const draft = toDraft(loaded);
+  await saveTemplate(rebound ? bindClip(draft, "legacy", { text_target: rebound }) : draft, loaded.template_id);
+  const [savedClip] = wireClips(saved!);
+  expect(savedClip.textTarget).toBe(rebound);
+  expect(savedClip.editor?.remotion?.businessTarget).toBe(purpose ? rebound ?? purpose : undefined);
+});
 
 // 场景：已有片段随模板读取后在右侧列出名称与时间；移除后随模板一次保存，请求里不再有 remotion 轨道，也没有任何绑定请求。
 test("已有片段显示在列表中，移除后随模板保存", async () => {
@@ -311,6 +354,7 @@ test("字效作用于文字对象并可改为字幕", async () => {
   fireEvent.click(within(item).getByRole("button", { name: "设置 Remotion 资产：金色标题" }));
   const inspector = await screen.findByRole("region", { name: "Remotion 资产设置" });
   expect(within(inspector).queryByLabelText("标题文字")).toBeNull();
+  expect(within(inspector).queryByRole("combobox", { name: "Remotion 合成用途" })).toBeNull();
   expect(within(inspector).getByLabelText("字号")).toBeTruthy();
   fireEvent.click(within(inspector).getByRole("radio", { name: "底部字幕" }));
   await waitFor(() => expect(screen.getByRole("listitem", { name: "Remotion 资产：金色标题" }).textContent).toContain("底部字幕字效"));

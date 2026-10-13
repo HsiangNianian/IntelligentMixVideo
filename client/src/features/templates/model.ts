@@ -105,6 +105,8 @@ export interface EffectAsset {
 
 /** 模板里的一次 Remotion 片段摆放：引用已发布的 Sprite，起点为秒；列表先后决定叠放层级，先者在下。 */
 export interface RemotionClip {
+  /** 旧合成用途的读写兼容；新模板使用 text_target 与资产分类，不再提供独立用途控件。 */
+  business_target?: "title" | "subtitle" | "decoration";
   /** 模板内唯一的摆放 ID，同一个 Sprite 可以摆放多次。 */
   id: string;
   sprite_id: string;

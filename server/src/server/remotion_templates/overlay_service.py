@@ -1,9 +1,9 @@
 """Durable async tasks that render Remotion overlays and publish the video to ZOS.
 
-Two kinds of task share one table, one render slot and one recovery: a template overlay (the placements of
+Two kinds of task share one table, three render slots and one recovery: a template overlay (the placements of
 `/api/v1/overlay-renders`) and a single Sprite render (one `SpriteRenderInput` of `/api/sprites/render`).
 Accepting a task validates its input and stores it in the Remotion SQLite database; a background asyncio
-task renders (one at a time), uploads to ZOS, saves the result and notifies the callback. Unfinished tasks
+task renders (up to three at a time), uploads to ZOS, saves the result and notifies the callback. Unfinished tasks
 are re-run by `resume()` after a restart, and the terminal notification is retried with fixed delays. The
 planning rules live in `overlay_render.py` and `sprite_render.py`.
 """
@@ -51,12 +51,12 @@ TERMINAL = ("succeeded", "failed")
 
 
 class OverlayRenders:
-    """Own the task table rows, the single render slot and the background tasks of one runtime."""
+    """Own the task table rows, three shared render slots and the background tasks of one runtime."""
 
     def __init__(self, store: Store, renderer: Renderer, settings: Settings) -> None:
         """Create no tasks; `resume()` starts recovery."""
         self.store, self.renderer, self.settings = store, renderer, settings
-        self.slot = asyncio.Semaphore(1)
+        self.slot = asyncio.Semaphore(3)
         self.tasks: set[asyncio.Task] = set()
         self.resumed = False
 
@@ -259,7 +259,7 @@ class OverlayRenders:
         """Plan the task, render it and publish it to ZOS.
 
         A template overlay first resolves its duration; a single Sprite render carries its time. Only the render
-        holds the single slot: the remote audio probe before it and the upload after it would otherwise keep
+        holds a slot: the remote audio probe before it and the upload after it would otherwise keep
         every queued render waiting on the network.
         """
         _, data = self._read(task_id)

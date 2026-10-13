@@ -129,6 +129,7 @@ class RemotionTrackEditor(_RemotionModel):
 
     parameters: list[RemotionParameterOverride] = Field(default_factory=list, max_length=64)
     transform: RemotionTransform | None = None
+    business_target: Literal["title", "subtitle", "decoration"] | None = None
 
     @model_validator(mode="after")
     def unique_keys(self) -> "RemotionTrackEditor":

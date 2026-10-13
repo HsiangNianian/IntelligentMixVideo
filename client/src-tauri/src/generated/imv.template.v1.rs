@@ -64,6 +64,9 @@ pub struct RemotionTrackEditor {
     /// 宿主变换；未提供表示全部取默认值。
     #[prost(message, optional, tag="2")]
     pub transform: ::core::option::Option<RemotionTransform>,
+    /// 业务合成用途：title/subtitle/decoration；省略时保留固定片段预览，业务合成要求明确用途。
+    #[prost(string, optional, tag="3")]
+    pub business_target: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// 单个画面对象的编辑参数，未提供的字段由业务模块补齐默认值。
 #[derive(::serde::Serialize)]

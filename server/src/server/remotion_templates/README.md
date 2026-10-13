@@ -90,6 +90,16 @@ IMV_TEST_RENDERER=1 uv run --locked --project server pytest server/tests/test_re
 ```
 
 The browser path requires Chromium, Noto CJK fonts, bubblewrap and util-linux.
+Linux sandboxes also mount `/var/cache/fontconfig` read-only when it exists, so each
+new Chrome can reuse system font metadata instead of rescanning all font files.
+Without that directory, fontconfig keeps its normal per-sandbox cache fallback.
+Chrome startup has a separate 90-second deadline: the locked Remotion 4.0.523
+renderer hardcodes 25 seconds, so `remotion/patches/` carries a Bun dependency patch
+for both CommonJS and ESM builds. Run `bun install --frozen-lockfile` in the renderer
+directory to apply it after checkout; when upgrading Remotion, reassess the patch.
+The outer render deadline (900 seconds for overlays) still covers browser startup
+and rendering; this change does not alter per-frame render timeouts.
+
 The isolation is Linux-only: `POST /works`, a parameter patch on a pre-composition
 (PR74) version or on a composed version whose player bundle predates injected defaults
 (no `/* imv-preview-protocol 1 */` first line) sent to `POST /works/{id}/messages`, the retry of such a parameter job and
@@ -223,7 +233,9 @@ Publishing re-verifies the sealed `accepted/` artifacts (409 when changed) and o
 with a kind and top-level parameter bindings (`spec.sprite.kind`/`bindings`); older versions are refused with a
 422 that asks for an edit in chat. The requested kind defaults to the agent's choice on the client but may be
 changed: the version must expose that kind's required parameters (`categories.REQUIRED`), otherwise the 422 lists
-them in Chinese. A text Sprite's required parameters include the keyword options the bus forwards from the IMS
+them in Chinese. The generation prompt and required-parameter examples use `text` with `minLength: 1` and
+`maxLength: 100`; already published assets retain their own sealed schema and need a new version to change it.
+A text Sprite's required parameters include the keyword options the bus forwards from the IMS
 title/subtitle keyword fields: `keywords`, `keywordBold`/`Italic`/`Underline`/`Strikeout`, `keywordColor` (`""`
 keeps the text colour) and `keywordSize` (0 keeps the font size, otherwise 12–300; placements refuse 1–11), with `keywords` items holding at least 12
 characters (the segmentation keywords the bus forwards). Their
@@ -345,8 +357,8 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
 - **Output**: no audio; the bus/IMS keeps its own audio track and overlays the WebM. The host re-probes the file
   (VP9, size, fps, frame count, alpha tag) before uploading.
 - **Execution**: `overlay_render.py` plans, `remotion/overlay-worker.mjs` renders in the bwrap sandbox
-  (`IMV_OVERLAY_RENDER_TIMEOUT_SECONDS`, 3600), `overlay_service.py` owns the SQLite `overlay_renders` task table,
-  one render at a time (the slot covers only the render: the remote audio probe before it and the ZOS upload after it
+  (`IMV_OVERLAY_RENDER_TIMEOUT_SECONDS`, default 900 seconds), `overlay_service.py` owns the SQLite `overlay_renders` task table,
+  up to three renders at a time (each slot covers only the render: the remote audio probe before it and the ZOS upload after it
   run outside, so a slow network never delays queued renders), recovery of unfinished tasks and pending notifications
   when the runtime is first built
   (`routes.runtime_for`, oldest first; a damaged row is logged and skipped, and the overlay routes retry if the table
@@ -354,9 +366,14 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   task, so a recovered task renders exactly what was accepted and only re-reads the published Sprites. State writes retry a locked database
   three times; if it stays unwritable the row keeps its previous state (never rewritten as a failure) and the next
   start re-runs it. Sealed sources are not re-policy-checked in this worker.
+- **Worker failures**: an exception exits the isolated overlay worker immediately, including a browser connection
+  timeout before `openBrowser()` returns a handle. Bubblewrap cleans up the remaining processes, so the host records
+  failure and releases the shared render slot instead of waiting for the full rendering deadline. The private worker
+  log records browser startup/connection and sparse rendered/encoded frame counts; API `assembling` remains the
+  enclosing video-composition stage and includes waiting for this slot.
 - **Cost**: a 1080×1920 frame takes about 0.4–1 s on one Chrome tab (software GL), so a 120 s overlay at 30 FPS needs
-  roughly 25–60 minutes: size `IMV_OVERLAY_RENDER_TIMEOUT_SECONDS` (at most 3600) for `IMV_OVERLAY_MAX_SECONDS` × FPS
-  × seconds per frame, or lower the length. The single VP9 encoder process and Chrome's GL process each need about
+  roughly 25–60 minutes and may exceed the default 15-minute deadline. Adjust `IMV_OVERLAY_RENDER_TIMEOUT_SECONDS`
+  (at most 3600) for the measured render cost, or lower the length. The single VP9 encoder process and Chrome's GL process each need about
   0.9 CPU seconds per frame, so the sandbox's per-process CPU cap is the render timeout times the host's cores
   (never below the 300 s of the short validation workers) instead of a fixed 300 s.
 

@@ -397,7 +397,7 @@ async function main() {
   try {
     // Chromium creates its profile under the attempt-local temporary directory.
     await fs.mkdir(os.tmpdir(), { recursive: true });
-    browser = await openBrowser("chrome", { browserExecutable: request.browser, logLevel: "error", chromiumOptions: { gl: "swangle", enableMultiProcessOnLinux: false } });
+    browser = await openBrowser("chrome", { browserExecutable: request.browser, logLevel: "error", chromiumOptions: { gl: "swangle", enableMultiProcessOnLinux: true } });
     const pages = await browser.pages();
     const page = pages[0] ?? await browser.newPage({ context: () => null, logLevel: "error", indent: false, pageIndex: 0, onBrowserLog: null, onLog: () => undefined });
     page.__imvUrl = url;

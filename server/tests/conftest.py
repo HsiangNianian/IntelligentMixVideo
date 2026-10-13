@@ -273,6 +273,12 @@ def composition_settings(monkeypatch, asr_env):
     from server.video_composition import service
     from server.video_composition.settings import Settings
 
+    async def empty_bindings(style_id):
+        """默认无 Remotion 绑定，具体集成用例单独覆盖资产快照。"""
+        return {"revision": 0, "placements": [], "assets": {}}
+
+    monkeypatch.setattr(service.remotion, "snapshot", empty_bindings)
+
     monkeypatch.setattr(service, "shutil", SimpleNamespace(which=lambda name: "ffmpeg"))
     for key, value in {
         "SEGMENT_MATCH_BASE_URL": "https://matching.example.test/deployment",

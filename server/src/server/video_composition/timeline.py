@@ -1,10 +1,10 @@
-"""由业务快照生成 IMS Timeline；纯素材按序裁尾，无声标题铺满全片，其余对象沿用模板规则。"""
+"""由业务快照生成 IMS Timeline；纯素材按序裁尾，标题沿用模板区间，字幕使用切片正文与时间。"""
 
 from math import floor
 
 from pydantic import TypeAdapter
 
-from ..segmentation.segmentation import SUBTITLE_PUNCTUATION
+from .text_events import subtitle_events
 from ..template.schema import CATEGORY_PARAMETERS, EffectTemplateEditor, EffectTrack, Template
 from ..template.timing import ClipContext, TimelineContext, resolve_template, resolve_track
 from .schema import CompositionRequest, MatchedSegment, PositiveSeconds, Segment
@@ -231,14 +231,8 @@ def build_timeline(
             if track.target == "title":
                 contents.append((request.title, title_keyword, applied.start, applied.end))
             elif track.target == "subtitle":
-                for item in source:
-                    keyword_used = False
-                    for part in item.subtitle_parts or [item]:
-                        content = "".join(char for char in part.text if char not in SUBTITLE_PUNCTUATION).strip()
-                        keyword = item.keyword if not keyword_used and item.keyword in content else ""
-                        keyword_used = keyword_used or bool(keyword)
-                        contents.append((content, keyword,
-                                         max(part.start_time, applied.start), min(part.end_time, applied.end)))
+                contents.extend((content, keyword, max(start, applied.start), min(end, applied.end))
+                                for content, keyword, start, end in subtitle_events(source))
             else:
                 contents.append((track.editor.bubble_text, "", applied.start, applied.end))
             text_clips = []

@@ -17,6 +17,8 @@ from urllib.parse import urlsplit, urlunsplit
 from pydantic import BaseModel, ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
+from .errors import CompositionError
+
 
 def sanitize(value, *, media_url: bool = False):
     """递归清理日志数据中的凭证字段和 URL 鉴权；不修改原始业务数据。"""
@@ -60,22 +62,24 @@ def sanitize(value, *, media_url: bool = False):
 
 def exception_details(exc: Exception) -> dict:
     """保留有限异常链、供应商错误码和调用位置；即使 from None 也可定位被包装的根因。"""
-    chain, seen = [], set()
+    chain, seen, private_source = [], set(), False
     while exc is not None and id(exc) not in seen and len(chain) < 5:
         seen.add(id(exc))
         item = {"type": type(exc).__name__, "frames": [
             {"file": frame.filename, "line": frame.lineno, "function": frame.name}
             for frame in traceback.extract_tb(exc.__traceback__)[-8:]
         ]}
-        if isinstance(exc, ValidationError):
+        # Remotion 错误之下的根因文本可能带资产源码或完整业务参数：只保留类型、位置与错误码，全文在私有诊断中。
+        if isinstance(exc, ValidationError) and not private_source:
             item["validation"] = exc.errors(include_input=False, include_context=False, include_url=False)
-        elif not isinstance(exc, SQLAlchemyError):
+        elif not isinstance(exc, (SQLAlchemyError, ValidationError)) and not private_source:
             item["message"] = sanitize(str(exc)[:4000])
         for key in ("code", "status_code", "request_id"):
             value = getattr(exc, key, None)
             if isinstance(value, (str, int)):
                 item[key] = value
         chain.append(item)
+        private_source = private_source or isinstance(exc, CompositionError) and exc.error["code"].startswith("remotion_")
         # SQL 异常链可能含原始语句和参数，不递归记录数据库驱动异常。
         exc = None if isinstance(exc, SQLAlchemyError) else exc.__cause__ or exc.__context__
     return sanitize({"exceptions": chain})
@@ -121,7 +125,8 @@ def error_message(details: dict) -> str:
 # 七个模块文件即持久化契约；未执行的模块保留四个空数组。
 MODULES = ("request", "template", "asr", "segmentation", "matching", "timeline", "zos")
 GROUPS = {
-    "template": "template", "asr": "asr", "segmentation": "segmentation",
+    "template": "template", "remotion_snapshot": "template", "remotion_render": "timeline",
+    "asr": "asr", "segmentation": "segmentation",
     "matching": "matching", "match_submit": "matching", "match_query": "matching",
     "assembling": "timeline", "material_probe": "timeline", "ims_storage": "timeline", "submitting": "timeline", "ims_submit": "timeline",
     "rendering": "zos", "ims_query": "zos", "playback": "zos", "zos_upload": "zos",
