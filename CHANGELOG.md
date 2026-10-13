@@ -3,6 +3,333 @@
 本项目的版本变更由发布工作流根据 Conventional Commits 自动生成。
 推送正式版本 tag 后，成功发布的版本记录会自动写入此文件。
 
+## [v0.9.0] - 2026-10-13
+### New Features
+- [`eefbb84`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/eefbb84e31d1c7ee8eacf49b17120d5fb3a4cd1e) - **remotion**: render a template's Remotion clips into one overlay video for the bus *(PR [#97](https://github.com/HsiangNianian/IntelligentMixVideo/pull/97) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`9eacbd6`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/9eacbd6d0d604eb5313710278c165da728d69da8) - **video-composition**: use title keywords and deterministic splits *(PR [#99](https://github.com/HsiangNianian/IntelligentMixVideo/pull/99) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`d7d9107`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/d7d9107915468c50a58036a5f2626bfd60dd7675) - **remotion**: separate template parameters from Remotion code and split effects into categories *(PR [#106](https://github.com/HsiangNianian/IntelligentMixVideo/pull/106) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`69bcc95`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/69bcc952aa02e29cb01d840a96939cb4da5b0ccd) - **client**: choose the Remotion effect duration before generating *(PR [#107](https://github.com/HsiangNianian/IntelligentMixVideo/pull/107) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`71bf8f6`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/71bf8f664409956016acca4907c16052c4542d92) - **remotion**: align text keyword parameters with the bus keyword options *(PR [#108](https://github.com/HsiangNianian/IntelligentMixVideo/pull/108) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`75dc8ed`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/75dc8ed9fccabed92a5c86fb247d8894ceec0f0a) - **templates**: place Remotion clips in template object slots *(PR [#113](https://github.com/HsiangNianian/IntelligentMixVideo/pull/113) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`fd6485f`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/fd6485fa4acb5638b8e4ada537f4a60e7817a3ba) - **remotion**: render Sprites with bus content at the bus's time *(PR [#115](https://github.com/HsiangNianian/IntelligentMixVideo/pull/115) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Bug Fixes
+- [`1ed890b`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/1ed890bdc6b9a5693ad2e9212da147f46eee904a) - **remotion**: surface a missing validation sandbox instead of a Preset store failure *(PR [#101](https://github.com/HsiangNianian/IntelligentMixVideo/pull/101) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`c8ac5ca`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/c8ac5ca0e8eba0e099deba9b37cef666f9be28f2) - **remotion**: stabilise generation validation and agent step handoff *(PR [#102](https://github.com/HsiangNianian/IntelligentMixVideo/pull/102) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`326853e`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/326853e0e409be6722cc3ec91428181ba0bce0a1) - **remotion**: make agent tool calls stable for weaker models *(PR [#104](https://github.com/HsiangNianian/IntelligentMixVideo/pull/104) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`4417648`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/441764851bc99723e42431617115b9277356392b) - **remotion**: recognise current player bundles by a protocol first line *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`c59586d`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/c59586d922c4225647a876dbc3dbd913197747cb) - **client**: accept every preview duration the server's frame contract allows *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Documentation Changes
+- [`8dd4280`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/8dd42804932b455f56edc3d2b55dd648c8a4d7f4) - update CHANGELOG.md for v0.5.0 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
+- [`ea75676`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/ea75676621f87594dfadbba9151658fccfa04529) - **readme**: update readme *(commit by [@zjq-yl](https://github.com/zjq-yl))*
+- [`bfc1e35`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/bfc1e354616d513cd9c8d612b285eb6834307fbc) - **readme**: add English README and preserve Chinese version *(commit by [@zjq-yl](https://github.com/zjq-yl))*
+
+### Chores
+- [`c954995`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/c9549954f1ee7b5e9d42accaa355db1c6bdc9c3d) - **deps**: bump urllib3 in /server in the uv group across 1 directory *(commit by [@dependabot[bot]](https://github.com/apps/dependabot))*
+- [`38f099a`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/38f099afcfc15c2c88f8613cb338f2a93670226c) - **release**: prepare v0.9.0 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`1cbf644`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/1cbf64493d49283d17948ddca61a01ee6f74473d) - **release**: promote dev to main for v0.9.0 *(PR [#111](https://github.com/HsiangNianian/IntelligentMixVideo/pull/111) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Other Changes
+- [`30700ae`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/30700ae5e8592a1213f7d5236a24ebea3cb3a3cd) - feat(remotion)!: store clips as template tracks and Sprites in MySQL ([#103](https://github.com/HsiangNianian/IntelligentMixVideo/pull/103))
+
+* feat(proto): add sprite_id to template tracks
+
+Remotion clips will be stored as `remotion` tracks of a cloud template. Each
+track keeps its own template-unique ID and needs a separate field that points
+at the published Sprite, so the same Sprite can be placed more than once.
+
+The field is a plain string where empty means unset, like `id` and `target`.
+Document the remotion target, its seconds-only start, optional duration and
+empty editor in the field comments.
+
+Regenerate the Python, TypeScript and Rust code with `buf generate` and add the
+new field to the Rust test fixture.
+
+* feat(template): accept Remotion tracks
+
+A template track can now be a Remotion clip: `target` is `remotion`, the new
+`sprite_id` references a published Sprite, and the track `id` stays the unique
+placement ID so one Sprite can be placed several times. Clips use a seconds
+start, an optional duration (empty means the Sprite's own length) and an empty
+editor, which is also what the API returns for them. Other tracks cannot carry
+a `sprite_id` and keep exactly the JSON keys they had before.
+
+The clip branch of the validator runs before the text and effect rules.
+Without it an unknown target hit `getattr(editor, target)` and surfaced as an
+HTTP 500 instead of a validation error. Clips add no effect IDs, so a template
+may contain only clips, and they share the 100-track limit with IMS tracks.
+
+The composition timeline skips clips: they are rendered as an overlay video,
+not through IMS.
+
+* feat(client): keep Remotion tracks when loading and saving
+
+The server now returns Remotion clips as `remotion` tracks with an empty
+editor. `toTemplate` rejected that editor as incomplete, and `listTemplates`
+maps the whole list, so a single template with a clip made the whole cloud
+library fail to load. A loaded clip would also have crashed the object list,
+which has no icon for an unknown target.
+
+Keep clips out of the IMS object list instead of widening `EffectTrack`: the
+draft gets a separate `clips` array that is split off on load and appended as
+`remotion` tracks on save, so editing other fields neither drops nor rewrites
+them. Clips count towards the shared 100-track limit and allow a template
+without IMS effects. Local templates do not support them, so saving a draft
+with clips there is refused before it reaches the desktop.
+
+Nothing in the editor creates or shows clips yet.
+
+* feat(desktop): refuse Remotion tracks in local templates
+
+Remotion clips reference Sprites that are published to the cloud backend, and
+local templates never reach that backend, so they cannot hold clips. The save
+conversion ignored the new `sprite_id` field, so a clip would only have failed
+later on the generic track whitelist, while a stray `sprite_id` on an IMS
+track would have been dropped silently.
+
+Reject any `remotion` track or non-empty `sprite_id` up front with an explicit
+message, before anything is written.
+
+* docs: describe Remotion tracks in templates
+
+Document the `remotion` track shape, its limits and how composition and the
+client treat it, and the rollout caveat: servers and clients that do not know
+the new track type fail on a template that contains one.
+
+* test(template): cover Remotion tracks on a real MySQL
+
+The SQLite stand-in used by the regular tests stores JSON as text, so it cannot
+show how the MySQL JSON column returns a clip track. Add an opt-in case that
+saves a template with clips, reads the stored configuration back and checks the
+reference, the seconds start and the empty editor, and that IMS tracks still
+carry no `sprite_id`.
+
+* refactor(remotion)!: render overlays from request placements
+
+The overlay endpoint took a style ID and read that style's clips from the
+Remotion SQLite bindings, while the composition bus already holds the template
+that names the same clips. Make the request carry them instead:
+`placements: [{spriteId, start, duration?}]`, bottom layer first, at most 100.
+
+The placements are stored with the task and rendered as stored. That also
+removes a race of the old flow, where accepting and executing both read the
+bindings, so a task recovered after a restart could render clips that were
+edited in the meantime. Only the published Sprites are read again.
+
+BREAKING CHANGE: `POST /api/v1/overlay-renders` no longer accepts `styleId`
+and requires `placements`. The endpoint has not been released. Tasks queued
+under the old request shape fail with `internal_error` after a restart.
+
+* docs: describe the overlay placements request
+
+Update the overlay section of the Remotion README and AGENTS.md: the request
+carries ordered placements read from the template's `remotion` tracks, empty or
+unpublished placements are a 422, and a recovered task renders the placements
+stored with it.
+
+* refactor(remotion)!: publish Sprites to MySQL
+
+Published Sprites lived in the Remotion SQLite database, a file on one backend
+host, while the templates that reference them are in MySQL. Store the
+publication rows in a new MySQL table `remotion_sprites` next to the templates:
+the JSON of the publication plus its source version, kind and text/keyword
+fields as columns, unique together, so a repeated publish still returns the
+original Sprite and a lost race resolves through the duplicate-key error.
+The player bundle stays a local file under `sprites/<id>/`.
+
+The catalog sorts in the application instead of in SQL. On a real MySQL the
+`ORDER BY` over rows that carry whole JSON documents fails with "Out of sort
+memory" once the documents get large. The two columns that hold JSON property
+names are `utf8mb4_bin` because those names are case-sensitive, and
+over-long names are refused with a 422 instead of a database error.
+
+BREAKING CHANGE: Sprites published before this change are not read or migrated; publish their accepted versions again.
+The old SQLite table is no longer created and an existing one is left alone.
+
+* feat(template): require saved Remotion tracks to reference published Sprites
+
+A `remotion` track points at a Sprite by ID, and both now live in the same
+database, so a typo or a Sprite that was never published can be rejected when
+the template is saved instead of failing later in the composition bus. Saving
+a template whose clips name an unpublished Sprite returns a 422 that lists the
+IDs and writes nothing; updates are checked the same way.
+
+Sprites are only ever added, so a Sprite that exists at check time cannot
+disappear before the write. Templates without clips never query the table and
+do not create it.
+
+Add a `seed_sprite` test helper that publishes a minimal Sprite row into the
+database stand-in or a real MySQL, and make the earlier clip tests use it.
+
+* docs: describe published Sprites in MySQL
+
+Sprite publications are now rows of `remotion_sprites` next to the templates,
+the preview bundle stays a local file, saving a template checks its clips
+against the table, and Sprites published to the old SQLite table are neither
+read nor migrated and have to be published again.
+
+* feat(client)!: place Remotion assets as template tracks
+
+Clips used to live outside the template: the editor kept them in a hook, and
+saving a template was followed by a second request that replaced the style's
+bindings under an optimistic lock. That made a save non-atomic (a template could
+be saved while its clips failed), left the bindings behind when a template was
+deleted, and made the bus look up the clips separately from the template.
+
+The clips are now part of the draft and are saved with the template as
+`remotion` tracks in one request, so the save either succeeds as a whole or
+changes nothing. Adding an asset from the catalog creates an independent
+placement, so the same asset can be added more than once; removing one or
+dragging its start on the timeline edits the draft like any other object. The
+unsaved-changes guard needs no second source of truth any more, and a template
+that only has clips can be saved without a dummy IMS effect.
+
+`useSpriteBindings` shrinks to `useSpriteCatalog`, which only reads the
+published catalog, and the binding calls and the `Placement` type are removed
+from the Sprite API. A clip whose asset is no longer in the catalog is flagged
+so it can be removed before saving, because the server refuses unpublished
+Sprites.
+
+BREAKING CHANGE: the editor no longer reads or writes style bindings, so clips
+placed with earlier versions are not shown and are not migrated; place them
+again. It needs a server that accepts `remotion` tracks and checks their
+Sprites.
+
+* docs: describe Remotion clips as template tracks in the editor
+
+Replace the description of separately saved style bindings with the editor
+behaviour: clips are template tracks, saved atomically with the template, may
+repeat an asset, are flagged when their asset is gone and are not supported by
+local templates.
+
+* refactor(remotion)!: remove style bindings
+
+Where a Sprite is placed now lives in the template's `remotion` tracks, so the
+separate store for it is dead: remove the `style_sprite_bindings` table, the
+`GET/POST /api/sprites/styles/{style_id}` routes, the placement validation and
+the optimistic revision lock, and the tests that pinned them. The OpenAPI route
+set test no longer expects the removed path, and a test now asserts the old
+routes answer 404.
+
+BREAKING CHANGE: `/api/sprites/styles/{style_id}` is gone and the bindings
+saved in `style_sprite_bindings` are neither read nor migrated; an existing
+table is left in place. Place the clips again in the template editor.
+
+* refactor(proto)!: remove the style binding messages
+
+Delete `SpriteTarget`, `SpritePlacement`, `StyleSpriteBindings`,
+`GetStyleSpritesResponse` and `SaveStyleSpritesRequest`/`Response`. Nothing
+sends or reads them any more: placements are `remotion` tracks of
+`imv.template.v1.EffectTrack`, which reference a published Sprite by
+`sprite_id`.
+
+The comments that still spoke of bindings now describe template tracks, and the
+header points at the track that references a Sprite. `SpriteRenderInput` and
+`SpriteParameterOverride` stay as they were: they belong to the unimplemented
+render protocol and do not depend on the removed messages.
+
+Regenerated with `buf generate`. `buf breaking --against v0.5.0` reports
+exactly these six deletions.
+
+BREAKING CHANGE: the removed messages are no longer part of `imv.sprite.v1`.
+
+* docs: remove the style binding routes from the docs
+
+State that placements are template tracks and that the binding table and routes
+of earlier versions are gone, with their data neither read nor migrated.
+
+* fix(template): reject Remotion tracks whose Sprites differ in canvas
+
+An overlay render stacks all clips of a template into one video and requires
+them to share width, height and fps, but saving a template only checked that
+the referenced Sprites were published. A template with mismatched clips was
+saved fine and the bus only found out with `canvas_mismatch` when it asked for
+the overlay.
+
+Read the canvas of the referenced Sprites in the same lookup that checks they
+exist and answer a 422 that lists the canvases in play, on create and update.
+`sprite_store.missing` becomes `canvases`, which returns the canvas of each
+published ID.
+
+Also cover the clips-only template over HTTP, which the existing test named for
+it did not: it sent an empty `tracks` list. The new case creates, reads, lists
+and updates a template with a published Sprite, one clip and no effects.
+
+* fix(client): refuse Remotion assets with a different canvas
+
+The server now rejects templates whose clips differ in canvas, but the editor
+let such assets be added and only failed on save. Carry the published canvas on
+the asset, reject an asset whose width, height or fps differs from the clips
+already added (naming both canvases), and show each asset's canvas in the
+catalog so the choice is visible before adding.
+
+* docs: state the Remotion clip canvas rule
+
+Clips of one template must share width, height and fps; the save checks it and
+the editor refuses a mismatching asset. *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`af588ef`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/af588ef86858b40a18a42534156841ce30591f91) - Merge pull request [#110](https://github.com/HsiangNianian/IntelligentMixVideo/pull/110) from zjq-yl/docs/update-readme
+
+docs: reorganize and expand bilingual README guides *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`a15c0c7`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/a15c0c79d2d5aaab860f05f6d350ce431729a45d) - Merge pull request [#92](https://github.com/HsiangNianian/IntelligentMixVideo/pull/92) from HsiangNianian/dependabot/uv/server/uv-2a4a739b48
+
+chore(deps): bump urllib3 from 2.7.0 to 2.8.0 in /server in the uv group across 1 directory *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`3c2eaca`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/3c2eaca25c0767faae4b9cfc7c5e515abbad2294) - feat(templates)!: redesign template editor ([#109](https://github.com/HsiangNianian/IntelligentMixVideo/pull/109))
+
+* feat(templates)!: enforce track limits and transition boundaries
+
+Persist two transition boundaries through Protobuf and local storage. Require one title and one full-length subtitle when saving, allow at most one VFX track, and retain support for multiple filters.
+
+Apply saved transition durations at their selected material boundaries and preserve template timing and layer order during composition.
+
+BREAKING CHANGE: Templates must contain exactly one title and one subtitle to be saved. Existing templates with duplicate title, subtitle, or VFX tracks, or custom subtitle timing, must be updated to satisfy these rules.
+
+Refs: [#105](https://github.com/HsiangNianian/IntelligentMixVideo/pull/105)
+
+* feat(client): add configurable three-video template previews
+
+Preview the first ten seconds of three configurable sources, reorder videos on the timeline, and assign transitions to consecutive boundaries in insertion order.
+
+Load all three URLs through a dialog and support separate environment defaults. Keep effect timing in the inspector, fix subtitle coverage, enforce object limits before saving, and display asset errors in a dialog.
+
+Document the editing rules and cover configuration, timing, ordering, validation, and workspace interactions with tests.
+
+Refs: [#105](https://github.com/HsiangNianian/IntelligentMixVideo/pull/105)
+
+* test(video-composition): cover template timing and layer rules
+
+Assert title timing and title-before-subtitle ordering throughout composition API and recovery tests. Include the required subtitle when updating the template snapshot fixture.
+
+Refs: [#105](https://github.com/HsiangNianian/IntelligentMixVideo/pull/105)
+
+* refactor(client)!: number all preview video environment variables
+
+Use VITE_PREVIEW_VIDEO_1_URL consistently in preview loading, types, test setup, examples, and documentation.
+
+BREAKING CHANGE: Configure the first preview source with VITE_PREVIEW_VIDEO_1_URL and restart Vite or rebuild the client.
+
+Refs: [#105](https://github.com/HsiangNianian/IntelligentMixVideo/pull/105)
+
+* fix(templates)!: unify rule resolution and isolate invalid records
+
+Resolve preview and composition timing from template rules and media context.
+Read actual metadata for all preview sources and share resolved ranges across
+the player, timeline, and inspectors while preserving fixed composition timing.
+
+Validate stored records individually, return template summaries with validation
+errors, and allow invalid records to be deleted without blocking valid templates.
+Add shared timing cases, storage regression tests, and updated documentation.
+
+BREAKING CHANGE: Transition tracks require transition_boundary and omit start
+and start_mode. Template list responses now contain TemplateSummary records.
+Upgrade clients and servers together. Incompatible stored templates must be
+explicitly converted or recreated; records are not migrated automatically.
+
+Refs: [#105](https://github.com/HsiangNianian/IntelligentMixVideo/pull/105) *(commit by [@left0ver](https://github.com/left0ver))*
+- [`65942eb`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/65942ebb1068d83ef44d189f1305199a23962df6) - Merge pull request [#117](https://github.com/HsiangNianian/IntelligentMixVideo/pull/117) from YUZHEthefool/fix/pr111-review
+
+fix: address Copilot findings on the dev→main PR [#111](https://github.com/HsiangNianian/IntelligentMixVideo/pull/111) *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+
 ## [v0.5.0] - 2026-10-10
 ### BREAKING CHANGES
 - due to [`6cfc094`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/6cfc0949e58644e45796ed15b82d4bd4fa209a54) - write composition logs to files asynchronously *(PR [#79](https://github.com/HsiangNianian/IntelligentMixVideo/pull/79) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*:
@@ -732,3 +1059,5 @@ feat(client): 在模板工作区页头添加时钟 *(commit by [@HsiangNianian](
 [v0.4.2]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.4.1...v0.4.2
 
 [v0.5.0]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.4.2...v0.5.0
+
+[v0.9.0]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.5.0...v0.9.0
