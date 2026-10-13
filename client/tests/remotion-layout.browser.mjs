@@ -288,10 +288,16 @@ try {
     .waitFor({ state: "hidden" });
   assert(await page.getByLabel("字号", { exact: true }).isDisabled());
   await page.getByRole("button", { name: "返回最新版本" }).click();
+  // 「正在渲染预览…」在重新加载开始前可能尚未出现，等它隐藏不代表渲染完成；以 V2 的参数真正下发到新 iframe 为准。
+  // 审计复现：iframe 就绪早于状态清空时参数不再下发，这里会一直等不到 V2 文字，而不是靠 20 秒超时解锁蒙混过去。
   await page
-    .getByText("正在渲染预览…", { exact: true })
-    .waitFor({ state: "hidden" });
-  assert(await page.getByLabel("字号", { exact: true }).isEnabled());
+    .frameLocator('iframe[title="Remotion 字效播放器"]')
+    .locator("#text", { hasText: "让灵感发光" })
+    .waitFor({ timeout: 10_000 });
+  await page
+    .getByLabel("字号", { exact: true })
+    .and(page.locator(":enabled"))
+    .waitFor({ timeout: 10_000 });
   await page.getByLabel("字号", { exact: true }).fill("104");
   await page.getByRole("button", { name: "预览 V1", exact: true }).click();
   await page.getByRole("dialog").waitFor();
