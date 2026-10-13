@@ -29,9 +29,12 @@ const codes = [...new Set(instances.map((item) => item.code))];
 function entrypoint() {
   const imports = codes.map((_, index) => `import Sprite${index} from './Sprite${index}';`).join("\n");
   const placed = instances.map((item, index) => {
-    const layer = `<HostLayer box={${JSON.stringify(item.host.box)}} transform={${JSON.stringify(item.host.transform)}}><Sprite${codes.indexOf(item.code)} {...${JSON.stringify(item.config)}} /></HostLayer>`;
+    const width = item.width ?? composition.width, height = item.height ?? composition.height;
+    const scale = Math.max(composition.width / width, composition.height / height);
+    const host = item.host ?? {box: {x: 0, y: 0, width, height}, transform: {}};
+    const layer = `<HostLayer box={${JSON.stringify(host.box)}} transform={${JSON.stringify(host.transform)}}><Sprite${codes.indexOf(item.code)} {...${JSON.stringify(item.config)}} /></HostLayer>`;
     const content = item.hold ? `<Hold frame={${item.hold.frame}} frames={${item.hold.frames}} length={${item.hold.length}}>${layer}</Hold>` : layer;
-    return `<Sequence key={${index}} from={${item.start_frame}} durationInFrames={${item.duration_frames}}>${content}</Sequence>`;
+    return `<Sequence key={${index}} from={${item.start_frame}} durationInFrames={${item.duration_frames}} width={${width}} height={${height}} style={{width:${width},height:${height},left:${(composition.width-width*scale)/2},top:${(composition.height-height*scale)/2},transform:'scale(${scale})',transformOrigin:'top left'}}>${content}</Sequence>`;
   }).join("");
   return `/** Trusted overlay host waits for both managed font weights. */
 import React from 'react';
@@ -66,16 +69,21 @@ try {
     publicDir: `${root}/public`,
     webpackOverride: (config) => ({ ...config, cache: false }),
   });
+  console.info(`[overlay] ${new Date().toISOString()} opening browser`);
   browser = await openBrowser("chrome", {
     browserExecutable: request.browser,
     logLevel: "error",
     chromiumOptions: { gl: "swangle" },
   });
+  console.info(`[overlay] ${new Date().toISOString()} browser connected`);
   const selected = await selectComposition({ serveUrl, id: "Overlay", inputProps: {}, puppeteerInstance: browser });
   // A long single Sprite render asks for consecutive `ranges`, each written to its own file from the same bundle and
   // browser; the host joins them. Otherwise the whole output is one file.
   const ranges = request.ranges ?? [[0, composition.frames - 1]];
   for (const [index, frameRange] of ranges.entries()) {
+    // Per-chunk progress separates a live render from browser startup without logging business content.
+    let reportedWork = 0;
+    const frameCount = frameRange[1] - frameRange[0] + 1;
     await renderMedia({
       serveUrl,
       composition: selected,
@@ -89,14 +97,22 @@ try {
       pixelFormat: "yuva420p",
       // Full-canvas filters and glows are heavy; one tab keeps Chrome within the sandbox's memory.
       concurrency: 1,
+      onProgress: ({ renderedFrames, encodedFrames }) => {
+        const completed = renderedFrames + encodedFrames;
+        if (completed > reportedWork && (reportedWork === 0 || completed - reportedWork >= 100 || encodedFrames === frameCount)) {
+          reportedWork = completed;
+          console.info(`[overlay] ${new Date().toISOString()} chunk ${index + 1}/${ranges.length}, rendered ${renderedFrames}/${frameCount}, encoded ${encodedFrames}`);
+        }
+      },
       outputLocation: request.ranges ? `${root}/chunk-${index}.webm` : `${root}/overlay.webm`,
     });
   }
   await fs.writeFile(`${root}/renderer.json`, JSON.stringify({ frames: composition.frames }));
 } catch (error) {
-  // A non-zero exit lets the host surface worker.log; no partial report is ever written.
+  // openBrowser can reject before returning a handle while Chrome still keeps Node alive.
+  // End this isolated worker immediately; bubblewrap tears down its remaining child processes.
   console.error(String(error?.stack ?? error));
-  process.exitCode = 1;
+  process.exit(1);
 } finally {
   if (browser) await browser.close({ silent: true });
 }

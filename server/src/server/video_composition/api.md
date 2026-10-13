@@ -36,7 +36,7 @@
 
 纯数字人模式仍对 `audioUrl` 执行 ASR，以原始音频总时长确定时间线；字幕由输入文案与 ASR 对齐后的 segmentation 切片确定，并受模板字幕对象显示区间限制。模板效果、背景音乐、IMS 渲染、ZOS 视频与 PNG 转存、查询和终态通知沿用相同流程。此前省略 `materials` 也会匹配；需要保留该行为的调用方应显式传入 `[]`。已有任务按保存的请求字段和阶段恢复，不重新解释原始请求日志。
 
-调用 segmentation 时一并传入请求 `title`，返回的 `title_keyword` 随切片结果保存，组装及恢复时复用。标题关键词只使用该返回值，并按模板局部样式强调首次出现的位置；字段缺失或为空时仍显示完整标题，但不强调关键词，不使用模板 `titleKeyword` 或标题前两个字回退。旧快照没有该字段或有声模式无文案而跳过切片时，同样不强调标题关键词。完整切片中的标题提词复用现有模型调用；无声模式有非空标题时，通过同一 `segment` 函数仅调用一次模型提取标题词，不需要正文或 ASR。仅标题分支不做词长或原文匹配校验，完整切片仍保留原有校验。
+调用 segmentation 时一并传入请求 `title`，返回的 `title_keyword` 随切片结果保存，组装及恢复时复用。标题关键词只使用该返回值，并按模板局部样式强调首次出现的位置；字段缺失或为空时仍显示完整标题，但不强调关键词，不使用模板 `titleKeyword` 或标题前两个字回退。旧快照没有该字段时不强调标题关键词；有声模式无文案但有标题时单独提取标题词。完整切片中的标题提词复用现有模型调用；无声模式有非空标题时，通过同一 `segment` 函数仅调用一次模型提取标题词，不需要正文或 ASR。仅标题分支不做词长或原文匹配校验，完整切片仍保留原有校验。
 
 `materials[]` 字段：
 
@@ -185,7 +185,7 @@ curl 'http://127.0.0.1:20070/api/v1/video-compositions/22222222-2222-4222-8222-2
 | `asr` | 语音识别 |
 | `segmentation` | 文本切片及时间对齐 |
 | `matching` | 等待素材匹配结果 |
-| `assembling` | 组装合成时间线 |
+| `assembling` | 渲染并上传可选 Remotion 透明字效，组装合成时间线 |
 | `submitting` | 提交 IMS 合成 |
 | `rendering` | 查询 IMS 合成进度，成功后继续等待成片地址 |
 | `completed` | IMS 合成及 ZOS 转存成功 |
@@ -314,7 +314,7 @@ COMPOSITION_POLL_SECONDS=2
 COMPOSITION_ASR_WAIT_SECONDS=1800
 COMPOSITION_MATCH_WAIT_SECONDS=30
 COMPOSITION_RENDER_WAIT_SECONDS=3600
-COMPOSITION_CONCURRENCY=2
+COMPOSITION_CONCURRENCY=3
 COMPOSITION_WIDTH=1080
 COMPOSITION_HEIGHT=1920
 COMPOSITION_FPS=30
@@ -338,7 +338,7 @@ ZOS_FORCE_PATH_STYLE=false
 - `COMPOSITION_PUBLIC_BASE_URL` 可填 `http://公网IP:端口` 或 HTTPS 域名，可包含部署路径前缀；不要附加 `/api/v1/video-compositions`，不能包含查询参数。应确保生成的回调路径能到达该后端。
 - 任务已保存的回调地址和截止时间不会随 `.env` 修改而更新；本地超时也不代表云端任务已被取消。
 
-素材匹配使用 `SEGMENT_MATCH_BASE_URL` 和可选的 `SEGMENT_MATCH_AUTHORIZATION`，仅 standard 显式传 `materials` 时要求匹配地址。两个纯素材模式不依赖匹配配置；包含视频素材时服务端 PATH 还须有 `ffprobe`，单个探测使用 `COMPOSITION_HTTP_TIMEOUT_SECONDS` 超时，取消或超时回收子进程。FFprobe 白名单包含 HTTP 代理所需的 `httpproxy`；探测失败的退出码及脱敏 stderr 保存到 `timeline.json` 的 `error_log`，查询与回调仍返回固定错误摘要。无语音模式不依赖 ASR，有非空标题时需要切片模型配置；有语音模式仍依赖 ASR，有文案才要求切片配置。所有模式仍需 IMS、ZOS、数据库和 FFmpeg；缺少所需配置或工具时受理返回 503。参见 `server/.env.example`。
+素材匹配使用 `SEGMENT_MATCH_BASE_URL` 和可选的 `SEGMENT_MATCH_AUTHORIZATION`，仅 standard 显式传 `materials` 时要求匹配地址。两个纯素材模式不依赖匹配配置；包含视频素材时服务端 PATH 还须有 `ffprobe`，单个探测使用 `COMPOSITION_HTTP_TIMEOUT_SECONDS` 超时，取消或超时回收子进程。FFprobe 白名单包含 HTTP 代理所需的 `httpproxy`；探测失败的退出码及脱敏 stderr 保存到 `timeline.json` 的 `error_log`，查询与回调仍返回固定错误摘要。无语音模式不依赖 ASR，有非空标题时需要切片模型配置；有语音模式仍依赖 ASR，有文案或非空标题时要求切片配置。所有模式仍需 IMS、ZOS、数据库和 FFmpeg；缺少所需配置或工具时受理返回 503。参见 `server/.env.example`。
 
 ## 7. 可选的客户端 IMS 配置
 
@@ -359,3 +359,8 @@ ZOS_FORCE_PATH_STYLE=false
 AccessKey ID/Secret 必填，临时凭据填写 SecurityToken；地域与官方 Endpoint 必须一致。请求头解析或字段校验失败返回 422。此头不能覆盖合成等待时间、尺寸或素材匹配配置。
 
 客户端 IMS 凭据只保存在任务内存，不写业务正文或任务数据库；新任务成功转存 ZOS 后，GET 不再需要 IMS 配置头。历史成功任务仍需提供有权限的 IMS 配置获取临时地址；服务重启会丢失未完成任务的客户端凭据快照。
+
+
+## Remotion 动态字效
+
+请求字段不变，`styleId` 读取统一模板，其中 `remotion` 轨道保存资产引用、`text_target` 文字槽位及 `transition_boundary` 转场交界处；旧 `editor.remotion.businessTarget` 仍可恢复，新字段优先。标题、字幕使用请求及 segmentation 数据替换示例内容，透明视频从 0 秒加入 IMS；新文字槽位沿用上游的替代规则，实际输出的 IMS 文字位于 Remotion 视频之上。上游固定时长资产由合成宿主将完整动画映射到字幕实际区间，无需额外动态声明或重新发布；生成、发布及编辑预览保持原样。模板含会实际渲染的 Remotion 摆放而服务端缺少隔离渲染环境时，任务在 `template` 阶段以 `remotion_render_environment_unavailable` 失败，不产生 ASR 或切片调用。完整契约、旧资产适配、错误码与真实联调清单见 [Remotion 接入说明](../../../../docs/remotion-video-composition.md)。

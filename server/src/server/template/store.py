@@ -115,15 +115,18 @@ def get_template(template_id: UUID) -> Template:
 def check_slot(track: EffectTrack, kind: int) -> None:
     """片段占用的模板对象须与 Sprite 分类相符：字效作用于标题或字幕，转场占用视频交界处，其他分类两者都不设置（422）。
 
+    旧 business_target 用途仍可独立叠加，不补写会替代 IMS 文字的 text_target；标题/字幕用途同样只属于字效，
+    否则保存成功的模板会在每次合成渲染时失败（422）。
     作用于文字的字效由该文字对象提供文字与关键词（合成时由总线填入），所以不能再覆盖这两个参数（422）。
     """
+    legacy_target = track.editor.remotion.business_target if track.editor.remotion else None
     if kind == sprite_pb.SPRITE_KIND_TEXT:
-        if track.text_target is None:
+        if track.text_target is None and legacy_target not in {"title", "subtitle"}:
             raise HTTPException(422, f"Remotion 字效「{track.id}」须作用于标题或底部字幕")
         overrides = {item.key for item in track.editor.remotion.parameters} if track.editor.remotion else set()
         if bound := sorted(overrides & {sprites.TEXT_PROP, sprites.KEYWORDS_PROP}):
             raise HTTPException(422, f"Remotion 字效「{track.id}」的文字与关键词取自所作用的对象，不能覆盖 {'、'.join(bound)}")
-    elif track.text_target is not None:
+    elif track.text_target is not None or legacy_target in {"title", "subtitle"}:
         raise HTTPException(422, f"Remotion 片段「{track.id}」不是字效，不能作用于文字")
     if kind == sprite_pb.SPRITE_KIND_TRANSITION_OVERLAY:
         if track.transition_boundary is None:

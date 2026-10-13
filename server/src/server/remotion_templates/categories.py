@@ -145,7 +145,7 @@ TEXT_KEYWORDS = (KEYWORDS, *KEYWORD_STYLES, KEYWORD_COLOR_RULE, KEYWORD_SIZE_RUL
 _COLOR = {"type": "string", "pattern": HEX_COLOR}
 REQUIRED: dict[SpriteKindName, tuple[Rule, ...]] = {
     "text": (
-        Rule("text", {"type": "string", "minLength": 1, "maxLength": 40}, f"文字内容，非空字符串并声明不超过 {TEXT_MAX_LENGTH} 的 maxLength", _text),
+        Rule("text", {"type": "string", "minLength": 1, "maxLength": 100}, f"文字内容，非空字符串并声明不超过 {TEXT_MAX_LENGTH} 的 maxLength", _text),
         Rule("fontSize", {"type": "number", "minimum": 24, "maximum": 240}, "字号，数字，范围在 8～400 像素之内且至少覆盖 24～160", _between(8, 400, 24, 160)),
         Rule("fontWeight", {"type": "integer", "enum": [400, 700]}, "字重，只能是 400 和 700 两个枚举值", _weight),
         Rule("color", _COLOR, "文字主色，十六进制颜色", _color),

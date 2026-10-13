@@ -154,3 +154,5 @@ bun run build
 工作区测试使用真实表单、Radix 选择器和弹窗，覆盖核心编辑与草稿保护。Happy DOM 无法验证真实视频播放和 Tauri 原生行为。
 Happy DOM 的小数 step 校验与浏览器不同，保存流程直接触发表单提交；浏览器原生表单约束仍需浏览器验证。
 Windows 原生资源服务的回归测试位于 `src-tauri/src/localhost.rs`，执行 `cargo test --manifest-path src-tauri/Cargo.toml --lib --locked`，覆盖真实 HTTP 资源响应、查询参数、HEAD、错误主机与方法；原生检查 CI 同步执行。
+
+云端模板通过上游 `text_target`／`transition_boundary` 保存 Remotion 文字及转场绑定，兼容旧 `businessTarget` 字段，不额外增加用途控件。旧用途读取与保存时不自动补新槽位，保留 IMS 与 Remotion 共存；右侧说明当前显示方式，用户显式重选作用对象后才采用新槽位。编辑预览与时间轴沿用 upstream/dev 的对象槽位流程，不调用业务输入接口、不等待动态绘制回执。详见 [Remotion 视频合成适配](../docs/remotion-video-composition.md)。

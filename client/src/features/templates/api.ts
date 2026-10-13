@@ -13,7 +13,7 @@ import {
 } from "@/generated/imv/template/v1/template_pb";
 import { defaultEditor, draftEffects, type Category, type Draft, type Editor, type EffectTrack, type RemotionClip, type Template, type TemplateSummary } from "./model";
 import { validateTemplateTracks } from "./tracks";
-import { validateClipSlots } from "./clips";
+import { BOUND_TEXT_PARAMETERS, validateClipSlots } from "./clips";
 
 /** 当前模板库的存储位置，每次操作显式传递，避免切换后写入错误环境。 */
 export type Environment = "local" | "cloud";
@@ -80,9 +80,17 @@ function toTemplate(record: TemplateRecord): Template {
         const value = remotion?.transform?.[name];
         if (value !== undefined) transform[name] = value;
       }
+      const purpose = remotion?.businessTarget;
+      if (purpose && !["title", "subtitle", "decoration"].includes(purpose)) throw new Error("Remotion 片段用途无效");
+      // 旧用途保持独立叠加，不能在读取时隐式迁移为替代 IMS 文字的槽位。
+      const textTarget = track.textTarget;
+      // 两种文字绑定都由总线填入正文，清除旧覆盖但保留样式。
+      if (purpose && (textTarget === "title" || textTarget === "subtitle" || purpose === "title" || purpose === "subtitle"))
+        for (const key of BOUND_TEXT_PARAMETERS) delete parameters[key];
       return {
         id: track.id, sprite_id: track.spriteId, start: track.start, duration: track.duration ?? null, parameters, transform,
-        ...(track.textTarget === "title" || track.textTarget === "subtitle" ? { text_target: track.textTarget } : {}),
+        ...(purpose ? { business_target: purpose as RemotionClip["business_target"] } : {}),
+        ...(textTarget === "title" || textTarget === "subtitle" ? { text_target: textTarget } : {}),
         ...(track.transitionBoundary !== undefined ? { transition_boundary: track.transitionBoundary } : {}),
       };
     }),
@@ -175,7 +183,7 @@ export function getTemplate(id: string, environment: Environment = "cloud", sign
   }, signal);
 }
 
-/** 一次摆放的 editor：只在有参数覆盖或宿主变换时设置 remotion，每个覆盖恰好一个值字段。 */
+/** 一次摆放的 editor：按需保存参数覆盖、宿主变换与旧用途；新槽位不重复写入旧用途。 */
 function clipEditor(clip: RemotionClip) {
   const parameters = Object.entries(clip.parameters).map(([key, value]) => ({
     key,
@@ -185,7 +193,8 @@ function clipEditor(clip: RemotionClip) {
           : { boolValue: value }),
   }));
   const transform = Object.keys(clip.transform).length ? clip.transform : undefined;
-  return parameters.length || transform ? { remotion: { parameters, transform } } : {};
+  const businessTarget = clip.business_target ? clip.text_target ?? clip.business_target : undefined;
+  return parameters.length || transform || businessTarget ? { remotion: { parameters, transform, businessTarget } } : {};
 }
 
 /**

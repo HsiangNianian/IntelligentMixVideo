@@ -15,5 +15,8 @@
     "react-dom": "19.1.0",
     "remotion": "4.0.523",
     "typescript": "6.0.3"
+  },
+  "patchedDependencies": {
+    "@remotion/renderer@4.0.523": "patches/@remotion%2Frenderer@4.0.523.patch"
   }
 }

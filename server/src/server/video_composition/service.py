@@ -16,7 +16,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from ..segmentation import segment
 from ..segmentation.settings import Settings as SegmentationSettings
 from ..template.store import get_template
-from . import ims, media, store, zos
+from . import ims, media, remotion, store, zos
 from .errors import CompositionError, remaining
 from .execution_log import close_logs, exception_details
 from .matching import Matching, payload, validated_matches
@@ -42,7 +42,7 @@ def preflight(request: CompositionRequest, config: ClientSettings | None = None)
     elif any(item.type == "video" for item in request.materials) and shutil.which("ffprobe") is None:
         raise RuntimeError("缺少 FFprobe，无法读取素材视频时长")
     if request.composition_mode != "materials_silent":
-        if request.text:
+        if request.text or (request.title and request.title.strip()):
             SegmentationSettings()
         from ..asr.asr import settings as asr_settings
 
@@ -257,7 +257,7 @@ class Runtime:
         while not self.stopping:
             self.wake.clear()
             try:
-                capacity = (self.settings.composition_concurrency if self.settings else 2) - len(self.active)
+                capacity = (self.settings.composition_concurrency if self.settings else 3) - len(self.active)
                 if capacity > 0:
                     records = await self.sync(store.pending, list(self.active), capacity)
                     if records and self.settings is None and any(not item["data"]["output"].get("client_config") for item in records):
@@ -402,15 +402,25 @@ class Job:
         if needs_matching and not self.record["data"].get("callback_base_url"):
             raise CompositionError("callback_address_missing", "任务缺少受理时的基础地址，无法生成匹配回调地址", "matching")
         await self.save("template")
-        try:
-            template = await self.runtime.step(self.record, "template", lambda: self.runtime.sync(get_template, request.style_id),
-                                               {"style_id": str(request.style_id)})
-        except HTTPException as exc:
-            raise CompositionError("template_not_found" if exc.status_code == 404 else "template_error", "模板不存在或无法读取", "template") from None
-        except Exception:
-            raise CompositionError("template_error", "模板读取失败", "template") from None
+        if "template" not in self.record["data"]:
+            try:
+                template = await self.runtime.step(self.record, "template", lambda: self.runtime.sync(get_template, request.style_id),
+                                                   {"style_id": str(request.style_id)})
+            except HTTPException as exc:
+                raise CompositionError("template_not_found" if exc.status_code == 404 else "template_error", "模板不存在或无法读取", "template") from None
+            except Exception:
+                raise CompositionError("template_error", "模板读取失败", "template") from None
+            # 两份模板一起持久化，后续恢复只读取这一份快照；源码不进入执行日志。
+            await self.runtime.log(self.record, "step_started", step="remotion_snapshot", input={"style_id": str(request.style_id)})
+            effects = await remotion.snapshot(template)
+            await self.save("template", template=template.model_dump(mode="json", by_alias=True), remotion=effects)
+            await self.runtime.log(self.record, "step_finished", step="remotion_snapshot",
+                                   output={"revision": effects["revision"], "placements": effects["placements"]})
+        template = self.record["data"]["template"]
+        # 恢复时同样复核：叠加渲染环境缺失要在 ASR 与切片模型产生成本前失败。
+        await remotion.require_environment(self.record["data"])
         if request.composition_mode == "materials_silent":
-            prepared = dict(template=template.model_dump(mode="json", by_alias=True),
+            prepared = dict(template=template,
                             duration_ms=request.process_rules.video_duration * 1000)
             if request.title and request.title.strip():
                 await self.save("segmentation", **prepared)
@@ -418,7 +428,7 @@ class Job:
                 prepared["segmentation"] = await self.runtime.step(self.record, "segmentation", lambda: self.runtime.sync(segment, segment_input), segment_input)
             await self.save("assembling", **prepared)
             return
-        await self.save("asr", template=template.model_dump(mode="json", by_alias=True))
+        await self.save("asr")
         from ..asr import transcribe
 
         asr_result = await self.runtime.step(self.record, "asr",
@@ -433,9 +443,13 @@ class Job:
             segmented = await self.runtime.step(self.record, "segmentation", lambda: self.runtime.sync(segment, segment_input), segment_input)
             segments = TypeAdapter(list[Segment]).validate_python(segmented["segments"])
             validate_segments(segments, duration_ms)
+        elif request.title and request.title.strip():
+            await self.save("segmentation", duration_ms=duration_ms)
+            segment_input = {"title": request.title}
+            segmented = await self.runtime.step(self.record, "segmentation", lambda: self.runtime.sync(segment, segment_input), segment_input)
         if not needs_matching:
             prepared = {"duration_ms": duration_ms}
-            if request.text:
+            if request.text or (request.title and request.title.strip()):
                 prepared["segmentation"] = segmented
             if request.composition_mode == "standard":
                 prepared["matches"] = [MatchedSegment.model_validate(item.model_dump()).model_dump(mode="json") for item in segments]
@@ -515,6 +529,13 @@ class Job:
         except Exception as exc:
             await self.runtime.log(self.record, "step_failed", step="assembling", **exception_details(exc))
             raise
+        if "remotion_result" not in data:
+            result = await self.runtime.step(self.record, "remotion_render",
+                lambda: remotion.render(self.record["task_id"], data, self.settings.composition_http_timeout_seconds, timeline=timeline),
+                {"duration_ms": data["duration_ms"], "output": data["output"]})
+            await self.save("assembling", remotion_result=result)
+            data = self.record["data"]
+        remotion.append_track(timeline, data["remotion_result"], data["output"])
         await self.runtime.log(self.record, "step_finished", step="assembling", output={"timeline": timeline, "warnings": warnings})
         async with asyncio.timeout(self.settings.composition_http_timeout_seconds):
             storage_location = await self.runtime.step(self.record, "ims_storage",

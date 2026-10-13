@@ -203,7 +203,8 @@ class Renderer:
             "--tmpfs",
             "/tmp",
         ]
-        for source in ("/usr", "/etc/fonts", "/etc/ld.so.cache"):
+        # 复用系统字体缓存，避免每个新 Chrome 都扫描全部字体并阻塞启动；缺失时仍可自行建缓存。
+        for source in ("/usr", "/etc/fonts", "/etc/ld.so.cache", "/var/cache/fontconfig"):
             if Path(source).exists():
                 command.extend(("--ro-bind", source, source))
         for source in ("/lib", "/lib64"):

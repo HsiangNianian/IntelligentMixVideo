@@ -90,6 +90,16 @@ IMV_TEST_RENDERER=1 uv run --locked --project server pytest server/tests/test_re
 ```
 
 The browser path requires Chromium, Noto CJK fonts, bubblewrap and util-linux.
+Linux sandboxes also mount `/var/cache/fontconfig` read-only when it exists, so each
+new Chrome can reuse system font metadata instead of rescanning all font files.
+Without that directory, fontconfig keeps its normal per-sandbox cache fallback.
+Chrome startup has a separate 90-second deadline: the locked Remotion 4.0.523
+renderer hardcodes 25 seconds, so `remotion/patches/` carries a Bun dependency patch
+for both CommonJS and ESM builds. Run `bun install --frozen-lockfile` in the renderer
+directory to apply it after checkout; when upgrading Remotion, reassess the patch.
+The outer render deadline (900 seconds for overlays) still covers browser startup
+and rendering; this change does not alter per-frame render timeouts.
+
 The isolation is Linux-only: `POST /works`, a parameter patch on a pre-composition
 (PR74) version or on a composed version whose player bundle predates injected defaults
 (no `/* imv-preview-protocol 1 */` first line) sent to `POST /works/{id}/messages`, the retry of such a parameter job and
@@ -134,6 +144,23 @@ module loads, fails the `transparency` (with the frame) or `default_render` chec
 the model gets `CODE_VALIDATION_FAILED` and the cause rather than `VALIDATION_UNAVAILABLE`. Only
 generation asks for the measurement; a user's manual parameter edits and already published versions are
 never blocked by it.
+
+A text effect (`kind=text`) must also show its longest allowed text in full. In the same mount `sprite.create`
+fills the `text` parameter with `测` up to its declared `maxLength` and, on the same five sampled frames, measures
+the text boxes of the layer: text cut off by an ancestor whose overflow is not visible (`hidden`, `clip`, `auto` or `scroll`: the
+video never scrolls) or with `contain: paint`, text outside the 1080x1920 canvas, text lines shorter than 20px (the smallest `fontSize` is 24) and text of which only part is rendered (a
+slice of it, or some of it hidden) are problems; text in a node without a box (`display: none`), with
+`visibility: hidden` or faded out to opacity 0 is not shown. Each line is measured as its line box (at least as tall
+as its font size), not as the font's whole ascent and descent, so a line in a mask exactly one line tall is not
+clipped (with Noto Sans CJK the ascent and descent span 1.448em and stick out of a `lineHeight` 1 or 1.2 line).
+The text is judged on the frames that show it at its full size (by the area of its lines, within 2% of the
+largest): entrance and exit animations show it smaller, scaled down or typed in, and must not hide a layout that
+clips it while it holds. The `text_fit` check fails when every one of those frames has a problem, so a reveal mask
+or slide-in that moves the full-size text out of view for a few frames is fine, while a fixed-size box that clips
+long text whenever it is shown at full size is not; it also fails when the filler text is never visibly rendered. A failure is refused with `CODE_VALIDATION_FAILED` (`text_fit: ...` with the clipped box or
+size and the fix: wrap the text inside a bounded width, no fixed-height `overflow: hidden` box, shrink the font
+for long text, never below 24px; text that cannot fit even then means the declared `maxLength` is too large and must be lowered, and input beyond it is refused by the parameter Schema). It is a geometric measurement, not a visual review; like the transparency
+measurement it only applies to generation, and already published versions are not re-checked.
 
 Contract diagnostics carry the position of a violation (line, column and range in the submitted code).
 `exec` and `spawn` are refused only as bare identifiers; as member names, such as `RegExp.prototype.exec`,
@@ -223,7 +250,9 @@ Publishing re-verifies the sealed `accepted/` artifacts (409 when changed) and o
 with a kind and top-level parameter bindings (`spec.sprite.kind`/`bindings`); older versions are refused with a
 422 that asks for an edit in chat. The requested kind defaults to the agent's choice on the client but may be
 changed: the version must expose that kind's required parameters (`categories.REQUIRED`), otherwise the 422 lists
-them in Chinese. A text Sprite's required parameters include the keyword options the bus forwards from the IMS
+them in Chinese. The generation prompt and required-parameter examples use `text` with `minLength: 1` and
+`maxLength: 100`; already published assets retain their own sealed schema and need a new version to change it.
+A text Sprite's required parameters include the keyword options the bus forwards from the IMS
 title/subtitle keyword fields: `keywords`, `keywordBold`/`Italic`/`Underline`/`Strikeout`, `keywordColor` (`""`
 keeps the text colour) and `keywordSize` (0 keeps the font size, otherwise 12–300; placements refuse 1–11), with `keywords` items holding at least 12
 characters (the segmentation keywords the bus forwards). Their
@@ -330,6 +359,28 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   Longer than `IMV_OVERLAY_MAX_SECONDS` (120) is a 422 at acceptance when the length is already known (`duration`
   or the clips' end); an `audioUrl` is only probed while rendering, so an over-long one fails the task with
   `duration_too_long`.
+- **Text fit**: a generated text effect cannot know how long a title the bus will send, so the host fits the text a
+  placement really carries (its `text` override, up to the published `maxLength`) before rendering. For every text
+  Sprite with `text` and `fontSize` parameters, inside the render slot, the isolated browser mounts the placement's
+  own values at the length its Sprite plays in the render (the length it reads as `durationInFrames`; a held text its
+  previewed length; a clip cut by the video's end is measured only on its rendered frames) and measures the text
+  boxes the same way `sprite.create` does: cut off by an ancestor whose
+  overflow is not visible or that contains its paint, outside the canvas once the placement's host transform moves,
+  scales and rotates it, lines under 20px tall, or only part of the text shown, judged on the frames that show the
+  text at its full size. Placements that differ only in length or transform are measured separately; the
+  transform's opacity does not move text and is ignored. Text that already fits keeps its `fontSize`; otherwise the
+  host lowers `fontSize` to the largest whole size, down to the published minimum, at which it is shown in full
+  (binary search; the size is logged, the template and the sealed source are untouched). Text that does not fit even
+  at the minimum fails the task with `text_too_long` and a fixed message (the callback's `errorMessage`) so the bus can
+  tell the user to shorten it, instead of publishing a clipped title. Other Sprites skip the pass, and a fit sandbox
+  that cannot start fails the task as `render_failed`. `POST /api/sprites/render` runs the same pass on each distinct
+  text or cue (a held text is measured on its frozen frame), and a video composition (`video_composition/remotion.py`)
+  on its titles and subtitles: it measures the code it renders (the timing wrapper of a fixed-clock asset) on the
+  asset's own canvas, and only the part of that canvas the video shows after scaling it to cover counts as on the
+  canvas; the failure there is `remotion_text_too_long`. All text Sprites of a render are measured in one browser
+  run, each loaded in turn on the same page, under one deadline: the default validation timeout, or 5 seconds per
+  distinct text plus 10 per Sprite when that is longer; the sandbox CPU cap grows with that deadline like an overlay
+  render's. It is a geometric measurement, not a visual review.
 - **Acceptance**: also a 503 when ZOS, ffprobe, bubblewrap, prlimit, Node, the browser or the managed fonts are
   missing (the isolated renderer is Linux-only), instead of accepting tasks that can only fail later. An empty
   `placements` (`no_placements`) or a `spriteId` that is not published (`sprite_missing`) is a 422.
@@ -345,8 +396,8 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
 - **Output**: no audio; the bus/IMS keeps its own audio track and overlays the WebM. The host re-probes the file
   (VP9, size, fps, frame count, alpha tag) before uploading.
 - **Execution**: `overlay_render.py` plans, `remotion/overlay-worker.mjs` renders in the bwrap sandbox
-  (`IMV_OVERLAY_RENDER_TIMEOUT_SECONDS`, 3600), `overlay_service.py` owns the SQLite `overlay_renders` task table,
-  one render at a time (the slot covers only the render: the remote audio probe before it and the ZOS upload after it
+  (`IMV_OVERLAY_RENDER_TIMEOUT_SECONDS`, default 900 seconds), `overlay_service.py` owns the SQLite `overlay_renders` task table,
+  up to three renders at a time (each slot covers only the render: the remote audio probe before it and the ZOS upload after it
   run outside, so a slow network never delays queued renders), recovery of unfinished tasks and pending notifications
   when the runtime is first built
   (`routes.runtime_for`, oldest first; a damaged row is logged and skipped, and the overlay routes retry if the table
@@ -354,9 +405,14 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   task, so a recovered task renders exactly what was accepted and only re-reads the published Sprites. State writes retry a locked database
   three times; if it stays unwritable the row keeps its previous state (never rewritten as a failure) and the next
   start re-runs it. Sealed sources are not re-policy-checked in this worker.
+- **Worker failures**: an exception exits the isolated overlay worker immediately, including a browser connection
+  timeout before `openBrowser()` returns a handle. Bubblewrap cleans up the remaining processes, so the host records
+  failure and releases the shared render slot instead of waiting for the full rendering deadline. The private worker
+  log records browser startup/connection and sparse rendered/encoded frame counts; API `assembling` remains the
+  enclosing video-composition stage and includes waiting for this slot.
 - **Cost**: a 1080×1920 frame takes about 0.4–1 s on one Chrome tab (software GL), so a 120 s overlay at 30 FPS needs
-  roughly 25–60 minutes: size `IMV_OVERLAY_RENDER_TIMEOUT_SECONDS` (at most 3600) for `IMV_OVERLAY_MAX_SECONDS` × FPS
-  × seconds per frame, or lower the length. The single VP9 encoder process and Chrome's GL process each need about
+  roughly 25–60 minutes and may exceed the default 15-minute deadline. Adjust `IMV_OVERLAY_RENDER_TIMEOUT_SECONDS`
+  (at most 3600) for the measured render cost, or lower the length. The single VP9 encoder process and Chrome's GL process each need about
   0.9 CPU seconds per frame, so the sandbox's per-process CPU cap is the render timeout times the host's cores
   (never below the 300 s of the short validation workers) instead of a fixed 300 s.
 
