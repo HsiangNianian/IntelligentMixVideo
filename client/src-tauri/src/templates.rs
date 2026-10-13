@@ -1125,7 +1125,7 @@ mod tests {
     }
 
     #[test]
-    /// Remotion 片段只存在于云端模板：remotion 轨道、任何轨道上的 Sprite 引用或 Remotion 参数覆盖都被明确拒绝，模板文件保持原样。
+    /// Remotion 片段只存在于云端模板：remotion 轨道、任何轨道上的 Sprite 引用、Remotion 参数覆盖或字效作用的文字对象都被明确拒绝，模板文件保持原样。
     fn protobuf_refuses_remotion_tracks_without_writes() {
         let dir = Directory::new();
         let saved = operate(&dir.0, "save", None, Some(draft("保留"))).unwrap();
@@ -1154,6 +1154,13 @@ mod tests {
             .as_mut()
             .unwrap()
             .remotion = Some(generated::RemotionTrackEditor::default());
+        let result = draft_from_protobuf(&request.encode_to_vec(), Some(id))
+            .and_then(|draft| operate(&dir.0, "save", Some(id), Some(draft)));
+        assert_eq!(result.unwrap_err(), "本地模板不支持 Remotion 资产");
+        assert_eq!(fs::read(&path).unwrap(), original);
+        let mut request = protobuf_request();
+        request.template_id = Some(id.into());
+        request.tracks.as_mut().unwrap().tracks[0].text_target = Some("title".into());
         let result = draft_from_protobuf(&request.encode_to_vec(), Some(id))
             .and_then(|draft| operate(&dir.0, "save", Some(id), Some(draft)));
         assert_eq!(result.unwrap_err(), "本地模板不支持 Remotion 资产");
