@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from uuid import uuid4
 
 from .renderer import CPU_SECONDS, Renderer
@@ -50,6 +50,15 @@ MAX_RENDER_SECONDS = 120
 # 字效（标题、字幕）显示不足这个时长时不播出入场，定格在预览长度的中间帧（见 sprite_render）：出入场通常共需
 # 0.6～1.3 秒，更短的字幕几乎看不到完整画面，还会闪烁。所以字效从不按更短的长度播放。
 STATIC_TEXT_SECONDS = 1.5
+
+
+class FitSprite(NamedTuple):
+    """One text Sprite of a render for `ToolValidator.fit_texts`: the code as rendered, its canvas, content box and items."""
+
+    component: ComponentDefinition
+    canvas: dict[str, int]
+    box: dict[str, float]
+    items: list[dict[str, Any]]
 
 
 def render_lengths(fps: int, *, text: bool = False) -> list[int]:
@@ -303,13 +312,14 @@ class ToolValidator:
         return RenderValidationReport(passed=passed, composition=composition, code_validation=code, checks=checks, tests=tests, custom_tests_executed=executed)
 
     async def fit_texts(
-        self, sprites: list[tuple[ComponentDefinition, dict[str, float], list[dict[str, Any]]]], composition: dict[str, int],
+        self, sprites: list[FitSprite], composition: dict[str, int],
         timeout_seconds: float | None = None, cpu_seconds: int = CPU_SECONDS,
     ) -> list[list[dict[str, Any]]]:
         """Find, for each text a render really passes, the largest font size that shows it in full.
 
-        ``sprites`` lists, per text Sprite of the render, its component, its content ``box`` and its items; all of
-        them are measured in one browser run under one deadline. Each item carries complete ``values`` (including the
+        ``sprites`` lists, per text Sprite of the render, its component, its ``canvas`` (width and height; the video,
+        ``composition``, may scale it to cover), its content ``box`` and its items; all of them are measured in one
+        browser run under one deadline. Each item carries complete ``values`` (including the
         text and the requested size), the ``text`` to look for, the name of the size parameter (``size_key``), its
         ``min``, the ``frames`` to measure at the ``length`` its Sprite plays and the host ``transform`` that places it
         inside ``box`` on the canvas. The answer is one list per Sprite with ``{index, fits, size}`` per item:
@@ -324,10 +334,11 @@ class ToolValidator:
                 "composition": composition,
                 "sprites": [
                     {
-                        "code": component.code, "parameter_schema": component.parameter_schema,
-                        "default_parameters": component.default_parameters, "box": box, "fit": items,
+                        "code": sprite.component.code, "parameter_schema": sprite.component.parameter_schema,
+                        "default_parameters": sprite.component.default_parameters, "canvas": sprite.canvas, "box": sprite.box,
+                        "fit": sprite.items,
                     }
-                    for component, box, items in sprites
+                    for sprite in sprites
                 ],
                 "browser": self.renderer.worker_browser_path(),
             }
@@ -343,9 +354,9 @@ class ToolValidator:
         fits = payload.get("fits") if isinstance(payload, dict) else None
         if not isinstance(fits, list) or len(fits) != len(sprites) or not all(
             isinstance(answers, list)
-            and [answer.get("index") for answer in answers if isinstance(answer, dict)] == [item["index"] for item in items]
+            and [answer.get("index") for answer in answers if isinstance(answer, dict)] == [item["index"] for item in sprite.items]
             and all(isinstance(answer.get("fits"), bool) and isinstance(answer.get("size"), (int, float)) for answer in answers)
-            for answers, (_, _, items) in zip(fits, sprites)
+            for answers, sprite in zip(fits, sprites)
         ):
             raise ValidationUnavailable("Text fit worker returned an incomplete report")
         return fits

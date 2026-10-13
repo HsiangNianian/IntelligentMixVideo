@@ -368,13 +368,25 @@ const FULL_SIZE_SHARE = 0.98;
 /**
  * The host transform of one placement as `host-layer.tsx` applies it: the content box centre (cx, cy) is moved to
  * (x, y), then the Sprite is rotated by `rotation` degrees and scaled by `scale` around it. Missing fields keep the
- * Sprite where it is, so an empty transform is the identity.
+ * Sprite where it is, so an empty transform is the identity. `visible` is the part of the Sprite's canvas the video
+ * shows (see `visibleWindow`).
  */
-function hostPlacement(box, transform = {}) {
+function hostPlacement(box, transform = {}, visible = null) {
   const cx = box.x + box.width / 2;
   const cy = box.y + box.height / 2;
   const finite = (value, fallback) => (typeof value === "number" && Number.isFinite(value) ? value : fallback);
-  return { cx, cy, x: finite(transform.x, cx), y: finite(transform.y, cy), scale: finite(transform.scale, 1), rotation: finite(transform.rotation, 0) };
+  return { cx, cy, x: finite(transform.x, cx), y: finite(transform.y, cy), scale: finite(transform.scale, 1), rotation: finite(transform.rotation, 0), visible };
+}
+
+/**
+ * The part of a Sprite's `canvas` that a video of `output` size shows, in canvas pixels. `overlay-worker.mjs` scales
+ * a canvas of another size to cover the output and centres it, so the overflow on the longer side is cut off; a
+ * canvas of the output's size is shown whole.
+ */
+function visibleWindow(canvas, output) {
+  const scale = Math.max(output.width / canvas.width, output.height / canvas.height);
+  const [width, height] = [output.width / scale, output.height / scale];
+  return { x: (canvas.width - width) / 2, y: (canvas.height - height) / 2, width, height };
 }
 
 /**
@@ -395,6 +407,7 @@ function textFitProblems(page, needle, placement) {
     const layer = document.querySelector("[data-imv-host-layer]")?.firstElementChild;
     if (!canvasNode || !layer) return null;
     const canvas = canvasNode.getBoundingClientRect();
+    const view = placement.visible ?? { x: 0, y: 0, width: canvas.width, height: canvas.height };
     const radians = (placement.rotation * Math.PI) / 180;
     const [cos, sin] = [Math.cos(radians) * placement.scale, Math.sin(radians) * placement.scale];
     /** Canvas position of a point of the untransformed layout, as the host layer places it. */
@@ -455,8 +468,8 @@ function textFitProblems(page, needle, placement) {
       const corners = lines.flatMap((rect) => [place(rect.left, rect.top), place(rect.right, rect.top), place(rect.left, rect.bottom), place(rect.right, rect.bottom)]);
       const [left, right] = [Math.min(...corners.map(([x]) => x)), Math.max(...corners.map(([x]) => x))];
       const [top, bottom] = [Math.min(...corners.map(([, y]) => y)), Math.max(...corners.map(([, y]) => y))];
-      if (left < -tolerance || right > canvas.width + tolerance || top < -tolerance || bottom > canvas.height + tolerance)
-        problems.add(`it extends beyond the ${Math.round(canvas.width)}x${Math.round(canvas.height)} canvas (text box ${Math.round(left)},${Math.round(top)} to ${Math.round(right)},${Math.round(bottom)})`);
+      if (left < view.x - tolerance || right > view.x + view.width + tolerance || top < view.y - tolerance || bottom > view.y + view.height + tolerance)
+        problems.add(`it extends beyond the ${Math.round(view.width)}x${Math.round(view.height)} ${view.width < canvas.width - tolerance || view.height < canvas.height - tolerance ? "part of the canvas the video shows" : "canvas"} (text box ${Math.round(left)},${Math.round(top)} to ${Math.round(right)},${Math.round(bottom)})`);
       for (let element = node.parentElement; element && layer.contains(element); element = element.parentElement) {
         const style = getComputedStyle(element);
         // Every overflow other than visible cuts the painted content (auto and scroll only add a scroll position the
@@ -477,7 +490,7 @@ function textFitProblems(page, needle, placement) {
 }
 
 /** No host transform: generation checks mount the Sprite over the whole canvas where it was laid out. */
-const UNPLACED = Object.freeze({ cx: 0, cy: 0, x: 0, y: 0, scale: 1, rotation: 0 });
+const UNPLACED = Object.freeze({ cx: 0, cy: 0, x: 0, y: 0, scale: 1, rotation: 0, visible: null });
 
 /**
  * Measure the text `needle` on `frames` (default: the sampled frames of the composition) of the currently mounted
@@ -551,13 +564,14 @@ async function textFitCheck(page) {
  */
 async function fitTexts(page, loadError, sprite) {
   if (loadError !== null) throw new Error(`Component runtime error: ${loadError}`);
-  const { width, height } = request.composition;
-  const box = sprite.box ?? { x: 0, y: 0, width, height };
+  const canvas = sprite.canvas ?? request.composition;
+  const box = sprite.box ?? { x: 0, y: 0, width: canvas.width, height: canvas.height };
+  const visible = visibleWindow(canvas, request.composition);
   const fits = async (item, size) => {
     await page.evaluate(() => window.__imvTool.reset());
     await page.evaluate((frames) => window.__imvTool.setDuration(frames), item.length);
     await page.evaluate((values) => window.__imvTool.setSample(values, {}), { ...item.values, [item.size_key]: size });
-    const measured = await measureTextFit(page, item.text, item.frames, hostPlacement(box, item.transform));
+    const measured = await measureTextFit(page, item.text, item.frames, hostPlacement(box, item.transform, visible));
     return measured.error !== null || measured.shown === 0 || measured.fits;
   };
   const answers = [];
@@ -585,7 +599,8 @@ async function fitTexts(page, loadError, sprite) {
 
 /**
  * Fit mode: the texts of every text Sprite of one render, measured in one browser under one deadline. Each Sprite's
- * sealed source (type-checked when it was published) is policy-checked again, bundled into its own host and loaded
+ * code as the render runs it (the sealed source, type-checked when it was published, or a video composition's
+ * timing wrapper around it) is policy-checked again, bundled into its own host with its own `canvas` size and loaded
  * on the same page in turn. `result.fits` holds one list of answers per Sprite, in request order.
  */
 async function fitAll() {
@@ -599,9 +614,11 @@ async function fitAll() {
     for (const sprite of request.sprites) {
       sourcePolicy(sprite.code);
       await fs.writeFile(`${root}/Template.tsx`, sprite.code, "utf8");
+      // A Sprite lays out on its own canvas, which the video may scale; the page keeps the video's size, as when rendering.
+      const { width, height } = sprite.canvas ?? request.composition;
       await bundleHost({
         defaults: sprite.default_parameters, configured: sprite.default_parameters, parameter_schema: sprite.parameter_schema,
-        composition: request.composition, ...(sprite.box ? { box: sprite.box } : {}),
+        composition: { ...request.composition, width, height }, ...(sprite.box ? { box: sprite.box } : {}),
       });
       result.fits.push(await fitTexts(opened.page, await waitReady(opened.page), sprite));
     }

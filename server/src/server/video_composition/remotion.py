@@ -22,7 +22,7 @@ from ..template.schema import EffectTrack, RemotionTrackEditor
 from ..template.timing import resolve_track
 from .remotion_content import ContentError, dynamic_duration, resolve_config, roles
 from .remotion_timing import retime_source
-from ..remotion_templates.overlay_render import Overlay, OverlayError, environment_problem, render_overlay, to_frames
+from ..remotion_templates.overlay_render import Overlay, OverlayError, environment_problem, fit_texts, render_overlay, to_frames
 from ..remotion_templates.sprite_router import sprite_runtime
 from .errors import CompositionError
 from .execution_log import sanitize
@@ -193,7 +193,9 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None) -> Ove
                 code = timed_sources[sprite.sprite_id]
             # 装饰保留完整动画区间，由成片总长裁尾；动态正文使用实际可见区间。
             length = count if dynamic else max(1, to_frames(min(length_seconds, max_seconds), fps))
-            instances.append({"code": code, "config": values, "host": host, "start_frame": first,
+            # 资产与实际正文供渲染前的排版预检：正文可能写入多个参数路径，这里给出唯一的显示文字。
+            instances.append({"sprite_id": placement["sprite_id"], **({"text": text} if dynamic else {}),
+                              "code": code, "config": values, "host": host, "start_frame": first,
                               "duration_frames": length, "width": sprite.canvas.width, "height": sprite.canvas.height})
     if not instances:
         return None
@@ -216,8 +218,11 @@ async def render(task_id: str, data: dict, timeout: float, *, timeline: dict | N
                 return None
             if environment_problem(service.settings):
                 raise OverlayError("render_environment_unavailable", "Remotion 渲染环境不可用")
+            publications = {key: ParseDict(value, pb.PublishedSprite()) for key, value in data["remotion"]["assets"].items()}
             async with service.overlays.slot:
                 await asyncio.to_thread(shutil.rmtree, work, True)
+                # 与叠加渲染相同：放不下的标题、字幕缩小字号，缩到最小仍放不下以 remotion_text_too_long 失败。
+                await fit_texts(service.harness.renderer, overlay, publications, work / "fit")
                 output = await render_overlay(service.harness.renderer, overlay, work)
             # 文件必须存活到上传线程收尾；取消任务不保存迟到结果。
             upload = asyncio.create_task(asyncio.to_thread(upload_public,

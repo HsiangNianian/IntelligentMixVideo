@@ -635,3 +635,127 @@ export default function Text(p) {
         assert pixel[3]/255 == pytest.approx(alpha, abs=0.06), (frame, list(pixel))
         if color:
             assert pixel[1 if color == "green" else 0] > 225, (frame, list(pixel))
+
+
+def fitted_case(composition_case, code="", title="甲乙丙丁", font_size=64):
+    """一个带 text、fontSize（默认 font_size）参数的上游字效作标题：源码为 code，按固定时钟播放（不声明动态时长）。"""
+    from .conftest import published_sprite
+    sprite = published_sprite()
+    sprite.text_prop = "text"
+    sprite.default_config_json = json.dumps({**json.loads(sprite.default_config_json), "fontSize": font_size}, ensure_ascii=False)
+    sprite.tsx_code, sprite.code_sha256 = code, hashlib.sha256(code.encode()).hexdigest()
+    data = case(composition_case, target="title")
+    data["request"]["title"] = title
+    data["remotion"]["assets"] = {sprite.sprite_id: MessageToDict(sprite, preserving_proto_field_name=True)}
+    data["remotion"]["placements"][0]["sprite_id"] = sprite.sprite_id
+    return data, sprite
+
+
+# 场景：合成里的标题与字幕交给 Remotion 渲染时，实例带上资产与实际显示的文字，供渲染前的排版预检测量。
+def test_plan_names_the_sprite_and_text_for_the_fit(composition_case, monkeypatch):
+    """标题实例的 sprite_id 是快照里的资产，text 是请求标题。"""
+    monkeypatch.setattr(remotion, "retime_source", lambda sprite: "timed source")
+    data, sprite = fitted_case(composition_case, title="一个业务标题")
+    [instance] = remotion.plan(data, 120).instances
+    assert (instance["sprite_id"], instance["text"], instance["code"]) == (sprite.sprite_id, "一个业务标题", "timed source")
+
+
+# 场景：预检测量合成真正运行的源码（固定时钟包装），在资产自己的画布上排版，成片尺寸用于计算 cover 后的可见部分。
+def test_fit_request_carries_the_rendered_code_and_the_sprite_canvas(composition_case, monkeypatch, tmp_path):
+    """横版成片里的竖版字效：请求的成片是 1920x1080，Sprite 画布是 1080x1920，源码是时钟包装后的源码，文字是请求标题。"""
+    from server.remotion_templates.overlay_render import fit_texts
+
+    class Recorder:
+        """记录排版预检请求，并回答所有文字都放得下。"""
+
+        settings = SimpleNamespace(render_timeout_seconds=180)
+        requests: list[dict] = []
+
+        def worker_browser_path(self):
+            """返回固定浏览器路径。"""
+            return "/browser"
+
+        async def run_worker(self, directory, *, worker=None, timeout_seconds=None, cpu_seconds=None):
+            """保存请求，按原字号作答。"""
+            request = json.loads((directory / "request.json").read_text())
+            self.requests.append(request)
+            return {"fits": [[{"index": item["index"], "fits": True, "size": item["values"]["fontSize"]} for item in sprite["fit"]]
+                             for sprite in request["sprites"]]}
+
+    monkeypatch.setattr(remotion, "retime_source", lambda sprite: "timed source")
+    data, sprite = fitted_case(composition_case, title="一个业务标题")
+    data["output"] = {"width": 1920, "height": 1080, "fps": 30}
+    renderer = Recorder()
+    asyncio.run(fit_texts(renderer, remotion.plan(data, 120), {sprite.sprite_id: sprite}, tmp_path / "fit"))
+    [request] = renderer.requests
+    [measured] = request["sprites"]
+    assert (request["composition"]["width"], request["composition"]["height"]) == (1920, 1080)
+    assert (measured["code"], measured["canvas"]) == ("timed source", {"width": 1080, "height": 1920})
+    assert [item["text"] for item in measured["fit"]] == ["一个业务标题"]
+
+
+# 场景：合成渲染先在共享名额内做排版预检、再渲染；放不下的标题以 remotion_text_too_long 失败，不出被裁切的成片。
+@pytest.mark.anyio
+async def test_render_fits_texts_in_the_slot_and_reports_text_too_long(composition_case, monkeypatch, tmp_path):
+    """预检拿到快照里的发布资产且已占名额；它拒绝时任务失败于 assembling，渲染器不被调用。"""
+    slot = asyncio.Semaphore(1)
+    runtime = SimpleNamespace(settings=SimpleNamespace(overlay_max_seconds=120), store=SimpleNamespace(root=tmp_path),
+                              overlays=SimpleNamespace(slot=slot), harness=SimpleNamespace(renderer="renderer"))
+    data, sprite = fitted_case(composition_case)
+    calls = []
+
+    async def get_runtime():
+        """提供唯一运行时。"""
+        return runtime
+
+    async def refuse(renderer, overlay, publications, directory):
+        """记录预检时的名额与资产，然后报告放不下。"""
+        calls.append((slot.locked(), list(publications), overlay.instances[0]["text"]))
+        raise OverlayError("text_too_long", "文字过长：缩到最小字号仍无法完整显示，请缩短文字")
+
+    async def render(*args):
+        """预检失败后不应渲染。"""
+        raise AssertionError("rendered after a failed fit")
+
+    monkeypatch.setattr(remotion, "retime_source", lambda sprite: "timed source")
+    monkeypatch.setattr(remotion, "sprite_runtime", get_runtime)
+    monkeypatch.setattr(remotion, "environment_problem", lambda settings: None)
+    monkeypatch.setattr(remotion, "fit_texts", refuse)
+    monkeypatch.setattr(remotion, "render_overlay", render)
+    with pytest.raises(CompositionError) as caught:
+        await remotion.render("task", data, 10)
+    assert calls == [(True, [sprite.sprite_id], "甲乙丙丁")]
+    assert caught.value.error == {"code": "remotion_text_too_long", "message": "文字过长：缩到最小字号仍无法完整显示，请缩短文字", "stage": "assembling"}
+
+
+# 972px 宽、自动换行的居中标题，字号就是 fontSize 参数。
+WRAPPED_TITLE = """import React from "react";
+import { AbsoluteFill } from "remotion";
+export default function Title(props: { text: string; fontSize: number }) {
+  return (
+    <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
+      <div style={{ width: 972, textAlign: "center", fontSize: props.fontSize, lineHeight: 1.2, whiteSpace: "normal", wordBreak: "break-all", color: "#fff" }}>{props.text}</div>
+    </AbsoluteFill>
+  );
+}
+"""
+
+
+# 场景：真实浏览器里，竖版字效（1080x1920）放进横版成片（1920x1080）时按 cover 缩放，只有中间约 607px 高的部分出现在视频里；
+# 40 字标题在 128px 时有 6 行（约 922px 高），放得下整块画布却超出可见部分。预检测量合成真正运行的固定时钟源码，
+# 把字号缩到可见部分放得下的最大值（5 行 × 1.2 × 字号 ≤ 607，约 100）。
+@pytest.mark.skipif(not REAL_RENDER, reason="set IMV_TEST_RENDERER=1 for the real text fit")
+def test_real_fit_measures_the_part_of_the_canvas_the_video_shows(composition_case, tmp_path):
+    """标题字号落在 90～103。"""
+    from server.remotion_templates.overlay_render import fit_texts
+    from server.remotion_templates.renderer import Renderer
+    from server.remotion_templates.settings import Settings
+
+    data, sprite = fitted_case(composition_case, WRAPPED_TITLE, "测" * 40, font_size=128)
+    data["output"] = {"width": 1920, "height": 1080, "fps": 30}
+    overlay = remotion.plan(data, 120)
+    configured = {field: Path(RENDER_PATHS[key]) for field, key in [("browser_executable", "IMV_BROWSER_EXECUTABLE"),
+        ("font_regular", "IMV_FONT_REGULAR"), ("font_bold", "IMV_FONT_BOLD")] if RENDER_PATHS[key]}
+    settings = Settings(_env_file=None, data_dir=tmp_path / "state", **configured)
+    asyncio.run(fit_texts(Renderer(settings), overlay, {sprite.sprite_id: sprite}, tmp_path / "fit"))
+    assert 90 <= overlay.instances[0]["config"]["fontSize"] <= 103

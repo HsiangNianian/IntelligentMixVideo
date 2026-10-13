@@ -226,63 +226,72 @@ async def fit_texts(renderer: Renderer, overlay: Overlay, sprites: dict[str, pb.
     reason instead of a clipped text. Only effects with the required `text` and `fontSize` parameters take part, all
     of them in one browser run (the render slot waits for it, so its deadline grows with what it measures); a Sprite
     that cannot be mounted is left to the render, which reports its own failure.
+
+    Instances name their Sprite with `sprite_id` (others are not measured) and are measured with the `code` the render
+    runs, on their own canvas (`width`, `height`, which the video scales to cover) when they have one. The text is the
+    instance's `text` when it carries one (a video composition fills it into several parameter paths), otherwise the
+    Sprite's text parameter.
     """
-    from .tool_validation import ToolValidator, ValidationUnavailable
+    from .tool_validation import FitSprite, ToolValidator, ValidationUnavailable
     from .tools.contracts import ComponentDefinition
 
-    groups: dict[str, dict[str, dict]] = {}  # sprite -> distinct values -> item
-    members: dict[tuple[str, str], list[int]] = {}  # (sprite, distinct values) -> instance indexes
+    groups: dict[tuple[str, str], dict[str, dict]] = {}  # (sprite, code) -> distinct values -> item
+    members: dict[tuple[tuple[str, str], str], list[int]] = {}  # ((sprite, code), distinct values) -> instance indexes
     for index, instance in enumerate(overlay.instances):
-        sprite = sprites[instance["sprite_id"]]
-        if sprite.kind != pb.SPRITE_KIND_TEXT:
+        sprite = sprites.get(instance.get("sprite_id", ""))
+        if sprite is None or sprite.kind != pb.SPRITE_KIND_TEXT:
             continue
         config = instance["config"]
         size = json.loads(sprite.config_schema_json).get("properties", {}).get("fontSize", {})
-        text = config.get(sprite.text_prop or "text")
+        text = instance["text"] if "text" in instance else config.get(sprite.text_prop or "text")
         if not isinstance(text, str) or not text.strip() or not isinstance(config.get("fontSize"), (int, float)) or "minimum" not in size:
             continue
         frames, length = _fit_frames(instance, overlay.frames)
         # Opacity does not move the text; every other transform field does, so it tells contents apart.
         transform = {name: value for name, value in instance["host"]["transform"].items() if name != "opacity"}
+        group = (instance["sprite_id"], instance["code"])
         key = json.dumps([config, frames, length, transform], sort_keys=True, ensure_ascii=False)
-        members.setdefault((instance["sprite_id"], key), []).append(index)
-        groups.setdefault(instance["sprite_id"], {}).setdefault(key, {
+        members.setdefault((group, key), []).append(index)
+        groups.setdefault(group, {}).setdefault(key, {
             "index": index, "values": config, "text": text, "size_key": "fontSize", "min": math.ceil(size["minimum"]),
             "frames": frames, "length": length, "transform": transform,
         })
     if not groups:
         return
-    measured = [(sprite_id, list(distinct), list(distinct.values())) for sprite_id, distinct in groups.items()]
-    items = [item for *_, group in measured for item in group]
+    measured = [(group, list(distinct), list(distinct.values())) for group, distinct in groups.items()]
+    items = [item for *_, distinct in measured for item in distinct]
     # One browser run measures every distinct text: a few seconds for each, and for loading each Sprite.
     timeout = max(renderer.settings.render_timeout_seconds, 5 * len(items) + 10 * len(measured))
+    fit_sprites = []
+    for (sprite_id, code), _, distinct in measured:
+        first = overlay.instances[distinct[0]["index"]]
+        fit_sprites.append(FitSprite(
+            ComponentDefinition(
+                code=code, parameter_schema=json.loads(sprites[sprite_id].config_schema_json),
+                default_parameters=json.loads(sprites[sprite_id].default_config_json),
+            ),
+            {"width": first.get("width", overlay.width), "height": first.get("height", overlay.height)},
+            first["host"]["box"],
+            distinct,
+        ))
     try:
         answers = await ToolValidator(renderer, directory).fit_texts(
-            [
-                (
-                    ComponentDefinition(
-                        code=sprites[sprite_id].tsx_code, parameter_schema=json.loads(sprites[sprite_id].config_schema_json),
-                        default_parameters=json.loads(sprites[sprite_id].default_config_json),
-                    ),
-                    overlay.instances[group[0]["index"]]["host"]["box"],
-                    group,
-                )
-                for sprite_id, _, group in measured
-            ],
+            fit_sprites,
             {"width": overlay.width, "height": overlay.height, "fps": overlay.fps, "duration_frames": max(item["length"] for item in items)},
             # The CPU cap grows with the deadline, or a long run of binary searches ends on it before the timeout.
             timeout_seconds=timeout, cpu_seconds=overlay_cpu_seconds(timeout),
         )
     except ValidationUnavailable as exc:
         raise OverlayError("render_failed", "叠加视频渲染失败") from exc
-    for (sprite_id, keys, group), fits in zip(measured, answers):
-        for key, item, fit in zip(keys, group, fits):
+    for (group, keys, distinct), fits in zip(measured, answers):
+        for key, item, fit in zip(keys, distinct, fits):
             if not fit["fits"]:
                 raise OverlayError("text_too_long", "文字过长：缩到最小字号仍无法完整显示，请缩短文字")
             if fit["size"] != item["values"]["fontSize"]:
-                logger.info("叠加渲染 Sprite %s 的文字（%d 字）字号 %s 缩小为 %s", sprite_id, len(item["text"]), item["values"]["fontSize"], fit["size"])
-                for index in members[(sprite_id, key)]:
+                logger.info("叠加渲染 Sprite %s 的文字（%d 字）字号 %s 缩小为 %s", group[0], len(item["text"]), item["values"]["fontSize"], fit["size"])
+                for index in members[(group, key)]:
                     overlay.instances[index]["config"] = {**item["values"], "fontSize": fit["size"]}
+
 
 async def probe_overlay(path: Path, overlay: Overlay) -> None:
     """Check size, rate, frame count and the alpha flag of the rendered file; raise on any mismatch."""

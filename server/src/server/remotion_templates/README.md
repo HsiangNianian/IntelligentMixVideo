@@ -374,7 +374,10 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   at the minimum fails the task with `text_too_long` and a fixed message (the callback's `errorMessage`) so the bus can
   tell the user to shorten it, instead of publishing a clipped title. Other Sprites skip the pass, and a fit sandbox
   that cannot start fails the task as `render_failed`. `POST /api/sprites/render` runs the same pass on each distinct
-  text or cue (a held text is measured on its frozen frame). All text Sprites of a render are measured in one browser
+  text or cue (a held text is measured on its frozen frame), and a video composition (`video_composition/remotion.py`)
+  on its titles and subtitles: it measures the code it renders (the timing wrapper of a fixed-clock asset) on the
+  asset's own canvas, and only the part of that canvas the video shows after scaling it to cover counts as on the
+  canvas; the failure there is `remotion_text_too_long`. All text Sprites of a render are measured in one browser
   run, each loaded in turn on the same page, under one deadline: the default validation timeout, or 5 seconds per
   distinct text plus 10 per Sprite when that is longer; the sandbox CPU cap grows with that deadline like an overlay
   render's. It is a geometric measurement, not a visual review.
