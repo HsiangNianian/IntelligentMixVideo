@@ -9,6 +9,8 @@ import asyncio
 import json
 import logging
 import os
+import shutil
+import signal
 import sqlite3
 import subprocess
 import threading
@@ -44,6 +46,49 @@ from .conftest import published_sprite
 CODE = "export default function Sprite() { return null; }"
 # 自动隔离夹具会清除 IMV_*，所以在导入时读取本次运行配置的渲染器位置。
 RENDERER_PATHS = {name: os.environ.get(name) for name in ("IMV_BROWSER_EXECUTABLE", "IMV_FONT_REGULAR", "IMV_FONT_BOLD")}
+
+
+# 场景：浏览器已派生进程却连接失败时，worker 必须立即退出，不能只设置退出码后占住渲染名额。
+@pytest.mark.skipif(os.name == "nt", reason="进程组清理回归使用 POSIX 信号")
+def test_worker_exits_when_browser_launch_leaves_live_handles(tmp_path: Path) -> None:
+    """执行真实 worker 的异常路径；模拟残留子进程和计时器，并清理测试进程组。"""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("需要 Node 执行 worker 生命周期回归")
+    renderer = Path(__file__).parents[1] / "src/server/remotion"
+    stub = tmp_path / "renderer-stub.mjs"
+    stub.write_text('''/** 模拟启动超时后仍持有子进程与事件循环句柄的浏览器库。 */
+import {spawn} from 'node:child_process';
+export const bundle = async () => 'unused';
+export const openBrowser = async () => {
+  spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);
+  setInterval(() => {}, 1000);
+  throw new Error('browser connection failed with live handles');
+};
+export const selectComposition = async () => { throw new Error('must not select'); };
+export const renderMedia = async () => { throw new Error('must not render'); };
+''')
+    source = (renderer / "overlay-worker.mjs").read_text()
+    source = source.replace('"@remotion/bundler"', json.dumps(stub.as_uri()))
+    source = source.replace('"@remotion/renderer"', json.dumps(stub.as_uri()))
+    worker = tmp_path / "overlay-worker.mjs"
+    worker.write_text(source)
+    (tmp_path / "request.json").write_text(json.dumps({"composition": {}, "instances": []}))
+    with (tmp_path / "failure.log").open("wb") as log:
+        process = subprocess.Popen(
+            [node, str(worker)], stdout=log, stderr=log, start_new_session=True,
+            env={**os.environ, "IMV_WORK_ROOT": str(tmp_path), "IMV_RENDERER_ROOT": str(renderer)},
+        )
+        try:
+            assert process.wait(timeout=5) == 1
+        finally:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+    assert "browser connection failed with live handles" in (tmp_path / "failure.log").read_text()
+    assert not (tmp_path / "renderer.json").exists()
 
 
 def sprite(sprite_id: str, *, width=1080, height=1920, fps=30, frames=60, code=CODE) -> pb.PublishedSprite:
@@ -401,6 +446,21 @@ def test_request_spans_clips_cut_by_the_total(service) -> None:
     run_task(overlays, duration=2.0)
     composition = renderer.requests[0]["composition"]
     assert (composition["duration_in_frames"], composition["frames"]) == (90, 60)
+
+
+# 场景：每个隔离浏览器复用只读字体缓存，避免启动时扫描全部系统字体。
+@pytest.mark.parametrize("cache_exists", [True, False])
+def test_sandbox_reuses_font_cache_read_only_when_available(tmp_path, monkeypatch, cache_exists) -> None:
+    """字体缓存存在时只读共享，不存在时仍能构建隔离命令，且不开放整个 /var。"""
+    cache = Path("/var/cache/fontconfig")
+    original_exists = Path.exists
+    monkeypatch.setattr(Path, "exists", lambda path: cache_exists if path == cache else original_exists(path))
+    renderer = Renderer(Settings(_env_file=None, data_dir=tmp_path))
+    command = renderer.command(tmp_path, worker="overlay-worker.mjs")
+    mounts = [command[index:index + 3] for index, argument in enumerate(command) if argument in {"--bind", "--ro-bind"}]
+    assert (["--ro-bind", str(cache), str(cache)] in mounts) is cache_exists
+    assert ["--bind", str(cache), str(cache)] not in mounts
+    assert not any(mount[1] == "/var" for mount in mounts)
 
 
 # 场景：沙箱 CPU 上限默认沿用短 worker 的 300 秒，调用方可按自己的渲染期限放大。

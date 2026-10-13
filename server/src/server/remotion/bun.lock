@@ -19,6 +19,9 @@
       },
     },
   },
+  "patchedDependencies": {
+    "@remotion/renderer@4.0.523": "patches/@remotion%2Frenderer@4.0.523.patch",
+  },
   "packages": {
     "@babel/helper-string-parser": ["@babel/helper-string-parser@7.29.7", "https://registry.npmmirror.com/@babel/helper-string-parser/-/helper-string-parser-7.29.7.tgz", {}, "sha512-Pb5ijPrZ89GDH8223L4UP8i6QApWxs04RbPQJTeWDV0/keR2E36MeKnyr6LYmUUvqRRI+Iv87SuF1W6ErINzYw=="],
 
