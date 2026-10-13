@@ -190,9 +190,9 @@ test("从目录添加资产无需配置，按资产自身长度随模板保存",
   expect(posts).toEqual(["/template"]);
 });
 
-// 场景：同一个资产可以多次添加：每次都是独立的摆放（不同的轨道 ID），列表和保存请求里各有一条。
+// 场景：不占用模板对象的资产（滤镜）可以多次添加：每次都是独立的摆放（不同的轨道 ID），列表和保存请求里各有一条。
 test("同一个资产可以添加多次", async () => {
-  const { template, saved } = sprites();
+  const { template, saved } = sprites({ catalog: [summary("sprite-1", SpriteKind.FILTER_OVERLAY)] });
   render(<TemplateWorkspace selection={{ environment: "cloud", templateId: template.template_id }} onHome={() => {}} />);
   const catalog = await screen.findByRole("region", { name: "Remotion 资产" });
   fireEvent.click(within(catalog).getByRole("button", { name: "展开" }));
@@ -292,9 +292,30 @@ test("添加画布不一致的资产时提示原因", async () => {
   fireEvent.click(await within(catalog).findByRole("button", { name: "添加 Remotion 资产：霓虹标题" }));
   fireEvent.click(await within(catalog).findByRole("button", { name: "添加 Remotion 资产：横版标题" }));
   await screen.findByText(/「横版标题」的画布（1920×1080 @ 30 FPS）与已添加的「霓虹标题」（1080×1920 @ 30 FPS）不一致/);
+  fireEvent.click(screen.getByRole("button", { name: "知道了" }));
   expect(screen.getAllByRole("listitem", { name: /^Remotion 资产：/ })).toHaveLength(1);
 });
 
+
+// 场景：字效作用于当前选择的文字对象（默认标题），不另开时间轴行：列表注明作用对象，设置里不再单独提供文字与关键词；改为作用于底部字幕后随模板保存。
+test("字效作用于文字对象并可改为字幕", async () => {
+  const { template, saved } = sprites({ catalog: [textAsset()] });
+  render(<TemplateWorkspace selection={{ environment: "cloud", templateId: template.template_id }} onHome={() => {}} />);
+  const catalog = await screen.findByRole("region", { name: "Remotion 资产" });
+  fireEvent.click(within(catalog).getByRole("button", { name: "展开" }));
+  fireEvent.click(await within(catalog).findByRole("button", { name: "添加 Remotion 资产：金色标题" }));
+  const item = await screen.findByRole("listitem", { name: "Remotion 资产：金色标题" });
+  expect(item.textContent).toContain("顶部标题字效");
+  fireEvent.click(within(item).getByRole("button", { name: "设置 Remotion 资产：金色标题" }));
+  const inspector = await screen.findByRole("region", { name: "Remotion 资产设置" });
+  expect(within(inspector).queryByLabelText("标题文字")).toBeNull();
+  expect(within(inspector).getByLabelText("字号")).toBeTruthy();
+  fireEvent.click(within(inspector).getByRole("radio", { name: "底部字幕" }));
+  await waitFor(() => expect(screen.getByRole("listitem", { name: "Remotion 资产：金色标题" }).textContent).toContain("底部字幕字效"));
+  fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
+  await waitFor(() => expect(saved).toHaveLength(1));
+  expect(wireClips(saved[0]).map((clip) => [clip.textTarget, clip.transitionBoundary])).toEqual([["subtitle", undefined]]);
+});
 
 /** 打开带一个字效片段的已保存模板，并选中该片段。 */
 async function openTextClip(clip: Partial<RemotionClip> = {}) {

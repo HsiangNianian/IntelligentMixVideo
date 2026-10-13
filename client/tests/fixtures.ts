@@ -84,6 +84,7 @@ function templateRecord(template: Template): TemplateRecord {
       ...(template.clips ?? []).map((clip) => ({
         id: clip.id, target: "remotion", startMode: "seconds", start: clip.start,
         duration: clip.duration ?? undefined, spriteId: clip.sprite_id,
+        textTarget: clip.text_target, transitionBoundary: clip.transition_boundary,
         editor: Object.keys(clip.parameters ?? {}).length || Object.keys(clip.transform ?? {}).length ? { remotion: {
           parameters: Object.entries(clip.parameters ?? {}).map(([key, value]) => ({
             key, ...(Array.isArray(value) ? { stringListValue: { values: value } } : typeof value === "string" ? { stringValue: value } : typeof value === "number" ? { numberValue: value } : { boolValue: value }),

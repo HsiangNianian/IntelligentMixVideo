@@ -1,14 +1,17 @@
-/** Remotion 片段编辑操作的核心测试：添加、移动、移除、参数覆盖、宿主变换与共用轨道上限，以及发布参数到控件的转换；纯函数，不依赖界面。 */
+/** Remotion 片段编辑操作的核心测试：添加、所占模板对象与共用名额、移动、移除、参数覆盖、宿主变换与共用轨道上限，以及发布参数到控件的转换；纯函数，不依赖界面。 */
 import { expect, test } from "bun:test";
 import { create } from "@bufbuild/protobuf";
 import { OperatorAccess, SpriteKind, SpriteParameterFormat, SpriteParameterSchema } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { SpriteAsset } from "@/features/sprites/model";
 import { assetParameter, categoryOf, transformFields } from "@/features/sprites/parameters";
 import { validParameter } from "@/components/ParameterControl";
-import { addClip, moveClip, removeClip, setClipParameter, setClipTransform } from "@/features/templates/clips";
-import { sampleDraft } from "./fixtures";
+import { addClip, bindClip, moveClip, removeClip, setClipParameter, setClipTransform, timeClips, validateClipSlots } from "@/features/templates/clips";
+import { addTrack, previewContext, resolveTemplate, setTrackTiming } from "@/features/templates/tracks";
+import type { Draft } from "@/features/templates/model";
+import { catalog, sampleDraft, sampleMedia } from "./fixtures";
 
-const asset: SpriteAsset = { id: "sprite-1", name: "霓虹标题", kind: SpriteKind.VIDEO_OVERLAY, seconds: 3, aspect: 9 / 16, width: 1080, height: 1920, fps: 30, box: { x: 0, y: 0, width: 1080, height: 1920 }, parameters: [] };
+// 滤镜不占用模板对象，可以重复添加；占用对象的分类在下方单独覆盖。
+const asset: SpriteAsset = { id: "sprite-1", name: "暖色滤镜", kind: SpriteKind.FILTER_OVERLAY, seconds: 3, aspect: 9 / 16, width: 1080, height: 1920, fps: 30, box: { x: 0, y: 0, width: 1080, height: 1920 }, parameters: [] };
 
 // 场景：添加的片段从 0 秒开始、长度为资产自身时长；同一资产可以重复添加，每次是独立摆放；输入草稿和 IMS 对象引用都不变。
 test("添加片段不改动输入，同一资产可重复添加", () => {
@@ -65,6 +68,67 @@ test("画布不一致的资产不能加入同一模板", () => {
   expect(() => addClip(first, { ...asset, id: "sprite-x", fps: 60 }, [asset])).toThrow("1080×1920 @ 60 FPS");
   expect(addClip(first, { ...asset, id: "sprite-y" }, [asset]).clips).toHaveLength(2);
   expect(addClip(first, { ...asset, id: "sprite-z", fps: 60 }, []).clips).toHaveLength(2);
+});
+
+// 场景：字效作用于当前选择的标题或字幕，同一文字对象只能有一个，气泡不能使用 Remotion 字效。
+test("字效作用于所选文字对象且每个对象最多一个", () => {
+  const text = { ...asset, id: "text", kind: SpriteKind.TEXT };
+  const title = addClip(sampleDraft(), text, [text], "title");
+  expect(title.clips[0].text_target).toBe("title");
+  expect(() => addClip(title, text, [text], "title")).toThrow("已有 Remotion 字效");
+  expect(addClip(title, text, [text], "subtitle").clips.map((clip) => clip.text_target)).toEqual(["title", "subtitle"]);
+  expect(() => addClip(sampleDraft(), text, [text], "bubble")).toThrow("只能作用于标题或底部字幕");
+});
+
+// 场景：Remotion 转场依次占用 IMS 转场未使用的交界处，两个交界处都占满后拒绝；IMS 转场也不能占用 Remotion 转场所在的交界处。
+test("Remotion 转场与 IMS 转场共用视频交界处", () => {
+  const cut = { ...asset, id: "cut", kind: SpriteKind.TRANSITION_OVERLAY };
+  const ims = addTrack(sampleDraft(), catalog[1], "transition").draft;
+  const both = addClip(ims, cut, [cut]);
+  expect(both.clips[0].transition_boundary).toBe(2);
+  expect(() => addClip(both, cut, [cut])).toThrow("两个视频交界处都已有转场");
+  expect(() => addTrack(addClip(sampleDraft(), cut, [cut]), catalog[1], "transition", undefined, 1)).toThrow("交界处 1 已有 Remotion 转场");
+  expect(addTrack(addClip(sampleDraft(), cut, [cut]), catalog[1], "transition").draft.tracks.at(-1)?.transition_boundary).toBe(2);
+});
+
+// 场景：Remotion 视频特效与 IMS 画面特效共用一个名额，已有任一种时拒绝再添加。
+test("Remotion 视频特效占用画面特效名额", () => {
+  const glow = { ...asset, id: "glow", kind: SpriteKind.VIDEO_OVERLAY };
+  const once = addClip(sampleDraft(), glow, [glow]);
+  expect(() => addClip(once, glow, [glow])).toThrow("画面特效最多一个");
+  const ims = sampleDraft();
+  ims.tracks.push({ id: "vfx", target: "vfx", start_mode: "seconds", start: 0, duration: null, editor: { ...ims.tracks[0].editor, vfx: "vfx/normal/x" } });
+  expect(() => addClip(ims, glow, [glow])).toThrow("画面特效最多一个");
+});
+
+// 场景：字效改为作用于另一个文字对象时清除文字与关键词覆盖（改由该对象提供），保留其他参数；目标已被占用或保存前存在冲突时报错。
+test("改变字效作用对象与转场交界处", () => {
+  const text = { ...asset, id: "text", kind: SpriteKind.TEXT };
+  const draft = addClip(addClip(sampleDraft(), text, [text], "title"), text, [text], "subtitle");
+  const [title, subtitle] = draft.clips;
+  expect(() => bindClip(draft, title.id, { text_target: "subtitle" })).toThrow("已有 Remotion 字效");
+  const single = setClipParameter(setClipParameter(removeClip(draft, subtitle.id), title.id, "text", "旧文字"), title.id, "fontSize", 80);
+  expect(bindClip(single, title.id, { text_target: "subtitle" }).clips[0]).toMatchObject({ text_target: "subtitle", parameters: { fontSize: 80 } });
+  expect(() => validateClipSlots({ ...draft, clips: [title, { ...subtitle, text_target: "title" }] })).toThrow("最多一个 Remotion 字效");
+  const cut = { ...asset, id: "cut", kind: SpriteKind.TRANSITION_OVERLAY };
+  const moved = bindClip(addClip(sampleDraft(), cut, [cut]), addClip(sampleDraft(), cut, [cut]).clips[0].id, { transition_boundary: 2 });
+  expect(moved.clips).toHaveLength(1);
+});
+
+// 场景：字效采用所作用文字在本次预览中的显示区间，Remotion 转场以交界处为中心；区间不变时返回原草稿，不改动输入。
+test("片段时间跟随所占对象", () => {
+  const text = { ...asset, id: "text", kind: SpriteKind.TEXT };
+  const cut = { ...asset, id: "cut", kind: SpriteKind.TRANSITION_OVERLAY, seconds: 1 };
+  /** 按三个 10 秒预览视频计算占用对象的片段区间。 */
+  const timed = (draft: Draft) => timeClips(draft, resolveTemplate(draft, previewContext(sampleMedia)));
+  expect(timed(addClip(sampleDraft(), cut, [cut])).clips[0]).toMatchObject({ transition_boundary: 1, start: 9.5, duration: 1 });
+  let draft = setTrackTiming(sampleDraft(), "title", { start_mode: "seconds", start: 2, duration: 3 });
+  // IMS 转场在第一个交界处重叠一秒，第二个交界处随之提前到 19 秒。
+  draft = addClip(addClip(addTrack(draft, catalog[1], "transition").draft, text, [text, cut], "title"), cut, [text, cut]);
+  const result = timed(draft);
+  expect(result.clips.map(({ start, duration, transition_boundary }) => [start, duration, transition_boundary])).toEqual([[2, 3, undefined], [18.5, 1, 2]]);
+  expect(draft.clips.map(({ start }) => start)).toEqual([0, 0]);
+  expect(timed(result)).toBe(result);
 });
 
 // 场景：参数覆盖与宿主变换逐项修改；undefined 恢复默认值，其他片段与输入草稿不变。

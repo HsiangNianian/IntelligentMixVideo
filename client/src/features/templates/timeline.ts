@@ -10,9 +10,10 @@ import {
   type PreviewMedia,
 } from "./model";
 import type { TimelineAction, TimelineRow } from "@xzdarcy/timeline-engine";
-import { isTextTarget, type EffectTarget } from "./effects";
+import { effectTargets, isTextTarget, type EffectTarget } from "./effects";
 import { trackLabel, trackLayers, type ResolvedTimeline } from "./tracks";
 import { previewVideos } from "./media";
+import type { ClipSlot } from "./clips";
 
 /** 预览轨道保留源素材范围，缩略图采样使用源时间，游标使用预览时间。 */
 export interface PreviewClip extends TimelineAction {
@@ -54,7 +55,7 @@ export function buildPreviewRows(timeline: ReturnType<typeof buildTimeline>): (O
   }))];
 }
 
-/** 时间轴上的 Remotion 资产片段：固定长度，开始时间由右侧设置。 */
+/** 时间轴上的 Remotion 资产片段：固定长度，按所占对象放进对应的行。 */
 export interface SpriteClip {
   id: string;
   spriteId: string;
@@ -62,6 +63,10 @@ export interface SpriteClip {
   name: string;
   start: number;
   end: number;
+  /** 占用的模板对象；字效尚未选择文字对象或资产不在目录中时为空，单独成行提示。 */
+  slot?: ClipSlot;
+  /** 转场所在的视频交界处。 */
+  boundary?: number;
   /** 这次摆放的参数覆盖（顶层参数），播放器合并到资产默认值之上。 */
   values?: Record<string, unknown>;
   /** 宿主变换，未设置的字段取默认值。 */
@@ -70,24 +75,33 @@ export interface SpriteClip {
   canvas?: { width: number; height: number; box: ContentBox; movable: boolean };
 }
 
-/** 每个 Remotion 资产独占一行；它不属于 SDK 时间线，仅在时间轴上展示区间。 */
-export function spriteRows(clips: SpriteClip[]): (Omit<TimelineRow, "actions"> & { actions: PreviewClip[] })[] {
-  return clips.map((clip) => ({
+/** 作用于文字的 Remotion 字效所替换的 IMS 文字对象。 */
+export function remotionTexts(draft: Pick<Draft, "clips">): Set<TextRole> {
+  return new Set(draft.clips.flatMap((clip) => clip.text_target ? [clip.text_target] : []));
+}
+
+/**
+ * 把 Remotion 片段并入 IMS 对象的行，不为每个资产另开一行：字效标在所作用的标题或字幕行上，
+ * 转场、画面特效与滤镜按图层插入同类对象之间；未确定对象的片段排在视频之前单独提示。
+ */
+export function mergeSpriteRows(rows: ReturnType<typeof buildPreviewRows>, clips: SpriteClip[]): ReturnType<typeof buildPreviewRows> {
+  const merged = rows.map((row) => {
+    const text = clips.find((clip) => clip.slot === row.actions[0]?.effectId && isTextTarget(clip.slot));
+    return text ? { ...row, actions: row.actions.map((action) => ({ ...action, effectName: `Remotion · ${text.name}` })) } : row;
+  });
+  const added = clips.filter((clip) => !clip.slot || !isTextTarget(clip.slot)).map((clip) => ({
     id: `row-${clip.id}`,
     actions: [{
-      id: clip.id,
-      effectId: "remotion",
-      start: clip.start,
-      end: clip.end,
-      movable: false,
-      flexible: false,
-      label: clip.name,
-      url: "",
-      sourceIn: 0,
-      sourceOut: 0,
-      targetId: clip.id,
+      id: clip.id, effectId: clip.slot ?? "remotion", start: clip.start, end: clip.end, movable: false, flexible: false,
+      label: clip.slot === "transition" ? `镜头转场 ${clip.boundary}` : clip.slot ? effectTargets[clip.slot] : "Remotion 资产",
+      effectName: `Remotion · ${clip.name}`, url: "", sourceIn: 0, sourceOut: 0, targetId: clip.id,
     }],
   }));
+  const layer = (row: (typeof merged)[number]) => {
+    const effect = row.actions[0]?.effectId;
+    return effect === "video" ? Infinity : effect === "remotion" ? 99 : trackLayers[effect as EffectTarget];
+  };
+  return [...merged, ...added].sort((a, b) => layer(a) - layer(b));
 }
 
 /** 每秒约取一张源素材缩略图，使用区间中心，避免在片段结束边界采样。 */
@@ -101,6 +115,13 @@ export function thumbnailTimes(clip: Pick<PreviewClip, "sourceIn" | "sourceOut">
 
 /** SDK 效果允许混合文字、数值参数；仅从可信目录和经过范围校验的配置生成。 */
 type Effect = Record<string, string | number>;
+
+/** 预览示例文字中强调的关键词：标题优先使用指定关键词，否则取首段前两个字；字幕取第一个词语。合成时改用切片结果。 */
+export function exampleKeyword(config: Editor, role: "title" | "subtitle"): string {
+  return role === "title"
+    ? config.titleKeyword || (config.title.match(/[\p{L}\p{N}]{1,2}/u)?.[0] ?? "")
+    : [...new Intl.Segmenter("zh", { granularity: "word" }).segment(config.subtitle)].find((part) => part.isWordLike)?.segment ?? "";
+}
 
 /** 校验数值输入，不让空值、NaN 或越界参数进入 SDK。 */
 function number(
@@ -138,11 +159,7 @@ function buildTrackContent(config: Editor, catalog: EffectAsset[], target: Effec
   const text = (role: TextRole) => {
     const content = role === "bubble" ? config.bubbleText : config[role];
     const size = number(config[`${role}Size`], 12, 300, "字号", true);
-    const previewKeyword = role === "title"
-      ? config.titleKeyword || (content.match(/[\p{L}\p{N}]{1,2}/u)?.[0] ?? "")
-      : role === "subtitle"
-        ? ([...new Intl.Segmenter("zh", { granularity: "word" }).segment(content)].find((part) => part.isWordLike)?.segment ?? "")
-        : "";
+    const previewKeyword = role === "bubble" ? "" : exampleKeyword(config, role);
     if (
       config[`${role}Loop`] &&
       (config[`${role}In`] || config[`${role}Out`])
@@ -210,6 +227,8 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media: Previ
     AudioTracks: [], AspectRatio: `${canvas.Width}:${canvas.Height}`, FECanvas: canvas,
   };
   const seen = new Set<string>();
+  // 改由 Remotion 字效显示的文字仍保留时间轴行，但不交给 SDK 渲染。
+  const replaced = remotionTexts(draft);
   for (const source of [...draft.tracks].sort((a, b) => trackLayers[a.target] - trackLayers[b.target])) {
     const applied = resolvedTimeline.tracks[source.id];
     if (!applied) throw new Error("对象缺少时间计算结果");
@@ -221,7 +240,7 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media: Previ
     if (isTextTarget(track.target)) {
       const text = resolved.text;
       if (!text?.Content.trim()) throw new Error("文字轨道内容不能为空");
-      timeline.SubtitleTracks.push({ SubtitleTrackClips: [{ ...text, TimelineIn: track.start, TimelineOut: track.end }] });
+      if (!replaced.has(track.target)) timeline.SubtitleTracks.push({ SubtitleTrackClips: [{ ...text, TimelineIn: track.start, TimelineOut: track.end }] });
     } else if (track.target === "transition") {
       const effect = resolved.effect;
       if (!effect) throw new Error("转场轨道缺少效果");

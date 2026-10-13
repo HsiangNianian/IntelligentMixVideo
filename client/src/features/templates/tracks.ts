@@ -1,5 +1,6 @@
 /** 对象时间规则、实例编辑与视频应用计算；计算结果不修改模板配置。 */
 import { defaultEditor, type Draft, type EffectDraft, type Editor, type EffectAsset, type EffectTrack, type PreviewMedia } from "./model";
+import { boundaryTaken } from "./clips";
 import { appliedTargets, applyAsset, effectTargets, isTextTarget, targetEffectKeys, type EffectTarget } from "./effects";
 import { previewVideos } from "./media";
 
@@ -233,9 +234,11 @@ export function addTrack(draft: Draft, asset: EffectAsset, target: EffectTarget,
   }
   const role = isTextTarget(target) ? target : "title";
   if (asset.category === "transition/normal" && boundary === undefined) {
-    boundary = [1, 2].find((value) => !draft.tracks.some((track) => track.target === "transition" && track.transition_boundary === value));
+    boundary = [1, 2].find((value) => !boundaryTaken(draft, value));
     if (boundary === undefined) throw new Error("最多添加两个转场，请在右侧修改已有转场");
   }
+  if (asset.category === "transition/normal" && draft.clips.some((clip) => clip.transition_boundary === boundary))
+    throw new Error(`交界处 ${boundary} 已有 Remotion 转场，请先移除`);
   const transition = asset.category === "transition/normal" ? draft.tracks.find((track) => track.target === "transition" && track.transition_boundary === boundary) : undefined;
   if (transition) {
     const applied = applyAsset(trackDraft(draft, transition), asset, role);

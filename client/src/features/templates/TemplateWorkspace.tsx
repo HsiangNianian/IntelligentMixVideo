@@ -16,7 +16,8 @@ import { TemplateInspector, TransitionInspector, type InspectorTab } from "./Tem
 import { TemplatePreview } from "./TemplatePreview";
 import { SpriteCatalog, SpriteClips } from "./SpritePanels";
 import { SpriteClipInspector } from "./SpriteClipInspector";
-import { addClip, moveClip, removeClip, setClipParameter, setClipTransform } from "./clips";
+import { addClip, bindClip, clipSlot, moveClip, removeClip, setClipParameter, setClipTransform, timeClips } from "./clips";
+import { exampleKeyword } from "./timeline";
 import { transformFields } from "@/features/sprites/parameters";
 import { useSpriteCatalog } from "./useSpriteCatalog";
 import type { TemplateSelection } from "./TemplateHome";
@@ -77,9 +78,14 @@ export function TemplateWorkspace({ selection = null, onHome }: {
     catch (reason) { return { timeline: undefined, error: reason instanceof Error ? reason.message : "时间规则无法应用到当前视频" }; }
   }, [draft, media, videoOrder]);
   const previewLength = preview.timeline?.duration ?? 0;
-  const draftClips = draft?.clips;
-  const spriteClips = useMemo(() => (draftClips ?? []).map((clip) => {
+  // 占用文字或交界处的片段按本次预览计算区间，展示与保存共用，不改变草稿。
+  const timedDraft = useMemo(() => draft && preview.timeline ? timeClips(draft, preview.timeline) : draft, [draft, preview.timeline]);
+  const timedClips = timedDraft?.clips;
+  const draftTracks = draft?.tracks;
+  const spriteClips = useMemo(() => (timedClips ?? []).map((clip) => {
     const asset = spriteCatalog.assets?.find((item) => item.id === clip.sprite_id);
+    // 作用于文字的字效显示该文字对象的示例文字与关键词，合成时由总线换成实际标题或切片。
+    const text = clip.text_target && draftTracks?.find((track) => track.target === clip.text_target);
     return {
       id: clip.id,
       spriteId: clip.sprite_id,
@@ -87,11 +93,13 @@ export function TemplateWorkspace({ selection = null, onHome }: {
       name: asset?.name ?? "Remotion 资产",
       start: clip.start,
       end: Math.min(previewLength, clip.start + (clip.duration ?? asset?.seconds ?? 0)),
-      values: clip.parameters,
+      slot: clipSlot(clip, asset),
+      boundary: clip.transition_boundary,
+      values: text && clip.text_target ? { ...clip.parameters, text: text.editor[clip.text_target], keywords: [exampleKeyword(text.editor, clip.text_target)].filter(Boolean) } : clip.parameters,
       transform: clip.transform,
       canvas: asset ? { width: asset.width, height: asset.height, box: asset.box, movable: transformFields(asset.kind).includes("x") } : undefined,
     };
-  }).filter((clip) => clip.end > clip.start), [draftClips, spriteCatalog.assets, previewLength]);
+  }).filter((clip) => clip.end > clip.start), [timedClips, draftTracks, spriteCatalog.assets, previewLength]);
   const dirty = draft !== null && (current === null || JSON.stringify(draft) !== baseline);
   const selectedTrack = draft?.tracks.find((track) => track.id === target);
   const assetTrack = selectedTrack ?? draft?.tracks.find((track) => track.id === lastTextTrack.current);
@@ -99,7 +107,7 @@ export function TemplateWorkspace({ selection = null, onHome }: {
   const selectedTransition = selectedTrack?.target === "transition" ? selectedTrack : undefined;
   const selectedBoundary = selectedTransition?.transition_boundary;
   // IMS 对象与 Remotion 片段共用一个选中状态，右栏只显示其中一种设置。
-  const selectedClip = draft?.clips.find((clip) => clip.id === target);
+  const selectedClip = timedClips?.find((clip) => clip.id === target);
 
   useEffect(() => {
     mounted.current = true;
@@ -195,7 +203,7 @@ export function TemplateWorkspace({ selection = null, onHome }: {
 
   /** 成功保存响应建立新基线；失败保留原草稿和待切换目标，不自动重发。 */
   async function persist(nextSelection?: TemplateSelection) {
-    if (!draft || lock.current || loading) return;
+    if (!draft || !timedDraft || lock.current || loading) return;
     // 时间输入保留局部编辑值，写入前检查；模板配置继续由 saveTemplate 校验。
     const timingInputs = form.current?.querySelectorAll<HTMLInputElement>('[aria-label="轨道时间设置"] input');
     if (timingInputs && [...timingInputs].some((input) => !input.checkValidity())) { setInspectorTab("timing"); return; }
@@ -203,8 +211,8 @@ export function TemplateWorkspace({ selection = null, onHome }: {
     setBusy(true);
     setError("");
     try {
-      // Remotion 片段是模板的 `remotion` 轨道，与 IMS 对象在同一次请求里保存，要么都成功要么都不写入。
-      const saved = await api.saveTemplate(draft, current?.template_id, environment, current?.library);
+      // Remotion 片段是模板的 `remotion` 轨道，占用对象的片段带上本次预览的区间，与 IMS 对象在同一次请求里保存，要么都成功要么都不写入。
+      const saved = await api.saveTemplate(timedDraft, current?.template_id, environment, current?.library);
       if (!mounted.current) return;
       const next = toDraft(saved);
       setCurrent(saved);
@@ -258,13 +266,15 @@ export function TemplateWorkspace({ selection = null, onHome }: {
                   setTarget(text?.id ?? null);
                   lastTextTrack.current = text?.id ?? null;
                 }} onAsset={(asset, role) => editTrack(() => {
+                  if (asset.category === "vfx/normal" && draft.clips.some((clip) => clipSlot(clip, spriteCatalog.assets?.find((item) => item.id === clip.sprite_id)) === "vfx"))
+                    throw new Error("画面特效最多一个，已添加的 Remotion 视频特效也占用这个名额，请先移除");
                   const result = addTrack(draft, asset, role, lastTextTrack.current ?? undefined);
                   setTarget(result.id);
                   const added = result.draft.tracks.find((track) => track.id === result.id)!;
                   if (isTextTarget(added.target)) { setTextTarget(added.target); lastTextTrack.current = added.id; }
                   return result.draft;
                 }, true)} />
-                <SpriteCatalog environment={environment} catalog={spriteCatalog} onAdd={(asset) => editTrack(() => addClip(draft, asset, spriteCatalog.assets ?? []))} />
+                <SpriteCatalog environment={environment} catalog={spriteCatalog} onAdd={(asset) => editTrack(() => addClip(draft, asset, spriteCatalog.assets ?? [], textTarget), true)} />
               </aside>}
               canvas={<main className="template-workspace-canvas h-full min-w-0 overflow-y-auto border-b xl:border-b-0">
                 <TemplatePreview draft={draft} media={media} resolved={preview.timeline} mediaError={mediaError || preview.error} onRetryMedia={() => setMediaAttempt((value) => value + 1)} onMediaChange={(next) => { setMedia(next); setMediaError(""); }} videoInputKey={`${environment}:${current?.template_id ?? draft.name}`} onCatalog={setCatalog} selectedId={target} onSelect={(id) => { if (draft.tracks.some((track) => track.id === id) || draft.clips.some((clip) => clip.id === id)) selectTarget(id); }} sprites={spriteClips} onSpriteMove={(id, x, y) => editTrack(() => setClipTransform(draft, id, { x, y }))}
@@ -276,11 +286,12 @@ export function TemplateWorkspace({ selection = null, onHome }: {
                   }} />
               </main>}
               inspector={<aside className="template-workspace-inspector h-full min-w-0 overflow-y-auto xl:border-l"><AppliedEffects draft={draft} catalog={catalog} resolved={preview.timeline} selected={target} onSelect={selectTarget} />
-                <SpriteClips environment={environment} clips={draft.clips} catalog={spriteCatalog} duration={preview.timeline?.duration} selected={selectedClip?.id ?? null} onSelect={selectTarget} onRemove={(id) => editTrack(() => removeClip(draft, id))} />
+                <SpriteClips environment={environment} clips={timedClips ?? []} catalog={spriteCatalog} duration={preview.timeline?.duration} selected={selectedClip?.id ?? null} onSelect={selectTarget} onRemove={(id) => editTrack(() => removeClip(draft, id))} />
                 {selectedClip && <SpriteClipInspector key={selectedClip.id} clip={selectedClip} asset={spriteCatalog.assets?.find((item) => item.id === selectedClip.sprite_id)} duration={preview.timeline?.duration}
                   onParameter={(key, value) => editTrack(() => setClipParameter(draft, selectedClip.id, key, value))}
                   onTransform={(patch) => editTrack(() => setClipTransform(draft, selectedClip.id, patch))}
                   onStart={(start) => editTrack(() => moveClip(draft, selectedClip.id, start))}
+                  onBind={(binding) => editTrack(() => bindClip(draft, selectedClip.id, binding))}
                   onRemove={() => { editTrack(() => removeClip(draft, selectedClip.id)); setTarget(null); }}
                   onClose={() => setTarget(null)} />}
                 {selectedTransition && <TransitionInspector boundary={selectedBoundary!} track={selectedTransition} catalog={catalog} resolved={preview.timeline?.tracks[selectedTransition.id]}

@@ -1,4 +1,4 @@
-/** 模板编辑中的 Remotion 资产：左侧按分类从发布目录添加片段，右侧列出模板里的片段并可选中调整参数；时间在预览下方时间轴拖动调整。 */
+/** 模板编辑中的 Remotion 资产：左侧按分类从发布目录添加片段，右侧列出模板里的片段、所占的模板对象，并可选中调整参数。 */
 import { useState } from "react";
 import { Plus, RefreshCw, Trash2, Wand2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -7,7 +7,9 @@ import { cn } from "@/lib/utils";
 import type { SpriteAsset } from "@/features/sprites/model";
 import { CATEGORIES, categoryOf, type CategoryId } from "@/features/sprites/parameters";
 import type { Environment } from "./api";
-import type { RemotionClip } from "./model";
+import { textRoles, type RemotionClip } from "./model";
+import { clipSlot } from "./clips";
+import { effectTargets } from "./effects";
 import type { useSpriteCatalog } from "./useSpriteCatalog";
 
 type Catalog = ReturnType<typeof useSpriteCatalog>;
@@ -28,7 +30,7 @@ export function SpriteCatalog({ environment, catalog, onAdd }: { environment: En
       </div>
       {environment !== "cloud" && <p role="status" className="text-[11px] text-muted-foreground">Remotion 资产只能添加到云端模板。</p>}
       {open && environment === "cloud" && <>
-        <p className="text-[11px] text-muted-foreground">资产画面以透明层叠加在预览上，并随时间轴位置显示。</p>
+        <p className="text-[11px] text-muted-foreground">资产画面以透明层叠加在预览上。字效作用于当前选择的标题或字幕，转场占用空闲的视频交界处，视频特效与画面特效共用一个名额。</p>
         {catalog.error && <p role="alert" className="text-[11px] text-destructive">{catalog.error}</p>}
         {catalog.assets && !catalog.assets.length && <p role="status" className="text-[11px] text-muted-foreground">还没有资产，请在字效工作区的成功版本上选择「保存到资产」。</p>}
         {!!catalog.assets?.length && <ToggleGroup type="single" spacing={1} value={category} onValueChange={(value) => { if (value) setChosen(value as CategoryId); }} aria-label="Remotion 资产分类" className="w-full flex-wrap">
@@ -72,8 +74,10 @@ export function SpriteClips({ environment, clips, catalog, duration, selected, o
           const end = duration === undefined ? undefined : Math.min(duration, clip.start + (clip.duration ?? asset?.seconds ?? 0));
           const timing = end === undefined ? "等待预览时间" : end <= clip.start ? "当前视频未应用" : `${Number(clip.start.toFixed(1))}～${Number(end.toFixed(1))} 秒`;
           const edited = Object.keys(clip.parameters).length + Object.keys(clip.transform).length > 0;
+          const slot = clipSlot(clip, asset);
+          const place = slot === "title" || slot === "subtitle" ? `${textRoles[slot]}字效` : slot === "transition" ? `镜头转场 ${clip.transition_boundary ?? ""}`.trim() : slot ? effectTargets[slot] : asset ? "未选择作用对象" : "";
           return <li key={clip.id} aria-label={`Remotion 资产：${name}`} className={cn("flex items-center justify-between gap-2 rounded-md border px-2 py-1.5", selected === clip.id && "border-primary ring-1 ring-primary/20")}>
-            <button type="button" className="min-w-0 flex-1 text-left" aria-pressed={selected === clip.id} aria-label={`设置 Remotion 资产：${name}`} onClick={() => onSelect(clip.id)}><span className="block truncate text-[12px] font-medium">{name}</span><span className="block text-[11px] tabular-nums text-muted-foreground">{timing}{edited && " · 已调整参数"}{assets && !asset && " · 资产已不可用，保存前请移除"}</span></button>
+            <button type="button" className="min-w-0 flex-1 text-left" aria-pressed={selected === clip.id} aria-label={`设置 Remotion 资产：${name}`} onClick={() => onSelect(clip.id)}><span className="block truncate text-[12px] font-medium">{name}</span><span className="block text-[11px] tabular-nums text-muted-foreground">{place && `${place} · `}{timing}{edited && " · 已调整参数"}{assets && !asset && " · 资产已不可用，保存前请移除"}</span></button>
             <Button type="button" variant="ghost" size="icon" className="size-6" aria-label={`移除 Remotion 资产：${name}`} onClick={() => onRemove(clip.id)}><Trash2 className="size-3.5" aria-hidden="true" /></Button>
           </li>;
         })}

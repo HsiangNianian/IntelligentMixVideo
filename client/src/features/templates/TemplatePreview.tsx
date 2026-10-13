@@ -6,7 +6,7 @@ import { Hint } from "@/components/Hint";
 import { Spinner } from "@/components/ui/spinner";
 import type { Draft, EffectAsset, MasterVideo, PreviewMedia } from "./model";
 import { loadSDK, loadPreviewFont, readCatalog, type Player } from "./sdk";
-import { buildTimeline, buildPreviewRows, playerTimeline, spriteRows, type SpriteClip } from "./timeline";
+import { buildTimeline, buildPreviewRows, mergeSpriteRows, playerTimeline, remotionTexts, type SpriteClip } from "./timeline";
 import { PreviewTimeline, type PreviewTimelineHandle } from "./PreviewTimeline";
 import { SpriteOverlay, type SpriteOverlayHandle } from "./SpriteOverlay";
 import type { ResolvedTimeline } from "./tracks";
@@ -39,6 +39,8 @@ function TimelineMark() {
 /** 每次修改全量更新时间线并回到开头；串行处理，快速修改只应用最新草稿。 */
 export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMedia, onMediaChange, videoInputKey, onCatalog, selectedId, onSelect, sprites = [], onSpriteMove, videoOrder = defaultVideoOrder, onVideoMove }: Props) {
   const duration = resolved?.duration ?? 0;
+  // 改由 Remotion 字效显示的文字变化时，SDK 需要重新应用时间线以隐藏或恢复 IMS 文字。
+  const replacedTexts = [...remotionTexts(draft)].sort().join();
   const stage = useRef<HTMLDivElement>(null);
   const container = useRef<HTMLDivElement>(null);
   const player = useRef<Player | null>(null);
@@ -46,6 +48,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   const latestMedia = useRef(media);
   const latestOrder = useRef(videoOrder);
   const latestResolved = useRef(resolved);
+  const latestTexts = useRef(replacedTexts);
   const apply = useRef<(() => void) | null>(null);
   const catalogCallback = useRef(onCatalog);
   const playAction = useRef<((start: number) => void) | null>(null);
@@ -54,7 +57,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   const track = useRef<PreviewTimelineHandle>(null);
   const overlay = useRef<SpriteOverlayHandle>(null);
   const [rows, setRows] = useState<ReturnType<typeof buildPreviewRows>>([]);
-  const timelineRows = useMemo(() => [...rows, ...spriteRows(sprites)], [rows, sprites]);
+  const timelineRows = useMemo(() => mergeSpriteRows(rows, sprites), [rows, sprites]);
   const [notices, setNotices] = useState<string[]>([]);
   const [attempt, setAttempt] = useState(0);
   const [status, setStatus] = useState("正在加载预览组件…");
@@ -68,6 +71,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   latestMedia.current = media;
   latestOrder.current = videoOrder;
   latestResolved.current = resolved;
+  latestTexts.current = replacedTexts;
   catalogCallback.current = onCatalog;
 
   useEffect(() => {
@@ -81,6 +85,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
     let appliedTracks: Draft["tracks"] | undefined;
     let appliedMedia: PreviewMedia | undefined;
     let appliedOrder: number[] | undefined;
+    let appliedTexts: string | undefined;
     let subscription: { unsubscribe(): void } | undefined;
     let seekTarget: number | null = null;
     let resumeAfterSeek = false;
@@ -147,6 +152,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           const currentDraft = latest.current;
           const currentMedia = latestMedia.current;
           const currentOrder = latestOrder.current;
+          const currentTexts = latestTexts.current;
           const currentResolved = latestResolved.current;
           if (!currentMedia || !currentResolved) { instance.pause(); return; }
           const timeline = buildTimeline(currentDraft, catalog, currentMedia, currentResolved, currentOrder);
@@ -161,6 +167,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
             appliedTracks = currentDraft.tracks;
             appliedMedia = currentMedia;
             appliedOrder = currentOrder;
+            appliedTexts = currentTexts;
             setRows(buildPreviewRows(timeline));
             setNotices(timeline.notices);
           }
@@ -186,7 +193,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
     };
     apply.current = () => {
       // 初始化已应用相同输入时，延迟通知无需再次重置播放位置。
-      if (appliedTracks === latest.current.tracks && appliedMedia === latestMedia.current && appliedOrder === latestOrder.current) return;
+      if (appliedTracks === latest.current.tracks && appliedMedia === latestMedia.current && appliedOrder === latestOrder.current && appliedTexts === latestTexts.current) return;
       revision++;
       void update();
     };
@@ -343,7 +350,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   useEffect(() => {
     const timer = window.setTimeout(() => apply.current?.(), 250);
     return () => window.clearTimeout(timer);
-  }, [draft.tracks, media, videoOrder, resolved]);
+  }, [draft.tracks, media, videoOrder, resolved, replacedTexts]);
 
   return <section aria-label="实时预览" className="flex min-h-full min-w-0 flex-col">
     <div className="template-preview-stage border-b px-4 pb-3 pt-4 lg:px-7 lg:pt-5"><div className="mx-auto max-w-[900px]">
