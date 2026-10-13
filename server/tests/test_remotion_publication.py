@@ -6,7 +6,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
-import jsonschema
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -213,8 +212,15 @@ def test_invalid_parameters_and_a_busy_work_are_refused(harness, sprite):
     """不合 Schema 的参数在入队前拒绝；已有运行中的修订时同一作品的第二次保存返回冲突。"""
     store, work, initial = accepted_version(harness, sprite)
     service = Runtime(store, harness, harness.settings)
-    with pytest.raises(jsonschema.ValidationError):
+    with pytest.raises(ValueError, match="invalid parameter value: 1 is not of type 'string'"):
         service.edit(work.id, EditTemplateRequest(parameters={"title": {"text": 1}}, base_version_id=initial.id))
+    application = FastAPI()
+    application.include_router(router, prefix="/api/templates")
+    application.state.runtime = service
+    with TestClient(application, raise_server_exceptions=False) as client:
+        # Regression: the schema error escaped as an HTTP 500 instead of a 422 the client can show.
+        response = client.post(f"/api/templates/works/{work.id}/messages", json={"parameters": {"title": {"text": 1}}, "base_version_id": str(initial.id)})
+    assert response.status_code == 422 and "invalid parameter value" in response.json()["detail"]
     store.enqueue(work.id, JobInput(mode="parameters", parameters={"title": {"text": "x"}}), initial.id, running=True)
     with pytest.raises(Conflict):
         service.edit(work.id, EditTemplateRequest(parameters={"title": {"text": "y"}}, base_version_id=initial.id))
