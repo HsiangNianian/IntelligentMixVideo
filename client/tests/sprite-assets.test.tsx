@@ -231,14 +231,13 @@ test("新模板只放 Remotion 片段也能保存", async () => {
   expect(posts).toEqual(["/template"]);
 });
 
-// 场景：既没有 IMS 效果也没有 Remotion 片段的新模板仍然不能保存，不发出任何写请求。
-test("没有效果也没有 Remotion 片段时仍不能保存", async () => {
+// 场景：新模板自带基础文字，无附加效果时也可以保存。
+test("基础文字模板可以直接保存", async () => {
   const { posts } = sprites();
   render(<TemplateWorkspace selection={{ environment: "cloud", templateId: null, name: "空模板", description: "" }} onHome={() => {}} />);
   await screen.findByRole("region", { name: "Remotion 资产" });
   fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
-  await screen.findByText("请至少选择一个效果");
-  expect(posts).toEqual([]);
+  await waitFor(() => expect(posts).toEqual(["/template"]));
 });
 
 // 场景：新模板同时有 IMS 效果和 Remotion 片段：只发一次保存请求（原子），IMS 对象在前、片段在后。

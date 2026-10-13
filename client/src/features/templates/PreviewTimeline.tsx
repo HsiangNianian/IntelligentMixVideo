@@ -1,4 +1,4 @@
-/** 母版与特效轨道编辑；SDK 驱动游标，特效变更回传草稿，卸载取消缩略图任务。 */
+/** 视频轨道拖动调整排列，效果时间由右侧设置；SDK 驱动游标，卸载取消缩略图任务。 */
 import { useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
 import { Timeline, type TimelineState } from "@xzdarcy/react-timeline-editor";
 import { Film, Wand2 } from "lucide-react";
@@ -25,7 +25,7 @@ interface Props {
   duration?: number;
   selectedId?: string | null;
   onSelect?: (id: string) => void;
-  onRangeChange?: (id: string, start: number, end: number) => void;
+  onVideoMove?: (source: number, destination: number) => void;
 }
 
 /** 显示源素材缩略图，错误独立提示并允许重试；缓存随预览组件释放。 */
@@ -51,7 +51,7 @@ function ClipThumbnails({ clip, cache }: { clip: PreviewClip; cache: Map<string,
       <div className="flex h-full" aria-hidden="true">
         {images.map((src, index) => <img key={index} src={src} alt="" draggable={false} className="h-full min-w-0 flex-1 object-cover" />)}
       </div>
-      <span className="absolute inset-y-0 left-2 flex items-center text-white"><Film className="size-3" aria-hidden="true" /></span>
+      <span className="absolute inset-y-0 left-2 flex items-center gap-1 text-[11px] text-white"><Film className="size-3" aria-hidden="true" />{clip.label}</span>
       {error && <div className="absolute inset-y-0 right-1 flex items-center gap-1 text-[11px] text-white/80">
         <span role="status" className="sr-only" title={error}>{error}</span>
         <Button type="button" size="sm" variant="ghost" onClick={(event) => { event.stopPropagation(); setAttempt((value) => value + 1); }} className="h-5 px-1 text-[11px] text-white hover:bg-white/15 hover:text-white">重试缩略图</Button>
@@ -66,7 +66,7 @@ function ClipThumbnails({ clip, cache }: { clip: PreviewClip; cache: Map<string,
 }
 
 /** 轨道宽度随容器调整；鼠标拖动期间忽略播放器旧时间，键盘支持 0.1 秒定位。 */
-export function PreviewTimeline({ ref, rows, disabled, time, onSeek, duration = 10, selectedId, onSelect, onRangeChange }: Props) {
+export function PreviewTimeline({ ref, rows, disabled, time, onSeek, duration = 30, selectedId, onSelect, onVideoMove }: Props) {
   const timeline = useRef<TimelineState>(null);
   const container = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
@@ -133,7 +133,7 @@ export function PreviewTimeline({ ref, rows, disabled, time, onSeek, duration = 
           editorData={editableRows}
           effects={{}}
           autoReRender={false}
-          disableDrag={disabled || !onRangeChange}
+          disableDrag={disabled || !onVideoMove}
           startLeft={startLeft}
           scale={scale}
           scaleWidth={scaleWidth}
@@ -153,19 +153,20 @@ export function PreviewTimeline({ ref, rows, disabled, time, onSeek, duration = 
             </div> : <ClipThumbnails clip={clip} cache={cache.current} />;
           }}
           onClickAction={(_event, { action }) => { if (rows.some((row) => row.actions.some((clip) => clip.id === action.id && clip.targetId))) onSelect?.(action.id); }}
-          onActionMoveStart={({ action }) => onSelect?.(action.id)}
+          onActionMoveStart={({ action }) => { if (action.effectId !== "video") onSelect?.(action.id); }}
+          onActionMoveEnd={({ action, start, end }) => {
+            const videos = rows.flatMap((row) => row.actions).filter((clip) => clip.videoSource !== undefined);
+            const original = videos.find((clip) => clip.id === action.id);
+            if (original?.videoSource === undefined) return;
+            const center = (start + end) / 2;
+            const destination = videos.filter((clip) => clip.id !== action.id && (clip.start + clip.end) / 2 < center).length;
+            onVideoMove?.(original.videoSource, destination);
+            setEditableRows(structuredClone(rows));
+          }}
           onActionResizeStart={({ action }) => onSelect?.(action.id)}
           onActionMoving={({ start, end }) => start >= 0 && end <= duration}
           onActionResizing={({ start, end }) => start >= 0 && end <= duration && end > start}
-          onChange={(updated) => {
-            for (const row of updated) for (const action of row.actions) {
-              const original = rows.flatMap((item) => item.actions).find((item) => item.id === action.id);
-              if (original?.targetId && (Math.abs(original.start - action.start) > 0.000001 || Math.abs(original.end - action.end) > 0.000001))
-                onRangeChange?.(original.targetId, action.start, action.end);
-            }
-            setEditableRows(structuredClone(rows));
-            return false;
-          }}
+          onChange={() => false}
           onClickTimeArea={() => false}
           onCursorDragStart={(value) => { dragging.current = true; seek(value); }}
           onCursorDrag={seek}

@@ -21,3 +21,5 @@ server/.log/
 server/src/server/.log/
 server/src/server/remotion_templates/.data/
 .DS_Store
+# 本地验证日志与临时测试文件。
+.work/

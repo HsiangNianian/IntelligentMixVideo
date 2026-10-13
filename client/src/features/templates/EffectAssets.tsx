@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { cn } from "@/lib/utils";
 import { defaultEditor, textRoles, type Category, type Draft, type Editor, type EffectAsset, type TextRole } from "./model";
 import { assetCategories, assetField, type EffectTarget } from "./effects";
-import { trackLabel } from "./tracks";
+import { trackLabel, trackLayers } from "./tracks";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 
 /** 目录封面失败时展示明确占位，保留名称和选择入口。 */
@@ -106,7 +106,7 @@ export function AppliedEffects({ draft, catalog, duration, selected, onSelect }:
 }) {
   return <section aria-label="已添加特效" className="space-y-3 border-b p-4">
     <div className="flex items-center justify-between"><h2 className="text-[13px] font-semibold">画面对象</h2><span className="text-[11px] tabular-nums text-muted-foreground">{draft.tracks.length}</span></div>
-    <div className="space-y-0.5">{draft.tracks.map((track) => {
+    <div className="space-y-0.5">{[...draft.tracks].sort((a, b) => trackLayers[a.target] - trackLayers[b.target]).map((track) => {
       const effectId = { title: track.editor.titleFlower, subtitle: track.editor.subtitleFlower, bubble: track.editor.bubble, filter: track.editor.filter, vfx: track.editor.vfx, transition: track.editor.transition }[track.target];
       const effect = catalog.find((item) => item.id === effectId)?.name ?? (effectId ? effectId.split("/").at(-1) : "未设置效果");
       const start = track.start_mode === "percent" ? track.start * duration / 100 : track.start;

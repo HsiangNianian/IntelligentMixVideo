@@ -52,6 +52,7 @@ export function TrackTiming({ track, duration, onChange }: {
     updateTiming(mode, start, nextLength, nextUntilEnd);
   }
 
+  if (track.target === "subtitle") return <div className="space-y-3 border-b p-4" aria-label="轨道时间设置"><p className="text-xs text-muted-foreground">底部字幕覆盖整个视频，时间不可修改。</p><p role="status" className="text-xs">0～{Number(duration.toFixed(3))} 秒</p></div>;
   return <div className="template-inspector-timing space-y-3 border-b p-4" aria-label="轨道时间设置" onKeyDown={(event) => { if (event.key === "Enter" && event.target instanceof HTMLInputElement) event.preventDefault(); }}>
     <div className="space-y-1.5"><Label htmlFor={`${id}-mode`}>开始方式</Label>
       <Select value={mode} onValueChange={changeMode}><SelectTrigger id={`${id}-mode`} className="w-full"><SelectValue /></SelectTrigger><SelectContent className="template-inspector-select"><SelectItem value="seconds">指定秒数</SelectItem><SelectItem value="percent">视频时长百分比</SelectItem></SelectContent></Select>

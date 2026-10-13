@@ -63,7 +63,7 @@ export function SpriteClips({ environment, clips, catalog, duration, selected, o
   return (
     <section aria-label="已添加 Remotion 资产" className="space-y-2 border-b p-4">
       <div className="flex items-center justify-between"><h2 className="text-[13px] font-semibold">Remotion 资产</h2><span className="text-[11px] tabular-nums text-muted-foreground">{clips.length}</span></div>
-      {!clips.length && <p className="text-[11px] text-muted-foreground">从左侧 Remotion 资产添加，在时间轴上拖动调整时间，点选后调整参数与位置。</p>}
+      {!clips.length && <p className="text-[11px] text-muted-foreground">从左侧 Remotion 资产添加，点选后在右侧调整时间、参数与位置。</p>}
       {catalog.error && <p role="alert" className="text-[11px] text-destructive">{catalog.error}</p>}
       <ul className="space-y-1">
         {clips.map((clip) => {

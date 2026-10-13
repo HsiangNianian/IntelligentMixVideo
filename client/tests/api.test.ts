@@ -33,12 +33,23 @@ test.each([undefined, "existing-id"])("保存请求正确区分创建与更新�
   expect(draft.name).toBe("  我的模板  ");
 });
 
-// 测试名称为空或没有选择效果时直接提示，不发送无效请求。
-test("保存前检查名称和所选效果", async () => {
+// 测试名称为空或缺少全部对象时直接提示，不发送无效请求。
+test("保存前检查名称和画面对象", async () => {
   const draft = newDraft();
   await expect(saveTemplate(draft)).rejects.toThrow("请输入模板名称");
   draft.name = "新模板";
-  await expect(saveTemplate(draft)).rejects.toThrow("请至少选择一个效果");
+  draft.tracks = [];
+  await expect(saveTemplate(draft)).rejects.toThrow("保存模板需要标题和底部字幕各一个");
+  expect(fetchMock).not.toHaveBeenCalled();
+});
+
+test.each(["cloud", "local"] as const)("%s 创建和更新均拒绝缺少固定文字对象", async (environment) => {
+  for (const id of [undefined, "existing-id"])
+    for (const missing of [["title"], ["subtitle"], ["title", "subtitle"]]) {
+      const draft = { ...newDraft(), name: "数量验证" };
+      draft.tracks = draft.tracks.filter((track) => !missing.includes(track.target));
+      await expect(saveTemplate(draft, id, environment)).rejects.toThrow("保存模板需要标题和底部字幕各一个");
+    }
   expect(fetchMock).not.toHaveBeenCalled();
 });
 
@@ -75,18 +86,18 @@ test("读取含 Remotion 片段的模板", async () => {
   expect(await getTemplate(withClips.template_id)).toEqual(withClips);
 });
 
-// 测试保存时片段排在 IMS 对象之后，作为 remotion 轨道带上引用、秒数起点和空 editor 消息；只含片段的模板不需要 IMS 效果。
+// 测试保存时片段排在固定文字对象之后，片段带上引用、秒数起点和空 editor 消息。
 test("保存 Remotion 片段", async () => {
-  const draft = { ...newDraft(), name: "只有片段", clips };
+  const draft = { ...newDraft(), name: "文字与片段", clips };
   fetchMock.mockResolvedValueOnce(protobufTemplateResponse({ ...savedTemplate(), clips }, "save", 201));
   await saveTemplate(draft);
   const body = fromBinary(SaveTemplateRequestSchema, new Uint8Array(fetchMock.mock.calls[0][1]?.body as Uint8Array));
   expect(body.effectIds).toEqual([]);
-  expect(body.tracks?.tracks.map((track) => [track.id, track.target, track.startMode, track.start, track.duration, track.spriteId])).toEqual([
+  expect(body.tracks?.tracks.slice(2).map((track) => [track.id, track.target, track.startMode, track.start, track.duration, track.spriteId])).toEqual([
     ["clip-a", "remotion", "seconds", 2.5, 3, spriteId],
     ["clip-b", "remotion", "seconds", 0, undefined, spriteId],
   ]);
-  expect(body.tracks?.tracks.map((track) => track.editor && toJson(EffectTemplateEditorSchema, track.editor))).toEqual([{}, {}]);
+  expect(body.tracks?.tracks.slice(2).map((track) => track.editor && toJson(EffectTemplateEditorSchema, track.editor))).toEqual([{}, {}]);
   const mixed = { ...toDraft(savedTemplate()), clips };
   fetchMock.mockResolvedValueOnce(protobufTemplateResponse({ ...savedTemplate(), clips }, "save", 201));
   await saveTemplate(mixed);

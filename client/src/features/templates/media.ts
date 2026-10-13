@@ -1,13 +1,58 @@
 /** 预览视频地址与元数据读取；输入表单和播放器共用，取消或结束时释放媒体资源。 */
-import type { MasterVideo } from "./model";
+import type { MasterVideo, PreviewMedia } from "./model";
 
 /** 环境配置留空时使用内置视频，支持 HTTP(S) 直链和 public 资源路径。 */
-export function previewVideoUrl(): string {
+export function previewVideoUrl(index: 0 | 1 | 2 = 0): string {
+  const configured = [
+    import.meta.env.VITE_PREVIEW_VIDEO_URL,
+    import.meta.env.VITE_PREVIEW_VIDEO_2_URL,
+    import.meta.env.VITE_PREVIEW_VIDEO_3_URL,
+  ];
+  const defaults = [
+    "https://oss.joyfile.net/source/2026/09/14/RC202609141904000001/01c1b9a1e9f747408d6522f7ec4cee61.mp4",
+    "https://oss.oemi.jdword.com/api/clip/2026-10-13/99083fe0c1d04947b523b0439401a0ee.mp4",
+    "https://oss.oemi.jdword.com/api/clip/2026-10-13/80ea1f518457424986fb425bf6da5b36.mp4",
+  ];
   return new URL(
-    import.meta.env.VITE_PREVIEW_VIDEO_URL?.trim() ||
-      "https://oss.joyfile.net/source/2026/09/14/RC202609141904000001/01c1b9a1e9f747408d6522f7ec4cee61.mp4",
+    configured[index]?.trim() || defaults[index],
     window.location.origin,
   ).href;
+}
+
+/** 三个来源各使用前十秒，不足十秒时使用完整区间。 */
+export function previewVideos(media?: PreviewMedia): PreviewMedia {
+  const sources = media ?? [
+    { url: previewVideoUrl(), duration: 10, width: 1080, height: 1920 },
+    { url: previewVideoUrl(1), duration: 10, width: 1080, height: 1920 },
+    { url: previewVideoUrl(2), duration: 10, width: 1080, height: 1920 },
+  ];
+  const clip = (video: MasterVideo) => ({ ...video, duration: Math.min(10, video.duration) });
+  return [clip(sources[0]), clip(sources[1]), clip(sources[2])];
+}
+
+/** 同时读取三个真实视频；任何来源失败时取消剩余读取，全部成功才返回。 */
+export async function readPreviewVideos(urls: readonly string[], signal: AbortSignal): Promise<PreviewMedia> {
+  if (urls.length !== 3) throw new Error("需要提供三个预览视频地址");
+  urls.forEach((url, index) => { if (!url.trim()) throw new Error(`请输入视频 ${index + 1} 的 URL`); });
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  signal.addEventListener("abort", abort, { once: true });
+  if (signal.aborted) abort();
+  const read = async (index: number) => {
+    try { return await readMasterVideo(urls[index].trim(), controller.signal); }
+    catch (reason) { throw new Error(`视频 ${index + 1}：${reason instanceof Error ? reason.message : "读取失败"}`); }
+  };
+  try { return await Promise.all([read(0), read(1), read(2)]); }
+  finally { controller.abort(); signal.removeEventListener("abort", abort); }
+}
+
+/** 视频只允许重新排列，三个来源必须各出现一次。 */
+export function reorderVideos(order: number[], source: number, destination: number): number[] {
+  if (order.length !== 3 || new Set(order).size !== 3 || order.some((item) => ![0, 1, 2].includes(item)) || !order.includes(source) || !Number.isInteger(destination) || destination < 0 || destination > 2)
+    throw new Error("视频排列无效");
+  const next = order.filter((item) => item !== source);
+  next.splice(destination, 0, source);
+  return next;
 }
 
 /** 读取真实时长和尺寸；超时、取消或无法加载时明确失败并清理监听器。 */

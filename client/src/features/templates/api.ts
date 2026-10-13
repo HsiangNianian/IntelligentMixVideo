@@ -12,6 +12,7 @@ import {
   type TemplateRecord,
 } from "@/generated/imv/template/v1/template_pb";
 import { defaultEditor, draftEffects, type Category, type Draft, type Editor, type EffectTrack, type RemotionClip, type Template } from "./model";
+import { validateTemplateTracks } from "./tracks";
 
 /** 当前模板库的存储位置，每次操作显式传递，避免切换后写入错误环境。 */
 export type Environment = "local" | "cloud";
@@ -60,6 +61,7 @@ function toTemplate(record: TemplateRecord): Template {
         start_mode: track.startMode as EffectTrack["start_mode"],
         start: track.start,
         duration: track.duration ?? null,
+        ...(track.transitionBoundary !== undefined ? { transition_boundary: track.transitionBoundary } : {}),
         editor,
       };
     }),
@@ -178,16 +180,18 @@ function clipEditor(clip: RemotionClip) {
 
 /**
  * 统一创建、更新及另存为；只有调用方明确传 ID 时才覆盖已有模板，本地更新携带打开时所属的库。
- * 草稿带有 Remotion 片段时可以没有 IMS 效果；否则至少需要一个效果。
+ * 保存要求标题和底部字幕各一个，基础文字允许不选择效果。
  * 片段在线路上是 `remotion` 轨道，排在 IMS 对象之后，与模板在同一次请求里原子保存；本地模板不支持，带片段的草稿直接拒绝。
  */
-export function saveTemplate(draft: Draft, id?: string, environment: Environment = "cloud", library?: string): Promise<Template> {
+export async function saveTemplate(draft: Draft, id?: string, environment: Environment = "cloud", library?: string): Promise<Template> {
   if (!draft.name.trim()) return Promise.reject(new Error("请输入模板名称"));
   if (environment === "local" && draft.clips.length)
     return Promise.reject(new Error("本地模板不支持 Remotion 资产"));
+  validateTemplateTracks(draft.tracks);
+  for (const target of ["title", "subtitle"])
+    if (draft.tracks.filter((track) => track.target === target).length !== 1)
+      throw new Error("保存模板需要标题和底部字幕各一个");
   const effect_ids = draftEffects(draft);
-  if (!effect_ids.length && !draft.clips.length)
-    return Promise.reject(new Error("请至少选择一个效果"));
   const message = create(SaveTemplateRequestSchema, {
     name: draft.name.trim(),
     description: draft.description.trim(),
@@ -201,6 +205,7 @@ export function saveTemplate(draft: Draft, id?: string, environment: Environment
           startMode: track.start_mode,
           start: track.start,
           duration: track.duration ?? undefined,
+          transitionBoundary: track.transition_boundary,
           editor: track.editor,
         })),
         // 片段的 editor 只带这次摆放的参数覆盖与宿主变换；没有修改时必须是空消息而不是缺省。

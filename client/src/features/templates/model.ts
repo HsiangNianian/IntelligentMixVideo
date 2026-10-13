@@ -141,6 +141,9 @@ export interface MasterVideo {
   height: number;
 }
 
+/** 三个预览来源按视频编号保存，排列由工作区独立管理。 */
+export type PreviewMedia = readonly [MasterVideo, MasterVideo, MasterVideo];
+
 /** 每个特效实例拥有独立时间和参数；文字动画保存在所属文字实例内。 */
 export interface EffectTrack {
   id: string;
@@ -149,6 +152,8 @@ export interface EffectTrack {
   start: number;
   duration: number | null;
   editor: Editor;
+  /** 转场所属的视频交界处，从 1 开始；其他对象省略。 */
+  transition_boundary?: number;
 }
 
 /** 后端返回的完整模板，effects 为保存时的可信快照。 */
@@ -169,7 +174,10 @@ export function newDraft(): Draft {
   return {
     name: "",
     description: "",
-    tracks: [],
+    tracks: (["title", "subtitle"] as const).map((target) => ({
+      id: target, target, start_mode: "seconds", start: 0, duration: null,
+      editor: { ...defaultEditor, title: "", subtitle: "", bubbleText: "", [target]: defaultEditor[target] },
+    })),
     clips: [],
     transition_duration_seconds: defaultTransitionDuration,
   };

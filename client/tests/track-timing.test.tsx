@@ -81,7 +81,7 @@ test("视频结束后没有可自动填入的固定时长", () => {
 // 场景：切换对象显示其独立规则；视频时长变化只更新计算结果，不再次修改规则。
 test("切换对象和预览时长保留各自时间规则", () => {
   const draft = sampleDraft();
-  const selected = { ...draft.tracks[1], start_mode: "percent" as const, start: 50, duration: null };
+  const selected = { ...draft.tracks[0], id: "other-title", start_mode: "percent" as const, start: 50, duration: null };
   const changes: unknown[] = [];
   const view = render(<TrackTiming track={draft.tracks[0]} duration={20} onChange={(value) => changes.push(value)} />);
   fireEvent.change(screen.getByLabelText("开始时间 / 秒"), { target: { value: "7" } });
@@ -91,4 +91,16 @@ test("切换对象和预览时长保留各自时间规则", () => {
   view.rerender(<TrackTiming track={selected} duration={60} onChange={(value) => changes.push(value)} />);
   expect(screen.getByRole("status").textContent).toContain("第 30～60 秒");
   expect(changes).toEqual([{ start_mode: "seconds", start: 7, duration: null }]);
+});
+
+// 场景：字幕时间只读，预览总时长变化时更新完整区间。
+test("底部字幕时间不可编辑并跟随完整视频", () => {
+  const changes: unknown[] = [];
+  const view = render(<TrackTiming track={sampleDraft().tracks[1]} duration={30} onChange={(value) => changes.push(value)} />);
+  expect(screen.queryByRole("spinbutton")).toBeNull();
+  expect(screen.queryByRole("combobox")).toBeNull();
+  expect(screen.getByRole("status").textContent).toBe("0～30 秒");
+  view.rerender(<TrackTiming track={sampleDraft().tracks[1]} duration={28} onChange={(value) => changes.push(value)} />);
+  expect(screen.getByRole("status").textContent).toBe("0～28 秒");
+  expect(changes).toEqual([]);
 });
