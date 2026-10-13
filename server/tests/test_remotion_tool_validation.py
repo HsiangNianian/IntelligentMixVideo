@@ -804,6 +804,10 @@ export default function Title(props: { text: string; fontSize: number }) {
   );
 }
 """
+# 与 FIXED_BOX_TEXT 同样的固定框，但用 overflow auto 或 contain: paint 裁切：视频里不会滚动，超出部分同样看不到。
+# 8 个 128px 的字（1024px）留在画布内，只被 972px 宽的框裁掉。
+SCROLL_BOX_TEXT = FIXED_BOX_TEXT.replace('overflow: "hidden"', 'overflow: "auto"')
+PAINT_CONTAINED_TEXT = FIXED_BOX_TEXT.replace('overflow: "hidden"', 'contain: "paint"')
 TYPEWRITER_TEXT = FITTING_TEXT.replace(
     "{props.text}</div>", "{props.text.slice(0, Math.ceil((props.text.length * (useCurrentFrame() + 1)) / 15))}</div>",
 ).replace('import { AbsoluteFill } from "remotion";', 'import { AbsoluteFill, useCurrentFrame } from "remotion";')
@@ -846,13 +850,16 @@ def browser_text_validate(tmp_path: Path, code: str, max_length: int):
     (LINE_MASK_TEXT, 4, True, ""),
     (SCALE_EXIT_TEXT, 20, False, "overflow"),
     (TYPEWRITER_TEXT, 100, True, ""),
+    (SCROLL_BOX_TEXT, 8, False, "overflow auto"),
+    (PAINT_CONTAINED_TEXT, 8, False, "contain: paint"),
 ], ids=["fixed-box-clips-long-title", "wrapped-and-shrunk", "reveal-mask-only-early", "ignores-text", "sliced-text", "display-none", "one-span-per-glyph",
-        "line-height-1-mask", "clipped-until-scaled-out", "typewriter"])
+        "line-height-1-mask", "clipped-until-scaled-out", "typewriter", "overflow-auto-box", "paint-contained-box"])
 def test_real_browser_requires_the_longest_text_to_be_shown_in_full(tmp_path, code, max_length, passed, reason):
     """issue #119：972x360 的 overflow hidden 固定框在 100 字标题下被裁切而被拒；按字数缩小字号并换行的写法、只在开头几帧被遮罩挡住的文字通过；
     不显示 text 的组件被拒。只渲染一段截断的文字、或文字在 display: none 里没有排版框，都不算完整显示；逐字拆成 span 的完整文字仍算。
     lineHeight 1 的一行文字放在恰好一行高的遮罩里不算裁切：按行框而不是字体的上下伸部度量。
-    文字只在退场缩小时才放得下仍被拒：按文字显示最大的帧判断；逐字打出的文字按完整显示的帧判断，通过。"""
+    文字只在退场缩小时才放得下仍被拒：按文字显示最大的帧判断；逐字打出的文字按完整显示的帧判断，通过。
+    overflow auto 与 contain: paint 的固定框同样算裁切。"""
     report = browser_text_validate(tmp_path, code, max_length)
     check = next(item for item in report.checks if item.name == "text_fit")
     assert (check.status == "passed") is passed, check.message

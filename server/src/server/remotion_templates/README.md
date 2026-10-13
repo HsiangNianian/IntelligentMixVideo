@@ -147,8 +147,8 @@ never blocked by it.
 
 A text effect (`kind=text`) must also show its longest allowed text in full. In the same mount `sprite.create`
 fills the `text` parameter with `测` up to its declared `maxLength` and, on the same five sampled frames, measures
-the text boxes of the layer: text cut off by an ancestor with `overflow: hidden|clip`, text outside the 1080x1920
-canvas, text lines shorter than 20px (the smallest `fontSize` is 24) and text of which only part is rendered (a
+the text boxes of the layer: text cut off by an ancestor whose overflow is not visible (`hidden`, `clip`, `auto` or `scroll`: the
+video never scrolls) or with `contain: paint`, text outside the 1080x1920 canvas, text lines shorter than 20px (the smallest `fontSize` is 24) and text of which only part is rendered (a
 slice of it, or some of it hidden) are problems; text in a node without a box (`display: none`), with
 `visibility: hidden` or faded out to opacity 0 is not shown. Each line is measured as its line box (at least as tall
 as its font size), not as the font's whole ascent and descent, so a line in a mask exactly one line tall is not
@@ -363,8 +363,8 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   placement really carries (its `text` override, up to the published `maxLength`) before rendering. For every text
   Sprite with `text` and `fontSize` parameters, inside the render slot, the isolated browser mounts the placement's own
   values at the length its Sprite plays in the render (the length it reads as `durationInFrames`; a held text its
-  previewed length) and measures the text boxes the same way `sprite.create` does (cut off by an `overflow:
-  hidden|clip` ancestor, outside the canvas once the placement's host transform moves, scales and rotates it, lines
+  previewed length) and measures the text boxes the same way `sprite.create` does (cut off by an ancestor whose
+  overflow is not visible or that contains its paint, outside the canvas once the placement's host transform moves, scales and rotates it, lines
   under 20px tall, or only part of the text shown). Placements that differ only in length or transform are measured
   separately; the transform's opacity does not move text and is ignored. Like `text_fit`, a size fits when the text is
   shown in full on one of the frames that show it at its full size. Text that already fits keeps its `fontSize`; otherwise the

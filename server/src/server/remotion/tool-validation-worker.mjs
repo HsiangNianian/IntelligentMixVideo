@@ -360,10 +360,10 @@ function hostPlacement(box, transform = {}) {
 }
 
 /**
- * Describe, for the frame currently mounted, how the text `needle` does not fit: text clipped by an ancestor with
- * `overflow: hidden|clip`, text outside the canvas once `placement` (see `hostPlacement`) moves, rotates and scales
- * it, text lines too small to read, or only part of the text rendered (sliced, or partly hidden). The component is
- * mounted without the host transform: clipping and line height are measured in its own layout, and only the corners
+ * Describe, for the frame currently mounted, how the text `needle` does not fit: text clipped by an ancestor whose
+ * overflow is not visible (hidden, clip, auto or scroll) or that contains its paint, text outside the canvas once
+ * `placement` (see `hostPlacement`) moves, rotates and scales it, text lines too small to read, or only part of the
+ * text rendered (sliced, or partly hidden). The component is mounted without the host transform: clipping and line height are measured in its own layout, and only the corners
  * of each line are mapped through the transform for the canvas. Only painted text counts: a node without a box
  * (`display: none`), with `visibility: hidden` or faded out to opacity 0 is not shown. A line is measured as its line
  * box (at least its em box), not as the font's whole ascent and descent: with a lineHeight below about 1.45 the
@@ -441,12 +441,15 @@ function textFitProblems(page, needle, placement) {
         problems.add(`it extends beyond the ${Math.round(canvas.width)}x${Math.round(canvas.height)} canvas (text box ${Math.round(left)},${Math.round(top)} to ${Math.round(right)},${Math.round(bottom)})`);
       for (let element = node.parentElement; element && layer.contains(element); element = element.parentElement) {
         const style = getComputedStyle(element);
-        const clipsX = style.overflowX === "hidden" || style.overflowX === "clip";
-        const clipsY = style.overflowY === "hidden" || style.overflowY === "clip";
+        // Every overflow other than visible cuts the painted content (auto and scroll only add a scroll position the
+        // video never moves), and paint containment clips like overflow clip.
+        const contained = /\b(?:paint|strict|content)\b/.test(style.contain);
+        const clipsX = contained || style.overflowX !== "visible";
+        const clipsY = contained || style.overflowY !== "visible";
         if (!clipsX && !clipsY) continue;
         const box = element.getBoundingClientRect();
         if ((clipsX && (bounds.left < box.left - tolerance || bounds.right > box.right + tolerance)) || (clipsY && (bounds.top < box.top - tolerance || bounds.bottom > box.bottom + tolerance)))
-          problems.add(`it is cut off by a ${Math.round(box.width)}x${Math.round(box.height)} box with overflow hidden`);
+          problems.add(`it is cut off by a ${Math.round(box.width)}x${Math.round(box.height)} box with ${contained ? `contain: ${style.contain}` : `overflow ${clipsX ? style.overflowX : style.overflowY}`}`);
       }
     }
     if (!joined) return null;
