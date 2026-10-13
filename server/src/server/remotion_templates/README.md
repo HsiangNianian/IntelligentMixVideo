@@ -311,8 +311,9 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   `placements` (`no_placements`) or a `spriteId` that is not published (`sprite_missing`) is a 422.
 - **Layout**: every asset must share width/height/fps. Clips are stacked in request order on one canvas (the first
   is the bottom layer), each inside the shared host layer (`remotion/host-layer.tsx`) that pivots around the
-  Sprite's content box; each plays for its `duration` (or its own `preview_frames / fps`), which its Sprite reads as `durationInFrames` just like in
-  its accepted preview, keeps that full length when the total cuts it (so its internal animation ranges are
+  Sprite's content box; each plays for its `duration` (or its own `preview_frames / fps`), which its Sprite reads as `durationInFrames`;
+  the composed Sprite lays its instances out against that length (`compose.mjs`), so a longer clip keeps them
+  running to its end instead of leaving the canvas blank after the preview length. Each keeps that full length when the total cuts it (so its internal animation ranges are
   unchanged), and is dropped when it starts later. Seconds become frames with half a frame rounding up, like the
   template timing, and a clip is at most `IMV_OVERLAY_MAX_SECONDS` long. Remotion clamps a Sequence to its
   composition, so the worker declares the composition up to the latest clip end and renders only the first `total`

@@ -15,7 +15,8 @@ from server.remotion_templates.boundary import samples
 from server.remotion_templates.categories import KEYWORD_COLOR
 from server.remotion_templates.renderer import Renderer
 from server.remotion_templates.settings import Settings
-from server.remotion_templates.tool_validation import ToolValidator, ValidationUnavailable
+from server.remotion_templates.tool_validation import ToolValidator, ValidationUnavailable, render_lengths
+from server.remotion_templates.tools.compose import compose_source
 from server.remotion_templates.tools.contracts import (
     ComponentDefinition,
     RenderValidationInput,
@@ -592,3 +593,76 @@ def test_real_boundary_samples_render_a_styled_keyword_hit(tmp_path):
     assert {name: status for name, status in broken.items() if name != "sample:keywords:styled"} == {
         "sample:defaults": "passed", "sample:low": "passed", "sample:high": "passed",
     }
+
+
+# 按预览长度写出入场与出场的字效：时长短于 30 帧时 interpolate 的输入区间不再递增而抛错。
+EDGES_BY_LENGTH = """import React from "react";
+import { AbsoluteFill, interpolate, useCurrentFrame, useVideoConfig } from "remotion";
+export default function Edges(props: { tint: string }) {
+  const frame = useCurrentFrame();
+  const { durationInFrames } = useVideoConfig();
+  const opacity = interpolate(frame, [0, 15, durationInFrames - 15, durationInFrames], [0, 1, 1, 0]);
+  return <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}><div style={{ color: props.tint, fontSize: 64, opacity }}>标题</div></AbsoluteFill>;
+}
+"""
+# 入场与出场都不超过时长三分之一的同款，任意长度都能渲染。
+EDGES_SCALED = EDGES_BY_LENGTH.replace(
+    "const opacity = interpolate(frame, [0, 15, durationInFrames - 15, durationInFrames], [0, 1, 1, 0]);",
+    "const edge = Math.max(1, Math.min(15, Math.floor(durationInFrames / 3)));\n  const opacity = interpolate(frame, [0, edge, durationInFrames - edge, durationInFrames], [0, 1, 1, 0]);",
+)
+
+
+@needs_node
+@needs_browser
+@pytest.mark.parametrize(("code", "passed"), [(EDGES_BY_LENGTH, False), (EDGES_SCALED, True)], ids=["fixed-edges", "scaled-edges"])
+def test_real_browser_mounts_the_shortest_and_longest_render_length(tmp_path, code, passed):
+    """总线按成片时长渲染（0.5～120 秒），不是按预览长度：生成检查在 15 帧与 3600 帧各挂载首、中、尾帧，只在预览长度下成立的写法以 render_lengths 失败并说明长度与帧号。"""
+    settings = Settings(_env_file=None, data_dir=tmp_path, **BROWSER)
+    component_ = ComponentDefinition(
+        code=code,
+        parameter_schema={"type": "object", "properties": {"tint": {"type": "string"}}, "required": ["tint"], "additionalProperties": False},
+        default_parameters={"tint": "#FFB347"},
+    )
+    report = asyncio.run(ToolValidator(Renderer(settings), tmp_path).validate_render(
+        RenderValidationInput(component=component_, duration_frames=150), transparency=True, lengths=render_lengths(30),
+    ))
+    check = next(item for item in report.checks if item.name == "render_lengths")
+    assert render_lengths(30) == [15, 3600]
+    assert report.passed is passed and (check.status == "passed") is passed, check.message
+    if not passed:
+        assert "Rendered 15 frames long (0.5 s)" in check.message and "at frame 0" in check.message
+
+
+def composed_instances() -> dict:
+    """组合两个实例的 Sprite：full 覆盖整段 30 帧预览，middle 只在第 10～19 帧出现。"""
+    preset = {
+        "code": 'import React from "react"; export default function Mark(p: {label: string}) { return <div style={{ color: "#FFFFFF" }}>{p.label}</div>; }',
+        "parameter_schema": {"type": "object", "properties": {"label": {"type": "string"}}, "required": ["label"], "additionalProperties": False},
+        "default_parameters": {"label": "x"}, "description": "mark",
+    }
+    instance = lambda name, start, length: {
+        "instance_id": name, "preset": preset, "parameters": {"label": name},
+        "layout": {"x": 0, "y": 0, "width": 540, "height": 200, "z_index": 0},
+        "timing": {"start_frame": start, "duration_frames": length},
+    }
+    code, schema, defaults = compose_source([instance("full", 0, 30), instance("middle", 10, 10)])
+    return {"code": code, "parameter_schema": schema, "default_parameters": defaults}
+
+
+@needs_node
+@needs_browser
+@pytest.mark.parametrize(("length", "frame", "full", "middle"), [
+    (300, 200, True, False), (300, 15, True, True), (15, 7, True, True), (15, 2, True, False),
+], ids=["longer-full-runs-to-end", "longer-middle-keeps-its-frames", "shorter-scaled-middle", "shorter-before-middle"])
+def test_real_browser_lays_out_composed_instances_at_the_render_length(tmp_path, length, frame, full, middle):
+    """Agent 按预览长度排布实例，宿主按实际渲染长度排布：更长时开头的实例保持原帧、一直到预览结尾的实例延续到新结尾；更短时全部按比例缩短。"""
+    settings = Settings(_env_file=None, data_dir=tmp_path, **BROWSER)
+    script = f"""export default async function (ctx) {{
+  await ctx.set_frame({frame});
+  ctx.assert_equal((await ctx.query('[data-imv-instance="full"]')) !== null, {str(full).lower()}, "full instance");
+  ctx.assert_equal((await ctx.query('[data-imv-instance="middle"]')) !== null, {str(middle).lower()}, "middle instance");
+}}"""
+    report = asyncio.run(ToolValidator(Renderer(settings), tmp_path).validate_render(RenderValidationInput(
+        component=ComponentDefinition(**composed_instances()), duration_frames=length, tests=[TestScript(name="layout", code=script)],
+    )))
+    assert report.passed is True, [*report.checks, *report.tests]

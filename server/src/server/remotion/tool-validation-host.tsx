@@ -1,7 +1,7 @@
 /**
  * Browser host for PR76 behavior validation.  It mounts one accepted component
- * in a fixed-size Remotion Player and exposes only frame/parameter operations
- * and DOM snapshots to the worker's test-context bridge.
+ * in a fixed-size Remotion Player and exposes only frame, length and parameter
+ * operations and DOM snapshots to the worker's test-context bridge.
  */
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -97,15 +97,27 @@ function App() {
   const [transform, setTransform] = useState<HostTransform>({});
   const [mountVersion, setMountVersion] = useState(0);
   const [ready, setReady] = useState(false);
+  // The bus renders a Sprite at whatever length it passes, so the worker can mount other lengths than the preview.
+  const [duration, setDurationFrames] = useState(config.composition.duration_frames);
   const valuesRef = useRef(values);
   valuesRef.current = values;
+  const durationRef = useRef(duration);
+  durationRef.current = duration;
   useEffect(() => {
     const tool = {
       composition: Object.freeze({ ...config.composition }),
       ready: false,
       async setFrame(frame: number) {
-        if (!Number.isSafeInteger(frame) || frame < 0 || frame >= config.composition.duration_frames) throw new Error("frame is outside composition");
+        if (!Number.isSafeInteger(frame) || frame < 0 || frame >= durationRef.current) throw new Error("frame is outside composition");
         player.current?.seekTo(frame);
+        await nextFrame();
+        await waitResources();
+      },
+      /** Mount the component at another render length; frames are then checked against that length. */
+      async setDuration(frames: number) {
+        if (!Number.isSafeInteger(frames) || frames < 1) throw new Error("duration must be a positive frame count");
+        durationRef.current = frames;
+        setDurationFrames(frames);
         await nextFrame();
         await waitResources();
       },
@@ -196,7 +208,7 @@ function App() {
       inputProps={{ values, transform }}
       compositionWidth={config.composition.width}
       compositionHeight={config.composition.height}
-      durationInFrames={config.composition.duration_frames}
+      durationInFrames={duration}
       fps={config.composition.fps}
       initiallyPaused
       controls={false}

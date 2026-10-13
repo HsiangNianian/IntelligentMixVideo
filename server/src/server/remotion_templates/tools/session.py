@@ -347,15 +347,17 @@ class ToolSession:
     async def validate_render(self, request: RenderValidationInput, *, transparency: bool = False) -> RenderValidationReport:
         """Run the isolated component behavior runner and cache the exact report.
 
-        ``transparency`` adds the canvas-coverage measurement. The option is only forwarded when asked for,
-        so a validator that predates it keeps working.
+        ``transparency`` asks for the generation checks: the canvas-coverage measurement and a mount at the
+        shortest and longest length the bus may render. The options are only forwarded when asked for, so a
+        validator that predates them keeps working.
         """
         if self.validator is None:
             raise ToolFault("VALIDATION_UNAVAILABLE", "The isolated behavior validator is unavailable.")
-        from ..tool_validation import ValidationUnavailable
+        from ..tool_validation import ValidationUnavailable, render_lengths
 
         try:
-            report = await self.validator.validate_render(request, **({"transparency": True} if transparency else {}))
+            options = {"transparency": True, "lengths": render_lengths(30)} if transparency else {}
+            report = await self.validator.validate_render(request, **options)
         except ValidationUnavailable as exc:
             raise ToolFault("VALIDATION_UNAVAILABLE", f"The isolated behavior validator is unavailable: {exc}"[:3000]) from exc
         parameters = merge_parameters(request.component.default_parameters, request.parameters)
@@ -494,10 +496,10 @@ class ToolSession:
         return SpriteCreateOutput(sprite_id=record.sprite_id, created_at=record.created_at, composition=record.composition, validation=validation)
 
     async def _require_visible_video(self, sprite: SpriteDraft) -> None:
-        """Refuse a Sprite that hides the video in most sampled frames while the Executor can still fix it.
+        """Refuse a Sprite that hides the video in most sampled frames, or throws at another render length, while the Executor can still fix it.
 
         Sprites are composited over the user's own video, so a full-frame opaque layer is never what a filter
-        or an effect wants. This is the browser mount the host needs anyway: the report is cached under the key
+        or an effect wants; the bus renders them at the final video's length, not the preview's. This is the browser mount the host needs anyway: the report is cached under the key
         the final host check reads, so completing the task does not mount the Sprite a second time.
         """
         report = await self.validate_render(

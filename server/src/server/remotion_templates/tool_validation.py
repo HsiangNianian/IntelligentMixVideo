@@ -8,6 +8,7 @@ the API process; the worker bundles them and drives a fixed Chromium Player.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -40,6 +41,15 @@ _RENDER_CHECKS = _CODE_CHECKS + ("default_render", "configured_render")
 # 调用方要求透明度度量时，worker 在两次基础渲染之后追加这一阶段。
 _TRANSPARENCY_CHECKS = _RENDER_CHECKS + ("transparency",)
 _FAILED_STATUSES = {"failed", "fail", "error"}
+
+# 总线渲染 Sprite 时传入的时长范围（秒）；Agent 生成时选的时长只用于预览，最终时长由合成决定。
+MIN_RENDER_SECONDS = 0.5
+MAX_RENDER_SECONDS = 120
+
+
+def render_lengths(fps: int) -> list[int]:
+    """最短与最长渲染时长的帧数，秒转帧与叠加渲染一致（半帧向后取整）；生成与发布在预览长度之外也挂载它们。"""
+    return [max(1, math.floor(seconds * fps + 0.5)) for seconds in (MIN_RENDER_SECONDS, MAX_RENDER_SECONDS)]
 
 
 def _reported_stages(checks: list[Any], stages: tuple[str, ...]) -> tuple[str, ...] | None:
@@ -179,12 +189,16 @@ class ToolValidator:
         )
         return CodeValidationReport(passed=worker_passed and not has_errors, diagnostics=diagnostics)
 
-    async def validate_render(self, request: RenderValidationInput, *, transparency: bool = False) -> RenderValidationReport:
+    async def validate_render(
+        self, request: RenderValidationInput, *, transparency: bool = False, lengths: list[int] | None = None,
+    ) -> RenderValidationReport:
         """Run fixed-canvas default/configured mounts and each independent behavior script.
 
         With ``transparency`` the worker also measures, on sampled frames, whether the canvas stays see-through
-        and fails the ``transparency`` check when most sampled frames are opaque almost everywhere. Only the
-        generation path asks for it: a user's own parameter edits are never blocked by it.
+        and fails the ``transparency`` check when most sampled frames are opaque almost everywhere. With ``lengths``
+        it then mounts the first, middle and last frame at each of those render lengths (frames) and fails the
+        ``render_lengths`` check when the component throws. Only the generation path asks for these: a user's own
+        parameter edits are never blocked by them.
         """
         if request.duration_frames > 216000:
             raise ValueError("duration_frames exceeds the validation resource limit")
@@ -225,6 +239,8 @@ class ToolValidator:
             "browser": self.renderer.worker_browser_path(),
             "transparency": transparency,
         }
+        if lengths:
+            payload_request["lengths"] = lengths
         (directory / "request.json").write_text(json.dumps(payload_request), encoding="utf-8")
         try:
             payload = await self.renderer.run_worker(directory, worker="tool-validation-worker.mjs")
@@ -237,7 +253,8 @@ class ToolValidator:
         for item in raw_checks:
             if isinstance(item, dict) and item.get("name") == "runtime" and item.get("status") == "error":
                 raise ValidationUnavailable(str(item.get("message") or "Render validation worker runtime error"))
-        if _reported_stages(raw_checks, _TRANSPARENCY_CHECKS if transparency else _RENDER_CHECKS) is None:
+        stages = (_TRANSPARENCY_CHECKS if transparency else _RENDER_CHECKS) + (("render_lengths",) if lengths else ())
+        if _reported_stages(raw_checks, stages) is None:
             raise ValidationUnavailable("Render validation worker returned an incomplete report")
         expected_tests = [test.name for test in request.tests]
         raw_tests = payload.get("tests")
@@ -278,8 +295,9 @@ class ToolValidator:
         """Mount publish-time boundary samples in one isolated browser and report one check per sample.
 
         ``composition`` is the version canvas (width, height, fps, duration_frames); each sample carries complete
-        ``values`` and a host ``transform`` applied around ``box``. A failed code stage is reported as that check
-        alone; a report that cannot be read at all is an infrastructure failure.
+        ``values`` and a host ``transform`` applied around ``box``, and is mounted at the preview length and at the
+        shortest and longest render length. A failed code stage is reported as that check alone; a report that
+        cannot be read at all is an infrastructure failure.
         """
         try:
             directory = self._attempt("validate-samples")
@@ -291,6 +309,7 @@ class ToolValidator:
                 "composition": composition,
                 "box": box,
                 "samples": samples,
+                "lengths": render_lengths(composition["fps"]),
                 "browser": self.renderer.worker_browser_path(),
             }
             (directory / "request.json").write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8")
