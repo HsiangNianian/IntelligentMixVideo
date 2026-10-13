@@ -1517,10 +1517,11 @@ def real_fit(tmp_path: Path, whitespace: str, text: str):
     return fit_for_real(tmp_path, FIXED_BOX.replace("WRAP", json.dumps(whitespace)), [titled(text)], 1.0)
 
 
-def titled(text: str, *, duration: float | None = None, font_size: int | None = None) -> OverlayPlacement:
-    """字效 t 从第 0 秒开始的一个摆放：覆盖文字，可选固定时长与字号。"""
+def titled(text: str, *, duration: float | None = None, font_size: int | None = None, **transform) -> OverlayPlacement:
+    """字效 t 从第 0 秒开始的一个摆放：覆盖文字，可选固定时长、字号与宿主变换。"""
     parameters = [{"key": "text", "stringValue": text}, *([{"key": "fontSize", "numberValue": font_size}] if font_size else [])]
-    return OverlayPlacement.model_validate({"spriteId": "t", "start": 0, **({"duration": duration} if duration else {}), "editor": {"remotion": {"parameters": parameters}}})
+    remotion = {"parameters": parameters, **({"transform": transform} if transform else {})}
+    return OverlayPlacement.model_validate({"spriteId": "t", "start": 0, **({"duration": duration} if duration else {}), "editor": {"remotion": remotion}})
 
 
 def fit_for_real(tmp_path: Path, code: str, placements: list[OverlayPlacement], seconds: float):
@@ -1585,10 +1586,10 @@ def test_sprite_render_fits_each_distinct_cue_in_one_browser_run(tmp_path) -> No
     assert [item["config"]["fontSize"] for item in overlay.instances] == [40, 40, 40, 40]
 
 
-def clip(text: str, duration: float) -> OverlayPlacement:
-    """字效 c 从第 0 秒开始、固定时长的一个摆放，覆盖文字。"""
-    editor = {"remotion": {"parameters": [{"key": "text", "stringValue": text}]}}
-    return OverlayPlacement.model_validate({"spriteId": "c", "start": 0, "duration": duration, "editor": editor})
+def clip(text: str, duration: float | None = None, **transform) -> OverlayPlacement:
+    """字效 c 从第 0 秒开始的一个摆放：覆盖文字，可选固定时长与宿主变换。"""
+    remotion = {"parameters": [{"key": "text", "stringValue": text}], **({"transform": transform} if transform else {})}
+    return OverlayPlacement.model_validate({"spriteId": "c", "start": 0, **({"duration": duration} if duration else {}), "editor": {"remotion": remotion}})
 
 
 # 场景：同一 Sprite 的两个摆放长度不同（1 秒与 3 秒）时，每份内容按自己播放的长度挂载（Sprite 读到的 durationInFrames），
@@ -1600,6 +1601,19 @@ def test_fit_mounts_each_content_at_the_length_it_plays(tmp_path) -> None:
     asyncio.run(overlay_render.fit_texts(renderer, overlay, PUBLICATIONS, tmp_path / "fit"))
     [request] = renderer.requests
     assert [(item["text"], item["length"]) for item in request["fit"]] == [("短标题", 30), ("长一点的标题", 90)]
+
+
+# 场景：相同文字的摆放只差宿主变换（放大、移到边缘并旋转）时分别测量，每份带自己的变换和 Sprite 的内容区域；
+# 只差不透明度的摆放不改变文字的位置与大小，仍与未变换的摆放共用一次测量。
+def test_fit_measures_each_placement_where_its_transform_puts_it(tmp_path) -> None:
+    """四个摆放得到三个条目：未变换（含只改不透明度的）、放大 2 倍、移到 x=100 并旋转 90°。"""
+    renderer = FitRenderer(capacity=240)
+    placements = [clip("标题"), clip("标题", scale=2), clip("标题", opacity=0.5), clip("标题", x=100, rotation=90)]
+    overlay = plan_overlay(placements, PUBLICATIONS, 3.0, 120)
+    asyncio.run(overlay_render.fit_texts(renderer, overlay, PUBLICATIONS, tmp_path / "fit"))
+    [request] = renderer.requests
+    assert [(item["index"], item["transform"]) for item in request["fit"]] == [(0, {}), (1, {"scale": 2}), (3, {"x": 100, "rotation": 90})]
+    assert request["box"] == {"x": 90, "y": 760, "width": 900, "height": 400}
 
 
 # 字幕框的宽度随 Sprite 读到的长度变化：超过 60 帧时是 300px 宽的 overflow hidden 窄框，否则是 972px 宽的框，都不换行。
@@ -1614,6 +1628,17 @@ export default function Title(props: { text: string; fontSize: number }) {
   );
 }
 """
+# 972px 宽、自动换行的居中标题，字号就是 fontSize 参数，本身不缩小。
+WRAPPED_TITLE = """import React from "react";
+import { AbsoluteFill } from "remotion";
+export default function Title(props: { text: string; fontSize: number }) {
+  return (
+    <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
+      <div style={{ width: 972, textAlign: "center", fontSize: props.fontSize, lineHeight: 1.2, whiteSpace: "normal", wordBreak: "break-all", color: "#fff" }}>{props.text}</div>
+    </AbsoluteFill>
+  );
+}
+"""
 
 
 # 场景：真实浏览器里，1 秒的摆放读到 30 帧、在 972px 的框里放得下 8 个 100px 的字；同一 Sprite 另有一个 3 秒的摆放，
@@ -1623,3 +1648,19 @@ def test_real_browser_fits_each_clip_at_its_own_length(tmp_path: Path) -> None:
     """两个摆放都保持 100 的字号。"""
     overlay = fit_for_real(tmp_path, LENGTH_DEPENDENT_BOX, [titled("测" * 8, duration=1.0, font_size=100), titled("短", duration=3.0, font_size=100)], 3.0)
     assert [item["config"]["fontSize"] for item in overlay.instances] == [100, 100]
+
+
+# 场景：真实浏览器里，8 个 100px 的字（800px 宽）在原位放得下；放大 2 倍后超出 1080px 宽的画布，放大 2.5 倍并旋转 90° 后
+# 超出 1920px 高的画布，中心移到 x=100 后左半边出了画布；宿主按各自变换后的位置把字号缩到放得下的最大值。
+@pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
+def test_real_browser_fits_text_where_the_host_transform_puts_it(tmp_path: Path) -> None:
+    """原位 100；放大 2 倍不超过 67（8×67×2≤1080）；旋转后按高度不超过 96（8×96×2.5≤1920）；移到 x=100 不超过 26。"""
+    placements = [
+        titled("测" * 8, font_size=100), titled("测" * 8, font_size=100, scale=2),
+        titled("测" * 8, font_size=100, scale=2.5, rotation=90), titled("测" * 8, font_size=100, x=100),
+    ]
+    sizes = [item["config"]["fontSize"] for item in fit_for_real(tmp_path, WRAPPED_TITLE, placements, 1.0).instances]
+    assert sizes[0] == 100
+    assert 60 <= sizes[1] <= 67
+    assert 85 <= sizes[2] <= 96
+    assert 24 <= sizes[3] <= 26

@@ -346,16 +346,38 @@ const MIN_LINE_HEIGHT = 20;
 const FIT_TOLERANCE = 2;
 
 /**
- * Describe, for the frame currently mounted, how the text `needle` does not fit: text clipped by an ancestor with
- * `overflow: hidden|clip`, text outside the canvas, or text lines too small to read. Returns `null` when the
- * component renders none of the text at this frame (not yet shown), and an empty list when every line fits.
+ * The host transform of one placement as `host-layer.tsx` applies it: the content box centre (cx, cy) is moved to
+ * (x, y), then the Sprite is rotated by `rotation` degrees and scaled by `scale` around it. Missing fields keep the
+ * Sprite where it is, so an empty transform is the identity.
  */
-function textFitProblems(page, needle) {
-  return page.evaluate((needle, minLine, tolerance) => {
+function hostPlacement(box, transform = {}) {
+  const cx = box.x + box.width / 2;
+  const cy = box.y + box.height / 2;
+  const finite = (value, fallback) => (typeof value === "number" && Number.isFinite(value) ? value : fallback);
+  return { cx, cy, x: finite(transform.x, cx), y: finite(transform.y, cy), scale: finite(transform.scale, 1), rotation: finite(transform.rotation, 0) };
+}
+
+/**
+ * Describe, for the frame currently mounted, how the text `needle` does not fit: text clipped by an ancestor with
+ * `overflow: hidden|clip`, text outside the canvas once `placement` (see `hostPlacement`) moves, rotates and scales
+ * it, or text lines too small to read. The component is mounted without the host transform: clipping and line height
+ * are measured in its own layout, and only the corners of each line are mapped through the transform for the canvas.
+ * Returns `null` when the component renders none of the text at this frame (not yet shown), and an empty list when
+ * every line fits.
+ */
+function textFitProblems(page, needle, placement) {
+  return page.evaluate((needle, minLine, tolerance, placement) => {
     const canvasNode = document.querySelector("[data-imv-validation-canvas]");
     const layer = document.querySelector("[data-imv-host-layer]")?.firstElementChild;
     if (!canvasNode || !layer) return null;
     const canvas = canvasNode.getBoundingClientRect();
+    const radians = (placement.rotation * Math.PI) / 180;
+    const [cos, sin] = [Math.cos(radians) * placement.scale, Math.sin(radians) * placement.scale];
+    /** Canvas position of a point of the untransformed layout, as the host layer places it. */
+    const place = (left, top) => {
+      const [dx, dy] = [left - canvas.left - placement.cx, top - canvas.top - placement.cy];
+      return [placement.x + dx * cos - dy * sin, placement.y + dx * sin + dy * cos];
+    };
     const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT);
     const problems = new Set();
     let found = false;
@@ -370,8 +392,11 @@ function textFitProblems(page, needle) {
       if (!lines.length) continue;
       const smallest = Math.min(...lines.map((rect) => rect.height));
       if (smallest < minLine) problems.add(`its lines are only ${Math.round(smallest)}px tall, too small to read`);
-      if (bounds.left < canvas.left - tolerance || bounds.right > canvas.right + tolerance || bounds.top < canvas.top - tolerance || bounds.bottom > canvas.bottom + tolerance)
-        problems.add(`it extends beyond the ${Math.round(canvas.width)}x${Math.round(canvas.height)} canvas (text box ${Math.round(bounds.left - canvas.left)},${Math.round(bounds.top - canvas.top)} to ${Math.round(bounds.right - canvas.left)},${Math.round(bounds.bottom - canvas.top)})`);
+      const corners = lines.flatMap((rect) => [place(rect.left, rect.top), place(rect.right, rect.top), place(rect.left, rect.bottom), place(rect.right, rect.bottom)]);
+      const [left, right] = [Math.min(...corners.map(([x]) => x)), Math.max(...corners.map(([x]) => x))];
+      const [top, bottom] = [Math.min(...corners.map(([, y]) => y)), Math.max(...corners.map(([, y]) => y))];
+      if (left < -tolerance || right > canvas.width + tolerance || top < -tolerance || bottom > canvas.height + tolerance)
+        problems.add(`it extends beyond the ${Math.round(canvas.width)}x${Math.round(canvas.height)} canvas (text box ${Math.round(left)},${Math.round(top)} to ${Math.round(right)},${Math.round(bottom)})`);
       for (let element = node.parentElement; element && layer.contains(element); element = element.parentElement) {
         const style = getComputedStyle(element);
         const clipsX = style.overflowX === "hidden" || style.overflowX === "clip";
@@ -383,22 +408,26 @@ function textFitProblems(page, needle) {
       }
     }
     return found ? [...problems] : null;
-  }, needle, MIN_LINE_HEIGHT, FIT_TOLERANCE);
+  }, needle, MIN_LINE_HEIGHT, FIT_TOLERANCE, placement);
 }
+
+/** No host transform: generation checks mount the Sprite over the whole canvas where it was laid out. */
+const UNPLACED = Object.freeze({ cx: 0, cy: 0, x: 0, y: 0, scale: 1, rotation: 0 });
 
 /**
  * Measure the text `needle` on `frames` (default: the sampled frames of the composition) of the currently mounted
- * values. `shown` counts the frames that display it and `failing` those where it is clipped, off the canvas or too
- * small; `error` is a runtime error thrown at `frame`. A fit problem that persists on every frame that shows the
- * text is real, while a reveal mask or slide-in that hides the text for a few frames leaves a frame without one.
+ * values, placed on the canvas by `placement`. `shown` counts the frames that display it and `failing` those where
+ * it is clipped, off the canvas or too small; `error` is a runtime error thrown at `frame`. A fit problem that
+ * persists on every frame that shows the text is real, while a reveal mask or slide-in that hides the text for a
+ * few frames leaves a frame without one.
  */
-async function measureTextFit(page, needle, frames = sampleFrames(request.composition.duration_frames)) {
+async function measureTextFit(page, needle, frames = sampleFrames(request.composition.duration_frames), placement = UNPLACED) {
   const verdicts = [];
   for (const frame of frames) {
     await page.evaluate((target) => window.__imvTool.setFrame(target), frame);
     const error = await page.evaluate(() => window.__imvRuntimeError ?? null);
     if (error) return { error, frame, shown: verdicts.length, failing: 0, problems: [] };
-    const problems = await textFitProblems(page, needle);
+    const problems = await textFitProblems(page, needle, placement);
     if (problems) verdicts.push(problems);
   }
   const failing = verdicts.filter((problems) => problems.length);
@@ -446,18 +475,20 @@ async function textFitCheck(page) {
 /**
  * Host-side fit of the text a render really passes: for each item, the largest whole font size from `min` up to
  * the requested one at which the text is shown in full on the item's own `frames`. Each item is mounted at the
- * `length` its Sprite plays in the render, which it reads as `durationInFrames`. The requested size is tried first,
- * so text that already fits is untouched; `fits: false` means even `min` does not fit. A component that throws, or
- * never renders the text, is left alone (the render reports its own failure). Sizes are assumed to fit
- * monotonically, so a binary search.
+ * `length` its Sprite plays in the render (which it reads as `durationInFrames`) and measured where its host
+ * `transform` puts it on the canvas. The requested size is tried first, so text that already fits is untouched;
+ * `fits: false` means even `min` does not fit. A component that throws, or never renders the text, is left alone
+ * (the render reports its own failure). Sizes are assumed to fit monotonically, so a binary search.
  */
 async function fitTexts(page, loadError) {
   if (loadError !== null) throw new Error(`Component runtime error: ${loadError}`);
+  const { width, height } = request.composition;
+  const box = request.box ?? { x: 0, y: 0, width, height };
   const fits = async (item, size) => {
     await page.evaluate(() => window.__imvTool.reset());
     await page.evaluate((frames) => window.__imvTool.setDuration(frames), item.length);
     await page.evaluate((values) => window.__imvTool.setSample(values, {}), { ...item.values, [item.size_key]: size });
-    const measured = await measureTextFit(page, item.text, item.frames);
+    const measured = await measureTextFit(page, item.text, item.frames, hostPlacement(box, item.transform));
     return measured.error !== null || measured.shown === 0 || measured.failing < measured.shown;
   };
   result.fits = [];

@@ -217,12 +217,12 @@ async def fit_texts(renderer: Renderer, overlay: Overlay, sprites: dict[str, pb.
 
     A generated effect cannot know how long a title or subtitle the bus will send, so the host measures it: for each
     text Sprite the isolated browser mounts each distinct content with its own values, at the length its Sprite plays
-    (which it reads as `durationInFrames`), and, when the text is cut off, leaves the canvas or is unreadably small,
-    lowers the `fontSize` to the largest whole size (down to the published minimum) at which it fits. Text that already
-    fits keeps the size it was given. Text that does not fit even at the smallest size fails the render with
-    `text_too_long`, so the bus gets a clear reason instead of a clipped text. Only effects with the required `text`
-    and `fontSize` parameters take part, one browser run per Sprite; a Sprite that cannot be mounted is left to the
-    render, which reports its own failure.
+    (which it reads as `durationInFrames`) and where its host transform moves, scales and rotates it on the canvas,
+    and, when the text is cut off, leaves the canvas or is unreadably small, lowers the `fontSize` to the largest
+    whole size (down to the published minimum) at which it fits. Text that already fits keeps the size it was given.
+    Text that does not fit even at the smallest size fails the render with `text_too_long`, so the bus gets a clear
+    reason instead of a clipped text. Only effects with the required `text` and `fontSize` parameters take part, one
+    browser run per Sprite; a Sprite that cannot be mounted is left to the render, which reports its own failure.
     """
     from .tool_validation import ToolValidator, ValidationUnavailable
     from .tools.contracts import ComponentDefinition
@@ -239,11 +239,13 @@ async def fit_texts(renderer: Renderer, overlay: Overlay, sprites: dict[str, pb.
         if not isinstance(text, str) or not text.strip() or not isinstance(config.get("fontSize"), (int, float)) or "minimum" not in size:
             continue
         frames, length = _fit_frames(instance)
-        key = json.dumps([config, frames, length], sort_keys=True, ensure_ascii=False)
+        # Opacity does not move the text; every other transform field does, so it tells contents apart.
+        transform = {name: value for name, value in instance["host"]["transform"].items() if name != "opacity"}
+        key = json.dumps([config, frames, length, transform], sort_keys=True, ensure_ascii=False)
         members.setdefault((instance["sprite_id"], key), []).append(index)
         groups.setdefault(instance["sprite_id"], {}).setdefault(key, {
             "index": index, "values": config, "text": text, "size_key": "fontSize", "min": math.ceil(size["minimum"]),
-            "frames": frames, "length": length,
+            "frames": frames, "length": length, "transform": transform,
         })
     validator = ToolValidator(renderer, directory)
     for sprite_id, distinct in groups.items():

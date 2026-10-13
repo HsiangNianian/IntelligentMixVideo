@@ -309,8 +309,8 @@ class ToolValidator:
         """Find, for each text a render really passes, the largest font size that shows it in full.
 
         Each item carries complete ``values`` (including the text and the requested size), the ``text`` to look
-        for, the name of the size parameter (``size_key``), its ``min`` and the ``frames`` to measure at the
-        ``length`` its Sprite plays. The answer
+        for, the name of the size parameter (``size_key``), its ``min``, the ``frames`` to measure at the ``length``
+        its Sprite plays and the host ``transform`` that places it inside ``box`` on the canvas. The answer
         per item is ``{index, fits, size}``: ``size`` is the requested size when the text already fits, otherwise
         the largest smaller whole size that does; ``fits`` is false when even ``min`` does not. A worker that
         cannot answer is an infrastructure failure, never a pass.
