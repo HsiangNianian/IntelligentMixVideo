@@ -105,7 +105,7 @@ def test_material_silent_extracts_title_without_asr(upstreams, client, compositi
     assert [clip["Duration"] for clip in clips] == [3, 1.5]
     title = timeline["SubtitleTracks"][0]["SubtitleTrackClips"][0]
     expected = request["title"].replace("标题", r"{\b1}标题{\b0}", 1) if expected_keyword else request["title"]
-    assert title["Content"] == expected and (title["TimelineIn"], title["TimelineOut"]) == (0, 4.5)
+    assert title["Content"] == expected and (title["TimelineIn"], title["TimelineOut"]) == (1, 3)
     assert title["AaiMotionIn"] == 0.5 and "AaiMotionInEffect" in title
     assert len(timeline["SubtitleTracks"]) == 2  # 标题和模板气泡，没有字幕。
     assert len(timeline["AudioTracks"]) == int(music)
@@ -264,7 +264,7 @@ def test_materials_presence_selects_matching(upstreams, client, composition_case
         else:
             assert "asset_url_list" not in upstreams["posts"][0]
     assert timeline["AudioTracks"][0]["AudioTrackClips"][0]["Out"] == 8
-    subtitles = timeline["SubtitleTracks"][0]["SubtitleTrackClips"]
+    subtitles = timeline["SubtitleTracks"][1]["SubtitleTrackClips"]
     assert [item["Content"] for item in subtitles] == ["甲乙丙丁", "戊己庚辛"]
     assert [(item["TimelineIn"], item["TimelineOut"]) for item in subtitles] == [(1, 3), (4, 6)]
     assert upstreams["zos_uploads"][0][1] == task_id
@@ -866,7 +866,7 @@ async def test_title_keyword_recovery_uses_snapshot(upstreams, composition_case,
     await composition_runtime._execute(record)
     result = store.get(record["task_id"])
     assert result["status"] == "succeeded", result["data"].get("error")
-    assert result["data"]["timeline"]["SubtitleTracks"][1]["SubtitleTrackClips"][0]["Content"] == expected
+    assert result["data"]["timeline"]["SubtitleTracks"][0]["SubtitleTrackClips"][0]["Content"] == expected
     assert upstreams["asr_calls"] == upstreams["segment_calls"] == 0
 
 
@@ -933,7 +933,7 @@ def test_remote_segmentation_response_reaches_render(upstreams, composition_case
     snapshot = store.get(task_id)["data"]
     assert snapshot["segmentation"]["segments"] == segments
     timeline = json.loads(snapshot["ims_request"]["timeline"])
-    subtitles, title, bubbles = [track["SubtitleTrackClips"] for track in timeline["SubtitleTracks"]]
+    title, subtitles, bubbles = [track["SubtitleTrackClips"] for track in timeline["SubtitleTracks"]]
     assert [(s["TimelineIn"], s["TimelineOut"]) for s in subtitles] == [
         (7 / 30, 85 / 30), (85 / 30, 128 / 30), (128 / 30, 178 / 30),
         (178 / 30, 269 / 30), (269 / 30, 313 / 30), (313 / 30, 361 / 30), (361 / 30, 452 / 30),
@@ -1002,7 +1002,8 @@ def test_real_segmentation_with_model_stub(upstreams, composition_case, client, 
         assert json.loads(upstreams["posts"][0]["llm"])["segments"] == snapshot["segmentation"]["segments"]
     else:
         assert upstreams["posts"] == []
-    assert [clip["Content"] for clip in snapshot["timeline"]["SubtitleTracks"][0]["SubtitleTrackClips"]] == [
+    subtitle_index = 0 if title_keyword is None else 1
+    assert [clip["Content"] for clip in snapshot["timeline"]["SubtitleTracks"][subtitle_index]["SubtitleTrackClips"]] == [
         "甲乙丙丁戊己庚辛",
     ]
     if title_keyword is None:
@@ -1011,7 +1012,7 @@ def test_real_segmentation_with_model_stub(upstreams, composition_case, client, 
     else:
         assert snapshot["segmentation"]["title_keyword"] == title_keyword
         expected = r"业务{\b1}标题{\b0}" + "\n保留换行" if title_keyword else request["title"]
-        assert snapshot["timeline"]["SubtitleTracks"][1]["SubtitleTrackClips"][0]["Content"] == expected
+        assert snapshot["timeline"]["SubtitleTracks"][0]["SubtitleTrackClips"][0]["Content"] == expected
         messages = model.chat.completions.create.call_args.kwargs["messages"]
         assert json.loads(messages[1]["content"])["title"] == request["title"]
     assert json.loads(upstreams["submits"][0]["timeline"]) == snapshot["timeline"]
@@ -1029,6 +1030,9 @@ def test_template_changes_do_not_change_running_snapshot(upstreams, client, comp
             "template_id": template_id, "name": "修改后的模板", "tracks": [{
                 "id": "title", "target": "title", "start_mode": "seconds", "start": 0, "duration": None,
                 "editor": {"title": "标题", "subtitle": "", "bubbleText": "", "titleIn": "in/blur_in"},
+            }, {
+                "id": "subtitle", "target": "subtitle", "start_mode": "seconds", "start": 0, "duration": None,
+                "editor": {"title": "", "subtitle": "字幕", "bubbleText": ""},
             }],
             "effect_ids": ["in/blur_in"],
         })
@@ -1588,7 +1592,7 @@ def test_matching_whitespace_keeps_local_subtitles_and_raw_receipt(upstreams, cl
     assert result["status"] == "succeeded", result
     data = store.get(task_id)["data"]
     assert data["segmentation"]["segments"] == composition_case["segments"]
-    subtitles = data["timeline"]["SubtitleTracks"][0]["SubtitleTrackClips"]
+    subtitles = data["timeline"]["SubtitleTracks"][1]["SubtitleTrackClips"]
     assert [item["Content"] for item in subtitles] == ["甲乙", "丙丁", "戊己庚辛"]
     assert [(item["TimelineIn"], item["TimelineOut"]) for item in subtitles] == [(1, 2), (2, 3), (4, 6)]
     rows = composition_logs(task_id)
@@ -1628,7 +1632,7 @@ def test_execution_logs_cover_inputs_outputs_and_notification(upstreams, client,
     assert started["assembling"]["segments"] == composition_case["segments"]
     submitted_timeline = sanitize(record["data"]["ims_request"]["timeline"])
     assert any(item["data"] == submitted_timeline for item in expand_columns(saved)["timeline"]["output"])
-    assert submitted_timeline["SubtitleTracks"][0]["SubtitleTrackClips"][0]["Content"] == "甲乙丙丁"
+    assert submitted_timeline["SubtitleTracks"][1]["SubtitleTrackClips"][0]["Content"] == "甲乙丙丁"
     assert "timeline" not in started["ims_submit"] and outputs["ims_submit"] == {"JobId": "ims-job"}
     assert outputs["ims_query"] is None
     assert outputs["playback"] == {"aliyun_video_url": upstreams["zos_uploads"][0][0]}
