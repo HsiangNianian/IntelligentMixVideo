@@ -248,8 +248,8 @@ def overlay_cpu_seconds(timeout_seconds: float) -> int:
     return max(CPU_SECONDS, math.ceil(timeout_seconds * (os.cpu_count() or 1)))
 
 
-async def render_overlay(renderer: Renderer, overlay: Overlay, directory: Path) -> Path:
-    """Run the isolated worker in `directory` and return the verified `overlay.webm`."""
+async def run_overlay_worker(renderer: Renderer, overlay: Overlay, directory: Path, ranges: list[list[int]] | None = None) -> None:
+    """Run the isolated worker in `directory`: one `overlay.webm`, or one `chunk-<i>.webm` per inclusive frame range."""
     settings = renderer.settings
     directory.mkdir(parents=True, exist_ok=True)
     (directory / ".tmp").mkdir(exist_ok=True)
@@ -264,6 +264,7 @@ async def render_overlay(renderer: Renderer, overlay: Overlay, directory: Path) 
         },
         "instances": overlay.instances,
         "browser": renderer.worker_browser_path(),
+        **({"ranges": ranges} if ranges else {}),
     }), encoding="utf-8")
     try:
         await renderer.run_worker(
@@ -274,6 +275,11 @@ async def render_overlay(renderer: Renderer, overlay: Overlay, directory: Path) 
         # The worker log tail holds sandbox paths and source excerpts: only the chained cause carries it.
         message = "叠加视频渲染超时" if isinstance(exc, TimeoutError) else "叠加视频渲染失败"
         raise OverlayError("render_failed", message) from exc
+
+
+async def render_overlay(renderer: Renderer, overlay: Overlay, directory: Path) -> Path:
+    """Run the isolated worker in `directory` and return the verified `overlay.webm`."""
+    await run_overlay_worker(renderer, overlay, directory)
     output = directory / "overlay.webm"
     if not output.is_file() or output.stat().st_size == 0:
         raise OverlayError("render_failed", "渲染器没有产出视频")

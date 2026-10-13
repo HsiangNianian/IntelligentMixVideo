@@ -303,6 +303,41 @@ async function transparencyCheck(page) {
   return { name: "transparency", status: "passed", message: `The video stays visible: the canvas is covered in ${covered} of the ${samples.length} measured frames (${summary}).` };
 }
 
+/** First, middle and last frame of one render length. */
+function edgeFrames(length) {
+  return [...new Set([0, Math.floor((length - 1) / 2), length - 1])];
+}
+
+/**
+ * The bus renders a Sprite at the length it passes (`request.lengths` holds the shortest and longest it may ask
+ * for), not at the previewed one: mount the first, middle and last frame at each of them. The preview length is
+ * restored afterwards, also after a failure, so the custom tests that follow run at the length they were written for.
+ */
+async function lengthsCheck(page) {
+  const { fps, duration_frames: preview } = request.composition;
+  try {
+    for (const length of request.lengths) {
+      await page.evaluate((frames) => window.__imvTool.setDuration(frames), length);
+      for (const frame of edgeFrames(length)) {
+        await page.evaluate((target) => window.__imvTool.setFrame(target), frame);
+        const failure = await page.evaluate(() => window.__imvRuntimeError ?? null);
+        if (failure)
+          return {
+            name: "render_lengths",
+            status: "failed",
+            message: `Rendered ${length} frames long (${length / fps} s) instead of the ${preview}-frame preview, the component throws at frame ${frame}: ${failure}. `
+              + "The final video sets the length, anywhere from the shortest to the longest of these, so the code must not assume the preview length: "
+              + "for example keep interpolate input ranges increasing when durationInFrames is short.",
+          };
+      }
+    }
+    return { name: "render_lengths", status: "passed", message: `Rendered without an error at ${request.lengths.join(" and ")} frames.` };
+  } finally {
+    await page.evaluate((frames) => window.__imvTool.setDuration(frames), preview);
+    await page.evaluate(() => window.__imvTool.setFrame(0));
+  }
+}
+
 function scriptPolicy(code) {
   if (/\b(?:import|export\s+(?!default))\b|\b(?:require|process|globalThis|self|window|document|navigator|location|fetch|XMLHttpRequest|WebSocket|Worker|importScripts|postMessage|Function|eval)\b/.test(code)) throw new Error("Test scripts may only use TestContext.");
 }
@@ -325,23 +360,26 @@ async function executeTest(page, test, timeoutMs) {
 
 /**
  * Publish-time boundary samples: mount each complete sample with its host transform and require the first,
- * middle and last frame to render without an error. One check per sample, named `sample:<name>`.
+ * middle and last frame to render without an error, at the preview length and at every length in
+ * `request.lengths`. One check per sample, named `sample:<name>`.
  */
 async function sampleChecks(page, loadError) {
-  const total = request.composition.duration_frames;
-  const frames = [...new Set([0, Math.floor((total - 1) / 2), total - 1])];
+  const lengths = [...new Set([request.composition.duration_frames, ...(request.lengths ?? [])])];
   for (const sample of request.samples) {
     const name = `sample:${sample.name}`;
     try {
       if (loadError !== null) throw new Error(`Component runtime error: ${loadError}`);
       await page.evaluate(() => window.__imvTool.reset());
       await page.evaluate((item) => window.__imvTool.setSample(item.values, item.transform), sample);
-      for (const frame of frames) {
-        await page.evaluate((target) => window.__imvTool.setFrame(target), frame);
-        const failure = await page.evaluate(() => window.__imvRuntimeError ?? null);
-        if (failure) throw new Error(`frame ${frame}: ${failure}`);
+      for (const length of lengths) {
+        await page.evaluate((frames) => window.__imvTool.setDuration(frames), length);
+        for (const frame of edgeFrames(length)) {
+          await page.evaluate((target) => window.__imvTool.setFrame(target), frame);
+          const failure = await page.evaluate(() => window.__imvRuntimeError ?? null);
+          if (failure) throw new Error(`frame ${frame} of a ${length}-frame render: ${failure}`);
+        }
       }
-      checks.push({ name, status: "passed", message: `Frames ${frames.join(", ")} rendered.` });
+      checks.push({ name, status: "passed", message: `First, middle and last frames rendered at ${lengths.join(", ")} frames.` });
     } catch (error) {
       checks.push({ name, status: "failed", message: String(error?.message ?? error).slice(0, 6000) });
     }
@@ -394,6 +432,7 @@ async function main() {
       checks.push({ name: "configured_render", status: "not_run", message: "Default render failed." });
     }
     if (baseReady && request.transparency === true) checks.push(await transparencyCheck(page));
+    if (baseReady && Array.isArray(request.lengths)) checks.push(await lengthsCheck(page));
     if (!baseReady) {
       result.tests = (request.tests ?? []).map((test) => ({ name: test.name, status: "not_run", message: "Base render failed.", assertions: [] }));
       result.custom_tests_executed = 0;

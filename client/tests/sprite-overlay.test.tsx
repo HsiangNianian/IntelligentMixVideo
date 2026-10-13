@@ -4,7 +4,8 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { createRef } from "react";
 import { SpriteOverlay, type SpriteOverlayHandle } from "@/features/templates/SpriteOverlay";
 
-const clip = { id: "sprite-a", spriteId: "s1", aspect: 9 / 16, name: "霓虹标题", start: 1, end: 4 };
+// 摆放的完整时长 5 秒长于预览里显示的 1～4 秒：同步消息带完整时长，Sprite 按它排布。
+const clip = { id: "sprite-a", spriteId: "s1", aspect: 9 / 16, name: "霓虹标题", start: 1, end: 4, length: 5 };
 
 /** 渲染叠加层并取出其播放器，返回通道号与消息探针；Happy DOM 不执行 iframe，按协议手动模拟就绪。 */
 function mount() {
@@ -37,10 +38,10 @@ test("就绪后按预览时间定位，区间外隐藏", async () => {
   await setTime(2.5);
   expect(post).not.toHaveBeenCalled();
   await ready(true);
-  await waitFor(() => expect(post).toHaveBeenCalledWith({ type: "imv-preview-sync", channel, time: 1.5 }, "*"));
+  await waitFor(() => expect(post).toHaveBeenCalledWith({ type: "imv-preview-sync", channel, time: 1.5, duration: 5 }, "*"));
   expect(frame.style.visibility).toBe("visible");
   await setTime(3);
-  expect(post).toHaveBeenLastCalledWith({ type: "imv-preview-sync", channel, time: 2 }, "*");
+  expect(post).toHaveBeenLastCalledWith({ type: "imv-preview-sync", channel, time: 2, duration: 5 }, "*");
   const calls = post.mock.calls.length;
   await setTime(0.5);
   await setTime(4);
@@ -88,12 +89,12 @@ test("增删资产后每个播放器继续使用稳定通道同步", async () =>
     window.dispatchEvent(new MessageEvent("message", { source: frame.contentWindow, data: { type: "imv-preview-ready", channel: new URL(frame.src).hash.slice(1), sync: true } }));
   });
   await act(async () => { ref.current!.setTime(3); await new Promise((resolve) => requestAnimationFrame(resolve)); });
-  frames.forEach((frame, index) => expect(posts[index]).toHaveBeenLastCalledWith({ type: "imv-preview-sync", channel: new URL(frame.src).hash.slice(1), time: 2 }, "*"));
+  frames.forEach((frame, index) => expect(posts[index]).toHaveBeenLastCalledWith({ type: "imv-preview-sync", channel: new URL(frame.src).hash.slice(1), time: 2, duration: 5 }, "*"));
   const otherSrc = other.src;
   view.rerender(<SpriteOverlay ref={ref} clips={[second]} stageAspect={1} initialTime={2} />);
   expect(other.src).toBe(otherSrc);
   await act(async () => { ref.current!.setTime(2); await new Promise((resolve) => requestAnimationFrame(resolve)); });
-  expect(posts[1]).toHaveBeenLastCalledWith({ type: "imv-preview-sync", channel: new URL(other.src).hash.slice(1), time: 1 }, "*");
+  expect(posts[1]).toHaveBeenLastCalledWith({ type: "imv-preview-sync", channel: new URL(other.src).hash.slice(1), time: 1, duration: 5 }, "*");
 });
 
 /** 带参数覆盖、宿主变换与画布信息的可移动片段。 */

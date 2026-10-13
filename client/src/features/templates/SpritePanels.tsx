@@ -44,7 +44,7 @@ export function SpriteCatalog({ environment, catalog, onAdd }: { environment: En
         <ul className="space-y-1">
           {shown?.map((asset) => (
             <li key={asset.id} className="flex items-center justify-between gap-2 rounded-md border px-2 py-1.5">
-              <span className="min-w-0"><span className="block truncate text-[11px] font-medium">{asset.name}</span><span className="block text-[10px] tabular-nums text-muted-foreground">{Number(asset.seconds.toFixed(1))} 秒 · {asset.width}×{asset.height} @ {asset.fps} FPS</span></span>
+              <span className="min-w-0"><span className="block truncate text-[11px] font-medium">{asset.name}</span><span className="block text-[10px] tabular-nums text-muted-foreground">预览 {Number(asset.seconds.toFixed(1))} 秒 · {asset.width}×{asset.height} @ {asset.fps} FPS</span></span>
               <Button type="button" variant="outline" size="sm" className="h-6 gap-1 px-2 text-[11px]" disabled={!usable} aria-label={`添加 Remotion 资产：${asset.name}`} onClick={() => onAdd(asset)}><Plus className="size-3" aria-hidden="true" />添加</Button>
             </li>
           ))}
