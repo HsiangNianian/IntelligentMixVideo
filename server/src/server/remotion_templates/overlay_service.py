@@ -164,20 +164,21 @@ class OverlayRenders:
     async def accept_sprite(self, message: pb.SpriteRenderInput) -> str:
         """Validate one Sprite render completely (it needs no network probe), persist it and start it.
 
-        Besides the overlay renderer it needs ffmpeg to join the chunks of a long effect, so a host without it is a 503.
+        Besides the overlay renderer an effect longer than one chunk needs ffmpeg to join the chunks, so such a request
+        on a host without it is a 503.
         """
         try:
             callback_url = media_url(message.callback_url) if message.callback_url else None
         except ValueError:
             raise HTTPException(422, "callback_url 必须是不含空白、用户信息或片段的 HTTP(S) 地址") from None
         self._require_environment()
-        if missing := join_problem():
-            logger.error("单 Sprite 渲染环境缺少 %s，拒绝受理", missing)
-            raise HTTPException(503, "叠加渲染环境不可用，请检查服务端环境")
         try:
-            plan_sprite_render(message, await asyncio.to_thread(self._publication, message.sprite_id))
+            overlay = plan_sprite_render(message, await asyncio.to_thread(self._publication, message.sprite_id))
         except OverlayError as exc:
             raise HTTPException(422, exc.message) from None
+        if missing := join_problem(overlay):
+            logger.error("单 Sprite 渲染环境缺少 %s，拒绝受理", missing)
+            raise HTTPException(503, "叠加渲染环境不可用，请检查服务端环境")
         task_id = str(uuid4())
         await asyncio.to_thread(self._insert, task_id, {"request": {
             "sprite_render": MessageToDict(message, preserving_proto_field_name=True), "callback_url": callback_url,

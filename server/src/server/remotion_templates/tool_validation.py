@@ -43,14 +43,20 @@ _TRANSPARENCY_CHECKS = _RENDER_CHECKS + ("transparency",)
 _FAILED_STATUSES = {"failed", "fail", "error"}
 
 # 总线渲染 Sprite 时传入的时长范围（秒）；Agent 生成时选的时长只用于预览，最终时长由合成决定。
-# 更短的字幕切片不按自身长度播放，而是定格在预览长度的中间帧（见 sprite_render.STATIC_TEXT_SECONDS）。
 MIN_RENDER_SECONDS = 0.5
 MAX_RENDER_SECONDS = 120
+# 字效（标题、字幕）显示不足这个时长时不播出入场，定格在预览长度的中间帧（见 sprite_render）：出入场通常共需
+# 0.6～1.3 秒，更短的字幕几乎看不到完整画面，还会闪烁。所以字效从不按更短的长度播放。
+STATIC_TEXT_SECONDS = 1.5
 
 
-def render_lengths(fps: int) -> list[int]:
-    """Sprite 可能被渲染的最短与最长帧数，秒转帧与叠加渲染一致（半帧向后取整）；生成与发布在预览长度之外也挂载它们。"""
-    return [max(1, math.floor(seconds * fps + 0.5)) for seconds in (MIN_RENDER_SECONDS, MAX_RENDER_SECONDS)]
+def render_lengths(fps: int, *, text: bool = False) -> list[int]:
+    """Sprite 可能按自身长度播放的最短与最长帧数，秒转帧与叠加渲染一致（半帧向后取整）；生成与发布在预览长度之外也挂载它们。
+
+    字效更短时会被定格，所以它的最短长度是 `STATIC_TEXT_SECONDS`，其他分类是 `MIN_RENDER_SECONDS`。
+    """
+    shortest = STATIC_TEXT_SECONDS if text else MIN_RENDER_SECONDS
+    return [max(1, math.floor(seconds * fps + 0.5)) for seconds in (shortest, MAX_RENDER_SECONDS)]
 
 
 def _reported_stages(checks: list[Any], stages: tuple[str, ...]) -> tuple[str, ...] | None:
@@ -292,12 +298,13 @@ class ToolValidator:
 
     async def validate_samples(
         self, component: ComponentDefinition, composition: dict[str, int], box: dict[str, float], samples: list[dict[str, Any]],
+        *, text: bool = False,
     ) -> list[CheckResult]:
         """Mount publish-time boundary samples in one isolated browser and report one check per sample.
 
         ``composition`` is the version canvas (width, height, fps, duration_frames); each sample carries complete
         ``values`` and a host ``transform`` applied around ``box``, and is mounted at the preview length and at the
-        shortest and longest render length. A failed code stage is reported as that check alone; a report that
+        shortest and longest render length (a ``text`` effect's shortest is the static threshold, see `render_lengths`). A failed code stage is reported as that check alone; a report that
         cannot be read at all is an infrastructure failure.
         """
         try:
@@ -310,7 +317,7 @@ class ToolValidator:
                 "composition": composition,
                 "box": box,
                 "samples": samples,
-                "lengths": render_lengths(composition["fps"]),
+                "lengths": render_lengths(composition["fps"], text=text),
                 "browser": self.renderer.worker_browser_path(),
             }
             (directory / "request.json").write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8")

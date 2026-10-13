@@ -310,28 +310,32 @@ function edgeFrames(length) {
 
 /**
  * The bus renders a Sprite at the length it passes (`request.lengths` holds the shortest and longest it may ask
- * for), not at the previewed one: mount the first, middle and last frame at each of them, then restore the preview.
+ * for), not at the previewed one: mount the first, middle and last frame at each of them. The preview length is
+ * restored afterwards, also after a failure, so the custom tests that follow run at the length they were written for.
  */
 async function lengthsCheck(page) {
   const { fps, duration_frames: preview } = request.composition;
-  for (const length of request.lengths) {
-    await page.evaluate((frames) => window.__imvTool.setDuration(frames), length);
-    for (const frame of edgeFrames(length)) {
-      await page.evaluate((target) => window.__imvTool.setFrame(target), frame);
-      const failure = await page.evaluate(() => window.__imvRuntimeError ?? null);
-      if (failure)
-        return {
-          name: "render_lengths",
-          status: "failed",
-          message: `Rendered ${length} frames long (${length / fps} s) instead of the ${preview}-frame preview, the component throws at frame ${frame}: ${failure}. `
-            + "The final video sets the length, anywhere from the shortest to the longest of these, so the code must not assume the preview length: "
-            + "for example keep interpolate input ranges increasing when durationInFrames is short.",
-        };
+  try {
+    for (const length of request.lengths) {
+      await page.evaluate((frames) => window.__imvTool.setDuration(frames), length);
+      for (const frame of edgeFrames(length)) {
+        await page.evaluate((target) => window.__imvTool.setFrame(target), frame);
+        const failure = await page.evaluate(() => window.__imvRuntimeError ?? null);
+        if (failure)
+          return {
+            name: "render_lengths",
+            status: "failed",
+            message: `Rendered ${length} frames long (${length / fps} s) instead of the ${preview}-frame preview, the component throws at frame ${frame}: ${failure}. `
+              + "The final video sets the length, anywhere from the shortest to the longest of these, so the code must not assume the preview length: "
+              + "for example keep interpolate input ranges increasing when durationInFrames is short.",
+          };
+      }
     }
+    return { name: "render_lengths", status: "passed", message: `Rendered without an error at ${request.lengths.join(" and ")} frames.` };
+  } finally {
+    await page.evaluate((frames) => window.__imvTool.setDuration(frames), preview);
+    await page.evaluate(() => window.__imvTool.setFrame(0));
   }
-  await page.evaluate((frames) => window.__imvTool.setDuration(frames), preview);
-  await page.evaluate(() => window.__imvTool.setFrame(0));
-  return { name: "render_lengths", status: "passed", message: `Rendered without an error at ${request.lengths.join(" and ")} frames.` };
 }
 
 function scriptPolicy(code) {

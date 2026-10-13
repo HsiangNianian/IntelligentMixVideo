@@ -6,35 +6,31 @@ each shown once in its own frames, so the Sprite reads the cue's length as `dura
 less than `STATIC_TEXT_SECONDS` plays no entrance or exit: the Sprite runs at its previewed length, frozen on the
 middle frame, for the text's frames, which avoids flicker and code that cannot animate in so few frames. The time is
 `effect_total_frames`, 0.5 to 120 seconds, whatever length the user previewed when generating the Sprite.
-`plan_sprite_render` checks the request and places the instances on the whole effect; `render_sprite` renders it
-in chunks of at most 30 seconds in the overlay worker, each instance keeping its full length across chunks so
-the animation continues, and joins the chunks losslessly into one WebM. The async task, upload and callback are
-in `overlay_service.py`.
+`plan_sprite_render` checks the request and places the instances on the whole effect; `render_sprite` renders it in
+one overlay worker run that writes consecutive chunks of at most 30 seconds from the same composition (so every
+animation continues across a chunk boundary) and joins them losslessly into one WebM. The async task, upload and
+callback are in `overlay_service.py`.
 """
 
 from __future__ import annotations
 
 import asyncio
 import shutil
-from dataclasses import replace
 from pathlib import Path
 
 from generated.imv.sprite.v1 import sprite_pb2 as pb
 from pydantic import ValidationError
 
 from ..template.schema import RemotionTrackEditor
-from .overlay_render import Overlay, OverlayError, probe_overlay, render_overlay, to_frames
+from .overlay_render import Overlay, OverlayError, probe_overlay, render_overlay, run_overlay_worker, to_frames
 from .placement import resolve
 from .renderer import Renderer
-from .tool_validation import MAX_RENDER_SECONDS, MIN_RENDER_SECONDS
+from .tool_validation import MAX_RENDER_SECONDS, MIN_RENDER_SECONDS, STATIC_TEXT_SECONDS
 
-# The worker renders at most this much in one run; longer effects are rendered chunk by chunk and joined.
+# Longer effects are written as consecutive chunks of at most this length and joined.
 CHUNK_SECONDS = 30
 # Joining copies the encoded chunks without re-encoding, so it is quick even for the longest effect.
 JOIN_SECONDS = 120
-# A text effect shown for less than this holds still instead of animating in and out: an entrance plus an exit
-# usually take 0.6 to 1.3 seconds, so a shorter subtitle would hardly be fully visible and would flicker.
-STATIC_TEXT_SECONDS = 1.5
 
 
 def _editor(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite, text: str, keywords: list[str]) -> RemotionTrackEditor:
@@ -100,8 +96,9 @@ def _contents(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite, total: 
 def plan_sprite_render(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite) -> Overlay:
     """Check the canvas, time, content and style, and place one instance per content on the whole effect.
 
-    A text shown for less than `STATIC_TEXT_SECONDS` gets a `hold`: its instance lasts the previewed length the
-    Sprite was accepted at and is frozen on its middle frame for the text's frames. Every refusal is an
+    A text shown for less than `STATIC_TEXT_SECONDS` gets a `hold`: frozen on the middle frame of the previewed length
+    the Sprite was accepted at (`hold.length`, which it reads as its length) and shown for the text's frames; the
+    instance lasts the longer of the two, so a preview shorter than the text does not cut it. Every refusal is an
     `OverlayError` with a stable code; acceptance turns it into a 422.
     """
     canvas = sprite.canvas
@@ -123,41 +120,30 @@ def plan_sprite_render(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite
             raise OverlayError("placement_invalid", f"样式或内容不符合发布契约：{exc}") from None
         instance = {"code": sprite.tsx_code, "config": config, "host": host, "start_frame": start, "duration_frames": length}
         if length < static:
-            instance.update(duration_frames=preview, hold={"frame": preview // 2, "frames": length})
+            instance.update(duration_frames=max(preview, length), hold={"frame": preview // 2, "frames": length, "length": preview})
         instances.append(instance)
     return Overlay(canvas.width, canvas.height, fps, total, instances)
 
 
-def shown_frames(instance: dict) -> int:
-    """How many frames an instance is visible: its held frames, otherwise its whole length."""
-    return instance["hold"]["frames"] if "hold" in instance else instance["duration_frames"]
-
-
-def chunks(overlay: Overlay) -> list[Overlay]:
-    """Split the whole effect into consecutive renders of at most `CHUNK_SECONDS`.
-
-    Each chunk keeps the instances that show in it at their full length, shifted to the chunk's first frame (an
-    instance that began earlier starts before it), so an animation continues across chunks instead of restarting.
-    A held instance shows only its `hold` frames. A chunk without any instance renders transparent frames.
-    """
-    size = max(1, to_frames(CHUNK_SECONDS, overlay.fps))
-    parts = []
-    for first in range(0, overlay.frames, size):
-        count = min(size, overlay.frames - first)
-        shown = [
-            {**item, "start_frame": item["start_frame"] - first}
-            for item in overlay.instances
-            if item["start_frame"] < first + count and item["start_frame"] + shown_frames(item) > first
-        ]
-        parts.append(replace(overlay, frames=count, instances=shown))
-    return parts
+def chunk_ranges(frames: int, fps: int) -> list[list[int]]:
+    """Inclusive frame ranges of consecutive chunks of at most `CHUNK_SECONDS` covering `frames` frames."""
+    size = max(1, to_frames(CHUNK_SECONDS, fps))
+    return [[first, min(first + size, frames) - 1] for first in range(0, frames, size)]
 
 
 async def render_sprite(renderer: Renderer, overlay: Overlay, directory: Path) -> Path:
-    """Render every chunk in the isolated worker and join them into the verified `sprite.webm` in `directory`."""
-    paths = [await render_overlay(renderer, part, directory / f"chunk-{index}") for index, part in enumerate(chunks(overlay))]
-    if len(paths) == 1:
-        return paths[0]
+    """Render the effect in the isolated worker and return the verified WebM; longer effects are joined from chunks.
+
+    All chunks come from one worker run (one bundle, one browser) rendering frame ranges of the same composition, so
+    instances keep their absolute timing and animations continue across chunk boundaries.
+    """
+    ranges = chunk_ranges(overlay.frames, overlay.fps)
+    if len(ranges) == 1:
+        return await render_overlay(renderer, overlay, directory)
+    await run_overlay_worker(renderer, overlay, directory, ranges)
+    paths = [directory / f"chunk-{index}.webm" for index in range(len(ranges))]
+    if not all(path.is_file() and path.stat().st_size > 0 for path in paths):
+        raise OverlayError("render_failed", "渲染器没有产出全部分块")
     listing = directory / "chunks.txt"
     listing.write_text("".join(f"file '{path}'\n" for path in paths), encoding="utf-8")
     output = directory / "sprite.webm"
@@ -179,6 +165,8 @@ async def render_sprite(renderer: Renderer, overlay: Overlay, directory: Path) -
     return output
 
 
-def join_problem() -> str | None:
-    """Name the joining tool when this host lacks it; a single Sprite render needs it besides the overlay tools."""
+def join_problem(overlay: Overlay) -> str | None:
+    """Name the joining tool when an effect needs more than one chunk and this host lacks it; shorter ones need none."""
+    if len(chunk_ranges(overlay.frames, overlay.fps)) == 1:
+        return None
     return None if shutil.which("ffmpeg") else "ffmpeg"

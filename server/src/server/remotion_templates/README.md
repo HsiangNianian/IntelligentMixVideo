@@ -276,16 +276,17 @@ video. A Sprite is a fixed style (the sealed code plus `resolved_style` and `tra
 its content: one `text` with `keywords` for the whole effect (a title), or the bus's subtitle `cues` (text, keywords
 and a frame range each; ordered, non-overlapping, at least one frame), each shown once by the same Sprite in its own
 frames so the Sprite reads the cue's length as `durationInFrames`, transparent in between. A text effect shown for
-less than 1.5 s (`STATIC_TEXT_SECONDS`, most subtitle cues) plays no entrance or exit: its instance lasts the
-published preview length, is frozen on the middle frame (`Freeze`) and shows only its own frames, so short
-subtitles neither flicker nor run animation code in fewer frames than it was accepted at. The time is
+less than 1.5 s (`STATIC_TEXT_SECONDS`, most subtitle cues) plays no entrance or exit: it is frozen (`Freeze`) on the
+middle frame of the published preview length, which the Sprite still reads as its length, and shows only its own
+frames, so short subtitles neither flicker nor run animation code in fewer frames than it was accepted at. The time is
 `effect_total_frames`, 0.5 to 120 seconds and the output's frame count, whatever length was previewed when the Sprite
-was generated. `sprite_render.py` renders the effect in chunks of at most 30 seconds in the overlay worker (each
-instance keeps its full length across chunks, so animations continue) and joins them with `ffmpeg -c copy`, then
-re-probes the frame count and alpha flag; the bus never splits a request. Text effects need `text` or `cues`, other
+was generated. `sprite_render.py` renders the effect in one overlay worker run that writes consecutive chunks of at
+most 30 seconds as frame ranges of the same composition (instances keep their absolute timing, so animations continue
+across a boundary) and joins them with `ffmpeg -c copy`, then re-probes the frame count and alpha flag; the bus never
+splits a request. Text effects need `text` or `cues`, other
 kinds take no content, keywords need a Sprite that publishes them, and content cannot be passed as a style override;
 every refusal, a canvas other than the publication's or an unknown Sprite is a 422 at acceptance
-(`SpriteRenderAccepted {task_id}`), and the overlay render's environment checks plus `ffmpeg` are 503s. The task
+(`SpriteRenderAccepted {task_id}`), and the overlay render's environment checks, plus `ffmpeg` when an effect needs joining, are 503s. The task
 shares the overlay renders' table, render slot, recovery and callback body below, uploads to ZOS
 `imv/sprite_render/{taskId}.webm`, and is read with `GET /api/sprites/render/{taskId}` (`SpriteRenderTask`); each
 query endpoint only finds its own kind of task. The overlay worker bundles each distinct Sprite module once, however

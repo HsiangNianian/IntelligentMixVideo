@@ -79,9 +79,10 @@ async def publish_sprite(request: Request, service: Service) -> Response:
     responses={200: {"content": PROTOBUF_CONTENT}}, summary="受理单个 Sprite 的渲染",
 )
 async def render_sprite(request: Request, service: Service) -> Response:
-    """按 SpriteRenderInput 的 content（文字、关键词）、style 覆盖与 time 异步渲染一段透明 WebM，转存 ZOS 后回调。
+    """按 SpriteRenderInput 的 content（标题 text 或字幕 cues）、style 覆盖与 time 异步渲染整个效果的一个透明 WebM，转存 ZOS 后回调。
 
-    输入不合发布契约、时长或分段返回 422，ZOS 或隔离渲染环境不可用返回 503；超过 30 秒的效果由总线分段请求。
+    超过 30 秒的效果由服务端分块渲染再拼接，总线不分段。输入不合发布契约或时长返回 422，
+    ZOS 或隔离渲染环境（较长效果还需 ffmpeg）不可用返回 503。
     """
     message = pb.SpriteRenderInput()
     await _body(request, message)

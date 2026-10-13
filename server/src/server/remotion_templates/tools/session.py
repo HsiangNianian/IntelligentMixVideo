@@ -344,19 +344,20 @@ class ToolSession:
         except ValidationUnavailable as exc:
             raise ToolFault("VALIDATION_UNAVAILABLE", f"The isolated TypeScript validator is unavailable: {exc}"[:3000]) from exc
 
-    async def validate_render(self, request: RenderValidationInput, *, transparency: bool = False) -> RenderValidationReport:
+    async def validate_render(
+        self, request: RenderValidationInput, *, transparency: bool = False, lengths: list[int] | None = None,
+    ) -> RenderValidationReport:
         """Run the isolated component behavior runner and cache the exact report.
 
-        ``transparency`` asks for the generation checks: the canvas-coverage measurement and a mount at the
-        shortest and longest length the bus may render. The options are only forwarded when asked for, so a
-        validator that predates them keeps working.
+        ``transparency`` adds the canvas-coverage measurement and ``lengths`` a mount at those render lengths
+        (frames). The options are only forwarded when asked for, so a validator that predates them keeps working.
         """
         if self.validator is None:
             raise ToolFault("VALIDATION_UNAVAILABLE", "The isolated behavior validator is unavailable.")
-        from ..tool_validation import ValidationUnavailable, render_lengths
+        from ..tool_validation import ValidationUnavailable
 
         try:
-            options = {"transparency": True, "lengths": render_lengths(30)} if transparency else {}
+            options = {**({"transparency": True} if transparency else {}), **({"lengths": lengths} if lengths else {})}
             report = await self.validator.validate_render(request, **options)
         except ValidationUnavailable as exc:
             raise ToolFault("VALIDATION_UNAVAILABLE", f"The isolated behavior validator is unavailable: {exc}"[:3000]) from exc
@@ -502,6 +503,8 @@ class ToolSession:
         or an effect wants; the bus renders them at the final video's length, not the preview's. This is the browser mount the host needs anyway: the report is cached under the key
         the final host check reads, so completing the task does not mount the Sprite a second time.
         """
+        from ..tool_validation import render_lengths
+
         report = await self.validate_render(
             RenderValidationInput(
                 component=ComponentDefinition(
@@ -512,6 +515,9 @@ class ToolSession:
                 duration_frames=sprite.composition.duration_frames,
             ),
             transparency=True,
+            # The bus renders a Sprite at the final video's length; a text effect shorter than the static threshold is
+            # frozen at its preview length instead, so its shortest played length is that threshold.
+            lengths=render_lengths(sprite.composition.fps, text=sprite.kind == "text"),
         )
         if report.passed:
             return

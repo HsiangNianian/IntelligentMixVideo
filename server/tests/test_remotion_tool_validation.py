@@ -627,10 +627,29 @@ def test_real_browser_mounts_the_shortest_and_longest_render_length(tmp_path, co
         RenderValidationInput(component=component_, duration_frames=150), transparency=True, lengths=render_lengths(30),
     ))
     check = next(item for item in report.checks if item.name == "render_lengths")
-    assert render_lengths(30) == [15, 3600]
+    assert render_lengths(30) == [15, 3600] and render_lengths(30, text=True) == [45, 3600]
     assert report.passed is passed and (check.status == "passed") is passed, check.message
     if not passed:
         assert "Rendered 15 frames long (0.5 s)" in check.message and "at frame 0" in check.message
+
+
+@needs_node
+@needs_browser
+def test_custom_tests_run_at_the_preview_length_after_a_failed_length_check(tmp_path):
+    """评审复现：两端长度检查失败后曾停在 15 帧，Actor 的自定义测试定位第 100 帧时报「frame is outside composition」；现在恢复预览长度后再跑测试。"""
+    settings = Settings(_env_file=None, data_dir=tmp_path, **BROWSER)
+    component_ = ComponentDefinition(
+        code=EDGES_BY_LENGTH,
+        parameter_schema={"type": "object", "properties": {"tint": {"type": "string"}}, "required": ["tint"], "additionalProperties": False},
+        default_parameters={"tint": "#FFB347"},
+    )
+    script = "export default async function (ctx) { await ctx.set_frame(100); ctx.assert(true, 'frame 100 of the preview'); }"
+    report = asyncio.run(ToolValidator(Renderer(settings), tmp_path).validate_render(
+        RenderValidationInput(component=component_, duration_frames=150, tests=[TestScript(name="late", code=script)]),
+        transparency=True, lengths=render_lengths(30),
+    ))
+    assert next(item for item in report.checks if item.name == "render_lengths").status == "failed"
+    assert [(item.name, item.status) for item in report.tests] == [("late", "passed")], report.tests
 
 
 def composed_instances() -> dict:
