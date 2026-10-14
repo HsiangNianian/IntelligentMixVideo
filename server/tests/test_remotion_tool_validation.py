@@ -896,6 +896,23 @@ export default function Title(props: { text: string; fontSize: number }) {
   );
 }
 """
+# 更早封存的组合 Sprite 的写法：每个实例放在按布局大小定位、overflow hidden 的盒子里（盒子的子元素带 data-imv-instance），内容自己没有固定框。
+SEALED_INSTANCE_BOX_TEXT = """import React from "react";
+import { AbsoluteFill } from "remotion";
+export default function Title(props: { text: string; fontSize: number }) {
+  return (
+    <AbsoluteFill>
+      <div style={{ position: "absolute", left: 80, top: 810, width: 920, height: 300, overflow: "hidden" }}>
+        <div data-imv-instance="title" style={{ width: "100%", height: "100%" }}>
+          <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
+            <div style={{ width: 920, textAlign: "center", fontSize: props.fontSize, lineHeight: 1.2, whiteSpace: "normal", wordBreak: "break-all", color: "#fff" }}>{props.text}</div>
+          </AbsoluteFill>
+        </div>
+      </div>
+    </AbsoluteFill>
+  );
+}
+"""
 # 与 FIXED_BOX_TEXT 同样的固定框，但用 overflow auto 或 contain: paint 裁切：视频里不会滚动，超出部分同样看不到。
 # 8 个 128px 的字（1024px）留在画布内，只被 972px 宽的框裁掉。
 SCROLL_BOX_TEXT = FIXED_BOX_TEXT.replace('overflow: "hidden"', 'overflow: "auto"')
@@ -944,8 +961,9 @@ def browser_text_validate(tmp_path: Path, code: str, max_length: int):
     (TYPEWRITER_TEXT, 100, True, ""),
     (SCROLL_BOX_TEXT, 8, False, "overflow auto"),
     (PAINT_CONTAINED_TEXT, 8, False, "contain: paint"),
+    (SEALED_INSTANCE_BOX_TEXT, 15, True, ""),
 ], ids=["fixed-box-clips-long-title", "wrapped-and-shrunk", "reveal-mask-only-early", "ignores-text", "sliced-text", "display-none", "one-span-per-glyph",
-        "line-height-1-mask", "clipped-until-scaled-out", "typewriter", "overflow-auto-box", "paint-contained-box"])
+        "line-height-1-mask", "clipped-until-scaled-out", "typewriter", "overflow-auto-box", "paint-contained-box", "sealed-instance-box"])
 def test_real_browser_requires_the_longest_text_to_be_shown_in_full(tmp_path, code, max_length, passed, reason):
     """issue #119：972x360 的 overflow hidden 固定框在 100 字标题下被裁切而被拒；按字数缩小字号并换行的写法、只在开头几帧被遮罩挡住的文字通过；
     不显示 text 的组件被拒。只渲染一段截断的文字、或文字在 display: none 里没有排版框，都不算完整显示；逐字拆成 span 的完整文字仍算。

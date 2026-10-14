@@ -440,6 +440,11 @@ def _json_script(value: dict) -> str:
     return text
 
 
+# 组合出的 Sprite 把每个实例放进按布局大小定位的盒子；盒子只是摆放区域，不应裁剪内容（见 `remotion/host-layer.tsx`）。
+# 更早封存的实例盒子带 overflow hidden，较旧的预览包也不含宿主的覆盖，所以预览页同样带这条规则。
+INSTANCE_BOX_CSS = "div:has(> [data-imv-instance]){overflow:visible !important}"
+
+
 def player_page(script: str, *, overlay: bool = False, host: dict | None = None) -> HTMLResponse:
     """Wrap a sealed interactive bundle in the sandboxed player document shared by versions and sprites.
 
@@ -451,6 +456,7 @@ def player_page(script: str, *, overlay: bool = False, host: dict | None = None)
     return HTMLResponse(
         '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width">'
         "<title>Remotion 字效预览</title><style>html,body,#root{margin:0;width:100%;height:100%;overflow:hidden}"
+        + INSTANCE_BOX_CSS
         + (":root{color-scheme:light}html,body{background:transparent}body{color:#fff;font-family:sans-serif}</style>" if overlay else "body{color:#fff;background-color:#25252b;background-image:conic-gradient(#35353d 25%,transparent 0 50%,#35353d 0 75%,transparent 0);background-size:24px 24px;font-family:sans-serif}</style>")
         +
         '<body><div id="root"></div>'
