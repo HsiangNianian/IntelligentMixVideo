@@ -48,7 +48,7 @@ COLOR = {"type": "string", "pattern": HEX_COLOR}
 SCHEMA = {
     "type": "object",
     "properties": {
-        "text": {"type": "string", "minLength": 1, "maxLength": 40, "title": "标题文字"},
+        "text": {"type": "string", "minLength": 1, "maxLength": 100, "title": "标题文字"},
         "keywords": {"type": "array", "items": {"type": "string", "maxLength": 100}, "maxItems": 20, "title": "关键词"},
         "keywordBold": {"type": "boolean", "title": "关键词加粗"},
         "keywordItalic": {"type": "boolean", "title": "关键词斜体"},
@@ -224,7 +224,7 @@ def test_publish_copies_content_and_lists_summary_without_source(client: TestCli
     # number_value cannot tell an integer from a number: the format keeps integer parameters integral.
     assert parameters["fontWeight"].format == pb.SPRITE_PARAMETER_FORMAT_INTEGER
     assert parameters["fontSize"].format == pb.SPRITE_PARAMETER_FORMAT_UNSPECIFIED
-    assert (parameters["text"].default_value.string_value, parameters["text"].min_length, parameters["text"].max_length) == ("标题", 1, 40)
+    assert (parameters["text"].default_value.string_value, parameters["text"].min_length, parameters["text"].max_length) == ("标题", 1, 100)
     keywords = parameters["keywords"]
     assert keywords.default_value.HasField("string_list_value") and list(keywords.default_value.string_list_value.values) == []
     assert (keywords.max_items, keywords.max_length) == (20, 100)
@@ -422,6 +422,16 @@ def test_publish_rejects_invalid_field_choices(client: TestClient, published, fi
     response = publish(client, publish_request(published.version.id, **fields))
     assert response.status_code == 422 and detail in response.json()["detail"]
     assert client.get("/api/sprites").content == b""
+
+
+@pytest.mark.parametrize("limit", [6, 101])
+def test_publish_requires_text_max_length_100(published, limit) -> None:
+    """发布同样拒绝非 100 的文字上限，防止旧成功版本绕过生成入口。"""
+    version = published.version.model_copy(deep=True)
+    version.candidate.config_schema["properties"]["text"]["maxLength"] = limit
+    with pytest.raises(HTTPException) as caught:
+        sprites._validated_request(publish_request(version.id), version)
+    assert caught.value.status_code == 422 and "maxLength 必须为 100" in caught.value.detail
 
 
 def test_a_text_version_without_its_keyword_parameters_is_refused(published) -> None:
@@ -695,7 +705,7 @@ def test_a_new_publication_renders_its_boundary_samples_once(client: TestClient,
     assert request["box"] == {"x": 90, "y": 760, "width": 900, "height": 400}
     assert request["composition"] == {"width": 1080, "height": 1920, "fps": 30, "duration_frames": 30}
     low = request["samples"][1]
-    assert low["values"]["text"] == "测" * 40 and low["values"]["keywords"] == ["测"] * 20 and low["values"]["color"] == "#000000"
+    assert low["values"]["text"] == "测" * 100 and low["values"]["keywords"] == ["测"] * 20 and low["values"]["color"] == "#000000"
     assert low["transform"] == {"x": 0, "y": 0, "scale": 0.25, "rotation": -180, "opacity": 0}
     assert published_sprite(client, published.version.id).sprite_id == first.sprite_id
     assert len(published.renderer.samples) == 1

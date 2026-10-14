@@ -18,7 +18,7 @@ from ..segmentation.settings import Settings as SegmentationSettings
 from ..template.store import get_template
 from . import ims, media, remotion, store, zos
 from .errors import CompositionError, remaining
-from .execution_log import close_logs, exception_details
+from .execution_log import close_logs, exception_details, log_dispatch_error
 from .matching import Matching, payload, validated_matches
 from .schema import CompositionRequest, MatchCallback, MatchedSegment, PositiveSeconds, Segment, TaskResponse
 from .settings import ClientSettings, Settings, ZosSettings
@@ -268,7 +268,7 @@ class Runtime:
                         task = asyncio.create_task(self._execute(record))
                         self.active[record["task_id"]] = task
             except Exception as exc:
-                logger.error("合成调度暂不可用：%s", type(exc).__name__)
+                await self.sync(log_dispatch_error, exc)
             try:
                 await asyncio.wait_for(self.wake.wait(), timeout=2)
             except TimeoutError:

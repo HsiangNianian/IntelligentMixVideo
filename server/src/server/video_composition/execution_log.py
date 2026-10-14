@@ -1,4 +1,4 @@
-"""执行日志先快照入队，再由单线程归类、脱敏并保存七个 JSON；超限时整任务清理。"""
+"""任务日志入队归类、脱敏并保存七个 JSON 与独立错误文件；调度错误保存最近一次诊断。"""
 
 import json
 import logging
@@ -13,11 +13,18 @@ from pathlib import Path
 from queue import Queue
 from threading import Lock, Thread
 from urllib.parse import urlsplit, urlunsplit
+from uuid import uuid4
 
 from pydantic import BaseModel, ValidationError
-from sqlalchemy.exc import SQLAlchemyError
+from pymysql.constants import CR, ER
+from pymysql.err import MySQLError
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 
 from .errors import CompositionError
+
+# 使用驱动自带的固定错误名称解释原生错误码，避免记录可能包含 SQL 或业务值的驱动正文。
+MYSQL_ERROR_NAMES = {code: name for module in (ER, CR) for name, code in vars(module).items()
+                     if name.isupper() and isinstance(code, int) and not name.endswith(("_FIRST", "_LAST"))}
 
 
 def sanitize(value, *, media_url: bool = False):
@@ -61,19 +68,32 @@ def sanitize(value, *, media_url: bool = False):
 
 
 def exception_details(exc: Exception) -> dict:
-    """保留有限异常链、供应商错误码和调用位置；即使 from None 也可定位被包装的根因。"""
+    """保留有限异常链、错误码、完整调用位置及已写入的详细日志路径；不含源码/局部变量。"""
     chain, seen, private_source = [], set(), False
+    details = {"exceptions": chain}
     while exc is not None and id(exc) not in seen and len(chain) < 5:
         seen.add(id(exc))
+        if path := getattr(exc, "detail_log_path", None):
+            details["detail_log_path"] = path
         item = {"type": type(exc).__name__, "frames": [
             {"file": frame.filename, "line": frame.lineno, "function": frame.name}
-            for frame in traceback.extract_tb(exc.__traceback__)[-8:]
+            for frame in traceback.extract_tb(exc.__traceback__)
         ]}
         # Remotion 错误之下的根因文本可能带资产源码或完整业务参数：只保留类型、位置与错误码，全文在私有诊断中。
         if isinstance(exc, ValidationError) and not private_source:
             item["validation"] = exc.errors(include_input=False, include_context=False, include_url=False)
         elif not isinstance(exc, (SQLAlchemyError, ValidationError)) and not private_source:
             item["message"] = sanitize(str(exc)[:4000])
+        if isinstance(exc, DBAPIError) and isinstance(exc.orig, MySQLError):
+            args = exc.orig.args
+            if args and isinstance(args[0], int):
+                item.update(mysql_errno=args[0], connection_invalidated=exc.connection_invalidated,
+                            message=f"MySQL {args[0]}: {MYSQL_ERROR_NAMES.get(args[0], 'UNKNOWN_ERROR')}")
+            cause = getattr(exc.orig, "original_exception", None) or exc.orig.__cause__ or exc.orig.__context__
+            if isinstance(cause, OSError):
+                item["driver_cause"] = {"type": type(cause).__name__, **{
+                    key: value for key in ("errno", "verify_code") if isinstance(value := getattr(cause, key, None), int)
+                }}
         for key in ("code", "status_code", "request_id"):
             value = getattr(exc, key, None)
             if isinstance(value, (str, int)):
@@ -82,7 +102,7 @@ def exception_details(exc: Exception) -> dict:
         private_source = private_source or isinstance(exc, CompositionError) and exc.error["code"].startswith("remotion_")
         # SQL 异常链可能含原始语句和参数，不递归记录数据库驱动异常。
         exc = None if isinstance(exc, SQLAlchemyError) else exc.__cause__ or exc.__context__
-    return sanitize({"exceptions": chain})
+    return sanitize(details)
 
 
 # 合成模块的数据库字段和人读日志统一为北京时间；云端截止时间仍使用带时区的原值。
@@ -252,8 +272,8 @@ def put_snapshots(columns: dict, time, action: str, payload: dict) -> None:
         put_data(columns, "ims_submit", "input", time, action, payload["ims_request"], fallback=True)
 
 
-def add_event(previous: dict | None, event: str, record: dict, details: dict, time) -> dict:
-    """新事件直接生成七模块内容，沿用输入输出、执行与错误的统一结构。"""
+def add_event(previous: dict | None, event: str, record: dict, details: dict, time, *, folder: Path | None = None) -> dict:
+    """新事件生成七模块内容；后台写入提供任务目录时，额外保存新错误的独立诊断文件。"""
     columns = expand_columns(previous) if previous else {
         name: {key: [] for key in ("input", "output", "execute_log", "error_log")} for name in MODULES
     }
@@ -270,9 +290,28 @@ def add_event(previous: dict | None, event: str, record: dict, details: dict, ti
     entry = {"time": time, "action": action, "status": record["status"]}
     if failed:
         entry["error"] = {**payload, "message": error_message(details)}
+        if path := details.get("diagnostics", {}).get("detail_log_path"):
+            entry["error"]["detail_log_path"] = path
+        if folder is not None:
+            write_error_detail(entry, folder)
     columns[GROUPS.get(group, "request")]["error_log" if failed else "execute_log"].append(entry)
     put_snapshots(columns, time, action, payload)
     return compact_columns(columns)
+
+
+def write_error_detail(entry: dict, folder: Path) -> None:
+    """在任务内独立保存脱敏错误快照并附相对路径；复用已有私有诊断，失败仍保留 JSON 摘要。"""
+    if entry["error"].get("detail_log_path"):
+        return
+    try:
+        directory = folder / "errors"
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path = directory / f"{uuid4().hex}.log"
+        path.write_text(json.dumps(entry, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as exc:
+        logging.getLogger(__name__).error("合成任务 %s 详细错误日志保存失败：%s", folder.name, type(exc).__name__)
+    else:
+        entry["error"]["detail_log_path"] = path.relative_to(folder).as_posix()
 
 
 # 路径固定相对于 server/ 项目目录，与启动工作目录无关；只支持现有单进程调度。
@@ -284,6 +323,23 @@ LOG_QUEUE = Queue(maxsize=128)
 PENDING = Counter()
 WRITER_LOCK = Lock()
 _writer: Thread | None = None
+
+
+def log_dispatch_error(exc: Exception) -> None:
+    """在线程中输出安全诊断并原子覆盖最近一次调度错误；写盘失败不打断调度重试。"""
+    entry = {"time": display_time(datetime.now(BEIJING)), "action": "dispatch_failed", "status": "failed", "error": exception_details(exc)}
+    content = json.dumps(entry, ensure_ascii=False)
+    logger = logging.getLogger(__name__)
+    logger.error("合成调度暂不可用：%s", content)
+    try:
+        with LOG_LOCK:
+            path = LOG_ROOT / "video_composition" / "dispatch-error.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text(content, encoding="utf-8")
+            temporary.replace(path)
+    except OSError as write_error:
+        logger.error("合成调度诊断写入失败：%s", type(write_error).__name__)
 
 
 def enqueue_log(record: dict, event: str, details: dict, finished_tasks) -> None:
@@ -339,8 +395,8 @@ def write_log(record: dict, event: str, details: dict, finished_tasks, *, time=N
     """锁内追加并以临时文件替换 JSON；写入后检查容量，结束任务由调用方查询确认。"""
     with LOG_LOCK:
         task_id = record["task_id"]
-        columns = add_event(read_log(task_id), event, record, details, time or datetime.now(BEIJING))
         folder = LOG_ROOT / "video_composition" / task_id
+        columns = add_event(read_log(task_id), event, record, details, time or datetime.now(BEIJING), folder=folder)
         folder.mkdir(parents=True, exist_ok=True)
         try:
             for name, section in columns.items():

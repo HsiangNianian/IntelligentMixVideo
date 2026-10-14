@@ -28,7 +28,7 @@ KEYWORD_STYLES = {
     "keywordSize": {"type": "integer", "minimum": 0, "maximum": 300},
 }
 BASE_TEXT = {
-    "text": {"type": "string", "minLength": 1, "maxLength": 40},
+    "text": {"type": "string", "minLength": 1, "maxLength": 100},
     "fontSize": {"type": "number", "minimum": 24, "maximum": 240},
     "fontWeight": {"type": "integer", "enum": [400, 700]},
     "color": COLOR,
@@ -61,9 +61,10 @@ def test_each_category_accepts_exactly_its_required_shapes():
 
 
 def test_text_limits_and_keywords_are_checked():
-    """文字须声明不超过 200 的 maxLength；关键词列表必须是受限的字符串数组。"""
-    too_long = {**TEXT_PROPERTIES, "text": {"type": "string", "minLength": 1, "maxLength": 500}}
-    assert [item.name for item in category_problems("text", schema(too_long), set(too_long), OFF)] == ["text"]
+    """文字 maxLength 必须为整数 100，拒绝缩短或放宽上限；关键词仍使用独立限制。"""
+    for limit in (6, 40, 99, 101, 200, 500, True, 100.0, "100", None):
+        invalid = {**TEXT_PROPERTIES, "text": {"type": "string", "minLength": 1, "maxLength": limit}}
+        assert [item.name for item in category_problems("text", schema(invalid), set(invalid), OFF)] == ["text"]
     unbounded = {**TEXT_PROPERTIES, "keywords": {"type": "array", "items": {"type": "string"}}}
     assert [item.name for item in category_problems("text", schema(unbounded), set(unbounded), OFF)] == ["keywords"]
 
@@ -270,6 +271,14 @@ def test_create_refuses_a_sprite_missing_its_category_parameters(tmp_path):
             await current.execute("sprite.create", SpriteCreateInput(draft_id="on"), available())
         assert enabled.value.error.code == "CATEGORY_PARAMETERS_MISSING"
         assert enabled.value.error.details["missing"] == [{"name": "keywordBold", "reason": "must default to false (off)", "schema": {"type": "boolean"}}]
+        # 复现模型把 maxLength 降到 6 绕过长文字排版；保存前拒绝并回传正确契约。
+        for limit in (6, 101):
+            current.sprite_drafts["limit"] = sprite("text", list(TEXT_PROPERTIES)).model_copy(deep=True)
+            current.sprite_drafts["limit"].parameter_schema["properties"]["text"]["maxLength"] = limit
+            with pytest.raises(ToolFault) as invalid:
+                await current.execute("sprite.create", SpriteCreateInput(draft_id="limit"), available())
+            assert invalid.value.error.code == "CATEGORY_PARAMETERS_MISSING"
+            assert invalid.value.error.details["missing"] == [{"name": "text", "reason": "has the wrong schema", "schema": TEXT_PROPERTIES["text"]}]
         assert current.saved_sprites == {}
 
     asyncio.run(run())

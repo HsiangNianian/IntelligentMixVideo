@@ -206,7 +206,7 @@ clips it while it holds. The `text_fit` check fails when every one of those fram
 or slide-in that moves the full-size text out of view for a few frames is fine, while a fixed-size box that clips
 long text whenever it is shown at full size is not; it also fails when the filler text is never visibly rendered. A failure is refused with `CODE_VALIDATION_FAILED` (`text_fit: ...` with the clipped box or
 size and the fix: wrap the text inside a bounded width, no fixed-height `overflow: hidden` box, shrink the font
-for long text, never below 24px; text that cannot fit even then means the declared `maxLength` is too large and must be lowered, and input beyond it is refused by the parameter Schema). It is a geometric measurement, not a visual review; like the transparency
+for long text, never below 24px; `text.maxLength` must remain exactly 100, so text that still cannot fit requires layout and wrapping fixes, never a lower limit). It is a geometric measurement, not a visual review; like the transparency
 measurement it only applies to generation, and already published versions are not re-checked.
 
 Contract diagnostics carry the position of a violation (line, column and range in the submitted code).
@@ -305,8 +305,8 @@ Publishing re-verifies the sealed version files (409 when changed) and only acce
 with a kind and top-level parameter bindings (`spec.sprite.kind`/`bindings`); older versions are refused with a
 422 that asks for an edit in chat. The requested kind defaults to the agent's choice on the client but may be
 changed: the version must expose that kind's required parameters (`categories.REQUIRED`), otherwise the 422 lists
-them in Chinese. The generation prompt and required-parameter examples use `text` with `minLength: 1` and
-`maxLength: 100`; already published assets retain their own sealed schema and need a new version to change it.
+them in Chinese. Generation and new-publication validation require `text.maxLength` to be exactly 100;
+already published assets retain their own sealed schema and need a new version to change it.
 A text Sprite's required parameters include the keyword options the bus forwards from the IMS
 title/subtitle keyword fields: `keywords`, `keywordBold`/`Italic`/`Underline`/`Strikeout`, `keywordColor` (`""`
 keeps the text colour) and `keywordSize` (0 keeps the font size, otherwise 12–300; placements refuse 1–11), with `keywords` items holding at least 12
