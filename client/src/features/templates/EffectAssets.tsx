@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { defaultEditor, textRoles, type Category, type Draft, type Editor, type EffectAsset, type TextRole } from "./model";
-import { assetCategories, assetField, type EffectTarget } from "./effects";
+import { assetCategories, assetField, isSelectableAsset, type EffectTarget } from "./effects";
 import { trackLabel, trackLayers } from "./tracks";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 
@@ -47,21 +47,22 @@ export function EffectAssets({ editor = defaultEditor, catalog, textTarget, onTe
   const [category, setCategory] = useState<Category>("flower");
   const [search, setSearch] = useState("");
   const [limit, setLimit] = useState(24);
+  const selectableAssets = catalog.filter(isSelectableAsset);
   const isMotion = category === "in" || category === "out" || category === "loop";
   const role = category === "flower" && textTarget === "bubble" ? "title" : textTarget;
   editor = (isMotion || category === "flower") && textEditor ? textEditor : editor;
-  const options = catalog.filter((asset) => asset.category === category && `${asset.name} ${asset.effect_id}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
+  const options = selectableAssets.filter((asset) => asset.category === category && `${asset.name} ${asset.effect_id}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
   const conflicting = isMotion && (category === "loop" ? Boolean(editor[`${role}In`] || editor[`${role}Out`]) : Boolean(editor[`${role}Loop`]));
   const needsBubble = isMotion && role === "bubble" && !editor.bubble;
   const selectedField = assetField(category, role);
   return (
     <section aria-label="特效资产" className="flex min-w-0 flex-col gap-2.5 p-3">
-      <div className="flex items-center justify-between gap-2"><h2 className="text-[13px] font-semibold">特效资产</h2><span className="rounded-md bg-muted px-1.5 py-1 text-[11px] text-muted-foreground">{catalog.length} 项</span></div>
+      <div className="flex items-center justify-between gap-2"><h2 className="text-[13px] font-semibold">特效资产</h2><span className="rounded-md bg-muted px-1.5 py-1 text-[11px] text-muted-foreground">{selectableAssets.length} 项</span></div>
       {/* 分类为单选切换组：再次点击当前分类不会取消选择。 */}
       <ToggleGroup type="single" spacing={1} value={category} onValueChange={(value) => { if (value) { setCategory(value as Category); setLimit(24); } }} aria-label="资产分类" className="template-asset-categories w-full flex-wrap">
         {(Object.keys(assetCategories) as Category[]).map((value) => (
           <ToggleGroupItem key={value} value={value} className="template-category-pill h-6 gap-1 rounded-full border px-2 text-[11px] font-normal">
-            {assetCategories[value]} <span aria-hidden="true" className="template-category-count">{catalog.filter((asset) => asset.category === value).length}</span>
+            {assetCategories[value]} <span aria-hidden="true" className="template-category-count">{selectableAssets.filter((asset) => asset.category === value).length}</span>
           </ToggleGroupItem>
         ))}
       </ToggleGroup>

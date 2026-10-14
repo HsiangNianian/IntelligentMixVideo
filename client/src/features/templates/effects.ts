@@ -11,6 +11,11 @@ export const assetCategories: Record<Category, string> = {
   "transition/normal": "转场", in: "文字入场", out: "文字出场", loop: "文字循环",
 };
 
+/** 判断资产能否作为新的效果选择，已有选择由编辑器保留。 */
+export function isSelectableAsset(asset: EffectAsset): boolean {
+  return asset.id !== "flower/CS0003-000002";
+}
+
 /** 判断当前对象是否具有文字、位置与动画字段。 */
 export function isTextTarget(target: EffectTarget): target is TextRole {
   return target === "title" || target === "subtitle" || target === "bubble";

@@ -25,6 +25,19 @@ test("画面对象按转场编号升序展示", () => {
   expect(draft.tracks.map((track) => track.id)).toEqual(originalIds);
 });
 
+// 场景：标题和字幕资产搜索均不提供停用花字，其他花字仍可选择。
+test.each(["title", "subtitle"] as const)("%s 资产列表排除停用花字", (target) => {
+  const catalog = readCatalog();
+  expect(catalog.some((asset) => asset.id === "flower/CS0003-000002")).toBe(true);
+  render(<EffectAssets catalog={catalog} textTarget={target}
+    onTextTarget={() => {}} onAsset={() => {}} />);
+  fireEvent.change(screen.getByRole("searchbox", { name: "搜索特效" }), { target: { value: "CS0003-000002" } });
+  expect(screen.queryByRole("button", { name: /应用花字/ })).toBeNull();
+  expect(screen.getByText("没有匹配的特效")).toBeTruthy();
+  fireEvent.change(screen.getByRole("searchbox", { name: "搜索特效" }), { target: { value: "CS0003-000001" } });
+  expect(screen.getByRole("button", { name: /应用花字/ })).toBeTruthy();
+});
+
 // 场景：选择字幕后点击真实目录资产，组件输出对应资产和字幕目标。
 test("资产组件传递所选资产与文字对象", async () => {
   const catalog = readCatalog();
