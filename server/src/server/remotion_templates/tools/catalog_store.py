@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 from threading import Lock
-from typing import Any
 
 from sqlalchemy import JSON, Column, MetaData, String, Table, select
 
@@ -62,8 +61,3 @@ class CatalogStore:
         with self._engine().connect() as connection:
             payload = connection.execute(select(presets.c.payload).where(presets.c.preset_id == preset_id)).scalar()
         return PresetRecord.model_validate(payload) if payload is not None else None
-
-
-def catalog_record(record: PresetRecord) -> dict[str, Any]:
-    """导出用于任务快照的公开字段，不携带存储后端细节。"""
-    return record.model_dump(mode="json", exclude_unset=True)
