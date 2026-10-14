@@ -75,7 +75,6 @@ export function addClip(draft: Draft, asset: SpriteAsset, known: SpriteAsset[], 
     clip.text_target = role;
   } else if (asset.kind === SpriteKind.TRANSITION_OVERLAY) {
     clip.transition_boundary = nextTransitionBoundary(draft);
-    clip.duration = draft.transition_duration_seconds;
   } else if (asset.kind !== SpriteKind.FILTER_OVERLAY && vfxTaken(draft, known)) {
     throw new Error("画面特效最多一个，Remotion 视频特效也占用这个名额，请先移除已有的画面特效");
   }
@@ -124,16 +123,16 @@ export function hiddenTextClips(draft: Draft, resolved: ResolvedTimeline): Set<s
 
 /**
  * 把本次预览算出的秒数写入占用对象的片段，供右侧列表、时间轴、叠加预览和保存数据使用：字效采用所作用文字的显示区间，
- * Remotion 转场采用统一计算的转场区间；所作用文字不显示时保留原值（见 `hiddenTextClips`）。合成时按实际素材重新计算；没有变化的片段与列表保持原引用。
+ * Remotion 转场预览采用计算后的区间，保存保留原有时长；所作用文字不显示时保留原值（见 `hiddenTextClips`）。合成时按实际素材重新计算；没有变化的片段与列表保持原引用。
  */
-export function timeClips(draft: Draft, resolved: ResolvedTimeline): Draft {
+export function timeClips(draft: Draft, resolved: ResolvedTimeline, purpose: "preview" | "save" = "preview"): Draft {
   const round = (seconds: number) => Math.round(seconds * 1000) / 1000;
   const clips = draft.clips.map((clip) => {
     let timing: Pick<RemotionClip, "start" | "duration"> | undefined;
     const text = clip.text_target && draft.tracks.find((track) => track.target === clip.text_target);
     const shown = text ? resolved.tracks[text.id] : undefined;
     if (shown && shown.end > shown.start) timing = { start: round(shown.start), duration: round(shown.end - shown.start) };
-    else if (clip.transition_boundary !== undefined && resolved.transitions[clip.transition_boundary - 1]) {
+    else if (purpose === "preview" && clip.transition_boundary !== undefined && resolved.transitions[clip.transition_boundary - 1]) {
       const transition = resolved.transitions[clip.transition_boundary - 1];
       timing = { start: round(transition.start), duration: round(transition.end - transition.start) };
     }

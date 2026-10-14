@@ -275,7 +275,7 @@ pub struct SaveTemplateRequest {
     /// 全部轨道选用的素材目录 ID 去重列表。
     #[prost(string, repeated, tag="3")]
     pub effect_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    /// 全部转场使用的统一持续时间，单位为秒。
+    /// 全部 IMS 转场使用的统一持续时间，单位为秒。
     #[prost(double, optional, tag="4")]
     pub transition_duration_seconds: ::core::option::Option<f64>,
     /// 模板的画面对象实例及时间规则；包装消息用于区分缺少字段和空列表。

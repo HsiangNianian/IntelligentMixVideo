@@ -62,24 +62,24 @@ test("转场按添加顺序连接三个视频", async () => {
   fireEvent.click(within(assets).getAllByRole("button", { name: /^应用转场：/ })[1]);
   expect(screen.getByRole("button", { name: "编辑镜头转场 2", pressed: true })).toBeTruthy();
   const inspector = screen.getByRole("region", { name: "转场设置" });
-  fireEvent.change(within(inspector).getByLabelText("转场持续时间 / 秒"), { target: { value: "2" } });
+  fireEvent.change(within(inspector).getByLabelText("IMS 转场持续时间 / 秒"), { target: { value: "2" } });
   const durationSlider = within(inspector).getByRole("slider", { name: "转场持续时间滑块" });
   expect(durationSlider.getAttribute("aria-valuenow")).toBe("2");
   fireEvent.keyDown(durationSlider, { key: "ArrowLeft" });
-  expect(screen.getByLabelText<HTMLInputElement>("转场持续时间 / 秒").value).toBe("1.9");
+  expect(screen.getByLabelText<HTMLInputElement>("IMS 转场持续时间 / 秒").value).toBe("1.9");
   fireEvent.keyDown(durationSlider, { key: "ArrowRight" });
-  expect(screen.getByLabelText<HTMLInputElement>("转场持续时间 / 秒").value).toBe("2");
+  expect(screen.getByLabelText<HTMLInputElement>("IMS 转场持续时间 / 秒").value).toBe("2");
   fireEvent.click(screen.getByRole("button", { name: "编辑顶部标题" }));
   expect(screen.getByRole("tab", { name: "外观与效果" })).toBeTruthy();
   expect(screen.queryByRole("region", { name: "转场设置" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "编辑镜头转场 2" }));
-  expect(screen.getByLabelText<HTMLInputElement>("转场持续时间 / 秒").value).toBe("2");
+  expect(screen.getByLabelText<HTMLInputElement>("IMS 转场持续时间 / 秒").value).toBe("2");
   expect(screen.getByRole("combobox", { name: "转场 2 效果" })).toBeTruthy();
   fireEvent.click(within(assets).getAllByRole("button", { name: /^应用转场：/ })[2]);
   expect(screen.queryByRole("dialog", { name: "无法添加特效" })).toBeNull();
   expect(screen.getByText("转场 3")).toBeTruthy();
   expect(within(screen.getByRole("region", { name: "已添加特效" })).getAllByRole("button", { name: /编辑镜头转场/ })).toHaveLength(3);
-  expect(screen.getByLabelText<HTMLInputElement>("转场持续时间 / 秒").value).toBe("2");
+  expect(screen.getByLabelText<HTMLInputElement>("IMS 转场持续时间 / 秒").value).toBe("2");
   fireEvent.click(screen.getByRole("radio", { name: "随机选择" }));
   expect(screen.getByRole("radio", { name: "随机选择" }).getAttribute("aria-checked")).toBe("true");
   fireEvent.click(screen.getByRole("combobox", { name: "转场 2 效果" }));
@@ -122,7 +122,7 @@ test("转场时长清空后阻止保存并支持修正", async () => {
   const assets = await screen.findByRole("region", { name: "特效资产" });
   fireEvent.click(within(assets).getByRole("radio", { name: "转场" }));
   fireEvent.click(within(assets).getAllByRole("button", { name: /^应用转场：/ })[0]);
-  const input = screen.getByLabelText<HTMLInputElement>("转场持续时间 / 秒");
+  const input = screen.getByLabelText<HTMLInputElement>("IMS 转场持续时间 / 秒");
   fireEvent.change(input, { target: { value: "" } });
   const error = "转场持续时间为 0.1～3 秒";
   expect(screen.getByText(error)).toBeTruthy();
@@ -134,7 +134,7 @@ test("转场时长清空后阻止保存并支持修正", async () => {
   expect(screen.queryByText(error)).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "编辑顶部标题" }));
   fireEvent.click(screen.getByRole("button", { name: "编辑镜头转场 1" }));
-  expect(screen.getByLabelText<HTMLInputElement>("转场持续时间 / 秒").value).toBe("3");
+  expect(screen.getByLabelText<HTMLInputElement>("IMS 转场持续时间 / 秒").value).toBe("3");
 });
 
 // 场景：往返经过 1280px 时保留未完成输入、焦点及预览节点，空白时间继续阻止保存。

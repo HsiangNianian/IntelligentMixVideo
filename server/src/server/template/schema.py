@@ -352,8 +352,8 @@ class TemplateData(BaseModel):
             raise ValueError("转场列表序号不能重复")
         if self.transition_mode is not None:
             for track in self.tracks:
-                if track.transition_boundary is not None and track.duration != self.transition_duration_seconds:
-                    raise ValueError("全部转场必须使用统一持续时间")
+                if track.target == "transition" and track.duration != self.transition_duration_seconds:
+                    raise ValueError("全部 IMS 转场必须使用统一持续时间")
         texts = [track.text_target for track in self.tracks if track.text_target is not None]
         if len(set(texts)) != len(texts):
             raise ValueError("每个标题或字幕最多一个 Remotion 字效")

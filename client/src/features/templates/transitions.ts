@@ -1,5 +1,6 @@
 /** 转场候选列表、预览选择与统一时长的编辑操作。 */
 import type { Draft } from "./model";
+import type { SpriteAsset } from "@/features/sprites/model";
 
 /** IMS 和 Remotion 转场共同使用一个有序列表。 */
 export function transitionItems(draft: Pick<Draft, "tracks" | "clips">) {
@@ -8,7 +9,7 @@ export function transitionItems(draft: Pick<Draft, "tracks" | "clips">) {
 }
 
 /** 预览生成两个转场实例，单个候选由两处共用；实例映射回候选，随机数由工作区持有。 */
-export function previewTransitions(draft: Draft, random: readonly [number, number]) {
+export function previewTransitions(draft: Draft, random: readonly [number, number], assets: readonly Pick<SpriteAsset, "id" | "seconds">[] = []) {
   const items = transitionItems(draft);
   const targets = new Map<string, string>();
   const tracks = draft.tracks.filter((track) => track.target !== "transition");
@@ -20,9 +21,9 @@ export function previewTransitions(draft: Draft, random: readonly [number, numbe
       const item = single ? items[0] : items.splice(position, 1)[0];
       const id = targets.has(item.id) ? `${item.id}:preview:${index + 1}` : item.id;
       targets.set(id, item.id);
-      const instance = { ...item, id, transition_boundary: index + 1, duration: draft.transition_duration_seconds };
-      if ("editor" in instance) tracks.push(instance);
-      else clips.push(instance);
+      if ("editor" in item) tracks.push({ ...item, id, transition_boundary: index + 1, duration: draft.transition_duration_seconds });
+      else clips.push({ ...item, id, transition_boundary: index + 1,
+        duration: item.duration ?? assets.find((asset) => asset.id === item.sprite_id)?.seconds ?? null });
     }
   }
   return { draft: { ...draft, tracks, clips }, targets };
@@ -45,11 +46,10 @@ export function compactTransitions(draft: Draft): Draft {
   };
 }
 
-/** 统一时长在输入处校验，随后更新全部转场，包含当前没有显示的条目。 */
+/** 统一时长在输入处校验，随后更新全部 IMS 转场，包含当前没有显示的条目。 */
 export function setTransitionDuration(draft: Draft, seconds: number): Draft {
   if (!Number.isFinite(seconds) || seconds < 0.1 || seconds > 3) throw new Error("转场持续时间为 0.1～3 秒");
   return { ...draft, transition_duration_seconds: seconds,
     tracks: draft.tracks.map((track) => track.target === "transition" ? { ...track, duration: seconds } : track),
-    clips: draft.clips.map((clip) => clip.transition_boundary !== undefined ? { ...clip, duration: seconds } : clip),
   };
 }

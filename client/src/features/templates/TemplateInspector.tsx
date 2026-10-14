@@ -19,7 +19,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import type { ResolvedTrack } from "./tracks";
 
-/** 全部转场共同设置时长和选择方式，每个条目独立选择 IMS 或 Remotion 效果。 */
+/** 全部转场共用选择方式，IMS 共用持续时间，每个条目独立选择效果。 */
 export function TransitionInspector({ draft, catalog, sprites, onChoose, onRemove, onDuration, onMode, onEnabled, onSelect }: {
   draft: Draft; catalog: EffectAsset[]; sprites: SpriteAsset[];
   onChoose: (id: string, value: string) => void;
@@ -53,7 +53,7 @@ export function TransitionInspector({ draft, catalog, sprites, onChoose, onRemov
       </ToggleGroup>
     </div>
     <div aria-label="转场时间设置" className="space-y-1.5">
-      <Label htmlFor={id}>转场持续时间 / 秒</Label>
+      <Label htmlFor={id}>IMS 转场持续时间 / 秒</Label>
       <div className="flex items-center gap-3">
         <Slider label="转场持续时间滑块" min={0.1} max={3} step={0.1} value={[draft.transition_duration_seconds]}
           onValueChange={([next]) => { setLength(String(next)); onDuration(next); }} className="flex-1" />

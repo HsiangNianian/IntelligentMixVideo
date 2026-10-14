@@ -700,7 +700,7 @@ export type SaveTemplateRequest = Message<"imv.template.v1.SaveTemplateRequest">
   effectIds: string[];
 
   /**
-   * 全部转场使用的统一持续时间，单位为秒。
+   * 全部 IMS 转场使用的统一持续时间，单位为秒。
    *
    * @generated from field: optional double transition_duration_seconds = 4;
    */
@@ -770,7 +770,7 @@ export type TemplateRecord = Message<"imv.template.v1.TemplateRecord"> & {
   effectIds: string[];
 
   /**
-   * 全部转场使用的统一持续时间，单位为秒。
+   * 全部 IMS 转场使用的统一持续时间，单位为秒。
    *
    * @generated from field: double transition_duration_seconds = 4;
    */

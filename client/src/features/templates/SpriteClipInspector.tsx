@@ -152,7 +152,7 @@ export function SpriteClipInspector({ clip, asset, duration, onParameter, onTran
         <p className="text-[11px] text-muted-foreground">{clip.text_target ? `由这个字效显示${textRoles[clip.text_target]}：文字与关键词取自${textRoles[clip.text_target]}，时间跟随它。` : legacyTextTarget ? `当前与 IMS ${textRoles[legacyTextTarget]}同时显示。重新选择作用对象后，将改为仅显示 Remotion 字效。` : "请选择作用的标题或底部字幕，否则无法保存模板。"}</p>
       </div> : isTransition ? <div className="space-y-2">
         <h3 className="text-xs font-medium">转场 {clip.transition_boundary}</h3>
-        <p className="text-[11px] text-muted-foreground">持续时间与选择方式在「镜头转场」中统一设置。</p>
+        <p className="text-[11px] text-muted-foreground">使用资产自身持续时间，选择方式在「镜头转场」中设置。</p>
       </div> : <ParameterControl field={{ key: "start", label: "开始时间（秒）", kind: "number", minimum: 0, maximum: duration }} value={clip.start} disabled={false}
         onChange={(value) => onStart(value as number)} />}
       <Button type="button" variant="outline" className="w-full gap-1.5" onClick={onRemove}><Trash2 className="size-3.5" aria-hidden="true" />移除这个资产</Button>

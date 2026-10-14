@@ -152,7 +152,7 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
             if placement.get("transition_boundary") is None:
                 expanded.append(placement)
             else:
-                expanded.extend({**placement, "transition_boundary": boundary, "duration": template["transition_duration_seconds"]}
+                expanded.extend({**placement, "transition_boundary": boundary}
                                 for item, boundary in selected if item["id"] == placement["id"])
         placements = expanded
     for placement in placements:

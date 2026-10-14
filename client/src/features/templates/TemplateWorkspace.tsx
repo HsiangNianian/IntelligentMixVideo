@@ -73,7 +73,7 @@ export function TemplateWorkspace({ selection = null, onHome }: {
   const handledSelection = useRef<TemplateSelection | null>(null);
   const spriteCatalog = useSpriteCatalog(environment, (draft?.clips.length ?? 0) > 0);
   const [transitionRandom, setTransitionRandom] = useState<readonly [number, number]>(() => [Math.random(), Math.random()]);
-  const previewSelection = useMemo(() => draft ? previewTransitions(draft, transitionRandom) : null, [draft, transitionRandom]);
+  const previewSelection = useMemo(() => draft ? previewTransitions(draft, transitionRandom, spriteCatalog.assets ?? []) : null, [draft, transitionRandom, spriteCatalog.assets]);
   const previewDraft = previewSelection?.draft;
   const preview = useMemo(() => {
     if (!previewDraft || !media) return { timeline: undefined, error: "" };
@@ -81,7 +81,7 @@ export function TemplateWorkspace({ selection = null, onHome }: {
     catch (reason) { return { timeline: undefined, error: reason instanceof Error ? reason.message : "时间规则无法应用到当前视频" }; }
   }, [previewDraft, media]);
   const previewLength = preview.timeline?.duration ?? 0;
-  // 占用文字或交界处的片段按本次预览计算区间，展示与保存共用，不改变草稿。
+  // 占用文字或交界处的片段按本次预览计算展示区间，不改变草稿。
   const timedDraft = useMemo(() => draft && preview.timeline ? timeClips(draft, preview.timeline) : draft, [draft, preview.timeline]);
   const timedClips = timedDraft?.clips;
   const previewClips = useMemo(() => previewDraft && preview.timeline ? timeClips(previewDraft, preview.timeline).clips : [], [previewDraft, preview.timeline]);
@@ -217,8 +217,9 @@ export function TemplateWorkspace({ selection = null, onHome }: {
     setBusy(true);
     setError("");
     try {
-      // Remotion 片段是模板的 `remotion` 轨道，占用对象的片段带上本次预览的区间，与 IMS 对象在同一次请求里保存，要么都成功要么都不写入。
-      const saved = await api.saveTemplate(setTransitionDuration(timedDraft, draft.transition_duration_seconds), current?.template_id, environment, current?.library);
+      // Remotion 字效保存文字区间，转场保留自身时长，与 IMS 对象在同一次请求里保存。
+      const saveDraft = preview.timeline ? timeClips(draft, preview.timeline, "save") : draft;
+      const saved = await api.saveTemplate(setTransitionDuration(saveDraft, draft.transition_duration_seconds), current?.template_id, environment, current?.library);
       if (!mounted.current) return;
       const next = toDraft(saved);
       setCurrent(saved);

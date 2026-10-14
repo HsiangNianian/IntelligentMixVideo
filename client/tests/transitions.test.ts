@@ -2,13 +2,41 @@
 import { expect, test } from "bun:test";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { SaveTemplateRequestSchema } from "@/generated/imv/template/v1/template_pb";
-import { newDraft } from "@/features/templates/model";
+import { newDraft, toDraft } from "@/features/templates/model";
 import { readCatalog } from "@/features/templates/sdk";
 import { addTrack, previewContext, resolveTemplate, removeTrack } from "@/features/templates/tracks";
 import { previewTransitions, setTransitionDuration, transitionItems } from "@/features/templates/transitions";
 import { buildPreviewRows, playerTimeline } from "@/features/templates/timeline";
 import { hiddenTextClips, timeClips } from "@/features/templates/clips";
-import { sampleMedia, buildTestTimeline } from "./fixtures";
+import { sampleMedia, buildTestTimeline, savedTemplate } from "./fixtures";
+
+test.each(["sequence", "random"] as const)("%s 混合转场只更新 IMS 时长", (mode) => {
+  const ims = readCatalog().find((item) => item.category === "transition/normal")!;
+  const original = addTrack(newDraft(), ims, "transition").draft;
+  original.transition_mode = mode;
+  original.clips = [{ id: "remotion", sprite_id: "sprite", transition_boundary: 2, duration: 2.4, start: 0, parameters: {}, transform: {} }];
+  const changed = setTransitionDuration(original, 0.2);
+  expect(changed.clips).toBe(original.clips);
+  expect(transitionItems(changed).map((item) => item.duration)).toEqual([0.2, 2.4]);
+  const preview = previewTransitions(changed, [0.9, 0]).draft;
+  expect(preview.clips[0].duration).toBe(2.4);
+  const resolved = resolveTemplate(preview, previewContext(sampleMedia));
+  const interval = resolved.transitions[preview.clips[0].transition_boundary! - 1];
+  expect(interval.end - interval.start).toBeCloseTo(2.4);
+  expect(toDraft({ ...savedTemplate(), ...changed }).clips).toEqual(original.clips);
+});
+
+test.each([null, 6])("Remotion 原始时长 %s 在预览计算与保存之间保持独立", (duration) => {
+  const draft = newDraft();
+  draft.clips = [{ id: "remotion", sprite_id: "sprite", transition_boundary: 1, duration, start: 0, parameters: {}, transform: {} }];
+  const preview = previewTransitions(draft, [0, 0], [{ id: "sprite", seconds: 6 }]).draft;
+  expect(preview.clips.map((clip) => clip.duration)).toEqual([6, 6]);
+  const resolved = resolveTemplate(preview, previewContext(sampleMedia));
+  expect(timeClips(preview, resolved).clips.map((clip) => clip.duration)).toEqual([5, 5]);
+  expect(timeClips(draft, resolved, "save").clips[0]).toEqual(draft.clips[0]);
+  const disabled = previewTransitions({ ...draft, transition_enabled: false }, [0, 0]).draft;
+  expect(timeClips(draft, resolveTemplate(disabled, previewContext(sampleMedia)), "save").clips[0]).toEqual(draft.clips[0]);
+});
 
 // 默认三个视频连续排列，增加多个不同效果后只有两个预览位置。
 test("多个候选共享一行转场并保留固定视频顺序", () => {

@@ -11,6 +11,22 @@ from server.template.timing import resolve_track
 from .conftest import SPRITE_ID, remotion_track, template_track
 
 
+@pytest.mark.parametrize("duration", [None, 0.6, 6])
+def test_shared_transition_duration_only_validates_ims(duration):
+    """模板序列化保留 Remotion 自身时长，统一时长仅校验 IMS。"""
+    asset = next(item for item in effect_catalog().values() if item.category == "transition/normal")
+    ims = {**template_track("transition", transition=asset.id), "transition_boundary": 1, "duration": 0.2}
+    clip = remotion_track(transition_boundary=2, duration=duration)
+    payload = {"name": "混合转场", "effect_ids": [asset.id], "tracks": [ims, clip],
+               "transition_mode": "sequence", "transition_duration_seconds": 0.2}
+    saved = TemplateSave.model_validate(payload)
+    restored = TemplateSave.model_validate_json(saved.model_dump_json())
+    assert [track.duration for track in restored.tracks] == [0.2, duration]
+    ims["duration"] = 1
+    with pytest.raises(ValidationError, match="全部 IMS 转场必须使用统一持续时间"):
+        TemplateSave.model_validate(payload)
+
+
 @pytest.mark.parametrize("target", ["title", "subtitle", "vfx"])
 def test_singleton_objects_reject_duplicate_tracks(target):
     """单个对象允许保存，第二个同类对象被拒绝。"""

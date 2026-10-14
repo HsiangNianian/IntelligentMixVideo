@@ -13,6 +13,13 @@ import { catalog, sampleDraft, sampleMedia } from "./fixtures";
 // 滤镜不占用模板对象，可以重复添加；占用对象的分类在下方单独覆盖。
 const asset: SpriteAsset = { id: "sprite-1", name: "暖色滤镜", kind: SpriteKind.FILTER_OVERLAY, seconds: 3, aspect: 9 / 16, width: 1080, height: 1920, fps: 30, box: { x: 0, y: 0, width: 1080, height: 1920 }, parameters: [] };
 
+test("新增 Remotion 转场沿用资产时长", () => {
+  const draft = { ...sampleDraft(), transition_duration_seconds: 0.2 };
+  const transition = { ...asset, kind: SpriteKind.TRANSITION_OVERLAY, seconds: 4 };
+  const added = addClip(draft, transition, []);
+  expect(added.clips[0]).toMatchObject({ transition_boundary: 1, duration: 4 });
+});
+
 // 场景：添加的片段从 0 秒开始、长度为资产自身时长；同一资产可以重复添加，每次是独立摆放；输入草稿和 IMS 对象引用都不变。
 test("添加片段不改动输入，同一资产可重复添加", () => {
   const draft = sampleDraft();

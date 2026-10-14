@@ -193,21 +193,23 @@ def test_upstream_visual_slots_render_without_business_target(composition_case, 
 
 
 @pytest.mark.parametrize("mode", ["sequence", "random"])
-def test_transition_list_uses_the_same_selection_for_remotion(composition_case, mode):
-    """混合列表只在选中 Remotion 的连接处生成实例，统一时长与任务选择保持一致。"""
+@pytest.mark.parametrize("duration", [0.6, None])
+def test_transition_list_uses_the_same_selection_for_remotion(composition_case, mode, duration):
+    """混合列表只在选中 Remotion 的连接处生成实例，并保留自身时长。"""
     from server.template.transitions import select_transitions
 
     data = case(composition_case, None)
     sprite = asset()
     sprite.kind = pb.SPRITE_KIND_TRANSITION_OVERLAY
+    sprite.canvas.preview_frames = 18
     sprite.config_schema_json = '{"type":"object","properties":{}}'
     sprite.default_config_json = '{}'
     data["remotion"]["assets"] = {sprite.sprite_id: MessageToDict(sprite, preserving_proto_field_name=True)}
     placement = data["remotion"]["placements"][0]
-    placement.update(sprite_id=sprite.sprite_id, transition_boundary=2, duration=0.6)
+    placement.update(sprite_id=sprite.sprite_id, transition_boundary=2, duration=duration)
     candidates = [{"id": "ims", "target": "transition", "transition_boundary": 1},
                   {"id": placement["id"], "target": "remotion", "transition_boundary": 2}]
-    data["template"] = {"transition_mode": mode, "transition_duration_seconds": 0.6, "tracks": candidates}
+    data["template"] = {"transition_mode": mode, "transition_duration_seconds": 0.2, "tracks": candidates}
     clips = [{"TimelineIn": index * 1.6, "TimelineOut": (index + 1) * 1.6} for index in range(5)]
     timeline = {"VideoTracks": [{"VideoTrackClips": clips}]}
     original = deepcopy(data)

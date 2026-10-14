@@ -218,7 +218,7 @@ export function toDraft(template: Template): Draft {
     transition_mode: template.transition_mode ?? "sequence",
     transition_enabled: template.transition_enabled ?? true,
     tracks: structuredClone(template.tracks).map((track) => track.target === "transition" ? { ...track, duration: template.transition_duration_seconds } : track),
-    clips: structuredClone(template.clips ?? []).map((clip) => clip.transition_boundary !== undefined ? { ...clip, duration: template.transition_duration_seconds } : clip),
+    clips: structuredClone(template.clips ?? []),
   };
 }
 
