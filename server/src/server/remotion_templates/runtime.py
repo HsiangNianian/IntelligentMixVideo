@@ -1,29 +1,52 @@
-"""Single-process durable job queue; cancellation and failure never replace an accepted version."""
+"""Single-instance durable job queue; cancellation and failure never replace an accepted version.
+
+The queue lives in MySQL. One backend instance owns it: startup interrupts what a previous process left running and
+finishes interrupted deletions, and an hourly sweep drops undelivered events, old audit logs, unused uploads and
+the works of devices that have been inactive for the retention period.
+"""
 
 import asyncio
 import json
 import logging
-import sqlite3
+import shutil
 from contextlib import suppress
+from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import UUID, uuid4
 
 from .deletion import finish as finish_deletion
 from .settings import ClientSettings, Settings
-from ..file_lock import lock_exclusive
 from .harness import Harness
-from .overlay_service import OverlayRenders
-from .models import DialogueOutput, EditTemplateRequest, JobError, JobInput, TaskMessage
+from .overlay_service import FINISHED_RETENTION, OverlayRenders, prune_finished
+from .models import DialogueOutput, EditTemplateRequest, JobError, JobInput, MessageImage, TaskMessage
 from .parameters import parameter_changes
 from .provider import Budget, ExecutionFailure, ModelFailure, Provider
 from .publication import revisable
-from .store import Conflict, Store
+from .store import LEASE_RENEW, Conflict, Store, now
 from .tool_validation import ToolValidator, ValidationUnavailable
 from .tools.contracts import CodeValidationReport, ComponentDefinition
 
 
 logger = logging.getLogger("uvicorn.error")
+
+# Host-written meaning of each reference image source, so an image without text still says what it is for.
+REFERENCE_MEANINGS = {
+    "work_original": "Attached to the request that created this work; it describes the original goal.",
+    "message": "Attached by the user to the current instruction as a reference for this change.",
+    "clarification_answer": "Attached by the user as their answer (or part of it) to clarifications[clarification].",
+}
+
+
+def reference_images(project, inputs: JobInput) -> list[dict]:
+    """Describe every reference image in the order the model receives them, each with its source."""
+    entries = [
+        {"asset_id": str(image.asset_id), "source": "work_original"} for image in project.request.images
+    ]
+    entries += [
+        image.model_dump(mode="json", exclude_none=True) for image in inputs.images
+    ]
+    return [{**entry, "meaning": REFERENCE_MEANINGS[entry["source"]]} for entry in entries]
 
 
 class Runtime:
@@ -39,7 +62,10 @@ class Runtime:
         self.deletions: dict[UUID, asyncio.Task] = {}
         # Instant parameter revisions in flight, by job; they never enter the FIFO queue.
         self.saves: dict[UUID, asyncio.Task] = {}
-        self.lock = None
+        self.maintenance: asyncio.Task | None = None
+        self.heartbeat: asyncio.Task | None = None
+        # Set once another instance took the queue lease over; this instance then claims and sweeps nothing.
+        self.fenced = False
         self.client_configs: dict[UUID, Settings] = {}
         self.diagnostics_lock = asyncio.Lock()
         self._overlays: OverlayRenders | None = None
@@ -56,24 +82,94 @@ class Runtime:
         return self.harness.renderer.sandbox_problem()
 
     def initialize(self) -> None:
-        """Lock the state directory before recovery so a second server cannot interrupt live jobs."""
+        """Create the tables, then recover: interrupt jobs a previous process left running and finish deletions."""
         self.store.root.mkdir(parents=True, exist_ok=True)
-        self.lock = (self.store.root / "runtime.lock").open("a")
-        try:
-            lock_exclusive(self.lock)
-            self.store.initialize()
-            self.store.interrupt_unfinished()
-            for work_id in self.store.pending_deletions():
-                try:
-                    finish_deletion(self.store, work_id)
-                except (OSError, sqlite3.Error):
-                    logging.getLogger(__name__).exception(
-                        "Work deletion recovery failed: %s", work_id
-                    )
-        except BaseException:
-            self.lock.close()
-            self.lock = None
-            raise
+        self.store.initialize()
+        self.store.acquire_lease()
+        self.store.interrupt_unfinished()
+        for work_id in self.store.pending_deletions():
+            try:
+                finish_deletion(self.store, work_id)
+            except Exception:
+                logging.getLogger(__name__).exception("Work deletion recovery failed: %s", work_id)
+
+    def start_maintenance(self) -> None:
+        """Start the lease renewal and the hourly retention sweep once; they live as long as the event loop."""
+        if self.maintenance is None or self.maintenance.done():
+            self.maintenance = asyncio.create_task(self._maintain())
+        if self.heartbeat is None or self.heartbeat.done():
+            self.heartbeat = asyncio.create_task(self._renew())
+
+    async def _renew(self) -> None:
+        """Renew the queue lease; a failed renewal is retried, a lost lease fences this instance for good."""
+        while not self.fenced:
+            await asyncio.sleep(LEASE_RENEW)
+            try:
+                if not await asyncio.to_thread(self.store.renew_lease):
+                    self.fenced = True
+                    logger.error("Another backend instance took over the Remotion queue; this one stops claiming jobs")
+            except Exception:
+                logger.exception("Remotion queue lease renewal failed")
+
+    async def close(self) -> None:
+        """Stop the background tasks and release the queue lease; called when the application shuts down."""
+        for task in (self.maintenance, self.heartbeat):
+            if task is not None:
+                task.cancel()
+        self.fenced = True
+        with suppress(Exception):
+            await asyncio.to_thread(self.store.release_lease)
+
+    async def _maintain(self) -> None:
+        """Run the retention sweep now and then every hour; one failed sweep is logged and retried later."""
+        while True:
+            try:
+                if not self.fenced:
+                    await self.sweep()
+            except Exception:
+                logger.exception("Remotion retention sweep failed")
+            await asyncio.sleep(3600)
+
+    async def sweep(self) -> None:
+        """Apply the retention periods: undelivered events, private audit logs, inactive devices, unused uploads,
+        finished overlay render tasks and idle read-cache files.
+
+        An upload no work references (its message was rejected or never sent) is reclaimed after 24 hours. Every
+        pending deletion is (re)tried: the works of expired devices, and user deletions whose cleanup failed and that
+        nobody retried. Each step and each work is isolated, so one storage failure postpones only itself.
+        """
+        stamp = now()
+        steps = (
+            ("unused uploads", self.store.prune_assets),
+            ("undelivered events", lambda: self.store.expire_events(stamp - timedelta(days=self.settings.undelivered_event_days))),
+            ("audit logs", lambda: self._expire_audit(stamp - timedelta(days=self.settings.audit_retention_days))),
+            ("inactive devices", lambda: self.store.expire_devices(stamp - timedelta(days=self.settings.device_retention_days))),
+            ("finished overlay renders", lambda: prune_finished(self.store, stamp - FINISHED_RETENTION)),
+            ("idle read cache", self.store.prune_cache),
+        )
+        for name, step in steps:
+            try:
+                await asyncio.to_thread(step)
+            except Exception:
+                logger.exception("Remotion retention sweep step failed: %s", name)
+        for work_id in await asyncio.to_thread(self.store.pending_deletions):
+            try:
+                await self.delete_work(work_id)
+            except Exception:
+                logger.exception("Work deletion is still incomplete: %s", work_id)
+
+    def _expire_audit(self, before) -> None:
+        """Remove private audit logs last written before the cutoff, then the work folders they leave empty."""
+        cutoff = before.timestamp()
+        audit = self.store.root / "audit"
+        for folder in (audit.iterdir() if audit.is_dir() else ()):
+            if not folder.is_dir() or folder.is_symlink():
+                continue
+            for path in folder.iterdir():
+                if path.is_file() and path.stat().st_mtime < cutoff:
+                    path.unlink(missing_ok=True)
+            with suppress(OSError):
+                folder.rmdir()
 
     def notify(self, job_id: UUID | None = None, config: ClientSettings | None = None) -> None:
         """Create a drain task only when work exists; no idle loop or application lifecycle hook."""
@@ -95,14 +191,24 @@ class Runtime:
             raise Conflict("base version belongs to another work")
         if request.parameters is not None:
             patch_parameters(base.candidate, base.spec, request.parameters)
+        images = [image.asset_id for image in request.images]
         inputs = JobInput(
             mode="parameters" if request.parameters is not None else "edit",
             instruction=request.instruction,
             parameters=request.parameters,
+            images=[MessageImage(asset_id=image) for image in images],
         )
-        return self._start(project_id, inputs, base, config)
+        return self._start(project_id, inputs, base, config, message_images=images)
 
-    def _start(self, project_id: UUID, inputs: JobInput, base, config: ClientSettings | None, message_text: str | None = None):
+    def _start(
+        self,
+        project_id: UUID,
+        inputs: JobInput,
+        base,
+        config: ClientSettings | None,
+        message_text: str | None = None,
+        message_images: list[UUID] | None = None,
+    ):
         """Queue a job for the worker, or save a PR76 parameter revision at once outside the FIFO queue.
 
         A parameter revision of a PR76 version whose player bundle reads injected defaults only re-checks the schema
@@ -116,19 +222,30 @@ class Runtime:
             self.saves[job.id] = task
             task.add_done_callback(lambda _done: self.saves.pop(job.id, None))
             return job
-        job = self.store.enqueue(project_id, inputs, base.id if base else None, message_text=message_text)
+        job = self.store.enqueue(
+            project_id, inputs, base.id if base else None,
+            message_text=message_text, message_images=message_images,
+        )
         self.notify(job.id, config)
         return job
 
     def instant(self, base) -> bool:
-        """Whether a parameter patch on this accepted version is saved at once instead of rendered in the sandbox."""
-        return base.spec.schema_version == "2" and revisable(self.store.root / "accepted" / str(base.id))
+        """Whether a parameter patch on this accepted version is saved at once instead of rendered in the sandbox.
+
+        Only the player bundle decides, so only that file is read (downloaded once into the verified cache).
+        """
+        if base.spec.schema_version != "2":
+            return False
+        try:
+            return revisable(self.store.version_file(base, "interactive.js").parent)
+        except (OSError, ValueError):
+            return False
 
     async def _save_parameters(self, job_id: UUID, base, patch: dict) -> None:
         """Seal the revision off the event loop and publish it; failures are recorded on the job, never raised."""
         try:
             directory = self.store.job_dir(job_id) / f"parameters-{uuid4().hex}"
-            accepted = self.store.root / "accepted" / str(base.id)
+            accepted = await asyncio.to_thread(self.store.accepted, base)
             result = await asyncio.to_thread(self.harness.presentation.revise, base, accepted, patch, directory)
             await asyncio.to_thread(self.store.publish, job_id, *result)
         except Exception as exc:
@@ -136,27 +253,35 @@ class Runtime:
             self.store.update(job_id, status="failed", stage="finished", error=JobError(
                 code="execution_failed", message=str(exc)[:1000] or "Parameter revision failed.",
             ))
+        finally:
+            shutil.rmtree(self.store.job_dir(job_id), ignore_errors=True)
 
     def message(self, project_id: UUID, request: TaskMessage, config: ClientSettings | None = None):
         """Route conversation input to generation, accepted-base edits, or outstanding questions."""
         latest = self.store.latest_job(project_id)
+        images = [image.asset_id for image in request.images]
         if request.reply_to_job_id:
             if latest.id != request.reply_to_job_id or latest.status != "needs_input":
                 raise Conflict("Question reply is stale or belongs to another task.")
-            return self.retry(latest.id, request.instruction, config)
+            return self.retry(latest.id, request.instruction or "", config, images=images)
         if latest.status == "needs_input":
             raise Conflict("Answer the outstanding questions using reply_to_job_id.")
         project = self.store.project(project_id)
         if (
             project.current_version_id is None
             and request.base_version_id is None
-            and request.instruction is not None
+            and request.parameters is None
         ):
             # A conversation can start with questions before its first accepted template exists.
             job = self.store.enqueue(
                 project_id,
-                JobInput(mode="generate", instruction=request.instruction),
+                JobInput(
+                    mode="generate",
+                    instruction=request.instruction,
+                    images=[MessageImage(asset_id=image) for image in images],
+                ),
                 None,
+                message_images=images,
             )
             self.notify(job.id, config)
             return job
@@ -168,8 +293,19 @@ class Runtime:
             config,
         )
 
-    def retry(self, job_id: UUID, answer: str | None = None, config: ClientSettings | None = None):
-        """Retry or clarification creates a new identity, never mutating historical execution state."""
+    def retry(
+        self,
+        job_id: UUID,
+        answer: str | None = None,
+        config: ClientSettings | None = None,
+        *,
+        images: list[UUID] | None = None,
+    ):
+        """Retry or clarification creates a new identity, never mutating historical execution state.
+
+        An answer keeps the task's earlier reference images and may attach more, bound to this answer both
+        in the image record and in the clarification entry, so an image-only answer still says what it answers.
+        """
         job = self.store.job(job_id)
         allowed = (
             {"needs_input"}
@@ -182,15 +318,19 @@ class Runtime:
             raise Conflict("Only the latest task execution may be retried or answered.")
         inputs = self.store.inputs(job_id)
         if answer is not None:
-            inputs.clarifications += [
-                json.dumps(
-                    {"questions": job.questions, "answer": answer}, ensure_ascii=False
-                )
-            ]
+            clarification = {"questions": job.questions, "answer": answer}
+            if images:
+                clarification["answer_images"] = [str(image) for image in images]
+                inputs.images += [
+                    MessageImage(asset_id=image, source="clarification_answer", clarification=len(inputs.clarifications))
+                    for image in images
+                ]
+            inputs.clarifications += [json.dumps(clarification, ensure_ascii=False)]
         base = self.store.version(job.base_version_id) if job.base_version_id else None
         return self._start(
             job.project_id, inputs, base, config,
             message_text=answer if answer is not None else "重试本次制作。",
+            message_images=images,
         )
 
     async def code_report(
@@ -258,7 +398,7 @@ class Runtime:
 
     async def _work(self) -> None:
         """Drain FIFO jobs without polling or allowing a failed run to stop subsequent work."""
-        while True:
+        while not self.fenced:
             job = self.store.claim()
             if job is None:
                 return
@@ -278,22 +418,23 @@ class Runtime:
         """Resolve intent, run a bounded harness and atomically publish only accepted evidence."""
         settings = self.client_configs.pop(job_id, self.settings)
         harness = self.harness if settings is self.settings else Harness(Provider(settings), self.harness.renderer)
+        job = self.store.job(job_id)
         budget = Budget(
-            audit_path=self.store.job_dir(job_id) / "audit.jsonl",
+            audit_path=self.store.audit_path(job.project_id, job_id),
             on_progress=lambda phase: self.store.progress(job_id, phase),
             on_round=lambda record: self.store.round(job_id, record),
         )
-        job = self.store.job(job_id)
         context = self.store.conversation(job.project_id)
         try:
             async with asyncio.timeout(settings.job_timeout_seconds):
                 job = self.store.job(job_id)
                 project = self.store.project(job.project_id)
                 inputs = self.store.inputs(job_id)
-                images = (
-                    [self.store.asset_path(project.request.image.asset_id)]
-                    if project.request.image
-                    else []
+                # The work's original image first, then images attached to the messages this task answers.
+                references = reference_images(project, inputs)
+                # Reference images may have to be downloaded from the object store; keep that off the event loop.
+                images = await asyncio.to_thread(
+                    lambda: [self.store.asset_path(UUID(entry["asset_id"])) for entry in references]
                 )
                 base = (
                     self.store.version(job.base_version_id)
@@ -310,7 +451,7 @@ class Runtime:
                     # Source stays out of the persisted Outer window; the tool session shows the base's
                     # Presets to the layer that edits code.
                     "accepted_base": base.spec.model_dump(mode="json", exclude_unset=True, exclude={"sprite"}) if base else None,
-                    "reference_images": [{"asset_id": str(project.request.image.asset_id)}] if project.request.image else [],
+                    "reference_images": references,
                 }
                 if patch is None and base and base.source == "user_parameters":
                     baseline = self.store.version(base.agent_base_version_id)
@@ -367,7 +508,7 @@ class Runtime:
                 candidate, spec, report, attempt_dir = result
                 self.store.update(job_id, usage=budget.summary())
                 budget.progress("preparing")
-                self.store.publish(job_id, candidate, spec, report, attempt_dir)
+                await asyncio.to_thread(self.store.publish, job_id, candidate, spec, report, attempt_dir)
         except asyncio.CancelledError:
             self.store.update(
                 job_id, status="interrupted", stage="finished", usage=budget.summary()
@@ -382,10 +523,10 @@ class Runtime:
                 else "execution_failed"
             )
             logger.exception(
-                "Remotion job %s failed code=%s data_dir=%s: %s",
+                "Remotion job %s failed code=%s audit=%s: %s",
                 job_id,
                 code,
-                self.store.job_dir(job_id),
+                budget.audit_path,
                 str(exc)[:4000] or repr(exc),
             )
             self.store.update(
@@ -401,9 +542,9 @@ class Runtime:
         except Exception:
             # Keep the public job sanitized while retaining the traceback in the FastAPI error log.
             logger.exception(
-                "Remotion job %s failed with an unexpected exception data_dir=%s",
+                "Remotion job %s failed with an unexpected exception audit=%s",
                 job_id,
-                self.store.job_dir(job_id),
+                budget.audit_path,
             )
             self.store.update(
                 job_id,
@@ -416,6 +557,8 @@ class Runtime:
                 ),
             )
         finally:
+            # Candidates and renders are scratch; the audit log lives outside the job folder until it expires.
+            shutil.rmtree(self.store.job_dir(job_id), ignore_errors=True)
             self.store.save_conversation(job.project_id, context)
             final = self.store.job(job_id)
             budget.record(

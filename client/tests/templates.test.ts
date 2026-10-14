@@ -62,9 +62,9 @@ test("动画和转场转换为正确的 SDK 配置", () => {
     0, 10, 0, 10,
   ]);
   expect([second.In, second.Out, second.TimelineIn, second.TimelineOut]).toEqual([
-    0, 10, 8, 18,
+    0, 10, 10, 20,
   ]);
-  expect(first.Effects).toContainEqual({ Type: "Transition", Duration: 2, SubType: "directional" });
+  expect(timeline.transitions[0]).toMatchObject({ start: 9, end: 11, effect: { Type: "Transition", Duration: 2, SubType: "directional" } });
   expect(timeline.SubtitleTracks[0].SubtitleTrackClips[0]).toMatchObject({
     AaiMotionInEffect: "fade_in", AaiMotionIn: 1, X: 0.9999,
   });

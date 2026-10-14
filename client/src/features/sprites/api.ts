@@ -1,10 +1,13 @@
-/** Sprite 资产 HTTP 边界：发布与目录使用 Protobuf 二进制；写入失败不自动重试。片段随云端模板保存，不在这里。 */
+/** Sprite 资产 HTTP 边界：发布、重命名与目录使用 Protobuf 二进制，删除无请求体；写入失败不自动重试。片段随云端模板保存，不在这里。 */
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { apiBase } from "@/lib/api-base";
+import { deviceId } from "@/features/remotion_templates/localSessions";
 import {
   ListSpritesResponseSchema,
   PublishSpriteRequestSchema,
   PublishSpriteResponseSchema,
+  RenameSpriteRequestSchema,
+  RenameSpriteResponseSchema,
   type SpriteKind,
   type SpriteSummary,
 } from "@/generated/imv/sprite/v1/sprite_pb";
@@ -22,7 +25,7 @@ export interface PublishChoice {
 const PUBLISH_TIMEOUT_MS = 180_000;
 
 /** 有界请求：调用方取消优先，超时给出可重试提示；HTTP 错误展示服务端 detail。 */
-async function request(path: string, method: "GET" | "POST", signal?: AbortSignal, body?: Uint8Array, timeoutMs = 20_000): Promise<Uint8Array> {
+async function request(path: string, method: "GET" | "POST" | "DELETE", signal?: AbortSignal, body?: Uint8Array, timeoutMs = 20_000, device?: string): Promise<Uint8Array> {
   const controller = new AbortController();
   let timedOut = false;
   const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
@@ -32,7 +35,11 @@ async function request(path: string, method: "GET" | "POST", signal?: AbortSigna
   try {
     const response = await fetch(`${apiBase()}${path}`, {
       method,
-      headers: { Accept: "application/x-protobuf", ...(body ? { "Content-Type": "application/x-protobuf" } : {}) },
+      headers: {
+        Accept: "application/x-protobuf",
+        ...(body ? { "Content-Type": "application/x-protobuf" } : {}),
+        ...(device ? { "X-IMV-Device": device } : {}),
+      },
       body: body ? Uint8Array.from(body) : undefined,
       signal: controller.signal,
     });
@@ -75,10 +82,24 @@ export async function listSprites(signal?: AbortSignal): Promise<SpriteAsset[]> 
   return fromBinary(ListSpritesResponseSchema, await request("/api/sprites", "GET", signal)).sprites.map(toAsset);
 }
 
-/** 把成功版本保存为资产（服务端先渲染参数边界样本）；相同选择重复调用返回原资产。 */
+/** 把本机会话的成功版本保存为资产（服务端先渲染参数边界样本）；相同选择重复调用返回原资产。 */
 export async function publishSprite(versionId: string, choice: PublishChoice): Promise<SpriteAsset> {
   const body = toBinary(PublishSpriteRequestSchema, create(PublishSpriteRequestSchema, { sourceVersionId: versionId, ...choice }));
-  const { sprite } = fromBinary(PublishSpriteResponseSchema, await request("/api/sprites/publish", "POST", undefined, body, PUBLISH_TIMEOUT_MS));
+  const device = await deviceId();
+  const { sprite } = fromBinary(PublishSpriteResponseSchema, await request("/api/sprites/publish", "POST", undefined, body, PUBLISH_TIMEOUT_MS, device));
   if (!sprite) throw new Error("发布响应缺少内容");
+  return toAsset(sprite);
+}
+
+/** 删除未被任何云端模板使用的资产；被使用时服务端说明涉及的模板，删除失败不自动重试。 */
+export async function deleteSprite(id: string): Promise<void> {
+  await request(`/api/sprites/${encodeURIComponent(id)}`, "DELETE");
+}
+
+/** 修改资产在目录里显示的名称；服务端去除首尾空白并限制 1～100 个字符，不要求唯一。被模板使用的资产也可以改名，失败不自动重试。 */
+export async function renameSprite(id: string, name: string): Promise<SpriteAsset> {
+  const body = toBinary(RenameSpriteRequestSchema, create(RenameSpriteRequestSchema, { name }));
+  const { sprite } = fromBinary(RenameSpriteResponseSchema, await request(`/api/sprites/${encodeURIComponent(id)}/rename`, "POST", undefined, body));
+  if (!sprite) throw new Error("重命名响应缺少内容");
   return toAsset(sprite);
 }

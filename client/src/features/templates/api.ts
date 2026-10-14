@@ -33,11 +33,15 @@ function toTemplate(record: TemplateRecord): Template {
   if (!record.tracks || !record.createdAt || !record.updatedAt)
     throw new Error("模板响应缺少必要字段");
   const wireTracks = record.tracks.tracks;
+  if (record.transitionMode !== undefined && !["sequence", "random"].includes(record.transitionMode))
+    throw new Error("转场设置方式无效");
   return {
     name: record.name,
     description: record.description,
     effect_ids: record.effectIds,
     transition_duration_seconds: record.transitionDurationSeconds,
+    transition_mode: record.transitionMode as Draft["transition_mode"],
+    transition_enabled: record.transitionEnabled ?? true,
     template_id: record.templateId,
     created_at: timestampDate(record.createdAt).toISOString(),
     updated_at: timestampDate(record.updatedAt).toISOString(),
@@ -217,6 +221,8 @@ export async function saveTemplate(draft: Draft, id?: string, environment: Envir
     description: draft.description.trim(),
     effectIds: effect_ids,
     transitionDurationSeconds: draft.transition_duration_seconds,
+    transitionMode: draft.transition_mode ?? "sequence",
+    transitionEnabled: draft.transition_enabled ?? true,
     tracks: {
       tracks: [
         ...draft.tracks.map((track) => ({

@@ -1,9 +1,9 @@
-"""Validate and normalize uploaded still images before storage or model access."""
+"""Validate and normalize uploaded still images, then store them in the object store for the uploading device."""
 
 import hashlib
 import warnings
 from io import BytesIO
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
@@ -12,7 +12,7 @@ from .models import Asset
 from .store import Store, now
 
 
-def save_image(content: bytes, store: Store, settings: Settings) -> Asset:
+def save_image(content: bytes, store: Store, settings: Settings, device: UUID) -> Asset:
     """Reject videos/animations and decompression bombs; strip metadata through PNG encoding."""
     if not content or len(content) > settings.max_upload_bytes:
         raise ValueError("image is empty or exceeds the upload size limit")
@@ -48,13 +48,12 @@ def save_image(content: bytes, store: Store, settings: Settings) -> Asset:
         sha256=hashlib.sha256(payload).hexdigest(),
         created_at=now(),
     )
-    directory = store.root / "assets"
+    directory = store.root / "uploads"
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{asset.id}.png"
-    path.write_bytes(payload)
     try:
-        store.save_asset(asset)
-    except BaseException:
+        path.write_bytes(payload)
+        store.save_asset(asset, path, device)
+    finally:
         path.unlink(missing_ok=True)
-        raise
     return asset

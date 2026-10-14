@@ -29,10 +29,10 @@ uv run --locked server
 
 默认监听 `0.0.0.0:20070`（所有 IPv4 接口），本机交互文档为 `http://127.0.0.1:20070/docs`。
 远程访问使用 `http://<服务器 IP 或域名>:20070`，服务器防火墙或云安全组需允许对应端口；客户端 `VITE_API_URL` 配置为实际服务地址。
-仓库根目录可执行 `uv run --locked --project server server`。首次模板请求自动创建缺失的 `templates` 表，不执行旧数据迁移；Remotion 已发布 Sprite 的 `remotion_sprites` 表在首次访问资产目录、发布，或保存含 Remotion 片段的模板时创建。
+仓库根目录可执行 `uv run --locked --project server server`。首次模板请求自动创建缺失的 `templates` 表，不执行旧数据迁移；Remotion 已发布 Sprite 的 `remotion_sprites` 表在首次访问资产目录、发布，或保存含 Remotion 片段的模板时创建；字效工作区的其余 `remotion_*` 表（作品、任务、版本、事件、设备、叠加渲染任务、Presets 等）在第一个 Remotion 请求时创建，要求 MySQL 8.0 及以上，且只部署一个后端实例。
 应用启动后数据库暂时不可用时，模板接口返回 503，恢复后可重试；首页和用户示例接口本身不查询数据库。
 
-`uv run server` 与 `uv run python -m server` 均读取固定的 `server/.env` 中的 `PORT`，进程环境变量优先。未设置时默认 `20070`；端口须为 1～65535 的整数，空值、非整数或越界值会阻止启动。修改后重启服务。
+`uv run server` 与 `uv run python -m server` 均读取固定的 `server/.env` 中的 `PORT`，进程环境变量优先。未设置时默认 `20070`；端口须为 1～65535 的整数，空值、非整数或越界值会阻止启动。修改后重启服务。停止服务时最多等待 10 秒收尾，仍未结束的连接（如作品 SSE）随后被断开，旧进程退出后不再运行字效任务队列与清理，新进程可直接接管。
 客户端 API 地址同样默认 `http://localhost:20070`；若 `client/.env` 已配置其他 `VITE_API_URL`，需同步修改并重启前端（生产环境重新构建）。
 
 ```sh
@@ -63,7 +63,7 @@ GET 成功响应与 POST 请求、成功响应均使用 `application/x-protobuf`
 
 顶部标题对象的 `titleKeywordBold`、`titleKeywordItalic`、`titleKeywordUnderline`、`titleKeywordStrikeout` 可组合使用，`titleKeywordColor` 设置局部颜色，`titleKeywordSize` 设置局部字号；合成调用切片时传入请求 `title`，标题局部样式仅作用于返回的 `title_keyword` 首次出现的位置；返回值缺失或为空时保留标题原文，不回退模板 `titleKeyword` 或标题前两个字。旧快照缺少标题词时不高亮；无声模式通过仅标题提词取得关键词；模板预览仍沿用原规则。底部字幕对象独立保存 `subtitleKeywordBold`、`subtitleKeywordItalic`、`subtitleKeywordUnderline`、`subtitleKeywordStrikeout`、`subtitleKeywordColor` 和 `subtitleKeywordSize`，作用于原切片中首次包含 `keyword` 的字幕短句，空关键词保留原文。颜色为空字符串或 `#RRGGBB`，空字符串表示保持文字原色；合成时转换为 IMS 要求的 BGR 顺序。局部字号为 0（沿用原字号）或 12～300 的整数，合成时使用 IMS `\fs` 指令设置并恢复。模板响应在对应对象的 `tracks[].editor` 返回这些值。 视频合成按气泡对象自身时间区间显示其 `bubbleText` 示例文字一次，不使用切片关键词；有气泡对象但未选气泡样式时仍显示文字，无气泡对象则不生成。关键词继续通过标题和字幕的局部样式强调。
 
-独立对象通过 `tracks` 保存，普通对象包含 `id`、`target`、`start_mode`、`start`、`duration` 和 `editor`。标题、字幕、VFX 最多各一个，滤镜可多个；字幕固定 `seconds`、0、null，覆盖整个视频。其他普通对象的 `start_mode` 支持 `seconds` 和 `percent`，百分比小于 100，`duration` 为正秒数或 `null`（持续到视频结束）。转场必须指定 `transition_boundary: 1 | 2` 和持续时间，禁止 `start`、`start_mode`，每个交界处最多一个。模板不保存预览视频信息。`resolve_template` 根据模板规则和 `TimelineContext` 计算完整时间结果：`sequence` 按帧累计扣除重叠；`fixed` 保留实际素材起止和目标总长，供正式合成使用。转场最多使用相邻片段各自长度的一半；不足 0.1 秒或缺少交界处时跳过并返回原因。普通对象按输出帧率计算区间：结尾以外不显示、结束越界时截短，动画按有效帧数缩短，帧数不足时明确失败。标题使用请求文字及模板时间，字幕按文案切片显示，音频总长保持不变。
+独立对象通过 `tracks` 保存，普通对象包含 `id`、`target`、`start_mode`、`start`、`duration` 和 `editor`。标题、字幕、VFX 最多各一个，滤镜可多个；字幕固定 `seconds`、0、null。其他普通对象支持 `seconds`、`percent` 起点，百分比小于 100，`duration` 为正秒数或 `null`（持续到结束）。转场使用唯一的 `transition_boundary` 列表序号（1～100），IMS 转场禁止设置 `start`、`start_mode`。IMS 与 Remotion 共用列表和统一时长 `transition_duration_seconds`。`transition_enabled` 为布尔值，默认 true；false 时保留候选，IMS 与 Remotion 成片均不应用转场。`transition_mode=sequence` 在所有素材连接处按列表循环，`random` 按任务 ID 与连接位置从尚未选中的候选中选择，每项最多一次，候选用完后其余连接位置不应用转场，重试结果一致；每个连接处只选一个效果。编辑预览开启转场且存在候选时应用于两个连接位置，只有一个候选时两处共用，有多个候选时随机选择不重复。未携带 `transition_mode` 的已有模板保持指定连接位置的行为，编辑保存后使用列表规则。转场时长最多为相邻素材各自长度的一半，短于 0.1 秒时跳过。模板不保存预览视频信息。`resolve_template` 的 `sequence` 模式累计扣除重叠，`fixed` 保留素材时间和音频总长。普通对象超出结束时截短，动画按有效帧数缩短，帧数不足时失败。标题使用请求文字，字幕按文案切片显示。
 创建和更新在写入前强制检查标题、底部字幕各一个，缺少任意一个返回 422，已有记录保持不变。同一文字角色的循环动画与入场、出场互斥。模板允许空效果列表，最多 500 个不同效果 ID。
 
 Remotion 片段也保存在 `tracks` 里：`target` 为 `remotion`，`sprite_id` 引用已发布的 Sprite；`id` 仍是模板内唯一的摆放 ID，所以同一个 Sprite 可以摆放多次。
@@ -90,7 +90,7 @@ standard 模式中，请求不包含 `materials` 时为纯数字人：跳过素�
 
 `SEGMENT_MATCH_BASE_URL` 在环境变量、`.env` 或 Debug 桌面设置中留空或仅含空白，均视为未配置。只有 standard 显式传入 `materials` 时必须提供有效匹配地址，否则受理返回 503；纯数字人和两个纯素材模式不要求该配置。非空非法地址仍拒绝加载。
 
-`POST /api/v1/video-compositions` 创建任务，HTTP 200 响应为 `{"code":200,"message":"操作成功","data":"任务ID"}`；`GET /api/v1/video-compositions/{taskId}` 查询结果，查询结构保持不变。终态回调仅含 `taskId/status/videoUrl/errorMessage`：成功为 `succeed`、视频直链、null 错误；失败为 `failed`、null 地址、错误摘要。回调 ID 与创建响应的 `data` 一致，内部和查询的成功状态仍为 `succeeded`。模板按 `tracks[].editor` 读取，标题取请求 `title`，关键词取原切片；字幕使用切片原文与时间，由合成时间线保留中英文问号并去除其他标点；已有快照中的 `subtitle_parts` 仍可读取。素材匹配仍接收原切片文字与时间，结果的数量、编号、顺序及起止时间严格校验，文字仅允许首尾空白差异；字幕继续取本地切片，原始匹配回执保留在脱敏日志中。标题和字幕的模板示例文字不进入成片，气泡对象使用其模板示例文字。
+`POST /api/v1/video-compositions` 创建任务，HTTP 200 响应为 `{"code":200,"message":"操作成功","data":"任务ID"}`；`GET /api/v1/video-compositions/{taskId}` 查询结果，查询结构保持不变。终态回调仅含 `taskId/status/videoUrl/errorMessage`：成功为 `succeed`、视频直链、null 错误；失败为 `failed`、null 地址、错误摘要。回调 ID 与创建响应的 `data` 一致，内部和查询的成功状态仍为 `succeeded`。模板按 `tracks[].editor` 读取，标题取请求 `title`，关键词取原切片；字幕使用切片原文与时间，由合成时间线保留中英文问号、数字内部的小数点并去除其他标点；已有快照中的 `subtitle_parts` 仍可读取。素材匹配仍接收原切片文字与时间，结果的数量、编号、顺序及起止时间严格校验，文字仅允许首尾空白差异；字幕继续取本地切片，原始匹配回执保留在脱敏日志中。标题和字幕的模板示例文字不进入成片，气泡对象使用其模板示例文字。
 
 创建请求的字段校验错误返回 HTTP 422，响应含 `{"code":422,"message":"请求参数无效","data":null}`；客户端配置头错误及其他错误沿用原有格式。后台合成失败通过查询结果的 `status: failed` 和 `error` 表示。
 
@@ -108,6 +108,8 @@ standard 模式中，请求不包含 `materials` 时为纯数字人：跳过素�
 
 历史日志仍保留在 `server/src/server/.log/`，不迁移或删除。新旧日志目录均由 Git 忽略，避免误提交带签名的业务链接；日志采集需同时覆盖历史目录与当前的 `server/.log/`。
 
+调度异常同时输出到服务端日志，并独立保存最近一次诊断到 `server/.log/video_composition/dispatch-error.json`（原子覆盖、不依赖数据库、写入失败不停止重试）。它不归属某个任务；任务内错误仍记录到对应模块的 `error_log`。数据库诊断保留 MySQL 原始错误码、驱动固定错误名称、连接失效标记和完整调用位置（文件、行号、函数，不含源码或局部变量），连接底层异常另保留类型及系统/TLS 校验错误码，不记录 SQL、参数或驱动原始正文。
+
 新任务执行日志保存到 `.log/video_composition/<task_id>/`，相对根目录固定为 `server/` 项目目录，按源码位置定位，不受启动工作目录影响。每个任务包含下面七个 JSON 文件（如 `asr.json`），时间使用北京时间：
 
 | 文件名（省略 `.json`） | 内容 |
@@ -123,6 +125,8 @@ standard 模式中，请求不包含 `materials` 时为纯数字人：跳过素�
 每个文件均为 `{"input": [], "output": [], "execute_log": [], "error_log": []}`。输入输出条目使用
 `time/action/data`，执行条目严格只有 `time/action/status`，状态沿用该事件发生时的任务状态；错误条目另外保存 `error`。
 动作采用 `阶段.事件`，如 `asr.step_finished`；输入输出可按时间和动作定位，重试与查询记录保留。
+七模块的新错误（含拒绝、取消及通知重试）在任务目录的 `errors/<随机记录ID>.log` 保存独立的脱敏错误快照，包含时间、动作、状态及当前已捕获的异常链、调用位置、错误码或拒绝原因；没有捕获到的上游信息不会补造。每条错误单独保存，成功事件不生成详细文件，已有记录不补写。对应 `error_log[].error.detail_log_path` 使用相对于该 JSON 所在目录的路径，例如 `errors/abc123.log`；JSON 保留原有诊断字段，不额外嵌入文件正文。详细文件写入失败时仍尝试保存 JSON 错误摘要，不添加无效路径；HTTP 查询和回调不返回该字段。
+Remotion 新私有诊断也保存到任务的 `errors/`：异常链为 `remotion-error.log`，worker 输出为 `remotion-worker.log`（存在时保存），路径为 `errors/remotion-error.log`，不重复生成通用错误副本。私有诊断保存失败时，通用错误文件仅保存当前可用的脱敏诊断，不含未保存的渲染器输出。整个 `errors/` 随任务目录计入下述 50 MB 清理；旧 `composition-overlay-failures/` 不迁移、不删除，已有路径仍有效。
 任务快照仅补充尚未保存的内容，不重复把输入输出塞入执行记录。`timeline.output` 不保存中间组装的时间线，
 只从最终提交请求提取；同模块还保留提交响应和非空组装警告。密钥与回调令牌继续脱敏。
 
@@ -217,8 +221,9 @@ result = segment({
 
 使用 ASR 第一音轨的词级时间（毫秒），返回 `segments`、`warnings` 和 `trace`；片段包含保留标点的原文、秒制时间、分组和关键词。
 带 ASR 的切片请求提供非 null 的 `title` 时，在现有关键词模型调用中同时提取一个标题关键词，响应新增同级 `title_keyword` 字符串；关键词须在标题中连续出现且最多 12 字。标题为空或无合适关键词时由模型返回空字符串；省略或传 null 时不返回此字段。模型结果缺失或非法直接报错，不增加兜底或额外重试。
-首次切分和关键词提取后，超过 8 个有效字（不计标点和空白）的片段由代码从有效字中点二分，奇数左短右长，仍超长则继续二分，直到每段最多 8 字。例如 20 字依次切成 10+10、5+5+5+5。保留原文和 ASR 时间，英文、数字和关键词也允许拆开；关键词仅由完整包含其首次出现位置的子段继承，被拆开的词不再高亮，标题关键词不受影响。二次切分不调用模型；完整切片仅首次切分和提词两次模型调用，不做结果纠错重试，网络错误仍沿用 SDK 策略。
-切片不调用 ASR，不生成字幕子段；最终去标点由下游合成负责。
+首次切分和关键词提取后，超过 8 个有效字（不计标点和空白）的片段由代码二次切分：优先选择两侧至少 2 个有效字的安全切点（没有时才回退），再按保护范围外的标点、结巴精确模式词边界、中点排序，必要时允许拆开中文词。首次与二次切分均保护连续的英文、字母数字串（含小数、连字符、百分号和 `1,299` 这类半角千分位），空格分隔的多词英文名称仍可拆分。数字列表只在有明确依据时整体保护：带共享后缀的 `70，80，90后`、顿号枚举、`第1、2、3名` 及“等”后带时间单位的约数（如 `等2，3天`）；普通逗号两侧的数字不自动合并，如 `99，3件`、`99，10件`。只有受保护表达本身超过 8 字时才单独保留超长片段，超长序数连同“第”和“名”保留。这些是有限的模式规则，不保证识别任意数字语义。
+例如 `就想做点事情的，70，80，90后滴滴我。` 可切为 `就想做点事情的，` / `70，80，90后` / `滴滴我。`，`OpenAI` 不会从内部拆开。保留原文和 ASR 时间；关键词仅由完整包含其首次出现位置的子段继承，被拆开的词不再高亮，标题关键词不受影响。二次切分不调用模型；完整切片仅首次切分和提词两次模型调用，不做结果纠错重试，网络错误仍沿用 SDK 策略。
+切片不调用 ASR，不生成字幕子段；最终去标点由下游合成负责：保留问号及两侧紧邻数字的小数点（如 `3.14`），逗号仍删除，因此数字人群字幕显示为同一段 `708090后`。展示关键词采用相同过滤规则，且必须先在对应子段原文中出现，因此 `70，80，90后` 仍能高亮；素材召回使用的原关键词不变。
 
 HTTP 与视频合成共用成功／失败日志入口，完整切片记录阶段、切点、关键词与模型耗时；仅标题分支不生成切片诊断。桌面日志写入 `backend/server.log`。
 日志包含文案，请按敏感数据管理；请求字段校验失败仍返回 422，不进入切片日志。
@@ -271,4 +276,4 @@ HTTP 请求与轮询等待均为异步，不阻塞事件循环。等待预算必
 
 视频合成支持同一 `styleId` 下的 Remotion 动态字效；新 `text_target` 槽位沿用上游的 IMS 文字替代规则，旧独立用途快照继续兼容。保存接口接受仅有 `editor.remotion.businessTarget=title/subtitle` 的旧字效轨道，替换资产仍保留 IMS 与 Remotion 共存，不自动迁移为新槽位。使用方式、资产字段声明、旧资产适配、时长限制和联调清单见 [Remotion 接入说明](../docs/remotion-video-composition.md)。
 
-合成侧计划、时长适配打包、渲染或上传失败会在 Remotion 数据目录的 `composition-overlay-failures/<task_id>/` 私有保留 `worker.log` 与异常链 `error.log`（含子进程 stderr），临时视频和编译产物仍清理；公开错误保持稳定摘要，执行日志只记录根因的异常类型、代码位置与错误码，排障时读取私有日志。
+合成侧计划、时长适配打包、渲染或上传失败会在 `server/.log/video_composition/<task_id>/errors/` 私有保留 `remotion-worker.log` 与异常链 `remotion-error.log`（含子进程 stderr），临时视频和编译产物仍清理；公开错误保持稳定摘要，执行日志记录根因的异常类型、代码位置、错误码及详细日志相对路径，排障时按 `timeline.json` 的 `error_log[].error.detail_log_path` 读取私有日志。

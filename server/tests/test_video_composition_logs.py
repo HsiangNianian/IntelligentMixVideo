@@ -7,14 +7,16 @@ import os
 import shutil
 from datetime import datetime
 from pathlib import Path
+from ssl import SSLCertVerificationError
 from threading import Event, Thread
 
 from pydantic import BaseModel, ValidationError
+from pymysql.err import OperationalError as MySQLOperationalError
 import pytest
 from sqlalchemy import event, inspect, text
 from sqlalchemy.exc import OperationalError
 
-from server.video_composition import execution_log, store
+from server.video_composition import execution_log, service, store
 from server.video_composition.execution_log import (
     MODULES, add_event, compact_columns, exception_details, expand_columns, sanitize,
 )
@@ -60,6 +62,98 @@ def test_exception_log_keeps_root_cause_without_validation_or_sql_inputs():
         assert "hidden-input" not in json.dumps(exception_details(exc))
     sql_error = OperationalError("hidden-sql", {"password": "hidden-param"}, Exception("hidden-driver"))
     assert "hidden-" not in json.dumps(exception_details(sql_error))
+
+
+@pytest.mark.parametrize("errno,reason", [(1045, "ACCESS_DENIED_ERROR"), (1064, "PARSE_ERROR"), (2013, "CR_SERVER_LOST"), (99999, "UNKNOWN_ERROR")])
+def test_database_diagnostics_keep_native_code_without_sql_or_driver_inputs(errno, reason):
+    """数据库原生错误码与固定名称进入错误日志，驱动正文、SQL 和参数均不泄漏。"""
+    error = OperationalError("hidden-sql", {"text": "hidden-param"}, MySQLOperationalError(errno, "hidden-driver"), connection_invalidated=True)
+    details = exception_details(error)
+    item = details["exceptions"][0]
+    assert item["mysql_errno"] == errno and item["connection_invalidated"] is True
+    assert item["message"] == f"MySQL {errno}: {reason}"
+    columns = add_event(None, "step_failed", {"stage": "template", "status": "processing"}, details, datetime.now())
+    assert columns["template"]["error_log"][0]["error"]["message"] == item["message"]
+    assert "hidden-" not in json.dumps(columns)
+
+
+@pytest.mark.parametrize("failure", ["refused", "timeout", "certificate"])
+def test_database_diagnostics_keep_connection_failure_cause(failure):
+    """连接拒绝、读超时和证书失败保留底层类型及错误码，不读取驱动正文。"""
+    driver = MySQLOperationalError(2003, "hidden-driver")
+    if failure == "certificate":
+        driver.original_exception = SSLCertVerificationError(1, "hidden-certificate")
+        driver.original_exception.verify_code = 10
+        expected = {"type": "SSLCertVerificationError", "errno": 1, "verify_code": 10}
+    elif failure == "timeout":
+        driver.__context__ = TimeoutError("hidden-host")
+        expected = {"type": "TimeoutError"}
+    else:
+        driver.original_exception = ConnectionRefusedError(111, "hidden-host")
+        expected = {"type": "ConnectionRefusedError", "errno": 111}
+    item = exception_details(OperationalError(None, None, driver))["exceptions"][0]
+    assert item["driver_cause"] == expected
+    assert "hidden-" not in json.dumps(item)
+
+
+def test_exception_log_keeps_caller_above_deep_driver_stack():
+    """驱动调用层数较深时仍保留业务入口，但不记录源码、局部变量或 SQL 输入。"""
+    def query(depth):
+        """用多层调用复现真实 SQLAlchemy/PyMySQL 堆栈对业务入口的遮挡。"""
+        if depth:
+            return query(depth - 1)
+        raise OperationalError("hidden-sql", {"text": "hidden-param"}, MySQLOperationalError(1054, "hidden-driver"))
+
+    try:
+        query(10)
+    except OperationalError as exc:
+        item = exception_details(exc)["exceptions"][0]
+    assert item["frames"][0]["function"] == "test_exception_log_keeps_caller_above_deep_driver_stack"
+    assert all(set(frame) == {"file", "line", "function"} for frame in item["frames"])
+    assert "hidden-" not in json.dumps(item)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("write_fails", [False, True])
+async def test_dispatch_failure_is_logged_without_database_and_keeps_retrying(monkeypatch, caplog, write_fails):
+    """数据库查询失败仍记录控制台和独立文件；文件写入失败也不阻止下一轮调度。"""
+    runtime, attempts = service.Runtime(), 0
+    loop = asyncio.get_running_loop()
+
+    def pending(exclude, limit):
+        """先模拟断连及鉴权失败再恢复，用唤醒事件避免测试等待固定轮询时间。"""
+        nonlocal attempts
+        attempts += 1
+        loop.call_soon_threadsafe(runtime.wake.set)
+        if attempts <= 2:
+            raise OperationalError("hidden-sql", {"text": "hidden-param"}, MySQLOperationalError(2013 if attempts == 1 else 1045, "hidden-driver"))
+        runtime.stopping = True
+        return []
+
+    def reject_write(*args, **kwargs):
+        """模拟日志目录不可写，错误不得传播到调度循环。"""
+        raise OSError("hidden-disk-error")
+
+    monkeypatch.setattr(store, "pending", pending)
+    if write_fails:
+        monkeypatch.setattr(Path, "write_text", reject_write)
+    try:
+        await asyncio.wait_for(runtime._dispatch(), timeout=3)
+    finally:
+        await runtime.close()
+    assert attempts == 3 and "hidden-" not in caplog.text
+    assert "MySQL 2013: CR_SERVER_LOST" in caplog.text
+    assert "MySQL 1045: ACCESS_DENIED_ERROR" in caplog.text
+    if write_fails:
+        assert "调度诊断写入失败" in caplog.text
+    else:
+        path = execution_log.LOG_ROOT / "video_composition" / "dispatch-error.json"
+        entry = json.loads(path.read_text())
+        assert entry["action"] == "dispatch_failed" and entry["status"] == "failed"
+        item = entry["error"]["exceptions"][0]
+        assert item["mysql_errno"] == 1045 and item["frames"][-1]["function"] == "pending"
+        assert "hidden-" not in path.read_text()
+        assert list(path.parent.iterdir()) == [path]
 
 
 def test_log_events_keep_task_times_and_cas_history(composition_case, composition_settings, composition_logs):
@@ -148,6 +242,65 @@ async def test_step_failure_and_cancellation_leave_input_log(composition_case, c
     assert rows[2]["details"]["exceptions"][0]["message"] == "素材不存在"
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("module,step", [("request", "notification"), ("template", "template"), ("asr", "asr"),
+    ("segmentation", "segmentation"), ("matching", "matching"), ("timeline", "assembling"), ("zos", "zos_upload")])
+async def test_each_module_writes_error_detail_file(module, step, composition_case, composition_runtime, composition_logs):
+    """各模块错误写真实文件并保存相对路径；重复失败不覆盖，成功事件不生成文件，凭证仍脱敏。"""
+    store.initialize_schema()
+    record = store.create(composition_case["request"], {})
+
+    async def fail():
+        """包含嵌套根因及凭证，验证详细文件保留诊断但不泄漏密钥。"""
+        try:
+            raise ValueError("上游连接失败 password=hidden-detail")
+        except ValueError:
+            raise RuntimeError("调用失败") from None
+
+    for _ in range(2):
+        with pytest.raises(RuntimeError):
+            await composition_runtime.step(record, step, fail, {})
+    saved, = composition_logs(record["task_id"], raw=True)
+    folder = execution_log.LOG_ROOT / "video_composition" / record["task_id"]
+    entries = saved[module]["error_log"]
+    assert len(entries) == 2 and len(list((folder / "errors").iterdir())) == 2
+    assert len({entry["error"]["detail_log_path"] for entry in entries}) == 2
+    for entry in entries:
+        relative = Path(entry["error"]["detail_log_path"])
+        assert not relative.is_absolute() and relative.parent == Path("errors")
+        detail = (folder / relative).read_text()
+        stored = json.loads(detail)
+        assert stored["time"] == entry["time"] and stored["action"] == entry["action"]
+        assert stored["error"]["exceptions"] == entry["error"]["exceptions"]
+        assert stored["error"]["exceptions"][-1]["frames"][-1]["function"] == "fail"
+        assert "上游连接失败" in detail and "hidden-detail" not in detail
+    store.add_log(record, "step_finished", {"step": step, "output": {"ok": True}})
+    execution_log.LOG_QUEUE.join()
+    assert len(list((folder / "errors").iterdir())) == 2
+
+
+def test_detail_file_write_failure_keeps_json_error(composition_case, composition_logs, monkeypatch, caplog):
+    """仅详细文件写入失败时仍保存 JSON 错误摘要，并继续消费后续事件，不写悬空路径。"""
+    store.initialize_schema()
+    record = store.create(composition_case["request"], {})
+    original = Path.write_text
+
+    def reject_detail(path, *args, **kwargs):
+        """只拒绝 .log 文件，保留 JSON 写入以检查降级行为。"""
+        if path.suffix == ".log":
+            raise OSError("detail disk unavailable")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", reject_detail)
+    store.add_log(record, "step_failed", {"step": "asr", "reason": "识别失败"})
+    store.add_log(record, "probe", {})
+    saved, = composition_logs(record["task_id"], raw=True)
+    error = saved["asr"]["error_log"][0]["error"]
+    assert error["message"] == "识别失败" and "detail_log_path" not in error
+    assert saved["request"]["execute_log"][-1]["action"].endswith(".probe")
+    assert "详细错误日志保存失败" in caplog.text
+
+
 def test_module_files_keep_io_errors_and_only_three_execution_fields(composition_case, composition_settings, composition_logs, template_db):
     """七文件各自存储；陈旧日志不改任务终态，中文和嵌套 JSON 保持可读。"""
     store.initialize_schema()
@@ -168,7 +321,7 @@ def test_module_files_keep_io_errors_and_only_three_execution_fields(composition
     assert all(not items for items in saved["asr"].values())
     assert not inspect(template_db).has_table("video_composition_logs")
     folder = execution_log.LOG_ROOT / "video_composition" / record["task_id"]
-    assert {path.name for path in folder.iterdir()} == {f"{name}.json" for name in MODULES}
+    assert {path.name for path in folder.iterdir()} == {f"{name}.json" for name in MODULES} | {"errors"}
     raw = (folder / "template.json").read_text(encoding="utf-8")
     assert "中文" in raw and "\\u" not in raw and "hidden" not in raw
 
@@ -320,7 +473,7 @@ def logged_task(composition_case, composition_settings):
         execution_log.LOG_QUEUE.join()
         folder = execution_log.LOG_ROOT / "video_composition" / record["task_id"]
         stamp = datetime.now().timestamp() - age_days * 86400
-        for path in folder.iterdir():
+        for path in folder.rglob("*"):
             os.utime(path, (stamp, stamp))
         return record, folder
 
@@ -374,6 +527,7 @@ def test_over_limit_protects_active_and_notifying_tasks(logged_task, monkeypatch
 def test_failed_tasks_with_finished_notifications_can_be_deleted(logged_task, monkeypatch, notification):
     """失败任务和通知最终失败均视作已结束，可整体清理。"""
     _, folder = logged_task(status="failed", notification=notification)
+    assert list((folder / "errors").glob("*.log"))
     monkeypatch.setattr(execution_log, "MAX_BYTES", 1)
     execution_log.cleanup(store.finished_tasks)
     assert not folder.exists()

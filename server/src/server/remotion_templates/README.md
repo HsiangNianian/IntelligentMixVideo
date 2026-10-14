@@ -39,27 +39,74 @@ words of the description (`[Not callable in this build ...]`); an unknown name
 lists callable tools and contract-only tools apart. The host still performs the code, parameter and browser
 checks needed to build a preview; those are not model-facing tools.
 
-Image tools read the reference image the user already uploaded and the server
-registered as a local asset. They take that asset reference, not a URL, and
+Image tools read the reference images the user already uploaded and the server
+registered as reference assets (objects under `imv/remotion/assets/`, read through the verified cache): the work's original images and, for a task started
+by a later chat message (`POST /works/{id}/messages` with `images`, up to four),
+that message's images. `user_intent.reference_images` lists them in the order the model
+receives them, each with its `source` (`work_original`, `message` or
+`clarification_answer` plus the answered `clarification` index) and a host-written
+`meaning`. They take that asset reference, not a URL, and
 never upload anything.
+
+## Storage
+
+The backend keeps no SQLite file. Works, jobs, accepted versions, the model's sliding window, public events and
+overlay render tasks are tables in the shared MySQL database (`tables.py`, created on first use next to
+`remotion_sprites`). The backend runs as a single instance: one in-process lock serializes write transactions,
+startup interrupts jobs a previous process left running and finishes interrupted deletions. A lease row
+(`remotion_instance`) enforces it: startup acquires the lease or the first Remotion request answers 503 ("another
+backend instance is using this database's queue"), the instance renews it every 10 seconds and releases it on a clean
+shutdown. A crashed instance's lease expires after 30 seconds, so a restart after `kill -9` may have to wait that long.
+An instance that finds its lease taken (it stopped renewing, for example during a long database outage) stops
+claiming jobs and sweeping. A second backend on the same database (for example a Debug desktop backend reading the
+same `server/.env`) is therefore refused instead of interrupting the first one's running jobs. MySQL 8.0 or later is required: acknowledged events are deleted and clients resume after the last event
+ID, which relies on InnoDB keeping its AUTO_INCREMENT counter across restarts (5.7 resets it to the highest row).
+
+Every work belongs to the client device that created it. JSON routes of a work require the `X-IMV-Device`
+header (a UUID the client keeps in its local session database) and treat another device's work as missing. A device
+is recorded when it creates its first work and its activity time is refreshed at most hourly; other header values add
+no rows;
+browser-embedded reads (preview page, fonts, reference image, artifact download) are addressed by unguessable IDs.
+Chat history lives on the client: the server buffers public messages and events only until the client stores them
+locally and acknowledges the last event ID with `POST /works/{id}/ack`. The open work streams its events over SSE
+(`GET /works/{id}/stream`; an idle stream sleeps until a commit appends an event of its work, with a 5 second read as a safety net, so it costs the database almost nothing); works the client is not showing catch up through `GET /works/{id}/events?after=<id>`,
+one page per call in the same shape, until an empty page. There is no server-side work list: the sidebar reads the
+client's local store. Acknowledged events are deleted; once a work
+has no undelivered events, the progress, rounds and messages of its finished jobs go too, and only the latest job row
+stays because retrying it or answering its questions needs its input.
+
+Sealed version files, reference images and Sprite preview bundles are objects under `imv/remotion/`
+(`object_store.py`): public-read in ZOS once `ZOS_BUCKET` is set, otherwise files under `IMV_DATA_DIR/objects`.
+Every sealed file of a version is public-read under `imv/remotion/versions/<version_id>/`, including the internal
+`candidate.json`, `spec.json` and `tool-validation.json` that the artifact route never serves; anyone who knows a
+version ID can read them, and `GET /api/sprites` lists each published Sprite's source version ID. Chat reference
+images are public-read under unguessable IDs as well.
+The backend reads them through a verified cache in `IMV_DATA_DIR/cache` (SHA-256 against the MySQL record), one file
+at a time (deciding whether a parameter patch is instant reads only `interactive.js`). Object uploads, downloads and
+deletes run in worker threads and never under the write lock: a version is uploaded under its new ID before its record
+commits and removed again if the commit fails; deletion and the upload sweep remove records and objects in separate
+steps. A ZOS failure other than a missing object is an `ObjectStoreError` (an `OSError`): uploads, reference images,
+downloads, diagnostics and work deletion answer a retryable 503 instead of a 500 or a misleading 422. Job
+scratch is removed when the job ends and the private `audit/<work_id>/<job_id>.jsonl` log outlives it (deleting the
+work removes its whole audit folder, including logs of jobs already pruned). An hourly sweep (started with the runtime on the first Remotion request, which runs it immediately) applies
+three retention periods: undelivered events (`IMV_UNDELIVERED_EVENT_DAYS`, 7), audit logs
+(`IMV_AUDIT_RETENTION_DAYS`, 14) and the works of devices inactive for `IMV_DEVICE_RETENTION_DAYS` (90). The same
+sweep retries every deletion whose cleanup failed (an expired device's work, or a user DELETE answered 503 and never
+repeated), drops finished overlay render tasks with nothing left to deliver after 30 days
+(`overlay_service.FINISHED_RETENTION`) and removes read-cache files unused for 30 days (`store.CACHE_IDLE`; every hit
+refreshes a file's time). Each step and each work is isolated, so one storage failure only postpones itself to the
+next hour.
+Published Sprites survive all of these.
 
 ## Preset storage
 
-`preset.create` writes through `tools/catalog_store.py`, which targets MySQL via
-the shared `server.database` settings (`DB_*`). When the database is unreachable
-it falls back to the task-local catalog under the module data directory, and
-`ToolSession.snapshot()` reports the backend that was actually used. Both paths
-append immutable records only; there is no update or delete.
-Connection and query failures also fall back to local records. Local appends
-hold a cross-process file lock over the entire read/modify/write transaction
-and replace the catalog from a unique, flushed temporary file.
-Catalog reads and writes run in worker threads, so database and lock waits do
-not block the event loop or delay cancellation. File-lock waits expire after
-10 seconds on every platform. An atomic write already in progress may finish
-after task cancellation; it does not publish a task version.
+`preset.create` writes through `tools/catalog_store.py` to the MySQL table `remotion_presets`, shared by every
+device. A database failure surfaces as `PRESET_STORE_FAILED`; nothing is written to a local fallback. Records are
+immutable; there is no update or delete. Catalog reads and writes run in worker threads, so database waits do not
+block the event loop or delay cancellation.
 
-`preset.search` merges database and local records, sorts by creation time newest
-first, and then applies `limit`. UUID ordering and storage backend do not affect
+`preset.search` reads the database records, sorts by creation time newest
+first, and then applies `limit`. UUID ordering does not affect
 which recent Presets are returned.
 Legacy timestamps without a timezone are interpreted as UTC; invalid timestamps
 sort last without hiding the record. `tools.inspect` identifies this search
@@ -158,8 +205,7 @@ largest): entrance and exit animations show it smaller, scaled down or typed in,
 clips it while it holds. The `text_fit` check fails when every one of those frames has a problem, so a reveal mask
 or slide-in that moves the full-size text out of view for a few frames is fine, while a fixed-size box that clips
 long text whenever it is shown at full size is not; it also fails when the filler text is never visibly rendered. A failure is refused with `CODE_VALIDATION_FAILED` (`text_fit: ...` with the clipped box or
-size and the fix: wrap the text inside a bounded width, no fixed-height `overflow: hidden` box, shrink the font
-for long text, never below 24px; text that cannot fit even then means the declared `maxLength` is too large and must be lowered, and input beyond it is refused by the parameter Schema). It is a geometric measurement, not a visual review; like the transparency
+size and the fix: wrap the text inside a bounded width of about 90 % of the canvas, no fixed-height `overflow: hidden` box, and use `fontSize` as given instead of deriving a size from the character count; `text.maxLength` must remain exactly 100, so text that still cannot fit requires layout and wrapping fixes, never a lower limit). The check fills the text to `maxLength` at the smallest size the host shrinks to (the declared `fontSize` minimum, at least 24), and then measures the default text at the default `fontSize`, which a user sees first and which must fit without the host's help. It is a geometric measurement, not a visual review; like the transparency
 measurement it only applies to generation, and already published versions are not re-checked.
 
 Contract diagnostics carry the position of a violation (line, column and range in the submitted code).
@@ -182,7 +228,8 @@ successful generation attempt does not remove the completion requirement.
 
 Drafts are handles: neither the model nor the snapshot carries Sprite or draft source, so a large
 composition is never copied back verbatim. Presets of the same source are bundled once however many
-instances use them. For an edit, the accepted base's instances are registered as `base_<instance_id>`
+instances use them. Bundling erases the Presets' TypeScript types and type arguments, so the composed
+adapter types every variable, class field and base class `any` and gives each class an `any` index signature; each Preset is still typechecked on its own before it is composed. For an edit, the accepted base's instances are registered as `base_<instance_id>`
 Preset drafts; only the Executor's snapshot shows their source, each distinct source once. The session
 snapshot stays within 200 KB: a base too large for it has its largest sources omitted first (`code_omitted`,
 `legacy_code_omitted`), while their handles still compose unchanged. The execution
@@ -232,26 +279,38 @@ code plus a fixed host-authored message. Tool arguments and result payloads
 stay in the private audit, plan step goals and model prose
 are never published, a turn that only replied records an empty call list, and a
 terminal job accepts no further rounds. Unknown tool names become `unknown`;
-model protocol failures are explicitly marked. Snapshots carry all rounds, while
-`job.updated` omits that history and clients retain already received deltas.
+model protocol failures are explicitly marked. Each `job.round` event carries one
+round, `job.updated` omits that history, and the client keeps the rounds it has stored locally.
 
 ## Sprite assets
 
 `POST /api/sprites/publish` copies an accepted version into an immutable
-`imv.sprite.v1.PublishedSprite` (a row of the shared MySQL table `remotion_sprites`, `sprite_store.py`, plus
-`sprites/<id>/interactive.js` in this module's data folder), so deleting or editing the source work never changes a
-published Sprite. The table is created on first use like the template table and sits in the same database as the
+`imv.sprite.v1.PublishedSprite` (a row of the shared MySQL table `remotion_sprites`, `sprite_store.py`, plus the
+object `imv/remotion/sprites/<id>/interactive.js`), so deleting or editing the source work never changes a
+published Sprite. Only the device that owns the source work may publish it (another device's version is a 404). The table is created on first use like the template table and sits in the same database as the
 templates that reference its IDs, which is what lets a template save check its `remotion` tracks (422 when a
-`sprite_id` is not published or the clips' Sprites do not share one width, height and fps, which an overlay render requires). The preview bundle is a local file: a host that did not publish the Sprite lists it
-but answers its preview with a 404, while overlay renders only need the stored TSX. Sprites published before this
-storage (the SQLite `sprites` table and the `sprites/<id>/` folders it pointed at) are neither read nor migrated and
-stay where they are: publish the accepted versions again.
-Publishing re-verifies the sealed `accepted/` artifacts (409 when changed) and only accepts versions composed
+`sprite_id` is not published or the clips' Sprites do not share one width, height and fps, which an overlay render requires). The preview bundle is an object; when it is missing or no longer matches the recorded
+hash (for example Sprites published while bundles were local files), the preview route rebuilds it from the
+published source in the isolated worker, stores it and records the new hash, and answers 404 only if that fails.
+Previews of the same asset take turns, so a library full of lost bundles rebuilds each once; after a failed rebuild
+previews answer 404 for `sprites.REBUILD_COOLDOWN` (5 minutes) instead of starting a worker per request, and an
+unreachable object store is a 503 that starts no rebuild. Deletion waits for a rebuild in progress, so the bundle is
+never written back after it. Overlay renders only need the stored TSX.
+`DELETE /api/sprites/{id}` removes a publication (anyone may delete from the shared library): its row, bundle object
+and cache. While a cloud template's `remotion` track still references it the answer is 409 naming those templates
+(raw configurations are scanned, so invalid templates count too); an unknown ID is a 404. The source work and its
+versions are untouched, so the version can be saved to the library again.
+`POST /api/sprites/{id}/rename` (`imv.sprite.v1.RenameSpriteRequest`, anyone may rename) changes only the catalog name:
+trimmed, 1 to 100 characters, not required to be unique (422 otherwise), an unknown ID is a 404. A placed asset can
+be renamed since templates store IDs only. The name lives in the stored JSON; `sprite_store.update_data` locks the
+row and merges one field, so a rename and a preview-hash refresh never overwrite each other. Republishing the same
+version returns the renamed asset.
+Publishing re-verifies the sealed version files (409 when changed) and only accepts versions composed
 with a kind and top-level parameter bindings (`spec.sprite.kind`/`bindings`); older versions are refused with a
 422 that asks for an edit in chat. The requested kind defaults to the agent's choice on the client but may be
 changed: the version must expose that kind's required parameters (`categories.REQUIRED`), otherwise the 422 lists
-them in Chinese. The generation prompt and required-parameter examples use `text` with `minLength: 1` and
-`maxLength: 100`; already published assets retain their own sealed schema and need a new version to change it.
+them in Chinese. Generation and new-publication validation require `text.maxLength` to be exactly 100;
+already published assets retain their own sealed schema and need a new version to change it.
 A text Sprite's required parameters include the keyword options the bus forwards from the IMS
 title/subtitle keyword fields: `keywords`, `keywordBold`/`Italic`/`Underline`/`Strikeout`, `keywordColor` (`""`
 keeps the text colour) and `keywordSize` (0 keeps the font size, otherwise 12–300; placements refuse 1–11), with `keywords` items holding at least 12
@@ -275,10 +334,11 @@ extremes, and the middle enum values. A text Sprite also renders `keywords:style
 keyword slot filled with a hit) with every keyword style, colour and size at its high end, so a styled hit is rendered. When the combined extreme breaks the schema (parameters that constrain each other), it is replaced by the
 greedy combination of the extremes that still fit and by one sample per parameter extreme, each with the same end
 of the host transform. Each sample must render its first, middle and last frame without an error inside the shared
-host layer; a failure is a 422 naming the sample and frame, and a validator that cannot start is a 503 (the route
-checks the sandbox first). Bound parameters may only use constraints these extremes respect
-(`categories.parameter_problems`), and a version whose root-level constraints still keep some parameter's end or
-enum value out of every sample is refused (`boundary.unsampled`). Template overrides are then checked against the
+host layer; a failing sample is only logged (sample name, frame) and the publication still succeeds, because
+availability comes first, and a validator that cannot start is a 503 (the route checks the sandbox first). Bound
+parameters may only use constraints these extremes respect (`categories.parameter_problems`); when root-level
+constraints still keep some parameter's end or enum value out of every sample (`boundary.unsampled`) that is
+logged too. Template overrides are then checked against the
 schema only, without the sandbox. The
 samples cover the extremes, not every combination: a placement that still fails to render fails its overlay task. The same source and field choice
 returns the original Sprite without sampling again. `animation_frames` and `static_frame` stay 0
@@ -327,7 +387,7 @@ like in the bus render), reporting `sync: true` in its
 ready message. The page injects the published defaults and content box as a JSON element (`#imv-preview-host`, with
 `<`, `>`, `&` and line separators escaped); the player starts from them, merges `imv-preview-update` values over
 them (objects key by key, arrays and scalars replace) and applies an optional `host: {transform}` through
-`remotion/host-layer.tsx`, the wrapper the overlay render uses too. Such a bundle reports `host: true` when ready.
+`remotion/host-layer.tsx`, the wrapper the overlay render uses too. The wrapper also lifts the clipping of a composed Sprite's instance boxes (the parent of each `data-imv-instance`, which Sprites sealed before this carry as `overflow: hidden`; `player_page` has the same rule for older bundles), so a larger font, keyword size or underline is bounded by the canvas only; a component's own fixed boxes are still measured as before. Such a bundle reports `host: true` when ready.
 `presentation.mjs` writes the host protocol it speaks as the bundle's first line (`/* imv-preview-protocol 1 */`,
 `publication.PREVIEW_PROTOCOL`); only that line counts, because the generated code and its defaults are bundled too and
 can contain any text. Publishing rebuilds the bundle from the sealed source in the isolated worker when the sealed one
@@ -335,6 +395,10 @@ lacks that line and refreshes an existing publication on re-save; a failed rebui
 A refresh stages the new bundle and records its hash before replacing the copy, so a failed update keeps the
 previous copy working and publishing again retries it. Identical publish requests (same version and field
 choice) take turns, so a double click rebuilds once.
+A saved publication whose copy lacks the protocol line is rebuilt from its published source on its first preview (it
+cannot take placement transforms otherwise, so an asset saved before they existed would not follow position edits in
+the template editor); a failed rebuild or store serves the old copy and the next preview retries. Concurrent previews
+of one Sprite rebuild once.
 
 ## Overlay renders for the bus
 
@@ -369,9 +433,15 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   scales and rotates it, lines under 20px tall, or only part of the text shown, judged on the frames that show the
   text at its full size. Placements that differ only in length or transform are measured separately; the
   transform's opacity does not move text and is ignored. Text that already fits keeps its `fontSize`; otherwise the
-  host lowers `fontSize` to the largest whole size, down to the published minimum, at which it is shown in full
-  (binary search; the size is logged, the template and the sealed source are untouched). Text that does not fit even
-  at the minimum fails the task with `text_too_long` and a fixed message (the callback's `errorMessage`) so the bus can
+  host lowers `fontSize` to the largest whole size, down to the published minimum but never below 24 (smaller lines count as unreadable), at which it is shown in full
+  (binary search; the size is logged, the template and the sealed source are untouched). A `keywordSize` above 0 is
+  an absolute size, so it shrinks by the same ratio (at least 12, never larger than set), keeping the keyword's
+  proportion to the text instead of crowding the smaller text. If at the minimum the text
+  still leaves the canvas only because of where it is placed (a long title whose centre sits near the top edge), the
+  host moves this render's copy of the placement by the shortest distance that brings it back inside (the shift is
+  logged; the saved placement is untouched, and the horizontal position changes only when the text overhangs the
+  side). Text that is clipped, too small, or wider or taller than the canvas even then fails the task with
+  `text_too_long` and a fixed message (the callback's `errorMessage`) so the bus can
   tell the user to shorten it, instead of publishing a clipped title. Other Sprites skip the pass, and a fit sandbox
   that cannot start fails the task as `render_failed`. `POST /api/sprites/render` runs the same pass on each distinct
   text or cue (a held text is measured on its frozen frame), and a video composition (`video_composition/remotion.py`)
@@ -396,7 +466,7 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
 - **Output**: no audio; the bus/IMS keeps its own audio track and overlays the WebM. The host re-probes the file
   (VP9, size, fps, frame count, alpha tag) before uploading.
 - **Execution**: `overlay_render.py` plans, `remotion/overlay-worker.mjs` renders in the bwrap sandbox
-  (`IMV_OVERLAY_RENDER_TIMEOUT_SECONDS`, default 900 seconds), `overlay_service.py` owns the SQLite `overlay_renders` task table,
+  (`IMV_OVERLAY_RENDER_TIMEOUT_SECONDS`, default 900 seconds), `overlay_service.py` owns the MySQL `remotion_overlay_renders` task table,
   up to three renders at a time (each slot covers only the render: the remote audio probe before it and the ZOS upload after it
   run outside, so a slow network never delays queued renders), recovery of unfinished tasks and pending notifications
   when the runtime is first built
@@ -420,7 +490,7 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
 
 `GET /api/templates/versions/{id}/diagnostics` re-runs the isolated TypeScript
 language service over an accepted version's sealed source and returns its
-contract and LSP diagnostics. It re-checks the sealed `accepted/` artifacts
+contract and LSP diagnostics. It re-checks the sealed version files
 first, so tampered bytes return 404 rather than a stale conclusion, and an
 unavailable sandbox returns 503 instead of reporting "no diagnostics" for code
 that was never checked. The route is read-only: it never queues work, publishes

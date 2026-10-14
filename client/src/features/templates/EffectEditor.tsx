@@ -18,7 +18,7 @@ import {
   type EffectKey,
   type TextRole,
 } from "./model";
-import { changeEffects, effectTargets, removeTarget, resetTextTarget, type EffectTarget } from "./effects";
+import { changeEffects, effectTargets, isSelectableAsset, removeTarget, resetTextTarget, type EffectTarget } from "./effects";
 
 /**
  * 带关联标签的数值控件；slider 为 true 时在输入框左侧加滑块用于快速拖动，二者共享同一个值。
@@ -120,7 +120,7 @@ function EffectSelect({
           options={[
             { value: "none", label: "无效果" },
             ...(editor[field] && !selected ? [{ value: editor[field], label: `未载入：${editor[field]}` }] : []),
-            ...options.map((item) => ({ value: item.id, label: item.name, hint: item.effect_id })),
+            ...options.filter((item) => isSelectableAsset(item) || item.id === editor[field]).map((item) => ({ value: item.id, label: item.name, hint: item.effect_id })),
           ]}
         />
         {selected?.preview_url && (

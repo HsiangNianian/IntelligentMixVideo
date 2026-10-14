@@ -1,16 +1,26 @@
-/** 本地协议替身保存公开消息和事件，供 UI 测试驱动真实 fetch/SSE 读取而不连接模型或播放器。 */
+/**
+ * 本地协议替身：按作品缓存未送达的公开事件，经真实 fetch/SSE 与分页事件接口重放，并实现送达确认；不连接模型或播放器。
+ *
+ * 会话历史保存在客户端本地存储（测试中为内存实现），替身不再提供会话快照或历史分页。`seed` 模拟本机此前
+ * 已创建并写入过的会话：调用创建接口后，把该作品已有事件写入本地存储。
+ */
 import { fetchMock } from "./setup";
 import { remotionJob, remotionVersion } from "./remotion-fixtures";
+import * as api from "@/features/remotion_templates/api";
+import { apply, record } from "@/features/remotion_templates/localSessions";
 import type {
   ChatMessage,
   Job,
   SessionJob,
-  SessionSnapshot,
   WorkEvent,
-  WorkSummary,
 } from "@/features/remotion_templates/model";
 
-/** 显式覆盖 HTTP 分支可模拟失败；未覆盖读写使用内存会话和可控制的 SSE。 */
+/** 待送达事件分页接口每页的条数；取小值让测试覆盖多页读取。 */
+const EVENT_PAGE = 2;
+/** 当前测试的替身；`seed` 从它读取已发出的事件。 */
+let active: ReturnType<typeof remotionServer> | undefined;
+
+/** 显式覆盖 HTTP 分支可模拟失败；未覆盖读写使用内存事件和可控制的 SSE。 */
 export function remotionServer(
   overrides: (
     path: string,
@@ -18,52 +28,42 @@ export function remotionServer(
     url?: URL,
   ) => Response | Promise<Response> | undefined = () => undefined,
 ) {
-  const snapshots = new Map<string, SessionSnapshot>();
-  const summaries = new Map<string, WorkSummary>();
+  const works = new Set<string>();
+  const jobs = new Map<string, SessionJob>();
   const records: WorkEvent[] = [];
+  // 已发出的全部事件，不随确认删除；用于重放重复事件等断言。
+  const emitted: WorkEvent[] = [];
+  const acks = new Map<string, number[]>();
   const streams = new Set<{
     work: string;
     controller: ReadableStreamDefaultController<Uint8Array>;
   }>();
   let sequence = 0,
-    created = 0;
+    created = 0,
+    nextId = 0;
   const versions = new Map<string, string>();
-  /** 每条测试事件具有单调 ID，并立即写入当前会话快照，模拟同事务持久化。 */
+  /** 每条测试事件具有单调 ID，保存到确认送达前，并推送给该作品的已有连接。 */
   function emit(work: string, payload: Pick<WorkEvent, "type" | "data">) {
     const event = {
-      id: records.length + 1,
+      id: ++nextId,
       work_id: work,
       created_at: "2026-09-14T08:01:08Z",
       ...payload,
     } as WorkEvent;
     records.push(event);
-    const snap = snapshots.get(work)!;
-    snap.cursor = event.id;
-    if (event.type === "message.created") snap.messages.push(event.data);
-    else if (event.type === "job.updated") {
-      const previous = snap.jobs?.find((job) => job.id === event.data.id);
-      snap.job = { ...previous, ...event.data };
-      snap.jobs = [
-        ...new Map(
-          [...(snap.jobs ?? []), snap.job].map((job) => [job.id, job]),
-        ).values(),
-      ];
-    } else if (event.type === "job.round") {
-      const job = snap.jobs?.find((job) => job.id === event.data.job_id);
-      if (job && !job.rounds?.some((round) => round.layer === event.data.round.layer && round.turn === event.data.round.turn)) {
-        job.rounds = [...(job.rounds ?? []), event.data.round];
-      }
-    } else snap.work.current_version_id = event.data.version_id;
+    emitted.push(event);
+    if (event.type === "job.updated")
+      jobs.set(work, { ...jobs.get(work), ...event.data });
     for (const stream of streams)
       if (stream.work === work) stream.controller.enqueue(encode(event));
   }
-  /** 一条公开消息同时支持聊天快照恢复和 SSE 重放。 */
+  /** 一条公开消息只以事件形式送达客户端。 */
   function message(
     work: string,
     job: Job,
     role: ChatMessage["role"],
     text: string,
-    image?: string,
+    images: string[] = [],
   ) {
     emit(work, {
       type: "message.created",
@@ -73,9 +73,8 @@ export function remotionServer(
         job_id: job.id,
         role,
         text,
-        image_asset_id: image,
+        image_asset_ids: images,
         created_at: "2026-09-14T08:00:00Z",
-        reconstructed: false,
       },
     });
   }
@@ -87,7 +86,7 @@ export function remotionServer(
       created_at: "2026-09-14T08:00:00Z",
       updated_at: "2026-09-14T08:01:08Z",
       parameters: null,
-      progress: (snapshots.get(work)?.job.progress ?? []).map((step) =>
+      progress: (jobs.get(work)?.progress ?? []).map((step) =>
         step.status === "active" && !["running", "queued"].includes(job.status)
           ? {
               ...step,
@@ -102,8 +101,6 @@ export function remotionServer(
       ),
     };
     emit(work, { type: "job.updated", data: state });
-    const summary = summaries.get(work);
-    if (summary) summary.job = state;
     if (job.status === "succeeded" && job.result_version_id) {
       versions.set(job.result_version_id, work);
       emit(work, {
@@ -128,40 +125,20 @@ export function remotionServer(
         job.message || "已停止本次制作，已有成功模板仍可使用。",
       );
   }
-  /** POST 回执生成公开历史；不通过轮询模拟异步完成。 */
+  /** POST 回执生成公开事件；创建回执补齐客户端登记本地会话所需的作品字段。 */
   async function capture(
     path: string,
     options: RequestInit | undefined,
     response: Response,
   ) {
-    if (options?.method !== "POST" || !response.ok || path === "/assets")
+    if (options?.method !== "POST" || !response.ok || path === "/assets" || path.endsWith("/ack"))
       return response;
     const body = await response.clone().json();
     const job: Job = body.job ?? body;
     if (!job.project_id) return response;
     const input =
       typeof options.body === "string" ? JSON.parse(options.body) : {};
-    if (!snapshots.has(job.project_id)) {
-      snapshots.set(job.project_id, {
-        work: { id: job.project_id, current_version_id: null },
-        job: {
-          ...job,
-          created_at: "2026-09-14T08:00:00Z",
-          updated_at: "2026-09-14T08:01:08Z",
-          parameters: null,
-        },
-        messages: [],
-        next_before: null,
-        cursor: 0,
-      });
-      summaries.set(job.project_id, {
-        id: job.project_id,
-        title: input.description || "图片字效",
-        updated_at: "2026-09-14T08:01:08Z",
-        current_version_id: null,
-        job: snapshots.get(job.project_id)!.job,
-      });
-    }
+    works.add(job.project_id);
     if (!path.endsWith("/cancel"))
       message(
         job.project_id,
@@ -170,15 +147,26 @@ export function remotionServer(
         input.description ||
           input.instruction ||
           (input.parameters ? "调整模板参数。" : "请参考这张图片制作字效。"),
-        input.image?.asset_id,
+        (input.images ?? []).map((image: { asset_id: string }) => image.asset_id),
       );
     advance(job);
+    if (path === "/works" && body.work)
+      return Response.json({
+        ...body,
+        work: {
+          current_version_id: null,
+          created_at: "2026-09-14T08:00:00Z",
+          request: { description: input.description ?? null },
+          ...body.work,
+        },
+      });
     return response;
   }
   /** 删除替身清理关联记录并给已有连接发送无游标终止信号。 */
   function remove(work: string) {
-    snapshots.delete(work);
-    summaries.delete(work);
+    works.delete(work);
+    for (let index = records.length - 1; index >= 0; index--)
+      if (records[index]!.work_id === work) records.splice(index, 1);
     for (const [id, owner] of versions) if (owner === work) versions.delete(id);
     for (const stream of streams)
       if (stream.work === work) {
@@ -189,25 +177,31 @@ export function remotionServer(
         );
       }
   }
+  /** 确认送达：记录游标并删除该作品不大于游标的事件。 */
+  function acknowledge(work: string, cursor: number) {
+    acks.set(work, [...(acks.get(work) ?? []), cursor]);
+    for (let index = records.length - 1; index >= 0; index--)
+      if (records[index]!.work_id === work && records[index]!.id <= cursor)
+        records.splice(index, 1);
+  }
   fetchMock.mockImplementation(
     Object.assign(
       async (input: RequestInfo | URL, options?: RequestInit) => {
         const url = new URL(String(input));
         const path = url.pathname.replace("/api/templates", "");
-        if (path === "/works" && options?.method !== "POST")
-          return Response.json({
-            items: [...summaries.values()],
-            next_cursor: null,
-          });
         const custom = overrides(path, options, url);
         if (custom) return capture(path, options, await custom);
         if (/^\/works\/[^/]+$/.test(path) && options?.method === "DELETE") {
           remove(path.split("/")[2]!);
           return new Response(null, { status: 204 });
         }
+        if (/^\/works\/[^/]+\/ack$/.test(path) && options?.method === "POST") {
+          acknowledge(path.split("/")[2]!, JSON.parse(String(options.body)).cursor);
+          return new Response(null, { status: 204 });
+        }
         if (path === "/capabilities")
           return Response.json({ models_configured: true });
-        if (path === "/works") {
+        if (path === "/works" && options?.method === "POST") {
           const id = `work-${++created}`;
           return capture(
             path,
@@ -221,10 +215,10 @@ export function remotionServer(
             }),
           );
         }
-        if (path.endsWith("/session"))
-          return Response.json(snapshots.get(path.split("/")[2]!) ?? {}, {
-            status: snapshots.has(path.split("/")[2]!) ? 200 : 404,
-          });
+        if (/^\/jobs\/[^/]+$/.test(path) && (options?.method ?? "GET") === "GET") {
+          const job = [...jobs.values()].find((item) => item.id === path.split("/")[2]);
+          return job ? Response.json(job) : new Response(null, { status: 404 });
+        }
         if (/^\/works\/[^/]+\/versions$/.test(path)) {
           const work = path.split("/")[2]!;
           return Response.json(
@@ -233,8 +227,18 @@ export function remotionServer(
               .map(([id]) => ({ ...remotionVersion(id), project_id: work })),
           );
         }
+        if (/^\/works\/[^/]+\/events$/.test(path)) {
+          const work = path.split("/")[2]!;
+          if (!works.has(work)) return new Response(null, { status: 404 });
+          const after = Number(url.searchParams.get("after"));
+          // 每页最多 EVENT_PAGE 条，后台同步须继续读取直到取空。
+          return Response.json(
+            records.filter((event) => event.work_id === work && event.id > after).slice(0, EVENT_PAGE),
+          );
+        }
         if (path.endsWith("/stream")) {
           const work = path.split("/")[2]!;
+          if (!works.has(work)) return new Response(null, { status: 404 });
           const after = Number(url.searchParams.get("after"));
           let stream: {
             work: string;
@@ -286,7 +290,17 @@ export function remotionServer(
       { preconnect: () => {} },
     ),
   );
-  return { snapshots, summaries, advance, emit, streams, records, remove };
+  const server = { works, advance, emit, streams, records, emitted, acks, remove };
+  active = server;
+  return server;
+}
+
+/** 模拟本机此前创建并已写入本地的会话：调用创建接口，再把该作品已有事件写入本地存储。 */
+export async function seed(description: string, assets: string[] = []) {
+  const created = await api.create(description, assets);
+  await record(created.work, created.job);
+  await apply(created.work.id, active!.records.filter((event) => event.work_id === created.work.id));
+  return created;
 }
 
 /** SSE 分帧遵循真实接口的 id/event/data 格式。 */

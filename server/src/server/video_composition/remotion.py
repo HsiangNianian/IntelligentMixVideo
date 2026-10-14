@@ -20,12 +20,13 @@ from ..remotion_templates import sprites
 from ..remotion_templates.placement import resolve as resolve_placement
 from ..template.schema import EffectTrack, RemotionTrackEditor
 from ..template.timing import resolve_track
+from ..template.transitions import select_transitions
 from .remotion_content import ContentError, dynamic_duration, resolve_config, roles
 from .remotion_timing import retime_source
 from ..remotion_templates.overlay_render import Overlay, OverlayError, environment_problem, fit_texts, render_overlay, to_frames
 from ..remotion_templates.sprite_router import sprite_runtime
+from . import execution_log
 from .errors import CompositionError
-from .execution_log import sanitize
 from .schema import CompositionRequest, Segment
 from .settings import ZosSettings
 from .text_events import subtitle_events
@@ -35,8 +36,8 @@ logger = logging.getLogger(__name__)
 
 
 def preserve_failure(work: Path, error: Exception) -> None:
-    """清理前私有保存完整异常链、子进程 stderr 和 worker 日志；不保留视频，不进入公开七模块日志。"""
-    destination = work.parent.parent / "composition-overlay-failures" / work.name
+    """清理前将私有诊断存入任务 errors/；异常正文写入成功后附加相对路径，随任务统一清理。"""
+    destination = execution_log.LOG_ROOT / "video_composition" / work.name / "errors"
     destination.mkdir(parents=True, exist_ok=True, mode=0o700)
     detail = "".join(traceback.format_exception(error))
     cause, seen = error, set()
@@ -46,10 +47,11 @@ def preserve_failure(work: Path, error: Exception) -> None:
         if isinstance(stderr := getattr(cause, "stderr", None), str) and stderr:
             detail += f"\n[{type(cause).__name__} stderr]\n{stderr[-20000:]}"
         cause = cause.__cause__ or cause.__context__
-    detail = sanitize(detail)
-    (destination / "error.log").write_text(detail, encoding="utf-8")
+    detail = execution_log.sanitize(detail)
+    (destination / "remotion-error.log").write_text(detail, encoding="utf-8")
+    error.detail_log_path = "errors/remotion-error.log"
     if (work / "worker.log").is_file():
-        shutil.copyfile(work / "worker.log", destination / "worker.log")
+        shutil.copyfile(work / "worker.log", destination / "remotion-worker.log")
 
 
 async def snapshot(template) -> dict:
@@ -59,6 +61,8 @@ async def snapshot(template) -> dict:
         placements, publications = [], {}
         for track in template.tracks:
             if track.target != "remotion":
+                continue
+            if not template.transition_enabled and track.transition_boundary is not None:
                 continue
             asset_id = str(track.sprite_id)
             if asset_id not in publications:
@@ -94,12 +98,15 @@ def placement_target(placement: dict, sprite: pb.PublishedSprite) -> str:
 async def require_environment(data: dict) -> None:
     """快照里有会实际渲染的摆放时，在付费 ASR／切片前确认隔离渲染环境；没有可显示内容时不要求。"""
     saved = data.get("remotion") or {}
-    if not saved.get("placements"):
+    placements = saved.get("placements", [])
+    if data.get("template", {}).get("transition_enabled") is False:
+        placements = [item for item in placements if item.get("transition_boundary") is None]
+    if not placements:
         return
     request = CompositionRequest.model_validate(data["request"])
     try:
         targets = {placement_target(placement, ParseDict(saved["assets"][placement["sprite_id"]], pb.PublishedSprite()))
-                   for placement in saved["placements"]}
+                   for placement in placements}
     except ContentError as exc:
         raise CompositionError("remotion_asset_not_adapted", str(exc), "template") from exc
     title = bool(request.title and request.title.strip())
@@ -114,7 +121,7 @@ async def require_environment(data: dict) -> None:
         raise CompositionError("remotion_render_environment_unavailable", "Remotion 渲染环境不可用", "template")
 
 
-def plan(data: dict, max_seconds: float, *, timeline: dict | None = None) -> Overlay | None:
+def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transition_seed: str = "") -> Overlay | None:
     """根据已保存业务快照展开字幕；示例时长不限制字幕，空内容不产生实例。"""
     saved = data.get("remotion")
     # 历史任务没有快照时延续原流程，不能恢复时偷偷读取新的模板绑定。
@@ -132,7 +139,24 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None) -> Ove
     title_keyword = data.get("segmentation", {}).get("title_keyword", "")
     instances = []
     timed_sources = {}
-    for placement in sorted(saved["placements"], key=lambda item: item.get("order", 0)):
+    placements = sorted(saved["placements"], key=lambda item: item.get("order", 0))
+    template = data.get("template", {})
+    if template.get("transition_enabled") is False:
+        placements = [item for item in placements if item.get("transition_boundary") is None]
+    if template.get("transition_mode") is not None and any(item.get("transition_boundary") is not None for item in placements):
+        if timeline is None:
+            raise ContentError("Remotion 转场缺少最终素材时间线")
+        selected = select_transitions(template["tracks"], len(timeline["VideoTracks"][0]["VideoTrackClips"]) - 1,
+                                      template["transition_mode"], transition_seed)
+        expanded = []
+        for placement in placements:
+            if placement.get("transition_boundary") is None:
+                expanded.append(placement)
+            else:
+                expanded.extend({**placement, "transition_boundary": boundary}
+                                for item, boundary in selected if item["id"] == placement["id"])
+        placements = expanded
+    for placement in placements:
         editor = RemotionTrackEditor.model_validate(placement.get("editor", {}))
         sprite = publications[placement["sprite_id"]]
         text_target = placement.get("text_target")
@@ -166,7 +190,12 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None) -> Ove
             clips = timeline["VideoTracks"][0]["VideoTrackClips"]
             if boundary >= len(clips):
                 continue
-            # 沿用上游预览规则，仅将已绑定的转场居中放在指定切点，不自动扩展至所有切点。
+            if template.get("transition_mode") is not None:
+                length_seconds = min(math.floor(length_seconds * fps + 0.5),
+                    math.floor((clips[boundary - 1]["TimelineOut"] - clips[boundary - 1]["TimelineIn"]) * fps + 1e-8) // 2,
+                    math.floor((clips[boundary]["TimelineOut"] - clips[boundary]["TimelineIn"]) * fps + 1e-8) // 2) / fps
+                if length_seconds < 0.1:
+                    continue
             start = max(0, clips[boundary - 1]["TimelineOut"] - length_seconds / 2)
         if target == "subtitle":
             contents = [(text, keyword, max(begin, start), min(end, start + length_seconds))
@@ -213,7 +242,7 @@ async def render(task_id: str, data: dict, timeout: float, *, timeline: dict | N
         work = service.store.root / "composition-overlays" / task_id
         # 计划与打包失败同样私有保存根因：公开错误只有固定摘要，打包器输出可能含资产源码。
         try:
-            overlay = await asyncio.to_thread(plan, data, service.settings.overlay_max_seconds, timeline=timeline)
+            overlay = await asyncio.to_thread(plan, data, service.settings.overlay_max_seconds, timeline=timeline, transition_seed=task_id)
             if overlay is None:
                 return None
             if environment_problem(service.settings):

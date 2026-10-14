@@ -718,7 +718,7 @@ description 非空，instances 非空。主画布配置和 sprite 总帧数均�
 
 | kind | 界面分类 | 必备顶层参数（Schema） | 宿主变换 |
 | --- | --- | --- | --- |
-| text | 字效 | text（string，minLength ≥ 1，maxLength ≤ 200）、fontSize（数字，范围在 8～400 内且覆盖 24～160）、fontWeight（enum 恰为 400、700）、color（颜色 pattern），以及下文的七个关键词参数 | 位置、缩放、旋转、不透明度 |
+| text | 字效 | text（string，minLength ≥ 1，maxLength 必须为 100，排版失败须调整换行和字号，不得降低上限）、fontSize（数字，范围在 8～400 内且覆盖 24～160）、fontWeight（enum 恰为 400、700）、color（颜色 pattern），以及下文的七个关键词参数 | 位置、缩放、旋转、不透明度 |
 | filter_overlay | 滤镜 | intensity（数字 0～1）、tintColor（颜色 pattern） | 不透明度 |
 | video_overlay | 转场与视频特效 | color（颜色 pattern）、speed（数字 0.25～4） | 位置、缩放、旋转、不透明度 |
 | transition_overlay | 转场与视频特效 | color（颜色 pattern）、speed（数字 0.25～4） | 不透明度 |

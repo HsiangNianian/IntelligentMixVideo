@@ -3,8 +3,9 @@
 A publication copies the sealed source, parameter contract and interactive player bundle out of the
 chat-owned version directory, so deleting or editing the source work never changes a placed Sprite.
 Publications (`imv.sprite.v1.PublishedSprite` JSON) are rows of the MySQL table in `sprite_store.py`, next
-to the templates whose `remotion` tracks reference them; their player bundle copies live in the Remotion
-data folder. Where a Sprite is placed is part of the template, so nothing here reads or validates IMS
+to the templates whose `remotion` tracks reference them; their player bundle copies are objects in the
+Remotion object store (ZOS, or the data folder without ZOS). A bundle that is missing or no longer matches its
+recorded hash is rebuilt from the published source on the next preview. Where a Sprite is placed is part of the template, so nothing here reads or validates IMS
 template data. HTTP framing lives in `sprite_router.py`.
 """
 
@@ -16,6 +17,8 @@ import shutil
 import weakref
 from dataclasses import asdict
 from datetime import UTC, datetime
+from pathlib import Path
+from time import monotonic
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException
@@ -26,15 +29,49 @@ from starlette.concurrency import run_in_threadpool
 
 from . import boundary, sprite_store
 from .categories import HEX_COLOR, category_problems, operator_message
-from .evidence import digest, verify_artifacts
 from .publication import current_bundle
 from .models import TemplateVersion
+from .object_store import PREFIX, ObjectStoreError
 from .store import Conflict, NotFound, Store
 
 PREVIEW_BUNDLE = "interactive.js"
+
+
+def bundle_key(sprite_id: str) -> str:
+    """Object key of one publication's player bundle copy."""
+    return f"{PREFIX}/sprites/{sprite_id}/{PREVIEW_BUNDLE}"
+
+
+def _bundle_bytes(store: Store, sprite: pb.PublishedSprite) -> bytes | None:
+    """The publication's verified bundle copy, or None when it is missing or no longer matches its hash.
+
+    An unreachable object store is not a lost copy: it raises ObjectStoreError instead of starting a rebuild.
+    """
+    try:
+        return store.cached(
+            bundle_key(sprite.sprite_id), Path("sprites") / sprite.sprite_id / PREVIEW_BUNDLE, sprite.preview_sha256,
+        ).read_bytes()
+    except ObjectStoreError:
+        raise
+    except (OSError, ValueError):
+        return None
 # 同一来源与字段选择的发布轮流执行：重复点击等待首个完成后读取它保存的资产，不重复重建播放器包。
 # 值为弱引用，没有持有者和等待者后锁自动释放，字典不会随发布次数增长。
 _publishing: weakref.WeakValueDictionary[tuple, asyncio.Lock] = weakref.WeakValueDictionary()
+# 同一资产的预览重建与删除轮流执行：并发预览只重建一次，删除不会被进行中的重建写回副本。
+_bundles: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
+# 预览包重建失败后的冷却时间（秒）：期间预览直接 404，不再为每次请求启动隔离 worker。
+REBUILD_COOLDOWN = 300.0
+# 最近一次重建失败的单调时间，按资产 ID；成功或删除后清除，只含已发布资产。
+_rebuild_failed: dict[str, float] = {}
+
+
+def bundle_lock(sprite_id: str) -> asyncio.Lock:
+    """The lock that serializes rebuilding and deleting one publication's player copy."""
+    lock = _bundles.get(sprite_id)
+    if lock is None:
+        lock = _bundles[sprite_id] = asyncio.Lock()
+    return lock
 
 # 发布类型与效果分类的对应；视频特效与转场在界面上合为第三类，但必备参数和宿主变换按各自类型检查。
 KIND_NAMES = {
@@ -46,6 +83,10 @@ KIND_NAMES = {
 # 字效固定的文字与关键词参数名；关键词可选。
 TEXT_PROP = "text"
 KEYWORDS_PROP = "keywords"
+
+
+# 目录里显示的资产名称长度上限，与发布时由描述截取的名称一致。
+NAME_MAX_LENGTH = 100
 
 
 def _invalid(message: str) -> HTTPException:
@@ -144,6 +185,25 @@ def get(sprite_id: str) -> pb.PublishedSprite:
     return published_from(data)
 
 
+def rename(sprite_id: str, name: str) -> pb.SpriteSummary:
+    """Change the name shown in the catalog; the code, parameters and preview bundle are untouched.
+
+    The name is trimmed and must be 1 to 100 characters; it need not be unique, like the names publishing derives.
+    Unknown or malformed IDs are a 404. Assets that templates place can be renamed, since templates store only IDs.
+    """
+    name = name.strip()
+    if not 1 <= len(name) <= NAME_MAX_LENGTH:
+        raise _invalid(f"名称去除首尾空白后需为 1～{NAME_MAX_LENGTH} 个字符")
+    try:
+        identifier = str(UUID(sprite_id))
+    except ValueError:
+        raise NotFound("sprite not found") from None
+    data = sprite_store.update_data(identifier, {"name": name})
+    if data is None:
+        raise NotFound("sprite not found")
+    return summarize(published_from(data))
+
+
 def content_box(sprite: pb.PublishedSprite) -> pb.SpriteBox:
     """The pivot box of the host transform; publications made before boxes were recorded use the whole canvas."""
     if sprite.HasField("content_box"):
@@ -210,20 +270,89 @@ def catalog() -> list[pb.SpriteSummary]:
     return items
 
 
-def preview_script(store: Store, sprite_id: str) -> tuple[str, dict]:
-    """Read the sprite's own copy of the player bundle after checking it against the published hash.
+async def preview_script(service, sprite_id: str) -> tuple[str, dict]:
+    """Read the sprite's own verified copy of the player bundle, rebuilding it from the published source when needed.
+
+    A lost copy (missing or no longer matching its hash) is rebuilt, and the preview is a 404 if that fails. A copy
+    that predates the current host protocol (`current_bundle`) cannot take the placement transform or parameter
+    overrides, so the template editor would show the asset unmoved; it is rebuilt once instead of waiting for the
+    Sprite to be saved again, and when that fails the old copy is served as before.
+    Previews of one Sprite load together (one iframe per placement): they take turns, so only the first rebuilds,
+    and after a failed rebuild of a lost copy later previews answer 404 for `REBUILD_COOLDOWN` seconds instead of
+    starting another isolated worker each. An unreachable object store is a 503.
 
     Also returns what the page injects for the player: the published defaults and the content box.
     """
-    sprite = get(sprite_id)
-    path = store.root / "sprites" / sprite.sprite_id / PREVIEW_BUNDLE
+    store = service.store
+    sprite = await run_in_threadpool(get, sprite_id)
     try:
-        if digest(path) != sprite.preview_sha256:
-            raise ValueError("preview changed")
-        script = path.read_text(encoding="utf-8")
-    except (OSError, ValueError) as exc:
-        raise NotFound("sprite preview unavailable") from exc
-    return script, {"config": json.loads(sprite.default_config_json or "{}"), "box": box_json(sprite)}
+        script = await run_in_threadpool(_bundle_bytes, store, sprite)
+        if script is None or not current_bundle(script):
+            async with bundle_lock(sprite.sprite_id):
+                # Another preview may have rebuilt the copy, or a deletion removed the asset, while this one waited.
+                sprite = await run_in_threadpool(get, sprite_id)
+                script = await run_in_threadpool(_bundle_bytes, store, sprite)
+                if script is None:
+                    script = await _rebuild_once(service, sprite)
+                elif not current_bundle(script):
+                    fresh = await _rebuilt(service, sprite, throttle=False)
+                    if fresh is not None:
+                        try:
+                            await run_in_threadpool(_store_bundle, store, sprite, fresh)
+                            script = fresh
+                        except Exception:
+                            logging.getLogger(__name__).exception("Sprite preview refresh not stored: %s", sprite.sprite_id)
+    except ObjectStoreError as exc:
+        raise HTTPException(503, "资产预览存储暂不可用，请稍后重试") from exc
+    return script.decode("utf-8"), {"config": json.loads(sprite.default_config_json or "{}"), "box": box_json(sprite)}
+
+
+async def _rebuilt(service, sprite: pb.PublishedSprite, *, throttle: bool = True) -> bytes | None:
+    """Rebuild a publication's player bundle from its source; None when it failed or, if throttled, failed within the cooldown.
+
+    Only a lost copy is throttled (its preview is a 404 anyway); an outdated copy is retried by every preview, since
+    the old copy keeps being served and a restored sandbox should refresh it at once.
+    """
+    failed = _rebuild_failed.get(sprite.sprite_id)
+    if throttle and failed is not None and monotonic() - failed < REBUILD_COOLDOWN:
+        return None
+    canvas = sprite.canvas
+    script = await _rebuild_bundle(service, sprite.tsx_code, json.loads(sprite.default_config_json or "{}"), {
+        "width": canvas.width, "height": canvas.height, "fps": canvas.fps, "duration_in_frames": canvas.preview_frames,
+    }, sprite.sprite_id)
+    if script is None:
+        if throttle:
+            _rebuild_failed[sprite.sprite_id] = monotonic()
+    else:
+        _rebuild_failed.pop(sprite.sprite_id, None)
+    return script
+
+
+async def _rebuild_once(service, sprite: pb.PublishedSprite) -> bytes:
+    """Rebuild and store a lost player copy under its lock; without a copy the preview is a 404."""
+    script = await _rebuilt(service, sprite)
+    if script is None:
+        raise NotFound("sprite preview unavailable")
+    await run_in_threadpool(_store_bundle, service.store, sprite, script)
+    return script
+
+
+def remove(store: Store, sprite_id: str, used_by: list[str]) -> None:
+    """Delete an unused publication with its bundle object and cache; a template that places it blocks deletion.
+
+    `used_by` lists the cloud templates whose `remotion` tracks reference the Sprite (409 naming them); an unknown
+    ID is a 404. A record that fails its integrity check can still be deleted. The source work and its versions are
+    untouched, so the version can be saved to the library again.
+    """
+    if sprite_store.get(sprite_id) is None:
+        raise NotFound("sprite not found")
+    if used_by:
+        raise Conflict(f"资产正被模板使用，请先在这些模板里移除后再删除：{'、'.join(used_by)}")
+    if not sprite_store.remove(sprite_id):
+        raise NotFound("sprite not found")
+    _rebuild_failed.pop(sprite_id, None)
+    store.objects.delete_prefix(f"{PREFIX}/sprites/{sprite_id}/")
+    shutil.rmtree(store.root / "cache" / "sprites" / sprite_id, ignore_errors=True)
 
 
 def _validated_request(request: pb.PublishSpriteRequest, version: TemplateVersion) -> None:
@@ -249,26 +378,24 @@ def _validated_request(request: pb.PublishSpriteRequest, version: TemplateVersio
         raise _invalid("只有字效可以声明 text_prop 与 keywords_prop")
 
 
-async def _rebuild_bundle(service, version) -> bytes | None:
-    """Rebuild the player bundle from the sealed source with the current host code; None when unavailable.
+async def _rebuild_bundle(service, code: str, config: dict, composition: dict, label) -> bytes | None:
+    """Rebuild a player bundle from sealed source with the current host code; None when unavailable.
 
-    Failure is non-fatal: the asset is still saved with its original bundle and simply cannot be previewed
-    over the template.
+    Failure is non-fatal when publishing: the asset is still saved with its original bundle and simply cannot be
+    previewed over the template.
     """
     store = service.store
     work = store.root / "sprites" / f".build-{uuid4()}"
     try:
         work.mkdir(parents=True)
         (work / "request.json").write_text(json.dumps({
-            "code": version.candidate.tsx_code,
-            "config": version.candidate.default_config,
-            "composition": version.spec.composition.model_dump(),
+            "code": code, "config": config, "composition": composition,
         }, ensure_ascii=False), encoding="utf-8")
         await service.harness.renderer.run_worker(work, worker="presentation-worker.mjs")
         data = (work / PREVIEW_BUNDLE).read_bytes()
         return data if current_bundle(data) else None
     except Exception:
-        logging.getLogger(__name__).exception("Sprite preview rebuild failed: %s", version.id)
+        logging.getLogger(__name__).exception("Sprite preview rebuild failed: %s", label)
         return None
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -277,17 +404,16 @@ async def _rebuild_bundle(service, version) -> bytes | None:
 def _store_bundle(store: Store, sprite: pb.PublishedSprite, data: bytes) -> None:
     """Replace a publication's player copy and its recorded hash; the source and parameters are untouched.
 
-    The new bytes are staged beside the copy and the hash is recorded before they take its place, so a failed
-    write or database update leaves the old copy matching its hash. A swap that never completes leaves the old
-    copy, which still lacks the protocol line, so publishing again retries it.
+    The object is written before the hash is recorded. If the second step fails, the copy no longer matches and
+    the next preview rebuilds it, so a partial update never leaves an unusable asset.
     """
-    target = store.root / "sprites" / sprite.sprite_id / PREVIEW_BUNDLE
-    staged = target.with_name(f"{PREVIEW_BUNDLE}.{uuid4().hex}.tmp")
+    staged = store.root / "sprites" / f".bundle-{uuid4().hex}.js"
+    staged.parent.mkdir(parents=True, exist_ok=True)
     try:
         staged.write_bytes(data)
+        store.objects.put(bundle_key(sprite.sprite_id), staged, "text/javascript")
         sprite.preview_sha256 = hashlib.sha256(data).hexdigest()
-        sprite_store.replace_data(sprite.sprite_id, MessageToDict(sprite, preserving_proto_field_name=True))
-        staged.replace(target)
+        sprite_store.update_data(sprite.sprite_id, {"preview_sha256": sprite.preview_sha256})
     finally:
         staged.unlink(missing_ok=True)
 
@@ -305,21 +431,24 @@ def _existing(version: TemplateVersion, request: pb.PublishSpriteRequest) -> dic
     return data
 
 
-def _inspect(store: Store, request: pb.PublishSpriteRequest) -> tuple[TemplateVersion, pb.PublishedSprite | None, bytes]:
-    """Check the request against its re-verified source and find the player bytes involved.
+def _inspect(
+    store: Store, request: pb.PublishSpriteRequest, device: UUID,
+) -> tuple[TemplateVersion, pb.PublishedSprite | None, bytes]:
+    """Check the request against its re-verified source of this device and find the player bytes involved.
 
     Returns the version, the publication this source and field choice already produced (or None) and the
-    bundle that publication serves, or that a new one would copy. It hashes every sealed artifact, so callers
-    run it in a worker thread.
+    bundle that publication serves (empty when its copy is lost, so it is rebuilt), or that a new one would copy.
+    It hashes every sealed artifact, so callers run it in a worker thread.
     """
     try:
         version_id = UUID(request.source_version_id)
     except ValueError:
         raise _invalid("source_version_id 不是有效的 UUID") from None
-    version = store.version(version_id)
-    accepted = store.root / "accepted" / str(version.id)
+    version = store.version(version_id, device)
     try:
-        verify_artifacts(version.candidate, version.spec, version.validation, accepted)
+        accepted = store.accepted(version)
+    except ObjectStoreError as exc:
+        raise HTTPException(503, "Artifact storage is unavailable; retry later.") from exc
     except (ValueError, OSError) as exc:
         raise Conflict("accepted artifact unavailable") from exc
     if PREVIEW_BUNDLE not in version.validation.artifacts:
@@ -331,7 +460,7 @@ def _inspect(store: Store, request: pb.PublishSpriteRequest) -> tuple[TemplateVe
         _validated_request(request, version)
         return version, None, (accepted / PREVIEW_BUNDLE).read_bytes()
     sprite = published_from(data)
-    return version, sprite, (store.root / "sprites" / sprite.sprite_id / PREVIEW_BUNDLE).read_bytes()
+    return version, sprite, _bundle_bytes(store, sprite) or b""
 
 
 def _bound_names(version: TemplateVersion) -> list[str]:
@@ -343,8 +472,9 @@ def _bound_names(version: TemplateVersion) -> list[str]:
 async def _sample(service, version: TemplateVersion, kind: int) -> None:
     """Render the version's boundary samples in the isolated browser before it becomes an asset.
 
-    After this passes, any template value inside the published parameter contract only needs the instant schema
-    check. A sample that fails is a 422 naming it; a validator that cannot start is a 503.
+    Availability comes first: a sample that fails to render, or an end the parameter constraints leave unsampled,
+    is only logged and the publication goes ahead, because the code still renders at its defaults and a placement
+    that really breaks fails its own overlay task. A validator that cannot start is still a 503.
     """
     from .tool_validation import ToolValidator, ValidationUnavailable
     from .tools.contracts import ComponentDefinition
@@ -353,11 +483,9 @@ async def _sample(service, version: TemplateVersion, kind: int) -> None:
     box = _content_box(version)
     names = _bound_names(version)
     samples = boundary.samples(candidate.config_schema, candidate.default_config, names, KIND_NAMES[kind], (composition.width, composition.height))
+    logger = logging.getLogger(__name__)
     if missing := boundary.unsampled(candidate.config_schema, candidate.default_config, names, samples):
-        raise _invalid(
-            f"参数 {'、'.join(missing)} 的两端或枚举取值在其他参数取默认值时不合约束，无法检查；"
-            "请在聊天中让 Agent 简化参数之间的约束后再保存到资产"
-        )
+        logger.warning("Sprite boundary samples skip parameters %s of %s: their ends do not fit the constraints", missing, version.id)
     work = service.store.root / "sprites" / f".samples-{uuid4()}"
     try:
         checks = await ToolValidator(service.harness.renderer, work).validate_samples(
@@ -368,16 +496,13 @@ async def _sample(service, version: TemplateVersion, kind: int) -> None:
             text=kind == pb.SPRITE_KIND_TEXT,
         )
     except ValidationUnavailable as exc:
-        logging.getLogger(__name__).warning("Sprite boundary samples unavailable for %s: %s", version.id, exc)
+        logger.warning("Sprite boundary samples unavailable for %s: %s", version.id, exc)
         raise HTTPException(503, "参数边界检查环境不可用，请稍后重试") from None
     finally:
         await run_in_threadpool(shutil.rmtree, work, True)
-    failed = next((item for item in checks if item.status != "passed"), None)
-    if failed is not None:
-        raise _invalid(
-            f"参数边界检查未通过（{failed.name.removeprefix('sample:')}）：{(failed.message or '')[:300]}。"
-            "请在聊天中让 Agent 修复后再保存到资产"
-        )
+    for item in checks:
+        if item.status != "passed":
+            logger.warning("Sprite boundary sample %s of %s failed, published anyway: %s", item.name.removeprefix("sample:"), version.id, (item.message or "")[:300])
 
 
 def _create(store: Store, request: pb.PublishSpriteRequest, version: TemplateVersion, bundle: bytes) -> pb.SpriteSummary:
@@ -386,10 +511,11 @@ def _create(store: Store, request: pb.PublishSpriteRequest, version: TemplateVer
     composition = version.spec.composition
     sprite_id = str(uuid4())
     published_at = datetime.now(UTC)
-    directory = store.root / "sprites" / sprite_id
-    directory.mkdir(parents=True)
+    staged = store.root / "sprites" / f".bundle-{uuid4().hex}.js"
+    staged.parent.mkdir(parents=True, exist_ok=True)
     try:
-        (directory / PREVIEW_BUNDLE).write_bytes(bundle)
+        staged.write_bytes(bundle)
+        store.objects.put(bundle_key(sprite_id), staged, "text/javascript")
         sprite = pb.PublishedSprite(
             sprite_id=sprite_id,
             source_version_id=str(version.id),
@@ -418,18 +544,20 @@ def _create(store: Store, request: pb.PublishSpriteRequest, version: TemplateVer
             data=MessageToDict(sprite, preserving_proto_field_name=True),
         )
     except IntegrityError as exc:
-        shutil.rmtree(directory, ignore_errors=True)
+        store.objects.delete_prefix(f"{PREFIX}/sprites/{sprite_id}/")
         # Only a duplicate key means an identical publication won the race; other integrity errors are real.
         if exc.orig.args[0] != 1062 or (data := _existing(version, request)) is None:
             raise
         return summarize(published_from(data))
     except BaseException:
-        shutil.rmtree(directory, ignore_errors=True)
+        store.objects.delete_prefix(f"{PREFIX}/sprites/{sprite_id}/")
         raise
+    finally:
+        staged.unlink(missing_ok=True)
     return summarize(sprite)
 
 
-async def publish(service, request: pb.PublishSpriteRequest) -> pb.SpriteSummary:
+async def publish(service, request: pb.PublishSpriteRequest, device: UUID) -> pb.SpriteSummary:
     """Copy a verified accepted version into an immutable publication; repeating returns the original.
 
     A new publication first renders its boundary samples (`boundary.py`), so later template overrides inside its
@@ -444,10 +572,13 @@ async def publish(service, request: pb.PublishSpriteRequest) -> pb.SpriteSummary
         (request.source_version_id, request.kind, request.text_prop, request.keywords_prop), asyncio.Lock()
     )
     async with lock:
-        version, sprite, bundle = await run_in_threadpool(_inspect, store, request)
+        version, sprite, bundle = await run_in_threadpool(_inspect, store, request, device)
         if sprite is None:
             await _sample(service, version, request.kind)
-        fresh = None if current_bundle(bundle) else await _rebuild_bundle(service, version)
+        fresh = None if current_bundle(bundle) else await _rebuild_bundle(
+            service, version.candidate.tsx_code, version.candidate.default_config,
+            version.spec.composition.model_dump(), version.id,
+        )
         if sprite is None:
             return await run_in_threadpool(_create, store, request, version, fresh or bundle)
         if fresh:

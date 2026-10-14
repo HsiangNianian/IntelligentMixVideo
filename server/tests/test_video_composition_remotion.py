@@ -16,7 +16,7 @@ from google.protobuf.json_format import MessageToDict
 from server.video_composition.remotion_content import ContentError, dynamic_duration, resolve_config, roles
 from server.video_composition.remotion_timing import retime_source
 from server.remotion_templates.overlay_render import OverlayError
-from server.video_composition import remotion, service, store
+from server.video_composition import execution_log, remotion, service, store
 from server.video_composition.errors import CompositionError
 
 
@@ -192,6 +192,49 @@ def test_upstream_visual_slots_render_without_business_target(composition_case, 
         assert remotion.plan(data, 120, timeline=timeline) is None
 
 
+@pytest.mark.parametrize("mode", ["sequence", "random"])
+@pytest.mark.parametrize("duration", [0.6, None])
+def test_transition_list_uses_the_same_selection_for_remotion(composition_case, mode, duration):
+    """混合列表只在选中 Remotion 的连接处生成实例，并保留自身时长。"""
+    from server.template.transitions import select_transitions
+
+    data = case(composition_case, None)
+    sprite = asset()
+    sprite.kind = pb.SPRITE_KIND_TRANSITION_OVERLAY
+    sprite.canvas.preview_frames = 18
+    sprite.config_schema_json = '{"type":"object","properties":{}}'
+    sprite.default_config_json = '{}'
+    data["remotion"]["assets"] = {sprite.sprite_id: MessageToDict(sprite, preserving_proto_field_name=True)}
+    placement = data["remotion"]["placements"][0]
+    placement.update(sprite_id=sprite.sprite_id, transition_boundary=2, duration=duration)
+    candidates = [{"id": "ims", "target": "transition", "transition_boundary": 1},
+                  {"id": placement["id"], "target": "remotion", "transition_boundary": 2}]
+    data["template"] = {"transition_mode": mode, "transition_duration_seconds": 0.2, "tracks": candidates}
+    clips = [{"TimelineIn": index * 1.6, "TimelineOut": (index + 1) * 1.6} for index in range(5)]
+    timeline = {"VideoTracks": [{"VideoTrackClips": clips}]}
+    original = deepcopy(data)
+    overlay = remotion.plan(data, 120, timeline=timeline, transition_seed="mixed-task")
+    selected = select_transitions(candidates, 4, mode, "mixed-task")
+    boundaries = [boundary for item, boundary in selected if item["target"] == "remotion"]
+    assert overlay is not None
+    assert [item["start_frame"] for item in overlay.instances] == [round((boundary * 1.6 - 0.3) * 30) for boundary in boundaries]
+    assert all(item["duration_frames"] == 18 for item in overlay.instances)
+    assert data == original
+    data["template"]["transition_enabled"] = False
+    assert remotion.plan(data, 120, timeline=timeline, transition_seed="mixed-task") is None
+    assert asyncio.run(remotion.require_environment(data)) is None
+    data["template"]["transition_enabled"] = True
+    data["remotion"]["placements"].append({**placement, "id": "decoration", "transition_boundary": None, "order": 1, "start": 0, "duration": 0.2})
+    layered = remotion.plan(data, 120, timeline=timeline, transition_seed="mixed-task")
+    assert [item["start_frame"] for item in layered.instances] == [item["start_frame"] for item in overlay.instances] + [0]
+    data["template"]["transition_enabled"] = False
+    disabled = remotion.plan(data, 120, timeline=timeline, transition_seed="mixed-task")
+    assert len(disabled.instances) == 1
+    assert disabled.instances[0]["start_frame"] == 0
+    data["template"]["transition_enabled"] = True
+    assert remotion.plan(data, 120, timeline=timeline, transition_seed="mixed-task").instances == layered.instances
+
+
 def test_no_content_and_historical_task_skip_rendering(composition_case):
     """空标题、无字幕和旧任务均不回退示例，且不读取最新绑定。"""
     data = case(composition_case, "title")
@@ -255,8 +298,8 @@ async def test_render_uses_shared_slot_and_persists_public_video(composition_cas
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("diagnostic_writable", [True, False])
-async def test_render_failure_keeps_private_cause_before_cleanup(composition_case, monkeypatch, tmp_path, diagnostic_writable):
-    """失败保留 worker 原始错误及完整异常链，清理视频；诊断写入失败仍返回原始业务错误。"""
+async def test_render_failure_keeps_private_cause_before_cleanup(composition_case, composition_runtime, composition_logs, monkeypatch, tmp_path, diagnostic_writable):
+    """失败引用已有私有根因；私有诊断写入失败时仍保存通用错误文件，不掩盖原错误。"""
     slot = asyncio.Semaphore(1)
     runtime = SimpleNamespace(settings=SimpleNamespace(overlay_max_seconds=120), store=SimpleNamespace(root=tmp_path),
                               overlays=SimpleNamespace(slot=slot), harness=SimpleNamespace(renderer="renderer"))
@@ -280,18 +323,44 @@ async def test_render_failure_keeps_private_cause_before_cleanup(composition_cas
     monkeypatch.setattr(remotion, "render_overlay", fail)
     if not diagnostic_writable:
         monkeypatch.setattr(remotion, "preserve_failure", unwritable)
+    legacy = tmp_path / "composition-overlay-failures" / "task" / "error.log"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("历史诊断")
+    store.initialize_schema()
+    record = store.advance(store.create(composition_case["request"], {}, task_id="task"), "assembling")
     with pytest.raises(CompositionError) as caught:
-        await remotion.render("task", case(composition_case), 10)
+        await composition_runtime.step(record, "remotion_render", lambda: remotion.render("task", case(composition_case), 10), {})
     assert caught.value.error == {"code": "remotion_render_failed", "message": "叠加视频渲染失败", "stage": "assembling"}
+    store.advance(record, "failed", status="failed", error=caught.value.error,
+                  diagnostics=execution_log.exception_details(caught.value))
+    entries = composition_logs("task", raw=True)[0]["timeline"]["error_log"]
+    assert [entry["action"] for entry in entries] == ["remotion_render.step_failed", "assembling.task_finished"]
+    assert "private browser connection timeout" not in json.dumps(entries)
     assert not slot.locked()
     assert not (tmp_path / "composition-overlays" / "task").exists()
-    private = tmp_path / "composition-overlay-failures" / "task"
+    private = execution_log.LOG_ROOT / "video_composition" / "task" / "errors"
+    for entry in entries:
+        relative = Path(entry["error"]["detail_log_path"])
+        assert not relative.is_absolute()
+        linked = execution_log.LOG_ROOT / "video_composition" / "task" / relative
+        assert linked.is_file()
+        if diagnostic_writable:
+            assert relative.as_posix() == "errors/remotion-error.log"
+            assert linked.resolve() == private / "remotion-error.log"
+        else:
+            assert relative.parent == Path("errors")
+            assert "private browser connection timeout" not in linked.read_text()
     if diagnostic_writable:
-        assert "25000 ms" in (private / "worker.log").read_text()
-        detail = (private / "error.log").read_text()
+        assert "25000 ms" in (private / "remotion-worker.log").read_text()
+        detail = (private / "remotion-error.log").read_text()
         assert "RuntimeError: private browser connection timeout" in detail and "OverlayError" in detail
-        assert {item.name for item in private.iterdir()} == {"worker.log", "error.log"}
+        assert {item.name for item in private.iterdir()} == {"remotion-worker.log", "remotion-error.log"}
         assert private.stat().st_mode & 0o777 == 0o700
+        # JSON 单独未超限，加入 Remotion 文件才超限；已结束任务应整体清理。
+        monkeypatch.setattr(execution_log, "MAX_BYTES", sum(path.stat().st_size for path in private.parent.glob("*.json")))
+        execution_log.cleanup(store.finished_tasks)
+        assert not private.parent.exists()
+    assert legacy.read_text() == "历史诊断"
 
 
 # 场景：渲染前的计划/时长适配打包失败时，公开错误只有固定摘要，打包器 stderr 等根因须进入私有诊断。
@@ -302,7 +371,7 @@ async def test_plan_failure_keeps_private_cause(composition_case, monkeypatch, t
     async def get_runtime():
         """使用隔离目录，不访问实际渲染服务。"""
         return runtime
-    def fail(data, max_seconds, *, timeline=None):
+    def fail(data, max_seconds, *, timeline=None, transition_seed=""):
         """模拟时长适配打包器缺少依赖：原因只在 stderr 中。"""
         try:
             raise subprocess.CalledProcessError(1, ["node"], stderr="Cannot find module 'esbuild'")
@@ -313,7 +382,7 @@ async def test_plan_failure_keeps_private_cause(composition_case, monkeypatch, t
     with pytest.raises(CompositionError) as caught:
         await remotion.render("task", case(composition_case), 10)
     assert caught.value.error["code"] == "remotion_asset_not_adapted"
-    detail = (tmp_path / "composition-overlay-failures" / "task" / "error.log").read_text()
+    detail = (execution_log.LOG_ROOT / "video_composition" / "task" / "errors" / "remotion-error.log").read_text()
     assert "CalledProcessError" in detail and "Cannot find module 'esbuild'" in detail
     assert not (tmp_path / "composition-overlays" / "task").exists()
 
@@ -444,15 +513,15 @@ async def test_snapshot_survives_binding_edit(composition_case, template_db):
     """共享资产读取后，修改模板轨道不会替换已受理任务的资产集合。"""
     from datetime import UTC, datetime
     from server.remotion_templates import sprite_store
-    from server.template.schema import EffectTrack
+    from server.template.schema import Template
     data = case(composition_case)
     sprite_id, published = next(iter(data["remotion"]["assets"].items()))
     sprite_store.insert(sprite_id=sprite_id, source_version_id=str(uuid4()), kind=1,
                         text_prop="", keywords_prop="", published_at=datetime.now(UTC), data=published)
-    template = SimpleNamespace(updated_at=datetime.now(UTC), tracks=[EffectTrack.model_validate({
+    template = Template.model_validate({**composition_case["template"], "tracks": [{
         "id": "text", "target": "remotion", "sprite_id": sprite_id, "start_mode": "seconds",
         "start": 1, "duration": 2, "text_target": "subtitle", "editor": {},
-    })])
+    }]})
     data["remotion"] = await remotion.snapshot(template)
     data["template"] = composition_case["template"]
     assert data["remotion"]["placements"][0]["text_target"] == "subtitle"

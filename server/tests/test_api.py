@@ -111,7 +111,8 @@ def test_api_documentation(client: TestClient) -> None:
         "/api/v1/video-compositions", "/api/v1/video-compositions/{task_id}",
         "/api/v1/video-compositions/{task_id}/segment-match-callback",
         "/api/settings/plugins",
-        "/api/sprites", "/api/sprites/publish", "/api/sprites/{sprite_id}/preview", "/api/sprites/{sprite_id}/fonts/{weight}",
+        "/api/sprites", "/api/sprites/publish", "/api/sprites/{sprite_id}", "/api/sprites/{sprite_id}/rename", "/api/sprites/{sprite_id}/preview",
+        "/api/sprites/{sprite_id}/fonts/{weight}",
         "/api/sprites/render", "/api/sprites/render/{task_id}",
         "/api/v1/overlay-renders", "/api/v1/overlay-renders/{task_id}",
     }
@@ -135,7 +136,9 @@ def test_template_agent_mount_preserves_shared_routes(
     response = client.get("/api/templates/openapi.json")
     assert response.status_code == 200
     schema = response.json()
-    assert {"/works", "/assets", "/jobs/{job_id}"} <= set(schema["paths"])
+    assert {"/works", "/assets", "/jobs/{job_id}", "/works/{work_id}/ack"} <= set(schema["paths"])
+    # 聊天历史归客户端本地库：服务端不再提供会话快照与任务事件轮询。
+    assert not {"/works/{work_id}/session", "/jobs/{job_id}/events"} & set(schema["paths"])
     assert "/template" not in schema["paths"]
 
     restored = client.get(f"/template/{saved['template_id']}")

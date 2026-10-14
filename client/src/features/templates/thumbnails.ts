@@ -13,9 +13,9 @@ function waitForMedia(video: HTMLVideoElement, event: "loadeddata" | "seeked", s
       else resolve();
     };
     const ready = () => finish();
-    const failed = () => finish(new Error("缩略图加载失败，请检查视频地址及跨域访问配置。"));
-    const aborted = () => finish(new DOMException("缩略图加载已取消", "AbortError"));
-    const timer = setTimeout(() => finish(new Error("缩略图加载超时")), 15_000);
+    const failed = () => finish(new Error("视频画面加载失败，请检查视频地址及跨域访问配置。"));
+    const aborted = () => finish(new DOMException("视频画面加载已取消", "AbortError"));
+    const timer = setTimeout(() => finish(new Error("视频画面加载超时")), 15_000);
     video.addEventListener(event, ready, { once: true });
     video.addEventListener("error", failed, { once: true });
     signal.addEventListener("abort", aborted, { once: true });
@@ -30,7 +30,13 @@ export async function loadThumbnails(
   cache: Map<string, string>,
 ): Promise<string[]> {
   const times = thumbnailTimes(clip);
-  const keys = times.map((time) => JSON.stringify([clip.url, time]));
+  return loadVideoFrames(clip.url, times, signal, cache, 160);
+}
+
+/** 按源时间提取画面；省略尺寸限制时保留原始分辨率，供转场补帧使用。 */
+export async function loadVideoFrames(url: string, times: number[], signal: AbortSignal, cache: Map<string, string>, maxDimension?: number): Promise<string[]> {
+  if (times.some((time) => !Number.isFinite(time) || time < 0)) throw new Error("视频采样时间无效");
+  const keys = times.map((time) => JSON.stringify([url, time, maxDimension]));
   signal.throwIfAborted();
   if (keys.every((key) => cache.has(key))) return keys.map((key) => cache.get(key)!);
   const video = document.createElement("video");
@@ -39,32 +45,33 @@ export async function loadThumbnails(
   video.muted = true;
   const canvas = document.createElement("canvas");
   const context = canvas.getContext("2d");
-  if (!context) throw new Error("当前环境无法生成视频缩略图");
+  if (!context) throw new Error("当前环境无法提取视频画面");
   try {
     const loaded = waitForMedia(video, "loadeddata", signal);
-    video.src = clip.url;
+    video.src = url;
     video.load();
     await loaded;
     if (video.videoWidth <= 0 || video.videoHeight <= 0)
-      throw new Error("视频尺寸无效，无法生成缩略图");
-    // 按源视频比例生成缩略图，最长边限制为 160 像素。
-    const scale = 160 / Math.max(video.videoWidth, video.videoHeight);
+      throw new Error("视频尺寸无效，无法提取画面");
+    const scale = maxDimension ? maxDimension / Math.max(video.videoWidth, video.videoHeight) : 1;
     canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
     canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
-    if (!Number.isFinite(video.duration) || clip.sourceOut > video.duration + 0.05)
-      throw new Error("视频时长不足，无法提取当前片段的缩略图");
+    if (!Number.isFinite(video.duration) || times.some((time) => time >= video.duration))
+      throw new Error("视频时长不足，无法提取当前片段的画面");
     const images: string[] = [];
     for (let index = 0; index < times.length; index++) {
       signal.throwIfAborted();
       const key = keys[index];
       let image = cache.get(key);
       if (!image) {
-        const sought = waitForMedia(video, "seeked", signal);
-        video.currentTime = times[index];
-        await sought;
+        if (video.currentTime !== times[index]) {
+          const sought = waitForMedia(video, "seeked", signal);
+          video.currentTime = times[index];
+          await sought;
+        }
         signal.throwIfAborted();
         context.drawImage(video, 0, 0, canvas.width, canvas.height);
-        image = canvas.toDataURL("image/jpeg", 0.7);
+        image = canvas.toDataURL("image/jpeg", maxDimension ? 0.7 : 0.95);
         cache.set(key, image);
         if (cache.size > 48) cache.delete(cache.keys().next().value!);
       }

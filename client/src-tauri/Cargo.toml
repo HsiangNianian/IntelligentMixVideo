@@ -1,6 +1,6 @@
 [package]
 name = "client"
-version = "0.9.1"
+version = "0.9.2"
 description = "IntelligentMixVideo desktop client"
 edition = "2021"
 
@@ -23,6 +23,8 @@ serde = { version = "1", features = ["derive"] }
 prost = "0.14"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 uuid = { version = "1", features = ["v4"] }
+# 字效会话本地库；bundled 随包编译 SQLite，不依赖系统库。
+rusqlite = { version = "0.37", features = ["bundled"] }
 
 [target.'cfg(windows)'.dependencies]
 tiny_http = "0.12"

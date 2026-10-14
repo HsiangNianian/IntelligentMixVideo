@@ -1,7 +1,9 @@
-/** 会话协调器：恢复公开快照、消费 SSE、提交用户操作；只接受成功版本，切换不取消后台任务。 */
+/** 会话协调器：从本地数据库恢复会话、把 SSE 事件写入本地后确认送达、提交用户操作；只接受成功版本，切换不取消后台任务。 */
 import { useEffect, useRef, useState } from "react";
 import * as api from "./api";
-import { events, StreamReset } from "./events";
+import { events } from "./events";
+import { settleJob } from "./backgroundSync";
+import * as local from "./localSessions";
 import { defaultComposition } from "./composition";
 import {
   sameValues,
@@ -15,7 +17,29 @@ import {
   type Version,
 } from "./model";
 
-/** 当前视图状态与服务端历史分离，临时参数只在验收成功后成为可复制默认值。 */
+/** 未送达的输入草稿；id 每次不同，输入框据此恢复文字和图片。 */
+export interface Draft {
+  id: string;
+  text: string;
+  images: File[];
+}
+
+/**
+ * 消息没有送达：参考图上传失败（服务端尚无写入），或新作品的本地登记失败（已尽力撤销刚创建的作品）。
+ * 携带草稿和本地消息 ID，按普通错误恢复，不进入任务读取恢复。
+ */
+class Unsent extends Error {
+  /** message 已是可直接展示的提示。 */
+  constructor(
+    message: string,
+    public draft: Draft,
+    public messageId: string,
+  ) {
+    super(message);
+  }
+}
+
+/** 当前视图状态与本地历史分离，临时参数只在验收成功后成为可复制默认值。 */
 interface Session {
   key: number;
   workId: string | null;
@@ -40,6 +64,7 @@ interface Session {
   navigation:
     | (({ work: string | null } | { version: string }) & { saving: boolean })
     | null;
+  draft: Draft | null;
 }
 /** 新增只建立本地空白页，首次发送才创建持久会话。 */
 function blank(key: number): Session {
@@ -65,11 +90,14 @@ function blank(key: number): Session {
     error: "",
     retryMode: null,
     navigation: null,
+    draft: null,
   };
 }
-/** 本地仅记录当前服务最后选中的 ID；浏览器禁用存储时仍可使用历史列表。 */
-const selectedKey = `imv.remotion.selected:${api.apiUrl("")}`;
-/** 合并有稳定 ID 的服务端消息，按持久序号排序；临时消息不参与历史恢复。 */
+/** 另行记录当前服务最后选中的 ID（每次按当前服务地址取键）；浏览器禁用存储时仍可使用历史列表。 */
+function selectedKey() {
+  return `imv.remotion.selected:${api.apiUrl("")}`;
+}
+/** 合并有稳定 ID 的已保存消息，按持久序号排序；临时消息不参与历史恢复。 */
 function mergeMessages(previous: ChatMessage[], incoming: ChatMessage[]) {
   return [
     ...new Map(
@@ -115,11 +143,11 @@ export function useTemplateSession(onHistoryChange: () => void) {
   function current(key: number, signal?: AbortSignal) {
     return alive.current && latest.current.key === key && !signal?.aborted;
   }
-  /** 仅缓存选择位置，不缓存作为事实来源的聊天内容或代码。 */
+  /** 仅记录选择位置；聊天内容在本地会话库，代码按需从服务端读取。 */
   function remember(id: string | null) {
     try {
-      if (id) localStorage.setItem(selectedKey, id);
-      else localStorage.removeItem(selectedKey);
+      if (id) localStorage.setItem(selectedKey(), id);
+      else localStorage.removeItem(selectedKey());
     } catch {
       /* 存储不可用不影响服务端历史。 */
     }
@@ -208,9 +236,11 @@ export function useTemplateSession(onHistoryChange: () => void) {
     )
       completeNavigation(navigation);
   }
-  /** 先恢复公开快照再推进游标，产物失败独立保留为可重试状态。 */
+  /** 先从本地恢复会话再推进游标，产物失败独立保留为可重试状态。 */
   async function hydrate(work: string, key: number, signal: AbortSignal) {
-    const snapshot = await api.session(work, signal);
+    let snapshot = await local.snapshot(work);
+    // 任务停在进行中而终态事件已不会送达时校正本地状态，否则会话会一直被锁定。
+    if (await settleJob(snapshot.job, signal)) snapshot = await local.snapshot(work);
     if (!current(key, signal)) return snapshot.cursor;
     publish({
       messages: snapshot.messages,
@@ -224,15 +254,21 @@ export function useTemplateSession(onHistoryChange: () => void) {
     if (current(key, signal)) applyJob(snapshot.job);
     return snapshot.cursor;
   }
-  /** 永久失效终止订阅并清空本地资源，不继续重连不存在的会话。 */
-  function unavailable(error: unknown) {
+  /** 永久失效终止订阅并清空本地资源，不继续重连不存在的会话；本地记录标记为待删除，侧栏提供重试删除。 */
+  function unavailable(work: string, error: unknown) {
     if (!(error instanceof api.ApiError) || ![404, 410].includes(error.status))
       return false;
     switchWork(null);
     publish({ error: "会话已删除或正在清理，可在历史列表重试未完成的删除。" });
+    void local
+      .markDeleting(work)
+      .catch(() => {})
+      .finally(() => {
+        if (alive.current) changed.current();
+      });
     return true;
   }
-  /** 断线从最后已应用的 ID 续传；游标失效才重新取快照，永不重发 POST。 */
+  /** 断线从本地已写入的最后 ID 续传；每个事件先写入本地再确认送达，永不重发 POST。 */
   async function watch(
     work: string,
     key: number,
@@ -241,11 +277,17 @@ export function useTemplateSession(onHistoryChange: () => void) {
   ) {
     while (current(key, signal)) {
       try {
+        const delivered = cursor;
         for await (const event of events(work, cursor, signal, () => {
           if (current(key, signal)) publish({ connection: "live" });
+          // 上次确认可能没送到；重新确认本地已有的事件，让服务端删除它们。
+          if (delivered) void api.ack(work, delivered).catch(() => {});
         })) {
           if (!current(key, signal)) return;
           if (event.id <= cursor) continue;
+          await local.apply(work, [event]);
+          if (!current(key, signal)) return;
+          void api.ack(work, event.id).catch(() => {});
           if (event.type === "message.created")
             publish({
               messages: mergeMessages(latest.current.messages, [event.data]),
@@ -276,16 +318,19 @@ export function useTemplateSession(onHistoryChange: () => void) {
         }
       } catch (error) {
         if (!current(key, signal)) return;
-        if (unavailable(error)) return;
-        publish({ connection: "reconnecting" });
-        if (error instanceof StreamReset) {
-          try {
-            cursor = await hydrate(work, key, signal);
-          } catch (error) {
-            if (!current(key, signal) || unavailable(error)) return;
-            /* 下一次连接仍以原游标触发快照恢复。 */
-          }
+        if (error instanceof local.MissingLocalWork) return switchWork(null);
+        if (unavailable(work, error)) return;
+        // 本地库写不进去时重连也写不进去：停止订阅、保留服务端未确认的事件，由用户修复后显式刷新。
+        if (error instanceof local.LocalStoreError) {
+          publish({
+            connection: null,
+            busy: null,
+            error: `本地会话库读写失败，已暂停接收更新：${error.message} 处理后可点击刷新任务。`,
+            retryMode: "read",
+          });
+          return;
         }
+        publish({ connection: "reconnecting" });
         await reconnectDelay(signal);
       }
     }
@@ -309,7 +354,10 @@ export function useTemplateSession(onHistoryChange: () => void) {
       publish({ loading: false });
       void watch(work, key, controller.signal, cursor);
     } catch (error) {
-      if (!current(key, controller.signal) || unavailable(error)) return;
+      if (!current(key, controller.signal)) return;
+      // 记住的会话已不在本机（例如浏览器刷新清空了内存库）：静默回到空白页，不提示删除。
+      if (error instanceof local.MissingLocalWork) return switchWork(null);
+      if (unavailable(work, error)) return;
       if (current(key, controller.signal))
         publish({
           loading: false,
@@ -358,6 +406,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
     }
     try {
       await api.deleteWork(work);
+      await local.forget(work);
       if (!alive.current) return;
       if (latest.current.workId === work) switchWork(null);
       else changed.current();
@@ -449,6 +498,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
     try {
       const job = await start();
       queued = true;
+      await local.track(job);
       if (!current(key)) {
         if (alive.current) changed.current();
         return;
@@ -457,6 +507,19 @@ export function useTemplateSession(onHistoryChange: () => void) {
       if (alive.current) changed.current();
       await attach(job.project_id, key);
     } catch (error) {
+      if (error instanceof Unsent) {
+        if (current(key))
+          publish({
+            busy: null,
+            error: error.message,
+            retryMode: null,
+            messages: latest.current.messages.filter(
+              (message) => message.id !== error.messageId,
+            ),
+            draft: error.draft,
+          });
+        return;
+      }
       if (current(key))
         publish({
           busy: null,
@@ -473,8 +536,8 @@ export function useTemplateSession(onHistoryChange: () => void) {
       if (alive.current) changed.current();
     }
   }
-  /** 首轮图片可上传；后续输入绑定最近成功版本，澄清明确绑定提问任务。 */
-  function send(text: string, image?: File, durationInFrames?: number) {
+  /** 每条消息可附多张图片，按顺序先上传再提交；后续输入绑定最近成功版本，澄清明确绑定提问任务。 */
+  function send(text: string, images: File[] = [], durationInFrames?: number) {
     const s = latest.current;
     if (
       s.deleting ||
@@ -483,24 +546,56 @@ export function useTemplateSession(onHistoryChange: () => void) {
       s.previewLoading ||
       s.previewVersion ||
       dirty() ||
-      (!text.trim() && !image)
+      (!text.trim() && !images.length)
     )
       return;
+    const messageId = crypto.randomUUID();
     publish({
       messages: [
         ...s.messages,
-        { id: crypto.randomUUID(), role: "user", text: text.trim(), image },
+        { id: messageId, role: "user", text: text.trim(), images },
       ],
     });
     void execute("chat", async () => {
+      let assets: string[];
+      try {
+        // 已上传的部分在整条失败后无人引用，由服务端过期回收。
+        assets = (await Promise.all(images.map((image) => api.upload(image)))).map(
+          (asset) => asset.id,
+        );
+      } catch (error) {
+        throw new Unsent(
+          `参考图片上传失败：${error instanceof Error ? error.message : "请求未完成。"} 消息尚未发送，已恢复草稿，可直接重新发送。`,
+          { id: messageId, text, images },
+          messageId,
+        );
+      }
+      if (!current(s.key)) throw new DOMException("Aborted", "AbortError");
       if (!s.workId) {
-        const asset = image ? await api.upload(image) : undefined;
-        if (!current(s.key)) throw new DOMException("Aborted", "AbortError");
-        return (await api.create(text, asset?.id, defaultComposition(durationInFrames)))
-          .job;
+        const created = await api.create(text, assets, defaultComposition(durationInFrames));
+        try {
+          await local.record(created.work, created.job);
+        } catch (error) {
+          // 本机没有记录的作品在侧栏不可见，重发还会重复生成：先撤销刚创建的作品，再把草稿交还输入框。
+          const undone = await api.deleteWork(created.work.id).then(
+            () => true,
+            () => false,
+          );
+          throw new Unsent(
+            `本地会话保存失败：${error instanceof Error ? error.message : String(error)} ${
+              undone
+                ? "已撤销本次创建，消息尚未发送，已恢复草稿。"
+                : "服务端已创建的作品未能撤销，重新发送会另建一个作品。已恢复草稿。"
+            }`,
+            { id: messageId, text, images },
+            messageId,
+          );
+        }
+        return created.job;
       }
       return api.message(s.workId, {
-        instruction: text.trim(),
+        ...(text.trim() ? { instruction: text.trim() } : {}),
+        ...(assets.length ? { images: assets.map((asset_id) => ({ asset_id })) } : {}),
         ...(s.job?.status === "needs_input"
           ? { reply_to_job_id: s.job.id }
           : { base_version_id: s.version?.id }),
@@ -597,7 +692,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
     )
       return;
     try {
-      await api.cancel(s.job.id);
+      await local.reconcile(await api.cancel(s.job.id));
       if (current(s.key)) await attach(s.workId, s.key);
       if (alive.current) changed.current();
     } catch {
@@ -632,7 +727,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
     const signal = scope.current.signal;
     publish({ olderLoading: true });
     try {
-      const page = await api.session(s.workId, signal, s.nextBefore);
+      const page = await local.snapshot(s.workId, s.nextBefore);
       if (current(s.key, signal))
         publish({
           messages: mergeMessages(page.messages, latest.current.messages),
@@ -655,7 +750,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
     alive.current = true;
     let selected: string | null = null;
     try {
-      selected = localStorage.getItem(selectedKey);
+      selected = localStorage.getItem(selectedKey());
     } catch {
       /* 使用侧栏手动恢复。 */
     }
@@ -694,5 +789,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
     deleteWork,
     reset: () => select(null),
     older,
+    // 后台同步据此跳过当前会话；同步读取最新值，不等待重新渲染。
+    openWork: () => latest.current.workId,
   };
 }

@@ -290,7 +290,24 @@ async def fit_texts(renderer: Renderer, overlay: Overlay, sprites: dict[str, pb.
             if fit["size"] != item["values"]["fontSize"]:
                 logger.info("叠加渲染 Sprite %s 的文字（%d 字）字号 %s 缩小为 %s", group[0], len(item["text"]), item["values"]["fontSize"], fit["size"])
                 for index in members[(group, key)]:
-                    overlay.instances[index]["config"] = {**item["values"], "fontSize": fit["size"]}
+                    # keywordSize is absolute, so the worker scales it with the text (see `valuesAtSize` there).
+                    overlay.instances[index]["config"] = {**item["values"], "fontSize": fit["size"], **({"keywordSize": fit["keyword_size"]} if "keyword_size" in fit else {})}
+            if shift := fit.get("shift"):
+                logger.info("叠加渲染 Sprite %s 的文字（%d 字）在最小字号下仍出画布，位置平移 (%s, %s)", group[0], len(item["text"]), shift["x"], shift["y"])
+                for index in members[(group, key)]:
+                    overlay.instances[index]["host"] = nudged_host(overlay.instances[index]["host"], shift)
+
+
+def nudged_host(host: dict, shift: dict) -> dict:
+    """A copy of `host` moved by `shift` canvas pixels: its transform's content-box centre (x, y) moves by that much.
+
+    Only an axis that moves is written; an unset coordinate starts at the published content box centre, as the host
+    layer reads it. The host is replaced, never edited: a video composition gives every cue of a placement the same
+    host object, and the saved placement is not touched either.
+    """
+    box, transform = host["box"], host["transform"]
+    centre = {"x": box["x"] + box["width"] / 2, "y": box["y"] + box["height"] / 2}
+    return {**host, "transform": {**transform, **{axis: transform.get(axis, centre[axis]) + move for axis, move in shift.items() if move}}}
 
 
 async def probe_overlay(path: Path, overlay: Overlay) -> None:

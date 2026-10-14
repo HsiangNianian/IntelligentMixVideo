@@ -1,11 +1,12 @@
 /** Remotion 资产核心测试：版本卡片保存到资产，以及云端模板编辑中的资产目录、片段编辑与随模板的原子保存；执行 bun run test。 */
 import { expect, test } from "bun:test";
 import { create, fromBinary, toBinary, toJson, type MessageInitShape } from "@bufbuild/protobuf";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, waitForElementToBeRemoved, within } from "@testing-library/react";
 import { VersionCard } from "@/features/remotion_templates/VersionCard";
 import { defaultKind, publishChoice } from "@/features/remotion_templates/spriteChoice";
 import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
 import { SpriteClips } from "@/features/templates/SpritePanels";
+import { SpriteClipInspector } from "@/features/templates/SpriteClipInspector";
 import { getTemplate, saveTemplate } from "@/features/templates/api";
 import { bindClip } from "@/features/templates/clips";
 import type { SpriteAsset } from "@/features/sprites/model";
@@ -16,6 +17,8 @@ import {
   OperatorAccess,
   PublishSpriteRequestSchema,
   PublishSpriteResponseSchema,
+  RenameSpriteRequestSchema,
+  RenameSpriteResponseSchema,
   SpriteKind,
   SpriteParameterFormat,
   SpriteParameterSchema,
@@ -380,11 +383,12 @@ async function openTextClip(clip: Partial<RemotionClip> = {}) {
     catalog: [textAsset(), summary("sprite-f", SpriteKind.FILTER_OVERLAY), summary("sprite-v")],
     clips: [{ id: "clip-t", sprite_id: "sprite-t", start: 0, duration: 3, parameters: {}, transform: {}, ...clip }],
   });
-  render(<><TemplateWorkspace selection={{ environment: "cloud", templateId: fixture.template.template_id }} onHome={() => {}} /><Toaster /></>);
+  const remotion = { opened: 0 };
+  render(<><TemplateWorkspace selection={{ environment: "cloud", templateId: fixture.template.template_id }} onHome={() => {}} onOpenRemotion={() => { remotion.opened += 1; }} /><Toaster /></>);
   const item = await screen.findByRole("listitem", { name: "Remotion 资产：金色标题" });
   fireEvent.click(within(item).getByRole("button", { name: "设置 Remotion 资产：金色标题" }));
   const inspector = await screen.findByRole("region", { name: "Remotion 资产设置" });
-  return { ...fixture, inspector };
+  return { ...fixture, inspector, remotion };
 }
 
 // 场景：资产库按字效、滤镜、转场与视频特效分类，显示各类数量，默认打开第一个有资产的分类。
@@ -401,38 +405,52 @@ test("Remotion 资产目录按三类分栏", async () => {
   expect(within(catalog).queryByRole("button", { name: "添加 Remotion 资产：金色标题" })).toBeNull();
 });
 
-// 场景：选中片段后调整参数与位置，随模板保存为 editor.remotion；恢复默认的参数不再出现在请求里，内部参数不显示，只读参数不可改。
-test("选中片段调整参数与宿主变换并随模板保存", async () => {
-  const { saved, inspector } = await openTextClip();
+// 场景：模板里只调这次摆放的示例文字、字号与位置（百分比，像 IMS 文字）：恢复默认的参数不再出现在请求里；颜色、光晕等资产内部参数不提供控件，只在「资产默认参数」里说明并给出回字效工作区的入口。
+test("字效在模板里只调示例文字、字号与位置，其余参数回字效工作区改", async () => {
+  const { saved, inspector, remotion } = await openTextClip({ text_target: "title" });
   expect(within(inspector).queryByText("内部")).toBeNull();
-  expect(within(inspector).getByLabelText<HTMLInputElement>("光晕").disabled).toBe(true);
-  expect(within(inspector).getByLabelText<HTMLInputElement>("横向位置").value).toBe("540");
-  fireEvent.change(within(inspector).getByLabelText("标题文字"), { target: { value: "新品上市" } });
+  for (const hidden of ["光晕", "颜色", "缩放", "旋转（度）", "不透明度", "标题文字"]) expect(within(inspector).queryByLabelText(hidden)).toBeNull();
+  expect(within(inspector).getByLabelText<HTMLInputElement>("水平位置 %").value).toBe("50");
+  expect(within(inspector).getByLabelText<HTMLInputElement>("垂直位置 %").value).toBe("50");
+  const defaults = within(inspector).getByRole("heading", { name: "资产默认参数" }).closest("fieldset")!;
+  expect(defaults.textContent).toContain("光晕");
+  fireEvent.click(within(defaults).getByRole("button", { name: "前往字效工作区" }));
+  expect(remotion.opened).toBe(1);
+  fireEvent.change(within(inspector).getByLabelText("示例文字"), { target: { value: "新品上市" } });
   fireEvent.change(within(inspector).getByLabelText("字号"), { target: { value: "96" } });
-  fireEvent.change(within(inspector).getByLabelText("关键词"), { target: { value: "新品" } });
   fireEvent.click(within(inspector).getByRole("button", { name: "恢复默认：字号" }));
-  fireEvent.change(within(inspector).getByLabelText("缩放"), { target: { value: "2" } });
-  fireEvent.change(within(inspector).getByLabelText("不透明度"), { target: { value: "0.5" } });
+  expect(within(inspector).queryByRole("button", { name: "恢复默认：字号" })).toBeNull();
+  fireEvent.change(within(inspector).getByLabelText("水平位置 %"), { target: { value: "25" } });
   expect(within(screen.getByRole("listitem", { name: "Remotion 资产：金色标题" })).getByText(/已调整参数/)).toBeTruthy();
   fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
   await waitFor(() => expect(saved).toHaveLength(1));
   const [clip] = wireClips(saved[0]);
-  expect(toJson(EffectTemplateEditorSchema, clip.editor!)).toEqual({ remotion: {
-    parameters: [{ key: "text", stringValue: "新品上市" }, { key: "keywords", stringListValue: { values: ["新品"] } }],
-    transform: { scale: 2, opacity: 0.5 },
-  } });
+  expect(toJson(EffectTemplateEditorSchema, clip.editor!)).toEqual({ remotion: { transform: { x: 270 } } });
+  expect(saved[0].tracks!.tracks.find((track) => track.target === "title")?.editor?.title).toBe("新品上市");
+});
+
+// 场景：被字效接管的标题，选中它就是选中字效：右栏只显示字效设置（不再出现 IMS 的字号、位置面板），标题的时间在字效的「时间设置」页签里调。
+test("选中被接管的标题打开字效设置而不是 IMS 面板，时间在字效页签里调", async () => {
+  await openTextClip({ text_target: "title" });
+  fireEvent.click(screen.getByRole("button", { name: "编辑顶部标题" }));
+  const inspector = await screen.findByRole("region", { name: "Remotion 资产设置" });
+  expect(screen.queryByRole("region", { name: "画面对象设置" })).toBeNull();
+  const tabs = within(inspector).getAllByRole("tab");
+  expect(tabs.map((tab) => tab.textContent)).toEqual(["外观与位置", "时间设置", "关键词设置"]);
+  fireEvent.click(tabs[1]);
+  expect(within(inspector).getByLabelText("开始时间 / 秒")).toBeTruthy();
 });
 
 // 场景：字效资产声明了关键词参数时，右栏出现「关键词设置」页签：关键词、样式切换与颜色集中在此，其余参数留在原页签；改动随模板保存。
 test("关键词参数集中在「关键词设置」页签并随模板保存", async () => {
   const { saved, inspector } = await openTextClip();
   const tabs = within(inspector).getAllByRole("tab");
-  expect(tabs.map((tab) => tab.textContent)).toEqual(["参数与变换", "关键词设置"]);
+  expect(tabs.map((tab) => tab.textContent)).toEqual(["外观与位置", "关键词设置"]);
   expect(within(inspector).getByLabelText("关键词").closest("fieldset")!.hidden).toBe(true);
   fireEvent.click(tabs[1]);
   const panel = within(inspector).getByLabelText("关键词").closest("fieldset")!;
   expect(panel.hidden).toBe(false);
-  expect(within(panel).queryByLabelText("标题文字")).toBeNull();
+  expect(within(panel).queryByLabelText("示例文字")).toBeNull();
   expect(within(panel).queryByText(/发布于关键词设置之前/)).toBeNull();
   fireEvent.click(within(panel).getByRole("button", { name: "加粗" }));
   fireEvent.change(within(panel).getByLabelText("关键词"), { target: { value: "新品" } });
@@ -472,7 +490,7 @@ test("只有字效显示「关键词设置」页签，旧字效提示重新生�
   }
 });
 
-// 场景：切换到另一个字效片段时页签回到「参数与变换」；非字效资产以 keyword 开头的参数留在参数区。
+// 场景：切换到另一个字效片段时页签回到「外观与位置」；非字效资产以 keyword 开头的参数同样不在模板里调整。
 test("切换片段重置页签，非字效的 keyword 参数不进入关键词页签", async () => {
   const effect = summary("sprite-v", SpriteKind.VIDEO_OVERLAY, false, [
     { key: "keywordGlow", label: "关键光晕", access: OperatorAccess.VISIBLE_EDITABLE, defaultValue: { value: { case: "numberValue", value: 0.5 } }, minimum: 0, maximum: 1 },
@@ -489,18 +507,23 @@ test("切换片段重置页签，非字效的 keyword 参数不进入关键词�
   expect(screen.getByRole("tab", { name: "关键词设置" }).getAttribute("aria-selected")).toBe("true");
   // 审计复现：右栏不随片段重建时，上一个片段选中的页签会带到下一个片段。
   fireEvent.click(second);
-  expect(screen.getByRole("tab", { name: "参数与变换" }).getAttribute("aria-selected")).toBe("true");
+  expect(screen.getByRole("tab", { name: "外观与位置" }).getAttribute("aria-selected")).toBe("true");
   fireEvent.click(screen.getByRole("button", { name: "设置 Remotion 资产：霓虹标题" }));
   const inspector = screen.getByRole("region", { name: "Remotion 资产设置" });
   expect(within(inspector).queryByRole("tab")).toBeNull();
-  expect(within(inspector).getByLabelText("关键光晕").closest("fieldset")!.hidden).toBe(false);
+  // 非字效没有关键词页签，以 keyword 开头的参数同其他内部参数一样回字效工作区改。
+  expect(within(inspector).queryByLabelText("关键光晕")).toBeNull();
+  expect(within(inspector).getByRole("heading", { name: "资产默认参数" }).closest("fieldset")!.textContent).toContain("关键光晕");
 });
 
-// 场景：已保存的覆盖随模板读回，控件显示覆盖值；滤镜只提供强度。
-test("读回片段的覆盖值，滤镜只调整强度", async () => {
-  const { inspector } = await openTextClip({ parameters: { text: "已保存" }, transform: { x: 300, y: 500 } });
-  expect(within(inspector).getByLabelText<HTMLInputElement>("标题文字").value).toBe("已保存");
-  expect(within(inspector).getByLabelText<HTMLInputElement>("横向位置").value).toBe("300");
+// 场景：已保存的覆盖随模板读回：位置显示为百分比；不在模板里调整的参数（这里是标题文字）仍列出「已覆盖」并可恢复默认，恢复后移除覆盖；滤镜只提供强度。
+test("读回片段的覆盖值，内部参数的覆盖可恢复默认，滤镜只调整强度", async () => {
+  const { inspector } = await openTextClip({ parameters: { text: "已保存" }, transform: { x: 300, y: 500, scale: 2 } });
+  expect(within(inspector).getByLabelText<HTMLInputElement>("水平位置 %").value).toBe("27.8");
+  expect(within(inspector).getByText(/标题文字 · 已覆盖/)).toBeTruthy();
+  expect(within(inspector).getByText(/缩放 · 已覆盖/)).toBeTruthy();
+  fireEvent.click(within(inspector).getByRole("button", { name: "恢复默认：标题文字" }));
+  expect(within(inspector).queryByText(/标题文字 · 已覆盖/)).toBeNull();
   fireEvent.click(within(inspector).getByRole("button", { name: "关闭资产设置" }));
   const catalog = screen.getByRole("region", { name: "Remotion 资产" });
   fireEvent.click(within(catalog).getByRole("button", { name: "展开" }));
@@ -510,5 +533,110 @@ test("读回片段的覆盖值，滤镜只调整强度", async () => {
   fireEvent.click(added);
   const filter = await screen.findByRole("region", { name: "Remotion 资产设置" });
   expect(within(filter).getByLabelText("强度")).toBeTruthy();
-  expect(within(filter).queryByLabelText("横向位置")).toBeNull();
+  expect(within(filter).queryByLabelText("水平位置 %")).toBeNull();
+});
+
+// 场景（回归）：资产目录还在读取、或资产已被删除时，带位置覆盖的片段也能打开右栏，只允许移除，不能因读不到资产的类型而整页白屏。
+test("资产未读到时带位置覆盖的片段仍能打开设置栏", () => {
+  const clip: RemotionClip = { id: "clip-x", sprite_id: "sprite-gone", start: 0, duration: 3, parameters: {}, transform: { x: 270, scale: 2 } };
+  const noop = () => {};
+  render(<SpriteClipInspector clip={clip} asset={undefined} duration={10} onSample={noop} onTextTiming={noop} onParameter={noop} onTransform={noop} onStart={noop} onBind={noop} onRemove={noop} onClose={noop} />);
+  expect(screen.getByText("未找到的资产")).toBeTruthy();
+});
+
+// 场景：资产库里的资产可确认后删除；仍被模板使用时弹窗显示服务端列出的模板并保留资产，确认删除成功后目录刷新不再显示它。
+test("确认后删除资产，被模板使用时说明原因", async () => {
+  const catalog = [summary("sprite-1"), summary("sprite-2", SpriteKind.VIDEO_OVERLAY)];
+  catalog[1].name = "冷色光斑";
+  sprites({ catalog });
+  const fallback = fetchMock.getMockImplementation()!;
+  const deletes: string[] = [];
+  fetchMock.mockImplementation((async (url, init) => {
+    const path = new URL(String(url)).pathname;
+    if (init?.method !== "DELETE") return fallback(url, init);
+    deletes.push(path);
+    if (deletes.length === 1)
+      return new Response(JSON.stringify({ detail: "资产正被模板使用，请先在这些模板里移除后再删除：片头模板" }), { status: 409 });
+    catalog.splice(0, 1);
+    return new Response(null, { status: 204 });
+  }) as typeof fetch);
+  render(<><Toaster /><TemplateWorkspace selection={{ environment: "cloud", templateId: null, name: "新模板", description: "" }} onHome={() => {}} /></>);
+  const region = await screen.findByRole("region", { name: "Remotion 资产" });
+  fireEvent.click(within(region).getByRole("button", { name: "展开" }));
+  fireEvent.click(await within(region).findByRole("button", { name: "删除 Remotion 资产：霓虹标题" }));
+  const dialog = await screen.findByRole("dialog", { name: "删除 Remotion 资产" });
+  expect(dialog.textContent).toContain("霓虹标题");
+  fireEvent.click(within(dialog).getByRole("button", { name: "确认删除" }));
+  expect((await within(dialog).findByRole("alert")).textContent).toBe("资产正被模板使用，请先在这些模板里移除后再删除：片头模板");
+  // 弹窗打开时背景对辅助技术隐藏，资产仍在目录里。
+  expect(within(region).getByRole("button", { name: "添加 Remotion 资产：霓虹标题", hidden: true })).toBeTruthy();
+  fireEvent.click(within(dialog).getByRole("button", { name: "确认删除" }));
+  // 等待元素消失不用 expect(元素).toBeNull()：失败时格式化整棵 DOM 会耗尽内存。
+  await waitForElementToBeRemoved(() => screen.queryByRole("dialog", { name: "删除 Remotion 资产" }));
+  expect(await screen.findByText("已删除资产「霓虹标题」")).toBeTruthy();
+  await waitFor(() => expect(within(region).queryByRole("button", { name: "添加 Remotion 资产：霓虹标题" }) === null).toBe(true));
+  expect(within(region).getByRole("button", { name: "添加 Remotion 资产：冷色光斑" })).toBeTruthy();
+  expect(deletes).toEqual(["/api/sprites/sprite-1", "/api/sprites/sprite-1"]);
+});
+
+// 场景：资产可重命名，包括当前模板正在使用的资产：服务端拒绝时原因留在弹窗里可改后重试，成功后请求只带新名称（无设备头），目录卡片和已添加片段列表都显示新名称。
+test("重命名资产，失败可重试，使用中的资产也能改名", async () => {
+  const catalog = [summary("sprite-1")];
+  sprites({ catalog });
+  const fallback = fetchMock.getMockImplementation()!;
+  const renames: { path: string; name: string; device: string | null }[] = [];
+  fetchMock.mockImplementation((async (url, init) => {
+    const path = new URL(String(url)).pathname;
+    if (!path.endsWith("/rename")) return fallback(url, init);
+    renames.push({ path, name: fromBinary(RenameSpriteRequestSchema, new Uint8Array(init!.body as Uint8Array)).name, device: new Headers(init!.headers).get("X-IMV-Device") });
+    if (renames.length === 1) return new Response(JSON.stringify({ detail: "名称去除首尾空白后需为 1～100 个字符" }), { status: 422 });
+    catalog[0].name = renames.at(-1)!.name;
+    return binary(RenameSpriteResponseSchema, create(RenameSpriteResponseSchema, { sprite: catalog[0] }));
+  }) as typeof fetch);
+  render(<><Toaster /><TemplateWorkspace selection={{ environment: "cloud", templateId: savedTemplate().template_id }} onHome={() => {}} /></>);
+  const region = await screen.findByRole("region", { name: "Remotion 资产" });
+  fireEvent.click(within(region).getByRole("button", { name: "展开" }));
+  fireEvent.click(await within(region).findByRole("button", { name: "添加 Remotion 资产：霓虹标题" }));
+  expect(await screen.findByRole("button", { name: "设置 Remotion 资产：霓虹标题", hidden: true })).toBeTruthy();
+  fireEvent.click(within(region).getByRole("button", { name: "重命名 Remotion 资产：霓虹标题", hidden: true }));
+  const dialog = await screen.findByRole("dialog", { name: "重命名 Remotion 资产" });
+  const input = within(dialog).getByLabelText<HTMLInputElement>("资产名称");
+  expect(input.value).toBe("霓虹标题");
+  fireEvent.change(input, { target: { value: "  冷色标题  " } });
+  fireEvent.click(within(dialog).getByRole("button", { name: "保存名称" }));
+  expect((await within(dialog).findByRole("alert")).textContent).toBe("名称去除首尾空白后需为 1～100 个字符");
+  fireEvent.click(within(dialog).getByRole("button", { name: "保存名称" }));
+  // 等待元素消失不用 expect(元素).toBeNull()：失败时格式化整棵 DOM 会耗尽内存。
+  await waitForElementToBeRemoved(() => screen.queryByRole("dialog", { name: "重命名 Remotion 资产" }));
+  expect(await screen.findByText("已重命名为「冷色标题」")).toBeTruthy();
+  expect(renames).toEqual([
+    { path: "/api/sprites/sprite-1/rename", name: "冷色标题", device: null },
+    { path: "/api/sprites/sprite-1/rename", name: "冷色标题", device: null },
+  ]);
+  expect(await within(region).findByRole("button", { name: "添加 Remotion 资产：冷色标题" })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "设置 Remotion 资产：冷色标题" })).toBeTruthy();
+});
+
+// 场景：当前草稿（含尚未保存的添加）摆放的资产不能删除，并说明原因；否则之后保存模板会因资产未发布被拒绝。移除片段后恢复可删除。
+test("当前模板摆放的资产禁止删除", async () => {
+  const catalog = [summary("sprite-1"), summary("sprite-2")];
+  catalog[1].name = "冷色光斑";
+  sprites({ catalog });
+  render(<TemplateWorkspace selection={{ environment: "cloud", templateId: savedTemplate().template_id }} onHome={() => {}} />);
+  const region = await screen.findByRole("region", { name: "Remotion 资产" });
+  fireEvent.click(within(region).getByRole("button", { name: "展开" }));
+  /** 删除按钮随禁用状态重新挂载（禁用时不包悬停提示），每次重新查询。 */
+  const remove = (name: string) => within(region).getByRole<HTMLButtonElement>("button", { name: `删除 Remotion 资产：${name}`, hidden: true });
+  await within(region).findByRole("button", { name: "删除 Remotion 资产：霓虹标题" });
+  expect(remove("霓虹标题").disabled).toBe(false);
+  fireEvent.click(within(region).getByRole("button", { name: "添加 Remotion 资产：霓虹标题" }));
+  await waitFor(() => expect(remove("霓虹标题").disabled).toBe(true));
+  expect(remove("霓虹标题").getAttribute("aria-describedby")).toBe("sprite-in-use-sprite-1");
+  expect(document.getElementById("sprite-in-use-sprite-1")!.textContent).toBe("当前模板正在使用，移除片段后才能删除");
+  expect(remove("冷色光斑").disabled).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "移除 Remotion 资产：霓虹标题", hidden: true }));
+  await waitFor(() => expect(remove("霓虹标题").disabled).toBe(false));
+  expect(document.getElementById("sprite-in-use-sprite-1")).toBeNull();
+  fireEvent.click(remove("霓虹标题"));
+  expect(await screen.findByRole("dialog", { name: "删除 Remotion 资产" })).toBeTruthy();
 });

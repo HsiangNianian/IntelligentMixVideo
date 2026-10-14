@@ -46,15 +46,6 @@ export async function readPreviewVideos(urls: readonly string[], signal: AbortSi
   finally { controller.abort(); signal.removeEventListener("abort", abort); }
 }
 
-/** 视频只允许重新排列，三个来源必须各出现一次。 */
-export function reorderVideos(order: number[], source: number, destination: number): number[] {
-  if (order.length !== 3 || new Set(order).size !== 3 || order.some((item) => ![0, 1, 2].includes(item)) || !order.includes(source) || !Number.isInteger(destination) || destination < 0 || destination > 2)
-    throw new Error("视频排列无效");
-  const next = order.filter((item) => item !== source);
-  next.splice(destination, 0, source);
-  return next;
-}
-
 /** 读取真实时长和尺寸；超时、取消或无法加载时明确失败并清理监听器。 */
 export function readMasterVideo(url: string, signal: AbortSignal): Promise<MasterVideo> {
   const parsed = new URL(url, window.location.origin);

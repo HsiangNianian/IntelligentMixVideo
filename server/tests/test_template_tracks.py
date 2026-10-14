@@ -11,6 +11,22 @@ from server.template.timing import resolve_track
 from .conftest import SPRITE_ID, remotion_track, template_track
 
 
+@pytest.mark.parametrize("duration", [None, 0.6, 6])
+def test_shared_transition_duration_only_validates_ims(duration):
+    """模板序列化保留 Remotion 自身时长，统一时长仅校验 IMS。"""
+    asset = next(item for item in effect_catalog().values() if item.category == "transition/normal")
+    ims = {**template_track("transition", transition=asset.id), "transition_boundary": 1, "duration": 0.2}
+    clip = remotion_track(transition_boundary=2, duration=duration)
+    payload = {"name": "混合转场", "effect_ids": [asset.id], "tracks": [ims, clip],
+               "transition_mode": "sequence", "transition_duration_seconds": 0.2}
+    saved = TemplateSave.model_validate(payload)
+    restored = TemplateSave.model_validate_json(saved.model_dump_json())
+    assert [track.duration for track in restored.tracks] == [0.2, duration]
+    ims["duration"] = 1
+    with pytest.raises(ValidationError, match="全部 IMS 转场必须使用统一持续时间"):
+        TemplateSave.model_validate(payload)
+
+
 @pytest.mark.parametrize("target", ["title", "subtitle", "vfx"])
 def test_singleton_objects_reject_duplicate_tracks(target):
     """单个对象允许保存，第二个同类对象被拒绝。"""
@@ -40,7 +56,7 @@ def test_transition_boundaries_are_independent_and_unique():
     tracks = [{**template_track("transition", transition=asset.id), "id": f"boundary-{boundary}", "transition_boundary": boundary} for boundary in (1, 2)]
     payload = {"name": "两个转场", "tracks": tracks, "effect_ids": [asset.id]}
     assert [track.transition_boundary for track in TemplateSave.model_validate(payload).tracks] == [1, 2]
-    for boundary in (0, 1, 3, True, 1.5):
+    for boundary in (0, 1, 101, True, 1.5):
         tracks[1]["transition_boundary"] = boundary
         with pytest.raises(ValidationError):
             TemplateSave.model_validate(payload)
@@ -283,7 +299,7 @@ def test_ims_timing_defaults(duration: float | None) -> None:
 
 @pytest.mark.parametrize(("tracks", "reason"), [
     ([remotion_track("a", text_target="title"), remotion_track("b", text_target="title")], "每个标题或字幕最多一个 Remotion 字效"),
-    ([remotion_track("a", transition_boundary=2), remotion_track("b", transition_boundary=2)], "每个视频交界处最多一个转场"),
+    ([remotion_track("a", transition_boundary=2), remotion_track("b", transition_boundary=2)], "转场列表序号不能重复"),
     ([remotion_track("a", text_target="title", transition_boundary=1)], "不能同时作用于文字和视频交界处"),
     ([{**template_track("title"), "text_target": "title"}], "只有 Remotion 字效可以设置作用的文字对象"),
     ([{**template_track("title"), "transition_boundary": 1}], "只有转场可以设置视频交界处"),

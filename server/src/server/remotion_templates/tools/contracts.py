@@ -118,14 +118,14 @@ class PresetCreateOutput(ContractModel):
 AssetId = Annotated[UUID, BeforeValidator(lambda value: value if isinstance(value, UUID) else UUID(str(value)))]
 
 
-# 用户上传的参考图由服务端登记为本地素材；图片工具按该引用读取，不使用 URL。
+# 用户上传的参考图由服务端登记为参考素材；图片工具按该引用读取，不使用 URL。
 class ImageReference(ContractModel):
     """已上传并登记的参考图片。"""
 
     asset_id: AssetId
 
 
-# 图片工具直接读取任务参考图：用户上传后已由服务端登记为本地素材，无需 URL、不上传云端。
+# 图片工具直接读取任务参考图：用户上传后已由服务端登记为参考素材，无需 URL。
 class ImageInfoInput(ContractModel):
     """待读取的任务参考图片。"""
 

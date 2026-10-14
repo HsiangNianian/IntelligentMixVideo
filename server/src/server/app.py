@@ -39,6 +39,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         try:
             await runtime.close()
+            if (remotion := getattr(remotion_templates_app.state, "runtime", None)) is not None:
+                await remotion.close()
         finally:
             close_database()
 
@@ -57,7 +59,7 @@ app.add_middleware(
         r"^http://localhost:(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|"
         r"6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$"
     ),
-    allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type", "Last-Event-ID", "X-Remotion-Config", "X-IMS-Config"],
+    allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type", "Last-Event-ID", "X-Remotion-Config", "X-IMS-Config", "X-IMV-Device"],
 )
 app.include_router(router)
 app.include_router(template_router)

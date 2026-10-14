@@ -243,8 +243,8 @@ pub struct EffectTrack {
     /// remotion 片段引用的已发布 Sprite ID；其他对象必须留空。
     #[prost(string, tag="7")]
     pub sprite_id: ::prost::alloc::string::String,
-    /// 转场所属的视频交界处，1 或 2。IMS 转场必须设置且不设置 start/start_mode；Remotion 转场片段也设置，
-    /// 以交界处为中心播放；其他对象禁止设置。每个交界处只能有一个转场（IMS 与 Remotion 合计）。
+    /// 转场列表序号，1～100，IMS 与 Remotion 共用；预览按选择方式取两个效果。
+    /// IMS 转场不设置 start/start_mode；合成时由 transition_mode 选择各连接处的效果。
     #[prost(uint32, optional, tag="8")]
     pub transition_boundary: ::core::option::Option<u32>,
     /// Remotion 字效作用的文字对象，title 或 subtitle；仅 remotion 字效片段设置，每个文字对象最多一个。
@@ -275,7 +275,7 @@ pub struct SaveTemplateRequest {
     /// 全部轨道选用的素材目录 ID 去重列表。
     #[prost(string, repeated, tag="3")]
     pub effect_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    /// 新增转场时使用的默认持续时间，单位为秒。
+    /// 全部 IMS 转场使用的统一持续时间，单位为秒。
     #[prost(double, optional, tag="4")]
     pub transition_duration_seconds: ::core::option::Option<f64>,
     /// 模板的画面对象实例及时间规则；包装消息用于区分缺少字段和空列表。
@@ -284,5 +284,11 @@ pub struct SaveTemplateRequest {
     /// 待更新模板的 UUID；未提供时创建新模板。
     #[prost(string, optional, tag="6")]
     pub template_id: ::core::option::Option<::prost::alloc::string::String>,
+    /// 转场列表选择方式：sequence 按顺序循环，random 随机选择。
+    #[prost(string, optional, tag="7")]
+    pub transition_mode: ::core::option::Option<::prost::alloc::string::String>,
+    /// 是否使用转场；省略时沿用开启状态，关闭时保留候选列表。
+    #[prost(bool, optional, tag="8")]
+    pub transition_enabled: ::core::option::Option<bool>,
 }
 // @@protoc_insertion_point(module)
