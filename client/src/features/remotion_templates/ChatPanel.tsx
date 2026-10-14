@@ -136,12 +136,13 @@ export function ChatPanel({
       />
     );
   }
-  // 未送达的草稿回到输入框；用户在等待期间已输入的新内容优先保留。
-  useEffect(() => {
-    if (!draft) return;
+  // 未送达的草稿在渲染时直接回到输入框，与错误提示同一次提交，不出现空输入的中间帧；等待期间已输入的新内容优先保留。
+  const [restored, setRestored] = useState(draft?.id);
+  if (draft && draft.id !== restored) {
+    setRestored(draft.id);
     setText((current) => current || draft.text);
     setImages((current) => (current.length ? current : draft.images));
-  }, [draft]);
+  }
   // 历史分页只在头部插入消息；末尾新增回复才跟随到底部。
   useEffect(() => {
     end.current?.scrollIntoView?.({ block: "nearest" });

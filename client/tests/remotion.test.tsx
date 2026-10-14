@@ -853,6 +853,7 @@ test("已有会话上传失败恢复草稿且不进入读取恢复", async () =>
   await screen.findByText(/参考图片上传失败.*消息尚未发送/);
   expect(messages).toBe(0);
   expect(screen.queryByRole("button", { name: "刷新任务" })).toBeNull();
+  // 草稿与错误提示同一次渲染提交，不依赖 effect 时序。
   expect(input.value).toBe("参考这张");
   expect(screen.getByAltText("参考图片：retry.png")).toBeTruthy();
   expect(within(screen.getByRole("log")).queryByText("参考这张")).toBeNull();
