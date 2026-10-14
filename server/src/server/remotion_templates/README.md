@@ -276,7 +276,10 @@ templates that reference its IDs, which is what lets a template save check its `
 `sprite_id` is not published or the clips' Sprites do not share one width, height and fps, which an overlay render requires). The preview bundle is an object; when it is missing or no longer matches the recorded
 hash (for example Sprites published while bundles were local files), the preview route rebuilds it from the
 published source in the isolated worker, stores it and records the new hash, and answers 404 only if that fails.
-Overlay renders only need the stored TSX.
+Previews of the same asset take turns, so a library full of lost bundles rebuilds each once; after a failed rebuild
+previews answer 404 for `sprites.REBUILD_COOLDOWN` (5 minutes) instead of starting a worker per request, and an
+unreachable object store is a 503 that starts no rebuild. Deletion waits for a rebuild in progress, so the bundle is
+never written back after it. Overlay renders only need the stored TSX.
 `DELETE /api/sprites/{id}` removes a publication (anyone may delete from the shared library): its row, bundle object
 and cache. While a cloud template's `remotion` track still references it the answer is 409 naming those templates
 (raw configurations are scanned, so invalid templates count too); an unknown ID is a 404. The source work and its

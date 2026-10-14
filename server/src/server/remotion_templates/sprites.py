@@ -18,6 +18,7 @@ import weakref
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
+from time import monotonic
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException
@@ -42,16 +43,35 @@ def bundle_key(sprite_id: str) -> str:
 
 
 def _bundle_bytes(store: Store, sprite: pb.PublishedSprite) -> bytes | None:
-    """The publication's verified bundle copy, or None when it is missing or no longer matches its hash."""
+    """The publication's verified bundle copy, or None when it is missing or no longer matches its hash.
+
+    An unreachable object store is not a lost copy: it raises ObjectStoreError instead of starting a rebuild.
+    """
     try:
         return store.cached(
             bundle_key(sprite.sprite_id), Path("sprites") / sprite.sprite_id / PREVIEW_BUNDLE, sprite.preview_sha256,
         ).read_bytes()
+    except ObjectStoreError:
+        raise
     except (OSError, ValueError):
         return None
 # 同一来源与字段选择的发布轮流执行：重复点击等待首个完成后读取它保存的资产，不重复重建播放器包。
 # 值为弱引用，没有持有者和等待者后锁自动释放，字典不会随发布次数增长。
 _publishing: weakref.WeakValueDictionary[tuple, asyncio.Lock] = weakref.WeakValueDictionary()
+# 同一资产的预览重建与删除轮流执行：并发预览只重建一次，删除不会被进行中的重建写回副本。
+_bundles: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
+# 预览包重建失败后的冷却时间（秒）：期间预览直接 404，不再为每次请求启动隔离 worker。
+REBUILD_COOLDOWN = 300.0
+# 最近一次重建失败的单调时间，按资产 ID；成功或删除后清除，只含已发布资产。
+_rebuild_failed: dict[str, float] = {}
+
+
+def bundle_lock(sprite_id: str) -> asyncio.Lock:
+    """The lock that serializes rebuilding and deleting one publication's player copy."""
+    lock = _bundles.get(sprite_id)
+    if lock is None:
+        lock = _bundles[sprite_id] = asyncio.Lock()
+    return lock
 
 # 发布类型与效果分类的对应；视频特效与转场在界面上合为第三类，但必备参数和宿主变换按各自类型检查。
 KIND_NAMES = {
@@ -231,19 +251,40 @@ async def preview_script(service, sprite_id: str) -> tuple[str, dict]:
     """Read the sprite's own verified copy of the player bundle, rebuilding a lost copy from its published source.
 
     Also returns what the page injects for the player: the published defaults and the content box.
+    Concurrent previews of a lost copy wait for one rebuild; after a failed rebuild, previews answer 404 for
+    `REBUILD_COOLDOWN` seconds instead of starting another isolated worker each. An unreachable object store is 503.
     """
     store = service.store
     sprite = await run_in_threadpool(get, sprite_id)
-    script = await run_in_threadpool(_bundle_bytes, store, sprite)
-    if script is None:
-        canvas = sprite.canvas
-        script = await _rebuild_bundle(service, sprite.tsx_code, json.loads(sprite.default_config_json or "{}"), {
-            "width": canvas.width, "height": canvas.height, "fps": canvas.fps, "duration_in_frames": canvas.preview_frames,
-        }, sprite.sprite_id)
+    try:
+        script = await run_in_threadpool(_bundle_bytes, store, sprite)
         if script is None:
-            raise NotFound("sprite preview unavailable")
-        await run_in_threadpool(_store_bundle, store, sprite, script)
+            async with bundle_lock(sprite.sprite_id):
+                # Another preview may have rebuilt the copy, or a deletion removed the asset, while this one waited.
+                sprite = await run_in_threadpool(get, sprite_id)
+                script = await run_in_threadpool(_bundle_bytes, store, sprite)
+                if script is None:
+                    script = await _rebuild_once(service, sprite)
+    except ObjectStoreError as exc:
+        raise HTTPException(503, "资产预览存储暂不可用，请稍后重试") from exc
     return script.decode("utf-8"), {"config": json.loads(sprite.default_config_json or "{}"), "box": box_json(sprite)}
+
+
+async def _rebuild_once(service, sprite: pb.PublishedSprite) -> bytes:
+    """Rebuild and store a lost player copy under its lock, unless a rebuild failed within the cooldown."""
+    failed = _rebuild_failed.get(sprite.sprite_id)
+    if failed is not None and monotonic() - failed < REBUILD_COOLDOWN:
+        raise NotFound("sprite preview unavailable")
+    canvas = sprite.canvas
+    script = await _rebuild_bundle(service, sprite.tsx_code, json.loads(sprite.default_config_json or "{}"), {
+        "width": canvas.width, "height": canvas.height, "fps": canvas.fps, "duration_in_frames": canvas.preview_frames,
+    }, sprite.sprite_id)
+    if script is None:
+        _rebuild_failed[sprite.sprite_id] = monotonic()
+        raise NotFound("sprite preview unavailable")
+    _rebuild_failed.pop(sprite.sprite_id, None)
+    await run_in_threadpool(_store_bundle, service.store, sprite, script)
+    return script
 
 
 def remove(store: Store, sprite_id: str, used_by: list[str]) -> None:
@@ -259,6 +300,7 @@ def remove(store: Store, sprite_id: str, used_by: list[str]) -> None:
         raise Conflict(f"资产正被模板使用，请先在这些模板里移除后再删除：{'、'.join(used_by)}")
     if not sprite_store.remove(sprite_id):
         raise NotFound("sprite not found")
+    _rebuild_failed.pop(sprite_id, None)
     store.objects.delete_prefix(f"{PREFIX}/sprites/{sprite_id}/")
     shutil.rmtree(store.root / "cache" / "sprites" / sprite_id, ignore_errors=True)
 

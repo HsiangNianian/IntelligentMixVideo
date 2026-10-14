@@ -142,5 +142,7 @@ async def delete_sprite(sprite_id: str, service: Service) -> Response:
     except ValueError:
         raise NotFound("sprite not found") from None
     used_by = await run_in_threadpool(templates_using, identifier)
-    await run_in_threadpool(sprites.remove, service.store, identifier, used_by)
+    # A preview rebuilding the copy finishes first, so it cannot write the bundle back after the deletion.
+    async with sprites.bundle_lock(identifier):
+        await run_in_threadpool(sprites.remove, service.store, identifier, used_by)
     return Response(status_code=204)

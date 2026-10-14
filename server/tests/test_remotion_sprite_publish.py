@@ -25,6 +25,7 @@ from server.remotion_templates import sprite_store, sprites
 from server.remotion_templates.categories import HEX_COLOR, KEYWORD_COLOR
 from server.remotion_templates.harness import Harness
 from server.remotion_templates.models import GenerateTemplateRequest
+from server.remotion_templates.object_store import ObjectStoreError
 from server.remotion_templates.provider import Budget
 from server.remotion_templates.publication import PREVIEW_PROTOCOL, current_bundle
 from server.remotion_templates.settings import Settings
@@ -329,6 +330,84 @@ def test_preview_is_unavailable_when_a_lost_bundle_cannot_be_rebuilt(client: Tes
     published.renderer.failure = RuntimeError("sandbox unavailable")
     assert client.get(summary.preview_url).status_code == 404
     assert [item.sprite_id for item in pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites] == [summary.sprite_id]
+
+
+def slow_rebuilds(published) -> None:
+    """让重建在事件循环上停留片刻，使并发的预览或删除必然在它完成前到达。"""
+    run_worker = published.renderer.run_worker
+
+    async def slow_worker(*args, **kwargs):
+        """延迟后照常重建。"""
+        await asyncio.sleep(0.05)
+        return await run_worker(*args, **kwargs)
+
+    published.renderer.run_worker = slow_worker
+
+
+def test_concurrent_previews_of_a_lost_bundle_rebuild_it_once(client: TestClient, published) -> None:
+    """资产库同时打开多个预览时，丢失或哈希不符的副本只重建一次，其余请求读取重建结果。"""
+    summary = published_sprite(client, published.version.id)
+    bundle_copy(published.store, summary.sprite_id).write_text("tampered")
+    shutil.rmtree(published.store.root / "cache" / "sprites" / summary.sprite_id, ignore_errors=True)
+    published.renderer.requests.clear()
+    slow_rebuilds(published)
+
+    async def together():
+        """在同一事件循环里同时预览三次。"""
+        return await asyncio.gather(*(sprites.preview_script(published.service, summary.sprite_id) for _ in range(3)))
+
+    scripts = asyncio.run(together())
+    assert all("// rebuilt" in script for script, _ in scripts)
+    assert len(published.renderer.requests) == 1
+
+
+def test_a_failed_rebuild_is_not_retried_by_every_preview(client: TestClient, published, monkeypatch) -> None:
+    """重建失败后在冷却时间内预览直接 404、不再启动隔离 worker；冷却过后再次尝试。"""
+    summary = published_sprite(client, published.version.id)
+    drop_bundle(published.store, summary.sprite_id)
+    published.renderer.requests.clear()
+    published.renderer.failure = RuntimeError("sandbox unavailable")
+    assert client.get(summary.preview_url).status_code == 404
+    assert client.get(summary.preview_url).status_code == 404
+    assert len(published.renderer.requests) == 1
+    published.renderer.failure = None
+    monkeypatch.setattr(sprites, "REBUILD_COOLDOWN", 0.0)
+    assert "// rebuilt" in client.get(summary.preview_url).text
+    assert len(published.renderer.requests) == 2
+
+
+def test_deleting_during_a_rebuild_leaves_no_bundle_behind(client: TestClient, published) -> None:
+    """删除等待进行中的重建结束再删除副本，重建不会在删除之后把公开的预览包写回。"""
+    from server.remotion_templates.sprite_router import delete_sprite
+
+    summary = published_sprite(client, published.version.id)
+    drop_bundle(published.store, summary.sprite_id)
+    slow_rebuilds(published)
+
+    async def preview_then_delete():
+        """预览开始重建后立即删除资产。"""
+        preview = asyncio.create_task(sprites.preview_script(published.service, summary.sprite_id))
+        await asyncio.sleep(0.01)
+        await delete_sprite(summary.sprite_id, published.service)
+        await preview
+
+    asyncio.run(preview_then_delete())
+    assert not (objects(published.store) / "sprites" / summary.sprite_id).exists()
+
+
+def test_an_unreachable_object_store_is_a_503_without_a_rebuild(client: TestClient, published, monkeypatch) -> None:
+    """对象存储暂时不可达不等于副本丢失：预览回答 503，不启动重建。"""
+    summary = published_sprite(client, published.version.id)
+    shutil.rmtree(published.store.root / "cache" / "sprites" / summary.sprite_id, ignore_errors=True)
+    published.renderer.requests.clear()
+
+    def unreachable(key, destination):
+        """模拟 ZOS 不可达。"""
+        raise ObjectStoreError("unreachable")
+
+    monkeypatch.setattr(published.store.objects, "fetch", unreachable)
+    assert client.get(summary.preview_url).status_code == 503
+    assert published.renderer.requests == []
 
 
 @pytest.mark.parametrize(("fields", "detail"), [
