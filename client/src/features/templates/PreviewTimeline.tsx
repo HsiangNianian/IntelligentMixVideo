@@ -1,4 +1,4 @@
-/** 视频轨道拖动调整排列，效果时间由右侧设置；SDK 驱动游标，卸载取消缩略图任务。 */
+/** 视频与效果片段固定显示，SDK 驱动游标，卸载取消缩略图任务。 */
 import { useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
 import { Timeline, type TimelineState } from "@xzdarcy/react-timeline-editor";
 import { Film, Wand2 } from "lucide-react";
@@ -25,7 +25,6 @@ interface Props {
   duration?: number;
   selectedId?: string | null;
   onSelect?: (id: string) => void;
-  onVideoMove?: (source: number, destination: number) => void;
 }
 
 /** 显示源素材缩略图，错误独立提示并允许重试；缓存随预览组件释放。 */
@@ -66,7 +65,7 @@ function ClipThumbnails({ clip, cache }: { clip: PreviewClip; cache: Map<string,
 }
 
 /** 轨道宽度随容器调整；鼠标拖动期间忽略播放器旧时间，键盘支持 0.1 秒定位。 */
-export function PreviewTimeline({ ref, rows, disabled, time, onSeek, duration = 30, selectedId, onSelect, onVideoMove }: Props) {
+export function PreviewTimeline({ ref, rows, disabled, time, onSeek, duration = 30, selectedId, onSelect }: Props) {
   const timeline = useRef<TimelineState>(null);
   const container = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
@@ -104,10 +103,14 @@ export function PreviewTimeline({ ref, rows, disabled, time, onSeek, duration = 
         <div className="h-8" aria-hidden="true" />
         {rows.map((row) => {
           const clip = row.actions[0];
+          if (row.id === "transitions" && !clip) {
+            const Icon = objectIcons.transition;
+            return <button key={row.id} type="button" data-object="transition" onClick={() => onSelect?.("transitions")} className="template-timeline-label flex h-[42px] w-full items-center gap-1.5 text-left"><Icon className="size-3.5 shrink-0" aria-hidden="true" /><span className="text-[11px]">镜头转场</span></button>;
+          }
           if (!clip) throw new Error("时间轴轨道缺少片段");
           const Icon = clip.effectId === "video" ? Film : clip.effectId === "remotion" ? Wand2 : objectIcons[clip.effectId as EffectTarget];
           if (!Icon) throw new Error("时间轴轨道类型无效");
-          return <div key={row.id} data-object={clip.effectId} className="template-timeline-label flex h-[42px] min-w-0 items-center gap-1.5" title={clip.label}><Icon className="size-3.5 shrink-0" aria-hidden="true" /><span className="truncate text-[11px]">{clip.effectId === "video" ? "视频" : clip.label}</span></div>;
+          return <div key={row.id} data-object={clip.effectId} className="template-timeline-label flex h-[42px] min-w-0 items-center gap-1.5" title={clip.label}><Icon className="size-3.5 shrink-0" aria-hidden="true" /><span className="truncate text-[11px]">{clip.effectId === "video" ? "视频" : clip.effectId === "transition" ? "镜头转场" : clip.label}</span></div>;
         })}
       </div>
       <div
@@ -133,7 +136,7 @@ export function PreviewTimeline({ ref, rows, disabled, time, onSeek, duration = 
           editorData={editableRows}
           effects={{}}
           autoReRender={false}
-          disableDrag={disabled || !onVideoMove}
+          disableDrag
           startLeft={startLeft}
           scale={scale}
           scaleWidth={scaleWidth}
@@ -152,20 +155,7 @@ export function PreviewTimeline({ ref, rows, disabled, time, onSeek, duration = 
               <span className="truncate">{clip.effectName ?? clip.label}</span>
             </div> : <ClipThumbnails clip={clip} cache={cache.current} />;
           }}
-          onClickAction={(_event, { action }) => { if (rows.some((row) => row.actions.some((clip) => clip.id === action.id && clip.targetId))) onSelect?.(action.id); }}
-          onActionMoveStart={({ action }) => { if (action.effectId !== "video") onSelect?.(action.id); }}
-          onActionMoveEnd={({ action, start, end }) => {
-            const videos = rows.flatMap((row) => row.actions).filter((clip) => clip.videoSource !== undefined);
-            const original = videos.find((clip) => clip.id === action.id);
-            if (original?.videoSource === undefined) return;
-            const center = (start + end) / 2;
-            const destination = videos.filter((clip) => clip.id !== action.id && (clip.start + clip.end) / 2 < center).length;
-            onVideoMove?.(original.videoSource, destination);
-            setEditableRows(structuredClone(rows));
-          }}
-          onActionResizeStart={({ action }) => onSelect?.(action.id)}
-          onActionMoving={({ start, end }) => start >= 0 && end <= duration}
-          onActionResizing={({ start, end }) => start >= 0 && end <= duration && end > start}
+          onClickAction={(_event, { action }) => { const target = rows.flatMap((row) => row.actions).find((clip) => clip.id === action.id)?.targetId; if (target) onSelect?.(target); }}
           onChange={() => false}
           onClickTimeArea={() => false}
           onCursorDragStart={(value) => { dragging.current = true; seek(value); }}

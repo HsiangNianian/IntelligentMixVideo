@@ -446,6 +446,25 @@ def test_transition_uses_selected_boundary_and_preserves_audio(composition_case,
     assert changed["VideoTracks"][0]["VideoTrackClips"][0]["Effects"][-1]["Duration"] == 0.1
 
 
+@pytest.mark.parametrize("mode", [None, "sequence", "random"])
+def test_disabled_transitions_preserve_candidates(composition_case, mode):
+    """统一关闭后 IMS 成片没有转场，重新开启继续使用已保存的候选。"""
+    asset = next(item for item in effect_catalog().values() if item.category == "transition/normal")
+    apply_tracks(composition_case, [{**template_track("transition", transition=asset.id), "duration": 1}])
+    composition_case["template"].update(transition_mode=mode, transition_enabled=False)
+    for index, match in enumerate(composition_case["matches"]):
+        match.update(matched_candidate_url=f"https://media.example.test/{index}", matched_candidate_type="video")
+    original = deepcopy(composition_case)
+    disabled, _ = build_timeline(**composition_case)
+    assert not any(effect["Type"] in ("Transition", "DLTransition")
+                   for clip in disabled["VideoTracks"][0]["VideoTrackClips"] for effect in clip["Effects"])
+    assert composition_case == original
+    composition_case["template"]["transition_enabled"] = True
+    enabled, _ = build_timeline(**composition_case)
+    assert any(effect["Type"] in ("Transition", "DLTransition")
+               for clip in enabled["VideoTracks"][0]["VideoTrackClips"] for effect in clip["Effects"])
+
+
 def test_transition_uses_only_selected_boundaries(composition_case):
     """两个交界处分别应用保存的效果与时长，其他交界处保持直接切换。"""
     asset = next(item for item in effect_catalog().values() if item.category == "transition/normal")
@@ -458,6 +477,52 @@ def test_transition_uses_only_selected_boundaries(composition_case):
     apply_tracks(composition_case, tracks[1:])
     clips = build_timeline(**composition_case)[0]["VideoTracks"][0]["VideoTrackClips"]
     assert [[item["Duration"] for item in clip["Effects"] if item["Type"] == "DLTransition"] for clip in clips] == [[], [0.4], [], [], []]
+
+
+@pytest.mark.parametrize("mode", ["sequence", "random"])
+def test_transition_list_selects_all_material_boundaries(composition_case, mode):
+    """顺序选择循环应用，随机选择各候选一次，时长统一且重试结果一致。"""
+    from server.template.transitions import select_transitions
+
+    assets = [item for item in effect_catalog().values() if item.category == "transition/normal"][:3]
+    tracks = [{**template_track("transition", transition=asset.id), "id": f"candidate-{index}",
+               "transition_boundary": index + 1, "duration": 0.2} for index, asset in enumerate(assets)]
+    apply_tracks(composition_case, tracks)
+    composition_case["template"].update(transition_mode=mode, transition_duration_seconds=0.2)
+    composition_case["transition_seed"] = "composition-task"
+    for index, match in enumerate(composition_case["matches"]):
+        match.update(matched_candidate_url=f"https://media.example.test/{index}", matched_candidate_type="video")
+    original = deepcopy(composition_case)
+    timeline, _ = build_timeline(**composition_case)
+    assert build_timeline(**composition_case)[0] == timeline
+    assert composition_case == original
+    clips = timeline["VideoTracks"][0]["VideoTrackClips"]
+    selected = select_transitions(tracks, len(clips) - 1, mode, "composition-task")
+    effects = [[item for item in clip["Effects"] if item["Type"] == "DLTransition"] for clip in clips]
+    assert [len(items) for items in effects] == ([1, 1, 1, 1, 0] if mode == "sequence" else [1, 1, 1, 0, 0])
+    assert [items[0]["SubType"] for items in effects if items] == [
+        effect_catalog()[item["editor"]["transition"]].parameters["SubType"] for item, _ in selected
+    ]
+    assert all(items[0]["Duration"] == 0.2 for items in effects if items)
+    assert timeline["AudioTracks"][0]["AudioTrackClips"][0]["TimelineOut"] == 8
+
+
+def test_transition_selection_combines_ims_and_remotion():
+    """混合列表保持同一个选择顺序，每个连接只选一个效果，随机结果依任务标识变化。"""
+    from server.template.transitions import select_transitions
+
+    candidates = [{"id": f"item-{index}", "target": target, "transition_boundary": index + 1}
+                  for index, target in enumerate(["transition", "remotion", "transition"])]
+    assert [item["id"] for item, _ in select_transitions(candidates, 5, "sequence", "task")] == [
+        "item-0", "item-1", "item-2", "item-0", "item-1"]
+    random = select_transitions(candidates, 10, "random", "task")
+    assert random == select_transitions(candidates, 10, "random", "task")
+    assert random != select_transitions(candidates, 10, "random", "another-task")
+    assert len(random) == len(candidates)
+    assert {item["id"] for item, _ in random} == {item["id"] for item in candidates}
+    assert [boundary for _, boundary in random] == [1, 2, 3]
+    assert select_transitions([], 5, "random", "task") == []
+    assert select_transitions(candidates, 0, "sequence", "task") == []
 
 
 def test_transition_does_not_split_single_clip_and_still_validates_effect(composition_case):

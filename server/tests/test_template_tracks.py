@@ -40,7 +40,7 @@ def test_transition_boundaries_are_independent_and_unique():
     tracks = [{**template_track("transition", transition=asset.id), "id": f"boundary-{boundary}", "transition_boundary": boundary} for boundary in (1, 2)]
     payload = {"name": "两个转场", "tracks": tracks, "effect_ids": [asset.id]}
     assert [track.transition_boundary for track in TemplateSave.model_validate(payload).tracks] == [1, 2]
-    for boundary in (0, 1, 3, True, 1.5):
+    for boundary in (0, 1, 101, True, 1.5):
         tracks[1]["transition_boundary"] = boundary
         with pytest.raises(ValidationError):
             TemplateSave.model_validate(payload)
@@ -283,7 +283,7 @@ def test_ims_timing_defaults(duration: float | None) -> None:
 
 @pytest.mark.parametrize(("tracks", "reason"), [
     ([remotion_track("a", text_target="title"), remotion_track("b", text_target="title")], "每个标题或字幕最多一个 Remotion 字效"),
-    ([remotion_track("a", transition_boundary=2), remotion_track("b", transition_boundary=2)], "每个视频交界处最多一个转场"),
+    ([remotion_track("a", transition_boundary=2), remotion_track("b", transition_boundary=2)], "转场列表序号不能重复"),
     ([remotion_track("a", text_target="title", transition_boundary=1)], "不能同时作用于文字和视频交界处"),
     ([{**template_track("title"), "text_target": "title"}], "只有 Remotion 字效可以设置作用的文字对象"),
     ([{**template_track("title"), "transition_boundary": 1}], "只有转场可以设置视频交界处"),

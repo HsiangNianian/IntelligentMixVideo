@@ -80,13 +80,13 @@ test("字效作用于所选文字对象且每个对象最多一个", () => {
   expect(() => addClip(sampleDraft(), text, [text], "bubble")).toThrow("只能作用于标题或底部字幕");
 });
 
-// 场景：Remotion 转场依次占用 IMS 转场未使用的交界处，两个交界处都占满后拒绝；IMS 转场也不能占用 Remotion 转场所在的交界处。
+// 场景：Remotion 和 IMS 转场共用有序列表，支持添加超过两个候选，每个序号仅有一个效果。
 test("Remotion 转场与 IMS 转场共用视频交界处", () => {
   const cut = { ...asset, id: "cut", kind: SpriteKind.TRANSITION_OVERLAY };
   const ims = addTrack(sampleDraft(), catalog[1], "transition").draft;
   const both = addClip(ims, cut, [cut]);
   expect(both.clips[0].transition_boundary).toBe(2);
-  expect(() => addClip(both, cut, [cut])).toThrow("两个视频交界处都已有转场");
+  expect(addClip(both, cut, [cut]).clips.at(-1)?.transition_boundary).toBe(3);
   expect(() => addTrack(addClip(sampleDraft(), cut, [cut]), catalog[1], "transition", undefined, 1)).toThrow("交界处 1 已有 Remotion 转场");
   expect(addTrack(addClip(sampleDraft(), cut, [cut]), catalog[1], "transition").draft.tracks.at(-1)?.transition_boundary).toBe(2);
 });
@@ -115,20 +115,22 @@ test("改变字效作用对象与转场交界处", () => {
   expect(moved.clips).toHaveLength(1);
 });
 
-// 场景：字效采用所作用文字在本次预览中的显示区间，Remotion 转场以交界处为中心；区间不变时返回原草稿，不改动输入。
+// 场景：字效采用所作用文字在本次预览中的显示区间，Remotion 转场使用视频重叠区间；区间不变时返回原草稿，不改动输入。
 test("片段时间跟随所占对象", () => {
   const text = { ...asset, id: "text", kind: SpriteKind.TEXT };
   const cut = { ...asset, id: "cut", kind: SpriteKind.TRANSITION_OVERLAY, seconds: 1 };
   /** 按三个 10 秒预览视频计算占用对象的片段区间。 */
   const timed = (draft: Draft) => timeClips(draft, resolveTemplate(draft, previewContext(sampleMedia)));
-  expect(timed(addClip(sampleDraft(), cut, [cut])).clips[0]).toMatchObject({ transition_boundary: 1, start: 9.5, duration: 1 });
+  expect(timed(addClip(sampleDraft(), cut, [cut])).clips[0]).toMatchObject({ transition_boundary: 1, start: 9, duration: 1 });
   let draft = setTrackTiming(sampleDraft(), "title", { start_mode: "seconds", start: 2, duration: 3 });
   // IMS 转场在第一个交界处重叠一秒，第二个交界处随之提前到 19 秒。
   draft = addClip(addClip(addTrack(draft, catalog[1], "transition").draft, text, [text, cut], "title"), cut, [text, cut]);
   const result = timed(draft);
-  expect(result.clips.map(({ start, duration, transition_boundary }) => [start, duration, transition_boundary])).toEqual([[2, 3, undefined], [18.5, 1, 2]]);
+  expect(result.clips.map(({ start, duration, transition_boundary }) => [start, duration, transition_boundary])).toEqual([[2, 3, undefined], [18, 1, 2]]);
   expect(draft.clips.map(({ start }) => start)).toEqual([0, 0]);
   expect(timed(result)).toBe(result);
+  const extra = addClip(result, cut, [text, cut]);
+  expect([...hiddenTextClips(extra, resolveTemplate(extra, previewContext(sampleMedia)))]).toEqual([extra.clips.at(-1)!.id]);
 });
 
 // 场景：所作用的标题在 30 秒预览里没有显示时间，字效同样不显示且保留原有区间；标题回到预览内后字效重新跟随它，滤镜不受影响。

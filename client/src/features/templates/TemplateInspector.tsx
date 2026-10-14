@@ -1,35 +1,82 @@
 /** 模版编辑右栏：按所选对象切换外观、时间与关键词设置，复用原有参数控件。 */
 import { useEffect, useId, useState } from "react";
-import { X } from "lucide-react";
+import { ListOrdered, Plus, Shuffle, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Hint } from "@/components/Hint";
-import type { EffectAsset, EffectDraft, EffectTrack } from "./model";
+import type { Draft, EffectAsset, EffectDraft, EffectTrack } from "./model";
+import type { SpriteAsset } from "@/features/sprites/model";
+import { SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
+import { transitionItems } from "./transitions";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { effectTargets } from "./effects";
 import { EffectEditor } from "./EffectEditor";
 import { ObjectIcon } from "./EffectAssets";
 import { TrackTiming } from "./TrackTiming";
 import { EffectCombobox } from "./EffectCombobox";
 import { Input } from "@/components/ui/input";
+import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import type { ResolvedTrack } from "./tracks";
 
-/** 两个交界处共用转场设置；起点由视频排列计算，右侧选择效果及持续时间。 */
-export function TransitionInspector({ boundary, track, catalog, resolved, onChoose, onDuration, onClose }: {
-  boundary: number; track?: EffectTrack; catalog: EffectAsset[]; resolved?: ResolvedTrack;
-  onChoose: (asset?: EffectAsset) => void; onDuration: (seconds: number) => void; onClose: () => void;
+/** 全部转场共同设置时长和选择方式，每个条目独立选择 IMS 或 Remotion 效果。 */
+export function TransitionInspector({ draft, catalog, sprites, onChoose, onRemove, onDuration, onMode, onEnabled, onSelect }: {
+  draft: Draft; catalog: EffectAsset[]; sprites: SpriteAsset[];
+  onChoose: (id: string, value: string) => void;
+  onRemove: (id: string) => void;
+  onDuration: (seconds: number) => void; onMode: (mode: "sequence" | "random") => void;
+  onEnabled: (enabled: boolean) => void;
+  onSelect: (id: string) => void;
 }) {
   const id = useId();
-  const [length, setLength] = useState(String(track?.duration ?? 1));
-  useEffect(() => setLength(String(track?.duration ?? 1)), [track?.id, track?.duration, boundary]);
-  return <section aria-label="转场设置" className="space-y-4 p-4">
-    <div className="flex items-center justify-between"><h2 className="text-sm font-semibold">转场 {boundary}</h2><Button type="button" variant="ghost" size="icon" aria-label="关闭转场设置" onClick={onClose}><X className="size-4" /></Button></div>
-    <EffectCombobox value={track?.editor.transition ?? "none"} ariaLabel="转场效果" placeholder="无转场" searchPlaceholder="搜索转场"
-      options={[{ value: "none", label: "无转场" }, ...catalog.filter((asset) => asset.category === "transition/normal").map((asset) => ({ value: asset.id, label: asset.name }))]}
-      onChange={(value) => onChoose(value === "none" ? undefined : catalog.find((asset) => asset.id === value))} />
-    {track && <div aria-label="轨道时间设置" className="space-y-2"><Label htmlFor={id}>转场持续时间 / 秒</Label><Input id={id} type="number" min={0.1} max={3} step="any" required value={length}
-      onKeyDown={(event) => { if (event.key === "Enter") event.preventDefault(); }}
-      onChange={(event) => { setLength(event.target.value); onDuration(event.target.value.trim() ? Number(event.target.value) : NaN); }} />
-      <p role="status" className="text-xs text-muted-foreground">{resolved ? resolved.end > resolved.start ? `当前预览：${Number(resolved.start.toFixed(3))}～${Number(resolved.end.toFixed(3))} 秒${resolved.notice ? `；${resolved.notice}` : ""}` : resolved.notice : "等待预览时间"}</p></div>}
+  const [length, setLength] = useState(String(draft.transition_duration_seconds));
+  useEffect(() => setLength(String(draft.transition_duration_seconds)), [draft.transition_duration_seconds]);
+  const items = transitionItems(draft);
+  const options = [...catalog.filter((asset) => asset.category === "transition/normal").map((asset) => ({ value: asset.id, label: asset.name })),
+    ...sprites.filter((asset) => asset.kind === SpriteKind.TRANSITION_OVERLAY).map((asset) => ({ value: `sprite:${asset.id}`, label: `Remotion · ${asset.name}` }))];
+  return <section aria-label="转场设置" className="template-inspector-fields min-w-0 space-y-3 p-4">
+    <div className="flex items-center justify-between gap-2">
+      <h2 className="text-[13px] font-semibold leading-5">镜头转场</h2>
+      <Switch aria-label="使用转场" checked={draft.transition_enabled !== false} onCheckedChange={onEnabled} />
+    </div>
+    <div className="space-y-2">
+      <Label className="text-xs text-muted-foreground">转场选择方式</Label>
+      <ToggleGroup type="single" spacing={1} value={draft.transition_mode ?? "sequence"} aria-label="转场选择方式"
+        className="grid w-full grid-cols-2 gap-1 rounded-lg border border-border/60 bg-muted/60 p-1"
+        onValueChange={(value) => { if (value === "sequence" || value === "random") onMode(value); }}>
+        {([["sequence", "顺序选择", ListOrdered], ["random", "随机选择", Shuffle]] as const).map(([value, label, Icon]) => (
+          <ToggleGroupItem key={value} value={value}
+            className="h-8 gap-1.5 rounded-md px-2 text-xs text-muted-foreground transition-[color,background-color,box-shadow] hover:bg-background/50 hover:text-foreground data-[state=on]:bg-background data-[state=on]:text-foreground data-[state=on]:shadow-sm">
+            <Icon className="size-3.5" aria-hidden="true" />{label}
+          </ToggleGroupItem>
+        ))}
+      </ToggleGroup>
+    </div>
+    <div aria-label="转场时间设置" className="space-y-1.5">
+      <Label htmlFor={id}>转场持续时间 / 秒</Label>
+      <div className="flex items-center gap-3">
+        <Slider label="转场持续时间滑块" min={0.1} max={3} step={0.1} value={[draft.transition_duration_seconds]}
+          onValueChange={([next]) => { setLength(String(next)); onDuration(next); }} className="flex-1" />
+        <Input id={id} type="number" min={0.1} max={3} step="any" required value={length} className="w-[4.5rem] shrink-0 text-right"
+          onKeyDown={(event) => { if (event.key === "Enter") event.preventDefault(); }}
+          onChange={(event) => { setLength(event.target.value); onDuration(event.target.value.trim() ? Number(event.target.value) : NaN); }} />
+      </div>
+    </div>
+    {items.map((item, index) => <div key={item.id} className="space-y-2" aria-label={`转场 ${index + 1}`}>
+      <Label>转场 {index + 1}</Label>
+      <div className="flex items-center gap-1.5">
+        <div className="min-w-0 flex-1"><EffectCombobox value={"editor" in item ? item.editor.transition : `sprite:${item.sprite_id}`} ariaLabel={`转场 ${index + 1} 效果`} placeholder="选择转场效果" searchPlaceholder="搜索转场"
+          options={options} onChange={(value) => onChoose(item.id, value)} /></div>
+        <Hint label={`删除转场 ${index + 1}`}><Button type="button" variant="ghost" size="icon" className="size-7 shrink-0 text-muted-foreground hover:text-destructive" aria-label={`删除转场 ${index + 1}`} onClick={() => onRemove(item.id)}><X className="size-3.5" aria-hidden="true" /></Button></Hint>
+      </div>
+      {"sprite_id" in item && <Button type="button" size="sm" variant="outline" onClick={() => onSelect(item.id)}>设置转场参数</Button>}
+    </div>)}
+    <EffectCombobox value="" ariaLabel="添加转场" placeholder="添加转场" searchPlaceholder="搜索要添加的转场" options={options}
+      disabled={draft.tracks.length + draft.clips.length >= 100} onChange={(value) => onChoose("", value)}
+      className="flex h-8 items-center justify-center gap-1.5 rounded-md border border-dashed border-input text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50">
+      <Plus className="size-3.5" aria-hidden="true" />添加转场
+    </EffectCombobox>
+    {!items.length && <p className="text-xs text-muted-foreground">尚未添加转场，三个视频连续播放。</p>}
   </section>;
 }
 

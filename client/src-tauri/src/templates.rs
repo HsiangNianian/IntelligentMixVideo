@@ -138,6 +138,12 @@ fn draft_from_protobuf(bytes: &[u8], id: Option<&str>) -> Result<Value, String> 
         "tracks": tracks,
         "effect_ids": request.effect_ids,
     });
+    if let Some(mode) = request.transition_mode {
+        draft["transition_mode"] = json!(mode);
+    }
+    if let Some(enabled) = request.transition_enabled {
+        draft["transition_enabled"] = json!(enabled);
+    }
 
     let mut expected_ids = Vec::new();
     for track in draft["tracks"].as_array().ok_or("轨道须为数组")? {
@@ -287,7 +293,9 @@ fn validate_editor(editor: &Value) -> Result<Vec<Value>, String> {
 /// 多轨保存校验时间规则、唯一 ID 与所属对象，模板不包含视频信息。
 fn validate(mut draft: Value) -> Result<Value, String> {
     let object = draft.as_object().ok_or("模板须为对象")?;
-    if object.len() != 4
+    if object.len()
+        != 4 + usize::from(object.contains_key("transition_mode"))
+            + usize::from(object.contains_key("transition_enabled"))
         || ![
             "name",
             "description",
@@ -311,6 +319,17 @@ fn validate(mut draft: Value) -> Result<Value, String> {
         draft[key] = json!(text);
     }
     number(&draft["transition_duration_seconds"], 0.1, 3.0, false)?;
+    if draft
+        .get("transition_enabled")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        return Err("转场开关必须是布尔值".into());
+    }
+    if let Some(mode) = draft.get("transition_mode") {
+        if !matches!(mode.as_str(), Some("sequence" | "random")) {
+            return Err("转场设置方式无效".into());
+        }
+    }
     let effects = {
         let items = draft["tracks"].as_array().ok_or("轨道须为数组")?;
         if items.len() > 100 {
@@ -363,11 +382,16 @@ fn validate(mut draft: Value) -> Result<Value, String> {
                     .as_u64()
                     .ok_or("转场必须指定视频交界处")?;
                 let length = track["duration"].as_f64().ok_or("转场需要固定持续时间")?;
-                if !(1..=2).contains(&boundary)
+                if !(1..=100).contains(&boundary)
                     || !transitions.insert(boundary)
                     || !(0.1..=3.).contains(&length)
                 {
                     return Err("转场位置、时长或数量无效".into());
+                }
+                if draft.get("transition_mode").is_some()
+                    && track["duration"] != draft["transition_duration_seconds"]
+                {
+                    return Err("全部转场必须使用统一持续时间".into());
                 }
             } else {
                 number(&track["start"], 0., f64::MAX, false)?;
@@ -935,6 +959,8 @@ mod tests {
             description: Some("  说明  ".into()),
             effect_ids: vec!["in/fade_in".into()],
             transition_duration_seconds: Some(0.5),
+            transition_mode: None,
+            transition_enabled: None,
             tracks: Some(generated::TrackList {
                 tracks: vec![
                     generated::EffectTrack {
@@ -963,10 +989,13 @@ mod tests {
     }
 
     #[test]
-    /// 两个交界处通过 Protobuf 和真实文件保存，重复交界处不写入。
+    /// 多个转场和统一设置通过 Protobuf 与真实文件保存，重复序号不写入。
     fn transition_boundaries_survive_protobuf_and_file() {
         let dir = Directory::new();
         let mut request = protobuf_request();
+        request.transition_mode = Some("random".into());
+        request.transition_enabled = Some(false);
+        request.transition_duration_seconds = Some(1.);
         let mut track = request.tracks.as_ref().unwrap().tracks[0].clone();
         let text_tracks = request.tracks.as_ref().unwrap().tracks.clone();
         track.id = "transition-1".into();
@@ -982,8 +1011,11 @@ mod tests {
         let mut second = track.clone();
         second.id = "transition-2".into();
         second.transition_boundary = Some(2);
+        let mut third = track.clone();
+        third.id = "transition-3".into();
+        third.transition_boundary = Some(3);
         request.effect_ids = vec!["transition/normal/directional".into(), "in/fade_in".into()];
-        request.tracks.as_mut().unwrap().tracks = vec![track, second];
+        request.tracks.as_mut().unwrap().tracks = vec![track, second, third];
         request.tracks.as_mut().unwrap().tracks.extend(text_tracks);
         let value = draft_from_protobuf(&request.encode_to_vec(), None).unwrap();
         let saved = operate(&dir.0, "save", None, Some(value.clone())).unwrap();
@@ -991,6 +1023,9 @@ mod tests {
         assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), saved);
         assert_eq!(saved["tracks"][0]["transition_boundary"], json!(1));
         assert_eq!(saved["tracks"][1]["transition_boundary"], json!(2));
+        assert_eq!(saved["tracks"][2]["transition_boundary"], json!(3));
+        assert_eq!(saved["transition_mode"], json!("random"));
+        assert_eq!(saved["transition_enabled"], json!(false));
         assert!(saved["tracks"][0].get("start").is_none());
         let mut missing = value.clone();
         missing["tracks"][0]
@@ -1001,7 +1036,7 @@ mod tests {
         let mut positioned = value.clone();
         positioned["tracks"][0]["start"] = json!(9);
         assert!(operate(&dir.0, "save", None, Some(positioned)).is_err());
-        for boundary in [json!(0), json!(1), json!(3), json!(true)] {
+        for boundary in [json!(0), json!(1), json!(101), json!(true)] {
             let mut invalid = value.clone();
             invalid["tracks"][1]["transition_boundary"] = boundary;
             assert!(operate(&dir.0, "save", Some(id), Some(invalid)).is_err());

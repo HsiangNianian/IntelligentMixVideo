@@ -48,41 +48,52 @@ test.each(["cloud", "local"] as const)("%s 新模板保留唯一标题和字幕"
   expect(within(applied).queryAllByRole("button")).toHaveLength(2);
 });
 
-// 场景：连续添加自动分配两个交界处，右侧独立修改，达到数量上限后拒绝添加。
+// 场景：转场设置仅在选中转场时显示，连续添加、切换对象和移除后保留统一参数。
 test("转场按添加顺序连接三个视频", async () => {
   render(<TemplateWorkspace selection={creation()} onHome={() => {}} />);
   await addText();
   const assets = screen.getByRole("region", { name: "特效资产" });
+  expect(screen.queryByRole("region", { name: "转场设置" })).toBeNull();
   expect(screen.queryByLabelText("视频交界处")).toBeNull();
   fireEvent.click(within(assets).getByRole("radio", { name: "转场" }));
   fireEvent.click(within(assets).getAllByRole("button", { name: /^应用转场：/ })[0]);
   expect(screen.getByRole("button", { name: "编辑镜头转场 1", pressed: true })).toBeTruthy();
-  expect(within(screen.getByRole("region", { name: "转场设置" })).getByText("等待预览时间")).toBeTruthy();
+  expect(screen.getByRole("combobox", { name: "转场 1 效果" })).toBeTruthy();
   fireEvent.click(within(assets).getAllByRole("button", { name: /^应用转场：/ })[1]);
   expect(screen.getByRole("button", { name: "编辑镜头转场 2", pressed: true })).toBeTruthy();
   const inspector = screen.getByRole("region", { name: "转场设置" });
   fireEvent.change(within(inspector).getByLabelText("转场持续时间 / 秒"), { target: { value: "2" } });
+  const durationSlider = within(inspector).getByRole("slider", { name: "转场持续时间滑块" });
+  expect(durationSlider.getAttribute("aria-valuenow")).toBe("2");
+  fireEvent.keyDown(durationSlider, { key: "ArrowLeft" });
+  expect(screen.getByLabelText<HTMLInputElement>("转场持续时间 / 秒").value).toBe("1.9");
+  fireEvent.keyDown(durationSlider, { key: "ArrowRight" });
+  expect(screen.getByLabelText<HTMLInputElement>("转场持续时间 / 秒").value).toBe("2");
   fireEvent.click(screen.getByRole("button", { name: "编辑顶部标题" }));
   expect(screen.getByRole("tab", { name: "外观与效果" })).toBeTruthy();
+  expect(screen.queryByRole("region", { name: "转场设置" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "编辑镜头转场 2" }));
   expect(screen.getByLabelText<HTMLInputElement>("转场持续时间 / 秒").value).toBe("2");
-  expect(within(inspector).getByText("等待预览时间")).toBeTruthy();
+  expect(screen.getByRole("combobox", { name: "转场 2 效果" })).toBeTruthy();
   fireEvent.click(within(assets).getAllByRole("button", { name: /^应用转场：/ })[2]);
-  const limitDialog = screen.getByRole("dialog", { name: "无法添加特效" });
-  expect(within(limitDialog).getByText("最多添加两个转场，请在右侧修改已有转场")).toBeTruthy();
-  expect(screen.getByText("最多添加两个转场，请在右侧修改已有转场").closest('[role="alert"]')).toBeNull();
-  fireEvent.click(within(limitDialog).getByRole("button", { name: "知道了" }));
   expect(screen.queryByRole("dialog", { name: "无法添加特效" })).toBeNull();
-  expect(screen.queryByText("最多添加两个转场，请在右侧修改已有转场")).toBeNull();
-  expect(within(screen.getByRole("region", { name: "已添加特效" })).getAllByRole("button", { name: /编辑镜头转场/ })).toHaveLength(2);
+  expect(screen.getByText("转场 3")).toBeTruthy();
+  expect(within(screen.getByRole("region", { name: "已添加特效" })).getAllByRole("button", { name: /编辑镜头转场/ })).toHaveLength(3);
   expect(screen.getByLabelText<HTMLInputElement>("转场持续时间 / 秒").value).toBe("2");
-  fireEvent.click(screen.getByRole("combobox", { name: "转场效果" }));
-  fireEvent.click(screen.getByRole("option", { name: "无转场" }));
-  expect(screen.queryByRole("button", { name: "编辑镜头转场 2" })).toBeNull();
+  fireEvent.click(screen.getByRole("radio", { name: "随机选择" }));
+  expect(screen.getByRole("radio", { name: "随机选择" }).getAttribute("aria-checked")).toBe("true");
+  fireEvent.click(screen.getByRole("combobox", { name: "转场 2 效果" }));
+  expect(screen.queryByRole("option", { name: "无转场" })).toBeNull();
+  fireEvent.keyDown(screen.getByPlaceholderText("搜索转场"), { key: "Escape" });
+  fireEvent.click(screen.getByRole("button", { name: "删除转场 2" }));
+  expect(screen.queryByRole("button", { name: "编辑镜头转场 3" })).toBeNull();
   expect(screen.queryByRole("region", { name: "画面对象设置" })).toBeNull();
-  expect(screen.queryByRole("region", { name: "转场设置" })).toBeNull();
+  expect(screen.getByRole("region", { name: "转场设置" })).toBeTruthy();
   fireEvent.click(within(assets).getAllByRole("button", { name: /^应用转场：/ })[1]);
-  expect(screen.getByRole("button", { name: "编辑镜头转场 2", pressed: true })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "编辑镜头转场 3", pressed: true })).toBeTruthy();
+  for (let index = 3; index >= 1; index -= 1) fireEvent.click(screen.getByRole("button", { name: `删除转场 ${index}` }));
+  expect(screen.queryAllByRole("button", { name: /编辑镜头转场/ })).toHaveLength(0);
+  expect(screen.getByText("尚未添加转场，三个视频连续播放。")).toBeTruthy();
 });
 
 // 场景：时间输入尚未完整时停止保存；修正后使用最新草稿继续执行模板校验。

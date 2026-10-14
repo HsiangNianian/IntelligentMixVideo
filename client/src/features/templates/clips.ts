@@ -8,6 +8,7 @@ import type { SpriteAsset } from "@/features/sprites/model";
 import type { ClipTransform, TransformField } from "@/features/sprites/parameters";
 import { textRoles, type Draft, type RemotionClip, type TextRole } from "./model";
 import type { ResolvedTimeline } from "./tracks";
+import { compactTransitions, nextTransitionBoundary } from "./transitions";
 
 /** 片段与 IMS 对象共用的轨道上限，与服务端和本地文件一致。 */
 const maxTracks = 100;
@@ -49,7 +50,7 @@ function textClip(draft: Draft, role: TextRole, except?: string): RemotionClip |
 }
 
 /**
- * 添加一次摆放并按分类占用模板对象：字效作用于 `role`（当前选择的文字对象），转场占用第一个空闲交界处，视频特效占用 VFX 名额；
+ * 添加一次摆放并按分类占用模板对象：字效作用于 `role`（当前选择的文字对象），转场追加到统一列表，视频特效占用 VFX 名额；
  * 名额已被占用时拒绝并说明原因，占用文字或交界处的片段起点与时长由 `timeClips` 按所占对象计算。
  * 叠加渲染要求所有片段的画布尺寸与帧率相同，所以与已添加片段画布不同的资产也在这里拒绝；`known` 是用来查找已添加片段资产的目录，服务端保存时仍会复核。
  */
@@ -73,8 +74,8 @@ export function addClip(draft: Draft, asset: SpriteAsset, known: SpriteAsset[], 
     if (existing) throw new Error(`${textRoles[role]}已有 Remotion 字效，请先移除再添加`);
     clip.text_target = role;
   } else if (asset.kind === SpriteKind.TRANSITION_OVERLAY) {
-    clip.transition_boundary = [1, 2].find((boundary) => !boundaryTaken(draft, boundary));
-    if (clip.transition_boundary === undefined) throw new Error("两个视频交界处都已有转场，请先移除一个转场");
+    clip.transition_boundary = nextTransitionBoundary(draft);
+    clip.duration = draft.transition_duration_seconds;
   } else if (asset.kind !== SpriteKind.FILTER_OVERLAY && vfxTaken(draft, known)) {
     throw new Error("画面特效最多一个，Remotion 视频特效也占用这个名额，请先移除已有的画面特效");
   }
@@ -108,9 +109,14 @@ export function validateClipSlots(draft: Draft): void {
   }
 }
 
-/** 作用于文字、但该文字在本次预览中没有可显示时间的字效：IMS 文字已隐藏，字效也不显示，列表标为未应用。 */
+/** 预览中没有有效时间的字效与转场隐藏，列表标为未应用。 */
 export function hiddenTextClips(draft: Draft, resolved: ResolvedTimeline): Set<string> {
   return new Set(draft.clips.filter((clip) => {
+    if (clip.transition_boundary !== undefined) {
+      const before = resolved.clips[clip.transition_boundary - 1];
+      const after = resolved.clips[clip.transition_boundary];
+      return !before || !after || after.start >= before.end;
+    }
     const text = clip.text_target && draft.tracks.find((track) => track.target === clip.text_target);
     const shown = text ? resolved.tracks[text.id] : undefined;
     return !!text && !(shown && shown.end > shown.start);
@@ -119,7 +125,7 @@ export function hiddenTextClips(draft: Draft, resolved: ResolvedTimeline): Set<s
 
 /**
  * 把本次预览算出的秒数写入占用对象的片段，供右侧列表、时间轴、叠加预览和保存数据使用：字效采用所作用文字的显示区间，
- * Remotion 转场以交界处为中心；所作用文字不显示时保留原值（见 `hiddenTextClips`）。模板规则保持不变，合成时由总线按实际素材重新计算；没有变化的片段与列表保持原引用。
+ * Remotion 转场覆盖相邻视频的重叠区间；所作用文字不显示时保留原值（见 `hiddenTextClips`）。合成时按实际素材重新计算；没有变化的片段与列表保持原引用。
  */
 export function timeClips(draft: Draft, resolved: ResolvedTimeline): Draft {
   const round = (seconds: number) => Math.round(seconds * 1000) / 1000;
@@ -129,8 +135,9 @@ export function timeClips(draft: Draft, resolved: ResolvedTimeline): Draft {
     const shown = text ? resolved.tracks[text.id] : undefined;
     if (shown && shown.end > shown.start) timing = { start: round(shown.start), duration: round(shown.end - shown.start) };
     else if (clip.transition_boundary !== undefined && resolved.clips[clip.transition_boundary]) {
-      const cut = resolved.clips[clip.transition_boundary - 1].end;
-      timing = { start: round(Math.max(0, cut - (clip.duration ?? 0) / 2)), duration: clip.duration };
+      const before = resolved.clips[clip.transition_boundary - 1];
+      const after = resolved.clips[clip.transition_boundary];
+      timing = { start: round(after.start), duration: round(before.end - after.start) };
     }
     return !timing || (timing.start === clip.start && timing.duration === clip.duration) ? clip : { ...clip, ...timing };
   });
@@ -144,7 +151,8 @@ export function moveClip(draft: Draft, id: string, start: number): Draft {
 
 /** 移除一次摆放，其余片段的先后（叠放层级）不变。 */
 export function removeClip(draft: Draft, id: string): Draft {
-  return { ...draft, clips: draft.clips.filter((clip) => clip.id !== id) };
+  const next = { ...draft, clips: draft.clips.filter((clip) => clip.id !== id) };
+  return draft.clips.some((clip) => clip.id === id && clip.transition_boundary !== undefined) ? compactTransitions(next) : next;
 }
 
 /** 修改这次摆放的一个参数；undefined 表示恢复资产默认值。 */

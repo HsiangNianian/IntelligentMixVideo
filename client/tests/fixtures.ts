@@ -74,6 +74,7 @@ function templateRecord(template: Template): TemplateRecord {
     description: template.description,
     effectIds: template.effect_ids,
     transitionDurationSeconds: template.transition_duration_seconds,
+    transitionMode: template.transition_mode,
     templateId: template.template_id,
     tracks: { tracks: [
       ...template.tracks.map((track) => ({

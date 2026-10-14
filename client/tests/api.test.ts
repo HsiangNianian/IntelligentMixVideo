@@ -117,7 +117,7 @@ test("含片段的模板读取后再保存不丢片段", async () => {
   const body = fromBinary(SaveTemplateRequestSchema, new Uint8Array(fetchMock.mock.calls[1][1]?.body as Uint8Array));
   const sent = body.tracks!.tracks.filter((track) => track.target === "remotion");
   expect(sent.map((track) => [track.id, track.spriteId, track.start, track.duration])).toEqual([
-    ["clip-a", spriteId, 2.5, 3], ["clip-b", spriteId, 0, undefined],
+    ["clip-a", spriteId, 2.5, 3], ["clip-b", spriteId, 0, 1],
   ]);
   expect(body.tracks!.tracks.length - sent.length).toBe(2);
 });

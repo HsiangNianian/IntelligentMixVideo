@@ -517,7 +517,7 @@ class Job:
             ), {"materials": data["request"]["materials"], "duration_ms": data["duration_ms"]})
             await self.save("assembling", material_durations=durations)
             data = self.record["data"]
-        inputs = dict(request=data["request"], template=data["template"], segments=data.get("segmentation", {}).get("segments", []),
+        inputs = dict(request=data["request"], template=data["template"], transition_seed=self.record["task_id"], segments=data.get("segmentation", {}).get("segments", []),
                       title_keyword=data.get("segmentation", {}).get("title_keyword", ""),
                       matches=data.get("matches", []), duration_ms=data["duration_ms"],
                       **{key: data["output"][key] for key in ("width", "height", "fps")})

@@ -20,6 +20,7 @@ from ..remotion_templates import sprites
 from ..remotion_templates.placement import resolve as resolve_placement
 from ..template.schema import EffectTrack, RemotionTrackEditor
 from ..template.timing import resolve_track
+from ..template.transitions import select_transitions
 from .remotion_content import ContentError, dynamic_duration, resolve_config, roles
 from .remotion_timing import retime_source
 from ..remotion_templates.overlay_render import Overlay, OverlayError, environment_problem, fit_texts, render_overlay, to_frames
@@ -60,6 +61,8 @@ async def snapshot(template) -> dict:
         for track in template.tracks:
             if track.target != "remotion":
                 continue
+            if not template.transition_enabled and track.transition_boundary is not None:
+                continue
             asset_id = str(track.sprite_id)
             if asset_id not in publications:
                 publications[asset_id] = MessageToDict(sprites.get(asset_id), preserving_proto_field_name=True)
@@ -94,12 +97,15 @@ def placement_target(placement: dict, sprite: pb.PublishedSprite) -> str:
 async def require_environment(data: dict) -> None:
     """快照里有会实际渲染的摆放时，在付费 ASR／切片前确认隔离渲染环境；没有可显示内容时不要求。"""
     saved = data.get("remotion") or {}
-    if not saved.get("placements"):
+    placements = saved.get("placements", [])
+    if data.get("template", {}).get("transition_enabled") is False:
+        placements = [item for item in placements if item.get("transition_boundary") is None]
+    if not placements:
         return
     request = CompositionRequest.model_validate(data["request"])
     try:
         targets = {placement_target(placement, ParseDict(saved["assets"][placement["sprite_id"]], pb.PublishedSprite()))
-                   for placement in saved["placements"]}
+                   for placement in placements}
     except ContentError as exc:
         raise CompositionError("remotion_asset_not_adapted", str(exc), "template") from exc
     title = bool(request.title and request.title.strip())
@@ -114,7 +120,7 @@ async def require_environment(data: dict) -> None:
         raise CompositionError("remotion_render_environment_unavailable", "Remotion 渲染环境不可用", "template")
 
 
-def plan(data: dict, max_seconds: float, *, timeline: dict | None = None) -> Overlay | None:
+def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transition_seed: str = "") -> Overlay | None:
     """根据已保存业务快照展开字幕；示例时长不限制字幕，空内容不产生实例。"""
     saved = data.get("remotion")
     # 历史任务没有快照时延续原流程，不能恢复时偷偷读取新的模板绑定。
@@ -132,7 +138,24 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None) -> Ove
     title_keyword = data.get("segmentation", {}).get("title_keyword", "")
     instances = []
     timed_sources = {}
-    for placement in sorted(saved["placements"], key=lambda item: item.get("order", 0)):
+    placements = sorted(saved["placements"], key=lambda item: item.get("order", 0))
+    template = data.get("template", {})
+    if template.get("transition_enabled") is False:
+        placements = [item for item in placements if item.get("transition_boundary") is None]
+    if template.get("transition_mode") is not None and any(item.get("transition_boundary") is not None for item in placements):
+        if timeline is None:
+            raise ContentError("Remotion 转场缺少最终素材时间线")
+        selected = select_transitions(template["tracks"], len(timeline["VideoTracks"][0]["VideoTrackClips"]) - 1,
+                                      template["transition_mode"], transition_seed)
+        expanded = []
+        for placement in placements:
+            if placement.get("transition_boundary") is None:
+                expanded.append(placement)
+            else:
+                expanded.extend({**placement, "transition_boundary": boundary, "duration": template["transition_duration_seconds"]}
+                                for item, boundary in selected if item["id"] == placement["id"])
+        placements = expanded
+    for placement in placements:
         editor = RemotionTrackEditor.model_validate(placement.get("editor", {}))
         sprite = publications[placement["sprite_id"]]
         text_target = placement.get("text_target")
@@ -166,7 +189,12 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None) -> Ove
             clips = timeline["VideoTracks"][0]["VideoTrackClips"]
             if boundary >= len(clips):
                 continue
-            # 沿用上游预览规则，仅将已绑定的转场居中放在指定切点，不自动扩展至所有切点。
+            if template.get("transition_mode") is not None:
+                length_seconds = min(math.floor(length_seconds * fps + 0.5),
+                    math.floor((clips[boundary - 1]["TimelineOut"] - clips[boundary - 1]["TimelineIn"]) * fps + 1e-8) // 2,
+                    math.floor((clips[boundary]["TimelineOut"] - clips[boundary]["TimelineIn"]) * fps + 1e-8) // 2) / fps
+                if length_seconds < 0.1:
+                    continue
             start = max(0, clips[boundary - 1]["TimelineOut"] - length_seconds / 2)
         if target == "subtitle":
             contents = [(text, keyword, max(begin, start), min(end, start + length_seconds))
@@ -213,7 +241,7 @@ async def render(task_id: str, data: dict, timeout: float, *, timeline: dict | N
         work = service.store.root / "composition-overlays" / task_id
         # 计划与打包失败同样私有保存根因：公开错误只有固定摘要，打包器输出可能含资产源码。
         try:
-            overlay = await asyncio.to_thread(plan, data, service.settings.overlay_max_seconds, timeline=timeline)
+            overlay = await asyncio.to_thread(plan, data, service.settings.overlay_max_seconds, timeline=timeline, transition_seed=task_id)
             if overlay is None:
                 return None
             if environment_problem(service.settings):

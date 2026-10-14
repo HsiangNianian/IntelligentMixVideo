@@ -11,7 +11,8 @@ import { newDraft, toDraft, type Draft, type EffectAsset, type Template, type Te
 import { AppliedEffects, EffectAssets } from "./EffectAssets";
 import { isTextTarget } from "./effects";
 import { addTrack, previewContext, resolveTemplate, removeTrack, setTrackTiming, trackDraft, updateTrack } from "./tracks";
-import { previewUrls, readPreviewVideos, reorderVideos } from "./media";
+import { previewUrls, readPreviewVideos } from "./media";
+import { compactTransitions, previewTransitions, setTransitionDuration, transitionItems } from "./transitions";
 import { TemplateInspector, TransitionInspector, type InspectorTab } from "./TemplateInspector";
 import { TemplatePreview } from "./TemplatePreview";
 import { SpriteCatalog, SpriteClips } from "./SpritePanels";
@@ -33,7 +34,7 @@ function WorkspaceColumns({ assets, canvas, inspector }: { assets: ReactNode; ca
     window.addEventListener("resize", update);
     return () => window.removeEventListener("resize", update);
   }, []);
-  return <ResizablePanelGroup orientation="horizontal" disabled={!desktop} data-layout={desktop ? "desktop" : "narrow"} className="template-workspace-columns" style={{ height: desktop ? "calc(100dvh - 92px)" : "auto", minHeight: desktop ? 760 : undefined }}>
+  return <ResizablePanelGroup orientation="horizontal" disabled={!desktop} data-layout={desktop ? "desktop" : "narrow"} className="template-workspace-columns" style={{ height: desktop ? "100%" : "auto", minHeight: desktop ? 0 : undefined }}>
     <ResizablePanel id="assets" data-workspace-panel="assets" defaultSize={205} minSize={205} maxSize="28%" className="min-w-0">{assets}</ResizablePanel>
     <ResizableHandle withHandle aria-label="调整资产与画布宽度" className="template-workspace-handle" />
     <ResizablePanel id="canvas" data-workspace-panel="canvas" minSize={420} className="min-w-0">{canvas}</ResizablePanel>
@@ -53,7 +54,6 @@ export function TemplateWorkspace({ selection = null, onHome }: {
   const [media, setMedia] = useState<PreviewMedia>();
   const [mediaError, setMediaError] = useState("");
   const [mediaAttempt, setMediaAttempt] = useState(0);
-  const [videoOrder, setVideoOrder] = useState([0, 1, 2]);
   const [baseline, setBaseline] = useState("");
   const [catalog, setCatalog] = useState<EffectAsset[]>(() => readCatalog());
   const [loading, setLoading] = useState(false);
@@ -72,19 +72,23 @@ export function TemplateWorkspace({ selection = null, onHome }: {
   const mounted = useRef(false);
   const handledSelection = useRef<TemplateSelection | null>(null);
   const spriteCatalog = useSpriteCatalog(environment, (draft?.clips.length ?? 0) > 0);
+  const [transitionRandom, setTransitionRandom] = useState<readonly [number, number]>(() => [Math.random(), Math.random()]);
+  const previewSelection = useMemo(() => draft ? previewTransitions(draft, transitionRandom) : null, [draft, transitionRandom]);
+  const previewDraft = previewSelection?.draft;
   const preview = useMemo(() => {
-    if (!draft || !media) return { timeline: undefined, error: "" };
-    try { return { timeline: resolveTemplate(draft, previewContext(media, videoOrder)), error: "" }; }
+    if (!previewDraft || !media) return { timeline: undefined, error: "" };
+    try { return { timeline: resolveTemplate(previewDraft, previewContext(media)), error: "" }; }
     catch (reason) { return { timeline: undefined, error: reason instanceof Error ? reason.message : "时间规则无法应用到当前视频" }; }
-  }, [draft, media, videoOrder]);
+  }, [previewDraft, media]);
   const previewLength = preview.timeline?.duration ?? 0;
   // 占用文字或交界处的片段按本次预览计算区间，展示与保存共用，不改变草稿。
   const timedDraft = useMemo(() => draft && preview.timeline ? timeClips(draft, preview.timeline) : draft, [draft, preview.timeline]);
   const timedClips = timedDraft?.clips;
+  const previewClips = useMemo(() => previewDraft && preview.timeline ? timeClips(previewDraft, preview.timeline).clips : [], [previewDraft, preview.timeline]);
   // 所作用文字在当前预览中不显示时，字效也不显示，避免按原有时间出现在画面上。
-  const hiddenClips = useMemo(() => draft && preview.timeline ? hiddenTextClips(draft, preview.timeline) : new Set<string>(), [draft, preview.timeline]);
+  const hiddenClips = useMemo(() => previewDraft && preview.timeline ? hiddenTextClips(previewDraft, preview.timeline) : new Set<string>(), [previewDraft, preview.timeline]);
   const draftTracks = draft?.tracks;
-  const spriteClips = useMemo(() => (timedClips ?? []).map((clip) => {
+  const spriteClips = useMemo(() => previewClips.map((clip) => {
     const asset = spriteCatalog.assets?.find((item) => item.id === clip.sprite_id);
     // 作用于文字的字效显示该文字对象的示例文字与关键词，合成时由总线换成实际标题或切片。
     const text = clip.text_target && draftTracks?.find((track) => track.target === clip.text_target);
@@ -102,15 +106,13 @@ export function TemplateWorkspace({ selection = null, onHome }: {
       transform: clip.transform,
       canvas: asset ? { width: asset.width, height: asset.height, box: asset.box, movable: transformFields(asset.kind).includes("x") } : undefined,
     };
-  }).filter((clip) => clip.end > clip.start && !hiddenClips.has(clip.id)), [timedClips, hiddenClips, draftTracks, spriteCatalog.assets, previewLength]);
+  }).filter((clip) => clip.end > clip.start && !hiddenClips.has(clip.id)), [previewClips, hiddenClips, draftTracks, spriteCatalog.assets, previewLength]);
   const dirty = draft !== null && (current === null || JSON.stringify(draft) !== baseline);
   const selectedTrack = draft?.tracks.find((track) => track.id === target);
   const assetTrack = selectedTrack ?? draft?.tracks.find((track) => track.id === lastTextTrack.current);
   const selectedDraft = draft && selectedTrack ? trackDraft(draft, selectedTrack) : null;
-  const selectedTransition = selectedTrack?.target === "transition" ? selectedTrack : undefined;
-  const selectedBoundary = selectedTransition?.transition_boundary;
   // IMS 对象与 Remotion 片段共用一个选中状态，右栏只显示其中一种设置。
-  const selectedClip = timedClips?.find((clip) => clip.id === target);
+  const selectedClip = draft?.clips.find((clip) => clip.id === target && clip.transition_boundary !== undefined) ?? timedClips?.find((clip) => clip.id === target);
 
   useEffect(() => {
     mounted.current = true;
@@ -168,7 +170,6 @@ export function TemplateWorkspace({ selection = null, onHome }: {
         setCurrent(template);
         setDraft(next);
         setMedia(undefined);
-        setVideoOrder([0, 1, 2]);
         setBaseline(JSON.stringify(next));
         setEnvironment(openRequest.environment);
         setTarget(next.tracks[0]?.id ?? null);
@@ -215,7 +216,7 @@ export function TemplateWorkspace({ selection = null, onHome }: {
     setError("");
     try {
       // Remotion 片段是模板的 `remotion` 轨道，占用对象的片段带上本次预览的区间，与 IMS 对象在同一次请求里保存，要么都成功要么都不写入。
-      const saved = await api.saveTemplate(timedDraft, current?.template_id, environment, current?.library);
+      const saved = await api.saveTemplate(setTransitionDuration(timedDraft, draft.transition_duration_seconds), current?.template_id, environment, current?.library);
       if (!mounted.current) return;
       const next = toDraft(saved);
       setCurrent(saved);
@@ -250,7 +251,7 @@ export function TemplateWorkspace({ selection = null, onHome }: {
           </Empty>
         </section>
       ) : (
-        <form ref={form} noValidate className="template-workspace overflow-hidden rounded-xl border bg-card" onSubmit={(event) => { event.preventDefault(); void persist(); }}>
+        <form ref={form} noValidate className="template-workspace overflow-hidden bg-card" onSubmit={(event) => { event.preventDefault(); void persist(); }}>
           <fieldset disabled={busy || loading} className="min-w-0 disabled:opacity-60">
             <section aria-label="模板信息" className="template-workspace-header flex min-h-16 flex-wrap items-center justify-between gap-4 border-b px-5 py-3 lg:px-7">
               <div className="flex min-w-0 items-center gap-4"><span className="template-workspace-mark flex size-9 shrink-0 items-center justify-center rounded-lg text-xs font-black tracking-[-.06em]" aria-hidden="true">IM</span>
@@ -280,15 +281,10 @@ export function TemplateWorkspace({ selection = null, onHome }: {
                 <SpriteCatalog environment={environment} catalog={spriteCatalog} onAdd={(asset) => editTrack(() => addClip(draft, asset, spriteCatalog.assets ?? [], textTarget), true)} />
               </aside>}
               canvas={<main className="template-workspace-canvas h-full min-w-0 overflow-y-auto border-b xl:border-b-0">
-                <TemplatePreview draft={draft} media={media} resolved={preview.timeline} mediaError={mediaError || preview.error} onRetryMedia={() => setMediaAttempt((value) => value + 1)} onMediaChange={(next) => { setMedia(next); setMediaError(""); }} videoInputKey={`${environment}:${current?.template_id ?? draft.name}`} onCatalog={setCatalog} selectedId={target} onSelect={(id) => { if (draft.tracks.some((track) => track.id === id) || draft.clips.some((clip) => clip.id === id)) selectTarget(id); }} sprites={spriteClips} onSpriteMove={(id, x, y) => editTrack(() => setClipTransform(draft, id, { x, y }))}
-                  videoOrder={videoOrder} onVideoMove={(source, destination) => {
-                    try {
-                      const next = reorderVideos(videoOrder, source, destination);
-                      setVideoOrder(next); setError("");
-                    } catch (reason) { setError(reason instanceof Error ? reason.message : "视频排列修改失败"); }
-                  }} />
+                <TemplatePreview draft={previewDraft!} media={media} resolved={preview.timeline} mediaError={mediaError || preview.error} onRetryMedia={() => setMediaAttempt((value) => value + 1)} onMediaChange={(next) => { setMedia(next); setMediaError(""); }} videoInputKey={`${environment}:${current?.template_id ?? draft.name}`} onCatalog={setCatalog} selectedId={target} selectionTargets={previewSelection?.targets} onSelect={(id) => { selectTarget(previewSelection?.targets.get(id) ?? id); }} sprites={spriteClips} onSpriteMove={(id, x, y) => editTrack(() => setClipTransform(draft, previewSelection?.targets.get(id) ?? id, { x, y }))}
+                />
               </main>}
-              inspector={<aside className="template-workspace-inspector h-full min-w-0 overflow-y-auto xl:border-l"><AppliedEffects draft={draft} catalog={catalog} resolved={preview.timeline} selected={target} onSelect={selectTarget} />
+              inspector={<aside className="template-workspace-inspector relative h-full min-w-0 overflow-y-auto xl:border-l"><AppliedEffects draft={draft} catalog={catalog} resolved={preview.timeline} selected={target} onSelect={selectTarget} />
                 <SpriteClips environment={environment} clips={timedClips ?? []} catalog={spriteCatalog} duration={preview.timeline?.duration} hidden={hiddenClips} selected={selectedClip?.id ?? null} onSelect={selectTarget} onRemove={(id) => editTrack(() => removeClip(draft, id))} />
                 {selectedClip && <SpriteClipInspector key={selectedClip.id} clip={selectedClip} asset={spriteCatalog.assets?.find((item) => item.id === selectedClip.sprite_id)} duration={preview.timeline?.duration}
                   onParameter={(key, value) => editTrack(() => setClipParameter(draft, selectedClip.id, key, value))}
@@ -297,10 +293,32 @@ export function TemplateWorkspace({ selection = null, onHome }: {
                   onBind={(binding) => editTrack(() => bindClip(draft, selectedClip.id, binding))}
                   onRemove={() => { editTrack(() => removeClip(draft, selectedClip.id)); setTarget(null); }}
                   onClose={() => setTarget(null)} />}
-                {selectedTransition && <TransitionInspector boundary={selectedBoundary!} track={selectedTransition} catalog={catalog} resolved={preview.timeline?.tracks[selectedTransition.id]}
-                  onChoose={(asset) => editTrack(() => { if (asset) return addTrack(draft, asset, "transition", undefined, selectedBoundary).draft; setTarget(null); return removeTrack(draft, selectedTransition.id); })}
-                  onDuration={(seconds) => editTrack(() => updateTrack(draft, selectedTransition.id, { editor: selectedTransition.editor, transition_duration_seconds: seconds }))}
-                  onClose={() => setTarget(null)} />}
+                {(target === "transitions" || selectedTrack?.target === "transition" || selectedClip?.transition_boundary !== undefined) && <TransitionInspector draft={draft} catalog={catalog} sprites={spriteCatalog.assets ?? []}
+                  onChoose={(id, value) => editTrack(() => {
+                    const existing = transitionItems(draft).find((item) => item.id === id);
+                    let next = { ...draft, tracks: draft.tracks.filter((track) => track.id !== id), clips: draft.clips.filter((clip) => clip.id !== id) };
+                    if (value.startsWith("sprite:")) {
+                      const asset = spriteCatalog.assets?.find((item) => item.id === value.slice(7));
+                      if (!asset) throw new Error("转场资产不存在");
+                      next = addClip(next, asset, spriteCatalog.assets ?? []);
+                      if (existing) next = { ...next, clips: next.clips.map((clip, index) => index === next.clips.length - 1 ? { ...clip, id: existing.id, transition_boundary: existing.transition_boundary } : clip) };
+                    } else {
+                      const asset = catalog.find((item) => item.id === value);
+                      if (!asset) throw new Error("转场效果不存在");
+                      const added = addTrack(next, asset, "transition", undefined, existing?.transition_boundary);
+                      next = existing ? { ...added.draft, tracks: added.draft.tracks.map((track) => track.id === added.id ? { ...track, id: existing.id } : track) } : added.draft;
+                    }
+                    setTarget("transitions");
+                    return next;
+                  })}
+                  onRemove={(id) => editTrack(() => {
+                    setTarget("transitions");
+                    return compactTransitions({ ...draft, tracks: draft.tracks.filter((track) => track.id !== id), clips: draft.clips.filter((clip) => clip.id !== id) });
+                  })}
+                  onDuration={(seconds) => editTrack(() => setTransitionDuration(draft, seconds))}
+                  onMode={(mode) => { setTransitionRandom([Math.random(), Math.random()]); editTrack(() => ({ ...draft, transition_mode: mode })); }}
+                  onEnabled={(enabled) => editTrack(() => ({ ...draft, transition_enabled: enabled }))}
+                  onSelect={selectTarget} />}
                 {selectedTrack && selectedTrack.target !== "transition" && <TemplateInspector track={selectedTrack} draft={selectedDraft!} catalog={catalog} duration={previewLength} resolved={preview.timeline?.tracks[selectedTrack.id]} tab={inspectorTab} onTabChange={setInspectorTab} onTimingChange={(timing) => editTrack(() => setTrackTiming(draft, selectedTrack.id, timing))} onEffectChange={(next) => editTrack(() => updateTrack(draft, selectedTrack.id, next))} onRemove={() => editTrack(() => removeTrack(draft, selectedTrack.id))} onClose={() => setTarget(null)} />}
               </aside>}
             />

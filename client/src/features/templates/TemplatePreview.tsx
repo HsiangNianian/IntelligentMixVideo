@@ -23,9 +23,9 @@ interface Props {
   videoInputKey: string;
   onCatalog: (catalog: EffectAsset[]) => void;
   selectedId?: string | null;
+  selectionTargets?: ReadonlyMap<string, string>;
   onSelect?: (id: string) => void;
   videoOrder?: number[];
-  onVideoMove?: (source: number, destination: number) => void;
   sprites?: SpriteClip[];
   /** 在画面上拖动所选 Remotion 资产时回报新的内容中心坐标（画布像素）。 */
   onSpriteMove?: (id: string, x: number, y: number) => void;
@@ -37,7 +37,7 @@ function TimelineMark() {
 }
 
 /** 每次修改全量更新时间线并回到开头；串行处理，快速修改只应用最新草稿。 */
-export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMedia, onMediaChange, videoInputKey, onCatalog, selectedId, onSelect, sprites = [], onSpriteMove, videoOrder = defaultVideoOrder, onVideoMove }: Props) {
+export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMedia, onMediaChange, videoInputKey, onCatalog, selectedId, selectionTargets, onSelect, sprites = [], onSpriteMove, videoOrder = defaultVideoOrder }: Props) {
   const duration = resolved?.duration ?? 0;
   // 改由 Remotion 字效显示的文字变化时，SDK 需要重新应用时间线以隐藏或恢复 IMS 文字。
   const replacedTexts = [...remotionTexts(draft)].sort().join();
@@ -57,7 +57,9 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   const track = useRef<PreviewTimelineHandle>(null);
   const overlay = useRef<SpriteOverlayHandle>(null);
   const [rows, setRows] = useState<ReturnType<typeof buildPreviewRows>>([]);
-  const timelineRows = useMemo(() => mergeSpriteRows(rows, sprites), [rows, sprites]);
+  const timelineRows = useMemo(() => mergeSpriteRows(rows, sprites).map((row) => ({ ...row,
+    actions: row.actions.map((clip) => ({ ...clip, targetId: clip.targetId ? selectionTargets?.get(clip.targetId) ?? clip.targetId : undefined })),
+  })), [rows, sprites, selectionTargets]);
   const [notices, setNotices] = useState<string[]>([]);
   const [attempt, setAttempt] = useState(0);
   const [status, setStatus] = useState("正在加载预览组件…");
@@ -86,6 +88,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
     let appliedMedia: PreviewMedia | undefined;
     let appliedOrder: number[] | undefined;
     let appliedTexts: string | undefined;
+    let appliedResolved: typeof resolved;
     let subscription: { unsubscribe(): void } | undefined;
     let seekTarget: number | null = null;
     let resumeAfterSeek = false;
@@ -168,6 +171,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
             appliedMedia = currentMedia;
             appliedOrder = currentOrder;
             appliedTexts = currentTexts;
+            appliedResolved = currentResolved;
             setRows(buildPreviewRows(timeline));
             setNotices(timeline.notices);
           }
@@ -193,7 +197,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
     };
     apply.current = () => {
       // 初始化已应用相同输入时，延迟通知无需再次重置播放位置。
-      if (appliedTracks === latest.current.tracks && appliedMedia === latestMedia.current && appliedOrder === latestOrder.current && appliedTexts === latestTexts.current) return;
+      if (appliedTracks === latest.current.tracks && appliedMedia === latestMedia.current && appliedOrder === latestOrder.current && appliedTexts === latestTexts.current && appliedResolved === latestResolved.current) return;
       revision++;
       void update();
     };
@@ -373,7 +377,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       {failed && <Button type="button" variant="outline" onClick={() => setAttempt((value) => value + 1)}>重试预览</Button>}
       {notices.length > 0 && <ul aria-label="时间调整说明" className="space-y-1 text-xs text-muted-foreground">{notices.map((notice, index) => <li key={index}>{notice}</li>)}</ul>}
     </div></div>
-    <div className="template-preview-timeline flex-1 px-4 pb-5 pt-4 lg:px-7"><div className="mx-auto max-w-[900px]"><div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><TimelineMark /><h2 className="text-[13px] font-semibold">时间轴</h2></div><div className="flex items-center gap-3 text-[11px] tabular-nums text-muted-foreground"><span className="font-semibold text-foreground">{time.toFixed(1)} / {duration.toFixed(1)} 秒</span><span>{draft.tracks.length} 个对象</span></div></div><PreviewTimeline ref={track} rows={timelineRows} disabled={!ready} time={time} duration={duration} selectedId={selectedId} onSelect={onSelect} onVideoMove={onVideoMove} onSeek={(value) => seekAction.current?.(value)} />
+    <div className="template-preview-timeline flex-1 px-4 pb-5 pt-4 lg:px-7"><div className="mx-auto max-w-[900px]"><div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><TimelineMark /><h2 className="text-[13px] font-semibold">时间轴</h2></div><div className="flex items-center gap-3 text-[11px] tabular-nums text-muted-foreground"><span className="font-semibold text-foreground">{time.toFixed(1)} / {duration.toFixed(1)} 秒</span><span>{draft.tracks.length} 个对象</span></div></div><PreviewTimeline ref={track} rows={timelineRows} disabled={!ready} time={time} duration={duration} selectedId={selectedId} onSelect={onSelect} onSeek={(value) => seekAction.current?.(value)} />
     </div></div>
   </section>;
 }

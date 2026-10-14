@@ -182,8 +182,8 @@ message EffectTrack {
   EffectTemplateEditor editor = 6;
   // remotion 片段引用的已发布 Sprite ID；其他对象必须留空。
   string sprite_id = 7;
-  // 转场所属的视频交界处，1 或 2。IMS 转场必须设置且不设置 start/start_mode；Remotion 转场片段也设置，
-  // 以交界处为中心播放；其他对象禁止设置。每个交界处只能有一个转场（IMS 与 Remotion 合计）。
+  // 转场列表序号，1～100，IMS 与 Remotion 共用；预览按选择方式取两个效果。
+  // IMS 转场不设置 start/start_mode；合成时由 transition_mode 选择各连接处的效果。
   optional uint32 transition_boundary = 8;
   // Remotion 字效作用的文字对象，title 或 subtitle；仅 remotion 字效片段设置，每个文字对象最多一个。
   // 设置后该文字不再由 IMS 渲染，片段的时间跟随该对象，文字与关键词在合成时按该对象填入。
@@ -204,12 +204,16 @@ message SaveTemplateRequest {
   optional string description = 2;
   // 全部轨道选用的素材目录 ID 去重列表。
   repeated string effect_ids = 3;
-  // 新增转场时使用的默认持续时间，单位为秒。
+  // 全部转场使用的统一持续时间，单位为秒。
   optional double transition_duration_seconds = 4;
   // 模板的画面对象实例及时间规则；包装消息用于区分缺少字段和空列表。
   TrackList tracks = 5;
   // 待更新模板的 UUID；未提供时创建新模板。
   optional string template_id = 6;
+  // 转场列表选择方式：sequence 按顺序循环，random 随机选择。
+  optional string transition_mode = 7;
+  // 是否使用转场；省略时沿用开启状态，关闭时保留候选列表。
+  optional bool transition_enabled = 8;
 }
 
 // 已保存的模板及效果快照。
@@ -220,7 +224,7 @@ message TemplateRecord {
   string description = 2;
   // 全部轨道选用的素材目录 ID 去重列表。
   repeated string effect_ids = 3;
-  // 新增转场时使用的默认持续时间，单位为秒。
+  // 全部转场使用的统一持续时间，单位为秒。
   double transition_duration_seconds = 4;
   // 模板的画面对象实例及时间规则。
   TrackList tracks = 5;
@@ -232,6 +236,10 @@ message TemplateRecord {
   google.protobuf.Timestamp created_at = 8;
   // 模板最近更新时间，使用 UTC 时间点。
   google.protobuf.Timestamp updated_at = 9;
+  // 转场列表选择方式，预览与合成都按此方式选择。
+  optional string transition_mode = 10;
+  // 是否使用转场；省略时沿用开启状态。
+  optional bool transition_enabled = 11;
 }
 
 // 模板列表只返回摘要；无效记录保留标识与原因，不能用于预览和合成。

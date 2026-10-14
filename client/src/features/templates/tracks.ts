@@ -1,8 +1,8 @@
 /** 对象时间规则、实例编辑与视频应用计算；计算结果不修改模板配置。 */
 import { defaultEditor, type Draft, type EffectDraft, type Editor, type EffectAsset, type EffectTrack, type PreviewMedia } from "./model";
-import { boundaryTaken } from "./clips";
 import { appliedTargets, applyAsset, effectTargets, isTextTarget, targetEffectKeys, type EffectTarget } from "./effects";
 import { previewVideos } from "./media";
+import { compactTransitions, nextTransitionBoundary, setTransitionDuration } from "./transitions";
 
 /** 时间轴自上向下显示的固定图层；同类对象保持添加顺序。 */
 export const trackLayers: Record<EffectTarget, number> = { title: 0, subtitle: 1, bubble: 2, transition: 3, vfx: 4, filter: 5 };
@@ -20,13 +20,13 @@ export function validateTrack(track: EffectTrack): void {
   if (track.target === "subtitle" && (track.start_mode !== "seconds" || track.start !== 0 || track.duration !== null))
     throw new Error("底部字幕固定覆盖整个视频，不能修改时间");
   if (track.target === "transition") {
-    if (track.transition_boundary === undefined || ![1, 2].includes(track.transition_boundary)) throw new Error("转场交界处必须为 1 或 2");
+    if (!Number.isInteger(track.transition_boundary) || track.transition_boundary! < 1 || track.transition_boundary! > 100) throw new Error("转场列表序号必须为 1～100 的整数");
     if (track.start !== undefined || track.start_mode !== undefined) throw new Error("转场只保存交界处与持续时间");
     if (track.duration === null || !Number.isFinite(track.duration) || track.duration < 0.1 || track.duration > 3) throw new Error("转场持续时间为 0.1～3 秒");
     return;
   }
   if (track.transition_boundary !== undefined)
-    throw new Error("转场交界处必须为 1 或 2");
+    throw new Error("只有转场可以设置列表序号");
   if (!track.start_mode || !["seconds", "percent"].includes(track.start_mode) || track.start === undefined || !Number.isFinite(track.start) || track.start < 0 || (track.start_mode === "percent" && track.start >= 100))
     throw new Error("开始时间须为非负秒数，或 0% 至小于 100% 的百分比");
   if (track.duration !== null && (!Number.isFinite(track.duration) || track.duration <= 0))
@@ -112,7 +112,7 @@ export function previewContext(media: PreviewMedia, order = [0, 1, 2]): Timeline
 }
 
 /** 校验规则后统一计算帧区间；缺少交界处或素材过短均产生明确的应用说明。 */
-export function resolveTemplate(draft: Pick<Draft, "tracks">, context: TimelineContext): ResolvedTimeline {
+export function resolveTemplate(draft: Pick<Draft, "tracks"> & Partial<Pick<Draft, "clips" | "transition_mode">>, context: TimelineContext): ResolvedTimeline {
   validateTemplateTracks(draft.tracks);
   const { fps, layout } = context;
   if (!["sequence", "fixed"].includes(layout) || !Number.isInteger(fps) || fps <= 0 || fps > 60 || !context.clips.length)
@@ -125,10 +125,10 @@ export function resolveTemplate(draft: Pick<Draft, "tracks">, context: TimelineC
   });
   const overlaps = lengths.map(() => 0);
   const transitionNotices = new Map<string, string>();
-  for (const track of draft.tracks.filter((item) => item.target === "transition")) {
+  for (const track of [...draft.tracks.filter((item) => item.target === "transition"), ...(draft.clips ?? []).filter((clip) => clip.transition_boundary !== undefined)]) {
     const index = track.transition_boundary! - 1;
     if (index + 1 >= lengths.length) {
-      transitionNotices.set(track.id, `交界处 ${index + 1} 不存在，未应用转场`);
+      if (!draft.transition_mode || index < 2) transitionNotices.set(track.id, `交界处 ${index + 1} 不存在，未应用转场`);
       continue;
     }
     const requested = Math.round(track.duration! * fps);
@@ -214,17 +214,19 @@ export function updateTrack(draft: Draft, id: string, edit: EffectDraft): Draft 
   const updated = { ...current, editor: trackEditor(edit.editor, current.target),
     duration: current.target === "transition" ? edit.transition_duration_seconds : current.duration };
   validateTrack(updated);
-  return { ...draft, tracks: tracks.map((track) => track.id === id ? updated : track) };
+  const next = { ...draft, tracks: tracks.map((track) => track.id === id ? updated : track) };
+  return current.target === "transition" ? setTransitionDuration(next, edit.transition_duration_seconds) : next;
 }
 
 /** 删除指定实例，其他对象的时间规则保持不变。 */
 export function removeTrack(draft: Draft, id: string): Draft {
   if (draft.tracks.some((track) => track.id === id && (track.target === "title" || track.target === "subtitle")))
     throw new Error("标题和底部字幕为固定对象");
-  return { ...draft, tracks: draft.tracks.filter((track) => track.id !== id) };
+  const next = { ...draft, tracks: draft.tracks.filter((track) => track.id !== id) };
+  return draft.tracks.some((track) => track.id === id && track.target === "transition") ? compactTransitions(next) : next;
 }
 
-/** 添加效果；转场依次占用空闲交界处，指定交界处时修改已有转场；滤镜可重复添加。 */
+/** 添加效果；转场追加到列表，指定序号时修改对应效果；滤镜可重复添加。 */
 export function addTrack(draft: Draft, asset: EffectAsset, target: EffectTarget, selectedId?: string, boundary?: number): { draft: Draft; id: string } {
   const selected = draft.tracks.find((track) => track.id === selectedId);
   if (["in", "out", "loop"].includes(asset.category)) {
@@ -234,8 +236,7 @@ export function addTrack(draft: Draft, asset: EffectAsset, target: EffectTarget,
   }
   const role = isTextTarget(target) ? target : "title";
   if (asset.category === "transition/normal" && boundary === undefined) {
-    boundary = [1, 2].find((value) => !boundaryTaken(draft, value));
-    if (boundary === undefined) throw new Error("最多添加两个转场，请在右侧修改已有转场");
+    boundary = nextTransitionBoundary(draft);
   }
   if (asset.category === "transition/normal" && draft.clips.some((clip) => clip.transition_boundary === boundary))
     throw new Error(`交界处 ${boundary} 已有 Remotion 转场，请先移除`);

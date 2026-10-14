@@ -28,9 +28,9 @@ export interface PreviewClip extends TimelineAction {
   videoSource?: number;
 }
 
-/** 轨道从已经应用的 SDK Timeline 派生；三个视频放在同一行，效果按图层排列。 */
+/** 轨道从已经应用的 SDK Timeline 派生；每个视频独立成行，效果按图层排列。 */
 export function buildPreviewRows(timeline: ReturnType<typeof buildTimeline>): (Omit<TimelineRow, "actions"> & { actions: PreviewClip[] })[] {
-  return [...[...timeline.previewRows].sort((a, b) => trackLayers[a.actions[0].effectId as EffectTarget] - trackLayers[b.actions[0].effectId as EffectTarget]), ...timeline.VideoTracks.map((track, trackIndex) => ({
+  const rows: (Omit<TimelineRow, "actions"> & { actions: PreviewClip[] })[] = [...timeline.previewRows, ...timeline.VideoTracks.map((track, trackIndex) => ({
     id: `video-${trackIndex}`,
     actions: track.VideoTrackClips.map((clip, index) => {
       const next = track.VideoTrackClips[index + 1];
@@ -42,7 +42,7 @@ export function buildPreviewRows(timeline: ReturnType<typeof buildTimeline>): (O
           effectId: "video",
           start: clip.TimelineIn,
           end: clip.TimelineOut,
-          movable: true,
+          movable: false,
           flexible: false,
           label: `视频 ${clip.source + 1}`,
           videoSource: clip.source,
@@ -53,6 +53,19 @@ export function buildPreviewRows(timeline: ReturnType<typeof buildTimeline>): (O
       };
     }),
   }))];
+  const effects = rows.filter((row) => row.actions[0]?.effectId !== "video");
+  const videos = rows.filter((row) => row.actions[0]?.effectId === "video").flatMap((row) => row.actions);
+  const videoRows = videos.map((clip) => ({ id: clip.id, actions: [clip] }));
+  return groupTransitionRows([...effects.sort((a, b) => trackLayers[a.actions[0].effectId as EffectTarget] - trackLayers[b.actions[0].effectId as EffectTarget]), ...videoRows]);
+}
+
+/** 全部可见转场共用一行，每个条目保留独立的选中 ID。 */
+function groupTransitionRows(rows: (Omit<TimelineRow, "actions"> & { actions: PreviewClip[] })[]) {
+  const actions = rows.filter((row) => row.actions[0]?.effectId === "transition").flatMap((row) => row.actions);
+  const result = rows.filter((row) => row.id !== "transitions" && row.actions[0]?.effectId !== "transition");
+  result.push({ id: "transitions", actions: actions.sort((a, b) => a.start - b.start) });
+  const layer = (row: (typeof rows)[number]) => row.id === "transitions" ? trackLayers.transition : row.actions[0]?.effectId === "video" ? Infinity : trackLayers[row.actions[0]?.effectId as EffectTarget] ?? 99;
+  return result.sort((a, b) => layer(a) - layer(b));
 }
 
 /** 时间轴上的 Remotion 资产片段：固定长度，按所占对象放进对应的行。 */
@@ -104,7 +117,7 @@ export function mergeSpriteRows(rows: ReturnType<typeof buildPreviewRows>, clips
     const effect = row.actions[0]?.effectId;
     return effect === "video" ? Infinity : effect === "remotion" ? 99 : trackLayers[effect as EffectTarget];
   };
-  return [...merged, ...added].sort((a, b) => layer(a) - layer(b));
+  return groupTransitionRows([...merged, ...added].sort((a, b) => layer(a) - layer(b)));
 }
 
 /** 每秒约取一张源素材缩略图，使用区间中心，避免在片段结束边界采样。 */

@@ -31,7 +31,7 @@ test("转场只接受明确的交界处和持续时间", () => {
   const { draft, id } = addTrack(newDraft(), asset, "transition");
   const track = draft.tracks.find((item) => item.id === id)!;
   delete track.transition_boundary;
-  expect(() => validateTemplateTracks(draft.tracks)).toThrow("交界处");
+  expect(() => validateTemplateTracks(draft.tracks)).toThrow("转场列表序号");
   track.transition_boundary = 1;
   track.start = 9;
   expect(() => validateTemplateTracks(draft.tracks)).toThrow("只保存交界处");

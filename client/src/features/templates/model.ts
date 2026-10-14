@@ -119,7 +119,7 @@ export interface RemotionClip {
   transform: ClipTransform;
   /** 字效作用的文字对象：该文字改由这个片段显示，起点与时长跟随它。 */
   text_target?: "title" | "subtitle";
-  /** 转场占用的视频交界处，片段以交界处为中心播放。 */
+  /** 转场候选序号，IMS 与 Remotion 共用，预览按选择方式取两个效果。 */
   transition_boundary?: number;
 }
 
@@ -128,6 +128,8 @@ export interface Draft {
   name: string;
   description: string;
   transition_duration_seconds: number;
+  transition_mode?: "sequence" | "random";
+  transition_enabled?: boolean;
   tracks: EffectTrack[];
   /** Remotion 片段不进入 IMS 效果与 SDK 预览，按分类占用文字对象、视频交界处或特效名额，随模板一并保存。 */
   clips: RemotionClip[];
@@ -158,7 +160,7 @@ export interface EffectTrack {
   start?: number;
   duration: number | null;
   editor: Editor;
-  /** 转场必须指定交界处，且不保存 start/start_mode；其他对象省略此字段。 */
+  /** 转场列表序号，且不保存 start/start_mode；其他对象省略此字段。 */
   transition_boundary?: number;
 }
 
@@ -200,6 +202,8 @@ export function newDraft(): Draft {
     })),
     clips: [],
     transition_duration_seconds: defaultTransitionDuration,
+    transition_mode: "sequence",
+    transition_enabled: true,
   };
 }
 
@@ -211,8 +215,10 @@ export function toDraft(template: Template): Draft {
     name: template.name,
     description: template.description,
     transition_duration_seconds: template.transition_duration_seconds,
-    tracks: structuredClone(template.tracks),
-    clips: structuredClone(template.clips ?? []),
+    transition_mode: template.transition_mode ?? "sequence",
+    transition_enabled: template.transition_enabled ?? true,
+    tracks: structuredClone(template.tracks).map((track) => track.target === "transition" ? { ...track, duration: template.transition_duration_seconds } : track),
+    clips: structuredClone(template.clips ?? []).map((clip) => clip.transition_boundary !== undefined ? { ...clip, duration: template.transition_duration_seconds } : clip),
   };
 }
 
