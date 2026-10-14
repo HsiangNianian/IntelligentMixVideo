@@ -100,10 +100,19 @@ def insert(
         ))
 
 
-def replace_data(sprite_id: str, data: dict) -> None:
-    """Replace the stored JSON of one publication (its refreshed preview hash); the identifying columns never change."""
+def update_data(sprite_id: str, fields: dict) -> dict | None:
+    """Set top-level fields of one publication's stored JSON and return the result; None when no row has that ID.
+
+    The row is locked while it is read and written, so a rename and a preview-hash refresh (which touch different
+    fields of the same document) never overwrite each other. The identifying columns never change.
+    """
     with initialize_schema().begin() as connection:
+        data = connection.execute(select(sprites.c.data).where(sprites.c.sprite_id == sprite_id).with_for_update()).scalar()
+        if data is None:
+            return None
+        data = {**data, **fields}
         connection.execute(update(sprites).where(sprites.c.sprite_id == sprite_id).values(data=data))
+        return data
 
 
 def remove(sprite_id: str) -> bool:

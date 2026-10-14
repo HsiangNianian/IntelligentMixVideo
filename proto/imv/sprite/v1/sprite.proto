@@ -220,6 +220,17 @@ message PublishSpriteResponse {
   SpriteSummary sprite = 1;
 }
 
+// POST /api/sprites/{sprite_id}/rename 的请求；只改目录里显示的名称，代码、参数与预览不变。
+message RenameSpriteRequest {
+  // 新名称，去除首尾空白后为 1～100 个字符；不要求唯一。
+  string name = 1;
+}
+
+// 重命名后的目录条目。
+message RenameSpriteResponse {
+  SpriteSummary sprite = 1;
+}
+
 // 一个运营参数覆盖；key 必须对应已发布 Sprite 的 VISIBLE_EDITABLE 参数。
 message SpriteParameterOverride {
   // 参数配置字段名，同一渲染请求中不能重复。

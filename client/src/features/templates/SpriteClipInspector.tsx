@@ -81,8 +81,9 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textReso
   const exposedTransforms = asset ? instanceTransformFields(asset.kind) : [];
   const overriddenInternal = [
     ...internalParameters.filter(({ field }) => Object.prototype.hasOwnProperty.call(clip.parameters, field.key)).map(({ field }) => ({ key: field.key, label: field.label, restore: () => onParameter(field.key, undefined) })),
-    ...(["x", "y", "scale", "rotation", "opacity"] as TransformField[]).filter((name) => !exposedTransforms.includes(name) && clip.transform[name] !== undefined)
-      .map((name) => { const { label } = transformField(name, asset!.kind, asset!.width, asset!.height); return { key: name, label, restore: () => onTransform({ [name]: undefined }) }; }),
+    // 目录尚未读到（或资产已被删除）时没有类型与画布可用来命名这些覆盖，等资产出现后再列出。
+    ...(asset ? (["x", "y", "scale", "rotation", "opacity"] as TransformField[]).filter((name) => !exposedTransforms.includes(name) && clip.transform[name] !== undefined)
+      .map((name) => { const { label } = transformField(name, asset.kind, asset.width, asset.height); return { key: name, label, restore: () => onTransform({ [name]: undefined }) }; }) : []),
   ];
   // 字效的时间跟随所作用的文字对象：标题可在这里设置，字幕固定为整段视频。
   const timedText = isText && textTrack?.target === "title" ? textTrack : undefined;
