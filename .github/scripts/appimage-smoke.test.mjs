@@ -9,9 +9,14 @@ import { verifyAppDir } from "./appimage-smoke.mjs";
 let root;
 
 /** 创建最小包内容夹具，仅用于验证文件清单检查；不冒充真实二进制或启动测试。 */
-function file(path) {
+function file(path, content = "fixture") {
   mkdirSync(dirname(join(root, path)), { recursive: true });
-  writeFileSync(join(root, path), "fixture");
+  writeFileSync(join(root, path), content);
+}
+
+/** gtk-query-immodules-3.0 输出格式的输入法清单，每个模块一行文件名、每个输入法一行 ID。 */
+function imCache(ids) {
+  return ids.map((id) => `"im-${id}.so" \n"${id}" "${id}" "gtk30" "/usr/share/locale" "" \n`).join("\n");
 }
 
 beforeEach(() => {
@@ -24,6 +29,11 @@ beforeEach(() => {
   file("usr/lib/gstreamer-1.0/libgstopengl.so");
   file("usr/lib/gstreamer-1.0/libgstplayback.so");
   file("usr/lib/gstreamer1.0/gstreamer-1.0/gst-plugin-scanner");
+  file("usr/lib/gtk-3.0/3.0.0/immodules/im-fcitx5.so");
+  file("usr/lib/libFcitx5GClient.so.2");
+  file("usr/lib/gtk-3.0/3.0.0/immodules/im-ibus.so");
+  file("usr/lib/libibus-1.0.so.5");
+  file("usr/lib/gtk-3.0/3.0.0/immodules.cache", imCache(["xim", "fcitx", "fcitx5", "ibus"]));
 });
 
 afterEach(() => rmSync(root, { recursive: true, force: true }));
@@ -64,8 +74,8 @@ test("rejects a bundled Wayland library symlink", () => {
   assert.throws(() => verifyAppDir(root), /must use host Wayland and PulseAudio libraries/);
 });
 
-// 缺少程序、WebKit 或媒体插件的残缺包，即使没有冲突库也不能上传。
-test("rejects packages missing the client, WebKit or media dependencies", () => {
+// 缺少程序、WebKit、媒体插件或中文输入法模块的残缺包，即使没有冲突库也不能上传。
+test("rejects packages missing the client, WebKit, media or input method files", () => {
   for (const path of [
     "usr/bin/client", "usr/lib/libwebkit2gtk-4.1.so.0",
     "usr/lib/gstreamer-1.0/libgstautodetect.so",
@@ -74,9 +84,24 @@ test("rejects packages missing the client, WebKit or media dependencies", () => 
     "usr/lib/gstreamer-1.0/libgstopengl.so",
     "usr/lib/gstreamer-1.0/libgstplayback.so",
     "usr/lib/gstreamer1.0/gstreamer-1.0/gst-plugin-scanner",
+    "usr/lib/gtk-3.0/3.0.0/immodules/im-fcitx5.so",
+    "usr/lib/libFcitx5GClient.so.2",
+    "usr/lib/gtk-3.0/3.0.0/immodules/im-ibus.so",
+    "usr/lib/libibus-1.0.so.5",
   ]) {
     rmSync(join(root, path));
     assert.throws(() => verifyAppDir(root), /Missing required AppImage file/);
     file(path);
   }
+});
+
+// 回归 Linux AppImage 无法打开中文输入法：v0.9.1 的随包清单只有 GTK 自带模块，fcitx/ibus 用户退回无输入法。
+test("rejects an input method cache without fcitx and ibus", () => {
+  for (const missing of ["fcitx", "fcitx5", "ibus"]) {
+    const ids = ["xim", "fcitx", "fcitx5", "ibus"].filter((id) => id !== missing);
+    file("usr/lib/gtk-3.0/3.0.0/immodules.cache", imCache(ids));
+    assert.throws(() => verifyAppDir(root), new RegExp(`must register the ${missing} GTK input method`));
+  }
+  rmSync(join(root, "usr/lib/gtk-3.0/3.0.0/immodules.cache"));
+  assert.throws(() => verifyAppDir(root), /Missing required AppImage file: usr\/lib\/gtk-3.0\/3.0.0\/immodules.cache/);
 });

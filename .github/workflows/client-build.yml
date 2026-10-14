@@ -82,9 +82,11 @@ jobs:
           if [ -n "$RELEASE_TAG" ] && [ "$BUILD_MODE" != package ]; then exit 1; fi
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
+        # fcitx5/ibus 的 GTK3 输入法模块随 AppImage 打包：AppImage 只读取随包的 immodules.cache，宿主模块不会被加载。
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 libxdo-dev patchelf gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-gl
+          sudo apt-get install -y --no-install-recommends fcitx5-frontend-gtk3 ibus-gtk3
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
         with:
