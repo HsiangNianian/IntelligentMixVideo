@@ -42,7 +42,10 @@ checks needed to build a preview; those are not model-facing tools.
 Image tools read the reference images the user already uploaded and the server
 registered as local assets: the work's original image and, for a task started
 by a later chat message (`POST /works/{id}/messages` with `image`), that
-message's image. They take that asset reference, not a URL, and
+message's image. `user_intent.reference_images` lists them in the order the model
+receives them, each with its `source` (`work_original`, `message` or
+`clarification_answer` plus the answered `clarification` index) and a host-written
+`meaning`. They take that asset reference, not a URL, and
 never upload anything.
 
 ## Preset storage

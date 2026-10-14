@@ -546,6 +546,23 @@ class GenerationJob(Contract):
         return self
 
 
+class MessageImage(Contract):
+    """A reference image the user attached to a chat message, with what that message was."""
+
+    asset_id: UUID
+    # "message": attached to the instruction that started the task; "clarification_answer": part of an answer.
+    source: Literal["message", "clarification_answer"] = "message"
+    # Zero-based index into JobInput.clarifications for an answer image.
+    clarification: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def answer_is_bound(self) -> Self:
+        """Only an answer image names the clarification it answers, and it must name one."""
+        if (self.source == "clarification_answer") != (self.clarification is not None):
+            raise ValueError("clarification answer images must name their clarification")
+        return self
+
+
 class JobInput(Contract):
     """Persisted execution input allows explicit retries without replaying hidden state."""
 
@@ -554,7 +571,7 @@ class JobInput(Contract):
     parameters: dict[str, JsonValue] | None = None
     clarifications: list[str] = Field(default_factory=list)
     # Reference images attached to later chat messages; the work's original image is read from its request.
-    images: list[UUID] = Field(default_factory=list)
+    images: list[MessageImage] = Field(default_factory=list)
 
 
 class PublicJob(Contract):

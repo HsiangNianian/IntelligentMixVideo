@@ -361,7 +361,7 @@ class Store:
                 db.execute("BEGIN IMMEDIATE")
                 self.require_work(db, project_id)
                 for image in inputs.images:
-                    self.require_reference(db, image)
+                    self.require_reference(db, image.asset_id)
                 self._insert_job(db, job, inputs, message_text, message_image)
         except sqlite3.IntegrityError as exc:
             raise Conflict("this work already has a queued or running job") from exc

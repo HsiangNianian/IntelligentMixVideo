@@ -12,7 +12,7 @@ from server.remotion_templates import deletion
 from server.remotion_templates.context import Conversation
 from server.remotion_templates.media import save_image
 from server.remotion_templates.parameters import patch_parameters
-from server.remotion_templates.models import GenerateTemplateRequest, JobInput, TaskMessage
+from server.remotion_templates.models import GenerateTemplateRequest, JobInput, MessageImage, TaskMessage
 from server.remotion_templates.routes import router
 from server.remotion_templates.runtime import Runtime
 from server.remotion_templates.settings import Settings
@@ -439,10 +439,12 @@ def test_follow_up_images_follow_work_lifecycle(store, service, candidate, spec,
     version = publish_fixture(store, first.id, candidate, spec, evidence(candidate, spec))
     edit = service.message(work.id, TaskMessage(instruction="参考这张", image={"asset_id": own.id}))
     assert store.job(edit.id).base_version_id == version.id
-    assert store.inputs(edit.id) == JobInput(mode="edit", instruction="参考这张", images=[own.id])
+    assert store.inputs(edit.id) == JobInput(
+        mode="edit", instruction="参考这张", images=[MessageImage(asset_id=own.id)]
+    )
     store.update(edit.id, status="failed", stage="finished")
     image_only = service.message(work.id, TaskMessage(image={"asset_id": kept.id}))
-    assert store.inputs(image_only.id).images == [kept.id]
+    assert store.inputs(image_only.id).images == [MessageImage(asset_id=kept.id)]
     other, other_first = store.create(
         GenerateTemplateRequest(description="保留", image={"asset_id": kept.id})
     )

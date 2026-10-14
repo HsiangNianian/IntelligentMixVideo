@@ -18,10 +18,11 @@ from server.remotion_templates.models import (
     GenerateTemplateRequest,
     JobError,
     JobInput,
+    MessageImage,
     TaskMessage,
 )
 from server.remotion_templates.routes import router
-from server.remotion_templates.runtime import Runtime
+from server.remotion_templates.runtime import REFERENCE_MEANINGS, Runtime
 from server.remotion_templates.store import Conflict, NotFound, Store
 from server.remotion_templates.settings import Settings
 
@@ -705,9 +706,10 @@ def reference_image(store):
 
 
 def test_follow_up_messages_attach_reference_images(history_store, monkeypatch):
-    """开始对话后的消息与澄清回答都可附参考图；任务读取原图加本条消息的图，公开消息显示本条的图。
+    """开始对话后的消息与澄清回答都可附参考图；模型按顺序收到每张图及其来源，回答图片绑定到所答问题。
 
-    修复前 messages 不接受 image，开始对话后无法继续上传参考图（#127）。
+    修复前 messages 不接受 image，开始对话后无法继续上传参考图（#127）；之后审计发现新增图片没有来源，
+    模型提示仍称原图之后是候选帧，图片-only 的回答也不知道在回答哪个问题。
     """
     runtime = Runtime(history_store, None, Settings(_env_file=None))
     monkeypatch.setattr(runtime, "notify", lambda *args: None)
@@ -720,7 +722,9 @@ def test_follow_up_messages_attach_reference_images(history_store, monkeypatch):
     reply = runtime.message(
         work.id, TaskMessage(image={"asset_id": answer.id}, reply_to_job_id=job.id)
     )
-    assert history_store.inputs(reply.id).images == [answer.id]
+    assert history_store.inputs(reply.id).images == [
+        MessageImage(asset_id=answer.id, source="clarification_answer", clarification=0)
+    ]
     message = history_store.session(work.id).messages[-1]
     assert (message.text, message.image_asset_id) == ("", answer.id)
 
@@ -732,16 +736,24 @@ def test_follow_up_messages_attach_reference_images(history_store, monkeypatch):
         renderer = None
 
         async def generate(self, spec, budget, directory, images, on_stage, **options):
-            """Capture image files and the intent's references for one task."""
-            seen.append((images, options["intent"]["reference_images"]))
+            """Capture image files, the intent and the user turn written to the model window."""
+            window = json.loads(options["context"].messages()[-1]["content"])
+            seen.append((images, options["intent"], window))
             return DialogueOutput(answer="好的")
 
     runtime.harness = Harness()
     asyncio.run(runtime._execute(reply.id))
-    assert seen == [(
-        [history_store.asset_path(original.id), history_store.asset_path(answer.id)],
-        [{"asset_id": str(original.id)}, {"asset_id": str(answer.id)}],
-    )]
+    images, intent, window = seen.pop()
+    assert images == [history_store.asset_path(original.id), history_store.asset_path(answer.id)]
+    assert intent["reference_images"] == [
+        {"asset_id": str(original.id), "source": "work_original", "meaning": REFERENCE_MEANINGS["work_original"]},
+        {"asset_id": str(answer.id), "source": "clarification_answer", "clarification": 0,
+         "meaning": REFERENCE_MEANINGS["clarification_answer"]},
+    ]
+    assert json.loads(intent["clarifications"][0]) == {
+        "questions": ["什么颜色？"], "answer": "", "answer_images": [str(answer.id)],
+    }
+    assert window["reference_images"] == intent["reference_images"]
 
     with pytest.raises(ValidationError):
         TaskMessage(parameters={"size": 80}, image={"asset_id": later.id})
@@ -749,6 +761,12 @@ def test_follow_up_messages_attach_reference_images(history_store, monkeypatch):
         runtime.message(work.id, TaskMessage(instruction="参考", image={"asset_id": uuid4()}))
     assert history_store.latest_job(work.id).id == reply.id
     follow = runtime.message(work.id, TaskMessage(instruction="改成这样", image={"asset_id": later.id}))
-    assert history_store.inputs(follow.id).images == [later.id]
+    assert history_store.inputs(follow.id).images == [MessageImage(asset_id=later.id)]
     message = history_store.session(work.id).messages[-1]
     assert (message.text, message.image_asset_id) == ("改成这样", later.id)
+    asyncio.run(runtime._execute(follow.id))
+    images, intent, _ = seen.pop()
+    assert images == [history_store.asset_path(original.id), history_store.asset_path(later.id)]
+    assert [(entry["asset_id"], entry["source"]) for entry in intent["reference_images"]] == [
+        (str(original.id), "work_original"), (str(later.id), "message"),
+    ]

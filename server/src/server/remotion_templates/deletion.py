@@ -15,7 +15,8 @@ if TYPE_CHECKING:
 
 # Works that use an asset: as the original request image or as an image attached to a later message.
 REFERENCES = """SELECT id FROM projects WHERE json_extract(data, '$.request.image.asset_id')=:asset
-    UNION SELECT j.project_id FROM jobs j, json_each(j.input_data, '$.images') i WHERE i.value=:asset"""
+    UNION SELECT j.project_id FROM jobs j, json_each(j.input_data, '$.images') i
+    WHERE json_extract(i.value, '$.asset_id')=:asset"""
 
 
 def remove_path(root: Path, category: str, identifier: str, suffix: str = "") -> None:
@@ -59,7 +60,8 @@ def finish(store: "Store", work_id: UUID) -> None:
         images.update(
             str(UUID(row[0]))
             for row in db.execute(
-                "SELECT i.value FROM jobs j, json_each(j.input_data, '$.images') i WHERE j.project_id=?",
+                "SELECT json_extract(i.value, '$.asset_id') FROM jobs j, json_each(j.input_data, '$.images') i "
+                "WHERE j.project_id=?",
                 (identifier,),
             )
         )
