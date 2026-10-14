@@ -81,6 +81,10 @@ class Runtime:
             lock_exclusive(self.lock)
             self.store.initialize()
             self.store.interrupt_unfinished()
+            try:
+                self.store.prune_assets()
+            except (OSError, sqlite3.Error):
+                logger.exception("Unreferenced reference image cleanup failed")
             for work_id in self.store.pending_deletions():
                 try:
                     finish_deletion(self.store, work_id)

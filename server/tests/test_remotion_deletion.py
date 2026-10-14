@@ -1,6 +1,7 @@
 """字效会话删除的真实 SQLite/文件/API/队列回归；执行 uv run --locked pytest tests/test_remotion_deletion.py。"""
 
 import asyncio
+from datetime import timedelta
 from io import BytesIO
 from uuid import uuid4
 
@@ -460,3 +461,45 @@ def test_follow_up_images_follow_work_lifecycle(store, service, candidate, spec,
     assert not (store.root / "assets" / f"{own.id}.png").exists()
     for asset in (original, kept):
         assert store.asset_path(asset.id).exists()
+
+
+def age(store, asset, hours):
+    """把素材登记时间改早，模拟上传后一直没有被任何消息引用。"""
+    aged = asset.model_copy(update={"created_at": asset.created_at - timedelta(hours=hours)})
+    with store.connection() as db:
+        db.execute("UPDATE assets SET data=? WHERE id=?", (aged.model_dump_json(), str(asset.id)))
+
+
+def test_unreferenced_uploads_are_reclaimed_after_a_grace_period(client, store, service, monkeypatch):
+    """#127 审计：上传成功但消息被拒绝时素材无人引用；超过 24 小时后在下次上传或服务启动时回收，仍被引用或较新的保留。"""
+    monkeypatch.setattr(service, "notify", lambda *args: None)
+    original, follow, orphan, fresh, later = (reference(store) for _ in range(5))
+    work, first = store.create(
+        GenerateTemplateRequest(description="保留", image={"asset_id": original.id})
+    )
+    store.update(first.id, status="failed", stage="finished")
+    service.message(work.id, TaskMessage(image={"asset_id": follow.id}))
+    with pytest.raises(Conflict):
+        service.message(work.id, TaskMessage(image={"asset_id": orphan.id}))
+    for asset in (original, follow, orphan, later):
+        age(store, asset, 25)
+    age(store, fresh, 23)
+
+    data = BytesIO()
+    Image.new("RGB", (8, 8), "blue").save(data, "PNG")
+    upload = client.post(
+        "/api/templates/assets", files={"file": ("new.png", data.getvalue(), "image/png")}
+    )
+    assert upload.status_code == 201
+    for asset in (orphan, later):
+        with pytest.raises(NotFound):
+            store.asset(asset.id)
+        assert not (store.root / "assets" / f"{asset.id}.png").exists()
+    for asset in (original, follow, fresh):
+        assert store.asset_path(asset.id).exists()
+
+    age(store, fresh, 25)
+    Runtime(store, None, Settings(_env_file=None)).initialize()
+    with pytest.raises(NotFound):
+        store.asset(fresh.id)
+    assert store.asset_path(original.id).exists() and store.asset_path(follow.id).exists()

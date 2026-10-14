@@ -4,7 +4,7 @@ import json
 import shutil
 import sqlite3
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Iterator
 from uuid import UUID, uuid4
@@ -13,7 +13,7 @@ from fastapi import HTTPException
 
 from . import history
 from .context import Conversation
-from .deletion import REFERENCES
+from .deletion import REFERENCES, remove_path
 from .evidence import verify_artifacts
 from .models import (
     Asset,
@@ -45,6 +45,11 @@ class Conflict(HTTPException):
     def __init__(self, detail: str) -> None:
         """Use FastAPI's built-in 409 response for concrete conflicting requests."""
         super().__init__(status_code=409, detail=detail)
+
+
+# An upload whose message was rejected or never arrived is reclaimed once it is this old; a send uploads
+# immediately before it submits, so no pending send can still be about to reference such an image.
+ORPHAN_ASSET_TTL = timedelta(hours=24)
 
 
 def now() -> datetime:
@@ -225,6 +230,26 @@ class Store:
                 "INSERT INTO assets VALUES (?, ?)",
                 (str(asset.id), asset.model_dump_json()),
             )
+
+    def prune_assets(self, older_than: timedelta = ORPHAN_ASSET_TTL) -> list[UUID]:
+        """Delete uploads that no work references once they are older than ``older_than``; return their IDs.
+
+        Works being deleted still reference their images until cleanup finishes, so those stay for it.
+        A file removal failure rolls back the metadata, as work deletion does.
+        """
+        cutoff = now() - older_than
+        removed = []
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            for row in db.execute("SELECT id, data FROM assets").fetchall():
+                if Asset.model_validate_json(row["data"]).created_at >= cutoff:
+                    continue
+                if db.execute(f"SELECT 1 FROM ({REFERENCES}) LIMIT 1", {"asset": row["id"]}).fetchone():
+                    continue
+                remove_path(self.root, "assets", row["id"], ".png")
+                db.execute("DELETE FROM assets WHERE id=?", (row["id"],))
+                removed.append(UUID(row["id"]))
+        return removed
 
     def asset_path(self, identifier: UUID) -> Path:
         """Resolve an asset by server-generated ID, never a user-supplied filename."""

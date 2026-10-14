@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 import re
 import sqlite3
 from pathlib import Path
@@ -44,6 +45,7 @@ from .tools.contracts import CodeValidationReport, ComponentDefinition
 
 # 按接口职责设置标签，供模板服务的 Swagger 分组展示。
 router = APIRouter()
+logger = logging.getLogger("uvicorn.error")
 
 
 async def runtime_for(state) -> Runtime:
@@ -134,7 +136,12 @@ async def upload(service: Service, file: Annotated[UploadFile, File()]) -> Asset
 
     图片经校验后统一保存为 PNG，返回的 `id` 可用于创建作品或后续消息的 `image.asset_id`。
     默认大小上限为 10 MiB；超限返回 413，内容无效返回 422。
+    上传后 24 小时仍未被任何作品或消息引用的图片（例如消息提交失败）会在之后的上传或服务启动时回收。
     """
+    try:
+        service.store.prune_assets()
+    except (OSError, sqlite3.Error):
+        logger.exception("Unreferenced reference image cleanup failed")
     try:
         content = await file.read(service.settings.max_upload_bytes + 1)
         if len(content) > service.settings.max_upload_bytes:
