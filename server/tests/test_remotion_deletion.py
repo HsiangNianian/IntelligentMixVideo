@@ -272,7 +272,7 @@ def test_cleanup_failure_remains_retryable_and_blocks_writes(
     assert client.get(f"/api/templates/works/{work.id}").status_code == 410
     assert client.get(f"/api/templates/works/{work.id}/stream").status_code == 410
     assert client.post(f"/api/templates/works/{work.id}/ack", json={"cursor": 0}).status_code == 410
-    assert client.get("/api/templates/works").json() == []
+    assert client.get(f"/api/templates/works/{work.id}/events").status_code == 410
     with pytest.raises(HTTPException) as error:
         store.enqueue(work.id, JobInput(), None)
     assert error.value.status_code == 410

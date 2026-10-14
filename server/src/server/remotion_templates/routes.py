@@ -29,6 +29,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from ..client_config import parse_config
 from .settings import ClientSettings
 from .evidence import digest
+from .history import WorkEvent
 from .media import save_image
 from .models import (
     Asset,
@@ -189,17 +190,6 @@ async def create(
     project, job = service.store.create(request, owner)
     service.notify(job.id, config)
     return {"work": project, "job": PublicJob.from_job(job)}
-
-
-@router.get(
-    "/works",
-    response_model=list[TemplateProject],
-    tags=["模板作品"],
-    summary="查询作品列表",
-)
-def works(service: Service, owner: Device) -> list[TemplateProject]:
-    """返回本设备最近的作品；聊天历史保存在客户端本地，不由服务端分页提供。"""
-    return service.store.projects(owner)
 
 
 @router.get(
@@ -529,6 +519,26 @@ def stream(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.get(
+    "/works/{work_id}/events",
+    response_model=list[WorkEvent],
+    tags=["聊天会话"],
+    summary="拉取未确认的聊天事件",
+)
+def work_events(
+    work_id: UUID,
+    service: Service,
+    owner: Device,
+    after: Annotated[int, Query(ge=0, le=9223372036854775807)] = 0,
+) -> list[WorkEvent]:
+    """按编号升序返回 `after` 之后尚未确认送达的事件，每次最多一页；返回空列表表示已取完。
+
+    供客户端在后台同步未打开的作品：写入本地后同样用确认接口回传编号。事件内容与 SSE 的 `data` 相同。
+    """
+    service.store.project(work_id, owner)
+    return service.store.work_events(work_id, after)
 
 
 class Acknowledgement(BaseModel):

@@ -7,6 +7,7 @@ here) and the client stores chat history locally. Run: uv run --locked pytest te
 import asyncio
 import json
 from datetime import timedelta
+from functools import partial
 from io import BytesIO
 from types import SimpleNamespace
 from uuid import uuid4
@@ -302,17 +303,15 @@ def test_answer_history_is_atomic_replayable_and_terminal(history_store, monkeyp
 
 
 def test_work_api_contracts(history_app, history_store):
-    """作品列表只含本设备作品；缺少或非法设备头为 422；服务端会话快照与旧轮询接口已移除。"""
-    history_store.create(GenerateTemplateRequest(description="其他设备"), OTHER)
+    """缺少或非法设备头为 422；作品列表、服务端会话快照与旧轮询接口已移除，会话列表只在客户端本地。"""
     with TestClient(history_app) as client:
-        assert client.get("/works", headers=DEVICE_HEADERS).json() == []
-        assert client.get("/works").status_code == 422
-        assert client.get("/works", headers={"X-IMV-Device": "not-a-uuid"}).status_code == 422
+        assert client.post("/works", json={"description": "无设备"}).status_code == 422
+        invalid = client.post("/works", headers={"X-IMV-Device": "not-a-uuid"}, json={"description": "非法"})
+        assert invalid.status_code == 422
         created = client.post("/works", headers=DEVICE_HEADERS, json={"description": "API 标题"})
         assert created.status_code == 202
         work_id = created.json()["work"]["id"]
-        listed = client.get("/works", headers=DEVICE_HEADERS).json()
-        assert [item["id"] for item in listed] == [work_id]
+        assert client.get("/works", headers=DEVICE_HEADERS).status_code == 405
         assert client.get(f"/works/{work_id}/session", headers=DEVICE_HEADERS).status_code == 404
         assert client.get(f"/jobs/{created.json()['job']['id']}/events", headers=DEVICE_HEADERS).status_code == 404
 
@@ -325,6 +324,7 @@ def test_other_devices_cannot_reach_a_work(history_app, history_store):
             ("get", f"/works/{work.id}", None),
             ("get", f"/works/{work.id}/versions", None),
             ("get", f"/works/{work.id}/stream", None),
+            ("get", f"/works/{work.id}/events", None),
             ("get", f"/jobs/{job.id}", None),
             ("get", f"/jobs/{job.id}/artifacts", None),
             ("post", f"/works/{work.id}/messages", {"instruction": "改大"}),
@@ -338,6 +338,24 @@ def test_other_devices_cannot_reach_a_work(history_app, history_store):
         assert client.get(f"/works/{work.id}", headers=DEVICE_HEADERS).status_code == 200
     assert history_store.job(job.id).status == "queued"
     assert len(history_store.work_events(work.id, 0)) == 2
+
+
+def test_events_route_pages_undelivered_events_for_background_sync(history_app, history_store, monkeypatch):
+    """未打开的作品经事件接口按页补取：顺序与 SSE 相同、`after` 之后续页、确认后为空；删除中的作品为 410。"""
+    work, job = history_store.create(GenerateTemplateRequest(description="后台"), DEVICE)
+    history_store.update(job.id, status="answered", stage="finished", answer="好")
+    expected = history_store.work_events(work.id, 0)
+    monkeypatch.setattr(history, "events", partial(history.events, limit=2))
+    with TestClient(history_app) as client:
+        first = client.get(f"/works/{work.id}/events", headers=DEVICE_HEADERS).json()
+        rest = client.get(f"/works/{work.id}/events", headers=DEVICE_HEADERS, params={"after": first[-1]["id"]}).json()
+        assert [event["id"] for event in first + rest] == [event.id for event in expected]
+        assert first[0] == expected[0].model_dump(mode="json")
+        assert client.get(f"/works/{work.id}/events", headers=DEVICE_HEADERS, params={"after": -1}).status_code == 422
+        client.post(f"/works/{work.id}/ack", headers=DEVICE_HEADERS, json={"cursor": expected[-1].id})
+        assert client.get(f"/works/{work.id}/events", headers=DEVICE_HEADERS).json() == []
+        history_store.begin_deletion(work.id)
+        assert client.get(f"/works/{work.id}/events", headers=DEVICE_HEADERS).status_code == 410
 
 
 def test_history_images_remain_readable_and_integrity_checked(history_app, history_store):

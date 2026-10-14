@@ -59,7 +59,10 @@ Every work belongs to the client device that created it. JSON routes of a work r
 header (a UUID the client keeps in its local session database) and treat another device's work as missing;
 browser-embedded reads (preview page, fonts, reference image, artifact download) are addressed by unguessable IDs.
 Chat history lives on the client: the server buffers public messages and events only until the client stores them
-locally and acknowledges the last event ID with `POST /works/{id}/ack`. Acknowledged events are deleted; once a work
+locally and acknowledges the last event ID with `POST /works/{id}/ack`. The open work streams its events over SSE
+(`GET /works/{id}/stream`); works the client is not showing catch up through `GET /works/{id}/events?after=<id>`,
+one page per call in the same shape, until an empty page. There is no server-side work list: the sidebar reads the
+client's local store. Acknowledged events are deleted; once a work
 has no undelivered events, the progress, rounds and messages of its finished jobs go too, and only the latest job row
 stays because retrying it or answering its questions needs its input.
 

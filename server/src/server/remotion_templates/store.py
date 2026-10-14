@@ -597,15 +597,6 @@ class Store:
             rows = db.execute(select(versions.c.data).where(versions.c.work_id == str(project_id)).order_by(versions.c.number))
             return [TemplateVersion.model_validate_json(data) for data in rows.scalars()]
 
-    def projects(self, device: UUID, limit: int = 100) -> list[TemplateProject]:
-        """List this device's recent works without including large code artifacts."""
-        with self.reading() as db:
-            rows = db.execute(
-                select(works.c.data).where(works.c.device_id == str(device), works.c.deleting.is_(False))
-                .order_by(works.c.seq.desc()).limit(limit)
-            )
-            return [TemplateProject.model_validate_json(data) for data in rows.scalars()]
-
     def work_events(self, work_id: UUID, after: int) -> list[history.WorkEvent]:
         """Read committed undelivered events without retaining a connection during stream waits."""
         with self.reading() as db:
