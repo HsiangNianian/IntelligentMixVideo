@@ -1,42 +1,130 @@
 //! 字效会话的本地 SQLite：聊天消息、任务公开状态与本机设备 ID 只保存在使用者电脑。
 //!
-//! 库文件位于应用数据目录的 `data/remotion/sessions.sqlite3`，首次调用时创建。前端的
-//! `localSessions.ts` 负责合并服务端事件，这里只按操作读写 JSON 行：`save` 在一个事务内写入会话与本批记录，
-//! `remove` 删除一条会话的全部记录。并发调用由 SQLite 的忙等待超时串行化。
+//! 库文件位于应用数据目录的 `data/remotion/sessions.sqlite3`。命令是异步的，读写在阻塞线程池执行，
+//! 不占用界面主线程；整个进程共用一个首次调用时打开的连接，表结构只在打开时按 `PRAGMA user_version`
+//! 建立一次，Mutex 串行化各次调用。前端的 `localSessions.ts` 负责合并服务端事件，这里只按操作读写 JSON 行：
+//! `save` 在一个事务内写入会话与本批记录，`remove` 删除一条会话的全部记录。每个操作的参数是固定结构，
+//! 多出或缺少字段都会明确报错。
 
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::{json, Value};
-use std::{path::Path, time::Duration};
+use std::{
+    path::Path,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use tauri::Manager;
 
-/// 表结构只增不改；`data` 列保存前端定义的 JSON 文档。
+/// 当前表结构版本；以后改表时按 `PRAGMA user_version` 从旧版本逐级迁移。
+const SCHEMA_VERSION: i64 = 1;
+
+/// 版本 1 的表结构；`data` 列保存前端定义的 JSON 文档。
 const SCHEMA: &str = "
     CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS works (id TEXT PRIMARY KEY, updated_at TEXT NOT NULL, data TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS messages (
+    CREATE TABLE works (id TEXT PRIMARY KEY, updated_at TEXT NOT NULL, data TEXT NOT NULL);
+    CREATE TABLE messages (
         id TEXT PRIMARY KEY, work_id TEXT NOT NULL, sequence INTEGER NOT NULL, data TEXT NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS messages_by_work ON messages(work_id, sequence);
-    CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, work_id TEXT NOT NULL, data TEXT NOT NULL);
-    CREATE INDEX IF NOT EXISTS jobs_by_work ON jobs(work_id);
+    CREATE INDEX messages_by_work ON messages(work_id, sequence);
+    CREATE TABLE jobs (id TEXT PRIMARY KEY, work_id TEXT NOT NULL, data TEXT NOT NULL);
+    CREATE INDEX jobs_by_work ON jobs(work_id);
 ";
 
-/// 打开（必要时创建）会话库并确保表存在。
+/// 进程内共享的会话库连接；首次调用时打开，打开失败则下次调用重试。
+#[derive(Default)]
+pub struct Sessions(Arc<Mutex<Option<Connection>>>);
+
+/// `device` 与 `works` 不带参数。
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Empty {}
+
+/// `work`：按 ID 读取一条会话。
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkQuery {
+    id: String,
+}
+
+/// `messages`：按序号从新到旧分页，`before` 为空时从最新开始。
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MessagesQuery {
+    work: String,
+    before: Option<i64>,
+    limit: i64,
+}
+
+/// `jobs`：读取属于该会话的指定任务。
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JobsQuery {
+    work: String,
+    ids: Vec<String>,
+}
+
+/// `save`：会话行与本批新增或更新的消息、任务，原样保存前端的 JSON 文档。
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Save {
+    work: Value,
+    messages: Vec<Value>,
+    jobs: Vec<Value>,
+}
+
+/// `remove`：删除一条会话的全部记录。
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Remove {
+    work: String,
+}
+
+/// 打开（必要时创建）会话库，并把表结构升级到当前版本。
 fn open(path: &Path) -> Result<Connection, String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|_| "创建本地会话目录失败")?;
     }
-    let connection = Connection::open(path).map_err(|_| "打开本地会话库失败")?;
+    let mut connection = Connection::open(path).map_err(|_| "打开本地会话库失败")?;
     connection
         .busy_timeout(Duration::from_secs(5))
         .map_err(|_| "设置本地会话库等待时间失败")?;
     connection
-        .execute_batch(&format!("PRAGMA journal_mode=WAL;{SCHEMA}"))
-        .map_err(|_| "初始化本地会话库失败".to_string())?;
+        .execute_batch("PRAGMA journal_mode=WAL;")
+        .map_err(|_| "初始化本地会话库失败")?;
+    migrate(&mut connection)?;
     Ok(connection)
 }
 
-/// 读取字符串字段；缺少或类型不符时报告字段名。
+/// 按 `user_version` 建表；更新版本客户端写过的库拒绝打开，避免旧代码误写新结构。
+fn migrate(connection: &mut Connection) -> Result<(), String> {
+    let failed = |_| "初始化本地会话库失败".to_string();
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(failed)?;
+    if version > SCHEMA_VERSION {
+        return Err("本地会话库来自更新版本的客户端，请升级客户端后再打开。".into());
+    }
+    if version == SCHEMA_VERSION {
+        return Ok(());
+    }
+    let transaction = connection.transaction().map_err(failed)?;
+    // 版本 0 是新库，或未发布的测试构建留下的旧表：重建会话表，保留设备 ID。
+    transaction
+        .execute_batch(&format!(
+            "DROP TABLE IF EXISTS works; DROP TABLE IF EXISTS messages; DROP TABLE IF EXISTS jobs;
+             DROP TABLE IF EXISTS versions; {SCHEMA} PRAGMA user_version={SCHEMA_VERSION};"
+        ))
+        .map_err(failed)?;
+    transaction.commit().map_err(failed)
+}
+
+/// 按操作解析固定结构的参数；字段名或类型不符时报告原因。
+fn parse<T: DeserializeOwned>(payload: Value) -> Result<T, String> {
+    serde_json::from_value(payload).map_err(|error| format!("本地会话请求无效：{error}"))
+}
+
+/// 读取 JSON 文档里的字符串字段；缺少或类型不符时报告字段名。
 fn text<'a>(value: &'a Value, field: &str) -> Result<&'a str, String> {
     value
         .get(field)
@@ -52,12 +140,12 @@ fn documents(rows: Vec<String>) -> Result<Value, String> {
         .map(Value::Array)
 }
 
-/// 执行一次操作；所有写入都在事务内完成，失败时回滚。
-fn operate(path: &Path, operation: &str, payload: &Value) -> Result<Value, String> {
-    let mut connection = open(path)?;
+/// 在已打开的连接上执行一次操作；所有写入都在事务内完成，失败时回滚。
+fn operate(connection: &mut Connection, operation: &str, payload: Value) -> Result<Value, String> {
     let failed = |_| "读写本地会话库失败".to_string();
     match operation {
         "device" => {
+            parse::<Empty>(payload)?;
             let existing: Option<String> = connection
                 .query_row("SELECT value FROM meta WHERE key='device_id'", [], |row| {
                     row.get(0)
@@ -77,6 +165,7 @@ fn operate(path: &Path, operation: &str, payload: &Value) -> Result<Value, Strin
             Ok(json!(device))
         }
         "works" => {
+            parse::<Empty>(payload)?;
             let mut statement = connection
                 .prepare("SELECT data FROM works ORDER BY updated_at DESC, id DESC")
                 .map_err(failed)?;
@@ -87,10 +176,11 @@ fn operate(path: &Path, operation: &str, payload: &Value) -> Result<Value, Strin
             documents(rows)
         }
         "work" => {
+            let query: WorkQuery = parse(payload)?;
             let data: Option<String> = connection
                 .query_row(
                     "SELECT data FROM works WHERE id=?1",
-                    params![text(payload, "id")?],
+                    params![query.id],
                     |row| row.get(0),
                 )
                 .optional()
@@ -100,42 +190,33 @@ fn operate(path: &Path, operation: &str, payload: &Value) -> Result<Value, Strin
             })
         }
         "messages" => {
-            let before = payload
-                .get("before")
-                .and_then(Value::as_i64)
-                .unwrap_or(i64::MAX);
-            let limit = payload
-                .get("limit")
-                .and_then(Value::as_i64)
-                .unwrap_or(50)
-                .clamp(1, 1000);
+            let query: MessagesQuery = parse(payload)?;
             let mut statement = connection
                 .prepare(
                     "SELECT data FROM messages WHERE work_id=?1 AND sequence<?2 ORDER BY sequence DESC LIMIT ?3",
                 )
                 .map_err(failed)?;
             let rows = statement
-                .query_map(params![text(payload, "work")?, before, limit], |row| {
-                    row.get(0)
-                })
+                .query_map(
+                    params![
+                        query.work,
+                        query.before.unwrap_or(i64::MAX),
+                        query.limit.clamp(1, 1000)
+                    ],
+                    |row| row.get(0),
+                )
                 .and_then(|rows| rows.collect::<Result<Vec<String>, _>>())
                 .map_err(failed)?;
             documents(rows)
         }
         "jobs" => {
-            let work = text(payload, "work")?;
+            let query: JobsQuery = parse(payload)?;
             let mut rows = Vec::new();
-            for id in payload
-                .get("ids")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                let id = id.as_str().ok_or("任务 ID 必须是字符串")?;
+            for id in &query.ids {
                 let data: Option<String> = connection
                     .query_row(
                         "SELECT data FROM jobs WHERE id=?1 AND work_id=?2",
-                        params![id, work],
+                        params![id, query.work],
                         |row| row.get(0),
                     )
                     .optional()
@@ -145,22 +226,17 @@ fn operate(path: &Path, operation: &str, payload: &Value) -> Result<Value, Strin
             documents(rows)
         }
         "save" => {
-            let stored = payload.get("work").ok_or("本地会话请求缺少 work")?;
-            let work = text(stored.get("work").ok_or("本地会话请求缺少作品")?, "id")?;
+            let change: Save = parse(payload)?;
+            let work = text(change.work.get("work").ok_or("本地会话请求缺少作品")?, "id")?;
             let transaction = connection.transaction().map_err(failed)?;
             transaction
                 .execute(
                     "INSERT INTO works(id, updated_at, data) VALUES (?1, ?2, ?3)
                      ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at, data=excluded.data",
-                    params![work, text(stored, "updated_at")?, stored.to_string()],
+                    params![work, text(&change.work, "updated_at")?, change.work.to_string()],
                 )
                 .map_err(failed)?;
-            for message in payload
-                .get("messages")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
+            for message in &change.messages {
                 let sequence = message
                     .get("sequence")
                     .and_then(Value::as_i64)
@@ -173,12 +249,7 @@ fn operate(path: &Path, operation: &str, payload: &Value) -> Result<Value, Strin
                     )
                     .map_err(failed)?;
             }
-            for job in payload
-                .get("jobs")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
+            for job in &change.jobs {
                 transaction
                     .execute(
                         "INSERT INTO jobs(id, work_id, data) VALUES (?1, ?2, ?3)
@@ -191,18 +262,18 @@ fn operate(path: &Path, operation: &str, payload: &Value) -> Result<Value, Strin
             Ok(Value::Null)
         }
         "remove" => {
-            let work = text(payload, "work")?;
+            let query: Remove = parse(payload)?;
             let transaction = connection.transaction().map_err(failed)?;
             for table in ["messages", "jobs"] {
                 transaction
                     .execute(
                         &format!("DELETE FROM {table} WHERE work_id=?1"),
-                        params![work],
+                        params![query.work],
                     )
                     .map_err(failed)?;
             }
             transaction
-                .execute("DELETE FROM works WHERE id=?1", params![work])
+                .execute("DELETE FROM works WHERE id=?1", params![query.work])
                 .map_err(failed)?;
             transaction.commit().map_err(failed)?;
             Ok(Value::Null)
@@ -211,9 +282,23 @@ fn operate(path: &Path, operation: &str, payload: &Value) -> Result<Value, Strin
     }
 }
 
+/// 在共享连接上执行一次操作；尚未打开时先在 `path` 打开并建表，之后的调用不再重复打开。
+fn run(
+    shared: &Mutex<Option<Connection>>,
+    path: &Path,
+    operation: &str,
+    payload: Value,
+) -> Result<Value, String> {
+    let mut connection = shared.lock().unwrap_or_else(|error| error.into_inner());
+    if connection.is_none() {
+        *connection = Some(open(path)?);
+    }
+    operate(connection.as_mut().expect("连接已打开"), operation, payload)
+}
+
 /// 前端会话存储入口；只读写应用数据目录下的固定库文件，不访问后端或任意用户路径。
 #[tauri::command]
-pub fn remotion_sessions(
+pub async fn remotion_sessions(
     app: tauri::AppHandle,
     operation: String,
     payload: Value,
@@ -223,25 +308,36 @@ pub fn remotion_sessions(
         .app_data_dir()
         .map_err(|_| "读取应用目录失败")?
         .join("data/remotion/sessions.sqlite3");
-    operate(&path, &operation, &payload)
+    let shared = app.state::<Sessions>().0.clone();
+    tauri::async_runtime::spawn_blocking(move || run(&shared, &path, &operation, payload))
+        .await
+        .map_err(|_| "本地会话库调用失败".to_string())?
 }
 
 #[cfg(test)]
 mod tests {
-    //! 临时目录验证建库、设备 ID、事务写入、分页与删除；执行 cargo test --locked --lib remotion_sessions。
+    //! 临时目录验证建库与版本、共享连接、设备 ID、事务写入、分页与删除，以及前端实际发送的参数结构；
+    //! 执行 cargo test --locked --lib remotion_sessions。
     use super::*;
 
     /// 每个用例使用独立临时库，结束时删除目录。
     struct Scratch(std::path::PathBuf);
     impl Scratch {
+        /// 在系统临时目录下分配一个尚不存在的目录。
         fn new() -> Self {
             Self(std::env::temp_dir().join(format!("imv-sessions-{}", uuid::Uuid::new_v4())))
         }
+        /// 库文件路径；目录由 `open` 按需创建。
         fn path(&self) -> std::path::PathBuf {
             self.0.join("sessions.sqlite3")
         }
+        /// 打开该临时库。
+        fn open(&self) -> Connection {
+            open(&self.path()).unwrap()
+        }
     }
     impl Drop for Scratch {
+        /// 用例结束删除临时目录。
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
@@ -264,49 +360,112 @@ mod tests {
     #[test]
     fn device_id_is_stable() {
         let scratch = Scratch::new();
-        let first = operate(&scratch.path(), "device", &json!({})).unwrap();
+        let mut connection = scratch.open();
+        let first = operate(&mut connection, "device", json!({})).unwrap();
         assert_eq!(
-            operate(&scratch.path(), "device", &json!({})).unwrap(),
+            operate(&mut connection, "device", json!({})).unwrap(),
             first
         );
         assert!(uuid::Uuid::parse_str(first.as_str().unwrap()).is_ok());
+    }
+
+    /// 新库写入当前表结构版本；重新打开不重建表，已保存的会话仍在。
+    #[test]
+    fn schema_is_created_once_with_a_version() {
+        let scratch = Scratch::new();
+        let mut connection = scratch.open();
+        operate(&mut connection, "save", change("a", "2026-10-01T00:00:00Z")).unwrap();
+        drop(connection);
+        let mut connection = scratch.open();
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        assert_ne!(
+            operate(&mut connection, "work", json!({"id": "a"})).unwrap(),
+            Value::Null
+        );
+    }
+
+    /// 更新版本客户端写过的库拒绝打开，不用旧结构读写。
+    #[test]
+    fn newer_schema_is_refused() {
+        let scratch = Scratch::new();
+        scratch
+            .open()
+            .execute_batch(&format!("PRAGMA user_version={}", SCHEMA_VERSION + 1))
+            .unwrap();
+        assert!(open(&scratch.path()).unwrap_err().contains("更新版本"));
+    }
+
+    /// 未发布测试构建留下的无版本旧表被重建为当前结构，设备 ID 保留。
+    #[test]
+    fn unversioned_tables_are_rebuilt() {
+        let scratch = Scratch::new();
+        std::fs::create_dir_all(&scratch.0).unwrap();
+        let old = Connection::open(scratch.path()).unwrap();
+        old.execute_batch(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO meta VALUES ('device_id', 'old-device');
+             CREATE TABLE works (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+             CREATE TABLE versions (id TEXT PRIMARY KEY, data TEXT NOT NULL);",
+        )
+        .unwrap();
+        drop(old);
+        let mut connection = scratch.open();
+        operate(&mut connection, "save", change("a", "2026-10-01T00:00:00Z")).unwrap();
+        assert_eq!(
+            operate(&mut connection, "device", json!({})).unwrap(),
+            json!("old-device")
+        );
+    }
+
+    /// 共享连接只在第一次调用时打开：之后即使路径不可用也继续使用已打开的连接。
+    #[test]
+    fn shared_connection_is_opened_once() {
+        let scratch = Scratch::new();
+        let shared = Mutex::new(None);
+        let device = run(&shared, &scratch.path(), "device", json!({})).unwrap();
+        let unusable = scratch
+            .path()
+            .join("not-a-directory")
+            .join("sessions.sqlite3");
+        assert_eq!(
+            run(&shared, &unusable, "device", json!({})).unwrap(),
+            device
+        );
+        // 打开失败不留下半初始化的连接，下次调用重试。
+        let fresh = Mutex::new(None);
+        assert!(run(&fresh, &unusable, "device", json!({})).is_err());
+        assert!(fresh.lock().unwrap().is_none());
     }
 
     /// 保存后按活动时间列出会话，消息从新到旧分页，任务只按所属作品读取。
     #[test]
     fn save_and_read_back() {
         let scratch = Scratch::new();
-        operate(
-            &scratch.path(),
-            "save",
-            &change("a", "2026-10-01T00:00:00Z"),
-        )
-        .unwrap();
-        operate(
-            &scratch.path(),
-            "save",
-            &change("b", "2026-10-02T00:00:00Z"),
-        )
-        .unwrap();
-        let works = operate(&scratch.path(), "works", &json!({})).unwrap();
+        let mut connection = scratch.open();
+        operate(&mut connection, "save", change("a", "2026-10-01T00:00:00Z")).unwrap();
+        operate(&mut connection, "save", change("b", "2026-10-02T00:00:00Z")).unwrap();
+        let works = operate(&mut connection, "works", json!({})).unwrap();
         assert_eq!(works[0]["work"]["id"], "b");
         assert_eq!(works[1]["work"]["id"], "a");
         let page = operate(
-            &scratch.path(),
+            &mut connection,
             "messages",
-            &json!({"work": "a", "before": 2, "limit": 5}),
+            json!({"work": "a", "before": 2, "limit": 5}),
         )
         .unwrap();
         assert_eq!(page, json!([{"id": "a-m1", "sequence": 1, "text": "一"}]));
         let jobs = operate(
-            &scratch.path(),
+            &mut connection,
             "jobs",
-            &json!({"work": "a", "ids": ["a-job", "b-job"]}),
+            json!({"work": "a", "ids": ["a-job", "b-job"]}),
         )
         .unwrap();
         assert_eq!(jobs, json!([{"id": "a-job", "status": "running"}]));
         assert_eq!(
-            operate(&scratch.path(), "work", &json!({"id": "missing"})).unwrap(),
+            operate(&mut connection, "work", json!({"id": "missing"})).unwrap(),
             Value::Null
         );
     }
@@ -315,32 +474,23 @@ mod tests {
     #[test]
     fn remove_one_work() {
         let scratch = Scratch::new();
-        operate(
-            &scratch.path(),
-            "save",
-            &change("a", "2026-10-01T00:00:00Z"),
-        )
-        .unwrap();
-        operate(
-            &scratch.path(),
-            "save",
-            &change("b", "2026-10-02T00:00:00Z"),
-        )
-        .unwrap();
-        operate(&scratch.path(), "remove", &json!({"work": "a"})).unwrap();
+        let mut connection = scratch.open();
+        operate(&mut connection, "save", change("a", "2026-10-01T00:00:00Z")).unwrap();
+        operate(&mut connection, "save", change("b", "2026-10-02T00:00:00Z")).unwrap();
+        operate(&mut connection, "remove", json!({"work": "a"})).unwrap();
         assert_eq!(
-            operate(&scratch.path(), "work", &json!({"id": "a"})).unwrap(),
+            operate(&mut connection, "work", json!({"id": "a"})).unwrap(),
             Value::Null
         );
         let page = operate(
-            &scratch.path(),
+            &mut connection,
             "messages",
-            &json!({"work": "a", "limit": 5}),
+            json!({"work": "a", "before": null, "limit": 5}),
         )
         .unwrap();
         assert_eq!(page, json!([]));
         assert_eq!(
-            operate(&scratch.path(), "works", &json!({}))
+            operate(&mut connection, "works", json!({}))
                 .unwrap()
                 .as_array()
                 .unwrap()
@@ -349,19 +499,52 @@ mod tests {
         );
     }
 
-    /// 缺少必需字段的保存整体失败，不留下部分写入。
+    /// 缺少必需字段的保存整体失败，不留下部分写入；多出或缺少参数字段同样拒绝。
     #[test]
-    fn invalid_save_writes_nothing() {
+    fn invalid_requests_write_nothing() {
         let scratch = Scratch::new();
+        let mut connection = scratch.open();
         let mut bad = change("a", "2026-10-01T00:00:00Z");
         bad["messages"][1]
             .as_object_mut()
             .unwrap()
             .remove("sequence");
-        assert!(operate(&scratch.path(), "save", &bad).is_err());
+        assert!(operate(&mut connection, "save", bad).is_err());
         assert_eq!(
-            operate(&scratch.path(), "work", &json!({"id": "a"})).unwrap(),
+            operate(&mut connection, "work", json!({"id": "a"})).unwrap(),
             Value::Null
         );
+        let mut extra = change("a", "2026-10-01T00:00:00Z");
+        extra["versions"] = json!([]);
+        assert!(operate(&mut connection, "save", extra)
+            .unwrap_err()
+            .contains("versions"));
+        assert!(operate(&mut connection, "messages", json!({"work": "a"})).is_err());
+        assert!(operate(&mut connection, "unknown", json!({})).is_err());
+    }
+
+    /// 前端 `localSessions.ts` 实际发送的每种操作（由前端测试录制并逐字比对的同一份夹具）都能被解析并执行。
+    #[test]
+    fn frontend_payloads_match_the_contract() {
+        let calls: Vec<Value> =
+            serde_json::from_str(include_str!("../../tests/remotion-sessions-contract.json"))
+                .unwrap();
+        let scratch = Scratch::new();
+        let mut connection = scratch.open();
+        let mut operations = Vec::new();
+        for call in calls {
+            let operation = call["operation"].as_str().unwrap().to_string();
+            let result = operate(&mut connection, &operation, call["payload"].clone());
+            assert!(result.is_ok(), "{operation}: {result:?}");
+            operations.push(operation);
+        }
+        for operation in [
+            "device", "works", "work", "messages", "jobs", "save", "remove",
+        ] {
+            assert!(
+                operations.iter().any(|item| item == operation),
+                "{operation}"
+            );
+        }
     }
 }

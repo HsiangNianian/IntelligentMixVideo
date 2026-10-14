@@ -1,6 +1,7 @@
 /**
  * 字效本地会话库回归：事件合并规则（任务状态、轮次、游标、作品版本指针）、消息分页、写入本地后确认送达，
- * 以及 Remotion 请求和资产发布携带本机设备 ID；存储使用每例独立的内存实现，执行 bun run test。
+ * 以及 Remotion 请求和资产发布携带本机设备 ID；存储使用每例独立的内存实现。桌面存储经 IPC 发送的参数与
+ * `remotion-sessions-contract.json` 逐字比对，Rust 单元测试解析并执行同一份夹具。执行 bun run test。
  */
 import { expect, spyOn, test } from "bun:test";
 import { act, renderHook, waitFor } from "@testing-library/react";
@@ -13,7 +14,8 @@ import { PublishSpriteResponseSchema, SpriteKind } from "@/generated/imv/sprite/
 import type { LoopRound, SessionJob, WorkEvent } from "@/features/remotion_templates/model";
 import { remotionJob } from "./remotion-fixtures";
 import { remotionServer, seed } from "./remotion-server";
-import { fetchMock } from "./setup";
+import { fetchMock, mockDesktop } from "./setup";
+import contract from "./remotion-sessions-contract.json";
 
 const ROUND: LoopRound = { layer: "outer", turn: 1, calls: [{ tool: "tools.plan_execute", status: "pass" }] };
 
@@ -24,6 +26,30 @@ function event(id: number, payload: Pick<WorkEvent, "type" | "data">): WorkEvent
 /** 运行中的公开任务状态；服务端的状态事件不携带轮次。 */
 function running(status: SessionJob["status"] = "running"): SessionJob {
   return { ...remotionJob(status), created_at: "2026-09-14T08:00:00Z", updated_at: "2026-09-14T08:00:00Z", parameters: null };
+}
+/** 模拟 Rust `remotion_sessions` 命令：按操作名与参数把调用交给内存实现，记录 IPC 序列化后的参数。 */
+function desktopStorage() {
+  const memory = local.memoryStorage();
+  const calls: { operation: string; payload: Record<string, unknown> }[] = [];
+  /** 与 Rust 命令相同的操作分派；参数先经 JSON 往返，和真实 IPC 一样丢弃 undefined 字段。 */
+  async function serve(args: Record<string, unknown>) {
+    const call = JSON.parse(JSON.stringify(args)) as { operation: string; payload: Record<string, never> };
+    calls.push(call);
+    const { operation, payload } = call;
+    if (operation === "device") return memory.device();
+    if (operation === "works") return memory.works();
+    if (operation === "work") return memory.work(payload.id);
+    if (operation === "messages") return memory.messages(payload.work, payload.before, payload.limit);
+    if (operation === "jobs") return memory.jobs(payload.work, payload.ids);
+    if (operation === "save") return memory.save(payload as unknown as local.SessionChange);
+    if (operation === "remove") return memory.remove(payload.work);
+    throw new Error(`未知的本地会话操作：${operation}`);
+  }
+  mockDesktop((command, args) =>
+    command === "remotion_sessions" ? serve(args) : Promise.reject(new Error(`未模拟命令：${command}`)),
+  );
+  local.setStorage(undefined);
+  return calls;
 }
 /** 登记一条只有初始任务的本地会话。 */
 async function recordWork() {
@@ -151,4 +177,25 @@ test("保存到资产携带本机设备 ID", async () => {
   const [url, init] = fetchMock.mock.calls.at(-1)!;
   expect(new URL(String(url)).pathname).toBe("/api/sprites/publish");
   expect((init?.headers as Record<string, string>)["X-IMV-Device"]).toBe(await local.deviceId());
+});
+
+// 桌面存储经 IPC 发送的每种操作与参数结构固定在共享夹具中；Rust 单元测试按同一夹具解析并执行，两端不会悄悄失配。
+test("桌面会话存储的 IPC 参数符合 Rust 契约夹具", async () => {
+  const calls = desktopStorage();
+  await local.deviceId();
+  await recordWork();
+  await local.apply("work-1", [
+    event(1, {
+      type: "message.created",
+      data: { id: "m-1", sequence: 1, job_id: "job-1", role: "user", text: "契约", image_asset_ids: [], created_at: "2026-09-14T08:00:00Z" },
+    }),
+    event(2, { type: "job.updated", data: running() }),
+    event(3, { type: "job.round", data: { job_id: "job-1", round: ROUND } }),
+    event(4, { type: "version.ready", data: { version_id: "version-1", job_id: "job-1" } }),
+  ]);
+  await local.snapshot("work-1");
+  await local.history();
+  await local.markDeleting("work-1");
+  await local.forget("work-1");
+  expect(calls).toEqual(contract);
 });

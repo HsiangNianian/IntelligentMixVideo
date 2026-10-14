@@ -24,8 +24,9 @@
 本期客户端不包含合成渲染；整个模板的叠加视频由服务端 `POST /api/v1/overlay-renders` 提供给总线。
 会话切换、新增、历史预览继续使用保存/放弃/取消保护，取消请求由服务端持久化后停止工作。
 
-聊天历史只保存在使用者本地：`localSessions.ts` 定义会话存储接口，桌面通过 Tauri `remotion_sessions` 命令读写应用数据目录的
-`data/remotion/sessions.sqlite3`，浏览器（仅供本地测试）使用页面内存、刷新即清空。库里另存本机设备 ID，所有 Remotion 请求
+聊天历史只保存在使用者本地：`localSessions.ts` 定义会话存储接口，桌面通过 Tauri `remotion_sessions` 异步命令读写应用数据目录的
+`data/remotion/sessions.sqlite3`（读写不占用界面线程，进程共用一个连接，表结构按 `PRAGMA user_version` 版本化；
+IPC 参数结构固定在 `client/tests/remotion-sessions-contract.json`，前端测试逐字比对、Rust 测试执行同一份夹具），浏览器（仅供本地测试）使用页面内存、刷新即清空。库里另存本机设备 ID，所有 Remotion 请求
 与 SSE 以 `X-IMV-Device` 携带，服务端只返回本设备的作品。会话订阅把每个事件先写入本地再调用 `POST /works/{id}/ack`
 确认送达，服务端随即删除已送达事件；重新连接时从本地游标续传并补发一次确认。侧栏、消息分页与恢复都读取本地库，
 删除会话先由服务端清理再删除本地记录；服务端报告会话不存在或正在清理（404/410）时，本地记录在侧栏标为
