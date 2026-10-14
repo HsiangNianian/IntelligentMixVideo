@@ -240,7 +240,7 @@ function HistoryList({
               <span className="flex flex-wrap justify-between gap-1 text-xs text-muted-foreground">
                 <span>
                   {work.deleting
-                    ? "等待清理 · 可重试删除"
+                    ? "已删除或正在清理 · 可重试删除"
                     : jobLabel(work.job.status)}
                 </span>
                 <time dateTime={work.updated_at}>

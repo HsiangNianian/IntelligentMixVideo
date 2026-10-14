@@ -246,12 +246,18 @@ export function useTemplateSession(onHistoryChange: () => void) {
     if (current(key, signal)) applyJob(snapshot.job);
     return snapshot.cursor;
   }
-  /** 永久失效终止订阅并清空本地资源，不继续重连不存在的会话。 */
-  function unavailable(error: unknown) {
+  /** 永久失效终止订阅并清空本地资源，不继续重连不存在的会话；本地记录标记为待删除，侧栏提供重试删除。 */
+  function unavailable(work: string, error: unknown) {
     if (!(error instanceof api.ApiError) || ![404, 410].includes(error.status))
       return false;
     switchWork(null);
     publish({ error: "会话已删除或正在清理，可在历史列表重试未完成的删除。" });
+    void local
+      .markDeleting(work)
+      .catch(() => {})
+      .finally(() => {
+        if (alive.current) changed.current();
+      });
     return true;
   }
   /** 断线从本地已写入的最后 ID 续传；每个事件先写入本地再确认送达，永不重发 POST。 */
@@ -304,7 +310,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
         }
       } catch (error) {
         if (!current(key, signal)) return;
-        if (unavailable(error)) return;
+        if (unavailable(work, error)) return;
         publish({ connection: "reconnecting" });
         await reconnectDelay(signal);
       }
@@ -329,7 +335,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
       publish({ loading: false });
       void watch(work, key, controller.signal, cursor);
     } catch (error) {
-      if (!current(key, controller.signal) || unavailable(error)) return;
+      if (!current(key, controller.signal) || unavailable(work, error)) return;
       if (current(key, controller.signal))
         publish({
           loading: false,

@@ -16,13 +16,17 @@ import type {
   WorkSummary,
 } from "./model";
 
-/** 一条本地会话：作品指针、最新任务、侧栏标题、最后活动时间与已写入的最后事件编号。 */
+/**
+ * 一条本地会话：作品指针、最新任务、侧栏标题、最后活动时间与已写入的最后事件编号。
+ * `deleting` 表示服务端已报告该作品不存在或正在清理（404/410）：本地记录保留到用户在侧栏重试删除。
+ */
 export interface StoredWork {
   work: { id: string; current_version_id: string | null };
   title: string;
   job: SessionJob;
   updated_at: string;
   cursor: number;
+  deleting?: boolean;
 }
 /** 一次原子写入：会话行与本批新增或更新的消息、任务。 */
 export interface SessionChange {
@@ -120,9 +124,10 @@ export function deviceId(): Promise<string> {
   return device;
 }
 
-/** 侧栏摘要只包含标题、活动时间与最新任务。 */
+/** 侧栏摘要只包含标题、活动时间、最新任务与服务端删除状态。 */
 function summary(item: StoredWork): WorkSummary {
   return {
+    ...(item.deleting ? { deleting: true } : {}),
     id: item.work.id,
     title: item.title,
     updated_at: item.updated_at,
@@ -216,6 +221,12 @@ export async function apply(work: string, events: WorkEvent[]): Promise<StoredWo
   // 侧栏摘要不需要轮次明细，完整任务状态保存在任务行。
   await storage().save({ work: { ...stored, job: { ...stored.job, rounds: [] } }, messages, jobs: [...jobs.values()] });
   return stored;
+}
+/** 服务端报告会话不存在或正在清理时标记本地记录，侧栏据此提供重试删除；本机没有该会话时不做任何事。 */
+export async function markDeleting(work: string): Promise<void> {
+  const stored = await storage().work(work);
+  if (stored && !stored.deleting)
+    await storage().save({ work: { ...stored, deleting: true }, messages: [], jobs: [] });
 }
 /** 删除本机会话的全部记录；服务端数据由删除接口单独清理。 */
 export function forget(work: string): Promise<void> {

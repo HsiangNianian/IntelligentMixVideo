@@ -189,6 +189,25 @@ test.each(["local", 404, 410] as const)("会话恢复失败（%s）时移除本�
   expect(localStorage.length).toBe(0);
 });
 
+// 服务端报告会话已删除或正在清理时，本地记录留在侧栏并标明可重试删除；再次删除后服务端与本机都不再保留。
+test("服务端已删除的会话在历史列表中可重试删除", async () => {
+  const fake = remotionServer((path) =>
+    path.endsWith("/stream") ? new Response(null, { status: 410 }) : undefined,
+  );
+  await seed("服务端清理中");
+  render(<RemotionWorkspace />);
+  fireEvent.click(await screen.findByRole("button", { name: /服务端清理中/ }));
+  expect((await screen.findByText(/会话已删除或正在清理/)).textContent).toContain("可在历史列表重试未完成的删除");
+  const row = await screen.findByRole("button", { name: /可重试删除/ });
+  expect(row.hasAttribute("disabled")).toBe(true);
+  fireEvent.click(deleteButton("服务端清理中"));
+  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "重试删除" }));
+  await waitFor(() => expect(screen.queryByRole("button", { name: /服务端清理中/ }) === null).toBe(true));
+  expect(deletes()).toHaveLength(1);
+  expect(fake.works.has("work-1")).toBe(false);
+  expect(await local.storage().work("work-1")).toBeNull();
+});
+
 // 删除时旧导出读取不能在新空白会话中恢复代码或版本。
 test("删除隔离迟到版本读取", async () => {
   let release!: (response: Response) => void;

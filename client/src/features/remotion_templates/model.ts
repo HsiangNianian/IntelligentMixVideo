@@ -330,7 +330,7 @@ export interface ProgressStep {
   ended_at: string | null;
   status: "active" | "done" | "stopped";
 }
-/** 历史列表只加载标题、活动时间和当前任务，不加载代码。 */
+/** 历史列表只加载标题、活动时间和当前任务，不加载代码；`deleting` 表示服务端已报告删除或正在清理。 */
 export interface WorkSummary {
   deleting?: boolean;
   id: string;
