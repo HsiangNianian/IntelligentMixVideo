@@ -53,7 +53,11 @@ never upload anything.
 The backend keeps no SQLite file. Works, jobs, accepted versions, the model's sliding window, public events and
 overlay render tasks are tables in the shared MySQL database (`tables.py`, created on first use next to
 `remotion_sprites`). The backend runs as a single instance: one in-process lock serializes write transactions,
-startup interrupts jobs a previous process left running and finishes interrupted deletions.
+startup interrupts jobs a previous process left running and finishes interrupted deletions. Nothing enforces the
+single instance: a second backend on the same database (for example a Debug desktop backend reading the same
+`server/.env`) would interrupt the first one's running jobs when it starts and run its own queue and sweeps, so deploy
+exactly one. MySQL 8.0 or later is required: acknowledged events are deleted and clients resume after the last event
+ID, which relies on InnoDB keeping its AUTO_INCREMENT counter across restarts (5.7 resets it to the highest row).
 
 Every work belongs to the client device that created it. JSON routes of a work require the `X-IMV-Device`
 header (a UUID the client keeps in its local session database) and treat another device's work as missing. A device
@@ -70,6 +74,10 @@ stays because retrying it or answering its questions needs its input.
 
 Sealed version files, reference images and Sprite preview bundles are objects under `imv/remotion/`
 (`object_store.py`): public-read in ZOS once `ZOS_BUCKET` is set, otherwise files under `IMV_DATA_DIR/objects`.
+Every sealed file of a version is public-read under `imv/remotion/versions/<version_id>/`, including the internal
+`candidate.json`, `spec.json` and `tool-validation.json` that the artifact route never serves; anyone who knows a
+version ID can read them, and `GET /api/sprites` lists each published Sprite's source version ID. Chat reference
+images are public-read under unguessable IDs as well.
 The backend reads them through a verified cache in `IMV_DATA_DIR/cache` (SHA-256 against the MySQL record), one file
 at a time (deciding whether a parameter patch is instant reads only `interactive.js`). Object uploads, downloads and
 deletes run in worker threads and never under the write lock: a version is uploaded under its new ID before its record
@@ -77,7 +85,7 @@ commits and removed again if the commit fails; deletion and the upload sweep rem
 steps. A ZOS failure other than a missing object is an `ObjectStoreError` (an `OSError`): uploads, reference images,
 downloads, diagnostics and work deletion answer a retryable 503 instead of a 500 or a misleading 422. Job
 scratch is removed when the job ends and the private `audit/<work_id>/<job_id>.jsonl` log outlives it (deleting the
-work removes its whole audit folder, including logs of jobs already pruned). An hourly sweep applies
+work removes its whole audit folder, including logs of jobs already pruned). An hourly sweep (started with the runtime on the first Remotion request, which runs it immediately) applies
 three retention periods: undelivered events (`IMV_UNDELIVERED_EVENT_DAYS`, 7), audit logs
 (`IMV_AUDIT_RETENTION_DAYS`, 14) and the works of devices inactive for `IMV_DEVICE_RETENTION_DAYS` (90). The same
 sweep retries every deletion whose cleanup failed (an expired device's work, or a user DELETE answered 503 and never
@@ -269,8 +277,8 @@ code plus a fixed host-authored message. Tool arguments and result payloads
 stay in the private audit, plan step goals and model prose
 are never published, a turn that only replied records an empty call list, and a
 terminal job accepts no further rounds. Unknown tool names become `unknown`;
-model protocol failures are explicitly marked. Snapshots carry all rounds, while
-`job.updated` omits that history and clients retain already received deltas.
+model protocol failures are explicitly marked. Each `job.round` event carries one
+round, `job.updated` omits that history, and the client keeps the rounds it has stored locally.
 
 ## Sprite assets
 

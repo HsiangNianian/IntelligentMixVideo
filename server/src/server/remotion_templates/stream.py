@@ -14,7 +14,7 @@ from .store import Store
 async def event_stream(store: Store, work_id: UUID, after: int) -> AsyncIterator[str]:
     """Replay every page before tailing new events; disconnect only closes this generator.
 
-    No SQLite connection spans a yield or wait. ASGI cancels the generator on disconnect;
+    No database connection spans a yield or wait. ASGI cancels the generator on disconnect;
     cancellation cannot affect the independent runtime worker or durable task state.
     """
     yield "retry: 2000\n: connected\n\n"

@@ -274,8 +274,9 @@ export const SpriteCanvasSchema: GenMessage<SpriteCanvas> = /*@__PURE__*/
   messageDesc(file_imv_sprite_v1_sprite, 4);
 
 /**
- * 一次不可变发布。服务端复制已通过验收的代码、参数契约和预览，
- * 因而源聊天被删除或继续编辑后，模板里引用的 Sprite 仍指向同一发布内容。
+ * 一次发布。服务端复制已通过验收的代码、参数契约和预览，代码与参数此后不变，
+ * 因而源聊天被删除或继续编辑后，模板里引用的 Sprite 仍指向同一发布内容；
+ * 未被模板使用的发布可以整体删除。
  * 此消息包含私有源码和配置，不通过公开目录或模板编辑接口完整返回。
  *
  * @generated from message imv.sprite.v1.PublishedSprite
@@ -360,8 +361,8 @@ export type PublishedSprite = Message<"imv.sprite.v1.PublishedSprite"> & {
   publishedAt?: Timestamp | undefined;
 
   /**
-   * 发布时复制到资产自有目录的交互预览播放器包（interactive.js）的 SHA-256，
-   * 每次读取预览前核验；该预览不是合成用透明素材。
+   * 资产自有的交互预览播放器包对象（imv/remotion/sprites/<id>/interactive.js）的 SHA-256，
+   * 每次读取预览前核验，副本丢失或不符时按发布源码重建并更新；该预览不是合成用透明素材。
    *
    * @generated from field: string preview_sha256 = 12;
    */
