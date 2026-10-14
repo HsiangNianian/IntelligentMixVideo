@@ -1,4 +1,7 @@
-"""Focused tests for Preset creation, Sprite composition, persistence and preview publication."""
+"""Focused tests for Preset creation, Sprite composition, persistence and preview publication.
+
+The shared Preset catalog lives in MySQL only, so every test here uses the temporary SQLite stand-in.
+"""
 
 import asyncio
 import json
@@ -33,6 +36,12 @@ from server.remotion_templates.tools.session import ToolSession
 
 
 RENDERER_DEPS = Path(__file__).parents[1] / "src" / "server" / "remotion" / "node_modules" / "esbuild"
+
+
+@pytest.fixture(autouse=True)
+def catalog_database(template_db):
+    """Preset catalog reads and writes go to the temporary database standing in for MySQL."""
+    return template_db
 
 
 def session(tmp_path: Path) -> ToolSession:
@@ -225,7 +234,6 @@ def test_creation_flow_persists_one_sprite_without_semantic_index(tmp_path):
         saved = await current.execute("sprite.create", SpriteCreateInput(draft_id=composed["draft_id"]), available())
         assert current.saved_sprite(saved["sprite_id"]).code == current.sprite_drafts[composed["draft_id"]].code
         assert len(current.saved_sprites) == 1
-        assert len(current.catalog.read_sprites()) == 1
 
     asyncio.run(run())
 
@@ -480,7 +488,7 @@ def test_sprite_that_hides_the_video_is_refused_with_an_actionable_reason(tmp_pa
         assert refused.value.error.code == "CODE_VALIDATION_FAILED"
         messages = [item["message"] for item in refused.value.error.details["validation"]["diagnostics"]]
         assert messages == [f"transparency: {reason}"]
-        assert current.saved_sprites == {} and current.catalog.read_sprites() == []
+        assert current.saved_sprites == {}
 
     asyncio.run(run())
 
@@ -604,14 +612,15 @@ def test_deferred_tools_stay_out_of_the_model_window():
 
 
 def test_mysql_preset_create_persists_through_the_catalog_store(tmp_path):
-    """preset.create 经目录存储写入；数据库不可用时仍能在本地目录读回。"""
+    """preset.create 经目录存储写入共享数据库，可按 ID 读回；数据目录不再保存 catalog/ 文件。"""
     async def run():
         """用仅创建模式的会话保存预设，再从同一目录重新读取。"""
         current = session(tmp_path)
         patch_validation(current)
         saved = await current.execute("preset.create", draft(), available())
-        assert current.catalog_backend in {"mysql", "local"}
+        assert current.catalog_backend == "mysql"
         assert current.catalog.find_preset(saved["preset"]["preset_id"]).description == "title"
+        assert not (tmp_path / "catalog").exists()
 
     asyncio.run(run())
 
@@ -706,58 +715,6 @@ def test_code_failure_returns_diagnostics_and_the_fix_saves(tmp_path):
     saved = asyncio.run(current.execute("preset.create", draft(), available()))
     assert saved["validation"]["passed"] is True
     assert len(catalog.records) == 1
-
-
-def test_local_fallback_preset_stays_readable_after_database_recovers(tmp_path):
-    """INSERT 失败落到本地兜底后，数据库恢复时读取仍须看到这条已保存记录。
-
-    若只读数据库，一次已返回成功的 Preset 会在恢复后消失，而 Agent 拿到的
-    preset_id 再也解析不到。
-    """
-    from sqlalchemy.exc import OperationalError
-
-    from server.remotion_templates.tools.catalog_store import CatalogStore
-
-    store = CatalogStore(tmp_path / "catalog")
-    record = PresetRecord(
-        preset_id="fallback-1",
-        created_at="2026-09-30T00:00:00+00:00",
-        description="兜底预设",
-        code="export default function C(){return null}",
-        parameter_schema={"type": "object", "properties": {}, "additionalProperties": False},
-        default_parameters={},
-    )
-
-    class BrokenInsert:
-        """探活成功但写入失败，模拟提交阶段的数据库故障。"""
-
-        def begin(self):
-            raise OperationalError("insert failed", {}, Exception())
-
-    store._engine = lambda: BrokenInsert()
-    assert store.append_preset(record) == "local"
-
-    class RecoveredEngine:
-        """数据库恢复且目标表为空，本地兜底记录不得因此消失。"""
-
-        def connect(self):
-            class Connection:
-                """返回空结果集，代表服务端尚未包含这条记录。"""
-
-                def execute(self, *_args, **_kwargs):
-                    return []
-
-                def __enter__(self):
-                    return self
-
-                def __exit__(self, *_args):
-                    return False
-
-            return Connection()
-
-    store._engine = lambda: RecoveredEngine()
-    assert [item.preset_id for item in store.read_presets()] == ["fallback-1"]
-    assert store.find_preset("fallback-1").description == "兜底预设"
 
 
 def test_missing_sandbox_is_a_validation_error_not_a_store_failure(tmp_path):

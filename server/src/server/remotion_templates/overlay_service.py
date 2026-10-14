@@ -2,7 +2,7 @@
 
 Two kinds of task share one table, three render slots and one recovery: a template overlay (the placements of
 `/api/v1/overlay-renders`) and a single Sprite render (one `SpriteRenderInput` of `/api/sprites/render`).
-Accepting a task validates its input and stores it in the Remotion SQLite database; a background asyncio
+Accepting a task validates its input and stores it in the Remotion MySQL table; a background asyncio
 task renders (up to three at a time), uploads to ZOS, saves the result and notifies the callback. Unfinished tasks
 are re-run by `resume()` after a restart, and the terminal notification is retried with fixed delays. The
 planning rules live in `overlay_render.py` and `sprite_render.py`.
@@ -12,7 +12,6 @@ import asyncio
 import json
 import logging
 import shutil
-import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -21,6 +20,8 @@ import httpx
 from fastapi import HTTPException
 from generated.imv.sprite.v1 import sprite_pb2 as pb
 from google.protobuf.json_format import MessageToDict, ParseDict
+from sqlalchemy import insert, select, update
+from sqlalchemy.exc import SQLAlchemyError
 
 from ..video_composition.schema import media_url
 from ..video_composition.settings import ZosSettings
@@ -41,6 +42,7 @@ from .renderer import Renderer
 from .settings import Settings
 from .sprite_render import join_problem, plan_sprite_render, render_sprite
 from .store import NotFound, Store
+from .tables import overlay_renders
 
 logger = logging.getLogger(__name__)
 NOTIFICATION_RETRY_DELAYS = (5, 15, 45)
@@ -75,31 +77,30 @@ class OverlayRenders:
 
     def _insert(self, task_id: str, data: dict) -> None:
         """Persist a new queued task."""
-        with self.store.connection() as db:
-            db.execute(
-                "INSERT INTO overlay_renders VALUES (?, ?, ?, ?)",
-                (task_id, "queued", datetime.now(UTC).isoformat(), json.dumps(data, ensure_ascii=False)),
-            )
+        with self.store.transaction() as db:
+            db.execute(insert(overlay_renders).values(
+                id=task_id, status="queued", created_at=datetime.now(UTC).isoformat(),
+                data=json.dumps(data, ensure_ascii=False),
+            ))
 
     def _save(self, task_id: str, status: str, **changes) -> dict:
         """Update the status and merge top-level data fields in one transaction."""
-        with self.store.connection() as db:
-            row = db.execute("SELECT data FROM overlay_renders WHERE id=?", (task_id,)).fetchone()
-            data = {**json.loads(row["data"]), **changes}
-            db.execute(
-                "UPDATE overlay_renders SET status=?, data=? WHERE id=?",
-                (status, json.dumps(data, ensure_ascii=False), task_id),
-            )
+        with self.store.transaction() as db:
+            row = db.execute(select(overlay_renders.c.data).where(overlay_renders.c.id == task_id).with_for_update()).scalar_one()
+            data = {**json.loads(row), **changes}
+            db.execute(update(overlay_renders).where(overlay_renders.c.id == task_id).values(
+                status=status, data=json.dumps(data, ensure_ascii=False),
+            ))
         return data
 
     def _read(self, task_id: str, *, sprite: bool | None = None) -> tuple[str, dict]:
         """Return one task's status and data; an unknown ID, or one of the other kind when `sprite` is given, is a 404."""
-        with self.store.connection() as db:
-            row = db.execute("SELECT status, data FROM overlay_renders WHERE id=?", (task_id,)).fetchone()
-        data = json.loads(row["data"]) if row is not None else None
+        with self.store.reading() as db:
+            row = db.execute(select(overlay_renders.c.status, overlay_renders.c.data).where(overlay_renders.c.id == task_id)).first()
+        data = json.loads(row.data) if row is not None else None
         if data is None or sprite is not None and ("sprite_render" in data["request"]) != sprite:
             raise HTTPException(404, "渲染任务不存在" if sprite else "叠加渲染任务不存在")
-        return row["status"], data
+        return row.status, data
 
     async def _persist(self, task_id: str, status: str, **changes) -> None:
         """Write a state change on a worker thread, retrying a locked or full database a few times.
@@ -110,7 +111,7 @@ class OverlayRenders:
             try:
                 await asyncio.to_thread(self._save, task_id, status, **changes)
                 return
-            except sqlite3.Error:
+            except SQLAlchemyError:
                 if attempt == PERSIST_ATTEMPTS:
                     raise
                 logger.warning("叠加渲染任务 %s 状态写入失败（第 %d 次），稍后重试", task_id, attempt)
@@ -213,23 +214,26 @@ class OverlayRenders:
         if self.resumed:
             return
         try:
-            with self.store.connection() as db:
-                rows = db.execute("SELECT id, status, data FROM overlay_renders ORDER BY created_at, id").fetchall()
-        except sqlite3.Error:
+            with self.store.reading() as db:
+                rows = db.execute(
+                    select(overlay_renders.c.id, overlay_renders.c.status, overlay_renders.c.data)
+                    .order_by(overlay_renders.c.created_at, overlay_renders.c.id)
+                ).all()
+        except SQLAlchemyError:
             logger.exception("叠加渲染任务表暂无法读取，恢复推迟到下次访问")
             return
         self.resumed = True
         for row in rows:
             try:
-                data = json.loads(row["data"])
+                data = json.loads(row.data)
                 callback_url = data["request"]["callback_url"]
             except (ValueError, KeyError, TypeError):
-                logger.exception("叠加渲染任务 %s 的记录已损坏，跳过恢复", row["id"])
+                logger.exception("叠加渲染任务 %s 的记录已损坏，跳过恢复", row.id)
                 continue
-            if row["status"] not in TERMINAL:
-                self._spawn(self._run(row["id"]))
+            if row.status not in TERMINAL:
+                self._spawn(self._run(row.id))
             elif callback_url and not data.get("notified"):
-                self._spawn(self._notify(row["id"]))
+                self._spawn(self._notify(row.id))
 
     async def _run(self, task_id: str) -> None:
         """Render, upload, record the outcome and notify; any failure becomes a sanitized task error.
@@ -244,14 +248,14 @@ class OverlayRenders:
             except OverlayError as exc:
                 logger.warning("叠加渲染任务 %s 失败（%s）：%s", task_id, exc.code, exc.__cause__ or exc.message)
                 await self._fail(task_id, exc.code, exc.message)
-            except sqlite3.Error:
+            except SQLAlchemyError:
                 raise
             except Exception:
                 logger.exception("叠加渲染任务 %s 失败", task_id)
                 await self._fail(task_id, "internal_error", "叠加视频渲染或上传失败")
             finally:
                 shutil.rmtree(work, ignore_errors=True)
-        except sqlite3.Error:
+        except SQLAlchemyError:
             logger.error("叠加渲染任务 %s 的状态暂无法保存，保留原状态，重启后重新执行", task_id)
             return
         await self._notify(task_id)
@@ -325,5 +329,5 @@ class OverlayRenders:
             logger.error("叠加渲染任务 %s 终态通知重试 %d 次后放弃", task_id, attempt)
         try:
             await self._persist(task_id, status, notified=True)
-        except sqlite3.Error:
+        except SQLAlchemyError:
             logger.error("叠加渲染任务 %s 的通知结果暂无法保存，重启后可能重复投递", task_id)

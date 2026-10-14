@@ -1,4 +1,4 @@
-"""PR76 publication, parameter revisions and evidence binding through real SQLite and HTTP boundaries."""
+"""PR76 publication, parameter revisions and evidence binding through the store (SQLite stand-in for MySQL), the local object store and HTTP."""
 
 import asyncio
 import json
@@ -19,6 +19,8 @@ from server.remotion_templates.runtime import Runtime
 from server.remotion_templates.settings import Settings
 from server.remotion_templates.store import Store, Conflict
 from server.remotion_templates.tools.contracts import RenderValidationReport, SpriteDraft, SpriteRecord
+
+from .conftest import DEVICE, DEVICE_HEADERS
 
 
 @pytest.fixture
@@ -54,8 +56,8 @@ class OfflinePresentationRenderer:
 
 
 @pytest.fixture
-def harness(tmp_path):
-    """No secrets or external model clients are loaded by this fixture."""
+def harness(tmp_path, template_db):
+    """No secrets or external model clients are loaded by this fixture; the store uses the temporary database."""
     font = tmp_path / "font.ttc"
     font.write_bytes(b"fixture-font")
     settings = Settings(_env_file=None, data_dir=tmp_path / "state", font_regular=font, font_bold=font, )
@@ -97,10 +99,15 @@ def accepted_version(harness, sprite):
     """Publish one accepted composition version through the real store and return the store, work and version."""
     store = Store(harness.settings.data_dir)
     store.initialize()
-    work, first = store.create(GenerateTemplateRequest(description="标题"))
+    work, first = store.create(GenerateTemplateRequest(description="标题"), DEVICE)
     store.claim()
     result = asyncio.run(harness.finalize_sprite(session_for(sprite, runtime_report(sprite)), "saved", Budget(), store.job_dir(first.id)))
     return store, work, store.publish(first.id, *result)
+
+
+def sealed(store: Store, version_id, name: str) -> Path:
+    """The stored object of one sealed version file (local object store, since ZOS is not configured in tests)."""
+    return store.root / "objects" / "imv" / "remotion" / "versions" / str(version_id) / name
 
 
 def save_parameters(service: Runtime, work, initial, parameters: dict):
@@ -144,11 +151,10 @@ def test_parameter_revision_is_saved_at_once_without_the_sandbox(harness, sprite
     assert revised.candidate.tsx_code == initial.candidate.tsx_code
     assert revised.source == "user_parameters" and revised.agent_base_version_id == initial.id
     assert revised.validation.render_passed
-    accepted = store.root / "accepted"
-    assert (accepted / str(revised.id) / "interactive.js").read_bytes() == (accepted / str(initial.id) / "interactive.js").read_bytes()
-    assert '"新标题"' in (accepted / str(revised.id) / "Export.tsx").read_text()
+    assert sealed(store, revised.id, "interactive.js").read_bytes() == sealed(store, initial.id, "interactive.js").read_bytes()
+    assert '"新标题"' in sealed(store, revised.id, "Export.tsx").read_text()
     assert exports[0]["code"] == initial.candidate.tsx_code and exports[0]["composition"]["duration_in_frames"] == 30
-    inherited = json.loads((accepted / str(revised.id) / "tool-validation.json").read_text())
+    inherited = json.loads(sealed(store, revised.id, "tool-validation.json").read_text())
     assert inherited["inherited_from"] == str(initial.id) and inherited["component"]["default_parameters"] == {"title": {"text": "新标题"}}
     assert not store.conversation(work.id).messages()
     application = FastAPI()
@@ -160,9 +166,11 @@ def test_parameter_revision_is_saved_at_once_without_the_sandbox(harness, sprite
         data = response.text.split('<script type="application/json" id="imv-preview-host">', 1)[1].split("</script>", 1)[0]
         assert json.loads(data) == {"config": {"title": {"text": "新标题"}}}
         # Without a sandbox the instant revision is still accepted over HTTP.
-        accepted_job = client.post(f"/api/templates/works/{work.id}/messages", json={"parameters": {"title": {"text": "第三版"}}, "base_version_id": str(revised.id)})
+        accepted_job = client.post(f"/api/templates/works/{work.id}/messages", headers=DEVICE_HEADERS, json={"parameters": {"title": {"text": "第三版"}}, "base_version_id": str(revised.id)})
         assert accepted_job.status_code == 202
-        (store.root / "accepted" / str(revised.id) / "interactive.js").write_text("tampered")
+        # A changed object is refused even when the read cache must be filled again from storage.
+        sealed(store, revised.id, "interactive.js").write_text("tampered")
+        (store.root / "cache" / "accepted" / str(revised.id) / "interactive.js").write_text("tampered")
         assert client.get(f"/api/templates/versions/{revised.id}/preview").status_code == 404
 
 
@@ -194,7 +202,7 @@ def test_a_bundle_without_injected_defaults_is_rebuilt_in_the_sandbox(harness, s
     application.state.runtime = service
     monkeypatch.setattr(harness.renderer, "sandbox_problem", lambda: "bwrap is not installed", raising=False)
     with TestClient(application) as client:
-        refused = client.post(f"/api/templates/works/{work.id}/messages", json={"parameters": {"title": {"text": "新标题"}}, "base_version_id": str(initial.id)})
+        refused = client.post(f"/api/templates/works/{work.id}/messages", headers=DEVICE_HEADERS, json={"parameters": {"title": {"text": "新标题"}}, "base_version_id": str(initial.id)})
         assert refused.status_code == 503
     job = store.enqueue(work.id, JobInput(mode="parameters", parameters={"title": {"text": "新标题"}}), initial.id)
     store.claim()
@@ -203,9 +211,9 @@ def test_a_bundle_without_injected_defaults_is_rebuilt_in_the_sandbox(harness, s
     assert final.status == "succeeded", final.error
     revised = store.version(final.result_version_id)
     assert seen == [{"title": {"text": "新标题"}}]
-    assert current_bundle((store.root / "accepted" / str(revised.id) / "interactive.js").read_bytes()) and service.instant(revised)
+    assert current_bundle(sealed(store, revised.id, "interactive.js").read_bytes()) and service.instant(revised)
     with pytest.raises(ValueError, match="cannot show new defaults"):
-        harness.presentation.revise(initial, store.root / "accepted" / str(initial.id), {"title": {"text": "x"}}, store.root / "direct")
+        harness.presentation.revise(initial, store.accepted(initial), {"title": {"text": "x"}}, store.root / "direct")
 
 
 def test_protocol_words_inside_an_older_bundle_do_not_allow_an_instant_revision(tmp_path):
@@ -231,7 +239,7 @@ def test_invalid_parameters_and_a_busy_work_are_refused(harness, sprite):
     application.state.runtime = service
     with TestClient(application, raise_server_exceptions=False) as client:
         # Regression: the schema error escaped as an HTTP 500 instead of a 422 the client can show.
-        response = client.post(f"/api/templates/works/{work.id}/messages", json={"parameters": {"title": {"text": 1}}, "base_version_id": str(initial.id)})
+        response = client.post(f"/api/templates/works/{work.id}/messages", headers=DEVICE_HEADERS, json={"parameters": {"title": {"text": 1}}, "base_version_id": str(initial.id)})
     assert response.status_code == 422 and "invalid parameter value" in response.json()["detail"]
     store.enqueue(work.id, JobInput(mode="parameters", parameters={"title": {"text": "x"}}), initial.id, running=True)
     with pytest.raises(Conflict):
@@ -261,7 +269,7 @@ def test_the_host_export_script_embeds_the_new_defaults(harness, sprite):
     service = Runtime(store, harness, harness.settings)
     job = save_parameters(service, work, initial, {"title": {"text": "新标题"}})
     revised = store.version(store.job(job.id).result_version_id)
-    exported = (store.root / "accepted" / str(revised.id) / "Export.tsx").read_text()
+    exported = sealed(store, revised.id, "Export.tsx").read_text()
     assert '{ title: { text: "新标题" } }' in exported or '"新标题"' in exported
     assert "export default function" in exported
 
@@ -270,7 +278,7 @@ def test_cancellation_wins_over_ready_artifacts(harness, sprite):
     """A result built before cancellation cannot be published after the durable cancellation state."""
     store = Store(harness.settings.data_dir)
     store.initialize()
-    work, job = store.create(GenerateTemplateRequest(description="title"))
+    work, job = store.create(GenerateTemplateRequest(description="title"), DEVICE)
     store.claim()
     result = asyncio.run(harness.finalize_sprite(session_for(sprite, runtime_report(sprite)), "saved", Budget(), store.job_dir(job.id)))
     store.update(job.id, status="cancelled", stage="finished")

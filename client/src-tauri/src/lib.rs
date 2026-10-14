@@ -4,6 +4,7 @@
 mod localhost;
 
 mod backend;
+mod remotion_sessions;
 mod settings;
 mod templates;
 
@@ -42,6 +43,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             templates::local_templates,
             settings::local_settings,
+            remotion_sessions::remotion_sessions,
             backend::start_backend
         ])
         .setup(|app| {

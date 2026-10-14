@@ -40,7 +40,7 @@ lists callable tools and contract-only tools apart. The host still performs the 
 checks needed to build a preview; those are not model-facing tools.
 
 Image tools read the reference images the user already uploaded and the server
-registered as local assets: the work's original images and, for a task started
+registered as reference assets (objects under `imv/remotion/assets/`, read through the verified cache): the work's original images and, for a task started
 by a later chat message (`POST /works/{id}/messages` with `images`, up to four),
 that message's images. `user_intent.reference_images` lists them in the order the model
 receives them, each with its `source` (`work_original`, `message` or
@@ -48,23 +48,38 @@ receives them, each with its `source` (`work_original`, `message` or
 `meaning`. They take that asset reference, not a URL, and
 never upload anything.
 
+## Storage
+
+The backend keeps no SQLite file. Works, jobs, accepted versions, the model's sliding window, public events and
+overlay render tasks are tables in the shared MySQL database (`tables.py`, created on first use next to
+`remotion_sprites`). The backend runs as a single instance: one in-process lock serializes write transactions,
+startup interrupts jobs a previous process left running and finishes interrupted deletions.
+
+Every work belongs to the client device that created it. JSON routes of a work require the `X-IMV-Device`
+header (a UUID the client keeps in its local session database) and treat another device's work as missing;
+browser-embedded reads (preview page, fonts, reference image, artifact download) are addressed by unguessable IDs.
+Chat history lives on the client: the server buffers public messages and events only until the client stores them
+locally and acknowledges the last event ID with `POST /works/{id}/ack`. Acknowledged events are deleted; once a work
+has no undelivered events, the progress, rounds and messages of its finished jobs go too, and only the latest job row
+stays because retrying it or answering its questions needs its input.
+
+Sealed version files, reference images and Sprite preview bundles are objects under `imv/remotion/`
+(`object_store.py`): public-read in ZOS once `ZOS_BUCKET` is set, otherwise files under `IMV_DATA_DIR/objects`.
+The backend reads them through a verified cache in `IMV_DATA_DIR/cache` (SHA-256 against the MySQL record); job
+scratch is removed when the job ends and the private `audit/<job_id>.jsonl` log outlives it. An hourly sweep applies
+three retention periods: undelivered events (`IMV_UNDELIVERED_EVENT_DAYS`, 7), audit logs
+(`IMV_AUDIT_RETENTION_DAYS`, 14) and the works of devices inactive for `IMV_DEVICE_RETENTION_DAYS` (90).
+Published Sprites survive all of these.
+
 ## Preset storage
 
-`preset.create` writes through `tools/catalog_store.py`, which targets MySQL via
-the shared `server.database` settings (`DB_*`). When the database is unreachable
-it falls back to the task-local catalog under the module data directory, and
-`ToolSession.snapshot()` reports the backend that was actually used. Both paths
-append immutable records only; there is no update or delete.
-Connection and query failures also fall back to local records. Local appends
-hold a cross-process file lock over the entire read/modify/write transaction
-and replace the catalog from a unique, flushed temporary file.
-Catalog reads and writes run in worker threads, so database and lock waits do
-not block the event loop or delay cancellation. File-lock waits expire after
-10 seconds on every platform. An atomic write already in progress may finish
-after task cancellation; it does not publish a task version.
+`preset.create` writes through `tools/catalog_store.py` to the MySQL table `remotion_presets`, shared by every
+device. A database failure surfaces as `PRESET_STORE_FAILED`; nothing is written to a local fallback. Records are
+immutable; there is no update or delete. Catalog reads and writes run in worker threads, so database waits do not
+block the event loop or delay cancellation.
 
-`preset.search` merges database and local records, sorts by creation time newest
-first, and then applies `limit`. UUID ordering and storage backend do not affect
+`preset.search` reads the database records, sorts by creation time newest
+first, and then applies `limit`. UUID ordering does not affect
 which recent Presets are returned.
 Legacy timestamps without a timezone are interpreted as UTC; invalid timestamps
 sort last without hiding the record. `tools.inspect` identifies this search
@@ -244,15 +259,19 @@ model protocol failures are explicitly marked. Snapshots carry all rounds, while
 ## Sprite assets
 
 `POST /api/sprites/publish` copies an accepted version into an immutable
-`imv.sprite.v1.PublishedSprite` (a row of the shared MySQL table `remotion_sprites`, `sprite_store.py`, plus
-`sprites/<id>/interactive.js` in this module's data folder), so deleting or editing the source work never changes a
-published Sprite. The table is created on first use like the template table and sits in the same database as the
+`imv.sprite.v1.PublishedSprite` (a row of the shared MySQL table `remotion_sprites`, `sprite_store.py`, plus the
+object `imv/remotion/sprites/<id>/interactive.js`), so deleting or editing the source work never changes a
+published Sprite. Only the device that owns the source work may publish it (another device's version is a 404). The table is created on first use like the template table and sits in the same database as the
 templates that reference its IDs, which is what lets a template save check its `remotion` tracks (422 when a
-`sprite_id` is not published or the clips' Sprites do not share one width, height and fps, which an overlay render requires). The preview bundle is a local file: a host that did not publish the Sprite lists it
-but answers its preview with a 404, while overlay renders only need the stored TSX. Sprites published before this
-storage (the SQLite `sprites` table and the `sprites/<id>/` folders it pointed at) are neither read nor migrated and
-stay where they are: publish the accepted versions again.
-Publishing re-verifies the sealed `accepted/` artifacts (409 when changed) and only accepts versions composed
+`sprite_id` is not published or the clips' Sprites do not share one width, height and fps, which an overlay render requires). The preview bundle is an object; when it is missing or no longer matches the recorded
+hash (for example Sprites published while bundles were local files), the preview route rebuilds it from the
+published source in the isolated worker, stores it and records the new hash, and answers 404 only if that fails.
+Overlay renders only need the stored TSX.
+`DELETE /api/sprites/{id}` removes a publication (anyone may delete from the shared library): its row, bundle object
+and cache. While a cloud template's `remotion` track still references it the answer is 409 naming those templates
+(raw configurations are scanned, so invalid templates count too); an unknown ID is a 404. The source work and its
+versions are untouched, so the version can be saved to the library again.
+Publishing re-verifies the sealed version files (409 when changed) and only accepts versions composed
 with a kind and top-level parameter bindings (`spec.sprite.kind`/`bindings`); older versions are refused with a
 422 that asks for an edit in chat. The requested kind defaults to the agent's choice on the client but may be
 changed: the version must expose that kind's required parameters (`categories.REQUIRED`), otherwise the 422 lists
@@ -402,7 +421,7 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
 - **Output**: no audio; the bus/IMS keeps its own audio track and overlays the WebM. The host re-probes the file
   (VP9, size, fps, frame count, alpha tag) before uploading.
 - **Execution**: `overlay_render.py` plans, `remotion/overlay-worker.mjs` renders in the bwrap sandbox
-  (`IMV_OVERLAY_RENDER_TIMEOUT_SECONDS`, default 900 seconds), `overlay_service.py` owns the SQLite `overlay_renders` task table,
+  (`IMV_OVERLAY_RENDER_TIMEOUT_SECONDS`, default 900 seconds), `overlay_service.py` owns the MySQL `remotion_overlay_renders` task table,
   up to three renders at a time (each slot covers only the render: the remote audio probe before it and the ZOS upload after it
   run outside, so a slow network never delays queued renders), recovery of unfinished tasks and pending notifications
   when the runtime is first built
@@ -426,7 +445,7 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
 
 `GET /api/templates/versions/{id}/diagnostics` re-runs the isolated TypeScript
 language service over an accepted version's sealed source and returns its
-contract and LSP diagnostics. It re-checks the sealed `accepted/` artifacts
+contract and LSP diagnostics. It re-checks the sealed version files
 first, so tampered bytes return 404 rather than a stale conclusion, and an
 unavailable sandbox returns 503 instead of reporting "no diagnostics" for code
 that was never checked. The route is read-only: it never queues work, publishes

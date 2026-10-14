@@ -1,6 +1,7 @@
-"""Remotion 字效保存为 Sprite 资产：发布、目录与预览的真实 SQLite/文件/HTTP 回归。
+"""Remotion 字效保存为 Sprite 资产：发布、目录与预览经存储、本地对象目录与 HTTP 的回归。
 
-不访问模型、浏览器或真实 MySQL（发布记录与模板库一样使用 conftest 的临时 SQLite 替身）；发布版本由离线渲染替身落盘。
+不访问模型、浏览器、ZOS 或真实 MySQL（作品与发布记录使用 conftest 的临时 SQLite 替身，未配置 ZOS 时对象
+落在数据目录的 objects/）；发布版本由离线渲染替身落盘。
 真实 MySQL 的建表、排序规则与唯一键见 test_mysql_integration.py。
 在 server/ 目录执行 `uv run --locked pytest tests/test_remotion_sprite_publish.py -v`。
 """
@@ -9,6 +10,7 @@ import asyncio
 import json
 import logging
 import shutil
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -28,9 +30,10 @@ from server.remotion_templates.publication import PREVIEW_PROTOCOL, current_bund
 from server.remotion_templates.settings import Settings
 from server.remotion_templates.sprite_router import sprite_runtime
 from server.remotion_templates.store import Store
+from server.remotion_templates.tables import versions
 from server.remotion_templates.tools.contracts import SpriteDraft
 
-from .conftest import seed_sprite
+from .conftest import DEVICE, DEVICE_HEADERS, seed_sprite
 from .test_remotion_version_diagnostics import (
     CodeOnlyRenderer,
     OfflineRenderer,
@@ -144,7 +147,7 @@ def published_version(tmp_path, schema, defaults, kind, bound):
         bindings=[{"name": name, "title": name, "targets": [{"instance_id": "title", "parameter": name}]} for name in bound],
         **({"kind": kind} if kind else {}),
     )
-    _work, job = store.create(GenerateTemplateRequest(description="标题"))
+    _work, job = store.create(GenerateTemplateRequest(description="标题"), DEVICE)
     store.claim()
     result = asyncio.run(harness.finalize_sprite(
         SimpleNamespace(saved_sprite=lambda _id: _SavedSprite(sprite), validation_for=lambda _r: runtime_report(sprite)),
@@ -158,15 +161,44 @@ def published_version(tmp_path, schema, defaults, kind, bound):
     app.dependency_overrides.pop(sprite_runtime)
 
 
+def objects(store: Store) -> Path:
+    """未配置 ZOS 时对象存储所在的本地目录。"""
+    return store.root / "objects" / "imv" / "remotion"
+
+
+def bundle_copy(store: Store, sprite_id: str) -> Path:
+    """一个资产的播放器包副本（对象）。"""
+    return objects(store) / "sprites" / sprite_id / "interactive.js"
+
+
+def drop_bundle(store: Store, sprite_id: str) -> None:
+    """丢失资产的播放器包副本：对象与本机读取缓存一起删除。"""
+    shutil.rmtree(objects(store) / "sprites" / sprite_id)
+    shutil.rmtree(store.root / "cache" / "sprites" / sprite_id, ignore_errors=True)
+
+
+def reseal(published, contents: str) -> None:
+    """改写源版本封存的 interactive.js（对象与缓存）并把新哈希写回版本记录，模拟以该包封存的版本。"""
+    from server.remotion_templates.evidence import digest
+
+    version_id = str(published.version.id)
+    sealed = objects(published.store) / "versions" / version_id / "interactive.js"
+    sealed.write_text(contents)
+    shutil.rmtree(published.store.root / "cache" / "accepted" / version_id, ignore_errors=True)
+    published.version.validation.artifacts["interactive.js"] = digest(sealed)
+    with published.store.transaction() as db:
+        db.execute(update(versions).where(versions.c.id == version_id).values(data=published.version.model_dump_json()))
+
+
 def publish_request(version_id, **fields) -> pb.PublishSpriteRequest:
     """默认把版本发布为带关键词字段的文字 Sprite；用例按需覆盖字段。"""
     values = {"kind": pb.SPRITE_KIND_TEXT, "text_prop": "text", "keywords_prop": "keywords", **fields}
     return pb.PublishSpriteRequest(source_version_id=str(version_id), **values)
 
 
-def publish(client: TestClient, request: pb.PublishSpriteRequest):
-    """发送二进制发布请求。"""
-    return client.post("/api/sprites/publish", content=request.SerializeToString(), headers=PROTOBUF)
+def publish(client: TestClient, request: pb.PublishSpriteRequest, device: dict = DEVICE_HEADERS):
+    """以作品所属设备发送二进制发布请求。"""
+    return client.post("/api/sprites/publish", content=request.SerializeToString(), headers={**PROTOBUF, **device})
 
 
 def published_sprite(client: TestClient, version_id, **fields) -> pb.SpriteSummary:
@@ -203,11 +235,11 @@ def test_publish_copies_content_and_lists_summary_without_source(client: TestCli
     assert listed.headers["content-type"] == "application/x-protobuf"
     assert [item.sprite_id for item in pb.ListSpritesResponse.FromString(listed.content).sprites] == [summary.sprite_id]
     assert b"export default" not in listed.content
-    assert (published.store.root / "sprites" / summary.sprite_id / "interactive.js").is_file()
+    assert bundle_copy(published.store, summary.sprite_id).is_file()
 
 
-def test_publications_are_rows_of_the_shared_database_not_of_the_remotion_sqlite(client: TestClient, published, template_db: Engine) -> None:
-    """发布记录是共享库 remotion_sprites 里的一行（标识列与 JSON），Remotion SQLite 没有 sprites 表；预览包仍是本机文件。"""
+def test_publications_are_rows_of_the_shared_database_with_an_object_bundle(client: TestClient, published, template_db: Engine) -> None:
+    """发布记录是共享库 remotion_sprites 里的一行（标识列与 JSON）；预览包是对象存储里的副本，数据目录不再有 sprites/<id> 文件夹。"""
     summary = published_sprite(client, published.version.id)
     with template_db.connect() as connection:
         row = connection.execute(select(sprite_store.sprites)).one()
@@ -215,9 +247,8 @@ def test_publications_are_rows_of_the_shared_database_not_of_the_remotion_sqlite
         summary.sprite_id, str(published.version.id), pb.SPRITE_KIND_TEXT, "text", "keywords",
     )
     assert row.data["tsx_code"] == CODE and row.data["sprite_id"] == summary.sprite_id
-    with published.store.connection() as db:
-        assert db.execute("SELECT name FROM sqlite_master WHERE name='sprites'").fetchone() is None
-    assert (published.store.root / "sprites" / summary.sprite_id / "interactive.js").is_file()
+    assert not (published.store.root / "sprites" / summary.sprite_id).exists()
+    assert bundle_copy(published.store, summary.sprite_id).is_file()
 
 
 def test_catalog_lists_the_newest_publication_first(client: TestClient, published) -> None:
@@ -240,11 +271,12 @@ def test_republishing_returns_the_original_sprite(client: TestClient, published)
 
 
 def test_published_sprite_survives_deleting_its_source_version(client: TestClient, published) -> None:
-    """源版本的封存目录与记录被清理后，目录条目和预览仍来自发布自己的副本。"""
+    """源版本的封存对象、缓存与记录被清理后，目录条目和预览仍来自发布自己的副本。"""
     summary = published_sprite(client, published.version.id)
-    shutil.rmtree(published.store.root / "accepted" / str(published.version.id))
-    with published.store.connection() as db:
-        db.execute("DELETE FROM versions")
+    shutil.rmtree(objects(published.store) / "versions" / str(published.version.id))
+    shutil.rmtree(published.store.root / "cache" / "accepted" / str(published.version.id))
+    with published.store.transaction() as db:
+        db.execute(versions.delete())
     assert pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites[0].sprite_id == summary.sprite_id
     preview = client.get(summary.preview_url)
     assert preview.status_code == 200
@@ -253,12 +285,13 @@ def test_published_sprite_survives_deleting_its_source_version(client: TestClien
 
 
 def test_losing_a_publish_race_returns_the_winner_and_cleans_up(published) -> None:
-    """并发的相同发布在写库时撞上唯一键：落败者返回胜者的资产，并删除自己刚复制的目录。"""
+    """并发的相同发布在写库时撞上唯一键：落败者返回胜者的资产，并删除自己刚上传的副本与暂存文件。"""
     request = publish_request(published.version.id)
     first = sprites._create(published.store, request, published.version, b"bundle")
     second = sprites._create(published.store, request, published.version, b"bundle")
     assert second.sprite_id == first.sprite_id
-    assert [item.name for item in (published.store.root / "sprites").iterdir()] == [first.sprite_id]
+    assert [item.name for item in (objects(published.store) / "sprites").iterdir()] == [first.sprite_id]
+    assert list((published.store.root / "sprites").iterdir()) == []
 
 
 def test_field_names_longer_than_the_column_are_a_422(published) -> None:
@@ -269,10 +302,31 @@ def test_field_names_longer_than_the_column_are_a_422(published) -> None:
     assert caught.value.status_code == 422 and str(sprite_store.NAME_LENGTH) in caught.value.detail
 
 
-def test_preview_is_unavailable_when_the_local_bundle_is_missing(client: TestClient, published) -> None:
-    """发布记录在共享库，预览包只是本机文件：缺失时预览 404，目录仍列出该资产（叠加渲染只用 TSX，不受影响）。"""
+def test_a_lost_preview_bundle_is_rebuilt_from_the_published_source(client: TestClient, published, template_db: Engine) -> None:
+    """副本丢失（换主机、对象被清理）时预览按发布记录里的源码、默认参数与画布重建，保存新副本并记录新哈希；源版本被删也不影响。"""
     summary = published_sprite(client, published.version.id)
-    shutil.rmtree(published.store.root / "sprites" / summary.sprite_id)
+    drop_bundle(published.store, summary.sprite_id)
+    published.renderer.requests.clear()
+    shutil.rmtree(objects(published.store) / "versions" / str(published.version.id))
+    preview = client.get(summary.preview_url)
+    assert preview.status_code == 200 and "// rebuilt" in preview.text
+    [request] = published.renderer.requests
+    assert (request["code"], request["config"]) == (CODE, DEFAULTS)
+    assert request["composition"] == {"width": 1080, "height": 1920, "fps": 30, "duration_in_frames": 30}
+    assert current_bundle(bundle_copy(published.store, summary.sprite_id).read_bytes())
+    with template_db.connect() as connection:
+        data = connection.execute(select(sprite_store.sprites.c.data)).scalar_one()
+    from server.remotion_templates.evidence import digest
+    assert data["preview_sha256"] == digest(bundle_copy(published.store, summary.sprite_id))
+    # The rebuilt copy is reused: a second preview starts no worker.
+    assert "// rebuilt" in client.get(summary.preview_url).text and len(published.renderer.requests) == 1
+
+
+def test_preview_is_unavailable_when_a_lost_bundle_cannot_be_rebuilt(client: TestClient, published) -> None:
+    """副本丢失且重建失败（例如没有隔离环境）时预览 404，目录仍列出该资产（叠加渲染只用 TSX，不受影响）。"""
+    summary = published_sprite(client, published.version.id)
+    drop_bundle(published.store, summary.sprite_id)
+    published.renderer.failure = RuntimeError("sandbox unavailable")
     assert client.get(summary.preview_url).status_code == 404
     assert [item.sprite_id for item in pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites] == [summary.sprite_id]
 
@@ -338,10 +392,20 @@ def test_publish_rejects_unknown_malformed_or_tampered_sources(client: TestClien
     """未知或格式错误的版本、被改写的封存产物都不能发布。"""
     assert publish(client, publish_request("00000000-0000-4000-8000-000000000000")).status_code == 404
     assert publish(client, publish_request("not-a-uuid")).status_code == 422
-    (published.store.root / "accepted" / str(published.version.id) / "interactive.js").write_text("tampered")
+    version_id = str(published.version.id)
+    for path in (objects(published.store) / "versions" / version_id, published.store.root / "cache" / "accepted" / version_id):
+        (path / "interactive.js").write_text("tampered")
     assert publish(client, publish_request(published.version.id)).status_code == 409
-    assert client.post("/api/sprites/publish", json={}).status_code == 415
-    assert client.post("/api/sprites/publish", content=b"\xff\xff", headers=PROTOBUF).status_code == 400
+    assert client.post("/api/sprites/publish", json={}, headers=DEVICE_HEADERS).status_code == 415
+    assert client.post("/api/sprites/publish", content=b"\xff\xff", headers={**PROTOBUF, **DEVICE_HEADERS}).status_code == 400
+
+
+def test_another_device_cannot_publish_a_version_it_does_not_own(client: TestClient, published) -> None:
+    """版本属于创建作品的设备：其他设备发布返回 404，不带设备请求头返回 422，均不保存资产。"""
+    other = {"X-IMV-Device": str(uuid4())}
+    assert publish(client, publish_request(published.version.id), other).status_code == 404
+    assert client.post("/api/sprites/publish", content=publish_request(published.version.id).SerializeToString(), headers=PROTOBUF).status_code == 422
+    assert client.get("/api/sprites").content == b""
 
 
 def test_style_binding_routes_are_gone(client: TestClient) -> None:
@@ -368,8 +432,10 @@ def test_overlay_preview_is_transparent_and_serves_managed_fonts(client: TestCli
 
 def test_publish_hashes_and_copies_off_the_event_loop(client: TestClient, published, monkeypatch) -> None:
     """发布要哈希全部封存产物并复制播放器包，必须在工作线程执行，不能占住事件循环（SSE 与取消都依赖它）。"""
+    from server.remotion_templates import store as store_module
+
     where = []
-    verify = sprites.verify_artifacts
+    verify = store_module.verify_artifacts
 
     def probe(*args, **kwargs):
         """工作线程里没有运行中的事件循环，事件循环线程里有；记录所在位置后照常校验。"""
@@ -380,7 +446,7 @@ def test_publish_hashes_and_copies_off_the_event_loop(client: TestClient, publis
             where.append("worker thread")
         return verify(*args, **kwargs)
 
-    monkeypatch.setattr(sprites, "verify_artifacts", probe)
+    monkeypatch.setattr(store_module, "verify_artifacts", probe)
     published_sprite(client, published.version.id)
     assert where == ["worker thread"]
 
@@ -419,19 +485,14 @@ def test_stale_player_bundle_is_rebuilt_from_sealed_source(client: TestClient, p
     assert request["code"] == published.version.candidate.tsx_code
     assert request["config"] == published.version.candidate.default_config
     assert request["composition"]["duration_in_frames"] == 30
-    copied = published.store.root / "sprites" / summary.sprite_id / "interactive.js"
-    assert current_bundle(copied.read_bytes())
-    assert b"offline Player fixture" in (published.store.root / "accepted" / str(published.version.id) / "interactive.js").read_bytes()
+    assert current_bundle(bundle_copy(published.store, summary.sprite_id).read_bytes())
+    assert b"offline Player fixture" in (objects(published.store) / "versions" / str(published.version.id) / "interactive.js").read_bytes()
     assert not [item for item in (published.store.root / "sprites").iterdir() if item.name.startswith(".build-")]
 
 
 def test_current_sealed_bundle_is_copied_without_rebuilding(client: TestClient, published) -> None:
     """封存包声明当前宿主协议时直接复制，不启动任何构建。"""
-    (published.store.root / "accepted" / str(published.version.id) / "interactive.js").write_text(CURRENT + "// sealed")
-    from server.remotion_templates.evidence import digest
-    published.version.validation.artifacts["interactive.js"] = digest(published.store.root / "accepted" / str(published.version.id) / "interactive.js")
-    with published.store.connection() as db:
-        db.execute("UPDATE versions SET data=? WHERE id=?", (published.version.model_dump_json(), str(published.version.id)))
+    reseal(published, CURRENT + "// sealed")
     summary = published_sprite(client, published.version.id)
     assert published.renderer.requests == []
     assert client.get(summary.preview_url).text.count("// sealed") == 1
@@ -442,12 +503,7 @@ def test_a_bundle_without_placement_support_is_rebuilt(client: TestClient, publi
 
     PR #111 审查复现：曾在整个包里搜索 imv-preview-host，默认文字为该字样的旧同步包被当作当前包直接复制，叠加预览不读页面注入的覆盖。
     """
-    accepted = published.store.root / "accepted" / str(published.version.id) / "interactive.js"
-    accepted.write_text('// imv-preview-sync\nvar config={"text":"imv-preview-host ' + PREVIEW_PROTOCOL.decode() + '"};')
-    from server.remotion_templates.evidence import digest
-    published.version.validation.artifacts["interactive.js"] = digest(accepted)
-    with published.store.connection() as db:
-        db.execute("UPDATE versions SET data=? WHERE id=?", (published.version.model_dump_json(), str(published.version.id)))
+    reseal(published, '// imv-preview-sync\nvar config={"text":"imv-preview-host ' + PREVIEW_PROTOCOL.decode() + '"};')
     summary = published_sprite(client, published.version.id)
     assert len(published.renderer.requests) == 1
     assert "// rebuilt" in client.get(summary.preview_url).text
@@ -485,7 +541,7 @@ def test_rebuild_failure_still_saves_and_republishing_refreshes_the_old_copy(cli
 
 
 def test_failed_hash_update_keeps_the_old_player_copy_and_republishing_finishes_the_refresh(client: TestClient, published, template_db: Engine) -> None:
-    """刷新旧副本时记录新哈希的数据库更新失败（锁超时、进程中断，应用答复 503）：旧副本与旧哈希仍一致、预览可用且不留临时文件；数据库恢复后再次保存完成刷新。"""
+    """刷新旧副本时记录新哈希的数据库更新失败（锁超时、进程中断，应用答复 503）：缓存的旧副本与旧哈希仍一致、预览可用且不留暂存文件；数据库恢复后再次保存完成刷新。"""
     published.renderer.failure = RuntimeError("sandbox unavailable")
     summary = published_sprite(client, published.version.id)
     published.renderer.failure = None
@@ -493,7 +549,8 @@ def test_failed_hash_update_keeps_the_old_player_copy_and_republishing_finishes_
         connection.exec_driver_sql("CREATE TRIGGER fail_refresh BEFORE UPDATE ON remotion_sprites BEGIN SELECT RAISE(ABORT, 'database is locked'); END")
     assert publish(client, publish_request(published.version.id)).status_code == 503
     assert "offline Player fixture" in client.get(summary.preview_url).text
-    assert [item.name for item in (published.store.root / "sprites" / summary.sprite_id).iterdir()] == ["interactive.js"]
+    assert [item.name for item in (objects(published.store) / "sprites" / summary.sprite_id).iterdir()] == ["interactive.js"]
+    assert list((published.store.root / "sprites").iterdir()) == []
     with template_db.begin() as connection:
         connection.exec_driver_sql("DROP TRIGGER fail_refresh")
     assert published_sprite(client, published.version.id).sprite_id == summary.sprite_id
@@ -514,7 +571,7 @@ def test_concurrent_identical_publishes_build_the_player_once(published) -> None
 
     async def twice():
         """在同一事件循环里同时发起两次发布。"""
-        return await asyncio.gather(*(sprites.publish(published.service, request) for _ in range(2)))
+        return await asyncio.gather(*(sprites.publish(published.service, request, DEVICE) for _ in range(2)))
 
     first, second = asyncio.run(twice())
     assert first.sprite_id == second.sprite_id
@@ -574,7 +631,8 @@ def test_publications_made_before_categories_can_still_be_re_saved(client: TestC
         visual = published_sprite(client, legacy_published.version.id, kind=pb.SPRITE_KIND_VIDEO_OVERLAY, text_prop="", keywords_prop="")
         text = published_sprite(client, legacy_published.version.id, text_prop="title.glow", keywords_prop="")
     for sprite_id in (visual.sprite_id, text.sprite_id):
-        (legacy_published.store.root / "sprites" / sprite_id / "interactive.js").write_text("// stale imv-preview-sync")
+        bundle_copy(legacy_published.store, sprite_id).write_text("// stale imv-preview-sync")
+        shutil.rmtree(legacy_published.store.root / "cache" / "sprites" / sprite_id, ignore_errors=True)
     legacy_published.renderer.requests.clear()
     again = published_sprite(client, legacy_published.version.id, kind=pb.SPRITE_KIND_VIDEO_OVERLAY, text_prop="", keywords_prop="")
     # Today's client sends the fixed text field; the old dot-path publication of the same kind is the one refreshed.
@@ -584,3 +642,51 @@ def test_publications_made_before_categories_can_still_be_re_saved(client: TestC
     assert "// rebuilt" in client.get(again.preview_url).text
     # A kind that was never published from this version is a new publication and gets the new rules.
     assert publish(client, publish_request(legacy_published.version.id, kind=pb.SPRITE_KIND_FILTER_OVERLAY, text_prop="", keywords_prop="")).status_code == 422
+
+
+def test_deleting_an_unused_sprite_removes_its_record_and_bundle(client: TestClient, published) -> None:
+    """未被模板使用的资产可删除：目录与预览不再提供，播放器包对象和缓存一起删除，源版本可以重新保存为新资产。"""
+    summary = published_sprite(client, published.version.id)
+    assert client.get(summary.preview_url).status_code == 200
+    assert client.delete(f"/api/sprites/{summary.sprite_id}").status_code == 204
+    assert pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites == []
+    assert not (objects(published.store) / "sprites" / summary.sprite_id).exists()
+    assert not (published.store.root / "cache" / "sprites" / summary.sprite_id).exists()
+    assert client.get(summary.preview_url).status_code == 404
+    assert client.delete(f"/api/sprites/{summary.sprite_id}").status_code == 404
+    assert published_sprite(client, published.version.id).sprite_id != summary.sprite_id
+
+
+def test_a_sprite_placed_in_a_template_cannot_be_deleted(client: TestClient, published) -> None:
+    """云端模板的 remotion 轨道仍引用资产时拒绝删除并列出模板名称，资产与预览保持可用；其他轨道或无效配置不算引用。"""
+    from datetime import UTC, datetime
+
+    from server.template.store import initialize_schema, templates
+
+    summary = published_sprite(client, published.version.id)
+    stamp = datetime.now(UTC).replace(tzinfo=None)
+    rows = [
+        ("片头模板", {"tracks": [{"target": "title"}, {"target": "remotion", "sprite_id": summary.sprite_id}]}),
+        ("无关模板", {"tracks": [{"target": "remotion", "sprite_id": str(uuid4())}]}),
+        ("A 模板", {"tracks": [{"target": "remotion", "sprite_id": summary.sprite_id}]}),
+        ("损坏模板", ["not", "an", "object"]),
+    ]
+    with initialize_schema().begin() as connection:
+        for name, configuration in rows:
+            connection.execute(templates.insert().values(
+                template_id=str(uuid4()), name=name, configuration=configuration, created_at=stamp, updated_at=stamp,
+            ))
+    response = client.delete(f"/api/sprites/{summary.sprite_id}")
+    assert response.status_code == 409
+    assert response.json()["detail"] == "资产正被模板使用，请先在这些模板里移除后再删除：A 模板、片头模板"
+    assert [item.sprite_id for item in pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites] == [summary.sprite_id]
+    assert client.get(summary.preview_url).status_code == 200
+
+
+@pytest.mark.parametrize("sprite_id", [str(uuid4()), "not-a-uuid"])
+def test_deleting_an_unknown_sprite_is_a_404(client: TestClient, published, sprite_id) -> None:
+    """不存在或格式错误的资产 ID 删除返回 404，不影响已有资产。"""
+    summary = published_sprite(client, published.version.id)
+    assert client.delete(f"/api/sprites/{sprite_id}").status_code == 404
+    assert len(pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites) == 1
+    assert summary.sprite_id

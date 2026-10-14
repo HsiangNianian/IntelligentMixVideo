@@ -12,7 +12,7 @@ from collections.abc import Iterator
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -115,6 +115,9 @@ def template_track(target: str = "title", **editor) -> dict:
 
 # 测试用的已发布 Sprite ID；同一模板可以多次摆放它，各次摆放用不同的轨道 ID。
 SPRITE_ID = "6f1c8a52-3d94-4b7e-9a10-2c5e8d7b4f31"
+# Remotion 作品归属的测试设备；HTTP 用例以 DEVICE_HEADERS 携带，直接调用 Store 时传 DEVICE。
+DEVICE = UUID("0d1ce0aa-5b8e-4c4f-9a3e-7c1d2b3a4e5f")
+DEVICE_HEADERS = {"X-IMV-Device": str(DEVICE)}
 
 
 def remotion_track(track_id: str = "clip", **changes) -> dict:

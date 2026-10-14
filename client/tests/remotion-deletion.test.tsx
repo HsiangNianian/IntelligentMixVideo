@@ -1,4 +1,4 @@
-/** 字效整条删除回归：真实会话 hook/历史 UI/SSE，网络与播放器隔离；执行 bun run test。 */
+/** 字效整条删除回归：真实会话 hook/历史 UI/SSE，服务端删除后同时清除本地会话库；网络与播放器隔离，执行 bun run test。 */
 import { expect, spyOn, test } from "bun:test";
 import {
   act,
@@ -10,10 +10,11 @@ import {
   within,
 } from "@testing-library/react";
 import * as api from "@/features/remotion_templates/api";
+import * as local from "@/features/remotion_templates/localSessions";
 import { RemotionWorkspace } from "@/features/remotion_templates/RemotionWorkspace";
 import { useTemplateSession } from "@/features/remotion_templates/useTemplateSession";
 import { useWorkHistory } from "@/features/remotion_templates/useWorkHistory";
-import { remotionServer } from "./remotion-server";
+import { remotionServer, seed } from "./remotion-server";
 import { fetchMock } from "./setup";
 
 /** 历史行内的删除按钮：删除提示改为悬停 Tooltip，按会话标题定位所在行再取删除按钮。 */
@@ -32,8 +33,8 @@ function deletes() {
 // 当前会话确认前不写入，确认后清空播放器和本地选择，历史只剩其他会话。
 test("删除当前聊天先确认，成功清理当前视图和订阅", async () => {
   const fake = remotionServer();
-  await api.create("待删除");
-  await api.create("保留会话");
+  await seed("待删除");
+  await seed("保留会话");
   render(<RemotionWorkspace />);
   fireEvent.click(await screen.findByRole("button", { name: /待删除/ }));
   await waitFor(() => expect(fake.streams.size).toBe(1));
@@ -43,7 +44,7 @@ test("删除当前聊天先确认，成功清理当前视图和订阅", async ()
     within(screen.getByRole("dialog")).getByRole("button", { name: "取消" }),
   );
   expect(deletes()).toHaveLength(0);
-  expect(fake.snapshots.has("work-1")).toBe(true);
+  expect(fake.works.has("work-1")).toBe(true);
   fireEvent.click(deleteButton("待删除"));
   fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
   await waitFor(() => expect(screen.queryByRole("dialog") === null).toBe(true));
@@ -55,6 +56,10 @@ test("删除当前聊天先确认，成功清理当前视图和订阅", async ()
     localStorage.getItem(`imv.remotion.selected:${api.apiUrl("")}`),
   ).toBeNull();
   expect(deletes()).toHaveLength(1);
+  // 服务端与本机会话库都不再保留该会话，另一条会话不受影响。
+  expect(fake.works.has("work-1")).toBe(false);
+  expect(await local.storage().work("work-1")).toBeNull();
+  expect(await local.storage().work("work-2")).not.toBeNull();
 });
 
 // 删除其他会话保留当前未保存参数、成功版本及同一条 SSE；失败不会自动重发。
@@ -65,8 +70,8 @@ test("其他聊天删除失败可重试且不打断当前草稿", async () => {
       ? new Response(null, { status: 503 })
       : undefined,
   );
-  await api.create("正在编辑");
-  await api.create("其他聊天");
+  await seed("正在编辑");
+  await seed("其他聊天");
   const { result } = renderHook(() => useTemplateSession(() => {}));
   act(() => result.current.select("work-1"));
   await waitFor(() => expect(result.current.version).not.toBeNull());
@@ -82,7 +87,7 @@ test("其他聊天删除失败可重试且不打断当前草稿", async () => {
   expect(deletes()).toHaveLength(1);
   fails = false;
   await act(async () => result.current.deleteWork("work-2"));
-  expect(fake.snapshots.has("work-2")).toBe(false);
+  expect(fake.works.has("work-2")).toBe(false);
   expect(result.current.workId).toBe("work-1");
   expect(result.current.values.size).toBe(105);
   expect(fake.streams.has(stream)).toBe(true);
@@ -96,7 +101,7 @@ test("当前删除失败锁定写入，重试删除不保存本地参数", async
       ? new Response(null, { status: 503 })
       : undefined,
   );
-  await api.create("草稿删除");
+  await seed("草稿删除");
   const { result } = renderHook(() => useTemplateSession(() => {}));
   act(() => result.current.select("work-1"));
   await waitFor(() => expect(result.current.version).not.toBeNull());
@@ -113,7 +118,7 @@ test("当前删除失败锁定写入，重试删除不保存本地参数", async
   });
   expect(result.current.values.size).toBe(105);
   expect(
-    fetchMock.mock.calls.filter(([, o]) => o?.method === "POST"),
+    fetchMock.mock.calls.filter(([url, o]) => o?.method === "POST" && !String(url).endsWith("/ack")),
   ).toHaveLength(1);
   fails = false;
   await act(async () => result.current.deleteWork("work-1"));
@@ -132,7 +137,7 @@ test("删除弹窗防重复提交并保留失败重试入口", async () => {
         })
       : undefined,
   );
-  await api.create("慢删除");
+  await seed("慢删除");
   render(<RemotionWorkspace />);
   await screen.findByRole("button", { name: /慢删除/ });
   fireEvent.click(deleteButton("慢删除"));
@@ -158,7 +163,7 @@ test("删除弹窗防重复提交并保留失败重试入口", async () => {
 // 其他窗口删除会终止当前连接；没有永久保留聊天或反复重连、自动重建会话。
 test("已打开 SSE 收到删除控制信号后清空会话", async () => {
   const fake = remotionServer();
-  await api.create("远端删除");
+  await seed("远端删除");
   const { result } = renderHook(() => useTemplateSession(() => {}));
   act(() => result.current.select("work-1"));
   await waitFor(() => expect(result.current.connection).toBe("live"));
@@ -170,12 +175,13 @@ test("已打开 SSE 收到删除控制信号后清空会话", async () => {
   expect(deletes()).toHaveLength(0);
 });
 
-// 恢复不存在或清理中的会话，不留下刷新任务和循环重连入口。
-test.each([404, 410])("会话恢复返回 %s 时移除本地选择", async (status) => {
+// 本机没有该会话，或服务端已删除、正在清理时，移除本地选择，不留下刷新任务和循环重连入口。
+test.each(["local", 404, 410] as const)("会话恢复失败（%s）时移除本地选择", async (status) => {
   remotionServer((path) =>
-    path.endsWith("/session") ? new Response(null, { status }) : undefined,
+    status !== "local" && path.endsWith("/stream") ? new Response(null, { status }) : undefined,
   );
-  localStorage.setItem(`imv.remotion.selected:${api.apiUrl("")}`, "missing");
+  if (status !== "local") await seed("服务端已清理");
+  localStorage.setItem(`imv.remotion.selected:${api.apiUrl("")}`, status === "local" ? "missing" : "work-1");
   const { result } = renderHook(() => useTemplateSession(() => {}));
   await waitFor(() => expect(result.current.error).toContain("已删除"));
   expect(result.current.workId).toBeNull();
@@ -193,7 +199,7 @@ test("删除隔离迟到版本读取", async () => {
         })
       : undefined,
   );
-  await api.create("慢版本");
+  await seed("慢版本");
   const { result } = renderHook(() => useTemplateSession(() => {}));
   act(() => result.current.select("work-1"));
   await waitFor(() => expect(release).toBeDefined());
@@ -204,13 +210,13 @@ test("删除隔离迟到版本读取", async () => {
   expect(result.current.version).toBeNull();
 });
 
-// 删除完成会中断旧历史读取，迟到的分页不能把删除项重新插入列表。
-test("历史删除淘汰迟到分页响应", async () => {
-  const fake = remotionServer();
-  await api.create("列表条目");
-  let release!: (page: Awaited<ReturnType<typeof api.history>>) => void;
-  const stale = { items: [...fake.summaries.values()], next_cursor: null };
-  const history = spyOn(api, "history")
+// 删除完成会中断旧历史读取，迟到的本地列表不能把删除项重新插入列表。
+test("历史删除淘汰迟到列表结果", async () => {
+  remotionServer();
+  await seed("列表条目");
+  let release!: (page: Awaited<ReturnType<typeof local.history>>) => void;
+  const stale = await local.history();
+  const history = spyOn(local, "history")
     .mockImplementationOnce(
       () =>
         new Promise((resolve) => {
@@ -236,7 +242,7 @@ test("卸载后删除回执不再刷新历史", async () => {
         })
       : undefined,
   );
-  await api.create("卸载清理");
+  await seed("卸载清理");
   const view = render(<RemotionWorkspace />);
   await screen.findByRole("button", { name: /卸载清理/ });
   fireEvent.click(deleteButton("卸载清理"));

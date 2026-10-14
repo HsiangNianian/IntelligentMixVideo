@@ -1,26 +1,25 @@
-"""Persist public chat and replayable work events independently of the model's sliding window."""
+"""Public chat and replayable work events, buffered in MySQL until the client acknowledges them.
 
-import base64
+The client keeps chat history in its own local SQLite; the server only appends public messages and events inside
+the job transactions that produce them and removes them once delivered (`store.acknowledge`). The model's
+sliding window and tool traces never enter these records.
+"""
+
 import json
-import sqlite3
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID, uuid4
 
-from pydantic import Field, model_validator
+from pydantic import Field
+from sqlalchemy import Connection, insert, select
 
-from .models import (
-    Contract,
-    GenerationJob,
-    JobInput,
-    PublicJob,
-    TemplateProject,
-)
-from .progress import LoopRound, ProgressStep, finish_steps, initialize_rounds, read_rounds, read_steps
+from .models import Contract, GenerationJob, JobInput, PublicJob
+from .progress import LoopRound, ProgressStep, finish_steps, read_rounds, read_steps
+from .tables import chat_messages, jobs, work_events
 
 
 class ChatMessage(Contract):
-    """One durable public message; normalized assets are referenced rather than embedded."""
+    """One public message; normalized assets are referenced rather than embedded."""
 
     id: UUID
     sequence: int
@@ -29,17 +28,6 @@ class ChatMessage(Contract):
     text: str
     image_asset_ids: list[UUID] = Field(default_factory=list)
     created_at: datetime
-    reconstructed: bool = False
-
-    @model_validator(mode="before")
-    @classmethod
-    def single_image(cls, data):
-        """Read the single ``image_asset_id`` that messages stored before multi-image chat carry."""
-        if isinstance(data, dict) and "image_asset_id" in data:
-            data = dict(data)
-            image = data.pop("image_asset_id")
-            data["image_asset_ids"] = [] if image is None else [image]
-        return data
 
 
 class SessionJob(PublicJob):
@@ -53,7 +41,7 @@ class SessionJob(PublicJob):
 
 
 class WorkEvent(Contract):
-    """A persisted public event belongs to exactly one work and has a stable replay ID."""
+    """A buffered public event belongs to exactly one work and has a stable replay ID."""
 
     id: int
     work_id: UUID
@@ -62,159 +50,61 @@ class WorkEvent(Contract):
     created_at: datetime
 
 
-class SessionSnapshot(Contract):
-    """One read transaction binds history, task, accepted pointer and stream watermark."""
-
-    work: TemplateProject
-    job: SessionJob
-    messages: list[ChatMessage]
-    next_before: int | None
-    cursor: int
-    jobs: list[SessionJob] = Field(default_factory=list)
-
-
-class WorkSummary(Contract):
-    """Sidebar metadata excludes code and internal execution diagnostics."""
-
-    id: UUID
-    title: str
-    deleting: bool = False
-    updated_at: datetime
-    current_version_id: UUID | None
-    job: SessionJob
-
-
-class WorkPage(Contract):
-    """Keyset pagination is ordered by recent activity and work ID."""
-
-    items: list[WorkSummary]
-    next_cursor: str | None
-
-
-def initialize(db: sqlite3.Connection) -> None:
-    """Add public tables without rewriting existing works, versions or model context."""
-    db.executescript("""
-        CREATE TABLE IF NOT EXISTS chat_messages (
-            sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL,
-            work_id TEXT NOT NULL REFERENCES projects(id), job_id TEXT NOT NULL REFERENCES jobs(id),
-            role TEXT NOT NULL, data TEXT NOT NULL, UNIQUE(job_id, role)
-        );
-        CREATE INDEX IF NOT EXISTS chat_by_work ON chat_messages(work_id, sequence);
-        CREATE TABLE IF NOT EXISTS work_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, work_id TEXT NOT NULL REFERENCES projects(id),
-            type TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS events_by_work ON work_events(work_id, id);
-        CREATE INDEX IF NOT EXISTS events_by_work_type ON work_events(work_id, type, id);
-        CREATE TABLE IF NOT EXISTS job_progress (
-            job_id TEXT PRIMARY KEY REFERENCES jobs(id), data TEXT NOT NULL
-        );
-    """)
-    initialize_rounds(db)
-    # Only jobs missing their user message need backfilling. Never expose conversations/tool records.
-    rows = db.execute("""SELECT j.data, j.input_data FROM jobs j
-        WHERE NOT EXISTS (SELECT 1 FROM chat_messages m WHERE m.job_id=j.id AND m.role='user')
-        ORDER BY j.created_at, j.rowid""").fetchall()
-    for row in rows:
-        job = GenerationJob.model_validate_json(row["data"])
-        record_input(
-            db, job, JobInput.model_validate_json(row["input_data"]), reconstructed=True
-        )
-        record_job(db, job, reconstructed=True)
-
-
-def append_event(
-    db: sqlite3.Connection, work_id: UUID, kind: str, data: dict, stamp: datetime
-) -> None:
+def append_event(db: Connection, work_id: UUID, kind: str, data: dict, stamp: datetime) -> None:
     """Append within the caller's state transaction; readers only see committed events."""
-    db.execute(
-        "INSERT INTO work_events(work_id,type,data,created_at) VALUES (?,?,?,?)",
-        (str(work_id), kind, json.dumps(data, ensure_ascii=False), stamp.isoformat()),
-    )
+    db.execute(insert(work_events).values(
+        work_id=str(work_id), type=kind, data=json.dumps(data, ensure_ascii=False),
+        created_at=stamp.astimezone(UTC).replace(tzinfo=None),
+    ))
 
 
-def append_message(
-    db: sqlite3.Connection,
-    job: GenerationJob,
-    role: str,
-    text: str,
-    *,
-    images: list[UUID] | None = None,
-    reconstructed: bool = False,
-) -> None:
+def append_message(db: Connection, job: GenerationJob, role: str, text: str, *, images: list[UUID] | None = None) -> None:
     """Publish each task's user/assistant message once, including on retry and replay."""
-    identifier = uuid4()
-    row = db.execute(
-        "INSERT OR IGNORE INTO chat_messages(id,work_id,job_id,role,data) VALUES (?,?,?,?,?)",
-        (str(identifier), str(job.project_id), str(job.id), role, "{}"),
-    )
-    if row.rowcount == 0:
+    exists = db.execute(select(chat_messages.c.id).where(
+        chat_messages.c.job_id == str(job.id), chat_messages.c.role == role,
+    )).first()
+    if exists is not None:
         return
+    identifier = uuid4()
+    sequence = db.execute(insert(chat_messages).values(
+        id=str(identifier), work_id=str(job.project_id), job_id=str(job.id), role=role, data="{}",
+    )).inserted_primary_key[0]
     message = ChatMessage(
         id=identifier,
-        sequence=row.lastrowid,
+        sequence=sequence,
         job_id=job.id,
         role=role,
         text=text,
         image_asset_ids=images or [],
         created_at=job.created_at if role == "user" else job.updated_at,
-        reconstructed=reconstructed,
     )
-    db.execute(
-        "UPDATE chat_messages SET data=? WHERE id=?",
-        (message.model_dump_json(), str(identifier)),
-    )
-    append_event(
-        db,
-        job.project_id,
-        "message.created",
-        message.model_dump(mode="json"),
-        message.created_at,
-    )
+    db.execute(chat_messages.update().where(chat_messages.c.id == str(identifier)).values(data=message.model_dump_json()))
+    append_event(db, job.project_id, "message.created", message.model_dump(mode="json"), message.created_at)
 
 
 def record_input(
-    db: sqlite3.Connection,
-    job: GenerationJob,
-    inputs: JobInput,
-    text: str | None = None,
-    *,
-    images: list[UUID] | None = None,
-    reconstructed: bool = False,
+    db: Connection, job: GenerationJob, inputs: JobInput, text: str | None = None, *, images: list[UUID] | None = None,
 ) -> None:
-    """Record persisted input; reconstructed messages never quote the private model context.
+    """Record the user's message for a new execution with the reference images attached to it.
 
-    ``images`` are the references attached to this message; the first message shows the work's original images.
+    The first job passes the work's description and original images; later messages pass their own images.
     """
-    first = db.execute(
-        "SELECT id FROM jobs WHERE project_id=? ORDER BY rowid LIMIT 1",
-        (str(job.project_id),),
-    ).fetchone()[0] == str(job.id)
-    if first:
-        row = db.execute(
-            "SELECT data FROM projects WHERE id=?", (str(job.project_id),)
-        ).fetchone()
-        project = TemplateProject.model_validate_json(row[0])
-        text = project.request.description or "请参考这张图片制作字效。"
-        images = [image.asset_id for image in project.request.images]
-    elif text is None:
+    if text is None:
         if inputs.clarifications:
-            answer = json.loads(inputs.clarifications[-1])
-            text = answer["answer"]
+            text = json.loads(inputs.clarifications[-1])["answer"]
         elif inputs.parameters is not None:
             text = "调整模板参数。"
         else:
             # An image-only message has no text; the client shows its own caption beside the image.
             text = inputs.instruction or ("" if images else "重试本次制作。")
-    append_message(db, job, "user", text, images=images, reconstructed=reconstructed)
+    append_message(db, job, "user", text, images=images)
 
 
-def public_job(db: sqlite3.Connection, job: GenerationJob, *, include_rounds: bool = True) -> SessionJob:
+def public_job(db: Connection, job: GenerationJob, *, include_rounds: bool = True) -> SessionJob:
     """Expose timestamps and input scalars, never provider errors, stages, attempts or tool traces."""
-    row = db.execute(
-        "SELECT input_data FROM jobs WHERE id=?", (str(job.id),)
-    ).fetchone()
-    inputs = JobInput.model_validate_json(row[0])
+    inputs = JobInput.model_validate_json(
+        db.execute(select(jobs.c.input_data).where(jobs.c.id == str(job.id))).scalar_one()
+    )
     return SessionJob(
         **PublicJob.from_job(job).model_dump(),
         created_at=job.created_at,
@@ -225,18 +115,16 @@ def public_job(db: sqlite3.Connection, job: GenerationJob, *, include_rounds: bo
     )
 
 
-def record_job(
-    db: sqlite3.Connection, job: GenerationJob, *, reconstructed: bool = False
-) -> None:
+def record_job(db: Connection, job: GenerationJob) -> None:
     """Suppress internal-only updates and atomically attach terminal messages and success pointers."""
     finish_steps(db, job)
     state = public_job(db, job, include_rounds=False).model_dump(mode="json", exclude={"rounds"})
     previous = db.execute(
-        "SELECT data FROM work_events WHERE work_id=? AND type='job.updated' ORDER BY id DESC LIMIT 1",
-        (str(job.project_id),),
-    ).fetchone()
+        select(work_events.c.data).where(work_events.c.work_id == str(job.project_id), work_events.c.type == "job.updated")
+        .order_by(work_events.c.id.desc()).limit(1)
+    ).scalar()
     if previous:
-        old = json.loads(previous[0])
+        old = json.loads(previous)
         if {k: v for k, v in old.items() if k not in {"updated_at", "rounds"}} == {
             k: v for k, v in state.items() if k != "updated_at"
         }:
@@ -251,120 +139,25 @@ def record_job(
         text = "模板已就绪。可以调整参数，或继续描述你想修改的效果。"
         if job.result_version_id is not None:
             append_event(
-                db,
-                job.project_id,
-                "version.ready",
-                {"version_id": str(job.result_version_id), "job_id": str(job.id)},
-                job.updated_at,
+                db, job.project_id, "version.ready",
+                {"version_id": str(job.result_version_id), "job_id": str(job.id)}, job.updated_at,
             )
     elif job.status == "cancelled":
         text = "已停止本次制作，已有成功模板仍可使用。"
     elif job.status in {"failed", "interrupted"}:
         text = PublicJob.from_job(job).message
     if text:
-        append_message(db, job, "assistant", text, reconstructed=reconstructed)
+        append_message(db, job, "assistant", text)
 
 
-def snapshot(
-    db: sqlite3.Connection, work_id: UUID, before: int | None, limit: int
-) -> SessionSnapshot | None:
-    """Read a consistent bounded history page and watermark; caller owns the read transaction."""
-    row = db.execute("SELECT data FROM projects WHERE id=?", (str(work_id),)).fetchone()
-    if row is None:
-        return None
-    work = TemplateProject.model_validate_json(row[0])
-    latest = db.execute(
-        "SELECT data FROM jobs WHERE project_id=? ORDER BY rowid DESC LIMIT 1",
-        (str(work_id),),
-    ).fetchone()
+def events(db: Connection, work_id: UUID, after: int, limit: int = 100) -> list[WorkEvent]:
+    """Replay an ordered bounded page of undelivered events for one work; IDs may contain gaps across works."""
     rows = db.execute(
-        "SELECT data FROM chat_messages WHERE work_id=? AND (? IS NULL OR sequence<?) ORDER BY sequence DESC LIMIT ?",
-        (str(work_id), before, before, limit + 1),
-    ).fetchall()
-    messages = [ChatMessage.model_validate_json(row[0]) for row in rows[:limit]][::-1]
-    cursor = db.execute(
-        "SELECT COALESCE(MAX(id),0) FROM work_events WHERE work_id=?", (str(work_id),)
-    ).fetchone()[0]
-    return SessionSnapshot(
-        work=work,
-        job=public_job(db, GenerationJob.model_validate_json(latest[0])),
-        messages=messages,
-        next_before=messages[0].sequence if len(rows) > limit else None,
-        cursor=cursor,
-        jobs=[
-            public_job(
-                db,
-                GenerationJob.model_validate_json(
-                    db.execute(
-                        "SELECT data FROM jobs WHERE id=? AND project_id=?",
-                        (str(identifier), str(work_id)),
-                    ).fetchone()[0]
-                ),
-            )
-            for identifier in dict.fromkeys(message.job_id for message in messages)
-        ],
+        select(work_events).where(work_events.c.work_id == str(work_id), work_events.c.id > after)
+        .order_by(work_events.c.id).limit(limit)
     )
-
-
-def events(
-    db: sqlite3.Connection, work_id: UUID, after: int, limit: int = 100
-) -> list[WorkEvent]:
-    """Replay an ordered bounded page for one work; event IDs may contain gaps across works."""
-    rows = db.execute(
-        "SELECT * FROM work_events WHERE work_id=? AND id>? ORDER BY id LIMIT ?",
-        (str(work_id), after, limit),
-    ).fetchall()
     return [
-        WorkEvent(
-            id=row["id"],
-            work_id=work_id,
-            type=row["type"],
-            data=json.loads(row["data"]),
-            created_at=row["created_at"],
-        )
+        WorkEvent(id=row.id, work_id=work_id, type=row.type, data=json.loads(row.data),
+                  created_at=row.created_at.replace(tzinfo=UTC))
         for row in rows
     ]
-
-
-def work_page(db: sqlite3.Connection, cursor: str | None, limit: int) -> WorkPage:
-    """Use an opaque activity timestamp/ID cursor without loading code or the full chat log."""
-    stamp, identifier = None, None
-    if cursor:
-        try:
-            stamp, identifier = json.loads(base64.urlsafe_b64decode(cursor.encode()))
-            datetime.fromisoformat(stamp)
-            UUID(identifier)
-        except (ValueError, TypeError, UnicodeError) as exc:
-            raise ValueError("invalid history cursor") from exc
-    rows = db.execute(
-        """SELECT p.id,p.data,MAX(e.created_at) AS activity FROM projects p
-        JOIN work_events e ON e.work_id=p.id GROUP BY p.id
-        HAVING (? IS NULL OR (activity,p.id)<(?,?)) ORDER BY activity DESC,p.id DESC LIMIT ?""",
-        (stamp, stamp, identifier, limit + 1),
-    ).fetchall()
-    items = []
-    for row in rows[:limit]:
-        work = TemplateProject.model_validate_json(row["data"])
-        job = db.execute(
-            "SELECT data FROM jobs WHERE project_id=? ORDER BY rowid DESC LIMIT 1",
-            (row["id"],),
-        ).fetchone()
-        items.append(
-            WorkSummary(
-                id=work.id,
-                deleting=db.execute(
-                    "SELECT 1 FROM work_deletions WHERE work_id=?", (str(work.id),)
-                ).fetchone() is not None,
-                title=(work.request.description or "图片字效")[:40],
-                updated_at=row["activity"],
-                current_version_id=work.current_version_id,
-                job=public_job(db, GenerationJob.model_validate_json(job[0]), include_rounds=False),
-            )
-        )
-    next_cursor = None
-    if len(rows) > limit:
-        last = rows[limit - 1]
-        next_cursor = base64.urlsafe_b64encode(
-            json.dumps([last["activity"], last["id"]]).encode()
-        ).decode()
-    return WorkPage(items=items, next_cursor=next_cursor)

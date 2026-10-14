@@ -1,4 +1,4 @@
-/** 公开聊天历史及 SSE 会话恢复测试；隔离 HTTP、存储和 iframe，执行 bun run test。 */
+/** 本地聊天历史及 SSE 会话恢复测试：会话保存在内存版本地存储，事件写入后确认送达；隔离 HTTP 和 iframe，执行 bun run test。 */
 import { expect, spyOn, test } from "bun:test";
 import {
   act,
@@ -15,16 +15,17 @@ import { RemotionWorkspace } from "@/features/remotion_templates/RemotionWorkspa
 import { useTemplateSession } from "@/features/remotion_templates/useTemplateSession";
 import { useWorkHistory } from "@/features/remotion_templates/useWorkHistory";
 import * as api from "@/features/remotion_templates/api";
+import * as local from "@/features/remotion_templates/localSessions";
 import { remotionJob } from "./remotion-fixtures";
 import { latestCopy } from "./remotion-version-helpers";
-import { remotionServer } from "./remotion-server";
+import { remotionServer, seed } from "./remotion-server";
 import { fetchMock } from "./setup";
 
 // 侧栏选择会话恢复各自消息与版本，新增只清空当前视图，历史会话和任务时间保留。
 test("历史侧栏切换、任务耗时和新增独立视图", async () => {
   const fake = remotionServer();
-  await api.create("春日标题");
-  await api.create("夏日标题");
+  await seed("春日标题");
+  await seed("夏日标题");
   render(<RemotionWorkspace />);
   fireEvent.click(await screen.findByRole("button", { name: /春日标题/ }));
   await waitFor(() =>
@@ -61,16 +62,14 @@ test("历史侧栏切换、任务耗时和新增独立视图", async () => {
   ).toHaveLength(0);
 });
 
-// 页面重新挂载从服务端恢复当前 ID；后台完成后读取新结果，不依赖上次内存消息或倒计时。
+// 页面重新挂载从本地会话库恢复当前 ID；成功版本按需读取，不依赖上次内存消息或倒计时。
 test("刷新恢复历史图片、成功版本和服务端时间", async () => {
   const fake = remotionServer();
-  await api.create("图片历史", ["asset-1"]);
-  fake.snapshots.get("work-1")!.messages[0].reconstructed = true;
+  await seed("图片历史", ["asset-1"]);
   localStorage.setItem(`imv.remotion.selected:${api.apiUrl("")}`, "work-1");
   const view = render(<RemotionWorkspace />);
   const image = await screen.findByAltText<HTMLImageElement>("历史参考图片");
   expect(image.src).toBe(api.apiUrl("/assets/asset-1"));
-  expect(screen.getAllByText(/历史恢复/).length).toBe(1);
   await waitFor(() => expect(fake.streams.size).toBe(1));
   view.unmount();
   await waitFor(() => expect(fake.streams.size).toBe(0));
@@ -82,7 +81,7 @@ test("刷新恢复历史图片、成功版本和服务端时间", async () => {
   expect(localStorage.length).toBe(1);
   expect(localStorage.getItem(localStorage.key(0)!)).toBe("work-1");
   expect(
-    fetchMock.mock.calls.filter((call) => call[1]?.method === "POST"),
+    fetchMock.mock.calls.filter((call) => call[1]?.method === "POST" && !String(call[0]).endsWith("/ack")),
   ).toHaveLength(1);
 });
 
@@ -96,7 +95,7 @@ test("SSE 断线续传、重复事件去重且不重发任务", async () => {
   const { result } = renderHook(() => useTemplateSession(() => {}));
   act(() => result.current.send("断线恢复"));
   await waitFor(() => expect(result.current.connection).toBe("live"));
-  const cursor = fake.snapshots.get("work-1")!.cursor;
+  const cursor = (await local.snapshot("work-1")).cursor;
   await act(async () => {
     for (const stream of fake.streams) {
       fake.streams.delete(stream);
@@ -109,7 +108,7 @@ test("SSE 断线续传、重复事件去重且不重发任务", async () => {
     timeout: 3500,
   });
   expect(result.current.messages).toHaveLength(2);
-  const record = fake.records.at(-1)!;
+  const record = fake.emitted.at(-1)!;
   await act(async () => {
     for (const stream of fake.streams)
       stream.controller.enqueue(
@@ -128,34 +127,11 @@ test("SSE 断线续传、重复事件去重且不重发任务", async () => {
     String(cursor),
   );
   expect(
-    fetchMock.mock.calls.filter((call) => call[1]?.method === "POST"),
+    fetchMock.mock.calls.filter((call) => call[1]?.method === "POST" && !String(call[0]).endsWith("/ack")),
   ).toHaveLength(1);
   expect(
     fetchMock.mock.calls.some((call) => /\/jobs\/[^/]+$/.test(String(call[0]))),
   ).toBe(false);
-});
-
-// 旧数据库游标失效后重新取快照，恢复期间不会使用旧代码或发送重复修改。
-test("游标失效重新读取快照并恢复订阅", async () => {
-  let connects = 0;
-  const fake = remotionServer((path) =>
-    path.endsWith("/stream") && ++connects === 1
-      ? new Response(null, { status: 409 })
-      : undefined,
-  );
-  await api.create("游标恢复");
-  const { result } = renderHook(() => useTemplateSession(() => {}));
-  act(() => result.current.select("work-1"));
-  await waitFor(() => expect(connects).toBe(2), { timeout: 3500 });
-  expect(result.current.version?.id).toBe("version-1");
-  expect(result.current.messages).toHaveLength(2);
-  expect(fake.streams.size).toBe(1);
-  expect(
-    fetchMock.mock.calls.filter((call) => String(call[0]).endsWith("/session")),
-  ).toHaveLength(2);
-  expect(
-    fetchMock.mock.calls.filter((call) => call[1]?.method === "POST"),
-  ).toHaveLength(1);
 });
 
 // 切换时仍在传输的旧成功版本不能回填新会话；任务不因读取中断被取消。
@@ -168,8 +144,8 @@ test.each([200, 404])("切换隔离迟到的版本下载：%s", async (status) =
         })
       : undefined,
   );
-  await api.create("慢会话");
-  await api.create("快会话");
+  await seed("慢会话");
+  await seed("快会话");
   const { result } = renderHook(() => useTemplateSession(() => {}));
   act(() => result.current.select("work-1"));
   await waitFor(() => expect(release).toBeDefined());
@@ -179,63 +155,46 @@ test.each([200, 404])("切换隔离迟到的版本下载：%s", async (status) =
   expect(result.current.workId).toBe("work-2");
   expect(result.current.code).not.toContain("old code");
   expect(result.current.error).toBe("");
-  expect(fake.snapshots.has("work-1")).toBe(true);
+  expect(fake.works.has("work-1")).toBe(true);
   expect(
     fetchMock.mock.calls.some((call) => String(call[0]).endsWith("/cancel")),
   ).toBe(false);
 });
 
-// 列表分页重叠去重；加载失败保留已有列表，聚焦和手动刷新均只触发读取。
-test("历史分页、失败保留与刷新", async () => {
-  const fake = remotionServer();
-  await api.create("会话一");
-  await api.create("会话二");
-  const [one, two] = [...fake.summaries.values()];
-  let failed = false;
-  fetchMock.mockImplementation(
-    Object.assign(
-      async (input: RequestInfo | URL) => {
-        if (failed) throw new TypeError("offline");
-        return Response.json(
-          String(input).includes("cursor=")
-            ? { items: [one, two], next_cursor: null }
-            : { items: [one], next_cursor: "page-two" },
-        );
-      },
-      { preconnect: () => {} },
-    ),
-  );
+// 本地历史按最近活动排列；读取失败保留已有列表，聚焦和手动刷新均只读取本地会话库。
+test("本地历史排序、失败保留与刷新", async () => {
+  remotionServer();
+  await seed("会话一");
+  await seed("会话二");
   const { result } = renderHook(useWorkHistory);
-  await waitFor(() => expect(result.current.items).toHaveLength(1));
-  act(() => result.current.more());
   await waitFor(() => expect(result.current.items).toHaveLength(2));
-  failed = true;
+  expect(result.current.next_cursor).toBeNull();
+  const read = spyOn(local, "history").mockRejectedValueOnce(new Error("本地会话库读取失败"));
   act(() => result.current.refresh());
-  await waitFor(() => expect(result.current.error).toContain("无法连接"));
+  await waitFor(() => expect(result.current.error).toContain("本地会话库读取失败"));
   expect(result.current.items).toHaveLength(2);
-  failed = false;
   act(() => window.dispatchEvent(new Event("focus")));
   await waitFor(() => expect(result.current.error).toBe(""));
-  expect(result.current.items).toHaveLength(1);
+  expect(result.current.items).toHaveLength(2);
+  expect(read).toHaveBeenCalledTimes(2);
+  expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("history="))).toBe(false);
 });
 
 // 较早消息请求晚于新事件返回时只合并消息，不能回退当前任务和成功版本。
 test("更早消息分页去重且不覆盖新任务状态", async () => {
-  let release: ((response: Response) => void) | undefined;
-  const fake = remotionServer((path, _options, url) =>
-    path.endsWith("/session") && url?.searchParams.has("before")
+  let release: ((page: Awaited<ReturnType<typeof local.snapshot>>) => void) | undefined;
+  const fake = remotionServer();
+  await seed("最近消息");
+  const real = local.snapshot;
+  const recent = await real("work-1");
+  const messages = recent.messages.map((message, index) => ({ ...message, sequence: 20 + index }));
+  spyOn(local, "snapshot").mockImplementation(async (work, before) =>
+    before
       ? new Promise((resolve) => {
           release = resolve;
         })
-      : undefined,
+      : { ...(await real(work)), messages, next_before: 20 },
   );
-  await api.create("最近消息");
-  const snap = fake.snapshots.get("work-1")!;
-  snap.messages = snap.messages.map((message, index) => ({
-    ...message,
-    sequence: 20 + index,
-  }));
-  snap.next_before = 20;
   const { result } = renderHook(() => useTemplateSession(() => {}));
   act(() => result.current.select("work-1"));
   await waitFor(() => expect(result.current.connection).toBe("live"));
@@ -246,19 +205,18 @@ test("更早消息分页去重且不覆盖新任务状态", async () => {
   await act(async () =>
     fake.advance({ ...remotionJob("running"), id: "new-job" }),
   );
+  await waitFor(() => expect(result.current.job?.id).toBe("new-job"));
   await act(async () =>
-    release!(
-      Response.json({
-        ...snap,
-        job: { ...snap.job, status: "failed" },
-        work: { id: "work-1", current_version_id: null },
-        messages: [
-          { id: "older", sequence: 1, role: "user", text: "更早消息" },
-          snap.messages[0],
-        ],
-        next_before: null,
-      }),
-    ),
+    release!({
+      ...recent,
+      job: { ...recent.job, status: "failed" },
+      work: { id: "work-1", current_version_id: null },
+      messages: [
+        { id: "older", sequence: 1, role: "user", text: "更早消息" },
+        messages[0]!,
+      ],
+      next_before: null,
+    }),
   );
   await waitFor(() => expect(result.current.olderLoading).toBe(false));
   expect(result.current.messages.map((message) => message.sequence)).toEqual([
@@ -271,7 +229,7 @@ test("更早消息分页去重且不覆盖新任务状态", async () => {
 });
 
 // 只有用户明确停止才发出取消请求，终态回执恢复可操作状态，卸载不再取消。
-test("明确停止任务后恢复公开快照", async () => {
+test("明确停止任务后恢复本地会话", async () => {
   remotionServer((path) => {
     if (path === "/works")
       return Response.json({

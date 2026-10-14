@@ -1,10 +1,13 @@
-"""HTTP contracts for local template works, durable job events, uploads and bounded artifacts."""
+"""HTTP contracts for device-owned template works, buffered job events, uploads and bounded artifacts.
 
-import hashlib
+JSON routes of a work require the caller's `X-IMV-Device` header and treat another device's work as missing.
+Browser-embedded reads (preview page, fonts, reference image, artifact download) are addressed by unguessable IDs
+and need no header, like the public-read objects behind them.
+"""
+
+import asyncio
 import json
-import logging
 import re
-import sqlite3
 from pathlib import Path
 from typing import Annotated
 from uuid import UUID
@@ -20,16 +23,16 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
+from pydantic import BaseModel, Field
+from sqlalchemy.exc import SQLAlchemyError
 
 from ..client_config import parse_config
 from .settings import ClientSettings
-from .evidence import digest, verify_artifacts
-from .history import SessionSnapshot, WorkPage
+from .evidence import digest
 from .media import save_image
 from .models import (
     Asset,
     GenerateTemplateRequest,
-    GenerationJob,
     PublicJob,
     PublicVersion,
     TaskMessage,
@@ -37,7 +40,6 @@ from .models import (
 )
 from .provider import ExecutionFailure
 from .runtime import Runtime
-from .publication import revisable
 from .store import NotFound
 from .stream import event_stream
 from .tool_validation import ValidationUnavailable
@@ -45,23 +47,23 @@ from .tools.contracts import CodeValidationReport, ComponentDefinition
 
 # 按接口职责设置标签，供模板服务的 Swagger 分组展示。
 router = APIRouter()
-logger = logging.getLogger("uvicorn.error")
 
 
 async def runtime_for(state) -> Runtime:
     """Start only the feature-local runtime on first use; unrelated routes need no model or database."""
     if not hasattr(state, "runtime"):
-        service = state.build_runtime()
         try:
-            service.initialize()
-        except (OSError, ImportError) as exc:
+            service = state.build_runtime()
+            await asyncio.to_thread(service.initialize)
+        except (OSError, ImportError, ValueError, SQLAlchemyError) as exc:
             raise HTTPException(
                 503,
-                "Template runtime requires a writable local data folder owned by one process.",
+                "Remotion 存储不可用：请检查 MySQL、ZOS 配置与可写的本地数据目录。",
             ) from exc
         state.runtime = service
         # Overlay tasks left unfinished by the previous process continue as soon as the runtime exists.
         service.overlays.resume()
+        service.start_maintenance()
     return state.runtime
 
 
@@ -71,6 +73,15 @@ async def runtime(request: Request) -> Runtime:
 
 
 Service = Annotated[Runtime, Depends(runtime)]
+
+
+async def device(service: Service, value: Annotated[UUID, Header(alias="X-IMV-Device")]) -> UUID:
+    """The client device that owns the request's works; each use refreshes its activity time."""
+    await asyncio.to_thread(service.store.touch, value)
+    return value
+
+
+Device = Annotated[UUID, Depends(device)]
 
 
 def require_sandbox(service: Runtime) -> None:
@@ -97,7 +108,7 @@ def parameters_need_sandbox(service: Runtime, base_id: UUID | None, work_id: UUI
         if base_id is None:
             return True
         version = service.store.version(base_id)
-        return version.spec.schema_version != "2" or not revisable(service.store.root / "accepted" / str(version.id))
+        return not service.instant(version)
     except (NotFound, ValueError):
         return True
 
@@ -131,23 +142,19 @@ def capabilities(service: Service, config: Config) -> dict:
     tags=["参考素材"],
     summary="上传参考图片",
 )
-async def upload(service: Service, file: Annotated[UploadFile, File()]) -> Asset:
+async def upload(service: Service, owner: Device, file: Annotated[UploadFile, File()]) -> Asset:
     """通过 multipart 表单的 `file` 字段上传单帧 PNG、JPEG 或 WebP 图片。
 
     图片经校验后统一保存为 PNG，返回的 `id` 可用于创建作品或后续消息 `images` 中的 `asset_id`。
     默认大小上限为 10 MiB；超限返回 413，内容无效返回 422。
-    上传后 24 小时仍未被任何作品或消息引用的图片（例如消息提交失败）会在之后的上传或服务启动时回收。
+    上传后 24 小时仍未被任何作品或消息引用的图片（例如消息提交失败）由服务端每小时的清理回收。
     """
-    try:
-        service.store.prune_assets()
-    except (OSError, sqlite3.Error):
-        logger.exception("Unreferenced reference image cleanup failed")
     try:
         content = await file.read(service.settings.max_upload_bytes + 1)
         if len(content) > service.settings.max_upload_bytes:
             raise HTTPException(413, "Image exceeds the upload size limit.")
         try:
-            return save_image(content, service.store, service.settings)
+            return await asyncio.to_thread(save_image, content, service.store, service.settings, owner)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
     finally:
@@ -156,7 +163,7 @@ async def upload(service: Service, file: Annotated[UploadFile, File()]) -> Asset
 
 @router.post("/works", status_code=202, tags=["模板作品"], summary="创建作品并生成模板")
 async def create(
-    request: GenerateTemplateRequest, service: Service, config: Config
+    request: GenerateTemplateRequest, service: Service, owner: Device, config: Config
 ) -> dict[str, TemplateProject | PublicJob]:
     """根据文字描述和／或参考图片创建作品，并提交异步生成任务。
 
@@ -170,35 +177,21 @@ async def create(
         raise HTTPException(503, "请配置 Agent 模型及密钥")
     require_sandbox(service)
     for image in request.images:
-        service.store.asset(image.asset_id)
-    project, job = service.store.create(request)
+        service.store.asset(image.asset_id, owner)
+    project, job = service.store.create(request, owner)
     service.notify(job.id, config)
     return {"work": project, "job": PublicJob.from_job(job)}
 
 
 @router.get(
     "/works",
-    response_model=list[TemplateProject] | WorkPage,
+    response_model=list[TemplateProject],
     tags=["模板作品"],
     summary="查询作品列表",
 )
-def works(
-    service: Service,
-    history: bool = False,
-    cursor: Annotated[str | None, Query(max_length=512)] = None,
-    limit: Annotated[int, Query(ge=1, le=100)] = 30,
-) -> list[TemplateProject] | WorkPage:
-    """默认兼容原作品列表；`history=true` 返回按最近活动排序的聊天会话分页。
-
-    历史分页包含标题、最新任务时间与成功版本 ID，用 `next_cursor` 加载下一页。
-    不包含内部执行记录或候选代码。
-    """
-    if history:
-        try:
-            return service.store.work_history(cursor, limit)
-        except ValueError as exc:
-            raise HTTPException(422, "Invalid history cursor.") from exc
-    return service.store.projects()
+def works(service: Service, owner: Device) -> list[TemplateProject]:
+    """返回本设备最近的作品；聊天历史保存在客户端本地，不由服务端分页提供。"""
+    return service.store.projects(owner)
 
 
 @router.get(
@@ -207,12 +200,12 @@ def works(
     tags=["模板作品"],
     summary="查询作品详情",
 )
-def work(work_id: UUID, service: Service) -> TemplateProject:
+def work(work_id: UUID, service: Service, owner: Device) -> TemplateProject:
     """查询作品的原始输入、创建时间和当前成功版本 ID。
 
     尚无成功版本时 `current_version_id` 为 null；生成失败或取消不会覆盖已有成功版本。
     """
-    return service.store.project(work_id)
+    return service.store.project(work_id, owner)
 
 
 @router.post(
@@ -222,8 +215,8 @@ def work(work_id: UUID, service: Service) -> TemplateProject:
     tags=["模板作品"],
     summary="提问、修改模板或回答澄清问题",
 )
-async def edit(work_id: UUID, request: TaskMessage, service: Service, config: Config) -> PublicJob:
-    """通过参数补丁 `parameters` 或自然语言修改模板，两者必须二选一。
+async def edit(work_id: UUID, request: TaskMessage, service: Service, owner: Device, config: Config) -> PublicJob:
+    """通过参数补丁 `parameters` 或自然语言 `instruction` 修改模板，两者必须二选一。
 
     自然语言修改由 `instruction` 和／或参考图片 `images`（`POST /assets` 返回的 ID，最多 4 张、不能重复）组成，至少提供一项；
     本次任务连同作品的原参考图一起读取这些图片，图片不能与参数补丁同时提交。
@@ -237,6 +230,7 @@ async def edit(work_id: UUID, request: TaskMessage, service: Service, config: Co
     纯问答或明确保持现状时返回 answered 终态，回答通过 message 和会话历史提供，不产生新版本。
     尚无成功版本的会话也可继续提问或描述生成需求；参数修改仍须已有成功版本。
     """
+    service.store.project(work_id, owner)
     if request.parameters is not None and parameters_need_sandbox(service, request.base_version_id, work_id):
         require_sandbox(service)
     try:
@@ -251,14 +245,14 @@ async def edit(work_id: UUID, request: TaskMessage, service: Service, config: Co
     tags=["模板版本"],
     summary="查询作品版本列表",
 )
-def versions(work_id: UUID, service: Service) -> list[PublicVersion]:
+def versions(work_id: UUID, service: Service, owner: Device) -> list[PublicVersion]:
     """按版本号升序返回可用版本，包含各版本代码、配置及来源 source。
 
     agent 为通过生成验收的版本，user_parameters 为通过渲染检查的用户修订。
     候选修复过程与验收报告仅供服务内部使用。
     """
     return [
-        PublicVersion.from_version(item) for item in service.store.versions(work_id)
+        PublicVersion.from_version(item) for item in service.store.versions(work_id, owner)
     ]
 
 
@@ -268,12 +262,12 @@ def versions(work_id: UUID, service: Service) -> list[PublicVersion]:
     tags=["模板版本"],
     summary="查询版本详情",
 )
-def version(version_id: UUID, service: Service) -> PublicVersion:
+def version(version_id: UUID, service: Service, owner: Device) -> PublicVersion:
     """获取成功版本的 TSX 代码、可编辑参数 schema、默认参数、模板规格。
 
     版本发布后保持不变；需要调整时应向所属作品提交新的修改任务。
     """
-    return PublicVersion.from_version(service.store.version(version_id))
+    return PublicVersion.from_version(service.store.version(version_id, owner))
 
 
 @router.get(
@@ -282,34 +276,13 @@ def version(version_id: UUID, service: Service) -> PublicVersion:
     tags=["生成任务"],
     summary="查询任务状态",
 )
-def job(job_id: UUID, service: Service) -> PublicJob:
+def job(job_id: UUID, service: Service, owner: Device) -> PublicJob:
     """查询任务是否排队、处理中、需要补充信息或已有可用结果。内部修复过程不对外展示。
 
     成功时返回 `result_version_id`；状态为 `needs_input` 时，通过 `questions` 查看待补充的问题。
     `answered` 表示已直接回答，正文在 `message`，`result_version_id` 为 null，不代表生成了模板。
     """
-    return PublicJob.from_job(service.store.job(job_id))
-
-
-@router.get("/jobs/{job_id}/events", tags=["生成任务"], summary="查询任务进度事件")
-def events(
-    job_id: UUID, service: Service, after: Annotated[int, Query(ge=0)] = 0
-) -> dict:
-    """按事件 ID 升序返回指定游标之后的任务进度记录，每次最多 100 条。
-
-    首次使用 `after=0`，后续将返回的 `next_cursor` 作为 `after` 继续轮询；此接口不是 SSE 长连接。
-    """
-    records = service.store.events(job_id, after)
-    return {
-        "events": [
-            {
-                "id": identifier,
-                "job": PublicJob.from_job(GenerationJob.model_validate_json(data)),
-            }
-            for identifier, data in records
-        ],
-        "next_cursor": records[-1][0] if records else after,
-    }
+    return PublicJob.from_job(service.store.job(job_id, owner))
 
 
 @router.post(
@@ -318,11 +291,12 @@ def events(
     tags=["生成任务"],
     summary="取消生成任务",
 )
-async def cancel(job_id: UUID, service: Service) -> PublicJob:
+async def cancel(job_id: UUID, service: Service, owner: Device) -> PublicJob:
     """取消排队或运行中的任务，并等待正在执行的模型请求或渲染子进程停止。
 
     重复取消安全；已结束的任务返回原有状态，不影响已发布的成功版本。
     """
+    service.store.job(job_id, owner)
     return PublicJob.from_job(await service.cancel(job_id))
 
 
@@ -333,14 +307,15 @@ async def cancel(job_id: UUID, service: Service) -> PublicJob:
     tags=["生成任务"],
     summary="重试生成任务",
 )
-async def retry(job_id: UUID, service: Service, config: Config) -> PublicJob:
+async def retry(job_id: UUID, service: Service, owner: Device, config: Config) -> PublicJob:
     """为失败、已取消或中断的任务创建一次新的执行，返回新的任务 ID。
 
     保留原任务记录及产物，不从中断位置续跑；不符合重试条件时返回 409。
     更早版本的参数修订任务重试需要渲染校验环境，缺失时返回 503；组合版本的参数修订与对话类任务仍可重试，环境问题在校验工具调用时报告。
     """
-    if service.store.inputs(job_id).mode == "parameters" and parameters_need_sandbox(service, service.store.job(job_id).base_version_id):
+    if service.store.inputs(job_id).mode == "parameters" and parameters_need_sandbox(service, service.store.job(job_id, owner).base_version_id):
         require_sandbox(service)
+    service.store.job(job_id, owner)
     return PublicJob.from_job(service.retry(job_id, config=config))
 
 
@@ -352,9 +327,8 @@ def artifact_path(service: Runtime, version_id: UUID, filename: str) -> Path:
         filename,
     ):
         raise NotFound("artifact not found")
-    directory = service.store.root / "accepted" / str(version.id)
     try:
-        verify_artifacts(version.candidate, version.spec, version.validation, directory)
+        directory = service.store.accepted(version)
     except (ValueError, OSError) as exc:
         raise NotFound("accepted artifact unavailable") from exc
     if filename not in version.validation.artifacts:
@@ -363,12 +337,12 @@ def artifact_path(service: Runtime, version_id: UUID, filename: str) -> Path:
 
 
 @router.get("/jobs/{job_id}/artifacts", tags=["生成产物"], summary="查询可用结果产物")
-def artifacts(job_id: UUID, service: Service) -> list[dict]:
+def artifacts(job_id: UUID, service: Service, owner: Device) -> list[dict]:
     """任务有可用结果时返回 TSX、PNG 和 MP4 下载链接；否则返回空列表。
 
     不返回内部候选、失败代码、验证报告或修复次数。
     """
-    job = service.store.job(job_id)
+    job = service.store.job(job_id, owner)
     if job.result_version_id is None:
         return []
     version = service.store.version(job.result_version_id)
@@ -394,17 +368,16 @@ def artifacts(job_id: UUID, service: Service) -> list[dict]:
     tags=["生成产物"],
     summary="读取成功版本的代码诊断",
 )
-async def diagnostics(version_id: UUID, service: Service) -> CodeValidationReport:
+async def diagnostics(version_id: UUID, service: Service, owner: Device) -> CodeValidationReport:
     """对已验收版本按需重跑一次隔离类型检查，返回契约与 LSP 诊断。
 
-    代码和默认参数取自封存记录，先按现有证据清单校验 `accepted/` 未被修改；
+    代码和默认参数取自封存记录，先按现有证据清单校验存储中的封存文件未被修改；
     文件被改写时返回 404，不返回与当前字节不符的陈旧诊断。
     隔离 worker 不可用（例如缺少 Linux 沙箱）时返回 503，调用方应保留代码显示并提供重试。
     """
-    version = service.store.version(version_id)
-    accepted = service.store.root / "accepted" / str(version.id)
+    version = service.store.version(version_id, owner)
     try:
-        verify_artifacts(version.candidate, version.spec, version.validation, accepted)
+        accepted = await asyncio.to_thread(service.store.accepted, version)
         export_code = (accepted / "Export.tsx").read_text(encoding="utf-8")
     except (ValueError, OSError) as exc:
         raise NotFound("accepted artifact unavailable") from exc
@@ -506,38 +479,17 @@ def preview_font(version_id: UUID, weight: int, service: Service) -> FileRespons
 @router.get("/assets/{asset_id}", tags=["参考素材"], summary="读取历史参考图片")
 def asset_image(asset_id: UUID, service: Service) -> Response:
     """读取已登记、去除元数据的 PNG，供历史聊天显示；缺失返回 404，损坏返回 409。"""
-    asset = service.store.asset(asset_id)
     try:
         payload = service.store.asset_path(asset_id).read_bytes()
     except FileNotFoundError as exc:
         raise NotFound("asset file not found") from exc
-    if hashlib.sha256(payload).hexdigest() != asset.sha256:
-        raise HTTPException(409, "Stored asset failed integrity verification.")
+    except ValueError as exc:
+        raise HTTPException(409, "Stored asset failed integrity verification.") from exc
     return Response(
         payload,
         media_type="image/png",
         headers={"Cache-Control": "private, max-age=3600"},
     )
-
-
-@router.get(
-    "/works/{work_id}/session",
-    response_model=SessionSnapshot,
-    tags=["聊天会话"],
-    summary="恢复聊天会话",
-)
-def session(
-    work_id: UUID,
-    service: Service,
-    before: Annotated[int | None, Query(ge=1, le=9223372036854775807)] = None,
-    limit: Annotated[int, Query(ge=1, le=100)] = 50,
-) -> SessionSnapshot:
-    """在一致的数据快照中读取公开消息、最新任务、成功版本指针和 SSE 游标。
-
-    消息按时间正序返回，`next_before` 用于加载更早消息。首次恢复后以 `cursor`
-    订阅事件，避免读取历史和建立连接之间漏掉更新；旧消息的 `reconstructed` 表示事实恢复。
-    """
-    return service.store.session(work_id, before, limit)
 
 
 @router.get(
@@ -550,22 +502,20 @@ def session(
 def stream(
     work_id: UUID,
     service: Service,
-    after: Annotated[int, Query(ge=0)] = 0,
+    owner: Device,
+    after: Annotated[int, Query(ge=0, le=9223372036854775807)] = 0,
     last_event_id: Annotated[str | None, Header(max_length=32)] = None,
 ) -> StreamingResponse:
-    """通过 SSE 推送公开消息、任务状态和成功版本指针，连接关闭不会停止任务。
+    """通过 SSE 推送尚未确认送达的公开消息、任务状态和成功版本指针，连接关闭不会停止任务。
 
-    新连接使用 `after`；重连优先使用 `Last-Event-ID`，仅重放该编号之后的事件。
-    每条事件具有稳定 ID，客户端按 ID 去重；空闲时每 15 秒发送心跳注释。
-    无效或不属于此会话的游标返回 409，客户端应重新读取会话快照。
+    新连接使用 `after`（客户端本地已保存的最后事件编号）；重连优先使用 `Last-Event-ID`。
+    每条事件具有稳定 ID，客户端写入本地后用确认接口回传编号，服务端随即删除已送达的事件；空闲时每 15 秒发送心跳注释。
     """
     if last_event_id is not None:
-        if not last_event_id.isascii() or not last_event_id.isdecimal():
+        if not last_event_id.isascii() or not last_event_id.isdecimal() or int(last_event_id) > 9223372036854775807:
             raise HTTPException(422, "Invalid Last-Event-ID.")
         after = int(last_event_id)
-    if after > 9223372036854775807:
-        raise HTTPException(422, "Event cursor is out of range.")
-    service.store.validate_cursor(work_id, after)
+    service.store.project(work_id, owner)
     return StreamingResponse(
         event_stream(service.store, work_id, after),
         media_type="text/event-stream",
@@ -573,18 +523,39 @@ def stream(
     )
 
 
+class Acknowledgement(BaseModel):
+    """The last event ID the client has committed to its local database."""
+
+    cursor: int = Field(ge=0, le=9223372036854775807)
+
+
+@router.post("/works/{work_id}/ack", status_code=204, tags=["聊天会话"], summary="确认事件已送达")
+def acknowledge(work_id: UUID, request: Acknowledgement, service: Service, owner: Device) -> Response:
+    """客户端把事件写入本地数据库后回传最后的事件编号；服务端删除该编号及之前的事件。
+
+    全部事件送达后，已结束任务的进度、轮次与消息随之删除；最新任务保留输入，供重试与回答澄清使用。
+    """
+    service.store.acknowledge(work_id, request.cursor, owner)
+    return Response(status_code=204)
+
+
 @router.delete(
     "/works/{work_id}", status_code=204,
     tags=["聊天会话"], summary="删除字效聊天及关联数据",
 )
-async def delete_work(work_id: UUID, service: Service) -> Response:
-    """停止后台任务并删除聊天、所有版本及专属文件；不存在时同样返回 204。
+async def delete_work(work_id: UUID, service: Service, owner: Device) -> Response:
+    """停止后台任务并删除本设备的会话、所有版本及专属文件；不存在时同样返回 204。
 
     清理失败返回 503，持久化删除标记禁止继续编辑；重试 DELETE 或服务重启后继续清理。
-    其他会话引用的图片保留，不删除共享数据库、字体或依赖。
+    其他会话引用的图片保留，已保存到资产库的 Sprite 不受影响。
     """
     try:
+        if service.store.owner(work_id) != owner:
+            return Response(status_code=204)
+    except NotFound:
+        return Response(status_code=204)
+    try:
         await service.delete_work(work_id)
-    except (OSError, sqlite3.Error) as exc:
+    except (OSError, SQLAlchemyError) as exc:
         raise HTTPException(503, "Work cleanup incomplete; retry deletion.") from exc
     return Response(status_code=204)

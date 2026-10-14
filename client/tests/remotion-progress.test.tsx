@@ -18,8 +18,9 @@ import type {
   ChatMessage,
 } from "@/features/remotion_templates/model";
 import * as api from "@/features/remotion_templates/api";
+import * as local from "@/features/remotion_templates/localSessions";
 import { remotionJob } from "./remotion-fixtures";
-import { remotionServer } from "./remotion-server";
+import { remotionServer, seed } from "./remotion-server";
 import { fetchMock } from "./setup";
 
 /** 固定服务端时间，不依赖当前日期或本机服务。 */
@@ -130,7 +131,7 @@ test("SSE 阶段推进、断线续传与刷新恢复", async () => {
       ? Response.json({ work: { id: "work-1" }, job: remotionJob("running") })
       : undefined,
   );
-  await api.create("制作测试标题");
+  await seed("制作测试标题");
   fake.emit("work-1", { type: "job.updated", data: progressJob() });
   localStorage.setItem(`imv.remotion.selected:${api.apiUrl("")}`, "work-1");
   let view = render(<RemotionWorkspace />);
@@ -154,7 +155,7 @@ test("SSE 阶段推进、断线续传与刷新恢复", async () => {
   let region = screen.getByRole("region", { name: "任务处理进度" });
   expect(within(region).getByText(/调整 1 次/)).toBeTruthy();
   expect(within(region).getByRole("list").children).toHaveLength(3);
-  const record = fake.records.at(-1)!;
+  const record = fake.emitted.at(-1)!;
   await act(async () => {
     for (const stream of fake.streams)
       stream.controller.enqueue(
@@ -186,7 +187,7 @@ test("SSE 阶段推进、断线续传与刷新恢复", async () => {
     ),
   ).toHaveLength(0);
   expect(
-    fetchMock.mock.calls.filter((call) => call[1]?.method === "POST"),
+    fetchMock.mock.calls.filter((call) => call[1]?.method === "POST" && !String(call[0]).endsWith("/ack")),
   ).toHaveLength(1);
   view.unmount();
 });
@@ -249,18 +250,19 @@ test("历史任务各自显示一条处理链", () => {
 
 // 加载旧消息带回对应进度，但不能覆盖此时 SSE 已推进的当前任务；切换及新增不携带旧链路。
 test("历史分页与会话切换隔离进度", async () => {
-  let release: ((response: Response) => void) | undefined;
-  const fake = remotionServer((path, _options, url) =>
-    path.endsWith("/session") && url?.searchParams.has("before")
-      ? new Promise<Response>((resolve) => {
+  let release: ((page: Awaited<ReturnType<typeof local.snapshot>>) => void) | undefined;
+  const fake = remotionServer();
+  await seed("第一会话");
+  await seed("第二会话");
+  fake.emit("work-1", { type: "job.updated", data: progressJob() });
+  const real = local.snapshot;
+  spyOn(local, "snapshot").mockImplementation(async (work, before) =>
+    before
+      ? new Promise((resolve) => {
           release = resolve;
         })
-      : undefined,
+      : { ...(await real(work)), next_before: 2 },
   );
-  await api.create("第一会话");
-  await api.create("第二会话");
-  fake.emit("work-1", { type: "job.updated", data: progressJob() });
-  fake.snapshots.get("work-1")!.next_before = 2;
   const { result } = renderHook(() => useTemplateSession(() => {}));
   act(() => result.current.select("work-1"));
   await waitFor(() => expect(result.current.connection).toBe("live"));
@@ -278,24 +280,23 @@ test("历史分页与会话切换隔离进度", async () => {
   await act(async () => {
     fake.emit("work-1", { type: "job.updated", data: newer });
   });
+  await waitFor(() => expect(result.current.jobs[newer.id].progress).toHaveLength(3));
   const old = { ...progressJob("failed"), id: "old-job" };
   await act(async () => {
-    release!(
-      Response.json({
-        ...fake.snapshots.get("work-1"),
-        messages: [
-          {
-            id: "old-message",
-            job_id: old.id,
-            sequence: 0,
-            role: "user",
-            text: "更早制作",
-          },
-        ],
-        jobs: [old, progressJob()],
-        next_before: null,
-      }),
-    );
+    release!({
+      ...(await real("work-1")),
+      messages: [
+        {
+          id: "old-message",
+          job_id: old.id,
+          sequence: 0,
+          role: "user",
+          text: "更早制作",
+        },
+      ],
+      jobs: [old, progressJob()],
+      next_before: null,
+    });
   });
   await waitFor(() => expect(result.current.olderLoading).toBe(false));
   expect(result.current.jobs[newer.id].progress).toHaveLength(3);

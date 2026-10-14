@@ -1,13 +1,12 @@
-/** Remotion HTTP 客户端；请求有超时，写入不自动重试，模型凭据从客户端读取并仅随模型任务与能力查询发送。 */
+/** Remotion HTTP 客户端；请求有超时，写入不自动重试，每个请求携带本机设备 ID，模型凭据只随模型任务与能力查询发送。 */
 import type {
   Composition,
   DiagnosticsReport,
   Job,
-  SessionSnapshot,
   Values,
   Version,
-  WorkPage,
 } from "./model";
+import { deviceId } from "./localSessions";
 import { readSettings } from "@/features/settings/api";
 import { apiBase } from "@/lib/api-base";
 
@@ -51,10 +50,12 @@ async function request<T>(
   if (options.signal?.aborted) controller.abort();
   const timeout = window.setTimeout(abort, timeoutMs);
   try {
+    const device = await deviceId();
     const response = await fetch(apiUrl(path), {
       ...options,
       signal: controller.signal,
       headers: {
+        "X-IMV-Device": device,
         ...(typeof options.body === "string"
           ? { "Content-Type": "application/json" }
           : {}),
@@ -126,7 +127,10 @@ export function create(
   description: string,
   assets: string[] = [],
   composition?: Composition,
-): Promise<{ work: { id: string }; job: Job }> {
+): Promise<{
+  work: { id: string; current_version_id: string | null; created_at: string; request: { description?: string | null } };
+  job: Job;
+}> {
   return modelRequest("/works", {
     method: "POST",
     body: JSON.stringify({
@@ -190,26 +194,12 @@ export function retry(id: string): Promise<Job> {
   });
 }
 
-/** 获取历史列表；每页只含轻量会话元数据。 */
-export function history(
-  cursor?: string,
-  signal?: AbortSignal,
-): Promise<WorkPage> {
-  return request(
-    `/works?history=true${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
-    { signal },
-  );
-}
-/** 恢复公开历史及订阅游标；before 仅用于加载更早消息。 */
-export function session(
-  id: string,
-  signal?: AbortSignal,
-  before?: number,
-): Promise<SessionSnapshot> {
-  return request(
-    `/works/${encodeURIComponent(id)}/session${before ? `?before=${before}` : ""}`,
-    { signal },
-  );
+/** 本地写入事件后确认送达；服务端删除该编号及之前的事件，不影响任务。 */
+export function ack(work: string, cursor: number): Promise<void> {
+  return request(`/works/${encodeURIComponent(work)}/ack`, {
+    method: "POST",
+    body: JSON.stringify({ cursor }),
+  });
 }
 
 /** 整条删除由服务端停止任务并清理数据；写入失败不自动重发。 */

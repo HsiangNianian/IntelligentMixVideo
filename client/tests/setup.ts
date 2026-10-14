@@ -1,4 +1,4 @@
-/** Bun 测试环境：注册 DOM、固定环境地址、拦截网络，并在每例后清理组件和 mock。 */
+/** Bun 测试环境：注册 DOM、固定环境地址、拦截网络、为每例换用独立的字效会话内存存储，并在每例后清理组件和 mock。 */
 import { afterEach, beforeEach, mock, spyOn } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
@@ -17,6 +17,8 @@ process.env.VITE_PREVIEW_VIDEO_1_URL = "/sample.mp4";
 
 // React DOM 必须在浏览器全局对象注册之后加载，保证事件与 screen 绑定正确。
 const { cleanup } = await import("@testing-library/react");
+// 字效会话存储同样在浏览器全局对象之后加载；每例使用独立内存实现，不调用 Tauri。
+const { memoryStorage, setStorage } = await import("@/features/remotion_templates/localSessions");
 
 /** 默认拒绝未声明的请求，各测试只配置自己需要的响应，不连接实际服务。 */
 export let fetchMock: ReturnType<typeof spyOn<typeof globalThis, "fetch">>;
@@ -34,6 +36,7 @@ export function mockDesktop(invoke: (command: string, args: Record<string, unkno
 beforeEach(() => {
   process.env.IMV_DEBUG = "false";
   localStorage.clear();
+  setStorage(memoryStorage());
   fetchMock = spyOn(globalThis, "fetch");
   fetchMock.mockRejectedValue(new Error("测试未配置此网络请求"));
 });

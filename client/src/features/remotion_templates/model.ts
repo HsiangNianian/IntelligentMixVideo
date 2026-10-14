@@ -163,7 +163,6 @@ export interface ChatMessage {
   job_id?: string;
   image_asset_ids?: string[];
   created_at?: string;
-  reconstructed?: boolean;
 }
 
 /** 稳定比较完整参数快照，避免依赖对象属性插入顺序。 */

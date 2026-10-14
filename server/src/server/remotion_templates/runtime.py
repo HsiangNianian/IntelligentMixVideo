@@ -1,24 +1,29 @@
-"""Single-process durable job queue; cancellation and failure never replace an accepted version."""
+"""Single-instance durable job queue; cancellation and failure never replace an accepted version.
+
+The queue lives in MySQL. One backend instance owns it: startup interrupts what a previous process left running and
+finishes interrupted deletions, and an hourly sweep drops undelivered events, old audit logs, unused uploads and
+the works of devices that have been inactive for the retention period.
+"""
 
 import asyncio
 import json
 import logging
-import sqlite3
+import shutil
 from contextlib import suppress
+from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import UUID, uuid4
 
 from .deletion import finish as finish_deletion
 from .settings import ClientSettings, Settings
-from ..file_lock import lock_exclusive
 from .harness import Harness
 from .overlay_service import OverlayRenders
 from .models import DialogueOutput, EditTemplateRequest, JobError, JobInput, MessageImage, TaskMessage
 from .parameters import parameter_changes
 from .provider import Budget, ExecutionFailure, ModelFailure, Provider
 from .publication import revisable
-from .store import Conflict, Store
+from .store import Conflict, Store, now
 from .tool_validation import ToolValidator, ValidationUnavailable
 from .tools.contracts import CodeValidationReport, ComponentDefinition
 
@@ -57,7 +62,7 @@ class Runtime:
         self.deletions: dict[UUID, asyncio.Task] = {}
         # Instant parameter revisions in flight, by job; they never enter the FIFO queue.
         self.saves: dict[UUID, asyncio.Task] = {}
-        self.lock = None
+        self.maintenance: asyncio.Task | None = None
         self.client_configs: dict[UUID, Settings] = {}
         self.diagnostics_lock = asyncio.Lock()
         self._overlays: OverlayRenders | None = None
@@ -74,28 +79,45 @@ class Runtime:
         return self.harness.renderer.sandbox_problem()
 
     def initialize(self) -> None:
-        """Lock the state directory before recovery so a second server cannot interrupt live jobs."""
+        """Create the tables, then recover: interrupt jobs a previous process left running and finish deletions."""
         self.store.root.mkdir(parents=True, exist_ok=True)
-        self.lock = (self.store.root / "runtime.lock").open("a")
-        try:
-            lock_exclusive(self.lock)
-            self.store.initialize()
-            self.store.interrupt_unfinished()
+        self.store.initialize()
+        self.store.interrupt_unfinished()
+        for work_id in self.store.pending_deletions():
             try:
-                self.store.prune_assets()
-            except (OSError, sqlite3.Error):
-                logger.exception("Unreferenced reference image cleanup failed")
-            for work_id in self.store.pending_deletions():
-                try:
-                    finish_deletion(self.store, work_id)
-                except (OSError, sqlite3.Error):
-                    logging.getLogger(__name__).exception(
-                        "Work deletion recovery failed: %s", work_id
-                    )
-        except BaseException:
-            self.lock.close()
-            self.lock = None
-            raise
+                finish_deletion(self.store, work_id)
+            except Exception:
+                logging.getLogger(__name__).exception("Work deletion recovery failed: %s", work_id)
+
+    def start_maintenance(self) -> None:
+        """Start the hourly retention sweep once; it lives as long as the event loop."""
+        if self.maintenance is None or self.maintenance.done():
+            self.maintenance = asyncio.create_task(self._maintain())
+
+    async def _maintain(self) -> None:
+        """Run the retention sweep now and then every hour; one failed sweep is logged and retried later."""
+        while True:
+            try:
+                await self.sweep()
+            except Exception:
+                logger.exception("Remotion retention sweep failed")
+            await asyncio.sleep(3600)
+
+    async def sweep(self) -> None:
+        """Apply the retention periods: undelivered events, private audit logs, inactive devices and unused uploads.
+
+        An upload no work references (its message was rejected or never sent) is reclaimed after 24 hours.
+        """
+        stamp = now()
+        await asyncio.to_thread(self.store.prune_assets)
+        await asyncio.to_thread(self.store.expire_events, stamp - timedelta(days=self.settings.undelivered_event_days))
+        cutoff = (stamp - timedelta(days=self.settings.audit_retention_days)).timestamp()
+        audit = self.store.root / "audit"
+        for path in (audit.iterdir() if audit.is_dir() else ()):
+            if path.is_file() and path.stat().st_mtime < cutoff:
+                path.unlink(missing_ok=True)
+        for work_id in await asyncio.to_thread(self.store.expire_devices, stamp - timedelta(days=self.settings.device_retention_days)):
+            await self.delete_work(work_id)
 
     def notify(self, job_id: UUID | None = None, config: ClientSettings | None = None) -> None:
         """Create a drain task only when work exists; no idle loop or application lifecycle hook."""
@@ -157,13 +179,18 @@ class Runtime:
 
     def instant(self, base) -> bool:
         """Whether a parameter patch on this accepted version is saved at once instead of rendered in the sandbox."""
-        return base.spec.schema_version == "2" and revisable(self.store.root / "accepted" / str(base.id))
+        if base.spec.schema_version != "2":
+            return False
+        try:
+            return revisable(self.store.accepted(base))
+        except (OSError, ValueError):
+            return False
 
     async def _save_parameters(self, job_id: UUID, base, patch: dict) -> None:
         """Seal the revision off the event loop and publish it; failures are recorded on the job, never raised."""
         try:
             directory = self.store.job_dir(job_id) / f"parameters-{uuid4().hex}"
-            accepted = self.store.root / "accepted" / str(base.id)
+            accepted = await asyncio.to_thread(self.store.accepted, base)
             result = await asyncio.to_thread(self.harness.presentation.revise, base, accepted, patch, directory)
             await asyncio.to_thread(self.store.publish, job_id, *result)
         except Exception as exc:
@@ -171,6 +198,8 @@ class Runtime:
             self.store.update(job_id, status="failed", stage="finished", error=JobError(
                 code="execution_failed", message=str(exc)[:1000] or "Parameter revision failed.",
             ))
+        finally:
+            shutil.rmtree(self.store.job_dir(job_id), ignore_errors=True)
 
     def message(self, project_id: UUID, request: TaskMessage, config: ClientSettings | None = None):
         """Route conversation input to generation, accepted-base edits, or outstanding questions."""
@@ -335,7 +364,7 @@ class Runtime:
         settings = self.client_configs.pop(job_id, self.settings)
         harness = self.harness if settings is self.settings else Harness(Provider(settings), self.harness.renderer)
         budget = Budget(
-            audit_path=self.store.job_dir(job_id) / "audit.jsonl",
+            audit_path=self.store.audit_path(job_id),
             on_progress=lambda phase: self.store.progress(job_id, phase),
             on_round=lambda record: self.store.round(job_id, record),
         )
@@ -436,10 +465,10 @@ class Runtime:
                 else "execution_failed"
             )
             logger.exception(
-                "Remotion job %s failed code=%s data_dir=%s: %s",
+                "Remotion job %s failed code=%s audit=%s: %s",
                 job_id,
                 code,
-                self.store.job_dir(job_id),
+                self.store.audit_path(job_id),
                 str(exc)[:4000] or repr(exc),
             )
             self.store.update(
@@ -455,9 +484,9 @@ class Runtime:
         except Exception:
             # Keep the public job sanitized while retaining the traceback in the FastAPI error log.
             logger.exception(
-                "Remotion job %s failed with an unexpected exception data_dir=%s",
+                "Remotion job %s failed with an unexpected exception audit=%s",
                 job_id,
-                self.store.job_dir(job_id),
+                self.store.audit_path(job_id),
             )
             self.store.update(
                 job_id,
@@ -470,6 +499,8 @@ class Runtime:
                 ),
             )
         finally:
+            # Candidates and renders are scratch; the audit log lives outside the job folder until it expires.
+            shutil.rmtree(self.store.job_dir(job_id), ignore_errors=True)
             self.store.save_conversation(job.project_id, context)
             final = self.store.job(job_id)
             budget.record(

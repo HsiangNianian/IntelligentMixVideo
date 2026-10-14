@@ -257,7 +257,6 @@ export function ChatPanel({
                     className="block text-xs opacity-70"
                   >
                     {new Date(message.created_at).toLocaleString("zh-CN")}
-                    {message.reconstructed ? " · 历史恢复" : ""}
                   </time>
                 )}
                 <p className="whitespace-pre-wrap break-words">

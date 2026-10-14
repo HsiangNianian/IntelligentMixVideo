@@ -1,7 +1,8 @@
-/** 会话协调器：恢复公开快照、消费 SSE、提交用户操作；只接受成功版本，切换不取消后台任务。 */
+/** 会话协调器：从本地数据库恢复会话、把 SSE 事件写入本地后确认送达、提交用户操作；只接受成功版本，切换不取消后台任务。 */
 import { useEffect, useRef, useState } from "react";
 import * as api from "./api";
-import { events, StreamReset } from "./events";
+import { events } from "./events";
+import * as local from "./localSessions";
 import { defaultComposition } from "./composition";
 import {
   sameValues,
@@ -34,7 +35,7 @@ class UploadFailure extends Error {
   }
 }
 
-/** 当前视图状态与服务端历史分离，临时参数只在验收成功后成为可复制默认值。 */
+/** 当前视图状态与本地历史分离，临时参数只在验收成功后成为可复制默认值。 */
 interface Session {
   key: number;
   workId: string | null;
@@ -88,9 +89,9 @@ function blank(key: number): Session {
     draft: null,
   };
 }
-/** 本地仅记录当前服务最后选中的 ID；浏览器禁用存储时仍可使用历史列表。 */
+/** 另行记录当前服务最后选中的 ID；浏览器禁用存储时仍可使用历史列表。 */
 const selectedKey = `imv.remotion.selected:${api.apiUrl("")}`;
-/** 合并有稳定 ID 的服务端消息，按持久序号排序；临时消息不参与历史恢复。 */
+/** 合并有稳定 ID 的已保存消息，按持久序号排序；临时消息不参与历史恢复。 */
 function mergeMessages(previous: ChatMessage[], incoming: ChatMessage[]) {
   return [
     ...new Map(
@@ -136,7 +137,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
   function current(key: number, signal?: AbortSignal) {
     return alive.current && latest.current.key === key && !signal?.aborted;
   }
-  /** 仅缓存选择位置，不缓存作为事实来源的聊天内容或代码。 */
+  /** 仅记录选择位置；聊天内容在本地会话库，代码按需从服务端读取。 */
   function remember(id: string | null) {
     try {
       if (id) localStorage.setItem(selectedKey, id);
@@ -229,9 +230,9 @@ export function useTemplateSession(onHistoryChange: () => void) {
     )
       completeNavigation(navigation);
   }
-  /** 先恢复公开快照再推进游标，产物失败独立保留为可重试状态。 */
+  /** 先从本地恢复会话再推进游标，产物失败独立保留为可重试状态。 */
   async function hydrate(work: string, key: number, signal: AbortSignal) {
-    const snapshot = await api.session(work, signal);
+    const snapshot = await local.snapshot(work);
     if (!current(key, signal)) return snapshot.cursor;
     publish({
       messages: snapshot.messages,
@@ -253,7 +254,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
     publish({ error: "会话已删除或正在清理，可在历史列表重试未完成的删除。" });
     return true;
   }
-  /** 断线从最后已应用的 ID 续传；游标失效才重新取快照，永不重发 POST。 */
+  /** 断线从本地已写入的最后 ID 续传；每个事件先写入本地再确认送达，永不重发 POST。 */
   async function watch(
     work: string,
     key: number,
@@ -262,11 +263,17 @@ export function useTemplateSession(onHistoryChange: () => void) {
   ) {
     while (current(key, signal)) {
       try {
+        const delivered = cursor;
         for await (const event of events(work, cursor, signal, () => {
           if (current(key, signal)) publish({ connection: "live" });
+          // 上次确认可能没送到；重新确认本地已有的事件，让服务端删除它们。
+          if (delivered) void api.ack(work, delivered).catch(() => {});
         })) {
           if (!current(key, signal)) return;
           if (event.id <= cursor) continue;
+          await local.apply(work, [event]);
+          if (!current(key, signal)) return;
+          void api.ack(work, event.id).catch(() => {});
           if (event.type === "message.created")
             publish({
               messages: mergeMessages(latest.current.messages, [event.data]),
@@ -299,14 +306,6 @@ export function useTemplateSession(onHistoryChange: () => void) {
         if (!current(key, signal)) return;
         if (unavailable(error)) return;
         publish({ connection: "reconnecting" });
-        if (error instanceof StreamReset) {
-          try {
-            cursor = await hydrate(work, key, signal);
-          } catch (error) {
-            if (!current(key, signal) || unavailable(error)) return;
-            /* 下一次连接仍以原游标触发快照恢复。 */
-          }
-        }
         await reconnectDelay(signal);
       }
     }
@@ -379,6 +378,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
     }
     try {
       await api.deleteWork(work);
+      await local.forget(work);
       if (!alive.current) return;
       if (latest.current.workId === work) switchWork(null);
       else changed.current();
@@ -470,6 +470,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
     try {
       const job = await start();
       queued = true;
+      await local.track(job);
       if (!current(key)) {
         if (alive.current) changed.current();
         return;
@@ -542,9 +543,11 @@ export function useTemplateSession(onHistoryChange: () => void) {
         );
       }
       if (!current(s.key)) throw new DOMException("Aborted", "AbortError");
-      if (!s.workId)
-        return (await api.create(text, assets, defaultComposition(durationInFrames)))
-          .job;
+      if (!s.workId) {
+        const created = await api.create(text, assets, defaultComposition(durationInFrames));
+        await local.record(created.work, created.job);
+        return created.job;
+      }
       return api.message(s.workId, {
         ...(text.trim() ? { instruction: text.trim() } : {}),
         ...(assets.length ? { images: assets.map((asset_id) => ({ asset_id })) } : {}),
@@ -679,7 +682,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
     const signal = scope.current.signal;
     publish({ olderLoading: true });
     try {
-      const page = await api.session(s.workId, signal, s.nextBefore);
+      const page = await local.snapshot(s.workId, s.nextBefore);
       if (current(s.key, signal))
         publish({
           messages: mergeMessages(page.messages, latest.current.messages),

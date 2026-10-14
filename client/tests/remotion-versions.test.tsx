@@ -14,18 +14,20 @@ import { VersionCard } from "@/features/remotion_templates/VersionCard";
 import { useTemplateSession } from "@/features/remotion_templates/useTemplateSession";
 import { useTemplateVersions } from "@/features/remotion_templates/useTemplateVersions";
 import * as api from "@/features/remotion_templates/api";
+import { apply } from "@/features/remotion_templates/localSessions";
 import { remotionJob, remotionVersion } from "./remotion-fixtures";
-import { remotionServer } from "./remotion-server";
+import { remotionServer, seed } from "./remotion-server";
 import { codeText } from "./remotion-version-helpers";
 import { fetchMock } from "./setup";
 
-/** 建立两个真实公开成功任务，刷新恢复时可把版本放回对应的助手消息。 */
+/** 建立两个真实公开成功任务并写入本地会话，刷新恢复时可把版本放回对应的助手消息。 */
 async function history(
   overrides: Parameters<typeof remotionServer>[0] = () => undefined,
 ) {
   const fake = remotionServer(overrides);
-  await api.create("最初标题");
+  await seed("最初标题");
   fake.advance({ ...remotionJob("succeeded", "version-2"), id: "job-2" });
+  await apply("work-1", fake.records);
   localStorage.setItem(`imv.remotion.selected:${api.apiUrl("")}`, "work-1");
   return fake;
 }
@@ -110,7 +112,7 @@ test("成功卡片默认折叠，复制对应版本并切换只读预览", async
     screen.getByRole<HTMLButtonElement>("button", { name: "发送" }).disabled,
   ).toBe(false);
   expect(
-    fetchMock.mock.calls.filter((call) => call[1]?.method === "POST"),
+    fetchMock.mock.calls.filter((call) => call[1]?.method === "POST" && !String(call[0]).endsWith("/ack")),
   ).toHaveLength(1);
 });
 
@@ -136,7 +138,7 @@ test("目录失败不隐藏当前结果，重试恢复参数版本", async () =>
   await screen.findByRole("button", { name: "预览 V1" });
   expect(screen.getByText(/参数调整 ·/)).toBeTruthy();
   expect(
-    fetchMock.mock.calls.filter((call) => call[1]?.method === "POST"),
+    fetchMock.mock.calls.filter((call) => call[1]?.method === "POST" && !String(call[0]).endsWith("/ack")),
   ).toHaveLength(1);
 });
 
@@ -207,6 +209,8 @@ test.each(["unmount", "disabled"])(
     };
     const view = render(<VersionCard {...props} />);
     fireEvent.click(screen.getByRole("button", { name: "复制代码" }));
+    // 请求先读取本机设备 ID，等到真正发出后再改变状态。
+    await waitFor(() => expect(finish).toBeDefined());
     if (mode === "unmount") {
       view.unmount();
       expect(signal?.aborted).toBe(true);
@@ -239,7 +243,7 @@ test("SSE 推进最新版本时保留历史预览，返回后发送绑定最新�
   });
   expect(result.current.values.size).toBe(64);
   expect(
-    fetchMock.mock.calls.filter((call) => call[1]?.method === "POST"),
+    fetchMock.mock.calls.filter((call) => call[1]?.method === "POST" && !String(call[0]).endsWith("/ack")),
   ).toHaveLength(1);
   await act(async () =>
     fake.advance({ ...remotionJob("succeeded", "version-3"), id: "job-3" }),
@@ -281,7 +285,7 @@ test("历史预览沿用未保存参数的取消和放弃保护", async () => {
   expect(result.current.dirty).toBe(false);
   expect(result.current.values.size).toBe(64);
   expect(
-    fetchMock.mock.calls.filter((call) => call[1]?.method === "POST"),
+    fetchMock.mock.calls.filter((call) => call[1]?.method === "POST" && !String(call[0]).endsWith("/ack")),
   ).toHaveLength(1);
 });
 
@@ -343,6 +347,7 @@ test.each(["latest", "work", "unmount"])(
     await waitFor(() => expect(result.current.version?.id).toBe("version-2"));
     act(() => result.current.selectVersion("version-1"));
     expect(result.current.previewLoading).toBe(true);
+    await waitFor(() => expect(finish).toBeDefined());
     if (target === "unmount") unmount();
     else
       act(() =>
@@ -404,7 +409,9 @@ test("版本目录隔离会话并清理请求", async () => {
     ({ work }) => useTemplateVersions(work, null),
     { initialProps: { work: "work-1" } },
   );
+  await waitFor(() => expect(signals).toHaveLength(1));
   rerender({ work: "work-2" });
+  await waitFor(() => expect(signals).toHaveLength(2));
   await act(async () => finish(Response.json([remotionVersion()])));
   expect(signals[0].aborted).toBe(true);
   expect(result.current.versions).toEqual([]);

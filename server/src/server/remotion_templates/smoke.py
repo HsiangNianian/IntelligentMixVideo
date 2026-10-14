@@ -64,12 +64,15 @@ async def run() -> None:
                     return service.store.version(job.result_version_id)
                 await asyncio.sleep(0.5)
 
+    # The smoke run owns its works through one throwaway device.
+    device = uuid4()
     composition = CompositionConfig(width=360, height=640, duration_in_frames=12)
     project, job = service.store.create(
         GenerateTemplateRequest(
             description="制作静态文字模板，唯一文字是‘今日灵感’，Noto Sans CJK SC 粗体，字号48，白色，水平垂直居中，宽度90%，无其他装饰，透明背景，全程显示。",
             composition=composition,
-        )
+        ),
+        device,
     )
     service.notify()
     original = await finish(job.id)
@@ -94,11 +97,12 @@ async def run() -> None:
         / f"attempt-{original_job.attempts}"
         / "frame-0.png"
     )
-    asset = save_image(frame.read_bytes(), service.store, settings)
+    asset = save_image(frame.read_bytes(), service.store, settings, device)
     _, image_job = service.store.create(
         GenerateTemplateRequest(
             images=[ImageReference(asset_id=asset.id)], composition=composition
-        )
+        ),
+        device,
     )
     service.notify()
     await finish(image_job.id)

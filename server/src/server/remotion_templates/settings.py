@@ -57,7 +57,12 @@ class Settings(ClientSettings, CommonSettings):
     # 保留服务端显式 None 的兼容性；客户端用空字符串表达复用主模型。
     vision_base_url: str | None = None
     vision_api_key: SecretStr | None = None
+    # 本地数据目录只放任务草稿、已校验的读取缓存与私有审计；没有配置 ZOS 时也存放对象。
     data_dir: Path = Path(".data")
+    # 保留期限（天）：客户端未确认送达的事件、私有审计日志、设备不活跃后的会话数据。
+    undelivered_event_days: int = Field(default=7, ge=1, le=365)
+    audit_retention_days: int = Field(default=14, ge=1, le=365)
+    device_retention_days: int = Field(default=90, ge=1, le=3650)
     job_timeout_seconds: int = Field(default=600, ge=1, le=3600)
     render_timeout_seconds: int = Field(default=180, ge=1, le=600)
     # 整段透明视频默认最多渲染 15 分钟；不含等待名额、成片校验与上传，可由环境变量覆盖。

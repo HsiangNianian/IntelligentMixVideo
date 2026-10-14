@@ -13,7 +13,7 @@ import { useTemplateSession } from "@/features/remotion_templates/useTemplateSes
 import type { JsonValue, Values } from "@/features/remotion_templates/model";
 import * as api from "@/features/remotion_templates/api";
 import { remotionJob, remotionNestedVersion } from "./remotion-fixtures";
-import { remotionServer } from "./remotion-server";
+import { remotionServer, seed } from "./remotion-server";
 import { fetchMock } from "./setup";
 
 /** 建立已选中的 v2 会话；版本接口返回嵌套参数版本，不连接真实服务。 */
@@ -26,7 +26,7 @@ async function nestedHistory() {
         })
       : undefined,
   );
-  await api.create("组合字效");
+  await seed("组合字效");
   fake.advance({ ...remotionJob("succeeded", "version-2"), id: "job-2" });
   localStorage.setItem(`imv.remotion.selected:${api.apiUrl("")}`, "work-1");
   return fake;

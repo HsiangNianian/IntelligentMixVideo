@@ -7,8 +7,8 @@ from .startup.settings import GRACEFUL_SHUTDOWN_SECONDS, ServerSettings
 def main() -> None:
     """启动 API；字符串导入路径使控制台命令与模块运行使用同一应用。
 
-    客户端的作品 SSE 长连接不会自行结束，不限时的优雅退出会让旧进程一直持有字效
-    `runtime.lock`，重启后的新进程只能返回 503；因此与桌面内置服务共用同一退出等待上限。
+    客户端的作品 SSE 长连接不会自行结束，不限时的优雅退出会让停止的旧进程带着任务队列、叠加渲染与清理任务
+    一直运行，与重启后的新进程同时操作同一个 MySQL；因此与桌面内置服务共用同一退出等待上限。
     """
     settings = ServerSettings()
     uvicorn.run("server.app:app", host="0.0.0.0", port=settings.port, timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECONDS)

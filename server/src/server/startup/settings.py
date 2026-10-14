@@ -4,7 +4,7 @@ from pydantic import Field
 
 from ..config_base import CommonSettings
 
-# 命令行与 Debug 内置服务的优雅退出上限（秒）：未关闭的 SSE 不能让旧进程无限持有字效运行锁。
+# 命令行与 Debug 内置服务的优雅退出上限（秒）：未关闭的 SSE 不能让旧进程无限运行、与新进程并存。
 GRACEFUL_SHUTDOWN_SECONDS = 10
 
 
