@@ -190,6 +190,36 @@ test("保存到资产携带本机设备 ID", async () => {
   expect((init?.headers as Record<string, string>)["X-IMV-Device"]).toBe(await local.deviceId());
 });
 
+// 标题按码位截取前 40 个字符：第 40 个字符是 emoji 时完整保留，标题仍是合法的 UTF-16，可经 IPC 序列化。
+test("会话标题不会截断 emoji", async () => {
+  const description = `${"字".repeat(39)}😀尾巴`;
+  await local.record(
+    { id: "work-1", current_version_id: null, created_at: "2026-09-14T08:00:00Z", request: { description } },
+    remotionJob("queued"),
+  );
+  const [{ title }] = await local.history();
+  expect(title).toBe(`${"字".repeat(39)}😀`);
+  expect(new TextDecoder().decode(new TextEncoder().encode(title))).toBe(title);
+});
+
+// 新作品创建成功但本地登记失败时撤销服务端作品，提示本地错误并恢复草稿，不留下本机看不到的作品。
+test("本地登记失败时撤销刚创建的作品", async () => {
+  const fake = remotionServer();
+  spyOn(local.storage(), "save").mockRejectedValueOnce(new local.LocalStoreError("读写本地会话库失败"));
+  const { result } = renderHook(() => useTemplateSession(() => {}));
+  act(() => result.current.send("登记失败"));
+  await waitFor(() => expect(result.current.error).toContain("本地会话保存失败：读写本地会话库失败"));
+  expect(result.current.error).toContain("已撤销本次创建");
+  expect(result.current.workId).toBeNull();
+  expect(result.current.busy).toBeNull();
+  expect(result.current.messages).toEqual([]);
+  expect(result.current.draft?.text).toBe("登记失败");
+  expect(fake.works.has("work-1")).toBe(false);
+  const deletes = fetchMock.mock.calls.filter(([, options]) => options?.method === "DELETE");
+  expect(deletes.map(([url]) => new URL(String(url)).pathname)).toEqual(["/api/templates/works/work-1"]);
+  expect(await local.history()).toEqual([]);
+});
+
 // 本地会话库写入失败（Rust 以字符串报错）时停止接收更新并显示可刷新的错误，不当作断线无限重连；修复后显式刷新即续传。
 test("本地会话库失败时显示错误且不反复重连", async () => {
   let broken = false;

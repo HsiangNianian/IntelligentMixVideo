@@ -196,7 +196,10 @@ export async function record(
   await storage().save(server(), {
     work: {
       work: { id: project.id, current_version_id: project.current_version_id },
-      title: (project.request.description || "图片字效").slice(0, 40),
+      // 按码位截取：按 UTF-16 截断可能留下半个 emoji，孤立代理项无法经 IPC 序列化。
+      title: Array.from(project.request.description || "图片字效")
+        .slice(0, 40)
+        .join(""),
       job: initial,
       updated_at: project.created_at,
       cursor: 0,

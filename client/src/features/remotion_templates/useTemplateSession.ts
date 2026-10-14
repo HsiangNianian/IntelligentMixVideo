@@ -23,8 +23,11 @@ export interface Draft {
   images: File[];
 }
 
-/** 参考图上传失败时服务端尚无任何写入：携带草稿和本地消息 ID，按普通错误恢复，不进入任务读取恢复。 */
-class UploadFailure extends Error {
+/**
+ * 消息没有送达：参考图上传失败（服务端尚无写入），或新作品的本地登记失败（已尽力撤销刚创建的作品）。
+ * 携带草稿和本地消息 ID，按普通错误恢复，不进入任务读取恢复。
+ */
+class Unsent extends Error {
   /** message 已是可直接展示的提示。 */
   constructor(
     message: string,
@@ -497,7 +500,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
       if (alive.current) changed.current();
       await attach(job.project_id, key);
     } catch (error) {
-      if (error instanceof UploadFailure) {
+      if (error instanceof Unsent) {
         if (current(key))
           publish({
             busy: null,
@@ -554,7 +557,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
           (asset) => asset.id,
         );
       } catch (error) {
-        throw new UploadFailure(
+        throw new Unsent(
           `参考图片上传失败：${error instanceof Error ? error.message : "请求未完成。"} 消息尚未发送，已恢复草稿，可直接重新发送。`,
           { id: messageId, text, images },
           messageId,
@@ -563,7 +566,24 @@ export function useTemplateSession(onHistoryChange: () => void) {
       if (!current(s.key)) throw new DOMException("Aborted", "AbortError");
       if (!s.workId) {
         const created = await api.create(text, assets, defaultComposition(durationInFrames));
-        await local.record(created.work, created.job);
+        try {
+          await local.record(created.work, created.job);
+        } catch (error) {
+          // 本机没有记录的作品在侧栏不可见，重发还会重复生成：先撤销刚创建的作品，再把草稿交还输入框。
+          const undone = await api.deleteWork(created.work.id).then(
+            () => true,
+            () => false,
+          );
+          throw new Unsent(
+            `本地会话保存失败：${error instanceof Error ? error.message : String(error)} ${
+              undone
+                ? "已撤销本次创建，消息尚未发送，已恢复草稿。"
+                : "服务端已创建的作品未能撤销，重新发送会另建一个作品。已恢复草稿。"
+            }`,
+            { id: messageId, text, images },
+            messageId,
+          );
+        }
         return created.job;
       }
       return api.message(s.workId, {
