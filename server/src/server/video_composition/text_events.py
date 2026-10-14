@@ -8,7 +8,11 @@ def subtitle_events(segments):
     for item in segments:
         used = False
         for part in item.subtitle_parts or [item]:
-            text = "".join(char for char in part.text if char not in SUBTITLE_PUNCTUATION).strip()
+            # 仅保留两侧紧邻数字的小数点；逗号等标点仍移除，避免把 3.14 显示成 314。
+            text = "".join(char for i, char in enumerate(part.text) if char not in SUBTITLE_PUNCTUATION or (
+                char in ".．" and 0 < i < len(part.text) - 1
+                and part.text[i - 1].isdecimal() and part.text[i + 1].isdecimal()
+            )).strip()
             keyword = item.keyword if not used and item.keyword and item.keyword in text else ""
             used = used or bool(keyword)
             if text:
