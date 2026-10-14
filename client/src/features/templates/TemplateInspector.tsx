@@ -59,7 +59,13 @@ export function TransitionInspector({ draft, catalog, sprites, onChoose, onRemov
           onValueChange={([next]) => { setLength(String(next)); onDuration(next); }} className="flex-1" />
         <Input id={id} type="number" min={0.1} max={3} step="any" required value={length} className="w-[4.5rem] shrink-0 text-right"
           onKeyDown={(event) => { if (event.key === "Enter") event.preventDefault(); }}
-          onChange={(event) => { setLength(event.target.value); onDuration(event.target.value.trim() ? Number(event.target.value) : NaN); }} />
+          onChange={(event) => {
+            const value = event.target.value;
+            const seconds = value.trim() ? Number(value) : NaN;
+            const next = Number.isFinite(seconds) ? Math.min(3, Math.max(0.1, seconds)) : NaN;
+            setLength(Number.isFinite(next) && next !== seconds ? String(next) : value);
+            onDuration(next);
+          }} />
       </div>
     </div>
     {items.map((item, index) => <div key={item.id} className="space-y-2" aria-label={`转场 ${index + 1}`}>

@@ -116,6 +116,27 @@ test("空白时间阻止保存，修正后恢复保存流程", async () => {
   expect(screen.getByLabelText<HTMLInputElement>("开始时间 / 秒").value).toBe("2");
 });
 
+// 场景：转场时长清空后阻止保存，输入超出上限时恢复为有效值并同步保留。
+test("转场时长清空后阻止保存并支持修正", async () => {
+  render(<TemplateWorkspace selection={creation()} onHome={() => {}} />);
+  const assets = await screen.findByRole("region", { name: "特效资产" });
+  fireEvent.click(within(assets).getByRole("radio", { name: "转场" }));
+  fireEvent.click(within(assets).getAllByRole("button", { name: /^应用转场：/ })[0]);
+  const input = screen.getByLabelText<HTMLInputElement>("转场持续时间 / 秒");
+  fireEvent.change(input, { target: { value: "" } });
+  const error = "转场持续时间为 0.1～3 秒";
+  expect(screen.getByText(error)).toBeTruthy();
+  fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
+  expect(screen.getByText(error)).toBeTruthy();
+  expect(screen.queryByText("正在保存…")).toBeNull();
+  fireEvent.change(input, { target: { value: "5" } });
+  expect(input.value).toBe("3");
+  expect(screen.queryByText(error)).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "编辑顶部标题" }));
+  fireEvent.click(screen.getByRole("button", { name: "编辑镜头转场 1" }));
+  expect(screen.getByLabelText<HTMLInputElement>("转场持续时间 / 秒").value).toBe("3");
+});
+
 // 场景：往返经过 1280px 时保留未完成输入、焦点及预览节点，空白时间继续阻止保存。
 test("跨越布局断点保留输入草稿和时间校验", async () => {
   const originalWidth = window.innerWidth;

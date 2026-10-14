@@ -211,6 +211,8 @@ export function TemplateWorkspace({ selection = null, onHome }: {
     // 时间输入保留局部编辑值，写入前检查；模板配置继续由 saveTemplate 校验。
     const timingInputs = form.current?.querySelectorAll<HTMLInputElement>('[aria-label="轨道时间设置"] input');
     if (timingInputs && [...timingInputs].some((input) => !input.checkValidity())) { setInspectorTab("timing"); return; }
+    const transitionInput = form.current?.querySelector<HTMLInputElement>('[aria-label="转场时间设置"] input[type="number"]');
+    if (transitionInput && !transitionInput.checkValidity()) { transitionInput.reportValidity(); return; }
     lock.current = true;
     setBusy(true);
     setError("");
