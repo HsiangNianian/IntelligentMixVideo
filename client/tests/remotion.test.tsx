@@ -1093,9 +1093,8 @@ test.each(["Enter", "blur"])(
     const retry = await screen.findByRole<HTMLButtonElement>("button", {
       name: "重新读取结果",
     });
-    const snapshots = fetchMock.mock.calls.filter((call) =>
-      String(call[0]).endsWith("/session"),
-    ).length;
+    // 读取恢复从本地会话库重读快照；草稿未保存期间不得发生。
+    const reads = spyOn(local, "snapshot");
     available = true;
     const size = screen.getByLabelText("字号");
     fireEvent.change(size, { target: { value: "80" } });
@@ -1103,11 +1102,7 @@ test.each(["Enter", "blur"])(
     else fireEvent.blur(size);
     fireEvent.click(retry);
     expect(retry.disabled).toBe(true);
-    expect(
-      fetchMock.mock.calls.filter((call) =>
-        String(call[0]).endsWith("/session"),
-      ),
-    ).toHaveLength(snapshots);
+    expect(reads).not.toHaveBeenCalled();
     expect(submitted).toHaveLength(0);
     fireEvent.click(screen.getByRole("button", { name: "保存配置" }));
     await waitFor(() => expect(submitted).toHaveLength(1), { timeout: 2000 });

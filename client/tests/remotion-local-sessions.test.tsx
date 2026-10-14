@@ -254,6 +254,7 @@ test("本地会话库失败时显示错误且不反复重连", async () => {
   expect(result.current.connection).toBeNull();
   expect(result.current.retryMode).toBe("read");
   await act(() => new Promise((resolve) => setTimeout(resolve, 2300)));
+  /** 已发起的 SSE 连接数。 */
   const streams = () => fetchMock.mock.calls.filter((call) => String(call[0]).includes("/stream?")).length;
   expect(streams()).toBe(1);
   broken = false;

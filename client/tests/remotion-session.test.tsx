@@ -180,6 +180,7 @@ test("hook 在参数待提交及读取期间拒绝重复恢复", async () => {
   await waitFor(() => expect(fake.streams.size).toBe(1));
   await act(async () => fake.advance(remotionJob("succeeded", "version-2")));
   await waitFor(() => expect(result.current.retryMode).toBe("version"));
+  /** 到目前为止从本地会话库读取快照的次数。 */
   const reads = () => snapshots.mock.calls.length;
   const before = reads();
   act(() => {

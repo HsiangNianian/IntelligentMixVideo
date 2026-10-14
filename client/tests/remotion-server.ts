@@ -201,7 +201,7 @@ export function remotionServer(
         }
         if (path === "/capabilities")
           return Response.json({ models_configured: true });
-        if (path === "/works") {
+        if (path === "/works" && options?.method === "POST") {
           const id = `work-${++created}`;
           return capture(
             path,
