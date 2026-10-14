@@ -1,5 +1,5 @@
 /**
- * 字效会话的本地存储：聊天消息、任务公开状态、版本索引与本机设备 ID 只保存在使用者这一端。
+ * 字效会话的本地存储：聊天消息、任务公开状态与本机设备 ID 只保存在使用者这一端；版本列表与代码按需从服务端读取。
  *
  * 桌面通过 Tauri `remotion_sessions` 命令读写应用数据目录下的 SQLite；浏览器仅供本地测试，使用页面内存，
  * 刷新即清空。两种实现共用同一存储接口，事件合并规则只在本文件实现一次：会话订阅把服务端事件交给
@@ -25,18 +25,11 @@ export interface StoredWork {
   updated_at: string;
   cursor: number;
 }
-/** 版本索引只记录编号关系，代码与参数仍按需从服务端读取。 */
-export interface VersionEntry {
-  id: string;
-  work_id: string;
-  job_id: string;
-}
-/** 一次原子写入：会话行与本批新增或更新的消息、任务、版本索引。 */
+/** 一次原子写入：会话行与本批新增或更新的消息、任务。 */
 export interface SessionChange {
   work: StoredWork;
   messages: ChatMessage[];
   jobs: SessionJob[];
-  versions: VersionEntry[];
 }
 /** 本地存储后端；messages 按序号从新到旧返回，`before` 为 null 时从最新开始。 */
 export interface SessionStorage {
@@ -72,7 +65,6 @@ export function memoryStorage(): SessionStorage {
   const works = new Map<string, StoredWork>();
   const messages = new Map<string, { work: string; message: ChatMessage }>();
   const jobs = new Map<string, SessionJob>();
-  const versions = new Map<string, VersionEntry>();
   return {
     device: async () => device,
     works: async () =>
@@ -98,13 +90,11 @@ export function memoryStorage(): SessionStorage {
       for (const job of change.jobs) jobs.set(job.id, structuredClone(job));
       for (const message of change.messages)
         messages.set(message.id, { work: change.work.work.id, message: structuredClone(message) });
-      for (const version of change.versions) versions.set(version.id, version);
     },
     remove: async (work) => {
       works.delete(work);
       for (const [id, job] of jobs) if (job.project_id === work) jobs.delete(id);
       for (const [id, message] of messages) if (message.work === work) messages.delete(id);
-      for (const [id, version] of versions) if (version.work_id === work) versions.delete(id);
     },
   };
 }
@@ -178,7 +168,6 @@ export async function record(
     },
     messages: [],
     jobs: [initial],
-    versions: [],
   });
 }
 /** 提交消息、参数或重试后先登记服务端返回的新任务为最新任务，事件到达前界面也不会回到旧任务状态。 */
@@ -187,12 +176,12 @@ export async function track(job: Job) {
   if (!stored || stored.job.id === job.id) return;
   const stamp = new Date().toISOString();
   const latest: SessionJob = { ...job, created_at: stamp, updated_at: stamp, parameters: null };
-  await storage().save({ work: { ...stored, job: latest }, messages: [], jobs: [latest], versions: [] });
+  await storage().save({ work: { ...stored, job: latest }, messages: [], jobs: [latest] });
 }
 /**
  * 按事件编号顺序把一批服务端事件合并进本地会话并原子保存，返回保存后的会话。
  *
- * 状态事件不含轮次，合并时保留已有轮次；轮次按层级与回合去重；成功版本更新作品指针并登记版本索引。
+ * 状态事件不含轮次，合并时保留已有轮次；轮次按层级与回合去重；成功版本只更新作品指针。
  * 已写入（编号不大于游标）的事件被忽略，重复投递不会产生重复记录。
  */
 export async function apply(work: string, events: WorkEvent[]): Promise<StoredWork> {
@@ -205,7 +194,6 @@ export async function apply(work: string, events: WorkEvent[]): Promise<StoredWo
   );
   const jobs = new Map((await storage().jobs(work, [...new Set(wanted)])).map((job) => [job.id, job]));
   const messages: ChatMessage[] = [];
-  const versions: VersionEntry[] = [];
   for (const event of fresh) {
     if (event.type === "message.created") messages.push(event.data);
     else if (event.type === "job.updated") {
@@ -222,13 +210,12 @@ export async function apply(work: string, events: WorkEvent[]): Promise<StoredWo
       }
     } else {
       stored.work = { ...stored.work, current_version_id: event.data.version_id };
-      versions.push({ id: event.data.version_id, work_id: work, job_id: event.data.job_id });
     }
     if (event.created_at > stored.updated_at) stored.updated_at = event.created_at;
     stored.cursor = event.id;
   }
   // 侧栏摘要不需要轮次明细，完整任务状态保存在任务行。
-  await storage().save({ work: { ...stored, job: { ...stored.job, rounds: [] } }, messages, jobs: [...jobs.values()], versions });
+  await storage().save({ work: { ...stored, job: { ...stored.job, rounds: [] } }, messages, jobs: [...jobs.values()] });
   return stored;
 }
 /** 删除本机会话的全部记录；服务端数据由删除接口单独清理。 */

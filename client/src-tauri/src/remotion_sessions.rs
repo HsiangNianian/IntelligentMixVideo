@@ -1,4 +1,4 @@
-//! 字效会话的本地 SQLite：聊天消息、任务公开状态、版本索引与本机设备 ID 只保存在使用者电脑。
+//! 字效会话的本地 SQLite：聊天消息、任务公开状态与本机设备 ID 只保存在使用者电脑。
 //!
 //! 库文件位于应用数据目录的 `data/remotion/sessions.sqlite3`，首次调用时创建。前端的
 //! `localSessions.ts` 负责合并服务端事件，这里只按操作读写 JSON 行：`save` 在一个事务内写入会话与本批记录，
@@ -19,8 +19,6 @@ const SCHEMA: &str = "
     CREATE INDEX IF NOT EXISTS messages_by_work ON messages(work_id, sequence);
     CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, work_id TEXT NOT NULL, data TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS jobs_by_work ON jobs(work_id);
-    CREATE TABLE IF NOT EXISTS versions (id TEXT PRIMARY KEY, work_id TEXT NOT NULL, data TEXT NOT NULL);
-    CREATE INDEX IF NOT EXISTS versions_by_work ON versions(work_id);
 ";
 
 /// 打开（必要时创建）会话库并确保表存在。
@@ -189,26 +187,13 @@ fn operate(path: &Path, operation: &str, payload: &Value) -> Result<Value, Strin
                     )
                     .map_err(failed)?;
             }
-            for version in payload
-                .get("versions")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                transaction
-                    .execute(
-                        "INSERT INTO versions(id, work_id, data) VALUES (?1, ?2, ?3) ON CONFLICT(id) DO NOTHING",
-                        params![text(version, "id")?, work, version.to_string()],
-                    )
-                    .map_err(failed)?;
-            }
             transaction.commit().map_err(failed)?;
             Ok(Value::Null)
         }
         "remove" => {
             let work = text(payload, "work")?;
             let transaction = connection.transaction().map_err(failed)?;
-            for table in ["messages", "jobs", "versions"] {
+            for table in ["messages", "jobs"] {
                 transaction
                     .execute(
                         &format!("DELETE FROM {table} WHERE work_id=?1"),
@@ -262,7 +247,7 @@ mod tests {
         }
     }
 
-    /// 一次保存：作品、两条消息、一个任务与一个版本索引。
+    /// 一次保存：作品、两条消息与一个任务。
     fn change(work: &str, updated_at: &str) -> Value {
         json!({
             "work": {"work": {"id": work, "current_version_id": null}, "title": "标题", "updated_at": updated_at, "cursor": 2,
@@ -271,8 +256,7 @@ mod tests {
                 {"id": format!("{work}-m1"), "sequence": 1, "text": "一"},
                 {"id": format!("{work}-m2"), "sequence": 2, "text": "二"}
             ],
-            "jobs": [{"id": format!("{work}-job"), "status": "running"}],
-            "versions": [{"id": format!("{work}-v1"), "work_id": work, "job_id": format!("{work}-job")}]
+            "jobs": [{"id": format!("{work}-job"), "status": "running"}]
         })
     }
 

@@ -1,5 +1,5 @@
 /**
- * 字效本地会话库回归：事件合并规则（任务状态、轮次、游标、版本索引）、消息分页、写入本地后确认送达，
+ * 字效本地会话库回归：事件合并规则（任务状态、轮次、游标、作品版本指针）、消息分页、写入本地后确认送达，
  * 以及 Remotion 请求和资产发布携带本机设备 ID；存储使用每例独立的内存实现，执行 bun run test。
  */
 import { expect, spyOn, test } from "bun:test";
@@ -53,12 +53,10 @@ test("本地合并保留轮次、去重并忽略已写入事件", async () => {
   expect(snapshot.cursor).toBe(4);
 });
 
-// 成功版本事件更新作品指针并登记版本索引；侧栏历史随之显示当前版本。
-test("成功版本写入作品指针与版本索引", async () => {
+// 成功版本事件只更新作品指针（版本列表按需从服务端读取）；侧栏历史随之显示当前版本。
+test("成功版本写入作品指针", async () => {
   await recordWork();
-  const save = spyOn(local.storage(), "save");
   await local.apply("work-1", [event(5, { type: "version.ready", data: { version_id: "version-9", job_id: "job-1" } })]);
-  expect(save.mock.calls.at(-1)![0].versions).toEqual([{ id: "version-9", work_id: "work-1", job_id: "job-1" }]);
   expect((await local.snapshot("work-1")).work.current_version_id).toBe("version-9");
   expect((await local.history()).items[0]).toMatchObject({ id: "work-1", current_version_id: "version-9", title: "本地标题" });
 });
