@@ -9,11 +9,12 @@ folder only holds job scratch, a verified read cache and the private audit logs 
 
 import json
 import logging
+import os
 import shutil
 import threading
 from collections import OrderedDict
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -58,6 +59,8 @@ from .tables import (
 
 ACTIVE = ("queued", "running")
 logger = logging.getLogger(__name__)
+# Read-cache files unused for this long are removed by the retention sweep; the object store keeps the originals.
+CACHE_IDLE = timedelta(days=30)
 # A device's last-seen time is rewritten at most this often.
 TOUCH_INTERVAL = timedelta(hours=1)
 # Devices whose activity this process wrote or checked recently; bounded, since any caller can send a new device ID.
@@ -323,6 +326,7 @@ class Store:
         """
         path = self.root / "cache" / relative
         if path.is_file() and digest(path) == sha256:
+            os.utime(path)
             return path
         path.parent.mkdir(parents=True, exist_ok=True)
         staged = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
@@ -356,6 +360,8 @@ class Store:
         directory = self.root / "cache" / "accepted" / str(version.id)
         try:
             verify_artifacts(version.candidate, version.spec, version.validation, directory)
+            for name in version.validation.artifacts:
+                os.utime(directory / name)
             return directory
         except (ValueError, OSError):
             pass
@@ -363,6 +369,19 @@ class Store:
             self.version_file(version, name)
         verify_artifacts(version.candidate, version.spec, version.validation, directory)
         return directory
+
+    def prune_cache(self, idle: timedelta = CACHE_IDLE) -> None:
+        """Remove read-cache files not used within ``idle`` (each hit refreshes a file's time), then empty folders."""
+        cache = self.root / "cache"
+        if not cache.is_dir():
+            return
+        cutoff = (now() - idle).timestamp()
+        for path in cache.rglob("*"):
+            if path.is_file() and not path.is_symlink() and path.stat().st_mtime < cutoff:
+                path.unlink(missing_ok=True)
+        for folder in sorted((path for path in cache.rglob("*") if path.is_dir()), key=lambda path: len(path.parts), reverse=True):
+            with suppress(OSError):
+                folder.rmdir()
 
     def job_dir(self, identifier: UUID) -> Path:
         """Scratch for one execution; removed when the execution ends, except its audit log."""

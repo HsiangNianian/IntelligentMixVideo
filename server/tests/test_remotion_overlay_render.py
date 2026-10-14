@@ -14,6 +14,7 @@ import signal
 import subprocess
 import threading
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -24,7 +25,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from generated.imv.sprite.v1 import sprite_pb2 as pb
 from pydantic import TypeAdapter
-from sqlalchemy import func, insert, select
+from sqlalchemy import func, insert, select, update
 from sqlalchemy.exc import OperationalError
 
 from server.app import app
@@ -691,6 +692,31 @@ def test_resume_reruns_unfinished_tasks(service) -> None:
     run_resume(overlays)
     assert overlays.get("11111111-1111-1111-1111-111111111111")["status"] == "succeeded"
     assert len(renderer.requests) == 1
+
+
+# 场景：保留期清理只删除早已结束且没有待发通知的任务，未结束或仍欠回调的任务留给恢复。
+def test_prune_drops_only_old_finished_tasks_with_nothing_to_deliver(service) -> None:
+    """早于截止时间的成功/失败任务（无回调或已通知）删除；运行中、仍欠回调或较新的任务保留。"""
+    overlays, _, _ = service
+    request = stored_request()
+    cases = {
+        "a" * 32: ("succeeded", {}, None),
+        "b" * 32: ("failed", {"notified": True}, "https://bus.example/callback"),
+        "c" * 32: ("failed", {}, "https://bus.example/callback"),
+        "d" * 32: ("rendering", {}, None),
+    }
+    for task_id, (status, changes, callback) in cases.items():
+        overlays._insert(task_id, {"request": {**request, "callback_url": callback}})
+        overlays._save(task_id, status, **changes)
+    overlays._insert("e" * 32, {"request": request})
+    overlays._save("e" * 32, "succeeded")
+    with overlays.store.transaction() as db:
+        db.execute(update(overlay_service.overlay_renders).where(overlay_service.overlay_renders.c.id != "e" * 32)
+                   .values(created_at="2020-01-01T00:00:00+00:00"))
+    overlay_service.prune_finished(overlays.store, datetime.now(UTC) - overlay_service.FINISHED_RETENTION)
+    with overlays.store.reading() as db:
+        kept = sorted(db.execute(select(overlay_service.overlay_renders.c.id)).scalars())
+    assert kept == ["c" * 32, "d" * 32, "e" * 32]
 
 
 # 场景：运行时第一次建立就恢复叠加任务，不论之后先访问哪条路由，也只恢复一次。

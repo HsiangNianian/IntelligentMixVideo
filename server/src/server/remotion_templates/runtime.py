@@ -18,7 +18,7 @@ from uuid import UUID, uuid4
 from .deletion import finish as finish_deletion
 from .settings import ClientSettings, Settings
 from .harness import Harness
-from .overlay_service import OverlayRenders
+from .overlay_service import FINISHED_RETENTION, OverlayRenders, prune_finished
 from .models import DialogueOutput, EditTemplateRequest, JobError, JobInput, MessageImage, TaskMessage
 from .parameters import parameter_changes
 from .provider import Budget, ExecutionFailure, ModelFailure, Provider
@@ -104,7 +104,8 @@ class Runtime:
             await asyncio.sleep(3600)
 
     async def sweep(self) -> None:
-        """Apply the retention periods: undelivered events, private audit logs, inactive devices and unused uploads.
+        """Apply the retention periods: undelivered events, private audit logs, inactive devices, unused uploads,
+        finished overlay render tasks and idle read-cache files.
 
         An upload no work references (its message was rejected or never sent) is reclaimed after 24 hours. Every
         pending deletion is (re)tried: the works of expired devices, and user deletions whose cleanup failed and that
@@ -116,6 +117,8 @@ class Runtime:
             ("undelivered events", lambda: self.store.expire_events(stamp - timedelta(days=self.settings.undelivered_event_days))),
             ("audit logs", lambda: self._expire_audit(stamp - timedelta(days=self.settings.audit_retention_days))),
             ("inactive devices", lambda: self.store.expire_devices(stamp - timedelta(days=self.settings.device_retention_days))),
+            ("finished overlay renders", lambda: prune_finished(self.store, stamp - FINISHED_RETENTION)),
+            ("idle read cache", self.store.prune_cache),
         )
         for name, step in steps:
             try:

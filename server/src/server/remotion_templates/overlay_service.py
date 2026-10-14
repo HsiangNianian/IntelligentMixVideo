@@ -12,7 +12,7 @@ import asyncio
 import json
 import logging
 import shutil
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -20,7 +20,7 @@ import httpx
 from fastapi import HTTPException
 from generated.imv.sprite.v1 import sprite_pb2 as pb
 from google.protobuf.json_format import MessageToDict, ParseDict
-from sqlalchemy import insert, select, update
+from sqlalchemy import delete, insert, select, update
 from sqlalchemy.exc import SQLAlchemyError
 
 from ..video_composition.schema import media_url
@@ -51,6 +51,29 @@ HTTP_TIMEOUT_SECONDS = 30
 PERSIST_ATTEMPTS = 3
 PERSIST_DELAY_SECONDS = 2
 TERMINAL = ("succeeded", "failed")
+# Finished tasks whose callback was delivered (or that have none) stay queryable this long, then the sweep drops them.
+FINISHED_RETENTION = timedelta(days=30)
+
+
+def prune_finished(store: Store, before: datetime) -> None:
+    """Delete finished overlay tasks created before the cutoff that have nothing left to deliver.
+
+    Unfinished tasks and those still owing their callback stay, so recovery can finish them.
+    """
+    with store.transaction() as db:
+        rows = db.execute(select(overlay_renders.c.id, overlay_renders.c.data).where(
+            overlay_renders.c.status.in_(TERMINAL), overlay_renders.c.created_at < before.astimezone(UTC).isoformat(),
+        )).all()
+        done = []
+        for row in rows:
+            try:
+                data = json.loads(row.data)
+                if not data["request"]["callback_url"] or data.get("notified"):
+                    done.append(row.id)
+            except (ValueError, KeyError, TypeError):
+                continue
+        if done:
+            db.execute(delete(overlay_renders).where(overlay_renders.c.id.in_(done)))
 
 
 class OverlayRenders:

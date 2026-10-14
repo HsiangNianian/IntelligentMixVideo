@@ -532,6 +532,23 @@ def test_sweep_retries_deletions_that_failed_and_isolates_each_work(service, sto
     assert count(store, works) == 0
 
 
+def test_idle_read_cache_files_are_evicted_and_hits_keep_them(store):
+    """读取缓存只是对象存储的副本：长期未用的文件被清理，命中缓存会刷新时间而保留；对象本身不受影响。"""
+    idle, used = reference(store), reference(store)
+    old = (now() - timedelta(days=60)).timestamp()
+    for asset in (idle, used):
+        os.utime(store.asset_path(asset.id), (old, old))
+    store.asset_path(used.id)
+    store.prune_cache()
+    cache = store.root / "cache" / "assets"
+    assert not (cache / f"{idle.id}.png").exists() and (cache / f"{used.id}.png").exists()
+    assert image_object(store, idle).exists()
+    os.utime(store.asset_path(used.id), (old, old))
+    store.prune_cache()
+    assert not cache.exists()
+    assert store.asset_path(used.id).exists()
+
+
 def image_object(store, asset):
     """参考图在本地对象存储中的文件。"""
     return store.root / "objects" / asset_key(asset.id)

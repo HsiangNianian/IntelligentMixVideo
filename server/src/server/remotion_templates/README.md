@@ -81,7 +81,10 @@ work removes its whole audit folder, including logs of jobs already pruned). An 
 three retention periods: undelivered events (`IMV_UNDELIVERED_EVENT_DAYS`, 7), audit logs
 (`IMV_AUDIT_RETENTION_DAYS`, 14) and the works of devices inactive for `IMV_DEVICE_RETENTION_DAYS` (90). The same
 sweep retries every deletion whose cleanup failed (an expired device's work, or a user DELETE answered 503 and never
-repeated); each step and each work is isolated, so one storage failure only postpones itself to the next hour.
+repeated), drops finished overlay render tasks with nothing left to deliver after 30 days
+(`overlay_service.FINISHED_RETENTION`) and removes read-cache files unused for 30 days (`store.CACHE_IDLE`; every hit
+refreshes a file's time). Each step and each work is isolated, so one storage failure only postpones itself to the
+next hour.
 Published Sprites survive all of these.
 
 ## Preset storage
