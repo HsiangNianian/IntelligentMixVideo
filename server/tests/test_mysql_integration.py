@@ -59,6 +59,16 @@ def mysql_database(monkeypatch):
             admin.dispose()
 
 
+def summary(templates: list[dict]) -> list[tuple[str, str, int]]:
+    """列表摘要中用于比较的字段：模板 ID、名称与轨道数。"""
+    return [(item["template_id"], item["name"], item.get("track_count", 0)) for item in templates]
+
+
+def summary_of(saved: dict) -> tuple[str, str, int]:
+    """保存后的完整模板对应的列表摘要字段。"""
+    return saved["template_id"], saved["name"], len(saved["tracks"])
+
+
 def test_mysql_bootstrap_unicode_and_persistence(mysql_database, template_payload):
     """真实启动创建 utf8mb4 库与缺失表；中文、emoji、JSON 和 UTC 响应在重启后保持。"""
     with TestClient(app) as client:
@@ -83,12 +93,15 @@ def test_mysql_bootstrap_unicode_and_persistence(mysql_database, template_payloa
     with TestClient(app) as client:
         response = client.get(f"/template/{saved['template_id']}")
         assert response.status_code == 200 and detail_template(response) == saved
-        assert listed_templates(client.get("/template")) == [saved]
+        assert summary(listed_templates(client.get("/template"))) == [summary_of(saved)]
 
 
 def test_mysql_stores_remotion_tracks_as_references(mysql_database, template_payload):
-    """未发布的 Sprite 被 422 拒绝；片段轨道的引用、秒数起点和空 editor 经 MySQL JSON 列往返不变，重启后读取仍通过校验；IMS 轨道不带 sprite_id。"""
-    template_payload["tracks"] += [remotion_track("clip-a", start=2.5, duration=3), remotion_track("clip-b")]
+    """未发布的 Sprite 被 422 拒绝；片段轨道的引用、作用对象、秒数起点和空 editor 经 MySQL JSON 列往返不变，重启后读取仍通过校验；IMS 轨道不带 sprite_id。"""
+    template_payload["tracks"] += [
+        remotion_track("clip-a", start=2.5, duration=3, text_target="title"),
+        remotion_track("clip-b", text_target="subtitle"),
+    ]
     with TestClient(app) as client:
         assert post_template(client, template_payload).status_code == 422
         seed_sprite()
@@ -97,12 +110,13 @@ def test_mysql_stores_remotion_tracks_as_references(mysql_database, template_pay
         saved = saved_template(response)
         with database.get_engine().connect() as connection:
             stored = connection.execute(select(store.templates.c.configuration)).scalar_one()
-        assert stored["tracks"][1] == {
-            "id": "clip-a", "target": "remotion", "sprite_id": SPRITE_ID,
+        tracks = {track["id"]: track for track in stored["tracks"]}
+        assert tracks["clip-a"] == {
+            "id": "clip-a", "target": "remotion", "sprite_id": SPRITE_ID, "text_target": "title",
             "start_mode": "seconds", "start": 2.5, "duration": 3, "editor": {},
         }
-        assert stored["tracks"][2]["duration"] is None
-        assert "sprite_id" not in stored["tracks"][0]
+        assert tracks["clip-b"]["duration"] is None
+        assert all("sprite_id" not in track for track in stored["tracks"] if track["target"] != "remotion")
     with TestClient(app) as client:
         assert detail_template(client.get(f"/template/{saved['template_id']}")) == saved
 
@@ -149,7 +163,7 @@ def test_mysql_conflict_rollback_update_and_delete(mysql_database, template_payl
         duplicate = post_template(client, template_payload)
         assert duplicate.status_code == 409 and duplicate.json()["detail"]
         assert post_template(client, {**template_payload, "name": " "}).status_code == 422
-        assert listed_templates(client.get("/template")) == [saved]
+        assert summary(listed_templates(client.get("/template"))) == [summary_of(saved)]
         updated = post_template(client, {
             **template_payload, "template_id": saved["template_id"], "name": "重命名",
         })
