@@ -205,8 +205,7 @@ largest): entrance and exit animations show it smaller, scaled down or typed in,
 clips it while it holds. The `text_fit` check fails when every one of those frames has a problem, so a reveal mask
 or slide-in that moves the full-size text out of view for a few frames is fine, while a fixed-size box that clips
 long text whenever it is shown at full size is not; it also fails when the filler text is never visibly rendered. A failure is refused with `CODE_VALIDATION_FAILED` (`text_fit: ...` with the clipped box or
-size and the fix: wrap the text inside a bounded width, no fixed-height `overflow: hidden` box, shrink the font
-for long text, never below 24px; `text.maxLength` must remain exactly 100, so text that still cannot fit requires layout and wrapping fixes, never a lower limit). It is a geometric measurement, not a visual review; like the transparency
+size and the fix: wrap the text inside a bounded width of about 90 % of the canvas, no fixed-height `overflow: hidden` box, and use `fontSize` as given instead of deriving a size from the character count; `text.maxLength` must remain exactly 100, so text that still cannot fit requires layout and wrapping fixes, never a lower limit). The check fills the text to `maxLength` at the smallest size the host shrinks to (the declared `fontSize` minimum, at least 24), and then measures the default text at the default `fontSize`, which a user sees first and which must fit without the host's help. It is a geometric measurement, not a visual review; like the transparency
 measurement it only applies to generation, and already published versions are not re-checked.
 
 Contract diagnostics carry the position of a violation (line, column and range in the submitted code).
@@ -434,9 +433,15 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   scales and rotates it, lines under 20px tall, or only part of the text shown, judged on the frames that show the
   text at its full size. Placements that differ only in length or transform are measured separately; the
   transform's opacity does not move text and is ignored. Text that already fits keeps its `fontSize`; otherwise the
-  host lowers `fontSize` to the largest whole size, down to the published minimum, at which it is shown in full
-  (binary search; the size is logged, the template and the sealed source are untouched). Text that does not fit even
-  at the minimum fails the task with `text_too_long` and a fixed message (the callback's `errorMessage`) so the bus can
+  host lowers `fontSize` to the largest whole size, down to the published minimum but never below 24 (smaller lines count as unreadable), at which it is shown in full
+  (binary search; the size is logged, the template and the sealed source are untouched). A `keywordSize` above 0 is
+  an absolute size, so it shrinks by the same ratio (at least 12, never larger than set), keeping the keyword's
+  proportion to the text instead of crowding the smaller text. If at the minimum the text
+  still leaves the canvas only because of where it is placed (a long title whose centre sits near the top edge), the
+  host moves this render's copy of the placement by the shortest distance that brings it back inside (the shift is
+  logged; the saved placement is untouched, and the horizontal position changes only when the text overhangs the
+  side). Text that is clipped, too small, or wider or taller than the canvas even then fails the task with
+  `text_too_long` and a fixed message (the callback's `errorMessage`) so the bus can
   tell the user to shorten it, instead of publishing a clipped title. Other Sprites skip the pass, and a fit sandbox
   that cannot start fails the task as `render_failed`. `POST /api/sprites/render` runs the same pass on each distinct
   text or cue (a held text is measured on its frozen frame), and a video composition (`video_composition/remotion.py`)

@@ -14,6 +14,7 @@ import signal
 import subprocess
 import threading
 import time
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -1456,9 +1457,11 @@ def test_real_short_subtitles_hold_still(tmp_path: Path) -> None:
 class FitRenderer:
     """排版预检 worker 的替身：只有不超过 `capacity` 的字号才放得下，并记录每次请求。"""
 
-    def __init__(self, capacity: int | None) -> None:
-        """capacity 为能完整显示文字的最大字号；None 表示连最小字号也放不下。"""
+    def __init__(self, capacity: int | None, shift: dict | None = None, shift_text: str | None = None) -> None:
+        """capacity 为能完整显示文字的最大字号；None 表示连最小字号也放不下；shift 是答案里附带的平移，给出 shift_text 时只附在该文字的条目上。"""
         self.capacity = capacity
+        self.shift = shift
+        self.shift_text = shift_text
         self.settings = SimpleNamespace(render_timeout_seconds=180)
         self.requests: list[dict] = []
         self.limits: list[tuple] = []
@@ -1481,7 +1484,8 @@ class FitRenderer:
                 if self.capacity is None:
                     answers.append({"index": item["index"], "fits": False, "size": item["min"]})
                 else:
-                    answers.append({"index": item["index"], "fits": True, "size": min(wanted, self.capacity)})
+                    moved = self.shift and self.shift_text in (None, item["text"])
+                    answers.append({"index": item["index"], "fits": True, "size": min(wanted, self.capacity), **({"shift": self.shift} if moved else {})})
             fits.append(answers)
         return {"fits": fits}
 
@@ -1491,6 +1495,31 @@ def title_overlay(text: str, font_size: int = 128):
     editor = {"remotion": {"parameters": [{"key": "text", "stringValue": text}, {"key": "fontSize", "numberValue": font_size}]}}
     placed = OverlayPlacement.model_validate({"spriteId": "c", "start": 0, "editor": editor})
     return plan_overlay([placed], PUBLICATIONS, 3.0, 120)
+
+# 场景：最小字号下文字仍出画布时 worker 答案带平移：渲染计划里这个摆放的宿主变换整体移动，已设置的坐标加上平移、
+# 未设置的从内容区域中心算起；字号照常缩小，保存的摆放设置不变；答案里的平移不是一对有限数字时按预检不可用（render_failed）处理。
+def test_fit_applies_the_workers_shift_to_this_renders_host_only(tmp_path) -> None:
+    """x 已设为 300、y 未设（内容区域中心 960）：平移 (0, 40) 后变换为 x=300、y=1000；字号缩到 48。"""
+    editor = {"remotion": {"parameters": [{"key": "text", "stringValue": "测" * 20}, {"key": "fontSize", "numberValue": 128}], "transform": {"x": 300}}}
+    placement = OverlayPlacement.model_validate({"spriteId": "c", "start": 0, "editor": editor})
+    overlay = plan_overlay([placement], PUBLICATIONS, 3.0, 120)
+    box = overlay.instances[0]["host"]["box"]
+    asyncio.run(overlay_render.fit_texts(FitRenderer(capacity=48, shift={"x": 0, "y": 40}), overlay, PUBLICATIONS, tmp_path / "fit"))
+    assert overlay.instances[0]["host"]["transform"] == {"x": 300, "y": box["y"] + box["height"] / 2 + 40}
+    assert overlay.instances[0]["config"]["fontSize"] == 48
+    assert placement.editor.remotion.transform.model_dump(exclude_none=True) == {"x": 300}
+    # A video composition gives all cues of a placement one shared host: only the cue that needs the shift moves.
+    shared = {"box": box, "transform": {"y": 500}}
+    cues = [{**overlay.instances[0], "text": text, "host": shared, "config": {"text": text, "fontSize": 128}} for text in ("短句", "测" * 20, "测" * 20)]
+    overlay = replace(overlay, instances=cues)
+    renderer = FitRenderer(capacity=48, shift={"x": 0, "y": 40}, shift_text="测" * 20)
+    asyncio.run(overlay_render.fit_texts(renderer, overlay, PUBLICATIONS, tmp_path / "shared"))
+    assert [item["host"]["transform"] for item in overlay.instances] == [{"y": 500}, {"y": 540}, {"y": 540}]
+    assert shared == {"box": box, "transform": {"y": 500}}
+    with pytest.raises(OverlayError) as failure:
+        asyncio.run(overlay_render.fit_texts(FitRenderer(capacity=48, shift={"x": "1", "y": 0}), title_overlay("标题"), PUBLICATIONS, tmp_path / "bad"))
+    assert failure.value.code == "render_failed"
+
 
 
 # 场景（issue #119）：总线传来的长标题在默认字号下放不下，宿主按这次真正的文字把字号缩到放得下的最大值，文字本身不变。
@@ -1590,7 +1619,7 @@ def titled(text: str, *, sprite_id: str = "t", duration: float | None = None, fo
     return OverlayPlacement.model_validate({"spriteId": sprite_id, "start": 0, **({"duration": duration} if duration else {}), "editor": {"remotion": remotion}})
 
 
-def fit_for_real(tmp_path: Path, codes: str | dict[str, str], placements: list[OverlayPlacement], seconds: float):
+def fit_for_real(tmp_path: Path, codes: str | dict[str, str], placements: list[OverlayPlacement], seconds: float, *, minimum: int = 24):
     """用真实沙箱和浏览器对这些摆放做排版预检，返回预检后的渲染计划。
 
     codes 是各字效的源码（Sprite ID 到源码；只给一份源码时就是字效 t），内容区域都是整块画布。
@@ -1607,16 +1636,18 @@ def fit_for_real(tmp_path: Path, codes: str | dict[str, str], placements: list[O
     settings = Settings(_env_file=None, data_dir=tmp_path / "state", **configured)
     schema = {"type": "object", "properties": {
         "text": {"type": "string", "minLength": 1, "maxLength": 100},
-        "fontSize": {"type": "number", "minimum": 24, "maximum": 240},
+        "fontSize": {"type": "number", "minimum": minimum, "maximum": 240},
+        "keywordSize": {"type": "integer", "minimum": 0, "maximum": 300},
     }, "required": ["text", "fontSize"], "additionalProperties": False}
     published = {sprite_id: pb.PublishedSprite(
         sprite_id=sprite_id, name=sprite_id, kind=pb.SPRITE_KIND_TEXT, tsx_code=code, text_prop="text",
         canvas=pb.SpriteCanvas(width=1080, height=1920, fps=30, preview_frames=30),
-        config_schema_json=json.dumps(schema), default_config_json=json.dumps({"text": "标题", "fontSize": 128}, ensure_ascii=False),
+        config_schema_json=json.dumps(schema), default_config_json=json.dumps({"text": "标题", "fontSize": 128, "keywordSize": 0}, ensure_ascii=False),
         content_box=pb.SpriteBox(x=0, y=0, width=1080, height=1920),
         parameters=[
             pb.SpriteParameter(key="text", label="文字", access=pb.OPERATOR_ACCESS_VISIBLE_EDITABLE, default_value=pb.ScalarValue(string_value="标题"), min_length=1, max_length=100),
-            pb.SpriteParameter(key="fontSize", label="字号", access=pb.OPERATOR_ACCESS_VISIBLE_EDITABLE, default_value=pb.ScalarValue(number_value=128), minimum=24, maximum=240),
+            pb.SpriteParameter(key="fontSize", label="字号", access=pb.OPERATOR_ACCESS_VISIBLE_EDITABLE, default_value=pb.ScalarValue(number_value=128), minimum=minimum, maximum=240),
+            pb.SpriteParameter(key="keywordSize", label="关键词字号", access=pb.OPERATOR_ACCESS_VISIBLE_EDITABLE, default_value=pb.ScalarValue(number_value=0), minimum=0, maximum=300, format=pb.SPRITE_PARAMETER_FORMAT_INTEGER),
         ],
     ) for sprite_id, code in ({"t": codes} if isinstance(codes, str) else codes).items()}
     overlay = plan_overlay(placements, published, seconds, 120)
@@ -1809,3 +1840,83 @@ def test_fit_measures_only_the_frames_that_are_rendered(tmp_path) -> None:
     [request] = renderer.requests
     [sprite] = request["sprites"]
     assert [(item["frames"], item["length"]) for item in sprite["fit"]] == [([0, 7, 14, 21, 29], 90)]
+
+
+# 场景：标题摆在紧贴画布顶边的位置（内容中心 y=20）、字号 200，总线可能传入 8～100 个字。8 个字缩小字号即可放进画布，位置不动；
+# 100 个字缩到最小字号 24 仍有一部分在画布外，宿主把它向画布内平移最小距离而不是以 text_too_long 失败，水平位置与摆放里保存的设置不变。
+@pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
+def test_real_browser_nudges_a_long_title_at_the_top_edge_into_the_canvas(tmp_path: Path) -> None:
+    """8 字缩到 40 以内且不平移；100 字字号 24、y 从 20 下移到约 43（三行 86px 的一半），x 不变。"""
+    short = fit_for_real(tmp_path / "short", WRAPPED_TITLE, [titled("测" * 8, font_size=200, x=540, y=20)], 1.0).instances[0]
+    assert short["config"]["fontSize"] <= 40
+    assert short["host"]["transform"] == {"x": 540, "y": 20}
+    long = fit_for_real(tmp_path / "long", WRAPPED_TITLE, [titled("测" * 100, font_size=200, x=540, y=20)], 1.0).instances[0]
+    assert long["config"]["fontSize"] == 24
+    assert long["host"]["transform"]["x"] == 540
+    assert 40 <= long["host"]["transform"]["y"] <= 48
+
+
+# 场景：标题的内容中心紧贴画布左边（x=60），8 个字在最小字号 24 下宽 192，左端仍在画布外；宿主只向右平移，
+# 不写入没有移动的 y 坐标，字号缩到最小。
+@pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
+def test_real_browser_nudges_a_title_at_the_left_edge_sideways_only(tmp_path: Path) -> None:
+    """字号 24；x 从 60 右移到约 96（192px 宽的一半），变换里仍没有 y。"""
+    instance = fit_for_real(tmp_path, WRAPPED_TITLE, [titled("测" * 8, font_size=100, x=60)], 1.0).instances[0]
+    assert instance["config"]["fontSize"] == 24
+    assert set(instance["host"]["transform"]) == {"x"}
+    assert 94 <= instance["host"]["transform"]["x"] <= 98
+
+
+# 场景：摆放旋转 90°：100 个字在 972 宽的框里排成约 960px 的行，旋转后竖直方向占 960px，中心 y=100 时上端在画布外约 380px。
+# 平移按旋转后的外包矩形计算，只向下移动，x 保持摆放里的值。
+@pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
+def test_real_browser_nudges_a_rotated_title_by_its_rotated_extent(tmp_path: Path) -> None:
+    """字号 24；y 从 100 下移约 380，x 保持 540，旋转不变。"""
+    instance = fit_for_real(tmp_path, WRAPPED_TITLE, [titled("测" * 100, font_size=100, x=540, y=100, rotation=90)], 1.0).instances[0]
+    transform = instance["host"]["transform"]
+    assert instance["config"]["fontSize"] == 24
+    assert (transform["x"], transform["rotation"]) == (540, 90)
+    assert 470 <= transform["y"] <= 490
+
+
+KEYWORD_TITLE = """import React from "react";
+import { AbsoluteFill } from "remotion";
+export default function Title(props: { text: string; fontSize: number; keywordSize: number }) {
+  return (
+    <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
+      <div style={{ width: 972, textAlign: "center", fontSize: props.fontSize, lineHeight: 1.2, whiteSpace: "normal", wordBreak: "break-all", color: "#fff" }}>
+        <span style={{ fontSize: props.keywordSize || props.fontSize, color: "#f00" }}>{props.text.slice(0, 2)}</span>{props.text.slice(2)}
+      </div>
+    </AbsoluteFill>
+  );
+}
+"""
+
+
+def keyworded(text: str, font_size: int, keyword_size: int) -> OverlayPlacement:
+    """字效 t 的一个摆放：覆盖文字、字号与关键词字号（关键词是文字的前两个字）。"""
+    parameters = [{"key": "text", "stringValue": text}, {"key": "fontSize", "numberValue": font_size}, {"key": "keywordSize", "numberValue": keyword_size}]
+    return OverlayPlacement.model_validate({"spriteId": "t", "start": 0, "editor": {"remotion": {"parameters": parameters}}})
+
+
+# 场景：模板里关键词字号设成文字的 1.5 倍（字号 160、关键词 240）。总线传来的长标题把字号缩小时，绝对字号的关键词若不跟着缩，
+# 会压住后面的字并逼着正文缩得更小；宿主让关键词字号按同一比例缩小，保持 1.5 倍，字号没有缩小时关键词字号不动。
+@pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
+def test_real_browser_shrinks_the_keyword_size_with_the_text(tmp_path: Path) -> None:
+    """长标题：字号缩到 160 以下，关键词字号约为它的 1.5 倍而不是 240；短标题：两个字号都不变。"""
+    long = fit_for_real(tmp_path / "long", KEYWORD_TITLE, [keyworded("测" * 100, 160, 240)], 1.0).instances[0]["config"]
+    assert 24 <= long["fontSize"] < 160
+    assert abs(long["keywordSize"] - 1.5 * long["fontSize"]) <= 1
+    short = fit_for_real(tmp_path / "short", KEYWORD_TITLE, [keyworded("标题", 100, 150)], 1.0).instances[0]["config"]
+    assert (short["fontSize"], short["keywordSize"]) == (100, 150)
+
+
+# 场景：资产声明的 fontSize 最小值是 8，100 个字在字号 200 下放不下。宿主的下限取 24（再小的行高算不可读，“越小越放得下”的二分假设不成立），
+# 在 24～200 之间二分得到放得下的字号；若下限是 8，先试 8 因“太小”判为放不下，整个任务就会以 text_too_long 失败。
+@pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
+def test_real_browser_never_shrinks_text_below_the_readable_size(tmp_path: Path) -> None:
+    """最小值 8、字号 200、100 字：缩到 24 以上且小于 200；字号本来就是 20 的短标题不被放大。"""
+    instance = fit_for_real(tmp_path / "long", WRAPPED_TITLE, [titled("测" * 100, font_size=200)], 1.0, minimum=8).instances[0]
+    assert 24 <= instance["config"]["fontSize"] < 200
+    small = fit_for_real(tmp_path / "small", WRAPPED_TITLE, [titled("标题", font_size=20)], 1.0, minimum=8).instances[0]
+    assert small["config"]["fontSize"] == 20
