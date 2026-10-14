@@ -432,6 +432,37 @@ def test_a_composed_sprite_keeps_erased_variable_types_valid_under_strict_typesc
     assert sprite["passed"] is True, sprite["diagnostics"]
 
 
+ERASED_CLASS_PRESET = """import React from "react";
+
+class Tally {
+  items: string[] = [];
+  last: string | null = null;
+  declare total: number;
+  constructor(private limit: number) {}
+  add(word: string) { if (this.items.length < this.limit) this.items.push(word); this.last = word; this.total = this.items.length; }
+}
+
+class Label extends React.Component<{ text: string }, { open: boolean }> {
+  state = { open: false };
+  render() { return <span data-open={String(this.state.open)}>{this.props.text}</span>; }
+}
+
+export default function Tag(props: { label: string; words?: string[] }) {
+  const tally = new Tally(3);
+  for (const word of props.words ?? []) tally.add(word);
+  return <Label text={`${props.label} ${tally.last ?? ""} ${tally.total}`} />;
+}
+"""
+
+
+@needs_node
+def test_a_composed_sprite_keeps_erased_class_member_types_valid_under_strict_typescript(tmp_path):
+    """合成打包会擦掉类字段注解、参数属性、`declare` 字段和 `React.Component<P, S>` 的类型参数，合成产物随之报 TS2339/TS2345/TS2322；它须与原 Preset 一样通过严格类型检查。"""
+    preset, sprite = compose_and_validate(tmp_path, ERASED_CLASS_PRESET)
+    assert preset["passed"] is True, preset["diagnostics"]
+    assert sprite["passed"] is True, sprite["diagnostics"]
+
+
 @needs_node
 def test_a_bare_exec_call_is_still_refused_and_located(tmp_path):
     """被禁止的 exec 仍然拒绝，并且诊断给出行列号与范围，模型可以直接定位。"""
