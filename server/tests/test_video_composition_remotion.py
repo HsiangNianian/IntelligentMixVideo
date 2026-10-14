@@ -16,7 +16,7 @@ from google.protobuf.json_format import MessageToDict
 from server.video_composition.remotion_content import ContentError, dynamic_duration, resolve_config, roles
 from server.video_composition.remotion_timing import retime_source
 from server.remotion_templates.overlay_render import OverlayError
-from server.video_composition import remotion, service, store
+from server.video_composition import execution_log, remotion, service, store
 from server.video_composition.errors import CompositionError
 
 
@@ -255,8 +255,8 @@ async def test_render_uses_shared_slot_and_persists_public_video(composition_cas
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("diagnostic_writable", [True, False])
-async def test_render_failure_keeps_private_cause_before_cleanup(composition_case, monkeypatch, tmp_path, diagnostic_writable):
-    """失败保留 worker 原始错误及完整异常链，清理视频；诊断写入失败仍返回原始业务错误。"""
+async def test_render_failure_keeps_private_cause_before_cleanup(composition_case, composition_runtime, composition_logs, monkeypatch, tmp_path, diagnostic_writable):
+    """失败引用已有私有根因；私有诊断写入失败时仍保存通用错误文件，不掩盖原错误。"""
     slot = asyncio.Semaphore(1)
     runtime = SimpleNamespace(settings=SimpleNamespace(overlay_max_seconds=120), store=SimpleNamespace(root=tmp_path),
                               overlays=SimpleNamespace(slot=slot), harness=SimpleNamespace(renderer="renderer"))
@@ -280,18 +280,44 @@ async def test_render_failure_keeps_private_cause_before_cleanup(composition_cas
     monkeypatch.setattr(remotion, "render_overlay", fail)
     if not diagnostic_writable:
         monkeypatch.setattr(remotion, "preserve_failure", unwritable)
+    legacy = tmp_path / "composition-overlay-failures" / "task" / "error.log"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("历史诊断")
+    store.initialize_schema()
+    record = store.advance(store.create(composition_case["request"], {}, task_id="task"), "assembling")
     with pytest.raises(CompositionError) as caught:
-        await remotion.render("task", case(composition_case), 10)
+        await composition_runtime.step(record, "remotion_render", lambda: remotion.render("task", case(composition_case), 10), {})
     assert caught.value.error == {"code": "remotion_render_failed", "message": "叠加视频渲染失败", "stage": "assembling"}
+    store.advance(record, "failed", status="failed", error=caught.value.error,
+                  diagnostics=execution_log.exception_details(caught.value))
+    entries = composition_logs("task", raw=True)[0]["timeline"]["error_log"]
+    assert [entry["action"] for entry in entries] == ["remotion_render.step_failed", "assembling.task_finished"]
+    assert "private browser connection timeout" not in json.dumps(entries)
     assert not slot.locked()
     assert not (tmp_path / "composition-overlays" / "task").exists()
-    private = tmp_path / "composition-overlay-failures" / "task"
+    private = execution_log.LOG_ROOT / "video_composition" / "task" / "errors"
+    for entry in entries:
+        relative = Path(entry["error"]["detail_log_path"])
+        assert not relative.is_absolute()
+        linked = execution_log.LOG_ROOT / "video_composition" / "task" / relative
+        assert linked.is_file()
+        if diagnostic_writable:
+            assert relative.as_posix() == "errors/remotion-error.log"
+            assert linked.resolve() == private / "remotion-error.log"
+        else:
+            assert relative.parent == Path("errors")
+            assert "private browser connection timeout" not in linked.read_text()
     if diagnostic_writable:
-        assert "25000 ms" in (private / "worker.log").read_text()
-        detail = (private / "error.log").read_text()
+        assert "25000 ms" in (private / "remotion-worker.log").read_text()
+        detail = (private / "remotion-error.log").read_text()
         assert "RuntimeError: private browser connection timeout" in detail and "OverlayError" in detail
-        assert {item.name for item in private.iterdir()} == {"worker.log", "error.log"}
+        assert {item.name for item in private.iterdir()} == {"remotion-worker.log", "remotion-error.log"}
         assert private.stat().st_mode & 0o777 == 0o700
+        # JSON 单独未超限，加入 Remotion 文件才超限；已结束任务应整体清理。
+        monkeypatch.setattr(execution_log, "MAX_BYTES", sum(path.stat().st_size for path in private.parent.glob("*.json")))
+        execution_log.cleanup(store.finished_tasks)
+        assert not private.parent.exists()
+    assert legacy.read_text() == "历史诊断"
 
 
 # 场景：渲染前的计划/时长适配打包失败时，公开错误只有固定摘要，打包器 stderr 等根因须进入私有诊断。
@@ -313,7 +339,7 @@ async def test_plan_failure_keeps_private_cause(composition_case, monkeypatch, t
     with pytest.raises(CompositionError) as caught:
         await remotion.render("task", case(composition_case), 10)
     assert caught.value.error["code"] == "remotion_asset_not_adapted"
-    detail = (tmp_path / "composition-overlay-failures" / "task" / "error.log").read_text()
+    detail = (execution_log.LOG_ROOT / "video_composition" / "task" / "errors" / "remotion-error.log").read_text()
     assert "CalledProcessError" in detail and "Cannot find module 'esbuild'" in detail
     assert not (tmp_path / "composition-overlays" / "task").exists()
 

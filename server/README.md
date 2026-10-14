@@ -108,6 +108,8 @@ standard 模式中，请求不包含 `materials` 时为纯数字人：跳过素�
 
 历史日志仍保留在 `server/src/server/.log/`，不迁移或删除。新旧日志目录均由 Git 忽略，避免误提交带签名的业务链接；日志采集需同时覆盖历史目录与当前的 `server/.log/`。
 
+调度异常同时输出到服务端日志，并独立保存最近一次诊断到 `server/.log/video_composition/dispatch-error.json`（原子覆盖、不依赖数据库、写入失败不停止重试）。它不归属某个任务；任务内错误仍记录到对应模块的 `error_log`。数据库诊断保留 MySQL 原始错误码、驱动固定错误名称、连接失效标记和完整调用位置（文件、行号、函数，不含源码或局部变量），连接底层异常另保留类型及系统/TLS 校验错误码，不记录 SQL、参数或驱动原始正文。
+
 新任务执行日志保存到 `.log/video_composition/<task_id>/`，相对根目录固定为 `server/` 项目目录，按源码位置定位，不受启动工作目录影响。每个任务包含下面七个 JSON 文件（如 `asr.json`），时间使用北京时间：
 
 | 文件名（省略 `.json`） | 内容 |
@@ -123,6 +125,8 @@ standard 模式中，请求不包含 `materials` 时为纯数字人：跳过素�
 每个文件均为 `{"input": [], "output": [], "execute_log": [], "error_log": []}`。输入输出条目使用
 `time/action/data`，执行条目严格只有 `time/action/status`，状态沿用该事件发生时的任务状态；错误条目另外保存 `error`。
 动作采用 `阶段.事件`，如 `asr.step_finished`；输入输出可按时间和动作定位，重试与查询记录保留。
+七模块的新错误（含拒绝、取消及通知重试）在任务目录的 `errors/<随机记录ID>.log` 保存独立的脱敏错误快照，包含时间、动作、状态及当前已捕获的异常链、调用位置、错误码或拒绝原因；没有捕获到的上游信息不会补造。每条错误单独保存，成功事件不生成详细文件，已有记录不补写。对应 `error_log[].error.detail_log_path` 使用相对于该 JSON 所在目录的路径，例如 `errors/abc123.log`；JSON 保留原有诊断字段，不额外嵌入文件正文。详细文件写入失败时仍尝试保存 JSON 错误摘要，不添加无效路径；HTTP 查询和回调不返回该字段。
+Remotion 新私有诊断也保存到任务的 `errors/`：异常链为 `remotion-error.log`，worker 输出为 `remotion-worker.log`（存在时保存），路径为 `errors/remotion-error.log`，不重复生成通用错误副本。私有诊断保存失败时，通用错误文件仅保存当前可用的脱敏诊断，不含未保存的渲染器输出。整个 `errors/` 随任务目录计入下述 50 MB 清理；旧 `composition-overlay-failures/` 不迁移、不删除，已有路径仍有效。
 任务快照仅补充尚未保存的内容，不重复把输入输出塞入执行记录。`timeline.output` 不保存中间组装的时间线，
 只从最终提交请求提取；同模块还保留提交响应和非空组装警告。密钥与回调令牌继续脱敏。
 
@@ -271,4 +275,4 @@ HTTP 请求与轮询等待均为异步，不阻塞事件循环。等待预算必
 
 视频合成支持同一 `styleId` 下的 Remotion 动态字效；新 `text_target` 槽位沿用上游的 IMS 文字替代规则，旧独立用途快照继续兼容。保存接口接受仅有 `editor.remotion.businessTarget=title/subtitle` 的旧字效轨道，替换资产仍保留 IMS 与 Remotion 共存，不自动迁移为新槽位。使用方式、资产字段声明、旧资产适配、时长限制和联调清单见 [Remotion 接入说明](../docs/remotion-video-composition.md)。
 
-合成侧计划、时长适配打包、渲染或上传失败会在 Remotion 数据目录的 `composition-overlay-failures/<task_id>/` 私有保留 `worker.log` 与异常链 `error.log`（含子进程 stderr），临时视频和编译产物仍清理；公开错误保持稳定摘要，执行日志只记录根因的异常类型、代码位置与错误码，排障时读取私有日志。
+合成侧计划、时长适配打包、渲染或上传失败会在 `server/.log/video_composition/<task_id>/errors/` 私有保留 `remotion-worker.log` 与异常链 `remotion-error.log`（含子进程 stderr），临时视频和编译产物仍清理；公开错误保持稳定摘要，执行日志记录根因的异常类型、代码位置、错误码及详细日志相对路径，排障时按 `timeline.json` 的 `error_log[].error.detail_log_path` 读取私有日志。

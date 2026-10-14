@@ -24,8 +24,8 @@ from .remotion_content import ContentError, dynamic_duration, resolve_config, ro
 from .remotion_timing import retime_source
 from ..remotion_templates.overlay_render import Overlay, OverlayError, environment_problem, fit_texts, render_overlay, to_frames
 from ..remotion_templates.sprite_router import sprite_runtime
+from . import execution_log
 from .errors import CompositionError
-from .execution_log import sanitize
 from .schema import CompositionRequest, Segment
 from .settings import ZosSettings
 from .text_events import subtitle_events
@@ -35,8 +35,8 @@ logger = logging.getLogger(__name__)
 
 
 def preserve_failure(work: Path, error: Exception) -> None:
-    """清理前私有保存完整异常链、子进程 stderr 和 worker 日志；不保留视频，不进入公开七模块日志。"""
-    destination = work.parent.parent / "composition-overlay-failures" / work.name
+    """清理前将私有诊断存入任务 errors/；异常正文写入成功后附加相对路径，随任务统一清理。"""
+    destination = execution_log.LOG_ROOT / "video_composition" / work.name / "errors"
     destination.mkdir(parents=True, exist_ok=True, mode=0o700)
     detail = "".join(traceback.format_exception(error))
     cause, seen = error, set()
@@ -46,10 +46,11 @@ def preserve_failure(work: Path, error: Exception) -> None:
         if isinstance(stderr := getattr(cause, "stderr", None), str) and stderr:
             detail += f"\n[{type(cause).__name__} stderr]\n{stderr[-20000:]}"
         cause = cause.__cause__ or cause.__context__
-    detail = sanitize(detail)
-    (destination / "error.log").write_text(detail, encoding="utf-8")
+    detail = execution_log.sanitize(detail)
+    (destination / "remotion-error.log").write_text(detail, encoding="utf-8")
+    error.detail_log_path = "errors/remotion-error.log"
     if (work / "worker.log").is_file():
-        shutil.copyfile(work / "worker.log", destination / "worker.log")
+        shutil.copyfile(work / "worker.log", destination / "remotion-worker.log")
 
 
 async def snapshot(template) -> dict:

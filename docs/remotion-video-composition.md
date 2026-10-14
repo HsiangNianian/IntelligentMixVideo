@@ -39,7 +39,7 @@
 
 日志仍只有七个模块，资产绑定摘要归 `template`，透明视频结果及最终 IMS Timeline 归 `timeline`；发布源码只进私有任务快照，不进入执行日志或 GET/回调。典型错误：`remotion_asset_not_adapted`、`remotion_duration_too_long`、`remotion_render_environment_unavailable`、`remotion_text_too_long`、`remotion_render_failed`。
 
-计划、时长适配打包、渲染或叠加视频上传失败时，清理工作目录前将 `worker.log` 与完整异常链 `error.log`（附子进程 stderr，例如打包器缺少依赖的原因）保存到 Remotion 数据目录的 `composition-overlay-failures/<task_id>/`（私有目录权限 0700）；不保留视频及编译产物，也不进入公开错误、七模块日志或回调；七模块日志只保留根因的异常类型、代码位置与错误码，不含其文本。诊断写入失败只记日志，不覆盖原始任务错误。成功仍清理整个临时工作目录。
+计划、时长适配打包、渲染或叠加视频上传失败时，清理工作目录前将 worker 输出与完整异常链（附子进程 stderr，例如打包器缺少依赖的原因）保存到 `server/.log/video_composition/<task_id>/errors/remotion-worker.log` 与 `remotion-error.log`（私有目录权限 0700），随任务目录参与 50 MB 容量清理；旧 `composition-overlay-failures/` 保留、不迁移。不保留视频及编译产物；七模块 JSON 只保留安全诊断及 `error_log[].error.detail_log_path`（`errors/remotion-error.log`），不嵌入详细正文或通过 GET/回调公开路径。诊断写入失败不覆盖原始任务错误。成功仍清理整个临时工作目录。
 
 ## 已确认、尚待后续实现的业务要求
 
