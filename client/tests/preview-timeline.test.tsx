@@ -101,3 +101,19 @@ test("Remotion 资产按所占对象并入时间轴行", () => {
   expect([...screen.getByLabelText("时间轴轨道标签").querySelectorAll("[data-object]")].map((label) => label.textContent))
     .toEqual(["顶部标题", "底部字幕", "镜头转场 2", "镜头转场", "画面特效", "视频滤镜", "Remotion 资产", "视频"]);
 });
+
+// 场景：Remotion 转场与 IMS 转场同属转场行：不重叠时共用一行，时间重叠才另起一行；被字效接管的标题行，条的 ID 就是字效的 ID，点击时间轴选中的是字效。
+test("Remotion 片段与同类 IMS 对象共用一行，字效接管的文字行选中字效", () => {
+  const draft = newDraft();
+  draft.tracks.push({ id: "cut", target: "transition", transition_boundary: 1, duration: 2,
+    editor: trackEditor({ ...defaultEditor, transition: "transition/normal/directional" }, "transition") });
+  const clip = { spriteId: "s1", aspect: 9 / 16, length: 2 };
+  const rows = mergeSpriteRows(buildPreviewRows(buildTimeline(draft, readCatalog())), [
+    { ...clip, id: "remotion-cut", name: "闪白", slot: "transition", boundary: 2, start: 18, end: 20 },
+    { ...clip, id: "overlap", name: "叠加转场", slot: "transition", boundary: 1, start: 9.5, end: 10.5 },
+    { ...clip, id: "text", name: "霓虹标题", slot: "title", start: 0, end: 5 },
+  ]);
+  const transitionRows = rows.filter((row) => row.actions[0].effectId === "transition");
+  expect(transitionRows.map((row) => row.actions.map((action) => action.id))).toEqual([["cut", "remotion-cut"], ["overlap"]]);
+  expect(rows.find((row) => row.actions[0].effectId === "title")!.actions[0]).toMatchObject({ id: "text", targetId: "text", effectName: "Remotion · 霓虹标题" });
+});

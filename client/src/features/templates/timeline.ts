@@ -83,28 +83,31 @@ export function remotionTexts(draft: Pick<Draft, "clips">): Set<TextRole> {
 }
 
 /**
- * 把 Remotion 片段并入 IMS 对象的行，不为每个资产另开一行：字效标在所作用的标题或字幕行上，
- * 转场、画面特效与滤镜按图层插入同类对象之间；未确定对象的片段排在视频之前单独提示。
+ * 把 Remotion 片段并入 IMS 对象的行，与 IMS 对象一样按所占的对象放行：字效在所作用的标题或字幕行上（该行的条属于字效，
+ * 点击选中字效）；转场、画面特效与滤镜放进同类对象的行里，时间重叠时才另起一行（滤镜可多个）；
+ * 未确定对象的片段排在视频之前、各占一行提示。
  */
 export function mergeSpriteRows(rows: ReturnType<typeof buildPreviewRows>, clips: SpriteClip[]): ReturnType<typeof buildPreviewRows> {
-  const merged = rows.map((row) => {
+  const result = rows.map((row) => {
     const text = clips.find((clip) => clip.slot === row.actions[0]?.effectId && isTextTarget(clip.slot));
-    return text ? { ...row, actions: row.actions.map((action) => ({ ...action, effectName: `Remotion · ${text.name}` })) } : row;
+    return text ? { ...row, actions: row.actions.map((action) => ({ ...action, id: text.id, targetId: text.id, effectName: `Remotion · ${text.name}` })) } : { ...row, actions: [...row.actions] };
   });
-  const added = clips.filter((clip) => !clip.slot || !isTextTarget(clip.slot)).map((clip) => ({
-    id: `row-${clip.id}`,
-    actions: [{
+  for (const clip of clips.filter((item) => !item.slot || !isTextTarget(item.slot))) {
+    const action = {
       id: clip.id, effectId: clip.slot ?? "remotion", start: clip.start, end: clip.end, movable: false, flexible: false,
       // 读回的转场片段可能还没有选择交界处，此时只显示对象名称。
       label: clip.slot === "transition" ? `镜头转场 ${clip.boundary ?? ""}`.trim() : clip.slot ? effectTargets[clip.slot] : "Remotion 资产",
       effectName: `Remotion · ${clip.name}`, url: "", sourceIn: 0, sourceOut: 0, targetId: clip.id,
-    }],
-  }));
-  const layer = (row: (typeof merged)[number]) => {
+    };
+    const home = clip.slot && result.find((row) => row.actions[0]?.effectId === clip.slot && row.actions.every((other) => other.end <= action.start || action.end <= other.start));
+    if (home) home.actions.push(action);
+    else result.push({ id: `row-${clip.id}`, actions: [action] });
+  }
+  const layer = (row: (typeof result)[number]) => {
     const effect = row.actions[0]?.effectId;
     return effect === "video" ? Infinity : effect === "remotion" ? 99 : trackLayers[effect as EffectTarget];
   };
-  return [...merged, ...added].sort((a, b) => layer(a) - layer(b));
+  return result.sort((a, b) => layer(a) - layer(b));
 }
 
 /** 每秒约取一张源素材缩略图，使用区间中心，避免在片段结束边界采样。 */

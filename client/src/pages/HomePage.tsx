@@ -121,7 +121,7 @@ export default function HomePage() {
             )}
           </TabsContent>
           <TabsContent value="library" forceMount hidden={workspace !== "library"}>
-            {libraryOpened && <TemplateWorkspace selection={selection} onHome={() => setWorkspace("home")} />}
+            {libraryOpened && <TemplateWorkspace selection={selection} onHome={() => setWorkspace("home")} onOpenRemotion={() => setWorkspace("remotion")} />}
           </TabsContent>
           <TabsContent value="remotion" forceMount hidden={workspace !== "remotion"}>
             {remotionOpened && <RemotionWorkspace />}
