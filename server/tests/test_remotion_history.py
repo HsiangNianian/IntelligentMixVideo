@@ -19,6 +19,7 @@ from PIL import Image
 from pydantic import SecretStr, ValidationError
 from sqlalchemy import func, select, update
 from server.remotion_templates import history
+from server.remotion_templates import store as store_module
 from server.remotion_templates.media import save_image
 from server.remotion_templates.models import (
     DialogueOutput,
@@ -450,6 +451,20 @@ def test_expire_events_drops_stale_deliveries_and_prunes(history_store):
     with store.reading() as db:
         assert db.execute(select(func.count()).select_from(chat_messages).where(chat_messages.c.work_id == str(old.id))).scalar_one() == 0
     assert store.latest_job(old.id).id == old_job.id
+
+
+def test_only_devices_with_works_are_recorded(history_app, history_store, monkeypatch):
+    """任意设备头不新增设备记录：设备在创建第一个作品时登记；进程内的刷新节流只保留有限个设备。"""
+    monkeypatch.setattr(store_module, "TOUCH_CACHE", 3)
+    with TestClient(history_app) as client:
+        for _ in range(5):
+            stranger = {"X-IMV-Device": str(uuid4())}
+            assert client.get(f"/works/{uuid4()}", headers=stranger).status_code == 404
+        assert counts(history_store, devices) == [0]
+        assert len(history_store._touched) == 3
+        assert client.post("/works", headers=DEVICE_HEADERS, json={"description": "登记"}).status_code == 202
+    with history_store.reading() as db:
+        assert db.execute(select(devices.c.device_id)).scalars().all() == [str(DEVICE)]
 
 
 def test_expire_devices_marks_works_and_leaves_uploads_to_the_orphan_cleanup(history_store):

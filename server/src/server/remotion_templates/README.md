@@ -56,7 +56,9 @@ overlay render tasks are tables in the shared MySQL database (`tables.py`, creat
 startup interrupts jobs a previous process left running and finishes interrupted deletions.
 
 Every work belongs to the client device that created it. JSON routes of a work require the `X-IMV-Device`
-header (a UUID the client keeps in its local session database) and treat another device's work as missing;
+header (a UUID the client keeps in its local session database) and treat another device's work as missing. A device
+is recorded when it creates its first work and its activity time is refreshed at most hourly; other header values add
+no rows;
 browser-embedded reads (preview page, fonts, reference image, artifact download) are addressed by unguessable IDs.
 Chat history lives on the client: the server buffers public messages and events only until the client stores them
 locally and acknowledges the last event ID with `POST /works/{id}/ack`. The open work streams its events over SSE

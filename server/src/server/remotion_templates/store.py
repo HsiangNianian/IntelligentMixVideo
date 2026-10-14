@@ -11,6 +11,7 @@ import json
 import logging
 import shutil
 import threading
+from collections import OrderedDict
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -59,6 +60,8 @@ ACTIVE = ("queued", "running")
 logger = logging.getLogger(__name__)
 # A device's last-seen time is rewritten at most this often.
 TOUCH_INTERVAL = timedelta(hours=1)
+# Devices whose activity this process wrote or checked recently; bounded, since any caller can send a new device ID.
+TOUCH_CACHE = 4096
 
 
 class NotFound(HTTPException):
@@ -110,7 +113,7 @@ class Store:
         self.root = root
         self.objects = objects if objects is not None else load_objects(root)
         self._write = threading.RLock()
-        self._touched: dict[str, datetime] = {}
+        self._touched: OrderedDict[str, datetime] = OrderedDict()
 
     def initialize(self) -> None:
         """Create the tables on first use; existing tables are reused unchanged."""
@@ -129,14 +132,29 @@ class Store:
             yield db
 
     def touch(self, device: UUID) -> None:
-        """Record that a device is active; inactive devices are expired after the retention period."""
+        """Refresh the activity time of a device that owns works; inactive devices are expired after the retention period.
+
+        A device's row is created with its first work, so a request carrying an arbitrary device ID adds no row, and
+        the in-memory throttle keeps at most `TOUCH_CACHE` devices.
+        """
         key, stamp = str(device), now()
         if (last := self._touched.get(key)) is not None and stamp - last < TOUCH_INTERVAL:
             return
         with self.transaction() as db:
-            if db.execute(update(devices).where(devices.c.device_id == key).values(last_seen_at=naive(stamp))).rowcount == 0:
-                db.execute(insert(devices).values(device_id=key, last_seen_at=naive(stamp)))
+            db.execute(update(devices).where(devices.c.device_id == key).values(last_seen_at=naive(stamp)))
         self._touched[key] = stamp
+        self._touched.move_to_end(key)
+        while len(self._touched) > TOUCH_CACHE:
+            self._touched.popitem(last=False)
+
+    @staticmethod
+    def _register(db: Connection, device: UUID) -> None:
+        """Create or refresh the row of a device that is creating a work."""
+        key, stamp = str(device), naive(now())
+        if db.execute(select(devices.c.device_id).where(devices.c.device_id == key)).first() is None:
+            db.execute(insert(devices).values(device_id=key, last_seen_at=stamp))
+        else:
+            db.execute(update(devices).where(devices.c.device_id == key).values(last_seen_at=stamp))
 
     def require_work(self, db: Connection, identifier: UUID, device: UUID | None = None) -> TemplateProject:
         """Return the work inside the caller's transaction; another device's work is missing, a deleting one is gone."""
@@ -405,6 +423,7 @@ class Store:
         images = [image.asset_id for image in request.images]
         with self.transaction() as db:
             self.require_references(db, images, device)
+            self._register(db, device)
             db.execute(insert(works).values(
                 id=str(project.id), device_id=str(device), deleting=False, data=project.model_dump_json(),
             ))
