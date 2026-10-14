@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import URL, create_engine, inspect, select
+from sqlalchemy import URL, create_engine, func, inspect, select
 from sqlalchemy.exc import IntegrityError
 
 from server import database
@@ -163,3 +163,50 @@ def test_mysql_conflict_rollback_update_and_delete(mysql_database, template_payl
             **template_payload, "template_id": saved["template_id"],
         }).status_code == 404
         assert listed_templates(client.get("/template")) == []
+
+
+def test_mysql_remotion_store_round_trip(mysql_database, tmp_path):
+    """真实 MySQL 上的字效存储：未变化的覆盖写入不重复插入，单活动任务唯一键，确认清理、事件与设备过期按 DATETIME 截止。"""
+    from datetime import timedelta
+
+    from server.remotion_templates.models import GenerateTemplateRequest, JobInput
+    from server.remotion_templates.store import Conflict, Store, now
+    from server.remotion_templates.tables import conversations, devices, job_progress, jobs
+
+    database.initialize_database()
+    remotion = Store(tmp_path / "remotion")
+    remotion.initialize()
+    device = uuid4()
+    work, first = remotion.create(GenerateTemplateRequest(description="真实库 🎬"), device)
+    window = remotion.conversation(work.id)
+    # 参数修订不改模型窗口，任务结束时仍保存同一份内容：MySQL 对未变化的 UPDATE 也必须视为已存在。
+    for _ in range(2):
+        remotion.save_conversation(work.id, window)
+    window.append([{"role": "user", "content": "改"}])
+    remotion.save_conversation(work.id, window)
+    remotion.claim()
+    for _ in range(2):
+        remotion.progress(first.id, "understanding")
+    remotion.round(first.id, {"layer": "outer", "turn": 1, "calls": []})
+    with pytest.raises(Conflict):
+        remotion.enqueue(work.id, JobInput(mode="edit", instruction="并发"), None)
+    remotion.update(first.id, status="answered", stage="finished", answer="好")
+    latest = remotion.enqueue(work.id, JobInput(mode="edit", instruction="再改"), None)
+    remotion.update(latest.id, status="failed", stage="finished")
+    with remotion.reading() as db:
+        assert db.execute(select(func.count()).select_from(conversations)).scalar_one() == 1
+        assert len(db.execute(select(job_progress.c.job_id)).all()) == 1
+    events = remotion.work_events(work.id, 0)
+    assert [event.id for event in events] == sorted(event.id for event in events)
+    remotion.acknowledge(work.id, events[-1].id, device)
+    with remotion.reading() as db:
+        assert db.execute(select(jobs.c.id)).scalars().all() == [str(latest.id)]
+    assert remotion.inputs(latest.id).instruction == "再改"
+    remotion.touch(device)
+    remotion.expire_events(now() + timedelta(seconds=1))
+    remotion.expire_devices(now() - timedelta(days=1))
+    assert remotion.pending_deletions() == []
+    remotion.expire_devices(now() + timedelta(seconds=1))
+    assert remotion.pending_deletions() == [work.id]
+    with remotion.reading() as db:
+        assert db.execute(select(devices.c.device_id)).scalars().all() == []
