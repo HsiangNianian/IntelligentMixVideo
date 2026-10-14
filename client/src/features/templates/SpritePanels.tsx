@@ -53,7 +53,7 @@ export function SpriteCatalog({ environment, catalog, placed, onAdd }: { environ
       </div>
       {environment !== "cloud" && <p role="status" className="text-[11px] text-muted-foreground">Remotion 资产只能添加到云端模板。</p>}
       {open && environment === "cloud" && <>
-        <p className="text-[11px] text-muted-foreground">资产画面以透明层叠加在预览上。字效作用于当前选择的标题或字幕，转场占用空闲的视频交界处，视频特效与画面特效共用一个名额。</p>
+        <p className="text-[11px] text-muted-foreground">资产画面以透明层叠加在预览上。字效作用于当前选择的标题或字幕，转场加入统一列表，视频特效与画面特效共用一个名额。</p>
         {catalog.error && <p role="alert" className="text-[11px] text-destructive">{catalog.error}</p>}
         {catalog.assets && !catalog.assets.length && <p role="status" className="text-[11px] text-muted-foreground">还没有资产，请在字效工作区的成功版本上选择「保存到资产」。</p>}
         {!!catalog.assets?.length && <ToggleGroup type="single" spacing={1} value={category} onValueChange={(value) => { if (value) setChosen(value as CategoryId); }} aria-label="Remotion 资产分类" className="w-full flex-wrap">

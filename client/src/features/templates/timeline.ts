@@ -22,37 +22,44 @@ export interface PreviewClip extends TimelineAction {
   url: string;
   sourceIn: number;
   sourceOut: number;
-  transition?: { start: number; end: number };
   targetId?: string;
   /** 视频来源编号在排列变化后保持不变。 */
   videoSource?: number;
 }
 
-/** 轨道从已经应用的 SDK Timeline 派生；三个视频放在同一行，效果按图层排列。 */
+/** 轨道从已经应用的 SDK Timeline 派生；每个视频独立成行，效果按图层排列。 */
 export function buildPreviewRows(timeline: ReturnType<typeof buildTimeline>): (Omit<TimelineRow, "actions"> & { actions: PreviewClip[] })[] {
-  return [...[...timeline.previewRows].sort((a, b) => trackLayers[a.actions[0].effectId as EffectTarget] - trackLayers[b.actions[0].effectId as EffectTarget]), ...timeline.VideoTracks.map((track, trackIndex) => ({
+  const rows: (Omit<TimelineRow, "actions"> & { actions: PreviewClip[] })[] = [...timeline.previewRows, ...timeline.VideoTracks.map((track, trackIndex) => ({
     id: `video-${trackIndex}`,
-    actions: track.VideoTrackClips.map((clip, index) => {
-      const next = track.VideoTrackClips[index + 1];
-      const transition = clip.Effects.some((item) => item.Type === "Transition") && next
-        ? { start: Math.max(clip.TimelineIn, next.TimelineIn), end: Math.min(clip.TimelineOut, next.TimelineOut) }
-        : undefined;
+    actions: track.VideoTrackClips.map((clip) => {
       return {
           id: `video-${clip.source}`,
           effectId: "video",
           start: clip.TimelineIn,
           end: clip.TimelineOut,
-          movable: true,
+          movable: false,
           flexible: false,
           label: `视频 ${clip.source + 1}`,
           videoSource: clip.source,
           url: clip.MediaURL,
           sourceIn: clip.In,
           sourceOut: clip.Out,
-          transition: transition && transition.end > transition.start ? transition : undefined,
       };
     }),
   }))];
+  const effects = rows.filter((row) => row.actions[0]?.effectId !== "video");
+  const videos = rows.filter((row) => row.actions[0]?.effectId === "video").flatMap((row) => row.actions);
+  const videoRows = videos.map((clip) => ({ id: clip.id, actions: [clip] }));
+  return groupTransitionRows([...effects.sort((a, b) => trackLayers[a.actions[0].effectId as EffectTarget] - trackLayers[b.actions[0].effectId as EffectTarget]), ...videoRows]);
+}
+
+/** 全部可见转场共用一行，每个条目保留独立的选中 ID。 */
+function groupTransitionRows(rows: (Omit<TimelineRow, "actions"> & { actions: PreviewClip[] })[]) {
+  const actions = rows.filter((row) => row.actions[0]?.effectId === "transition").flatMap((row) => row.actions);
+  const result = rows.filter((row) => row.id !== "transitions" && row.actions[0]?.effectId !== "transition");
+  result.push({ id: "transitions", actions: actions.sort((a, b) => a.start - b.start) });
+  const layer = (row: (typeof rows)[number]) => row.id === "transitions" ? trackLayers.transition : row.actions[0]?.effectId === "video" ? Infinity : trackLayers[row.actions[0]?.effectId as EffectTarget] ?? 99;
+  return result.sort((a, b) => layer(a) - layer(b));
 }
 
 /** 时间轴上的 Remotion 资产片段：固定长度，按所占对象放进对应的行。 */
@@ -84,7 +91,7 @@ export function remotionTexts(draft: Pick<Draft, "clips">): Set<TextRole> {
 
 /**
  * 把 Remotion 片段并入 IMS 对象的行，与 IMS 对象一样按所占的对象放行：字效在所作用的标题或字幕行上（该行的条属于字效，
- * 点击选中字效）；转场、画面特效与滤镜放进同类对象的行里，时间重叠时才另起一行（滤镜可多个）；
+ * 点击选中字效）；全部转场共用一行，画面特效与滤镜放进同类对象的行里，时间重叠时才另起一行（滤镜可多个）；
  * 未确定对象的片段排在视频之前、各占一行提示。
  */
 export function mergeSpriteRows(rows: ReturnType<typeof buildPreviewRows>, clips: SpriteClip[]): ReturnType<typeof buildPreviewRows> {
@@ -107,7 +114,7 @@ export function mergeSpriteRows(rows: ReturnType<typeof buildPreviewRows>, clips
     const effect = row.actions[0]?.effectId;
     return effect === "video" ? Infinity : effect === "remotion" ? 99 : trackLayers[effect as EffectTarget];
   };
-  return result.sort((a, b) => layer(a) - layer(b));
+  return groupTransitionRows(result.sort((a, b) => layer(a) - layer(b)));
 }
 
 /** 每秒约取一张源素材缩略图，使用区间中心，避免在片段结束边界采样。 */
@@ -217,6 +224,7 @@ function buildTrackContent(config: Editor, catalog: EffectAsset[], target: Effec
 export function buildTimeline(draft: Draft, catalog: EffectAsset[], media: PreviewMedia, resolvedTimeline: ResolvedTimeline, order = [0, 1, 2]) {
   const previewRows: (Omit<TimelineRow, "actions"> & { actions: PreviewClip[] })[] = [];
   const EffectTracks: { EffectTrackItems: Effect[] }[] = [];
+  const transitions: { boundary: number; start: number; end: number; effect: Effect }[] = [];
   const notices = resolvedTimeline.notices;
   if ("editor" in draft || !Array.isArray(draft.tracks)) throw new Error("模板格式不支持，请重新创建模板");
   const canvas = { Width: media[0].width, Height: media[0].height };
@@ -251,7 +259,7 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media: Previ
       const effect = resolved.effect;
       if (!effect) throw new Error("转场轨道缺少效果");
       effect.Duration = Math.round((track.end - track.start) * 30) / 30;
-      timeline.VideoTracks[0].VideoTrackClips[source.transition_boundary! - 1].Effects.push(effect);
+      transitions.push({ boundary: source.transition_boundary!, start: track.start, end: track.end, effect });
     } else {
       const effect = resolved.effect;
       if (!effect) throw new Error("特效轨道缺少效果");
@@ -265,19 +273,38 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media: Previ
       label: trackLabel(track, draft.tracks), effectName, url: "", sourceIn: 0, sourceOut: 0,
     }] });
   }
-  return { ...timeline, EffectTracks, previewRows, notices };
+  return { ...timeline, EffectTracks, previewRows, notices, transitions };
 }
 
 /** SDK 将专用轨道追加到视频之后；统一传入从下到上的图层，保证文字位于滤镜和 VFX 上方。 */
-export function playerTimeline(timeline: ReturnType<typeof buildTimeline>) {
+export function playerTimeline(timeline: ReturnType<typeof buildTimeline>, transitionFrames: ReadonlyMap<string, string> = new Map()) {
+  const videos = timeline.VideoTracks[0].VideoTrackClips;
+  const transitionTracks = timeline.transitions.map(({ boundary, start, end, effect }) => ({
+    VideoTrackClips: [videos[boundary - 1], videos[boundary]].map((video, index) => {
+      const key = transitionFrameKey(boundary, index);
+      const image = transitionFrames.get(key);
+      if (!image) throw new Error("居中转场缺少视频补帧画面");
+      return {
+        Type: "Image", MediaURL: image, Duration: end - start, TimelineIn: start, TimelineOut: end,
+        Width: video.Width, Height: video.Height, AdaptMode: video.AdaptMode,
+        Effects: [{ Type: "Background", SubType: "Color", Color: "#000000" }, ...(index === 0 ? [effect] : [])],
+      };
+    }),
+  }));
   return {
     AspectRatio: timeline.AspectRatio, FECanvas: timeline.FECanvas, AudioTracks: timeline.AudioTracks,
     VideoTracks: [
       ...timeline.VideoTracks.map((row) => ({ VideoTrackClips: row.VideoTrackClips.map(({ source: _source, ...clip }) => clip) })),
+      ...transitionTracks,
       ...[...timeline.EffectTracks].reverse().map((row) => ({ Type: "Effect", VideoTrackClips: row.EffectTrackItems })),
       ...[...timeline.SubtitleTracks].reverse().map((row) => ({ Type: "Subtitle", VideoTrackClips: row.SubtitleTrackClips })),
     ],
   };
+}
+
+/** 补帧键仅在这次预览内标识前后画面，媒体缓存使用地址和源时间。 */
+export function transitionFrameKey(boundary: number, index: number): string {
+  return `${boundary}:${index}`;
 }
 
 /** 将启用的局部样式包在首次出现的关键词两侧；无关键词时保留原文字。 */

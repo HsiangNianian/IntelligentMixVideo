@@ -14,17 +14,20 @@ from .conftest import SPRITE_ID, remotion_track, seed_sprite, template_track
 from .template_wire import post_template as _post
 
 
-def test_two_transition_boundaries_roundtrip(client: TestClient):
-    """两个转场的交界处编号经 Protobuf 与数据库保存后保持不变。"""
+def test_transition_list_roundtrip(client: TestClient):
+    """多个转场及统一设置经 Protobuf 与数据库保存后保持不变。"""
     from server.template.schema import effect_catalog
 
     asset = next(item for item in effect_catalog().values() if item.category == "transition/normal")
-    tracks = [{**template_track("transition", transition=asset.id), "id": f"transition-{boundary}", "transition_boundary": boundary} for boundary in (1, 2)]
+    tracks = [{**template_track("transition", transition=asset.id), "id": f"transition-{boundary}", "transition_boundary": boundary, "duration": 1.5} for boundary in (1, 2, 3)]
     tracks.extend([template_track("title"), template_track("subtitle")])
-    created = _post(client, {"name": "两个交界处", "effect_ids": [asset.id], "tracks": tracks})
+    created = _post(client, {"name": "转场列表", "effect_ids": [asset.id], "tracks": tracks, "transition_mode": "random", "transition_enabled": False, "transition_duration_seconds": 1.5})
     assert created.status_code == 201
     record = pb.SaveTemplateResponse.FromString(created.content).template
-    assert [track.transition_boundary for track in record.tracks.tracks[:2]] == [1, 2]
+    assert [track.transition_boundary for track in record.tracks.tracks[:3]] == [1, 2, 3]
+    assert record.transition_mode == "random"
+    assert record.HasField("transition_enabled") and not record.transition_enabled
+    assert record.transition_duration_seconds == 1.5
     assert all(not track.HasField("start") and not track.start_mode for track in record.tracks.tracks[:2])
     assert pb.GetTemplateResponse.FromString(client.get(f"/template/{record.template_id}").content).template == record
     tracks[1]["transition_boundary"] = 1
@@ -414,7 +417,7 @@ def test_remotion_transitions_and_effects_share_ims_limits(client: TestClient, t
     tracks = [*template_payload["tracks"], {**template_track("transition", transition=ims_transition.id), "id": "ims-transition", "transition_boundary": 1}, clip]
     payload = {**template_payload, "effect_ids": [*template_payload["effect_ids"], ims_transition.id], "tracks": tracks}
     rejected = _post(client, payload)
-    assert rejected.status_code == 422 and "每个视频交界处最多一个转场" in rejected.text
+    assert rejected.status_code == 422 and "转场列表序号不能重复" in rejected.text
     clip["transition_boundary"] = 2
     created = _post(client, payload)
     assert created.status_code == 201

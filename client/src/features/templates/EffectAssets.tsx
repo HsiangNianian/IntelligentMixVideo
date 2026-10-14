@@ -106,11 +106,11 @@ export function AppliedEffects({ draft, catalog, resolved, selected, onSelect }:
 }) {
   return <section aria-label="已添加特效" className="space-y-3 border-b p-4">
     <div className="flex items-center justify-between"><h2 className="text-[13px] font-semibold">画面对象</h2><span className="text-[11px] tabular-nums text-muted-foreground">{draft.tracks.length}</span></div>
-    <div className="space-y-0.5">{[...draft.tracks].sort((a, b) => trackLayers[a.target] - trackLayers[b.target]).map((track) => {
+    <div className="space-y-0.5">{[...draft.tracks].sort((a, b) => trackLayers[a.target] - trackLayers[b.target] || (a.target === "transition" && b.target === "transition" ? a.transition_boundary! - b.transition_boundary! : 0)).map((track) => {
       const effectId = { title: track.editor.titleFlower, subtitle: track.editor.subtitleFlower, bubble: track.editor.bubble, filter: track.editor.filter, vfx: track.editor.vfx, transition: track.editor.transition }[track.target];
       const effect = catalog.find((item) => item.id === effectId)?.name ?? (effectId ? effectId.split("/").at(-1) : "未设置效果");
       const timing = resolved?.tracks[track.id];
-      const interval = timing ? timing.end > timing.start ? `${Number(timing.start.toFixed(1))}～${Number(timing.end.toFixed(1))} 秒` : "当前视频未应用" : "等待预览时间";
+      const interval = timing ? timing.end > timing.start ? `${Number(timing.start.toFixed(1))}～${Number(timing.end.toFixed(1))} 秒` : "当前视频未应用" : resolved ? "当前视频未应用" : "等待预览时间";
       return <Button key={track.id} type="button" variant="ghost" data-object={track.target} className="template-object-row h-auto w-full min-w-0 justify-start gap-2.5 rounded-md px-2 py-2 text-left" aria-pressed={selected === track.id} aria-label={`编辑${trackLabel(track, draft.tracks)}`} onClick={() => onSelect(track.id)}>
         <ObjectIcon target={track.target} /><span className="min-w-0 flex-1"><span className="block truncate text-[13px] font-medium leading-5">{trackLabel(track, draft.tracks)}</span><span className="block truncate text-[11px] leading-4 tabular-nums text-muted-foreground">{effect} · {interval}</span></span>
       </Button>;

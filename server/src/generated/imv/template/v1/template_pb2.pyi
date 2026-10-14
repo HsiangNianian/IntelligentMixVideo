@@ -203,23 +203,27 @@ class TrackList(_message.Message):
     def __init__(self, tracks: _Optional[_Iterable[_Union[EffectTrack, _Mapping]]] = ...) -> None: ...
 
 class SaveTemplateRequest(_message.Message):
-    __slots__ = ("name", "description", "effect_ids", "transition_duration_seconds", "tracks", "template_id")
+    __slots__ = ("name", "description", "effect_ids", "transition_duration_seconds", "tracks", "template_id", "transition_mode", "transition_enabled")
     NAME_FIELD_NUMBER: _ClassVar[int]
     DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
     EFFECT_IDS_FIELD_NUMBER: _ClassVar[int]
     TRANSITION_DURATION_SECONDS_FIELD_NUMBER: _ClassVar[int]
     TRACKS_FIELD_NUMBER: _ClassVar[int]
     TEMPLATE_ID_FIELD_NUMBER: _ClassVar[int]
+    TRANSITION_MODE_FIELD_NUMBER: _ClassVar[int]
+    TRANSITION_ENABLED_FIELD_NUMBER: _ClassVar[int]
     name: str
     description: str
     effect_ids: _containers.RepeatedScalarFieldContainer[str]
     transition_duration_seconds: float
     tracks: TrackList
     template_id: str
-    def __init__(self, name: _Optional[str] = ..., description: _Optional[str] = ..., effect_ids: _Optional[_Iterable[str]] = ..., transition_duration_seconds: _Optional[float] = ..., tracks: _Optional[_Union[TrackList, _Mapping]] = ..., template_id: _Optional[str] = ...) -> None: ...
+    transition_mode: str
+    transition_enabled: bool
+    def __init__(self, name: _Optional[str] = ..., description: _Optional[str] = ..., effect_ids: _Optional[_Iterable[str]] = ..., transition_duration_seconds: _Optional[float] = ..., tracks: _Optional[_Union[TrackList, _Mapping]] = ..., template_id: _Optional[str] = ..., transition_mode: _Optional[str] = ..., transition_enabled: _Optional[bool] = ...) -> None: ...
 
 class TemplateRecord(_message.Message):
-    __slots__ = ("name", "description", "effect_ids", "transition_duration_seconds", "tracks", "template_id", "effects", "created_at", "updated_at")
+    __slots__ = ("name", "description", "effect_ids", "transition_duration_seconds", "tracks", "template_id", "effects", "created_at", "updated_at", "transition_mode", "transition_enabled")
     NAME_FIELD_NUMBER: _ClassVar[int]
     DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
     EFFECT_IDS_FIELD_NUMBER: _ClassVar[int]
@@ -229,6 +233,8 @@ class TemplateRecord(_message.Message):
     EFFECTS_FIELD_NUMBER: _ClassVar[int]
     CREATED_AT_FIELD_NUMBER: _ClassVar[int]
     UPDATED_AT_FIELD_NUMBER: _ClassVar[int]
+    TRANSITION_MODE_FIELD_NUMBER: _ClassVar[int]
+    TRANSITION_ENABLED_FIELD_NUMBER: _ClassVar[int]
     name: str
     description: str
     effect_ids: _containers.RepeatedScalarFieldContainer[str]
@@ -238,7 +244,9 @@ class TemplateRecord(_message.Message):
     effects: _containers.RepeatedCompositeFieldContainer[EffectAsset]
     created_at: _timestamp_pb2.Timestamp
     updated_at: _timestamp_pb2.Timestamp
-    def __init__(self, name: _Optional[str] = ..., description: _Optional[str] = ..., effect_ids: _Optional[_Iterable[str]] = ..., transition_duration_seconds: _Optional[float] = ..., tracks: _Optional[_Union[TrackList, _Mapping]] = ..., template_id: _Optional[str] = ..., effects: _Optional[_Iterable[_Union[EffectAsset, _Mapping]]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., updated_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
+    transition_mode: str
+    transition_enabled: bool
+    def __init__(self, name: _Optional[str] = ..., description: _Optional[str] = ..., effect_ids: _Optional[_Iterable[str]] = ..., transition_duration_seconds: _Optional[float] = ..., tracks: _Optional[_Union[TrackList, _Mapping]] = ..., template_id: _Optional[str] = ..., effects: _Optional[_Iterable[_Union[EffectAsset, _Mapping]]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., updated_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., transition_mode: _Optional[str] = ..., transition_enabled: _Optional[bool] = ...) -> None: ...
 
 class TemplateSummary(_message.Message):
     __slots__ = ("template_id", "name", "description", "created_at", "updated_at", "title", "subtitle", "track_count", "validation_error")

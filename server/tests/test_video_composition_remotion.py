@@ -192,6 +192,49 @@ def test_upstream_visual_slots_render_without_business_target(composition_case, 
         assert remotion.plan(data, 120, timeline=timeline) is None
 
 
+@pytest.mark.parametrize("mode", ["sequence", "random"])
+@pytest.mark.parametrize("duration", [0.6, None])
+def test_transition_list_uses_the_same_selection_for_remotion(composition_case, mode, duration):
+    """混合列表只在选中 Remotion 的连接处生成实例，并保留自身时长。"""
+    from server.template.transitions import select_transitions
+
+    data = case(composition_case, None)
+    sprite = asset()
+    sprite.kind = pb.SPRITE_KIND_TRANSITION_OVERLAY
+    sprite.canvas.preview_frames = 18
+    sprite.config_schema_json = '{"type":"object","properties":{}}'
+    sprite.default_config_json = '{}'
+    data["remotion"]["assets"] = {sprite.sprite_id: MessageToDict(sprite, preserving_proto_field_name=True)}
+    placement = data["remotion"]["placements"][0]
+    placement.update(sprite_id=sprite.sprite_id, transition_boundary=2, duration=duration)
+    candidates = [{"id": "ims", "target": "transition", "transition_boundary": 1},
+                  {"id": placement["id"], "target": "remotion", "transition_boundary": 2}]
+    data["template"] = {"transition_mode": mode, "transition_duration_seconds": 0.2, "tracks": candidates}
+    clips = [{"TimelineIn": index * 1.6, "TimelineOut": (index + 1) * 1.6} for index in range(5)]
+    timeline = {"VideoTracks": [{"VideoTrackClips": clips}]}
+    original = deepcopy(data)
+    overlay = remotion.plan(data, 120, timeline=timeline, transition_seed="mixed-task")
+    selected = select_transitions(candidates, 4, mode, "mixed-task")
+    boundaries = [boundary for item, boundary in selected if item["target"] == "remotion"]
+    assert overlay is not None
+    assert [item["start_frame"] for item in overlay.instances] == [round((boundary * 1.6 - 0.3) * 30) for boundary in boundaries]
+    assert all(item["duration_frames"] == 18 for item in overlay.instances)
+    assert data == original
+    data["template"]["transition_enabled"] = False
+    assert remotion.plan(data, 120, timeline=timeline, transition_seed="mixed-task") is None
+    assert asyncio.run(remotion.require_environment(data)) is None
+    data["template"]["transition_enabled"] = True
+    data["remotion"]["placements"].append({**placement, "id": "decoration", "transition_boundary": None, "order": 1, "start": 0, "duration": 0.2})
+    layered = remotion.plan(data, 120, timeline=timeline, transition_seed="mixed-task")
+    assert [item["start_frame"] for item in layered.instances] == [item["start_frame"] for item in overlay.instances] + [0]
+    data["template"]["transition_enabled"] = False
+    disabled = remotion.plan(data, 120, timeline=timeline, transition_seed="mixed-task")
+    assert len(disabled.instances) == 1
+    assert disabled.instances[0]["start_frame"] == 0
+    data["template"]["transition_enabled"] = True
+    assert remotion.plan(data, 120, timeline=timeline, transition_seed="mixed-task").instances == layered.instances
+
+
 def test_no_content_and_historical_task_skip_rendering(composition_case):
     """空标题、无字幕和旧任务均不回退示例，且不读取最新绑定。"""
     data = case(composition_case, "title")
@@ -302,7 +345,7 @@ async def test_plan_failure_keeps_private_cause(composition_case, monkeypatch, t
     async def get_runtime():
         """使用隔离目录，不访问实际渲染服务。"""
         return runtime
-    def fail(data, max_seconds, *, timeline=None):
+    def fail(data, max_seconds, *, timeline=None, transition_seed=""):
         """模拟时长适配打包器缺少依赖：原因只在 stderr 中。"""
         try:
             raise subprocess.CalledProcessError(1, ["node"], stderr="Cannot find module 'esbuild'")
@@ -444,15 +487,15 @@ async def test_snapshot_survives_binding_edit(composition_case, template_db):
     """共享资产读取后，修改模板轨道不会替换已受理任务的资产集合。"""
     from datetime import UTC, datetime
     from server.remotion_templates import sprite_store
-    from server.template.schema import EffectTrack
+    from server.template.schema import Template
     data = case(composition_case)
     sprite_id, published = next(iter(data["remotion"]["assets"].items()))
     sprite_store.insert(sprite_id=sprite_id, source_version_id=str(uuid4()), kind=1,
                         text_prop="", keywords_prop="", published_at=datetime.now(UTC), data=published)
-    template = SimpleNamespace(updated_at=datetime.now(UTC), tracks=[EffectTrack.model_validate({
+    template = Template.model_validate({**composition_case["template"], "tracks": [{
         "id": "text", "target": "remotion", "sprite_id": sprite_id, "start_mode": "seconds",
         "start": 1, "duration": 2, "text_target": "subtitle", "editor": {},
-    })])
+    }]})
     data["remotion"] = await remotion.snapshot(template)
     data["template"] = composition_case["template"]
     assert data["remotion"]["placements"][0]["text_target"] == "subtitle"

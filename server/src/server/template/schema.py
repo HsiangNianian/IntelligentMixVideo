@@ -246,7 +246,7 @@ class EffectTrack(BaseModel):
     # 仅 Remotion 片段引用 Sprite；为空时不输出，其余对象的 JSON 与引入该字段前保持一致。
     sprite_id: UUID | None = Field(default=None, exclude_if=lambda value: value is None)
     # 转场与 Remotion 转场片段绑定视频交界处，开始秒数仅由本次视频计算。
-    transition_boundary: int | None = Field(default=None, ge=1, le=2, strict=True, exclude_if=lambda value: value is None)
+    transition_boundary: int | None = Field(default=None, ge=1, le=100, strict=True, exclude_if=lambda value: value is None)
     # Remotion 字效作用的文字对象；该文字不再由 IMS 渲染，片段时间跟随它。分类是否相符由保存时按 Sprite 检查。
     text_target: Literal["title", "subtitle"] | None = Field(default=None, exclude_if=lambda value: value is None)
 
@@ -332,11 +332,13 @@ class TemplateData(BaseModel):
     # Protobuf 转字典会省略空数组，所以缺失按空列表处理。
     effect_ids: list[str] = Field(default_factory=list, max_length=500)
     transition_duration_seconds: float = Field(default=1, ge=0.1, le=3, allow_inf_nan=False)
+    transition_mode: Literal["sequence", "random"] | None = Field(default=None, exclude_if=lambda value: value is None)
+    transition_enabled: bool = Field(default=True, strict=True)
     tracks: list[EffectTrack] = Field(max_length=100)
 
     @model_validator(mode="after")
     def validate_tracks(self) -> "TemplateData":
-        """检查对象数量、固定字幕时间及两个视频交界处；Remotion 转场与字效和 IMS 对象共用这些名额。"""
+        """检查对象数量、固定字幕时间、转场列表与统一时长；Remotion 和 IMS 对象共用名额。"""
         if len({track.id for track in self.tracks}) != len(self.tracks):
             raise ValueError("轨道 ID 重复")
         for target in ("title", "subtitle", "vfx"):
@@ -346,8 +348,12 @@ class TemplateData(BaseModel):
             if track.target == "subtitle" and (track.start_mode != "seconds" or track.start != 0 or track.duration is not None):
                 raise ValueError("底部字幕固定覆盖整个视频")
         transitions = [track.transition_boundary for track in self.tracks if track.transition_boundary is not None]
-        if len(transitions) > 2 or len(set(transitions)) != len(transitions):
-            raise ValueError("每个视频交界处最多一个转场")
+        if len(set(transitions)) != len(transitions):
+            raise ValueError("转场列表序号不能重复")
+        if self.transition_mode is not None:
+            for track in self.tracks:
+                if track.target == "transition" and track.duration != self.transition_duration_seconds:
+                    raise ValueError("全部 IMS 转场必须使用统一持续时间")
         texts = [track.text_target for track in self.tracks if track.text_target is not None]
         if len(set(texts)) != len(texts):
             raise ValueError("每个标题或字幕最多一个 Remotion 字效")

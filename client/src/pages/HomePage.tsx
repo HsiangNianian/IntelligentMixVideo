@@ -96,8 +96,8 @@ export default function HomePage() {
           </Button></Hint>
         </div>
       </aside>
-      <main className="min-w-0 flex-1 px-3 py-3 sm:px-6">
-        <div className="mx-auto max-w-[1920px] space-y-3">
+      <main className={cn("min-w-0 flex-1", workspace !== "library" && "px-3 py-3 sm:px-6")}>
+        <div className={workspace === "library" ? "w-full" : "mx-auto max-w-[1920px] space-y-3"}>
           {workspace === "remotion" && <header className="flex h-14 shrink-0 items-center gap-3 border-b px-1">
             {/* Remotion 页头只保留标题与说明；主页标题由模板主页自身提供，品牌标识统一放在侧栏。 */}
             <div className="min-w-0">

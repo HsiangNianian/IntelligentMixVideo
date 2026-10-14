@@ -7,6 +7,7 @@ from pydantic import TypeAdapter
 from .text_events import subtitle_events
 from ..template.schema import CATEGORY_PARAMETERS, EffectTemplateEditor, EffectTrack, Template
 from ..template.timing import ClipContext, TimelineContext, resolve_template, resolve_track
+from ..template.transitions import select_transitions
 from .schema import CompositionRequest, MatchedSegment, PositiveSeconds, Segment
 
 
@@ -68,7 +69,7 @@ def format_keyword(content: str, keyword: str, config: EffectTemplateEditor, rol
 def build_timeline(
     request: dict, template: dict, segments: list[dict], matches: list[dict],
     duration_ms: int | float, *, width: int, height: int, fps: int,
-    material_durations: list[float] | None = None, title_keyword: str = "",
+    material_durations: list[float] | None = None, title_keyword: str = "", transition_seed: str = "",
 ) -> tuple[dict, list[str]]:
     """返回时间线及转场说明；标题关键词仅取切片返回值，缺失不强调，不修改输入快照。"""
     request = CompositionRequest.model_validate(request)
@@ -193,6 +194,17 @@ def build_timeline(
     # 使用 Remotion 字效的标题或字幕同样由叠加视频显示，IMS 不再渲染这段文字。
     remotion_texts = {track.text_target for track in template.tracks if track.text_target is not None}
     tracks = [track for track in template.tracks if track.target != "remotion" and track.target not in remotion_texts]
+    if not template.transition_enabled:
+        tracks = [track for track in tracks if track.target != "transition"]
+    elif template.transition_mode is not None:
+        selected = select_transitions([track.model_dump(mode="json") for track in template.tracks],
+                                      len(clips) - 1, template.transition_mode, transition_seed)
+        by_track = {track.id: track for track in template.tracks}
+        tracks = [track for track in tracks if track.target != "transition"] + [
+            by_track[item["id"]].model_copy(update={"id": f"{item['id']}:{boundary}",
+                "transition_boundary": boundary, "duration": template.transition_duration_seconds})
+            for item, boundary in selected if item["target"] == "transition"
+        ]
     if not standard:
         tracks = [track for track in tracks
                   if not ((track.target == "subtitle" and not source) or (track.target == "title" and not request.title))]

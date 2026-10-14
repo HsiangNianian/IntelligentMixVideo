@@ -1,7 +1,13 @@
-/* 模版编辑工作区：沿用全局深色剪辑台令牌，面板为卡片层、预览区为更深的监视器层，对象按类别使用低饱和标记色。 */
+/* 模板编辑工作区：三栏填满可用区域，各栏独立滚动，对象按类别使用低饱和标记色。 */
 .template-workspace {
   color: var(--foreground);
-  box-shadow: 0 20px 48px -24px rgb(0 0 0 / 60%);
+}
+
+@media (min-width: 1280px) {
+  .template-workspace { height: 100dvh; }
+  .template-workspace > fieldset { display: flex; height: 100%; min-height: 0; flex-direction: column; }
+  .template-workspace-header { flex-shrink: 0; }
+  .template-workspace-columns { flex: 1; min-height: 0; }
 }
 
 /* 顶栏与三栏分界保持轻量：资产与参数为面板层，画布为监视器层，各栏独立滚动。 */

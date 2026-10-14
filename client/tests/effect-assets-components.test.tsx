@@ -2,9 +2,28 @@
 import { expect, test } from "bun:test";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
-import { EffectAssets } from "@/features/templates/EffectAssets";
-import { defaultEditor, type EffectAsset, type TextRole } from "@/features/templates/model";
+import { AppliedEffects, EffectAssets } from "@/features/templates/EffectAssets";
+import { defaultEditor, newDraft, type EffectAsset, type TextRole } from "@/features/templates/model";
 import { readCatalog } from "@/features/templates/sdk";
+import { addTrack } from "@/features/templates/tracks";
+
+// 场景：转场存储顺序与编号不同，画面对象按编号展示，点击后仍选择对应对象。
+test("画面对象按转场编号升序展示", () => {
+  const catalog = readCatalog();
+  const asset = catalog.find((item) => item.category === "transition/normal")!;
+  let draft = newDraft();
+  for (const boundary of [2, 1, 4, 3, 5]) draft = addTrack(draft, asset, "transition", undefined, boundary).draft;
+  const originalIds = draft.tracks.map((track) => track.id);
+  const selections: string[] = [];
+  render(<AppliedEffects draft={draft} catalog={catalog} selected={null} onSelect={(id) => selections.push(id)} />);
+  const buttons = screen.getAllByRole("button");
+  expect(buttons.map((button) => button.getAttribute("aria-label"))).toEqual([
+    "编辑顶部标题", "编辑底部字幕", "编辑镜头转场 1", "编辑镜头转场 2", "编辑镜头转场 3", "编辑镜头转场 4", "编辑镜头转场 5",
+  ]);
+  fireEvent.click(buttons[2]);
+  expect(selections).toEqual([draft.tracks.find((track) => track.transition_boundary === 1)!.id]);
+  expect(draft.tracks.map((track) => track.id)).toEqual(originalIds);
+});
 
 // 场景：选择字幕后点击真实目录资产，组件输出对应资产和字幕目标。
 test("资产组件传递所选资产与文字对象", async () => {
