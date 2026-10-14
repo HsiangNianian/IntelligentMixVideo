@@ -8,6 +8,23 @@ import { readCatalog } from "@/features/templates/sdk";
 
 const catalog = readCatalog();
 
+// 场景：已有标题或字幕使用停用花字时，仍显示当前值，但选项和搜索均不能再次选择它。
+test.each(["title", "subtitle"] as const)("%s 花字选择排除停用花字并保留已有值", async (role) => {
+  const initial = newDraft();
+  const asset = catalog.find((item) => item.id === "flower/CS0003-000002")!;
+  initial.editor[`${role}Flower`] = asset.id;
+  const read = renderEditor(initial, role);
+  expect(screen.getByRole("combobox", { name: "花字样式" }).textContent).toBe(asset.name);
+  fireEvent.click(screen.getByRole("combobox", { name: "花字样式" }));
+  expect(screen.queryByRole("option", { name: /CS0003-000002/ })).toBeNull();
+  fireEvent.change(await screen.findByPlaceholderText("搜索花字样式"), { target: { value: "CS0003-000002" } });
+  expect(screen.queryByRole("option", { name: /CS0003-000002/ })).toBeNull();
+  expect(read().editor[`${role}Flower`]).toBe(asset.id);
+  fireEvent.change(screen.getByPlaceholderText("搜索花字样式"), { target: { value: "" } });
+  fireEvent.click(screen.getByRole("option", { name: /^无效果/ }));
+  expect(read().editor[`${role}Flower`]).toBe("");
+});
+
 /** 保存组件输出并重新提供受控值，返回最新草稿供断言检查。 */
 function renderEditor(initial: Draft, target: TextRole) {
   let draft = initial;

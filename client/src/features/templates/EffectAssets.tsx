@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { defaultEditor, textRoles, type Category, type Draft, type Editor, type EffectAsset, type TextRole } from "./model";
-import { assetCategories, assetField, type EffectTarget } from "./effects";
+import { assetCategories, assetField, isSelectableAsset, type EffectTarget } from "./effects";
 import { trackLabel, trackLayers } from "./tracks";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 
@@ -47,6 +47,7 @@ export function EffectAssets({ editor = defaultEditor, catalog, textTarget, onTe
   const [category, setCategory] = useState<Category>("flower");
   const [search, setSearch] = useState("");
   const [limit, setLimit] = useState(24);
+  catalog = catalog.filter(isSelectableAsset);
   const isMotion = category === "in" || category === "out" || category === "loop";
   const role = category === "flower" && textTarget === "bubble" ? "title" : textTarget;
   editor = (isMotion || category === "flower") && textEditor ? textEditor : editor;
