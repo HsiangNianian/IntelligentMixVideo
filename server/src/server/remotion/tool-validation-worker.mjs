@@ -370,7 +370,7 @@ const FULL_SIZE_SHARE = 0.98;
  * (x, y), then the Sprite is rotated by `rotation` degrees and scaled by `scale` around it. Missing fields keep the
  * Sprite where it is, so an empty transform is the identity. `visible` is the part of the Sprite's canvas the video
  * shows (see `visibleWindow`). With `nudge: true` (see `fitTexts`) the text leaving that window is not a problem: the
- * canvas `bounds` of the text are measured so the caller can move it back inside.
+ * canvas `extent` of the text is measured so the caller can move it back inside.
  */
 function hostPlacement(box, transform = {}, visible = null, nudge = false) {
   const cx = box.x + box.width / 2;

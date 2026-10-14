@@ -333,8 +333,8 @@ class ToolValidator:
         inside ``box`` on the canvas. The answer is one list per Sprite with ``{index, fits, size[, shift]}`` per item:
         ``size`` is the requested size when the text already fits, otherwise the largest smaller whole size that
         does; when even ``min`` leaves it outside the window the video shows, ``shift`` ``{x, y}`` is the shortest move
-        of the placement, in canvas pixels, that brings it back in; ``fits`` is false when not even that helps. A worker that cannot answer is an infrastructure failure,
-        never a pass.
+        of the placement, in canvas pixels, that brings it back in; ``fits`` is false when not even that helps. A
+        worker that cannot answer is an infrastructure failure, never a pass.
         """
         try:
             directory = self._attempt("fit-texts")

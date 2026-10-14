@@ -294,21 +294,19 @@ async def fit_texts(renderer: Renderer, overlay: Overlay, sprites: dict[str, pb.
             if shift := fit.get("shift"):
                 logger.info("叠加渲染 Sprite %s 的文字（%d 字）在最小字号下仍出画布，位置平移 (%s, %s)", group[0], len(item["text"]), shift["x"], shift["y"])
                 for index in members[(group, key)]:
-                    nudge_host(overlay.instances[index]["host"], shift)
+                    overlay.instances[index]["host"] = nudged_host(overlay.instances[index]["host"], shift)
 
 
-def nudge_host(host: dict, shift: dict) -> None:
-    """Move a placement by `shift` canvas pixels: its host transform's content-box centre (x, y) moves by that much.
+def nudged_host(host: dict, shift: dict) -> dict:
+    """A copy of `host` moved by `shift` canvas pixels: its transform's content-box centre (x, y) moves by that much.
 
-    An unset coordinate stays at the published content box centre, as the host layer reads it. The saved placement is
-    not touched: only this render's copy of the host is replaced.
+    Only an axis that moves is written; an unset coordinate starts at the published content box centre, as the host
+    layer reads it. The host is replaced, never edited: a video composition gives every cue of a placement the same
+    host object, and the saved placement is not touched either.
     """
     box, transform = host["box"], host["transform"]
-    host["transform"] = {
-        **transform,
-        "x": transform.get("x", box["x"] + box["width"] / 2) + shift["x"],
-        "y": transform.get("y", box["y"] + box["height"] / 2) + shift["y"],
-    }
+    centre = {"x": box["x"] + box["width"] / 2, "y": box["y"] + box["height"] / 2}
+    return {**host, "transform": {**transform, **{axis: transform.get(axis, centre[axis]) + move for axis, move in shift.items() if move}}}
 
 
 async def probe_overlay(path: Path, overlay: Overlay) -> None:

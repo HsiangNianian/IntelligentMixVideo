@@ -14,6 +14,7 @@ import signal
 import subprocess
 import threading
 import time
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -1456,10 +1457,11 @@ def test_real_short_subtitles_hold_still(tmp_path: Path) -> None:
 class FitRenderer:
     """排版预检 worker 的替身：只有不超过 `capacity` 的字号才放得下，并记录每次请求。"""
 
-    def __init__(self, capacity: int | None, shift: dict | None = None) -> None:
-        """capacity 为能完整显示文字的最大字号；None 表示连最小字号也放不下；shift 是每个条目答案里附带的平移。"""
+    def __init__(self, capacity: int | None, shift: dict | None = None, shift_text: str | None = None) -> None:
+        """capacity 为能完整显示文字的最大字号；None 表示连最小字号也放不下；shift 是答案里附带的平移，给出 shift_text 时只附在该文字的条目上。"""
         self.capacity = capacity
         self.shift = shift
+        self.shift_text = shift_text
         self.settings = SimpleNamespace(render_timeout_seconds=180)
         self.requests: list[dict] = []
         self.limits: list[tuple] = []
@@ -1482,7 +1484,8 @@ class FitRenderer:
                 if self.capacity is None:
                     answers.append({"index": item["index"], "fits": False, "size": item["min"]})
                 else:
-                    answers.append({"index": item["index"], "fits": True, "size": min(wanted, self.capacity), **({"shift": self.shift} if self.shift else {})})
+                    moved = self.shift and self.shift_text in (None, item["text"])
+                    answers.append({"index": item["index"], "fits": True, "size": min(wanted, self.capacity), **({"shift": self.shift} if moved else {})})
             fits.append(answers)
         return {"fits": fits}
 
@@ -1505,6 +1508,14 @@ def test_fit_applies_the_workers_shift_to_this_renders_host_only(tmp_path) -> No
     assert overlay.instances[0]["host"]["transform"] == {"x": 300, "y": box["y"] + box["height"] / 2 + 40}
     assert overlay.instances[0]["config"]["fontSize"] == 48
     assert placement.editor.remotion.transform.model_dump(exclude_none=True) == {"x": 300}
+    # A video composition gives all cues of a placement one shared host: only the cue that needs the shift moves.
+    shared = {"box": box, "transform": {"y": 500}}
+    cues = [{**overlay.instances[0], "text": text, "host": shared, "config": {"text": text, "fontSize": 128}} for text in ("短句", "测" * 20, "测" * 20)]
+    overlay = replace(overlay, instances=cues)
+    renderer = FitRenderer(capacity=48, shift={"x": 0, "y": 40}, shift_text="测" * 20)
+    asyncio.run(overlay_render.fit_texts(renderer, overlay, PUBLICATIONS, tmp_path / "shared"))
+    assert [item["host"]["transform"] for item in overlay.instances] == [{"y": 500}, {"y": 540}, {"y": 540}]
+    assert shared == {"box": box, "transform": {"y": 500}}
     with pytest.raises(OverlayError) as failure:
         asyncio.run(overlay_render.fit_texts(FitRenderer(capacity=48, shift={"x": "1", "y": 0}), title_overlay("标题"), PUBLICATIONS, tmp_path / "bad"))
     assert failure.value.code == "render_failed"
