@@ -28,8 +28,11 @@ function event(id: number, payload: Pick<WorkEvent, "type" | "data">): WorkEvent
 function running(status: SessionJob["status"] = "running"): SessionJob {
   return { ...remotionJob(status), created_at: "2026-09-14T08:00:00Z", updated_at: "2026-09-14T08:00:00Z", parameters: null };
 }
-/** 模拟 Rust `remotion_sessions` 命令：按操作名与参数把调用交给内存实现，记录 IPC 序列化后的参数。 */
-function desktopStorage() {
+/**
+ * 模拟 Rust `remotion_sessions` 命令：按操作名与参数把调用交给内存实现，记录 IPC 序列化后的参数；
+ * `fail` 返回 true 的操作像 Rust 一样以字符串错误拒绝。
+ */
+function desktopStorage(fail: (operation: string) => boolean = () => false) {
   const memory = local.memoryStorage();
   const calls: { operation: string; payload: Record<string, unknown> }[] = [];
   /** 与 Rust 命令相同的操作分派；参数先经 JSON 往返，和真实 IPC 一样丢弃 undefined 字段。 */
@@ -37,6 +40,7 @@ function desktopStorage() {
     const call = JSON.parse(JSON.stringify(args)) as { operation: string; payload: Record<string, never> };
     calls.push(call);
     const { operation, payload } = call;
+    if (fail(operation)) throw "读写本地会话库失败";
     if (operation === "device") return memory.device();
     if (operation === "works") return memory.works(payload.server);
     if (operation === "work") return memory.work(payload.server, payload.id);
@@ -49,9 +53,12 @@ function desktopStorage() {
     if (operation === "remove") return memory.remove(payload.server, payload.work);
     throw new Error(`未知的本地会话操作：${operation}`);
   }
-  mockDesktop((command, args) =>
-    command === "remotion_sessions" ? serve(args) : Promise.reject(new Error(`未模拟命令：${command}`)),
-  );
+  // 模型请求读取桌面设置；这里没有保存过的设置。
+  mockDesktop(async (command, args) => {
+    if (command === "remotion_sessions") return serve(args);
+    if (command === "local_settings") return {};
+    throw new Error(`未模拟命令：${command}`);
+  });
   local.setStorage(undefined);
   return calls;
 }
@@ -181,6 +188,31 @@ test("保存到资产携带本机设备 ID", async () => {
   const [url, init] = fetchMock.mock.calls.at(-1)!;
   expect(new URL(String(url)).pathname).toBe("/api/sprites/publish");
   expect((init?.headers as Record<string, string>)["X-IMV-Device"]).toBe(await local.deviceId());
+});
+
+// 本地会话库写入失败（Rust 以字符串报错）时停止接收更新并显示可刷新的错误，不当作断线无限重连；修复后显式刷新即续传。
+test("本地会话库失败时显示错误且不反复重连", async () => {
+  let broken = false;
+  desktopStorage((operation) => broken && operation === "save");
+  const fake = remotionServer();
+  await seed("本地失败");
+  const { result } = renderHook(() => useTemplateSession(() => {}));
+  act(() => result.current.select("work-1"));
+  await waitFor(() => expect(result.current.connection).toBe("live"));
+  broken = true;
+  await act(async () => fake.advance({ ...remotionJob("answered"), id: "job-2", message: "已回答" }));
+  await waitFor(() => expect(result.current.error).toContain("读写本地会话库失败"));
+  expect(result.current.connection).toBeNull();
+  expect(result.current.retryMode).toBe("read");
+  await act(() => new Promise((resolve) => setTimeout(resolve, 2300)));
+  const streams = () => fetchMock.mock.calls.filter((call) => String(call[0]).includes("/stream?")).length;
+  expect(streams()).toBe(1);
+  broken = false;
+  act(() => result.current.retry());
+  await waitFor(() => expect(result.current.job?.id).toBe("job-2"));
+  expect(result.current.connection).toBe("live");
+  expect(result.current.error).toBe("");
+  expect(streams()).toBe(2);
 });
 
 // 会话按 API 服务地址归属：切换服务后历史只列该服务的会话，删除也只移除该服务下的本地记录；同一服务的不同写法视为同一个。

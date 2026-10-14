@@ -49,11 +49,18 @@ export interface SessionStorage {
   remove(server: string, work: string): Promise<void>;
 }
 
+/** 本地会话库读写失败：与服务端错误区分，会话订阅据此停止并提示，而不是当作断线反复重连。 */
+export class LocalStoreError extends Error {}
+
 /** 桌面实现：每个操作是一次 Rust 侧 SQLite 调用，保存在一个事务内完成。 */
 function tauriStorage(): SessionStorage {
-  /** 统一调用入口；Rust 返回的中文错误原样展示。 */
+  /** 统一调用入口；Rust 以字符串返回的中文错误包装为 LocalStoreError，原文展示。 */
   function call<T>(operation: string, payload: Record<string, unknown> = {}) {
-    return invoke<T>("remotion_sessions", { operation, payload });
+    return invoke<T>("remotion_sessions", { operation, payload }).catch((error: unknown) => {
+      throw new LocalStoreError(
+        typeof error === "string" ? error : error instanceof Error ? error.message : "本地会话库读写失败。",
+      );
+    });
   }
   return {
     device: () => call("device"),

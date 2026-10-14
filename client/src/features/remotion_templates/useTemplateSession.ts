@@ -313,6 +313,16 @@ export function useTemplateSession(onHistoryChange: () => void) {
       } catch (error) {
         if (!current(key, signal)) return;
         if (unavailable(work, error)) return;
+        // 本地库写不进去时重连也写不进去：停止订阅、保留服务端未确认的事件，由用户修复后显式刷新。
+        if (error instanceof local.LocalStoreError) {
+          publish({
+            connection: null,
+            busy: null,
+            error: `本地会话库读写失败，已暂停接收更新：${error.message} 处理后可点击刷新任务。`,
+            retryMode: "read",
+          });
+          return;
+        }
         publish({ connection: "reconnecting" });
         await reconnectDelay(signal);
       }
