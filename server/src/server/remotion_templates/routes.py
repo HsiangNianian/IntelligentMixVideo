@@ -50,20 +50,28 @@ router = APIRouter()
 
 
 async def runtime_for(state) -> Runtime:
-    """Start only the feature-local runtime on first use; unrelated routes need no model or database."""
+    """Start only the feature-local runtime on first use; unrelated routes need no model or database.
+
+    Requests that arrive while the first one initializes wait for it, so one runtime (one write lock, one worker,
+    one sweep) ever exists per app and recovery never interrupts a job another runtime has just claimed.
+    """
     if not hasattr(state, "runtime"):
-        try:
-            service = state.build_runtime()
-            await asyncio.to_thread(service.initialize)
-        except (OSError, ImportError, ValueError, SQLAlchemyError) as exc:
-            raise HTTPException(
-                503,
-                "Remotion 存储不可用：请检查 MySQL、ZOS 配置与可写的本地数据目录。",
-            ) from exc
-        state.runtime = service
-        # Overlay tasks left unfinished by the previous process continue as soon as the runtime exists.
-        service.overlays.resume()
-        service.start_maintenance()
+        if not hasattr(state, "runtime_starting"):
+            state.runtime_starting = asyncio.Lock()
+        async with state.runtime_starting:
+            if not hasattr(state, "runtime"):
+                try:
+                    service = state.build_runtime()
+                    await asyncio.to_thread(service.initialize)
+                except (OSError, ImportError, ValueError, SQLAlchemyError) as exc:
+                    raise HTTPException(
+                        503,
+                        "Remotion 存储不可用：请检查 MySQL、ZOS 配置与可写的本地数据目录。",
+                    ) from exc
+                state.runtime = service
+                # Overlay tasks left unfinished by the previous process continue as soon as the runtime exists.
+                service.overlays.resume()
+                service.start_maintenance()
     return state.runtime
 
 

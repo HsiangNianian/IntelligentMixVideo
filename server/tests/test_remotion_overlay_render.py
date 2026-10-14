@@ -13,6 +13,7 @@ import shutil
 import signal
 import subprocess
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -37,6 +38,7 @@ from server.remotion_templates.overlay_router import overlay_renders
 from server.remotion_templates.overlay_service import OverlayRenders
 from server.remotion_templates.renderer import Renderer
 from server.remotion_templates.routes import runtime_for
+from server.remotion_templates.runtime import Runtime
 from server.remotion_templates.settings import Settings
 from server.remotion_templates import sprite_render
 from server.remotion_templates.sprite_render import chunk_ranges, join_problem, plan_sprite_render
@@ -707,6 +709,33 @@ def test_runtime_start_recovers_overlay_tasks(tmp_path, monkeypatch, template_db
 
     first, second = asyncio.run(scenario())
     assert first is second and resumed == [first.overlays]
+
+
+# 场景：工作区打开或服务重启后几个请求同时到达，运行时只建立并恢复一次。
+def test_concurrent_first_requests_share_one_runtime(tmp_path, monkeypatch, template_db) -> None:
+    """初始化在线程中等待时，并发的 runtime_for 等待同一次建立，不重复恢复任务或启动清理。"""
+    settings = Settings(_env_file=None, data_dir=tmp_path / "state")
+    application = create_template_app(
+        settings, provider=SimpleNamespace(settings=settings), renderer=SimpleNamespace(settings=settings),
+    )
+    initialized, resumed, sweeps = [], [], []
+
+    def slow_initialize(self) -> None:
+        """模拟建表与恢复耗时，让其他请求在初始化完成前到达。"""
+        time.sleep(0.2)
+        initialized.append(self)
+
+    monkeypatch.setattr(Runtime, "initialize", slow_initialize)
+    monkeypatch.setattr(Runtime, "start_maintenance", lambda self: sweeps.append(self))
+    monkeypatch.setattr(OverlayRenders, "resume", lambda self: resumed.append(self))
+
+    async def scenario():
+        """三个首请求同时取用运行时。"""
+        return await asyncio.gather(*(runtime_for(application.state) for _ in range(3)))
+
+    runtimes = asyncio.run(scenario())
+    assert len({id(runtime) for runtime in runtimes}) == 1
+    assert initialized == sweeps == [runtimes[0]] and resumed == [runtimes[0].overlays]
 
 
 # 场景：路由依赖取用 Remotion 运行时里的任务服务，并在取用时触发（重试）恢复。
