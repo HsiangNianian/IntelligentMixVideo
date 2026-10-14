@@ -95,3 +95,47 @@ test("后台会话已被服务端删除时标记为可重试删除", async () =>
   fireEvent.click(screen.getByRole("button", { name: "删除聊天" }));
   expect(screen.getByRole("button", { name: "重试删除" })).toBeTruthy();
 });
+
+// 终态事件已被服务端过期清理（客户端长时间离线）：本地仍停在运行中，同步改读任务当前状态校正，会话不再被锁定。
+test("事件已过期时用任务状态校正停在运行中的后台会话", async () => {
+  const fake = runningServer();
+  await seed("过期会话");
+  await act(async () => fake.advance(remotionJob("succeeded", "version-1")));
+  fake.records.length = 0;
+  render(<RemotionWorkspace />);
+  await waitFor(() => expect(screen.getByRole("button", { name: /过期会话/ }).textContent).toContain("已完成"));
+  const snapshot = await local.snapshot("work-1");
+  expect(snapshot.job.status).toBe("succeeded");
+  expect(snapshot.work.current_version_id).toBe("version-1");
+  expect(await local.pendingWorks()).toEqual([]);
+});
+
+// 服务端任务仍在运行时不改本地记录；任务已不在服务端（404）时按会话已删除处理，网络失败留待下一轮。
+test("核对任务状态：仍在运行不改动，404 标记删除，网络失败保持原状", async () => {
+  let mode: "running" | "missing" | "offline" = "running";
+  runningServer((path) => {
+    if (!/^\/jobs\/[^/]+$/.test(path)) return undefined;
+    if (mode === "missing") return new Response(null, { status: 404 });
+    if (mode === "offline") throw new TypeError("offline");
+    return undefined;
+  });
+  await seed("核对会话");
+  const signal = new AbortController().signal;
+  expect(await syncBackground(() => false, signal, true)).toBe(false);
+  mode = "offline";
+  expect(await syncBackground(() => false, signal, true)).toBe(false);
+  expect((await local.pendingWorks()).map((item) => item.work.id)).toEqual(["work-1"]);
+  mode = "missing";
+  expect(await syncBackground(() => false, signal, true)).toBe(true);
+  expect(await local.pendingWorks()).toEqual([]);
+});
+
+// 后续各轮同步不再读取任务状态：任务接口不被轮询。
+test("只有挂载后的第一轮同步读取任务状态", async () => {
+  runningServer();
+  await seed("不轮询");
+  const signal = new AbortController().signal;
+  await syncBackground(() => false, signal);
+  await syncBackground(() => false, signal);
+  expect(fetchMock.mock.calls.some((call) => /\/jobs\/[^/]+$/.test(String(call[0])))).toBe(false);
+});

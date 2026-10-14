@@ -129,9 +129,10 @@ test("SSE 断线续传、重复事件去重且不重发任务", async () => {
   expect(
     fetchMock.mock.calls.filter((call) => call[1]?.method === "POST" && !String(call[0]).endsWith("/ack")),
   ).toHaveLength(1);
+  // 打开会话时最多读取一次任务状态（校正停滞的本地状态）；断线重连不轮询任务接口。
   expect(
-    fetchMock.mock.calls.some((call) => /\/jobs\/[^/]+$/.test(String(call[0]))),
-  ).toBe(false);
+    fetchMock.mock.calls.filter((call) => /\/jobs\/[^/]+$/.test(String(call[0]))).length,
+  ).toBeLessThanOrEqual(1);
 });
 
 // 切换时仍在传输的旧成功版本不能回填新会话；任务不因读取中断被取消。

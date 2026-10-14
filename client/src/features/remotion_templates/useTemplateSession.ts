@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import * as api from "./api";
 import { events } from "./events";
+import { settleJob } from "./backgroundSync";
 import * as local from "./localSessions";
 import { defaultComposition } from "./composition";
 import {
@@ -237,7 +238,9 @@ export function useTemplateSession(onHistoryChange: () => void) {
   }
   /** 先从本地恢复会话再推进游标，产物失败独立保留为可重试状态。 */
   async function hydrate(work: string, key: number, signal: AbortSignal) {
-    const snapshot = await local.snapshot(work);
+    let snapshot = await local.snapshot(work);
+    // 任务停在进行中而终态事件已不会送达时校正本地状态，否则会话会一直被锁定。
+    if (await settleJob(snapshot.job, signal)) snapshot = await local.snapshot(work);
     if (!current(key, signal)) return snapshot.cursor;
     publish({
       messages: snapshot.messages,
@@ -689,7 +692,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
     )
       return;
     try {
-      await api.cancel(s.job.id);
+      await local.reconcile(await api.cancel(s.job.id));
       if (current(s.key)) await attach(s.workId, s.key);
       if (alive.current) changed.current();
     } catch {

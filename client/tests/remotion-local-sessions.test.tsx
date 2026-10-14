@@ -265,6 +265,48 @@ test("本地会话库失败时显示错误且不反复重连", async () => {
   expect(streams()).toBe(2);
 });
 
+// 终态事件已过期、本机停在运行中：打开会话时读取任务状态校正，输入不再被锁定。
+test("打开停在运行中的会话时校正为服务端终态", async () => {
+  const fake = remotionServer((path, options) =>
+    path === "/works" && options?.method === "POST"
+      ? Response.json({ work: { id: "work-1" }, job: remotionJob("running") })
+      : undefined,
+  );
+  await seed("过期");
+  await act(async () => fake.advance(remotionJob("succeeded", "version-1")));
+  fake.records.length = 0;
+  const { result } = renderHook(() => useTemplateSession(() => {}));
+  act(() => result.current.select("work-1"));
+  await waitFor(() => expect(result.current.job?.status).toBe("succeeded"));
+  expect(result.current.busy).toBeNull();
+  expect((await local.snapshot("work-1")).work.current_version_id).toBe("version-1");
+});
+
+// 「停止」遇到服务端早已结束的任务：取消接口回执的终态写入本地，会话解除锁定，不必删除重建。
+test("停止停在运行中的过期会话时采用服务端回执的终态", async () => {
+  const fake = remotionServer((path, options) =>
+    path === "/works" && options?.method === "POST"
+      ? Response.json({ work: { id: "work-1" }, job: remotionJob("running") })
+      : path.endsWith("/cancel")
+        ? Response.json(remotionJob("failed"))
+        : undefined,
+  );
+  await seed("过期停止");
+  const { result } = renderHook(() => useTemplateSession(() => {}));
+  act(() => result.current.select("work-1"));
+  await waitFor(() => expect(result.current.connection).toBe("live"));
+  // 服务端在本机不知情时已结束任务，也没有事件可送。
+  fake.records.length = 0;
+  fake.works.add("work-1");
+  expect(result.current.busy).toBe("chat");
+  const reconcile = spyOn(local, "reconcile");
+  await act(async () => result.current.stop());
+  await waitFor(() => expect(result.current.busy).toBeNull());
+  expect(result.current.job?.status).toBe("failed");
+  // 回执的终态由停止操作直接写入本地，不依赖事件再送达。
+  expect(reconcile.mock.calls.map(([job]) => [job.id, job.status])).toEqual([["job-1", "failed"]]);
+});
+
 // 会话按 API 服务地址归属：切换服务后历史只列该服务的会话，删除也只移除该服务下的本地记录；同一服务的不同写法视为同一个。
 test("本地会话按服务地址隔离", async () => {
   const original = apiBase();

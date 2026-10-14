@@ -215,6 +215,10 @@ export function remotionServer(
             }),
           );
         }
+        if (/^\/jobs\/[^/]+$/.test(path) && (options?.method ?? "GET") === "GET") {
+          const job = [...jobs.values()].find((item) => item.id === path.split("/")[2]);
+          return job ? Response.json(job) : new Response(null, { status: 404 });
+        }
         if (/^\/works\/[^/]+\/versions$/.test(path)) {
           const work = path.split("/")[2]!;
           return Response.json(

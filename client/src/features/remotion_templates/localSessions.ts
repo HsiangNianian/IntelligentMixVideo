@@ -300,6 +300,34 @@ async function merge(work: string, events: WorkEvent[]): Promise<StoredWork> {
   });
   return stored;
 }
+/**
+ * 用服务端报告的任务状态校正本机仍停在排队或运行的最新任务：事件已被服务端过期清理（长时间离线）或确认丢失时，
+ * 终态事件再也不会送达，会话会一直被锁在运行中。只改任务状态与成功版本指针，已过期的消息不会补回；
+ * 返回是否改动了本地记录。其他任务、本机已是终态或状态相同时不做任何事。
+ */
+export function reconcile(job: Job): Promise<boolean> {
+  return serial(job.project_id, async () => {
+    const scope = server();
+    const stored = await storage().work(scope, job.project_id);
+    if (!stored || stored.job.id !== job.id) return false;
+    const active = (status: Job["status"]) => status === "queued" || status === "running";
+    if (!active(stored.job.status) || stored.job.status === job.status) return false;
+    const settled: SessionJob = { ...stored.job, ...job };
+    const pointer =
+      job.status === "succeeded" && job.result_version_id ? job.result_version_id : stored.work.current_version_id;
+    await storage().save(scope, {
+      work: {
+        ...stored,
+        work: { ...stored.work, current_version_id: pointer },
+        job: { ...settled, rounds: [] },
+        updated_at: new Date().toISOString(),
+      },
+      messages: [],
+      jobs: [settled],
+    });
+    return true;
+  });
+}
 /** 服务端报告会话不存在或正在清理时标记本地记录，侧栏据此提供重试删除；本机没有该会话时不做任何事。 */
 export function markDeleting(work: string): Promise<void> {
   return serial(work, async () => {

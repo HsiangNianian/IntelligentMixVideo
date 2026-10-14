@@ -17,8 +17,22 @@ const MAX_PAGES = 50;
 /** 与 SSE 相同，只写入这些公开事件类型。 */
 const KNOWN = new Set<WorkEvent["type"]>(["message.created", "job.updated", "job.round", "version.ready"]);
 
+/**
+ * 本机最新任务仍在排队或运行时向服务端核对一次：事件已过期或确认丢失时，终态事件不会再送达（见 `local.reconcile`）。
+ * 网络失败时保持原状，下次再核对；服务端答复 404/410 时抛出，由调用方按会话已删除处理；返回本地记录是否被校正。
+ */
+export async function settleJob(job: local.StoredWork["job"], signal?: AbortSignal): Promise<boolean> {
+  if (job.status !== "queued" && job.status !== "running") return false;
+  try {
+    return await local.reconcile(await api.job(job.id, signal));
+  } catch (error) {
+    if (error instanceof api.ApiError && [404, 410].includes(error.status)) throw error;
+    return false;
+  }
+}
+
 /** 逐页拉取一个会话的待送达事件直到取空；返回是否写入了本地。会话转为 SSE 订阅时立即停下，不确认未写入的事件。 */
-async function syncWork(stored: local.StoredWork, open: (id: string) => boolean, signal: AbortSignal) {
+async function syncWork(stored: local.StoredWork, open: (id: string) => boolean, signal: AbortSignal, settle: boolean) {
   const work = stored.work.id;
   let cursor = stored.cursor;
   let changed = false;
@@ -26,7 +40,11 @@ async function syncWork(stored: local.StoredWork, open: (id: string) => boolean,
     const events = (await api.workEvents(work, cursor, signal))
       .filter((event) => event.work_id === work && Number.isSafeInteger(event.id) && event.id > cursor)
       .sort((left, right) => left.id - right.id);
-    if (!events.length) break;
+    if (!events.length) {
+      // 没有待送达事件而本机仍显示进行中：事件可能已过期，向服务端核对任务状态（只在挂载后的第一轮，不是轮询）。
+      if (settle && page === 0 && (await settleJob(stored.job, signal))) changed = true;
+      break;
+    }
     const saved = await local.apply(
       work,
       events.filter((event) => KNOWN.has(event.type)),
@@ -41,14 +59,21 @@ async function syncWork(stored: local.StoredWork, open: (id: string) => boolean,
   return changed;
 }
 
-/** 同步当前服务下全部未结束、未在 SSE 中打开的本地会话；返回侧栏是否需要刷新。 */
-export async function syncBackground(open: (id: string) => boolean, signal: AbortSignal): Promise<boolean> {
+/**
+ * 同步当前服务下全部未结束、未在 SSE 中打开的本地会话；返回侧栏是否需要刷新。
+ * `settle` 为 true 时，无事件可取而仍显示进行中的会话再核对一次任务状态（工作区挂载后的第一轮）。
+ */
+export async function syncBackground(
+  open: (id: string) => boolean,
+  signal: AbortSignal,
+  settle = false,
+): Promise<boolean> {
   let changed = false;
   for (const stored of await local.pendingWorks()) {
     if (signal.aborted) break;
     if (open(stored.work.id)) continue;
     try {
-      if (await syncWork(stored, open, signal)) changed = true;
+      if (await syncWork(stored, open, signal, settle)) changed = true;
     } catch (error) {
       if (error instanceof api.ApiError && [404, 410].includes(error.status)) {
         await local.markDeleting(stored.work.id);
@@ -67,12 +92,15 @@ export function useBackgroundSync(open: () => string | null, onChange: () => voi
   useEffect(() => {
     const controller = new AbortController();
     let running = false;
+    /** 只有挂载后的第一轮核对任务状态：此后的停滞由事件或用户操作处理，不轮询任务接口。 */
+    let first = true;
     /** 上一轮未结束时跳过本轮，避免同一会话的两轮同步重叠。 */
     async function tick() {
       if (running) return;
       running = true;
       try {
-        const changed = await syncBackground((id) => latest.current.open() === id, controller.signal);
+        const changed = await syncBackground((id) => latest.current.open() === id, controller.signal, first);
+        first = false;
         if (changed && !controller.signal.aborted) latest.current.onChange();
       } catch {
         // 本地会话列表读取失败：侧栏自己会显示读取错误，下一轮重试。

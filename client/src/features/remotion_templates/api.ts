@@ -184,6 +184,12 @@ export function versions(
 ): Promise<Version[]> {
   return request(`/works/${encodeURIComponent(work)}/versions`, { signal });
 }
+/** 读取任务当前状态；本机还停在运行中而服务端已无事件可送时，用它校正本地状态。 */
+export function job(id: string, signal?: AbortSignal): Promise<Job> {
+  return request(`/jobs/${encodeURIComponent(id)}`, { signal });
+}
+
+
 /** 取消可重复调用；不删除之前的成功版本。 */
 export function cancel(id: string): Promise<Job> {
   return request(`/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" });

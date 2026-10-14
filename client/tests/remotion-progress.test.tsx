@@ -181,11 +181,12 @@ test("SSE 阶段推进、断线续传与刷新恢复", async () => {
   region = await screen.findByRole("region", { name: "任务处理进度" });
   expect(within(region).getByRole("list").children).toHaveLength(3);
   expect(within(region).getByText(/调整 1 次/)).toBeTruthy();
+  // 重新挂载后打开会话最多读取一次任务状态，断线重连与刷新恢复不轮询任务接口。
   expect(
     fetchMock.mock.calls.filter((call) =>
       /\/jobs\/[^/]+$/.test(String(call[0])),
-    ),
-  ).toHaveLength(0);
+    ).length,
+  ).toBeLessThanOrEqual(1);
   expect(
     fetchMock.mock.calls.filter((call) => call[1]?.method === "POST" && !String(call[0]).endsWith("/ack")),
   ).toHaveLength(1);
