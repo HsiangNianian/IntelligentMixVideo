@@ -248,41 +248,68 @@ def catalog() -> list[pb.SpriteSummary]:
 
 
 async def preview_script(service, sprite_id: str) -> tuple[str, dict]:
-    """Read the sprite's own verified copy of the player bundle, rebuilding a lost copy from its published source.
+    """Read the sprite's own verified copy of the player bundle, rebuilding it from the published source when needed.
+
+    A lost copy (missing or no longer matching its hash) is rebuilt, and the preview is a 404 if that fails. A copy
+    that predates the current host protocol (`current_bundle`) cannot take the placement transform or parameter
+    overrides, so the template editor would show the asset unmoved; it is rebuilt once instead of waiting for the
+    Sprite to be saved again, and when that fails the old copy is served as before.
+    Previews of one Sprite load together (one iframe per placement): they take turns, so only the first rebuilds,
+    and after a failed rebuild of a lost copy later previews answer 404 for `REBUILD_COOLDOWN` seconds instead of
+    starting another isolated worker each. An unreachable object store is a 503.
 
     Also returns what the page injects for the player: the published defaults and the content box.
-    Concurrent previews of a lost copy wait for one rebuild; after a failed rebuild, previews answer 404 for
-    `REBUILD_COOLDOWN` seconds instead of starting another isolated worker each. An unreachable object store is 503.
     """
     store = service.store
     sprite = await run_in_threadpool(get, sprite_id)
     try:
         script = await run_in_threadpool(_bundle_bytes, store, sprite)
-        if script is None:
+        if script is None or not current_bundle(script):
             async with bundle_lock(sprite.sprite_id):
                 # Another preview may have rebuilt the copy, or a deletion removed the asset, while this one waited.
                 sprite = await run_in_threadpool(get, sprite_id)
                 script = await run_in_threadpool(_bundle_bytes, store, sprite)
                 if script is None:
                     script = await _rebuild_once(service, sprite)
+                elif not current_bundle(script):
+                    fresh = await _rebuilt(service, sprite, throttle=False)
+                    if fresh is not None:
+                        try:
+                            await run_in_threadpool(_store_bundle, store, sprite, fresh)
+                            script = fresh
+                        except Exception:
+                            logging.getLogger(__name__).exception("Sprite preview refresh not stored: %s", sprite.sprite_id)
     except ObjectStoreError as exc:
         raise HTTPException(503, "资产预览存储暂不可用，请稍后重试") from exc
     return script.decode("utf-8"), {"config": json.loads(sprite.default_config_json or "{}"), "box": box_json(sprite)}
 
 
-async def _rebuild_once(service, sprite: pb.PublishedSprite) -> bytes:
-    """Rebuild and store a lost player copy under its lock, unless a rebuild failed within the cooldown."""
+async def _rebuilt(service, sprite: pb.PublishedSprite, *, throttle: bool = True) -> bytes | None:
+    """Rebuild a publication's player bundle from its source; None when it failed or, if throttled, failed within the cooldown.
+
+    Only a lost copy is throttled (its preview is a 404 anyway); an outdated copy is retried by every preview, since
+    the old copy keeps being served and a restored sandbox should refresh it at once.
+    """
     failed = _rebuild_failed.get(sprite.sprite_id)
-    if failed is not None and monotonic() - failed < REBUILD_COOLDOWN:
-        raise NotFound("sprite preview unavailable")
+    if throttle and failed is not None and monotonic() - failed < REBUILD_COOLDOWN:
+        return None
     canvas = sprite.canvas
     script = await _rebuild_bundle(service, sprite.tsx_code, json.loads(sprite.default_config_json or "{}"), {
         "width": canvas.width, "height": canvas.height, "fps": canvas.fps, "duration_in_frames": canvas.preview_frames,
     }, sprite.sprite_id)
     if script is None:
-        _rebuild_failed[sprite.sprite_id] = monotonic()
+        if throttle:
+            _rebuild_failed[sprite.sprite_id] = monotonic()
+    else:
+        _rebuild_failed.pop(sprite.sprite_id, None)
+    return script
+
+
+async def _rebuild_once(service, sprite: pb.PublishedSprite) -> bytes:
+    """Rebuild and store a lost player copy under its lock; without a copy the preview is a 404."""
+    script = await _rebuilt(service, sprite)
+    if script is None:
         raise NotFound("sprite preview unavailable")
-    _rebuild_failed.pop(sprite.sprite_id, None)
     await run_in_threadpool(_store_bundle, service.store, sprite, script)
     return script
 

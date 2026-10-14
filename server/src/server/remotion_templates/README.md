@@ -382,7 +382,7 @@ like in the bus render), reporting `sync: true` in its
 ready message. The page injects the published defaults and content box as a JSON element (`#imv-preview-host`, with
 `<`, `>`, `&` and line separators escaped); the player starts from them, merges `imv-preview-update` values over
 them (objects key by key, arrays and scalars replace) and applies an optional `host: {transform}` through
-`remotion/host-layer.tsx`, the wrapper the overlay render uses too. Such a bundle reports `host: true` when ready.
+`remotion/host-layer.tsx`, the wrapper the overlay render uses too. The wrapper also lifts the clipping of a composed Sprite's instance boxes (the parent of each `data-imv-instance`, which Sprites sealed before this carry as `overflow: hidden`; `player_page` has the same rule for older bundles), so a larger font, keyword size or underline is bounded by the canvas only; a component's own fixed boxes are still measured as before. Such a bundle reports `host: true` when ready.
 `presentation.mjs` writes the host protocol it speaks as the bundle's first line (`/* imv-preview-protocol 1 */`,
 `publication.PREVIEW_PROTOCOL`); only that line counts, because the generated code and its defaults are bundled too and
 can contain any text. Publishing rebuilds the bundle from the sealed source in the isolated worker when the sealed one
@@ -390,6 +390,10 @@ lacks that line and refreshes an existing publication on re-save; a failed rebui
 A refresh stages the new bundle and records its hash before replacing the copy, so a failed update keeps the
 previous copy working and publishing again retries it. Identical publish requests (same version and field
 choice) take turns, so a double click rebuilds once.
+A saved publication whose copy lacks the protocol line is rebuilt from its published source on its first preview (it
+cannot take placement transforms otherwise, so an asset saved before they existed would not follow position edits in
+the template editor); a failed rebuild or store serves the old copy and the next preview retries. Concurrent previews
+of one Sprite rebuild once.
 
 ## Overlay renders for the bus
 

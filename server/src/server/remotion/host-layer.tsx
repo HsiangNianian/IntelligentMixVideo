@@ -11,6 +11,15 @@ export type HostBox = { x: number; y: number; width: number; height: number };
 /** Optional placement values; a missing field keeps the sample's own position, size, angle or opacity. */
 export type HostTransform = { x?: number; y?: number; scale?: number; rotation?: number; opacity?: number };
 
+/**
+ * Composed Sprites put every instance in an absolutely positioned box of its layout size. That box is only a region
+ * for placing the instance and must not cut it: a larger font, a longer keyword or a taller underline would be
+ * cropped at the box edge while the canvas still has room. Newly composed Sprites no longer clip it; Sprites
+ * sealed earlier did (`overflow: hidden`), so the host lifts it for them too. Only the canvas bounds the picture.
+ * `routes.player_page` carries the same rule for bundles built before this was added.
+ */
+const INSTANCE_BOX_CSS = "div:has(> [data-imv-instance]){overflow:visible !important}";
+
 /** Read a finite number or fall back, so a partial transform never produces NaN styles. */
 function finite(value: number | undefined, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
@@ -39,6 +48,8 @@ export function HostLayer({ box, transform, children }: { box: HostBox; transfor
       >
         {children}
       </AbsoluteFill>
+      {/* After the transformed layer: the text measurements read the host layer's first child as the content. */}
+      <style>{INSTANCE_BOX_CSS}</style>
     </AbsoluteFill>
   );
 }

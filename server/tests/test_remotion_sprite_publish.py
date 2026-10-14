@@ -494,6 +494,17 @@ def test_style_binding_routes_are_gone(client: TestClient) -> None:
     assert client.post(f"/api/sprites/styles/{style_id}", content=b"", headers=PROTOBUF).status_code == 404
 
 
+def test_preview_page_lifts_the_clipping_of_composed_instance_boxes(client: TestClient, published) -> None:
+    """较早封存的组合 Sprite 的实例盒子带 overflow hidden：预览页（透明叠加与普通预览）都带覆盖规则，大字号下关键词与下划线不被盒子裁掉。
+
+    Issue #142：覆盖只针对 data-imv-instance 的父元素，内容自己的固定框不受影响。
+    """
+    summary = published_sprite(client, published.version.id)
+    rule = "div:has(> [data-imv-instance]){overflow:visible !important}"
+    assert rule in client.get(summary.preview_url).text
+    assert rule in client.get(summary.preview_url, params={"overlay": "true"}).text
+
+
 def test_overlay_preview_is_transparent_and_serves_managed_fonts(client: TestClient, published) -> None:
     """模板编辑叠加使用透明背景页；普通预览保留检查棋盘格。字体路由随页面相对路径可用，缺失资产或字重返回 404。"""
     summary = published_sprite(client, published.version.id)
@@ -617,6 +628,24 @@ def test_rebuild_failure_still_saves_and_republishing_refreshes_the_old_copy(cli
     assert again.sprite_id == first.sprite_id
     assert "// rebuilt" in client.get(first.preview_url).text
     assert len(pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites) == 1
+
+
+def test_previewing_an_asset_saved_with_an_outdated_player_rebuilds_it_once(client: TestClient, published) -> None:
+    """资产保存时播放器包早于宿主变换协议（无协议首行），预览不必等重新保存：第一次预览按发布源码重建并记录哈希，之后复用。
+
+    Issue #142：这样的旧包不回报 host 能力，模板编辑里调整水平、垂直位置时预览画面不动；重建失败时仍提供旧包。
+    """
+    published.renderer.failure = RuntimeError("sandbox unavailable")
+    summary = published_sprite(client, published.version.id)
+    published.renderer.requests.clear()
+    assert "offline Player fixture" in client.get(summary.preview_url).text
+    assert len(published.renderer.requests) == 1
+    published.renderer.failure = None
+    assert "// rebuilt" in client.get(summary.preview_url).text
+    copied = objects(published.store) / "sprites" / summary.sprite_id / "interactive.js"
+    assert current_bundle(copied.read_bytes())
+    assert "// rebuilt" in client.get(summary.preview_url).text
+    assert len(published.renderer.requests) == 2
 
 
 def test_failed_hash_update_keeps_the_old_player_copy_and_republishing_finishes_the_refresh(client: TestClient, published, template_db: Engine) -> None:
