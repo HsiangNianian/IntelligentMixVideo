@@ -15,6 +15,8 @@ from openai import APIError, APITimeoutError, OpenAI
 
 from .settings import ClientSettings, Settings
 
+jieba.setLogLevel(logging.WARNING)
+
 # 对齐忽略常见中英文标点；字幕过滤集合供下游合成使用，切片原文保留标点。
 PUNCTUATION = set("，。！？、；：“”‘’（）《》〈〉【】〔〕…—～·,.．!?;:\"'()<>[]{}~`")
 SUBTITLE_PUNCTUATION = PUNCTUATION - {"？", "?"}
@@ -248,13 +250,17 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
         repair_ranges.append((indices[0], indices[-1] + 1))
     trace["repair_block_count"] = len(repair_ranges)
 
-    # 两次切分共用英文、数字保护；数字列表连同共享的“后”整体保留，不保护普通逗号两侧的中文。
+    # 两次切分共用词串保护；逗号列表须有共享后缀或明确约数语境，避免把“99，3件”连成一串。
     diagnostics["stage"] = "candidate_filter"
     offsets = [c[0] for c in chars]
     protected = set()
+    number = r"\d+(?:[.．]\d+)?"
     for pattern in (
         r"[+＋\-－]?[A-Za-zＡ-Ｚａ-ｚ\d]+(?:[.．\-－][A-Za-zＡ-Ｚａ-ｚ\d]+)*[%％]?",
-        r"\d+(?:[.．]\d+)?(?:\s*[,，、]\s*\d+(?:[.．]\d+)?)+(?:\s*后)?",
+        rf"{number}(?:\s*[,，、]\s*{number})+\s*后",
+        rf"第\s*{number}(?:\s*[,，、]\s*{number})+\s*名",
+        rf"{number}(?:\s*、\s*{number})+",
+        rf"(?<=等)\s*{number}\s*[,，]\s*{number}\s*(?:小时|分钟|秒|天|周|个月|月|年)",
     ):
         for token in re.finditer(pattern, script):
             begin, end = bisect.bisect_left(offsets, token.start()), bisect.bisect_left(offsets, token.end())
@@ -412,7 +418,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                     # 有关键词即重点句 2，否则为普通句 1；CTA 需语义判断，不标注。
                     item["level"] = 2 if item["keyword"] else 1
 
-    # 标点、结巴词边界优先，同级选最接近中点的位置；中文词可拆，英文数字仅在整串超长时放宽上限。
+    # 先避免单字子段，再优先标点、结巴词边界及中点；英文数字仅在整串超长时放宽上限。
     # 标点留在前段，关键词仅继承到完整包含首次出现位置的子段；沿用既有字符时间，不重新对齐。
     diagnostics["stage"] = "secondary_split"
     word_edges = {bisect.bisect_left(offsets, end) for _, _, end in jieba.tokenize(script)} if any(
@@ -433,6 +439,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                 cuts = [cut for cut in range(a + 1, b) if cut not in protected]
                 if cuts:
                     middle = min(cuts, key=lambda cut: (
+                        min(cut - a, b - cut) < 2,
                         cut not in punctuation_edges, cut not in word_edges, abs(2 * cut - a - b), cut,
                     ))
                     pending.extend([(middle, b), (a, middle)])

@@ -106,19 +106,18 @@ def test_alignment_and_contract(model, script, transcript, cost):
     assert previous == len(transcript) * 200 / 1000
 
 
-@pytest.mark.parametrize("script", ["甲" * size for size in (1, 8, 9, 16, 17, 20)] + [
-    "abcdefghi", "12345678901234567",
+@pytest.mark.parametrize("script,expected_lengths", [
+    ("甲" * 1, [1]), ("甲" * 8, [8]), ("甲" * 9, [3, 6]),
+    ("甲" * 16, [3, 6, 7]), ("甲" * 17, [3, 6, 8]), ("甲" * 20, [3, 6, 6, 5]),
+    ("abcdefghi", [9]), ("12345678901234567", [17]),
 ])
-def test_secondary_split_length_and_timing(model, client, script):
+def test_secondary_split_length_and_timing(model, client, script, expected_lengths):
     """中文每段至多八字，超长英文数字保持完整，保留时间覆盖且模型只调用两次。"""
     response = client.post("/segmentations", json=payload(script))
     assert response.status_code == 200
     parts = response.json()["segments"]
     lengths = [len(part["text"]) for part in parts]
-    if script.isascii() or len(script) <= 8:
-        assert lengths == [len(script)]
-    else:
-        assert all(length <= 8 for length in lengths)
+    assert lengths == expected_lengths
     assert "".join(part["text"] for part in parts) == script
     assert [(part["start_time"], part["end_time"]) for part in parts] == [
         (sum(lengths[:i]) / 5, sum(lengths[:i + 1]) / 5) for i in range(len(lengths))
@@ -179,6 +178,7 @@ def test_secondary_split_regressions(model, script, expected):
 @pytest.mark.parametrize("token", [
     "OpenAI", "GPT-4o", "3.14%", "-3.14%", "ＯｐｅｎＡＩ", "１２３．４５",
     "ChatGPT4o", "123456789", "60，70，80，90后",
+    "1、2、3", "1.5、2.5、3.5", "第1、2、3、4、5、6、7、8、9、10名",
 ])
 def test_secondary_split_never_breaks_protected_expressions(model, token):
     """半角全角英文、数字、小数和数字列表不可拆，超长表达单独成段，不携带周围中文。"""
@@ -200,6 +200,57 @@ def test_numeric_list_is_protected_in_first_split(model):
         {"id": 1, "text": "欢迎，"}, {"id": 2, "text": "70，80，90后滴滴我。"},
     ]
     assert any("70，80，90后" in s["text"] for s in result["segments"])
+
+
+@pytest.mark.parametrize("prefix,suffix", [
+    ("今天只要99，", "3件还包邮送到家。"),
+    ("库存只剩500，", "3分钟就抢光了。"),
+    ("原价199，", "2件到手只要299元。"),
+    ("今天只要99，", "10件还包邮送到家。"),
+])
+@pytest.mark.parametrize("select_boundary", [False, True])
+def test_price_and_quantity_keep_comma_boundary(model, prefix, suffix, select_boundary):
+    """价格和下句数量不视为数字列表，首次候选与模型合并后的二次切分都保留句界。"""
+    model[1].chat.completions.create.side_effect = [
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(output)))])
+        for output in [
+            {"boundaries_after": [1] if select_boundary else []},
+            {"keywords": [[], []] if select_boundary else [[]]},
+        ]
+    ]
+    parts = segment(payload(prefix + suffix, step=1000))["segments"]
+    request = model[1].chat.completions.create.call_args_list[0].kwargs
+    assert json.loads(request["messages"][1]["content"]) == [
+        {"id": 1, "text": prefix}, {"id": 2, "text": suffix},
+    ]
+    assert parts[0]["text"] == prefix
+    assert "".join(part["text"] for part in parts[1:]) == suffix
+
+
+@pytest.mark.parametrize("script,expected", [
+    ("再等2，3天就可以拿到了。", ["再等2，3天", "就可以拿到了。"]),
+    ("第1、2、3、4、5、6、7、8、9、10名都有奖品。", ["第1、2、3、4、5、6、7、8、9、10名", "都有奖品。"]),
+])
+def test_contextual_numeric_expressions_stay_together(model, script, expected):
+    """等两三天的约数及第几名的序数在两次切分都保持完整，超长序数不留下单字“第”。"""
+    parts = segment(payload(script, step=1000))["segments"]
+    request = model[1].chat.completions.create.call_args_list[0].kwargs
+    assert json.loads(request["messages"][1]["content"]) == [{"id": 1, "text": script}]
+    assert [part["text"] for part in parts] == expected
+
+
+@pytest.mark.parametrize("script,expected", [
+    ("嗯，我们今天来聊聊这个产品。", ["嗯，我们今天来", "聊聊这个产品。"]),
+    ("我们今天来聊聊这个产品，嗯。", ["我们今天来", "聊聊这个产品，嗯。"]),
+    ("用OpenAI做点事", ["用OpenAI", "做点事"]),
+    ("用123456789", ["用", "123456789"]),
+])
+def test_secondary_split_avoids_optional_single_char_parts(model, script, expected):
+    """有安全切点时不为标点或词界切出单字，只有硬保护迫使拆分时才允许单字回退。"""
+    parts = segment(payload(script))["segments"]
+    assert [part["text"] for part in parts] == expected
+    if script.startswith("嗯"):
+        assert parts[0]["end_time"] == 1.4
 
 
 def test_long_chinese_word_still_obeys_eight_character_limit(model):
