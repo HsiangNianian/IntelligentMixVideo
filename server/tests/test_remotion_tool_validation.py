@@ -371,6 +371,50 @@ def test_regexp_exec_is_ordinary_code_for_the_real_worker(tmp_path):
     assert [item["status"] for item in report["checks"]] == ["pass", "pass", "pass"]
 
 
+EMPTY_ARRAY_PRESET = """import React from "react";
+
+const NO_WORDS: string[] = [];
+
+export default function Tag(props: { label: string; words?: string[] }) {
+  const words = props.words ?? NO_WORDS;
+  const hits: string[] = [];
+  let first: string | null = null;
+  let last: string | undefined;
+  for (const word of words) {
+    if (!props.label.includes(word)) continue;
+    hits.push(word);
+    first = first ?? word;
+    last = word;
+  }
+  const mark = (text: string) => (hits.includes(text) || text === first || text === last ? <b key={text}>{text}</b> : text);
+  return <div>{props.label.split("").map(mark)}</div>;
+}
+"""
+
+
+@needs_node
+def test_a_composed_sprite_keeps_annotated_empty_arrays_valid_under_strict_typescript(tmp_path):
+    """任务 76be0e4a 的 sprite_create 连续三次被拒：合成打包擦掉类型后，Preset 里 `const hits: string[] = []` 变成无标注的 `[]`，严格模式报 TS7034/7005；合成产物须与原 Preset 一样通过类型检查。"""
+    preset = {
+        "code": EMPTY_ARRAY_PRESET,
+        "parameter_schema": {
+            "type": "object", "required": ["label"], "additionalProperties": False,
+            "properties": {"label": {"type": "string"}, "words": {"type": "array", "items": {"type": "string"}}},
+        },
+        "default_parameters": {"label": "abc"}, "description": "tag",
+    }
+    [item] = [{
+        "instance_id": "tag", "preset": preset, "parameters": {"label": "abc"},
+        "layout": {"x": 0, "y": 0, "width": 540, "height": 200, "z_index": 0}, "timing": {"start_frame": 0, "duration_frames": 30},
+    }]
+    code, schema, defaults = compose_source([item])
+    (tmp_path / "preset").mkdir()
+    assert run_code_worker(tmp_path / "preset", EMPTY_ARRAY_PRESET, {"label": {"type": "string"}, "words": {"type": "array", "items": {"type": "string"}}}, {"label": "abc"})["passed"] is True
+    (tmp_path / "sprite").mkdir()
+    report = run_code_worker(tmp_path / "sprite", code, schema["properties"], defaults)
+    assert report["passed"] is True, report["diagnostics"]
+
+
 @needs_node
 def test_a_bare_exec_call_is_still_refused_and_located(tmp_path):
     """被禁止的 exec 仍然拒绝，并且诊断给出行列号与范围，模型可以直接定位。"""

@@ -55,13 +55,24 @@ const result = await build({
 });
 const source = ts.createSourceFile("Sprite.tsx", result.outputFiles[0]?.text ?? "", ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 // esbuild erases types and rewrites the default export. Restore generated function
-// boundaries with the parser so defaults, destructuring and recursive helpers remain valid.
+// boundaries and the variables whose erased annotation fixed their type with the parser,
+// so defaults, destructuring, recursive helpers and `const hits: T[] = []` remain valid.
 // Original Preset modules are independently typechecked before the generated adapter.
 const transformed = ts.transform(source, [(context) => {
+  /** True for a declaration TypeScript can only type from later assignments (`[]`, `null`, no initializer), which strict mode rejects once captured by a closure. */
+  function inferredFromAssignments(node, parent) {
+    if (parent && ts.isVariableDeclarationList(parent) && ts.isForInOrOfStatement(parent.parent)) return false;
+    const initializer = node.initializer;
+    return !initializer || initializer.kind === ts.SyntaxKind.NullKeyword || (ts.isArrayLiteralExpression(initializer) && initializer.elements.length === 0);
+  }
   /** Normalize emitted JavaScript without running any Preset code. */
   function visit(node) {
+    const parent = node.parent;
     node = ts.visitEachChild(node, visit, context);
     const any = () => ts.factory.createKeywordTypeNode(ts.SyntaxKind.AnyKeyword);
+    if (ts.isVariableDeclaration(node) && !node.type && ts.isIdentifier(node.name) && inferredFromAssignments(node, parent)) {
+      return ts.factory.updateVariableDeclaration(node, node.name, node.exclamationToken, any(), node.initializer);
+    }
     if (ts.isParameter(node)) {
       return ts.factory.updateParameterDeclaration(node, node.modifiers, node.dotDotDotToken, node.name, node.questionToken,
         node.dotDotDotToken ? ts.factory.createArrayTypeNode(any()) : any(), node.initializer);
