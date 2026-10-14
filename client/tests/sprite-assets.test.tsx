@@ -547,3 +547,27 @@ test("确认后删除资产，被模板使用时说明原因", async () => {
   expect(within(region).getByRole("button", { name: "添加 Remotion 资产：冷色光斑" })).toBeTruthy();
   expect(deletes).toEqual(["/api/sprites/sprite-1", "/api/sprites/sprite-1"]);
 });
+
+// 场景：当前草稿（含尚未保存的添加）摆放的资产不能删除，并说明原因；否则之后保存模板会因资产未发布被拒绝。移除片段后恢复可删除。
+test("当前模板摆放的资产禁止删除", async () => {
+  const catalog = [summary("sprite-1"), summary("sprite-2")];
+  catalog[1].name = "冷色光斑";
+  sprites({ catalog });
+  render(<TemplateWorkspace selection={{ environment: "cloud", templateId: savedTemplate().template_id }} onHome={() => {}} />);
+  const region = await screen.findByRole("region", { name: "Remotion 资产" });
+  fireEvent.click(within(region).getByRole("button", { name: "展开" }));
+  /** 删除按钮随禁用状态重新挂载（禁用时不包悬停提示），每次重新查询。 */
+  const remove = (name: string) => within(region).getByRole<HTMLButtonElement>("button", { name: `删除 Remotion 资产：${name}`, hidden: true });
+  await within(region).findByRole("button", { name: "删除 Remotion 资产：霓虹标题" });
+  expect(remove("霓虹标题").disabled).toBe(false);
+  fireEvent.click(within(region).getByRole("button", { name: "添加 Remotion 资产：霓虹标题" }));
+  await waitFor(() => expect(remove("霓虹标题").disabled).toBe(true));
+  expect(remove("霓虹标题").getAttribute("aria-describedby")).toBe("sprite-in-use-sprite-1");
+  expect(document.getElementById("sprite-in-use-sprite-1")!.textContent).toBe("当前模板正在使用，移除片段后才能删除");
+  expect(remove("冷色光斑").disabled).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "移除 Remotion 资产：霓虹标题", hidden: true }));
+  await waitFor(() => expect(remove("霓虹标题").disabled).toBe(false));
+  expect(document.getElementById("sprite-in-use-sprite-1")).toBeNull();
+  fireEvent.click(remove("霓虹标题"));
+  expect(await screen.findByRole("dialog", { name: "删除 Remotion 资产" })).toBeTruthy();
+});
