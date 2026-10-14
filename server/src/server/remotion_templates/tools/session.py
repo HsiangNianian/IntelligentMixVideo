@@ -90,7 +90,7 @@ _HINTS = (
      "layers, gradients, vignettes or grain."),
     (lambda item: item.message.startswith("text_fit"),
      "Lay the text out from its content: wrap it onto several lines inside a bounded width, no fixed-height box with "
-     "overflow hidden, and shrink the font size for long text so all text up to its maxLength stays visible."),
+     "overflow hidden; use the fontSize parameter as given (the host shrinks long text at render time) and make sure text up to its maxLength fits at the smallest fontSize."),
     (lambda item: item.source == "contract" and item.field is not None,
      "parameter_schema must be a self-contained object schema with additionalProperties false, and default_parameters "
      "must satisfy it."),

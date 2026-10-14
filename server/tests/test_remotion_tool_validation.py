@@ -839,6 +839,17 @@ export default function Title(props: { text: string; fontSize: number }) {
   );
 }
 """
+# 不按字数自行换算字号：100 字在默认的 128px 下排成 2300px 高放不下，只有宿主缩到声明的最小字号 24 时才放得下。
+PLAIN_WRAP_TEXT = """import React from "react";
+import { AbsoluteFill } from "remotion";
+export default function Title(props: { text: string; fontSize: number }) {
+  return (
+    <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
+      <div style={{ width: 972, textAlign: "center", fontSize: props.fontSize, lineHeight: 1.2, whiteSpace: "normal", wordBreak: "break-all", color: "#fff" }}>{props.text}</div>
+    </AbsoluteFill>
+  );
+}
+"""
 FITTING_TEXT = """import React from "react";
 import { AbsoluteFill } from "remotion";
 export default function Title(props: { text: string; fontSize: number }) {
@@ -957,19 +968,23 @@ def browser_text_validate(tmp_path: Path, code: str, max_length: int):
     (HIDDEN_TEXT, 100, False, "never renders"),
     (PER_GLYPH_TEXT, 100, True, ""),
     (LINE_MASK_TEXT, 4, True, ""),
-    (SCALE_EXIT_TEXT, 20, False, "overflow"),
+    (SCALE_EXIT_TEXT, 100, False, "overflow"),
     (TYPEWRITER_TEXT, 100, True, ""),
-    (SCROLL_BOX_TEXT, 8, False, "overflow auto"),
-    (PAINT_CONTAINED_TEXT, 8, False, "contain: paint"),
+    (SCROLL_BOX_TEXT, 100, False, "overflow auto"),
+    (PAINT_CONTAINED_TEXT, 100, False, "contain: paint"),
     (SEALED_INSTANCE_BOX_TEXT, 15, True, ""),
+    (PLAIN_WRAP_TEXT, 100, True, "smallest fontSize 24"),
 ], ids=["fixed-box-clips-long-title", "wrapped-and-shrunk", "reveal-mask-only-early", "ignores-text", "sliced-text", "display-none", "one-span-per-glyph",
-        "line-height-1-mask", "clipped-until-scaled-out", "typewriter", "overflow-auto-box", "paint-contained-box", "sealed-instance-box"])
+        "line-height-1-mask", "clipped-until-scaled-out", "typewriter", "overflow-auto-box", "paint-contained-box", "sealed-instance-box", "plain-wrap-fits-at-smallest-size"])
 def test_real_browser_requires_the_longest_text_to_be_shown_in_full(tmp_path, code, max_length, passed, reason):
     """issue #119：972x360 的 overflow hidden 固定框在 100 字标题下被裁切而被拒；按字数缩小字号并换行的写法、只在开头几帧被遮罩挡住的文字通过；
     不显示 text 的组件被拒。只渲染一段截断的文字、或文字在 display: none 里没有排版框，都不算完整显示；逐字拆成 span 的完整文字仍算。
     lineHeight 1 的一行文字放在恰好一行高的遮罩里不算裁切：按行框而不是字体的上下伸部度量。
     文字只在退场缩小时才放得下仍被拒：按文字显示最大的帧判断；逐字打出的文字按完整显示的帧判断，通过。
-    overflow auto 与 contain: paint 的固定框同样算裁切。"""
+    overflow auto 与 contain: paint 的固定框同样算裁切。
+
+    文字按声明的最小字号（24）填满 maxLength 后再度量：宿主渲染时会把长文字缩到这个下限，所以只在大字号下放不下的写法通过，
+    裁切用例都用 100 字，在最小字号下仍被固定框裁掉。"""
     report = browser_text_validate(tmp_path, code, max_length)
     check = next(item for item in report.checks if item.name == "text_fit")
     assert (check.status == "passed") is passed, check.message

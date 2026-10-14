@@ -205,8 +205,7 @@ largest): entrance and exit animations show it smaller, scaled down or typed in,
 clips it while it holds. The `text_fit` check fails when every one of those frames has a problem, so a reveal mask
 or slide-in that moves the full-size text out of view for a few frames is fine, while a fixed-size box that clips
 long text whenever it is shown at full size is not; it also fails when the filler text is never visibly rendered. A failure is refused with `CODE_VALIDATION_FAILED` (`text_fit: ...` with the clipped box or
-size and the fix: wrap the text inside a bounded width, no fixed-height `overflow: hidden` box, shrink the font
-for long text, never below 24px; `text.maxLength` must remain exactly 100, so text that still cannot fit requires layout and wrapping fixes, never a lower limit). It is a geometric measurement, not a visual review; like the transparency
+size and the fix: wrap the text inside a bounded width of about 90 % of the canvas, no fixed-height `overflow: hidden` box, and use `fontSize` as given instead of deriving a size from the character count; `text.maxLength` must remain exactly 100, so text that still cannot fit requires layout and wrapping fixes, never a lower limit). The check fills the text to `maxLength` at the smallest declared `fontSize`, the size the host may shrink long text to when it renders. It is a geometric measurement, not a visual review; like the transparency
 measurement it only applies to generation, and already published versions are not re-checked.
 
 Contract diagnostics carry the position of a violation (line, column and range in the submitted code).

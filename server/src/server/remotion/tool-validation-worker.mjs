@@ -546,7 +546,9 @@ async function textFitCheck(page) {
   if (!Number.isInteger(length) || length < 1)
     return { name: "text_fit", status: "failed", message: "A text effect must declare a text parameter with an integer maxLength." };
   const text = TEXT_FILLER.repeat(length);
-  await page.evaluate((patch) => window.__imvTool.setParameters(patch), { text });
+  // Long text is made smaller by the host at render time (see `fitTexts`), down to the smallest size the effect declares, so that is the size it must fit at.
+  const smallest = request.parameter_schema?.properties?.fontSize?.minimum;
+  await page.evaluate((patch) => window.__imvTool.setParameters(patch), { text, ...(typeof smallest === "number" ? { fontSize: smallest } : {}) });
   let measured;
   try {
     measured = await measureTextFit(page, text);
@@ -560,15 +562,15 @@ async function textFitCheck(page) {
   if (!measured.shown)
     return { name: "text_fit", status: "failed", message: `With text filled to its maxLength (${length} characters) the component never renders any of that text visibly. The text parameter must be displayed as given.` };
   if (measured.fits)
-    return { name: "text_fit", status: "passed", message: `The ${length}-character text is shown in full (measured on the ${measured.full} of ${measured.shown} frames that show it at its full size).` };
+    return { name: "text_fit", status: "passed", message: `The ${length}-character text is shown in full${typeof smallest === "number" ? ` at the smallest fontSize ${smallest}` : ""} (measured on the ${measured.full} of ${measured.shown} frames that show it at its full size).` };
   return {
     name: "text_fit",
     status: "failed",
-    message: `With text filled to its maxLength (${length} characters) the text is not shown in full: ${measured.problems.join("; ")}. `
-      + `Long text must fit on the ${composition.width}x${composition.height} canvas at any length up to maxLength: lay it out from its content, wrapping onto several lines `
-      + "(a bounded width with whiteSpace normal and wordBreak break-all for CJK, no fixed-height box with overflow hidden), and reduce the font size as the text gets longer "
-      + "(derive it from the character count, never below 24px) while short text keeps the fontSize parameter. Fit as much text as possible; "
-      + "Keep text maxLength exactly 100; if 100 characters still do not fit at 24px, adjust the layout and wrapping instead of lowering maxLength or clipping.",
+    message: `With text filled to its maxLength (${length} characters)${typeof smallest === "number" ? ` at the smallest fontSize ${smallest}` : ""} the text is not shown in full: ${measured.problems.join("; ")}. `
+      + `Long text must fit on the ${composition.width}x${composition.height} canvas: lay it out from its content, wrapping onto several lines `
+      + "(a bounded width of about 90% of the canvas width with whiteSpace normal and wordBreak break-all for CJK, no fixed-height box with overflow hidden). "
+      + "Render the text at the fontSize parameter as given and do not derive a size from the character count: the host lowers fontSize (and keywordSize in the same proportion) "
+      + "for long text at render time. Keep text maxLength exactly 100; if 100 characters still do not fit at the smallest fontSize, adjust the layout and wrapping instead of lowering maxLength or clipping.",
   };
 }
 
