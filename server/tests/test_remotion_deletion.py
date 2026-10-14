@@ -191,8 +191,8 @@ def test_delete_all_versions_jobs_and_files(client, store, candidate, spec):
         directory = store.job_dir(job.id) / "candidate"
         directory.mkdir(parents=True, exist_ok=True)
         (directory / "reviews.jsonl").write_text("private")
-        store.audit_path(job.id).parent.mkdir(parents=True, exist_ok=True)
-        store.audit_path(job.id).write_text("private")
+        store.audit_path(work.id, job.id).parent.mkdir(parents=True, exist_ok=True)
+        store.audit_path(work.id, job.id).write_text("private")
     for version in (v1, v2):
         store.accepted(version)
         assert (store.root / "objects" / version_key(version.id, "Template.tsx")).is_file()
@@ -214,7 +214,7 @@ def test_delete_all_versions_jobs_and_files(client, store, candidate, spec):
     assert store.job_dir(other_job.id).exists()
     for job in (first, second, failed):
         assert not store.job_dir(job.id).exists()
-        assert not store.audit_path(job.id).exists()
+        assert not store.audit_path(work.id, job.id).exists()
     for version in (v1, v2):
         assert not (store.root / "objects" / version_key(version.id)).exists()
         assert not (store.root / "cache" / "accepted" / str(version.id)).exists()
@@ -323,8 +323,8 @@ def test_running_delete_waits_for_teardown_and_keeps_queue_alive(
                 finally:
                     stopping.set()
                     await release.wait()
-                    store.audit_path(identifier).parent.mkdir(parents=True, exist_ok=True)
-                    store.audit_path(identifier).write_text("last write")
+                    store.audit_path(work.id, identifier).parent.mkdir(parents=True, exist_ok=True)
+                    store.audit_path(work.id, identifier).write_text("last write")
                     store.save_conversation(work.id, Conversation())
             else:
                 store.update(identifier, status="answered", answer="完成")
@@ -354,7 +354,7 @@ def test_running_delete_waits_for_teardown_and_keeps_queue_alive(
         await completed.wait()
         await service.worker
         assert not store.job_dir(job.id).exists()
-        assert not store.audit_path(job.id).exists()
+        assert not store.audit_path(work.id, job.id).exists()
         assert store.job(other_job.id).status == "answered"
         if stop:
             await stop
@@ -466,8 +466,8 @@ def test_sweep_applies_the_three_retention_periods(service, store):
     with store.transaction() as db:
         db.execute(update(devices).where(devices.c.device_id == str(other)).values(last_seen_at=old))
         db.execute(update(work_events).where(work_events.c.work_id == str(kept.id)).values(created_at=old))
-    for job, age in ((stale_job, 30), (kept_job, 1)):
-        path = store.audit_path(job.id)
+    for work, job, age in ((stale, stale_job, 30), (kept, kept_job, 1)):
+        path = store.audit_path(work.id, job.id)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("private")
         stamp = (now() - timedelta(days=age)).timestamp()
@@ -475,12 +475,30 @@ def test_sweep_applies_the_three_retention_periods(service, store):
     asyncio.run(service.sweep())
     with pytest.raises(NotFound):
         store.project(stale.id)
-    assert not store.audit_path(stale_job.id).exists()
-    assert store.audit_path(kept_job.id).exists()
+    assert not store.audit_path(stale.id, stale_job.id).exists()
+    assert store.audit_path(kept.id, kept_job.id).exists()
     assert store.work_events(kept.id, 0) == []
     assert store.latest_job(kept.id).id == kept_job.id
     assert count(store, chat_messages) == 0
     assert count(store, devices) == 1
+
+
+def test_deleting_a_work_removes_audit_logs_of_pruned_jobs(store):
+    """确认送达后较早的任务记录被清理，删除会话时这些任务的私有审计仍一并删除，不等到保留期结束。"""
+    work, first = store.create(GenerateTemplateRequest(description="审计"), DEVICE)
+    store.update(first.id, status="answered", stage="finished", answer="好")
+    latest = store.enqueue(work.id, JobInput(mode="edit", instruction="再改"), None)
+    store.update(latest.id, status="failed", stage="finished")
+    for job in (first, latest):
+        path = store.audit_path(work.id, job.id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("private")
+    store.acknowledge(work.id, store.work_events(work.id, 0)[-1].id, DEVICE)
+    with pytest.raises(NotFound):
+        store.job(first.id)
+    store.begin_deletion(work.id)
+    deletion.finish(store, work.id)
+    assert not (store.root / "audit" / str(work.id)).exists()
 
 
 def test_sweep_retries_deletions_that_failed_and_isolates_each_work(service, store, monkeypatch):

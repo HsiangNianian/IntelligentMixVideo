@@ -74,7 +74,8 @@ deletes run in worker threads and never under the write lock: a version is uploa
 commits and removed again if the commit fails; deletion and the upload sweep remove records and objects in separate
 steps. A ZOS failure other than a missing object is an `ObjectStoreError` (an `OSError`): uploads, reference images,
 downloads, diagnostics and work deletion answer a retryable 503 instead of a 500 or a misleading 422. Job
-scratch is removed when the job ends and the private `audit/<job_id>.jsonl` log outlives it. An hourly sweep applies
+scratch is removed when the job ends and the private `audit/<work_id>/<job_id>.jsonl` log outlives it (deleting the
+work removes its whole audit folder, including logs of jobs already pruned). An hourly sweep applies
 three retention periods: undelivered events (`IMV_UNDELIVERED_EVENT_DAYS`, 7), audit logs
 (`IMV_AUDIT_RETENTION_DAYS`, 14) and the works of devices inactive for `IMV_DEVICE_RETENTION_DAYS` (90). The same
 sweep retries every deletion whose cleanup failed (an expired device's work, or a user DELETE answered 503 and never

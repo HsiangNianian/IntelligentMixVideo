@@ -129,12 +129,17 @@ class Runtime:
                 logger.exception("Work deletion is still incomplete: %s", work_id)
 
     def _expire_audit(self, before) -> None:
-        """Remove private audit logs last written before the cutoff."""
+        """Remove private audit logs last written before the cutoff, then the work folders they leave empty."""
         cutoff = before.timestamp()
         audit = self.store.root / "audit"
-        for path in (audit.iterdir() if audit.is_dir() else ()):
-            if path.is_file() and path.stat().st_mtime < cutoff:
-                path.unlink(missing_ok=True)
+        for folder in (audit.iterdir() if audit.is_dir() else ()):
+            if not folder.is_dir() or folder.is_symlink():
+                continue
+            for path in folder.iterdir():
+                if path.is_file() and path.stat().st_mtime < cutoff:
+                    path.unlink(missing_ok=True)
+            with suppress(OSError):
+                folder.rmdir()
 
     def notify(self, job_id: UUID | None = None, config: ClientSettings | None = None) -> None:
         """Create a drain task only when work exists; no idle loop or application lifecycle hook."""
@@ -383,12 +388,12 @@ class Runtime:
         """Resolve intent, run a bounded harness and atomically publish only accepted evidence."""
         settings = self.client_configs.pop(job_id, self.settings)
         harness = self.harness if settings is self.settings else Harness(Provider(settings), self.harness.renderer)
+        job = self.store.job(job_id)
         budget = Budget(
-            audit_path=self.store.audit_path(job_id),
+            audit_path=self.store.audit_path(job.project_id, job_id),
             on_progress=lambda phase: self.store.progress(job_id, phase),
             on_round=lambda record: self.store.round(job_id, record),
         )
-        job = self.store.job(job_id)
         context = self.store.conversation(job.project_id)
         try:
             async with asyncio.timeout(settings.job_timeout_seconds):
@@ -491,7 +496,7 @@ class Runtime:
                 "Remotion job %s failed code=%s audit=%s: %s",
                 job_id,
                 code,
-                self.store.audit_path(job_id),
+                budget.audit_path,
                 str(exc)[:4000] or repr(exc),
             )
             self.store.update(
@@ -509,7 +514,7 @@ class Runtime:
             logger.exception(
                 "Remotion job %s failed with an unexpected exception audit=%s",
                 job_id,
-                self.store.audit_path(job_id),
+                budget.audit_path,
             )
             self.store.update(
                 job_id,

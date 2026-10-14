@@ -4,7 +4,7 @@ Works belong to the client device that created them; routes pass the caller's de
 device reads as missing. The backend runs as a single instance: one in-process lock serializes write
 transactions, so the one-active-job rule, job claims and event IDs commit in order on MySQL as on the SQLite
 test fixture. Sealed version files and reference images live in the object store (`object_store.py`); the data
-folder only holds job scratch, a verified read cache and the private audit logs.
+folder only holds job scratch, a verified read cache and the private audit logs (one folder per work).
 """
 
 import json
@@ -350,9 +350,12 @@ class Store:
         """Scratch for one execution; removed when the execution ends, except its audit log."""
         return self.root / "jobs" / str(identifier)
 
-    def audit_path(self, identifier: UUID) -> Path:
-        """Private audit log of one execution, kept for the audit retention period."""
-        return self.root / "audit" / f"{identifier}.jsonl"
+    def audit_path(self, work_id: UUID, job_id: UUID) -> Path:
+        """Private audit log of one execution, kept for the audit retention period.
+
+        Logs are grouped by work, so deleting a work removes those of executions whose records were already pruned.
+        """
+        return self.root / "audit" / str(work_id) / f"{job_id}.jsonl"
 
     def progress(self, identifier: UUID, phase: str) -> None:
         """Atomically publish whitelisted host phase transitions through the existing work stream."""

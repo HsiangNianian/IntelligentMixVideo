@@ -69,7 +69,7 @@ def finish(store: "Store", work_id: UUID) -> None:
         ]
     for job_id in job_ids:
         remove_path(store.root, "jobs", job_id)
-        remove_path(store.root, "audit", job_id, ".jsonl")
+    remove_path(store.root, "audit", identifier)
     for version_id in version_ids:
         store.objects.delete_prefix(version_key(UUID(version_id)))
         remove_path(store.root / "cache", "accepted", version_id)
