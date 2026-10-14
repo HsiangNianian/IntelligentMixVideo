@@ -1456,9 +1456,10 @@ def test_real_short_subtitles_hold_still(tmp_path: Path) -> None:
 class FitRenderer:
     """排版预检 worker 的替身：只有不超过 `capacity` 的字号才放得下，并记录每次请求。"""
 
-    def __init__(self, capacity: int | None) -> None:
-        """capacity 为能完整显示文字的最大字号；None 表示连最小字号也放不下。"""
+    def __init__(self, capacity: int | None, shift: dict | None = None) -> None:
+        """capacity 为能完整显示文字的最大字号；None 表示连最小字号也放不下；shift 是每个条目答案里附带的平移。"""
         self.capacity = capacity
+        self.shift = shift
         self.settings = SimpleNamespace(render_timeout_seconds=180)
         self.requests: list[dict] = []
         self.limits: list[tuple] = []
@@ -1481,7 +1482,7 @@ class FitRenderer:
                 if self.capacity is None:
                     answers.append({"index": item["index"], "fits": False, "size": item["min"]})
                 else:
-                    answers.append({"index": item["index"], "fits": True, "size": min(wanted, self.capacity)})
+                    answers.append({"index": item["index"], "fits": True, "size": min(wanted, self.capacity), **({"shift": self.shift} if self.shift else {})})
             fits.append(answers)
         return {"fits": fits}
 
@@ -1491,6 +1492,23 @@ def title_overlay(text: str, font_size: int = 128):
     editor = {"remotion": {"parameters": [{"key": "text", "stringValue": text}, {"key": "fontSize", "numberValue": font_size}]}}
     placed = OverlayPlacement.model_validate({"spriteId": "c", "start": 0, "editor": editor})
     return plan_overlay([placed], PUBLICATIONS, 3.0, 120)
+
+# 场景：最小字号下文字仍出画布时 worker 答案带平移：渲染计划里这个摆放的宿主变换整体移动，已设置的坐标加上平移、
+# 未设置的从内容区域中心算起；字号照常缩小，保存的摆放设置不变；答案里的平移不是一对有限数字时按预检不可用（render_failed）处理。
+def test_fit_applies_the_workers_shift_to_this_renders_host_only(tmp_path) -> None:
+    """x 已设为 300、y 未设（内容区域中心 960）：平移 (0, 40) 后变换为 x=300、y=1000；字号缩到 48。"""
+    editor = {"remotion": {"parameters": [{"key": "text", "stringValue": "测" * 20}, {"key": "fontSize", "numberValue": 128}], "transform": {"x": 300}}}
+    placement = OverlayPlacement.model_validate({"spriteId": "c", "start": 0, "editor": editor})
+    overlay = plan_overlay([placement], PUBLICATIONS, 3.0, 120)
+    box = overlay.instances[0]["host"]["box"]
+    asyncio.run(overlay_render.fit_texts(FitRenderer(capacity=48, shift={"x": 0, "y": 40}), overlay, PUBLICATIONS, tmp_path / "fit"))
+    assert overlay.instances[0]["host"]["transform"] == {"x": 300, "y": box["y"] + box["height"] / 2 + 40}
+    assert overlay.instances[0]["config"]["fontSize"] == 48
+    assert placement.editor.remotion.transform.model_dump(exclude_none=True) == {"x": 300}
+    with pytest.raises(OverlayError) as failure:
+        asyncio.run(overlay_render.fit_texts(FitRenderer(capacity=48, shift={"x": "1", "y": 0}), title_overlay("标题"), PUBLICATIONS, tmp_path / "bad"))
+    assert failure.value.code == "render_failed"
+
 
 
 # 场景（issue #119）：总线传来的长标题在默认字号下放不下，宿主按这次真正的文字把字号缩到放得下的最大值，文字本身不变。
@@ -1809,3 +1827,17 @@ def test_fit_measures_only_the_frames_that_are_rendered(tmp_path) -> None:
     [request] = renderer.requests
     [sprite] = request["sprites"]
     assert [(item["frames"], item["length"]) for item in sprite["fit"]] == [([0, 7, 14, 21, 29], 90)]
+
+
+# 场景：标题摆在紧贴画布顶边的位置（内容中心 y=20）、字号 200，总线可能传入 8～100 个字。8 个字缩小字号即可放进画布，位置不动；
+# 100 个字缩到最小字号 24 仍有一部分在画布外，宿主把它向画布内平移最小距离而不是以 text_too_long 失败，水平位置与摆放里保存的设置不变。
+@pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
+def test_real_browser_nudges_a_long_title_at_the_top_edge_into_the_canvas(tmp_path: Path) -> None:
+    """8 字缩到 40 以内且不平移；100 字字号 24、y 从 20 下移到约 43（三行 86px 的一半），x 不变。"""
+    short = fit_for_real(tmp_path / "short", WRAPPED_TITLE, [titled("测" * 8, font_size=200, x=540, y=20)], 1.0).instances[0]
+    assert short["config"]["fontSize"] <= 40
+    assert short["host"]["transform"] == {"x": 540, "y": 20}
+    long = fit_for_real(tmp_path / "long", WRAPPED_TITLE, [titled("测" * 100, font_size=200, x=540, y=20)], 1.0).instances[0]
+    assert long["config"]["fontSize"] == 24
+    assert long["host"]["transform"]["x"] == 540
+    assert 40 <= long["host"]["transform"]["y"] <= 48

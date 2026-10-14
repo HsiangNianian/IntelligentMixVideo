@@ -369,13 +369,14 @@ const FULL_SIZE_SHARE = 0.98;
  * The host transform of one placement as `host-layer.tsx` applies it: the content box centre (cx, cy) is moved to
  * (x, y), then the Sprite is rotated by `rotation` degrees and scaled by `scale` around it. Missing fields keep the
  * Sprite where it is, so an empty transform is the identity. `visible` is the part of the Sprite's canvas the video
- * shows (see `visibleWindow`).
+ * shows (see `visibleWindow`). With `nudge: true` (see `fitTexts`) the text leaving that window is not a problem: the
+ * canvas `bounds` of the text are measured so the caller can move it back inside.
  */
-function hostPlacement(box, transform = {}, visible = null) {
+function hostPlacement(box, transform = {}, visible = null, nudge = false) {
   const cx = box.x + box.width / 2;
   const cy = box.y + box.height / 2;
   const finite = (value, fallback) => (typeof value === "number" && Number.isFinite(value) ? value : fallback);
-  return { cx, cy, x: finite(transform.x, cx), y: finite(transform.y, cy), scale: finite(transform.scale, 1), rotation: finite(transform.rotation, 0), visible };
+  return { cx, cy, x: finite(transform.x, cx), y: finite(transform.y, cy), scale: finite(transform.scale, 1), rotation: finite(transform.rotation, 0), visible, nudge };
 }
 
 /**
@@ -399,7 +400,8 @@ function visibleWindow(canvas, output) {
  * box (at least its em box), not as the font's whole ascent and descent: with a lineHeight below about 1.45 the
  * latter sticks out of a box that holds the line exactly, although no glyph is cut. Returns `null` when no part of
  * the text is shown at this frame (not yet shown), otherwise the `problems` (empty when all of it is shown and fits)
- * and the `area` of the shown lines, which tells the frames that show the text at its full size.
+ * and the `area` of the shown lines, which tells the frames that show the text at its full size. `extent` is the canvas
+ * rectangle of all shown text after the transform and `view` the window of the canvas the video shows.
  */
 function textFitProblems(page, needle, placement) {
   return page.evaluate((needle, minLine, tolerance, placement) => {
@@ -449,6 +451,7 @@ function textFitProblems(page, needle, placement) {
     const problems = new Set();
     let joined = "";
     let area = 0;
+    let extent = null; // canvas rectangle of all shown text after the transform
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
       const shown = compact(node.nodeValue);
       if (!shown || !(wanted.includes(shown) || shown.includes(wanted)) || !node.parentElement || !painted(node.parentElement)) continue;
@@ -468,7 +471,11 @@ function textFitProblems(page, needle, placement) {
       const corners = lines.flatMap((rect) => [place(rect.left, rect.top), place(rect.right, rect.top), place(rect.left, rect.bottom), place(rect.right, rect.bottom)]);
       const [left, right] = [Math.min(...corners.map(([x]) => x)), Math.max(...corners.map(([x]) => x))];
       const [top, bottom] = [Math.min(...corners.map(([, y]) => y)), Math.max(...corners.map(([, y]) => y))];
-      if (left < view.x - tolerance || right > view.x + view.width + tolerance || top < view.y - tolerance || bottom > view.y + view.height + tolerance)
+      extent = {
+        left: Math.min(extent?.left ?? left, left), right: Math.max(extent?.right ?? right, right),
+        top: Math.min(extent?.top ?? top, top), bottom: Math.max(extent?.bottom ?? bottom, bottom),
+      };
+      if (!placement.nudge && (left < view.x - tolerance || right > view.x + view.width + tolerance || top < view.y - tolerance || bottom > view.y + view.height + tolerance))
         problems.add(`it extends beyond the ${Math.round(view.width)}x${Math.round(view.height)} ${view.width < canvas.width - tolerance || view.height < canvas.height - tolerance ? "part of the canvas the video shows" : "canvas"} (text box ${Math.round(left)},${Math.round(top)} to ${Math.round(right)},${Math.round(bottom)})`);
       for (let element = node.parentElement; element && layer.contains(element); element = element.parentElement) {
         const style = getComputedStyle(element);
@@ -485,7 +492,7 @@ function textFitProblems(page, needle, placement) {
     }
     if (!joined) return null;
     if (!joined.includes(wanted)) problems.add(`only part of it is rendered, not all ${wanted.length} characters`);
-    return { problems: [...problems], area };
+    return { problems: [...problems], area, extent, view };
   }, needle, MIN_LINE_HEIGHT, FIT_TOLERANCE, placement);
 }
 
@@ -499,6 +506,9 @@ const UNPLACED = Object.freeze({ cx: 0, cy: 0, x: 0, y: 0, scale: 1, rotation: 0
  * lines): entrance and exit animations show it smaller, scaled down or typed in, and would hide a layout that clips
  * it while it holds. It `fits` when one of those frames has no problem, so a reveal mask or slide-in that moves the
  * full-size text out of view for a few frames is fine; `problems` are those of the full-size frames otherwise.
+ * With `placement.nudge` the text leaving the window is no problem and `shift` is the smallest move of the placement
+ * (`{x, y}` in canvas pixels, zero when none is needed) that brings the text of the middle one of the problem-free
+ * full-size frames back inside it; when that text is larger than the window no move helps and it does not fit.
  */
 async function measureTextFit(page, needle, frames = sampleFrames(request.composition.duration_frames), placement = UNPLACED) {
   const verdicts = [];
@@ -511,8 +521,17 @@ async function measureTextFit(page, needle, frames = sampleFrames(request.compos
   }
   const largest = Math.max(0, ...verdicts.map((verdict) => verdict.area));
   const full = verdicts.filter((verdict) => verdict.area >= largest * FULL_SIZE_SHARE);
-  const fits = full.some((verdict) => !verdict.problems.length);
-  return { error: null, shown: verdicts.length, full: full.length, fits, problems: fits ? [] : [...new Set(full.flatMap((verdict) => verdict.problems))] };
+  const clean = full.filter((verdict) => !verdict.problems.length);
+  let shift = null;
+  if (placement.nudge && clean.length) {
+    const { extent, view } = clean[Math.floor((clean.length - 1) / 2)];
+    /** Move along one axis: the start edge into the window first, then the end edge back, or none when it is wider. */
+    const along = (low, high, from, size) => (high - low > size + FIT_TOLERANCE ? null : low < from ? from - low : high > from + size ? from + size - high : 0);
+    const [x, y] = [along(extent.left, extent.right, view.x, view.width), along(extent.top, extent.bottom, view.y, view.height)];
+    if (x !== null && y !== null) shift = { x, y };
+  }
+  const fits = placement.nudge ? shift !== null : clean.length > 0;
+  return { error: null, shown: verdicts.length, full: full.length, fits, shift, problems: fits ? [] : [...new Set(full.flatMap((verdict) => verdict.problems))] };
 }
 
 /**
@@ -559,19 +578,24 @@ async function textFitCheck(page) {
  * the requested one at which the text is shown in full on the item's own `frames`. Each item is mounted at the
  * `length` its Sprite plays in the render (which it reads as `durationInFrames`) and measured where its host
  * `transform` puts it on the canvas. The requested size is tried first, so text that already fits is untouched;
- * `fits: false` means even `min` does not fit. A component that throws, or never renders the text, is left alone
- * (the render reports its own failure). Sizes are assumed to fit monotonically, so a binary search.
+ * a component that throws, or never renders the text, is left alone (the render reports its own failure). Sizes are
+ * assumed to fit monotonically, so a binary search. When even `min` leaves the text outside the window the video
+ * shows (a long title placed at the top edge), the placement is moved the shortest way back inside at `min`:
+ * the answer's `shift` is that move in canvas pixels. `fits: false` means the text is too long even for that.
  */
 async function fitTexts(page, loadError, sprite) {
   if (loadError !== null) throw new Error(`Component runtime error: ${loadError}`);
   const canvas = sprite.canvas ?? request.composition;
   const box = sprite.box ?? { x: 0, y: 0, width: canvas.width, height: canvas.height };
   const visible = visibleWindow(canvas, request.composition);
-  const fits = async (item, size) => {
+  const measure = async (item, size, nudge) => {
     await page.evaluate(() => window.__imvTool.reset());
     await page.evaluate((frames) => window.__imvTool.setDuration(frames), item.length);
     await page.evaluate((values) => window.__imvTool.setSample(values, {}), { ...item.values, [item.size_key]: size });
-    const measured = await measureTextFit(page, item.text, item.frames, hostPlacement(box, item.transform, visible));
+    return measureTextFit(page, item.text, item.frames, hostPlacement(box, item.transform, visible, nudge));
+  };
+  const fits = async (item, size) => {
+    const measured = await measure(item, size, false);
     return measured.error !== null || measured.shown === 0 || measured.fits;
   };
   const answers = [];
@@ -592,7 +616,13 @@ async function fitTexts(page, loadError, sprite) {
         size = low;
       } else size = item.min;
     }
-    answers.push({ index: item.index, fits: ok, size });
+    let shift = null;
+    if (!ok) {
+      const nudged = await measure(item, size, true);
+      ok = nudged.fits;
+      shift = nudged.shift;
+    }
+    answers.push({ index: item.index, fits: ok, size, ...(shift && (shift.x || shift.y) ? { shift } : {}) });
   }
   return answers;
 }

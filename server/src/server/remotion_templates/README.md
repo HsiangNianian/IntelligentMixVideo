@@ -435,8 +435,12 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   text at its full size. Placements that differ only in length or transform are measured separately; the
   transform's opacity does not move text and is ignored. Text that already fits keeps its `fontSize`; otherwise the
   host lowers `fontSize` to the largest whole size, down to the published minimum, at which it is shown in full
-  (binary search; the size is logged, the template and the sealed source are untouched). Text that does not fit even
-  at the minimum fails the task with `text_too_long` and a fixed message (the callback's `errorMessage`) so the bus can
+  (binary search; the size is logged, the template and the sealed source are untouched). If at the minimum the text
+  still leaves the canvas only because of where it is placed (a long title whose centre sits near the top edge), the
+  host moves this render's copy of the placement by the shortest distance that brings it back inside (the shift is
+  logged; the saved placement is untouched, and the horizontal position changes only when the text overhangs the
+  side). Text that is clipped, too small, or wider or taller than the canvas even then fails the task with
+  `text_too_long` and a fixed message (the callback's `errorMessage`) so the bus can
   tell the user to shorten it, instead of publishing a clipped title. Other Sprites skip the pass, and a fit sandbox
   that cannot start fails the task as `render_failed`. `POST /api/sprites/render` runs the same pass on each distinct
   text or cue (a held text is measured on its frozen frame), and a video composition (`video_composition/remotion.py`)

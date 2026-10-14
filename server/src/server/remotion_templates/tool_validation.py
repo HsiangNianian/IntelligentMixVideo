@@ -127,6 +127,14 @@ def _check_status(value: Any) -> str:
     return {"pass": "passed", "fail": "failed"}.get(str(value), str(value))
 
 
+def _valid_shift(value: Any) -> bool:
+    """A fit answer's optional `shift` is absent or an `{x, y}` of finite numbers (canvas pixels)."""
+    return value is None or (
+        isinstance(value, dict) and set(value) == {"x", "y"}
+        and all(isinstance(item, (int, float)) and not isinstance(item, bool) and math.isfinite(item) for item in value.values())
+    )
+
+
 class ToolValidator:
     """Run PR76 code checks and DOM behavior scripts in isolated renderer attempts."""
 
@@ -322,9 +330,10 @@ class ToolValidator:
         browser run under one deadline. Each item carries complete ``values`` (including the
         text and the requested size), the ``text`` to look for, the name of the size parameter (``size_key``), its
         ``min``, the ``frames`` to measure at the ``length`` its Sprite plays and the host ``transform`` that places it
-        inside ``box`` on the canvas. The answer is one list per Sprite with ``{index, fits, size}`` per item:
+        inside ``box`` on the canvas. The answer is one list per Sprite with ``{index, fits, size[, shift]}`` per item:
         ``size`` is the requested size when the text already fits, otherwise the largest smaller whole size that
-        does; ``fits`` is false when even ``min`` does not. A worker that cannot answer is an infrastructure failure,
+        does; when even ``min`` leaves it outside the window the video shows, ``shift`` ``{x, y}`` is the shortest move
+        of the placement, in canvas pixels, that brings it back in; ``fits`` is false when not even that helps. A worker that cannot answer is an infrastructure failure,
         never a pass.
         """
         try:
@@ -355,7 +364,7 @@ class ToolValidator:
         if not isinstance(fits, list) or len(fits) != len(sprites) or not all(
             isinstance(answers, list)
             and [answer.get("index") for answer in answers if isinstance(answer, dict)] == [item["index"] for item in sprite.items]
-            and all(isinstance(answer.get("fits"), bool) and isinstance(answer.get("size"), (int, float)) for answer in answers)
+            and all(isinstance(answer.get("fits"), bool) and isinstance(answer.get("size"), (int, float)) and _valid_shift(answer.get("shift")) for answer in answers)
             for answers, sprite in zip(fits, sprites)
         ):
             raise ValidationUnavailable("Text fit worker returned an incomplete report")
