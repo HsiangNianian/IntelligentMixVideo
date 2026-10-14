@@ -39,6 +39,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         try:
             await runtime.close()
+            if (remotion := getattr(remotion_templates_app.state, "runtime", None)) is not None:
+                await remotion.close()
         finally:
             close_database()
 

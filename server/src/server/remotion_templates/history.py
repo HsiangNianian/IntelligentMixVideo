@@ -50,8 +50,13 @@ class WorkEvent(Contract):
     created_at: datetime
 
 
+# Key in `Connection.info` listing the works whose events a transaction appended; `Store.transaction` wakes their streams.
+APPENDED = "remotion_appended_works"
+
+
 def append_event(db: Connection, work_id: UUID, kind: str, data: dict, stamp: datetime) -> None:
     """Append within the caller's state transaction; readers only see committed events."""
+    db.info.setdefault(APPENDED, set()).add(str(work_id))
     db.execute(insert(work_events).values(
         work_id=str(work_id), type=kind, data=json.dumps(data, ensure_ascii=False),
         created_at=stamp.astimezone(UTC).replace(tzinfo=None),

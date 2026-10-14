@@ -571,6 +571,43 @@ def test_sse_heartbeat_without_public_activity(history_store, monkeypatch):
     asyncio.run(scenario())
 
 
+def test_idle_sse_wakes_on_commit_of_its_own_work(history_store, monkeypatch):
+    """An idle stream sleeps without reading until a transaction appends an event of its work, and then answers at once.
+
+    The poll fallback is stretched to a minute, so only the commit wake-up can deliver the frame in time; a commit of
+    another work leaves the stream waiting, and closing the stream unregisters its watcher.
+    """
+    import asyncio
+
+    from server.remotion_templates import stream as streaming
+
+    monkeypatch.setattr(streaming, "IDLE_POLL_SECONDS", 60.0)
+    store = history_store
+    work, job = store.create(GenerateTemplateRequest(description="唤醒"), DEVICE)
+    other, other_job = store.create(GenerateTemplateRequest(description="无关"), DEVICE)
+    reads = []
+    original = store.work_events
+    monkeypatch.setattr(store, "work_events", lambda *args: reads.append(args) or original(*args))
+
+    async def scenario():
+        """Drain the backlog, let the stream go idle, then commit to another work and to this one from a worker thread."""
+        stream = streaming.event_stream(store, work.id, cursor(store, work.id))
+        await anext(stream)
+        waiting = asyncio.create_task(anext(stream))
+        await asyncio.sleep(0.2)
+        assert len(reads) == 1 and not waiting.done()
+        await asyncio.to_thread(store.update, other_job.id, status="cancelled")
+        await asyncio.sleep(0.2)
+        assert not waiting.done() and len(reads) == 1
+        await asyncio.to_thread(store.update, job.id, status="cancelled")
+        frame = await asyncio.wait_for(waiting, 2)
+        assert '"status":"cancelled"' in frame.replace(" ", "") and str(work.id) in frame
+        await stream.aclose()
+        assert store._watchers == {}
+
+    asyncio.run(scenario())
+
+
 def test_sse_rejects_invalid_cursors_before_streaming(history_app, history_store):
     """Malformed cursors and unknown or foreign works return ordinary HTTP errors before SSE headers are sent."""
     work, _ = history_store.create(GenerateTemplateRequest(description="游标"), DEVICE)

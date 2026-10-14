@@ -23,7 +23,7 @@ from .models import DialogueOutput, EditTemplateRequest, JobError, JobInput, Mes
 from .parameters import parameter_changes
 from .provider import Budget, ExecutionFailure, ModelFailure, Provider
 from .publication import revisable
-from .store import Conflict, Store, now
+from .store import LEASE_RENEW, Conflict, Store, now
 from .tool_validation import ToolValidator, ValidationUnavailable
 from .tools.contracts import CodeValidationReport, ComponentDefinition
 
@@ -63,6 +63,9 @@ class Runtime:
         # Instant parameter revisions in flight, by job; they never enter the FIFO queue.
         self.saves: dict[UUID, asyncio.Task] = {}
         self.maintenance: asyncio.Task | None = None
+        self.heartbeat: asyncio.Task | None = None
+        # Set once another instance took the queue lease over; this instance then claims and sweeps nothing.
+        self.fenced = False
         self.client_configs: dict[UUID, Settings] = {}
         self.diagnostics_lock = asyncio.Lock()
         self._overlays: OverlayRenders | None = None
@@ -82,6 +85,7 @@ class Runtime:
         """Create the tables, then recover: interrupt jobs a previous process left running and finish deletions."""
         self.store.root.mkdir(parents=True, exist_ok=True)
         self.store.initialize()
+        self.store.acquire_lease()
         self.store.interrupt_unfinished()
         for work_id in self.store.pending_deletions():
             try:
@@ -90,15 +94,38 @@ class Runtime:
                 logging.getLogger(__name__).exception("Work deletion recovery failed: %s", work_id)
 
     def start_maintenance(self) -> None:
-        """Start the hourly retention sweep once; it lives as long as the event loop."""
+        """Start the lease renewal and the hourly retention sweep once; they live as long as the event loop."""
         if self.maintenance is None or self.maintenance.done():
             self.maintenance = asyncio.create_task(self._maintain())
+        if self.heartbeat is None or self.heartbeat.done():
+            self.heartbeat = asyncio.create_task(self._renew())
+
+    async def _renew(self) -> None:
+        """Renew the queue lease; a failed renewal is retried, a lost lease fences this instance for good."""
+        while not self.fenced:
+            await asyncio.sleep(LEASE_RENEW)
+            try:
+                if not await asyncio.to_thread(self.store.renew_lease):
+                    self.fenced = True
+                    logger.error("Another backend instance took over the Remotion queue; this one stops claiming jobs")
+            except Exception:
+                logger.exception("Remotion queue lease renewal failed")
+
+    async def close(self) -> None:
+        """Stop the background tasks and release the queue lease; called when the application shuts down."""
+        for task in (self.maintenance, self.heartbeat):
+            if task is not None:
+                task.cancel()
+        self.fenced = True
+        with suppress(Exception):
+            await asyncio.to_thread(self.store.release_lease)
 
     async def _maintain(self) -> None:
         """Run the retention sweep now and then every hour; one failed sweep is logged and retried later."""
         while True:
             try:
-                await self.sweep()
+                if not self.fenced:
+                    await self.sweep()
             except Exception:
                 logger.exception("Remotion retention sweep failed")
             await asyncio.sleep(3600)
@@ -371,7 +398,7 @@ class Runtime:
 
     async def _work(self) -> None:
         """Drain FIFO jobs without polling or allowing a failed run to stop subsequent work."""
-        while True:
+        while not self.fenced:
             job = self.store.claim()
             if job is None:
                 return

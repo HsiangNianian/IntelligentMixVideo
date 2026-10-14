@@ -7,6 +7,7 @@ test fixture. Sealed version files and reference images live in the object store
 folder only holds job scratch, a verified read cache and the private audit logs (one folder per work).
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -47,6 +48,7 @@ from .tables import (
     chat_messages,
     conversations,
     devices,
+    instance,
     job_progress,
     job_rounds,
     jobs,
@@ -75,6 +77,10 @@ class NotFound(HTTPException):
         super().__init__(status_code=404, detail=detail)
 
 
+class InstanceInUse(OSError):
+    """Another backend instance holds the queue lease of this database; wait for it to stop or its lease to expire."""
+
+
 class Conflict(HTTPException):
     """The requested state transition conflicts with current durable state."""
 
@@ -82,6 +88,10 @@ class Conflict(HTTPException):
         """Use FastAPI's built-in 409 response for concrete conflicting requests."""
         super().__init__(status_code=409, detail=detail)
 
+
+# The queue lease is renewed every LEASE_RENEW and may be taken over once it is LEASE_TTL old (a crashed instance).
+LEASE_TTL = timedelta(seconds=30)
+LEASE_RENEW = 10.0
 
 # An upload whose message was rejected or never arrived is reclaimed once it is this old; a send uploads
 # immediately before it submits, so no pending send can still be about to reference such an image.
@@ -115,18 +125,87 @@ class Store:
         """Locate scratch storage; tables are created by `initialize`, so constructing touches nothing."""
         self.root = root
         self.objects = objects if objects is not None else load_objects(root)
+        self.instance_id = uuid4()
         self._write = threading.RLock()
         self._touched: OrderedDict[str, datetime] = OrderedDict()
+        # Open event streams by work, woken when a transaction that appended events of that work commits.
+        self._watchers: dict[str, set[tuple[asyncio.AbstractEventLoop, asyncio.Event]]] = {}
+        self._watching = threading.Lock()
 
     def initialize(self) -> None:
         """Create the tables on first use; existing tables are reused unchanged."""
         metadata.create_all(get_engine())
 
+    def acquire_lease(self) -> None:
+        """Become the one backend instance that owns this database's queue, or raise `InstanceInUse`.
+
+        Recovery on startup interrupts every running job and a second instance would claim queued jobs it cannot
+        finish (local scratch, optionally local objects), so an unexpired lease of another instance refuses startup.
+        """
+        stamp, key = naive(now()), str(self.instance_id)
+        with self.transaction() as db:
+            row = db.execute(select(instance).where(instance.c.name == "backend").with_for_update()).first()
+            if row is None:
+                db.execute(insert(instance).values(name="backend", instance_id=key, heartbeat_at=stamp))
+            elif row.instance_id == key or row.heartbeat_at < stamp - LEASE_TTL:
+                db.execute(update(instance).where(instance.c.name == "backend").values(instance_id=key, heartbeat_at=stamp))
+            else:
+                raise InstanceInUse(
+                    "另一个后端实例正在使用这个数据库的 Remotion 任务队列；请先停止它，或在其停止约 30 秒后重试。"
+                )
+
+    def renew_lease(self) -> bool:
+        """Refresh the lease; False when another instance has taken it over after this one stopped renewing."""
+        with self.transaction() as db:
+            return db.execute(update(instance).where(
+                instance.c.name == "backend", instance.c.instance_id == str(self.instance_id),
+            ).values(heartbeat_at=naive(now()))).rowcount == 1
+
+    def release_lease(self) -> None:
+        """Give the lease up on a clean stop so the next instance starts at once."""
+        with self.transaction() as db:
+            db.execute(delete(instance).where(
+                instance.c.name == "backend", instance.c.instance_id == str(self.instance_id),
+            ))
+
     @contextmanager
     def transaction(self) -> Iterator[Connection]:
-        """Run one serialized write transaction that commits or rolls back as a whole."""
-        with self._write, get_engine().begin() as db:
-            yield db
+        """Run one serialized write transaction that commits or rolls back as a whole.
+
+        Streams waiting on the works whose events it appended (`history.append_event`) are woken after the commit.
+        """
+        with self._write:
+            with get_engine().begin() as db:
+                yield db
+                # Reached only when the body did not raise; the commit follows when the block exits.
+                appended = db.info.pop(history.APPENDED, ())
+        if appended:
+            self._wake(appended)
+
+    @contextmanager
+    def watch(self, work_id: UUID) -> Iterator[asyncio.Event]:
+        """An event set whenever new events of the work commit; call from the event loop that waits on it.
+
+        Create it before reading, clear it, then read and wait: a commit between the read and the wait leaves it set.
+        """
+        key, entry = str(work_id), (asyncio.get_running_loop(), asyncio.Event())
+        with self._watching:
+            self._watchers.setdefault(key, set()).add(entry)
+        try:
+            yield entry[1]
+        finally:
+            with self._watching:
+                self._watchers[key].discard(entry)
+                if not self._watchers[key]:
+                    del self._watchers[key]
+
+    def _wake(self, work_ids: set[str]) -> None:
+        """Set the events of every stream watching one of the works; a stream whose loop is gone is skipped."""
+        with self._watching:
+            entries = [entry for key in work_ids for entry in self._watchers.get(key, ())]
+        for loop, event in entries:
+            with suppress(RuntimeError):
+                loop.call_soon_threadsafe(event.set)
 
     @contextmanager
     def reading(self) -> Iterator[Connection]:

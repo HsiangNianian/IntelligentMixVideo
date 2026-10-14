@@ -42,7 +42,7 @@ from .models import (
 )
 from .provider import ExecutionFailure
 from .runtime import Runtime
-from .store import NotFound
+from .store import InstanceInUse, NotFound
 from .stream import event_stream
 from .tool_validation import ValidationUnavailable
 from .tools.contracts import CodeValidationReport, ComponentDefinition
@@ -65,6 +65,8 @@ async def runtime_for(state) -> Runtime:
                 try:
                     service = state.build_runtime()
                     await asyncio.to_thread(service.initialize)
+                except InstanceInUse as exc:
+                    raise HTTPException(503, str(exc)) from exc
                 except (OSError, ImportError, ValueError, SQLAlchemyError) as exc:
                     raise HTTPException(
                         503,

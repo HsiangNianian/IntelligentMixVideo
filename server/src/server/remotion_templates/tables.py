@@ -4,7 +4,7 @@ Works, jobs, accepted versions, the model's sliding window, public events and ov
 shared database next to `remotion_sprites`. Every work belongs to one client device. Public chat is only
 buffered here until the client acknowledges it into its local SQLite (`store.acknowledge`). Documents are JSON
 text in long columns; `seq`/`id` autoincrement columns give the insertion order that SQLite's rowid used to.
-Tables are created on first use and never altered, like the template and Sprite tables. The SQLite variants only
+The single `remotion_instance` row is a lease that keeps a second backend off the same queue. Tables are created on first use and never altered, like the template and Sprite tables. The SQLite variants only
 serve the test fixture that stands in for MySQL.
 """
 
@@ -31,6 +31,14 @@ IDENTIFIER = String(36)
 
 metadata = MetaData()
 
+# One row (key "backend") naming the backend instance that owns the queue; see `Store.acquire_lease`.
+instance = Table(
+    "remotion_instance", metadata,
+    Column("name", String(16), primary_key=True),
+    Column("instance_id", IDENTIFIER, nullable=False),
+    Column("heartbeat_at", STAMP, nullable=False),
+    mysql_charset="utf8mb4",
+)
 devices = Table(
     "remotion_devices", metadata,
     Column("device_id", IDENTIFIER, primary_key=True),

@@ -53,10 +53,13 @@ never upload anything.
 The backend keeps no SQLite file. Works, jobs, accepted versions, the model's sliding window, public events and
 overlay render tasks are tables in the shared MySQL database (`tables.py`, created on first use next to
 `remotion_sprites`). The backend runs as a single instance: one in-process lock serializes write transactions,
-startup interrupts jobs a previous process left running and finishes interrupted deletions. Nothing enforces the
-single instance: a second backend on the same database (for example a Debug desktop backend reading the same
-`server/.env`) would interrupt the first one's running jobs when it starts and run its own queue and sweeps, so deploy
-exactly one. MySQL 8.0 or later is required: acknowledged events are deleted and clients resume after the last event
+startup interrupts jobs a previous process left running and finishes interrupted deletions. A lease row
+(`remotion_instance`) enforces it: startup acquires the lease or the first Remotion request answers 503 ("another
+backend instance is using this database's queue"), the instance renews it every 10 seconds and releases it on a clean
+shutdown. A crashed instance's lease expires after 30 seconds, so a restart after `kill -9` may have to wait that long.
+An instance that finds its lease taken (it stopped renewing, for example during a long database outage) stops
+claiming jobs and sweeping. A second backend on the same database (for example a Debug desktop backend reading the
+same `server/.env`) is therefore refused instead of interrupting the first one's running jobs. MySQL 8.0 or later is required: acknowledged events are deleted and clients resume after the last event
 ID, which relies on InnoDB keeping its AUTO_INCREMENT counter across restarts (5.7 resets it to the highest row).
 
 Every work belongs to the client device that created it. JSON routes of a work require the `X-IMV-Device`
@@ -66,7 +69,7 @@ no rows;
 browser-embedded reads (preview page, fonts, reference image, artifact download) are addressed by unguessable IDs.
 Chat history lives on the client: the server buffers public messages and events only until the client stores them
 locally and acknowledges the last event ID with `POST /works/{id}/ack`. The open work streams its events over SSE
-(`GET /works/{id}/stream`); works the client is not showing catch up through `GET /works/{id}/events?after=<id>`,
+(`GET /works/{id}/stream`; an idle stream sleeps until a commit appends an event of its work, with a 5 second read as a safety net, so it costs the database almost nothing); works the client is not showing catch up through `GET /works/{id}/events?after=<id>`,
 one page per call in the same shape, until an empty page. There is no server-side work list: the sidebar reads the
 client's local store. Acknowledged events are deleted; once a work
 has no undelivered events, the progress, rounds and messages of its finished jobs go too, and only the latest job row
