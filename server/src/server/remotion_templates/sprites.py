@@ -35,6 +35,8 @@ PREVIEW_BUNDLE = "interactive.js"
 # 同一来源与字段选择的发布轮流执行：重复点击等待首个完成后读取它保存的资产，不重复重建播放器包。
 # 值为弱引用，没有持有者和等待者后锁自动释放，字典不会随发布次数增长。
 _publishing: weakref.WeakValueDictionary[tuple, asyncio.Lock] = weakref.WeakValueDictionary()
+# 同一资产的预览重建同样轮流执行，后到的请求读取先到者保存的新包。
+_previewing: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
 
 # 发布类型与效果分类的对应；视频特效与转场在界面上合为第三类，但必备参数和宿主变换按各自类型检查。
 KIND_NAMES = {
@@ -210,20 +212,48 @@ def catalog() -> list[pb.SpriteSummary]:
     return items
 
 
-def preview_script(store: Store, sprite_id: str) -> tuple[str, dict]:
-    """Read the sprite's own copy of the player bundle after checking it against the published hash.
-
-    Also returns what the page injects for the player: the published defaults and the content box.
-    """
-    sprite = get(sprite_id)
+def _read_bundle(store: Store, sprite: pb.PublishedSprite) -> bytes:
+    """The publication's player copy, checked against the published hash; a missing or changed copy is a 404."""
     path = store.root / "sprites" / sprite.sprite_id / PREVIEW_BUNDLE
     try:
         if digest(path) != sprite.preview_sha256:
             raise ValueError("preview changed")
-        script = path.read_text(encoding="utf-8")
+        return path.read_bytes()
     except (OSError, ValueError) as exc:
         raise NotFound("sprite preview unavailable") from exc
-    return script, {"config": json.loads(sprite.default_config_json or "{}"), "box": box_json(sprite)}
+
+
+async def preview_script(service, sprite_id: str) -> tuple[str, dict]:
+    """Read the sprite's own copy of the player bundle after checking it against the published hash.
+
+    A copy that predates the current host protocol (`current_bundle`) cannot take the placement transform or
+    parameter overrides, so the template editor would show the asset unmoved. It is rebuilt here from the
+    published source, once, instead of waiting for the Sprite to be saved again; when that fails the old copy is
+    served as before.
+
+    Also returns what the page injects for the player: the published defaults and the content box.
+    """
+    store = service.store
+    sprite = await run_in_threadpool(get, sprite_id)
+    script = await run_in_threadpool(_read_bundle, store, sprite)
+    if not current_bundle(script):
+        # Previews of one Sprite load together (one iframe per placement): they take turns, so only the first rebuilds.
+        lock = _previewing.setdefault(sprite_id, asyncio.Lock())
+        async with lock:
+            sprite = await run_in_threadpool(get, sprite_id)
+            script = await run_in_threadpool(_read_bundle, store, sprite)
+            if not current_bundle(script):
+                canvas = sprite.canvas
+                fresh = await _rebuild_bundle(service, sprite.tsx_code, json.loads(sprite.default_config_json or "{}"), {
+                    "width": canvas.width, "height": canvas.height, "fps": canvas.fps, "duration_in_frames": canvas.preview_frames,
+                }, sprite.sprite_id)
+                if fresh is not None:
+                    try:
+                        await run_in_threadpool(_store_bundle, store, sprite, fresh)
+                        script = fresh
+                    except Exception:
+                        logging.getLogger(__name__).exception("Sprite preview refresh not stored: %s", sprite.sprite_id)
+    return script.decode("utf-8"), {"config": json.loads(sprite.default_config_json or "{}"), "box": box_json(sprite)}
 
 
 def _validated_request(request: pb.PublishSpriteRequest, version: TemplateVersion) -> None:
@@ -249,8 +279,8 @@ def _validated_request(request: pb.PublishSpriteRequest, version: TemplateVersio
         raise _invalid("只有字效可以声明 text_prop 与 keywords_prop")
 
 
-async def _rebuild_bundle(service, version) -> bytes | None:
-    """Rebuild the player bundle from the sealed source with the current host code; None when unavailable.
+async def _rebuild_bundle(service, code: str, config: dict, composition: dict, label) -> bytes | None:
+    """Rebuild the player bundle from sealed source with the current host code; None when unavailable.
 
     Failure is non-fatal: the asset is still saved with its original bundle and simply cannot be previewed
     over the template.
@@ -260,15 +290,13 @@ async def _rebuild_bundle(service, version) -> bytes | None:
     try:
         work.mkdir(parents=True)
         (work / "request.json").write_text(json.dumps({
-            "code": version.candidate.tsx_code,
-            "config": version.candidate.default_config,
-            "composition": version.spec.composition.model_dump(),
+            "code": code, "config": config, "composition": composition,
         }, ensure_ascii=False), encoding="utf-8")
         await service.harness.renderer.run_worker(work, worker="presentation-worker.mjs")
         data = (work / PREVIEW_BUNDLE).read_bytes()
         return data if current_bundle(data) else None
     except Exception:
-        logging.getLogger(__name__).exception("Sprite preview rebuild failed: %s", version.id)
+        logging.getLogger(__name__).exception("Sprite preview rebuild failed: %s", label)
         return None
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -447,7 +475,10 @@ async def publish(service, request: pb.PublishSpriteRequest) -> pb.SpriteSummary
         version, sprite, bundle = await run_in_threadpool(_inspect, store, request)
         if sprite is None:
             await _sample(service, version, request.kind)
-        fresh = None if current_bundle(bundle) else await _rebuild_bundle(service, version)
+        fresh = None if current_bundle(bundle) else await _rebuild_bundle(
+            service, version.candidate.tsx_code, version.candidate.default_config,
+            version.spec.composition.model_dump(), version.id,
+        )
         if sprite is None:
             return await run_in_threadpool(_create, store, request, version, fresh or bundle)
         if fresh:

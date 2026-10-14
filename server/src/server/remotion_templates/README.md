@@ -341,6 +341,10 @@ lacks that line and refreshes an existing publication on re-save; a failed rebui
 A refresh stages the new bundle and records its hash before replacing the copy, so a failed update keeps the
 previous copy working and publishing again retries it. Identical publish requests (same version and field
 choice) take turns, so a double click rebuilds once.
+A saved publication whose copy lacks the protocol line is rebuilt from its published source on its first preview (it
+cannot take placement transforms otherwise, so an asset saved before they existed would not follow position edits in
+the template editor); a failed rebuild or store serves the old copy and the next preview retries. Concurrent previews
+of one Sprite rebuild once.
 
 ## Overlay renders for the bus
 

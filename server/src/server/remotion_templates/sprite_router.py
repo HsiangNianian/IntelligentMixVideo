@@ -106,7 +106,7 @@ async def sprite_preview(sprite_id: str, service: Service, overlay: bool = False
     `overlay=true` 使用透明背景，供模板编辑把资产叠在预览画面上；再加页面参数 `sync=1`
     （新生成的资产支持）即由父页面通过消息逐帧驱动，无控制条和循环。
     """
-    script, host = await run_in_threadpool(sprites.preview_script, service.store, sprite_id)
+    script, host = await sprites.preview_script(service, sprite_id)
     return player_page(script, overlay=overlay, host=host)
 
 
