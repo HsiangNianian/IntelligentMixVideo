@@ -18,14 +18,14 @@ test("普通与转场轨道保留实际时间范围", () => {
   expect(ordinary[2]).toMatchObject({ id: "transitions", actions: [] });
   expect(ordinary.slice(3).map((row) => row.actions.length)).toEqual([1, 1, 1]);
   expect(ordinary[3].actions[0]).toMatchObject({ start: 0, end: 10, sourceIn: 0, sourceOut: 10, movable: false, flexible: false });
-  expect(ordinary[3].actions[0].transition).toBeUndefined();
   draft.tracks.push({ id: "transition", target: "transition", transition_boundary: 1, duration: 2,
     editor: trackEditor({ ...defaultEditor, transition: "transition/normal/directional" }, "transition") });
   const rows = buildPreviewRows(buildTimeline(draft, catalog));
   expect(rows).toHaveLength(6);
-  expect(rows[3].actions[0]).toMatchObject({ start: 0, end: 10, sourceIn: 0, sourceOut: 10, transition: { start: 8, end: 10 } });
-  expect(rows[4].actions[0]).toMatchObject({ start: 8, end: 18, sourceIn: 0, sourceOut: 10 });
-  expect(rows[5].actions[0]).toMatchObject({ start: 18, end: 28, sourceIn: 0, sourceOut: 10 });
+  expect(rows[2].actions[0]).toMatchObject({ start: 9, end: 11 });
+  expect(rows[3].actions[0]).toMatchObject({ start: 0, end: 10, sourceIn: 0, sourceOut: 10 });
+  expect(rows[4].actions[0]).toMatchObject({ start: 10, end: 20, sourceIn: 0, sourceOut: 10 });
+  expect(rows[5].actions[0]).toMatchObject({ start: 20, end: 30, sourceIn: 0, sourceOut: 10 });
   expect(new Set(rows.flatMap((row) => row.actions.map((action) => action.id))).size).toBe(6);
   expect(buildPreviewRows({ ...buildTimeline(draft, catalog), VideoTracks: [] })).toEqual(rows.slice(0, 3));
 });

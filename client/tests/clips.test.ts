@@ -121,12 +121,12 @@ test("片段时间跟随所占对象", () => {
   const cut = { ...asset, id: "cut", kind: SpriteKind.TRANSITION_OVERLAY, seconds: 1 };
   /** 按三个 10 秒预览视频计算占用对象的片段区间。 */
   const timed = (draft: Draft) => timeClips(draft, resolveTemplate(draft, previewContext(sampleMedia)));
-  expect(timed(addClip(sampleDraft(), cut, [cut])).clips[0]).toMatchObject({ transition_boundary: 1, start: 9, duration: 1 });
+  expect(timed(addClip(sampleDraft(), cut, [cut])).clips[0]).toMatchObject({ transition_boundary: 1, start: 9.5, duration: 1 });
   let draft = setTrackTiming(sampleDraft(), "title", { start_mode: "seconds", start: 2, duration: 3 });
   // IMS 转场在第一个交界处重叠一秒，第二个交界处随之提前到 19 秒。
   draft = addClip(addClip(addTrack(draft, catalog[1], "transition").draft, text, [text, cut], "title"), cut, [text, cut]);
   const result = timed(draft);
-  expect(result.clips.map(({ start, duration, transition_boundary }) => [start, duration, transition_boundary])).toEqual([[2, 3, undefined], [18, 1, 2]]);
+  expect(result.clips.map(({ start, duration, transition_boundary }) => [start, duration, transition_boundary])).toEqual([[2, 3, undefined], [19.5, 1, 2]]);
   expect(draft.clips.map(({ start }) => start)).toEqual([0, 0]);
   expect(timed(result)).toBe(result);
   const extra = addClip(result, cut, [text, cut]);

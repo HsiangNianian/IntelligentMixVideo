@@ -22,7 +22,6 @@ export interface PreviewClip extends TimelineAction {
   url: string;
   sourceIn: number;
   sourceOut: number;
-  transition?: { start: number; end: number };
   targetId?: string;
   /** 视频来源编号在排列变化后保持不变。 */
   videoSource?: number;
@@ -32,11 +31,7 @@ export interface PreviewClip extends TimelineAction {
 export function buildPreviewRows(timeline: ReturnType<typeof buildTimeline>): (Omit<TimelineRow, "actions"> & { actions: PreviewClip[] })[] {
   const rows: (Omit<TimelineRow, "actions"> & { actions: PreviewClip[] })[] = [...timeline.previewRows, ...timeline.VideoTracks.map((track, trackIndex) => ({
     id: `video-${trackIndex}`,
-    actions: track.VideoTrackClips.map((clip, index) => {
-      const next = track.VideoTrackClips[index + 1];
-      const transition = clip.Effects.some((item) => item.Type === "Transition") && next
-        ? { start: Math.max(clip.TimelineIn, next.TimelineIn), end: Math.min(clip.TimelineOut, next.TimelineOut) }
-        : undefined;
+    actions: track.VideoTrackClips.map((clip) => {
       return {
           id: `video-${clip.source}`,
           effectId: "video",
@@ -49,7 +44,6 @@ export function buildPreviewRows(timeline: ReturnType<typeof buildTimeline>): (O
           url: clip.MediaURL,
           sourceIn: clip.In,
           sourceOut: clip.Out,
-          transition: transition && transition.end > transition.start ? transition : undefined,
       };
     }),
   }))];
@@ -227,6 +221,7 @@ function buildTrackContent(config: Editor, catalog: EffectAsset[], target: Effec
 export function buildTimeline(draft: Draft, catalog: EffectAsset[], media: PreviewMedia, resolvedTimeline: ResolvedTimeline, order = [0, 1, 2]) {
   const previewRows: (Omit<TimelineRow, "actions"> & { actions: PreviewClip[] })[] = [];
   const EffectTracks: { EffectTrackItems: Effect[] }[] = [];
+  const transitions: { boundary: number; start: number; end: number; effect: Effect }[] = [];
   const notices = resolvedTimeline.notices;
   if ("editor" in draft || !Array.isArray(draft.tracks)) throw new Error("模板格式不支持，请重新创建模板");
   const canvas = { Width: media[0].width, Height: media[0].height };
@@ -261,7 +256,7 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media: Previ
       const effect = resolved.effect;
       if (!effect) throw new Error("转场轨道缺少效果");
       effect.Duration = Math.round((track.end - track.start) * 30) / 30;
-      timeline.VideoTracks[0].VideoTrackClips[source.transition_boundary! - 1].Effects.push(effect);
+      transitions.push({ boundary: source.transition_boundary!, start: track.start, end: track.end, effect });
     } else {
       const effect = resolved.effect;
       if (!effect) throw new Error("特效轨道缺少效果");
@@ -275,19 +270,38 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media: Previ
       label: trackLabel(track, draft.tracks), effectName, url: "", sourceIn: 0, sourceOut: 0,
     }] });
   }
-  return { ...timeline, EffectTracks, previewRows, notices };
+  return { ...timeline, EffectTracks, previewRows, notices, transitions };
 }
 
 /** SDK 将专用轨道追加到视频之后；统一传入从下到上的图层，保证文字位于滤镜和 VFX 上方。 */
-export function playerTimeline(timeline: ReturnType<typeof buildTimeline>) {
+export function playerTimeline(timeline: ReturnType<typeof buildTimeline>, transitionFrames: ReadonlyMap<string, string> = new Map()) {
+  const videos = timeline.VideoTracks[0].VideoTrackClips;
+  const transitionTracks = timeline.transitions.map(({ boundary, start, end, effect }) => ({
+    VideoTrackClips: [videos[boundary - 1], videos[boundary]].map((video, index) => {
+      const key = transitionFrameKey(boundary, index);
+      const image = transitionFrames.get(key);
+      if (!image) throw new Error("居中转场缺少视频补帧画面");
+      return {
+        Type: "Image", MediaURL: image, Duration: end - start, TimelineIn: start, TimelineOut: end,
+        Width: video.Width, Height: video.Height, AdaptMode: video.AdaptMode,
+        Effects: [{ Type: "Background", SubType: "Color", Color: "#000000" }, ...(index === 0 ? [effect] : [])],
+      };
+    }),
+  }));
   return {
     AspectRatio: timeline.AspectRatio, FECanvas: timeline.FECanvas, AudioTracks: timeline.AudioTracks,
     VideoTracks: [
       ...timeline.VideoTracks.map((row) => ({ VideoTrackClips: row.VideoTrackClips.map(({ source: _source, ...clip }) => clip) })),
+      ...transitionTracks,
       ...[...timeline.EffectTracks].reverse().map((row) => ({ Type: "Effect", VideoTrackClips: row.EffectTrackItems })),
       ...[...timeline.SubtitleTracks].reverse().map((row) => ({ Type: "Subtitle", VideoTrackClips: row.SubtitleTrackClips })),
     ],
   };
+}
+
+/** 补帧键仅在这次预览内标识前后画面，媒体缓存使用地址和源时间。 */
+export function transitionFrameKey(boundary: number, index: number): string {
+  return `${boundary}:${index}`;
 }
 
 /** 将启用的局部样式包在首次出现的关键词两侧；无关键词时保留原文字。 */

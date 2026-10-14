@@ -55,11 +55,6 @@ function ClipThumbnails({ clip, cache }: { clip: PreviewClip; cache: Map<string,
         <span role="status" className="sr-only" title={error}>{error}</span>
         <Button type="button" size="sm" variant="ghost" onClick={(event) => { event.stopPropagation(); setAttempt((value) => value + 1); }} className="h-5 px-1 text-[11px] text-white hover:bg-white/15 hover:text-white">重试缩略图</Button>
       </div>}
-      {clip.transition && <div
-        className="pointer-events-none absolute inset-y-0 border-x-2 border-primary bg-primary/25"
-        style={{ left: `${100 * (clip.transition.start - clip.start) / (clip.end - clip.start)}%`, width: `${100 * (clip.transition.end - clip.transition.start) / (clip.end - clip.start)}%` }}
-        title={`转场：${clip.transition.start}～${clip.transition.end} 秒`}
-      />}
     </div>
   );
 }

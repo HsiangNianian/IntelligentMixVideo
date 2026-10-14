@@ -113,9 +113,8 @@ export function validateClipSlots(draft: Draft): void {
 export function hiddenTextClips(draft: Draft, resolved: ResolvedTimeline): Set<string> {
   return new Set(draft.clips.filter((clip) => {
     if (clip.transition_boundary !== undefined) {
-      const before = resolved.clips[clip.transition_boundary - 1];
-      const after = resolved.clips[clip.transition_boundary];
-      return !before || !after || after.start >= before.end;
+      const transition = resolved.transitions[clip.transition_boundary - 1];
+      return !transition || transition.end <= transition.start;
     }
     const text = clip.text_target && draft.tracks.find((track) => track.target === clip.text_target);
     const shown = text ? resolved.tracks[text.id] : undefined;
@@ -125,7 +124,7 @@ export function hiddenTextClips(draft: Draft, resolved: ResolvedTimeline): Set<s
 
 /**
  * 把本次预览算出的秒数写入占用对象的片段，供右侧列表、时间轴、叠加预览和保存数据使用：字效采用所作用文字的显示区间，
- * Remotion 转场覆盖相邻视频的重叠区间；所作用文字不显示时保留原值（见 `hiddenTextClips`）。合成时按实际素材重新计算；没有变化的片段与列表保持原引用。
+ * Remotion 转场采用统一计算的转场区间；所作用文字不显示时保留原值（见 `hiddenTextClips`）。合成时按实际素材重新计算；没有变化的片段与列表保持原引用。
  */
 export function timeClips(draft: Draft, resolved: ResolvedTimeline): Draft {
   const round = (seconds: number) => Math.round(seconds * 1000) / 1000;
@@ -134,10 +133,9 @@ export function timeClips(draft: Draft, resolved: ResolvedTimeline): Draft {
     const text = clip.text_target && draft.tracks.find((track) => track.target === clip.text_target);
     const shown = text ? resolved.tracks[text.id] : undefined;
     if (shown && shown.end > shown.start) timing = { start: round(shown.start), duration: round(shown.end - shown.start) };
-    else if (clip.transition_boundary !== undefined && resolved.clips[clip.transition_boundary]) {
-      const before = resolved.clips[clip.transition_boundary - 1];
-      const after = resolved.clips[clip.transition_boundary];
-      timing = { start: round(after.start), duration: round(before.end - after.start) };
+    else if (clip.transition_boundary !== undefined && resolved.transitions[clip.transition_boundary - 1]) {
+      const transition = resolved.transitions[clip.transition_boundary - 1];
+      timing = { start: round(transition.start), duration: round(transition.end - transition.start) };
     }
     return !timing || (timing.start === clip.start && timing.duration === clip.duration) ? clip : { ...clip, ...timing };
   });

@@ -88,9 +88,9 @@ export function resolveTrack(track: EffectTrack, duration: number, fps = 30): Re
   return { start: first / fps, end: last / fps, editor, notice };
 }
 
-/** 片段来源已经确定；顺序拼接计算重叠，固定时间保留语音及素材位置。 */
+/** 片段来源已经确定；居中预览保持视频长度，顺序拼接计算重叠，固定时间保留素材位置。 */
 export interface TimelineContext {
-  layout: "sequence" | "fixed";
+  layout: "sequence" | "fixed" | "centered";
   clips: readonly { duration: number; start?: number }[];
   fps: number;
   duration?: number;
@@ -101,26 +101,27 @@ export interface ResolvedTimeline {
   duration: number;
   clips: { start: number; end: number }[];
   tracks: Record<string, ResolvedTrack>;
+  transitions: { start: number; end: number }[];
   notices: string[];
 }
 
-/** 将已读取的三个来源按当前排列转换为顺序拼接输入。 */
+/** 将已读取的三个来源按当前排列转换为居中转场的预览输入。 */
 export function previewContext(media: PreviewMedia, order = [0, 1, 2]): TimelineContext {
   if (order.length !== 3 || new Set(order).size !== 3 || order.some((value) => ![0, 1, 2].includes(value))) throw new Error("视频排列无效");
   const sources = previewVideos(media);
-  return { layout: "sequence", fps: 30, clips: order.map((source) => ({ duration: sources[source].duration })) };
+  return { layout: "centered", fps: 30, clips: order.map((source) => ({ duration: sources[source].duration })) };
 }
 
 /** 校验规则后统一计算帧区间；缺少交界处或素材过短均产生明确的应用说明。 */
 export function resolveTemplate(draft: Pick<Draft, "tracks"> & Partial<Pick<Draft, "clips" | "transition_mode">>, context: TimelineContext): ResolvedTimeline {
   validateTemplateTracks(draft.tracks);
   const { fps, layout } = context;
-  if (!["sequence", "fixed"].includes(layout) || !Number.isInteger(fps) || fps <= 0 || fps > 60 || !context.clips.length)
+  if (!["sequence", "fixed", "centered"].includes(layout) || !Number.isInteger(fps) || fps <= 0 || fps > 60 || !context.clips.length)
     throw new Error("视频时间信息无效");
   const lengths = context.clips.map((clip) => {
     if (!Number.isFinite(clip.duration) || clip.duration <= 0) throw new Error("视频片段时长无效");
     const frames = Math.floor(clip.duration * fps + 1e-8);
-    if (!frames && layout === "sequence") throw new Error("视频片段不足一帧");
+    if (!frames && layout !== "fixed") throw new Error("视频片段不足一帧");
     return frames;
   });
   const overlaps = lengths.map(() => 0);
@@ -148,25 +149,29 @@ export function resolveTemplate(draft: Pick<Draft, "tracks"> & Partial<Pick<Draf
       end = fixedStart! + context.clips[index].duration;
       return { start: fixedStart!, end };
     }
-    const start = end - (overlaps[index - 1] ?? 0);
+    const start = end - (layout === "sequence" ? overlaps[index - 1] ?? 0 : 0);
     end = start + frames;
     return { start: start / fps, end: end / fps };
   });
-  const duration = layout === "sequence" ? end / fps : context.duration;
+  const duration = layout === "fixed" ? context.duration : end / fps;
   if (duration === undefined || !Number.isFinite(duration) || duration <= 0 || clips.at(-1)!.end > duration + 1e-8) throw new Error("视频总时长无效");
   const tracks: ResolvedTimeline["tracks"] = {};
+  const transitions = clips.slice(0, -1).map((clip, index) => {
+    const frames = overlaps[index];
+    const last = layout === "centered" ? (Math.round(clip.end * fps) + Math.ceil(frames / 2)) / fps : clip.end;
+    return { start: last - frames / fps, end: last };
+  });
   const notices: string[] = [];
   for (const track of draft.tracks) {
     const index = track.transition_boundary! - 1;
     const boundaryEnd = clips[index]?.end ?? 0;
-    const overlap = (overlaps[index] ?? 0) / fps;
     const resolved = track.target === "transition"
-      ? { start: boundaryEnd - overlap, end: boundaryEnd, editor: track.editor, notice: transitionNotices.get(track.id) ?? "" }
+      ? { ...(transitions[index] ?? { start: boundaryEnd, end: boundaryEnd }), editor: track.editor, notice: transitionNotices.get(track.id) ?? "" }
       : resolveTrack(track, duration, fps);
     tracks[track.id] = resolved;
     if (resolved.notice) notices.push(`${trackLabel(track, draft.tracks)}：${resolved.notice}`);
   }
-  return { duration, clips, tracks, notices };
+  return { duration, clips, tracks, transitions, notices };
 }
 
 /** 提取当前对象参数，供参数面板和 SDK 转换共用。 */

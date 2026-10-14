@@ -6,7 +6,8 @@ import { Hint } from "@/components/Hint";
 import { Spinner } from "@/components/ui/spinner";
 import type { Draft, EffectAsset, MasterVideo, PreviewMedia } from "./model";
 import { loadSDK, loadPreviewFont, readCatalog, type Player } from "./sdk";
-import { buildTimeline, buildPreviewRows, mergeSpriteRows, playerTimeline, remotionTexts, type SpriteClip } from "./timeline";
+import { buildTimeline, buildPreviewRows, mergeSpriteRows, remotionTexts, type SpriteClip } from "./timeline";
+import { centeredPlayerTimeline } from "./centeredTransitions";
 import { PreviewTimeline, type PreviewTimelineHandle } from "./PreviewTimeline";
 import { SpriteOverlay, type SpriteOverlayHandle } from "./SpriteOverlay";
 import type { ResolvedTimeline } from "./tracks";
@@ -83,6 +84,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
     let instance: Player | null = null;
     let frame: HTMLIFrameElement | undefined;
     const controller = new AbortController();
+    const transitionFrames = new Map<string, string>();
     let catalog: EffectAsset[] = [];
     let appliedTracks: Draft["tracks"] | undefined;
     let appliedMedia: PreviewMedia | undefined;
@@ -165,7 +167,9 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           setStatus("正在应用效果并加载媒体…");
           // 清空 SDK 缓存的旧时间线，确保文字更新后只显示当前内容。
           instance.timeline = {};
-          await instance.setTimeline(playerTimeline(timeline));
+          const playback = await centeredPlayerTimeline(timeline, controller.signal, transitionFrames);
+          if (disposed) return;
+          await instance.setTimeline(playback);
           if (!disposed && applied === revision) {
             appliedTracks = currentDraft.tracks;
             appliedMedia = currentMedia;
@@ -253,6 +257,8 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           getMediaInfo: async (id, _type, _origin, url) => url || id,
           getTimelineMaterials: async (materials) =>
             materials.map((item) => {
+              if (typeof item.mediaId === "string" && item.mediaId.startsWith("data:image/"))
+                return { ...item, image: { src: item.mediaId } };
               const video = sources.find((source) => source.url === item.mediaId);
               if (!video) throw new Error("预览素材缺少真实媒体信息");
               return { ...item, video: { duration: video.duration } };
