@@ -473,7 +473,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
       if (alive.current) changed.current();
     }
   }
-  /** 首轮图片可上传；后续输入绑定最近成功版本，澄清明确绑定提问任务。 */
+  /** 每条消息可附一张图片，先上传再提交；后续输入绑定最近成功版本，澄清明确绑定提问任务。 */
   function send(text: string, image?: File, durationInFrames?: number) {
     const s = latest.current;
     if (
@@ -493,14 +493,14 @@ export function useTemplateSession(onHistoryChange: () => void) {
       ],
     });
     void execute("chat", async () => {
-      if (!s.workId) {
-        const asset = image ? await api.upload(image) : undefined;
-        if (!current(s.key)) throw new DOMException("Aborted", "AbortError");
+      const asset = image ? await api.upload(image) : undefined;
+      if (!current(s.key)) throw new DOMException("Aborted", "AbortError");
+      if (!s.workId)
         return (await api.create(text, asset?.id, defaultComposition(durationInFrames)))
           .job;
-      }
       return api.message(s.workId, {
-        instruction: text.trim(),
+        ...(text.trim() ? { instruction: text.trim() } : {}),
+        ...(asset ? { image: { asset_id: asset.id } } : {}),
         ...(s.job?.status === "needs_input"
           ? { reply_to_job_id: s.job.id }
           : { base_version_id: s.version?.id }),

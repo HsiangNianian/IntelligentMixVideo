@@ -737,17 +737,92 @@ test("拖入参考图校验格式并显示预览", async () => {
   expect(screen.queryByAltText("参考图片：dropped.png")).toBeNull();
 });
 
-// 首轮结束后不能再附图，但拖放仍须阻止浏览器默认打开文件，避免离开应用丢失未保存状态。
-test("不可附图时拖放仍阻止默认行为且不添加图片", async () => {
-  server();
+/** 构造只含一项的剪贴板数据；kind 为 file 时 getAsFile 返回该文件。 */
+function clipboard(file: File | null, type = file?.type ?? "text/plain") {
+  return {
+    clipboardData: {
+      items: [{ kind: file ? "file" : "string", type, getAsFile: () => file }],
+    },
+  };
+}
+
+// #127：开始对话后仍可粘贴参考图并随修改提交；文字粘贴照常输入，任务进行中说明何时可再上传且不附图。
+test("开始对话后可粘贴参考图提交，任务进行中说明锁定原因", async () => {
+  let body: Record<string, unknown> = {};
+  let uploads = 0;
+  server((path, options) => {
+    if (path === "/assets") {
+      uploads += 1;
+      return Response.json({ id: "image-2" });
+    }
+    if (path.endsWith("/messages")) {
+      body = JSON.parse(String(options?.body));
+      return Response.json({ ...remotionJob("running"), id: "edit-1" });
+    }
+  });
   render(<RemotionWorkspace />);
   await generate();
-  const form = screen.getByLabelText("字效描述").closest("form")!;
-  const file = new File(["png"], "late.png", { type: "image/png" });
-  expect(fireEvent.dragOver(form, { dataTransfer: { files: [file] } })).toBe(false);
+  const input = screen.getByLabelText("字效描述");
+  const form = input.closest("form")!;
+  expect(fireEvent.paste(input, clipboard(null))).toBe(true);
+  fireEvent.paste(input, clipboard(new File(["gif"], "pasted.gif", { type: "image/gif" })));
+  expect(screen.getByRole("alert").textContent).toBe(
+    "请选择不超过 10 MiB 的 PNG、JPEG 或 WebP 图片。",
+  );
+  const pasted = new File(["png"], "pasted.png", { type: "image/png" });
+  expect(fireEvent.paste(input, clipboard(pasted))).toBe(false);
+  expect(screen.getByAltText("参考图片：pasted.png")).toBeTruthy();
+  fireEvent.submit(form);
+  await waitFor(() => expect(body).toHaveProperty("image"));
+  expect(uploads).toBe(1);
+  expect(body).toEqual({
+    image: { asset_id: "image-2" },
+    base_version_id: "version-1",
+  });
+  await screen.findByText("当前任务完成或停止后，可继续发送消息和上传图片。");
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "图片" }).disabled).toBe(true);
+  const late = new File(["png"], "late.png", { type: "image/png" });
+  expect(fireEvent.dragOver(form, { dataTransfer: { files: [late] } })).toBe(false);
   expect(screen.queryByText("松开以添加参考图片")).toBeNull();
-  expect(fireEvent.drop(form, { dataTransfer: { files: [file] } })).toBe(false);
+  expect(fireEvent.drop(form, { dataTransfer: { files: [late] } })).toBe(false);
+  fireEvent.paste(input, clipboard(late));
   expect(screen.queryByAltText("参考图片：late.png")).toBeNull();
+});
+
+// #127：回答澄清问题时也可只附一张参考图，答案绑定提出问题的任务。
+test("澄清回答可只附参考图", async () => {
+  let body: Record<string, unknown> = {};
+  server((path, options) => {
+    if (path === "/works")
+      return Response.json({
+        work: { id: "work-1" },
+        job: remotionJob("needs_input"),
+      });
+    if (path === "/assets") return Response.json({ id: "image-3" });
+    if (path.endsWith("/messages")) {
+      body = JSON.parse(String(options?.body));
+      return Response.json(remotionJob());
+    }
+  });
+  render(<RemotionWorkspace />);
+  fireEvent.change(screen.getByLabelText("字效描述"), {
+    target: { value: "帮我制作标题" },
+  });
+  const form = screen.getByLabelText("字效描述").closest("form")!;
+  fireEvent.submit(form);
+  await screen.findByText("标题写什么？");
+  fireEvent.drop(form, {
+    dataTransfer: {
+      files: [new File(["png"], "answer.png", { type: "image/png" })],
+    },
+  });
+  fireEvent.submit(form);
+  await waitFor(() =>
+    expect(body).toEqual({
+      image: { asset_id: "image-3" },
+      reply_to_job_id: "job-1",
+    }),
+  );
 });
 
 // 参数写入结果未知时保留草稿，先只读恢复确认任务，不自动重发。

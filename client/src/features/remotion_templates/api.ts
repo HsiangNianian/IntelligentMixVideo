@@ -136,11 +136,12 @@ export function create(
     }),
   });
 }
-/** 自然语言修改、澄清和参数共用同一端点，显式绑定成功版本或问题任务。 */
+/** 自然语言修改（文字和／或参考图）、澄清和参数共用同一端点，显式绑定成功版本或问题任务。 */
 export function message(
   work: string,
   body: {
     instruction?: string;
+    image?: { asset_id: string };
     parameters?: Values;
     base_version_id?: string;
     reply_to_job_id?: string;

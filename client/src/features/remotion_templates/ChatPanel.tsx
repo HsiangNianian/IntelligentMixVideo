@@ -1,4 +1,4 @@
-/** 当前会话的聊天展示与输入；参考图可点击选择或拖入输入区，只作为生成参考，预览 URL 随组件卸载释放。 */
+/** 当前会话的聊天展示与输入；每条消息可附一张参考图（点击选择、拖入或粘贴），只作为生成参考，预览 URL 随组件卸载释放。 */
 import { cn } from "@/lib/utils";
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowUp, ImagePlus, Square, Sparkles, X } from "lucide-react";
@@ -33,11 +33,12 @@ function ReferenceImage({ file }: { file: File }) {
   );
 }
 
-/** 发送、图片和停止操作由工作区的统一任务锁控制。 */
+/** 发送、图片和停止操作由工作区的统一任务锁控制；disabledReason 说明锁定原因与恢复时机。 */
 interface Props {
   messages: ChatMessage[];
   busy: boolean;
   disabled: boolean;
+  disabledReason?: string;
   canStop: boolean;
   first: boolean;
   onSend: (text: string, image?: File, durationInFrames?: number) => void;
@@ -62,6 +63,7 @@ export function ChatPanel({
   messages,
   busy,
   disabled,
+  disabledReason,
   canStop,
   first,
   onSend,
@@ -98,9 +100,9 @@ export function ChatPanel({
     if (versionId && (message.role === "assistant" || !anchors.has(versionId)))
       anchors.set(versionId, message.id);
   }
-  /** 选择与拖放共用的参考图校验；仅首次请求可附图，不合规时显示错误并保留原图。 */
+  /** 选择、拖放与粘贴共用的参考图校验；锁定时不附图（输入区下方常驻锁定原因），不合规时显示错误并保留原图。 */
   function attach(file: File | undefined) {
-    if (disabled || !first || !file) return;
+    if (disabled || !file) return;
     if (
       !["image/png", "image/jpeg", "image/webp"].includes(file.type) ||
       file.size > 10 * 1024 * 1024
@@ -185,7 +187,7 @@ export function ChatPanel({
             </div>
             <h2 className="text-lg font-semibold"><FlipText loop={false} duration={1.6}>把想法变成字效</FlipText></h2>
             <p className="max-w-72 leading-6 text-muted-foreground">
-              描述文字、颜色、位置和出场方式，也可以上传一张参考图片。
+              描述文字、颜色、位置和出场方式，也可以上传、拖入或粘贴参考图片。
             </p>
             <button
               type="button"
@@ -281,7 +283,7 @@ export function ChatPanel({
         )}
         <div ref={end} />
       </div>
-      {/* 输入区接受拖入参考图：始终阻止浏览器默认打开文件，避免离开应用；仅首次请求且未锁定时附图并显示遮罩。 */}
+      {/* 输入区接受拖入或粘贴参考图：拖放始终阻止浏览器默认打开文件，避免离开应用；未锁定时附图并显示遮罩。粘贴只截获图片，文字照常输入。 */}
       <form
         className={cn(
           "relative m-4 mt-0 rounded-xl border bg-background p-3 transition-colors",
@@ -293,7 +295,7 @@ export function ChatPanel({
         }}
         onDragOver={(event) => {
           event.preventDefault();
-          setDragging(!disabled && first);
+          setDragging(!disabled);
         }}
         onDragLeave={(event) => {
           if (!event.currentTarget.contains(event.relatedTarget as Node | null))
@@ -303,6 +305,14 @@ export function ChatPanel({
           event.preventDefault();
           setDragging(false);
           attach(event.dataTransfer.files[0]);
+        }}
+        onPaste={(event) => {
+          const file = Array.from(event.clipboardData.items)
+            .find((item) => item.kind === "file" && item.type.startsWith("image/"))
+            ?.getAsFile();
+          if (!file) return;
+          event.preventDefault();
+          attach(file);
         }}
       >
         <AnimatePresence>
@@ -371,11 +381,14 @@ export function ChatPanel({
             {error}
           </motion.p>
         )}
+        {disabled && disabledReason && (
+          <p className="pt-2 text-xs text-muted-foreground">{disabledReason}</p>
+        )}
         {/* 窄聊天栏放不下时整行换行，发送按钮靠右另起一行，不被外层 overflow-hidden 裁掉。 */}
         <div className="mt-2 flex flex-wrap items-center justify-between gap-x-1 gap-y-2">
           <input
             ref={picker}
-            disabled={!first || disabled}
+            disabled={disabled}
             type="file"
             accept="image/png,image/jpeg,image/webp"
             className="hidden"
@@ -391,7 +404,7 @@ export function ChatPanel({
               type="button"
               variant="ghost"
               size="sm"
-              disabled={!first || disabled}
+              disabled={disabled}
               onClick={() => picker.current?.click()}
             >
               <ImagePlus />
