@@ -32,7 +32,7 @@ uv run --locked server
 仓库根目录可执行 `uv run --locked --project server server`。首次模板请求自动创建缺失的 `templates` 表，不执行旧数据迁移；Remotion 已发布 Sprite 的 `remotion_sprites` 表在首次访问资产目录、发布，或保存含 Remotion 片段的模板时创建。
 应用启动后数据库暂时不可用时，模板接口返回 503，恢复后可重试；首页和用户示例接口本身不查询数据库。
 
-`uv run server` 与 `uv run python -m server` 均读取固定的 `server/.env` 中的 `PORT`，进程环境变量优先。未设置时默认 `20070`；端口须为 1～65535 的整数，空值、非整数或越界值会阻止启动。修改后重启服务。停止服务时最多等待 10 秒收尾，仍未结束的连接（如作品 SSE）随后被断开，旧进程退出后字效运行锁即释放，新进程可直接接管。
+`uv run server` 与 `uv run python -m server` 均读取固定的 `server/.env` 中的 `PORT`，进程环境变量优先。未设置时默认 `20070`；端口须为 1～65535 的整数，空值、非整数或越界值会阻止启动。修改后重启服务。停止服务时最多等待 10 秒收尾，仍未结束的连接（如作品 SSE）随后被断开，旧进程退出后不再运行字效任务队列与清理，新进程可直接接管。
 客户端 API 地址同样默认 `http://localhost:20070`；若 `client/.env` 已配置其他 `VITE_API_URL`，需同步修改并重启前端（生产环境重新构建）。
 
 ```sh
