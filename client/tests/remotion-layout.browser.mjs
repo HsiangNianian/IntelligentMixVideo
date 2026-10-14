@@ -1,4 +1,7 @@
-/** 浏览器布局回归：模拟 API 和 iframe 协议，验证真实 CSS、指针/键盘分栏、持久化与窄屏交互；执行 bun run test:remotion-browser。 */
+/**
+ * 浏览器布局回归：模拟 API（创建、SSE 事件与送达确认）和 iframe 协议，验证真实 CSS、指针/键盘分栏、持久化与窄屏交互；
+ * 会话历史只在页面内存的本地库里，由 SSE 事件写入。执行 bun run test:remotion-browser。
+ */
 import { chromium } from "playwright-core";
 import { remotionVersion } from "./remotion-fixtures.ts";
 import assert from "node:assert/strict";
@@ -36,97 +39,72 @@ try {
   await page.route("**/template", (route) => route.fulfill({ status: 503 }));
   const errors = [];
   let deleted = false;
+  let creates = 0;
   let diagnosticRequests = 0;
   page.on("pageerror", (e) => errors.push(e.message));
+  const loopRounds = [
+    { layer: "outer", turn: 1, calls: [], error_code: "MODEL_CONTRACT_FAILED" },
+    { layer: "executor", turn: 2, calls: [{ tool: "sprite.compose", status: "fail", error_code: "COMPOSITION_FAILED", message: "组合生成失败。" }] },
+  ];
+  const jobs = versions.map((v, i) => ({
+    id: `job-${i + 1}`,
+    project_id: "work-1",
+    status: "succeeded",
+    result_version_id: v.id,
+    questions: [],
+    message: null,
+    parameters: null,
+    created_at: "2026-09-17T06:00:00Z",
+    updated_at: "2026-09-17T06:01:00Z",
+  }));
+  /** 一条用户或助手消息事件的载荷。 */
+  const message = (n, job, role, text) => ({ id: `m${n}`, sequence: n, job_id: job.id, role, text, created_at: job.updated_at });
+  // 会话历史只在客户端本地：浏览器版本地库在页面内存里，由创建作品后 SSE 送达的事件写入（两轮成功任务、四条消息与循环记录）。
+  const history = [
+    ["message.created", message(1, jobs[0], "user", "做一个简洁的居中标题，淡入出现。")],
+    ["job.updated", jobs[0]],
+    ...loopRounds.map((round) => ["job.round", { job_id: "job-1", round }]),
+    ["version.ready", { version_id: "version-1", job_id: "job-1" }],
+    ["message.created", message(2, jobs[0], "assistant", "标题已完成。可以预览效果，或者继续调整。")],
+    ["message.created", message(3, jobs[1], "user", "改成「让灵感发光」，暖金色，加一条下划线。")],
+    ["job.updated", jobs[1]],
+    ...loopRounds.map((round) => ["job.round", { job_id: "job-2", round }]),
+    ["version.ready", { version_id: "version-2", job_id: "job-2" }],
+    ["message.created", message(4, jobs[1], "assistant", "已更新暖金色标题和下划线，保留淡入动画。")],
+  ].map(([type, data], index) => ({ id: index + 1, work_id: "work-1", created_at: "2026-09-17T06:01:00Z", type, data }));
   await page.route("**/api/templates/**", async (route) => {
     const req = route.request();
     const url = new URL(req.url());
     const path = url.pathname.replace("/api/templates", "");
-    /** 返回确定的公开数据，仅允许本测试明确执行的会话删除，不连接真实服务。 */
+    /** 返回确定的公开数据，仅允许本测试明确执行的创建、送达确认与会话删除，不连接真实服务。 */
     const json = (body) => route.fulfill({ json: body });
     if (req.method() === "DELETE" && path === "/works/work-1") {
       deleted = true;
       return route.fulfill({ status: 204 });
     }
-    assert.equal(req.method(), "GET");
-    const jobs = versions.map((v, i) => ({
-      id: `job-${i + 1}`,
-      project_id: "work-1",
-      status: "succeeded",
-      result_version_id: v.id,
-      questions: [],
-      message: null,
-      parameters: null,
-      created_at: "2026-09-17T06:00:00Z",
-      updated_at: "2026-09-17T06:01:00Z",
-      rounds: [
-        { layer: "outer", turn: 1, calls: [], error_code: "MODEL_CONTRACT_FAILED" },
-        { layer: "executor", turn: 2, calls: [{ tool: "sprite.compose", status: "fail", error_code: "COMPOSITION_FAILED", message: "组合生成失败。" }] },
-      ],
-    }));
+    if (req.method() === "POST" && path === "/works") {
+      creates++;
+      deleted = false;
+      return json({
+        work: { id: "work-1", current_version_id: null, created_at: "2026-09-17T06:00:00Z", request: { description: "温暖的电影标题" } },
+        job: { ...jobs[0], status: "running", result_version_id: null },
+      });
+    }
+    if (req.method() === "POST" && path === "/works/work-1/ack")
+      return route.fulfill({ status: 204 });
+    assert.equal(req.method(), "GET", `${req.method()} ${path}`);
     if (path === "/capabilities") return json({ models_configured: true });
-    if (path === "/works")
-      return json({
-        items: deleted
-          ? []
-          : [
-              {
-                id: "work-1",
-                title: "温暖的电影标题",
-                updated_at: "2026-09-17T06:01:00Z",
-                current_version_id: "version-2",
-                job: jobs[1],
-              },
-            ],
-        next_cursor: null,
-      });
-    if (path.endsWith("/session"))
-      return json({
-        work: { id: "work-1", current_version_id: "version-2" },
-        job: jobs[1],
-        jobs,
-        messages: [
-          {
-            id: "m1",
-            sequence: 1,
-            job_id: "job-1",
-            role: "user",
-            text: "做一个简洁的居中标题，淡入出现。",
-            created_at: jobs[0].created_at,
-          },
-          {
-            id: "m2",
-            sequence: 2,
-            job_id: "job-1",
-            role: "assistant",
-            text: "标题已完成。可以预览效果，或者继续调整。",
-            created_at: jobs[0].updated_at,
-          },
-          {
-            id: "m3",
-            sequence: 3,
-            job_id: "job-2",
-            role: "user",
-            text: "改成「让灵感发光」，暖金色，加一条下划线。",
-            created_at: jobs[1].created_at,
-          },
-          {
-            id: "m4",
-            sequence: 4,
-            job_id: "job-2",
-            role: "assistant",
-            text: "已更新暖金色标题和下划线，保留淡入动画。",
-            created_at: jobs[1].updated_at,
-          },
-        ],
-        cursor: 0,
-        next_before: null,
-      });
-    if (path.endsWith("/stream"))
+    if (path.endsWith("/events")) return json([]);
+    if (path.endsWith("/stream")) {
+      const after = Number(url.searchParams.get("after"));
       return route.fulfill({
         contentType: "text/event-stream",
-        body: ": connected\n\n",
+        body: ": connected\n\n" + history
+          .filter((event) => event.id > after)
+          .map((event) => `id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+          .join(""),
       });
+    }
     if (path.endsWith("/versions")) return json(versions);
     if (/\/versions\/[^/]+$/.test(path))
       return json(versions.find((v) => path.endsWith(v.id)));
@@ -146,10 +124,16 @@ try {
       return route.fulfill({ contentType: "text/html", body: preview });
     return route.fulfill({ status: 404 });
   });
+  /** 浏览器版会话只在页面内存：从空白聊天发送首条消息创建作品，等 SSE 把历史写入本地并恢复到最新版本。 */
+  async function createWork() {
+    await page.getByLabel("字效描述").fill("做一个简洁的居中标题，淡入出现。");
+    await page.getByRole("button", { name: "发送", exact: true }).click();
+    await page.getByRole("button", { name: /温暖的电影标题/ }).first().waitFor();
+    await page.getByRole("button", { name: "预览 V2", exact: true }).waitFor();
+  }
   await page.goto(url);
   await page.getByRole("tab", { name: "Remotion 字效", exact: true }).click();
-  await page.getByRole("button", { name: /温暖的电影标题/ }).click();
-  await page.getByRole("button", { name: "预览 V2", exact: true }).waitFor();
+  await createWork();
   await page
     .getByText("正在渲染预览…", { exact: true })
     .waitFor({ state: "hidden" });
@@ -229,7 +213,11 @@ try {
   assert(pref);
   await page.reload();
   await page.getByRole("tab", { name: "Remotion 字效", exact: true }).click();
-  await page.getByRole("button", { name: "预览 V2", exact: true }).waitFor();
+  // 刷新清空了浏览器内存会话库：记住的会话静默清除，不提示删除；重新创建后继续验证。
+  await page.getByText("还没有聊天会话").first().waitFor();
+  assert.equal(await page.getByText(/会话已删除或正在清理/).count(), 0);
+  await createWork();
+  assert.equal(creates, 2);
   assert.equal(
     await page.evaluate(() => localStorage.getItem("imv.remotion.layout")),
     pref,
@@ -370,13 +358,13 @@ try {
   await page.getByRole("tab", { name: "聊天", exact: true }).click();
   await page.getByRole("heading", { name: "把想法变成字效" }).waitFor();
   // 新会话的时长选择与自定义输入加宽了工具栏：窄屏与三栏桌面下发送按钮都须留在输入框内，不被裁掉。
-  await page.getByRole("combobox", { name: "字效时长" }).click();
+  await page.getByRole("combobox", { name: "预览时长" }).click();
   await page.getByRole("option", { name: "自定义", exact: true }).click();
   // Chrome 把「-」这类无法解析的数字输入报告为空值；必须显示错误，而不是只把发送按钮变灰。
-  await page.getByLabel("自定义时长（秒）").press("-");
-  assert.equal(await page.getByLabel("自定义时长（秒）").inputValue(), "");
+  await page.getByLabel("自定义预览时长（秒）").press("-");
+  assert.equal(await page.getByLabel("自定义预览时长（秒）").inputValue(), "");
   await page.getByRole("alert").filter({ hasText: "请输入不超过 30 秒、至少 1 帧的时长" }).waitFor();
-  await page.getByLabel("自定义时长（秒）").fill("99");
+  await page.getByLabel("自定义预览时长（秒）").fill("99");
   for (const width of [390, 375, 1024]) {
     await page.setViewportSize({ width, height: 844 });
     const box = await page.evaluate(() => {

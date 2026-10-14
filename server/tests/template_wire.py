@@ -38,5 +38,8 @@ def detail_template(response: Response) -> dict:
 
 
 def listed_templates(response: Response) -> list[dict]:
-    """解码列表响应中的全部模板记录。"""
-    return [template_data(item) for item in pb.ListTemplatesResponse.FromString(response.content).templates]
+    """解码列表响应中的模板摘要（列表只返回摘要，不含轨道），保留 proto 字段名。"""
+    return [
+        MessageToDict(item, preserving_proto_field_name=True)
+        for item in pb.ListTemplatesResponse.FromString(response.content).templates
+    ]

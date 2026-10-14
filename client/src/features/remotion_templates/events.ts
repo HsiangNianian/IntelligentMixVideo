@@ -1,9 +1,7 @@
-/** SSE 传输只读取公开事件；支持分块 UTF-8、心跳与中断，由会话协调重连和游标。 */
+/** SSE 传输只读取尚未送达的公开事件；支持分块 UTF-8、心跳与中断，由会话协调重连、本地写入和送达确认。 */
 import { ApiError, apiUrl } from "./api";
+import { deviceId } from "./localSessions";
 import type { WorkEvent } from "./model";
-
-/** 服务端拒绝旧游标时必须重取快照，不能不断重试失效的事件编号。 */
-export class StreamReset extends Error {}
 
 /** 消费标准 SSE 字段；每次调用只建立一条连接，退出时清理 reader、超时与监听。 */
 export async function* events(
@@ -31,14 +29,13 @@ export async function* events(
         signal: controller.signal,
         headers: {
           Accept: "text/event-stream",
+          "X-IMV-Device": await deviceId(),
           ...(after ? { "Last-Event-ID": String(after) } : {}),
         },
       },
     );
     if (response.status === 404 || response.status === 410)
       throw new ApiError(response.status, "会话已删除或正在清理。");
-    if (response.status === 409)
-      throw new StreamReset("会话游标已变化，正在恢复历史。");
     if (
       !response.ok ||
       !response.body ||

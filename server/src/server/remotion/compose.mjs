@@ -28,7 +28,7 @@ const entry = [
   ...modules.map((_, index) => `import Preset${index} from "imv:preset/${index}";`),
   `const __defaults = ${JSON.stringify(input.defaults ?? {})};`,
   `const __merge = (base, patch) => { if (patch === undefined || patch === null || typeof patch !== "object" || Array.isArray(patch)) return patch === undefined ? base : patch; const result = {...base}; for (const [key, value] of Object.entries(patch)) result[key] = value && typeof value === "object" && !Array.isArray(value) && result[key] && typeof result[key] === "object" && !Array.isArray(result[key]) ? __merge(result[key], value) : value; return result; };`,
-  `export default function Sprite(inputProps = {}) { const props = __merge(__defaults, inputProps); const {durationInFrames: __total} = useVideoConfig(); const __t = [${instances.map((item) => `__span(${item.timing.start_frame}, ${item.timing.duration_frames}, __total)`).join(", ")}]; return <AbsoluteFill>${instances.map((item, index) => `<Sequence key={${JSON.stringify(item.instance_id)}} from={__t[${index}][0]} durationInFrames={__t[${index}][1]} width={${item.layout.width}} height={${item.layout.height}} style={{position:"absolute",left:${item.layout.x},top:${item.layout.y},width:${item.layout.width},height:${item.layout.height},zIndex:${item.layout.z_index},overflow:"hidden"}}><div data-imv-instance={${JSON.stringify(item.instance_id)}} style={{width:"100%",height:"100%"}}><Preset${modules.indexOf(item.code)} {...props[${JSON.stringify(item.instance_id)}]}${bound(item)} /></div></Sequence>`).join("")}</AbsoluteFill>; }`,
+  `export default function Sprite(inputProps = {}) { const props = __merge(__defaults, inputProps); const {durationInFrames: __total} = useVideoConfig(); const __t = [${instances.map((item) => `__span(${item.timing.start_frame}, ${item.timing.duration_frames}, __total)`).join(", ")}]; return <AbsoluteFill>${instances.map((item, index) => `<Sequence key={${JSON.stringify(item.instance_id)}} from={__t[${index}][0]} durationInFrames={__t[${index}][1]} width={${item.layout.width}} height={${item.layout.height}} style={{position:"absolute",left:${item.layout.x},top:${item.layout.y},width:${item.layout.width},height:${item.layout.height},zIndex:${item.layout.z_index}}}><div data-imv-instance={${JSON.stringify(item.instance_id)}} style={{width:"100%",height:"100%"}}><Preset${modules.indexOf(item.code)} {...props[${JSON.stringify(item.instance_id)}]}${bound(item)} /></div></Sequence>`).join("")}</AbsoluteFill>; }`,
 ].join("\n");
 
 const result = await build({
@@ -55,13 +55,39 @@ const result = await build({
 });
 const source = ts.createSourceFile("Sprite.tsx", result.outputFiles[0]?.text ?? "", ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 // esbuild erases types and rewrites the default export. Restore generated function
-// boundaries with the parser so defaults, destructuring and recursive helpers remain valid.
+// boundaries, variables and class members with the parser, so defaults, destructuring, recursive helpers and
+// declarations typed only by an erased annotation or type argument (`const hits: T[] = []`, `useState<T | null>(null)`,
+// `constructor(private size: number)`) remain valid.
 // Original Preset modules are independently typechecked before the generated adapter.
 const transformed = ts.transform(source, [(context) => {
+  /** True for a for-in/for-of binding, where a type annotation is a syntax error. */
+  function loopBinding(parent) {
+    return Boolean(parent && ts.isVariableDeclarationList(parent) && ts.isForInOrOfStatement(parent.parent));
+  }
   /** Normalize emitted JavaScript without running any Preset code. */
   function visit(node) {
+    const parent = node.parent;
     node = ts.visitEachChild(node, visit, context);
     const any = () => ts.factory.createKeywordTypeNode(ts.SyntaxKind.AnyKeyword);
+    if (ts.isVariableDeclaration(node) && !node.type && !loopBinding(parent)) {
+      return ts.factory.updateVariableDeclaration(node, node.name, node.exclamationToken, any(), node.initializer);
+    }
+    if (ts.isPropertyDeclaration(node) && !node.type) {
+      return ts.factory.updatePropertyDeclaration(node, node.modifiers, node.name, node.questionToken ?? node.exclamationToken, any(), node.initializer);
+    }
+    // Parameter properties and `declare` fields leave no member behind, only `this.size = size`.
+    // `extends React.Component<P, S>` loses its type arguments, so the base class is typed `any` too.
+    if (ts.isHeritageClause(node) && node.token === ts.SyntaxKind.ExtendsKeyword) {
+      return ts.factory.updateHeritageClause(node, node.types.map((base) => ts.factory.updateExpressionWithTypeArguments(base,
+        ts.factory.createParenthesizedExpression(ts.factory.createAsExpression(base.expression, any())), base.typeArguments)));
+    }
+    if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
+      const key = ts.factory.createParameterDeclaration(undefined, undefined, "key", undefined, ts.factory.createKeywordTypeNode(ts.SyntaxKind.StringKeyword));
+      const members = [ts.factory.createIndexSignature(undefined, [key], any()), ...node.members];
+      return ts.isClassDeclaration(node)
+        ? ts.factory.updateClassDeclaration(node, node.modifiers, node.name, node.typeParameters, node.heritageClauses, members)
+        : ts.factory.updateClassExpression(node, node.modifiers, node.name, node.typeParameters, node.heritageClauses, members);
+    }
     if (ts.isParameter(node)) {
       return ts.factory.updateParameterDeclaration(node, node.modifiers, node.dotDotDotToken, node.name, node.questionToken,
         node.dotDotDotToken ? ts.factory.createArrayTypeNode(any()) : any(), node.initializer);

@@ -1,13 +1,13 @@
-/** Remotion HTTP 客户端；请求有超时，写入不自动重试，模型凭据从客户端读取并仅随模型任务与能力查询发送。 */
+/** Remotion HTTP 客户端；请求有超时，写入不自动重试，每个请求携带本机设备 ID，模型凭据只随模型任务与能力查询发送。 */
 import type {
   Composition,
   DiagnosticsReport,
   Job,
-  SessionSnapshot,
   Values,
   Version,
-  WorkPage,
+  WorkEvent,
 } from "./model";
+import { deviceId } from "./localSessions";
 import { readSettings } from "@/features/settings/api";
 import { apiBase } from "@/lib/api-base";
 
@@ -51,10 +51,12 @@ async function request<T>(
   if (options.signal?.aborted) controller.abort();
   const timeout = window.setTimeout(abort, timeoutMs);
   try {
+    const device = await deviceId();
     const response = await fetch(apiUrl(path), {
       ...options,
       signal: controller.signal,
       headers: {
+        "X-IMV-Device": device,
         ...(typeof options.body === "string"
           ? { "Content-Type": "application/json" }
           : {}),
@@ -124,23 +126,27 @@ export function upload(
 /** 首次发送才创建作品；尚未收到 ID 的请求不自动重试。 */
 export function create(
   description: string,
-  asset?: string,
+  assets: string[] = [],
   composition?: Composition,
-): Promise<{ work: { id: string }; job: Job }> {
+): Promise<{
+  work: { id: string; current_version_id: string | null; created_at: string; request: { description?: string | null } };
+  job: Job;
+}> {
   return modelRequest("/works", {
     method: "POST",
     body: JSON.stringify({
       ...(description.trim() ? { description: description.trim() } : {}),
-      ...(asset ? { image: { asset_id: asset } } : {}),
+      ...(assets.length ? { images: assets.map((asset_id) => ({ asset_id })) } : {}),
       ...(composition ? { composition } : {}),
     }),
   });
 }
-/** 自然语言修改、澄清和参数共用同一端点，显式绑定成功版本或问题任务。 */
+/** 自然语言修改（文字和／或参考图）、澄清和参数共用同一端点，显式绑定成功版本或问题任务。 */
 export function message(
   work: string,
   body: {
     instruction?: string;
+    images?: { asset_id: string }[];
     parameters?: Values;
     base_version_id?: string;
     reply_to_job_id?: string;
@@ -178,6 +184,12 @@ export function versions(
 ): Promise<Version[]> {
   return request(`/works/${encodeURIComponent(work)}/versions`, { signal });
 }
+/** 读取任务当前状态；本机还停在运行中而服务端已无事件可送时，用它校正本地状态。 */
+export function job(id: string, signal?: AbortSignal): Promise<Job> {
+  return request(`/jobs/${encodeURIComponent(id)}`, { signal });
+}
+
+
 /** 取消可重复调用；不删除之前的成功版本。 */
 export function cancel(id: string): Promise<Job> {
   return request(`/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" });
@@ -189,26 +201,23 @@ export function retry(id: string): Promise<Job> {
   });
 }
 
-/** 获取历史列表；每页只含轻量会话元数据。 */
-export function history(
-  cursor?: string,
+/** 读取一页编号大于 after 的待送达公开事件（升序，可能少于全部）；后台同步据此补齐未在 SSE 中打开的会话。 */
+export function workEvents(
+  work: string,
+  after: number,
   signal?: AbortSignal,
-): Promise<WorkPage> {
-  return request(
-    `/works?history=true${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
-    { signal },
-  );
+): Promise<WorkEvent[]> {
+  return request(`/works/${encodeURIComponent(work)}/events?after=${after}`, {
+    signal,
+  });
 }
-/** 恢复公开历史及订阅游标；before 仅用于加载更早消息。 */
-export function session(
-  id: string,
-  signal?: AbortSignal,
-  before?: number,
-): Promise<SessionSnapshot> {
-  return request(
-    `/works/${encodeURIComponent(id)}/session${before ? `?before=${before}` : ""}`,
-    { signal },
-  );
+
+/** 本地写入事件后确认送达；服务端删除该编号及之前的事件，不影响任务。 */
+export function ack(work: string, cursor: number): Promise<void> {
+  return request(`/works/${encodeURIComponent(work)}/ack`, {
+    method: "POST",
+    body: JSON.stringify({ cursor }),
+  });
 }
 
 /** 整条删除由服务端停止任务并清理数据；写入失败不自动重发。 */

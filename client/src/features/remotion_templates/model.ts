@@ -151,16 +151,18 @@ export interface Job {
   message: string | null;
 }
 /** 公开历史消息；提交中的图片暂用 File，持久消息使用服务端素材 ID。 */
+/** 每条消息最多附带的参考图数量，与服务端契约一致。 */
+export const MAX_MESSAGE_IMAGES = 4;
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   text: string;
-  image?: File;
+  images?: File[];
   sequence?: number;
   job_id?: string;
-  image_asset_id?: string | null;
+  image_asset_ids?: string[];
   created_at?: string;
-  reconstructed?: boolean;
 }
 
 /** 稳定比较完整参数快照，避免依赖对象属性插入顺序。 */
@@ -328,7 +330,7 @@ export interface ProgressStep {
   ended_at: string | null;
   status: "active" | "done" | "stopped";
 }
-/** 历史列表只加载标题、活动时间和当前任务，不加载代码。 */
+/** 历史列表只加载标题、活动时间和当前任务，不加载代码；`deleting` 表示服务端已报告删除或正在清理。 */
 export interface WorkSummary {
   deleting?: boolean;
   id: string;
@@ -336,11 +338,6 @@ export interface WorkSummary {
   updated_at: string;
   current_version_id: string | null;
   job: SessionJob;
-}
-/** 最近活动分页使用服务端游标，避免偏移分页重复记录。 */
-export interface WorkPage {
-  items: WorkSummary[];
-  next_cursor: string | null;
 }
 /** 单一读取快照提供消息分页、成功版本指针及后续订阅起点。 */
 export interface SessionSnapshot {

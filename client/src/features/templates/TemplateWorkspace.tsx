@@ -44,9 +44,11 @@ function WorkspaceColumns({ assets, canvas, inspector }: { assets: ReactNode; ca
 }
 
 /** 只有成功读取或明确放弃时才替换草稿；保存始终使用当前模板的环境和 ID。 */
-export function TemplateWorkspace({ selection = null, onHome }: {
+export function TemplateWorkspace({ selection = null, onHome, onOpenRemotion }: {
   selection?: TemplateSelection | null;
   onHome: () => void;
+  /** 回到字效工作区修改资产本身（颜色、动画等不在模板里调整的参数）。 */
+  onOpenRemotion?: () => void;
 }) {
   const [environment, setEnvironment] = useState<api.Environment>("cloud");
   const [current, setCurrent] = useState<Template | null>(null);
@@ -112,7 +114,11 @@ export function TemplateWorkspace({ selection = null, onHome }: {
   const assetTrack = selectedTrack ?? draft?.tracks.find((track) => track.id === lastTextTrack.current);
   const selectedDraft = draft && selectedTrack ? trackDraft(draft, selectedTrack) : null;
   // IMS 对象与 Remotion 片段共用一个选中状态，右栏只显示其中一种设置。
-  const selectedClip = draft?.clips.find((clip) => clip.id === target && clip.transition_boundary !== undefined) ?? timedClips?.find((clip) => clip.id === target);
+  // 文字被 Remotion 字效接管后，选中该文字对象就是选中字效：右栏、时间轴与预览都以字效为准，IMS 面板不再混用。
+  const replacingClip = draft?.tracks.find((track) => track.id === target && isTextTarget(track.target))?.target;
+  const effectiveTarget = (replacingClip && draft?.clips.find((clip) => clip.text_target === replacingClip)?.id) ?? target;
+  const selectedClip = draft?.clips.find((clip) => clip.id === effectiveTarget && clip.transition_boundary !== undefined) ?? timedClips?.find((clip) => clip.id === effectiveTarget);
+  const clipText = selectedClip?.text_target ? draft?.tracks.find((track) => track.target === selectedClip.text_target) : undefined;
 
   useEffect(() => {
     mounted.current = true;
@@ -281,15 +287,22 @@ export function TemplateWorkspace({ selection = null, onHome }: {
                   if (isTextTarget(added.target)) { setTextTarget(added.target); lastTextTrack.current = added.id; }
                   return result.draft;
                 }, true)} />
-                <SpriteCatalog environment={environment} catalog={spriteCatalog} onAdd={(asset) => editTrack(() => addClip(draft, asset, spriteCatalog.assets ?? [], textTarget), true)} />
+                <SpriteCatalog environment={environment} catalog={spriteCatalog} placed={new Set(draft.clips.map((clip) => clip.sprite_id))} onAdd={(asset) => editTrack(() => addClip(draft, asset, spriteCatalog.assets ?? [], textTarget), true)} />
               </aside>}
               canvas={<main className="template-workspace-canvas h-full min-w-0 overflow-y-auto border-b xl:border-b-0">
-                <TemplatePreview draft={previewDraft!} media={media} resolved={preview.timeline} mediaError={mediaError || preview.error} onRetryMedia={() => setMediaAttempt((value) => value + 1)} onMediaChange={(next) => { setMedia(next); setMediaError(""); }} videoInputKey={`${environment}:${current?.template_id ?? draft.name}`} onCatalog={setCatalog} selectedId={target} selectionTargets={previewSelection?.targets} onSelect={(id) => { selectTarget(previewSelection?.targets.get(id) ?? id); }} sprites={spriteClips} onSpriteMove={(id, x, y) => editTrack(() => setClipTransform(draft, previewSelection?.targets.get(id) ?? id, { x, y }))}
+                <TemplatePreview draft={previewDraft!} media={media} resolved={preview.timeline} mediaError={mediaError || preview.error} onRetryMedia={() => setMediaAttempt((value) => value + 1)} onMediaChange={(next) => { setMedia(next); setMediaError(""); }} videoInputKey={`${environment}:${current?.template_id ?? draft.name}`} onCatalog={setCatalog} selectedId={effectiveTarget} selectionTargets={previewSelection?.targets} onSelect={(id) => { selectTarget(previewSelection?.targets.get(id) ?? id); }} sprites={spriteClips} onSpriteMove={(id, x, y) => editTrack(() => setClipTransform(draft, previewSelection?.targets.get(id) ?? id, { x, y }))}
                 />
               </main>}
               inspector={<aside className="template-workspace-inspector relative h-full min-w-0 overflow-y-auto xl:border-l"><AppliedEffects draft={draft} catalog={catalog} resolved={preview.timeline} selected={target} onSelect={selectTarget} />
                 <SpriteClips environment={environment} clips={timedClips ?? []} catalog={spriteCatalog} duration={preview.timeline?.duration} hidden={hiddenClips} selected={selectedClip?.id ?? null} onSelect={selectTarget} onRemove={(id) => editTrack(() => removeClip(draft, id))} />
                 {selectedClip && <SpriteClipInspector key={selectedClip.id} clip={selectedClip} asset={spriteCatalog.assets?.find((item) => item.id === selectedClip.sprite_id)} duration={preview.timeline?.duration}
+                  textTrack={clipText} textResolved={clipText && preview.timeline?.tracks[clipText.id]} onOpenRemotion={onOpenRemotion}
+                  onSample={(value) => clipText && editTrack(() => {
+                    const role = clipText.target as "title" | "subtitle";
+                    const edit = trackDraft(draft, clipText);
+                    return updateTrack(draft, clipText.id, { ...edit, editor: { ...edit.editor, [role]: value, ...(role === "title" ? { titleKeyword: "" } : {}) } });
+                  })}
+                  onTextTiming={(timing) => clipText && editTrack(() => setTrackTiming(draft, clipText.id, timing))}
                   onParameter={(key, value) => editTrack(() => setClipParameter(draft, selectedClip.id, key, value))}
                   onTransform={(patch) => editTrack(() => setClipTransform(draft, selectedClip.id, patch))}
                   onStart={(start) => editTrack(() => moveClip(draft, selectedClip.id, start))}
@@ -322,7 +335,7 @@ export function TemplateWorkspace({ selection = null, onHome }: {
                   onMode={(mode) => { setTransitionRandom([Math.random(), Math.random()]); editTrack(() => ({ ...draft, transition_mode: mode })); }}
                   onEnabled={(enabled) => editTrack(() => ({ ...draft, transition_enabled: enabled }))}
                   onSelect={selectTarget} />}
-                {selectedTrack && selectedTrack.target !== "transition" && <TemplateInspector track={selectedTrack} draft={selectedDraft!} catalog={catalog} duration={previewLength} resolved={preview.timeline?.tracks[selectedTrack.id]} tab={inspectorTab} onTabChange={setInspectorTab} onTimingChange={(timing) => editTrack(() => setTrackTiming(draft, selectedTrack.id, timing))} onEffectChange={(next) => editTrack(() => updateTrack(draft, selectedTrack.id, next))} onRemove={() => editTrack(() => removeTrack(draft, selectedTrack.id))} onClose={() => setTarget(null)} />}
+                {selectedTrack && !selectedClip && selectedTrack.target !== "transition" && <TemplateInspector track={selectedTrack} draft={selectedDraft!} catalog={catalog} duration={previewLength} resolved={preview.timeline?.tracks[selectedTrack.id]} tab={inspectorTab} onTabChange={setInspectorTab} onTimingChange={(timing) => editTrack(() => setTrackTiming(draft, selectedTrack.id, timing))} onEffectChange={(next) => editTrack(() => updateTrack(draft, selectedTrack.id, next))} onRemove={() => editTrack(() => removeTrack(draft, selectedTrack.id))} onClose={() => setTarget(null)} />}
               </aside>}
             />
           </fieldset>

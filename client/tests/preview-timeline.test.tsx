@@ -128,3 +128,24 @@ test("Remotion 资产按所占对象并入时间轴行", () => {
   expect([...screen.getByLabelText("时间轴轨道标签").querySelectorAll("[data-object]")].map((label) => label.textContent))
     .toEqual(["顶部标题", "底部字幕", "镜头转场", "画面特效", "视频滤镜", "Remotion 资产", "视频", "视频", "视频"]);
 });
+
+// 场景：全部转场共用一行，滤镜按时间重叠情况分行；标题行使用字效 ID，点击时间轴可以选中字效。
+test("Remotion 片段与同类 IMS 对象共用一行，字效接管的文字行选中字效", () => {
+  const draft = newDraft();
+  draft.tracks.push({ id: "cut", target: "transition", transition_boundary: 1, duration: 2,
+    editor: trackEditor({ ...defaultEditor, transition: "transition/normal/directional" }, "transition") });
+  const clip = { spriteId: "s1", aspect: 9 / 16, length: 2 };
+  const rows = mergeSpriteRows(buildPreviewRows(buildTimeline(draft, readCatalog())), [
+    { ...clip, id: "remotion-cut", name: "闪白", slot: "transition", boundary: 2, start: 18, end: 20 },
+    { ...clip, id: "overlap", name: "叠加转场", slot: "transition", boundary: 1, start: 9.5, end: 10.5 },
+    { ...clip, id: "text", name: "霓虹标题", slot: "title", start: 0, end: 5 },
+    { ...clip, id: "filter-first", name: "暖色", slot: "filter", start: 0, end: 5 },
+    { ...clip, id: "filter-next", name: "冷色", slot: "filter", start: 5, end: 10 },
+    { ...clip, id: "filter-overlap", name: "柔光", slot: "filter", start: 2, end: 4 },
+  ]);
+  const transitionRows = rows.filter((row) => row.actions[0].effectId === "transition");
+  expect(transitionRows.map((row) => row.actions.map((action) => action.id))).toEqual([["cut", "overlap", "remotion-cut"]]);
+  expect(rows.filter((row) => row.actions[0].effectId === "filter").map((row) => row.actions.map((action) => action.id)))
+    .toEqual([["filter-first", "filter-next"], ["filter-overlap"]]);
+  expect(rows.find((row) => row.actions[0].effectId === "title")!.actions[0]).toMatchObject({ id: "text", targetId: "text", effectName: "Remotion · 霓虹标题" });
+});

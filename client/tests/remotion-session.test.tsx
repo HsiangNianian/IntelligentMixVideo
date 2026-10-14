@@ -1,13 +1,14 @@
 /** Remotion 会话核心测试：独立验证成功结果、参数互斥与失败恢复；执行 bun run test。 */
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { StrictMode } from "react";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { useTemplateSession } from "@/features/remotion_templates/useTemplateSession";
 import type { Values } from "@/features/remotion_templates/model";
 import { fetchMock } from "./setup";
-import { remotionServer } from "./remotion-server";
+import { remotionServer, seed } from "./remotion-server";
 import { remotionJob } from "./remotion-fixtures";
 import * as api from "@/features/remotion_templates/api";
+import * as local from "@/features/remotion_templates/localSessions";
 
 /** 仅提供核心请求需要的响应；记录实际 HTTP 载荷并阻止真实网络。 */
 function responses(
@@ -25,7 +26,7 @@ function responses(
 // 开发模式重新挂载 effect 后仍恢复历史及 SSE，同会话点击不能让恢复停留在加载状态。
 test("StrictMode 恢复已选择会话并清理重建的订阅", async () => {
   const fake = remotionServer();
-  await api.create("已有模板");
+  await seed("已有模板");
   localStorage.setItem(`imv.remotion.selected:${api.apiUrl("")}`, "work-1");
   const { result, unmount } = renderHook(() => useTemplateSession(() => {}), {
     wrapper: StrictMode,
@@ -131,7 +132,7 @@ test("快照产物失败不阻塞 SSE 与断线续传", async () => {
       result.current.messages.some((m) => m.text === "后续事件已到达"),
     ).toBe(true),
   );
-  const cursor = fake.records.at(-1)!.id;
+  const cursor = fake.emitted.at(-1)!.id;
   await act(async () => {
     for (const stream of fake.streams)
       stream.controller.error(new TypeError("offline"));
@@ -150,7 +151,7 @@ test("快照产物失败不阻塞 SSE 与断线续传", async () => {
   expect(result.current.error).toContain("新版本读取失败");
   expect(result.current.busy).toBeNull();
   expect(
-    fetchMock.mock.calls.filter((call) => call[1]?.method === "POST"),
+    fetchMock.mock.calls.filter((call) => call[1]?.method === "POST" && !String(call[0]).endsWith("/ack")),
   ).toHaveLength(1);
   unmount();
   expect(fake.streams.size).toBe(0);
@@ -158,13 +159,17 @@ test("快照产物失败不阻塞 SSE 与断线续传", async () => {
 
 // 同一轮直接调用 hook 也必须阻止恢复与待提交参数竞争，不能只依赖按钮 disabled。
 test("hook 在参数待提交及读取期间拒绝重复恢复", async () => {
-  let release: ((response: Response) => void) | undefined;
+  let release: (() => void) | undefined;
   let holdRead = false;
+  const real = local.snapshot;
+  const snapshots = spyOn(local, "snapshot").mockImplementation((work, before) =>
+    holdRead
+      ? new Promise((resolve) => {
+          release = () => resolve(real(work, before));
+        })
+      : real(work, before),
+  );
   const fake = remotionServer((path) => {
-    if (holdRead && path.endsWith("/session"))
-      return new Promise((resolve) => {
-        release = resolve;
-      });
     if (path.endsWith("/messages")) return new Response(null, { status: 503 });
     if (path.includes("version-2") && path.endsWith("/artifacts/Export.tsx"))
       return new Response(null, { status: 404 });
@@ -175,9 +180,8 @@ test("hook 在参数待提交及读取期间拒绝重复恢复", async () => {
   await waitFor(() => expect(fake.streams.size).toBe(1));
   await act(async () => fake.advance(remotionJob("succeeded", "version-2")));
   await waitFor(() => expect(result.current.retryMode).toBe("version"));
-  const reads = () =>
-    fetchMock.mock.calls.filter((call) => String(call[0]).endsWith("/session"))
-      .length;
+  /** 到目前为止从本地会话库读取快照的次数。 */
+  const reads = () => snapshots.mock.calls.length;
   const before = reads();
   act(() => {
     result.current.change("size", 80);
@@ -197,7 +201,7 @@ test("hook 在参数待提交及读取期间拒绝重复恢复", async () => {
   expect(reads()).toBe(before + 1);
   expect(result.current.loading).toBe(true);
   expect(result.current.values.size).toBe(80);
-  await act(async () => release!(Response.json(fake.snapshots.get("work-1"))));
+  await act(async () => release!());
   await waitFor(() => expect(result.current.loading).toBe(false));
 });
 
@@ -225,8 +229,8 @@ test.each([null, "work-2"])(
   "核心切换保护支持取消和放弃：%s",
   async (target) => {
     remotionServer();
-    await api.create("原会话");
-    await api.create("目标会话");
+    await seed("原会话");
+    await seed("目标会话");
     const { result } = renderHook(() => useTemplateSession(() => {}));
     act(() => result.current.select("work-1"));
     await waitFor(() => expect(result.current.version?.id).toBe("version-1"));
@@ -258,11 +262,13 @@ test.each([null, "work-2"])(
 test.each([null, "work-2"])(
   "保存成功后才切换，失败可继续编辑：%s",
   async (target) => {
+    // 每次提交都是新的任务 ID，与服务端一致。
+    let saves = 0;
     const fake = responses(() =>
-      Response.json({ ...remotionJob("running"), id: "saving" }),
+      Response.json({ ...remotionJob("running"), id: ++saves === 1 ? "saving" : "saving-2" }),
     );
-    await api.create("原会话");
-    await api.create("目标会话");
+    await seed("原会话");
+    await seed("目标会话");
     const { result } = renderHook(() => useTemplateSession(() => {}));
     act(() => result.current.select("work-1"));
     await waitFor(() => expect(result.current.version?.id).toBe("version-1"));
@@ -288,7 +294,7 @@ test.each([null, "work-2"])(
     await act(async () =>
       fake.advance({
         ...remotionJob("succeeded", "saved-version"),
-        id: "saving",
+        id: "saving-2",
       }),
     );
     await waitFor(() => expect(result.current.workId).toBe(target));

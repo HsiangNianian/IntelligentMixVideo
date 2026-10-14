@@ -371,6 +371,98 @@ def test_regexp_exec_is_ordinary_code_for_the_real_worker(tmp_path):
     assert [item["status"] for item in report["checks"]] == ["pass", "pass", "pass"]
 
 
+ERASED_TYPES_PRESET = """import React from "react";
+
+const NO_WORDS: string[] = [];
+
+export default function Tag(props: { label: string; words?: string[] }) {
+  const words = props.words ?? NO_WORDS;
+  const hits: string[] = [];
+  let first: string | null = null;
+  let last: string | undefined;
+  const counts: Record<string, number> = {};
+  let mode: string | null = "idle";
+  let { tone }: { tone: string | null } = { tone: "warm" };
+  const [active, setActive] = React.useState<string | null>(null);
+  const box = React.useRef<HTMLDivElement>(null);
+  const seen = new Set<string>();
+  for (const word of words) {
+    if (!props.label.includes(word)) continue;
+    hits.push(word);
+    first = first ?? word;
+    last = word;
+    counts[word] = (counts[word] ?? 0) + 1;
+    seen.add(word);
+  }
+  for (const word of seen) mode = word.toUpperCase();
+  if (hits.length === 0) { mode = null; tone = null; }
+  React.useEffect(() => { if (active === null && first) setActive(first); box.current?.scrollTo(0, 0); }, [active]);
+  const mark = (text: string) => (hits.includes(text) || text === first || text === last ? <b key={text}>{text}</b> : text);
+  return <div ref={box} data-mode={mode ?? tone ?? ""}>{props.label.split("").map(mark)}</div>;
+}
+"""
+
+
+def compose_and_validate(tmp_path: Path, code: str) -> tuple[dict, dict]:
+    """Compose one instance of a Preset, then return the real worker reports of the Preset and of the Sprite."""
+    properties = {"label": {"type": "string"}, "words": {"type": "array", "items": {"type": "string"}}}
+    preset = {
+        "code": code,
+        "parameter_schema": {"type": "object", "required": ["label"], "additionalProperties": False, "properties": properties},
+        "default_parameters": {"label": "abc"}, "description": "tag",
+    }
+    [item] = [{
+        "instance_id": "tag", "preset": preset, "parameters": {"label": "abc"},
+        "layout": {"x": 0, "y": 0, "width": 540, "height": 200, "z_index": 0}, "timing": {"start_frame": 0, "duration_frames": 30},
+    }]
+    sprite, schema, defaults = compose_source([item])
+    (tmp_path / "preset").mkdir()
+    (tmp_path / "sprite").mkdir()
+    return (
+        run_code_worker(tmp_path / "preset", code, properties, {"label": "abc"}),
+        run_code_worker(tmp_path / "sprite", sprite, schema["properties"], defaults),
+    )
+
+
+@needs_node
+def test_a_composed_sprite_keeps_erased_variable_types_valid_under_strict_typescript(tmp_path):
+    """任务 76be0e4a 的 sprite_create 连续三次被拒：合成打包擦掉类型注解与类型参数后，`const hits: string[] = []`、`Record<string, number>` 的 `{}`、字面量联合、解构以及 `useState<T | null>(null)`、`useRef<T>(null)`、`new Set<T>()` 都会在严格模式下报错；合成产物须与原 Preset 一样通过类型检查。"""
+    preset, sprite = compose_and_validate(tmp_path, ERASED_TYPES_PRESET)
+    assert preset["passed"] is True, preset["diagnostics"]
+    assert sprite["passed"] is True, sprite["diagnostics"]
+
+
+ERASED_CLASS_PRESET = """import React from "react";
+
+class Tally {
+  items: string[] = [];
+  last: string | null = null;
+  declare total: number;
+  constructor(private limit: number) {}
+  add(word: string) { if (this.items.length < this.limit) this.items.push(word); this.last = word; this.total = this.items.length; }
+}
+
+class Label extends React.Component<{ text: string }, { open: boolean }> {
+  state = { open: false };
+  render() { return <span data-open={String(this.state.open)}>{this.props.text}</span>; }
+}
+
+export default function Tag(props: { label: string; words?: string[] }) {
+  const tally = new Tally(3);
+  for (const word of props.words ?? []) tally.add(word);
+  return <Label text={`${props.label} ${tally.last ?? ""} ${tally.total}`} />;
+}
+"""
+
+
+@needs_node
+def test_a_composed_sprite_keeps_erased_class_member_types_valid_under_strict_typescript(tmp_path):
+    """合成打包会擦掉类字段注解、参数属性、`declare` 字段和 `React.Component<P, S>` 的类型参数，合成产物随之报 TS2339/TS2345/TS2322；它须与原 Preset 一样通过严格类型检查。"""
+    preset, sprite = compose_and_validate(tmp_path, ERASED_CLASS_PRESET)
+    assert preset["passed"] is True, preset["diagnostics"]
+    assert sprite["passed"] is True, sprite["diagnostics"]
+
+
 @needs_node
 def test_a_bare_exec_call_is_still_refused_and_located(tmp_path):
     """被禁止的 exec 仍然拒绝，并且诊断给出行列号与范围，模型可以直接定位。"""
@@ -804,6 +896,23 @@ export default function Title(props: { text: string; fontSize: number }) {
   );
 }
 """
+# 更早封存的组合 Sprite 的写法：每个实例放在按布局大小定位、overflow hidden 的盒子里（盒子的子元素带 data-imv-instance），内容自己没有固定框。
+SEALED_INSTANCE_BOX_TEXT = """import React from "react";
+import { AbsoluteFill } from "remotion";
+export default function Title(props: { text: string; fontSize: number }) {
+  return (
+    <AbsoluteFill>
+      <div style={{ position: "absolute", left: 80, top: 810, width: 920, height: 300, overflow: "hidden" }}>
+        <div data-imv-instance="title" style={{ width: "100%", height: "100%" }}>
+          <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
+            <div style={{ width: 920, textAlign: "center", fontSize: props.fontSize, lineHeight: 1.2, whiteSpace: "normal", wordBreak: "break-all", color: "#fff" }}>{props.text}</div>
+          </AbsoluteFill>
+        </div>
+      </div>
+    </AbsoluteFill>
+  );
+}
+"""
 # 与 FIXED_BOX_TEXT 同样的固定框，但用 overflow auto 或 contain: paint 裁切：视频里不会滚动，超出部分同样看不到。
 # 8 个 128px 的字（1024px）留在画布内，只被 972px 宽的框裁掉。
 SCROLL_BOX_TEXT = FIXED_BOX_TEXT.replace('overflow: "hidden"', 'overflow: "auto"')
@@ -852,8 +961,9 @@ def browser_text_validate(tmp_path: Path, code: str, max_length: int):
     (TYPEWRITER_TEXT, 100, True, ""),
     (SCROLL_BOX_TEXT, 8, False, "overflow auto"),
     (PAINT_CONTAINED_TEXT, 8, False, "contain: paint"),
+    (SEALED_INSTANCE_BOX_TEXT, 15, True, ""),
 ], ids=["fixed-box-clips-long-title", "wrapped-and-shrunk", "reveal-mask-only-early", "ignores-text", "sliced-text", "display-none", "one-span-per-glyph",
-        "line-height-1-mask", "clipped-until-scaled-out", "typewriter", "overflow-auto-box", "paint-contained-box"])
+        "line-height-1-mask", "clipped-until-scaled-out", "typewriter", "overflow-auto-box", "paint-contained-box", "sealed-instance-box"])
 def test_real_browser_requires_the_longest_text_to_be_shown_in_full(tmp_path, code, max_length, passed, reason):
     """issue #119：972x360 的 overflow hidden 固定框在 100 字标题下被裁切而被拒；按字数缩小字号并换行的写法、只在开头几帧被遮罩挡住的文字通过；
     不显示 text 的组件被拒。只渲染一段截断的文字、或文字在 display: none 里没有排版框，都不算完整显示；逐字拆成 span 的完整文字仍算。

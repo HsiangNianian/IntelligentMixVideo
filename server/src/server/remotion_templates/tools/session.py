@@ -6,7 +6,6 @@ import asyncio
 import hashlib
 import json
 from datetime import UTC, datetime
-from pathlib import Path
 from uuid import uuid4
 from .contracts import (
     CodeDiagnostic,
@@ -150,12 +149,7 @@ class ToolSession:
         # and keeps deriving its length from the instances.
         self.target_frames = None if spec else (request.get("composition") or {}).get("duration_in_frames")
         self.kind = spec.sprite_kind if spec else request.get("sprite_kind")
-        root = harness.settings.data_dir
-        if not root.is_absolute():
-            root = Path(__file__).parent.parent / root
-        self.catalog_root = root / "catalog"
-        self.catalog_root.mkdir(parents=True, exist_ok=True)
-        self.catalog = CatalogStore(self.catalog_root)
+        self.catalog = CatalogStore()
         self.latest_sprite_id: str | None = None
         self.saved_sprites: dict[str, SpriteRecord] = {}
         self.validation_reports: dict[str, RenderValidationReport] = {}
@@ -389,7 +383,7 @@ class ToolSession:
             created_at=datetime.now(UTC).isoformat(),
             **request.model_dump(mode="json", exclude_unset=True),
         )
-        # Presets persist to MySQL with a local fallback; the record is immutable once saved.
+        # Presets are shared by every device in MySQL; the record is immutable once saved.
         self.catalog_backend = await asyncio.to_thread(self.catalog.append_preset, record)
         return PresetCreateOutput(preset=record, validation=validation)
 
@@ -498,7 +492,6 @@ class ToolSession:
             created_at=datetime.now(UTC).isoformat(),
             **sprite.model_dump(mode="json", exclude_unset=True),
         )
-        await asyncio.to_thread(self.catalog.append_sprite, record)
         self.saved_sprites[record.sprite_id] = record
         self.latest_sprite_id = record.sprite_id
         return SpriteCreateOutput(sprite_id=record.sprite_id, created_at=record.created_at, composition=record.composition, validation=validation)

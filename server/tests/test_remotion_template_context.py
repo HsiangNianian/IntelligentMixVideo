@@ -293,6 +293,10 @@ def test_actor_receives_reference_images_outside_persistent_window(
         """检查真实 HTTP 消息，返回工具调用，不连接外部模型。"""
         body = json.loads(request.content)
         assert body["messages"][-2]["tool_call_id"] == "previous"
+        # 参考图按 user_intent.reference_images 的顺序与来源对应，不能被说成“原图之后是候选帧”。
+        mapping = body["messages"][-1]["content"][0]["text"]
+        assert "one-to-one and in order with user_intent.reference_images" in mapping
+        assert "clarification" in mapping and "original user references first" not in mapping
         assert body["messages"][-1]["content"][1]["image_url"]["url"].startswith(
             "data:image/png;base64,"
         )

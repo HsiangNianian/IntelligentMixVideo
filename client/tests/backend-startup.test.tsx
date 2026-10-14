@@ -17,7 +17,10 @@ afterEach(() => setApiBase(originalBase));
 test("内置后端接收上游新增的生成配置", async () => {
   setApiBase("http://127.0.0.1:43212");
   const composition = { width: 1280, height: 720, fps: 24, duration_in_frames: 72 };
-  const response = { work: { id: "work-1" }, job: remotionJob("running") };
+  const response = {
+    work: { id: "work-1", current_version_id: null, created_at: "2026-09-14T08:00:00Z", request: { description: "横屏标题" } },
+    job: remotionJob("running"),
+  };
   fetchMock.mockResolvedValueOnce(Response.json(response));
   expect(await create("横屏标题", undefined, composition)).toEqual(response);
   const [url, options] = fetchMock.mock.calls.at(-1)!;

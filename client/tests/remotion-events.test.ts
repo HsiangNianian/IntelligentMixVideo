@@ -1,6 +1,7 @@
-/** SSE 字节协议回归：分块、续传、无效游标、坏帧与资源清理；执行 bun run test。 */
+/** SSE 字节协议回归：分块、续传、设备头、坏帧与资源清理；执行 bun run test。 */
 import { expect, spyOn, test } from "bun:test";
-import { events, StreamReset } from "@/features/remotion_templates/events";
+import { events } from "@/features/remotion_templates/events";
+import { deviceId } from "@/features/remotion_templates/localSessions";
 import type { WorkEvent } from "@/features/remotion_templates/model";
 import { fetchMock } from "./setup";
 
@@ -47,16 +48,17 @@ test("SSE 跨字节中文、CRLF、多行数据与续传请求", async () => {
   expect(String(fetchMock.mock.calls[0][0])).toContain("after=6");
   expect(fetchMock.mock.calls[0][1]?.headers).toEqual({
     Accept: "text/event-stream",
+    "X-IMV-Device": await deviceId(),
     "Last-Event-ID": "6",
   });
 });
 
-// 游标已不属于当前数据库时明确要求恢复快照，普通错误不误判为成功连接。
-test("SSE 游标失效和非流响应显式失败", async () => {
-  fetchMock.mockResolvedValueOnce(new Response(null, { status: 409 }));
+// 非事件流响应不误判为成功连接；删除中的会话以 410 明确终止。
+test("SSE 非流响应与已删除会话显式失败", async () => {
+  fetchMock.mockResolvedValueOnce(new Response(null, { status: 410 }));
   await expect(
     events("work-1", 6, new AbortController().signal).next(),
-  ).rejects.toBeInstanceOf(StreamReset);
+  ).rejects.toThrow("会话已删除");
   fetchMock.mockResolvedValueOnce(Response.json({ unexpected: true }));
   await expect(
     events("work-1", 0, new AbortController().signal).next(),
@@ -86,6 +88,12 @@ test("SSE 心跳超时中止静默连接", async () => {
     Object.assign(
       (_input: RequestInfo | URL, options?: RequestInit) =>
         new Promise<Response>((_resolve, reject) => {
+          // 与真实 fetch 一致：已中止的信号立即拒绝。
+          if (options?.signal?.aborted) {
+            aborted = true;
+            reject(new DOMException("Aborted", "AbortError"));
+            return;
+          }
           options?.signal?.addEventListener(
             "abort",
             () => {

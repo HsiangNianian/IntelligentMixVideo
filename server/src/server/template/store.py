@@ -141,7 +141,8 @@ def save_template(data: TemplateSave) -> Template:
     Remotion 片段引用的 Sprite 必须已发布，且画布尺寸与帧率一致（422）：叠加渲染要把它们叠成同一个视频，
     不一致的模板到总线渲染时才会失败，所以在保存时拒绝。每个片段的参数覆盖与宿主变换也按所引用 Sprite 的
     发布参数契约检查（422）。片段按分类占用模板对象：字效作用于标题或字幕（不再覆盖文字与关键词）、转场占用视频交界处，
-    Remotion 视频特效与 IMS VFX 合计最多一个（422）。Sprite 只追加不删除，所以检查之后引用不会失效。
+    Remotion 视频特效与 IMS VFX 合计最多一个（422）。被模板引用的 Sprite 不能删除（`templates_using`），
+    只有与删除同时发生的保存才可能留下失效引用，届时总线渲染以 sprite_missing 报告。
     """
     # 创建和更新都检查必需文字对象，检查通过后才访问资产及模板数据库。
     if issue := completeness_error(data):
@@ -201,6 +202,19 @@ def save_template(data: TemplateSave) -> Template:
         if exc.orig.args[0] == 1062:
             raise HTTPException(409, "模板名称已存在，请使用其他名称") from None
         raise
+
+
+def templates_using(sprite_id: str) -> list[str]:
+    """按名称排序返回 `remotion` 轨道引用该 Sprite 的模板；按原始配置检查，无效模板里的引用同样计入。"""
+    with initialize_schema().connect() as connection:
+        rows = connection.execute(select(templates.c.name, templates.c.configuration)).all()
+    return sorted(
+        row.name for row in rows
+        if isinstance(row.configuration, dict) and any(
+            isinstance(track, dict) and track.get("target") == "remotion" and track.get("sprite_id") == sprite_id
+            for track in row.configuration.get("tracks") or []
+        )
+    )
 
 
 def delete_template(template_id: UUID) -> None:

@@ -1,13 +1,14 @@
 """Public host-owned phase and loop summaries, persisted separately from private model/tool diagnostics."""
 
 import json
-import sqlite3
 from datetime import datetime
 from typing import Literal
 
 from pydantic import Field, model_validator
+from sqlalchemy import Connection, insert, select, update
 
 from .models import Contract, GenerationJob
+from .tables import job_progress, job_rounds
 
 Phase = Literal[
     "understanding",
@@ -102,75 +103,39 @@ class LoopRound(Contract):
     error_code: Literal["MODEL_CONTRACT_FAILED", "MODEL_FAILED", "CANCELLED"] | None = None
 
 
-def read_steps(db: sqlite3.Connection, job: GenerationJob) -> list[ProgressStep]:
-    """Read only recorded summaries; legacy jobs have no fabricated intermediate history."""
-    row = db.execute(
-        "SELECT data FROM job_progress WHERE job_id=?", (str(job.id),)
-    ).fetchone()
-    return (
-        [ProgressStep.model_validate(item) for item in json.loads(row[0])]
-        if row
-        else []
-    )
+def read_steps(db: Connection, job: GenerationJob) -> list[ProgressStep]:
+    """Read only recorded summaries; jobs without records have no fabricated intermediate history."""
+    data = db.execute(select(job_progress.c.data).where(job_progress.c.job_id == str(job.id))).scalar()
+    return [ProgressStep.model_validate(item) for item in json.loads(data)] if data else []
 
 
-def save_steps(
-    db: sqlite3.Connection, job: GenerationJob, steps: list[ProgressStep]
-) -> None:
-    """Write inside the job/event transaction, so snapshot cursors cannot outrun progress."""
-    db.execute(
-        "INSERT INTO job_progress(job_id,data) VALUES (?,?) ON CONFLICT(job_id) DO UPDATE SET data=excluded.data",
-        (str(job.id), json.dumps([step.model_dump(mode="json") for step in steps])),
-    )
+def save_steps(db: Connection, job: GenerationJob, steps: list[ProgressStep]) -> None:
+    """Write inside the job/event transaction, so stream cursors cannot outrun progress."""
+    data = json.dumps([step.model_dump(mode="json") for step in steps])
+    if db.execute(update(job_progress).where(job_progress.c.job_id == str(job.id)).values(data=data)).rowcount == 0:
+        db.execute(insert(job_progress).values(job_id=str(job.id), data=data))
 
 
-def read_rounds(db: sqlite3.Connection, job: GenerationJob) -> list[LoopRound]:
+def read_rounds(db: Connection, job: GenerationJob) -> list[LoopRound]:
     """Read only recorded rounds; jobs without records never get fabricated history."""
     rows = db.execute(
-        "SELECT data FROM job_rounds WHERE job_id=? ORDER BY turn, layer", (str(job.id),)
+        select(job_rounds.c.data).where(job_rounds.c.job_id == str(job.id))
+        .order_by(job_rounds.c.turn, job_rounds.c.layer)
     )
-    return [LoopRound.model_validate_json(row[0]) for row in rows]
+    return [LoopRound.model_validate_json(row.data) for row in rows]
 
 
-def save_round(db: sqlite3.Connection, job_id: str, record: LoopRound) -> bool:
-    """Insert one immutable round; uniqueness makes retried reporting idempotent."""
-    result = db.execute(
-        "INSERT INTO job_rounds(job_id,layer,turn,data) VALUES (?,?,?,?) "
-        "ON CONFLICT(job_id,layer,turn) DO NOTHING",
-        (job_id, record.layer, record.turn, record.model_dump_json()),
-    )
-    return result.rowcount == 1
-
-
-def initialize_rounds(db: sqlite3.Connection) -> None:
-    """Migrate list storage and sanitize legacy replay data before any job is parsed."""
-    db.execute("BEGIN IMMEDIATE")
-    columns = {row[1] for row in db.execute("PRAGMA table_info(job_rounds)")}
-    legacy = bool(columns) and "turn" not in columns
-    if legacy:
-        db.execute("ALTER TABLE job_rounds RENAME TO legacy_job_rounds")
-    db.execute("""CREATE TABLE IF NOT EXISTS job_rounds (
-        job_id TEXT NOT NULL REFERENCES jobs(id), layer TEXT NOT NULL,
-        turn INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(job_id, layer, turn)
-    )""")
-    if legacy:
-        for row in db.execute("SELECT job_id,data FROM legacy_job_rounds").fetchall():
-            for record in json.loads(row[1]):
-                save_round(db, row[0], LoopRound.model_validate(record))
-        db.execute("DROP TABLE legacy_job_rounds")
-        # Existing replay IDs remain valid; remove private messages from old snapshots too.
-        for row in db.execute("SELECT id,data FROM work_events WHERE type='job.updated'").fetchall():
-            data = json.loads(row[1])
-            if "rounds" in data:
-                data["rounds"] = [LoopRound.model_validate(item).model_dump(mode="json") for item in data["rounds"]]
-                db.execute("UPDATE work_events SET data=? WHERE id=?", (json.dumps(data), row[0]))
-    db.execute("UPDATE jobs SET data=json_remove(data, '$.loop') WHERE json_type(data, '$.loop') IS NOT NULL")
-    db.execute("UPDATE events SET data=json_remove(data, '$.loop') WHERE json_type(data, '$.loop') IS NOT NULL")
-    db.execute("UPDATE work_events SET data=json_remove(data, '$.loop') WHERE type='job.updated' AND json_type(data, '$.loop') IS NOT NULL")
+def save_round(db: Connection, job_id: str, record: LoopRound) -> bool:
+    """Insert one immutable round; a repeated layer/turn is ignored so retried reporting is idempotent."""
+    key = (job_rounds.c.job_id == job_id, job_rounds.c.layer == record.layer, job_rounds.c.turn == record.turn)
+    if db.execute(select(job_rounds.c.turn).where(*key)).first() is not None:
+        return False
+    db.execute(insert(job_rounds).values(job_id=job_id, layer=record.layer, turn=record.turn, data=record.model_dump_json()))
+    return True
 
 
 def start_step(
-    db: sqlite3.Connection, job: GenerationJob, phase: Phase, stamp: datetime
+    db: Connection, job: GenerationJob, phase: Phase, stamp: datetime
 ) -> bool:
     """Ignore duplicate active phases and terminal jobs; accept only the public phase whitelist."""
     step = ProgressStep(phase=phase, started_at=stamp)
@@ -186,7 +151,7 @@ def start_step(
     return True
 
 
-def finish_steps(db: sqlite3.Connection, job: GenerationJob) -> None:
+def finish_steps(db: Connection, job: GenerationJob) -> None:
     """Close the last observed interval on completion, failure, cancellation or restart interruption."""
     if job.status in {"queued", "running"}:
         return

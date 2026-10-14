@@ -34,6 +34,32 @@ export function transformFields(kind: SpriteKind): TransformField[] {
     : ["x", "y", "scale", "rotation", "opacity"];
 }
 
+/**
+ * 模板编辑里开放给这次摆放的变换字段：字效只调位置，滤镜与转场只调强度，视频特效调全部。
+ * 其余字段（例如字效的缩放）服务端契约仍允许；已有覆盖照常生效，但不在这里新增。
+ */
+export function instanceTransformFields(kind: SpriteKind): TransformField[] {
+  return kind === SpriteKind.TEXT ? ["x", "y"] : transformFields(kind);
+}
+
+/**
+ * 模板编辑里开放的资产参数：只有字效的字号与关键词样式；颜色、字体、动画与出入场时间等属于资产本身，
+ * 回字效工作区改出新版本。已有覆盖不受影响。
+ */
+export function isInstanceParameter(kind: SpriteKind, key: string): boolean {
+  return kind === SpriteKind.TEXT && (key === "fontSize" || /^keyword/i.test(key));
+}
+
+/** 画布像素换算为 0～100 的百分比（一位小数），与 IMS 文字位置同样的表示。 */
+export function pixelsToPercent(pixels: number, total: number): number {
+  return Math.round((pixels / total) * 1000) / 10;
+}
+
+/** 0～100 的百分比换算为画布像素（两位小数）。 */
+export function percentToPixels(percent: number, total: number): number {
+  return Math.round((percent / 100) * total * 100) / 100;
+}
+
 /** 宿主变换各字段的控件：范围与服务端一致，默认值来自内容区域中心。 */
 export function transformField(field: TransformField, kind: SpriteKind, width: number, height: number): ParameterField & { fallback: (box: ContentBox) => number } {
   const full = transformFields(kind).length === 1;

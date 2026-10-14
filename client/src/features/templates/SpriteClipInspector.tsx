@@ -1,10 +1,13 @@
 /**
- * 模板里一次 Remotion 摆放的设置：资产对外的参数（可逐项恢复默认值）、宿主变换，以及所占的模板对象或起点；
- * 字效选择作用的标题或字幕，转场选择视频交界处，两者的时间跟随所占对象；滤镜与视频特效设置起点。修改只进入草稿，随模板保存时服务端再按发布契约检查。
+ * 模板里一次 Remotion 摆放的设置，只影响这次摆放、不改资产：字效调示例文字、字号、水平/垂直位置（百分比，与 IMS 文字一致）
+ * 与关键词；滤镜与转场调强度，视频特效调位置、缩放、旋转与不透明度，并设置起点或所占交界处。
+ * 颜色、速度、动画与出入场时间等资产内部参数不在这里调，说明原因并提供回字效工作区的入口；这些参数已有的覆盖仍生效，可在此恢复默认。
+ * 修改只进入草稿，随模板保存时服务端再按发布契约检查。
  */
 import { useState } from "react";
 import { Bold, Italic, RotateCcw, Strikethrough, Trash2, Underline, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
@@ -12,9 +15,11 @@ import { Hint } from "@/components/Hint";
 import { ParameterControl, type ParameterValue } from "@/components/ParameterControl";
 import { SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { SpriteAsset } from "@/features/sprites/model";
-import { CATEGORIES, categoryOf, transformField, transformFields, type TransformField } from "@/features/sprites/parameters";
-import { textRoles, type RemotionClip } from "./model";
+import { CATEGORIES, categoryOf, instanceTransformFields, isInstanceParameter, percentToPixels, pixelsToPercent, transformField, type TransformField } from "@/features/sprites/parameters";
+import { textRoles, type EffectTrack, type RemotionClip } from "./model";
 import { BOUND_TEXT_PARAMETERS, type bindClip } from "./clips";
+import { TrackTiming } from "./TrackTiming";
+import type { ResolvedTrack } from "./tracks";
 
 /** 关键词相关参数：键名以 keyword 开头（keywords、keywordColor、keywordBold……）。 */
 const isKeywordParameter = (key: string) => /^keyword/i.test(key);
@@ -31,11 +36,21 @@ const KEYWORD_STYLES = [
   ["keywordStrikeout", "删除线", Strikethrough],
 ] as const;
 
-/** 选中片段的右栏；资产已不在目录中时只允许移除。调用方按片段 ID 设 key，切换片段时页签回到「参数与变换」。 */
-export function SpriteClipInspector({ clip, asset, duration, onParameter, onTransform, onStart, onBind, onRemove, onClose }: {
+/** 示例文字允许的最大长度，与 IMS 标题、字幕一致。 */
+const SAMPLE_MAX_LENGTH = { title: 60, subtitle: 100 } as const;
+
+/** 选中片段的右栏；资产已不在目录中时只允许移除。调用方按片段 ID 设 key，切换片段时页签回到「外观与位置」。 */
+export function SpriteClipInspector({ clip, asset, duration, textTrack, textResolved, onSample, onTextTiming, onOpenRemotion, onParameter, onTransform, onStart, onBind, onRemove, onClose }: {
   clip: RemotionClip;
   asset: SpriteAsset | undefined;
   duration: number | undefined;
+  /** 字效作用的标题或字幕对象：示例文字与时间属于它，字效只是显示它。 */
+  textTrack?: EffectTrack;
+  textResolved?: ResolvedTrack;
+  onSample: (value: string) => void;
+  onTextTiming: (timing: Pick<EffectTrack, "start_mode" | "start" | "duration">) => void;
+  /** 回到字效工作区修改资产本身；没有入口时不显示按钮。 */
+  onOpenRemotion?: () => void;
   onParameter: (key: string, value: ParameterValue | undefined) => void;
   onTransform: (patch: Partial<Record<TransformField, number | undefined>>) => void;
   onStart: (start: number) => void;
@@ -43,7 +58,7 @@ export function SpriteClipInspector({ clip, asset, duration, onParameter, onTran
   onRemove: () => void;
   onClose: () => void;
 }) {
-  const [tab, setTab] = useState<"appearance" | "keyword">("appearance");
+  const [tab, setTab] = useState<"appearance" | "timing" | "keyword">("appearance");
   const isText = asset?.kind === SpriteKind.TEXT;
   const isTransition = asset?.kind === SpriteKind.TRANSITION_OVERLAY;
   const legacyTextTarget = clip.business_target === "title" || clip.business_target === "subtitle" ? clip.business_target : undefined;
@@ -59,8 +74,21 @@ export function SpriteClipInspector({ clip, asset, duration, onParameter, onTran
   const sizeItem = keywordParameters.find(({ field }) => field.key === "keywordSize" && field.kind === "integer");
   const legacyText = isText && KEYWORD_STYLE_KEYS.some((key) => !keywordParameters.some(({ field }) => field.key === key));
   const fontSize = asset?.parameters.find(({ field }) => field.key === "fontSize");
-  const appearanceParameters = asset?.parameters.filter((item) => !keywordParameters.includes(item) && shown(item.field.key)) ?? [];
+  // 模板里只开放适用的参数；资产内部参数（颜色、速度、动画时间等）回字效工作区改，已有覆盖仍列出以便恢复默认。
+  const others = asset?.parameters.filter((item) => !keywordParameters.includes(item) && shown(item.field.key)) ?? [];
+  const appearanceParameters = asset ? others.filter(({ field }) => isInstanceParameter(asset.kind, field.key)) : [];
+  const internalParameters = others.filter((item) => !appearanceParameters.includes(item));
+  const exposedTransforms = asset ? instanceTransformFields(asset.kind) : [];
+  const overriddenInternal = [
+    ...internalParameters.filter(({ field }) => Object.prototype.hasOwnProperty.call(clip.parameters, field.key)).map(({ field }) => ({ key: field.key, label: field.label, restore: () => onParameter(field.key, undefined) })),
+    ...(["x", "y", "scale", "rotation", "opacity"] as TransformField[]).filter((name) => !exposedTransforms.includes(name) && clip.transform[name] !== undefined)
+      .map((name) => { const { label } = transformField(name, asset!.kind, asset!.width, asset!.height); return { key: name, label, restore: () => onTransform({ [name]: undefined }) }; }),
+  ];
+  // 字效的时间跟随所作用的文字对象：标题可在这里设置，字幕固定为整段视频。
+  const timedText = isText && textTrack?.target === "title" ? textTrack : undefined;
+  const tabs = [["appearance", "外观与位置"], ...(timedText ? [["timing", "时间设置"] as const] : []), ["keyword", "关键词设置"]] as const;
   const activeTab = isText ? tab : "appearance";
+  const sampleRole = textTrack?.target === "title" || textTrack?.target === "subtitle" ? textTrack.target : undefined;
   /** 参数当前值：本次摆放的覆盖优先，否则取发布默认值。 */
   const valueOf = ({ field, defaultValue }: NonNullable<typeof asset>["parameters"][number]) => clip.parameters[field.key] ?? defaultValue;
   /** 写入参数覆盖；与发布默认值相同时清除覆盖。 */
@@ -72,6 +100,7 @@ export function SpriteClipInspector({ clip, asset, duration, onParameter, onTran
     return <div key={field.key} className="flex items-end gap-1.5">
       <ParameterControl className="min-w-0 flex-1" field={field} value={changed ? clip.parameters[field.key]! : defaultValue} disabled={!editable}
         onChange={(value) => onParameter(field.key, JSON.stringify(value) === JSON.stringify(defaultValue) ? undefined : value)} />
+      {changed && <span className="mb-2.5 shrink-0 text-[10px] text-primary">已覆盖</span>}
       {changed && <Hint label={`恢复默认：${field.label}`}><Button type="button" variant="ghost" size="icon" className="mb-0.5 size-8 shrink-0" aria-label={`恢复默认：${field.label}`} onClick={() => onParameter(field.key, undefined)}><RotateCcw className="size-3.5" aria-hidden="true" /></Button></Hint>}
     </div>;
   };
@@ -81,8 +110,8 @@ export function SpriteClipInspector({ clip, asset, duration, onParameter, onTran
       <div className="min-w-0"><h2 className="truncate text-[13px] font-semibold leading-5">{asset?.name ?? "未找到的资产"}</h2><p className="mt-0.5 text-[11px] leading-3 text-muted-foreground">{category ?? "资产已不可用，保存前请移除"}</p></div>
       <Hint label="关闭资产设置"><Button type="button" variant="ghost" size="icon" className="size-6 shrink-0" aria-label="关闭资产设置" onClick={onClose}><X className="size-3.5" aria-hidden="true" /></Button></Hint>
     </div>
-    {asset && isText && <div role="tablist" aria-label="资产设置分类" className="grid grid-cols-2 border-b px-4">
-      {([["appearance", "参数与变换"], ["keyword", "关键词设置"]] as const).map(([value, label]) =>
+    {asset && isText && <div role="tablist" aria-label="资产设置分类" className={`grid border-b px-4 ${tabs.length === 3 ? "grid-cols-3" : "grid-cols-2"}`}>
+      {tabs.map(([value, label]) =>
         <button key={value} type="button" role="tab" aria-selected={activeTab === value} onClick={() => setTab(value)} className="border-b-2 border-transparent px-1 py-2.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring data-[selected=true]:border-primary data-[selected=true]:text-primary" data-selected={activeTab === value}>{label}</button>)}
     </div>}
     {asset && isText && <fieldset hidden={activeTab !== "keyword"} className="space-y-3 px-4 py-3">
@@ -124,24 +153,46 @@ export function SpriteClipInspector({ clip, asset, duration, onParameter, onTran
     </fieldset>}
     {asset && <>
       <fieldset hidden={activeTab !== "appearance"} className="space-y-3 border-t px-4 py-3">
-        <legend className="sr-only">资产参数</legend>
-        <h3 className="text-xs font-medium">参数</h3>
-        {!appearanceParameters.length && <p className="text-[11px] text-muted-foreground">这个资产没有可调整的参数。</p>}
+        <legend className="sr-only">当前模板参数覆盖</legend>
+        <div><h3 className="text-xs font-medium">当前模板参数覆盖</h3><p className="mt-0.5 text-[11px] text-muted-foreground">只影响这次摆放，不改资产默认值，也不影响其他模板。</p></div>
+        {sampleRole && textTrack && <div className="space-y-1.5">
+          <Label htmlFor={`${textTrack.id}-sample`} className="text-xs">示例文字</Label>
+          <Input id={`${textTrack.id}-sample`} value={textTrack.editor[sampleRole]} maxLength={SAMPLE_MAX_LENGTH[sampleRole]} onChange={(event) => onSample(event.target.value)} />
+          <p className="text-[11px] text-muted-foreground">{textRoles[sampleRole]}的文字由这个文字对象提供，合成时换成实际{sampleRole === "title" ? "标题" : "字幕"}。</p>
+        </div>}
         {appearanceParameters.map(parameterRow)}
-      </fieldset>
-      <fieldset hidden={activeTab !== "appearance"} className="space-y-3 border-t px-4 py-3">
-        <legend className="sr-only">位置与变换</legend>
-        <div className="flex items-center justify-between"><h3 className="text-xs font-medium">{transformFields(asset.kind).length === 1 ? "强度" : "位置与变换"}</h3>
-          {Object.keys(clip.transform).length > 0 && <Button type="button" variant="ghost" size="sm" className="h-6 px-2 text-[11px]" onClick={() => onTransform({ x: undefined, y: undefined, scale: undefined, rotation: undefined, opacity: undefined })}>恢复默认</Button>}
-        </div>
-        {transformFields(asset.kind).map((name) => {
+        {exposedTransforms.map((name) => {
           const { fallback, ...field } = transformField(name, asset.kind, asset.width, asset.height);
-          return <ParameterControl key={name} field={field} value={clip.transform[name] ?? fallback(asset.box)} disabled={false}
-            onChange={(value) => onTransform({ [name]: value as number })} />;
+          // 位置像 IMS 文字一样用 0～100% 表示，存储仍是资产画布像素。
+          const total = name === "x" ? asset.width : asset.height;
+          const percent = name === "x" || name === "y";
+          const stored = clip.transform[name];
+          const current = stored ?? fallback(asset.box);
+          return <div key={name} className="flex items-end gap-1.5">
+            <ParameterControl className="min-w-0 flex-1" disabled={false}
+              field={percent ? { ...field, label: name === "x" ? "水平位置 %" : "垂直位置 %", minimum: 0, maximum: 100 } : field}
+              value={percent ? pixelsToPercent(current, total) : current}
+              onChange={(value) => onTransform({ [name]: percent ? percentToPixels(value as number, total) : value as number })} />
+            {stored !== undefined && <span className="mb-2.5 shrink-0 text-[10px] text-primary">已覆盖</span>}
+            {stored !== undefined && <Hint label={`恢复默认：${field.label}`}><Button type="button" variant="ghost" size="icon" className="mb-0.5 size-8 shrink-0" aria-label={`恢复默认：${field.label}`} onClick={() => onTransform({ [name]: undefined })}><RotateCcw className="size-3.5" aria-hidden="true" /></Button></Hint>}
+          </div>;
         })}
-        {transformFields(asset.kind).length > 1 && <p className="text-[11px] text-muted-foreground">也可以在预览画面上拖动所选资产调整位置。</p>}
+        {exposedTransforms.includes("x") && <p className="text-[11px] text-muted-foreground">也可以在预览画面上拖动所选资产调整位置。</p>}
+        {overriddenInternal.length > 0 && <div className="space-y-1.5 rounded-md border px-3 py-2">
+          <p className="text-[11px] text-muted-foreground">下列设置不在模板里调整，但这次摆放仍带着覆盖值：</p>
+          {overriddenInternal.map((item) => <div key={item.key} className="flex items-center justify-between gap-2 text-xs"><span className="min-w-0 truncate">{item.label} · 已覆盖</span>
+            <Button type="button" variant="ghost" size="sm" className="h-6 shrink-0 px-2 text-[11px]" aria-label={`恢复默认：${item.label}`} onClick={item.restore}>恢复默认</Button></div>)}
+        </div>}
+      </fieldset>
+      <fieldset hidden={activeTab !== "appearance"} className="space-y-2 border-t px-4 py-3">
+        <legend className="sr-only">资产默认参数</legend>
+        <h3 className="text-xs font-medium">资产默认参数</h3>
+        <p className="text-[11px] text-muted-foreground">颜色、速度、字体、动画与出入场时间等属于资产本身，不在模板里逐次调整。需要修改请到字效工作区生成新版本并重新保存到资产；已放进模板的这个资产不会被静默改变。</p>
+        {internalParameters.length > 0 && <p className="text-[11px] text-muted-foreground">资产开放的参数：{internalParameters.map(({ field }) => field.label).join("、")}</p>}
+        {onOpenRemotion && <Button type="button" variant="outline" size="sm" className="h-7 text-[11px]" onClick={onOpenRemotion}>前往字效工作区</Button>}
       </fieldset>
     </>}
+    {timedText && <div hidden={activeTab !== "timing"} className="border-t"><TrackTiming track={timedText} duration={duration ?? 0} resolved={textResolved} onChange={onTextTiming} /></div>}
     <div className="space-y-3 border-t px-4 py-3">
       {isText ? <div className="space-y-2">
         <h3 className="text-xs font-medium">作用对象</h3>

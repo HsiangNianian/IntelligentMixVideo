@@ -286,7 +286,7 @@ class Provider:
             content = [
                 {
                     "type": "text",
-                    "text": "Images follow the host snapshot mapping: original user references first, then current candidate frames. Candidate frames are observations, not new user requirements. Interpret only the requested Sprite appearance, not application chrome or scenery.",
+                    "text": "The leading images are the user's reference images, one-to-one and in order with user_intent.reference_images; each entry's source and meaning say whether it came with the original request, with the current instruction, or as the answer to a numbered clarification. Any images after them are current candidate frames: observations, not new user requirements. Interpret only the requested Sprite appearance, not application chrome or scenery.",
                 }
             ]
             content.extend(_image_content(images, label="Reference"))

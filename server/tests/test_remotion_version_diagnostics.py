@@ -33,6 +33,8 @@ from server.remotion_templates.tools.contracts import (
     SpriteDraft,
 )
 
+from .conftest import DEVICE, DEVICE_HEADERS
+
 CODE = (
     'import React from "react";\n'
     "export default function Sprite(p: {title: {text: string}}) {\n"
@@ -140,8 +142,8 @@ class OfflineRenderer:
 
 
 @pytest.fixture
-def published(tmp_path, sprite):
-    """发布一个真实封存的成功版本，并返回其 ID、Store 与可注入的代码诊断替身。"""
+def published(tmp_path, sprite, template_db):
+    """发布一个真实封存的成功版本，并返回其 ID、Store 与可注入的代码诊断替身；记录写入临时数据库。"""
     font = tmp_path / "font.ttc"
     font.write_bytes(b"fixture-font")
     settings = Settings(_env_file=None, data_dir=tmp_path / "state", font_regular=font, font_bold=font)
@@ -149,7 +151,7 @@ def published(tmp_path, sprite):
     harness = Harness(SimpleNamespace(settings=settings), OfflineRenderer(settings, code_renderer))
     store = Store(settings.data_dir)
     store.initialize()
-    work, job = store.create(GenerateTemplateRequest(description="标题"))
+    work, job = store.create(GenerateTemplateRequest(description="标题"), DEVICE)
     store.claim()
     result = asyncio.run(
         harness.finalize_sprite(
@@ -179,12 +181,20 @@ class _SavedSprite:
 
 
 def client_for(published):
-    """构造只挂载模板路由、注入真实 Runtime 的测试应用。"""
+    """构造只挂载模板路由、注入真实 Runtime 的测试应用；请求默认携带作品所属设备。"""
     service = Runtime(published.store, published.harness, published.settings)
     application = FastAPI()
     application.include_router(router, prefix="/api/templates")
     application.state.runtime = service
-    return TestClient(application)
+    return TestClient(application, headers=DEVICE_HEADERS)
+
+
+def tamper(published, name: str, contents: str) -> None:
+    """改写封存对象与读取缓存中的同一文件，使重新下载也无法通过证据校验。"""
+    version = str(published.version.id)
+    root = published.store.root
+    for path in (root / "objects" / "imv" / "remotion" / "versions" / version / name, root / "cache" / "accepted" / version / name):
+        path.write_text(contents)
 
 
 def test_diagnostics_return_real_lsp_ranges(published):
@@ -216,8 +226,7 @@ def test_diagnostics_return_real_lsp_ranges(published):
     assert request["code"] == published.version.candidate.tsx_code
     assert request["default_parameters"] == published.version.candidate.default_config
     assert request["parameter_schema"] == published.version.candidate.config_schema
-    accepted = published.store.root / "accepted" / str(published.version.id)
-    assert request["export_code"] == (accepted / "Export.tsx").read_text()
+    assert request["export_code"] == (published.store.accepted(published.version) / "Export.tsx").read_text()
 
 
 def test_clean_typecheck_passes_without_diagnostics(published):
@@ -259,8 +268,7 @@ def test_source_policy_failure_becomes_a_contract_error(published):
 def test_tampered_acceptance_artifacts_are_not_diagnosed(published):
     """封存产物被改写后返回 404，不返回与当前字节不符的诊断。"""
     with client_for(published) as client:
-        accepted = published.store.root / "accepted" / str(published.version.id)
-        (accepted / "Export.tsx").write_text("tampered")
+        tamper(published, "Export.tsx", "tampered")
         response = client.get(f"/api/templates/versions/{published.version.id}/diagnostics")
     assert response.status_code == 404
     assert published.code_renderer.requests == []
@@ -367,11 +375,20 @@ def test_diagnostics_do_not_create_versions_or_jobs(published):
     assert [item.id for item in published.store.versions(published.version.project_id)] == [published.version.id]
 
 
+def test_other_devices_cannot_read_a_version_or_its_diagnostics(published):
+    """版本详情与代码诊断只属于作品所属设备；其他设备为 404，且不启动诊断 worker。"""
+    other = {"X-IMV-Device": str(uuid4())}
+    with client_for(published) as client:
+        for suffix in ("", "/diagnostics"):
+            assert client.get(f"/api/templates/versions/{published.version.id}{suffix}", headers=other).status_code == 404
+        assert client.get(f"/api/templates/versions/{published.version.id}").status_code == 200
+    assert published.code_renderer.requests == []
+
+
 @pytest.mark.parametrize("contents", ["{}", '{"report": {}}', "[]", "null", '{"component": {}}'])
 def test_malformed_sealed_validation_returns_404(published, contents):
     """合法 JSON 的缺字段或错误容器均视为无效产物，下载与诊断不得返回 500。"""
-    accepted = published.store.root / "accepted" / str(published.version.id)
-    (accepted / "tool-validation.json").write_text(contents)
+    tamper(published, "tool-validation.json", contents)
     with client_for(published) as client:
         for suffix in ("diagnostics", "artifacts/Export.tsx"):
             assert client.get(f"/api/templates/versions/{published.version.id}/{suffix}").status_code == 404

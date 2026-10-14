@@ -1,0 +1,202 @@
+[
+  {
+    "operation": "device",
+    "payload": {}
+  },
+  {
+    "operation": "save",
+    "payload": {
+      "server": "http://api.test:8000",
+      "work": {
+        "work": {
+          "id": "work-1",
+          "current_version_id": null
+        },
+        "title": "本地标题",
+        "job": {
+          "id": "job-1",
+          "project_id": "work-1",
+          "status": "queued",
+          "result_version_id": null,
+          "questions": [],
+          "message": null,
+          "created_at": "2026-09-14T08:00:00Z",
+          "updated_at": "2026-09-14T08:00:00Z",
+          "parameters": null
+        },
+        "updated_at": "2026-09-14T08:00:00Z",
+        "cursor": 0
+      },
+      "messages": [],
+      "jobs": [
+        {
+          "id": "job-1",
+          "project_id": "work-1",
+          "status": "queued",
+          "result_version_id": null,
+          "questions": [],
+          "message": null,
+          "created_at": "2026-09-14T08:00:00Z",
+          "updated_at": "2026-09-14T08:00:00Z",
+          "parameters": null
+        }
+      ]
+    }
+  },
+  {
+    "operation": "work",
+    "payload": {
+      "server": "http://api.test:8000",
+      "id": "work-1"
+    }
+  },
+  {
+    "operation": "jobs",
+    "payload": {
+      "server": "http://api.test:8000",
+      "work": "work-1",
+      "ids": [
+        "job-1"
+      ]
+    }
+  },
+  {
+    "operation": "save",
+    "payload": {
+      "server": "http://api.test:8000",
+      "work": {
+        "work": {
+          "id": "work-1",
+          "current_version_id": "version-1"
+        },
+        "title": "本地标题",
+        "job": {
+          "id": "job-1",
+          "project_id": "work-1",
+          "status": "running",
+          "result_version_id": null,
+          "questions": [],
+          "message": null,
+          "created_at": "2026-09-14T08:00:00Z",
+          "updated_at": "2026-09-14T08:00:00Z",
+          "parameters": null,
+          "rounds": []
+        },
+        "updated_at": "2026-09-14T08:00:04Z",
+        "cursor": 4
+      },
+      "messages": [
+        {
+          "id": "m-1",
+          "sequence": 1,
+          "job_id": "job-1",
+          "role": "user",
+          "text": "契约",
+          "image_asset_ids": [],
+          "created_at": "2026-09-14T08:00:00Z"
+        }
+      ],
+      "jobs": [
+        {
+          "id": "job-1",
+          "project_id": "work-1",
+          "status": "running",
+          "result_version_id": null,
+          "questions": [],
+          "message": null,
+          "created_at": "2026-09-14T08:00:00Z",
+          "updated_at": "2026-09-14T08:00:00Z",
+          "parameters": null,
+          "rounds": [
+            {
+              "layer": "outer",
+              "turn": 1,
+              "calls": [
+                {
+                  "tool": "tools.plan_execute",
+                  "status": "pass"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "operation": "work",
+    "payload": {
+      "server": "http://api.test:8000",
+      "id": "work-1"
+    }
+  },
+  {
+    "operation": "messages",
+    "payload": {
+      "server": "http://api.test:8000",
+      "work": "work-1",
+      "before": null,
+      "limit": 51
+    }
+  },
+  {
+    "operation": "jobs",
+    "payload": {
+      "server": "http://api.test:8000",
+      "work": "work-1",
+      "ids": [
+        "job-1"
+      ]
+    }
+  },
+  {
+    "operation": "works",
+    "payload": {
+      "server": "http://api.test:8000"
+    }
+  },
+  {
+    "operation": "work",
+    "payload": {
+      "server": "http://api.test:8000",
+      "id": "work-1"
+    }
+  },
+  {
+    "operation": "save",
+    "payload": {
+      "server": "http://api.test:8000",
+      "work": {
+        "work": {
+          "id": "work-1",
+          "current_version_id": "version-1"
+        },
+        "title": "本地标题",
+        "job": {
+          "id": "job-1",
+          "project_id": "work-1",
+          "status": "running",
+          "result_version_id": null,
+          "questions": [],
+          "message": null,
+          "created_at": "2026-09-14T08:00:00Z",
+          "updated_at": "2026-09-14T08:00:00Z",
+          "parameters": null,
+          "rounds": []
+        },
+        "updated_at": "2026-09-14T08:00:04Z",
+        "cursor": 4,
+        "deleting": true
+      },
+      "messages": [],
+      "jobs": []
+    }
+  },
+  {
+    "operation": "remove",
+    "payload": {
+      "server": "http://api.test:8000",
+      "work": "work-1"
+    }
+  }
+]

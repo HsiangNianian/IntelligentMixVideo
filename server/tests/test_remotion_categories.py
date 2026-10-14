@@ -168,6 +168,17 @@ def binding(name: str, *targets: tuple[str, str]) -> dict:
 
 
 @pytest.mark.skipif(not RENDERER_DEPS.exists(), reason="install locked Remotion renderer dependencies")
+def test_composed_instance_box_does_not_clip_its_content():
+    """组合出的实例盒子只是摆放区域：不带 overflow，更大的字号、关键词字号或下划线不会在盒子边缘被裁掉，只受画布限制。
+
+    修复前盒子带 overflow hidden，字号放到最大时关键词顶部与下划线被裁（issue #142）。
+    """
+    code, _, _ = compose_source([instance("title", {"label": "标题"}, {"label": {"type": "string"}})])
+    assert 'data-imv-instance": "title"' in code and "overflow" not in code
+    assert "width: 1080, height: 960, zIndex: 0" in code
+
+
+@pytest.mark.skipif(not RENDERER_DEPS.exists(), reason="install locked Remotion renderer dependencies")
 def test_bound_parameters_become_required_top_level_props_passed_to_every_target():
     """绑定的参数提升为顶层必填属性并从实例里移除；生成的宿主把顶层值传给每个目标 prop。"""
     instances = [

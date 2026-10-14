@@ -1,7 +1,11 @@
-/** 模板编辑中的 Remotion 资产：左侧按分类从发布目录添加片段，右侧列出模板里的片段、所占的模板对象，并可选中调整参数。 */
+/** 模板编辑中的 Remotion 资产：左侧按分类从发布目录添加或删除资产，右侧列出模板里的片段、所占的模板对象，并可选中调整参数。 */
 import { useState } from "react";
+import { toast } from "sonner";
 import { Plus, RefreshCw, Trash2, Wand2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Hint } from "@/components/Hint";
+import { deleteSprite } from "@/features/sprites/api";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
 import type { SpriteAsset } from "@/features/sprites/model";
@@ -14,14 +18,33 @@ import type { useSpriteCatalog } from "./useSpriteCatalog";
 
 type Catalog = ReturnType<typeof useSpriteCatalog>;
 
-/** 左侧资产区：展开时读取目录，按字效、滤镜、转场与视频特效分类列出；本地模板不支持 Remotion 资产，只说明原因。 */
-export function SpriteCatalog({ environment, catalog, onAdd }: { environment: Environment; catalog: Catalog; onAdd: (asset: SpriteAsset) => void }) {
+/**
+ * 左侧资产区：展开时读取目录，按字效、滤镜、转场与视频特效分类列出，可确认后删除共享资产；本地模板不支持 Remotion 资产，只说明原因。
+ * `placed` 是当前草稿（含未保存的修改）摆放的资产：它们不能删除，否则之后保存模板会因资产未发布被拒绝。
+ */
+export function SpriteCatalog({ environment, catalog, placed, onAdd }: { environment: Environment; catalog: Catalog; placed: ReadonlySet<string>; onAdd: (asset: SpriteAsset) => void }) {
   const [open, setOpen] = useState(false);
+  const [deleting, setDeleting] = useState<SpriteAsset | null>(null);
+  const [removing, setRemoving] = useState(false);
+  const [removeError, setRemoveError] = useState("");
   // 未手动选择时打开第一个有资产的分类，新保存的资产不会藏在空分类后面。
   const [chosen, setChosen] = useState<CategoryId | null>(null);
   const usable = environment === "cloud";
   const category = chosen ?? CATEGORIES.find((item) => catalog.assets?.some((asset) => categoryOf(asset.kind) === item.id))?.id ?? "text";
   const shown = catalog.assets?.filter((asset) => categoryOf(asset.kind) === category);
+
+  /** 删除确认的资产；仍被模板使用等失败原因留在弹窗里，成功后刷新目录。 */
+  async function remove() {
+    if (!deleting || removing) return;
+    setRemoving(true); setRemoveError("");
+    try {
+      await deleteSprite(deleting.id);
+      toast(`已删除资产「${deleting.name}」`);
+      setDeleting(null); catalog.refresh();
+    } catch (reason) { setRemoveError(reason instanceof Error ? reason.message : "删除资产失败"); }
+    finally { setRemoving(false); }
+  }
+
   return (
     <section aria-label="Remotion 资产" className="space-y-2 border-t p-3">
       <div className="flex items-center justify-between gap-2">
@@ -42,15 +65,26 @@ export function SpriteCatalog({ environment, catalog, onAdd }: { environment: En
         </ToggleGroup>}
         {shown && catalog.assets!.length > 0 && !shown.length && <p role="status" className="text-[11px] text-muted-foreground">这个分类还没有资产。</p>}
         <ul className="space-y-1">
-          {shown?.map((asset) => (
-            <li key={asset.id} className="flex items-center justify-between gap-2 rounded-md border px-2 py-1.5">
-              <span className="min-w-0"><span className="block truncate text-[11px] font-medium">{asset.name}</span><span className="block text-[10px] tabular-nums text-muted-foreground">预览 {Number(asset.seconds.toFixed(1))} 秒 · {asset.width}×{asset.height} @ {asset.fps} FPS</span></span>
-              <Button type="button" variant="outline" size="sm" className="h-6 gap-1 px-2 text-[11px]" disabled={!usable} aria-label={`添加 Remotion 资产：${asset.name}`} onClick={() => onAdd(asset)}><Plus className="size-3" aria-hidden="true" />添加</Button>
-            </li>
-          ))}
+          {shown?.map((asset) => {
+            const inUse = placed.has(asset.id);
+            return <li key={asset.id} className="flex items-center justify-between gap-2 rounded-md border px-2 py-1.5">
+              <span className="min-w-0"><span className="block truncate text-[11px] font-medium">{asset.name}</span><span className="block text-[10px] tabular-nums text-muted-foreground">预览 {Number(asset.seconds.toFixed(1))} 秒 · {asset.width}×{asset.height} @ {asset.fps} FPS</span>{inUse && <span id={`sprite-in-use-${asset.id}`} className="block text-[10px] text-muted-foreground">当前模板正在使用，移除片段后才能删除</span>}</span>
+              <span className="flex shrink-0 items-center gap-1">
+                <Button type="button" variant="outline" size="sm" className="h-6 gap-1 px-2 text-[11px]" disabled={!usable} aria-label={`添加 Remotion 资产：${asset.name}`} onClick={() => onAdd(asset)}><Plus className="size-3" aria-hidden="true" />添加</Button>
+                {/* 禁用的按钮不触发悬停提示，原因以上方文字说明。 */}
+                <Hint label="删除资产" disabled={inUse}><Button type="button" variant="ghost" size="icon" className="size-6" disabled={inUse} aria-describedby={inUse ? `sprite-in-use-${asset.id}` : undefined} aria-label={`删除 Remotion 资产：${asset.name}`} onClick={() => { setDeleting(asset); setRemoveError(""); }}><Trash2 className="size-3.5" aria-hidden="true" /></Button></Hint>
+              </span>
+            </li>;
+          })}
         </ul>
         <Button type="button" variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[11px]" onClick={catalog.refresh}><RefreshCw className="size-3" aria-hidden="true" />刷新目录</Button>
       </>}
+      <Dialog open={deleting !== null} onOpenChange={(next) => { if (!next && !removing) setDeleting(null); }}>
+        <DialogContent><DialogHeader><DialogTitle>删除 Remotion 资产</DialogTitle><DialogDescription>将从共享资产库永久删除「{deleting?.name}」，所有人都无法再添加它。仍被云端模板使用的资产不能删除；生成它的字效会话不受影响，可以重新保存到资产。</DialogDescription></DialogHeader>
+          {removeError && <p role="alert" className="text-sm text-destructive">{removeError}</p>}
+          <DialogFooter><Button type="button" variant="outline" disabled={removing} onClick={() => setDeleting(null)}>取消</Button><Button type="button" variant="destructive" disabled={removing} onClick={() => void remove()}>{removing ? "正在删除…" : "确认删除"}</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }

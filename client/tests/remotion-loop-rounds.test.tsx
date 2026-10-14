@@ -11,9 +11,8 @@ import type {
   SessionJob,
 } from "@/features/remotion_templates/model";
 import { remotionJob } from "./remotion-fixtures";
-import { remotionServer } from "./remotion-server";
+import { remotionServer, seed } from "./remotion-server";
 import { useTemplateSession } from "@/features/remotion_templates/useTemplateSession";
-import * as api from "@/features/remotion_templates/api";
 
 /** 固定服务端阶段，避免依赖当前时间或本机服务。 */
 const STEPS: ProgressStep[] = [
@@ -135,7 +134,7 @@ test("无效模型轮次显示失败原因而非只返回消息", () => {
 // 快照、增量事件与终态共享完整轮次；重复重放不重复追加，重新挂载仍可恢复。
 test("循环增量经 SSE 去重并在状态更新和刷新后保留", async () => {
   const fake = remotionServer();
-  await api.create("轮次恢复");
+  await seed("轮次恢复");
   fake.emit("work-1", { type: "job.updated", data: roundJob("running", [ROUNDS[0]!]) });
   const changed = () => {};
   const view = renderHook(() => useTemplateSession(changed));
