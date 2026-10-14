@@ -3,6 +3,8 @@
 import asyncio
 import json
 import shutil
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -380,6 +382,43 @@ def test_instant_revision_check_reads_only_the_player_bundle(harness, sprite):
     objects.calls.clear()
     assert Runtime(store, harness, harness.settings).instant(version)
     assert [call[1].rsplit("/", 1)[-1] for call in objects.calls] == ["interactive.js"]
+
+
+def test_concurrent_readers_of_a_cold_cache_all_get_the_sealed_files(harness, sprite, monkeypatch):
+    """Preview, diagnostics and downloads opening a version at once each get complete, verified files."""
+    store, objects = recording_store(harness)
+    work, job = store.create(GenerateTemplateRequest(description="标题"), DEVICE)
+    store.claim()
+    result = asyncio.run(harness.finalize_sprite(session_for(sprite, runtime_report(sprite)), "saved", Budget(), store.job_dir(job.id)))
+    version = store.publish(job.id, *result)
+    shutil.rmtree(store.root / "cache")
+    fetch = RecordingObjects.fetch
+
+    def slow_fetch(self, key, destination):
+        """Download slowly enough for the readers to overlap."""
+        time.sleep(0.02)
+        fetch(self, key, destination)
+
+    monkeypatch.setattr(RecordingObjects, "fetch", slow_fetch)
+    barrier = threading.Barrier(8)
+    errors, directories = [], []
+
+    def read():
+        """Open the version together with the other readers and read every sealed file."""
+        barrier.wait()
+        try:
+            directory = store.accepted(version)
+            directories.append({name: (directory / name).read_bytes() for name in version.validation.artifacts})
+        except Exception as exc:
+            errors.append(exc)
+
+    readers = [threading.Thread(target=read) for _ in range(8)]
+    for reader in readers:
+        reader.start()
+    for reader in readers:
+        reader.join()
+    assert errors == [] and len(directories) == 8
+    assert all(files == directories[0] for files in directories)
 
 
 def test_host_builds_preview_without_agent_test_scripts(harness, sprite, tmp_path):

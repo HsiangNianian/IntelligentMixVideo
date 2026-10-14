@@ -322,7 +322,7 @@ class Store:
 
         Raises FileNotFoundError when the version has no such file or its object is gone.
         """
-        if name not in version.validation.artifacts:
+        if name not in version.validation.artifacts or Path(name).name != name:
             raise FileNotFoundError(name)
         return self.cached(
             version_key(version.id, name), Path("accepted") / str(version.id) / name, version.validation.artifacts[name],
@@ -331,6 +331,8 @@ class Store:
     def accepted(self, version: TemplateVersion) -> Path:
         """Return a local copy of a version's sealed files, downloaded on demand and checked against its evidence.
 
+        Each file is cached on its own through a staged download and an atomic replace, so concurrent readers of a
+        cold cache never remove or rename a directory another reader is already using.
         Raises ValueError or OSError (FileNotFoundError when an object is gone) if the files cannot be verified.
         """
         directory = self.root / "cache" / "accepted" / str(version.id)
@@ -339,16 +341,9 @@ class Store:
             return directory
         except (ValueError, OSError):
             pass
-        staged = directory.with_name(f".{directory.name}.{uuid4().hex}")
-        staged.mkdir(parents=True)
-        try:
-            for name in version.validation.artifacts:
-                self.objects.fetch(version_key(version.id, name), staged / name)
-            verify_artifacts(version.candidate, version.spec, version.validation, staged)
-            shutil.rmtree(directory, ignore_errors=True)
-            staged.rename(directory)
-        finally:
-            shutil.rmtree(staged, ignore_errors=True)
+        for name in version.validation.artifacts:
+            self.version_file(version, name)
+        verify_artifacts(version.candidate, version.spec, version.validation, directory)
         return directory
 
     def job_dir(self, identifier: UUID) -> Path:
@@ -601,11 +596,20 @@ class Store:
         except BaseException:
             self._discard_upload(version_id)
             raise
-        # Seed the read cache from the verified candidate so the first preview needs no download.
+        # Seed the read cache from the verified candidate so the first preview needs no download; each file is replaced
+        # atomically, and a failure only costs that download later.
         cached = self.root / "cache" / "accepted" / str(version.id)
-        cached.mkdir(parents=True, exist_ok=True)
-        for name in report.artifacts:
-            shutil.copyfile(directory / name, cached / name)
+        try:
+            cached.mkdir(parents=True, exist_ok=True)
+            for name in report.artifacts:
+                staged = cached / f".{name}.{uuid4().hex}.tmp"
+                try:
+                    shutil.copyfile(directory / name, staged)
+                    staged.replace(cached / name)
+                finally:
+                    staged.unlink(missing_ok=True)
+        except OSError:
+            logger.exception("Read cache of version %s was not seeded", version.id)
         return version
 
     def _discard_upload(self, version_id: UUID) -> None:
