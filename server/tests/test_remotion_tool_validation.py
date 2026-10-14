@@ -371,7 +371,7 @@ def test_regexp_exec_is_ordinary_code_for_the_real_worker(tmp_path):
     assert [item["status"] for item in report["checks"]] == ["pass", "pass", "pass"]
 
 
-EMPTY_ARRAY_PRESET = """import React from "react";
+ERASED_TYPES_PRESET = """import React from "react";
 
 const NO_WORDS: string[] = [];
 
@@ -380,39 +380,56 @@ export default function Tag(props: { label: string; words?: string[] }) {
   const hits: string[] = [];
   let first: string | null = null;
   let last: string | undefined;
+  const counts: Record<string, number> = {};
+  let mode: string | null = "idle";
+  let { tone }: { tone: string | null } = { tone: "warm" };
+  const [active, setActive] = React.useState<string | null>(null);
+  const box = React.useRef<HTMLDivElement>(null);
+  const seen = new Set<string>();
   for (const word of words) {
     if (!props.label.includes(word)) continue;
     hits.push(word);
     first = first ?? word;
     last = word;
+    counts[word] = (counts[word] ?? 0) + 1;
+    seen.add(word);
   }
+  for (const word of seen) mode = word.toUpperCase();
+  if (hits.length === 0) { mode = null; tone = null; }
+  React.useEffect(() => { if (active === null && first) setActive(first); box.current?.scrollTo(0, 0); }, [active]);
   const mark = (text: string) => (hits.includes(text) || text === first || text === last ? <b key={text}>{text}</b> : text);
-  return <div>{props.label.split("").map(mark)}</div>;
+  return <div ref={box} data-mode={mode ?? tone ?? ""}>{props.label.split("").map(mark)}</div>;
 }
 """
 
 
-@needs_node
-def test_a_composed_sprite_keeps_annotated_empty_arrays_valid_under_strict_typescript(tmp_path):
-    """任务 76be0e4a 的 sprite_create 连续三次被拒：合成打包擦掉类型后，Preset 里 `const hits: string[] = []` 变成无标注的 `[]`，严格模式报 TS7034/7005；合成产物须与原 Preset 一样通过类型检查。"""
+def compose_and_validate(tmp_path: Path, code: str) -> tuple[dict, dict]:
+    """Compose one instance of a Preset, then return the real worker reports of the Preset and of the Sprite."""
+    properties = {"label": {"type": "string"}, "words": {"type": "array", "items": {"type": "string"}}}
     preset = {
-        "code": EMPTY_ARRAY_PRESET,
-        "parameter_schema": {
-            "type": "object", "required": ["label"], "additionalProperties": False,
-            "properties": {"label": {"type": "string"}, "words": {"type": "array", "items": {"type": "string"}}},
-        },
+        "code": code,
+        "parameter_schema": {"type": "object", "required": ["label"], "additionalProperties": False, "properties": properties},
         "default_parameters": {"label": "abc"}, "description": "tag",
     }
     [item] = [{
         "instance_id": "tag", "preset": preset, "parameters": {"label": "abc"},
         "layout": {"x": 0, "y": 0, "width": 540, "height": 200, "z_index": 0}, "timing": {"start_frame": 0, "duration_frames": 30},
     }]
-    code, schema, defaults = compose_source([item])
+    sprite, schema, defaults = compose_source([item])
     (tmp_path / "preset").mkdir()
-    assert run_code_worker(tmp_path / "preset", EMPTY_ARRAY_PRESET, {"label": {"type": "string"}, "words": {"type": "array", "items": {"type": "string"}}}, {"label": "abc"})["passed"] is True
     (tmp_path / "sprite").mkdir()
-    report = run_code_worker(tmp_path / "sprite", code, schema["properties"], defaults)
-    assert report["passed"] is True, report["diagnostics"]
+    return (
+        run_code_worker(tmp_path / "preset", code, properties, {"label": "abc"}),
+        run_code_worker(tmp_path / "sprite", sprite, schema["properties"], defaults),
+    )
+
+
+@needs_node
+def test_a_composed_sprite_keeps_erased_variable_types_valid_under_strict_typescript(tmp_path):
+    """任务 76be0e4a 的 sprite_create 连续三次被拒：合成打包擦掉类型注解与类型参数后，`const hits: string[] = []`、`Record<string, number>` 的 `{}`、字面量联合、解构以及 `useState<T | null>(null)`、`useRef<T>(null)`、`new Set<T>()` 都会在严格模式下报错；合成产物须与原 Preset 一样通过类型检查。"""
+    preset, sprite = compose_and_validate(tmp_path, ERASED_TYPES_PRESET)
+    assert preset["passed"] is True, preset["diagnostics"]
+    assert sprite["passed"] is True, sprite["diagnostics"]
 
 
 @needs_node

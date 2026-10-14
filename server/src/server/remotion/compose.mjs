@@ -55,22 +55,20 @@ const result = await build({
 });
 const source = ts.createSourceFile("Sprite.tsx", result.outputFiles[0]?.text ?? "", ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 // esbuild erases types and rewrites the default export. Restore generated function
-// boundaries and the variables whose erased annotation fixed their type with the parser,
-// so defaults, destructuring, recursive helpers and `const hits: T[] = []` remain valid.
+// boundaries and variables with the parser, so defaults, destructuring, recursive helpers and variables
+// typed only by an erased annotation or type argument (`const hits: T[] = []`, `useState<T | null>(null)`) remain valid.
 // Original Preset modules are independently typechecked before the generated adapter.
 const transformed = ts.transform(source, [(context) => {
-  /** True for a declaration TypeScript can only type from later assignments (`[]`, `null`, no initializer), which strict mode rejects once captured by a closure. */
-  function inferredFromAssignments(node, parent) {
-    if (parent && ts.isVariableDeclarationList(parent) && ts.isForInOrOfStatement(parent.parent)) return false;
-    const initializer = node.initializer;
-    return !initializer || initializer.kind === ts.SyntaxKind.NullKeyword || (ts.isArrayLiteralExpression(initializer) && initializer.elements.length === 0);
+  /** True for a for-in/for-of binding, where a type annotation is a syntax error. */
+  function loopBinding(parent) {
+    return Boolean(parent && ts.isVariableDeclarationList(parent) && ts.isForInOrOfStatement(parent.parent));
   }
   /** Normalize emitted JavaScript without running any Preset code. */
   function visit(node) {
     const parent = node.parent;
     node = ts.visitEachChild(node, visit, context);
     const any = () => ts.factory.createKeywordTypeNode(ts.SyntaxKind.AnyKeyword);
-    if (ts.isVariableDeclaration(node) && !node.type && ts.isIdentifier(node.name) && inferredFromAssignments(node, parent)) {
+    if (ts.isVariableDeclaration(node) && !node.type && !loopBinding(parent)) {
       return ts.factory.updateVariableDeclaration(node, node.name, node.exclamationToken, any(), node.initializer);
     }
     if (ts.isParameter(node)) {
