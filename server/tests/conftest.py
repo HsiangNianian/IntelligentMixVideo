@@ -3,6 +3,7 @@
 路由仍调用真实 schema/store；仅适配排序规则和唯一约束错误码，不模拟 MySQL 行锁或建库。
 """
 
+import asyncio
 import hashlib
 import json
 import os
@@ -24,6 +25,7 @@ from sqlalchemy.exc import IntegrityError
 from server import database
 from server.app import app
 from server.remotion_templates import sprite_store
+from server.remotion_templates.object_store import LocalObjects
 from server.template import store
 
 
@@ -118,6 +120,41 @@ SPRITE_ID = "6f1c8a52-3d94-4b7e-9a10-2c5e8d7b4f31"
 # Remotion 作品归属的测试设备；HTTP 用例以 DEVICE_HEADERS 携带，直接调用 Store 时传 DEVICE。
 DEVICE = UUID("0d1ce0aa-5b8e-4c4f-9a3e-7c1d2b3a4e5f")
 DEVICE_HEADERS = {"X-IMV-Device": str(DEVICE)}
+
+
+class RecordingObjects(LocalObjects):
+    """本地对象存储，记录每次调用是否发生在事件循环上、是否持有 Store 写锁（对象存储可能是慢速网络）。"""
+
+    def __init__(self, root: Path) -> None:
+        """记录写入 `calls`；构造 Store 后把它赋给 `store`，以便检查写锁。"""
+        super().__init__(root)
+        self.store = None
+        self.calls: list[tuple[str, str, bool, bool]] = []
+
+    def _record(self, operation: str, key: str) -> None:
+        """记录操作、键、是否在运行中的事件循环线程、是否持有写锁。"""
+        try:
+            asyncio.get_running_loop()
+            on_loop = True
+        except RuntimeError:
+            on_loop = False
+        locked = self.store is not None and self.store._write._is_owned()
+        self.calls.append((operation, key, on_loop, locked))
+
+    def put(self, key: str, path: Path, content_type: str) -> None:
+        """记录后照常写入。"""
+        self._record("put", key)
+        super().put(key, path, content_type)
+
+    def fetch(self, key: str, destination: Path) -> None:
+        """记录后照常读取。"""
+        self._record("fetch", key)
+        super().fetch(key, destination)
+
+    def delete_prefix(self, prefix: str) -> None:
+        """记录后照常删除。"""
+        self._record("delete", prefix)
+        super().delete_prefix(prefix)
 
 
 def remotion_track(track_id: str = "clip", **changes) -> dict:

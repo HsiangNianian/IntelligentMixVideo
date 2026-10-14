@@ -46,7 +46,7 @@ from server.remotion_templates.models import (
     ValidationReport,
     validation_fingerprint,
 )
-from .conftest import DEVICE, DEVICE_HEADERS
+from .conftest import DEVICE, DEVICE_HEADERS, RecordingObjects
 
 
 @pytest.fixture
@@ -519,6 +519,28 @@ def test_follow_up_images_follow_work_lifecycle(store, service, candidate, spec,
     assert not image_object(store, own).exists()
     for asset in (original, kept):
         assert store.asset_path(asset.id).exists()
+
+
+def test_cleanup_calls_the_object_store_outside_the_write_lock(tmp_path, template_db, candidate, spec):
+    """删除会话与回收无人引用的上传都在写锁之外调用对象存储，慢速 ZOS 不会阻塞其他写入。"""
+    objects = RecordingObjects(tmp_path / "data" / "objects")
+    store = Store(tmp_path / "data", objects)
+    objects.store = store
+    store.initialize()
+    image, orphan = reference(store), reference(store)
+    work, job = store.create(GenerateTemplateRequest(description="删除", images=[{"asset_id": image.id}]), DEVICE)
+    store.claim()
+    publish_fixture(store, job.id, candidate, spec, evidence(candidate, spec))
+    age(store, orphan, 25)
+    objects.calls.clear()
+    store.begin_deletion(work.id)
+    deletion.finish(store, work.id)
+    assert store.prune_assets() == [orphan.id]
+    deleted = [call for call in objects.calls if call[0] == "delete"]
+    assert {key for _, key, _, _ in deleted} >= {asset_key(image.id), asset_key(orphan.id)}
+    assert all(not locked for *_, locked in deleted)
+    assert not image_object(store, image).exists() and not image_object(store, orphan).exists()
+    assert count(store, assets) == 0
 
 
 def age(store, asset, hours):

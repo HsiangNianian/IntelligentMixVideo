@@ -68,7 +68,11 @@ stays because retrying it or answering its questions needs its input.
 
 Sealed version files, reference images and Sprite preview bundles are objects under `imv/remotion/`
 (`object_store.py`): public-read in ZOS once `ZOS_BUCKET` is set, otherwise files under `IMV_DATA_DIR/objects`.
-The backend reads them through a verified cache in `IMV_DATA_DIR/cache` (SHA-256 against the MySQL record); job
+The backend reads them through a verified cache in `IMV_DATA_DIR/cache` (SHA-256 against the MySQL record), one file
+at a time (deciding whether a parameter patch is instant reads only `interactive.js`). Object uploads, downloads and
+deletes run in worker threads and never under the write lock: a version is uploaded under its new ID before its record
+commits and removed again if the commit fails; deletion and the upload sweep remove records and objects in separate
+steps. Job
 scratch is removed when the job ends and the private `audit/<job_id>.jsonl` log outlives it. An hourly sweep applies
 three retention periods: undelivered events (`IMV_UNDELIVERED_EVENT_DAYS`, 7), audit logs
 (`IMV_AUDIT_RETENTION_DAYS`, 14) and the works of devices inactive for `IMV_DEVICE_RETENTION_DAYS` (90).

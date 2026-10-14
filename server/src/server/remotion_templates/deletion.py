@@ -47,32 +47,40 @@ def remove_path(root: Path, category: str, identifier: str, suffix: str = "") ->
 def finish(store: "Store", work_id: UUID) -> None:
     """Remove objects and local copies, then the records; reference images no other work uses go too.
 
-    Call only after worker teardown, or during startup before workers exist. A storage failure rolls back the
-    record removal but keeps the previously committed deletion flag.
+    Call only after worker teardown, or during startup before workers exist. Files and objects are removed outside the
+    write lock: nothing can add a job, version or image reference to a deleting work, and an image only this work uses
+    cannot be attached elsewhere meanwhile (`Store.require_references` refuses images of deleting works). A storage
+    failure leaves every record and the committed deletion flag, so a retry derives the same keys again.
     """
     from .store import asset_key, version_key
 
     identifier = str(work_id)
-    with store.transaction() as db:
-        deleting = db.execute(select(works.c.deleting).where(works.c.id == identifier)).scalar()
-        if not deleting:
+    with store.reading() as db:
+        if not db.execute(select(works.c.deleting).where(works.c.id == identifier)).scalar():
             return
         job_ids = db.execute(select(jobs.c.id).where(jobs.c.work_id == identifier)).scalars().all()
         version_ids = db.execute(select(versions.c.id).where(versions.c.work_id == identifier)).scalars().all()
-        for job_id in job_ids:
-            remove_path(store.root, "jobs", job_id)
-            remove_path(store.root, "audit", job_id, ".jsonl")
-        for version_id in version_ids:
-            store.objects.delete_prefix(version_key(UUID(version_id)))
-            remove_path(store.root / "cache", "accepted", version_id)
         images = db.execute(select(work_assets.c.asset_id).where(work_assets.c.work_id == identifier)).scalars().all()
-        for asset_id in sorted(images):
+        exclusive = [
+            asset_id for asset_id in sorted(images)
             if not db.execute(select(work_assets.c.work_id).where(
                 work_assets.c.asset_id == asset_id, work_assets.c.work_id != identifier,
-            ).limit(1)).first():
-                store.objects.delete_prefix(asset_key(UUID(asset_id)))
-                remove_path(store.root / "cache", "assets", asset_id, ".png")
-                db.execute(delete(assets).where(assets.c.id == asset_id))
+            ).limit(1)).first()
+        ]
+    for job_id in job_ids:
+        remove_path(store.root, "jobs", job_id)
+        remove_path(store.root, "audit", job_id, ".jsonl")
+    for version_id in version_ids:
+        store.objects.delete_prefix(version_key(UUID(version_id)))
+        remove_path(store.root / "cache", "accepted", version_id)
+    for asset_id in exclusive:
+        store.objects.delete_prefix(asset_key(UUID(asset_id)))
+        remove_path(store.root / "cache", "assets", asset_id, ".png")
+    with store.transaction() as db:
+        if not db.execute(select(works.c.deleting).where(works.c.id == identifier)).scalar():
+            return
+        if exclusive:
+            db.execute(delete(assets).where(assets.c.id.in_(exclusive)))
         db.execute(delete(work_assets).where(work_assets.c.work_id == identifier))
         db.execute(delete(job_progress).where(job_progress.c.job_id.in_(job_ids)))
         db.execute(delete(job_rounds).where(job_rounds.c.job_id.in_(job_ids)))

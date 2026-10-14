@@ -8,6 +8,7 @@ folder only holds job scratch, a verified read cache and the private audit logs.
 """
 
 import json
+import logging
 import shutil
 import threading
 from collections.abc import Iterator
@@ -55,6 +56,7 @@ from .tables import (
 )
 
 ACTIVE = ("queued", "running")
+logger = logging.getLogger(__name__)
 # A device's last-seen time is rewritten at most this often.
 TOUCH_INTERVAL = timedelta(hours=1)
 
@@ -251,23 +253,25 @@ class Store:
     def prune_assets(self, older_than: timedelta = ORPHAN_ASSET_TTL) -> list[UUID]:
         """Delete uploads that no work references once they are older than ``older_than``; return their IDs.
 
-        Works being deleted still reference their images until cleanup finishes, so those stay for it. A storage
-        failure rolls back the record removal, as work deletion does.
+        Works being deleted still reference their images until cleanup finishes, so those stay for it. The records go
+        first, so no message can reference an image whose bytes are being removed, and the object store is called
+        outside the write lock; an object that fails to delete is only logged, since nothing can reach it any more.
         """
         cutoff = now() - older_than
-        removed = []
         with self.transaction() as db:
             rows = db.execute(select(assets.c.id, assets.c.data).where(
                 assets.c.id.not_in(select(work_assets.c.asset_id))
             )).all()
-            for row in rows:
-                if Asset.model_validate_json(row.data).created_at >= cutoff:
-                    continue
-                self.objects.delete_prefix(asset_key(UUID(row.id)))
-                (self.root / "cache" / "assets" / f"{row.id}.png").unlink(missing_ok=True)
-                db.execute(delete(assets).where(assets.c.id == row.id))
-                removed.append(UUID(row.id))
-        return removed
+            removed = [row.id for row in rows if Asset.model_validate_json(row.data).created_at < cutoff]
+            if removed:
+                db.execute(delete(assets).where(assets.c.id.in_(removed)))
+        for identifier in removed:
+            try:
+                self.objects.delete_prefix(asset_key(UUID(identifier)))
+                (self.root / "cache" / "assets" / f"{identifier}.png").unlink(missing_ok=True)
+            except Exception:
+                logger.exception("Unused reference image %s could not be removed from storage", identifier)
+        return [UUID(identifier) for identifier in removed]
 
     def require_references(self, db: Connection, images: list[UUID], device: UUID) -> None:
         """Accept images this device uploaded unless a deleting work still uses one, since cleanup may remove it."""
@@ -312,6 +316,17 @@ class Store:
         finally:
             staged.unlink(missing_ok=True)
         return path
+
+    def version_file(self, version: TemplateVersion, name: str) -> Path:
+        """Return a verified local copy of one sealed file, downloading only that file when the cache lacks it.
+
+        Raises FileNotFoundError when the version has no such file or its object is gone.
+        """
+        if name not in version.validation.artifacts:
+            raise FileNotFoundError(name)
+        return self.cached(
+            version_key(version.id, name), Path("accepted") / str(version.id) / name, version.validation.artifacts[name],
+        )
 
     def accepted(self, version: TemplateVersion) -> Path:
         """Return a local copy of a version's sealed files, downloaded on demand and checked against its evidence.
@@ -519,11 +534,19 @@ class Store:
         report: ValidationReport,
         directory: Path,
     ) -> TemplateVersion:
-        """Publish generated or user-edited results with distinct gates; cancellation wins over either."""
+        """Publish generated or user-edited results with distinct gates; cancellation wins over either.
+
+        The sealed bytes are uploaded under a fresh version ID before the record transaction, outside the write lock,
+        so a slow object store never blocks other writers. If the transaction fails they are removed again, unless the
+        version did commit and only the acknowledgement was lost.
+        """
         verify_artifacts(candidate, spec, report, directory)
+        if self.job(job_id).status != "running":
+            raise Conflict("only a running job may publish a version")
         version_id = uuid4()
-        uploaded = False
         try:
+            for name in report.artifacts:
+                self.objects.put(version_key(version_id, name), directory / name, "application/octet-stream")
             with self.transaction() as db:
                 job = self._job_for_update(db, job_id)
                 if job.status != "running":
@@ -568,10 +591,6 @@ class Store:
                     validation=report,
                     created_at=now(),
                 )
-                # Upload the sealed bytes before the record commits; a failed commit removes them again.
-                uploaded = True
-                for name in report.artifacts:
-                    self.objects.put(version_key(version.id, name), directory / name, "application/octet-stream")
                 db.execute(insert(versions).values(
                     id=str(version.id), work_id=str(project.id), number=number, data=version.model_dump_json(),
                 ))
@@ -580,8 +599,7 @@ class Store:
                 job.status, job.stage, job.result_version_id = "succeeded", "finished", version.id
                 self._save_job(db, job)
         except BaseException:
-            if uploaded:
-                self.objects.delete_prefix(version_key(version_id))
+            self._discard_upload(version_id)
             raise
         # Seed the read cache from the verified candidate so the first preview needs no download.
         cached = self.root / "cache" / "accepted" / str(version.id)
@@ -589,6 +607,16 @@ class Store:
         for name in report.artifacts:
             shutil.copyfile(directory / name, cached / name)
         return version
+
+    def _discard_upload(self, version_id: UUID) -> None:
+        """Remove the objects of a version whose record did not commit; a cleanup failure is logged, never raised."""
+        try:
+            with self.reading() as db:
+                if db.execute(select(versions.c.id).where(versions.c.id == str(version_id))).first() is not None:
+                    return
+            self.objects.delete_prefix(version_key(version_id))
+        except Exception:
+            logger.exception("Objects of unpublished version %s could not be removed", version_id)
 
     def versions(self, project_id: UUID, device: UUID | None = None) -> list[TemplateVersion]:
         """List accepted revisions in publication order, including historical edit bases."""

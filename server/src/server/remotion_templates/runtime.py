@@ -178,11 +178,14 @@ class Runtime:
         return job
 
     def instant(self, base) -> bool:
-        """Whether a parameter patch on this accepted version is saved at once instead of rendered in the sandbox."""
+        """Whether a parameter patch on this accepted version is saved at once instead of rendered in the sandbox.
+
+        Only the player bundle decides, so only that file is read (downloaded once into the verified cache).
+        """
         if base.spec.schema_version != "2":
             return False
         try:
-            return revisable(self.store.accepted(base))
+            return revisable(self.store.version_file(base, "interactive.js").parent)
         except (OSError, ValueError):
             return False
 
@@ -377,7 +380,10 @@ class Runtime:
                 inputs = self.store.inputs(job_id)
                 # The work's original image first, then images attached to the messages this task answers.
                 references = reference_images(project, inputs)
-                images = [self.store.asset_path(UUID(entry["asset_id"])) for entry in references]
+                # Reference images may have to be downloaded from the object store; keep that off the event loop.
+                images = await asyncio.to_thread(
+                    lambda: [self.store.asset_path(UUID(entry["asset_id"])) for entry in references]
+                )
                 base = (
                     self.store.version(job.base_version_id)
                     if job.base_version_id
@@ -450,7 +456,7 @@ class Runtime:
                 candidate, spec, report, attempt_dir = result
                 self.store.update(job_id, usage=budget.summary())
                 budget.progress("preparing")
-                self.store.publish(job_id, candidate, spec, report, attempt_dir)
+                await asyncio.to_thread(self.store.publish, job_id, candidate, spec, report, attempt_dir)
         except asyncio.CancelledError:
             self.store.update(
                 job_id, status="interrupted", stage="finished", usage=budget.summary()

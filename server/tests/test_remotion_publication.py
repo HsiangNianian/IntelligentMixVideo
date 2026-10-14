@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -20,7 +21,7 @@ from server.remotion_templates.settings import Settings
 from server.remotion_templates.store import Store, Conflict
 from server.remotion_templates.tools.contracts import RenderValidationReport, SpriteDraft, SpriteRecord
 
-from .conftest import DEVICE, DEVICE_HEADERS
+from .conftest import DEVICE, DEVICE_HEADERS, RecordingObjects
 
 
 @pytest.fixture
@@ -285,6 +286,100 @@ def test_cancellation_wins_over_ready_artifacts(harness, sprite):
     with pytest.raises(Conflict):
         store.publish(job.id, *result)
     assert store.project(work.id).current_version_id is None
+
+
+def recording_store(harness) -> tuple[Store, RecordingObjects]:
+    """A store whose local object store records where each call ran."""
+    objects = RecordingObjects(harness.settings.data_dir / "objects")
+    store = Store(harness.settings.data_dir, objects)
+    objects.store = store
+    store.initialize()
+    return store, objects
+
+
+def test_generation_publishes_off_the_event_loop_and_outside_the_write_lock(harness, sprite):
+    """A generated version is uploaded in a worker thread before the record transaction, never under the write lock."""
+    store, objects = recording_store(harness)
+    work, job = store.create(GenerateTemplateRequest(description="标题"), DEVICE)
+    store.claim()
+    result = asyncio.run(harness.finalize_sprite(session_for(sprite, runtime_report(sprite)), "saved", Budget(), store.job_dir(job.id)))
+
+    class Generated:
+        """Return the finished composition without a model call."""
+
+        renderer = None
+
+        async def generate(self, *args, **options):
+            """Hand back the sealed result the runtime then publishes."""
+            return result
+
+    service = Runtime(store, Generated(), harness.settings)
+    asyncio.run(service._execute(job.id))
+    version = store.project(work.id).current_version_id
+    assert version is not None and store.job(job.id).status == "succeeded"
+    puts = [call for call in objects.calls if call[0] == "put"]
+    assert len(puts) == len(store.version(version).validation.artifacts)
+    assert all(not on_loop and not locked for _, _, on_loop, locked in puts)
+
+
+def test_a_failed_publication_removes_its_upload_unless_the_version_committed(harness, sprite, monkeypatch):
+    """A rolled-back transaction removes the uploaded objects; a commit whose acknowledgement is lost keeps them."""
+    store, objects = recording_store(harness)
+    versions_root = harness.settings.data_dir / "objects" / "imv" / "remotion" / "versions"
+    work, job = store.create(GenerateTemplateRequest(description="标题"), DEVICE)
+    store.claim()
+    result = asyncio.run(harness.finalize_sprite(session_for(sprite, runtime_report(sprite)), "saved", Budget(), store.job_dir(job.id)))
+    original = Store.transaction
+
+    class Rollback:
+        """Raise inside the publication transaction so nothing commits."""
+
+        def __init__(self, store):
+            """Wrap the real transaction of this store."""
+            self.manager = original(store)
+
+        def __enter__(self):
+            """Open the real transaction."""
+            return self.manager.__enter__()
+
+        def __exit__(self, kind, error, trace):
+            """Roll back as if the commit had failed."""
+            self.manager.__exit__(OSError, OSError("commit failed"), None)
+            raise OSError("commit failed")
+
+    class LostAcknowledgement(Rollback):
+        """Commit for real, then report a failure as a dropped connection would."""
+
+        def __exit__(self, kind, error, trace):
+            """Commit, then raise."""
+            self.manager.__exit__(kind, error, trace)
+            raise OSError("acknowledgement lost")
+
+    monkeypatch.setattr(Store, "transaction", lambda self: Rollback(self) if self is store else original(self))
+    with pytest.raises(OSError, match="commit failed"):
+        store.publish(job.id, *result)
+    monkeypatch.setattr(Store, "transaction", original)
+    assert store.project(work.id).current_version_id is None
+    assert not versions_root.exists() or not any(versions_root.iterdir())
+    monkeypatch.setattr(Store, "transaction", lambda self: LostAcknowledgement(self) if self is store else original(self))
+    with pytest.raises(OSError, match="acknowledgement lost"):
+        store.publish(job.id, *result)
+    monkeypatch.setattr(Store, "transaction", original)
+    version = store.version(store.project(work.id).current_version_id)
+    assert all(sealed(store, version.id, name).is_file() for name in version.validation.artifacts)
+
+
+def test_instant_revision_check_reads_only_the_player_bundle(harness, sprite):
+    """Deciding whether a parameter patch is instant downloads the bundle alone, not every sealed file."""
+    store, objects = recording_store(harness)
+    work, job = store.create(GenerateTemplateRequest(description="标题"), DEVICE)
+    store.claim()
+    result = asyncio.run(harness.finalize_sprite(session_for(sprite, runtime_report(sprite)), "saved", Budget(), store.job_dir(job.id)))
+    version = store.publish(job.id, *result)
+    shutil.rmtree(store.root / "cache")
+    objects.calls.clear()
+    assert Runtime(store, harness, harness.settings).instant(version)
+    assert [call[1].rsplit("/", 1)[-1] for call in objects.calls] == ["interactive.js"]
 
 
 def test_host_builds_preview_without_agent_test_scripts(harness, sprite, tmp_path):

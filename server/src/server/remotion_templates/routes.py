@@ -229,7 +229,10 @@ async def edit(work_id: UUID, request: TaskMessage, service: Service, owner: Dev
     尚无成功版本的会话也可继续提问或描述生成需求；参数修改仍须已有成功版本。
     """
     service.store.project(work_id, owner)
-    if request.parameters is not None and parameters_need_sandbox(service, request.base_version_id, work_id):
+    # Deciding may download the base's player bundle; doing it in a thread also warms the cache `_start` reads.
+    if request.parameters is not None and await asyncio.to_thread(
+        parameters_need_sandbox, service, request.base_version_id, work_id,
+    ):
         require_sandbox(service)
     try:
         return PublicJob.from_job(service.message(work_id, request, config))
@@ -311,7 +314,9 @@ async def retry(job_id: UUID, service: Service, owner: Device, config: Config) -
     保留原任务记录及产物，不从中断位置续跑；不符合重试条件时返回 409。
     更早版本的参数修订任务重试需要渲染校验环境，缺失时返回 503；组合版本的参数修订与对话类任务仍可重试，环境问题在校验工具调用时报告。
     """
-    if service.store.inputs(job_id).mode == "parameters" and parameters_need_sandbox(service, service.store.job(job_id, owner).base_version_id):
+    if service.store.inputs(job_id).mode == "parameters" and await asyncio.to_thread(
+        parameters_need_sandbox, service, service.store.job(job_id, owner).base_version_id,
+    ):
         require_sandbox(service)
     service.store.job(job_id, owner)
     return PublicJob.from_job(service.retry(job_id, config=config))
