@@ -97,7 +97,7 @@ async def run() -> None:
     asset = save_image(frame.read_bytes(), service.store, settings)
     _, image_job = service.store.create(
         GenerateTemplateRequest(
-            image=ImageReference(asset_id=asset.id), composition=composition
+            images=[ImageReference(asset_id=asset.id)], composition=composition
         )
     )
     service.notify()

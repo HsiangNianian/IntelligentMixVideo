@@ -13,8 +13,11 @@ from uuid import UUID
 if TYPE_CHECKING:
     from .store import Store
 
-# Works that use an asset: as the original request image or as an image attached to a later message.
+# Works that use an asset: as an original request image (the single ``image`` of works stored before
+# multi-image chat, or ``images``) or as an image attached to a later message.
 REFERENCES = """SELECT id FROM projects WHERE json_extract(data, '$.request.image.asset_id')=:asset
+    UNION SELECT p.id FROM projects p, json_each(p.data, '$.request.images') i
+    WHERE json_extract(i.value, '$.asset_id')=:asset
     UNION SELECT j.project_id FROM jobs j, json_each(j.input_data, '$.images') i
     WHERE json_extract(i.value, '$.asset_id')=:asset"""
 
@@ -55,8 +58,9 @@ def finish(store: "Store", work_id: UUID) -> None:
         project = db.execute(
             "SELECT data FROM projects WHERE id=?", (identifier,)
         ).fetchone()
-        image = json.loads(project[0])["request"].get("image") if project else None
-        images = {str(UUID(image["asset_id"]))} if image else set()
+        request = json.loads(project[0])["request"] if project else {}
+        originals = request.get("images", []) + ([request["image"]] if request.get("image") else [])
+        images = {str(UUID(image["asset_id"])) for image in originals}
         images.update(
             str(UUID(row[0]))
             for row in db.execute(

@@ -1,4 +1,4 @@
-/** 当前会话的聊天展示与输入；每条消息可附一张参考图（点击选择、拖入或粘贴），只作为生成参考，预览 URL 随组件卸载释放。 */
+/** 当前会话的聊天展示与输入；每条消息最多附 4 张参考图（点击选择、拖入或粘贴），只作为生成参考，预览 URL 随组件卸载释放。 */
 import { cn } from "@/lib/utils";
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowUp, ImagePlus, Square, Sparkles, X } from "lucide-react";
@@ -11,7 +11,7 @@ import { DurationPicker } from "./DurationPicker";
 import { LoopRounds } from "./LoopRounds";
 import { TaskStatus } from "./TaskStatus";
 import { VersionCard } from "./VersionCard";
-import type { ChatMessage, Job, SessionJob, Version } from "./model";
+import { MAX_MESSAGE_IMAGES, type ChatMessage, type Job, type SessionJob, type Version } from "./model";
 import type { Draft } from "./useTemplateSession";
 import { FlipText } from "@/components/ui/flip-text";
 import { LoaderGooeyBlobs } from "@/components/ui/loaders-gooey-blobs";
@@ -42,7 +42,7 @@ interface Props {
   disabledReason?: string;
   canStop: boolean;
   first: boolean;
-  onSend: (text: string, image?: File, durationInFrames?: number) => void;
+  onSend: (text: string, images: File[], durationInFrames?: number) => void;
   onStop: () => void;
   draft?: Draft | null;
   job?: Job | SessionJob | null;
@@ -87,7 +87,7 @@ export function ChatPanel({
   versionNotice,
 }: Props) {
   const [text, setText] = useState("");
-  const [image, setImage] = useState<File>();
+  const [images, setImages] = useState<File[]>([]);
   const [error, setError] = useState("");
   const [frames, setFrames] = useState<number | null>(FIXED_COMPOSITION.duration_in_frames);
   const [dragging, setDragging] = useState(false);
@@ -103,18 +103,23 @@ export function ChatPanel({
     if (versionId && (message.role === "assistant" || !anchors.has(versionId)))
       anchors.set(versionId, message.id);
   }
-  /** 选择、拖放与粘贴共用的参考图校验；锁定时不附图（输入区下方常驻锁定原因），不合规时显示错误并保留原图。 */
-  function attach(file: File | undefined) {
-    if (disabled || !file) return;
-    if (
-      !["image/png", "image/jpeg", "image/webp"].includes(file.type) ||
-      file.size > 10 * 1024 * 1024
-    ) {
-      setError("请选择不超过 10 MiB 的 PNG、JPEG 或 WebP 图片。");
-      return;
-    }
-    setImage(file);
-    setError("");
+  /** 选择、拖放与粘贴共用：逐张校验格式与大小，合规的按顺序追加，每条最多 MAX_MESSAGE_IMAGES 张；锁定时不附图（输入区下方常驻锁定原因）。 */
+  function attach(files: File[]) {
+    if (disabled || !files.length) return;
+    const valid = files.filter(
+      (file) =>
+        ["image/png", "image/jpeg", "image/webp"].includes(file.type) &&
+        file.size <= 10 * 1024 * 1024,
+    );
+    const room = Math.max(MAX_MESSAGE_IMAGES - images.length, 0);
+    if (valid.length && room) setImages([...images, ...valid.slice(0, room)]);
+    setError(
+      valid.length < files.length
+        ? "请选择不超过 10 MiB 的 PNG、JPEG 或 WebP 图片。"
+        : valid.length > room
+          ? `每条消息最多附 ${MAX_MESSAGE_IMAGES} 张参考图片。`
+          : "",
+    );
   }
   /** 代码、预览与选择各自绑定版本，不能从当前草稿推导历史内容。 */
   function resultCard(version: Version) {
@@ -135,7 +140,7 @@ export function ChatPanel({
   useEffect(() => {
     if (!draft) return;
     setText((current) => current || draft.text);
-    setImage((current) => current ?? draft.image);
+    setImages((current) => (current.length ? current : draft.images));
   }, [draft]);
   // 历史分页只在头部插入消息；末尾新增回复才跟随到底部。
   useEffect(() => {
@@ -148,10 +153,10 @@ export function ChatPanel({
   }, [job?.id, phaseCount, versions.at(-1)?.id, versions.length]);
   /** 按钮与 Enter 共用防重复入口；等待期间保留文字草稿。 */
   function send() {
-    if (disabled || (!text.trim() && !image) || (first && frames === null)) return;
-    onSend(text, image, first ? frames! : undefined);
+    if (disabled || (!text.trim() && !images.length) || (first && frames === null)) return;
+    onSend(text, images, first ? frames! : undefined);
     setText("");
-    setImage(undefined);
+    setImages([]);
     setError("");
   }
   return (
@@ -230,15 +235,20 @@ export function ChatPanel({
                     : "rounded-bl-md bg-muted",
                 )}
               >
-                {message.image && <ReferenceImage file={message.image} />}
-                {message.image_asset_id && (
-                  <img
-                    src={apiUrl(
-                      `/assets/${encodeURIComponent(message.image_asset_id)}`,
-                    )}
-                    alt="历史参考图片"
-                    className="max-h-32 max-w-full rounded-lg object-contain"
-                  />
+                {!!(message.images?.length || message.image_asset_ids?.length) && (
+                  <div className="flex flex-wrap gap-2">
+                    {message.images?.map((file, index) => (
+                      <ReferenceImage key={index} file={file} />
+                    ))}
+                    {message.image_asset_ids?.map((id) => (
+                      <img
+                        key={id}
+                        src={apiUrl(`/assets/${encodeURIComponent(id)}`)}
+                        alt="历史参考图片"
+                        className="max-h-32 max-w-full rounded-lg object-contain"
+                      />
+                    ))}
+                  </div>
                 )}
                 {message.created_at && (
                   <time
@@ -313,15 +323,16 @@ export function ChatPanel({
         onDrop={(event) => {
           event.preventDefault();
           setDragging(false);
-          attach(event.dataTransfer.files[0]);
+          attach(Array.from(event.dataTransfer.files));
         }}
         onPaste={(event) => {
-          const file = Array.from(event.clipboardData.items)
-            .find((item) => item.kind === "file" && item.type.startsWith("image/"))
-            ?.getAsFile();
-          if (!file) return;
+          const files = Array.from(event.clipboardData.items)
+            .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+            .map((item) => item.getAsFile())
+            .filter((file): file is File => !!file);
+          if (!files.length) return;
           event.preventDefault();
-          attach(file);
+          attach(files);
         }}
       >
         <AnimatePresence>
@@ -338,28 +349,32 @@ export function ChatPanel({
             </motion.div>
           )}
         </AnimatePresence>
-        {image && (
-          <motion.div
-            key={image.name + image.size}
-            initial={{ opacity: 0, scale: 0.85, filter: "blur(8px)" }}
-            animate={{ opacity: 1, scale: 1, filter: "blur(0px)" }}
-            transition={{ type: "spring", duration: 0.4, bounce: 0 }}
-            className="mb-2 flex origin-top-left items-start gap-2"
-          >
-            <ReferenceImage file={image} />
-            <Hint label="移除参考图片">
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-xs"
-                aria-label="移除参考图片"
-                disabled={disabled}
-                onClick={() => setImage(undefined)}
+        {!!images.length && (
+          <div className="mb-2 flex flex-wrap gap-2">
+            {images.map((file, index) => (
+              <motion.div
+                key={`${index}-${file.name}-${file.size}-${file.lastModified}`}
+                initial={{ opacity: 0, scale: 0.85, filter: "blur(8px)" }}
+                animate={{ opacity: 1, scale: 1, filter: "blur(0px)" }}
+                transition={{ type: "spring", duration: 0.4, bounce: 0 }}
+                className="flex origin-top-left items-start gap-1"
               >
-                <X />
-              </Button>
-            </Hint>
-          </motion.div>
+                <ReferenceImage file={file} />
+                <Hint label={`移除参考图片：${file.name}`}>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label={`移除参考图片：${file.name}`}
+                    disabled={disabled}
+                    onClick={() => setImages(images.filter((_, other) => other !== index))}
+                  >
+                    <X />
+                  </Button>
+                </Hint>
+              </motion.div>
+            ))}
+          </div>
         )}
         <Textarea
           aria-label="字效描述"
@@ -400,12 +415,13 @@ export function ChatPanel({
             disabled={disabled}
             type="file"
             accept="image/png,image/jpeg,image/webp"
+            multiple
             className="hidden"
             aria-label="上传参考图片"
             onChange={(event) => {
-              const file = event.target.files?.[0];
+              const files = Array.from(event.target.files ?? []);
               event.target.value = "";
-              attach(file);
+              attach(files);
             }}
           />
           <div className="flex min-w-0 flex-wrap items-center gap-1">
@@ -431,7 +447,7 @@ export function ChatPanel({
               type="submit"
               size="sm"
               className="ml-auto"
-              disabled={disabled || (!text.trim() && !image) || (first && frames === null)}
+              disabled={disabled || (!text.trim() && !images.length) || (first && frames === null)}
             >
               发送
               <ArrowUp />

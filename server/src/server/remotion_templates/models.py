@@ -9,6 +9,7 @@ from uuid import UUID
 from .tools.contracts import SpriteDraft
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -56,20 +57,48 @@ class ImageReference(Contract):
     asset_id: UUID
 
 
+# One chat message carries at most this many reference images.
+MAX_MESSAGE_IMAGES = 4
+
+
+def distinct_images(images: list[ImageReference]) -> list[ImageReference]:
+    """Reject the same upload listed twice in one message."""
+    if len({image.asset_id for image in images}) != len(images):
+        raise ValueError("a message lists the same image more than once")
+    return images
+
+
+MessageImages = Annotated[
+    list[ImageReference], Field(max_length=MAX_MESSAGE_IMAGES), AfterValidator(distinct_images)
+]
+
+
 class GenerateTemplateRequest(Contract):
     """Start one Agent project for text or a transparent visual overlay Sprite."""
 
     description: Text | None = None
-    image: ImageReference | None = None
+    images: MessageImages = Field(default_factory=list)
     composition: CompositionConfig = Field(default_factory=CompositionConfig)
     sprite_kind: Literal["text", "subtitle", "filter_overlay", "video_overlay", "transition_overlay"] = "text"
+
+    @model_validator(mode="before")
+    @classmethod
+    def single_image(cls, data):
+        """Read the single ``image`` that stored works and older clients use as a one-image list."""
+        if isinstance(data, dict) and "image" in data:
+            if "images" in data:
+                raise ValueError("send images only, not image and images together")
+            data = dict(data)
+            image = data.pop("image")
+            data["images"] = [] if image is None else [image]
+        return data
 
     @model_validator(mode="after")
     def require_input(self) -> Self:
         """Require user input and a fixed 30 FPS for new Agent generations."""
-        if self.description is None and self.image is None:
+        if self.description is None and not self.images:
             raise ValueError(
-                "description or image is required; video is not supported yet"
+                "description or images are required; video is not supported yet"
             )
         if self.composition.fps != 30:
             raise ValueError("new Remotion generations require 30 FPS")
@@ -77,19 +106,19 @@ class GenerateTemplateRequest(Contract):
 
 
 class EditTemplateRequest(Contract):
-    """Edit a successful version with natural language (text and/or a reference image) or a parameter patch."""
+    """Edit a successful version with natural language (text and/or reference images) or a parameter patch."""
 
     instruction: Text | None = None
-    image: ImageReference | None = None
+    images: MessageImages = Field(default_factory=list)
     parameters: dict[str, JsonValue] | None = None
     base_version_id: UUID | None = None
 
     @model_validator(mode="after")
     def exactly_one_edit(self) -> Self:
         """Prevent contradictory edits and parameter updates which do nothing."""
-        natural = self.instruction is not None or self.image is not None
+        natural = self.instruction is not None or bool(self.images)
         if natural == (self.parameters is not None):
-            raise ValueError("provide exactly one of instruction/image or parameters")
+            raise ValueError("provide exactly one of instruction/images or parameters")
         if self.parameters is not None and not self.parameters:
             raise ValueError("parameters must not be empty")
         return self
@@ -102,11 +131,11 @@ class TaskMessage(EditTemplateRequest):
 
     @model_validator(mode="after")
     def answer_is_text(self) -> Self:
-        """Question replies carry text and/or an image and cannot also select an edit base or patch parameters."""
+        """Question replies carry text and/or images and cannot also select an edit base or patch parameters."""
         if self.reply_to_job_id and (
             self.parameters is not None or self.base_version_id is not None
         ):
-            raise ValueError("question replies require instruction or image only")
+            raise ValueError("question replies require instruction or images only")
         return self
 
 

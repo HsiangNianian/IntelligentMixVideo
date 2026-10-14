@@ -117,7 +117,7 @@ def capabilities(service: Service, config: Config) -> dict:
     当前支持文字描述和图片，不支持视频；响应不包含模型密钥。
     """
     return {
-        "inputs": ["description", "image"],
+        "inputs": ["description", "images"],
         "video_supported": False,
         "models_configured": (service.settings.model_copy(update=config.model_dump()) if config is not None else service.settings).models_configured,
         "fonts": [{"family": "Noto Sans CJK SC", "weights": [400, 700]}],
@@ -134,7 +134,7 @@ def capabilities(service: Service, config: Config) -> dict:
 async def upload(service: Service, file: Annotated[UploadFile, File()]) -> Asset:
     """通过 multipart 表单的 `file` 字段上传单帧 PNG、JPEG 或 WebP 图片。
 
-    图片经校验后统一保存为 PNG，返回的 `id` 可用于创建作品或后续消息的 `image.asset_id`。
+    图片经校验后统一保存为 PNG，返回的 `id` 可用于创建作品或后续消息 `images` 中的 `asset_id`。
     默认大小上限为 10 MiB；超限返回 413，内容无效返回 422。
     上传后 24 小时仍未被任何作品或消息引用的图片（例如消息提交失败）会在之后的上传或服务启动时回收。
     """
@@ -160,7 +160,7 @@ async def create(
 ) -> dict[str, TemplateProject | PublicJob]:
     """根据文字描述和／或参考图片创建作品，并提交异步生成任务。
 
-    `description` 与 `image` 至少提供一种；可通过 `composition` 设置画布和时长。
+    `description` 与 `images`（每条最多 4 张，不能重复）至少提供一种；旧客户端的单张 `image` 按一张处理。可通过 `composition` 设置画布和时长。
     返回 202 及 `work`、`job`，随后使用任务 ID 查询进度；模型未配置时返回 503。
     """
     if (request.composition.width, request.composition.height, request.composition.fps) != (1080, 1920, 30):
@@ -169,8 +169,8 @@ async def create(
     if not settings.models_configured:
         raise HTTPException(503, "请配置 Agent 模型及密钥")
     require_sandbox(service)
-    if request.image:
-        service.store.asset(request.image.asset_id)
+    for image in request.images:
+        service.store.asset(image.asset_id)
     project, job = service.store.create(request)
     service.notify(job.id, config)
     return {"work": project, "job": PublicJob.from_job(job)}
@@ -225,10 +225,10 @@ def work(work_id: UUID, service: Service) -> TemplateProject:
 async def edit(work_id: UUID, request: TaskMessage, service: Service, config: Config) -> PublicJob:
     """通过参数补丁 `parameters` 或自然语言修改模板，两者必须二选一。
 
-    自然语言修改由 `instruction` 和／或参考图片 `image`（`POST /assets` 返回的 ID）组成，至少提供一项；
-    本次任务连同作品的原参考图一起读取这张图片，图片不能与参数补丁同时提交。
+    自然语言修改由 `instruction` 和／或参考图片 `images`（`POST /assets` 返回的 ID，最多 4 张、不能重复）组成，至少提供一项；
+    本次任务连同作品的原参考图一起读取这些图片，图片不能与参数补丁同时提交。
     默认基于当前成功版本，也可用 `base_version_id` 指定历史成功版本。
-    回答问题时用 instruction 和／或 image 提交答案，并用 reply_to_job_id 绑定提出问题的任务；回答沿用该任务已有的参考图片。
+    回答问题时用 instruction 和／或 images 提交答案，并用 reply_to_job_id 绑定提出问题的任务；回答沿用该任务已有的参考图片。
     图片不存在时返回 404，属于正在删除的会话时返回 409。
     参数修改保留 TSX：组合版本（PR76）只做参数 Schema 校验并立即封存新默认值，不进入任务队列、不启动沙箱、不重新打包；
     更早的版本仍经渲染检查后保存。都不调用 Actor 或 Judge。

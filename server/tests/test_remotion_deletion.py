@@ -1,6 +1,7 @@
 """字效会话删除的真实 SQLite/文件/API/队列回归；执行 uv run --locked pytest tests/test_remotion_deletion.py。"""
 
 import asyncio
+import json
 from datetime import timedelta
 from io import BytesIO
 from uuid import uuid4
@@ -438,19 +439,19 @@ def test_follow_up_images_follow_work_lifecycle(store, service, candidate, spec,
     )
     store.claim()
     version = publish_fixture(store, first.id, candidate, spec, evidence(candidate, spec))
-    edit = service.message(work.id, TaskMessage(instruction="参考这张", image={"asset_id": own.id}))
+    edit = service.message(work.id, TaskMessage(instruction="参考这张", images=[{"asset_id": own.id}]))
     assert store.job(edit.id).base_version_id == version.id
     assert store.inputs(edit.id) == JobInput(
         mode="edit", instruction="参考这张", images=[MessageImage(asset_id=own.id)]
     )
     store.update(edit.id, status="failed", stage="finished")
-    image_only = service.message(work.id, TaskMessage(image={"asset_id": kept.id}))
+    image_only = service.message(work.id, TaskMessage(images=[{"asset_id": kept.id}]))
     assert store.inputs(image_only.id).images == [MessageImage(asset_id=kept.id)]
     other, other_first = store.create(
         GenerateTemplateRequest(description="保留", image={"asset_id": kept.id})
     )
     store.update(other_first.id, status="failed", stage="finished")
-    service.message(other.id, TaskMessage(image={"asset_id": original.id}))
+    service.message(other.id, TaskMessage(images=[{"asset_id": original.id}]))
 
     store.begin_deletion(work.id)
     with pytest.raises(Conflict):
@@ -478,9 +479,9 @@ def test_unreferenced_uploads_are_reclaimed_after_a_grace_period(client, store, 
         GenerateTemplateRequest(description="保留", image={"asset_id": original.id})
     )
     store.update(first.id, status="failed", stage="finished")
-    service.message(work.id, TaskMessage(image={"asset_id": follow.id}))
+    service.message(work.id, TaskMessage(images=[{"asset_id": follow.id}]))
     with pytest.raises(Conflict):
-        service.message(work.id, TaskMessage(image={"asset_id": orphan.id}))
+        service.message(work.id, TaskMessage(images=[{"asset_id": orphan.id}]))
     for asset in (original, follow, orphan, later):
         age(store, asset, 25)
     age(store, fresh, 23)
@@ -503,3 +504,26 @@ def test_unreferenced_uploads_are_reclaimed_after_a_grace_period(client, store, 
     with pytest.raises(NotFound):
         store.asset(fresh.id)
     assert store.asset_path(original.id).exists() and store.asset_path(follow.id).exists()
+
+
+def test_single_image_work_cleans_up_its_original(client, store):
+    """多图之前保存的作品只有 request.image；删除时照常清理该图，被其他会话引用时保留。"""
+    legacy, shared = reference(store), reference(store)
+    works = [
+        store.create(GenerateTemplateRequest(description="旧作品", image={"asset_id": asset.id}))[0]
+        for asset in (legacy, shared)
+    ]
+    other, _ = store.create(GenerateTemplateRequest(description="共享", image={"asset_id": shared.id}))
+    with store.connection() as db:
+        for work in works:
+            data = json.loads(db.execute("SELECT data FROM projects WHERE id=?", (str(work.id),)).fetchone()[0])
+            data["request"]["image"] = data["request"].pop("images")[0]
+            db.execute("UPDATE projects SET data=? WHERE id=?", (json.dumps(data), str(work.id)))
+    for work in works:
+        assert client.delete(f"/api/templates/works/{work.id}").status_code == 204
+    with pytest.raises(NotFound):
+        store.asset(legacy.id)
+    assert store.asset_path(shared.id).exists()
+    assert client.delete(f"/api/templates/works/{other.id}").status_code == 204
+    with pytest.raises(NotFound):
+        store.asset(shared.id)

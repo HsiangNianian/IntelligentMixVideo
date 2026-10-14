@@ -143,8 +143,8 @@ test("图片上传互斥且失败后可重试固定配置", async () => {
   const { result } = renderHook(() => useTemplateSession(() => {}));
   const image = new File(["image"], "test.png", { type: "image/png" });
   act(() => {
-    result.current.send("", image);
-    result.current.send("重复上传", image);
+    result.current.send("", [image]);
+    result.current.send("重复上传", [image]);
   });
   expect(result.current.busy).toBe("chat");
   expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/assets"))).toHaveLength(1);
@@ -152,11 +152,11 @@ test("图片上传互斥且失败后可重试固定配置", async () => {
   await act(async () => finish(new Response(null, { status: 503 })));
   await waitFor(() => expect(result.current.busy).toBeNull());
   expect(creations()).toHaveLength(0);
-  act(() => result.current.send("", image));
+  act(() => result.current.send("", [image]));
   await act(async () => finish(Response.json({ id: "asset-1" })));
   await waitFor(() => expect(result.current.version).not.toBeNull());
   expect(creations()).toEqual([{
-    image: { asset_id: "asset-1" },
+    images: [{ asset_id: "asset-1" }],
     composition: { width: 1080, height: 1920, fps: 30, duration_in_frames: 150 },
   }]);
 });
@@ -168,7 +168,7 @@ test("迟到上传不跨会话创建作品", async () => {
     ? new Promise<Response>(resolve => { finish = resolve; })
     : undefined);
   const { result } = renderHook(() => useTemplateSession(() => {}));
-  act(() => result.current.send("旧图片", new File(["image"], "test.png", { type: "image/png" })));
+  act(() => result.current.send("旧图片", [new File(["image"], "test.png", { type: "image/png" })]));
   act(() => result.current.reset());
   await act(async () => finish(Response.json({ id: "asset-old" })));
   expect(creations()).toHaveLength(0);

@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID, uuid4
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from .models import (
     Contract,
@@ -27,9 +27,19 @@ class ChatMessage(Contract):
     job_id: UUID
     role: Literal["user", "assistant"]
     text: str
-    image_asset_id: UUID | None = None
+    image_asset_ids: list[UUID] = Field(default_factory=list)
     created_at: datetime
     reconstructed: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def single_image(cls, data):
+        """Read the single ``image_asset_id`` that messages stored before multi-image chat carry."""
+        if isinstance(data, dict) and "image_asset_id" in data:
+            data = dict(data)
+            image = data.pop("image_asset_id")
+            data["image_asset_ids"] = [] if image is None else [image]
+        return data
 
 
 class SessionJob(PublicJob):
@@ -129,7 +139,7 @@ def append_message(
     role: str,
     text: str,
     *,
-    image: UUID | None = None,
+    images: list[UUID] | None = None,
     reconstructed: bool = False,
 ) -> None:
     """Publish each task's user/assistant message once, including on retry and replay."""
@@ -146,7 +156,7 @@ def append_message(
         job_id=job.id,
         role=role,
         text=text,
-        image_asset_id=image,
+        image_asset_ids=images or [],
         created_at=job.created_at if role == "user" else job.updated_at,
         reconstructed=reconstructed,
     )
@@ -169,12 +179,12 @@ def record_input(
     inputs: JobInput,
     text: str | None = None,
     *,
-    image: UUID | None = None,
+    images: list[UUID] | None = None,
     reconstructed: bool = False,
 ) -> None:
     """Record persisted input; reconstructed messages never quote the private model context.
 
-    ``image`` is the reference attached to this message; the first message shows the work's original image.
+    ``images`` are the references attached to this message; the first message shows the work's original images.
     """
     first = db.execute(
         "SELECT id FROM jobs WHERE project_id=? ORDER BY rowid LIMIT 1",
@@ -186,7 +196,7 @@ def record_input(
         ).fetchone()
         project = TemplateProject.model_validate_json(row[0])
         text = project.request.description or "请参考这张图片制作字效。"
-        image = project.request.image.asset_id if project.request.image else None
+        images = [image.asset_id for image in project.request.images]
     elif text is None:
         if inputs.clarifications:
             answer = json.loads(inputs.clarifications[-1])
@@ -195,8 +205,8 @@ def record_input(
             text = "调整模板参数。"
         else:
             # An image-only message has no text; the client shows its own caption beside the image.
-            text = inputs.instruction or ("" if image else "重试本次制作。")
-    append_message(db, job, "user", text, image=image, reconstructed=reconstructed)
+            text = inputs.instruction or ("" if images else "重试本次制作。")
+    append_message(db, job, "user", text, images=images, reconstructed=reconstructed)
 
 
 def public_job(db: sqlite3.Connection, job: GenerationJob, *, include_rounds: bool = True) -> SessionJob:

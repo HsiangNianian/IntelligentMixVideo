@@ -36,8 +36,8 @@ REFERENCE_MEANINGS = {
 def reference_images(project, inputs: JobInput) -> list[dict]:
     """Describe every reference image in the order the model receives them, each with its source."""
     entries = [
-        {"asset_id": str(project.request.image.asset_id), "source": "work_original"}
-    ] if project.request.image else []
+        {"asset_id": str(image.asset_id), "source": "work_original"} for image in project.request.images
+    ]
     entries += [
         image.model_dump(mode="json", exclude_none=True) for image in inputs.images
     ]
@@ -117,14 +117,14 @@ class Runtime:
             raise Conflict("base version belongs to another work")
         if request.parameters is not None:
             patch_parameters(base.candidate, base.spec, request.parameters)
-        image = request.image.asset_id if request.image else None
+        images = [image.asset_id for image in request.images]
         inputs = JobInput(
             mode="parameters" if request.parameters is not None else "edit",
             instruction=request.instruction,
             parameters=request.parameters,
-            images=[MessageImage(asset_id=image)] if image else [],
+            images=[MessageImage(asset_id=image) for image in images],
         )
-        return self._start(project_id, inputs, base, config, message_image=image)
+        return self._start(project_id, inputs, base, config, message_images=images)
 
     def _start(
         self,
@@ -133,7 +133,7 @@ class Runtime:
         base,
         config: ClientSettings | None,
         message_text: str | None = None,
-        message_image: UUID | None = None,
+        message_images: list[UUID] | None = None,
     ):
         """Queue a job for the worker, or save a PR76 parameter revision at once outside the FIFO queue.
 
@@ -150,7 +150,7 @@ class Runtime:
             return job
         job = self.store.enqueue(
             project_id, inputs, base.id if base else None,
-            message_text=message_text, message_image=message_image,
+            message_text=message_text, message_images=message_images,
         )
         self.notify(job.id, config)
         return job
@@ -175,11 +175,11 @@ class Runtime:
     def message(self, project_id: UUID, request: TaskMessage, config: ClientSettings | None = None):
         """Route conversation input to generation, accepted-base edits, or outstanding questions."""
         latest = self.store.latest_job(project_id)
-        image = request.image.asset_id if request.image else None
+        images = [image.asset_id for image in request.images]
         if request.reply_to_job_id:
             if latest.id != request.reply_to_job_id or latest.status != "needs_input":
                 raise Conflict("Question reply is stale or belongs to another task.")
-            return self.retry(latest.id, request.instruction or "", config, image=image)
+            return self.retry(latest.id, request.instruction or "", config, images=images)
         if latest.status == "needs_input":
             raise Conflict("Answer the outstanding questions using reply_to_job_id.")
         project = self.store.project(project_id)
@@ -194,10 +194,10 @@ class Runtime:
                 JobInput(
                     mode="generate",
                     instruction=request.instruction,
-                    images=[MessageImage(asset_id=image)] if image else [],
+                    images=[MessageImage(asset_id=image) for image in images],
                 ),
                 None,
-                message_image=image,
+                message_images=images,
             )
             self.notify(job.id, config)
             return job
@@ -215,11 +215,11 @@ class Runtime:
         answer: str | None = None,
         config: ClientSettings | None = None,
         *,
-        image: UUID | None = None,
+        images: list[UUID] | None = None,
     ):
         """Retry or clarification creates a new identity, never mutating historical execution state.
 
-        An answer keeps the task's earlier reference images and may attach one more, bound to this answer both
+        An answer keeps the task's earlier reference images and may attach more, bound to this answer both
         in the image record and in the clarification entry, so an image-only answer still says what it answers.
         """
         job = self.store.job(job_id)
@@ -235,17 +235,18 @@ class Runtime:
         inputs = self.store.inputs(job_id)
         if answer is not None:
             clarification = {"questions": job.questions, "answer": answer}
-            if image:
-                clarification["answer_images"] = [str(image)]
-                inputs.images += [MessageImage(
-                    asset_id=image, source="clarification_answer", clarification=len(inputs.clarifications),
-                )]
+            if images:
+                clarification["answer_images"] = [str(image) for image in images]
+                inputs.images += [
+                    MessageImage(asset_id=image, source="clarification_answer", clarification=len(inputs.clarifications))
+                    for image in images
+                ]
             inputs.clarifications += [json.dumps(clarification, ensure_ascii=False)]
         base = self.store.version(job.base_version_id) if job.base_version_id else None
         return self._start(
             job.project_id, inputs, base, config,
             message_text=answer if answer is not None else "重试本次制作。",
-            message_image=image,
+            message_images=images,
         )
 
     async def code_report(

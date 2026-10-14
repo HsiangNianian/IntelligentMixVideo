@@ -315,8 +315,8 @@ class Store:
         job = self._new_job(project.id, None)
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
-            if request.image:
-                self.require_reference(db, request.image.asset_id)
+            for image in request.images:
+                self.require_reference(db, image.asset_id)
             db.execute(
                 "INSERT INTO projects VALUES (?, ?)",
                 (str(project.id), project.model_dump_json()),
@@ -343,7 +343,7 @@ class Store:
         job: GenerationJob,
         inputs: JobInput,
         message_text: str | None = None,
-        message_image: UUID | None = None,
+        message_images: list[UUID] | None = None,
     ) -> None:
         """Insert a queued job and the first replayable progress event."""
         db.execute(
@@ -357,7 +357,7 @@ class Store:
                 inputs.model_dump_json(),
             ),
         )
-        history.record_input(db, job, inputs, message_text, image=message_image)
+        history.record_input(db, job, inputs, message_text, images=message_images)
         self._event(db, job)
 
     def enqueue(
@@ -367,12 +367,12 @@ class Store:
         base: UUID | None,
         *,
         message_text: str | None = None,
-        message_image: UUID | None = None,
+        message_images: list[UUID] | None = None,
         running: bool = False,
     ) -> GenerationJob:
         """Reject concurrent edits, foreign version IDs and unusable reference images before enqueueing any work.
 
-        ``message_image`` is the image the user attached to this chat message; ``inputs.images`` may also carry
+        ``message_images`` are the images the user attached to this chat message; ``inputs.images`` may also carry
         images inherited from the task being answered or retried. ``running`` records a job the caller executes
         itself at once (an instant parameter revision); the FIFO worker only claims queued jobs, and the
         one-active-job rule still applies.
@@ -387,7 +387,7 @@ class Store:
                 self.require_work(db, project_id)
                 for image in inputs.images:
                     self.require_reference(db, image.asset_id)
-                self._insert_job(db, job, inputs, message_text, message_image)
+                self._insert_job(db, job, inputs, message_text, message_images)
         except sqlite3.IntegrityError as exc:
             raise Conflict("this work already has a queued or running job") from exc
         return job

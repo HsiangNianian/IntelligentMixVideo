@@ -19,7 +19,7 @@ import {
 export interface Draft {
   id: string;
   text: string;
-  image?: File;
+  images: File[];
 }
 
 /** 参考图上传失败时服务端尚无任何写入：携带草稿和本地消息 ID，按普通错误恢复，不进入任务读取恢复。 */
@@ -507,8 +507,8 @@ export function useTemplateSession(onHistoryChange: () => void) {
       if (alive.current) changed.current();
     }
   }
-  /** 每条消息可附一张图片，先上传再提交；后续输入绑定最近成功版本，澄清明确绑定提问任务。 */
-  function send(text: string, image?: File, durationInFrames?: number) {
+  /** 每条消息可附多张图片，按顺序先上传再提交；后续输入绑定最近成功版本，澄清明确绑定提问任务。 */
+  function send(text: string, images: File[] = [], durationInFrames?: number) {
     const s = latest.current;
     if (
       s.deleting ||
@@ -517,34 +517,37 @@ export function useTemplateSession(onHistoryChange: () => void) {
       s.previewLoading ||
       s.previewVersion ||
       dirty() ||
-      (!text.trim() && !image)
+      (!text.trim() && !images.length)
     )
       return;
     const messageId = crypto.randomUUID();
     publish({
       messages: [
         ...s.messages,
-        { id: messageId, role: "user", text: text.trim(), image },
+        { id: messageId, role: "user", text: text.trim(), images },
       ],
     });
     void execute("chat", async () => {
-      let asset: { id: string } | undefined;
+      let assets: string[];
       try {
-        asset = image ? await api.upload(image) : undefined;
+        // 已上传的部分在整条失败后无人引用，由服务端过期回收。
+        assets = (await Promise.all(images.map((image) => api.upload(image)))).map(
+          (asset) => asset.id,
+        );
       } catch (error) {
         throw new UploadFailure(
           `参考图片上传失败：${error instanceof Error ? error.message : "请求未完成。"} 消息尚未发送，已恢复草稿，可直接重新发送。`,
-          { id: messageId, text, image },
+          { id: messageId, text, images },
           messageId,
         );
       }
       if (!current(s.key)) throw new DOMException("Aborted", "AbortError");
       if (!s.workId)
-        return (await api.create(text, asset?.id, defaultComposition(durationInFrames)))
+        return (await api.create(text, assets, defaultComposition(durationInFrames)))
           .job;
       return api.message(s.workId, {
         ...(text.trim() ? { instruction: text.trim() } : {}),
-        ...(asset ? { image: { asset_id: asset.id } } : {}),
+        ...(assets.length ? { images: assets.map((asset_id) => ({ asset_id })) } : {}),
         ...(s.job?.status === "needs_input"
           ? { reply_to_job_id: s.job.id }
           : { base_version_id: s.version?.id }),
