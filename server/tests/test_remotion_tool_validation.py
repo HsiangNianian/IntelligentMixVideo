@@ -939,18 +939,18 @@ export default function Title(props: { text: string; fontSize: number }) {
 """
 
 
-def browser_text_validate(tmp_path: Path, code: str, max_length: int):
+def browser_text_validate(tmp_path: Path, code: str, max_length: int, *, minimum: int = 24, defaults: dict | None = None):
     """Mount a text effect with the generation-path measurements in the real sandboxed browser."""
     settings = Settings(_env_file=None, data_dir=tmp_path, **BROWSER)
     component_ = ComponentDefinition(
         code=code,
         parameter_schema={
             "type": "object",
-            "properties": {"text": {"type": "string", "minLength": 1, "maxLength": max_length}, "fontSize": {"type": "number", "minimum": 24, "maximum": 240}},
+            "properties": {"text": {"type": "string", "minLength": 1, "maxLength": max_length}, "fontSize": {"type": "number", "minimum": minimum, "maximum": 240}},
             "required": ["text", "fontSize"],
             "additionalProperties": False,
         },
-        default_parameters={"text": "标题", "fontSize": 128},
+        default_parameters=defaults or {"text": "标题", "fontSize": 128},
     )
     validator = ToolValidator(Renderer(settings), tmp_path)
     request = RenderValidationInput(component=component_, duration_frames=30)
@@ -992,3 +992,28 @@ def test_real_browser_requires_the_longest_text_to_be_shown_in_full(tmp_path, co
     if code == FIXED_BOX_TEXT:
         assert "Keep text maxLength exactly 100" in check.message
     assert report.passed is passed
+
+
+# 场景：资产声明的 fontSize 最小值低于 24（如 8）。宿主渲染时最多把文字缩到 24（再小的行高算不可读），生成关卡也在 24 下量，
+# 所以不按字数换算字号的写法通过，而不是被“行高太小”误拒。
+@needs_node
+@needs_browser
+def test_real_browser_gate_measures_at_the_readable_size_when_the_declared_minimum_is_smaller(tmp_path):
+    """最小值 8：关卡在 24 下量 100 字并通过。"""
+    check = next(item for item in browser_text_validate(tmp_path, PLAIN_WRAP_TEXT, 100, minimum=8).checks if item.name == "text_fit")
+    assert check.status == "passed", check.message
+    assert "smallest fontSize 24" in check.message
+
+
+# 场景：默认文字在默认字号下就被固定高度的框裁掉（8 个字、字号 240 排成两行 576px，框只有 360px），而 100 字在 24px 下放得下：
+# 用户首先看到的默认示例不完整，关卡拒绝并点明默认文字；默认字号小一点（128）时通过。
+@needs_node
+@needs_browser
+@pytest.mark.parametrize(("font_size", "passed"), [(240, False), (128, True)])
+def test_real_browser_gate_requires_the_default_text_to_fit_at_the_default_size(tmp_path, font_size, passed):
+    """默认 8 字：字号 240 被拒并提到 default text；字号 128 通过。"""
+    code = PLAIN_WRAP_TEXT.replace('textAlign: "center",', 'textAlign: "center", height: 360, overflow: "hidden",')
+    report = browser_text_validate(tmp_path, code, 100, defaults={"text": "测" * 8, "fontSize": font_size})
+    check = next(item for item in report.checks if item.name == "text_fit")
+    assert (check.status == "passed") is passed, check.message
+    assert passed or "default text" in check.message

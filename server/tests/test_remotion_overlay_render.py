@@ -1619,7 +1619,7 @@ def titled(text: str, *, sprite_id: str = "t", duration: float | None = None, fo
     return OverlayPlacement.model_validate({"spriteId": sprite_id, "start": 0, **({"duration": duration} if duration else {}), "editor": {"remotion": remotion}})
 
 
-def fit_for_real(tmp_path: Path, codes: str | dict[str, str], placements: list[OverlayPlacement], seconds: float):
+def fit_for_real(tmp_path: Path, codes: str | dict[str, str], placements: list[OverlayPlacement], seconds: float, *, minimum: int = 24):
     """用真实沙箱和浏览器对这些摆放做排版预检，返回预检后的渲染计划。
 
     codes 是各字效的源码（Sprite ID 到源码；只给一份源码时就是字效 t），内容区域都是整块画布。
@@ -1636,7 +1636,7 @@ def fit_for_real(tmp_path: Path, codes: str | dict[str, str], placements: list[O
     settings = Settings(_env_file=None, data_dir=tmp_path / "state", **configured)
     schema = {"type": "object", "properties": {
         "text": {"type": "string", "minLength": 1, "maxLength": 100},
-        "fontSize": {"type": "number", "minimum": 24, "maximum": 240},
+        "fontSize": {"type": "number", "minimum": minimum, "maximum": 240},
         "keywordSize": {"type": "integer", "minimum": 0, "maximum": 300},
     }, "required": ["text", "fontSize"], "additionalProperties": False}
     published = {sprite_id: pb.PublishedSprite(
@@ -1646,7 +1646,7 @@ def fit_for_real(tmp_path: Path, codes: str | dict[str, str], placements: list[O
         content_box=pb.SpriteBox(x=0, y=0, width=1080, height=1920),
         parameters=[
             pb.SpriteParameter(key="text", label="文字", access=pb.OPERATOR_ACCESS_VISIBLE_EDITABLE, default_value=pb.ScalarValue(string_value="标题"), min_length=1, max_length=100),
-            pb.SpriteParameter(key="fontSize", label="字号", access=pb.OPERATOR_ACCESS_VISIBLE_EDITABLE, default_value=pb.ScalarValue(number_value=128), minimum=24, maximum=240),
+            pb.SpriteParameter(key="fontSize", label="字号", access=pb.OPERATOR_ACCESS_VISIBLE_EDITABLE, default_value=pb.ScalarValue(number_value=128), minimum=minimum, maximum=240),
             pb.SpriteParameter(key="keywordSize", label="关键词字号", access=pb.OPERATOR_ACCESS_VISIBLE_EDITABLE, default_value=pb.ScalarValue(number_value=0), minimum=0, maximum=300, format=pb.SPRITE_PARAMETER_FORMAT_INTEGER),
         ],
     ) for sprite_id, code in ({"t": codes} if isinstance(codes, str) else codes).items()}
@@ -1909,3 +1909,14 @@ def test_real_browser_shrinks_the_keyword_size_with_the_text(tmp_path: Path) -> 
     assert abs(long["keywordSize"] - 1.5 * long["fontSize"]) <= 1
     short = fit_for_real(tmp_path / "short", KEYWORD_TITLE, [keyworded("标题", 100, 150)], 1.0).instances[0]["config"]
     assert (short["fontSize"], short["keywordSize"]) == (100, 150)
+
+
+# 场景：资产声明的 fontSize 最小值是 8，100 个字在字号 200 下放不下。宿主的下限取 24（再小的行高算不可读，“越小越放得下”的二分假设不成立），
+# 在 24～200 之间二分得到放得下的字号；若下限是 8，先试 8 因“太小”判为放不下，整个任务就会以 text_too_long 失败。
+@pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
+def test_real_browser_never_shrinks_text_below_the_readable_size(tmp_path: Path) -> None:
+    """最小值 8、字号 200、100 字：缩到 24 以上且小于 200；字号本来就是 20 的短标题不被放大。"""
+    instance = fit_for_real(tmp_path / "long", WRAPPED_TITLE, [titled("测" * 100, font_size=200)], 1.0, minimum=8).instances[0]
+    assert 24 <= instance["config"]["fontSize"] < 200
+    small = fit_for_real(tmp_path / "small", WRAPPED_TITLE, [titled("标题", font_size=20)], 1.0, minimum=8).instances[0]
+    assert small["config"]["fontSize"] == 20

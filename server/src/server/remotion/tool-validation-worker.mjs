@@ -360,6 +360,12 @@ async function lengthsCheck(page) {
 const TEXT_FILLER = "测";
 /** A rendered text line shorter than this is unreadable on the 1080x1920 canvas (the smallest supported fontSize is 24). */
 const MIN_LINE_HEIGHT = 20;
+/**
+ * The smallest font size the host shrinks a text to, whatever minimum the effect declares: below it lines fall under
+ * `MIN_LINE_HEIGHT` and no longer count as readable, so sizes under it never fit (and the "smaller fits better"
+ * assumption of the search in `fitTexts` would not hold). The generation check measures at this size too.
+ */
+const READABLE_FONT_SIZE = 24;
 /** Sub-pixel tolerance when comparing a text rectangle with a box. */
 const FIT_TOLERANCE = 2;
 /** Frames whose text area is at least this share of the largest one show the text at its full size. */
@@ -535,8 +541,10 @@ async function measureTextFit(page, needle, frames = sampleFrames(request.compos
 }
 
 /**
- * Mechanical check that a text effect shows its longest allowed text in full: the text parameter is filled to its
- * declared maxLength and the sampled frames are measured. The check fails when every frame that shows the text at
+ * Mechanical check that a text effect shows its text in full: first the text parameter filled to its declared
+ * maxLength at the smallest size the host shrinks text to (`READABLE_FONT_SIZE` or the declared minimum, whichever is
+ * larger: long text is made smaller at render time, see `fitTexts`), then the default text at the default size, which
+ * is what a user sees first. The sampled frames are measured. A sample fails when every frame that shows the text at
  * its full size has a problem (a text cut to a slice of itself is one), and when the text is never visibly rendered.
  * This is a geometric measurement of the text boxes, not a visual review of how the result looks.
  */
@@ -545,33 +553,49 @@ async function textFitCheck(page) {
   const length = request.parameter_schema?.properties?.text?.maxLength;
   if (!Number.isInteger(length) || length < 1)
     return { name: "text_fit", status: "failed", message: "A text effect must declare a text parameter with an integer maxLength." };
-  const text = TEXT_FILLER.repeat(length);
-  // Long text is made smaller by the host at render time (see `fitTexts`), down to the smallest size the effect declares, so that is the size it must fit at.
-  const smallest = request.parameter_schema?.properties?.fontSize?.minimum;
-  await page.evaluate((patch) => window.__imvTool.setParameters(patch), { text, ...(typeof smallest === "number" ? { fontSize: smallest } : {}) });
-  let measured;
-  try {
-    measured = await measureTextFit(page, text);
-  } finally {
-    // Later tests and the cached report must see the configured parameters again.
-    await page.evaluate((values) => window.__imvTool.setParameters(values), request.parameters ?? {});
-    await page.evaluate(() => window.__imvTool.setFrame(0));
-  }
-  if (measured.error)
-    return { name: "text_fit", status: "failed", message: `The component throws at frame ${measured.frame} with the text filled to maxLength ${length}: ${measured.error}`.slice(0, 6000) };
-  if (!measured.shown)
-    return { name: "text_fit", status: "failed", message: `With text filled to its maxLength (${length} characters) the component never renders any of that text visibly. The text parameter must be displayed as given.` };
-  if (measured.fits)
-    return { name: "text_fit", status: "passed", message: `The ${length}-character text is shown in full${typeof smallest === "number" ? ` at the smallest fontSize ${smallest}` : ""} (measured on the ${measured.full} of ${measured.shown} frames that show it at its full size).` };
-  return {
-    name: "text_fit",
-    status: "failed",
-    message: `With text filled to its maxLength (${length} characters)${typeof smallest === "number" ? ` at the smallest fontSize ${smallest}` : ""} the text is not shown in full: ${measured.problems.join("; ")}. `
-      + `Long text must fit on the ${composition.width}x${composition.height} canvas: lay it out from its content, wrapping onto several lines `
-      + "(a bounded width of about 90% of the canvas width with whiteSpace normal and wordBreak break-all for CJK, no fixed-height box with overflow hidden). "
-      + "Render the text at the fontSize parameter as given and do not derive a size from the character count: the host lowers fontSize (and keywordSize in the same proportion) "
-      + "for long text at render time. Keep text maxLength exactly 100; if 100 characters still do not fit at the smallest fontSize, adjust the layout and wrapping instead of lowering maxLength or clipping.",
+  const declared = request.parameter_schema?.properties?.fontSize?.minimum;
+  const smallest = typeof declared === "number" ? Math.max(declared, READABLE_FONT_SIZE) : null;
+  /** Mount the sample's parameters, measure its text, and put the configured parameters back for later checks. */
+  const measureSample = async (patch, needle) => {
+    await page.evaluate((values) => window.__imvTool.setParameters(values), patch);
+    try {
+      return await measureTextFit(page, needle);
+    } finally {
+      await page.evaluate((values) => window.__imvTool.setParameters(values), request.parameters ?? {});
+      await page.evaluate(() => window.__imvTool.setFrame(0));
+    }
   };
+  const longest = TEXT_FILLER.repeat(length);
+  const where = `its maxLength (${length} characters)${smallest !== null ? ` at the smallest fontSize ${smallest}` : ""}`;
+  const measured = await measureSample({ text: longest, ...(smallest !== null ? { fontSize: smallest } : {}) }, longest);
+  if (measured.error)
+    return { name: "text_fit", status: "failed", message: `The component throws at frame ${measured.frame} with the text filled to ${where}: ${measured.error}`.slice(0, 6000) };
+  if (!measured.shown)
+    return { name: "text_fit", status: "failed", message: `With text filled to ${where} the component never renders any of that text visibly. The text parameter must be displayed as given.` };
+  if (!measured.fits)
+    return {
+      name: "text_fit",
+      status: "failed",
+      message: `With text filled to ${where} the text is not shown in full: ${measured.problems.join("; ")}. `
+        + `Long text must fit on the ${composition.width}x${composition.height} canvas: lay it out from its content, wrapping onto several lines `
+        + "(a bounded width of about 90% of the canvas width with whiteSpace normal and wordBreak break-all for CJK, no fixed-height box with overflow hidden). "
+        + "Render the text at the fontSize parameter as given and do not derive a size from the character count: the host lowers fontSize (and keywordSize in the same proportion) "
+        + "for long text at render time. Keep text maxLength exactly 100; if 100 characters still do not fit at the smallest fontSize, adjust the layout and wrapping instead of lowering maxLength or clipping.",
+    };
+  const shortText = request.parameters?.text;
+  let shortNote = "";
+  if (typeof shortText === "string" && shortText.trim()) {
+    const preview = await measureSample({}, shortText);
+    if (!preview.error && preview.shown && !preview.fits)
+      return {
+        name: "text_fit",
+        status: "failed",
+        message: `The default text "${shortText}" at the default fontSize is not shown in full: ${preview.problems.join("; ")}. `
+          + "A user sees the default text first, so it must fit the canvas at the default fontSize without relying on the host shrinking it: adjust the default fontSize or the layout.",
+      };
+    shortNote = " The default text is shown in full at the default fontSize too.";
+  }
+  return { name: "text_fit", status: "passed", message: `The ${length}-character text is shown in full${smallest !== null ? ` at the smallest fontSize ${smallest}` : ""} (measured on the ${measured.full} of ${measured.shown} frames that show it at its full size).${shortNote}` };
 }
 
 /** The smallest `keywordSize` a placement may set (0 follows the text size, which is not scaled). */
@@ -594,12 +618,12 @@ function valuesAtSize(item, size) {
 
 /**
  * Host-side fit of the text a render really passes, for one Sprite (`sprite.fit` items, `sprite.box` content box):
- * for each item, the largest whole font size from `min` up to
+ * for each item, the largest whole font size from its floor (`min`, at least `READABLE_FONT_SIZE`) up to
  * the requested one at which the text is shown in full on the item's own `frames`. Each item is mounted at the
  * `length` its Sprite plays in the render (which it reads as `durationInFrames`) and measured where its host
  * `transform` puts it on the canvas. The requested size is tried first, so text that already fits is untouched;
  * a component that throws, or never renders the text, is left alone (the render reports its own failure). Sizes are
- * assumed to fit monotonically, so a binary search. When even `min` leaves the text outside the window the video
+ * assumed to fit monotonically, so a binary search. When even the floor leaves the text outside the window the video
  * shows (a long title placed at the top edge), the placement is moved the shortest way back inside at `min`:
  * the answer's `shift` is that move in canvas pixels. `fits: false` means the text is too long even for that. When the
  * size is lowered the answer also carries the matching `keyword_size` (see `valuesAtSize`).
@@ -622,20 +646,22 @@ async function fitTexts(page, loadError, sprite) {
   const answers = [];
   for (const item of sprite.fit) {
     const requested = item.values[item.size_key];
+    // Never below what is readable, and never above what was asked for.
+    const floor = Math.min(requested, Math.max(item.min, READABLE_FONT_SIZE));
     let size = requested;
     let ok = await fits(item, requested);
     if (!ok) {
-      ok = requested > item.min && await fits(item, item.min);
+      ok = requested > floor && await fits(item, floor);
       if (ok) {
         // `low` fits: the answer lies in [low, requested - 1].
-        let low = item.min;
+        let low = floor;
         let high = requested - 1;
         while (low < high) {
           const middle = Math.ceil((low + high) / 2);
           if (await fits(item, middle)) low = middle; else high = middle - 1;
         }
         size = low;
-      } else size = item.min;
+      } else size = floor;
     }
     let shift = null;
     if (!ok) {

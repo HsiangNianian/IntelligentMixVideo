@@ -205,7 +205,7 @@ largest): entrance and exit animations show it smaller, scaled down or typed in,
 clips it while it holds. The `text_fit` check fails when every one of those frames has a problem, so a reveal mask
 or slide-in that moves the full-size text out of view for a few frames is fine, while a fixed-size box that clips
 long text whenever it is shown at full size is not; it also fails when the filler text is never visibly rendered. A failure is refused with `CODE_VALIDATION_FAILED` (`text_fit: ...` with the clipped box or
-size and the fix: wrap the text inside a bounded width of about 90 % of the canvas, no fixed-height `overflow: hidden` box, and use `fontSize` as given instead of deriving a size from the character count; `text.maxLength` must remain exactly 100, so text that still cannot fit requires layout and wrapping fixes, never a lower limit). The check fills the text to `maxLength` at the smallest declared `fontSize`, the size the host may shrink long text to when it renders. It is a geometric measurement, not a visual review; like the transparency
+size and the fix: wrap the text inside a bounded width of about 90 % of the canvas, no fixed-height `overflow: hidden` box, and use `fontSize` as given instead of deriving a size from the character count; `text.maxLength` must remain exactly 100, so text that still cannot fit requires layout and wrapping fixes, never a lower limit). The check fills the text to `maxLength` at the smallest size the host shrinks to (the declared `fontSize` minimum, at least 24), and then measures the default text at the default `fontSize`, which a user sees first and which must fit without the host's help. It is a geometric measurement, not a visual review; like the transparency
 measurement it only applies to generation, and already published versions are not re-checked.
 
 Contract diagnostics carry the position of a violation (line, column and range in the submitted code).
@@ -433,7 +433,7 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   scales and rotates it, lines under 20px tall, or only part of the text shown, judged on the frames that show the
   text at its full size. Placements that differ only in length or transform are measured separately; the
   transform's opacity does not move text and is ignored. Text that already fits keeps its `fontSize`; otherwise the
-  host lowers `fontSize` to the largest whole size, down to the published minimum, at which it is shown in full
+  host lowers `fontSize` to the largest whole size, down to the published minimum but never below 24 (smaller lines count as unreadable), at which it is shown in full
   (binary search; the size is logged, the template and the sealed source are untouched). A `keywordSize` above 0 is
   an absolute size, so it shrinks by the same ratio (at least 12, never larger than set), keeping the keyword's
   proportion to the text instead of crowding the smaller text. If at the minimum the text
