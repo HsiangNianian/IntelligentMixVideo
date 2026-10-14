@@ -31,6 +31,7 @@ from .settings import ClientSettings
 from .evidence import digest
 from .history import WorkEvent
 from .media import save_image
+from .object_store import ObjectStoreError
 from .models import (
     Asset,
     GenerateTemplateRequest,
@@ -166,6 +167,8 @@ async def upload(service: Service, owner: Device, file: Annotated[UploadFile, Fi
             return await asyncio.to_thread(save_image, content, service.store, service.settings, owner)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(503, "参考图暂时无法保存，请稍后重试。") from exc
     finally:
         await file.close()
 
@@ -332,6 +335,8 @@ def artifact_path(service: Runtime, version_id: UUID, filename: str) -> Path:
         raise NotFound("artifact not found")
     try:
         directory = service.store.accepted(version)
+    except ObjectStoreError as exc:
+        raise HTTPException(503, "Artifact storage is unavailable; retry later.") from exc
     except (ValueError, OSError) as exc:
         raise NotFound("accepted artifact unavailable") from exc
     if filename not in version.validation.artifacts:
@@ -382,6 +387,8 @@ async def diagnostics(version_id: UUID, service: Service, owner: Device) -> Code
     try:
         accepted = await asyncio.to_thread(service.store.accepted, version)
         export_code = (accepted / "Export.tsx").read_text(encoding="utf-8")
+    except ObjectStoreError as exc:
+        raise HTTPException(503, "Artifact storage is unavailable; retry later.") from exc
     except (ValueError, OSError) as exc:
         raise NotFound("accepted artifact unavailable") from exc
     component = ComponentDefinition(
@@ -488,6 +495,8 @@ def asset_image(asset_id: UUID, service: Service) -> Response:
         raise NotFound("asset file not found") from exc
     except ValueError as exc:
         raise HTTPException(409, "Stored asset failed integrity verification.") from exc
+    except OSError as exc:
+        raise HTTPException(503, "Asset storage is unavailable; retry later.") from exc
     return Response(
         payload,
         media_type="image/png",

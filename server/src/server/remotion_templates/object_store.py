@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
 
-from botocore.exceptions import ClientError
+import httpx
+from botocore.exceptions import BotoCoreError, ClientError
 from pydantic import ValidationError
 
 from ..video_composition.settings import ZosSettings
@@ -23,6 +24,10 @@ from ..video_composition.zos import storage_client, upload_public
 PREFIX = "imv/remotion"
 TIMEOUT = 60.0
 logger = logging.getLogger(__name__)
+
+
+class ObjectStoreError(OSError):
+    """The object store could not be reached or refused a request; routes answer 503 so the caller can retry."""
 
 
 class Objects(Protocol):
@@ -84,26 +89,35 @@ class ZosObjects:
         self.settings = settings
 
     def put(self, key: str, path: Path, content_type: str) -> None:
-        """Upload public-read and confirm size and anonymous read before returning."""
-        upload_public([(path, key, content_type)], self.settings, TIMEOUT)
+        """Upload public-read and confirm size and anonymous read before returning; failures are ObjectStoreError."""
+        try:
+            upload_public([(path, key, content_type)], self.settings, TIMEOUT)
+        except (BotoCoreError, ClientError, httpx.HTTPError, ValueError) as exc:
+            raise ObjectStoreError(f"ZOS upload failed: {key}") from exc
 
     def fetch(self, key: str, destination: Path) -> None:
-        """Download with the server credentials; a missing key becomes FileNotFoundError."""
-        with closing(storage_client(self.settings, TIMEOUT)) as storage:
-            try:
+        """Download with the server credentials; a missing key becomes FileNotFoundError, other failures ObjectStoreError."""
+        try:
+            with closing(storage_client(self.settings, TIMEOUT)) as storage:
                 storage.download_file(self.settings.zos_bucket, key, str(destination))
-            except ClientError as exc:
-                if exc.response.get("Error", {}).get("Code") in {"404", "NoSuchKey"}:
-                    raise FileNotFoundError(key) from exc
-                raise
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") in {"404", "NoSuchKey"}:
+                raise FileNotFoundError(key) from exc
+            raise ObjectStoreError(f"ZOS download failed: {key}") from exc
+        except BotoCoreError as exc:
+            raise ObjectStoreError(f"ZOS download failed: {key}") from exc
 
     def delete_prefix(self, prefix: str) -> None:
-        """List the prefix page by page and delete each page in one request."""
-        with closing(storage_client(self.settings, TIMEOUT)) as storage:
-            for page in storage.get_paginator("list_objects_v2").paginate(Bucket=self.settings.zos_bucket, Prefix=prefix):
-                keys = [{"Key": item["Key"]} for item in page.get("Contents", [])]
-                if keys:
-                    storage.delete_objects(Bucket=self.settings.zos_bucket, Delete={"Objects": keys, "Quiet": True})
+        """List the prefix page by page and delete each page in one request; failures are ObjectStoreError."""
+        try:
+            with closing(storage_client(self.settings, TIMEOUT)) as storage:
+                pages = storage.get_paginator("list_objects_v2").paginate(Bucket=self.settings.zos_bucket, Prefix=prefix)
+                for page in pages:
+                    keys = [{"Key": item["Key"]} for item in page.get("Contents", [])]
+                    if keys:
+                        storage.delete_objects(Bucket=self.settings.zos_bucket, Delete={"Objects": keys, "Quiet": True})
+        except (BotoCoreError, ClientError) as exc:
+            raise ObjectStoreError(f"ZOS delete failed: {prefix}") from exc
 
 
 def load_objects(data_dir: Path) -> Objects:

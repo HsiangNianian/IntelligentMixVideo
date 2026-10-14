@@ -72,7 +72,8 @@ The backend reads them through a verified cache in `IMV_DATA_DIR/cache` (SHA-256
 at a time (deciding whether a parameter patch is instant reads only `interactive.js`). Object uploads, downloads and
 deletes run in worker threads and never under the write lock: a version is uploaded under its new ID before its record
 commits and removed again if the commit fails; deletion and the upload sweep remove records and objects in separate
-steps. Job
+steps. A ZOS failure other than a missing object is an `ObjectStoreError` (an `OSError`): uploads, reference images,
+downloads, diagnostics and work deletion answer a retryable 503 instead of a 500 or a misleading 422. Job
 scratch is removed when the job ends and the private `audit/<job_id>.jsonl` log outlives it. An hourly sweep applies
 three retention periods: undelivered events (`IMV_UNDELIVERED_EVENT_DAYS`, 7), audit logs
 (`IMV_AUDIT_RETENTION_DAYS`, 14) and the works of devices inactive for `IMV_DEVICE_RETENTION_DAYS` (90). The same

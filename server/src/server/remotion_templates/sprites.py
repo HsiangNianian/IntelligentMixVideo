@@ -30,7 +30,7 @@ from . import boundary, sprite_store
 from .categories import HEX_COLOR, category_problems, operator_message
 from .publication import current_bundle
 from .models import TemplateVersion
-from .object_store import PREFIX
+from .object_store import PREFIX, ObjectStoreError
 from .store import Conflict, NotFound, Store
 
 PREVIEW_BUNDLE = "interactive.js"
@@ -355,6 +355,8 @@ def _inspect(
     version = store.version(version_id, device)
     try:
         accepted = store.accepted(version)
+    except ObjectStoreError as exc:
+        raise HTTPException(503, "Artifact storage is unavailable; retry later.") from exc
     except (ValueError, OSError) as exc:
         raise Conflict("accepted artifact unavailable") from exc
     if PREVIEW_BUNDLE not in version.validation.artifacts:
