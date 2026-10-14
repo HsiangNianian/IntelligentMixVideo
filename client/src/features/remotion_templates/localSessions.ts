@@ -7,7 +7,6 @@
  */
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { apiBase } from "@/lib/api-base";
-import { ApiError } from "./api";
 import type {
   ChatMessage,
   Job,
@@ -49,6 +48,13 @@ export interface SessionStorage {
   remove(server: string, work: string): Promise<void>;
 }
 
+/** 本机没有这条会话（浏览器刷新后内存已清空、记录已删除或属于其他服务）；与服务端 404/410 区分。 */
+export class MissingLocalWork extends Error {
+  /** 固定提示，调用方通常静默清除选择。 */
+  constructor() {
+    super("会话不存在于本机。");
+  }
+}
 /** 本地会话库读写失败：与服务端错误区分，会话订阅据此停止并提示，而不是当作断线反复重连。 */
 export class LocalStoreError extends Error {}
 
@@ -173,7 +179,7 @@ export async function history(): Promise<WorkSummary[]> {
 export async function snapshot(work: string, before?: number, limit = 50): Promise<SessionSnapshot> {
   const scope = server();
   const stored = await storage().work(scope, work);
-  if (!stored) throw new ApiError(404, "会话不存在于本机。");
+  if (!stored) throw new MissingLocalWork();
   const rows = await storage().messages(scope, work, before ?? null, limit + 1);
   const messages = rows.slice(0, limit).reverse();
   const ids = [...new Set([...messages.flatMap((item) => (item.job_id ? [item.job_id] : [])), stored.job.id])];
@@ -226,7 +232,7 @@ export async function track(job: Job) {
 export async function apply(work: string, events: WorkEvent[]): Promise<StoredWork> {
   const scope = server();
   const stored = await storage().work(scope, work);
-  if (!stored) throw new ApiError(404, "会话不存在于本机。");
+  if (!stored) throw new MissingLocalWork();
   const fresh = events.filter((event) => event.id > stored.cursor).sort((left, right) => left.id - right.id);
   if (!fresh.length) return stored;
   const wanted = fresh.flatMap((event) =>

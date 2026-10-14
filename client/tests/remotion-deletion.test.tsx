@@ -175,13 +175,13 @@ test("已打开 SSE 收到删除控制信号后清空会话", async () => {
   expect(deletes()).toHaveLength(0);
 });
 
-// 本机没有该会话，或服务端已删除、正在清理时，移除本地选择，不留下刷新任务和循环重连入口。
-test.each(["local", 404, 410] as const)("会话恢复失败（%s）时移除本地选择", async (status) => {
+// 服务端已删除或正在清理时，移除本地选择并提示，不留下刷新任务和循环重连入口。
+test.each([404, 410] as const)("会话恢复失败（%s）时移除本地选择", async (status) => {
   remotionServer((path) =>
-    status !== "local" && path.endsWith("/stream") ? new Response(null, { status }) : undefined,
+    path.endsWith("/stream") ? new Response(null, { status }) : undefined,
   );
-  if (status !== "local") await seed("服务端已清理");
-  localStorage.setItem(`imv.remotion.selected:${api.apiUrl("")}`, status === "local" ? "missing" : "work-1");
+  await seed("服务端已清理");
+  localStorage.setItem(`imv.remotion.selected:${api.apiUrl("")}`, "work-1");
   const { result } = renderHook(() => useTemplateSession(() => {}));
   await waitFor(() => expect(result.current.error).toContain("已删除"));
   expect(result.current.workId).toBeNull();

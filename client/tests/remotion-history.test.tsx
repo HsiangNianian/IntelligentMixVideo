@@ -251,15 +251,19 @@ test("明确停止任务后恢复本地会话", async () => {
   ).toHaveLength(1);
 });
 
-// 已删除或失效的会话直接回到空白页，不提供反复读取不存在会话的恢复入口。
-test("失效会话 ID 自动清空并允许新增", async () => {
+// 浏览器刷新清空内存会话库后，记住的会话 ID 已不在本机：静默回到空白页，不提示删除，也不提供反复读取的恢复入口。
+test("本机没有记住的会话时静默清空并允许新增", async () => {
   remotionServer();
-  localStorage.setItem(
-    `imv.remotion.selected:${api.apiUrl("")}`,
-    "missing-work",
-  );
+  await seed("刷新前的会话");
+  localStorage.setItem(`imv.remotion.selected:${api.apiUrl("")}`, "work-1");
+  local.setStorage(local.memoryStorage());
   render(<RemotionWorkspace />);
-  await screen.findByText(/会话已删除或正在清理/);
+  await waitFor(() => expect(localStorage.length).toBe(0));
+  await screen.findByText("还没有聊天会话");
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(
+    fetchMock.mock.calls.some((call) => String(call[0]).includes("/stream?")),
+  ).toBe(false);
   fireEvent.change(screen.getByLabelText("字效描述"), {
     target: { value: "新的任务" },
   });

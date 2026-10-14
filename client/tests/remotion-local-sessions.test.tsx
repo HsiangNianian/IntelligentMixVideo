@@ -116,7 +116,7 @@ test("本地消息分页返回 next_before", async () => {
   const older = await local.snapshot("work-1", first.next_before!, 2);
   expect(older.messages.map((message) => message.sequence)).toEqual([1]);
   expect(older.next_before).toBeNull();
-  await expect(local.snapshot("missing")).rejects.toMatchObject({ status: 404 });
+  await expect(local.snapshot("missing")).rejects.toBeInstanceOf(local.MissingLocalWork);
 });
 
 // 每个 SSE 事件先写入本地会话库，再以该事件编号确认送达；重新连接时重新确认本地已有的游标。
@@ -252,7 +252,7 @@ test("本地会话按服务地址隔离", async () => {
     await recordWork();
     setApiBase("http://other.test:9000");
     expect(await local.history()).toEqual([]);
-    await expect(local.snapshot("work-1")).rejects.toMatchObject({ status: 404 });
+    await expect(local.snapshot("work-1")).rejects.toBeInstanceOf(local.MissingLocalWork);
     await local.forget("work-1");
     setApiBase(original.toUpperCase().replace("HTTP://", "http://") + "/");
     expect((await local.history()).map((work) => work.id)).toEqual(["work-1"]);

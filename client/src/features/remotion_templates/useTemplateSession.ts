@@ -315,6 +315,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
         }
       } catch (error) {
         if (!current(key, signal)) return;
+        if (error instanceof local.MissingLocalWork) return switchWork(null);
         if (unavailable(work, error)) return;
         // 本地库写不进去时重连也写不进去：停止订阅、保留服务端未确认的事件，由用户修复后显式刷新。
         if (error instanceof local.LocalStoreError) {
@@ -350,7 +351,10 @@ export function useTemplateSession(onHistoryChange: () => void) {
       publish({ loading: false });
       void watch(work, key, controller.signal, cursor);
     } catch (error) {
-      if (!current(key, controller.signal) || unavailable(work, error)) return;
+      if (!current(key, controller.signal)) return;
+      // 记住的会话已不在本机（例如浏览器刷新清空了内存库）：静默回到空白页，不提示删除。
+      if (error instanceof local.MissingLocalWork) return switchWork(null);
+      if (unavailable(work, error)) return;
       if (current(key, controller.signal))
         publish({
           loading: false,
