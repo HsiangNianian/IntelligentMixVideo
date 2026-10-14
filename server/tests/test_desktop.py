@@ -27,6 +27,7 @@ from fastapi import FastAPI
 from server import database, desktop
 from server.remotion_templates.renderer import Renderer
 from server.remotion_templates.settings import Settings
+from server.startup.settings import GRACEFUL_SHUTDOWN_SECONDS
 
 BUNDLE = os.environ.get("IMV_TEST_BUNDLE")
 APPDIR = os.environ.get("IMV_TEST_APPDIR")
@@ -215,7 +216,8 @@ def test_readiness_protocol_excludes_http_logs(monkeypatch):
         return {"path": path}
 
     config_type = desktop.uvicorn.Config
-    monkeypatch.setattr(desktop.uvicorn, "Config", lambda *args, **kwargs: config_type(application, use_colors=False))
+    options = []
+    monkeypatch.setattr(desktop.uvicorn, "Config", lambda *args, **kwargs: options.append(kwargs) or config_type(application, use_colors=False))
     protocol, diagnostics = StringIO(), StringIO()
     monkeypatch.setattr(sys, "stdout", protocol)
     monkeypatch.setattr(sys, "stderr", diagnostics)
@@ -241,6 +243,8 @@ def test_readiness_protocol_excludes_http_logs(monkeypatch):
     asyncio.run(scenario())
     assert json.loads(protocol.getvalue())["url"].startswith("http://127.0.0.1:")
     assert "GET /template HTTP/1.1" in diagnostics.getvalue()
+    # 与命令行入口共用退出上限，未关闭的 SSE 不能让内置服务无限持有字效运行锁。
+    assert options[0]["timeout_graceful_shutdown"] == GRACEFUL_SHUTDOWN_SECONDS
 
 
 @pytest.fixture

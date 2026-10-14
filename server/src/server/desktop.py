@@ -23,6 +23,7 @@ import uvicorn
 from dotenv import load_dotenv
 
 from .file_lock import lock_exclusive
+from .startup.settings import GRACEFUL_SHUTDOWN_SECONDS
 
 WINDOWS = sys.platform == "win32"
 # Windows 工具始终写入诊断管道，双击客户端不弹出独立控制台。
@@ -151,7 +152,7 @@ async def serve(listener: socket.socket, mysql: subprocess.Popen, stopped: threa
     # Uvicorn 的访问日志默认绑定 stdout，必须在配置 logger 前分离 IPC 和诊断输出。
     protocol = sys.stdout
     sys.stdout = sys.stderr
-    server = uvicorn.Server(uvicorn.Config("server.app:app", log_level="info", timeout_graceful_shutdown=10))
+    server = uvicorn.Server(uvicorn.Config("server.app:app", log_level="info", timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECONDS))
     task = asyncio.create_task(server.serve(sockets=[listener]))
     url = f"http://127.0.0.1:{listener.getsockname()[1]}"
     try:

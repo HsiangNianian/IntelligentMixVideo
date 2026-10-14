@@ -60,6 +60,7 @@ import asyncio
 from fastapi.responses import StreamingResponse
 import server.app as app_module
 import server.__main__ as entry
+from server.startup.settings import GRACEFUL_SHUTDOWN_SECONDS
 import uvicorn
 
 app_module.initialize_database = lambda: None
@@ -76,7 +77,7 @@ async def probe_stream():
 
 real_run = uvicorn.run
 def run_with_short_timeout(application, **options):
-    if options.get("timeout_graceful_shutdown") != 10:
+    if options.get("timeout_graceful_shutdown") != GRACEFUL_SHUTDOWN_SECONDS:
         raise RuntimeError("graceful shutdown timeout was not configured")
     options["timeout_graceful_shutdown"] = 0.2
     real_run(application, **options)
