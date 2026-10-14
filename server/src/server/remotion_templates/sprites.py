@@ -449,8 +449,9 @@ def _bound_names(version: TemplateVersion) -> list[str]:
 async def _sample(service, version: TemplateVersion, kind: int) -> None:
     """Render the version's boundary samples in the isolated browser before it becomes an asset.
 
-    After this passes, any template value inside the published parameter contract only needs the instant schema
-    check. A sample that fails is a 422 naming it; a validator that cannot start is a 503.
+    Availability comes first: a sample that fails to render, or an end the parameter constraints leave unsampled,
+    is only logged and the publication goes ahead, because the code still renders at its defaults and a placement
+    that really breaks fails its own overlay task. A validator that cannot start is still a 503.
     """
     from .tool_validation import ToolValidator, ValidationUnavailable
     from .tools.contracts import ComponentDefinition
@@ -459,11 +460,9 @@ async def _sample(service, version: TemplateVersion, kind: int) -> None:
     box = _content_box(version)
     names = _bound_names(version)
     samples = boundary.samples(candidate.config_schema, candidate.default_config, names, KIND_NAMES[kind], (composition.width, composition.height))
+    logger = logging.getLogger(__name__)
     if missing := boundary.unsampled(candidate.config_schema, candidate.default_config, names, samples):
-        raise _invalid(
-            f"参数 {'、'.join(missing)} 的两端或枚举取值在其他参数取默认值时不合约束，无法检查；"
-            "请在聊天中让 Agent 简化参数之间的约束后再保存到资产"
-        )
+        logger.warning("Sprite boundary samples skip parameters %s of %s: their ends do not fit the constraints", missing, version.id)
     work = service.store.root / "sprites" / f".samples-{uuid4()}"
     try:
         checks = await ToolValidator(service.harness.renderer, work).validate_samples(
@@ -474,16 +473,13 @@ async def _sample(service, version: TemplateVersion, kind: int) -> None:
             text=kind == pb.SPRITE_KIND_TEXT,
         )
     except ValidationUnavailable as exc:
-        logging.getLogger(__name__).warning("Sprite boundary samples unavailable for %s: %s", version.id, exc)
+        logger.warning("Sprite boundary samples unavailable for %s: %s", version.id, exc)
         raise HTTPException(503, "参数边界检查环境不可用，请稍后重试") from None
     finally:
         await run_in_threadpool(shutil.rmtree, work, True)
-    failed = next((item for item in checks if item.status != "passed"), None)
-    if failed is not None:
-        raise _invalid(
-            f"参数边界检查未通过（{failed.name.removeprefix('sample:')}）：{(failed.message or '')[:300]}。"
-            "请在聊天中让 Agent 修复后再保存到资产"
-        )
+    for item in checks:
+        if item.status != "passed":
+            logger.warning("Sprite boundary sample %s of %s failed, published anyway: %s", item.name.removeprefix("sample:"), version.id, (item.message or "")[:300])
 
 
 def _create(store: Store, request: pb.PublishSpriteRequest, version: TemplateVersion, bundle: bytes) -> pb.SpriteSummary:

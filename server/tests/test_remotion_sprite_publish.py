@@ -702,13 +702,14 @@ def test_a_new_publication_renders_its_boundary_samples_once(client: TestClient,
     assert not [item for item in (published.store.root / "sprites").iterdir() if item.name.startswith(".samples-")]
 
 
-def test_a_failed_boundary_sample_refuses_the_publication(client: TestClient, published) -> None:
-    """任一边界样本渲染出错时不保存资产，422 说明是哪一个样本和第几帧。"""
+def test_a_failed_boundary_sample_only_warns(client: TestClient, published, caplog) -> None:
+    """可用性优先：边界样本渲染出错时仍保存资产，样本名和帧号只写服务端日志。"""
     published.renderer.failing_sample = "high"
-    response = publish(client, publish_request(published.version.id))
-    assert response.status_code == 422
-    assert "参数边界检查未通过（high）：frame 15: boom" in response.json()["detail"]
-    assert client.get("/api/sprites").content == b""
+    with caplog.at_level("WARNING"):
+        response = publish(client, publish_request(published.version.id))
+    assert response.status_code == 200
+    assert "boundary sample high" in caplog.text and "frame 15: boom" in caplog.text
+    assert client.get("/api/sprites").content != b""
 
 
 def test_publishing_needs_the_isolated_validator(client: TestClient, published) -> None:

@@ -61,7 +61,7 @@ def test_a_combined_extreme_that_breaks_the_schema_falls_back_to_single_paramete
 
 
 def test_values_no_sample_can_reach_are_reported():
-    """根级约束把参数绑得太紧、单个参数的一端在其他参数取默认值时都不合法时，该参数被列为无法检查，发布据此拒绝。
+    """根级约束把参数绑得太紧、单个参数的一端在其他参数取默认值时都不合法时，该参数被列为无法检查，发布仅记日志并照常保存。
 
     修复前这样的一端被静默跳过，模板却可以填入它，直到叠加渲染才失败。
     """
