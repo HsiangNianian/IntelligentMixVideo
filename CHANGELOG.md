@@ -3,6 +3,20 @@
 本项目的版本变更由发布工作流根据 Conventional Commits 自动生成。
 推送正式版本 tag 后，成功发布的版本记录会自动写入此文件。
 
+## [v0.9.1] - 2026-10-14
+### New Features
+- [`2cbdce5`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/2cbdce535346588e772e9f26abcba546ecfee14d) - **composition**: integrate Remotion overlays into IMS timelines *(PR [#121](https://github.com/HsiangNianian/IntelligentMixVideo/pull/121) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+
+### Bug Fixes
+- [`6b0bae8`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/6b0bae80d07087251330d2cccd57503415d2f6c2) - **remotion**: fit long text effect titles to the canvas instead of clipping them *(PR [#120](https://github.com/HsiangNianian/IntelligentMixVideo/pull/120) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Documentation Changes
+- [`b0a4cd3`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/b0a4cd3a6f306eb8c2fb2a29deb99ca4738e5f63) - update CHANGELOG.md for v0.9.0 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
+
+### Chores
+- [`c69df93`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/c69df93a38cc2aeaa7d1a3c9c0227c95a96f839f) - **release**: prepare v0.9.1 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`cb3f2b5`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/cb3f2b548acaf827190509b8dc5210ef3c8a6b36) - **release**: promote dev to main for v0.9.1 *(PR [#124](https://github.com/HsiangNianian/IntelligentMixVideo/pull/124) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
 ## [v0.9.0] - 2026-10-13
 ### New Features
 - [`eefbb84`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/eefbb84e31d1c7ee8eacf49b17120d5fb3a4cd1e) - **remotion**: render a template's Remotion clips into one overlay video for the bus *(PR [#97](https://github.com/HsiangNianian/IntelligentMixVideo/pull/97) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
@@ -1061,3 +1075,5 @@ feat(client): 在模板工作区页头添加时钟 *(commit by [@HsiangNianian](
 [v0.5.0]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.4.2...v0.5.0
 
 [v0.9.0]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.5.0...v0.9.0
+
+[v0.9.1]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.0...v0.9.1
