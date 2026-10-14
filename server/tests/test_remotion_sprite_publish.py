@@ -7,6 +7,7 @@
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import shutil
@@ -819,3 +820,77 @@ def test_deleting_an_unknown_sprite_is_a_404(client: TestClient, published, spri
     assert client.delete(f"/api/sprites/{sprite_id}").status_code == 404
     assert len(pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites) == 1
     assert summary.sprite_id
+
+
+def rename(client: TestClient, sprite_id: str, name: str):
+    """发送二进制重命名请求，不带设备头（资产库共享）。"""
+    return client.post(f"/api/sprites/{sprite_id}/rename", content=pb.RenameSpriteRequest(name=name).SerializeToString(), headers=PROTOBUF)
+
+
+def test_renaming_a_sprite_changes_only_its_catalog_name(client: TestClient, published) -> None:
+    """重命名去除首尾空白后写入目录并返回新摘要；代码、预览包与哈希不变，重复保存同一版本返回改名后的原资产而不是新建。"""
+    summary = published_sprite(client, published.version.id)
+    before = sprite_store.get(summary.sprite_id)
+    response = rename(client, summary.sprite_id, "  新的名称  ")
+    assert response.status_code == 200
+    renamed = pb.RenameSpriteResponse.FromString(response.content).sprite
+    assert renamed.name == "新的名称" and renamed.sprite_id == summary.sprite_id
+    assert [item.name for item in pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites] == ["新的名称"]
+    assert sprite_store.get(summary.sprite_id) == {**before, "name": "新的名称"}
+    assert client.get(summary.preview_url).status_code == 200
+    assert published_sprite(client, published.version.id).name == "新的名称"
+
+
+def test_a_sprite_placed_in_a_template_can_be_renamed(client: TestClient, published) -> None:
+    """模板轨道只保存资产 ID，所以正被云端模板使用的资产也可以重命名，且仍不能删除。"""
+    from datetime import UTC, datetime
+
+    from server.template.store import initialize_schema, templates
+
+    summary = published_sprite(client, published.version.id)
+    stamp = datetime.now(UTC).replace(tzinfo=None)
+    with initialize_schema().begin() as connection:
+        connection.execute(templates.insert().values(
+            template_id=str(uuid4()), name="片头模板", configuration={"tracks": [{"target": "remotion", "sprite_id": summary.sprite_id}]},
+            created_at=stamp, updated_at=stamp,
+        ))
+    assert rename(client, summary.sprite_id, "改名后").status_code == 200
+    assert client.delete(f"/api/sprites/{summary.sprite_id}").status_code == 409
+
+
+@pytest.mark.parametrize("name", ["", "   ", "测" * 101])
+def test_renaming_to_an_empty_or_overlong_name_is_a_422(client: TestClient, published, name) -> None:
+    """去除首尾空白后为空或超过 100 个字符的名称返回 422，原名称保持不变；恰好 100 个字符可以。"""
+    summary = published_sprite(client, published.version.id)
+    original = pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites[0].name
+    assert rename(client, summary.sprite_id, name).status_code == 422
+    assert pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites[0].name == original
+    assert rename(client, summary.sprite_id, "测" * 100).status_code == 200
+
+
+@pytest.mark.parametrize("sprite_id", [str(uuid4()), "not-a-uuid"])
+def test_renaming_an_unknown_sprite_is_a_404(client: TestClient, published, sprite_id) -> None:
+    """不存在或格式错误的资产 ID 重命名返回 404，不影响已有资产。"""
+    summary = published_sprite(client, published.version.id)
+    assert rename(client, sprite_id, "新名称").status_code == 404
+    assert pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites[0].name == summary.name
+
+
+def test_rename_requires_a_protobuf_body(client: TestClient, published) -> None:
+    """非 Protobuf 的内容类型返回 415，内容损坏返回 400，名称都不变。"""
+    summary = published_sprite(client, published.version.id)
+    url = f"/api/sprites/{summary.sprite_id}/rename"
+    assert client.post(url, json={"name": "新名称"}).status_code == 415
+    assert client.post(url, content=b"\xff\xff\xff", headers=PROTOBUF).status_code == 400
+    assert pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites[0].name == summary.name
+
+
+def test_a_stale_preview_hash_refresh_does_not_undo_a_rename(client: TestClient, published) -> None:
+    """预览包刷新时手里的发布记录可能早于重命名：只更新预览哈希，不把旧名称写回。"""
+    summary = published_sprite(client, published.version.id)
+    stale = sprites.get(summary.sprite_id)
+    assert rename(client, summary.sprite_id, "改名后").status_code == 200
+    sprites._store_bundle(published.store, stale, b"// refreshed")
+    stored = sprite_store.get(summary.sprite_id)
+    assert stored["name"] == "改名后"
+    assert stored["preview_sha256"] == hashlib.sha256(b"// refreshed").hexdigest()

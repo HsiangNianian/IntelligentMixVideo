@@ -6,6 +6,7 @@ import { VersionCard } from "@/features/remotion_templates/VersionCard";
 import { defaultKind, publishChoice } from "@/features/remotion_templates/spriteChoice";
 import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
 import { SpriteClips } from "@/features/templates/SpritePanels";
+import { SpriteClipInspector } from "@/features/templates/SpriteClipInspector";
 import { getTemplate, saveTemplate } from "@/features/templates/api";
 import { bindClip } from "@/features/templates/clips";
 import type { SpriteAsset } from "@/features/sprites/model";
@@ -16,6 +17,8 @@ import {
   OperatorAccess,
   PublishSpriteRequestSchema,
   PublishSpriteResponseSchema,
+  RenameSpriteRequestSchema,
+  RenameSpriteResponseSchema,
   SpriteKind,
   SpriteParameterFormat,
   SpriteParameterSchema,
@@ -533,6 +536,14 @@ test("读回片段的覆盖值，内部参数的覆盖可恢复默认，滤镜�
   expect(within(filter).queryByLabelText("水平位置 %")).toBeNull();
 });
 
+// 场景（回归）：资产目录还在读取、或资产已被删除时，带位置覆盖的片段也能打开右栏，只允许移除，不能因读不到资产的类型而整页白屏。
+test("资产未读到时带位置覆盖的片段仍能打开设置栏", () => {
+  const clip: RemotionClip = { id: "clip-x", sprite_id: "sprite-gone", start: 0, duration: 3, parameters: {}, transform: { x: 270, scale: 2 } };
+  const noop = () => {};
+  render(<SpriteClipInspector clip={clip} asset={undefined} duration={10} onSample={noop} onTextTiming={noop} onParameter={noop} onTransform={noop} onStart={noop} onBind={noop} onRemove={noop} onClose={noop} />);
+  expect(screen.getByText("未找到的资产")).toBeTruthy();
+});
+
 // 场景：资产库里的资产可确认后删除；仍被模板使用时弹窗显示服务端列出的模板并保留资产，确认删除成功后目录刷新不再显示它。
 test("确认后删除资产，被模板使用时说明原因", async () => {
   const catalog = [summary("sprite-1"), summary("sprite-2", SpriteKind.VIDEO_OVERLAY)];
@@ -566,6 +577,44 @@ test("确认后删除资产，被模板使用时说明原因", async () => {
   await waitFor(() => expect(within(region).queryByRole("button", { name: "添加 Remotion 资产：霓虹标题" }) === null).toBe(true));
   expect(within(region).getByRole("button", { name: "添加 Remotion 资产：冷色光斑" })).toBeTruthy();
   expect(deletes).toEqual(["/api/sprites/sprite-1", "/api/sprites/sprite-1"]);
+});
+
+// 场景：资产可重命名，包括当前模板正在使用的资产：服务端拒绝时原因留在弹窗里可改后重试，成功后请求只带新名称（无设备头），目录卡片和已添加片段列表都显示新名称。
+test("重命名资产，失败可重试，使用中的资产也能改名", async () => {
+  const catalog = [summary("sprite-1")];
+  sprites({ catalog });
+  const fallback = fetchMock.getMockImplementation()!;
+  const renames: { path: string; name: string; device: string | null }[] = [];
+  fetchMock.mockImplementation((async (url, init) => {
+    const path = new URL(String(url)).pathname;
+    if (!path.endsWith("/rename")) return fallback(url, init);
+    renames.push({ path, name: fromBinary(RenameSpriteRequestSchema, new Uint8Array(init!.body as Uint8Array)).name, device: new Headers(init!.headers).get("X-IMV-Device") });
+    if (renames.length === 1) return new Response(JSON.stringify({ detail: "名称去除首尾空白后需为 1～100 个字符" }), { status: 422 });
+    catalog[0].name = renames.at(-1)!.name;
+    return binary(RenameSpriteResponseSchema, create(RenameSpriteResponseSchema, { sprite: catalog[0] }));
+  }) as typeof fetch);
+  render(<><Toaster /><TemplateWorkspace selection={{ environment: "cloud", templateId: savedTemplate().template_id }} onHome={() => {}} /></>);
+  const region = await screen.findByRole("region", { name: "Remotion 资产" });
+  fireEvent.click(within(region).getByRole("button", { name: "展开" }));
+  fireEvent.click(await within(region).findByRole("button", { name: "添加 Remotion 资产：霓虹标题" }));
+  expect(await screen.findByRole("button", { name: "设置 Remotion 资产：霓虹标题", hidden: true })).toBeTruthy();
+  fireEvent.click(within(region).getByRole("button", { name: "重命名 Remotion 资产：霓虹标题", hidden: true }));
+  const dialog = await screen.findByRole("dialog", { name: "重命名 Remotion 资产" });
+  const input = within(dialog).getByLabelText<HTMLInputElement>("资产名称");
+  expect(input.value).toBe("霓虹标题");
+  fireEvent.change(input, { target: { value: "  冷色标题  " } });
+  fireEvent.click(within(dialog).getByRole("button", { name: "保存名称" }));
+  expect((await within(dialog).findByRole("alert")).textContent).toBe("名称去除首尾空白后需为 1～100 个字符");
+  fireEvent.click(within(dialog).getByRole("button", { name: "保存名称" }));
+  // 等待元素消失不用 expect(元素).toBeNull()：失败时格式化整棵 DOM 会耗尽内存。
+  await waitForElementToBeRemoved(() => screen.queryByRole("dialog", { name: "重命名 Remotion 资产" }));
+  expect(await screen.findByText("已重命名为「冷色标题」")).toBeTruthy();
+  expect(renames).toEqual([
+    { path: "/api/sprites/sprite-1/rename", name: "冷色标题", device: null },
+    { path: "/api/sprites/sprite-1/rename", name: "冷色标题", device: null },
+  ]);
+  expect(await within(region).findByRole("button", { name: "添加 Remotion 资产：冷色标题" })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "设置 Remotion 资产：冷色标题" })).toBeTruthy();
 });
 
 // 场景：当前草稿（含尚未保存的添加）摆放的资产不能删除，并说明原因；否则之后保存模板会因资产未发布被拒绝。移除片段后恢复可删除。

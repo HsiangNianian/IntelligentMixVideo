@@ -35,38 +35,48 @@ export interface AssetCard {
   selected?: boolean;
   disabled?: boolean;
   onSelect: () => void;
+  /** 叠在封面右上角的操作按钮（如重命名、删除）；它们是选择按钮的兄弟节点，避免按钮嵌套。 */
+  actions?: ReactNode;
+  /** 卡片下方的附加说明，位于选择按钮之外。 */
+  note?: ReactNode;
 }
 
-/** 单张卡片：跟踪指针悬停与键盘聚焦，把“正在被查看”的状态交给封面。 */
+/** 单张卡片：跟踪指针悬停与键盘聚焦（含操作按钮），把“正在被查看”的状态交给封面。 */
 function Card({ card }: { card: AssetCard }) {
   const [active, setActive] = useState(false);
-  const { name, label, cover, coverClassName, selected, disabled, onSelect } = card;
+  const { name, label, cover, coverClassName, selected, disabled, onSelect, actions, note } = card;
   return (
-    <Button
-      type="button"
-      variant="ghost"
-      className={cn("template-asset-card h-auto min-w-0 flex-col items-stretch gap-1 whitespace-normal rounded-lg border p-1 text-left", selected && "is-selected")}
-      aria-label={label}
-      aria-pressed={selected}
-      disabled={disabled}
-      onClick={onSelect}
+    <div
+      className="relative min-w-0"
       onPointerEnter={() => setActive(true)}
       onPointerLeave={() => setActive(false)}
       onFocus={() => setActive(true)}
       onBlur={() => setActive(false)}
     >
-      <span className={cn("flex items-center justify-center overflow-hidden rounded bg-muted", coverClassName ?? "h-[68px]")}>{typeof cover === "function" ? cover(active) : cover}</span>
-      <span className="flex min-w-0 items-start justify-between gap-0.5">
-        <span className="min-w-0 break-all text-[11px] leading-4">{name}</span>
-        {selected ? <Check className="size-3 shrink-0" aria-hidden="true" /> : <Plus className="size-3 shrink-0" aria-hidden="true" />}
-      </span>
-    </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        className={cn("template-asset-card h-auto w-full min-w-0 flex-col items-stretch gap-1 whitespace-normal rounded-lg border p-1 text-left", selected && "is-selected")}
+        aria-label={label}
+        aria-pressed={selected}
+        disabled={disabled}
+        onClick={onSelect}
+      >
+        <span className={cn("flex items-center justify-center overflow-hidden rounded bg-muted", coverClassName ?? "h-[68px]")}>{typeof cover === "function" ? cover(active) : cover}</span>
+        <span className="flex min-w-0 items-start justify-between gap-0.5">
+          <span className="min-w-0 break-all text-[11px] leading-4">{name}</span>
+          {selected ? <Check className="size-3 shrink-0" aria-hidden="true" /> : <Plus className="size-3 shrink-0" aria-hidden="true" />}
+        </span>
+      </Button>
+      {actions && <div className="absolute right-1.5 top-1.5 flex gap-0.5">{actions}</div>}
+      {note}
+    </div>
   );
 }
 
 /**
  * 提供分类时显示单选切换组（再次点击当前分类不会取消选择），其下是名称搜索、调用方的附加控件和分批显示的卡片网格；
- * 不提供分类的目录（Remotion 资产自成一类）直接从搜索开始。分类由调用方持有，`items` 只包含当前分类的条目；搜索词与显示批次留在组件内。
+ * 不提供分类的目录直接从搜索开始。分类由调用方持有，`items` 只包含当前分类的条目；搜索词与显示批次留在组件内。
  */
 export function AssetBrowser<T>({ categories, category, onCategory, categoriesLabel, searchLabel, searchPlaceholder, noun, items, searchText, card, controls }: {
   /** 分类相关属性要么全部提供，要么全部省略。 */

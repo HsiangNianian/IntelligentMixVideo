@@ -201,6 +201,18 @@ class PublishSpriteResponse(_message.Message):
     sprite: SpriteSummary
     def __init__(self, sprite: _Optional[_Union[SpriteSummary, _Mapping]] = ...) -> None: ...
 
+class RenameSpriteRequest(_message.Message):
+    __slots__ = ("name",)
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    name: str
+    def __init__(self, name: _Optional[str] = ...) -> None: ...
+
+class RenameSpriteResponse(_message.Message):
+    __slots__ = ("sprite",)
+    SPRITE_FIELD_NUMBER: _ClassVar[int]
+    sprite: SpriteSummary
+    def __init__(self, sprite: _Optional[_Union[SpriteSummary, _Mapping]] = ...) -> None: ...
+
 class SpriteParameterOverride(_message.Message):
     __slots__ = ("key", "value")
     KEY_FIELD_NUMBER: _ClassVar[int]

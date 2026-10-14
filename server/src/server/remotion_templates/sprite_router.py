@@ -128,6 +128,21 @@ async def sprite_font(sprite_id: str, weight: int, service: Service) -> FileResp
     )
 
 
+@router.post(
+    "/{sprite_id}/rename", response_class=Response, openapi_extra=_REQUEST_BODY,
+    responses={200: {"content": PROTOBUF_CONTENT}}, summary="重命名 Sprite 资产",
+)
+async def rename_sprite(sprite_id: str, request: Request) -> Response:
+    """只修改目录里显示的名称；资产库共享，任何人都可改，被模板使用的资产也可以改。
+
+    名称去除首尾空白后需为 1～100 个字符，不要求唯一，否则 422；不存在返回 404。代码、参数与预览不变。
+    """
+    message = pb.RenameSpriteRequest()
+    await _body(request, message)
+    summary = await run_in_threadpool(sprites.rename, sprite_id, message.name)
+    return _response(pb.RenameSpriteResponse(sprite=summary))
+
+
 @router.delete("/{sprite_id}", status_code=204, summary="删除未被模板使用的 Sprite 资产")
 async def delete_sprite(sprite_id: str, service: Service) -> Response:
     """删除资产记录与预览包；资产库共享，任何人都可删除。

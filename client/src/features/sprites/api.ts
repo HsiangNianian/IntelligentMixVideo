@@ -1,4 +1,4 @@
-/** Sprite 资产 HTTP 边界：发布与目录使用 Protobuf 二进制，删除无请求体；写入失败不自动重试。片段随云端模板保存，不在这里。 */
+/** Sprite 资产 HTTP 边界：发布、重命名与目录使用 Protobuf 二进制，删除无请求体；写入失败不自动重试。片段随云端模板保存，不在这里。 */
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { apiBase } from "@/lib/api-base";
 import { deviceId } from "@/features/remotion_templates/localSessions";
@@ -6,6 +6,8 @@ import {
   ListSpritesResponseSchema,
   PublishSpriteRequestSchema,
   PublishSpriteResponseSchema,
+  RenameSpriteRequestSchema,
+  RenameSpriteResponseSchema,
   type SpriteKind,
   type SpriteSummary,
 } from "@/generated/imv/sprite/v1/sprite_pb";
@@ -92,4 +94,12 @@ export async function publishSprite(versionId: string, choice: PublishChoice): P
 /** 删除未被任何云端模板使用的资产；被使用时服务端说明涉及的模板，删除失败不自动重试。 */
 export async function deleteSprite(id: string): Promise<void> {
   await request(`/api/sprites/${encodeURIComponent(id)}`, "DELETE");
+}
+
+/** 修改资产在目录里显示的名称；服务端去除首尾空白并限制 1～100 个字符，不要求唯一。被模板使用的资产也可以改名，失败不自动重试。 */
+export async function renameSprite(id: string, name: string): Promise<SpriteAsset> {
+  const body = toBinary(RenameSpriteRequestSchema, create(RenameSpriteRequestSchema, { name }));
+  const { sprite } = fromBinary(RenameSpriteResponseSchema, await request(`/api/sprites/${encodeURIComponent(id)}/rename`, "POST", undefined, body));
+  if (!sprite) throw new Error("重命名响应缺少内容");
+  return toAsset(sprite);
 }

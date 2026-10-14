@@ -145,11 +145,12 @@ def test_mysql_sprite_table_keeps_field_names_binary_and_selections_unique(mysql
         publish(str(uuid4()))
     assert caught.value.orig.args[0] == 1062
     large = {"tsx_code": "路径🎬" * 100_000}
-    sprite_store.replace_data(first, large)
-    assert sprite_store.get(first) == large
-    assert sprite_store.records([first, "unknown"]) == {first: large}  # 未知 ID 不在结果里
+    merged = {"sprite_id": first, **large}
+    assert sprite_store.update_data(first, large) == merged and sprite_store.update_data(str(uuid4()), large) is None
+    assert sprite_store.get(first) == merged
+    assert sprite_store.records([first, "unknown"]) == {first: merged}  # 未知 ID 不在结果里
     # 不论文字字段取最早的同源同类型发布：只排序标识列，不对整行 JSON 排序。
-    assert sprite_store.find_any(version, 1) == large and sprite_store.find_any(version, 2) is None
+    assert sprite_store.find_any(version, 1) == merged and sprite_store.find_any(version, 2) is None
     assert [sprite_id for sprite_id, _ in sprite_store.listing()].count(first) == 1
 
 

@@ -85,6 +85,10 @@ TEXT_PROP = "text"
 KEYWORDS_PROP = "keywords"
 
 
+# 目录里显示的资产名称长度上限，与发布时由描述截取的名称一致。
+NAME_MAX_LENGTH = 100
+
+
 def _invalid(message: str) -> HTTPException:
     """Report a request that is well-formed protobuf but violates the Sprite contract."""
     return HTTPException(422, message)
@@ -179,6 +183,25 @@ def get(sprite_id: str) -> pb.PublishedSprite:
     if data is None:
         raise NotFound("sprite not found")
     return published_from(data)
+
+
+def rename(sprite_id: str, name: str) -> pb.SpriteSummary:
+    """Change the name shown in the catalog; the code, parameters and preview bundle are untouched.
+
+    The name is trimmed and must be 1 to 100 characters; it need not be unique, like the names publishing derives.
+    Unknown or malformed IDs are a 404. Assets that templates place can be renamed, since templates store only IDs.
+    """
+    name = name.strip()
+    if not 1 <= len(name) <= NAME_MAX_LENGTH:
+        raise _invalid(f"名称去除首尾空白后需为 1～{NAME_MAX_LENGTH} 个字符")
+    try:
+        identifier = str(UUID(sprite_id))
+    except ValueError:
+        raise NotFound("sprite not found") from None
+    data = sprite_store.update_data(identifier, {"name": name})
+    if data is None:
+        raise NotFound("sprite not found")
+    return summarize(published_from(data))
 
 
 def content_box(sprite: pb.PublishedSprite) -> pb.SpriteBox:
@@ -390,7 +413,7 @@ def _store_bundle(store: Store, sprite: pb.PublishedSprite, data: bytes) -> None
         staged.write_bytes(data)
         store.objects.put(bundle_key(sprite.sprite_id), staged, "text/javascript")
         sprite.preview_sha256 = hashlib.sha256(data).hexdigest()
-        sprite_store.replace_data(sprite.sprite_id, MessageToDict(sprite, preserving_proto_field_name=True))
+        sprite_store.update_data(sprite.sprite_id, {"preview_sha256": sprite.preview_sha256})
     finally:
         staged.unlink(missing_ok=True)
 
