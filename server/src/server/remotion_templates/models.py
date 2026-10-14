@@ -77,17 +77,19 @@ class GenerateTemplateRequest(Contract):
 
 
 class EditTemplateRequest(Contract):
-    """Edit a successful version with either natural language or a parameter patch."""
+    """Edit a successful version with natural language (text and/or a reference image) or a parameter patch."""
 
     instruction: Text | None = None
+    image: ImageReference | None = None
     parameters: dict[str, JsonValue] | None = None
     base_version_id: UUID | None = None
 
     @model_validator(mode="after")
     def exactly_one_edit(self) -> Self:
         """Prevent contradictory edits and parameter updates which do nothing."""
-        if (self.instruction is None) == (self.parameters is None):
-            raise ValueError("provide exactly one of instruction or parameters")
+        natural = self.instruction is not None or self.image is not None
+        if natural == (self.parameters is not None):
+            raise ValueError("provide exactly one of instruction/image or parameters")
         if self.parameters is not None and not self.parameters:
             raise ValueError("parameters must not be empty")
         return self
@@ -100,11 +102,11 @@ class TaskMessage(EditTemplateRequest):
 
     @model_validator(mode="after")
     def answer_is_text(self) -> Self:
-        """Question replies are text and cannot also select an edit base or patch parameters."""
+        """Question replies carry text and/or an image and cannot also select an edit base or patch parameters."""
         if self.reply_to_job_id and (
             self.parameters is not None or self.base_version_id is not None
         ):
-            raise ValueError("question replies require instruction only")
+            raise ValueError("question replies require instruction or image only")
         return self
 
 
@@ -551,6 +553,8 @@ class JobInput(Contract):
     instruction: str | None = None
     parameters: dict[str, JsonValue] | None = None
     clarifications: list[str] = Field(default_factory=list)
+    # Reference images attached to later chat messages; the work's original image is read from its request.
+    images: list[UUID] = Field(default_factory=list)
 
 
 class PublicJob(Contract):

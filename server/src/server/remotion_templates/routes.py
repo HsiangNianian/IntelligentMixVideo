@@ -132,7 +132,7 @@ def capabilities(service: Service, config: Config) -> dict:
 async def upload(service: Service, file: Annotated[UploadFile, File()]) -> Asset:
     """通过 multipart 表单的 `file` 字段上传单帧 PNG、JPEG 或 WebP 图片。
 
-    图片经校验后统一保存为 PNG，返回的 `id` 可用于创建作品时的 `image.asset_id`。
+    图片经校验后统一保存为 PNG，返回的 `id` 可用于创建作品或后续消息的 `image.asset_id`。
     默认大小上限为 10 MiB；超限返回 413，内容无效返回 422。
     """
     try:
@@ -216,10 +216,13 @@ def work(work_id: UUID, service: Service) -> TemplateProject:
     summary="提问、修改模板或回答澄清问题",
 )
 async def edit(work_id: UUID, request: TaskMessage, service: Service, config: Config) -> PublicJob:
-    """通过参数补丁 `parameters` 或自然语言 `instruction` 修改模板，两者必须二选一。
+    """通过参数补丁 `parameters` 或自然语言修改模板，两者必须二选一。
 
+    自然语言修改由 `instruction` 和／或参考图片 `image`（`POST /assets` 返回的 ID）组成，至少提供一项；
+    本次任务连同作品的原参考图一起读取这张图片，图片不能与参数补丁同时提交。
     默认基于当前成功版本，也可用 `base_version_id` 指定历史成功版本。
-    回答问题时用 instruction 提交答案，并用 reply_to_job_id 绑定提出问题的任务。
+    回答问题时用 instruction 和／或 image 提交答案，并用 reply_to_job_id 绑定提出问题的任务；回答沿用该任务已有的参考图片。
+    图片不存在时返回 404，属于正在删除的会话时返回 409。
     参数修改保留 TSX：组合版本（PR76）只做参数 Schema 校验并立即封存新默认值，不进入任务队列、不启动沙箱、不重新打包；
     更早的版本仍经渲染检查后保存。都不调用 Actor 或 Judge。
     手动修订成为后续自然语言修改的基线；问题已过期或已有运行任务时返回 409。

@@ -13,6 +13,10 @@ from uuid import UUID
 if TYPE_CHECKING:
     from .store import Store
 
+# Works that use an asset: as the original request image or as an image attached to a later message.
+REFERENCES = """SELECT id FROM projects WHERE json_extract(data, '$.request.image.asset_id')=:asset
+    UNION SELECT j.project_id FROM jobs j, json_each(j.input_data, '$.images') i WHERE i.value=:asset"""
+
 
 def remove_path(root: Path, category: str, identifier: str, suffix: str = "") -> None:
     """Remove only UUID-owned paths; unlink leaf symlinks and reject redirected parents."""
@@ -51,15 +55,22 @@ def finish(store: "Store", work_id: UUID) -> None:
             "SELECT data FROM projects WHERE id=?", (identifier,)
         ).fetchone()
         image = json.loads(project[0])["request"].get("image") if project else None
+        images = {str(UUID(image["asset_id"]))} if image else set()
+        images.update(
+            str(UUID(row[0]))
+            for row in db.execute(
+                "SELECT i.value FROM jobs j, json_each(j.input_data, '$.images') i WHERE j.project_id=?",
+                (identifier,),
+            )
+        )
         for row in jobs:
             remove_path(store.root, "jobs", row[0])
         for row in versions:
             remove_path(store.root, "accepted", row[0])
-        if image:
-            asset_id = str(UUID(image["asset_id"]))
+        for asset_id in sorted(images):
             shared = db.execute(
-                "SELECT 1 FROM projects WHERE id<>? AND json_extract(data, '$.request.image.asset_id')=? LIMIT 1",
-                (identifier, asset_id),
+                f"SELECT 1 FROM ({REFERENCES}) WHERE id<>:work LIMIT 1",
+                {"asset": asset_id, "work": identifier},
             ).fetchone()
             if not shared:
                 remove_path(store.root, "assets", asset_id, ".png")

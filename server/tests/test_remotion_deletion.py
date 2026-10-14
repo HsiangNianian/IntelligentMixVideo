@@ -12,7 +12,7 @@ from server.remotion_templates import deletion
 from server.remotion_templates.context import Conversation
 from server.remotion_templates.media import save_image
 from server.remotion_templates.parameters import patch_parameters
-from server.remotion_templates.models import GenerateTemplateRequest, JobInput
+from server.remotion_templates.models import GenerateTemplateRequest, JobInput, TaskMessage
 from server.remotion_templates.routes import router
 from server.remotion_templates.runtime import Runtime
 from server.remotion_templates.settings import Settings
@@ -426,3 +426,35 @@ def test_pending_image_cannot_be_reused_after_partial_cleanup(store):
             GenerateTemplateRequest(description="复用", image={"asset_id": asset.id})
         )
     assert len(store.work_history().items) == 1
+
+
+def test_follow_up_images_follow_work_lifecycle(store, service, candidate, spec, monkeypatch):
+    """后续消息附带的参考图随会话删除；其他会话仍以原图或后续消息引用时保留，删除未完成时禁止复用。"""
+    monkeypatch.setattr(service, "notify", lambda *args: None)
+    original, own, kept = reference(store), reference(store), reference(store)
+    work, first = store.create(
+        GenerateTemplateRequest(description="删除", image={"asset_id": original.id})
+    )
+    store.claim()
+    version = publish_fixture(store, first.id, candidate, spec, evidence(candidate, spec))
+    edit = service.message(work.id, TaskMessage(instruction="参考这张", image={"asset_id": own.id}))
+    assert store.job(edit.id).base_version_id == version.id
+    assert store.inputs(edit.id) == JobInput(mode="edit", instruction="参考这张", images=[own.id])
+    store.update(edit.id, status="failed", stage="finished")
+    image_only = service.message(work.id, TaskMessage(image={"asset_id": kept.id}))
+    assert store.inputs(image_only.id).images == [kept.id]
+    other, other_first = store.create(
+        GenerateTemplateRequest(description="保留", image={"asset_id": kept.id})
+    )
+    store.update(other_first.id, status="failed", stage="finished")
+    service.message(other.id, TaskMessage(image={"asset_id": original.id}))
+
+    store.begin_deletion(work.id)
+    with pytest.raises(Conflict):
+        store.create(GenerateTemplateRequest(description="复用", image={"asset_id": own.id}))
+    deletion.finish(store, work.id)
+    with pytest.raises(NotFound):
+        store.asset(own.id)
+    assert not (store.root / "assets" / f"{own.id}.png").exists()
+    for asset in (original, kept):
+        assert store.asset_path(asset.id).exists()

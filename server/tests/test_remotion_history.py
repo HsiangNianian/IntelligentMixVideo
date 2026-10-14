@@ -1,5 +1,6 @@
 """Verify durable public histories and compatible APIs offline: uv run --locked pytest tests/test_remotion_history.py."""
 
+import asyncio
 import json
 from io import BytesIO
 from types import SimpleNamespace
@@ -11,10 +12,17 @@ from fastapi.testclient import TestClient
 from PIL import Image
 from pydantic import SecretStr, ValidationError
 from server.remotion_templates import history
-from server.remotion_templates.models import GenerateTemplateRequest, JobError, JobInput
+from server.remotion_templates.media import save_image
+from server.remotion_templates.models import (
+    DialogueOutput,
+    GenerateTemplateRequest,
+    JobError,
+    JobInput,
+    TaskMessage,
+)
 from server.remotion_templates.routes import router
 from server.remotion_templates.runtime import Runtime
-from server.remotion_templates.store import Conflict, Store
+from server.remotion_templates.store import Conflict, NotFound, Store
 from server.remotion_templates.settings import Settings
 
 
@@ -687,3 +695,60 @@ def test_parameter_work_is_refused_but_conversation_is_not(history_app, history_
         monkeypatch.setattr(history_store, "inputs", lambda _id: JobInput(mode="parameters", parameters={"size": 80}))
         assert client.post(f"/jobs/{job.id}/retry").status_code == 503
         assert reached == ["message"] * 3 + ["retry"]
+
+
+def reference_image(store):
+    """Register a normalized reference through the real upload pipeline."""
+    buffer = BytesIO()
+    Image.new("RGB", (8, 8), "red").save(buffer, format="PNG")
+    return save_image(buffer.getvalue(), store, Settings(_env_file=None))
+
+
+def test_follow_up_messages_attach_reference_images(history_store, monkeypatch):
+    """开始对话后的消息与澄清回答都可附参考图；任务读取原图加本条消息的图，公开消息显示本条的图。
+
+    修复前 messages 不接受 image，开始对话后无法继续上传参考图（#127）。
+    """
+    runtime = Runtime(history_store, None, Settings(_env_file=None))
+    monkeypatch.setattr(runtime, "notify", lambda *args: None)
+    original, answer, later = (reference_image(history_store) for _ in range(3))
+    work, job = history_store.create(
+        GenerateTemplateRequest(description="标题", image={"asset_id": original.id})
+    )
+    history_store.update(job.id, status="needs_input", stage="finished", questions=["什么颜色？"])
+
+    reply = runtime.message(
+        work.id, TaskMessage(image={"asset_id": answer.id}, reply_to_job_id=job.id)
+    )
+    assert history_store.inputs(reply.id).images == [answer.id]
+    message = history_store.session(work.id).messages[-1]
+    assert (message.text, message.image_asset_id) == ("", answer.id)
+
+    seen = []
+
+    class Harness:
+        """Record what the model would receive and answer without generating."""
+
+        renderer = None
+
+        async def generate(self, spec, budget, directory, images, on_stage, **options):
+            """Capture image files and the intent's references for one task."""
+            seen.append((images, options["intent"]["reference_images"]))
+            return DialogueOutput(answer="好的")
+
+    runtime.harness = Harness()
+    asyncio.run(runtime._execute(reply.id))
+    assert seen == [(
+        [history_store.asset_path(original.id), history_store.asset_path(answer.id)],
+        [{"asset_id": str(original.id)}, {"asset_id": str(answer.id)}],
+    )]
+
+    with pytest.raises(ValidationError):
+        TaskMessage(parameters={"size": 80}, image={"asset_id": later.id})
+    with pytest.raises(NotFound):
+        runtime.message(work.id, TaskMessage(instruction="参考", image={"asset_id": uuid4()}))
+    assert history_store.latest_job(work.id).id == reply.id
+    follow = runtime.message(work.id, TaskMessage(instruction="改成这样", image={"asset_id": later.id}))
+    assert history_store.inputs(follow.id).images == [later.id]
+    message = history_store.session(work.id).messages[-1]
+    assert (message.text, message.image_asset_id) == ("改成这样", later.id)

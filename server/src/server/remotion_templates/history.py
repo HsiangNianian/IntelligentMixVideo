@@ -169,14 +169,17 @@ def record_input(
     inputs: JobInput,
     text: str | None = None,
     *,
+    image: UUID | None = None,
     reconstructed: bool = False,
 ) -> None:
-    """Record persisted input; reconstructed messages never quote the private model context."""
+    """Record persisted input; reconstructed messages never quote the private model context.
+
+    ``image`` is the reference attached to this message; the first message shows the work's original image.
+    """
     first = db.execute(
         "SELECT id FROM jobs WHERE project_id=? ORDER BY rowid LIMIT 1",
         (str(job.project_id),),
     ).fetchone()[0] == str(job.id)
-    image = None
     if first:
         row = db.execute(
             "SELECT data FROM projects WHERE id=?", (str(job.project_id),)
@@ -191,7 +194,8 @@ def record_input(
         elif inputs.parameters is not None:
             text = "调整模板参数。"
         else:
-            text = inputs.instruction or "重试本次制作。"
+            # An image-only message has no text; the client shows its own caption beside the image.
+            text = inputs.instruction or ("" if image else "重试本次制作。")
     append_message(db, job, "user", text, image=image, reconstructed=reconstructed)
 
 
