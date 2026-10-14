@@ -83,7 +83,7 @@ test("本地合并保留轮次、去重并忽略已写入事件", async () => {
     event(2, { type: "job.round", data: { job_id: "job-1", round: { ...ROUND, turn: 9 } } }),
     event(4, { type: "job.updated", data: ended as SessionJob }),
   ]);
-  expect(stored.cursor).toBe(4);
+  expect(stored?.cursor).toBe(4);
   const snapshot = await local.snapshot("work-1");
   expect(snapshot.job.status).toBe("answered");
   expect(snapshot.job.rounds).toEqual([ROUND]);
@@ -96,6 +96,25 @@ test("成功版本写入作品指针", async () => {
   await local.apply("work-1", [event(5, { type: "version.ready", data: { version_id: "version-9", job_id: "job-1" } })]);
   expect((await local.snapshot("work-1")).work.current_version_id).toBe("version-9");
   expect((await local.history())[0]).toMatchObject({ id: "work-1", current_version_id: "version-9", title: "本地标题" });
+});
+
+// 同一会话的读写串行：恢复读取排在进行中的事件写入之后，读到的游标包含这批事件；后台同步与 SSE 不会交错写入。
+test("同一会话的快照等待进行中的写入", async () => {
+  await recordWork();
+  const save = local.storage().save;
+  let release!: () => void;
+  spyOn(local.storage(), "save").mockImplementationOnce(async (...args) => {
+    await new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return save(...args);
+  });
+  const writing = local.apply("work-1", [event(1, { type: "job.updated", data: running() })]);
+  const reading = local.snapshot("work-1");
+  await waitFor(() => expect(release).toBeDefined());
+  release();
+  await writing;
+  expect((await reading).cursor).toBe(1);
 });
 
 // 消息按序号分页：首屏返回最新一页与 next_before，继续向前读取到最早消息后不再有下一页。

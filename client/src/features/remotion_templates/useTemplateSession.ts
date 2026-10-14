@@ -786,5 +786,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
     deleteWork,
     reset: () => select(null),
     older,
+    // 后台同步据此跳过当前会话；同步读取最新值，不等待重新渲染。
+    openWork: () => latest.current.workId,
   };
 }

@@ -1,5 +1,5 @@
 /**
- * 本地协议替身：按作品缓存未送达的公开事件，经真实 fetch/SSE 重放，并实现送达确认；不连接模型或播放器。
+ * 本地协议替身：按作品缓存未送达的公开事件，经真实 fetch/SSE 与分页事件接口重放，并实现送达确认；不连接模型或播放器。
  *
  * 会话历史保存在客户端本地存储（测试中为内存实现），替身不再提供会话快照或历史分页。`seed` 模拟本机此前
  * 已创建并写入过的会话：调用创建接口后，把该作品已有事件写入本地存储。
@@ -15,6 +15,8 @@ import type {
   WorkEvent,
 } from "@/features/remotion_templates/model";
 
+/** 待送达事件分页接口每页的条数；取小值让测试覆盖多页读取。 */
+const EVENT_PAGE = 2;
 /** 当前测试的替身；`seed` 从它读取已发出的事件。 */
 let active: ReturnType<typeof remotionServer> | undefined;
 
@@ -219,6 +221,15 @@ export function remotionServer(
             [...versions]
               .filter(([, owner]) => owner === work)
               .map(([id]) => ({ ...remotionVersion(id), project_id: work })),
+          );
+        }
+        if (/^\/works\/[^/]+\/events$/.test(path)) {
+          const work = path.split("/")[2]!;
+          if (!works.has(work)) return new Response(null, { status: 404 });
+          const after = Number(url.searchParams.get("after"));
+          // 每页最多 EVENT_PAGE 条，后台同步须继续读取直到取空。
+          return Response.json(
+            records.filter((event) => event.work_id === work && event.id > after).slice(0, EVENT_PAGE),
           );
         }
         if (path.endsWith("/stream")) {

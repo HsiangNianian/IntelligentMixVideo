@@ -2,7 +2,8 @@
  * 字效会话的本地存储：聊天消息、任务公开状态与本机设备 ID 只保存在使用者这一端；版本列表与代码按需从服务端读取。
  *
  * 桌面通过 Tauri `remotion_sessions` 命令读写应用数据目录下的 SQLite；浏览器仅供本地测试，使用页面内存，
- * 刷新即清空。会话按当前 API 服务地址归属，切换服务只看到该服务下的会话。两种实现共用同一存储接口，事件合并规则只在本文件实现一次：会话订阅把服务端事件交给
+ * 刷新即清空。会话按当前 API 服务地址归属，切换服务只看到该服务下的会话。同一会话的读写按调用顺序串行，
+ * 打开会话的 SSE 订阅与后台同步（`backgroundSync.ts`）不会交错写入。两种实现共用同一存储接口，事件合并规则只在本文件实现一次：会话订阅把服务端事件交给
  * `apply` 写入本地后，再向服务端确认送达，服务端随即删除已送达的事件。
  */
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -160,6 +161,20 @@ export function server(): string {
   }
 }
 
+/** 每个会话的本地读写队列：SSE、后台同步、恢复读取与删除按调用顺序串行，读到的游标总是上一次写入之后的。 */
+const queues = new Map<string, Promise<unknown>>();
+/** 在当前服务下该会话的队列末尾执行任务；任务失败只拒绝自己，不阻塞后续任务。 */
+function serial<T>(work: string, task: () => Promise<T>): Promise<T> {
+  const key = JSON.stringify([server(), work]);
+  const run = (queues.get(key) ?? Promise.resolve()).then(task);
+  const tail = run.catch(() => {});
+  queues.set(key, tail);
+  void tail.then(() => {
+    if (queues.get(key) === tail) queues.delete(key);
+  });
+  return run;
+}
+
 /** 侧栏摘要只包含标题、活动时间、最新任务与服务端删除状态。 */
 function summary(item: StoredWork): WorkSummary {
   return {
@@ -175,8 +190,18 @@ function summary(item: StoredWork): WorkSummary {
 export async function history(): Promise<WorkSummary[]> {
   return (await storage().works(server())).map(summary);
 }
-/** 从本地恢复与原服务端快照相同的结构；本机没有该会话时视为不存在。 */
-export async function snapshot(work: string, before?: number, limit = 50): Promise<SessionSnapshot> {
+/** 当前服务下仍在排队或运行、且服务端未报告删除的会话；后台同步只拉取它们的待送达事件。 */
+export async function pendingWorks(): Promise<StoredWork[]> {
+  return (await storage().works(server())).filter(
+    (item) => !item.deleting && (item.job.status === "queued" || item.job.status === "running"),
+  );
+}
+/** 从本地恢复与原服务端快照相同的结构；本机没有该会话时视为不存在。排在该会话进行中的写入之后读取。 */
+export function snapshot(work: string, before?: number, limit = 50): Promise<SessionSnapshot> {
+  return serial(work, () => read(work, before, limit));
+}
+/** 快照的实际读取。 */
+async function read(work: string, before: number | undefined, limit: number): Promise<SessionSnapshot> {
   const scope = server();
   const stored = await storage().work(scope, work);
   if (!stored) throw new MissingLocalWork();
@@ -194,12 +219,12 @@ export async function snapshot(work: string, before?: number, limit = 50): Promi
   };
 }
 /** 新建作品后立即登记本地会话，后续消息与状态由事件写入。 */
-export async function record(
+export function record(
   project: { id: string; current_version_id: string | null; created_at: string; request: { description?: string | null } },
   job: Job,
-) {
+): Promise<void> {
   const initial: SessionJob = { ...job, created_at: project.created_at, updated_at: project.created_at, parameters: null };
-  await storage().save(server(), {
+  return serial(project.id, () => storage().save(server(), {
     work: {
       work: { id: project.id, current_version_id: project.current_version_id },
       // 按码位截取：按 UTF-16 截断可能留下半个 emoji，孤立代理项无法经 IPC 序列化。
@@ -212,24 +237,31 @@ export async function record(
     },
     messages: [],
     jobs: [initial],
-  });
+  }));
 }
 /** 提交消息、参数或重试后先登记服务端返回的新任务为最新任务，事件到达前界面也不会回到旧任务状态。 */
-export async function track(job: Job) {
-  const scope = server();
-  const stored = await storage().work(scope, job.project_id);
-  if (!stored || stored.job.id === job.id) return;
-  const stamp = new Date().toISOString();
-  const latest: SessionJob = { ...job, created_at: stamp, updated_at: stamp, parameters: null };
-  await storage().save(scope, { work: { ...stored, job: latest }, messages: [], jobs: [latest] });
+export function track(job: Job): Promise<void> {
+  return serial(job.project_id, async () => {
+    const scope = server();
+    const stored = await storage().work(scope, job.project_id);
+    if (!stored || stored.job.id === job.id) return;
+    const stamp = new Date().toISOString();
+    const latest: SessionJob = { ...job, created_at: stamp, updated_at: stamp, parameters: null };
+    await storage().save(scope, { work: { ...stored, job: latest }, messages: [], jobs: [latest] });
+  });
 }
 /**
  * 按事件编号顺序把一批服务端事件合并进本地会话并原子保存，返回保存后的会话。
  *
  * 状态事件不含轮次，合并时保留已有轮次；轮次按层级与回合去重；成功版本只更新作品指针。
- * 已写入（编号不大于游标）的事件被忽略，重复投递不会产生重复记录。
+ * 已写入（编号不大于游标）的事件被忽略，重复投递不会产生重复记录。轮到写入时 `skip` 返回 true 则不写入并返回
+ * null：后台同步借此把已在 SSE 中打开的会话留给订阅，两者不会先后写入同一批事件。
  */
-export async function apply(work: string, events: WorkEvent[]): Promise<StoredWork> {
+export function apply(work: string, events: WorkEvent[], skip?: () => boolean): Promise<StoredWork | null> {
+  return serial(work, () => (skip?.() ? Promise.resolve(null) : merge(work, events)));
+}
+/** 事件合并与保存的实际实现。 */
+async function merge(work: string, events: WorkEvent[]): Promise<StoredWork> {
   const scope = server();
   const stored = await storage().work(scope, work);
   if (!stored) throw new MissingLocalWork();
@@ -269,13 +301,15 @@ export async function apply(work: string, events: WorkEvent[]): Promise<StoredWo
   return stored;
 }
 /** 服务端报告会话不存在或正在清理时标记本地记录，侧栏据此提供重试删除；本机没有该会话时不做任何事。 */
-export async function markDeleting(work: string): Promise<void> {
-  const scope = server();
-  const stored = await storage().work(scope, work);
-  if (stored && !stored.deleting)
-    await storage().save(scope, { work: { ...stored, deleting: true }, messages: [], jobs: [] });
+export function markDeleting(work: string): Promise<void> {
+  return serial(work, async () => {
+    const scope = server();
+    const stored = await storage().work(scope, work);
+    if (stored && !stored.deleting)
+      await storage().save(scope, { work: { ...stored, deleting: true }, messages: [], jobs: [] });
+  });
 }
 /** 删除当前服务下本机会话的全部记录；其他服务的同 ID 记录不受影响，服务端数据由删除接口单独清理。 */
 export function forget(work: string): Promise<void> {
-  return storage().remove(server(), work);
+  return serial(work, () => storage().remove(server(), work));
 }

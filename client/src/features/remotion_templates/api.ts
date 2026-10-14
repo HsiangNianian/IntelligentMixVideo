@@ -5,6 +5,7 @@ import type {
   Job,
   Values,
   Version,
+  WorkEvent,
 } from "./model";
 import { deviceId } from "./localSessions";
 import { readSettings } from "@/features/settings/api";
@@ -191,6 +192,17 @@ export function cancel(id: string): Promise<Job> {
 export function retry(id: string): Promise<Job> {
   return modelRequest(`/jobs/${encodeURIComponent(id)}/retry`, {
     method: "POST",
+  });
+}
+
+/** 读取一页编号大于 after 的待送达公开事件（升序，可能少于全部）；后台同步据此补齐未在 SSE 中打开的会话。 */
+export function workEvents(
+  work: string,
+  after: number,
+  signal?: AbortSignal,
+): Promise<WorkEvent[]> {
+  return request(`/works/${encodeURIComponent(work)}/events?after=${after}`, {
+    signal,
   });
 }
 
