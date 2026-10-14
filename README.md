@@ -347,6 +347,19 @@ Replace `app.AppImage` with the actual filename. This option compares display ba
 
 </details>
 
+<details>
+<summary>Linux AppImage cannot open a Chinese input method</summary>
+
+The AppImage loads only its bundled GTK input method modules, never the ones installed on the system (their GTK/GLib versions differ, and mixing them can crash). AppImages up to 0.9.1 bundle no fcitx or ibus module, so no input field can switch to Chinese; upgrade to a newer version. The `.deb` uses the system GTK and is not affected. Newer AppImages bundle the fcitx5 module (which also answers to `GTK_IM_MODULE=fcitx`) and the ibus module. With another input method framework, start the AppImage with the bundled XIM module:
+
+```bash
+GTK_IM_MODULE=xim ./app.AppImage
+```
+
+XIM requires the input method framework to set `XMODIFIERS` (for example `@im=fcitx`).
+
+</details>
+
 ---
 
 ## Data and Credentials
@@ -479,7 +492,7 @@ On Unix, the database uses a private socket. On Windows, it uses a random passwo
 
 Isolated generation of new Remotion effects currently supports Linux servers only. For local development on macOS, set `IMV_ALLOW_UNSANDBOXED_WORKER=true` on the server to run effect generation without isolation. This switch is off by default and ignored on other systems; when enabled, generated code runs outside a sandbox. Transparent overlay rendering always requires the Linux sandbox and is unaffected by this switch. See the [Remotion server documentation](server/src/server/remotion_templates/README.md) for dependencies and configuration.
 
-Linux AppImages exclude bundled Wayland and PulseAudio libraries, use the host versions, and retain the required GStreamer plugins. Startup defaults to `WEBKIT_GST_DMABUF_SINK_DISABLED=1` and `WEBKIT_GST_USE_PLAYBIN3=1` while preserving explicit user settings. Actual playback behavior still needs verification on the target machine.
+Linux AppImages exclude bundled Wayland and PulseAudio libraries, use the host versions, and retain the required GStreamer plugins. They bundle the fcitx5 and ibus GTK3 input method modules (the startup hook pins GTK to the bundled module list), and the modules, their libraries and their registration are checked before upload. Startup defaults to `WEBKIT_GST_DMABUF_SINK_DISABLED=1` and `WEBKIT_GST_USE_PLAYBIN3=1` while preserving explicit user settings. Actual playback behavior still needs verification on the target machine.
 
 </details>
 

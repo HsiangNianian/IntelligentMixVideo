@@ -345,6 +345,19 @@ IMV_GDK_BACKEND=x11 ./应用.AppImage
 
 </details>
 
+<details>
+<summary>Linux AppImage 无法打开中文输入法</summary>
+
+AppImage 只加载随包的 GTK 输入法模块，不使用系统里安装的模块（两者的 GTK/GLib 版本不同，混用可能导致崩溃）。0.9.1 及更早的 AppImage 没有随包 fcitx/ibus 模块，所有输入框都无法切换中文，请升级到新版本；`.deb` 使用系统 GTK，不受影响。新版本随包提供 fcitx5（也响应 `GTK_IM_MODULE=fcitx`）和 ibus 模块。使用其他输入法框架时，可以改用随包的 XIM 模块启动：
+
+```bash
+GTK_IM_MODULE=xim ./应用.AppImage
+```
+
+XIM 需要输入法框架已设置 `XMODIFIERS`（例如 `@im=fcitx`）。
+
+</details>
+
 ---
 
 ## 数据与凭据
@@ -477,7 +490,7 @@ Unix 数据库使用私有 socket；Windows 使用随机密码与动态回环端
 
 Remotion 新字效的隔离生成目前仅支持 Linux 服务端。macOS 本地开发可在服务端设置 `IMV_ALLOW_UNSANDBOXED_WORKER=true`，以非隔离方式运行字效生成；该开关默认关闭，其他系统忽略，启用后生成代码不受沙箱隔离。透明叠加视频渲染仍始终要求 Linux 沙箱，不受此开关影响。依赖与配置详见 [Remotion 服务端说明](server/src/server/remotion_templates/README.md)。
 
-Linux AppImage 排除随包 Wayland 和 PulseAudio 库，使用宿主版本并保留必要的 GStreamer 插件；启动默认设置 `WEBKIT_GST_DMABUF_SINK_DISABLED=1`、`WEBKIT_GST_USE_PLAYBIN3=1`，保留用户显式配置。真实播放行为仍需目标机器验证。
+Linux AppImage 排除随包 Wayland 和 PulseAudio 库，使用宿主版本并保留必要的 GStreamer 插件；随包提供 fcitx5、ibus GTK3 输入法模块（启动钩子固定使用随包的输入法清单），上传前检查模块、依赖库与清单登记；启动默认设置 `WEBKIT_GST_DMABUF_SINK_DISABLED=1`、`WEBKIT_GST_USE_PLAYBIN3=1`，保留用户显式配置。真实播放行为仍需目标机器验证。
 
 </details>
 

@@ -1,12 +1,15 @@
-/** 验证 AppImage 媒体依赖并排除冲突的宿主库；执行：bun .github/scripts/appimage-smoke.mjs <AppImage>。 */
+/** 验证 AppImage 媒体依赖与中文输入法模块并排除冲突的宿主库；执行：bun .github/scripts/appimage-smoke.mjs <AppImage>。 */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, rmSync, mkdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-/** 检查解包产物的必需文件与冲突库，包含 usr 下不同架构的库目录及符号链接。 */
+/** AppImage 启动钩子把 GTK 固定到随包的输入法清单；这些模块须随包提供，宿主模块与随包 GTK/GLib 版本不符。 */
+const IM_CACHE = "usr/lib/gtk-3.0/3.0.0/immodules.cache";
+
+/** 检查解包产物的必需文件、已登记的输入法与冲突库，包含 usr 下不同架构的库目录及符号链接。 */
 export function verifyAppDir(root) {
   for (const path of [
     "usr/bin/client", "usr/lib/libwebkit2gtk-4.1.so.0",
@@ -16,8 +19,15 @@ export function verifyAppDir(root) {
     "usr/lib/gstreamer-1.0/libgstopengl.so",
     "usr/lib/gstreamer-1.0/libgstplayback.so",
     "usr/lib/gstreamer1.0/gstreamer-1.0/gst-plugin-scanner",
+    IM_CACHE,
+    "usr/lib/gtk-3.0/3.0.0/immodules/im-fcitx5.so", "usr/lib/libFcitx5GClient.so.2",
+    "usr/lib/gtk-3.0/3.0.0/immodules/im-ibus.so", "usr/lib/libibus-1.0.so.5",
   ]) {
     assert(existsSync(join(root, path)), `Missing required AppImage file: ${path}`);
+  }
+  const cache = readFileSync(join(root, IM_CACHE), "utf8");
+  for (const id of ["fcitx", "fcitx5", "ibus"]) {
+    assert.match(cache, new RegExp(`^"${id}" `, "m"), `AppImage must register the ${id} GTK input method`);
   }
   // 检查实际产物，而非复制排除规则；也能捕获库目录变化后规则失效。
   const bundled = readdirSync(join(root, "usr"), { recursive: true })
@@ -50,7 +60,7 @@ if (import.meta.main) {
         stdio: "inherit", timeout: 720_000,
       });
     }
-    console.log("AppImage keeps client/WebKit/media plugins and excludes bundled Wayland/PulseAudio libraries");
+    console.log("AppImage keeps client/WebKit/media plugins and fcitx5/ibus input methods, and excludes bundled Wayland/PulseAudio libraries");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
