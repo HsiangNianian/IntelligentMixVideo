@@ -8,21 +8,39 @@ import { readCatalog } from "@/features/templates/sdk";
 
 const catalog = readCatalog();
 
-// 场景：已有标题或字幕使用停用花字时，仍显示当前值，但选项和搜索均不能再次选择它。
-test.each(["title", "subtitle"] as const)("%s 花字选择排除停用花字并保留已有值", async (role) => {
+// 场景：已有标题或字幕保留停用花字的正常文字和勾选标记，清除或更换后无法重新选择。
+test.each([
+  ["title", ""], ["subtitle", ""],
+  ["title", "flower/CS0003-000001"], ["subtitle", "flower/CS0003-000001"],
+] as const)("%s 保留当前停用花字，改为 %s 后移除该选项", async (role, replacement) => {
   const initial = newDraft();
   const asset = catalog.find((item) => item.id === "flower/CS0003-000002")!;
   initial.editor[`${role}Flower`] = asset.id;
   const read = renderEditor(initial, role);
-  expect(screen.getByRole("combobox", { name: "花字样式" }).textContent).toBe(asset.name);
+  const trigger = screen.getByRole("combobox", { name: "花字样式" });
+  expect(trigger.textContent).toBe(asset.name);
+  expect(trigger.querySelector("span")?.classList.contains("text-muted-foreground")).toBe(false);
+  fireEvent.click(trigger);
+  expect(screen.getByRole("option", { name: /CS0003-000002/ }).querySelector("svg")?.classList.contains("opacity-100")).toBe(true);
+  fireEvent.change(await screen.findByPlaceholderText("搜索花字样式"), { target: { value: "CS0003-000002" } });
+  fireEvent.click(screen.getByRole("option", { name: /CS0003-000002/ }));
+  expect(read()).toEqual(initial);
+  fireEvent.click(trigger);
+  fireEvent.click(screen.getByRole("option", { name: replacement ? /CS0003-000001/ : /^无效果/ }));
+  expect(read().editor[`${role}Flower`]).toBe(replacement);
+  fireEvent.click(trigger);
+  expect(screen.queryByRole("option", { name: /CS0003-000002/ })).toBeNull();
+  fireEvent.change(await screen.findByPlaceholderText("搜索花字样式"), { target: { value: "CS0003-000002" } });
+  expect(screen.queryByRole("option", { name: /CS0003-000002/ })).toBeNull();
+});
+
+// 场景：标题或字幕未使用停用花字时，选项和搜索均不提供该花字。
+test.each(["title", "subtitle"] as const)("%s 不提供停用花字的新选择", async (role) => {
+  renderEditor(newDraft(), role);
   fireEvent.click(screen.getByRole("combobox", { name: "花字样式" }));
   expect(screen.queryByRole("option", { name: /CS0003-000002/ })).toBeNull();
   fireEvent.change(await screen.findByPlaceholderText("搜索花字样式"), { target: { value: "CS0003-000002" } });
   expect(screen.queryByRole("option", { name: /CS0003-000002/ })).toBeNull();
-  expect(read().editor[`${role}Flower`]).toBe(asset.id);
-  fireEvent.change(screen.getByPlaceholderText("搜索花字样式"), { target: { value: "" } });
-  fireEvent.click(screen.getByRole("option", { name: /^无效果/ }));
-  expect(read().editor[`${role}Flower`]).toBe("");
 });
 
 /** 保存组件输出并重新提供受控值，返回最新草稿供断言检查。 */

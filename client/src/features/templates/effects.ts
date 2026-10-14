@@ -11,7 +11,7 @@ export const assetCategories: Record<Category, string> = {
   "transition/normal": "转场", in: "文字入场", out: "文字出场", loop: "文字循环",
 };
 
-/** 前端选择入口统一排除停用的花字，完整目录继续用于已有模板。 */
+/** 判断资产能否作为新的效果选择，已有选择由编辑器保留。 */
 export function isSelectableAsset(asset: EffectAsset): boolean {
   return asset.id !== "flower/CS0003-000002";
 }

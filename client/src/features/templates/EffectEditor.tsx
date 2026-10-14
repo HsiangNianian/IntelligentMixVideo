@@ -115,12 +115,12 @@ function EffectSelect({
           value={editor[field] || "none"}
           onChange={(value) => onChange(value === "none" ? "" : value)}
           disabled={disabled || !catalog.length}
-          placeholder={selected?.name ?? "无效果"}
+          placeholder="无效果"
           searchPlaceholder={`搜索${label}`}
           options={[
             { value: "none", label: "无效果" },
             ...(editor[field] && !selected ? [{ value: editor[field], label: `未载入：${editor[field]}` }] : []),
-            ...options.filter(isSelectableAsset).map((item) => ({ value: item.id, label: item.name, hint: item.effect_id })),
+            ...options.filter((item) => isSelectableAsset(item) || item.id === editor[field]).map((item) => ({ value: item.id, label: item.name, hint: item.effect_id })),
           ]}
         />
         {selected?.preview_url && (
