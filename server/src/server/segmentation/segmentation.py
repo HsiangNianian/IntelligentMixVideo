@@ -250,13 +250,14 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
         repair_ranges.append((indices[0], indices[-1] + 1))
     trace["repair_block_count"] = len(repair_ranges)
 
-    # 两次切分共用词串保护；逗号列表须有共享后缀或明确约数语境，避免把“99，3件”连成一串。
+    # 两次切分共用词串保护，数字后紧跟三位数字的半角逗号视为千分位；
+    # 逗号列表须有共享后缀或明确约数语境，避免把“99，3件”连成一串。
     diagnostics["stage"] = "candidate_filter"
     offsets = [c[0] for c in chars]
     protected = set()
     number = r"\d+(?:[.．]\d+)?"
     for pattern in (
-        r"[+＋\-－]?[A-Za-zＡ-Ｚａ-ｚ\d]+(?:[.．\-－][A-Za-zＡ-Ｚａ-ｚ\d]+)*[%％]?",
+        r"[+＋\-－]?[A-Za-zＡ-Ｚａ-ｚ\d]+(?:(?:[.．\-－]|(?<=\d),(?=\d{3}(?!\d)))[A-Za-zＡ-Ｚａ-ｚ\d]+)*[%％]?",
         rf"{number}(?:\s*[,，、]\s*{number})+\s*后",
         rf"第\s*{number}(?:\s*[,，、]\s*{number})+\s*名",
         rf"{number}(?:\s*、\s*{number})+",

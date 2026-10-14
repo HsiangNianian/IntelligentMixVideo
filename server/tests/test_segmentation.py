@@ -179,9 +179,10 @@ def test_secondary_split_regressions(model, script, expected):
     "OpenAI", "GPT-4o", "3.14%", "-3.14%", "ＯｐｅｎＡＩ", "１２３．４５",
     "ChatGPT4o", "123456789", "60，70，80，90后",
     "1、2、3", "1.5、2.5、3.5", "第1、2、3、4、5、6、7、8、9、10名",
+    "1,299", "1,000,000", "12,345,678,901",
 ])
 def test_secondary_split_never_breaks_protected_expressions(model, token):
-    """半角全角英文、数字、小数和数字列表不可拆，超长表达单独成段，不携带周围中文。"""
+    """半角全角英文、数字、小数、千分位和数字列表不可拆，超长表达单独成段，不携带周围中文。"""
     script = f"这次谈到{token}这个对象"
     parts = segment(payload(script))["segments"]
     assert "".join(s["text"] for s in parts) == script
@@ -200,6 +201,16 @@ def test_numeric_list_is_protected_in_first_split(model):
         {"id": 1, "text": "欢迎，"}, {"id": 2, "text": "70，80，90后滴滴我。"},
     ]
     assert any("70，80，90后" in s["text"] for s in result["segments"])
+
+
+@pytest.mark.parametrize("script,expected", [
+    ("这款售价1,299元起包邮到家", ["这款售价1,299", "元起包邮到家"]),
+    ("今天一共售出了1,000,000件商品", ["今天一共售出了", "1,000,000", "件商品"]),
+    ("只要99,3件还包邮送到家", ["只要99,", "3件还包邮送到家"]),
+])
+def test_secondary_split_keeps_thousands_separators(model, script, expected):
+    """半角逗号后恰为三位数字时视为千分位，不因标点优先在数字内部切开；其他半角逗号仍是切点。"""
+    assert [part["text"] for part in segment(payload(script))["segments"]] == expected
 
 
 @pytest.mark.parametrize("prefix,suffix", [
