@@ -106,17 +106,19 @@ def test_alignment_and_contract(model, script, transcript, cost):
     assert previous == len(transcript) * 200 / 1000
 
 
-@pytest.mark.parametrize("script,lengths", [
-    ("甲", [1]), ("甲" * 8, [8]), ("甲" * 9, [4, 5]),
-    ("甲" * 16, [8, 8]), ("甲" * 17, [8, 4, 5]), ("甲" * 20, [5, 5, 5, 5]),
-    ("abcdefghi", [4, 5]), ("12345678901234567", [8, 4, 5]),
+@pytest.mark.parametrize("script", ["甲" * size for size in (1, 8, 9, 16, 17, 20)] + [
+    "abcdefghi", "12345678901234567",
 ])
-def test_secondary_split_uses_midpoints(model, client, script, lengths):
-    """最多 8 字直接保留；超长按中点反复二分，英文数字也硬切，模型只调用两次。"""
+def test_secondary_split_length_and_timing(model, client, script):
+    """中文每段至多八字，超长英文数字保持完整，保留时间覆盖且模型只调用两次。"""
     response = client.post("/segmentations", json=payload(script))
     assert response.status_code == 200
     parts = response.json()["segments"]
-    assert [len(part["text"]) for part in parts] == lengths
+    lengths = [len(part["text"]) for part in parts]
+    if script.isascii() or len(script) <= 8:
+        assert lengths == [len(script)]
+    else:
+        assert all(length <= 8 for length in lengths)
     assert "".join(part["text"] for part in parts) == script
     assert [(part["start_time"], part["end_time"]) for part in parts] == [
         (sum(lengths[:i]) / 5, sum(lengths[:i + 1]) / 5) for i in range(len(lengths))
@@ -126,10 +128,10 @@ def test_secondary_split_uses_midpoints(model, client, script, lengths):
 
 
 @pytest.mark.parametrize("keyword,expected", [
-    ("甲乙", ["甲乙", ""]), ("庚辛", ["", "庚辛"]), ("戊己", ["", ""]), ("", ["", ""]),
+    ("甲乙", ["甲乙", ""]), ("庚辛", ["", "庚辛"]), ("丁？戊", ["", ""]), ("", ["", ""]),
 ])
 def test_secondary_split_preserves_punctuation_and_keyword(model, keyword, expected):
-    """标点空白不占长度且原样保留；跨中点关键词清空，完整关键词继承，标题词不变。"""
+    """标点切点优先于中点且保留原文，跨切点关键词清空，完整关键词继承，标题词不变。"""
     script = " \t甲乙， 丙丁？戊己庚辛壬癸。 "
     model[1].chat.completions.create.side_effect = [
         SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(data)))])
@@ -137,17 +139,85 @@ def test_secondary_split_preserves_punctuation_and_keyword(model, keyword, expec
     ]
     result = segment({**payload(script), "title": "硬切测试"})
     parts = result["segments"]
-    assert [s["text"] for s in parts] == [" \t甲乙， 丙丁？戊", "己庚辛壬癸。 "]
+    assert [s["text"] for s in parts] == [" \t甲乙， 丙丁？", "戊己庚辛壬癸。 "]
     assert "".join(s["text"] for s in parts) == script
     assert [s["keyword"] for s in parts] == expected
     assert [s["level"] for s in parts] == [2 if word else 1 for word in expected]
     assert [s["segment_id"] for s in parts] == [1, 2]
     assert [s["group_id"] for s in parts] == [[1, 2], [2, 2]]
-    assert [(s["start_time"], s["end_time"]) for s in parts] == [(0.4, 2.0), (2.0, 3.0)]
+    assert [(s["start_time"], s["end_time"]) for s in parts] == [(0.4, 1.6), (1.8, 3.0)]
     assert result["title_keyword"] == "测试"
     assert model[1].chat.completions.create.call_count == 2
     request = model[1].chat.completions.create.call_args.kwargs
     assert json.loads(request["messages"][1]["content"]) == {"title": "硬切测试", "segments": [script]}
+
+
+@pytest.mark.parametrize("script,expected", [
+    ("就想做点事情的，70，80，90后滴滴我。", ["就想做点事情的，", "70，80，90后", "滴滴我。"]),
+    ("为啥？OpenAI说，一道", ["为啥？", "OpenAI说，", "一道"]),
+])
+def test_secondary_split_regressions(model, script, expected):
+    """复现截图中的数字人群与公司名被硬切，验证完整原文、关键词、字符时间及两次模型调用。"""
+    keyword = "OpenAI" if "OpenAI" in script else "70，80，90后"
+    model[1].chat.completions.create.side_effect = [
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(output)))])
+        for output in [{"boundaries_after": []}, {"keywords": [[keyword]]}]
+    ]
+    result = segment(payload(script))
+    assert [s["text"] for s in result["segments"]] == expected
+    assert "".join(s["text"] for s in result["segments"]) == script
+    assert [s["keyword"] for s in result["segments"] if s["keyword"]] == [keyword]
+    offset = 0
+    for item in result["segments"]:
+        indices = [offset + i for i, char in enumerate(item["text"])
+                   if not char.isspace() and char not in segmentation.PUNCTUATION]
+        assert (item["start_time"], item["end_time"]) == (indices[0] / 5, (indices[-1] + 1) / 5)
+        offset += len(item["text"])
+    assert model[1].chat.completions.create.call_count == 2
+
+
+@pytest.mark.parametrize("token", [
+    "OpenAI", "GPT-4o", "3.14%", "-3.14%", "ＯｐｅｎＡＩ", "１２３．４５",
+    "ChatGPT4o", "123456789", "60，70，80，90后",
+])
+def test_secondary_split_never_breaks_protected_expressions(model, token):
+    """半角全角英文、数字、小数和数字列表不可拆，超长表达单独成段，不携带周围中文。"""
+    script = f"这次谈到{token}这个对象"
+    parts = segment(payload(script))["segments"]
+    assert "".join(s["text"] for s in parts) == script
+    assert sum(token in s["text"] for s in parts) == 1
+    for item in parts:
+        size = sum(not char.isspace() and char not in segmentation.PUNCTUATION for char in item["text"])
+        assert size <= 8 or item["text"] == token
+
+
+def test_numeric_list_is_protected_in_first_split(model):
+    """即使每个数字都足够两秒，首次候选也不能拆开共享“后”的数字人群表达。"""
+    script = "欢迎，70，80，90后滴滴我。"
+    result = segment(payload(script, step=1000))
+    request = model[1].chat.completions.create.call_args_list[0].kwargs
+    assert json.loads(request["messages"][1]["content"]) == [
+        {"id": 1, "text": "欢迎，"}, {"id": 2, "text": "70，80，90后滴滴我。"},
+    ]
+    assert any("70，80，90后" in s["text"] for s in result["segments"])
+
+
+def test_long_chinese_word_still_obeys_eight_character_limit(model):
+    """中文整词超过八字时仍可拆分；放宽上限只适用于英文数字表达。"""
+    script = "中华人民共和国中央人民政府"
+    parts = segment(payload(script))["segments"]
+    assert "".join(s["text"] for s in parts) == script
+    assert all(len(s["text"]) <= 8 for s in parts)
+
+
+def test_chinese_word_boundaries_precede_midpoint(model):
+    """中点落在“不靠”内部时按真实结巴词边界切，保持数学、不靠、灵光、一闪完整。"""
+    script = "它不懂数学也不靠灵光一闪解题"
+    parts = segment(payload(script))["segments"]
+    assert "".join(s["text"] for s in parts) == script
+    assert all(len(s["text"]) <= 8 for s in parts)
+    for word in ("数学", "不靠", "灵光", "一闪"):
+        assert any(word in s["text"] for s in parts)
 
 
 def test_secondary_split_keeps_asr_groups(model):
@@ -266,7 +336,10 @@ def test_real_fun_asr_excerpt(model):
     original = json.dumps(data, ensure_ascii=False)
     result = segment(data)
     assert json.dumps(data, ensure_ascii=False) == original
-    assert [s["text"] for s in result["segments"]] == ["刚才我家人", "还问我，家里不", "是还有鸡蛋吗？", "怎么又买一箱？"]
+    assert [s["text"] for s in result["segments"]] == ["刚才我家人还问我，", "家里不是", "还有鸡蛋吗？", "怎么又买一箱？"]
+    assert [(s["start_time"], s["end_time"]) for s in result["segments"]] == [
+        (0.16, 1.08), (1.28, 1.72), (1.72, 2.4), (2.52, 3.44),
+    ]
     assert "".join(s["text"] for s in result["segments"]) == data["script"]
     assert result["segments"][0]["start_time"] == 0.16
     assert result["segments"][-1]["end_time"] == 3.44
@@ -336,7 +409,7 @@ def test_english_protection_preserves_model_cut(model):
 
 
 def test_long_text_without_candidates_is_split(model):
-    """无中文标点的长文按有效字中点二分，空格仍保留在前段。"""
+    """无中文标点时在完整英文词之间切分，空格仍保留在前段。"""
     model[1].chat.completions.create.side_effect = [
         SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(data)))])
         for data in [{"boundaries_after": []}, {"keywords": [["world"]]}]

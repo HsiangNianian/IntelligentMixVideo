@@ -9,13 +9,14 @@ from time import perf_counter
 import unicodedata
 from urllib.parse import urlparse
 
+import jieba
 from pydantic import ValidationError
 from openai import APIError, APITimeoutError, OpenAI
 
 from .settings import ClientSettings, Settings
 
 # 对齐忽略常见中英文标点；字幕过滤集合供下游合成使用，切片原文保留标点。
-PUNCTUATION = set("，。！？、；：“”‘’（）《》〈〉【】〔〕…—～·,.!?;:\"'()<>[]{}~`")
+PUNCTUATION = set("，。！？、；：“”‘’（）《》〈〉【】〔〕…—～·,.．!?;:\"'()<>[]{}~`")
 SUBTITLE_PUNCTUATION = PUNCTUATION - {"？", "?"}
 
 
@@ -52,7 +53,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
 
     请求为 {script, asr_result}，读取 fun-asr transcripts 第一音轨，词时间为 begin_time/end_time 毫秒。
     替换/增删代价均为 1；波前搜索保留最远位置，平局依次优先替换、文案多字、
-    ASR 多字。模型只返回分句切点和关键词，超长片段按中点硬切，时间投射和关键词校验由代码完成。
+    ASR 多字。模型只返回分句切点和关键词，超长片段按安全边界切分，时间投射和关键词校验由代码完成。
     显式 config 仅用于当前调用；省略时读取 server/.env 与 IMV_ 环境变量，SDK 在返回前关闭。
     返回 segments（整型 segment_id、秒制 start_time/end_time、group_id、字符串 keyword、level）、
     warnings 和 trace；原文保留标点，字幕去标点由下游合成处理。
@@ -247,14 +248,19 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
         repair_ranges.append((indices[0], indices[-1] + 1))
     trace["repair_block_count"] = len(repair_ranges)
 
-    # 仅保护原文连续的英文、数字串（含小数、连字符和百分号），不跨空格或中文标点保护。
+    # 两次切分共用英文、数字保护；数字列表连同共享的“后”整体保留，不保护普通逗号两侧的中文。
     diagnostics["stage"] = "candidate_filter"
     offsets = [c[0] for c in chars]
-    forbidden = set()
-    for token in re.finditer(r"[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*%?", script):
-        begin, end = bisect.bisect_left(offsets, token.start()), bisect.bisect_left(offsets, token.end())
-        forbidden.update(range(begin + 1, end))
+    protected = set()
+    for pattern in (
+        r"[+＋\-－]?[A-Za-zＡ-Ｚａ-ｚ\d]+(?:[.．\-－][A-Za-zＡ-Ｚａ-ｚ\d]+)*[%％]?",
+        r"\d+(?:[.．]\d+)?(?:\s*[,，、]\s*\d+(?:[.．]\d+)?)+(?:\s*后)?",
+    ):
+        for token in re.finditer(pattern, script):
+            begin, end = bisect.bisect_left(offsets, token.start()), bisect.bisect_left(offsets, token.end())
+            protected.update(range(begin + 1, end))
     # 增删修复块内时间为估算值，保留整块以免制造看似精确的切点。
+    forbidden = protected.copy()
     for begin, end in repair_ranges:
         forbidden.update(range(begin + 1, end))
     # 首次只使用中文标点候选；无候选或全文不足 2 秒时保持整段，超长片段随后二次切分。
@@ -284,7 +290,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     trace.update(candidate_clauses=listing, filtered_boundaries=filtered_boundaries,
                  selected_boundaries_after=[], keyword_candidates=[], model_elapsed_ms={})
     segments, rejected = [], 0
-    # 模型依次选切点、提关键词；超长片段随后由代码硬切。
+    # 模型依次选切点、提关键词；超长片段随后由代码按安全边界切分。
     with OpenAI(base_url=base_url, api_key=key, timeout=config.llm_timeout_seconds, max_retries=config.llm_max_retries) as client:
         for stage in ("boundaries", "keywords"):
             diagnostics["stage"] = stage
@@ -406,8 +412,15 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                     # 有关键词即重点句 2，否则为普通句 1；CTA 需语义判断，不标注。
                     item["level"] = 2 if item["keyword"] else 1
 
-    # 按有效字中点二分，奇数左短右长；标点留在前段，关键词仅继承到完整包含首次出现位置的子段。
+    # 标点、结巴词边界优先，同级选最接近中点的位置；中文词可拆，英文数字仅在整串超长时放宽上限。
+    # 标点留在前段，关键词仅继承到完整包含首次出现位置的子段；沿用既有字符时间，不重新对齐。
     diagnostics["stage"] = "secondary_split"
+    word_edges = {bisect.bisect_left(offsets, end) for _, _, end in jieba.tokenize(script)} if any(
+        b - a > segment_max_length for a, b in spans
+    ) else set()
+    punctuation_edges = {i for i in range(1, len(chars)) if any(
+        char in PUNCTUATION for char in script[offsets[i - 1] + 1:offsets[i]]
+    )}
     refined, refined_groups = [], []
     for item, (a, b) in zip(segments, spans):
         origin = 0 if a == 0 else offsets[a]
@@ -417,9 +430,13 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
         while pending:
             a, b = pending.pop()
             if b - a > segment_max_length:
-                middle = (a + b) // 2
-                pending.extend([(middle, b), (a, middle)])
-                continue
+                cuts = [cut for cut in range(a + 1, b) if cut not in protected]
+                if cuts:
+                    middle = min(cuts, key=lambda cut: (
+                        cut not in punctuation_edges, cut not in word_edges, abs(2 * cut - a - b), cut,
+                    ))
+                    pending.extend([(middle, b), (a, middle)])
+                    continue
             begin = 0 if a == 0 else offsets[a]
             end = len(script) if b == len(chars) else offsets[b]
             inherited = keyword if begin <= keyword_start and keyword_start + len(keyword) <= end else ""
