@@ -290,7 +290,8 @@ async def fit_texts(renderer: Renderer, overlay: Overlay, sprites: dict[str, pb.
             if fit["size"] != item["values"]["fontSize"]:
                 logger.info("叠加渲染 Sprite %s 的文字（%d 字）字号 %s 缩小为 %s", group[0], len(item["text"]), item["values"]["fontSize"], fit["size"])
                 for index in members[(group, key)]:
-                    overlay.instances[index]["config"] = {**item["values"], "fontSize": fit["size"]}
+                    # keywordSize is absolute, so the worker scales it with the text (see `valuesAtSize` there).
+                    overlay.instances[index]["config"] = {**item["values"], "fontSize": fit["size"], **({"keywordSize": fit["keyword_size"]} if "keyword_size" in fit else {})}
             if shift := fit.get("shift"):
                 logger.info("叠加渲染 Sprite %s 的文字（%d 字）在最小字号下仍出画布，位置平移 (%s, %s)", group[0], len(item["text"]), shift["x"], shift["y"])
                 for index in members[(group, key)]:

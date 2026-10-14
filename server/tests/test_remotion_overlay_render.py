@@ -1637,15 +1637,17 @@ def fit_for_real(tmp_path: Path, codes: str | dict[str, str], placements: list[O
     schema = {"type": "object", "properties": {
         "text": {"type": "string", "minLength": 1, "maxLength": 100},
         "fontSize": {"type": "number", "minimum": 24, "maximum": 240},
+        "keywordSize": {"type": "integer", "minimum": 0, "maximum": 300},
     }, "required": ["text", "fontSize"], "additionalProperties": False}
     published = {sprite_id: pb.PublishedSprite(
         sprite_id=sprite_id, name=sprite_id, kind=pb.SPRITE_KIND_TEXT, tsx_code=code, text_prop="text",
         canvas=pb.SpriteCanvas(width=1080, height=1920, fps=30, preview_frames=30),
-        config_schema_json=json.dumps(schema), default_config_json=json.dumps({"text": "标题", "fontSize": 128}, ensure_ascii=False),
+        config_schema_json=json.dumps(schema), default_config_json=json.dumps({"text": "标题", "fontSize": 128, "keywordSize": 0}, ensure_ascii=False),
         content_box=pb.SpriteBox(x=0, y=0, width=1080, height=1920),
         parameters=[
             pb.SpriteParameter(key="text", label="文字", access=pb.OPERATOR_ACCESS_VISIBLE_EDITABLE, default_value=pb.ScalarValue(string_value="标题"), min_length=1, max_length=100),
             pb.SpriteParameter(key="fontSize", label="字号", access=pb.OPERATOR_ACCESS_VISIBLE_EDITABLE, default_value=pb.ScalarValue(number_value=128), minimum=24, maximum=240),
+            pb.SpriteParameter(key="keywordSize", label="关键词字号", access=pb.OPERATOR_ACCESS_VISIBLE_EDITABLE, default_value=pb.ScalarValue(number_value=0), minimum=0, maximum=300, format=pb.SPRITE_PARAMETER_FORMAT_INTEGER),
         ],
     ) for sprite_id, code in ({"t": codes} if isinstance(codes, str) else codes).items()}
     overlay = plan_overlay(placements, published, seconds, 120)
@@ -1875,3 +1877,35 @@ def test_real_browser_nudges_a_rotated_title_by_its_rotated_extent(tmp_path: Pat
     assert instance["config"]["fontSize"] == 24
     assert (transform["x"], transform["rotation"]) == (540, 90)
     assert 470 <= transform["y"] <= 490
+
+
+KEYWORD_TITLE = """import React from "react";
+import { AbsoluteFill } from "remotion";
+export default function Title(props: { text: string; fontSize: number; keywordSize: number }) {
+  return (
+    <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
+      <div style={{ width: 972, textAlign: "center", fontSize: props.fontSize, lineHeight: 1.2, whiteSpace: "normal", wordBreak: "break-all", color: "#fff" }}>
+        <span style={{ fontSize: props.keywordSize || props.fontSize, color: "#f00" }}>{props.text.slice(0, 2)}</span>{props.text.slice(2)}
+      </div>
+    </AbsoluteFill>
+  );
+}
+"""
+
+
+def keyworded(text: str, font_size: int, keyword_size: int) -> OverlayPlacement:
+    """字效 t 的一个摆放：覆盖文字、字号与关键词字号（关键词是文字的前两个字）。"""
+    parameters = [{"key": "text", "stringValue": text}, {"key": "fontSize", "numberValue": font_size}, {"key": "keywordSize", "numberValue": keyword_size}]
+    return OverlayPlacement.model_validate({"spriteId": "t", "start": 0, "editor": {"remotion": {"parameters": parameters}}})
+
+
+# 场景：模板里关键词字号设成文字的 1.5 倍（字号 160、关键词 240）。总线传来的长标题把字号缩小时，绝对字号的关键词若不跟着缩，
+# 会压住后面的字并逼着正文缩得更小；宿主让关键词字号按同一比例缩小，保持 1.5 倍，字号没有缩小时关键词字号不动。
+@pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
+def test_real_browser_shrinks_the_keyword_size_with_the_text(tmp_path: Path) -> None:
+    """长标题：字号缩到 160 以下，关键词字号约为它的 1.5 倍而不是 240；短标题：两个字号都不变。"""
+    long = fit_for_real(tmp_path / "long", KEYWORD_TITLE, [keyworded("测" * 100, 160, 240)], 1.0).instances[0]["config"]
+    assert 24 <= long["fontSize"] < 160
+    assert abs(long["keywordSize"] - 1.5 * long["fontSize"]) <= 1
+    short = fit_for_real(tmp_path / "short", KEYWORD_TITLE, [keyworded("标题", 100, 150)], 1.0).instances[0]["config"]
+    assert (short["fontSize"], short["keywordSize"]) == (100, 150)

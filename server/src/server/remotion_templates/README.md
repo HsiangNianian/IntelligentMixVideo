@@ -435,7 +435,9 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   text at its full size. Placements that differ only in length or transform are measured separately; the
   transform's opacity does not move text and is ignored. Text that already fits keeps its `fontSize`; otherwise the
   host lowers `fontSize` to the largest whole size, down to the published minimum, at which it is shown in full
-  (binary search; the size is logged, the template and the sealed source are untouched). If at the minimum the text
+  (binary search; the size is logged, the template and the sealed source are untouched). A `keywordSize` above 0 is
+  an absolute size, so it shrinks by the same ratio (at least 12, never larger than set), keeping the keyword's
+  proportion to the text instead of crowding the smaller text. If at the minimum the text
   still leaves the canvas only because of where it is placed (a long title whose centre sits near the top edge), the
   host moves this render's copy of the placement by the shortest distance that brings it back inside (the shift is
   logged; the saved placement is untouched, and the horizontal position changes only when the text overhangs the

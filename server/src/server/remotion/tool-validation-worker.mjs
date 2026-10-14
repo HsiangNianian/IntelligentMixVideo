@@ -572,6 +572,24 @@ async function textFitCheck(page) {
   };
 }
 
+/** The smallest `keywordSize` a placement may set (0 follows the text size, which is not scaled). */
+const KEYWORD_SIZE_MIN = 12;
+
+/**
+ * The parameter values of a fit item with its text at `size`. `keywordSize` is an absolute size (0 follows the text
+ * size), so it shrinks in the same proportion as the text, or a keyword set larger than the text would stay at its
+ * full size while the rest is made small and crowd it. It is never made larger and not below the smallest size
+ * (`KEYWORD_SIZE_MIN`) a placement may set.
+ */
+function valuesAtSize(item, size) {
+  const values = { ...item.values, [item.size_key]: size };
+  const requested = item.values[item.size_key];
+  const keyword = item.values.keywordSize;
+  if (typeof keyword === "number" && keyword > 0 && size < requested)
+    values.keywordSize = Math.min(keyword, Math.max(KEYWORD_SIZE_MIN, Math.round((keyword * size) / requested)));
+  return values;
+}
+
 /**
  * Host-side fit of the text a render really passes, for one Sprite (`sprite.fit` items, `sprite.box` content box):
  * for each item, the largest whole font size from `min` up to
@@ -581,7 +599,8 @@ async function textFitCheck(page) {
  * a component that throws, or never renders the text, is left alone (the render reports its own failure). Sizes are
  * assumed to fit monotonically, so a binary search. When even `min` leaves the text outside the window the video
  * shows (a long title placed at the top edge), the placement is moved the shortest way back inside at `min`:
- * the answer's `shift` is that move in canvas pixels. `fits: false` means the text is too long even for that.
+ * the answer's `shift` is that move in canvas pixels. `fits: false` means the text is too long even for that. When the
+ * size is lowered the answer also carries the matching `keyword_size` (see `valuesAtSize`).
  */
 async function fitTexts(page, loadError, sprite) {
   if (loadError !== null) throw new Error(`Component runtime error: ${loadError}`);
@@ -591,7 +610,7 @@ async function fitTexts(page, loadError, sprite) {
   const measure = async (item, size, nudge) => {
     await page.evaluate(() => window.__imvTool.reset());
     await page.evaluate((frames) => window.__imvTool.setDuration(frames), item.length);
-    await page.evaluate((values) => window.__imvTool.setSample(values, {}), { ...item.values, [item.size_key]: size });
+    await page.evaluate((values) => window.__imvTool.setSample(values, {}), valuesAtSize(item, size));
     return measureTextFit(page, item.text, item.frames, hostPlacement(box, item.transform, visible, nudge));
   };
   const fits = async (item, size) => {
@@ -622,7 +641,11 @@ async function fitTexts(page, loadError, sprite) {
       ok = nudged.fits;
       shift = nudged.shift;
     }
-    answers.push({ index: item.index, fits: ok, size, ...(shift && (shift.x || shift.y) ? { shift } : {}) });
+    const keywordSize = valuesAtSize(item, size).keywordSize;
+    answers.push({
+      index: item.index, fits: ok, size, ...(keywordSize !== item.values.keywordSize ? { keyword_size: keywordSize } : {}),
+      ...(shift && (shift.x || shift.y) ? { shift } : {}),
+    });
   }
   return answers;
 }
