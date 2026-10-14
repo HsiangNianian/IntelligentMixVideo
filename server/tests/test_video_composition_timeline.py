@@ -131,6 +131,54 @@ def test_subtitle_parts_keep_adjacent_times_without_changing_other_text(composit
     assert composition_case["matches"] == original["matches"]
 
 
+@pytest.mark.parametrize("text,expected", [
+    ("增长3.14%，70，80，90后？", "增长3.14%708090后？"),
+    ("价格１２．３元，真的?", "价格１２．３元真的?"),
+    (".你好.世界．结束。", "你好世界结束"),
+])
+def test_subtitle_preserves_only_decimal_points(composition_case, text, expected):
+    """最终字幕保留数字内部的小数点和既有问号，继续去掉逗号及普通句点，不改变时间。"""
+    composition_case["segments"][0].update(text=text, keyword="")
+    composition_case["matches"][0].update(text=text)
+    timeline, _ = build_timeline(**composition_case)
+    clip = timeline["SubtitleTracks"][1]["SubtitleTrackClips"][0]
+    assert (clip["Content"], clip["TimelineIn"], clip["TimelineOut"]) == (expected, 1, 3)
+
+
+@pytest.mark.parametrize("text,keyword,expected", [
+    ("70，80，90后滴滴我。", "70，80，90后", r"{\b1}708090后{\b0}滴滴我"),
+    ("第1、2、3名获奖。", "第1、2、3名", r"{\b1}第123名{\b0}获奖"),
+    ("增长3.14%，太好了？", "3.14%", r"增长{\b1}3.14%{\b0}太好了？"),
+    ("增长３．１４%，太好了？", "３．１４%", r"增长{\b1}３．１４%{\b0}太好了？"),
+    ("你好，。", "，。", "你好"),
+])
+def test_subtitle_cleans_display_keyword_without_changing_source(composition_case, text, keyword, expected):
+    """含标点关键词与字幕同步清洗并正确高亮，原切片和召回词不变，空展示词不生成样式。"""
+    composition_case["segments"][0].update(text=text, keyword=keyword)
+    composition_case["matches"][0].update(text=text)
+    composition_case["template"]["tracks"][0]["editor"]["subtitleKeywordBold"] = True
+    original = deepcopy(composition_case)
+    timeline, _ = build_timeline(**composition_case)
+    clip = timeline["SubtitleTracks"][1]["SubtitleTrackClips"][0]
+    assert (clip["Content"], clip["TimelineIn"], clip["TimelineOut"]) == (expected, 1, 3)
+    assert composition_case == original
+
+
+def test_subtitle_keyword_requires_original_match_in_part(composition_case):
+    """去标点后相同的另一个子段不能抢走关键词，只有首个含原词的子段继承高亮。"""
+    text = "708090后70，80，90后70，80，90后"
+    composition_case["matches"][0].update(text=text)
+    composition_case["segments"][0].update(text=text, keyword="70，80，90后", subtitle_parts=[
+        {"text": "708090后", "start_time": 1, "end_time": 1.5},
+        {"text": "70，80，90后", "start_time": 1.5, "end_time": 2},
+        {"text": "70，80，90后", "start_time": 2, "end_time": 3},
+    ])
+    composition_case["template"]["tracks"][0]["editor"]["subtitleKeywordBold"] = True
+    timeline, _ = build_timeline(**composition_case)
+    clips = timeline["SubtitleTracks"][1]["SubtitleTrackClips"]
+    assert [clip["Content"] for clip in clips] == ["708090后", r"{\b1}708090后{\b0}", "708090后", "戊己庚辛"]
+
+
 def test_subtitle_keyword_styles_apply_only_to_matching_text(composition_case):
     """组合样式只标记字幕首个关键词，空关键词和标题维持原文，气泡显示模板文字。"""
     composition_case["template"]["tracks"][0]["editor"].update(
