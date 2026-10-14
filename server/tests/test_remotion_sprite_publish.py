@@ -351,6 +351,17 @@ def test_style_binding_routes_are_gone(client: TestClient) -> None:
     assert client.post(f"/api/sprites/styles/{style_id}", content=b"", headers=PROTOBUF).status_code == 404
 
 
+def test_preview_page_lifts_the_clipping_of_composed_instance_boxes(client: TestClient, published) -> None:
+    """较早封存的组合 Sprite 的实例盒子带 overflow hidden：预览页（透明叠加与普通预览）都带覆盖规则，大字号下关键词与下划线不被盒子裁掉。
+
+    Issue #142：覆盖只针对 data-imv-instance 的父元素，内容自己的固定框不受影响。
+    """
+    summary = published_sprite(client, published.version.id)
+    rule = "div:has(> [data-imv-instance]){overflow:visible !important}"
+    assert rule in client.get(summary.preview_url).text
+    assert rule in client.get(summary.preview_url, params={"overlay": "true"}).text
+
+
 def test_overlay_preview_is_transparent_and_serves_managed_fonts(client: TestClient, published) -> None:
     """模板编辑叠加使用透明背景页；普通预览保留检查棋盘格。字体路由随页面相对路径可用，缺失资产或字重返回 404。"""
     summary = published_sprite(client, published.version.id)
