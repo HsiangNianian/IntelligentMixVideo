@@ -9,6 +9,7 @@ import pytest
 import uvicorn
 
 from server.app import app
+from server.startup.settings import GRACEFUL_SHUTDOWN_SECONDS
 
 
 @pytest.mark.parametrize("entry", ["console", "module"])
@@ -39,7 +40,8 @@ def test_startup_entry(entry: str, monkeypatch: pytest.MonkeyPatch, mocker) -> N
     application, options = calls[0]
     module, name = application.split(":")
     assert getattr(import_module(module), name) is app
-    assert options == {"host": "0.0.0.0", "port": 20070}
+    # 限时优雅退出：未关闭的 SSE 不能让旧进程无限持有字效运行锁（issue #126）。
+    assert options == {"host": "0.0.0.0", "port": 20070, "timeout_graceful_shutdown": GRACEFUL_SHUTDOWN_SECONDS}
 
 
 @pytest.mark.parametrize("module,class_name,field,key", [
