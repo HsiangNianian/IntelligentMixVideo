@@ -3,6 +3,341 @@
 本项目的版本变更由发布工作流根据 Conventional Commits 自动生成。
 推送正式版本 tag 后，成功发布的版本记录会自动写入此文件。
 
+## [v0.9.2] - 2026-10-14
+### BREAKING CHANGES
+- due to [`3362018`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/3362018027d4608c75979aca394ec50eb8c209a3) - keep chat on the client and execution state in MySQL *(PR [#143](https://github.com/HsiangNianian/IntelligentMixVideo/pull/143) by [@YUZHEthefool](https://github.com/YUZHEthefool))*:
+
+  the server session snapshot, history pagination and job event  
+  polling routes are removed, work routes require the X-IMV-Device header, and  
+  clients and server must be upgraded together. Chats, versions and files in the  
+  old backend SQLite are not migrated.  
+  Closes #144  
+  Refs #126  
+  * test(server): check bounded shutdown without MySQL or the removed runtime lock  
+  The graceful shutdown regression from #141 waited for  
+  /api/templates/capabilities, which now builds the Remotion runtime and so  
+  answers 503 without MySQL, and it still flocked runtime.lock, which the  
+  backend no longer creates. Probe a test route instead and assert only the  
+  bounded exit. Comments and docs that said the timeout releases the runtime  
+  lock now say it stops the old process's job queue.  
+  * fix(remotion): build the runtime once when first requests arrive together  
+  runtime_for now awaits the MySQL initialization in a thread, so requests  
+  arriving before it finished each built their own Runtime: overlay tasks  
+  resumed and rendered several times, several retention sweeps ran, the  
+  stores used separate write locks, and a later recovery could interrupt a  
+  job an earlier runtime had just claimed. Concurrent first requests now wait  
+  for one initialization under a per-app asyncio lock.  
+  * fix(remotion): let clients catch up works they do not stream  
+  Only the open work received events, so a work left generating in the  
+  background never stored its reply locally, and after the undelivered-event  
+  retention the reply and version pointer were deleted for good.  
+  GET /works/{id}/events?after= returns one page of undelivered events in the  
+  SSE shape for the client's background sync, acknowledged like streamed  
+  events. The unused GET /works list route goes: the sidebar reads the local  
+  store.  
+  * fix(remotion): keep object store I/O off the event loop and the write lock  
+  With ZOS configured, publishing a generated version uploaded every sealed  
+  file (upload, HEAD and anonymous read each) synchronously on the event loop  
+  inside the write transaction, freezing every request and stream; reference  
+  images were downloaded on the loop, and deciding whether a parameter patch  
+  is instant downloaded and hashed all sealed files, the preview MP4  
+  included. Work deletion and the upload sweep called the object store while  
+  holding the write lock.  
+  - Publish uploads under the new version ID before the record transaction,  
+    in a worker thread, and removes the upload when the commit fails unless  
+    the version did commit (a lost acknowledgement no longer leaves a version  
+    without files).  
+  - Reference images are resolved in a worker thread.  
+  - The instant check reads only interactive.js through the verified cache,  
+    in a worker thread from the edit and retry routes.  
+  - Work deletion removes objects before a short record transaction; the  
+    upload sweep deletes records first and then the objects.  
+  * fix(remotion): cache sealed version files one by one  
+  Store.accepted downloaded a cold version into a staging folder, removed the  
+  live folder and renamed the staging folder over it. Readers opening the  
+  same version together (preview, diagnostics and downloads after a cache  
+  wipe or on a new host) deleted the folder another reader had just returned  
+  or failed the rename with ENOTEMPTY, answering 404 or 500. Each sealed file  
+  is now cached through the verified per-file download with an atomic  
+  replace before the whole version is checked against its evidence, and  
+  publication seeds the cache the same way.  
+  * fix(remotion): retry unfinished deletions in every retention sweep  
+  expire_devices forgot the expired devices in the same transaction that  
+  marked their works for deletion, and the sweep then deleted those works one  
+  by one: one storage failure aborted the rest, and later sweeps never saw  
+  the works again, so their records and public objects stayed until the  
+  process restarted. A user DELETE answered 503 and never repeated stayed  
+  pending the same way. The sweep now isolates each step and retries every  
+  pending deletion each hour.  
+  * fix(remotion): answer 503 when the object store is unreachable  
+  ZOS and botocore failures are not OSError, so with ZOS configured a failed  
+  work deletion answered 500 instead of the documented retryable 503, reading  
+  a reference image or artifact answered 500, and an upload whose anonymous  
+  read check failed came back as a 422 that read like an invalid image.  
+  ZosObjects now raises ObjectStoreError, an OSError, for every failure  
+  except a missing object, and the upload, reference image, artifact,  
+  diagnostics and Sprite publish routes answer 503 for it.  
+  * fix(remotion): rebuild a lost Sprite preview bundle once per asset  
+  The anonymous preview route rebuilt a missing or mismatched bundle in a  
+  sandboxed worker for every request: after this release every pre-existing  
+  Sprite needs a rebuild, so opening the asset library started one worker per  
+  preview and client, and a rebuild that kept failing could be triggered  
+  without limit. Two rebuilds could also interleave their writes, and a  
+  rebuild in progress re-uploaded the public bundle after DELETE removed it.  
+  Previews and deletion of one asset now take turns under a per-asset lock,  
+  waiting previews reuse the rebuilt copy, a failed rebuild answers 404  
+  without a worker for five minutes, and an unreachable object store is a  
+  503 rather than a reason to rebuild.  
+  * fix(remotion): delete audit logs of pruned jobs with their work  
+  Acknowledging a work's events deletes its earlier job rows, and work  
+  deletion found audit logs by job ID, so the private logs (with prompts) of  
+  pruned jobs outlived the deleted work by up to the audit retention period.  
+  Audit logs now live in one folder per work, removed with the work; the  
+  retention sweep expires files inside those folders and drops empty ones.  
+  * fix(remotion): keep the live smoke run working on the shared database  
+  The live acceptance script read the first result's frame from the job  
+  folder, which is now removed when a job ends, so its image round trip  
+  always failed. It also ran startup recovery against the shared MySQL,  
+  interrupting the running jobs of a backend using the same database, and  
+  left its works there forever under a device that never expires. It now  
+  reads the sealed frame through the verified cache, only creates the  
+  tables, and deletes its works when it ends.  
+  * fix(remotion): record a device only when it creates a work  
+  Every request with an unseen X-IMV-Device inserted a device row under the  
+  global write lock and kept an in-memory entry until the 90-day expiry, so  
+  random header values grew both without bound. A device row is now created  
+  with the device's first work, a request from an unknown device writes  
+  nothing, and the activity throttle keeps at most 4096 devices.  
+  * fix(remotion): report a work deleted during enqueue as missing  
+  Store.enqueue read the work's device with scalar_one before checking the  
+  work inside its transaction, so a work whose deletion finished after the  
+  route's check raised NoResultFound and answered 500. The transaction now  
+  checks the work first and answers 404 or 410.  
+  * fix(remotion): expire finished overlay tasks and the idle read cache  
+  Overlay render rows were never removed, and each start loaded every row's  
+  LONGTEXT to resume, so the table and startup cost grew forever. With ZOS,  
+  the local read cache slowly mirrored every version, image and bundle ever  
+  read. The hourly sweep now drops finished overlay tasks older than 30 days  
+  that owe no callback, and removes cache files unused for 30 days; every  
+  cache hit refreshes a file's time.  
+  * test(remotion): exercise the work store on a real MySQL  
+  Every Remotion store test used the SQLite stand-in, which hides MySQL  
+  behaviour the store relies on: an UPDATE that changes nothing must still  
+  count as an existing row (CLIENT_FOUND_ROWS, used by the conversation and  
+  progress writes), the nullable one-active-job unique key, DATETIME(6)  
+  cutoffs and acknowledgement pruning. The opt-in integration suite now runs  
+  that path against the disposable MySQL of the Backend integration job.  
+  * test(remotion): cover version isolation, ZOS writes and sweeps over Sprites  
+  Add the regression coverage the audit found missing: another device reading  
+  a version or its diagnostics gets 404 without starting a worker, ZosObjects  
+  uploads through upload_public and deletes every listed page, and the  
+  retention sweep that deletes an expired device's works keeps the Sprites  
+  published from them.  
+  * refactor(remotion): remove the unused Preset catalog export helper  
+  catalog_record had no caller left once the Preset catalog became MySQL-only.  
+  * docs(remotion): correct storage, retention and deployment notes  
+  - State that nothing enforces the single backend instance and what a second  
+    one on the same database would do, and that MySQL 8.0+ is required for  
+    acknowledgement (AUTO_INCREMENT must survive restarts).  
+  - Say that every sealed version file, the internal JSON included, is  
+    public-read in ZOS and readable by anyone who knows the version ID.  
+  - The retention sweep starts with the runtime on the first Remotion  
+    request, not at server startup; list the tables created then.  
+  - Publications can be deleted and their preview bundle is a rebuildable  
+    object (sprite.proto, regenerated TypeScript).  
+  - Rounds arrive as job.round events; the stream holds no SQLite  
+    connection.  
+  * refactor(client): drop the write-only local version index  
+  The local session store wrote a `versions` row (and a `VersionEntry` in the  
+  TypeScript change set) for every `version.ready` event, but nothing ever read  
+  it: the version list and code come from the server through  
+  `useTemplateVersions`. Remove the TypeScript type, the memory backend map, the  
+  Rust `versions` table and the doc mentions; a ready version still moves the  
+  work's `current_version_id` pointer.  
+  * refactor(client): drop the dead history pagination  
+  History now reads the whole local store, so `next_cursor` was always null:  
+  the cursor merge branch and `more()` in `useWorkHistory`, the `WorkPage`  
+  type, the workspace's `hasMore` and the sidebar's "加载更多会话" button could  
+  never run. `history()` returns the summaries directly and the hook keeps a  
+  plain list.  
+  * fix(client): let the sidebar retry deleting works the server reports gone  
+  When the open work's stream answered 404/410 the client cleared the view and  
+  said "可在历史列表重试未完成的删除", but the local row kept its old job label  
+  and nothing ever set the sidebar's `deleting` state (the server history list  
+  that used to carry it is gone). Persist a `deleting` flag on the local work  
+  when the server reports it missing or being deleted; the sidebar then shows  
+  "已删除或正在清理 · 可重试删除", keeps the row from being reopened, and offers  
+  "重试删除", which removes the local record once the server confirms.  
+  * perf(client): run local session storage off the UI thread on one connection  
+  `remotion_sessions` was a synchronous Tauri command, so every call ran on the  
+  main thread, and each call reopened the SQLite file, switched it to WAL and  
+  ran the CREATE statements again: three times per SSE event.  
+  - The command is async and does its work in `spawn_blocking`; a managed  
+    `Sessions` state holds one connection behind a Mutex, opened lazily on the  
+    first call (a failed open is retried on the next call).  
+  - The schema is created once on open and versioned with  
+    `PRAGMA user_version`; a database written by a newer client is refused, and  
+    version 0 (a new file, or tables left by unreleased test builds) rebuilds  
+    the session tables while keeping the device ID.  
+  - Each operation's payload is a fixed serde structure with  
+    `deny_unknown_fields`, so a missing or extra field is reported instead of  
+    being silently ignored. A shared fixture,  
+    `client/tests/remotion-sessions-contract.json`, pins the TS/Rust contract:  
+    the frontend test records the exact IPC payloads `localSessions.ts` sends and  
+    compares them with it, and the Rust test parses and executes the same file.  
+  * fix(client): scope local sessions by API server  
+  The local store and `history()` ignored the API base, which users can change  
+  in settings (`setApiBase`). After switching servers the sidebar listed the  
+  other server's works; deleting one got 204 (the server treats an unknown work  
+  as a no-op) and `local.forget` then erased the only copy of that chat.  
+  Works, messages and jobs are now keyed by the normalized API base (origin plus  
+  path, so case, default ports and trailing slashes do not split a server): the  
+  Rust tables use (server, id) keys, every storage operation carries `server`,  
+  and the memory backend keys its maps the same way. History, snapshots,  
+  merges and deletion only see the current server's records; the device ID  
+  stays global. The remembered-selection key is also computed per call instead  
+  of once at module load.  
+  * fix(client): stop and report local store failures instead of reconnecting forever  
+  Tauri rejects with the Rust error string, not an `ApiError`, so a persistent  
+  local SQLite failure (full disk, unreadable file) while writing an SSE event  
+  fell into the generic catch: "连接中断，正在恢复更新" and a reconnect every two  
+  seconds, forever, with the cause never shown.  
+  The Tauri storage wraps command errors in `LocalStoreError`. When the watch  
+  loop hits one it stops, clears the connection state and shows the reason with  
+  "刷新任务"; the unacknowledged events stay on the server, so a refresh after  
+  the problem is fixed resumes from the local cursor.  
+  * fix(client): keep emoji titles whole and undo works the client cannot record  
+  `record()` cut the sidebar title with `slice(0, 40)`, which can split a  
+  surrogate pair. Tauri IPC (serde_json) rejects the lone surrogate, so  
+  `local.record` failed after `api.create` had succeeded: the new work and its  
+  running job existed only on the server, invisible locally, and resending the  
+  message started a second generation.  
+  - Cut the title by code points.  
+  - If recording the new work still fails, `DELETE` it on the server (which  
+    also cancels its job), then show the local error and put the text and images  
+    back in the input like an upload failure. The message says whether the  
+    server work could be undone.  
+  * fix(client): silently drop a remembered work missing from the local store  
+  In the browser the in-memory store is emptied by every reload while the  
+  remembered selection in localStorage survives, so each reload greeted the  
+  user with "会话已删除或正在清理…". A missing local row was reported as an  
+  `ApiError(404)` and treated like a server-side deletion.  
+  A missing local work now raises `MissingLocalWork`; restoring or watching such  
+  a work clears the selection and returns to a blank chat without an error.  
+  Real server 404/410 answers keep the deletion message and the retry path.  
+  * fix(client): sync background works through the events route  
+  Only the open work's SSE `watch()` applied and acknowledged events. A work  
+  left running in the background kept showing "正在处理" in the sidebar, its  
+  local job stayed `running` (so the input stayed locked when reopened late),  
+  and once the server's 7-day undelivered-event sweep ran its reply and version  
+  pointer were gone for good.  
+  - `backgroundSync.ts` pulls, for every local work of the current server whose  
+    latest job is queued or running and that the server has not reported  
+    deleted, `GET /works/{id}/events?after=<cursor>` page by page until a page  
+    is empty, applies each page with the same merge rules and acknowledges it.  
+    The workspace runs it on mount and every 30 s while mounted and refreshes  
+    the sidebar when anything changed; a 404/410 marks the work deleting, like  
+    the open-work path. Network and local failures are retried next round.  
+  - The work watched by SSE is skipped. To keep the two from ever applying the  
+    same events, all local reads and writes of one work now run in a per-work  
+    queue, and the sync re-checks "is it open now?" inside that queue right  
+    before writing; a snapshot taken when a work is opened waits for an  
+    in-flight background write, so the SSE resumes from the right cursor.  
+  - The test protocol double serves the paged events route (two per page).  
+  * fix(client): keep assets placed in the open draft from being deleted  
+  The asset list let the user delete asset X while the open, unsaved template  
+  draft had a clip using X. The server only refuses deleting assets placed in  
+  saved cloud templates, so the delete succeeded and the next template save  
+  failed with a misleading 422 "Remotion 资产尚未发布：<uuid>".  
+  `SpriteCatalog` now receives the sprite IDs placed in the current draft  
+  (including unsaved additions). Their delete button is disabled and the row  
+  explains "当前模板正在使用，移除片段后才能删除" (linked with  
+  aria-describedby); removing the clip enables it again.  
+  * test(client): replace stale Remotion session checks with local-store ones  
+  - `remotion.test.tsx` counted fetches ending in `/session`, a route that no  
+    longer exists, so "retry does not re-read while a parameter draft is  
+    pending" always compared 0 with 0. It now spies on `local.snapshot`, which  
+    is what a read recovery calls.  
+  - `remotion-layout.browser.mjs` (`bun run test:remotion-browser`) still mocked  
+    the removed `/works?history=true` and `/session` routes and asserted every  
+    request was a GET, which the `POST /ack` after each event breaks. It now  
+    creates the work from a blank chat, delivers the history (four messages,  
+    two jobs with loop rounds and their versions) through the SSE stream, allows  
+    only the create, ack and delete writes, checks that a reload (which empties  
+    the in-memory store) returns to a blank chat silently, and uses the current  
+    "预览时长" picker labels. Passed locally against Vite with Chrome.  
+  - The protocol double only answers `POST /works` now that the server has no  
+    list route; it already deleted acknowledged events like the server.  
+  - Doc comments for the small `reads`/`streams` test helpers.  
+  * test(server): update the real MySQL template tests to the current contract  
+  The opt-in MySQL integration tests only run in the manual Backend  
+  integration workflow, so they kept assumptions the template API dropped  
+  earlier: the list route returns TemplateSummary records without tracks  
+  (since #109), text Sprite clips need a text_target (since #113), and the  
+  fixture now holds both IMS text tracks. They still cover what nothing else  
+  does (real bootstrap and utf8mb4, MySQL unique-key conflicts, rollback and  
+  JSON columns), so compare list summaries, give the clips their text  
+  targets and look tracks up by ID instead of removing them.  
+  * fix(client): settle Remotion sessions stuck as running after their events expired  
+  The server drops undelivered events after IMV_UNDELIVERED_EVENT_DAYS, so a  
+  client that was offline for longer never receives the terminal event and  
+  stayed locked in "running"; Stop could not recover it either. Read the  
+  task state once when a session opens, on the first background sync after  
+  mount and from the Stop receipt, and settle the local job and version  
+  pointer. Later sync rounds still do not poll the task route.  
+  * fix(remotion): keep a second backend off the queue and let idle streams sleep  
+  Without runtime.lock nothing stopped a second backend on the same MySQL  
+  from interrupting running jobs at startup. Add a lease row  
+  (remotion_instance): acquired at startup, renewed every 10 s, released on  
+  clean shutdown, taken over after 30 s; a refused instance answers 503, and  
+  one that loses its lease stops claiming jobs and sweeping.  
+  Idle SSE streams polled MySQL every 250 ms (~12 queries/s per stream).  
+  They now sleep until a committed transaction appends an event of their  
+  work, with a 5 s read as a safety net (~0.6 queries/s per stream).
+
+
+### New Features
+- [`7927653`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/7927653dd4e248e2bb3d226cddb4727f9f819630) - **remotion**: accept reference images on follow-up chat messages *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`afe7d4a`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/afe7d4ade99e89f8f5d3c83f4ea6c49c6ef22110) - **remotion**: attach up to four reference images to a chat message *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`c206f79`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/c206f791d43888d1e1961bb0c5989ce43fad59f1) - **client**: separate Remotion instance settings from asset defaults in template editing *(PR [#149](https://github.com/HsiangNianian/IntelligentMixVideo/pull/149) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`3a142b6`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/3a142b65afb8f7f4e83398131983eefeace64138) - **templates**: redesign transition selection and timeline tracks *(PR [#145](https://github.com/HsiangNianian/IntelligentMixVideo/pull/145) by [@left0ver](https://github.com/left0ver))*
+- [`fc2e60f`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/fc2e60f37bb020a03d6b426271426d87ad5898c0) - **remotion**: rename Sprite assets and preview them with frozen frames *(PR [#98](https://github.com/HsiangNianian/IntelligentMixVideo/pull/98) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Bug Fixes
+- [`2b464a7`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/2b464a732f68edcb9402c5dcd84704f500e13788) - **remotion**: paste images and keep uploading after the chat starts *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`f230e64`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/f230e6442a0a87c50e29a2810a737c3442576aba) - **remotion**: tell the model where each reference image came from *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`0c14f5f`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/0c14f5f6c29ecc323c8e7bbd0c1f5dd612a1c085) - **remotion**: keep the draft when a reference image upload fails *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`813007d`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/813007dce4aae098ce1053005eaaf3bb76744dae) - **remotion**: reclaim reference images no message ever used *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`cd1fc05`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/cd1fc0532d9f5620f40153166c43cd75d8e57670) - **remotion**: restore an undelivered draft in the same render as its error *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`a461099`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/a4610999bcdb98de94ffc7fcf8c871eb838f6ab2) - **client**: bundle fcitx5 and ibus input methods in the Linux AppImage *(PR [#132](https://github.com/HsiangNianian/IntelligentMixVideo/pull/132) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`e543af2`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/e543af26b200cf29a5e438aa2885fca2eb2a23c8) - **remotion**: keep erased variable annotations valid in composed Sprites *(PR [#139](https://github.com/HsiangNianian/IntelligentMixVideo/pull/139) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`edb0eac`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/edb0eac6d1d5e492429a07d2f98ff95329abdf55) - **server**: bound graceful shutdown with open SSE streams *(PR [#141](https://github.com/HsiangNianian/IntelligentMixVideo/pull/141) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`062e7c8`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/062e7c88c30ffb044c13071f97a18e72db188f75) - **remotion**: rebuild an outdated Sprite preview bundle on first preview *(PR [#146](https://github.com/HsiangNianian/IntelligentMixVideo/pull/146) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`f195615`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/f195615185c51f5679b233561bdf011547336b78) - **remotion**: stop the composed instance box from clipping its content *(PR [#148](https://github.com/HsiangNianian/IntelligentMixVideo/pull/148) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`b2061bc`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/b2061bc3022998d3755459313fb0958e3ac842e3) - **remotion**: publish Sprites even when boundary samples fail *(PR [#153](https://github.com/HsiangNianian/IntelligentMixVideo/pull/153) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`217a9d1`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/217a9d1f056683d329eb0b0e97ad55d2d939bf8a) - **client**: hide CS0003-000002 from effect selectors *(PR [#150](https://github.com/HsiangNianian/IntelligentMixVideo/pull/150) by [@left0ver](https://github.com/left0ver))*
+- [`1104a98`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/1104a984b93e85c8d858d9e6378d09af8112b353) - **server**: improve composition diagnostics and enforce text limits *(PR [#155](https://github.com/HsiangNianian/IntelligentMixVideo/pull/155) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`6f8b548`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/6f8b548f4e6f7a7ad938dbcddc5d288db1d8fb8d) - **remotion**: keep fitted text inside the canvas and keyword sizes proportional *(PR [#159](https://github.com/HsiangNianian/IntelligentMixVideo/pull/159) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`3cf32a4`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/3cf32a4fc225c0d1a22879e043792694762695a0) - **segmentation**: preserve words and numeric expressions *(PR [#160](https://github.com/HsiangNianian/IntelligentMixVideo/pull/160) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+
+### Refactors
+- [`3362018`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/3362018027d4608c75979aca394ec50eb8c209a3) - **remotion**: keep chat on the client and execution state in MySQL *(PR [#143](https://github.com/HsiangNianian/IntelligentMixVideo/pull/143) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Tests
+- [`fc2318e`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/fc2318ecfea3eca1553474eb19906f881d6df433) - **client**: mark a cancelled animation's finished promise handled *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Documentation Changes
+- [`e033f6f`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/e033f6feefebca76f515cb6bc941e3941a7012fc) - update CHANGELOG.md for v0.9.1 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
+
+### Chores
+- [`7e4c557`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/7e4c557210788d0a9b20cb6cd7bf6bdaed48c718) - **release**: prepare v0.9.2 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`8eda3cd`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/8eda3cdff2d3663f12ffab742b62e0da9d39e7ba) - **release**: promote dev to main for v0.9.2 *(PR [#162](https://github.com/HsiangNianian/IntelligentMixVideo/pull/162) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Other Changes
+- [`a35cc0f`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/a35cc0f70a6dcbae4c8c2e772445ed44c5f0625e) - Merge pull request [#131](https://github.com/HsiangNianian/IntelligentMixVideo/pull/131) from YUZHEthefool/fix/remotion-image-input-127
+
+fix(remotion): paste images and keep uploading them after the chat starts *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
 ## [v0.9.1] - 2026-10-14
 ### New Features
 - [`2cbdce5`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/2cbdce535346588e772e9f26abcba546ecfee14d) - **composition**: integrate Remotion overlays into IMS timelines *(PR [#121](https://github.com/HsiangNianian/IntelligentMixVideo/pull/121) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
@@ -1077,3 +1412,5 @@ feat(client): 在模板工作区页头添加时钟 *(commit by [@HsiangNianian](
 [v0.9.0]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.5.0...v0.9.0
 
 [v0.9.1]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.0...v0.9.1
+
+[v0.9.2]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.1...v0.9.2
