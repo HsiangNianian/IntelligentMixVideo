@@ -14,7 +14,6 @@ import signal
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 
 import pytest
@@ -111,7 +110,6 @@ entry.main()
 
         process.send_signal(signal.SIGTERM)
         process.wait(timeout=5)
-        assert process.returncode is not None
 
         import fcntl
 
