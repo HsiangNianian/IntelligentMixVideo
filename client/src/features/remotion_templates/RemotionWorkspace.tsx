@@ -198,6 +198,7 @@ export function RemotionWorkspace() {
               if (!locked && !session.dirty) session.send(text, image, frames);
             }}
             onStop={() => void session.stop()}
+            draft={session.draft}
           />
         }
         preview={

@@ -12,6 +12,7 @@ import { LoopRounds } from "./LoopRounds";
 import { TaskStatus } from "./TaskStatus";
 import { VersionCard } from "./VersionCard";
 import type { ChatMessage, Job, SessionJob, Version } from "./model";
+import type { Draft } from "./useTemplateSession";
 import { FlipText } from "@/components/ui/flip-text";
 import { LoaderGooeyBlobs } from "@/components/ui/loaders-gooey-blobs";
 import { AnimatePresence, motion } from "motion/react";
@@ -43,6 +44,7 @@ interface Props {
   first: boolean;
   onSend: (text: string, image?: File, durationInFrames?: number) => void;
   onStop: () => void;
+  draft?: Draft | null;
   job?: Job | SessionJob | null;
   jobs?: Record<string, SessionJob>;
   hasOlder?: boolean;
@@ -68,6 +70,7 @@ export function ChatPanel({
   first,
   onSend,
   onStop,
+  draft,
   job,
   jobs = {},
   hasOlder,
@@ -128,6 +131,12 @@ export function ChatPanel({
       />
     );
   }
+  // 未送达的草稿回到输入框；用户在等待期间已输入的新内容优先保留。
+  useEffect(() => {
+    if (!draft) return;
+    setText((current) => current || draft.text);
+    setImage((current) => current ?? draft.image);
+  }, [draft]);
   // 历史分页只在头部插入消息；末尾新增回复才跟随到底部。
   useEffect(() => {
     end.current?.scrollIntoView?.({ block: "nearest" });

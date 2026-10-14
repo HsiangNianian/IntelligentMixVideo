@@ -15,6 +15,25 @@ import {
   type Version,
 } from "./model";
 
+/** 未送达的输入草稿；id 每次不同，输入框据此恢复文字和图片。 */
+export interface Draft {
+  id: string;
+  text: string;
+  image?: File;
+}
+
+/** 参考图上传失败时服务端尚无任何写入：携带草稿和本地消息 ID，按普通错误恢复，不进入任务读取恢复。 */
+class UploadFailure extends Error {
+  /** message 已是可直接展示的提示。 */
+  constructor(
+    message: string,
+    public draft: Draft,
+    public messageId: string,
+  ) {
+    super(message);
+  }
+}
+
 /** 当前视图状态与服务端历史分离，临时参数只在验收成功后成为可复制默认值。 */
 interface Session {
   key: number;
@@ -40,6 +59,7 @@ interface Session {
   navigation:
     | (({ work: string | null } | { version: string }) & { saving: boolean })
     | null;
+  draft: Draft | null;
 }
 /** 新增只建立本地空白页，首次发送才创建持久会话。 */
 function blank(key: number): Session {
@@ -65,6 +85,7 @@ function blank(key: number): Session {
     error: "",
     retryMode: null,
     navigation: null,
+    draft: null,
   };
 }
 /** 本地仅记录当前服务最后选中的 ID；浏览器禁用存储时仍可使用历史列表。 */
@@ -457,6 +478,19 @@ export function useTemplateSession(onHistoryChange: () => void) {
       if (alive.current) changed.current();
       await attach(job.project_id, key);
     } catch (error) {
+      if (error instanceof UploadFailure) {
+        if (current(key))
+          publish({
+            busy: null,
+            error: error.message,
+            retryMode: null,
+            messages: latest.current.messages.filter(
+              (message) => message.id !== error.messageId,
+            ),
+            draft: error.draft,
+          });
+        return;
+      }
       if (current(key))
         publish({
           busy: null,
@@ -486,14 +520,24 @@ export function useTemplateSession(onHistoryChange: () => void) {
       (!text.trim() && !image)
     )
       return;
+    const messageId = crypto.randomUUID();
     publish({
       messages: [
         ...s.messages,
-        { id: crypto.randomUUID(), role: "user", text: text.trim(), image },
+        { id: messageId, role: "user", text: text.trim(), image },
       ],
     });
     void execute("chat", async () => {
-      const asset = image ? await api.upload(image) : undefined;
+      let asset: { id: string } | undefined;
+      try {
+        asset = image ? await api.upload(image) : undefined;
+      } catch (error) {
+        throw new UploadFailure(
+          `参考图片上传失败：${error instanceof Error ? error.message : "请求未完成。"} 消息尚未发送，已恢复草稿，可直接重新发送。`,
+          { id: messageId, text, image },
+          messageId,
+        );
+      }
       if (!current(s.key)) throw new DOMException("Aborted", "AbortError");
       if (!s.workId)
         return (await api.create(text, asset?.id, defaultComposition(durationInFrames)))

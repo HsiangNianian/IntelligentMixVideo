@@ -789,6 +789,35 @@ test("开始对话后可粘贴参考图提交，任务进行中说明锁定原�
   expect(screen.queryByAltText("参考图片：late.png")).toBeNull();
 });
 
+// #127 审计：已有会话中参考图上传失败时服务端还没有任何写入；恢复草稿、按普通错误提示，不进入“刷新任务”恢复。
+test("已有会话上传失败恢复草稿且不进入读取恢复", async () => {
+  let messages = 0;
+  let fail = true;
+  server((path) => {
+    if (path === "/assets")
+      return fail ? new Response(null, { status: 503 }) : Response.json({ id: "image-9" });
+    if (path.endsWith("/messages")) {
+      messages += 1;
+      return Response.json({ ...remotionJob("running"), id: "edit-9" });
+    }
+  });
+  render(<RemotionWorkspace />);
+  await generate();
+  const input = screen.getByLabelText<HTMLTextAreaElement>("字效描述");
+  fireEvent.change(input, { target: { value: "参考这张" } });
+  fireEvent.paste(input, clipboard(new File(["png"], "retry.png", { type: "image/png" })));
+  fireEvent.submit(input.closest("form")!);
+  await screen.findByText(/参考图片上传失败.*消息尚未发送/);
+  expect(messages).toBe(0);
+  expect(screen.queryByRole("button", { name: "刷新任务" })).toBeNull();
+  expect(input.value).toBe("参考这张");
+  expect(screen.getByAltText("参考图片：retry.png")).toBeTruthy();
+  expect(within(screen.getByRole("log")).queryByText("参考这张")).toBeNull();
+  fail = false;
+  fireEvent.submit(input.closest("form")!);
+  await waitFor(() => expect(messages).toBe(1));
+});
+
 // #127：回答澄清问题时也可只附一张参考图，答案绑定提出问题的任务。
 test("澄清回答可只附参考图", async () => {
   let body: Record<string, unknown> = {};
