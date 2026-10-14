@@ -864,4 +864,6 @@ def test_real_browser_requires_the_longest_text_to_be_shown_in_full(tmp_path, co
     check = next(item for item in report.checks if item.name == "text_fit")
     assert (check.status == "passed") is passed, check.message
     assert reason in check.message
+    if code == FIXED_BOX_TEXT:
+        assert "Keep text maxLength exactly 100" in check.message
     assert report.passed is passed

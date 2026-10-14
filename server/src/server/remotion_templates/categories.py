@@ -20,8 +20,8 @@ KEYWORD_SIZE_MIN = 12
 KEYWORD_COLOR = "^(?:|#[0-9A-Fa-f]{6})$"
 # 颜色参数统一使用的 JSON Schema pattern；界面和宿主按它识别颜色控件。
 HEX_COLOR = "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$"
-# 文字参数的长度上限；更长的文字无法在固定画布内可靠排版。
-TEXT_MAX_LENGTH = 200
+# 字效统一支持 100 字；排版失败必须修复布局，不能降低契约上限。
+TEXT_MAX_LENGTH = 100
 # 关键词列表的项数和逐项长度上限，与总线的关键词约束一致。
 KEYWORDS_MAX_ITEMS = 20
 KEYWORD_MAX_LENGTH = 100
@@ -55,12 +55,12 @@ def _color(definition: dict) -> bool:
 
 
 def _text(definition: dict) -> bool:
-    """文字参数：非空字符串，并声明不超过上限的最大长度。"""
+    """文字参数：非空字符串，maxLength 必须恰好为 100。"""
     limit = definition.get("maxLength")
     return (
         definition.get("type") == "string"
         and isinstance(definition.get("minLength"), int) and definition["minLength"] >= 1
-        and isinstance(limit, int) and not isinstance(limit, bool) and 1 <= limit <= TEXT_MAX_LENGTH
+        and isinstance(limit, int) and not isinstance(limit, bool) and limit == TEXT_MAX_LENGTH
     )
 
 
@@ -145,7 +145,7 @@ TEXT_KEYWORDS = (KEYWORDS, *KEYWORD_STYLES, KEYWORD_COLOR_RULE, KEYWORD_SIZE_RUL
 _COLOR = {"type": "string", "pattern": HEX_COLOR}
 REQUIRED: dict[SpriteKindName, tuple[Rule, ...]] = {
     "text": (
-        Rule("text", {"type": "string", "minLength": 1, "maxLength": 100}, f"文字内容，非空字符串并声明不超过 {TEXT_MAX_LENGTH} 的 maxLength", _text),
+        Rule("text", {"type": "string", "minLength": 1, "maxLength": TEXT_MAX_LENGTH}, f"文字内容，非空字符串且 maxLength 必须为 {TEXT_MAX_LENGTH}", _text),
         Rule("fontSize", {"type": "number", "minimum": 24, "maximum": 240}, "字号，数字，范围在 8～400 像素之内且至少覆盖 24～160", _between(8, 400, 24, 160)),
         Rule("fontWeight", {"type": "integer", "enum": [400, 700]}, "字重，只能是 400 和 700 两个枚举值", _weight),
         Rule("color", _COLOR, "文字主色，十六进制颜色", _color),

@@ -549,7 +549,7 @@ async function textFitCheck(page) {
       + `Long text must fit on the ${composition.width}x${composition.height} canvas at any length up to maxLength: lay it out from its content, wrapping onto several lines `
       + "(a bounded width with whiteSpace normal and wordBreak break-all for CJK, no fixed-height box with overflow hidden), and reduce the font size as the text gets longer "
       + "(derive it from the character count, never below 24px) while short text keeps the fontSize parameter. Fit as much text as possible; "
-      + "if it cannot fit even at 24px, lower the text parameter's maxLength to what really fits instead of clipping.",
+      + "Keep text maxLength exactly 100; if 100 characters still do not fit at 24px, adjust the layout and wrapping instead of lowering maxLength or clipping.",
   };
 }
 
