@@ -75,7 +75,9 @@ commits and removed again if the commit fails; deletion and the upload sweep rem
 steps. Job
 scratch is removed when the job ends and the private `audit/<job_id>.jsonl` log outlives it. An hourly sweep applies
 three retention periods: undelivered events (`IMV_UNDELIVERED_EVENT_DAYS`, 7), audit logs
-(`IMV_AUDIT_RETENTION_DAYS`, 14) and the works of devices inactive for `IMV_DEVICE_RETENTION_DAYS` (90).
+(`IMV_AUDIT_RETENTION_DAYS`, 14) and the works of devices inactive for `IMV_DEVICE_RETENTION_DAYS` (90). The same
+sweep retries every deletion whose cleanup failed (an expired device's work, or a user DELETE answered 503 and never
+repeated); each step and each work is isolated, so one storage failure only postpones itself to the next hour.
 Published Sprites survive all of these.
 
 ## Preset storage

@@ -671,15 +671,16 @@ class Store:
             for work_id in stale:
                 self._prune(db, UUID(work_id))
 
-    def expire_devices(self, before: datetime) -> list[UUID]:
-        """Mark every work of devices inactive since the cutoff for deletion and forget those devices."""
+    def expire_devices(self, before: datetime) -> None:
+        """Mark every work of devices inactive since the cutoff for deletion and forget those devices.
+
+        The marked works are then removed like any pending deletion, which the sweep retries until cleanup succeeds.
+        """
         with self.transaction() as db:
             stale = db.execute(select(devices.c.device_id).where(devices.c.last_seen_at < naive(before))).scalars().all()
             if not stale:
-                return []
-            marked = db.execute(select(works.c.id).where(works.c.device_id.in_(stale))).scalars().all()
+                return
             db.execute(update(works).where(works.c.device_id.in_(stale)).values(deleting=True))
             db.execute(delete(devices).where(devices.c.device_id.in_(stale)))
         for key in stale:
             self._touched.pop(key, None)
-        return [UUID(value) for value in marked]

@@ -106,18 +106,35 @@ class Runtime:
     async def sweep(self) -> None:
         """Apply the retention periods: undelivered events, private audit logs, inactive devices and unused uploads.
 
-        An upload no work references (its message was rejected or never sent) is reclaimed after 24 hours.
+        An upload no work references (its message was rejected or never sent) is reclaimed after 24 hours. Every
+        pending deletion is (re)tried: the works of expired devices, and user deletions whose cleanup failed and that
+        nobody retried. Each step and each work is isolated, so one storage failure postpones only itself.
         """
         stamp = now()
-        await asyncio.to_thread(self.store.prune_assets)
-        await asyncio.to_thread(self.store.expire_events, stamp - timedelta(days=self.settings.undelivered_event_days))
-        cutoff = (stamp - timedelta(days=self.settings.audit_retention_days)).timestamp()
+        steps = (
+            ("unused uploads", self.store.prune_assets),
+            ("undelivered events", lambda: self.store.expire_events(stamp - timedelta(days=self.settings.undelivered_event_days))),
+            ("audit logs", lambda: self._expire_audit(stamp - timedelta(days=self.settings.audit_retention_days))),
+            ("inactive devices", lambda: self.store.expire_devices(stamp - timedelta(days=self.settings.device_retention_days))),
+        )
+        for name, step in steps:
+            try:
+                await asyncio.to_thread(step)
+            except Exception:
+                logger.exception("Remotion retention sweep step failed: %s", name)
+        for work_id in await asyncio.to_thread(self.store.pending_deletions):
+            try:
+                await self.delete_work(work_id)
+            except Exception:
+                logger.exception("Work deletion is still incomplete: %s", work_id)
+
+    def _expire_audit(self, before) -> None:
+        """Remove private audit logs last written before the cutoff."""
+        cutoff = before.timestamp()
         audit = self.store.root / "audit"
         for path in (audit.iterdir() if audit.is_dir() else ()):
             if path.is_file() and path.stat().st_mtime < cutoff:
                 path.unlink(missing_ok=True)
-        for work_id in await asyncio.to_thread(self.store.expire_devices, stamp - timedelta(days=self.settings.device_retention_days)):
-            await self.delete_work(work_id)
 
     def notify(self, job_id: UUID | None = None, config: ClientSettings | None = None) -> None:
         """Create a drain task only when work exists; no idle loop or application lifecycle hook."""

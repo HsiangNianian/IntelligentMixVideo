@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 from sqlalchemy import func, select, update
 from server.remotion_templates import deletion
+from server.remotion_templates import runtime as runtime_module
 from server.remotion_templates.context import Conversation
 from server.remotion_templates.media import save_image
 from server.remotion_templates.parameters import patch_parameters
@@ -480,6 +481,37 @@ def test_sweep_applies_the_three_retention_periods(service, store):
     assert store.latest_job(kept.id).id == kept_job.id
     assert count(store, chat_messages) == 0
     assert count(store, devices) == 1
+
+
+def test_sweep_retries_deletions_that_failed_and_isolates_each_work(service, store, monkeypatch):
+    """过期设备的清理有一个失败时，其他作品照常删除；失败的作品与无人重试的用户删除在下一轮清理中完成。"""
+    other = uuid4()
+    first, _ = store.create(GenerateTemplateRequest(description="失败"), other)
+    second, _ = store.create(GenerateTemplateRequest(description="成功"), other)
+    abandoned, _ = store.create(GenerateTemplateRequest(description="用户删除未重试"), DEVICE)
+    store.touch(other)
+    store.begin_deletion(abandoned.id)
+    with store.transaction() as db:
+        db.execute(update(devices).where(devices.c.device_id == str(other)).values(
+            last_seen_at=(now() - timedelta(days=200)).replace(tzinfo=None)))
+    original = deletion.finish
+
+    def flaky(target_store, work_id):
+        """模拟对象存储暂时不可用，只影响第一个作品。"""
+        if work_id == first.id:
+            raise OSError("object store unavailable")
+        original(target_store, work_id)
+
+    monkeypatch.setattr(runtime_module, "finish_deletion", flaky)
+    asyncio.run(service.sweep())
+    assert store.pending_deletions() == [first.id]
+    for work in (second, abandoned):
+        with pytest.raises(NotFound):
+            store.project(work.id)
+    monkeypatch.setattr(runtime_module, "finish_deletion", original)
+    asyncio.run(service.sweep())
+    assert store.pending_deletions() == []
+    assert count(store, works) == 0
 
 
 def image_object(store, asset):

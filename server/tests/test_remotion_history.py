@@ -453,7 +453,7 @@ def test_expire_events_drops_stale_deliveries_and_prunes(history_store):
 
 
 def test_expire_devices_marks_works_and_leaves_uploads_to_the_orphan_cleanup(history_store):
-    """长期不活跃设备的作品被标记删除并返回，活跃设备不受影响；它未被作品引用的上传由 24 小时后的孤儿清理回收。"""
+    """长期不活跃设备的作品被标记删除，活跃设备不受影响；它未被作品引用的上传由 24 小时后的孤儿清理回收。"""
     store = history_store
     buffer = BytesIO()
     Image.new("RGB", (8, 8), "blue").save(buffer, format="PNG")
@@ -467,12 +467,13 @@ def test_expire_devices_marks_works_and_leaves_uploads_to_the_orphan_cleanup(his
     with store.transaction() as db:
         db.execute(update(devices).where(devices.c.device_id == str(OTHER)).values(
             last_seen_at=(now() - timedelta(days=200)).replace(tzinfo=None)))
-    assert store.expire_devices(now() - timedelta(days=90)) == [stale.id]
+    store.expire_devices(now() - timedelta(days=90))
     assert store.pending_deletions() == [stale.id]
     assert store.project(active.id).id == active.id
     with store.reading() as db:
         assert db.execute(select(devices.c.device_id)).scalars().all() == [str(DEVICE)]
-    assert store.expire_devices(now() - timedelta(days=90)) == []
+    store.expire_devices(now() - timedelta(days=90))
+    assert store.pending_deletions() == [stale.id]
     assert store.prune_assets() == []
     aged = unused.model_copy(update={"created_at": unused.created_at - timedelta(hours=25)})
     with store.transaction() as db:
