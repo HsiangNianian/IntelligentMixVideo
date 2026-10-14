@@ -13,7 +13,6 @@ import type {
   SessionJob,
   SessionSnapshot,
   WorkEvent,
-  WorkPage,
   WorkSummary,
 } from "./model";
 
@@ -132,8 +131,8 @@ function summary(item: StoredWork): WorkSummary {
   };
 }
 /** 本机全部会话按最近活动排序；本地数量有限，不分页。 */
-export async function history(): Promise<WorkPage> {
-  return { items: (await storage().works()).map(summary), next_cursor: null };
+export async function history(): Promise<WorkSummary[]> {
+  return (await storage().works()).map(summary);
 }
 /** 从本地恢复与原服务端快照相同的结构；本机没有该会话时视为不存在。 */
 export async function snapshot(work: string, before?: number, limit = 50): Promise<SessionSnapshot> {

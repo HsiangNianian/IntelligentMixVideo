@@ -1,4 +1,4 @@
-/** 历史会话列表和小屏抽屉复用同一内容，业务数据与分页请求由工作区提供。 */
+/** 历史会话列表和小屏抽屉复用同一内容，业务数据由工作区从本地会话库提供，不分页。 */
 import { useRef, useState } from "react";
 import { History, MessageSquare, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -21,10 +21,8 @@ interface Props {
   selected: string | null;
   loading: boolean;
   error: string;
-  hasMore: boolean;
   onSelect: (id: string) => void;
   onRefresh: () => void;
-  onMore: () => void;
   onNew: () => void;
   dirty: boolean;
   onDelete: (id: string) => Promise<void>;
@@ -153,16 +151,14 @@ export function HistorySidebar(props: Props) {
     </>
   );
 }
-/** 选中项使用 aria-current，分页与失败恢复保持明确操作入口。 */
+/** 选中项使用 aria-current，失败恢复保持明确操作入口。 */
 function HistoryList({
   items,
   selected,
   loading,
   error,
-  hasMore,
   onSelect,
   onRefresh,
-  onMore,
   onNew,
   onDelete,
 }: Omit<Props, "onDelete"> & { onDelete: (work: WorkSummary) => void }) {
@@ -270,16 +266,6 @@ function HistoryList({
             </Hint>
           </div>
         ))}
-        {hasMore && (
-          <Button
-            className="w-full"
-            variant="ghost"
-            disabled={loading}
-            onClick={onMore}
-          >
-            加载更多会话
-          </Button>
-        )}
       </div>
     </section>
   );

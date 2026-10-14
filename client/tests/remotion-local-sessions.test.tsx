@@ -58,7 +58,7 @@ test("成功版本写入作品指针", async () => {
   await recordWork();
   await local.apply("work-1", [event(5, { type: "version.ready", data: { version_id: "version-9", job_id: "job-1" } })]);
   expect((await local.snapshot("work-1")).work.current_version_id).toBe("version-9");
-  expect((await local.history()).items[0]).toMatchObject({ id: "work-1", current_version_id: "version-9", title: "本地标题" });
+  expect((await local.history())[0]).toMatchObject({ id: "work-1", current_version_id: "version-9", title: "本地标题" });
 });
 
 // 消息按序号分页：首屏返回最新一页与 next_before，继续向前读取到最早消息后不再有下一页。

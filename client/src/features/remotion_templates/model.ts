@@ -339,11 +339,6 @@ export interface WorkSummary {
   current_version_id: string | null;
   job: SessionJob;
 }
-/** 最近活动分页使用服务端游标，避免偏移分页重复记录。 */
-export interface WorkPage {
-  items: WorkSummary[];
-  next_cursor: string | null;
-}
 /** 单一读取快照提供消息分页、成功版本指针及后续订阅起点。 */
 export interface SessionSnapshot {
   work: { id: string; current_version_id: string | null };

@@ -168,7 +168,6 @@ test("本地历史排序、失败保留与刷新", async () => {
   await seed("会话二");
   const { result } = renderHook(useWorkHistory);
   await waitFor(() => expect(result.current.items).toHaveLength(2));
-  expect(result.current.next_cursor).toBeNull();
   const read = spyOn(local, "history").mockRejectedValueOnce(new Error("本地会话库读取失败"));
   act(() => result.current.refresh());
   await waitFor(() => expect(result.current.error).toContain("本地会话库读取失败"));

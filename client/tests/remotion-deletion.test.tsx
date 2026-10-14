@@ -223,7 +223,7 @@ test("历史删除淘汰迟到列表结果", async () => {
           release = resolve;
         }),
     )
-    .mockResolvedValue({ items: [], next_cursor: null });
+    .mockResolvedValue([]);
   const { result } = renderHook(() => useWorkHistory());
   await waitFor(() => expect(release).toBeDefined());
   act(() => result.current.remove("work-1"));

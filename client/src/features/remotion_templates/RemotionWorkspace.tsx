@@ -134,10 +134,8 @@ export function RemotionWorkspace() {
             selected={session.workId}
             loading={history.loading}
             error={history.error}
-            hasMore={!!history.next_cursor}
             onSelect={session.select}
             onRefresh={history.refresh}
-            onMore={history.more}
             onNew={session.reset}
             dirty={session.dirty}
             onDelete={async (id) => {
