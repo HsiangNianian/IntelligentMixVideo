@@ -681,7 +681,7 @@ test("纯图片生成使用上传 ID，背景链接留在客户端", async () =>
   );
   expect(uploaded).toBe(true);
   expect(created).toEqual({
-    image: { asset_id: "image-1" },
+    images: [{ asset_id: "image-1" }],
     composition: {
       width: 1080,
       height: 1920,
@@ -733,21 +733,169 @@ test("拖入参考图校验格式并显示预览", async () => {
   });
   expect(screen.getByAltText("参考图片：dropped.png")).toBeTruthy();
   expect(screen.queryByRole("alert")).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "移除参考图片" }));
+  fireEvent.click(screen.getByRole("button", { name: "移除参考图片：dropped.png" }));
   expect(screen.queryByAltText("参考图片：dropped.png")).toBeNull();
 });
 
-// 首轮结束后不能再附图，但拖放仍须阻止浏览器默认打开文件，避免离开应用丢失未保存状态。
-test("不可附图时拖放仍阻止默认行为且不添加图片", async () => {
-  server();
+/** 构造只含一项的剪贴板数据；kind 为 file 时 getAsFile 返回该文件。 */
+function clipboard(file: File | null, type = file?.type ?? "text/plain") {
+  return {
+    clipboardData: {
+      items: [{ kind: file ? "file" : "string", type, getAsFile: () => file }],
+    },
+  };
+}
+
+// #127：开始对话后仍可粘贴参考图并随修改提交；文字粘贴照常输入，任务进行中说明何时可再上传且不附图。
+test("开始对话后可粘贴参考图提交，任务进行中说明锁定原因", async () => {
+  let body: Record<string, unknown> = {};
+  let uploads = 0;
+  server((path, options) => {
+    if (path === "/assets") {
+      uploads += 1;
+      return Response.json({ id: "image-2" });
+    }
+    if (path.endsWith("/messages")) {
+      body = JSON.parse(String(options?.body));
+      return Response.json({ ...remotionJob("running"), id: "edit-1" });
+    }
+  });
   render(<RemotionWorkspace />);
   await generate();
-  const form = screen.getByLabelText("字效描述").closest("form")!;
-  const file = new File(["png"], "late.png", { type: "image/png" });
-  expect(fireEvent.dragOver(form, { dataTransfer: { files: [file] } })).toBe(false);
+  const input = screen.getByLabelText("字效描述");
+  const form = input.closest("form")!;
+  expect(fireEvent.paste(input, clipboard(null))).toBe(true);
+  fireEvent.paste(input, clipboard(new File(["gif"], "pasted.gif", { type: "image/gif" })));
+  expect(screen.getByRole("alert").textContent).toBe(
+    "请选择不超过 10 MiB 的 PNG、JPEG 或 WebP 图片。",
+  );
+  const pasted = new File(["png"], "pasted.png", { type: "image/png" });
+  expect(fireEvent.paste(input, clipboard(pasted))).toBe(false);
+  expect(screen.getByAltText("参考图片：pasted.png")).toBeTruthy();
+  fireEvent.submit(form);
+  await waitFor(() => expect(body).toHaveProperty("images"));
+  expect(uploads).toBe(1);
+  expect(body).toEqual({
+    images: [{ asset_id: "image-2" }],
+    base_version_id: "version-1",
+  });
+  await screen.findByText("当前任务完成或停止后，可继续发送消息和上传图片。");
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "图片" }).disabled).toBe(true);
+  const late = new File(["png"], "late.png", { type: "image/png" });
+  expect(fireEvent.dragOver(form, { dataTransfer: { files: [late] } })).toBe(false);
   expect(screen.queryByText("松开以添加参考图片")).toBeNull();
-  expect(fireEvent.drop(form, { dataTransfer: { files: [file] } })).toBe(false);
+  expect(fireEvent.drop(form, { dataTransfer: { files: [late] } })).toBe(false);
+  fireEvent.paste(input, clipboard(late));
   expect(screen.queryByAltText("参考图片：late.png")).toBeNull();
+});
+
+// #127：一条消息可附多张参考图（一次粘贴多张、再拖入），最多 4 张，可单独移除，按顺序上传并提交。
+test("一条消息附多张参考图并按顺序提交", async () => {
+  let body: Record<string, unknown> = {};
+  let uploads = 0;
+  server((path, options) => {
+    if (path === "/assets") {
+      uploads += 1;
+      return Response.json({ id: `image-${uploads}` });
+    }
+    if (path.endsWith("/messages")) {
+      body = JSON.parse(String(options?.body));
+      return Response.json({ ...remotionJob("running"), id: "edit-2" });
+    }
+  });
+  render(<RemotionWorkspace />);
+  await generate();
+  const input = screen.getByLabelText("字效描述");
+  const form = input.closest("form")!;
+  const png = (name: string) => new File([name], name, { type: "image/png" });
+  fireEvent.paste(input, {
+    clipboardData: {
+      items: ["a.png", "b.png"].map((name) => ({
+        kind: "file", type: "image/png", getAsFile: () => png(name),
+      })),
+    },
+  });
+  fireEvent.drop(form, { dataTransfer: { files: ["c.png", "d.png", "e.png"].map(png) } });
+  expect(screen.getByRole("alert").textContent).toBe("每条消息最多附 4 张参考图片。");
+  for (const name of ["a.png", "b.png", "c.png", "d.png"])
+    expect(screen.getByAltText(`参考图片：${name}`)).toBeTruthy();
+  expect(screen.queryByAltText("参考图片：e.png")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "移除参考图片：b.png" }));
+  fireEvent.change(input, { target: { value: "参考这几张" } });
+  fireEvent.submit(form);
+  await waitFor(() => expect(body).toHaveProperty("images"));
+  expect(uploads).toBe(3);
+  expect(body).toEqual({
+    instruction: "参考这几张",
+    images: [{ asset_id: "image-1" }, { asset_id: "image-2" }, { asset_id: "image-3" }],
+    base_version_id: "version-1",
+  });
+});
+
+// #127 审计：已有会话中参考图上传失败时服务端还没有任何写入；恢复草稿、按普通错误提示，不进入“刷新任务”恢复。
+test("已有会话上传失败恢复草稿且不进入读取恢复", async () => {
+  let messages = 0;
+  let fail = true;
+  server((path) => {
+    if (path === "/assets")
+      return fail ? new Response(null, { status: 503 }) : Response.json({ id: "image-9" });
+    if (path.endsWith("/messages")) {
+      messages += 1;
+      return Response.json({ ...remotionJob("running"), id: "edit-9" });
+    }
+  });
+  render(<RemotionWorkspace />);
+  await generate();
+  const input = screen.getByLabelText<HTMLTextAreaElement>("字效描述");
+  fireEvent.change(input, { target: { value: "参考这张" } });
+  fireEvent.paste(input, clipboard(new File(["png"], "retry.png", { type: "image/png" })));
+  fireEvent.submit(input.closest("form")!);
+  await screen.findByText(/参考图片上传失败.*消息尚未发送/);
+  expect(messages).toBe(0);
+  expect(screen.queryByRole("button", { name: "刷新任务" })).toBeNull();
+  // 草稿与错误提示同一次渲染提交，不依赖 effect 时序。
+  expect(input.value).toBe("参考这张");
+  expect(screen.getByAltText("参考图片：retry.png")).toBeTruthy();
+  expect(within(screen.getByRole("log")).queryByText("参考这张")).toBeNull();
+  fail = false;
+  fireEvent.submit(input.closest("form")!);
+  await waitFor(() => expect(messages).toBe(1));
+});
+
+// #127：回答澄清问题时也可只附一张参考图，答案绑定提出问题的任务。
+test("澄清回答可只附参考图", async () => {
+  let body: Record<string, unknown> = {};
+  server((path, options) => {
+    if (path === "/works")
+      return Response.json({
+        work: { id: "work-1" },
+        job: remotionJob("needs_input"),
+      });
+    if (path === "/assets") return Response.json({ id: "image-3" });
+    if (path.endsWith("/messages")) {
+      body = JSON.parse(String(options?.body));
+      return Response.json(remotionJob());
+    }
+  });
+  render(<RemotionWorkspace />);
+  fireEvent.change(screen.getByLabelText("字效描述"), {
+    target: { value: "帮我制作标题" },
+  });
+  const form = screen.getByLabelText("字效描述").closest("form")!;
+  fireEvent.submit(form);
+  await screen.findByText("标题写什么？");
+  fireEvent.drop(form, {
+    dataTransfer: {
+      files: [new File(["png"], "answer.png", { type: "image/png" })],
+    },
+  });
+  fireEvent.submit(form);
+  await waitFor(() =>
+    expect(body).toEqual({
+      images: [{ asset_id: "image-3" }],
+      reply_to_job_id: "job-1",
+    }),
+  );
 });
 
 // 参数写入结果未知时保留草稿，先只读恢复确认任务，不自动重发。

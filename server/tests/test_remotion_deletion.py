@@ -1,6 +1,8 @@
 """字效会话删除的真实 SQLite/文件/API/队列回归；执行 uv run --locked pytest tests/test_remotion_deletion.py。"""
 
 import asyncio
+import json
+from datetime import timedelta
 from io import BytesIO
 from uuid import uuid4
 
@@ -12,7 +14,7 @@ from server.remotion_templates import deletion
 from server.remotion_templates.context import Conversation
 from server.remotion_templates.media import save_image
 from server.remotion_templates.parameters import patch_parameters
-from server.remotion_templates.models import GenerateTemplateRequest, JobInput
+from server.remotion_templates.models import GenerateTemplateRequest, JobInput, MessageImage, TaskMessage
 from server.remotion_templates.routes import router
 from server.remotion_templates.runtime import Runtime
 from server.remotion_templates.settings import Settings
@@ -426,3 +428,102 @@ def test_pending_image_cannot_be_reused_after_partial_cleanup(store):
             GenerateTemplateRequest(description="复用", image={"asset_id": asset.id})
         )
     assert len(store.work_history().items) == 1
+
+
+def test_follow_up_images_follow_work_lifecycle(store, service, candidate, spec, monkeypatch):
+    """后续消息附带的参考图随会话删除；其他会话仍以原图或后续消息引用时保留，删除未完成时禁止复用。"""
+    monkeypatch.setattr(service, "notify", lambda *args: None)
+    original, own, kept = reference(store), reference(store), reference(store)
+    work, first = store.create(
+        GenerateTemplateRequest(description="删除", image={"asset_id": original.id})
+    )
+    store.claim()
+    version = publish_fixture(store, first.id, candidate, spec, evidence(candidate, spec))
+    edit = service.message(work.id, TaskMessage(instruction="参考这张", images=[{"asset_id": own.id}]))
+    assert store.job(edit.id).base_version_id == version.id
+    assert store.inputs(edit.id) == JobInput(
+        mode="edit", instruction="参考这张", images=[MessageImage(asset_id=own.id)]
+    )
+    store.update(edit.id, status="failed", stage="finished")
+    image_only = service.message(work.id, TaskMessage(images=[{"asset_id": kept.id}]))
+    assert store.inputs(image_only.id).images == [MessageImage(asset_id=kept.id)]
+    other, other_first = store.create(
+        GenerateTemplateRequest(description="保留", image={"asset_id": kept.id})
+    )
+    store.update(other_first.id, status="failed", stage="finished")
+    service.message(other.id, TaskMessage(images=[{"asset_id": original.id}]))
+
+    store.begin_deletion(work.id)
+    with pytest.raises(Conflict):
+        store.create(GenerateTemplateRequest(description="复用", image={"asset_id": own.id}))
+    deletion.finish(store, work.id)
+    with pytest.raises(NotFound):
+        store.asset(own.id)
+    assert not (store.root / "assets" / f"{own.id}.png").exists()
+    for asset in (original, kept):
+        assert store.asset_path(asset.id).exists()
+
+
+def age(store, asset, hours):
+    """把素材登记时间改早，模拟上传后一直没有被任何消息引用。"""
+    aged = asset.model_copy(update={"created_at": asset.created_at - timedelta(hours=hours)})
+    with store.connection() as db:
+        db.execute("UPDATE assets SET data=? WHERE id=?", (aged.model_dump_json(), str(asset.id)))
+
+
+def test_unreferenced_uploads_are_reclaimed_after_a_grace_period(client, store, service, monkeypatch):
+    """#127 审计：上传成功但消息被拒绝时素材无人引用；超过 24 小时后在下次上传或服务启动时回收，仍被引用或较新的保留。"""
+    monkeypatch.setattr(service, "notify", lambda *args: None)
+    original, follow, orphan, fresh, later = (reference(store) for _ in range(5))
+    work, first = store.create(
+        GenerateTemplateRequest(description="保留", image={"asset_id": original.id})
+    )
+    store.update(first.id, status="failed", stage="finished")
+    service.message(work.id, TaskMessage(images=[{"asset_id": follow.id}]))
+    with pytest.raises(Conflict):
+        service.message(work.id, TaskMessage(images=[{"asset_id": orphan.id}]))
+    for asset in (original, follow, orphan, later):
+        age(store, asset, 25)
+    age(store, fresh, 23)
+
+    data = BytesIO()
+    Image.new("RGB", (8, 8), "blue").save(data, "PNG")
+    upload = client.post(
+        "/api/templates/assets", files={"file": ("new.png", data.getvalue(), "image/png")}
+    )
+    assert upload.status_code == 201
+    for asset in (orphan, later):
+        with pytest.raises(NotFound):
+            store.asset(asset.id)
+        assert not (store.root / "assets" / f"{asset.id}.png").exists()
+    for asset in (original, follow, fresh):
+        assert store.asset_path(asset.id).exists()
+
+    age(store, fresh, 25)
+    Runtime(store, None, Settings(_env_file=None)).initialize()
+    with pytest.raises(NotFound):
+        store.asset(fresh.id)
+    assert store.asset_path(original.id).exists() and store.asset_path(follow.id).exists()
+
+
+def test_single_image_work_cleans_up_its_original(client, store):
+    """多图之前保存的作品只有 request.image；删除时照常清理该图，被其他会话引用时保留。"""
+    legacy, shared = reference(store), reference(store)
+    works = [
+        store.create(GenerateTemplateRequest(description="旧作品", image={"asset_id": asset.id}))[0]
+        for asset in (legacy, shared)
+    ]
+    other, _ = store.create(GenerateTemplateRequest(description="共享", image={"asset_id": shared.id}))
+    with store.connection() as db:
+        for work in works:
+            data = json.loads(db.execute("SELECT data FROM projects WHERE id=?", (str(work.id),)).fetchone()[0])
+            data["request"]["image"] = data["request"].pop("images")[0]
+            db.execute("UPDATE projects SET data=? WHERE id=?", (json.dumps(data), str(work.id)))
+    for work in works:
+        assert client.delete(f"/api/templates/works/{work.id}").status_code == 204
+    with pytest.raises(NotFound):
+        store.asset(legacy.id)
+    assert store.asset_path(shared.id).exists()
+    assert client.delete(f"/api/templates/works/{other.id}").status_code == 204
+    with pytest.raises(NotFound):
+        store.asset(shared.id)

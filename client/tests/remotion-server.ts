@@ -63,7 +63,7 @@ export function remotionServer(
     job: Job,
     role: ChatMessage["role"],
     text: string,
-    image?: string,
+    images: string[] = [],
   ) {
     emit(work, {
       type: "message.created",
@@ -73,7 +73,7 @@ export function remotionServer(
         job_id: job.id,
         role,
         text,
-        image_asset_id: image,
+        image_asset_ids: images,
         created_at: "2026-09-14T08:00:00Z",
         reconstructed: false,
       },
@@ -170,7 +170,7 @@ export function remotionServer(
         input.description ||
           input.instruction ||
           (input.parameters ? "调整模板参数。" : "请参考这张图片制作字效。"),
-        input.image?.asset_id,
+        (input.images ?? []).map((image: { asset_id: string }) => image.asset_id),
       );
     advance(job);
     return response;

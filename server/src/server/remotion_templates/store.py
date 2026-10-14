@@ -4,7 +4,7 @@ import json
 import shutil
 import sqlite3
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Iterator
 from uuid import UUID, uuid4
@@ -13,6 +13,7 @@ from fastapi import HTTPException
 
 from . import history
 from .context import Conversation
+from .deletion import REFERENCES, remove_path
 from .evidence import verify_artifacts
 from .models import (
     Asset,
@@ -44,6 +45,11 @@ class Conflict(HTTPException):
     def __init__(self, detail: str) -> None:
         """Use FastAPI's built-in 409 response for concrete conflicting requests."""
         super().__init__(status_code=409, detail=detail)
+
+
+# An upload whose message was rejected or never arrived is reclaimed once it is this old; a send uploads
+# immediately before it submits, so no pending send can still be about to reference such an image.
+ORPHAN_ASSET_TTL = timedelta(hours=24)
 
 
 def now() -> datetime:
@@ -116,6 +122,18 @@ class Store:
             "SELECT 1 FROM projects WHERE id=?", (str(identifier),)
         ).fetchone():
             raise NotFound("work not found")
+
+    def require_reference(self, db: sqlite3.Connection, identifier: UUID) -> None:
+        """Accept a registered image unless a deleting work still uses it, since cleanup may have removed its file."""
+        if not db.execute(
+            "SELECT 1 FROM assets WHERE id=?", (str(identifier),)
+        ).fetchone():
+            raise NotFound("asset not found")
+        if db.execute(
+            f"SELECT 1 FROM ({REFERENCES}) r JOIN work_deletions d ON d.work_id=r.id LIMIT 1",
+            {"asset": str(identifier)},
+        ).fetchone():
+            raise Conflict("reference image belongs to a work being deleted")
 
     def begin_deletion(self, identifier: UUID) -> list[UUID]:
         """Persist deletion intent and cancel all pending jobs before awaiting any writer."""
@@ -213,6 +231,26 @@ class Store:
                 (str(asset.id), asset.model_dump_json()),
             )
 
+    def prune_assets(self, older_than: timedelta = ORPHAN_ASSET_TTL) -> list[UUID]:
+        """Delete uploads that no work references once they are older than ``older_than``; return their IDs.
+
+        Works being deleted still reference their images until cleanup finishes, so those stay for it.
+        A file removal failure rolls back the metadata, as work deletion does.
+        """
+        cutoff = now() - older_than
+        removed = []
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            for row in db.execute("SELECT id, data FROM assets").fetchall():
+                if Asset.model_validate_json(row["data"]).created_at >= cutoff:
+                    continue
+                if db.execute(f"SELECT 1 FROM ({REFERENCES}) LIMIT 1", {"asset": row["id"]}).fetchone():
+                    continue
+                remove_path(self.root, "assets", row["id"], ".png")
+                db.execute("DELETE FROM assets WHERE id=?", (row["id"],))
+                removed.append(UUID(row["id"]))
+        return removed
+
     def asset_path(self, identifier: UUID) -> Path:
         """Resolve an asset by server-generated ID, never a user-supplied filename."""
         self.asset(identifier)
@@ -277,16 +315,8 @@ class Store:
         job = self._new_job(project.id, None)
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
-            if request.image and not db.execute(
-                "SELECT 1 FROM assets WHERE id=?", (str(request.image.asset_id),)
-            ).fetchone():
-                raise NotFound("asset not found")
-            if request.image and db.execute(
-                "SELECT 1 FROM projects p JOIN work_deletions d ON d.work_id=p.id "
-                "WHERE json_extract(p.data, '$.request.image.asset_id')=? LIMIT 1",
-                (str(request.image.asset_id),),
-            ).fetchone():
-                raise Conflict("reference image belongs to a work being deleted")
+            for image in request.images:
+                self.require_reference(db, image.asset_id)
             db.execute(
                 "INSERT INTO projects VALUES (?, ?)",
                 (str(project.id), project.model_dump_json()),
@@ -313,6 +343,7 @@ class Store:
         job: GenerationJob,
         inputs: JobInput,
         message_text: str | None = None,
+        message_images: list[UUID] | None = None,
     ) -> None:
         """Insert a queued job and the first replayable progress event."""
         db.execute(
@@ -326,7 +357,7 @@ class Store:
                 inputs.model_dump_json(),
             ),
         )
-        history.record_input(db, job, inputs, message_text)
+        history.record_input(db, job, inputs, message_text, images=message_images)
         self._event(db, job)
 
     def enqueue(
@@ -336,12 +367,15 @@ class Store:
         base: UUID | None,
         *,
         message_text: str | None = None,
+        message_images: list[UUID] | None = None,
         running: bool = False,
     ) -> GenerationJob:
-        """Reject concurrent edits and foreign version IDs before enqueueing any work.
+        """Reject concurrent edits, foreign version IDs and unusable reference images before enqueueing any work.
 
-        ``running`` records a job the caller executes itself at once (an instant parameter revision); the FIFO
-        worker only claims queued jobs, and the one-active-job rule still applies.
+        ``message_images`` are the images the user attached to this chat message; ``inputs.images`` may also carry
+        images inherited from the task being answered or retried. ``running`` records a job the caller executes
+        itself at once (an instant parameter revision); the FIFO worker only claims queued jobs, and the
+        one-active-job rule still applies.
         """
         self.project(project_id)
         if base is not None and self.version(base).project_id != project_id:
@@ -351,7 +385,9 @@ class Store:
             with self.connection() as db:
                 db.execute("BEGIN IMMEDIATE")
                 self.require_work(db, project_id)
-                self._insert_job(db, job, inputs, message_text)
+                for image in inputs.images:
+                    self.require_reference(db, image.asset_id)
+                self._insert_job(db, job, inputs, message_text, message_images)
         except sqlite3.IntegrityError as exc:
             raise Conflict("this work already has a queued or running job") from exc
         return job

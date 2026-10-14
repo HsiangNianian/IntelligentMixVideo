@@ -14,7 +14,7 @@ from .settings import ClientSettings, Settings
 from ..file_lock import lock_exclusive
 from .harness import Harness
 from .overlay_service import OverlayRenders
-from .models import DialogueOutput, EditTemplateRequest, JobError, JobInput, TaskMessage
+from .models import DialogueOutput, EditTemplateRequest, JobError, JobInput, MessageImage, TaskMessage
 from .parameters import parameter_changes
 from .provider import Budget, ExecutionFailure, ModelFailure, Provider
 from .publication import revisable
@@ -24,6 +24,24 @@ from .tools.contracts import CodeValidationReport, ComponentDefinition
 
 
 logger = logging.getLogger("uvicorn.error")
+
+# Host-written meaning of each reference image source, so an image without text still says what it is for.
+REFERENCE_MEANINGS = {
+    "work_original": "Attached to the request that created this work; it describes the original goal.",
+    "message": "Attached by the user to the current instruction as a reference for this change.",
+    "clarification_answer": "Attached by the user as their answer (or part of it) to clarifications[clarification].",
+}
+
+
+def reference_images(project, inputs: JobInput) -> list[dict]:
+    """Describe every reference image in the order the model receives them, each with its source."""
+    entries = [
+        {"asset_id": str(image.asset_id), "source": "work_original"} for image in project.request.images
+    ]
+    entries += [
+        image.model_dump(mode="json", exclude_none=True) for image in inputs.images
+    ]
+    return [{**entry, "meaning": REFERENCE_MEANINGS[entry["source"]]} for entry in entries]
 
 
 class Runtime:
@@ -63,6 +81,10 @@ class Runtime:
             lock_exclusive(self.lock)
             self.store.initialize()
             self.store.interrupt_unfinished()
+            try:
+                self.store.prune_assets()
+            except (OSError, sqlite3.Error):
+                logger.exception("Unreferenced reference image cleanup failed")
             for work_id in self.store.pending_deletions():
                 try:
                     finish_deletion(self.store, work_id)
@@ -95,14 +117,24 @@ class Runtime:
             raise Conflict("base version belongs to another work")
         if request.parameters is not None:
             patch_parameters(base.candidate, base.spec, request.parameters)
+        images = [image.asset_id for image in request.images]
         inputs = JobInput(
             mode="parameters" if request.parameters is not None else "edit",
             instruction=request.instruction,
             parameters=request.parameters,
+            images=[MessageImage(asset_id=image) for image in images],
         )
-        return self._start(project_id, inputs, base, config)
+        return self._start(project_id, inputs, base, config, message_images=images)
 
-    def _start(self, project_id: UUID, inputs: JobInput, base, config: ClientSettings | None, message_text: str | None = None):
+    def _start(
+        self,
+        project_id: UUID,
+        inputs: JobInput,
+        base,
+        config: ClientSettings | None,
+        message_text: str | None = None,
+        message_images: list[UUID] | None = None,
+    ):
         """Queue a job for the worker, or save a PR76 parameter revision at once outside the FIFO queue.
 
         A parameter revision of a PR76 version whose player bundle reads injected defaults only re-checks the schema
@@ -116,7 +148,10 @@ class Runtime:
             self.saves[job.id] = task
             task.add_done_callback(lambda _done: self.saves.pop(job.id, None))
             return job
-        job = self.store.enqueue(project_id, inputs, base.id if base else None, message_text=message_text)
+        job = self.store.enqueue(
+            project_id, inputs, base.id if base else None,
+            message_text=message_text, message_images=message_images,
+        )
         self.notify(job.id, config)
         return job
 
@@ -140,23 +175,29 @@ class Runtime:
     def message(self, project_id: UUID, request: TaskMessage, config: ClientSettings | None = None):
         """Route conversation input to generation, accepted-base edits, or outstanding questions."""
         latest = self.store.latest_job(project_id)
+        images = [image.asset_id for image in request.images]
         if request.reply_to_job_id:
             if latest.id != request.reply_to_job_id or latest.status != "needs_input":
                 raise Conflict("Question reply is stale or belongs to another task.")
-            return self.retry(latest.id, request.instruction, config)
+            return self.retry(latest.id, request.instruction or "", config, images=images)
         if latest.status == "needs_input":
             raise Conflict("Answer the outstanding questions using reply_to_job_id.")
         project = self.store.project(project_id)
         if (
             project.current_version_id is None
             and request.base_version_id is None
-            and request.instruction is not None
+            and request.parameters is None
         ):
             # A conversation can start with questions before its first accepted template exists.
             job = self.store.enqueue(
                 project_id,
-                JobInput(mode="generate", instruction=request.instruction),
+                JobInput(
+                    mode="generate",
+                    instruction=request.instruction,
+                    images=[MessageImage(asset_id=image) for image in images],
+                ),
                 None,
+                message_images=images,
             )
             self.notify(job.id, config)
             return job
@@ -168,8 +209,19 @@ class Runtime:
             config,
         )
 
-    def retry(self, job_id: UUID, answer: str | None = None, config: ClientSettings | None = None):
-        """Retry or clarification creates a new identity, never mutating historical execution state."""
+    def retry(
+        self,
+        job_id: UUID,
+        answer: str | None = None,
+        config: ClientSettings | None = None,
+        *,
+        images: list[UUID] | None = None,
+    ):
+        """Retry or clarification creates a new identity, never mutating historical execution state.
+
+        An answer keeps the task's earlier reference images and may attach more, bound to this answer both
+        in the image record and in the clarification entry, so an image-only answer still says what it answers.
+        """
         job = self.store.job(job_id)
         allowed = (
             {"needs_input"}
@@ -182,15 +234,19 @@ class Runtime:
             raise Conflict("Only the latest task execution may be retried or answered.")
         inputs = self.store.inputs(job_id)
         if answer is not None:
-            inputs.clarifications += [
-                json.dumps(
-                    {"questions": job.questions, "answer": answer}, ensure_ascii=False
-                )
-            ]
+            clarification = {"questions": job.questions, "answer": answer}
+            if images:
+                clarification["answer_images"] = [str(image) for image in images]
+                inputs.images += [
+                    MessageImage(asset_id=image, source="clarification_answer", clarification=len(inputs.clarifications))
+                    for image in images
+                ]
+            inputs.clarifications += [json.dumps(clarification, ensure_ascii=False)]
         base = self.store.version(job.base_version_id) if job.base_version_id else None
         return self._start(
             job.project_id, inputs, base, config,
             message_text=answer if answer is not None else "重试本次制作。",
+            message_images=images,
         )
 
     async def code_report(
@@ -290,11 +346,9 @@ class Runtime:
                 job = self.store.job(job_id)
                 project = self.store.project(job.project_id)
                 inputs = self.store.inputs(job_id)
-                images = (
-                    [self.store.asset_path(project.request.image.asset_id)]
-                    if project.request.image
-                    else []
-                )
+                # The work's original image first, then images attached to the messages this task answers.
+                references = reference_images(project, inputs)
+                images = [self.store.asset_path(UUID(entry["asset_id"])) for entry in references]
                 base = (
                     self.store.version(job.base_version_id)
                     if job.base_version_id
@@ -310,7 +364,7 @@ class Runtime:
                     # Source stays out of the persisted Outer window; the tool session shows the base's
                     # Presets to the layer that edits code.
                     "accepted_base": base.spec.model_dump(mode="json", exclude_unset=True, exclude={"sprite"}) if base else None,
-                    "reference_images": [{"asset_id": str(project.request.image.asset_id)}] if project.request.image else [],
+                    "reference_images": references,
                 }
                 if patch is None and base and base.source == "user_parameters":
                     baseline = self.store.version(base.agent_base_version_id)

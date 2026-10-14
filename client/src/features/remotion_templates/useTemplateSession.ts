@@ -15,6 +15,25 @@ import {
   type Version,
 } from "./model";
 
+/** 未送达的输入草稿；id 每次不同，输入框据此恢复文字和图片。 */
+export interface Draft {
+  id: string;
+  text: string;
+  images: File[];
+}
+
+/** 参考图上传失败时服务端尚无任何写入：携带草稿和本地消息 ID，按普通错误恢复，不进入任务读取恢复。 */
+class UploadFailure extends Error {
+  /** message 已是可直接展示的提示。 */
+  constructor(
+    message: string,
+    public draft: Draft,
+    public messageId: string,
+  ) {
+    super(message);
+  }
+}
+
 /** 当前视图状态与服务端历史分离，临时参数只在验收成功后成为可复制默认值。 */
 interface Session {
   key: number;
@@ -40,6 +59,7 @@ interface Session {
   navigation:
     | (({ work: string | null } | { version: string }) & { saving: boolean })
     | null;
+  draft: Draft | null;
 }
 /** 新增只建立本地空白页，首次发送才创建持久会话。 */
 function blank(key: number): Session {
@@ -65,6 +85,7 @@ function blank(key: number): Session {
     error: "",
     retryMode: null,
     navigation: null,
+    draft: null,
   };
 }
 /** 本地仅记录当前服务最后选中的 ID；浏览器禁用存储时仍可使用历史列表。 */
@@ -457,6 +478,19 @@ export function useTemplateSession(onHistoryChange: () => void) {
       if (alive.current) changed.current();
       await attach(job.project_id, key);
     } catch (error) {
+      if (error instanceof UploadFailure) {
+        if (current(key))
+          publish({
+            busy: null,
+            error: error.message,
+            retryMode: null,
+            messages: latest.current.messages.filter(
+              (message) => message.id !== error.messageId,
+            ),
+            draft: error.draft,
+          });
+        return;
+      }
       if (current(key))
         publish({
           busy: null,
@@ -473,8 +507,8 @@ export function useTemplateSession(onHistoryChange: () => void) {
       if (alive.current) changed.current();
     }
   }
-  /** 首轮图片可上传；后续输入绑定最近成功版本，澄清明确绑定提问任务。 */
-  function send(text: string, image?: File, durationInFrames?: number) {
+  /** 每条消息可附多张图片，按顺序先上传再提交；后续输入绑定最近成功版本，澄清明确绑定提问任务。 */
+  function send(text: string, images: File[] = [], durationInFrames?: number) {
     const s = latest.current;
     if (
       s.deleting ||
@@ -483,24 +517,37 @@ export function useTemplateSession(onHistoryChange: () => void) {
       s.previewLoading ||
       s.previewVersion ||
       dirty() ||
-      (!text.trim() && !image)
+      (!text.trim() && !images.length)
     )
       return;
+    const messageId = crypto.randomUUID();
     publish({
       messages: [
         ...s.messages,
-        { id: crypto.randomUUID(), role: "user", text: text.trim(), image },
+        { id: messageId, role: "user", text: text.trim(), images },
       ],
     });
     void execute("chat", async () => {
-      if (!s.workId) {
-        const asset = image ? await api.upload(image) : undefined;
-        if (!current(s.key)) throw new DOMException("Aborted", "AbortError");
-        return (await api.create(text, asset?.id, defaultComposition(durationInFrames)))
-          .job;
+      let assets: string[];
+      try {
+        // 已上传的部分在整条失败后无人引用，由服务端过期回收。
+        assets = (await Promise.all(images.map((image) => api.upload(image)))).map(
+          (asset) => asset.id,
+        );
+      } catch (error) {
+        throw new UploadFailure(
+          `参考图片上传失败：${error instanceof Error ? error.message : "请求未完成。"} 消息尚未发送，已恢复草稿，可直接重新发送。`,
+          { id: messageId, text, images },
+          messageId,
+        );
       }
+      if (!current(s.key)) throw new DOMException("Aborted", "AbortError");
+      if (!s.workId)
+        return (await api.create(text, assets, defaultComposition(durationInFrames)))
+          .job;
       return api.message(s.workId, {
-        instruction: text.trim(),
+        ...(text.trim() ? { instruction: text.trim() } : {}),
+        ...(assets.length ? { images: assets.map((asset_id) => ({ asset_id })) } : {}),
         ...(s.job?.status === "needs_input"
           ? { reply_to_job_id: s.job.id }
           : { base_version_id: s.version?.id }),

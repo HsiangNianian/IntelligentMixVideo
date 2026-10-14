@@ -124,23 +124,24 @@ export function upload(
 /** 首次发送才创建作品；尚未收到 ID 的请求不自动重试。 */
 export function create(
   description: string,
-  asset?: string,
+  assets: string[] = [],
   composition?: Composition,
 ): Promise<{ work: { id: string }; job: Job }> {
   return modelRequest("/works", {
     method: "POST",
     body: JSON.stringify({
       ...(description.trim() ? { description: description.trim() } : {}),
-      ...(asset ? { image: { asset_id: asset } } : {}),
+      ...(assets.length ? { images: assets.map((asset_id) => ({ asset_id })) } : {}),
       ...(composition ? { composition } : {}),
     }),
   });
 }
-/** 自然语言修改、澄清和参数共用同一端点，显式绑定成功版本或问题任务。 */
+/** 自然语言修改（文字和／或参考图）、澄清和参数共用同一端点，显式绑定成功版本或问题任务。 */
 export function message(
   work: string,
   body: {
     instruction?: string;
+    images?: { asset_id: string }[];
     parameters?: Values;
     base_version_id?: string;
     reply_to_job_id?: string;

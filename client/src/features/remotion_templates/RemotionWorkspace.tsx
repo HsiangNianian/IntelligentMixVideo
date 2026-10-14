@@ -60,6 +60,22 @@ export function RemotionWorkspace() {
     unresolved ||
     session.retryMode === "read";
   const locked = pending || previewBusy || session.previewLoading;
+  // 聊天输入（含附图）被锁定的原因与恢复时机；为空表示可以发送和上传。
+  const inputLock = serviceError
+    ? "字效服务尚未就绪，重新连接成功后可发送消息和上传图片。"
+    : session.deleting
+      ? "会话正在删除，无法继续发送消息或上传图片。"
+      : session.loading || session.retryMode === "read"
+        ? "会话恢复后可发送消息和上传图片。"
+        : session.busy || unresolved
+          ? "当前任务完成或停止后，可继续发送消息和上传图片。"
+          : historical
+            ? "正在查看历史版本，返回最新版本后可发送消息和上传图片。"
+            : session.dirty
+              ? "参数修改尚未保存，保存或撤销后可发送消息和上传图片。"
+              : previewBusy || session.previewLoading
+                ? "预览加载完成后可发送消息和上传图片。"
+                : "";
   return (
     <div className="space-y-2">
       {serviceError && (
@@ -157,12 +173,8 @@ export function RemotionWorkspace() {
             olderLoading={session.olderLoading}
             onOlder={() => void session.older()}
             busy={!!session.busy}
-            disabled={
-              locked ||
-              historical ||
-              session.dirty ||
-              !!serviceError
-            }
+            disabled={!!inputLock}
+            disabledReason={inputLock}
             canStop={unresolved && !session.deleting}
             first={!session.workId}
             configuration={
@@ -182,10 +194,11 @@ export function RemotionWorkspace() {
                 </p>
               ) : undefined
             }
-            onSend={(text, image, frames) => {
-              if (!locked && !session.dirty) session.send(text, image, frames);
+            onSend={(text, images, frames) => {
+              if (!locked && !session.dirty) session.send(text, images, frames);
             }}
             onStop={() => void session.stop()}
+            draft={session.draft}
           />
         }
         preview={

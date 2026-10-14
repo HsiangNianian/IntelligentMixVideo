@@ -39,8 +39,13 @@ words of the description (`[Not callable in this build ...]`); an unknown name
 lists callable tools and contract-only tools apart. The host still performs the code, parameter and browser
 checks needed to build a preview; those are not model-facing tools.
 
-Image tools read the reference image the user already uploaded and the server
-registered as a local asset. They take that asset reference, not a URL, and
+Image tools read the reference images the user already uploaded and the server
+registered as local assets: the work's original images and, for a task started
+by a later chat message (`POST /works/{id}/messages` with `images`, up to four),
+that message's images. `user_intent.reference_images` lists them in the order the model
+receives them, each with its `source` (`work_original`, `message` or
+`clarification_answer` plus the answered `clarification` index) and a host-written
+`meaning`. They take that asset reference, not a URL, and
 never upload anything.
 
 ## Preset storage

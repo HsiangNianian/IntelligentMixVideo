@@ -1,5 +1,6 @@
 """Verify durable public histories and compatible APIs offline: uv run --locked pytest tests/test_remotion_history.py."""
 
+import asyncio
 import json
 from io import BytesIO
 from types import SimpleNamespace
@@ -11,10 +12,18 @@ from fastapi.testclient import TestClient
 from PIL import Image
 from pydantic import SecretStr, ValidationError
 from server.remotion_templates import history
-from server.remotion_templates.models import GenerateTemplateRequest, JobError, JobInput
+from server.remotion_templates.media import save_image
+from server.remotion_templates.models import (
+    DialogueOutput,
+    GenerateTemplateRequest,
+    JobError,
+    JobInput,
+    MessageImage,
+    TaskMessage,
+)
 from server.remotion_templates.routes import router
-from server.remotion_templates.runtime import Runtime
-from server.remotion_templates.store import Conflict, Store
+from server.remotion_templates.runtime import REFERENCE_MEANINGS, Runtime, reference_images
+from server.remotion_templates.store import Conflict, NotFound, Store
 from server.remotion_templates.settings import Settings
 
 
@@ -424,8 +433,8 @@ def test_history_images_remain_readable_and_integrity_checked(
             "work"
         ]["id"]
         assert (
-            client.get(f"/works/{work}/session").json()["messages"][0]["image_asset_id"]
-            == asset_id
+            client.get(f"/works/{work}/session").json()["messages"][0]["image_asset_ids"]
+            == [asset_id]
         )
         image = client.get(f"/assets/{asset_id}")
         assert image.status_code == 200
@@ -687,3 +696,127 @@ def test_parameter_work_is_refused_but_conversation_is_not(history_app, history_
         monkeypatch.setattr(history_store, "inputs", lambda _id: JobInput(mode="parameters", parameters={"size": 80}))
         assert client.post(f"/jobs/{job.id}/retry").status_code == 503
         assert reached == ["message"] * 3 + ["retry"]
+
+
+def reference_image(store):
+    """Register a normalized reference through the real upload pipeline."""
+    buffer = BytesIO()
+    Image.new("RGB", (8, 8), "red").save(buffer, format="PNG")
+    return save_image(buffer.getvalue(), store, Settings(_env_file=None))
+
+
+def test_follow_up_messages_attach_reference_images(history_store, monkeypatch):
+    """开始对话后的消息与澄清回答都可附参考图；模型按顺序收到每张图及其来源，回答图片绑定到所答问题。
+
+    修复前 messages 不接受 image，开始对话后无法继续上传参考图（#127）；之后审计发现新增图片没有来源，
+    模型提示仍称原图之后是候选帧，图片-only 的回答也不知道在回答哪个问题。
+    """
+    runtime = Runtime(history_store, None, Settings(_env_file=None))
+    monkeypatch.setattr(runtime, "notify", lambda *args: None)
+    original, answer, later = (reference_image(history_store) for _ in range(3))
+    work, job = history_store.create(
+        GenerateTemplateRequest(description="标题", image={"asset_id": original.id})
+    )
+    history_store.update(job.id, status="needs_input", stage="finished", questions=["什么颜色？"])
+
+    reply = runtime.message(
+        work.id, TaskMessage(images=[{"asset_id": answer.id}], reply_to_job_id=job.id)
+    )
+    assert history_store.inputs(reply.id).images == [
+        MessageImage(asset_id=answer.id, source="clarification_answer", clarification=0)
+    ]
+    message = history_store.session(work.id).messages[-1]
+    assert (message.text, message.image_asset_ids) == ("", [answer.id])
+
+    seen = []
+
+    class Harness:
+        """Record what the model would receive and answer without generating."""
+
+        renderer = None
+
+        async def generate(self, spec, budget, directory, images, on_stage, **options):
+            """Capture image files, the intent and the user turn written to the model window."""
+            window = json.loads(options["context"].messages()[-1]["content"])
+            seen.append((images, options["intent"], window))
+            return DialogueOutput(answer="好的")
+
+    runtime.harness = Harness()
+    asyncio.run(runtime._execute(reply.id))
+    images, intent, window = seen.pop()
+    assert images == [history_store.asset_path(original.id), history_store.asset_path(answer.id)]
+    assert intent["reference_images"] == [
+        {"asset_id": str(original.id), "source": "work_original", "meaning": REFERENCE_MEANINGS["work_original"]},
+        {"asset_id": str(answer.id), "source": "clarification_answer", "clarification": 0,
+         "meaning": REFERENCE_MEANINGS["clarification_answer"]},
+    ]
+    assert json.loads(intent["clarifications"][0]) == {
+        "questions": ["什么颜色？"], "answer": "", "answer_images": [str(answer.id)],
+    }
+    assert window["reference_images"] == intent["reference_images"]
+
+    with pytest.raises(ValidationError):
+        TaskMessage(parameters={"size": 80}, images=[{"asset_id": later.id}])
+    with pytest.raises(NotFound):
+        runtime.message(work.id, TaskMessage(instruction="参考", images=[{"asset_id": uuid4()}]))
+    assert history_store.latest_job(work.id).id == reply.id
+    follow = runtime.message(work.id, TaskMessage(instruction="改成这样", images=[{"asset_id": later.id}]))
+    assert history_store.inputs(follow.id).images == [MessageImage(asset_id=later.id)]
+    message = history_store.session(work.id).messages[-1]
+    assert (message.text, message.image_asset_ids) == ("改成这样", [later.id])
+    asyncio.run(runtime._execute(follow.id))
+    images, intent, _ = seen.pop()
+    assert images == [history_store.asset_path(original.id), history_store.asset_path(later.id)]
+    assert [(entry["asset_id"], entry["source"]) for entry in intent["reference_images"]] == [
+        (str(original.id), "work_original"), (str(later.id), "message"),
+    ]
+
+
+def test_messages_carry_several_reference_images(history_app, history_store, monkeypatch):
+    """创建与后续消息每条最多 4 张参考图，按发送顺序进入公开消息与模型输入；超量或重复列出同一张图被拒绝。"""
+    runtime = Runtime(history_store, None, Settings(_env_file=None))
+    monkeypatch.setattr(runtime, "notify", lambda *args: None)
+    first, second, third, fourth, fifth = (reference_image(history_store) for _ in range(5))
+    with TestClient(history_app) as client:
+        created = client.post("/works", json={
+            "description": "标题", "images": [{"asset_id": str(first.id)}, {"asset_id": str(second.id)}],
+        })
+        assert created.status_code == 202
+        work_id = created.json()["work"]["id"]
+        assert client.get(f"/works/{work_id}/session").json()["messages"][0]["image_asset_ids"] == [
+            str(first.id), str(second.id),
+        ]
+        for images in ([first, second, third, fourth, fifth], [first, first]):
+            body = {"description": "标题", "images": [{"asset_id": str(image.id)} for image in images]}
+            assert client.post("/works", json=body).status_code == 422
+    job = history_store.latest_job(work_id)
+    history_store.update(job.id, status="failed", stage="finished")
+    follow = runtime.message(
+        work_id, TaskMessage(images=[{"asset_id": fourth.id}, {"asset_id": third.id}])
+    )
+    assert history_store.inputs(follow.id).images == [
+        MessageImage(asset_id=fourth.id), MessageImage(asset_id=third.id),
+    ]
+    assert history_store.session(work_id).messages[-1].image_asset_ids == [fourth.id, third.id]
+    project = history_store.project(work_id)
+    assert [(entry["asset_id"], entry["source"]) for entry in reference_images(project, history_store.inputs(follow.id))] == [
+        (str(first.id), "work_original"), (str(second.id), "work_original"),
+        (str(fourth.id), "message"), (str(third.id), "message"),
+    ]
+
+
+def test_single_image_records_stay_readable(history_store):
+    """多图之前保存的作品（request.image）与消息（image_asset_id）仍按一张图读取，旧客户端的单张 image 也照常创建。"""
+    original = reference_image(history_store)
+    work, _ = history_store.create(GenerateTemplateRequest(image={"asset_id": original.id}))
+    with history_store.connection() as db:
+        for table, key in (("projects", "id"), ("chat_messages", "work_id")):
+            for row in db.execute(f"SELECT rowid AS row_id, data FROM {table} WHERE {key}=?", (str(work.id),)).fetchall():
+                data = json.loads(row["data"])
+                if table == "projects":
+                    data["request"]["image"] = data["request"].pop("images")[0]
+                elif data["role"] == "user":
+                    data["image_asset_id"] = data.pop("image_asset_ids")[0]
+                db.execute(f"UPDATE {table} SET data=? WHERE rowid=?", (json.dumps(data), row["row_id"]))
+    assert history_store.project(work.id).request.images[0].asset_id == original.id
+    assert history_store.session(work.id).messages[0].image_asset_ids == [original.id]

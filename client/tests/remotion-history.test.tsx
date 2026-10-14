@@ -64,7 +64,7 @@ test("历史侧栏切换、任务耗时和新增独立视图", async () => {
 // 页面重新挂载从服务端恢复当前 ID；后台完成后读取新结果，不依赖上次内存消息或倒计时。
 test("刷新恢复历史图片、成功版本和服务端时间", async () => {
   const fake = remotionServer();
-  await api.create("图片历史", "asset-1");
+  await api.create("图片历史", ["asset-1"]);
   fake.snapshots.get("work-1")!.messages[0].reconstructed = true;
   localStorage.setItem(`imv.remotion.selected:${api.apiUrl("")}`, "work-1");
   const view = render(<RemotionWorkspace />);

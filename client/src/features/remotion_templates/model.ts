@@ -151,14 +151,17 @@ export interface Job {
   message: string | null;
 }
 /** 公开历史消息；提交中的图片暂用 File，持久消息使用服务端素材 ID。 */
+/** 每条消息最多附带的参考图数量，与服务端契约一致。 */
+export const MAX_MESSAGE_IMAGES = 4;
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   text: string;
-  image?: File;
+  images?: File[];
   sequence?: number;
   job_id?: string;
-  image_asset_id?: string | null;
+  image_asset_ids?: string[];
   created_at?: string;
   reconstructed?: boolean;
 }
