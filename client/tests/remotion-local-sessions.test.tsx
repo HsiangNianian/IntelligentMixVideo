@@ -16,6 +16,7 @@ import { remotionJob } from "./remotion-fixtures";
 import { remotionServer, seed } from "./remotion-server";
 import { fetchMock, mockDesktop } from "./setup";
 import contract from "./remotion-sessions-contract.json";
+import { apiBase, setApiBase } from "@/lib/api-base";
 
 const ROUND: LoopRound = { layer: "outer", turn: 1, calls: [{ tool: "tools.plan_execute", status: "pass" }] };
 
@@ -37,12 +38,15 @@ function desktopStorage() {
     calls.push(call);
     const { operation, payload } = call;
     if (operation === "device") return memory.device();
-    if (operation === "works") return memory.works();
-    if (operation === "work") return memory.work(payload.id);
-    if (operation === "messages") return memory.messages(payload.work, payload.before, payload.limit);
-    if (operation === "jobs") return memory.jobs(payload.work, payload.ids);
-    if (operation === "save") return memory.save(payload as unknown as local.SessionChange);
-    if (operation === "remove") return memory.remove(payload.work);
+    if (operation === "works") return memory.works(payload.server);
+    if (operation === "work") return memory.work(payload.server, payload.id);
+    if (operation === "messages") return memory.messages(payload.server, payload.work, payload.before, payload.limit);
+    if (operation === "jobs") return memory.jobs(payload.server, payload.work, payload.ids);
+    if (operation === "save") {
+      const { server, ...change } = payload;
+      return memory.save(server, change as unknown as local.SessionChange);
+    }
+    if (operation === "remove") return memory.remove(payload.server, payload.work);
     throw new Error(`未知的本地会话操作：${operation}`);
   }
   mockDesktop((command, args) =>
@@ -177,6 +181,23 @@ test("保存到资产携带本机设备 ID", async () => {
   const [url, init] = fetchMock.mock.calls.at(-1)!;
   expect(new URL(String(url)).pathname).toBe("/api/sprites/publish");
   expect((init?.headers as Record<string, string>)["X-IMV-Device"]).toBe(await local.deviceId());
+});
+
+// 会话按 API 服务地址归属：切换服务后历史只列该服务的会话，删除也只移除该服务下的本地记录；同一服务的不同写法视为同一个。
+test("本地会话按服务地址隔离", async () => {
+  const original = apiBase();
+  try {
+    await recordWork();
+    setApiBase("http://other.test:9000");
+    expect(await local.history()).toEqual([]);
+    await expect(local.snapshot("work-1")).rejects.toMatchObject({ status: 404 });
+    await local.forget("work-1");
+    setApiBase(original.toUpperCase().replace("HTTP://", "http://") + "/");
+    expect((await local.history()).map((work) => work.id)).toEqual(["work-1"]);
+    expect((await local.snapshot("work-1")).work.id).toBe("work-1");
+  } finally {
+    setApiBase(original);
+  }
 });
 
 // 桌面存储经 IPC 发送的每种操作与参数结构固定在共享夹具中；Rust 单元测试按同一夹具解析并执行，两端不会悄悄失配。

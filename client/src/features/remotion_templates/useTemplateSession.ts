@@ -89,8 +89,10 @@ function blank(key: number): Session {
     draft: null,
   };
 }
-/** 另行记录当前服务最后选中的 ID；浏览器禁用存储时仍可使用历史列表。 */
-const selectedKey = `imv.remotion.selected:${api.apiUrl("")}`;
+/** 另行记录当前服务最后选中的 ID（每次按当前服务地址取键）；浏览器禁用存储时仍可使用历史列表。 */
+function selectedKey() {
+  return `imv.remotion.selected:${api.apiUrl("")}`;
+}
 /** 合并有稳定 ID 的已保存消息，按持久序号排序；临时消息不参与历史恢复。 */
 function mergeMessages(previous: ChatMessage[], incoming: ChatMessage[]) {
   return [
@@ -140,8 +142,8 @@ export function useTemplateSession(onHistoryChange: () => void) {
   /** 仅记录选择位置；聊天内容在本地会话库，代码按需从服务端读取。 */
   function remember(id: string | null) {
     try {
-      if (id) localStorage.setItem(selectedKey, id);
-      else localStorage.removeItem(selectedKey);
+      if (id) localStorage.setItem(selectedKey(), id);
+      else localStorage.removeItem(selectedKey());
     } catch {
       /* 存储不可用不影响服务端历史。 */
     }
@@ -711,7 +713,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
     alive.current = true;
     let selected: string | null = null;
     try {
-      selected = localStorage.getItem(selectedKey);
+      selected = localStorage.getItem(selectedKey());
     } catch {
       /* 使用侧栏手动恢复。 */
     }

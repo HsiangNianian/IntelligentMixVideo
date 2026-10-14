@@ -58,8 +58,8 @@ test("删除当前聊天先确认，成功清理当前视图和订阅", async ()
   expect(deletes()).toHaveLength(1);
   // 服务端与本机会话库都不再保留该会话，另一条会话不受影响。
   expect(fake.works.has("work-1")).toBe(false);
-  expect(await local.storage().work("work-1")).toBeNull();
-  expect(await local.storage().work("work-2")).not.toBeNull();
+  expect(await local.storage().work(local.server(), "work-1")).toBeNull();
+  expect(await local.storage().work(local.server(), "work-2")).not.toBeNull();
 });
 
 // 删除其他会话保留当前未保存参数、成功版本及同一条 SSE；失败不会自动重发。
@@ -205,7 +205,7 @@ test("服务端已删除的会话在历史列表中可重试删除", async () =>
   await waitFor(() => expect(screen.queryByRole("button", { name: /服务端清理中/ }) === null).toBe(true));
   expect(deletes()).toHaveLength(1);
   expect(fake.works.has("work-1")).toBe(false);
-  expect(await local.storage().work("work-1")).toBeNull();
+  expect(await local.storage().work(local.server(), "work-1")).toBeNull();
 });
 
 // 删除时旧导出读取不能在新空白会话中恢复代码或版本。

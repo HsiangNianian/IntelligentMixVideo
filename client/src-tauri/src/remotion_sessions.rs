@@ -3,7 +3,8 @@
 //! 库文件位于应用数据目录的 `data/remotion/sessions.sqlite3`。命令是异步的，读写在阻塞线程池执行，
 //! 不占用界面主线程；整个进程共用一个首次调用时打开的连接，表结构只在打开时按 `PRAGMA user_version`
 //! 建立一次，Mutex 串行化各次调用。前端的 `localSessions.ts` 负责合并服务端事件，这里只按操作读写 JSON 行：
-//! `save` 在一个事务内写入会话与本批记录，`remove` 删除一条会话的全部记录。每个操作的参数是固定结构，
+//! `save` 在一个事务内写入会话与本批记录，`remove` 删除一条会话的全部记录。会话、消息与任务都按前端
+//! 传入的服务地址 `server` 归属，不同服务的同 ID 记录互不影响；设备 ID 全局唯一。每个操作的参数是固定结构，
 //! 多出或缺少字段都会明确报错。
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -19,31 +20,47 @@ use tauri::Manager;
 /// 当前表结构版本；以后改表时按 `PRAGMA user_version` 从旧版本逐级迁移。
 const SCHEMA_VERSION: i64 = 1;
 
-/// 版本 1 的表结构；`data` 列保存前端定义的 JSON 文档。
+/// 版本 1 的表结构：会话记录以（服务地址, ID）为键；`data` 列保存前端定义的 JSON 文档。
 const SCHEMA: &str = "
     CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-    CREATE TABLE works (id TEXT PRIMARY KEY, updated_at TEXT NOT NULL, data TEXT NOT NULL);
-    CREATE TABLE messages (
-        id TEXT PRIMARY KEY, work_id TEXT NOT NULL, sequence INTEGER NOT NULL, data TEXT NOT NULL
+    CREATE TABLE works (
+        server TEXT NOT NULL, id TEXT NOT NULL, updated_at TEXT NOT NULL, data TEXT NOT NULL,
+        PRIMARY KEY (server, id)
     );
-    CREATE INDEX messages_by_work ON messages(work_id, sequence);
-    CREATE TABLE jobs (id TEXT PRIMARY KEY, work_id TEXT NOT NULL, data TEXT NOT NULL);
-    CREATE INDEX jobs_by_work ON jobs(work_id);
+    CREATE INDEX works_by_activity ON works(server, updated_at);
+    CREATE TABLE messages (
+        server TEXT NOT NULL, id TEXT NOT NULL, work_id TEXT NOT NULL, sequence INTEGER NOT NULL,
+        data TEXT NOT NULL, PRIMARY KEY (server, id)
+    );
+    CREATE INDEX messages_by_work ON messages(server, work_id, sequence);
+    CREATE TABLE jobs (
+        server TEXT NOT NULL, id TEXT NOT NULL, work_id TEXT NOT NULL, data TEXT NOT NULL,
+        PRIMARY KEY (server, id)
+    );
+    CREATE INDEX jobs_by_work ON jobs(server, work_id);
 ";
 
 /// 进程内共享的会话库连接；首次调用时打开，打开失败则下次调用重试。
 #[derive(Default)]
 pub struct Sessions(Arc<Mutex<Option<Connection>>>);
 
-/// `device` 与 `works` 不带参数。
+/// `device` 不带参数。
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Empty {}
+
+/// `works`：列出一个服务下的全部会话。
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorksQuery {
+    server: String,
+}
 
 /// `work`：按 ID 读取一条会话。
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WorkQuery {
+    server: String,
     id: String,
 }
 
@@ -51,6 +68,7 @@ struct WorkQuery {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MessagesQuery {
+    server: String,
     work: String,
     before: Option<i64>,
     limit: i64,
@@ -60,6 +78,7 @@ struct MessagesQuery {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct JobsQuery {
+    server: String,
     work: String,
     ids: Vec<String>,
 }
@@ -68,6 +87,7 @@ struct JobsQuery {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Save {
+    server: String,
     work: Value,
     messages: Vec<Value>,
     jobs: Vec<Value>,
@@ -77,6 +97,7 @@ struct Save {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Remove {
+    server: String,
     work: String,
 }
 
@@ -165,12 +186,12 @@ fn operate(connection: &mut Connection, operation: &str, payload: Value) -> Resu
             Ok(json!(device))
         }
         "works" => {
-            parse::<Empty>(payload)?;
+            let query: WorksQuery = parse(payload)?;
             let mut statement = connection
-                .prepare("SELECT data FROM works ORDER BY updated_at DESC, id DESC")
+                .prepare("SELECT data FROM works WHERE server=?1 ORDER BY updated_at DESC, id DESC")
                 .map_err(failed)?;
             let rows = statement
-                .query_map([], |row| row.get(0))
+                .query_map(params![query.server], |row| row.get(0))
                 .and_then(|rows| rows.collect::<Result<Vec<String>, _>>())
                 .map_err(failed)?;
             documents(rows)
@@ -179,8 +200,8 @@ fn operate(connection: &mut Connection, operation: &str, payload: Value) -> Resu
             let query: WorkQuery = parse(payload)?;
             let data: Option<String> = connection
                 .query_row(
-                    "SELECT data FROM works WHERE id=?1",
-                    params![query.id],
+                    "SELECT data FROM works WHERE server=?1 AND id=?2",
+                    params![query.server, query.id],
                     |row| row.get(0),
                 )
                 .optional()
@@ -193,12 +214,14 @@ fn operate(connection: &mut Connection, operation: &str, payload: Value) -> Resu
             let query: MessagesQuery = parse(payload)?;
             let mut statement = connection
                 .prepare(
-                    "SELECT data FROM messages WHERE work_id=?1 AND sequence<?2 ORDER BY sequence DESC LIMIT ?3",
+                    "SELECT data FROM messages WHERE server=?1 AND work_id=?2 AND sequence<?3
+                     ORDER BY sequence DESC LIMIT ?4",
                 )
                 .map_err(failed)?;
             let rows = statement
                 .query_map(
                     params![
+                        query.server,
                         query.work,
                         query.before.unwrap_or(i64::MAX),
                         query.limit.clamp(1, 1000)
@@ -215,8 +238,8 @@ fn operate(connection: &mut Connection, operation: &str, payload: Value) -> Resu
             for id in &query.ids {
                 let data: Option<String> = connection
                     .query_row(
-                        "SELECT data FROM jobs WHERE id=?1 AND work_id=?2",
-                        params![id, query.work],
+                        "SELECT data FROM jobs WHERE server=?1 AND id=?2 AND work_id=?3",
+                        params![query.server, id, query.work],
                         |row| row.get(0),
                     )
                     .optional()
@@ -231,9 +254,14 @@ fn operate(connection: &mut Connection, operation: &str, payload: Value) -> Resu
             let transaction = connection.transaction().map_err(failed)?;
             transaction
                 .execute(
-                    "INSERT INTO works(id, updated_at, data) VALUES (?1, ?2, ?3)
-                     ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at, data=excluded.data",
-                    params![work, text(&change.work, "updated_at")?, change.work.to_string()],
+                    "INSERT INTO works(server, id, updated_at, data) VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(server, id) DO UPDATE SET updated_at=excluded.updated_at, data=excluded.data",
+                    params![
+                        change.server,
+                        work,
+                        text(&change.work, "updated_at")?,
+                        change.work.to_string()
+                    ],
                 )
                 .map_err(failed)?;
             for message in &change.messages {
@@ -243,18 +271,24 @@ fn operate(connection: &mut Connection, operation: &str, payload: Value) -> Resu
                     .ok_or("消息缺少序号")?;
                 transaction
                     .execute(
-                        "INSERT INTO messages(id, work_id, sequence, data) VALUES (?1, ?2, ?3, ?4)
-                         ON CONFLICT(id) DO NOTHING",
-                        params![text(message, "id")?, work, sequence, message.to_string()],
+                        "INSERT INTO messages(server, id, work_id, sequence, data) VALUES (?1, ?2, ?3, ?4, ?5)
+                         ON CONFLICT(server, id) DO NOTHING",
+                        params![
+                            change.server,
+                            text(message, "id")?,
+                            work,
+                            sequence,
+                            message.to_string()
+                        ],
                     )
                     .map_err(failed)?;
             }
             for job in &change.jobs {
                 transaction
                     .execute(
-                        "INSERT INTO jobs(id, work_id, data) VALUES (?1, ?2, ?3)
-                         ON CONFLICT(id) DO UPDATE SET data=excluded.data",
-                        params![text(job, "id")?, work, job.to_string()],
+                        "INSERT INTO jobs(server, id, work_id, data) VALUES (?1, ?2, ?3, ?4)
+                         ON CONFLICT(server, id) DO UPDATE SET data=excluded.data",
+                        params![change.server, text(job, "id")?, work, job.to_string()],
                     )
                     .map_err(failed)?;
             }
@@ -267,13 +301,16 @@ fn operate(connection: &mut Connection, operation: &str, payload: Value) -> Resu
             for table in ["messages", "jobs"] {
                 transaction
                     .execute(
-                        &format!("DELETE FROM {table} WHERE work_id=?1"),
-                        params![query.work],
+                        &format!("DELETE FROM {table} WHERE server=?1 AND work_id=?2"),
+                        params![query.server, query.work],
                     )
                     .map_err(failed)?;
             }
             transaction
-                .execute("DELETE FROM works WHERE id=?1", params![query.work])
+                .execute(
+                    "DELETE FROM works WHERE server=?1 AND id=?2",
+                    params![query.server, query.work],
+                )
                 .map_err(failed)?;
             transaction.commit().map_err(failed)?;
             Ok(Value::Null)
@@ -343,9 +380,13 @@ mod tests {
         }
     }
 
+    /// 测试默认使用的服务地址。
+    const SERVER: &str = "http://api.test:8000";
+
     /// 一次保存：作品、两条消息与一个任务。
     fn change(work: &str, updated_at: &str) -> Value {
         json!({
+            "server": SERVER,
             "work": {"work": {"id": work, "current_version_id": null}, "title": "标题", "updated_at": updated_at, "cursor": 2,
                      "job": {"id": format!("{work}-job")}},
             "messages": [
@@ -382,7 +423,12 @@ mod tests {
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
         assert_ne!(
-            operate(&mut connection, "work", json!({"id": "a"})).unwrap(),
+            operate(
+                &mut connection,
+                "work",
+                json!({"server": SERVER, "id": "a"})
+            )
+            .unwrap(),
             Value::Null
         );
     }
@@ -447,25 +493,30 @@ mod tests {
         let mut connection = scratch.open();
         operate(&mut connection, "save", change("a", "2026-10-01T00:00:00Z")).unwrap();
         operate(&mut connection, "save", change("b", "2026-10-02T00:00:00Z")).unwrap();
-        let works = operate(&mut connection, "works", json!({})).unwrap();
+        let works = operate(&mut connection, "works", json!({"server": SERVER})).unwrap();
         assert_eq!(works[0]["work"]["id"], "b");
         assert_eq!(works[1]["work"]["id"], "a");
         let page = operate(
             &mut connection,
             "messages",
-            json!({"work": "a", "before": 2, "limit": 5}),
+            json!({"server": SERVER, "work": "a", "before": 2, "limit": 5}),
         )
         .unwrap();
         assert_eq!(page, json!([{"id": "a-m1", "sequence": 1, "text": "一"}]));
         let jobs = operate(
             &mut connection,
             "jobs",
-            json!({"work": "a", "ids": ["a-job", "b-job"]}),
+            json!({"server": SERVER, "work": "a", "ids": ["a-job", "b-job"]}),
         )
         .unwrap();
         assert_eq!(jobs, json!([{"id": "a-job", "status": "running"}]));
         assert_eq!(
-            operate(&mut connection, "work", json!({"id": "missing"})).unwrap(),
+            operate(
+                &mut connection,
+                "work",
+                json!({"server": SERVER, "id": "missing"})
+            )
+            .unwrap(),
             Value::Null
         );
     }
@@ -477,26 +528,85 @@ mod tests {
         let mut connection = scratch.open();
         operate(&mut connection, "save", change("a", "2026-10-01T00:00:00Z")).unwrap();
         operate(&mut connection, "save", change("b", "2026-10-02T00:00:00Z")).unwrap();
-        operate(&mut connection, "remove", json!({"work": "a"})).unwrap();
+        operate(
+            &mut connection,
+            "remove",
+            json!({"server": SERVER, "work": "a"}),
+        )
+        .unwrap();
         assert_eq!(
-            operate(&mut connection, "work", json!({"id": "a"})).unwrap(),
+            operate(
+                &mut connection,
+                "work",
+                json!({"server": SERVER, "id": "a"})
+            )
+            .unwrap(),
             Value::Null
         );
         let page = operate(
             &mut connection,
             "messages",
-            json!({"work": "a", "before": null, "limit": 5}),
+            json!({"server": SERVER, "work": "a", "before": null, "limit": 5}),
         )
         .unwrap();
         assert_eq!(page, json!([]));
         assert_eq!(
-            operate(&mut connection, "works", json!({}))
+            operate(&mut connection, "works", json!({"server": SERVER}))
                 .unwrap()
                 .as_array()
                 .unwrap()
                 .len(),
             1
         );
+    }
+
+    /// 不同服务的同 ID 会话互不可见：列表、读取与删除都只作用于请求的服务。
+    #[test]
+    fn works_are_scoped_by_server() {
+        let scratch = Scratch::new();
+        let mut connection = scratch.open();
+        let other = "http://other.test:9000";
+        operate(&mut connection, "save", change("a", "2026-10-01T00:00:00Z")).unwrap();
+        let mut elsewhere = change("a", "2026-10-02T00:00:00Z");
+        elsewhere["server"] = json!(other);
+        elsewhere["work"]["title"] = json!("另一个服务");
+        operate(&mut connection, "save", elsewhere).unwrap();
+        let works = operate(&mut connection, "works", json!({"server": other})).unwrap();
+        assert_eq!(works.as_array().unwrap().len(), 1);
+        assert_eq!(works[0]["title"], "另一个服务");
+        operate(
+            &mut connection,
+            "remove",
+            json!({"server": other, "work": "a"}),
+        )
+        .unwrap();
+        assert_eq!(
+            operate(&mut connection, "works", json!({"server": other})).unwrap(),
+            json!([])
+        );
+        assert_eq!(
+            operate(
+                &mut connection,
+                "work",
+                json!({"server": SERVER, "id": "a"})
+            )
+            .unwrap()["title"],
+            "标题"
+        );
+        let page = operate(
+            &mut connection,
+            "messages",
+            json!({"server": SERVER, "work": "a", "before": null, "limit": 5}),
+        )
+        .unwrap();
+        assert_eq!(page.as_array().unwrap().len(), 2);
+        let jobs = operate(
+            &mut connection,
+            "jobs",
+            json!({"server": SERVER, "work": "a", "ids": ["a-job"]}),
+        )
+        .unwrap();
+        assert_eq!(jobs.as_array().unwrap().len(), 1);
     }
 
     /// 缺少必需字段的保存整体失败，不留下部分写入；多出或缺少参数字段同样拒绝。
@@ -511,7 +621,12 @@ mod tests {
             .remove("sequence");
         assert!(operate(&mut connection, "save", bad).is_err());
         assert_eq!(
-            operate(&mut connection, "work", json!({"id": "a"})).unwrap(),
+            operate(
+                &mut connection,
+                "work",
+                json!({"server": SERVER, "id": "a"})
+            )
+            .unwrap(),
             Value::Null
         );
         let mut extra = change("a", "2026-10-01T00:00:00Z");
@@ -519,7 +634,12 @@ mod tests {
         assert!(operate(&mut connection, "save", extra)
             .unwrap_err()
             .contains("versions"));
-        assert!(operate(&mut connection, "messages", json!({"work": "a"})).is_err());
+        assert!(operate(
+            &mut connection,
+            "messages",
+            json!({"server": SERVER, "work": "a"})
+        )
+        .is_err());
         assert!(operate(&mut connection, "unknown", json!({})).is_err());
     }
 

@@ -2,10 +2,11 @@
  * 字效会话的本地存储：聊天消息、任务公开状态与本机设备 ID 只保存在使用者这一端；版本列表与代码按需从服务端读取。
  *
  * 桌面通过 Tauri `remotion_sessions` 命令读写应用数据目录下的 SQLite；浏览器仅供本地测试，使用页面内存，
- * 刷新即清空。两种实现共用同一存储接口，事件合并规则只在本文件实现一次：会话订阅把服务端事件交给
+ * 刷新即清空。会话按当前 API 服务地址归属，切换服务只看到该服务下的会话。两种实现共用同一存储接口，事件合并规则只在本文件实现一次：会话订阅把服务端事件交给
  * `apply` 写入本地后，再向服务端确认送达，服务端随即删除已送达的事件。
  */
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { apiBase } from "@/lib/api-base";
 import { ApiError } from "./api";
 import type {
   ChatMessage,
@@ -34,15 +35,18 @@ export interface SessionChange {
   messages: ChatMessage[];
   jobs: SessionJob[];
 }
-/** 本地存储后端；messages 按序号从新到旧返回，`before` 为 null 时从最新开始。 */
+/**
+ * 本地存储后端。会话及其消息、任务按服务地址 `server` 归属（见 `server()`），不同服务的记录互不可见；
+ * 设备 ID 全局唯一。messages 按序号从新到旧返回，`before` 为 null 时从最新开始。
+ */
 export interface SessionStorage {
   device(): Promise<string>;
-  works(): Promise<StoredWork[]>;
-  work(id: string): Promise<StoredWork | null>;
-  messages(work: string, before: number | null, limit: number): Promise<ChatMessage[]>;
-  jobs(work: string, ids: string[]): Promise<SessionJob[]>;
-  save(change: SessionChange): Promise<void>;
-  remove(work: string): Promise<void>;
+  works(server: string): Promise<StoredWork[]>;
+  work(server: string, id: string): Promise<StoredWork | null>;
+  messages(server: string, work: string, before: number | null, limit: number): Promise<ChatMessage[]>;
+  jobs(server: string, work: string, ids: string[]): Promise<SessionJob[]>;
+  save(server: string, change: SessionChange): Promise<void>;
+  remove(server: string, work: string): Promise<void>;
 }
 
 /** 桌面实现：每个操作是一次 Rust 侧 SQLite 调用，保存在一个事务内完成。 */
@@ -53,51 +57,56 @@ function tauriStorage(): SessionStorage {
   }
   return {
     device: () => call("device"),
-    works: () => call("works"),
-    work: (id) => call("work", { id }),
-    messages: (work, before, limit) => call("messages", { work, before, limit }),
-    jobs: (work, ids) => call("jobs", { work, ids }),
-    save: (change) => call("save", { ...change }),
-    remove: (work) => call("remove", { work }),
+    works: (server) => call("works", { server }),
+    work: (server, id) => call("work", { server, id }),
+    messages: (server, work, before, limit) => call("messages", { server, work, before, limit }),
+    jobs: (server, work, ids) => call("jobs", { server, work, ids }),
+    save: (server, change) => call("save", { server, ...change }),
+    remove: (server, work) => call("remove", { server, work }),
   };
 }
 
-/** 浏览器测试实现：页面内存保存，刷新后设备 ID 与会话一起丢弃。 */
+/** 浏览器测试实现：页面内存保存，刷新后设备 ID 与会话一起丢弃；键为服务地址与记录 ID。 */
 export function memoryStorage(): SessionStorage {
   const device = crypto.randomUUID();
-  const works = new Map<string, StoredWork>();
-  const messages = new Map<string, { work: string; message: ChatMessage }>();
-  const jobs = new Map<string, SessionJob>();
+  const works = new Map<string, { server: string; work: StoredWork }>();
+  const messages = new Map<string, { server: string; work: string; message: ChatMessage }>();
+  const jobs = new Map<string, { server: string; job: SessionJob }>();
+  /** 同一 ID 在不同服务下是不同记录。 */
+  const key = (server: string, id: string) => JSON.stringify([server, id]);
   return {
     device: async () => device,
-    works: async () =>
-      [...works.values()].sort((left, right) =>
-        left.updated_at === right.updated_at
-          ? right.work.id.localeCompare(left.work.id)
-          : right.updated_at.localeCompare(left.updated_at),
-      ),
-    work: async (id) => structuredClone(works.get(id) ?? null),
-    messages: async (work, before, limit) =>
+    works: async (server) =>
+      [...works.values()]
+        .flatMap((item) => (item.server === server ? [structuredClone(item.work)] : []))
+        .sort((left, right) =>
+          left.updated_at === right.updated_at
+            ? right.work.id.localeCompare(left.work.id)
+            : right.updated_at.localeCompare(left.updated_at),
+        ),
+    work: async (server, id) => structuredClone(works.get(key(server, id))?.work ?? null),
+    messages: async (server, work, before, limit) =>
       [...messages.values()]
-        .flatMap((item) => (item.work === work ? [structuredClone(item.message)] : []))
+        .flatMap((item) => (item.server === server && item.work === work ? [structuredClone(item.message)] : []))
         .filter((item) => before === null || (item.sequence ?? 0) < before)
         .sort((left, right) => (right.sequence ?? 0) - (left.sequence ?? 0))
         .slice(0, limit),
-    jobs: async (work, ids) =>
+    jobs: async (server, work, ids) =>
       ids.flatMap((id) => {
-        const job = jobs.get(id);
+        const job = jobs.get(key(server, id))?.job;
         return job && job.project_id === work ? [structuredClone(job)] : [];
       }),
-    save: async (change) => {
-      works.set(change.work.work.id, structuredClone(change.work));
-      for (const job of change.jobs) jobs.set(job.id, structuredClone(job));
+    save: async (server, change) => {
+      const work = change.work.work.id;
+      works.set(key(server, work), { server, work: structuredClone(change.work) });
+      for (const job of change.jobs) jobs.set(key(server, job.id), { server, job: structuredClone(job) });
       for (const message of change.messages)
-        messages.set(message.id, { work: change.work.work.id, message: structuredClone(message) });
+        messages.set(key(server, message.id), { server, work, message: structuredClone(message) });
     },
-    remove: async (work) => {
-      works.delete(work);
-      for (const [id, job] of jobs) if (job.project_id === work) jobs.delete(id);
-      for (const [id, message] of messages) if (message.work === work) messages.delete(id);
+    remove: async (server, work) => {
+      works.delete(key(server, work));
+      for (const [id, item] of jobs) if (item.server === server && item.job.project_id === work) jobs.delete(id);
+      for (const [id, item] of messages) if (item.server === server && item.work === work) messages.delete(id);
     },
   };
 }
@@ -124,6 +133,20 @@ export function deviceId(): Promise<string> {
   return device;
 }
 
+/**
+ * 本机会话归属的服务地址：取当前 API 地址的来源与路径，大小写、默认端口与末尾斜杠不同的写法视为同一服务。
+ * 切换服务后只看到该服务的会话，删除也只影响该服务下的本地记录。
+ */
+export function server(): string {
+  const base = apiBase();
+  try {
+    const url = new URL(base);
+    return url.origin + url.pathname.replace(/\/+$/, "");
+  } catch {
+    return base;
+  }
+}
+
 /** 侧栏摘要只包含标题、活动时间、最新任务与服务端删除状态。 */
 function summary(item: StoredWork): WorkSummary {
   return {
@@ -135,18 +158,19 @@ function summary(item: StoredWork): WorkSummary {
     job: item.job,
   };
 }
-/** 本机全部会话按最近活动排序；本地数量有限，不分页。 */
+/** 当前服务下本机全部会话按最近活动排序；本地数量有限，不分页。 */
 export async function history(): Promise<WorkSummary[]> {
-  return (await storage().works()).map(summary);
+  return (await storage().works(server())).map(summary);
 }
 /** 从本地恢复与原服务端快照相同的结构；本机没有该会话时视为不存在。 */
 export async function snapshot(work: string, before?: number, limit = 50): Promise<SessionSnapshot> {
-  const stored = await storage().work(work);
+  const scope = server();
+  const stored = await storage().work(scope, work);
   if (!stored) throw new ApiError(404, "会话不存在于本机。");
-  const rows = await storage().messages(work, before ?? null, limit + 1);
+  const rows = await storage().messages(scope, work, before ?? null, limit + 1);
   const messages = rows.slice(0, limit).reverse();
   const ids = [...new Set([...messages.flatMap((item) => (item.job_id ? [item.job_id] : [])), stored.job.id])];
-  const jobs = await storage().jobs(work, ids);
+  const jobs = await storage().jobs(scope, work, ids);
   return {
     work: stored.work,
     job: jobs.find((job) => job.id === stored.job.id) ?? stored.job,
@@ -162,7 +186,7 @@ export async function record(
   job: Job,
 ) {
   const initial: SessionJob = { ...job, created_at: project.created_at, updated_at: project.created_at, parameters: null };
-  await storage().save({
+  await storage().save(server(), {
     work: {
       work: { id: project.id, current_version_id: project.current_version_id },
       title: (project.request.description || "图片字效").slice(0, 40),
@@ -176,11 +200,12 @@ export async function record(
 }
 /** 提交消息、参数或重试后先登记服务端返回的新任务为最新任务，事件到达前界面也不会回到旧任务状态。 */
 export async function track(job: Job) {
-  const stored = await storage().work(job.project_id);
+  const scope = server();
+  const stored = await storage().work(scope, job.project_id);
   if (!stored || stored.job.id === job.id) return;
   const stamp = new Date().toISOString();
   const latest: SessionJob = { ...job, created_at: stamp, updated_at: stamp, parameters: null };
-  await storage().save({ work: { ...stored, job: latest }, messages: [], jobs: [latest] });
+  await storage().save(scope, { work: { ...stored, job: latest }, messages: [], jobs: [latest] });
 }
 /**
  * 按事件编号顺序把一批服务端事件合并进本地会话并原子保存，返回保存后的会话。
@@ -189,14 +214,15 @@ export async function track(job: Job) {
  * 已写入（编号不大于游标）的事件被忽略，重复投递不会产生重复记录。
  */
 export async function apply(work: string, events: WorkEvent[]): Promise<StoredWork> {
-  const stored = await storage().work(work);
+  const scope = server();
+  const stored = await storage().work(scope, work);
   if (!stored) throw new ApiError(404, "会话不存在于本机。");
   const fresh = events.filter((event) => event.id > stored.cursor).sort((left, right) => left.id - right.id);
   if (!fresh.length) return stored;
   const wanted = fresh.flatMap((event) =>
     event.type === "job.updated" ? [event.data.id] : event.type === "job.round" ? [event.data.job_id] : [],
   );
-  const jobs = new Map((await storage().jobs(work, [...new Set(wanted)])).map((job) => [job.id, job]));
+  const jobs = new Map((await storage().jobs(scope, work, [...new Set(wanted)])).map((job) => [job.id, job]));
   const messages: ChatMessage[] = [];
   for (const event of fresh) {
     if (event.type === "message.created") messages.push(event.data);
@@ -219,16 +245,21 @@ export async function apply(work: string, events: WorkEvent[]): Promise<StoredWo
     stored.cursor = event.id;
   }
   // 侧栏摘要不需要轮次明细，完整任务状态保存在任务行。
-  await storage().save({ work: { ...stored, job: { ...stored.job, rounds: [] } }, messages, jobs: [...jobs.values()] });
+  await storage().save(scope, {
+    work: { ...stored, job: { ...stored.job, rounds: [] } },
+    messages,
+    jobs: [...jobs.values()],
+  });
   return stored;
 }
 /** 服务端报告会话不存在或正在清理时标记本地记录，侧栏据此提供重试删除；本机没有该会话时不做任何事。 */
 export async function markDeleting(work: string): Promise<void> {
-  const stored = await storage().work(work);
+  const scope = server();
+  const stored = await storage().work(scope, work);
   if (stored && !stored.deleting)
-    await storage().save({ work: { ...stored, deleting: true }, messages: [], jobs: [] });
+    await storage().save(scope, { work: { ...stored, deleting: true }, messages: [], jobs: [] });
 }
-/** 删除本机会话的全部记录；服务端数据由删除接口单独清理。 */
+/** 删除当前服务下本机会话的全部记录；其他服务的同 ID 记录不受影响，服务端数据由删除接口单独清理。 */
 export function forget(work: string): Promise<void> {
-  return storage().remove(work);
+  return storage().remove(server(), work);
 }

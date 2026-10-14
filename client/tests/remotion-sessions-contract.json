@@ -6,6 +6,7 @@
   {
     "operation": "save",
     "payload": {
+      "server": "http://api.test:8000",
       "work": {
         "work": {
           "id": "work-1",
@@ -45,12 +46,14 @@
   {
     "operation": "work",
     "payload": {
+      "server": "http://api.test:8000",
       "id": "work-1"
     }
   },
   {
     "operation": "jobs",
     "payload": {
+      "server": "http://api.test:8000",
       "work": "work-1",
       "ids": [
         "job-1"
@@ -60,6 +63,7 @@
   {
     "operation": "save",
     "payload": {
+      "server": "http://api.test:8000",
       "work": {
         "work": {
           "id": "work-1",
@@ -122,12 +126,14 @@
   {
     "operation": "work",
     "payload": {
+      "server": "http://api.test:8000",
       "id": "work-1"
     }
   },
   {
     "operation": "messages",
     "payload": {
+      "server": "http://api.test:8000",
       "work": "work-1",
       "before": null,
       "limit": 51
@@ -136,6 +142,7 @@
   {
     "operation": "jobs",
     "payload": {
+      "server": "http://api.test:8000",
       "work": "work-1",
       "ids": [
         "job-1"
@@ -144,17 +151,21 @@
   },
   {
     "operation": "works",
-    "payload": {}
+    "payload": {
+      "server": "http://api.test:8000"
+    }
   },
   {
     "operation": "work",
     "payload": {
+      "server": "http://api.test:8000",
       "id": "work-1"
     }
   },
   {
     "operation": "save",
     "payload": {
+      "server": "http://api.test:8000",
       "work": {
         "work": {
           "id": "work-1",
@@ -184,6 +195,7 @@
   {
     "operation": "remove",
     "payload": {
+      "server": "http://api.test:8000",
       "work": "work-1"
     }
   }
