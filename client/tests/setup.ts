@@ -5,6 +5,13 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 
 // 禁止测试 iframe 导航访问真实服务，仍保留 contentWindow 供消息协议用例使用。
 GlobalRegistrator.register({ url: "http://localhost:1420", settings: {navigation: {disableChildFrameNavigation: true}} });
+// Web Animations 规范在 cancel() 拒绝 finished 时把该 promise 标记为已处理，浏览器不报错；happy-dom 没有标记，
+// motion 动画中途卸载（例如移除正在出现的图片预览）会被 bun 报成未处理错误并算到当前用例上。
+const cancelAnimation = Animation.prototype.cancel;
+Animation.prototype.cancel = function cancel(this: Animation) {
+  this.finished.catch(() => {});
+  cancelAnimation.call(this);
+};
 process.env.VITE_API_URL = "http://api.test:8000/";
 process.env.VITE_PREVIEW_VIDEO_1_URL = "/sample.mp4";
 
