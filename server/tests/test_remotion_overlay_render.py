@@ -1852,3 +1852,26 @@ def test_real_browser_nudges_a_long_title_at_the_top_edge_into_the_canvas(tmp_pa
     assert long["config"]["fontSize"] == 24
     assert long["host"]["transform"]["x"] == 540
     assert 40 <= long["host"]["transform"]["y"] <= 48
+
+
+# 场景：标题的内容中心紧贴画布左边（x=60），8 个字在最小字号 24 下宽 192，左端仍在画布外；宿主只向右平移，
+# 不写入没有移动的 y 坐标，字号缩到最小。
+@pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
+def test_real_browser_nudges_a_title_at_the_left_edge_sideways_only(tmp_path: Path) -> None:
+    """字号 24；x 从 60 右移到约 96（192px 宽的一半），变换里仍没有 y。"""
+    instance = fit_for_real(tmp_path, WRAPPED_TITLE, [titled("测" * 8, font_size=100, x=60)], 1.0).instances[0]
+    assert instance["config"]["fontSize"] == 24
+    assert set(instance["host"]["transform"]) == {"x"}
+    assert 94 <= instance["host"]["transform"]["x"] <= 98
+
+
+# 场景：摆放旋转 90°：100 个字在 972 宽的框里排成约 960px 的行，旋转后竖直方向占 960px，中心 y=100 时上端在画布外约 380px。
+# 平移按旋转后的外包矩形计算，只向下移动，x 保持摆放里的值。
+@pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
+def test_real_browser_nudges_a_rotated_title_by_its_rotated_extent(tmp_path: Path) -> None:
+    """字号 24；y 从 100 下移约 380，x 保持 540，旋转不变。"""
+    instance = fit_for_real(tmp_path, WRAPPED_TITLE, [titled("测" * 100, font_size=100, x=540, y=100, rotation=90)], 1.0).instances[0]
+    transform = instance["host"]["transform"]
+    assert instance["config"]["fontSize"] == 24
+    assert (transform["x"], transform["rotation"]) == (540, 90)
+    assert 470 <= transform["y"] <= 490
