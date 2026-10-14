@@ -36,12 +36,14 @@ export function TransitionInspector({ boundary, track, catalog, resolved, onChoo
 export type InspectorTab = "appearance" | "timing" | "keyword";
 
 /** 字幕只提供外观与关键词页签；其他对象的时间输入保持挂载以便保存前校验。 */
-export function TemplateInspector({ track, draft, catalog, duration, resolved, tab, onTabChange, onTimingChange, onEffectChange, onRemove, onClose }: {
+export function TemplateInspector({ track, draft, catalog, duration, resolved, replaced, tab, onTabChange, onTimingChange, onEffectChange, onRemove, onClose }: {
   track: EffectTrack;
   draft: EffectDraft;
   catalog: EffectAsset[];
   duration: number;
   resolved?: ResolvedTrack;
+  /** 这段文字已由 Remotion 字效显示，外观与关键词样式不再生效。 */
+  replaced?: boolean;
   tab: InspectorTab;
   onTabChange: (tab: InspectorTab) => void;
   onTimingChange: (timing: Pick<EffectTrack, "start_mode" | "start" | "duration">) => void;
@@ -61,8 +63,8 @@ export function TemplateInspector({ track, draft, catalog, duration, resolved, t
       <Hint label="关闭特效设置"><Button type="button" variant="ghost" size="icon" className="size-6 shrink-0" aria-label="关闭特效设置" onClick={onClose}><X className="size-3.5" aria-hidden="true" /></Button></Hint>
     </div>
     <div role="tablist" aria-label={`${effectTargets[track.target]}设置分类`} className={`grid border-b px-4 ${tabs.length === 1 ? "grid-cols-1" : tabs.length === 3 ? "grid-cols-3" : "grid-cols-2"}`}>{tabs.map((value) => <button key={value} type="button" role="tab" id={`${id}-${value}`} aria-controls={`${id}-panel-${value}`} aria-selected={activeTab === value} onClick={() => onTabChange(value)} className="border-b-2 border-transparent px-1 py-2.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring data-[selected=true]:border-primary data-[selected=true]:text-primary" data-selected={activeTab === value}>{value === "appearance" ? "外观与效果" : value === "timing" ? "时间设置" : "关键词设置"}</button>)}</div>
-    <div id={`${id}-panel-appearance`} role="tabpanel" aria-labelledby={`${id}-appearance`} hidden={activeTab !== "appearance"}><EffectEditor draft={draft} catalog={catalog} onChange={onEffectChange} target={track.target} onRemove={onRemove} onClose={onClose} view="appearance" showHeader={false} /></div>
+    <div id={`${id}-panel-appearance`} role="tabpanel" aria-labelledby={`${id}-appearance`} hidden={activeTab !== "appearance"}><EffectEditor draft={draft} catalog={catalog} onChange={onEffectChange} target={track.target} onRemove={onRemove} onClose={onClose} view="appearance" showHeader={false} replaced={replaced} /></div>
     {track.target !== "subtitle" && <div id={`${id}-panel-timing`} role="tabpanel" aria-labelledby={`${id}-timing`} hidden={activeTab !== "timing"}><TrackTiming track={track} duration={duration} resolved={resolved} onChange={onTimingChange} /></div>}
-    {hasKeywords && <div id={`${id}-panel-keyword`} role="tabpanel" aria-labelledby={`${id}-keyword`} hidden={activeTab !== "keyword"}><EffectEditor draft={draft} catalog={catalog} onChange={onEffectChange} target={track.target} onRemove={onRemove} onClose={onClose} view="keyword" showHeader={false} /></div>}
+    {hasKeywords && <div id={`${id}-panel-keyword`} role="tabpanel" aria-labelledby={`${id}-keyword`} hidden={activeTab !== "keyword"}><EffectEditor draft={draft} catalog={catalog} onChange={onEffectChange} target={track.target} onRemove={onRemove} onClose={onClose} view="keyword" showHeader={false} replaced={replaced} /></div>}
   </section>;
 }

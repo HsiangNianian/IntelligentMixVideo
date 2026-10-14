@@ -17,7 +17,7 @@ import { TemplatePreview } from "./TemplatePreview";
 import { SpriteCatalog, SpriteClips } from "./SpritePanels";
 import { SpriteClipInspector } from "./SpriteClipInspector";
 import { addClip, bindClip, clipSlot, hiddenTextClips, moveClip, removeClip, setClipParameter, setClipTransform, timeClips } from "./clips";
-import { exampleKeyword } from "./timeline";
+import { exampleKeyword, remotionTexts } from "./timeline";
 import { transformFields } from "@/features/sprites/parameters";
 import { useSpriteCatalog } from "./useSpriteCatalog";
 import type { TemplateSelection } from "./TemplateHome";
@@ -301,7 +301,7 @@ export function TemplateWorkspace({ selection = null, onHome }: {
                   onChoose={(asset) => editTrack(() => { if (asset) return addTrack(draft, asset, "transition", undefined, selectedBoundary).draft; setTarget(null); return removeTrack(draft, selectedTransition.id); })}
                   onDuration={(seconds) => editTrack(() => updateTrack(draft, selectedTransition.id, { editor: selectedTransition.editor, transition_duration_seconds: seconds }))}
                   onClose={() => setTarget(null)} />}
-                {selectedTrack && selectedTrack.target !== "transition" && <TemplateInspector track={selectedTrack} draft={selectedDraft!} catalog={catalog} duration={previewLength} resolved={preview.timeline?.tracks[selectedTrack.id]} tab={inspectorTab} onTabChange={setInspectorTab} onTimingChange={(timing) => editTrack(() => setTrackTiming(draft, selectedTrack.id, timing))} onEffectChange={(next) => editTrack(() => updateTrack(draft, selectedTrack.id, next))} onRemove={() => editTrack(() => removeTrack(draft, selectedTrack.id))} onClose={() => setTarget(null)} />}
+                {selectedTrack && selectedTrack.target !== "transition" && <TemplateInspector track={selectedTrack} draft={selectedDraft!} catalog={catalog} duration={previewLength} resolved={preview.timeline?.tracks[selectedTrack.id]} replaced={isTextTarget(selectedTrack.target) && remotionTexts(draft).has(selectedTrack.target)} tab={inspectorTab} onTabChange={setInspectorTab} onTimingChange={(timing) => editTrack(() => setTrackTiming(draft, selectedTrack.id, timing))} onEffectChange={(next) => editTrack(() => updateTrack(draft, selectedTrack.id, next))} onRemove={() => editTrack(() => removeTrack(draft, selectedTrack.id))} onClose={() => setTarget(null)} />}
               </aside>}
             />
           </fieldset>

@@ -166,6 +166,7 @@ export function EffectEditor({
   onRemove,
   view = "all",
   showHeader = true,
+  replaced = false,
 }: {
   draft: EffectDraft;
   catalog: EffectAsset[];
@@ -175,11 +176,16 @@ export function EffectEditor({
   onRemove?: () => void;
   view?: "all" | "appearance" | "keyword";
   showHeader?: boolean;
+  /** 这段文字已由 Remotion 字效显示：预览与合成都不渲染 IMS 文字，其字号、位置、样式、动画与关键词样式不生效，只保留示例文字。 */
+  replaced?: boolean;
 }) {
   const id = useId();
   const editor = draft.editor;
   const update = <K extends keyof Editor>(key: K, value: Editor[K]) =>
     onChange({ ...draft, editor: { ...editor, [key]: value } });
+  // 不生效的设置整体失去交互并变淡，避免误以为调整了预览。
+  const inertProps = replaced ? { inert: true } : {};
+  const fade = replaced ? " opacity-60" : "";
   const selector = (field: EffectKey, label: string, disabled = false) => (
     <EffectSelect
       key={field}
@@ -217,8 +223,9 @@ export function EffectEditor({
                   : update(textKey, event.target.value)}
               />
             </div>}
+            {replaced && (role === "title" || role === "subtitle") && <p role="status" className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">这段文字由 Remotion 字效显示，不再使用这里的字号、位置、样式、动画与关键词样式。请在右栏「Remotion 资产」里选中该字效，在它的设置中调整，或直接在预览画面上拖动。</p>}
             {(role === "title" || role === "subtitle") && view !== "appearance" && (
-              <fieldset className="space-y-2">
+              <fieldset className={`space-y-2${fade}`} {...inertProps}>
                 <legend className="text-sm font-medium">关键词样式</legend>
                 {/* 四种局部样式可组合，多选切换组按下即开启对应字段。 */}
                 <ToggleGroup type="multiple" variant="outline" size="sm" className="w-full"
@@ -256,7 +263,7 @@ export function EffectEditor({
                 </div>
               </fieldset>
             )}
-            {view !== "keyword" && <><div className="space-y-3">
+            {view !== "keyword" && <div {...inertProps} className={`${view === "all" ? "space-y-5" : "space-y-3"}${fade}`}><div className="space-y-3">
               <NumberField
                 label="字号"
                 slider
@@ -312,7 +319,7 @@ export function EffectEditor({
               !!(editor[`${role}In`] || editor[`${role}Out`]),
             )}
             {view === "all" && <p className="text-xs text-muted-foreground">循环与入场、出场动画互斥。选择“无效果”后可切换。</p>}
-            </>}
+            </div>}
             <Button
               type="button"
               variant="outline"

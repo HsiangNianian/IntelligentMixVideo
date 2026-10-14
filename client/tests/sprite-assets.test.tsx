@@ -363,6 +363,27 @@ test("字效作用于文字对象并可改为字幕", async () => {
   expect(wireClips(saved[0]).map((clip) => [clip.textTarget, clip.transitionBoundary])).toEqual([["subtitle", undefined]]);
 });
 
+// 场景：标题由 Remotion 字效显示时，IMS「顶部标题」面板里的字号、位置等不生效：说明原因并让它们不可操作，示例文字仍可改；字效改作用于字幕后标题面板恢复可用。
+test("被 Remotion 字效接管的文字在 IMS 面板里提示并禁用无效设置", async () => {
+  const { template } = sprites({ catalog: [textAsset()] });
+  render(<TemplateWorkspace selection={{ environment: "cloud", templateId: template.template_id }} onHome={() => {}} />);
+  const catalog = await screen.findByRole("region", { name: "Remotion 资产" });
+  fireEvent.click(within(catalog).getByRole("button", { name: "展开" }));
+  fireEvent.click(await within(catalog).findByRole("button", { name: "添加 Remotion 资产：金色标题" }));
+  const item = await screen.findByRole("listitem", { name: "Remotion 资产：金色标题" });
+  fireEvent.click(screen.getByRole("button", { name: "编辑顶部标题" }));
+  const panel = await screen.findByRole("region", { name: "画面对象设置" });
+  expect(within(panel).getAllByText(/这段文字由 Remotion 字效显示/).length).toBeGreaterThan(0);
+  expect(within(panel).getByLabelText("水平位置 %").closest("[inert]")).not.toBeNull();
+  expect(within(panel).getByLabelText("示例文字").closest("[inert]")).toBeNull();
+  fireEvent.click(within(item).getByRole("button", { name: "设置 Remotion 资产：金色标题" }));
+  fireEvent.click(within(await screen.findByRole("region", { name: "Remotion 资产设置" })).getByRole("radio", { name: "底部字幕" }));
+  fireEvent.click(screen.getByRole("button", { name: "编辑顶部标题" }));
+  const title = await screen.findByRole("region", { name: "画面对象设置" });
+  expect(within(title).queryAllByText(/这段文字由 Remotion 字效显示/)).toHaveLength(0);
+  expect(within(title).getByLabelText("水平位置 %").closest("[inert]")).toBeNull();
+});
+
 // 场景：字效作用的标题在当前预览里没有显示时间，标题被隐藏，列表里的字效也标为未应用，不显示原有区间。
 test("所作用文字不在预览内时字效标为未应用", () => {
   const asset: SpriteAsset = { id: "sprite-t", name: "金色标题", kind: SpriteKind.TEXT, seconds: 3, aspect: 9 / 16, width: 1080, height: 1920, fps: 30, box: { x: 0, y: 0, width: 1080, height: 1920 }, parameters: [] };
