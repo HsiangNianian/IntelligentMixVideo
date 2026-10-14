@@ -1,7 +1,7 @@
-"""回归验证命令入口在存在未关闭 SSE 时仍能限时退出并释放字效运行锁。
+"""回归验证命令入口在存在未关闭 SSE 时仍能限时退出，不让停止的旧进程继续运行字效任务。
 
-测试在子进程中启动真实入口，避免 Uvicorn 的信号处理污染 pytest 主进程；仅在非 Windows
-平台执行，因为当前字效运行锁和 SIGTERM 关闭路径使用 POSIX 文件锁及进程信号。
+测试在子进程中启动真实入口，避免 Uvicorn 的信号处理污染 pytest 主进程；就绪探测与长连接都使用
+测试自带的路由，不依赖 MySQL。仅在非 Windows 平台执行，因为 SIGTERM 关闭路径使用 POSIX 进程信号。
 在 server/ 执行 `uv run --locked pytest -v tests/test_graceful_shutdown.py`。
 """
 
@@ -20,7 +20,7 @@ import pytest
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
-    reason="字效运行锁与 SIGTERM 关闭回归测试使用 POSIX flock 和信号。",
+    reason="SIGTERM 关闭回归测试使用 POSIX 信号。",
 )
 
 
@@ -42,7 +42,7 @@ def _wait_ready(process: subprocess.Popen[str], port: int, timeout: float) -> No
             )
         try:
             connection = http.client.HTTPConnection("127.0.0.1", port, timeout=1)
-            connection.request("GET", "/api/templates/capabilities")
+            connection.request("GET", "/_probe/ready")
             response = connection.getresponse()
             response.read()
             if response.status == 200:
@@ -52,9 +52,9 @@ def _wait_ready(process: subprocess.Popen[str], port: int, timeout: float) -> No
     raise AssertionError("服务未在超时前就绪")
 
 
-def test_open_sse_shutdown_releases_remotion_lock(tmp_path: Path) -> None:
-    """持续 SSE 阻止正常收尾时，入口仍须限时退出且让下一次启动重新获取运行锁。"""
-    # 子进程只替换数据库与合成调度器生命周期，保留真实 Uvicorn、SSE 和 Remotion 锁路径。
+def test_open_sse_shutdown_exits_within_limit(tmp_path: Path) -> None:
+    """持续 SSE 阻止正常收尾时，入口仍须在限时内退出，旧进程不会与重启后的进程同时操作 MySQL。"""
+    # 子进程只替换数据库与合成调度器生命周期，保留真实 Uvicorn 与 SSE 关闭路径。
     runner = r'''
 import asyncio
 from fastapi.responses import StreamingResponse
@@ -67,6 +67,10 @@ app_module.initialize_database = lambda: None
 app_module.close_database = lambda: None
 app_module.Runtime.start = lambda self: asyncio.sleep(0)
 app_module.Runtime.close = lambda self: asyncio.sleep(0)
+
+@app_module.app.get("/_probe/ready")
+async def probe_ready():
+    return {"ready": True}
 
 @app_module.app.get("/_probe/stream")
 async def probe_stream():
@@ -111,12 +115,6 @@ entry.main()
 
         process.send_signal(signal.SIGTERM)
         process.wait(timeout=5)
-
-        import fcntl
-
-        with (data_dir / "runtime.lock").open("a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            fcntl.flock(lock, fcntl.LOCK_UN)
     finally:
         if process.poll() is None:
             process.kill()

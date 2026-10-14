@@ -147,12 +147,15 @@ test("图片上传互斥且失败后可重试固定配置", async () => {
     result.current.send("重复上传", [image]);
   });
   expect(result.current.busy).toBe("chat");
-  expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/assets"))).toHaveLength(1);
+  // 请求先读取本机设备 ID 再发出，需等待一个微任务。
+  await waitFor(() => expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/assets"))).toHaveLength(1));
   expect(creations()).toHaveLength(0);
   await act(async () => finish(new Response(null, { status: 503 })));
   await waitFor(() => expect(result.current.busy).toBeNull());
   expect(creations()).toHaveLength(0);
+  const uploads = fetchMock.mock.calls.length;
   act(() => result.current.send("", [image]));
+  await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(uploads));
   await act(async () => finish(Response.json({ id: "asset-1" })));
   await waitFor(() => expect(result.current.version).not.toBeNull());
   expect(creations()).toEqual([{
@@ -169,6 +172,7 @@ test("迟到上传不跨会话创建作品", async () => {
     : undefined);
   const { result } = renderHook(() => useTemplateSession(() => {}));
   act(() => result.current.send("旧图片", [new File(["image"], "test.png", { type: "image/png" })]));
+  await waitFor(() => expect(finish).toBeDefined());
   act(() => result.current.reset());
   await act(async () => finish(Response.json({ id: "asset-old" })));
   expect(creations()).toHaveLength(0);

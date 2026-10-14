@@ -283,7 +283,7 @@ export function TemplateWorkspace({ selection = null, onHome, onOpenRemotion }: 
                   if (isTextTarget(added.target)) { setTextTarget(added.target); lastTextTrack.current = added.id; }
                   return result.draft;
                 }, true)} />
-                <SpriteCatalog environment={environment} catalog={spriteCatalog} onAdd={(asset) => editTrack(() => addClip(draft, asset, spriteCatalog.assets ?? [], textTarget), true)} />
+                <SpriteCatalog environment={environment} catalog={spriteCatalog} placed={new Set(draft.clips.map((clip) => clip.sprite_id))} onAdd={(asset) => editTrack(() => addClip(draft, asset, spriteCatalog.assets ?? [], textTarget), true)} />
               </aside>}
               canvas={<main className="template-workspace-canvas h-full min-w-0 overflow-y-auto border-b xl:border-b-0">
                 <TemplatePreview draft={draft} media={media} resolved={preview.timeline} mediaError={mediaError || preview.error} onRetryMedia={() => setMediaAttempt((value) => value + 1)} onMediaChange={(next) => { setMedia(next); setMediaError(""); }} videoInputKey={`${environment}:${current?.template_id ?? draft.name}`} onCatalog={setCatalog} selectedId={effectiveTarget} onSelect={(id) => { if (draft.tracks.some((track) => track.id === id) || draft.clips.some((clip) => clip.id === id)) selectTarget(id); }} sprites={spriteClips} onSpriteMove={(id, x, y) => editTrack(() => setClipTransform(draft, id, { x, y }))}

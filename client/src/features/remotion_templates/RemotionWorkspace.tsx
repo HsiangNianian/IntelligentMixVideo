@@ -1,4 +1,4 @@
-/** Remotion 工作区组合聊天、代码、预览和参数；服务状态与当前会话独立，页面卸载时清理。 */
+/** Remotion 工作区组合聊天、代码、预览和参数；服务状态与当前会话独立，后台会话定时同步，页面卸载时清理。 */
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -20,11 +20,13 @@ import { PreviewPanel } from "./PreviewPanel";
 import { useWorkHistory } from "./useWorkHistory";
 import { HistorySidebar } from "./HistorySidebar";
 import { useTemplateSession } from "./useTemplateSession";
+import { useBackgroundSync } from "./backgroundSync";
 
 /** 宽屏左右分栏，小屏切换聊天和预览但保留会话与播放器实例。 */
 export function RemotionWorkspace() {
   const history = useWorkHistory();
   const session = useTemplateSession(history.refresh);
+  useBackgroundSync(session.openWork, history.refresh);
   const catalog = useTemplateVersions(session.workId, session.version);
   const viewed = session.previewVersion ?? session.version;
   const historical = !!session.previewVersion;
@@ -134,10 +136,8 @@ export function RemotionWorkspace() {
             selected={session.workId}
             loading={history.loading}
             error={history.error}
-            hasMore={!!history.next_cursor}
             onSelect={session.select}
             onRefresh={history.refresh}
-            onMore={history.more}
             onNew={session.reset}
             dirty={session.dirty}
             onDelete={async (id) => {

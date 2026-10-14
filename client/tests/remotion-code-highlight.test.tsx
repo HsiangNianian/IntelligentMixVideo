@@ -250,6 +250,8 @@ test("慢诊断使用独立超时并支持调用方取消", async () => {
   const timer = spyOn(window, "setTimeout");
   const clear = spyOn(window, "clearTimeout");
   remotionServer((_path, options) => new Promise<Response>((_resolve, reject) => {
+    // 请求先读取设备 ID，取消可能早于发出；与真实 fetch 一致，已中止的信号立即拒绝。
+    if (options?.signal?.aborted) reject(new DOMException("Aborted", "AbortError"));
     options?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
   }));
   const controller = new AbortController();

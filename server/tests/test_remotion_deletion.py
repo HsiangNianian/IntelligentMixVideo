@@ -1,7 +1,10 @@
-"""字效会话删除的真实 SQLite/文件/API/队列回归；执行 uv run --locked pytest tests/test_remotion_deletion.py。"""
+"""字效会话删除与保留期限的回归：MySQL 替身记录、对象存储文件、本地缓存与审计、API 与队列。
+
+执行 uv run --locked pytest tests/test_remotion_deletion.py。
+"""
 
 import asyncio
-import json
+import os
 from datetime import timedelta
 from io import BytesIO
 from uuid import uuid4
@@ -10,7 +13,9 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from PIL import Image
+from sqlalchemy import func, select, update
 from server.remotion_templates import deletion
+from server.remotion_templates import runtime as runtime_module
 from server.remotion_templates.context import Conversation
 from server.remotion_templates.media import save_image
 from server.remotion_templates.parameters import patch_parameters
@@ -18,7 +23,18 @@ from server.remotion_templates.models import GenerateTemplateRequest, JobInput, 
 from server.remotion_templates.routes import router
 from server.remotion_templates.runtime import Runtime
 from server.remotion_templates.settings import Settings
-from server.remotion_templates.store import Conflict, NotFound, Store
+from server.remotion_templates.store import Conflict, NotFound, Store, asset_key, now, version_key
+from server.remotion_templates.tables import (
+    assets,
+    chat_messages,
+    conversations,
+    devices,
+    job_progress,
+    jobs,
+    versions,
+    work_events,
+    works,
+)
 from server.remotion_templates.stream import event_stream
 from server.remotion_templates.evidence import seal_artifacts
 from server.remotion_templates.harness import controls
@@ -31,6 +47,7 @@ from server.remotion_templates.models import (
     ValidationReport,
     validation_fingerprint,
 )
+from .conftest import DEVICE, DEVICE_HEADERS, RecordingObjects
 
 
 @pytest.fixture
@@ -115,8 +132,8 @@ def publish_fixture(store, job_id, candidate, spec, report):
 
 
 @pytest.fixture
-def store(tmp_path):
-    """所有元数据与生成文件只写入临时目录。"""
+def store(tmp_path, template_db):
+    """记录写入每例独立的 MySQL 替身，对象与缓存只写入临时目录。"""
     result = Store(tmp_path / "data")
     result.initialize()
     return result
@@ -134,22 +151,28 @@ def client(service):
     app = FastAPI()
     app.include_router(router, prefix="/api/templates")
     app.state.runtime = service
-    with TestClient(app) as result:
+    with TestClient(app, headers=DEVICE_HEADERS) as result:
         yield result
+
+
+def count(store, table, *where):
+    """统计表中满足条件的行数。"""
+    with store.reading() as db:
+        return db.execute(select(func.count()).select_from(table).where(*where)).scalar_one()
 
 
 def reference(store):
     """创建经真实图片处理链规范化和登记的参考图。"""
     data = BytesIO()
     Image.new("RGB", (8, 8), "red").save(data, "PNG")
-    return save_image(data.getvalue(), store, Settings(_env_file=None))
+    return save_image(data.getvalue(), store, Settings(_env_file=None), DEVICE)
 
 
 def test_delete_all_versions_jobs_and_files(client, store, candidate, spec):
     """整条删除包含多个成功版本、参数版本、失败候选及审计；其他会话与数据库保留。"""
     asset = reference(store)
     work, first = store.create(
-        GenerateTemplateRequest(description="删除", image={"asset_id": asset.id})
+        GenerateTemplateRequest(description="删除", image={"asset_id": asset.id}), DEVICE
     )
     store.claim()
     v1 = publish_fixture(store, first.id, candidate, spec, evidence(candidate, spec))
@@ -168,42 +191,41 @@ def test_delete_all_versions_jobs_and_files(client, store, candidate, spec):
         directory = store.job_dir(job.id) / "candidate"
         directory.mkdir(parents=True, exist_ok=True)
         (directory / "reviews.jsonl").write_text("private")
-    other, other_job = store.create(GenerateTemplateRequest(description="保留"))
+        store.audit_path(work.id, job.id).parent.mkdir(parents=True, exist_ok=True)
+        store.audit_path(work.id, job.id).write_text("private")
+    for version in (v1, v2):
+        store.accepted(version)
+        assert (store.root / "objects" / version_key(version.id, "Template.tsx")).is_file()
+    other, other_job = store.create(GenerateTemplateRequest(description="保留"), DEVICE)
     store.job_dir(other_job.id).mkdir(parents=True)
-    before = store.session(other.id)
+    before = store.work_events(other.id, 0)
     response = client.delete(f"/api/templates/works/{work.id}")
     assert response.status_code == 204 and response.content == b""
     assert client.delete(f"/api/templates/works/{work.id}").status_code == 204
     for path in (
         f"works/{work.id}",
-        f"works/{work.id}/session",
         f"works/{work.id}/stream",
         f"versions/{v1.id}",
         f"jobs/{failed.id}",
         f"assets/{asset.id}",
     ):
         assert client.get(f"/api/templates/{path}").status_code == 404
-    assert store.session(other.id) == before
-    assert store.job_dir(other_job.id).exists() and store.path.exists()
+    assert store.work_events(other.id, 0) == before
+    assert store.job_dir(other_job.id).exists()
     for job in (first, second, failed):
         assert not store.job_dir(job.id).exists()
+        assert not store.audit_path(work.id, job.id).exists()
     for version in (v1, v2):
-        assert not (store.root / "accepted" / str(version.id)).exists()
-    assert not (store.root / "assets" / f"{asset.id}.png").exists()
-    with store.connection() as db:
-        assert db.execute("PRAGMA foreign_key_check").fetchall() == []
-        for table in (
-            "versions",
-            "conversations",
-            "job_progress",
-            "assets",
-            "work_deletions",
-        ):
-            assert db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
-        assert db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 1
-        assert db.execute("SELECT DISTINCT work_id FROM chat_messages").fetchall()[0][
-            0
-        ] == str(other.id)
+        assert not (store.root / "objects" / version_key(version.id)).exists()
+        assert not (store.root / "cache" / "accepted" / str(version.id)).exists()
+    assert not (store.root / "objects" / asset_key(asset.id)).exists()
+    for table in (versions, conversations, job_progress, assets):
+        assert count(store, table) == 0
+    assert count(store, works) == 1 and count(store, works, works.c.deleting.is_(True)) == 0
+    assert count(store, jobs) == 1
+    with store.reading() as db:
+        assert db.execute(select(chat_messages.c.work_id).distinct()).scalars().all() == [str(other.id)]
+        assert db.execute(select(work_events.c.work_id).distinct()).scalars().all() == [str(other.id)]
 
 
 def test_shared_reference_removed_only_with_last_work(client, store):
@@ -211,7 +233,7 @@ def test_shared_reference_removed_only_with_last_work(client, store):
     asset, orphan = reference(store), reference(store)
     works = [
         store.create(
-            GenerateTemplateRequest(description="共享", image={"asset_id": asset.id})
+            GenerateTemplateRequest(description="共享", image={"asset_id": asset.id}), DEVICE
         )[0]
         for _ in range(2)
     ]
@@ -225,7 +247,8 @@ def test_shared_reference_removed_only_with_last_work(client, store):
         store.create(
             GenerateTemplateRequest(
                 description="失效图片", image={"asset_id": asset.id}
-            )
+            ),
+            DEVICE,
         )
 
 
@@ -233,7 +256,7 @@ def test_cleanup_failure_remains_retryable_and_blocks_writes(
     client, store, monkeypatch
 ):
     """文件清理失败返回 503，标记持久化且读写被拒绝；显式重试完成其余清理。"""
-    work, job = store.create(GenerateTemplateRequest(description="失败恢复"))
+    work, job = store.create(GenerateTemplateRequest(description="失败恢复"), DEVICE)
     store.job_dir(job.id).mkdir(parents=True)
     original = deletion.remove_path
 
@@ -247,12 +270,10 @@ def test_cleanup_failure_remains_retryable_and_blocks_writes(
     assert response.status_code == 503
     assert "private" not in response.text
     assert store.pending_deletions() == [work.id]
-    assert client.get(f"/api/templates/works/{work.id}/session").status_code == 410
+    assert client.get(f"/api/templates/works/{work.id}").status_code == 410
     assert client.get(f"/api/templates/works/{work.id}/stream").status_code == 410
-    assert (
-        client.get("/api/templates/works?history=true").json()["items"][0]["deleting"]
-        is True
-    )
+    assert client.post(f"/api/templates/works/{work.id}/ack", json={"cursor": 0}).status_code == 410
+    assert client.get(f"/api/templates/works/{work.id}/events").status_code == 410
     with pytest.raises(HTTPException) as error:
         store.enqueue(work.id, JobInput(), None)
     assert error.value.status_code == 410
@@ -264,18 +285,19 @@ def test_cleanup_failure_remains_retryable_and_blocks_writes(
 
 def test_restart_finishes_pending_cleanup(store):
     """进程重启只恢复明确请求的清理，不扫描或误删其他文件。"""
-    work, job = store.create(GenerateTemplateRequest(description="重启"))
+    work, job = store.create(GenerateTemplateRequest(description="重启"), DEVICE)
+    kept, kept_job = store.create(GenerateTemplateRequest(description="保留"), DEVICE)
     store.job_dir(job.id).mkdir(parents=True)
+    store.job_dir(kept_job.id).mkdir(parents=True)
     store.begin_deletion(work.id)
     runtime = Runtime(store, None, Settings(_env_file=None))
     runtime.initialize()
-    try:
-        assert store.pending_deletions() == []
-        assert not store.job_dir(job.id).exists()
-        with pytest.raises(NotFound):
-            store.project(work.id)
-    finally:
-        runtime.lock.close()
+    assert store.pending_deletions() == []
+    assert not store.job_dir(job.id).exists()
+    with pytest.raises(NotFound):
+        store.project(work.id)
+    assert store.job_dir(kept_job.id).exists()
+    assert store.job(kept_job.id).status == "interrupted"
 
 
 @pytest.mark.parametrize("disconnect", [False, True])
@@ -287,8 +309,8 @@ def test_running_delete_waits_for_teardown_and_keeps_queue_alive(
 
     async def scenario():
         """用可控屏障模拟模型/渲染 finally，所有等待设定上限。"""
-        work, job = store.create(GenerateTemplateRequest(description="运行中"))
-        other, other_job = store.create(GenerateTemplateRequest(description="后续"))
+        work, job = store.create(GenerateTemplateRequest(description="运行中"), DEVICE)
+        other, other_job = store.create(GenerateTemplateRequest(description="后续"), DEVICE)
         started, stopping, release, completed = (asyncio.Event() for _ in range(4))
 
         async def execute(identifier):
@@ -301,7 +323,8 @@ def test_running_delete_waits_for_teardown_and_keeps_queue_alive(
                 finally:
                     stopping.set()
                     await release.wait()
-                    (store.job_dir(identifier) / "audit.jsonl").write_text("last write")
+                    store.audit_path(work.id, identifier).parent.mkdir(parents=True, exist_ok=True)
+                    store.audit_path(work.id, identifier).write_text("last write")
                     store.save_conversation(work.id, Conversation())
             else:
                 store.update(identifier, status="answered", answer="完成")
@@ -331,6 +354,7 @@ def test_running_delete_waits_for_teardown_and_keeps_queue_alive(
         await completed.wait()
         await service.worker
         assert not store.job_dir(job.id).exists()
+        assert not store.audit_path(work.id, job.id).exists()
         assert store.job(other_job.id).status == "answered"
         if stop:
             await stop
@@ -342,13 +366,13 @@ def test_running_delete_waits_for_teardown_and_keeps_queue_alive(
 
 def test_late_publish_is_rejected(store, candidate, spec):
     """开始删除后已有候选也不能发布，且入队前通过的请求会在写事务内再次校验。"""
-    work, job = store.create(GenerateTemplateRequest(description="发布竞争"))
+    work, job = store.create(GenerateTemplateRequest(description="发布竞争"), DEVICE)
     store.claim()
     store.begin_deletion(work.id)
     with pytest.raises(Conflict):
         publish_fixture(store, job.id, candidate, spec, evidence(candidate, spec))
-    with store.connection() as db:
-        assert db.execute("SELECT COUNT(*) FROM versions").fetchone()[0] == 0
+    assert count(store, versions) == 0
+    assert not (store.root / "objects" / "imv" / "remotion" / "versions").exists()
 
 
 @pytest.mark.parametrize("begin_only", [True, False])
@@ -357,8 +381,8 @@ def test_open_stream_terminates_on_deletion(service, store, begin_only):
 
     async def scenario():
         """先建立流再触发删除，验证已有连接的下一次读。"""
-        work, _ = store.create(GenerateTemplateRequest(description="连接"))
-        stream = event_stream(store, work.id, store.session(work.id).cursor)
+        work, _ = store.create(GenerateTemplateRequest(description="连接"), DEVICE)
+        stream = event_stream(store, work.id, store.work_events(work.id, 0)[-1].id)
         assert "connected" in await anext(stream)
         if begin_only:
             store.begin_deletion(work.id)
@@ -374,11 +398,12 @@ def test_open_stream_terminates_on_deletion(service, store, begin_only):
 @pytest.mark.parametrize("parent_link", [True, False])
 def test_cleanup_never_follows_symlinks(client, store, tmp_path, parent_link):
     """父目录重定向拒绝删除，叶子链接只删链接；两者均不触碰外部内容。"""
-    work, job = store.create(GenerateTemplateRequest(description="边界"))
+    work, job = store.create(GenerateTemplateRequest(description="边界"), DEVICE)
     external = tmp_path / "external"
     external.mkdir()
     (external / "keep.txt").write_text("keep")
     parent = store.root / "jobs"
+    store.root.mkdir(parents=True, exist_ok=True)
     if parent_link:
         parent.symlink_to(external, target_is_directory=True)
     else:
@@ -397,7 +422,7 @@ def test_unknown_and_invalid_delete(client):
 
 def test_enqueue_rechecks_deletion_inside_transaction(store, monkeypatch):
     """入队预读后删除标记抢先提交，后续写事务仍拒绝创建任务。"""
-    work, job = store.create(GenerateTemplateRequest(description="并发入队"))
+    work, job = store.create(GenerateTemplateRequest(description="并发入队"), DEVICE)
     store.update(job.id, status="answered", answer="完成")
     original = store.project
 
@@ -411,23 +436,122 @@ def test_enqueue_rechecks_deletion_inside_transaction(store, monkeypatch):
     with pytest.raises(HTTPException) as error:
         store.enqueue(work.id, JobInput(), None)
     assert error.value.status_code == 410
-    with store.connection() as db:
-        assert db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 1
+    assert count(store, jobs) == 1
 
 
 def test_pending_image_cannot_be_reused_after_partial_cleanup(store):
     """删除未完成时禁止新会话复用可能已经清理的参考图片元数据。"""
     asset = reference(store)
     work, _ = store.create(
-        GenerateTemplateRequest(description="图片", image={"asset_id": asset.id})
+        GenerateTemplateRequest(description="图片", image={"asset_id": asset.id}), DEVICE
     )
     store.begin_deletion(work.id)
-    store.asset_path(asset.id).unlink()
+    (store.root / "objects" / asset_key(asset.id)).unlink()
     with pytest.raises(Conflict):
         store.create(
-            GenerateTemplateRequest(description="复用", image={"asset_id": asset.id})
+            GenerateTemplateRequest(description="复用", image={"asset_id": asset.id}), DEVICE
         )
-    assert len(store.work_history().items) == 1
+    assert count(store, works) == 1
+
+
+def test_sweep_applies_the_three_retention_periods(service, store):
+    """保留期清理：过期未送达事件删除，过期审计删除而新审计保留，长期不活跃设备的作品连同文件被完整删除。"""
+    other = uuid4()
+    stale, stale_job = store.create(GenerateTemplateRequest(description="闲置设备"), other)
+    kept, kept_job = store.create(GenerateTemplateRequest(description="活跃设备"), DEVICE)
+    store.update(kept_job.id, status="answered", answer="好")
+    store.touch(other)
+    store.touch(DEVICE)
+    old = (now() - timedelta(days=200)).replace(tzinfo=None)
+    with store.transaction() as db:
+        db.execute(update(devices).where(devices.c.device_id == str(other)).values(last_seen_at=old))
+        db.execute(update(work_events).where(work_events.c.work_id == str(kept.id)).values(created_at=old))
+    for work, job, age in ((stale, stale_job, 30), (kept, kept_job, 1)):
+        path = store.audit_path(work.id, job.id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("private")
+        stamp = (now() - timedelta(days=age)).timestamp()
+        os.utime(path, (stamp, stamp))
+    asyncio.run(service.sweep())
+    with pytest.raises(NotFound):
+        store.project(stale.id)
+    assert not store.audit_path(stale.id, stale_job.id).exists()
+    assert store.audit_path(kept.id, kept_job.id).exists()
+    assert store.work_events(kept.id, 0) == []
+    assert store.latest_job(kept.id).id == kept_job.id
+    assert count(store, chat_messages) == 0
+    assert count(store, devices) == 1
+
+
+def test_deleting_a_work_removes_audit_logs_of_pruned_jobs(store):
+    """确认送达后较早的任务记录被清理，删除会话时这些任务的私有审计仍一并删除，不等到保留期结束。"""
+    work, first = store.create(GenerateTemplateRequest(description="审计"), DEVICE)
+    store.update(first.id, status="answered", stage="finished", answer="好")
+    latest = store.enqueue(work.id, JobInput(mode="edit", instruction="再改"), None)
+    store.update(latest.id, status="failed", stage="finished")
+    for job in (first, latest):
+        path = store.audit_path(work.id, job.id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("private")
+    store.acknowledge(work.id, store.work_events(work.id, 0)[-1].id, DEVICE)
+    with pytest.raises(NotFound):
+        store.job(first.id)
+    store.begin_deletion(work.id)
+    deletion.finish(store, work.id)
+    assert not (store.root / "audit" / str(work.id)).exists()
+
+
+def test_sweep_retries_deletions_that_failed_and_isolates_each_work(service, store, monkeypatch):
+    """过期设备的清理有一个失败时，其他作品照常删除；失败的作品与无人重试的用户删除在下一轮清理中完成。"""
+    other = uuid4()
+    first, _ = store.create(GenerateTemplateRequest(description="失败"), other)
+    second, _ = store.create(GenerateTemplateRequest(description="成功"), other)
+    abandoned, _ = store.create(GenerateTemplateRequest(description="用户删除未重试"), DEVICE)
+    store.touch(other)
+    store.begin_deletion(abandoned.id)
+    with store.transaction() as db:
+        db.execute(update(devices).where(devices.c.device_id == str(other)).values(
+            last_seen_at=(now() - timedelta(days=200)).replace(tzinfo=None)))
+    original = deletion.finish
+
+    def flaky(target_store, work_id):
+        """模拟对象存储暂时不可用，只影响第一个作品。"""
+        if work_id == first.id:
+            raise OSError("object store unavailable")
+        original(target_store, work_id)
+
+    monkeypatch.setattr(runtime_module, "finish_deletion", flaky)
+    asyncio.run(service.sweep())
+    assert store.pending_deletions() == [first.id]
+    for work in (second, abandoned):
+        with pytest.raises(NotFound):
+            store.project(work.id)
+    monkeypatch.setattr(runtime_module, "finish_deletion", original)
+    asyncio.run(service.sweep())
+    assert store.pending_deletions() == []
+    assert count(store, works) == 0
+
+
+def test_idle_read_cache_files_are_evicted_and_hits_keep_them(store):
+    """读取缓存只是对象存储的副本：长期未用的文件被清理，命中缓存会刷新时间而保留；对象本身不受影响。"""
+    idle, used = reference(store), reference(store)
+    old = (now() - timedelta(days=60)).timestamp()
+    for asset in (idle, used):
+        os.utime(store.asset_path(asset.id), (old, old))
+    store.asset_path(used.id)
+    store.prune_cache()
+    cache = store.root / "cache" / "assets"
+    assert not (cache / f"{idle.id}.png").exists() and (cache / f"{used.id}.png").exists()
+    assert image_object(store, idle).exists()
+    os.utime(store.asset_path(used.id), (old, old))
+    store.prune_cache()
+    assert not cache.exists()
+    assert store.asset_path(used.id).exists()
+
+
+def image_object(store, asset):
+    """参考图在本地对象存储中的文件。"""
+    return store.root / "objects" / asset_key(asset.id)
 
 
 def test_follow_up_images_follow_work_lifecycle(store, service, candidate, spec, monkeypatch):
@@ -435,7 +559,7 @@ def test_follow_up_images_follow_work_lifecycle(store, service, candidate, spec,
     monkeypatch.setattr(service, "notify", lambda *args: None)
     original, own, kept = reference(store), reference(store), reference(store)
     work, first = store.create(
-        GenerateTemplateRequest(description="删除", image={"asset_id": original.id})
+        GenerateTemplateRequest(description="删除", images=[{"asset_id": original.id}]), DEVICE
     )
     store.claim()
     version = publish_fixture(store, first.id, candidate, spec, evidence(candidate, spec))
@@ -448,35 +572,57 @@ def test_follow_up_images_follow_work_lifecycle(store, service, candidate, spec,
     image_only = service.message(work.id, TaskMessage(images=[{"asset_id": kept.id}]))
     assert store.inputs(image_only.id).images == [MessageImage(asset_id=kept.id)]
     other, other_first = store.create(
-        GenerateTemplateRequest(description="保留", image={"asset_id": kept.id})
+        GenerateTemplateRequest(description="保留", images=[{"asset_id": kept.id}]), DEVICE
     )
     store.update(other_first.id, status="failed", stage="finished")
     service.message(other.id, TaskMessage(images=[{"asset_id": original.id}]))
 
     store.begin_deletion(work.id)
     with pytest.raises(Conflict):
-        store.create(GenerateTemplateRequest(description="复用", image={"asset_id": own.id}))
+        store.create(GenerateTemplateRequest(description="复用", images=[{"asset_id": own.id}]), DEVICE)
     deletion.finish(store, work.id)
     with pytest.raises(NotFound):
         store.asset(own.id)
-    assert not (store.root / "assets" / f"{own.id}.png").exists()
+    assert not image_object(store, own).exists()
     for asset in (original, kept):
         assert store.asset_path(asset.id).exists()
+
+
+def test_cleanup_calls_the_object_store_outside_the_write_lock(tmp_path, template_db, candidate, spec):
+    """删除会话与回收无人引用的上传都在写锁之外调用对象存储，慢速 ZOS 不会阻塞其他写入。"""
+    objects = RecordingObjects(tmp_path / "data" / "objects")
+    store = Store(tmp_path / "data", objects)
+    objects.store = store
+    store.initialize()
+    image, orphan = reference(store), reference(store)
+    work, job = store.create(GenerateTemplateRequest(description="删除", images=[{"asset_id": image.id}]), DEVICE)
+    store.claim()
+    publish_fixture(store, job.id, candidate, spec, evidence(candidate, spec))
+    age(store, orphan, 25)
+    objects.calls.clear()
+    store.begin_deletion(work.id)
+    deletion.finish(store, work.id)
+    assert store.prune_assets() == [orphan.id]
+    deleted = [call for call in objects.calls if call[0] == "delete"]
+    assert {key for _, key, _, _ in deleted} >= {asset_key(image.id), asset_key(orphan.id)}
+    assert all(not locked for *_, locked in deleted)
+    assert not image_object(store, image).exists() and not image_object(store, orphan).exists()
+    assert count(store, assets) == 0
 
 
 def age(store, asset, hours):
     """把素材登记时间改早，模拟上传后一直没有被任何消息引用。"""
     aged = asset.model_copy(update={"created_at": asset.created_at - timedelta(hours=hours)})
-    with store.connection() as db:
-        db.execute("UPDATE assets SET data=? WHERE id=?", (aged.model_dump_json(), str(asset.id)))
+    with store.transaction() as db:
+        db.execute(update(assets).where(assets.c.id == str(asset.id)).values(data=aged.model_dump_json()))
 
 
-def test_unreferenced_uploads_are_reclaimed_after_a_grace_period(client, store, service, monkeypatch):
-    """#127 审计：上传成功但消息被拒绝时素材无人引用；超过 24 小时后在下次上传或服务启动时回收，仍被引用或较新的保留。"""
+def test_unreferenced_uploads_are_reclaimed_after_a_grace_period(store, service, monkeypatch):
+    """上传成功但消息被拒绝时素材无人引用；超过 24 小时后由保留期清理回收，仍被引用或较新的保留。"""
     monkeypatch.setattr(service, "notify", lambda *args: None)
     original, follow, orphan, fresh, later = (reference(store) for _ in range(5))
     work, first = store.create(
-        GenerateTemplateRequest(description="保留", image={"asset_id": original.id})
+        GenerateTemplateRequest(description="保留", images=[{"asset_id": original.id}]), DEVICE
     )
     store.update(first.id, status="failed", stage="finished")
     service.message(work.id, TaskMessage(images=[{"asset_id": follow.id}]))
@@ -486,43 +632,34 @@ def test_unreferenced_uploads_are_reclaimed_after_a_grace_period(client, store, 
         age(store, asset, 25)
     age(store, fresh, 23)
 
-    data = BytesIO()
-    Image.new("RGB", (8, 8), "blue").save(data, "PNG")
-    upload = client.post(
-        "/api/templates/assets", files={"file": ("new.png", data.getvalue(), "image/png")}
-    )
-    assert upload.status_code == 201
+    asyncio.run(service.sweep())
     for asset in (orphan, later):
         with pytest.raises(NotFound):
             store.asset(asset.id)
-        assert not (store.root / "assets" / f"{asset.id}.png").exists()
+        assert not image_object(store, asset).exists()
     for asset in (original, follow, fresh):
         assert store.asset_path(asset.id).exists()
 
     age(store, fresh, 25)
-    Runtime(store, None, Settings(_env_file=None)).initialize()
+    assert store.prune_assets() == [fresh.id]
     with pytest.raises(NotFound):
         store.asset(fresh.id)
     assert store.asset_path(original.id).exists() and store.asset_path(follow.id).exists()
 
 
 def test_single_image_work_cleans_up_its_original(client, store):
-    """多图之前保存的作品只有 request.image；删除时照常清理该图，被其他会话引用时保留。"""
+    """旧客户端以单张 image 创建的作品删除时照常清理该图；被其他会话引用的图保留到最后一个会话删除。"""
     legacy, shared = reference(store), reference(store)
-    works = [
-        store.create(GenerateTemplateRequest(description="旧作品", image={"asset_id": asset.id}))[0]
+    works_created = [
+        store.create(GenerateTemplateRequest(description="旧客户端", image={"asset_id": asset.id}), DEVICE)[0]
         for asset in (legacy, shared)
     ]
-    other, _ = store.create(GenerateTemplateRequest(description="共享", image={"asset_id": shared.id}))
-    with store.connection() as db:
-        for work in works:
-            data = json.loads(db.execute("SELECT data FROM projects WHERE id=?", (str(work.id),)).fetchone()[0])
-            data["request"]["image"] = data["request"].pop("images")[0]
-            db.execute("UPDATE projects SET data=? WHERE id=?", (json.dumps(data), str(work.id)))
-    for work in works:
+    other, _ = store.create(GenerateTemplateRequest(description="共享", image={"asset_id": shared.id}), DEVICE)
+    for work in works_created:
         assert client.delete(f"/api/templates/works/{work.id}").status_code == 204
     with pytest.raises(NotFound):
         store.asset(legacy.id)
+    assert not image_object(store, legacy).exists()
     assert store.asset_path(shared.id).exists()
     assert client.delete(f"/api/templates/works/{other.id}").status_code == 204
     with pytest.raises(NotFound):

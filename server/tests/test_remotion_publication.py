@@ -1,7 +1,10 @@
-"""PR76 publication, parameter revisions and evidence binding through real SQLite and HTTP boundaries."""
+"""PR76 publication, parameter revisions and evidence binding through the store (SQLite stand-in for MySQL), the local object store and HTTP."""
 
 import asyncio
 import json
+import shutil
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -19,6 +22,8 @@ from server.remotion_templates.runtime import Runtime
 from server.remotion_templates.settings import Settings
 from server.remotion_templates.store import Store, Conflict
 from server.remotion_templates.tools.contracts import RenderValidationReport, SpriteDraft, SpriteRecord
+
+from .conftest import DEVICE, DEVICE_HEADERS, RecordingObjects
 
 
 @pytest.fixture
@@ -54,8 +59,8 @@ class OfflinePresentationRenderer:
 
 
 @pytest.fixture
-def harness(tmp_path):
-    """No secrets or external model clients are loaded by this fixture."""
+def harness(tmp_path, template_db):
+    """No secrets or external model clients are loaded by this fixture; the store uses the temporary database."""
     font = tmp_path / "font.ttc"
     font.write_bytes(b"fixture-font")
     settings = Settings(_env_file=None, data_dir=tmp_path / "state", font_regular=font, font_bold=font, )
@@ -97,10 +102,15 @@ def accepted_version(harness, sprite):
     """Publish one accepted composition version through the real store and return the store, work and version."""
     store = Store(harness.settings.data_dir)
     store.initialize()
-    work, first = store.create(GenerateTemplateRequest(description="标题"))
+    work, first = store.create(GenerateTemplateRequest(description="标题"), DEVICE)
     store.claim()
     result = asyncio.run(harness.finalize_sprite(session_for(sprite, runtime_report(sprite)), "saved", Budget(), store.job_dir(first.id)))
     return store, work, store.publish(first.id, *result)
+
+
+def sealed(store: Store, version_id, name: str) -> Path:
+    """The stored object of one sealed version file (local object store, since ZOS is not configured in tests)."""
+    return store.root / "objects" / "imv" / "remotion" / "versions" / str(version_id) / name
 
 
 def save_parameters(service: Runtime, work, initial, parameters: dict):
@@ -144,11 +154,10 @@ def test_parameter_revision_is_saved_at_once_without_the_sandbox(harness, sprite
     assert revised.candidate.tsx_code == initial.candidate.tsx_code
     assert revised.source == "user_parameters" and revised.agent_base_version_id == initial.id
     assert revised.validation.render_passed
-    accepted = store.root / "accepted"
-    assert (accepted / str(revised.id) / "interactive.js").read_bytes() == (accepted / str(initial.id) / "interactive.js").read_bytes()
-    assert '"新标题"' in (accepted / str(revised.id) / "Export.tsx").read_text()
+    assert sealed(store, revised.id, "interactive.js").read_bytes() == sealed(store, initial.id, "interactive.js").read_bytes()
+    assert '"新标题"' in sealed(store, revised.id, "Export.tsx").read_text()
     assert exports[0]["code"] == initial.candidate.tsx_code and exports[0]["composition"]["duration_in_frames"] == 30
-    inherited = json.loads((accepted / str(revised.id) / "tool-validation.json").read_text())
+    inherited = json.loads(sealed(store, revised.id, "tool-validation.json").read_text())
     assert inherited["inherited_from"] == str(initial.id) and inherited["component"]["default_parameters"] == {"title": {"text": "新标题"}}
     assert not store.conversation(work.id).messages()
     application = FastAPI()
@@ -160,9 +169,11 @@ def test_parameter_revision_is_saved_at_once_without_the_sandbox(harness, sprite
         data = response.text.split('<script type="application/json" id="imv-preview-host">', 1)[1].split("</script>", 1)[0]
         assert json.loads(data) == {"config": {"title": {"text": "新标题"}}}
         # Without a sandbox the instant revision is still accepted over HTTP.
-        accepted_job = client.post(f"/api/templates/works/{work.id}/messages", json={"parameters": {"title": {"text": "第三版"}}, "base_version_id": str(revised.id)})
+        accepted_job = client.post(f"/api/templates/works/{work.id}/messages", headers=DEVICE_HEADERS, json={"parameters": {"title": {"text": "第三版"}}, "base_version_id": str(revised.id)})
         assert accepted_job.status_code == 202
-        (store.root / "accepted" / str(revised.id) / "interactive.js").write_text("tampered")
+        # A changed object is refused even when the read cache must be filled again from storage.
+        sealed(store, revised.id, "interactive.js").write_text("tampered")
+        (store.root / "cache" / "accepted" / str(revised.id) / "interactive.js").write_text("tampered")
         assert client.get(f"/api/templates/versions/{revised.id}/preview").status_code == 404
 
 
@@ -194,7 +205,7 @@ def test_a_bundle_without_injected_defaults_is_rebuilt_in_the_sandbox(harness, s
     application.state.runtime = service
     monkeypatch.setattr(harness.renderer, "sandbox_problem", lambda: "bwrap is not installed", raising=False)
     with TestClient(application) as client:
-        refused = client.post(f"/api/templates/works/{work.id}/messages", json={"parameters": {"title": {"text": "新标题"}}, "base_version_id": str(initial.id)})
+        refused = client.post(f"/api/templates/works/{work.id}/messages", headers=DEVICE_HEADERS, json={"parameters": {"title": {"text": "新标题"}}, "base_version_id": str(initial.id)})
         assert refused.status_code == 503
     job = store.enqueue(work.id, JobInput(mode="parameters", parameters={"title": {"text": "新标题"}}), initial.id)
     store.claim()
@@ -203,9 +214,9 @@ def test_a_bundle_without_injected_defaults_is_rebuilt_in_the_sandbox(harness, s
     assert final.status == "succeeded", final.error
     revised = store.version(final.result_version_id)
     assert seen == [{"title": {"text": "新标题"}}]
-    assert current_bundle((store.root / "accepted" / str(revised.id) / "interactive.js").read_bytes()) and service.instant(revised)
+    assert current_bundle(sealed(store, revised.id, "interactive.js").read_bytes()) and service.instant(revised)
     with pytest.raises(ValueError, match="cannot show new defaults"):
-        harness.presentation.revise(initial, store.root / "accepted" / str(initial.id), {"title": {"text": "x"}}, store.root / "direct")
+        harness.presentation.revise(initial, store.accepted(initial), {"title": {"text": "x"}}, store.root / "direct")
 
 
 def test_protocol_words_inside_an_older_bundle_do_not_allow_an_instant_revision(tmp_path):
@@ -231,7 +242,7 @@ def test_invalid_parameters_and_a_busy_work_are_refused(harness, sprite):
     application.state.runtime = service
     with TestClient(application, raise_server_exceptions=False) as client:
         # Regression: the schema error escaped as an HTTP 500 instead of a 422 the client can show.
-        response = client.post(f"/api/templates/works/{work.id}/messages", json={"parameters": {"title": {"text": 1}}, "base_version_id": str(initial.id)})
+        response = client.post(f"/api/templates/works/{work.id}/messages", headers=DEVICE_HEADERS, json={"parameters": {"title": {"text": 1}}, "base_version_id": str(initial.id)})
     assert response.status_code == 422 and "invalid parameter value" in response.json()["detail"]
     store.enqueue(work.id, JobInput(mode="parameters", parameters={"title": {"text": "x"}}), initial.id, running=True)
     with pytest.raises(Conflict):
@@ -261,7 +272,7 @@ def test_the_host_export_script_embeds_the_new_defaults(harness, sprite):
     service = Runtime(store, harness, harness.settings)
     job = save_parameters(service, work, initial, {"title": {"text": "新标题"}})
     revised = store.version(store.job(job.id).result_version_id)
-    exported = (store.root / "accepted" / str(revised.id) / "Export.tsx").read_text()
+    exported = sealed(store, revised.id, "Export.tsx").read_text()
     assert '{ title: { text: "新标题" } }' in exported or '"新标题"' in exported
     assert "export default function" in exported
 
@@ -270,13 +281,144 @@ def test_cancellation_wins_over_ready_artifacts(harness, sprite):
     """A result built before cancellation cannot be published after the durable cancellation state."""
     store = Store(harness.settings.data_dir)
     store.initialize()
-    work, job = store.create(GenerateTemplateRequest(description="title"))
+    work, job = store.create(GenerateTemplateRequest(description="title"), DEVICE)
     store.claim()
     result = asyncio.run(harness.finalize_sprite(session_for(sprite, runtime_report(sprite)), "saved", Budget(), store.job_dir(job.id)))
     store.update(job.id, status="cancelled", stage="finished")
     with pytest.raises(Conflict):
         store.publish(job.id, *result)
     assert store.project(work.id).current_version_id is None
+
+
+def recording_store(harness) -> tuple[Store, RecordingObjects]:
+    """A store whose local object store records where each call ran."""
+    objects = RecordingObjects(harness.settings.data_dir / "objects")
+    store = Store(harness.settings.data_dir, objects)
+    objects.store = store
+    store.initialize()
+    return store, objects
+
+
+def test_generation_publishes_off_the_event_loop_and_outside_the_write_lock(harness, sprite):
+    """A generated version is uploaded in a worker thread before the record transaction, never under the write lock."""
+    store, objects = recording_store(harness)
+    work, job = store.create(GenerateTemplateRequest(description="标题"), DEVICE)
+    store.claim()
+    result = asyncio.run(harness.finalize_sprite(session_for(sprite, runtime_report(sprite)), "saved", Budget(), store.job_dir(job.id)))
+
+    class Generated:
+        """Return the finished composition without a model call."""
+
+        renderer = None
+
+        async def generate(self, *args, **options):
+            """Hand back the sealed result the runtime then publishes."""
+            return result
+
+    service = Runtime(store, Generated(), harness.settings)
+    asyncio.run(service._execute(job.id))
+    version = store.project(work.id).current_version_id
+    assert version is not None and store.job(job.id).status == "succeeded"
+    puts = [call for call in objects.calls if call[0] == "put"]
+    assert len(puts) == len(store.version(version).validation.artifacts)
+    assert all(not on_loop and not locked for _, _, on_loop, locked in puts)
+
+
+def test_a_failed_publication_removes_its_upload_unless_the_version_committed(harness, sprite, monkeypatch):
+    """A rolled-back transaction removes the uploaded objects; a commit whose acknowledgement is lost keeps them."""
+    store, objects = recording_store(harness)
+    versions_root = harness.settings.data_dir / "objects" / "imv" / "remotion" / "versions"
+    work, job = store.create(GenerateTemplateRequest(description="标题"), DEVICE)
+    store.claim()
+    result = asyncio.run(harness.finalize_sprite(session_for(sprite, runtime_report(sprite)), "saved", Budget(), store.job_dir(job.id)))
+    original = Store.transaction
+
+    class Rollback:
+        """Raise inside the publication transaction so nothing commits."""
+
+        def __init__(self, store):
+            """Wrap the real transaction of this store."""
+            self.manager = original(store)
+
+        def __enter__(self):
+            """Open the real transaction."""
+            return self.manager.__enter__()
+
+        def __exit__(self, kind, error, trace):
+            """Roll back as if the commit had failed."""
+            self.manager.__exit__(OSError, OSError("commit failed"), None)
+            raise OSError("commit failed")
+
+    class LostAcknowledgement(Rollback):
+        """Commit for real, then report a failure as a dropped connection would."""
+
+        def __exit__(self, kind, error, trace):
+            """Commit, then raise."""
+            self.manager.__exit__(kind, error, trace)
+            raise OSError("acknowledgement lost")
+
+    monkeypatch.setattr(Store, "transaction", lambda self: Rollback(self) if self is store else original(self))
+    with pytest.raises(OSError, match="commit failed"):
+        store.publish(job.id, *result)
+    monkeypatch.setattr(Store, "transaction", original)
+    assert store.project(work.id).current_version_id is None
+    assert not versions_root.exists() or not any(versions_root.iterdir())
+    monkeypatch.setattr(Store, "transaction", lambda self: LostAcknowledgement(self) if self is store else original(self))
+    with pytest.raises(OSError, match="acknowledgement lost"):
+        store.publish(job.id, *result)
+    monkeypatch.setattr(Store, "transaction", original)
+    version = store.version(store.project(work.id).current_version_id)
+    assert all(sealed(store, version.id, name).is_file() for name in version.validation.artifacts)
+
+
+def test_instant_revision_check_reads_only_the_player_bundle(harness, sprite):
+    """Deciding whether a parameter patch is instant downloads the bundle alone, not every sealed file."""
+    store, objects = recording_store(harness)
+    work, job = store.create(GenerateTemplateRequest(description="标题"), DEVICE)
+    store.claim()
+    result = asyncio.run(harness.finalize_sprite(session_for(sprite, runtime_report(sprite)), "saved", Budget(), store.job_dir(job.id)))
+    version = store.publish(job.id, *result)
+    shutil.rmtree(store.root / "cache")
+    objects.calls.clear()
+    assert Runtime(store, harness, harness.settings).instant(version)
+    assert [call[1].rsplit("/", 1)[-1] for call in objects.calls] == ["interactive.js"]
+
+
+def test_concurrent_readers_of_a_cold_cache_all_get_the_sealed_files(harness, sprite, monkeypatch):
+    """Preview, diagnostics and downloads opening a version at once each get complete, verified files."""
+    store, objects = recording_store(harness)
+    work, job = store.create(GenerateTemplateRequest(description="标题"), DEVICE)
+    store.claim()
+    result = asyncio.run(harness.finalize_sprite(session_for(sprite, runtime_report(sprite)), "saved", Budget(), store.job_dir(job.id)))
+    version = store.publish(job.id, *result)
+    shutil.rmtree(store.root / "cache")
+    fetch = RecordingObjects.fetch
+
+    def slow_fetch(self, key, destination):
+        """Download slowly enough for the readers to overlap."""
+        time.sleep(0.02)
+        fetch(self, key, destination)
+
+    monkeypatch.setattr(RecordingObjects, "fetch", slow_fetch)
+    barrier = threading.Barrier(8)
+    errors, directories = [], []
+
+    def read():
+        """Open the version together with the other readers and read every sealed file."""
+        barrier.wait()
+        try:
+            directory = store.accepted(version)
+            directories.append({name: (directory / name).read_bytes() for name in version.validation.artifacts})
+        except Exception as exc:
+            errors.append(exc)
+
+    readers = [threading.Thread(target=read) for _ in range(8)]
+    for reader in readers:
+        reader.start()
+    for reader in readers:
+        reader.join()
+    assert errors == [] and len(directories) == 8
+    assert all(files == directories[0] for files in directories)
 
 
 def test_host_builds_preview_without_agent_test_scripts(harness, sprite, tmp_path):

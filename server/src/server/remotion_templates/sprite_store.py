@@ -1,7 +1,7 @@
 """MySQL storage of published Remotion Sprites: one immutable row per publication.
 
 A row holds the `imv.sprite.v1.PublishedSprite` JSON and the columns that identify a publication: its source
-version and field choice, which are unique together. The preview bundle stays a file in the Remotion data
+version and field choice, which are unique together. A row is only deleted as a whole, when nothing uses it. The preview bundle stays a file in the Remotion data
 folder (`sprites.py`). Like the template and Preset tables, the table is created on first use and never altered.
 Templates reference Sprites by ID, and keeping both in one database lets a template be checked against the
 published Sprites when it is saved. The functions are synchronous; callers run them in a worker thread.
@@ -11,7 +11,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from threading import Lock
 
-from sqlalchemy import JSON, Column, MetaData, SmallInteger, String, Table, UniqueConstraint, select, update
+from sqlalchemy import JSON, Column, MetaData, SmallInteger, String, Table, UniqueConstraint, delete, select, update
 from sqlalchemy.dialects.mysql import DATETIME
 
 from ..database import get_engine
@@ -104,6 +104,12 @@ def replace_data(sprite_id: str, data: dict) -> None:
     """Replace the stored JSON of one publication (its refreshed preview hash); the identifying columns never change."""
     with initialize_schema().begin() as connection:
         connection.execute(update(sprites).where(sprites.c.sprite_id == sprite_id).values(data=data))
+
+
+def remove(sprite_id: str) -> bool:
+    """Delete one publication; False when no row has that ID."""
+    with initialize_schema().begin() as connection:
+        return connection.execute(delete(sprites).where(sprites.c.sprite_id == sprite_id)).rowcount > 0
 
 
 def records(sprite_ids: Iterable[str]) -> dict[str, object]:

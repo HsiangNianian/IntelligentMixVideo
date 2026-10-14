@@ -1,4 +1,9 @@
-"""Explicit live acceptance script: python -m server.remotion_templates.smoke --live; artifacts stay under remotion_templates/.data/."""
+"""Explicit live acceptance script: python -m server.remotion_templates.smoke --live.
+
+It uses the configured MySQL and object store under one throwaway device and deletes its works when it ends; job
+scratch and the read cache stay under a `smoke-*` folder of the data directory. It never runs startup recovery, so a
+backend serving the same database keeps its running jobs.
+"""
 
 import argparse
 import asyncio
@@ -29,8 +34,9 @@ async def run() -> None:
         Harness(Provider(settings), Renderer(settings)),
         settings,
     )
-    service.initialize()
-    print(f"Artifacts: {settings.data_dir}", flush=True)
+    # Create the tables only: recovery would interrupt the jobs of a backend that shares this database.
+    service.store.initialize()
+    print(f"Scratch: {settings.data_dir}", flush=True)
 
     async def finish(identifier: UUID):
         """Poll a real local run with an outer deadline and print only status and public diagnostics."""
@@ -64,13 +70,27 @@ async def run() -> None:
                     return service.store.version(job.result_version_id)
                 await asyncio.sleep(0.5)
 
+    # The smoke run owns its works through one throwaway device and removes them at the end.
+    device = uuid4()
+    created: list[UUID] = []
+    try:
+        await scenario(service, settings, device, finish, created)
+    finally:
+        for work_id in created:
+            await service.delete_work(work_id)
+
+
+async def scenario(service: Runtime, settings, device: UUID, finish, created: list[UUID]) -> None:
+    """Generate, edit by parameters and by instruction, then generate from an image of the first result."""
     composition = CompositionConfig(width=360, height=640, duration_in_frames=12)
     project, job = service.store.create(
         GenerateTemplateRequest(
             description="制作静态文字模板，唯一文字是‘今日灵感’，Noto Sans CJK SC 粗体，字号48，白色，水平垂直居中，宽度90%，无其他装饰，透明背景，全程显示。",
             composition=composition,
-        )
+        ),
+        device,
     )
+    created.append(project.id)
     service.notify()
     original = await finish(job.id)
     revised_job = service.edit(
@@ -88,18 +108,16 @@ async def run() -> None:
     natural = await finish(natural_job.id)
     if natural.candidate.tsx_code != revised.candidate.tsx_code:
         raise RuntimeError("Natural-language scalar edit did not preserve source.")
-    original_job = service.store.job(original.job_id)
-    frame = (
-        service.store.job_dir(original.job_id)
-        / f"attempt-{original_job.attempts}"
-        / "frame-0.png"
-    )
-    asset = save_image(frame.read_bytes(), service.store, settings)
-    _, image_job = service.store.create(
+    # Job scratch is gone once a job ends; the sealed frame is read back through the verified cache.
+    frame = await asyncio.to_thread(service.store.accepted, original) / "frame-0.png"
+    asset = save_image(frame.read_bytes(), service.store, settings, device)
+    image_work, image_job = service.store.create(
         GenerateTemplateRequest(
             images=[ImageReference(asset_id=asset.id)], composition=composition
-        )
+        ),
+        device,
     )
+    created.append(image_work.id)
     service.notify()
     await finish(image_job.id)
     print(

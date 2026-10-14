@@ -10,7 +10,7 @@ Request and response bodies are `imv.sprite.v1` messages, mirroring the template
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse
 from generated.imv.sprite.v1 import sprite_pb2 as pb
 from google.protobuf.message import DecodeError, Message
@@ -62,15 +62,17 @@ async def list_sprites(service: Service) -> Response:
     "/publish", response_class=Response, openapi_extra=_REQUEST_BODY,
     responses={200: {"content": PROTOBUF_CONTENT}}, summary="把成功版本保存为 Sprite 资产",
 )
-async def publish_sprite(request: Request, service: Service) -> Response:
-    """复制已验收版本的源码、参数契约与预览；相同来源与字段选择重复发布返回原 Sprite。
+async def publish_sprite(
+    request: Request, service: Service, device: Annotated[UUID, Header(alias="X-IMV-Device")],
+) -> Response:
+    """复制本设备已验收版本的源码、参数契约与预览；相同来源与字段选择重复发布返回原 Sprite。
 
-    新发布要在隔离浏览器里渲染参数边界样本，校验环境不可用时先以 503 拒绝。
+    新发布要在隔离浏览器里渲染参数边界样本，校验环境不可用时先以 503 拒绝；其他设备的版本视为不存在。
     """
     require_sandbox(service)
     message = pb.PublishSpriteRequest()
     await _body(request, message)
-    summary = await sprites.publish(service, message)
+    summary = await sprites.publish(service, message, device)
     return _response(pb.PublishSpriteResponse(sprite=summary))
 
 
@@ -101,7 +103,7 @@ async def get_sprite_render(task_id: UUID, service: Service) -> Response:
 
 @router.get("/{sprite_id}/preview", response_class=HTMLResponse, summary="打开已发布 Sprite 的交互预览")
 async def sprite_preview(sprite_id: str, service: Service, overlay: bool = False) -> HTMLResponse:
-    """返回发布时复制的隔离播放器页面，不依赖源聊天仍然存在。
+    """返回发布时复制的隔离播放器页面，不依赖源聊天仍然存在；副本丢失时按发布源码重建。
 
     `overlay=true` 使用透明背景，供模板编辑把资产叠在预览画面上；再加页面参数 `sync=1`
     （新生成的资产支持）即由父页面通过消息逐帧驱动，无控制条和循环。
@@ -124,3 +126,23 @@ async def sprite_font(sprite_id: str, weight: int, service: Service) -> FileResp
         font, media_type="font/collection",
         headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"},
     )
+
+
+@router.delete("/{sprite_id}", status_code=204, summary="删除未被模板使用的 Sprite 资产")
+async def delete_sprite(sprite_id: str, service: Service) -> Response:
+    """删除资产记录与预览包；资产库共享，任何人都可删除。
+
+    仍被云端模板的 `remotion` 轨道引用时返回 409 并列出模板名称，需先在模板里移除；不存在返回 404。
+    源聊天与版本不受影响，之后可以重新保存到资产。
+    """
+    from ..template.store import templates_using
+
+    try:
+        identifier = str(UUID(sprite_id))
+    except ValueError:
+        raise NotFound("sprite not found") from None
+    used_by = await run_in_threadpool(templates_using, identifier)
+    # A preview rebuilding the copy finishes first, so it cannot write the bundle back after the deletion.
+    async with sprites.bundle_lock(identifier):
+        await run_in_threadpool(sprites.remove, service.store, identifier, used_by)
+    return Response(status_code=204)

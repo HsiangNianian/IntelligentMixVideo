@@ -32,16 +32,14 @@ from server.remotion_templates.tools.registry import (
 from server.remotion_templates.tools.session import ToolSession
 
 
+@pytest.fixture(autouse=True)
+def catalog_database(template_db):
+    """The Preset catalog lives in MySQL only; every test here uses the temporary SQLite stand-in."""
+    return template_db
+
+
 def make_session(tmp_path, monkeypatch):
-    """Build a ToolSession on a temporary catalog with the MySQL backend disabled."""
-    from sqlalchemy.exc import SQLAlchemyError
-
-    from server.remotion_templates.tools import catalog_store
-
-    def unavailable(self):
-        raise SQLAlchemyError("no database in tests")
-
-    monkeypatch.setattr(catalog_store.CatalogStore, "_engine", unavailable)
+    """Build a ToolSession whose Preset catalog is the temporary database."""
     harness = SimpleNamespace(settings=SimpleNamespace(data_dir=tmp_path), renderer=None)
     return ToolSession(harness, None, None, None, tmp_path, [], lambda *_: None, {})
 
@@ -160,15 +158,11 @@ def test_search_lists_summaries_with_optional_keyword(tmp_path, monkeypatch):
     assert len(session.search_presets(PresetSearchInput(limit=1)).presets) == 1
 
 
-def test_search_orders_merged_database_and_local_presets_by_creation_time(tmp_path, monkeypatch, template_db):
-    """数据库 UUID 顺序与本地追加顺序均不能替代创建时间，混合后排序再截取。"""
-    from server.remotion_templates.tools import catalog_store
-
+def test_search_orders_presets_by_creation_time(tmp_path, monkeypatch):
+    """数据库按 ID 读出的顺序不能替代创建时间：先按创建时间倒序排序，再截取。"""
     session = make_session(tmp_path, monkeypatch)
     local = save_preset(session, "Title local", preset_id="b" * 32, created_at="2026-10-08T12:00:00+00:00")
     save_preset(session, "Title oldest", preset_id="e" * 32, created_at="2026-10-07T00:00:00+00:00")
-    catalog_store.metadata.create_all(template_db)
-    monkeypatch.setattr(catalog_store.CatalogStore, "_engine", lambda self: template_db)
     save_preset(session, "Title older", preset_id="f" * 32, created_at="2026-10-08T00:00:00+00:00")
     newest = save_preset(session, "Title newest", preset_id="0" * 32, created_at="2026-10-09T00:00:00+00:00")
     result = session.search_presets(PresetSearchInput(query="title", limit=2))
@@ -311,6 +305,7 @@ def test_single_oversized_preset_returns_a_bounded_error(tmp_path, monkeypatch, 
     stored = save_preset(session, "normal")
     oversized = stored.model_copy(update={"description" if large_field == "summary" else "code": "中" * 40_000})
     monkeypatch.setattr(session.catalog, "read_presets", lambda: [oversized])
+    monkeypatch.setattr(session.catalog, "find_preset", lambda preset_id: oversized if preset_id == stored.preset_id else None)
     request = {} if large_field == "summary" else {"preset_id": stored.preset_id}
     result = asyncio.run(get_tool("preset.search").invoke(session, request))
     assert result["ok"] is False

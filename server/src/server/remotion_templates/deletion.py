@@ -1,30 +1,38 @@
-"""Delete a work's files and relational history after its runtime has stopped all writers.
+"""Delete a work's stored files and database records after its runtime has stopped all writers.
 
-The durable marker survives partial filesystem failures. Metadata stays until cleanup
-finishes, so retry/startup recovery can derive the same server-owned paths again.
+The durable `deleting` flag survives partial failures. Records stay until cleanup finishes, so a retried DELETE,
+the expiry sweep or startup recovery can derive the same object keys and local paths again.
 """
 
-import json
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID
 
+from sqlalchemy import delete, select
+
+from .tables import (
+    assets,
+    chat_messages,
+    conversations,
+    job_progress,
+    job_rounds,
+    jobs,
+    versions,
+    work_assets,
+    work_events,
+    works,
+)
+
 if TYPE_CHECKING:
     from .store import Store
 
-# Works that use an asset: as an original request image (the single ``image`` of works stored before
-# multi-image chat, or ``images``) or as an image attached to a later message.
-REFERENCES = """SELECT id FROM projects WHERE json_extract(data, '$.request.image.asset_id')=:asset
-    UNION SELECT p.id FROM projects p, json_each(p.data, '$.request.images') i
-    WHERE json_extract(i.value, '$.asset_id')=:asset
-    UNION SELECT j.project_id FROM jobs j, json_each(j.input_data, '$.images') i
-    WHERE json_extract(i.value, '$.asset_id')=:asset"""
-
 
 def remove_path(root: Path, category: str, identifier: str, suffix: str = "") -> None:
-    """Remove only UUID-owned paths; unlink leaf symlinks and reject redirected parents."""
+    """Remove only UUID-owned local paths; unlink leaf symlinks and reject redirected parents."""
     parent = root / category
+    if not parent.exists():
+        return
     if parent.is_symlink() or not parent.resolve().is_relative_to(root.resolve()):
         raise OSError("Data directory points outside its managed location")
     path = parent / f"{UUID(identifier)}{suffix}"
@@ -37,67 +45,48 @@ def remove_path(root: Path, category: str, identifier: str, suffix: str = "") ->
 
 
 def finish(store: "Store", work_id: UUID) -> None:
-    """Clean files then commit metadata removal; serialize shared-asset checks with creation.
+    """Remove objects and local copies, then the records; reference images no other work uses go too.
 
-    Call only after worker teardown, or during startup before workers exist. Filesystem
-    failure rolls back SQL but preserves the previously committed deletion marker.
+    Call only after worker teardown, or during startup before workers exist. Files and objects are removed outside the
+    write lock: nothing can add a job, version or image reference to a deleting work, and an image only this work uses
+    cannot be attached elsewhere meanwhile (`Store.require_references` refuses images of deleting works). A storage
+    failure leaves every record and the committed deletion flag, so a retry derives the same keys again.
     """
+    from .store import asset_key, version_key
+
     identifier = str(work_id)
-    with store.connection() as db:
-        db.execute("BEGIN IMMEDIATE")
-        if not db.execute(
-            "SELECT 1 FROM work_deletions WHERE work_id=?", (identifier,)
-        ).fetchone():
+    with store.reading() as db:
+        if not db.execute(select(works.c.deleting).where(works.c.id == identifier)).scalar():
             return
-        jobs = db.execute(
-            "SELECT id FROM jobs WHERE project_id=?", (identifier,)
-        ).fetchall()
-        versions = db.execute(
-            "SELECT id FROM versions WHERE project_id=?", (identifier,)
-        ).fetchall()
-        project = db.execute(
-            "SELECT data FROM projects WHERE id=?", (identifier,)
-        ).fetchone()
-        request = json.loads(project[0])["request"] if project else {}
-        originals = request.get("images", []) + ([request["image"]] if request.get("image") else [])
-        images = {str(UUID(image["asset_id"])) for image in originals}
-        images.update(
-            str(UUID(row[0]))
-            for row in db.execute(
-                "SELECT json_extract(i.value, '$.asset_id') FROM jobs j, json_each(j.input_data, '$.images') i "
-                "WHERE j.project_id=?",
-                (identifier,),
-            )
-        )
-        for row in jobs:
-            remove_path(store.root, "jobs", row[0])
-        for row in versions:
-            remove_path(store.root, "accepted", row[0])
-        for asset_id in sorted(images):
-            shared = db.execute(
-                f"SELECT 1 FROM ({REFERENCES}) WHERE id<>:work LIMIT 1",
-                {"asset": asset_id, "work": identifier},
-            ).fetchone()
-            if not shared:
-                remove_path(store.root, "assets", asset_id, ".png")
-                db.execute("DELETE FROM assets WHERE id=?", (asset_id,))
-        # Keep the foreign-key deletion order explicit and bind every work identifier.
-        db.execute(
-            "DELETE FROM events WHERE job_id IN (SELECT id FROM jobs WHERE project_id=?)",
-            (identifier,),
-        )
-        db.execute(
-            "DELETE FROM job_progress WHERE job_id IN (SELECT id FROM jobs WHERE project_id=?)",
-            (identifier,),
-        )
-        db.execute("DELETE FROM chat_messages WHERE work_id=?", (identifier,))
-        db.execute(
-            "DELETE FROM job_rounds WHERE job_id IN (SELECT id FROM jobs WHERE project_id=?)",
-            (identifier,),
-        )
-        db.execute("DELETE FROM work_events WHERE work_id=?", (identifier,))
-        db.execute("DELETE FROM conversations WHERE project_id=?", (identifier,))
-        db.execute("DELETE FROM versions WHERE project_id=?", (identifier,))
-        db.execute("DELETE FROM jobs WHERE project_id=?", (identifier,))
-        db.execute("DELETE FROM projects WHERE id=?", (identifier,))
-        db.execute("DELETE FROM work_deletions WHERE work_id=?", (identifier,))
+        job_ids = db.execute(select(jobs.c.id).where(jobs.c.work_id == identifier)).scalars().all()
+        version_ids = db.execute(select(versions.c.id).where(versions.c.work_id == identifier)).scalars().all()
+        images = db.execute(select(work_assets.c.asset_id).where(work_assets.c.work_id == identifier)).scalars().all()
+        exclusive = [
+            asset_id for asset_id in sorted(images)
+            if not db.execute(select(work_assets.c.work_id).where(
+                work_assets.c.asset_id == asset_id, work_assets.c.work_id != identifier,
+            ).limit(1)).first()
+        ]
+    for job_id in job_ids:
+        remove_path(store.root, "jobs", job_id)
+    remove_path(store.root, "audit", identifier)
+    for version_id in version_ids:
+        store.objects.delete_prefix(version_key(UUID(version_id)))
+        remove_path(store.root / "cache", "accepted", version_id)
+    for asset_id in exclusive:
+        store.objects.delete_prefix(asset_key(UUID(asset_id)))
+        remove_path(store.root / "cache", "assets", asset_id, ".png")
+    with store.transaction() as db:
+        if not db.execute(select(works.c.deleting).where(works.c.id == identifier)).scalar():
+            return
+        if exclusive:
+            db.execute(delete(assets).where(assets.c.id.in_(exclusive)))
+        db.execute(delete(work_assets).where(work_assets.c.work_id == identifier))
+        db.execute(delete(job_progress).where(job_progress.c.job_id.in_(job_ids)))
+        db.execute(delete(job_rounds).where(job_rounds.c.job_id.in_(job_ids)))
+        db.execute(delete(chat_messages).where(chat_messages.c.work_id == identifier))
+        db.execute(delete(work_events).where(work_events.c.work_id == identifier))
+        db.execute(delete(conversations).where(conversations.c.work_id == identifier))
+        db.execute(delete(versions).where(versions.c.work_id == identifier))
+        db.execute(delete(jobs).where(jobs.c.work_id == identifier))
+        db.execute(delete(works).where(works.c.id == identifier))

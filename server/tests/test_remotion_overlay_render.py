@@ -1,6 +1,6 @@
 """Remotion 叠加视频与单个 Sprite 渲染：时长优先级、摆放与分段规划、任务流转、ZOS 转存与回调的离线回归。
 
-默认不启动浏览器、ffprobe 或 ZOS：渲染器、探测与上传由替身承担，任务表使用临时 SQLite。
+默认不启动浏览器、ffprobe 或 ZOS：渲染器、探测与上传由替身承担，任务表 `remotion_overlay_renders` 使用代替 MySQL 的临时 SQLite（template_db）。
 `real_` 用例在 Linux 上经隔离沙箱真实渲染，需 IMV_TEST_RENDERER=1（见 backend-integration 工作流）。
 在 server/ 目录执行 `uv run --locked pytest tests/test_remotion_overlay_render.py -v`。
 """
@@ -11,9 +11,10 @@ import logging
 import os
 import shutil
 import signal
-import sqlite3
 import subprocess
 import threading
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -24,6 +25,8 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from generated.imv.sprite.v1 import sprite_pb2 as pb
 from pydantic import TypeAdapter
+from sqlalchemy import func, insert, select, update
+from sqlalchemy.exc import OperationalError
 
 from server.app import app
 from server.remotion_templates import overlay_render, overlay_service
@@ -36,11 +39,13 @@ from server.remotion_templates.overlay_router import overlay_renders
 from server.remotion_templates.overlay_service import OverlayRenders
 from server.remotion_templates.renderer import Renderer
 from server.remotion_templates.routes import runtime_for
+from server.remotion_templates.runtime import Runtime
 from server.remotion_templates.settings import Settings
 from server.remotion_templates import sprite_render
 from server.remotion_templates.sprite_render import chunk_ranges, join_problem, plan_sprite_render
 from server.remotion_templates.sprite_router import sprite_runtime
 from server.remotion_templates.store import NotFound, Store
+from server.remotion_templates.tables import overlay_renders as overlay_table
 from server.video_composition import media
 from server.video_composition.schema import MediaURL
 
@@ -254,7 +259,7 @@ class FakeRenderer:
 
 
 @pytest.fixture
-def service(tmp_path, monkeypatch):
+def service(tmp_path, monkeypatch, template_db):
     """带临时任务表、假渲染器、假 ZOS 的任务服务；重试间隔缩成毫秒，返回服务、渲染器和上传记录。"""
     font = tmp_path / "font.ttc"
     font.write_bytes(b"font")
@@ -359,21 +364,21 @@ def callbacks(monkeypatch) -> SimpleNamespace:
 
 def is_notified(overlays: OverlayRenders, task_id: str) -> bool:
     """任务行是否已记录终态通知处理完毕（送达或放弃）。"""
-    with overlays.store.connection() as db:
-        row = db.execute("SELECT data FROM overlay_renders WHERE id=?", (task_id,)).fetchone()
-    return bool(json.loads(row["data"]).get("notified"))
+    with overlays.store.reading() as db:
+        data = db.execute(select(overlay_table.c.data).where(overlay_table.c.id == task_id)).scalar_one()
+    return bool(json.loads(data).get("notified"))
 
 
 def task_rows(overlays: OverlayRenders) -> int:
     """任务表当前的行数。"""
-    with overlays.store.connection() as db:
-        return db.execute("SELECT COUNT(*) FROM overlay_renders").fetchone()[0]
+    with overlays.store.reading() as db:
+        return db.execute(select(func.count()).select_from(overlay_table)).scalar_one()
 
 
 def insert_row(overlays: OverlayRenders, task_id: str, status: str, created_at: str, data: str) -> None:
     """直接写入一行任务记录，可以是损坏的内容。"""
-    with overlays.store.connection() as db:
-        db.execute("INSERT INTO overlay_renders VALUES (?, ?, ?, ?)", (task_id, status, created_at, data))
+    with overlays.store.transaction() as db:
+        db.execute(insert(overlay_table).values(id=task_id, status=status, created_at=created_at, data=data))
 
 
 # 场景：成功路径按 duration 渲染，转存 ZOS 指定键，并向回调发送四字段通知。
@@ -689,8 +694,33 @@ def test_resume_reruns_unfinished_tasks(service) -> None:
     assert len(renderer.requests) == 1
 
 
+# 场景：保留期清理只删除早已结束且没有待发通知的任务，未结束或仍欠回调的任务留给恢复。
+def test_prune_drops_only_old_finished_tasks_with_nothing_to_deliver(service) -> None:
+    """早于截止时间的成功/失败任务（无回调或已通知）删除；运行中、仍欠回调或较新的任务保留。"""
+    overlays, _, _ = service
+    request = stored_request()
+    cases = {
+        "a" * 32: ("succeeded", {}, None),
+        "b" * 32: ("failed", {"notified": True}, "https://bus.example/callback"),
+        "c" * 32: ("failed", {}, "https://bus.example/callback"),
+        "d" * 32: ("rendering", {}, None),
+    }
+    for task_id, (status, changes, callback) in cases.items():
+        overlays._insert(task_id, {"request": {**request, "callback_url": callback}})
+        overlays._save(task_id, status, **changes)
+    overlays._insert("e" * 32, {"request": request})
+    overlays._save("e" * 32, "succeeded")
+    with overlays.store.transaction() as db:
+        db.execute(update(overlay_service.overlay_renders).where(overlay_service.overlay_renders.c.id != "e" * 32)
+                   .values(created_at="2020-01-01T00:00:00+00:00"))
+    overlay_service.prune_finished(overlays.store, datetime.now(UTC) - overlay_service.FINISHED_RETENTION)
+    with overlays.store.reading() as db:
+        kept = sorted(db.execute(select(overlay_service.overlay_renders.c.id)).scalars())
+    assert kept == ["c" * 32, "d" * 32, "e" * 32]
+
+
 # 场景：运行时第一次建立就恢复叠加任务，不论之后先访问哪条路由，也只恢复一次。
-def test_runtime_start_recovers_overlay_tasks(tmp_path, monkeypatch) -> None:
+def test_runtime_start_recovers_overlay_tasks(tmp_path, monkeypatch, template_db) -> None:
     """runtime_for 建立运行时后调用 resume 一次；再次取用不重复恢复。"""
     settings = Settings(_env_file=None, data_dir=tmp_path / "state")
     application = create_template_app(
@@ -705,6 +735,33 @@ def test_runtime_start_recovers_overlay_tasks(tmp_path, monkeypatch) -> None:
 
     first, second = asyncio.run(scenario())
     assert first is second and resumed == [first.overlays]
+
+
+# 场景：工作区打开或服务重启后几个请求同时到达，运行时只建立并恢复一次。
+def test_concurrent_first_requests_share_one_runtime(tmp_path, monkeypatch, template_db) -> None:
+    """初始化在线程中等待时，并发的 runtime_for 等待同一次建立，不重复恢复任务或启动清理。"""
+    settings = Settings(_env_file=None, data_dir=tmp_path / "state")
+    application = create_template_app(
+        settings, provider=SimpleNamespace(settings=settings), renderer=SimpleNamespace(settings=settings),
+    )
+    initialized, resumed, sweeps = [], [], []
+
+    def slow_initialize(self) -> None:
+        """模拟建表与恢复耗时，让其他请求在初始化完成前到达。"""
+        time.sleep(0.2)
+        initialized.append(self)
+
+    monkeypatch.setattr(Runtime, "initialize", slow_initialize)
+    monkeypatch.setattr(Runtime, "start_maintenance", lambda self: sweeps.append(self))
+    monkeypatch.setattr(OverlayRenders, "resume", lambda self: resumed.append(self))
+
+    async def scenario():
+        """三个首请求同时取用运行时。"""
+        return await asyncio.gather(*(runtime_for(application.state) for _ in range(3)))
+
+    runtimes = asyncio.run(scenario())
+    assert len({id(runtime) for runtime in runtimes}) == 1
+    assert initialized == sweeps == [runtimes[0]] and resumed == [runtimes[0].overlays]
 
 
 # 场景：路由依赖取用 Remotion 运行时里的任务服务，并在取用时触发（重试）恢复。
@@ -768,16 +825,16 @@ def test_resume_requeues_oldest_first(service, monkeypatch) -> None:
 def test_resume_retries_when_the_table_is_unreadable(service, monkeypatch) -> None:
     """第一次读表失败时 resumed 仍为 False，第二次成功后才置为 True。"""
     overlays, _, _ = service
-    real = overlays.store.connection
+    real = overlays.store.reading
 
     def locked():
         """模拟数据库被锁，读表失败。"""
-        raise sqlite3.OperationalError("database is locked")
+        raise OperationalError("SELECT", {}, Exception("database is locked"))
 
-    monkeypatch.setattr(overlays.store, "connection", locked)
+    monkeypatch.setattr(overlays.store, "reading", locked)
     overlays.resume()
     assert overlays.resumed is False
-    monkeypatch.setattr(overlays.store, "connection", real)
+    monkeypatch.setattr(overlays.store, "reading", real)
     overlays.resume()
     assert overlays.resumed is True
 
@@ -791,7 +848,7 @@ def lock_writes(overlays: OverlayRenders, status: str, times: int | None) -> Non
         if new_status == status and (left["n"] is None or left["n"] > 0):
             if left["n"] is not None:
                 left["n"] -= 1
-            raise sqlite3.OperationalError("database is locked")
+            raise OperationalError("UPDATE", {}, Exception("database is locked"))
         return real(task_id, new_status, **changes)
 
     overlays._save = save

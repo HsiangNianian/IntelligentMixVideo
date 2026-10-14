@@ -24,10 +24,9 @@ def extract_third_frame(video: Path, image: Path, timeout: float) -> None:
         raise ValueError("IMS 成片不足三帧，无法生成封面")
 
 
-def upload_public(files: list[tuple[Path, str, str]], settings: ZosSettings, timeout: float) -> list[str]:
-    """逐个上传为 public-read，核对大小并匿名读取首字节；返回与输入同序的公开地址。"""
-    urls = [f"{settings.zos_web_url.rstrip('/')}/{key}" for _, key, _ in files]
-    storage = boto3.client(
+def storage_client(settings: ZosSettings, timeout: float):
+    """按服务端 ZOS 配置创建 S3 兼容客户端；单次尝试、有界超时，调用方负责关闭。"""
+    return boto3.client(
         "s3", endpoint_url=settings.zos_api_endpoint, region_name=settings.zos_region,
         aws_access_key_id=settings.zos_access_key_id.get_secret_value(),
         aws_secret_access_key=settings.zos_secret_access_key.get_secret_value(),
@@ -35,6 +34,12 @@ def upload_public(files: list[tuple[Path, str, str]], settings: ZosSettings, tim
                       connect_timeout=timeout, read_timeout=timeout, retries={"max_attempts": 1},
                       request_checksum_calculation="when_required", response_checksum_validation="when_required"),
     )
+
+
+def upload_public(files: list[tuple[Path, str, str]], settings: ZosSettings, timeout: float) -> list[str]:
+    """逐个上传为 public-read，核对大小并匿名读取首字节；返回与输入同序的公开地址。"""
+    urls = [f"{settings.zos_web_url.rstrip('/')}/{key}" for _, key, _ in files]
+    storage = storage_client(settings, timeout)
     with closing(storage), httpx.Client(timeout=timeout, follow_redirects=False) as client:
         for (path, object_key, content_type), url in zip(files, urls):
             with path.open("rb") as file:

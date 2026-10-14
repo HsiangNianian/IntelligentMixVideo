@@ -1,7 +1,7 @@
 /** Remotion 资产核心测试：版本卡片保存到资产，以及云端模板编辑中的资产目录、片段编辑与随模板的原子保存；执行 bun run test。 */
 import { expect, test } from "bun:test";
 import { create, fromBinary, toBinary, toJson, type MessageInitShape } from "@bufbuild/protobuf";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, waitForElementToBeRemoved, within } from "@testing-library/react";
 import { VersionCard } from "@/features/remotion_templates/VersionCard";
 import { defaultKind, publishChoice } from "@/features/remotion_templates/spriteChoice";
 import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
@@ -531,4 +531,63 @@ test("读回片段的覆盖值，内部参数的覆盖可恢复默认，滤镜�
   const filter = await screen.findByRole("region", { name: "Remotion 资产设置" });
   expect(within(filter).getByLabelText("强度")).toBeTruthy();
   expect(within(filter).queryByLabelText("水平位置 %")).toBeNull();
+});
+
+// 场景：资产库里的资产可确认后删除；仍被模板使用时弹窗显示服务端列出的模板并保留资产，确认删除成功后目录刷新不再显示它。
+test("确认后删除资产，被模板使用时说明原因", async () => {
+  const catalog = [summary("sprite-1"), summary("sprite-2", SpriteKind.VIDEO_OVERLAY)];
+  catalog[1].name = "冷色光斑";
+  sprites({ catalog });
+  const fallback = fetchMock.getMockImplementation()!;
+  const deletes: string[] = [];
+  fetchMock.mockImplementation((async (url, init) => {
+    const path = new URL(String(url)).pathname;
+    if (init?.method !== "DELETE") return fallback(url, init);
+    deletes.push(path);
+    if (deletes.length === 1)
+      return new Response(JSON.stringify({ detail: "资产正被模板使用，请先在这些模板里移除后再删除：片头模板" }), { status: 409 });
+    catalog.splice(0, 1);
+    return new Response(null, { status: 204 });
+  }) as typeof fetch);
+  render(<><Toaster /><TemplateWorkspace selection={{ environment: "cloud", templateId: null, name: "新模板", description: "" }} onHome={() => {}} /></>);
+  const region = await screen.findByRole("region", { name: "Remotion 资产" });
+  fireEvent.click(within(region).getByRole("button", { name: "展开" }));
+  fireEvent.click(await within(region).findByRole("button", { name: "删除 Remotion 资产：霓虹标题" }));
+  const dialog = await screen.findByRole("dialog", { name: "删除 Remotion 资产" });
+  expect(dialog.textContent).toContain("霓虹标题");
+  fireEvent.click(within(dialog).getByRole("button", { name: "确认删除" }));
+  expect((await within(dialog).findByRole("alert")).textContent).toBe("资产正被模板使用，请先在这些模板里移除后再删除：片头模板");
+  // 弹窗打开时背景对辅助技术隐藏，资产仍在目录里。
+  expect(within(region).getByRole("button", { name: "添加 Remotion 资产：霓虹标题", hidden: true })).toBeTruthy();
+  fireEvent.click(within(dialog).getByRole("button", { name: "确认删除" }));
+  // 等待元素消失不用 expect(元素).toBeNull()：失败时格式化整棵 DOM 会耗尽内存。
+  await waitForElementToBeRemoved(() => screen.queryByRole("dialog", { name: "删除 Remotion 资产" }));
+  expect(await screen.findByText("已删除资产「霓虹标题」")).toBeTruthy();
+  await waitFor(() => expect(within(region).queryByRole("button", { name: "添加 Remotion 资产：霓虹标题" }) === null).toBe(true));
+  expect(within(region).getByRole("button", { name: "添加 Remotion 资产：冷色光斑" })).toBeTruthy();
+  expect(deletes).toEqual(["/api/sprites/sprite-1", "/api/sprites/sprite-1"]);
+});
+
+// 场景：当前草稿（含尚未保存的添加）摆放的资产不能删除，并说明原因；否则之后保存模板会因资产未发布被拒绝。移除片段后恢复可删除。
+test("当前模板摆放的资产禁止删除", async () => {
+  const catalog = [summary("sprite-1"), summary("sprite-2")];
+  catalog[1].name = "冷色光斑";
+  sprites({ catalog });
+  render(<TemplateWorkspace selection={{ environment: "cloud", templateId: savedTemplate().template_id }} onHome={() => {}} />);
+  const region = await screen.findByRole("region", { name: "Remotion 资产" });
+  fireEvent.click(within(region).getByRole("button", { name: "展开" }));
+  /** 删除按钮随禁用状态重新挂载（禁用时不包悬停提示），每次重新查询。 */
+  const remove = (name: string) => within(region).getByRole<HTMLButtonElement>("button", { name: `删除 Remotion 资产：${name}`, hidden: true });
+  await within(region).findByRole("button", { name: "删除 Remotion 资产：霓虹标题" });
+  expect(remove("霓虹标题").disabled).toBe(false);
+  fireEvent.click(within(region).getByRole("button", { name: "添加 Remotion 资产：霓虹标题" }));
+  await waitFor(() => expect(remove("霓虹标题").disabled).toBe(true));
+  expect(remove("霓虹标题").getAttribute("aria-describedby")).toBe("sprite-in-use-sprite-1");
+  expect(document.getElementById("sprite-in-use-sprite-1")!.textContent).toBe("当前模板正在使用，移除片段后才能删除");
+  expect(remove("冷色光斑").disabled).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "移除 Remotion 资产：霓虹标题", hidden: true }));
+  await waitFor(() => expect(remove("霓虹标题").disabled).toBe(false));
+  expect(document.getElementById("sprite-in-use-sprite-1")).toBeNull();
+  fireEvent.click(remove("霓虹标题"));
+  expect(await screen.findByRole("dialog", { name: "删除 Remotion 资产" })).toBeTruthy();
 });

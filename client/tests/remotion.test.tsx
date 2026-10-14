@@ -11,6 +11,7 @@ import {
 import { StrictMode } from "react";
 import { RemotionWorkspace } from "@/features/remotion_templates/RemotionWorkspace";
 import { backgroundUrl, validValue } from "@/features/remotion_templates/model";
+import * as local from "@/features/remotion_templates/localSessions";
 import type { Job, Values } from "@/features/remotion_templates/model";
 import { fetchMock } from "./setup";
 import { remotionJob, remotionVersion } from "./remotion-fixtures";
@@ -66,8 +67,8 @@ test("纯问答保留成功预览并恢复历史", async () => {
   fireEvent.submit(
     screen.getByRole("button", { name: "发送" }).closest("form")!,
   );
-  await waitFor(() =>
-    expect(fake.snapshots.get("work-1")?.job.id).toBe("question-1"),
+  await waitFor(async () =>
+    expect((await local.snapshot("work-1")).job.id).toBe("question-1"),
   );
   await waitFor(() => expect(fake.streams.size).toBe(1));
   expect(screen.queryByText("正在渲染预览…") !== null).toBe(false);
@@ -941,18 +942,15 @@ test("参数提交网络失败保留草稿，读取恢复后可继续编辑", as
 
 // 会话快照读取失败允许手动恢复，不重新提交生成请求。
 test("刷新会话恢复读取而不重复生成", async () => {
-  let reads = 0;
   const fake = server((path) => {
     if (path === "/works")
       return Response.json({
         work: { id: "work-1" },
         job: remotionJob("running"),
       });
-    if (path === "/works/work-1/session") {
-      if (++reads === 1) throw new TypeError("offline");
-      return undefined;
-    }
   });
+  // 首次从本地会话库恢复失败，刷新任务只重新读取，不重复创建。
+  spyOn(local, "snapshot").mockRejectedValueOnce(new Error("本地会话库读取失败"));
   render(<RemotionWorkspace />);
   fireEvent.change(screen.getByLabelText("字效描述"), {
     target: { value: "恢复测试" },
@@ -1056,7 +1054,7 @@ test.each([404, 503])(
     expect(screen.queryByText(/新版本读取失败/)).toBeNull();
     expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("72");
     expect(
-      fetchMock.mock.calls.filter((call) => call[1]?.method === "POST"),
+      fetchMock.mock.calls.filter((call) => call[1]?.method === "POST" && !String(call[0]).endsWith("/ack")),
     ).toHaveLength(1);
     view.unmount();
     expect(fake.streams.size).toBe(0);
@@ -1095,9 +1093,8 @@ test.each(["Enter", "blur"])(
     const retry = await screen.findByRole<HTMLButtonElement>("button", {
       name: "重新读取结果",
     });
-    const snapshots = fetchMock.mock.calls.filter((call) =>
-      String(call[0]).endsWith("/session"),
-    ).length;
+    // 读取恢复从本地会话库重读快照；草稿未保存期间不得发生。
+    const reads = spyOn(local, "snapshot");
     available = true;
     const size = screen.getByLabelText("字号");
     fireEvent.change(size, { target: { value: "80" } });
@@ -1105,11 +1102,7 @@ test.each(["Enter", "blur"])(
     else fireEvent.blur(size);
     fireEvent.click(retry);
     expect(retry.disabled).toBe(true);
-    expect(
-      fetchMock.mock.calls.filter((call) =>
-        String(call[0]).endsWith("/session"),
-      ),
-    ).toHaveLength(snapshots);
+    expect(reads).not.toHaveBeenCalled();
     expect(submitted).toHaveLength(0);
     fireEvent.click(screen.getByRole("button", { name: "保存配置" }));
     await waitFor(() => expect(submitted).toHaveLength(1), { timeout: 2000 });
