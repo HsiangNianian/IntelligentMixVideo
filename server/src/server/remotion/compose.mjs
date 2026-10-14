@@ -55,13 +55,39 @@ const result = await build({
 });
 const source = ts.createSourceFile("Sprite.tsx", result.outputFiles[0]?.text ?? "", ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 // esbuild erases types and rewrites the default export. Restore generated function
-// boundaries with the parser so defaults, destructuring and recursive helpers remain valid.
+// boundaries, variables and class members with the parser, so defaults, destructuring, recursive helpers and
+// declarations typed only by an erased annotation or type argument (`const hits: T[] = []`, `useState<T | null>(null)`,
+// `constructor(private size: number)`) remain valid.
 // Original Preset modules are independently typechecked before the generated adapter.
 const transformed = ts.transform(source, [(context) => {
+  /** True for a for-in/for-of binding, where a type annotation is a syntax error. */
+  function loopBinding(parent) {
+    return Boolean(parent && ts.isVariableDeclarationList(parent) && ts.isForInOrOfStatement(parent.parent));
+  }
   /** Normalize emitted JavaScript without running any Preset code. */
   function visit(node) {
+    const parent = node.parent;
     node = ts.visitEachChild(node, visit, context);
     const any = () => ts.factory.createKeywordTypeNode(ts.SyntaxKind.AnyKeyword);
+    if (ts.isVariableDeclaration(node) && !node.type && !loopBinding(parent)) {
+      return ts.factory.updateVariableDeclaration(node, node.name, node.exclamationToken, any(), node.initializer);
+    }
+    if (ts.isPropertyDeclaration(node) && !node.type) {
+      return ts.factory.updatePropertyDeclaration(node, node.modifiers, node.name, node.questionToken ?? node.exclamationToken, any(), node.initializer);
+    }
+    // Parameter properties and `declare` fields leave no member behind, only `this.size = size`.
+    // `extends React.Component<P, S>` loses its type arguments, so the base class is typed `any` too.
+    if (ts.isHeritageClause(node) && node.token === ts.SyntaxKind.ExtendsKeyword) {
+      return ts.factory.updateHeritageClause(node, node.types.map((base) => ts.factory.updateExpressionWithTypeArguments(base,
+        ts.factory.createParenthesizedExpression(ts.factory.createAsExpression(base.expression, any())), base.typeArguments)));
+    }
+    if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
+      const key = ts.factory.createParameterDeclaration(undefined, undefined, "key", undefined, ts.factory.createKeywordTypeNode(ts.SyntaxKind.StringKeyword));
+      const members = [ts.factory.createIndexSignature(undefined, [key], any()), ...node.members];
+      return ts.isClassDeclaration(node)
+        ? ts.factory.updateClassDeclaration(node, node.modifiers, node.name, node.typeParameters, node.heritageClauses, members)
+        : ts.factory.updateClassExpression(node, node.modifiers, node.name, node.typeParameters, node.heritageClauses, members);
+    }
     if (ts.isParameter(node)) {
       return ts.factory.updateParameterDeclaration(node, node.modifiers, node.dotDotDotToken, node.name, node.questionToken,
         node.dotDotDotToken ? ts.factory.createArrayTypeNode(any()) : any(), node.initializer);

@@ -187,7 +187,8 @@ successful generation attempt does not remove the completion requirement.
 
 Drafts are handles: neither the model nor the snapshot carries Sprite or draft source, so a large
 composition is never copied back verbatim. Presets of the same source are bundled once however many
-instances use them. For an edit, the accepted base's instances are registered as `base_<instance_id>`
+instances use them. Bundling erases the Presets' TypeScript types and type arguments, so the composed
+adapter types every variable, class field and base class `any` and gives each class an `any` index signature; each Preset is still typechecked on its own before it is composed. For an edit, the accepted base's instances are registered as `base_<instance_id>`
 Preset drafts; only the Executor's snapshot shows their source, each distinct source once. The session
 snapshot stays within 200 KB: a base too large for it has its largest sources omitted first (`code_omitted`,
 `legacy_code_omitted`), while their handles still compose unchanged. The execution
