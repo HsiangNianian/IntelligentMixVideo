@@ -375,6 +375,16 @@ def test_diagnostics_do_not_create_versions_or_jobs(published):
     assert [item.id for item in published.store.versions(published.version.project_id)] == [published.version.id]
 
 
+def test_other_devices_cannot_read_a_version_or_its_diagnostics(published):
+    """版本详情与代码诊断只属于作品所属设备；其他设备为 404，且不启动诊断 worker。"""
+    other = {"X-IMV-Device": str(uuid4())}
+    with client_for(published) as client:
+        for suffix in ("", "/diagnostics"):
+            assert client.get(f"/api/templates/versions/{published.version.id}{suffix}", headers=other).status_code == 404
+        assert client.get(f"/api/templates/versions/{published.version.id}").status_code == 200
+    assert published.code_renderer.requests == []
+
+
 @pytest.mark.parametrize("contents", ["{}", '{"report": {}}', "[]", "null", '{"component": {}}'])
 def test_malformed_sealed_validation_returns_404(published, contents):
     """合法 JSON 的缺字段或错误容器均视为无效产物，下载与诊断不得返回 500。"""

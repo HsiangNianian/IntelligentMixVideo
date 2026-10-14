@@ -211,3 +211,46 @@ def test_routes_answer_503_while_the_object_store_is_unreachable(tmp_path: Path,
         assert client.get(f"/assets/{asset.id}").status_code == 503
         assert client.delete(f"/works/{work.id}", headers=DEVICE_HEADERS).status_code == 503
     assert store.pending_deletions() == [work.id]
+
+
+# 场景：ZOS 写入经 upload_public 以 public-read 上传；按前缀删除逐页列举并批量删除，客户端用后释放。
+def test_zos_put_uploads_public_and_delete_prefix_removes_every_page(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """put 把文件、键与内容类型交给 upload_public；delete_prefix 对每页非空结果各发一次批量删除。"""
+    for key, value in ZOS_ENV.items():
+        monkeypatch.setenv(key, value)
+    uploads, deleted, closed = [], [], []
+    monkeypatch.setattr(object_store, "upload_public", lambda files, settings, timeout: uploads.extend(files))
+
+    class Paginator:
+        """两页结果，其中一页为空。"""
+
+        def paginate(self, Bucket, Prefix):
+            """核对桶与前缀后返回分页。"""
+            assert (Bucket, Prefix) == ("archives", "imv/remotion/versions/v/")
+            return [{"Contents": [{"Key": Prefix + "a"}, {"Key": Prefix + "b"}]}, {}, {"Contents": [{"Key": Prefix + "c"}]}]
+
+    class Storage:
+        """记录批量删除的 S3 替身。"""
+
+        def get_paginator(self, name):
+            """只支持 list_objects_v2。"""
+            assert name == "list_objects_v2"
+            return Paginator()
+
+        def delete_objects(self, Bucket, Delete):
+            """记录每次批量删除的键。"""
+            deleted.append([item["Key"] for item in Delete["Objects"]])
+
+        def close(self):
+            """记录客户端被释放。"""
+            closed.append(True)
+
+    monkeypatch.setattr(zos.boto3, "client", lambda *args, **kwargs: Storage())
+    objects = load_objects(tmp_path)
+    source = tmp_path / "preview.mp4"
+    source.write_bytes(b"video")
+    objects.put("imv/remotion/versions/v/preview.mp4", source, "video/mp4")
+    assert uploads == [(source, "imv/remotion/versions/v/preview.mp4", "video/mp4")]
+    objects.delete_prefix("imv/remotion/versions/v/")
+    prefix = "imv/remotion/versions/v/"
+    assert deleted == [[prefix + "a", prefix + "b"], [prefix + "c"]] and closed == [True]

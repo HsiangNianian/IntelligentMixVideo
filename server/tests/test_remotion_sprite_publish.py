@@ -158,7 +158,7 @@ def published_version(tmp_path, schema, defaults, kind, bound):
     renderer = BundleRebuilder()
     service = SimpleNamespace(store=store, settings=settings, harness=SimpleNamespace(renderer=renderer), sandbox_problem=lambda: None)
     app.dependency_overrides[sprite_runtime] = lambda: service
-    yield SimpleNamespace(store=store, version=version, renderer=renderer, service=service)
+    yield SimpleNamespace(store=store, version=version, renderer=renderer, service=service, settings=settings)
     app.dependency_overrides.pop(sprite_runtime)
 
 
@@ -721,6 +721,26 @@ def test_publications_made_before_categories_can_still_be_re_saved(client: TestC
     assert "// rebuilt" in client.get(again.preview_url).text
     # A kind that was never published from this version is a new publication and gets the new rules.
     assert publish(client, publish_request(legacy_published.version.id, kind=pb.SPRITE_KIND_FILTER_OVERLAY, text_prop="", keywords_prop="")).status_code == 422
+
+
+def test_retention_sweep_keeps_published_sprites_of_expired_devices(client: TestClient, published) -> None:
+    """源设备长期不活跃时其会话被保留期清理删除，已发布的资产记录、预览包与预览照常可用。"""
+    from datetime import timedelta
+
+    from server.remotion_templates.runtime import Runtime
+    from server.remotion_templates.store import now
+    from server.remotion_templates.tables import devices
+
+    summary = published_sprite(client, published.version.id)
+    with published.store.transaction() as db:
+        db.execute(update(devices).values(last_seen_at=(now() - timedelta(days=200)).replace(tzinfo=None)))
+    asyncio.run(Runtime(published.store, None, published.settings).sweep())
+    assert published.store.pending_deletions() == []
+    assert not (objects(published.store) / "versions" / str(published.version.id)).exists()
+    listed = pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites
+    assert [item.sprite_id for item in listed] == [summary.sprite_id]
+    assert bundle_copy(published.store, summary.sprite_id).is_file()
+    assert client.get(summary.preview_url).status_code == 200
 
 
 def test_deleting_an_unused_sprite_removes_its_record_and_bundle(client: TestClient, published) -> None:
