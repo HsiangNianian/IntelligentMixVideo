@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 from pydantic import SecretStr, ValidationError
 from sqlalchemy import func, select, update
-from server.remotion_templates import history
+from server.remotion_templates import deletion, history
 from server.remotion_templates import store as store_module
 from server.remotion_templates.media import save_image
 from server.remotion_templates.models import (
@@ -451,6 +451,18 @@ def test_expire_events_drops_stale_deliveries_and_prunes(history_store):
     with store.reading() as db:
         assert db.execute(select(func.count()).select_from(chat_messages).where(chat_messages.c.work_id == str(old.id))).scalar_one() == 0
     assert store.latest_job(old.id).id == old_job.id
+
+
+def test_a_work_deleted_while_enqueueing_is_missing(history_store, monkeypatch):
+    """作品在入队前的检查之后被删除完毕时，入队报告 404，而不是数据库异常导致的 500。"""
+    work, job = history_store.create(GenerateTemplateRequest(description="并发删除"), DEVICE)
+    history_store.update(job.id, status="failed", stage="finished")
+    checked = history_store.project(work.id)
+    history_store.begin_deletion(work.id)
+    deletion.finish(history_store, work.id)
+    monkeypatch.setattr(history_store, "project", lambda *args: checked)
+    with pytest.raises(NotFound):
+        history_store.enqueue(work.id, JobInput(mode="edit", instruction="继续"), None)
 
 
 def test_only_devices_with_works_are_recorded(history_app, history_store, monkeypatch):

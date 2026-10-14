@@ -485,8 +485,9 @@ class Store:
         job = self._new_job(project_id, base, running)
         try:
             with self.transaction() as db:
-                device = UUID(db.execute(select(works.c.device_id).where(works.c.id == str(project_id))).scalar_one())
+                # The work may have been deleted since the check above: report it as missing, not as a server error.
                 self.require_work(db, project_id)
+                device = UUID(db.execute(select(works.c.device_id).where(works.c.id == str(project_id))).scalar_one())
                 self.require_references(db, [image.asset_id for image in inputs.images], device)
                 self._reference(db, project_id, [image.asset_id for image in inputs.images])
                 self._insert_job(db, job, inputs, message_text, images=message_images)
