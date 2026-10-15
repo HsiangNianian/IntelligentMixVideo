@@ -74,6 +74,10 @@
 
 ## 模板功能约定
 
+- 标题和字幕分别保存 `tracks[].editor.titleFont` / `subtitleFont`，Protobuf 对应 `title_font` / `subtitle_font`。可选字体限定为 `server/src/server/template/fonts.json` 的十一项：前端、Python 和 Rust 共用该目录，保存和合成使用 `value`，预览使用 `preview`。思源黑体由 `Source Han Sans CN` 转为 `Source Han Sans CN Normal`，思源宋体由 `Source Han Serif CN` 转为 `思源宋体`。缺少字段的旧模板默认 `Alibaba PuHuiTi`；重置只恢复当前对象的字体。未知字体、空值和 SDK 专用标识不能作为保存值。
+
+- IMS 与 Remotion 字体选择共用 `features/fonts/FontSelect.tsx`（搜索、字形预览、选中状态与附加操作）及 `FontName.tsx`（透明预览条按主题文字色显示）。`TemplateFontPicker` 使用上述十一种字体和随包 PNG，图片由 `client/scripts/generate-font-previews.mjs` 按 SDK 5.2.2 字体目录、实际字体文件和共享中文名称绘制；浏览选项无需联网。Remotion 的 `FontPicker` 提供实时字体库与上传操作，`FontLibrary` 也使用相同名称展示。预览条按文字实际宽度绘制，保持在 640×64 以内。真实浏览器回归及生成方式见客户端 README。
+
 - 前端资产列表通过 `isSelectableAsset` 排除 `CS0003-000002`；花字下拉框允许当前对象保留已选中的该花字及勾选标记，清除或更换后无法重新选择。完整效果目录保留该花字供已有模板读取、预览与保存。
 
 - 侧栏编辑入口显示「模版编辑」，使用现有 Lucide `SquarePen` 图标；保留 `library` 内部标识和工作区状态，窄屏保留图标及无障碍名称。

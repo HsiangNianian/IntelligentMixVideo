@@ -21,6 +21,8 @@ def post_template(client: Client, payload: dict) -> Response:
 def template_data(message: pb.TemplateRecord) -> dict:
     """将生成的模板消息转换为业务模型字段，便于检查服务端默认值。"""
     data = MessageToDict(message, preserving_proto_field_name=True)
+    # Protobuf JSON 省略空 repeated 字段，无效果模板仍保留空的效果快照。
+    data.setdefault("effects", [])
     data["tracks"] = data["tracks"].get("tracks", [])
     for track in data["tracks"]:
         track.setdefault("duration", None)

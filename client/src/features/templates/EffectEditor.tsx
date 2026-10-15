@@ -9,6 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Hint } from "@/components/Hint";
 import { EffectCombobox } from "./EffectCombobox";
+import { TemplateFontPicker } from "./TemplateFontPicker";
 import {
   effectGroups,
   textRoles,
@@ -257,6 +258,14 @@ export function EffectEditor({
               </fieldset>
             )}
             {view !== "keyword" && <><div className="space-y-3">
+              {role !== "bubble" && <div className="space-y-1.5">
+                <Label htmlFor={`${id}-${role}-font`}>字体</Label>
+                <TemplateFontPicker
+                  id={`${id}-${role}-font`}
+                  value={editor[`${role}Font`]}
+                  onChange={(value) => update(`${role}Font`, value)}
+                />
+              </div>}
               <NumberField
                 label="字号"
                 slider
