@@ -1,4 +1,4 @@
-/** 设置对话框主体：左侧纵向模块导航（首项通用展示环境与连接），右侧滚动表单；选择模块后显式保存到客户端本地。 */
+/** 设置对话框主体：普通客户端只展示通用环境与连接，Debug 另按后端目录展示模块表单；显式保存到客户端本地。 */
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { Puzzle, Settings2 } from "lucide-react";
@@ -139,7 +139,7 @@ function PluginForm({ plugin, saved, onCancel }: { plugin: Plugin; saved?: Value
       }
       setSaving(true);
       try {
-        // 普通模式保存时保留未展示的 Debug 字段；已展示的空可选值仍按规范化结果清除。
+        // 保留当前 Schema 未展示的已存字段；已展示的空可选值仍按规范化结果清除。
         const hidden = Object.fromEntries(Object.entries(saved ?? {}).filter(([key]) => !(key in plugin.schema.properties)));
         await saveSettings(plugin.id, { ...hidden, ...normalized });
         setFeedback({ text: isTauri() ? "已保存到当前客户端" : "已保存到当前页面，刷新后丢失", role: "status" });
@@ -184,12 +184,13 @@ function PluginForm({ plugin, saved, onCancel }: { plugin: Plugin; saved?: Value
   );
 }
 
-/** 默认选择通用面板，切换仅隐藏表单保留草稿；卸载取消目录读取并忽略迟到结果。 */
+/** 默认选择通用面板，只有 Debug 读取模块；切换保留草稿，卸载取消目录读取并忽略迟到结果。 */
 export function PluginSettings({ onCancel }: { onCancel?: () => void }) {
   const [data, setData] = useState<{ plugins: Plugin[]; values: Record<string, Values> }>();
   const [error, setError] = useState("");
   const [active, setActive] = useState(GENERAL_TAB);
   useEffect(() => {
+    if (import.meta.env.IMV_DEBUG !== "true") return;
     const controller = new AbortController();
     Promise.all([listPlugins(controller.signal), readSettings()]).then(([plugins, values]) => {
       if (!controller.signal.aborted) setData({ plugins, values });
@@ -201,7 +202,7 @@ export function PluginSettings({ onCancel }: { onCancel?: () => void }) {
   return (
     <section aria-label="模块设置" className="flex min-h-0 min-w-0 flex-1 flex-col">
       {error && <p role="alert" className="p-4 sm:p-6">{error}</p>}
-      {!data && !error && <p role="status" className="flex items-center gap-2 p-4 text-sm text-muted-foreground sm:p-6"><Spinner />正在读取设置…</p>}
+      {import.meta.env.IMV_DEBUG === "true" && !data && !error && <p role="status" className="flex items-center gap-2 p-4 text-sm text-muted-foreground sm:p-6"><Spinner />正在读取设置…</p>}
           <Tabs orientation="vertical" value={active} onValueChange={setActive} className="min-h-0 flex-1 gap-0">
             <div className="flex w-14 shrink-0 flex-col overflow-y-auto border-r bg-muted/40 p-2 sm:w-52 sm:p-3">
               <TabsList aria-label="设置模块" className="w-full gap-1 rounded-none bg-transparent p-0">

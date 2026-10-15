@@ -5,29 +5,70 @@ import * as remotion from "@/features/remotion_templates/api";
 import { createComposition, getComposition } from "@/features/video_composition/api";
 import { requestSegmentation } from "@/features/segmentation/api";
 import { PluginSettings } from "@/features/settings/PluginSettings";
-import { listPlugins, readSettings, saveSettings, type Plugin, type Values } from "@/features/settings/api";
+import { SettingsDialog } from "@/features/settings/SettingsDialog";
+import { readSettings, saveSettings, type Plugin, type Values } from "@/features/settings/api";
 import { apiBase, setApiBase } from "@/lib/api-base";
 import { fetchMock, mockDesktop } from "./setup";
 
 // 现有插件用例验证 Debug 路径；普通模式用例显式覆盖，公共夹具逐例重置开关。
 beforeEach(() => { process.env.IMV_DEBUG = "true"; });
 
-// 场景：普通模式只请求客户端模块目录；旧切片值保留，但不进入业务请求。
+// 场景：普通模式只保留通用页，不请求模块目录；地址可保存，已有模块配置不被改写，切片仍不携带旧配置。
 test.each([undefined, "false", "TRUE"])("普通模式隔离模块配置：%s", async (mode) => {
   if (mode === undefined) delete process.env.IMV_DEBUG;
   else process.env.IMV_DEBUG = mode;
-  const stored = { segmentation: { llm_model: "old-model", llm_api_key: "test-key" } };
-  const invoke = mock(async () => structuredClone(stored));
+  const stored: Record<string, Values> = {
+    $client: { template_path: "/saved/templates.json" },
+    segmentation: { llm_model: "old-model", llm_api_key: "test-key" },
+    remotion_agent: { actor_api_key: "agent-key" },
+    ims: { ims_access_key_secret: "ims-key" },
+  };
+  const original = structuredClone(stored);
+  const invoke = mock(async (_command: string, args: Record<string, unknown>) => {
+    if (args?.id) stored[String(args.id)] = { ...stored[String(args.id)], ...(args.values as Values) };
+    return structuredClone(stored);
+  });
   mockDesktop(invoke);
-  fetchMock.mockResolvedValueOnce(Response.json([]));
-  expect(await listPlugins()).toEqual([]);
-  expect(fetchMock.mock.calls[0][0]).toBe("http://api.test:8000/api/settings/plugins?client_only=true");
-  fetchMock.mockClear();
+  const onOpenChange = mock();
+  render(<SettingsDialog open onOpenChange={onOpenChange} />);
+  await screen.findByDisplayValue("/saved/templates.json");
+  expect(screen.getAllByRole("tab").map(tab => tab.textContent)).toEqual(["通用"]);
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.queryByRole("status")).toBeNull();
+  expect(screen.getByRole("dialog").textContent).not.toMatch(/密钥|凭据|Debug/);
+  expect(fetchMock).not.toHaveBeenCalled();
+  const previous = apiBase();
+  try {
+    fireEvent.change(screen.getByLabelText("后端服务地址"), { target: { value: "http://new.test:9000" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await screen.findByText(/已保存。后续请求使用新地址/);
+    expect(apiBase()).toBe("http://new.test:9000");
+    expect(await readSettings()).toEqual({ ...original, $client: { ...original.$client, api_url: "http://new.test:9000" } });
+    expect(onOpenChange).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  } finally {
+    setApiBase(previous);
+  }
+  invoke.mockClear();
   fetchMock.mockResolvedValueOnce(Response.json({ segments: [] }));
   await requestSegmentation({ script: "测试", asr_result: {} });
   expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ script: "测试", asr_result: {} });
   expect(invoke).not.toHaveBeenCalled();
   expect(await readSettings()).toEqual(stored);
+});
+
+// 场景：Debug 仍读取完整目录、展示模块导航与凭据说明。
+test("Debug 设置保留模块目录与说明", async () => {
+  mockDesktop(async () => ({}));
+  fetchMock.mockResolvedValueOnce(Response.json([segmentation, asr]));
+  render(<SettingsDialog open onOpenChange={() => {}} />);
+  await openModule("文案切片");
+  expect(fetchMock.mock.calls[0][0]).toBe("http://api.test:8000/api/settings/plugins");
+  expect(screen.getAllByRole("tab").map(tab => tab.textContent)).toEqual(["通用", "文案切片", "语音识别"]);
+  expect(screen.getByRole("dialog").textContent).toContain("密钥以明文保存在本地文件中。");
+  expect(screen.getByRole("form", { name: "文案切片" })).toBeTruthy();
 });
 
 /** 与后端目录协议一致，字段由描述控制；API 的真实模型生成在 pytest 中覆盖。 */

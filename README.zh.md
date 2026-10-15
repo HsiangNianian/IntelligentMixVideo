@@ -36,7 +36,7 @@ IntelligentMixVideo 将桌面模板编辑、服务端媒体处理和云端视频
 | 主页 | 浏览本地与云端模板，新建模板，进入已有作品 |
 | 模板编辑 | 左侧选择资产，中间预览，右侧编辑对象参数与时间；下方时间轴调整视频排列 |
 | Remotion 字效 | 发起字效生成、查看成功版本与历史、调整参数并保存资产 |
-| 设置 | 管理后端地址、本地模板路径及可用的模型、IMS 等配置 |
+| 设置 | 管理后端地址与本地模板路径；Debug 另提供模块配置 |
 
 模板保存的是对象配置与时间规则，预览视频独立于模板保存。更换预览视频后，会按新视频时长重新计算对象的显示区间。
 
@@ -172,7 +172,7 @@ bun run dev
 
 ### 使用 Remotion 字效
 
-在「设置」中配置 Remotion Agent，并确认连接的 Linux 服务端已具备隔离渲染环境；然后从「Remotion 字效」页面发起生成，查看成功版本并调整参数。
+在服务端配置 Remotion Agent（Debug 客户端也可通过「设置」配置），并确认连接的 Linux 服务端已具备隔离渲染环境；然后从「Remotion 字效」页面发起生成，查看成功版本并调整参数。
 
 成功版本可以保存为资产，再从云端模板的「Remotion 资产」中添加到时间轴。本地模板目前不支持此类资产。字效页面的预览与资产保存不等同于提交整片云端合成任务。
 
@@ -238,15 +238,15 @@ uv run --locked --project server python -m server.asr "https://example.com/audio
 | `PORT` | `server/.env` 或进程环境变量 | API 监听端口，默认 `20070`；有效范围为 1～65535 |
 | `DASHSCOPE_API_KEY` | `server/.env` | 使用北京地域 Fun-ASR 转写时所需的密钥 |
 | `IMV_LLM_BASE_URL`、`IMV_LLM_API_KEY`、`IMV_LLM_MODEL` | `server/.env` | 文案切片模型连接，与 Remotion Agent 分别配置 |
-| `IMV_ACTOR_BASE_URL`、`IMV_ACTOR_API_KEY`、`IMV_ACTOR_MODEL`、`IMV_VISION_MODEL` | `server/.env` 或客户端 Remotion Agent 设置 | 字效生成与视觉模型；客户端可提供本次任务使用的配置 |
+| `IMV_ACTOR_BASE_URL`、`IMV_ACTOR_API_KEY`、`IMV_ACTOR_MODEL`、`IMV_VISION_MODEL` | `server/.env` 或 Debug 客户端 Remotion Agent 设置 | 字效生成与视觉模型；客户端可提供本次任务使用的配置 |
 | `SEGMENT_MATCH_BASE_URL` | `server/.env` | 标准模式显式提供 `materials` 时使用的外部素材匹配地址 |
 | `COMPOSITION_PUBLIC_BASE_URL` | `server/.env` | 对外可访问的服务端回调基础地址；留空沿用请求基础地址 |
-| `ALIBABA_CLOUD_ACCESS_KEY_ID`、`ALIBABA_CLOUD_ACCESS_KEY_SECRET` | `server/.env` 或客户端上海 IMS 设置 | IMS 云渲染凭据；可选 `ALIBABA_CLOUD_SECURITY_TOKEN`，地域与 Endpoint 默认使用上海 |
+| `ALIBABA_CLOUD_ACCESS_KEY_ID`、`ALIBABA_CLOUD_ACCESS_KEY_SECRET` | `server/.env` 或 Debug 客户端上海 IMS 设置 | IMS 云渲染凭据；可选 `ALIBABA_CLOUD_SECURITY_TOKEN`，地域与 Endpoint 默认使用上海 |
 | `ZOS_API_ENDPOINT`、`ZOS_BUCKET`、`ZOS_ACCESS_KEY_ID`、`ZOS_SECRET_ACCESS_KEY`、`ZOS_WEB_URL` | `server/.env` | 仅由服务端读取；上传入口与公开访问地址分别配置 |
 
 完整字段见 [server/.env.example](server/.env.example) 和 [client/.env.example](client/.env.example)。媒体直链的访问要求及素材字段约束见[视频合成 API 文档](server/src/server/video_composition/api.md)。
 
-普通客户端设置提供 Remotion Agent 与上海 IMS 配置；Debug 模式展示更多服务端字段，但数据库不在设置面板中。动态表单依赖后端返回配置 Schema，界面显示的默认值不代表服务端 `.env` 中的实际值。
+普通客户端设置仅保留「通用」页的后端地址、本地模板路径与环境信息，不请求模块目录；Debug 继续提供 Remotion Agent、上海 IMS 等完整模块设置，数据库仍不在设置面板中。动态表单依赖后端返回配置 Schema，界面显示的默认值不代表服务端 `.env` 中的实际值。
 
 设置中的「保存」只提交当前模块，并保持弹窗打开；「取消」关闭弹窗，丢弃尚未保存的修改，不撤销此前已经保存的值。
 
@@ -255,7 +255,7 @@ uv run --locked --project server python -m server.asr "https://example.com/audio
 - **源码服务端**：配置固定读取 `server/.env`，优先级为构造参数、进程环境变量、配置文件、字段默认值；修改后重启服务。
 - **前端环境文件**：修改 `client/.env` 后重启开发服务；已经构建的客户端需重新构建。注意其他 Vite 环境文件可能覆盖同名变量。
 - **客户端后端地址**：可在「设置 → 通用」中保存；新请求使用新地址，已有会话连接需重启客户端后切换。
-- **客户端模型与 IMS 设置**：保存后供对应业务请求使用；未保存时沿用服务端默认配置。
+- **Debug 客户端模型与 IMS 设置**：保存后供对应业务请求使用；普通客户端已有模块配置仍保留，未保存时沿用服务端默认配置。
 - **Debug 内置服务高级设置**：保存后退出并重新打开客户端，启动时加载；该路径不适用于手动启动或远程服务端，数据库配置也不在此设置范围内。
 
 客户端设置不会修改共享服务端的 `.env`。界面配置、保存位置与各模式差异见[客户端设置说明](client/src/features/settings/README.md)。
@@ -308,7 +308,7 @@ Windows、macOS 的 Debug 包携带运行环境，可使用内置 API、模板�
 
 ### 设置里只有「通用」，或模块列表加载失败？
 
-模块列表来自后端的 `/api/settings/plugins`。先确认后端地址和服务状态，再重新打开设置。浏览器刷新后会丢失仅保存在页面内存中的设置。
+普通客户端仅显示「通用」是预期行为。Debug 的模块列表来自后端 `/api/settings/plugins`；加载失败时先确认后端地址和服务状态，再重新打开设置。浏览器刷新后会丢失仅保存在页面内存中的设置。
 
 ### 安装依赖时提示版本不存在？
 
