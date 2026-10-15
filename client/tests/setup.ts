@@ -16,6 +16,7 @@ process.env.VITE_API_URL = "http://api.test:8000/";
 process.env.VITE_PREVIEW_VIDEO_1_URL = "/sample.mp4";
 // 构建时由 Vite 从 package.json 注入；测试固定一个值，不随发版变化。
 process.env.IMV_VERSION = "1.2.3";
+process.env.IMV_COMMIT = "abc1234";
 
 // React DOM 必须在浏览器全局对象注册之后加载，保证事件与 screen 绑定正确。
 const { cleanup } = await import("@testing-library/react");

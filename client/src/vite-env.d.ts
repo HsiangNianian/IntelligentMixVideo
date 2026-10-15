@@ -6,6 +6,8 @@ interface ImportMetaEnv {
   readonly IMV_DEBUG?: string;
   /** 构建时从 package.json 注入的客户端版本。 */
   readonly IMV_VERSION?: string;
+  /** 构建对应的短提交哈希（有未提交改动时带 -dirty）。 */
+  readonly IMV_COMMIT?: string;
   readonly VITE_API_URL?: string;
   readonly VITE_PREVIEW_VIDEO_1_URL?: string;
   readonly VITE_PREVIEW_VIDEO_2_URL?: string;

@@ -11,7 +11,7 @@ import { listPlugins, readSettings, saveSettings, type Plugin, type Values } fro
 import { normalizeValues, schemaError } from "./schema";
 import { Spinner } from "@/components/ui/spinner";
 import { Hint } from "@/components/Hint";
-import { APP_VERSION } from "@/lib/version";
+import { APP_COMMIT, APP_VERSION } from "@/lib/version";
 
 /** 固定面板使用独立值，插件导航统一加前缀，存储 ID 不受影响。 */
 const GENERAL_TAB = "general";
@@ -216,8 +216,11 @@ export function PluginSettings({ onCancel }: { onCancel?: () => void }) {
                   </TabsTrigger></div></Hint>
                 ))}
               </TabsList>
-              {/* 版本号固定在导航栏左下角，窄屏居中显示。 */}
-              <p aria-label="应用版本" className="mt-auto pt-3 text-center text-[10px] text-muted-foreground sm:px-3 sm:text-left sm:text-xs">v{APP_VERSION}</p>
+              {/* 版本号与构建校验码固定在导航栏左下角，窄屏居中显示；校验码可选中复制，用来核对运行的是哪一版代码。 */}
+              <p aria-label="应用版本" className="mt-auto pt-3 text-center text-[10px] text-muted-foreground sm:px-3 sm:text-left sm:text-xs">
+                v{APP_VERSION}
+                <span aria-label="构建校验码" className="block select-all break-all font-mono text-[10px] opacity-80">{APP_COMMIT}</span>
+              </p>
             </div>
             <div className="min-h-0 min-w-0 flex-1">
               <TabsContent className="h-full min-h-0" value={GENERAL_TAB} forceMount hidden={active !== GENERAL_TAB}>

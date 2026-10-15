@@ -1,4 +1,4 @@
-/** 应用版本号：窗口/网页标题后缀、Tauri 原生标题栏，以及设置页导航栏左下角的版本；执行 bun run test，不访问网络。 */
+/** 应用版本号：窗口/网页标题后缀、Tauri 原生标题栏，以及设置页导航栏左下角的版本与构建校验码；执行 bun run test，不访问网络。 */
 import { expect, mock, test } from "bun:test";
 import { mockWindows } from "@tauri-apps/api/mocks";
 import { render, renderHook, screen } from "@testing-library/react";
@@ -46,12 +46,13 @@ test("没有原生窗口信息时保留网页标题", () => {
   expect(document.title).toBe("IntelligentMixVideo - v1.2.3");
 });
 
-// 场景：设置页左侧导航栏底部显示版本号。
-test("设置页导航栏左下角显示版本号", async () => {
+// 场景：设置页左侧导航栏底部显示版本号，并在其下给出构建校验码（短提交哈希）。
+test("设置页导航栏左下角显示版本号和构建校验码", async () => {
   mockDesktop(async () => ({}));
   fetchMock.mockResolvedValueOnce(Response.json([]));
   render(<PluginSettings />);
   const version = await screen.findByLabelText("应用版本");
-  expect(version.textContent).toBe("v1.2.3");
+  expect(version.textContent).toBe("v1.2.3abc1234");
+  expect(screen.getByLabelText("构建校验码").textContent).toBe("abc1234");
   expect(screen.getByRole("tablist", { name: "设置模块" }).parentElement).toBe(version.parentElement);
 });
