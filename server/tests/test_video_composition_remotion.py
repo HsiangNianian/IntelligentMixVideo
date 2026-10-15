@@ -413,7 +413,8 @@ def visual_case(composition_case):
 
 # 场景：只有无内容可显示的文字绑定（例如请求没有标题）时不要求渲染环境，合成照常继续。
 @pytest.mark.anyio
-async def test_environment_check_skips_bindings_without_content(composition_case, monkeypatch):
+@pytest.mark.parametrize("saved_mode", [False, True])
+async def test_environment_check_skips_bindings_without_content(composition_case, monkeypatch, saved_mode):
     """标题绑定遇空标题、字幕绑定遇无声模式都不会渲染，因此不读取 Remotion 运行时；滤镜总会渲染。"""
     async def runtime():
         """记录被调用，说明本单确实需要渲染环境。"""
@@ -427,8 +428,12 @@ async def test_environment_check_skips_bindings_without_content(composition_case
     subtitle = case(composition_case, "subtitle")
     subtitle["request"] = {**subtitle["request"], "audioUrl": None, "videoUrl": None, "processRules": {"videoDuration": 8},
                            "materials": [{"fileUrl": "https://media.test/a.jpg", "type": "image"}]}
+    if saved_mode:
+        subtitle["request"].update(compositionMode="materials_silent", text=None,
+                                   videoUrl=composition_case["request"]["videoUrl"])
     for data in (title, subtitle, {**title, "remotion": {"placements": []}}):
         await remotion.require_environment(data)
+    assert remotion.plan(subtitle, 120) is None
     assert called == []
     with pytest.raises(CompositionError) as error:
         await remotion.require_environment(visual_case(composition_case))

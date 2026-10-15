@@ -396,7 +396,7 @@ class Job:
     async def prepare(self) -> None:
         """模板读取后按模式准备文字和总时长；无声只提标题词，只有标准模式可能匹配。"""
         config = self.runtime.client_configs.get(self.record["task_id"])
-        request = CompositionRequest.model_validate(self.record["data"]["request"])
+        request = CompositionRequest.from_snapshot(self.record["data"]["request"])
         await self.runtime.sync(preflight, request, config)
         needs_matching = request.composition_mode == "standard" and "materials" in request.model_fields_set
         if needs_matching and not self.record["data"].get("callback_base_url"):
@@ -510,7 +510,7 @@ class Job:
     async def assemble(self) -> None:
         """组装只读业务快照，提交前持久化完整请求、稳定 ClientToken 和总截止时间。"""
         data = self.record["data"]
-        request = CompositionRequest.model_validate(data["request"])
+        request = CompositionRequest.from_snapshot(data["request"])
         if request.composition_mode != "standard" and "material_durations" not in data:
             durations = await self.runtime.step(self.record, "material_probe", lambda: media.material_durations(
                 request.materials, data["duration_ms"] / 1000, self.settings.composition_http_timeout_seconds,

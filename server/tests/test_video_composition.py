@@ -38,9 +38,10 @@ def test_material_voice_uses_order_and_full_audio(upstreams, client, composition
 
     monkeypatch.setattr(service.media, "video_duration", duration)
     monkeypatch.delenv("SEGMENT_MATCH_BASE_URL")
-    request = {**composition_case["request"], "videoUrl": None,
+    request = {**composition_case["request"],
                "materials": [{"fileUrl": f"https://media.test/{index}?token=a%2Fb", "type": kind}
                              for index, kind in enumerate(("video", "image", "video", "video"))]}
+    request["videoUrl"] = request["materials"][0]["fileUrl"]
     request.pop("text")
     if with_text:
         request["copy"] = composition_case["request"]["text"]
@@ -63,7 +64,55 @@ def test_material_voice_uses_order_and_full_audio(upstreams, client, composition
     assert upstreams["asr_calls"] == 1 and upstreams["segment_calls"] == 1
     assert upstreams["posts"] == [] and upstreams["gets"] == [] and "match_request" not in data
     assert len(data["timeline"]["SubtitleTracks"]) == (3 if with_text else 2)
-    assert "copy" not in data["request"] and "compositionMode" not in data["request"]
+    assert "copy" not in data["request"] and data["request"]["compositionMode"] == "materials_voice"
+
+
+@pytest.mark.parametrize("patch", [
+    {"text": "正文", "copy": "正文"}, {"text": "数字人", "copy": "素材字幕"},
+    {"text": "正文", "audioUrl": None}, {"copy": "字幕", "audioUrl": None},
+    {"text": "正文", "videoUrl": None}, {"copy": "字幕", "materials": []},
+    *[{field: value} for field in ("text", "copy") for value in (0, False, [], {}, "字" * 20001)],
+])
+def test_mode_parameter_errors_do_not_create_tasks(upstreams, client, composition_case, patch):
+    """歧义文案、无配音文案、缺失本模式素材及非法文案均在受理前返回 422，不调用上游。"""
+    request = {**composition_case["request"], "text": None, "processRules": {"videoDuration": 8},
+               "materials": [{"fileUrl": "https://media.test/a.jpg", "type": "image"}], **patch}
+    response = client.post(BASE, json=request)
+    assert response.status_code == 422
+    assert response.json() == {"code": 422, "message": "请求参数无效", "data": None}
+    assert store.pending([], 100) == []
+    assert upstreams["asr_calls"] == upstreams["segment_calls"] == 0
+    assert upstreams["submits"] == upstreams["posts"] == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("stage", ["queued", "assembling"])
+@pytest.mark.parametrize("voiced", [False, True])
+async def test_material_recovery_reads_saved_mode(upstreams, composition_case, composition_runtime, stage, voiced):
+    """素材请求保留 videoUrl、copy 合并成 text 后，从数据库恢复仍顺序铺满，不能变成数字人匹配。"""
+    store.initialize_schema()
+    request = {**composition_case["request"], "text": None,
+               "copy": composition_case["request"]["text"] if voiced else None,
+               "audioUrl": composition_case["request"]["audioUrl"] if voiced else None,
+               "materials": [{"fileUrl": f"https://media.test/{i}.jpg", "type": "image"} for i in range(3)],
+               "processRules": {"videoDuration": 8}}
+    record = await composition_runtime.accept(CompositionRequest.model_validate(request), "http://testserver", request)
+    if stage == "assembling":
+        await service.Job(composition_runtime, record, composition_runtime.settings).prepare()
+    restored = store.get(record["task_id"])
+    assert restored["stage"] == stage
+    saved_request = restored["data"]["request"]
+    assert saved_request["compositionMode"] == ("materials_voice" if voiced else "materials_silent")
+    assert saved_request["text"] == request["copy"] and "copy" not in saved_request
+    assert restored["data"]["raw_request"] == request
+    await composition_runtime._execute(restored)
+    saved = store.get(record["task_id"])
+    assert saved["status"] == "succeeded", saved["data"].get("error")
+    clips = saved["data"]["timeline"]["VideoTracks"][0]["VideoTrackClips"]
+    assert [clip["MediaURL"] for clip in clips] == [item["fileUrl"] for item in request["materials"]]
+    assert clips[-1]["TimelineOut"] == 8
+    assert upstreams["posts"] == upstreams["gets"] == []
+    assert upstreams["asr_calls"] == int(voiced) and upstreams["segment_calls"] == 1
 
 
 @pytest.mark.parametrize("music", [False, True])
@@ -88,7 +137,7 @@ def test_material_silent_extracts_title_without_asr(upstreams, client, compositi
     template["tracks"][1]["editor"].update(titleKeyword="长", titleKeywordBold=True)
     assert post_template(client, {key: template[key] for key in ("template_id", "name", "tracks", "effect_ids")}).status_code == 200
     request = {"styleId": composition_case["request"]["styleId"],
-               "title": "长标题保留标点！\n" * 10, "copy": "此模式不生成字幕", "processRules": {"videoDuration": 4.5},
+               "title": "长标题保留标点！\n" * 10, "processRules": {"videoDuration": 4.5},
                "materials": [{"fileUrl": f"https://media.test/{i}.jpg", "type": "image"} for i in range(3)],
                "packRules": {"backgroundMusic": {"audioSwitch": music, "audioUrl": "https://media.test/bgm.mp3"}},
                "callbackUrl": "https://notify.example.test/result"}
@@ -117,7 +166,7 @@ def test_material_silent_extracts_title_without_asr(upstreams, client, compositi
     assert upstreams["posts"] == upstreams["gets"] == []
     assert data["segmentation"] == {"title_keyword": expected_keyword} and "matches" not in data
     assert json.loads(upstreams["submits"][0]["timeline"]) == timeline
-    assert "compositionMode" not in data["request"]
+    assert data["request"]["compositionMode"] == "materials_silent"
     assert notified(task_id)["data"]["notification_status"] == "sent"
     assert upstreams["notifications"][0]["body"]["videoUrl"] == result["result"]["videoUrl"]
 
@@ -187,20 +236,24 @@ def test_material_probe_failures_do_not_render(upstreams, client, composition_ca
     assert upstreams["submits"] == [] and upstreams["asr_calls"] == 0
 
 
-def test_insufficient_materials_fail_asynchronously_and_notify(upstreams, client, composition_case):
-    """素材不足先受理再失败，查询和回调均给出时长原因，且不提交 IMS。"""
+@pytest.mark.parametrize("voiced", [False, True])
+def test_insufficient_materials_fail_asynchronously_and_notify(upstreams, client, composition_case, voiced):
+    """两种素材模式即使携带 videoUrl 也检查时长，不足先受理再失败并通知，且不提交 IMS。"""
     request = {"styleId": composition_case["request"]["styleId"],
+               "videoUrl": composition_case["request"]["videoUrl"],
                "processRules": {"videoDuration": 6.5}, "callbackUrl": "https://notify.example.test/result",
                "materials": [{"fileUrl": "https://media.test/image.jpg", "type": "image"}]}
+    if voiced:
+        request.update(copy=composition_case["request"]["text"], audioUrl=composition_case["request"]["audioUrl"])
     response = client.post(BASE, json=request)
     assert response.status_code == 200
     task_id = response.json()["data"]
     result = finished(client, task_id)
     assert result["status"] == "failed" and result["error"]["code"] == "materials_duration_insufficient"
-    assert "3 秒" in result["error"]["message"] and "6.5 秒" in result["error"]["message"]
+    assert "3 秒" in result["error"]["message"] and f"{8 if voiced else 6.5} 秒" in result["error"]["message"]
     assert notified(task_id)["data"]["notification_status"] == "sent"
     assert upstreams["notifications"][0]["body"]["errorMessage"] == result["error"]["message"]
-    assert upstreams["submits"] == [] and upstreams["asr_calls"] == 0
+    assert upstreams["submits"] == upstreams["posts"] == [] and upstreams["asr_calls"] == int(voiced)
 
 
 @pytest.mark.anyio
@@ -302,6 +355,9 @@ def test_null_background_music_disables_music(upstreams, client, composition_cas
         request["materials"] = [{"fileUrl": f"https://media.test/{i}.jpg", "type": "image"} for i in range(3)]
     if mode.startswith("materials_"):
         request.pop("videoUrl")
+        script = request.pop("text")
+        if mode == "materials_voice":
+            request["copy"] = script
     if mode == "materials_silent":
         request.pop("audioUrl")
         request["processRules"] = {"videoDuration": 8}
@@ -324,6 +380,9 @@ def test_blank_match_address_only_blocks_matching(upstreams, client, composition
         request.pop("materials")
     if mode.startswith("materials_"):
         request.pop("videoUrl")
+        script = request.pop("text")
+        if mode == "materials_voice":
+            request["copy"] = script
         request["materials"] = [{"fileUrl": f"https://media.test/{i}.jpg", "type": "image"} for i in range(3)]
     if mode == "materials_silent":
         request.pop("audioUrl")
@@ -988,6 +1047,7 @@ def test_real_segmentation_with_model_stub(upstreams, composition_case, client, 
     if mode == "avatar":
         request.pop("materials")
     elif mode == "materials_voice":
+        request["copy"] = request.pop("text")
         request.update(videoUrl=None, materials=[{"fileUrl": f"https://media.test/{i}.jpg", "type": "image"} for i in range(3)])
     template = composition_case["template"]
     template["tracks"][1]["editor"].update(titleKeyword="业务", titleKeywordBold=True)
@@ -1020,7 +1080,7 @@ def test_real_segmentation_with_model_stub(upstreams, composition_case, client, 
     assert finished(client, task_id)["status"] == "succeeded"
     snapshot = store.get(task_id)["data"]
     assert snapshot["segmentation"]["trace"]["edit_cost"] == 0
-    assert "".join(s["text"] for s in snapshot["segmentation"]["segments"]) == composition_case["request"]["text"]
+    assert "".join(s["text"] for s in snapshot["segmentation"]["segments"]) == snapshot["request"]["text"]
     assert snapshot["segmentation"]["segments"] == [{
         "segment_id": 1, "text": "甲乙丙丁。戊己庚辛。", "start_time": 1, "end_time": 6,
         "keyword": "甲乙", "level": 2, "group_id": [1, 1],
@@ -1561,6 +1621,7 @@ def test_request_openapi_hides_internal_mode_and_uses_camel_case(client):
     assert "callbackUrl" in schema["properties"] and "callback_url" not in schema["properties"]
     assert "callbackUrl" not in schema["required"]
     assert "compositionMode" not in schema["properties"] and "composition_mode" not in schema["properties"]
+    assert "copy" in schema["properties"]
 
 
 @pytest.mark.parametrize("code,error,expected", [

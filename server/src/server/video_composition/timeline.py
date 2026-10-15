@@ -72,7 +72,7 @@ def build_timeline(
     material_durations: list[float] | None = None, title_keyword: str = "", transition_seed: str = "",
 ) -> tuple[dict, list[str]]:
     """返回时间线及转场说明；标题关键词仅取切片返回值，缺失不强调，不修改输入快照。"""
-    request = CompositionRequest.model_validate(request)
+    request = CompositionRequest.from_snapshot(request)
     template = Template.model_validate(template)
     standard = request.composition_mode == "standard"
     has_subtitles = request.composition_mode != "materials_silent" and bool(request.text)

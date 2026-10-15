@@ -103,7 +103,7 @@ async def require_environment(data: dict) -> None:
         placements = [item for item in placements if item.get("transition_boundary") is None]
     if not placements:
         return
-    request = CompositionRequest.model_validate(data["request"])
+    request = CompositionRequest.from_snapshot(data["request"])
     try:
         targets = {placement_target(placement, ParseDict(saved["assets"][placement["sprite_id"]], pb.PublishedSprite()))
                    for placement in placements}
@@ -127,7 +127,7 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
     # 历史任务没有快照时延续原流程，不能恢复时偷偷读取新的模板绑定。
     if not saved or not saved["placements"]:
         return None
-    request = CompositionRequest.model_validate(data["request"])
+    request = CompositionRequest.from_snapshot(data["request"])
     duration = data["duration_ms"] / 1000
     if not math.isfinite(duration) or duration <= 0:
         raise OverlayError("duration_invalid", "成片时长无效")

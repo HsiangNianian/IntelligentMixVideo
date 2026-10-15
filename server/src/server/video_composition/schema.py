@@ -5,9 +5,10 @@ from typing import Annotated, Literal, Self
 from uuid import UUID
 
 from pydantic import (
-    AfterValidator, BaseModel, ConfigDict, Field, HttpUrl, TypeAdapter, model_validator,
+    AfterValidator, BaseModel, ConfigDict, Field, HttpUrl, TypeAdapter, ValidationInfo, model_validator,
 )
 from pydantic.alias_generators import to_camel
+from pydantic.json_schema import SkipJsonSchema
 
 
 def media_url(value: str) -> str:
@@ -71,6 +72,8 @@ class CompositionRequest(APIModel):
     """合成输入含可选终态通知地址；原声音量、水印、卡片和其他控制字段暂不生效。"""
 
     text: str | None = Field(default=None, max_length=20000)
+    copy_text: str | None = Field(default=None, alias="copy", max_length=20000, exclude=True)
+    composition_mode: SkipJsonSchema[Literal["standard", "materials_voice", "materials_silent"]] = "materials_silent"
     video_url: MediaURL | None = None
     audio_url: MediaURL | None = None
     style_id: UUID
@@ -80,23 +83,33 @@ class CompositionRequest(APIModel):
     process_rules: ProcessRules = Field(default_factory=ProcessRules)
     callback_url: MediaURL | None = None
 
-    @property
-    def composition_mode(self) -> Literal["standard", "materials_voice", "materials_silent"]:
-        """仅由数字人视频和顶层配音地址推导内部模式，不进入请求 Schema 或序列化快照。"""
-        if self.video_url is not None:
-            return "standard"
-        return "materials_voice" if self.audio_url is not None else "materials_silent"
+    @classmethod
+    def from_snapshot(cls, value: dict) -> Self:
+        """内部恢复读取已存模式；旧快照仍按原视频地址规则解释，不能使用新请求规则。"""
+        return cls.model_validate(value, context={"snapshot": True})
 
     @model_validator(mode="before")
     @classmethod
-    def resolve_copy(cls, value):
-        """空 text 回退 copy；只统一业务文案，不修改原请求或去掉正文中的换行。"""
+    def resolve_mode_and_copy(cls, value, info: ValidationInfo):
+        """新请求先按文案来源判定模式再合并正文；调用方不能指定内部模式。"""
         if isinstance(value, dict):
             value = value.copy()
-            text = value.get("text")
-            if text is None or isinstance(text, str) and not text.strip():
-                text = value.get("copy")
-            value["text"] = None if isinstance(text, str) and not text.strip() else text
+            text, copy = (None if isinstance(item, str) and not item.strip() else item
+                          for item in (value.get("text"), value.get("copy", value.get("copy_text"))))
+            audio = value.get("audioUrl", value.get("audio_url"))
+            mode = "materials_voice" if audio is not None else "materials_silent"
+            if info.context and info.context.get("snapshot"):
+                if value.get("videoUrl", value.get("video_url")) is not None:
+                    mode = "standard"
+                mode = value.get("compositionMode", value.get("composition_mode", mode))
+            else:
+                if text is not None and copy is not None:
+                    raise ValueError("text 和 copy 不能同时非空")
+                if (text is not None or copy is not None) and audio is None:
+                    raise ValueError("提供口播文案时必须提供 audioUrl")
+                if text is not None:
+                    mode = "standard"
+            value.update(text=text if text is not None else copy, copy=copy, compositionMode=mode)
         return value
 
     @model_validator(mode="after")
