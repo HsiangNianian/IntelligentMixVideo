@@ -22,12 +22,12 @@ from server.video_composition.schema import CompositionRequest, Material
 
 
 @pytest.mark.parametrize("text,copy,expected", [
-    ("优先正文", "备用文案", "优先正文"), (None, "备用文案", "备用文案"),
+    ("数字人文案", None, "数字人文案"), (None, "素材文案", "素材文案"),
     ("", "备用文案", "备用文案"), (" \n", "备用文案", "备用文案"), (None, None, None), (" ", " ", None),
 ])
-def test_text_copy_precedence(composition_case, text, copy, expected):
-    """空值回退 copy，非空 text 优先；业务正文统一存 text，不保留兼容字段。"""
-    request = CompositionRequest.model_validate({**composition_case["request"], "videoUrl": None,
+def test_text_copy_normalization(composition_case, text, copy, expected):
+    """文案空白视为空，保留正文原样；存储统一用 text，模式在合并前判定。"""
+    request = CompositionRequest.model_validate({**composition_case["request"],
         "materials": [{"fileUrl": "https://media.test/a.jpg", "type": "image"}], "text": text, "copy": copy})
     assert request.text == expected and "copy" not in request.model_dump(by_alias=True)
 
@@ -47,27 +47,47 @@ def test_material_mode_invalid_contract_rejected(composition_case, patch):
             "materials": [{"fileUrl": "https://media.test/a.jpg", "type": "image"}], **patch})
 
 
-@pytest.mark.parametrize("urls,expected", [
-    ({"videoUrl": "https://media.test/avatar.mp4", "audioUrl": "https://media.test/voice.wav"}, "standard"),
+@pytest.mark.parametrize("fields,expected", [
+    ({"text": "数字人文案", "audioUrl": "https://media.test/voice.wav"}, "standard"),
+    ({"copy": "素材字幕", "audioUrl": "https://media.test/voice.wav"}, "materials_voice"),
     ({"audioUrl": "https://media.test/voice.wav"}, "materials_voice"),
-    ({"videoUrl": None, "audioUrl": "https://media.test/voice.wav"}, "materials_voice"),
-    ({}, "materials_silent"), ({"videoUrl": None, "audioUrl": None}, "materials_silent"),
+    ({"text": " \n", "copy": "", "audioUrl": "https://media.test/voice.wav"}, "materials_voice"),
+    ({}, "materials_silent"), ({"text": None, "copy": " \n", "audioUrl": None}, "materials_silent"),
 ])
-def test_mode_is_internal_and_inferred_from_media_urls(composition_case, urls, expected):
-    """缺省和 null 均视为无地址；背景音乐、文案、时长和外传模式不能覆盖分流，快照恢复一致。"""
-    body = {"styleId": composition_case["request"]["styleId"], "text": "测试正文",
+def test_mode_is_internal_and_saved_before_text_normalization(composition_case, fields, expected):
+    """保留 videoUrl 不改变素材模式；外传模式、音乐和时长不能覆盖判定，合并文案后恢复一致。"""
+    body = {"styleId": composition_case["request"]["styleId"], "videoUrl": "https://media.test/avatar.mp4",
             "materials": [{"fileUrl": "https://media.test/a.jpg", "type": "image"}],
             "processRules": {"videoDuration": 10.5},
             "packRules": {"backgroundMusic": {"audioSwitch": True, "audioUrl": "https://media.test/bgm.mp3"}},
-            **urls}
+            **fields}
     request = CompositionRequest.model_validate(body)
     assert request.composition_mode == expected
     for field in ("compositionMode", "composition_mode"):
         overridden = CompositionRequest.model_validate({**body, field: "unknown"})
         assert overridden.composition_mode == expected
     saved = request.model_dump(mode="json", by_alias=True)
-    assert "compositionMode" not in saved and "composition_mode" not in saved
-    assert CompositionRequest.model_validate(saved).composition_mode == expected
+    assert saved["compositionMode"] == expected and "composition_mode" not in saved
+    assert CompositionRequest.from_snapshot(saved).composition_mode == expected
+
+
+@pytest.mark.parametrize("fields,expected", [
+    ({"videoUrl": "https://media.test/avatar.mp4"}, "standard"),
+    ({"videoUrl": None}, "materials_voice"),
+    ({"videoUrl": None, "audioUrl": None}, "materials_silent"),
+])
+def test_legacy_snapshot_keeps_original_mode(composition_case, fields, expected):
+    """旧任务没有模式且 copy 已合并成 text；恢复仍按旧规则，包括无声快照残留文案。"""
+    saved = {**composition_case["request"], "materials": [{"fileUrl": "https://media.test/a.jpg", "type": "image"}],
+             "processRules": {"videoDuration": 3}, **fields}
+    assert CompositionRequest.from_snapshot(saved).composition_mode == expected
+
+
+@pytest.mark.parametrize("mode", [None, "unknown", 0])
+def test_invalid_saved_mode_is_not_reinterpreted(composition_case, mode):
+    """损坏的已存模式必须报错，不回退为另一种模式继续合成。"""
+    with pytest.raises(ValueError):
+        CompositionRequest.from_snapshot({**composition_case["request"], "compositionMode": mode})
 
 
 @pytest.mark.anyio

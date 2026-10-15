@@ -14,7 +14,7 @@
 
 当前模块没有任务列表、取消、删除、重试或重新发送最终通知接口。创建接口没有调用方幂等键，重复 POST 会创建新的任务；响应丢失时不要盲目重复提交。
 
-业务调用流程：创建任务 → 保存返回的 `taskId` → 接收最终通知或查询任务 → 取得视频地址。后台根据 `videoUrl` 和顶层 `audioUrl` 自动判断模式，准备素材与文字，共用模板、IMS、ZOS、查询和通知。`compositionMode` 仅为内部概念，不属于请求字段。
+业务调用流程：创建任务 → 保存返回的 `taskId` → 接收最终通知或查询任务 → 取得视频地址。后台根据原始 `text`／`copy` 和顶层 `audioUrl` 自动判断并保存模式，准备素材与文字，共用模板、IMS、ZOS、查询和通知。`compositionMode` 是内部字段，不属于公开请求参数，调用方传入也不能覆盖服务端判定。
 
 ## 2. 创建任务
 
@@ -24,9 +24,10 @@
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `text` / `copy` | string/null | 按模式 | 非空 `text` 优先；缺省、null、空串或全空白时回退 `copy`，最多 20000 字符；内部统一保存为 `text` |
-| `videoUrl` | string/null | standard | 数字人视频 HTTP(S) 直链；提供时走原数字人流程，纯素材必须省略或传 null |
-| `audioUrl` | string/null | standard / materials_voice | 配音 HTTPS 直链，供 ASR 获取完整音频时长和合成；无数字人视频时由此字段决定有无语音，无语音必须省略或传 null |
+| `text` | string/null | standard | 数字人口播文案，非空时选择数字人模式；最多 20000 字符 |
+| `copy` | string/null | 否 | 纯素材配音的字幕文案，最多 20000 字符；与 `text` 不得同时非空，判定模式后内部统一保存为 `text` |
+| `videoUrl` | string/null | standard | 数字人视频 HTTP(S) 直链；不参与模式判断，纯素材模式即使携带也不作为主视频使用 |
+| `audioUrl` | string/null | standard / materials_voice | 配音 HTTPS 直链，供 ASR 获取完整音频时长和合成；非空口播文案必须提供此字段，无语音必须省略或传 null |
 | `styleId` | string(UUID) | 是 | 已保存的云端模板 ID；后台从服务端模板存储读取 |
 | `title` | string/null | 否 | 标题；省略、null 或全空白时不生成标题 |
 | `materials` | array | 纯素材必填 | 纯素材必须非空、按数组顺序播放；standard 省略为纯数字人，显式 `[]` 匹配但不指定候选，非空数组指定候选；不接受 null |
@@ -34,7 +35,9 @@
 | `processRules.videoDuration` | number | materials_silent | 秒制有限正数，允许小数，不接受布尔值或数字字符串；其他模式不使用，可省略或为 null |
 | `callbackUrl` | string/null | 否 | IMV 向业务系统发送最终结果的 HTTP(S) 地址；省略或 null 不通知 |
 
-纯数字人模式仍对 `audioUrl` 执行 ASR，以原始音频总时长确定时间线；字幕由输入文案与 ASR 对齐后的 segmentation 切片确定，并受模板字幕对象显示区间限制。模板效果、背景音乐、IMS 渲染、ZOS 视频与 PNG 转存、查询和终态通知沿用相同流程。此前省略 `materials` 也会匹配；需要保留该行为的调用方应显式传入 `[]`。已有任务按保存的请求字段和阶段恢复，不重新解释原始请求日志。
+`text`／`copy` 的缺省、null、空串或全空白均视为无文案，非空正文保持原样。两个字段同时非空，或提供非空文案但未提供 `audioUrl`，均在受理前返回 422，不创建任务。两者不再是同义字段：数字人调用方使用 `text`，纯素材调用方使用 `copy`；无声请求不再允许附带非空口播文案。
+
+纯数字人模式仍对 `audioUrl` 执行 ASR，以原始音频总时长确定时间线；字幕由输入文案与 ASR 对齐后的 segmentation 切片确定，并受模板字幕对象显示区间限制。模板效果、背景音乐、IMS 渲染、ZOS 视频与 PNG 转存、查询和终态通知沿用相同流程。此前省略 `materials` 也会匹配；需要保留该行为的调用方应显式传入 `[]`。已判定模式保存在 MySQL `video_compositions.data.request.compositionMode`，后续组装、Remotion 与恢复使用该值；没有此字段的旧任务仍按原 `videoUrl`／`audioUrl` 规则解释保存的快照，不使用新规则重判，也不重新解释原始请求日志。
 
 调用 segmentation 时一并传入请求 `title`，返回的 `title_keyword` 随切片结果保存，组装及恢复时复用。标题关键词只使用该返回值，并按模板局部样式强调首次出现的位置；字段缺失或为空时仍显示完整标题，但不强调关键词，不使用模板 `titleKeyword` 或标题前两个字回退。旧快照没有该字段时不强调标题关键词；有声模式无文案但有标题时单独提取标题词。完整切片中的标题提词复用现有模型调用；无声模式有非空标题时，通过同一 `segment` 函数仅调用一次模型提取标题词，不需要正文或 ASR。仅标题分支不做词长或原文匹配校验，完整切片仍保留原有校验。
 
@@ -59,11 +62,11 @@ URL 不接受 Markdown 链接、空白、用户名密码或 `#fragment`，允许
 
 ### 三种模式
 
-以下名称仅在接口内部使用，无需传入。提供 `videoUrl` 时为 `standard`；没有 `videoUrl`、提供顶层 `audioUrl` 时为 `materials_voice`；两者都没有时为 `materials_silent`。地址缺省或 null 均视为没有，`packRules.backgroundMusic.audioUrl` 不参与判断。
+以下名称仅在接口内部使用，无需传入。通过上述文案互斥及配音校验后，非空 `text` 为 `standard`；没有非空 `text`、有顶层 `audioUrl` 为 `materials_voice`（`copy` 可省略）；没有顶层配音及非空文案为 `materials_silent`。`videoUrl` 和 `packRules.backgroundMusic.audioUrl` 不参与判断，地址缺省或 null 均视为没有。
 
 - `standard`：仍需非空文案、数字人视频和配音。省略 `materials` 跳过匹配，数字人铺满音频；显式数组保留匹配流程。保存请求时保留 `materials` 缺省状态，旧任务依据已保存字段恢复，不重新解释原始日志。
 - `materials_voice`：ASR 获取配音原始总时长（含静音）；有文案才进行字幕切片，没有文案不生成字幕。按素材顺序铺满完整配音，字幕间隙不影响画面，不调用素材匹配。
-- `materials_silent`：以 `processRules.videoDuration` 为总长，跳过 ASR、正文切片和匹配，有非空标题时只调用一次模型提取标题关键词；始终不生成字幕，即使请求带了 `text/copy`。请求 `title` 使用模板标题样式与时间区间，保留原文换行、标点和模板花字及动画，按返回的 `title_keyword` 应用模板关键词样式。标题为空就不显示，也不调用提词模型。
+- `materials_silent`：以 `processRules.videoDuration` 为总长，跳过 ASR、正文切片和匹配，有非空标题时只调用一次模型提取标题关键词；始终不生成字幕，新请求不得附带非空 `text/copy`。请求 `title` 使用模板标题样式与时间区间，保留原文换行、标点和模板花字及动画，按返回的 `title_keyword` 应用模板关键词样式。标题为空就不显示，也不调用提词模型。
 
 两个纯素材模式均使用后端 FFprobe 读取视频流实际时长，图片每张 3 秒。按顺序探测至足够覆盖目标，不访问后续未使用素材；不足报 `materials_duration_insufficient`，视频无法读取或缺少有效视频流时长报 `material_probe_failed`，不拿可能更长的容器音轨时长代替。POST 先返回任务 ID，以上错误通过查询与终态回调报告，不提交 IMS。超长时裁切最后实际使用的素材（图片也可裁短），相等则完整使用，不循环补足。素材时长快照保存后，恢复组装不再探测。
 
