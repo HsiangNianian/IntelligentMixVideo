@@ -3,6 +3,17 @@
 本项目的版本变更由发布工作流根据 Conventional Commits 自动生成。
 推送正式版本 tag 后，成功发布的版本记录会自动写入此文件。
 
+## [v0.9.3] - 2026-10-15
+### New Features
+- [`1ae37f1`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/1ae37f14520d061b18119e41aac37aa6e32fb425) - **remotion**: add a shared font library that the agent chooses from *(PR [#165](https://github.com/HsiangNianian/IntelligentMixVideo/pull/165) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Documentation Changes
+- [`713ded5`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/713ded550e7fd54c2c1cf74298f590350319980f) - update CHANGELOG.md for v0.9.2 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
+
+### Chores
+- [`1953ac5`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/1953ac528ac9602953df1df28c98ad5952c121dd) - **release**: prepare v0.9.3 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`9b66f73`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/9b66f733d3a381b68a6f559fa8fa57f25dc14687) - **release**: promote dev to main for v0.9.3 *(PR [#166](https://github.com/HsiangNianian/IntelligentMixVideo/pull/166) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
 ## [v0.9.2] - 2026-10-14
 ### BREAKING CHANGES
 - due to [`3362018`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/3362018027d4608c75979aca394ec50eb8c209a3) - keep chat on the client and execution state in MySQL *(PR [#143](https://github.com/HsiangNianian/IntelligentMixVideo/pull/143) by [@YUZHEthefool](https://github.com/YUZHEthefool))*:
@@ -1414,3 +1425,5 @@ feat(client): 在模板工作区页头添加时钟 *(commit by [@HsiangNianian](
 [v0.9.1]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.0...v0.9.1
 
 [v0.9.2]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.1...v0.9.2
+
+[v0.9.3]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.2...v0.9.3
