@@ -44,8 +44,9 @@ function WorkspaceColumns({ assets, canvas, inspector }: { assets: ReactNode; ca
 }
 
 /** 只有成功读取或明确放弃时才替换草稿；保存始终使用当前模板的环境和 ID。 */
-export function TemplateWorkspace({ selection = null, onHome, onOpenRemotion }: {
+export function TemplateWorkspace({ selection = null, deletedTemplate = null, onHome, onOpenRemotion }: {
   selection?: TemplateSelection | null;
+  deletedTemplate?: TemplateSelection | null;
   onHome: () => void;
   /** 回到字效工作区修改资产本身（颜色、动画等不在模板里调整的参数）。 */
   onOpenRemotion?: () => void;
@@ -124,6 +125,12 @@ export function TemplateWorkspace({ selection = null, onHome, onOpenRemotion }: 
     mounted.current = true;
     return () => { mounted.current = false; };
   }, []);
+
+  // 主页删除当前模板后清空保留的编辑区，删除其他模板不影响当前草稿。
+  useEffect(() => {
+    if (!current || deletedTemplate?.templateId !== current.template_id || deletedTemplate.environment !== environment) return;
+    setCurrent(null); setDraft(null); setBaseline(""); setError("");
+  }, [deletedTemplate, current, environment]);
 
   // 默认地址与弹窗均读取真实元数据；已选择来源时不再启动默认读取。
   useEffect(() => {

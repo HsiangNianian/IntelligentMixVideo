@@ -1,7 +1,7 @@
 /** 主页按云端、本地顺序读取模板；各库独立显示状态，选择后交给模板工作区编辑。 */
 import { useEffect, useId, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
-import { Cloud, FolderOpen, Layers, Monitor, Plus, RefreshCw, Sparkles, SquarePen, WandSparkles } from "lucide-react";
+import { Cloud, FolderOpen, Layers, Monitor, Plus, RefreshCw, Sparkles, SquarePen, Trash2, WandSparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { FlipText } from "@/components/ui/flip-text";
 import { Hint } from "@/components/Hint";
@@ -24,6 +24,7 @@ export type TemplateSelection = { environment: Environment } & (
 /** 主页只负责选择，编辑交给模板工作区。 */
 interface Props {
   onSelect: (selection: TemplateSelection) => void;
+  onDelete?: (selection: TemplateSelection) => void;
 }
 
 /** 两个模板库分别读取和重试；卸载取消 HTTP，并忽略迟到的本地 IPC 结果。 */
@@ -87,7 +88,7 @@ function TemplateCover({ template }: { template: TemplateSummary }) {
 const updatedFormat = new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit" });
 
 /** 模板分组展示加载结果，整张卡片按钮传递模板 ID 和所属环境。 */
-export function TemplateCollection({ environment, collection, onSelect }: Props & {
+export function TemplateCollection({ environment, collection, onSelect, onDelete }: Props & {
   environment: Environment;
   collection: ReturnType<typeof useTemplateCollection>;
 }) {
@@ -99,12 +100,13 @@ export function TemplateCollection({ environment, collection, onSelect }: Props 
   const title = environment === "cloud" ? "云端模板" : "本地模板";
   const Icon = environment === "cloud" ? Cloud : FolderOpen;
 
-  /** 仅删除已确认的无效记录，失败时保留选择和原因供用户重试。 */
-  async function removeInvalid() {
+  /** 只删除已确认的记录，成功后刷新列表并通知编辑区；失败保留确认框供重试。 */
+  async function removeTemplate() {
     if (!deleting || removing) return;
     setRemoving(true); setRemoveError("");
     try {
       await deleteTemplate(deleting.template_id, environment, deleting.library);
+      onDelete?.({ templateId: deleting.template_id, environment });
       setDeleting(null); collection.refresh();
     } catch (reason) { setRemoveError(reason instanceof Error ? reason.message : "删除模板失败"); }
     finally { setRemoving(false); }
@@ -155,36 +157,43 @@ export function TemplateCollection({ environment, collection, onSelect }: Props 
         <ul className={gridClass}>
           {templates.map((template) => (
             <li key={template.template_id} className="min-w-0">
-              <button
-                type="button"
-                className="group flex w-full cursor-pointer flex-col gap-2.5 rounded-lg text-left outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
-                aria-label={`选择模板：${template.name}`}
-                disabled={!!template.validation_error}
-                onClick={() => onSelect({ environment, templateId: template.template_id })}
-              >
-                <TemplateCover template={template} />
-                <span className="min-w-0 px-0.5">
-                  <span className="flex items-baseline justify-between gap-2">
-                    <span className="truncate text-sm font-medium transition-colors group-hover:text-primary" title={template.name}>{template.name}</span>
-                    <time dateTime={template.updated_at} className="shrink-0 font-mono text-[11px] text-muted-foreground">{updatedFormat.format(new Date(template.updated_at))}</time>
+              <div className="relative">
+                <button
+                  type="button"
+                  className="group flex w-full cursor-pointer flex-col gap-2.5 rounded-lg text-left outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                  aria-label={`选择模板：${template.name}`}
+                  disabled={!!template.validation_error}
+                  onClick={() => onSelect({ environment, templateId: template.template_id })}
+                >
+                  <TemplateCover template={template} />
+                  <span className="w-full min-w-0 px-0.5 pr-8">
+                    <span className="flex items-baseline justify-between gap-2">
+                      <span className="truncate text-sm font-medium transition-colors group-hover:text-primary" title={template.name}>{template.name}</span>
+                      <time dateTime={template.updated_at} className="shrink-0 font-mono text-[11px] text-muted-foreground">{updatedFormat.format(new Date(template.updated_at))}</time>
+                    </span>
+                    <span className="mt-0.5 block truncate text-xs text-muted-foreground">{template.description || "暂无模板说明"}</span>
                   </span>
-                  <span className="mt-0.5 block truncate text-xs text-muted-foreground">{template.description || "暂无模板说明"}</span>
-                </span>
-              </button>
+                </button>
+                <Hint label={`删除模板：${template.name}`}><Button type="button" variant="ghost" size="icon-sm"
+                  className="absolute right-0 bottom-1 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                  aria-label={`删除模板：${template.name}`} aria-haspopup="dialog"
+                  onClick={() => { setDeleting(template); setRemoveError(""); }}>
+                  <Trash2 className="size-4" aria-hidden="true" />
+                </Button></Hint>
+              </div>
+              <p className="mt-1 break-all px-0.5 font-mono text-[10px] text-muted-foreground">styleid：{template.template_id}</p>
               {template.validation_error && <div className="mt-2 space-y-2 rounded-md border border-destructive/30 p-3 text-xs">
                 <p className="font-medium text-destructive">模板不符合当前规则</p>
-                <p className="break-all text-muted-foreground">ID：{template.template_id}</p>
                 <p className="break-words text-destructive">{template.validation_error}</p>
-                <Button type="button" size="sm" variant="outline" onClick={() => { setDeleting(template); setRemoveError(""); }}>删除无效模板</Button>
               </div>}
             </li>
           ))}
         </ul>
       )}
       <Dialog open={deleting !== null} onOpenChange={(open) => { if (!open && !removing) setDeleting(null); }}>
-        <DialogContent><DialogHeader><DialogTitle>删除无效模板</DialogTitle><DialogDescription>将永久删除模板「{deleting?.name}」（{deleting?.template_id}）。</DialogDescription></DialogHeader>
+        <DialogContent><DialogHeader><DialogTitle>删除模板</DialogTitle><DialogDescription>是否确认删除「{deleting?.name}」模板？删除后无法恢复。<span className="mt-2 block break-all">styleid：{deleting?.template_id}</span></DialogDescription></DialogHeader>
           {removeError && <p role="alert" className="text-sm text-destructive">{removeError}</p>}
-          <DialogFooter><Button type="button" variant="outline" disabled={removing} onClick={() => setDeleting(null)}>取消</Button><Button type="button" variant="destructive" disabled={removing} onClick={() => void removeInvalid()}>{removing ? "正在删除…" : "确认删除"}</Button></DialogFooter>
+          <DialogFooter><Button type="button" variant="outline" disabled={removing} onClick={() => setDeleting(null)}>取消</Button><Button type="button" variant="destructive" disabled={removing} onClick={() => void removeTemplate()}>{removing ? "正在删除…" : "确认删除"}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
     </section>
@@ -219,7 +228,7 @@ function CreateTile({ icon: Icon, title, description, onClick, disabled, feature
 }
 
 /** 主页：顶部快捷创作入口，下方按云端、本地分组展示模板画廊；再次进入主页重新读取两库。 */
-export function TemplateHome({ onSelect, onOpenRemotion }: Props & { onOpenRemotion: () => void }) {
+export function TemplateHome({ onSelect, onDelete, onOpenRemotion }: Props & { onOpenRemotion: () => void }) {
   const cloud = useTemplateCollection("cloud");
   const local = useTemplateCollection("local");
   const [creating, setCreating] = useState<Environment | null>(null);
@@ -256,8 +265,8 @@ export function TemplateHome({ onSelect, onOpenRemotion }: Props & { onOpenRemot
           <h1 id={`${formId}-library`} className="text-lg font-semibold tracking-tight">我的模板</h1>
           <p className="text-xs text-muted-foreground">选择模板继续编辑</p>
         </div>
-        <TemplateCollection environment="cloud" collection={cloud} onSelect={onSelect} />
-        <TemplateCollection environment="local" collection={local} onSelect={onSelect} />
+        <TemplateCollection environment="cloud" collection={cloud} onSelect={onSelect} onDelete={onDelete} />
+        <TemplateCollection environment="local" collection={local} onSelect={onSelect} onDelete={onDelete} />
       </section>
       <Dialog open={creating !== null} onOpenChange={(open) => { if (!open) setCreating(null); }}>
         <DialogContent>

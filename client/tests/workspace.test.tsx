@@ -493,3 +493,16 @@ test("保存成功显示轻提示，图标按钮提供悬停提示", async () =>
   fireEvent.focus(screen.getByRole("button", { name: "全屏预览" }));
   expect((await screen.findByRole("tooltip")).textContent).toBe("全屏预览");
 });
+
+// 场景：删除另一个库的模板不影响草稿，删除当前模板才清空编辑区。
+test("主页删除当前模板后清空保留的编辑区", async () => {
+  const template = savedTemplate();
+  fetchMock.mockResolvedValue(protobufTemplateResponse(template, "get"));
+  const selection = { environment: "cloud" as const, templateId: template.template_id };
+  const view = render(<TemplateWorkspace selection={selection} onHome={() => {}} />);
+  await screen.findByLabelText("模板名称");
+  view.rerender(<TemplateWorkspace selection={selection} deletedTemplate={{ ...selection, environment: "local" }} onHome={() => {}} />);
+  expect(screen.getByLabelText("模板名称").textContent).toBe("已有模板");
+  view.rerender(<TemplateWorkspace selection={selection} deletedTemplate={selection} onHome={() => {}} />);
+  expect(await screen.findByText("还没有打开模板")).toBeTruthy();
+});
