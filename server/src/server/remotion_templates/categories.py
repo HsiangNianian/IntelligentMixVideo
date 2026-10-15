@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from collections.abc import Collection
 from typing import Callable, get_args
 
 from ..template.schema import OVERRIDE_STRING_MAX_LENGTH
@@ -61,6 +62,15 @@ def _text(definition: dict) -> bool:
         definition.get("type") == "string"
         and isinstance(definition.get("minLength"), int) and definition["minLength"] >= 1
         and isinstance(limit, int) and not isinstance(limit, bool) and limit == TEXT_MAX_LENGTH
+    )
+
+
+def _font_family(definition: dict) -> bool:
+    """字体参数：字符串枚举，取值是非空的家族名列表（是否都在字体库里由生成路径另查）。"""
+    values = definition.get("enum")
+    return (
+        definition.get("type") == "string"
+        and isinstance(values, list) and values != [] and all(isinstance(value, str) and value for value in values)
     )
 
 
@@ -142,6 +152,11 @@ KEYWORD_SIZE_RULE = Rule(
 TEXT_KEYWORDS = (KEYWORDS, *KEYWORD_STYLES, KEYWORD_COLOR_RULE, KEYWORD_SIZE_RULE)
 
 
+# 字效的字体参数：只在 Agent 生成时必备（`fonts` 传入时检查），发布更早的版本不要求，所以不在 REQUIRED 里。
+FONT_FAMILY = Rule(
+    "fontFamily", {"type": "string", "enum": ["<family names from the font library>"]},
+    "字体，字符串枚举，取值是字体库里的家族名，默认值是其中之一", _font_family,
+)
 _COLOR = {"type": "string", "pattern": HEX_COLOR}
 REQUIRED: dict[SpriteKindName, tuple[Rule, ...]] = {
     "text": (
@@ -242,8 +257,12 @@ def parameter_problems(definition: object, name: str) -> str | None:
     return "type must be number, integer, string, boolean or a keywords array"
 
 
-def category_problems(kind: str | None, schema: dict, bound: set[str], defaults: dict) -> list[Problem]:
-    """列出某分类缺少、形状不符或默认值不合约定的必备参数；``bound`` 是作为顶层参数暴露的名称，``defaults`` 是默认参数。"""
+def category_problems(kind: str | None, schema: dict, bound: set[str], defaults: dict, fonts: Collection[str] | None = None) -> list[Problem]:
+    """列出某分类缺少、形状不符或默认值不合约定的必备参数；``bound`` 是作为顶层参数暴露的名称，``defaults`` 是默认参数。
+
+    ``fonts`` 是字体库里的家族名：生成路径传入时，字效还必须暴露 `fontFamily` 枚举（取值都在字体库里），默认值是枚举之一；
+    发布更早的版本时不传，不要求这个参数。
+    """
     if kind not in REQUIRED:
         return [Problem("kind", None, f"kind must be one of {', '.join(KINDS)}")]
     properties = _properties(schema)
@@ -255,6 +274,17 @@ def category_problems(kind: str | None, schema: dict, bound: set[str], defaults:
             problems.append(Problem(rule.name, rule, "has the wrong schema"))
         elif rule.off is not None and (rule.name not in defaults or not _same(defaults[rule.name], rule.off)):
             problems.append(Problem(rule.name, rule, f"{DEFAULT_REASON} {json.dumps(rule.off)} (off)"))
+    if kind == "text" and fonts is not None:
+        definition = properties.get(FONT_FAMILY.name)
+        if FONT_FAMILY.name not in bound or definition is None:
+            problems.append(Problem(FONT_FAMILY.name, FONT_FAMILY, "missing"))
+        elif not FONT_FAMILY.accepts(definition):
+            problems.append(Problem(FONT_FAMILY.name, FONT_FAMILY, "has the wrong schema"))
+        elif not set(definition["enum"]) <= set(fonts):
+            unknown = sorted(set(definition["enum"]) - set(fonts))
+            problems.append(Problem(FONT_FAMILY.name, FONT_FAMILY, f"lists families that are not in the font library: {unknown}"))
+        elif defaults.get(FONT_FAMILY.name) not in definition["enum"]:
+            problems.append(Problem(FONT_FAMILY.name, FONT_FAMILY, "must default to one of its enum values"))
     return problems
 
 

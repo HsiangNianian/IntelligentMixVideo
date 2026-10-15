@@ -9,6 +9,7 @@ import asyncio
 import json
 import re
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Annotated
 from uuid import UUID
 
@@ -16,6 +17,7 @@ from fastapi import (
     APIRouter,
     Depends,
     File,
+    Form,
     Header,
     HTTPException,
     Query,
@@ -29,6 +31,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from ..client_config import parse_config
 from .settings import ClientSettings
 from .evidence import digest
+from .fonts import Font, FontRejected, FontStore
 from .history import WorkEvent
 from .media import save_image
 from .object_store import ObjectStoreError
@@ -143,7 +146,9 @@ def capabilities(service: Service, config: Config) -> dict:
         "inputs": ["description", "images"],
         "video_supported": False,
         "models_configured": (service.settings.model_copy(update=config.model_dump()) if config is not None else service.settings).models_configured,
-        "fonts": [{"family": "Noto Sans CJK SC", "weights": [400, 700]}],
+        "fonts": [
+            {"family": font.family, "weights": font.weights} for font in FontStore.for_settings(service.settings).listing()
+        ],
     }
 
 
@@ -430,12 +435,20 @@ def _json_script(value: dict) -> str:
 INSTANCE_BOX_CSS = "div:has(> [data-imv-instance]){overflow:visible !important}"
 
 
-def player_page(script: str, *, overlay: bool = False, host: dict | None = None) -> HTMLResponse:
+def font_list(fonts: Sequence[Font]) -> list[dict]:
+    """What the preview page needs to register each catalog font: family, CSS weight and served URL."""
+    return [{"family": font.family, "weight": font.weight_text, "url": f"/api/templates/fonts/{font.id}"} for font in fonts if font.has_file]
+
+
+def player_page(
+    script: str, *, overlay: bool = False, host: dict | None = None, fonts: Sequence[Font] = ()
+) -> HTMLResponse:
     """Wrap a sealed interactive bundle in the sandboxed player document shared by versions and sprites.
 
     `overlay` drops the inspection checkerboard so the page can sit transparently over other video. `host`
     (defaults ``config`` and content ``box``) is injected as JSON the player reads at start-up instead of the
-    defaults built into the bundle.
+    defaults built into the bundle. `fonts` are the downloaded catalog fonts; the player registers each as a lazy
+    `FontFace` so it loads only when the effect uses that family.
     """
     script = script.replace("</", "<\\/")
     return HTMLResponse(
@@ -446,6 +459,7 @@ def player_page(script: str, *, overlay: bool = False, host: dict | None = None)
         +
         '<body><div id="root"></div>'
         + (f'<script type="application/json" id="imv-preview-host">{_json_script(host)}</script>' if host is not None else "")
+        + (f'<script type="application/json" id="imv-preview-fonts">{_json_script(font_list(fonts))}</script>' if fonts else "")
         + "<script>" + script + "</script></body></html>",
         headers={
             "Content-Security-Policy": "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src http: https:; media-src http: https: data:; img-src http: https: data:; connect-src 'none'; base-uri 'none'; form-action 'none'",
@@ -468,7 +482,11 @@ def preview(version_id: UUID, service: Service) -> HTMLResponse:
     """
     script = artifact_path(service, version_id, "interactive.js").read_text()
     # A parameter revision reuses its base's bundle, so the page supplies this version's own defaults.
-    return player_page(script, host={"config": service.store.version(version_id).candidate.default_config})
+    return player_page(
+        script,
+        host={"config": service.store.version(version_id).candidate.default_config},
+        fonts=FontStore.for_settings(service.settings).listing(),
+    )
 
 
 @router.get(
@@ -492,6 +510,93 @@ def preview_font(version_id: UUID, weight: int, service: Service) -> FileRespons
         media_type="font/collection",
         headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"},
     )
+
+
+class FontInfo(BaseModel):
+    """A registered font as the picker shows it: name, style, weights and where its file and preview strip are."""
+
+    id: str
+    family: str
+    label: str
+    style: str
+    weights: list[int]
+    source: str
+    size: int
+    file_url: str | None
+    preview_url: str | None
+
+
+def font_info(font: Font) -> FontInfo:
+    """Public view of a registry font; URLs are paths below this API's `/fonts`."""
+    return FontInfo(
+        **font.model_dump(include={"id", "family", "label", "style", "weights", "source", "size"}),
+        file_url=f"/api/templates/fonts/{font.id}" if font.has_file else None,
+        preview_url=f"/api/templates/fonts/{font.id}/preview" if font.preview else None,
+    )
+
+
+@router.get("/fonts", tags=["字体"], summary="字体列表")
+def list_fonts(service: Service) -> list[FontInfo]:
+    """预装与用户上传的全部字体，按登记顺序；`family` 就是效果的 `fontFamily` 参数取值。字体库所有人共享。"""
+    return [font_info(font) for font in FontStore.for_settings(service.settings).listing()]
+
+
+@router.post("/fonts", status_code=201, tags=["字体"], summary="上传字体")
+async def upload_font(
+    service: Service,
+    owner: Device,
+    file: Annotated[UploadFile, File()],
+    preview: Annotated[UploadFile | None, File()] = None,
+    label: Annotated[str, Form()] = "",
+) -> FontInfo:
+    """上传一个 TrueType / OpenType 字体（.ttf、.otf），保存到对象存储并登记到共享字体库。
+
+    `preview` 是上传者浏览器用该字体画出的黑色透明底 PNG 预览条（选填，下拉框用它展示字体）。家族名称不能与已有字体、
+    系统字体或保留名重复，文件超过大小上限返回 413，内容无效或重名返回 422；对象存储不可用返回 503。字体不可删除。
+    """
+    store = FontStore.for_settings(service.settings)
+    try:
+        content = await file.read(store.max_upload + 1)
+        strip = await preview.read(1024 * 1024 + 1) if preview is not None else None
+        if len(content) > store.max_upload:
+            raise HTTPException(413, "Font exceeds the upload size limit.")
+        if strip is not None and len(strip) > 1024 * 1024:
+            raise HTTPException(413, "Preview exceeds the size limit.")
+        try:
+            return font_info(await asyncio.to_thread(store.upload, content, strip or None, label, str(owner)))
+        except FontRejected as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except (OSError, SQLAlchemyError) as exc:
+            raise HTTPException(503, "字体暂时无法保存，请稍后重试。") from exc
+    finally:
+        await file.close()
+        if preview is not None:
+            await preview.close()
+
+
+@router.get("/fonts/{font_id}", tags=["字体"], summary="读取字体文件")
+async def catalog_font(font_id: str, service: Service) -> FileResponse:
+    """提供已登记字体的文件供预览页与字体选择器注册（本机还没缓存时先从对象存储取回并校验哈希）；未知字体返回 404。
+
+    字体库共享、字体不可变，所以不按设备校验，可以长期缓存。
+    """
+    path = await asyncio.to_thread(FontStore.for_settings(service.settings).ensure, font_id)
+    if path is None:
+        raise NotFound("font not found")
+    return FileResponse(
+        path,
+        media_type="font/ttf" if path.suffix == ".ttf" else "font/otf",
+        headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=86400"},
+    )
+
+
+@router.get("/fonts/{font_id}/preview", tags=["字体"], summary="读取字体预览条")
+async def font_preview(font_id: str, service: Service) -> FileResponse:
+    """黑色透明底的 PNG 预览条，页面用 CSS mask 着色；字体不存在或没有预览返回 404。"""
+    path = await asyncio.to_thread(FontStore.for_settings(service.settings).preview_path, font_id)
+    if path is None:
+        raise NotFound("preview not found")
+    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
 
 
 @router.get("/assets/{asset_id}", tags=["参考素材"], summary="读取历史参考图片")

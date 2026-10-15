@@ -1,6 +1,6 @@
 /** 首页以侧边导航组合工作区；设置经侧栏底部按钮打开对话框，业务面板隐藏时保留草稿、播放器与订阅。 */
 import { Fragment, useId, useState } from "react";
-import { Film, House, PanelLeftClose, PanelLeftOpen, Settings, Sparkles, SquarePen } from "lucide-react";
+import { Film, House, PanelLeftClose, PanelLeftOpen, Settings, Sparkles, SquarePen, Type } from "lucide-react";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Hint } from "@/components/Hint";
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,7 @@ import { SettingsDialog } from "@/features/settings/SettingsDialog";
 import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
 import { TemplateHome, type TemplateSelection } from "@/features/templates/TemplateHome";
 import { RemotionWorkspace } from "@/features/remotion_templates/RemotionWorkspace";
+import { FontLibrary } from "@/features/fonts/FontLibrary";
 import { Tabs as TabsPrimitive } from "radix-ui";
 import { TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
@@ -17,6 +18,7 @@ const navigation = [
   { value: "home", label: "主页", icon: House },
   { value: "library", label: "模版编辑", icon: SquarePen },
   { value: "remotion", label: "Remotion 字效", icon: Sparkles },
+  { value: "fonts", label: "字体库", icon: Type },
 ];
 
 /** 工作区首次打开后仅隐藏；根使用 Radix 避免竖向 group 样式影响嵌套横向标签。 */
@@ -105,6 +107,12 @@ export default function HomePage() {
               <p className="truncate text-xs text-muted-foreground">用对话生成可调参数的文字动效</p>
             </div>
           </header>}
+          {workspace === "fonts" && <header className="flex h-14 shrink-0 items-center gap-3 border-b px-1">
+            <div className="min-w-0">
+              <h1 className="truncate text-base font-semibold tracking-tight">字体库</h1>
+              <p className="truncate text-xs text-muted-foreground">查看全部可用字体，或上传自己的字体供字效使用</p>
+            </div>
+          </header>}
           <TabsContent value="home" forceMount hidden={workspace !== "home"}>
             {workspace === "home" && (
               <TemplateHome
@@ -125,6 +133,10 @@ export default function HomePage() {
           </TabsContent>
           <TabsContent value="remotion" forceMount hidden={workspace !== "remotion"}>
             {remotionOpened && <RemotionWorkspace />}
+          </TabsContent>
+          {/* 字体库不保留草稿，每次打开都重新读取，所以只在当前页签挂载。 */}
+          <TabsContent value="fonts" forceMount hidden={workspace !== "fonts"}>
+            {workspace === "fonts" && <FontLibrary />}
           </TabsContent>
         </div>
       </main>

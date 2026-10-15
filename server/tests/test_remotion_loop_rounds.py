@@ -181,6 +181,7 @@ class FakeHarness:
     def __init__(self, responses):
         self.responses = iter(responses)
         self.roles = []
+        self.fonts = SimpleNamespace(guide=lambda: "")
         self.settings = SimpleNamespace(
             max_steps=4,
             max_tooluse=3,

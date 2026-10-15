@@ -30,6 +30,7 @@ from .contracts import (
     SpriteCreateOutput,
 )
 from ..categories import agent_message, category_problems, parameter_problems
+from ..fonts import FontStore, open_font_schema
 from .catalog_store import CatalogStore
 from .registry import ToolFault
 from .schema import merge_parameters, validate_component_contract, validate_parameters
@@ -481,11 +482,19 @@ class ToolSession:
         )
         if not validation.passed:
             raise _validation_fault("Sprite code validation failed.", validation)
-        problems = category_problems(sprite.kind, sprite.parameter_schema, {item.name for item in sprite.bindings}, sprite.default_parameters)
+        store = FontStore.active
+        problems = category_problems(
+            sprite.kind, sprite.parameter_schema, {item.name for item in sprite.bindings}, sprite.default_parameters,
+            fonts={font.family for font in store.listing()} if store is not None else None,
+        )
         if problems:
             raise ToolFault("CATEGORY_PARAMETERS_MISSING", agent_message(sprite.kind, problems), details={
                 "missing": [{"name": item.name, "reason": item.reason, **({"schema": item.rule.example} if item.rule else {})} for item in problems],
             })
+        # The Agent chose `fontFamily` from the library's enum; the stored Sprite keeps a plain string so that fonts uploaded
+        # later stay selectable (the live library is the check). Everything from here on, including the host's final
+        # validation, sees the stored form.
+        sprite = sprite.model_copy(update={"parameter_schema": open_font_schema(sprite.parameter_schema)})
         await self._require_visible_video(sprite)
         record = SpriteRecord(
             sprite_id=uuid4().hex,

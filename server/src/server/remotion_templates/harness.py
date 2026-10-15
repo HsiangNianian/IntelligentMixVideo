@@ -5,6 +5,7 @@ from uuid import uuid4
 from pydantic import Field
 
 from .context import Conversation
+from .fonts import FontStore
 from .models import Contract, TemplateSpec
 from .parameters import patch_parameters
 from .provider import Budget, Provider, ExecutionFailure
@@ -61,6 +62,7 @@ class Harness:
         self.provider, self.renderer = provider, renderer
         self.settings = getattr(provider, "settings", None) or Settings(_env_file=None)
         self.presentation = PresentationBuilder(renderer)
+        self.fonts = FontStore.for_settings(self.settings)
 
     async def _turn(self, system, context, tools, budget, images, *, phase="outer"):
         """Account exactly one request for an explicit ReAct role."""
