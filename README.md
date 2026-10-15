@@ -198,13 +198,15 @@ Segments longer than 8 characters, excluding punctuation and whitespace, are spl
 
 Create a task with `POST /api/v1/video-compositions`, then query its result with `GET /api/v1/video-compositions/{task_id}`. You can also provide `callbackUrl` to receive a terminal-state notification.
 
-The server selects the workflow from the media fields; do not supply an additional `compositionMode`:
+The server selects and saves the workflow from the script field and top-level narration URL; do not supply `compositionMode`:
 
 | Input | Workflow |
 | --- | --- |
-| `videoUrl` is provided | Standard mode; omitting `materials` uses only the digital avatar, while an explicit array participates in asset matching according to the API rules |
-| No `videoUrl`, but a top-level `audioUrl` | Media-only mode with narration; requires a non-empty asset list and composes assets in order |
-| Neither is provided | Media-only mode without narration; requires a non-empty asset list and a valid target duration, and does not generate subtitles |
+| Non-blank `text` and a top-level `audioUrl` | Standard mode; requires `videoUrl`. Omitting `materials` uses only the digital avatar, while an explicit array participates in asset matching |
+| No non-blank `text`, but a top-level `audioUrl` | Media-only mode with narration; optional `copy` supplies subtitles. Requires a non-empty asset list and composes assets in order, regardless of `videoUrl` |
+| Neither a narration URL nor a non-blank script | Media-only mode without narration; requires a non-empty asset list and a valid target duration, and does not generate subtitles |
+
+`text` and `copy` are distinct inputs: both being non-blank, or either being non-blank without `audioUrl`, returns HTTP 422 before task creation. Missing, null, empty, and whitespace-only scripts count as absent. The internal mode is saved in `video_compositions.data.request.compositionMode` before `copy` is normalized to `text`; subsequent processing uses that saved mode. Older tasks without it retain the original URL-based interpretation.
 
 A successful creation response means the request was accepted, not that rendering is complete. Its `data` field contains the task ID. Save that ID and retrieve the result through the query endpoint or terminal callback.
 
