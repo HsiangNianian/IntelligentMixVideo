@@ -44,6 +44,54 @@ def test_missing_font_defaults():
 
 
 @pytest.fixture
+def font_timeline_case():
+    """提供标题、字幕和气泡的完整合成输入，直接构造数据，不访问 HTTP 或数据库。"""
+    template_id = str(uuid4())
+    tracks = [
+        {"id": role, "target": role, "start_mode": "seconds", "start": 0, "duration": None,
+         "editor": {"title": "标题" if role == "title" else "",
+                    "subtitle": "字幕" if role == "subtitle" else "",
+                    "bubbleText": "气泡" if role == "bubble" else ""}}
+        for role in ("title", "subtitle", "bubble")
+    ]
+    return {
+        "request": {"text": "字幕", "title": "标题", "videoUrl": "https://example.com/video.mp4",
+                    "audioUrl": "https://example.com/audio.wav", "styleId": template_id},
+        "template": {"template_id": template_id, "name": "字体测试", "tracks": tracks,
+                     "effects": [], "created_at": "2026-10-15T00:00:00Z",
+                     "updated_at": "2026-10-15T00:00:00Z"},
+        "segments": [{"segment_id": 1, "text": "字幕", "start_time": 0, "end_time": 2,
+                      "keyword": "", "level": 1, "group_id": [1, 1]}],
+        "matches": [{"segment_id": 1, "text": "字幕", "start_time": 0, "end_time": 2,
+                     "matched_candidate_url": None}],
+        "duration_ms": 2000, "width": 1080, "height": 1920, "fps": 30,
+    }
+
+
+@pytest.mark.parametrize("title_font,subtitle_font", [
+    (font["value"], FONTS[(index + 1) % len(FONTS)]["value"])
+    for index, font in enumerate(FONTS)
+] + [(None, None)])
+def test_timeline_fonts_without_external_service(font_timeline_case, title_font, subtitle_font):
+    """默认 CI 验证十一种字体独立用于标题和字幕、气泡固定普惠体，以及旧模板默认字体。"""
+    case = font_timeline_case
+    if title_font is not None:
+        for track in case["template"]["tracks"]:
+            track["editor"].update(titleFont=title_font, subtitleFont=subtitle_font)
+    original = deepcopy(case)
+
+    timeline, _ = build_timeline(**case)
+
+    assert [(clip["Content"], clip["Font"]) for track in timeline["SubtitleTracks"]
+            for clip in track["SubtitleTrackClips"]] == [
+        ("标题", title_font or "Alibaba PuHuiTi"),
+        ("字幕", subtitle_font or "Alibaba PuHuiTi"),
+        ("气泡", "Alibaba PuHuiTi"),
+    ]
+    assert case == original
+
+
+@pytest.fixture
 def font_http_client():
     """直接访问独立测试服务；没有配置时跳过 HTTP 用例。"""
     address = os.environ.get("IMV_FONT_TEST_API")
