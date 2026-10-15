@@ -148,11 +148,19 @@ are objects in ZOS (or the local object folder while `ZOS_BUCKET` is empty). It 
 empty: the system default `Noto Sans CJK SC` (registered when the runtime starts, no file), the preinstalled catalog
 and the fonts users upload. Rows are only ever added, so a template that names a family keeps rendering.
 
-- **Preinstalled fonts**: `font_catalog.json` pins each free OFL font by URL, size and SHA-256. After the runtime starts,
-  `FontStore.sync` (`fonts.py`) copies the missing ones from their origin into the object store and the registry, then
-  re-syncs hourly; a download that does not match its pin is dropped, and a failure only leaves that font for the
-  next sync. `IMV_FONT_DOWNLOADS=false` stops all origin requests. To add a font, add a catalog entry (pin the URL to
-  a commit or release) and restart; an existing row is never changed.
+- **Preinstalled fonts**: the 16 free OFL fonts ship inside the backend package as `bundled_fonts/<file>.xz`
+  (xz-compressed, about 60 MB). `font_catalog.json` pins each font's uncompressed size and SHA-256 and records where
+  the file came from (`url`, provenance only). After the runtime starts, `FontStore.sync` (`fonts.py`) unpacks the
+  ones the registry lacks, checks them against the pin, copies them into the object store and the registry, and
+  re-syncs hourly. Nothing is downloaded, so a host that cannot reach GitHub gets the same library. A file that is
+  missing or does not match its pin is skipped with a warning (`Font <id> was not installed`) and retried at the next
+  sync. `IMV_INSTALL_BUNDLED_FONTS=false` installs none. To add a font, put its `.xz` in `bundled_fonts/` and add a
+  catalog entry, and add its license text to `bundled_fonts/LICENSES.txt` (OFL requires it to travel with the font files; `tests/test_remotion_fonts.py` checks that the files, the catalog and the licenses agree); an existing row is never changed.
+  IMS font names: `Source Han Sans CN` and `Source Han Serif CN` are the genuine Adobe fonts (OFL), registered under
+  the exact `Font` value IMS uses, so a text effect and an IMS title can pick the same family. The other IMS fonts
+  (Alibaba PuHuiTi, FZFangSong-Z02S, FZHei-B01S, FZKai-Z03S, FZShuSong-Z01S, SimSun, KaiTi, Microsoft YaHei,
+  HappyZcool-2016) are not bundled: they are proprietary or their redistribution terms are not confirmed. Anyone
+  holding a licence can upload them (the family name inside the file must match).
 - **Uploads**: `POST /api/templates/fonts` (multipart `file`, optional `label` and `preview`, `X-IMV-Device`) takes a
   `.ttf`/`.otf` up to `IMV_FONT_UPLOAD_MAX_BYTES`. The backend only reads the family name from the `name` table with
   bounds-checked Python and never decodes the font; the sandboxed Chrome and the user's own browser do. The family
@@ -310,11 +318,18 @@ Every Outer → Plan → Executor turn appends one public round record through t
 `job.round` delta event on the same work stream as the phase timeline. A round
 carries the layer, the turn and the tools the host handled in that turn — the
 canonical dotted tool ID, whether it passed, and on failure a whitelisted error
-code plus a fixed host-authored message. Tool arguments and result payloads
-stay in the private audit, plan step goals and model prose
-are never published, a turn that only replied records an empty call list, and a
-terminal job accepts no further rounds. Unknown tool names become `unknown`;
-model protocol failures are explicitly marked. Each `job.round` event carries one
+code plus a fixed host-authored message. So the chat can show what the model actually
+sent, each call also carries the raw `arguments` (4000 characters) and, on failure, the
+tool's real error `detail` (2000). This is published on purpose: `arguments` can hold plan
+step goals (`tools.plan_execute`) and candidate source (`preset.create`, `preset.modify`,
+`sprite.create`), and `detail` is the tool's own error text, which can name server paths or
+compiler output. A turn without calls carries the model's reply (`message`) or the reason
+its request failed (`error_detail`, the already sanitized `ModelFailure` text); narration
+that accompanies calls is not published. Everything is cut with `…`, so a cut `arguments`
+is no longer valid JSON. Tool results, host steer text and the full payloads stay in the
+private audit. A terminal job accepts no further rounds. Unknown tool
+names become `unknown` with the name the model asked for in `requested_tool`; model
+protocol failures are explicitly marked. Each `job.round` event carries one
 round, `job.updated` omits that history, and the client keeps the rounds it has stored locally.
 
 ## Sprite assets

@@ -43,6 +43,8 @@ PORT=8010 uv run --locked server
 
 ## 模板接口
 
+标题和字幕分别通过 `tracks[].editor.titleFont` / `subtitleFont` 保存字体，Protobuf 字段为 `title_font` / `subtitle_font`。仅接受 `src/server/template/fonts.json` 中十一种字体的 `value`，无效字体返回 422，缺少字段默认 `Alibaba PuHuiTi`。正式合成分别使用对应对象的字体；思源黑体、思源宋体保存及合成使用 `Source Han Sans CN`、`Source Han Serif CN`，预览专用标识由客户端转换。字体 HTTP 集成测试使用独立 MySQL 服务：设置 `IMV_FONT_TEST_API` 后执行 `uv run --locked pytest --noconftest tests/test_template_fonts.py`，测试会创建并删除自己的模板，覆盖保存、读取、更新及合成时间线。
+
 客户端云端模板在现有 HTTP 地址上传输 Protobuf 二进制消息。协议定义在仓库根目录 `proto/`，Python 生成代码位于 `src/generated/imv/template/v1/`，与客户端生成目录结构一致。
 
 模板接口：
@@ -82,7 +84,7 @@ MySQL 单独列保存唯一名称、ID 和时间，JSON 保存完整编辑配置
 
 所有模式均接受 `packRules.backgroundMusic: null`，表示不使用背景音乐，等同于省略该字段或传 `audioSwitch: false`。
 
-统一入口根据现有字段自动确定内部模式：有 `videoUrl` 为 standard；没有 `videoUrl`、有顶层 `audioUrl` 为 materials_voice；两者都没有为 materials_silent。地址缺省或 null 均视为没有，背景音乐不参与分流；请求不包含 `compositionMode`。standard 省略 `materials` 为纯数字人，显式数组才匹配；两个纯素材模式要求非空素材数组，严格按顺序拼接且不调用匹配。视频使用 FFprobe 获取实际视频流时长，图片每张 3 秒，超长裁尾、不足异步失败。非空 `text` 优先，否则读取 `copy`；有语音以 ASR 配音总长合成，有文案才切片生成字幕。无语音以 `processRules.videoDuration`（有限正数秒，可为小数，不接受布尔值或数字字符串）合成，始终无字幕，`title` 使用模板标题样式、动画与时间区间。纯素材缺少文字对象时回退内置默认样式，正文仍取请求，不保存回模板。素材原声静音，背景音乐仍可选。无语音不依赖 ASR／匹配配置，有非空标题时需要切片模型配置并仅提取标题关键词；纯素材含视频时 PATH 需有 `ffprobe`；探测白名单包含 HTTP 代理所需的 `httpproxy`，失败的退出码与脱敏诊断写入 `timeline.json`。字段矩阵和完整请求示例见 [视频合成 API 文档](src/server/video_composition/api.md#三种模式)。
+统一入口先按原始文案字段确定内部模式：非空 `text` 为 standard（必须有 `videoUrl` 和 `audioUrl`）；无非空 `text`、有顶层 `audioUrl` 为 materials_voice（`copy` 提供字幕，可省略）；无配音且无文案为 materials_silent。文案缺省、null、空串或纯空白均视为空；`text` 与 `copy` 同时非空，或有非空文案却没有配音，均返回 422。`videoUrl` 和背景音乐不参与分流。请求不用传 `compositionMode`，服务端将已判定模式保存在 `video_compositions.data.request.compositionMode`，后续读取保存值；旧任务没有模式字段时仍按原 URL 规则恢复。standard 省略 `materials` 为纯数字人，显式数组才匹配；两个纯素材模式要求非空素材数组，严格按顺序拼接且不调用匹配。视频使用 FFprobe 获取实际视频流时长，图片每张 3 秒，超长裁尾、不足异步失败。判定模式后才把 `copy` 合并为内部 `text`；有语音以 ASR 配音总长合成，有文案才切片生成字幕。无语音以 `processRules.videoDuration`（有限正数秒，可为小数，不接受布尔值或数字字符串）合成，始终无字幕，`title` 使用模板标题样式、动画与时间区间。纯素材缺少文字对象时回退内置默认样式，正文仍取请求，不保存回模板。素材原声静音，背景音乐仍可选。无语音不依赖 ASR／匹配配置，有非空标题时需要切片模型配置并仅提取标题关键词；纯素材含视频时 PATH 需有 `ffprobe`；探测白名单包含 HTTP 代理所需的 `httpproxy`，失败的退出码与脱敏诊断写入 `timeline.json`。字段矩阵和完整请求示例见 [视频合成 API 文档](src/server/video_composition/api.md#三种模式)。
 
 standard 模式中，请求不包含 `materials` 时为纯数字人：跳过素材匹配，以 `audioUrl` 的 ASR 原始总时长铺满数字人视频，字幕继续按文案切片和模板时间规则显示。显式 `materials: []` 保留素材匹配但不指定候选，非空数组携带候选匹配，`null` 返回 422。需要保留此前缺省字段也匹配的行为时，调用方须改为显式传入 `[]`；已有任务继续按已保存的请求和阶段恢复。
 

@@ -215,6 +215,12 @@ pub struct EffectTemplateEditor {
     /// Remotion 片段的参数覆盖与宿主变换；只有 target 为 remotion 的轨道可以设置，且该轨道只能设置此字段。
     #[prost(message, optional, tag="47")]
     pub remotion: ::core::option::Option<RemotionTrackEditor>,
+    /// 顶部标题的 IMS 字体标识；省略时使用 Alibaba PuHuiTi。
+    #[prost(string, optional, tag="48")]
+    pub title_font: ::core::option::Option<::prost::alloc::string::String>,
+    /// 底部字幕的 IMS 字体标识；省略时使用 Alibaba PuHuiTi。
+    #[prost(string, optional, tag="49")]
+    pub subtitle_font: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// 画面对象及其时间规则。
 #[derive(::serde::Serialize)]

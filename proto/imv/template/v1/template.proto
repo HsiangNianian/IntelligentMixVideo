@@ -163,6 +163,10 @@ message EffectTemplateEditor {
   int32 subtitle_keyword_size = 46;
   // Remotion 片段的参数覆盖与宿主变换；只有 target 为 remotion 的轨道可以设置，且该轨道只能设置此字段。
   RemotionTrackEditor remotion = 47;
+  // 顶部标题的 IMS 字体标识；省略时使用 Alibaba PuHuiTi。
+  optional string title_font = 48;
+  // 底部字幕的 IMS 字体标识；省略时使用 Alibaba PuHuiTi。
+  optional string subtitle_font = 49;
 }
 
 // 画面对象及其时间规则。

@@ -72,7 +72,7 @@ def build_timeline(
     material_durations: list[float] | None = None, title_keyword: str = "", transition_seed: str = "",
 ) -> tuple[dict, list[str]]:
     """返回时间线及转场说明；标题关键词仅取切片返回值，缺失不强调，不修改输入快照。"""
-    request = CompositionRequest.model_validate(request)
+    request = CompositionRequest.from_snapshot(request)
     template = Template.model_validate(template)
     standard = request.composition_mode == "standard"
     has_subtitles = request.composition_mode != "materials_silent" and bool(request.text)
@@ -159,7 +159,8 @@ def build_timeline(
             "TimelineOut": end, "Alignment": "Center",
             "X": min(getattr(config, f"{role}_x") / 100, 0.9999),
             "Y": min(getattr(config, f"{role}_y") / 100, 0.9999),
-            "Font": "Alibaba PuHuiTi", "FontSize": getattr(config, f"{role}_size"),
+            "Font": "Alibaba PuHuiTi" if role == "bubble" else getattr(config, f"{role}_font"),
+            "FontSize": getattr(config, f"{role}_size"),
             "FontColor": "#FFFFFF", "Outline": 0, "AdaptMode": "AutoWrap",
             **effects.get("bubble" if role == "bubble" else f"{role}_flower", {}),
         }

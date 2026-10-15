@@ -23,6 +23,8 @@ fn editor_from_protobuf(editor: generated::EffectTemplateEditor) -> Value {
         "title": editor.title.unwrap_or_else(|| "让每一帧 都有风格".into()),
         "subtitle": editor.subtitle.unwrap_or_else(|| "选择花字、滤镜和特效，看看组合效果".into()),
         "bubbleText": editor.bubble_text.unwrap_or_else(|| "超值特惠".into()),
+        "titleFont": editor.title_font.unwrap_or_else(|| "Alibaba PuHuiTi".into()),
+        "subtitleFont": editor.subtitle_font.unwrap_or_else(|| "Alibaba PuHuiTi".into()),
         "titleSize": editor.title_size.unwrap_or(40),
         "subtitleSize": editor.subtitle_size.unwrap_or(26),
         "bubbleSize": editor.bubble_size.unwrap_or(32),
@@ -175,8 +177,18 @@ fn draft_from_protobuf(bytes: &[u8], id: Option<&str>) -> Result<Value, String> 
 
 /// 校验对象编辑参数并从随包目录生成效果快照。
 fn validate_editor(editor: &Value) -> Result<Vec<Value>, String> {
-    if editor.as_object().is_none_or(|fields| fields.len() != 46) {
+    if editor.as_object().is_none_or(|fields| fields.len() != 48) {
         return Err("编辑配置字段不完整或包含未知字段".into());
+    }
+    let fonts: Vec<Value> = serde_json::from_str(include_str!(
+        "../../../server/src/server/template/fonts.json"
+    ))
+    .map_err(|_| "内置字体目录损坏")?;
+    for key in ["titleFont", "subtitleFont"] {
+        let font = editor[key].as_str().ok_or("字体须为文字")?;
+        if !fonts.iter().any(|item| item["value"] == font) {
+            return Err("字体不在支持的目录中".into());
+        }
     }
     for key in SUBTITLE_KEYWORD_FIELDS
         .into_iter()
@@ -558,6 +570,9 @@ fn validate_record(record: &Value) -> Result<Value, String> {
                 for key in ["titleKeywordSize", "subtitleKeywordSize"] {
                     editor.entry(key).or_insert(json!(0));
                 }
+                for key in ["titleFont", "subtitleFont"] {
+                    editor.entry(key).or_insert(json!("Alibaba PuHuiTi"));
+                }
             }
         }
     }
@@ -874,6 +889,8 @@ mod tests {
         editor["titleKeyword"] = json!("");
         editor["titleKeywordColor"] = json!("");
         editor["titleKeywordSize"] = json!(0);
+        editor["titleFont"] = json!("Alibaba PuHuiTi");
+        editor["subtitleFont"] = json!("Alibaba PuHuiTi");
         for role in ["title", "subtitle", "bubble"] {
             for (suffix, value) in [
                 ("Size", 40.),
@@ -949,6 +966,8 @@ mod tests {
             title_keyword_color: "".into(),
             title_keyword_size: 0,
             remotion: None,
+            title_font: None,
+            subtitle_font: None,
         };
         let mut subtitle = editor.clone();
         subtitle.title = Some(String::new());
@@ -1132,6 +1151,80 @@ mod tests {
         );
         assert!(draft_from_protobuf(&bytes, Some("different-id")).is_err());
         assert!(draft_from_protobuf(&[0xff], None).is_err());
+    }
+
+    #[test]
+    /// 十一种字体经过 Protobuf 和真实文件保存后保留，旧文件读取补齐默认值且不改写原文件。
+    fn fonts_roundtrip_and_restore_missing_fields() {
+        let dir = Directory::new();
+        let fonts: Vec<Value> = serde_json::from_str(include_str!(
+            "../../../server/src/server/template/fonts.json"
+        ))
+        .unwrap();
+        assert_eq!(fonts.len(), 11);
+        for font in fonts {
+            let mut request = protobuf_request();
+            request.name = font["label"].as_str().unwrap().to_owned();
+            let tracks = &mut request.tracks.as_mut().unwrap().tracks;
+            tracks[0].editor.as_mut().unwrap().title_font =
+                Some(font["value"].as_str().unwrap().into());
+            tracks[1].editor.as_mut().unwrap().subtitle_font = Some("Source Han Serif CN".into());
+            let converted = draft_from_protobuf(&request.encode_to_vec(), None).unwrap();
+            let saved = operate(&dir.0, "save", None, Some(converted)).unwrap();
+            let id = saved["template_id"].as_str().unwrap();
+            let loaded = operate(&dir.0, "get", Some(id), None).unwrap();
+            assert_eq!(loaded["tracks"][0]["editor"]["titleFont"], font["value"]);
+            assert_eq!(
+                loaded["tracks"][1]["editor"]["subtitleFont"],
+                "Source Han Serif CN"
+            );
+        }
+        let path = dir.0.join("templates.json");
+        let mut records: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        for track in records[0]["tracks"].as_array_mut().unwrap() {
+            track["editor"].as_object_mut().unwrap().remove("titleFont");
+            track["editor"]
+                .as_object_mut()
+                .unwrap()
+                .remove("subtitleFont");
+        }
+        fs::write(&path, serde_json::to_vec(&records).unwrap()).unwrap();
+        let before = fs::read(&path).unwrap();
+        let loaded = operate(&dir.0, "get", records[0]["template_id"].as_str(), None).unwrap();
+        assert_eq!(
+            loaded["tracks"][0]["editor"]["titleFont"],
+            "Alibaba PuHuiTi"
+        );
+        assert_eq!(
+            loaded["tracks"][1]["editor"]["subtitleFont"],
+            "Alibaba PuHuiTi"
+        );
+        assert_eq!(fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    /// 两个字体字段拒绝未知字体、空字符串、预览标识和非字符串，已有记录保持不变。
+    fn unsupported_fonts_do_not_change_local_templates() {
+        let dir = Directory::new();
+        let valid = draft("字体校验");
+        let saved = operate(&dir.0, "save", None, Some(valid.clone())).unwrap();
+        let id = saved["template_id"].as_str().unwrap();
+        let path = dir.0.join("templates.json");
+        let before = fs::read(&path).unwrap();
+        for (index, field) in [(0, "titleFont"), (1, "subtitleFont")] {
+            for font in [
+                json!(""),
+                json!("Arial"),
+                json!("思源宋体"),
+                json!("Source Han Sans CN Normal"),
+                json!(42),
+            ] {
+                let mut invalid = valid.clone();
+                invalid["tracks"][index]["editor"][field] = font;
+                assert!(operate(&dir.0, "save", Some(id), Some(invalid)).is_err());
+                assert_eq!(fs::read(&path).unwrap(), before);
+            }
+        }
     }
 
     #[test]

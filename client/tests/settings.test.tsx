@@ -5,29 +5,45 @@ import * as remotion from "@/features/remotion_templates/api";
 import { createComposition, getComposition } from "@/features/video_composition/api";
 import { requestSegmentation } from "@/features/segmentation/api";
 import { PluginSettings } from "@/features/settings/PluginSettings";
-import { listPlugins, readSettings, saveSettings, type Plugin, type Values } from "@/features/settings/api";
+import { SettingsDialog } from "@/features/settings/SettingsDialog";
+import { readSettings, saveSettings, type Plugin, type Values } from "@/features/settings/api";
 import { apiBase, setApiBase } from "@/lib/api-base";
 import { fetchMock, mockDesktop } from "./setup";
 
 // 现有插件用例验证 Debug 路径；普通模式用例显式覆盖，公共夹具逐例重置开关。
 beforeEach(() => { process.env.IMV_DEBUG = "true"; });
 
-// 场景：普通模式只请求客户端模块目录；旧切片值保留，但不进入业务请求。
+// 场景：普通模式只保留通用页且不请求模块目录；旧切片值仍不进入业务请求。
 test.each([undefined, "false", "TRUE"])("普通模式隔离模块配置：%s", async (mode) => {
   if (mode === undefined) delete process.env.IMV_DEBUG;
   else process.env.IMV_DEBUG = mode;
   const stored = { segmentation: { llm_model: "old-model", llm_api_key: "test-key" } };
   const invoke = mock(async () => structuredClone(stored));
   mockDesktop(invoke);
-  fetchMock.mockResolvedValueOnce(Response.json([]));
-  expect(await listPlugins()).toEqual([]);
-  expect(fetchMock.mock.calls[0][0]).toBe("http://api.test:8000/api/settings/plugins?client_only=true");
-  fetchMock.mockClear();
+  render(<SettingsDialog open onOpenChange={() => {}} />);
+  expect(screen.getAllByRole("tab").map(tab => tab.textContent)).toEqual(["通用"]);
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.queryByRole("status")).toBeNull();
+  expect(screen.getByRole("dialog").textContent).not.toMatch(/密钥|凭据|Debug/);
+  expect(fetchMock).not.toHaveBeenCalled();
+  invoke.mockClear();
   fetchMock.mockResolvedValueOnce(Response.json({ segments: [] }));
   await requestSegmentation({ script: "测试", asr_result: {} });
   expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ script: "测试", asr_result: {} });
   expect(invoke).not.toHaveBeenCalled();
   expect(await readSettings()).toEqual(stored);
+});
+
+// 场景：Debug 仍读取完整目录、展示模块导航与凭据说明。
+test("Debug 设置保留模块目录与说明", async () => {
+  mockDesktop(async () => ({}));
+  fetchMock.mockResolvedValueOnce(Response.json([segmentation, asr]));
+  render(<SettingsDialog open onOpenChange={() => {}} />);
+  await openModule("文案切片");
+  expect(fetchMock.mock.calls[0][0]).toBe("http://api.test:8000/api/settings/plugins");
+  expect(screen.getAllByRole("tab").map(tab => tab.textContent)).toEqual(["通用", "文案切片", "语音识别"]);
+  expect(screen.getByRole("dialog").textContent).toContain("密钥以明文保存在本地文件中。");
+  expect(screen.getByRole("form", { name: "文案切片" })).toBeTruthy();
 });
 
 /** 与后端目录协议一致，字段由描述控制；API 的真实模型生成在 pytest 中覆盖。 */
@@ -64,7 +80,8 @@ test.each(["测试标题", null])("保存切片设置并携带本地配置请求
   });
   mockDesktop(invoke);
   fetchMock.mockResolvedValueOnce(Response.json([segmentation]));
-  const view = render(<PluginSettings />);
+  const onClose = mock();
+  const view = render(<PluginSettings onClose={onClose} />);
   await openModule("文案切片");
   expect(screen.getByLabelText<HTMLInputElement>("API Key").type).toBe("password");
   fireEvent.change(screen.getByLabelText("模型 API 地址"), { target: { value: "https://client.test/v1" } });
@@ -75,9 +92,11 @@ test.each(["测试标题", null])("保存切片设置并携带本地配置请求
   fireEvent.submit(screen.getByRole("form", { name: "文案切片" }));
   expect((await screen.findByRole("alert")).textContent).toContain("必须大于");
   expect(invoke).not.toHaveBeenCalled();
+  expect(onClose).not.toHaveBeenCalled();
   fireEvent.change(screen.getByLabelText("请求超时（秒）"), { target: { value: "8.5" } });
   fireEvent.submit(screen.getByRole("form", { name: "文案切片" }));
   await screen.findByText("已保存到当前客户端");
+  expect(onClose).toHaveBeenCalledTimes(1);
   view.unmount();
   fetchMock.mockResolvedValueOnce(Response.json([segmentation]));
   render(<PluginSettings />);
@@ -107,23 +126,31 @@ test("切换模块保留草稿", async () => {
   expect(invoke.mock.calls.some(([, args]) => args?.id)).toBe(false);
 });
 
-// 场景：IPC 保存失败可见，界面不假报成功，保留输入并允许修正。
+// 场景：模块与通用设置保存失败都保留输入、不关闭弹窗，并允许修正。
 test("保存失败显示错误", async () => {
   mockDesktop(async (_command, args) => {
     if (args?.id) throw new Error("write failed");
     return { asr: { dashscope_api_key: "old-key" } };
   });
   fetchMock.mockResolvedValueOnce(Response.json([asr]));
-  render(<PluginSettings />);
+  const onClose = mock();
+  render(<PluginSettings onClose={onClose} />);
   await openModule("语音识别");
   await screen.findByDisplayValue("old-key");
   fireEvent.change(screen.getByLabelText("Dashscope Api Key"), { target: { value: "new-key" } });
   fireEvent.submit(screen.getByRole("form", { name: "语音识别" }));
   await screen.findByText("保存设置失败");
+  expect(onClose).not.toHaveBeenCalled();
   expect(screen.queryByText("已保存到当前客户端")).toBeNull();
   expect(screen.getByLabelText<HTMLInputElement>("Dashscope Api Key").value).toBe("new-key");
   fireEvent.change(screen.getByLabelText("Dashscope Api Key"), { target: { value: "corrected-key" } });
   expect(screen.queryByRole("alert")).toBeNull();
+  await openModule("通用");
+  fireEvent.change(screen.getByLabelText("后端服务地址"), { target: { value: "http://new.test:9000" } });
+  fireEvent.submit(screen.getByRole("form", { name: "通用设置" }));
+  await screen.findByText("保存地址失败，请重试");
+  expect(onClose).not.toHaveBeenCalled();
+  expect(screen.getByLabelText<HTMLInputElement>("后端服务地址").value).toBe("http://new.test:9000");
 });
 
 // 场景：接口失败仍可访问通用面板；卸载中断目录请求。
@@ -154,17 +181,19 @@ function mockClientSettings(stored: Record<string, Values>) {
     return structuredClone(stored);
   });
   fetchMock.mockResolvedValueOnce(Response.json([]));
-  render(<PluginSettings />);
-  return sent;
+  const onClose = mock();
+  render(<PluginSettings onClose={onClose} />);
+  return { sent, onClose };
 }
 
 // 回归：未配置固定地址时只改模板路径，不把运行时后端地址存成固定地址，避免下次启动跳过内置服务。
 test("只改模板路径不保存运行时后端地址", async () => {
   const stored: Record<string, Values> = { $client: { template_path: "/old/templates.json" } };
-  const sent = mockClientSettings(stored);
+  const { sent, onClose } = mockClientSettings(stored);
   fireEvent.change(await screen.findByDisplayValue("/old/templates.json"), { target: { value: " /new/templates.json " } });
   fireEvent.submit(screen.getByRole("form", { name: "通用设置" }));
   await screen.findByText(/本地模板读写立即使用新路径/);
+  expect(onClose).toHaveBeenCalledTimes(1);
   expect(sent).toEqual([{ template_path: "/new/templates.json" }]);
   expect(stored.$client).toEqual({ template_path: "/new/templates.json" });
 });
@@ -172,7 +201,7 @@ test("只改模板路径不保存运行时后端地址", async () => {
 // 回归：其他实例在表单打开后保存了新路径，本实例只改地址时不把路径改回打开时的旧值。
 test("只改后端地址不覆盖其他实例保存的路径", async () => {
   const stored: Record<string, Values> = { $client: { template_path: "/old/templates.json" } };
-  const sent = mockClientSettings(stored);
+  const { sent, onClose } = mockClientSettings(stored);
   await screen.findByDisplayValue("/old/templates.json");
   stored.$client = { template_path: "/other-instance/templates.json" };
   const previous = apiBase();
@@ -180,6 +209,7 @@ test("只改后端地址不覆盖其他实例保存的路径", async () => {
     fireEvent.change(screen.getByLabelText("后端服务地址"), { target: { value: "http://fixed.test:9000" } });
     fireEvent.submit(screen.getByRole("form", { name: "通用设置" }));
     await screen.findByText(/本地模板读写立即使用新路径/);
+    expect(onClose).toHaveBeenCalledTimes(1);
     expect(sent).toEqual([{ api_url: "http://fixed.test:9000" }]);
     expect(stored.$client).toEqual({ template_path: "/other-instance/templates.json", api_url: "http://fixed.test:9000" });
   } finally {

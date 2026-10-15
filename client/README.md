@@ -25,7 +25,7 @@ API 使用其他端口时同步修改此地址，填写服务根地址。
 客户端配置保存 API 与示例视频地址，数据库连接和密码只放服务端。修改后重启 Vite 并刷新页面；生产使用需重新构建。
 避免在 `.env.local` 中重复设置 `VITE_API_URL`，否则会覆盖 `.env` 中的值。
 
-首页「设置」在两种模式均提供 Remotion Agent 与上海 IMS 凭据配置并接通实际请求；`IMV_DEBUG=true` 额外显示切片、ASR。字段来自后端插件目录，值保存在当前客户端，和构建环境变量分开；桌面本地 JSON 包含明文密钥，浏览器仅当前页面内存保存。未保存时兼容服务端环境默认值，ASR 仍仅展示/保存。协议、范围与联调步骤见 [模块设置说明](src/features/settings/README.md)。
+首页「设置」在普通 Client 中仅保留「通用」页的后端地址、本地模板路径与环境信息，不请求模块目录。`IMV_DEBUG=true` 继续提供 Remotion Agent、上海 IMS、切片、ASR 与启动端口等完整模块设置。模块字段来自后端目录，值保存在当前客户端，和构建环境变量分开；桌面本地 JSON 包含明文密钥，浏览器仅当前页面内存保存。已有模块配置保留，实际请求的配置使用规则不变；未保存时沿用服务端环境默认值。协议、范围与联调步骤见 [模块设置说明](src/features/settings/README.md)。
 
 ```sh
 bun run build
@@ -62,6 +62,25 @@ VITE_PREVIEW_VIDEO_3_URL=https://your-domain.example/preview-3.mp4
 预览默认使用三个视频，各取前十秒，读取真实媒体信息后播放。点击「加载预览视频」打开弹窗，分别设置视频 1、视频 2、视频 3 的 URL；三个地址全部读取成功且时间校验通过后一起更新，失败时标明视频编号并保留原有来源，取消或关闭弹窗会终止读取。每个视频不足十秒时使用完整区间。画布和 SDK 场景使用视频 1 的原始宽高，字号按画布像素计算；标题和字幕保留原文。预览按可用宽度和窗口高度的 48% 等比例显示。SDK 在独立 iframe 中加载，更换视频后重新初始化，卸载时释放。视频顺序固定，更换来源后重新计算转场时间，其他对象保留规则。远程直链须允许浏览器跨域读取。
 
 ## 模板行为
+
+标题和底部字幕分别提供字体选择：阿里巴巴普惠体、方正仿宋简体、方正黑体简体、方正楷体简体、方正书宋简体、宋体、楷体、微软雅黑、站酷快乐体、思源黑体、思源宋体。字体随各自的 `tracks[].editor.titleFont` / `subtitleFont` 保存为 IMS 标识；预览将 `Source Han Sans CN` 转为 `Source Han Sans CN Normal`，将 `Source Han Serif CN` 转为 `思源宋体`。云端与本地使用同一目录，旧模板缺少字段时采用 `Alibaba PuHuiTi`；重置当前对象时恢复该字体，其他对象的选择保留。共享目录维护在 `server/src/server/template/fonts.json`，`value` 是保存及合成标识，`preview` 是 SDK 标识。
+
+字体下拉框与 Remotion 共用 `features/fonts/FontSelect.tsx` 和 `FontName.tsx`：选项及当前值以对应字体的字形展示名称，下面显示保存标识，支持搜索、键盘选择与主题颜色。IMS 的十一张透明 PNG 保存在 `features/templates/font-previews/`，随客户端打包，浏览字体选项无需下载完整字体。图片由固定 SDK 5.2.2 的对应字体绘制，Remotion 继续使用实时字体库的预览地址和上传功能。
+
+字体预览维护与真实浏览器测试使用 ego-browser。启动 Vite（以下默认 `http://localhost:18766`），测试时还需将 `VITE_API_URL` 指向独立测试后端。通过 `ego-browser nodejs` 在同一个任务中执行下面的代码，`root` 填写本地仓库绝对路径；更新预览图片时调用 `generateFontPreviews`，仅测试时省略该调用。生成函数读取当前固定 SDK 的字体 URL，用浏览器 `FontFace` 和 Canvas 绘制名称，不保存完整字体文件。
+
+```js
+const root = "/absolute/path/to/IntelligentMixVideo";
+const task = await taskSpace("字体预览验证");
+const page = task.page("p1");
+const { generateFontPreviews } = await import(root + "/client/scripts/generate-font-previews.mjs");
+await generateFontPreviews(root, page);
+const { testFontSelect } = await import(root + "/client/tests/font-select.browser.mjs");
+await testFontSelect(page);
+await task.finish({ keep: [] });
+```
+
+浏览器回归挂载实际字体组件、访问测试后端，检查十一张预览图片的解码和透明文字、搜索与键盘选择、标题和字幕的独立值、主题着色及 Remotion 目录与上传入口；不创建模板或上传字体。生产构建同时检查测试组件的 TypeScript 类型。
 
 侧栏编辑入口显示「模版编辑」，使用 Lucide `SquarePen` 的方框与铅笔线条图标；窄屏保留图标、悬停提示及无障碍名称。
 

@@ -10,6 +10,8 @@ export const defaultEditor = {
   title: "让每一帧 都有风格",
   subtitle: "选择花字、滤镜和特效，看看组合效果",
   bubbleText: "超值特惠",
+  titleFont: "Alibaba PuHuiTi",
+  subtitleFont: "Alibaba PuHuiTi",
   titleSize: 40,
   subtitleSize: 26,
   bubbleSize: 32,
