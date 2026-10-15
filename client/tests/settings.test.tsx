@@ -44,8 +44,10 @@ test.each([undefined, "false", "TRUE"])("普通模式隔离模块配置：%s", a
     await screen.findByText(/已保存。后续请求使用新地址/);
     expect(apiBase()).toBe("http://new.test:9000");
     expect(await readSettings()).toEqual({ ...original, $client: { ...original.$client, api_url: "http://new.test:9000" } });
-    expect(onOpenChange).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    onOpenChange.mockClear();
+    // 已保存且没有继续修改时，再次保存也应关闭。
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
     expect(onOpenChange).toHaveBeenCalledWith(false);
     expect(fetchMock).not.toHaveBeenCalled();
   } finally {
@@ -57,6 +59,41 @@ test.each([undefined, "false", "TRUE"])("普通模式隔离模块配置：%s", a
   expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ script: "测试", asr_result: {} });
   expect(invoke).not.toHaveBeenCalled();
   expect(await readSettings()).toEqual(stored);
+});
+
+// 场景：地址写入未完成时保持弹窗；成功才切换地址并关闭，失败保留输入且不切换地址。
+test.each([true, false])("通用设置等待保存结果再关闭：成功=%s", async (succeed) => {
+  process.env.IMV_DEBUG = "false";
+  let resolveSave!: () => void;
+  let rejectSave!: (reason: Error) => void;
+  const pending = new Promise<void>((resolve, reject) => { resolveSave = resolve; rejectSave = reject; });
+  mockDesktop(async (_command, args) => {
+    if (args?.id) await pending;
+    return {};
+  });
+  const onOpenChange = mock();
+  render(<SettingsDialog open onOpenChange={onOpenChange} />);
+  const previous = apiBase();
+  try {
+    fireEvent.change(screen.getByLabelText("后端服务地址"), { target: { value: "http://pending.test:9000" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "保存中…" }).disabled).toBe(true);
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(apiBase()).toBe(previous);
+    if (succeed) {
+      resolveSave();
+      await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+      expect(apiBase()).toBe("http://pending.test:9000");
+    } else {
+      rejectSave(new Error("write failed"));
+      await screen.findByText("保存地址失败，请重试");
+      expect(onOpenChange).not.toHaveBeenCalled();
+      expect(screen.getByLabelText<HTMLInputElement>("后端服务地址").value).toBe("http://pending.test:9000");
+      expect(apiBase()).toBe(previous);
+    }
+  } finally {
+    setApiBase(previous);
+  }
 });
 
 // 场景：Debug 仍读取完整目录、展示模块导航与凭据说明。
@@ -105,7 +142,8 @@ test.each(["测试标题", null])("保存切片设置并携带本地配置请求
   });
   mockDesktop(invoke);
   fetchMock.mockResolvedValueOnce(Response.json([segmentation]));
-  const view = render(<PluginSettings />);
+  const onClose = mock();
+  const view = render(<PluginSettings onClose={onClose} />);
   await openModule("文案切片");
   expect(screen.getByLabelText<HTMLInputElement>("API Key").type).toBe("password");
   fireEvent.change(screen.getByLabelText("模型 API 地址"), { target: { value: "https://client.test/v1" } });
@@ -116,9 +154,11 @@ test.each(["测试标题", null])("保存切片设置并携带本地配置请求
   fireEvent.submit(screen.getByRole("form", { name: "文案切片" }));
   expect((await screen.findByRole("alert")).textContent).toContain("必须大于");
   expect(invoke).not.toHaveBeenCalled();
+  expect(onClose).not.toHaveBeenCalled();
   fireEvent.change(screen.getByLabelText("请求超时（秒）"), { target: { value: "8.5" } });
   fireEvent.submit(screen.getByRole("form", { name: "文案切片" }));
   await screen.findByText("已保存到当前客户端");
+  expect(onClose).toHaveBeenCalledTimes(1);
   view.unmount();
   fetchMock.mockResolvedValueOnce(Response.json([segmentation]));
   render(<PluginSettings />);
@@ -155,12 +195,14 @@ test("保存失败显示错误", async () => {
     return { asr: { dashscope_api_key: "old-key" } };
   });
   fetchMock.mockResolvedValueOnce(Response.json([asr]));
-  render(<PluginSettings />);
+  const onClose = mock();
+  render(<PluginSettings onClose={onClose} />);
   await openModule("语音识别");
   await screen.findByDisplayValue("old-key");
   fireEvent.change(screen.getByLabelText("Dashscope Api Key"), { target: { value: "new-key" } });
   fireEvent.submit(screen.getByRole("form", { name: "语音识别" }));
   await screen.findByText("保存设置失败");
+  expect(onClose).not.toHaveBeenCalled();
   expect(screen.queryByText("已保存到当前客户端")).toBeNull();
   expect(screen.getByLabelText<HTMLInputElement>("Dashscope Api Key").value).toBe("new-key");
   fireEvent.change(screen.getByLabelText("Dashscope Api Key"), { target: { value: "corrected-key" } });

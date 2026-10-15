@@ -1,4 +1,4 @@
-/** 设置对话框：普通客户端只保留通用设置，Debug 另展示模块；关闭丢弃未保存草稿。 */
+/** 设置对话框：普通客户端只保留通用设置，Debug 另展示模块；保存成功或取消时关闭，丢弃其他未保存草稿。 */
 import { isTauri } from "@tauri-apps/api/core";
 import {
   Dialog,
@@ -24,7 +24,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
             </>}
           </DialogDescription>
         </DialogHeader>
-        <PluginSettings onCancel={() => onOpenChange(false)} />
+        <PluginSettings onClose={() => onOpenChange(false)} />
       </DialogContent>
     </Dialog>
   );

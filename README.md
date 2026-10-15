@@ -250,7 +250,7 @@ See [server/.env.example](server/.env.example) and [client/.env.example](client/
 
 Standard client settings show only General, with the backend URL, local template path, and environment information, without requesting the module catalog. Debug mode retains all module settings, including Remotion Agent and Shanghai IMS; database settings are not part of the settings panel. Dynamic forms depend on the configuration schema returned by the backend; displayed defaults are not the actual values in the server `.env` file.
 
-Save applies only the current module and keeps the dialog open. Cancel closes the dialog and discards unsaved changes without undoing values already saved.
+Save applies only the current page and closes the dialog after success; validation or write failures keep it open with the input preserved. Cancel closes the dialog without saving. Closing discards any other unsaved module drafts without undoing values already saved.
 
 ### When Changes Take Effect
 
