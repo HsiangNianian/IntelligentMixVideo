@@ -140,6 +140,41 @@ The browser path requires Chromium, Noto CJK fonts, bubblewrap and util-linux.
 Linux sandboxes also mount `/var/cache/fontconfig` read-only when it exists, so each
 new Chrome can reuse system font metadata instead of rescanning all font files.
 Without that directory, fontconfig keeps its normal per-sandbox cache fallback.
+
+### Font library
+
+Effects can use any font of the shared font library, a MySQL registry (`remotion_fonts`, `font_store.py`) whose files
+are objects in ZOS (or the local object folder while `ZOS_BUCKET` is empty). It holds three kinds of font and is never
+empty: the system default `Noto Sans CJK SC` (registered when the runtime starts, no file), the preinstalled catalog
+and the fonts users upload. Rows are only ever added, so a template that names a family keeps rendering.
+
+- **Preinstalled fonts**: `font_catalog.json` pins each free OFL font by URL, size and SHA-256. After the runtime starts,
+  `FontStore.sync` (`fonts.py`) copies the missing ones from their origin into the object store and the registry, then
+  re-syncs hourly; a download that does not match its pin is dropped, and a failure only leaves that font for the
+  next sync. `IMV_FONT_DOWNLOADS=false` stops all origin requests. To add a font, add a catalog entry (pin the URL to
+  a commit or release) and restart; an existing row is never changed.
+- **Uploads**: `POST /api/templates/fonts` (multipart `file`, optional `label` and `preview`, `X-IMV-Device`) takes a
+  `.ttf`/`.otf` up to `IMV_FONT_UPLOAD_MAX_BYTES`. The backend only reads the family name from the `name` table with
+  bounds-checked Python and never decodes the font; the sandboxed Chrome and the user's own browser do. The family
+  must differ from every registered, installed and reserved name. The preview strip is drawn by the uploader's browser
+  and only its alpha is kept. Fonts cannot be deleted. The library is shared, like the Sprite library.
+- **Rendering**: the sandbox has no network, so the backend caches each font from the object store after checking its
+  registry hash (`<data dir>/fonts/files`) and the sandbox mounts that folder read-only at `/imv-fonts` with a generated
+  `fonts.conf` (`FONTCONFIG_FILE`). Chrome in every worker (validation, preview build, overlay render, video
+  composition) resolves a family by its CSS name. macOS development without the sandbox does not load them.
+- **Agent**: the Executor rules end with the library as an enum read from the database. A text effect must expose
+  `fontFamily` (an enum of library families, defaulting to the font chosen from the reference image or description);
+  `sprite.create` checks the enum against the library. The stored Sprite keeps a plain string (`maxLength` 100), since
+  the library grows, and a choice is checked against the live library: `placement.resolve` when a template saves or an
+  overlay is accepted, `patch_parameters` for a manual revision. The Agent only receives the user's reference images,
+  never its own renders. Older text effects without `fontFamily` keep working and show no font picker.
+- **Editor**: the choice is a normal parameter override, so it is stored in the template track's
+  `editor.remotion.parameters`. The client's `FontPicker` (`features/fonts/`) is used for every `fontFamily` parameter.
+- **Preview**: the player page lists the fonts that have a file (`#imv-preview-fonts`) and registers each as a lazy
+  `FontFace` served by `GET /api/templates/fonts/{id}`, so only fonts an effect really uses are fetched.
+- **Safety**: an overlay render or text preflight whose code or parameters name a library font this host has not
+  cached fetches it first and otherwise fails with `font_unavailable` instead of silently drawing the default font.
+
 Chrome startup has a separate 90-second deadline: the locked Remotion 4.0.523
 renderer hardcodes 25 seconds, so `remotion/patches/` carries a Bun dependency patch
 for both CommonJS and ESM builds. Run `bun install --frozen-lockfile` in the renderer

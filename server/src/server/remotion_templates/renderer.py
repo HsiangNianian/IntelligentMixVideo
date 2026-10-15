@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .settings import Settings
 from .evidence import digest
+from .fonts import CONFIG_NAME, SANDBOX_DIR, font_root
 from .image_comparison import consistency_checks
 from .models import (
     Check,
@@ -207,6 +208,11 @@ class Renderer:
         for source in ("/usr", "/etc/fonts", "/etc/ld.so.cache", "/var/cache/fontconfig"):
             if Path(source).exists():
                 command.extend(("--ro-bind", source, source))
+        # 已下载并校验的目录字体：只读挂载，并用生成的 fontconfig 让 Chrome 按字体名解析。
+        font_folder = font_root(settings)
+        fonts_ready = (font_folder / CONFIG_NAME).is_file()
+        if fonts_ready:
+            command.extend(("--ro-bind", str(font_folder.resolve()), SANDBOX_DIR))
         for source in ("/lib", "/lib64"):
             if Path(source).is_symlink():
                 command.extend(("--symlink", os.readlink(source), source))
@@ -240,6 +246,7 @@ class Renderer:
                 "--setenv",
                 "LANG",
                 "C.UTF-8",
+                *(("--setenv", "FONTCONFIG_FILE", f"{SANDBOX_DIR}/{CONFIG_NAME}") if fonts_ready else ()),
                 "--setenv",
                 "TMPDIR",
                 "/tmp",

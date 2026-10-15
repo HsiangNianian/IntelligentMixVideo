@@ -258,8 +258,27 @@ function PreviewError({ requestId }: { requestId: number }) {
   return <p role="alert">{message}</p>;
 }
 
+/**
+ * Register the downloaded catalog fonts the serving page lists (`#imv-preview-fonts`). They are not loaded here:
+ * the browser fetches a font only when text first uses its family, so an effect pays for the fonts it really uses.
+ */
+function registerCatalogFonts() {
+  try {
+    const fonts = JSON.parse(document.getElementById("imv-preview-fonts")?.textContent ?? "[]");
+    for (const item of Array.isArray(fonts) ? fonts : []) {
+      if (typeof item?.family !== "string" || typeof item.weight !== "string" || typeof item.url !== "string") continue;
+      document.fonts.add(
+        new FontFace(item.family, `url("${new URL(item.url, window.location.href)}")`, { weight: item.weight }),
+      );
+    }
+  } catch {
+    // A font list that cannot be read only costs the extra fonts; the default font still loads below.
+  }
+}
+
 /** Await the same managed font files used by server rendering before exposing the Player. */
 async function mount() {
+  registerCatalogFonts();
   try {
     await Promise.all(
       [400, 700].map(async (weight) => {

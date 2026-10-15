@@ -18,6 +18,7 @@ from starlette.concurrency import run_in_threadpool
 
 from . import sprites
 from .api import app as remotion_templates_app
+from .fonts import FontStore
 from .routes import player_page, require_sandbox, runtime_for
 from .store import NotFound
 from .runtime import Runtime
@@ -109,7 +110,7 @@ async def sprite_preview(sprite_id: str, service: Service, overlay: bool = False
     （新生成的资产支持）即由父页面通过消息逐帧驱动，无控制条和循环。
     """
     script, host = await sprites.preview_script(service, sprite_id)
-    return player_page(script, overlay=overlay, host=host)
+    return player_page(script, overlay=overlay, host=host, fonts=FontStore.for_settings(service.settings).listing())
 
 
 @router.get("/{sprite_id}/fonts/{weight}", summary="读取预览字体")

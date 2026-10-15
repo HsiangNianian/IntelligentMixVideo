@@ -1,0 +1,203 @@
+[
+  {
+    "id": "noto-serif-sc",
+    "family": "Noto Serif SC",
+    "label": "思源宋体",
+    "style": "serif Song/Ming typeface, formal, literary, magazine and film-title look; variable weight 200-900",
+    "weights": [
+      200,
+      900
+    ],
+    "filename": "NotoSerifSC-VF.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/2750b521bd22ce141f12617194ab0e04cf5d12d5/ofl/notoserifsc/NotoSerifSC%5Bwght%5D.ttf",
+    "sha256": "050080d9255a86808f2945bffac582b31ef32bc36411ce29563b4961670c66f9",
+    "size": 25125512,
+    "license": "OFL-1.1"
+  },
+  {
+    "id": "lxgw-wenkai",
+    "family": "LXGW WenKai",
+    "label": "霞鹜文楷",
+    "style": "Kai (regular-script) typeface, gentle, bookish, handwritten-print feel",
+    "weights": [
+      400
+    ],
+    "filename": "LXGWWenKai-Regular.ttf",
+    "url": "https://github.com/lxgw/LxgwWenKai/releases/download/v1.522/LXGWWenKai-Regular.ttf",
+    "sha256": "39ad71264b588165b469e35e6afb162a378dacd1f95348160240ba9038ac3009",
+    "size": 25575676,
+    "license": "OFL-1.1"
+  },
+  {
+    "id": "ma-shan-zheng",
+    "family": "Ma Shan Zheng",
+    "label": "马善政毛笔楷书",
+    "style": "brush calligraphy, bold ink strokes, traditional, martial or festive mood",
+    "weights": [
+      400
+    ],
+    "filename": "MaShanZheng-Regular.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/2750b521bd22ce141f12617194ab0e04cf5d12d5/ofl/mashanzheng/MaShanZheng-Regular.ttf",
+    "sha256": "6d2546bb189c732a8ca29af9e22457b152387d158aa459e4ac2ce1e51788b7fb",
+    "size": 5857936,
+    "license": "OFL-1.1"
+  },
+  {
+    "id": "zcool-kuaile",
+    "family": "ZCOOL KuaiLe",
+    "label": "站酷快乐体",
+    "style": "rounded, playful, cartoon-like, cheerful and child-friendly",
+    "weights": [
+      400
+    ],
+    "filename": "ZCOOLKuaiLe-Regular.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/2750b521bd22ce141f12617194ab0e04cf5d12d5/ofl/zcoolkuaile/ZCOOLKuaiLe-Regular.ttf",
+    "sha256": "812a6fc1fe54b6d73a419245c32dfeba8aa33104d5be90d1cf6af082007cb71d",
+    "size": 1514968,
+    "license": "OFL-1.1"
+  },
+  {
+    "id": "zcool-qingke-huangyou",
+    "family": "ZCOOL QingKe HuangYou",
+    "label": "站酷庆科黄油体",
+    "style": "heavy rounded display face, chunky, trendy poster and title look",
+    "weights": [
+      400
+    ],
+    "filename": "ZCOOLQingKeHuangYou-Regular.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/2750b521bd22ce141f12617194ab0e04cf5d12d5/ofl/zcoolqingkehuangyou/ZCOOLQingKeHuangYou-Regular.ttf",
+    "sha256": "54f0c0df4308cd74cd0f2fd3494ae054dbc4a1fd6fa7d71f4807eb4cdd8b4136",
+    "size": 8328684,
+    "license": "OFL-1.1"
+  },
+  {
+    "id": "zcool-xiaowei",
+    "family": "ZCOOL XiaoWei",
+    "label": "站酷小薇体",
+    "style": "elegant high-contrast serif, refined, fashion and lifestyle look",
+    "weights": [
+      400
+    ],
+    "filename": "ZCOOLXiaoWei-Regular.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/2750b521bd22ce141f12617194ab0e04cf5d12d5/ofl/zcoolxiaowei/ZCOOLXiaoWei-Regular.ttf",
+    "sha256": "a42b620140f493db42f741351dfbf343c0936d58588ee8004b8b2a218d997ff1",
+    "size": 6313808,
+    "license": "OFL-1.1"
+  },
+  {
+    "id": "zhi-mang-xing",
+    "family": "Zhi Mang Xing",
+    "label": "志莽行书",
+    "style": "running-script handwriting, fluid, energetic, personal-signature feel",
+    "weights": [
+      400
+    ],
+    "filename": "ZhiMangXing-Regular.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/2750b521bd22ce141f12617194ab0e04cf5d12d5/ofl/zhimangxing/ZhiMangXing-Regular.ttf",
+    "sha256": "644e0cae9b40f0b10ab729a01bd32032e3973bac22be3dccae01bf6ae7fde969",
+    "size": 4063532,
+    "license": "OFL-1.1"
+  },
+  {
+    "id": "long-cang",
+    "family": "Long Cang",
+    "label": "龙藏体",
+    "style": "casual pen handwriting, slim and slanted, diary or note feel",
+    "weights": [
+      400
+    ],
+    "filename": "LongCang-Regular.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/2750b521bd22ce141f12617194ab0e04cf5d12d5/ofl/longcang/LongCang-Regular.ttf",
+    "sha256": "e5bf2c3f24ef2327c6f136d8f73e2f9dfdf44896fdbeb35a9515f44777bb91bc",
+    "size": 5162508,
+    "license": "OFL-1.1"
+  },
+  {
+    "id": "liu-jian-mao-cao",
+    "family": "Liu Jian Mao Cao",
+    "label": "刘建毛草",
+    "style": "wild cursive brush script, expressive, dramatic and artistic",
+    "weights": [
+      400
+    ],
+    "filename": "LiuJianMaoCao-Regular.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/2750b521bd22ce141f12617194ab0e04cf5d12d5/ofl/liujianmaocao/LiuJianMaoCao-Regular.ttf",
+    "sha256": "cab396b91a5b7c0b4005a35891180d06e6751f5ac261fe680aec65c1ae209033",
+    "size": 4951804,
+    "license": "OFL-1.1"
+  },
+  {
+    "id": "noto-sans-sc",
+    "family": "Noto Sans SC",
+    "label": "思源黑体（可变字重）",
+    "style": "clean modern sans-serif (Hei) typeface, neutral, readable; variable weight 100-900",
+    "weights": [
+      100,
+      900
+    ],
+    "filename": "NotoSansSC-VF.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/2750b521bd22ce141f12617194ab0e04cf5d12d5/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf",
+    "sha256": "a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da",
+    "size": 17772300,
+    "license": "OFL-1.1"
+  },
+  {
+    "id": "montserrat",
+    "family": "Montserrat",
+    "label": "Montserrat",
+    "style": "geometric Latin sans-serif, modern, brand and poster look (Latin letters and digits only); variable weight 100-900",
+    "weights": [
+      100,
+      900
+    ],
+    "filename": "Montserrat-VF.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/2750b521bd22ce141f12617194ab0e04cf5d12d5/ofl/montserrat/Montserrat%5Bwght%5D.ttf",
+    "sha256": "0f7b311b2f3279e4eef9b2f968bcdbab6e28f4daeb1f049f4f278a902bcd82f7",
+    "size": 744936,
+    "license": "OFL-1.1"
+  },
+  {
+    "id": "oswald",
+    "family": "Oswald",
+    "label": "Oswald",
+    "style": "condensed Latin sans-serif, tall and strong, headline look (Latin only); variable weight 200-700",
+    "weights": [
+      200,
+      700
+    ],
+    "filename": "Oswald-VF.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/2750b521bd22ce141f12617194ab0e04cf5d12d5/ofl/oswald/Oswald%5Bwght%5D.ttf",
+    "sha256": "5b38c246e255a12f5712d640d56bcced0472466fc68983d2d0410ec0457c2817",
+    "size": 172088,
+    "license": "OFL-1.1"
+  },
+  {
+    "id": "bebas-neue",
+    "family": "Bebas Neue",
+    "label": "Bebas Neue",
+    "style": "all-caps display Latin face, bold and cinematic title look (Latin capitals only)",
+    "weights": [
+      400
+    ],
+    "filename": "BebasNeue-Regular.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/2750b521bd22ce141f12617194ab0e04cf5d12d5/ofl/bebasneue/BebasNeue-Regular.ttf",
+    "sha256": "08e4623805102d819f58601e46e345648846075e363b2ceb23313c2d1c83ec73",
+    "size": 61400,
+    "license": "OFL-1.1"
+  },
+  {
+    "id": "playfair-display",
+    "family": "Playfair Display",
+    "label": "Playfair Display",
+    "style": "high-contrast Latin serif, elegant editorial and fashion look (Latin only); variable weight 400-900",
+    "weights": [
+      400,
+      900
+    ],
+    "filename": "PlayfairDisplay-VF.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/2750b521bd22ce141f12617194ab0e04cf5d12d5/ofl/playfairdisplay/PlayfairDisplay%5Bwght%5D.ttf",
+    "sha256": "c40f2293766a503bc70cce9e512ef844a4ccb7cbcde792fe2ea31d191917d8d6",
+    "size": 300724,
+    "license": "OFL-1.1"
+  }
+]

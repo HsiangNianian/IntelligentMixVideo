@@ -154,6 +154,10 @@ def patch_parameters(
         except ValidationError as exc:
             # Callers map ValueError to a 422 or a failed job; a raw ValidationError surfaced as an HTTP 500.
             raise ValueError(f"invalid parameter value: {exc.message}") from exc
+        if "fontFamily" in patch:
+            from .fonts import require_family
+
+            require_family(config["fontFamily"])
         return candidate.model_copy(update={"default_config": config}), spec.model_copy(deep=True)
     unknown = set(patch) - set(candidate.default_config)
     if unknown:

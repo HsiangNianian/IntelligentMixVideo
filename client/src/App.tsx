@@ -7,9 +7,11 @@ import { readSettings } from "@/features/settings/api";
 import { LoaderGooeyBlobs } from "@/components/ui/loaders-gooey-blobs";
 import { MotionConfig } from "motion/react";
 import { Toaster } from "@/components/ui/sonner";
+import { useWindowTitle } from "@/lib/window-title";
 
 /** 启动失败展示实际诊断，避免业务页面向尚未启动的后端发送请求。 */
 export default function App() {
+  useWindowTitle();
   const [ready, setReady] = useState(!isTauri());
   const [error, setError] = useState("");
   useEffect(() => {
