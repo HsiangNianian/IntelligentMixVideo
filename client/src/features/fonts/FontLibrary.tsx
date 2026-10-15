@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { toast } from "sonner";
-import type { FontInfo } from "./api";
+import { previewUrl, type FontInfo } from "./api";
 import { FontName } from "./FontName";
 import { useFonts, type Previewer } from "./useFonts";
 
@@ -72,7 +72,7 @@ export function FontLibrary({ previewer }: { previewer?: Previewer }) {
       <ul className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-3">
         {shown.map((font) => (
           <li key={font.id} className="flex flex-col gap-2 rounded-lg border bg-card p-4 text-card-foreground">
-            <FontName font={font} className="h-9 w-full" />
+            <FontName label={font.label} url={previewUrl(font)} className="h-9 w-full" />
             <div className="min-w-0">
               <p className="truncate font-mono text-xs text-muted-foreground">{font.family}</p>
               <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{font.style}</p>

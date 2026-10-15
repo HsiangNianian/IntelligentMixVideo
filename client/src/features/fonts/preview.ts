@@ -1,6 +1,6 @@
-/** 字体预览条：用上传者浏览器里的字体把名称画成黑色透明底 PNG，服务端只保留其透明度，页面用 CSS mask 着色。 */
+/** 字体预览条：浏览器加载实际字体并把名称画成黑色透明底 PNG，供上传和随包资源生成使用，页面以 CSS mask 着色。 */
 
-/** 预览条画布：宽高与服务端 `PREVIEW_MAX` 一致（640×96 以内），文字黑色、背景透明。 */
+/** 预览条按文字宽度绘制，保持在服务端 `PREVIEW_MAX`（640×96）以内，文字黑色、背景透明。 */
 const STRIP = { width: 640, height: 64, size: 44 } as const;
 /** 上传的字体在画布上临时使用的家族名，画完即移除。 */
 const STRIP_FAMILY = "imv-upload-preview";
@@ -19,9 +19,12 @@ export async function drawFontPreview(file: File, text: string): Promise<Blob | 
     const context = canvas.getContext("2d");
     if (!context) return null;
     context.font = `${STRIP.size}px "${STRIP_FAMILY}"`;
+    const metrics = context.measureText(text);
+    canvas.width = Math.min(STRIP.width, Math.ceil(Math.max(metrics.width, metrics.actualBoundingBoxLeft + metrics.actualBoundingBoxRight)) + 16);
+    context.font = `${STRIP.size}px "${STRIP_FAMILY}"`;
     context.fillStyle = "#000";
     context.textBaseline = "alphabetic";
-    context.fillText(text, 8, 48, STRIP.width - 16);
+    context.fillText(text, 8, 48, canvas.width - 16);
     return await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
   } finally {
     document.fonts.delete(face);
