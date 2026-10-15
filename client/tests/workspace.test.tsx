@@ -366,8 +366,8 @@ test("未选择模板时通过主页开始创作", async () => {
   expect(screen.getByRole<HTMLButtonElement>("button", { name: "新建云端模板" }).disabled).toBe(false);
 });
 
-// 场景：主页填写信息后跳转，模板库只读展示并明确新模板尚未保存。
-test("主页创建后显示环境、名称与描述，模板库只保留保存入口", async () => {
+// 场景：主页填写信息后跳转，模板信息默认展示文本及铅笔入口，并明确新模板尚未保存。
+test("主页创建后显示环境、名称与描述及编辑入口", async () => {
   render(<HomePage />);
   const info = await createFromHome("  旅行模板  ");
   expect(screen.getByRole("tab", { name: "模版编辑" }).getAttribute("aria-selected")).toBe("true");
@@ -376,7 +376,9 @@ test("主页创建后显示环境、名称与描述，模板库只保留保存�
   expect(within(info).getByLabelText("模板描述").textContent).toBe("适用于旅行视频");
   expect(within(info).queryByRole("textbox")).toBeNull();
   expect(within(info).queryByRole("combobox")).toBeNull();
-  expect(within(info).getAllByRole("button").map((button) => button.textContent)).toEqual(["保存模板"]);
+  expect(within(info).getByRole("button", { name: "编辑模板名称" })).toBeTruthy();
+  expect(within(info).getByRole("button", { name: "编辑模板描述" })).toBeTruthy();
+  expect(within(info).getByRole("button", { name: "保存模板" })).toBeTruthy();
   expect(screen.queryByRole("button", { name: "新建云端模板" })).toBeNull();
   expect(screen.queryByRole("button", { name: "刷新列表" })).toBeNull();
   expect(screen.getByText("新模板 · 尚未保存")).toBeTruthy();
