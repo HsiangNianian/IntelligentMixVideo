@@ -3,6 +3,38 @@
 本项目的版本变更由发布工作流根据 Conventional Commits 自动生成。
 推送正式版本 tag 后，成功发布的版本记录会自动写入此文件。
 
+## [v0.9.4] - 2026-10-15
+### BREAKING CHANGES
+- due to [`e045efd`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/e045efdcaad4440cfc2d07dd5ce0d2f31dd4bbbf) - infer and persist modes from script fields *(PR [#167](https://github.com/HsiangNianian/IntelligentMixVideo/pull/167) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*:
+
+  Use text for avatar narration and copy for media-only  
+  subtitles. Both fields cannot be non-blank, and any non-blank script  
+  requires audioUrl. videoUrl no longer selects the workflow.  
+  * docs(composition): document script-based mode routing  
+  Update the API guide, READMEs, and collaboration guide with the new  
+  request rules, persisted mode location, and legacy recovery behavior.
+
+
+### New Features
+- [`b6d37d8`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/b6d37d858251637961d4e0c80734198c44638a40) - **remotion**: bundle the preinstalled fonts with the backend package *(PR [#169](https://github.com/HsiangNianian/IntelligentMixVideo/pull/169) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`1ad9884`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/1ad98844369632ae76d27f913cbece43c59cfe16) - **remotion**: show each tool call's arguments in the loop record *(PR [#174](https://github.com/HsiangNianian/IntelligentMixVideo/pull/174) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`f50bc72`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/f50bc7287d7b692f9983e71be9253b424e2c770d) - **templates**: add title and subtitle font selection with previews *(PR [#172](https://github.com/HsiangNianian/IntelligentMixVideo/pull/172) by [@left0ver](https://github.com/left0ver))*
+
+### Bug Fixes
+- [`e045efd`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/e045efdcaad4440cfc2d07dd5ce0d2f31dd4bbbf) - **composition**: infer and persist modes from script fields *(PR [#167](https://github.com/HsiangNianian/IntelligentMixVideo/pull/167) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`675b9b3`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/675b9b37796d0e5655aaf85768bfbd2aada753c5) - **client**: simplify settings and close dialogs after saving *(PR [#168](https://github.com/HsiangNianian/IntelligentMixVideo/pull/168) by [@muyuzhong](https://github.com/muyuzhong))*
+
+### Documentation Changes
+- [`3440adf`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/3440adf68f701bd15f4e88be57350f61cfce8863) - update CHANGELOG.md for v0.9.3 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
+
+### Chores
+- [`e35cb3d`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/e35cb3d69f111c4922c14bb323da5bb0fab29549) - **release**: prepare v0.9.4 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Other Changes
+- [`8e2b6e3`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/8e2b6e33fbe514f5cdc89e0df0209096b8ee8790) - Merge pull request [#176](https://github.com/HsiangNianian/IntelligentMixVideo/pull/176) from HsiangNianian/dev
+
+chore(release): promote dev to main for v0.9.4 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
 ## [v0.9.3] - 2026-10-15
 ### New Features
 - [`1ae37f1`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/1ae37f14520d061b18119e41aac37aa6e32fb425) - **remotion**: add a shared font library that the agent chooses from *(PR [#165](https://github.com/HsiangNianian/IntelligentMixVideo/pull/165) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
@@ -1427,3 +1459,5 @@ feat(client): 在模板工作区页头添加时钟 *(commit by [@HsiangNianian](
 [v0.9.2]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.1...v0.9.2
 
 [v0.9.3]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.2...v0.9.3
+
+[v0.9.4]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.3...v0.9.4
