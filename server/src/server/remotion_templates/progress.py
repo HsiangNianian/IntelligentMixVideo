@@ -41,6 +41,9 @@ PUBLIC_TOOLS = {
     "preset.search", "sprite.compose", "sprite.create", "validate.code",
     "validate.render", "image.info", "image.resize", "image.crop",
 }
+CALL_TEXT_LIMIT = 2000
+ARGUMENTS_LIMIT = 4000
+ROUND_TEXT_LIMIT = 4000
 PUBLIC_ERRORS = {
     "INVALID_ARGUMENT": "工具参数无效。",
     "TOOL_NOT_FOUND": "工具不可用。",
@@ -64,17 +67,30 @@ PUBLIC_ERRORS = {
 }
 
 
-class RoundCall(Contract):
-    """One tool call the host actually ran; the name and the outcome only.
+def clip(value, limit: int) -> str | None:
+    """Bound one public diagnostic text; empty values stay absent and a cut is marked."""
+    text = value if isinstance(value, str) else ("" if value is None else str(value))
+    if not text:
+        return None
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
-    Arguments and result payloads stay in the private audit, so a public round can
-    never carry model input, candidate source or tool output.
+
+class RoundCall(Contract):
+    """One tool call the host actually ran, with the model's arguments for auditing it.
+
+    ``arguments`` is the raw JSON text the model sent and ``detail`` the tool's real
+    error text, both clipped; complete payloads stay in the private audit. The
+    outcome vocabulary (tool names, error codes and the fixed ``message``) is still
+    host-authored.
     """
 
     tool: str = Field(min_length=1, max_length=64)
+    requested_tool: str | None = Field(default=None, max_length=64)
     status: Literal["pass", "fail"]
     error_code: str | None = Field(default=None, max_length=64)
     message: str | None = Field(default=None, max_length=200)
+    detail: str | None = Field(default=None, max_length=CALL_TEXT_LIMIT)
+    arguments: str | None = Field(default=None, max_length=ARGUMENTS_LIMIT)
 
     @model_validator(mode="before")
     @classmethod
@@ -85,6 +101,9 @@ class RoundCall(Contract):
         value = dict(value)
         tool = value.get("tool")
         value["tool"] = tool if isinstance(tool, str) and tool in PUBLIC_TOOLS else "unknown"
+        for key, limit in (("detail", CALL_TEXT_LIMIT), ("arguments", ARGUMENTS_LIMIT), ("requested_tool", 64)):
+            if key in value:
+                value[key] = clip(value[key], limit)
         code = value.get("error_code")
         if value.get("status") == "fail":
             code = code if isinstance(code, str) and code in PUBLIC_ERRORS else "TOOL_FAILED"
@@ -101,6 +120,21 @@ class LoopRound(Contract):
     turn: int = Field(ge=1)
     calls: list[RoundCall] = Field(default_factory=list)
     error_code: Literal["MODEL_CONTRACT_FAILED", "MODEL_FAILED", "CANCELLED"] | None = None
+    # Bounded text for a turn without tool calls: what the model replied, why its request failed.
+    message: str | None = Field(default=None, max_length=ROUND_TEXT_LIMIT)
+    error_detail: str | None = Field(default=None, max_length=CALL_TEXT_LIMIT)
+
+    @model_validator(mode="before")
+    @classmethod
+    def bounded_text(cls, value):
+        """Clip free text instead of rejecting a long model reply or host steer."""
+        if not isinstance(value, dict):
+            return value
+        value = dict(value)
+        for key, limit in (("message", ROUND_TEXT_LIMIT), ("error_detail", CALL_TEXT_LIMIT)):
+            if key in value:
+                value[key] = clip(value[key], limit)
+        return value
 
 
 def read_steps(db: Connection, job: GenerationJob) -> list[ProgressStep]:

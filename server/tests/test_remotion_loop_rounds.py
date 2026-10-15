@@ -1,4 +1,4 @@
-"""公开的 ReAct 每轮记录：工具名与结论、白名单校验、终态与去重，以及不泄漏参数与载荷。
+"""公开的 ReAct 每轮记录：工具名与结论、白名单校验、终态与去重，以及供前端审计的有界细节（模型给出的原始参数、工具真实错误、无调用轮次的模型回复与失败原因）。
 
 不调用真实模型、浏览器或 Chroma；Agent 循环用脚本化替身驱动。
 在 server/ 目录执行 `uv run --locked pytest tests/test_remotion_loop_rounds.py -v`。
@@ -73,8 +73,8 @@ def test_round_is_published_scoped_and_durable(round_store):
     assert rounds(reopened, job) == rounds(store, job)
 
 
-def test_public_payload_never_carries_arguments_or_payloads(round_store):
-    """公开事件只带工具名与结论，不含工具参数、候选源码或任何模型原文。"""
+def test_public_payload_is_whitelisted_and_clipped(round_store):
+    """公开事件只含声明的字段；超长的模型回复、参数与错误被截断，错误码与固定说明仍由宿主决定。"""
     store = round_store
     work, job = running_job(store)
     after = cursor(store, work)
@@ -82,24 +82,30 @@ def test_public_payload_never_carries_arguments_or_payloads(round_store):
         job.id,
         ROUND
         | {
+            "message": "回" * 9000,
             "calls": [
                 {
                     "tool": "sprite.create",
                     "status": "fail",
                     "error_code": "COMPOSITION_FAILED",
-                    "message": "Sprite code, schema or defaults do not match its instance definition.",
+                    "message": "ignored",
+                    "detail": "真实错误 " * 1000,
+                    "arguments": json.dumps({"draft_id": "d1", "pad": "x" * 9000}),
                 }
-            ]
+            ],
         },
     )
     events = store.work_events(work.id, after)
     assert [event.type for event in events] == ["job.round"]
     published = events[-1].data["round"]
-    assert set(published) == {"layer", "turn", "calls", "error_code"}
-    assert set(published["calls"][0]) == {"tool", "status", "error_code", "message"}
-    payload = json.dumps(events[-1].data, ensure_ascii=False)
-    for leaked in ("arguments", "details", "tsx_code", "goal", "done_when", "input_refs"):
-        assert leaked not in payload
+    assert {key for key, value in published.items() if value is not None} == {"layer", "turn", "calls", "message"}
+    assert len(published["message"]) == 4000 and published["message"].endswith("…")
+    call_ = published["calls"][0]
+    assert {key for key, value in call_.items() if value is not None} == {"tool", "status", "error_code", "message", "detail", "arguments"}
+    assert call_["message"] == "组合生成失败。"
+    assert len(call_["detail"]) == 2000 and len(call_["arguments"]) == 4000
+    with pytest.raises(ValidationError):
+        LoopRound.model_validate(ROUND | {"feedback": "extra"})
 
 
 def test_unknown_layer_is_rejected_and_not_stored(round_store):
@@ -242,15 +248,17 @@ def test_real_loop_records_every_turn_with_its_tools(monkeypatch, tmp_path):
         ("outer", 1), ("executor", 2), ("executor", 3), ("executor", 4), ("executor", 5),
     ]
     # 控制工具与业务工具都按契约里的点号 ID 记录，而不是模型侧的调用名。
-    assert seen[0]["calls"] == [{"tool": "tools.plan_execute", "status": "pass"}]
-    assert seen[1]["calls"] == [{"tool": "preset.search", "status": "pass"}]
-    assert seen[4]["calls"] == [{"tool": "tools.report_step", "status": "pass"}]
-    # 只回消息、没有调用工具的轮次记录为空列表，不编造不存在的调用。
+    assert [(item["calls"][0]["tool"], item["calls"][0]["status"]) for item in (seen[0], seen[1], seen[4])] == [
+        ("tools.plan_execute", "pass"), ("preset.search", "pass"), ("tools.report_step", "pass"),
+    ]
+    # 每次调用带模型给出的原始参数，前端展开即可核对。
+    search = seen[1]["calls"][0]
+    assert json.loads(search["arguments"]) == {"preset_id": "preset-1"}
+    assert "PRIVATE_DRAFT" in json.dumps(seen[3]["calls"][0], ensure_ascii=False)
+    assert json.loads(seen[0]["calls"][0]["arguments"]) == {"action": "delegate", "reason": "暖色调滤镜"}
+    # 只回消息、没有调用工具的轮次没有调用，但保留模型回复，不再是空白。
     assert seen[2]["calls"] == []
-    # 计划目标与工具参数都是宿主或模型输入，不能随公开记录一起上报。
-    leaked = json.dumps(seen, ensure_ascii=False)
-    assert "Reuse a fitting stored Preset" not in leaked
-    assert "PRIVATE_DRAFT" not in leaked
+    assert json.loads(seen[2]["message"])["summary"] == "预设已就绪"
 
 
 def test_failed_call_is_recorded_with_its_error_code(monkeypatch, tmp_path):
@@ -281,16 +289,17 @@ def test_failed_call_is_recorded_with_its_error_code(monkeypatch, tmp_path):
     asyncio.run(run.plan_execute())
     failed = seen[1]
     assert failed["layer"] == "executor" and failed["turn"] == 2
-    assert failed["calls"] == [
-        {
-            "tool": "preset.create",
-            "status": "fail",
-            "error_code": "CODE_VALIDATION_FAILED",
-            "message": "代码校验未通过。",
-        }
-    ]
-    # 失败详情里的候选源码留在私有诊断里，不进入公开记录。
-    assert "export default function C()" not in json.dumps(seen, ensure_ascii=False)
+    (failure,) = failed["calls"]
+    assert {key: failure[key] for key in ("tool", "status", "error_code", "message")} == {
+        "tool": "preset.create",
+        "status": "fail",
+        "error_code": "CODE_VALIDATION_FAILED",
+        "message": "代码校验未通过。",
+    }
+    # 工具抛出的真实说明与模型给出的参数一并公开，方便定位失败原因；错误详情里的校验结构化数据不公开。
+    assert failure["detail"] == "Preset code validation failed."
+    assert json.loads(failure["arguments"])["description"] == "标题"
+    assert "export default function C(){return null}" not in json.dumps(seen, ensure_ascii=False)
 
 
 def test_round_published_through_the_store_round_trips(round_store):
@@ -327,7 +336,9 @@ def test_invalid_model_turn_is_recorded_before_recovery(monkeypatch, tmp_path, r
     assert [item.turn for item in recorded] == [1, 2, 3]
     assert recorded[1].error_code == "MODEL_CONTRACT_FAILED"
     assert recorded[1].calls == []
-    assert "private model text" not in " ".join(e.model_dump_json() for e in round_store.work_events(work.id, 0))
+    # 协议失败的原因公开给前端，说明这一轮为什么没有调用工具，以及宿主下一轮给了什么指示。
+    assert "private model text" in recorded[1].error_detail
+    assert recorded[0].calls[0].status == "fail"
 
 
 def test_unresolved_names_do_not_break_rounds(monkeypatch, tmp_path, round_store):
@@ -353,9 +364,12 @@ def test_unresolved_names_do_not_break_rounds(monkeypatch, tmp_path, round_store
     assert recorded[0].calls[0].status == "pass"
     assert recorded[0].calls[1].error_code == "INVALID_ARGUMENT"
     assert all(item.tool == "unknown" for item in recorded[0].calls[2:])
+    # 未知名称仍记为 unknown，但模型请求的原名（截断到 64 字）与宿主的纠错说明保留，才能看出叫错了什么。
+    assert recorded[0].calls[2].requested_tool.startswith("PRIVATE_TOOL_")
+    assert len(recorded[0].calls[2].requested_tool) == 64
+    assert "Unknown or out-of-scope tool" in recorded[0].calls[2].detail
+    assert recorded[0].calls[1].tool == "preset.create" and "PRIVATE_SOURCE" in recorded[0].calls[1].arguments
     assert "PRIVATE_SOURCE" in run.executor_context.serialize()
-    public = " ".join(e.model_dump_json() for e in round_store.work_events(work.id, 0))
-    assert "PRIVATE_SOURCE" not in public and "PRIVATE_TOOL_" not in public
 
 
 def test_round_storage_does_not_limit_recorded_receipts(round_store):

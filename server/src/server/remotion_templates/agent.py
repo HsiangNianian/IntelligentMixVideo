@@ -15,7 +15,7 @@ from .context import Conversation
 from .models import DialogueOutput
 from .planning import ExecutionState, PlanAction, PlanResult, StepResult, default_plan
 from .provider import ExecutionFailure, ModelContractFailure, ModelFailure
-from .progress import RoundCall
+from .progress import CALL_TEXT_LIMIT, ROUND_TEXT_LIMIT, RoundCall, clip
 from .tools.catalog import PLAN_TOOL, REPORT_TOOL, available
 from .tools.registry import ToolFault, get_tool, parse_arguments, wire_name
 from .tools.session import ToolSession
@@ -191,6 +191,9 @@ class AgentRun:
         self.turn = 0
         self.round_calls: list[dict] = []
         self.round_error: str | None = None
+        # Text of a turn without tool calls, for the public round: the model's reply or why its request failed.
+        self.round_message: str | None = None
+        self.round_error_detail: str | None = None
         self.generation_started = False
         self.delegation = None
         self.plan_result = None
@@ -701,18 +704,30 @@ class AgentRun:
             summary = {
                 "tool": resolved.get(call.id, "unknown"),
                 "status": "pass" if result.get("ok") else "fail",
+                "arguments": call.function.arguments,
             }
+            if call.id not in resolved:
+                summary["requested_tool"] = call.function.name
             if not result.get("ok"):
                 error = result.get("error") or {}
                 summary["error_code"] = error.get("code")
+                summary["detail"] = error.get("message")
             self.round_calls.append(RoundCall.model_validate(summary).model_dump(mode="json", exclude_none=True))
 
     def _report_round(self, layer):
-        """Publish one finished ReAct round through the job's own event stream."""
-        self.budget.round(
-            {"layer": layer, "turn": self.turn, "calls": self.round_calls,
-             **({"error_code": self.round_error} if self.round_error else {})}
-        )
+        """Publish one finished ReAct round through the job's own event stream.
+
+        Besides the calls, a turn without any carries the model's reply or the error text
+        of a failed model request, clipped; complete payloads stay in the private audit.
+        """
+        record = {"layer": layer, "turn": self.turn, "calls": self.round_calls}
+        for key, value in (
+            ("error_code", self.round_error), ("message", self.round_message),
+            ("error_detail", self.round_error_detail),
+        ):
+            if value:
+                record[key] = value
+        self.budget.round(record)
 
     async def _three_layer_execute(self):
         """Run the role state machine until Outer returns a dialogue or final artifact."""
@@ -738,6 +753,8 @@ class AgentRun:
             layer = role
             self.round_calls = []
             self.round_error = None
+            self.round_message = None
+            self.round_error_detail = None
             previous_stalls = self.stalled_turns
             self._round_progress = False
             result = None
@@ -746,15 +763,18 @@ class AgentRun:
                     response = await self.harness._turn(system, context, [item.wire() for item in tools], self.budget, images, phase=role)
                 except ModelContractFailure as exc:
                     self.round_error = "MODEL_CONTRACT_FAILED"
+                    self.round_error_detail = clip(str(exc), CALL_TEXT_LIMIT)
                     self._set_feedback("Return the declared JSON/tool-call protocol: " + str(exc))
                     self.stalled_turns += 1
                     continue
-                except ModelFailure:
+                except ModelFailure as exc:
                     self.round_error = "MODEL_FAILED"
+                    self.round_error_detail = clip(str(exc), CALL_TEXT_LIMIT)
                     raise
                 except asyncio.CancelledError:
                     self.round_error = "CANCELLED"
                     raise
+                self.round_message = clip(response.content, ROUND_TEXT_LIMIT)
                 if response.tool_calls:
                     result = await self._handle_layer_tools(response)
                 else:

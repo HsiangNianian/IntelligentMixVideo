@@ -297,19 +297,30 @@ export interface SessionJob extends Job {
   progress?: ProgressStep[];
   rounds?: LoopRound[];
 }
-/** 一次宿主实际执行的工具调用；只有工具名与结论，不含参数与返回载荷。 */
+/**
+ * 一次宿主实际执行的工具调用：工具名、结论与模型给出的参数。
+ * `arguments` 是模型发送的原始 JSON 文本（服务端截断），`detail` 是工具的真实错误说明；旧记录没有这两项。
+ */
 export interface RoundCall {
   tool: string;
+  /** 工具名未知时模型实际请求的名称。 */
+  requested_tool?: string | null;
   status: "pass" | "fail";
   error_code?: string | null;
   message?: string | null;
+  detail?: string | null;
+  arguments?: string | null;
 }
-/** 一层 ReAct 的一轮；空 calls 且无 error_code 才表示普通消息轮次。 */
+/** 一层 ReAct 的一轮；没有 calls 的轮次带模型回复或失败原因（旧记录两者都没有）。 */
 export interface LoopRound {
   layer: "outer" | "plan" | "executor";
   turn: number;
   calls: RoundCall[];
   error_code?: "MODEL_CONTRACT_FAILED" | "MODEL_FAILED" | "CANCELLED" | null;
+  /** 没有调用工具时模型本轮的文字回复（截断）。 */
+  message?: string | null;
+  /** 模型请求失败或协议无效时的原因文本。 */
+  error_detail?: string | null;
 }
 /** 宿主公开的阶段摘要；只含白名单阶段与时间，不含候选代码或内部评审。 */
 export interface ProgressStep {
