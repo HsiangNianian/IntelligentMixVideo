@@ -686,10 +686,13 @@ class AgentRun:
     def _note_round_calls(self, response, exchange, resolved):
         """Record what the host actually ran this turn for the public round record.
 
-        Only the tool name and its outcome leave this method: arguments and result
-        payloads stay in the private audit. Receipts are matched by call ID so the
-        record keeps the order the model asked for, and a resolved call reports the
-        canonical dotted tool ID. Unknown names and raw errors stay private.
+        Each call is published with the raw ``arguments`` the model sent (so plan
+        goals and candidate source in them are visible) and, on failure, the tool's
+        real error text as ``detail``; both are clipped when the record is validated.
+        Successful result payloads stay in the private audit. Receipts are matched by
+        call ID so the record keeps the order the model asked for, a resolved call
+        reports the canonical dotted tool ID, and an unknown name is published as
+        ``unknown`` with the requested name in ``requested_tool``.
         """
         receipts = {
             message.get("tool_call_id"): message.get("content")
@@ -718,7 +721,7 @@ class AgentRun:
         """Publish one finished ReAct round through the job's own event stream.
 
         Besides the calls, a turn without any carries the model's reply or the error text
-        of a failed model request, clipped; complete payloads stay in the private audit.
+        of a failed model request, clipped; the full text stays in the private audit.
         """
         record = {"layer": layer, "turn": self.turn, "calls": self.round_calls}
         for key, value in (
@@ -774,10 +777,11 @@ class AgentRun:
                 except asyncio.CancelledError:
                     self.round_error = "CANCELLED"
                     raise
-                self.round_message = clip(response.content, ROUND_TEXT_LIMIT)
                 if response.tool_calls:
                     result = await self._handle_layer_tools(response)
                 else:
+                    # Only a turn without calls publishes the model's reply; narration beside calls stays private.
+                    self.round_message = clip(response.content, ROUND_TEXT_LIMIT)
                     # Handlers distinguish fresh handoffs from repeated or rejected replies.
                     result = await self._handle_layer_message(response)
             finally:

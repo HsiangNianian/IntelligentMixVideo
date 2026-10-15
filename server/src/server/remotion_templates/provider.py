@@ -129,7 +129,7 @@ class Budget:
             self.on_progress(phase)
 
     def round(self, record: dict) -> None:
-        """Send one finished ReAct round to persistence, never arguments or result payloads."""
+        """Send one finished ReAct round (calls with their clipped arguments, no result payloads) to persistence."""
         if self.on_round is not None:
             self.on_round(record)
 

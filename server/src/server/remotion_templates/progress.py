@@ -78,9 +78,11 @@ def clip(value, limit: int) -> str | None:
 class RoundCall(Contract):
     """One tool call the host actually ran, with the model's arguments for auditing it.
 
-    ``arguments`` is the raw JSON text the model sent and ``detail`` the tool's real
-    error text, both clipped; complete payloads stay in the private audit. The
-    outcome vocabulary (tool names, error codes and the fixed ``message``) is still
+    ``arguments`` is the raw JSON text the model sent (plan step goals and candidate
+    source included) and ``detail`` the tool's real error text (which can name server
+    paths or compiler output); both are published on purpose and clipped, while
+    complete payloads and tool results stay in the private audit. The outcome
+    vocabulary (tool names, error codes and the fixed ``message``) is still
     host-authored.
     """
 

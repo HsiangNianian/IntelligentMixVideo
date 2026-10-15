@@ -141,7 +141,7 @@ test("无效模型轮次显示失败原因而非只返回消息", () => {
   expect(screen.queryByText("本轮只返回了消息，没有调用工具。")).toBeNull();
 });
 
-// 参数无法解析（被截断或模型发了非法 JSON）时摘要与原始 tool call 都显示原文；未知工具显示模型请求的原名。
+// 参数无法解析（被截断或模型发了非法 JSON）时摘要与原始 tool call 都显示原文；未知工具显示模型请求的原名；旧记录无参数字段。
 test("无法解析的参数与未知工具原样显示原文和请求名称", () => {
   const rounds: LoopRound[] = [
     {
@@ -149,7 +149,8 @@ test("无法解析的参数与未知工具原样显示原文和请求名称", ()
       turn: 1,
       calls: [
         { tool: "unknown", requested_tool: "do_magic", status: "fail", error_code: "TOOL_NOT_FOUND", message: "工具不可用。", detail: "Unknown tool: do_magic", arguments: '{"broken' },
-        { tool: "tools.inspect", status: "pass" },
+        { tool: "tools.inspect", status: "pass", arguments: "{}" },
+        { tool: "tools.report_step", status: "pass" },
       ],
     },
   ];
@@ -158,7 +159,9 @@ test("无法解析的参数与未知工具原样显示原文和请求名称", ()
   expect(bad.textContent).toContain('{"broken');
   fireEvent.click(bad);
   expect(screen.getByText(/"name": "do_magic"/).textContent).toContain("Unknown tool: do_magic");
+  // 空对象参数明确显示“无参数”；旧记录没有 arguments 字段，只显示工具名而不声称无参数。
   expect(screen.getByRole("button", { name: /tools\.inspect/ }).textContent).toContain("无参数");
+  expect(screen.getByRole("button", { name: /tools\.report_step/ }).textContent).not.toContain("无参数");
 });
 
 // 没有调用的轮次显示模型回复或失败原因，而不是空白。

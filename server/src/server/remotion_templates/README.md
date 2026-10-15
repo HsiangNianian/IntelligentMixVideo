@@ -318,11 +318,16 @@ Every Outer → Plan → Executor turn appends one public round record through t
 `job.round` delta event on the same work stream as the phase timeline. A round
 carries the layer, the turn and the tools the host handled in that turn — the
 canonical dotted tool ID, whether it passed, and on failure a whitelisted error
-code plus a fixed host-authored message. For auditing from the chat, each call also carries the raw `arguments` the model
-sent (4000 characters) and the tool's real error `detail` (2000), and a turn without
-calls carries the model's reply (`message`) or the reason its request failed
-(`error_detail`); all are cut with `…`. Complete payloads, tool results and plan step
-goals stay in the private audit. A terminal job accepts no further rounds. Unknown tool
+code plus a fixed host-authored message. So the chat can show what the model actually
+sent, each call also carries the raw `arguments` (4000 characters) and, on failure, the
+tool's real error `detail` (2000). This is published on purpose: `arguments` can hold plan
+step goals (`tools.plan_execute`) and candidate source (`preset.create`, `preset.modify`,
+`sprite.create`), and `detail` is the tool's own error text, which can name server paths or
+compiler output. A turn without calls carries the model's reply (`message`) or the reason
+its request failed (`error_detail`, the already sanitized `ModelFailure` text); narration
+that accompanies calls is not published. Everything is cut with `…`, so a cut `arguments`
+is no longer valid JSON. Tool results, host steer text and the full payloads stay in the
+private audit. A terminal job accepts no further rounds. Unknown tool
 names become `unknown` with the name the model asked for in `requested_tool`; model
 protocol failures are explicitly marked. Each `job.round` event carries one
 round, `job.updated` omits that history, and the client keeps the rounds it has stored locally.

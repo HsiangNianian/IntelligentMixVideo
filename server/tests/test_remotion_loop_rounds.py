@@ -20,7 +20,7 @@ from server.remotion_templates.context import AssistantMessage
 from server.remotion_templates.models import GenerateTemplateRequest
 from server.remotion_templates.planning import PlanAction, default_plan
 from server.remotion_templates.progress import LoopRound
-from server.remotion_templates.provider import Budget, ModelContractFailure
+from server.remotion_templates.provider import Budget, ModelContractFailure, ModelFailure
 from server.remotion_templates.store import Store
 from server.remotion_templates.tables import job_rounds, work_events
 from server.remotion_templates.tools.registry import ToolFault
@@ -166,18 +166,21 @@ class FakeSession:
             identifier = f"sprite-{len(self.saved_sprites) + 1}"
             self.saved_sprites[identifier] = {"sprite_id": identifier}
             self.latest_sprite_id = identifier
-        return {"tool": name, "args": args.model_dump(mode="json"), "preset": {"preset_id": "preset-1"}}
+        return {
+            "tool": name, "args": args.model_dump(mode="json"), "preset": {"preset_id": "preset-1"},
+            "observation": "RESULT_ONLY_MARKER",
+        }
 
 
 class FailingSession(FakeSession):
-    """让业务工具按契约失败，用于验证结论与错误码进入记录。"""
+    """让业务工具按契约失败，用于验证结论、错误码与错误说明进入记录，而结构化 details 不进入。"""
 
     async def execute(self, name, args, _catalog):
         """以真实工具的错误码和说明失败，不返回任何结果。"""
         raise ToolFault(
             "CODE_VALIDATION_FAILED",
             "Preset code validation failed.",
-            details={"validation": {"tsx_code": "export default function C(){return null}"}},
+            details={"validation": {"tsx_code": "DETAILS_ONLY_SOURCE"}},
         )
 
 
@@ -251,7 +254,8 @@ def test_real_loop_records_every_turn_with_its_tools(monkeypatch, tmp_path):
     assert [(item["calls"][0]["tool"], item["calls"][0]["status"]) for item in (seen[0], seen[1], seen[4])] == [
         ("tools.plan_execute", "pass"), ("preset.search", "pass"), ("tools.report_step", "pass"),
     ]
-    # 每次调用带模型给出的原始参数，前端展开即可核对。
+    # 每次调用带模型给出的原始参数（有意公开），前端展开即可核对；工具成功结果仍只在私有审计。
+    assert "RESULT_ONLY_MARKER" not in json.dumps(seen)
     search = seen[1]["calls"][0]
     assert json.loads(search["arguments"]) == {"preset_id": "preset-1"}
     assert "PRIVATE_DRAFT" in json.dumps(seen[3]["calls"][0], ensure_ascii=False)
@@ -296,10 +300,70 @@ def test_failed_call_is_recorded_with_its_error_code(monkeypatch, tmp_path):
         "error_code": "CODE_VALIDATION_FAILED",
         "message": "代码校验未通过。",
     }
-    # 工具抛出的真实说明与模型给出的参数一并公开，方便定位失败原因；错误详情里的校验结构化数据不公开。
+    # 工具抛出的真实说明与模型给出的参数（含候选源码）一并公开，方便定位失败原因；ToolFault 的结构化 details 不是公开字段。
     assert failure["detail"] == "Preset code validation failed."
-    assert json.loads(failure["arguments"])["description"] == "标题"
-    assert "export default function C(){return null}" not in json.dumps(seen, ensure_ascii=False)
+    arguments = json.loads(failure["arguments"])
+    assert arguments["description"] == "标题"
+    assert arguments["code"] == "export default function Label(){return null}"
+    assert "details" not in failure and "DETAILS_ONLY_SOURCE" not in json.dumps(seen)
+
+
+def test_narration_beside_calls_is_not_published(monkeypatch, tmp_path):
+    """带工具调用的轮次不公开模型的旁白；只有没有调用的轮次才带模型回复 `message`。"""
+    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
+    narrated = AssistantMessage(
+        content="NARRATION_ONLY",
+        tool_calls=call("outer-1", "tools_plan_execute", {"action": "delegate", "reason": "标题"}).tool_calls,
+    )
+    harness = FakeHarness([
+        narrated,
+        AssistantMessage(content="只回复的内容"),
+        call("exec-1", "tools_report_step", {"status": "blocked", "summary": "无法继续"}),
+        call("plan-1", "tools_plan_execute", {"action": "complete"}),
+    ])
+    seen: list[dict] = []
+    run = AgentRun(
+        harness, None, Budget(on_round=seen.append), tmp_path, [], lambda *_: None,
+        intent={"original_request": {"description": "demo"}},
+    )
+    asyncio.run(run.plan_execute())
+    assert seen[0]["calls"] and "message" not in seen[0]
+    assert "NARRATION_ONLY" not in json.dumps(seen, ensure_ascii=False)
+    assert seen[1]["calls"] == [] and seen[1]["message"] == "只回复的内容"
+
+
+def test_plan_goals_and_candidate_source_are_published_verbatim(round_store):
+    """参数原文有意公开：计划步骤目标与候选源码不被剥离，经事件送达并随任务视图保留。"""
+    store = round_store
+    work, job = running_job(store)
+    after = cursor(store, work)
+    plan = {"action": "update_plan", "plan": {"steps": [{"goal": "Reuse a fitting stored Preset", "done_when": "preset reused"}]}}
+    source = {"code": "export default function Label(){return null}"}
+    store.round(job.id, ROUND | {"calls": [
+        {"tool": "tools.plan_execute", "status": "pass", "arguments": json.dumps(plan)},
+        {"tool": "preset.create", "status": "pass", "arguments": json.dumps(source)},
+    ]})
+    published = store.work_events(work.id, after)[-1].data["round"]["calls"]
+    assert json.loads(published[0]["arguments"]) == plan
+    assert json.loads(published[1]["arguments"]) == source
+    assert [json.loads(call_.arguments) for call_ in rounds(store, job)[0].calls] == [plan, source]
+
+
+def test_model_failure_reason_is_published(monkeypatch, tmp_path):
+    """模型请求失败时，该轮记录 MODEL_FAILED 和（已净化的）失败原因，再把异常交给上层。"""
+    monkeypatch.setattr("server.remotion_templates.agent.ToolSession", FakeSession)
+    harness = FakeHarness([ModelFailure("Model request timed out.")])
+    seen: list[dict] = []
+    run = AgentRun(
+        harness, None, Budget(on_round=seen.append), tmp_path, [], lambda *_: None,
+        intent={"original_request": {"description": "demo"}},
+    )
+    with pytest.raises(ModelFailure):
+        asyncio.run(run.plan_execute())
+    assert seen == [{
+        "layer": "outer", "turn": 1, "calls": [],
+        "error_code": "MODEL_FAILED", "error_detail": "Model request timed out.",
+    }]
 
 
 def test_round_published_through_the_store_round_trips(round_store):
@@ -327,7 +391,7 @@ def test_invalid_model_turn_is_recorded_before_recovery(monkeypatch, tmp_path, r
     work, job = running_job(round_store)
     harness = FakeHarness([
         call("ask-wrong-layer", "tools_inspect", {"tool_name": "sprite.create"}),
-        ModelContractFailure("private model text"),
+        ModelContractFailure("Model returned an invalid tool-call contract."),
         AssistantMessage(content=json.dumps({"action": "complete", "sprite_id": "sprite-1"})),
     ])
     run = AgentRun(harness, None, Budget(on_round=lambda record: round_store.round(job.id, record)), tmp_path, [], lambda *_: None)
@@ -336,8 +400,8 @@ def test_invalid_model_turn_is_recorded_before_recovery(monkeypatch, tmp_path, r
     assert [item.turn for item in recorded] == [1, 2, 3]
     assert recorded[1].error_code == "MODEL_CONTRACT_FAILED"
     assert recorded[1].calls == []
-    # 协议失败的原因公开给前端，说明这一轮为什么没有调用工具，以及宿主下一轮给了什么指示。
-    assert "private model text" in recorded[1].error_detail
+    # 协议失败的原因（异常文本，与生产一致的固定句）公开给前端，说明这一轮为什么没有调用工具；宿主下一轮的纠错指示不公开。
+    assert recorded[1].error_detail == "Model returned an invalid tool-call contract."
     assert recorded[0].calls[0].status == "fail"
 
 
@@ -380,7 +444,7 @@ def test_round_storage_does_not_limit_recorded_receipts(round_store):
 
 
 def test_round_messages_and_error_codes_are_host_owned(round_store):
-    """原始异常、内部路径和任意错误码在存储边界被固定文案替换。"""
+    """`message` 与错误码由宿主决定：调用方给的原始异常、内部路径和任意错误码在存储边界被固定文案替换（真实错误只走 `detail`）。"""
     work, job = running_job(round_store)
     for turn, code in enumerate(["COMPOSITION_FAILED", "PRIVATE_CODE_/home/key"], 1):
         round_store.round(job.id, ROUND | {"turn": turn, "calls": [{

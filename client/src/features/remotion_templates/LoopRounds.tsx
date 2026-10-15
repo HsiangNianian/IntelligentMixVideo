@@ -50,10 +50,11 @@ function rawCall(call: RoundCall): string {
   return JSON.stringify(raw, null, 2);
 }
 
-/** 一次调用：名称与参数摘要在一行，点开显示原始 tool call。 */
+/** 一次调用：名称与参数摘要在一行，点开显示原始 tool call；旧记录没有 `arguments`，只显示名称。 */
 function CallRow({ call }: { call: RoundCall }) {
   const [open, setOpen] = useState(false);
   const failed = call.status === "fail";
+  const summary = argumentSummary(call) || (call.arguments ? "无参数" : "");
   return (
     <li>
       <Button
@@ -71,9 +72,11 @@ function CallRow({ call }: { call: RoundCall }) {
             {call.requested_tool ?? call.tool}
             {failed && ` ✗ ${call.error_code ?? ""}`}
           </span>
-          <span className="mt-0.5 block truncate font-mono text-muted-foreground">
-            {argumentSummary(call) || "无参数"}
-          </span>
+          {summary && (
+            <span className="mt-0.5 block truncate font-mono text-muted-foreground">
+              {summary}
+            </span>
+          )}
         </span>
       </Button>
       {open && (
