@@ -140,6 +140,13 @@ class RemotionTrackEditor(_RemotionModel):
         return self
 
 
+@lru_cache(maxsize=1)
+def template_font_names() -> frozenset[str]:
+    """读取前端、Python 和 Rust 共用的 IMS 字体白名单。"""
+    fonts = json.loads(Path(__file__).with_name("fonts.json").read_text(encoding="utf-8"))
+    return frozenset(font["value"] for font in fonts)
+
+
 class EffectTemplateEditor(BaseModel):
     """SDK 5.2.2 编辑配置；文字内容用于模板示例，正式字幕内容由剪辑计划提供。"""
 
@@ -148,6 +155,8 @@ class EffectTemplateEditor(BaseModel):
     title: str = Field(default="让每一帧 都有风格", max_length=60)
     subtitle: str = Field(default="选择花字、滤镜和特效，看看组合效果", max_length=100)
     bubble_text: str = Field(default="超值特惠", max_length=40)
+    title_font: str = Field(default="Alibaba PuHuiTi", strict=True)
+    subtitle_font: str = Field(default="Alibaba PuHuiTi", strict=True)
     title_size: int = Field(default=40, ge=12, le=300)
     subtitle_size: int = Field(default=26, ge=12, le=300)
     bubble_size: int = Field(default=32, ge=12, le=300)
@@ -193,6 +202,14 @@ class EffectTemplateEditor(BaseModel):
     subtitle_keyword_size: int = Field(default=0, ge=0, le=300, strict=True)
     # 仅 Remotion 片段使用：参数覆盖与宿主变换；IMS 对象不输出该字段，JSON 与引入前保持一致。
     remotion: RemotionTrackEditor | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    @field_validator("title_font", "subtitle_font")
+    @classmethod
+    def validate_font(cls, value: str) -> str:
+        """标题和字幕只接受共享目录内的 IMS 标识。"""
+        if value not in template_font_names():
+            raise ValueError("字体不在支持的目录中")
+        return value
 
     @field_validator("title_keyword_size", "subtitle_keyword_size")
     @classmethod

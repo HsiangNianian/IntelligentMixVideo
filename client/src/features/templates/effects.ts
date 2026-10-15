@@ -90,6 +90,7 @@ export function resetTextTarget(draft: EffectDraft, target: TextRole): EffectDra
   const next = changeEffects(draft, Object.fromEntries(targetEffectKeys(target).map((key) => [key, ""])));
   const textKey = target === "bubble" ? "bubbleText" : target;
   next.editor[textKey] = defaultEditor[textKey];
+  if (target !== "bubble") next.editor[`${target}Font`] = defaultEditor[`${target}Font`];
   next.editor[`${target}Size`] = defaultEditor[`${target}Size`];
   next.editor[`${target}X`] = defaultEditor[`${target}X`];
   next.editor[`${target}Y`] = defaultEditor[`${target}Y`];
@@ -120,6 +121,7 @@ export function removeTarget(draft: EffectDraft, target: EffectTarget): EffectDr
   const next = changeEffects(draft, Object.fromEntries(targetEffectKeys(target).map((key) => [key, ""])));
   if (isTextTarget(target)) {
     next.editor[target === "bubble" ? "bubbleText" : target] = "";
+    if (target !== "bubble") next.editor[`${target}Font`] = defaultEditor[`${target}Font`];
     next.editor[`${target}Size`] = defaultEditor[`${target}Size`];
     next.editor[`${target}X`] = defaultEditor[`${target}X`];
     next.editor[`${target}Y`] = defaultEditor[`${target}Y`];

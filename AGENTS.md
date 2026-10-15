@@ -74,6 +74,8 @@
 
 ## 模板功能约定
 
+- 标题和字幕分别保存 `tracks[].editor.titleFont` / `subtitleFont`，Protobuf 对应 `title_font` / `subtitle_font`。可选字体限定为 `server/src/server/template/fonts.json` 的十一项：前端、Python 和 Rust 共用该目录，保存和合成使用 `value`，预览使用 `preview`。思源黑体由 `Source Han Sans CN` 转为 `Source Han Sans CN Normal`，思源宋体由 `Source Han Serif CN` 转为 `思源宋体`。缺少字段的旧模板默认 `Alibaba PuHuiTi`；重置只恢复当前对象的字体。未知字体、空值和 SDK 专用标识不能作为保存值。
+
 - 前端资产列表通过 `isSelectableAsset` 排除 `CS0003-000002`；花字下拉框允许当前对象保留已选中的该花字及勾选标记，清除或更换后无法重新选择。完整效果目录保留该花字供已有模板读取、预览与保存。
 
 - 侧栏编辑入口显示「模版编辑」，使用现有 Lucide `SquarePen` 图标；保留 `library` 内部标识和工作区状态，窄屏保留图标及无障碍名称。

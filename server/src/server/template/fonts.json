@@ -1,0 +1,13 @@
+[
+  {"label": "阿里巴巴普惠体", "value": "Alibaba PuHuiTi", "preview": "Alibaba PuHuiTi"},
+  {"label": "方正仿宋简体", "value": "FZFangSong-Z02S", "preview": "FZFangSong-Z02S"},
+  {"label": "方正黑体简体", "value": "FZHei-B01S", "preview": "FZHei-B01S"},
+  {"label": "方正楷体简体", "value": "FZKai-Z03S", "preview": "FZKai-Z03S"},
+  {"label": "方正书宋简体", "value": "FZShuSong-Z01S", "preview": "FZShuSong-Z01S"},
+  {"label": "宋体", "value": "SimSun", "preview": "SimSun"},
+  {"label": "楷体", "value": "KaiTi", "preview": "KaiTi"},
+  {"label": "微软雅黑", "value": "Microsoft YaHei", "preview": "Microsoft YaHei"},
+  {"label": "站酷快乐体", "value": "HappyZcool-2016", "preview": "HappyZcool-2016"},
+  {"label": "思源黑体", "value": "Source Han Sans CN", "preview": "Source Han Sans CN Normal"},
+  {"label": "思源宋体", "value": "Source Han Serif CN", "preview": "思源宋体"}
+]

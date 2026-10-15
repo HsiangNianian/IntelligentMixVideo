@@ -3,6 +3,7 @@ import { defaultEditor, type Draft, type EffectDraft, type Editor, type EffectAs
 import { appliedTargets, applyAsset, effectTargets, isTextTarget, targetEffectKeys, type EffectTarget } from "./effects";
 import { previewVideos } from "./media";
 import { compactTransitions, nextTransitionBoundary, setTransitionDuration } from "./transitions";
+import { previewFont } from "./fonts";
 
 /** 时间轴自上向下显示的固定图层；同类对象保持添加顺序。 */
 export const trackLayers: Record<EffectTarget, number> = { title: 0, subtitle: 1, bubble: 2, transition: 3, vfx: 4, filter: 5 };
@@ -41,6 +42,8 @@ export function validateTemplateTracks(tracks: EffectTrack[]): void {
   const boundaries = new Set<number>();
   for (const track of tracks) {
     validateTrack(track);
+    previewFont(track.editor.titleFont);
+    previewFont(track.editor.subtitleFont);
     if (isTextTarget(track.target) && !track.editor[track.target === "bubble" ? "bubbleText" : track.target].trim())
       throw new Error("文字轨道内容不能为空");
     if (!track.id || ids.has(track.id)) throw new Error("特效轨道 ID 必须唯一");
@@ -181,6 +184,7 @@ export function trackEditor(editor: Editor, target: EffectTarget): Editor {
   if (isTextTarget(target)) {
     const key = target === "bubble" ? "bubbleText" : target;
     result[key] = editor[key];
+    if (target !== "bubble") result[`${target}Font`] = editor[`${target}Font`];
     for (const suffix of ["Size", "X", "Y", "InDuration", "OutDuration"] as const)
       result[`${target}${suffix}`] = editor[`${target}${suffix}`];
     if (target === "title") {

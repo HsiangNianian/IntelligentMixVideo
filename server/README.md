@@ -43,6 +43,8 @@ PORT=8010 uv run --locked server
 
 ## 模板接口
 
+标题和字幕分别通过 `tracks[].editor.titleFont` / `subtitleFont` 保存字体，Protobuf 字段为 `title_font` / `subtitle_font`。仅接受 `src/server/template/fonts.json` 中十一种字体的 `value`，无效字体返回 422，缺少字段默认 `Alibaba PuHuiTi`。正式合成分别使用对应对象的字体；思源黑体、思源宋体保存及合成使用 `Source Han Sans CN`、`Source Han Serif CN`，预览专用标识由客户端转换。字体 HTTP 集成测试使用独立 MySQL 服务：设置 `IMV_FONT_TEST_API` 后执行 `uv run --locked pytest --noconftest tests/test_template_fonts.py`，测试会创建并删除自己的模板，覆盖保存、读取、更新及合成时间线。
+
 客户端云端模板在现有 HTTP 地址上传输 Protobuf 二进制消息。协议定义在仓库根目录 `proto/`，Python 生成代码位于 `src/generated/imv/template/v1/`，与客户端生成目录结构一致。
 
 模板接口：

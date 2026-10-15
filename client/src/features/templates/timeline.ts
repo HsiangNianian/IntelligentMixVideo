@@ -14,6 +14,7 @@ import { effectTargets, isTextTarget, type EffectTarget } from "./effects";
 import { trackLabel, trackLayers, type ResolvedTimeline } from "./tracks";
 import { previewVideos } from "./media";
 import type { ClipSlot } from "./clips";
+import { previewFont } from "./fonts";
 
 /** 预览轨道保留源素材范围，缩略图采样使用源时间，游标使用预览时间。 */
 export interface PreviewClip extends TimelineAction {
@@ -201,7 +202,7 @@ function buildTrackContent(config: Editor, catalog: EffectAsset[], target: Effec
       X: position(config[`${role}X`]),
       Y: position(config[`${role}Y`]),
       Alignment: "Center",
-      Font: "Alibaba PuHuiTi",
+      Font: role === "bubble" ? "Alibaba PuHuiTi" : previewFont(config[`${role}Font`]),
       FontSize: size,
       FontColor: "#FFFFFF",
       Outline: 0,

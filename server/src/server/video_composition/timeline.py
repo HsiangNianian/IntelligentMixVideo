@@ -159,7 +159,8 @@ def build_timeline(
             "TimelineOut": end, "Alignment": "Center",
             "X": min(getattr(config, f"{role}_x") / 100, 0.9999),
             "Y": min(getattr(config, f"{role}_y") / 100, 0.9999),
-            "Font": "Alibaba PuHuiTi", "FontSize": getattr(config, f"{role}_size"),
+            "Font": "Alibaba PuHuiTi" if role == "bubble" else getattr(config, f"{role}_font"),
+            "FontSize": getattr(config, f"{role}_size"),
             "FontColor": "#FFFFFF", "Outline": 0, "AdaptMode": "AutoWrap",
             **effects.get("bubble" if role == "bubble" else f"{role}_flower", {}),
         }

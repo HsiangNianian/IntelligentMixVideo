@@ -57,7 +57,7 @@ function toTemplate(record: TemplateRecord): Template {
       if ((track.target !== "transition" && track.start === undefined) || !track.editor)
         throw new Error("模板对象缺少必要字段");
       const received = toJson(EffectTemplateEditorSchema, track.editor) as Partial<Editor>;
-      if (Object.keys(defaultEditor).some((key) => !key.startsWith("subtitleKeyword") && !key.startsWith("titleKeyword") && !Object.prototype.hasOwnProperty.call(received, key)))
+      if (Object.keys(defaultEditor).some((key) => !key.startsWith("subtitleKeyword") && !key.startsWith("titleKeyword") && key !== "titleFont" && key !== "subtitleFont" && !Object.prototype.hasOwnProperty.call(received, key)))
         throw new Error("模板编辑配置缺少必要字段");
       const editor = { ...defaultEditor, ...received };
       return {
