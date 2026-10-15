@@ -29,9 +29,9 @@ export type Plugin = {
 // ponytail: 浏览器只用于预览，刷新即丢失；持久化由桌面命令负责。
 let browserSettings: Record<string, Values> = {};
 
-/** 每次打开设置读取目录，调用方卸载时取消请求。 */
+/** Debug 每次打开设置读取完整目录，调用方卸载时取消请求。 */
 export async function listPlugins(signal?: AbortSignal): Promise<Plugin[]> {
-  const response = await fetch(`${apiBase()}/api/settings/plugins${import.meta.env.IMV_DEBUG === "true" ? "" : "?client_only=true"}`, { signal });
+  const response = await fetch(`${apiBase()}/api/settings/plugins`, { signal });
   if (!response.ok) throw new Error("读取设置插件失败");
   return response.json();
 }

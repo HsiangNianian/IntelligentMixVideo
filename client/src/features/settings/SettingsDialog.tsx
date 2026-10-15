@@ -1,4 +1,4 @@
-/** 设置对话框：左侧模块纵向导航、右侧滚动内容；打开时读取目录，关闭丢弃未保存草稿。 */
+/** 设置对话框：普通客户端只保留通用设置，Debug 另展示模块；保存成功或取消时关闭，丢弃其他未保存草稿。 */
 import { isTauri } from "@tauri-apps/api/core";
 import {
   Dialog,
@@ -17,11 +17,14 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
         <DialogHeader className="shrink-0 border-b px-6 py-5 pr-12">
           <DialogTitle>设置</DialogTitle>
           <DialogDescription className="text-xs leading-5">
-            {isTauri() ? "配置保存在当前客户端，密钥以明文保存在本地文件中。" : "浏览器预览仅在当前页面保存配置，刷新后丢失。"}
-            Remotion Agent 与 IMS 使用当前客户端保存的凭据；Debug 另提供服务端模块设置。
+            {isTauri() ? "配置保存在当前客户端。" : "浏览器预览仅在当前页面保存配置，刷新后丢失。"}
+            {import.meta.env.IMV_DEBUG === "true" && <>
+              {isTauri() && "密钥以明文保存在本地文件中。"}
+              Remotion Agent 与 IMS 使用当前客户端保存的凭据；Debug 另提供服务端模块设置。
+            </>}
           </DialogDescription>
         </DialogHeader>
-        <PluginSettings onCancel={() => onOpenChange(false)} />
+        <PluginSettings onClose={() => onOpenChange(false)} />
       </DialogContent>
     </Dialog>
   );

@@ -29,14 +29,16 @@ try {
   await save.click();
   await dialog.getByRole("alert").filter({ hasText: "请输入有效数字" }).waitFor();
   assert.equal(await dialog.getByRole("status").count(), 0);
-  // 场景：修正成有效整数可保存；之后主动清空允许省略，重新打开恢复 Schema 默认值。
+  // 场景：修正成有效整数后保存并关闭；重新打开保留值，主动清空后保存并关闭，再打开恢复默认值。
   await input.fill("5");
   await save.click();
-  await dialog.getByRole("status").filter({ hasText: "已保存到当前页面" }).waitFor();
+  await dialog.waitFor({ state: "hidden" });
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await dialog.getByRole("tab", { name: "数字验证" }).click();
+  assert.equal(await input.inputValue(), "5");
   await input.fill("");
   await save.click();
-  await dialog.getByRole("status").filter({ hasText: "已保存到当前页面" }).waitFor();
-  await dialog.getByRole("button", { name: "关闭", exact: true }).click();
+  await dialog.waitFor({ state: "hidden" });
   await page.getByRole("button", { name: "设置", exact: true }).click();
   await dialog.getByRole("tab", { name: "数字验证" }).click();
   assert.equal(await input.inputValue(), "3");

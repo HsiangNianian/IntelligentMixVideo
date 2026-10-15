@@ -36,7 +36,7 @@ IntelligentMixVideo connects desktop template editing, server-side media process
 | Home | Browse local and cloud templates, create templates, and open existing work |
 | Template editor | Select assets on the left, preview in the center, edit object parameters and timing on the right, and reorder videos on the timeline below |
 | Remotion effects | Request new effects, view successful versions and history, adjust parameters, and save assets |
-| Settings | Manage the backend URL, local template path, and available model, IMS, and other settings |
+| Settings | Manage the backend URL and local template path; Debug also provides module settings |
 
 Templates store object configurations and timing rules separately from the preview video. Replacing the preview video recalculates object visibility intervals based on the new video duration.
 
@@ -172,7 +172,7 @@ See [template behavior](client/README.md#模板行为) for timing rules, asset o
 
 ### Using Remotion Effects
 
-Configure Remotion Agent in Settings and confirm that the connected Linux server has the isolated rendering environment. Then open Remotion effects to request a generation, view successful versions, and adjust parameters.
+Configure Remotion Agent on the server (or in Debug client Settings) and confirm that the connected Linux server has the isolated rendering environment. Then open Remotion effects to request a generation, view successful versions, and adjust parameters.
 
 Save a successful version as an asset, then add it to a cloud template timeline from Remotion assets. Local templates do not currently support these assets. Previewing effects and saving assets do not submit a full cloud video composition task.
 
@@ -242,24 +242,24 @@ Query the status with `GET /api/v1/overlay-renders/{taskId}`. This API always re
 | `PORT` | `server/.env` or process environment | API listening port; defaults to `20070`, with a valid range of 1–65535 |
 | `DASHSCOPE_API_KEY` | `server/.env` | API key for Fun-ASR transcription in the Beijing region |
 | `IMV_LLM_BASE_URL`, `IMV_LLM_API_KEY`, `IMV_LLM_MODEL` | `server/.env` | Text segmentation model connection, configured separately from Remotion Agent |
-| `IMV_ACTOR_BASE_URL`, `IMV_ACTOR_API_KEY`, `IMV_ACTOR_MODEL`, `IMV_VISION_MODEL` | `server/.env` or the client Remotion Agent settings | Effect generation and vision models; the client can supply configuration for the current task |
+| `IMV_ACTOR_BASE_URL`, `IMV_ACTOR_API_KEY`, `IMV_ACTOR_MODEL`, `IMV_VISION_MODEL` | `server/.env` or Debug client Remotion Agent settings | Effect generation and vision models; the client can supply configuration for the current task |
 | `SEGMENT_MATCH_BASE_URL` | `server/.env` | External asset matching URL used when standard mode explicitly supplies `materials` |
 | `COMPOSITION_PUBLIC_BASE_URL` | `server/.env` | Externally accessible server callback base URL; uses the request base URL when empty |
-| `ALIBABA_CLOUD_ACCESS_KEY_ID`, `ALIBABA_CLOUD_ACCESS_KEY_SECRET` | `server/.env` or the client Shanghai IMS settings | IMS rendering credentials; optional `ALIBABA_CLOUD_SECURITY_TOKEN`; region and endpoint default to Shanghai |
+| `ALIBABA_CLOUD_ACCESS_KEY_ID`, `ALIBABA_CLOUD_ACCESS_KEY_SECRET` | `server/.env` or Debug client Shanghai IMS settings | IMS rendering credentials; optional `ALIBABA_CLOUD_SECURITY_TOKEN`; region and endpoint default to Shanghai |
 | `ZOS_API_ENDPOINT`, `ZOS_BUCKET`, `ZOS_ACCESS_KEY_ID`, `ZOS_SECRET_ACCESS_KEY`, `ZOS_WEB_URL` | `server/.env` | Read only by the server; upload and public access URLs are configured separately |
 
 See [server/.env.example](server/.env.example) and [client/.env.example](client/.env.example) for the full field list. Media URL access requirements and asset field constraints are covered in the [video composition API documentation](server/src/server/video_composition/api.md).
 
-Standard client settings expose Remotion Agent and Shanghai IMS configuration. Debug mode exposes additional server fields, but database settings are not part of the settings panel. Dynamic forms depend on the configuration schema returned by the backend; displayed defaults are not the actual values in the server `.env` file.
+Standard client settings show only General, with the backend URL, local template path, and environment information, without requesting the module catalog. Debug mode retains all module settings, including Remotion Agent and Shanghai IMS; database settings are not part of the settings panel. Dynamic forms depend on the configuration schema returned by the backend; displayed defaults are not the actual values in the server `.env` file.
 
-Save applies only the current module and keeps the dialog open. Cancel closes the dialog and discards unsaved changes without undoing values already saved.
+Save applies only the current page and closes the dialog after success; validation or write failures keep it open with the input preserved. Cancel closes the dialog without saving. Closing discards any other unsaved module drafts without undoing values already saved.
 
 ### When Changes Take Effect
 
 - **Server running from source**: Configuration is read from the fixed `server/.env` path. Precedence is constructor arguments, process environment variables, configuration file, then field defaults. Restart the server after changes.
 - **Frontend environment files**: Restart the development server after editing `client/.env`. Rebuild an already-built client. Other Vite environment files may override variables with the same names.
 - **Client backend URL**: Save it under Settings → General. New requests use the new URL; restart the client to switch existing session connections.
-- **Client model and IMS settings**: Saved values are used by the corresponding business requests. Without saved settings, server defaults apply.
+- **Debug client model and IMS settings**: Saved values are used by the corresponding business requests. Previously saved module values are preserved in standard clients; without saved settings, server defaults apply.
 - **Advanced settings for the Debug bundled server**: Quit and reopen the client after saving; the settings are loaded at startup. This does not apply to manually started or remote servers, and database configuration is outside this settings scope.
 
 Client settings do not modify the shared server `.env` file. See the [client settings documentation](client/src/features/settings/README.md) for the UI, storage locations, and differences between modes.
@@ -312,7 +312,7 @@ Confirm that the backend has a working model configuration and a Linux environme
 
 ### Settings Shows Only General, or the Module List Fails to Load
 
-The module list comes from the backend endpoint `/api/settings/plugins`. Check the backend URL and service status, then reopen Settings. Browser settings are stored only in page memory and are lost on refresh.
+Standard clients intentionally show only General. In Debug mode, the module list comes from `/api/settings/plugins`; if loading fails, check the backend URL and service status, then reopen Settings. Browser settings are stored only in page memory and are lost on refresh.
 
 ### Dependency Installation Reports an Unavailable Version
 

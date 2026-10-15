@@ -1,4 +1,4 @@
-/** 设置对话框主体：左侧纵向模块导航（首项通用展示环境与连接），右侧滚动表单；选择模块后显式保存到客户端本地。 */
+/** 设置对话框主体：普通客户端只展示通用环境与连接，Debug 另按后端目录展示模块表单；显式保存到客户端本地。 */
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { Puzzle, Settings2 } from "lucide-react";
@@ -20,10 +20,10 @@ const GENERAL_TAB = "general";
 const navTriggerClass =
   "h-10 w-full flex-none gap-3 rounded-lg px-3 justify-center sm:justify-start hover:bg-muted data-[state=active]:bg-accent data-[state=active]:text-primary group-data-[variant=default]/tabs-list:data-[state=active]:shadow-none";
 
-/** 两种表单共用固定操作栏；取消关闭弹窗，保存只提交当前页。 */
-function SettingsActions({ saving, onCancel, children }: {
+/** 两种表单共用固定操作栏；取消关闭弹窗，保存当前页成功后关闭。 */
+function SettingsActions({ saving, onClose, children }: {
   saving: boolean;
-  onCancel?: () => void;
+  onClose?: () => void;
   children?: ReactNode;
 }) {
   return (
@@ -31,14 +31,14 @@ function SettingsActions({ saving, onCancel, children }: {
       <div className="min-w-0 basis-full text-xs leading-5 text-muted-foreground sm:basis-auto sm:flex-1">
         {children ?? "保存仅作用于当前页"}
       </div>
-      <Button type="button" variant="outline" disabled={saving} onClick={onCancel} className="h-9 min-w-20 rounded-md px-5">取消</Button>
+      <Button type="button" variant="outline" disabled={saving} onClick={onClose} className="h-9 min-w-20 rounded-md px-5">取消</Button>
       <Button type="submit" disabled={saving} className="h-9 min-w-20 rounded-md px-5">{saving ? "保存中…" : "保存"}</Button>
     </div>
   );
 }
 
 /** 通用地址与本地模板路径保存在客户端；不依赖目录，新请求读取保存后的地址。 */
-function GeneralSection({ onCancel }: { onCancel?: () => void }) {
+function GeneralSection({ onClose }: { onClose?: () => void }) {
   const titleId = useId();
   const [url, setUrl] = useState(apiBase);
   // 读取到已存值前禁用路径输入，避免用空值覆盖已保存路径。
@@ -72,6 +72,7 @@ function GeneralSection({ onCancel }: { onCancel?: () => void }) {
           if (values.api_url !== undefined) setApiBase(url.trim());
           initial.current = { url: url.trim(), path: path?.trim() ?? initial.current.path };
           setMessage("已保存。后续请求使用新地址；本地模板读写立即使用新路径，已打开的本地模板需回主页重新打开；已有会话连接请重启客户端后切换。");
+          onClose?.();
         } catch {
           setMessage("保存地址失败，请重试");
         } finally {
@@ -104,7 +105,7 @@ function GeneralSection({ onCancel }: { onCancel?: () => void }) {
             </div>
           </dl>
         </div>
-        <SettingsActions saving={saving} onCancel={onCancel}>
+        <SettingsActions saving={saving} onClose={onClose}>
           {message ? <p role="status">{message}</p> : undefined}
         </SettingsActions>
       </form>
@@ -113,7 +114,7 @@ function GeneralSection({ onCancel }: { onCancel?: () => void }) {
 }
 
 /** 一个插件一张表单；只维护编辑值和保存状态，不建立全局配置状态。 */
-function PluginForm({ plugin, saved, onCancel }: { plugin: Plugin; saved?: Values; onCancel?: () => void }) {
+function PluginForm({ plugin, saved, onClose }: { plugin: Plugin; saved?: Values; onClose?: () => void }) {
   const id = useId();
   const [values, setValues] = useState<Values>(() => Object.fromEntries(
     Object.entries(plugin.schema.properties).map(([key, field]) => [key, saved?.[key] ?? field.default ?? (field.type === "boolean" ? false : "")]),
@@ -139,10 +140,11 @@ function PluginForm({ plugin, saved, onCancel }: { plugin: Plugin; saved?: Value
       }
       setSaving(true);
       try {
-        // 普通模式保存时保留未展示的 Debug 字段；已展示的空可选值仍按规范化结果清除。
+        // 保留当前 Schema 未展示的已存字段；已展示的空可选值仍按规范化结果清除。
         const hidden = Object.fromEntries(Object.entries(saved ?? {}).filter(([key]) => !(key in plugin.schema.properties)));
         await saveSettings(plugin.id, { ...hidden, ...normalized });
         setFeedback({ text: isTauri() ? "已保存到当前客户端" : "已保存到当前页面，刷新后丢失", role: "status" });
+        onClose?.();
       } catch {
         setFeedback({ text: "保存设置失败", role: "alert" });
       } finally {
@@ -177,19 +179,20 @@ function PluginForm({ plugin, saved, onCancel }: { plugin: Plugin; saved?: Value
         ))}
       </fieldset>
       </div>
-      <SettingsActions saving={saving} onCancel={onCancel}>
+      <SettingsActions saving={saving} onClose={onClose}>
         {feedback ? <p role={feedback.role} className={feedback.role === "alert" ? "text-sm text-destructive" : undefined}>{feedback.text}</p> : undefined}
       </SettingsActions>
     </form>
   );
 }
 
-/** 默认选择通用面板，切换仅隐藏表单保留草稿；卸载取消目录读取并忽略迟到结果。 */
-export function PluginSettings({ onCancel }: { onCancel?: () => void }) {
+/** 默认选择通用面板，只有 Debug 读取模块；切换保留草稿，卸载取消目录读取并忽略迟到结果。 */
+export function PluginSettings({ onClose }: { onClose?: () => void }) {
   const [data, setData] = useState<{ plugins: Plugin[]; values: Record<string, Values> }>();
   const [error, setError] = useState("");
   const [active, setActive] = useState(GENERAL_TAB);
   useEffect(() => {
+    if (import.meta.env.IMV_DEBUG !== "true") return;
     const controller = new AbortController();
     Promise.all([listPlugins(controller.signal), readSettings()]).then(([plugins, values]) => {
       if (!controller.signal.aborted) setData({ plugins, values });
@@ -201,7 +204,7 @@ export function PluginSettings({ onCancel }: { onCancel?: () => void }) {
   return (
     <section aria-label="模块设置" className="flex min-h-0 min-w-0 flex-1 flex-col">
       {error && <p role="alert" className="p-4 sm:p-6">{error}</p>}
-      {!data && !error && <p role="status" className="flex items-center gap-2 p-4 text-sm text-muted-foreground sm:p-6"><Spinner />正在读取设置…</p>}
+      {import.meta.env.IMV_DEBUG === "true" && !data && !error && <p role="status" className="flex items-center gap-2 p-4 text-sm text-muted-foreground sm:p-6"><Spinner />正在读取设置…</p>}
           <Tabs orientation="vertical" value={active} onValueChange={setActive} className="min-h-0 flex-1 gap-0">
             <div className="flex w-14 shrink-0 flex-col overflow-y-auto border-r bg-muted/40 p-2 sm:w-52 sm:p-3">
               <TabsList aria-label="设置模块" className="w-full gap-1 rounded-none bg-transparent p-0">
@@ -224,14 +227,14 @@ export function PluginSettings({ onCancel }: { onCancel?: () => void }) {
             </div>
             <div className="min-h-0 min-w-0 flex-1">
               <TabsContent className="h-full min-h-0" value={GENERAL_TAB} forceMount hidden={active !== GENERAL_TAB}>
-                <GeneralSection onCancel={onCancel} />
+                <GeneralSection onClose={onClose} />
               </TabsContent>
               {(data?.plugins ?? []).map((plugin) => {
                 const unsupported = schemaError(plugin);
                 return (
                 <TabsContent className="h-full min-h-0" key={plugin.id} value={`plugin:${plugin.id}`} forceMount hidden={active !== `plugin:${plugin.id}`}>
                   {unsupported ? <p role="alert" className="p-5 sm:p-8">{unsupported}</p>
-                    : <PluginForm plugin={plugin} saved={data?.values[plugin.id]} onCancel={onCancel} />}
+                    : <PluginForm plugin={plugin} saved={data?.values[plugin.id]} onClose={onClose} />}
                 </TabsContent>
                 );
               })}
