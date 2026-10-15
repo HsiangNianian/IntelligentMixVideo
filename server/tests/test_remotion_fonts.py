@@ -1,9 +1,9 @@
 """Remotion 字体库：MySQL 注册表 + 对象存储 + 本地校验缓存、用户上传、沙箱挂载、Agent 清单、API 与渲染守卫。
 
-范围：`font_catalog.json` 的结构、预装字体复制进对象存储与注册表、从对象存储取回缓存（换机器/丢缓存仍可用）、
+范围：`font_catalog.json` 的结构与随包字体文件、预装字体从字体包复制进对象存储与注册表、从对象存储取回缓存（换机器/丢缓存仍可用）、
 被篡改的缓存被剔除、上传字体的校验（格式、家族名、重名、大小、预览条）、`fontFamily` 的分类规则与覆盖校验、
 沙箱命令是否挂载字体目录、Agent 字体清单、字体 API 与预览页、渲染前的字体守卫。数据库用 `template_db` 的临时 SQLite，
-对象存储用本地目录，网络用 httpx 内存传输，不访问真实站点；真实浏览器里字体是否生效由 `IMV_TEST_RENDERER=1` 的用例验证。
+对象存储用本地目录，字体包用小文件代替（另有一例核对随包的真实字体），不访问网络；真实浏览器里字体是否生效由 `IMV_TEST_RENDERER=1` 的用例验证。
 执行：在 `server/` 下运行 `uv run --locked pytest tests/test_remotion_fonts.py -v`。
 """
 
@@ -17,7 +17,7 @@ from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
-import httpx
+import lzma
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
@@ -116,17 +116,22 @@ def isolated_registry(monkeypatch):
 
 
 @pytest.fixture
-def catalog(monkeypatch) -> tuple[FontSpec, FontSpec]:
-    """两个可复制的小字体，替换随包目录（内容不是真字体，只用于哈希与存储）。"""
+def catalog(monkeypatch, tmp_path) -> tuple[FontSpec, FontSpec]:
+    """两个小字体替换随包目录，并把它们的 .xz 写进临时字体包（内容不是真字体，只用于哈希与存储）。"""
     specs = (spec("alpha", "Alpha Sans"), spec("beta", "Beta Serif", weights=[200, 900]))
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    for item in specs:
+        (bundle / f"{item.filename}.xz").write_bytes(lzma.compress(PAYLOADS[item.id]))
     monkeypatch.setattr(fonts_module, "load_catalog", lambda: specs)
+    monkeypatch.setattr(fonts_module, "BUNDLE", bundle)
     return specs
 
 
 @pytest.fixture
 def settings(tmp_path, catalog, template_db) -> Settings:
-    """开启复制的设置，数据目录在临时目录，注册表用临时 SQLite。"""
-    return Settings(_env_file=None, data_dir=tmp_path / "state", font_downloads=True)
+    """开启预装字体安装的设置，数据目录在临时目录，注册表用临时 SQLite。"""
+    return Settings(_env_file=None, data_dir=tmp_path / "state", install_bundled_fonts=True)
 
 
 @pytest.fixture
@@ -144,30 +149,29 @@ def store(settings, objects) -> FontStore:
     return fonts
 
 
-def serve(monkeypatch, responder) -> list[str]:
-    """让来源下载走内存传输；返回按顺序请求过的 URL。"""
-    requested: list[str] = []
-    real = httpx.AsyncClient
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requested.append(str(request.url))
-        return responder(request)
-
-    monkeypatch.setattr(fonts_module.httpx, "AsyncClient", lambda **kwargs: real(transport=httpx.MockTransport(handler), **kwargs))
-    return requested
-
-
-def origin(request: httpx.Request) -> httpx.Response:
-    """来源站点：按 URL 返回对应字体字节。"""
-    return httpx.Response(200, content=PAYLOADS[Path(request.url.path).stem])
-
-
 def test_the_bundled_catalog_pins_every_font() -> None:
     """随包目录：条目结构合法，ID 与字体名唯一，下载地址为 https，哈希为 64 位十六进制，并写明许可证。"""
     specs = load_catalog()
     assert len(specs) >= 10
     assert {item.license for item in specs} == {"OFL-1.1"}
     assert all(item.url.startswith("https://") and len(item.sha256) == 64 for item in specs)
+
+
+def test_every_catalog_font_ships_in_the_package() -> None:
+    """随包字体与目录一致：每个目录条目都有对应的 .xz，解压后的大小与 SHA-256 正是目录里固定的值，包里没有多余的字体文件，并附有每个字体的 OFL 许可证。"""
+    specs = load_catalog()
+    for item in specs:
+        digest, size = hashlib.sha256(), 0
+        with lzma.open(fonts_module.BUNDLE / f"{item.filename}.xz") as packed:
+            while chunk := packed.read(1 << 20):
+                digest.update(chunk)
+                size += len(chunk)
+        assert (size, digest.hexdigest()) == (item.size, item.sha256), item.id
+    assert {path.name for path in fonts_module.BUNDLE.glob("*.xz")} == {f"{item.filename}.xz" for item in specs}
+    # OFL requires the license and copyright notice to travel with the font files.
+    licenses = (fonts_module.BUNDLE / "LICENSES.txt").read_text(encoding="utf-8")
+    assert all(f"{item.family}  ({item.filename})" in licenses for item in specs)
+    assert licenses.upper().count("SIL OPEN FONT LICENSE") >= len(specs)
 
 
 def test_the_family_name_is_read_without_trusting_the_file() -> None:
@@ -179,9 +183,9 @@ def test_the_family_name_is_read_without_trusting_the_file() -> None:
             read_family(broken)
 
 
-def test_sync_copies_the_catalog_into_the_object_store_and_the_registry(store, objects, monkeypatch) -> None:
-    """默认字体登记为 system（没有文件）排在最前；预装字体从来源复制一次：对象存储里有字体文件，注册表有记录（来源 builtin），本机缓存校验通过并生成沙箱用的配置；再次同步不重复下载。"""
-    requested = serve(monkeypatch, origin)
+def test_sync_installs_the_bundled_fonts_into_the_object_store_and_the_registry(store, objects) -> None:
+    """默认字体登记为 system（没有文件）排在最前；预装字体从随包字体包安装一次：对象存储里有字体文件，注册表有记录（来源 builtin），
+    本机缓存校验通过并生成沙箱用的配置；字体包不在了再次同步也不受影响（已安装的不再读取字体包）。"""
     asyncio.run(store.sync())
     assert [font.id for font in store.available()] == ["noto-sans-cjk", "alpha", "beta"]
     assert {record["id"] for record in font_store.listing()} == {"noto-sans-cjk", "alpha", "beta"}
@@ -191,24 +195,23 @@ def test_sync_copies_the_catalog_into_the_object_store_and_the_registry(store, o
     config = (store.root / CONFIG_NAME).read_text(encoding="utf-8")
     assert "<dir>/imv-fonts/files</dir>" in config and "/etc/fonts/fonts.conf" in config
     assert not list(store.files.glob("*.part"))
+    shutil.rmtree(fonts_module.BUNDLE)
     asyncio.run(store.sync())
-    assert len(requested) == 2
+    assert [font.id for font in store.available()] == ["noto-sans-cjk", "alpha", "beta"]
 
 
-def test_another_host_caches_from_the_object_store_without_the_origin(store, objects, tmp_path, monkeypatch) -> None:
-    """对象存储与注册表是唯一来源：换一台机器（空缓存、关闭来源复制）同步后字体照样可用，不访问来源站点。"""
-    serve(monkeypatch, origin)
+def test_another_host_caches_from_the_object_store_without_the_bundle(store, objects, tmp_path) -> None:
+    """对象存储与注册表是唯一来源：换一台机器（空缓存、没有字体包）同步后字体照样可用。"""
     asyncio.run(store.sync())
-    requested = serve(monkeypatch, lambda request: httpx.Response(500))
-    fresh = FontStore(Settings(_env_file=None, data_dir=tmp_path / "other-host", font_downloads=False))
+    shutil.rmtree(fonts_module.BUNDLE)
+    fresh = FontStore(Settings(_env_file=None, data_dir=tmp_path / "other-host", install_bundled_fonts=False))
     fresh.attach(objects)
     asyncio.run(fresh.sync())
-    assert [font.id for font in fresh.available()] == ["noto-sans-cjk", "alpha", "beta"] and requested == []
+    assert [font.id for font in fresh.available()] == ["noto-sans-cjk", "alpha", "beta"]
 
 
-def test_a_tampered_cache_file_is_dropped_and_fetched_again(store, monkeypatch) -> None:
+def test_a_tampered_cache_file_is_dropped_and_fetched_again(store) -> None:
     """本机缓存里被改动（哈希与注册表不符）的字体在刷新时删除、不可用，下次同步从对象存储取回正确文件。"""
-    serve(monkeypatch, origin)
     asyncio.run(store.sync())
     (store.files / "beta.ttf").write_bytes(b"x" * len(PAYLOADS["beta"]))
     store.refresh()
@@ -217,24 +220,26 @@ def test_a_tampered_cache_file_is_dropped_and_fetched_again(store, monkeypatch) 
     assert (store.files / "beta.ttf").read_bytes() == PAYLOADS["beta"]
 
 
-def test_a_catalog_font_that_does_not_match_its_pin_is_not_installed(store, objects, monkeypatch) -> None:
-    """来源返回的内容与固定哈希不符时该字体不入库、不入对象存储；另一个字体照常安装，下次同步重试。"""
-    served = {"alpha": b"tampered-bytes!!!"}
-    serve(monkeypatch, lambda request: httpx.Response(200, content=served.get(Path(request.url.path).stem, PAYLOADS[Path(request.url.path).stem])))
+def test_a_bundled_font_that_does_not_match_its_pin_is_not_installed(store, objects) -> None:
+    """随包文件解压后与固定哈希不符（或缺失）时该字体不入库、不入对象存储；另一个字体照常安装，修好后下次同步补上。"""
+    packed = fonts_module.BUNDLE / "AlphaSans.ttf.xz"
+    good = packed.read_bytes()
+    packed.write_bytes(lzma.compress(b"tampered-bytes!!!"))
+    (fonts_module.BUNDLE / "BetaSerif.ttf.xz").unlink()
     asyncio.run(store.sync())
-    assert [font.id for font in store.listing()] == ["noto-sans-cjk", "beta"] and not (objects.root / "imv/remotion/fonts/alpha").exists()
-    served.clear()
+    assert [font.id for font in store.listing()] == ["noto-sans-cjk"] and not (objects.root / "imv/remotion/fonts/alpha").exists()
+    packed.write_bytes(good)
+    (fonts_module.BUNDLE / "BetaSerif.ttf.xz").write_bytes(lzma.compress(PAYLOADS["beta"]))
     asyncio.run(store.sync())
     assert {font.id for font in store.listing()} == {"noto-sans-cjk", "alpha", "beta"}
 
 
-def test_seeding_can_be_switched_off(tmp_path, catalog, template_db, objects, monkeypatch) -> None:
-    """关闭来源复制时不发任何请求，字体库里只有默认字体（它不需要下载）。"""
-    store = FontStore(Settings(_env_file=None, data_dir=tmp_path / "state", font_downloads=False))
+def test_installing_the_bundled_fonts_can_be_switched_off(tmp_path, catalog, template_db, objects) -> None:
+    """关闭安装时不读取字体包，字体库里只有默认字体（它不需要安装）。"""
+    store = FontStore(Settings(_env_file=None, data_dir=tmp_path / "state", install_bundled_fonts=False))
     store.attach(objects)
-    requested = serve(monkeypatch, lambda request: httpx.Response(500))
     asyncio.run(store.sync())
-    assert requested == [] and [font.id for font in store.listing()] == ["noto-sans-cjk"]
+    assert [font.id for font in store.listing()] == ["noto-sans-cjk"]
 
 
 def test_upload_registers_a_user_font_in_the_object_store(store, objects) -> None:
@@ -287,11 +292,10 @@ def test_an_installed_system_family_cannot_be_taken_by_an_upload(store, monkeypa
         store.upload(minimal_font("Liberation Sans"), None, "", "device-1")
 
 
-def test_the_agent_guide_is_the_font_library_as_an_enum(store, monkeypatch) -> None:
+def test_the_agent_guide_is_the_font_library_as_an_enum(store) -> None:
     """Agent 拿到的是数据库里字体库的枚举：一开始只有默认字体（库不会是空的）；同步预装字体和上传后都出现在枚举里，并带风格与字重说明。"""
     guide = store.guide()
     assert '"enum":["Noto Sans CJK SC"]' in guide and "fontFamily" in guide and "never others" in guide
-    serve(monkeypatch, origin)
     asyncio.run(store.sync())
     store.upload(minimal_font("Zed Display"), None, "", "device-1")
     guide = store.guide()
@@ -390,7 +394,6 @@ def clip(code: str, **config) -> Overlay:
 
 def test_a_render_guard_caches_a_named_font_before_rendering(store, monkeypatch) -> None:
     """渲染的代码点名了注册表里的字体、本机还没缓存：先从对象存储取回并校验；没有活动的字体存储时不做任何事。"""
-    serve(monkeypatch, origin)
     asyncio.run(store.sync())
     (store.files / "beta.ttf").unlink()
     store.refresh()
@@ -402,9 +405,8 @@ def test_a_render_guard_caches_a_named_font_before_rendering(store, monkeypatch)
     asyncio.run(require_fonts(clip('fontFamily: "Beta Serif"')))
 
 
-def test_a_render_is_refused_when_a_named_font_cannot_be_obtained(store, objects, monkeypatch) -> None:
+def test_a_render_is_refused_when_a_named_font_cannot_be_obtained(store, objects) -> None:
     """字体取不回来（对象存储里没有）时，点名该字体的渲染以稳定错误码 font_unavailable 失败，不会悄悄用默认字体渲染。"""
-    serve(monkeypatch, origin)
     asyncio.run(store.sync())
     (store.files / "alpha.ttf").unlink()
     (objects.root / "imv/remotion/fonts/alpha/font.ttf").unlink()
@@ -424,10 +426,9 @@ def served(settings, store, client: TestClient):
     remotion_templates_app.dependency_overrides.clear()
 
 
-def test_the_font_api_lists_serves_and_uploads(client: TestClient, served, monkeypatch) -> None:
+def test_the_font_api_lists_serves_and_uploads(client: TestClient, served) -> None:
     """字体接口：列表给出家族名、风格、字重、文件与预览地址；文件带 CORS 可被预览 iframe 加载；上传（multipart）返回新字体且立即出现在列表；
     重名返回 422，超大返回 413，缺少设备头返回 422；未知字体 404。"""
-    serve(monkeypatch, origin)
     asyncio.run(served.sync())
     listed = client.get("/api/templates/fonts").json()
     assert [item["family"] for item in listed] == ["Noto Sans CJK SC", "Alpha Sans", "Beta Serif"]
@@ -489,7 +490,7 @@ def test_an_uploaded_font_is_used_by_the_sandboxed_browser(tmp_path, template_db
     from server.remotion_templates.tools.contracts import ComponentDefinition, RenderValidationInput, TestScript
 
     settings = Settings(
-        _env_file=None, data_dir=tmp_path / "state", font_downloads=False, browser_executable=Path(BROWSER),
+        _env_file=None, data_dir=tmp_path / "state", install_bundled_fonts=False, browser_executable=Path(BROWSER),
         font_regular=Path(SYSTEM_FONT), font_bold=Path(SYSTEM_FONT),
     )
     fonts = FontStore.for_settings(settings)

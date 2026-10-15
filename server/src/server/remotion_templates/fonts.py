@@ -1,8 +1,9 @@
 """Fonts for Remotion effects: a MySQL registry, ZOS objects and a verified local cache.
 
 Three kinds of font share one registry (`font_store.py`): the system default (installed with the OS, so it has no
-file here), the preinstalled catalog (`font_catalog.json`, each file pinned
-by URL, size and SHA-256 and copied from its origin into the object store once) and fonts users upload. The registry
+file here), the preinstalled catalog (`font_catalog.json`; the files ship inside this package as `bundled_fonts/*.xz`,
+each pinned by size and SHA-256, and are copied into the object store once, so no network is needed) and fonts users
+upload. The registry
 row names the font by a unique family name; the file is an object under `imv/remotion/fonts/<id>/` (ZOS when
 configured, the data folder otherwise, see `object_store.py`).
 
@@ -18,6 +19,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import lzma
 import os
 import struct
 import subprocess
@@ -28,7 +30,6 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-import httpx
 from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
 from pydantic import BaseModel, Field
 
@@ -39,6 +40,8 @@ from .settings import Settings
 logger = logging.getLogger(__name__)
 
 CATALOG = Path(__file__).with_name("font_catalog.json")
+# The catalog fonts, xz-compressed, as `<filename>.xz`; shipped inside the package.
+BUNDLE = Path(__file__).with_name("bundled_fonts")
 CONFIG_NAME = "fonts.conf"
 # Where the sandbox sees the font folder; the generated config refers to this path, never to the host's.
 SANDBOX_DIR = "/imv-fonts"
@@ -110,7 +113,8 @@ class Font(BaseModel):
 
 
 class FontSpec(BaseModel):
-    """One catalog font: a pinned origin file that is copied into the registry once."""
+    """One catalog font: a bundled file pinned by size and SHA-256 (of the uncompressed font) that is copied into the
+    registry once. `url` only records where the file came from; nothing is downloaded at run time."""
 
     id: str = Field(pattern=r"^[a-z0-9-]{1,40}$")
     family: str
@@ -266,7 +270,7 @@ class FontStore:
     def __init__(self, settings: Settings) -> None:
         """Construct without touching the data directory or the database; `attach` and `refresh` do."""
         self.root = font_root(settings)
-        self.downloads = settings.font_downloads
+        self.install_bundled = settings.install_bundled_fonts
         self.max_upload = settings.font_upload_max_bytes
         self.system_file = settings.font_regular
         self.known: dict[str, Font] = {}
@@ -424,45 +428,42 @@ class FontStore:
         return [font.family for font in named if font.id not in self.ready]
 
     async def sync(self) -> None:
-        """Seed the preinstalled catalog (unless downloads are off), then cache every registered font.
+        """Install the bundled catalog fonts the registry lacks (unless switched off), then cache every registered font.
 
-        One failure (network, hash mismatch, object store) is logged and leaves that font for the next sync; the
-        others proceed.
+        One failure (missing or corrupt bundled file, object store) is logged and leaves that font for the next sync;
+        the others proceed.
         """
         if self.objects is None:
             return
         await asyncio.to_thread(self.refresh)
-        missing = [spec for spec in load_catalog() if spec.id not in self.known] if self.downloads else []
-        if missing:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=120.0), follow_redirects=True) as client:
-                for spec in missing:
-                    try:
-                        await self._seed(client, spec)
-                    except Exception as exc:
-                        logger.warning("Font %s was not installed: %s", spec.id, exc)
+        for spec in load_catalog() if self.install_bundled else ():
+            if spec.id in self.known:
+                continue
+            try:
+                await asyncio.to_thread(self._seed, spec)
+            except Exception as exc:
+                logger.warning("Font %s was not installed: %s", spec.id, exc)
         for font in list(self.known.values()):
             if font.has_file and font.id not in self.ready:
                 await asyncio.to_thread(self._cache, font)
 
-    async def _seed(self, client: httpx.AsyncClient, spec: FontSpec) -> None:
-        """Copy one catalog font from its origin into the object store and the registry, then cache it."""
+    def _seed(self, spec: FontSpec) -> None:
+        """Unpack one bundled font, check its size and SHA-256 against the catalog, then register it; blocking."""
         font = spec.font()
         self.files.mkdir(parents=True, exist_ok=True)
         staged = self.files / f"{font.cache_name}.{uuid4().hex}.part"
         digest, received = hashlib.sha256(), 0
         try:
-            async with client.stream("GET", spec.url) as response:
-                response.raise_for_status()
-                with staged.open("wb") as handle:
-                    async for chunk in response.aiter_bytes(1 << 16):
-                        received += len(chunk)
-                        if received > spec.size:
-                            raise ValueError("larger than the pinned size")
-                        digest.update(chunk)
-                        handle.write(chunk)
+            with lzma.open(BUNDLE / f"{spec.filename}.xz") as packed, staged.open("wb") as handle:
+                while chunk := packed.read(1 << 20):
+                    received += len(chunk)
+                    if received > spec.size:
+                        raise ValueError("larger than the pinned size")
+                    digest.update(chunk)
+                    handle.write(chunk)
             if received != spec.size or digest.hexdigest() != spec.sha256:
                 raise ValueError("does not match the pinned size and SHA-256")
-            await asyncio.to_thread(self._register, font, staged, None)
+            self._register(font, staged, None)
         finally:
             staged.unlink(missing_ok=True)
 
