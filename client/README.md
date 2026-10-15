@@ -3,6 +3,7 @@
 基于 Tauri 2、React、TypeScript、Tailwind CSS 4 和 shadcn/ui。
 模板预览继续使用阿里云 AliyunTimelinePlayer 5.2.2；Windows 安装包通过内置回环 HTTP 服务加载页面，使 SDK 识别到 `localhost`。
 客户端与服务端使用同一项目版本；发版前统一更新并提交清单和锁文件，操作见[根目录发版说明](../README.md#tag-发版)。
+界面直接显示这个版本：窗口标题（浏览器网页标题与桌面原生标题栏）是「IntelligentMixVideo - v版本号」，设置对话框左侧导航栏的左下角也显示版本号。版本由 Vite 构建时从 `package.json` 注入，不在界面里另写一处，所以发版同步版本后重新构建即可。
 
 ## 开发运行
 
