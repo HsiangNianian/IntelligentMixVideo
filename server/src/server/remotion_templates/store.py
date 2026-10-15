@@ -486,10 +486,11 @@ class Store:
         """Append one finished ReAct round and publish it through the existing work stream.
 
         The record carries the layer, the turn and the tool calls the host actually
-        ran; arguments and result payloads stay in the private audit. Unknown
-        layers are rejected by the contract, terminal jobs accept nothing, and a
-        repeated layer/turn pair is ignored so a retried handler cannot duplicate
-        a round.
+        ran, each with the model's clipped arguments and, on failure, the tool's
+        error text (see ``progress.LoopRound``); result payloads stay in the private
+        audit. Unknown layers are rejected by the contract, terminal jobs accept
+        nothing, and a repeated layer/turn pair is ignored so a retried handler
+        cannot duplicate a round.
         """
         from .progress import LoopRound, save_round
 

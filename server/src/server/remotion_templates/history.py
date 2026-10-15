@@ -2,7 +2,8 @@
 
 The client keeps chat history in its own local SQLite; the server only appends public messages and events inside
 the job transactions that produce them and removes them once delivered (`store.acknowledge`). The model's
-sliding window and tool traces never enter these records.
+sliding window never enters these records; the loop record (`progress.LoopRound`) publishes each tool call's
+clipped arguments and error text for auditing, while tool results stay in the private audit.
 """
 
 import json
@@ -106,7 +107,7 @@ def record_input(
 
 
 def public_job(db: Connection, job: GenerationJob, *, include_rounds: bool = True) -> SessionJob:
-    """Expose timestamps and input scalars, never provider errors, stages, attempts or tool traces."""
+    """Expose timestamps, input scalars, the phase timeline and the loop record; the job's own failure stays a fixed message."""
     inputs = JobInput.model_validate_json(
         db.execute(select(jobs.c.input_data).where(jobs.c.id == str(job.id))).scalar_one()
     )

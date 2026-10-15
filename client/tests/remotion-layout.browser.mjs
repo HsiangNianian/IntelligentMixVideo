@@ -44,7 +44,7 @@ try {
   page.on("pageerror", (e) => errors.push(e.message));
   const loopRounds = [
     { layer: "outer", turn: 1, calls: [], error_code: "MODEL_CONTRACT_FAILED" },
-    { layer: "executor", turn: 2, calls: [{ tool: "sprite.compose", status: "fail", error_code: "COMPOSITION_FAILED", message: "组合生成失败。" }] },
+    { layer: "executor", turn: 2, calls: [{ tool: "sprite.compose", status: "fail", error_code: "COMPOSITION_FAILED", message: "组合生成失败。", detail: "Sprite bundler unavailable", arguments: '{"draft_id":"d1"}' }] },
   ];
   const jobs = versions.map((v, i) => ({
     id: `job-${i + 1}`,
@@ -170,7 +170,12 @@ try {
   await rounds.getByRole("button", { name: /任务循环 第 1 轮/ }).click();
   await rounds.getByText("模型响应格式无效，本轮未调用工具。").waitFor();
   await rounds.getByRole("button", { name: /执行循环 第 2 轮/ }).click();
-  await rounds.getByText("sprite.compose → 失败 · COMPOSITION_FAILED：组合生成失败。").waitFor();
+  // 调用行显示工具名、错误码与参数摘要；点开后原始 tool call 带错误码与工具的真实错误。
+  const compose = rounds.getByRole("button", { name: /sprite\.compose ✗ COMPOSITION_FAILED/ });
+  await compose.waitFor();
+  assert((await compose.textContent()).includes("draft_id=d1"));
+  await compose.click();
+  await rounds.getByText(/COMPOSITION_FAILED：组合生成失败。：Sprite bundler unavailable/).waitFor();
   await page.screenshot({ path: join(screenshots, "imv-audit-rounds.png"), fullPage: true });
   await rounds.getByRole("button", { name: /循环记录 · 2 轮/ }).click();
   // 桌面删除先确认，取消不影响当前播放器或历史选择。
