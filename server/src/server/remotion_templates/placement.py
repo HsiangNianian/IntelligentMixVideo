@@ -15,6 +15,7 @@ from generated.imv.sprite.v1 import sprite_pb2 as pb
 
 from ..template.schema import RemotionTrackEditor, RemotionTransform
 from .categories import KEYWORD_SIZE_MIN, transform_fields, transform_ranges
+from .fonts import require_family
 from .sprites import KIND_NAMES, box_json, operator_parameters, sampled
 from .tools.schema import validate_parameters
 
@@ -65,6 +66,9 @@ def resolve(sprite: pb.PublishedSprite, editor: RemotionTrackEditor | None) -> t
                     raise ValueError(f"参数 {override.key} 不可修改：该资产发布于参数边界检查之前，请在字效工作区改出新版本后保存为新资产")
                 raise ValueError(f"参数 {override.key} 不可修改")
             value = _checked(parameter, override.value())
+            if override.key == "fontFamily":
+                # The library grows after publication, so a font is checked against it live, not against the schema.
+                require_family(value)
             # Overridable parameters are top-level (only sampled publications take overrides, and they bind top-level).
             definition = schema.get("properties", {}).get(override.key, {})
             if isinstance(value, float) and value.is_integer() and isinstance(definition, dict) and definition.get("type") == "integer":

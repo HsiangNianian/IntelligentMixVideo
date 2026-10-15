@@ -11,6 +11,7 @@ import { listPlugins, readSettings, saveSettings, type Plugin, type Values } fro
 import { normalizeValues, schemaError } from "./schema";
 import { Spinner } from "@/components/ui/spinner";
 import { Hint } from "@/components/Hint";
+import { APP_COMMIT, APP_VERSION } from "@/lib/version";
 
 /** 固定面板使用独立值，插件导航统一加前缀，存储 ID 不受影响。 */
 const GENERAL_TAB = "general";
@@ -202,7 +203,7 @@ export function PluginSettings({ onCancel }: { onCancel?: () => void }) {
       {error && <p role="alert" className="p-4 sm:p-6">{error}</p>}
       {!data && !error && <p role="status" className="flex items-center gap-2 p-4 text-sm text-muted-foreground sm:p-6"><Spinner />正在读取设置…</p>}
           <Tabs orientation="vertical" value={active} onValueChange={setActive} className="min-h-0 flex-1 gap-0">
-            <div className="w-14 shrink-0 overflow-y-auto border-r bg-muted/40 p-2 sm:w-52 sm:p-3">
+            <div className="flex w-14 shrink-0 flex-col overflow-y-auto border-r bg-muted/40 p-2 sm:w-52 sm:p-3">
               <TabsList aria-label="设置模块" className="w-full gap-1 rounded-none bg-transparent p-0">
                 <Hint label="通用" side="right" visibleBelow="sm"><div className="flex w-full"><TabsTrigger value={GENERAL_TAB} className={navTriggerClass}>
                   <Settings2 className="size-[18px]" aria-hidden="true" />
@@ -215,6 +216,11 @@ export function PluginSettings({ onCancel }: { onCancel?: () => void }) {
                   </TabsTrigger></div></Hint>
                 ))}
               </TabsList>
+              {/* 版本号与构建校验码固定在导航栏左下角，窄屏居中显示；校验码可选中复制，用来核对运行的是哪一版代码。 */}
+              <p aria-label="应用版本" className="mt-auto pt-3 text-center text-[10px] text-muted-foreground sm:px-3 sm:text-left sm:text-xs">
+                v{APP_VERSION}
+                <span aria-label="构建校验码" className="block select-all break-all font-mono text-[10px] opacity-80">{APP_COMMIT}</span>
+              </p>
             </div>
             <div className="min-h-0 min-w-0 flex-1">
               <TabsContent className="h-full min-h-0" value={GENERAL_TAB} forceMount hidden={active !== GENERAL_TAB}>

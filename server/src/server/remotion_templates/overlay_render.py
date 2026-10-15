@@ -22,6 +22,7 @@ from pydantic.alias_generators import to_camel
 from ..template.schema import RemotionTrackEditor
 from ..video_composition.media import ffprobe_json
 from ..video_composition.schema import PositiveSeconds
+from .fonts import FontStore
 from .placement import resolve
 from .renderer import CPU_SECONDS, Renderer
 from .settings import Settings
@@ -214,6 +215,21 @@ def _fit_frames(instance: dict, end: int) -> tuple[list[int], int]:
     return sorted({min(shown - 1, math.floor((shown - 1) * ratio)) for ratio in (0, 0.25, 0.5, 0.75, 1)}), length
 
 
+async def require_fonts(overlay: Overlay) -> None:
+    """Make every library font the code or parameters name available on this host before laying out or rendering.
+
+    A `fontFamily` value is always a library family (`placement.resolve` checks it when the placement is accepted),
+    so the only case left is a library font this host has not cached yet: it is fetched from the object store, and a
+    font that still cannot be had fails the render instead of being drawn in the fallback font.
+    """
+    store = FontStore.active
+    if store is None:
+        return
+    named = store.named(json.dumps(overlay.instances, ensure_ascii=False))
+    if named and await store.require(named):
+        raise OverlayError("font_unavailable", "渲染需要的字体尚未就绪，请稍后重试")
+
+
 async def fit_texts(renderer: Renderer, overlay: Overlay, sprites: dict[str, pb.PublishedSprite], directory: Path) -> None:
     """Make every text effect show the text a render really passes, whatever its length.
 
@@ -235,6 +251,7 @@ async def fit_texts(renderer: Renderer, overlay: Overlay, sprites: dict[str, pb.
     from .tool_validation import FitSprite, ToolValidator, ValidationUnavailable
     from .tools.contracts import ComponentDefinition
 
+    await require_fonts(overlay)
     groups: dict[tuple[str, str], dict[str, dict]] = {}  # (sprite, code) -> distinct values -> item
     members: dict[tuple[tuple[str, str], str], list[int]] = {}  # ((sprite, code), distinct values) -> instance indexes
     for index, instance in enumerate(overlay.instances):
@@ -362,6 +379,7 @@ def overlay_cpu_seconds(timeout_seconds: float) -> int:
 
 async def run_overlay_worker(renderer: Renderer, overlay: Overlay, directory: Path, ranges: list[list[int]] | None = None) -> None:
     """Run the isolated worker in `directory`: one `overlay.webm`, or one `chunk-<i>.webm` per inclusive frame range."""
+    await require_fonts(overlay)
     settings = renderer.settings
     directory.mkdir(parents=True, exist_ok=True)
     (directory / ".tmp").mkdir(exist_ok=True)

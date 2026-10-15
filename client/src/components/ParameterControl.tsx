@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import { FontPicker } from "@/features/fonts/FontPicker";
 import {
   Select,
   SelectContent,
@@ -143,7 +144,9 @@ export function ParameterControl({
       <Label htmlFor={id} className="text-xs text-muted-foreground">
         {field.label}
       </Label>
-      {field.options ? (
+      {field.key === "fontFamily" ? (
+        <FontPicker id={id} label={field.label} value={String(value)} disabled={disabled} onChange={(family) => onChange(family)} />
+      ) : field.options ? (
         <Select
           disabled={disabled}
           value={String(value)}

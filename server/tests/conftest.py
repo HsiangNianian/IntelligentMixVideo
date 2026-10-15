@@ -38,6 +38,8 @@ def isolate_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, request: pyt
             continue
         if key.upper().startswith(("DB_", "IMV_", "COMPOSITION_", "SEGMENT_MATCH_", "IMS_", "MIX_VIDEO_ALIYUN_IMS_", "ALIBABA_CLOUD_", "ZOS_")) or key.upper() in ("PORT", "DASHSCOPE_API_KEY", "ASR_BASE_URL"):
             monkeypatch.delenv(key)
+    # 字体目录默认会在后台联网下载；测试一律关闭，下载行为的用例自行显式开启并替换传输层。
+    monkeypatch.setenv("IMV_FONT_DOWNLOADS", "false")
     monkeypatch.chdir(tmp_path)
     from server.video_composition import execution_log
     monkeypatch.setattr(execution_log, "LOG_ROOT", tmp_path / ".log")

@@ -99,6 +99,10 @@ class Settings(ClientSettings, CommonSettings):
     browser_executable: Path = Field(default_factory=default_browser_executable)
     font_regular: Path = Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc")
     font_bold: Path = Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc")
+    # 首次使用时把 `font_catalog.json` 中固定了哈希的免费字体从来源复制进对象存储与注册表；关闭后不联网，只用注册表里已有的字体。
+    font_downloads: bool = True
+    # 用户上传的字体文件大小上限（字节）。
+    font_upload_max_bytes: int = Field(default=50 * 1024 * 1024, gt=0)
 
     @property
     def models_configured(self) -> bool:

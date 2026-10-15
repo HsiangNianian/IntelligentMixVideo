@@ -16,6 +16,7 @@ from tempfile import TemporaryDirectory
 from uuid import UUID, uuid4
 
 from .deletion import finish as finish_deletion
+from .fonts import FontStore
 from .settings import ClientSettings, Settings
 from .harness import Harness
 from .overlay_service import FINISHED_RETENTION, OverlayRenders, prune_finished
@@ -64,6 +65,7 @@ class Runtime:
         self.saves: dict[UUID, asyncio.Task] = {}
         self.maintenance: asyncio.Task | None = None
         self.heartbeat: asyncio.Task | None = None
+        self.fonts: asyncio.Task | None = None
         # Set once another instance took the queue lease over; this instance then claims and sweeps nothing.
         self.fenced = False
         self.client_configs: dict[UUID, Settings] = {}
@@ -85,6 +87,10 @@ class Runtime:
         """Create the tables, then recover: interrupt jobs a previous process left running and finish deletions."""
         self.store.root.mkdir(parents=True, exist_ok=True)
         self.store.initialize()
+        # Fonts already in the registry and cache are visible to the sandbox from the first render on.
+        fonts = FontStore.for_settings(self.settings)
+        fonts.attach(self.store.objects)
+        fonts.refresh()
         self.store.acquire_lease()
         self.store.interrupt_unfinished()
         for work_id in self.store.pending_deletions():
@@ -99,6 +105,8 @@ class Runtime:
             self.maintenance = asyncio.create_task(self._maintain())
         if self.heartbeat is None or self.heartbeat.done():
             self.heartbeat = asyncio.create_task(self._renew())
+        if self.fonts is None or self.fonts.done():
+            self.fonts = asyncio.create_task(FontStore.for_settings(self.settings).run())
 
     async def _renew(self) -> None:
         """Renew the queue lease; a failed renewal is retried, a lost lease fences this instance for good."""
@@ -113,7 +121,7 @@ class Runtime:
 
     async def close(self) -> None:
         """Stop the background tasks and release the queue lease; called when the application shuts down."""
-        for task in (self.maintenance, self.heartbeat):
+        for task in (self.maintenance, self.heartbeat, self.fonts):
             if task is not None:
                 task.cancel()
         self.fenced = True

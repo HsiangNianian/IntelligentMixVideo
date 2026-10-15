@@ -43,11 +43,11 @@ export function instanceTransformFields(kind: SpriteKind): TransformField[] {
 }
 
 /**
- * 模板编辑里开放的资产参数：只有字效的字号与关键词样式；颜色、字体、动画与出入场时间等属于资产本身，
+ * 模板编辑里开放的资产参数：字效的字体、字号与关键词样式；颜色、动画与出入场时间等属于资产本身，
  * 回字效工作区改出新版本。已有覆盖不受影响。
  */
 export function isInstanceParameter(kind: SpriteKind, key: string): boolean {
-  return kind === SpriteKind.TEXT && (key === "fontSize" || /^keyword/i.test(key));
+  return kind === SpriteKind.TEXT && (key === "fontSize" || key === "fontFamily" || /^keyword/i.test(key));
 }
 
 /** 画布像素换算为 0～100 的百分比（一位小数），与 IMS 文字位置同样的表示。 */

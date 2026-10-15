@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from server.remotion_templates.categories import HEX_COLOR, KEYWORD_COLOR, category_problems, parameter_problems
+from server.remotion_templates.fonts import FontStore
 from server.remotion_templates.models import TemplateCandidate
 from server.remotion_templates.provider import Budget
 from server.remotion_templates.settings import Settings
@@ -280,6 +281,45 @@ def test_create_refuses_a_sprite_missing_its_category_parameters(tmp_path):
             assert invalid.value.error.code == "CATEGORY_PARAMETERS_MISSING"
             assert invalid.value.error.details["missing"] == [{"name": "text", "reason": "has the wrong schema", "schema": TEXT_PROPERTIES["text"]}]
         assert current.saved_sprites == {}
+
+    asyncio.run(run())
+
+
+def test_create_stores_the_font_family_as_an_open_string(tmp_path, monkeypatch):
+    """Agent 从字体库枚举里选字体：枚举里出现库外的字体名被拒绝；通过后保存的 Sprite 把 fontFamily 存成普通字符串（去掉冻结的枚举），
+    宿主之后的校验与模板里的覆盖都看到这个形式，所以之后上传的字体也能选。"""
+    library = ["Noto Sans CJK SC", "Zed Display"]
+    monkeypatch.setattr(FontStore, "active", SimpleNamespace(listing=lambda: [SimpleNamespace(family=name) for name in library]))
+
+    def draft(enum: list[str]) -> SpriteDraft:
+        """A text Sprite whose fontFamily enum is `enum`, defaulting to the library's second font."""
+        properties = {**TEXT_PROPERTIES, "fontFamily": {"type": "string", "enum": enum}}
+        return SpriteDraft(
+            description="标题", code="export default function Sprite(){return null}", kind="text",
+            parameter_schema=schema(properties), default_parameters={**OFF, "fontFamily": "Zed Display"},
+            composition={"width": 1080, "height": 1920, "fps": 30, "duration_frames": 30},
+            instances=[instance("title", {}, properties)], bindings=[binding(name, ("title", name)) for name in properties],
+        )
+
+    async def run():
+        """Create two drafts: one naming a font outside the library, one valid whose mounted schema is captured."""
+        current = session(tmp_path)
+        current.sprite_drafts["ghost"] = draft(["Zed Display", "Ghost Font"])
+        with pytest.raises(ToolFault) as refused:
+            await current.execute("sprite.create", SpriteCreateInput(draft_id="ghost"), available())
+        assert refused.value.error.code == "CATEGORY_PARAMETERS_MISSING" and "Ghost Font" in refused.value.error.details["missing"][0]["reason"]
+        mounted = {}
+
+        async def capture(request, **_options):
+            """Record the schema the browser check receives, then stop before anything is saved."""
+            mounted["schema"] = request.component.parameter_schema
+            raise RuntimeError("stop after the mount")
+
+        current.validate_render = capture
+        current.sprite_drafts["ok"] = draft(library)
+        with pytest.raises(ToolFault, match="stop after the mount"):
+            await current.execute("sprite.create", SpriteCreateInput(draft_id="ok"), available())
+        assert mounted["schema"]["properties"]["fontFamily"] == {"type": "string", "maxLength": 100}
 
     asyncio.run(run())
 
