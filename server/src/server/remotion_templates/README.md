@@ -148,14 +148,19 @@ are objects in ZOS (or the local object folder while `ZOS_BUCKET` is empty). It 
 empty: the system default `Noto Sans CJK SC` (registered when the runtime starts, no file), the preinstalled catalog
 and the fonts users upload. Rows are only ever added, so a template that names a family keeps rendering.
 
-- **Preinstalled fonts**: the 14 free OFL fonts ship inside the backend package as `bundled_fonts/<file>.xz`
-  (xz-compressed, about 46 MB). `font_catalog.json` pins each font's uncompressed size and SHA-256 and records where
+- **Preinstalled fonts**: the 16 free OFL fonts ship inside the backend package as `bundled_fonts/<file>.xz`
+  (xz-compressed, about 60 MB). `font_catalog.json` pins each font's uncompressed size and SHA-256 and records where
   the file came from (`url`, provenance only). After the runtime starts, `FontStore.sync` (`fonts.py`) unpacks the
   ones the registry lacks, checks them against the pin, copies them into the object store and the registry, and
   re-syncs hourly. Nothing is downloaded, so a host that cannot reach GitHub gets the same library. A file that is
   missing or does not match its pin is skipped with a warning (`Font <id> was not installed`) and retried at the next
   sync. `IMV_INSTALL_BUNDLED_FONTS=false` installs none. To add a font, put its `.xz` in `bundled_fonts/` and add a
   catalog entry, and add its license text to `bundled_fonts/LICENSES.txt` (OFL requires it to travel with the font files; `tests/test_remotion_fonts.py` checks that the files, the catalog and the licenses agree); an existing row is never changed.
+  IMS font names: `Source Han Sans CN` and `Source Han Serif CN` are the genuine Adobe fonts (OFL), registered under
+  the exact `Font` value IMS uses, so a text effect and an IMS title can pick the same family. The other IMS fonts
+  (Alibaba PuHuiTi, FZFangSong-Z02S, FZHei-B01S, FZKai-Z03S, FZShuSong-Z01S, SimSun, KaiTi, Microsoft YaHei,
+  HappyZcool-2016) are not bundled: they are proprietary or their redistribution terms are not confirmed. Anyone
+  holding a licence can upload them (the family name inside the file must match).
 - **Uploads**: `POST /api/templates/fonts` (multipart `file`, optional `label` and `preview`, `X-IMV-Device`) takes a
   `.ttf`/`.otf` up to `IMV_FONT_UPLOAD_MAX_BYTES`. The backend only reads the family name from the `name` table with
   bounds-checked Python and never decodes the font; the sandboxed Chrome and the user's own browser do. The family

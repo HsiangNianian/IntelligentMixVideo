@@ -199,5 +199,33 @@
     "sha256": "c40f2293766a503bc70cce9e512ef844a4ccb7cbcde792fe2ea31d191917d8d6",
     "size": 300724,
     "license": "OFL-1.1"
+  },
+  {
+    "id": "source-han-sans-cn",
+    "family": "Source Han Sans CN",
+    "label": "思源黑体 CN（IMS）",
+    "style": "clean modern Hei (sans-serif) typeface, neutral and highly legible, subtitle and body look; same name as the IMS font Source Han Sans CN",
+    "weights": [
+      400
+    ],
+    "filename": "SourceHanSansCN-Regular.otf",
+    "url": "https://raw.githubusercontent.com/adobe-fonts/source-han-sans/a4f7cf94edfb9d7ffbdfc4841de276358bd7e0f2/SubsetOTF/CN/SourceHanSansCN-Regular.otf",
+    "sha256": "e2bc8a2e7f37474b774fff8db758681ece40bb6947a90d571bce9dd60671a8e4",
+    "size": 8429224,
+    "license": "OFL-1.1"
+  },
+  {
+    "id": "source-han-serif-cn",
+    "family": "Source Han Serif CN",
+    "label": "思源宋体 CN（IMS）",
+    "style": "formal Song/Ming (serif) typeface, literary, magazine and film-title look; same name as the IMS font Source Han Serif CN",
+    "weights": [
+      400
+    ],
+    "filename": "SourceHanSerifCN-Regular.otf",
+    "url": "https://raw.githubusercontent.com/adobe-fonts/source-han-serif/7889f11bf31170b5d092a083b357c8c8130f89e0/SubsetOTF/CN/SourceHanSerifCN-Regular.otf",
+    "sha256": "3754ea669c530e2473354f8f6d9f79680a44d7e26ec7d00eeabee4a7e0753c5d",
+    "size": 11626108,
+    "license": "OFL-1.1"
   }
 ]
