@@ -1,4 +1,4 @@
-/** 生成七个发布附件的清单，并按 Release ID 校验远端上传完整性后公开草稿。 */
+/** 生成安装包、更新资源与变更日志附件清单，并按 Release ID 校验远端上传完整性后公开草稿。 */
 
 import assert from "node:assert/strict";
 import { readdirSync, statSync, readFileSync, writeFileSync } from "node:fs";
@@ -6,7 +6,7 @@ import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 /** 要求每个平台的安装包唯一且非空，返回名称和大小供上传后核对。 */
-export function collectAssets(root = "release-assets", changelog = "CHANGELOG.md") {
+export function collectAssets(root = "release-assets", changelog = "CHANGELOG.md", updates = false) {
   // 平台与必需安装包的映射须与构建矩阵一致。
   const platforms = {
     "linux-x64": [".deb", ".AppImage"],
@@ -33,6 +33,18 @@ export function collectAssets(root = "release-assets", changelog = "CHANGELOG.md
       assert.equal(matches.length, 1, `Expected one ${platform} ${extension} installer`);
       selected.push(matches[0]);
     }
+  }
+  if (updates) {
+    for (const target of ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc", "aarch64-apple-darwin", "x86_64-apple-darwin"]) {
+      for (const prefix of ["update", "resources"]) {
+        const matches = files.filter(path => basename(path) === `${prefix}-${target}.json`);
+        assert.equal(matches.length, 1, `Missing or duplicate ${prefix} for ${target}`);
+        selected.push(matches[0]);
+      }
+    }
+    const apps = files.filter(path => path.endsWith('.app.tar.gz'));
+    assert.equal(apps.length, 2, 'Expected both macOS updater archives');
+    selected.push(...apps);
   }
   selected.push(changelog);
   const assets = selected.map((path) => ({ name: basename(path), size: statSync(path).size }));
@@ -62,5 +74,5 @@ export async function publishDraft(github, repo, tag, releaseId, expected = JSON
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  writeFileSync("release-assets.json", JSON.stringify(collectAssets(), null, 2) + "\n");
+  writeFileSync("release-assets.json", JSON.stringify(collectAssets("release-assets", "CHANGELOG.md", true), null, 2) + "\n");
 }
