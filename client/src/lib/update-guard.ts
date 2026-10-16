@@ -3,7 +3,7 @@ import { useLayoutEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 const blockers = new Map<symbol, string>();
 let locked = false;
-let requests = 0;
+const requests = new Set<symbol>();
 export function useUpdateBlocker(reason: string, blocked: boolean) {
   const key = useRef(Symbol());
   useLayoutEffect(() => {
@@ -16,7 +16,7 @@ export function useUpdateBlocker(reason: string, blocked: boolean) {
 export function updateBlockers(): string[] {
   return [...new Set([
     ...blockers.values(),
-    ...(requests ? ['正在完成保存、上传或读取请求'] : []),
+    ...(requests.size ? ['正在完成保存、上传或读取请求'] : []),
     ...(document.querySelector('[data-slot="dialog-content"][data-state="open"]:not([data-update-safe])') ? ['请先完成或关闭其他对话框'] : []),
   ])];
 }
@@ -31,9 +31,15 @@ export function lockForUpdate(value: boolean) {
 }
 export async function updateTask<T>(task: () => Promise<T>): Promise<T> {
   if (locked) throw new Error('正在应用客户端更新，请稍候');
-  requests++;
-  try { return await task(); } finally { requests--; }
+  const request = Symbol();
+  requests.add(request);
+  try { return await task(); } finally { requests.delete(request); }
 }
 /** 业务接口复用原 fetch/invoke，更新接口本身不经过门禁。 */
 export const updateFetch = (...args: Parameters<typeof fetch>) => updateTask(() => globalThis.fetch(...args));
 export const updateInvoke: typeof invoke = (...args) => updateTask(() => invoke(...args));
+
+/** 测试销毁门禁；旧请求结束时只移除自己的标记，不影响重置后的新请求。 */
+export function resetUpdateGuard() {
+  blockers.clear(); requests.clear(); lockForUpdate(false);
+}

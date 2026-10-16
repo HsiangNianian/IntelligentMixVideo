@@ -4,7 +4,7 @@ import { useSyncExternalStore } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { APP_VERSION } from '@/lib/version';
-import { lockForUpdate, updateBlockers } from '@/lib/update-guard';
+import { lockForUpdate, resetUpdateGuard, updateBlockers } from '@/lib/update-guard';
 import { syncBackground } from '@/features/remotion_templates/backgroundSync';
 import { recovery, restoreRecovery, type Recovery } from './recovery';
 export type Candidate = { version: string; mode: 'hot' | 'native' | 'manual' };
@@ -117,6 +117,6 @@ export function cancelUpdate() {
 /** 测试销毁单例，避免模拟桌面状态跨用例残留。 */
 export function resetUpdates() {
   generation++; stopWaiting(); unlisten?.(); unlisten = undefined;
-  initialization = undefined; ready = false; applying = false; lockForUpdate(false); restoreRecovery(null);
+  initialization = undefined; ready = false; applying = false; resetUpdateGuard(); restoreRecovery(null);
   publish({ phase: 'disabled', nativeVersion: APP_VERSION, message: '此构建不支持客户端更新', candidate: undefined, progress: undefined, links: undefined });
 }
