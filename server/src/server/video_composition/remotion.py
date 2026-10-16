@@ -17,6 +17,7 @@ from google.protobuf.json_format import MessageToDict, ParseDict
 from pydantic import TypeAdapter
 
 from ..remotion_templates import sprites
+from ..remotion_templates.categories import LINE_START_MAX_FRAMES, line_count
 from ..remotion_templates.placement import resolve as resolve_placement
 from ..template.schema import EffectTrack, RemotionTrackEditor, active_tracks
 from ..template.timing import resolve_track
@@ -29,7 +30,7 @@ from . import execution_log
 from .errors import CompositionError
 from .schema import CompositionRequest, Segment
 from .settings import ZosSettings
-from .text_events import subtitle_events
+from .text_events import subtitle_blocks, subtitle_events
 from .zos import upload_public
 
 logger = logging.getLogger(__name__)
@@ -143,7 +144,7 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
     frames = max(1, math.ceil(duration * fps - 1e-8))
     publications = {key: ParseDict(value, pb.PublishedSprite()) for key, value in saved["assets"].items()}
     segments = TypeAdapter(list[Segment]).validate_python(data.get("segmentation", {}).get("segments", []))
-    events = subtitle_events(segments) if request.composition_mode != "materials_silent" and request.text else []
+    spoken = request.composition_mode != "materials_silent" and bool(request.text)
     title_keyword = data.get("segmentation", {}).get("title_keyword", "")
     instances = []
     timed_sources = {}
@@ -206,29 +207,51 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
                 if length_seconds < 0.1:
                     continue
             start = max(0, clips[boundary - 1]["TimelineOut"] - length_seconds / 2)
+        lines = line_count(json.loads(sprite.config_schema_json)) if sprite.kind == pb.SPRITE_KIND_TEXT else 1
+        # 每项内容是 (各行文字, 各行关键词, 各行出现的秒数, 开始, 结束)；单行字效只有一行。
         if target == "subtitle":
-            current_events = subtitle_events(segments, language) if events else []
-            contents = [(text, keyword, max(begin, start), min(end, start + length_seconds))
-                        for text, keyword, begin, end in current_events] if text_target else current_events
+            # 多行字效把同一句里最多 lines 个连续切片合成一组：逐行出现，整组在最后一个切片结束时清空。
+            text_schema = json.loads(sprite.config_schema_json).get("properties", {}).get(sprite.text_prop or "text", {})
+            language_events = subtitle_events(segments, language) if spoken else []
+            blocks = subtitle_blocks(segments, lines, text_schema.get("maxLength"), (LINE_START_MAX_FRAMES - 1) / fps, language=language) \
+                if spoken and lines > 1 else [[event] for event in language_events]
+            low, high = (start, start + length_seconds) if text_target else (0, duration)
+            contents = []
+            for block in blocks:
+                # 新槽位只显示文字对象区间内的部分，区间外的切片（行）丢弃。
+                shown = [(text, keyword, max(begin, low), min(end, high)) for text, keyword, begin, end in block]
+                shown = [event for event in shown if min(duration, event[3]) > max(0, event[2])]
+                if shown:
+                    contents.append(([item[0] for item in shown], [item[1] for item in shown], [item[2] for item in shown],
+                                     shown[0][2], shown[-1][3]))
         elif target == "title":
+            # 多行字效的标题整段放在第一行，其余行没有文字、不显示。
             title = data.get("segmentation", {}).get("title_en") if language == "en" else request.title
             keyword = data.get("segmentation", {}).get("title_keyword_en", "") if language == "en" else title_keyword
             if language == "en" and request.title and request.title.strip() and not (title and title.strip()):
                 raise ContentError("缺少英文标题译文")
-            contents = [(title, keyword, start, start + length_seconds)] if request.title and request.title.strip() else []
+            contents = [([title], [keyword], [start], start, start + length_seconds)] if request.title and request.title.strip() else []
         else:
             if sprite.kind == pb.SPRITE_KIND_TEXT or roles(json.loads(sprite.config_schema_json))["text"]:
                 raise ContentError("文字资产必须选择标题或字幕，不能作为装饰渲染示例文案")
-            contents = [("", "", start, start + length_seconds)]
-        for text, keyword, start, end in contents:
+            contents = [([""], [""], [start], start, start + length_seconds)]
+        for texts, keywords, starts, start, end in contents:
             start, end = max(0, start), min(duration, end)
             if end <= start:
                 continue
             first = min(frames - 1, to_frames(start, fps))
             last = min(frames, max(first + 1, to_frames(end, fps)))
             count = last - first
-            values = resolve_config(sprite, text, keyword, sprite.canvas.preview_frames if fixed_clock else count,
-                                    placement.get("text_prop", ""), placement.get("keywords_prop", ""), config=config) if dynamic else config
+            # 多行字效的换行只用来分行：标题里自带的换行不能把标题拆到下一行的样式里。
+            text = "\n".join(item.replace("\n", " ") for item in texts) if lines > 1 else texts[0]
+            # 各行出现的帧，从实例起点算起；固定时钟资产读到的是预览时钟，按宿主同样的线性映射换算，
+            # 两帧以内会被定格，所有行同时显示。
+            offsets = [min(count - 1, max(0, to_frames(item, fps) - first)) for item in starts]
+            preview = sprite.canvas.preview_frames
+            clock = [round(item * (preview - 1) / (count - 1)) if count > 2 else 0 for item in offsets] if fixed_clock else offsets
+            values = resolve_config(sprite, text, keywords, preview if fixed_clock else count,
+                                    placement.get("text_prop", ""), placement.get("keywords_prop", ""), config=config,
+                                    line_starts=clock) if dynamic else config
             code = sprite.tsx_code
             if fixed_clock:
                 if sprite.sprite_id not in timed_sources:
@@ -237,7 +260,9 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
             # 装饰保留完整动画区间，由成片总长裁尾；动态正文使用实际可见区间。
             length = count if dynamic else max(1, to_frames(min(length_seconds, max_seconds), fps))
             # 资产与实际正文供渲染前的排版预检：正文可能写入多个参数路径，这里给出唯一的显示文字。
+            # 多行字效在最后一行出现后才完整，排版预检只测量这之后的帧。
             instances.append({"sprite_id": placement["sprite_id"], **({"text": text} if dynamic else {}),
+                              **({"reveal_frame": offsets[-1]} if dynamic and lines > 1 else {}),
                               "code": code, "config": values, "host": host, "start_frame": first,
                               "duration_frames": length, "width": sprite.canvas.width, "height": sprite.canvas.height})
     if not instances:
