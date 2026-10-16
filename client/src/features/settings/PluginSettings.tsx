@@ -1,4 +1,6 @@
 /** 设置对话框主体：普通客户端只展示通用环境与连接，Debug 另按后端目录展示模块表单；显式保存到客户端本地。 */
+import { useUpdateBlocker } from "@/lib/update-guard";
+import { ClientUpdate } from "@/features/updates/ClientUpdate";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { Puzzle, Settings2 } from "lucide-react";
@@ -47,6 +49,7 @@ function GeneralSection({ onClose }: { onClose?: () => void }) {
   const initial = useRef({ url: apiBase(), path: "" });
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
+  useUpdateBlocker("设置尚未保存", saving || url.trim() !== initial.current.url || (path !== undefined && path.trim() !== initial.current.path));
   useEffect(() => {
     let active = true;
     if (isTauri()) readSettings().then(saved => {
@@ -104,6 +107,7 @@ function GeneralSection({ onClose }: { onClose?: () => void }) {
               </dd>
             </div>
           </dl>
+          <ClientUpdate />
         </div>
         <SettingsActions saving={saving} onClose={onClose}>
           {message ? <p role="status">{message}</p> : undefined}

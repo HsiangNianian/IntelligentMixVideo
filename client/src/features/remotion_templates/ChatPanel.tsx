@@ -1,4 +1,5 @@
 /** 当前会话的聊天展示与输入；每条消息最多附 4 张参考图（点击选择、拖入或粘贴），只作为生成参考，预览 URL 随组件卸载释放。 */
+import { useUpdateBlocker } from "@/lib/update-guard";
 import { cn } from "@/lib/utils";
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowUp, ImagePlus, Square, Sparkles, X } from "lucide-react";
@@ -90,6 +91,7 @@ export function ChatPanel({
   const [images, setImages] = useState<File[]>([]);
   const [error, setError] = useState("");
   const [frames, setFrames] = useState<number | null>(FIXED_COMPOSITION.duration_in_frames);
+  useUpdateBlocker("聊天中还有未发送的内容或参考图", !!text || images.length > 0);
   const [dragging, setDragging] = useState(false);
   const end = useRef<HTMLDivElement>(null);
   const following = useRef(true);

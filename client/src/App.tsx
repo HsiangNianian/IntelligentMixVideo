@@ -1,4 +1,5 @@
 /** 应用入口优先恢复客户端地址；未指定时等待内置服务就绪，再挂载首页与全局轻提示容器。 */
+import { initializeUpdates } from "@/features/updates/store";
 import HomePage from "@/pages/HomePage";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
@@ -17,7 +18,7 @@ export default function App() {
   useEffect(() => {
     if (!isTauri()) return;
     let active = true;
-    readSettings().then((saved) => {
+    Promise.all([readSettings(), initializeUpdates()]).then(([saved]) => {
       if (!active) return null;
       const url = saved.$client?.api_url;
       return typeof url === "string" && url ? url : invoke<string | null>("start_backend");

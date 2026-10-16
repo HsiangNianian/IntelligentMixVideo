@@ -1,5 +1,7 @@
 /** 模板存储边界：云端及本地保存请求使用 Protobuf，本地文件仍使用 JSON。 */
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { updateInvoke as invoke } from "@/lib/update-guard";
+import { updateFetch as fetch } from "@/lib/update-guard";
+import { isTauri } from "@tauri-apps/api/core";
 import { create, fromBinary, toBinary, toJson } from "@bufbuild/protobuf";
 import { timestampDate } from "@bufbuild/protobuf/wkt";
 import { apiBase } from "@/lib/api-base";

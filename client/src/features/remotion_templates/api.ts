@@ -1,4 +1,5 @@
 /** Remotion HTTP 客户端；请求有超时，写入不自动重试，每个请求携带本机设备 ID，模型凭据只随模型任务与能力查询发送。 */
+import { updateFetch as fetch } from "@/lib/update-guard";
 import type {
   Composition,
   DiagnosticsReport,

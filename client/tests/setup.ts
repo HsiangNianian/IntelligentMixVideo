@@ -21,6 +21,7 @@ process.env.IMV_COMMIT = "abc1234";
 // React DOM 必须在浏览器全局对象注册之后加载，保证事件与 screen 绑定正确。
 const { cleanup } = await import("@testing-library/react");
 // 字效会话存储同样在浏览器全局对象之后加载；每例使用独立内存实现，不调用 Tauri。
+const { resetUpdates } = await import("@/features/updates/store");
 const { memoryStorage, setStorage } = await import("@/features/remotion_templates/localSessions");
 
 /** 默认拒绝未声明的请求，各测试只配置自己需要的响应，不连接实际服务。 */
@@ -46,6 +47,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetUpdates();
   clearMocks();
   Reflect.deleteProperty(globalThis, "isTauri");
   mock.restore();
