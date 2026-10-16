@@ -218,7 +218,7 @@ jobs:
           mkdir -p src-tauri/target
           if [ -n "$RELEASE_TAG" ]; then
             test -n "$IMV_UPDATE_PUBLIC_KEY" && test -n "$TAURI_SIGNING_PRIVATE_KEY" || { echo "Release updates require signing configuration"; exit 1; }
-            config+=(--config '{"bundle":{"createUpdaterArtifacts":true}}')
+            config+=(--config "{\"bundle\":{\"createUpdaterArtifacts\":true},\"plugins\":{\"updater\":{\"pubkey\":\"$IMV_UPDATE_PUBLIC_KEY\"}}}")
           fi
           if [ "$IMV_DEBUG" = true ]; then
             config+=(--config src-tauri/tauri.debug.conf.json)
