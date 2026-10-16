@@ -26,10 +26,12 @@ function desktop({ pending = 0, fail = false, mode = 'hot' }: { pending?: number
 // 场景：隐藏工作区仍有草稿，下载完成后保持等待，处理完草稿才应用，并传递已保存位置。
 test('下载不丢失草稿，安全后应用一次并恢复位置', async () => {
   const calls = desktop();
-  await initializeUpdates(); await checkUpdate();
+  await initializeUpdates();
   const blocker = renderHook(({ dirty }) => useUpdateBlocker('模板尚未保存', dirty), { initialProps: { dirty: true } });
-  render(<ClientUpdate />);
-  await waitFor(() => expect(screen.queryByText('正在检查更新…')).toBeNull());
+  // 挂载会自动检查；在 act 内等其状态提交，不让 DOM 重试抢占异步检查的完成。
+  await act(async () => { render(<ClientUpdate />); });
+  expect(screen.getByRole('button', { name: '一键更新' })).toBeTruthy();
+  expect(calls.mock.calls.filter(([, args]) => args.operation === 'check')).toHaveLength(1);
   await act(async () => { await downloadUpdate(); });
   await waitFor(() => expect(screen.getByText(/等待处理/)).toBeTruthy());
   expect(calls.mock.calls.some(([, args]) => args.operation === 'apply')).toBe(false);
