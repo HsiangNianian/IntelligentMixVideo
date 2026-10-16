@@ -1,0 +1,11 @@
+[package]
+name = "imv-update-build"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+base64 = "0.22"
+sha2 = "0.10"
+serde_json = "1"
+minisign-verify = "0.3"

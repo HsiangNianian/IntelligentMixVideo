@@ -165,6 +165,15 @@ fn documents(rows: Vec<String>) -> Result<Value, String> {
 fn operate(connection: &mut Connection, operation: &str, payload: Value) -> Result<Value, String> {
     let failed = |_| "读写本地会话库失败".to_string();
     match operation {
+        "pending" => {
+            parse::<Empty>(payload)?;
+            // 全部服务的会话都参与门禁，不能只看当前打开的页签或服务。
+            let count: i64 = connection.query_row(
+                "SELECT COUNT(*) FROM works WHERE COALESCE(json_extract(data, '$.job.status'), '') NOT IN ('succeeded', 'answered', 'needs_input', 'failed', 'cancelled', 'interrupted') OR json_extract(data, '$.deleting') = 1",
+                [], |row| row.get(0),
+            ).map_err(failed)?;
+            Ok(json!(count))
+        }
         "device" => {
             parse::<Empty>(payload)?;
             let existing: Option<String> = connection
@@ -395,6 +404,27 @@ mod tests {
             ],
             "jobs": [{"id": format!("{work}-job"), "status": "running"}]
         })
+    }
+
+    /// 不同服务的后台会话和未知状态都阻止更新，终态与等用户回答的会话不阻止。
+    #[test]
+    fn pending_checks_all_servers_and_unknown_states() {
+        let scratch = Scratch::new();
+        let mut connection = scratch.open();
+        for (i, status) in ["queued", "running", "succeeded", "needs_input", "unknown"]
+            .iter()
+            .enumerate()
+        {
+            let mut value = change(&format!("w{i}"), "2026-10-16T00:00:00Z");
+            value["server"] = json!(format!("http://server-{i}.test"));
+            value["work"]["job"]["status"] = json!(status);
+            operate(&mut connection, "save", value).unwrap();
+        }
+        assert_eq!(
+            operate(&mut connection, "pending", json!({})).unwrap(),
+            json!(3)
+        );
+        assert!(operate(&mut connection, "pending", json!({"server":SERVER})).is_err());
     }
 
     /// 设备 ID 首次生成后保持不变，库文件按需创建。

@@ -8,6 +8,7 @@ mod preview_videos;
 mod remotion_sessions;
 mod settings;
 mod templates;
+mod updates;
 
 /// Windows 只为当前窗口的准确资源 URL 授权，其他 localhost 端口和远程域名均不匹配。
 #[cfg(any(windows, test))]
@@ -17,12 +18,19 @@ fn localhost_capability(url: &tauri::Url, label: &str) -> tauri::ipc::Capability
         .window(label)
         .remote(url.to_string())
         .permission("desktop-commands")
+        .permission("core:event:allow-listen")
+        .permission("core:event:allow-unlisten")
 }
 
 /// 启动主窗口与事件循环；初始化失败时报告错误。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let context = tauri::generate_context!();
+    let mut context = tauri::generate_context!();
+    let updates = updates::attach(&mut context);
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        context.config_mut().app.windows[0].create = false;
+    }
     #[cfg(target_os = "linux")]
     let context = {
         let mut context = context;
@@ -40,6 +48,8 @@ pub fn run() {
         context
     };
     tauri::Builder::default()
+        .manage(updates)
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(backend::Backend::default())
         .manage(remotion_sessions::Sessions::default())
         .invoke_handler(tauri::generate_handler![
@@ -50,9 +60,11 @@ pub fn run() {
             preview_videos::preview_video_write,
             preview_videos::preview_video_remove,
             remotion_sessions::remotion_sessions,
-            backend::start_backend
+            backend::start_backend,
+            updates::client_update
         ])
         .setup(|app| {
+            updates::check_startup(app).map_err(std::io::Error::other)?;
             #[cfg(windows)]
             if !tauri::is_dev() {
                 use tauri::Manager;
@@ -74,10 +86,26 @@ pub fn run() {
                     .join(tauri::webview_version()?);
                 tauri::WebviewWindowBuilder::from_config(app, &app.config().app.windows[0])?
                     .data_directory(data_directory)
+                    .on_web_resource_request(|_, response| {
+                        response.headers_mut().insert(
+                            tauri::http::header::CACHE_CONTROL,
+                            "no-store".parse().unwrap(),
+                        );
+                    })
                     .build()?;
             }
             #[cfg(not(any(windows, target_os = "linux")))]
-            let _ = app;
+            {
+                use tauri::Manager;
+                tauri::WebviewWindowBuilder::from_config(app, &app.config().app.windows[0])?
+                    .on_web_resource_request(|_, response| {
+                        response.headers_mut().insert(
+                            tauri::http::header::CACHE_CONTROL,
+                            "no-store".parse().unwrap(),
+                        );
+                    })
+                    .build()?;
+            }
             Ok(())
         })
         .build(context)
@@ -126,7 +154,7 @@ mod tests {
                 "http://localhost:23457/",
                 "https://example.com/",
             ] {
-                for command in ["start_backend", "local_settings"] {
+                for command in ["start_backend", "local_settings", "plugin:event|listen"] {
                     let result = tauri::test::get_ipc_response(
                         &view,
                         tauri::webview::InvokeRequest {
@@ -134,7 +162,13 @@ mod tests {
                             callback: tauri::ipc::CallbackFn(0),
                             error: tauri::ipc::CallbackFn(1),
                             url: origin.parse().unwrap(),
-                            body: tauri::ipc::InvokeBody::default(),
+                            body: if command == "plugin:event|listen" {
+                                tauri::ipc::InvokeBody::Json(
+                                    serde_json::json!({"event":"client-update-progress","target":{"kind":"Any"},"handler":0}),
+                                )
+                            } else {
+                                tauri::ipc::InvokeBody::default()
+                            },
                             headers: Default::default(),
                             invoke_key: tauri::test::INVOKE_KEY.into(),
                         },
