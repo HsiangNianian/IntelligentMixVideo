@@ -1,5 +1,6 @@
-/** 预览视频地址与元数据读取；输入表单和播放器共用，取消或结束时释放媒体资源。 */
+/** 预览视频地址与元数据读取；输入表单和播放器共用，支持 HTTP(S)、public 资源与本地文件的 blob URL，取消或结束时释放媒体资源。 */
 import type { MasterVideo, PreviewMedia } from "./model";
+import { localPreviewVideos } from "./localVideos";
 
 /** 环境配置留空时使用内置视频，支持 HTTP(S) 直链和 public 资源路径。 */
 export function previewVideoUrl(index: 0 | 1 | 2 = 0): string {
@@ -19,15 +20,16 @@ export function previewVideoUrl(index: 0 | 1 | 2 = 0): string {
   ).href;
 }
 
-/** 三个来源各使用前十秒，不足十秒时使用完整区间。 */
+/** 默认与 URL 来源各使用前十秒（不足十秒用完整区间）；用户选择的本地文件（blob URL）使用完整时长。 */
 export function previewVideos(sources: PreviewMedia): PreviewMedia {
-  const clip = (video: MasterVideo) => ({ ...video, duration: Math.min(10, video.duration) });
+  const clip = (video: MasterVideo) => video.url.startsWith("blob:") ? video : { ...video, duration: Math.min(10, video.duration) };
   return [clip(sources[0]), clip(sources[1]), clip(sources[2])];
 }
 
-/** 加载入口共用默认地址；元数据必须通过 readPreviewVideos 读取。 */
-export function previewUrls(media?: PreviewMedia): string[] {
-  return media ? media.map((video) => video.url) : [previewVideoUrl(0), previewVideoUrl(1), previewVideoUrl(2)];
+/** 工作区默认来源：每个槽位优先使用本机保存的本地视频，否则使用配置或内置地址；元数据须经 readPreviewVideos 读取。 */
+export async function defaultPreviewUrls(): Promise<string[]> {
+  const local = await localPreviewVideos();
+  return ([0, 1, 2] as const).map((index) => local[index]?.url ?? previewVideoUrl(index));
 }
 
 /** 同时读取三个真实视频；任何来源失败时取消剩余读取，全部成功才返回。 */
@@ -49,7 +51,8 @@ export async function readPreviewVideos(urls: readonly string[], signal: AbortSi
 /** 读取真实时长和尺寸；超时、取消或无法加载时明确失败并清理监听器。 */
 export function readMasterVideo(url: string, signal: AbortSignal): Promise<MasterVideo> {
   const parsed = new URL(url, window.location.origin);
-  if (!["http:", "https:"].includes(parsed.protocol)) return Promise.reject(new Error("母版须为 HTTP(S) 视频地址或 public 资源路径"));
+  const local = parsed.protocol === "blob:";
+  if (!local && !["http:", "https:"].includes(parsed.protocol)) return Promise.reject(new Error("母版须为 HTTP(S) 视频地址、public 资源路径或本地文件"));
   return new Promise((resolve, reject) => {
     const video = document.createElement("video");
     video.preload = "metadata";
@@ -64,7 +67,7 @@ export function readMasterVideo(url: string, signal: AbortSignal): Promise<Maste
       if (error) reject(error); else resolve(media);
     };
     const loaded = () => finish(Number.isFinite(video.duration) && video.duration > 0 && video.videoWidth > 0 && video.videoHeight > 0 ? undefined : new Error("母版视频缺少有效时长或画面尺寸"));
-    const failed = () => finish(new Error("母版加载失败，请检查地址与跨域访问配置"));
+    const failed = () => finish(new Error(local ? "本地视频无法播放，请确认格式受支持" : "母版加载失败，请检查地址与跨域访问配置"));
     const aborted = () => finish(new DOMException("母版读取已取消", "AbortError"));
     const timer = setTimeout(() => finish(new Error("母版读取超时")), 20_000);
     video.addEventListener("loadedmetadata", loaded);

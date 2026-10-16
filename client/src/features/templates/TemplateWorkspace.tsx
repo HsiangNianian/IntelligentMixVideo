@@ -14,7 +14,7 @@ import { newDraft, toDraft, type Draft, type EffectAsset, type Template, type Te
 import { AppliedEffects, EffectAssets } from "./EffectAssets";
 import { isTextTarget } from "./effects";
 import { addTrack, previewContext, resolveTemplate, removeTrack, setTrackTiming, trackDraft, updateTrack } from "./tracks";
-import { previewUrls, readPreviewVideos } from "./media";
+import { defaultPreviewUrls, readPreviewVideos } from "./media";
 import { compactTransitions, previewTransitions, setTransitionDuration, transitionItems } from "./transitions";
 import { TemplateInspector, TransitionInspector, type InspectorTab } from "./TemplateInspector";
 import { TemplatePreview } from "./TemplatePreview";
@@ -140,12 +140,12 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
     setCurrent(null); setDraft(null); setEditing(null); setBaseline(""); setError("");
   }, [deletedTemplate, current, environment, openRequest]);
 
-  // 默认地址与弹窗均读取真实元数据；已选择来源时不再启动默认读取。
+  // 默认地址（本机保存的本地视频优先）与弹窗均读取真实元数据；已选择来源时不再启动默认读取。
   useEffect(() => {
     if (!draft || media) return;
     const controller = new AbortController();
     setMediaError("");
-    void readPreviewVideos(previewUrls(), controller.signal).then((sources) => {
+    void defaultPreviewUrls().then((urls) => readPreviewVideos(urls, controller.signal)).then((sources) => {
       if (!controller.signal.aborted) setMedia(sources);
     }).catch((reason: unknown) => {
       if (!controller.signal.aborted) setMediaError(reason instanceof Error ? reason.message : "预览视频读取失败");

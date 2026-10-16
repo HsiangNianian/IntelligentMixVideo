@@ -351,6 +351,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tiny_http",
+ "tokio",
  "uuid",
 ]
 

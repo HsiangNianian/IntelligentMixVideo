@@ -4,6 +4,7 @@
 mod localhost;
 
 mod backend;
+mod preview_videos;
 mod remotion_sessions;
 mod settings;
 mod templates;
@@ -44,6 +45,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             templates::local_templates,
             settings::local_settings,
+            preview_videos::preview_video_list,
+            preview_videos::preview_video_read,
+            preview_videos::preview_video_write,
+            preview_videos::preview_video_remove,
             remotion_sessions::remotion_sessions,
             backend::start_backend
         ])
