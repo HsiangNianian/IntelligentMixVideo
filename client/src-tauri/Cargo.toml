@@ -1,8 +1,10 @@
 [package]
 name = "client"
-version = "0.9.4"
+version = "0.9.5"
 description = "IntelligentMixVideo desktop client"
 edition = "2021"
+# File::try_lock / lock_shared 自 1.89 稳定。
+rust-version = "1.89"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -23,6 +25,8 @@ serde = { version = "1", features = ["derive"] }
 prost = "0.14"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 uuid = { version = "1", features = ["v4"] }
+# 大文件落盘经 block_in_place 让出 Tauri 的异步工作线程；与 tauri 共用同一运行时。
+tokio = { version = "1", features = ["rt-multi-thread"] }
 # 字效会话本地库；bundled 随包编译 SQLite，不依赖系统库。
 rusqlite = { version = "0.37", features = ["bundled"] }
 

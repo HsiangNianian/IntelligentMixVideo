@@ -1,4 +1,5 @@
-"""文案切片与标题提词：无 ASR 时仅提取标题词，其余完成字符对齐、切分与时间投射。"""
+"""文案切片与标题提词：无 ASR 时仅提取标题词，其余完成字符对齐、切分与时间投射；
+另提供独立的 translate，把切片结果一次性译成英文并校验英文关键词。"""
 
 import bisect
 from collections import Counter
@@ -32,6 +33,82 @@ def segmentation_error(exc: Exception) -> tuple[str, int]:
         status = 422 if isinstance(exc, ValueError) else 500 if isinstance(exc, AssertionError) else 502
         return str(exc), status
     return type(exc).__name__, 500
+
+
+def _settings(config: ClientSettings | None) -> Settings:
+    """准备本次调用的模型配置并检查，返回 Settings。
+
+    传了 config（客户端配置）就用它，传 None 就读服务端 server/.env 与 IMV_ 环境变量；
+    「是否允许远程 HTTP」始终只看服务端设置。必填项缺失或格式不对、模型地址不是有效的
+    http/https 地址、或用远程 http 地址却没在服务端开启允许时，抛 RuntimeError，报错不带原始输入。
+    """
+    try:
+        config = Settings(**config.model_dump()) if config is not None else Settings()
+    except ValidationError:
+        raise RuntimeError("模型或切片配置缺失或不合法，请检查 IMV_ 配置。") from None
+    try:
+        address = urlparse(config.llm_base_url)
+    except ValueError:
+        raise RuntimeError("模型地址格式不合法。") from None
+    if (
+        address.scheme not in ("https", "http")
+        or not address.netloc
+        or (
+            address.scheme == "http"
+            and address.hostname not in ("localhost", "127.0.0.1", "::1")
+            and not config.allow_insecure_llm_http
+        )
+    ):
+        raise RuntimeError("模型地址必须有效，远程 HTTP 需要显式授权。")
+    return config
+
+
+def _json_output(response) -> dict:
+    """把模型回复的文字解析成 dict。
+
+    回复整段被 ```json … ``` 包住时先去掉包裹。回复为空、不是合法 JSON、或解析出来不是对象
+    （例如是数组）时抛 RuntimeError。
+    """
+    if not response.choices or not isinstance(response.choices[0].message.content, str):
+        raise RuntimeError("模型返回空内容。")
+    raw = response.choices[0].message.content.strip()
+    if raw.startswith("```json") and raw.endswith("```"):
+        raw = raw[7:-3].strip()
+    try:
+        output = json.loads(raw)
+    except json.JSONDecodeError:
+        raise RuntimeError("模型返回非法 JSON。") from None
+    if not isinstance(output, dict):
+        raise RuntimeError("模型必须返回 JSON 对象。")
+    return output
+
+
+def _pick_keyword(text: str, candidates: list[str], max_length: int | None) -> str:
+    """从模型给的候选词里挑出 text 的关键词，没有合格的返回空字符串。
+
+    候选去掉首尾空白后，同时满足以下三条才合格：不为空；长度不超过 max_length（None 表示不限）；
+    在 text 中原样连续出现（大小写、全半角都要一致）。多个候选合格时取在 text 中位置最靠前的，
+    位置相同取先给出的。例如 text 为「散养的土鸡。」、候选为 ["土鸡", "散养的土鸡"] 时返回「散养的土鸡」。
+    """
+    keyword, first = "", len(text)
+    for candidate in candidates:
+        word = candidate.strip()
+        start = text.find(word)
+        if word and (max_length is None or len(word) <= max_length) and 0 <= start < first:
+            keyword, first = word, start
+    return keyword
+
+
+def _check_title_keyword(keyword, title: str, max_length: int | None, field: str) -> str:
+    """检查模型给的标题关键词，合格就原样返回，不合格就抛 RuntimeError（报错里写明字段名 field）。
+
+    合格条件：是字符串；长度不超过 max_length（None 表示不限）；在 title 中原样连续出现。
+    空字符串表示没有关键词，视为合格。和片段关键词不同，这里不合格不置空，而是整体失败。
+    """
+    if not isinstance(keyword, str) or (max_length is not None and len(keyword) > max_length) or keyword not in title:
+        limit = f"，且不超过{max_length}字" if max_length is not None else ""
+        raise RuntimeError(f"模型 {field} 必须为标题中的连续字符串{limit}。")
+    return keyword
 
 
 def segment(payload: dict, *, config: ClientSettings | None = None, diagnostics: dict | None = None) -> dict:
@@ -81,25 +158,8 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
             raise ValueError("缺少 ASR 结果或标题。")
     # 客户端完整参数覆盖模型字段；服务端 HTTP 策略仍从环境读取，不修改共享状态。
     diagnostics["stage"] = "config"
-    try:
-        config = Settings(**config.model_dump()) if config is not None else Settings()
-    except ValidationError:
-        raise RuntimeError("模型或切片配置缺失或不合法，请检查 IMV_ 配置。") from None
+    config = _settings(config)
     base_url, key, model = config.llm_base_url, config.llm_api_key, config.llm_model
-    try:
-        address = urlparse(base_url)
-    except ValueError:
-        raise RuntimeError("模型地址格式不合法。") from None
-    if (
-        address.scheme not in ("https", "http")
-        or not address.netloc
-        or (
-            address.scheme == "http"
-            and address.hostname not in ("localhost", "127.0.0.1", "::1")
-            and not config.allow_insecure_llm_http
-        )
-    ):
-        raise RuntimeError("模型地址必须有效，远程 HTTP 需要显式授权。")
     if title_only:
         diagnostics["stage"] = "keywords"
         with OpenAI(base_url=base_url, api_key=key, timeout=config.llm_timeout_seconds, max_retries=config.llm_max_retries) as client:
@@ -350,17 +410,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                 )
             finally:
                 trace["model_elapsed_ms"][stage] = round((perf_counter() - started) * 1000, 1)
-            if not response.choices or not isinstance(response.choices[0].message.content, str):
-                raise RuntimeError("模型返回空内容。")
-            raw = response.choices[0].message.content.strip()
-            if raw.startswith("```json") and raw.endswith("```"):
-                raw = raw[7:-3].strip()
-            try:
-                output = json.loads(raw)
-            except json.JSONDecodeError:
-                raise RuntimeError("模型返回非法 JSON。") from None
-            if not isinstance(output, dict):
-                raise RuntimeError("模型必须返回 JSON 对象。")
+            output = _json_output(response)
             if stage == "boundaries":
                 ids = output.get("boundaries_after")
                 if not isinstance(ids, list) or any(type(n) is not int or not 1 <= n < len(listing) for n in ids):
@@ -395,9 +445,8 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                     )
             elif stage == "keywords":
                 if title is not None:
-                    title_keyword = output.get("title_keyword")
-                    if not isinstance(title_keyword, str) or len(title_keyword) > keyword_max_length or title_keyword not in title:
-                        raise RuntimeError("模型 title_keyword 必须为标题中的连续字符串，且不超过12字。")
+                    title_keyword = _check_title_keyword(
+                        output.get("title_keyword"), title, keyword_max_length, "title_keyword")
                 groups = output.get("keywords")
                 if (
                     not isinstance(groups, list)
@@ -408,13 +457,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                 trace["keyword_candidates"] = groups
                 # 单次扫描选最靠前的有效词；同位置保留首个候选，其余候选均计为拒绝。
                 for item, candidates in zip(segments, groups):
-                    keyword, first = "", len(item["text"])
-                    for candidate in candidates:
-                        word = candidate.strip()
-                        start = item["text"].find(word)
-                        if word and len(word) <= keyword_max_length and 0 <= start < first:
-                            keyword, first = word, start
-                    item["keyword"] = keyword
+                    item["keyword"] = _pick_keyword(item["text"], candidates, keyword_max_length)
                     rejected += len(candidates) - bool(item["keyword"])
                     # 有关键词即重点句 2，否则为普通句 1；CTA 需语义判断，不标注。
                     item["level"] = 2 if item["keyword"] else 1
@@ -482,3 +525,68 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
             "edit_cost", "repair_block_count", "segment_count", "keyword_rejected_count",
         )},
     }
+
+
+def translate(result: dict, *, title: str | None = None) -> dict:
+    """把 segment 的返回结果翻译成英文，只调用一次模型。
+
+    输入：result 是 segment 的返回值；title 是当初传给 segment 的标题，不传就不翻译标题。
+    发给模型的只有每个片段的 segment_id、text、keyword，以及 title、title_keyword，时间等字段不发。
+
+    输出：result 的副本，原有字段不变，也不修改传入的 result。每个片段多出 text_en（译文）和
+    keyword_en（关键词译文）；传了 title 时顶层多出 title_en 和 title_keyword_en。
+
+    英文关键词的检查与中文相同，只是不限长度：keyword_en 不在本段 text_en 里就置空，
+    title_keyword_en 不在 title_en 里就报错；中文关键词为空时英文关键词也是空。
+    模型返回的段数对不上、字段类型不对，或译文为空（片段 text_en 为空，或原标题非空而 title_en 为空）时
+    抛 RuntimeError，不重试；网络等 SDK 异常原样抛出。
+    模型配置只读服务端 server/.env 与 IMV_ 环境变量。
+    """
+    config = _settings(None)
+    segments = result.get("segments", [])
+    content = {"segments": [{key: item[key] for key in ("segment_id", "text", "keyword")} for item in segments]}
+    prompt = (
+        '将短视频口播字幕译成英文，只返回 JSON：{"segments":[{"text_en":"译文","keyword_en":"关键词译文"}]}。'
+        "segments 是同一篇文案按顺序切出的连续片段，按顺序连读应是通顺自然的英文；"
+        "输出数组长度必须等于输入片段数，第i项只翻译第i段，不合并、拆分或挪动内容，空项不能省略。"
+        "keyword 是该段需要高亮的中文关键词：非空时 keyword_en 返回它在本段译文中的对应译法，"
+        "必须与 text_en 中的一段连续文字完全相同（含大小写和标点）；keyword 为空时 keyword_en 返回空字符串。"
+    )
+    if title is not None:
+        content.update(title=title, title_keyword=result.get("title_keyword", ""))
+        prompt += (
+            "输入另含 title 与 title_keyword：同级返回标题译文 title_en 与 title_keyword_en，"
+            "title_keyword_en 按同样规则必须在 title_en 中连续出现，title_keyword 为空时返回空字符串。"
+            '完整输出为 {"segments":[{"text_en":"","keyword_en":""}],"title_en":"","title_keyword_en":""}。'
+        )
+    prompt += "自检段数和关键词原文匹配。只输出纯JSON，无Markdown或解释。"
+    with OpenAI(base_url=config.llm_base_url, api_key=config.llm_api_key,
+                timeout=config.llm_timeout_seconds, max_retries=config.llm_max_retries) as client:
+        response = client.chat.completions.create(
+            model=config.llm_model, temperature=0.2, response_format={"type": "json_object"},
+            messages=[{"role": "system", "content": prompt},
+                      {"role": "user", "content": json.dumps(content, ensure_ascii=False)}],
+        )
+    output = _json_output(response)
+    items = output.get("segments")
+    if (
+        not isinstance(items, list)
+        or len(items) != len(segments)
+        or any(not isinstance(i, dict) or not isinstance(i.get("text_en"), str) or not i["text_en"].strip()
+               or not isinstance(i.get("keyword_en"), str) for i in items)
+    ):
+        raise RuntimeError("模型译文数组必须与片段一一对应，text_en 为非空字符串，keyword_en 为字符串。")
+    translated = {**result, "segments": [
+        {**item, "text_en": i["text_en"],
+         "keyword_en": _pick_keyword(i["text_en"], [i["keyword_en"]], None) if item["keyword"] else ""}
+        for item, i in zip(segments, items)
+    ]}
+    if title is not None:
+        title_en = output.get("title_en")
+        # 原标题有内容时译文不能为空；原标题本身为空时允许空译文。
+        if not isinstance(title_en, str) or (title.strip() and not title_en.strip()):
+            raise RuntimeError("模型 title_en 必须为字符串，原标题非空时不能为空。")
+        keyword = output.get("title_keyword_en") if content["title_keyword"] else ""
+        translated.update(title_en=title_en,
+                          title_keyword_en=_check_title_keyword(keyword, title_en, None, "title_keyword_en"))
+    return translated

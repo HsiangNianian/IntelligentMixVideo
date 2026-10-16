@@ -1,8 +1,11 @@
 /** 模板编辑工作区：接收主页选择，展示模板信息，协调效果编辑、保存和未保存切换保护。 */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { CircleCheck, SquarePen } from "lucide-react";
+import { CircleCheck, Pencil, SquarePen } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/Hint";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import * as api from "./api";
@@ -11,7 +14,7 @@ import { newDraft, toDraft, type Draft, type EffectAsset, type Template, type Te
 import { AppliedEffects, EffectAssets } from "./EffectAssets";
 import { isTextTarget } from "./effects";
 import { addTrack, previewContext, resolveTemplate, removeTrack, setTrackTiming, trackDraft, updateTrack } from "./tracks";
-import { previewUrls, readPreviewVideos } from "./media";
+import { defaultPreviewUrls, readPreviewVideos } from "./media";
 import { compactTransitions, previewTransitions, setTransitionDuration, transitionItems } from "./transitions";
 import { TemplateInspector, TransitionInspector, type InspectorTab } from "./TemplateInspector";
 import { TemplatePreview } from "./TemplatePreview";
@@ -44,8 +47,9 @@ function WorkspaceColumns({ assets, canvas, inspector }: { assets: ReactNode; ca
 }
 
 /** 只有成功读取或明确放弃时才替换草稿；保存始终使用当前模板的环境和 ID。 */
-export function TemplateWorkspace({ selection = null, onHome, onOpenRemotion }: {
+export function TemplateWorkspace({ selection = null, deletedTemplate = null, onHome, onOpenRemotion }: {
   selection?: TemplateSelection | null;
+  deletedTemplate?: TemplateSelection | null;
   onHome: () => void;
   /** 回到字效工作区修改资产本身（颜色、动画等不在模板里调整的参数）。 */
   onOpenRemotion?: () => void;
@@ -53,6 +57,7 @@ export function TemplateWorkspace({ selection = null, onHome, onOpenRemotion }: 
   const [environment, setEnvironment] = useState<api.Environment>("cloud");
   const [current, setCurrent] = useState<Template | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [editing, setEditing] = useState<{ field: "name" | "description"; value: string } | null>(null);
   const [media, setMedia] = useState<PreviewMedia>();
   const [mediaError, setMediaError] = useState("");
   const [mediaAttempt, setMediaAttempt] = useState(0);
@@ -109,7 +114,7 @@ export function TemplateWorkspace({ selection = null, onHome, onOpenRemotion }: 
       canvas: asset ? { width: asset.width, height: asset.height, box: asset.box, movable: transformFields(asset.kind).includes("x") } : undefined,
     };
   }).filter((clip) => clip.end > clip.start && !hiddenClips.has(clip.id)), [previewClips, hiddenClips, draftTracks, spriteCatalog.assets, previewLength]);
-  const dirty = draft !== null && (current === null || JSON.stringify(draft) !== baseline);
+  const dirty = draft !== null && (current === null || JSON.stringify(draft) !== baseline || (editing !== null && editing.value !== draft[editing.field]));
   const selectedTrack = draft?.tracks.find((track) => track.id === target);
   const assetTrack = selectedTrack ?? draft?.tracks.find((track) => track.id === lastTextTrack.current);
   const selectedDraft = draft && selectedTrack ? trackDraft(draft, selectedTrack) : null;
@@ -125,12 +130,22 @@ export function TemplateWorkspace({ selection = null, onHome, onOpenRemotion }: 
     return () => { mounted.current = false; };
   }, []);
 
-  // 默认地址与弹窗均读取真实元数据；已选择来源时不再启动默认读取。
+  // 主页删除模板后取消对应读取、清空对应编辑区，删除其他模板不影响当前草稿。
+  useEffect(() => {
+    if (!deletedTemplate) return;
+    if (openRequest?.templateId === deletedTemplate.templateId && openRequest.environment === deletedTemplate.environment) {
+      setOpenRequest(null); setLoading(false); setError("");
+    }
+    if (!current || deletedTemplate.templateId !== current.template_id || deletedTemplate.environment !== environment) return;
+    setCurrent(null); setDraft(null); setEditing(null); setBaseline(""); setError("");
+  }, [deletedTemplate, current, environment, openRequest]);
+
+  // 默认地址（本机保存的本地视频优先）与弹窗均读取真实元数据；已选择来源时不再启动默认读取。
   useEffect(() => {
     if (!draft || media) return;
     const controller = new AbortController();
     setMediaError("");
-    void readPreviewVideos(previewUrls(), controller.signal).then((sources) => {
+    void defaultPreviewUrls().then((urls) => readPreviewVideos(urls, controller.signal)).then((sources) => {
       if (!controller.signal.aborted) setMedia(sources);
     }).catch((reason: unknown) => {
       if (!controller.signal.aborted) setMediaError(reason instanceof Error ? reason.message : "预览视频读取失败");
@@ -175,6 +190,7 @@ export function TemplateWorkspace({ selection = null, onHome, onOpenRemotion }: 
         };
         setCurrent(template);
         setDraft(next);
+        setEditing(null);
         setMedia(undefined);
         setBaseline(JSON.stringify(next));
         setEnvironment(openRequest.environment);
@@ -212,8 +228,9 @@ export function TemplateWorkspace({ selection = null, onHome, onOpenRemotion }: 
   }
 
   /** 成功保存响应建立新基线；失败保留原草稿和待切换目标，不自动重发。 */
-  async function persist(nextSelection?: TemplateSelection) {
-    if (!draft || !timedDraft || lock.current || loading) return;
+  async function persist(nextSelection?: TemplateSelection, savingDraft = draft) {
+    if (!savingDraft || lock.current || loading) return;
+    if (editing?.field === "name" && !editing.value.trim()) { setError("请输入模板名称"); return; }
     // 时间输入保留局部编辑值，写入前检查；模板配置继续由 saveTemplate 校验。
     const timingInputs = form.current?.querySelectorAll<HTMLInputElement>('[aria-label="轨道时间设置"] input');
     if (timingInputs && [...timingInputs].some((input) => !input.checkValidity())) { setInspectorTab("timing"); return; }
@@ -224,8 +241,8 @@ export function TemplateWorkspace({ selection = null, onHome, onOpenRemotion }: 
     setError("");
     try {
       // Remotion 字效保存文字区间，转场保留自身时长，与 IMS 对象在同一次请求里保存。
-      const saveDraft = preview.timeline ? timeClips(draft, preview.timeline, "save") : draft;
-      const saved = await api.saveTemplate(setTransitionDuration(saveDraft, draft.transition_duration_seconds), current?.template_id, environment, current?.library);
+      const saveDraft = preview.timeline ? timeClips(savingDraft, preview.timeline, "save") : savingDraft;
+      const saved = await api.saveTemplate(setTransitionDuration(saveDraft, savingDraft.transition_duration_seconds), current?.template_id, environment, current?.library);
       if (!mounted.current) return;
       const next = toDraft(saved);
       setCurrent(saved);
@@ -239,6 +256,18 @@ export function TemplateWorkspace({ selection = null, onHome, onOpenRemotion }: 
       lock.current = false;
       if (mounted.current) setBusy(false);
     }
+  }
+
+  /** 名称或描述失焦时复用完整保存流程；无变化不写入，失败仍保留新值供重试。 */
+  function saveMetadata() {
+    if (!draft || !editing) return;
+    const value = editing.value.trim();
+    if (editing.field === "name" && !value) { setError("请输入模板名称"); return; }
+    setEditing(null);
+    if (value === draft[editing.field]) return;
+    const next = { ...draft, [editing.field]: value };
+    setDraft(next);
+    void persist(undefined, next);
   }
 
   return (
@@ -264,7 +293,28 @@ export function TemplateWorkspace({ selection = null, onHome, onOpenRemotion }: 
           <fieldset disabled={busy || loading} className="min-w-0 disabled:opacity-60">
             <section aria-label="模板信息" className="template-workspace-header flex min-h-16 flex-wrap items-center justify-between gap-4 border-b px-5 py-3 lg:px-7">
               <div className="flex min-w-0 items-center gap-4"><span className="template-workspace-mark flex size-9 shrink-0 items-center justify-center rounded-lg text-xs font-black tracking-[-.06em]" aria-hidden="true">IM</span>
-                <dl className="min-w-0 space-y-1"><div className="flex min-w-0 flex-wrap items-center gap-2"><div className="min-w-0"><dt className="sr-only">模板名称</dt><dd aria-label="模板名称" className="truncate text-[17px] font-semibold tracking-tight">{draft.name}</dd></div><div><dt className="sr-only">当前环境</dt><dd aria-label="当前环境" className="template-workspace-environment rounded-full px-2 py-0.5 text-[11px]">{environment === "cloud" ? "云端" : "本地"}</dd></div></div><div><dt className="sr-only">模板描述</dt><dd aria-label="模板描述" className="truncate text-[11px] text-muted-foreground">{draft.description || "暂无模板描述"}</dd></div></dl>
+                <dl className="min-w-0 space-y-1">
+                  {(["name", "description"] as const).map((field) => {
+                    const label = field === "name" ? "模板名称" : "模板描述";
+                    const Control = field === "name" ? Input : Textarea;
+                    return <div key={field} className="flex min-w-0 items-center gap-2">
+                      <dt className="sr-only">{label}</dt>
+                      <dd className="min-w-0">
+                        {editing?.field === field ? <Control autoFocus aria-label={label} value={editing.value}
+                          required={field === "name"} maxLength={field === "name" ? 100 : 1000} className="min-w-48" rows={2}
+                          onChange={(event) => setEditing({ field, value: event.target.value })} onBlur={saveMetadata}
+                          onKeyDown={(event) => {
+                            if (event.key === "Escape") { event.preventDefault(); setEditing(null); setError(""); }
+                            if (event.key === "Enter" && field === "name" && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.blur(); }
+                          }} />
+                          : <span aria-label={label} className={field === "name" ? "block truncate text-[17px] font-semibold tracking-tight" : "block truncate text-[11px] text-muted-foreground"}>{draft[field] || "暂无模板描述"}</span>}
+                      </dd>
+                      {editing?.field !== field && <Hint label={`编辑${label}`}><Button type="button" variant="ghost" size="icon-xs" aria-label={`编辑${label}`}
+                        onClick={() => { setEditing({ field, value: draft[field] }); setError(""); }}><Pencil className="size-3" aria-hidden="true" /></Button></Hint>}
+                      {field === "name" && <div><dt className="sr-only">当前环境</dt><dd aria-label="当前环境" className="template-workspace-environment rounded-full px-2 py-0.5 text-[11px]">{environment === "cloud" ? "云端" : "本地"}</dd></div>}
+                    </div>;
+                  })}
+                </dl>
               </div>
               <div className="flex flex-wrap items-center gap-3">
                 <span className="template-workspace-status flex items-center gap-2 text-[11px] text-muted-foreground"><span className={`size-1.5 rounded-full ${dirty ? "bg-warning" : "bg-success"}`} />{current ? dirty ? "有未保存的修改" : "已保存" : "新模板 · 尚未保存"}</span>

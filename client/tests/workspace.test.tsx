@@ -1,12 +1,12 @@
 /** 工作区核心测试：使用真实 React 控件和随包目录检查创建、独立对象与草稿保护；执行 bun run test。 */
 import { expect, test } from "bun:test";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode } from "react";
 import HomePage from "@/pages/HomePage";
 import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
 import { TemplateCollection, type TemplateSelection } from "@/features/templates/TemplateHome";
 import { Toaster } from "@/components/ui/sonner";
-import { fetchMock } from "./setup";
+import { fetchMock, mockDesktop } from "./setup";
 import { protobufTemplateResponse, savedTemplate, templateSummary } from "./fixtures";
 
 /** 生成独立的主页新建输入，不包含服务端响应或存储数据。 */
@@ -366,8 +366,8 @@ test("未选择模板时通过主页开始创作", async () => {
   expect(screen.getByRole<HTMLButtonElement>("button", { name: "新建云端模板" }).disabled).toBe(false);
 });
 
-// 场景：主页填写信息后跳转，模板库只读展示并明确新模板尚未保存。
-test("主页创建后显示环境、名称与描述，模板库只保留保存入口", async () => {
+// 场景：主页填写信息后跳转，模板信息默认展示文本及铅笔入口，并明确新模板尚未保存。
+test("主页创建后显示环境、名称与描述及编辑入口", async () => {
   render(<HomePage />);
   const info = await createFromHome("  旅行模板  ");
   expect(screen.getByRole("tab", { name: "模版编辑" }).getAttribute("aria-selected")).toBe("true");
@@ -376,7 +376,9 @@ test("主页创建后显示环境、名称与描述，模板库只保留保存�
   expect(within(info).getByLabelText("模板描述").textContent).toBe("适用于旅行视频");
   expect(within(info).queryByRole("textbox")).toBeNull();
   expect(within(info).queryByRole("combobox")).toBeNull();
-  expect(within(info).getAllByRole("button").map((button) => button.textContent)).toEqual(["保存模板"]);
+  expect(within(info).getByRole("button", { name: "编辑模板名称" })).toBeTruthy();
+  expect(within(info).getByRole("button", { name: "编辑模板描述" })).toBeTruthy();
+  expect(within(info).getByRole("button", { name: "保存模板" })).toBeTruthy();
   expect(screen.queryByRole("button", { name: "新建云端模板" })).toBeNull();
   expect(screen.queryByRole("button", { name: "刷新列表" })).toBeNull();
   expect(screen.getByText("新模板 · 尚未保存")).toBeTruthy();
@@ -492,4 +494,84 @@ test("保存成功显示轻提示，图标按钮提供悬停提示", async () =>
   await screen.findByText(`模板「${template.name}」已保存`);
   fireEvent.focus(screen.getByRole("button", { name: "全屏预览" }));
   expect((await screen.findByRole("tooltip")).textContent).toBe("全屏预览");
+});
+
+// 场景：删除另一个库的模板不影响草稿，删除当前模板才清空编辑区。
+test("主页删除当前模板后清空保留的编辑区", async () => {
+  const template = savedTemplate();
+  fetchMock.mockResolvedValue(protobufTemplateResponse(template, "get"));
+  const selection = { environment: "cloud" as const, templateId: template.template_id };
+  const view = render(<TemplateWorkspace selection={selection} onHome={() => {}} />);
+  await screen.findByLabelText("模板名称");
+  view.rerender(<TemplateWorkspace selection={selection} deletedTemplate={{ ...selection, environment: "local" }} onHome={() => {}} />);
+  expect(screen.getByLabelText("模板名称").textContent).toBe("已有模板");
+  view.rerender(<TemplateWorkspace selection={selection} deletedTemplate={selection} onHome={() => {}} />);
+  expect(await screen.findByText("还没有打开模板")).toBeTruthy();
+});
+
+// 场景：删除正在读取的模板后，迟到的 HTTP/IPC 成功或失败回执均不能恢复模板或错误态。
+test.each([
+  ["cloud", "success"], ["cloud", "missing"],
+  ["local", "success"], ["local", "missing"],
+] as const)("%s 删除读取中的模板后忽略 %s 回执", async (environment, outcome) => {
+  const template = savedTemplate();
+  let resolve!: (value: typeof template) => void;
+  let reject!: (reason: Error) => void;
+  const response = new Promise<typeof template>((done, fail) => { resolve = done; reject = fail; });
+  let signal: AbortSignal | null | undefined;
+  if (environment === "local") mockDesktop(async () => response);
+  else fetchMock.mockImplementation((async (_url, init) => {
+    signal = init?.signal;
+    try { return protobufTemplateResponse(await response, "get"); }
+    catch { return new Response(JSON.stringify({ detail: "模板不存在" }), { status: 404 }); }
+  }) as typeof fetch);
+  const selection = { environment, templateId: template.template_id };
+  const view = render(<TemplateWorkspace selection={selection} onHome={() => {}} />);
+  await screen.findByText("正在读取模板…");
+  for (const unrelated of [
+    { ...selection, environment: environment === "cloud" ? "local" as const : "cloud" as const },
+    { ...selection, templateId: "00000000-0000-4000-8000-000000000002" },
+  ]) {
+    view.rerender(<TemplateWorkspace selection={selection} deletedTemplate={unrelated} onHome={() => {}} />);
+    expect(screen.getByText("正在读取模板…")).toBeTruthy();
+    if (environment === "cloud") expect(signal?.aborted).toBe(false);
+  }
+  view.rerender(<TemplateWorkspace selection={selection} deletedTemplate={selection} onHome={() => {}} />);
+  expect(screen.queryByText("正在读取模板…")).toBeNull();
+  await act(async () => {
+    if (outcome === "success") resolve(template);
+    else reject(new Error("模板不存在"));
+  });
+  expect(screen.queryByRole("alert")?.textContent).toBeUndefined();
+  expect(screen.queryByRole("button", { name: "重试打开模板" })).toBeNull();
+  expect(screen.queryByText("正在读取模板…")).toBeNull();
+  expect(screen.getByText("还没有打开模板")).toBeTruthy();
+  if (environment === "cloud") expect(signal?.aborted).toBe(true);
+  view.rerender(<TemplateWorkspace selection={creation("删除后新建")} deletedTemplate={selection} onHome={() => {}} />);
+  expect((await screen.findByLabelText("模板名称")).textContent).toBe("删除后新建");
+});
+
+// 场景：已有模板与待打开模板不同，删除其中一个只清理对应草稿或读取，另一个仍可使用。
+test.each(["current", "pending"] as const)("切换读取期间删除 %s 模板不影响另一个模板", async (deleting) => {
+  const current = savedTemplate();
+  const pending = { ...current, template_id: "00000000-0000-4000-8000-000000000002", name: "另一模板" };
+  let finish!: (response: Response) => void;
+  const response = new Promise<Response>((resolve) => { finish = resolve; });
+  fetchMock.mockImplementation((async (url) => String(url).endsWith(current.template_id)
+    ? protobufTemplateResponse(current, "get") : response) as typeof fetch);
+  const currentSelection = { environment: "cloud" as const, templateId: current.template_id };
+  const nextSelection = { ...currentSelection, templateId: pending.template_id };
+  const view = render(<TemplateWorkspace selection={currentSelection} onHome={() => {}} />);
+  await screen.findByLabelText("模板名称");
+  view.rerender(<TemplateWorkspace selection={nextSelection} onHome={() => {}} />);
+  await screen.findByText("正在读取模板…");
+  view.rerender(<TemplateWorkspace selection={nextSelection}
+    deletedTemplate={deleting === "current" ? currentSelection : nextSelection} onHome={() => {}} />);
+  if (deleting === "current") expect(screen.getByText("正在读取模板…")).toBeTruthy();
+  else expect(screen.queryByText("正在读取模板…")).toBeNull();
+  await act(async () => { finish(deleting === "current" ? protobufTemplateResponse(pending, "get")
+    : new Response(JSON.stringify({ detail: "模板不存在" }), { status: 404 })); });
+  expect(screen.getByLabelText("模板名称").textContent).toBe(deleting === "current" ? pending.name : current.name);
+  expect(screen.queryByRole("alert")?.textContent).toBeUndefined();
+  expect(screen.queryByRole("button", { name: "重试打开模板" })).toBeNull();
 });
