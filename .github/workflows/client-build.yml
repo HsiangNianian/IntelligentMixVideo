@@ -233,6 +233,7 @@ jobs:
         run: cargo run --manifest-path src-tauri/Cargo.toml -p imv-update-build --locked -- . ${{ matrix.target }} src-tauri/target/${{ matrix.target }}/release/bundle src-tauri/target/update-native-id
       - name: Check native targets
         if: inputs.build-mode == 'check'
+        shell: bash
         run: |
           mkdir -p src-tauri/target
           bun run build
