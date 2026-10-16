@@ -5,7 +5,7 @@ from math import floor
 from pydantic import TypeAdapter
 
 from .text_events import subtitle_events
-from ..template.schema import CATEGORY_PARAMETERS, EffectTemplateEditor, EffectTrack, Template
+from ..template.schema import CATEGORY_PARAMETERS, EffectTemplateEditor, EffectTrack, Template, active_tracks
 from ..template.timing import ClipContext, TimelineContext, resolve_template, resolve_track
 from ..template.transitions import select_transitions
 from .schema import CompositionRequest, MatchedSegment, PositiveSeconds, Segment
@@ -70,10 +70,12 @@ def build_timeline(
     request: dict, template: dict, segments: list[dict], matches: list[dict],
     duration_ms: int | float, *, width: int, height: int, fps: int,
     material_durations: list[float] | None = None, title_keyword: str = "", transition_seed: str = "",
+    title_en: str | None = None, title_keyword_en: str = "",
 ) -> tuple[dict, list[str]]:
     """返回时间线及转场说明；标题关键词仅取切片返回值，缺失不强调，不修改输入快照。"""
     request = CompositionRequest.from_snapshot(request)
     template = Template.model_validate(template)
+    template = template.model_copy(update={"tracks": active_tracks(template.tracks)})
     standard = request.composition_mode == "standard"
     has_subtitles = request.composition_mode != "materials_silent" and bool(request.text)
     source = TypeAdapter(list[Segment]).validate_python(segments) if has_subtitles else []
@@ -193,8 +195,8 @@ def build_timeline(
     effects = []
     # Remotion 片段由叠加视频服务渲染，不属于 IMS 时间线，也没有 IMS 效果可校验；
     # 使用 Remotion 字效的标题或字幕同样由叠加视频显示，IMS 不再渲染这段文字。
-    remotion_texts = {track.text_target for track in template.tracks if track.text_target is not None}
-    tracks = [track for track in template.tracks if track.target != "remotion" and track.target not in remotion_texts]
+    remotion_texts = {(track.text_target, track.language) for track in template.tracks if track.text_target is not None}
+    tracks = [track for track in template.tracks if track.target != "remotion" and (track.target, track.language) not in remotion_texts]
     if not template.transition_enabled:
         tracks = [track for track in tracks if track.target != "transition"]
     elif template.transition_mode is not None:
@@ -211,7 +213,7 @@ def build_timeline(
                   if not ((track.target == "subtitle" and not source) or (track.target == "title" and not request.title))]
         # 缺少对象时只补本次合成的默认样式，不保存模板，也不使用编辑器示例文字。
         for target, content in (("title", request.title), ("subtitle", source)):
-            if content and target not in remotion_texts and not any(track.target == target for track in tracks):
+            if content and (target, "zh") not in remotion_texts and not any(track.target == target and track.language == "zh" for track in tracks):
                 tracks.append(EffectTrack(id=f"composition-{target}", target=target, start_mode="seconds",
                                           start=0, duration=None, editor=EffectTemplateEditor(**{
                                               key: "" for key in ("title", "subtitle", "bubble_text") if key != target
@@ -242,10 +244,13 @@ def build_timeline(
             # 标题使用请求文字，标题与字幕关键词均取切片结果；气泡显示模板文字一次。
             contents = []
             if track.target == "title":
-                contents.append((request.title, title_keyword, applied.start, applied.end))
+                if track.language == "en" and request.title and request.title.strip() and not (title_en and title_en.strip()):
+                    raise ValueError("缺少英文标题译文")
+                contents.append((title_en if track.language == "en" else request.title,
+                                 title_keyword_en if track.language == "en" else title_keyword, applied.start, applied.end))
             elif track.target == "subtitle":
                 contents.extend((content, keyword, max(start, applied.start), min(end, applied.end))
-                                for content, keyword, start, end in subtitle_events(source))
+                                for content, keyword, start, end in subtitle_events(source, track.language))
             else:
                 contents.append((track.editor.bubble_text, "", applied.start, applied.end))
             text_clips = []
@@ -261,7 +266,10 @@ def build_timeline(
                         content = format_keyword(content, keyword, segment.editor, track.target)
                     # 持续到结束的标题覆盖请求终点，固定时长标题遵循用户设置。
                     end = duration if track.target == "title" and track.duration is None else segment.end
-                    text_clips.append(text(track.target, content, segment.start, end, segment.editor, track_parameters))
+                    clip = text(track.target, content, segment.start, end, segment.editor, track_parameters)
+                    if track.language == "en":
+                        clip.update(AdaptMode="AutoScale", TextWidth=0.9)
+                    text_clips.append(clip)
             if text_clips:
                 timeline["SubtitleTracks"].append({"SubtitleTrackClips": text_clips})
     if effects:

@@ -23,7 +23,7 @@ IntelligentMixVideo connects desktop template editing, server-side media process
 - **Visual template editing**: Add decorative text, speech bubbles, filters, visual effects, transitions, and text animations. Adjust text, font size, position, and effect parameters.
 - **Preview and timeline**: Preview template effects, set object start times in seconds or as a percentage of the video duration, and choose a fixed duration or let an object run to the end of the video.
 - **Local and cloud template libraries**: Desktop local templates stay on your machine; cloud templates are saved to MySQL through the server. The two libraries operate independently.
-- **Text and audio processing**: ASR transcription, text segmentation, and keyword processing provide data for subtitles and composition timelines.
+- **Text and audio processing**: ASR transcription, text segmentation, and keyword processing provide data for subtitles and composition timelines. Titles and subtitles can each enable Chinese–English text with independent styles; composition translates the actual content and synchronizes both languages. Disabled English settings are retained for reuse and omitted from output.
 - **Asynchronous video composition**: Depending on the inputs, use the standard digital avatar workflow or compose media assets with or without narration. Retrieve results through task queries and callbacks.
 - **Remotion text effects**: Generate effects with an agent, preview successful versions, and save them as assets for cloud templates.
 

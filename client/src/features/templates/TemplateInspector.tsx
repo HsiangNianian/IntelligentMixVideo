@@ -17,7 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import type { ResolvedTrack } from "./tracks";
+import { trackLabel, type ResolvedTrack } from "./tracks";
 
 /** 全部转场共用选择方式，IMS 共用持续时间，每个条目独立选择效果。 */
 export function TransitionInspector({ draft, catalog, sprites, onChoose, onRemove, onDuration, onMode, onEnabled, onSelect }: {
@@ -104,18 +104,19 @@ export function TemplateInspector({ track, draft, catalog, duration, resolved, t
 }) {
   const id = useId();
   const hasKeywords = track.target === "title" || track.target === "subtitle";
-  const tabs: InspectorTab[] = track.target === "subtitle" ? ["appearance", "keyword"] : hasKeywords ? ["appearance", "timing", "keyword"] : ["appearance", "timing"];
+  const tabs: InspectorTab[] = track.target === "subtitle" || track.language === "en" ? ["appearance", "keyword"] : hasKeywords ? ["appearance", "timing", "keyword"] : ["appearance", "timing"];
   const activeTab = tabs.includes(tab) ? tab : tabs[0];
   const effectId = { title: track.editor.titleFlower, subtitle: track.editor.subtitleFlower, bubble: track.editor.bubble, filter: track.editor.filter, vfx: track.editor.vfx, transition: track.editor.transition }[track.target];
   const effect = catalog.find((asset) => asset.id === effectId)?.name ?? (effectId ? effectId.split("/").at(-1) : "未设置效果");
   return <section aria-label="画面对象设置" className="min-w-0">
+    {track.language === "en" && <p className="px-4 pt-3 text-[11px] text-muted-foreground">成片中英文过长时自动缩小字号，尽量保持单行；预览暂不支持自动缩小。</p>}
     <div className="flex items-start justify-between gap-2 px-4 pb-2 pt-3">
-      <div className="flex min-w-0 items-center gap-2.5"><ObjectIcon target={track.target} /><div className="min-w-0"><h2 className="text-[13px] font-semibold leading-5">{effectTargets[track.target]}</h2><p className="mt-0.5 truncate text-[11px] leading-3 text-muted-foreground">{effect}</p></div></div>
+      <div className="flex min-w-0 items-center gap-2.5"><ObjectIcon target={track.target} /><div className="min-w-0"><h2 className="text-[13px] font-semibold leading-5">{trackLabel(track, [track])}</h2><p className="mt-0.5 truncate text-[11px] leading-3 text-muted-foreground">{effect}</p></div></div>
       <Hint label="关闭特效设置"><Button type="button" variant="ghost" size="icon" className="size-6 shrink-0" aria-label="关闭特效设置" onClick={onClose}><X className="size-3.5" aria-hidden="true" /></Button></Hint>
     </div>
     <div role="tablist" aria-label={`${effectTargets[track.target]}设置分类`} className={`grid border-b px-4 ${tabs.length === 1 ? "grid-cols-1" : tabs.length === 3 ? "grid-cols-3" : "grid-cols-2"}`}>{tabs.map((value) => <button key={value} type="button" role="tab" id={`${id}-${value}`} aria-controls={`${id}-panel-${value}`} aria-selected={activeTab === value} onClick={() => onTabChange(value)} className="border-b-2 border-transparent px-1 py-2.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring data-[selected=true]:border-primary data-[selected=true]:text-primary" data-selected={activeTab === value}>{value === "appearance" ? "外观与效果" : value === "timing" ? "时间设置" : "关键词设置"}</button>)}</div>
-    <div id={`${id}-panel-appearance`} role="tabpanel" aria-labelledby={`${id}-appearance`} hidden={activeTab !== "appearance"}><EffectEditor draft={draft} catalog={catalog} onChange={onEffectChange} target={track.target} onRemove={onRemove} onClose={onClose} view="appearance" showHeader={false} /></div>
-    {track.target !== "subtitle" && <div id={`${id}-panel-timing`} role="tabpanel" aria-labelledby={`${id}-timing`} hidden={activeTab !== "timing"}><TrackTiming track={track} duration={duration} resolved={resolved} onChange={onTimingChange} /></div>}
-    {hasKeywords && <div id={`${id}-panel-keyword`} role="tabpanel" aria-labelledby={`${id}-keyword`} hidden={activeTab !== "keyword"}><EffectEditor draft={draft} catalog={catalog} onChange={onEffectChange} target={track.target} onRemove={onRemove} onClose={onClose} view="keyword" showHeader={false} /></div>}
+    <div id={`${id}-panel-appearance`} role="tabpanel" aria-labelledby={`${id}-appearance`} hidden={activeTab !== "appearance"}><EffectEditor draft={draft} catalog={catalog} onChange={onEffectChange} target={track.target} language={track.language} onRemove={onRemove} onClose={onClose} view="appearance" showHeader={false} /></div>
+    {tabs.includes("timing") && <div id={`${id}-panel-timing`} role="tabpanel" aria-labelledby={`${id}-timing`} hidden={activeTab !== "timing"}><TrackTiming track={track} duration={duration} resolved={resolved} onChange={onTimingChange} /></div>}
+    {hasKeywords && <div id={`${id}-panel-keyword`} role="tabpanel" aria-labelledby={`${id}-keyword`} hidden={activeTab !== "keyword"}><EffectEditor draft={draft} catalog={catalog} onChange={onEffectChange} target={track.target} language={track.language} onRemove={onRemove} onClose={onClose} view="keyword" showHeader={false} /></div>}
   </section>;
 }

@@ -12,10 +12,10 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import * as api from "./api";
 import { readCatalog } from "./sdk";
-import { newDraft, toDraft, type Draft, type EffectAsset, type Template, type TextRole, type PreviewMedia } from "./model";
+import { activeDraft, boundText, newDraft, toDraft, type Draft, type EffectAsset, type Template, type TextRole, type PreviewMedia } from "./model";
 import { AppliedEffects, EffectAssets } from "./EffectAssets";
 import { isTextTarget } from "./effects";
-import { addTrack, previewContext, resolveTemplate, removeTrack, setTrackTiming, trackDraft, updateTrack } from "./tracks";
+import { addTrack, previewContext, resolveTemplate, removeTrack, setBilingual, setTrackTiming, trackDraft, updateTrack } from "./tracks";
 import { defaultPreviewUrls, readPreviewVideos } from "./media";
 import { compactTransitions, previewTransitions, setTransitionDuration, transitionItems } from "./transitions";
 import { TemplateInspector, TransitionInspector, type InspectorTab } from "./TemplateInspector";
@@ -82,7 +82,8 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
   const handledSelection = useRef<TemplateSelection | null>(null);
   const spriteCatalog = useSpriteCatalog(environment, (draft?.clips.length ?? 0) > 0);
   const [transitionRandom, setTransitionRandom] = useState<readonly [number, number]>(() => [Math.random(), Math.random()]);
-  const previewSelection = useMemo(() => draft ? previewTransitions(draft, transitionRandom, spriteCatalog.assets ?? []) : null, [draft, transitionRandom, spriteCatalog.assets]);
+  const visibleDraft = useMemo(() => draft ? activeDraft(draft) : null, [draft]);
+  const previewSelection = useMemo(() => visibleDraft ? previewTransitions(visibleDraft, transitionRandom, spriteCatalog.assets ?? []) : null, [visibleDraft, transitionRandom, spriteCatalog.assets]);
   const previewDraft = previewSelection?.draft;
   const preview = useMemo(() => {
     if (!previewDraft || !media) return { timeline: undefined, error: "" };
@@ -92,7 +93,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
   const previewLength = preview.timeline?.duration ?? 0;
   // 占用文字或交界处的片段按本次预览计算展示区间，不改变草稿。
   const timedDraft = useMemo(() => draft && preview.timeline ? timeClips(draft, preview.timeline) : draft, [draft, preview.timeline]);
-  const timedClips = timedDraft?.clips;
+  const timedClips = timedDraft ? activeDraft(timedDraft).clips : undefined;
   const previewClips = useMemo(() => previewDraft && preview.timeline ? timeClips(previewDraft, preview.timeline).clips : [], [previewDraft, preview.timeline]);
   // 所作用文字在当前预览中不显示时，字效也不显示，避免按原有时间出现在画面上。
   const hiddenClips = useMemo(() => previewDraft && preview.timeline ? hiddenTextClips(previewDraft, preview.timeline) : new Set<string>(), [previewDraft, preview.timeline]);
@@ -100,7 +101,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
   const spriteClips = useMemo(() => previewClips.map((clip) => {
     const asset = spriteCatalog.assets?.find((item) => item.id === clip.sprite_id);
     // 作用于文字的字效显示该文字对象的示例文字与关键词，合成时由总线换成实际标题或切片。
-    const text = clip.text_target && draftTracks?.find((track) => track.target === clip.text_target);
+    const text = boundText(draftTracks ?? [], clip);
     return {
       id: clip.id,
       spriteId: clip.sprite_id,
@@ -110,8 +111,9 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
       end: Math.min(previewLength, clip.start + (clip.duration ?? asset?.seconds ?? 0)),
       length: clip.duration ?? asset?.seconds ?? 0,
       slot: clipSlot(clip, asset),
+      textTrackId: text?.id,
       boundary: clip.transition_boundary,
-      values: text && clip.text_target ? { ...clip.parameters, text: text.editor[clip.text_target], keywords: [exampleKeyword(text.editor, clip.text_target)].filter(Boolean) } : clip.parameters,
+      values: text && clip.text_target ? { ...clip.parameters, text: text.editor[clip.text_target], keywords: [exampleKeyword(text.editor, clip.text_target, text.language)].filter(Boolean) } : clip.parameters,
       transform: clip.transform,
       canvas: asset ? { width: asset.width, height: asset.height, box: asset.box, movable: transformFields(asset.kind).includes("x") } : undefined,
     };
@@ -124,10 +126,12 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
   const selectedDraft = draft && selectedTrack ? trackDraft(draft, selectedTrack) : null;
   // IMS 对象与 Remotion 片段共用一个选中状态，右栏只显示其中一种设置。
   // 文字被 Remotion 字效接管后，选中该文字对象就是选中字效：右栏、时间轴与预览都以字效为准，IMS 面板不再混用。
-  const replacingClip = draft?.tracks.find((track) => track.id === target && isTextTarget(track.target))?.target;
-  const effectiveTarget = (replacingClip && draft?.clips.find((clip) => clip.text_target === replacingClip)?.id) ?? target;
+  const effectiveTarget = draft?.clips.find((clip) => boundText(draft.tracks, clip)?.id === target)?.id ?? target;
   const selectedClip = draft?.clips.find((clip) => clip.id === effectiveTarget && clip.transition_boundary !== undefined) ?? timedClips?.find((clip) => clip.id === effectiveTarget);
-  const clipText = selectedClip?.text_target ? draft?.tracks.find((track) => track.target === selectedClip.text_target) : undefined;
+  const clipText = selectedClip && draft ? boundText(draft.tracks, selectedClip) : undefined;
+  const selectedText = clipText ?? selectedTrack;
+  const bilingualTarget = selectedText?.target === "title" || selectedText?.target === "subtitle" ? selectedText.target : undefined;
+  const english = draft?.tracks.find((track) => track.target === bilingualTarget && track.language === "en");
 
   useEffect(() => {
     mounted.current = true;
@@ -217,7 +221,8 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
   /** 资产和已添加对象共用选中状态，文字资产沿用最近选择的文字对象。 */
   function selectTarget(next: string) {
     setTarget(next);
-    const selected = draft?.tracks.find((track) => track.id === next);
+    const clip = draft?.clips.find((item) => item.id === next);
+    const selected = draft?.tracks.find((track) => track.id === next) ?? (draft && clip ? boundText(draft.tracks, clip) : undefined);
     if (selected && isTextTarget(selected.target)) { setTextTarget(selected.target); lastTextTrack.current = selected.id; }
   }
 
@@ -327,7 +332,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
             </section>
             <WorkspaceColumns
               assets={<aside className="template-workspace-assets h-full min-w-0 overflow-y-auto border-b xl:border-b-0">
-                <EffectAssets editor={assetTrack?.editor} catalog={catalog} textTarget={textTarget} textEditor={draft.tracks.find((track) => track.id === lastTextTrack.current)?.editor} onTextTarget={(role) => {
+                <EffectAssets editor={assetTrack?.editor} catalog={catalog} textTarget={textTarget} textTracks={visibleDraft!.tracks} selectedText={lastTextTrack.current} onSelectText={selectTarget} textEditor={draft.tracks.find((track) => track.id === lastTextTrack.current)?.editor} onTextTarget={(role) => {
                   setTextTarget(role);
                   const text = draft.tracks.find((track) => track.target === role);
                   setTarget(text?.id ?? null);
@@ -341,16 +346,31 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
                   if (isTextTarget(added.target)) { setTextTarget(added.target); lastTextTrack.current = added.id; }
                   return result.draft;
                 }, true)} />
-                <SpriteCatalog environment={environment} catalog={spriteCatalog} placed={new Set(draft.clips.map((clip) => clip.sprite_id))} onAdd={(asset) => editTrack(() => addClip(draft, asset, spriteCatalog.assets ?? [], textTarget), true)} />
+                <SpriteCatalog environment={environment} catalog={spriteCatalog} placed={new Set(draft.clips.map((clip) => clip.sprite_id))} onAdd={(asset) => editTrack(() => addClip(draft, asset, spriteCatalog.assets ?? [], textTarget, draft.tracks.find((track) => track.id === lastTextTrack.current)?.language), true)} />
               </aside>}
               canvas={<main className="template-workspace-canvas h-full min-w-0 overflow-y-auto border-b xl:border-b-0">
                 <TemplatePreview draft={previewDraft!} media={media} resolved={preview.timeline} mediaError={mediaError || preview.error} onRetryMedia={() => setMediaAttempt((value) => value + 1)} onMediaChange={(next) => { setMedia(next); setMediaError(""); }} videoInputKey={`${environment}:${current?.template_id ?? draft.name}`} onCatalog={setCatalog} selectedId={effectiveTarget} selectionTargets={previewSelection?.targets} onSelect={(id) => { selectTarget(previewSelection?.targets.get(id) ?? id); }} sprites={spriteClips} onSpriteMove={(id, x, y) => editTrack(() => setClipTransform(draft, previewSelection?.targets.get(id) ?? id, { x, y }))}
                 />
               </main>}
-              inspector={<aside className="template-workspace-inspector relative h-full min-w-0 overflow-y-auto xl:border-l"><AppliedEffects draft={draft} catalog={catalog} resolved={preview.timeline} selected={target} onSelect={selectTarget} />
+              inspector={<aside className="template-workspace-inspector relative h-full min-w-0 overflow-y-auto xl:border-l"><AppliedEffects draft={visibleDraft!} catalog={catalog} resolved={preview.timeline} selected={target} onSelect={selectTarget} />
                 <SpriteClips environment={environment} clips={timedClips ?? []} catalog={spriteCatalog} duration={preview.timeline?.duration} hidden={hiddenClips} selected={selectedClip?.id ?? null} onSelect={selectTarget} onRemove={(id) => editTrack(() => removeClip(draft, id))} />
+                {bilingualTarget && <div className="space-y-2 border-b px-4 py-3">
+                  <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={!!english && english.enabled !== false} onChange={(event) => {
+                    const enabled = event.target.checked;
+                    editTrack(() => {
+                      const next = setBilingual(draft, bilingualTarget, enabled);
+                      if (!enabled && selectedText?.language === "en") {
+                        const chinese = next.tracks.find((track) => track.target === bilingualTarget && track.language !== "en")!;
+                        setTarget(chinese.id); lastTextTrack.current = chinese.id;
+                      }
+                      return next;
+                    });
+                  }} />中英双语</label>
+                  {english?.enabled !== false && english && <Button type="button" variant="outline" size="sm" onClick={() => { selectTarget(english.id); setInspectorTab("appearance"); }}>编辑英文{bilingualTarget === "title" ? "标题" : "字幕"}</Button>}
+                  {selectedText?.language === "en" && <p className="text-[11px] text-muted-foreground">时间跟随中文{bilingualTarget === "title" ? "标题" : "字幕"}，合成时自动翻译实际文案。</p>}
+                </div>}
                 {selectedClip && <SpriteClipInspector key={selectedClip.id} clip={selectedClip} asset={spriteCatalog.assets?.find((item) => item.id === selectedClip.sprite_id)} duration={preview.timeline?.duration}
-                  textTrack={clipText} textResolved={clipText && preview.timeline?.tracks[clipText.id]} onOpenRemotion={onOpenRemotion}
+                  textTrack={clipText} textTracks={visibleDraft!.tracks} textResolved={clipText && preview.timeline?.tracks[clipText.id]} onOpenRemotion={onOpenRemotion}
                   onSample={(value) => clipText && editTrack(() => {
                     const role = clipText.target as "title" | "subtitle";
                     const edit = trackDraft(draft, clipText);
@@ -360,7 +380,12 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
                   onParameter={(key, value) => editTrack(() => setClipParameter(draft, selectedClip.id, key, value))}
                   onTransform={(patch) => editTrack(() => setClipTransform(draft, selectedClip.id, patch))}
                   onStart={(start) => editTrack(() => moveClip(draft, selectedClip.id, start))}
-                  onBind={(binding) => editTrack(() => bindClip(draft, selectedClip.id, binding))}
+                  onBind={(binding) => editTrack(() => {
+                    const next = bindClip(draft, selectedClip.id, binding);
+                    const text = boundText(next.tracks, next.clips.find((clip) => clip.id === selectedClip.id)!);
+                    if (text && isTextTarget(text.target)) { setTextTarget(text.target); lastTextTrack.current = text.id; }
+                    return next;
+                  })}
                   onRemove={() => { editTrack(() => removeClip(draft, selectedClip.id)); setTarget(null); }}
                   onClose={() => setTarget(null)} />}
                 {(target === "transitions" || selectedTrack?.target === "transition" || selectedClip?.transition_boundary !== undefined) && <TransitionInspector draft={draft} catalog={catalog} sprites={spriteCatalog.assets ?? []}

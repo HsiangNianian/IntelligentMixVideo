@@ -28,7 +28,7 @@ from sqlalchemy.exc import IntegrityError
 from starlette.concurrency import run_in_threadpool
 
 from . import boundary, sprite_store
-from .categories import HEX_COLOR, category_problems, operator_message
+from .categories import HEX_COLOR, LINE_STARTS_PROP, category_problems, line_count, operator_message
 from .publication import current_bundle
 from .models import TemplateVersion
 from .object_store import PREFIX, ObjectStoreError
@@ -146,10 +146,14 @@ def _parameters(schema: dict, defaults: dict, names: list[str]) -> list[pb.Sprit
     """Expose the version's top-level parameters, text and keywords included, as editable controls.
 
     Each Preset instance's remaining props stay nested and internal: the code is a fixed sample that templates
-    change only through these parameters.
+    change only through these parameters. A multi-line text's `lineStartFrames` is content the host injects from
+    the subtitle cues, so it is not a control either.
     """
     properties = schema.get("properties", {})
-    return [item for name in names if (item := _parameter(name, properties.get(name, {}), defaults.get(name))) is not None]
+    return [
+        item for name in names
+        if name != LINE_STARTS_PROP and (item := _parameter(name, properties.get(name, {}), defaults.get(name))) is not None
+    ]
 
 
 def _content_box(version: TemplateVersion) -> pb.SpriteBox:
@@ -252,6 +256,7 @@ def summarize(sprite: pb.PublishedSprite) -> pb.SpriteSummary:
         preview_url=f"/api/sprites/{sprite.sprite_id}/preview",
         keywords_supported=bool(sprite.keywords_prop),
         content_box=content_box(sprite),
+        line_count=line_count(json.loads(sprite.config_schema_json or "{}")) if sprite.kind == pb.SPRITE_KIND_TEXT else 0,
     )
 
 

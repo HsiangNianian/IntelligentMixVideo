@@ -75,6 +75,7 @@ function toAsset(summary: SpriteSummary): SpriteAsset {
       ? { x: summary.contentBox.x, y: summary.contentBox.y, width: summary.contentBox.width, height: summary.contentBox.height }
       : { x: 0, y: 0, width: summary.canvas?.width ?? 0, height: summary.canvas?.height ?? 0 },
     parameters: summary.parameters.map(assetParameter).filter((item) => item !== null),
+    lines: summary.lineCount,
   };
 }
 

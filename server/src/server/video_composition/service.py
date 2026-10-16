@@ -13,7 +13,7 @@ from fastapi import HTTPException
 from pydantic import SecretStr, TypeAdapter
 from sqlalchemy.exc import SQLAlchemyError
 
-from ..segmentation import segment
+from ..segmentation import segment, translate
 from ..segmentation.settings import Settings as SegmentationSettings
 from ..template.store import get_template
 from . import ims, media, remotion, store, zos
@@ -374,13 +374,30 @@ class Job:
             raise LostOwnership
         self.record = updated
 
+    async def translate_texts(self, result: dict, request: CompositionRequest) -> dict:
+        """仅翻译已启用且有实际内容的英文对象；完整译文随任务保存，失败不降为中文。"""
+        enabled = {track["target"] for track in self.record["data"]["template"]["tracks"]
+                   if track.get("language") == "en" and track.get("enabled", True) and track["target"] in {"title", "subtitle"}}
+        subtitles = "subtitle" in enabled and bool(request.text) and request.composition_mode != "materials_silent"
+        title = request.title if "title" in enabled and request.title and request.title.strip() else None
+        if not subtitles and title is None:
+            return result
+        source = result if subtitles else {"segments": [], "title_keyword": result.get("title_keyword", "")}
+        await self.save("translation", segmentation=result)
+        try:
+            translated = await self.runtime.step(self.record, "translation",
+                lambda: self.runtime.sync(translate, source, title=title), {"segmentation": source, "title": title})
+        except Exception as exc:
+            raise CompositionError("translation_failed", "英文翻译失败，请重试", "translation") from exc
+        return {**result, **translated, "segments": translated["segments"] if subtitles else result.get("segments", [])}
+
     async def run(self) -> None:
         """恢复只读查询和确定性组装；无恢复句柄的成本阶段明确标记中断。"""
         if self.record["status"] in ("succeeded", "failed"):
             return
         stage = self.record["stage"]
         await self.runtime.log(self.record, "execution_started", resumed=stage != "queued")
-        if stage in ("asr", "segmentation"):
+        if stage in ("asr", "segmentation", "translation"):
             raise CompositionError("interrupted", "任务在不可恢复的本地阶段中断，未重放成本调用", stage)
         if stage in ("queued", "template"):
             await self.prepare()
@@ -426,6 +443,8 @@ class Job:
                 await self.save("segmentation", **prepared)
                 segment_input = {"title": request.title}
                 prepared["segmentation"] = await self.runtime.step(self.record, "segmentation", lambda: self.runtime.sync(segment, segment_input), segment_input)
+            if "segmentation" in prepared:
+                prepared["segmentation"] = await self.translate_texts(prepared["segmentation"], request)
             await self.save("assembling", **prepared)
             return
         await self.save("asr")
@@ -447,6 +466,7 @@ class Job:
             await self.save("segmentation", duration_ms=duration_ms)
             segment_input = {"title": request.title}
             segmented = await self.runtime.step(self.record, "segmentation", lambda: self.runtime.sync(segment, segment_input), segment_input)
+        segmented = await self.translate_texts(segmented, request)
         if not needs_matching:
             prepared = {"duration_ms": duration_ms}
             if request.text or (request.title and request.title.strip()):
@@ -519,6 +539,8 @@ class Job:
             data = self.record["data"]
         inputs = dict(request=data["request"], template=data["template"], transition_seed=self.record["task_id"], segments=data.get("segmentation", {}).get("segments", []),
                       title_keyword=data.get("segmentation", {}).get("title_keyword", ""),
+                      title_en=data.get("segmentation", {}).get("title_en"),
+                      title_keyword_en=data.get("segmentation", {}).get("title_keyword_en", ""),
                       matches=data.get("matches", []), duration_ms=data["duration_ms"],
                       **{key: data["output"][key] for key in ("width", "height", "fps")})
         if request.composition_mode != "standard":

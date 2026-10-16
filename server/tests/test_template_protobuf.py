@@ -14,6 +14,55 @@ from .conftest import SPRITE_ID, remotion_track, seed_sprite, template_track
 from .template_wire import post_template as _post
 
 
+def test_bilingual_roundtrip_retains_disabled_style_and_sprite(client, template_db):
+    """真实协议与存储保留停用英文和字效绑定；摘要仍取中文，重新开启不改参数。"""
+    seed_sprite()
+    chinese = template_track("title", title="中文标题")
+    english = {**template_track("title", title="English sample", titleSize=28, titleY=15),
+               "id": "title-en", "language": "en", "enabled": False}
+    payload = {"name": "双语", "effect_ids": [], "tracks": [chinese, template_track("subtitle"), english,
+        remotion_track("english-effect", text_target="title", language="en", editor={"remotion": {"parameters": [{"key": "fontSize", "numberValue": 48}]}})]}
+    created = _post(client, payload)
+    assert created.status_code == 201, created.text
+    record = pb.SaveTemplateResponse.FromString(created.content).template
+    saved_english = record.tracks.tracks[2]
+    assert saved_english.language == "en" and saved_english.HasField("enabled") and not saved_english.enabled
+    assert saved_english.editor.title_size == 28
+    assert record.tracks.tracks[3].language == "en"
+    assert not record.tracks.tracks[0].HasField("language")
+    assert pb.GetTemplateResponse.FromString(client.get(f"/template/{record.template_id}").content).template == record
+    summary = pb.ListTemplatesResponse.FromString(client.get("/template").content).templates[0]
+    assert summary.title == "中文标题" and not summary.validation_error
+    payload["template_id"] = record.template_id
+    english["enabled"] = True
+    restored = _post(client, payload)
+    assert restored.status_code == 200
+    tracks = pb.SaveTemplateResponse.FromString(restored.content).template.tracks.tracks
+    assert tracks[2].editor == saved_english.editor
+    assert tracks[3] == record.tracks.tracks[3]
+
+
+@pytest.mark.parametrize("error", ["duplicate", "missing-chinese", "different-time", "disabled-chinese", "missing-english"])
+def test_invalid_bilingual_objects_do_not_save(client, error):
+    """语言内唯一、中文依赖、时间同步与开关范围都在保存边界检查，不写入无效模板。"""
+    chinese = template_track("title")
+    english = {**template_track("title"), "id": "title-en", "language": "en"}
+    tracks = [chinese, template_track("subtitle"), english]
+    if error == "duplicate":
+        tracks.append({**english, "id": "title-en-2"})
+    elif error == "missing-chinese":
+        tracks.remove(chinese)
+    elif error == "different-time":
+        english["start"] = 1
+    elif error == "disabled-chinese":
+        chinese["enabled"] = False
+    else:
+        tracks.remove(english)
+        tracks.append(remotion_track(text_target="title", language="en"))
+    assert _post(client, {"name": "不合法双语", "tracks": tracks}).status_code == 422
+    assert not pb.ListTemplatesResponse.FromString(client.get("/template").content).templates
+
+
 def test_transition_list_roundtrip(client: TestClient):
     """多个转场及统一设置经 Protobuf 与数据库保存后保持不变。"""
     from server.template.schema import effect_catalog

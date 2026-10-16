@@ -1,5 +1,5 @@
 /** 资产分类、编辑对象和效果变更规则；左侧资产与右侧表单共同生成可保存的模板草稿。 */
-import { defaultEditor, defaultTransitionDuration, effectGroups, textRoles, type Category, type EffectDraft, type EffectAsset, type EffectKey, type TextRole } from "./model";
+import { defaultEditor, defaultTransitionDuration, effectGroups, englishEditor, textRoles, type Category, type EffectDraft, type EffectAsset, type EffectKey, type TextRole, type TextLanguage } from "./model";
 
 /** 编辑对象对应现有模板字段；文字对象共享花字、位置和动画设置。 */
 export const effectTargets = { ...textRoles, filter: "视频滤镜", vfx: "画面特效", transition: "镜头转场" } as const;
@@ -86,7 +86,7 @@ export function appliedTargets(draft: EffectDraft): EffectTarget[] {
 }
 
 /** 清除当前文字对象的样式与动画，并恢复全部文字参数；其他对象和模板信息保持不变。 */
-export function resetTextTarget(draft: EffectDraft, target: TextRole): EffectDraft {
+export function resetTextTarget(draft: EffectDraft, target: TextRole, language?: TextLanguage): EffectDraft {
   const next = changeEffects(draft, Object.fromEntries(targetEffectKeys(target).map((key) => [key, ""])));
   const textKey = target === "bubble" ? "bubbleText" : target;
   next.editor[textKey] = defaultEditor[textKey];
@@ -113,6 +113,7 @@ export function resetTextTarget(draft: EffectDraft, target: TextRole): EffectDra
     next.editor.subtitleKeywordColor = "";
     next.editor.subtitleKeywordSize = 0;
   }
+  if (language === "en" && target !== "bubble") next.editor = englishEditor(next.editor, target);
   return next;
 }
 

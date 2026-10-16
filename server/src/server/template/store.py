@@ -84,8 +84,8 @@ def summarize(row) -> TemplateSummary:
         return summary
     summary.description = template.description
     summary.track_count = len(template.tracks)
-    summary.title = next(track.editor.title for track in template.tracks if track.target == "title")
-    summary.subtitle = next(track.editor.subtitle for track in template.tracks if track.target == "subtitle")
+    summary.title = next(track.editor.title for track in template.tracks if track.target == "title" and track.language == "zh")
+    summary.subtitle = next(track.editor.subtitle for track in template.tracks if track.target == "subtitle" and track.language == "zh")
     return summary
 
 

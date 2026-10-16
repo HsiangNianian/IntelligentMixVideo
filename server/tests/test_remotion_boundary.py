@@ -108,3 +108,16 @@ def test_only_sprites_with_keywords_and_styles_get_the_styled_sample():
         }, "additionalProperties": False}
         defaults = {"text": "标题", "keywords": [], "keywordBold": False}
         assert "keywords:styled" not in by_name(samples(schema, defaults, names, "text", (1080, 1920)))
+
+
+def test_line_starts_keep_the_assets_own_schedule():
+    """多行字效的行起点是宿主注入的内容：每个样本都保持默认的出现节奏，也不报告为漏抽。"""
+    schema = {**SCHEMA, "properties": {**SCHEMA["properties"], "lineStartFrames": {
+        "type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 3600}, "minItems": 2, "maxItems": 2,
+    }}}
+    defaults = {**DEFAULTS, "text": "一\n二", "lineStartFrames": [0, 30]}
+    names = [*NAMES, "lineStartFrames"]
+    drawn = samples(schema, defaults, names, "text", (1080, 1920))
+    assert {tuple(item.values["lineStartFrames"]) for item in drawn} == {(0, 30)}
+    assert by_name(drawn)["low"].values["text"] == FILLER * 12
+    assert unsampled(schema, defaults, names, drawn) == []

@@ -1091,14 +1091,14 @@ export default function Sprite() {
 """
 
 
-def decoded_alpha(video: Path, index: int) -> float:
-    """用 libvpx 解码一帧并返回左上角像素的 alpha；原生 vp9 解码器会丢弃透明通道。"""
+def decoded_alpha(video: Path, index: int, pixel: int = 0) -> float:
+    """用 libvpx 解码一帧并返回第 pixel 个像素（按行展开，默认左上角）的 alpha；原生 vp9 解码器会丢弃透明通道。"""
     raw = subprocess.run(
         ["ffmpeg", "-v", "error", "-c:v", "libvpx-vp9", "-i", str(video), "-vf", f"select=eq(n\\,{index})",
          "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "-"],
         capture_output=True, check=True,
     ).stdout
-    return raw[3] / 255
+    return raw[pixel * 4 + 3] / 255
 
 
 # 场景：真实沙箱渲染中，嵌套 Sequence 内的 Preset 读到自己的时长，且被成片总长截断时也不受影响。
@@ -1269,6 +1269,84 @@ def test_sprite_render_refuses_inputs_outside_the_contract(sprite_id, changes, c
     with pytest.raises(OverlayError) as caught:
         plan_sprite_render(message, PUBLICATIONS[sprite_id])
     assert caught.value.code == code, caught.value.message
+
+
+# 两行字效：t 加上 lineStartFrames（两项），默认文字两行。
+M = pb.PublishedSprite()
+M.CopyFrom(T)
+M.config_schema_json = json.dumps({**json.loads(T.config_schema_json), "properties": {
+    **json.loads(T.config_schema_json)["properties"],
+    "lineStartFrames": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 3600}, "minItems": 2, "maxItems": 2},
+}})
+M.default_config_json = json.dumps({**json.loads(T.default_config_json), "text": "一\n二", "lineStartFrames": [0, 30]}, ensure_ascii=False)
+
+
+def sentence_cue(text: str, start: int, end: int, sentence: int, *keywords: str) -> pb.SpriteCue:
+    """一条带句子序号的字幕切片。"""
+    return pb.SpriteCue(text=text, start_frame=start, end_frame=end, sentence=sentence, keywords=list(keywords))
+
+
+# 场景：多行字效把同一句里最多两个连续切片合成一组：第二行在第二个切片开始时出现，整组在最后一个切片结束时清空；
+# 换句时即使没有填满也开始新组；没给句子序号时只按行数分组。
+@pytest.mark.parametrize(("sentences", "expected"), [
+    ((1, 1, 1, 2, 2), [(0, 120, "看新闻了吗\nAI把数学圈", [0, 60], ["新闻", "数学圈"]), (130, 60, "搞炸了", [0, 0], []),
+                       (200, 90, "下一句\n收尾", [0, 60], [])]),
+    ((0, 0, 0, 0, 0), [(0, 120, "看新闻了吗\nAI把数学圈", [0, 60], ["新闻", "数学圈"]), (130, 130, "搞炸了\n下一句", [0, 70], []),
+                       (260, 90, "收尾", [0, 0], [])]),
+])
+def test_multi_line_render_groups_consecutive_cues_of_one_sentence(sentences, expected) -> None:
+    """每组一个实例，文字按行连接、关键词按序去重，行起点从组的起点算起；排版预检从最后一行出现的帧开始测量。
+
+    没给句子序号时最后只剩 30 帧的一行，不足 1.5 秒，按 90 帧预览定格。
+    """
+    frames = [(0, 60), (60, 120), (130, 190), (200, 260), (260, 290)]
+    texts = ["看新闻了吗", "AI把数学圈", "搞炸了", "下一句", "收尾"]
+    keywords = [("新闻",), ("数学圈", "新闻"), (), (), ()]
+    cues = [sentence_cue(text, start, end, sentence, *words) for text, (start, end), sentence, words in zip(texts, frames, sentences, keywords)]
+    overlay = plan_sprite_render(render_input(text="", keywords=[], effect_total_frames=300, cues=cues), M)
+    assert [(item["start_frame"], item["duration_frames"], item["config"]["text"], item["config"]["lineStartFrames"], item["config"]["keywords"])
+            for item in overlay.instances] == expected
+    assert [item["reveal_frame"] for item in overlay.instances] == [entry[3][-1] for entry in expected]
+    assert ["hold" in item for item in overlay.instances] == [False, False, sentences[0] == 0]
+
+
+# 场景：不足 1.5 秒的一组同样定格，但所有行从第 0 帧显示，定格的中间帧不会少显示一行；整段 text 也从第 0 帧显示全部行。
+def test_multi_line_short_groups_and_whole_text_show_every_line() -> None:
+    """20 帧的两行组按 90 帧预览定格，行起点都是 0；两行的 text 行起点也是 0；单行字效不注入行起点。"""
+    cues = [sentence_cue("看新闻", 0, 10, 1), sentence_cue("了吗", 10, 20, 1)]
+    [held] = plan_sprite_render(render_input(text="", keywords=[], effect_total_frames=30, cues=cues), M).instances
+    assert (held["duration_frames"], held["hold"], held["config"]["text"], held["config"]["lineStartFrames"]) == (
+        90, {"frame": 45, "frames": 20, "length": 90}, "看新闻\n了吗", [0, 0])
+    [whole] = plan_sprite_render(render_input(text="第一行\n第二行", effect_total_frames=300), M).instances
+    assert whole["config"]["lineStartFrames"] == [0, 0] and whole["config"]["text"] == "第一行\n第二行"
+    [single] = plan_sprite_render(render_input(effect_total_frames=300), T).instances
+    assert "lineStartFrames" not in single["config"] and "reveal_frame" not in single
+
+
+# 场景：多行字效的 text 不能超过固定行数，切片文字不能自带换行。
+@pytest.mark.parametrize("changes", [
+    {"text": "一\n二\n三"},
+    {"text": "", "keywords": [], "cues": [sentence_cue("一\n二", 0, 60, 1)]},
+], ids=["too-many-lines", "cue-with-line-break"])
+def test_multi_line_render_refuses_extra_lines(changes) -> None:
+    """都是 content_invalid。"""
+    with pytest.raises(OverlayError) as caught:
+        plan_sprite_render(render_input(**changes), M)
+    assert caught.value.code == "content_invalid", caught.value.message
+
+
+# 场景：同一句的两个切片单独都合规，拼起来超过资产文字上限（40 字）时分成两组，而不是整个请求被拒。
+def test_multi_line_render_splits_groups_before_the_text_limit() -> None:
+    """25 字加 25 字超过 40 字：两个切片各自一组。"""
+    cues = [sentence_cue("甲" * 25, 0, 60, 1), sentence_cue("乙" * 25, 60, 120, 1)]
+    overlay = plan_sprite_render(render_input(text="", keywords=[], effect_total_frames=300, cues=cues), M)
+    assert [(item["start_frame"], item["config"]["text"]) for item in overlay.instances] == [(0, "甲" * 25), (60, "乙" * 25)]
+
+
+def test_fit_frames_of_a_multi_line_text_start_at_its_last_line() -> None:
+    """排版预检只在最后一行出现之后取 5 帧；没有 reveal_frame 时与原来一样从第 0 帧取。"""
+    assert overlay_render._fit_frames({"start_frame": 0, "duration_frames": 60, "reveal_frame": 20}, 300) == ([20, 29, 39, 49, 59], 60)
+    assert overlay_render._fit_frames({"start_frame": 0, "duration_frames": 60}, 300) == ([0, 14, 29, 44, 59], 60)
 
 
 def run_sprite_task(overlays: OverlayRenders, message: pb.SpriteRenderInput) -> str:
@@ -1452,6 +1530,47 @@ def test_real_short_subtitles_hold_still(tmp_path: Path) -> None:
     video = asyncio.run(sprite_render.render_sprite(Renderer(settings), plan_sprite_render(message, still_title(EDGE_FADE)), tmp_path / "job"))
     for frame, expected in ((0, 1.0), (11, 1.0), (12, 0.0), (30, 0.0), (60, 1.0), (135, 1.0), (140, 0.0)):
         assert decoded_alpha(video, frame) == pytest.approx(expected, abs=0.05), frame
+
+
+# 两行字效：第 i 行到 lineStartFrames[i] 才出现，第一行涂满画布上半部、第二行涂满下半部。
+LINE_BLOCKS = """import React from 'react';
+import {AbsoluteFill, useCurrentFrame} from 'remotion';
+export default function Sprite(props: {text: string; lineStartFrames: number[]}) {
+  const frame = useCurrentFrame();
+  return <AbsoluteFill>{props.text.split('\\n').map((line, index) => frame >= (props.lineStartFrames[index] ?? Infinity)
+    ? <div key={index} style={{position: 'absolute', left: 0, right: 0, top: index * 160, height: 160, background: '#ff0000'}} /> : null)}</AbsoluteFill>;
+}
+"""
+
+
+# 场景：真实沙箱里，两行字效把同一句的两个切片放进一个画面：第一行先出现，第二个切片开始时第二行出现，
+# 整组在第二个切片结束时一起清空；下一句的切片从第一行重新开始。
+@pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
+def test_real_multi_line_text_reveals_lines_and_clears_together(tmp_path: Path) -> None:
+    """切片 0～60、60～120 属于第 1 句，130～190 属于第 2 句：上半部（第一行）与下半部（第二行）在第 10/70/125/140 帧的 alpha。"""
+    configured = {
+        name: Path(value)
+        for name, value in (
+            ("browser_executable", RENDERER_PATHS["IMV_BROWSER_EXECUTABLE"]),
+            ("font_regular", RENDERER_PATHS["IMV_FONT_REGULAR"]),
+            ("font_bold", RENDERER_PATHS["IMV_FONT_BOLD"]),
+        )
+        if value
+    }
+    settings = Settings(_env_file=None, data_dir=tmp_path / "state", **configured)
+    lines = still_title(LINE_BLOCKS)
+    lines.config_schema_json = json.dumps({"type": "object", "properties": {
+        "text": {"type": "string", "minLength": 1},
+        "lineStartFrames": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 3600}, "minItems": 2, "maxItems": 2},
+    }})
+    lines.default_config_json = json.dumps({"text": "一\n二", "lineStartFrames": [0, 15]})
+    message = pb.SpriteRenderInput(sprite_id="still", effect_total_frames=200, cues=[
+        sentence_cue("一", 0, 60, 1), sentence_cue("二", 60, 120, 1), sentence_cue("三", 130, 190, 2)])
+    video = asyncio.run(sprite_render.render_sprite(Renderer(settings), plan_sprite_render(message, lines), tmp_path / "job"))
+    bottom = 200 * 180
+    for frame, top_alpha, bottom_alpha in ((10, 1.0, 0.0), (70, 1.0, 1.0), (125, 0.0, 0.0), (140, 1.0, 0.0)):
+        assert decoded_alpha(video, frame) == pytest.approx(top_alpha, abs=0.05), frame
+        assert decoded_alpha(video, frame, bottom) == pytest.approx(bottom_alpha, abs=0.05), frame
 
 
 class FitRenderer:

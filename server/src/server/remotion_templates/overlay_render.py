@@ -206,13 +206,16 @@ def _fit_frames(instance: dict, end: int) -> tuple[list[int], int]:
     A held text (shown for less than the static threshold) is frozen on one frame of its previewed length; any other
     one plays its own length and is measured on the first, last and three frames in between of the part that is
     rendered: a clip running past the video's `end` frame keeps its length, but its frames after `end` never show.
+    A multi-line text is complete only once its last line appears (`reveal_frame`), so only the frames from there on
+    are measured.
     """
     hold = instance.get("hold")
     if hold:
         return [hold["frame"]], hold["length"]
     length = instance["duration_frames"]
     shown = max(1, min(length, end - instance["start_frame"]))
-    return sorted({min(shown - 1, math.floor((shown - 1) * ratio)) for ratio in (0, 0.25, 0.5, 0.75, 1)}), length
+    first = min(shown - 1, instance.get("reveal_frame", 0))
+    return sorted({first + math.floor((shown - 1 - first) * ratio) for ratio in (0, 0.25, 0.5, 0.75, 1)}), length
 
 
 async def require_fonts(overlay: Overlay) -> None:

@@ -48,6 +48,106 @@ def case(composition_case, target="subtitle"):
                          "assets": {sprite.sprite_id: MessageToDict(sprite, preserving_proto_field_name=True)}}}
 
 
+@pytest.mark.parametrize("role", ["title", "subtitle"])
+def test_bilingual_shared_sprite_has_independent_content_and_timing(composition_case, role):
+    """同一 Sprite 的中英文摆放分别注入译文，按各自语言替换 IMS；停用后不产生英文实例。"""
+    from server.video_composition.timeline import build_timeline
+    from .conftest import remotion_track
+
+    data = case(composition_case, role)
+    data["template"] = deepcopy(composition_case["template"])
+    source = next(track for track in data["template"]["tracks"] if track["target"] == role)
+    english = {**deepcopy(source), "id": f"{role}-en", "language": "en"}
+    placement = data["remotion"]["placements"][0]
+    placement.update(text_target=role)
+    data["template"]["tracks"].append(english)
+    for language, track_id in (("zh", "effect-zh"), ("en", "effect-en")):
+        data["template"]["tracks"].append(remotion_track(track_id, sprite_id=placement["sprite_id"], text_target=role, language=language))
+    data["remotion"]["placements"].append({**deepcopy(placement), "id": "text-en", "language": "en"})
+    data["segmentation"].update(title_en="Business, title!", title_keyword_en="Business")
+    for item, text in zip(data["segmentation"]["segments"], ["Don't stop!", "Keep going."]):
+        item.update(text_en=text, keyword_en="")
+    overlay = remotion.plan(data, 120)
+    texts = [item["config"]["layer"]["text"] for item in overlay.instances]
+    assert texts == ([data["request"]["title"], "Business, title!"] if role == "title" else ["甲乙丙丁", "戊己庚辛", "Don't stop", "Keep going"])
+    half = len(overlay.instances) // 2
+    assert [(item["start_frame"], item["duration_frames"]) for item in overlay.instances[:half]] == [(item["start_frame"], item["duration_frames"]) for item in overlay.instances[half:]]
+    timeline, _ = build_timeline(**{**composition_case, "template": data["template"], "segments": data["segmentation"]["segments"]}, title_en="Business, title!")
+    ims_texts = [clip["Content"] for row in timeline["SubtitleTracks"] for clip in row["SubtitleTrackClips"]]
+    assert not set(texts) & set(ims_texts)
+    english["enabled"] = False
+    assert len(remotion.plan(data, 120).instances) == half
+
+
+@pytest.mark.parametrize("renderer", ["ims", "remotion"])
+@pytest.mark.parametrize("content,keyword,expected,clean_keyword", [
+    ('  "Don\'t stop!"\nPay 3.14?  ', "Don't", "Don't stop\nPay 3.14?", "Don't"),
+    ("O’Reilly isn’t late.", "O’Reilly", "O’Reilly isn’t late", "O’Reilly"),
+    ("Paid 3.14. Why？", "3.14.", "Paid 3.14 Why？", "3.14"),
+    ("，。!\"'…", "…", "", ""),
+])
+def test_english_subtitle_punctuation_and_keywords_are_cleaned_at_rendering(
+    composition_case, renderer, content, keyword, expected, clean_keyword,
+):
+    """两种渲染器的英文字幕共用清洗规则；关键词同步、空文字跳过，原始快照不变。"""
+    from server.video_composition.timeline import build_timeline
+
+    role = "subtitle"
+    data = case(composition_case, role)
+    data["template"] = deepcopy(composition_case["template"])
+    source = next(track for track in data["template"]["tracks"] if track["target"] == role)
+    english = {**deepcopy(source), "id": f"{role}-en", "language": "en"}
+    english["editor"][f"{role}KeywordBold"] = True
+    data["template"]["tracks"].append(english)
+    data["segmentation"].update(title_en=content, title_keyword_en=keyword)
+    data["segmentation"]["segments"] = data["segmentation"]["segments"][:1]
+    data["segmentation"]["segments"][0].update(text_en=content, keyword_en=keyword)
+    data["remotion"]["placements"][0].update(text_target=role, language="en")
+    original = deepcopy(data)
+    if renderer == "ims":
+        timeline, _ = build_timeline(
+            **{**composition_case, "template": data["template"], "segments": data["segmentation"]["segments"],
+               "matches": composition_case["matches"][:1]},
+            title_en=content, title_keyword_en=keyword,
+        )
+        texts = [clip["Content"] for row in timeline["SubtitleTracks"] for clip in row["SubtitleTrackClips"]
+                 if clip.get("AdaptMode") == "AutoScale"]
+        styled = expected.replace(clean_keyword, r"{\b1}" + clean_keyword + r"{\b0}", 1) if clean_keyword else expected
+        assert texts == ([styled] if expected else [])
+    else:
+        overlay = remotion.plan(data, 120)
+        if expected:
+            layer = overlay.instances[0]["config"]["layer"]
+            assert layer["text"] == expected
+            start = expected.index(clean_keyword)
+            assert layer["ranges"] == [[start, start + len(clean_keyword)]]
+        else:
+            assert overlay is None
+    assert data == original
+
+
+@pytest.mark.anyio
+async def test_disabled_english_does_not_read_sprite_or_require_renderer(composition_case, monkeypatch):
+    """停用英文的模板配置仍存在，但合成快照、环境检查与恢复计划都不读取其资产。"""
+    from server.template.schema import Template
+    from .conftest import remotion_track
+
+    data = case(composition_case, "title")
+    template = deepcopy(composition_case["template"])
+    chinese = next(track for track in template["tracks"] if track["target"] == "title")
+    template["tracks"].extend([{**deepcopy(chinese), "id": "title-en", "language": "en", "enabled": False},
+                               remotion_track(text_target="title", language="en")])
+    monkeypatch.setattr(remotion.sprites, "get", lambda *_: pytest.fail("不应读取停用英文资产"))
+    monkeypatch.setattr(remotion, "sprite_runtime", lambda: pytest.fail("不应检查停用英文的渲染环境"))
+    snapshot = await remotion.snapshot(Template.model_validate(template))
+    assert snapshot["placements"] == [] and snapshot["assets"] == {}
+    data["template"] = template
+    data["remotion"]["placements"][0].update(text_target="title", language="en")
+    data["remotion"]["assets"] = {}  # 恢复时也不能读取停用绑定。
+    await remotion.require_environment(data)
+    assert remotion.plan(data, 120) is None
+
+
 @pytest.mark.parametrize("text,keyword,expected", [("😀今天今天", "今天", [[1, 3]]), ("问？你好", "不存在", []), ("空词", "", [])])
 def test_resolve_replaces_sample_and_uses_first_codepoint_range(text, keyword, expected):
     """首次关键词使用码点区间；空或未命中清除旧高亮，保留样式且不修改发布值。"""
@@ -833,3 +933,104 @@ def test_real_fit_measures_the_part_of_the_canvas_the_video_shows(composition_ca
     settings = Settings(_env_file=None, data_dir=tmp_path / "state", **configured)
     asyncio.run(fit_texts(Renderer(settings), overlay, {sprite.sprite_id: sprite}, tmp_path / "fit"))
     assert 90 <= overlay.instances[0]["config"]["fontSize"] <= 103
+
+
+def multi_line_case(composition_case, *, dynamic=True, target="subtitle"):
+    """两行字效（声明 lineStartFrames）配一组字幕：第一句三个切片、第二句一个切片，切片之间有空隙。"""
+    from .conftest import published_sprite
+    sprite = published_sprite()
+    sprite.text_prop, sprite.keywords_prop = "text", "keywords"
+    schema = json.loads(sprite.config_schema_json)
+    schema["properties"]["lineStartFrames"] = {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 3600},
+                                               "minItems": 2, "maxItems": 2}
+    if dynamic:
+        schema["x-imv-dynamic-duration"] = True
+    sprite.config_schema_json = json.dumps(schema)
+    sprite.default_config_json = json.dumps({**json.loads(sprite.default_config_json), "text": "一\n二", "lineStartFrames": [0, 30]})
+    data = case(composition_case, target)
+    data["remotion"]["assets"] = {sprite.sprite_id: MessageToDict(sprite, preserving_proto_field_name=True)}
+    data["remotion"]["placements"][0]["sprite_id"] = sprite.sprite_id
+    segment = lambda index, text, keyword, start, end, group: {"segment_id": index, "text": text, "keyword": keyword, "start_time": start,
+                                                              "end_time": end, "level": 1, "group_id": group}
+    data["segmentation"]["segments"] = [
+        segment(1, "甲乙，", "甲乙", 0, 1, [1, 3]), segment(2, "丙丁，", "丁", 1, 2, [2, 3]),
+        segment(3, "戊己。", "", 2.5, 3.5, [3, 3]), segment(4, "庚辛。", "庚", 4, 5, [1, 1]),
+    ]
+    return data
+
+
+def test_multi_line_subtitles_fill_lines_from_consecutive_cues_of_one_sentence(composition_case):
+    """多行字效：同一句里每两个切片一组，第 i 行在第 i 个切片开始时出现，整组在最后一个切片结束时清空；换句时提前开始新组。"""
+    result = remotion.plan(multi_line_case(composition_case), 120)
+    assert [(item["start_frame"], item["duration_frames"]) for item in result.instances] == [(0, 60), (75, 30), (120, 30)]
+    assert [item["config"]["text"] for item in result.instances] == ["甲乙\n丙丁", "戊己", "庚辛"]
+    assert [item["config"]["lineStartFrames"] for item in result.instances] == [[0, 30], [0, 0], [0, 0]]
+    assert [item["config"]["keywords"] for item in result.instances] == [["甲乙", "丁"], [], ["庚"]]
+    # The fit measures each group once its last line is shown.
+    assert [(item["text"], item["reveal_frame"]) for item in result.instances] == [("甲乙\n丙丁", 30), ("戊己", 0), ("庚辛", 0)]
+
+
+@pytest.mark.parametrize("duration_ms, expected", [
+    (8000, [(0, 60, "甲乙\n丙丁", [0, 30]), (75, 30, "戊己", [0, 0]), (120, 30, "庚辛", [0, 0])]),
+    # The second line starts after the video ends: it is dropped and the group is one line.
+    (900, [(0, 27, "甲乙", [0, 0])]),
+    # The second line is cut by the end of the video, which also ends the group.
+    (1500, [(0, 45, "甲乙\n丙丁", [0, 30])]),
+])
+def test_multi_line_text_slot_keeps_only_the_lines_inside_its_interval(composition_case, duration_ms, expected):
+    """新字幕槽位按文字对象区间（字幕从 0 到成片结尾）裁剪：区间外开始的行丢弃，被截的组随区间结束。"""
+    data = multi_line_case(composition_case)
+    data["template"] = deepcopy(composition_case["template"])
+    data["duration_ms"] = duration_ms
+    data["remotion"]["placements"][0].update(text_target="subtitle", editor={})
+    result = remotion.plan(data, 120)
+    assert [(item["start_frame"], item["duration_frames"], item["config"]["text"], item["config"]["lineStartFrames"])
+            for item in result.instances] == expected
+
+
+def test_fixed_clock_multi_line_starts_follow_the_preview_clock(composition_case, monkeypatch):
+    """固定时钟的资产读到预览时钟：行起点按宿主同样的线性映射换算到预览帧，排版预检仍按实际帧测量。"""
+    monkeypatch.setattr(remotion, "retime_source", lambda sprite: "timed source")
+    result = remotion.plan(multi_line_case(composition_case, dynamic=False), 120)
+    first = result.instances[0]
+    # 30 of 60 real frames is round(30 * 89 / 59) of the 90 preview frames.
+    assert first["config"]["lineStartFrames"] == [0, 45] and first["reveal_frame"] == 30 and first["code"] == "timed source"
+
+
+def test_multi_line_title_puts_the_whole_title_on_the_first_line(composition_case):
+    """多行字效绑定标题：整段标题放第一行（自带的换行改为空格），其余行没有文字。"""
+    result = remotion.plan(multi_line_case(composition_case, target="title"), 120)
+    item, = result.instances
+    assert item["config"]["text"] == "业务标题 保留换行"
+    assert item["config"]["lineStartFrames"] == [0, 0]
+
+
+def test_single_line_subtitles_are_still_one_instance_per_cue(composition_case):
+    """单行字效不分组：每个切片一个实例，不注入行起点（回归）。"""
+    data = multi_line_case(composition_case)
+    sprite = next(iter(data["remotion"]["assets"].values()))
+    schema = json.loads(sprite["config_schema_json"])
+    schema["properties"].pop("lineStartFrames")
+    sprite["config_schema_json"] = json.dumps(schema)
+    defaults = json.loads(sprite["default_config_json"])
+    defaults.pop("lineStartFrames")
+    sprite["default_config_json"] = json.dumps(defaults)
+    result = remotion.plan(data, 120)
+    assert [item["config"]["text"] for item in result.instances] == ["甲乙", "丙丁", "戊己", "庚辛"]
+    assert all("lineStartFrames" not in item["config"] and "reveal_frame" not in item for item in result.instances)
+
+
+def test_multi_line_groups_split_before_the_text_or_line_start_limits(composition_case):
+    """同一句的两个切片单独都合规：拼起来超过资产文字上限（40 字），或第二行比组首晚 120 秒以上（行起点上限 3600 帧）时分成两组，不让合成失败。"""
+    data = multi_line_case(composition_case)
+    long = lambda index, char, start, group: {"segment_id": index, "text": char * 25, "keyword": "", "start_time": start,
+                                               "end_time": start + 1, "level": 1, "group_id": group}
+    data["segmentation"]["segments"] = [long(1, "甲", 0, [1, 2]), long(2, "乙", 1, [2, 2])]
+    assert [item["config"]["text"] for item in remotion.plan(data, 120).instances] == ["甲" * 25, "乙" * 25]
+    data = multi_line_case(composition_case)
+    data["duration_ms"] = 200_000
+    segment = lambda index, text, start, group: {"segment_id": index, "text": text, "keyword": "", "start_time": start,
+                                                 "end_time": start + 1, "level": 1, "group_id": group}
+    data["segmentation"]["segments"] = [segment(1, "开头", 0, [1, 2]), segment(2, "很久以后", 125, [2, 2])]
+    result = remotion.plan(data, 400)
+    assert [(item["start_frame"], item["config"]["text"]) for item in result.instances] == [(0, "开头"), (3750, "很久以后")]

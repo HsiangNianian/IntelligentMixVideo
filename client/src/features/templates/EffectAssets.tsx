@@ -4,7 +4,7 @@ import { Captions, Heading1, Layers, MessageCircle, Shuffle, SlidersHorizontal, 
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { defaultEditor, textRoles, type Category, type Draft, type Editor, type EffectAsset, type TextRole } from "./model";
+import { defaultEditor, textRoles, type Category, type Draft, type Editor, type EffectAsset, type EffectTrack, type TextRole } from "./model";
 import { assetCategories, assetField, isSelectableAsset, type EffectTarget } from "./effects";
 import { trackLabel, trackLayers } from "./tracks";
 import { AssetBrowser, CoverPlaceholder } from "./AssetBrowser";
@@ -30,13 +30,16 @@ export function ObjectIcon({ target }: { target: EffectTarget }) {
 }
 
 /** 按分类和名称浏览目录；文字资产显式选择作用对象，目录数量较多时分批展示。 */
-export function EffectAssets({ editor = defaultEditor, catalog, textTarget, onTextTarget, onAsset, textEditor }: {
+export function EffectAssets({ editor = defaultEditor, catalog, textTarget, onTextTarget, onAsset, textEditor, textTracks, selectedText, onSelectText }: {
   editor?: Editor;
   catalog: EffectAsset[];
   textTarget: TextRole;
   onTextTarget: (target: TextRole) => void;
   onAsset: (asset: EffectAsset, target: TextRole) => void;
   textEditor?: Editor;
+  textTracks?: EffectTrack[];
+  selectedText?: string | null;
+  onSelectText?: (id: string) => void;
 }) {
   const id = useId();
   const [category, setCategory] = useState<Category>("flower");
@@ -47,6 +50,7 @@ export function EffectAssets({ editor = defaultEditor, catalog, textTarget, onTe
   const conflicting = isMotion && (category === "loop" ? Boolean(editor[`${role}In`] || editor[`${role}Out`]) : Boolean(editor[`${role}Loop`]));
   const needsBubble = isMotion && role === "bubble" && !editor.bubble;
   const selectedField = assetField(category, role);
+  const options = textTracks?.filter((track) => track.target === "title" || track.target === "subtitle" || (isMotion && track.target === "bubble"));
   return (
     <section aria-label="特效资产" className="flex min-w-0 flex-col gap-2.5 p-3">
       <div className="flex items-center justify-between gap-2"><h2 className="text-[13px] font-semibold">特效资产</h2><span className="rounded-md bg-muted px-1.5 py-1 text-[11px] text-muted-foreground">{selectableAssets.length} 项</span></div>
@@ -71,8 +75,8 @@ export function EffectAssets({ editor = defaultEditor, catalog, textTarget, onTe
         })}
         controls={<>
           {(category === "flower" || isMotion) && (
-            <div className="space-y-1.5"><Label htmlFor={`${id}-target`} className="text-[11px]">应用到</Label><Select value={role} onValueChange={(value) => onTextTarget(value as TextRole)}><SelectTrigger id={`${id}-target`} size="sm" className="w-full px-2.5 text-[11px]"><SelectValue /></SelectTrigger><SelectContent>
-              {(Object.keys(textRoles) as TextRole[]).filter((value) => category !== "flower" || value !== "bubble").map((value) => <SelectItem key={value} value={value} className="text-xs">{textRoles[value]}</SelectItem>)}
+            <div className="space-y-1.5"><Label htmlFor={`${id}-target`} className="text-[11px]">应用到</Label><Select value={options ? options.find((track) => track.id === selectedText)?.id ?? options.find((track) => track.target === role)?.id : role} onValueChange={(value) => options ? onSelectText?.(value) : onTextTarget(value as TextRole)}><SelectTrigger id={`${id}-target`} size="sm" className="w-full px-2.5 text-[11px]"><SelectValue /></SelectTrigger><SelectContent>
+              {options ? options.map((track) => <SelectItem key={track.id} value={track.id} className="text-xs">{trackLabel(track, textTracks!)}</SelectItem>) : (Object.keys(textRoles) as TextRole[]).filter((value) => category !== "flower" || value !== "bubble").map((value) => <SelectItem key={value} value={value} className="text-xs">{textRoles[value]}</SelectItem>)}
             </SelectContent></Select></div>
           )}
           {(conflicting || needsBubble) && <p role="status" className="text-[11px] text-muted-foreground">{needsBubble ? "请先添加气泡样式。" : "循环动画与入场、出场动画互斥，请在右侧清除当前动画后选择。"}</p>}
