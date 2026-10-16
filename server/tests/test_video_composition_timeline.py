@@ -9,6 +9,57 @@ from server.video_composition.timeline import build_timeline, format_subtitle_ke
 from .conftest import remotion_track, template_track
 
 
+@pytest.mark.parametrize("title_on,subtitle_on", [(True, True), (True, False), (False, True), (False, False)])
+def test_bilingual_timeline_uses_independent_styles_and_synchronized_times(composition_case, title_on, subtitle_on):
+    """英文使用实际译文、独立样式和原片段区间；停用英文即使快照有译文也不输出。"""
+    case = composition_case
+    english = {}
+    for role, enabled in (("title", title_on), ("subtitle", subtitle_on)):
+        source = next(track for track in case["template"]["tracks"] if track["target"] == role)
+        english[role] = deepcopy(source)
+        english[role].update(id=f"{role}-en", language="en", enabled=enabled)
+        english[role]["editor"].update({role: "Must not render this example", f"{role}Size": 20,
+                                       f"{role}Y": 17 if role == "title" else 90, f"{role}Font": "Source Han Sans CN"})
+        case["template"]["tracks"].append(english[role])
+    case["segments"][0].update(text_en="Don't stop!", keyword_en="stop")
+    case["segments"][1].update(text_en="Keep going.", keyword_en="")
+    original = deepcopy(case)
+    timeline, _ = build_timeline(**case, title_en="Business, title!", title_keyword_en="Business")
+    clips = [clip for row in timeline["SubtitleTracks"] for clip in row["SubtitleTrackClips"]]
+    translated = [clip for clip in clips if clip.get("AdaptMode") == "AutoScale"]
+    assert [clip["Content"] for clip in translated] == (["Business, title!"] if title_on else []) + (["Don't stop", "Keep going"] if subtitle_on else [])
+    assert all((clip["TextWidth"], clip["FontSize"], clip["Font"]) == (0.9, 20, "Source Han Sans CN") for clip in translated)
+    assert [(clip["TimelineIn"], clip["TimelineOut"]) for clip in translated] == ([(1, 3)] if title_on else []) + ([(1, 3), (4, 6)] if subtitle_on else [])
+    assert any(clip["Content"] == "甲乙丙丁" for clip in clips)
+    assert case == original
+
+
+@pytest.mark.parametrize("role", ["title", "subtitle"])
+def test_missing_english_never_falls_back_to_sample(composition_case, role):
+    """启用英文但译文缺失时拒绝组装；关闭后既不需要译文也不借用模板示例。"""
+    source = next(track for track in composition_case["template"]["tracks"] if track["target"] == role)
+    english = {**deepcopy(source), "id": "english", "language": "en"}
+    composition_case["template"]["tracks"].append(english)
+    with pytest.raises(ValueError, match="缺少英文"):
+        build_timeline(**composition_case)
+    english["enabled"] = False
+    timeline, _ = build_timeline(**composition_case)
+    assert all(clip.get("AdaptMode") != "AutoScale" for row in timeline["SubtitleTracks"] for clip in row["SubtitleTrackClips"])
+
+
+@pytest.mark.parametrize("title", [None, "", "   "])
+def test_bilingual_empty_title_does_not_require_translation(composition_case, title):
+    """未提供实际标题时，即使开启双语也不要求译文或输出模板示例。"""
+    composition_case["request"]["title"] = title
+    source = next(track for track in composition_case["template"]["tracks"] if track["target"] == "title")
+    source["editor"]["title"] = "标题示例不应出现在成片"
+    composition_case["template"]["tracks"].append({**deepcopy(source), "id": "title-en", "language": "en"})
+    timeline, _ = build_timeline(**composition_case)
+    clips = [clip for row in timeline["SubtitleTracks"] for clip in row["SubtitleTrackClips"]]
+    assert all(clip.get("AdaptMode") != "AutoScale" for clip in clips)
+    assert source["editor"]["title"] not in [clip["Content"] for clip in clips]
+
+
 @pytest.mark.parametrize("mode", ["materials_voice", "materials_silent"])
 def test_material_defaults_use_business_text_without_modifying_template(composition_case, mode):
     """缺少文字对象时补默认样式；无声只显示标题，有声字幕仍依切片时间。"""

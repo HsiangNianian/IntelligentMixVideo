@@ -266,6 +266,8 @@ class EffectTrack(BaseModel):
     transition_boundary: int | None = Field(default=None, ge=1, le=100, strict=True, exclude_if=lambda value: value is None)
     # Remotion 字效作用的文字对象；该文字不再由 IMS 渲染，片段时间跟随它。分类是否相符由保存时按 Sprite 检查。
     text_target: Literal["title", "subtitle"] | None = Field(default=None, exclude_if=lambda value: value is None)
+    language: Literal["zh", "en"] = Field(default="zh", exclude_if=lambda value: value == "zh")
+    enabled: StrictBool = Field(default=True, exclude_if=lambda value: value is True)
 
     @field_serializer("editor", mode="wrap")
     def serialize_editor(self, editor: EffectTemplateEditor, handler: SerializerFunctionWrapHandler) -> dict:
@@ -279,6 +281,10 @@ class EffectTrack(BaseModel):
     @model_validator(mode="after")
     def validate_instance(self) -> "EffectTrack":
         """检查时间规则和对象内容；应用视频时计算实际区间与动画时长。"""
+        if self.language != "zh" and self.target not in ("title", "subtitle") and not (self.target == "remotion" and self.text_target):
+            raise ValueError("只有标题、字幕及其 Remotion 绑定可以设置语言")
+        if not self.enabled and not (self.language == "en" and self.target in ("title", "subtitle")):
+            raise ValueError("只有英文标题或字幕可以停用")
         if self.transition_boundary is not None and self.target not in ("transition", "remotion"):
             raise ValueError("只有转场可以设置视频交界处")
         if self.target == "transition":
@@ -359,9 +365,20 @@ class TemplateData(BaseModel):
         if len({track.id for track in self.tracks}) != len(self.tracks):
             raise ValueError("轨道 ID 重复")
         for target in ("title", "subtitle", "vfx"):
-            if sum(track.target == target for track in self.tracks) > 1:
-                raise ValueError(f"{target} 最多只能有一个")
+            for language in ("zh", "en"):
+                if sum(track.target == target and track.language == language for track in self.tracks) > 1:
+                    raise ValueError(f"{target} 每种语言最多只能有一个")
         for track in self.tracks:
+            if track.language == "en":
+                role = track.text_target if track.target == "remotion" else track.target
+                source = next((item for item in self.tracks if item.target == role and item.language == "zh"), None)
+                if source is None:
+                    raise ValueError("英文文字需要对应的中文对象")
+                if track.target == "remotion":
+                    if not any(item.target == role and item.language == "en" for item in self.tracks):
+                        raise ValueError("英文 Remotion 字效需要对应的英文对象")
+                elif (track.start_mode, track.start, track.duration) != (source.start_mode, source.start, source.duration):
+                    raise ValueError("英文文字的时间必须跟随中文对象")
             if track.target == "subtitle" and (track.start_mode != "seconds" or track.start != 0 or track.duration is not None):
                 raise ValueError("底部字幕固定覆盖整个视频")
         transitions = [track.transition_boundary for track in self.tracks if track.transition_boundary is not None]
@@ -371,7 +388,7 @@ class TemplateData(BaseModel):
             for track in self.tracks:
                 if track.target == "transition" and track.duration != self.transition_duration_seconds:
                     raise ValueError("全部 IMS 转场必须使用统一持续时间")
-        texts = [track.text_target for track in self.tracks if track.text_target is not None]
+        texts = [(track.text_target, track.language) for track in self.tracks if track.text_target is not None]
         if len(set(texts)) != len(texts):
             raise ValueError("每个标题或字幕最多一个 Remotion 字效")
         return self
@@ -428,9 +445,17 @@ class TemplateSummary(BaseModel):
 
 def completeness_error(template: TemplateData) -> str:
     """保存及存储读取共用必需对象检查，不依赖预览媒体。"""
-    if any(sum(track.target == target for track in template.tracks) != 1 for target in ("title", "subtitle")):
+    if any(sum(track.target == target and track.language == "zh" for track in template.tracks) != 1 for target in ("title", "subtitle")):
         return "保存模板需要标题和底部字幕各一个"
     return ""
+
+
+def active_tracks(tracks: list[EffectTrack]) -> list[EffectTrack]:
+    """只在渲染边界过滤停用英文及其字效；持久化始终保留完整配置。"""
+    enabled = {track.target for track in tracks if track.language == "en" and track.enabled and track.target in ("title", "subtitle")}
+    return [track for track in tracks if track.language != "en" or (
+        track.text_target in enabled if track.target == "remotion" else track.target in enabled
+    )]
 
 
 @lru_cache(maxsize=1)

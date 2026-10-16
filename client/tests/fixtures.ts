@@ -79,6 +79,7 @@ function templateRecord(template: Template): TemplateRecord {
     tracks: { tracks: [
       ...template.tracks.map((track) => ({
         id: track.id, target: track.target, startMode: track.start_mode,
+        language: track.language, enabled: track.enabled,
         start: track.start, duration: track.duration ?? undefined, transitionBoundary: track.transition_boundary, editor: track.editor,
       })),
       // 服务端把 Remotion 片段作为 remotion 轨道返回，editor 只带参数覆盖与宿主变换（没有时为空消息）。
@@ -86,6 +87,7 @@ function templateRecord(template: Template): TemplateRecord {
         id: clip.id, target: "remotion", startMode: "seconds", start: clip.start,
         duration: clip.duration ?? undefined, spriteId: clip.sprite_id,
         textTarget: clip.text_target, transitionBoundary: clip.transition_boundary,
+        language: clip.language,
         editor: Object.keys(clip.parameters ?? {}).length || Object.keys(clip.transform ?? {}).length ? { remotion: {
           parameters: Object.entries(clip.parameters ?? {}).map(([key, value]) => ({
             key, ...(Array.isArray(value) ? { stringListValue: { values: value } } : typeof value === "string" ? { stringValue: value } : typeof value === "number" ? { numberValue: value } : { boolValue: value }),

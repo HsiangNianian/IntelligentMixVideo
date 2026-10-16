@@ -257,6 +257,12 @@ pub struct EffectTrack {
     /// 设置后该文字不再由 IMS 渲染，片段的时间跟随该对象，文字与关键词在合成时按该对象填入。
     #[prost(string, optional, tag="9")]
     pub text_target: ::core::option::Option<::prost::alloc::string::String>,
+    /// 文字对象或 Remotion 文字绑定的语言；省略为中文 zh，英文使用 en。
+    #[prost(string, optional, tag="10")]
+    pub language: ::core::option::Option<::prost::alloc::string::String>,
+    /// 英文文字对象是否参与预览和合成；省略为启用，关闭仍保留配置与资产绑定。
+    #[prost(bool, optional, tag="11")]
+    pub enabled: ::core::option::Option<bool>,
 }
 /// 包装数组以保留“提供了空轨道列表”的含义。
 #[derive(::serde::Serialize)]

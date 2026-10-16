@@ -103,6 +103,18 @@ const placed = {
   canvas: { width: 1080, height: 1920, box: { x: 90, y: 760, width: 900, height: 400 }, movable: true },
 };
 
+// 场景：同一资产的英文摆放可从画面单独选中，区间外不留下可选热区。
+test("画面选择按文字摆放 ID 区分中英文", () => {
+  const selected: string[] = [];
+  const ref = createRef<SpriteOverlayHandle>();
+  const english = { ...placed, id: "english", textTrackId: "title-en", name: "英文标题", transform: { y: 1200 } };
+  const view = render(<SpriteOverlay ref={ref} clips={[placed, english]} stageAspect={9 / 16} initialTime={2} onSelect={(id) => selected.push(id)} />);
+  fireEvent.pointerDown(screen.getByRole("button", { name: "选择文字：英文标题" }));
+  expect(selected).toEqual(["english"]);
+  view.rerender(<SpriteOverlay ref={ref} clips={[placed, english]} stageAspect={9 / 16} initialTime={5} onSelect={(id) => selected.push(id)} />);
+  expect(screen.queryByRole("button", { name: "选择文字：英文标题" })).toBeNull();
+});
+
 // 场景：回报 host 能力的播放器在就绪后收到这次摆放的参数与宿主变换；内容变化时重发，未变化时不重复发送。
 test("支持参数覆盖的播放器收到参数与宿主变换", async () => {
   const ref = createRef<SpriteOverlayHandle>();
