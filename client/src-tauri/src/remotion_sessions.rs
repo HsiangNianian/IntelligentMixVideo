@@ -165,6 +165,21 @@ fn documents(rows: Vec<String>) -> Result<Value, String> {
 fn operate(connection: &mut Connection, operation: &str, payload: Value) -> Result<Value, String> {
     let failed = |_| "读写本地会话库失败".to_string();
     match operation {
+        "pending" => {
+            parse::<Empty>(payload)?;
+            // 全部服务的会话都参与门禁，不能只看当前打开的页签或服务；列出所属服务与标题，供用户找到并处理。
+            let mut statement = connection.prepare(
+                "SELECT server, COALESCE(json_extract(data, '$.title'), ''), COALESCE(json_extract(data, '$.deleting'), 0) = 1 FROM works WHERE COALESCE(json_extract(data, '$.job.status'), '') NOT IN ('succeeded', 'answered', 'needs_input', 'failed', 'cancelled', 'interrupted') OR json_extract(data, '$.deleting') = 1 ORDER BY server, updated_at DESC",
+            ).map_err(failed)?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok(json!({"server": row.get::<_, String>(0)?, "title": row.get::<_, String>(1)?, "deleting": row.get::<_, bool>(2)?}))
+                })
+                .map_err(failed)?
+                .collect::<Result<Vec<Value>, _>>()
+                .map_err(failed)?;
+            Ok(Value::Array(rows))
+        }
         "device" => {
             parse::<Empty>(payload)?;
             let existing: Option<String> = connection
@@ -395,6 +410,39 @@ mod tests {
             ],
             "jobs": [{"id": format!("{work}-job"), "status": "running"}]
         })
+    }
+
+    /// 不同服务的后台会话和未知状态都阻止更新，终态与等用户回答的会话不阻止。
+    #[test]
+    fn pending_checks_all_servers_and_unknown_states() {
+        let scratch = Scratch::new();
+        let mut connection = scratch.open();
+        for (i, status) in ["queued", "running", "succeeded", "needs_input", "unknown"]
+            .iter()
+            .enumerate()
+        {
+            let mut value = change(&format!("w{i}"), "2026-10-16T00:00:00Z");
+            value["server"] = json!(format!("http://server-{i}.test"));
+            value["work"]["job"]["status"] = json!(status);
+            operate(&mut connection, "save", value).unwrap();
+        }
+        let pending = operate(&mut connection, "pending", json!({})).unwrap();
+        let servers: Vec<&str> = pending
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["server"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            servers,
+            [
+                "http://server-0.test",
+                "http://server-1.test",
+                "http://server-4.test"
+            ]
+        );
+        assert_eq!(pending[0]["deleting"], json!(false));
+        assert!(operate(&mut connection, "pending", json!({"server":SERVER})).is_err());
     }
 
     /// 设备 ID 首次生成后保持不变，库文件按需创建。

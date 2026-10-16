@@ -6,7 +6,7 @@ import type { ParameterValue } from "@/components/ParameterControl";
 import { SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { SpriteAsset } from "@/features/sprites/model";
 import type { ClipTransform, TransformField } from "@/features/sprites/parameters";
-import { textRoles, type Draft, type RemotionClip, type TextRole } from "./model";
+import { boundText, textKey, textRoles, type Draft, type RemotionClip, type TextRole, type TextLanguage } from "./model";
 import type { ResolvedTimeline } from "./tracks";
 import { compactTransitions, nextTransitionBoundary } from "./transitions";
 
@@ -45,8 +45,8 @@ export function vfxTaken(draft: Draft, known: SpriteAsset[], except?: string): b
 }
 
 /** 已作用于该文字对象的 Remotion 字效。 */
-function textClip(draft: Draft, role: TextRole, except?: string): RemotionClip | undefined {
-  return draft.clips.find((clip) => clip.id !== except && clip.text_target === role);
+function textClip(draft: Draft, role: TextRole, except?: string, language?: TextLanguage): RemotionClip | undefined {
+  return draft.clips.find((clip) => clip.id !== except && clip.text_target === role && textKey(role, clip.language) === textKey(role, language));
 }
 
 /**
@@ -54,7 +54,7 @@ function textClip(draft: Draft, role: TextRole, except?: string): RemotionClip |
  * 名额已被占用时拒绝并说明原因，占用文字或交界处的片段起点与时长由 `timeClips` 按所占对象计算。
  * 叠加渲染要求所有片段的画布尺寸与帧率相同，所以与已添加片段画布不同的资产也在这里拒绝；`known` 是用来查找已添加片段资产的目录，服务端保存时仍会复核。
  */
-export function addClip(draft: Draft, asset: SpriteAsset, known: SpriteAsset[], role: TextRole = "title"): Draft {
+export function addClip(draft: Draft, asset: SpriteAsset, known: SpriteAsset[], role: TextRole = "title", language?: TextLanguage): Draft {
   if (draft.tracks.length + draft.clips.length >= maxTracks) throw new Error("轨道数量不能超过 100");
   const clash = draft.clips
     .map((clip) => known.find((item) => item.id === clip.sprite_id))
@@ -70,9 +70,10 @@ export function addClip(draft: Draft, asset: SpriteAsset, known: SpriteAsset[], 
   };
   if (asset.kind === SpriteKind.TEXT) {
     if (role === "bubble") throw new Error("Remotion 字效只能作用于标题或底部字幕，请先在左侧选择标题或字幕");
-    const existing = textClip(draft, role);
+    const existing = textClip(draft, role, undefined, language);
     if (existing) throw new Error(`${textRoles[role]}已有 Remotion 字效，请先移除再添加`);
     clip.text_target = role;
+    if (language) clip.language = language;
   } else if (asset.kind === SpriteKind.TRANSITION_OVERLAY) {
     clip.transition_boundary = nextTransitionBoundary(draft);
   } else if (asset.kind !== SpriteKind.FILTER_OVERLAY && vfxTaken(draft, known)) {
@@ -82,8 +83,8 @@ export function addClip(draft: Draft, asset: SpriteAsset, known: SpriteAsset[], 
 }
 
 /** 改变字效作用的文字对象或转场所在的交界处；目标已被占用时拒绝。作用于文字后，文字与关键词由该对象提供，清除对应的参数覆盖。 */
-export function bindClip(draft: Draft, id: string, binding: { text_target: "title" | "subtitle" } | { transition_boundary: number }): Draft {
-  if ("text_target" in binding && textClip(draft, binding.text_target, id))
+export function bindClip(draft: Draft, id: string, binding: { text_target: "title" | "subtitle"; language?: TextLanguage } | { transition_boundary: number }): Draft {
+  if ("text_target" in binding && textClip(draft, binding.text_target, id, binding.language))
     throw new Error(`${textRoles[binding.text_target]}已有 Remotion 字效，请先移除`);
   if ("transition_boundary" in binding && boundaryTaken(draft, binding.transition_boundary, id))
     throw new Error(`交界处 ${binding.transition_boundary} 已有转场，请先移除`);
@@ -91,7 +92,7 @@ export function bindClip(draft: Draft, id: string, binding: { text_target: "titl
     if (clip.id !== id) return clip;
     if (!("text_target" in binding)) return { ...clip, ...binding };
     const parameters = Object.fromEntries(Object.entries(clip.parameters).filter(([key]) => !BOUND_TEXT_PARAMETERS.includes(key)));
-    return { ...clip, ...binding, parameters };
+    return { ...clip, ...binding, language: binding.language, parameters };
   }) };
 }
 
@@ -101,8 +102,10 @@ export function validateClipSlots(draft: Draft): void {
   for (const clip of draft.clips) {
     if (clip.text_target && clip.transition_boundary !== undefined) throw new Error("Remotion 片段不能同时作用于文字和视频交界处");
     if (clip.text_target) {
-      if (texts.has(clip.text_target)) throw new Error("每个标题或字幕最多一个 Remotion 字效");
-      texts.add(clip.text_target);
+      const key = textKey(clip.text_target, clip.language);
+      if (texts.has(key)) throw new Error("每个标题或字幕最多一个 Remotion 字效");
+      texts.add(key);
+      if (clip.language === "en" && !boundText(draft.tracks, clip)) throw new Error("英文字幕或标题对象不存在");
     }
     if (clip.transition_boundary !== undefined && boundaryTaken(draft, clip.transition_boundary, clip.id)) throw new Error("每个视频交界处最多一个转场");
   }
@@ -115,9 +118,9 @@ export function hiddenTextClips(draft: Draft, resolved: ResolvedTimeline): Set<s
       const transition = resolved.transitions[clip.transition_boundary - 1];
       return !transition || transition.end <= transition.start;
     }
-    const text = clip.text_target && draft.tracks.find((track) => track.target === clip.text_target);
+    const text = boundText(draft.tracks, clip);
     const shown = text ? resolved.tracks[text.id] : undefined;
-    return !!text && !(shown && shown.end > shown.start);
+    return !!text && (text.enabled === false || !(shown && shown.end > shown.start));
   }).map((clip) => clip.id));
 }
 
@@ -129,7 +132,7 @@ export function timeClips(draft: Draft, resolved: ResolvedTimeline, purpose: "pr
   const round = (seconds: number) => Math.round(seconds * 1000) / 1000;
   const clips = draft.clips.map((clip) => {
     let timing: Pick<RemotionClip, "start" | "duration"> | undefined;
-    const text = clip.text_target && draft.tracks.find((track) => track.target === clip.text_target);
+    const text = boundText(draft.tracks, clip);
     const shown = text ? resolved.tracks[text.id] : undefined;
     if (shown && shown.end > shown.start) timing = { start: round(shown.start), duration: round(shown.end - shown.start) };
     else if (purpose === "preview" && clip.transition_boundary !== undefined && resolved.transitions[clip.transition_boundary - 1]) {

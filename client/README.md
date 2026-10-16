@@ -5,6 +5,21 @@
 客户端与服务端使用同一项目版本；发版前统一更新并提交清单和锁文件，操作见[根目录发版说明](../README.md#tag-发版)。
 界面直接显示这个版本：窗口标题（浏览器网页标题与桌面原生标题栏）是「IntelligentMixVideo - v版本号」，设置对话框左侧导航栏的左下角也显示版本号，其下一行是构建校验码（构建时从 git 读取的 7 位短提交哈希，工作区有未提交改动时带 `-dirty`，可选中复制，用来核对运行的是哪一版代码；可用环境变量 `IMV_COMMIT` 显式指定，没有 `.git` 的构建环境退到 `GITHUB_SHA`，都没有时显示 unknown）。版本由 Vite 构建时从 `package.json` 注入，不在界面里另写一处，所以发版同步版本后重新构建即可。
 
+## 客户端更新
+
+设置「通用」展示当前界面版本、原生版本和更新状态。正式客户端在启动后、打开设置时自动检查，点击「一键更新」才下载。兼容并经过验证的界面版本保持窗口打开、短暂刷新；涉及原生变化时显示重启提示并自动安装重启。Linux deb 的完整升级提供下载链接。Debug 和未配置更新公钥的构建不启用更新。
+
+检查更新同时请求以下全部来源并取最高的有效版本；下载按 `gh-proxy.org` → `ghfast.top` → `ghproxy.net` → `gpp.hydroroll.team` → `ghproxy.hydroroll.team` → GitHub 直连顺序尝试，所有来源的清单及自动下载内容都必须通过 Rust 签名与完整性校验；deb 手动下载后，先按界面显示的签名清单摘要核对文件，再安装。应用前等待未保存内容和后台任务结束（等待说明列出阻止更新的会话），可以取消等待；更新后恢复工作区与已保存内容，预览保持暂停。热更新失败自动回退，多实例同时运行时提示关闭其他实例。
+
+更新实现、签名变量/Secret、兼容验证记录及首次安装要求见[客户端更新方案](../docs/client-update-design.md)。发布工具与更新核心均使用 Rust，完整安装复用官方 Tauri 更新插件。测试命令（仓库根目录）：
+
+```sh
+cargo test --manifest-path client/src-tauri/Cargo.toml --lib --bin client --locked -- --test-threads=1
+cargo test --manifest-path client/src-tauri/Cargo.toml -p imv-update-build --locked
+```
+
+第二条包含调用 Bun/Tauri CLI 的签名集成测试，须先在 `client/` 冻结安装依赖。Rust 最低版本为 1.90。
+
 ## 开发运行
 
 云端模式先按 [服务端说明](../server/README.md) 启动 MySQL 与 API；仅使用桌面本地模式可跳过服务端。在本目录执行：
@@ -55,13 +70,15 @@ VITE_PREVIEW_VIDEO_3_URL=https://your-domain.example/preview-3.mp4
 
 时间默认值按 IMS 接口配置：[转场默认 1 秒，文字入场与出场各 0.5 秒](https://help.aliyun.com/zh/ims/developer-reference/effect-configuration-description)；滤镜和 VFX 默认从视频开始持续到结束。切换固定时长时按当前视频剩余区间填写；用户已经设置的时长继续保留。
 
-新模板自动创建标题和底部字幕各一个。创建和更新时，前端、云端和本地保存都检查两者各一个；缺少任意一个便拒绝写入并保留已有记录。通过左侧「特效资产」选择样式，右侧编辑对象参数。
+新模板自动创建中文标题和中文字幕各一个。创建和更新时，前端、云端和本地保存都检查中文对象各一个；缺少任意一个便拒绝写入并保留已有记录。通过左侧「特效资产」选择样式，右侧编辑对象参数。
 修改后重启 `bun run dev`；生产构建需要重新执行 `bun run build`。
 若 `.env.local` 或对应模式的环境文件设置了同名变量，会按 Vite 的优先级覆盖 `.env`。
 
 预览默认使用三个视频，各取前十秒，读取真实媒体信息后播放。点击「加载预览视频」打开弹窗，分别为视频 1、视频 2、视频 3 填写 URL 或点击「本地文件」选择本机视频（每个不超过 512 MiB，可与 URL 混用）；三个来源全部读取成功且时间校验通过后一起更新，失败时标明视频编号并保留原有来源，取消或关闭弹窗会终止读取。每个视频不足十秒时使用完整区间；本地文件不截取，按完整时长排列。画布和 SDK 场景使用视频 1 的原始宽高，字号按画布像素计算；标题和字幕保留原文。预览按可用宽度和窗口高度的 48% 等比例显示。SDK 在独立 iframe 中加载，更换视频后重新初始化，卸载时释放。视频顺序固定，更换来源后重新计算转场时间，其他对象保留规则。远程直链须允许浏览器跨域读取。本地文件只保存在本机、不上传服务端：桌面客户端把文件复制到应用数据目录的 `data/preview_videos/`（Tauri `preview_video_*` 命令），重启后自动读回并优先于默认地址使用，在弹窗中移除文件并加载即删除本机副本、恢复默认地址；浏览器只在页面内存中使用，刷新后恢复默认。
 
 ## 模板行为
+
+标题、字幕设置分别提供「中英双语」复选框。开启后英文作为独立对象出现在画面和时间轴，可单独调整字体、字号、位置或绑定 Remotion 字效；英文标题时间跟随中文标题，英文字幕与中文切片同时出现和消失。示例文字可以编辑，成片由服务端翻译实际文案。关闭后隐藏英文并停止输出，配置和字效绑定随模板保存，重新开启即可恢复；从未开启不创建英文配置。普通英文过长时成片自动缩小字号、尽量保持单行；[Web SDK 暂不支持 AutoScale](https://help.aliyun.com/zh/ims/developer-reference/timeline-support-guide-for-editing-and-previewing-the-component-web-sdk)，预览仍使用设置的字号。Remotion 字效沿用资产的文字长度限制和排版预检。
 
 标题和底部字幕分别提供字体选择：阿里巴巴普惠体、方正仿宋简体、方正黑体简体、方正楷体简体、方正书宋简体、宋体、楷体、微软雅黑、站酷快乐体、思源黑体、思源宋体。字体随各自的 `tracks[].editor.titleFont` / `subtitleFont` 保存为 IMS 标识；预览将 `Source Han Sans CN` 转为 `Source Han Sans CN Normal`，将 `Source Han Serif CN` 转为 `思源宋体`。云端与本地使用同一目录，旧模板缺少字段时采用 `Alibaba PuHuiTi`；重置当前对象时恢复该字体，其他对象的选择保留。共享目录维护在 `server/src/server/template/fonts.json`，`value` 是保存及合成标识，`preview` 是 SDK 标识。
 

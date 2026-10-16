@@ -146,7 +146,7 @@ def error_message(details: dict) -> str:
 MODULES = ("request", "template", "asr", "segmentation", "matching", "timeline", "zos")
 GROUPS = {
     "template": "template", "remotion_snapshot": "template", "remotion_render": "timeline",
-    "asr": "asr", "segmentation": "segmentation",
+    "asr": "asr", "segmentation": "segmentation", "translation": "segmentation",
     "matching": "matching", "match_submit": "matching", "match_query": "matching",
     "assembling": "timeline", "material_probe": "timeline", "ims_storage": "timeline", "submitting": "timeline", "ims_submit": "timeline",
     "rendering": "zos", "ims_query": "zos", "playback": "zos", "zos_upload": "zos",

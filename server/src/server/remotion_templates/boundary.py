@@ -54,6 +54,9 @@ def _extreme(definition: dict, default, high: bool):
             return FILLER * (max(1, definition.get("minLength", 1)) if high else definition["maxLength"])
         return default
     if kind == "array":
+        # A multi-line text's line starts are content the host injects, not a style: keep the asset's own schedule.
+        if (definition.get("items") or {}).get("type") == "integer":
+            return default
         # Keywords: every slot filled with a word that hits the filler text everywhere, or none at all.
         if high or not isinstance(definition.get("maxItems"), int):
             return []

@@ -1,10 +1,10 @@
 [package]
 name = "client"
-version = "0.9.5"
+version = "0.9.6"
 description = "IntelligentMixVideo desktop client"
 edition = "2021"
-# File::try_lock / lock_shared 自 1.89 稳定。
-rust-version = "1.89"
+# 更新插件要求 Rust 1.90；文件锁使用标准库。
+rust-version = "1.90"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -15,11 +15,22 @@ rust-version = "1.89"
 name = "client_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[workspace]
+members = ["update-tools"]
+
 [build-dependencies]
+imv-update-build = { path = "update-tools" }
+serde_json = "1"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+tauri-plugin-updater = { version = "2.14", default-features = false, features = ["rustls-tls", "system-proxy"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json", "stream"] }
+base64 = "0.22"
+minisign-verify = "0.3"
+sha2 = "0.10"
+semver = "1"
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 prost = "0.14"

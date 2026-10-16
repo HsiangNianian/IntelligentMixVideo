@@ -1,7 +1,7 @@
 {
   "name": "intelligent-mix-video-client",
   "private": true,
-  "version": "0.9.5",
+  "version": "0.9.6",
   "type": "module",
   "packageManager": "bun@1.4.2",
   "scripts": {
@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@bufbuild/protobuf": "2.15.0",
-    "@tauri-apps/api": "^2",
+    "@tauri-apps/api": "^2.12.4",
     "@xzdarcy/react-timeline-editor": "1.0.0",
     "@xzdarcy/timeline-engine": "1.0.0",
     "class-variance-authority": "^0.7.1",
@@ -33,7 +33,7 @@
   "devDependencies": {
     "@happy-dom/global-registrator": "^20.14.5",
     "@tailwindcss/vite": "^4.3.3",
-    "@tauri-apps/cli": "^2",
+    "@tauri-apps/cli": "^2.12.3",
     "@testing-library/react": "^16.3.3",
     "@types/bun": "^1.4.2",
     "@types/node": "^22.20.2",

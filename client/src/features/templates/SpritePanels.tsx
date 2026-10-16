@@ -158,7 +158,7 @@ export function SpriteClips({ environment, clips, catalog, duration, hidden, sel
           const timing = end === undefined ? "等待预览时间" : end <= clip.start || hidden?.has(clip.id) ? "当前视频未应用" : `${Number(clip.start.toFixed(1))}～${Number(end.toFixed(1))} 秒`;
           const edited = Object.keys(clip.parameters).length + Object.keys(clip.transform).length > 0;
           const slot = clipSlot(clip, asset);
-          const place = slot === "title" || slot === "subtitle" ? `${textRoles[slot]}字效` : slot === "transition" ? `镜头转场 ${clip.transition_boundary ?? ""}`.trim() : slot ? effectTargets[slot] : asset ? "未选择作用对象" : "";
+          const place = slot === "title" || slot === "subtitle" ? `${clip.language === "en" ? slot === "title" ? "英文标题" : "英文字幕" : textRoles[slot]}字效` : slot === "transition" ? `镜头转场 ${clip.transition_boundary ?? ""}`.trim() : slot ? effectTargets[slot] : asset ? "未选择作用对象" : "";
           return <li key={clip.id} aria-label={`Remotion 资产：${name}`} className={cn("flex items-center justify-between gap-2 rounded-md border px-2 py-1.5", selected === clip.id && "border-primary ring-1 ring-primary/20")}>
             <button type="button" className="min-w-0 flex-1 text-left" aria-pressed={selected === clip.id} aria-label={`设置 Remotion 资产：${name}`} onClick={() => onSelect(clip.id)}><span className="block truncate text-[12px] font-medium">{name}</span><span className="block text-[11px] tabular-nums text-muted-foreground">{place && `${place} · `}{timing}{edited && " · 已调整参数"}{assets && !asset && " · 资产已不可用，保存前请移除"}</span></button>
             <Button type="button" variant="ghost" size="icon" className="size-6" aria-label={`移除 Remotion 资产：${name}`} onClick={() => onRemove(clip.id)}><Trash2 className="size-3.5" aria-hidden="true" /></Button>

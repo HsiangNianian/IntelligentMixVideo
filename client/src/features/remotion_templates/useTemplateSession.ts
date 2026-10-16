@@ -1,4 +1,5 @@
 /** 会话协调器：从本地数据库恢复会话、把 SSE 事件写入本地后确认送达、提交用户操作；只接受成功版本，切换不取消后台任务。 */
+import { recovery, restored } from "@/features/updates/recovery";
 import { useEffect, useRef, useState } from "react";
 import * as api from "./api";
 import { events } from "./events";
@@ -146,6 +147,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
   /** 仅记录选择位置；聊天内容在本地会话库，代码按需从服务端读取。 */
   function remember(id: string | null) {
     try {
+      recovery.remotionWork = id;
       if (id) localStorage.setItem(selectedKey(), id);
       else localStorage.removeItem(selectedKey());
     } catch {
@@ -750,7 +752,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
     alive.current = true;
     let selected: string | null = null;
     try {
-      selected = localStorage.getItem(selectedKey());
+      selected = restored.remotionWork ?? localStorage.getItem(selectedKey());
     } catch {
       /* 使用侧栏手动恢复。 */
     }

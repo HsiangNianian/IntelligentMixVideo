@@ -3,7 +3,8 @@
  * 桌面端经 Tauri `preview_video_*` 命令复制到应用数据目录，首次使用时读回字节生成 blob URL；
  * 浏览器只登记在页面内存，刷新后回到默认地址。登记的 blob URL 在应用存活期间有效，被替换或移除时释放。
  */
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { updateInvoke as invoke } from "@/lib/update-guard";
+import { isTauri } from "@tauri-apps/api/core";
 
 /** 单个本地视频上限，与桌面存储一致；字节需完整经过 IPC 并在页面内存生成 blob。 */
 export const LOCAL_VIDEO_MAX_BYTES = 512 * 1024 * 1024;

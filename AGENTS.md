@@ -11,7 +11,7 @@
 - 模板模块位于 `server/src/server/template/`，与用户示例目录 `sub_api/` 平级；路由、配置校验、数据库存储与效果目录均放在该模块内。
 - `POST /segmentations`：`title`、`script`、`asr_result` 均可省略或为 null。有 ASR 时须有有效文案，模型调用两次（首次切分、提词），非 null 标题在提词调用里同时返回 `title_keyword`（标题内连续原文、最多 12 字，不合法即失败）；只有标题时只调用一次模型、只返回 `title_keyword`，不校验内容，缺失或非字符串按空串。模型结果不做纠错重试，网络错误沿用 SDK 策略。
 - 二次切分由代码完成、不调模型：超过 8 个有效字（不计标点空白）的片段按「两侧至少 2 字 → 标点 → 结巴词边界 → 中点」选切点。两次切分都保护英文和字母数字串（含小数、连字符、百分号、半角千分位）及有限的数字列表模式（共享后缀“后”、顿号枚举、“第…名”、“等”后带时间单位的约数），普通逗号两侧的数字（如 `99，3件`）不合并；受保护表达本身超过 8 字才保留超长片段。保留原文与 ASR 时间，关键词只由完整包含它的子段继承。下游字幕去标点但保留问号和数字小数点，素材召回用原关键词。
-- `translate`（暂无调用方）：对切片结果一次模型调用译成英文，增加 `text_en`/`keyword_en`，传标题时增加 `title_en`/`title_keyword_en`；英文关键词复用中文校验但不限长度。
+- `translate`（供双语视频合成调用）：对切片结果一次模型调用译成英文，增加 `text_en`/`keyword_en`，传标题时增加 `title_en`/`title_keyword_en`；英文关键词复用中文校验但不限长度。
 - Remotion 文字模板生成服务位于 `server/src/server/remotion_templates/`，Python 包名为 `server.remotion_templates`，挂载 `/api/templates`；作品、任务、版本、模型窗口、待送达事件与叠加渲染任务保存在共享 MySQL（`tables.py`，首次使用建表），后端不再创建 SQLite 或运行锁、只按单实例部署：库里的租约行 `remotion_instance` 强制这一点（启动获取、每 10 秒续期、正常退出释放，崩溃的实例 30 秒后过期；未过期时第二个实例的首个 Remotion 请求返回 503，失去租约的实例不再领取任务），要求 MySQL 8.0 及以上；封存版本文件、参考图与资产预览包是 `imv/remotion/` 下的对象（`object_store.py`：`ZOS_BUCKET` 非空时以 public-read 存 ZOS，版本的内部文件 `candidate.json`/`spec.json`/`tool-validation.json` 知道版本 ID 即可读取，为空时存 `IMV_DATA_DIR/objects`；填了桶但其余配置不全即报错），后端经 SHA-256 校验的本地缓存读取；模块 `.data/` 只放任务草稿、缓存与私有审计 `audit/<work_id>/<job_id>.jsonl`（删除会话时整个目录一并删除）。每个作品属于创建它的客户端设备：作品相关 JSON 接口必须携带 `X-IMV-Device`，其他设备的作品视为不存在（删除为 204 空操作）；打开的作品经 SSE 接收事件（空闲时休眠到本作品有事务提交才读取库，5 秒读取一次兜底），其他作品经 `GET /works/{id}/events?after=` 分页补取，写入本地后同样确认，服务端不提供作品列表；预览页、字体、参考图与产物下载按不可猜测的 ID 访问、不校验设备。每小时清理一次：未确认送达的事件 `IMV_UNDELIVERED_EVENT_DAYS`（7 天）、私有审计 `IMV_AUDIT_RETENTION_DAYS`（14 天）、设备 `IMV_DEVICE_RETENTION_DAYS`（90 天）未活跃则删除其会话数据，并重试清理未完成的删除，删除 30 天前结束且无待发回调的叠加渲染任务与 30 天未用的读取缓存（各步骤与各作品互不影响），已发布 Sprite 不受影响。使用说明维护在模块内 README。
 - 创建作品、更早（PR74）版本或播放器包早于默认值注入的组合版本的参数补丁消息与此类参数任务的重试在入队前检查隔离校验环境（非 Linux 或缺少 `bwrap`/`prlimit`/`node`），不满足返回 503（提问、澄清回复、文字修改与普通重试不预检，模型可能无需校验器即可回答） 并说明原因，不留下作品或任务，客户端显示该 503 的文本 `detail` 且不再提示检查历史会话；仅 macOS 开发可设 `IMV_ALLOW_UNSANDBOXED_WORKER=true`，以普通 Node 运行 `tool-validation-worker.mjs`、`presentation-worker.mjs` 与 `worker.mjs`（只要求 `node`，生成代码无隔离，启动时记警告；默认关闭，其他系统一律忽略；`overlay-worker.mjs` 不在名单内，叠加渲染含重启恢复始终需要 Linux 沙箱）；运行中校验器无法启动时 `preset.create`/`sprite.create` 返回 `VALIDATION_UNAVAILABLE`（原始异常留在私有审计，不再变成 `PRESET_STORE_FAILED`/`SPRITE_STORE_FAILED`；`preset.modify` 只校验契约，不启动校验器），存储错误码仅用于存储失败。
 - 成功版本只读诊断接口复用 `validate.code` 的契约检查与隔离 TypeScript 语言服务，不新增诊断持久化表；先按证据清单校验封存产物（改写返回 404），隔离运行时不可用返回 503，不把「未检查」表示为「无诊断」；只读接口不排队、不发布。
@@ -85,7 +85,9 @@
 
 - 主页内容最大宽度 1400px、整页滚动。顶部「开始创作」并排「新建云端模板」「新建本地模板」「AI 生成字效」（跳转 Remotion 字效）快捷卡片，浏览器禁用本地新建并说明需要桌面客户端；下方「我的模板」云端在上、本地在下，分组标题带存储说明与数量。模板以自动列数画廊卡片展示（最小约 210px，窄屏单列），封面按模板 ID 生成稳定配色并排版模板自身的标题 / 字幕文字，角标显示对象数，悬停显示「打开编辑」；名称、更新日期、单行说明与完整 `styleid`（模板 UUID）位于封面下方，点击卡片选择模板；每张卡片提供红色垃圾桶，确认框显示名称与 ID，确认才删除所属环境的模板，取消不修改，失败保留确认框供重试；删除当前打开的模板后清空编辑区；删除正在读取的模板时取消对应请求、清除加载与错误状态并忽略迟到回执，其他草稿和读取保留；空列表与不可用状态使用 Empty。主页不展示更新日志，客户端各页头均不显示当前时间。复用 Button、Dialog 和表单组件，两库分别加载和重试。
 
-- 新模板自动创建标题和底部字幕各一个，两者不可删除；前端提交、Python 存储与 Rust 本地保存均强制检查标题和字幕各一个，创建和更新都适用，缺少时拒绝写入。VFX 最多一个，滤镜可添加多个。标题、字幕和 VFX 重复选择样式时替换已有对象的效果，保留参数。底部字幕从零持续到视频结束，时间不可修改。效果通过左侧「特效资产」添加，已添加列表用于选择对象。
+- 新模板自动创建中文标题和中文字幕各一个，两者不可删除；前端提交、Python 存储与 Rust 本地保存均强制检查中文标题和中文字幕各一个，创建和更新都适用，缺少时拒绝写入。VFX 最多一个，滤镜可添加多个。标题、字幕和 VFX 重复选择样式时替换已有对象的效果，保留参数。底部字幕从零持续到视频结束，时间不可修改。效果通过左侧「特效资产」添加，已添加列表用于选择对象。
+
+- 标题、字幕各有「中英双语」开关，首次开启新增 `language=en` 的独立文字对象，`language` 省略为中文；同用途每种语言最多一个。英文外观和 Remotion 绑定独立，时间跟随中文（包括停用时），示例文字可编辑。关闭时 `enabled=false`，模板与资产引用保留，预览、翻译、合成及 Remotion 环境检查跳过该英文及其绑定，重新开启恢复设置；从未开启不创建英文对象，不新增数据库表。`video_composition` 在切片后调用现有 `translate`，英文逐片同步，标题取本次译文，翻译失败以 `translation_failed` 终止，翻译中断不重放成本调用；译文随任务快照恢复，不进入素材匹配。英文字幕及展示关键词复用中文字幕去标点规则，保留问号、数字内小数点、英文词内撇号和空格换行；英文标题和原始译文快照保留标点。普通 IMS 使用 `AdaptMode=AutoScale`、`TextWidth=0.9`，Web SDK 暂不支持缩放并在面板提示；Remotion 沿用资产契约与排版预检。客户端、服务端需一起升级。
 
 - 三个预览视频各取前 10 秒（用户选择的本地文件使用完整时长），顺序固定且始终各占一条 track，视频片段不可拖动和调整长度；初始没有转场。选中转场对象或空转场 track 时，右侧展示「镜头转场」面板；默认及选择其他对象时隐藏。通过「＋ 添加转场」搜索选择效果，展示全部候选，统一设置开关、IMS 的 0.1～3 秒持续时间及「转场选择方式：顺序选择／随机选择」。`transition_enabled` 默认 true，关闭时保留候选但预览及正式合成都不应用转场；「镜头转场」track 始终存在，没有应用效果时为空。开启转场且存在候选时，预览在两个连接位置应用转场，只有一个候选时两处共用；有多个候选时，顺序选择列表前两项，随机从尚未选中的候选中选择，每项最多一次，修改时长和其他对象保留本次随机结果。`transition_boundary` 为 IMS 与 Remotion 共用的候选序号（1～100），删除后连续编号；`transition_duration_seconds` 为 IMS 统一时长，默认 1 秒。Remotion 新增时采用资产自身时长，读取、编辑和保存保留其 `duration`，预览与正式合成均独立计算。`transition_mode=sequence` 在正式合成时按列表循环，`random` 对每个候选最多选择一次，候选用完后其余连接位置不应用转场，任务 ID 保证重试一致。未携带方式的已有模板保持指定连接位置的合成行为，编辑保存后采用列表规则。左右两侧均可添加转场，添加失败弹窗提示。
 
@@ -269,7 +271,7 @@ git push origin v0.3.0
 - 四个平台 / 架构的构建全部成功后，再发布 GitHub Release。安装包及 `CHANGELOG.md` 作为附件上传。
 - 使用 `requarks/changelog-action`，按 Conventional Commits 分类生成变更记录；Release 正文使用其输出。
 - 显式指定前一个祖先版本 tag 到当前 tag 的比较范围。首次发版使用仓库最初提交作为基线，不包含该引导提交，避免 action 默认要求已有两个 tag 的限制。
-- 使用 `ncipollo/release-action` 上传到草稿，随后通过 `release-assets.mjs` 校验六个安装包及 `CHANGELOG.md` 的文件名、大小和上传状态，全部通过后才公开。上传失败必须保持草稿状态。
+- 使用 `ncipollo/release-action` 上传到草稿，随后通过 `release-assets.mjs` 校验安装包、签名更新清单、界面资源、macOS 更新归档及 `CHANGELOG.md` 的文件名、大小和上传状态，全部通过后才公开。上传失败必须保持草稿状态。
 - 重跑可修复草稿或补齐日志回写；已公开 Release 的附件与正文不再修改。
 - 草稿校验使用上传 action 返回的 Release ID 查询，并确认其 tag 匹配；不要通过按 tag 查询接口查找未公开草稿。
 - 发布并发组按 tag 隔离，避免不同版本互相替换等待中的运行。
@@ -278,6 +280,17 @@ git push origin v0.3.0
 - 不以手工维护正式版本条目的方式替代自动 changelog 流程。
 - 使用内置 `GITHUB_TOKEN`；构建 job 使用读权限，发布 job 需要 `contents: write`。默认分支规则必须允许对应的机器人写入。
 - 当前未配置 Windows 代码签名和 macOS 公证，不将生成的安装包描述为已签名或已公证。
+
+## 客户端自动更新
+
+- 正式客户端更新核心在 `client/src-tauri/src/updates.rs`，Rust 负责检查、镜像下载、签名、资源切换、回退和官方安装器调用；React 只负责状态展示、草稿/请求门禁及恢复位置。Debug 不启用。
+- 默认镜像顺序为 `gh-proxy.org`、`ghfast.top`、`ghproxy.net`、`gpp.hydroroll.team`、`ghproxy.hydroroll.team`、GitHub 直连；编译变量 `IMV_UPDATE_MIRRORS` 可覆盖前缀列表，业务 API 地址不能改变更新信任来源。检查更新同时请求全部来源、取最高的有效版本（总耗时受单源 12 秒超时限制），下载按顺序尝试。清单和资产必须校验签名、大小及摘要；新的界面资源下载后只保留当前、上一版与新版，其余资源文件删除。
+- 热更新要求实际原生指纹相同且 `client/hot-update-validation.json` 中登记该版本/平台的真实组合验证；未验证或不兼容时完整更新并自动重启，deb 提供下载引导。不能用模拟测试代替真实组合验证。
+- 应用前保护全部已挂载工作区草稿、在途请求及本地所有服务的未结束/未知状态任务，等待说明列出阻止更新的会话标题与服务地址；字效工作区挂载时后台同步由工作区负责（跳过 SSE 会话），未挂载时才由更新等待同步当前服务。最终核查加锁期间新业务请求等待解锁而不报错。多实例通过文件锁阻止同时更新；启动时最多等待 10 秒共享锁，更新存储不可用（目录不可写、不支持文件锁或另一实例仍在安装）只关闭本次更新并提示，不阻止启动。热更新保持窗口，页面确认失败约 40 秒内重试，60 秒未确认或启动发现待确认标记则回退；整包安装失败保留已下载安装包供重试并清除恢复位置；保存的恢复信息不包含播放进度和撤销历史。
+- `client/src-tauri/update-tools` 是 Rust workspace 成员，供 build.rs 与发版共用；升级官方 updater 时同步检查 Tauri CLI 的版本绑定签名支持。最低 Rust 1.90；保留 Cargo/Bun 锁文件。
+- 正式 tag 需要 Actions variable `IMV_UPDATE_PUBLIC_KEY`、secret `TAURI_SIGNING_PRIVATE_KEY` 和可选口令 secret `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。私钥不入库；未配置密钥不能发正式更新。更新签名不代表 Windows 代码签名或 macOS 公证。
+- Release 完整性门禁检查 17 个必需附件：原六个安装包、CHANGELOG、四个签名清单、四个资源包及两个 macOS 更新归档。发布工具测试使用临时密钥和不可执行的测试文件，不安装、不使用真实密钥。
+- 修改更新功能时运行客户端完整测试/构建、原生测试及 `cargo test --manifest-path client/src-tauri/Cargo.toml -p imv-update-build --locked`；后者需要先冻结安装客户端 Bun 依赖。发布脚本、release-smoke 与 actionlint 同时验证。详细配置与平台验证见 `docs/client-update-design.md`。
 
 ## Git 与交付约定
 
@@ -302,6 +315,7 @@ git push origin v0.3.0
 - `video_composition` 从同一份模板的 `remotion` 轨道固定 MySQL 资产快照，新模板使用上游 `text_target`／`transition_boundary` 槽位，旧 `editor.remotion.businessTarget` 保留兼容，新字段优先。新标题按所绑定对象区间，旧用途标题按摆放区间，字幕按切片正文与时间注入；运营参数和 HostLayer 变换保留。业务参数解析仅位于 `video_composition/remotion_content.py`，读取已发布资产契约，不修改 Agent 生成或发布流程；上游固定时长资产仅在合成侧通过 `remotion_timing.py` / `remotion-timing.mjs` 映射完整播放时钟到实际字幕区间，1～2 帧取发布静态帧或中间帧，已有动态声明资产继续直接接收实际帧数。渲染前在共享名额内做与叠加渲染相同的排版预检（测量实际渲染的源码，含固定时钟包装；在资产自己的画布上排版，按 cover 缩放后成片里看得到的部分判断是否出画布），放不下的标题、字幕缩小 `fontSize`，缩到最小仍放不下以 `remotion_text_too_long` 失败。整段透明 WebM 从 0 秒直接加入 IMS 最后视频轨，新文字槽位沿用上游的 IMS 替代规则，实际输出的 IMS 文字在上层；上传结果持久化供恢复，源码不进执行日志。Remotion Agent、组合器、校验、发布与编辑预览以 upstream/dev 为准；仅保留 Chrome 多进程配置及视频合成所需渲染适配，后续修改等待用户真实测试反馈。新旧资产与测试说明见 `docs/remotion-video-composition.md`。
 
 - Remotion 叠加 worker 捕获错误后立即以非零状态退出，由 bubblewrap 清理残留进程、宿主保存失败并释放共享渲染名额；不能只设置 `process.exitCode`，否则 `openBrowser` 连接失败前产生的子进程可能使 Node 长期存活。私有 worker 日志记录浏览器启动/连接与稀疏帧进度，不包含业务正文；异步受理共用三个实际渲染名额，`video_composition` 总任务并发 `COMPOSITION_CONCURRENCY` 默认也为 3，对外的 `assembling` 包含等待名额、渲染及上传。
+- 多行字效：参考图有 2～4 行各自成行的文字时，Agent 仍只用一个 `text`（各行以 `\n` 分隔，不得把某行写死在代码里），另绑定固定名参数 `lineStartFrames`（恰好 N 项的整数数组，`minItems`=`maxItems`=N，每项 0～3600），第 i 行在 `lineStartFrames[i]` 帧出现；所有行在同一个 Preset 实例的纵向容器里排布，必须暴露行间距 `lineGap`（数字，下界 0、上界 200～600 像素，模板可按摆放调整），各行共用出入场（第 i 行从自己的起点入场、所有行按 `durationInFrames` 一起出场，不写死帧数），未出现的行从第一帧起以 opacity 0 占住位置，后出现的行不能把已显示的行挤动；`categories.category_problems` 要求默认文字恰好 N 个非空行、默认行起点从 0 开始且不递减并带 `lineGap`，默认文字带换行却没有绑定 `lineStartFrames` 的字效同样拒绝（否则会被当成单行）；逐行样式只能是标量参数（如 `line2Color`，逐行字号用相对 `fontSize` 的比例），数组参数只有 `keywords` 与 `lineStartFrames`；`line_count` 读出 N（其余字效为 1）；`sprite.create` 的 `text_fit` 在行起点全为 0 时逐帧检查默认各行由同一个实例渲染、同时显示与隐藏，并把行起点均匀错开检查后一行出现的那一帧前面的行没有跳动（超出前一帧自身移动 6px 或行高的十分之一），否则以 `CODE_VALIDATION_FAILED` 拒绝。行起点属于内容：发布时不列入可编辑参数、模板不能覆盖，边界抽样保持默认值，目录摘要 `SpriteSummary.line_count` 给出行数。召回合成与 `POST /api/sprites/render` 把同一句里最多 N 个连续切片合成一个实例（合成按切片 `group_id` 句内序号 1 断句，总线按 `SpriteCue.sentence`，0 为未给出），第 i 行在第 i 个切片开始时出现、整组在最后一个切片结束时清空，换句时、或再加一行会超过资产文字上限或行起点上限（3600 帧）时提前开始新组；定格（不足 1.5 秒）的组与整段 `text` 所有行从第 0 帧显示，固定时钟资产把行起点换算到预览时钟；标题绑定时整段放在第一行；排版预检只测量最后一行出现后的帧，生成检查把 maxLength 分到 N 行并同时显示。客户端聊天参数面板与模板字幕示例逐行编辑；单行字效行为不变。
 - Remotion 字效生成提示与必备参数示例统一使用 `text` 的 `minLength: 1`、`maxLength: 100`；分类校验仍兼容已有合法范围，已发布资产及任务快照保留自己的封存 Schema，调整生成规则不会追溯改写，需通过新版本更新资产。
 - 模板保存兼容未填 `text_target` 但明确携带 `editor.remotion.businessTarget=title/subtitle` 的旧字效轨道，替换资产时保留两套文字共存；仍校验发布资产、画布、参数及禁止正文/关键词覆盖；标题/字幕用途只属于字效，非字效资产携带时保存返回 422。新 `text_target` 保持 IMS 替代规则，客户端读取旧轨道不自动补写，右侧说明两套文字共存，显式重选作用对象才采用新槽位。
 - 合成侧 Remotion 计划、时长适配打包、渲染或上传失败在清理前私有保存 `composition-overlay-failures/<task_id>/worker.log` 与完整异常链 `error.log`（附子进程 stderr；位于 Remotion 数据目录，任务诊断目录权限 0700）；公开七模块日志、GET 与回调仍只保留安全摘要，七模块日志另记根因的异常类型、代码位置与错误码，不含其文本。诊断写入失败不覆盖原任务错误，视频及编译目录照常清理。

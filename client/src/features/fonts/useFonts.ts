@@ -1,4 +1,5 @@
 /** 字体库状态：读取共享字体库并提供上传；下拉选择器与字体库页面共用，卸载时取消读取。 */
+import { useUpdateBlocker } from "@/lib/update-guard";
 import { useCallback, useEffect, useState } from "react";
 import { listFonts, uploadFont, type FontInfo } from "./api";
 import { drawFontPreview } from "./preview";
@@ -15,6 +16,7 @@ export function useFonts() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  useUpdateBlocker("字体正在上传", uploading);
   const load = useCallback((signal?: AbortSignal) => listFonts(signal).then((list) => {
     setFonts(list);
     setLoadError(null);

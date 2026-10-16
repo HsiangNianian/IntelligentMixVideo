@@ -1,5 +1,7 @@
 /** 首页以侧边导航组合工作区；设置经侧栏底部按钮打开对话框，业务面板隐藏时保留草稿、播放器与订阅。 */
-import { Fragment, useId, useState } from "react";
+import { recovery, restored } from "@/features/updates/recovery";
+import { UpdateLifecycle } from "@/features/updates/ClientUpdate";
+import { Fragment, useEffect, useId, useState } from "react";
 import { Film, House, PanelLeftClose, PanelLeftOpen, Settings, Sparkles, SquarePen, Type } from "lucide-react";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Hint } from "@/components/Hint";
@@ -23,15 +25,16 @@ const navigation = [
 
 /** 工作区首次打开后仅隐藏；根使用 Radix 避免竖向 group 样式影响嵌套横向标签。 */
 export default function HomePage() {
-  const [workspace, setWorkspace] = useState("home");
-  const [libraryOpened, setLibraryOpened] = useState(false);
-  const [remotionOpened, setRemotionOpened] = useState(false);
-  const [selection, setSelection] = useState<TemplateSelection | null>(null);
+  const [workspace, setWorkspace] = useState(() => ["home", "library", "remotion", "fonts"].includes(restored.workspace ?? "") ? restored.workspace! : "home");
+  const [libraryOpened, setLibraryOpened] = useState(!!restored.template || restored.workspace === "library");
+  const [remotionOpened, setRemotionOpened] = useState(!!restored.remotionWork || restored.workspace === "remotion");
+  const [selection, setSelection] = useState<TemplateSelection | null>(restored.template ?? null);
   const [deletedTemplate, setDeletedTemplate] = useState<TemplateSelection | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   // 侧栏收起只调整导航宽度，工作区继续保留当前编辑状态。
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const navigationId = useId();
+  useEffect(() => { recovery.workspace = workspace; }, [workspace]);
   return (
     <TabsPrimitive.Root
       orientation="vertical"
@@ -142,6 +145,7 @@ export default function HomePage() {
           </TabsContent>
         </div>
       </main>
+      <UpdateLifecycle />
       <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
     </TabsPrimitive.Root>
   );

@@ -88,6 +88,9 @@ export function schemaField(key: string, control: Control): ParameterField | nul
   }
 }
 
+/** 多行字效的行起点参数名，与服务端 `categories.LINE_STARTS_PROP` 一致。 */
+const LINE_STARTS_KEY = "lineStartFrames";
+
 /** 组合版本的参数分组：顶层参数（模板里可逐次修改），以及各实例的内部参数；实例里有无法逐项编辑的形状时整体回退为 JSON。 */
 export function schemaGroups(properties: Record<string, Control>): {
   top: ParameterField[];
@@ -95,10 +98,13 @@ export function schemaGroups(properties: Record<string, Control>): {
 } {
   const top: ParameterField[] = [];
   const instances: { id: string; fields: ParameterField[] | null }[] = [];
+  // 多行字效每行出现的帧由宿主按字幕切片注入，不在参数面板编辑；它的项数就是文字的固定行数。
+  const lines = properties[LINE_STARTS_KEY]?.maxItems;
   for (const [key, control] of Object.entries(properties)) {
+    if (key === LINE_STARTS_KEY) continue;
     if (control.type !== "object") {
       const field = schemaField(key, control);
-      if (field) top.push(field);
+      if (field) top.push(key === "text" && field.kind === "string" && lines && lines > 1 ? { ...field, lines } : field);
       else instances.push({ id: key, fields: null });
       continue;
     }

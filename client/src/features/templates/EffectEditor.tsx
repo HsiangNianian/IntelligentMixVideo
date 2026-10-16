@@ -18,6 +18,7 @@ import {
   type EffectAsset,
   type EffectKey,
   type TextRole,
+  type TextLanguage,
 } from "./model";
 import { changeEffects, effectTargets, isSelectableAsset, removeTarget, resetTextTarget, type EffectTarget } from "./effects";
 
@@ -167,6 +168,7 @@ export function EffectEditor({
   onRemove,
   view = "all",
   showHeader = true,
+  language,
 }: {
   draft: EffectDraft;
   catalog: EffectAsset[];
@@ -176,6 +178,7 @@ export function EffectEditor({
   onRemove?: () => void;
   view?: "all" | "appearance" | "keyword";
   showHeader?: boolean;
+  language?: TextLanguage;
 }) {
   const id = useId();
   const editor = draft.editor;
@@ -326,7 +329,7 @@ export function EffectEditor({
               type="button"
               variant="outline"
               className="template-inspector-reset w-full"
-              onClick={() => onChange(resetTextTarget(draft, role))}
+              onClick={() => onChange(resetTextTarget(draft, role, language))}
             >
               重置特效设置
             </Button>

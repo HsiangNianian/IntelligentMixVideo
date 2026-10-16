@@ -2,11 +2,13 @@
 import type { ClipTransform, ContentBox } from "@/features/sprites/parameters";
 import {
   effectGroups,
+  textKey,
   type Draft,
   type Editor,
   type EffectAsset,
   type EffectKey,
   type TextRole,
+  type TextLanguage,
   type PreviewMedia,
 } from "./model";
 import type { TimelineAction, TimelineRow } from "@xzdarcy/timeline-engine";
@@ -75,6 +77,7 @@ export interface SpriteClip {
   length: number;
   /** 占用的模板对象；字效尚未选择文字对象或资产不在目录中时为空，单独成行提示。 */
   slot?: ClipSlot;
+  textTrackId?: string;
   /** 转场所在的视频交界处。 */
   boundary?: number;
   /** 这次摆放的参数覆盖（顶层参数），播放器合并到资产默认值之上。 */
@@ -86,8 +89,8 @@ export interface SpriteClip {
 }
 
 /** 作用于文字的 Remotion 字效所替换的 IMS 文字对象。 */
-export function remotionTexts(draft: Pick<Draft, "clips">): Set<TextRole> {
-  return new Set(draft.clips.flatMap((clip) => clip.text_target ? [clip.text_target] : []));
+export function remotionTexts(draft: Pick<Draft, "clips">): Set<string> {
+  return new Set(draft.clips.flatMap((clip) => clip.text_target ? [textKey(clip.text_target, clip.language)] : []));
 }
 
 /**
@@ -97,7 +100,7 @@ export function remotionTexts(draft: Pick<Draft, "clips">): Set<TextRole> {
  */
 export function mergeSpriteRows(rows: ReturnType<typeof buildPreviewRows>, clips: SpriteClip[]): ReturnType<typeof buildPreviewRows> {
   const result = rows.map((row) => {
-    const text = clips.find((clip) => clip.slot === row.actions[0]?.effectId && isTextTarget(clip.slot));
+    const text = clips.find((clip) => clip.textTrackId ? clip.textTrackId === row.id : clip.slot === row.actions[0]?.effectId && isTextTarget(clip.slot));
     return text ? { ...row, actions: row.actions.map((action) => ({ ...action, id: text.id, targetId: text.id, effectName: `Remotion · ${text.name}` })) } : { ...row, actions: [...row.actions] };
   });
   for (const clip of clips.filter((item) => !item.slot || !isTextTarget(item.slot))) {
@@ -131,7 +134,8 @@ export function thumbnailTimes(clip: Pick<PreviewClip, "sourceIn" | "sourceOut">
 type Effect = Record<string, string | number>;
 
 /** 预览示例文字中强调的关键词：标题优先使用指定关键词，否则取首段前两个字；字幕取第一个词语。合成时改用切片结果。 */
-export function exampleKeyword(config: Editor, role: "title" | "subtitle"): string {
+export function exampleKeyword(config: Editor, role: "title" | "subtitle", language?: TextLanguage): string {
+  if (language === "en") return (role === "title" ? config.titleKeyword : "") || [...new Intl.Segmenter("en", { granularity: "word" }).segment(config[role])].find((part) => part.isWordLike)?.segment || "";
   return role === "title"
     ? config.titleKeyword || (config.title.match(/[\p{L}\p{N}]{1,2}/u)?.[0] ?? "")
     : [...new Intl.Segmenter("zh", { granularity: "word" }).segment(config.subtitle)].find((part) => part.isWordLike)?.segment ?? "";
@@ -157,7 +161,7 @@ function number(
 }
 
 /** 从单个对象参数生成文字或效果，校验目录引用及数值范围。 */
-function buildTrackContent(config: Editor, catalog: EffectAsset[], target: EffectTarget) {
+function buildTrackContent(config: Editor, catalog: EffectAsset[], target: EffectTarget, language?: TextLanguage) {
   const byId = new Map(catalog.map((item) => [item.id, item]));
   // 效果类别与字段绑定，拒绝错误类别及未知目录条目。
   const effect = (key: EffectKey): Effect => {
@@ -173,7 +177,7 @@ function buildTrackContent(config: Editor, catalog: EffectAsset[], target: Effec
   const text = (role: TextRole) => {
     const content = role === "bubble" ? config.bubbleText : config[role];
     const size = number(config[`${role}Size`], 12, 300, "字号", true);
-    const previewKeyword = role === "bubble" ? "" : exampleKeyword(config, role);
+    const previewKeyword = role === "bubble" ? "" : exampleKeyword(config, role, language);
     if (
       config[`${role}Loop`] &&
       (config[`${role}In`] || config[`${role}Out`])
@@ -209,6 +213,7 @@ function buildTrackContent(config: Editor, catalog: EffectAsset[], target: Effec
       ...effect(role === "bubble" ? "bubble" : `${role}Flower`),
       ...motion,
       ...(role === "bubble" ? { Width: 0.5 } : {}),
+      ...(language === "en" ? { AdaptMode: "AutoScale", TextWidth: 0.9 } : {}),
     };
   };
   if (!isTextTarget(target) && !config[target]) throw new Error("特效轨道缺少效果");
@@ -245,17 +250,18 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media: Previ
   // 改由 Remotion 字效显示的文字仍保留时间轴行，但不交给 SDK 渲染。
   const replaced = remotionTexts(draft);
   for (const source of [...draft.tracks].sort((a, b) => trackLayers[a.target] - trackLayers[b.target])) {
+    if (source.enabled === false) continue;
     const applied = resolvedTimeline.tracks[source.id];
     if (!applied) throw new Error("对象缺少时间计算结果");
     const track = { ...source, ...applied };
     if (!track.id || seen.has(track.id)) throw new Error("特效轨道 ID 必须唯一");
     seen.add(track.id);
-    const resolved = buildTrackContent(track.editor, catalog, track.target);
+    const resolved = buildTrackContent(track.editor, catalog, track.target, track.language);
     if (track.end <= track.start) continue;
     if (isTextTarget(track.target)) {
       const text = resolved.text;
       if (!text?.Content.trim()) throw new Error("文字轨道内容不能为空");
-      if (!replaced.has(track.target)) timeline.SubtitleTracks.push({ SubtitleTrackClips: [{ ...text, TimelineIn: track.start, TimelineOut: track.end }] });
+      if (!replaced.has(textKey(track.target, track.language))) timeline.SubtitleTracks.push({ SubtitleTrackClips: [{ ...text, TimelineIn: track.start, TimelineOut: track.end }] });
     } else if (track.target === "transition") {
       const effect = resolved.effect;
       if (!effect) throw new Error("转场轨道缺少效果");

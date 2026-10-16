@@ -42,6 +42,7 @@ fn respond(
         let mut response = Response::from_data(bytes);
         for (name, value) in [
             ("Content-Type", Some(mime)),
+            ("Cache-Control", Some("no-store".into())),
             ("Content-Security-Policy", csp),
         ] {
             if let Some(value) = value {

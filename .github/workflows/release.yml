@@ -50,6 +50,7 @@ jobs:
     name: Build release installers
     needs: validate
     uses: ./.github/workflows/client-build.yml
+    secrets: inherit
     with:
       release-tag: ${{ github.ref_name }}
 
@@ -138,7 +139,7 @@ jobs:
           tag: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           body: ${{ steps.changelog.outputs.changes }}
-          artifacts: "release-assets/**/*.deb,release-assets/**/*.AppImage,release-assets/**/*.exe,release-assets/**/*.msi,release-assets/**/*.dmg,CHANGELOG.md"
+          artifacts: "release-assets/**/*.deb,release-assets/**/*.AppImage,release-assets/**/*.exe,release-assets/**/*.msi,release-assets/**/*.dmg,release-assets/**/update-*.json,release-assets/**/resources-*.json,release-assets/**/*.app.tar.gz,release-assets/**/*.sig,CHANGELOG.md"
           artifactErrorsFailBuild: true
           allowUpdates: true
           skipIfReleaseExists: true

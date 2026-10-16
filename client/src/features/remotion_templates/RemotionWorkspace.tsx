@@ -1,4 +1,5 @@
 /** Remotion 工作区组合聊天、代码、预览和参数；服务状态与当前会话独立，后台会话定时同步，页面卸载时清理。 */
+import { useUpdateBlocker } from "@/lib/update-guard";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -61,6 +62,7 @@ export function RemotionWorkspace() {
     !!session.busy ||
     unresolved ||
     session.retryMode === "read";
+  useUpdateBlocker("字效参数尚未保存或会话正在处理", pending || session.dirty);
   const locked = pending || previewBusy || session.previewLoading;
   // 聊天输入（含附图）被锁定的原因与恢复时机；为空表示可以发送和上传。
   const inputLock = serviceError

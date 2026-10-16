@@ -1,4 +1,5 @@
 /** Debug 切片请求携带本模块已保存配置；普通模式使用服务端环境配置。 */
+import { updateFetch as fetch } from "@/lib/update-guard";
 import { readSettings } from "@/features/settings/api";
 import { apiBase } from "@/lib/api-base";
 
