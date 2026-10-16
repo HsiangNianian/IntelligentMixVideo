@@ -3,6 +3,23 @@
 本项目的版本变更由发布工作流根据 Conventional Commits 自动生成。
 推送正式版本 tag 后，成功发布的版本记录会自动写入此文件。
 
+## [v0.9.5] - 2026-10-16
+### New Features
+- [`83792ce`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/83792cee88b9f5001adbf9fbdc816a14580c3c3f) - **client**: add template deletion and inline metadata editing *(PR [#177](https://github.com/HsiangNianian/IntelligentMixVideo/pull/177) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`9af20da`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/9af20da6eccc85c0a9f3dff1d79b5c2defbb4290) - **segmentation**: add English translation for segmentation results *(PR [#178](https://github.com/HsiangNianian/IntelligentMixVideo/pull/178) by [@muyuzhong](https://github.com/muyuzhong))*
+- [`f0a1c3f`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/f0a1c3f345c458665226a125c838b980f8cfddb8) - **client**: let template previews use local video files *(PR [#181](https://github.com/HsiangNianian/IntelligentMixVideo/pull/181) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Documentation Changes
+- [`eec7b80`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/eec7b80e5f7515d338c84bb76f66daafca14578f) - update CHANGELOG.md for v0.9.4 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
+
+### Chores
+- [`1343cb3`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/1343cb3cc204e988db1074f4d9b9ff9f04b2c2ca) - **release**: prepare v0.9.5 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Other Changes
+- [`df3af8f`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/df3af8f912dfc275c08fb5de4d7c2cef04772656) - Merge pull request [#182](https://github.com/HsiangNianian/IntelligentMixVideo/pull/182) from HsiangNianian/dev
+
+chore(release): promote dev to main for v0.9.5 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
 ## [v0.9.4] - 2026-10-15
 ### BREAKING CHANGES
 - due to [`e045efd`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/e045efdcaad4440cfc2d07dd5ce0d2f31dd4bbbf) - infer and persist modes from script fields *(PR [#167](https://github.com/HsiangNianian/IntelligentMixVideo/pull/167) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*:
@@ -1461,3 +1478,5 @@ feat(client): 在模板工作区页头添加时钟 *(commit by [@HsiangNianian](
 [v0.9.3]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.2...v0.9.3
 
 [v0.9.4]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.3...v0.9.4
+
+[v0.9.5]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.4...v0.9.5
