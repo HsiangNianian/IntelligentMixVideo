@@ -7,6 +7,8 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
+/// 参数为客户端目录、目标平台、安装包目录与原生指纹文件：打包界面资源、复核安装包签名，
+/// 按热更新验证记录写入清单并调用 Tauri signer 签名，输出 `update-<target>.json` 与资源包。
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
     if args.len() != 4 {

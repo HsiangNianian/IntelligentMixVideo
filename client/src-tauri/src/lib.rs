@@ -64,7 +64,6 @@ pub fn run() {
             updates::client_update
         ])
         .setup(|app| {
-            updates::check_startup(app).map_err(std::io::Error::other)?;
             #[cfg(windows)]
             if !tauri::is_dev() {
                 use tauri::Manager;

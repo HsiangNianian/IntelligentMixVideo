@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { APP_VERSION } from '@/lib/version';
 import { cancelUpdate, checkUpdate, downloadUpdate, updaterReady, useClientUpdate } from './store';
+/** 设置弹窗中的更新区块：挂载即检查，展示版本、状态与进度，提供下载、取消与 deb 手动下载链接。 */
 export function ClientUpdate() {
   const state = useClientUpdate();
   useEffect(() => { void checkUpdate(); }, []);
@@ -21,6 +22,7 @@ export function ClientUpdate() {
     {state.candidate && <p className="text-xs text-muted-foreground">{state.candidate.mode === 'hot' ? '兼容当前客户端，更新时窗口保持打开。' : state.candidate.mode === 'native' ? '此版本需要完整升级，准备完成后会提示并自动重启。' : 'deb 安装包需要手动安装；已保存内容会保留。'}</p>}
   </section>;
 }
+/** 根页面常驻部分：挂载后确认当前界面可用，并在设置关闭后继续显示等待浮层与应用中的状态对话框。 */
 export function UpdateLifecycle() {
   const state = useClientUpdate();
   useEffect(() => { void updaterReady(); }, []);

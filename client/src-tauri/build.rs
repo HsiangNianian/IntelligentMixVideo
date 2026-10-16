@@ -43,14 +43,12 @@ fn main() {
     .expect("native fingerprint failed");
     println!("cargo:rustc-env=IMV_NATIVE_ID={}", native_id.trim());
     println!("cargo:rustc-env=IMV_UPDATE_TARGET={target}");
-    // 供发布脚本读取实际编译时的指纹，而非再次猜测构建环境。
+    // 供发布脚本读取实际编译时的指纹，而非再次猜测构建环境。该文件是输出，
+    // 不能声明为 rerun-if-changed：每次写入都比上次运行新，会让每次 cargo 调用都重跑并重编译。
     println!("cargo:rerun-if-env-changed=IMV_UPDATE_METADATA_PATH");
     if let Ok(path) = std::env::var("IMV_UPDATE_METADATA_PATH") {
-        println!("cargo:rerun-if-changed={path}");
         std::fs::write(path, native_id.trim()).unwrap();
     }
-    let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    std::fs::write(out.join("update-native-id"), native_id.trim()).unwrap();
     let mut attributes = tauri_build::Attributes::new();
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         // tauri-build 默认只向主程序链接清单，mock 测试会在加载时缺少 v6 入口。

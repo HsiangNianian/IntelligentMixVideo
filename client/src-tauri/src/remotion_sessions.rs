@@ -167,12 +167,18 @@ fn operate(connection: &mut Connection, operation: &str, payload: Value) -> Resu
     match operation {
         "pending" => {
             parse::<Empty>(payload)?;
-            // 全部服务的会话都参与门禁，不能只看当前打开的页签或服务。
-            let count: i64 = connection.query_row(
-                "SELECT COUNT(*) FROM works WHERE COALESCE(json_extract(data, '$.job.status'), '') NOT IN ('succeeded', 'answered', 'needs_input', 'failed', 'cancelled', 'interrupted') OR json_extract(data, '$.deleting') = 1",
-                [], |row| row.get(0),
+            // 全部服务的会话都参与门禁，不能只看当前打开的页签或服务；列出所属服务与标题，供用户找到并处理。
+            let mut statement = connection.prepare(
+                "SELECT server, COALESCE(json_extract(data, '$.title'), ''), COALESCE(json_extract(data, '$.deleting'), 0) = 1 FROM works WHERE COALESCE(json_extract(data, '$.job.status'), '') NOT IN ('succeeded', 'answered', 'needs_input', 'failed', 'cancelled', 'interrupted') OR json_extract(data, '$.deleting') = 1 ORDER BY server, updated_at DESC",
             ).map_err(failed)?;
-            Ok(json!(count))
+            let rows = statement
+                .query_map([], |row| {
+                    Ok(json!({"server": row.get::<_, String>(0)?, "title": row.get::<_, String>(1)?, "deleting": row.get::<_, bool>(2)?}))
+                })
+                .map_err(failed)?
+                .collect::<Result<Vec<Value>, _>>()
+                .map_err(failed)?;
+            Ok(Value::Array(rows))
         }
         "device" => {
             parse::<Empty>(payload)?;
@@ -420,10 +426,22 @@ mod tests {
             value["work"]["job"]["status"] = json!(status);
             operate(&mut connection, "save", value).unwrap();
         }
+        let pending = operate(&mut connection, "pending", json!({})).unwrap();
+        let servers: Vec<&str> = pending
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["server"].as_str().unwrap())
+            .collect();
         assert_eq!(
-            operate(&mut connection, "pending", json!({})).unwrap(),
-            json!(3)
+            servers,
+            [
+                "http://server-0.test",
+                "http://server-1.test",
+                "http://server-4.test"
+            ]
         );
+        assert_eq!(pending[0]["deleting"], json!(false));
         assert!(operate(&mut connection, "pending", json!({"server":SERVER})).is_err());
     }
 

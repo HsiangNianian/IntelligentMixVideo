@@ -22,12 +22,16 @@ use tauri::{
 };
 use tauri_plugin_updater::UpdaterExt;
 
+/// 本次编译的原生兼容指纹（build.rs 计算），热更新资源必须与之相同。
 const NATIVE_ID: &str = env!("IMV_NATIVE_ID");
+/// 编译目标三元组，决定读取哪个平台的更新清单。
 const TARGET: &str = env!("IMV_UPDATE_TARGET");
+/// 编译时内置的更新公钥；为空表示此构建不启用更新。
 const PUBLIC_KEY: &str = match option_env!("IMV_UPDATE_PUBLIC_KEY") {
     Some(v) => v,
     None => "",
 };
+/// 编译期配置为空时使用默认值。
 const fn configured(value: Option<&'static str>, fallback: &'static str) -> &'static str {
     match value {
         Some(v) if !v.is_empty() => v,
@@ -43,15 +47,20 @@ const MIRRORS: &str = configured(
     "https://gh-proxy.org/,https://ghfast.top/,https://ghproxy.net/,https://gpp.hydroroll.team/,https://ghproxy.hydroroll.team/",
 );
 const MAX_HOT: usize = 64 * 1024 * 1024;
+/// 启动时等待其他实例释放独占锁的上限：整包更新重启时旧进程可能还没退出。
+const LOCK_WAIT: Duration = Duration::from_secs(10);
 type Result<T> = std::result::Result<T, String>;
 type Files = BTreeMap<String, Vec<u8>>;
+/// 把任意错误转成返回给前端的文字。
 fn error(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
+/// 只有配置了公钥的正式（非开发、非 Debug）构建启用更新。
 fn enabled() -> bool {
     !tauri::is_dev() && option_env!("IMV_DEBUG") != Some("true") && !PUBLIC_KEY.is_empty()
 }
 
+/// 清单里的一个下载文件：发布附件名、字节数、SHA-256 与（安装包的）Tauri 签名。
 #[derive(Clone, Deserialize, Serialize)]
 struct Asset {
     name: String,
@@ -60,6 +69,7 @@ struct Asset {
     #[serde(default)]
     signature: String,
 }
+/// 签名清单内容：版本、平台、原生指纹、是否验证过热更新，以及界面资源包和各类安装包。
 #[derive(Clone, Deserialize, Serialize)]
 struct Manifest {
     format: u32,
@@ -71,11 +81,13 @@ struct Manifest {
     hot: Asset,
     installers: BTreeMap<String, Asset>,
 }
+/// 发布的清单文件：base64 清单原文与其 minisign 签名。
 #[derive(Deserialize, Serialize)]
 struct Envelope {
     payload: String,
     signature: String,
 }
+/// `state.json`：当前/上一版界面资源、待确认标记、已拒绝版本与更新后恢复位置。
 #[derive(Default, Clone, Deserialize, Serialize)]
 struct DiskState {
     current: Option<String>,
@@ -85,10 +97,12 @@ struct DiskState {
     rejected: Vec<String>,
     resume: Option<Value>,
 }
+/// 已读入内存并校验过的界面资源。
 struct Loaded {
     version: String,
     files: Files,
 }
+/// 进程内更新状态：存储目录、生效资源、磁盘状态镜像、实例锁、检查/下载结果与启动提示。
 #[derive(Default)]
 pub struct Updates {
     root: OnceLock<PathBuf>,
@@ -110,8 +124,10 @@ struct UpdateAssets<R: Runtime> {
 impl<R: Runtime> Assets<R> for UpdateAssets<R> {
     fn setup(&self, app: &tauri::App<R>) {
         self.original.get().unwrap().setup(app);
+        // 更新存储不可用时只关闭本次更新并提示，客户端照常使用随包界面启动。
         if let Err(e) = self.state.start(app) {
-            *self.state.notice.lock().unwrap() = format!("更新存储不可用：{e}");
+            *self.state.notice.lock().unwrap() =
+                format!("客户端更新暂不可用：{e}；当前版本可正常使用，重启客户端后重试");
         }
     }
     fn get(&self, key: &AssetKey) -> Option<Cow<'_, [u8]>> {
@@ -144,6 +160,7 @@ impl<R: Runtime> Assets<R> for SharedAssets<R> {
         self.0.csp_hashes(key)
     }
 }
+/// 在构建应用前配置官方更新插件的公钥与地址，并把资源读取换成可热切换的包装；返回共享状态供 `manage`。
 pub fn attach<R: Runtime>(context: &mut tauri::Context<R>) -> Arc<Updates> {
     context.config_mut().plugins.0.insert("updater".into(), json!({
         "pubkey": PUBLIC_KEY,
@@ -159,14 +176,7 @@ pub fn attach<R: Runtime>(context: &mut tauri::Context<R>) -> Arc<Updates> {
     state
 }
 
-pub fn check_startup(app: &tauri::App) -> Result<()> {
-    let state = app.state::<Arc<Updates>>();
-    if enabled() && state.root.get().is_none() {
-        return Err(state.notice.lock().unwrap().clone());
-    }
-    Ok(())
-}
-
+/// 用内置公钥验证 minisign 签名；公钥与签名都是 Tauri signer 的 base64 文本。
 fn verify(bytes: &[u8], signature: &str, public_key: &str) -> Result<()> {
     let key = String::from_utf8(B64.decode(public_key.trim()).map_err(error)?).map_err(error)?;
     let sig = String::from_utf8(B64.decode(signature.trim()).map_err(error)?).map_err(error)?;
@@ -179,6 +189,7 @@ fn verify(bytes: &[u8], signature: &str, public_key: &str) -> Result<()> {
         )
         .map_err(error)
 }
+/// 解析正式版本号，拒绝预发布与构建元数据。
 fn version(value: &str) -> Result<Version> {
     let parsed = Version::parse(value).map_err(error)?;
     if !parsed.pre.is_empty() || !parsed.build.is_empty() {
@@ -186,6 +197,7 @@ fn version(value: &str) -> Result<Version> {
     }
     Ok(parsed)
 }
+/// 附件名只允许字母数字与 `._-`，不能是 `.`/`..`。
 fn safe_name(value: &str) -> bool {
     !value.is_empty()
         && value
@@ -194,6 +206,7 @@ fn safe_name(value: &str) -> bool {
         && value != "."
         && value != ".."
 }
+/// 验签并解析清单信封，检查协议、平台、版本格式与每个资产的声明；镜像返回的 HTML 等直接失败。
 fn manifest(bytes: &[u8], public_key: &str) -> Result<Manifest> {
     let envelope: Envelope = serde_json::from_slice(bytes).map_err(error)?;
     let payload = B64.decode(envelope.payload).map_err(error)?;
@@ -214,12 +227,14 @@ fn manifest(bytes: &[u8], public_key: &str) -> Result<Manifest> {
     }
     Ok(item)
 }
+/// 下载内容的大小与 SHA-256 必须和已签名清单一致。
 fn check_asset(asset: &Asset, bytes: &[u8]) -> Result<()> {
     if bytes.len() != asset.size || format!("{:x}", Sha256::digest(bytes)) != asset.sha256 {
         return Err("更新文件大小或摘要不匹配".into());
     }
     Ok(())
 }
+/// 校验并解码界面资源包（路径 → base64 内容）：限制体积与文件数，要求两个入口，拒绝穿越与异常路径。
 fn hot_files(asset: &Asset, bytes: &[u8]) -> Result<Files> {
     if bytes.len() > MAX_HOT {
         return Err("界面更新包过大".into());
@@ -247,6 +262,7 @@ fn hot_files(asset: &Asset, bytes: &[u8]) -> Result<Files> {
         })
         .collect()
 }
+/// 读取不超过 `limit` 字节的文件，超出即报错而不是截断。
 fn read_limited(path: &Path, limit: usize) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     File::open(path)
@@ -259,6 +275,7 @@ fn read_limited(path: &Path, limit: usize) -> Result<Vec<u8>> {
     }
     Ok(bytes)
 }
+/// 把未确认的当前版本记入拒绝列表并恢复上一版，清除待确认标记；恢复位置保留。
 fn rollback(disk: &mut DiskState) {
     if let Some(bad) = disk.current.take() {
         disk.rejected.push(bad);
@@ -266,9 +283,11 @@ fn rollback(disk: &mut DiskState) {
     disk.current = disk.previous.take();
     disk.pending = None;
 }
+/// 看门狗只回退自己那次应用：待确认标记仍是同一个才算匹配。
 fn pending_matches(disk: &DiskState, pending: &Option<String>) -> bool {
     pending.is_some() && disk.pending == *pending
 }
+/// 同目录唯一临时文件写入并刷盘后改名替换，失败时删除临时文件。
 fn atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
     let result = (|| {
@@ -282,6 +301,7 @@ fn atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     }
     result
 }
+/// 按配置顺序生成「镜像前缀 + GitHub URL」，最后是 GitHub 直连；镜像必须是纯 HTTPS 前缀。
 fn sources(url: &str) -> Result<Vec<String>> {
     let mut result = Vec::new();
     for prefix in MIRRORS.split(',').map(str::trim).filter(|v| !v.is_empty()) {
@@ -299,12 +319,14 @@ fn sources(url: &str) -> Result<Vec<String>> {
     result.push(url.into());
     Ok(result)
 }
+/// 资产在清单所写固定 tag 下的 GitHub 下载地址，不经过浮动的 latest。
 fn release_url(item: &Manifest, asset: &Asset) -> String {
     format!(
         "https://github.com/{REPOSITORY}/releases/download/v{}/{}",
         item.version, asset.name
     )
 }
+/// 当前运行的安装形式对应的清单键；无法识别时按平台默认。
 fn installer_kind() -> &'static str {
     use tauri::utils::config::BundleType;
     match tauri::utils::platform::bundle_type() {
@@ -318,6 +340,7 @@ fn installer_kind() -> &'static str {
         _ => "deb",
     }
 }
+/// 只经 HTTPS 下载，读取量不超过 `limit`；检查清单时整体 12 秒超时，下载安装包时每 200 毫秒发送进度。
 async fn download(
     url: &str,
     limit: usize,
@@ -364,6 +387,7 @@ async fn download(
     Ok(bytes)
 }
 impl Updates {
+    /// 启动时持有共享实例锁并读取 `state.json`；上次应用未确认则回退。失败时调用方关闭本次更新，不阻止启动。
     fn start<R: Runtime>(&self, app: &tauri::App<R>) -> Result<()> {
         if !enabled() {
             return Ok(());
@@ -377,8 +401,20 @@ impl Updates {
             .truncate(false)
             .open(root.join("instances.lock"))
             .map_err(error)?;
-        lock.try_lock_shared()
-            .map_err(|_| "另一个客户端正在安装更新，请稍后启动")?;
+        // 独占锁只在应用或确认更新的短时间内持有；等待它释放，文件系统不支持锁则直接失败。
+        let started = std::time::Instant::now();
+        loop {
+            match lock.try_lock_shared() {
+                Ok(()) => break,
+                Err(fs::TryLockError::WouldBlock) if started.elapsed() < LOCK_WAIT => {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Err(fs::TryLockError::WouldBlock) => {
+                    return Err("另一个客户端正在安装更新".into());
+                }
+                Err(fs::TryLockError::Error(e)) => return Err(error(e)),
+            }
+        }
         *self.instance.lock().unwrap() = Some(lock);
         self.root
             .set(root.clone())
@@ -396,12 +432,14 @@ impl Updates {
         // 启动时不改共享指针；只有获得独占锁的应用/确认阶段写入。
         Ok(())
     }
+    /// 更新存储目录；启动初始化失败时不可用。
     fn root(&self) -> Result<&Path> {
         self.root
             .get()
             .map(PathBuf::as_path)
             .ok_or_else(|| "更新存储不可用".into())
     }
+    /// 重新验签读取已缓存的界面资源；必须验证过热更新、与本原生程序同指纹且不旧于随包版本。
     fn load(&self, name: &str) -> Result<Loaded> {
         version(name)?;
         let root = self.root()?;
@@ -422,12 +460,40 @@ impl Updates {
             files: hot_files(&item.hot, &bytes)?,
         })
     }
+    /// 原子写入 `state.json`。
     fn save(&self, disk: &DiskState) -> Result<()> {
         atomic(
             &self.root()?.join("state.json"),
             &serde_json::to_vec(disk).map_err(error)?,
         )
     }
+    /// 删除只会占用空间的界面资源：保留当前、上一版与 `keep`（刚下载的版本），已拒绝或被取代的版本不会再加载。
+    /// 其他实例已把自己的资源读入内存，删除文件不影响它们。
+    fn prune(&self, keep: &str) {
+        let disk = self.disk.lock().unwrap().clone();
+        let Ok(entries) = self
+            .root()
+            .and_then(|root| fs::read_dir(root).map_err(error))
+        else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(stem) = name.to_str().and_then(|name| {
+                name.strip_suffix(".manifest")
+                    .or_else(|| name.strip_suffix(".resources"))
+            }) else {
+                continue;
+            };
+            if stem != keep
+                && disk.current.as_deref() != Some(stem)
+                && disk.previous.as_deref() != Some(stem)
+            {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+    /// 当前生效的界面版本：热更新资源或随包版本。
     fn current(&self) -> String {
         self.active
             .read()
@@ -436,6 +502,7 @@ impl Updates {
             .map(|v| v.version.clone())
             .unwrap_or_else(|| env!("CARGO_PKG_VERSION").into())
     }
+    /// 更新方式：验证过且同指纹、未被拒绝时热更新，否则整包安装；deb 只能手动安装。
     fn mode(&self, item: &Manifest) -> String {
         if item.hot_validated
             && item.native_id == NATIVE_ID
@@ -449,6 +516,7 @@ impl Updates {
         }
         .into()
     }
+    /// 把共享实例锁升级为独占锁；有其他实例运行时恢复共享锁并报错。
     fn exclusive(&self) -> Result<()> {
         if self.exclusive_held.load(Ordering::SeqCst) {
             return Ok(());
@@ -472,6 +540,7 @@ impl Updates {
         self.exclusive_held.store(true, Ordering::SeqCst);
         Ok(())
     }
+    /// 放弃独占锁，回到共享锁。
     fn shared(&self) {
         if !self.exclusive_held.swap(false, Ordering::SeqCst) {
             return;
@@ -491,16 +560,17 @@ pub async fn client_update(
     payload: Option<Value>,
 ) -> Result<Value> {
     let state = app.state::<Arc<Updates>>().inner().clone();
-    let _operation = state
-        .operation
-        .try_lock()
-        .map_err(|_| "另一个更新操作正在进行")?;
-    let payload = payload.unwrap_or(Value::Null);
+    // 只读快照不占操作锁，页面加载时不会因检查或下载正在进行而读不到状态。
     if operation == "status" {
         return Ok(
             json!({"enabled": enabled() && state.root.get().is_some(), "nativeVersion": env!("CARGO_PKG_VERSION"), "version": state.current(), "notice": *state.notice.lock().unwrap(), "resume": state.disk.lock().unwrap().resume}),
         );
     }
+    let _operation = state
+        .operation
+        .try_lock()
+        .map_err(|_| "另一个更新操作正在进行")?;
+    let payload = payload.unwrap_or(Value::Null);
     if !enabled() {
         return Err("此构建未启用正式客户端更新".into());
     }
@@ -532,9 +602,15 @@ pub async fn client_update(
         let url = format!(
             "https://github.com/{REPOSITORY}/releases/latest/download/update-{TARGET}.json"
         );
-        let mut best: Option<(Manifest, Vec<u8>)> = None;
+        // 同时请求全部来源并取最高的有效版本：整体耗时只受单个来源的超时限制，不随卡住的镜像累加。
+        let mut fetches = tokio::task::JoinSet::new();
         for url in sources(&url)? {
-            if let Ok(bytes) = download(&url, 256 * 1024, true, &app).await {
+            let app = app.clone();
+            fetches.spawn(async move { download(&url, 256 * 1024, true, &app).await });
+        }
+        let mut best: Option<(Manifest, Vec<u8>)> = None;
+        while let Some(result) = fetches.join_next().await {
+            if let Ok(Ok(bytes)) = result {
                 if let Ok(item) = manifest(&bytes, PUBLIC_KEY) {
                     if best.as_ref().is_none_or(|(old, _)| {
                         version(&item.version).unwrap() > version(&old.version).unwrap()
@@ -596,6 +672,7 @@ pub async fn client_update(
                         &state.root()?.join(format!("{}.resources", item.version)),
                         &bytes,
                     )?;
+                    state.prune(&item.version);
                 } else {
                     if native_update(&app, &item, asset)?.verify(&bytes).is_err() {
                         continue;
@@ -614,7 +691,7 @@ pub async fn client_update(
         let pending =
             crate::remotion_sessions::remotion_sessions(app.clone(), "pending".into(), json!({}))
                 .await?;
-        if pending.as_i64() != Some(0) {
+        if !pending.as_array().is_some_and(Vec::is_empty) {
             return Err("仍有后台任务或状态不明的会话，请稍后应用".into());
         }
         state.exclusive()?;
@@ -674,19 +751,36 @@ pub async fn client_update(
                 .reload()
                 .map_err(error)?;
         } else {
-            let result = async {
-                let update = native_update(
-                    &app,
-                    &item,
-                    item.installers.get(installer_kind()).ok_or("缺少安装包")?,
-                )?;
-                tauri::async_runtime::spawn_blocking(move || update.install(bytes))
-                    .await
-                    .map_err(error)?
-                    .map_err(error)
-            }
-            .await;
+            // 安装包随任务一起交回：安装失败时放回暂存，重试无需重新下载。
+            let (result, bytes) = match item
+                .installers
+                .get(installer_kind())
+                .ok_or_else(|| "缺少安装包".to_string())
+                .and_then(|asset| native_update(&app, &item, asset))
+            {
+                Err(e) => (Err(e), Some(bytes)),
+                Ok(update) => match tauri::async_runtime::spawn_blocking(move || {
+                    let result = update.install(&bytes).map_err(error);
+                    (result, bytes)
+                })
+                .await
+                {
+                    Ok((result, bytes)) => (result, Some(bytes)),
+                    Err(e) => (Err(error(e)), None),
+                },
+            };
             if let Err(e) = result {
+                if let Some(bytes) = bytes {
+                    *state.staged.lock().unwrap() = Some((item, bytes, mode));
+                }
+                // 没有重启，恢复位置不再适用；留着会让之后每次启动都跳回此处。
+                let mut disk = state.disk.lock().unwrap();
+                let mut next = disk.clone();
+                next.resume = None;
+                if state.save(&next).is_ok() {
+                    *disk = next;
+                }
+                drop(disk);
                 state.shared();
                 return Err(e);
             }
@@ -696,6 +790,7 @@ pub async fn client_update(
     }
     Err("未知更新操作".into())
 }
+/// 用清单里的固定版本、下载地址与安装包签名构造官方插件的 Update；版本不高于本机原生版本时拒绝。
 fn native_update<R: Runtime>(
     app: &tauri::AppHandle<R>,
     item: &Manifest,
@@ -846,6 +941,43 @@ mod tests {
         assert_eq!(saved.resume, disk.resume);
         assert!(!pending_matches(&saved, &None));
         assert!(read_limited(&scratch.0.join("state.json"), 2).is_err());
+    }
+    /// 新下载后只保留当前、上一版与新版资源，已拒绝及被取代的版本被删除，状态与锁文件不动。
+    #[test]
+    fn download_prunes_unused_resources() {
+        let scratch = Scratch::new();
+        let state = scratch.state();
+        *state.disk.lock().unwrap() = DiskState {
+            current: Some("1.2.0".into()),
+            previous: Some("1.1.0".into()),
+            rejected: vec!["1.0.0".into()],
+            ..Default::default()
+        };
+        state.save(&state.disk.lock().unwrap()).unwrap();
+        for version in ["1.0.0", "1.1.0", "1.2.0", "1.2.1", "1.3.0"] {
+            for extension in ["manifest", "resources"] {
+                fs::write(scratch.0.join(format!("{version}.{extension}")), b"x").unwrap();
+            }
+        }
+        state.prune("1.3.0");
+        let mut left: Vec<String> = fs::read_dir(&scratch.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            [
+                "1.1.0.manifest",
+                "1.1.0.resources",
+                "1.2.0.manifest",
+                "1.2.0.resources",
+                "1.3.0.manifest",
+                "1.3.0.resources",
+                "instances.lock",
+                "state.json"
+            ]
+        );
     }
     struct Bundled;
     impl<R: Runtime> Assets<R> for Bundled {

@@ -85,11 +85,19 @@ export async function syncBackground(
   return changed;
 }
 
+/** 已挂载的工作区同步数；挂载期间由工作区负责后台会话（并跳过其 SSE 会话），其他调用方不再另行同步。 */
+let mounted = 0;
+/** 字效工作区是否已在同步后台会话。 */
+export function backgroundSyncActive() {
+  return mounted > 0;
+}
+
 /** 工作区挂载期间定时同步后台会话；`open` 返回 SSE 正在订阅的会话，有写入时调用 `onChange` 刷新侧栏，卸载即停止。 */
 export function useBackgroundSync(open: () => string | null, onChange: () => void) {
   const latest = useRef({ open, onChange });
   latest.current = { open, onChange };
   useEffect(() => {
+    mounted++;
     const controller = new AbortController();
     let running = false;
     /** 只有挂载后的第一轮核对任务状态：此后的停滞由事件或用户操作处理，不轮询任务接口。 */
@@ -111,6 +119,7 @@ export function useBackgroundSync(open: () => string | null, onChange: () => voi
     void tick();
     const timer = window.setInterval(() => void tick(), SYNC_INTERVAL_MS);
     return () => {
+      mounted--;
       controller.abort();
       window.clearInterval(timer);
     };
