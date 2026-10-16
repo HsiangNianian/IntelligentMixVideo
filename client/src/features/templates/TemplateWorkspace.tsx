@@ -130,11 +130,15 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
     return () => { mounted.current = false; };
   }, []);
 
-  // 主页删除当前模板后清空保留的编辑区，删除其他模板不影响当前草稿。
+  // 主页删除模板后取消对应读取、清空对应编辑区，删除其他模板不影响当前草稿。
   useEffect(() => {
-    if (!current || deletedTemplate?.templateId !== current.template_id || deletedTemplate.environment !== environment) return;
+    if (!deletedTemplate) return;
+    if (openRequest?.templateId === deletedTemplate.templateId && openRequest.environment === deletedTemplate.environment) {
+      setOpenRequest(null); setLoading(false); setError("");
+    }
+    if (!current || deletedTemplate.templateId !== current.template_id || deletedTemplate.environment !== environment) return;
     setCurrent(null); setDraft(null); setEditing(null); setBaseline(""); setError("");
-  }, [deletedTemplate, current, environment]);
+  }, [deletedTemplate, current, environment, openRequest]);
 
   // 默认地址与弹窗均读取真实元数据；已选择来源时不再启动默认读取。
   useEffect(() => {
