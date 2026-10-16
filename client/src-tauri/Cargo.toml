@@ -1,6 +1,6 @@
 [package]
 name = "client"
-version = "0.9.4"
+version = "0.9.5"
 description = "IntelligentMixVideo desktop client"
 edition = "2021"
 # File::try_lock / lock_shared 自 1.89 稳定。
