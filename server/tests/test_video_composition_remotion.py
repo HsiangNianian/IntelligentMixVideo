@@ -69,7 +69,7 @@ def test_bilingual_shared_sprite_has_independent_content_and_timing(composition_
         item.update(text_en=text, keyword_en="")
     overlay = remotion.plan(data, 120)
     texts = [item["config"]["layer"]["text"] for item in overlay.instances]
-    assert texts == ([data["request"]["title"], "Business, title!"] if role == "title" else ["甲乙丙丁", "戊己庚辛", "Dont stop", "Keep going"])
+    assert texts == ([data["request"]["title"], "Business, title!"] if role == "title" else ["甲乙丙丁", "戊己庚辛", "Don't stop", "Keep going"])
     half = len(overlay.instances) // 2
     assert [(item["start_frame"], item["duration_frames"]) for item in overlay.instances[:half]] == [(item["start_frame"], item["duration_frames"]) for item in overlay.instances[half:]]
     timeline, _ = build_timeline(**{**composition_case, "template": data["template"], "segments": data["segmentation"]["segments"]}, title_en="Business, title!")
@@ -81,7 +81,8 @@ def test_bilingual_shared_sprite_has_independent_content_and_timing(composition_
 
 @pytest.mark.parametrize("renderer", ["ims", "remotion"])
 @pytest.mark.parametrize("content,keyword,expected,clean_keyword", [
-    ('  "Don\'t stop!"\nPay 3.14?  ', "Don't", "Dont stop\nPay 3.14?", "Dont"),
+    ('  "Don\'t stop!"\nPay 3.14?  ', "Don't", "Don't stop\nPay 3.14?", "Don't"),
+    ("O’Reilly isn’t late.", "O’Reilly", "O’Reilly isn’t late", "O’Reilly"),
     ("Paid 3.14. Why？", "3.14.", "Paid 3.14 Why？", "3.14"),
     ("，。!\"'…", "…", "", ""),
 ])
