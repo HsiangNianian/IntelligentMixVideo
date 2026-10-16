@@ -546,6 +546,8 @@ async function measureTextFit(page, needle, frames = sampleFrames(request.compos
  * larger: long text is made smaller at render time, see `fitTexts`), then the default text at the default size, which
  * is what a user sees first. The sampled frames are measured. A sample fails when every frame that shows the text at
  * its full size has a problem (a text cut to a slice of itself is one), and when the text is never visibly rendered.
+ * A multi-line text (a `lineStartFrames` parameter of N items) is filled with N lines that share maxLength, and both
+ * samples show every line from the first frame; its default lines must also pass `lineSyncProblem` and `lineJumpProblem`.
  * This is a geometric measurement of the text boxes, not a visual review of how the result looks.
  */
 async function textFitCheck(page) {
@@ -565,9 +567,15 @@ async function textFitCheck(page) {
       await page.evaluate(() => window.__imvTool.setFrame(0));
     }
   };
-  const longest = TEXT_FILLER.repeat(length);
-  const where = `its maxLength (${length} characters)${smallest !== null ? ` at the smallest fontSize ${smallest}` : ""}`;
-  const measured = await measureSample({ text: longest, ...(smallest !== null ? { fontSize: smallest } : {}) }, longest);
+  const lines = request.parameter_schema?.properties?.lineStartFrames?.maxItems;
+  const multi = Number.isInteger(lines) && lines > 1;
+  // Every line is shown from frame 0, so the measurement sees the complete text.
+  const allLines = multi ? { lineStartFrames: Array(lines).fill(0) } : {};
+  const longest = multi
+    ? Array(lines).fill(TEXT_FILLER.repeat(Math.max(1, Math.floor((length - (lines - 1)) / lines)))).join("\n")
+    : TEXT_FILLER.repeat(length);
+  const where = `its maxLength (${length} characters${multi ? ` over ${lines} lines` : ""})${smallest !== null ? ` at the smallest fontSize ${smallest}` : ""}`;
+  const measured = await measureSample({ text: longest, ...allLines, ...(smallest !== null ? { fontSize: smallest } : {}) }, longest);
   if (measured.error)
     return { name: "text_fit", status: "failed", message: `The component throws at frame ${measured.frame} with the text filled to ${where}: ${measured.error}`.slice(0, 6000) };
   if (!measured.shown)
@@ -585,7 +593,7 @@ async function textFitCheck(page) {
   const shortText = request.parameters?.text;
   let shortNote = "";
   if (typeof shortText === "string" && shortText.trim()) {
-    const preview = await measureSample({}, shortText);
+    const preview = await measureSample(allLines, shortText);
     if (!preview.error && preview.shown && !preview.fits)
       return {
         name: "text_fit",
@@ -594,8 +602,100 @@ async function textFitCheck(page) {
           + "A user sees the default text first, so it must fit the canvas at the default fontSize without relying on the host shrinking it: adjust the default fontSize or the layout.",
       };
     shortNote = " The default text is shown in full at the default fontSize too.";
+    const defaultLines = shortText.split("\n");
+    const sync = multi && defaultLines.length === lines ? (await lineSyncProblem(page, defaultLines)) ?? (await lineJumpProblem(page, defaultLines)) : null;
+    if (sync) return { name: "text_fit", status: "failed", message: sync };
   }
-  return { name: "text_fit", status: "passed", message: `The ${length}-character text is shown in full${smallest !== null ? ` at the smallest fontSize ${smallest}` : ""} (measured on the ${measured.full} of ${measured.shown} frames that show it at its full size).${shortNote}` };
+  return { name: "text_fit", status: "passed", message: `The ${length}-character text${multi ? ` over ${lines} lines` : ""} is shown in full${smallest !== null ? ` at the smallest fontSize ${smallest}` : ""} (measured on the ${measured.full} of ${measured.shown} frames that show it at its full size).${shortNote}` };
+}
+
+/**
+ * The lines of a multi-line text must form one effect: shown from frame 0 (every `lineStartFrames` at 0), the default
+ * `lines` must be rendered by one composed instance and be shown and hidden together on every sampled frame, so
+ * they share the layout (and its `lineGap`), the entrance and the exit. Returns the failure message, or null.
+ */
+async function lineSyncProblem(page, lines) {
+  await page.evaluate((values) => window.__imvTool.setParameters(values), { lineStartFrames: lines.map(() => 0) });
+  try {
+    const owners = new Set();
+    for (const frame of sampleFrames(request.composition.duration_frames)) {
+      await page.evaluate((target) => window.__imvTool.setFrame(target), frame);
+      if (await page.evaluate(() => window.__imvRuntimeError ?? null)) return null; // the fit measurement reports it
+      const shown = [];
+      for (const line of lines) shown.push((await textFitProblems(page, line, UNPLACED)) !== null);
+      // The composed instance (`data-imv-instance`) each text node of a line belongs to.
+      for (const owner of await page.evaluate((lines) => {
+        const layer = document.querySelector("[data-imv-host-layer]")?.firstElementChild;
+        if (!layer) return [];
+        const compact = (value) => value.replace(/\s+/g, "");
+        const wanted = lines.map(compact);
+        const found = new Set();
+        const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          const text = compact(node.nodeValue);
+          if (text && wanted.some((line) => line.includes(text) || text.includes(line)))
+            found.add(node.parentElement?.closest("[data-imv-instance]")?.getAttribute("data-imv-instance") ?? "");
+        }
+        return [...found];
+      }, lines)) owners.add(owner);
+      if (owners.size > 1)
+        return `The ${lines.length} lines of the multi-line text are rendered by different instances (${[...owners].join(", ")}). `
+          + 'Render every line in one Preset instance: split text on "\\n" and stack the lines in one column spaced by the lineGap parameter, so they share one layout and one entrance and exit.';
+      if (shown.some(Boolean) && !shown.every(Boolean)) {
+        const numbers = (wanted) => shown.flatMap((value, index) => (value === wanted ? [index + 1] : [])).join(", ");
+        return `With every lineStartFrames at 0, frame ${frame} shows line ${numbers(true)} but not line ${numbers(false)} of the default text. `
+          + "Give every line the same animationIn/animationOut: line i enters from lineStartFrames[i] and all lines exit together, timed from useVideoConfig().durationInFrames instead of a constant frame count.";
+      }
+    }
+    return null;
+  } finally {
+    await page.evaluate((values) => window.__imvTool.setParameters(values), request.parameters ?? {});
+    await page.evaluate(() => window.__imvTool.setFrame(0));
+  }
+}
+
+/** How far (canvas pixels, at least) an earlier line may move in the frame a later line appears beyond its own motion just before. */
+const LINE_JUMP_TOLERANCE = 6;
+
+/**
+ * The lines of a multi-line text appear one by one, and an appearing line must not push the lines already shown:
+ * a layout that only adds a line when it starts (not rendered before, in a centred column) makes every earlier line
+ * jump in that frame. The default `lines` are started evenly over the preview (line i at i/(N+1) of it, after the
+ * entrance of the line before has settled), and at the frame each later line starts, every earlier line may move no
+ * more than it moved in the frame before plus `LINE_JUMP_TOLERANCE` (or a tenth of its height). Returns the failure
+ * message, or null.
+ */
+async function lineJumpProblem(page, lines) {
+  const step = Math.floor(request.composition.duration_frames / (lines.length + 1));
+  if (step < 3) return null;
+  const starts = lines.map((_, index) => index * step);
+  await page.evaluate((values) => window.__imvTool.setParameters(values), { lineStartFrames: starts });
+  try {
+    for (let index = 1; index < lines.length; index++) {
+      const boxes = [];
+      for (const frame of [starts[index] - 2, starts[index] - 1, starts[index]]) {
+        await page.evaluate((target) => window.__imvTool.setFrame(target), frame);
+        if (await page.evaluate(() => window.__imvRuntimeError ?? null)) return null; // the fit measurement reports it
+        const shown = [];
+        for (const line of lines.slice(0, index)) shown.push((await textFitProblems(page, line, UNPLACED))?.extent ?? null);
+        boxes.push(shown);
+      }
+      for (let earlier = 0; earlier < index; earlier++) {
+        const [first, before, after] = boxes.map((shown) => shown[earlier]);
+        if (!first || !before || !after) continue;
+        const moved = (from, to) => Math.max(...["left", "right", "top", "bottom"].map((edge) => Math.abs(to[edge] - from[edge])));
+        const jump = moved(before, after);
+        if (jump > moved(first, before) + Math.max(LINE_JUMP_TOLERANCE, (before.bottom - before.top) / 10))
+          return `When line ${index + 1} of the default text appears (lineStartFrames ${JSON.stringify(starts)}), line ${earlier + 1} jumps ${Math.round(jump)}px `
+            + `between frames ${starts[index] - 1} and ${starts[index]}. Keep the space of every line from the first frame: render a line that has not appeared yet `
+            + "with opacity 0 instead of not rendering it, so the lines already shown stay where they are and each line only plays its own entrance.";
+      }
+    }
+    return null;
+  } finally {
+    await page.evaluate((values) => window.__imvTool.setParameters(values), request.parameters ?? {});
+    await page.evaluate(() => window.__imvTool.setFrame(0));
+  }
 }
 
 /** The smallest `keywordSize` a placement may set (0 follows the text size, which is not scaled). */

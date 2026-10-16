@@ -18,4 +18,6 @@ export interface SpriteAsset {
   box: ContentBox;
   /** 可见的发布参数（可修改或只读），按发布顺序。 */
   parameters: AssetParameter[];
+  /** 字效的固定行数：多行字效为 2～4，示例文字按行分别填写，字幕的连续切片逐行显示；缺省或 1 为单行。 */
+  lines?: number;
 }

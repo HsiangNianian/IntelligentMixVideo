@@ -2,9 +2,12 @@
 
 The Sprite's style is its accepted code plus the editable style overrides and host transform of the placement.
 The content is either one `text` with `keywords` shown for the whole effect (a title) or timed `cues` (subtitles,
-each shown once in its own frames, so the Sprite reads the cue's length as `durationInFrames`). A text shown for
-less than `STATIC_TEXT_SECONDS` plays no entrance or exit: the Sprite runs at its previewed length, frozen on the
-middle frame, for the text's frames, which avoids flicker and code that cannot animate in so few frames. The time is
+each shown once in its own frames, so the Sprite reads the cue's length as `durationInFrames`). A multi-line text
+effect (`categories.line_count` above 1) shows up to that many consecutive cues of one sentence together instead:
+line i appears when cue i starts (the host passes each line's frame as `lineStartFrames`) and the group clears when
+its last cue ends. A text shown for less than `STATIC_TEXT_SECONDS` plays no entrance or exit: the Sprite runs at its
+previewed length, frozen on the middle frame with every line shown, for the text's frames, which avoids flicker and
+code that cannot animate in so few frames. The time is
 `effect_total_frames`, 0.5 to 120 seconds, whatever length the user previewed when generating the Sprite.
 `plan_sprite_render` checks the request and places the instances on the whole effect; `render_sprite` renders it in
 one overlay worker run that writes consecutive chunks of at most 30 seconds from the same composition (so every
@@ -15,6 +18,7 @@ callback are in `overlay_service.py`.
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 from pathlib import Path
 
@@ -22,6 +26,7 @@ from generated.imv.sprite.v1 import sprite_pb2 as pb
 from pydantic import ValidationError
 
 from ..template.schema import RemotionTrackEditor
+from .categories import LINE_STARTS_PROP, line_count
 from .overlay_render import Overlay, OverlayError, probe_overlay, render_overlay, run_overlay_worker, to_frames
 from .placement import resolve
 from .renderer import Renderer
@@ -59,20 +64,26 @@ def _editor(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite, text: str
         raise OverlayError("placement_invalid", f"样式或内容无效：{exc.errors()[0]['msg']}") from None
 
 
-def _contents(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite, total: int) -> list[tuple[int, int, str, list[str]]]:
-    """The shown contents as (start frame, frames, text, keywords) on the whole effect.
+def _contents(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite, total: int) -> list[tuple[int, int, str, list[str], list[int]]]:
+    """The shown contents as (start frame, frames, text, keywords, line starts) on the whole effect.
 
     A text effect takes `text` for the whole effect or ordered, non-overlapping, non-empty `cues`; other kinds take
-    no content and render once over the whole effect.
+    no content and render once over the whole effect. A multi-line text effect groups up to its line count of
+    consecutive cues, starting a new group when the cue's `sentence` changes (both given): the lines are joined with
+    a line break and each line starts at its cue's frame, counted from the group's start. A multi-line `text` is
+    shown whole from the first frame and has at most the line count of lines.
     """
     if sprite.kind != pb.SPRITE_KIND_TEXT:
         if message.text or message.keywords or message.cues:
             raise OverlayError("content_invalid", "只有字效接收 text、keywords 或 cues")
-        return [(0, total, "", [])]
+        return [(0, total, "", [], [])]
     if bool(message.text) == bool(message.cues):
         raise OverlayError("content_invalid", "字效必须提供 text 或 cues 之一")
+    lines = line_count(json.loads(sprite.config_schema_json or "{}"))
     if message.text:
-        contents = [(0, total, message.text, list(message.keywords))]
+        if lines > 1 and len(message.text.split("\n")) > lines:
+            raise OverlayError("content_invalid", f"这个字效最多显示 {lines} 行")
+        contents = [(0, total, message.text, list(message.keywords), [0])]
     else:
         if message.keywords:
             raise OverlayError("content_invalid", "使用 cues 时关键词放在各切片里")
@@ -86,11 +97,35 @@ def _contents(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite, total: 
                 raise OverlayError("content_invalid", f"第 {index} 个切片的结束帧必须晚于开始帧")
             if cue.end_frame > total:
                 raise OverlayError("content_invalid", f"第 {index} 个切片超出了效果时长")
-            contents.append((cue.start_frame, cue.end_frame - cue.start_frame, cue.text, list(cue.keywords)))
+            if lines > 1 and "\n" in cue.text:
+                raise OverlayError("content_invalid", f"第 {index} 个切片的文字不能换行")
+            contents.append((cue.start_frame, cue.end_frame - cue.start_frame, cue.text, list(cue.keywords), [0]))
             end = cue.end_frame
-    if any(keywords for *_, keywords in contents) and not sprite.keywords_prop:
+        if lines > 1:
+            contents = _groups(message.cues, contents, lines)
+    if any(keywords for *_, keywords, _ in contents) and not sprite.keywords_prop:
         raise OverlayError("content_invalid", "这个 Sprite 不支持关键词")
     return contents
+
+
+def _groups(cues, contents: list[tuple], lines: int) -> list[tuple[int, int, str, list[str], list[int]]]:
+    """Group the checked cue contents of a multi-line text: up to `lines` per group, a new group at a sentence change.
+
+    A group lasts from its first cue's start to its last cue's end (the gaps between them included), its text is the
+    cues' texts one per line, its keywords the cues' keywords in order without repeats, and each line starts at its
+    cue's start frame counted from the group's start.
+    """
+    groups: list[list[tuple]] = []
+    for index, (cue, content) in enumerate(zip(cues, contents)):
+        previous = cues[index - 1].sentence if index else 0
+        if not groups or len(groups[-1]) == lines or cue.sentence and previous and cue.sentence != previous:
+            groups.append([])
+        groups[-1].append(content)
+    return [
+        (group[0][0], group[-1][0] + group[-1][1] - group[0][0], "\n".join(item[2] for item in group),
+         list(dict.fromkeys(word for item in group for word in item[3])), [item[0] - group[0][0] for item in group])
+        for group in groups
+    ]
 
 
 def plan_sprite_render(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite) -> Overlay:
@@ -98,8 +133,10 @@ def plan_sprite_render(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite
 
     A text shown for less than `STATIC_TEXT_SECONDS` gets a `hold`: frozen on the middle frame of the previewed length
     the Sprite was accepted at (`hold.length`, which it reads as its length) and shown for the text's frames; the
-    instance lasts the longer of the two, so a preview shorter than the text does not cut it. Every refusal is an
-    `OverlayError` with a stable code; acceptance turns it into a 422.
+    instance lasts the longer of the two, so a preview shorter than the text does not cut it. A multi-line text gets
+    its lines' start frames, all 0 when held so the frozen frame shows every line, and the frame of its last line
+    (`reveal_frame`) for the text fit. Every refusal is an `OverlayError` with a stable code; acceptance turns it into
+    a 422.
     """
     canvas = sprite.canvas
     fps = canvas.fps
@@ -113,7 +150,8 @@ def plan_sprite_render(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite
     static = to_frames(STATIC_TEXT_SECONDS, fps) if sprite.kind == pb.SPRITE_KIND_TEXT else 0
     preview = max(1, canvas.preview_frames)
     instances = []
-    for start, length, text, keywords in _contents(message, sprite, total):
+    lines = line_count(json.loads(sprite.config_schema_json or "{}")) if sprite.kind == pb.SPRITE_KIND_TEXT else 1
+    for start, length, text, keywords, starts in _contents(message, sprite, total):
         try:
             config, host = resolve(sprite, _editor(message, sprite, text, keywords))
         except ValueError as exc:
@@ -121,6 +159,11 @@ def plan_sprite_render(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite
         instance = {"sprite_id": message.sprite_id, "code": sprite.tsx_code, "config": config, "host": host, "start_frame": start, "duration_frames": length}
         if length < static:
             instance.update(duration_frames=max(preview, length), hold={"frame": preview // 2, "frames": length, "length": preview})
+            starts = [0]
+        if lines > 1:
+            # Content the host injects (not an operator parameter), padded with the last line's start for absent lines.
+            config[LINE_STARTS_PROP] = starts + [starts[-1]] * (lines - len(starts))
+            instance["reveal_frame"] = starts[-1]
         instances.append(instance)
     return Overlay(canvas.width, canvas.height, fps, total, instances)
 

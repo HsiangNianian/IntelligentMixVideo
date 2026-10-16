@@ -1,10 +1,11 @@
-"""动态字效参数契约：解析显式字段声明并注入业务文字、首次关键词区间和实际帧数。
+"""动态字效参数契约：解析显式字段声明并注入业务文字、首次关键词区间、多行字效的行起点和实际帧数。
 
 读取上游发布的正文/关键词路径，兼容已有 x-imv-role 声明，不修改生成或发布流程。
 固定时长资产由合成宿主映射播放时钟；已声明动态时长的资产继续接收实际帧数。
 """
 from copy import deepcopy
 import json
+from ..remotion_templates.categories import LINE_STARTS_PROP, line_count
 from ..remotion_templates.tools.schema import validate_parameters
 
 
@@ -65,9 +66,14 @@ def first_range(text: str, keyword: str) -> list[list[int]]:
     return [[start, start + len(keyword)]] if start >= 0 else []
 
 
-def resolve_config(sprite, text: str, keyword: str, frames: int,
-                   text_prop: str = "", keywords_prop: str = "", *, config: dict | None = None) -> dict:
-    """克隆资产默认值并覆盖全部业务字段；空关键词覆盖示例，源码和样式保留。"""
+def resolve_config(sprite, text: str, keyword: str | list[str], frames: int,
+                   text_prop: str = "", keywords_prop: str = "", *, config: dict | None = None,
+                   line_starts: list[int] | None = None) -> dict:
+    """克隆资产默认值并覆盖全部业务字段；空关键词覆盖示例，源码和样式保留。
+
+    多行字效的 ``text`` 用换行分隔各行，``keyword`` 是各行关键词的列表，``line_starts`` 是各行出现的帧：
+    资产声明了 `lineStartFrames` 时写入并补足到它的固定项数（补的项沿用最后一行，没有文字的行不会显示）。
+    """
     schema = json.loads(sprite.config_schema_json)
     mapping = roles(schema)
     definitions = dict(fields(schema))
@@ -84,16 +90,21 @@ def resolve_config(sprite, text: str, keyword: str, frames: int,
         if definitions.get(path, {}).get("type") != "string":
             raise ContentError("正文参数必须是字符串：" + path)
         set_path(config, path, text)
+    # 只注入在正文里命中的词，多行字效的各行关键词去重后保持先后。
+    hits = [word for word in dict.fromkeys([keyword] if isinstance(keyword, str) else keyword) if first_range(text, word)]
     for path in mapping["keywords"]:
         kind = definitions.get(path, {}).get("type")
         if kind not in ("string", "array"):
             raise ContentError("关键词参数必须是字符串或数组：" + path)
         # 旧字符串字段接收实际命中的词；数组按已封存契约区分词列表与码点区间。
-        value = (keyword if first_range(text, keyword) else "") if kind == "string" else first_range(text, keyword)
+        value = (hits[0] if hits else "") if kind == "string" else [item for word in hits for item in first_range(text, word)]
         if kind == "array" and definitions[path].get("items", {}).get("type") == "string":
             # 上游新分类契约使用词列表；旧区间数组仍按其显式 Schema 注入。
-            value = [keyword] if first_range(text, keyword) else []
+            value = hits
         set_path(config, path, value)
+    if (count := line_count(schema)) > 1:
+        starts = (line_starts or [0])[:count]
+        set_path(config, LINE_STARTS_PROP, starts + [starts[-1]] * (count - len(starts)))
     for path in mapping["duration"]:
         set_path(config, path, frames)
     try:

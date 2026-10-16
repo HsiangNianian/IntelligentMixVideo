@@ -175,3 +175,21 @@ test("实例参数的 pattern 在本地检查，不合的输入不进入预览",
   fireEvent.change(screen.getByLabelText("编号"), { target: { value: "XY" } });
   expect(changes).toEqual([["title", { code: "XY" }]]);
 });
+
+// 场景：多行字效（声明 lineStartFrames）的文字按行分别填写，用换行连接后回传；任意一行留空都不进入预览；行起点由宿主注入，不出现在面板里。
+test("多行字效逐行编辑文字，行起点不在参数面板显示", () => {
+  const changes: [string, JsonValue][] = [];
+  const version = composedVersion();
+  version.candidate.config_schema.properties.text!.maxLength = 100;
+  version.candidate.config_schema.properties.lineStartFrames = { type: "array", title: "行起点", items: { type: "integer", minimum: 0, maximum: 3600 }, maxItems: 2 };
+  const values = { ...version.candidate.default_config, text: "判断一个人\n选择花字", lineStartFrames: [0, 30] };
+  render(<ParametersPanel version={version} values={values} disabled={false} pending={false} dirty={false} saving={false}
+    onChange={(key, value) => changes.push([key, value])} onSave={() => {}} onDiscard={() => {}} />);
+  expect((screen.getByLabelText("标题文字第 1 行") as HTMLInputElement).value).toBe("判断一个人");
+  fireEvent.change(screen.getByLabelText("标题文字第 2 行"), { target: { value: "选择滤镜" } });
+  expect(changes).toEqual([["text", "判断一个人\n选择滤镜"]]);
+  fireEvent.change(screen.getByLabelText("标题文字第 1 行"), { target: { value: " " } });
+  expect(changes).toHaveLength(1);
+  expect(screen.getByRole("alert").textContent).toBe("请输入有效的标题文字（2 行都要填写）。");
+  expect(screen.queryByText(/lineStartFrames|行起点/) === null).toBe(true);
+});

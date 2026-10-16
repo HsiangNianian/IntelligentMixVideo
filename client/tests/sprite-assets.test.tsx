@@ -10,7 +10,7 @@ import { SpriteClipInspector } from "@/features/templates/SpriteClipInspector";
 import { getTemplate, saveTemplate } from "@/features/templates/api";
 import { bindClip } from "@/features/templates/clips";
 import type { SpriteAsset } from "@/features/sprites/model";
-import { toDraft, type RemotionClip } from "@/features/templates/model";
+import { newDraft, toDraft, type RemotionClip } from "@/features/templates/model";
 import { EffectTemplateEditorSchema, GetTemplateResponseSchema, SaveTemplateRequestSchema, SaveTemplateResponseSchema } from "@/generated/imv/template/v1/template_pb";
 import {
   ListSpritesResponseSchema,
@@ -41,6 +41,7 @@ function summary(id = "sprite-1", kind = SpriteKind.VIDEO_OVERLAY, keywords = fa
     canvas: { width: 1080, height: 1920, fps: 30, previewFrames: 90 },
     contentBox: { x: 90, y: 760, width: 900, height: 400 },
     parameters,
+    lineCount: 0,
   };
 }
 
@@ -377,10 +378,14 @@ test("所作用文字不在预览内时字效标为未应用", () => {
   expect(screen.getByRole("listitem", { name: "Remotion 资产：金色标题" }).textContent).toContain("顶部标题字效 · 当前视频未应用");
 });
 
-/** 打开带一个字效片段的已保存模板，并选中该片段。 */
-async function openTextClip(clip: Partial<RemotionClip> = {}) {
+/** 多行字效的行间距参数（像素）。 */
+const LINE_GAP: MessageInitShape<typeof SpriteParameterSchema> = { key: "lineGap", label: "行间距", access: OperatorAccess.VISIBLE_EDITABLE, defaultValue: { value: { case: "numberValue", value: 24 } }, minimum: 0, maximum: 300 };
+
+/** 打开带一个字效片段的已保存模板，并选中该片段；lineCount 是目录里字效的固定行数，多行字效带行间距参数。 */
+async function openTextClip(clip: Partial<RemotionClip> = {}, lineCount = 1) {
+  const text = textAsset();
   const fixture = sprites({
-    catalog: [textAsset(), summary("sprite-f", SpriteKind.FILTER_OVERLAY), summary("sprite-v")],
+    catalog: [{ ...text, lineCount, parameters: lineCount > 1 ? [...text.parameters, LINE_GAP] : text.parameters }, summary("sprite-f", SpriteKind.FILTER_OVERLAY), summary("sprite-v")],
     clips: [{ id: "clip-t", sprite_id: "sprite-t", start: 0, duration: 3, parameters: {}, transform: {}, ...clip }],
   });
   const remotion = { opened: 0 };
@@ -390,6 +395,18 @@ async function openTextClip(clip: Partial<RemotionClip> = {}) {
   const inspector = await screen.findByRole("region", { name: "Remotion 资产设置" });
   return { ...fixture, inspector, remotion };
 }
+
+// 场景：目录给出的行数决定示例文字的输入方式：两行字效作用于底部字幕时出现两个逐行输入框；两行之间的距离和字号一样按这次摆放调整，并随模板保存。
+test("目录里的多行字效在模板中逐行填写字幕示例并调整行间距", async () => {
+  const { inspector, saved } = await openTextClip({ text_target: "subtitle" }, 2);
+  expect(within(inspector).getByLabelText("示例文字第 1 行")).toBeTruthy();
+  fireEvent.change(within(inspector).getByLabelText("示例文字第 2 行"), { target: { value: "第二行" } });
+  await waitFor(() => expect(within(inspector).getByLabelText<HTMLInputElement>("示例文字第 2 行").value).toBe("第二行"));
+  fireEvent.change(within(inspector).getByLabelText("行间距"), { target: { value: "60" } });
+  fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
+  await waitFor(() => expect(saved).toHaveLength(1));
+  expect(wireClips(saved[0]).map((clip) => clip.editor?.remotion?.parameters.map((item) => [item.key, item.numberValue]))).toEqual([[["lineGap", 60]]]);
+});
 
 // 场景：资产库按字效、滤镜、转场与视频特效分类，显示各类数量，默认打开第一个有资产的分类。
 test("Remotion 资产目录按三类分栏", async () => {
@@ -542,6 +559,25 @@ test("资产未读到时带位置覆盖的片段仍能打开设置栏", () => {
   const noop = () => {};
   render(<SpriteClipInspector clip={clip} asset={undefined} duration={10} onSample={noop} onTextTiming={noop} onParameter={noop} onTransform={noop} onStart={noop} onBind={noop} onRemove={noop} onClose={noop} />);
   expect(screen.getByText("未找到的资产")).toBeTruthy();
+});
+
+// 场景：多行字效作用于底部字幕时，示例文字按资产行数逐行填写，用换行连接写回字幕对象；作用于标题时仍是一个输入框，整段标题显示在第一行。
+test("多行字效作用于字幕时逐行填写示例文字", () => {
+  const asset: SpriteAsset = { id: "sprite-t", name: "两行花字", kind: SpriteKind.TEXT, seconds: 3, aspect: 9 / 16, width: 1080, height: 1920, fps: 30, box: { x: 0, y: 0, width: 1080, height: 1920 }, parameters: [], lines: 2 };
+  const clip: RemotionClip = { id: "clip-t", sprite_id: "sprite-t", start: 0, duration: 3, parameters: {}, transform: {}, text_target: "subtitle" };
+  const [title, subtitle] = newDraft().tracks;
+  const samples: string[] = [];
+  const noop = () => {};
+  const props = { asset, duration: 10, onTextTiming: noop, onParameter: noop, onTransform: noop, onStart: noop, onBind: noop, onRemove: noop, onClose: noop };
+  const { rerender } = render(<SpriteClipInspector {...props} clip={clip} textTrack={{ ...subtitle!, editor: { ...subtitle!.editor, subtitle: "判断一个人\n选择花字" } }}
+    onSample={(value) => samples.push(value)} />);
+  expect(screen.getByLabelText<HTMLInputElement>("示例文字第 1 行").value).toBe("判断一个人");
+  fireEvent.change(screen.getByLabelText("示例文字第 2 行"), { target: { value: "选择滤镜" } });
+  expect(samples).toEqual(["判断一个人\n选择滤镜"]);
+  rerender(<SpriteClipInspector {...props} clip={{ ...clip, text_target: "title" }} textTrack={title} onSample={(value) => samples.push(value)} />);
+  expect(screen.queryByLabelText("示例文字第 1 行") === null).toBe(true);
+  expect(screen.getByLabelText("示例文字")).toBeTruthy();
+  expect(screen.getByText(/整段显示在这个多行字效的第一行/)).toBeTruthy();
 });
 
 // 场景：资产库里的资产可确认后删除；仍被模板使用时弹窗显示服务端列出的模板并保留资产，确认删除成功后目录刷新不再显示它。
