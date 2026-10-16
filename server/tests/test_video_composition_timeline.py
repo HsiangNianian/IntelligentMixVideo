@@ -24,10 +24,10 @@ def test_bilingual_timeline_uses_independent_styles_and_synchronized_times(compo
     case["segments"][0].update(text_en="Don't stop!", keyword_en="stop")
     case["segments"][1].update(text_en="Keep going.", keyword_en="")
     original = deepcopy(case)
-    timeline, _ = build_timeline(**case, title_en="Business title", title_keyword_en="Business")
+    timeline, _ = build_timeline(**case, title_en="Business, title!", title_keyword_en="Business")
     clips = [clip for row in timeline["SubtitleTracks"] for clip in row["SubtitleTrackClips"]]
     translated = [clip for clip in clips if clip.get("AdaptMode") == "AutoScale"]
-    assert [clip["Content"] for clip in translated] == (["Business title"] if title_on else []) + (["Don't stop!", "Keep going."] if subtitle_on else [])
+    assert [clip["Content"] for clip in translated] == (["Business, title!"] if title_on else []) + (["Dont stop", "Keep going"] if subtitle_on else [])
     assert all((clip["TextWidth"], clip["FontSize"], clip["Font"]) == (0.9, 20, "Source Han Sans CN") for clip in translated)
     assert [(clip["TimelineIn"], clip["TimelineOut"]) for clip in translated] == ([(1, 3)] if title_on else []) + ([(1, 3), (4, 6)] if subtitle_on else [])
     assert any(clip["Content"] == "甲乙丙丁" for clip in clips)

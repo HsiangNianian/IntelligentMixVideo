@@ -17,9 +17,10 @@ def subtitle_events(segments, language="zh"):
         if language == "en":
             if not item.text_en or not item.text_en.strip():
                 raise ValueError("缺少英文字幕译文")
-            # 英文保留撇号、标点及单词空格，不经过中文字幕清洗。
-            keyword = item.keyword_en if item.keyword_en and item.keyword_en in item.text_en else ""
-            result.append((item.text_en.strip(), keyword, item.start_time, item.end_time))
+            text = _subtitle_text(item.text_en)
+            keyword = _subtitle_text(item.keyword_en) if item.keyword_en and item.keyword_en in item.text_en else ""
+            if text:
+                result.append((text, keyword, item.start_time, item.end_time))
             continue
         used = False
         for part in item.subtitle_parts or [item]:

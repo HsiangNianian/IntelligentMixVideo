@@ -592,7 +592,7 @@ def test_bilingual_translation_is_gated_and_does_not_change_matching(upstreams, 
     data = store.get(task_id)["data"]
     texts = [clip["Content"] for row in data["timeline"]["SubtitleTracks"] for clip in row["SubtitleTrackClips"]]
     assert ("Business title" in texts) == title_on
-    assert ("Sentence 1." in texts) == (subtitle_on and mode != "materials_silent")
+    assert ("Sentence 1" in texts) == (subtitle_on and mode != "materials_silent")
     for posted in upstreams["posts"]:
         assert json.loads(posted["llm"])["segments"] == composition_case["segments"]
 

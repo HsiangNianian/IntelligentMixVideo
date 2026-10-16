@@ -64,19 +64,65 @@ def test_bilingual_shared_sprite_has_independent_content_and_timing(composition_
     for language, track_id in (("zh", "effect-zh"), ("en", "effect-en")):
         data["template"]["tracks"].append(remotion_track(track_id, sprite_id=placement["sprite_id"], text_target=role, language=language))
     data["remotion"]["placements"].append({**deepcopy(placement), "id": "text-en", "language": "en"})
-    data["segmentation"].update(title_en="Business title", title_keyword_en="Business")
+    data["segmentation"].update(title_en="Business, title!", title_keyword_en="Business")
     for item, text in zip(data["segmentation"]["segments"], ["Don't stop!", "Keep going."]):
         item.update(text_en=text, keyword_en="")
     overlay = remotion.plan(data, 120)
     texts = [item["config"]["layer"]["text"] for item in overlay.instances]
-    assert texts == ([data["request"]["title"], "Business title"] if role == "title" else ["甲乙丙丁", "戊己庚辛", "Don't stop!", "Keep going."])
+    assert texts == ([data["request"]["title"], "Business, title!"] if role == "title" else ["甲乙丙丁", "戊己庚辛", "Dont stop", "Keep going"])
     half = len(overlay.instances) // 2
     assert [(item["start_frame"], item["duration_frames"]) for item in overlay.instances[:half]] == [(item["start_frame"], item["duration_frames"]) for item in overlay.instances[half:]]
-    timeline, _ = build_timeline(**{**composition_case, "template": data["template"], "segments": data["segmentation"]["segments"]}, title_en="Business title")
+    timeline, _ = build_timeline(**{**composition_case, "template": data["template"], "segments": data["segmentation"]["segments"]}, title_en="Business, title!")
     ims_texts = [clip["Content"] for row in timeline["SubtitleTracks"] for clip in row["SubtitleTrackClips"]]
     assert not set(texts) & set(ims_texts)
     english["enabled"] = False
     assert len(remotion.plan(data, 120).instances) == half
+
+
+@pytest.mark.parametrize("renderer", ["ims", "remotion"])
+@pytest.mark.parametrize("content,keyword,expected,clean_keyword", [
+    ('  "Don\'t stop!"\nPay 3.14?  ', "Don't", "Dont stop\nPay 3.14?", "Dont"),
+    ("Paid 3.14. Why？", "3.14.", "Paid 3.14 Why？", "3.14"),
+    ("，。!\"'…", "…", "", ""),
+])
+def test_english_subtitle_punctuation_and_keywords_are_cleaned_at_rendering(
+    composition_case, renderer, content, keyword, expected, clean_keyword,
+):
+    """两种渲染器的英文字幕共用清洗规则；关键词同步、空文字跳过，原始快照不变。"""
+    from server.video_composition.timeline import build_timeline
+
+    role = "subtitle"
+    data = case(composition_case, role)
+    data["template"] = deepcopy(composition_case["template"])
+    source = next(track for track in data["template"]["tracks"] if track["target"] == role)
+    english = {**deepcopy(source), "id": f"{role}-en", "language": "en"}
+    english["editor"][f"{role}KeywordBold"] = True
+    data["template"]["tracks"].append(english)
+    data["segmentation"].update(title_en=content, title_keyword_en=keyword)
+    data["segmentation"]["segments"] = data["segmentation"]["segments"][:1]
+    data["segmentation"]["segments"][0].update(text_en=content, keyword_en=keyword)
+    data["remotion"]["placements"][0].update(text_target=role, language="en")
+    original = deepcopy(data)
+    if renderer == "ims":
+        timeline, _ = build_timeline(
+            **{**composition_case, "template": data["template"], "segments": data["segmentation"]["segments"],
+               "matches": composition_case["matches"][:1]},
+            title_en=content, title_keyword_en=keyword,
+        )
+        texts = [clip["Content"] for row in timeline["SubtitleTracks"] for clip in row["SubtitleTrackClips"]
+                 if clip.get("AdaptMode") == "AutoScale"]
+        styled = expected.replace(clean_keyword, r"{\b1}" + clean_keyword + r"{\b0}", 1) if clean_keyword else expected
+        assert texts == ([styled] if expected else [])
+    else:
+        overlay = remotion.plan(data, 120)
+        if expected:
+            layer = overlay.instances[0]["config"]["layer"]
+            assert layer["text"] == expected
+            start = expected.index(clean_keyword)
+            assert layer["ranges"] == [[start, start + len(clean_keyword)]]
+        else:
+            assert overlay is None
+    assert data == original
 
 
 @pytest.mark.anyio
