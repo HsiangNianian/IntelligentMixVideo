@@ -538,7 +538,8 @@ def translate(result: dict, *, title: str | None = None) -> dict:
 
     英文关键词的检查与中文相同，只是不限长度：keyword_en 不在本段 text_en 里就置空，
     title_keyword_en 不在 title_en 里就报错；中文关键词为空时英文关键词也是空。
-    模型返回的段数对不上或字段类型不对时抛 RuntimeError，不重试；网络等 SDK 异常原样抛出。
+    模型返回的段数对不上、字段类型不对，或译文为空（片段 text_en 为空，或原标题非空而 title_en 为空）时
+    抛 RuntimeError，不重试；网络等 SDK 异常原样抛出。
     模型配置只读服务端 server/.env 与 IMV_ 环境变量。
     """
     config = _settings(None)
@@ -571,10 +572,10 @@ def translate(result: dict, *, title: str | None = None) -> dict:
     if (
         not isinstance(items, list)
         or len(items) != len(segments)
-        or any(not isinstance(i, dict) or not isinstance(i.get("text_en"), str)
+        or any(not isinstance(i, dict) or not isinstance(i.get("text_en"), str) or not i["text_en"].strip()
                or not isinstance(i.get("keyword_en"), str) for i in items)
     ):
-        raise RuntimeError("模型译文数组必须与片段一一对应，且 text_en、keyword_en 为字符串。")
+        raise RuntimeError("模型译文数组必须与片段一一对应，text_en 为非空字符串，keyword_en 为字符串。")
     translated = {**result, "segments": [
         {**item, "text_en": i["text_en"],
          "keyword_en": _pick_keyword(i["text_en"], [i["keyword_en"]], None) if item["keyword"] else ""}
@@ -582,8 +583,9 @@ def translate(result: dict, *, title: str | None = None) -> dict:
     ]}
     if title is not None:
         title_en = output.get("title_en")
-        if not isinstance(title_en, str):
-            raise RuntimeError("模型 title_en 必须为字符串。")
+        # 原标题有内容时译文不能为空；原标题本身为空时允许空译文。
+        if not isinstance(title_en, str) or (title.strip() and not title_en.strip()):
+            raise RuntimeError("模型 title_en 必须为字符串，原标题非空时不能为空。")
         keyword = output.get("title_keyword_en") if content["title_keyword"] else ""
         translated.update(title_en=title_en,
                           title_keyword_en=_check_title_keyword(keyword, title_en, None, "title_keyword_en"))

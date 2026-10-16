@@ -1063,11 +1063,23 @@ def test_translate_ignores_keyword_without_chinese_keyword(model):
       "title_en": "New chickens", "title_keyword_en": "hens"}, "title_keyword_en"),
     ({"segments": [{"text_en": "a", "keyword_en": ""}, {"text_en": "chickens.", "keyword_en": ""}],
       "title_keyword_en": ""}, "title_en"),
+    ({"segments": [{"text_en": "Today", "keyword_en": ""}, {"text_en": " ", "keyword_en": ""}]}, "text_en"),
+    ({"segments": [{"text_en": "a", "keyword_en": ""}, {"text_en": "chickens.", "keyword_en": ""}],
+      "title_en": "", "title_keyword_en": ""}, "title_en"),
 ])
 def test_translate_invalid_output_fails_without_retry(model, output, field):
-    """段数或类型不符、英文标题关键词不在英文标题中时直接失败，只调用一次并关闭客户端。"""
+    """段数或类型不符、译文为空、英文标题关键词不在英文标题中时直接失败，只调用一次并关闭客户端。"""
     reply(model, output)
     with pytest.raises(RuntimeError, match=field):
         translate(SEGMENTED, title="散养土鸡上新")
     model[1].chat.completions.create.assert_called_once()
     assert model[0].return_value.__exit__.call_count == 1
+
+
+def test_translate_allows_empty_title_translation_for_empty_title(model):
+    """原标题本身为空时，英文标题为空不算错误。"""
+    reply(model, {"segments": [{"text_en": "Today", "keyword_en": ""},
+                               {"text_en": "chickens.", "keyword_en": ""}],
+                  "title_en": "", "title_keyword_en": ""})
+    result = translate({**SEGMENTED, "title_keyword": ""}, title="")
+    assert result["title_en"] == "" and result["title_keyword_en"] == ""
