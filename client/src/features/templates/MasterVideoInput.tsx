@@ -1,6 +1,7 @@
 /**
  * 三个预览视频的来源弹窗：每个视频填写 URL 或选择本地文件（只保存在本机，不上传服务端）。
- * 全部读取成功后保存本地文件并一次更新；关闭或卸载时取消读取，释放未提交文件的 blob URL。
+ * 全部读取成功后保存本地文件并一次更新；保存开始前关闭或卸载会取消读取并释放未提交文件的 blob URL，
+ * 保存期间不可关闭，保存完成后一定更新来源，使预览与本机存储一致。
  */
 import { useEffect, useId, useRef, useState } from "react";
 import { FileVideo, FolderOpen, Upload, X } from "lucide-react";
@@ -29,11 +30,14 @@ export function MasterVideoInput({ media, onChange }: { media?: PreviewMedia; on
   const [sources, setSources] = useState(() => currentSources(media));
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const controller = useRef<AbortController | null>(null);
   const pickers = useRef<(HTMLInputElement | null)[]>([]);
   // 本次弹窗为新选择的文件创建、尚未交给本地登记的 blob URL。
   const pending = useRef(new Set<string>());
+  // 本地文件保存中：不能取消，也不能释放即将登记的 blob URL。
+  const committing = useRef(false);
 
   /** 释放未登记的 blob URL；已登记的由本地视频模块在替换或移除时释放。 */
   function release(url?: string) {
@@ -43,10 +47,11 @@ export function MasterVideoInput({ media, onChange }: { media?: PreviewMedia; on
       if (pending.current.delete(value) && !owned.has(value)) URL.revokeObjectURL(value);
     }
   }
-  useEffect(() => () => { controller.current?.abort(); release(); }, []);
+  useEffect(() => () => { controller.current?.abort(); if (!committing.current) release(); }, []);
 
-  /** 打开时读取当前来源，关闭时终止本次请求并丢弃未提交的文件，迟到结果不会修改工作区。 */
+  /** 打开时读取当前来源，关闭时终止本次请求并丢弃未提交的文件，迟到结果不会修改工作区；保存期间忽略关闭。 */
   function changeOpen(value: boolean) {
+    if (committing.current) return;
     controller.current?.abort();
     release();
     setLoading(false);
@@ -81,8 +86,9 @@ export function MasterVideoInput({ media, onChange }: { media?: PreviewMedia; on
     try {
       const media = await readPreviewVideos(sources.map((source) => source.url), request.signal);
       if (request.signal.aborted) return;
-      await commitLocalVideos(sources);
-      if (request.signal.aborted) return;
+      committing.current = true; setSaving(true);
+      try { await commitLocalVideos(sources); }
+      finally { committing.current = false; setSaving(false); }
       onChange(media);
       changeOpen(false);
     } catch (reason) {
@@ -109,7 +115,7 @@ export function MasterVideoInput({ media, onChange }: { media?: PreviewMedia; on
         </div>
       </div>)}</div>
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-      <DialogFooter><Button type="button" variant="outline" onClick={() => changeOpen(false)}>取消</Button><Button type="button" disabled={loading} onClick={() => void load()}>{loading && <Spinner />}{loading ? "正在读取…" : "加载"}</Button></DialogFooter>
+      <DialogFooter><Button type="button" variant="outline" disabled={saving} onClick={() => changeOpen(false)}>取消</Button><Button type="button" disabled={loading} onClick={() => void load()}>{loading && <Spinner />}{loading ? "正在读取…" : "加载"}</Button></DialogFooter>
     </DialogContent>
   </Dialog>;
 }
