@@ -1,6 +1,6 @@
 /**
- * 模板里一次 Remotion 摆放的设置，只影响这次摆放、不改资产：字效调示例文字、字号、水平/垂直位置（百分比，与 IMS 文字一致）
- * 与关键词；滤镜与转场调强度，视频特效调位置、缩放、旋转与不透明度，并设置起点或所占交界处。
+ * 模板里一次 Remotion 摆放的设置，只影响这次摆放、不改资产：字效调示例文字（多行字效作用于字幕时逐行填写，用换行连接）、
+ * 字号、水平/垂直位置（百分比，与 IMS 文字一致）与关键词；滤镜与转场调强度，视频特效调位置、缩放、旋转与不透明度，并设置起点或所占交界处。
  * 颜色、速度、动画与出入场时间等资产内部参数不在这里调，说明原因并提供回字效工作区的入口；这些参数已有的覆盖仍生效，可在此恢复默认。
  * 修改只进入草稿，随模板保存时服务端再按发布契约检查。
  */
@@ -12,7 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Hint } from "@/components/Hint";
-import { ParameterControl, type ParameterValue } from "@/components/ParameterControl";
+import { ParameterControl, withLine, type ParameterValue } from "@/components/ParameterControl";
 import { SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { SpriteAsset } from "@/features/sprites/model";
 import { CATEGORIES, categoryOf, instanceTransformFields, isInstanceParameter, percentToPixels, pixelsToPercent, transformField, type TransformField } from "@/features/sprites/parameters";
@@ -90,6 +90,8 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textReso
   const tabs = [["appearance", "外观与位置"], ...(timedText ? [["timing", "时间设置"] as const] : []), ["keyword", "关键词设置"]] as const;
   const activeTab = isText ? tab : "appearance";
   const sampleRole = textTrack?.target === "title" || textTrack?.target === "subtitle" ? textTrack.target : undefined;
+  // 多行字效作用于字幕时逐行填写示例；作用于标题时整段标题显示在第一行，仍是一个输入框。
+  const sampleLines = sampleRole === "subtitle" && isText ? asset?.lines ?? 1 : 1;
   /** 参数当前值：本次摆放的覆盖优先，否则取发布默认值。 */
   const valueOf = ({ field, defaultValue }: NonNullable<typeof asset>["parameters"][number]) => clip.parameters[field.key] ?? defaultValue;
   /** 写入参数覆盖；与发布默认值相同时清除覆盖。 */
@@ -156,11 +158,18 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textReso
       <fieldset hidden={activeTab !== "appearance"} className="space-y-3 border-t px-4 py-3">
         <legend className="sr-only">当前模板参数覆盖</legend>
         <div><h3 className="text-xs font-medium">当前模板参数覆盖</h3><p className="mt-0.5 text-[11px] text-muted-foreground">只影响这次摆放，不改资产默认值，也不影响其他模板。</p></div>
-        {sampleRole && textTrack && <div className="space-y-1.5">
+        {sampleRole && textTrack && (sampleLines > 1 ? <fieldset className="space-y-1.5">
+          <legend className="text-xs">示例文字（{sampleLines} 行）</legend>
+          {Array.from({ length: sampleLines }, (_, index) =>
+            <Input key={index} aria-label={`示例文字第 ${index + 1} 行`} placeholder={`第 ${index + 1} 行`} value={textTrack.editor.subtitle.split("\n")[index] ?? ""}
+              maxLength={Math.floor((SAMPLE_MAX_LENGTH.subtitle - (sampleLines - 1)) / sampleLines)}
+              onChange={(event) => onSample(withLine(textTrack.editor.subtitle, sampleLines, index, event.target.value))} />)}
+          <p className="text-[11px] text-muted-foreground">合成时同一句里连续的 {sampleLines} 条字幕逐行出现，最后一条结束后一起清空，再显示下一组。</p>
+        </fieldset> : <div className="space-y-1.5">
           <Label htmlFor={`${textTrack.id}-sample`} className="text-xs">示例文字</Label>
           <Input id={`${textTrack.id}-sample`} value={textTrack.editor[sampleRole]} maxLength={SAMPLE_MAX_LENGTH[sampleRole]} onChange={(event) => onSample(event.target.value)} />
-          <p className="text-[11px] text-muted-foreground">{textRoles[sampleRole]}的文字由这个文字对象提供，合成时换成实际{sampleRole === "title" ? "标题" : "字幕"}。</p>
-        </div>}
+          <p className="text-[11px] text-muted-foreground">{textRoles[sampleRole]}的文字由这个文字对象提供，合成时换成实际{sampleRole === "title" ? "标题" : "字幕"}{sampleRole === "title" && (asset?.lines ?? 1) > 1 ? "，整段显示在这个多行字效的第一行" : ""}。</p>
+        </div>)}
         {appearanceParameters.map(parameterRow)}
         {exposedTransforms.map((name) => {
           const { fallback, ...field } = transformField(name, asset.kind, asset.width, asset.height);

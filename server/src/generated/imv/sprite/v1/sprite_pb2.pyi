@@ -156,7 +156,7 @@ class PublishedSprite(_message.Message):
     def __init__(self, sprite_id: _Optional[str] = ..., source_version_id: _Optional[str] = ..., name: _Optional[str] = ..., kind: _Optional[_Union[SpriteKind, str]] = ..., canvas: _Optional[_Union[SpriteCanvas, _Mapping]] = ..., tsx_code: _Optional[str] = ..., code_sha256: _Optional[str] = ..., parameters: _Optional[_Iterable[_Union[SpriteParameter, _Mapping]]] = ..., text_prop: _Optional[str] = ..., keywords_prop: _Optional[str] = ..., published_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., preview_sha256: _Optional[str] = ..., config_schema_json: _Optional[str] = ..., default_config_json: _Optional[str] = ..., animation_frames: _Optional[int] = ..., static_frame: _Optional[int] = ..., bubble_asset_url: _Optional[str] = ..., bubble_asset_width: _Optional[int] = ..., bubble_asset_height: _Optional[int] = ..., content_box: _Optional[_Union[SpriteBox, _Mapping]] = ...) -> None: ...
 
 class SpriteSummary(_message.Message):
-    __slots__ = ("sprite_id", "name", "kind", "canvas", "parameters", "source_version_id", "preview_url", "keywords_supported", "content_box")
+    __slots__ = ("sprite_id", "name", "kind", "canvas", "parameters", "source_version_id", "preview_url", "keywords_supported", "content_box", "line_count")
     SPRITE_ID_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
     KIND_FIELD_NUMBER: _ClassVar[int]
@@ -166,6 +166,7 @@ class SpriteSummary(_message.Message):
     PREVIEW_URL_FIELD_NUMBER: _ClassVar[int]
     KEYWORDS_SUPPORTED_FIELD_NUMBER: _ClassVar[int]
     CONTENT_BOX_FIELD_NUMBER: _ClassVar[int]
+    LINE_COUNT_FIELD_NUMBER: _ClassVar[int]
     sprite_id: str
     name: str
     kind: SpriteKind
@@ -175,7 +176,8 @@ class SpriteSummary(_message.Message):
     preview_url: str
     keywords_supported: bool
     content_box: SpriteBox
-    def __init__(self, sprite_id: _Optional[str] = ..., name: _Optional[str] = ..., kind: _Optional[_Union[SpriteKind, str]] = ..., canvas: _Optional[_Union[SpriteCanvas, _Mapping]] = ..., parameters: _Optional[_Iterable[_Union[SpriteParameter, _Mapping]]] = ..., source_version_id: _Optional[str] = ..., preview_url: _Optional[str] = ..., keywords_supported: _Optional[bool] = ..., content_box: _Optional[_Union[SpriteBox, _Mapping]] = ...) -> None: ...
+    line_count: int
+    def __init__(self, sprite_id: _Optional[str] = ..., name: _Optional[str] = ..., kind: _Optional[_Union[SpriteKind, str]] = ..., canvas: _Optional[_Union[SpriteCanvas, _Mapping]] = ..., parameters: _Optional[_Iterable[_Union[SpriteParameter, _Mapping]]] = ..., source_version_id: _Optional[str] = ..., preview_url: _Optional[str] = ..., keywords_supported: _Optional[bool] = ..., content_box: _Optional[_Union[SpriteBox, _Mapping]] = ..., line_count: _Optional[int] = ...) -> None: ...
 
 class ListSpritesResponse(_message.Message):
     __slots__ = ("sprites",)
@@ -246,16 +248,18 @@ class SpriteRenderInput(_message.Message):
     def __init__(self, sprite_id: _Optional[str] = ..., placement_id: _Optional[str] = ..., output: _Optional[_Union[SpriteCanvas, _Mapping]] = ..., text: _Optional[str] = ..., keywords: _Optional[_Iterable[str]] = ..., resolved_style: _Optional[_Iterable[_Union[SpriteParameterOverride, _Mapping]]] = ..., effect_total_frames: _Optional[int] = ..., callback_url: _Optional[str] = ..., transform: _Optional[_Union[SpriteHostTransform, _Mapping]] = ..., cues: _Optional[_Iterable[_Union[SpriteCue, _Mapping]]] = ...) -> None: ...
 
 class SpriteCue(_message.Message):
-    __slots__ = ("text", "keywords", "start_frame", "end_frame")
+    __slots__ = ("text", "keywords", "start_frame", "end_frame", "sentence")
     TEXT_FIELD_NUMBER: _ClassVar[int]
     KEYWORDS_FIELD_NUMBER: _ClassVar[int]
     START_FRAME_FIELD_NUMBER: _ClassVar[int]
     END_FRAME_FIELD_NUMBER: _ClassVar[int]
+    SENTENCE_FIELD_NUMBER: _ClassVar[int]
     text: str
     keywords: _containers.RepeatedScalarFieldContainer[str]
     start_frame: int
     end_frame: int
-    def __init__(self, text: _Optional[str] = ..., keywords: _Optional[_Iterable[str]] = ..., start_frame: _Optional[int] = ..., end_frame: _Optional[int] = ...) -> None: ...
+    sentence: int
+    def __init__(self, text: _Optional[str] = ..., keywords: _Optional[_Iterable[str]] = ..., start_frame: _Optional[int] = ..., end_frame: _Optional[int] = ..., sentence: _Optional[int] = ...) -> None: ...
 
 class SpriteHostTransform(_message.Message):
     __slots__ = ("x", "y", "scale", "rotation", "opacity")

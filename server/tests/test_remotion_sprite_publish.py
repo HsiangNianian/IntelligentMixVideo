@@ -478,6 +478,19 @@ def test_publications_without_a_content_box_transform_around_the_whole_canvas() 
     assert (summary.content_box.x, summary.content_box.y, summary.content_box.width, summary.content_box.height) == (0, 0, 1080, 1920)
 
 
+def test_multi_line_publications_report_their_lines_and_keep_line_starts_internal() -> None:
+    """多行字效的行起点由宿主注入：不列入可编辑参数；目录摘要给出行数，单行字效为 1，其他分类为 0。"""
+    starts = {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 3600}, "minItems": 3, "maxItems": 3}
+    schema = {"type": "object", "properties": {"text": {"type": "string", "minLength": 1, "maxLength": 100}, "lineStartFrames": starts}}
+    defaults = {"text": "一\n二\n三", "lineStartFrames": [0, 20, 40]}
+    assert [item.key for item in sprites._parameters(schema, defaults, ["text", "lineStartFrames"])] == ["text"]
+    canvas = pb.SpriteCanvas(width=1080, height=1920, fps=30, preview_frames=90)
+    summary = lambda kind, value: sprites.summarize(pb.PublishedSprite(sprite_id="s", kind=kind, canvas=canvas, config_schema_json=json.dumps(value))).line_count
+    assert summary(pb.SPRITE_KIND_TEXT, schema) == 3
+    assert summary(pb.SPRITE_KIND_TEXT, {"type": "object", "properties": {"text": schema["properties"]["text"]}}) == 1
+    assert summary(pb.SPRITE_KIND_FILTER_OVERLAY, schema) == 0
+
+
 def test_publish_rejects_unknown_malformed_or_tampered_sources(client: TestClient, published) -> None:
     """未知或格式错误的版本、被改写的封存产物都不能发布。"""
     assert publish(client, publish_request("00000000-0000-4000-8000-000000000000")).status_code == 404

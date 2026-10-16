@@ -1,4 +1,4 @@
-/** Remotion 参数控件：按字段类型给出颜色、滑条、下拉、开关、文字或关键词输入；非法草稿只留在表单，不进入预览。 */
+/** Remotion 参数控件：按字段类型给出颜色、滑条、下拉、开关、文字（多行字效逐行输入）或关键词输入；非法草稿只留在表单，不进入预览。 */
 import { useEffect, useId, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
@@ -29,6 +29,8 @@ export interface ParameterField {
   maxItems?: number;
   /** 字符串须匹配的 JSON Schema pattern（颜色之外，例如实例内部参数）。 */
   pattern?: string;
+  /** 多行字效的文字：固定行数（2～4），值用换行连接各行，每行都不能为空。 */
+  lines?: number;
 }
 
 /** 颜色参数统一使用 #RRGGBB 或 #RRGGBBAA。 */
@@ -45,6 +47,12 @@ const OPTION_LABELS: Record<string, string> = {
   true: "是",
   false: "否",
 };
+
+/** 把多行文字的第 index 行改为 value：按 lines 补齐或截断后用换行连接，其余行保持原样。 */
+export function withLine(text: string, lines: number, index: number, value: string): string {
+  const parts = text.split("\n");
+  return Array.from({ length: lines }, (_, line) => (line === index ? value : parts[line] ?? "")).join("\n");
+}
 
 /** 按 Unicode 码点计数，与服务端的长度约束一致。 */
 function length(text: string): number {
@@ -74,7 +82,8 @@ export function validParameter(field: ParameterField, value: ParameterValue): bo
     case "color":
       return typeof value === "string" && HEX_COLOR.test(value);
     case "string":
-      return typeof value === "string" && fits(value) && matches(field.pattern, value);
+      return typeof value === "string" && fits(value) && matches(field.pattern, value)
+        && ((field.lines ?? 1) <= 1 || value.split("\n").length === field.lines && value.split("\n").every((line) => line.trim() !== ""));
     default:
       return (
         typeof value === "number" &&
@@ -168,6 +177,28 @@ export function ParameterControl({
         </Select>
       ) : field.kind === "boolean" ? (
         <Switch id={id} checked={value === true} disabled={disabled} onCheckedChange={(checked) => onChange(checked)} />
+      ) : field.kind === "string" && field.lines && field.lines > 1 ? (
+        <div className="space-y-1.5">
+          {Array.from({ length: field.lines }, (_, index) => (
+            <Input
+              key={index}
+              id={index === 0 ? id : undefined}
+              aria-label={`${field.label}第 ${index + 1} 行`}
+              placeholder={`第 ${index + 1} 行`}
+              value={draft.split("\n")[index] ?? ""}
+              disabled={disabled}
+              aria-invalid={invalid}
+              onChange={(event) => edit(withLine(draft, field.lines!, index, event.target.value))}
+              onBlur={settle}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                  event.preventDefault();
+                  settle();
+                }
+              }}
+            />
+          ))}
+        </div>
       ) : (
         <div className="flex items-center gap-3">
           {field.kind === "color" && (
@@ -218,7 +249,8 @@ export function ParameterControl({
       {invalid && (
         <p className="text-xs text-destructive" role="alert">
           请输入有效的{field.label}
-          {field.kind === "keywords" && field.maxItems !== undefined ? `（最多 ${field.maxItems} 个）` : ""}。
+          {field.kind === "keywords" && field.maxItems !== undefined ? `（最多 ${field.maxItems} 个）` : ""}
+          {field.lines && field.lines > 1 ? `（${field.lines} 行都要填写）` : ""}。
         </p>
       )}
     </div>

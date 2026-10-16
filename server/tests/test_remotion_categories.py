@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from server.remotion_templates.categories import HEX_COLOR, KEYWORD_COLOR, category_problems, parameter_problems
+from server.remotion_templates.categories import HEX_COLOR, KEYWORD_COLOR, category_problems, line_count, parameter_problems
 from server.remotion_templates.fonts import FontStore
 from server.remotion_templates.models import TemplateCandidate
 from server.remotion_templates.provider import Budget
@@ -110,6 +110,67 @@ def test_keyword_parameters_must_default_to_off():
     assert [item.name for item in category_problems("text", schema(TEXT_PROPERTIES), set(TEXT_PROPERTIES), missing)] == ["keywords"]
 
 
+LINE_STARTS = {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 3600}, "minItems": 2, "maxItems": 2}
+LINE_GAP = {"type": "number", "minimum": 0, "maximum": 300}
+MULTI_LINE = {**TEXT_PROPERTIES, "lineStartFrames": LINE_STARTS, "lineGap": LINE_GAP}
+MULTI_LINE_DEFAULTS = {**OFF, "text": "判断一个人\n选择花字、滤镜和特效", "lineStartFrames": [0, 30], "lineGap": 24}
+
+
+def test_multi_line_text_declares_fixed_lines_and_their_starts():
+    """多行字效：行起点恰好 N 项、默认文字恰好 N 个非空行、默认行起点从 0 开始且不递减、带行间距时通过，行数取项数；单行字效为 1 行。"""
+    assert category_problems("text", schema(MULTI_LINE), set(MULTI_LINE), MULTI_LINE_DEFAULTS) == []
+    assert line_count(schema(MULTI_LINE)) == 2 and line_count(schema(TEXT_PROPERTIES)) == 1
+    # Declared but not bound: not a multi-line text, so its defaults are not checked.
+    assert category_problems("text", schema(MULTI_LINE), set(TEXT_PROPERTIES), OFF) == []
+    # The line gap is required, so users can move the lines closer together or apart.
+    problems = category_problems("text", schema(MULTI_LINE), set(MULTI_LINE) - {"lineGap"}, MULTI_LINE_DEFAULTS)
+    assert [(item.name, item.reason) for item in problems] == [("lineGap", "missing")]
+    narrow = {**MULTI_LINE, "lineGap": {"type": "number", "minimum": 10, "maximum": 50}}
+    assert [(item.name, item.reason) for item in category_problems("text", schema(narrow), set(narrow), MULTI_LINE_DEFAULTS)] == [("lineGap", "has the wrong schema")]
+    for starts in ([5, 30], [0, 30, 60], [30, 0], [0, 1.5], [0, True], None):
+        problems = category_problems("text", schema(MULTI_LINE), set(MULTI_LINE), {**MULTI_LINE_DEFAULTS, "lineStartFrames": starts})
+        assert [item.name for item in problems] == ["lineStartFrames"], starts
+    for text in ("一行文字", "一\n二\n三", "第一行\n "):
+        problems = category_problems("text", schema(MULTI_LINE), set(MULTI_LINE), {**MULTI_LINE_DEFAULTS, "text": text})
+        assert [item.name for item in problems] == ["text"], text
+
+
+@pytest.mark.parametrize("definition", [
+    {**LINE_STARTS, "minItems": 1},
+    {**LINE_STARTS, "minItems": 5, "maxItems": 5},
+    {**LINE_STARTS, "minItems": 1, "maxItems": 1},
+    {**LINE_STARTS, "items": {"type": "integer", "minimum": 0, "maximum": 100}},
+    {**LINE_STARTS, "items": {"type": "string", "maxLength": 12}},
+])
+def test_wrong_line_starts_are_refused_and_stay_single_line(definition):
+    """行起点形状不合规（项数不定、超过 4 行、帧号范围或类型不对）时报告错误形状，资产按单行处理。"""
+    properties = {**MULTI_LINE, "lineStartFrames": definition}
+    problems = category_problems("text", schema(properties), set(properties), MULTI_LINE_DEFAULTS)
+    assert [(item.name, item.reason) for item in problems] == [("lineStartFrames", "has the wrong schema")]
+    assert line_count(schema(properties)) == 1
+    assert parameter_problems(definition, "lineStartFrames") is not None
+
+
+def test_a_text_defaulting_to_several_lines_must_be_a_multi_line_text():
+    """默认文字带换行却没有绑定 lineStartFrames（例如把它留在实例内部）时被拒：否则资产按单行处理，两行只能在一个输入框里改，召回也不会逐行出现。"""
+    problems = category_problems("text", schema(TEXT_PROPERTIES), set(TEXT_PROPERTIES), {**OFF, "text": "今日灵感\n记录每一个小确幸"})
+    assert [item.name for item in problems] == ["lineStartFrames"]
+    assert "the default text has 2 lines" in problems[0].reason and "minItems and maxItems 2" in problems[0].reason
+    assert category_problems("text", schema(TEXT_PROPERTIES), set(TEXT_PROPERTIES), {**OFF, "text": "一行文字"}) == []
+
+
+def test_line_starts_refusals_name_the_exact_shape():
+    """项数不固定的行起点被拒时，说明 minItems 与 maxItems 都等于行数，并给出两行的完整 Schema。"""
+    reason = parameter_problems({**LINE_STARTS, "minItems": 2, "maxItems": 4}, "lineStartFrames")
+    assert "minItems and maxItems both N" in reason and '"minItems": 2, "maxItems": 2' in reason
+
+
+def test_only_line_starts_may_be_an_integer_array():
+    """整数数组只允许名为 lineStartFrames 的行起点；其他名称仍只接受关键词形状。"""
+    assert parameter_problems(LINE_STARTS, "lineStartFrames") is None
+    assert parameter_problems(LINE_STARTS, "value") == "uses schema keywords the publish-time samples cannot cover: items.maximum, items.minimum, minItems"
+
+
 def test_a_missing_kind_is_reported_without_rules():
     """旧草稿没有 kind：只报告 kind 本身，不再猜测必备参数。"""
     problems = category_problems(None, schema({}), set(), OFF)
@@ -131,7 +192,8 @@ def test_a_missing_kind_is_reported_without_rules():
     ({"type": "string", "enum": ["a"], "maxLength": 0}, "a string maxLength must be between 1 and 2000"),
     ({"type": "string"}, f"a string needs the colour pattern {HEX_COLOR}, an enum or a maxLength"),
     ({"type": "boolean"}, None),
-    ({"type": "array", "items": {"type": "number"}}, "only a keywords string array is supported"),
+    ({"type": "array", "items": {"type": "number"}}, "only a keywords string array (and lineStartFrames) is supported: per-line styles are separate scalar parameters "
+     "(such as line2Color, or line2SizeRatio as a ratio of fontSize so the host's fontSize shrink scales every line), not arrays"),
     ({"type": "object"}, "type must be number, integer, string, boolean or a keywords array"),
     # Constraints the publish-time extremes would violate, so those ends would silently go unsampled.
     ({"type": "number", "minimum": 0, "maximum": 1, "exclusiveMaximum": 1}, "uses schema keywords the publish-time samples cannot cover: exclusiveMaximum"),

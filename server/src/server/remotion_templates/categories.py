@@ -28,6 +28,14 @@ KEYWORDS_MAX_ITEMS = 20
 KEYWORD_MAX_LENGTH = 100
 # 每项关键词至少要容纳的长度：总线转发切片返回的标题关键词（最多 12 字）与字幕片段关键词。
 KEYWORD_MIN_LENGTH = 12
+# 多行字效：`text` 用换行分隔各行，`lineStartFrames` 是每行在资产内出现的帧。它属于内容，只由宿主按字幕切片注入，
+# 不列入可编辑参数；资产固定 2～MAX_LINES 行，没有这个参数的字效就是单行。
+LINE_STARTS_PROP = "lineStartFrames"
+MAX_LINES = 4
+# 行起点的上限：资产最长按 120 秒、30 FPS 播放。
+LINE_START_MAX_FRAMES = 3600
+# 多行字效相邻两行之间的距离（像素）：所有行在同一个纵向容器里排布，模板可以按摆放调整。
+LINE_GAP_PROP = "lineGap"
 
 
 @dataclass(frozen=True)
@@ -112,6 +120,25 @@ def _keywords(definition: dict) -> bool:
     )
 
 
+def _line_starts(definition: dict) -> bool:
+    """多行字效的行起点：恰好 N 项（2～MAX_LINES）的整数数组，每项是 0～LINE_START_MAX_FRAMES 的帧号。"""
+    items = definition.get("items")
+    count = definition.get("maxItems")
+    return (
+        definition.get("type") == "array"
+        and isinstance(items, dict) and items.get("type") == "integer"
+        and items.get("minimum") == 0 and items.get("maximum") == LINE_START_MAX_FRAMES
+        and isinstance(count, int) and not isinstance(count, bool) and 2 <= count <= MAX_LINES
+        and definition.get("minItems") == count
+    )
+
+
+def line_count(schema: dict) -> int:
+    """字效的固定行数：声明了合规 `lineStartFrames` 的多行字效为其项数，其余（包括所有已发布的单行字效）为 1。"""
+    definition = _properties(schema).get(LINE_STARTS_PROP)
+    return definition["maxItems"] if isinstance(definition, dict) and _line_starts(definition) else 1
+
+
 def _keyword_color(definition: dict) -> bool:
     """关键词颜色参数：字符串且使用允许空串的 pattern。"""
     return definition.get("type") == "string" and definition.get("pattern") == KEYWORD_COLOR
@@ -156,6 +183,23 @@ TEXT_KEYWORDS = (KEYWORDS, *KEYWORD_STYLES, KEYWORD_COLOR_RULE, KEYWORD_SIZE_RUL
 FONT_FAMILY = Rule(
     "fontFamily", {"type": "string", "enum": ["<family names from the font library>"]},
     "字体，字符串枚举，取值是字体库里的家族名，默认值是其中之一", _font_family,
+)
+# 多行字效的行起点：可选，绑定了才是多行字效，所以不在 REQUIRED 里。
+LINE_STARTS = Rule(
+    LINE_STARTS_PROP,
+    # The example is a two-line text; minItems and maxItems are both the number of lines.
+    {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": LINE_START_MAX_FRAMES}, "minItems": 2, "maxItems": 2},
+    f"多行字效每行出现的帧，2～{MAX_LINES} 项整数数组（minItems 与 maxItems 都等于行数），首项为 0 且不递减", _line_starts,
+)
+# 数组参数不合规时附给 Agent 的说明：逐行样式不能做成数组。
+_ARRAY_HINT = (
+    "per-line styles are separate scalar parameters (such as line2Color, or line2SizeRatio as a ratio of fontSize so the "
+    "host's fontSize shrink scales every line), not arrays"
+)
+# 多行字效的行间距：绑定了行起点就必须有，用户才能调整两行之间的距离。
+LINE_GAP = Rule(
+    LINE_GAP_PROP, {"type": "number", "minimum": 0, "maximum": 300},
+    "多行字效相邻两行之间的距离（像素），数字，下界为 0、上界在 200～600 之间", _between(0, 600, 0, 200),
 )
 _COLOR = {"type": "string", "pattern": HEX_COLOR}
 REQUIRED: dict[SpriteKindName, tuple[Rule, ...]] = {
@@ -211,27 +255,31 @@ _ALLOWED = {
     "array": _LABELS | {"items", "maxItems"},
 }
 _ALLOWED_ITEMS = _LABELS | {"maxLength"}
+# 行起点数组另有固定项数与逐项帧号范围；抽样保持它的默认值，不推两端。
+_LINE_STARTS_ALLOWED = _ALLOWED["array"] | {"minItems"}
+_LINE_STARTS_ITEMS = _LABELS | {"minimum", "maximum"}
 
 
-def _unsupported(definition: dict) -> list[str]:
+def _unsupported(definition: dict, name: str) -> list[str]:
     """顶层参数里抽样无法处理的 Schema 关键字。"""
-    extra = set(definition) - _ALLOWED.get(definition.get("type"), _LABELS)
+    lines = name == LINE_STARTS_PROP
+    extra = set(definition) - (_LINE_STARTS_ALLOWED if lines else _ALLOWED.get(definition.get("type"), _LABELS))
     if definition.get("type") == "array" and isinstance(definition.get("items"), dict):
-        extra |= {f"items.{key}" for key in set(definition["items"]) - _ALLOWED_ITEMS}
+        extra |= {f"items.{key}" for key in set(definition["items"]) - (_LINE_STARTS_ITEMS if lines else _ALLOWED_ITEMS)}
     return sorted(extra)
 
 
 def parameter_problems(definition: object, name: str) -> str | None:
     """顶层标准参数的通用约束：控件需要明确的取值范围，返回违反原因或 None。
 
-    数字须声明上下界；字符串须是颜色、枚举或声明 maxLength；布尔不受限；数组只允许关键词形状。
+    数字须声明上下界；字符串须是颜色、枚举或声明 maxLength；布尔不受限；数组只允许关键词形状与多行字效的行起点。
     字符串的 maxLength 不能超过模板覆盖值的上限：否则控件允许的文字保存不了，发布时的长文字样本也会无限膨胀。
     """
     if not isinstance(definition, dict):
         return "must be a JSON Schema object"
     if "$ref" in str(definition):
         return "must not use $ref"
-    if extra := _unsupported(definition):
+    if extra := _unsupported(definition, name):
         return f"uses schema keywords the publish-time samples cannot cover: {', '.join(extra)}"
     kind = definition.get("type")
     if kind == "integer" and any(isinstance(definition.get(bound), float) and not definition[bound].is_integer() for bound in ("minimum", "maximum")):
@@ -253,7 +301,12 @@ def parameter_problems(definition: object, name: str) -> str | None:
     if kind == "boolean":
         return None
     if kind == "array":
-        return None if _keywords(definition) else "only a keywords string array is supported"
+        if name == LINE_STARTS_PROP:
+            return None if _line_starts(definition) else (
+                f"must be the line starts array of a multi-line text with exactly N items, minItems and maxItems both N (2 to {MAX_LINES}), "
+                f"for two lines {json.dumps(LINE_STARTS.example)}"
+            )
+        return None if _keywords(definition) else f"only a keywords string array (and {LINE_STARTS_PROP}) is supported: {_ARRAY_HINT}"
     return "type must be number, integer, string, boolean or a keywords array"
 
 
@@ -285,6 +338,39 @@ def category_problems(kind: str | None, schema: dict, bound: set[str], defaults:
             problems.append(Problem(FONT_FAMILY.name, FONT_FAMILY, f"lists families that are not in the font library: {unknown}"))
         elif defaults.get(FONT_FAMILY.name) not in definition["enum"]:
             problems.append(Problem(FONT_FAMILY.name, FONT_FAMILY, "must default to one of its enum values"))
+    if kind == "text" and LINE_STARTS_PROP in bound:
+        problems += _line_problems(properties, bound, defaults)
+    elif kind == "text" and isinstance(defaults.get("text"), str) and "\n" in defaults["text"]:
+        # A text that defaults to several lines is a multi-line text: without bound line starts the host would show the
+        # lines as one, in one input and at one time.
+        lines = len(defaults["text"].split("\n"))
+        problems.append(Problem(LINE_STARTS_PROP, LINE_STARTS, f"missing: the default text has {lines} lines, so bind {LINE_STARTS_PROP} "
+                                f"(minItems and maxItems {lines}) and {LINE_GAP_PROP} as top-level parameters, or make the default text one line"))
+    return problems
+
+
+def _line_problems(properties: dict, bound: set[str], defaults: dict) -> list[Problem]:
+    """多行字效的行起点与行间距：默认文字恰好 N 个非空行，默认行起点首项为 0 且不递减，预览才能逐行显示每一行；
+    行间距必须作为顶层参数暴露。"""
+    problems = []
+    if LINE_GAP_PROP not in bound or LINE_GAP_PROP not in properties:
+        problems.append(Problem(LINE_GAP_PROP, LINE_GAP, "missing"))
+    elif not LINE_GAP.accepts(properties[LINE_GAP_PROP]):
+        problems.append(Problem(LINE_GAP_PROP, LINE_GAP, "has the wrong schema"))
+    definition = properties.get(LINE_STARTS_PROP)
+    if not isinstance(definition, dict) or not _line_starts(definition):
+        return [Problem(LINE_STARTS_PROP, LINE_STARTS, "has the wrong schema"), *problems]
+    count = definition["maxItems"]
+    starts = defaults.get(LINE_STARTS_PROP)
+    if not (
+        isinstance(starts, list) and len(starts) == count and starts[0] == 0
+        and all(isinstance(item, int) and not isinstance(item, bool) for item in starts)
+        and all(left <= right for left, right in zip(starts, starts[1:]))
+    ):
+        problems.append(Problem(LINE_STARTS_PROP, LINE_STARTS, f"has the wrong default: {count} non-decreasing frames starting at 0"))
+    text = defaults.get("text")
+    if not isinstance(text, str) or len(lines := text.split("\n")) != count or not all(line.strip() for line in lines):
+        problems.append(Problem("text", REQUIRED["text"][0], f"has the wrong default: a multi-line text defaults to {count} non-empty lines separated by \\n"))
     return problems
 
 

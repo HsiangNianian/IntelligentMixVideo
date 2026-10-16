@@ -251,6 +251,29 @@ long text whenever it is shown at full size is not; it also fails when the fille
 size and the fix: wrap the text inside a bounded width of about 90 % of the canvas, no fixed-height `overflow: hidden` box, and use `fontSize` as given instead of deriving a size from the character count; `text.maxLength` must remain exactly 100, so text that still cannot fit requires layout and wrapping fixes, never a lower limit). The check fills the text to `maxLength` at the smallest size the host shrinks to (the declared `fontSize` minimum, at least 24), and then measures the default text at the default `fontSize`, which a user sees first and which must fit without the host's help. It is a geometric measurement, not a visual review; like the transparency
 measurement it only applies to generation, and already published versions are not re-checked.
 
+A text effect can show a fixed number of lines (2 to 4, `categories.MAX_LINES`), for example a small lead line above
+a large headline. Such a multi-line text keeps the single `text` parameter, with its lines separated by `\n`, and also
+binds `lineStartFrames`, an integer array of exactly N items (`minItems` = `maxItems` = N, each 0 to 3600), so that
+line i appears from frame `lineStartFrames[i]` of the instance. A line with no text or no start is not rendered.
+All lines are stacked in one column of one Preset instance spaced by `lineGap` (pixels, minimum 0, maximum 200 to
+600), which templates may override per placement like `fontSize`, and they share the entrance and exit: line i
+enters from its own start and all lines exit together, timed from `durationInFrames`.
+`categories.category_problems` accepts it when the default text has exactly N non-empty lines, the default
+starts begin at 0 and never decrease and `lineGap` is bound, and it refuses a text whose default has several lines
+but no bound `lineStartFrames` (it would be shown as one line); per-line styles are scalar parameters such as
+`line2Color`, with per-line sizes as ratios of `fontSize` so the host's shrink scales every line; `categories.line_count` reads N, and is 1 for every
+other text effect. With every start at 0, `text_fit` also requires the default lines to be rendered by one composed
+instance (`data-imv-instance`) and to be shown and hidden together on every sampled frame, so a lead line drawn by
+its own instance, or fading out at a constant frame of its own, is refused with the frame and line numbers. A line
+that has not appeared yet keeps its space (opacity 0) from the first frame: with the default lines started evenly
+over the preview, an earlier line that moves in the frame a later line appears by more than it moved the frame
+before plus 6px (or a tenth of its height), as a centred column does when it only adds a line once it starts, is
+refused too.
+The line starts are content the host injects, not a style: publishing leaves them out of the editable parameters
+(templates cannot override them), boundary samples keep the defaults, and the catalog summary reports
+`line_count` so that the template editor and the parameter panel edit the text line by line. `text_fit` fills the
+N lines so that together they reach `maxLength`, and shows every line from frame 0 for both measurements.
+
 Contract diagnostics carry the position of a violation (line, column and range in the submitted code).
 `exec` and `spawn` are refused only as bare identifiers; as member names, such as `RegExp.prototype.exec`,
 they are ordinary methods.
@@ -422,7 +445,14 @@ frames, so short subtitles neither flicker nor run animation code in fewer frame
 was generated. `sprite_render.py` renders the effect in one overlay worker run that writes consecutive chunks of at
 most 30 seconds as frame ranges of the same composition (instances keep their absolute timing, so animations continue
 across a boundary) and joins them with `ffmpeg -c copy`, then re-probes the frame count and alpha flag; the bus never
-splits a request. Text effects need `text` or `cues`, other
+splits a request. A multi-line text effect groups up to `line_count` consecutive cues instead, starting a new group when
+a cue's `sentence` changes (when both cues give one), or when one more line would exceed the text parameter's
+`maxLength` or start beyond the line start limit, so cues valid on their own never fail for being grouped. Each group is one instance from its first cue's start to its
+last cue's end; its text is the cues' texts one per line, its keywords theirs in order, and `lineStartFrames` holds
+each cue's start counted from the group's start, so line i appears when cue i starts and the group clears together.
+A held group (shorter than 1.5 s) shows every line from frame 0, and so does a multi-line `text`, which may have at
+most `line_count` lines; a cue's text cannot contain a line break. The text fit measures a group only from the frame
+its last line appears (`reveal_frame`). Text effects need `text` or `cues`, other
 kinds take no content, keywords need a Sprite that publishes them, and content cannot be passed as a style override;
 every refusal, a canvas other than the publication's or an unknown Sprite is a 422 at acceptance
 (`SpriteRenderAccepted {task_id}`), and the overlay render's environment checks, plus `ffmpeg` when an effect needs joining, are 503s. The task
