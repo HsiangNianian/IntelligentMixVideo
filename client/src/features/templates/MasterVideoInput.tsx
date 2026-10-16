@@ -88,6 +88,11 @@ export function MasterVideoInput({ media, onChange }: { media?: PreviewMedia; on
       if (request.signal.aborted) return;
       committing.current = true; setSaving(true);
       try { await commitLocalVideos(sources); }
+      catch (reason) {
+        // 保存中卸载时清理已跳过；保存失败后新选择的 blob URL 不会被登记，此处释放。
+        if (request.signal.aborted) release();
+        throw reason;
+      }
       finally { committing.current = false; setSaving(false); }
       onChange(media);
       changeOpen(false);

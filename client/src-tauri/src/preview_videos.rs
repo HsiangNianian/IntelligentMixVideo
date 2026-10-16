@@ -118,7 +118,8 @@ fn sweep(directory: &Path, name: &str, keep: Option<&str>) {
     for entry in entries.flatten() {
         let file = entry.file_name();
         let file = file.to_string_lossy();
-        if file.starts_with(&prefix) && keep != Some(&*file) {
+        let metadata_temporary = file.starts_with(&format!("{name}.")) && file.ends_with(".tmp");
+        if (file.starts_with(&prefix) || metadata_temporary) && keep != Some(&*file) {
             let _ = fs::remove_file(entry.path());
         }
     }
@@ -375,11 +376,13 @@ mod tests {
         write(&dir.0, 1, "a.mp4", "video/mp4", b"old").unwrap();
         fs::write(dir.0.join("video-1-deadbeef"), b"half written new").unwrap();
         fs::write(dir.0.join("video-1-deadbeef.1234.tmp"), b"tmp").unwrap();
+        fs::write(dir.0.join("video-1.1234.tmp"), b"tmp").unwrap();
         assert_eq!(read(&dir.0, 1).unwrap(), b"old");
         assert_eq!(list(&dir.0).unwrap()[0].as_ref().unwrap().name, "a.mp4");
         write(&dir.0, 1, "b.mp4", "video/mp4", b"new").unwrap();
         assert_eq!(read(&dir.0, 1).unwrap(), b"new");
         assert_eq!(data_files(&dir.0, 1).len(), 1);
+        assert!(!dir.0.join("video-1.1234.tmp").exists());
         fs::write(dir.0.join("video-1-leftover"), b"orphan").unwrap();
         remove(&dir.0, 1).unwrap();
         assert!(data_files(&dir.0, 1).is_empty());
