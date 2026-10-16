@@ -15,13 +15,14 @@ export interface SpriteOverlayHandle {
 const KEY_STEP = 10;
 
 /** 资产片段与模板画面比例；播放器页面加载后才可见，并且只在片段区间内显示。 */
-export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId, onMove }: {
+export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId, onMove, onSelect }: {
   ref: Ref<SpriteOverlayHandle>;
   clips: SpriteClip[];
   stageAspect: number;
   initialTime: number;
   selectedId?: string | null;
   onMove?: (id: string, x: number, y: number) => void;
+  onSelect?: (id: string) => void;
 }) {
   const frames = useRef(new Map<string, HTMLIFrameElement>());
   const supported = useRef(new Set<string>());
@@ -119,6 +120,8 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
         />
       ))}
       {selected && onMove && <PositionHandle clip={selected} stageAspect={stageAspect} onMove={onMove} />}
+      {onSelect && clips.filter((clip) => clip.textTrackId && clip.canvas?.movable && clip.id !== selectedId && initialTime >= clip.start && initialTime < clip.end).map((clip) =>
+        <PositionHandle key={clip.id} clip={clip} stageAspect={stageAspect} onSelect={onSelect} />)}
       {unsupported.length > 0 && <p role="status" className="absolute left-2 top-2 rounded bg-black/60 px-2 py-1 text-[11px] text-white">部分 Remotion 资产由旧版本生成，无法预览；请重新保存到资产。</p>}
       {fixed.length > 0 && <p role="status" className="absolute bottom-2 left-2 rounded bg-black/60 px-2 py-1 text-[11px] text-white">部分 Remotion 资产的预览不显示参数调整，请重新保存到资产；保存模板后的渲染不受影响。</p>}
     </div>
@@ -126,7 +129,7 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
 }
 
 /** 选中资产内容区域的可拖动框：按播放器在画面里的实际宽度把指针位移换算为画布像素，并限制在画布内。 */
-function PositionHandle({ clip, stageAspect, onMove }: { clip: SpriteClip; stageAspect: number; onMove: (id: string, x: number, y: number) => void }) {
+function PositionHandle({ clip, stageAspect, onMove, onSelect }: { clip: SpriteClip; stageAspect: number; onMove?: (id: string, x: number, y: number) => void; onSelect?: (id: string) => void }) {
   const area = useRef<HTMLDivElement>(null);
   const drag = useRef<{ pointer: number; clientX: number; clientY: number; x: number; y: number } | null>(null);
   const { width, height, box } = clip.canvas!;
@@ -135,7 +138,7 @@ function PositionHandle({ clip, stageAspect, onMove }: { clip: SpriteClip; stage
   const y = clip.transform?.y ?? box.y + box.height / 2;
   /** 位置限制在画布内并取整。 */
   function move(nextX: number, nextY: number) {
-    onMove(clip.id, Math.round(Math.min(width, Math.max(0, nextX))), Math.round(Math.min(height, Math.max(0, nextY))));
+    onMove?.(clip.id, Math.round(Math.min(width, Math.max(0, nextX))), Math.round(Math.min(height, Math.max(0, nextY))));
   }
   /** 拖动中按显示比例换算位移。 */
   function pointerMove(event: PointerEvent<HTMLDivElement>) {
@@ -157,28 +160,31 @@ function PositionHandle({ clip, stageAspect, onMove }: { clip: SpriteClip; stage
   return (
     <div ref={area} className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2" style={{ aspectRatio: aspect, ...(aspect > stageAspect ? { height: "100%" } : { width: "100%" }) }}>
       <div
-        role="slider"
+        role={onMove ? "slider" : "button"}
         tabIndex={0}
-        aria-label={`拖动调整位置：${clip.name}`}
+        aria-label={`${onMove ? "拖动调整位置" : "选择文字"}：${clip.name}`}
         aria-valuemin={0}
         aria-valuemax={width}
         aria-valuenow={Math.round(x)}
         aria-valuetext={`横向 ${Math.round(x)}，纵向 ${Math.round(y)}`}
-        className="pointer-events-auto absolute cursor-move rounded-sm border-2 border-dashed border-primary bg-primary/5 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className={`pointer-events-auto absolute rounded-sm border-2 border-dashed outline-none focus-visible:ring-2 focus-visible:ring-ring ${onMove ? "cursor-move border-primary bg-primary/5" : "border-transparent hover:border-primary"}`}
         style={{
           left: `${((x - (box.width * scale) / 2) / width) * 100}%`,
           top: `${((y - (box.height * scale) / 2) / height) * 100}%`,
           width: `${((box.width * scale) / width) * 100}%`,
           height: `${((box.height * scale) / height) * 100}%`,
+          rotate: `${clip.transform?.rotation ?? 0}deg`,
         }}
         onPointerDown={(event) => {
+          onSelect?.(clip.id);
+          if (!onMove) return;
           event.currentTarget.setPointerCapture?.(event.pointerId);
           drag.current = { pointer: event.pointerId, clientX: event.clientX, clientY: event.clientY, x, y };
         }}
         onPointerMove={pointerMove}
         onPointerUp={() => { drag.current = null; }}
         onPointerCancel={() => { drag.current = null; }}
-        onKeyDown={keyMove}
+        onKeyDown={(event) => { if (onSelect && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); onSelect(clip.id); } else keyMove(event); }}
       />
     </div>
   );

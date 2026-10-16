@@ -1,5 +1,5 @@
 /** 对象时间规则、实例编辑与视频应用计算；计算结果不修改模板配置。 */
-import { defaultEditor, type Draft, type EffectDraft, type Editor, type EffectAsset, type EffectTrack, type PreviewMedia } from "./model";
+import { defaultEditor, englishEditor, textKey, type Draft, type EffectDraft, type Editor, type EffectAsset, type EffectTrack, type PreviewMedia } from "./model";
 import { appliedTargets, applyAsset, effectTargets, isTextTarget, targetEffectKeys, type EffectTarget } from "./effects";
 import { previewVideos } from "./media";
 import { compactTransitions, nextTransitionBoundary, setTransitionDuration } from "./transitions";
@@ -18,6 +18,9 @@ export interface ResolvedTrack {
 
 /** 保存规则时检查数值和转场限制，允许位置超过当前预览视频。 */
 export function validateTrack(track: EffectTrack): void {
+  if (track.language !== undefined && !["zh", "en"].includes(track.language)) throw new Error("文字语言无效");
+  if (track.language === "en" && track.target !== "title" && track.target !== "subtitle") throw new Error("只有标题或字幕可以设置英文");
+  if (track.enabled !== undefined && (typeof track.enabled !== "boolean" || (track.enabled === false && track.language !== "en"))) throw new Error("只有英文标题或字幕可以停用");
   if (track.target === "subtitle" && (track.start_mode !== "seconds" || track.start !== 0 || track.duration !== null))
     throw new Error("底部字幕固定覆盖整个视频，不能修改时间");
   if (track.target === "transition") {
@@ -49,14 +52,21 @@ export function validateTemplateTracks(tracks: EffectTrack[]): void {
     if (!track.id || ids.has(track.id)) throw new Error("特效轨道 ID 必须唯一");
     ids.add(track.id);
     if (["title", "subtitle", "vfx"].includes(track.target)) {
-      if (singletons.has(track.target)) throw new Error("标题、字幕和 VFX 最多各一个");
-      singletons.add(track.target);
+      const key = textKey(track.target, track.language);
+      if (singletons.has(key)) throw new Error("同一语言的标题、字幕和 VFX 最多各一个");
+      singletons.add(key);
     }
     if (track.target === "transition") {
       const boundary = track.transition_boundary!;
       if (boundaries.has(boundary)) throw new Error("每个视频交界处最多一个转场");
       boundaries.add(boundary);
     }
+  }
+  for (const track of tracks.filter((item) => item.language === "en")) {
+    const chinese = tracks.find((item) => item.target === track.target && item.language !== "en");
+    if (!chinese) throw new Error("英文需要对应的中文对象");
+    if (track.start_mode !== chinese.start_mode || track.start !== chinese.start || track.duration !== chinese.duration)
+      throw new Error("英文时间必须跟随中文对象");
   }
 }
 
@@ -71,6 +81,7 @@ export function resolveTrack(track: EffectTrack, duration: number, fps = 30): Re
   const first = Math.round(start * fps);
   const last = Math.min(Math.floor(duration * fps + 1e-8), Math.round(end * fps));
   const editor = { ...track.editor };
+  if (track.enabled === false) return { start: first / fps, end: first / fps, editor, notice: "" };
   if (first >= last) return { start: first / fps, end: first / fps, editor, notice: "当前视频中没有可显示的时间" };
   let notice = end > duration + 1e-8 ? "持续时间已缩短至视频结束" : "";
   if (isTextTarget(track.target)) {
@@ -256,7 +267,7 @@ export function addTrack(draft: Draft, asset: EffectAsset, target: EffectTarget,
   }
   const styleTarget = asset.category === "bubble" ? "bubble" : asset.category === "flower" ? role : null;
   const styleField = styleTarget === "bubble" ? "bubble" : styleTarget ? `${styleTarget}Flower` as const : null;
-  const unstyled = asset.category === "vfx/normal" ? draft.tracks.find((track) => track.target === "vfx") : styleTarget && styleField ? draft.tracks.find((track) => track.target === styleTarget && (styleTarget !== "bubble" || !track.editor[styleField])) : undefined;
+  const unstyled = asset.category === "vfx/normal" ? draft.tracks.find((track) => track.target === "vfx") : styleTarget && styleField ? (asset.category === "flower" && selected?.target === styleTarget ? selected : draft.tracks.find((track) => track.target === styleTarget && (styleTarget !== "bubble" || !track.editor[styleField]))) : undefined;
   if (unstyled) {
     const applied = applyAsset(trackDraft(draft, unstyled), asset, role);
     return { draft: updateTrack(draft, unstyled.id, applied.draft), id: unstyled.id };
@@ -276,9 +287,11 @@ export function addTrack(draft: Draft, asset: EffectAsset, target: EffectTarget,
 
 /** 参数表单保存规则，不依赖预览视频长度。 */
 export function setTrackTiming(draft: Draft, id: string, timing: Pick<EffectTrack, "start_mode" | "start" | "duration">): Draft {
-  if (!draft.tracks.some((track) => track.id === id)) throw new Error("特效轨道不存在");
+  const current = draft.tracks.find((track) => track.id === id);
+  if (!current) throw new Error("特效轨道不存在");
+  if (current.language === "en") throw new Error("英文时间跟随中文对象，请调整中文时间");
   return { ...draft, tracks: draft.tracks.map((track) => {
-    if (track.id !== id) return track;
+    if (track.id !== id && !(track.language === "en" && track.target === current.target)) return track;
     const next = { ...track, ...timing };
     validateTrack(next);
     return next;
@@ -288,6 +301,22 @@ export function setTrackTiming(draft: Draft, id: string, timing: Pick<EffectTrac
 /** 同类对象显示实例序号。 */
 export function trackLabel(track: EffectTrack, tracks: EffectTrack[]): string {
   if (track.target === "transition") return `镜头转场 ${track.transition_boundary}`;
-  const siblings = tracks.filter((item) => item.target === track.target);
+  if (track.language === "en") return track.target === "title" ? "英文标题" : "英文字幕";
+  if (tracks.some((item) => item.target === track.target && item.language === "en" && item.enabled !== false)) return track.target === "title" ? "中文标题" : "中文字幕";
+  const siblings = tracks.filter((item) => item.target === track.target && item.language !== "en");
   return siblings.length === 1 ? effectTargets[track.target] : `${effectTargets[track.target]} ${siblings.findIndex((item) => item.id === track.id) + 1}`;
+}
+
+/** 首次开启时复制中文外观，后续开关只改变启用状态，保留英文样式和字效。 */
+export function setBilingual(draft: Draft, target: "title" | "subtitle", enabled: boolean): Draft {
+  const english = draft.tracks.find((track) => track.target === target && track.language === "en");
+  if (english) return { ...draft, tracks: draft.tracks.map((track) => track.id === english.id ? { ...track, enabled } : track) };
+  if (!enabled) return draft;
+  const chinese = draft.tracks.find((track) => track.target === target && track.language !== "en");
+  if (!chinese) throw new Error("英文需要对应的中文对象");
+  if (draft.tracks.length + draft.clips.length >= 100) throw new Error("轨道数量不能超过 100");
+  return { ...draft, tracks: [...draft.tracks, {
+    ...chinese, id: crypto.randomUUID(), language: "en",
+    editor: englishEditor(chinese.editor, target),
+  }] };
 }

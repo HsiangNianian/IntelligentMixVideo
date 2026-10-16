@@ -64,6 +64,7 @@ export const textRoles = {
   bubble: "气泡字",
 } as const;
 export type TextRole = keyof typeof textRoles;
+export type TextLanguage = "zh" | "en";
 export type Editor = typeof defaultEditor;
 export type Category =
   | "flower"
@@ -121,6 +122,7 @@ export interface RemotionClip {
   transform: ClipTransform;
   /** 字效作用的文字对象：该文字改由这个片段显示，起点与时长跟随它。 */
   text_target?: "title" | "subtitle";
+  language?: TextLanguage;
   /** 转场候选序号，IMS 与 Remotion 共用，预览按选择方式取两个效果。 */
   transition_boundary?: number;
 }
@@ -162,8 +164,37 @@ export interface EffectTrack {
   start?: number;
   duration: number | null;
   editor: Editor;
+  /** 省略为中文；英文关闭后保留配置，预览与合成时跳过。 */
+  language?: TextLanguage;
+  enabled?: boolean;
   /** 转场列表序号，且不保存 start/start_mode；其他对象省略此字段。 */
   transition_boundary?: number;
+}
+
+/** 文字槽位由用途和语言共同确定，旧模板省略语言仍是中文。 */
+export function textKey(target: string, language: TextLanguage = "zh"): string {
+  return language === "zh" ? target : `${target}:en`;
+}
+
+/** 按用途和语言查找字效所属的文字对象。 */
+export function boundText(tracks: EffectTrack[], clip: RemotionClip): EffectTrack | undefined {
+  return clip.text_target ? tracks.find((track) => textKey(track.target, track.language) === textKey(clip.text_target!, clip.language)) : undefined;
+}
+
+/** 英文初始示例与位置；字号、位置等仍保存为普通编辑参数。 */
+export function englishEditor(editor: Editor, target: "title" | "subtitle"): Editor {
+  return { ...editor, [target]: target === "title" ? "Make every frame count" : "Give your story a new style",
+    titleKeyword: "", [`${target}Size`]: Math.max(12, Math.round(editor[`${target}Size`] * 0.8)),
+    [`${target}Y`]: Math.min(95, editor[`${target}Y`] + 6) };
+}
+
+/** 仅供展示使用；保存始终使用完整草稿，停用的英文及其资产绑定也保留。 */
+export function activeDraft(draft: Draft): Draft {
+  return {
+    ...draft,
+    tracks: draft.tracks.filter((track) => track.enabled !== false),
+    clips: draft.clips.filter((clip) => clip.language !== "en" || boundText(draft.tracks, clip)?.enabled !== false),
+  };
 }
 
 /** 列表只携带展示信息与校验结果，无效记录可以定位和删除。 */

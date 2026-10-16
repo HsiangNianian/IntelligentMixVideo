@@ -63,6 +63,8 @@ function toTemplate(record: TemplateRecord): Template {
       return {
         id: track.id,
         target: track.target as EffectTrack["target"],
+        ...(track.language !== undefined ? { language: track.language as EffectTrack["language"] } : {}),
+        ...(track.enabled !== undefined ? { enabled: track.enabled } : {}),
         ...(track.startMode ? { start_mode: track.startMode as EffectTrack["start_mode"] } : {}),
         ...(track.start !== undefined ? { start: track.start } : {}),
         duration: track.duration ?? null,
@@ -95,6 +97,7 @@ function toTemplate(record: TemplateRecord): Template {
         id: track.id, sprite_id: track.spriteId, start: track.start, duration: track.duration ?? null, parameters, transform,
         ...(purpose ? { business_target: purpose as RemotionClip["business_target"] } : {}),
         ...(textTarget === "title" || textTarget === "subtitle" ? { text_target: textTarget } : {}),
+        ...(track.language !== undefined ? { language: track.language as RemotionClip["language"] } : {}),
         ...(track.transitionBoundary !== undefined ? { transition_boundary: track.transitionBoundary } : {}),
       };
     }),
@@ -213,7 +216,7 @@ export async function saveTemplate(draft: Draft, id?: string, environment: Envir
   validateTemplateTracks(draft.tracks);
   validateClipSlots(draft);
   for (const target of ["title", "subtitle"])
-    if (draft.tracks.filter((track) => track.target === target).length !== 1)
+    if (draft.tracks.filter((track) => track.target === target && track.language !== "en").length !== 1)
       throw new Error("保存模板需要标题和底部字幕各一个");
   const effect_ids = draftEffects(draft);
   const message = create(SaveTemplateRequestSchema, {
@@ -228,6 +231,8 @@ export async function saveTemplate(draft: Draft, id?: string, environment: Envir
         ...draft.tracks.map((track) => ({
           id: track.id,
           target: track.target,
+          language: track.language,
+          enabled: track.enabled,
           startMode: track.start_mode,
           start: track.start,
           duration: track.duration ?? undefined,
@@ -244,6 +249,7 @@ export async function saveTemplate(draft: Draft, id?: string, environment: Envir
           editor: clipEditor(clip),
           spriteId: clip.sprite_id,
           textTarget: clip.text_target,
+          language: clip.language,
           transitionBoundary: clip.transition_boundary,
         })),
       ],
