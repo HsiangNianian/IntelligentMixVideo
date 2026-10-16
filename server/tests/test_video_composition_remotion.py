@@ -48,6 +48,59 @@ def case(composition_case, target="subtitle"):
                          "assets": {sprite.sprite_id: MessageToDict(sprite, preserving_proto_field_name=True)}}}
 
 
+@pytest.mark.parametrize("role", ["title", "subtitle"])
+def test_bilingual_shared_sprite_has_independent_content_and_timing(composition_case, role):
+    """同一 Sprite 的中英文摆放分别注入译文，按各自语言替换 IMS；停用后不产生英文实例。"""
+    from server.video_composition.timeline import build_timeline
+    from .conftest import remotion_track
+
+    data = case(composition_case, role)
+    data["template"] = deepcopy(composition_case["template"])
+    source = next(track for track in data["template"]["tracks"] if track["target"] == role)
+    english = {**deepcopy(source), "id": f"{role}-en", "language": "en"}
+    placement = data["remotion"]["placements"][0]
+    placement.update(text_target=role)
+    data["template"]["tracks"].append(english)
+    for language, track_id in (("zh", "effect-zh"), ("en", "effect-en")):
+        data["template"]["tracks"].append(remotion_track(track_id, sprite_id=placement["sprite_id"], text_target=role, language=language))
+    data["remotion"]["placements"].append({**deepcopy(placement), "id": "text-en", "language": "en"})
+    data["segmentation"].update(title_en="Business title", title_keyword_en="Business")
+    for item, text in zip(data["segmentation"]["segments"], ["Don't stop!", "Keep going."]):
+        item.update(text_en=text, keyword_en="")
+    overlay = remotion.plan(data, 120)
+    texts = [item["config"]["layer"]["text"] for item in overlay.instances]
+    assert texts == ([data["request"]["title"], "Business title"] if role == "title" else ["甲乙丙丁", "戊己庚辛", "Don't stop!", "Keep going."])
+    half = len(overlay.instances) // 2
+    assert [(item["start_frame"], item["duration_frames"]) for item in overlay.instances[:half]] == [(item["start_frame"], item["duration_frames"]) for item in overlay.instances[half:]]
+    timeline, _ = build_timeline(**{**composition_case, "template": data["template"], "segments": data["segmentation"]["segments"]}, title_en="Business title")
+    ims_texts = [clip["Content"] for row in timeline["SubtitleTracks"] for clip in row["SubtitleTrackClips"]]
+    assert not set(texts) & set(ims_texts)
+    english["enabled"] = False
+    assert len(remotion.plan(data, 120).instances) == half
+
+
+@pytest.mark.anyio
+async def test_disabled_english_does_not_read_sprite_or_require_renderer(composition_case, monkeypatch):
+    """停用英文的模板配置仍存在，但合成快照、环境检查与恢复计划都不读取其资产。"""
+    from server.template.schema import Template
+    from .conftest import remotion_track
+
+    data = case(composition_case, "title")
+    template = deepcopy(composition_case["template"])
+    chinese = next(track for track in template["tracks"] if track["target"] == "title")
+    template["tracks"].extend([{**deepcopy(chinese), "id": "title-en", "language": "en", "enabled": False},
+                               remotion_track(text_target="title", language="en")])
+    monkeypatch.setattr(remotion.sprites, "get", lambda *_: pytest.fail("不应读取停用英文资产"))
+    monkeypatch.setattr(remotion, "sprite_runtime", lambda: pytest.fail("不应检查停用英文的渲染环境"))
+    snapshot = await remotion.snapshot(Template.model_validate(template))
+    assert snapshot["placements"] == [] and snapshot["assets"] == {}
+    data["template"] = template
+    data["remotion"]["placements"][0].update(text_target="title", language="en")
+    data["remotion"]["assets"] = {}  # 恢复时也不能读取停用绑定。
+    await remotion.require_environment(data)
+    assert remotion.plan(data, 120) is None
+
+
 @pytest.mark.parametrize("text,keyword,expected", [("😀今天今天", "今天", [[1, 3]]), ("问？你好", "不存在", []), ("空词", "", [])])
 def test_resolve_replaces_sample_and_uses_first_codepoint_range(text, keyword, expected):
     """首次关键词使用码点区间；空或未命中清除旧高亮，保留样式且不修改发布值。"""

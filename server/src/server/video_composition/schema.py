@@ -23,7 +23,7 @@ MediaURL = Annotated[str, AfterValidator(media_url)]
 PositiveSeconds = Annotated[float, Field(gt=0, allow_inf_nan=False)]
 Status = Literal["queued", "processing", "succeeded", "failed"]
 Stage = Literal[
-    "queued", "template", "asr", "segmentation", "matching", "assembling", "submitting",
+    "queued", "template", "asr", "segmentation", "translation", "matching", "assembling", "submitting",
     "rendering", "completed", "failed",
 ]
 
@@ -181,6 +181,9 @@ class Segment(BaseModel):
     keyword: str
     level: int = Field(ge=1, le=2, strict=True)
     group_id: list[Annotated[int, Field(gt=0, strict=True)]] = Field(min_length=2, max_length=2)
+    # 英文仅供渲染，序列化素材匹配请求时排除。
+    text_en: str | None = Field(default=None, exclude=True)
+    keyword_en: str = Field(default="", exclude=True)
     subtitle_parts: list[SubtitlePart] | None = Field(default=None, min_length=1, exclude=True)
 
     @model_validator(mode="after")

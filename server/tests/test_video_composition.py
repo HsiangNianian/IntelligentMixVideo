@@ -550,6 +550,90 @@ def finished(client, task_id, headers=None):
     pytest.fail(f"任务未在测试预算内结束：{data}")
 
 
+@pytest.mark.parametrize("mode,title_on,subtitle_on", [
+    ("standard", True, True), ("standard", False, False), ("standard", True, False),
+    ("materials_voice", False, True), ("materials_silent", True, True),
+])
+def test_bilingual_translation_is_gated_and_does_not_change_matching(upstreams, client, composition_case, monkeypatch, mode, title_on, subtitle_on):
+    """只翻译启用且有内容的英文，中文素材匹配保持原契约；三种合成模式都不使用预览示例。"""
+    template = composition_case["template"]
+    for role, enabled in (("title", title_on), ("subtitle", subtitle_on)):
+        chinese = next(track for track in template["tracks"] if track["target"] == role)
+        template["tracks"].append({**deepcopy(chinese), "id": f"{role}-en", "language": "en", "enabled": enabled})
+    assert post_template(client, {key: template[key] for key in ("template_id", "name", "tracks", "effect_ids")}).status_code == 200
+    calls = []
+
+    def translate(result, *, title):
+        """模拟已通过翻译函数校验的完整结果，记录一次合并调用。"""
+        calls.append((deepcopy(result), title))
+        translated = deepcopy(result)
+        for item in translated["segments"]:
+            item.update(text_en=f"Sentence {item['segment_id']}.", keyword_en="")
+        if title:
+            translated.update(title_en="Business title", title_keyword_en="")
+        return translated
+
+    monkeypatch.setattr(service, "translate", translate)
+    request = deepcopy(composition_case["request"])
+    if mode != "standard":
+        request.update(videoUrl=None, materials=[{"fileUrl": f"https://media.test/{i}.jpg", "type": "image"} for i in range(3)], processRules={"videoDuration": 8})
+        request["copy"] = request.pop("text") if mode == "materials_voice" else None
+        if mode == "materials_silent":
+            request.update(text=None, audioUrl=None)
+    response = client.post(BASE, json=request)
+    assert response.status_code == 200
+    task_id = response.json()["data"]
+    result = finished(client, task_id)
+    assert result["status"] == "succeeded", result
+    assert len(calls) == int(title_on or (subtitle_on and mode != "materials_silent"))
+    if calls:
+        assert calls[0][1] == (request["title"] if title_on else None)
+        assert len(calls[0][0]["segments"]) == (2 if subtitle_on and mode != "materials_silent" else 0)
+    data = store.get(task_id)["data"]
+    texts = [clip["Content"] for row in data["timeline"]["SubtitleTracks"] for clip in row["SubtitleTrackClips"]]
+    assert ("Business title" in texts) == title_on
+    assert ("Sentence 1." in texts) == (subtitle_on and mode != "materials_silent")
+    for posted in upstreams["posts"]:
+        assert json.loads(posted["llm"])["segments"] == composition_case["segments"]
+
+
+def test_bilingual_translation_failure_never_submits_ims(upstreams, client, composition_case, monkeypatch):
+    """网络或内容校验失败都成为明确失败，既不启动匹配也不提交缺英文的成片。"""
+    template = composition_case["template"]
+    chinese = next(track for track in template["tracks"] if track["target"] == "subtitle")
+    template["tracks"].append({**deepcopy(chinese), "id": "subtitle-en", "language": "en"})
+    assert post_template(client, {key: template[key] for key in ("template_id", "name", "tracks", "effect_ids")}).status_code == 200
+
+    def fail(*args, **kwargs):
+        """已存在的 translate 会在模型缺少任一片段时抛错。"""
+        raise RuntimeError("missing English segment")
+
+    monkeypatch.setattr(service, "translate", fail)
+    task_id = client.post(BASE, json=composition_case["request"]).json()["data"]
+    result = finished(client, task_id)
+    assert result["status"] == "failed"
+    assert result["error"]["code"] == "translation_failed"
+    assert upstreams["submits"] == upstreams["posts"] == []
+
+
+@pytest.mark.anyio
+async def test_bilingual_recovery_reuses_saved_translation(upstreams, composition_case, composition_runtime, monkeypatch):
+    """重启后的组装只读已持久化的译文，不再调用翻译，也不回退模板示例。"""
+    template = composition_case["template"]
+    chinese = next(track for track in template["tracks"] if track["target"] == "title")
+    template["tracks"].append({**deepcopy(chinese), "id": "title-en", "language": "en"})
+    store.initialize_schema()
+    record = store.create(composition_case["request"], composition_runtime.settings.output())
+    record = store.advance(record, "assembling", template=template, duration_ms=8000,
+                           segmentation={"segments": composition_case["segments"], "title_en": "Saved translation", "title_keyword_en": ""},
+                           matches=composition_case["matches"])
+    monkeypatch.setattr(service, "translate", lambda *args, **kwargs: pytest.fail("不应重放翻译"))
+    await composition_runtime._execute(record)
+    saved = store.get(record["task_id"])
+    assert saved["status"] == "succeeded", saved["data"].get("error")
+    assert "Saved translation" in [clip["Content"] for row in saved["data"]["timeline"]["SubtitleTracks"] for clip in row["SubtitleTrackClips"]]
+
+
 @pytest.mark.parametrize("stage,delay", [("matching", 0.15), ("submitting", 5.1)])
 def test_success_survives_slow_stage_persistence(upstreams, client, composition_case, monkeypatch, stage, delay):
     """正常流程容忍慢 CI 的落库回执，不因测试专用短期限失败或重复提交上游。"""
@@ -909,7 +993,7 @@ async def test_template_stage_recovery_continues_to_completion(upstreams, compos
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("stage", ["matching", "assembling", "submitting", "rendering", "asr", "segmentation"])
+@pytest.mark.parametrize("stage", ["matching", "assembling", "submitting", "rendering", "asr", "segmentation", "translation"])
 async def test_recovery_uses_saved_handles_and_payload(upstreams, composition_case, composition_settings, stage, composition_runtime):
     """恢复匹配/IMS 只查已存 ID；无副作用组装可重跑；无法恢复的成本阶段不重放。"""
     store.initialize_schema()
@@ -926,7 +1010,7 @@ async def test_recovery_uses_saved_handles_and_payload(upstreams, composition_ca
     record = store.advance(record, stage, **saved)
     await composition_runtime._execute(record)
     result = store.get(record["task_id"])
-    if stage in ("asr", "segmentation"):
+    if stage in ("asr", "segmentation", "translation"):
         assert result["status"] == "failed" and result["data"]["error"]["code"] == "interrupted"
     else:
         assert result["status"] == "succeeded"

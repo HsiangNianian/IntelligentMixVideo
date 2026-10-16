@@ -18,7 +18,7 @@ from pydantic import TypeAdapter
 
 from ..remotion_templates import sprites
 from ..remotion_templates.placement import resolve as resolve_placement
-from ..template.schema import EffectTrack, RemotionTrackEditor
+from ..template.schema import EffectTrack, RemotionTrackEditor, active_tracks
 from ..template.timing import resolve_track
 from ..template.transitions import select_transitions
 from .remotion_content import ContentError, dynamic_duration, resolve_config, roles
@@ -59,7 +59,7 @@ async def snapshot(template) -> dict:
     def read():
         """数据库和源码校验在工作线程内执行；空模板不初始化 Remotion 运行时。"""
         placements, publications = [], {}
-        for track in template.tracks:
+        for track in active_tracks(template.tracks):
             if track.target != "remotion":
                 continue
             if not template.transition_enabled and track.transition_boundary is not None:
@@ -68,7 +68,7 @@ async def snapshot(template) -> dict:
             if asset_id not in publications:
                 publications[asset_id] = MessageToDict(sprites.get(asset_id), preserving_proto_field_name=True)
             placements.append({"id": track.id, "sprite_id": asset_id, "start": track.start,
-                               "duration": track.duration, "text_target": track.text_target,
+                               "duration": track.duration, "text_target": track.text_target, "language": track.language,
                                "transition_boundary": track.transition_boundary,
                                "editor": track.editor.remotion.model_dump(mode="json", exclude_none=True) if track.editor.remotion else {}})
         return {"revision": template.updated_at.isoformat(), "placements": placements, "assets": publications}
@@ -95,10 +95,18 @@ def placement_target(placement: dict, sprite: pb.PublishedSprite) -> str:
     return target
 
 
+def active_placements(data: dict) -> list[dict]:
+    """恢复同样以本单模板快照里的英文开关为准，旧摆放默认中文。"""
+    enabled = {track["target"] for track in data.get("template", {}).get("tracks", [])
+               if track.get("language") == "en" and track.get("enabled", True) and track["target"] in {"title", "subtitle"}}
+    return [item for item in (data.get("remotion") or {}).get("placements", [])
+            if item.get("language", "zh") != "en" or item.get("text_target") in enabled]
+
+
 async def require_environment(data: dict) -> None:
     """快照里有会实际渲染的摆放时，在付费 ASR／切片前确认隔离渲染环境；没有可显示内容时不要求。"""
     saved = data.get("remotion") or {}
-    placements = saved.get("placements", [])
+    placements = active_placements(data)
     if data.get("template", {}).get("transition_enabled") is False:
         placements = [item for item in placements if item.get("transition_boundary") is None]
     if not placements:
@@ -125,7 +133,7 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
     """根据已保存业务快照展开字幕；示例时长不限制字幕，空内容不产生实例。"""
     saved = data.get("remotion")
     # 历史任务没有快照时延续原流程，不能恢复时偷偷读取新的模板绑定。
-    if not saved or not saved["placements"]:
+    if not saved or not active_placements(data):
         return None
     request = CompositionRequest.from_snapshot(data["request"])
     duration = data["duration_ms"] / 1000
@@ -139,7 +147,7 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
     title_keyword = data.get("segmentation", {}).get("title_keyword", "")
     instances = []
     timed_sources = {}
-    placements = sorted(saved["placements"], key=lambda item: item.get("order", 0))
+    placements = sorted(active_placements(data), key=lambda item: item.get("order", 0))
     template = data.get("template", {})
     if template.get("transition_enabled") is False:
         placements = [item for item in placements if item.get("transition_boundary") is None]
@@ -159,6 +167,7 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
     for placement in placements:
         editor = RemotionTrackEditor.model_validate(placement.get("editor", {}))
         sprite = publications[placement["sprite_id"]]
+        language = placement.get("language", "zh")
         text_target = placement.get("text_target")
         target = placement_target(placement, sprite)
         if hashlib.sha256(sprite.tsx_code.encode()).hexdigest() != sprite.code_sha256:
@@ -174,7 +183,7 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
         if text_target:
             # 新槽位跟随文字对象的实际区间；IMS 动画不参与 Remotion 字效的时长校验。
             text_track = next((track for track in data.get("template", {}).get("tracks", [])
-                               if track.get("target") == text_target), None)
+                               if track.get("target") == text_target and track.get("language", "zh") == language), None)
             if text_track is None:
                 raise ContentError("Remotion 字效缺少所作用的文字对象")
             track = EffectTrack.model_validate(text_track).model_copy(update={"target": "remotion"})
@@ -198,10 +207,15 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
                     continue
             start = max(0, clips[boundary - 1]["TimelineOut"] - length_seconds / 2)
         if target == "subtitle":
+            current_events = subtitle_events(segments, language) if events else []
             contents = [(text, keyword, max(begin, start), min(end, start + length_seconds))
-                        for text, keyword, begin, end in events] if text_target else events
+                        for text, keyword, begin, end in current_events] if text_target else current_events
         elif target == "title":
-            contents = [(request.title, title_keyword, start, start + length_seconds)] if request.title and request.title.strip() else []
+            title = data.get("segmentation", {}).get("title_en") if language == "en" else request.title
+            keyword = data.get("segmentation", {}).get("title_keyword_en", "") if language == "en" else title_keyword
+            if language == "en" and request.title and request.title.strip() and not (title and title.strip()):
+                raise ContentError("缺少英文标题译文")
+            contents = [(title, keyword, start, start + length_seconds)] if request.title and request.title.strip() else []
         else:
             if sprite.kind == pb.SPRITE_KIND_TEXT or roles(json.loads(sprite.config_schema_json))["text"]:
                 raise ContentError("文字资产必须选择标题或字幕，不能作为装饰渲染示例文案")

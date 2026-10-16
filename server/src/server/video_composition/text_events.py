@@ -10,10 +10,17 @@ def _subtitle_text(text):
     )).strip()
 
 
-def subtitle_events(segments):
+def subtitle_events(segments, language="zh"):
     """兼容已保存的 subtitle_parts；每个原切片仅首个合法短句继承关键词。"""
     result = []
     for item in segments:
+        if language == "en":
+            if not item.text_en or not item.text_en.strip():
+                raise ValueError("缺少英文字幕译文")
+            # 英文保留撇号、标点及单词空格，不经过中文字幕清洗。
+            keyword = item.keyword_en if item.keyword_en and item.keyword_en in item.text_en else ""
+            result.append((item.text_en.strip(), keyword, item.start_time, item.end_time))
+            continue
         used = False
         for part in item.subtitle_parts or [item]:
             text = _subtitle_text(part.text)
