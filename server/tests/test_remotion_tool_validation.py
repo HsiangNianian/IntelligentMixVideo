@@ -1068,3 +1068,56 @@ def test_real_browser_measures_every_line_of_a_multi_line_text(tmp_path, code, p
     assert (check.status == "passed") is passed, check.message
     assert reason in check.message
     assert not passed or "over 2 lines" in check.message
+
+
+# 一个只渲染第 line 行的 Preset：两个组合实例各用它渲染一行，就是 Agent 曾经生成的「两个独立实例各管一行」的结构。
+LINE_PRESET = """import React from "react";
+import { AbsoluteFill, useCurrentFrame } from "remotion";
+export default function Line(props: { text: string; fontSize: number; lineStartFrames: number[]; line: number }) {
+  const frame = useCurrentFrame();
+  return (
+    <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
+      <div style={{ width: 972, textAlign: "center", fontSize: props.fontSize, lineHeight: 1.2, wordBreak: "break-all", color: "#fff", opacity: frame >= (props.lineStartFrames[props.line] ?? Infinity) ? 1 : 0 }}>
+        {props.text.split("\\n")[props.line] ?? ""}
+      </div>
+    </AbsoluteFill>
+  );
+}
+"""
+
+
+# 场景：组合器真正生成的两个实例（各自的摆放框、各自渲染一行）被 text_fit 以「不同实例」拒绝，与给同一组件手工加实例标记的用例结论一致。
+@needs_node
+@needs_browser
+def test_real_browser_refuses_lines_of_separately_composed_instances(tmp_path):
+    """两个实例分别占上下半个画布、绑定同一组 text、fontSize、lineStartFrames：报告 rendered by different instances (first, second)。"""
+    from server.remotion_templates.tools.compose import compose_source
+
+    properties = {
+        "text": {"type": "string", "minLength": 1, "maxLength": 100},
+        "fontSize": {"type": "number", "minimum": 24, "maximum": 240},
+        **LINE_STARTS_SCHEMA,
+        "line": {"type": "integer", "minimum": 0, "maximum": 1},
+    }
+    shared = {"text": "判断一个人\n选择花字", "fontSize": 96, "lineStartFrames": [0, 20]}
+
+    def part(instance_id: str, line: int, top: int) -> dict:
+        """One composed instance rendering line ``line`` of the shared text in its own box."""
+        return {
+            "instance_id": instance_id,
+            "preset": {"description": instance_id, "code": LINE_PRESET, "default_parameters": {**shared, "line": line},
+                       "parameter_schema": {"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False}},
+            "parameters": {**shared, "line": line},
+            "layout": {"x": 0, "y": top, "width": 1080, "height": 960, "z_index": 0},
+            "timing": {"start_frame": 0, "duration_frames": 30},
+        }
+
+    bindings = [{"name": name, "title": name, "targets": [{"instance_id": "first", "parameter": name}, {"instance_id": "second", "parameter": name}]}
+                for name in ("text", "fontSize", "lineStartFrames")]
+    code, schema, defaults = compose_source([part("first", 0, 0), part("second", 1, 960)], bindings)
+    assert 'data-imv-instance": "first"' in code and 'data-imv-instance": "second"' in code
+    settings = Settings(_env_file=None, data_dir=tmp_path, **BROWSER)
+    request = RenderValidationInput(component=ComponentDefinition(code=code, parameter_schema=schema, default_parameters=defaults), duration_frames=30)
+    report = asyncio.run(ToolValidator(Renderer(settings), tmp_path).validate_render(request, transparency=True, text_fit=True))
+    check = next(item for item in report.checks if item.name == "text_fit")
+    assert check.status == "failed" and "rendered by different instances (first, second)" in check.message, check.message

@@ -918,3 +918,19 @@ def test_single_line_subtitles_are_still_one_instance_per_cue(composition_case):
     result = remotion.plan(data, 120)
     assert [item["config"]["text"] for item in result.instances] == ["甲乙", "丙丁", "戊己", "庚辛"]
     assert all("lineStartFrames" not in item["config"] and "reveal_frame" not in item for item in result.instances)
+
+
+def test_multi_line_groups_split_before_the_text_or_line_start_limits(composition_case):
+    """同一句的两个切片单独都合规：拼起来超过资产文字上限（40 字），或第二行比组首晚 120 秒以上（行起点上限 3600 帧）时分成两组，不让合成失败。"""
+    data = multi_line_case(composition_case)
+    long = lambda index, char, start, group: {"segment_id": index, "text": char * 25, "keyword": "", "start_time": start,
+                                               "end_time": start + 1, "level": 1, "group_id": group}
+    data["segmentation"]["segments"] = [long(1, "甲", 0, [1, 2]), long(2, "乙", 1, [2, 2])]
+    assert [item["config"]["text"] for item in remotion.plan(data, 120).instances] == ["甲" * 25, "乙" * 25]
+    data = multi_line_case(composition_case)
+    data["duration_ms"] = 200_000
+    segment = lambda index, text, start, group: {"segment_id": index, "text": text, "keyword": "", "start_time": start,
+                                                 "end_time": start + 1, "level": 1, "group_id": group}
+    data["segmentation"]["segments"] = [segment(1, "开头", 0, [1, 2]), segment(2, "很久以后", 125, [2, 2])]
+    result = remotion.plan(data, 400)
+    assert [(item["start_frame"], item["config"]["text"]) for item in result.instances] == [(0, "开头"), (3750, "很久以后")]

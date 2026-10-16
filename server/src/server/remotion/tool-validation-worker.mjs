@@ -571,8 +571,11 @@ async function textFitCheck(page) {
   const multi = Number.isInteger(lines) && lines > 1;
   // Every line is shown from frame 0, so the measurement sees the complete text.
   const allLines = multi ? { lineStartFrames: Array(lines).fill(0) } : {};
+  // The N lines share maxLength with their N - 1 line breaks: the first lines take one more character each when it
+  // does not divide evenly, so the joined sample is exactly maxLength long.
+  const characters = multi ? Math.max(lines, length - (lines - 1)) : length;
   const longest = multi
-    ? Array(lines).fill(TEXT_FILLER.repeat(Math.max(1, Math.floor((length - (lines - 1)) / lines)))).join("\n")
+    ? Array.from({ length: lines }, (_, index) => TEXT_FILLER.repeat(Math.floor(characters / lines) + (index < characters % lines ? 1 : 0))).join("\n")
     : TEXT_FILLER.repeat(length);
   const where = `its maxLength (${length} characters${multi ? ` over ${lines} lines` : ""})${smallest !== null ? ` at the smallest fontSize ${smallest}` : ""}`;
   const measured = await measureSample({ text: longest, ...allLines, ...(smallest !== null ? { fontSize: smallest } : {}) }, longest);

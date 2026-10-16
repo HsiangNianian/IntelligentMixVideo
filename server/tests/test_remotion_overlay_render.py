@@ -1335,6 +1335,14 @@ def test_multi_line_render_refuses_extra_lines(changes) -> None:
     assert caught.value.code == "content_invalid", caught.value.message
 
 
+# 场景：同一句的两个切片单独都合规，拼起来超过资产文字上限（40 字）时分成两组，而不是整个请求被拒。
+def test_multi_line_render_splits_groups_before_the_text_limit() -> None:
+    """25 字加 25 字超过 40 字：两个切片各自一组。"""
+    cues = [sentence_cue("甲" * 25, 0, 60, 1), sentence_cue("乙" * 25, 60, 120, 1)]
+    overlay = plan_sprite_render(render_input(text="", keywords=[], effect_total_frames=300, cues=cues), M)
+    assert [(item["start_frame"], item["config"]["text"]) for item in overlay.instances] == [(0, "甲" * 25), (60, "乙" * 25)]
+
+
 def test_fit_frames_of_a_multi_line_text_start_at_its_last_line() -> None:
     """排版预检只在最后一行出现之后取 5 帧；没有 reveal_frame 时与原来一样从第 0 帧取。"""
     assert overlay_render._fit_frames({"start_frame": 0, "duration_frames": 60, "reveal_frame": 20}, 300) == ([20, 29, 39, 49, 59], 60)

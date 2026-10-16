@@ -26,7 +26,7 @@ from generated.imv.sprite.v1 import sprite_pb2 as pb
 from pydantic import ValidationError
 
 from ..template.schema import RemotionTrackEditor
-from .categories import LINE_STARTS_PROP, line_count
+from .categories import LINE_START_MAX_FRAMES, LINE_STARTS_PROP, line_count
 from .overlay_render import Overlay, OverlayError, probe_overlay, render_overlay, run_overlay_worker, to_frames
 from .placement import resolve
 from .renderer import Renderer
@@ -81,7 +81,7 @@ def _contents(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite, total: 
         raise OverlayError("content_invalid", "字效必须提供 text 或 cues 之一")
     lines = line_count(json.loads(sprite.config_schema_json or "{}"))
     if message.text:
-        if lines > 1 and len(message.text.split("\n")) > lines:
+        if lines > 1 and message.text.count("\n") >= lines:
             raise OverlayError("content_invalid", f"这个字效最多显示 {lines} 行")
         contents = [(0, total, message.text, list(message.keywords), [0])]
     else:
@@ -102,23 +102,29 @@ def _contents(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite, total: 
             contents.append((cue.start_frame, cue.end_frame - cue.start_frame, cue.text, list(cue.keywords), [0]))
             end = cue.end_frame
         if lines > 1:
-            contents = _groups(message.cues, contents, lines)
+            limit = json.loads(sprite.config_schema_json or "{}").get("properties", {}).get(sprite.text_prop or "text", {}).get("maxLength")
+            contents = _groups(message.cues, contents, lines, limit)
     if any(keywords for *_, keywords, _ in contents) and not sprite.keywords_prop:
         raise OverlayError("content_invalid", "这个 Sprite 不支持关键词")
     return contents
 
 
-def _groups(cues, contents: list[tuple], lines: int) -> list[tuple[int, int, str, list[str], list[int]]]:
+def _groups(cues, contents: list[tuple], lines: int, max_length: int | None) -> list[tuple[int, int, str, list[str], list[int]]]:
     """Group the checked cue contents of a multi-line text: up to `lines` per group, a new group at a sentence change.
 
-    A group lasts from its first cue's start to its last cue's end (the gaps between them included), its text is the
-    cues' texts one per line, its keywords the cues' keywords in order without repeats, and each line starts at its
-    cue's start frame counted from the group's start.
+    A new group also starts when one more line would make the joined text longer than `max_length` code points (the
+    text parameter's limit) or start more than `LINE_START_MAX_FRAMES` after the group, so cues that are valid on
+    their own never fail for being grouped. A group lasts from its first cue's start to its last cue's end (the gaps
+    between them included), its text is the cues' texts one per line, its keywords the cues' keywords in order without
+    repeats, and each line starts at its cue's start frame counted from the group's start.
     """
     groups: list[list[tuple]] = []
     for index, (cue, content) in enumerate(zip(cues, contents)):
         previous = cues[index - 1].sentence if index else 0
-        if not groups or len(groups[-1]) == lines or cue.sentence and previous and cue.sentence != previous:
+        group = groups[-1] if groups else []
+        if (not group or len(group) == lines or cue.sentence and previous and cue.sentence != previous
+                or max_length is not None and len("\n".join(item[2] for item in group)) + 1 + len(content[2]) > max_length
+                or content[0] - group[0][0] > LINE_START_MAX_FRAMES):
             groups.append([])
         groups[-1].append(content)
     return [

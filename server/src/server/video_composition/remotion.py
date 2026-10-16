@@ -17,7 +17,7 @@ from google.protobuf.json_format import MessageToDict, ParseDict
 from pydantic import TypeAdapter
 
 from ..remotion_templates import sprites
-from ..remotion_templates.categories import line_count
+from ..remotion_templates.categories import LINE_START_MAX_FRAMES, line_count
 from ..remotion_templates.placement import resolve as resolve_placement
 from ..template.schema import EffectTrack, RemotionTrackEditor
 from ..template.timing import resolve_track
@@ -203,7 +203,9 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
         # 每项内容是 (各行文字, 各行关键词, 各行出现的秒数, 开始, 结束)；单行字效只有一行。
         if target == "subtitle":
             # 多行字效把同一句里最多 lines 个连续切片合成一组：逐行出现，整组在最后一个切片结束时清空。
-            blocks = subtitle_blocks(segments, lines) if spoken and lines > 1 else [[event] for event in events]
+            text_schema = json.loads(sprite.config_schema_json).get("properties", {}).get(sprite.text_prop or "text", {})
+            blocks = subtitle_blocks(segments, lines, text_schema.get("maxLength"), (LINE_START_MAX_FRAMES - 1) / fps) \
+                if spoken and lines > 1 else [[event] for event in events]
             low, high = (start, start + length_seconds) if text_target else (0, duration)
             contents = []
             for block in blocks:

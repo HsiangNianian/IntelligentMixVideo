@@ -446,7 +446,8 @@ was generated. `sprite_render.py` renders the effect in one overlay worker run t
 most 30 seconds as frame ranges of the same composition (instances keep their absolute timing, so animations continue
 across a boundary) and joins them with `ffmpeg -c copy`, then re-probes the frame count and alpha flag; the bus never
 splits a request. A multi-line text effect groups up to `line_count` consecutive cues instead, starting a new group when
-a cue's `sentence` changes (when both cues give one). Each group is one instance from its first cue's start to its
+a cue's `sentence` changes (when both cues give one), or when one more line would exceed the text parameter's
+`maxLength` or start beyond the line start limit, so cues valid on their own never fail for being grouped. Each group is one instance from its first cue's start to its
 last cue's end; its text is the cues' texts one per line, its keywords theirs in order, and `lineStartFrames` holds
 each cue's start counted from the group's start, so line i appears when cue i starts and the group clears together.
 A held group (shorter than 1.5 s) shows every line from frame 0, and so does a multi-line `text`, which may have at

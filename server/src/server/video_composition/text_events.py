@@ -34,11 +34,18 @@ def subtitle_events(segments):
     return [event for _, event in _sentence_events(segments)]
 
 
-def subtitle_blocks(segments, lines: int):
-    """多行字效的字幕分组：同一句里最多 ``lines`` 个连续字幕事件为一组，换句时即使没有填满也开始新的一组。"""
+def subtitle_blocks(segments, lines: int, max_length: int | None = None, max_span: float | None = None):
+    """多行字效的字幕分组：同一句里最多 ``lines`` 个连续字幕事件为一组，换句时即使没有填满也开始新的一组。
+
+    再加一行会让换行连接的文字超过 ``max_length`` 个码点（资产文字参数的上限），或这一行的起点比组首晚
+    ``max_span`` 秒以上（行起点参数的上限）时，也开始新的一组，所以单独合规的字幕不会因为分组而失败。
+    """
     blocks, last = [], None
     for sentence, event in _sentence_events(segments):
-        if sentence != last or len(blocks[-1]) == lines:
+        block = blocks[-1] if blocks else []
+        if (sentence != last or len(block) == lines
+                or max_length is not None and len("\n".join(item[0] for item in block)) + 1 + len(event[0]) > max_length
+                or max_span is not None and event[2] - block[0][2] > max_span):
             blocks.append([])
         blocks[-1].append(event)
         last = sentence
