@@ -198,16 +198,7 @@ uv sync --locked --default-index https://pypi.org/simple
 
 ## 文案切片
 
-提供 `POST /segmentations` 接口和独立的 `segment` 函数，使用正确文案与已有 ASR 结果生成带时间和关键词的片段。
-
-在 `server/.env` 填写 `IMV_LLM_BASE_URL`、`IMV_LLM_API_KEY` 和 `IMV_LLM_MODEL`，其余配置见 [.env.example](.env.example)。
-配置读取固定的 `server/.env`，环境变量优先；从仓库根目录启动时使用：
-
-```sh
-uv run --locked --project server server
-```
-
-HTTP 请求体的 `script`、`asr_result`、`title` 均可省略或为 null，字段类型仍由 Pydantic 校验。提供 ASR 时仍须有效 `script`；`asr_result` 省略或为 null 且提供 `title` 时，只调用一次模型提取标题关键词，忽略 `script`，仅返回 `{"title_keyword":"关键词"}`。例如请求 `{"title":"散养土鸡上新"}` 即可；这一分支不校验词长或原文匹配，缺少返回字段或返回非字符串时按空字符串处理。也可在代码中读取 ASR 输出文件并调用：
+`POST /segmentations` 与 `segment` 函数用正确文案和已有 ASR 结果生成带时间和关键词的片段，不调用 ASR。模型连接填在 `server/.env` 的 `IMV_LLM_BASE_URL`、`IMV_LLM_API_KEY`、`IMV_LLM_MODEL`（其余见 [.env.example](.env.example)），环境变量优先；从仓库根目录启动用 `uv run --locked --project server server`。代码中调用：
 
 ```python
 import json
@@ -221,16 +212,17 @@ result = segment({
 })
 ```
 
-使用 ASR 第一音轨的词级时间（毫秒），返回 `segments`、`warnings` 和 `trace`；片段包含保留标点的原文、秒制时间、分组和关键词。
-带 ASR 的切片请求提供非 null 的 `title` 时，在现有关键词模型调用中同时提取一个标题关键词，响应新增同级 `title_keyword` 字符串；关键词须在标题中连续出现且最多 12 字。标题为空或无合适关键词时由模型返回空字符串；省略或传 null 时不返回此字段。模型结果缺失或非法直接报错，不增加兜底或额外重试。
-首次切分和关键词提取后，超过 8 个有效字（不计标点和空白）的片段由代码二次切分：优先选择两侧至少 2 个有效字的安全切点（没有时才回退），再按保护范围外的标点、结巴精确模式词边界、中点排序，必要时允许拆开中文词。首次与二次切分均保护连续的英文、字母数字串（含小数、连字符、百分号和 `1,299` 这类半角千分位），空格分隔的多词英文名称仍可拆分。数字列表只在有明确依据时整体保护：带共享后缀的 `70，80，90后`、顿号枚举、`第1、2、3名` 及“等”后带时间单位的约数（如 `等2，3天`）；普通逗号两侧的数字不自动合并，如 `99，3件`、`99，10件`。只有受保护表达本身超过 8 字时才单独保留超长片段，超长序数连同“第”和“名”保留。这些是有限的模式规则，不保证识别任意数字语义。
-例如 `就想做点事情的，70，80，90后滴滴我。` 可切为 `就想做点事情的，` / `70，80，90后` / `滴滴我。`，`OpenAI` 不会从内部拆开。保留原文和 ASR 时间；关键词仅由完整包含其首次出现位置的子段继承，被拆开的词不再高亮，标题关键词不受影响。二次切分不调用模型；完整切片仅首次切分和提词两次模型调用，不做结果纠错重试，网络错误仍沿用 SDK 策略。
-切片不调用 ASR，不生成字幕子段；最终去标点由下游合成负责：保留问号及两侧紧邻数字的小数点（如 `3.14`），逗号仍删除，因此数字人群字幕显示为同一段 `708090后`。展示关键词采用相同过滤规则，且必须先在对应子段原文中出现，因此 `70，80，90后` 仍能高亮；素材召回使用的原关键词不变。
+**请求与返回**：`script`、`asr_result`、`title` 都可省略或为 null。
 
-HTTP 与视频合成共用成功／失败日志入口，完整切片记录阶段、切点、关键词与模型耗时；仅标题分支不生成切片诊断。桌面日志写入 `backend/server.log`。
-日志包含文案，请按敏感数据管理；请求字段校验失败仍返回 422，不进入切片日志。
+- 有 ASR：必须有有效 `script`，使用第一音轨的词级时间（毫秒）。返回 `segments`（保留标点的原文、秒制时间、分组、关键词）、`warnings` 和 `trace`；传了 `title` 时另返回 `title_keyword`，须在标题中连续出现且最多 12 字，不合法直接报错。
+- 只有 `title`：只调用一次模型，返回 `{"title_keyword":"关键词"}`，不校验内容，缺失或非字符串按空字符串处理。
+- 可选 `config` 只用于本次调用：`llm_base_url`、`llm_api_key`、`llm_model` 必填，`llm_timeout_seconds` 默认 120，`llm_max_retries` 默认 1（0～3）；Python 中传 `segment(payload, config=ClientSettings(...))`。`allow_insecure_llm_http` 由服务端决定，错误响应不回显输入。
 
-请求可另带 `config` 对象：`llm_base_url`、`llm_api_key`、`llm_model` 必填，`llm_timeout_seconds` 默认 120，`llm_max_retries` 默认 1（0～3）。客户端参数仅用于该次切片，完整连接参数不与服务端密钥混用；省略 `config` 仍使用原服务端配置。独立 Python 调用可传 `segment(payload, config=ClientSettings(...))`，模型定义位于 `server.segmentation.settings`。`allow_insecure_llm_http` 仍由服务端决定，不接受客户端覆盖；错误响应不回显请求输入。
+**切分规则**：模型先在标点处切句、再提关键词（两次调用，不做结果纠错重试），之后由代码把超过 8 个有效字（不计标点和空白）的片段继续切开，切点优先两侧至少 2 字，再按标点、结巴词边界、中点。`OpenAI`、`3.14%`、`1,299` 这类英文和数字串不拆开；`70，80，90后`、顿号枚举、`第1、2、3名`、`等2，3天` 这类数字列表整体保留，普通逗号两侧的数字（如 `99，3件`）不合并。关键词只留在完整包含它的子段上。字幕去标点由下游合成负责，保留问号和数字小数点。
+
+**英文翻译**：`translate(result, title=None)` 把 `segment` 的结果一次模型调用译成英文（目前没有调用方），模型配置只从服务端 `server/.env` 读取。返回副本，每个片段增加 `text_en`、`keyword_en`，传入 `title` 时增加 `title_en`、`title_keyword_en`。英文关键词复用中文关键词的校验但不限长度：片段词不在本段译文中时置空，标题词不在英文标题中时报错。
+
+**日志**：HTTP 与视频合成共用日志入口，完整切片记录阶段、切点、关键词与模型耗时；日志含文案，按敏感数据管理。桌面写入 `backend/server.log`。
 
 `GET /api/settings/plugins` 只返回自动发现的公开描述与代码默认值，不读写服务端配置。一级模块通过 `settings_plugin.py` 导出 `SETTINGS_PLUGIN`，Schema 由自己的配置模型生成；公共层导入时扫描一次，无人工注册名单，重复 ID、坏描述和依赖导入失败直接报错。增删入口后重启后端并重新打开客户端设置；移除入口不删除客户端旧值。当前包含 Remotion Agent、上海 IMS/视频合成、切片、ASR 和服务启动入口；完整目录从入口的 `settings` 模型类生成 Debug Schema；`client_only=true` 只返回标记 `scope: "client"` 的 Agent 与 IMS，测试使用临时包文件验证发现与移除。此机制不自动注册业务路由，也不支持删除整个业务目录后免处理依赖；各模块仍须自行接入请求配置消费。
 

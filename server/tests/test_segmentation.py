@@ -10,7 +10,7 @@ import httpx
 from openai import APIConnectionError, APITimeoutError
 import pytest
 
-from server.segmentation import segment, segmentation
+from server.segmentation import segment, segmentation, translate
 
 
 def payload(script, transcript=None, step=200):
@@ -986,3 +986,88 @@ def test_client_config_keeps_server_http_policy(model, client, monkeypatch):
     }})
     assert response.status_code == 502
     model[0].assert_not_called()
+
+
+# 翻译用例的切片结果：时间与 trace 不发给模型，原样保留在返回值里。
+SEGMENTED = {
+    "title_keyword": "土鸡",
+    "segments": [
+        {"segment_id": 1, "group_id": [1, 2], "text": "今天上架", "start_time": 0.0, "end_time": 0.8,
+         "keyword": "", "level": 1},
+        {"segment_id": 2, "group_id": [2, 2], "text": "散养的土鸡。", "start_time": 0.8, "end_time": 2.0,
+         "keyword": "散养的土鸡", "level": 2},
+    ],
+    "warnings": [],
+    "trace": {"segment_count": 2},
+}
+
+
+def reply(model, output):
+    """让模型替身只返回一次给定 JSON。"""
+    model[1].chat.completions.create.side_effect = None
+    model[1].chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(output)))])
+
+
+def test_translate_one_call_keeps_both_keywords(model):
+    """片段与标题一次调用翻译；只发送文字与关键词，英文关键词不限长度，原结果不被修改。"""
+    snapshot = json.loads(json.dumps(SEGMENTED))
+    reply(model, {
+        "segments": [{"text_en": "On sale today", "keyword_en": ""},
+                     {"text_en": "free-range chickens.", "keyword_en": "free-range chickens"}],
+        "title_en": "New free-range chickens", "title_keyword_en": "free-range chickens",
+    })
+    result = translate(SEGMENTED, title="散养土鸡上新")
+    model[1].chat.completions.create.assert_called_once()
+    assert model[0].return_value.__exit__.call_count == 1
+    assert json.loads(model[1].chat.completions.create.call_args.kwargs["messages"][1]["content"]) == {
+        "segments": [{"segment_id": 1, "text": "今天上架", "keyword": ""},
+                     {"segment_id": 2, "text": "散养的土鸡。", "keyword": "散养的土鸡"}],
+        "title": "散养土鸡上新", "title_keyword": "土鸡",
+    }
+    assert [(s["text_en"], s["keyword_en"]) for s in result["segments"]] == [
+        ("On sale today", ""), ("free-range chickens.", "free-range chickens")]
+    assert result["title_en"] == "New free-range chickens"
+    assert result["title_keyword_en"] == "free-range chickens"
+    assert [{k: v for k, v in s.items() if not k.endswith("_en")} for s in result["segments"]] == snapshot["segments"]
+    assert result["trace"] == snapshot["trace"] and SEGMENTED == snapshot
+
+
+@pytest.mark.parametrize("keyword_en,expected", [
+    ("chickens", "chickens"), (" chickens ", "chickens"), ("hens", ""), ("Chickens", ""), ("", ""),
+])
+def test_translate_segment_keyword_reuses_validation(model, keyword_en, expected):
+    """英文片段关键词复用中文校验：去空白后须在本段译文中连续出现，否则置空而不失败。"""
+    reply(model, {"segments": [{"text_en": "Today", "keyword_en": ""},
+                               {"text_en": "free-range chickens.", "keyword_en": keyword_en}]})
+    result = translate(SEGMENTED)
+    assert result["segments"][1]["keyword_en"] == expected
+    assert "title_en" not in result
+    assert "title" not in json.loads(model[1].chat.completions.create.call_args.kwargs["messages"][1]["content"])
+
+
+def test_translate_ignores_keyword_without_chinese_keyword(model):
+    """中文关键词为空的片段和标题，模型多给的英文关键词一律丢弃。"""
+    reply(model, {"segments": [{"text_en": "Today", "keyword_en": "Today"},
+                               {"text_en": "chickens.", "keyword_en": "chickens"}],
+                  "title_en": "New chickens", "title_keyword_en": "chickens"})
+    result = translate({**SEGMENTED, "title_keyword": ""}, title="散养土鸡上新")
+    assert result["segments"][0]["keyword_en"] == "" and result["title_keyword_en"] == ""
+
+
+@pytest.mark.parametrize("output,field", [
+    ({"segments": [{"text_en": "Today", "keyword_en": ""}]}, "text_en"),
+    ({"segments": [{"text_en": "Today", "keyword_en": ""}, {"text_en": None, "keyword_en": ""}]}, "text_en"),
+    ({"segments": [{"text_en": "Today", "keyword_en": ""}, {"text_en": "chickens."}]}, "keyword_en"),
+    ({"segments": [{"text_en": "a", "keyword_en": ""}, {"text_en": "chickens.", "keyword_en": ""}],
+      "title_en": "New chickens", "title_keyword_en": "hens"}, "title_keyword_en"),
+    ({"segments": [{"text_en": "a", "keyword_en": ""}, {"text_en": "chickens.", "keyword_en": ""}],
+      "title_keyword_en": ""}, "title_en"),
+])
+def test_translate_invalid_output_fails_without_retry(model, output, field):
+    """段数或类型不符、英文标题关键词不在英文标题中时直接失败，只调用一次并关闭客户端。"""
+    reply(model, output)
+    with pytest.raises(RuntimeError, match=field):
+        translate(SEGMENTED, title="散养土鸡上新")
+    model[1].chat.completions.create.assert_called_once()
+    assert model[0].return_value.__exit__.call_count == 1
