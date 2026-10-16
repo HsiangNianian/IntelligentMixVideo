@@ -269,7 +269,7 @@ git push origin v0.3.0
 - 四个平台 / 架构的构建全部成功后，再发布 GitHub Release。安装包及 `CHANGELOG.md` 作为附件上传。
 - 使用 `requarks/changelog-action`，按 Conventional Commits 分类生成变更记录；Release 正文使用其输出。
 - 显式指定前一个祖先版本 tag 到当前 tag 的比较范围。首次发版使用仓库最初提交作为基线，不包含该引导提交，避免 action 默认要求已有两个 tag 的限制。
-- 使用 `ncipollo/release-action` 上传到草稿，随后通过 `release-assets.mjs` 校验六个安装包及 `CHANGELOG.md` 的文件名、大小和上传状态，全部通过后才公开。上传失败必须保持草稿状态。
+- 使用 `ncipollo/release-action` 上传到草稿，随后通过 `release-assets.mjs` 校验安装包、签名更新清单、界面资源、macOS 更新归档及 `CHANGELOG.md` 的文件名、大小和上传状态，全部通过后才公开。上传失败必须保持草稿状态。
 - 重跑可修复草稿或补齐日志回写；已公开 Release 的附件与正文不再修改。
 - 草稿校验使用上传 action 返回的 Release ID 查询，并确认其 tag 匹配；不要通过按 tag 查询接口查找未公开草稿。
 - 发布并发组按 tag 隔离，避免不同版本互相替换等待中的运行。
@@ -278,6 +278,17 @@ git push origin v0.3.0
 - 不以手工维护正式版本条目的方式替代自动 changelog 流程。
 - 使用内置 `GITHUB_TOKEN`；构建 job 使用读权限，发布 job 需要 `contents: write`。默认分支规则必须允许对应的机器人写入。
 - 当前未配置 Windows 代码签名和 macOS 公证，不将生成的安装包描述为已签名或已公证。
+
+## 客户端自动更新
+
+- 正式客户端更新核心在 `client/src-tauri/src/updates.rs`，Rust 负责检查、镜像下载、签名、资源切换、回退和官方安装器调用；React 只负责状态展示、草稿/请求门禁及恢复位置。Debug 不启用。
+- 默认镜像顺序为 `gh-proxy.org`、`ghfast.top`、`ghproxy.net`、`gpp.hydroroll.team`、`ghproxy.hydroroll.team`、GitHub 直连；编译变量 `IMV_UPDATE_MIRRORS` 可覆盖前缀列表，业务 API 地址不能改变更新信任来源。清单和资产必须校验签名、大小及摘要。
+- 热更新要求实际原生指纹相同且 `client/hot-update-validation.json` 中登记该版本/平台的真实组合验证；未验证或不兼容时完整更新并自动重启，deb 提供下载引导。不能用模拟测试代替真实组合验证。
+- 应用前保护全部已挂载工作区草稿、在途请求及本地所有服务的未结束/未知状态任务；多实例通过文件锁阻止同时更新。热更新保持窗口，60 秒未确认或启动发现待确认标记则回退；保存的恢复信息不包含播放进度和撤销历史。
+- `client/src-tauri/update-tools` 是 Rust workspace 成员，供 build.rs 与发版共用；升级官方 updater 时同步检查 Tauri CLI 的版本绑定签名支持。最低 Rust 1.90；保留 Cargo/Bun 锁文件。
+- 正式 tag 需要 Actions variable `IMV_UPDATE_PUBLIC_KEY`、secret `TAURI_SIGNING_PRIVATE_KEY` 和可选口令 secret `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。私钥不入库；未配置密钥不能发正式更新。更新签名不代表 Windows 代码签名或 macOS 公证。
+- Release 完整性门禁检查 17 个必需附件：原六个安装包、CHANGELOG、四个签名清单、四个资源包及两个 macOS 更新归档。发布工具测试使用临时密钥和不可执行的测试文件，不安装、不使用真实密钥。
+- 修改更新功能时运行客户端完整测试/构建、原生测试及 `cargo test --manifest-path client/src-tauri/Cargo.toml -p imv-update-build --locked`；后者需要先冻结安装客户端 Bun 依赖。发布脚本、release-smoke 与 actionlint 同时验证。详细配置与平台验证见 `docs/client-update-design.md`。
 
 ## Git 与交付约定
 
