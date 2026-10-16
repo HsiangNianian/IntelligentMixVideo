@@ -1,4 +1,5 @@
 /** 合成提交与查询使用当前客户端 IMS 凭据；后台 ASR、切片和素材匹配仍由服务端配置。 */
+import { updateFetch as fetch } from "@/lib/update-guard";
 import { readSettings } from "@/features/settings/api";
 import { apiBase } from "@/lib/api-base";
 

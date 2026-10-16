@@ -23,7 +23,7 @@ test.each([undefined, "false", "TRUE"])("普通模式隔离模块配置：%s", a
   render(<SettingsDialog open onOpenChange={() => {}} />);
   expect(screen.getAllByRole("tab").map(tab => tab.textContent)).toEqual(["通用"]);
   expect(screen.queryByRole("alert")).toBeNull();
-  expect(screen.queryByRole("status")).toBeNull();
+  expect(screen.getByRole("status").textContent).toBe("此构建不支持客户端更新");
   expect(screen.getByRole("dialog").textContent).not.toMatch(/密钥|凭据|Debug/);
   expect(fetchMock).not.toHaveBeenCalled();
   invoke.mockClear();

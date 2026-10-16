@@ -6,7 +6,8 @@
  * 打开会话的 SSE 订阅与后台同步（`backgroundSync.ts`）不会交错写入。两种实现共用同一存储接口，事件合并规则只在本文件实现一次：会话订阅把服务端事件交给
  * `apply` 写入本地后，再向服务端确认送达，服务端随即删除已送达的事件。
  */
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { updateInvoke as invoke } from "@/lib/update-guard";
+import { isTauri } from "@tauri-apps/api/core";
 import { apiBase } from "@/lib/api-base";
 import type {
   ChatMessage,

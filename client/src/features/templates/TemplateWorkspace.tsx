@@ -1,4 +1,6 @@
 /** 模板编辑工作区：接收主页选择，展示模板信息，协调效果编辑、保存和未保存切换保护。 */
+import { useUpdateBlocker } from "@/lib/update-guard";
+import { recovery } from "@/features/updates/recovery";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { CircleCheck, Pencil, SquarePen } from "lucide-react";
 import { toast } from "sonner";
@@ -117,6 +119,8 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
     };
   }).filter((clip) => clip.end > clip.start && !hiddenClips.has(clip.id)), [previewClips, hiddenClips, draftTracks, spriteCatalog.assets, previewLength]);
   const dirty = draft !== null && (current === null || JSON.stringify(draft) !== baseline || (editing !== null && editing.value !== draft[editing.field]));
+  useUpdateBlocker("模板尚未保存或正在处理", dirty || busy || loading || !!openRequest);
+  useEffect(() => { recovery.template = current ? { environment, templateId: current.template_id } : null; }, [current, environment]);
   const selectedTrack = draft?.tracks.find((track) => track.id === target);
   const assetTrack = selectedTrack ?? draft?.tracks.find((track) => track.id === lastTextTrack.current);
   const selectedDraft = draft && selectedTrack ? trackDraft(draft, selectedTrack) : null;

@@ -35,6 +35,15 @@ test("release manifest requires all six installers and a nonempty changelog", ()
   const log = join(dir, "CHANGELOG.md");
   writeFileSync(log, "# Changelog");
   assert.equal(collectAssets(assets, log).length, 7);
+  // 新版发布必须有四个平台的清单和资源，以及两个架构的 macOS 更新归档。
+  assert.throws(() => collectAssets(assets, log, true), /Missing or duplicate update/);
+  for (const target of ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc", "aarch64-apple-darwin", "x86_64-apple-darwin"]) {
+    for (const prefix of ["update", "resources"]) writeFileSync(join(assets, `${prefix}-${target}.json`), "{}");
+  }
+  for (const arch of ["arm", "intel"]) writeFileSync(join(assets, `${arch}.app.tar.gz`), "archive");
+  assert.equal(collectAssets(assets, log, true).length, 17);
+  rmSync(join(assets, "resources-x86_64-pc-windows-msvc.json"));
+  assert.throws(() => collectAssets(assets, log, true), /Missing or duplicate resources/);
   writeFileSync(join(assets, "intelligent-mix-video-macos-arm64-sha/arm.dmg"), "");
   assert.throws(() => collectAssets(assets, log), /Empty release asset/);
   rmSync(join(assets, "intelligent-mix-video-macos-arm64-sha/arm.dmg"));

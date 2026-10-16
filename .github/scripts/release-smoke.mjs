@@ -20,7 +20,7 @@ try {
   for (const path of [
     "client/package.json", "client/bun.lock", "client/bunfig.toml",
     "client/src-tauri/Cargo.toml", "client/src-tauri/Cargo.lock",
-    "client/src-tauri/tauri.conf.json", "client/src-tauri/build.rs", "client/src-tauri/src",
+    "client/src-tauri/update-tools", "client/src-tauri/tauri.conf.json", "client/src-tauri/build.rs", "client/src-tauri/src",
     "server/pyproject.toml", "server/uv.lock", "server/README.md", "server/src",
   ]) {
     mkdirSync(dirname(join(dir, path)), { recursive: true });

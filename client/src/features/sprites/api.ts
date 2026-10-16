@@ -1,4 +1,5 @@
 /** Sprite 资产 HTTP 边界：发布、重命名与目录使用 Protobuf 二进制，删除无请求体；写入失败不自动重试。片段随云端模板保存，不在这里。 */
+import { updateFetch as fetch } from "@/lib/update-guard";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { apiBase } from "@/lib/api-base";
 import { deviceId } from "@/features/remotion_templates/localSessions";

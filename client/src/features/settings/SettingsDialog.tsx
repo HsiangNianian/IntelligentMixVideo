@@ -13,7 +13,7 @@ import { PluginSettings } from "./PluginSettings";
 export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex h-[min(600px,70dvh)] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
+      <DialogContent data-update-safe className="flex h-[min(600px,70dvh)] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
         <DialogHeader className="shrink-0 border-b px-6 py-5 pr-12">
           <DialogTitle>设置</DialogTitle>
           <DialogDescription className="text-xs leading-5">

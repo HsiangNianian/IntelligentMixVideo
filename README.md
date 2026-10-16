@@ -86,6 +86,8 @@ Debug installer artifacts are named `intelligent-mix-video-debug-<platform>-<com
 
 After installing and opening the client, follow [Basic Usage](#basic-usage) to create a local template. For cloud features, check the backend URL and related configuration in Settings.
 
+Official clients expose version checks and one-click updates in Settings. Compatible, validated UI updates keep the window open; native updates install and restart automatically (deb uses a download guide). Configure release signing and record platform validation before enabling hot updates; see the [client update guide](docs/client-update-design.md).
+
 Windows code signing and macOS notarization are not currently configured. See the [client documentation](client/README.md) and [Builds and Releases](#builds-and-releases) for platform setup and build details.
 
 ---
@@ -525,7 +527,7 @@ git push origin v0.6.0
 
 Here, `origin` must point to the project repository that actually publishes releases. Pushing a tag to a personal fork does not release a version of the upstream project.
 
-[release.yml](.github/workflows/release.yml) runs on official version tags. After successful cross-platform builds, it validates the installers and `CHANGELOG.md` attachment before making the Release public. Only stable versions are accepted, not `-beta` / `-rc` versions, and versions must satisfy Windows MSI numeric limits.
+[release.yml](.github/workflows/release.yml) runs on official version tags. After successful cross-platform builds, it validates the installers, signed update manifests, UI resources, macOS update archives, and `CHANGELOG.md` before making the Release public. Release builds require the `IMV_UPDATE_PUBLIC_KEY` variable and `TAURI_SIGNING_PRIVATE_KEY` secret (plus the password secret when applicable). Only stable versions are accepted, not `-beta` / `-rc` versions, and versions must satisfy Windows MSI numeric limits.
 
 The workflow generates changelogs from Conventional Commits. Publishing uses the built-in `GITHUB_TOKEN` and requires the appropriate write permissions. Failed runs can be retried and missing draft attachments can be uploaded, but reruns do not overwrite published releases. Do not move published tags.
 

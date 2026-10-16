@@ -1,5 +1,6 @@
 /** 设置插件描述从后端读取；值经 Tauri 保存，浏览器仅保留当前页面进程内的配置。 */
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { updateInvoke as invoke } from "@/lib/update-guard";
+import { isTauri } from "@tauri-apps/api/core";
 import { apiBase } from "@/lib/api-base";
 
 /** 第一版只支持标量配置；描述由模块的 Pydantic 模型生成。 */
