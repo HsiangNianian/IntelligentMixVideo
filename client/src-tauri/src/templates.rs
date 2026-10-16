@@ -129,6 +129,12 @@ fn draft_from_protobuf(bytes: &[u8], id: Option<&str>) -> Result<Value, String> 
                 if let Some(boundary) = track.transition_boundary {
                     value["transition_boundary"] = json!(boundary);
                 }
+                if let Some(language) = track.language {
+                    value["language"] = json!(language);
+                }
+                if let Some(enabled) = track.enabled {
+                    value["enabled"] = json!(enabled);
+                }
                 value
             })
             .collect::<Vec<_>>()
@@ -354,11 +360,12 @@ fn validate(mut draft: Value) -> Result<Value, String> {
         for track in items {
             if track.as_object().is_none_or(|fields| {
                 fields.len()
-                    != if track["target"] == "transition" {
+                    != (if track["target"] == "transition" {
                         5
                     } else {
                         6
-                    }
+                    }) + usize::from(fields.contains_key("language"))
+                        + usize::from(fields.contains_key("enabled"))
                     || !fields.contains_key("duration")
             }) {
                 return Err("轨道字段不完整".into());
@@ -374,8 +381,33 @@ fn validate(mut draft: Value) -> Result<Value, String> {
                 return Err("轨道 ID 无效或重复".into());
             }
             let target = track["target"].as_str().ok_or("轨道对象无效")?;
-            if ["title", "subtitle", "vfx"].contains(&target) && !singletons.insert(target) {
-                return Err("标题、字幕和 VFX 最多各一个".into());
+            let language = track.get("language").map_or(Some("zh"), Value::as_str);
+            if !matches!(language, Some("zh" | "en"))
+                || (language == Some("en") && !["title", "subtitle"].contains(&target))
+            {
+                return Err("文字语言无效".into());
+            }
+            if track.get("enabled").is_some_and(|value| {
+                !value.is_boolean() || (value == false && language != Some("en"))
+            }) {
+                return Err("只有英文标题或字幕可以停用".into());
+            }
+            if language == Some("en") {
+                let chinese = items
+                    .iter()
+                    .find(|item| item["target"] == target && item["language"] != "en")
+                    .ok_or("英文需要对应的中文对象")?;
+                if ["start_mode", "start", "duration"]
+                    .iter()
+                    .any(|key| track[*key] != chinese[*key])
+                {
+                    return Err("英文时间必须跟随中文对象".into());
+                }
+            }
+            if ["title", "subtitle", "vfx"].contains(&target)
+                && !singletons.insert((target, language))
+            {
+                return Err("同一语言的标题、字幕和 VFX 最多各一个".into());
             }
             if target != "transition" && track.get("transition_boundary").is_some() {
                 return Err("只有转场可以设置视频交界处".into());
@@ -542,7 +574,7 @@ fn require_complete(record: &Value) -> Result<(), String> {
     if ["title", "subtitle"].iter().any(|target| {
         tracks
             .iter()
-            .filter(|track| track["target"] == *target)
+            .filter(|track| track["target"] == *target && track["language"] != "en")
             .count()
             != 1
     }) {
@@ -609,6 +641,9 @@ fn summarize(record: &Value) -> Value {
             let tracks = record["tracks"].as_array().expect("已经校验轨道数组");
             summary["track_count"] = json!(tracks.len());
             for track in tracks {
+                if track["language"] == "en" {
+                    continue;
+                }
                 if let Some(target @ ("title" | "subtitle")) = track["target"].as_str() {
                     summary[target] = track["editor"][target].clone();
                 }
@@ -992,6 +1027,8 @@ mod tests {
                         sprite_id: String::new(),
                         transition_boundary: None,
                         text_target: None,
+                        language: None,
+                        enabled: None,
                     },
                     generated::EffectTrack {
                         id: "subtitle".into(),
@@ -1115,6 +1152,41 @@ mod tests {
                 assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), saved);
             }
         }
+    }
+
+    #[test]
+    /// 停用英文仍通过 Protobuf 和文件保存，摘要取中文，重新开启恢复样式；错误时间不写入。
+    fn bilingual_roundtrip_keeps_disabled_settings() {
+        let dir = Directory::new();
+        let mut request = protobuf_request();
+        let mut english = request.tracks.as_ref().unwrap().tracks[0].clone();
+        english.id = "title-en".into();
+        english.language = Some("en".into());
+        english.enabled = Some(false);
+        english.editor.as_mut().unwrap().title = Some("English sample".into());
+        english.editor.as_mut().unwrap().title_size = Some(28);
+        request.tracks.as_mut().unwrap().tracks.push(english);
+        let value = draft_from_protobuf(&request.encode_to_vec(), None).unwrap();
+        let saved = operate(&dir.0, "save", None, Some(value.clone())).unwrap();
+        let id = saved["template_id"].as_str().unwrap();
+        assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), saved);
+        assert_eq!(saved["tracks"][2]["enabled"], false);
+        assert_eq!(saved["tracks"][2]["editor"]["titleSize"], 28);
+        assert_eq!(
+            summarize(&saved)["title"],
+            saved["tracks"][0]["editor"]["title"]
+        );
+        let mut enabled = value.clone();
+        enabled["tracks"][2]["enabled"] = json!(true);
+        let restored = operate(&dir.0, "save", Some(id), Some(enabled)).unwrap();
+        assert_eq!(
+            restored["tracks"][2]["editor"],
+            saved["tracks"][2]["editor"]
+        );
+        let mut invalid = value;
+        invalid["tracks"][2]["start"] = json!(1.0);
+        assert!(operate(&dir.0, "save", Some(id), Some(invalid)).is_err());
+        assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), restored);
     }
 
     #[test]
