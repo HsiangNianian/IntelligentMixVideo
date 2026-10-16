@@ -27,6 +27,7 @@ export default function HomePage() {
   const [libraryOpened, setLibraryOpened] = useState(false);
   const [remotionOpened, setRemotionOpened] = useState(false);
   const [selection, setSelection] = useState<TemplateSelection | null>(null);
+  const [deletedTemplate, setDeletedTemplate] = useState<TemplateSelection | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   // 侧栏收起只调整导航宽度，工作区继续保留当前编辑状态。
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -116,6 +117,7 @@ export default function HomePage() {
           <TabsContent value="home" forceMount hidden={workspace !== "home"}>
             {workspace === "home" && (
               <TemplateHome
+                onDelete={setDeletedTemplate}
                 onSelect={(next) => {
                   setSelection(next);
                   setLibraryOpened(true);
@@ -129,7 +131,7 @@ export default function HomePage() {
             )}
           </TabsContent>
           <TabsContent value="library" forceMount hidden={workspace !== "library"}>
-            {libraryOpened && <TemplateWorkspace selection={selection} onHome={() => setWorkspace("home")} onOpenRemotion={() => setWorkspace("remotion")} />}
+            {libraryOpened && <TemplateWorkspace selection={selection} deletedTemplate={deletedTemplate} onHome={() => setWorkspace("home")} onOpenRemotion={() => setWorkspace("remotion")} />}
           </TabsContent>
           <TabsContent value="remotion" forceMount hidden={workspace !== "remotion"}>
             {remotionOpened && <RemotionWorkspace />}
