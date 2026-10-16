@@ -3,6 +3,36 @@
 本项目的版本变更由发布工作流根据 Conventional Commits 自动生成。
 推送正式版本 tag 后，成功发布的版本记录会自动写入此文件。
 
+## [v0.9.6] - 2026-10-16
+### New Features
+- [`3ced7b9`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/3ced7b9a410e62abffb4bd4669a141ab7366b071) - **templates**: support bilingual titles and subtitles *(PR [#185](https://github.com/HsiangNianian/IntelligentMixVideo/pull/185) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`22356ab`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/22356ab5c5473bb3405d138177999b3a191433a2) - **client**: add signed updates with compatible UI hot reload *(PR [#186](https://github.com/HsiangNianian/IntelligentMixVideo/pull/186) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+
+### Bug Fixes
+- [`ce8b09f`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/ce8b09fa80d04ed7ae5b849ef7a4789151db002b) - **client**: align @tauri-apps/api with the tauri 2.12 crate *(PR [#190](https://github.com/HsiangNianian/IntelligentMixVideo/pull/190) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`beec525`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/beec525fbe62880fa76211bb3b4faca52fdee522) - **release**: configure updater signing for tagged builds *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`6777a43`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/6777a435851d199c4bb19a3f6da4e302212840b2) - **release**: build macOS updater app bundles *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Documentation Changes
+- [`26773fa`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/26773fa249334abbd7a9475f91931e2c11933e11) - update CHANGELOG.md for v0.9.5 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
+
+### Chores
+- [`1f2ab70`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/1f2ab70f465c828c93a9eeff2b4b25f1d7b1cd00) - **release**: prepare v0.9.6 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Other Changes
+- [`632ed52`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/632ed522e4317b4952a5063eceee2ac8581979c5) - Merge pull request [#187](https://github.com/HsiangNianian/IntelligentMixVideo/pull/187) from HsiangNianian/feat/remotion-multiline-text
+
+feat(remotion): support multi-line text effects revealed line by line *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`42e0ab9`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/42e0ab9fa63fb0055cb10c568eb649a7bf5f0205) - Merge pull request [#191](https://github.com/HsiangNianian/IntelligentMixVideo/pull/191) from HsiangNianian/dev
+
+chore(release): promote dev to main for v0.9.6 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`f605972`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/f60597277327718477d733f5360cff3680fc5733) - Merge pull request [#192](https://github.com/HsiangNianian/IntelligentMixVideo/pull/192) from HsiangNianian/dev
+
+fix(release): configure updater signing for tagged builds *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`1c8edde`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/1c8edde428b3b50c5f7db9910d44aba4b2d2d702) - Merge pull request [#193](https://github.com/HsiangNianian/IntelligentMixVideo/pull/193) from HsiangNianian/dev
+
+fix(release): build macOS updater app bundles *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
 ## [v0.9.5] - 2026-10-16
 ### New Features
 - [`83792ce`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/83792cee88b9f5001adbf9fbdc816a14580c3c3f) - **client**: add template deletion and inline metadata editing *(PR [#177](https://github.com/HsiangNianian/IntelligentMixVideo/pull/177) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
@@ -1480,3 +1510,5 @@ feat(client): 在模板工作区页头添加时钟 *(commit by [@HsiangNianian](
 [v0.9.4]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.3...v0.9.4
 
 [v0.9.5]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.4...v0.9.5
+
+[v0.9.6]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.5...v0.9.6
