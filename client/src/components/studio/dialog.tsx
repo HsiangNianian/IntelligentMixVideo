@@ -1,5 +1,5 @@
 /**
- * 设计沙盒的对话框外壳：模糊遮罩、居中浮层、标题区与底部操作栏。
+ * 工作室界面的对话框外壳：模糊遮罩、居中浮层、标题区与底部操作栏。
  * 焦点管理、Esc 关闭与读屏语义由 Radix Dialog 提供；内容与按钮由调用方组合。
  */
 import type { ReactNode } from "react";
@@ -18,6 +18,7 @@ export function DialogContent({ children, busy, className }: { children: ReactNo
     <DialogPrimitive.Portal>
       <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-scrim backdrop-blur-[3px] data-[state=closed]:animate-fade-out data-[state=open]:animate-fade-in" />
       <DialogPrimitive.Content
+        data-slot="dialog-content"
         onEscapeKeyDown={block}
         onPointerDownOutside={block}
         className={cn(
@@ -39,10 +40,10 @@ export function DialogContent({ children, busy, className }: { children: ReactNo
 }
 
 /** 标题区：左侧图标块标明对话框性质（tone 决定颜色），右侧标题与说明。 */
-export function DialogHeader({ icon, tone = "neutral", title, description }: { icon: ReactNode; tone?: "neutral" | "accent" | "danger"; title: string; description?: ReactNode }) {
+export function DialogHeader({ icon, tone = "neutral", title, description }: { icon: ReactNode; tone?: "neutral" | "brand" | "danger"; title: string; description?: ReactNode }) {
   const tones = {
     neutral: "bg-raised text-fg-muted",
-    accent: "bg-accent/15 text-accent",
+    brand: "bg-brand/15 text-brand",
     danger: "bg-danger/15 text-danger",
   };
   return (

@@ -193,6 +193,7 @@ test("生成、复制并新增独立会话", async () => {
   const clipboard = spyOn(navigator.clipboard, "writeText").mockResolvedValue();
   render(<RemotionWorkspace />);
   expect(screen.queryByRole("button", { name: "复制代码" })).toBeNull();
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "保存资产" }).disabled).toBe(true);
   await generate();
   expect(screen.getByLabelText<HTMLInputElement>("文字").value).toBe(
     "今日灵感",
@@ -206,7 +207,7 @@ test("生成、复制并新增独立会话", async () => {
   fireEvent.change(screen.getByRole("textbox", { name: "背景视频直链" }), {
     target: { value: "https://media.test/video.mp4" },
   });
-  fireEvent.click(screen.getByRole("button", { name: "新增聊天" }));
+  fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
   expect(
     within(screen.getByRole("log")).queryByText("制作今日灵感标题") === null,
   ).toBe(true);
@@ -266,6 +267,7 @@ test("参数连续预览，保存成功后才能复制新代码", async () => {
   slideFontSize(16);
   expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("88");
   expect(latestCopy().hasAttribute("disabled")).toBe(true);
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "保存资产" }).disabled).toBe(true);
   expect(submitted).toEqual({});
   fireEvent.click(screen.getByRole("button", { name: "保存配置" }));
   await waitFor(() => expect(submitted.size).toBe(88), { timeout: 2000 });
@@ -342,14 +344,14 @@ test("新增会话提示未保存参数，取消或放弃", async () => {
   render(<RemotionWorkspace />);
   await generate();
   fireEvent.change(screen.getByLabelText("字号"), { target: { value: "80" } });
-  fireEvent.click(screen.getByRole("button", { name: "新增聊天" }));
+  fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
   const dialog = await screen.findByRole("dialog", { name: "参数尚未保存" });
   expect(
     within(dialog).getByRole("button", { name: "保存并切换" }),
   ).toBeDefined();
   fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
   expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("80");
-  fireEvent.click(screen.getByRole("button", { name: "新增聊天" }));
+  fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
   fireEvent.click(screen.getByRole("button", { name: "放弃修改并切换" }));
   expect(screen.queryByTitle("Remotion 字效播放器")).toBeNull();
   expect(
@@ -406,7 +408,7 @@ test("新增隔离迟到的创建响应并保留旧任务", async () => {
     screen.getByRole("button", { name: "发送" }).closest("form")!,
   );
   await waitFor(() => expect(resolve).toBeDefined());
-  fireEvent.click(screen.getByRole("button", { name: "新增聊天" }));
+  fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
   await act(async () =>
     resolve!(
       Response.json({ work: { id: "work-1" }, job: remotionJob("running") }),

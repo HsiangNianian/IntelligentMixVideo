@@ -131,7 +131,7 @@ export function remotionServer(
     options: RequestInit | undefined,
     response: Response,
   ) {
-    if (options?.method !== "POST" || !response.ok || path === "/assets" || path.endsWith("/ack"))
+    if (options?.method !== "POST" || !response.ok || !response.headers.get("Content-Type")?.includes("application/json") || path === "/assets" || path.endsWith("/ack"))
       return response;
     const body = await response.clone().json();
     const job: Job = body.job ?? body;

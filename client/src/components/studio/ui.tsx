@@ -1,6 +1,6 @@
 /**
- * 设计沙盒的基础控件：按钮、图标按钮、悬停提示、骨架块、呼吸圆点、加载圈与带字数统计的输入框。
- * 交互语义交给 Radix 原语，这里只负责视觉，颜色全部取自 design.css 的令牌；不请求数据、不依赖页面。
+ * 工作室界面的基础控件：按钮、图标按钮、悬停提示、骨架块、呼吸圆点、加载圈与带字数统计的输入框。
+ * 交互语义交给 Radix 原语，这里只负责视觉，颜色全部取自 studio.css 的令牌；不请求数据、不依赖页面。
  */
 import { useId, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
@@ -136,11 +136,13 @@ export function TextField({ label, value, onChange, maxLength, required, multili
   const id = useId();
   const nearLimit = value.length > maxLength * 0.9;
   const control = cn(
-    "w-full rounded-[10px] border bg-sunken px-3 text-sm text-fg outline-none transition-[border-color,box-shadow] duration-150 placeholder:text-fg-subtle focus:border-accent/60 focus:ring-[3px] focus:ring-accent/15",
+    "w-full rounded-[10px] border bg-sunken px-3 text-sm text-fg outline-none transition-[border-color,box-shadow] duration-150 placeholder:text-fg-subtle focus:border-brand/60 focus:ring-[3px] focus:ring-brand/15",
     error ? "border-danger/60" : "border-line",
   );
   const shared = {
     id,
+    "aria-label": label,
+    required,
     value,
     maxLength,
     placeholder,
@@ -153,7 +155,7 @@ export function TextField({ label, value, onChange, maxLength, required, multili
       <div className="flex items-baseline justify-between gap-3">
         <label htmlFor={id} className="text-[13px] font-medium text-fg">
           {label}
-          {required ? <span className="ml-1 text-accent">*</span> : <span className="ml-1.5 font-normal text-fg-subtle">选填</span>}
+          {required ? <span className="ml-1 text-brand">*</span> : <span className="ml-1.5 font-normal text-fg-subtle">选填</span>}
         </label>
         <span className={cn("font-mono text-[11px] tabular-nums", nearLimit ? "text-warning" : "text-fg-subtle")}>
           {value.length}/{maxLength}
@@ -164,7 +166,7 @@ export function TextField({ label, value, onChange, maxLength, required, multili
       ) : (
         <input {...shared} onChange={(event) => onChange(event.target.value)} className={cn(control, "h-10")} />
       )}
-      {error && <p id={`${id}-error`} className="text-xs text-danger">{error}</p>}
+      {error && <p role="alert" id={`${id}-error`} className="text-xs text-danger">{error}</p>}
     </div>
   );
 }

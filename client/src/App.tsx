@@ -2,10 +2,11 @@
 import { initializeUpdates } from "@/features/updates/store";
 import HomePage from "@/pages/HomePage";
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { setApiBase } from "@/lib/api-base";
 import { readSettings } from "@/features/settings/api";
-import { LoaderGooeyBlobs } from "@/components/ui/loaders-gooey-blobs";
+import { Splash } from "@/components/studio/Splash";
+import { LogoMark } from "@/components/studio/Logo";
 import { MotionConfig } from "motion/react";
 import { Toaster } from "@/components/ui/sonner";
 import { useWindowTitle } from "@/lib/window-title";
@@ -15,6 +16,8 @@ export default function App() {
   useWindowTitle();
   const [ready, setReady] = useState(!isTauri());
   const [error, setError] = useState("");
+  const [splash, setSplash] = useState(true);
+  const finishSplash = useCallback(() => setSplash(false), []);
   useEffect(() => {
     if (!isTauri()) return;
     let active = true;
@@ -31,13 +34,14 @@ export default function App() {
     });
     return () => { active = false; };
   }, []);
-  // 全局轻提示容器与页面并列挂载，业务通过 sonner 的 toast() 发送保存结果等短提示。
-  // MotionConfig 让所有 motion 动画遵循系统「减少动态效果」设置。
-  if (ready) return <MotionConfig reducedMotion="user"><HomePage /><Toaster position="bottom-right" /></MotionConfig>;
-  return <main className="flex min-h-screen flex-col items-center justify-center gap-4 p-8 text-center">
-    {!error && <LoaderGooeyBlobs size={14} className="text-foreground/70" />}
-    <p role={error ? "alert" : "status"} className={error ? "max-w-xl whitespace-pre-wrap text-sm text-destructive" : "max-w-xl whitespace-pre-wrap text-sm text-muted-foreground"}>
-      {error || "正在启动内置服务，首次运行需要初始化数据库，请稍候…"}
-    </p>
-  </main>;
+  return <MotionConfig reducedMotion="user">
+    {ready ? <HomePage logoHidden={splash} /> : <main className="flex min-h-dvh flex-col items-center justify-center gap-5 bg-canvas p-8 text-center">
+      <LogoMark className="size-14" />
+      <h1 className="text-lg font-semibold">{error ? "内置服务没有启动成功" : "正在启动内置服务"}</h1>
+      <p role={error ? "alert" : "status"} className={error ? "max-w-xl whitespace-pre-wrap text-sm text-danger" : "max-w-xl text-sm text-fg-muted"}>{error || "首次运行需要初始化数据库，请稍候…"}</p>
+      {!error && <span className="h-1 w-48 overflow-hidden rounded-full bg-raised"><span className="block h-full w-1/3 animate-sweep bg-brand" /></span>}
+    </main>}
+    {splash && <Splash holding={!ready && !error} handoff={ready} onDone={finishSplash} />}
+    <Toaster position="bottom-right" />
+  </MotionConfig>;
 }

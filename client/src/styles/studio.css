@@ -1,20 +1,5 @@
-/*
- * 设计沙盒样式入口，只被 design.html 加载，不影响现有客户端。
- * 配色参考 Linear、Vercel Geist 与 Figma：中性色几乎不带色相，只用一个冷色作强调色，且只用于主要操作、选中与进行中；
- * 主要操作按钮用墨色（近黑，带细微渐变与内高光），不用强调色铺满。
- * 红、绿、黄只表达状态。已选定默认的「冷白」浅色；「石墨」中性深色保留作深色主题的候选（<html data-palette="graphite">）。所有颜色都是令牌，组件里只出现语义色；模板封面等「画面内容」的颜色不随配色变化。
- * source(".") 让 Tailwind 只扫描沙盒目录，正式客户端的类名不会进入这里。
- */
-@import "tailwindcss" source(".");
-
-/*
- * 主题令牌（默认值即「冷白」）。清空 Tailwind 默认色板，页面只能使用下面的语义色。
- * 层级：rail（导航）、sunken（输入框）、canvas（工作区）、surface（卡片）、overlay（对话框）、raised（悬停/浮起）、hover。
- * ink / on-ink 是主要按钮的底色与文字；scrim 是对话框遮罩，shimmer 是骨架高光，splash 是开场背景；brand-from/to 是标志渐变，
- * spectrum-1~3 是与强调色同族的三色光谱，用在开场素材块与 AI 字效入口。
- */
+/* PR #196 工作室视觉令牌与动画：默认亮色，.dark 覆盖暗色配色。 */
 @theme {
-  --color-*: initial;
   --color-white: #fff;
   --color-black: #000;
 
@@ -38,9 +23,9 @@
   --color-on-ink: oklch(0.99 0 0);
 
   /* 靛蓝强调色及其上的文字：只用于选中、进度、链接与 AI 发送。 */
-  --color-accent: oklch(0.55 0.2 275);
-  --color-accent-hover: oklch(0.5 0.21 275);
-  --color-accent-ink: oklch(1 0 0);
+  --color-brand: oklch(0.55 0.2 275);
+  --color-brand-hover: oklch(0.5 0.21 275);
+  --color-brand-ink: oklch(1 0 0);
 
   --color-danger: oklch(0.58 0.21 25);
   --color-success: oklch(0.62 0.15 155);
@@ -70,9 +55,7 @@
   --animate-dialog-out: dialog-out 140ms ease-in;
   --animate-pop-in: pop-in 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
   --animate-sweep: sweep 1.4s cubic-bezier(0.45, 0, 0.25, 1) infinite;
-  --animate-twinkle: twinkle 2.4s ease-in-out infinite;
   --animate-caret: caret 1s steps(1) infinite;
-  --animate-text-shimmer: text-shimmer 1.8s linear infinite;
   --animate-type-text: type-text 0.8s steps(5, end) both;
   --animate-ping-soft: ping-soft 1.8s cubic-bezier(0, 0, 0.2, 1) infinite;
   --animate-lock-pop: lock-pop 280ms cubic-bezier(0.2, 0.8, 0.2, 1);
@@ -105,15 +88,6 @@
     from { transform: translateX(-110%); }
     to { transform: translateX(260%); }
   }
-  @keyframes twinkle {
-    0%, 100% { opacity: 0.35; transform: scale(0.85); }
-    50% { opacity: 1; transform: scale(1); }
-  }
-  /* 进行中阶段名的流光：高亮带从右向左扫过文字。 */
-  @keyframes text-shimmer {
-    from { background-position: 100% 0; }
-    to { background-position: -100% 0; }
-  }
   /* 输入光标闪烁。 */
   @keyframes caret {
     50% { opacity: 0; }
@@ -140,45 +114,9 @@
   /* 开场「Mix」锁定后闪一次强调色光，再保持一层淡淡的光晕。 */
   @keyframes mix-glow {
     0% { text-shadow: 0 0 0 transparent; }
-    30% { text-shadow: 0 0 28px color-mix(in oklch, var(--color-accent) 85%, transparent), 0 0 6px var(--color-brand-from); }
-    100% { text-shadow: 0 0 22px color-mix(in oklch, var(--color-accent) 30%, transparent); }
+    30% { text-shadow: 0 0 28px color-mix(in oklch, var(--color-brand) 85%, transparent), 0 0 6px var(--color-brand-from); }
+    100% { text-shadow: 0 0 22px color-mix(in oklch, var(--color-brand) 30%, transparent); }
   }
-}
-
-/* 「石墨」：Linear 式中性深色，几乎无色相的灰阶，靛蓝强调色提亮以适应深色底。 */
-:root[data-palette="graphite"] {
-  color-scheme: dark;
-  --color-rail: oklch(0.155 0.003 265);
-  --color-sunken: oklch(0.165 0.003 265);
-  --color-canvas: oklch(0.18 0.003 265);
-  --color-surface: oklch(0.21 0.004 265);
-  --color-overlay: oklch(0.225 0.004 265);
-  --color-raised: oklch(0.25 0.005 265);
-  --color-hover: oklch(0.285 0.006 265);
-  --color-line: oklch(1 0 0 / 0.08);
-  --color-line-strong: oklch(1 0 0 / 0.14);
-  --color-fg: oklch(0.97 0.002 265);
-  --color-fg-muted: oklch(0.74 0.006 265);
-  --color-fg-subtle: oklch(0.57 0.008 265);
-  --color-ink: oklch(0.95 0.003 265);
-  --color-ink-hover: oklch(1 0 0);
-  --color-on-ink: oklch(0.18 0.006 265);
-  --color-accent: oklch(0.64 0.17 275);
-  --color-accent-hover: oklch(0.69 0.16 275);
-  --color-accent-ink: oklch(1 0 0);
-  --color-danger: oklch(0.67 0.19 25);
-  --color-success: oklch(0.75 0.14 158);
-  --color-warning: oklch(0.83 0.14 85);
-  --color-scrim: oklch(0 0 0 / 0.6);
-  --color-shimmer: oklch(1 0 0 / 0.06);
-  --color-splash: oklch(0.13 0.003 265);
-  --color-brand-from: oklch(0.76 0.13 262);
-  --color-brand-to: oklch(0.58 0.2 288);
-  --color-spectrum-1: oklch(0.62 0.15 245);
-  --color-spectrum-2: oklch(0.6 0.18 275);
-  --color-spectrum-3: oklch(0.6 0.18 312);
-  --shadow-pop: inset 0 1px 0 0 oklch(1 0 0 / 0.06), 0 24px 64px -16px oklch(0 0 0 / 0.75);
-  --shadow-lift: 0 18px 40px -18px oklch(0 0 0 / 0.8);
 }
 
 /* 胶片颗粒：叠在模板封面上让渐变像一帧画面，而不是一块平涂色块。 */
@@ -203,14 +141,14 @@
     -moz-osx-font-smoothing: grayscale;
   }
   ::selection {
-    background: color-mix(in oklch, var(--color-accent) 30%, transparent);
+    background: color-mix(in oklch, var(--color-brand) 30%, transparent);
   }
   * {
     scrollbar-width: thin;
     scrollbar-color: var(--color-line-strong) transparent;
   }
   :focus-visible {
-    outline: 2px solid var(--color-accent);
+    outline: 2px solid var(--color-brand);
     outline-offset: 2px;
   }
   button:not(:disabled) {
@@ -218,23 +156,38 @@
   }
 }
 
-/* 系统要求减少动态效果时压缩全部 CSS 动画与过渡；motion 动画由 MotionConfig 处理。 */
-@media (prefers-reduced-motion: reduce) {
-  *, ::before, ::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-  }
+/* 暗色保留靛蓝强调色，以深灰层级区分工作区、面板和浮层；视频画面不随主题变色。 */
+.dark {
+  --color-rail: oklch(0.205 0.012 265);
+  --color-sunken: oklch(0.19 0.01 265);
+  --color-canvas: oklch(0.17 0.01 265);
+  --color-surface: oklch(0.225 0.012 265);
+  --color-overlay: oklch(0.26 0.014 265);
+  --color-raised: oklch(0.285 0.014 265);
+  --color-hover: oklch(0.335 0.016 265);
+  --color-line: oklch(1 0 0 / 0.1);
+  --color-line-strong: oklch(1 0 0 / 0.18);
+  --color-fg: oklch(0.93 0.004 265);
+  --color-fg-muted: oklch(0.76 0.012 265);
+  --color-fg-subtle: oklch(0.65 0.012 265);
+  --color-ink: oklch(0.9 0.008 265);
+  --color-ink-hover: oklch(0.98 0.004 265);
+  --color-on-ink: oklch(0.19 0.01 265);
+  --color-brand: oklch(0.74 0.14 275);
+  --color-brand-hover: oklch(0.8 0.12 275);
+  --color-brand-ink: oklch(0.17 0.02 275);
+  --color-danger: oklch(0.7 0.18 25);
+  --color-scrim: oklch(0 0 0 / 0.65);
+  --color-shimmer: oklch(1 0 0 / 0.08);
+  --color-splash: var(--color-canvas);
+  --shadow-pop: 0 1px 2px oklch(0 0 0 / 0.2), 0 20px 48px -16px oklch(0 0 0 / 0.65);
+  --shadow-lift: 0 14px 32px -14px oklch(0 0 0 / 0.65);
 }
 
-/* 素材面板里文字动画缩略图的悬停示意：入场从下方浮入、出场向上淡出、循环轻微缩放。 */
-@keyframes tile-enter {
-  from { opacity: 0; transform: translateY(10px) scale(0.9); }
-}
-@keyframes tile-exit {
-  to { opacity: 0; transform: translateY(-10px) scale(0.9); }
-}
-@keyframes tile-loop {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.12); }
+/* 空会话将标题与输入框放在中间；消息出现后输入框自然回到底部。 */
+.studio-chat-empty .studio-chat-log { flex: 0 1 auto; margin-top: auto; }
+.studio-chat-empty .studio-composer { margin-bottom: auto; }
+.studio-effects > [role="alert"] { flex-shrink: 0; border-radius: 0; font-size: 12px; }
+@media (max-width: 1023px) {
+  .studio-effects { height: auto; min-height: 100%; }
 }

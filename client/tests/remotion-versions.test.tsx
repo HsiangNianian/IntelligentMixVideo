@@ -1,5 +1,7 @@
 /** 成功版本交互回归：目录、折叠复制、只读预览、导航保护与并发清理；执行 bun run test。 */
 import { expect, spyOn, test } from "bun:test";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import { PublishSpriteRequestSchema, PublishSpriteResponseSchema, SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
 import {
   act,
   fireEvent,
@@ -61,6 +63,71 @@ async function ready() {
   );
   post.mockRestore();
 }
+
+/** 发布成功的最小 Protobuf 回执，不访问真实资产库。 */
+function publishedAsset() {
+  return new Response(Uint8Array.from(toBinary(PublishSpriteResponseSchema, create(PublishSpriteResponseSchema, {
+    sprite: { spriteId: "sprite-1", name: "今日灵感", kind: SpriteKind.TEXT },
+  }))), { headers: { "Content-Type": "application/x-protobuf" } });
+}
+
+// 顶部保存使用当前预览（含历史）版本与对应分类；重复点击不会重复写入，左侧仍可新建会话。
+test("顶栏保存当前预览版本为资产并防止重复提交", async () => {
+  const requests: ReturnType<typeof fromBinary<typeof PublishSpriteRequestSchema>>[] = [];
+  let complete: ((response: Response) => void) | undefined;
+  await history((path, options) => {
+    if (/^\/versions\/version-\d+$/.test(path)) {
+      const version = remotionVersion(path.split("/")[2]);
+      version.spec.sprite = { kind: "text", bindings: [{ name: "text", title: "文字" }, { name: "keywords", title: "关键词" }] };
+      return Response.json(version);
+    }
+    if (path === "/api/sprites/publish") {
+      requests.push(fromBinary(PublishSpriteRequestSchema, new Uint8Array(options!.body as Uint8Array)));
+      return requests.length === 1 ? new Promise<Response>((resolve) => { complete = resolve; }) : publishedAsset();
+    }
+  });
+  render(<RemotionWorkspace />);
+  await screen.findByRole("button", { name: "预览 V2" });
+  await ready();
+  const save = screen.getByRole<HTMLButtonElement>("button", { name: "保存资产" });
+  expect(save.disabled).toBe(false);
+  expect(screen.queryByRole("button", { name: "新建字效会话" }) === null).toBe(true);
+  expect(within(screen.getByRole("complementary", { name: "字效历史会话" })).getByRole("button", { name: "新建会话" })).toBeTruthy();
+  fireEvent.click(save);
+  fireEvent.click(save);
+  await waitFor(() => expect(requests).toHaveLength(1));
+  expect(requests[0]).toMatchObject({ sourceVersionId: "version-2", kind: SpriteKind.TEXT, textProp: "text", keywordsProp: "keywords" });
+  expect(save.disabled).toBe(true);
+  await act(async () => complete!(publishedAsset()));
+  await waitFor(() => expect(save.disabled).toBe(false));
+  fireEvent.click(screen.getByRole("button", { name: "预览 V1" }));
+  await waitFor(() => expect(screen.getByTitle<HTMLIFrameElement>("Remotion 字效播放器").src).toContain("version-1"));
+  await ready();
+  fireEvent.click(save);
+  await waitFor(() => expect(requests).toHaveLength(2));
+  expect(requests[1].sourceVersionId).toBe("version-1");
+  await waitFor(() => expect(save.disabled).toBe(false));
+});
+
+// 发布被服务端拒绝时保留具体原因、不自动重试，用户再次保存后可恢复。
+test("顶栏保存资产展示失败原因并允许重试", async () => {
+  let attempts = 0;
+  await history((path) => path === "/api/sprites/publish"
+    ? ++attempts === 1 ? Response.json({ detail: "关键词字号须先设为 0" }, { status: 422 }) : publishedAsset()
+    : undefined);
+  render(<RemotionWorkspace />);
+  await screen.findByRole("button", { name: "预览 V2" });
+  await ready();
+  const save = screen.getByRole<HTMLButtonElement>("button", { name: "保存资产" });
+  fireEvent.click(save);
+  expect((await screen.findByText("关键词字号须先设为 0")).getAttribute("role")).toBe("alert");
+  expect(attempts).toBe(1);
+  expect(save.disabled).toBe(false);
+  fireEvent.click(save);
+  await waitFor(() => expect(attempts).toBe(2));
+  await waitFor(() => expect(save.disabled).toBe(false));
+  expect(screen.queryByText("关键词字号须先设为 0") === null).toBe(true);
+});
 
 // 每次成功关联各自聊天结果；初始折叠，旧版本复制不能读成当前代码，查看版本不写服务端。
 test("成功卡片默认折叠，复制对应版本并切换只读预览", async () => {

@@ -2,10 +2,11 @@
 import { useUpdateBlocker } from "@/lib/update-guard";
 import { recovery } from "@/features/updates/recovery";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { CircleCheck, Pencil, SquarePen } from "lucide-react";
+import { ArrowLeft, CircleCheck, Pencil, SquarePen } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Hint } from "@/components/Hint";
+import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -40,16 +41,21 @@ function WorkspaceColumns({ assets, canvas, inspector }: { assets: ReactNode; ca
     return () => window.removeEventListener("resize", update);
   }, []);
   return <ResizablePanelGroup orientation="horizontal" disabled={!desktop} data-layout={desktop ? "desktop" : "narrow"} className="template-workspace-columns" style={{ height: desktop ? "100%" : "auto", minHeight: desktop ? 0 : undefined }}>
-    <ResizablePanel id="assets" data-workspace-panel="assets" defaultSize={205} minSize={205} maxSize="28%" className="min-w-0">{assets}</ResizablePanel>
+    <ResizablePanel id="assets" data-workspace-panel="assets" defaultSize={284} minSize={240} maxSize="28%" className="min-w-0">{assets}</ResizablePanel>
     <ResizableHandle withHandle aria-label="调整资产与画布宽度" className="template-workspace-handle" />
     <ResizablePanel id="canvas" data-workspace-panel="canvas" minSize={420} className="min-w-0">{canvas}</ResizablePanel>
     <ResizableHandle withHandle aria-label="调整画布与参数宽度" className="template-workspace-handle" />
-    <ResizablePanel id="inspector" data-workspace-panel="inspector" defaultSize={250} minSize={250} maxSize="32%" className="min-w-0">{inspector}</ResizablePanel>
+    <ResizablePanel id="inspector" data-workspace-panel="inspector" defaultSize={300} minSize={260} maxSize="32%" className="min-w-0">{inspector}</ResizablePanel>
   </ResizablePanelGroup>;
 }
 
+/** 导航与主页共享当前编辑状态，不包含可变草稿。 */
+export interface EditingState { id: string | null; name: string; environment: api.Environment; dirty: boolean }
+
 /** 只有成功读取或明确放弃时才替换草稿；保存始终使用当前模板的环境和 ID。 */
-export function TemplateWorkspace({ selection = null, deletedTemplate = null, onHome, onOpenRemotion }: {
+export function TemplateWorkspace({ selection = null, deletedTemplate = null, onHome, onOpenRemotion, onEditingState, active = true }: {
+  active?: boolean;
+  onEditingState?: (state: EditingState | null) => void;
   selection?: TemplateSelection | null;
   deletedTemplate?: TemplateSelection | null;
   onHome: () => void;
@@ -72,6 +78,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
   const [action, setAction] = useState<TemplateSelection | null>(null);
   const [openRequest, setOpenRequest] = useState<TemplateSelection | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const [assetSource, setAssetSource] = useState("effects");
   const [target, setTarget] = useState<string | null>("title");
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("timing");
   const [textTarget, setTextTarget] = useState<TextRole>("title");
@@ -121,6 +128,15 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
   const dirty = draft !== null && (current === null || JSON.stringify(draft) !== baseline || (editing !== null && editing.value !== draft[editing.field]));
   useUpdateBlocker("模板尚未保存或正在处理", dirty || busy || loading || !!openRequest);
   useEffect(() => { recovery.template = current ? { environment, templateId: current.template_id } : null; }, [current, environment]);
+  useEffect(() => { onEditingState?.(draft ? { id: current?.template_id ?? null, name: draft.name, environment, dirty } : null); }, [draft?.name, !!draft, current?.template_id, environment, dirty, onEditingState]);
+  useEffect(() => {
+    function saveShortcut(event: KeyboardEvent) {
+      if (active && !event.defaultPrevented && !document.querySelector('[role="dialog"]') && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); form.current?.requestSubmit(); }
+    }
+    window.addEventListener("keydown", saveShortcut);
+    return () => window.removeEventListener("keydown", saveShortcut);
+  }, [active]);
+
   const selectedTrack = draft?.tracks.find((track) => track.id === target);
   const assetTrack = selectedTrack ?? draft?.tracks.find((track) => track.id === lastTextTrack.current);
   const selectedDraft = draft && selectedTrack ? trackDraft(draft, selectedTrack) : null;
@@ -280,13 +296,13 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
   }
 
   return (
-    <div className="@container min-w-0 space-y-3">
+    <div className={cn("@container min-w-0", draft ? "space-y-3" : "flex min-h-full flex-col gap-3")}>
       {error && !action && <p role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{error}</p>}
       {openRequest && error && !action && <Button type="button" variant="outline" disabled={loading} onClick={() => setAttempt((value) => value + 1)}>重试打开模板</Button>}
       {loading && <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Spinner />正在读取模板…</p>}
       {!draft ? (
-        <section aria-label="模板编辑入口">
-          <Empty className="min-h-[60dvh] border bg-card">
+        <section aria-label="模板编辑入口" className="flex flex-1">
+          <Empty>
             <EmptyHeader>
               <EmptyMedia variant="icon"><SquarePen aria-hidden="true" /></EmptyMedia>
               <EmptyTitle>还没有打开模板</EmptyTitle>
@@ -301,7 +317,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
         <form ref={form} noValidate className="template-workspace overflow-hidden bg-card" onSubmit={(event) => { event.preventDefault(); void persist(); }}>
           <fieldset disabled={busy || loading} className="min-w-0 disabled:opacity-60">
             <section aria-label="模板信息" className="template-workspace-header flex min-h-16 flex-wrap items-center justify-between gap-4 border-b px-5 py-3 lg:px-7">
-              <div className="flex min-w-0 items-center gap-4"><span className="template-workspace-mark flex size-9 shrink-0 items-center justify-center rounded-lg text-xs font-black tracking-[-.06em]" aria-hidden="true">IM</span>
+              <div className="flex min-w-0 items-center gap-4"><Button type="button" variant="ghost" size="icon-sm" aria-label="返回主页" onClick={onHome}><ArrowLeft className="size-4" /></Button>
                 <dl className="min-w-0 space-y-1">
                   {(["name", "description"] as const).map((field) => {
                     const label = field === "name" ? "模板名称" : "模板描述";
@@ -332,7 +348,11 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
             </section>
             <WorkspaceColumns
               assets={<aside className="template-workspace-assets h-full min-w-0 overflow-y-auto border-b xl:border-b-0">
-                <EffectAssets editor={assetTrack?.editor} catalog={catalog} textTarget={textTarget} textTracks={visibleDraft!.tracks} selectedText={lastTextTrack.current} onSelectText={selectTarget} textEditor={draft.tracks.find((track) => track.id === lastTextTrack.current)?.editor} onTextTarget={(role) => {
+                <div className="flex h-14 items-center gap-1 border-b border-line px-3" role="tablist" aria-label="素材来源">
+                  <button type="button" role="tab" aria-selected={assetSource === "effects"} className="studio-source-tab" onClick={() => setAssetSource("effects")}>特效素材</button>
+                  <button type="button" role="tab" aria-selected={assetSource === "ai"} className="studio-source-tab" onClick={() => { setAssetSource("ai"); spriteCatalog.refresh(); }}>AI 资产</button>
+                </div>
+                <div hidden={assetSource !== "effects"}><EffectAssets editor={assetTrack?.editor} catalog={catalog} textTarget={textTarget} textTracks={visibleDraft!.tracks} selectedText={lastTextTrack.current} onSelectText={selectTarget} textEditor={draft.tracks.find((track) => track.id === lastTextTrack.current)?.editor} onTextTarget={(role) => {
                   setTextTarget(role);
                   const text = draft.tracks.find((track) => track.target === role);
                   setTarget(text?.id ?? null);
@@ -345,8 +365,8 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
                   const added = result.draft.tracks.find((track) => track.id === result.id)!;
                   if (isTextTarget(added.target)) { setTextTarget(added.target); lastTextTrack.current = added.id; }
                   return result.draft;
-                }, true)} />
-                <SpriteCatalog environment={environment} catalog={spriteCatalog} placed={new Set(draft.clips.map((clip) => clip.sprite_id))} onAdd={(asset) => editTrack(() => addClip(draft, asset, spriteCatalog.assets ?? [], textTarget, draft.tracks.find((track) => track.id === lastTextTrack.current)?.language), true)} />
+                }, true)} /></div>
+                <div hidden={assetSource !== "ai"}><SpriteCatalog environment={environment} catalog={spriteCatalog} placed={new Set(draft.clips.map((clip) => clip.sprite_id))} onAdd={(asset) => editTrack(() => addClip(draft, asset, spriteCatalog.assets ?? [], textTarget, draft.tracks.find((track) => track.id === lastTextTrack.current)?.language), true)} /></div>
               </aside>}
               canvas={<main className="template-workspace-canvas h-full min-w-0 overflow-y-auto border-b xl:border-b-0">
                 <TemplatePreview draft={previewDraft!} media={media} resolved={preview.timeline} mediaError={mediaError || preview.error} onRetryMedia={() => setMediaAttempt((value) => value + 1)} onMediaChange={(next) => { setMedia(next); setMediaError(""); }} videoInputKey={`${environment}:${current?.template_id ?? draft.name}`} onCatalog={setCatalog} selectedId={effectiveTarget} selectionTargets={previewSelection?.targets} onSelect={(id) => { selectTarget(previewSelection?.targets.get(id) ?? id); }} sprites={spriteClips} onSpriteMove={(id, x, y) => editTrack(() => setClipTransform(draft, previewSelection?.targets.get(id) ?? id, { x, y }))}

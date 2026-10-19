@@ -11,7 +11,7 @@ import { AnimatePresence, motion, useMotionTemplate, useMotionValue, useReducedM
 import { cn } from "@/lib/utils";
 import { Icon, type IconName } from "../icons";
 import { PulseDot, Skeleton, Tooltip } from "../ui";
-import type { TemplateSummary } from "../mock";
+import type { Library, TemplateSummary } from "../types";
 
 /** 由模板 ID 得到稳定哈希：FNV-1a，相近 ID 也会落到明显不同的值上。 */
 function hashOf(id: string): number {
@@ -87,6 +87,7 @@ function formatUpdated(iso: string): string {
 }
 
 interface CardProps {
+  library: Library;
   template: TemplateSummary;
   index: number;
   /** 当前在编辑器中打开；dirty 表示还有未保存的修改。 */
@@ -98,7 +99,7 @@ interface CardProps {
 }
 
 /** 单张模板卡片；进入时按序号错开淡入，被删除时缩小淡出，其余卡片平滑补位。 */
-export function TemplateCard({ template, index, editing, dirty, onOpen, onDelete, onCopyId }: CardProps) {
+export function TemplateCard({ library, template, index, editing, dirty, onOpen, onDelete, onCopyId }: CardProps) {
   const invalid = Boolean(template.validation_error);
   const tilt = useSinkTilt(!invalid);
   return (
@@ -114,12 +115,12 @@ export function TemplateCard({ template, index, editing, dirty, onOpen, onDelete
         type="button"
         disabled={invalid}
         onClick={onOpen}
-        aria-label={invalid ? `${template.name}（配置无效，不能打开）` : `打开模板「${template.name}」`}
+        aria-label={`选择模板：${template.name}`}
         className="block w-full rounded-xl text-left focus-visible:outline-offset-4"
       >
         {/* 外框不动，指针位置相对它计算；透视放在外框上，消失点不随封面转动。 */}
         <span className="relative block [perspective:800px]" onPointerMove={tilt.track} onPointerLeave={tilt.release}>
-          {editing && <span className="absolute -inset-[5px] rounded-[17px] ring-2 ring-accent/45" />}
+          {editing && <span className="absolute -inset-[5px] rounded-[17px] ring-2 ring-brand/45" />}
           <motion.span
             className={cn("relative block overflow-hidden rounded-xl bg-surface ring-1", invalid ? "ring-warning/25" : "ring-line")}
             style={tilt.surface}
@@ -128,7 +129,7 @@ export function TemplateCard({ template, index, editing, dirty, onOpen, onDelete
             {!invalid && (
               <>
                 <motion.span aria-hidden="true" className="pointer-events-none absolute inset-0" style={{ backgroundImage: tilt.sheen }} />
-                <StatusPill state={editing ? (dirty ? "dirty" : "editing") : "idle"} count={template.track_count} />
+                <StatusPill state={editing ? (dirty ? "dirty" : "editing") : "idle"} count={template.track_count ?? 0} />
               </>
             )}
           </motion.span>
@@ -141,6 +142,9 @@ export function TemplateCard({ template, index, editing, dirty, onOpen, onDelete
             <span className="mt-1 block truncate text-[12.5px] text-fg-muted">{template.description || "没有说明"}</span>
           )}
           <span className="mt-1.5 flex items-center gap-1.5 text-[11px] text-fg-subtle">
+            <span role="img" aria-label={library === "cloud" ? "云端模板" : "本地模板"} title={library === "cloud" ? "云端模板" : "本地模板"}>
+              <Icon name={library === "cloud" ? "cloud" : "laptop-minimalistic"} className="size-3.5" />
+            </span>
             <span>{formatUpdated(template.updated_at)}</span>
             <span aria-hidden="true">·</span>
             <span className="truncate font-mono">{template.template_id.slice(0, 8)}</span>
@@ -148,9 +152,9 @@ export function TemplateCard({ template, index, editing, dirty, onOpen, onDelete
         </span>
       </button>
       <span className="absolute right-2.5 top-2.5 flex flex-col gap-1.5">
-        {!invalid && <ActionButton order={0} icon="arrow-right-up" label="打开编辑" tone="accent" onClick={onOpen} />}
+        {!invalid && <ActionButton order={0} icon="arrow-right-up" label="打开编辑" tone="brand" onClick={onOpen} />}
         {!invalid && <ActionButton order={1} icon="copy" label="复制模板 ID" onClick={onCopyId} />}
-        <ActionButton order={invalid ? 0 : 2} icon="trash-bin-minimalistic" label="删除模板" tone="danger" onClick={onDelete} pinned={invalid} />
+        <ActionButton order={invalid ? 0 : 2} icon="trash-bin-minimalistic" label={`删除模板：${template.name}`} tone="danger" onClick={onDelete} pinned={invalid} />
       </span>
     </motion.article>
   );
@@ -240,7 +244,7 @@ function StatusPill({ state, count }: { state: "idle" | "editing" | "dirty"; cou
 
 const actionTones = {
   neutral: "hover:bg-raised",
-  accent: "hover:bg-accent hover:text-accent-ink",
+  brand: "hover:bg-brand hover:text-brand-ink",
   danger: "hover:bg-danger hover:text-white",
 };
 

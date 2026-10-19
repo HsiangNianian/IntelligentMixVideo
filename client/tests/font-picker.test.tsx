@@ -169,14 +169,14 @@ test("字体库页面展示上传被拒绝的原因", async () => {
 test("侧栏可以进入字体库页面", async () => {
   const server = fontServer();
   render(<HomePage />);
-  fireEvent.mouseDown(screen.getByRole("tab", { name: "字体库" }), { button: 0 });
+  fireEvent.click(screen.getByRole("button", { name: "字体库" }));
   expect(screen.getByRole("heading", { name: "字体库" })).toBeTruthy();
   expect(await screen.findByText("共 2 个字体")).toBeTruthy();
   const listed = () => fetchMock.mock.calls.filter(([url]) => new URL(String(url)).pathname === "/api/templates/fonts").length;
   expect(listed()).toBe(1);
-  fireEvent.mouseDown(screen.getByRole("tab", { name: "主页" }), { button: 0 });
+  fireEvent.click(screen.getByRole("button", { name: "主页" }));
   await waitFor(() => expect(screen.queryByText("共 2 个字体")).toBeNull());
-  fireEvent.mouseDown(screen.getByRole("tab", { name: "字体库" }), { button: 0 });
+  fireEvent.click(screen.getByRole("button", { name: "字体库" }));
   await screen.findByText("共 2 个字体");
   expect(listed()).toBe(2);
   expect(server.uploads).toEqual([]);

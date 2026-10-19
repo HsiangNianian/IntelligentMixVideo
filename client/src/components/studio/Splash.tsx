@@ -132,7 +132,7 @@ export function Splash({ holding, handoff, onDone }: SplashProps) {
     let active = true;
     let playback: { stop: () => void } | undefined;
     // 等字体就绪再开始，保证两层的字形宽度一致、逐字解码的位置准确。
-    void document.fonts.ready.then(() => {
+    void (document.fonts?.ready ?? Promise.resolve()).then(() => {
       if (!active) return;
       if (reduce) sweep.set(1);
       const run = animate(reduce ? reducedSequence : introSequence(sweep));
@@ -210,7 +210,7 @@ export function Splash({ holding, handoff, onDone }: SplashProps) {
       <div className="sp-bg absolute inset-0 bg-splash">
         <div className="grain absolute inset-0 opacity-[0.05]" />
       </div>
-      <div className="sp-glow sp-fade pointer-events-none absolute inset-0 bg-[radial-gradient(42%_38%_at_50%_50%,color-mix(in_oklch,var(--color-accent)_12%,transparent),transparent_70%)] opacity-0" />
+      <div className="sp-glow sp-fade pointer-events-none absolute inset-0 bg-[radial-gradient(42%_38%_at_50%_50%,color-mix(in_oklch,var(--color-brand)_12%,transparent),transparent_70%)] opacity-0" />
 
       <div className="relative flex flex-col items-center">
         <div className="sp-mark-wrap mb-14 opacity-0">
@@ -230,7 +230,7 @@ export function Splash({ holding, handoff, onDone }: SplashProps) {
           </motion.p>
           <motion.p aria-label="IntelligentMixVideo" className="sp-fade relative flex px-3" style={{ clipPath: textClip }}>
             {words.map((word, wordIndex) => (
-              <span key={word.text} aria-hidden="true" className={cn("flex", wordIndex === 1 && "text-accent", wordIndex === 1 && mixLocked && "animate-mix-glow")}>
+              <span key={word.text} aria-hidden="true" className={cn("flex", wordIndex === 1 && "text-brand", wordIndex === 1 && mixLocked && "animate-mix-glow")}>
                 {letters.map((letter, index) => {
                   if (letter.word !== wordIndex) return null;
                   const state = states[index];
@@ -245,9 +245,9 @@ export function Splash({ holding, handoff, onDone }: SplashProps) {
             ))}
           </motion.p>
           <motion.div className="sp-playhead pointer-events-none absolute -bottom-3 -top-12 origin-top opacity-0" style={{ left: playheadLeft }}>
-            <span className="absolute inset-y-0 -left-6 w-12 bg-[radial-gradient(closest-side,color-mix(in_oklch,var(--color-accent)_22%,transparent),transparent)]" />
-            <span className="absolute inset-y-0 -left-px w-[2px] rounded-full bg-accent shadow-[0_0_12px_var(--color-accent)]" />
-            <svg viewBox="0 0 12 14" className="absolute -left-1.5 -top-0.5 h-3.5 w-3 text-accent" aria-hidden="true">
+            <span className="absolute inset-y-0 -left-6 w-12 bg-[radial-gradient(closest-side,color-mix(in_oklch,var(--color-brand)_22%,transparent),transparent)]" />
+            <span className="absolute inset-y-0 -left-px w-[2px] rounded-full bg-brand shadow-[0_0_12px_var(--color-brand)]" />
+            <svg viewBox="0 0 12 14" className="absolute -left-1.5 -top-0.5 h-3.5 w-3 text-brand" aria-hidden="true">
               <path d="M1 1.5A.5.5 0 0 1 1.5 1h9a.5.5 0 0 1 .5.5V8l-5 5-5-5Z" fill="currentColor" />
             </svg>
           </motion.div>
@@ -259,7 +259,7 @@ export function Splash({ holding, handoff, onDone }: SplashProps) {
           {holding && played && (
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex flex-col items-center gap-3">
               <span className="block h-[3px] w-48 overflow-hidden rounded-full bg-raised">
-                <span className="block h-full w-1/3 animate-sweep rounded-full bg-accent" />
+                <span className="block h-full w-1/3 animate-sweep rounded-full bg-brand" />
               </span>
               <span className="text-xs text-fg-subtle">正在启动内置服务，第一次运行需要初始化数据库…</span>
             </motion.div>

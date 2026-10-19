@@ -111,7 +111,7 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
     </div>;
   };
   const category = asset ? CATEGORIES.find((item) => item.id === categoryOf(asset.kind))?.label : undefined;
-  return <section aria-label="Remotion 资产设置" className="min-w-0">
+  return <section aria-label="AI 资产设置" className="min-w-0">
     <div className="flex items-start justify-between gap-2 px-4 pb-2 pt-3">
       <div className="min-w-0"><h2 className="truncate text-[13px] font-semibold leading-5">{asset?.name ?? "未找到的资产"}</h2><p className="mt-0.5 text-[11px] leading-3 text-muted-foreground">{category ?? "资产已不可用，保存前请移除"}</p></div>
       <Hint label="关闭资产设置"><Button type="button" variant="ghost" size="icon" className="size-6 shrink-0" aria-label="关闭资产设置" onClick={onClose}><X className="size-3.5" aria-hidden="true" /></Button></Hint>

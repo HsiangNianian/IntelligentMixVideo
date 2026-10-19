@@ -1,4 +1,4 @@
-/** Remotion 资产封面：在卡片里加载资产自己的隔离同步预览页，并定格到动画中的几帧；封面只读取现有预览接口，不新增服务端产物。 */
+/** AI 资产封面：在卡片里加载资产自己的隔离同步预览页，并定格到动画中的几帧；封面只读取现有预览接口，不新增服务端产物。 */
 import { useEffect, useRef, useState } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiBase } from "@/lib/api-base";
@@ -98,7 +98,7 @@ export function SpriteCover({ asset, active }: { asset: SpriteAsset; active: boo
       {visible && !unavailable && (
         <iframe
           ref={frame}
-          title={`Remotion 资产封面：${asset.name}`}
+          title={`AI 资产封面：${asset.name}`}
           sandbox="allow-scripts"
           tabIndex={-1}
           src={`${apiBase()}/api/sprites/${encodeURIComponent(asset.id)}/preview?sync=1#${channel}`}

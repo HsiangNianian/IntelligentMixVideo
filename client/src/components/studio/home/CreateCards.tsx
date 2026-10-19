@@ -32,12 +32,12 @@ export function CreateCards({ desktop, onCreateCloud, onCreateLocal, onOpenEffec
       />
       <EntryCard
         icon={<Icon name="stars" variant="duotone" />}
-        iconClassName="bg-accent/12 text-accent"
+        iconClassName="bg-brand/12 text-brand"
         title="AI 生成字效"
         description="描述想法，对话生成字效"
         onClick={onOpenEffects}
         art={<EffectArt />}
-        className="border-accent/20 bg-[linear-gradient(135deg,color-mix(in_oklch,var(--color-accent)_7%,var(--color-surface)),var(--color-surface)_60%)] hover:border-accent/35"
+        className="border-brand/20 bg-[linear-gradient(135deg,color-mix(in_oklch,var(--color-brand)_7%,var(--color-surface)),var(--color-surface)_60%)] hover:border-brand/35"
       />
     </div>
   );
@@ -60,6 +60,7 @@ function EntryCard({ icon, iconClassName, title, description, art, onClick, disa
   return (
     <button
       type="button"
+      aria-label={title}
       onClick={onClick}
       disabled={disabled}
       className={cn(
@@ -75,7 +76,7 @@ function EntryCard({ icon, iconClassName, title, description, art, onClick, disa
         </span>
         <span className="mt-1 flex items-center gap-1.5 text-[12.5px] text-fg-muted">
           <span className="truncate">{description}</span>
-          {!disabled && <Icon name="arrow-right" className="size-3.5 shrink-0 text-fg-subtle transition-[transform,color] duration-200 group-hover:translate-x-1 group-hover:text-accent" />}
+          {!disabled && <Icon name="arrow-right" className="size-3.5 shrink-0 text-fg-subtle transition-[transform,color] duration-200 group-hover:translate-x-1 group-hover:text-brand" />}
         </span>
       </span>
       <span aria-hidden="true" className={cn("pointer-events-none absolute inset-y-0 right-0 w-[46%]", disabled && "opacity-35 grayscale")}>{art}</span>
@@ -175,10 +176,10 @@ function EffectArt() {
   return (
     <span className="absolute inset-0">
       <Chip>
-        <Icon name="stars" variant="duotone" className="ml-1 size-3.5 text-accent" />
+        <Icon name="stars" variant="duotone" className="ml-1 size-3.5 text-brand" />
         <span className="relative mr-1 text-fg">
           <span className="block group-hover:animate-type-text">电影感标题</span>
-          <span className="absolute left-full top-1/2 ml-px h-3 w-px -translate-y-1/2 animate-caret bg-accent group-hover:[animation:caret_1s_steps(1)_infinite,type-caret_0.8s_steps(5,end)_both]" />
+          <span className="absolute left-full top-1/2 ml-px h-3 w-px -translate-y-1/2 animate-caret bg-brand group-hover:[animation:caret_1s_steps(1)_infinite,type-caret_0.8s_steps(5,end)_both]" />
         </span>
       </Chip>
       <span className="absolute bottom-5 right-5 flex h-[62px] w-[136px] max-lg:bottom-[30px] items-center justify-center overflow-hidden rounded-xl shadow-lift ring-1 ring-black/10" style={{ background: footage[0] }}>

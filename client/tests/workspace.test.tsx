@@ -7,7 +7,10 @@ import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
 import { TemplateCollection, type TemplateSelection } from "@/features/templates/TemplateHome";
 import { Toaster } from "@/components/ui/sonner";
 import { fetchMock, mockDesktop } from "./setup";
-import { protobufTemplateResponse, savedTemplate, templateSummary } from "./fixtures";
+import { apiBase, setApiBase } from "@/lib/api-base";
+import { recovery, restoreRecovery } from "@/features/updates/recovery";
+import { updateBlockers } from "@/lib/update-guard";
+import { protobufListResponse, protobufTemplateResponse, savedTemplate, templateSummary } from "./fixtures";
 
 /** 生成独立的主页新建输入，不包含服务端响应或存储数据。 */
 function creation(name = "旅行模板", environment: "cloud" | "local" = "cloud"): TemplateSelection {
@@ -272,7 +275,7 @@ test("底部字幕仅提供外观与关键词页签", async () => {
   await screen.findByRole("region", { name: "画面对象设置" });
   expect(screen.getByRole("tab", { name: "时间设置", selected: true })).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "编辑底部字幕" }));
-  expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["外观与效果", "关键词设置"]);
+  expect(within(screen.getByRole("region", { name: "画面对象设置" })).getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["外观与效果", "关键词设置"]);
   expect(screen.getByRole("tab", { name: "外观与效果", selected: true })).toBeTruthy();
   expect(screen.getByLabelText("示例文字")).toBeTruthy();
   expect(screen.queryByLabelText("轨道时间设置")).toBeNull();
@@ -331,37 +334,70 @@ async function createFromHome(name = "旅行模板") {
   return screen.findByLabelText("模板信息");
 }
 
-// 场景：收起侧栏后页签带悬停提示，切换后页签自身的 data-state 仍与选中状态一致，选中样式不丢失；展开时文字可见不渲染提示。
-test("侧栏页签的选中状态不被悬停提示覆盖", async () => {
+// 场景：导航通过 aria-current 表达当前页，切换后编辑入口可用。
+test("工作室导航标记当前页面", () => {
   render(<HomePage />);
-  fireEvent.focus(screen.getByRole("tab", { name: "主页" }));
-  expect(screen.queryByRole("tooltip")).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "收起侧边栏" }));
-  fireEvent.focus(screen.getByRole("tab", { name: "主页" }));
-  expect((await screen.findByRole("tooltip")).textContent).toBe("主页");
-  const home = screen.getByRole("tab", { name: "主页" });
-  const library = screen.getByRole("tab", { name: "模版编辑" });
-  expect(home.getAttribute("data-state")).toBe("active");
-  fireEvent.mouseDown(library, { button: 0 });
-  expect(library.getAttribute("aria-selected")).toBe("true");
-  expect(library.getAttribute("data-state")).toBe("active");
-  expect(home.getAttribute("data-state")).toBe("inactive");
+  const home = screen.getByRole("button", { name: "主页" });
+  const editor = screen.getByRole("button", { name: "模板编辑" });
+  expect(home.getAttribute("aria-current")).toBe("page");
+  fireEvent.click(editor);
+  expect(editor.getAttribute("aria-current")).toBe("page");
+  expect(home.getAttribute("aria-current")).toBeNull();
+});
+
+// 场景：更新前保存的旧导航标识仍可恢复到新版工作区，下一次更新继续保存兼容标识。
+test.each([
+  ["library", "模板编辑"], ["remotion", "AI 字效"], ["fonts", "字体库"],
+] as const)("更新后恢复 %s 工作区", (workspace, label) => {
+  restoreRecovery({ workspace });
+  render(<HomePage />);
+  expect(screen.getByRole("button", { name: label }).getAttribute("aria-current")).toBe("page");
+  expect(recovery.workspace).toBe(workspace);
+  fireEvent.click(screen.getByRole("button", { name: "主页" }));
+  expect(recovery.workspace).toBe("home");
+});
+
+// 场景：更新后恢复已保存模板，返回主页仅隐藏编辑器，模板身份仍供下一次更新恢复。
+test("新版导航恢复已保存模板且切页保留位置", async () => {
+  const template = savedTemplate();
+  const selection = { environment: "cloud" as const, templateId: template.template_id };
+  restoreRecovery({ workspace: "library", template: selection });
+  fetchMock.mockImplementation((async (_url) => protobufTemplateResponse(template, "get")) as typeof fetch);
+  render(<HomePage />);
+  expect((await screen.findByLabelText("模板名称")).textContent).toBe(template.name);
+  expect(recovery.template).toEqual(selection);
+  fireEvent.click(screen.getByRole("button", { name: "主页" }));
+  expect(recovery.template).toEqual(selection);
+  fireEvent.click(screen.getByRole("button", { name: "模板编辑" }));
+  expect(screen.getByLabelText("模板名称").textContent).toBe(template.name);
+});
+
+// 场景：新工作室弹窗中的未提交输入阻止自动更新，关闭后才解除对话框门禁。
+test("新建模板弹窗沿用更新保护", async () => {
+  render(<HomePage />);
+  fireEvent.click(screen.getByRole("button", { name: "新建云端模板" }));
+  const dialog = await screen.findByRole("dialog", { name: "新建云端模板" });
+  fireEvent.change(within(dialog).getByLabelText("模板名称"), { target: { value: "尚未提交的模板" } });
+  expect(updateBlockers()).toContain("请先完成或关闭其他对话框");
+  fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+  await waitFor(() => expect(updateBlockers()).not.toContain("请先完成或关闭其他对话框"));
 });
 
 // 场景：直接进入模板库显示主页入口，主页与 Remotion 页头都不显示时钟。
 test("未选择模板时通过主页开始创作", async () => {
   render(<HomePage />);
-  expect(screen.getByRole("tab", { name: "主页" }).getAttribute("aria-selected")).toBe("true");
+  expect(screen.getByRole("button", { name: "主页" }).getAttribute("aria-current")).toBe("page");
   expect(screen.queryByRole("region", { name: "当前时间" })).toBeNull();
   // Remotion 页头同样不显示当前时间。
-  fireEvent.mouseDown(screen.getByRole("tab", { name: "Remotion 字效" }), { button: 0 });
+  fireEvent.click(screen.getByRole("button", { name: "AI 字效" }));
   expect(screen.queryByRole("region", { name: "当前时间" })).toBeNull();
-  fireEvent.mouseDown(screen.getByRole("tab", { name: "模版编辑" }), { button: 0 });
+  fireEvent.click(screen.getByRole("button", { name: "模板编辑" }));
   expect(screen.getByText("请从主页选择已有模板或创建新模板。")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "保存模板" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "前往主页" }));
-  expect(screen.getByRole("tab", { name: "主页" }).getAttribute("aria-selected")).toBe("true");
-  expect(screen.getByText("请在桌面客户端中查看和选择本地模板。")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "主页" }).getAttribute("aria-current")).toBe("page");
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "本地模板" }), { button: 0, ctrlKey: false });
+  expect(screen.getByText("浏览器无法读取电脑上的文件，请在桌面客户端中查看和新建本地模板。")).toBeTruthy();
   expect(screen.getByRole<HTMLButtonElement>("button", { name: "新建本地模板" }).disabled).toBe(true);
   expect(screen.getByRole<HTMLButtonElement>("button", { name: "新建云端模板" }).disabled).toBe(false);
 });
@@ -370,7 +406,7 @@ test("未选择模板时通过主页开始创作", async () => {
 test("主页创建后显示环境、名称与描述及编辑入口", async () => {
   render(<HomePage />);
   const info = await createFromHome("  旅行模板  ");
-  expect(screen.getByRole("tab", { name: "模版编辑" }).getAttribute("aria-selected")).toBe("true");
+  expect(screen.getByRole("button", { name: "模板编辑" }).getAttribute("aria-current")).toBe("page");
   expect(within(info).getByLabelText("当前环境").textContent).toBe("云端");
   expect(within(info).getByLabelText("模板名称").textContent).toBe("旅行模板");
   expect(within(info).getByLabelText("模板描述").textContent).toBe("适用于旅行视频");
@@ -393,7 +429,7 @@ test("创建表单拒绝空白名称并支持取消", async () => {
   fireEvent.submit(within(dialog).getByRole("button", { name: "进入编辑" }).closest("form")!);
   expect(within(dialog).getByRole("alert").textContent).toBe("请输入模板名称");
   fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
-  expect(screen.getByRole("tab", { name: "主页" }).getAttribute("aria-selected")).toBe("true");
+  expect(screen.getByRole("button", { name: "主页" }).getAttribute("aria-current")).toBe("page");
   fireEvent.click(screen.getByRole("button", { name: "新建云端模板" }));
   dialog = await screen.findByRole("dialog");
   expect(within(dialog).getByLabelText<HTMLInputElement>("模板名称").value).toBe("");
@@ -405,11 +441,11 @@ test("创建表单拒绝空白名称并支持取消", async () => {
 test.each(["cloud", "local"] as const)("%s 模板整行选择保留来源与 ID", (environment) => {
   const template = { ...savedTemplate(), description: "用于产品视频的文字效果" };
   const selections: TemplateSelection[] = [];
-  render(<TemplateCollection environment={environment}
-    collection={{ templates: [templateSummary(template)], loading: false, error: "", unavailable: false, refresh: () => {} }}
+  render(<TemplateCollection collections={[{ environment,
+    collection: { templates: [templateSummary(template)], loading: false, error: "", unavailable: false, refresh: () => {} } }]}
     onSelect={(selection) => selections.push(selection)} />);
   const row = screen.getByRole("button", { name: `选择模板：${template.name}` });
-  expect(screen.getAllByRole("listitem")).toHaveLength(1);
+  expect(screen.getByRole("button", { name: `选择模板：${template.name}` })).toBeTruthy();
   fireEvent.click(within(row).getByText(template.description));
   expect(selections).toEqual([{ environment, templateId: template.template_id }]);
 });
@@ -467,16 +503,12 @@ test("主页与模板库切换保留未保存内容", async () => {
   await createFromHome();
   await addText();
   fireEvent.change(screen.getByLabelText("示例文字"), { target: { value: "保留标题" } });
-  fireEvent.click(screen.getByRole("button", { name: "收起侧边栏" }));
-  expect(screen.getByRole("button", { name: "展开侧边栏" }).getAttribute("aria-expanded")).toBe("false");
   expect(screen.getByLabelText<HTMLInputElement>("示例文字").value).toBe("保留标题");
-  fireEvent.mouseDown(screen.getByRole("tab", { name: "主页" }), { button: 0 });
-  fireEvent.mouseDown(screen.getByRole("tab", { name: "模版编辑" }), { button: 0 });
-  fireEvent.click(screen.getByRole("button", { name: "展开侧边栏" }));
-  expect(screen.getByRole("button", { name: "收起侧边栏" }).getAttribute("aria-expanded")).toBe("true");
+  fireEvent.click(screen.getByRole("button", { name: "主页" }));
+  fireEvent.click(screen.getByRole("button", { name: "模板编辑" }));
   expect(screen.getByLabelText<HTMLInputElement>("示例文字").value).toBe("保留标题");
   expect(screen.getByLabelText("模板名称").textContent).toBe("旅行模板");
-  fireEvent.mouseDown(screen.getByRole("tab", { name: "主页" }), { button: 0 });
+  fireEvent.click(screen.getByRole("button", { name: "主页" }));
   await createFromHome("另一模板");
   const dialog = await screen.findByRole("dialog", { name: "保存当前修改？" });
   fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
@@ -574,4 +606,36 @@ test.each(["current", "pending"] as const)("切换读取期间删除 %s 模板�
   expect(screen.getByLabelText("模板名称").textContent).toBe(deleting === "current" ? pending.name : current.name);
   expect(screen.queryByRole("alert")?.textContent).toBeUndefined();
   expect(screen.queryByRole("button", { name: "重试打开模板" })).toBeNull();
+});
+
+// 场景：隐藏的编辑器仍保留草稿，但只在编辑页响应保存快捷键；导航同步保存状态。
+test("保存快捷键只作用于当前编辑页并同步导航状态", async () => {
+  const states: { name: string; dirty: boolean }[] = [];
+  const template = { ...savedTemplate(), name: "旅行模板" };
+  fetchMock.mockImplementation((async (_url, init) => protobufTemplateResponse(template, init?.method === "POST" ? "save" : "get")) as typeof fetch);
+  const selection = creation();
+  const report = (state: { name: string; dirty: boolean } | null) => { if (state) states.push(state); };
+  const view = render(<TemplateWorkspace selection={selection} active={false} onHome={() => {}} onEditingState={report} />);
+  await screen.findByRole("region", { name: "模板信息" });
+  expect(states.at(-1)?.dirty).toBe(true);
+  fireEvent.keyDown(window, { key: "s", ctrlKey: true });
+  expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  view.rerender(<TemplateWorkspace selection={selection} active onHome={() => {}} onEditingState={report} />);
+  fireEvent.keyDown(window, { key: "s", ctrlKey: true });
+  await waitFor(() => expect(states.at(-1)?.dirty).toBe(false));
+  expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+});
+
+// 场景：设置切换服务地址后，主页重新读取真实列表；状态胶囊只显示连接状态，不显示地址。
+test("服务地址变化后刷新主页模板列表", async () => {
+  const original = apiBase();
+  fetchMock.mockImplementation((async (_url, _init) => protobufListResponse([])) as typeof fetch);
+  const view = render(<HomePage />);
+  try {
+    await screen.findByRole("button", { name: /服务已连接/ });
+    act(() => { setApiBase("http://new-api.test:9000"); view.rerender(<HomePage />); });
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url) === "http://new-api.test:9000/template")).toBe(true));
+    const status = await screen.findByRole("button", { name: "服务已连接，点击打开设置" });
+    expect(status.textContent).toBe("已连接");
+  } finally { view.unmount(); setApiBase(original); }
 });

@@ -1,6 +1,8 @@
 /** Remotion 工作区组合聊天、代码、预览和参数；服务状态与当前会话独立，后台会话定时同步，页面卸载时清理。 */
 import { useUpdateBlocker } from "@/lib/update-guard";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { Wand2 } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -22,6 +24,8 @@ import { useWorkHistory } from "./useWorkHistory";
 import { HistorySidebar } from "./HistorySidebar";
 import { useTemplateSession } from "./useTemplateSession";
 import { useBackgroundSync } from "./backgroundSync";
+import { publishSprite } from "@/features/sprites/api";
+import { defaultKind, publishChoice } from "./spriteChoice";
 
 /** 宽屏左右分栏，小屏切换聊天和预览但保留会话与播放器实例。 */
 export function RemotionWorkspace() {
@@ -35,6 +39,17 @@ export function RemotionWorkspace() {
   const [mobile, setMobile] = useState("chat");
   const [serviceError, setServiceError] = useState("");
   const [check, setCheck] = useState(0);
+  const [publishing, setPublishing] = useState(false);
+  const [publishError, setPublishError] = useState("");
+  const publishScope = useRef({ active: true, pending: false });
+  // 切换预览后只展示当前版本的保存反馈，迟到响应不能覆盖新版本的状态。
+  useEffect(() => {
+    const scope = { active: true, pending: false };
+    publishScope.current = scope;
+    setPublishing(false);
+    setPublishError("");
+    return () => { scope.active = false; };
+  }, [viewed?.id]);
   useEffect(() => {
     const controller = new AbortController();
     void capabilities(controller.signal)
@@ -64,6 +79,23 @@ export function RemotionWorkspace() {
     session.retryMode === "read";
   useUpdateBlocker("字效参数尚未保存或会话正在处理", pending || session.dirty);
   const locked = pending || previewBusy || session.previewLoading;
+  /** 顶栏按当前预览版本的分类保存；只发布已保存参数，失败由用户显式重试。 */
+  async function saveAsset() {
+    const scope = publishScope.current;
+    if (!viewed || locked || session.dirty || scope.pending) return;
+    scope.pending = true;
+    setPublishing(true);
+    setPublishError("");
+    try {
+      const asset = await publishSprite(viewed.id, publishChoice(viewed, defaultKind(viewed.spec.sprite?.kind)));
+      if (scope.active) toast.success(`已保存到资产「${asset.name}」，可在云端模板的 AI 资产中添加。`);
+    } catch (reason) {
+      if (scope.active) setPublishError(reason instanceof Error ? reason.message : "保存资产失败，请重试。");
+    } finally {
+      scope.pending = false;
+      if (scope.active) setPublishing(false);
+    }
+  }
   // 聊天输入（含附图）被锁定的原因与恢复时机；为空表示可以发送和上传。
   const inputLock = serviceError
     ? "字效服务尚未就绪，重新连接成功后可发送消息和上传图片。"
@@ -81,7 +113,7 @@ export function RemotionWorkspace() {
                 ? "预览加载完成后可发送消息和上传图片。"
                 : "";
   return (
-    <div className="space-y-2">
+    <div className="studio-effects flex h-full min-h-0 flex-col bg-canvas">
       {serviceError && (
         <div
           role="alert"
@@ -115,6 +147,7 @@ export function RemotionWorkspace() {
           )}
         </div>
       )}
+      {publishError && <p role="alert" className="border-b border-destructive/30 bg-destructive/5 px-4 py-2 text-sm text-destructive">{publishError}</p>}
       <Tabs value={mobile} onValueChange={setMobile} className="lg:hidden">
         <TabsList aria-label="工作区面板">
           <TabsTrigger value="chat">聊天</TabsTrigger>
@@ -122,6 +155,12 @@ export function RemotionWorkspace() {
         </TabsList>
       </Tabs>
       <WorkspacePanels
+        action={
+          <Button size="sm" disabled={!viewed || locked || session.dirty || publishing} onClick={() => void saveAsset()}
+            title={session.dirty ? "请先保存或撤销参数修改" : viewed ? `保存当前预览 V${viewed.number} 为资产` : "生成成功后可保存资产"}>
+            <Wand2 className="size-3.5" />{publishing ? "保存中…" : "保存资产"}
+          </Button>
+        }
         mobile={mobile}
         status={
           <span role="status">
@@ -225,7 +264,7 @@ export function RemotionWorkspace() {
                 )}
               </div>
             )}
-            <div className="grid min-h-0 flex-1 grid-rows-[minmax(280px,3fr)_minmax(180px,2fr)] gap-3">
+            <div className="flex min-h-0 flex-1 flex-col">
               <PreviewPanel
                 key={`preview-${session.key}`}
                 version={viewed}
@@ -235,6 +274,11 @@ export function RemotionWorkspace() {
                 pending={pending || session.previewLoading}
                 onBusyChange={setPreviewBusy}
               />
+
+            </div>
+          </div>
+        }
+        parameters={
               <ParametersPanel
                 version={viewed}
                 values={
@@ -260,8 +304,6 @@ export function RemotionWorkspace() {
                   if (!locked) session.change(key, value);
                 }}
               />
-            </div>
-          </div>
         }
       />
       <Dialog

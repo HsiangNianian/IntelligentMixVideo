@@ -26,7 +26,7 @@ try {
   await page.getByLabel("模板名称").fill("溢出测试");
   await page.getByRole("button", { name: "进入编辑" }).click();
   await page.getByRole("region", { name: "模板信息" }).waitFor();
-  await page.getByRole("tab", { name: "主页" }).click();
+  await page.getByRole("button", { name: "主页", exact: true }).click();
   await page.getByRole("button", { name: `选择模板：${template.name}` }).click();
   const dialog = page.getByRole("dialog", { name: "保存当前修改？" });
   await dialog.getByRole("button", { name: "放弃修改" }).click();

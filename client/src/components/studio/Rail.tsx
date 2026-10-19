@@ -1,13 +1,14 @@
 /**
  * 左侧导航栏：72px 宽的竖向导航，图标下方始终显示文字，给编辑页留出最多的横向空间。
  * 图标默认线性，选中时换成双色并染上强调色，强调色底在项目之间滑动；
- * 正在编辑的模板有未保存修改时，「模板编辑」图标上显示呼吸圆点。底部是设置入口与客户端版本号。
+ * 正在编辑的模板有未保存修改时，「模板编辑」图标上显示呼吸圆点。底部是主题切换、设置入口与客户端版本号。
  */
 import { motion } from "motion/react";
 import { cn } from "@/lib/utils";
 import { Icon, type IconName } from "./icons";
 import { LogoMark } from "./Logo";
 import { PulseDot, Tooltip } from "./ui";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 export type Page = "home" | "editor" | "effects" | "fonts";
 
@@ -51,8 +52,8 @@ export function Rail({ page, onNavigate, onSettings, editing, dirty, version, lo
               onClick={() => onNavigate(target)}
               className="group flex w-full flex-col items-center gap-1 rounded-xl py-1.5 focus-visible:outline-offset-0"
             >
-              <span className={cn("relative flex h-8 w-12 items-center justify-center rounded-full transition-colors duration-150", active ? "text-accent" : "text-fg-subtle group-hover:bg-raised group-hover:text-fg")}>
-                {active && <motion.span layoutId="rail-pill" transition={{ type: "spring", stiffness: 500, damping: 38 }} className="absolute inset-0 rounded-full bg-accent/12" />}
+              <span className={cn("relative flex h-8 w-12 items-center justify-center rounded-full transition-colors duration-150", active ? "text-brand" : "text-fg-subtle group-hover:bg-raised group-hover:text-fg")}>
+                {active && <motion.span layoutId="rail-pill" transition={{ type: "spring", stiffness: 500, damping: 38 }} className="absolute inset-0 rounded-full bg-brand/12" />}
                 <Icon name={icon} variant={active ? "duotone" : "linear"} className="relative size-[21px]" />
                 {showDot && <PulseDot className="absolute right-2 top-0.5 text-warning ring-2 ring-rail" />}
               </span>
@@ -71,6 +72,7 @@ export function Rail({ page, onNavigate, onSettings, editing, dirty, version, lo
         })}
       </ul>
       <div className="mt-auto flex w-full flex-col items-center gap-2 px-2">
+        <ThemeToggle />
         <button type="button" aria-haspopup="dialog" onClick={onSettings} className="group flex w-full flex-col items-center gap-1 rounded-xl py-1.5">
           <span className="flex h-8 w-12 items-center justify-center rounded-full text-fg-subtle transition-colors group-hover:bg-raised group-hover:text-fg">
             <Icon name="settings" className="size-[21px]" />

@@ -1,4 +1,4 @@
-/* 模板编辑工作区：三栏填满可用区域，各栏独立滚动，对象按类别使用低饱和标记色。 */
+/* PR #196 模板编辑工作区：三栏填满可用区域，各栏独立滚动，对象按类别使用低饱和标记色。 */
 .template-workspace {
   color: var(--foreground);
 }
@@ -17,7 +17,7 @@
 .template-workspace-assets,
 .template-workspace-inspector { background: var(--card); }
 .template-workspace-canvas { background: var(--background); }
-.template-workspace-handle { width: 5px; border-inline: 1px solid var(--border); background: var(--sidebar); }
+.template-workspace-handle { width: 1px; border: 0; background: var(--color-surface); }
 .template-workspace-handle:hover,
 .template-workspace-handle:focus-visible { background: color-mix(in oklch, var(--primary) 30%, transparent); }
 .template-workspace-handle > div { color: var(--muted-foreground); border-color: var(--border); background: var(--muted); }
@@ -94,7 +94,7 @@
 
 /* 预览为黑色监视器画面，控制栏使用强调色播放按钮与进度条。 */
 .template-workspace .template-preview-stage { border-color: var(--border); }
-.template-workspace .template-preview-canvas { background: #000; box-shadow: 0 0 0 1px var(--border), 0 18px 40px -18px rgb(0 0 0 / 80%); }
+.template-workspace .template-preview-canvas { background: #000; box-shadow: var(--shadow-pop); }
 .template-workspace .template-preview-canvas:fullscreen { display: flex; width: 100vw; height: 100vh; max-width: none !important; align-items: center; justify-content: center; aspect-ratio: auto !important; border-radius: 0; }
 .template-workspace .template-preview-canvas:fullscreen .template-preview-player { position: static; width: min(100vw, calc(100vh * var(--preview-ratio))); height: min(100vh, calc(100vw / var(--preview-ratio))); }
 .template-workspace .template-preview-fullscreen { color: #fff; border: 1px solid rgb(255 255 255 / 25%); background: rgb(0 0 0 / 55%); }
@@ -111,5 +111,22 @@
 .template-workspace .template-preview-progress::-webkit-slider-thumb { width: 12px; height: 12px; border: 2px solid var(--background); border-radius: 50%; appearance: none; background: var(--primary); box-shadow: 0 1px 4px rgb(0 0 0 / 40%); }
 .template-workspace .template-preview-progress::-moz-range-thumb { width: 9px; height: 9px; border: 2px solid var(--background); border-radius: 50%; background: var(--primary); box-shadow: 0 1px 4px rgb(0 0 0 / 40%); }
 .template-workspace .template-preview-progress:disabled { cursor: default; opacity: .45; }
-.template-workspace .template-preview-timeline { background: var(--sidebar); }
+.template-workspace .template-preview-timeline { background: var(--color-surface); }
 .template-workspace .template-timeline-mark { color: var(--primary); background: color-mix(in oklch, var(--primary) 14%, transparent); }
+
+/* 来源页签与 Demo 的点阵工作台；实际 SDK 画布和时间轴仍由业务组件驱动。 */
+.studio-source-tab { padding: 8px 12px; border-radius: 8px; font-size: 13px; color: var(--color-fg-muted); }
+.studio-source-tab[aria-selected="true"] { background: var(--color-raised); color: var(--color-fg); font-weight: 600; }
+.template-workspace .template-preview-stage { background-color: var(--color-canvas); background-image: radial-gradient(var(--color-line-strong) 1px, transparent 1px); background-size: 18px 18px; }
+.template-workspace .template-preview-controls { margin-top: 16px; padding: 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--color-surface); }
+.template-workspace .template-workspace-environment { color: var(--color-fg-muted); background: var(--color-raised); }
+.template-workspace .template-category-pill { height: 32px; border-radius: 8px; font-size: 12px; }
+.template-workspace .template-category-pill[data-state="on"] { color: var(--color-brand); border-color: color-mix(in oklch, var(--color-brand) 25%, transparent); background: color-mix(in oklch, var(--color-brand) 8%, transparent); }
+.template-workspace .template-asset-card { border: 1px solid var(--border); border-radius: 10px; padding: 6px; background: var(--color-surface); }
+.template-workspace .template-asset-card.is-selected { color: var(--color-brand); border-color: var(--color-brand); background: color-mix(in oklch, var(--color-brand) 6%, white); }
+.template-workspace .template-object-row[aria-pressed="true"] { background: color-mix(in oklch, var(--color-brand) 8%, transparent); }
+.template-workspace .template-workspace-header { padding: 10px 16px; min-height: 64px; }
+.template-workspace .template-workspace-header dl { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; }
+.template-workspace .template-workspace-header dl > div { margin: 0; }
+.template-workspace .template-workspace-header dl > div:last-child { max-width: 320px; }
+.template-workspace .template-workspace-handle > div { display: none; }

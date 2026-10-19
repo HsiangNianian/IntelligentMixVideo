@@ -76,11 +76,11 @@ export function HistorySidebar(props: Props) {
           }}
         >
           <History />
-          聊天历史
+          历史会话
         </Button>
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogContent className="top-0 left-0 flex h-dvh max-w-80 translate-x-0 translate-y-0 flex-col rounded-none p-4 sm:max-w-80">
-            <DialogTitle>字效聊天历史</DialogTitle>
+            <DialogTitle>字效历史会话</DialogTitle>
             <DialogDescription>
               切换会话不会停止正在制作的模板。
             </DialogDescription>
@@ -163,9 +163,9 @@ function HistoryList({
   onDelete,
 }: Omit<Props, "onDelete"> & { onDelete: (work: WorkSummary) => void }) {
   return (
-    <section className="flex h-full min-h-0 flex-col rounded-xl border bg-muted/35">
+    <section className="flex h-full min-h-0 flex-col bg-surface">
       <div className="flex h-14 shrink-0 items-center justify-between px-4">
-        <h2 className="text-sm font-medium">聊天历史</h2>
+        <h2 className="text-sm font-medium">历史会话</h2>
         <Hint label="刷新历史">
           <Button
             variant="ghost"
@@ -180,11 +180,11 @@ function HistoryList({
       </div>
       <div className="px-3 pb-3">
         <Button
-          className="w-full justify-start gap-2 shadow-none"
+          variant="outline" className="w-full justify-start gap-2 shadow-none"
           onClick={onNew}
         >
           <Plus className="size-4" />
-          新增聊天
+          新建会话
         </Button>
       </div>
       <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
@@ -207,7 +207,7 @@ function HistoryList({
               </EmptyMedia>
               <EmptyTitle className="text-sm">还没有聊天会话</EmptyTitle>
               <EmptyDescription className="text-xs">
-                点击「新增聊天」描述你想要的字效。
+                点击「新建会话」描述你想要的字效。
               </EmptyDescription>
             </EmptyHeader>
           </Empty>
@@ -221,9 +221,9 @@ function HistoryList({
               title={work.id}
               onClick={() => onSelect(work.id)}
               className={cn(
-                "min-w-0 flex-1 space-y-2 rounded-lg border border-transparent p-3 text-left text-sm transition-colors hover:bg-background/80 focus-visible:outline-2 focus-visible:outline-ring",
+                "min-w-0 flex-1 space-y-1 rounded-lg border border-transparent px-2.5 py-2 text-left text-sm transition-colors hover:bg-background/80 focus-visible:outline-2 focus-visible:outline-ring",
                 selected === work.id &&
-                  "border-primary/15 bg-background shadow-sm",
+                  "border-brand/10 bg-brand/8 text-brand",
               )}
             >
               <span className="flex items-center gap-2 font-medium">
