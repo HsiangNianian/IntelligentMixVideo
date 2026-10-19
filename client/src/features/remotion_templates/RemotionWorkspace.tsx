@@ -25,6 +25,7 @@ import { HistorySidebar } from "./HistorySidebar";
 import { useTemplateSession } from "./useTemplateSession";
 import { useBackgroundSync } from "./backgroundSync";
 import { publishSprite } from "@/features/sprites/api";
+import type { SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
 import { defaultKind, publishChoice } from "./spriteChoice";
 
 /** 宽屏左右分栏，小屏切换聊天和预览但保留会话与播放器实例。 */
@@ -42,6 +43,8 @@ export function RemotionWorkspace() {
   const [publishing, setPublishing] = useState(false);
   const [publishError, setPublishError] = useState("");
   const publishScope = useRef({ active: true, pending: false });
+  // 版本卡片下拉改选的资产分类，按版本 ID 记录：版本列表刷新重建对象或聊天重新挂载都不会改回默认值。
+  const [kinds, setKinds] = useState<Record<string, SpriteKind>>({});
   // 切换预览后只展示当前版本的保存反馈，迟到响应不能覆盖新版本的状态。
   useEffect(() => {
     const scope = { active: true, pending: false };
@@ -79,7 +82,7 @@ export function RemotionWorkspace() {
     session.retryMode === "read";
   useUpdateBlocker("字效参数尚未保存或会话正在处理", pending || session.dirty);
   const locked = pending || previewBusy || session.previewLoading;
-  /** 顶栏按当前预览版本的分类保存；只发布已保存参数，失败由用户显式重试。 */
+  /** 顶栏保存当前预览版本，分类取它卡片上的选择（未改选为 Agent 的判断）；只发布已保存参数，失败由用户显式重试。 */
   async function saveAsset() {
     const scope = publishScope.current;
     if (!viewed || locked || session.dirty || scope.pending) return;
@@ -87,7 +90,7 @@ export function RemotionWorkspace() {
     setPublishing(true);
     setPublishError("");
     try {
-      const asset = await publishSprite(viewed.id, publishChoice(viewed, defaultKind(viewed.spec.sprite?.kind)));
+      const asset = await publishSprite(viewed.id, publishChoice(viewed, kinds[viewed.id] ?? defaultKind(viewed.spec.sprite?.kind)));
       if (scope.active) toast.success(`已保存到资产「${asset.name}」，可在云端模板的 AI 资产中添加。`);
     } catch (reason) {
       if (scope.active) setPublishError(reason instanceof Error ? reason.message : "保存资产失败，请重试。");
@@ -200,6 +203,8 @@ export function RemotionWorkspace() {
             versionDisabled={pending || session.dirty}
             previewDisabled={pending}
             onPreviewVersion={session.selectVersion}
+            versionKinds={kinds}
+            onVersionKindChange={(id, kind) => setKinds((current) => ({ ...current, [id]: kind }))}
             versionNotice={
               catalog.error ? (
                 <div role="alert" className="text-xs text-destructive">

@@ -1,4 +1,4 @@
-/** AI 资产核心测试：版本卡片保存到资产，以及云端模板编辑中的资产目录、片段编辑与随模板的原子保存；执行 bun run test。 */
+/** AI 资产核心测试：版本卡片的资产分类与发布请求，以及云端模板编辑中的资产目录、片段编辑与随模板的原子保存；执行 bun run test。 */
 import { expect, test } from "bun:test";
 import { create, fromBinary, toBinary, toJson, type MessageInitShape } from "@bufbuild/protobuf";
 import { cleanup, fireEvent, render, screen, waitFor, waitForElementToBeRemoved, within } from "@testing-library/react";
@@ -15,8 +15,6 @@ import { EffectTemplateEditorSchema, GetTemplateResponseSchema, SaveTemplateRequ
 import {
   ListSpritesResponseSchema,
   OperatorAccess,
-  PublishSpriteRequestSchema,
-  PublishSpriteResponseSchema,
   RenameSpriteRequestSchema,
   RenameSpriteResponseSchema,
   SpriteKind,
@@ -109,59 +107,30 @@ async function openAssets() {
   return screen.findByRole("region", { name: "AI 资产" });
 }
 
-// 场景：保存到资产时默认使用 Agent 判断的分类；字效固定 text 字段，声明了关键词参数时同时发布 keywords。
-test("版本卡片按 Agent 判断的分类把成功版本保存为 Sprite 资产", async () => {
-  let request: ReturnType<typeof fromBinary<typeof PublishSpriteRequestSchema>> | undefined;
-  fetchMock.mockImplementation((async (url, init) => {
-    expect(new URL(String(url)).pathname).toBe("/api/sprites/publish");
-    request = fromBinary(PublishSpriteRequestSchema, new Uint8Array(init!.body as Uint8Array));
-    return binary(PublishSpriteResponseSchema, create(PublishSpriteResponseSchema, { sprite: summary() }));
-  }) as typeof fetch);
-  const version = remotionVersion("version-2");
-  version.spec.sprite_kind = "composition";
-  version.spec.sprite = { kind: "text", bindings: [{ name: "text", title: "文字" }, { name: "keywords", title: "关键词" }] };
-  render(<VersionCard version={version} selected={false} latest disabled={false} previewDisabled={false} onPreview={() => {}} />);
-  expect(screen.getByRole("combobox", { name: "资产分类" }).textContent).toContain("字效");
-  fireEvent.click(screen.getByRole("button", { name: "保存到资产" }));
-  await screen.findByText("已保存到资产「霓虹标题」，可在云端模板的 AI 资产中添加。");
-  expect(screen.queryByRole("dialog")).toBeNull();
-  expect(request).toMatchObject({ sourceVersionId: "version-2", kind: SpriteKind.TEXT, textProp: "text", keywordsProp: "keywords" });
-});
-
-// 场景：用户改选的分类在版本列表刷新（同一版本换成新对象）后保留，发布请求使用它。
-test("改选的发布分类在版本对象刷新后保留", async () => {
-  let request: ReturnType<typeof fromBinary<typeof PublishSpriteRequestSchema>> | undefined;
-  fetchMock.mockImplementation((async (_url, init) => {
-    request = fromBinary(PublishSpriteRequestSchema, new Uint8Array(init!.body as Uint8Array));
-    return binary(PublishSpriteResponseSchema, create(PublishSpriteResponseSchema, { sprite: summary() }));
-  }) as typeof fetch);
+// 场景：卡片只选择资产分类（默认取 Agent 的判断），保存在工作区顶栏，卡片里不再有第二个保存按钮。
+test("版本卡片显示 Agent 判断的资产分类，改选交给工作区且不提供保存按钮", async () => {
+  const chosen: SpriteKind[] = [];
   const version = remotionVersion("version-2");
   version.spec.sprite = { kind: "text", bindings: [{ name: "text", title: "文字" }] };
-  const { rerender } = render(<VersionCard version={version} selected={false} latest disabled={false} previewDisabled={false} onPreview={() => {}} />);
+  render(<VersionCard version={version} selected={false} latest disabled={false} previewDisabled={false} onPreview={() => {}} onKindChange={(kind) => chosen.push(kind)} />);
+  expect(screen.getByRole("combobox", { name: "资产分类" }).textContent).toContain("字效");
+  expect(screen.queryByRole("button", { name: "保存到资产" }) === null).toBe(true);
   fireEvent.keyDown(screen.getByRole("combobox", { name: "资产分类" }), { key: "ArrowDown" });
   fireEvent.keyDown(await screen.findByRole("option", { name: "滤镜" }), { key: "Enter" });
-  rerender(<VersionCard version={structuredClone(version)} selected={false} latest disabled={false} previewDisabled={false} onPreview={() => {}} />);
-  expect(screen.getByRole("combobox", { name: "资产分类" }).textContent).toContain("滤镜");
-  fireEvent.click(screen.getByRole("button", { name: "保存到资产" }));
-  await waitFor(() => expect(request).toMatchObject({ kind: SpriteKind.FILTER_OVERLAY, textProp: "" }));
+  expect(chosen).toEqual([SpriteKind.FILTER_OVERLAY]);
+  expect(fetchMock).not.toHaveBeenCalled();
 });
 
-// 场景：改选其他分类时不带文字字段；没有分类的旧版本默认视频特效，由服务端说明需要先在聊天中改出新版本。
-test("发布请求随所选分类变化，旧版本的拒绝原因原样显示", async () => {
+// 场景：改选其他分类时不带文字字段；字效声明了关键词参数时同时发布 keywords；没有分类的旧版本默认视频特效。
+test("发布请求随所选分类变化", () => {
   const version = remotionVersion("version-2");
   version.spec.sprite = { kind: "text", bindings: [{ name: "text", title: "文字" }] };
   expect(publishChoice(version, SpriteKind.TEXT)).toEqual({ kind: SpriteKind.TEXT, textProp: "text", keywordsProp: "" });
   expect(publishChoice(version, SpriteKind.FILTER_OVERLAY)).toEqual({ kind: SpriteKind.FILTER_OVERLAY, textProp: "", keywordsProp: "" });
-  delete version.spec.sprite;
+  version.spec.sprite = { kind: "text", bindings: [{ name: "text", title: "文字" }, { name: "keywords", title: "关键词" }] };
+  expect(publishChoice(version, SpriteKind.TEXT)).toEqual({ kind: SpriteKind.TEXT, textProp: "text", keywordsProp: "keywords" });
   expect(defaultKind(undefined)).toBe(SpriteKind.VIDEO_OVERLAY);
-  fetchMock.mockResolvedValue(new Response(JSON.stringify({ detail: "该版本由旧版生成，没有效果分类和参数契约；请在聊天中继续修改，生成新版本后再保存到资产" }), { status: 422 }));
-  const { rerender } = render(<VersionCard version={version} selected={false} latest disabled={false} previewDisabled={false} onPreview={() => {}} />);
-  fireEvent.click(screen.getByRole("button", { name: "保存到资产" }));
-  expect((await screen.findByText(/请在聊天中继续修改/)).getAttribute("role")).toBe("alert");
-  rerender(<VersionCard version={version} selected={false} latest disabled previewDisabled={false} onPreview={() => {}} />);
-  expect(screen.getByRole<HTMLButtonElement>("button", { name: "保存到资产" }).disabled).toBe(true);
 });
-
 
 /** 保存请求里的 remotion 轨道，按线路格式展开为便于断言的数组。 */
 function wireClips(request: ReturnType<typeof fromBinary<typeof SaveTemplateRequestSchema>>) {

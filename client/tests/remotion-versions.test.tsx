@@ -71,7 +71,7 @@ function publishedAsset() {
   }))), { headers: { "Content-Type": "application/x-protobuf" } });
 }
 
-// 顶部保存使用当前预览（含历史）版本与对应分类；重复点击不会重复写入，左侧仍可新建会话。
+// 顶部保存是唯一的保存入口，使用当前预览（含历史）版本与它卡片上选择的分类；重复点击不会重复写入，左侧仍可新建会话。
 test("顶栏保存当前预览版本为资产并防止重复提交", async () => {
   const requests: ReturnType<typeof fromBinary<typeof PublishSpriteRequestSchema>>[] = [];
   let complete: ((response: Response) => void) | undefined;
@@ -91,6 +91,7 @@ test("顶栏保存当前预览版本为资产并防止重复提交", async () =>
   await ready();
   const save = screen.getByRole<HTMLButtonElement>("button", { name: "保存资产" });
   expect(save.disabled).toBe(false);
+  expect(screen.queryByRole("button", { name: "保存到资产" }) === null).toBe(true);
   expect(screen.queryByRole("button", { name: "新建字效会话" }) === null).toBe(true);
   expect(within(screen.getByRole("complementary", { name: "字效历史会话" })).getByRole("button", { name: "新建会话" })).toBeTruthy();
   fireEvent.click(save);
@@ -103,9 +104,13 @@ test("顶栏保存当前预览版本为资产并防止重复提交", async () =>
   fireEvent.click(screen.getByRole("button", { name: "预览 V1" }));
   await waitFor(() => expect(screen.getByTitle<HTMLIFrameElement>("Remotion 字效播放器").src).toContain("version-1"));
   await ready();
+  const kind = within(screen.getByLabelText("成功版本 V1")).getByRole("combobox", { name: "资产分类" });
+  fireEvent.keyDown(kind, { key: "ArrowDown" });
+  fireEvent.keyDown(await screen.findByRole("option", { name: "滤镜" }), { key: "Enter" });
+  await waitFor(() => expect(kind.textContent).toContain("滤镜"));
   fireEvent.click(save);
   await waitFor(() => expect(requests).toHaveLength(2));
-  expect(requests[1].sourceVersionId).toBe("version-1");
+  expect(requests[1]).toMatchObject({ sourceVersionId: "version-1", kind: SpriteKind.FILTER_OVERLAY, textProp: "", keywordsProp: "" });
   await waitFor(() => expect(save.disabled).toBe(false));
 });
 

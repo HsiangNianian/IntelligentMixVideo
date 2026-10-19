@@ -15,6 +15,7 @@ import { TaskStatus } from "./TaskStatus";
 import { VersionCard } from "./VersionCard";
 import { MAX_MESSAGE_IMAGES, type ChatMessage, type Job, type NewWork, type SessionJob, type Version } from "./model";
 import type { Draft } from "./useTemplateSession";
+import type { SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
 import { LogoMark } from "@/components/studio/Logo";
 import { LoaderGooeyBlobs } from "@/components/ui/loaders-gooey-blobs";
 import { AnimatePresence, motion } from "motion/react";
@@ -61,6 +62,9 @@ interface Props {
   versionDisabled?: boolean;
   previewDisabled?: boolean;
   onPreviewVersion?: (id: string) => void;
+  /** 用户改选过的资产分类（按版本 ID）；未改选的版本卡片显示 Agent 判断的分类。 */
+  versionKinds?: Record<string, SpriteKind>;
+  onVersionKindChange?: (id: string, kind: SpriteKind) => void;
   versionNotice?: ReactNode;
 }
 /** 只渲染公开消息；输入支持中文组合输入，Shift+Enter 换行，Enter 发送。 */
@@ -87,6 +91,8 @@ export function ChatPanel({
   versionDisabled = false,
   previewDisabled = false,
   onPreviewVersion,
+  versionKinds,
+  onVersionKindChange,
   versionNotice,
 }: Props) {
   const [text, setText] = useState("");
@@ -140,6 +146,8 @@ export function ChatPanel({
         disabled={versionDisabled}
         previewDisabled={previewDisabled}
         onPreview={() => onPreviewVersion?.(version.id)}
+        kind={versionKinds?.[version.id]}
+        onKindChange={(kind) => onVersionKindChange?.(version.id, kind)}
       />
     );
   }

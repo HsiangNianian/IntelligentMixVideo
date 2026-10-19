@@ -1,6 +1,6 @@
-/** 聊天中的成功版本卡片：独立预览、按需读取默认参数导出，折叠和复制不会改变预览选择。 */
+/** 聊天中的成功版本卡片：独立预览、按需读取默认参数导出与选择资产分类，折叠和复制不会改变预览选择；保存资产在工作区顶栏。 */
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, Code2, Copy, Play, Wand2 } from "lucide-react";
+import { Check, ChevronDown, Code2, Copy, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Collapsible,
@@ -11,7 +11,6 @@ import { cn } from "@/lib/utils";
 import { diagnostics as readDiagnostics, exported } from "./api";
 import { CodeBlock } from "./CodeBlock";
 import type { Diagnostic, Version } from "./model";
-import { publishSprite } from "@/features/sprites/api";
 import type { SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
 import {
   Select,
@@ -20,9 +19,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { PUBLISH_KINDS, defaultKind, publishChoice } from "./spriteChoice";
+import { PUBLISH_KINDS, defaultKind } from "./spriteChoice";
 
-/** 每张卡片只拥有本版本的读取与提示，卸载取消请求，不展示未经确认的参数草稿。 */
+/**
+ * 每张卡片只拥有本版本的读取与提示，卸载取消请求，不展示未经确认的参数草稿。
+ * 资产分类由工作区按版本 ID 持有（顶栏保存使用同一选择），未改选时取 Agent 判断的分类。
+ */
 export function VersionCard({
   version,
   code: acceptedCode,
@@ -31,6 +33,8 @@ export function VersionCard({
   disabled,
   previewDisabled,
   onPreview,
+  kind = defaultKind(version.spec.sprite?.kind),
+  onKindChange,
 }: {
   version: Version;
   code?: string;
@@ -39,19 +43,14 @@ export function VersionCard({
   disabled: boolean;
   previewDisabled: boolean;
   onPreview: () => void;
+  kind?: SpriteKind;
+  onKindChange?: (kind: SpriteKind) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [code, setCode] = useState(acceptedCode ?? "");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [publishing, setPublishing] = useState(false);
-  const [publishError, setPublishError] = useState("");
-  // 发布分类默认取 Agent 的判断；只在换成另一个版本时重新取默认值。版本列表刷新会重建同一版本的对象，
-  // 按对象比较会把用户刚选的分类静默改回默认值。
-  const agentKind = version.spec.sprite?.kind;
-  const [kind, setKind] = useState<SpriteKind>(() => defaultKind(agentKind));
-  useEffect(() => setKind(defaultKind(agentKind)), [version.id, agentKind]);
   const [items, setItems] = useState<Diagnostic[]>([]);
   const [diagnosticsNotice, setDiagnosticsNotice] = useState("");
   const [diagnosticsFailed, setDiagnosticsFailed] = useState(false);
@@ -130,21 +129,6 @@ export function VersionCard({
     if (!value) return;
     void load().catch(() => {});
     void loadDiagnostics();
-  }
-  /** 一键保存为资产；重复保存同一版本由服务端返回原资产，失败显示原因且可重试。 */
-  async function saveAsset() {
-    if (publishing) return;
-    setPublishing(true);
-    setNotice("");
-    setPublishError("");
-    try {
-      const asset = await publishSprite(version.id, publishChoice(version, kind));
-      if (!scope.current.signal.aborted) setNotice(`已保存到资产「${asset.name}」，可在云端模板的 AI 资产中添加。`);
-    } catch (reason) {
-      if (!scope.current.signal.aborted) setPublishError(reason instanceof Error ? reason.message : "保存到资产失败，请重试");
-    } finally {
-      if (!scope.current.signal.aborted) setPublishing(false);
-    }
   }
   /** 复制固定版本的 Export.tsx；剪贴板失败时展开相同代码供手动复制。 */
   async function copy() {
@@ -229,7 +213,7 @@ export function VersionCard({
           </Button>
         </CollapsibleTrigger>
         <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-0.5">
-          <Select value={String(kind)} disabled={disabled || publishing} onValueChange={(value) => setKind(Number(value) as SpriteKind)}>
+          <Select value={String(kind)} disabled={disabled} onValueChange={(value) => onKindChange?.(Number(value) as SpriteKind)}>
             <SelectTrigger size="sm" aria-label="资产分类" className="h-8 w-20 border-none bg-transparent text-xs shadow-none">
               <SelectValue />
             </SelectTrigger>
@@ -237,10 +221,6 @@ export function VersionCard({
               {PUBLISH_KINDS.map((item) => <SelectItem key={item.kind} value={String(item.kind)}>{item.label}</SelectItem>)}
             </SelectContent>
           </Select>
-          <Button variant="ghost" size="sm" disabled={disabled || publishing} onClick={() => void saveAsset()}>
-            <Wand2 />
-            {publishing ? "保存中…" : "保存到资产"}
-          </Button>
           <Button
             variant="ghost"
             size="sm"
@@ -256,9 +236,6 @@ export function VersionCard({
         <p role="status" className="px-3 pb-2 text-xs text-muted-foreground">
           {notice}
         </p>
-      )}
-      {publishError && (
-        <p role="alert" className="px-3 pb-2 text-xs text-destructive">{publishError}</p>
       )}
       {error && (
         <div

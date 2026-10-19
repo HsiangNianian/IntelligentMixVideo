@@ -76,7 +76,7 @@ export function SpriteCatalog({ environment, catalog, placed, onAdd }: { environ
       {environment === "cloud" && <>
         <p className="text-[11px] text-muted-foreground">资产画面以透明层叠加在预览上。字效作用于当前选择的标题或字幕，转场加入统一列表，视频特效与画面特效共用一个名额。</p>
         {catalog.error && <p role="alert" className="text-[11px] text-destructive">{catalog.error}</p>}
-        {catalog.assets && !catalog.assets.length && <p role="status" className="text-[11px] text-muted-foreground">还没有资产，请在字效工作区的成功版本上选择「保存到资产」。</p>}
+        {catalog.assets && !catalog.assets.length && <p role="status" className="text-[11px] text-muted-foreground">还没有资产，请在字效工作区预览成功版本后点击右上角「保存资产」。</p>}
         {!!catalog.assets?.length && shown && (
           <AssetBrowser
             categories={CATEGORIES.map((item) => ({ value: item.id, label: item.label, count: catalog.assets!.filter((asset) => categoryOf(asset.kind) === item.id).length }))}
