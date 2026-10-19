@@ -995,6 +995,23 @@ def test_real_browser_requires_the_longest_text_to_be_shown_in_full(tmp_path, co
     assert report.passed is passed
 
 
+# 场景：句中原位的关键词要求字效把命中的关键词放进带 data-imv-keyword 的元素；只按样式渲染、没有标记的字效以 text_fit
+# 失败并说明改法，加上标记后通过。
+@needs_node
+@needs_browser
+@pytest.mark.parametrize(("marked", "passed"), [(False, False), (True, True)], ids=["unmarked", "marked"])
+def test_real_browser_requires_the_keyword_hit_to_be_marked(tmp_path, marked, passed):
+    """默认文字「今日灵感」以前两个字「今日」为关键词挂载，在采样帧上找带标记且文字恰好是这个词的元素。"""
+    code = KEYWORD_TITLE.replace("FAIL", "false")
+    if marked:
+        code = code.replace("<span style=", "<span data-imv-keyword style=")
+    report = browser_text_validate(tmp_path, code, 12, defaults={**KEYWORD_DEFAULTS, "fontSize": 64},
+                                   extra={name: KEYWORD_SCHEMA["properties"][name] for name in KEYWORD_DEFAULTS if name != "text"})
+    check = next(item for item in report.checks if item.name == "text_fit")
+    assert (check.status == "passed") is passed, check.message
+    assert passed or 'no element marked data-imv-keyword holds exactly "今日"' in check.message
+
+
 # 场景：资产声明的 fontSize 最小值低于 24（如 8）。宿主渲染时最多把文字缩到 24（再小的行高算不可读），生成关卡也在 24 下量，
 # 所以不按字数换算字号的写法通过，而不是被“行高太小”误拒。
 @needs_node

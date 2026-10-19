@@ -249,7 +249,8 @@ async def fit_texts(renderer: Renderer, overlay: Overlay, sprites: dict[str, pb.
     Instances name their Sprite with `sprite_id` (others are not measured) and are measured with the `code` the render
     runs, on their own canvas (`width`, `height`, which the video scales to cover) when they have one. The text is the
     instance's `text` when it carries one (a video composition fills it into several parameter paths), otherwise the
-    Sprite's text parameter.
+    Sprite's text parameter. An in-place keyword (`anchored`) is not measured: the overlay worker sizes it to the
+    keyword hit of its body, which is measured with the body.
     """
     from .tool_validation import FitSprite, ToolValidator, ValidationUnavailable
     from .tools.contracts import ComponentDefinition
@@ -259,7 +260,7 @@ async def fit_texts(renderer: Renderer, overlay: Overlay, sprites: dict[str, pb.
     members: dict[tuple[tuple[str, str], str], list[int]] = {}  # ((sprite, code), distinct values) -> instance indexes
     for index, instance in enumerate(overlay.instances):
         sprite = sprites.get(instance.get("sprite_id", ""))
-        if sprite is None or sprite.kind != pb.SPRITE_KIND_TEXT:
+        if sprite is None or sprite.kind != pb.SPRITE_KIND_TEXT or "anchored" in instance:
             continue
         config = instance["config"]
         size = json.loads(sprite.config_schema_json).get("properties", {}).get("fontSize", {})

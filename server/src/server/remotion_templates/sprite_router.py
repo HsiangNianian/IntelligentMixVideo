@@ -103,14 +103,17 @@ async def get_sprite_render(task_id: UUID, service: Service) -> Response:
 
 
 @router.get("/{sprite_id}/preview", response_class=HTMLResponse, summary="打开已发布 Sprite 的交互预览")
-async def sprite_preview(sprite_id: str, service: Service, overlay: bool = False) -> HTMLResponse:
+async def sprite_preview(sprite_id: str, service: Service, overlay: bool = False, measure: bool = False,
+                         hide_keyword: bool = False) -> HTMLResponse:
     """返回发布时复制的隔离播放器页面，不依赖源聊天仍然存在；副本丢失时按发布源码重建。
 
     `overlay=true` 使用透明背景，供模板编辑把资产叠在预览画面上；再加页面参数 `sync=1`
-    （新生成的资产支持）即由父页面通过消息逐帧驱动，无控制条和循环。
+    （新生成的资产支持）即由父页面通过消息逐帧驱动，无控制条和循环。句中原位的关键词预览时，
+    `measure=true` 逐帧回报标记的关键词位置与自身文字位置，`hide_keyword=true` 隐藏正文里标记的关键词（保留占位）。
     """
     script, host = await sprites.preview_script(service, sprite_id)
-    return player_page(script, overlay=overlay, host=host, fonts=FontStore.for_settings(service.settings).listing())
+    return player_page(script, overlay=overlay, host=host, fonts=FontStore.for_settings(service.settings).listing(),
+                       measure=measure, hide_keyword=hide_keyword)
 
 
 @router.get("/{sprite_id}/fonts/{weight}", summary="读取预览字体")

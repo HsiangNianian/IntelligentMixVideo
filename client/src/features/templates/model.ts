@@ -181,6 +181,8 @@ export interface EffectTrack {
   /** 省略为中文；英文与关键词对象关闭后保留配置，预览与合成时跳过。 */
   language?: TextLanguage;
   enabled?: boolean;
+  /** 仅关键词对象：画在所属文字 Remotion 字效里该词的原位置；需要两者都使用 Remotion 字效。 */
+  in_place?: boolean;
   /** 转场列表序号，且不保存 start/start_mode；其他对象省略此字段。 */
   transition_boundary?: number;
 }

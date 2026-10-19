@@ -83,6 +83,17 @@ KIND_NAMES = {
 # 字效固定的文字与关键词参数名；关键词可选。
 TEXT_PROP = "text"
 KEYWORDS_PROP = "keywords"
+# 字效标记命中关键词的属性：宿主据此隐藏原句里的这个词，在原位置画句中原位的关键词字效（`remotion/keyword-anchor.js`）。
+KEYWORD_MARKER = "data-imv-keyword"
+
+
+def keyword_slot(sprite: pb.PublishedSprite) -> bool:
+    """Whether a text effect marks its keyword hit, so it can be the body of an in-place keyword effect.
+
+    Generation checks the marker on every new text effect (`text_fit` in `tool-validation-worker.mjs`); effects
+    published before the rule never name it.
+    """
+    return sprite.kind == pb.SPRITE_KIND_TEXT and KEYWORD_MARKER in sprite.tsx_code
 
 
 # 目录里显示的资产名称长度上限，与发布时由描述截取的名称一致。
@@ -257,6 +268,7 @@ def summarize(sprite: pb.PublishedSprite) -> pb.SpriteSummary:
         keywords_supported=bool(sprite.keywords_prop),
         content_box=content_box(sprite),
         line_count=line_count(json.loads(sprite.config_schema_json or "{}")) if sprite.kind == pb.SPRITE_KIND_TEXT else 0,
+        keyword_slot=keyword_slot(sprite),
     )
 
 

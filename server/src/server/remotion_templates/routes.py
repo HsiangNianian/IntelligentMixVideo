@@ -440,27 +440,47 @@ def font_list(fonts: Sequence[Font]) -> list[dict]:
     return [{"family": font.family, "weight": font.weight_text, "url": f"/api/templates/fonts/{font.id}"} for font in fonts if font.has_file]
 
 
+# 句中原位关键词的度量（`remotion/keyword-anchor.js`，叠加渲染同用）与预览页的回报脚本：每个动画帧把画面里标记的关键词
+# 位置（`spots`）和内容自身文字的静止位置（`text`）按画布像素发给父页面，变化时才发送。
+KEYWORD_MEASURE_SCRIPT = (
+    "(()=>{const channel=location.hash.slice(1);let last='';"
+    "const round=(box)=>box&&Object.fromEntries(Object.entries(box).map(([key,value])=>[key,typeof value==='number'?Math.round(value*10)/10:value]));"
+    "const report=()=>{const geometry=globalThis.imvKeywordAnchor;const canvas=document.querySelector('[data-imv-host-layer]');"
+    "const layer=canvas&&canvas.firstElementChild;"
+    "const data=layer?{spots:geometry.spots(layer,canvas).map(round),text:round(geometry.restText(layer))}:{spots:[],text:null};"
+    "const key=JSON.stringify(data);if(key!==last){last=key;parent.postMessage({type:'imv-preview-measure',channel,...data},'*');}"
+    "requestAnimationFrame(report);};requestAnimationFrame(report);})();"
+)
+
+
 def player_page(
-    script: str, *, overlay: bool = False, host: dict | None = None, fonts: Sequence[Font] = ()
+    script: str, *, overlay: bool = False, host: dict | None = None, fonts: Sequence[Font] = (),
+    measure: bool = False, hide_keyword: bool = False,
 ) -> HTMLResponse:
     """Wrap a sealed interactive bundle in the sandboxed player document shared by versions and sprites.
 
     `overlay` drops the inspection checkerboard so the page can sit transparently over other video. `host`
     (defaults ``config`` and content ``box``) is injected as JSON the player reads at start-up instead of the
     defaults built into the bundle. `fonts` are the downloaded catalog fonts; the player registers each as a lazy
-    `FontFace` so it loads only when the effect uses that family.
+    `FontFace` so it loads only when the effect uses that family. For an in-place keyword in template editing,
+    `measure` reports the marked keyword hits and the content's own text box to the parent (`imv-preview-measure`)
+    and `hide_keyword` hides the marked hits while keeping their space; both work outside the sealed bundle.
     """
     script = script.replace("</", "<\\/")
+    geometry = (Path(__file__).parents[1] / "remotion" / "keyword-anchor.js").read_text(encoding="utf-8").replace("</", "<\\/") if measure else ""
     return HTMLResponse(
         '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width">'
         "<title>Remotion 字效预览</title><style>html,body,#root{margin:0;width:100%;height:100%;overflow:hidden}"
         + INSTANCE_BOX_CSS
+        + ("[data-imv-keyword]{visibility:hidden !important}" if hide_keyword else "")
         + (":root{color-scheme:light}html,body{background:transparent}body{color:#fff;font-family:sans-serif}</style>" if overlay else "body{color:#fff;background-color:#25252b;background-image:conic-gradient(#35353d 25%,transparent 0 50%,#35353d 0 75%,transparent 0);background-size:24px 24px;font-family:sans-serif}</style>")
         +
         '<body><div id="root"></div>'
         + (f'<script type="application/json" id="imv-preview-host">{_json_script(host)}</script>' if host is not None else "")
         + (f'<script type="application/json" id="imv-preview-fonts">{_json_script(font_list(fonts))}</script>' if fonts else "")
-        + "<script>" + script + "</script></body></html>",
+        + "<script>" + script + "</script>"
+        + (f"<script>{geometry}</script><script>{KEYWORD_MEASURE_SCRIPT}</script>" if measure else "")
+        + "</body></html>",
         headers={
             "Content-Security-Policy": "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src http: https:; media-src http: https: data:; img-src http: https: data:; connect-src 'none'; base-uri 'none'; form-action 'none'",
             "Cache-Control": "no-store",

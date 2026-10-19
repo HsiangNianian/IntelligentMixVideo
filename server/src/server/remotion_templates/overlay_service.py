@@ -98,6 +98,17 @@ class OverlayRenders:
         """Read the published Sprite of every distinct placement."""
         return {sprite_id: self._publication(sprite_id) for sprite_id in dict.fromkeys(item.sprite_id for item in placements)}
 
+    def _sprite_publications(self, message: pb.SpriteRenderInput) -> dict[str, pb.PublishedSprite]:
+        """The rendered Sprite and, with an in-place keyword effect, the keyword's Sprite (it may be the same one)."""
+        ids = [message.sprite_id, *([message.keyword.sprite_id] if message.HasField("keyword") else [])]
+        return {sprite_id: self._publication(sprite_id) for sprite_id in dict.fromkeys(ids)}
+
+    @staticmethod
+    def _plan_sprite(message: pb.SpriteRenderInput, publications: dict[str, pb.PublishedSprite]):
+        """Plan a single Sprite render from its publications (see `_sprite_publications`)."""
+        keyword = publications[message.keyword.sprite_id] if message.HasField("keyword") else None
+        return plan_sprite_render(message, publications[message.sprite_id], keyword)
+
     def _insert(self, task_id: str, data: dict) -> None:
         """Persist a new queued task."""
         with self.store.transaction() as db:
@@ -198,7 +209,7 @@ class OverlayRenders:
             raise HTTPException(422, "callback_url 必须是不含空白、用户信息或片段的 HTTP(S) 地址") from None
         self._require_environment()
         try:
-            overlay = plan_sprite_render(message, await asyncio.to_thread(self._publication, message.sprite_id))
+            overlay = self._plan_sprite(message, await asyncio.to_thread(self._sprite_publications, message))
         except OverlayError as exc:
             raise HTTPException(422, exc.message) from None
         if missing := join_problem(overlay):
@@ -295,8 +306,8 @@ class OverlayRenders:
         # The accepted input is rendered as stored; only the published Sprites are read again.
         if "sprite_render" in request:
             message = ParseDict(request["sprite_render"], pb.SpriteRenderInput())
-            publications = {message.sprite_id: await asyncio.to_thread(self._publication, message.sprite_id)}
-            overlay = plan_sprite_render(message, publications[message.sprite_id])
+            publications = await asyncio.to_thread(self._sprite_publications, message)
+            overlay = self._plan_sprite(message, publications)
             render, key = render_sprite, f"imv/sprite_render/{task_id}.webm"
         else:
             placements = [OverlayPlacement.model_validate(item) for item in request["placements"]]

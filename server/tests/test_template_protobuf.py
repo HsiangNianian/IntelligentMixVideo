@@ -1,5 +1,6 @@
 # 使用临时 SQLite 和真实 FastAPI 路由验证模板 Protobuf 通信；执行 uv run pytest tests/test_template_protobuf.py。
 
+import hashlib
 import json
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -117,6 +118,49 @@ def test_invalid_keyword_objects_do_not_save(client, template_db, error):
     if error == "multi-line":
         assert "多行字效" in response.text
     assert not pb.ListTemplatesResponse.FromString(client.get("/template").content).templates
+
+
+MARKED_SPRITE_ID = "1b7d2c3e-4f50-4a6b-8c7d-9e0f1a2b3c4d"
+
+
+def seed_marked_sprite() -> None:
+    """放一条把命中关键词标记为 data-imv-keyword 的字效发布记录，可作为句中原位的正文。"""
+    from google.protobuf.json_format import MessageToDict
+    from server.remotion_templates import sprite_store
+    from .conftest import published_sprite
+
+    sprite = published_sprite(MARKED_SPRITE_ID)
+    sprite.tsx_code = "export default (p) => <span data-imv-keyword>{p.keywords[0]}</span>;"
+    sprite.code_sha256 = hashlib.sha256(sprite.tsx_code.encode()).hexdigest()
+    sprite_store.insert(sprite_id=MARKED_SPRITE_ID, source_version_id=str(uuid4()), kind=1, text_prop="", keywords_prop="",
+                        published_at=datetime.now(UTC), data=MessageToDict(sprite, preserving_proto_field_name=True))
+
+
+@pytest.mark.parametrize("error", [None, "unbound-keyword", "ims-body", "unmarked-body", "not-keyword"])
+def test_in_place_keyword_needs_remotion_bindings_and_a_marked_body(client, template_db, error):
+    """句中原位只属于关键词对象，要求关键词对象和所属字幕都由 Remotion 字效显示，且所属字效标记了关键词；合法时随模板往返。"""
+    seed_sprite()
+    seed_marked_sprite()
+    keyword = {**template_track("subtitle_keyword"), "in_place": True}
+    body = remotion_track("body", text_target="subtitle", sprite_id=MARKED_SPRITE_ID)
+    tracks = [template_track("title"), template_track("subtitle"), keyword, body, remotion_track("keyword", text_target="subtitle_keyword")]
+    if error == "unbound-keyword":
+        tracks.pop()
+    elif error == "ims-body":
+        tracks.remove(body)
+    elif error == "unmarked-body":
+        body["sprite_id"] = SPRITE_ID
+    elif error == "not-keyword":
+        tracks[1]["in_place"] = True
+    response = _post(client, {"name": "句中原位", "tracks": tracks})
+    if error:
+        assert response.status_code == 422, response.text
+        if error == "unmarked-body":
+            assert "没有标记关键词" in response.text
+        return
+    assert response.status_code == 201, response.text
+    saved = pb.SaveTemplateResponse.FromString(response.content).template.tracks.tracks[2]
+    assert saved.target == "subtitle_keyword" and saved.HasField("in_place") and saved.in_place
 
 
 def test_transition_list_roundtrip(client: TestClient):

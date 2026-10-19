@@ -22,6 +22,8 @@ export function validateTrack(track: EffectTrack): void {
   if (track.language === "en" && track.target !== "title" && track.target !== "subtitle") throw new Error("只有标题或字幕可以设置英文");
   if (track.enabled !== undefined && (typeof track.enabled !== "boolean" || (track.enabled === false && track.language !== "en" && !isKeywordTarget(track.target))))
     throw new Error("只有英文标题、英文字幕或关键词对象可以停用");
+  if (track.in_place !== undefined && (typeof track.in_place !== "boolean" || (track.in_place && !isKeywordTarget(track.target))))
+    throw new Error("只有关键词对象可以显示在句中原位");
   if (track.target === "subtitle" && (track.start_mode !== "seconds" || track.start !== 0 || track.duration !== null))
     throw new Error("底部字幕固定覆盖整个视频，不能修改时间");
   if (track.target === "transition") {
@@ -330,6 +332,16 @@ export function setBilingual(draft: Draft, target: "title" | "subtitle", enabled
     ...chinese, id: crypto.randomUUID(), language: "en",
     editor: englishEditor(chinese.editor, target),
   }] };
+}
+
+/** 设置关键词对象是否画在句中原位；关闭时去掉该字段，与服务端省略即为独立位置一致。 */
+export function setKeywordInPlace(draft: Draft, id: string, inPlace: boolean): Draft {
+  return { ...draft, tracks: draft.tracks.map((track) => {
+    if (track.id !== id) return track;
+    if (!isKeywordTarget(track.target)) throw new Error("只有关键词对象可以显示在句中原位");
+    const { in_place: _previous, ...rest } = track;
+    return inPlace ? { ...rest, in_place: true } : rest;
+  }) };
 }
 
 /** 关键词单独字效开关：首次开启按中文标题或字幕建立关键词对象，之后只改变启用状态，保留它的外观与字效。 */

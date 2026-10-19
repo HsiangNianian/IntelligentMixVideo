@@ -91,6 +91,10 @@ export interface SpriteClip {
   transform?: ClipTransform;
   /** 资产画布与内容区域，用于在预览上拖动位置；movable 为 false 的分类只能调整强度。 */
   canvas?: { width: number; height: number; box: ContentBox; movable: boolean };
+  /** 句中原位的关键词字效：画在这个片段（所属文字的字效）里标记的关键词上，位置与大小由它决定。 */
+  anchor?: string;
+  /** 所属文字的字效：它标记的关键词由句中原位的关键词字效代替显示，自己隐藏（保留占位）。 */
+  hideKeyword?: boolean;
 }
 
 /** 作用于文字的 Remotion 字效所替换的 IMS 文字对象。 */

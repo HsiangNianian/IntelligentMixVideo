@@ -105,12 +105,13 @@ fn draft_from_protobuf(bytes: &[u8], id: Option<&str>) -> Result<Value, String> 
         return Err("模板 ID 与保存请求不一致".into());
     }
     // Remotion 片段引用云端已发布的 Sprite，本地模板不支持；明确拒绝，而不是落到轨道白名单的笼统错误。
-    // 任何轨道上的 Remotion 参数覆盖同样拒绝，避免转换时被静默丢弃。
+    // 任何轨道上的 Remotion 参数覆盖、需要 Remotion 字效的句中原位关键词同样拒绝，避免转换时被静默丢弃。
     if request.tracks.as_ref().is_some_and(|list| {
         list.tracks.iter().any(|track| {
             track.target == "remotion"
                 || !track.sprite_id.is_empty()
                 || track.text_target.is_some()
+                || track.in_place == Some(true)
                 || track
                     .editor
                     .as_ref()
@@ -1060,6 +1061,7 @@ mod tests {
                         text_target: None,
                         language: None,
                         enabled: None,
+                        in_place: None,
                     },
                     generated::EffectTrack {
                         id: "subtitle".into(),
@@ -1429,6 +1431,14 @@ mod tests {
         let mut request = protobuf_request();
         request.template_id = Some(id.into());
         request.tracks.as_mut().unwrap().tracks[0].text_target = Some("title".into());
+        let result = draft_from_protobuf(&request.encode_to_vec(), Some(id))
+            .and_then(|draft| operate(&dir.0, "save", Some(id), Some(draft)));
+        assert_eq!(result.unwrap_err(), "本地模板不支持 Remotion 资产");
+        assert_eq!(fs::read(&path).unwrap(), original);
+        // 句中原位的关键词要用 Remotion 字效画在原句里，本地模板同样不支持。
+        let mut request = protobuf_request();
+        request.template_id = Some(id.into());
+        request.tracks.as_mut().unwrap().tracks[0].in_place = Some(true);
         let result = draft_from_protobuf(&request.encode_to_vec(), Some(id))
             .and_then(|draft| operate(&dir.0, "save", Some(id), Some(draft)));
         assert_eq!(result.unwrap_err(), "本地模板不支持 Remotion 资产");

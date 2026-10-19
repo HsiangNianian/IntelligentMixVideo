@@ -13,6 +13,10 @@ code that cannot animate in so few frames. The time is
 one overlay worker run that writes consecutive chunks of at most 30 seconds from the same composition (so every
 animation continues across a chunk boundary) and joins them losslessly into one WebM. The async task, upload and
 callback are in `overlay_service.py`.
+
+An optional `keyword` effect draws each content's keywords in place: the body text effect marks its keyword hit
+(`sprites.keyword_slot`), the overlay worker hides it and lays another single-line text effect, whose text is the
+keyword, over that spot every frame (`remotion/keyword-anchor.js`).
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ from .categories import LINE_START_MAX_FRAMES, LINE_STARTS_PROP, line_count
 from .overlay_render import Overlay, OverlayError, probe_overlay, render_overlay, run_overlay_worker, to_frames
 from .placement import resolve
 from .renderer import Renderer
+from .sprites import keyword_slot
 from .tool_validation import MAX_RENDER_SECONDS, MIN_RENDER_SECONDS, STATIC_TEXT_SECONDS
 
 # Longer effects are written as consecutive chunks of at most this length and joined.
@@ -38,11 +43,12 @@ CHUNK_SECONDS = 30
 JOIN_SECONDS = 120
 
 
-def _editor(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite, text: str, keywords: list[str]) -> RemotionTrackEditor:
+def _editor(style, transform: pb.SpriteHostTransform | None, sprite: pb.PublishedSprite, text: str,
+            keywords: list[str]) -> RemotionTrackEditor:
     """The placement editor of one content: the style overrides plus the text and keywords, which only content may set."""
     content = {sprite.text_prop, sprite.keywords_prop} - {""}
     parameters = []
-    for item in message.resolved_style:
+    for item in style:
         if item.key in content:
             raise OverlayError("placement_invalid", f"参数 {item.key} 是内容，只能通过 text、keywords 或 cues 传入")
         case = item.value.WhichOneof("value")
@@ -54,12 +60,12 @@ def _editor(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite, text: str
         parameters.append({"key": sprite.text_prop, "string_value": text})
     if keywords:
         parameters.append({"key": sprite.keywords_prop, "string_list_value": {"values": keywords}})
-    transform = {
-        name: getattr(message.transform, name)
-        for name in ("x", "y", "scale", "rotation", "opacity") if message.transform.HasField(name)
+    fields = {
+        name: getattr(transform, name)
+        for name in ("x", "y", "scale", "rotation", "opacity") if transform is not None and transform.HasField(name)
     }
     try:
-        return RemotionTrackEditor(parameters=parameters, transform=transform or None)
+        return RemotionTrackEditor(parameters=parameters, transform=fields or None)
     except ValidationError as exc:
         raise OverlayError("placement_invalid", f"样式或内容无效：{exc.errors()[0]['msg']}") from None
 
@@ -134,16 +140,62 @@ def _groups(cues, contents: list[tuple], lines: int, max_length: int | None) -> 
     ]
 
 
-def plan_sprite_render(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite) -> Overlay:
+def _keyword_effect(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite, keyword: pb.PublishedSprite | None) -> pb.PublishedSprite | None:
+    """The request's in-place keyword effect, checked against the body: None without one.
+
+    The body must mark its keyword hit, and the keyword effect must be a single-line text effect on the same canvas.
+    """
+    if not message.HasField("keyword"):
+        return None
+    if not keyword_slot(sprite):
+        raise OverlayError("content_invalid", "这个字效没有标记关键词，不能使用句中原位的关键词字效，请重新生成字效")
+    if keyword is None or keyword.kind != pb.SPRITE_KIND_TEXT or line_count(json.loads(keyword.config_schema_json or "{}")) > 1:
+        raise OverlayError("content_invalid", "句中原位的关键词字效必须是单行字效")
+    if (keyword.canvas.width, keyword.canvas.height, keyword.canvas.fps) != (sprite.canvas.width, sprite.canvas.height, sprite.canvas.fps):
+        raise OverlayError("canvas_mismatch", "关键词字效的画布尺寸与帧率必须与正文字效一致")
+    return keyword
+
+
+def _anchored(message: pb.SpriteRenderInput, keyword: pb.PublishedSprite, anchor: str, start: int, length: int,
+              text: str, words: list[str], starts: list[int], held: bool) -> list[dict]:
+    """The in-place keyword instances of one shown content, anchored to its body instance `anchor`.
+
+    Each keyword with a hit in `text` gets the keyword effect with that word as its text, from the start of the line
+    holding the hit (the whole content when it is held, since every line is then shown at once) to the content's end.
+    A held content holds the keyword effect the same way, on the middle of its own previewed length.
+    """
+    preview = max(1, keyword.canvas.preview_frames)
+    instances = []
+    for word in dict.fromkeys(words):
+        at = text.find(word) if word else -1
+        if at < 0:
+            continue
+        offset = 0 if held else starts[min(text[:at].count("\n"), len(starts) - 1)]
+        try:
+            config, host = resolve(keyword, _editor(message.keyword.resolved_style, None, keyword, word, []))
+        except ValueError as exc:
+            raise OverlayError("placement_invalid", f"关键词字效的样式或文字不符合发布契约：{exc}") from None
+        instance = {"sprite_id": message.keyword.sprite_id, "code": keyword.tsx_code, "config": config, "host": host,
+                    "start_frame": start + offset, "duration_frames": length - offset,
+                    "anchored": {"anchor": anchor, "keyword": "".join(word.split())}}
+        if held:
+            instance.update(duration_frames=max(preview, length), hold={"frame": preview // 2, "frames": length, "length": preview})
+        instances.append(instance)
+    return instances
+
+
+def plan_sprite_render(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite, keyword: pb.PublishedSprite | None = None) -> Overlay:
     """Check the canvas, time, content and style, and place one instance per content on the whole effect.
 
     A text shown for less than `STATIC_TEXT_SECONDS` gets a `hold`: frozen on the middle frame of the previewed length
     the Sprite was accepted at (`hold.length`, which it reads as its length) and shown for the text's frames; the
     instance lasts the longer of the two, so a preview shorter than the text does not cut it. A multi-line text gets
     its lines' start frames, all 0 when held so the frozen frame shows every line, and the frame of its last line
-    (`reveal_frame`) for the text fit. Every refusal is an `OverlayError` with a stable code; acceptance turns it into
-    a 422.
+    (`reveal_frame`) for the text fit. With an in-place `keyword` effect (`message.keyword`, its publication passed as
+    `keyword`) a content with keywords becomes an anchor and its keywords are drawn in place above all bodies. Every
+    refusal is an `OverlayError` with a stable code; acceptance turns it into a 422.
     """
+    effect = _keyword_effect(message, sprite, keyword)
     canvas = sprite.canvas
     fps = canvas.fps
     if message.HasField("output") and (message.output.width, message.output.height, message.output.fps) != (canvas.width, canvas.height, fps):
@@ -155,23 +207,27 @@ def plan_sprite_render(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite
         raise OverlayError("duration_too_long", f"效果时长不能超过 {MAX_RENDER_SECONDS:g} 秒")
     static = to_frames(STATIC_TEXT_SECONDS, fps) if sprite.kind == pb.SPRITE_KIND_TEXT else 0
     preview = max(1, canvas.preview_frames)
-    instances = []
+    instances, anchored = [], []
     lines = line_count(json.loads(sprite.config_schema_json or "{}")) if sprite.kind == pb.SPRITE_KIND_TEXT else 1
-    for start, length, text, keywords, starts in _contents(message, sprite, total):
+    for index, (start, length, text, keywords, starts) in enumerate(_contents(message, sprite, total)):
         try:
-            config, host = resolve(sprite, _editor(message, sprite, text, keywords))
+            config, host = resolve(sprite, _editor(message.resolved_style, message.transform, sprite, text, keywords))
         except ValueError as exc:
             raise OverlayError("placement_invalid", f"样式或内容不符合发布契约：{exc}") from None
         instance = {"sprite_id": message.sprite_id, "code": sprite.tsx_code, "config": config, "host": host, "start_frame": start, "duration_frames": length}
-        if length < static:
+        held = length < static
+        if held:
             instance.update(duration_frames=max(preview, length), hold={"frame": preview // 2, "frames": length, "length": preview})
             starts = [0]
         if lines > 1:
             # Content the host injects (not an operator parameter), padded with the last line's start for absent lines.
             config[LINE_STARTS_PROP] = starts + [starts[-1]] * (lines - len(starts))
             instance["reveal_frame"] = starts[-1]
+        if effect is not None and (keyword_instances := _anchored(message, effect, f"a{index}", start, length, text, keywords, starts, held)):
+            instance["anchor"] = f"a{index}"
+            anchored.extend(keyword_instances)
         instances.append(instance)
-    return Overlay(canvas.width, canvas.height, fps, total, instances)
+    return Overlay(canvas.width, canvas.height, fps, total, instances + anchored)
 
 
 def chunk_ranges(frames: int, fps: int) -> list[list[int]]:

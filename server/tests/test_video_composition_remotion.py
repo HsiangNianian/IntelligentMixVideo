@@ -1033,6 +1033,31 @@ def test_multi_line_asset_cannot_show_a_keyword(composition_case):
         remotion.plan(data, 120)
 
 
+def test_in_place_keyword_anchors_to_the_body_instance_of_its_cue(composition_case):
+    """句中原位：所属字幕字效的每个实例是锚点；关键词字效排在全部实例之后、从关键词所在切片开始，到覆盖它的那组结束，
+    文字是关键词、不带摆放的宿主变换；关键词对象停用后只剩正文且不设锚点。"""
+    from .conftest import template_track
+    data = multi_line_case(composition_case)
+    data["template"] = deepcopy(composition_case["template"])
+    keyword_track = {**template_track("subtitle_keyword"), "in_place": True}
+    data["template"]["tracks"].append(keyword_track)
+    data["remotion"]["placements"][0].update(text_target="subtitle", editor={})
+    word = asset()
+    data["remotion"]["assets"][word.sprite_id] = MessageToDict(word, preserving_proto_field_name=True)
+    data["remotion"]["placements"].insert(0, {"id": "keyword", "sprite_id": word.sprite_id, "start": 0, "duration": 1,
+                                              "text_target": "subtitle_keyword", "editor": {}})
+    result = remotion.plan(data, 120)
+    bodies, keywords = result.instances[:3], result.instances[3:]
+    assert [(item["anchor"], item["start_frame"], item["duration_frames"]) for item in bodies] == [("text#0", 0, 60), ("text#1", 75, 30), ("text#2", 120, 30)]
+    assert [(item["anchored"], item["config"]["layer"]["text"], item["start_frame"], item["duration_frames"], item["host"]["transform"]) for item in keywords] == [
+        ({"anchor": "text#0", "keyword": "甲乙"}, "甲乙", 0, 60, {}),
+        ({"anchor": "text#0", "keyword": "丁"}, "丁", 30, 30, {}),
+        ({"anchor": "text#2", "keyword": "庚"}, "庚", 120, 30, {}),
+    ]
+    keyword_track["enabled"] = False
+    assert all("anchor" not in item and "anchored" not in item for item in remotion.plan(data, 120).instances)
+
+
 def test_single_line_subtitles_are_still_one_instance_per_cue(composition_case):
     """单行字效不分组：每个切片一个实例，不注入行起点（回归）。"""
     data = multi_line_case(composition_case)

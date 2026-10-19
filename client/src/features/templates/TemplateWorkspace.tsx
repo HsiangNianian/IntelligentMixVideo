@@ -12,17 +12,17 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import * as api from "./api";
 import { readCatalog } from "./sdk";
-import { activeDraft, boundText, isKeywordTarget, newDraft, textRole, toDraft, type Draft, type EffectAsset, type Template, type TextRole, type PreviewMedia } from "./model";
+import { activeDraft, boundText, isKeywordTarget, keywordTargets, newDraft, textRole, toDraft, type Draft, type EffectAsset, type Template, type TextRole, type PreviewMedia } from "./model";
 import { AppliedEffects, EffectAssets } from "./EffectAssets";
 import { isTextTarget } from "./effects";
-import { addTrack, previewContext, resolveTemplate, removeTrack, setBilingual, setKeywordObject, setTrackTiming, trackDraft, updateTrack } from "./tracks";
+import { addTrack, previewContext, resolveTemplate, removeTrack, setBilingual, setKeywordInPlace, setKeywordObject, setTrackTiming, trackDraft, updateTrack } from "./tracks";
 import { defaultPreviewUrls, readPreviewVideos } from "./media";
 import { compactTransitions, previewTransitions, setTransitionDuration, transitionItems } from "./transitions";
 import { TemplateInspector, TransitionInspector, type InspectorTab } from "./TemplateInspector";
 import { TemplatePreview } from "./TemplatePreview";
 import { SpriteCatalog, SpriteClips } from "./SpritePanels";
 import { SpriteClipInspector } from "./SpriteClipInspector";
-import { addClip, bindClip, clipSlot, hiddenTextClips, moveClip, removeClip, setClipParameter, setClipTransform, timeClips } from "./clips";
+import { addClip, bindClip, clipSlot, hiddenTextClips, inPlaceProblem, moveClip, removeClip, setClipParameter, setClipTransform, timeClips } from "./clips";
 import { exampleKeyword, keywordSample } from "./timeline";
 import { transformFields } from "@/features/sprites/parameters";
 import { useSpriteCatalog } from "./useSpriteCatalog";
@@ -106,6 +106,11 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
     const content = !text || !target ? clip.parameters : isKeywordTarget(target)
       ? { ...clip.parameters, text: keywordSample(draftTracks ?? [], target), keywords: [] }
       : { ...clip.parameters, text: text.editor[target], keywords: [exampleKeyword(text.editor, target, text.language)].filter(Boolean) };
+    // 句中原位：关键词字效画在所属中文文字的字效里标记的关键词上，后者隐藏自己的关键词。
+    const anchor = text?.in_place && target && isKeywordTarget(target)
+      ? previewClips.find((item) => item.text_target === keywordTargets[target] && item.language !== "en")?.id : undefined;
+    const hideKeyword = (target === "title" || target === "subtitle") && clip.language !== "en" && previewClips.some((item) =>
+      item.text_target === `${target}_keyword` && boundText(draftTracks ?? [], item)?.in_place);
     return {
       id: clip.id,
       spriteId: clip.sprite_id,
@@ -119,7 +124,9 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
       boundary: clip.transition_boundary,
       values: content,
       transform: clip.transform,
-      canvas: asset ? { width: asset.width, height: asset.height, box: asset.box, movable: transformFields(asset.kind).includes("x") } : undefined,
+      canvas: asset ? { width: asset.width, height: asset.height, box: asset.box, movable: !anchor && transformFields(asset.kind).includes("x") } : undefined,
+      ...(anchor ? { anchor } : {}),
+      ...(hideKeyword ? { hideKeyword } : {}),
     };
   }).filter((clip) => clip.end > clip.start && !hiddenClips.has(clip.id)), [previewClips, hiddenClips, draftTracks, spriteCatalog.assets, previewLength]);
   const dirty = draft !== null && (current === null || JSON.stringify(draft) !== baseline || (editing !== null && editing.value !== draft[editing.field]));
@@ -140,6 +147,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
   const keywordRole = selectedText && selectedText.language !== "en" && isTextTarget(selectedText.target) ? textRole(selectedText.target) : undefined;
   const keywordOwner = keywordRole === "title" || keywordRole === "subtitle" ? keywordRole : undefined;
   const keywordTrack = keywordOwner && draft?.tracks.find((track) => track.target === `${keywordOwner}_keyword`);
+  const inPlaceReason = draft && keywordTrack && isKeywordTarget(keywordTrack.target) ? inPlaceProblem(draft, keywordTrack.target, spriteCatalog.assets ?? []) : "";
 
   useEffect(() => {
     mounted.current = true;
@@ -394,7 +402,13 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
                     });
                   }} />关键词单独字效</label>
                   {keywordTrack && keywordTrack.enabled !== false && selectedText?.id !== keywordTrack.id && <Button type="button" variant="outline" size="sm" onClick={() => { selectTarget(keywordTrack.id); setInspectorTab("appearance"); }}>编辑{keywordOwner === "title" ? "标题" : "字幕"}关键词</Button>}
-                  <p className="text-[11px] text-muted-foreground">关键词作为独立对象显示，可单独设置字体、字号、位置、花字、动画或 Remotion 字效；句中的关键词仍按「关键词设置」显示。</p>
+                  {keywordTrack && keywordTrack.enabled !== false ? <>
+                    <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={!!keywordTrack.in_place} disabled={!keywordTrack.in_place && !!inPlaceReason}
+                      onChange={(event) => editTrack(() => setKeywordInPlace(draft, keywordTrack.id, event.target.checked))} />显示在句中原位</label>
+                    <p role={inPlaceReason && keywordTrack.in_place ? "alert" : undefined} className={`text-[11px] ${inPlaceReason && keywordTrack.in_place ? "text-destructive" : "text-muted-foreground"}`}>
+                      {inPlaceReason || (keywordTrack.in_place ? "关键词画在原句里它的位置，跟随原句移动、字号与它一致；原句的这个词由关键词字效代替。" : "关键词作为独立对象显示在自己的位置。")}
+                    </p>
+                  </> : <p className="text-[11px] text-muted-foreground">关键词作为独立对象显示，可单独设置字体、字号、位置、花字、动画或 Remotion 字效；句中的关键词仍按「关键词设置」显示。</p>}
                 </div>}
                 {selectedClip && <SpriteClipInspector key={selectedClip.id} clip={selectedClip} asset={spriteCatalog.assets?.find((item) => item.id === selectedClip.sprite_id)} duration={preview.timeline?.duration}
                   textTrack={clipText} textTracks={visibleDraft!.tracks} textResolved={clipText && preview.timeline?.tracks[clipText.id]} onOpenRemotion={onOpenRemotion}

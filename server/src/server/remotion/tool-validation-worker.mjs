@@ -548,6 +548,7 @@ async function measureTextFit(page, needle, frames = sampleFrames(request.compos
  * its full size has a problem (a text cut to a slice of itself is one), and when the text is never visibly rendered.
  * A multi-line text (a `lineStartFrames` parameter of N items) is filled with N lines that share maxLength, and both
  * samples show every line from the first frame; its default lines must also pass `lineSyncProblem` and `lineJumpProblem`.
+ * An effect with a `keywords` parameter must mark its keyword hit for in-place keyword effects (`keywordSlotProblem`).
  * This is a geometric measurement of the text boxes, not a visual review of how the result looks.
  */
 async function textFitCheck(page) {
@@ -608,8 +609,38 @@ async function textFitCheck(page) {
     const defaultLines = shortText.split("\n");
     const sync = multi && defaultLines.length === lines ? (await lineSyncProblem(page, defaultLines)) ?? (await lineJumpProblem(page, defaultLines)) : null;
     if (sync) return { name: "text_fit", status: "failed", message: sync };
+    // The first two characters of the default text are a keyword hit any text effect can show.
+    const word = Array.from(shortText.replace(/\s+/g, "")).slice(0, 2).join("");
+    const slot = request.parameter_schema?.properties?.keywords?.type === "array" ? await keywordSlotProblem(page, word, allLines) : null;
+    if (slot) return { name: "text_fit", status: "failed", message: slot };
   }
   return { name: "text_fit", status: "passed", message: `The ${length}-character text${multi ? ` over ${lines} lines` : ""} is shown in full${smallest !== null ? ` at the smallest fontSize ${smallest}` : ""} (measured on the ${measured.full} of ${measured.shown} frames that show it at its full size).${shortNote}` };
+}
+
+/**
+ * The in-place keyword contract (see `keyword-anchor.js`): with `keywords: [word]`, a hit in the default text, the
+ * component must render that hit in its own element marked `data-imv-keyword` whose text is exactly the word on at
+ * least one sampled frame, so the host can hide it and draw a separate keyword effect there. `patch` holds the other
+ * parameters of the sample (every line shown for a multi-line text). Returns the failure message, or null.
+ */
+async function keywordSlotProblem(page, word, patch) {
+  await page.evaluate((values) => window.__imvTool.setParameters(values), { ...patch, keywords: [word] });
+  try {
+    for (const frame of sampleFrames(request.composition.duration_frames)) {
+      await page.evaluate((target) => window.__imvTool.setFrame(target), frame);
+      const error = await page.evaluate(() => window.__imvRuntimeError ?? null);
+      if (error) return `The component throws at frame ${frame} with keywords ["${word}"]: ${error}`.slice(0, 6000);
+      const marked = await page.evaluate((word) => [...(document.querySelector("[data-imv-host-layer]")?.querySelectorAll("[data-imv-keyword]") ?? [])]
+        .some((element) => (element.textContent ?? "").replace(/\s+/g, "") === word), word);
+      if (marked) return null;
+    }
+  } finally {
+    await page.evaluate((values) => window.__imvTool.setParameters(values), request.parameters ?? {});
+    await page.evaluate(() => window.__imvTool.setFrame(0));
+  }
+  return `With keywords ["${word}"] no element marked data-imv-keyword holds exactly "${word}" on any sampled frame. `
+    + "Render the first literal hit of each keyword in its own inline element (a span in the text flow) with the attribute data-imv-keyword "
+    + "and only the keyword's characters inside it: the host hides that element and draws a separate keyword effect exactly in its place.";
 }
 
 /**

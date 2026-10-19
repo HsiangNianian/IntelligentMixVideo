@@ -529,6 +529,18 @@ def test_preview_page_lifts_the_clipping_of_composed_instance_boxes(client: Test
     assert rule in client.get(summary.preview_url, params={"overlay": "true"}).text
 
 
+def test_preview_page_measures_and_hides_keywords_only_when_asked(client: TestClient, published) -> None:
+    """句中原位预览：measure 内联度量脚本并逐帧回报 imv-preview-measure，hide_keyword 隐藏标记的关键词（保留占位）；
+    默认页面两者都没有，封存的播放器包不变。"""
+    summary = published_sprite(client, published.version.id)
+    plain = client.get(summary.preview_url, params={"overlay": "true"}).text
+    measured = client.get(summary.preview_url, params={"overlay": "true", "measure": "true", "hide_keyword": "true"}).text
+    hide = "[data-imv-keyword]{visibility:hidden !important}"
+    assert "imvKeywordAnchor" not in plain and "imv-preview-measure" not in plain and hide not in plain
+    assert "globalThis.imvKeywordAnchor = { spots, restText, placement }" in measured and "imv-preview-measure" in measured and hide in measured
+    assert measured.index("imvKeywordAnchor = {") > measured.index('<div id="root">')
+
+
 def test_overlay_preview_is_transparent_and_serves_managed_fonts(client: TestClient, published) -> None:
     """模板编辑叠加使用透明背景页；普通预览保留检查棋盘格。字体路由随页面相对路径可用，缺失资产或字重返回 404。"""
     summary = published_sprite(client, published.version.id)

@@ -132,7 +132,11 @@ async def require_environment(data: dict) -> None:
 
 
 def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transition_seed: str = "") -> Overlay | None:
-    """根据已保存业务快照展开字幕；示例时长不限制字幕，空内容不产生实例。"""
+    """根据已保存业务快照展开字幕；示例时长不限制字幕，空内容不产生实例。
+
+    关键词对象设为句中原位（`in_place`）时，所属文字的实例带 `anchor`，关键词字效实例带 `anchored`，
+    由叠加 worker 画在所属文字字效标记的关键词上（见 `remotion/overlay-worker.mjs`）。
+    """
     saved = data.get("remotion")
     # 历史任务没有快照时延续原流程，不能恢复时偷偷读取新的模板绑定。
     if not saved or not active_placements(data):
@@ -166,12 +170,19 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
                 expanded.extend({**placement, "transition_boundary": boundary}
                                 for item, boundary in selected if item["id"] == placement["id"])
         placements = expanded
+    # 句中原位：所属文字的字效实例是锚点，关键词字效排在全部实例之后，逐帧画在锚点标记的关键词上，
+    # 从关键词所在切片开始，到覆盖它的锚点实例结束（多行字效整组清空时一起消失）。
+    in_place = {KEYWORD_TARGETS[track["target"]]: track["target"] for track in template.get("tracks", [])
+                if track.get("target") in KEYWORD_TARGETS and track.get("in_place") and track.get("enabled", True)}
+    anchors: dict[str, list[tuple[str, int, int]]] = {role: [] for role in in_place}
+    placements = sorted(placements, key=lambda item: item.get("text_target") in in_place.values())
     for placement in placements:
         editor = RemotionTrackEditor.model_validate(placement.get("editor", {}))
         sprite = publications[placement["sprite_id"]]
         language = placement.get("language", "zh")
         text_target = placement.get("text_target")
         target = placement_target(placement, sprite)
+        anchoring = target in in_place.values()
         if hashlib.sha256(sprite.tsx_code.encode()).hexdigest() != sprite.code_sha256:
             raise ContentError("Remotion 资产快照源码校验失败")
         try:
@@ -252,6 +263,12 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
                 continue
             first = min(frames - 1, to_frames(start, fps))
             last = min(frames, max(first + 1, to_frames(end, fps)))
+            anchor = None
+            if anchoring:
+                body = next((item for item in anchors[KEYWORD_TARGETS[target]] if item[1] <= first < item[2]), None)
+                if body is None:
+                    continue
+                anchor, last = body[0], body[2]
             count = last - first
             # 多行字效的换行只用来分行：标题里自带的换行不能把标题拆到下一行的样式里。
             text = "\n".join(item.replace("\n", " ") for item in texts) if lines > 1 else texts[0]
@@ -272,10 +289,17 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
             length = count if dynamic else max(1, to_frames(min(length_seconds, max_seconds), fps))
             # 资产与实际正文供渲染前的排版预检：正文可能写入多个参数路径，这里给出唯一的显示文字。
             # 多行字效在最后一行出现后才完整，排版预检只测量这之后的帧。
-            instances.append({"sprite_id": placement["sprite_id"], **({"text": text} if dynamic else {}),
-                              **({"reveal_frame": offsets[-1]} if dynamic and lines > 1 else {}),
-                              "code": code, "config": values, "host": host, "start_frame": first,
-                              "duration_frames": length, "width": sprite.canvas.width, "height": sprite.canvas.height})
+            instance = {"sprite_id": placement["sprite_id"], **({"text": text} if dynamic else {}),
+                        **({"reveal_frame": offsets[-1]} if dynamic and lines > 1 else {}),
+                        "code": code, "config": values, "host": host, "start_frame": first,
+                        "duration_frames": length, "width": sprite.canvas.width, "height": sprite.canvas.height}
+            if anchor:
+                # 位置与大小来自锚点里的关键词，摆放自己的宿主变换不适用。
+                instance.update(anchored={"anchor": anchor, "keyword": "".join(text.split())}, host={**host, "transform": {}})
+            elif language == "zh" and text_target in anchors:
+                instance["anchor"] = f"{placement['id']}#{len(instances)}"
+                anchors[text_target].append((instance["anchor"], first, first + length))
+            instances.append(instance)
     if not instances:
         return None
     if duration > max_seconds:

@@ -79,7 +79,7 @@ function templateRecord(template: Template): TemplateRecord {
     tracks: { tracks: [
       ...template.tracks.map((track) => ({
         id: track.id, target: track.target, startMode: track.start_mode,
-        language: track.language, enabled: track.enabled,
+        language: track.language, enabled: track.enabled, inPlace: track.in_place,
         start: track.start, duration: track.duration ?? undefined, transitionBoundary: track.transition_boundary, editor: track.editor,
       })),
       // 服务端把 Remotion 片段作为 remotion 轨道返回，editor 只带参数覆盖与宿主变换（没有时为空消息）。

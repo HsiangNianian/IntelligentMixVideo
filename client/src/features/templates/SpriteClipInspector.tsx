@@ -80,11 +80,13 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
   const others = asset?.parameters.filter((item) => !keywordParameters.includes(item) && shown(item.field.key)) ?? [];
   const appearanceParameters = asset ? others.filter(({ field }) => isInstanceParameter(asset.kind, field.key)) : [];
   const internalParameters = others.filter((item) => !appearanceParameters.includes(item));
-  const exposedTransforms = asset ? instanceTransformFields(asset.kind) : [];
+  // 句中原位的关键词字效画在原句关键词上，位置、大小与不透明度都由它决定，宿主变换不适用。
+  const inPlace = !!textTrack?.in_place;
+  const exposedTransforms = asset && !inPlace ? instanceTransformFields(asset.kind) : [];
   const overriddenInternal = [
     ...internalParameters.filter(({ field }) => Object.prototype.hasOwnProperty.call(clip.parameters, field.key)).map(({ field }) => ({ key: field.key, label: field.label, restore: () => onParameter(field.key, undefined) })),
     // 目录尚未读到（或资产已被删除）时没有类型与画布可用来命名这些覆盖，等资产出现后再列出。
-    ...(asset ? (["x", "y", "scale", "rotation", "opacity"] as TransformField[]).filter((name) => !exposedTransforms.includes(name) && clip.transform[name] !== undefined)
+    ...(asset && !inPlace ? (["x", "y", "scale", "rotation", "opacity"] as TransformField[]).filter((name) => !exposedTransforms.includes(name) && clip.transform[name] !== undefined)
       .map((name) => { const { label } = transformField(name, asset.kind, asset.width, asset.height); return { key: name, label, restore: () => onTransform({ [name]: undefined }) }; }) : []),
   ];
   // 字效的时间跟随所作用的文字对象：标题可在这里设置，字幕固定为整段视频；关键词对象跟随所属文字。
@@ -197,6 +199,7 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
           </div>;
         })}
         {exposedTransforms.includes("x") && <p className="text-[11px] text-muted-foreground">也可以在预览画面上拖动所选资产调整位置。</p>}
+        {inPlace && <p className="text-[11px] text-muted-foreground">句中原位：位置、大小与淡入淡出跟随原句中的关键词。</p>}
         {overriddenInternal.length > 0 && <div className="space-y-1.5 rounded-md border px-3 py-2">
           <p className="text-[11px] text-muted-foreground">下列设置不在模板里调整，但这次摆放仍带着覆盖值：</p>
           {overriddenInternal.map((item) => <div key={item.key} className="flex items-center justify-between gap-2 text-xs"><span className="min-w-0 truncate">{item.label} · 已覆盖</span>

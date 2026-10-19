@@ -6,7 +6,7 @@ import type { ParameterValue } from "@/components/ParameterControl";
 import { SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { SpriteAsset } from "@/features/sprites/model";
 import type { ClipTransform, TransformField } from "@/features/sprites/parameters";
-import { boundText, isKeywordTarget, textKey, type Draft, type KeywordTarget, type RemotionClip, type TextRole, type TextLanguage } from "./model";
+import { boundText, isKeywordTarget, keywordTargets, textKey, textRoles, type Draft, type KeywordTarget, type RemotionClip, type TextRole, type TextLanguage } from "./model";
 import { effectTargets } from "./effects";
 import type { ResolvedTimeline } from "./tracks";
 import { compactTransitions, nextTransitionBoundary } from "./transitions";
@@ -110,8 +110,28 @@ export function bindClip(draft: Draft, id: string, binding: { text_target: TextS
   }) };
 }
 
-/** 保存前检查片段占用的对象互不冲突；分类是否相符与 VFX 名额需要资产分类，由服务端复核。 */
+/**
+ * 关键词对象 `target` 显示在句中原位的前提：关键词对象和所属中文文字都由 Remotion 字效显示，且所属字效标记了命中的关键词
+ * （`known` 里查得到它的资产时检查；服务端保存时复核）。返回不满足的原因，满足时为空串。
+ */
+export function inPlaceProblem(draft: Draft, target: KeywordTarget, known: SpriteAsset[]): string {
+  const role = keywordTargets[target];
+  const body = draft.clips.find((clip) => clip.text_target === role && clip.language !== "en");
+  if (!body) return `句中原位需要${textRoles[role]}使用 Remotion 字效`;
+  if (!draft.clips.some((clip) => clip.text_target === target)) return `句中原位需要${effectTargets[target]}使用 Remotion 字效`;
+  if (known.find((item) => item.id === body.sprite_id)?.keywordSlot === false)
+    return `${textRoles[role]}的 Remotion 字效没有标记关键词，请在字效工作区重新生成并保存到资产`;
+  return "";
+}
+
+/** 保存前检查片段占用的对象互不冲突，句中原位的关键词对象有两边的字效；分类是否相符与 VFX 名额需要资产分类，由服务端复核。 */
 export function validateClipSlots(draft: Draft): void {
+  for (const track of draft.tracks) {
+    if (track.in_place && isKeywordTarget(track.target)) {
+      const problem = inPlaceProblem(draft, track.target, []);
+      if (problem) throw new Error(problem);
+    }
+  }
   const texts = new Set<string>();
   for (const clip of draft.clips) {
     if (clip.text_target && clip.transition_boundary !== undefined) throw new Error("Remotion 片段不能同时作用于文字和视频交界处");

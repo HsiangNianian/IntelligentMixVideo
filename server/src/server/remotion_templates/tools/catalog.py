@@ -107,6 +107,7 @@ async def sprite_compose(owner, request: SpriteComposeInput) -> ToolResult[Sprit
         "Takes the draft_id that sprite.compose returned in this task; the host keeps the composed source, so it is never re-sent.",
         "The Sprite is mounted once in the browser and must leave the user's video visible: a canvas that is opaque in most sampled frames (4 of 5) is refused with CODE_VALIDATION_FAILED.",
         "The Sprite must expose its kind's required top-level parameters (text: text, fontSize, fontWeight, fontFamily (an enum of font library families), color, keywords, keywordBold, keywordItalic, keywordUnderline, keywordStrikeout, keywordColor, keywordSize, with every keyword option defaulting to off; filter_overlay: intensity, tintColor; video_overlay and transition_overlay: color, speed), otherwise CATEGORY_PARAMETERS_MISSING lists what to bind.",
+        "A text Sprite renders the first literal hit of each keyword in its own inline element marked data-imv-keyword (checked by text_fit), so templates can draw a separate keyword effect in its place.",
     ],
     side_effects=["code validation, one browser mount with a transparency measurement, and sprite catalog write"],
     error_codes=["INVALID_ARGUMENT", "CODE_VALIDATION_FAILED", "CATEGORY_PARAMETERS_MISSING", "VALIDATION_UNAVAILABLE", "SPRITE_STORE_FAILED"],

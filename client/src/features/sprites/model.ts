@@ -20,4 +20,6 @@ export interface SpriteAsset {
   parameters: AssetParameter[];
   /** 字效的固定行数：多行字效为 2～4，示例文字按行分别填写，字幕的连续切片逐行显示；缺省或 1 为单行。 */
   lines?: number;
+  /** 字效是否标记了命中的关键词：是时可以作为句中原位关键词的正文。 */
+  keywordSlot?: boolean;
 }

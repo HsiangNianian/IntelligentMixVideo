@@ -1462,6 +1462,141 @@ def test_sprite_render_routes_accept_and_query(sprite_client, monkeypatch) -> No
     assert client.post("/api/sprites/render", json={"spriteId": "t"}).status_code == 415
 
 
+# ---- 句中原位的关键词字效：正文字效 MARKED 标记了关键词，关键词字效 WORD 是另一个单行字效 ----
+MARKED = pb.PublishedSprite()
+MARKED.CopyFrom(T)
+MARKED.sprite_id, MARKED.tsx_code = "marked", "export default (p) => <div><span data-imv-keyword>{p.keywords[0]}</span></div>;"
+WORD = pb.PublishedSprite()
+WORD.CopyFrom(published_sprite("word"))
+WORD.text_prop, WORD.keywords_prop = "text", "keywords"
+PUBLICATIONS.update({"marked": MARKED, "word": WORD})
+BOLD = pb.SpriteParameterOverride(key="fontWeight", value=pb.ScalarValue(number_value=700))
+
+
+# 场景：目录条目说明字效是否标记了命中的关键词，模板编辑据此判断能否把它用作句中原位的正文；更早的字效没有标记。
+def test_catalog_reports_whether_a_text_effect_marks_its_keyword() -> None:
+    """MARKED 的源码带 data-imv-keyword，T 没有；滤镜即使出现这个字样也不算。"""
+    from server.remotion_templates import sprites
+    marked_filter = pb.PublishedSprite()
+    marked_filter.CopyFrom(F)
+    marked_filter.tsx_code = MARKED.tsx_code
+    assert [sprites.summarize(item).keyword_slot for item in (MARKED, T, marked_filter)] == [True, False, False]
+
+
+# 场景：带关键词字效时，每段内容里命中的关键词各有一个关键词字效实例，锚定在这段正文上、排在全部正文之后，
+# 文字就是关键词、只用关键词字效自己的样式覆盖、不带宿主变换；短切片同样定格；没有关键词的内容不设锚点。
+def test_sprite_render_draws_keywords_in_place_over_the_body() -> None:
+    """标题：一个锚点与一个从第 0 帧持续 300 帧的关键词；切片：18 帧的切片两者都定格，60 帧的照常播放。"""
+    keyword = pb.SpriteKeywordEffect(sprite_id="word", resolved_style=[BOLD])
+    body, effect = plan_sprite_render(render_input(sprite_id="marked", keyword=keyword), MARKED, WORD).instances
+    assert (body["anchor"], body["config"]["keywords"]) == ("a0", ["新品"])
+    assert effect["anchored"] == {"anchor": "a0", "keyword": "新品"} and effect["sprite_id"] == "word" and effect["code"] == WORD.tsx_code
+    assert (effect["config"]["text"], effect["config"]["keywords"], effect["config"]["fontWeight"]) == ("新品", [], 700)
+    assert (effect["start_frame"], effect["duration_frames"], effect["host"]["transform"]) == (0, 300, {})
+    cues = plan_sprite_render(render_input(
+        sprite_id="marked", text="", keywords=[], effect_total_frames=200, keyword=keyword,
+        cues=[cue("看新闻了吗", 7, 25, "新闻"), cue("AI把数学圈", 52, 112, "数学圈"), cue("搞炸了", 112, 126)]), MARKED, WORD).instances
+    assert [item.get("anchor") for item in cues[:3]] == ["a0", "a1", None]
+    assert [(item["anchored"]["anchor"], item["config"]["text"], item["start_frame"], item["duration_frames"], item.get("hold")) for item in cues[3:]] == [
+        ("a0", "新闻", 7, 90, {"frame": 45, "frames": 18, "length": 90}), ("a1", "数学圈", 52, 60, None)]
+
+
+# 场景：正文没有标记关键词、关键词字效不是单行字效或画布不一致时，受理就拒绝，不悄悄在别处画关键词。
+@pytest.mark.parametrize(("body", "keyword", "code"), [
+    (T, WORD, "content_invalid"), (MARKED, F, "content_invalid"), (MARKED, "multi-line", "content_invalid"), (MARKED, "canvas", "canvas_mismatch"),
+])
+def test_sprite_render_refuses_an_in_place_keyword_it_cannot_anchor(body, keyword, code) -> None:
+    """错误码稳定：content_invalid 说明正文或关键词字效不适用，canvas_mismatch 说明画布不一致。"""
+    if isinstance(keyword, str):
+        changed = pb.PublishedSprite()
+        changed.CopyFrom(WORD)
+        if keyword == "canvas":
+            changed.canvas.width = 720
+        else:
+            schema = json.loads(changed.config_schema_json)
+            schema["properties"]["lineStartFrames"] = {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 3600}, "minItems": 2, "maxItems": 2}
+            changed.config_schema_json = json.dumps(schema)
+        keyword = changed
+    with pytest.raises(OverlayError) as raised:
+        plan_sprite_render(render_input(sprite_id=body.sprite_id, keyword=pb.SpriteKeywordEffect(sprite_id=keyword.sprite_id)), body, keyword)
+    assert raised.value.code == code
+
+
+# 场景：HTTP 受理时同时读取关键词字效的发布记录；关键词字效不存在为 422，不建任务。
+def test_sprite_render_route_reads_the_keyword_effect(sprite_client) -> None:
+    """带存在的关键词字效受理成功；引用不存在的关键词字效说明是哪个 Sprite。"""
+    client, overlays = sprite_client
+    assert post_render(client, render_input(sprite_id="marked", keyword=pb.SpriteKeywordEffect(sprite_id="word"))).status_code == 200
+    rows = task_rows(overlays)
+    missing = post_render(client, render_input(sprite_id="marked", keyword=pb.SpriteKeywordEffect(sprite_id="missing")))
+    assert missing.status_code == 422 and "Sprite missing 不存在" in missing.json()["detail"]
+    assert task_rows(overlays) == rows
+
+
+def decoded_rgba(video: Path, index: int, pixel: int) -> tuple[int, int, int, int]:
+    """用 libvpx 解码一帧并返回第 pixel 个像素（按行展开）的 RGBA。"""
+    raw = subprocess.run(
+        ["ffmpeg", "-v", "error", "-c:v", "libvpx-vp9", "-i", str(video), "-vf", f"select=eq(n\\,{index})",
+         "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "-"],
+        capture_output=True, check=True,
+    ).stdout
+    return tuple(raw[pixel * 4:pixel * 4 + 4])
+
+
+# 正文：40px 的三个字从 (20, 200) 起排成一行、前 10 帧淡入，命中的关键词放在标记元素里（绿色底）。
+MARKED_BODY = """import React from 'react';
+import {AbsoluteFill, interpolate, useCurrentFrame} from 'remotion';
+export default function Sprite(props: {text: string; keywords: string[]}) {
+  const word = props.keywords[0] ?? '';
+  const at = word ? props.text.indexOf(word) : -1;
+  const opacity = interpolate(useCurrentFrame(), [0, 10], [0, 1], {extrapolateRight: 'clamp'});
+  return <AbsoluteFill><div style={{position: 'absolute', left: 20, top: 200, fontSize: 40, lineHeight: 1, color: '#00ff00', whiteSpace: 'nowrap', opacity}}>
+    {at < 0 ? props.text : <>{props.text.slice(0, at)}<span data-imv-keyword style={{background: '#00ff00'}}>{word}</span>{props.text.slice(at + word.length)}</>}
+  </div></AbsoluteFill>;
+}
+"""
+# 关键词字效：在画布中央把文字画成 80px 的红底红字。
+RED_WORD = """import React from 'react';
+import {AbsoluteFill} from 'remotion';
+export default function Sprite(props: {text: string}) {
+  return <AbsoluteFill style={{justifyContent: 'center', alignItems: 'center'}}><span style={{fontSize: 80, lineHeight: 1, color: '#ff0000', background: '#ff0000'}}>{props.text}</span></AbsoluteFill>;
+}
+"""
+
+
+# 场景：真实沙箱里，关键词字效移到正文里关键词「乙」的位置、缩到它的字高并随正文淡入；正文自己的关键词被隐藏，
+# 关键词字效原来画在画布中央的位置保持透明。
+@pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
+def test_real_in_place_keyword_follows_the_body_hit(tmp_path: Path) -> None:
+    """「乙」的字形约在 x 60～100：第 20 帧 (80, 220) 是不透明的红色，第 0 帧随正文透明；画布中央 (90, 160) 透明。"""
+    configured = {
+        name: Path(value)
+        for name, value in (
+            ("browser_executable", RENDERER_PATHS["IMV_BROWSER_EXECUTABLE"]),
+            ("font_regular", RENDERER_PATHS["IMV_FONT_REGULAR"]),
+            ("font_bold", RENDERER_PATHS["IMV_FONT_BOLD"]),
+        )
+        if value
+    }
+    settings = Settings(_env_file=None, data_dir=tmp_path / "state", **configured)
+    body, word = still_title(MARKED_BODY), still_title(RED_WORD)
+    body.keywords_prop = "keywords"
+    body.config_schema_json = json.dumps({"type": "object", "properties": {
+        "text": {"type": "string", "minLength": 1}, "keywords": {"type": "array", "items": {"type": "string", "maxLength": 20}, "maxItems": 5}}})
+    body.default_config_json = json.dumps({"text": "字", "keywords": []})
+    body.parameters.append(pb.SpriteParameter(key="keywords", access=pb.OPERATOR_ACCESS_VISIBLE_EDITABLE,
+                                              default_value=pb.ScalarValue(string_list_value=pb.StringList()), max_items=5, max_length=20))
+    word.sprite_id = "word"
+    message = pb.SpriteRenderInput(sprite_id="still", text="甲乙丙", keywords=["乙"], effect_total_frames=60,
+                                   keyword=pb.SpriteKeywordEffect(sprite_id="word"))
+    video = asyncio.run(sprite_render.render_sprite(Renderer(settings), plan_sprite_render(message, body, word), tmp_path / "job"))
+    red, rest = 220 * 180 + 80, 160 * 180 + 90
+    r, g, b, a = decoded_rgba(video, 20, red)
+    assert (r > 200, g < 60, a > 240) == (True, True, True)
+    assert decoded_alpha(video, 0, red) == pytest.approx(0, abs=0.05)
+    assert decoded_alpha(video, 20, rest) == pytest.approx(0, abs=0.05)
+
+
 # 一个整段淡入、末 10 帧淡出的组件：淡出终点取自 durationInFrames。
 EDGE_FADE = """import React from 'react';
 import {AbsoluteFill, useCurrentFrame, useVideoConfig, interpolate} from 'remotion';

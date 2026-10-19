@@ -278,6 +278,8 @@ class EffectTrack(BaseModel):
         default=None, exclude_if=lambda value: value is None)
     language: Literal["zh", "en"] = Field(default="zh", exclude_if=lambda value: value == "zh")
     enabled: StrictBool = Field(default=True, exclude_if=lambda value: value is True)
+    # 仅关键词对象：画在所属文字 Remotion 字效里该词的原位置（句中原位），需要两者都由 Remotion 字效显示。
+    in_place: StrictBool = Field(default=False, exclude_if=lambda value: value is False)
 
     @field_serializer("editor", mode="wrap")
     def serialize_editor(self, editor: EffectTemplateEditor, handler: SerializerFunctionWrapHandler) -> dict:
@@ -296,6 +298,8 @@ class EffectTrack(BaseModel):
             raise ValueError("只有标题、字幕及其 Remotion 绑定可以设置语言")
         if not self.enabled and not (self.target in KEYWORD_TARGETS or (self.language == "en" and self.target in ("title", "subtitle"))):
             raise ValueError("只有英文标题、英文字幕或关键词对象可以停用")
+        if self.in_place and self.target not in KEYWORD_TARGETS:
+            raise ValueError("只有关键词对象可以显示在句中原位")
         if self.transition_boundary is not None and self.target not in ("transition", "remotion"):
             raise ValueError("只有转场可以设置视频交界处")
         if self.target == "transition":
@@ -389,6 +393,10 @@ class TemplateData(BaseModel):
                     raise ValueError("关键词对象需要所属的中文标题或字幕")
                 if (track.start_mode, track.start, track.duration) != (source.start_mode, source.start, source.duration):
                     raise ValueError("关键词对象的时间必须跟随所属文字")
+                # 句中原位要在所属文字的字效里找到关键词，再用关键词自己的字效画在那里。
+                bound = {item.text_target for item in self.tracks if item.target == "remotion" and item.language == "zh"}
+                if track.in_place and not {track.target, KEYWORD_TARGETS[track.target]} <= bound:
+                    raise ValueError("句中原位需要关键词对象和所属文字都使用 Remotion 字效")
             if track.text_target in KEYWORD_TARGETS and not any(item.target == track.text_target for item in self.tracks):
                 raise ValueError("关键词 Remotion 字效需要对应的关键词对象")
             if track.language == "en":

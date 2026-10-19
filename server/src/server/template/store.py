@@ -147,7 +147,8 @@ def save_template(data: TemplateSave) -> Template:
     Remotion 片段引用的 Sprite 必须已发布，且画布尺寸与帧率一致（422）：叠加渲染要把它们叠成同一个视频，
     不一致的模板到总线渲染时才会失败，所以在保存时拒绝。每个片段的参数覆盖与宿主变换也按所引用 Sprite 的
     发布参数契约检查（422）。片段按分类占用模板对象：字效作用于标题或字幕（不再覆盖文字与关键词）、转场占用视频交界处，
-    Remotion 视频特效与 IMS VFX 合计最多一个（422）。被模板引用的 Sprite 不能删除（`templates_using`），
+    Remotion 视频特效与 IMS VFX 合计最多一个（422）；句中原位的关键词要求所属文字的字效标记了关键词（422）。
+    被模板引用的 Sprite 不能删除（`templates_using`），
     只有与删除同时发生的保存才可能留下失效引用，届时总线渲染以 sprite_missing 报告。
     """
     # 创建和更新都检查必需文字对象，检查通过后才访问资产及模板数据库。
@@ -175,6 +176,12 @@ def save_template(data: TemplateSave) -> Template:
             except ValueError as exc:
                 raise HTTPException(422, f"Remotion 片段「{track.id}」：{exc}") from None
             check_slot(track, published[str(track.sprite_id)])
+        for track in data.tracks:
+            # 句中原位的关键词画在所属文字字效标记的关键词上，所以那个字效必须标记关键词。
+            body = next((clip for clip in clips if track.in_place and clip.language == "zh"
+                         and clip.text_target == KEYWORD_TARGETS.get(track.target)), None)
+            if body is not None and not sprites.keyword_slot(published[str(body.sprite_id)]):
+                raise HTTPException(422, f"「{body.id}」的 Remotion 字效没有标记关键词，不能使用句中原位；请在字效工作区重新生成并保存到资产")
         effects = sum(published[str(track.sprite_id)].kind in VFX_KINDS for track in clips)
         if effects + sum(track.target == "vfx" for track in data.tracks) > 1:
             raise HTTPException(422, "VFX 最多一个，Remotion 视频特效也占用这个名额")

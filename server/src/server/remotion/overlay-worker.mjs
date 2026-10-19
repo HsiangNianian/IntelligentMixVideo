@@ -25,6 +25,10 @@ const codes = [...new Set(instances.map((item) => item.code))];
  * of a `hold.length`-frame timeline, so the Sprite reads the length it was accepted at, and is shown for its first
  * `hold.frames` frames only. Remotion clamps a Sequence to its composition, so the
  * composition spans the latest clip end (`duration_in_frames`) and only `frames` of it are rendered.
+ *
+ * In-place keywords: a body instance with `anchor` is wrapped in `[data-imv-anchor]`, which hides the keyword hits
+ * its Sprite marks with `data-imv-keyword` (their space stays); an instance with `anchored: {anchor, keyword}` (listed
+ * after its body) is a keyword effect laid over that hit each frame by `KeywordAnchor`, ignoring its own placement.
  */
 function entrypoint() {
   const imports = codes.map((_, index) => `import Sprite${index} from './Sprite${index}';`).join("\n");
@@ -32,14 +36,19 @@ function entrypoint() {
     const width = item.width ?? composition.width, height = item.height ?? composition.height;
     const scale = Math.max(composition.width / width, composition.height / height);
     const host = item.host ?? {box: {x: 0, y: 0, width, height}, transform: {}};
-    const layer = `<HostLayer box={${JSON.stringify(host.box)}} transform={${JSON.stringify(host.transform)}}><Sprite${codes.indexOf(item.code)} {...${JSON.stringify(item.config)}} /></HostLayer>`;
-    const content = item.hold ? `<Hold frame={${item.hold.frame}} frames={${item.hold.frames}} length={${item.hold.length}}>${layer}</Hold>` : layer;
+    const sprite = `<Sprite${codes.indexOf(item.code)} {...${JSON.stringify(item.config)}} />`;
+    const layer = item.anchored
+      ? `<KeywordAnchor anchor={${JSON.stringify(item.anchored.anchor)}} keyword={${JSON.stringify(item.anchored.keyword)}} box={${JSON.stringify(host.box)}}>${sprite}</KeywordAnchor>`
+      : `<HostLayer box={${JSON.stringify(host.box)}} transform={${JSON.stringify(host.transform)}}>${sprite}</HostLayer>`;
+    const held = item.hold ? `<Hold frame={${item.hold.frame}} frames={${item.hold.frames}} length={${item.hold.length}}>${layer}</Hold>` : layer;
+    const content = item.anchor ? `<AbsoluteFill data-imv-anchor={${JSON.stringify(item.anchor)}}>${held}</AbsoluteFill>` : held;
     return `<Sequence key={${index}} from={${item.start_frame}} durationInFrames={${item.duration_frames}} width={${width}} height={${height}} style={{width:${width},height:${height},left:${(composition.width-width*scale)/2},top:${(composition.height-height*scale)/2},transform:'scale(${scale})',transformOrigin:'top left'}}>${content}</Sequence>`;
   }).join("");
   return `/** Trusted overlay host waits for both managed font weights. */
 import React from 'react';
 import {AbsoluteFill, Composition, Freeze, Sequence, registerRoot, delayRender, continueRender, cancelRender, staticFile, useCurrentFrame} from 'remotion';
 import {HostLayer} from './host-layer';
+import './keyword-anchor.js';
 ${imports}
 const handle = delayRender('managed fonts');
 Promise.all([400,700].map(async weight => {
@@ -48,8 +57,33 @@ Promise.all([400,700].map(async weight => {
 })).then(() => continueRender(handle)).catch(cancelRender);
 /** A still instance: frozen on one frame of a \`length\`-frame timeline and shown only for its first \`frames\` frames. */
 const Hold = ({frame, frames, length, children}) => useCurrentFrame() < frames ? <Freeze frame={frame}><Sequence durationInFrames={length}>{children}</Sequence></Freeze> : null;
+/**
+ * A keyword effect over the hit its body marks under \`[data-imv-anchor=anchor]\` (the one whose text is \`keyword\`, or
+ * the first): every frame, after the body has rendered, the host transform maps the effect's text onto the hit's
+ * glyphs at their height and opacity (see keyword-anchor.js). Hidden until measured, and when the body shows no hit.
+ * The measurement repeats once fonts finish loading, since they change the layout.
+ */
+const KeywordAnchor = ({anchor, keyword, box, children}) => {
+  const canvas = React.useRef(null);
+  const [transform, setTransform] = React.useState({opacity: 0});
+  const frame = useCurrentFrame();
+  React.useLayoutEffect(() => {
+    const geometry = globalThis.imvKeywordAnchor;
+    const measure = () => {
+      if (!canvas.current) return;
+      const root = document.querySelector('[data-imv-anchor="' + CSS.escape(anchor) + '"]');
+      const spots = root ? geometry.spots(root, canvas.current) : [];
+      const layer = canvas.current.querySelector('[data-imv-host-layer]')?.firstElementChild;
+      const next = geometry.placement(spots.find((spot) => spot.text === keyword) ?? spots[0], layer ? geometry.restText(layer) : null, box) ?? {opacity: 0};
+      setTransform((current) => JSON.stringify(current) === JSON.stringify(next) ? current : next);
+    };
+    measure();
+    if (document.fonts.status !== 'loaded') document.fonts.ready.then(measure);
+  }, [frame]);
+  return <AbsoluteFill ref={canvas}><HostLayer box={box} transform={transform}>{children}</HostLayer></AbsoluteFill>;
+};
 /** Transparent canvas: nothing paints a background, so unplaced frames stay fully transparent. */
-const Overlay = () => <AbsoluteFill>${placed}</AbsoluteFill>;
+const Overlay = () => <AbsoluteFill>${placed}<style>{'[data-imv-anchor] [data-imv-keyword]{visibility:hidden !important}'}</style></AbsoluteFill>;
 const Root = () => <Composition id="Overlay" component={Overlay} width={${composition.width}} height={${composition.height}} fps={${composition.fps}} durationInFrames={${composition.duration_in_frames}} />;
 registerRoot(Root);
 `;
@@ -59,6 +93,7 @@ let browser;
 try {
   await fs.symlink(`${rendererRoot}/node_modules`, `${root}/node_modules`);
   await fs.copyFile(`${rendererRoot}/host-layer.tsx`, `${root}/host-layer.tsx`);
+  await fs.copyFile(`${rendererRoot}/keyword-anchor.js`, `${root}/keyword-anchor.js`);
   for (const [index, code] of codes.entries()) {
     await fs.writeFile(`${root}/Sprite${index}.tsx`, code);
   }

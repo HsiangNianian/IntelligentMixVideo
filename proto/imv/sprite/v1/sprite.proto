@@ -198,6 +198,9 @@ message SpriteSummary {
   // 字效的固定行数：多行字效（声明 lineStartFrames 参数）为 2～4，文字用换行分隔各行，
   // 字幕的连续切片逐行填入；单行字效为 1，其他分类为 0。
   uint32 line_count = 10;
+  // 字效是否把命中的关键词放在带 data-imv-keyword 标记的元素里：是时可以作为正文使用句中原位的关键词字效
+  // （宿主隐藏该词、在原位置画另一个字效）；更早发布的字效为 false，需重新生成。
+  bool keyword_slot = 11;
 }
 
 // GET /api/sprites 的响应，返回可供运营选择的不可变发布条目。
@@ -286,6 +289,19 @@ message SpriteRenderInput {
   // line_count 个连续切片合成一组：第 i 行在第 i 个切片开始时出现，整组在最后一个切片结束时清空；
   // 定格按整组的长度判断，定格时所有行同时显示。
   repeated SpriteCue cues = 12;
+  // 句中原位的关键词字效（模板里关键词对象 in_place 时绑定的字效摆放）：可省略。提供时本 Sprite 必须是
+  // keyword_slot 为 true 的字效，keyword 引用另一个单行字效、画布一致；每段内容里命中的关键词由 keyword 字效
+  // 画在原句该词的位置（随原句移动，字号与该词一致），原句的这个词隐藏但保留占位。
+  SpriteKeywordEffect keyword = 13;
+}
+
+// 句中原位关键词所用的字效：它的文字就是关键词本身，只能覆盖样式参数。
+message SpriteKeywordEffect {
+  // 已发布的单行字效 ID。
+  string sprite_id = 1;
+  // 关键词字效的样式覆盖（模板里关键词字效轨道的 editor.remotion.parameters），规则同 resolved_style；
+  // 宿主变换不适用，位置与大小由原句中的关键词决定。
+  repeated SpriteParameterOverride resolved_style = 2;
 }
 
 // 一条字幕切片：文字、关键词与它在效果时间轴上的区间。帧号按发布画布的 fps 计数，

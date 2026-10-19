@@ -468,6 +468,22 @@ ready message. The page injects the published defaults and content box as a JSON
 `<`, `>`, `&` and line separators escaped); the player starts from them, merges `imv-preview-update` values over
 them (objects key by key, arrays and scalars replace) and applies an optional `host: {transform}` through
 `remotion/host-layer.tsx`, the wrapper the overlay render uses too. The wrapper also lifts the clipping of a composed Sprite's instance boxes (the parent of each `data-imv-instance`, which Sprites sealed before this carry as `overflow: hidden`; `player_page` has the same rule for older bundles), so a larger font, keyword size or underline is bounded by the canvas only; a component's own fixed boxes are still measured as before. Such a bundle reports `host: true` when ready.
+
+In-place keywords reuse ordinary text effects. A text effect renders the first literal hit of each keyword in its own
+inline element marked `data-imv-keyword` (Agent rule; `text_fit` mounts the default text with its first two characters
+as the keyword and refuses an effect that marks no element holding exactly that word); `sprites.keyword_slot` reads
+whether a publication names the marker and the catalog reports it as `SpriteSummary.keyword_slot` (effects published
+before the rule do not). `SpriteRenderInput.keyword` names another single-line text effect on the same canvas with its
+own style overrides: each content with keywords becomes an anchor (`anchor` on the body instance) and every keyword with
+a hit gets that effect, with the keyword as its text, as an `anchored` instance listed after all bodies, from the start
+of the line holding the hit to the content's end (held contents hold it too). The overlay worker wraps an anchor in
+`[data-imv-anchor]`, which hides its marked hits while keeping their space, and `KeywordAnchor` maps the keyword
+effect's text, as laid out without the transforms it animates, onto the hit's glyphs at their height and opacity every
+frame (`remotion/keyword-anchor.js`, which `player_page` also inlines); its placement transform does not apply and the
+text fit skips it. A body without the marker, a multi-line or non-text keyword effect, or another canvas is a 422. For
+the template editor, `?measure=true` adds a reporter that posts `imv-preview-measure {spots, text}` (the marked hits and
+the content's own rest text box, in canvas pixels) whenever they change, and `?hide_keyword=true` hides the marked hits;
+the editor computes the keyword player's host transform from the two pages, which cannot see each other.
 `presentation.mjs` writes the host protocol it speaks as the bundle's first line (`/* imv-preview-protocol 1 */`,
 `publication.PREVIEW_PROTOCOL`); only that line counts, because the generated code and its defaults are bundled too and
 can contain any text. Publishing rebuilds the bundle from the sealed source in the isolated worker when the sealed one

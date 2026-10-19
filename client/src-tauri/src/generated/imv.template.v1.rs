@@ -264,6 +264,11 @@ pub struct EffectTrack {
     /// 英文文字对象或关键词对象是否参与预览和合成；省略为启用，关闭仍保留配置与资产绑定。
     #[prost(bool, optional, tag="11")]
     pub enabled: ::core::option::Option<bool>,
+    /// 仅关键词对象：true 时关键词画在所属标题或字幕的 Remotion 字效里该词的原位置（句中原位），
+    /// 原句中的关键词隐藏但保留占位；要求关键词对象和所属文字都由 Remotion 字效显示，且所属字效标记了关键词。
+    /// 省略为独立位置。
+    #[prost(bool, optional, tag="12")]
+    pub in_place: ::core::option::Option<bool>,
 }
 /// 包装数组以保留“提供了空轨道列表”的含义。
 #[derive(::serde::Serialize)]
