@@ -13,8 +13,8 @@ import { PluginSettings } from "./PluginSettings";
 export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent data-update-safe className="flex h-[min(600px,70dvh)] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
-        <DialogHeader className="shrink-0 border-b px-6 py-5 pr-12">
+      <DialogContent data-update-safe className="flex h-[min(600px,70dvh)] flex-col gap-0 overflow-hidden rounded-[20px] border-line-strong bg-surface p-0 shadow-pop sm:max-w-3xl">
+        <DialogHeader className="shrink-0 border-b border-line bg-surface px-6 py-5 pr-12">
           <DialogTitle>设置</DialogTitle>
           <DialogDescription className="text-xs leading-5">
             {isTauri() ? "配置保存在当前客户端。" : "浏览器预览仅在当前页面保存配置，刷新后丢失。"}

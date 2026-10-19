@@ -36,6 +36,10 @@ MAX_LINES = 4
 LINE_START_MAX_FRAMES = 3600
 # 多行字效相邻两行之间的距离（像素）：所有行在同一个纵向容器里排布，模板可以按摆放调整。
 LINE_GAP_PROP = "lineGap"
+# 生成只做双栏：新的多行字效固定上下两栏；更早发布的 3～MAX_LINES 行资产仍按自己封存的行数显示。
+TIERS = 2
+# 双栏字效每栏的字号是两栏共用的 fontSize 乘以该栏的比例，比例范围固定。
+TIER_SIZE_RATIO = (0.4, 2)
 
 
 @dataclass(frozen=True)
@@ -189,12 +193,12 @@ LINE_STARTS = Rule(
     LINE_STARTS_PROP,
     # The example is a two-line text; minItems and maxItems are both the number of lines.
     {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": LINE_START_MAX_FRAMES}, "minItems": 2, "maxItems": 2},
-    f"多行字效每行出现的帧，2～{MAX_LINES} 项整数数组（minItems 与 maxItems 都等于行数），首项为 0 且不递减", _line_starts,
+    f"多行字效每行出现的帧，整数数组（minItems 与 maxItems 都等于行数，新生成的双栏为 {TIERS}），首项为 0 且不递减", _line_starts,
 )
-# 数组参数不合规时附给 Agent 的说明：逐行样式不能做成数组。
+# 数组参数不合规时附给 Agent 的说明：逐栏样式是固定名称的标量参数，不能做成数组。
 _ARRAY_HINT = (
-    "per-line styles are separate scalar parameters (such as line2Color, or line2SizeRatio as a ratio of fontSize so the "
-    "host's fontSize shrink scales every line), not arrays"
+    "per-tier styles are the fixed scalar parameters line1Color, line1SizeRatio, line1FontFamily and line1FontWeight "
+    "(and the same for line2), not arrays"
 )
 # 多行字效的行间距：绑定了行起点就必须有，用户才能调整两行之间的距离。
 LINE_GAP = Rule(
@@ -223,6 +227,42 @@ REQUIRED: dict[SpriteKindName, tuple[Rule, ...]] = {
         Rule("speed", {"type": "number", "minimum": 0.25, "maximum": 4}, "速度倍率，0.25～4 的数字", _exact(0.25, 4)),
     ),
 }
+# 关键词字效的开关：画了关键词字效的字效必须暴露它（默认开启），关掉后命中词只按六个关键词样式显示，不用重新生成。
+KEYWORD_EFFECT_PROP = "keywordEffect"
+KEYWORD_EFFECT = Rule(KEYWORD_EFFECT_PROP, {"type": "boolean"}, "关键词字效开关，布尔值，默认开启", _boolean)
+# 宿主固定名称的参数在参数面板里的中文标题：组合时由宿主写入（`tools/session.py`），不随 Agent 的措辞变化。
+FIXED_TITLES = {
+    "text": "文字", "fontSize": "字号", "fontWeight": "字重", "fontFamily": "字体",
+    "keywords": "关键词", "keywordBold": "关键词加粗", "keywordItalic": "关键词斜体", "keywordUnderline": "关键词下划线",
+    "keywordStrikeout": "关键词删除线", "keywordColor": "关键词颜色", "keywordSize": "关键词字号", KEYWORD_EFFECT_PROP: "关键词字效",
+    LINE_GAP_PROP: "栏间距", LINE_STARTS_PROP: "各栏出现帧",
+    **{
+        f"line{tier}{suffix}": f"{name}{label}"
+        for tier, name in ((1, "上栏"), (2, "下栏"))
+        for suffix, label in (("Color", "颜色"), ("SizeRatio", "字号比例"), ("FontFamily", "字体"), ("FontWeight", "字重"))
+    },
+}
+
+
+def _tier_rules(tier: int) -> tuple[Rule, ...]:
+    """双栏字效第 ``tier`` 栏（1 为上栏）自己的样式参数：颜色、相对 fontSize 的字号比例、字体与字重，名称与 Schema 固定。"""
+    low, high = TIER_SIZE_RATIO
+    name = FIXED_TITLES[f"line{tier}Color"][:2]
+    return (
+        Rule(f"line{tier}Color", _COLOR, f"{name}文字颜色，十六进制颜色", _color),
+        Rule(f"line{tier}SizeRatio", {"type": "number", "minimum": low, "maximum": high},
+             f"{name}字号相对 fontSize 的比例，{low}～{high} 的数字", _exact(low, high)),
+        Rule(f"line{tier}FontFamily", FONT_FAMILY.example, f"{name}字体，字符串枚举，取值是字体库里的家族名，默认值是其中之一", _font_family),
+        Rule(f"line{tier}FontWeight", {"type": "integer", "enum": [400, 700]}, f"{name}字重，只能是 400 和 700 两个枚举值", _weight),
+    )
+
+
+# 双栏字效的逐栏样式参数：只在 Agent 生成时必备（`fonts` 传入时检查），发布更早的多行版本不要求。
+TIER_STYLES = tuple(rule for tier in range(1, TIERS + 1) for rule in _tier_rules(tier))
+# 双栏各栏有自己的颜色、字重与字体，整段共用的这三个参数不再暴露；fontSize 仍是两栏共用的基准字号，宿主据此缩小长文字。
+SHARED_STYLES = ("color", "fontWeight", FONT_FAMILY.name)
+# 取值是字体库家族名的参数：保存时取消冻结的枚举，之后按实时字体库校验（`fonts.open_font_schema`、`fonts.require_family`）。
+FONT_PARAMETERS = (FONT_FAMILY.name, *(f"line{tier}FontFamily" for tier in range(1, TIERS + 1)))
 
 
 # 默认值未关闭的关键词参数的原因前缀；运营说明据此与缺少参数分开提示。
@@ -302,25 +342,30 @@ def parameter_problems(definition: object, name: str) -> str | None:
         return None
     if kind == "array":
         if name == LINE_STARTS_PROP:
-            return None if _line_starts(definition) else (
-                f"must be the line starts array of a multi-line text with exactly N items, minItems and maxItems both N (2 to {MAX_LINES}), "
-                f"for two lines {json.dumps(LINE_STARTS.example)}"
-            )
+            return None if _line_starts(definition) else f"must be the line starts array of a two-tier text (双栏): {json.dumps(LINE_STARTS.example)}"
         return None if _keywords(definition) else f"only a keywords string array (and {LINE_STARTS_PROP}) is supported: {_ARRAY_HINT}"
     return "type must be number, integer, string, boolean or a keywords array"
 
 
-def category_problems(kind: str | None, schema: dict, bound: set[str], defaults: dict, fonts: Collection[str] | None = None) -> list[Problem]:
+def category_problems(
+    kind: str | None, schema: dict, bound: set[str], defaults: dict, fonts: Collection[str] | None = None, requested: Collection[str] = (),
+) -> list[Problem]:
     """列出某分类缺少、形状不符或默认值不合约定的必备参数；``bound`` 是作为顶层参数暴露的名称，``defaults`` 是默认参数。
 
     ``fonts`` 是字体库里的家族名：生成路径传入时，字效还必须暴露 `fontFamily` 枚举（取值都在字体库里），默认值是枚举之一；
-    发布更早的版本时不传，不要求这个参数。
+    多行字效在生成路径必须恰好两栏，并以每栏固定的颜色、字号比例、字体与字重（`TIER_STYLES`）代替整段共用的
+    颜色、字重与字体；画了关键词字效的字效必须暴露默认开启的 `keywordEffect` 开关。``requested`` 是新会话里用户打开的
+    开关（`two_tier`、`keyword_effect`），生成路径据此要求双栏或关键词字效。发布更早的版本时都不传，不要求这些参数；
+    多行字效在两条路径上都不要求整段共用的颜色与字重。
     """
     if kind not in REQUIRED:
         return [Problem("kind", None, f"kind must be one of {', '.join(KINDS)}")]
     properties = _properties(schema)
+    tiered = kind == "text" and LINE_STARTS_PROP in bound
     problems = []
     for rule in REQUIRED[kind]:
+        if tiered and rule.name in SHARED_STYLES:
+            continue
         if rule.name not in bound or rule.name not in properties:
             problems.append(Problem(rule.name, rule, "missing"))
         elif not rule.accepts(properties[rule.name]):
@@ -328,24 +373,75 @@ def category_problems(kind: str | None, schema: dict, bound: set[str], defaults:
         elif rule.off is not None and (rule.name not in defaults or not _same(defaults[rule.name], rule.off)):
             problems.append(Problem(rule.name, rule, f"{DEFAULT_REASON} {json.dumps(rule.off)} (off)"))
     if kind == "text" and fonts is not None:
-        definition = properties.get(FONT_FAMILY.name)
-        if FONT_FAMILY.name not in bound or definition is None:
-            problems.append(Problem(FONT_FAMILY.name, FONT_FAMILY, "missing"))
-        elif not FONT_FAMILY.accepts(definition):
-            problems.append(Problem(FONT_FAMILY.name, FONT_FAMILY, "has the wrong schema"))
-        elif not set(definition["enum"]) <= set(fonts):
-            unknown = sorted(set(definition["enum"]) - set(fonts))
-            problems.append(Problem(FONT_FAMILY.name, FONT_FAMILY, f"lists families that are not in the font library: {unknown}"))
-        elif defaults.get(FONT_FAMILY.name) not in definition["enum"]:
-            problems.append(Problem(FONT_FAMILY.name, FONT_FAMILY, "must default to one of its enum values"))
-    if kind == "text" and LINE_STARTS_PROP in bound:
+        problems += _tier_problems(properties, bound, defaults, fonts) if tiered else _font_problems(FONT_FAMILY, properties, bound, defaults, fonts)
+        problems += _keyword_effect_problems(properties, bound, defaults, "keyword_effect" in requested)
+        if "two_tier" in requested and not tiered:
+            problems.append(Problem(LINE_STARTS_PROP, LINE_STARTS, "missing: the user switched on 双栏 (original_request.two_tier), so make a two-tier "
+                                    f"text whose default text has exactly {TIERS} lines and bind {LINE_STARTS_PROP}, {LINE_GAP_PROP} and the tier parameters"))
+    if tiered:
         problems += _line_problems(properties, bound, defaults)
     elif kind == "text" and isinstance(defaults.get("text"), str) and "\n" in defaults["text"]:
         # A text that defaults to several lines is a multi-line text: without bound line starts the host would show the
         # lines as one, in one input and at one time.
         lines = len(defaults["text"].split("\n"))
-        problems.append(Problem(LINE_STARTS_PROP, LINE_STARTS, f"missing: the default text has {lines} lines, so bind {LINE_STARTS_PROP} "
-                                f"(minItems and maxItems {lines}) and {LINE_GAP_PROP} as top-level parameters, or make the default text one line"))
+        problems.append(Problem(LINE_STARTS_PROP, LINE_STARTS, f"missing: the default text has {lines} lines, so make it a two-tier text "
+                                f"(双栏) with exactly {TIERS} lines and bind {LINE_STARTS_PROP} (minItems and maxItems {TIERS}), {LINE_GAP_PROP} "
+                                "and the tier parameters as top-level parameters, or make the default text one line"))
+    return problems
+
+
+def _font_problems(rule: Rule, properties: dict, bound: set[str], defaults: dict, fonts: Collection[str]) -> list[Problem]:
+    """字体参数（`fontFamily` 或某一栏的字体）：枚举取值都在字体库里，默认值是枚举之一。"""
+    definition = properties.get(rule.name)
+    if rule.name not in bound or definition is None:
+        return [Problem(rule.name, rule, "missing")]
+    if not rule.accepts(definition):
+        return [Problem(rule.name, rule, "has the wrong schema")]
+    if not set(definition["enum"]) <= set(fonts):
+        unknown = sorted(set(definition["enum"]) - set(fonts))
+        return [Problem(rule.name, rule, f"lists families that are not in the font library: {unknown}")]
+    if defaults.get(rule.name) not in definition["enum"]:
+        return [Problem(rule.name, rule, "must default to one of its enum values")]
+    return []
+
+
+def has_keyword_effect(bound: Collection[str]) -> bool:
+    """字效画了关键词字效：文字组合带关键词 Preset（宿主暴露它的 keywordEffect 开关），或者绑定了以 keywordEffect 开头的外观参数。"""
+    return any(name.startswith(KEYWORD_EFFECT_PROP) for name in bound)
+
+
+def _keyword_effect_problems(properties: dict, bound: set[str], defaults: dict, requested: bool) -> list[Problem]:
+    """关键词字效（生成路径）：用户打开了开关就必须画；画了就必须暴露默认开启的 `keywordEffect` 开关。"""
+    if not has_keyword_effect(bound):
+        return [Problem(KEYWORD_EFFECT_PROP, None, "missing: the user switched on the keyword effect (original_request.keyword_effect), so give the "
+                        "keyword hit its own effect, bind its look as keywordEffect... parameters and bind the keywordEffect switch {\"type\":\"boolean\"}")] if requested else []
+    if KEYWORD_EFFECT_PROP not in bound or KEYWORD_EFFECT_PROP not in properties:
+        return [Problem(KEYWORD_EFFECT_PROP, KEYWORD_EFFECT, "missing")]
+    if not KEYWORD_EFFECT.accepts(properties[KEYWORD_EFFECT_PROP]):
+        return [Problem(KEYWORD_EFFECT_PROP, KEYWORD_EFFECT, "has the wrong schema")]
+    if defaults.get(KEYWORD_EFFECT_PROP) is not True:
+        return [Problem(KEYWORD_EFFECT_PROP, KEYWORD_EFFECT, "must default to true, so the keyword effect shows until the user switches it off")]
+    return []
+
+
+def _tier_problems(properties: dict, bound: set[str], defaults: dict, fonts: Collection[str]) -> list[Problem]:
+    """双栏字效（生成路径）：恰好两栏，每栏的固定样式参数齐全且形状正确，不暴露整段共用的颜色、字重与字体。"""
+    problems = []
+    definition = properties.get(LINE_STARTS_PROP)
+    if isinstance(definition, dict) and _line_starts(definition) and definition["maxItems"] != TIERS:
+        problems.append(Problem(LINE_STARTS_PROP, LINE_STARTS, f"has {definition['maxItems']} lines: a multi-line text is a two-tier text (双栏) "
+                                f"with exactly {TIERS} lines, minItems and maxItems both {TIERS}; put any further text into one of the two tiers"))
+    for rule in TIER_STYLES:
+        if rule.name in FONT_PARAMETERS:
+            problems += _font_problems(rule, properties, bound, defaults, fonts)
+        elif rule.name not in bound or rule.name not in properties:
+            problems.append(Problem(rule.name, rule, "missing"))
+        elif not rule.accepts(properties[rule.name]):
+            problems.append(Problem(rule.name, rule, "has the wrong schema"))
+    for name in SHARED_STYLES:
+        if name in bound:
+            problems.append(Problem(name, None, f"must not be bound for a two-tier text: each tier has its own line1{name[0].upper()}{name[1:]} "
+                                    f"and line2{name[0].upper()}{name[1:]} (fontSize stays the shared base size)"))
     return problems
 
 

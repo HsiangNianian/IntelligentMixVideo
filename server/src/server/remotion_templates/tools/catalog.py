@@ -65,7 +65,10 @@ def _deferred(name: str):
 
 @tool(
     "preset.create",
-    constraints=["The complete source, parameter schema and defaults are saved as a new immutable record."],
+    constraints=[
+        "The complete source, parameter schema and defaults are saved as a new immutable record.",
+        "role text or keyword marks a Preset for a text effect's text block. The host passes a text Preset text, segments, Keyword, fontFamily, fontWeight and fontSize and a keyword Preset text; it is type-checked with those props, and its parameter_schema declares only its own style parameters, never these.",
+    ],
     side_effects=["code validation and preset catalog write"],
     error_codes=["INVALID_ARGUMENT", "CODE_VALIDATION_FAILED", "VALIDATION_UNAVAILABLE", "PRESET_STORE_FAILED"],
     starts_generation=True,
@@ -81,17 +84,28 @@ async def preset_create(owner, request: PresetCreateInput) -> ToolResult[PresetC
 
 @tool(
     "sprite.compose",
-    contract_version=2,
+    contract_version=3,
     constraints=[
-        "The host canvas is fixed at 1080x1920, 30 FPS; duration is derived from instances. When the snapshot has target_duration_frames (a new work), the last instance must end exactly there, otherwise the call is refused.",
-        "Contract v2: kind is required (text, filter_overlay, video_overlay or transition_overlay) and parameters lifts Preset props to required top-level Sprite parameters that templates may change per placement.",
-        "Each binding targets declared top-level Preset props that share one object schema and one value; a bound number needs minimum and maximum (integers for an integer), a bound string a colour pattern, enum or maxLength of at most 2000; only type, title, description, default, minimum, maximum, enum, minLength, maxLength, the colour pattern (or the keywordColor pattern), maxItems and items.maxLength are allowed.",
+        "The host canvas is fixed at 1080x1920, 30 FPS. When the snapshot has target_duration_frames (a new work), the Sprite must last exactly that long (the last instance's end, or the text block's duration_frames), otherwise the call is refused.",
+        "Contract v3: kind is required (text, filter_overlay, video_overlay or transition_overlay). A text effect is composed from text {layout, text, font_size, tiers, line_gap, line_starts, keyword, duration_frames} with role text Presets for the tiers and an optional role keyword Preset, and no instances; the host lays the block out and provides its configuration parameters. Other kinds place instances by layout and timing.",
+        "parameters lifts Preset props to required top-level Sprite style parameters that templates may change per placement; each binding targets declared top-level Preset props that share one object schema and one value; a bound number needs minimum and maximum (integers for an integer), a bound string a colour pattern, enum or maxLength of at most 2000; only type, title, description, default, minimum, maximum, enum, minLength, maxLength, the colour pattern (or the keywordColor pattern), maxItems and items.maxLength may be used. A text block's configuration names (text, fontSize, fonts, weights, size ratios, lineGap, lineStartFrames, keyword options, keywordEffect) are taken, for parameter names and for the tiers' and keyword's instance_id alike.",
         "The host owns position, scale, rotation and opacity of the whole Sprite; do not bind or implement them.",
     ],
     side_effects=["deterministic source generation; no catalog write"],
     error_codes=["INVALID_ARGUMENT", "PRESET_NOT_FOUND", "COMPOSITION_FAILED"],
     starts_generation=True,
-    examples=[{"input": {"description": "暖色标题", "kind": "text", "instances": [{"instance_id": "title", "source": {"kind": "stored", "preset_id": "preset_title_001"}, "layout": {"x": 90.0, "y": 760.0, "width": 900, "height": 400, "z_index": 0}, "timing": {"start_frame": 0, "duration_frames": 150}}], "parameters": [{"name": "text", "title": "文字", "targets": [{"instance_id": "title", "parameter": "text"}]}, {"name": "fontSize", "title": "字号", "targets": [{"instance_id": "title", "parameter": "size"}]}, {"name": "fontWeight", "title": "字重", "targets": [{"instance_id": "title", "parameter": "weight"}]}, {"name": "fontFamily", "title": "字体", "targets": [{"instance_id": "title", "parameter": "fontFamily"}]}, {"name": "color", "title": "颜色", "targets": [{"instance_id": "title", "parameter": "color"}]}, {"name": "keywords", "title": "关键词", "targets": [{"instance_id": "title", "parameter": "keywords"}]}, {"name": "keywordBold", "title": "关键词加粗", "targets": [{"instance_id": "title", "parameter": "keywordBold"}]}, {"name": "keywordItalic", "title": "关键词斜体", "targets": [{"instance_id": "title", "parameter": "keywordItalic"}]}, {"name": "keywordUnderline", "title": "关键词下划线", "targets": [{"instance_id": "title", "parameter": "keywordUnderline"}]}, {"name": "keywordStrikeout", "title": "关键词删除线", "targets": [{"instance_id": "title", "parameter": "keywordStrikeout"}]}, {"name": "keywordColor", "title": "关键词颜色", "targets": [{"instance_id": "title", "parameter": "keywordColor"}]}, {"name": "keywordSize", "title": "关键词字号", "targets": [{"instance_id": "title", "parameter": "keywordSize"}]}]}, "output": {"ok": True, "data": {"draft_id": "sprite_draft_0123456789ab", "digest": "3f2a9c1e5b7d4f60", "description": "暖色标题", "composition": {"width": 1080, "height": 1920, "fps": 30, "duration_frames": 150}, "kind": "text", "instances": [{"instance_id": "title", "preset_id": "preset_title_001", "parameter_names": ["text", "size", "weight", "color", "glow", "keywords", "keywordBold", "keywordItalic", "keywordUnderline", "keywordStrikeout", "keywordColor", "keywordSize"], "layout": {"x": 90.0, "y": 760.0, "width": 900, "height": 400, "z_index": 0}, "timing": {"start_frame": 0, "duration_frames": 150}}], "parameter_names": ["text", "fontSize", "fontWeight", "color", "keywords", "keywordBold", "keywordItalic", "keywordUnderline", "keywordStrikeout", "keywordColor", "keywordSize"], "default_parameters": {"text": "今日灵感", "fontSize": 96, "fontWeight": 700, "color": "#FFFFFF", "keywords": [], "keywordBold": False, "keywordItalic": False, "keywordUnderline": False, "keywordStrikeout": False, "keywordColor": "", "keywordSize": 0, "title": {"glow": 0.4}}, "code_bytes": 2048}}}],
+    examples=[{"input": {"description": "双栏标题", "kind": "text", "text": {
+        "layout": {"x": 54.0, "y": 700.0, "width": 972, "height": 520}, "text": "判断一个人\n选择花字、滤镜和特效", "font_size": 96,
+        "tiers": [
+            {"instance_id": "upper", "source": {"kind": "stored", "preset_id": "preset_tier_001"}, "parameters": {"color": "#FFFFFF"}, "font_family": "Noto Sans CJK SC", "font_weight": 700, "size_ratio": 0.5},
+            {"instance_id": "lower", "source": {"kind": "stored", "preset_id": "preset_tier_001"}, "parameters": {"color": "#F5B93C"}, "font_family": "Noto Sans CJK SC", "font_weight": 700, "size_ratio": 1},
+        ],
+        "line_gap": 24, "line_starts": [0, 30], "keyword": {"instance_id": "keyword", "source": {"kind": "stored", "preset_id": "preset_glow_001"}}, "duration_frames": 150},
+        "parameters": [
+            {"name": "line1Color", "title": "上栏颜色", "targets": [{"instance_id": "upper", "parameter": "color"}]},
+            {"name": "line2Color", "title": "下栏颜色", "targets": [{"instance_id": "lower", "parameter": "color"}]},
+            {"name": "keywordEffectColor", "title": "关键词发光颜色", "targets": [{"instance_id": "keyword", "parameter": "glowColor"}]},
+        ]}, "output": {"ok": False, "error": {"code": "PRESET_NOT_FOUND", "message": "example"}}}],
 )
 async def sprite_compose(owner, request: SpriteComposeInput) -> ToolResult[SpriteComposeOutput]:
     """Resolve Presets (stored preset_id, or a task draft_id from preset_modify or the accepted base) and keep the composed Sprite as a host draft; returns its draft_id and a code-free summary."""
@@ -106,7 +120,7 @@ async def sprite_compose(owner, request: SpriteComposeInput) -> ToolResult[Sprit
     constraints=[
         "Takes the draft_id that sprite.compose returned in this task; the host keeps the composed source, so it is never re-sent.",
         "The Sprite is mounted once in the browser and must leave the user's video visible: a canvas that is opaque in most sampled frames (4 of 5) is refused with CODE_VALIDATION_FAILED.",
-        "The Sprite must expose its kind's required top-level parameters (text: text, fontSize, fontWeight, fontFamily (an enum of font library families), color, keywords, keywordBold, keywordItalic, keywordUnderline, keywordStrikeout, keywordColor, keywordSize, with every keyword option defaulting to off; filter_overlay: intensity, tintColor; video_overlay and transition_overlay: color, speed), otherwise CATEGORY_PARAMETERS_MISSING lists what to bind.",
+        "The Sprite must expose its kind's required top-level parameters (text: a text block provides its configuration and needs the style parameter color for one tier or line1Color and line2Color for two tiers; filter_overlay: intensity, tintColor; video_overlay and transition_overlay: color, speed), otherwise CATEGORY_PARAMETERS_MISSING lists what to bind.",
     ],
     side_effects=["code validation, one browser mount with a transparency measurement, and sprite catalog write"],
     error_codes=["INVALID_ARGUMENT", "CODE_VALIDATION_FAILED", "CATEGORY_PARAMETERS_MISSING", "VALIDATION_UNAVAILABLE", "SPRITE_STORE_FAILED"],
@@ -194,10 +208,10 @@ async def image_crop(owner, request: ImageCropInput) -> ToolResult[ProcessedImag
 @tool(
     "preset.search",
     contract_version=2,
-    constraints=["Contract v2: presets summaries replace the former unimplemented matches contract. Optional substring filter; limit is 1-100. Results also have a 40000-byte serialized content budget; has_more indicates omitted summaries. Use a narrower query or preset_id to read a full record. An oversized full record fails without truncating code."],
+    constraints=["Contract v2: presets summaries replace the former unimplemented matches contract. Optional query whose every whitespace-separated word must appear in the description, and an optional role (text or keyword) for text-block Presets; limit is 1-100. Results also have a 40000-byte serialized content budget; has_more indicates omitted summaries. Use a narrower query or preset_id to read a full record. An oversized full record fails without truncating code."],
     side_effects=["read-only catalog listing"],
     error_codes=["INVALID_ARGUMENT", "PRESET_NOT_FOUND", "PRESET_STORE_FAILED", "RESOURCE_LIMIT_EXCEEDED"],
-    examples=[{"input": {"query": "标题", "limit": 5}, "output": {"ok": True, "data": {"presets": []}}}],
+    examples=[{"input": {"query": "描边", "role": "text", "limit": 5}, "output": {"ok": True, "data": {"presets": []}}}],
 )
 async def preset_search(owner, request: PresetSearchInput) -> ToolResult[PresetSearchOutput]:
     """List Preset summaries (id, description, parameter names), optionally filtered by keyword."""

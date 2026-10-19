@@ -94,6 +94,8 @@ try {
       return route.fulfill({ status: 204 });
     assert.equal(req.method(), "GET", `${req.method()} ${path}`);
     if (path === "/capabilities") return json({ models_configured: true });
+    // 新建后本地任务仍为 running，会话恢复会先核对一次任务；返回进行中，后续状态由 SSE 事件推进。
+    if (path === "/jobs/job-1") return json({ ...jobs[0], status: "running", result_version_id: null });
     if (path.endsWith("/events")) return json([]);
     if (path.endsWith("/stream")) {
       const after = Number(url.searchParams.get("after"));
@@ -132,7 +134,7 @@ try {
     await page.getByRole("button", { name: "预览 V2", exact: true }).waitFor();
   }
   await page.goto(url);
-  await page.getByRole("tab", { name: "Remotion 字效", exact: true }).click();
+  await page.getByRole("button", { name: "AI 字效", exact: true }).click();
   await createWork();
   await page
     .getByText("正在渲染预览…", { exact: true })
@@ -185,11 +187,12 @@ try {
   assert.equal(deleted, false);
   const frame = page.locator('iframe[title="Remotion 字效播放器"]');
   const rect = await frame.boundingBox();
-  // Player 自身保持画布比例；iframe 占满预览区域，避免竖屏画布挤压播放控件。
+  // iframe 与外框保持成功版本的真实画布比例；外框完整落在预览区内。
+  assert(Math.abs(rect.width / rect.height - versions[1].spec.composition.width / versions[1].spec.composition.height) < 0.01);
   const frameParent = await frame.locator("..").boundingBox();
   assert(Math.abs(rect.width - frameParent.width) <= 2);
   assert(Math.abs(rect.height - frameParent.height) <= 2);
-  const handle = page.getByRole("separator", { name: "调整历史与聊天宽度" });
+  const handle = page.getByRole("separator", { name: "调整聊天与预览宽度" });
 
   const before = await page
     .locator('[data-slot="resizable-panel"]')
@@ -213,18 +216,18 @@ try {
   ).width;
   assert(resizedWidth < after.width - 1);
   const pref = await page.evaluate(() =>
-    localStorage.getItem("imv.remotion.layout"),
+    localStorage.getItem("imv.remotion.studio-layout"),
   );
   assert(pref);
   await page.reload();
-  await page.getByRole("tab", { name: "Remotion 字效", exact: true }).click();
+  await page.getByRole("button", { name: "AI 字效", exact: true }).click();
   // 刷新清空了浏览器内存会话库：记住的会话静默清除，不提示删除；重新创建后继续验证。
   await page.getByText("还没有聊天会话").first().waitFor();
   assert.equal(await page.getByText(/会话已删除或正在清理/).count(), 0);
   await createWork();
   assert.equal(creates, 2);
   assert.equal(
-    await page.evaluate(() => localStorage.getItem("imv.remotion.layout")),
+    await page.evaluate(() => localStorage.getItem("imv.remotion.studio-layout")),
     pref,
   );
   assert(
@@ -248,30 +251,25 @@ try {
       ).width - before.width,
     ) < 2,
   );
-  // 第二条分隔线调整预览宽度；极端拖动也必须保留三个面板的最小可用宽度。
+  // 预览/参数分隔线调整预览宽度；极端拖动也必须保留三个面板的最小可用宽度。
   const second = await page
-    .getByRole("separator", { name: "调整聊天与预览宽度" })
+    .getByRole("separator", { name: "调整预览与参数宽度" })
     .boundingBox();
-  const previewBefore = await page
-    .locator('[data-slot="resizable-panel"]')
-    .last()
-    .boundingBox();
+  const previewBefore = await page.locator("#preview").boundingBox();
   await page.mouse.move(second.x + second.width / 2, second.y + 100);
   await page.mouse.down();
-  await page.mouse.move(second.x - 60, second.y + 100, { steps: 8 });
+  await page.mouse.move(second.x + 60, second.y + 100, { steps: 8 });
   await page.mouse.up();
   assert(
-    (await page.locator('[data-slot="resizable-panel"]').last().boundingBox())
-      .width >
+    (await page.locator("#preview").boundingBox()).width >
       previewBefore.width + 30,
   );
-  await page.mouse.move(second.x - 60, second.y + 100);
+  await page.mouse.move(second.x + 60, second.y + 100);
   await page.mouse.down();
-  await page.mouse.move(1400, second.y + 100, { steps: 8 });
+  await page.mouse.move(300, second.y + 100, { steps: 8 });
   await page.mouse.up();
   assert(
-    (await page.locator('[data-slot="resizable-panel"]').last().boundingBox())
-      .width >= 359,
+    (await page.locator("#preview").boundingBox()).width >= 219,
   );
   await page.getByRole("button", { name: "恢复布局" }).click();
   // 点击成功卡片只替换预览；返回最新后恢复参数编辑。
@@ -333,7 +331,7 @@ try {
   });
   assert(await frame.isVisible());
   // 窄屏删除按钮关闭抽屉并打开确认框，删除当前会话后播放器和选择同步释放。
-  await page.getByRole("button", { name: "聊天历史", exact: true }).click();
+  await page.getByRole("button", { name: "历史会话", exact: true }).click();
   await page
     .getByRole("dialog")
     .getByRole("button", { name: "删除聊天", exact: true })
@@ -351,17 +349,17 @@ try {
     ),
     0,
   );
-  await page.getByRole("button", { name: "聊天历史", exact: true }).click();
+  await page.getByRole("button", { name: "历史会话", exact: true }).click();
   await page.getByRole("dialog").getByText("还没有聊天会话").waitFor();
   await page
     .getByRole("dialog")
-    .getByRole("button", { name: "新增聊天" })
+    .getByRole("button", { name: "新建会话" })
     .click();
   // 抽屉带关闭动画，等待卸载完成后再确认没有残留弹窗。
   await page.getByRole("dialog").waitFor({ state: "detached" });
   assert.equal(await page.getByRole("dialog").count(), 0);
   await page.getByRole("tab", { name: "聊天", exact: true }).click();
-  await page.getByRole("heading", { name: "把想法变成字效" }).waitFor();
+  await page.getByRole("heading", { name: "把想法，变成画面" }).waitFor();
   // 新会话的时长选择与自定义输入加宽了工具栏：窄屏与三栏桌面下发送按钮都须留在输入框内，不被裁掉。
   await page.getByRole("combobox", { name: "预览时长" }).click();
   await page.getByRole("option", { name: "自定义", exact: true }).click();
@@ -387,12 +385,12 @@ try {
   await page.setViewportSize({ width: 390, height: 844 });
   // 损坏的本地偏好不能阻止打开工作区，也不能生成 NaN 或挤掉面板。
   await page.evaluate(() =>
-    localStorage.setItem("imv.remotion.layout", '{"history":"bad"}'),
+    localStorage.setItem("imv.remotion.studio-layout", '{"history":"bad"}'),
   );
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.reload();
-  await page.getByRole("tab", { name: "Remotion 字效", exact: true }).click();
-  await page.getByRole("button", { name: "新增聊天" }).waitFor();
+  await page.getByRole("button", { name: "AI 字效", exact: true }).click();
+  await page.getByRole("button", { name: "保存资产", exact: true }).waitFor();
   assert(
     Math.abs(
       (

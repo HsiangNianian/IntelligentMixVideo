@@ -214,7 +214,7 @@ function clipEditor(clip: RemotionClip) {
 export async function saveTemplate(draft: Draft, id?: string, environment: Environment = "cloud", library?: string): Promise<Template> {
   if (!draft.name.trim()) return Promise.reject(new Error("请输入模板名称"));
   if (environment === "local" && draft.clips.length)
-    return Promise.reject(new Error("本地模板不支持 Remotion 资产"));
+    return Promise.reject(new Error("本地模板不支持 AI 资产"));
   validateTemplateTracks(draft.tracks);
   validateClipSlots(draft);
   for (const target of ["title", "subtitle"])

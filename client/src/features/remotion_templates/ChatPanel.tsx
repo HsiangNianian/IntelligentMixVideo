@@ -1,9 +1,10 @@
 /** 当前会话的聊天展示与输入；每条消息最多附 4 张参考图（点击选择、拖入或粘贴），只作为生成参考，预览 URL 随组件卸载释放。 */
 import { useUpdateBlocker } from "@/lib/update-guard";
 import { cn } from "@/lib/utils";
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { ArrowUp, ImagePlus, Square, Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { Hint } from "@/components/Hint";
 import { Textarea } from "@/components/ui/textarea";
 import { apiUrl } from "./api";
@@ -12,9 +13,10 @@ import { DurationPicker } from "./DurationPicker";
 import { LoopRounds } from "./LoopRounds";
 import { TaskStatus } from "./TaskStatus";
 import { VersionCard } from "./VersionCard";
-import { MAX_MESSAGE_IMAGES, type ChatMessage, type Job, type SessionJob, type Version } from "./model";
+import { MAX_MESSAGE_IMAGES, type ChatMessage, type Job, type NewWork, type SessionJob, type Version } from "./model";
 import type { Draft } from "./useTemplateSession";
-import { FlipText } from "@/components/ui/flip-text";
+import type { SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
+import { LogoMark } from "@/components/studio/Logo";
 import { LoaderGooeyBlobs } from "@/components/ui/loaders-gooey-blobs";
 import { AnimatePresence, motion } from "motion/react";
 
@@ -43,7 +45,8 @@ interface Props {
   disabledReason?: string;
   canStop: boolean;
   first: boolean;
-  onSend: (text: string, images: File[], durationInFrames?: number) => void;
+  /** 首条消息另带预览时长与「关键词字效」「双栏」选择；之后的消息不带。 */
+  onSend: (text: string, images: File[], start?: NewWork) => void;
   onStop: () => void;
   draft?: Draft | null;
   job?: Job | SessionJob | null;
@@ -59,6 +62,9 @@ interface Props {
   versionDisabled?: boolean;
   previewDisabled?: boolean;
   onPreviewVersion?: (id: string) => void;
+  /** 用户改选过的资产分类（按版本 ID）；未改选的版本卡片显示 Agent 判断的分类。 */
+  versionKinds?: Record<string, SpriteKind>;
+  onVersionKindChange?: (id: string, kind: SpriteKind) => void;
   versionNotice?: ReactNode;
 }
 /** 只渲染公开消息；输入支持中文组合输入，Shift+Enter 换行，Enter 发送。 */
@@ -85,12 +91,17 @@ export function ChatPanel({
   versionDisabled = false,
   previewDisabled = false,
   onPreviewVersion,
+  versionKinds,
+  onVersionKindChange,
   versionNotice,
 }: Props) {
   const [text, setText] = useState("");
   const [images, setImages] = useState<File[]>([]);
   const [error, setError] = useState("");
   const [frames, setFrames] = useState<number | null>(FIXED_COMPOSITION.duration_in_frames);
+  const [keywordEffect, setKeywordEffect] = useState(false);
+  const [twoTier, setTwoTier] = useState(false);
+  const switchId = useId();
   useUpdateBlocker("聊天中还有未发送的内容或参考图", !!text || images.length > 0);
   const [dragging, setDragging] = useState(false);
   const end = useRef<HTMLDivElement>(null);
@@ -135,6 +146,8 @@ export function ChatPanel({
         disabled={versionDisabled}
         previewDisabled={previewDisabled}
         onPreview={() => onPreviewVersion?.(version.id)}
+        kind={versionKinds?.[version.id]}
+        onKindChange={(kind) => onVersionKindChange?.(version.id, kind)}
       />
     );
   }
@@ -157,7 +170,7 @@ export function ChatPanel({
   /** 按钮与 Enter 共用防重复入口；等待期间保留文字草稿。 */
   function send() {
     if (disabled || (!text.trim() && !images.length) || (first && frames === null)) return;
-    onSend(text, images, first ? frames! : undefined);
+    onSend(text, images, first ? { durationInFrames: frames!, keywordEffect, twoTier } : undefined);
     setText("");
     setImages([]);
     setError("");
@@ -165,10 +178,10 @@ export function ChatPanel({
   return (
     <section
       aria-label="字效聊天"
-      className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border bg-card"
+      className={cn("studio-chat flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-surface", !messages.length && "studio-chat-empty")}
     >
       <div className="flex h-14 shrink-0 items-center gap-2 border-b px-5 text-sm font-medium">
-        <Sparkles className="size-4 text-primary" /> 字效助手{" "}
+        <Sparkles className="size-4 text-brand" /> AI 字效{" "}
         <span className="ml-auto text-xs font-normal text-muted-foreground">
           当前会话
         </span>
@@ -180,7 +193,7 @@ export function ChatPanel({
         role="log"
         aria-label="聊天消息"
         aria-live="polite"
-        className="min-h-0 flex-1 space-y-5 overflow-x-hidden overflow-y-auto p-4 xl:p-5"
+        className="studio-chat-log min-h-0 flex-1 space-y-5 overflow-x-hidden overflow-y-auto p-5"
         onScroll={(event) => {
           const log = event.currentTarget;
           following.current =
@@ -198,11 +211,9 @@ export function ChatPanel({
           </Button>
         )}
         {!messages.length && (
-          <div className="flex min-h-52 flex-col justify-center gap-3 text-sm">
-            <div className="flex size-10 items-center justify-center rounded-xl bg-primary/10">
-              <Sparkles className="size-5 text-primary" />
-            </div>
-            <h2 className="text-lg font-semibold"><FlipText loop={false} duration={1.6}>把想法变成字效</FlipText></h2>
+          <div className="flex flex-col items-center justify-center gap-3 pt-4 text-center text-sm">
+            <LogoMark className="mb-2 size-11" />
+            <h2 className="text-[23px] font-semibold tracking-tight">把想法，变成画面</h2>
             <p className="max-w-72 leading-6 text-muted-foreground">
               描述文字、颜色、位置和出场方式，也可以上传、拖入或粘贴参考图片。
             </p>
@@ -234,8 +245,8 @@ export function ChatPanel({
                 className={cn(
                   "max-w-[90%] space-y-2 rounded-2xl px-4 py-3 text-sm leading-6",
                   message.role === "user"
-                    ? "rounded-br-md bg-primary/15 ring-1 ring-primary/25"
-                    : "rounded-bl-md bg-muted",
+                    ? "rounded-br-md bg-raised"
+                    : "rounded-bl-md px-0 bg-transparent",
                 )}
               >
                 {!!(message.images?.length || message.image_asset_ids?.length) && (
@@ -256,7 +267,7 @@ export function ChatPanel({
                 {message.created_at && (
                   <time
                     dateTime={message.created_at}
-                    className="block text-xs opacity-70"
+                    className="block font-mono text-[10px] text-fg-subtle"
                   >
                     {new Date(message.created_at).toLocaleString("zh-CN")}
                   </time>
@@ -307,7 +318,7 @@ export function ChatPanel({
       {/* 输入区接受拖入或粘贴参考图：拖放始终阻止浏览器默认打开文件，避免离开应用；未锁定时附图并显示遮罩。粘贴只截获图片，文字照常输入。 */}
       <form
         className={cn(
-          "relative m-4 mt-0 rounded-xl border bg-background p-3 transition-colors",
+          "studio-composer relative m-4 mt-0 shrink-0 rounded-2xl border border-line-strong bg-surface p-3 shadow-sm transition-colors focus-within:border-brand/40 focus-within:ring-4 focus-within:ring-brand/5",
           dragging && "border-primary/60",
         )}
         onSubmit={(event) => {
@@ -438,6 +449,24 @@ export function ChatPanel({
               图片
             </Button>
             {first && <DurationPicker disabled={disabled} onChange={setFrames} />}
+            {first && (
+              <div
+                title="让关键词带自己的字效（如弹跳、发光、描边），之后可在本会话继续修改；未打开时由 Agent 按描述与参考图判断"
+                className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground"
+              >
+                <Switch id={`${switchId}-keyword`} checked={keywordEffect} disabled={disabled} onCheckedChange={setKeywordEffect} />
+                <label htmlFor={`${switchId}-keyword`}>关键词字效</label>
+              </div>
+            )}
+            {first && (
+              <div
+                title="生成上下两栏、各自样式的字效（如上栏小字引导语、下栏大字标题）；未打开时由 Agent 按描述与参考图判断"
+                className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground"
+              >
+                <Switch id={`${switchId}-tiers`} checked={twoTier} disabled={disabled} onCheckedChange={setTwoTier} />
+                <label htmlFor={`${switchId}-tiers`}>双栏</label>
+              </div>
+            )}
           </div>
           {busy && canStop ? (
             <Button type="button" variant="outline" size="sm" className="ml-auto" onClick={onStop}>
@@ -448,7 +477,7 @@ export function ChatPanel({
             <Button
               type="submit"
               size="sm"
-              className="ml-auto"
+              className="ml-auto bg-brand text-brand-ink hover:bg-brand-hover"
               disabled={disabled || (!text.trim() && !images.length) || (first && frames === null)}
             >
               发送

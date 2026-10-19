@@ -1,6 +1,6 @@
 /**
- * 模板里一次 Remotion 摆放的设置，只影响这次摆放、不改资产：字效调示例文字（多行字效作用于字幕时逐行填写，用换行连接）、
- * 字号、水平/垂直位置（百分比，与 IMS 文字一致）与关键词；滤镜与转场调强度，视频特效调位置、缩放、旋转与不透明度，并设置起点或所占交界处。
+ * 模板里一次 Remotion 摆放的设置，只影响这次摆放、不改资产：字效调示例文字（多行字效逐行填写，用换行连接）、
+ * 字号、字体与字重（双栏逐栏设置，与字效工作区的配置参数相同）、水平/垂直位置（百分比，与 IMS 文字一致）与关键词；滤镜与转场调强度，视频特效调位置、缩放、旋转与不透明度，并设置起点或所占交界处。
  * 颜色、速度、动画与出入场时间等资产内部参数不在这里调，说明原因并提供回字效工作区的入口；这些参数已有的覆盖仍生效，可在此恢复默认。
  * 修改只进入草稿，随模板保存时服务端再按发布契约检查。
  */
@@ -15,14 +15,14 @@ import { Hint } from "@/components/Hint";
 import { ParameterControl, withLine, type ParameterValue } from "@/components/ParameterControl";
 import { SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { SpriteAsset } from "@/features/sprites/model";
-import { CATEGORIES, categoryOf, instanceTransformFields, isInstanceParameter, percentToPixels, pixelsToPercent, transformField, type TransformField } from "@/features/sprites/parameters";
+import { CATEGORIES, TEMPLATE_KEYWORD_PARAMETERS, categoryOf, instanceTransformFields, isInstanceParameter, percentToPixels, pixelsToPercent, transformField, type TransformField } from "@/features/sprites/parameters";
 import { textKey, textRoles, type EffectTrack, type RemotionClip } from "./model";
 import { BOUND_TEXT_PARAMETERS, type bindClip } from "./clips";
 import { TrackTiming } from "./TrackTiming";
 import { trackLabel, type ResolvedTrack } from "./tracks";
 
-/** 关键词相关参数：键名以 keyword 开头（keywords、keywordColor、keywordBold……）。 */
-const isKeywordParameter = (key: string) => /^keyword/i.test(key);
+/** 关键词页签里的参数：关键词与六个样式选项；字效自带的关键词效果参数属于资产本身，不在模板里修改。 */
+const isKeywordParameter = (key: string) => TEMPLATE_KEYWORD_PARAMETERS.includes(key);
 /** 字效必备的关键词样式参数，与服务端 `categories.TEXT_KEYWORDS` 一致；缺任何一个即为早于该契约发布的字效。 */
 const KEYWORD_STYLE_KEYS = ["keywordBold", "keywordItalic", "keywordUnderline", "keywordStrikeout", "keywordColor", "keywordSize"];
 /** 关键词颜色（空串沿用文字颜色）与字号（0 沿用文字字号）的开关打开时的初值与字号下限，与 IMV 模板一致。 */
@@ -65,7 +65,7 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
   const legacyTextTarget = clip.business_target === "title" || clip.business_target === "subtitle" ? clip.business_target : undefined;
   // 作用于文字时，文字与关键词由该文字对象提供，不在这里单独设置。
   const shown = (key: string) => !(clip.text_target || legacyTextTarget) || !BOUND_TEXT_PARAMETERS.includes(key);
-  // 只有字效把关键词参数移到单独页签；其他类型里以 keyword 开头的参数仍留在参数区。
+  // 只有字效把关键词与六个样式选项移到单独页签；关键词效果参数与其他类型里以 keyword 开头的参数都按资产内部参数处理。
   const keywordParameters = asset && isText ? asset.parameters.filter(({ field }) => isKeywordParameter(field.key) && shown(field.key)) : [];
   const styleSwitches = keywordParameters.flatMap((item) => {
     const style = KEYWORD_STYLES.find(([key]) => key === item.field.key);
@@ -93,8 +93,8 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
   const textOptions = textTracks?.filter((track) => track.target === "title" || track.target === "subtitle").map((track) => ({ value: textKey(track.target, track.language), label: trackLabel(track, textTracks), target: track.target as "title" | "subtitle", language: track.language }))
     ?? (["title", "subtitle"] as const).map((target) => ({ value: target, label: textRoles[target], target, language: undefined }));
   const sampleRole = textTrack?.target === "title" || textTrack?.target === "subtitle" ? textTrack.target : undefined;
-  // 多行字效作用于字幕时逐行填写示例；作用于标题时整段标题显示在第一行，仍是一个输入框。
-  const sampleLines = sampleRole === "subtitle" && isText ? asset?.lines ?? 1 : 1;
+  // 多行字效逐行填写示例：字幕的连续切片逐行出现，标题按其中的换行分栏，与合成一致。
+  const sampleLines = sampleRole && isText ? asset?.lines ?? 1 : 1;
   /** 参数当前值：本次摆放的覆盖优先，否则取发布默认值。 */
   const valueOf = ({ field, defaultValue }: NonNullable<typeof asset>["parameters"][number]) => clip.parameters[field.key] ?? defaultValue;
   /** 写入参数覆盖；与发布默认值相同时清除覆盖。 */
@@ -111,7 +111,7 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
     </div>;
   };
   const category = asset ? CATEGORIES.find((item) => item.id === categoryOf(asset.kind))?.label : undefined;
-  return <section aria-label="Remotion 资产设置" className="min-w-0">
+  return <section aria-label="AI 资产设置" className="min-w-0">
     <div className="flex items-start justify-between gap-2 px-4 pb-2 pt-3">
       <div className="min-w-0"><h2 className="truncate text-[13px] font-semibold leading-5">{asset?.name ?? "未找到的资产"}</h2><p className="mt-0.5 text-[11px] leading-3 text-muted-foreground">{category ?? "资产已不可用，保存前请移除"}</p></div>
       <Hint label="关闭资产设置"><Button type="button" variant="ghost" size="icon" className="size-6 shrink-0" aria-label="关闭资产设置" onClick={onClose}><X className="size-3.5" aria-hidden="true" /></Button></Hint>
@@ -164,14 +164,16 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
         {sampleRole && textTrack && (sampleLines > 1 ? <fieldset className="space-y-1.5">
           <legend className="text-xs">示例文字（{sampleLines} 行）</legend>
           {Array.from({ length: sampleLines }, (_, index) =>
-            <Input key={index} aria-label={`示例文字第 ${index + 1} 行`} placeholder={`第 ${index + 1} 行`} value={textTrack.editor.subtitle.split("\n")[index] ?? ""}
-              maxLength={Math.floor((SAMPLE_MAX_LENGTH.subtitle - (sampleLines - 1)) / sampleLines)}
-              onChange={(event) => onSample(withLine(textTrack.editor.subtitle, sampleLines, index, event.target.value))} />)}
-          <p className="text-[11px] text-muted-foreground">合成时同一句里连续的 {sampleLines} 条字幕逐行出现，最后一条结束后一起清空，再显示下一组。</p>
+            <Input key={index} aria-label={`示例文字第 ${index + 1} 行`} placeholder={`第 ${index + 1} 行`} value={textTrack.editor[sampleRole].split("\n")[index] ?? ""}
+              maxLength={Math.floor((SAMPLE_MAX_LENGTH[sampleRole] - (sampleLines - 1)) / sampleLines)}
+              onChange={(event) => onSample(withLine(textTrack.editor[sampleRole], sampleLines, index, event.target.value))} />)}
+          <p className="text-[11px] text-muted-foreground">{sampleRole === "subtitle"
+            ? `合成时同一句里连续的 ${sampleLines} 条字幕逐行出现，最后一条结束后一起清空，再显示下一组。`
+            : "合成时实际标题按其中的换行分行（多出的并入最后一行），没有换行时整段显示在第一行。"}</p>
         </fieldset> : <div className="space-y-1.5">
           <Label htmlFor={`${textTrack.id}-sample`} className="text-xs">示例文字</Label>
           <Input id={`${textTrack.id}-sample`} value={textTrack.editor[sampleRole]} maxLength={SAMPLE_MAX_LENGTH[sampleRole]} onChange={(event) => onSample(event.target.value)} />
-          <p className="text-[11px] text-muted-foreground">{textRoles[sampleRole]}的文字由这个文字对象提供，合成时换成实际{sampleRole === "title" ? "标题" : "字幕"}{sampleRole === "title" && (asset?.lines ?? 1) > 1 ? "，整段显示在这个多行字效的第一行" : ""}。</p>
+          <p className="text-[11px] text-muted-foreground">{textRoles[sampleRole]}的文字由这个文字对象提供，合成时换成实际{sampleRole === "title" ? "标题" : "字幕"}。</p>
         </div>)}
         {appearanceParameters.map(parameterRow)}
         {exposedTransforms.map((name) => {

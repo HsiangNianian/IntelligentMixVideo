@@ -1,4 +1,4 @@
-/** Remotion 资产叠加预览核心测试：就绪握手、按预览时间逐帧定位、区间外隐藏、旧资产降级；执行 bun run test。 */
+/** AI 资产叠加预览核心测试：就绪握手、按预览时间逐帧定位、区间外隐藏、旧资产降级；执行 bun run test。 */
 import { expect, spyOn, test } from "bun:test";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRef } from "react";
@@ -11,7 +11,7 @@ const clip = { id: "sprite-a", spriteId: "s1", aspect: 9 / 16, name: "霓虹标�
 function mount() {
   const ref = createRef<SpriteOverlayHandle>();
   render(<SpriteOverlay ref={ref} clips={[clip]} stageAspect={16 / 9} initialTime={0} />);
-  const frame = screen.getByTitle<HTMLIFrameElement>("Remotion 资产预览：霓虹标题");
+  const frame = screen.getByTitle<HTMLIFrameElement>("AI 资产预览：霓虹标题");
   const post = spyOn(frame.contentWindow!, "postMessage");
   const channel = new URL(frame.src).hash.slice(1);
   /** 播放器页面发出就绪通知；sync 表示该资产的包是否支持逐帧驱动。 */
@@ -78,11 +78,11 @@ test("增删资产后每个播放器继续使用稳定通道同步", async () =>
   const view = render(<SpriteOverlay ref={ref} clips={[]} stageAspect={1} initialTime={2} />);
   const second = { ...clip, id: "sprite-b", spriteId: "s2", name: "第二个资产" };
   view.rerender(<SpriteOverlay ref={ref} clips={[clip]} stageAspect={1} initialTime={2} />);
-  const first = screen.getByTitle<HTMLIFrameElement>("Remotion 资产预览：霓虹标题");
+  const first = screen.getByTitle<HTMLIFrameElement>("AI 资产预览：霓虹标题");
   const originalSrc = first.src;
   view.rerender(<SpriteOverlay ref={ref} clips={[clip, second]} stageAspect={1} initialTime={2} />);
   expect(first.src).toBe(originalSrc);
-  const other = screen.getByTitle<HTMLIFrameElement>("Remotion 资产预览：第二个资产");
+  const other = screen.getByTitle<HTMLIFrameElement>("AI 资产预览：第二个资产");
   const frames = [first, other];
   const posts = frames.map((frame) => spyOn(frame.contentWindow!, "postMessage"));
   for (const frame of frames) await act(async () => {
@@ -119,7 +119,7 @@ test("画面选择按文字摆放 ID 区分中英文", () => {
 test("支持参数覆盖的播放器收到参数与宿主变换", async () => {
   const ref = createRef<SpriteOverlayHandle>();
   const view = render(<SpriteOverlay ref={ref} clips={[placed]} stageAspect={16 / 9} initialTime={0} />);
-  const frame = screen.getByTitle<HTMLIFrameElement>("Remotion 资产预览：霓虹标题");
+  const frame = screen.getByTitle<HTMLIFrameElement>("AI 资产预览：霓虹标题");
   const post = spyOn(frame.contentWindow!, "postMessage");
   const channel = new URL(frame.src).hash.slice(1);
   await act(async () => {

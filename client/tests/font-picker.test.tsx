@@ -105,14 +105,15 @@ test("服务端拒绝上传时展示原因", async () => {
   expect(changes).toEqual([]);
 });
 
-// 场景：参数面板里名为 fontFamily 的参数使用字体选择器，而不是普通文本框或冻结的枚举下拉。
-test("fontFamily 参数控件是字体选择器", async () => {
+// 场景：参数面板里名为 fontFamily 的参数、以及双栏字效每栏的字体（line1FontFamily / line2FontFamily）使用字体选择器，
+// 而不是普通文本框或冻结的枚举下拉。
+test.each([["fontFamily", "字体"], ["line2FontFamily", "下栏字体"]])("%s 参数控件是字体选择器", async (key, label) => {
   fontServer();
   const changes: unknown[] = [];
-  render(<ParameterControl field={{ key: "fontFamily", label: "字体", kind: "string", maxLength: 100 }} value="Noto Sans CJK SC" disabled={false} onChange={(value) => changes.push(value)} />);
+  render(<ParameterControl field={{ key, label, kind: "string", maxLength: 100 }} value="Noto Sans CJK SC" disabled={false} onChange={(value) => changes.push(value)} />);
   await screen.findByRole("img", { name: "思源黑体（默认）" });
   expect(screen.queryByRole("textbox")).toBeNull();
-  fireEvent.click(screen.getByRole("combobox", { name: "字体" }));
+  fireEvent.click(screen.getByRole("combobox", { name: label }));
   fireEvent.click(await screen.findByRole("option", { name: /马善政毛笔楷书/ }));
   expect(changes).toEqual(["Ma Shan Zheng"]);
 });
@@ -168,14 +169,14 @@ test("字体库页面展示上传被拒绝的原因", async () => {
 test("侧栏可以进入字体库页面", async () => {
   const server = fontServer();
   render(<HomePage />);
-  fireEvent.mouseDown(screen.getByRole("tab", { name: "字体库" }), { button: 0 });
+  fireEvent.click(screen.getByRole("button", { name: "字体库" }));
   expect(screen.getByRole("heading", { name: "字体库" })).toBeTruthy();
   expect(await screen.findByText("共 2 个字体")).toBeTruthy();
   const listed = () => fetchMock.mock.calls.filter(([url]) => new URL(String(url)).pathname === "/api/templates/fonts").length;
   expect(listed()).toBe(1);
-  fireEvent.mouseDown(screen.getByRole("tab", { name: "主页" }), { button: 0 });
+  fireEvent.click(screen.getByRole("button", { name: "主页" }));
   await waitFor(() => expect(screen.queryByText("共 2 个字体")).toBeNull());
-  fireEvent.mouseDown(screen.getByRole("tab", { name: "字体库" }), { button: 0 });
+  fireEvent.click(screen.getByRole("button", { name: "字体库" }));
   await screen.findByText("共 2 个字体");
   expect(listed()).toBe(2);
   expect(server.uploads).toEqual([]);

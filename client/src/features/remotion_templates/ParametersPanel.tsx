@@ -16,6 +16,7 @@ import {
 import { ParameterControl, type ParameterValue } from "@/components/ParameterControl";
 import {
   controlLabel,
+  instanceTitle,
   isJsonValue,
   sameJson,
   numericRules,
@@ -304,7 +305,7 @@ export function ParametersPanel({
 }
 
 /**
- * 组合版本的参数：顶层参数是代码样例对外的参数（模板里每次摆放都能修改），各实例参数只在这里调整默认值。
+ * 组合版本的参数：顶层参数分为宿主固定的「配置」与这个字效自己的「样式」，各实例参数只在这里调整默认值。
  * 保存只检查参数 Schema 并立即生成新版本；无法逐项编辑的实例回退为 JSON 文本域。
  */
 function ComposedParameters({version, values, disabled, onChange, onValidity}: {
@@ -312,20 +313,23 @@ function ComposedParameters({version, values, disabled, onChange, onValidity}: {
   onChange: (key: string, value: JsonValue) => void; onValidity: (key: string, invalid: boolean) => void;
 }) {
   const groups = schemaGroups(version.candidate.config_schema.properties ?? {});
-  const top = groups.top.filter((field) => values[field.key] !== undefined);
+  const sections = [["配置", groups.config], ["样式", groups.style]] as const;
   return <div className="space-y-4 py-3">
-    <p className="text-xs text-muted-foreground">模板参数会在云端模板里逐次摆放修改；保存只检查参数范围，立即生成新版本。布局与时间修改请通过聊天描述。</p>
-    {top.length > 0 && <fieldset className="space-y-3">
-      <legend className="text-sm font-medium">模板参数</legend>
-      <div className="grid gap-4 @min-[420px]:grid-cols-2">
-        {top.map((field) => <ParameterControl key={field.key} field={field} value={values[field.key] as ParameterValue} disabled={disabled}
-          className={cn(field.kind === "string" && "@min-[420px]:col-span-2")}
-          onChange={(next) => onChange(field.key, next)} />)}
-      </div>
-    </fieldset>}
+    <p className="text-xs text-muted-foreground">配置是固定的文字、字体、排版与关键词设置，样式是这个字效自己的外观；云端模板按摆放调整字号、字体、字重、栏间距与逐栏字号比例、位置与关键词，其余在这里修改。保存只检查参数范围，立即生成新版本；布局与时间修改请通过聊天描述。</p>
+    {sections.map(([title, all]) => {
+      const fields = all.filter((field) => values[field.key] !== undefined);
+      return fields.length > 0 && <fieldset key={title} className="space-y-3">
+        <legend className="text-sm font-medium">{title}</legend>
+        <div className="grid gap-4 @min-[420px]:grid-cols-2">
+          {fields.map((field) => <ParameterControl key={field.key} field={field} value={values[field.key] as ParameterValue} disabled={disabled}
+            className={cn(field.kind === "string" && "@min-[420px]:col-span-2")}
+            onChange={(next) => onChange(field.key, next)} />)}
+        </div>
+      </fieldset>;
+    })}
     {groups.instances.filter(({id}) => values[id] !== undefined).map(({id, fields}) => fields ? (
       <details key={id} className="border-t pt-3">
-        <summary className="cursor-pointer text-sm font-medium">实例 · {id}</summary>
+        <summary className="cursor-pointer text-sm font-medium">{instanceTitle(version, id)}</summary>
         <div className="grid gap-4 pt-3 @min-[420px]:grid-cols-2">
           {fields.filter((field) => (values[id] as Values)[field.key] !== undefined).map((field) => (
             <ParameterControl key={field.key} field={field} value={(values[id] as Values)[field.key] as ParameterValue} disabled={disabled}

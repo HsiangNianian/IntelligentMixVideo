@@ -14,7 +14,7 @@ from jsonschema import Draft202012Validator, SchemaError, ValidationError
 from referencing import Registry
 from referencing.exceptions import Unresolvable
 
-from .contracts import CodeDiagnostic, ComponentDefinition
+from .contracts import ROLE_PROPS, CodeDiagnostic, ComponentDefinition
 
 
 def _refuse_retrieval(uri: str) -> Any:
@@ -123,6 +123,13 @@ def validate_component_contract(component: ComponentDefinition) -> list[CodeDiag
         diagnostics.append(_diagnostic("parameter_schema 根类型必须为 object。", field="/parameter_schema/type"))
     if component.parameter_schema.get("additionalProperties") is not False:
         diagnostics.append(_diagnostic("parameter_schema 必须拒绝未知参数。", field="/parameter_schema/additionalProperties"))
+    role = getattr(component, "role", None)
+    declared = sorted(set(ROLE_PROPS.get(role, ())) & set(component.parameter_schema.get("properties") or {}))
+    if declared:
+        diagnostics.append(_diagnostic(
+            f"role {role} 的 Preset 由宿主传入 {', '.join(ROLE_PROPS[role])}，parameter_schema 只声明自己的样式参数，不能声明 {', '.join(declared)}。",
+            field="/parameter_schema/properties",
+        ))
     try:
         validate_parameters(component.parameter_schema, component.default_parameters)
     except ValidationError as exc:

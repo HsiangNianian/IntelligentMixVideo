@@ -1,4 +1,4 @@
-/** 资产浏览的共享骨架：可选的分类切换、搜索、卡片网格与分批显示；IMS 特效目录与 Remotion 资产目录各自独立使用，只提供各自的条目、封面和选择动作。 */
+/** 资产浏览的共享骨架：可选的分类切换、搜索、卡片网格与分批显示；IMS 特效目录与 AI 资产目录各自独立使用，只提供各自的条目、封面和选择动作。 */
 import { useId, useState, type ReactNode } from "react";
 import { Check, Image, Plus, SearchX } from "lucide-react";
 import { Button } from "@/components/ui/button";

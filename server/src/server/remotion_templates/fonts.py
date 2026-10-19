@@ -34,6 +34,7 @@ from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
 from pydantic import BaseModel, Field
 
 from . import font_store
+from .categories import FONT_PARAMETERS
 from .object_store import PREFIX, Objects
 from .settings import Settings
 
@@ -147,24 +148,28 @@ def font_root(settings: Settings) -> Path:
 
 
 def open_font_schema(schema: dict) -> dict:
-    """The stored form of a Sprite's `fontFamily` parameter: the enum the Agent chose from becomes a plain string.
+    """The stored form of a Sprite's font parameters (`fontFamily`, a two-tier text's `line1FontFamily`/`line2FontFamily`):
+    the enum the Agent chose from becomes a plain string.
 
     The Agent may only pick families of the font library, but the library keeps growing with uploads, so a frozen enum
     would refuse fonts added later in every validator that reads the stored schema. Choices are checked against the
     live library instead (`require_family`). Returns the schema unchanged when it has no such parameter.
     """
-    definition = schema.get("properties", {}).get("fontFamily")
-    if not isinstance(definition, dict) or "enum" not in definition:
-        return schema
-    opened = {key: value for key, value in definition.items() if key != "enum"} | {"maxLength": FONT_FAMILY_MAX_LENGTH}
-    return {**schema, "properties": {**schema["properties"], "fontFamily": opened}}
+    properties = schema.get("properties", {})
+    opened = {
+        name: {key: value for key, value in definition.items() if key != "enum"} | {"maxLength": FONT_FAMILY_MAX_LENGTH}
+        for name in FONT_PARAMETERS
+        if isinstance(definition := properties.get(name), dict) and "enum" in definition
+    }
+    return {**schema, "properties": {**properties, **opened}} if opened else schema
 
 
-def require_family(family: object) -> None:
-    """Raise a user-facing ValueError unless `family` is a family of the live font library (when a library is attached)."""
+def require_family(family: object, name: str = "fontFamily") -> None:
+    """Raise a user-facing ValueError unless `family` (the value of font parameter `name`) is a family of the live font
+    library (when a library is attached)."""
     store = FontStore.active
     if store is not None and family not in store.families():
-        raise ValueError(f"参数 fontFamily 不是字体库里的字体：{family}")
+        raise ValueError(f"参数 {name} 不是字体库里的字体：{family}")
 
 
 def sha256_of(path: Path) -> str:
@@ -570,9 +575,10 @@ class FontStore:
         enum = json.dumps([font.family for font in fonts], ensure_ascii=False)
         return (
             "Font library (the only fonts that exist; all are installed for rendering and previews):\n" + "\n".join(lines) + "\n"
-            f'A text effect must expose a parameter fontFamily {{"type":"string","enum":{enum}}} (the enum may list fewer of these '
-            "families, never others) whose default is the exact family name of the font you chose, so users and templates can "
-            "switch fonts; write it into CSS as fontFamily: `\"${props.fontFamily}\", \"" + DEFAULT_FAMILY + "\", sans-serif` (quoted, with "
+            f'Each tier\'s font_family in a text block is the exact family name of one of these fonts (the host exposes it as fontFamily '
+            f'{{"type":"string","enum":{enum}}}, or line1FontFamily and line2FontFamily for two tiers; these families only, never others) so users and '
+            "templates can switch fonts, and passes it to the tier's text Preset as its fontFamily prop; write it into CSS as fontFamily: "
+            "`\"${props.fontFamily}\", \"" + DEFAULT_FAMILY + "\", sans-serif` (quoted, with "
             "the default as fallback). Look at the user's reference image or description (serif or Song, brush, rounded, "
             "handwritten, condensed, Latin-only) and pick the listed font whose style is closest; when none fits, choose "
             f'"{DEFAULT_FAMILY}". A single-weight font has only weight 400 and 700 is synthesized bold; a Latin-only font draws '

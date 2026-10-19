@@ -174,11 +174,17 @@ class ComponentDefinition(ContractModel):
     default_parameters: JsonObject
 
 
+# 文字组合里 Preset 担任的角色：text 画一栏文字（宿主传入文字、切分好的片段、关键词组件与字体），keyword 画一个关键词命中。
+# 不填的是自由组件（滤镜、特效，以及更早按固定框组合的字效）。
+PresetRole = Literal["text", "keyword"]
+
+
 class PresetDraft(ComponentDefinition):
-    """尚未入库的完整预设，可标记直接来源。"""
+    """尚未入库的完整预设，可标记直接来源与文字组合里的角色。"""
 
     description: Description
     source_preset_id: Omittable[PresetId]
+    role: Omittable[PresetRole]
 
 
 class PresetRecord(PresetDraft):
@@ -359,9 +365,10 @@ resize/crop 统一生成 PNG，保留可用 alpha，存储完成后才返回可�
 
 ```python
 class PresetSearchInput(ContractModel):
-    """可选关键词（子串匹配）与结果数量上限；留空则列出最近的预设；给出 preset_id 则读取该完整记录。"""
+    """可选关键词（空白分隔的每个词都要出现在描述里）、角色与结果数量上限；留空则列出最近的预设；给出 preset_id 则读取该完整记录。"""
 
     query: str = ""
+    role: Omittable[PresetRole]
     limit: Annotated[PositiveInteger, Field(le=100)] = 20
     preset_id: Omittable[PresetId]
 
@@ -372,6 +379,7 @@ class PresetSummary(ContractModel):
     preset_id: PresetId
     description: Description
     parameter_names: list[str]
+    role: Omittable[PresetRole]
 
 
 class PresetSearchOutput(ContractModel):
@@ -388,7 +396,7 @@ async def preset_search(request: PresetSearchInput) -> ToolResult[PresetSearchOu
 ```
 
 - 契约版本为 2，由 `tools.inspect` 的 `contract_version` 标识。旧版本只声明过 `matches` 语义检索结构，尚未启用；消费者必须按版本选择解析器，v2 不返回旧字段。
-- 不做语义或向量检索：只列出摘要（preset_id、description、参数名），由 Agent 自行判断召回哪个。query 可选，为 description 的不区分大小写子串过滤；limit 为 1～100 的整数，省略时为 20，按创建时间由新到旧。旧无时区时间按 UTC 解释，无效时间放末尾，记录仍可按 ID 读取。
+- 不做语义或向量检索：只列出摘要（preset_id、description、参数名），由 Agent 自行判断召回哪个。query 可选，按空白分成若干词，description 须不区分大小写地包含每一个词；role 可选，只列出该角色（text 或 keyword）的预设；limit 为 1～100 的整数，省略时为 20，按创建时间由新到旧。旧无时区时间按 UTC 解释，无效时间放末尾，记录仍可按 ID 读取。
 - 传入 preset_id 时，另在 preset 字段返回该预设的完整代码、Schema 和默认参数；ID 不存在返回 PRESET_NOT_FOUND 并列出近期可用 ID。读取预设不得借用 preset.modify。
 - 匹配结果是候选能力，不表示已经符合当前用户需求。排序不承诺统一的相似度百分比，不暴露含义未统一的“置信度”。
 - 没有结果返回 `presets: []`；不会自动创建预设。查询不得写入预设库。
@@ -507,6 +515,7 @@ class PresetDraftSummary(ContractModel):
     description: Description
     parameter_names: list[str]
     source_preset_id: Omittable[PresetId]
+    role: Omittable[PresetRole]
 
 
 class PresetModifyOutput(ContractModel):
@@ -633,14 +642,67 @@ class SpriteParameterBinding(ContractModel):
     targets: list[ParameterTarget] = Field(min_length=1)
 
 
+class TextLayout(ContractModel):
+    """文字块在画布上的区域：宿主在其中纵向居中排布各栏，宽度就是换行宽度。"""
+
+    x: FiniteNumber
+    y: FiniteNumber
+    width: PositiveInteger
+    height: PositiveInteger
+
+
+class TextTier(ContractModel):
+    """文字块的一栏：画这一栏的 text 角色 Preset、它的样式参数，以及这一栏的字体、字重与字号比例（配置的默认值）。"""
+
+    instance_id: NonEmptyString
+    source: PresetSource
+    parameters: Omittable[JsonObject]
+    font_family: NonEmptyString
+    font_weight: Literal[400, 700]
+    # 这一栏按 fontSize 乘以它渲染；只有双栏使用，单栏恒为 1。
+    size_ratio: Omittable[Annotated[FiniteNumber, Field(ge=0.4, le=2)]]
+
+
+class TextKeyword(ContractModel):
+    """关键词字效：画命中词的 keyword 角色 Preset 及其样式参数。"""
+
+    instance_id: NonEmptyString
+    source: PresetSource
+    parameters: Omittable[JsonObject]
+
+
+class TextComposition(ContractModel):
+    """字效的文字组合：宿主按配置把文字切成一栏或上下两栏，各栏交给 text Preset 画，关键词命中交给 keyword Preset 画。"""
+
+    layout: TextLayout
+    # 默认文字：单栏一行，双栏为「上栏\n下栏」。
+    text: Annotated[StrictStr, StringConstraints(min_length=1, max_length=100)]
+    font_size: Annotated[FiniteNumber, Field(ge=24, le=240)]
+    tiers: list[TextTier] = Field(min_length=1, max_length=2)
+    # 只有双栏使用：两栏之间的距离（像素）与各栏出现的帧（首项为 0，不递减）。
+    line_gap: Omittable[Annotated[FiniteNumber, Field(ge=0, le=300)]]
+    line_starts: Omittable[list[Annotated[Integer, Field(ge=0, le=3600)]]]
+    keyword: Omittable[TextKeyword]
+    duration_frames: PositiveInteger
+
+
+class TextBlock(ContractModel):
+    """组合后记录的文字块结构：区域、各栏实例与关键词实例；配置的默认值在 Sprite 的默认参数里。"""
+
+    layout: TextLayout
+    tiers: list[NonEmptyString] = Field(min_length=1, max_length=2)
+    keyword: Omittable[NonEmptyString]
+
+
 class SpriteDraft(ComponentDefinition):
-    """组合生成的源码、参数契约和实例快照。"""
+    """组合生成的源码、参数契约和实例快照；字效的文字组合另记文字块结构。"""
 
     description: Description
     composition: Composition
     instances: list[ResolvedPresetInstance] = Field(min_length=1)
     kind: Omittable[SpriteKindName]
     bindings: list[SpriteParameterBinding] = Field(default_factory=list)
+    text: Omittable[TextBlock]
 
 
 class SpriteRecord(SpriteDraft):
@@ -674,11 +736,12 @@ class SpriteRecord(SpriteDraft):
 
 ```python
 class SpriteComposeInput(ContractModel):
-    """组合描述、效果分类、显式编排的预设实例及提升为顶层的参数。"""
+    """组合描述、效果分类、显式编排的预设实例或字效的文字组合，以及提升为顶层的样式参数。"""
 
     description: Description
     kind: SpriteKindName
-    instances: list[PresetInstance] = Field(min_length=1)
+    instances: list[PresetInstance] = Field(default_factory=list)
+    text: Omittable[TextComposition]
     parameters: list[SpriteParameterBinding] = Field(default_factory=list, max_length=32)
 
 
@@ -712,9 +775,11 @@ async def sprite_compose(request: SpriteComposeInput) -> ToolResult[SpriteCompos
     ...
 ```
 
-description 非空，instances 非空。主画布配置和 sprite 总帧数均不作为输入；起点之前和实例之间未被内容覆盖的区间保持空画布。
+description 非空；字效给出 text 文字块且 instances 为空，其他分类 instances 非空。主画布配置不作为输入；起点之前和实例之间未被内容覆盖的区间保持空画布。
 
-契约版本 2 新增 `kind` 与 `parameters`。代码只是确定的样例：模板里每次摆放只能通过顶层参数调整它，因而组合时必须选定效果分类，并把该分类必备的参数绑定为顶层参数。
+契约版本 3 新增 `text` 文字块（字效专用，新作品必须使用，编辑更早按固定框组合的字效时仍可用 instances）：文字块给出区域、默认文字（单栏一行，双栏「上栏\n下栏」）、基准字号、各栏（role=text 的 Preset、样式参数、字体、字重、双栏的字号比例）、双栏的栏间距与行起点、可选的 role=keyword 关键词 Preset 和时长。宿主据此生成源码（各栏在区域内纵向居中排布，下栏到起点前定格于首帧、不显示但占位；每个关键词在全文的首次字面命中按 IMS 六个关键词样式包裹，`keywordEffect` 开启时交给关键词 Preset 画），并生成固定名称、Schema 与中文标题的配置参数：`text`、`fontSize`、单栏 `fontFamily`/`fontWeight` 或双栏每栏 `line{i}FontFamily`/`line{i}FontWeight`/`line{i}SizeRatio` 与 `lineGap`、`lineStartFrames`、七个关键词参数及有关键词 Preset 时的 `keywordEffect`；它们在 bindings 中以伪实例 `text` 为目标。`parameters` 只绑定各 Preset 的样式 prop，不能占用配置名。text Preset 由宿主传入 `text`、`segments`、`Keyword`、`fontFamily`、`fontWeight`、`fontSize`，keyword Preset 传入 `text`；这些 prop 不能写进它们的 parameter_schema。行数与栏数不符、双栏缺字号比例/栏间距/行起点、行起点不从 0 开始、递减或下栏不早于文字块结束、字体不在字体库、Preset 角色不符、各栏与关键词实例的 instance_id 重复或占用 `text` 与配置名（否则它的嵌套参数会顶替同名配置参数）时按字段返回 INVALID_ARGUMENT。
+
+契约版本 2 新增 `kind` 与 `parameters`（版本 3 起字效改用 text 文字块，见上文）。代码只是确定的样例：模板里每次摆放只能通过顶层参数调整它，因而组合时必须选定效果分类，并把该分类必备的参数绑定为顶层参数。
 
 | kind | 界面分类 | 必备顶层参数（Schema） | 宿主变换 |
 | --- | --- | --- | --- |
@@ -1209,7 +1274,7 @@ async def tools_inspect(request: ToolInspectInput) -> ToolResult[ToolDescriptor]
 
 根据精确工具名返回真实契约，不做语义搜索、不执行被查询工具。未知名称返回 `TOOL_NOT_FOUND`，消息可附最多两个拼写相近的名称（`Closest:`）以便纠正拼写，但不会据此返回任何契约。输入格式错误返回 `INVALID_ARGUMENT`。
 
-描述符始终返回 `contract_version`；默认版本为 1，`preset.search` 的列表加 ID 查找结构为版本 2。调用方应先读取版本和 Schema，再选择对应的输入输出解析器，不把 v2 摘要当成旧 `matches` 完整记录。
+描述符始终返回 `contract_version`；默认版本为 1，`preset.search` 的列表加 ID 查找结构为版本 2，`sprite.compose` 的文字块为版本 3。调用方应先读取版本和 Schema，再选择对应的输入输出解析器，不把 v2 摘要当成旧 `matches` 完整记录。
 
 input_schema 描述完整入参；output_schema 描述包含 ok/data/error 的完整 ToolResult，而非只描述成功 data。Schema 为自包含 JSON Schema，公共类型可以放入 `$defs`，不能依赖 Agent 自行查找未给出的模型。
 

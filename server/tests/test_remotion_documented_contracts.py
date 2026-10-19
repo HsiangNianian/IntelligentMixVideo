@@ -54,7 +54,7 @@ def test_published_descriptor_accepts_actual_inspection(published_contract, tool
     assert response["ok"] is True
     descriptor = published_contract.ToolDescriptor.model_validate(response["data"])
     assert descriptor.tool_name == tool.name
-    assert descriptor.contract_version == (2 if tool.name in {"preset.search", "sprite.compose"} else 1)
+    assert descriptor.contract_version == {"preset.search": 2, "sprite.compose": 3}.get(tool.name, 1)
 
 
 def test_documented_search_examples_follow_the_published_version(published_contract):

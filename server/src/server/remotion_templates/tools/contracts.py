@@ -90,11 +90,22 @@ class ComponentDefinition(ContractModel):
     default_parameters: JsonObject
 
 
+# 文字组合里 Preset 担任的角色：text 画一栏文字（宿主传入文字、切分好的片段、关键词组件与字体），keyword 画一个关键词命中。
+# 不填的是自由组件（滤镜、特效，以及更早按固定框组合的字效）。
+PresetRole = Literal["text", "keyword"]
+# 宿主传给各角色 Preset 的 prop：它们不属于 Preset 自己的参数，不能写进 parameter_schema。
+ROLE_PROPS: dict[str, tuple[str, ...]] = {
+    "text": ("text", "segments", "Keyword", "fontFamily", "fontWeight", "fontSize"),
+    "keyword": ("text",),
+}
+
+
 class PresetDraft(ComponentDefinition):
-    """尚未入库的完整预设，可标记直接来源。"""
+    """尚未入库的完整预设，可标记直接来源与文字组合里的角色。"""
 
     description: Description
     source_preset_id: Omittable[PresetId]
+    role: Omittable[PresetRole]
 
 
 class PresetRecord(PresetDraft):
@@ -169,9 +180,10 @@ class ImageCropInput(ImageInfoInput):
 # create 承接 Agent 已写好的完整定义；输入模型即 PresetDraft。
 
 class PresetSearchInput(ContractModel):
-    """可选关键词（子串匹配）与结果数量上限；留空则列出最近的预设；给出 preset_id 则读取该完整记录。"""
+    """可选关键词（空白分隔的每个词都要出现在描述里）、角色与结果数量上限；留空则列出最近的预设；给出 preset_id 则读取该完整记录。"""
 
     query: str = ""
+    role: Omittable[PresetRole]
     limit: Annotated[PositiveInteger, Field(le=100)] = 20
     preset_id: Omittable[PresetId]
 
@@ -182,6 +194,7 @@ class PresetSummary(ContractModel):
     preset_id: PresetId
     description: Description
     parameter_names: list[str]
+    role: Omittable[PresetRole]
 
 
 class PresetSearchOutput(ContractModel):
@@ -214,6 +227,7 @@ class PresetDraftSummary(ContractModel):
     description: Description
     parameter_names: list[str]
     source_preset_id: Omittable[PresetId]
+    role: Omittable[PresetRole]
 
 
 class PresetModifyOutput(ContractModel):
@@ -310,14 +324,67 @@ class SpriteParameterBinding(ContractModel):
     targets: list[ParameterTarget] = Field(min_length=1)
 
 
+class TextLayout(ContractModel):
+    """文字块在画布上的区域：宿主在其中纵向居中排布各栏，宽度就是换行宽度。"""
+
+    x: FiniteNumber
+    y: FiniteNumber
+    width: PositiveInteger
+    height: PositiveInteger
+
+
+class TextTier(ContractModel):
+    """文字块的一栏：画这一栏的 text 角色 Preset、它的样式参数，以及这一栏的字体、字重与字号比例（配置的默认值）。"""
+
+    instance_id: NonEmptyString
+    source: PresetSource
+    parameters: Omittable[JsonObject]
+    font_family: NonEmptyString
+    font_weight: Literal[400, 700]
+    # 这一栏按 fontSize 乘以它渲染；只有双栏使用，单栏恒为 1。
+    size_ratio: Omittable[Annotated[FiniteNumber, Field(ge=0.4, le=2)]]
+
+
+class TextKeyword(ContractModel):
+    """关键词字效：画命中词的 keyword 角色 Preset 及其样式参数。"""
+
+    instance_id: NonEmptyString
+    source: PresetSource
+    parameters: Omittable[JsonObject]
+
+
+class TextComposition(ContractModel):
+    """字效的文字组合：宿主按配置把文字切成一栏或上下两栏，各栏交给 text Preset 画，关键词命中交给 keyword Preset 画。"""
+
+    layout: TextLayout
+    # 默认文字：单栏一行，双栏为「上栏\n下栏」。
+    text: Annotated[StrictStr, StringConstraints(min_length=1, max_length=100)]
+    font_size: Annotated[FiniteNumber, Field(ge=24, le=240)]
+    tiers: list[TextTier] = Field(min_length=1, max_length=2)
+    # 只有双栏使用：两栏之间的距离（像素）与各栏出现的帧（首项为 0，不递减）。
+    line_gap: Omittable[Annotated[FiniteNumber, Field(ge=0, le=300)]]
+    line_starts: Omittable[list[Annotated[Integer, Field(ge=0, le=3600)]]]
+    keyword: Omittable[TextKeyword]
+    duration_frames: PositiveInteger
+
+
+class TextBlock(ContractModel):
+    """组合后记录的文字块结构：区域、各栏实例与关键词实例；配置的默认值在 Sprite 的默认参数里。"""
+
+    layout: TextLayout
+    tiers: list[NonEmptyString] = Field(min_length=1, max_length=2)
+    keyword: Omittable[NonEmptyString]
+
+
 class SpriteDraft(ComponentDefinition):
-    """组合生成的源码、参数契约和实例快照。"""
+    """组合生成的源码、参数契约和实例快照；字效的文字组合另记文字块结构。"""
 
     description: Description
     composition: Composition
     instances: list[ResolvedPresetInstance] = Field(min_length=1)
     kind: Omittable[SpriteKindName]
     bindings: list[SpriteParameterBinding] = Field(default_factory=list)
+    text: Omittable[TextBlock]
 
 
 class SpriteRecord(SpriteDraft):
@@ -327,11 +394,12 @@ class SpriteRecord(SpriteDraft):
     created_at: Timestamp
 
 class SpriteComposeInput(ContractModel):
-    """组合描述、效果分类、显式编排的预设实例及提升为顶层的参数。"""
+    """组合描述、效果分类、显式编排的预设实例或字效的文字组合，以及提升为顶层的样式参数。"""
 
     description: Description
     kind: SpriteKindName
-    instances: list[PresetInstance] = Field(min_length=1)
+    instances: list[PresetInstance] = Field(default_factory=list)
+    text: Omittable[TextComposition]
     parameters: list[SpriteParameterBinding] = Field(default_factory=list, max_length=32)
 
 

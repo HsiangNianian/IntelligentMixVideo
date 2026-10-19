@@ -131,7 +131,8 @@ async function prepareSource() {
     result.diagnostics.push(diagnosticFromError(error?.message ?? error));
     return false;
   }
-  await fs.writeFile(`${root}/contract.tsx`, `/** Host-generated default props call site. */\nimport React from 'react';\nimport Template from './Template';\nimport Export from './Export';\nconst props = ${JSON.stringify(request.default_parameters)};\nconst element = <Template {...props} />;\nconst exported = <Export />;\n`, "utf8");
+  const attributes = [...Object.entries(request.default_parameters ?? {}).map(jsxAttribute), ROLE_HOST_PROPS[request.role] ?? ""].join(" ");
+  await fs.writeFile(`${root}/contract.tsx`, `/** Host-generated default props call site. */\nimport React from 'react';\nimport Template from './Template';\nimport Export from './Export';\nconst element = <Template ${attributes} />;\nconst exported = <Export />;\n`, "utf8");
   await fs.symlink(`${rendererRoot}/node_modules`, `${root}/node_modules`).catch(() => undefined);
   const checked = languageDiagnostics(root);
   if (checked.diagnostics.length) result.diagnostics.push(...await lspDiagnostics(checked.diagnostics));
@@ -356,6 +357,24 @@ async function lengthsCheck(page) {
   }
 }
 
+/**
+ * Sample values of the props the host passes a text-block Preset (`ROLE_PROPS` in contracts.py), as JSX attributes of
+ * the type check's call site: a text Preset draws one tier from its text, keyword segments and fonts, a keyword Preset one hit.
+ */
+const ROLE_HOST_PROPS = {
+  text: 'text={"示例文字"} segments={[{text: "示例", keyword: true}, {text: "文字", keyword: false}]} Keyword={(keyword: {text: string}) => <span>{keyword.text}</span>} fontFamily={"Noto Sans CJK SC"} fontWeight={700} fontSize={96}',
+  keyword: 'text={"示例"}',
+};
+
+/**
+ * One default parameter as a JSX attribute of the type check's call site. Attributes are typed against each prop, so a
+ * literal default such as "center" satisfies a prop typed "left" | "center" | "right"; an object spread would widen it
+ * to string and refuse a correctly typed component. A key that is no identifier is spread on its own.
+ */
+function jsxAttribute([key, value]) {
+  return /^[A-Za-z_$][\w$]*$/.test(key) ? `${key}={${JSON.stringify(value)}}` : `{...{${JSON.stringify(key)}: ${JSON.stringify(value)}}}`;
+}
+
 /** Filler glyph for the longest-text check: CJK glyphs are the widest, so they expose layout problems first. */
 const TEXT_FILLER = "测";
 /** A rendered text line shorter than this is unreadable on the 1080x1920 canvas (the smallest supported fontSize is 24). */
@@ -366,6 +385,18 @@ const MIN_LINE_HEIGHT = 20;
  * assumption of the search in `fitTexts` would not hold). The generation check measures at this size too.
  */
 const READABLE_FONT_SIZE = 24;
+
+/**
+ * The smallest fontSize at which every line of `values` stays readable: a two-tier text renders tier i at
+ * fontSize * line{i}SizeRatio, so a tier smaller than fontSize raises the floor to `READABLE_FONT_SIZE` / its ratio.
+ * Other texts (no ratios) keep `READABLE_FONT_SIZE`.
+ */
+function readableFontSize(values) {
+  const ratios = Object.entries(values ?? {})
+    .filter(([key, value]) => /^line\d+SizeRatio$/.test(key) && typeof value === "number" && value > 0)
+    .map(([, value]) => value);
+  return Math.ceil(READABLE_FONT_SIZE / Math.min(1, ...ratios));
+}
 /** Sub-pixel tolerance when comparing a text rectangle with a box. */
 const FIT_TOLERANCE = 2;
 /** Frames whose text area is at least this share of the largest one show the text at its full size. */
@@ -542,12 +573,14 @@ async function measureTextFit(page, needle, frames = sampleFrames(request.compos
 
 /**
  * Mechanical check that a text effect shows its text in full: first the text parameter filled to its declared
- * maxLength at the smallest size the host shrinks text to (`READABLE_FONT_SIZE` or the declared minimum, whichever is
+ * maxLength at the smallest size the host shrinks text to (`readableFontSize` or the declared minimum, whichever is
  * larger: long text is made smaller at render time, see `fitTexts`), then the default text at the default size, which
  * is what a user sees first. The sampled frames are measured. A sample fails when every frame that shows the text at
  * its full size has a problem (a text cut to a slice of itself is one), and when the text is never visibly rendered.
  * A multi-line text (a `lineStartFrames` parameter of N items) is filled with N lines that share maxLength, and both
  * samples show every line from the first frame; its default lines must also pass `lineSyncProblem` and `lineJumpProblem`.
+ * An effect with a `keywords` parameter is also mounted with a hit in its default text: the hit, and any keyword effect
+ * drawn on it, must not throw or keep the default text from showing in full.
  * This is a geometric measurement of the text boxes, not a visual review of how the result looks.
  */
 async function textFitCheck(page) {
@@ -556,7 +589,7 @@ async function textFitCheck(page) {
   if (!Number.isInteger(length) || length < 1)
     return { name: "text_fit", status: "failed", message: "A text effect must declare a text parameter with an integer maxLength." };
   const declared = request.parameter_schema?.properties?.fontSize?.minimum;
-  const smallest = typeof declared === "number" ? Math.max(declared, READABLE_FONT_SIZE) : null;
+  const smallest = typeof declared === "number" ? Math.max(declared, readableFontSize(request.parameters)) : null;
   /** Mount the sample's parameters, measure its text, and put the configured parameters back for later checks. */
   const measureSample = async (patch, needle) => {
     await page.evaluate((values) => window.__imvTool.setParameters(values), patch);
@@ -608,6 +641,22 @@ async function textFitCheck(page) {
     const defaultLines = shortText.split("\n");
     const sync = multi && defaultLines.length === lines ? (await lineSyncProblem(page, defaultLines)) ?? (await lineJumpProblem(page, defaultLines)) : null;
     if (sync) return { name: "text_fit", status: "failed", message: sync };
+    // Templates pass keywords at render time, so the keyword hit (and any keyword effect drawn on it) must keep the text
+    // whole: up to two characters opening the first non-empty default line are a hit every text effect can show
+    // (the workspace preview shows the same sample keyword).
+    const word = defaultLines.find((line) => line.trim())?.match(/\S{1,2}/u)?.[0] ?? "";
+    if (request.parameter_schema?.properties?.keywords?.type === "array" && word) {
+      const hit = await measureSample({ ...allLines, keywords: [word] }, shortText);
+      if (hit.error)
+        return { name: "text_fit", status: "failed", message: `The component throws at frame ${hit.frame} with keywords ["${word}"]: ${hit.error}`.slice(0, 6000) };
+      if (!hit.shown || !hit.fits)
+        return {
+          name: "text_fit",
+          status: "failed",
+          message: `With keywords ["${word}"] the default text "${shortText}" is not shown in full${hit.shown ? `: ${hit.problems.join("; ")}` : ""}. `
+            + "A keyword hit and any keyword effect drawn on it must stay inline and within the text's room, so the whole text still shows.",
+        };
+    }
   }
   return { name: "text_fit", status: "passed", message: `The ${length}-character text${multi ? ` over ${lines} lines` : ""} is shown in full${smallest !== null ? ` at the smallest fontSize ${smallest}` : ""} (measured on the ${measured.full} of ${measured.shown} frames that show it at its full size).${shortNote}` };
 }
@@ -721,7 +770,7 @@ function valuesAtSize(item, size) {
 
 /**
  * Host-side fit of the text a render really passes, for one Sprite (`sprite.fit` items, `sprite.box` content box):
- * for each item, the largest whole font size from its floor (`min`, at least `READABLE_FONT_SIZE`) up to
+ * for each item, the largest whole font size from its floor (`min`, at least `readableFontSize`) up to
  * the requested one at which the text is shown in full on the item's own `frames`. Each item is mounted at the
  * `length` its Sprite plays in the render (which it reads as `durationInFrames`) and measured where its host
  * `transform` puts it on the canvas. The requested size is tried first, so text that already fits is untouched;
@@ -750,7 +799,7 @@ async function fitTexts(page, loadError, sprite) {
   for (const item of sprite.fit) {
     const requested = item.values[item.size_key];
     // Never below what is readable, and never above what was asked for.
-    const floor = Math.min(requested, Math.max(item.min, READABLE_FONT_SIZE));
+    const floor = Math.min(requested, Math.max(item.min, readableFontSize(item.values)));
     let size = requested;
     let ok = await fits(item, requested);
     if (!ok) {
