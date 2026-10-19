@@ -1,8 +1,8 @@
 /** 关键词对象核心回归：开关与时间跟随、独立样式预览与叠放、Remotion 文字下不显示、协议往返和实际工作区；执行 bun run test。 */
 import { expect, test } from "bun:test";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import { fireEvent, render, screen } from "@testing-library/react";
-import { SaveTemplateRequestSchema, SaveTemplateResponseSchema } from "@/generated/imv/template/v1/template_pb";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { SaveTemplateRequestSchema, SaveTemplateResponseSchema, type SaveTemplateRequest } from "@/generated/imv/template/v1/template_pb";
 import { SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { SpriteAsset } from "@/features/sprites/model";
 import { activeDraft, newDraft, toDraft } from "@/features/templates/model";
@@ -101,4 +101,35 @@ test("工作区关键词设置建立独立对象并保留外观", async () => {
   expect(screen.getByRole("combobox", { name: "关键词花字" }).textContent).toBe(flower.name);
   fireEvent.click(screen.getByRole("button", { name: "编辑字幕关键词" }));
   expect(screen.getByLabelText<HTMLInputElement>("字号").value).toBe("60");
+});
+
+// 场景：关键词对象存在并选中时，左侧「应用到」切到该对象后添加花字，只写入关键词轨道；父字幕保持无花字。
+test("工作区向关键词对象应用资产", async () => {
+  const original = savedTemplate();
+  const draft = setKeywordObject(toDraft(original), "subtitle", true);
+  original.tracks = draft.tracks;
+  let request: SaveTemplateRequest | undefined;
+  fetchMock.mockImplementation((async (url, init) => {
+    if (String(url).endsWith("/template") && init?.method === "POST") {
+      request = fromBinary(SaveTemplateRequestSchema, new Uint8Array(init.body as Uint8Array));
+      const response = fromBinary(SaveTemplateResponseSchema, new Uint8Array(await protobufTemplateResponse(original, "save").arrayBuffer()));
+      response.template!.tracks = request.tracks;
+      return new Response(toBinary(SaveTemplateResponseSchema, create(SaveTemplateResponseSchema, response)));
+    }
+    return protobufTemplateResponse(original, "get");
+  }) as typeof fetch);
+  render(<TemplateWorkspace selection={{ environment: "cloud", templateId: original.template_id }} onHome={() => {}} />);
+  fireEvent.click(await screen.findByRole("button", { name: "编辑底部字幕" }));
+  fireEvent.click(screen.getByRole("tab", { name: "关键词设置" }));
+  fireEvent.click(screen.getByRole("button", { name: "编辑字幕关键词" }));
+  const assets = screen.getByRole("region", { name: "特效资产" });
+  fireEvent.keyDown(within(assets).getByRole("combobox", { name: "应用到" }), { key: "ArrowDown" });
+  fireEvent.click(await screen.findByRole("option", { name: "字幕关键词" }));
+  const flower = readCatalog().find((item) => item.category === "flower" && item.id !== "flower/CS0003-000002")!;
+  fireEvent.click(within(assets).getByRole("button", { name: `应用花字：${flower.name}` }));
+  fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
+  await waitFor(() => expect(request).toBeDefined());
+  const tracks = request!.tracks!.tracks;
+  expect(tracks.find((track) => track.target === "subtitle_keyword")?.editor?.subtitleFlower).toBe(flower.id);
+  expect(tracks.find((track) => track.target === "subtitle")?.editor?.subtitleFlower).toBe("");
 });
