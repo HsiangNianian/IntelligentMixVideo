@@ -212,7 +212,7 @@ export function VersionCard({
           {selected ? "预览中" : "预览"}
         </span>
       </button>
-      <div className="flex items-center justify-between border-t bg-muted/20 px-2 py-1">
+      <div className="flex flex-wrap items-center justify-between gap-1 border-t bg-muted/20 px-2 py-1">
         <CollapsibleTrigger asChild>
           <Button
             variant="ghost"
@@ -228,9 +228,9 @@ export function VersionCard({
             {open ? "收起代码" : "查看代码"}
           </Button>
         </CollapsibleTrigger>
-        <div className="flex items-center">
+        <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-0.5">
           <Select value={String(kind)} disabled={disabled || publishing} onValueChange={(value) => setKind(Number(value) as SpriteKind)}>
-            <SelectTrigger size="sm" aria-label="资产分类" className="h-8 w-24 border-none bg-transparent text-xs shadow-none">
+            <SelectTrigger size="sm" aria-label="资产分类" className="h-8 w-20 border-none bg-transparent text-xs shadow-none">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

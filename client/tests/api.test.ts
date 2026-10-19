@@ -122,14 +122,14 @@ test("含片段的模板读取后再保存不丢片段", async () => {
   expect(body.tracks!.tracks.length - sent.length).toBe(2);
 });
 
-// 测试本地模板不支持 Remotion 资产：草稿带片段时直接拒绝，不调用桌面 IPC，也不写入云端。
+// 测试本地模板不支持 AI 资产：草稿带片段时直接拒绝，不调用桌面 IPC，也不写入云端。
 test("本地环境拒绝保存 Remotion 片段", async () => {
   const { mock } = await import("bun:test");
   const invoke = mock(async () => null);
   const restoreDesktop = mockDesktop(invoke);
   try {
     const draft = { ...toDraft(savedTemplate()), clips };
-    await expect(saveTemplate(draft, undefined, "local")).rejects.toThrow("本地模板不支持 Remotion 资产");
+    await expect(saveTemplate(draft, undefined, "local")).rejects.toThrow("本地模板不支持 AI 资产");
     expect(invoke).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
   } finally {

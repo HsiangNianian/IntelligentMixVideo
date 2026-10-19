@@ -1,4 +1,4 @@
-/* PR #196 模板编辑工作区：三栏填满可用区域，各栏独立滚动，对象按类别使用低饱和标记色。 */
+/* 模板编辑工作区：三栏填满可用区域，各栏独立滚动，对象按类别使用低饱和标记色。 */
 .template-workspace {
   color: var(--foreground);
 }
@@ -114,7 +114,7 @@
 .template-workspace .template-preview-timeline { background: var(--color-surface); }
 .template-workspace .template-timeline-mark { color: var(--primary); background: color-mix(in oklch, var(--primary) 14%, transparent); }
 
-/* 来源页签与 Demo 的点阵工作台；实际 SDK 画布和时间轴仍由业务组件驱动。 */
+/* 来源页签与工作台点阵背景；实际 SDK 画布和时间轴仍由业务组件驱动。 */
 .studio-source-tab { padding: 8px 12px; border-radius: 8px; font-size: 13px; color: var(--color-fg-muted); }
 .studio-source-tab[aria-selected="true"] { background: var(--color-raised); color: var(--color-fg); font-weight: 600; }
 .template-workspace .template-preview-stage { background-color: var(--color-canvas); background-image: radial-gradient(var(--color-line-strong) 1px, transparent 1px); background-size: 18px 18px; }
@@ -123,7 +123,7 @@
 .template-workspace .template-category-pill { height: 32px; border-radius: 8px; font-size: 12px; }
 .template-workspace .template-category-pill[data-state="on"] { color: var(--color-brand); border-color: color-mix(in oklch, var(--color-brand) 25%, transparent); background: color-mix(in oklch, var(--color-brand) 8%, transparent); }
 .template-workspace .template-asset-card { border: 1px solid var(--border); border-radius: 10px; padding: 6px; background: var(--color-surface); }
-.template-workspace .template-asset-card.is-selected { color: var(--color-brand); border-color: var(--color-brand); background: color-mix(in oklch, var(--color-brand) 6%, white); }
+.template-workspace .template-asset-card.is-selected { color: var(--color-brand); border-color: var(--color-brand); background: color-mix(in oklch, var(--color-brand) 6%, var(--color-surface)); }
 .template-workspace .template-object-row[aria-pressed="true"] { background: color-mix(in oklch, var(--color-brand) 8%, transparent); }
 .template-workspace .template-workspace-header { padding: 10px 16px; min-height: 64px; }
 .template-workspace .template-workspace-header dl { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; }

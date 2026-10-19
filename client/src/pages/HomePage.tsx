@@ -1,4 +1,4 @@
-/** 正式客户端工作室：采用 PR #196 导航，切换页面时保留编辑草稿、播放器和会话订阅。 */
+/** 正式客户端工作室：导航切换时保留编辑草稿、播放器和会话订阅。 */
 import { useEffect, useState } from "react";
 import { recovery, restored } from "@/features/updates/recovery";
 import { UpdateLifecycle } from "@/features/updates/ClientUpdate";

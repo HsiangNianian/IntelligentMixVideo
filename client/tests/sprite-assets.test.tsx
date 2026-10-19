@@ -540,8 +540,8 @@ test("关键词字效参数不在模板里调整，只列在资产默认参数",
     clips: [{ id: "clip-t", sprite_id: "sprite-t", start: 0, duration: 3, parameters: {}, transform: {} }],
   });
   render(<TemplateWorkspace selection={{ environment: "cloud", templateId: savedTemplate().template_id }} onHome={() => {}} />);
-  fireEvent.click(await screen.findByRole("button", { name: "设置 Remotion 资产：金色标题" }));
-  const inspector = screen.getByRole("region", { name: "Remotion 资产设置" });
+  fireEvent.click(await screen.findByRole("button", { name: "设置 AI 资产：金色标题" }));
+  const inspector = screen.getByRole("region", { name: "AI 资产设置" });
   fireEvent.click(within(inspector).getByRole("tab", { name: "关键词设置" }));
   expect(within(inspector).getByLabelText("关键词")).toBeTruthy();
   expect(within(inspector).queryByLabelText("关键词弹跳幅度") === null).toBe(true);

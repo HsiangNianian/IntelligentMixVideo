@@ -1,5 +1,5 @@
 /**
- * 把 Remotion 资产叠在模板预览画面上：每个资产一个透明隔离播放器，由预览播放时间逐帧驱动（只定位，不自行播放）。
+ * 把 AI 资产叠在模板预览画面上：每个资产一个透明隔离播放器，由预览播放时间逐帧驱动（只定位，不自行播放）。
  * 支持参数覆盖的播放器同时收到这次摆放的参数与宿主变换；选中的可移动资产在画面上显示一个可拖动的位置框。
  */
 import { useEffect, useImperativeHandle, useRef, useState, type KeyboardEvent, type PointerEvent, type Ref } from "react";
@@ -112,7 +112,7 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
         <iframe
           key={clip.id}
           ref={(element) => { if (element) frames.current.set(clip.id, element); else frames.current.delete(clip.id); }}
-          title={`Remotion 资产预览：${clip.name}`}
+          title={`AI 资产预览：${clip.name}`}
           sandbox="allow-scripts"
           src={`${apiBase()}/api/sprites/${encodeURIComponent(clip.spriteId)}/preview?overlay=true&sync=1#${channels.current.get(clip.id)}`}
           className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 border-0"
@@ -122,8 +122,8 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
       {selected && onMove && <PositionHandle clip={selected} stageAspect={stageAspect} onMove={onMove} />}
       {onSelect && clips.filter((clip) => clip.textTrackId && clip.canvas?.movable && clip.id !== selectedId && initialTime >= clip.start && initialTime < clip.end).map((clip) =>
         <PositionHandle key={clip.id} clip={clip} stageAspect={stageAspect} onSelect={onSelect} />)}
-      {unsupported.length > 0 && <p role="status" className="absolute left-2 top-2 rounded bg-black/60 px-2 py-1 text-[11px] text-white">部分 Remotion 资产由旧版本生成，无法预览；请重新保存到资产。</p>}
-      {fixed.length > 0 && <p role="status" className="absolute bottom-2 left-2 rounded bg-black/60 px-2 py-1 text-[11px] text-white">部分 Remotion 资产的预览不显示参数调整，请重新保存到资产；保存模板后的渲染不受影响。</p>}
+      {unsupported.length > 0 && <p role="status" className="absolute left-2 top-2 rounded bg-black/60 px-2 py-1 text-[11px] text-white">部分 AI 资产由旧版本生成，无法预览；请重新保存到资产。</p>}
+      {fixed.length > 0 && <p role="status" className="absolute bottom-2 left-2 rounded bg-black/60 px-2 py-1 text-[11px] text-white">部分 AI 资产的预览不显示参数调整，请重新保存到资产；保存模板后的渲染不受影响。</p>}
     </div>
   );
 }

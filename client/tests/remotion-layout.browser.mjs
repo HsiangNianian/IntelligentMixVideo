@@ -94,6 +94,8 @@ try {
       return route.fulfill({ status: 204 });
     assert.equal(req.method(), "GET", `${req.method()} ${path}`);
     if (path === "/capabilities") return json({ models_configured: true });
+    // 新建后本地任务仍为 running，会话恢复会先核对一次任务；返回进行中，后续状态由 SSE 事件推进。
+    if (path === "/jobs/job-1") return json({ ...jobs[0], status: "running", result_version_id: null });
     if (path.endsWith("/events")) return json([]);
     if (path.endsWith("/stream")) {
       const after = Number(url.searchParams.get("after"));
@@ -249,30 +251,25 @@ try {
       ).width - before.width,
     ) < 2,
   );
-  // 第二条分隔线调整预览宽度；极端拖动也必须保留三个面板的最小可用宽度。
+  // 预览/参数分隔线调整预览宽度；极端拖动也必须保留三个面板的最小可用宽度。
   const second = await page
-    .getByRole("separator", { name: "调整聊天与预览宽度" })
+    .getByRole("separator", { name: "调整预览与参数宽度" })
     .boundingBox();
-  const previewBefore = await page
-    .locator('[data-slot="resizable-panel"]')
-    .last()
-    .boundingBox();
+  const previewBefore = await page.locator("#preview").boundingBox();
   await page.mouse.move(second.x + second.width / 2, second.y + 100);
   await page.mouse.down();
-  await page.mouse.move(second.x - 60, second.y + 100, { steps: 8 });
+  await page.mouse.move(second.x + 60, second.y + 100, { steps: 8 });
   await page.mouse.up();
   assert(
-    (await page.locator('[data-slot="resizable-panel"]').last().boundingBox())
-      .width >
+    (await page.locator("#preview").boundingBox()).width >
       previewBefore.width + 30,
   );
-  await page.mouse.move(second.x - 60, second.y + 100);
+  await page.mouse.move(second.x + 60, second.y + 100);
   await page.mouse.down();
-  await page.mouse.move(1400, second.y + 100, { steps: 8 });
+  await page.mouse.move(300, second.y + 100, { steps: 8 });
   await page.mouse.up();
   assert(
-    (await page.locator('[data-slot="resizable-panel"]').last().boundingBox())
-      .width >= 359,
+    (await page.locator("#preview").boundingBox()).width >= 219,
   );
   await page.getByRole("button", { name: "恢复布局" }).click();
   // 点击成功卡片只替换预览；返回最新后恢复参数编辑。

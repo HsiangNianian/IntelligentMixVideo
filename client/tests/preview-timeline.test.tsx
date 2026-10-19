@@ -109,8 +109,8 @@ test("Remotion 字效替换的文字不进入 SDK 时间线", () => {
   expect(buildPreviewRows(timeline).map((row) => row.actions[0]?.effectId ?? row.id)).toEqual(["title", "subtitle", "transitions", "video", "video", "video"]);
 });
 
-// Remotion 资产并入 IMS 对象的行：字效标在所作用的标题行上，转场、画面特效和滤镜按图层插入，不再每个资产独占一行；读回的转场尚未选择交界处时只显示对象名称。
-test("Remotion 资产按所占对象并入时间轴行", () => {
+// AI 资产并入 IMS 对象的行：字效标在所作用的标题行上，转场、画面特效和滤镜按图层插入，不再每个资产独占一行；读回的转场尚未选择交界处时只显示对象名称。
+test("AI 资产按所占对象并入时间轴行", () => {
   const clip = { spriteId: "s1", aspect: 9 / 16, start: 1, end: 4, length: 3 };
   const rows = mergeSpriteRows(buildPreviewRows(buildTimeline(newDraft(), readCatalog())), [
     { ...clip, id: "text", name: "霓虹标题", slot: "title" },
@@ -126,7 +126,7 @@ test("Remotion 资产按所占对象并入时间轴行", () => {
   expect(rows[2].actions[0]).toMatchObject({ id: "cut", label: "镜头转场 2", effectName: "Remotion · 闪白", start: 1, end: 4, movable: false, targetId: "cut" });
   render(<PreviewTimeline ref={createRef()} rows={rows} disabled={false} time={0} onSeek={() => {}} />);
   expect([...screen.getByLabelText("时间轴轨道标签").querySelectorAll("[data-object]")].map((label) => label.textContent))
-    .toEqual(["顶部标题", "底部字幕", "镜头转场", "画面特效", "视频滤镜", "Remotion 资产", "视频", "视频", "视频"]);
+    .toEqual(["顶部标题", "底部字幕", "镜头转场", "画面特效", "视频滤镜", "AI 资产", "视频", "视频", "视频"]);
 });
 
 // 场景：全部转场共用一行，滤镜按时间重叠情况分行；标题行使用字效 ID，点击时间轴可以选中字效。

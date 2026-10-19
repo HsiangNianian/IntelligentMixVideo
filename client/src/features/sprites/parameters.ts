@@ -1,4 +1,4 @@
-/** Remotion 资产的分类、宿主变换与参数声明：与服务端 `categories.py`、`placement.py` 的规则一致，模板编辑据此生成控件并在本地校验。 */
+/** AI 资产的分类、宿主变换与参数声明：与服务端 `categories.py`、`placement.py` 的规则一致，模板编辑据此生成控件并在本地校验。 */
 import { OperatorAccess, SpriteKind, SpriteParameterFormat, type SpriteParameter } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { ParameterField, ParameterValue } from "@/components/ParameterControl";
 

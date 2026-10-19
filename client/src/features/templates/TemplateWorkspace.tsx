@@ -113,7 +113,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
       id: clip.id,
       spriteId: clip.sprite_id,
       aspect: asset?.aspect ?? 9 / 16,
-      name: asset?.name ?? "Remotion 资产",
+      name: asset?.name ?? "AI 资产",
       start: clip.start,
       end: Math.min(previewLength, clip.start + (clip.duration ?? asset?.seconds ?? 0)),
       length: clip.duration ?? asset?.seconds ?? 0,
