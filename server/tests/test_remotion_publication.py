@@ -168,6 +168,11 @@ def test_parameter_revision_is_saved_at_once_without_the_sandbox(harness, sprite
         assert response.status_code == 200 and "sandbox allow-scripts" in response.headers["content-security-policy"]
         data = response.text.split('<script type="application/json" id="imv-preview-host">', 1)[1].split("</script>", 1)[0]
         assert json.loads(data) == {"config": {"title": {"text": "新标题"}}}
+        # 透明页面复用同一份封存播放器，旧版本也能叠在客户端本地视频上。
+        overlay = client.get(f"/api/templates/versions/{revised.id}/preview?overlay=true")
+        assert overlay.status_code == 200 and "conic-gradient" not in overlay.text
+        assert "background:transparent" in overlay.text and "conic-gradient" in response.text
+        assert overlay.headers["content-security-policy"] == response.headers["content-security-policy"]
         # Without a sandbox the instant revision is still accepted over HTTP.
         accepted_job = client.post(f"/api/templates/works/{work.id}/messages", headers=DEVICE_HEADERS, json={"parameters": {"title": {"text": "第三版"}}, "base_version_id": str(revised.id)})
         assert accepted_job.status_code == 202

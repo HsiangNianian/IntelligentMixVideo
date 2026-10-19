@@ -15,6 +15,7 @@ import * as local from "@/features/remotion_templates/localSessions";
 import type { Job, Values } from "@/features/remotion_templates/model";
 import { fetchMock } from "./setup";
 import { remotionJob, remotionVersion } from "./remotion-fixtures";
+import { commitLocalVideos } from "@/features/templates/localVideos";
 
 import { latestCopy, latestCode } from "./remotion-version-helpers";
 import { remotionServer as server } from "./remotion-server";
@@ -422,7 +423,7 @@ test("新增隔离迟到的创建响应并保留旧任务", async () => {
   );
 });
 
-// 预览只信任当前 iframe 的通道；修改背景链接不创建新生成任务。
+// 预览只信任当前 iframe 的通道；背景直链在父页面播放，不进入字效协议或生成任务。
 test("播放器握手隔离和背景直链更新", async () => {
   server();
   render(<RemotionWorkspace />);
@@ -467,11 +468,9 @@ test("播放器握手隔离和背景直链更新", async () => {
   fireEvent.submit(
     screen.getByRole("button", { name: "加载" }).closest("form")!,
   );
-  await waitFor(() =>
-    expect(post.mock.calls.at(-1)?.[0].background).toBe(
-      "https://media.test/demo.mp4",
-    ),
-  );
+  expect(screen.getByLabelText<HTMLVideoElement>("预览背景视频").src).toBe("https://media.test/demo.mp4");
+  expect(post.mock.calls).toHaveLength(1);
+  expect(post.mock.calls[0][0].background).toBe("");
   expect(
     fetchMock.mock.calls.filter((call) =>
       String(call[0]).endsWith("/messages"),
@@ -607,48 +606,55 @@ test("渲染期间锁定所有输入操作，完成后恢复", async () => {
   ).toBe(false);
 });
 
-// 预览失败必须解除锁定；旧请求的完成消息不能释放新背景的加载锁。
-test("背景加载过滤迟到确认，失败后解除锁定", async () => {
+// 背景媒体错误只显示提示，不能锁定字效参数或触发 iframe 更新。
+test("背景加载失败不影响字效编辑", async () => {
   server();
   render(<RemotionWorkspace />);
   await generate();
   const iframe = screen.getByTitle<HTMLIFrameElement>("Remotion 字效播放器");
-  const channel = new URL(iframe.src).hash.slice(1);
   const post = spyOn(iframe.contentWindow!, "postMessage");
   fireEvent.change(screen.getByLabelText("背景视频直链"), {
     target: { value: "https://media.test/video.mp4" },
   });
   fireEvent.click(screen.getByRole("button", { name: "加载" }));
-  const requestId = post.mock.calls.at(-1)?.[0].requestId;
-  expect(screen.getByLabelText("字号").hasAttribute("disabled")).toBe(true);
-  await act(async () => {
-    window.dispatchEvent(
-      new MessageEvent("message", {
-        source: iframe.contentWindow,
-        data: {
-          type: "imv-preview-rendered",
-          channel,
-          requestId: requestId - 1,
-        },
-      }),
-    );
-  });
-  expect(screen.getByLabelText("字号").hasAttribute("disabled")).toBe(true);
-  await act(async () => {
-    window.dispatchEvent(
-      new MessageEvent("message", {
-        source: iframe.contentWindow,
-        data: {
-          type: "imv-preview-error",
-          channel,
-          requestId,
-          message: "背景加载失败",
-        },
-      }),
-    );
-  });
-  expect(screen.getByText("背景加载失败")).toBeTruthy();
   expect(screen.getByLabelText("字号").hasAttribute("disabled")).toBe(false);
+  fireEvent.error(screen.getByLabelText("预览背景视频"));
+  expect(screen.getByText("背景视频无法播放，请检查文件格式或视频直链。")).toBeTruthy();
+  expect(post).not.toHaveBeenCalled();
+  expect(screen.getByLabelText("字号").hasAttribute("disabled")).toBe(false);
+});
+
+// 模板编辑登记的视频在 Agent 底层播放；替换、删除同一槽位立即同步，封存播放器不参与背景切换。
+test("共享本地预览视频并同步替换和删除", async () => {
+  server();
+  render(<RemotionWorkspace />);
+  await generate();
+  const iframe = screen.getByTitle<HTMLIFrameElement>("Remotion 字效播放器");
+  const src = iframe.src;
+  expect(new URL(src).searchParams.get("overlay")).toBe("true");
+  const post = spyOn(iframe.contentWindow!, "postMessage");
+  const file = new File(["video"], "本地素材.mp4", { type: "video/mp4" });
+  const first = URL.createObjectURL(file);
+  const second = URL.createObjectURL(file);
+  const empty = { kind: "url" as const, url: "" };
+  try {
+    await act(async () => commitLocalVideos([{ kind: "file", name: file.name, file, url: first }, empty, empty]));
+    fireEvent.keyDown(screen.getByRole("combobox", { name: "预览背景" }), { key: "ArrowDown" });
+    fireEvent.click(await screen.findByRole("option", { name: "视频 1：本地素材.mp4" }));
+    const video = screen.getByLabelText<HTMLVideoElement>("预览背景视频");
+    expect(video.src).toBe(first);
+    expect(video.autoplay && video.muted && video.loop).toBe(true);
+    await act(async () => commitLocalVideos([{ kind: "file", name: file.name, file, url: second }, empty, empty]));
+    expect(screen.getByLabelText<HTMLVideoElement>("预览背景视频").src).toBe(second);
+    await act(async () => commitLocalVideos([empty, empty, empty]));
+    expect(screen.queryByLabelText("预览背景视频")).toBeNull();
+    expect(screen.getByTitle("Remotion 字效播放器")).toBe(iframe);
+    expect(iframe.src).toBe(src);
+    expect(post).not.toHaveBeenCalled();
+  } finally {
+    await act(async () => commitLocalVideos([empty, empty, empty]));
+    URL.revokeObjectURL(first); URL.revokeObjectURL(second);
+  }
 });
 
 // 图片输入至少可单独创建任务，上传返回的素材 ID 用于生成；背景链接不发送给模型。

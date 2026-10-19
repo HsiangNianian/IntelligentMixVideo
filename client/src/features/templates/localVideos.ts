@@ -5,6 +5,7 @@
  */
 import { updateInvoke as invoke } from "@/lib/update-guard";
 import { isTauri } from "@tauri-apps/api/core";
+import type { PreviewMedia } from "./model";
 
 /** 单个本地视频上限，与桌面存储一致；字节需完整经过 IPC 并在页面内存生成 blob。 */
 export const LOCAL_VIDEO_MAX_BYTES = 512 * 1024 * 1024;
@@ -17,6 +18,13 @@ export type VideoSource = { kind: "url"; url: string } | { kind: "file"; name: s
 
 const slots: (LocalVideo | undefined)[] = [undefined, undefined, undefined];
 let restored: Promise<void> | undefined;
+const listeners = new Set<(media?: PreviewMedia) => void>();
+
+/** 两个工作区保持挂载，保存或移除后通知背景预览更新来源。 */
+export function subscribeLocalVideos(listener: (media?: PreviewMedia) => void): () => void {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
+}
 
 /** 当前登记的本地视频快照，弹窗据此区分文件与 URL 来源。 */
 export function localVideoSlots(): readonly (LocalVideo | undefined)[] {
@@ -64,7 +72,7 @@ async function save(index: number, name: string, blob: Blob) {
  * 此时新选择的 blob URL 仍未被登记，由弹窗负责释放。全部成功才释放被替换的 blob URL，
  * 失败时当前预览可能仍在使用，暂不释放。
  */
-export async function commitLocalVideos(sources: readonly VideoSource[]): Promise<void> {
+export async function commitLocalVideos(sources: readonly VideoSource[], media?: PreviewMedia): Promise<void> {
   await localPreviewVideos().catch(() => undefined);
   const before = [...slots];
   const done: number[] = [];
@@ -81,6 +89,7 @@ export async function commitLocalVideos(sources: readonly VideoSource[]): Promis
       done.push(index);
     } catch (reason) {
       await rollback(before, done);
+      listeners.forEach((listener) => listener());
       // Tauri 命令以字符串拒绝，统一包装为带视频编号的错误供弹窗展示。
       throw new Error(`视频 ${index + 1}：${reason instanceof Error ? reason.message : String(reason)}`);
     }
@@ -89,6 +98,7 @@ export async function commitLocalVideos(sources: readonly VideoSource[]): Promis
     const previous = before[index];
     if (previous && previous.url !== slots[index]?.url) URL.revokeObjectURL(previous.url);
   }
+  listeners.forEach((listener) => listener(media));
 }
 
 /** 把已完成的槽位恢复为提交前的登记与本机存储；尽力而为，写回失败的槽位保持当前状态。 */

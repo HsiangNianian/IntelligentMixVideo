@@ -4,8 +4,9 @@
  * 视频元数据通过替换 HTMLMediaElement 的 src 设置器模拟，不读取真实媒体；执行 bun run test。
  */
 import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MasterVideoInput } from "@/features/templates/MasterVideoInput";
+import { PreviewPanel } from "@/features/remotion_templates/PreviewPanel";
 import { defaultPreviewUrls, previewVideoUrl } from "@/features/templates/media";
 import { commitLocalVideos, LOCAL_VIDEO_MAX_BYTES, localVideoSlots } from "@/features/templates/localVideos";
 import type { PreviewMedia } from "@/features/templates/model";
@@ -59,6 +60,29 @@ function openDialog() {
 function choose(dialog: HTMLElement, index: number, file: File) {
   fireEvent.change(within(dialog).getByLabelText(`视频 ${index} 本地视频文件`), { target: { files: [file] } });
 }
+
+// 两页直接使用同一个选文件弹窗；Agent 尚无字效也能播放视频，替换文件后两页保持一致。
+test("Remotion 直接加载本地文件并与模板文件弹窗双向共享", async () => {
+  const agent = render(<PreviewPanel version={null} values={{}} pending={false} onBusyChange={() => {}} />);
+  fireEvent.click(within(agent.container).getByRole("button", { name: "加载预览视频" }));
+  let dialog = screen.getByRole("dialog", { name: "加载预览视频" });
+  choose(dialog, 2, new File(["video"], "Agent素材.mp4", { type: "video/mp4" }));
+  await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "加载" })));
+  await waitFor(() => expect(localVideoSlots()[1]?.name).toBe("Agent素材.mp4"));
+  expect(within(agent.container).getByLabelText<HTMLVideoElement>("预览背景视频").src).toBe(localVideoSlots()[1]!.url);
+  expect(screen.queryByTitle("Remotion 字效播放器")).toBeNull();
+
+  const editor = render(<MasterVideoInput onChange={() => {}} />);
+  fireEvent.click(within(editor.container).getByRole("button", { name: "加载预览视频" }));
+  dialog = screen.getByRole("dialog", { name: "加载预览视频" });
+  expect(within(dialog).getByLabelText("视频 2 本地文件").textContent).toBe("Agent素材.mp4");
+  choose(dialog, 2, new File(["replacement"], "替换素材.mp4", { type: "video/mp4" }));
+  await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "加载" })));
+  await waitFor(() => expect(localVideoSlots()[1]?.name).toBe("替换素材.mp4"));
+  expect(within(agent.container).getByLabelText<HTMLVideoElement>("预览背景视频").src).toBe(localVideoSlots()[1]!.url);
+  fireEvent.click(within(agent.container).getByRole("button", { name: "加载预览视频" }));
+  expect(screen.getByLabelText("视频 2 本地文件").textContent).toBe("替换素材.mp4");
+});
 
 // 场景：视频 2 选择本地文件并加载，其余仍用默认地址；再次打开显示为文件，移除后改回默认 URL。
 test("本地文件加载为预览来源，移除后恢复默认地址", async () => {

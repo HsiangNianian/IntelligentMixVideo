@@ -17,6 +17,7 @@ import { AppliedEffects, EffectAssets } from "./EffectAssets";
 import { isTextTarget } from "./effects";
 import { addTrack, previewContext, resolveTemplate, removeTrack, setBilingual, setTrackTiming, trackDraft, updateTrack } from "./tracks";
 import { defaultPreviewUrls, readPreviewVideos } from "./media";
+import { subscribeLocalVideos } from "./localVideos";
 import { compactTransitions, previewTransitions, setTransitionDuration, transitionItems } from "./transitions";
 import { TemplateInspector, TransitionInspector, type InspectorTab } from "./TemplateInspector";
 import { TemplatePreview } from "./TemplatePreview";
@@ -147,6 +148,9 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
     if (!current || deletedTemplate.templateId !== current.template_id || deletedTemplate.environment !== environment) return;
     setCurrent(null); setDraft(null); setEditing(null); setBaseline(""); setError("");
   }, [deletedTemplate, current, environment, openRequest]);
+
+  // Remotion 页也能更换来源，复用弹窗已读到的元数据，避免继续使用已释放的 blob URL。
+  useEffect(() => subscribeLocalVideos((sources) => { setMedia(sources); setMediaError(""); }), []);
 
   // 默认地址（本机保存的本地视频优先）与弹窗均读取真实元数据；已选择来源时不再启动默认读取。
   useEffect(() => {

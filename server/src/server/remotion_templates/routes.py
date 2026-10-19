@@ -475,15 +475,16 @@ def player_page(
     tags=["生成产物"],
     summary="打开交互预览",
 )
-def preview(version_id: UUID, service: Service) -> HTMLResponse:
+def preview(version_id: UUID, service: Service, overlay: bool = False) -> HTMLResponse:
     """返回成功版本的隔离播放器，支持背景视频与实时参数；旧版本缺少预览包时返回 404。
 
-    父页面以 iframe 加载，使用 URL fragment 作为消息通道标识；只交换参数、背景链接及就绪通知。
+    父页面以 iframe 加载，使用 URL fragment 作为消息通道标识；overlay=true 透明显示，供客户端叠在独立视频上。
     """
     script = artifact_path(service, version_id, "interactive.js").read_text()
     # A parameter revision reuses its base's bundle, so the page supplies this version's own defaults.
     return player_page(
         script,
+        overlay=overlay,
         host={"config": service.store.version(version_id).candidate.default_config},
         fonts=FontStore.for_settings(service.settings).listing(),
     )

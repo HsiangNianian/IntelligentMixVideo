@@ -87,7 +87,7 @@ export function MasterVideoInput({ media, onChange }: { media?: PreviewMedia; on
       const media = await readPreviewVideos(sources.map((source) => source.url), request.signal);
       if (request.signal.aborted) return;
       committing.current = true; setSaving(true);
-      try { await commitLocalVideos(sources); }
+      try { await commitLocalVideos(sources, media); }
       catch (reason) {
         // 保存中卸载时清理已跳过；保存失败后新选择的 blob URL 不会被登记，此处释放。
         if (request.signal.aborted) release();
