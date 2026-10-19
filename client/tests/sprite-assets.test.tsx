@@ -349,12 +349,14 @@ test("所作用文字不在预览内时字效标为未应用", () => {
 
 /** 多行字效的行间距参数（像素）。 */
 const LINE_GAP: MessageInitShape<typeof SpriteParameterSchema> = { key: "lineGap", label: "行间距", access: OperatorAccess.VISIBLE_EDITABLE, defaultValue: { value: { case: "numberValue", value: 24 } }, minimum: 0, maximum: 300 };
+/** 双栏字效的上栏字号比例（相对 fontSize），与服务端生成的配置参数同名同范围。 */
+const LINE1_SIZE_RATIO: MessageInitShape<typeof SpriteParameterSchema> = { key: "line1SizeRatio", label: "上栏字号比例", access: OperatorAccess.VISIBLE_EDITABLE, defaultValue: { value: { case: "numberValue", value: 0.6 } }, minimum: 0.4, maximum: 2 };
 
-/** 打开带一个字效片段的已保存模板，并选中该片段；lineCount 是目录里字效的固定行数，多行字效带行间距参数。 */
+/** 打开带一个字效片段的已保存模板，并选中该片段；lineCount 是目录里字效的固定行数，多行字效带行间距与上栏字号比例参数。 */
 async function openTextClip(clip: Partial<RemotionClip> = {}, lineCount = 1) {
   const text = textAsset();
   const fixture = sprites({
-    catalog: [{ ...text, lineCount, parameters: lineCount > 1 ? [...text.parameters, LINE_GAP] : text.parameters }, summary("sprite-f", SpriteKind.FILTER_OVERLAY), summary("sprite-v")],
+    catalog: [{ ...text, lineCount, parameters: lineCount > 1 ? [...text.parameters, LINE_GAP, LINE1_SIZE_RATIO] : text.parameters }, summary("sprite-f", SpriteKind.FILTER_OVERLAY), summary("sprite-v")],
     clips: [{ id: "clip-t", sprite_id: "sprite-t", start: 0, duration: 3, parameters: {}, transform: {}, ...clip }],
   });
   const remotion = { opened: 0 };
@@ -375,6 +377,21 @@ test("目录里的多行字效在模板中逐行填写字幕示例并调整行�
   fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
   await waitFor(() => expect(saved).toHaveLength(1));
   expect(wireClips(saved[0]).map((clip) => clip.editor?.remotion?.parameters.map((item) => [item.key, item.numberValue]))).toEqual([[["lineGap", 60]]]);
+});
+
+// 场景：双栏字效作用于标题时同样逐栏填写示例（合成按标题里的换行分栏）；逐栏字号比例和字效工作区的配置一样在「外观与位置」里按这次摆放调整，不列入资产默认参数，并随模板保存。
+test("双栏字效作用于标题时逐栏填写示例并调整逐栏字号比例", async () => {
+  const { inspector, saved } = await openTextClip({ text_target: "title" }, 2);
+  fireEvent.change(within(inspector).getByLabelText("示例文字第 1 行"), { target: { value: "判断一个人" } });
+  fireEvent.change(within(inspector).getByLabelText("示例文字第 2 行"), { target: { value: "选择花字" } });
+  await waitFor(() => expect(within(inspector).getByLabelText<HTMLInputElement>("示例文字第 2 行").value).toBe("选择花字"));
+  expect(within(inspector).getByText(/按其中的换行分行/)).toBeTruthy();
+  expect(within(inspector).getByRole("heading", { name: "资产默认参数" }).closest("fieldset")!.textContent).not.toContain("上栏字号比例");
+  fireEvent.change(within(inspector).getByLabelText("上栏字号比例"), { target: { value: "0.8" } });
+  fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
+  await waitFor(() => expect(saved).toHaveLength(1));
+  expect(saved[0].tracks!.tracks.find((track) => track.target === "title")?.editor?.title).toBe("判断一个人\n选择花字");
+  expect(wireClips(saved[0]).map((clip) => clip.editor?.remotion?.parameters.map((item) => [item.key, item.numberValue]))).toEqual([[["line1SizeRatio", 0.8]]]);
 });
 
 // 场景：资产库按字效、滤镜、转场与视频特效分类，显示各类数量，默认打开第一个有资产的分类。
@@ -545,8 +562,8 @@ test("资产未读到时带位置覆盖的片段仍能打开设置栏", () => {
   expect(screen.getByText("未找到的资产")).toBeTruthy();
 });
 
-// 场景：多行字效作用于底部字幕时，示例文字按资产行数逐行填写，用换行连接写回字幕对象；作用于标题时仍是一个输入框，整段标题显示在第一行。
-test("多行字效作用于字幕时逐行填写示例文字", () => {
+// 场景：多行字效作用于底部字幕或标题时，示例文字都按资产行数逐行填写，用换行连接写回所作用的文字对象；单行字效仍是一个输入框。
+test("多行字效作用于字幕或标题时逐行填写示例文字", () => {
   const asset: SpriteAsset = { id: "sprite-t", name: "两行花字", kind: SpriteKind.TEXT, seconds: 3, aspect: 9 / 16, width: 1080, height: 1920, fps: 30, box: { x: 0, y: 0, width: 1080, height: 1920 }, parameters: [], lines: 2 };
   const clip: RemotionClip = { id: "clip-t", sprite_id: "sprite-t", start: 0, duration: 3, parameters: {}, transform: {}, text_target: "subtitle" };
   const [title, subtitle] = newDraft().tracks;
@@ -558,10 +575,13 @@ test("多行字效作用于字幕时逐行填写示例文字", () => {
   expect(screen.getByLabelText<HTMLInputElement>("示例文字第 1 行").value).toBe("判断一个人");
   fireEvent.change(screen.getByLabelText("示例文字第 2 行"), { target: { value: "选择滤镜" } });
   expect(samples).toEqual(["判断一个人\n选择滤镜"]);
-  rerender(<SpriteClipInspector {...props} clip={{ ...clip, text_target: "title" }} textTrack={title} onSample={(value) => samples.push(value)} />);
+  rerender(<SpriteClipInspector {...props} clip={{ ...clip, text_target: "title" }} textTrack={{ ...title!, editor: { ...title!.editor, title: "今日灵感" } }} onSample={(value) => samples.push(value)} />);
+  expect(screen.getByLabelText<HTMLInputElement>("示例文字第 1 行").value).toBe("今日灵感");
+  fireEvent.change(screen.getByLabelText("示例文字第 2 行"), { target: { value: "副标题" } });
+  expect(samples.at(-1)).toBe("今日灵感\n副标题");
+  rerender(<SpriteClipInspector {...props} asset={{ ...asset, lines: 1 }} clip={{ ...clip, text_target: "title" }} textTrack={title} onSample={(value) => samples.push(value)} />);
   expect(screen.queryByLabelText("示例文字第 1 行") === null).toBe(true);
   expect(screen.getByLabelText("示例文字")).toBeTruthy();
-  expect(screen.getByText(/整段显示在这个多行字效的第一行/)).toBeTruthy();
 });
 
 // 场景：资产库里的资产可确认后删除；仍被模板使用时弹窗显示服务端列出的模板并保留资产，确认删除成功后目录刷新不再显示它。

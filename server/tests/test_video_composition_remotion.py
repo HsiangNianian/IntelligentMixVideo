@@ -997,12 +997,20 @@ def test_fixed_clock_multi_line_starts_follow_the_preview_clock(composition_case
     assert first["config"]["lineStartFrames"] == [0, 45] and first["reveal_frame"] == 30 and first["code"] == "timed source"
 
 
-def test_multi_line_title_puts_the_whole_title_on_the_first_line(composition_case):
-    """多行字效绑定标题：整段标题放第一行（自带的换行改为空格），其余行没有文字。"""
-    result = remotion.plan(multi_line_case(composition_case, target="title"), 120)
-    item, = result.instances
-    assert item["config"]["text"] == "业务标题 保留换行"
-    assert item["config"]["lineStartFrames"] == [0, 0]
+@pytest.mark.parametrize("title, expected", [
+    ("业务标题\n保留换行", "业务标题\n保留换行"),
+    # Without a line break the whole title is the first line and the second line stays empty.
+    ("业务标题", "业务标题"),
+    # Blank lines are skipped; lines beyond the effect's two join the last one with a space.
+    ("上栏\n\n下栏\n多出", "上栏\n下栏 多出"),
+])
+def test_multi_line_title_splits_the_title_at_its_line_breaks(composition_case, title, expected):
+    """多行字效绑定标题：按标题里的换行分行，所有行同时出现；没有换行时整段放第一行。"""
+    data = multi_line_case(composition_case, target="title")
+    data["request"] = {**data["request"], "title": title}
+    item, = remotion.plan(data, 120).instances
+    assert (item["config"]["text"], item["text"]) == (expected, expected)
+    assert item["config"]["lineStartFrames"] == [0, 0] and item["reveal_frame"] == 0
 
 
 def test_single_line_subtitles_are_still_one_instance_per_cue(composition_case):

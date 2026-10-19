@@ -315,7 +315,7 @@ function ComposedParameters({version, values, disabled, onChange, onValidity}: {
   const groups = schemaGroups(version.candidate.config_schema.properties ?? {});
   const sections = [["配置", groups.config], ["样式", groups.style]] as const;
   return <div className="space-y-4 py-3">
-    <p className="text-xs text-muted-foreground">配置是固定的文字、字体、排版与关键词设置，样式是这个字效自己的外观；云端模板按摆放调整字号、字体、栏间距、位置与关键词，其余在这里修改。保存只检查参数范围，立即生成新版本；布局与时间修改请通过聊天描述。</p>
+    <p className="text-xs text-muted-foreground">配置是固定的文字、字体、排版与关键词设置，样式是这个字效自己的外观；云端模板按摆放调整字号、字体、字重、栏间距与逐栏字号比例、位置与关键词，其余在这里修改。保存只检查参数范围，立即生成新版本；布局与时间修改请通过聊天描述。</p>
     {sections.map(([title, all]) => {
       const fields = all.filter((field) => values[field.key] !== undefined);
       return fields.length > 0 && <fieldset key={title} className="space-y-3">
