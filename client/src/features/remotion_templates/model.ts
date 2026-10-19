@@ -202,14 +202,14 @@ export interface ChatMessage {
 }
 
 /**
- * 预览用的示例关键词。除模板可调的七个关键词参数外还有以 keyword 开头的顶层参数，说明这个字效在生成时带了关键词字效
- * （Agent 规则约定 keywordEffect… 命名）；默认关键词为空时它不出现，所以取默认文字首个非空行开头至多两个字作示例，
- * 与生成校验挂载的示例相同。已填关键词、没有关键词字效、关键词字效开关（keywordEffect）已关或没有文字时返回空串；
- * 只影响预览，不改参数、不进入保存。
+ * 预览用的示例关键词。有以 keywordEffect 开头的顶层参数（关键词 Preset 的开关或关键词外观，与服务端
+ * `categories.has_keyword_effect` 一致）说明这个字效在生成时带了关键词字效；默认关键词为空时它不出现，所以取当前文字
+ * 首个非空行开头至多两个字作示例（文字未改时即默认文字，与生成校验挂载的示例相同；改了文字仍能命中）。
+ * 已填关键词、没有关键词字效、关键词字效开关（keywordEffect）已关或没有文字时返回空串；只影响预览，不改参数、不进入保存。
  */
 export function sampleKeyword(version: Version | null, values: Values): string {
   const properties = version?.candidate.config_schema.properties ?? {};
-  const effect = Object.keys(properties).some((key) => key.startsWith("keyword") && !TEMPLATE_KEYWORD_PARAMETERS.includes(key));
+  const effect = Object.keys(properties).some((key) => key.startsWith("keywordEffect"));
   if (!effect || values.keywordEffect === false || !Array.isArray(values.keywords) || values.keywords.length || typeof values.text !== "string") return "";
   return values.text.split("\n").find((line) => line.trim())?.match(/\S{1,2}/u)?.[0] ?? "";
 }

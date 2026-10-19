@@ -79,4 +79,9 @@ test("关键词字效以示例关键词预览，不改参数", async () => {
   Object.assign(plain.candidate.config_schema.properties, { keywords: { type: "array" }, keywordBold: { type: "boolean" } });
   expect((await previewValues(plain)).keywords).toEqual([]);
   expect(screen.queryByText(/示例关键词/) === null).toBe(true);
+  cleanup();
+  // 审计复现：以 keyword 开头、却不是 keywordEffect… 的内部参数曾被当作关键词字效，预览注入资产里并不存在的示例高亮。
+  const hinted = remotionVersion("version-1", { keywords: [], keywordHint: "#FFFFFF" });
+  Object.assign(hinted.candidate.config_schema.properties, { keywords: { type: "array" }, keywordHint: { type: "string" } });
+  expect((await previewValues(hinted)).keywords).toEqual([]);
 });
