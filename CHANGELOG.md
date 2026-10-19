@@ -3,6 +3,21 @@
 本项目的版本变更由发布工作流根据 Conventional Commits 自动生成。
 推送正式版本 tag 后，成功发布的版本记录会自动写入此文件。
 
+## [v0.9.7] - 2026-10-19
+### Bug Fixes
+- [`fac89c9`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/fac89c9b0dc570904c5cd999d56fe05c7032970b) - **client**: install rustls crypto provider before update checks *(PR [#194](https://github.com/HsiangNianian/IntelligentMixVideo/pull/194) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Documentation Changes
+- [`efad46f`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/efad46f9f3c8446c8cf5eb0e252646fafdd31a74) - update CHANGELOG.md for v0.9.6 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
+
+### Chores
+- [`d9ead65`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/d9ead65a3d96797219f0889e59db2e3fe59b0228) - **release**: prepare v0.9.7 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Other Changes
+- [`0c1b89e`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/0c1b89e40609dc54ee4070ab474b83de844fabbf) - Merge pull request [#195](https://github.com/HsiangNianian/IntelligentMixVideo/pull/195) from HsiangNianian/dev
+
+chore(release): promote dev to main for v0.9.7 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
 ## [v0.9.6] - 2026-10-16
 ### New Features
 - [`3ced7b9`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/3ced7b9a410e62abffb4bd4669a141ab7366b071) - **templates**: support bilingual titles and subtitles *(PR [#185](https://github.com/HsiangNianian/IntelligentMixVideo/pull/185) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
@@ -1512,3 +1527,5 @@ feat(client): 在模板工作区页头添加时钟 *(commit by [@HsiangNianian](
 [v0.9.5]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.4...v0.9.5
 
 [v0.9.6]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.5...v0.9.6
+
+[v0.9.7]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.6...v0.9.7
