@@ -19,7 +19,7 @@ from pydantic import TypeAdapter
 from ..remotion_templates import sprites
 from ..remotion_templates.categories import LINE_START_MAX_FRAMES, line_count
 from ..remotion_templates.placement import resolve as resolve_placement
-from ..template.schema import KEYWORD_TARGETS, EffectTrack, RemotionTrackEditor, active_tracks, text_role
+from ..template.schema import EffectTrack, RemotionTrackEditor, active_tracks
 from ..template.timing import resolve_track
 from ..template.transitions import select_transitions
 from .remotion_content import ContentError, dynamic_duration, resolve_config, roles
@@ -91,17 +91,17 @@ def placement_target(placement: dict, sprite: pb.PublishedSprite) -> str:
         target = "decoration"
     if target is None:
         raise ContentError("请先为 Remotion 资产选择标题、字幕或透明装饰用途")
-    if (sprite.kind == pb.SPRITE_KIND_TEXT) != (text_role(target) in {"title", "subtitle"}):
-        raise ContentError("字效请选择标题、字幕或它们的关键词，视觉资产请选择透明装饰")
+    if (sprite.kind == pb.SPRITE_KIND_TEXT) != (target in {"title", "subtitle"}):
+        raise ContentError("字效请选择标题或字幕，视觉资产请选择透明装饰")
     return target
 
 
 def active_placements(data: dict) -> list[dict]:
-    """恢复同样以本单模板快照里的英文与关键词开关为准，旧摆放默认中文。"""
-    disabled = {(track["target"], track.get("language", "zh")) for track in data.get("template", {}).get("tracks", [])
-                if track.get("enabled", True) is False}
+    """恢复同样以本单模板快照里的英文开关为准，旧摆放默认中文。"""
+    enabled = {track["target"] for track in data.get("template", {}).get("tracks", [])
+               if track.get("language") == "en" and track.get("enabled", True) and track["target"] in {"title", "subtitle"}}
     return [item for item in (data.get("remotion") or {}).get("placements", [])
-            if (item.get("text_target"), item.get("language", "zh")) not in disabled]
+            if item.get("language", "zh") != "en" or item.get("text_target") in enabled]
 
 
 async def require_environment(data: dict) -> None:
@@ -114,8 +114,7 @@ async def require_environment(data: dict) -> None:
         return
     request = CompositionRequest.from_snapshot(data["request"])
     try:
-        # 关键词对象跟随所属文字：切片前不知道是否有关键词，按所属文字是否存在要求环境。
-        targets = {text_role(placement_target(placement, ParseDict(saved["assets"][placement["sprite_id"]], pb.PublishedSprite())))
+        targets = {placement_target(placement, ParseDict(saved["assets"][placement["sprite_id"]], pb.PublishedSprite()))
                    for placement in placements}
     except ContentError as exc:
         raise CompositionError("remotion_asset_not_adapted", str(exc), "template") from exc
@@ -178,7 +177,7 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
             config, host = resolve_placement(sprite, editor)
         except ValueError as exc:
             raise ContentError(str(exc)) from exc
-        dynamic = text_role(target) in {"title", "subtitle"}
+        dynamic = target in {"title", "subtitle"}
         fixed_clock = dynamic and not dynamic_duration(json.loads(sprite.config_schema_json))
         start = placement.get("start", 0)
         length_seconds = placement.get("duration") or sprite.canvas.preview_frames / sprite.canvas.fps
@@ -190,7 +189,7 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
                 raise ContentError("Remotion 字效缺少所作用的文字对象")
             track = EffectTrack.model_validate(text_track).model_copy(update={"target": "remotion"})
             applied = resolve_track(track, duration, fps)
-            end = duration if text_role(text_target) == "title" and track.duration is None and applied.end > applied.start else applied.end
+            end = duration if text_target == "title" and track.duration is None and applied.end > applied.start else applied.end
             start, length_seconds = applied.start, end - applied.start
         boundary = placement.get("transition_boundary")
         if boundary is not None:
@@ -209,18 +208,8 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
                     continue
             start = max(0, clips[boundary - 1]["TimelineOut"] - length_seconds / 2)
         lines = line_count(json.loads(sprite.config_schema_json)) if sprite.kind == pb.SPRITE_KIND_TEXT else 1
-        if target in KEYWORD_TARGETS and lines > 1:
-            raise ContentError("多行字效不能用于关键词对象")
         # 每项内容是 (各行文字, 各行关键词, 各行出现的秒数, 开始, 结束)；单行字效只有一行。
-        if target == "subtitle_keyword":
-            # 关键词对象在每个带关键词的字幕区间里只显示这个词，字效内部不再强调关键词。
-            events = subtitle_events(segments, language) if spoken else []
-            shown = [(keyword, max(begin, start), min(end, start + length_seconds)) for _, keyword, begin, end in events if keyword]
-            contents = [([keyword], [""], [begin], begin, end) for keyword, begin, end in shown if min(duration, end) > max(0, begin)]
-        elif target == "title_keyword":
-            contents = [([title_keyword], [""], [start], start, start + length_seconds)] \
-                if request.title and request.title.strip() and title_keyword else []
-        elif target == "subtitle":
+        if target == "subtitle":
             # 多行字效把同一句里最多 lines 个连续切片合成一组：逐行出现，整组在最后一个切片结束时清空。
             text_schema = json.loads(sprite.config_schema_json).get("properties", {}).get(sprite.text_prop or "text", {})
             language_events = subtitle_events(segments, language) if spoken else []

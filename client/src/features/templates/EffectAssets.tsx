@@ -90,9 +90,11 @@ export function EffectAssets({ editor = defaultEditor, catalog, textTarget, onTe
 export function AppliedEffects({ draft, catalog, resolved, selected, onSelect }: {
   draft: Draft; catalog: EffectAsset[]; resolved?: import("./tracks").ResolvedTimeline; selected: string | null; onSelect: (target: string) => void;
 }) {
+  // 关键词对象在所属文字的「关键词设置」里配置，不单独列出。
+  const tracks = draft.tracks.filter((track) => !isKeywordTarget(track.target));
   return <section aria-label="已添加特效" className="space-y-3 border-b p-4">
-    <div className="flex items-center justify-between"><h2 className="text-[13px] font-semibold">画面对象</h2><span className="text-[11px] tabular-nums text-muted-foreground">{draft.tracks.length}</span></div>
-    <div className="space-y-0.5">{[...draft.tracks].sort((a, b) => trackLayers[a.target] - trackLayers[b.target] || (a.target === "transition" && b.target === "transition" ? a.transition_boundary! - b.transition_boundary! : 0)).map((track) => {
+    <div className="flex items-center justify-between"><h2 className="text-[13px] font-semibold">画面对象</h2><span className="text-[11px] tabular-nums text-muted-foreground">{tracks.length}</span></div>
+    <div className="space-y-0.5">{[...tracks].sort((a, b) => trackLayers[a.target] - trackLayers[b.target] || (a.target === "transition" && b.target === "transition" ? a.transition_boundary! - b.transition_boundary! : 0)).map((track) => {
       const effectId = trackEffect(track);
       const effect = catalog.find((item) => item.id === effectId)?.name ?? (effectId ? effectId.split("/").at(-1) : "未设置效果");
       const timing = resolved?.tracks[track.id];
@@ -101,6 +103,6 @@ export function AppliedEffects({ draft, catalog, resolved, selected, onSelect }:
         <ObjectIcon target={track.target} /><span className="min-w-0 flex-1"><span className="block truncate text-[13px] font-medium leading-5">{trackLabel(track, draft.tracks)}</span><span className="block truncate text-[11px] leading-4 tabular-nums text-muted-foreground">{effect} · {interval}</span></span>
       </Button>;
     })}</div>
-    {!draft.tracks.length && <Empty className="border p-5 md:p-5"><EmptyHeader><EmptyMedia variant="icon"><Layers className="size-5" aria-hidden="true" /></EmptyMedia><EmptyTitle className="text-sm">还没有画面对象</EmptyTitle><EmptyDescription className="text-xs">从左侧特效资产选择并添加效果。</EmptyDescription></EmptyHeader></Empty>}
+    {!tracks.length && <Empty className="border p-5 md:p-5"><EmptyHeader><EmptyMedia variant="icon"><Layers className="size-5" aria-hidden="true" /></EmptyMedia><EmptyTitle className="text-sm">还没有画面对象</EmptyTitle><EmptyDescription className="text-xs">从左侧特效资产选择并添加效果。</EmptyDescription></EmptyHeader></Empty>}
   </section>;
 }

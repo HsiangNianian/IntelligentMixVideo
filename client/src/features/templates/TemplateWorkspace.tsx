@@ -14,16 +14,17 @@ import * as api from "./api";
 import { readCatalog } from "./sdk";
 import { activeDraft, boundText, isKeywordTarget, newDraft, textRole, toDraft, type Draft, type EffectAsset, type Template, type TextRole, type PreviewMedia } from "./model";
 import { AppliedEffects, EffectAssets } from "./EffectAssets";
-import { isTextTarget } from "./effects";
+import { changeEffects, isSelectableAsset, isTextTarget } from "./effects";
 import { addTrack, previewContext, resolveTemplate, removeTrack, setBilingual, setKeywordObject, setTrackTiming, trackDraft, updateTrack } from "./tracks";
 import { defaultPreviewUrls, readPreviewVideos } from "./media";
 import { compactTransitions, previewTransitions, setTransitionDuration, transitionItems } from "./transitions";
 import { TemplateInspector, TransitionInspector, type InspectorTab } from "./TemplateInspector";
 import { TemplatePreview } from "./TemplatePreview";
+import { KeywordEffectPanel } from "./KeywordEffectPanel";
 import { SpriteCatalog, SpriteClips } from "./SpritePanels";
 import { SpriteClipInspector } from "./SpriteClipInspector";
 import { addClip, bindClip, clipSlot, hiddenTextClips, moveClip, removeClip, setClipParameter, setClipTransform, timeClips } from "./clips";
-import { exampleKeyword, keywordSample } from "./timeline";
+import { exampleKeyword } from "./timeline";
 import { transformFields } from "@/features/sprites/parameters";
 import { useSpriteCatalog } from "./useSpriteCatalog";
 import type { TemplateSelection } from "./TemplateHome";
@@ -100,12 +101,8 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
   const draftTracks = draft?.tracks;
   const spriteClips = useMemo(() => previewClips.map((clip) => {
     const asset = spriteCatalog.assets?.find((item) => item.id === clip.sprite_id);
-    // 作用于文字的字效显示该文字对象的示例文字与关键词，合成时由总线换成实际标题或切片；作用于关键词对象时只显示关键词本身。
+    // 作用于文字的字效显示该文字对象的示例文字与关键词，合成时由总线换成实际标题或切片。
     const text = boundText(draftTracks ?? [], clip);
-    const target = clip.text_target;
-    const content = !text || !target ? clip.parameters : isKeywordTarget(target)
-      ? { ...clip.parameters, text: keywordSample(draftTracks ?? [], target), keywords: [] }
-      : { ...clip.parameters, text: text.editor[target], keywords: [exampleKeyword(text.editor, target, text.language)].filter(Boolean) };
     return {
       id: clip.id,
       spriteId: clip.sprite_id,
@@ -117,7 +114,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
       slot: clipSlot(clip, asset),
       textTrackId: text?.id,
       boundary: clip.transition_boundary,
-      values: content,
+      values: text && clip.text_target ? { ...clip.parameters, text: text.editor[clip.text_target], keywords: [exampleKeyword(text.editor, clip.text_target, text.language)].filter(Boolean) } : clip.parameters,
       transform: clip.transform,
       canvas: asset ? { width: asset.width, height: asset.height, box: asset.box, movable: transformFields(asset.kind).includes("x") } : undefined,
     };
@@ -136,10 +133,27 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
   const selectedText = clipText ?? selectedTrack;
   const bilingualTarget = selectedText?.target === "title" || selectedText?.target === "subtitle" ? selectedText.target : undefined;
   const english = draft?.tracks.find((track) => track.target === bilingualTarget && track.language === "en");
-  // 中文标题、字幕或它们的关键词对象被选中时，显示关键词单独字效开关。
-  const keywordRole = selectedText && selectedText.language !== "en" && isTextTarget(selectedText.target) ? textRole(selectedText.target) : undefined;
+  // IMS 中文标题、字幕或它们的关键词对象被选中时，关键词设置里提供关键词字效（关键词对象只用 IMS 花字；
+  // 改由 Remotion 字效显示的文字，关键词效果属于字效本身，模板里不设置）。
+  const keywordRole = selectedTrack && selectedTrack.language !== "en" && isTextTarget(selectedTrack.target) ? textRole(selectedTrack.target) : undefined;
   const keywordOwner = keywordRole === "title" || keywordRole === "subtitle" ? keywordRole : undefined;
   const keywordTrack = keywordOwner && draft?.tracks.find((track) => track.target === `${keywordOwner}_keyword`);
+  const keywordFlower = keywordTrack && keywordOwner ? keywordTrack.editor[`${keywordOwner}Flower`] : "";
+  const keywordPanel = draft && keywordOwner ? <KeywordEffectPanel role={keywordOwner} keyword={keywordTrack || undefined} flower={keywordFlower}
+    flowers={catalog.filter((asset) => asset.category === "flower" && (isSelectableAsset(asset) || asset.id === keywordFlower))}
+    editing={!!keywordTrack && selectedTrack?.id === keywordTrack.id}
+    onEnabled={(enabled) => editTrack(() => {
+      const next = setKeywordObject(draft, keywordOwner, enabled);
+      if (!enabled && selectedTrack && isKeywordTarget(selectedTrack.target)) {
+        const owner = next.tracks.find((track) => track.target === keywordOwner && track.language !== "en")!;
+        setTarget(owner.id); lastTextTrack.current = owner.id;
+      }
+      return next;
+    })}
+    onFlower={(value) => { if (keywordTrack) editTrack(() => updateTrack(draft, keywordTrack.id, changeEffects(trackDraft(draft, keywordTrack), { [`${keywordOwner}Flower`]: value }))); }}
+    onEdit={() => { if (keywordTrack) { selectTarget(keywordTrack.id); setInspectorTab("appearance"); } }} /> : undefined;
+  // 改由 Remotion 字效显示的文字不渲染它的 IMS 关键词对象，特效资产的「应用到」也不列出它。
+  const assetTextTracks = visibleDraft?.tracks.filter((track) => !isKeywordTarget(track.target) || !visibleDraft.clips.some((clip) => clip.text_target === textRole(track.target) && clip.language !== "en"));
 
   useEffect(() => {
     mounted.current = true;
@@ -340,7 +354,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
             </section>
             <WorkspaceColumns
               assets={<aside className="template-workspace-assets h-full min-w-0 overflow-y-auto border-b xl:border-b-0">
-                <EffectAssets editor={assetTrack?.editor} catalog={catalog} textTarget={textTarget} textTracks={visibleDraft!.tracks} selectedText={lastTextTrack.current} onSelectText={selectTarget} textEditor={draft.tracks.find((track) => track.id === lastTextTrack.current)?.editor} onTextTarget={(role) => {
+                <EffectAssets editor={assetTrack?.editor} catalog={catalog} textTarget={textTarget} textTracks={assetTextTracks} selectedText={lastTextTrack.current} onSelectText={selectTarget} textEditor={draft.tracks.find((track) => track.id === lastTextTrack.current)?.editor} onTextTarget={(role) => {
                   setTextTarget(role);
                   const text = draft.tracks.find((track) => track.target === role);
                   setTarget(text?.id ?? null);
@@ -354,11 +368,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
                   if (isTextTarget(added.target)) { setTextTarget(textRole(added.target)); lastTextTrack.current = added.id; }
                   return result.draft;
                 }, true)} />
-                <SpriteCatalog environment={environment} catalog={spriteCatalog} placed={new Set(draft.clips.map((clip) => clip.sprite_id))} onAdd={(asset) => editTrack(() => {
-                  // 字效作用于最近选择的文字对象：选中关键词对象时绑定到它，否则按文字用途与语言。
-                  const text = draft.tracks.find((track) => track.id === lastTextTrack.current);
-                  return addClip(draft, asset, spriteCatalog.assets ?? [], text && isKeywordTarget(text.target) ? text.target : textTarget, text?.language);
-                }, true)} />
+                <SpriteCatalog environment={environment} catalog={spriteCatalog} placed={new Set(draft.clips.map((clip) => clip.sprite_id))} onAdd={(asset) => editTrack(() => addClip(draft, asset, spriteCatalog.assets ?? [], textTarget, draft.tracks.find((track) => track.id === lastTextTrack.current)?.language), true)} />
               </aside>}
               canvas={<main className="template-workspace-canvas h-full min-w-0 overflow-y-auto border-b xl:border-b-0">
                 <TemplatePreview draft={previewDraft!} media={media} resolved={preview.timeline} mediaError={mediaError || preview.error} onRetryMedia={() => setMediaAttempt((value) => value + 1)} onMediaChange={(next) => { setMedia(next); setMediaError(""); }} videoInputKey={`${environment}:${current?.template_id ?? draft.name}`} onCatalog={setCatalog} selectedId={effectiveTarget} selectionTargets={previewSelection?.targets} onSelect={(id) => { selectTarget(previewSelection?.targets.get(id) ?? id); }} sprites={spriteClips} onSpriteMove={(id, x, y) => editTrack(() => setClipTransform(draft, previewSelection?.targets.get(id) ?? id, { x, y }))}
@@ -381,21 +391,6 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
                   {english?.enabled !== false && english && <Button type="button" variant="outline" size="sm" onClick={() => { selectTarget(english.id); setInspectorTab("appearance"); }}>编辑英文{bilingualTarget === "title" ? "标题" : "字幕"}</Button>}
                   {selectedText?.language === "en" && <p className="text-[11px] text-muted-foreground">时间跟随中文{bilingualTarget === "title" ? "标题" : "字幕"}，合成时自动翻译实际文案。</p>}
                 </div>}
-                {keywordOwner && <div className="space-y-2 border-b px-4 py-3">
-                  <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={!!keywordTrack && keywordTrack.enabled !== false} onChange={(event) => {
-                    const enabled = event.target.checked;
-                    editTrack(() => {
-                      const next = setKeywordObject(draft, keywordOwner, enabled);
-                      if (!enabled && selectedText && isKeywordTarget(selectedText.target)) {
-                        const owner = next.tracks.find((track) => track.target === keywordOwner && track.language !== "en")!;
-                        setTarget(owner.id); lastTextTrack.current = owner.id;
-                      }
-                      return next;
-                    });
-                  }} />关键词单独字效</label>
-                  {keywordTrack && keywordTrack.enabled !== false && selectedText?.id !== keywordTrack.id && <Button type="button" variant="outline" size="sm" onClick={() => { selectTarget(keywordTrack.id); setInspectorTab("appearance"); }}>编辑{keywordOwner === "title" ? "标题" : "字幕"}关键词</Button>}
-                  <p className="text-[11px] text-muted-foreground">关键词作为独立对象显示，可单独设置字体、字号、位置、花字、动画或 Remotion 字效；句中的关键词仍按「关键词设置」显示。</p>
-                </div>}
                 {selectedClip && <SpriteClipInspector key={selectedClip.id} clip={selectedClip} asset={spriteCatalog.assets?.find((item) => item.id === selectedClip.sprite_id)} duration={preview.timeline?.duration}
                   textTrack={clipText} textTracks={visibleDraft!.tracks} textResolved={clipText && preview.timeline?.tracks[clipText.id]} onOpenRemotion={onOpenRemotion}
                   onSample={(value) => clipText && editTrack(() => {
@@ -408,7 +403,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
                   onTransform={(patch) => editTrack(() => setClipTransform(draft, selectedClip.id, patch))}
                   onStart={(start) => editTrack(() => moveClip(draft, selectedClip.id, start))}
                   onBind={(binding) => editTrack(() => {
-                    const next = bindClip(draft, selectedClip.id, binding, spriteCatalog.assets?.find((item) => item.id === selectedClip.sprite_id));
+                    const next = bindClip(draft, selectedClip.id, binding);
                     const text = boundText(next.tracks, next.clips.find((clip) => clip.id === selectedClip.id)!);
                     if (text && isTextTarget(text.target)) { setTextTarget(textRole(text.target)); lastTextTrack.current = text.id; }
                     return next;
@@ -441,7 +436,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
                   onMode={(mode) => { setTransitionRandom([Math.random(), Math.random()]); editTrack(() => ({ ...draft, transition_mode: mode })); }}
                   onEnabled={(enabled) => editTrack(() => ({ ...draft, transition_enabled: enabled }))}
                   onSelect={selectTarget} />}
-                {selectedTrack && !selectedClip && selectedTrack.target !== "transition" && <TemplateInspector track={selectedTrack} draft={selectedDraft!} catalog={catalog} duration={previewLength} resolved={preview.timeline?.tracks[selectedTrack.id]} tab={inspectorTab} onTabChange={setInspectorTab} onTimingChange={(timing) => editTrack(() => setTrackTiming(draft, selectedTrack.id, timing))} onEffectChange={(next) => editTrack(() => updateTrack(draft, selectedTrack.id, next))} onRemove={() => editTrack(() => removeTrack(draft, selectedTrack.id))} onClose={() => setTarget(null)} />}
+                {selectedTrack && !selectedClip && selectedTrack.target !== "transition" && <TemplateInspector track={selectedTrack} draft={selectedDraft!} keywordPanel={keywordPanel} catalog={catalog} duration={previewLength} resolved={preview.timeline?.tracks[selectedTrack.id]} tab={inspectorTab} onTabChange={setInspectorTab} onTimingChange={(timing) => editTrack(() => setTrackTiming(draft, selectedTrack.id, timing))} onEffectChange={(next) => editTrack(() => updateTrack(draft, selectedTrack.id, next))} onRemove={() => editTrack(() => removeTrack(draft, selectedTrack.id))} onClose={() => setTarget(null)} />}
               </aside>}
             />
           </fieldset>

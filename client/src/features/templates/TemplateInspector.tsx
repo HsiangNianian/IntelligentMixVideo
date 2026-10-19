@@ -1,5 +1,5 @@
 /** 模版编辑右栏：按所选对象切换外观、时间与关键词设置，复用原有参数控件。 */
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import { ListOrdered, Plus, Shuffle, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Hint } from "@/components/Hint";
@@ -88,14 +88,18 @@ export function TransitionInspector({ draft, catalog, sprites, onChoose, onRemov
 
 export type InspectorTab = "appearance" | "timing" | "keyword";
 
-/** 字幕只提供外观与关键词页签，关键词对象只有外观（时间跟随所属文字）；其他对象的时间输入保持挂载以便保存前校验。 */
-export function TemplateInspector({ track, draft, catalog, duration, resolved, tab, onTabChange, onTimingChange, onEffectChange, onRemove, onClose }: {
+/**
+ * 字幕只提供外观与关键词页签，关键词对象只有外观（时间跟随所属文字）；其他对象的时间输入保持挂载以便保存前校验。
+ * `keywordPanel`（关键词字效设置）放在关键词页签末尾，关键词对象没有该页签时放在外观页签末尾。
+ */
+export function TemplateInspector({ track, draft, catalog, duration, resolved, tab, keywordPanel, onTabChange, onTimingChange, onEffectChange, onRemove, onClose }: {
   track: EffectTrack;
   draft: EffectDraft;
   catalog: EffectAsset[];
   duration: number;
   resolved?: ResolvedTrack;
   tab: InspectorTab;
+  keywordPanel?: ReactNode;
   onTabChange: (tab: InspectorTab) => void;
   onTimingChange: (timing: Pick<EffectTrack, "start_mode" | "start" | "duration">) => void;
   onEffectChange: (draft: EffectDraft) => void;
@@ -117,8 +121,8 @@ export function TemplateInspector({ track, draft, catalog, duration, resolved, t
       <Hint label="关闭特效设置"><Button type="button" variant="ghost" size="icon" className="size-6 shrink-0" aria-label="关闭特效设置" onClick={onClose}><X className="size-3.5" aria-hidden="true" /></Button></Hint>
     </div>
     <div role="tablist" aria-label={`${effectTargets[track.target]}设置分类`} className={`grid border-b px-4 ${tabs.length === 1 ? "grid-cols-1" : tabs.length === 3 ? "grid-cols-3" : "grid-cols-2"}`}>{tabs.map((value) => <button key={value} type="button" role="tab" id={`${id}-${value}`} aria-controls={`${id}-panel-${value}`} aria-selected={activeTab === value} onClick={() => onTabChange(value)} className="border-b-2 border-transparent px-1 py-2.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring data-[selected=true]:border-primary data-[selected=true]:text-primary" data-selected={activeTab === value}>{value === "appearance" ? "外观与效果" : value === "timing" ? "时间设置" : "关键词设置"}</button>)}</div>
-    <div id={`${id}-panel-appearance`} role="tabpanel" aria-labelledby={`${id}-appearance`} hidden={activeTab !== "appearance"}><EffectEditor draft={draft} catalog={catalog} onChange={onEffectChange} target={track.target} language={track.language} onRemove={onRemove} onClose={onClose} view="appearance" showHeader={false} /></div>
+    <div id={`${id}-panel-appearance`} role="tabpanel" aria-labelledby={`${id}-appearance`} hidden={activeTab !== "appearance"}><EffectEditor draft={draft} catalog={catalog} onChange={onEffectChange} target={track.target} language={track.language} onRemove={onRemove} onClose={onClose} view="appearance" showHeader={false} />{!tabs.includes("keyword") && keywordPanel}</div>
     {tabs.includes("timing") && <div id={`${id}-panel-timing`} role="tabpanel" aria-labelledby={`${id}-timing`} hidden={activeTab !== "timing"}><TrackTiming track={track} duration={duration} resolved={resolved} onChange={onTimingChange} /></div>}
-    {hasKeywords && <div id={`${id}-panel-keyword`} role="tabpanel" aria-labelledby={`${id}-keyword`} hidden={activeTab !== "keyword"}><EffectEditor draft={draft} catalog={catalog} onChange={onEffectChange} target={track.target} language={track.language} onRemove={onRemove} onClose={onClose} view="keyword" showHeader={false} /></div>}
+    {hasKeywords && <div id={`${id}-panel-keyword`} role="tabpanel" aria-labelledby={`${id}-keyword`} hidden={activeTab !== "keyword"}><EffectEditor draft={draft} catalog={catalog} onChange={onEffectChange} target={track.target} language={track.language} onRemove={onRemove} onClose={onClose} view="keyword" showHeader={false} />{keywordPanel}</div>}
   </section>;
 }

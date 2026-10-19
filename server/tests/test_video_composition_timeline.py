@@ -504,7 +504,7 @@ def test_remotion_text_effect_replaces_the_ims_text(composition_case, role, laye
 
 def test_keyword_objects_render_keywords_with_their_own_style(composition_case):
     """关键词对象是独立的 IMS 文字：只显示切片关键词，用自己的字号、位置、花字与动画，叠在所属文字上层；
-    没有关键词的切片不输出，停用或改由 Remotion 字效显示时 IMS 不再渲染它，原句不受影响。"""
+    没有关键词的切片不输出；停用、或所属文字改由 Remotion 字效显示时 IMS 不再渲染它，原句不受影响。"""
     catalog = effect_catalog().values()
     flower = next(item for item in catalog if item.category == "flower")
     loop = next(item for item in catalog if item.category == "loop")
@@ -531,13 +531,12 @@ def test_keyword_objects_render_keywords_with_their_own_style(composition_case):
     assert [clip["Content"] for clip in subtitle] == ["甲乙丙丁", "戊己庚辛"]
     assert "EffectColorStyle" not in subtitle[0] and "AaiMotionInEffect" not in subtitle[0]
 
-    # 没有标题关键词时标题关键词对象不输出；停用的字幕关键词与改用 Remotion 的标题关键词同样不进入 IMS。
+    # 没有标题关键词时标题关键词对象不输出；停用的字幕关键词、标题改用 Remotion 字效后的标题关键词同样不进入 IMS。
     assert len(build_timeline(**composition_case)[0]["SubtitleTracks"]) == 3
     composition_case["template"]["tracks"][3]["enabled"] = False
-    composition_case["template"]["tracks"].append(remotion_track("keyword-effect", text_target="title_keyword"))
+    composition_case["template"]["tracks"].append(remotion_track("title-effect", text_target="title"))
     rows = build_timeline(**composition_case, title_keyword="业务")[0]["SubtitleTracks"]
-    assert [[clip["Content"] for clip in row["SubtitleTrackClips"]] for row in rows] == [
-        [composition_case["request"]["title"]], ["甲乙丙丁", "戊己庚辛"]]
+    assert [[clip["Content"] for clip in row["SubtitleTrackClips"]] for row in rows] == [["甲乙丙丁", "戊己庚辛"]]
 
 
 def test_text_rules_keep_business_content_and_separate_styles(composition_case):

@@ -1,13 +1,12 @@
 /**
  * 模板里 Remotion 片段的编辑操作：纯函数，返回新草稿且不修改输入。
- * 片段按资产分类占用模板对象，与 IMS 对象共用名额：字效作用于标题、底部字幕或它们的关键词对象、转场占用视频交界处、视频特效占用唯一的 VFX，滤镜可以多个。
+ * 片段按资产分类占用模板对象，与 IMS 对象共用名额：字效作用于标题或底部字幕、转场占用视频交界处、视频特效占用唯一的 VFX，滤镜可以多个。
  */
 import type { ParameterValue } from "@/components/ParameterControl";
 import { SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { SpriteAsset } from "@/features/sprites/model";
 import type { ClipTransform, TransformField } from "@/features/sprites/parameters";
-import { boundText, isKeywordTarget, textKey, type Draft, type KeywordTarget, type RemotionClip, type TextRole, type TextLanguage } from "./model";
-import { effectTargets } from "./effects";
+import { boundText, textKey, textRoles, type Draft, type RemotionClip, type TextRole, type TextLanguage } from "./model";
 import type { ResolvedTimeline } from "./tracks";
 import { compactTransitions, nextTransitionBoundary } from "./transitions";
 
@@ -15,10 +14,7 @@ import { compactTransitions, nextTransitionBoundary } from "./transitions";
 const maxTracks = 100;
 
 /** 片段在模板里占用的对象，与 IMS 对象的时间轴行一致。 */
-export type ClipSlot = "title" | "subtitle" | KeywordTarget | "transition" | "vfx" | "filter";
-
-/** 字效可以作用的文字对象：标题、字幕及它们的关键词对象。 */
-export type TextSlot = "title" | "subtitle" | KeywordTarget;
+export type ClipSlot = "title" | "subtitle" | "transition" | "vfx" | "filter";
 
 /** 字效作用于文字时，这两个参数由该文字对象提供（合成时由总线填入），摆放不再单独覆盖。 */
 export const BOUND_TEXT_PARAMETERS = ["text", "keywords"];
@@ -49,13 +45,8 @@ export function vfxTaken(draft: Draft, known: SpriteAsset[], except?: string): b
 }
 
 /** 已作用于该文字对象的 Remotion 字效。 */
-function textClip(draft: Draft, role: TextSlot, except?: string, language?: TextLanguage): RemotionClip | undefined {
+function textClip(draft: Draft, role: TextRole, except?: string, language?: TextLanguage): RemotionClip | undefined {
   return draft.clips.find((clip) => clip.id !== except && clip.text_target === role && textKey(role, clip.language) === textKey(role, language));
-}
-
-/** 关键词对象每次只显示一个词，逐行出现的多行字效不能用于它。 */
-function checkKeywordAsset(role: TextSlot, asset: SpriteAsset): void {
-  if (isKeywordTarget(role) && (asset.lines ?? 1) > 1) throw new Error(`「${asset.name}」是多行字效，不能用于${effectTargets[role]}`);
 }
 
 /**
@@ -63,7 +54,7 @@ function checkKeywordAsset(role: TextSlot, asset: SpriteAsset): void {
  * 名额已被占用时拒绝并说明原因，占用文字或交界处的片段起点与时长由 `timeClips` 按所占对象计算。
  * 叠加渲染要求所有片段的画布尺寸与帧率相同，所以与已添加片段画布不同的资产也在这里拒绝；`known` 是用来查找已添加片段资产的目录，服务端保存时仍会复核。
  */
-export function addClip(draft: Draft, asset: SpriteAsset, known: SpriteAsset[], role: TextRole | KeywordTarget = "title", language?: TextLanguage): Draft {
+export function addClip(draft: Draft, asset: SpriteAsset, known: SpriteAsset[], role: TextRole = "title", language?: TextLanguage): Draft {
   if (draft.tracks.length + draft.clips.length >= maxTracks) throw new Error("轨道数量不能超过 100");
   const clash = draft.clips
     .map((clip) => known.find((item) => item.id === clip.sprite_id))
@@ -78,10 +69,9 @@ export function addClip(draft: Draft, asset: SpriteAsset, known: SpriteAsset[], 
     transform: {},
   };
   if (asset.kind === SpriteKind.TEXT) {
-    if (role === "bubble") throw new Error("Remotion 字效只能作用于标题、底部字幕或它们的关键词，请先在左侧选择");
-    checkKeywordAsset(role, asset);
+    if (role === "bubble") throw new Error("Remotion 字效只能作用于标题或底部字幕，请先在左侧选择标题或字幕");
     const existing = textClip(draft, role, undefined, language);
-    if (existing) throw new Error(`${effectTargets[role]}已有 Remotion 字效，请先移除再添加`);
+    if (existing) throw new Error(`${textRoles[role]}已有 Remotion 字效，请先移除再添加`);
     clip.text_target = role;
     if (language) clip.language = language;
   } else if (asset.kind === SpriteKind.TRANSITION_OVERLAY) {
@@ -92,14 +82,10 @@ export function addClip(draft: Draft, asset: SpriteAsset, known: SpriteAsset[], 
   return { ...draft, clips: [...draft.clips, clip] };
 }
 
-/**
- * 改变字效作用的文字对象或转场所在的交界处；目标已被占用、或要把多行字效（`asset`）用于关键词对象时拒绝。
- * 作用于文字后，文字与关键词由该对象提供，清除对应的参数覆盖。
- */
-export function bindClip(draft: Draft, id: string, binding: { text_target: TextSlot; language?: TextLanguage } | { transition_boundary: number }, asset?: SpriteAsset): Draft {
-  if ("text_target" in binding && asset) checkKeywordAsset(binding.text_target, asset);
+/** 改变字效作用的文字对象或转场所在的交界处；目标已被占用时拒绝。作用于文字后，文字与关键词由该对象提供，清除对应的参数覆盖。 */
+export function bindClip(draft: Draft, id: string, binding: { text_target: "title" | "subtitle"; language?: TextLanguage } | { transition_boundary: number }): Draft {
   if ("text_target" in binding && textClip(draft, binding.text_target, id, binding.language))
-    throw new Error(`${effectTargets[binding.text_target]}已有 Remotion 字效，请先移除`);
+    throw new Error(`${textRoles[binding.text_target]}已有 Remotion 字效，请先移除`);
   if ("transition_boundary" in binding && boundaryTaken(draft, binding.transition_boundary, id))
     throw new Error(`交界处 ${binding.transition_boundary} 已有转场，请先移除`);
   return { ...draft, clips: draft.clips.map((clip) => {
@@ -120,7 +106,6 @@ export function validateClipSlots(draft: Draft): void {
       if (texts.has(key)) throw new Error("每个标题或字幕最多一个 Remotion 字效");
       texts.add(key);
       if (clip.language === "en" && !boundText(draft.tracks, clip)) throw new Error("英文字幕或标题对象不存在");
-      if (isKeywordTarget(clip.text_target) && !boundText(draft.tracks, clip)) throw new Error(`${effectTargets[clip.text_target]}对象不存在`);
     }
     if (clip.transition_boundary !== undefined && boundaryTaken(draft, clip.transition_boundary, clip.id)) throw new Error("每个视频交界处最多一个转场");
   }

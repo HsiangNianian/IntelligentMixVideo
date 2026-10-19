@@ -275,7 +275,8 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media: Previ
     if (isTextTarget(track.target)) {
       const text = resolved.text;
       if (!text?.Content.trim() && keyword === undefined) throw new Error("文字轨道内容不能为空");
-      if (text?.Content.trim() && !replaced.has(textKey(track.target, track.language))) timeline.SubtitleTracks.push({ SubtitleTrackClips: [{ ...text, TimelineIn: track.start, TimelineOut: track.end }] });
+      // 改由 Remotion 字效显示的文字不交给 SDK，它的 IMS 关键词对象也不显示。
+      if (text?.Content.trim() && !replaced.has(textKey(textRole(track.target), track.language))) timeline.SubtitleTracks.push({ SubtitleTrackClips: [{ ...text, TimelineIn: track.start, TimelineOut: track.end }] });
     } else if (track.target === "transition") {
       const effect = resolved.effect;
       if (!effect) throw new Error("转场轨道缺少效果");
@@ -286,6 +287,8 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media: Previ
       if (!effect) throw new Error("特效轨道缺少效果");
       EffectTracks.push({ EffectTrackItems: [{ ...effect, TimelineIn: track.start, TimelineOut: track.end }] });
     }
+    // 关键词对象在所属文字的「关键词设置」里配置，时间轴不为它单独加一行。
+    if (isKeywordTarget(track.target)) continue;
     const effectId = trackEffect(track);
     const effectName = catalog.find((item) => item.id === effectId)?.name ?? (effectId ? effectId.split("/").at(-1) : undefined);
     previewRows.push({ id: track.id, actions: [{

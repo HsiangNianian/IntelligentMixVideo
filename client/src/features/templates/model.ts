@@ -66,7 +66,7 @@ export const textRoles = {
 export type TextRole = keyof typeof textRoles;
 export type TextLanguage = "zh" | "en";
 
-/** 关键词对象单独显示所属中文标题或字幕的关键词，沿用所属文字的样式字段（字体、字号、位置、花字与动画）。 */
+/** 关键词对象用 IMS 单独显示所属中文标题或字幕的关键词，沿用所属文字的样式字段（字体、字号、位置、花字与动画）。 */
 export const keywordTargets = { title_keyword: "title", subtitle_keyword: "subtitle" } as const;
 export type KeywordTarget = keyof typeof keywordTargets;
 
@@ -134,8 +134,8 @@ export interface RemotionClip {
   parameters: Record<string, ParameterValue>;
   /** 宿主变换：内容中心位置、缩放、旋转与不透明度；未设置的字段取默认值。 */
   transform: ClipTransform;
-  /** 字效作用的文字对象（含关键词对象）：该文字改由这个片段显示，起点与时长跟随它。 */
-  text_target?: "title" | "subtitle" | KeywordTarget;
+  /** 字效作用的文字对象：该文字改由这个片段显示，起点与时长跟随它。 */
+  text_target?: "title" | "subtitle";
   language?: TextLanguage;
   /** 转场候选序号，IMS 与 Remotion 共用，预览按选择方式取两个效果。 */
   transition_boundary?: number;
@@ -210,12 +210,12 @@ export function keywordEditor(editor: Editor, role: "title" | "subtitle"): Edito
     [`${role}Y`]: role === "title" ? Math.min(95, editor.titleY + 8) : Math.max(5, editor.subtitleY - 10) };
 }
 
-/** 仅供展示使用；保存始终使用完整草稿，停用的英文或关键词对象及其资产绑定也保留。 */
+/** 仅供展示使用；保存始终使用完整草稿，停用的英文（及其资产绑定）与关键词对象也保留。 */
 export function activeDraft(draft: Draft): Draft {
   return {
     ...draft,
     tracks: draft.tracks.filter((track) => track.enabled !== false),
-    clips: draft.clips.filter((clip) => boundText(draft.tracks, clip)?.enabled !== false),
+    clips: draft.clips.filter((clip) => clip.language !== "en" || boundText(draft.tracks, clip)?.enabled !== false),
   };
 }
 

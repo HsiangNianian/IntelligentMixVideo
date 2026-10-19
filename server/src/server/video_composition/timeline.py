@@ -1,6 +1,7 @@
 """由业务快照生成 IMS Timeline；纯素材按序裁尾，标题沿用模板区间，字幕使用切片正文与时间。
 
-关键词对象是独立的文字片段：标题关键词随标题区间显示切片返回的 title_keyword，字幕关键词在每个带关键词的字幕区间里显示该词。
+关键词对象是独立的 IMS 文字片段：标题关键词随标题区间显示切片返回的 title_keyword，字幕关键词在每个带关键词的字幕区间里显示该词；
+所属文字改由 Remotion 字效显示时不输出。
 """
 
 from math import floor
@@ -197,9 +198,10 @@ def build_timeline(
                 "SubtitleTracks": subtitle_tracks}
     effects = []
     # Remotion 片段由叠加视频服务渲染，不属于 IMS 时间线，也没有 IMS 效果可校验；
-    # 使用 Remotion 字效的标题或字幕同样由叠加视频显示，IMS 不再渲染这段文字。
+    # 使用 Remotion 字效的标题或字幕同样由叠加视频显示，IMS 不再渲染这段文字，也不渲染它的 IMS 关键词对象
+    # （Remotion 字效的关键词效果属于字效本身）。
     remotion_texts = {(track.text_target, track.language) for track in template.tracks if track.text_target is not None}
-    tracks = [track for track in template.tracks if track.target != "remotion" and (track.target, track.language) not in remotion_texts]
+    tracks = [track for track in template.tracks if track.target != "remotion" and (text_role(track.target), track.language) not in remotion_texts]
     if not template.transition_enabled:
         tracks = [track for track in tracks if track.target != "transition"]
     elif template.transition_mode is not None:

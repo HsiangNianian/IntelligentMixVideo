@@ -13,7 +13,7 @@ import {
   SaveTemplateResponseSchema,
   type TemplateRecord,
 } from "@/generated/imv/template/v1/template_pb";
-import { defaultEditor, draftEffects, isKeywordTarget, type Category, type Draft, type Editor, type EffectTrack, type RemotionClip, type Template, type TemplateSummary } from "./model";
+import { defaultEditor, draftEffects, type Category, type Draft, type Editor, type EffectTrack, type RemotionClip, type Template, type TemplateSummary } from "./model";
 import { validateTemplateTracks } from "./tracks";
 import { BOUND_TEXT_PARAMETERS, validateClipSlots } from "./clips";
 
@@ -91,14 +91,14 @@ function toTemplate(record: TemplateRecord): Template {
       const purpose = remotion?.businessTarget;
       if (purpose && !["title", "subtitle", "decoration"].includes(purpose)) throw new Error("Remotion 片段用途无效");
       // 旧用途保持独立叠加，不能在读取时隐式迁移为替代 IMS 文字的槽位。
-      const textTarget = track.textTarget === "title" || track.textTarget === "subtitle" || (track.textTarget && isKeywordTarget(track.textTarget)) ? track.textTarget : undefined;
+      const textTarget = track.textTarget;
       // 两种文字绑定都由总线填入正文，清除旧覆盖但保留样式。
-      if (purpose && (textTarget || purpose === "title" || purpose === "subtitle"))
+      if (purpose && (textTarget === "title" || textTarget === "subtitle" || purpose === "title" || purpose === "subtitle"))
         for (const key of BOUND_TEXT_PARAMETERS) delete parameters[key];
       return {
         id: track.id, sprite_id: track.spriteId, start: track.start, duration: track.duration ?? null, parameters, transform,
         ...(purpose ? { business_target: purpose as RemotionClip["business_target"] } : {}),
-        ...(textTarget ? { text_target: textTarget } : {}),
+        ...(textTarget === "title" || textTarget === "subtitle" ? { text_target: textTarget } : {}),
         ...(track.language !== undefined ? { language: track.language as RemotionClip["language"] } : {}),
         ...(track.transitionBoundary !== undefined ? { transition_boundary: track.transitionBoundary } : {}),
       };
