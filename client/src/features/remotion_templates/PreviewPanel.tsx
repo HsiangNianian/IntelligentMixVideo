@@ -236,8 +236,14 @@ export function PreviewPanel({
         {version || videoUrl ? (
           <div className="relative" style={{ width: `min(100cqw, ${100 * aspect}cqh)`, aspectRatio: aspect,
             backgroundColor: "#25252b", backgroundImage: "conic-gradient(#35353d 25%, transparent 0 50%, #35353d 0 75%, transparent 0)", backgroundSize: "24px 24px" }}>
-            {videoUrl && <video key={videoUrl} aria-label="预览背景视频" src={videoUrl} autoPlay muted loop playsInline
+            {/* 先读元数据再播放，避免 WebKitGTK 直接自动播放较大 blob 时的解码错误。 */}
+            {videoUrl && <video key={videoUrl} aria-label="预览背景视频" src={videoUrl} preload="metadata" muted loop playsInline
               className="absolute inset-0 h-full w-full object-cover"
+              onLoadedMetadata={({ currentTarget }) => {
+                void currentTarget.play().catch(() => {
+                  if (currentTarget.isConnected) setBackgroundError("背景视频无法开始播放，请重新加载。");
+                });
+              }}
               onError={() => setBackgroundError("背景视频无法播放，请检查文件格式或视频直链。")}
             />}
             {version && <iframe
