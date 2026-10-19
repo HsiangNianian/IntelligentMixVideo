@@ -3,13 +3,11 @@
  * 清理消息监听和就绪超时。带关键词字效的字效在未填关键词时以示例关键词预览（见 `sampleKeyword`），参数本身不变。
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Film, Maximize, RotateCcw } from "lucide-react";
+import { Film, FolderOpen, Maximize, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { localPreviewVideos, localVideoSlots, subscribeLocalVideos } from "@/features/templates/localVideos";
-import { MasterVideoInput } from "@/features/templates/MasterVideoInput";
-import type { PreviewMedia } from "@/features/templates/model";
+import { commitLocalVideos, LOCAL_VIDEO_MAX_BYTES, localPreviewVideos, localVideoSlots, subscribeLocalVideos } from "@/features/templates/localVideos";
+import { readMasterVideo } from "@/features/templates/media";
 import { apiUrl } from "./api";
 import { backgroundUrl, sampleKeyword, type Values, type Version } from "./model";
 import { Spinner } from "@/components/ui/spinner";
@@ -30,11 +28,11 @@ export function PreviewPanel({
   const shown = useMemo(() => (sample ? { ...values, keywords: [sample] } : values), [values, sample]);
   const [link, setLink] = useState("");
   const [background, setBackground] = useState("");
-  const [localSlot, setLocalSlot] = useState<number | null>(null);
-  const [localVideos, setLocalVideos] = useState(localVideoSlots);
-  const [media, setMedia] = useState<PreviewMedia>();
+  const [useLocal, setUseLocal] = useState(true);
+  const [localVideo, setLocalVideo] = useState(() => localVideoSlots()[0]);
+  const [loadingFile, setLoadingFile] = useState(false);
   const [backgroundError, setBackgroundError] = useState("");
-  const videoUrl = localSlot === null ? background : localVideos[localSlot]?.url ?? "";
+  const videoUrl = useLocal ? localVideo?.url ?? "" : background;
   const [error, setError] = useState("");
   // 已就绪的通道而不是布尔值：切换版本时 iframe 若在清空渲染前就回报就绪，false→true 会被合并成未变化，
   // 参数不再下发，预览锁到超时；每次加载的通道都不同，就绪必然触发一次下发。
@@ -43,6 +41,8 @@ export function PreviewPanel({
   const [reload, setReload] = useState(0);
   const frame = useRef<HTMLIFrameElement>(null);
   const stage = useRef<HTMLDivElement>(null);
+  const picker = useRef<HTMLInputElement>(null);
+  const fileRequest = useRef<AbortController | null>(null);
   const channel = useRef("");
   const requestId = useRef(0);
   const timer = useRef<number | undefined>(undefined);
@@ -50,12 +50,12 @@ export function PreviewPanel({
   const rendered = useRef(false);
   useEffect(() => {
     let active = true;
-    const refresh = (sources?: PreviewMedia) => { setLocalVideos(localVideoSlots()); setMedia(sources); };
+    const refresh = () => setLocalVideo(localVideoSlots()[0]);
     const unsubscribe = subscribeLocalVideos(refresh);
     void localPreviewVideos().then(() => { if (active) refresh(); }).catch((reason) => {
       if (active) setBackgroundError(reason instanceof Error ? reason.message : "本地视频读取失败");
     });
-    return () => { active = false; unsubscribe(); };
+    return () => { active = false; unsubscribe(); fileRequest.current?.abort(); };
   }, []);
   useEffect(() => { setBackgroundError(""); }, [videoUrl]);
   /** 每次加载都有超时出口；播放本身不触发锁定。 */
@@ -146,12 +146,34 @@ export function PreviewPanel({
       );
     }
   }, [shown, ready]);
+  /** 只校验所选文件并替换共享视频 1；失败保留旧视频，未登记的 URL 及时释放。 */
+  async function pick(file: File | undefined) {
+    if (!file || fileRequest.current) return;
+    if (file.size > LOCAL_VIDEO_MAX_BYTES) { setBackgroundError("本地视频不能超过 512 MiB"); return; }
+    const request = new AbortController();
+    fileRequest.current = request;
+    const url = URL.createObjectURL(file);
+    setLoadingFile(true);
+    setBackgroundError("");
+    try {
+      const media = await readMasterVideo(url, request.signal);
+      if (request.signal.aborted) return;
+      await commitLocalVideos([{ kind: "file", name: file.name, url, file }], [media]);
+      if (!request.signal.aborted) { setUseLocal(true); setBackground(""); }
+    } catch (reason) {
+      if (!request.signal.aborted) setBackgroundError(reason instanceof Error ? reason.message : "本地视频读取失败");
+    } finally {
+      if (localVideoSlots()[0]?.url !== url) URL.revokeObjectURL(url);
+      fileRequest.current = null;
+      if (!request.signal.aborted) setLoadingFile(false);
+    }
+  }
   /** 直链与本地文件都只更新客户端底层视频。 */
   function load() {
-    if (pending || rendering) return;
+    if (pending || rendering || loadingFile) return;
     try {
       setBackground(backgroundUrl(link));
-      setLocalSlot(null);
+      setUseLocal(false);
       setBackgroundError("");
     } catch (reason) {
       setBackgroundError(reason instanceof Error ? reason.message : "视频链接无效");
@@ -180,25 +202,14 @@ export function PreviewPanel({
           <Maximize aria-hidden="true" />
         </Button>}
       </div>
-      <div className="mb-2 flex">
-        <MasterVideoInput media={media} onChange={(sources) => {
-          const index = localSlot !== null && sources[localSlot].url.startsWith("blob:")
-            ? localSlot : sources.findIndex((video) => video.url.startsWith("blob:"));
-          setLocalSlot(index < 0 ? null : index);
-          setBackground(index < 0 ? sources[0].url : "");
-        }} />
+      <div className="mb-2 flex min-w-0 items-center gap-2">
+        <input ref={picker} type="file" accept="video/*" aria-label="本地预览视频文件" className="sr-only" tabIndex={-1}
+          onChange={(event) => { void pick(event.target.files?.[0]); event.target.value = ""; }} />
+        <Button type="button" variant="outline" disabled={loadingFile} onClick={() => picker.current?.click()}>
+          {loadingFile ? <Spinner /> : <FolderOpen aria-hidden="true" />}{loadingFile ? "正在加载…" : "加载本地文件"}
+        </Button>
+        {useLocal && localVideo && <span className="truncate text-xs text-muted-foreground" title={localVideo.name}>{localVideo.name}</span>}
       </div>
-      <Select value={localSlot !== null && localVideos[localSlot] ? String(localSlot) : background ? "url" : "none"}
-        onValueChange={(value) => { setLocalSlot(value === "none" || value === "url" ? null : Number(value)); if (value !== "url") setBackground(""); }}>
-        <SelectTrigger aria-label="预览背景" className="mb-2 w-full"><SelectValue /></SelectTrigger>
-        <SelectContent>
-          <SelectItem value="none">无背景视频</SelectItem>
-          {localVideos.map((video, index) => <SelectItem key={index} value={String(index)} disabled={!video}>
-            视频 {index + 1}：{video?.name ?? "未加载本地文件"}
-          </SelectItem>)}
-          {background && <SelectItem value="url">已加载的视频直链</SelectItem>}
-        </SelectContent>
-      </Select>
       <form
         className="mb-4 flex gap-2"
         onSubmit={(event) => {
@@ -210,10 +221,10 @@ export function PreviewPanel({
           aria-label="背景视频直链"
           placeholder="粘贴背景视频直链（可选）"
           value={link}
-          disabled={pending || rendering}
+          disabled={pending || rendering || loadingFile}
           onChange={(event) => setLink(event.target.value)}
         />
-        <Button type="submit" variant="outline" disabled={pending || rendering}>
+        <Button type="submit" variant="outline" disabled={pending || rendering || loadingFile}>
           加载
         </Button>
       </form>

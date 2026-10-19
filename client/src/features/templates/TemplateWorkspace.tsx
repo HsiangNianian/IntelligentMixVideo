@@ -149,8 +149,18 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
     setCurrent(null); setDraft(null); setEditing(null); setBaseline(""); setError("");
   }, [deletedTemplate, current, environment, openRequest]);
 
-  // Remotion 页也能更换来源，复用弹窗已读到的元数据，避免继续使用已释放的 blob URL。
-  useEffect(() => subscribeLocalVideos((sources) => { setMedia(sources); setMediaError(""); }), []);
+  // Agent 只替换视频 1，保留模板已选择的视频 2、3；无需再次读取已校验的文件。
+  useEffect(() => subscribeLocalVideos((sources) => {
+    if (!sources) return;
+    setMedia((current) => {
+      const first = sources[0] ?? current?.[0];
+      const second = sources[1] ?? current?.[1];
+      const third = sources[2] ?? current?.[2];
+      return first && second && third ? [first, second, third] : undefined;
+    });
+    setMediaAttempt((value) => value + 1); // 默认读取若尚未结束，取消旧请求并按最新来源重读。
+    setMediaError("");
+  }), []);
 
   // 默认地址（本机保存的本地视频优先）与弹窗均读取真实元数据；已选择来源时不再启动默认读取。
   useEffect(() => {

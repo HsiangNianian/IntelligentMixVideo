@@ -1,5 +1,5 @@
 /**
- * 预览视频弹窗的本地文件来源：选择、加载、移除、超限、取消释放，以及桌面端写入/删除本机副本、
+ * Agent 直接选文件并共享视频 1；模板弹窗选择、加载、移除、超限、取消释放，以及桌面端写入/删除本机副本、
  * 多槽位失败回滚、保存期间不可取消和逐个恢复本机视频。
  * 视频元数据通过替换 HTMLMediaElement 的 src 设置器模拟，不读取真实媒体；执行 bun run test。
  */
@@ -47,7 +47,7 @@ afterEach(async () => {
   Object.defineProperty(HTMLMediaElement.prototype, "src", source);
   // 本地视频登记是模块级状态，每例结束以浏览器模式改回 URL，避免影响其他用例。
   Reflect.deleteProperty(globalThis, "isTauri");
-  await commitLocalVideos([0, 1, 2].map(() => ({ kind: "url", url: "" })));
+  await act(async () => commitLocalVideos([0, 1, 2].map(() => ({ kind: "url", url: "" }))));
 });
 
 /** 打开弹窗并返回对话框元素。 */
@@ -61,27 +61,53 @@ function choose(dialog: HTMLElement, index: number, file: File) {
   fireEvent.change(within(dialog).getByLabelText(`视频 ${index} 本地视频文件`), { target: { files: [file] } });
 }
 
-// 两页直接使用同一个选文件弹窗；Agent 尚无字效也能播放视频，替换文件后两页保持一致。
-test("Remotion 直接加载本地文件并与模板文件弹窗双向共享", async () => {
+// Agent 原位选择一个文件，只读取该文件并共享视频 1；模板替换后同步，URL 模式保持独立。
+test("Remotion 直接选择文件并共享视频 1，保留其他槽位", async () => {
+  const other = new File(["other"], "保留素材.mp4", { type: "video/mp4" });
+  const otherUrl = URL.createObjectURL(other);
+  await commitLocalVideos([{ kind: "url", url: "" }, { kind: "file", name: other.name, url: otherUrl, file: other }]);
   const agent = render(<PreviewPanel version={null} values={{}} pending={false} onBusyChange={() => {}} />);
-  fireEvent.click(within(agent.container).getByRole("button", { name: "加载预览视频" }));
-  let dialog = screen.getByRole("dialog", { name: "加载预览视频" });
-  choose(dialog, 2, new File(["video"], "Agent素材.mp4", { type: "video/mp4" }));
-  await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "加载" })));
-  await waitFor(() => expect(localVideoSlots()[1]?.name).toBe("Agent素材.mp4"));
-  expect(within(agent.container).getByLabelText<HTMLVideoElement>("预览背景视频").src).toBe(localVideoSlots()[1]!.url);
+  expect(screen.queryByRole("button", { name: "加载预览视频" })).toBeNull();
+  expect(screen.queryByRole("combobox", { name: "预览背景" })).toBeNull();
+  await act(async () => fireEvent.change(screen.getByLabelText("本地预览视频文件"), { target: { files: [new File(["video"], "Agent素材.mp4", { type: "video/mp4" })] } }));
+  expect(localVideoSlots()[0]?.name).toBe("Agent素材.mp4");
+  expect(assigned).toEqual([localVideoSlots()[0]!.url]);
+  expect(localVideoSlots()[1]?.url).toBe(otherUrl);
+  expect(within(agent.container).getByLabelText<HTMLVideoElement>("预览背景视频").src).toBe(localVideoSlots()[0]!.url);
   expect(screen.queryByTitle("Remotion 字效播放器")).toBeNull();
 
   const editor = render(<MasterVideoInput onChange={() => {}} />);
   fireEvent.click(within(editor.container).getByRole("button", { name: "加载预览视频" }));
-  dialog = screen.getByRole("dialog", { name: "加载预览视频" });
-  expect(within(dialog).getByLabelText("视频 2 本地文件").textContent).toBe("Agent素材.mp4");
-  choose(dialog, 2, new File(["replacement"], "替换素材.mp4", { type: "video/mp4" }));
+  const dialog = screen.getByRole("dialog", { name: "加载预览视频" });
+  expect(within(dialog).getByLabelText("视频 1 本地文件").textContent).toBe("Agent素材.mp4");
+  choose(dialog, 1, new File(["replacement"], "替换素材.mp4", { type: "video/mp4" }));
   await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "加载" })));
-  await waitFor(() => expect(localVideoSlots()[1]?.name).toBe("替换素材.mp4"));
-  expect(within(agent.container).getByLabelText<HTMLVideoElement>("预览背景视频").src).toBe(localVideoSlots()[1]!.url);
-  fireEvent.click(within(agent.container).getByRole("button", { name: "加载预览视频" }));
-  expect(screen.getByLabelText("视频 2 本地文件").textContent).toBe("替换素材.mp4");
+  expect(within(agent.container).getByLabelText<HTMLVideoElement>("预览背景视频").src).toBe(localVideoSlots()[0]!.url);
+  fireEvent.change(screen.getByLabelText("背景视频直链"), { target: { value: "https://media.test/remote.mp4" } });
+  fireEvent.click(within(agent.container).getByRole("button", { name: "加载" }));
+  await act(async () => commitLocalVideos([{ kind: "url", url: "" }]));
+  expect(within(agent.container).getByLabelText<HTMLVideoElement>("预览背景视频").src).toBe("https://media.test/remote.mp4");
+});
+
+// 文件过大或无法解码时保留当前预览和共享文件，失败的新 blob 释放。
+test.each(["size", "decode"])("Remotion 本地文件 %s 失败保留旧视频", async (failure) => {
+  render(<PreviewPanel version={null} values={{}} pending={false} onBusyChange={() => {}} />);
+  const input = screen.getByLabelText("本地预览视频文件");
+  await act(async () => fireEvent.change(input, { target: { files: [new File(["video"], "原素材.mp4", { type: "video/mp4" })] } }));
+  const previous = localVideoSlots()[0]!.url;
+  const revoked = spyOn(URL, "revokeObjectURL");
+  const file = new File(["bad"], "无效素材.mp4", { type: "video/mp4" });
+  if (failure === "size") Object.defineProperty(file, "size", { value: LOCAL_VIDEO_MAX_BYTES + 1 });
+  else Object.defineProperty(HTMLMediaElement.prototype, "src", {
+    configurable: true, get: source.get,
+    set(this: HTMLMediaElement, value: string) { source.set!.call(this, value); queueMicrotask(() => this.dispatchEvent(new Event("error"))); },
+  });
+  await act(async () => fireEvent.change(input, { target: { files: [file] } }));
+  expect(screen.getByRole("alert").textContent).toContain(failure === "size" ? "512 MiB" : "本地视频无法播放");
+  expect(localVideoSlots()[0]!.url).toBe(previous);
+  expect(screen.getByLabelText<HTMLVideoElement>("预览背景视频").src).toBe(previous);
+  expect(revoked.mock.calls).not.toContainEqual([previous]);
+  if (failure === "decode") expect(revoked).toHaveBeenCalledWith(created.at(-1)!);
 });
 
 // 场景：视频 2 选择本地文件并加载，其余仍用默认地址；再次打开显示为文件，移除后改回默认 URL。

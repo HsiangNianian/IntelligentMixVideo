@@ -639,8 +639,6 @@ test("共享本地预览视频并同步替换和删除", async () => {
   const empty = { kind: "url" as const, url: "" };
   try {
     await act(async () => commitLocalVideos([{ kind: "file", name: file.name, file, url: first }, empty, empty]));
-    fireEvent.keyDown(screen.getByRole("combobox", { name: "预览背景" }), { key: "ArrowDown" });
-    fireEvent.click(await screen.findByRole("option", { name: "视频 1：本地素材.mp4" }));
     const video = screen.getByLabelText<HTMLVideoElement>("预览背景视频");
     expect(video.src).toBe(first);
     expect(video.autoplay && video.muted && video.loop).toBe(true);
