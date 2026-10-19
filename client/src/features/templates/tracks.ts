@@ -5,8 +5,11 @@ import { previewVideos } from "./media";
 import { compactTransitions, nextTransitionBoundary, setTransitionDuration } from "./transitions";
 import { previewFont } from "./fonts";
 
-/** 时间轴自上向下显示的固定图层，也是画面上自上而下的叠放顺序：关键词对象紧挨在所属文字之上；同类对象保持添加顺序。 */
-export const trackLayers: Record<EffectTarget, number> = { title_keyword: 0, title: 1, subtitle_keyword: 2, subtitle: 3, bubble: 4, transition: 5, vfx: 6, filter: 7 };
+/**
+ * 时间轴自上向下显示的固定图层，也是预览 SubtitleTracks 的先后；SDK 把后面的文字叠在上层，所以关键词对象紧跟所属文字，
+ * 叠在它上面（关键词对象不在时间轴单独成行）。同类对象保持添加顺序。
+ */
+export const trackLayers: Record<EffectTarget, number> = { title: 0, title_keyword: 1, subtitle: 2, subtitle_keyword: 3, bubble: 4, transition: 5, vfx: 6, filter: 7 };
 
 /** 应用到视频后的秒数和动画参数，说明用于展示缩短或跳过的对象。 */
 export interface ResolvedTrack {

@@ -520,7 +520,8 @@ def test_keyword_objects_render_keywords_with_their_own_style(composition_case):
          "editor": editor(subtitle_size=64, subtitle_x=30, subtitle_y=60, subtitle_flower=flower.id, subtitle_in="in/fade_in")},
     ])
     timeline, _ = build_timeline(**composition_case, title_keyword="业务")
-    title_keyword, title, subtitle_keyword, subtitle = [row["SubtitleTrackClips"] for row in timeline["SubtitleTracks"]]
+    # IMS 把后面的 SubtitleTracks 叠在上层，关键词对象紧跟所属文字。
+    title, title_keyword, subtitle, subtitle_keyword = [row["SubtitleTrackClips"] for row in timeline["SubtitleTracks"]]
     assert [(clip["Content"], clip["TimelineIn"], clip["TimelineOut"]) for clip in title_keyword] == [("业务", 1, 3)]
     assert (title_keyword[0]["FontSize"], title_keyword[0]["Y"], title_keyword[0]["AaiMotionLoopEffect"]) == (80, 0.2, loop.effect_id)
     assert (title[0]["Content"], title[0]["FontSize"]) == (composition_case["request"]["title"], 40)

@@ -52,10 +52,10 @@ test("关键词预览使用独立样式、叠在所属文字上层且不单独�
   expect(draft.tracks.find((track) => track.id === keyword.id)?.editor.subtitleFlower).toBe(flower.id);
   const timeline = buildTestTimeline(draft, catalog);
   const clips = timeline.SubtitleTracks.map((row) => row.SubtitleTrackClips[0]);
-  // 时间线按自上而下的叠放顺序：标题、字幕关键词、字幕；SDK 播放时倒序叠放，关键词在字幕之上。
-  expect(clips.map((clip) => clip.Content)).toEqual([draft.tracks[0].editor.title, exampleKeyword(subtitle.editor, "subtitle"), subtitle.editor.subtitle]);
-  expect(clips[1]).toMatchObject({ FontSize: 42, Y: 0.72, ...flower.parameters });
-  expect(clips[2]).not.toHaveProperty("EffectColorStyle");
+  // SDK 把后面的 SubtitleTracks 叠在上层，所以顺序是标题、字幕、字幕关键词：关键词在字幕之上。
+  expect(clips.map((clip) => clip.Content)).toEqual([draft.tracks[0].editor.title, subtitle.editor.subtitle, exampleKeyword(subtitle.editor, "subtitle")]);
+  expect(clips[2]).toMatchObject({ FontSize: 42, Y: 0.72, ...flower.parameters });
+  expect(clips[1]).not.toHaveProperty("EffectColorStyle");
   expect(timeline.previewRows.some((row) => row.id === keyword.id)).toBe(false);
 
   const replaced = buildTestTimeline(addClip(draft, asset, [asset], "subtitle"), catalog);

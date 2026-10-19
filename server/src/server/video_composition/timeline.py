@@ -223,8 +223,8 @@ def build_timeline(
                                           start=0, duration=None, editor=EffectTemplateEditor(**{
                                               key: "" for key in ("title", "subtitle", "bubble_text") if key != target
                                           })))
-    # 关键词对象紧挨在所属文字之前，叠放在所属文字上层。
-    layers = {"title_keyword": 0, "title": 1, "subtitle_keyword": 2, "subtitle": 3, "bubble": 4, "transition": 5, "vfx": 6, "filter": 7}
+    # IMS 按 SubtitleTracks 的先后叠放，后面的文字在上层；关键词对象紧跟所属文字，叠在它上面。
+    layers = {"title": 0, "title_keyword": 1, "subtitle": 2, "subtitle_keyword": 3, "bubble": 4, "transition": 5, "vfx": 6, "filter": 7}
     resolved = resolve_template(template.model_copy(update={"tracks": tracks}), TimelineContext(
         layout="fixed", fps=fps, duration=duration,
         clips=[ClipContext(start=clip["TimelineIn"], duration=clip["TimelineOut"] - clip["TimelineIn"]) for clip in clips],
