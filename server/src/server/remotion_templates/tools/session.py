@@ -710,12 +710,17 @@ class ToolSession:
         slots = [(tier, "text", f"/text/tiers/{index}") for index, tier in enumerate(block.tiers)]
         if block.keyword is not None:
             slots.append((block.keyword, "keyword", "/text/keyword"))
+        # Each instance's Preset props sit under its instance_id next to the host's configuration parameters, so an id
+        # such as fontSize or keywordEffect would replace that parameter.
+        reserved = {TEXT_BLOCK_ID, *FIXED_TITLES, "__proto__", "prototype", "constructor"}
         seen: set[str] = set()
         resolved: list[dict] = []
         summaries: list[InstanceSummary] = []
         for slot, role, field in slots:
-            if slot.instance_id in seen or slot.instance_id in {TEXT_BLOCK_ID, "__proto__", "prototype", "constructor"}:
-                raise ToolFault("INVALID_ARGUMENT", f"instance_id must be unique, safe and not {TEXT_BLOCK_ID!r}", field=f"{field}/instance_id")
+            if slot.instance_id in seen or slot.instance_id in reserved:
+                raise ToolFault("INVALID_ARGUMENT", f"instance_id {slot.instance_id!r} must be unique, safe and not a parameter name of the text block "
+                                "(text, fontSize, keywords, keywordEffect, ...): name the tiers upper and lower and the keyword Preset keyword, say",
+                                field=f"{field}/instance_id")
             seen.add(slot.instance_id)
             if role == "text" and slot.font_family not in fonts:
                 raise ToolFault("INVALID_ARGUMENT", f"font_family {slot.font_family!r} is not in the font library: {fonts}", field=f"{field}/font_family")
