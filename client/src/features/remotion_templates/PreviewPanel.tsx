@@ -155,121 +155,154 @@ export function PreviewPanel({
   const c = version?.spec.composition;
   const aspect = c ? c.width / c.height : 9 / 16;
   return (
-    <section
-      aria-label="实时预览"
-      className="flex min-h-0 min-w-0 flex-col rounded-xl border bg-card p-4"
-    >
-      <div className="mb-3 flex flex-wrap items-center gap-2 text-sm font-medium">
+    <section aria-label="实时预览" className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-canvas">
+      <header className="flex h-14 shrink-0 items-center gap-2 border-b border-line bg-surface px-4 text-[13px] font-medium">
         <Film className="size-4" />
-        实时预览
+        预览
         {version && (
-          <span className="rounded bg-accent px-1.5 py-0.5 text-[10px] text-primary">
+          <span className="rounded bg-brand/10 px-1.5 py-0.5 font-mono text-[10px] text-brand">
             V{version.number}
           </span>
         )}
-        <span className="ml-auto text-xs font-normal text-muted-foreground">
+        <span className="ml-auto font-mono text-[10px] font-normal text-fg-subtle">
           {c ? `${c.width} × ${c.height} · ${c.fps} fps` : "视频背景 + 字效"}
         </span>
         {/* 全屏整个画布，背景视频与字效一起显示；iframe 自身的全屏只含字效，因此禁用。 */}
-        {(version || background) && <Button type="button" variant="ghost" size="icon-sm" aria-label="全屏预览"
-          onClick={() => void stage.current?.requestFullscreen()}>
-          <Maximize aria-hidden="true" />
-        </Button>}
-      </div>
-      <div className="mb-2">
-        <input ref={picker} type="file" accept="video/*" aria-label="本地预览视频文件" className="sr-only" tabIndex={-1}
-          onChange={(event) => { pick(event.target.files?.[0]); event.target.value = ""; }} />
-        <Button type="button" variant="outline" onClick={() => picker.current?.click()}>
-          <FolderOpen aria-hidden="true" />加载本地文件
-        </Button>
-      </div>
-      <form
-        className="mb-4 flex gap-2"
-        onSubmit={(event) => {
-          event.preventDefault();
-          load();
-        }}
-      >
-        <Input
-          aria-label="背景视频直链"
-          placeholder="粘贴背景视频直链（可选）"
-          value={link}
-          onChange={(event) => setLink(event.target.value)}
-        />
-        <Button type="submit" variant="outline">
-          加载
-        </Button>
-      </form>
-      <div
-        ref={stage}
-        className="relative flex min-h-40 flex-1 items-center justify-center overflow-hidden rounded-lg border border-dashed bg-muted/40"
-        style={{ containerType: "size" }}
-      >
-        {version || background ? (
-          // 按画布比例排布，背景视频与透明播放器对齐；画布与模板预览一样为黑底。
-          <div className="relative bg-black" style={{ width: `min(100cqw, ${100 * aspect}cqh)`, aspectRatio: aspect }}>
-            {/* 先读元数据再播放，避免 WebKitGTK 直接自动播放较大 blob 时的解码错误。 */}
-            {background && <video key={`${attempt}:${background}`} aria-label="预览背景视频" src={background} preload="metadata" muted loop playsInline
-              className="absolute inset-0 size-full object-cover"
-              onLoadedMetadata={(event) => void event.currentTarget.play().catch(() => {})}
-              onError={() => setBackgroundError("背景视频无法播放，请检查文件格式或视频直链。")}
-            />}
-            {/* 与透明页面的 color-scheme 一致，否则深色主题下浏览器会把 iframe 画成不透明。 */}
-            {version && <iframe
-              ref={frame}
-              title="Remotion 字效播放器"
-              sandbox="allow-scripts"
-              allow="autoplay; fullscreen 'none'"
-              referrerPolicy="no-referrer"
-              className="absolute inset-0 h-full w-full border-0"
-              style={{ colorScheme: "light" }}
-            />}
-          </div>
-        ) : (
-          <div className="px-6 py-12 text-center">
-            <Film className="mx-auto mb-3 size-9 text-muted-foreground/40" />
-            <p className="text-sm text-muted-foreground">
-              你的字效将在这里呈现
-            </p>
-            <p className="mt-2 text-xs text-muted-foreground/70">
-              先在左侧描述想法，再用视频背景查看效果
-            </p>
-          </div>
-        )}
-        {rendering && !error && (
-          <div
-            role="status"
-            className="absolute inset-0 flex items-center justify-center gap-2 bg-muted text-sm text-muted-foreground"
+        {(version || background) && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label="全屏预览"
+            onClick={() => void stage.current?.requestFullscreen()}
           >
-            <Spinner />
-            正在渲染预览…
+            <Maximize aria-hidden="true" />
+          </Button>
+        )}
+      </header>
+      <div className="relative min-h-0 flex-1 bg-[radial-gradient(var(--color-line-strong)_1px,transparent_1px)] bg-size-[18px_18px]">
+        <div className="absolute inset-5 flex items-center justify-center [container-type:size]">
+          <div
+            ref={stage}
+            aria-label="字效画布"
+            className="relative overflow-hidden rounded-xl border border-line-strong bg-black shadow-pop"
+            style={{ width: `min(100cqw, ${100 * aspect}cqh)`, aspectRatio: aspect }}
+          >
+            {/* 先读元数据再播放，避免 WebKitGTK 直接自动播放较大 blob 时的解码错误。 */}
+            {background && (
+              <video
+                key={`${attempt}:${background}`}
+                aria-label="预览背景视频"
+                src={background}
+                preload="metadata"
+                muted
+                loop
+                playsInline
+                className="absolute inset-0 size-full object-cover"
+                onLoadedMetadata={(event) => void event.currentTarget.play().catch(() => {})}
+                onError={() => setBackgroundError("背景视频无法播放，请检查文件格式或视频直链。")}
+              />
+            )}
+            {/* 与透明页面的 color-scheme 一致，否则深色主题下浏览器会把 iframe 画成不透明。 */}
+            {version && (
+              <iframe
+                ref={frame}
+                title="Remotion 字效播放器"
+                sandbox="allow-scripts"
+                allow="autoplay; fullscreen 'none'"
+                referrerPolicy="no-referrer"
+                className="absolute inset-0 h-full w-full border-0"
+                style={{ colorScheme: "light" }}
+              />
+            )}
+            {!version && !background && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center px-6 text-center">
+                <Film className="mb-3 size-7 text-brand/60" />
+                <p className="text-[13px] font-medium">你的字效将在这里呈现</p>
+                <p className="mt-2 text-xs leading-relaxed text-fg-subtle">
+                  先在左侧描述想法，再用视频背景查看效果
+                </p>
+              </div>
+            )}
+            {rendering && !error && (
+              <div
+                role="status"
+                className="absolute inset-0 flex items-center justify-center gap-2 bg-surface/90 text-xs text-fg-muted"
+              >
+                <Spinner />
+                正在渲染预览…
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+      <div className="shrink-0 border-t border-line bg-surface p-3">
+        <input
+          ref={picker}
+          type="file"
+          accept="video/*"
+          aria-label="本地预览视频文件"
+          className="sr-only"
+          tabIndex={-1}
+          onChange={(event) => {
+            pick(event.target.files?.[0]);
+            event.target.value = "";
+          }}
+        />
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" size="sm" variant="outline" disabled={pending || rendering} onClick={() => picker.current?.click()}>
+            <FolderOpen aria-hidden="true" />加载本地文件
+          </Button>
+          <form className="flex min-w-48 flex-1 gap-2" onSubmit={(event) => { event.preventDefault(); load(); }}>
+            <Input
+              aria-label="背景视频直链"
+              placeholder="背景视频直链（可选）"
+              value={link}
+              disabled={pending || rendering}
+              onChange={(event) => setLink(event.target.value)}
+              className="h-8 min-w-0 text-xs"
+            />
+            <Button type="submit" size="sm" variant="outline" disabled={pending || rendering}>加载</Button>
+            {background && (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                disabled={pending || rendering}
+                onClick={() => {
+                  setBackground("");
+                  setLink("");
+                  setBackgroundError("");
+                }}
+              >
+                清除背景
+              </Button>
+            )}
+          </form>
+        </div>
+        {sample && (
+          <p className="mt-2 text-xs text-fg-subtle">
+            预览以「{sample}」为示例关键词展示关键词字效；模板里由切片关键词决定，只能开关六个关键词样式。
+          </p>
+        )}
+        {backgroundError && <p role="alert" className="mt-2 text-xs text-danger">{backgroundError}</p>}
+        {error && (
+          <div className="mt-2 flex items-center justify-between gap-2">
+            <p role="alert" className="text-xs text-danger">{error}</p>
+            {version && (
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={pending || rendering}
+                onClick={() => setReload(reload + 1)}
+              >
+                <RotateCcw />
+                重试预览
+              </Button>
+            )}
           </div>
         )}
       </div>
-      {sample && (
-        <p className="mt-2 text-xs text-muted-foreground">
-          预览以「{sample}」为示例关键词展示关键词字效；模板里由切片关键词决定，只能开关六个关键词样式。
-        </p>
-      )}
-      {backgroundError && <p role="alert" className="mt-3 text-xs text-destructive">{backgroundError}</p>}
-      {error && (
-        <div className="mt-3 flex items-center justify-between gap-2">
-          <p role="alert" className="text-xs text-destructive">
-            {error}
-          </p>
-          {version && (
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={pending || rendering}
-              onClick={() => setReload(reload + 1)}
-            >
-              <RotateCcw />
-              重试预览
-            </Button>
-          )}
-        </div>
-      )}
     </section>
   );
 }

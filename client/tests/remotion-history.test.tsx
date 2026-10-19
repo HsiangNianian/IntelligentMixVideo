@@ -49,7 +49,7 @@ test("历史侧栏切换、任务耗时和新增独立视图", async () => {
   expect(within(screen.getByRole("log")).queryByText("夏日标题") !== null).toBe(
     true,
   );
-  fireEvent.click(screen.getByRole("button", { name: "新增聊天" }));
+  fireEvent.click(within(screen.getByRole("complementary", { name: "字效历史会话" })).getByRole("button", { name: "新建会话" }));
   await waitFor(() => expect(fake.streams.size).toBe(0));
   expect(within(screen.getByRole("log")).queryByText("夏日标题") === null).toBe(
     true,

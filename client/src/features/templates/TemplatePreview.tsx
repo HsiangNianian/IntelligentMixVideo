@@ -28,7 +28,7 @@ interface Props {
   onSelect?: (id: string) => void;
   videoOrder?: number[];
   sprites?: SpriteClip[];
-  /** 在画面上拖动所选 Remotion 资产时回报新的内容中心坐标（画布像素）。 */
+  /** 在画面上拖动所选 AI 资产时回报新的内容中心坐标（画布像素）。 */
   onSpriteMove?: (id: string, x: number, y: number) => void;
 }
 

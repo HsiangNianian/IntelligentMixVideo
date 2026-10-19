@@ -39,7 +39,7 @@ test("桌面等待内置服务并共享实际 API 地址", async () => {
   });
   const view = render(<App />);
   try {
-    expect(screen.getByRole("status").textContent).toContain("正在启动内置服务");
+    expect(screen.getByRole("heading", { name: "正在启动内置服务" })).toBeTruthy();
     expect(fetchMock).not.toHaveBeenCalled();
     remotionServer();
     await waitFor(() => expect(ready).toBeFunction());

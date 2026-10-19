@@ -1,4 +1,4 @@
-/** Remotion 资产封面核心测试：进入视口才加载、定格帧定位与悬停轮播、旧资产降级，以及目录卡片的搜索浏览；执行 bun run test。 */
+/** AI 资产封面核心测试：进入视口才加载、定格帧定位与悬停轮播、旧资产降级，以及目录卡片的搜索浏览；执行 bun run test。 */
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { SpriteCover } from "@/features/templates/SpriteCover";
@@ -33,7 +33,7 @@ const intersect = (isIntersecting: boolean) => act(async () => {
 
 /** 取封面播放器和通道，并模拟页面按协议回报就绪；sync 表示该资产的包是否支持逐帧驱动。 */
 function player() {
-  const frame = screen.getByTitle<HTMLIFrameElement>("Remotion 资产封面：霓虹标题");
+  const frame = screen.getByTitle<HTMLIFrameElement>("AI 资产封面：霓虹标题");
   const channel = new URL(frame.src).hash.slice(1);
   const post = spyOn(frame.contentWindow!, "postMessage");
   const send = (data: object) => act(async () => { window.dispatchEvent(new MessageEvent("message", { source: frame.contentWindow, data: { channel, ...data } })); });
@@ -43,13 +43,13 @@ function player() {
 // 场景：卡片没进入视口前不加载预览页；进入后使用不带控制条的同步页，离开视口即卸载。
 test("封面进入视口才加载播放器，离开视口卸载", async () => {
   render(<SpriteCover asset={asset} active={false} />);
-  expect(screen.queryByTitle("Remotion 资产封面：霓虹标题")).toBeNull();
+  expect(screen.queryByTitle("AI 资产封面：霓虹标题")).toBeNull();
   await intersect(true);
   const { frame, channel } = player();
   expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
   expect(frame.src).toBe(`http://api.test:8000/api/sprites/s1/preview?sync=1#${channel}`);
   await intersect(false);
-  expect(screen.queryByTitle("Remotion 资产封面：霓虹标题")).toBeNull();
+  expect(screen.queryByTitle("AI 资产封面：霓虹标题")).toBeNull();
 });
 
 // 场景：就绪后定格到时长中点（3 秒的 50% 即 1.5 秒）并在定位后显示；陌生通道或来源的消息被忽略。
@@ -96,7 +96,7 @@ test("旧资产显示暂无封面，预览页报错显示加载失败", async ()
   const view = render(<SpriteCover asset={asset} active={false} />);
   await intersect(true);
   await player().ready(undefined);
-  expect(screen.queryByTitle("Remotion 资产封面：霓虹标题")).toBeNull();
+  expect(screen.queryByTitle("AI 资产封面：霓虹标题")).toBeNull();
   expect(screen.getByText("暂无封面")).toBeTruthy();
   view.unmount();
   render(<SpriteCover asset={asset} active={false} />);
@@ -105,19 +105,18 @@ test("旧资产显示暂无封面，预览页报错显示加载失败", async ()
   expect(screen.getByText("封面加载失败")).toBeTruthy();
 });
 
-// 场景：Remotion 目录按分类显示，分类内按名称搜索；卡片仍以“添加 Remotion 资产”为操作名并带封面播放器，点击把资产交给 onAdd。
+// 场景：Remotion 目录按分类显示，分类内按名称搜索；卡片仍以“添加 AI 资产”为操作名并带封面播放器，点击把资产交给 onAdd。
 test("Remotion 目录在分类内按名称搜索并添加", async () => {
   const added: SpriteAsset[] = [];
   const other = { ...asset, id: "s2", name: "流光字幕" };
   const catalog = { assets: [asset, other], error: "", refresh() {} } as unknown as ReturnType<typeof useSpriteCatalog>;
   render(<SpriteCatalog environment="cloud" catalog={catalog} placed={new Set()} onAdd={(item) => added.push(item)} />);
-  const region = screen.getByRole("region", { name: "Remotion 资产" });
-  fireEvent.click(within(region).getByRole("button", { name: "展开" }));
+  const region = screen.getByRole("region", { name: "AI 资产" });
   expect(within(region).getAllByRole("radio").length).toBeGreaterThan(0);
-  fireEvent.change(within(region).getByRole("searchbox", { name: "搜索 Remotion 资产" }), { target: { value: "流光" } });
-  expect(within(region).queryByRole("button", { name: "添加 Remotion 资产：霓虹标题" })).toBeNull();
-  fireEvent.click(within(region).getByRole("button", { name: "添加 Remotion 资产：流光字幕" }));
+  fireEvent.change(within(region).getByRole("searchbox", { name: "搜索 AI 资产" }), { target: { value: "流光" } });
+  expect(within(region).queryByRole("button", { name: "添加 AI 资产：霓虹标题" })).toBeNull();
+  fireEvent.click(within(region).getByRole("button", { name: "添加 AI 资产：流光字幕" }));
   expect(added).toEqual([other]);
-  fireEvent.change(within(region).getByRole("searchbox", { name: "搜索 Remotion 资产" }), { target: { value: "不存在" } });
+  fireEvent.change(within(region).getByRole("searchbox", { name: "搜索 AI 资产" }), { target: { value: "不存在" } });
   expect(within(region).getByText("没有匹配的资产")).toBeTruthy();
 });

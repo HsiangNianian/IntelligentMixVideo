@@ -65,7 +65,7 @@ function groupTransitionRows(rows: (Omit<TimelineRow, "actions"> & { actions: Pr
   return result.sort((a, b) => layer(a) - layer(b));
 }
 
-/** 时间轴上的 Remotion 资产片段：固定长度，按所占对象放进对应的行。 */
+/** 时间轴上的 AI 资产片段：固定长度，按所占对象放进对应的行。 */
 export interface SpriteClip {
   id: string;
   spriteId: string;
@@ -107,7 +107,7 @@ export function mergeSpriteRows(rows: ReturnType<typeof buildPreviewRows>, clips
     const action = {
       id: clip.id, effectId: clip.slot ?? "remotion", start: clip.start, end: clip.end, movable: false, flexible: false,
       // 读回的转场片段可能还没有选择交界处，此时只显示对象名称。
-      label: clip.slot === "transition" ? `镜头转场 ${clip.boundary ?? ""}`.trim() : clip.slot ? effectTargets[clip.slot] : "Remotion 资产",
+      label: clip.slot === "transition" ? `镜头转场 ${clip.boundary ?? ""}`.trim() : clip.slot ? effectTargets[clip.slot] : "AI 资产",
       effectName: `Remotion · ${clip.name}`, url: "", sourceIn: 0, sourceOut: 0, targetId: clip.id,
     };
     const home = clip.slot && result.find((row) => row.actions[0]?.effectId === clip.slot && row.actions.every((other) => other.end <= action.start || action.end <= other.start));

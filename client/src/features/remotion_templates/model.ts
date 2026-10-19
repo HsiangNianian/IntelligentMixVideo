@@ -1,6 +1,6 @@
 /** Remotion 服务契约与参数解释；只保存当前会话和已验收模板，不暴露内部候选。 */
 import { HEX_COLOR, type ParameterField } from "@/components/ParameterControl";
-import { TEMPLATE_KEYWORD_PARAMETERS } from "@/features/sprites/parameters";
+import { TEMPLATE_KEYWORD_PARAMETERS, TEXT_LAYOUT_PARAMETERS } from "@/features/sprites/parameters";
 
 /** 第一版参数只支持字符串、有限数值和布尔值。 */
 export type Scalar = string | number | boolean;
@@ -110,11 +110,7 @@ const LINE_STARTS_KEY = "lineStartFrames";
  * 字效的配置参数：名称、Schema 与中文标题由宿主固定（服务端 `categories.FIXED_TITLES`），是文字、字体与字号、双栏排版、
  * 关键词这些「写什么、怎么排」的设置；其余顶层参数是 Agent 为这个字效设计的样式（颜色、发光、描边、动画、关键词字效的外观）。
  */
-const CONFIG_PARAMETERS = new Set([
-  "text", "fontSize", "fontWeight", "fontFamily", "lineGap",
-  ...[1, 2].flatMap((tier) => [`line${tier}SizeRatio`, `line${tier}FontFamily`, `line${tier}FontWeight`]),
-  ...TEMPLATE_KEYWORD_PARAMETERS, "keywordEffect",
-]);
+const CONFIG_PARAMETERS = new Set(["text", ...TEXT_LAYOUT_PARAMETERS, ...TEMPLATE_KEYWORD_PARAMETERS, "keywordEffect"]);
 
 /**
  * 组合版本的参数分组：顶层参数分为配置与样式（见 `CONFIG_PARAMETERS`），以及各实例的内部参数；

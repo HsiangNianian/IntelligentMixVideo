@@ -225,12 +225,15 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
                     contents.append(([item[0] for item in shown], [item[1] for item in shown], [item[2] for item in shown],
                                      shown[0][2], shown[-1][3]))
         elif target == "title":
-            # 多行字效的标题整段放在第一行，其余行没有文字、不显示。
+            # 多行字效按标题里的换行分行（空行忽略，多出的并入最后一行），所有行同时出现；没有换行时整段放在第一行，
+            # 其余行没有文字、不显示。
             title = data.get("segmentation", {}).get("title_en") if language == "en" else request.title
             keyword = data.get("segmentation", {}).get("title_keyword_en", "") if language == "en" else title_keyword
             if language == "en" and request.title and request.title.strip() and not (title and title.strip()):
                 raise ContentError("缺少英文标题译文")
-            contents = [([title], [keyword], [start], start, start + length_seconds)] if request.title and request.title.strip() else []
+            parts = [part for part in title.split("\n") if part.strip()] if lines > 1 and title else []
+            texts = parts[:lines - 1] + [" ".join(parts[lines - 1:])] if len(parts) > lines else parts or [title]
+            contents = [(texts, [keyword], [start] * len(texts), start, start + length_seconds)] if request.title and request.title.strip() else []
         else:
             if sprite.kind == pb.SPRITE_KIND_TEXT or roles(json.loads(sprite.config_schema_json))["text"]:
                 raise ContentError("文字资产必须选择标题或字幕，不能作为装饰渲染示例文案")
@@ -242,7 +245,7 @@ def plan(data: dict, max_seconds: float, *, timeline: dict | None = None, transi
             first = min(frames - 1, to_frames(start, fps))
             last = min(frames, max(first + 1, to_frames(end, fps)))
             count = last - first
-            # 多行字效的换行只用来分行：标题里自带的换行不能把标题拆到下一行的样式里。
+            # 多行字效的换行只用来分行：每一行自己的文字不能再含换行，否则会挤进下一行的样式里。
             text = "\n".join(item.replace("\n", " ") for item in texts) if lines > 1 else texts[0]
             # 各行出现的帧，从实例起点算起；固定时钟资产读到的是预览时钟，按宿主同样的线性映射换算，
             # 两帧以内会被定格，所有行同时显示。

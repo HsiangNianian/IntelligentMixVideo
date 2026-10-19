@@ -1,4 +1,4 @@
-/** Remotion 资产的分类、宿主变换与参数声明：与服务端 `categories.py`、`placement.py` 的规则一致，模板编辑据此生成控件并在本地校验。 */
+/** AI 资产的分类、宿主变换与参数声明：与服务端 `categories.py`、`placement.py` 的规则一致，模板编辑据此生成控件并在本地校验。 */
 import { OperatorAccess, SpriteKind, SpriteParameterFormat, type SpriteParameter } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { ParameterField, ParameterValue } from "@/components/ParameterControl";
 
@@ -49,11 +49,20 @@ export function instanceTransformFields(kind: SpriteKind): TransformField[] {
 export const TEMPLATE_KEYWORD_PARAMETERS = ["keywords", "keywordBold", "keywordItalic", "keywordUnderline", "keywordStrikeout", "keywordColor", "keywordSize"];
 
 /**
- * 模板编辑里开放的资产参数：字效的字体、字号、多行字效的行间距与关键词样式；颜色、动画、出入场时间与关键词效果等属于资产本身，
+ * 字效的排版参数：基准字号、单栏的字体与字重、双栏的栏间距与逐栏字体、字重、字号比例（名称与服务端 `categories.FIXED_TITLES` 一致）。
+ * 字效工作区的「配置」组与模板编辑的「外观与位置」共用这份清单，两处能调的排版项相同。
+ */
+export const TEXT_LAYOUT_PARAMETERS = [
+  "fontSize", "fontFamily", "fontWeight", "lineGap",
+  ...[1, 2].flatMap((tier) => [`line${tier}SizeRatio`, `line${tier}FontFamily`, `line${tier}FontWeight`]),
+];
+
+/**
+ * 模板编辑里开放的资产参数：字效的排版参数与关键词样式；颜色、动画、出入场时间与关键词效果等属于资产本身，
  * 回字效工作区改出新版本。已有覆盖不受影响。
  */
 export function isInstanceParameter(kind: SpriteKind, key: string): boolean {
-  return kind === SpriteKind.TEXT && (key === "fontSize" || key === "fontFamily" || key === "lineGap" || TEMPLATE_KEYWORD_PARAMETERS.includes(key));
+  return kind === SpriteKind.TEXT && (TEXT_LAYOUT_PARAMETERS.includes(key) || TEMPLATE_KEYWORD_PARAMETERS.includes(key));
 }
 
 /** 画布像素换算为 0～100 的百分比（一位小数），与 IMS 文字位置同样的表示。 */
