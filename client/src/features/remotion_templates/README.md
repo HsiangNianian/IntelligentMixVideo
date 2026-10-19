@@ -16,7 +16,7 @@
 字效的 `fontFamily` 参数（以及双栏字效每栏的字体 `line1FontFamily`/`line2FontFamily`）使用字体选择器（`features/fonts/FontPicker.tsx`，由 `ParameterControl` 对这些参数名自动采用，聊天参数面板与模板编辑的「外观与位置」共用）：选项来自共享字体库（`GET /api/templates/fonts`，预装与用户上传的字体，不是生成时冻结的枚举），每项用服务端预览条以字体自己的样子展示（CSS mask 随主题着色），可按名称或风格搜索；浮层底部可上传自己的 .ttf/.otf（`POST /api/templates/fonts`）：浏览器先用该字体画出预览条，同时验证文件可读，再与文件、名称一起上传，成功后立即选中，失败原因（重名、格式、大小）留在浮层里。左侧导航「工作空间」组另有「字体库」页面（`features/fonts/FontLibrary.tsx`）：以卡片列出库内全部字体（预览条、家族名、风格、来源、字重、大小），可搜索，也可直接上传字体；页面每次打开都重新读取字体库。Agent 按参考图从字体库里选一个作为默认字体，用户可在这里改选；选择保存在模板轨道的 `editor.remotion.parameters`。没有 `fontFamily` 的旧字效不显示字体选择。
 模型只通过服务端调用，聊天仍使用 `/api/templates` API 和作品级 SSE。
 新结果交付 Export.tsx 与隔离 Player；代码、参数与时长由服务端封存，参数修订复用原播放器包，预览页注入该版本的默认值。
-预览区直接提供「加载本地文件」和背景视频 URL 输入框，选文件后即可预览，无需额外弹窗或槽位选择。只读取所选文件的元数据，与模板编辑的「视频 1」共用原有本地存储和文件变更通知，不改动视频 2、3；文件过大、不可播放或保存失败时保留旧视频。URL 只用于当前 Agent 预览，不覆盖共享文件。尚无字效版本时也能播放背景视频。背景由客户端底层 `<video>` 静音循环播放，先用 `preload="metadata"` 读取元数据再调用 `play()`，避免 Linux WebKitGTK 直接自动播放较大本地 blob 时解码失败；与字效的播放、暂停和进度独立；上层版本播放器使用 `?overlay=true` 透明显示，复用原封存包，历史版本同样适用。背景视频只留在客户端，不进入 iframe、Agent 请求或导出源码。
+预览背景可粘贴视频直链，也可「加载本地文件」（只在页面内以 blob URL 播放，不上传、不保存，桌面重启后需重新选择）；尚无字效版本时也能播放。背景由客户端底层 `<video>` 静音循环，先读元数据再调用 `play()`（Linux WebKitGTK 直接自动播放较大本地 blob 会解码失败），与字效的播放进度独立；上层版本播放器用 `?overlay=true` 透明显示，复用原封存包。背景视频不进入 iframe、Agent 请求或导出源码。
 操作截图：[本地文件与 URL 入口](../../../../docs/images/remotion-local-video-picker.png) · [视频与字效叠加预览](../../../../docs/images/remotion-local-preview.png)（浏览器夹具，使用测试视频）。
 
 旧版本继续显示原画布与扁平控件。成功版本卡片提供「保存到资产」：分类下拉默认取 Agent 判断的分类（字效、滤镜、视频特效、转场），可以改选，再调用 `POST /api/sprites/publish`；

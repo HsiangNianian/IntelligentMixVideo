@@ -476,7 +476,7 @@ def player_page(
     summary="打开交互预览",
 )
 def preview(version_id: UUID, service: Service, overlay: bool = False) -> HTMLResponse:
-    """返回成功版本的隔离播放器，支持背景视频与实时参数；旧版本缺少预览包时返回 404。
+    """返回成功版本的隔离播放器，支持实时参数；旧版本缺少预览包时返回 404。
 
     父页面以 iframe 加载，使用 URL fragment 作为消息通道标识；overlay=true 透明显示，供客户端叠在独立视频上。
     """

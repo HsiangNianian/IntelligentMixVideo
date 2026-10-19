@@ -15,7 +15,6 @@ import * as local from "@/features/remotion_templates/localSessions";
 import type { Job, Values } from "@/features/remotion_templates/model";
 import { fetchMock } from "./setup";
 import { remotionJob, remotionVersion } from "./remotion-fixtures";
-import { commitLocalVideos } from "@/features/templates/localVideos";
 
 import { latestCopy, latestCode } from "./remotion-version-helpers";
 import { remotionServer as server } from "./remotion-server";
@@ -606,8 +605,8 @@ test("渲染期间锁定所有输入操作，完成后恢复", async () => {
   ).toBe(false);
 });
 
-// 背景播放被拒绝或解码失败只显示提示，不能锁定字效参数或触发 iframe 更新。
-test("背景加载失败不影响字效编辑", async () => {
+// 背景视频解码失败只显示提示，不能锁定字效参数或触发 iframe 更新；重试同一直链会重建视频元素。
+test("背景加载失败不影响字效编辑并可重试", async () => {
   server();
   render(<RemotionWorkspace />);
   await generate();
@@ -617,19 +616,18 @@ test("背景加载失败不影响字效编辑", async () => {
     target: { value: "https://media.test/video.mp4" },
   });
   fireEvent.click(screen.getByRole("button", { name: "加载" }));
-  expect(screen.getByLabelText("字号").hasAttribute("disabled")).toBe(false);
-  const video = screen.getByLabelText<HTMLVideoElement>("预览背景视频");
-  spyOn(video, "play").mockRejectedValue(new DOMException("blocked", "NotAllowedError"));
-  await act(async () => fireEvent.loadedMetadata(video));
-  expect(screen.getByText("背景视频无法开始播放，请重新加载。")).toBeTruthy();
-  fireEvent.error(video);
+  const failed = screen.getByLabelText("预览背景视频");
+  fireEvent.error(failed);
   expect(screen.getByText("背景视频无法播放，请检查文件格式或视频直链。")).toBeTruthy();
   expect(post).not.toHaveBeenCalled();
   expect(screen.getByLabelText("字号").hasAttribute("disabled")).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "加载" }));
+  expect(screen.getByLabelText("预览背景视频")).not.toBe(failed);
+  expect(screen.queryByText("背景视频无法播放，请检查文件格式或视频直链。")).toBeNull();
 });
 
-// 本地视频读到元数据才播放；替换、删除立即同步，旧播放拒绝不污染新视频，封存播放器不参与背景切换。
-test("共享本地预览视频并同步替换和删除", async () => {
+// 本地文件读到元数据才播放；更换文件释放旧 blob，封存播放器不重载、不收到背景。
+test("本地文件作为背景播放并在更换时释放", async () => {
   server();
   render(<RemotionWorkspace />);
   await generate();
@@ -637,35 +635,24 @@ test("共享本地预览视频并同步替换和删除", async () => {
   const src = iframe.src;
   expect(new URL(src).searchParams.get("overlay")).toBe("true");
   const post = spyOn(iframe.contentWindow!, "postMessage");
-  const file = new File(["video"], "本地素材.mp4", { type: "video/mp4" });
-  const first = URL.createObjectURL(file);
-  const second = URL.createObjectURL(file);
-  const empty = { kind: "url" as const, url: "" };
-  try {
-    await act(async () => commitLocalVideos([{ kind: "file", name: file.name, file, url: first }, empty, empty]));
-    const video = screen.getByLabelText<HTMLVideoElement>("预览背景视频");
-    expect(video.src).toBe(first);
-    expect(video.autoplay).toBe(false);
-    expect(video.preload).toBe("metadata");
-    expect(video.muted && video.loop).toBe(true);
-    let rejectPlay!: (reason: Error) => void;
-    const play = spyOn(video, "play").mockImplementation(() => new Promise<void>((_, reject) => { rejectPlay = reject; }));
-    expect(play).not.toHaveBeenCalled();
-    fireEvent.loadedMetadata(video);
-    expect(play).toHaveBeenCalledTimes(1);
-    await act(async () => commitLocalVideos([{ kind: "file", name: file.name, file, url: second }, empty, empty]));
-    await act(async () => rejectPlay(new DOMException("replaced", "AbortError")));
-    expect(screen.queryByText("背景视频无法开始播放，请重新加载。")).toBeNull();
-    expect(screen.getByLabelText<HTMLVideoElement>("预览背景视频").src).toBe(second);
-    await act(async () => commitLocalVideos([empty, empty, empty]));
-    expect(screen.queryByLabelText("预览背景视频")).toBeNull();
-    expect(screen.getByTitle("Remotion 字效播放器")).toBe(iframe);
-    expect(iframe.src).toBe(src);
-    expect(post).not.toHaveBeenCalled();
-  } finally {
-    await act(async () => commitLocalVideos([empty, empty, empty]));
-    URL.revokeObjectURL(first); URL.revokeObjectURL(second);
-  }
+  const revoke = spyOn(URL, "revokeObjectURL");
+  const choose = (name: string) => fireEvent.change(screen.getByLabelText("本地预览视频文件"), {
+    target: { files: [new File(["video"], name, { type: "video/mp4" })] },
+  });
+  choose("第一段.mp4");
+  const video = screen.getByLabelText<HTMLVideoElement>("预览背景视频");
+  const first = video.src;
+  expect(first.startsWith("blob:")).toBe(true);
+  expect(video.preload).toBe("metadata");
+  const play = spyOn(video, "play").mockResolvedValue();
+  expect(play).not.toHaveBeenCalled();
+  fireEvent.loadedMetadata(video);
+  expect(play).toHaveBeenCalledTimes(1);
+  choose("第二段.mp4");
+  expect(screen.getByLabelText<HTMLVideoElement>("预览背景视频").src).not.toBe(first);
+  expect(revoke).toHaveBeenCalledWith(first);
+  expect(iframe.src).toBe(src);
+  expect(post).not.toHaveBeenCalled();
 });
 
 // 图片输入至少可单独创建任务，上传返回的素材 ID 用于生成；背景链接不发送给模型。

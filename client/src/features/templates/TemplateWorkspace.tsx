@@ -17,7 +17,6 @@ import { AppliedEffects, EffectAssets } from "./EffectAssets";
 import { isTextTarget } from "./effects";
 import { addTrack, previewContext, resolveTemplate, removeTrack, setBilingual, setTrackTiming, trackDraft, updateTrack } from "./tracks";
 import { defaultPreviewUrls, readPreviewVideos } from "./media";
-import { subscribeLocalVideos } from "./localVideos";
 import { compactTransitions, previewTransitions, setTransitionDuration, transitionItems } from "./transitions";
 import { TemplateInspector, TransitionInspector, type InspectorTab } from "./TemplateInspector";
 import { TemplatePreview } from "./TemplatePreview";
@@ -148,19 +147,6 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
     if (!current || deletedTemplate.templateId !== current.template_id || deletedTemplate.environment !== environment) return;
     setCurrent(null); setDraft(null); setEditing(null); setBaseline(""); setError("");
   }, [deletedTemplate, current, environment, openRequest]);
-
-  // Agent 只替换视频 1，保留模板已选择的视频 2、3；无需再次读取已校验的文件。
-  useEffect(() => subscribeLocalVideos((sources) => {
-    if (!sources) return;
-    setMedia((current) => {
-      const first = sources[0] ?? current?.[0];
-      const second = sources[1] ?? current?.[1];
-      const third = sources[2] ?? current?.[2];
-      return first && second && third ? [first, second, third] : undefined;
-    });
-    setMediaAttempt((value) => value + 1); // 默认读取若尚未结束，取消旧请求并按最新来源重读。
-    setMediaError("");
-  }), []);
 
   // 默认地址（本机保存的本地视频优先）与弹窗均读取真实元数据；已选择来源时不再启动默认读取。
   useEffect(() => {

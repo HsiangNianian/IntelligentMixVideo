@@ -123,7 +123,7 @@ only checks the contract and never starts the validator.
 ## Preview
 
 Version previews accept `?overlay=true` to remove the page's checkerboard while reusing the sealed player bundle.
-The client plays shared local videos or URL backgrounds in a separate bottom layer; these videos are not sent to the player or Agent.
+The client plays URL or local-file backgrounds in a separate bottom layer; these videos are not sent to the player or Agent.
 
 The preview is built from the saved Sprite's exact code, schema and defaults.
 The main canvas is 1080×1920 at 30 FPS and the last instance's exclusive end

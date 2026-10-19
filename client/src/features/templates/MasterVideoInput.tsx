@@ -12,7 +12,8 @@ import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
 import type { PreviewMedia } from "./model";
 import { previewVideoUrl, readPreviewVideos } from "./media";
-import { commitLocalVideos, LOCAL_VIDEO_MAX_BYTES, localVideoSlots, type VideoSource } from "./localVideos";
+import { isTauri } from "@tauri-apps/api/core";
+import { commitLocalVideos, LOCAL_VIDEO_MAX_BYTES, localPreviewVideos, localVideoSlots, type VideoSource } from "./localVideos";
 
 /** 当前来源中与本地登记一致的槽位显示为文件，其余显示为 URL；尚无来源时按登记或默认地址。 */
 function currentSources(media?: PreviewMedia): VideoSource[] {
@@ -32,6 +33,8 @@ export function MasterVideoInput({ media, onChange }: { media?: PreviewMedia; on
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  // 桌面端读回本机视频前不能打开：此时来源都是默认 URL，提交会删除尚未恢复的本机副本。
+  const [restoring, setRestoring] = useState(isTauri);
   const controller = useRef<AbortController | null>(null);
   const pickers = useRef<(HTMLInputElement | null)[]>([]);
   // 本次弹窗为新选择的文件创建、尚未交给本地登记的 blob URL。
@@ -48,6 +51,7 @@ export function MasterVideoInput({ media, onChange }: { media?: PreviewMedia; on
     }
   }
   useEffect(() => () => { controller.current?.abort(); if (!committing.current) release(); }, []);
+  useEffect(() => { void localPreviewVideos().catch(() => undefined).then(() => setRestoring(false)); }, []);
 
   /** 打开时读取当前来源，关闭时终止本次请求并丢弃未提交的文件，迟到结果不会修改工作区；保存期间忽略关闭。 */
   function changeOpen(value: boolean) {
@@ -87,7 +91,7 @@ export function MasterVideoInput({ media, onChange }: { media?: PreviewMedia; on
       const media = await readPreviewVideos(sources.map((source) => source.url), request.signal);
       if (request.signal.aborted) return;
       committing.current = true; setSaving(true);
-      try { await commitLocalVideos(sources, media); }
+      try { await commitLocalVideos(sources); }
       catch (reason) {
         // 保存中卸载时清理已跳过；保存失败后新选择的 blob URL 不会被登记，此处释放。
         if (request.signal.aborted) release();
@@ -101,7 +105,7 @@ export function MasterVideoInput({ media, onChange }: { media?: PreviewMedia; on
     } finally { if (!request.signal.aborted) setLoading(false); }
   }
   return <Dialog open={open} onOpenChange={changeOpen}>
-    <DialogTrigger asChild><Button type="button" variant="ghost" size="sm" className="template-master-video-trigger ml-auto h-8 gap-1.5 px-2 text-[11px]"><Upload className="size-3.5" aria-hidden="true" />加载预览视频</Button></DialogTrigger>
+    <DialogTrigger asChild><Button type="button" variant="ghost" size="sm" disabled={restoring} className="template-master-video-trigger ml-auto h-8 gap-1.5 px-2 text-[11px]"><Upload className="size-3.5" aria-hidden="true" />加载预览视频</Button></DialogTrigger>
     <DialogContent onKeyDown={(event) => { if (event.key === "Enter" && event.target instanceof HTMLInputElement && event.target.type !== "file") { event.preventDefault(); if (!loading) void load(); } }}>
       <DialogHeader><DialogTitle>加载预览视频</DialogTitle><DialogDescription>设置三个视频的 URL 或选择本地文件，URL 视频各使用前 10 秒（不足 10 秒时使用完整视频），本地文件使用完整时长。本地文件只保存在本机、不上传服务器：桌面客户端重启后保留，浏览器刷新后恢复默认。</DialogDescription></DialogHeader>
       <div className="space-y-4">{sources.map((source, index) => <div key={index} className="space-y-2">

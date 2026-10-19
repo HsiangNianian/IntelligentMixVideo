@@ -5,7 +5,6 @@
  */
 import { updateInvoke as invoke } from "@/lib/update-guard";
 import { isTauri } from "@tauri-apps/api/core";
-import type { MasterVideo } from "./model";
 
 /** 单个本地视频上限，与桌面存储一致；字节需完整经过 IPC 并在页面内存生成 blob。 */
 export const LOCAL_VIDEO_MAX_BYTES = 512 * 1024 * 1024;
@@ -18,13 +17,6 @@ export type VideoSource = { kind: "url"; url: string } | { kind: "file"; name: s
 
 const slots: (LocalVideo | undefined)[] = [undefined, undefined, undefined];
 let restored: Promise<void> | undefined;
-const listeners = new Set<(media?: readonly MasterVideo[]) => void>();
-
-/** 两个工作区保持挂载，保存或移除后通知背景预览更新来源。 */
-export function subscribeLocalVideos(listener: (media?: readonly MasterVideo[]) => void): () => void {
-  listeners.add(listener);
-  return () => { listeners.delete(listener); };
-}
 
 /** 当前登记的本地视频快照，弹窗据此区分文件与 URL 来源。 */
 export function localVideoSlots(): readonly (LocalVideo | undefined)[] {
@@ -66,13 +58,13 @@ async function save(index: number, name: string, blob: Blob) {
 }
 
 /**
- * 保存已校验的来源（Agent 只传视频 1，弹窗传三个）：新文件写入桌面存储并登记，改用 URL 的槽位删除本地视频。
+ * 弹窗读取三个来源成功后保存：新文件写入桌面存储并登记，改用 URL 的槽位删除本地视频。
  * 先等待桌面恢复结束，使晚到的恢复不会把刚删除的本机副本重新登记；桌面端 URL 来源一律删除对应槽位的副本，
  * 包括恢复失败而未登记的槽位。任一槽位失败时已完成的槽位写回原状（登记与本机存储一并回滚），再抛错；
- * 此时新选择的 blob URL 仍未被登记，由调用方负责释放。全部成功才释放被替换的 blob URL，
+ * 此时新选择的 blob URL 仍未被登记，由弹窗负责释放。全部成功才释放被替换的 blob URL，
  * 失败时当前预览可能仍在使用，暂不释放。
  */
-export async function commitLocalVideos(sources: readonly VideoSource[], media?: readonly MasterVideo[]): Promise<void> {
+export async function commitLocalVideos(sources: readonly VideoSource[]): Promise<void> {
   await localPreviewVideos().catch(() => undefined);
   const before = [...slots];
   const done: number[] = [];
@@ -89,7 +81,6 @@ export async function commitLocalVideos(sources: readonly VideoSource[], media?:
       done.push(index);
     } catch (reason) {
       await rollback(before, done);
-      listeners.forEach((listener) => listener());
       // Tauri 命令以字符串拒绝，统一包装为带视频编号的错误供弹窗展示。
       throw new Error(`视频 ${index + 1}：${reason instanceof Error ? reason.message : String(reason)}`);
     }
@@ -98,7 +89,6 @@ export async function commitLocalVideos(sources: readonly VideoSource[], media?:
     const previous = before[index];
     if (previous && previous.url !== slots[index]?.url) URL.revokeObjectURL(previous.url);
   }
-  listeners.forEach((listener) => listener(media));
 }
 
 /** 把已完成的槽位恢复为提交前的登记与本机存储；尽力而为，写回失败的槽位保持当前状态。 */

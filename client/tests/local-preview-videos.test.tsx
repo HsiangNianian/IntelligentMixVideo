@@ -1,13 +1,13 @@
 /**
- * Agent 直接选文件并共享视频 1；模板弹窗选择、加载、移除、超限、取消释放，以及桌面端写入/删除本机副本、
+ * 预览视频弹窗的本地文件来源：选择、加载、移除、超限、取消释放，以及桌面端写入/删除本机副本、
  * 多槽位失败回滚、保存期间不可取消和逐个恢复本机视频。
  * 视频元数据通过替换 HTMLMediaElement 的 src 设置器模拟，不读取真实媒体；执行 bun run test。
  */
 import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MasterVideoInput } from "@/features/templates/MasterVideoInput";
-import { PreviewPanel } from "@/features/remotion_templates/PreviewPanel";
 import { defaultPreviewUrls, previewVideoUrl } from "@/features/templates/media";
+import * as localVideos from "@/features/templates/localVideos";
 import { commitLocalVideos, LOCAL_VIDEO_MAX_BYTES, localVideoSlots } from "@/features/templates/localVideos";
 import type { PreviewMedia } from "@/features/templates/model";
 import { mockDesktop } from "./setup";
@@ -47,12 +47,14 @@ afterEach(async () => {
   Object.defineProperty(HTMLMediaElement.prototype, "src", source);
   // 本地视频登记是模块级状态，每例结束以浏览器模式改回 URL，避免影响其他用例。
   Reflect.deleteProperty(globalThis, "isTauri");
-  await act(async () => commitLocalVideos([0, 1, 2].map(() => ({ kind: "url", url: "" }))));
+  await commitLocalVideos([0, 1, 2].map(() => ({ kind: "url", url: "" })));
 });
 
-/** 打开弹窗并返回对话框元素。 */
-function openDialog() {
-  fireEvent.click(screen.getByRole("button", { name: "加载预览视频" }));
+/** 等待本机视频恢复结束后打开弹窗并返回对话框元素。 */
+async function openDialog() {
+  const trigger = screen.getByRole("button", { name: "加载预览视频" });
+  await waitFor(() => expect(trigger.hasAttribute("disabled")).toBe(false));
+  fireEvent.click(trigger);
   return screen.getByRole("dialog", { name: "加载预览视频" });
 }
 
@@ -61,60 +63,11 @@ function choose(dialog: HTMLElement, index: number, file: File) {
   fireEvent.change(within(dialog).getByLabelText(`视频 ${index} 本地视频文件`), { target: { files: [file] } });
 }
 
-// Agent 原位选择一个文件，只读取该文件并共享视频 1；模板替换后同步，URL 模式保持独立。
-test("Remotion 直接选择文件并共享视频 1，保留其他槽位", async () => {
-  const other = new File(["other"], "保留素材.mp4", { type: "video/mp4" });
-  const otherUrl = URL.createObjectURL(other);
-  await commitLocalVideos([{ kind: "url", url: "" }, { kind: "file", name: other.name, url: otherUrl, file: other }]);
-  const agent = render(<PreviewPanel version={null} values={{}} pending={false} onBusyChange={() => {}} />);
-  expect(screen.queryByRole("button", { name: "加载预览视频" })).toBeNull();
-  expect(screen.queryByRole("combobox", { name: "预览背景" })).toBeNull();
-  await act(async () => fireEvent.change(screen.getByLabelText("本地预览视频文件"), { target: { files: [new File(["video"], "Agent素材.mp4", { type: "video/mp4" })] } }));
-  expect(localVideoSlots()[0]?.name).toBe("Agent素材.mp4");
-  expect(assigned).toEqual([localVideoSlots()[0]!.url]);
-  expect(localVideoSlots()[1]?.url).toBe(otherUrl);
-  expect(within(agent.container).getByLabelText<HTMLVideoElement>("预览背景视频").src).toBe(localVideoSlots()[0]!.url);
-  expect(screen.queryByTitle("Remotion 字效播放器")).toBeNull();
-
-  const editor = render(<MasterVideoInput onChange={() => {}} />);
-  fireEvent.click(within(editor.container).getByRole("button", { name: "加载预览视频" }));
-  const dialog = screen.getByRole("dialog", { name: "加载预览视频" });
-  expect(within(dialog).getByLabelText("视频 1 本地文件").textContent).toBe("Agent素材.mp4");
-  choose(dialog, 1, new File(["replacement"], "替换素材.mp4", { type: "video/mp4" }));
-  await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "加载" })));
-  expect(within(agent.container).getByLabelText<HTMLVideoElement>("预览背景视频").src).toBe(localVideoSlots()[0]!.url);
-  fireEvent.change(screen.getByLabelText("背景视频直链"), { target: { value: "https://media.test/remote.mp4" } });
-  fireEvent.click(within(agent.container).getByRole("button", { name: "加载" }));
-  await act(async () => commitLocalVideos([{ kind: "url", url: "" }]));
-  expect(within(agent.container).getByLabelText<HTMLVideoElement>("预览背景视频").src).toBe("https://media.test/remote.mp4");
-});
-
-// 文件过大或无法解码时保留当前预览和共享文件，失败的新 blob 释放。
-test.each(["size", "decode"])("Remotion 本地文件 %s 失败保留旧视频", async (failure) => {
-  render(<PreviewPanel version={null} values={{}} pending={false} onBusyChange={() => {}} />);
-  const input = screen.getByLabelText("本地预览视频文件");
-  await act(async () => fireEvent.change(input, { target: { files: [new File(["video"], "原素材.mp4", { type: "video/mp4" })] } }));
-  const previous = localVideoSlots()[0]!.url;
-  const revoked = spyOn(URL, "revokeObjectURL");
-  const file = new File(["bad"], "无效素材.mp4", { type: "video/mp4" });
-  if (failure === "size") Object.defineProperty(file, "size", { value: LOCAL_VIDEO_MAX_BYTES + 1 });
-  else Object.defineProperty(HTMLMediaElement.prototype, "src", {
-    configurable: true, get: source.get,
-    set(this: HTMLMediaElement, value: string) { source.set!.call(this, value); queueMicrotask(() => this.dispatchEvent(new Event("error"))); },
-  });
-  await act(async () => fireEvent.change(input, { target: { files: [file] } }));
-  expect(screen.getByRole("alert").textContent).toContain(failure === "size" ? "512 MiB" : "本地视频无法播放");
-  expect(localVideoSlots()[0]!.url).toBe(previous);
-  expect(screen.getByLabelText<HTMLVideoElement>("预览背景视频").src).toBe(previous);
-  expect(revoked.mock.calls).not.toContainEqual([previous]);
-  if (failure === "decode") expect(revoked).toHaveBeenCalledWith(created.at(-1)!);
-});
-
 // 场景：视频 2 选择本地文件并加载，其余仍用默认地址；再次打开显示为文件，移除后改回默认 URL。
 test("本地文件加载为预览来源，移除后恢复默认地址", async () => {
   const changes: PreviewMedia[] = [];
   const view = render(<MasterVideoInput onChange={(media) => changes.push(media)} />);
-  let dialog = openDialog();
+  let dialog = await openDialog();
   choose(dialog, 2, new File(["video"], "我的素材.mp4", { type: "video/mp4" }));
   expect(within(dialog).getByLabelText("视频 2 本地文件").textContent).toBe("我的素材.mp4");
   fireEvent.click(within(dialog).getByRole("button", { name: "加载" }));
@@ -127,7 +80,7 @@ test("本地文件加载为预览来源，移除后恢复默认地址", async ()
   expect(await defaultPreviewUrls()).toEqual([previewVideoUrl(0), local, previewVideoUrl(2)]);
 
   view.rerender(<MasterVideoInput media={changes[0]} onChange={(media) => changes.push(media)} />);
-  dialog = openDialog();
+  dialog = await openDialog();
   expect(within(dialog).getByLabelText("视频 2 本地文件").textContent).toBe("我的素材.mp4");
   fireEvent.click(within(dialog).getByRole("button", { name: "移除视频 2 的本地文件" }));
   expect(within(dialog).getByRole<HTMLInputElement>("textbox", { name: "视频 2 URL" }).value).toBe(previewVideoUrl(1));
@@ -138,9 +91,9 @@ test("本地文件加载为预览来源，移除后恢复默认地址", async ()
 });
 
 // 场景：超过 512 MiB 的文件直接提示，不替换该视频的来源。
-test("超过上限的本地文件提示且不替换来源", () => {
+test("超过上限的本地文件提示且不替换来源", async () => {
   render(<MasterVideoInput onChange={() => {}} />);
-  const dialog = openDialog();
+  const dialog = await openDialog();
   const file = new File(["video"], "large.mp4", { type: "video/mp4" });
   Object.defineProperty(file, "size", { value: LOCAL_VIDEO_MAX_BYTES + 1 });
   choose(dialog, 1, file);
@@ -149,11 +102,11 @@ test("超过上限的本地文件提示且不替换来源", () => {
 });
 
 // 场景：选择文件后取消，不更新来源并释放本次生成的 blob URL。
-test("取消弹窗不提交本地文件并释放 blob URL", () => {
+test("取消弹窗不提交本地文件并释放 blob URL", async () => {
   const revoke = spyOn(URL, "revokeObjectURL");
   const onChange = mock();
   render(<MasterVideoInput onChange={onChange} />);
-  const dialog = openDialog();
+  const dialog = await openDialog();
   choose(dialog, 3, new File(["video"], "c.mp4", { type: "video/mp4" }));
   fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
   expect(created).toHaveLength(1);
@@ -168,7 +121,7 @@ test("桌面端保存本地文件并在改回 URL 时删除", async () => {
   mockDesktop(async (command, args) => { calls.push([command, args]); return null; });
   const changes: PreviewMedia[] = [];
   const view = render(<MasterVideoInput onChange={(media) => changes.push(media)} />);
-  let dialog = openDialog();
+  let dialog = await openDialog();
   choose(dialog, 1, new File(["abc"], "a.mp4", { type: "video/mp4" }));
   fireEvent.click(within(dialog).getByRole("button", { name: "加载" }));
   await waitFor(() => expect(changes).toHaveLength(1));
@@ -177,7 +130,7 @@ test("桌面端保存本地文件并在改回 URL 时删除", async () => {
   expect([...(calls[0][1] as Uint8Array)]).toEqual([...new TextEncoder().encode("abc")]);
 
   view.rerender(<MasterVideoInput media={changes[0]} onChange={(media) => changes.push(media)} />);
-  dialog = openDialog();
+  dialog = await openDialog();
   fireEvent.click(within(dialog).getByRole("button", { name: "移除视频 1 的本地文件" }));
   fireEvent.click(within(dialog).getByRole("button", { name: "加载" }));
   await waitFor(() => expect(changes).toHaveLength(2));
@@ -192,7 +145,7 @@ test("桌面端写入失败保留弹窗与来源", async () => {
   });
   const onChange = mock();
   render(<MasterVideoInput onChange={onChange} />);
-  const dialog = openDialog();
+  const dialog = await openDialog();
   choose(dialog, 2, new File(["abc"], "b.mp4", { type: "video/mp4" }));
   fireEvent.click(within(dialog).getByRole("button", { name: "加载" }));
   await waitFor(() => expect(within(dialog).getByRole("alert").textContent).toBe("视频 2：本地预览视频正在被其他操作使用，请重试"));
@@ -210,7 +163,7 @@ test("多槽位保存失败时回滚已完成的槽位", async () => {
   });
   const onChange = mock();
   render(<MasterVideoInput onChange={onChange} />);
-  const dialog = openDialog();
+  const dialog = await openDialog();
   choose(dialog, 1, new File(["a"], "a.mp4", { type: "video/mp4" }));
   choose(dialog, 2, new File(["bb"], "b.mp4", { type: "video/mp4" }));
   fireEvent.click(within(dialog).getByRole("button", { name: "加载" }));
@@ -234,7 +187,7 @@ test("保存期间不能取消，完成后更新来源", async () => {
   mockDesktop(async (command) => { if (command === "preview_video_write") await written; return null; });
   const changes: PreviewMedia[] = [];
   render(<MasterVideoInput onChange={(media) => changes.push(media)} />);
-  const dialog = openDialog();
+  const dialog = await openDialog();
   choose(dialog, 3, new File(["abc"], "c.mp4", { type: "video/mp4" }));
   fireEvent.click(within(dialog).getByRole("button", { name: "加载" }));
   await waitFor(() => expect(within(dialog).getByRole<HTMLButtonElement>("button", { name: "取消" }).disabled).toBe(true));
@@ -244,6 +197,19 @@ test("保存期间不能取消，完成后更新来源", async () => {
   await waitFor(() => expect(changes).toHaveLength(1));
   expect(changes[0][2].url).toBe(created[0]);
   expect(localVideoSlots()[2]?.url).toBe(created[0]);
+});
+
+// 场景：桌面端读回本机视频前弹窗来源都是默认 URL，此时提交会删除本机副本，因此恢复结束前不能打开。
+test("桌面端恢复本机视频前不能打开弹窗", async () => {
+  mockDesktop(async () => null);
+  let finish!: () => void;
+  spyOn(localVideos, "localPreviewVideos").mockReturnValue(new Promise((resolve) => { finish = () => resolve([]); }));
+  render(<MasterVideoInput onChange={() => {}} />);
+  const trigger = screen.getByRole("button", { name: "加载预览视频" });
+  await Promise.resolve();
+  expect(trigger.hasAttribute("disabled")).toBe(true);
+  finish();
+  await waitFor(() => expect(trigger.hasAttribute("disabled")).toBe(false));
 });
 
 // 场景：桌面端提交 URL 来源时先等待恢复结束，并对每个槽位删除本机副本，包括恢复失败而未登记的槽位。
