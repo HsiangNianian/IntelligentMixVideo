@@ -22,9 +22,16 @@ fn localhost_capability(url: &tauri::Url, label: &str) -> tauri::ipc::Capability
         .permission("core:event:allow-unlisten")
 }
 
+/// reqwest 以 `rustls-no-provider` 构建；创建任何 HTTPS 客户端前必须安装进程级默认提供者，
+/// 否则更新检查会在后台线程 panic，并以 `panic = "abort"` 终止整个客户端。
+fn install_tls_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 /// 启动主窗口与事件循环；初始化失败时报告错误。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    install_tls_provider();
     let mut context = tauri::generate_context!();
     let updates = updates::attach(&mut context);
     #[cfg(not(any(windows, target_os = "linux")))]
@@ -130,6 +137,13 @@ mod tests {
     #[tauri::command]
     fn local_settings() -> bool {
         true
+    }
+
+    /// reqwest 使用 `rustls-no-provider`，缺少提供者时构建客户端会 panic；此测试锁定启动初始化。
+    #[test]
+    fn update_client_builds_with_rustls_provider() {
+        super::install_tls_provider();
+        reqwest::Client::builder().build().expect("update client");
     }
 
     /// 用真实权限清单验证准确 URL 可调用，其他端口、域名和窗口均被拒绝。

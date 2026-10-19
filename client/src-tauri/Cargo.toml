@@ -27,6 +27,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-updater = { version = "2.14", default-features = false, features = ["rustls-tls", "system-proxy"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json", "stream"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 base64 = "0.22"
 minisign-verify = "0.3"
 sha2 = "0.10"
