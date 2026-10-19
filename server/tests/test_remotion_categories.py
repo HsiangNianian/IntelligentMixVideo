@@ -160,9 +160,82 @@ def test_a_text_defaulting_to_several_lines_must_be_a_multi_line_text():
 
 
 def test_line_starts_refusals_name_the_exact_shape():
-    """项数不固定的行起点被拒时，说明 minItems 与 maxItems 都等于行数，并给出两行的完整 Schema。"""
+    """项数不固定的行起点被拒时，说明这是双栏字效的行起点，并给出两栏的完整 Schema。"""
     reason = parameter_problems({**LINE_STARTS, "minItems": 2, "maxItems": 4}, "lineStartFrames")
-    assert "minItems and maxItems both N" in reason and '"minItems": 2, "maxItems": 2' in reason
+    assert "two-tier text (双栏)" in reason and '"minItems": 2, "maxItems": 2' in reason
+
+
+# 双栏字效：两栏各有固定名称的颜色、字号比例、字体与字重，不暴露整段共用的颜色、字重与字体。
+TIER_LIBRARY = {"Noto Sans CJK SC", "Zed Display"}
+TIER_FONT = {"type": "string", "enum": sorted(TIER_LIBRARY)}
+TWO_TIER = {
+    **{name: definition for name, definition in MULTI_LINE.items() if name not in ("color", "fontWeight")},
+    **{f"line{tier}{suffix}": definition for tier in (1, 2) for suffix, definition in (
+        ("Color", COLOR), ("SizeRatio", {"type": "number", "minimum": 0.4, "maximum": 2}), ("FontFamily", TIER_FONT),
+        ("FontWeight", {"type": "integer", "enum": [400, 700]}),
+    )},
+}
+TWO_TIER_DEFAULTS = {
+    **MULTI_LINE_DEFAULTS, "line1Color": "#FFFFFF", "line1SizeRatio": 0.5, "line1FontFamily": "Noto Sans CJK SC", "line1FontWeight": 700,
+    "line2Color": "#F5B93C", "line2SizeRatio": 1, "line2FontFamily": "Zed Display", "line2FontWeight": 700,
+}
+TIER_NAMES = [f"line{tier}{suffix}" for tier in (1, 2) for suffix in ("Color", "SizeRatio", "FontFamily", "FontWeight")]
+
+
+def generated_problems(properties: dict, defaults: dict = TWO_TIER_DEFAULTS) -> list[tuple[str, str]]:
+    """生成路径（传入字体库）对全部绑定的 ``properties`` 的分类检查结果。"""
+    return [(item.name, item.reason) for item in category_problems("text", schema(properties), set(properties), defaults, TIER_LIBRARY)]
+
+
+def test_generated_two_tier_text_uses_the_fixed_tier_parameters():
+    """审计复现（作品 29b8f95f 等）：双栏的逐栏设置每次生成叫法都不同（subtitleColor、写死在代码里的 subtitleText，或者干脆没有）；
+    生成路径现在要求恰好两栏，每栏有固定名称的颜色、字号比例、字体与字重，且不再暴露整段共用的颜色、字重与字体。"""
+    assert generated_problems(TWO_TIER) == []
+    assert generated_problems({name: value for name, value in TWO_TIER.items() if name != "line2FontFamily"}) == [("line2FontFamily", "missing")]
+    assert generated_problems({**TWO_TIER, "line1SizeRatio": {"type": "number", "minimum": 0.1, "maximum": 3}}) == [("line1SizeRatio", "has the wrong schema")]
+    [(name, reason)] = generated_problems({**TWO_TIER, "line1FontFamily": {"type": "string", "enum": ["Ghost"]}}, {**TWO_TIER_DEFAULTS, "line1FontFamily": "Ghost"})
+    assert name == "line1FontFamily" and "not in the font library" in reason
+    [(name, reason)] = generated_problems({**TWO_TIER, "color": COLOR}, {**TWO_TIER_DEFAULTS, "color": "#FFFFFF"})
+    assert name == "color" and "line1Color and line2Color" in reason
+    # More than two tiers are not generated.
+    three = {**TWO_TIER, "lineStartFrames": {**LINE_STARTS, "minItems": 3, "maxItems": 3}}
+    problems = generated_problems(three, {**TWO_TIER_DEFAULTS, "text": "一\n二\n三", "lineStartFrames": [0, 10, 20]})
+    assert [name for name, _ in problems] == ["lineStartFrames"] and "exactly 2 lines" in problems[0][1]
+    # The free-named per-line style of the earlier generations: every fixed tier parameter is missing and the shared ones must go.
+    loose = {**MULTI_LINE, "subtitleColor": COLOR}
+    assert [name for name, _ in generated_problems(loose, {**MULTI_LINE_DEFAULTS, "subtitleColor": "#FF00FF"})] == [*TIER_NAMES, "color", "fontWeight"]
+
+
+def test_new_chat_switches_are_enforced_when_generating():
+    """新会话打开了「双栏」：生成路径拒绝单行字效；打开了「关键词字效」：拒绝没有关键词字效的字效。没打开时都不要求。"""
+    single = {**TEXT_PROPERTIES, "fontFamily": TIER_FONT}
+    defaults = {**OFF, "fontFamily": "Zed Display"}
+    check = lambda requested: [(item.name, item.reason) for item in category_problems("text", schema(single), set(single), defaults, TIER_LIBRARY, requested)]
+    assert check(()) == []
+    [(name, reason)] = check({"two_tier"})
+    assert name == "lineStartFrames" and "switched on 双栏" in reason
+    [(name, reason)] = check({"keyword_effect"})
+    assert name == "keywordEffect" and "switched on the keyword effect" in reason
+    assert category_problems("text", schema(TWO_TIER), set(TWO_TIER), TWO_TIER_DEFAULTS, TIER_LIBRARY, {"two_tier"}) == []
+
+
+def test_a_keyword_effect_exposes_a_switch_that_defaults_on():
+    """画了关键词字效（有 keywordEffect… 外观参数）的字效必须暴露 keywordEffect 开关且默认开启，用户才能不重新生成就关掉它；
+    没有关键词字效的字效不要求。"""
+    looks = {**TEXT_PROPERTIES, "fontFamily": TIER_FONT, "keywordEffectColor": COLOR}
+    defaults = {**OFF, "fontFamily": "Zed Display", "keywordEffectColor": "#FFD54A"}
+    check = lambda properties, values: [(item.name, item.reason) for item in category_problems("text", schema(properties), set(properties), values, TIER_LIBRARY)]
+    assert check(looks, defaults) == [("keywordEffect", "missing")]
+    switched = {**looks, "keywordEffect": {"type": "boolean"}}
+    assert check(switched, {**defaults, "keywordEffect": True}) == []
+    assert "must default to true" in check(switched, {**defaults, "keywordEffect": False})[0][1]
+    assert check({**looks, "keywordEffect": {"type": "string", "maxLength": 4}}, {**defaults, "keywordEffect": "on"}) == [("keywordEffect", "has the wrong schema")]
+
+
+def test_publishing_a_multi_line_text_needs_no_shared_colour_or_weight():
+    """发布路径（不传字体库）：新生成的双栏字效没有整段共用的颜色与字重也能保存到资产，更早生成、没有逐栏参数的多行版本同样可以。"""
+    assert category_problems("text", schema(TWO_TIER), set(TWO_TIER), TWO_TIER_DEFAULTS) == []
+    assert category_problems("text", schema(MULTI_LINE), set(MULTI_LINE), MULTI_LINE_DEFAULTS) == []
 
 
 def test_only_line_starts_may_be_an_integer_array():
@@ -192,8 +265,8 @@ def test_a_missing_kind_is_reported_without_rules():
     ({"type": "string", "enum": ["a"], "maxLength": 0}, "a string maxLength must be between 1 and 2000"),
     ({"type": "string"}, f"a string needs the colour pattern {HEX_COLOR}, an enum or a maxLength"),
     ({"type": "boolean"}, None),
-    ({"type": "array", "items": {"type": "number"}}, "only a keywords string array (and lineStartFrames) is supported: per-line styles are separate scalar parameters "
-     "(such as line2Color, or line2SizeRatio as a ratio of fontSize so the host's fontSize shrink scales every line), not arrays"),
+    ({"type": "array", "items": {"type": "number"}}, "only a keywords string array (and lineStartFrames) is supported: per-tier styles are the fixed scalar "
+     "parameters line1Color, line1SizeRatio, line1FontFamily and line1FontWeight (and the same for line2), not arrays"),
     ({"type": "object"}, "type must be number, integer, string, boolean or a keywords array"),
     # Constraints the publish-time extremes would violate, so those ends would silently go unsampled.
     ({"type": "number", "minimum": 0, "maximum": 1, "exclusiveMaximum": 1}, "uses schema keywords the publish-time samples cannot cover: exclusiveMaximum"),
@@ -282,9 +355,9 @@ def test_invalid_bindings_name_the_offending_field(bindings, field, message):
     assert refused.value.error.field == field and message in refused.value.error.message
 
 
-def session(tmp_path: Path, spec=None, base=None) -> ToolSession:
-    """A creation session whose isolated checks always pass, so only the category gate decides."""
-    current = ToolSession(SimpleNamespace(settings=Settings(_env_file=None, data_dir=tmp_path), renderer=None), spec, base, Budget(), tmp_path / "run", [], lambda *_: None, {})
+def session(tmp_path: Path, spec=None, base=None, intent=None) -> ToolSession:
+    """A creation session whose isolated checks always pass, so only the category gate decides; ``intent`` is the user intent."""
+    current = ToolSession(SimpleNamespace(settings=Settings(_env_file=None, data_dir=tmp_path), renderer=None), spec, base, Budget(), tmp_path / "run", [], lambda *_: None, intent or {})
 
     async def passed(*_args, **_options):
         """Code and render checks are not under test here."""
@@ -384,6 +457,32 @@ def test_create_stores_the_font_family_as_an_open_string(tmp_path, monkeypatch):
         assert mounted["schema"]["properties"]["fontFamily"] == {"type": "string", "maxLength": 100}
 
     asyncio.run(run())
+
+
+def test_a_new_work_with_the_two_tier_switch_refuses_a_single_line_text(tmp_path, monkeypatch):
+    """新会话打开「双栏」后，sprite.create 在挂载浏览器之前就拒绝单行字效并说明用户要的是双栏；编辑已有作品（有基线）时不强制。"""
+    monkeypatch.setattr(FontStore, "active", SimpleNamespace(listing=lambda: [SimpleNamespace(family=name) for name in TIER_LIBRARY]))
+    properties = {**TEXT_PROPERTIES, "fontFamily": TIER_FONT}
+    single = SpriteDraft(
+        description="标题", code="export default function Sprite(){return null}", kind="text",
+        parameter_schema=schema(properties), default_parameters={**OFF, "fontFamily": "Zed Display"},
+        composition={"width": 1080, "height": 1920, "fps": 30, "duration_frames": 30},
+        instances=[instance("title", {}, properties)], bindings=[binding(name, ("title", name)) for name in properties],
+    )
+    intent = {"original_request": {"description": "双栏标题", "two_tier": True}}
+
+    async def run():
+        """Create the single-line draft in a new work whose user switched on 双栏."""
+        current = session(tmp_path, intent=intent)
+        current.sprite_drafts["single"] = single
+        with pytest.raises(ToolFault) as refused:
+            await current.execute("sprite.create", SpriteCreateInput(draft_id="single"), available())
+        assert refused.value.error.code == "CATEGORY_PARAMETERS_MISSING"
+        assert [item["name"] for item in refused.value.error.details["missing"]] == ["lineStartFrames"]
+        assert "switched on 双栏" in refused.value.error.details["missing"][0]["reason"]
+
+    asyncio.run(run())
+    assert session(tmp_path, spec=SimpleNamespace(sprite_kind="text"), intent=intent).requested == set()
 
 
 def test_edit_snapshot_repeats_the_base_kind_and_parameter_bindings(tmp_path):

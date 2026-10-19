@@ -533,6 +533,23 @@ test("切换片段重置页签，非字效的 keyword 参数不进入关键词�
   expect(within(inspector).getByRole("heading", { name: "资产默认参数" }).closest("fieldset")!.textContent).toContain("关键光晕");
 });
 
+// 场景：生成时带关键词字效的字效另有 keywordEffect… 参数；「关键词设置」只提供关键词与六个样式选项，关键词字效本身回字效工作区修改。
+test("关键词字效参数不在模板里调整，只列在资产默认参数", async () => {
+  const text = textAsset();
+  sprites({
+    catalog: [{ ...text, parameters: [...text.parameters, { key: "keywordEffectScale", label: "关键词弹跳幅度", access: OperatorAccess.VISIBLE_EDITABLE, defaultValue: { value: { case: "numberValue", value: 1.3 } }, minimum: 1, maximum: 2 }] }],
+    clips: [{ id: "clip-t", sprite_id: "sprite-t", start: 0, duration: 3, parameters: {}, transform: {} }],
+  });
+  render(<TemplateWorkspace selection={{ environment: "cloud", templateId: savedTemplate().template_id }} onHome={() => {}} />);
+  fireEvent.click(await screen.findByRole("button", { name: "设置 Remotion 资产：金色标题" }));
+  const inspector = screen.getByRole("region", { name: "Remotion 资产设置" });
+  fireEvent.click(within(inspector).getByRole("tab", { name: "关键词设置" }));
+  expect(within(inspector).getByLabelText("关键词")).toBeTruthy();
+  expect(within(inspector).queryByLabelText("关键词弹跳幅度") === null).toBe(true);
+  fireEvent.click(within(inspector).getByRole("tab", { name: "外观与位置" }));
+  expect(within(inspector).getByRole("heading", { name: "资产默认参数" }).closest("fieldset")!.textContent).toContain("关键词弹跳幅度");
+});
+
 // 场景：已保存的覆盖随模板读回：位置显示为百分比；不在模板里调整的参数（这里是标题文字）仍列出「已覆盖」并可恢复默认，恢复后移除覆盖；滤镜只提供强度。
 test("读回片段的覆盖值，内部参数的覆盖可恢复默认，滤镜只调整强度", async () => {
   const { inspector } = await openTextClip({ parameters: { text: "已保存" }, transform: { x: 300, y: 500, scale: 2 } });

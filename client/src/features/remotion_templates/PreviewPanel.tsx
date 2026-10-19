@@ -1,10 +1,13 @@
-/** 隔离预览容器；仅向当前成功版本的 iframe 发送参数与背景直链，清理消息监听和就绪超时。 */
-import { useEffect, useRef, useState } from "react";
+/**
+ * 隔离预览容器；仅向当前成功版本的 iframe 发送参数与背景直链，清理消息监听和就绪超时。
+ * 带关键词字效的字效在未填关键词时以示例关键词预览（见 `sampleKeyword`），参数本身不变。
+ */
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Film, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { apiUrl } from "./api";
-import { backgroundUrl, type Values, type Version } from "./model";
+import { backgroundUrl, sampleKeyword, type Values, type Version } from "./model";
 import { Spinner } from "@/components/ui/spinner";
 
 /** 背景链接不进入生成请求，模板切换后的旧 iframe 消息不会影响当前画面。 */
@@ -19,6 +22,8 @@ export function PreviewPanel({
   pending: boolean;
   onBusyChange: (busy: boolean) => void;
 }) {
+  const sample = sampleKeyword(version, values);
+  const shown = useMemo(() => (sample ? { ...values, keywords: [sample] } : values), [values, sample]);
   const [link, setLink] = useState("");
   const [background, setBackground] = useState("");
   const [error, setError] = useState("");
@@ -120,13 +125,13 @@ export function PreviewPanel({
           type: "imv-preview-update",
           channel: channel.current,
           requestId: ++requestId.current,
-          values,
+          values: shown,
           background,
         },
         "*",
       );
     }
-  }, [values, background, ready]);
+  }, [shown, background, ready]);
   /** 背景变更只进入隔离播放器，不写入模板任务。 */
   function load() {
     if (pending || rendering) return;
@@ -207,6 +212,11 @@ export function PreviewPanel({
           </div>
         )}
       </div>
+      {sample && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          预览以「{sample}」为示例关键词展示关键词字效；模板里由切片关键词决定，只能开关六个关键词样式。
+        </p>
+      )}
       {error && (
         <div className="mt-3 flex items-center justify-between gap-2">
           <p role="alert" className="text-xs text-destructive">

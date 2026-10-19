@@ -43,11 +43,17 @@ export function instanceTransformFields(kind: SpriteKind): TransformField[] {
 }
 
 /**
- * 模板编辑里开放的资产参数：字效的字体、字号、多行字效的行间距与关键词样式；颜色、动画与出入场时间等属于资产本身，
+ * 模板逐次设置的关键词参数：关键词本身与六个样式选项，与服务端 `categories.TEXT_KEYWORDS` 一致。字效自带的其他关键词
+ * 效果参数（如 keywordEffectColor）属于资产本身，只在字效工作区修改。
+ */
+export const TEMPLATE_KEYWORD_PARAMETERS = ["keywords", "keywordBold", "keywordItalic", "keywordUnderline", "keywordStrikeout", "keywordColor", "keywordSize"];
+
+/**
+ * 模板编辑里开放的资产参数：字效的字体、字号、多行字效的行间距与关键词样式；颜色、动画、出入场时间与关键词效果等属于资产本身，
  * 回字效工作区改出新版本。已有覆盖不受影响。
  */
 export function isInstanceParameter(kind: SpriteKind, key: string): boolean {
-  return kind === SpriteKind.TEXT && (key === "fontSize" || key === "fontFamily" || key === "lineGap" || /^keyword/i.test(key));
+  return kind === SpriteKind.TEXT && (key === "fontSize" || key === "fontFamily" || key === "lineGap" || TEMPLATE_KEYWORD_PARAMETERS.includes(key));
 }
 
 /** 画布像素换算为 0～100 的百分比（一位小数），与 IMS 文字位置同样的表示。 */

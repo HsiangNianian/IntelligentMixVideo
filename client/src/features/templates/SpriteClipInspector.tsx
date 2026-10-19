@@ -15,14 +15,14 @@ import { Hint } from "@/components/Hint";
 import { ParameterControl, withLine, type ParameterValue } from "@/components/ParameterControl";
 import { SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { SpriteAsset } from "@/features/sprites/model";
-import { CATEGORIES, categoryOf, instanceTransformFields, isInstanceParameter, percentToPixels, pixelsToPercent, transformField, type TransformField } from "@/features/sprites/parameters";
+import { CATEGORIES, TEMPLATE_KEYWORD_PARAMETERS, categoryOf, instanceTransformFields, isInstanceParameter, percentToPixels, pixelsToPercent, transformField, type TransformField } from "@/features/sprites/parameters";
 import { textKey, textRoles, type EffectTrack, type RemotionClip } from "./model";
 import { BOUND_TEXT_PARAMETERS, type bindClip } from "./clips";
 import { TrackTiming } from "./TrackTiming";
 import { trackLabel, type ResolvedTrack } from "./tracks";
 
-/** 关键词相关参数：键名以 keyword 开头（keywords、keywordColor、keywordBold……）。 */
-const isKeywordParameter = (key: string) => /^keyword/i.test(key);
+/** 关键词页签里的参数：关键词与六个样式选项；字效自带的关键词效果参数属于资产本身，不在模板里修改。 */
+const isKeywordParameter = (key: string) => TEMPLATE_KEYWORD_PARAMETERS.includes(key);
 /** 字效必备的关键词样式参数，与服务端 `categories.TEXT_KEYWORDS` 一致；缺任何一个即为早于该契约发布的字效。 */
 const KEYWORD_STYLE_KEYS = ["keywordBold", "keywordItalic", "keywordUnderline", "keywordStrikeout", "keywordColor", "keywordSize"];
 /** 关键词颜色（空串沿用文字颜色）与字号（0 沿用文字字号）的开关打开时的初值与字号下限，与 IMV 模板一致。 */
@@ -65,7 +65,7 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
   const legacyTextTarget = clip.business_target === "title" || clip.business_target === "subtitle" ? clip.business_target : undefined;
   // 作用于文字时，文字与关键词由该文字对象提供，不在这里单独设置。
   const shown = (key: string) => !(clip.text_target || legacyTextTarget) || !BOUND_TEXT_PARAMETERS.includes(key);
-  // 只有字效把关键词参数移到单独页签；其他类型里以 keyword 开头的参数仍留在参数区。
+  // 只有字效把关键词与六个样式选项移到单独页签；关键词效果参数与其他类型里以 keyword 开头的参数都按资产内部参数处理。
   const keywordParameters = asset && isText ? asset.parameters.filter(({ field }) => isKeywordParameter(field.key) && shown(field.key)) : [];
   const styleSwitches = keywordParameters.flatMap((item) => {
     const style = KEYWORD_STYLES.find(([key]) => key === item.field.key);

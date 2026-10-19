@@ -995,6 +995,38 @@ def test_real_browser_requires_the_longest_text_to_be_shown_in_full(tmp_path, co
     assert report.passed is passed
 
 
+# 关键词字效：命中的关键词放大 1.2 倍并带金色光晕，仍在文字流里；BROKEN 为 true 时一有命中就抛错。
+KEYWORD_EFFECT_TITLE = """import React from "react";
+import { AbsoluteFill } from "remotion";
+export default function Title(p: { text: string; fontSize: number; keywords: string[]; keywordEffectColor: string }) {
+  const word = p.keywords.find((item) => item !== "" && p.text.includes(item));
+  const at = word === undefined ? -1 : p.text.indexOf(word);
+  if (BROKEN && at >= 0) throw new Error("keyword effect broke");
+  return <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
+    <div style={{ width: "90%", fontSize: p.fontSize, color: "#FFFFFF", textAlign: "center", whiteSpace: "normal", wordBreak: "break-all" }}>
+      {at < 0 ? p.text : <>{p.text.slice(0, at)}<span style={{ display: "inline-block", transform: "scale(1.2)", textShadow: `0 0 12px ${p.keywordEffectColor}` }}>{word}</span>{p.text.slice(at + word!.length)}</>}
+    </div>
+  </AbsoluteFill>;
+}
+"""
+
+
+# 场景：模板渲染时会传入关键词，生成关卡以默认文字前两个字为关键词再挂载一次：关键词字效让组件抛错时以 text_fit 拒绝并说明，
+# 放大加光晕但仍在文字流里的关键词字效通过。
+@needs_node
+@needs_browser
+@pytest.mark.parametrize(("broken", "passed"), [(True, False), (False, True)], ids=["throws-on-hit", "inline-effect"])
+def test_real_browser_mounts_a_keyword_hit(tmp_path, broken, passed):
+    """默认文字「今日灵感」以「今日」为关键词挂载；关键词数组与关键词字效颜色作为额外参数声明。"""
+    report = browser_text_validate(tmp_path, KEYWORD_EFFECT_TITLE.replace("BROKEN", "true" if broken else "false"), 100,
+                                   defaults={"text": "今日灵感", "fontSize": 96, "keywords": [], "keywordEffectColor": "#FFD400"},
+                                   extra={"keywords": {"type": "array", "items": {"type": "string", "maxLength": 12}, "maxItems": 3},
+                                          "keywordEffectColor": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}$"}})
+    check = next(item for item in report.checks if item.name == "text_fit")
+    assert (check.status == "passed") is passed, check.message
+    assert passed or 'with keywords ["今日"]: ' in check.message and "keyword effect broke" in check.message
+
+
 # 场景：资产声明的 fontSize 最小值低于 24（如 8）。宿主渲染时最多把文字缩到 24（再小的行高算不可读），生成关卡也在 24 下量，
 # 所以不按字数换算字号的写法通过，而不是被“行高太小”误拒。
 @needs_node
@@ -1068,6 +1100,30 @@ def test_real_browser_measures_every_line_of_a_multi_line_text(tmp_path, code, p
     assert (check.status == "passed") is passed, check.message
     assert reason in check.message
     assert not passed or "over 2 lines" in check.message
+
+
+# 双栏字效：每栏按 fontSize × line{i}SizeRatio 渲染，上栏是小字引导语。
+TWO_TIER_TEXT = MULTI_LINE_TEXT.replace(
+    "props: { text: string; fontSize: number; lineStartFrames: number[] }",
+    "props: { text: string; fontSize: number; lineStartFrames: number[]; line1SizeRatio: number; line2SizeRatio: number }",
+).replace(
+    'color: index ? "#FFD34D" : "#fff", opacity',
+    'color: index ? "#FFD34D" : "#fff", fontSize: props.fontSize * (index ? props.line2SizeRatio : props.line1SizeRatio), opacity',
+)
+TIER_RATIOS_SCHEMA = {f"line{tier}SizeRatio": {"type": "number", "minimum": 0.4, "maximum": 2} for tier in (1, 2)}
+
+
+# 场景：双栏字效的上栏是 0.5 倍的小字：宿主不会把字号缩到让上栏低于可读高度，100 字的排版检查按 48 号（24 ÷ 0.5）测量并通过；
+# 以前按 24 号测量，上栏只剩 12 号，被判为太小而拒绝。
+@needs_node
+@needs_browser
+def test_real_browser_measures_a_two_tier_text_at_its_readable_floor(tmp_path):
+    """上栏 0.5 倍时最小测量字号是 48，两栏都可读、排版检查通过。"""
+    defaults = {"text": "判断一个人\n选择花字、滤镜和特效", "fontSize": 120, "lineStartFrames": [0, 20], "line1SizeRatio": 0.5, "line2SizeRatio": 1}
+    report = browser_text_validate(tmp_path, TWO_TIER_TEXT, 100, defaults=defaults, extra={**LINE_STARTS_SCHEMA, **TIER_RATIOS_SCHEMA})
+    check = next(item for item in report.checks if item.name == "text_fit")
+    assert check.status == "passed", check.message
+    assert "over 2 lines is shown in full at the smallest fontSize 48" in check.message
 
 
 # 一个只渲染第 line 行的 Preset：两个组合实例各用它渲染一行，就是 Agent 曾经生成的「两个独立实例各管一行」的结构。

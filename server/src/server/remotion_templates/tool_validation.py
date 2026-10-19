@@ -183,6 +183,8 @@ class ToolValidator:
                 "code": component.code,
                 "parameter_schema": component.parameter_schema,
                 "default_parameters": component.default_parameters,
+                # A text-block Preset is type-checked with the props the host passes it (see the worker's contract call site).
+                **({"role": component.role} if getattr(component, "role", None) else {}),
                 "composition": {"width": 1080, "height": 1920, "fps": 30, "duration_frames": 1},
                 "browser": self.renderer.worker_browser_path(),
             }

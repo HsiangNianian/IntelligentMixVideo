@@ -7,6 +7,7 @@ import {
   renderHook,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { ParametersPanel } from "@/features/remotion_templates/ParametersPanel";
 import { useTemplateSession } from "@/features/remotion_templates/useTemplateSession";
@@ -140,7 +141,10 @@ function renderComposed(changes: [string, JsonValue][]) {
 test("组合版本按 Schema 生成类型化控件，实例参数整体回传", () => {
   const changes: [string, JsonValue][] = [];
   renderComposed(changes);
-  expect(screen.getByRole("group", { name: "模板参数" })).toBeTruthy();
+  // 宿主固定的文字、字号、字重与关键词归入「配置」，Agent 设计的颜色归入「样式」。
+  expect(within(screen.getByRole("group", { name: "配置" })).getByLabelText("字号")).toBeTruthy();
+  expect(within(screen.getByRole("group", { name: "样式" })).getByLabelText("颜色选择器")).toBeTruthy();
+  expect(within(screen.getByRole("group", { name: "样式" })).queryByLabelText("关键词") === null).toBe(true);
   fireEvent.change(screen.getByLabelText("标题文字"), { target: { value: "新品上市" } });
   fireEvent.change(screen.getByLabelText("颜色选择器"), { target: { value: "#ff0000" } });
   fireEvent.change(screen.getByLabelText("字号"), { target: { value: "96" } });
@@ -150,6 +154,19 @@ test("组合版本按 Schema 生成类型化控件，实例参数整体回传", 
     ["text", "新品上市"], ["color", "#ff0000"], ["fontSize", 96], ["keywords", ["新品", "上市"]], ["title", { glow: 0.8 }],
   ]);
   expect(screen.queryByLabelText("实例参数 · title")).toBeNull();
+});
+
+// 场景：文字组合的版本里，各栏与关键词 Preset 的内部参数按「上栏」「下栏」「关键词字效」命名，而不是实例 ID。
+test("文字组合的实例参数按栏与关键词命名", () => {
+  const version = composedVersion();
+  version.spec.sprite = { kind: "text", text: { tiers: ["upper", "lower"], keyword: "glow" } };
+  const nested = { type: "object" as const, properties: { glow: { type: "number" as const, title: "光晕", minimum: 0, maximum: 1 } } };
+  Object.assign(version.candidate.config_schema.properties, { upper: nested, lower: nested, glow: nested });
+  Object.assign(version.candidate.default_config, { upper: { glow: 0.2 }, lower: { glow: 0.4 }, glow: { glow: 0.6 } });
+  render(<ParametersPanel version={version} values={version.candidate.default_config} disabled={false} pending={false} dirty={false} saving={false}
+    onChange={() => {}} onSave={() => {}} onDiscard={() => {}} />);
+  const titles = Array.from(document.querySelectorAll("summary")).map((item) => item.textContent);
+  expect(titles).toEqual(["实例 · title", "上栏", "下栏", "关键词字效"]);
 });
 
 test("超出范围、长度或项数的输入只留在表单并提示", () => {

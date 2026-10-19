@@ -14,6 +14,7 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
+    StrictBool,
     StringConstraints,
     model_validator,
     field_serializer,
@@ -80,6 +81,11 @@ class GenerateTemplateRequest(Contract):
     images: MessageImages = Field(default_factory=list)
     composition: CompositionConfig = Field(default_factory=CompositionConfig)
     sprite_kind: Literal["text", "subtitle", "filter_overlay", "video_overlay", "transition_overlay"] = "text"
+    # The user asked in the new-chat form for a keyword effect: the text effect gives keyword hits their own look or motion.
+    # The Agent reads it from user_intent.original_request for every job of the work (see EXECUTOR_RULES).
+    keyword_effect: StrictBool = False
+    # The user asked in the new-chat form for a two-tier text (双栏); a new work's sprite.create refuses a single-line text then.
+    two_tier: StrictBool = False
 
     @model_validator(mode="before")
     @classmethod
