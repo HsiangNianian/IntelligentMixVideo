@@ -84,6 +84,8 @@ class GenerateTemplateRequest(Contract):
     # The user asked in the new-chat form for a keyword effect: the text effect gives keyword hits their own look or motion.
     # The Agent reads it from user_intent.original_request for every job of the work (see EXECUTOR_RULES).
     keyword_effect: StrictBool = False
+    # The user asked in the new-chat form for a two-tier text (双栏); a new work's sprite.create refuses a single-line text then.
+    two_tier: StrictBool = False
 
     @model_validator(mode="before")
     @classmethod

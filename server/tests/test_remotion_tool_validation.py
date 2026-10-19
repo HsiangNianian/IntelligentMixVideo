@@ -1102,6 +1102,30 @@ def test_real_browser_measures_every_line_of_a_multi_line_text(tmp_path, code, p
     assert not passed or "over 2 lines" in check.message
 
 
+# 双栏字效：每栏按 fontSize × line{i}SizeRatio 渲染，上栏是小字引导语。
+TWO_TIER_TEXT = MULTI_LINE_TEXT.replace(
+    "props: { text: string; fontSize: number; lineStartFrames: number[] }",
+    "props: { text: string; fontSize: number; lineStartFrames: number[]; line1SizeRatio: number; line2SizeRatio: number }",
+).replace(
+    'color: index ? "#FFD34D" : "#fff", opacity',
+    'color: index ? "#FFD34D" : "#fff", fontSize: props.fontSize * (index ? props.line2SizeRatio : props.line1SizeRatio), opacity',
+)
+TIER_RATIOS_SCHEMA = {f"line{tier}SizeRatio": {"type": "number", "minimum": 0.4, "maximum": 2} for tier in (1, 2)}
+
+
+# 场景：双栏字效的上栏是 0.5 倍的小字：宿主不会把字号缩到让上栏低于可读高度，100 字的排版检查按 48 号（24 ÷ 0.5）测量并通过；
+# 以前按 24 号测量，上栏只剩 12 号，被判为太小而拒绝。
+@needs_node
+@needs_browser
+def test_real_browser_measures_a_two_tier_text_at_its_readable_floor(tmp_path):
+    """上栏 0.5 倍时最小测量字号是 48，两栏都可读、排版检查通过。"""
+    defaults = {"text": "判断一个人\n选择花字、滤镜和特效", "fontSize": 120, "lineStartFrames": [0, 20], "line1SizeRatio": 0.5, "line2SizeRatio": 1}
+    report = browser_text_validate(tmp_path, TWO_TIER_TEXT, 100, defaults=defaults, extra={**LINE_STARTS_SCHEMA, **TIER_RATIOS_SCHEMA})
+    check = next(item for item in report.checks if item.name == "text_fit")
+    assert check.status == "passed", check.message
+    assert "over 2 lines is shown in full at the smallest fontSize 48" in check.message
+
+
 # 一个只渲染第 line 行的 Preset：两个组合实例各用它渲染一行，就是 Agent 曾经生成的「两个独立实例各管一行」的结构。
 LINE_PRESET = """import React from "react";
 import { AbsoluteFill, useCurrentFrame } from "remotion";

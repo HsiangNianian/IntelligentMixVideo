@@ -273,6 +273,30 @@ def test_draft_receipts_carry_a_digest_of_their_content(tmp_path):
 
 
 @pytest.mark.skipif(not RENDERER_DEPS.exists(), reason="install locked Remotion renderer dependencies")
+def test_fixed_tier_parameters_carry_the_host_titles(tmp_path):
+    """宿主固定名称的参数（这里是双栏的上栏颜色）在参数面板里显示宿主固定的中文标题，不随 Agent 的措辞变化；其他参数保留 Agent 给的标题。"""
+    async def run():
+        """Compose a Preset whose line1Color the Agent titled 颜色一."""
+        current = session(tmp_path)
+        patch_validation(current)
+        properties = {**FILTER_SCHEMA["properties"], "line1Color": FILTER_SCHEMA["properties"]["tintColor"]}
+        tiered = draft().model_copy(update={
+            "parameter_schema": {**FILTER_SCHEMA, "properties": properties, "required": list(properties)},
+            "default_parameters": {**draft().default_parameters, "line1Color": "#FFFFFF"},
+        })
+        preset = await current.execute("preset.create", tiered, available())
+        request = title_instance(preset["preset"]["preset_id"]).model_dump(mode="json", exclude_none=True)
+        request["parameters"].append({"name": "line1Color", "title": "颜色一", "targets": [{"instance_id": "title", "parameter": "line1Color"}]})
+        composed = await current.execute("sprite.compose", SpriteComposeInput.model_validate(request), available())
+        sprite = current.sprite_drafts[composed["draft_id"]]
+        assert sprite.parameter_schema["properties"]["line1Color"]["title"] == "上栏颜色"
+        assert sprite.parameter_schema["properties"]["tintColor"]["title"] == "色调"
+        assert {item.name: item.title for item in sprite.bindings} == {"intensity": "强度", "tintColor": "色调", "line1Color": "上栏颜色"}
+
+    asyncio.run(run())
+
+
+@pytest.mark.skipif(not RENDERER_DEPS.exists(), reason="install locked Remotion renderer dependencies")
 def test_repeated_compose_returns_the_same_digest_under_a_new_handle(tmp_path):
     """重复同一组合：draft_id 不同、digest 相同；换一个参数 digest 就变。"""
     async def run():
@@ -438,7 +462,7 @@ def test_modified_copy_composes_by_handle_and_a_shared_preset_is_bundled_once(tm
         layout = {"x": 0, "y": 0, "width": 1080, "height": 960, "z_index": 0}
         composed = await current.execute("sprite.compose", SpriteComposeInput.model_validate({
             "description": "两行文字",
-            "kind": "text",
+            "kind": "video_overlay",
             "instances": [
                 {"instance_id": "top", "source": {"kind": "stored", "preset_id": stored["preset"]["preset_id"]}, "parameters": {"text": "上"}, "layout": layout, "timing": {"start_frame": 0, "duration_frames": 30}},
                 {"instance_id": "bottom", "source": {"kind": "draft", "draft_id": copy["draft_id"]}, "parameters": {"text": "下"}, "layout": {**layout, "y": 960}, "timing": {"start_frame": 0, "duration_frames": 30}},

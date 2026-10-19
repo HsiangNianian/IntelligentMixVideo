@@ -126,18 +126,43 @@ The preview is built from the saved Sprite's exact code, schema and defaults.
 The main canvas is 1080×1920 at 30 FPS and the last instance's exclusive end
 determines the duration. A new work must last exactly the requested
 `composition.duration_in_frames`: the snapshot shows it as `target_duration_frames`
-and `sprite.compose` refuses any other length with `INVALID_ARGUMENT` on `/instances`.
+and `sprite.compose` refuses any other length with `INVALID_ARGUMENT` on `/instances` (`/text/duration_frames` for a text block).
 Edits start from the accepted version and keep deriving the length from the instances.
 
-A new work may ask for a keyword effect: `POST /works` takes `keyword_effect` (strict boolean, default false), which
-reaches every job of the work as `user_intent.original_request.keyword_effect`. With the flag, or when the request or
-a reference image shows keywords with a look or motion of their own, the Executor rules have the text component draw
-the keyword hit with its own effect (pop, glow, outline, highlight box) and bind its look as extra top-level
-`keywordEffect…` parameters whose defaults show it; the seven keyword parameters keep their off defaults and still
-apply to the hit. `text_fit` mounts the default text once more with up to two characters opening its first non-empty
-line as `keywords`, so the hit must stay inline and the whole text must still show. Templates only switch the seven
-keyword parameters (any other `keyword…` parameter is internal there), so the keyword effect is changed in the
-workspace and saved to the library again.
+### Text effects are composed from role Presets
+
+A new text effect (kind `text`) is composed from a text block (`sprite.compose` contract v3, `text`), not from boxes;
+boxes stay for edits of older text effects. A Preset may carry a role. A `text` Preset draws one tier: the host passes
+it `text`, the `segments` of that text cut at the keyword hits, a `Keyword` component for the hit segments and
+`fontFamily`, `fontWeight` and `fontSize` (`tools/contracts.ROLE_PROPS`); its `parameter_schema` declares only its
+own style props, declaring a host prop is refused, and the code check type-checks it with sample host props (`sprite.create`
+re-checks every source Preset with its role). The check's call site passes each default and host prop as its own JSX
+attribute, so a literal default such as `"center"` satisfies a prop typed `"left" | "center" | "right"` (an object
+spread would widen it to `string`). A
+`keyword` Preset draws one hit inline from `text`. The block gives the area, the default text (one line, or
+`upper\nlower` for 双栏), the base font size, each tier's Preset, style parameters, font, weight and (two tiers) size
+ratio, the tier gap and line starts of two tiers, an optional keyword Preset and the duration. `compose.mjs`
+(`textEntry`) writes the host: the tiers are centred in the area, which is also their wrapping width; a tier waits at
+its first frame, invisible but keeping its space, until its start and then plays from there; the first literal hit
+of each keyword in the whole text (earliest first, never overlapping) is wrapped in the six IMS keyword options and,
+while `keywordEffect` is on, drawn by the keyword Preset. The host generates the configuration parameters
+(`compose.text_configuration`: fixed names, schemas and `categories.FIXED_TITLES` titles): `text`, `fontSize`, one
+tier's `fontFamily`/`fontWeight` or each tier's `line{i}FontFamily`/`line{i}FontWeight`/`line{i}SizeRatio` with
+`lineGap` and `lineStartFrames`, the seven keyword parameters (off) and, with a keyword Preset, `keywordEffect` (on).
+They are bindings targeting the pseudo instance `text`, so publishing and the category check read them like any
+other top-level parameter; the edit snapshot leaves them out and hands back `base.text`, the block over `base_*`
+drafts with the current configuration values. The Agent binds style parameters only (`color`, or `line1Color` and
+`line2Color` for two tiers, keyword looks as `keywordEffect…`), never a configuration name.
+
+The Agent decides from the request and the reference images whether the block has two tiers and a keyword Preset. The
+new-chat switches are a temporary explicit choice: `POST /works` takes `keyword_effect` and `two_tier` (strict booleans,
+default false) that reach every job as `user_intent.original_request`; for a new work (`ToolSession.requested`)
+compose then requires two tiers or a keyword Preset, and the category check refuses a text without them. An older
+Sprite whose own component draws a keyword effect must expose the `keywordEffect` switch defaulting to true. `text_fit`
+mounts the default text once more with up to two characters opening its first non-empty line as `keywords`, so the
+hit must stay inline and the whole text must still show. Templates only switch the seven keyword parameters (any
+other `keyword…` parameter is internal there), so the keyword effect is changed in the workspace and saved to the
+library again. `preset.search` matches every whitespace-separated word of the query and filters by role.
 
 For Linux renderer validation, install the locked Bun dependencies in
 `server/src/server/remotion`, then run:
@@ -262,10 +287,21 @@ size and the fix: wrap the text inside a bounded width of about 90 % of the canv
 measurement it only applies to generation, and already published versions are not re-checked.
 
 A text effect can show a fixed number of lines (2 to 4, `categories.MAX_LINES`), for example a small lead line above
-a large headline. Such a multi-line text keeps the single `text` parameter, with its lines separated by `\n`, and also
+a large headline. Generation only makes two-tier texts (双栏, `categories.TIERS`, a two-tier text block): the
+Executor rules define 双栏 as two rows stacked in one column (never side-by-side columns, bars or a frame). Each
+tier's font, weight and size ratio (exactly 0.4 to 2; the tier renders at `fontSize` times it, so the host's shrink
+scales both) and the tier gap are host configuration, each tier's colour `line1Color`/`line2Color` an Agent style
+parameter; a two-tier text exposes no top-level `color`, `fontWeight` or `fontFamily`. On the generation path
+(`category_problems` with the font library) the line starts must have exactly two items, every tier parameter must be
+present with its schema and the three shared styles must not be bound; publishing requires neither the shared colour
+and weight of a multi-line version nor its tier parameters, so earlier multi-line versions still publish. Tier fonts
+are opened like `fontFamily` on save and checked against the live library on overrides and parameter revisions.
+`text_fit` and the host's fit never shrink `fontSize` below 24 divided by the smallest tier ratio below 1 (the
+worker's `readableFontSize`), so a small
+lead tier stays readable. Assets published with 3 or 4 lines keep their line count downstream. Such a multi-line text keeps the single `text` parameter, with its lines separated by `\n`, and also
 binds `lineStartFrames`, an integer array of exactly N items (`minItems` = `maxItems` = N, each 0 to 3600), so that
 line i appears from frame `lineStartFrames[i]` of the instance. A line with no text or no start is not rendered.
-All lines are stacked in one column of one Preset instance spaced by `lineGap` (pixels, minimum 0, maximum 200 to
+All lines are stacked in one column (the text block's host, or one Preset instance of an older text) spaced by `lineGap` (pixels, minimum 0, maximum 200 to
 600), which templates may override per placement like `fontSize`, and they share the entrance and exit: line i
 enters from its own start and all lines exit together, timed from `durationInFrames`.
 `categories.category_problems` accepts it when the default text has exactly N non-empty lines, the default

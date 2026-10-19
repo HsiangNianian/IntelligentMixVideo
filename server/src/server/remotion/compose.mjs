@@ -2,32 +2,85 @@
  * Bundle Preset TSX modules into one Sprite module without executing generated code.
  * The Agent times instances against the length the user previewed; the generated host lays them out against the
  * length it is actually rendered at (`useVideoConfig().durationInFrames`, set by the render request's time).
+ * A text effect's text block (`input.text`) is laid out by the host instead: it splits `text` into one tier or an
+ * upper and a lower tier, cuts each tier at the keyword hits, stacks the tiers in one column of the block and hands
+ * each tier to its text Preset, keyword hits to the keyword Preset (see `textEntry`).
  */
 import { build } from "esbuild";
 import fs from "node:fs";
 import ts from "typescript";
 
 const input = JSON.parse(fs.readFileSync(0, "utf8"));
-const instances = Array.isArray(input.instances) ? input.instances : [];
+const block = input.text ?? null;
+const instances = block ? [...block.tiers, ...(block.keyword ? [block.keyword] : [])] : Array.isArray(input.instances) ? input.instances : [];
 // Instances of the same Preset share one bundled module, so repeated instances do not repeat its source.
 const modules = [...new Set(instances.map((item) => item.code))];
+/** The object of this instance's Preset props that top-level parameters bind, read from `props`. */
+function boundProps(item) {
+  return `{${(item.bindings ?? []).map(({ name, parameter }) => `${JSON.stringify(parameter)}: props[${JSON.stringify(name)}]`).join(", ")}}`;
+}
 /** Pass each top-level parameter bound to this instance to its Preset prop, after the nested props so it wins. */
 function bound(item) {
-  const pairs = (item.bindings ?? []).map(({ name, parameter }) => `${JSON.stringify(parameter)}: props[${JSON.stringify(name)}]`);
-  return pairs.length ? ` {...{${pairs.join(", ")}}}` : "";
+  return item.bindings?.length ? ` {...${boundProps(item)}}` : "";
 }
 // The previewed length: the latest instance end, as the Agent composed it.
-const authored = Math.max(1, ...instances.map((item) => item.timing.start_frame + item.timing.duration_frames));
-const entry = [
+// A text block spans the whole Sprite, so only box instances have a previewed length to lay out against.
+const authored = block ? 1 : Math.max(1, ...instances.map((item) => item.timing.start_frame + item.timing.duration_frames));
+// Shared by both entries: the defaults the version accepted and the nested merge of caller props over them.
+const prelude = [
+  ...modules.map((_, index) => `import Preset${index} from "imv:preset/${index}";`),
+  `const __defaults = ${JSON.stringify(input.defaults ?? {})};`,
+  `const __merge = (base, patch) => { if (patch === undefined || patch === null || typeof patch !== "object" || Array.isArray(patch)) return patch === undefined ? base : patch; const result = {...base}; for (const [key, value] of Object.entries(patch)) result[key] = value && typeof value === "object" && !Array.isArray(value) && result[key] && typeof result[key] === "object" && !Array.isArray(result[key]) ? __merge(result[key], value) : value; return result; };`,
+];
+
+/**
+ * The host of a text block. Configuration comes from top-level props with fixed names: `text` (tiers split on \n),
+ * `fontSize`, one tier's `fontFamily`/`fontWeight` or each tier's `line{i}FontFamily`/`line{i}FontWeight`/
+ * `line{i}SizeRatio`, `lineGap`, `lineStartFrames`, the keyword list with its six IMS styles and `keywordEffect`.
+ * The first literal hit of each keyword in the whole text (earliest first, never overlapping) becomes a keyword
+ * segment; the host wraps it in the IMS styles and draws it with the keyword Preset while `keywordEffect` is on.
+ * Tier i stays at its first frame, invisible but keeping its space, until `lineStartFrames[i]`, then plays from there.
+ */
+function textEntry() {
+  const tiers = block.tiers.length;
+  const keyword = block.keyword ? modules.indexOf(block.keyword.code) : -1;
+  const effect = block.keyword ? `{...props[${JSON.stringify(block.keyword.instance_id)}], ...${boundProps(block.keyword)}}` : "{}";
+  const tier = (item, index) => {
+    const font = tiers === 1
+      ? "fontFamily: props.fontFamily, fontWeight: props.fontWeight, fontSize: props.fontSize"
+      : `fontFamily: props.line${index + 1}FontFamily, fontWeight: props.line${index + 1}FontWeight, fontSize: props.fontSize * props.line${index + 1}SizeRatio`;
+    const start = tiers === 1 ? "0" : `(Array.isArray(props.lineStartFrames) && Number.isFinite(props.lineStartFrames[${index}]) ? props.lineStartFrames[${index}] : 0)`;
+    return `(() => { const __line = __lines[${index}]; if (!__line) return null; const __start = ${start}; const __waiting = __frame < __start; `
+      + `return <div key={${JSON.stringify(item.instance_id)}} style={{width: "100%", opacity: __waiting ? 0 : 1}}>`
+      + `<Freeze frame={__start} active={__waiting}><Sequence from={__start} durationInFrames={Math.max(1, __total - __start)} layout="none">`
+      + `<Preset${modules.indexOf(item.code)} {...props[${JSON.stringify(item.instance_id)}]}${bound(item)} {...{text: __line, segments: __segments(__line, __offsets[${index}], __found), Keyword: __Keyword, ${font}}} />`
+      + `</Sequence></Freeze></div>; })()`;
+  };
+  const { x, y, width, height } = block.layout;
+  return [
+    'import React from "react";',
+    'import {AbsoluteFill, Freeze, Sequence, useCurrentFrame, useVideoConfig} from "remotion";',
+    ...prelude,
+    `const __hits = (text, keywords) => { const hits = []; for (const word of Array.isArray(keywords) ? keywords : []) { if (typeof word !== "string" || !word) continue; for (let at = text.indexOf(word); at >= 0; at = text.indexOf(word, at + 1)) { if (!hits.some(([start, end]) => at < end && at + word.length > start)) { hits.push([at, at + word.length]); break; } } } return hits.sort((left, right) => left[0] - right[0]); };`,
+    `const __segments = (line, offset, hits) => { const out = []; let at = 0; for (const [start, end] of hits) { const from = Math.max(start - offset, at), to = Math.min(end - offset, line.length); if (to <= from) continue; if (from > at) out.push({text: line.slice(at, from), keyword: false}); out.push({text: line.slice(from, to), keyword: true}); at = to; } if (at < line.length) out.push({text: line.slice(at), keyword: false}); return out; };`,
+    `const __Context = React.createContext({props: {}, effect: {}});`,
+    // The six keyword options of the bus's IMS text: bold, italic, underline, strikeout, colour ("" keeps the text's) and size (0 keeps it).
+    `function __Keyword({text}) { const {props, effect} = React.useContext(__Context); const style = {fontWeight: props.keywordBold ? 700 : undefined, fontStyle: props.keywordItalic ? "italic" : undefined, textDecorationLine: [props.keywordUnderline && "underline", props.keywordStrikeout && "line-through"].filter(Boolean).join(" ") || undefined, color: props.keywordColor || undefined, fontSize: props.keywordSize > 0 ? props.keywordSize : undefined}; return <span data-imv-keyword="" style={style}>{${keyword >= 0 ? `props.keywordEffect !== false ? <Preset${keyword} {...effect} text={text} /> : text` : "text"}}</span>; }`,
+    `export default function Sprite(inputProps = {}) { const props = __merge(__defaults, inputProps); const __frame = useCurrentFrame(); const {durationInFrames: __total} = useVideoConfig(); `
+      + `const __text = typeof props.text === "string" ? props.text : ""; const __lines = ${tiers === 1 ? "[__text]" : "__text.split(\"\\n\").slice(0, 2)"}; const __offsets = __lines.map((_, index) => __lines.slice(0, index).reduce((sum, line) => sum + line.length + 1, 0)); const __found = __hits(__text, props.keywords); `
+      + `return <__Context.Provider value={{props, effect: ${effect}}}><AbsoluteFill><div data-imv-instance="text" style={{position: "absolute", left: ${x}, top: ${y}, width: ${width}, height: ${height}, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: ${tiers === 1 ? 0 : "props.lineGap"}}}>`
+      + `${block.tiers.map((item, index) => `{${tier(item, index)}}`).join("")}</div></AbsoluteFill></__Context.Provider>; }`,
+  ].join("\n");
+}
+
+const entry = block ? textEntry() : [
   'import React from "react";',
   'import {AbsoluteFill, Sequence, useVideoConfig} from "remotion";',
   `const __authored = ${authored};`,
   // Longer renders keep each instance's start and length, and instances that ran to the previewed end run to the
   // new end; shorter renders scale every instance by the same ratio, keeping at least one frame each.
   `const __span = (start, length, total) => { if (total >= __authored) return [start, start + length === __authored ? total - start : length]; const from = Math.floor(start * total / __authored); return [from, Math.max(1, Math.floor((start + length) * total / __authored) - from)]; };`,
-  ...modules.map((_, index) => `import Preset${index} from "imv:preset/${index}";`),
-  `const __defaults = ${JSON.stringify(input.defaults ?? {})};`,
-  `const __merge = (base, patch) => { if (patch === undefined || patch === null || typeof patch !== "object" || Array.isArray(patch)) return patch === undefined ? base : patch; const result = {...base}; for (const [key, value] of Object.entries(patch)) result[key] = value && typeof value === "object" && !Array.isArray(value) && result[key] && typeof result[key] === "object" && !Array.isArray(result[key]) ? __merge(result[key], value) : value; return result; };`,
+  ...prelude,
   `export default function Sprite(inputProps = {}) { const props = __merge(__defaults, inputProps); const {durationInFrames: __total} = useVideoConfig(); const __t = [${instances.map((item) => `__span(${item.timing.start_frame}, ${item.timing.duration_frames}, __total)`).join(", ")}]; return <AbsoluteFill>${instances.map((item, index) => `<Sequence key={${JSON.stringify(item.instance_id)}} from={__t[${index}][0]} durationInFrames={__t[${index}][1]} width={${item.layout.width}} height={${item.layout.height}} style={{position:"absolute",left:${item.layout.x},top:${item.layout.y},width:${item.layout.width},height:${item.layout.height},zIndex:${item.layout.z_index}}}><div data-imv-instance={${JSON.stringify(item.instance_id)}} style={{width:"100%",height:"100%"}}><Preset${modules.indexOf(item.code)} {...props[${JSON.stringify(item.instance_id)}]}${bound(item)} /></div></Sequence>`).join("")}</AbsoluteFill>; }`,
 ].join("\n");
 

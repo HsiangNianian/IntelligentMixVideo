@@ -859,9 +859,9 @@ def test_follow_up_messages_attach_reference_images(history_store, monkeypatch):
     ]
 
 
-def test_keyword_effect_choice_reaches_every_job_of_the_work(history_store, monkeypatch):
-    """新建会话时选择「关键词字效」：作品请求保存 keyword_effect，第一条任务与之后的修改任务都在 original_request 里读到它；
-    未选择时为 false，只接受布尔值。"""
+def test_new_chat_switches_reach_every_job_of_the_work(history_store, monkeypatch):
+    """新建会话时打开「关键词字效」与「双栏」：作品请求保存 keyword_effect 与 two_tier，第一条任务与之后的修改任务都在
+    original_request 里读到它们；未选择时为 false，只接受布尔值。"""
     runtime = Runtime(history_store, None, Settings(_env_file=None))
     monkeypatch.setattr(runtime, "notify", lambda *args: None)
     seen = []
@@ -877,15 +877,17 @@ def test_keyword_effect_choice_reaches_every_job_of_the_work(history_store, monk
             return DialogueOutput(answer="好的")
 
     runtime.harness = Harness()
-    work, job = history_store.create(GenerateTemplateRequest(description="标题", keyword_effect=True), DEVICE)
+    work, job = history_store.create(GenerateTemplateRequest(description="标题", keyword_effect=True, two_tier=True), DEVICE)
     asyncio.run(runtime._execute(job.id))
     history_store.update(job.id, status="answered", stage="finished")
     follow = runtime.message(work.id, TaskMessage(instruction="关键词再大一点"))
     asyncio.run(runtime._execute(follow.id))
-    assert [intent["original_request"]["keyword_effect"] for intent in seen] == [True, True]
-    assert GenerateTemplateRequest(description="标题").keyword_effect is False
-    with pytest.raises(ValidationError):
-        GenerateTemplateRequest(description="标题", keyword_effect="yes")
+    assert [(intent["original_request"]["keyword_effect"], intent["original_request"]["two_tier"]) for intent in seen] == [(True, True)] * 2
+    default = GenerateTemplateRequest(description="标题")
+    assert default.keyword_effect is False and default.two_tier is False
+    for name in ("keyword_effect", "two_tier"):
+        with pytest.raises(ValidationError):
+            GenerateTemplateRequest(description="标题", **{name: "yes"})
 
 
 def test_other_devices_cannot_attach_my_reference_images(history_store, monkeypatch):

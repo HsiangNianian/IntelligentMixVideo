@@ -71,6 +71,10 @@ test("关键词字效以示例关键词预览，不改参数", async () => {
   version.candidate.default_config.keywords = ["灵感"];
   expect((await previewValues(version)).keywords).toEqual(["灵感"]);
   cleanup();
+  // 关键词字效开关关闭后不再注入示例关键词。
+  Object.assign(version.candidate.default_config, { keywords: [], keywordEffect: false });
+  expect((await previewValues(version)).keywords).toEqual([]);
+  cleanup();
   const plain = remotionVersion("version-1", { keywords: [] });
   Object.assign(plain.candidate.config_schema.properties, { keywords: { type: "array" }, keywordBold: { type: "boolean" } });
   expect((await previewValues(plain)).keywords).toEqual([]);

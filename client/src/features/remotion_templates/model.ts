@@ -41,6 +41,12 @@ export interface Control {
 }
 /** 效果分类：字效、滤镜、视频特效、转场（后两者在界面上合为「转场与视频特效」）。 */
 export type SpriteKindName = "text" | "filter_overlay" | "video_overlay" | "transition_overlay";
+/** 新会话首条消息附带的生成选择：预览时长（整帧）与「关键词字效」「双栏」两个开关。 */
+export interface NewWork {
+  durationInFrames: number;
+  keywordEffect: boolean;
+  twoTier: boolean;
+}
 /** 成功版本提供代码、参数默认值、控件和画布信息。 */
 export interface Version {
   id: string;
@@ -59,9 +65,17 @@ export interface Version {
     sprite_kind?: "text" | "subtitle" | "filter_overlay" | "video_overlay" | "transition_overlay" | "composition";
     composition: Composition;
     text_layers: { id: string; text: string }[];
-    /** 组合版本的分类与顶层参数绑定；更早的版本没有。 */
-    sprite?: { kind?: SpriteKindName; bindings?: { name: string; title: string }[] };
+    /** 组合版本的分类与顶层参数绑定，字效的文字组合另有各栏与关键词的实例 ID；更早的版本没有。 */
+    sprite?: { kind?: SpriteKindName; bindings?: { name: string; title: string }[]; text?: { tiers: string[]; keyword?: string } };
   };
+}
+
+/** 参数面板里一个实例的名称：文字组合的一栏为「正文」或「上栏」「下栏」，关键词 Preset 为「关键词字效」，其他实例显示实例 ID。 */
+export function instanceTitle(version: Version, id: string): string {
+  const block = version.spec.sprite?.text;
+  const tier = block?.tiers.indexOf(id) ?? -1;
+  if (block && tier >= 0) return block.tiers.length === 1 ? "正文" : ["上栏", "下栏"][tier];
+  return block?.keyword === id ? "关键词字效" : `实例 · ${id}`;
 }
 
 /** 一个 Schema 属性对应的控件描述；对象、未约束的数组等无法逐项编辑的形状返回 null。 */
@@ -92,12 +106,27 @@ export function schemaField(key: string, control: Control): ParameterField | nul
 /** 多行字效的行起点参数名，与服务端 `categories.LINE_STARTS_PROP` 一致。 */
 const LINE_STARTS_KEY = "lineStartFrames";
 
-/** 组合版本的参数分组：顶层参数（模板里可逐次修改），以及各实例的内部参数；实例里有无法逐项编辑的形状时整体回退为 JSON。 */
+/**
+ * 字效的配置参数：名称、Schema 与中文标题由宿主固定（服务端 `categories.FIXED_TITLES`），是文字、字体与字号、双栏排版、
+ * 关键词这些「写什么、怎么排」的设置；其余顶层参数是 Agent 为这个字效设计的样式（颜色、发光、描边、动画、关键词字效的外观）。
+ */
+const CONFIG_PARAMETERS = new Set([
+  "text", "fontSize", "fontWeight", "fontFamily", "lineGap",
+  ...[1, 2].flatMap((tier) => [`line${tier}SizeRatio`, `line${tier}FontFamily`, `line${tier}FontWeight`]),
+  ...TEMPLATE_KEYWORD_PARAMETERS, "keywordEffect",
+]);
+
+/**
+ * 组合版本的参数分组：顶层参数分为配置与样式（见 `CONFIG_PARAMETERS`），以及各实例的内部参数；
+ * 实例里有无法逐项编辑的形状时整体回退为 JSON。
+ */
 export function schemaGroups(properties: Record<string, Control>): {
-  top: ParameterField[];
+  config: ParameterField[];
+  style: ParameterField[];
   instances: { id: string; fields: ParameterField[] | null }[];
 } {
-  const top: ParameterField[] = [];
+  const config: ParameterField[] = [];
+  const style: ParameterField[] = [];
   const instances: { id: string; fields: ParameterField[] | null }[] = [];
   // 多行字效每行出现的帧由宿主按字幕切片注入，不在参数面板编辑；它的项数就是文字的固定行数。
   const lines = properties[LINE_STARTS_KEY]?.maxItems;
@@ -105,14 +134,14 @@ export function schemaGroups(properties: Record<string, Control>): {
     if (key === LINE_STARTS_KEY) continue;
     if (control.type !== "object") {
       const field = schemaField(key, control);
-      if (field) top.push(key === "text" && field.kind === "string" && lines && lines > 1 ? { ...field, lines } : field);
+      if (field) (CONFIG_PARAMETERS.has(key) ? config : style).push(key === "text" && field.kind === "string" && lines && lines > 1 ? { ...field, lines } : field);
       else instances.push({ id: key, fields: null });
       continue;
     }
     const nested = Object.entries(control.properties ?? {}).map(([name, child]) => schemaField(name, child));
     instances.push({ id: key, fields: nested.length && nested.every(Boolean) ? (nested as ParameterField[]) : null });
   }
-  return { top, instances };
+  return { config, style, instances };
 }
 /** 服务端隔离类型检查返回的零基行列；与 LSP 一致，character 以 UTF-16 计。 */
 export interface TextPosition {
@@ -175,12 +204,13 @@ export interface ChatMessage {
 /**
  * 预览用的示例关键词。除模板可调的七个关键词参数外还有以 keyword 开头的顶层参数，说明这个字效在生成时带了关键词字效
  * （Agent 规则约定 keywordEffect… 命名）；默认关键词为空时它不出现，所以取默认文字首个非空行开头至多两个字作示例，
- * 与生成校验挂载的示例相同。已填关键词、没有关键词字效或没有文字时返回空串；只影响预览，不改参数、不进入保存。
+ * 与生成校验挂载的示例相同。已填关键词、没有关键词字效、关键词字效开关（keywordEffect）已关或没有文字时返回空串；
+ * 只影响预览，不改参数、不进入保存。
  */
 export function sampleKeyword(version: Version | null, values: Values): string {
   const properties = version?.candidate.config_schema.properties ?? {};
   const effect = Object.keys(properties).some((key) => key.startsWith("keyword") && !TEMPLATE_KEYWORD_PARAMETERS.includes(key));
-  if (!effect || !Array.isArray(values.keywords) || values.keywords.length || typeof values.text !== "string") return "";
+  if (!effect || values.keywordEffect === false || !Array.isArray(values.keywords) || values.keywords.length || typeof values.text !== "string") return "";
   return values.text.split("\n").find((line) => line.trim())?.match(/\S{1,2}/u)?.[0] ?? "";
 }
 

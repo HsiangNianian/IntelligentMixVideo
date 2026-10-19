@@ -13,7 +13,7 @@ import { DurationPicker } from "./DurationPicker";
 import { LoopRounds } from "./LoopRounds";
 import { TaskStatus } from "./TaskStatus";
 import { VersionCard } from "./VersionCard";
-import { MAX_MESSAGE_IMAGES, type ChatMessage, type Job, type SessionJob, type Version } from "./model";
+import { MAX_MESSAGE_IMAGES, type ChatMessage, type Job, type NewWork, type SessionJob, type Version } from "./model";
 import type { Draft } from "./useTemplateSession";
 import { FlipText } from "@/components/ui/flip-text";
 import { LoaderGooeyBlobs } from "@/components/ui/loaders-gooey-blobs";
@@ -44,8 +44,8 @@ interface Props {
   disabledReason?: string;
   canStop: boolean;
   first: boolean;
-  /** 首条消息另带预览时长与「关键词字效」选择；之后的消息两者都为 undefined。 */
-  onSend: (text: string, images: File[], durationInFrames?: number, keywordEffect?: boolean) => void;
+  /** 首条消息另带预览时长与「关键词字效」「双栏」选择；之后的消息不带。 */
+  onSend: (text: string, images: File[], start?: NewWork) => void;
   onStop: () => void;
   draft?: Draft | null;
   job?: Job | SessionJob | null;
@@ -94,7 +94,8 @@ export function ChatPanel({
   const [error, setError] = useState("");
   const [frames, setFrames] = useState<number | null>(FIXED_COMPOSITION.duration_in_frames);
   const [keywordEffect, setKeywordEffect] = useState(false);
-  const keywordEffectId = useId();
+  const [twoTier, setTwoTier] = useState(false);
+  const switchId = useId();
   useUpdateBlocker("聊天中还有未发送的内容或参考图", !!text || images.length > 0);
   const [dragging, setDragging] = useState(false);
   const end = useRef<HTMLDivElement>(null);
@@ -161,7 +162,7 @@ export function ChatPanel({
   /** 按钮与 Enter 共用防重复入口；等待期间保留文字草稿。 */
   function send() {
     if (disabled || (!text.trim() && !images.length) || (first && frames === null)) return;
-    onSend(text, images, first ? frames! : undefined, first ? keywordEffect : undefined);
+    onSend(text, images, first ? { durationInFrames: frames!, keywordEffect, twoTier } : undefined);
     setText("");
     setImages([]);
     setError("");
@@ -447,8 +448,17 @@ export function ChatPanel({
                 title="让关键词带自己的字效（如弹跳、发光、描边），之后可在本会话继续修改；未打开时由 Agent 按描述与参考图判断"
                 className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground"
               >
-                <Switch id={keywordEffectId} checked={keywordEffect} disabled={disabled} onCheckedChange={setKeywordEffect} />
-                <label htmlFor={keywordEffectId}>关键词字效</label>
+                <Switch id={`${switchId}-keyword`} checked={keywordEffect} disabled={disabled} onCheckedChange={setKeywordEffect} />
+                <label htmlFor={`${switchId}-keyword`}>关键词字效</label>
+              </div>
+            )}
+            {first && (
+              <div
+                title="生成上下两栏、各自样式的字效（如上栏小字引导语、下栏大字标题）；未打开时由 Agent 按描述与参考图判断"
+                className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground"
+              >
+                <Switch id={`${switchId}-tiers`} checked={twoTier} disabled={disabled} onCheckedChange={setTwoTier} />
+                <label htmlFor={`${switchId}-tiers`}>双栏</label>
               </div>
             )}
           </div>

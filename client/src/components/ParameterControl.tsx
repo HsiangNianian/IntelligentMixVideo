@@ -14,6 +14,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
+/** 取值是字体库家族名的参数：字体，以及双栏字效的上栏、下栏字体；它们用实时字体库的选择器。 */
+const FONT_PARAMETER = /^(?:fontFamily|line[12]FontFamily)$/;
 /** 一个参数的取值：标量或关键词列表。 */
 export type ParameterValue = string | number | boolean | string[];
 /** 控件所需的参数描述，由版本 Schema 或已发布资产的参数声明生成。 */
@@ -153,7 +155,7 @@ export function ParameterControl({
       <Label htmlFor={id} className="text-xs text-muted-foreground">
         {field.label}
       </Label>
-      {field.key === "fontFamily" ? (
+      {FONT_PARAMETER.test(field.key) ? (
         <FontPicker id={id} label={field.label} value={String(value)} disabled={disabled} onChange={(family) => onChange(family)} />
       ) : field.options ? (
         <Select
