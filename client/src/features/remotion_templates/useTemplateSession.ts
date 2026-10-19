@@ -538,8 +538,11 @@ export function useTemplateSession(onHistoryChange: () => void) {
       if (alive.current) changed.current();
     }
   }
-  /** 每条消息可附多张图片，按顺序先上传再提交；后续输入绑定最近成功版本，澄清明确绑定提问任务。 */
-  function send(text: string, images: File[] = [], durationInFrames?: number) {
+  /**
+   * 每条消息可附多张图片，按顺序先上传再提交；后续输入绑定最近成功版本，澄清明确绑定提问任务。
+   * 预览时长与「关键词字效」只随创建作品的首条消息提交。
+   */
+  function send(text: string, images: File[] = [], durationInFrames?: number, keywordEffect = false) {
     const s = latest.current;
     if (
       s.deleting ||
@@ -574,7 +577,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
       }
       if (!current(s.key)) throw new DOMException("Aborted", "AbortError");
       if (!s.workId) {
-        const created = await api.create(text, assets, defaultComposition(durationInFrames));
+        const created = await api.create(text, assets, defaultComposition(durationInFrames), keywordEffect);
         try {
           await local.record(created.work, created.job);
         } catch (error) {

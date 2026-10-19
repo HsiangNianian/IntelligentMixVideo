@@ -1,9 +1,10 @@
 /** 当前会话的聊天展示与输入；每条消息最多附 4 张参考图（点击选择、拖入或粘贴），只作为生成参考，预览 URL 随组件卸载释放。 */
 import { useUpdateBlocker } from "@/lib/update-guard";
 import { cn } from "@/lib/utils";
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { ArrowUp, ImagePlus, Square, Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { Hint } from "@/components/Hint";
 import { Textarea } from "@/components/ui/textarea";
 import { apiUrl } from "./api";
@@ -43,7 +44,8 @@ interface Props {
   disabledReason?: string;
   canStop: boolean;
   first: boolean;
-  onSend: (text: string, images: File[], durationInFrames?: number) => void;
+  /** 首条消息另带预览时长与「关键词字效」选择；之后的消息两者都为 undefined。 */
+  onSend: (text: string, images: File[], durationInFrames?: number, keywordEffect?: boolean) => void;
   onStop: () => void;
   draft?: Draft | null;
   job?: Job | SessionJob | null;
@@ -91,6 +93,8 @@ export function ChatPanel({
   const [images, setImages] = useState<File[]>([]);
   const [error, setError] = useState("");
   const [frames, setFrames] = useState<number | null>(FIXED_COMPOSITION.duration_in_frames);
+  const [keywordEffect, setKeywordEffect] = useState(false);
+  const keywordEffectId = useId();
   useUpdateBlocker("聊天中还有未发送的内容或参考图", !!text || images.length > 0);
   const [dragging, setDragging] = useState(false);
   const end = useRef<HTMLDivElement>(null);
@@ -157,7 +161,7 @@ export function ChatPanel({
   /** 按钮与 Enter 共用防重复入口；等待期间保留文字草稿。 */
   function send() {
     if (disabled || (!text.trim() && !images.length) || (first && frames === null)) return;
-    onSend(text, images, first ? frames! : undefined);
+    onSend(text, images, first ? frames! : undefined, first ? keywordEffect : undefined);
     setText("");
     setImages([]);
     setError("");
@@ -438,6 +442,15 @@ export function ChatPanel({
               图片
             </Button>
             {first && <DurationPicker disabled={disabled} onChange={setFrames} />}
+            {first && (
+              <div
+                title="让关键词带自己的字效（如弹跳、发光、描边），之后可在本会话继续修改；未打开时由 Agent 按描述与参考图判断"
+                className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground"
+              >
+                <Switch id={keywordEffectId} checked={keywordEffect} disabled={disabled} onCheckedChange={setKeywordEffect} />
+                <label htmlFor={keywordEffectId}>关键词字效</label>
+              </div>
+            )}
           </div>
           {busy && canStop ? (
             <Button type="button" variant="outline" size="sm" className="ml-auto" onClick={onStop}>

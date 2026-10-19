@@ -548,6 +548,8 @@ async function measureTextFit(page, needle, frames = sampleFrames(request.compos
  * its full size has a problem (a text cut to a slice of itself is one), and when the text is never visibly rendered.
  * A multi-line text (a `lineStartFrames` parameter of N items) is filled with N lines that share maxLength, and both
  * samples show every line from the first frame; its default lines must also pass `lineSyncProblem` and `lineJumpProblem`.
+ * An effect with a `keywords` parameter is also mounted with a hit in its default text: the hit, and any keyword effect
+ * drawn on it, must not throw or keep the default text from showing in full.
  * This is a geometric measurement of the text boxes, not a visual review of how the result looks.
  */
 async function textFitCheck(page) {
@@ -608,6 +610,22 @@ async function textFitCheck(page) {
     const defaultLines = shortText.split("\n");
     const sync = multi && defaultLines.length === lines ? (await lineSyncProblem(page, defaultLines)) ?? (await lineJumpProblem(page, defaultLines)) : null;
     if (sync) return { name: "text_fit", status: "failed", message: sync };
+    // Templates pass keywords at render time, so the keyword hit (and any keyword effect drawn on it) must keep the text
+    // whole: up to two characters opening the first non-empty default line are a hit every text effect can show
+    // (the workspace preview shows the same sample keyword).
+    const word = defaultLines.find((line) => line.trim())?.match(/\S{1,2}/u)?.[0] ?? "";
+    if (request.parameter_schema?.properties?.keywords?.type === "array" && word) {
+      const hit = await measureSample({ ...allLines, keywords: [word] }, shortText);
+      if (hit.error)
+        return { name: "text_fit", status: "failed", message: `The component throws at frame ${hit.frame} with keywords ["${word}"]: ${hit.error}`.slice(0, 6000) };
+      if (!hit.shown || !hit.fits)
+        return {
+          name: "text_fit",
+          status: "failed",
+          message: `With keywords ["${word}"] the default text "${shortText}" is not shown in full${hit.shown ? `: ${hit.problems.join("; ")}` : ""}. `
+            + "A keyword hit and any keyword effect drawn on it must stay inline and within the text's room, so the whole text still shows.",
+        };
+    }
   }
   return { name: "text_fit", status: "passed", message: `The ${length}-character text${multi ? ` over ${lines} lines` : ""} is shown in full${smallest !== null ? ` at the smallest fontSize ${smallest}` : ""} (measured on the ${measured.full} of ${measured.shown} frames that show it at its full size).${shortNote}` };
 }

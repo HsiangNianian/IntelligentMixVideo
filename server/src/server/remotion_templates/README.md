@@ -129,6 +129,16 @@ determines the duration. A new work must last exactly the requested
 and `sprite.compose` refuses any other length with `INVALID_ARGUMENT` on `/instances`.
 Edits start from the accepted version and keep deriving the length from the instances.
 
+A new work may ask for a keyword effect: `POST /works` takes `keyword_effect` (strict boolean, default false), which
+reaches every job of the work as `user_intent.original_request.keyword_effect`. With the flag, or when the request or
+a reference image shows keywords with a look or motion of their own, the Executor rules have the text component draw
+the keyword hit with its own effect (pop, glow, outline, highlight box) and bind its look as extra top-level
+`keywordEffect…` parameters whose defaults show it; the seven keyword parameters keep their off defaults and still
+apply to the hit. `text_fit` mounts the default text once more with up to two characters opening its first non-empty
+line as `keywords`, so the hit must stay inline and the whole text must still show. Templates only switch the seven
+keyword parameters (any other `keyword…` parameter is internal there), so the keyword effect is changed in the
+workspace and saved to the library again.
+
 For Linux renderer validation, install the locked Bun dependencies in
 `server/src/server/remotion`, then run:
 

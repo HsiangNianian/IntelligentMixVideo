@@ -1,8 +1,9 @@
-/** 隔离预览就绪协议回归：切换版本时 iframe 立即就绪也必须下发参数并解除锁定；执行 bun run test。 */
+/** 隔离预览就绪协议回归：切换版本时 iframe 立即就绪也必须下发参数并解除锁定；关键词字效以示例关键词预览；执行 bun run test。 */
 import { expect, spyOn, test } from "bun:test";
-import { act, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { PreviewPanel } from "@/features/remotion_templates/PreviewPanel";
 import { remotionVersion } from "./remotion-fixtures";
+import type { Version } from "@/features/remotion_templates/model";
 
 /** 以播放器 iframe 的身份向父页面发送一条协议消息。 */
 function fromFrame(iframe: HTMLIFrameElement, data: Record<string, unknown>) {
@@ -47,4 +48,31 @@ test("切换版本时立即就绪的预览仍下发参数并解锁", async () =>
   await act(async () => fromFrame(iframe, { type: "imv-preview-rendered", channel, requestId: update.requestId }));
   expect(screen.queryByText("正在渲染预览…")).toBeNull();
   expect(busy.at(-1)).toBe(false);
+});
+
+/** 加载预览并回报就绪，返回下发给播放器的参数。 */
+async function previewValues(version: Version) {
+  render(<PreviewPanel version={version} values={version.candidate.default_config} pending={false} onBusyChange={() => {}} />);
+  const iframe = screen.getByTitle<HTMLIFrameElement>("Remotion 字效播放器");
+  const post = spyOn(iframe.contentWindow!, "postMessage");
+  await act(async () => fromFrame(iframe, { type: "imv-preview-ready", channel: new URL(iframe.src).hash.slice(1) }));
+  return post.mock.calls.map(([message]) => message).find((message) => message.type === "imv-preview-update")!.values;
+}
+
+// 生成时带关键词字效的字效（有 keywordEffect… 参数）默认关键词为空，预览以默认文字开头两个字为示例关键词并说明；
+// 只有模板可调的七个关键词参数时、或已填关键词时按原参数预览。参数本身不变。
+test("关键词字效以示例关键词预览，不改参数", async () => {
+  const version = remotionVersion("version-1", { keywords: [], keywordEffectScale: 1.3 });
+  Object.assign(version.candidate.config_schema.properties, { keywords: { type: "array" }, keywordBold: { type: "boolean" }, keywordEffectScale: { type: "number" } });
+  expect(await previewValues(version)).toMatchObject({ text: "今日灵感", keywords: ["今日"] });
+  expect(screen.getByText(/预览以「今日」为示例关键词/)).toBeTruthy();
+  expect(version.candidate.default_config.keywords).toEqual([]);
+  cleanup();
+  version.candidate.default_config.keywords = ["灵感"];
+  expect((await previewValues(version)).keywords).toEqual(["灵感"]);
+  cleanup();
+  const plain = remotionVersion("version-1", { keywords: [] });
+  Object.assign(plain.candidate.config_schema.properties, { keywords: { type: "array" }, keywordBold: { type: "boolean" } });
+  expect((await previewValues(plain)).keywords).toEqual([]);
+  expect(screen.queryByText(/示例关键词/) === null).toBe(true);
 });

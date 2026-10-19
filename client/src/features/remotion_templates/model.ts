@@ -1,5 +1,6 @@
 /** Remotion 服务契约与参数解释；只保存当前会话和已验收模板，不暴露内部候选。 */
 import { HEX_COLOR, type ParameterField } from "@/components/ParameterControl";
+import { TEMPLATE_KEYWORD_PARAMETERS } from "@/features/sprites/parameters";
 
 /** 第一版参数只支持字符串、有限数值和布尔值。 */
 export type Scalar = string | number | boolean;
@@ -169,6 +170,18 @@ export interface ChatMessage {
   job_id?: string;
   image_asset_ids?: string[];
   created_at?: string;
+}
+
+/**
+ * 预览用的示例关键词。除模板可调的七个关键词参数外还有以 keyword 开头的顶层参数，说明这个字效在生成时带了关键词字效
+ * （Agent 规则约定 keywordEffect… 命名）；默认关键词为空时它不出现，所以取默认文字首个非空行开头至多两个字作示例，
+ * 与生成校验挂载的示例相同。已填关键词、没有关键词字效或没有文字时返回空串；只影响预览，不改参数、不进入保存。
+ */
+export function sampleKeyword(version: Version | null, values: Values): string {
+  const properties = version?.candidate.config_schema.properties ?? {};
+  const effect = Object.keys(properties).some((key) => key.startsWith("keyword") && !TEMPLATE_KEYWORD_PARAMETERS.includes(key));
+  if (!effect || !Array.isArray(values.keywords) || values.keywords.length || typeof values.text !== "string") return "";
+  return values.text.split("\n").find((line) => line.trim())?.match(/\S{1,2}/u)?.[0] ?? "";
 }
 
 /** 稳定比较完整参数快照，避免依赖对象属性插入顺序。 */
