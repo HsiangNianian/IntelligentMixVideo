@@ -3,6 +3,26 @@
 本项目的版本变更由发布工作流根据 Conventional Commits 自动生成。
 推送正式版本 tag 后，成功发布的版本记录会自动写入此文件。
 
+## [v0.9.8] - 2026-10-19
+### New Features
+- [`6dbecdd`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/6dbecdd6f8b8282c465f1324935b90a817cb9608) - **remotion**: compose text effects from role Presets *(PR [#199](https://github.com/HsiangNianian/IntelligentMixVideo/pull/199) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`8c801a3`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/8c801a3d079a018e251289b61db43659feaf86bf) - **remotion**: share local preview videos with the template editor *(PR [#200](https://github.com/HsiangNianian/IntelligentMixVideo/pull/200) by [@muyuzhong](https://github.com/muyuzhong))*
+- [`25871ac`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/25871ac4b851e02748c243a114584e888e2ab292) - **client**: add redesign prototype sandbox *(PR [#196](https://github.com/HsiangNianian/IntelligentMixVideo/pull/196) by [@muyuzhong](https://github.com/muyuzhong))*
+
+### Documentation Changes
+- [`34702ba`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/34702baaeb3e87c7c285de76c6f2ba1323074ec7) - update CHANGELOG.md for v0.9.7 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
+
+### Chores
+- [`dff7996`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/dff79961044ce959eb689a5f3cc8e285caafa1ba) - **release**: prepare v0.9.8 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Other Changes
+- [`5d20269`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/5d20269c212ca56247f439a1bf0641a057421ccb) - Merge pull request [#203](https://github.com/HsiangNianian/IntelligentMixVideo/pull/203) from HsiangNianian/codex/release-v0.9.8
+
+chore(release): prepare v0.9.8 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`620ba0d`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/620ba0dac20ec40b82ede988bbac6eb72f5b8695) - Merge pull request [#204](https://github.com/HsiangNianian/IntelligentMixVideo/pull/204) from HsiangNianian/dev
+
+chore(release): promote dev to main for v0.9.8 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
 ## [v0.9.7] - 2026-10-19
 ### Bug Fixes
 - [`fac89c9`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/fac89c9b0dc570904c5cd999d56fe05c7032970b) - **client**: install rustls crypto provider before update checks *(PR [#194](https://github.com/HsiangNianian/IntelligentMixVideo/pull/194) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
@@ -1529,3 +1549,5 @@ feat(client): 在模板工作区页头添加时钟 *(commit by [@HsiangNianian](
 [v0.9.6]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.5...v0.9.6
 
 [v0.9.7]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.6...v0.9.7
+
+[v0.9.8]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.7...v0.9.8
