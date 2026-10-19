@@ -340,21 +340,28 @@ fn installer_kind() -> &'static str {
         _ => "deb",
     }
 }
-/// 只经 HTTPS 下载，读取量不超过 `limit`；检查清单时整体 12 秒超时，下载安装包时每 200 毫秒发送进度。
-async fn download(
-    url: &str,
-    limit: usize,
-    checking: bool,
-    app: &tauri::AppHandle,
-) -> Result<Vec<u8>> {
-    let client = reqwest::Client::builder()
+/// 构建只走 HTTPS 的下载客户端：检查清单整体 12 秒超时，下载安装包 30 分钟。
+/// reqwest 以 `rustls-no-provider` 编译，构建前须安装进程级 ring 提供者（与官方更新插件相同，重复安装忽略），
+/// 否则在异步工作线程 panic，并因 `panic = "abort"` 终止整个客户端。
+fn http_client(checking: bool) -> Result<reqwest::Client> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(8))
         .read_timeout(Duration::from_secs(20))
         .timeout(Duration::from_secs(if checking { 12 } else { 1800 }))
         .https_only(true)
         .user_agent("IntelligentMixVideo-Updater")
         .build()
-        .map_err(error)?;
+        .map_err(error)
+}
+/// 只经 HTTPS 下载，读取量不超过 `limit`；下载安装包时每 200 毫秒发送进度。
+async fn download(
+    url: &str,
+    limit: usize,
+    checking: bool,
+    app: &tauri::AppHandle,
+) -> Result<Vec<u8>> {
+    let client = http_client(checking)?;
     let mut response = client
         .get(url)
         .header("Cache-Control", "no-cache")
@@ -849,6 +856,12 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+    /// v0.9.6 回归：reqwest 缺少 rustls 提供者时构建客户端会 panic；检查与下载两种客户端都必须能直接构建。
+    #[test]
+    fn update_clients_build_without_prior_tls_setup() {
+        http_client(true).expect("check client");
+        http_client(false).expect("download client");
     }
     /// 镜像篡改了版本、签名或资源字节时拒绝，合法签名包可读取。
     #[test]
