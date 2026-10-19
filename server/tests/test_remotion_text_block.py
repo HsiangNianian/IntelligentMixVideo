@@ -212,15 +212,17 @@ def test_a_two_tier_text_with_a_keyword_effect_composes_from_role_presets(tmp_pa
 @pytest.mark.parametrize(("change", "field", "message"), [
     ({"text": {"text": "只有一行"}}, "/text/text", "has 1 lines for 2 tiers"),
     ({"text": {"line_starts": [5, 12]}}, "/text/line_starts", "the first 0"),
+    ({"text": {"line_starts": [0, 30]}}, "/text/line_starts", "start it before the end"),
     ({"text": {"duration_frames": 20}}, "/text/duration_frames", "set its duration_frames to exactly 30"),
     ({"text": {"tiers": "font"}}, "/text/tiers/1/font_family", "not in the font library"),
     ({"binding": "fontSize"}, "/parameters/0/name", "configuration parameter of the text block"),
     ({"role": None}, "/text/tiers/0/source", "role 'text'"),
     ({"instances": True}, "/instances", "text block alone"),
     ({"instance_id": "keywordEffect"}, "/text/keyword/instance_id", "not a parameter name of the text block"),
-], ids=["lines", "starts", "length", "font", "taken-name", "legacy-preset", "with-boxes", "taken-id"])
+], ids=["lines", "starts", "late-start", "length", "font", "taken-name", "legacy-preset", "with-boxes", "taken-id"])
 def test_a_wrong_text_block_is_refused_with_the_field(tmp_path, monkeypatch, change, field, message):
-    """文字块不合约定时按字段拒绝：行数与栏数不符、行起点不从 0 开始、时长不等于用户所选、字体不在字体库、样式参数占用配置名、
+    """文字块不合约定时按字段拒绝：行数与栏数不符、行起点不从 0 开始、下栏到结束才出现（审计复现：曾被接受，预览按默认行起点播放时下栏从不显示）、
+    时长不等于用户所选、字体不在字体库、样式参数占用配置名、
     栏用了没有 text 角色的 Preset、文字块之外还放了固定框实例、实例 ID 占用配置名（审计复现：关键词实例叫 keywordEffect 时，
     它的嵌套参数曾顶替宿主的 keywordEffect 开关，保存时才报一个 Agent 无法绑定的分类参数错误）。"""
     monkeypatch.setattr(FontStore, "active", SimpleNamespace(listing=lambda: [SimpleNamespace(family="Noto Sans CJK SC")]))

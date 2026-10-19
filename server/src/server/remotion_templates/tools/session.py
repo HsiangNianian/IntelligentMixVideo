@@ -693,6 +693,10 @@ class ToolSession:
             starts = block.line_starts
             if len(starts) != 2 or starts[0] != 0 or starts[1] < starts[0]:
                 raise ToolFault("INVALID_ARGUMENT", "line_starts has two frames, the first 0 and the second not earlier (for example [0, 30]).", field="/text/line_starts")
+            # The preview plays the default starts; a lower tier starting at the end would never be seen there.
+            if starts[1] >= block.duration_frames:
+                raise ToolFault("INVALID_ARGUMENT", f"The lower tier starts at frame {starts[1]} but the block lasts {block.duration_frames} frames: "
+                                "start it before the end so it shows.", field="/text/line_starts")
             for index, tier in enumerate(block.tiers):
                 if tier.size_ratio is None:
                     raise ToolFault("INVALID_ARGUMENT", "Each tier of a two-tier text needs size_ratio (0.4 to 2, a ratio of font_size).", field=f"/text/tiers/{index}/size_ratio")
