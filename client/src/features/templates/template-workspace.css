@@ -50,6 +50,8 @@
 /* 对象列表参考图层面板：行无边框，悬停与选中仅用逐级加深的整行填充；时间轴片段和图标按实际类别着色；文字色与前景色混合，在浅色和深色主题下都保持可读，填充半透明。 */
 .template-workspace [data-object="title"] { --object-ink: color-mix(in oklch, oklch(0.62 0.1 250) 72%, var(--foreground)); --object-fill: oklch(0.62 0.1 250 / 20%); }
 .template-workspace [data-object="subtitle"] { --object-ink: color-mix(in oklch, oklch(0.62 0.1 165) 72%, var(--foreground)); --object-fill: oklch(0.62 0.1 165 / 20%); }
+/* 标题与字幕的关键词对象共用一种强调色。 */
+.template-workspace :is([data-object="title_keyword"], [data-object="subtitle_keyword"]) { --object-ink: color-mix(in oklch, oklch(0.62 0.12 345) 72%, var(--foreground)); --object-fill: oklch(0.62 0.12 345 / 20%); }
 .template-workspace [data-object="bubble"] { --object-ink: color-mix(in oklch, oklch(0.62 0.1 60) 72%, var(--foreground)); --object-fill: oklch(0.62 0.1 60 / 20%); }
 .template-workspace [data-object="filter"] { --object-ink: color-mix(in oklch, oklch(0.62 0.1 115) 72%, var(--foreground)); --object-fill: oklch(0.62 0.1 115 / 20%); }
 .template-workspace [data-object="vfx"] { --object-ink: color-mix(in oklch, oklch(0.62 0.1 310) 72%, var(--foreground)); --object-fill: oklch(0.62 0.1 310 / 20%); }

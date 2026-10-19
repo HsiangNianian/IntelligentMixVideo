@@ -4,7 +4,8 @@ import { Maximize2, Pause, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Hint } from "@/components/Hint";
 import { Spinner } from "@/components/ui/spinner";
-import { textKey, type Draft, type EffectAsset, type MasterVideo, type PreviewMedia } from "./model";
+import { isKeywordTarget, textKey, textRole, type Draft, type EffectAsset, type MasterVideo, type PreviewMedia } from "./model";
+import { effectTargets } from "./effects";
 import { loadSDK, loadPreviewFont, readCatalog, type Player } from "./sdk";
 import { buildTimeline, buildPreviewRows, mergeSpriteRows, remotionTexts, type SpriteClip } from "./timeline";
 import { centeredPlayerTimeline } from "./centeredTransitions";
@@ -367,13 +368,15 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       <div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><span className="template-live-dot size-1.5 rounded-full" aria-hidden="true" /><h2 className="text-[13px] font-semibold">实时预览</h2></div><span className="rounded-md border px-2 py-1 text-[11px] tabular-nums text-muted-foreground">{canvas ? `${canvas.width} × ${canvas.height}` : "正在读取画布尺寸"}</span></div>
       <div ref={stage} className="template-preview-canvas relative mx-auto aspect-video w-full overflow-hidden rounded-lg bg-black" style={canvas ? { aspectRatio: `${canvas.width} / ${canvas.height}`, maxWidth: `${48 * canvas.width / canvas.height}dvh`, "--preview-ratio": canvas.width / canvas.height } as CSSProperties : undefined} aria-label="模板视频预览">
         <div ref={container} className="template-preview-player absolute inset-0 size-full" />
-        {ready && canvas && onSelect && draft.tracks.filter((item) => (item.target === "title" || item.target === "subtitle") && item.enabled !== false && !remotionTexts(draft).has(textKey(item.target, item.language))).map((item) => {
+        {ready && canvas && onSelect && draft.tracks.filter((item) => (item.target === "title" || item.target === "subtitle" || isKeywordTarget(item.target)) && item.enabled !== false && !remotionTexts(draft).has(textKey(item.target, item.language))).map((item) => {
           const interval = resolved?.tracks[item.id];
           if (!interval || time < interval.start || time >= interval.end) return null;
-          const role = item.target as "title" | "subtitle";
-          return <button key={item.id} type="button" aria-label={`选择${item.language === "en" ? "英文" : "中文"}${role === "title" ? "标题" : "字幕"}`} aria-pressed={selectedId === item.id}
+          const role = textRole(item.target) as "title" | "subtitle";
+          // 关键词只有几个字，选择框按较窄的宽度覆盖。
+          const keyword = isKeywordTarget(item.target);
+          return <button key={item.id} type="button" aria-label={`选择${keyword ? effectTargets[item.target] : `${item.language === "en" ? "英文" : "中文"}${role === "title" ? "标题" : "字幕"}`}`} aria-pressed={selectedId === item.id}
             className={`absolute -translate-x-1/2 rounded-sm border border-dashed hover:border-primary focus-visible:ring-2 focus-visible:ring-ring ${selectedId === item.id ? "border-primary" : "border-transparent"}`}
-            style={{ left: `${item.editor[`${role}X`]}%`, top: `${item.editor[`${role}Y`]}%`, width: "90%", height: `${item.editor[`${role}Size`] * 1.5 / canvas.height * 100}%`, minHeight: 12 }}
+            style={{ left: `${item.editor[`${role}X`]}%`, top: `${item.editor[`${role}Y`]}%`, width: keyword ? "40%" : "90%", height: `${item.editor[`${role}Size`] * 1.5 / canvas.height * 100}%`, minHeight: 12 }}
             onClick={() => onSelect(item.id)} />;
         })}
         {sprites.length > 0 && canvas && <SpriteOverlay ref={overlay} clips={sprites} stageAspect={canvas.width / canvas.height} initialTime={time} selectedId={selectedId} onMove={onSpriteMove} onSelect={onSelect} />}

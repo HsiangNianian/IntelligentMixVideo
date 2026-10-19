@@ -63,6 +63,62 @@ def test_invalid_bilingual_objects_do_not_save(client, error):
     assert not pb.ListTemplatesResponse.FromString(client.get("/template").content).templates
 
 
+def test_keyword_object_roundtrip_retains_disabled_style_and_sprite(client, template_db):
+    """关键词对象沿用所属文字的样式字段；停用后仍保留样式与 Remotion 关键词字效，摘要只取中文标题与字幕。"""
+    seed_sprite()
+    keyword = {**template_track("subtitle_keyword", subtitleSize=64, subtitleY=70), "enabled": False}
+    payload = {"name": "关键词", "effect_ids": [], "tracks": [
+        template_track("title"), template_track("subtitle"), keyword,
+        remotion_track("keyword-effect", text_target="subtitle_keyword")]}
+    created = _post(client, payload)
+    assert created.status_code == 201, created.text
+    record = pb.SaveTemplateResponse.FromString(created.content).template
+    saved = record.tracks.tracks[2]
+    assert (saved.target, saved.enabled, saved.editor.subtitle_size, saved.editor.subtitle) == ("subtitle_keyword", False, 64, "")
+    assert record.tracks.tracks[3].text_target == "subtitle_keyword"
+    assert pb.GetTemplateResponse.FromString(client.get(f"/template/{record.template_id}").content).template == record
+    summary = pb.ListTemplatesResponse.FromString(client.get("/template").content).templates[0]
+    assert (summary.subtitle, summary.validation_error) == ("示例文字", "")
+
+
+@pytest.mark.parametrize("error", ["different-time", "duplicate", "english", "sample-text", "inline-style", "missing-object", "multi-line"])
+def test_invalid_keyword_objects_do_not_save(client, template_db, error):
+    """关键词对象时间跟随所属文字、每种最多一个、只有中文、没有示例文字与句内关键词样式；关键词字效需要对象且不能是多行字效。"""
+    title = {**template_track("title"), "start": 1, "duration": 2}
+    keyword = {**template_track("title_keyword"), "start": 1, "duration": 2}
+    tracks = [title, template_track("subtitle"), keyword]
+    if error == "different-time":
+        keyword["start"] = 0
+    elif error == "duplicate":
+        tracks.append({**keyword, "id": "title-keyword-2"})
+    elif error == "english":
+        keyword["language"] = "en"
+    elif error == "sample-text":
+        keyword["editor"]["title"] = "示例"
+    elif error == "inline-style":
+        keyword["editor"]["titleKeywordBold"] = True
+    elif error == "missing-object":
+        tracks.append(remotion_track(text_target="subtitle_keyword"))
+    else:
+        from google.protobuf.json_format import MessageToDict
+        from server.remotion_templates import sprite_store
+        from .conftest import published_sprite
+
+        sprite = published_sprite()
+        schema = json.loads(sprite.config_schema_json)
+        schema["properties"]["lineStartFrames"] = {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 3600},
+                                                   "minItems": 2, "maxItems": 2}
+        sprite.config_schema_json = json.dumps(schema)
+        sprite_store.insert(sprite_id=SPRITE_ID, source_version_id=str(uuid4()), kind=1, text_prop="", keywords_prop="",
+                            published_at=datetime.now(UTC), data=MessageToDict(sprite, preserving_proto_field_name=True))
+        tracks.append(remotion_track(text_target="title_keyword"))
+    response = _post(client, {"name": "不合法关键词", "tracks": tracks})
+    assert response.status_code == 422, response.text
+    if error == "multi-line":
+        assert "多行字效" in response.text
+    assert not pb.ListTemplatesResponse.FromString(client.get("/template").content).templates
+
+
 def test_transition_list_roundtrip(client: TestClient):
     """多个转场及统一设置经 Protobuf 与数据库保存后保持不变。"""
     from server.template.schema import effect_catalog

@@ -502,6 +502,44 @@ def test_remotion_text_effect_replaces_the_ims_text(composition_case, role, laye
         {key: value for key, value in expected.items() if key != "SubtitleTracks"}
 
 
+def test_keyword_objects_render_keywords_with_their_own_style(composition_case):
+    """关键词对象是独立的 IMS 文字：只显示切片关键词，用自己的字号、位置、花字与动画，叠在所属文字上层；
+    没有关键词的切片不输出，停用或改由 Remotion 字效显示时 IMS 不再渲染它，原句不受影响。"""
+    catalog = effect_catalog().values()
+    flower = next(item for item in catalog if item.category == "flower")
+    loop = next(item for item in catalog if item.category == "loop")
+    blank = {"title": "", "subtitle": "", "bubble_text": ""}
+    editor = lambda **fields: EffectTemplateEditor(**{**blank, **fields}).model_dump(by_alias=True)
+    title_time = {"start_mode": "seconds", "start": 1, "duration": 2}
+    subtitle_time = {"start_mode": "seconds", "start": 0, "duration": None}
+    apply_tracks(composition_case, [
+        {"id": "title", "target": "title", **title_time, "editor": editor(title="示例标题")},
+        {"id": "subtitle", "target": "subtitle", **subtitle_time, "editor": editor(subtitle="示例字幕")},
+        {"id": "title-keyword", "target": "title_keyword", **title_time, "editor": editor(title_size=80, title_y=20, title_loop=loop.id)},
+        {"id": "subtitle-keyword", "target": "subtitle_keyword", **subtitle_time,
+         "editor": editor(subtitle_size=64, subtitle_x=30, subtitle_y=60, subtitle_flower=flower.id, subtitle_in="in/fade_in")},
+    ])
+    timeline, _ = build_timeline(**composition_case, title_keyword="业务")
+    title_keyword, title, subtitle_keyword, subtitle = [row["SubtitleTrackClips"] for row in timeline["SubtitleTracks"]]
+    assert [(clip["Content"], clip["TimelineIn"], clip["TimelineOut"]) for clip in title_keyword] == [("业务", 1, 3)]
+    assert (title_keyword[0]["FontSize"], title_keyword[0]["Y"], title_keyword[0]["AaiMotionLoopEffect"]) == (80, 0.2, loop.effect_id)
+    assert (title[0]["Content"], title[0]["FontSize"]) == (composition_case["request"]["title"], 40)
+    assert [(clip["Content"], clip["TimelineIn"], clip["TimelineOut"]) for clip in subtitle_keyword] == [("甲乙", 1, 3)]
+    assert {key: subtitle_keyword[0][key] for key in ("FontSize", "X", "Y", "EffectColorStyle")} == \
+        {"FontSize": 64, "X": 0.3, "Y": 0.6, "EffectColorStyle": flower.effect_id}
+    assert "AaiMotionInEffect" in subtitle_keyword[0]
+    assert [clip["Content"] for clip in subtitle] == ["甲乙丙丁", "戊己庚辛"]
+    assert "EffectColorStyle" not in subtitle[0] and "AaiMotionInEffect" not in subtitle[0]
+
+    # 没有标题关键词时标题关键词对象不输出；停用的字幕关键词与改用 Remotion 的标题关键词同样不进入 IMS。
+    assert len(build_timeline(**composition_case)[0]["SubtitleTracks"]) == 3
+    composition_case["template"]["tracks"][3]["enabled"] = False
+    composition_case["template"]["tracks"].append(remotion_track("keyword-effect", text_target="title_keyword"))
+    rows = build_timeline(**composition_case, title_keyword="业务")[0]["SubtitleTracks"]
+    assert [[clip["Content"] for clip in row["SubtitleTrackClips"]] for row in rows] == [
+        [composition_case["request"]["title"]], ["甲乙丙丁", "戊己庚辛"]]
+
+
 def test_text_rules_keep_business_content_and_separate_styles(composition_case):
     """标题采用指定区间，唯一字幕使用完整文案时间并保留样式。"""
     title = EffectTemplateEditor(title="示例标题", subtitle="", bubble_text="", title_in="in/fade_in")

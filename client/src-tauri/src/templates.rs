@@ -88,6 +88,15 @@ const TITLE_KEYWORD_FIELDS: [&str; 4] = [
     "titleKeywordStrikeout",
 ];
 
+/// 对象读取的样式字段前缀：关键词对象沿用所属标题或字幕的字段，其余对象就是自身。
+fn text_role(target: &str) -> &str {
+    match target {
+        "title_keyword" => "title",
+        "subtitle_keyword" => "subtitle",
+        other => other,
+    }
+}
+
 /// 将本地保存请求转换为现有 JSON 草稿结构，保留磁盘文件格式。
 fn draft_from_protobuf(bytes: &[u8], id: Option<&str>) -> Result<Value, String> {
     let request =
@@ -387,32 +396,52 @@ fn validate(mut draft: Value) -> Result<Value, String> {
             {
                 return Err("文字语言无效".into());
             }
+            let keyword = target.ends_with("_keyword");
             if track.get("enabled").is_some_and(|value| {
-                !value.is_boolean() || (value == false && language != Some("en"))
+                !value.is_boolean() || (value == false && language != Some("en") && !keyword)
             }) {
-                return Err("只有英文标题或字幕可以停用".into());
+                return Err("只有英文标题、英文字幕或关键词对象可以停用".into());
             }
-            if language == Some("en") {
+            // 英文与关键词对象的时间都跟随所属的中文标题或字幕。
+            if language == Some("en") || keyword {
                 let chinese = items
                     .iter()
-                    .find(|item| item["target"] == target && item["language"] != "en")
-                    .ok_or("英文需要对应的中文对象")?;
+                    .find(|item| item["target"] == text_role(target) && item["language"] != "en")
+                    .ok_or("英文或关键词需要对应的中文对象")?;
                 if ["start_mode", "start", "duration"]
                     .iter()
                     .any(|key| track[*key] != chinese[*key])
                 {
-                    return Err("英文时间必须跟随中文对象".into());
+                    return Err("英文与关键词的时间必须跟随中文对象".into());
                 }
             }
-            if ["title", "subtitle", "vfx"].contains(&target)
+            if [
+                "title",
+                "subtitle",
+                "vfx",
+                "title_keyword",
+                "subtitle_keyword",
+            ]
+            .contains(&target)
                 && !singletons.insert((target, language))
             {
-                return Err("同一语言的标题、字幕和 VFX 最多各一个".into());
+                return Err("同一语言的标题、字幕、关键词和 VFX 最多各一个".into());
             }
             if target != "transition" && track.get("transition_boundary").is_some() {
                 return Err("只有转场可以设置视频交界处".into());
             }
-            if !["title", "subtitle", "bubble", "filter", "vfx", "transition"].contains(&target) {
+            if ![
+                "title",
+                "subtitle",
+                "title_keyword",
+                "subtitle_keyword",
+                "bubble",
+                "filter",
+                "vfx",
+                "transition",
+            ]
+            .contains(&target)
+            {
                 return Err("轨道对象无效".into());
             }
             if !track["duration"].is_null() {
@@ -469,27 +498,29 @@ fn validate(mut draft: Value) -> Result<Value, String> {
             {
                 return Err("只有顶部标题可以设置标题关键词样式".into());
             }
+            let role = text_role(target);
             let mut allowed = vec![target.to_owned()];
-            if ["title", "subtitle", "bubble"].contains(&target) {
-                allowed = vec![if target == "bubble" {
+            if ["title", "subtitle", "bubble"].contains(&role) {
+                allowed = vec![if role == "bubble" {
                     "bubble".into()
                 } else {
-                    format!("{target}Flower")
+                    format!("{role}Flower")
                 }];
                 for suffix in ["In", "Out", "Loop"] {
-                    allowed.push(format!("{target}{suffix}"));
+                    allowed.push(format!("{role}{suffix}"));
                 }
             } else if editor[target] == "" {
                 return Err("轨道缺少效果".into());
             }
-            for (role, field) in [
+            // 关键词对象没有示例文字：三段示例文字都必须为空。
+            for (owner, field) in [
                 ("title", "title"),
                 ("subtitle", "subtitle"),
                 ("bubble", "bubbleText"),
             ] {
                 let content = editor[field].as_str().ok_or("文字无效")?;
-                if (role != target && !content.is_empty())
-                    || (role == target && content.trim().is_empty())
+                if (owner != target && !content.is_empty())
+                    || (owner == target && content.trim().is_empty())
                 {
                     return Err("轨道文字与对象不一致".into());
                 }
@@ -1187,6 +1218,43 @@ mod tests {
         invalid["tracks"][2]["start"] = json!(1.0);
         assert!(operate(&dir.0, "save", Some(id), Some(invalid)).is_err());
         assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), restored);
+    }
+
+    #[test]
+    /// 关键词对象沿用所属字幕的样式字段，可以停用并保留设置；时间不跟随、带示例文字或句内关键词样式、重复都拒绝写入。
+    fn keyword_object_roundtrip_and_validation() {
+        let dir = Directory::new();
+        let mut value = draft("关键词");
+        let mut keyword = value["tracks"][1].clone();
+        keyword["id"] = json!("subtitle-keyword");
+        keyword["target"] = json!("subtitle_keyword");
+        keyword["enabled"] = json!(false);
+        keyword["editor"]["subtitle"] = json!("");
+        keyword["editor"]["subtitleSize"] = json!(64.);
+        keyword["editor"]["subtitleIn"] = json!("in/fade_in");
+        value["tracks"].as_array_mut().unwrap().push(keyword);
+        let saved = operate(&dir.0, "save", None, Some(value.clone())).unwrap();
+        let id = saved["template_id"].as_str().unwrap();
+        assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), saved);
+        assert_eq!(saved["tracks"][2]["enabled"], false);
+        assert_eq!(saved["tracks"][2]["editor"]["subtitleSize"], 64.);
+        assert_eq!(summarize(&saved)["subtitle"], "字幕");
+        let mutations: [fn(&mut Value); 4] = [
+            |draft| draft["tracks"][2]["start"] = json!(1.0),
+            |draft| draft["tracks"][2]["editor"]["subtitle"] = json!("示例"),
+            |draft| draft["tracks"][2]["editor"]["subtitleKeywordBold"] = json!(true),
+            |draft| {
+                let mut copy = draft["tracks"][2].clone();
+                copy["id"] = json!("duplicate");
+                draft["tracks"].as_array_mut().unwrap().push(copy);
+            },
+        ];
+        for mutate in mutations {
+            let mut invalid = value.clone();
+            mutate(&mut invalid);
+            assert!(operate(&dir.0, "save", Some(id), Some(invalid)).is_err());
+        }
+        assert_eq!(operate(&dir.0, "get", Some(id), None).unwrap(), saved);
     }
 
     #[test]

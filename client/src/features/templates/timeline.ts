@@ -2,17 +2,22 @@
 import type { ClipTransform, ContentBox } from "@/features/sprites/parameters";
 import {
   effectGroups,
+  isKeywordTarget,
+  keywordTargets,
   textKey,
+  textRole,
   type Draft,
   type Editor,
   type EffectAsset,
   type EffectKey,
+  type EffectTrack,
+  type KeywordTarget,
   type TextRole,
   type TextLanguage,
   type PreviewMedia,
 } from "./model";
 import type { TimelineAction, TimelineRow } from "@xzdarcy/timeline-engine";
-import { effectTargets, isTextTarget, type EffectTarget } from "./effects";
+import { effectTargets, isTextTarget, trackEffect, type EffectTarget } from "./effects";
 import { trackLabel, trackLayers, type ResolvedTimeline } from "./tracks";
 import { previewVideos } from "./media";
 import type { ClipSlot } from "./clips";
@@ -141,6 +146,13 @@ export function exampleKeyword(config: Editor, role: "title" | "subtitle", langu
     : [...new Intl.Segmenter("zh", { granularity: "word" }).segment(config.subtitle)].find((part) => part.isWordLike)?.segment ?? "";
 }
 
+/** 关键词对象的预览文字：所属中文标题或字幕示例里的关键词，对应成片里切片给出的关键词。 */
+export function keywordSample(tracks: EffectTrack[], target: KeywordTarget): string {
+  const role = keywordTargets[target];
+  const owner = tracks.find((item) => item.target === role && item.language !== "en");
+  return owner ? exampleKeyword(owner.editor, role) : "";
+}
+
 /** 校验数值输入，不让空值、NaN 或越界参数进入 SDK。 */
 function number(
   value: number,
@@ -160,8 +172,8 @@ function number(
   return value;
 }
 
-/** 从单个对象参数生成文字或效果，校验目录引用及数值范围。 */
-function buildTrackContent(config: Editor, catalog: EffectAsset[], target: EffectTarget, language?: TextLanguage) {
+/** 从单个对象参数生成文字或效果，校验目录引用及数值范围；关键词对象以 `keyword` 作为文字内容，不加句内关键词样式。 */
+function buildTrackContent(config: Editor, catalog: EffectAsset[], target: EffectTarget, language?: TextLanguage, keyword?: string) {
   const byId = new Map(catalog.map((item) => [item.id, item]));
   // 效果类别与字段绑定，拒绝错误类别及未知目录条目。
   const effect = (key: EffectKey): Effect => {
@@ -200,7 +212,7 @@ function buildTrackContent(config: Editor, catalog: EffectAsset[], target: Effec
     }
     return {
       Type: "Text",
-      Content: role === "title" || role === "subtitle" ? formatKeyword(content, previewKeyword, config, role) : content,
+      Content: keyword ?? (role === "title" || role === "subtitle" ? formatKeyword(content, previewKeyword, config, role) : content),
       TimelineIn: 0,
       TimelineOut: 10,
       X: position(config[`${role}X`]),
@@ -218,7 +230,7 @@ function buildTrackContent(config: Editor, catalog: EffectAsset[], target: Effec
   };
   if (!isTextTarget(target) && !config[target]) throw new Error("特效轨道缺少效果");
   return {
-    text: isTextTarget(target) ? text(target) : undefined,
+    text: isTextTarget(target) ? text(textRole(target)) : undefined,
     effect: isTextTarget(target) ? undefined : {
       Type: target === "transition" ? "Transition" : target === "filter" ? "Filter" : "VFX",
       ...effect(target),
@@ -256,12 +268,14 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media: Previ
     const track = { ...source, ...applied };
     if (!track.id || seen.has(track.id)) throw new Error("特效轨道 ID 必须唯一");
     seen.add(track.id);
-    const resolved = buildTrackContent(track.editor, catalog, track.target, track.language);
+    // 关键词对象的示例没有关键词时不显示。
+    const keyword = isKeywordTarget(track.target) ? keywordSample(draft.tracks, track.target) : undefined;
+    const resolved = buildTrackContent(track.editor, catalog, track.target, track.language, keyword);
     if (track.end <= track.start) continue;
     if (isTextTarget(track.target)) {
       const text = resolved.text;
-      if (!text?.Content.trim()) throw new Error("文字轨道内容不能为空");
-      if (!replaced.has(textKey(track.target, track.language))) timeline.SubtitleTracks.push({ SubtitleTrackClips: [{ ...text, TimelineIn: track.start, TimelineOut: track.end }] });
+      if (!text?.Content.trim() && keyword === undefined) throw new Error("文字轨道内容不能为空");
+      if (text?.Content.trim() && !replaced.has(textKey(track.target, track.language))) timeline.SubtitleTracks.push({ SubtitleTrackClips: [{ ...text, TimelineIn: track.start, TimelineOut: track.end }] });
     } else if (track.target === "transition") {
       const effect = resolved.effect;
       if (!effect) throw new Error("转场轨道缺少效果");
@@ -272,7 +286,7 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media: Previ
       if (!effect) throw new Error("特效轨道缺少效果");
       EffectTracks.push({ EffectTrackItems: [{ ...effect, TimelineIn: track.start, TimelineOut: track.end }] });
     }
-    const effectId = { title: track.editor.titleFlower, subtitle: track.editor.subtitleFlower, bubble: track.editor.bubble, filter: track.editor.filter, vfx: track.editor.vfx, transition: track.editor.transition }[track.target];
+    const effectId = trackEffect(track);
     const effectName = catalog.find((item) => item.id === effectId)?.name ?? (effectId ? effectId.split("/").at(-1) : undefined);
     previewRows.push({ id: track.id, actions: [{
       id: track.id, targetId: track.id, effectId: track.target,

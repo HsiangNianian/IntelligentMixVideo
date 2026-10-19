@@ -3,12 +3,12 @@ import { useEffect, useId, useState } from "react";
 import { ListOrdered, Plus, Shuffle, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Hint } from "@/components/Hint";
-import type { Draft, EffectAsset, EffectDraft, EffectTrack } from "./model";
+import { isKeywordTarget, textRole, type Draft, type EffectAsset, type EffectDraft, type EffectTrack } from "./model";
 import type { SpriteAsset } from "@/features/sprites/model";
 import { SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
 import { transitionItems } from "./transitions";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { effectTargets } from "./effects";
+import { effectTargets, trackEffect } from "./effects";
 import { EffectEditor } from "./EffectEditor";
 import { ObjectIcon } from "./EffectAssets";
 import { TrackTiming } from "./TrackTiming";
@@ -88,7 +88,7 @@ export function TransitionInspector({ draft, catalog, sprites, onChoose, onRemov
 
 export type InspectorTab = "appearance" | "timing" | "keyword";
 
-/** 字幕只提供外观与关键词页签；其他对象的时间输入保持挂载以便保存前校验。 */
+/** 字幕只提供外观与关键词页签，关键词对象只有外观（时间跟随所属文字）；其他对象的时间输入保持挂载以便保存前校验。 */
 export function TemplateInspector({ track, draft, catalog, duration, resolved, tab, onTabChange, onTimingChange, onEffectChange, onRemove, onClose }: {
   track: EffectTrack;
   draft: EffectDraft;
@@ -104,12 +104,14 @@ export function TemplateInspector({ track, draft, catalog, duration, resolved, t
 }) {
   const id = useId();
   const hasKeywords = track.target === "title" || track.target === "subtitle";
-  const tabs: InspectorTab[] = track.target === "subtitle" || track.language === "en" ? ["appearance", "keyword"] : hasKeywords ? ["appearance", "timing", "keyword"] : ["appearance", "timing"];
+  const keywordObject = isKeywordTarget(track.target);
+  const tabs: InspectorTab[] = keywordObject ? ["appearance"] : track.target === "subtitle" || track.language === "en" ? ["appearance", "keyword"] : hasKeywords ? ["appearance", "timing", "keyword"] : ["appearance", "timing"];
   const activeTab = tabs.includes(tab) ? tab : tabs[0];
-  const effectId = { title: track.editor.titleFlower, subtitle: track.editor.subtitleFlower, bubble: track.editor.bubble, filter: track.editor.filter, vfx: track.editor.vfx, transition: track.editor.transition }[track.target];
+  const effectId = trackEffect(track);
   const effect = catalog.find((asset) => asset.id === effectId)?.name ?? (effectId ? effectId.split("/").at(-1) : "未设置效果");
   return <section aria-label="画面对象设置" className="min-w-0">
     {track.language === "en" && <p className="px-4 pt-3 text-[11px] text-muted-foreground">成片中英文过长时自动缩小字号，尽量保持单行；预览暂不支持自动缩小。</p>}
+    {keywordObject && <p className="px-4 pt-3 text-[11px] text-muted-foreground">单独显示所属{textRole(track.target) === "title" ? "标题" : "字幕"}的关键词，时间跟随它：预览取示例文字中的关键词，合成时换成切片给出的关键词，没有关键词的片段不显示。</p>}
     <div className="flex items-start justify-between gap-2 px-4 pb-2 pt-3">
       <div className="flex min-w-0 items-center gap-2.5"><ObjectIcon target={track.target} /><div className="min-w-0"><h2 className="text-[13px] font-semibold leading-5">{trackLabel(track, [track])}</h2><p className="mt-0.5 truncate text-[11px] leading-3 text-muted-foreground">{effect}</p></div></div>
       <Hint label="关闭特效设置"><Button type="button" variant="ghost" size="icon" className="size-6 shrink-0" aria-label="关闭特效设置" onClick={onClose}><X className="size-3.5" aria-hidden="true" /></Button></Hint>

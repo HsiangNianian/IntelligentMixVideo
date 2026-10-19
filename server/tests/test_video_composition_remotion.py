@@ -1005,6 +1005,34 @@ def test_multi_line_title_puts_the_whole_title_on_the_first_line(composition_cas
     assert item["config"]["lineStartFrames"] == [0, 0]
 
 
+@pytest.mark.parametrize("target, expected", [("subtitle_keyword", [(30, 60, "甲乙")]), ("title_keyword", [(30, 60, "业务")])])
+def test_keyword_slot_shows_only_the_keyword_in_its_text_interval(composition_case, target, expected):
+    """关键词字效只在所属文字带关键词的区间显示这个词，字效内部不再强调关键词；停用关键词对象后不渲染。"""
+    from .conftest import template_track
+    data = case(composition_case, None)
+    data["template"] = deepcopy(composition_case["template"])
+    source = next(track for track in data["template"]["tracks"] if track["target"] == target.removesuffix("_keyword"))
+    keyword = {**template_track(target), **{key: source[key] for key in ("start_mode", "start", "duration")}}
+    data["template"]["tracks"].append(keyword)
+    data["remotion"]["placements"][0].update(text_target=target, start=7, duration=0.5)
+    result = remotion.plan(data, 120)
+    assert [(item["start_frame"], item["duration_frames"], item["config"]["layer"]["text"]) for item in result.instances] == expected
+    assert all(item["config"]["layer"]["ranges"] == [] for item in result.instances)
+    keyword["enabled"] = False
+    assert remotion.plan(data, 120) is None
+
+
+def test_multi_line_asset_cannot_show_a_keyword(composition_case):
+    """关键词每次只有一个词：快照里逐行出现的多行字效绑定关键词对象时明确失败，不按单行静默渲染。"""
+    from .conftest import template_track
+    data = multi_line_case(composition_case, target=None)
+    data["template"] = deepcopy(composition_case["template"])
+    data["template"]["tracks"].append(template_track("subtitle_keyword"))
+    data["remotion"]["placements"][0].update(text_target="subtitle_keyword", editor={})
+    with pytest.raises(ContentError, match="多行字效"):
+        remotion.plan(data, 120)
+
+
 def test_single_line_subtitles_are_still_one_instance_per_cue(composition_case):
     """单行字效不分组：每个切片一个实例，不注入行起点（回归）。"""
     data = multi_line_case(composition_case)

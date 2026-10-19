@@ -1,11 +1,14 @@
-"""由业务快照生成 IMS Timeline；纯素材按序裁尾，标题沿用模板区间，字幕使用切片正文与时间。"""
+"""由业务快照生成 IMS Timeline；纯素材按序裁尾，标题沿用模板区间，字幕使用切片正文与时间。
+
+关键词对象是独立的文字片段：标题关键词随标题区间显示切片返回的 title_keyword，字幕关键词在每个带关键词的字幕区间里显示该词。
+"""
 
 from math import floor
 
 from pydantic import TypeAdapter
 
 from .text_events import subtitle_events
-from ..template.schema import CATEGORY_PARAMETERS, EffectTemplateEditor, EffectTrack, Template, active_tracks
+from ..template.schema import CATEGORY_PARAMETERS, EffectTemplateEditor, EffectTrack, Template, active_tracks, text_role
 from ..template.timing import ClipContext, TimelineContext, resolve_template, resolve_track
 from ..template.transitions import select_transitions
 from .schema import CompositionRequest, MatchedSegment, PositiveSeconds, Segment
@@ -209,8 +212,8 @@ def build_timeline(
             for item, boundary in selected if item["target"] == "transition"
         ]
     if not standard:
-        tracks = [track for track in tracks
-                  if not ((track.target == "subtitle" and not source) or (track.target == "title" and not request.title))]
+        tracks = [track for track in tracks if not (
+            (text_role(track.target) == "subtitle" and not source) or (text_role(track.target) == "title" and not request.title))]
         # 缺少对象时只补本次合成的默认样式，不保存模板，也不使用编辑器示例文字。
         for target, content in (("title", request.title), ("subtitle", source)):
             if content and (target, "zh") not in remotion_texts and not any(track.target == target and track.language == "zh" for track in tracks):
@@ -218,7 +221,8 @@ def build_timeline(
                                           start=0, duration=None, editor=EffectTemplateEditor(**{
                                               key: "" for key in ("title", "subtitle", "bubble_text") if key != target
                                           })))
-    layers = {"title": 0, "subtitle": 1, "bubble": 2, "transition": 3, "vfx": 4, "filter": 5}
+    # 关键词对象紧挨在所属文字之前，叠放在所属文字上层。
+    layers = {"title_keyword": 0, "title": 1, "subtitle_keyword": 2, "subtitle": 3, "bubble": 4, "transition": 5, "vfx": 6, "filter": 7}
     resolved = resolve_template(template.model_copy(update={"tracks": tracks}), TimelineContext(
         layout="fixed", fps=fps, duration=duration,
         clips=[ClipContext(start=clip["TimelineIn"], duration=clip["TimelineOut"] - clip["TimelineIn"]) for clip in clips],
@@ -241,16 +245,22 @@ def build_timeline(
                 **track_parameters[track.target], "TimelineIn": applied.start, "TimelineOut": applied.end,
             }]})
         else:
-            # 标题使用请求文字，标题与字幕关键词均取切片结果；气泡显示模板文字一次。
+            # 标题使用请求文字，标题与字幕关键词均取切片结果；关键词对象只显示关键词；气泡显示模板文字一次。
+            role = text_role(track.target)
             contents = []
             if track.target == "title":
                 if track.language == "en" and request.title and request.title.strip() and not (title_en and title_en.strip()):
                     raise ValueError("缺少英文标题译文")
                 contents.append((title_en if track.language == "en" else request.title,
                                  title_keyword_en if track.language == "en" else title_keyword, applied.start, applied.end))
+            elif track.target == "title_keyword":
+                contents.append((title_keyword if request.title and request.title.strip() else "", "", applied.start, applied.end))
             elif track.target == "subtitle":
                 contents.extend((content, keyword, max(start, applied.start), min(end, applied.end))
                                 for content, keyword, start, end in subtitle_events(source, track.language))
+            elif track.target == "subtitle_keyword":
+                contents.extend((keyword, "", max(start, applied.start), min(end, applied.end))
+                                for _, keyword, start, end in subtitle_events(source) if keyword)
             else:
                 contents.append((track.editor.bubble_text, "", applied.start, applied.end))
             text_clips = []
@@ -264,9 +274,9 @@ def build_timeline(
                 if segment.end > segment.start:
                     if track.target in ("title", "subtitle"):
                         content = format_keyword(content, keyword, segment.editor, track.target)
-                    # 持续到结束的标题覆盖请求终点，固定时长标题遵循用户设置。
-                    end = duration if track.target == "title" and track.duration is None else segment.end
-                    clip = text(track.target, content, segment.start, end, segment.editor, track_parameters)
+                    # 持续到结束的标题（及其关键词）覆盖请求终点，固定时长标题遵循用户设置。
+                    end = duration if role == "title" and track.duration is None else segment.end
+                    clip = text(role, content, segment.start, end, segment.editor, track_parameters)
                     if track.language == "en":
                         clip.update(AdaptMode="AutoScale", TextWidth=0.9)
                     text_clips.append(clip)

@@ -1,12 +1,12 @@
 /** 对象时间规则、实例编辑与视频应用计算；计算结果不修改模板配置。 */
-import { defaultEditor, englishEditor, textKey, type Draft, type EffectDraft, type Editor, type EffectAsset, type EffectTrack, type PreviewMedia } from "./model";
+import { defaultEditor, englishEditor, isKeywordTarget, keywordEditor, textKey, textRole, type Draft, type EffectDraft, type Editor, type EffectAsset, type EffectTrack, type PreviewMedia } from "./model";
 import { appliedTargets, applyAsset, effectTargets, isTextTarget, targetEffectKeys, type EffectTarget } from "./effects";
 import { previewVideos } from "./media";
 import { compactTransitions, nextTransitionBoundary, setTransitionDuration } from "./transitions";
 import { previewFont } from "./fonts";
 
-/** 时间轴自上向下显示的固定图层；同类对象保持添加顺序。 */
-export const trackLayers: Record<EffectTarget, number> = { title: 0, subtitle: 1, bubble: 2, transition: 3, vfx: 4, filter: 5 };
+/** 时间轴自上向下显示的固定图层，也是画面上自上而下的叠放顺序：关键词对象紧挨在所属文字之上；同类对象保持添加顺序。 */
+export const trackLayers: Record<EffectTarget, number> = { title_keyword: 0, title: 1, subtitle_keyword: 2, subtitle: 3, bubble: 4, transition: 5, vfx: 6, filter: 7 };
 
 /** 应用到视频后的秒数和动画参数，说明用于展示缩短或跳过的对象。 */
 export interface ResolvedTrack {
@@ -20,7 +20,8 @@ export interface ResolvedTrack {
 export function validateTrack(track: EffectTrack): void {
   if (track.language !== undefined && !["zh", "en"].includes(track.language)) throw new Error("文字语言无效");
   if (track.language === "en" && track.target !== "title" && track.target !== "subtitle") throw new Error("只有标题或字幕可以设置英文");
-  if (track.enabled !== undefined && (typeof track.enabled !== "boolean" || (track.enabled === false && track.language !== "en"))) throw new Error("只有英文标题或字幕可以停用");
+  if (track.enabled !== undefined && (typeof track.enabled !== "boolean" || (track.enabled === false && track.language !== "en" && !isKeywordTarget(track.target))))
+    throw new Error("只有英文标题、英文字幕或关键词对象可以停用");
   if (track.target === "subtitle" && (track.start_mode !== "seconds" || track.start !== 0 || track.duration !== null))
     throw new Error("底部字幕固定覆盖整个视频，不能修改时间");
   if (track.target === "transition") {
@@ -47,13 +48,14 @@ export function validateTemplateTracks(tracks: EffectTrack[]): void {
     validateTrack(track);
     previewFont(track.editor.titleFont);
     previewFont(track.editor.subtitleFont);
-    if (isTextTarget(track.target) && !track.editor[track.target === "bubble" ? "bubbleText" : track.target].trim())
+    // 关键词对象没有示例文字，内容取所属文字的关键词。
+    if ((track.target === "title" || track.target === "subtitle" || track.target === "bubble") && !track.editor[track.target === "bubble" ? "bubbleText" : track.target].trim())
       throw new Error("文字轨道内容不能为空");
     if (!track.id || ids.has(track.id)) throw new Error("特效轨道 ID 必须唯一");
     ids.add(track.id);
-    if (["title", "subtitle", "vfx"].includes(track.target)) {
+    if (["title", "subtitle", "vfx", "title_keyword", "subtitle_keyword"].includes(track.target)) {
       const key = textKey(track.target, track.language);
-      if (singletons.has(key)) throw new Error("同一语言的标题、字幕和 VFX 最多各一个");
+      if (singletons.has(key)) throw new Error("同一语言的标题、字幕、关键词和 VFX 最多各一个");
       singletons.add(key);
     }
     if (track.target === "transition") {
@@ -62,11 +64,12 @@ export function validateTemplateTracks(tracks: EffectTrack[]): void {
       boundaries.add(boundary);
     }
   }
-  for (const track of tracks.filter((item) => item.language === "en")) {
-    const chinese = tracks.find((item) => item.target === track.target && item.language !== "en");
-    if (!chinese) throw new Error("英文需要对应的中文对象");
+  for (const track of tracks.filter((item) => item.language === "en" || isKeywordTarget(item.target))) {
+    const label = isKeywordTarget(track.target) ? "关键词" : "英文";
+    const chinese = tracks.find((item) => item.target === textRole(track.target) && item.language !== "en");
+    if (!chinese) throw new Error(`${label}需要对应的中文对象`);
     if (track.start_mode !== chinese.start_mode || track.start !== chinese.start || track.duration !== chinese.duration)
-      throw new Error("英文时间必须跟随中文对象");
+      throw new Error(`${label}时间必须跟随中文对象`);
   }
 }
 
@@ -85,7 +88,7 @@ export function resolveTrack(track: EffectTrack, duration: number, fps = 30): Re
   if (first >= last) return { start: first / fps, end: first / fps, editor, notice: "当前视频中没有可显示的时间" };
   let notice = end > duration + 1e-8 ? "持续时间已缩短至视频结束" : "";
   if (isTextTarget(track.target)) {
-    const role = track.target;
+    const role = textRole(track.target);
     const motions = (["In", "Out"] as const).filter((motion) => editor[`${role}${motion}`]);
     const total = motions.reduce((sum, motion) => sum + editor[`${role}${motion}Duration`], 0);
     if (last - first < motions.length) throw new Error("文字显示帧数不足以完成入场与出场动画");
@@ -188,16 +191,19 @@ export function resolveTemplate(draft: Pick<Draft, "tracks"> & Partial<Pick<Draf
   return { duration, clips, tracks, transitions, notices };
 }
 
-/** 提取当前对象参数，供参数面板和 SDK 转换共用。 */
+/** 提取当前对象参数，供参数面板和 SDK 转换共用；关键词对象只保留所属文字的样式字段，没有示例文字与句内关键词样式。 */
 export function trackEditor(editor: Editor, target: EffectTarget): Editor {
   const result = { ...defaultEditor, title: "", subtitle: "", bubbleText: "" };
   for (const field of targetEffectKeys(target)) result[field] = editor[field];
   if (isTextTarget(target)) {
-    const key = target === "bubble" ? "bubbleText" : target;
-    result[key] = editor[key];
-    if (target !== "bubble") result[`${target}Font`] = editor[`${target}Font`];
+    const role = textRole(target);
+    if (!isKeywordTarget(target)) {
+      const key = role === "bubble" ? "bubbleText" : role;
+      result[key] = editor[key];
+    }
+    if (role !== "bubble") result[`${role}Font`] = editor[`${role}Font`];
     for (const suffix of ["Size", "X", "Y", "InDuration", "OutDuration"] as const)
-      result[`${target}${suffix}`] = editor[`${target}${suffix}`];
+      result[`${role}${suffix}`] = editor[`${role}${suffix}`];
     if (target === "title") {
       result.titleKeyword = editor.titleKeyword;
       result.titleKeywordBold = editor.titleKeywordBold;
@@ -242,6 +248,8 @@ export function updateTrack(draft: Draft, id: string, edit: EffectDraft): Draft 
 export function removeTrack(draft: Draft, id: string): Draft {
   if (draft.tracks.some((track) => track.id === id && (track.target === "title" || track.target === "subtitle")))
     throw new Error("标题和底部字幕为固定对象");
+  if (draft.tracks.some((track) => track.id === id && isKeywordTarget(track.target)))
+    throw new Error("关键词对象请在所属标题或字幕中关闭");
   const next = { ...draft, tracks: draft.tracks.filter((track) => track.id !== id) };
   return draft.tracks.some((track) => track.id === id && track.target === "transition") ? compactTransitions(next) : next;
 }
@@ -251,10 +259,10 @@ export function addTrack(draft: Draft, asset: EffectAsset, target: EffectTarget,
   const selected = draft.tracks.find((track) => track.id === selectedId);
   if (["in", "out", "loop"].includes(asset.category)) {
     if (!selected || !isTextTarget(selected.target)) throw new Error("请选择需要添加动画的文字轨道");
-    const applied = applyAsset(trackDraft(draft, selected), asset, selected.target);
+    const applied = applyAsset(trackDraft(draft, selected), asset, textRole(selected.target));
     return { draft: updateTrack(draft, selected.id, applied.draft), id: selected.id };
   }
-  const role = isTextTarget(target) ? target : "title";
+  const role = isTextTarget(target) ? textRole(target) : "title";
   if (asset.category === "transition/normal" && boundary === undefined) {
     boundary = nextTransitionBoundary(draft);
   }
@@ -267,7 +275,8 @@ export function addTrack(draft: Draft, asset: EffectAsset, target: EffectTarget,
   }
   const styleTarget = asset.category === "bubble" ? "bubble" : asset.category === "flower" ? role : null;
   const styleField = styleTarget === "bubble" ? "bubble" : styleTarget ? `${styleTarget}Flower` as const : null;
-  const unstyled = asset.category === "vfx/normal" ? draft.tracks.find((track) => track.target === "vfx") : styleTarget && styleField ? (asset.category === "flower" && selected?.target === styleTarget ? selected : draft.tracks.find((track) => track.target === styleTarget && (styleTarget !== "bubble" || !track.editor[styleField]))) : undefined;
+  // 花字应用到选中的同类文字（含该文字的关键词对象），否则应用到这类文字的中文对象。
+  const unstyled = asset.category === "vfx/normal" ? draft.tracks.find((track) => track.target === "vfx") : styleTarget && styleField ? (asset.category === "flower" && selected && isTextTarget(selected.target) && textRole(selected.target) === styleTarget ? selected : draft.tracks.find((track) => track.target === styleTarget && (styleTarget !== "bubble" || !track.editor[styleField]))) : undefined;
   if (unstyled) {
     const applied = applyAsset(trackDraft(draft, unstyled), asset, role);
     return { draft: updateTrack(draft, unstyled.id, applied.draft), id: unstyled.id };
@@ -285,13 +294,14 @@ export function addTrack(draft: Draft, asset: EffectAsset, target: EffectTarget,
   return { draft: { ...draft, tracks: [...draft.tracks, track] }, id: track.id };
 }
 
-/** 参数表单保存规则，不依赖预览视频长度。 */
+/** 参数表单保存规则，不依赖预览视频长度；英文与关键词对象同步跟随中文对象的时间。 */
 export function setTrackTiming(draft: Draft, id: string, timing: Pick<EffectTrack, "start_mode" | "start" | "duration">): Draft {
   const current = draft.tracks.find((track) => track.id === id);
   if (!current) throw new Error("特效轨道不存在");
   if (current.language === "en") throw new Error("英文时间跟随中文对象，请调整中文时间");
+  if (isKeywordTarget(current.target)) throw new Error("关键词时间跟随所属文字，请调整所属文字的时间");
   return { ...draft, tracks: draft.tracks.map((track) => {
-    if (track.id !== id && !(track.language === "en" && track.target === current.target)) return track;
+    if (track.id !== id && !(track.language === "en" && track.target === current.target) && track.target !== `${current.target}_keyword`) return track;
     const next = { ...track, ...timing };
     validateTrack(next);
     return next;
@@ -301,6 +311,7 @@ export function setTrackTiming(draft: Draft, id: string, timing: Pick<EffectTrac
 /** 同类对象显示实例序号。 */
 export function trackLabel(track: EffectTrack, tracks: EffectTrack[]): string {
   if (track.target === "transition") return `镜头转场 ${track.transition_boundary}`;
+  if (isKeywordTarget(track.target)) return effectTargets[track.target];
   if (track.language === "en") return track.target === "title" ? "英文标题" : "英文字幕";
   if (tracks.some((item) => item.target === track.target && item.language === "en" && item.enabled !== false)) return track.target === "title" ? "中文标题" : "中文字幕";
   const siblings = tracks.filter((item) => item.target === track.target && item.language !== "en");
@@ -318,5 +329,20 @@ export function setBilingual(draft: Draft, target: "title" | "subtitle", enabled
   return { ...draft, tracks: [...draft.tracks, {
     ...chinese, id: crypto.randomUUID(), language: "en",
     editor: englishEditor(chinese.editor, target),
+  }] };
+}
+
+/** 关键词单独字效开关：首次开启按中文标题或字幕建立关键词对象，之后只改变启用状态，保留它的外观与字效。 */
+export function setKeywordObject(draft: Draft, role: "title" | "subtitle", enabled: boolean): Draft {
+  const target = `${role}_keyword` as const;
+  const existing = draft.tracks.find((track) => track.target === target);
+  if (existing) return { ...draft, tracks: draft.tracks.map((track) => track.id === existing.id ? { ...track, enabled } : track) };
+  if (!enabled) return draft;
+  const chinese = draft.tracks.find((track) => track.target === role && track.language !== "en");
+  if (!chinese) throw new Error("关键词需要对应的中文对象");
+  if (draft.tracks.length + draft.clips.length >= 100) throw new Error("轨道数量不能超过 100");
+  return { ...draft, tracks: [...draft.tracks, {
+    id: crypto.randomUUID(), target, start_mode: chinese.start_mode, start: chinese.start, duration: chinese.duration,
+    editor: keywordEditor(chinese.editor, role),
   }] };
 }

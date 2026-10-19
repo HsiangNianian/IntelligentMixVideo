@@ -80,6 +80,8 @@ VITE_PREVIEW_VIDEO_3_URL=https://your-domain.example/preview-3.mp4
 
 标题、字幕设置分别提供「中英双语」复选框。开启后英文作为独立对象出现在画面和时间轴，可单独调整字体、字号、位置或绑定 Remotion 字效；英文标题时间跟随中文标题，英文字幕与中文切片同时出现和消失。示例文字可以编辑，成片由服务端翻译实际文案。关闭后隐藏英文并停止输出，配置和字效绑定随模板保存，重新开启即可恢复；从未开启不创建英文配置。普通英文过长时成片自动缩小字号、尽量保持单行；[Web SDK 暂不支持 AutoScale](https://help.aliyun.com/zh/ims/developer-reference/timeline-support-guide-for-editing-and-previewing-the-component-web-sdk)，预览仍使用设置的字号。Remotion 字效沿用资产的文字长度限制和排版预检。
 
+中文标题、字幕设置分别提供「关键词单独字效」复选框。开启后「标题关键词」「字幕关键词」作为独立对象出现在画面和时间轴，只显示所属文字的关键词，可单独设置字体、字号、位置、花字和入出场/循环动画，或绑定单行 Remotion 字效（字效里只显示这个词，不再强调关键词，多行字效不能用于它）；时间跟随所属文字，没有页签可单独改时间。预览取示例文字中的关键词，成片换成切片给出的关键词，没有关键词的字幕片段不显示。原句仍显示完整文字，句中关键词按「关键词设置」的局部样式强调。关闭后停止输出，外观和字效绑定随模板保存，重新开启即可恢复。
+
 标题和底部字幕分别提供字体选择：阿里巴巴普惠体、方正仿宋简体、方正黑体简体、方正楷体简体、方正书宋简体、宋体、楷体、微软雅黑、站酷快乐体、思源黑体、思源宋体。字体随各自的 `tracks[].editor.titleFont` / `subtitleFont` 保存为 IMS 标识；预览将 `Source Han Sans CN` 转为 `Source Han Sans CN Normal`，将 `Source Han Serif CN` 转为 `思源宋体`。云端与本地使用同一目录，旧模板缺少字段时采用 `Alibaba PuHuiTi`；重置当前对象时恢复该字体，其他对象的选择保留。共享目录维护在 `server/src/server/template/fonts.json`，`value` 是保存及合成标识，`preview` 是 SDK 标识。
 
 字体下拉框与 Remotion 共用 `features/fonts/FontSelect.tsx` 和 `FontName.tsx`：选项及当前值以对应字体的字形展示名称，下面显示保存标识，支持搜索、键盘选择与主题颜色。IMS 的十一张透明 PNG 保存在 `features/templates/font-previews/`，随客户端打包，浏览字体选项无需下载完整字体。图片由固定 SDK 5.2.2 的对应字体绘制，Remotion 继续使用实时字体库的预览地址和上传功能。

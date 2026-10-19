@@ -599,7 +599,8 @@ export type EffectTrack = Message<"imv.template.v1.EffectTrack"> & {
   id: string;
 
   /**
-   * 效果作用对象，可选值为 title、subtitle、bubble、filter、vfx、transition 或 remotion。
+   * 效果作用对象，可选值为 title、subtitle、title_keyword、subtitle_keyword、bubble、filter、vfx、transition 或 remotion。
+   * title_keyword、subtitle_keyword 是关键词对象：单独显示所属中文标题或字幕的关键词，沿用所属文字的样式字段，时间跟随它。
    *
    * @generated from field: string target = 2;
    */
@@ -650,8 +651,8 @@ export type EffectTrack = Message<"imv.template.v1.EffectTrack"> & {
   transitionBoundary?: number | undefined;
 
   /**
-   * Remotion 字效作用的文字对象，title 或 subtitle；仅 remotion 字效片段设置，每个文字对象最多一个。
-   * 设置后该文字不再由 IMS 渲染，片段的时间跟随该对象，文字与关键词在合成时按该对象填入。
+   * Remotion 字效作用的文字对象，title、subtitle 或关键词对象 title_keyword、subtitle_keyword；仅 remotion 字效片段设置，每个文字对象最多一个。
+   * 设置后该文字不再由 IMS 渲染，片段的时间跟随该对象，文字与关键词在合成时按该对象填入；关键词对象只填入关键词本身。
    *
    * @generated from field: optional string text_target = 9;
    */
@@ -665,7 +666,7 @@ export type EffectTrack = Message<"imv.template.v1.EffectTrack"> & {
   language?: string | undefined;
 
   /**
-   * 英文文字对象是否参与预览和合成；省略为启用，关闭仍保留配置与资产绑定。
+   * 英文文字对象或关键词对象是否参与预览和合成；省略为启用，关闭仍保留配置与资产绑定。
    *
    * @generated from field: optional bool enabled = 11;
    */

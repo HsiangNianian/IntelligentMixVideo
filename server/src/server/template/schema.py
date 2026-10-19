@@ -37,6 +37,15 @@ CATEGORY_PARAMETERS = {
 }
 
 
+# 关键词对象：单独显示所属中文标题或字幕的关键词，沿用所属文字的样式字段（字体、字号、位置、花字与动画）。
+KEYWORD_TARGETS = {"title_keyword": "title", "subtitle_keyword": "subtitle"}
+
+
+def text_role(target: str) -> str:
+    """对象读取的样式字段前缀：关键词对象使用所属标题或字幕的字段，其余对象就是自身。"""
+    return KEYWORD_TARGETS.get(target, target)
+
+
 class EffectAsset(BaseModel):
     """由可信 SDK 目录生成的效果信息，客户端不能提交渲染参数。"""
 
@@ -255,7 +264,7 @@ class EffectTrack(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     id: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
-    target: Literal["title", "subtitle", "bubble", "filter", "vfx", "transition", "remotion"]
+    target: Literal["title", "subtitle", "title_keyword", "subtitle_keyword", "bubble", "filter", "vfx", "transition", "remotion"]
     start_mode: Literal["seconds", "percent"] | None = Field(default=None, exclude_if=lambda value: value is None)
     start: float | None = Field(default=None, ge=0, allow_inf_nan=False, exclude_if=lambda value: value is None)
     duration: float | None = Field(gt=0, allow_inf_nan=False)
@@ -264,8 +273,9 @@ class EffectTrack(BaseModel):
     sprite_id: UUID | None = Field(default=None, exclude_if=lambda value: value is None)
     # 转场与 Remotion 转场片段绑定视频交界处，开始秒数仅由本次视频计算。
     transition_boundary: int | None = Field(default=None, ge=1, le=100, strict=True, exclude_if=lambda value: value is None)
-    # Remotion 字效作用的文字对象；该文字不再由 IMS 渲染，片段时间跟随它。分类是否相符由保存时按 Sprite 检查。
-    text_target: Literal["title", "subtitle"] | None = Field(default=None, exclude_if=lambda value: value is None)
+    # Remotion 字效作用的文字对象（含关键词对象）；该文字不再由 IMS 渲染，片段时间跟随它。分类是否相符由保存时按 Sprite 检查。
+    text_target: Literal["title", "subtitle", "title_keyword", "subtitle_keyword"] | None = Field(
+        default=None, exclude_if=lambda value: value is None)
     language: Literal["zh", "en"] = Field(default="zh", exclude_if=lambda value: value == "zh")
     enabled: StrictBool = Field(default=True, exclude_if=lambda value: value is True)
 
@@ -281,10 +291,11 @@ class EffectTrack(BaseModel):
     @model_validator(mode="after")
     def validate_instance(self) -> "EffectTrack":
         """检查时间规则和对象内容；应用视频时计算实际区间与动画时长。"""
-        if self.language != "zh" and self.target not in ("title", "subtitle") and not (self.target == "remotion" and self.text_target):
+        if self.language != "zh" and self.target not in ("title", "subtitle") and not (
+                self.target == "remotion" and self.text_target in ("title", "subtitle")):
             raise ValueError("只有标题、字幕及其 Remotion 绑定可以设置语言")
-        if not self.enabled and not (self.language == "en" and self.target in ("title", "subtitle")):
-            raise ValueError("只有英文标题或字幕可以停用")
+        if not self.enabled and not (self.target in KEYWORD_TARGETS or (self.language == "en" and self.target in ("title", "subtitle"))):
+            raise ValueError("只有英文标题、英文字幕或关键词对象可以停用")
         if self.transition_boundary is not None and self.target not in ("transition", "remotion"):
             raise ValueError("只有转场可以设置视频交界处")
         if self.target == "transition":
@@ -315,9 +326,10 @@ class EffectTrack(BaseModel):
             raise ValueError("只有 Remotion 片段可以设置参数覆盖与宿主变换")
         if self.start_mode == "percent" and self.start >= 100:
             raise ValueError("开始百分比须小于 100")
-        text = self.target in ("title", "subtitle", "bubble")
-        keys = ({"bubble" if self.target == "bubble" else f"{self.target}_flower"}
-                | {f"{self.target}_{motion}" for motion in ("in", "out", "loop")}) if text else {self.target}
+        role = text_role(self.target)
+        text = role in ("title", "subtitle", "bubble")
+        keys = ({"bubble" if role == "bubble" else f"{role}_flower"}
+                | {f"{role}_{motion}" for motion in ("in", "out", "loop")}) if text else {self.target}
         if set(self.editor.selected_effects()) - keys:
             raise ValueError("轨道包含其他对象的效果")
         if self.target != "subtitle" and any((
@@ -334,11 +346,12 @@ class EffectTrack(BaseModel):
             bool(self.editor.title_keyword_size),
         )):
             raise ValueError("只有顶部标题可以设置标题关键词样式")
-        for role, field in (("title", "title"), ("subtitle", "subtitle"), ("bubble", "bubble_text")):
+        # 关键词对象没有示例文字：内容取所属文字的关键词，三段示例文字都必须为空。
+        for owner, field in (("title", "title"), ("subtitle", "subtitle"), ("bubble", "bubble_text")):
             content = getattr(self.editor, field)
-            if role != self.target and content:
+            if owner != self.target and content:
                 raise ValueError("轨道包含其他对象的文字")
-            if role == self.target and not content.strip():
+            if owner == self.target and not content.strip():
                 raise ValueError("文字轨道内容不能为空")
         if not text and not getattr(self.editor, self.target):
             raise ValueError("轨道缺少效果")
@@ -361,14 +374,23 @@ class TemplateData(BaseModel):
 
     @model_validator(mode="after")
     def validate_tracks(self) -> "TemplateData":
-        """检查对象数量、固定字幕时间、转场列表与统一时长；Remotion 和 IMS 对象共用名额。"""
+        """检查对象数量、固定字幕时间、关键词对象与所属文字、转场列表与统一时长；Remotion 和 IMS 对象共用名额。"""
         if len({track.id for track in self.tracks}) != len(self.tracks):
             raise ValueError("轨道 ID 重复")
-        for target in ("title", "subtitle", "vfx"):
+        for target in ("title", "subtitle", "vfx", *KEYWORD_TARGETS):
             for language in ("zh", "en"):
                 if sum(track.target == target and track.language == language for track in self.tracks) > 1:
                     raise ValueError(f"{target} 每种语言最多只能有一个")
         for track in self.tracks:
+            if track.target in KEYWORD_TARGETS:
+                source = next((item for item in self.tracks
+                               if item.target == KEYWORD_TARGETS[track.target] and item.language == "zh"), None)
+                if source is None:
+                    raise ValueError("关键词对象需要所属的中文标题或字幕")
+                if (track.start_mode, track.start, track.duration) != (source.start_mode, source.start, source.duration):
+                    raise ValueError("关键词对象的时间必须跟随所属文字")
+            if track.text_target in KEYWORD_TARGETS and not any(item.target == track.text_target for item in self.tracks):
+                raise ValueError("关键词 Remotion 字效需要对应的关键词对象")
             if track.language == "en":
                 role = track.text_target if track.target == "remotion" else track.target
                 source = next((item for item in self.tracks if item.target == role and item.language == "zh"), None)
@@ -451,11 +473,9 @@ def completeness_error(template: TemplateData) -> str:
 
 
 def active_tracks(tracks: list[EffectTrack]) -> list[EffectTrack]:
-    """只在渲染边界过滤停用英文及其字效；持久化始终保留完整配置。"""
-    enabled = {track.target for track in tracks if track.language == "en" and track.enabled and track.target in ("title", "subtitle")}
-    return [track for track in tracks if track.language != "en" or (
-        track.text_target in enabled if track.target == "remotion" else track.target in enabled
-    )]
+    """只在渲染边界过滤停用的英文或关键词对象及其字效；持久化始终保留完整配置。"""
+    disabled = {(track.target, track.language) for track in tracks if not track.enabled}
+    return [track for track in tracks if track.enabled and (track.text_target, track.language) not in disabled]
 
 
 @lru_cache(maxsize=1)

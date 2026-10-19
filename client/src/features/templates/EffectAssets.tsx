@@ -1,11 +1,11 @@
 /** 特效资产浏览与已添加对象列表；读取真实目录缩略图，选择操作更新父组件草稿和当前编辑对象。 */
 import { useId, useState } from "react";
-import { Captions, Heading1, Layers, MessageCircle, Shuffle, SlidersHorizontal, Sparkles, type LucideIcon } from "lucide-react";
+import { Captions, Heading1, Highlighter, Layers, MessageCircle, Shuffle, SlidersHorizontal, Sparkles, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { defaultEditor, textRoles, type Category, type Draft, type Editor, type EffectAsset, type EffectTrack, type TextRole } from "./model";
-import { assetCategories, assetField, isSelectableAsset, type EffectTarget } from "./effects";
+import { defaultEditor, isKeywordTarget, textRoles, type Category, type Draft, type Editor, type EffectAsset, type EffectTrack, type TextRole } from "./model";
+import { assetCategories, assetField, isSelectableAsset, trackEffect, type EffectTarget } from "./effects";
 import { trackLabel, trackLayers } from "./tracks";
 import { AssetBrowser, CoverPlaceholder } from "./AssetBrowser";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
@@ -20,8 +20,8 @@ function AssetCover({ asset }: { asset: EffectAsset }) {
   );
 }
 
-/** 六类画面对象使用独立图标和颜色，列表与设置栏共享。 */
-export const objectIcons: Record<EffectTarget, LucideIcon> = { title: Heading1, subtitle: Captions, bubble: MessageCircle, filter: SlidersHorizontal, vfx: Sparkles, transition: Shuffle };
+/** 各类画面对象使用独立图标和颜色，列表与设置栏共享；两种关键词对象共用一个图标。 */
+export const objectIcons: Record<EffectTarget, LucideIcon> = { title: Heading1, subtitle: Captions, title_keyword: Highlighter, subtitle_keyword: Highlighter, bubble: MessageCircle, filter: SlidersHorizontal, vfx: Sparkles, transition: Shuffle };
 
 /** 对象列表和设置栏展示带类别色块的图标。 */
 export function ObjectIcon({ target }: { target: EffectTarget }) {
@@ -50,7 +50,7 @@ export function EffectAssets({ editor = defaultEditor, catalog, textTarget, onTe
   const conflicting = isMotion && (category === "loop" ? Boolean(editor[`${role}In`] || editor[`${role}Out`]) : Boolean(editor[`${role}Loop`]));
   const needsBubble = isMotion && role === "bubble" && !editor.bubble;
   const selectedField = assetField(category, role);
-  const options = textTracks?.filter((track) => track.target === "title" || track.target === "subtitle" || (isMotion && track.target === "bubble"));
+  const options = textTracks?.filter((track) => track.target === "title" || track.target === "subtitle" || isKeywordTarget(track.target) || (isMotion && track.target === "bubble"));
   return (
     <section aria-label="特效资产" className="flex min-w-0 flex-col gap-2.5 p-3">
       <div className="flex items-center justify-between gap-2"><h2 className="text-[13px] font-semibold">特效资产</h2><span className="rounded-md bg-muted px-1.5 py-1 text-[11px] text-muted-foreground">{selectableAssets.length} 项</span></div>
@@ -93,7 +93,7 @@ export function AppliedEffects({ draft, catalog, resolved, selected, onSelect }:
   return <section aria-label="已添加特效" className="space-y-3 border-b p-4">
     <div className="flex items-center justify-between"><h2 className="text-[13px] font-semibold">画面对象</h2><span className="text-[11px] tabular-nums text-muted-foreground">{draft.tracks.length}</span></div>
     <div className="space-y-0.5">{[...draft.tracks].sort((a, b) => trackLayers[a.target] - trackLayers[b.target] || (a.target === "transition" && b.target === "transition" ? a.transition_boundary! - b.transition_boundary! : 0)).map((track) => {
-      const effectId = { title: track.editor.titleFlower, subtitle: track.editor.subtitleFlower, bubble: track.editor.bubble, filter: track.editor.filter, vfx: track.editor.vfx, transition: track.editor.transition }[track.target];
+      const effectId = trackEffect(track);
       const effect = catalog.find((item) => item.id === effectId)?.name ?? (effectId ? effectId.split("/").at(-1) : "未设置效果");
       const timing = resolved?.tracks[track.id];
       const interval = timing ? timing.end > timing.start ? `${Number(timing.start.toFixed(1))}～${Number(timing.end.toFixed(1))} 秒` : "当前视频未应用" : resolved ? "当前视频未应用" : "等待预览时间";

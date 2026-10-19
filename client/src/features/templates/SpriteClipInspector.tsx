@@ -16,8 +16,9 @@ import { ParameterControl, withLine, type ParameterValue } from "@/components/Pa
 import { SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { SpriteAsset } from "@/features/sprites/model";
 import { CATEGORIES, categoryOf, instanceTransformFields, isInstanceParameter, percentToPixels, pixelsToPercent, transformField, type TransformField } from "@/features/sprites/parameters";
-import { textKey, textRoles, type EffectTrack, type RemotionClip } from "./model";
-import { BOUND_TEXT_PARAMETERS, type bindClip } from "./clips";
+import { isKeywordTarget, textKey, textRoles, type EffectTrack, type RemotionClip } from "./model";
+import { BOUND_TEXT_PARAMETERS, type TextSlot, type bindClip } from "./clips";
+import { effectTargets } from "./effects";
 import { TrackTiming } from "./TrackTiming";
 import { trackLabel, type ResolvedTrack } from "./tracks";
 
@@ -86,11 +87,16 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
     ...(asset ? (["x", "y", "scale", "rotation", "opacity"] as TransformField[]).filter((name) => !exposedTransforms.includes(name) && clip.transform[name] !== undefined)
       .map((name) => { const { label } = transformField(name, asset.kind, asset.width, asset.height); return { key: name, label, restore: () => onTransform({ [name]: undefined }) }; }) : []),
   ];
-  // 字效的时间跟随所作用的文字对象：标题可在这里设置，字幕固定为整段视频。
+  // 字效的时间跟随所作用的文字对象：标题可在这里设置，字幕固定为整段视频；关键词对象跟随所属文字。
   const timedText = isText && textTrack?.target === "title" && textTrack.language !== "en" ? textTrack : undefined;
-  const tabs = [["appearance", "外观与位置"], ...(timedText ? [["timing", "时间设置"] as const] : []), ["keyword", "关键词设置"]] as const;
-  const activeTab = isText && (tab !== "timing" || timedText) ? tab : "appearance";
-  const textOptions = textTracks?.filter((track) => track.target === "title" || track.target === "subtitle").map((track) => ({ value: textKey(track.target, track.language), label: trackLabel(track, textTracks), target: track.target as "title" | "subtitle", language: track.language }))
+  // 作用于关键词对象时字效只显示关键词本身，不再在其中强调关键词，所以没有关键词页签。
+  const keywordSlot = !!clip.text_target && isKeywordTarget(clip.text_target);
+  const tabs = [["appearance", "外观与位置"], ...(timedText ? [["timing", "时间设置"] as const] : []), ...(keywordSlot ? [] : [["keyword", "关键词设置"] as const])] as const;
+  const activeTab = isText && tabs.some(([value]) => value === tab) ? tab : "appearance";
+  // 多行字效逐行显示多段文字，不能用于每次只有一个词的关键词对象。
+  const singleLine = (asset?.lines ?? 1) === 1;
+  const textOptions = textTracks?.filter((track) => track.target === "title" || track.target === "subtitle" || (singleLine && isKeywordTarget(track.target)))
+    .map((track) => ({ value: textKey(track.target, track.language), label: trackLabel(track, textTracks), target: track.target as TextSlot, language: track.language }))
     ?? (["title", "subtitle"] as const).map((target) => ({ value: target, label: textRoles[target], target, language: undefined }));
   const sampleRole = textTrack?.target === "title" || textTrack?.target === "subtitle" ? textTrack.target : undefined;
   // 多行字效作用于字幕时逐行填写示例；作用于标题时整段标题显示在第一行，仍是一个输入框。
@@ -213,7 +219,7 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
           onValueChange={(value) => { const option = textOptions.find((item) => item.value === value); if (option) onBind({ text_target: option.target, ...(option.language ? { language: option.language } : {}) }); }}>
           {textOptions.map((option) => <ToggleGroupItem key={option.value} value={option.value} className="flex-1 text-xs">{option.label}</ToggleGroupItem>)}
         </ToggleGroup>
-        <p className="text-[11px] text-muted-foreground">{clip.text_target ? `由这个字效显示${textRoles[clip.text_target]}：文字与关键词取自${textRoles[clip.text_target]}，时间跟随它。` : legacyTextTarget ? `当前与 IMS ${textRoles[legacyTextTarget]}同时显示。重新选择作用对象后，将改为仅显示 Remotion 字效。` : "请选择作用的标题或底部字幕，否则无法保存模板。"}</p>
+        <p className="text-[11px] text-muted-foreground">{clip.text_target ? isKeywordTarget(clip.text_target) ? `由这个字效显示${effectTargets[clip.text_target]}：内容是所属文字每段的关键词，时间跟随它。` : `由这个字效显示${effectTargets[clip.text_target]}：文字与关键词取自${effectTargets[clip.text_target]}，时间跟随它。` : legacyTextTarget ? `当前与 IMS ${textRoles[legacyTextTarget]}同时显示。重新选择作用对象后，将改为仅显示 Remotion 字效。` : "请选择作用的标题或底部字幕，否则无法保存模板。"}</p>
       </div> : isTransition ? <div className="space-y-2">
         <h3 className="text-xs font-medium">转场 {clip.transition_boundary}</h3>
         <p className="text-[11px] text-muted-foreground">使用资产自身持续时间，选择方式在「镜头转场」中设置。</p>

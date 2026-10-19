@@ -1,5 +1,6 @@
 # MySQL 模板存储：列表保留每条记录的校验结果，详情只返回有效模板，事务保护写入。
 
+import json
 from datetime import UTC, datetime
 from threading import Lock
 from uuid import UUID, uuid4
@@ -15,8 +16,9 @@ from generated.imv.sprite.v1 import sprite_pb2 as sprite_pb
 
 from ..database import get_engine
 from ..remotion_templates import placement, sprite_store, sprites
+from ..remotion_templates.categories import line_count
 from ..remotion_templates.store import Conflict
-from .schema import EffectTrack, Template, TemplateSave, TemplateSummary, completeness_error, effect_catalog
+from .schema import KEYWORD_TARGETS, EffectTrack, Template, TemplateSave, TemplateSummary, completeness_error, effect_catalog
 
 # 模板元数据用于查询和约束，配置 JSON 保留完整编辑字段与可信效果快照。
 metadata = MetaData()
@@ -112,13 +114,15 @@ def get_template(template_id: UUID) -> Template:
             raise HTTPException(409, f"模板 {template_id} 不符合当前规则：{validation_message(error)}") from error
 
 
-def check_slot(track: EffectTrack, kind: int) -> None:
-    """片段占用的模板对象须与 Sprite 分类相符：字效作用于标题或字幕，转场占用视频交界处，其他分类两者都不设置（422）。
+def check_slot(track: EffectTrack, sprite: sprite_pb.PublishedSprite) -> None:
+    """片段占用的模板对象须与 Sprite 分类相符：字效作用于标题、字幕或它们的关键词对象，转场占用视频交界处，其他分类两者都不设置（422）。
 
     旧 business_target 用途仍可独立叠加，不补写会替代 IMS 文字的 text_target；标题/字幕用途同样只属于字效，
     否则保存成功的模板会在每次合成渲染时失败（422）。
     作用于文字的字效由该文字对象提供文字与关键词（合成时由总线填入），所以不能再覆盖这两个参数（422）。
+    关键词对象每次只显示一个词，逐行出现的多行字效不能用于它（422）。
     """
+    kind = sprite.kind
     legacy_target = track.editor.remotion.business_target if track.editor.remotion else None
     if kind == sprite_pb.SPRITE_KIND_TEXT:
         if track.text_target is None and legacy_target not in {"title", "subtitle"}:
@@ -126,6 +130,8 @@ def check_slot(track: EffectTrack, kind: int) -> None:
         overrides = {item.key for item in track.editor.remotion.parameters} if track.editor.remotion else set()
         if bound := sorted(overrides & {sprites.TEXT_PROP, sprites.KEYWORDS_PROP}):
             raise HTTPException(422, f"Remotion 字效「{track.id}」的文字与关键词取自所作用的对象，不能覆盖 {'、'.join(bound)}")
+        if track.text_target in KEYWORD_TARGETS and line_count(json.loads(sprite.config_schema_json)) > 1:
+            raise HTTPException(422, f"Remotion 字效「{track.id}」是多行字效，不能用于关键词对象")
     elif track.text_target is not None or legacy_target in {"title", "subtitle"}:
         raise HTTPException(422, f"Remotion 片段「{track.id}」不是字效，不能作用于文字")
     if kind == sprite_pb.SPRITE_KIND_TRANSITION_OVERLAY:
@@ -168,7 +174,7 @@ def save_template(data: TemplateSave) -> Template:
                 placement.resolve(published[str(track.sprite_id)], track.editor.remotion)
             except ValueError as exc:
                 raise HTTPException(422, f"Remotion 片段「{track.id}」：{exc}") from None
-            check_slot(track, published[str(track.sprite_id)].kind)
+            check_slot(track, published[str(track.sprite_id)])
         effects = sum(published[str(track.sprite_id)].kind in VFX_KINDS for track in clips)
         if effects + sum(track.target == "vfx" for track in data.tracks) > 1:
             raise HTTPException(422, "VFX 最多一个，Remotion 视频特效也占用这个名额")

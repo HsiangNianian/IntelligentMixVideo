@@ -12,6 +12,8 @@ import { EffectCombobox } from "./EffectCombobox";
 import { TemplateFontPicker } from "./TemplateFontPicker";
 import {
   effectGroups,
+  isKeywordTarget,
+  textRole,
   textRoles,
   type EffectDraft,
   type Editor,
@@ -158,7 +160,10 @@ function TransitionPicker({ value, catalog, onChange }: { value: string; catalog
   </div>;
 }
 
-/** 仅显示选中对象的参数；循环与入出场动画相互排斥，其他对象的草稿保持不变。 */
+/**
+ * 仅显示选中对象的参数；循环与入出场动画相互排斥，其他对象的草稿保持不变。
+ * 关键词对象编辑所属标题或字幕的同名字段，没有示例文字（内容是关键词）与句内关键词样式，由所属文字的开关停用。
+ */
 export function EffectEditor({
   draft,
   catalog,
@@ -202,13 +207,14 @@ export function EffectEditor({
         <div className="space-y-1"><h2 className="font-semibold">特效设置</h2><p className="text-sm text-muted-foreground" aria-live="polite">{effectTargets[target]}</p></div>
         <Hint label="关闭特效设置"><Button type="button" variant="ghost" size="icon" className="size-7 shrink-0" aria-label="关闭特效设置" onClick={onClose}><X aria-hidden="true" /></Button></Hint>
       </div>}
-      {(Object.keys(textRoles) as TextRole[]).filter((role) => role === target).map((role) => {
+      {(Object.keys(textRoles) as TextRole[]).filter((role) => role === textRole(target)).map((role) => {
         const textKey = role === "bubble" ? "bubbleText" : role;
         const styleKey =
           role === "bubble" ? "bubble" : (`${role}Flower` as const);
+        const keywordObject = isKeywordTarget(target);
         return (
           <div key={role} className={view === "all" ? "space-y-5" : "space-y-3"}>
-            {view !== "keyword" && <div className="space-y-2">
+            {view !== "keyword" && !keywordObject && <div className="space-y-2">
               <Label htmlFor={`${id}-${role}`}>示例文字</Label>
               <Input
                 id={`${id}-${role}`}
@@ -221,7 +227,7 @@ export function EffectEditor({
                   : update(textKey, event.target.value)}
               />
             </div>}
-            {(role === "title" || role === "subtitle") && view !== "appearance" && (
+            {(role === "title" || role === "subtitle") && view !== "appearance" && !keywordObject && (
               <fieldset className="space-y-2">
                 <legend className="text-sm font-medium">关键词样式</legend>
                 {/* 四种局部样式可组合，多选切换组按下即开启对应字段。 */}
@@ -329,7 +335,7 @@ export function EffectEditor({
               type="button"
               variant="outline"
               className="template-inspector-reset w-full"
-              onClick={() => onChange(resetTextTarget(draft, role, language))}
+              onClick={() => onChange(resetTextTarget(draft, isKeywordTarget(target) ? target : role, language))}
             >
               重置特效设置
             </Button>
@@ -353,7 +359,7 @@ export function EffectEditor({
           }
         />
       </div>}
-      {target !== "title" && target !== "subtitle" && <Button type="button" variant="outline" className="template-inspector-remove w-full" onClick={() => { if (onRemove) onRemove(); else onChange(removeTarget(draft, target)); onClose(); }}>移除当前画面对象</Button>}
+      {target !== "title" && target !== "subtitle" && !isKeywordTarget(target) && <Button type="button" variant="outline" className="template-inspector-remove w-full" onClick={() => { if (onRemove) onRemove(); else onChange(removeTarget(draft, target)); onClose(); }}>移除当前画面对象</Button>}
     </section>
   );
 }

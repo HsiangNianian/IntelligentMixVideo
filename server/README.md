@@ -222,6 +222,8 @@ result = segment({
 
 双语模板的文字对象及 Remotion 绑定通过可选 `language=en` 区分，省略为中文。英文文字对象的 `enabled` 省略为 true；false 只保留配置及资产引用，不翻译、不渲染，也不触发对应 Remotion 环境检查。标题、字幕开关独立，不新增表。翻译合并为一次调用，英文标题使用 `title_en`，字幕按 `text_en`/`keyword_en` 与中文片段同步；英文字幕和展示关键词复用中文字幕去标点规则，保留问号、数字内小数点、英文词内撇号和空格换行；英文标题和原始译文快照保留标点，译文不进入素材匹配请求。普通 IMS 英文使用 `AdaptMode=AutoScale`、`TextWidth=0.9`，Remotion 按每个语言的对象绑定渲染。翻译错误以 `translation_failed` 结束任务；`translation` 是不可恢复的成本阶段，中断后不自动重放，已完成的译文随任务快照恢复。翻译步骤写入既有 `segmentation.json` 日志。
 
+关键词对象是 `target=title_keyword`／`subtitle_keyword` 的文字对象，每种最多一个、只有中文，沿用所属标题或字幕的样式字段（字体、字号、位置、花字、动画），不带示例文字和句内关键词样式，时间必须与所属中文对象一致；`enabled=false` 保留配置和资产引用，不渲染。合成时标题关键词在标题区间显示切片返回的 `title_keyword`，字幕关键词在每个带关键词的字幕区间里只显示该词，各自成为独立的 IMS 文字片段，叠在所属文字之上。Remotion 字效以 `text_target=title_keyword`／`subtitle_keyword` 绑定关键词对象时，IMS 不再输出它，字效的 `text` 是关键词、`keywords` 为空；关键词绑定须先有对应关键词对象，多行字效不能用于关键词对象（422）。总线经 `POST /api/sprites/render` 渲染这类摆放时，以关键词作为每条 cue 的文字。
+
 **英文翻译**：`translate(result, title=None)` 把 `segment` 的结果一次模型调用译成英文（双语视频合成在切片后调用），模型配置只从服务端 `server/.env` 读取。返回副本，每个片段增加 `text_en`、`keyword_en`，传入 `title` 时增加 `title_en`、`title_keyword_en`。英文关键词复用中文关键词的校验但不限长度：片段词不在本段译文中时置空，标题词不在英文标题中时报错。段数或类型不符、片段译文为空、原标题非空而英文标题为空时直接报错，不重试。
 
 **日志**：HTTP 与视频合成共用日志入口，完整切片记录阶段、切点、关键词与模型耗时；日志含文案，按敏感数据管理。桌面写入 `backend/server.log`。

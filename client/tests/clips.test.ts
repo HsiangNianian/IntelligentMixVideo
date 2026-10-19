@@ -84,7 +84,7 @@ test("字效作用于所选文字对象且每个对象最多一个", () => {
   expect(title.clips[0].text_target).toBe("title");
   expect(() => addClip(title, text, [text], "title")).toThrow("已有 Remotion 字效");
   expect(addClip(title, text, [text], "subtitle").clips.map((clip) => clip.text_target)).toEqual(["title", "subtitle"]);
-  expect(() => addClip(sampleDraft(), text, [text], "bubble")).toThrow("只能作用于标题或底部字幕");
+  expect(() => addClip(sampleDraft(), text, [text], "bubble")).toThrow("只能作用于标题、底部字幕或它们的关键词");
 });
 
 // 场景：Remotion 和 IMS 转场共用有序列表，支持添加超过两个候选，每个序号仅有一个效果。

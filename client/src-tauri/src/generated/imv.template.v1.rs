@@ -230,7 +230,8 @@ pub struct EffectTrack {
     /// 模板内唯一的对象实例 ID；Remotion 片段也用它标识这一次摆放，同一个 Sprite 可以摆放多次。
     #[prost(string, tag="1")]
     pub id: ::prost::alloc::string::String,
-    /// 效果作用对象，可选值为 title、subtitle、bubble、filter、vfx、transition 或 remotion。
+    /// 效果作用对象，可选值为 title、subtitle、title_keyword、subtitle_keyword、bubble、filter、vfx、transition 或 remotion。
+    /// title_keyword、subtitle_keyword 是关键词对象：单独显示所属中文标题或字幕的关键词，沿用所属文字的样式字段，时间跟随它。
     #[prost(string, tag="2")]
     pub target: ::prost::alloc::string::String,
     /// 开始位置的计量方式，可选值为 seconds 或 percent；remotion 片段只能使用 seconds。
@@ -253,14 +254,14 @@ pub struct EffectTrack {
     /// IMS 转场不设置 start/start_mode；合成时由 transition_mode 选择各连接处的效果。
     #[prost(uint32, optional, tag="8")]
     pub transition_boundary: ::core::option::Option<u32>,
-    /// Remotion 字效作用的文字对象，title 或 subtitle；仅 remotion 字效片段设置，每个文字对象最多一个。
-    /// 设置后该文字不再由 IMS 渲染，片段的时间跟随该对象，文字与关键词在合成时按该对象填入。
+    /// Remotion 字效作用的文字对象，title、subtitle 或关键词对象 title_keyword、subtitle_keyword；仅 remotion 字效片段设置，每个文字对象最多一个。
+    /// 设置后该文字不再由 IMS 渲染，片段的时间跟随该对象，文字与关键词在合成时按该对象填入；关键词对象只填入关键词本身。
     #[prost(string, optional, tag="9")]
     pub text_target: ::core::option::Option<::prost::alloc::string::String>,
     /// 文字对象或 Remotion 文字绑定的语言；省略为中文 zh，英文使用 en。
     #[prost(string, optional, tag="10")]
     pub language: ::core::option::Option<::prost::alloc::string::String>,
-    /// 英文文字对象是否参与预览和合成；省略为启用，关闭仍保留配置与资产绑定。
+    /// 英文文字对象或关键词对象是否参与预览和合成；省略为启用，关闭仍保留配置与资产绑定。
     #[prost(bool, optional, tag="11")]
     pub enabled: ::core::option::Option<bool>,
 }

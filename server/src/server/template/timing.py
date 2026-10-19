@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from .schema import EffectTemplateEditor, EffectTrack, TemplateData
+from .schema import EffectTemplateEditor, EffectTrack, TemplateData, text_role
 
 
 @dataclass(frozen=True)
@@ -32,15 +32,16 @@ def resolve_track(track: EffectTrack, duration: float, fps: int) -> ResolvedTrac
     if first >= last:
         return ResolvedTrack(first / fps, first / fps, editor, "当前视频中没有可显示的时间")
     notice = "持续时间已缩短至视频结束" if end > duration + 1e-8 else ""
-    if track.target in ("title", "subtitle", "bubble"):
-        motions = [motion for motion in ("in", "out") if getattr(editor, f"{track.target}_{motion}")]
-        total = sum(getattr(editor, f"{track.target}_{motion}_duration") for motion in motions)
+    role = text_role(track.target)
+    if role in ("title", "subtitle", "bubble"):
+        motions = [motion for motion in ("in", "out") if getattr(editor, f"{role}_{motion}")]
+        total = sum(getattr(editor, f"{role}_{motion}_duration") for motion in motions)
         if last - first < len(motions):
             raise ValueError("文字显示帧数不足以完成入场与出场动画")
         if total > (last - first) / fps + 1e-8:
             available = last - first
             for index, motion in enumerate(motions):
-                field = f"{track.target}_{motion}_duration"
+                field = f"{role}_{motion}_duration"
                 frames = available if index == len(motions) - 1 else max(1, min(available - 1, floor(getattr(editor, field) / total * (last - first) + 0.5)))
                 setattr(editor, field, frames / fps)
                 available -= frames
