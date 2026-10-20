@@ -1,9 +1,11 @@
 /**
  * 字效本地会话库回归：事件合并规则（任务状态、轮次、游标、作品版本指针）、消息分页、写入本地后确认送达，
  * 以及 Remotion 请求和资产发布携带本机设备 ID；存储使用每例独立的内存实现。桌面存储经 IPC 发送的参数与
- * `remotion-sessions-contract.json` 逐字比对，Rust 单元测试解析并执行同一份夹具。执行 bun run test。
+ * `remotion-sessions-contract.json` 逐字比对，Rust 单元测试解析并执行同一份夹具。浏览器的 IndexedDB 实现用
+ * fake-indexeddb 验证页面重新加载后的读回、按服务删除、strict 持久性提交、连接关闭后重新打开与失败原因。执行 bun run test。
  */
 import { expect, spyOn, test } from "bun:test";
+import { forceCloseDatabase, IDBDatabase, IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import * as api from "@/features/remotion_templates/api";
 import * as local from "@/features/remotion_templates/localSessions";
@@ -61,6 +63,24 @@ function desktopStorage(fail: (operation: string) => boolean = () => false) {
   });
   local.setStorage(undefined);
   return calls;
+}
+/**
+ * 在一个全新的 fake-indexeddb 里执行 `body`，模拟浏览器版的本地会话库；之后恢复服务地址并移除全局 IndexedDB，
+ * 下一例由测试初始化换回内存实现。
+ */
+async function browserDatabase(body: (factory: IDBFactory) => Promise<void>) {
+  const factory = new IDBFactory();
+  Reflect.set(globalThis, "indexedDB", factory);
+  Reflect.set(globalThis, "IDBKeyRange", IDBKeyRange);
+  const original = apiBase();
+  try {
+    local.setStorage(undefined);
+    await body(factory);
+  } finally {
+    setApiBase(original);
+    Reflect.deleteProperty(globalThis, "indexedDB");
+    Reflect.deleteProperty(globalThis, "IDBKeyRange");
+  }
 }
 /** 登记一条只有初始任务的本地会话。 */
 async function recordWork() {
@@ -137,6 +157,99 @@ test("本地消息分页返回 next_before", async () => {
   expect(older.next_before).toBeNull();
   await expect(local.snapshot("missing")).rejects.toBeInstanceOf(local.MissingLocalWork);
 });
+
+// 回归：浏览器曾只把会话存在页面内存，刷新或重启后聊天历史和设备 ID 一起丢失（设备 ID 变了，服务端也认不出原作品）。
+// 现在保存在 IndexedDB：模拟页面重新加载（新的存储实例与连接）后会话、消息分页、任务状态与设备 ID 原样读回；
+// 删除只移除当前服务下的这条会话。
+test("浏览器重新加载后从 IndexedDB 读回会话与设备 ID", () =>
+  browserDatabase(async () => {
+    const original = apiBase();
+    const device = await local.deviceId();
+    await recordWork();
+    await local.apply("work-1", [
+      ...[1, 2, 3].map((sequence) =>
+        event(sequence, {
+          type: "message.created",
+          data: { id: `m-${sequence}`, sequence, job_id: "job-1", role: "user", text: `第 ${sequence} 条` },
+        }),
+      ),
+      event(4, { type: "job.updated", data: running("succeeded") }),
+    ]);
+    setApiBase("http://other.test:9000");
+    await recordWork();
+    setApiBase(original);
+
+    local.setStorage(undefined);
+    expect(await local.deviceId()).toBe(device);
+    expect(await local.history()).toMatchObject([{ id: "work-1", title: "本地标题", job: { status: "succeeded" } }]);
+    const first = await local.snapshot("work-1", undefined, 2);
+    expect(first.messages.map((message) => message.text)).toEqual(["第 2 条", "第 3 条"]);
+    expect(first.cursor).toBe(4);
+    expect((await local.snapshot("work-1", first.next_before!, 2)).messages.map((message) => message.sequence)).toEqual([1]);
+
+    await local.forget("work-1");
+    expect(await local.history()).toEqual([]);
+    expect(await local.storage().messages(local.server(), "work-1", null, 10)).toEqual([]);
+    setApiBase("http://other.test:9000");
+    expect((await local.history()).map((work) => work.id)).toEqual(["work-1"]);
+  }));
+
+// 回归：浏览器默认以 relaxed 提交，写入只到系统缓冲；服务端在确认送达后删除事件，系统崩溃或断电会丢失已确认的消息，
+// 首次生成的设备 ID 丢失还会让本机认不出原作品。会话库的每个事务都以 strict 提交。
+test("浏览器会话库以 strict 持久性提交", () =>
+  browserDatabase(async () => {
+    const opened = spyOn(IDBDatabase.prototype, "transaction");
+    try {
+      await local.deviceId();
+      await recordWork();
+      await local.snapshot("work-1");
+      await local.forget("work-1");
+      // 设备 ID、登记会话与删除各一次写事务；建表的 versionchange 事务由打开请求创建，不经过这里的选项。
+      const writes = opened.mock.results
+        .map((result) => result.value as IDBTransaction)
+        .filter((transaction) => transaction.mode === "readwrite");
+      expect(writes.map((transaction) => transaction.durability)).toEqual(["strict", "strict", "strict"]);
+    } finally {
+      opened.mockRestore();
+    }
+  }));
+
+// 回归：会话库连接只打开一次并一直缓存。清除站点数据等情况下浏览器强制关闭连接后，本页每次读写都报连接已关闭，
+// 直到刷新；其他页签删除（或以后升级）本库时，本页一直占着连接，对方的请求被挡住。现在两种情况都放弃旧连接，
+// 下次读写重新打开。
+test("浏览器会话库连接关闭或被其他页签删除后重新打开", () =>
+  browserDatabase(async (factory) => {
+    const open = spyOn(factory, "open");
+    await recordWork();
+    const db = (open.mock.results[0]!.value as IDBOpenDBRequest).result;
+    // fake-indexeddb 把参数声明成了构造函数类型，实际接收的是连接实例。
+    forceCloseDatabase(db as unknown as typeof IDBDatabase);
+    expect((await local.history()).map((work) => work.id)).toEqual(["work-1"]);
+    await new Promise<void>((resolve, reject) => {
+      const request = factory.deleteDatabase("imv-remotion-sessions");
+      request.onsuccess = () => resolve();
+      request.onblocked = () => reject(new Error("本页的连接挡住了删除"));
+    });
+    expect(await local.history()).toEqual([]);
+    expect(open).toHaveBeenCalledTimes(3);
+  }));
+
+// 回归：请求失败时 error 事件先冒泡到事务，那时 transaction.error 还是 null，界面只显示「读写失败：null」。
+// 用一次真实失败的请求（对已有键 add）代替读取，原因须带该请求的错误名。
+test("浏览器会话库读写失败时报告请求的错误", () =>
+  browserDatabase(async () => {
+    await local.storage().device();
+    const read = spyOn(IDBObjectStore.prototype, "get").mockImplementation(function (this: IDBObjectStore) {
+      return this.add("重复", "device_id");
+    });
+    try {
+      const failure = local.storage().device();
+      await expect(failure).rejects.toBeInstanceOf(local.LocalStoreError);
+      await expect(failure).rejects.toThrow(/ConstraintError/);
+    } finally {
+      read.mockRestore();
+    }
+  }));
 
 // 每个 SSE 事件先写入本地会话库，再以该事件编号确认送达；重新连接时重新确认本地已有的游标。
 test("事件写入本地后确认送达，重连时补发确认", async () => {

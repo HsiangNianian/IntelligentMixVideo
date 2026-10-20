@@ -33,7 +33,7 @@
 
 聊天历史只保存在使用者本地：`localSessions.ts` 定义会话存储接口，桌面通过 Tauri `remotion_sessions` 异步命令读写应用数据目录的
 `data/remotion/sessions.sqlite3`（读写不占用界面线程，进程共用一个连接，表结构按 `PRAGMA user_version` 版本化；
-IPC 参数结构固定在 `client/tests/remotion-sessions-contract.json`，前端测试逐字比对、Rust 测试执行同一份夹具），浏览器（仅供本地测试）使用页面内存、刷新即清空（刷新后记住的会话已不在本机，静默回到空白页）。会话按当前 API 服务地址归属（设置里改了共享后端地址后，侧栏只列该服务的会话，删除也只移除该服务下的本地记录）。
+IPC 参数结构固定在 `client/tests/remotion-sessions-contract.json`，前端测试逐字比对、Rust 测试执行同一份夹具），浏览器保存在当前站点的 IndexedDB `imv-remotion-sessions`（表结构与桌面库对应，事务以 strict 持久性落盘后才算完成，刷新或重启浏览器后仍在；连接被浏览器关闭或其他页签删除本库后，下次读写重新打开；清除站点数据后记住的会话已不在本机，静默回到空白页）。会话按当前 API 服务地址归属（设置里改了共享后端地址后，侧栏只列该服务的会话，删除也只移除该服务下的本地记录）。
 库里另存全局唯一的本机设备 ID，所有 Remotion 请求
 与 SSE 以 `X-IMV-Device` 携带，服务端只返回本设备的作品。会话订阅把每个事件先写入本地再调用 `POST /works/{id}/ack`
 确认送达，服务端随即删除已送达事件；重新连接时从本地游标续传并补发一次确认。只有打开的会话有 SSE：其余仍在排队或运行的
