@@ -42,6 +42,18 @@ export interface FontInfo {
   faces: FontFaceInfo[];
 }
 
+/** 服务端发来的字体卡片；早于字体卡片的服务端（0.9.8 及以前）没有 `faces` 和 `license`。 */
+type FontCard = Omit<FontInfo, "faces" | "license"> & Partial<Pick<FontInfo, "faces" | "license">>;
+
+/**
+ * 补齐早期服务端缺少的字段：一个字体就是只有常规字形的卡片。客户端热更新可能先于服务端部署，
+ * 缺字段不能让字体库页面渲染时抛错（整个界面会变成黑屏）。
+ */
+function asCard(card: FontCard): FontInfo {
+  const { id, weights, size, file_url, preview_url } = card;
+  return { license: "", faces: [{ id, slot: "regular", weights, size, sha256: "", file_url, preview_url }], ...card };
+}
+
 /** 服务端 4xx/5xx 响应里的文字说明；不是文字时返回 null。 */
 async function detailOf(response: Response): Promise<string | null> {
   try {
@@ -83,7 +95,7 @@ async function request<T>(path: string, init: RequestInit, timeoutMs: number): P
 
 /** 读取共享字体库（预装与用户上传），按登记顺序，默认字体在最前。 */
 export function listFonts(signal?: AbortSignal): Promise<FontInfo[]> {
-  return request("/fonts", { signal }, 20_000);
+  return request<FontCard[]>("/fonts", { signal }, 20_000).then((cards) => cards.map(asCard));
 }
 
 /**
@@ -95,7 +107,7 @@ export function uploadFont(file: File, label: string, preview: Blob | null, sign
   form.append("file", file);
   form.append("label", label);
   if (preview) form.append("preview", preview, "preview.png");
-  return request("/fonts", { method: "POST", body: form, signal }, 120_000);
+  return request<FontCard>("/fonts", { method: "POST", body: form, signal }, 120_000).then(asCard);
 }
 
 /** 卡片或字形预览条的完整地址；没有预览条时返回 null，界面改用文字名称。 */
