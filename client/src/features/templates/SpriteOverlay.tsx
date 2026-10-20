@@ -1,9 +1,11 @@
 /**
  * 把 AI 资产叠在模板预览画面上：每个资产一个透明隔离播放器，由预览播放时间逐帧驱动（只定位，不自行播放）。
+ * 播放器的字体由本页读取一次后转交，不各自下载。
  * 支持参数覆盖的播放器同时收到这次摆放的参数与宿主变换；选中的可移动资产在画面上显示一个可拖动的位置框。
  */
 import { useEffect, useImperativeHandle, useRef, useState, type KeyboardEvent, type PointerEvent, type Ref } from "react";
 import { apiBase } from "@/lib/api-base";
+import { HOST_FONTS, sendPreviewFonts } from "@/features/sprites/previewFonts";
 import type { SpriteClip } from "./timeline";
 
 /** 父预览仅推送当前时间；播放、暂停、拖动都以同一时间驱动，不会产生时钟漂移。 */
@@ -82,11 +84,16 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
     schedule();
   }, [clips]);
 
-  // 页面就绪后才开始定位；旧版本生成的资产不支持逐帧驱动，保持隐藏并提示；不支持参数覆盖的资产按发布默认值显示并提示。
+  // 播放器请求字体时转交本页读取的字体。页面就绪后才开始定位；旧版本生成的资产不支持逐帧驱动，保持隐藏并提示；
+  // 不支持参数覆盖的资产按发布默认值显示并提示。
   useEffect(() => {
     function receive(event: MessageEvent) {
-      const id = [...frames.current].find(([, frame]) => frame.contentWindow === event.source)?.[0];
-      if (!id || event.data?.type !== "imv-preview-ready" || event.data?.channel !== channels.current.get(id)) return;
+      const entry = [...frames.current].find(([, frame]) => frame.contentWindow === event.source);
+      const id = entry?.[0];
+      const channel = id ? channels.current.get(id) : undefined;
+      if (!entry?.[1].contentWindow || !channel || event.data?.channel !== channel) return;
+      if (event.data?.type === "imv-preview-fonts-request") return sendPreviewFonts(entry[1].contentWindow, channel);
+      if (!id || event.data?.type !== "imv-preview-ready") return;
       if (event.data.sync !== true) { setUnsupported((items) => items.includes(id) ? items : [...items, id]); return; }
       supported.current.add(id);
       if (event.data.host === true) {
@@ -114,7 +121,7 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
           ref={(element) => { if (element) frames.current.set(clip.id, element); else frames.current.delete(clip.id); }}
           title={`AI 资产预览：${clip.name}`}
           sandbox="allow-scripts"
-          src={`${apiBase()}/api/sprites/${encodeURIComponent(clip.spriteId)}/preview?overlay=true&sync=1#${channels.current.get(clip.id)}`}
+          src={`${apiBase()}/api/sprites/${encodeURIComponent(clip.spriteId)}/preview?overlay=true&sync=1&${HOST_FONTS}#${channels.current.get(clip.id)}`}
           className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 border-0"
           style={{ colorScheme: "light", visibility: "hidden", aspectRatio: clip.aspect, ...(clip.aspect > stageAspect ? { height: "100%" } : { width: "100%" }) }}
         />

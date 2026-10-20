@@ -47,7 +47,7 @@ test("封面进入视口才加载播放器，离开视口卸载", async () => {
   await intersect(true);
   const { frame, channel } = player();
   expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
-  expect(frame.src).toBe(`http://api.test:8000/api/sprites/s1/preview?sync=1#${channel}`);
+  expect(frame.src).toBe(`http://api.test:8000/api/sprites/s1/preview?sync=1&fonts=host#${channel}`);
   await intersect(false);
   expect(screen.queryByTitle("AI 资产封面：霓虹标题")).toBeNull();
 });
