@@ -1,9 +1,10 @@
 """MySQL registry of the fonts Remotion effects can use: the preinstalled catalog and fonts users uploaded.
 
 A row identifies a font by a unique family name (the name CSS and the render sandbox's fontconfig resolve) and holds
-the file's metadata as JSON; the bytes themselves are objects in ZOS (`fonts.py`). Rows are only ever added, never
-changed or deleted, so a template or Sprite that names a family keeps rendering. Like the Sprite table, the table
-is created on first use and never altered. The functions are synchronous; callers run them in a worker thread.
+the file's metadata as JSON; the bytes themselves are objects in ZOS (`fonts.py`). Rows are never deleted and their ID
+and family never change, so a template or Sprite that names a family keeps rendering; only how a font is shown (its
+label and preview strip) may be corrected (`update_data`). Like the Sprite table, the table is created on first use
+and never altered. The functions are synchronous; callers run them in a worker thread.
 """
 
 from datetime import UTC, datetime
@@ -46,6 +47,12 @@ def listing() -> list[dict]:
     with initialize_schema().connect() as connection:
         rows = connection.execute(select(fonts).order_by(fonts.c.created_at, fonts.c.font_id)).all()
     return [{**row.data, "id": row.font_id, "family": row.family, "device_id": row.device_id} for row in rows]
+
+
+def update_data(font_id: str, data: dict) -> None:
+    """Replace a font's metadata JSON; callers only change how the font is shown, never its file fields."""
+    with initialize_schema().begin() as connection:
+        connection.execute(fonts.update().where(fonts.c.font_id == font_id).values(data=data))
 
 
 def insert(font_id: str, family: str, data: dict, device: str | None) -> bool:

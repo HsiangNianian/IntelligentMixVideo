@@ -1,4 +1,4 @@
-/** 字体库 HTTP 客户端：读取共享字体库、上传字体；上传失败直接展示服务端给出的原因（重名、格式、大小）。 */
+/** 字体库 HTTP 客户端：读取共享字体库、上传字体；上传失败直接展示服务端给出的原因（文件已在库里、格式、大小）。 */
 import { updateFetch as fetch } from "@/lib/update-guard";
 import { ApiError, apiUrl } from "@/features/remotion_templates/api";
 import { deviceId } from "@/features/remotion_templates/localSessions";

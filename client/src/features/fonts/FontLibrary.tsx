@@ -52,7 +52,7 @@ export function FontLibrary({ previewer }: { previewer?: Previewer }) {
         </Button>
       </div>
       <p className="text-xs leading-5 text-muted-foreground">
-        支持 .ttf 与 .otf。上传的字体会加入所有人共享的字体库，之后不能删除，请确认你有权使用该字体；家族名称不能与已有字体重复。
+        支持 .ttf 与 .otf。上传的字体会加入所有人共享的字体库，之后不能删除，请确认你有权使用该字体；同一个文件只能上传一次；粗体、斜体等样式的家族名带上样式名（如 Bold），同一字体的其他版本另起一个家族名。
       </p>
       {problem && <p role="alert" className="text-sm text-destructive">{problem}</p>}
       {loadError && (

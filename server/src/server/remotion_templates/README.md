@@ -184,7 +184,8 @@ Without that directory, fontconfig keeps its normal per-sandbox cache fallback.
 Effects can use any font of the shared font library, a MySQL registry (`remotion_fonts`, `font_store.py`) whose files
 are objects in ZOS (or the local object folder while `ZOS_BUCKET` is empty). It holds three kinds of font and is never
 empty: the system default `Noto Sans CJK SC` (registered when the runtime starts, no file), the preinstalled catalog
-and the fonts users upload. Rows are only ever added, so a template that names a family keeps rendering.
+and the fonts users upload. Rows are never deleted and their family never changes, so a template that names a family
+keeps rendering; only how a font is shown (label, preview strip) may be corrected.
 
 - **Preinstalled fonts**: the 16 free OFL fonts ship inside the backend package as `bundled_fonts/<file>.xz`
   (xz-compressed, about 60 MB). `font_catalog.json` pins each font's uncompressed size and SHA-256 and records where
@@ -200,14 +201,29 @@ and the fonts users upload. Rows are only ever added, so a template that names a
   HappyZcool-2016) are not bundled: they are proprietary or their redistribution terms are not confirmed. Anyone
   holding a licence can upload them (the family name inside the file must match).
 - **Uploads**: `POST /api/templates/fonts` (multipart `file`, optional `label` and `preview`, `X-IMV-Device`) takes a
-  `.ttf`/`.otf` up to `IMV_FONT_UPLOAD_MAX_BYTES`. The backend only reads the family name from the `name` table with
-  bounds-checked Python and never decodes the font; the sandboxed Chrome and the user's own browser do. The family
-  must differ from every registered, installed and reserved name. The preview strip is drawn by the uploader's browser
-  and only its alpha is kept. Fonts cannot be deleted. The library is shared, like the Sprite library.
+  `.ttf`/`.otf` up to `IMV_FONT_UPLOAD_MAX_BYTES`. The backend only reads the font's names from the `name` table with
+  bounds-checked Python and never decodes the font; the sandboxed Chrome and the user's own browser do. The family is
+  the font's English (default-language) name; the display name is its own Chinese name when it has one, otherwise the
+  same family, and never the file name. Duplicates are found by content: a file whose SHA-256 is already registered
+  (an upload or a preinstalled font, also one that sync has not installed yet) is refused and the message names that
+  font. The family must be unique. A style other than regular (name ID 17, else 2; not for a variable font, whose
+  style names only its default instance) is part of the family, so the styles of a family get the same names in any
+  upload order (`Liberation Serif Bold`, `Smiley Sans Oblique`). Another version of the same style, or a file carrying
+  a registered, preinstalled, installed or reserved name, is registered under its legacy family (name ID 1), that name
+  plus version (`Zed Sans v2.000`), or that name numbered from 2 (`Zed Sans (2)`), whichever is free first. A
+  preinstalled font whose family an earlier upload took is skipped by sync with a warning. Uploads registered before
+  the display name came from the font (labelled with their file name) get their own display name at the next
+  `FontStore.sync`; their strip shows the file name, so it is dropped (with its object) and the name is shown as text.
+  The preview strip is drawn by the uploader's browser with that display name (`client/src/features/fonts/names.ts`
+  applies the same rule and sends it as `label`); a strip drawn with any other text is dropped, and only its alpha is
+  kept. Fonts cannot be deleted. The library is shared, like the Sprite library.
 - **Rendering**: the sandbox has no network, so the backend caches each font from the object store after checking its
   registry hash (`<data dir>/fonts/files`) and the sandbox mounts that folder read-only at `/imv-fonts` with a generated
   `fonts.conf` (`FONTCONFIG_FILE`). Chrome in every worker (validation, preview build, overlay render, video
-  composition) resolves a family by its CSS name. macOS development without the sandbox does not load them.
+  composition) resolves a family by its CSS name. The config holds one scan rule per font file (preinstalled and
+  uploaded) that lists the file under its registry family only, so files that carry the same name inside them stay
+  apart, including a preinstalled variable font's legacy name such as `Noto Sans SC Thin` (each sandbox scans the folder
+  afresh, its fontconfig cache being in its own `/tmp`). macOS development without the sandbox does not load them.
 - **Agent**: the Executor rules end with the library as an enum read from the database. A text effect must expose
   `fontFamily` (an enum of library families, defaulting to the font chosen from the reference image or description);
   `sprite.create` checks the enum against the library. The stored Sprite keeps a plain string (`maxLength` 100), since
