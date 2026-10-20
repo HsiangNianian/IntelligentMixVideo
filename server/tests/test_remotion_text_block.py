@@ -1,4 +1,4 @@
-"""字效的文字组合：text / keyword 角色 Preset、宿主生成的配置参数、双栏与关键词组合、编辑快照与 Preset 搜索。
+"""字效的文字组合：text / keyword / effect 角色 Preset、宿主生成的配置参数、双栏、关键词与特效组合、编辑快照与 Preset 搜索。
 
 执行：在 server/ 下 `uv run --locked pytest tests/test_remotion_text_block.py -v`。组合需要锁定的 Remotion 依赖（esbuild）；
 真实浏览器用例另需 `IMV_TEST_RENDERER=1` 与浏览器、字体路径。Preset 目录使用临时 SQLite 代替 MySQL。
@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import pytest
 from generated.imv.sprite.v1 import sprite_pb2 as pb
 
-from server.remotion_templates.categories import HEX_COLOR, category_problems
+from server.remotion_templates.categories import HEX_COLOR, category_problems, parameter_problems
 from server.remotion_templates.fonts import FontStore
 from server.remotion_templates.models import TemplateCandidate
 from server.remotion_templates.provider import Budget
@@ -69,6 +69,31 @@ KEYWORD_CODE = """export default function Glow(props: {text: string; glowColor: 
 }
 """
 
+# 特效：按宿主给的显现进度改变不透明度，包在宿主的 Box 里；没有自己的样式参数，入场与出场共用。
+FADE_CODE = """import React from "react";
+export default function Fade(props: {children: React.ReactNode; progress: number; Box: React.ComponentType<{style?: React.CSSProperties; children?: React.ReactNode}>}) {
+  const {Box} = props;
+  return <Box style={{opacity: props.progress}}>{props.children}</Box>;
+}
+"""
+# 特效：从小到大弹出，用于关键词命中；只改 transform，不影响排版。
+POP_CODE = FADE_CODE.replace("Fade", "Pop").replace("{opacity: props.progress}", "{transform: `scale(${0.6 + 0.4 * props.progress})`}")
+# 持续特效：按自己的颜色给包住的部分加发光。
+SHINE_CODE = """import React from "react";
+export default function Shine(props: {children: React.ReactNode; progress: number; Box: React.ComponentType<{style?: React.CSSProperties; children?: React.ReactNode}>; glowColor: string}) {
+  const {Box} = props;
+  return <Box style={{filter: `drop-shadow(0 0 12px ${props.glowColor})`}}>{props.children}</Box>;
+}
+"""
+
+
+def effect_preset(code: str, prop: str | None = None) -> PresetDraft:
+    """An effect Preset with no style parameter, or only the colour ``prop``."""
+    if prop:
+        return preset("effect", code, prop, "#FFD54A")
+    return PresetDraft(description="effect preset", code=code, role="effect", default_parameters={},
+                       parameter_schema={"type": "object", "properties": {}, "additionalProperties": False})
+
 
 def preset(role: str | None, code: str, prop: str, default: str = "#FFFFFF") -> PresetDraft:
     """A Preset of ``role`` whose only own parameter is the colour ``prop``."""
@@ -121,15 +146,24 @@ def recording(current: ToolSession) -> list:
     return seen
 
 
-async def stored(current: ToolSession) -> tuple[str, str]:
-    """Store a text Preset and a keyword Preset; return their IDs."""
+async def stored(current: ToolSession) -> tuple[str, str, str]:
+    """Store a text Preset, a keyword Preset and a fade effect Preset; return their IDs."""
     tier = await current.execute("preset.create", preset("text", TIER_CODE, "color"), available())
     glow = await current.execute("preset.create", preset("keyword", KEYWORD_CODE, "glowColor", "#FFD54A"), available())
-    return tier["preset"]["preset_id"], glow["preset"]["preset_id"]
+    fade = await current.execute("preset.create", effect_preset(FADE_CODE), available())
+    return tier["preset"]["preset_id"], glow["preset"]["preset_id"], fade["preset"]["preset_id"]
 
 
-def two_tiers(tier: str, glow: str | None, **text) -> SpriteComposeInput:
-    """A two-tier text block over the stored ``tier`` Preset, with a keyword Preset when ``glow`` is given."""
+def fades(fade: str, enabled: bool = True) -> list[dict]:
+    """The entrance and exit a new work's text block needs: each tier fades in and the block fades out over the stored ``fade``."""
+    source = {"kind": "stored", "preset_id": fade}
+    return [{"instance_id": "fadeIn", "source": source, "title": "淡入", "slot": "enter", "target": "tiers", "enabled": enabled},
+            {"instance_id": "fadeOut", "source": source, "title": "淡出", "slot": "exit", "target": "block", "enabled": enabled}]
+
+
+def two_tiers(tier: str, glow: str | None, fade: str | None = None, **text) -> SpriteComposeInput:
+    """A two-tier text block over the stored ``tier`` Preset, with a keyword Preset when ``glow`` is given and the fade in
+    and out (`fades`) over the stored ``fade`` effect Preset when that is given."""
     source = {"kind": "stored", "preset_id": tier}
     block = {
         "layout": {"x": 54, "y": 700, "width": 972, "height": 520}, "text": "判断一个人\n选择花字、滤镜和特效", "font_size": 96,
@@ -139,6 +173,7 @@ def two_tiers(tier: str, glow: str | None, **text) -> SpriteComposeInput:
         ],
         "line_gap": 24, "line_starts": [0, 12], "duration_frames": 30,
         **({"keyword": {"instance_id": "keyword", "source": {"kind": "stored", "preset_id": glow}}} if glow else {}),
+        **({"effects": fades(fade)} if fade else {}),
         **text,
     }
     bindings = [
@@ -166,6 +201,24 @@ def test_the_host_owns_a_text_blocks_configuration():
     assert (defaults["line1SizeRatio"], defaults["line2FontFamily"], defaults["lineStartFrames"], defaults["keywordEffect"]) == (0.5, "Noto Sans CJK SC", [0, 12], True)
 
 
+def test_effects_get_the_hosts_switch_position_and_length():
+    """第 k 个特效由宿主给出开关 effect{k}、位置枚举 effect{k}Target，入场与出场另有 0.1～3 秒的时长 effect{k}Seconds（省略为 0.5）；
+    标题取特效的中文名称，双栏可选整体、各栏、上下栏与关键词，单栏只有整体与关键词；这些 Schema 都能被发布抽样覆盖。"""
+    two = {"text": "上\n下", "font_size": 96, "line_gap": 24, "line_starts": [0, 12],
+           "tiers": [{"font_family": "Zed Display", "font_weight": 400, "size_ratio": 0.5}, {"font_family": "Noto Sans CJK SC", "font_weight": 700, "size_ratio": 1}],
+           "effects": [{"title": "淡入", "slot": "enter", "target": "tiers", "seconds": 0.4}, {"title": "发光", "slot": "loop", "target": "line2", "enabled": False}]}
+    schemas, defaults = text_configuration(two, LIBRARY)
+    assert schemas["effect1"] == {"type": "boolean", "title": "入场·淡入"} and schemas["effect2"]["title"] == "持续·发光"
+    assert schemas["effect1Target"] == {"type": "string", "enum": ["block", "tiers", "line1", "line2", "keyword"], "title": "淡入位置"}
+    assert schemas["effect1Seconds"] == {"type": "number", "minimum": 0.1, "maximum": 3, "title": "淡入时长（秒）"} and "effect2Seconds" not in schemas
+    assert (defaults["effect1"], defaults["effect1Target"], defaults["effect1Seconds"], defaults["effect2"], defaults["effect2Target"]) == (True, "tiers", 0.4, False, "line2")
+    assert all(parameter_problems(schema, name) is None for name, schema in schemas.items() if name.startswith("effect"))
+    one = {"text": "今日灵感", "font_size": 96, "tiers": [{"font_family": "Zed Display", "font_weight": 700}],
+           "effects": [{"title": "淡出", "slot": "exit", "target": "block"}]}
+    schemas, defaults = text_configuration(one, LIBRARY)
+    assert schemas["effect1Target"]["enum"] == ["block", "keyword"] and defaults["effect1Seconds"] == 0.5
+
+
 def test_role_presets_declare_only_their_own_style():
     """text 角色的 Preset 由宿主传入文字、片段、Keyword 与字体，parameter_schema 再声明 fontSize 等就被拒；没有角色的自由组件不受限。"""
     tier = preset("text", TIER_CODE, "color")
@@ -186,11 +239,11 @@ def test_a_two_tier_text_with_a_keyword_effect_composes_from_role_presets(tmp_pa
     async def run():
         """Compose the block and save it."""
         current = session(tmp_path, {"original_request": {"description": "双栏", "two_tier": True, "keyword_effect": True}})
-        tier, glow = await stored(current)
-        composed = await current.execute("sprite.compose", two_tiers(tier, glow), available())
+        tier, glow, fade = await stored(current)
+        composed = await current.execute("sprite.compose", two_tiers(tier, glow, fade), available())
         sprite = current.sprite_drafts[composed["draft_id"]]
         names = list(sprite.parameter_schema["properties"])
-        assert names[:3] == ["text", "fontSize", "line1FontFamily"] and names[-3:] == ["upper", "lower", "keyword"]
+        assert names[:3] == ["text", "fontSize", "line1FontFamily"] and names[-5:] == ["upper", "lower", "keyword", "fadeIn", "fadeOut"]
         assert sprite.default_parameters["keywordEffect"] is True and sprite.default_parameters["line2FontFamily"] == "Zed Display"
         host = [item for item in sprite.bindings if item.targets[0].instance_id == TEXT_BLOCK_ID]
         assert {item.name for item in host} >= {"text", "lineStartFrames", "keywords", "keywordEffect"}
@@ -203,7 +256,160 @@ def test_a_two_tier_text_with_a_keyword_effect_composes_from_role_presets(tmp_pa
         saved = await current.execute("sprite.create", SpriteCreateInput(draft_id=composed["draft_id"]), available())
         assert current.saved_sprite(saved["sprite_id"]).text.tiers == ["upper", "lower"]
         # 审计复现（作品 f941b066）：保存时复查源 Preset 曾丢掉角色，text Preset 不带宿主 prop 做类型检查，18 次保存全部失败。
-        assert [getattr(item, "role", None) for item in checked] == ["text", "keyword", None]
+        assert [getattr(item, "role", None) for item in checked] == ["text", "keyword", "effect", None]
+
+    asyncio.run(run())
+
+
+# 双栏标题的特效：各栏淡入、整体淡出（同一个 fade Preset），关键词命中弹出，下栏持续发光（颜色是绑定的样式参数）。
+EFFECTS = [
+    {"instance_id": "fadeIn", "source": "fade", "title": "淡入", "slot": "enter", "target": "tiers"},
+    {"instance_id": "fadeOut", "source": "fade", "title": "淡出", "slot": "exit", "target": "block", "seconds": 0.4},
+    {"instance_id": "pop", "source": "pop", "title": "弹出", "slot": "enter", "target": "keyword"},
+    {"instance_id": "shine", "source": "shine", "title": "发光", "slot": "loop", "target": "line2"},
+]
+
+
+async def effect_sources(current: ToolSession) -> dict[str, dict]:
+    """Store the fade, pop and shine effect Presets; return their stored sources by name."""
+    sources = {}
+    for name, draft in (("fade", effect_preset(FADE_CODE)), ("pop", effect_preset(POP_CODE)), ("shine", effect_preset(SHINE_CODE, "glowColor"))):
+        sources[name] = {"kind": "stored", "preset_id": (await current.execute("preset.create", draft, available()))["preset"]["preset_id"]}
+    return sources
+
+
+def with_effects(request: SpriteComposeInput, sources: dict[str, dict]) -> dict:
+    """The two-tier ``request`` as data with `EFFECTS` over ``sources`` and the shine colour bound as a style parameter."""
+    data = request.model_dump(mode="json", exclude_none=True)
+    data["text"]["effects"] = [{**item, "source": sources[item["source"]]} for item in EFFECTS]
+    data["parameters"].append({"name": "shineColor", "title": "发光颜色", "targets": [{"instance_id": "shine", "parameter": "glowColor"}]})
+    return data
+
+
+@needs_bundler
+def test_a_text_block_wraps_its_positions_in_effect_presets(tmp_path, monkeypatch):
+    """特效组合：effect Preset 按顺序包住各自的位置，宿主给每个特效开关、位置与（入场、出场的）时长并以文字块为绑定目标，发光颜色是
+    Agent 绑定的样式参数；记录特效与「各栏 Preset 只画静止外观」的标记，保存时 effect Preset 按宿主的 prop 做类型检查，同一个 fade 只检查一次。"""
+    monkeypatch.setattr(FontStore, "active", SimpleNamespace(families=lambda: list(LIBRARY)))
+
+    async def run():
+        """Compose the block with its effects and save it."""
+        current = session(tmp_path)
+        tier, glow, fade = await stored(current)
+        request = with_effects(two_tiers(tier, glow), await effect_sources(current))
+        composed = await current.execute("sprite.compose", SpriteComposeInput.model_validate(request), available())
+        sprite = current.sprite_drafts[composed["draft_id"]]
+        host = {item.name for item in sprite.bindings if item.targets[0].instance_id == TEXT_BLOCK_ID}
+        assert {"effect1", "effect1Target", "effect1Seconds", "effect2Seconds", "effect3Target", "effect4", "effect4Target"} <= host and "effect4Seconds" not in host
+        assert (sprite.default_parameters["effect2Seconds"], sprite.default_parameters["effect3Target"], sprite.default_parameters["shineColor"]) == (0.4, "keyword", "#FFD54A")
+        assert [item.model_dump() for item in sprite.text.effects] == [{"instance_id": item["instance_id"], "title": item["title"], "slot": item["slot"]} for item in EFFECTS]
+        assert sprite.text.still is True and 'at: ["keyword"], inline: true' in sprite.code and 'at: ["tiers", "line2"]' in sprite.code and "__Hold" in sprite.code
+        assert category_problems("text", sprite.parameter_schema, {item.name for item in sprite.bindings}, sprite.default_parameters) == []
+        checked = recording(current)
+        await current.execute("sprite.create", SpriteCreateInput(draft_id=composed["draft_id"]), available())
+        assert [getattr(item, "role", None) for item in checked] == ["text", "keyword", "effect", "effect", "effect", None]
+
+    asyncio.run(run())
+
+
+@needs_bundler
+@pytest.mark.parametrize(("change", "field", "message"), [
+    ("one-tier", "/text/effects/0/target", "A one-tier text has no tiers position"),
+    ("loop-seconds", "/text/effects/3/seconds", "leave seconds out"),
+    ("taken-id", "/text/effects/0/instance_id", "not a parameter name of the text block"),
+    ("taken-name", "/parameters/3/name", "configuration parameter of the text block"),
+    ("text-preset", "/text/effects/0/source", "role 'effect'"),
+])
+def test_a_wrong_effect_is_refused_with_the_field(tmp_path, monkeypatch, change, field, message):
+    """特效不合约定时按字段拒绝：单栏没有各栏位置、持续特效带时长、实例 ID 占用特效配置名（会顶替宿主的开关）、样式参数占用之后
+    特效的配置名、特效用了 text 角色的 Preset。"""
+    monkeypatch.setattr(FontStore, "active", SimpleNamespace(families=lambda: list(LIBRARY)))
+
+    async def run():
+        """Compose the block with one effect wrong."""
+        current = session(tmp_path)
+        tier, glow, fade = await stored(current)
+        request = with_effects(two_tiers(tier, glow), await effect_sources(current))
+        effects = request["text"]["effects"]
+        if change == "one-tier":
+            request["text"] = {**{key: value for key, value in request["text"].items() if key not in {"line_gap", "line_starts"}},
+                               "text": "今日灵感", "tiers": [{key: value for key, value in request["text"]["tiers"][0].items() if key != "size_ratio"}]}
+            request["parameters"] = [{"name": "color", "title": "颜色", "targets": [{"instance_id": "upper", "parameter": "color"}]}, *request["parameters"][2:]]
+            effects[3]["target"] = "block"
+        elif change == "loop-seconds":
+            effects[3]["seconds"] = 1
+        elif change == "taken-id":
+            effects[0]["instance_id"] = "effect1"
+        elif change == "taken-name":
+            request["parameters"][3]["name"] = "effect7"
+        else:
+            effects[0]["source"] = {"kind": "stored", "preset_id": tier}
+        with pytest.raises(ToolFault) as refused:
+            await current.execute("sprite.compose", SpriteComposeInput.model_validate(request), available())
+        assert refused.value.error.code == "INVALID_ARGUMENT" and refused.value.error.field == field
+        assert message in refused.value.error.message
+
+    asyncio.run(run())
+
+
+@needs_bundler
+def test_a_new_works_text_block_needs_an_entrance_and_an_exit(tmp_path, monkeypatch):
+    """审计复现（作品 afb7aeb1）：新作品复用了自带动画的旧 text Preset，被静止检查拒绝后 Agent 删掉动画、也没加特效，保存出一个完全不动的字效。
+    现在新作品的文字块至少要有一个入场与一个出场特效；要静止文字时保留它们并关掉开关。编辑更早的字效（没有 still 标记）不要求特效，
+    它的各栏也不被定格。"""
+    monkeypatch.setattr(FontStore, "active", SimpleNamespace(families=lambda: list(LIBRARY)))
+
+    async def run():
+        """Compose without effects, with only an entrance, with switched-off fades, and in an edit of an older text effect."""
+        current = session(tmp_path / "new")
+        tier, glow, fade = await stored(current)
+        for effects, missing in (([], "no enter and no exit effect"), (fades(fade)[:1], "no exit effect")):
+            with pytest.raises(ToolFault) as refused:
+                await current.execute("sprite.compose", two_tiers(tier, glow, effects=effects), available())
+            assert refused.value.error.field == "/text/effects" and missing in refused.value.error.message and "enabled false" in refused.value.error.message
+        still = await current.execute("sprite.compose", two_tiers(tier, glow, effects=fades(fade, enabled=False)), available())
+        assert {name: current.sprite_drafts[still["draft_id"]].default_parameters[name] for name in ("effect1", "effect2")} == {"effect1": False, "effect2": False}
+        legacy = SimpleNamespace(text=SimpleNamespace(still=None), instances=[])
+        base = TemplateCandidate(tsx_code="export default function A(){return null}", config_schema={"type": "object"}, default_config={})
+        edit = session(tmp_path / "edit", spec=SimpleNamespace(sprite=legacy, sprite_kind="text"), base=base)
+        tier, glow, _ = await stored(edit)
+        composed = await edit.execute("sprite.compose", two_tiers(tier, glow), available())
+        # The older text effect's tier Presets keep playing their own motion: the host does not hold them.
+        assert edit.sprite_drafts[composed["draft_id"]].text.still is None and "__Hold" not in edit.sprite_drafts[composed["draft_id"]].code
+
+    asyncio.run(run())
+
+
+@needs_bundler
+@pytest.mark.parametrize("still", [True, False], ids=["current", "legacy"])
+def test_an_edit_snapshot_hands_back_the_effects_as_configured(tmp_path, monkeypatch, still):
+    """编辑带特效的基线：快照里的特效给出 base_* 草稿、名称、类型，以及用户在配置里改过的位置、时长与开关；照快照重新组合得到同样的配置。
+    「只画静止外观」的标记随基线保留：有标记的基线重新组合仍带标记，没有标记的旧字效（text Preset 自己画动画）重新组合也不带。"""
+    monkeypatch.setattr(FontStore, "active", SimpleNamespace(families=lambda: list(LIBRARY)))
+
+    async def run():
+        """Compose a base, revise its effects like a user would, then recompose from the edit snapshot."""
+        first = session(tmp_path / "first")
+        tier, glow, fade = await stored(first)
+        request = with_effects(two_tiers(tier, glow), await effect_sources(first))
+        composed = await first.execute("sprite.compose", SpriteComposeInput.model_validate(request), available())
+        sprite = first.sprite_drafts[composed["draft_id"]]
+        if not still:
+            sprite = sprite.model_copy(update={"text": sprite.text.model_copy(update={"still": None})})
+        config = {**sprite.default_parameters, "effect1Target": "line1", "effect1Seconds": 1.2, "effect4": False}
+        base = TemplateCandidate(tsx_code=sprite.code, config_schema=sprite.parameter_schema, default_config=config)
+        edit = session(tmp_path / "edit", spec=SimpleNamespace(sprite=sprite, sprite_kind="text"), base=base)
+        snapshot = edit.snapshot()["base"]
+        effects = snapshot["text"]["effects"]
+        assert effects[0] == {"instance_id": "fadeIn", "source": {"kind": "draft", "draft_id": "base_fadeIn"}, "parameters": {}, "title": "淡入",
+                              "slot": "enter", "target": "line1", "seconds": 1.2, "enabled": True}
+        assert (effects[3]["enabled"], "seconds" in effects[3], effects[3]["source"]) == (False, False, {"kind": "draft", "draft_id": "base_shine"})
+        assert "shineColor" in [item["name"] for item in snapshot["parameters"]]
+        again = await edit.execute("sprite.compose", SpriteComposeInput.model_validate(
+            {"description": "双栏标题", "kind": "text", "text": snapshot["text"], "parameters": snapshot["parameters"]}), available())
+        recomposed = edit.sprite_drafts[again["draft_id"]]
+        assert {name: recomposed.default_parameters[name] for name in ("effect1Target", "effect1Seconds", "effect4")} == {"effect1Target": "line1", "effect1Seconds": 1.2, "effect4": False}
+        assert recomposed.text.still is (True if still else None)
 
     asyncio.run(run())
 
@@ -230,11 +436,11 @@ def test_a_wrong_text_block_is_refused_with_the_field(tmp_path, monkeypatch, cha
     async def run():
         """Compose the block with one thing wrong."""
         current = session(tmp_path, {"original_request": {"composition": {"duration_in_frames": 30}}})
-        tier, glow = await stored(current)
+        tier, glow, fade = await stored(current)
         if "role" in change:
             legacy = await current.execute("preset.create", preset(None, TIER_CODE.replace("Keyword: React.ComponentType<{text: string}>; ", ""), "color"), available())
             tier = legacy["preset"]["preset_id"]
-        request = two_tiers(tier, glow).model_dump(mode="json", exclude_none=True)
+        request = two_tiers(tier, glow, fade).model_dump(mode="json", exclude_none=True)
         if change.get("text", {}).get("tiers") == "font":
             request["text"]["tiers"][1]["font_family"] = "Zed Display"
         elif "text" in change:
@@ -263,7 +469,7 @@ def test_new_chat_switches_require_their_combination(tmp_path):
         """Compose one tier without a keyword Preset in works whose user switched each option on."""
         for name, field in (("two_tier", "/text/tiers"), ("keyword_effect", "/text/keyword")):
             current = session(tmp_path / name, {"original_request": {"description": "标题", name: True}})
-            tier, _ = await stored(current)
+            tier, *_ = await stored(current)
             one = {"description": "标题", "kind": "text", "text": {
                 "layout": {"x": 54, "y": 800, "width": 972, "height": 300}, "text": "今日灵感", "font_size": 96, "duration_frames": 30,
                 "tiers": [{"instance_id": "body", "source": {"kind": "stored", "preset_id": tier}, "font_family": "Noto Sans CJK SC", "font_weight": 700}]},
@@ -289,8 +495,8 @@ def test_an_edit_snapshot_hands_back_the_text_block(tmp_path, monkeypatch):
     async def run():
         """Compose a base, revise one configuration value like a user would, then recompose from the edit snapshot."""
         first = session(tmp_path / "first")
-        tier, glow = await stored(first)
-        composed = await first.execute("sprite.compose", two_tiers(tier, glow), available())
+        tier, glow, fade = await stored(first)
+        composed = await first.execute("sprite.compose", two_tiers(tier, glow, fade), available())
         sprite = first.sprite_drafts[composed["draft_id"]]
         config = {**sprite.default_parameters, "line1SizeRatio": 0.6}
         base = TemplateCandidate(tsx_code=sprite.code, config_schema=sprite.parameter_schema, default_config=config)
@@ -341,19 +547,22 @@ def test_real_type_check_gives_role_presets_the_host_props(tmp_path):
                    .replace("<Keyword key={index} text={segment.text} />", "<Keyword key={index} label={segment.text} />"), "color")
     report = asyncio.run(checker.validate_code(wrong))
     assert not report.passed and any(item.severity == "error" and "Keyword=" in (item.excerpt or "") for item in report.diagnostics)
+    assert asyncio.run(checker.validate_code(effect_preset(FADE_CODE))).passed
+    assert asyncio.run(checker.validate_code(effect_preset(SHINE_CODE, "glowColor"))).passed
+
 
 
 @needs_browser
 def test_real_two_tier_block_with_a_keyword_preset_passes_the_generation_measurements(tmp_path, monkeypatch):
-    """真实浏览器：上栏 0.5 倍小字、下栏大字、关键词发光的双栏文字块通过透明度与排版检查：100 字分到两栏完整显示，两栏由同一个文字块渲染、
-    同时出现与消失，下栏出现时上栏不跳动，关键词命中原位显示且整段文字仍然完整。"""
+    """真实浏览器：上栏 0.5 倍小字、下栏大字、关键词发光的双栏文字块带着各栏淡入、整体淡出、关键词弹出与下栏发光通过透明度与排版检查：
+    100 字分到两栏完整显示，两栏由同一个文字块渲染、同时出现与消失，下栏出现时上栏不跳动，关键词命中原位显示且整段文字仍然完整。"""
     monkeypatch.setattr(FontStore, "active", SimpleNamespace(families=lambda: ["Noto Sans CJK SC"]))
 
     async def run():
-        """Compose the block, then mount it with the generation-path measurements."""
+        """Compose the block with its effects, then mount it with the generation-path measurements."""
         current = session(tmp_path / "compose")
-        tier, glow = await stored(current)
-        request = two_tiers(tier, glow).model_dump(mode="json", exclude_none=True)
+        tier, glow, fade = await stored(current)
+        request = with_effects(two_tiers(tier, glow), await effect_sources(current))
         request["text"]["tiers"][1]["font_family"] = "Noto Sans CJK SC"
         composed = await current.execute("sprite.compose", SpriteComposeInput.model_validate(request), available())
         sprite = current.sprite_drafts[composed["draft_id"]]
@@ -395,7 +604,7 @@ def test_real_render_reveals_the_lower_tier_at_its_cue_and_clears_both(tmp_path)
             "layout": {"x": 0, "y": 0, "width": 180, "height": 320, "z_index": 0}, "timing": {"start_frame": 0, "duration_frames": 30}}
     block = {"layout": {"x": 0, "y": 0, "width": 180, "height": 320}, "text": "上\n下", "font_size": 96, "line_gap": 0, "line_starts": [0, 15],
              "tiers": [{"font_family": "Noto Sans CJK SC", "font_weight": 700, "size_ratio": 1}, {"font_family": "Noto Sans CJK SC", "font_weight": 700, "size_ratio": 1}]}
-    code, schema, defaults, _ = compose_text_source(block, [{**tier, "instance_id": "upper"}, {**tier, "instance_id": "lower"}], None, [], ["Noto Sans CJK SC"])
+    code, schema, defaults, _ = compose_text_source(block, [{**tier, "instance_id": "upper"}, {**tier, "instance_id": "lower"}], None, [], [], ["Noto Sans CJK SC"])
     sprite = pb.PublishedSprite(
         sprite_id="tiers", name="tiers", kind=pb.SPRITE_KIND_TEXT, tsx_code=code, text_prop="text",
         canvas=pb.SpriteCanvas(width=180, height=320, fps=30, preview_frames=30), content_box=pb.SpriteBox(x=0, y=0, width=180, height=320),
@@ -409,6 +618,82 @@ def test_real_render_reveals_the_lower_tier_at_its_cue_and_clears_both(tmp_path)
     # Row 20 is inside the upper tier only while the waiting lower tier keeps its space (centred alone it would span rows 80-240).
     upper, lower = 20 * 180 + 90, 300 * 180 + 90
     for frame, upper_alpha, lower_alpha in ((10, 1.0, 0.0), (60, 1.0, 1.0), (95, 0.0, 0.0)):
+        assert decoded_alpha(video, frame, upper) == pytest.approx(upper_alpha, abs=0.05), frame
+        assert decoded_alpha(video, frame, lower) == pytest.approx(lower_alpha, abs=0.05), frame
+
+
+# 一栏：上半是随帧淡入淡出的实心色块（这一栏自己的动画），下半只画关键词命中。
+FADING_TIER = """import React from "react";
+import {useCurrentFrame, useVideoConfig} from "remotion";
+export default function Fading(props: {text: string; segments: {text: string; keyword: boolean}[]; Keyword: React.ComponentType<{text: string}>; color: string}) {
+  const frame = useCurrentFrame();
+  const {durationInFrames} = useVideoConfig();
+  const {Keyword} = props;
+  return <div style={{height: 160, opacity: Math.min(1, frame / 10, (durationInFrames - 1 - frame) / 10)}}><div style={{height: 80, background: props.color}} />{props.segments.map((segment, index) => segment.keyword ? <Keyword key={index} text={segment.text} /> : null)}</div>;
+}
+"""
+# 关键词命中：80 像素高的色块，按帧淡入。
+FADING_KEYWORD = """import {useCurrentFrame} from "remotion";
+export default function Box(props: {text: string}) {
+  return <span style={{display: "inline-block", width: 180, height: 80, verticalAlign: "top", background: "#0000FF", opacity: Math.min(1, useCurrentFrame() / 10)}} />;
+}
+"""
+
+
+@needs_browser
+def test_real_render_holds_the_tier_and_keeps_the_keyword_live(tmp_path):
+    """真实沙箱渲染：新作品（still）的一栏被宿主定格在中间帧，它自己的淡入淡出不再播放（第 0 帧与最后一帧都完整显示）；
+    栏里的关键词 Preset 取回实时帧，仍按自己的动画在 10 帧内淡入。"""
+    empty = {"type": "object", "properties": {}, "additionalProperties": False}
+    tier = {"instance_id": "body", "preset": {"code": FADING_TIER, "parameter_schema": {"type": "object", "properties": {"color": COLOR}, "required": ["color"], "additionalProperties": False},
+                                              "default_parameters": {"color": "#FF0000"}}, "parameters": {"color": "#FF0000"}}
+    keyword = {"instance_id": "keyword", "preset": {"code": FADING_KEYWORD, "parameter_schema": empty, "default_parameters": {}}, "parameters": {}}
+    block = {"layout": {"x": 0, "y": 0, "width": 180, "height": 160}, "text": "上", "font_size": 96, "tiers": [{"font_family": "Noto Sans CJK SC", "font_weight": 700}], "keyword": {}}
+    code, schema, defaults, _ = compose_text_source(block, [tier], keyword, [], [], ["Noto Sans CJK SC"], still=True)
+    sprite = pb.PublishedSprite(
+        sprite_id="held", name="held", kind=pb.SPRITE_KIND_TEXT, tsx_code=code, text_prop="text", keywords_prop="keywords",
+        canvas=pb.SpriteCanvas(width=180, height=160, fps=30, preview_frames=60), content_box=pb.SpriteBox(x=0, y=0, width=180, height=160),
+        config_schema_json=json.dumps(schema), default_config_json=json.dumps(defaults),
+        parameters=[pb.SpriteParameter(key="text", access=pb.OPERATOR_ACCESS_VISIBLE_EDITABLE, default_value=pb.ScalarValue(string_value="上")),
+                    pb.SpriteParameter(key="keywords", access=pb.OPERATOR_ACCESS_VISIBLE_EDITABLE, default_value=pb.ScalarValue(string_list_value=pb.StringList()))],
+    )
+    message = pb.SpriteRenderInput(sprite_id="held", effect_total_frames=60, text="上", keywords=["上"])
+    settings = Settings(_env_file=None, data_dir=tmp_path / "state", **BROWSER)
+    video = asyncio.run(sprite_render.render_sprite(Renderer(settings), sprite_render.plan_sprite_render(message, sprite), tmp_path / "job"))
+    block_pixel, keyword_pixel = 20 * 180 + 90, 120 * 180 + 90
+    for frame, block_alpha, keyword_alpha in ((0, 1.0, 0.0), (4, 1.0, 0.4), (20, 1.0, 1.0), (59, 1.0, 1.0)):
+        assert decoded_alpha(video, frame, block_pixel) == pytest.approx(block_alpha, abs=0.05), frame
+        assert decoded_alpha(video, frame, keyword_pixel) == pytest.approx(keyword_alpha, abs=0.05), frame
+
+
+@needs_browser
+def test_real_render_times_each_effect_from_its_position(tmp_path):
+    """真实沙箱渲染：各栏淡入从每一栏自己出现的帧起按 0.5 秒（15 帧）升满，整体淡出在结尾降到 0；时长不超过各位置播放帧数的一半减一，
+    所以 3 秒的淡出在 60 帧里只占 29 帧，定格的中间帧完整显示。下栏在第二个切片（第 30 帧）才出现，它的淡入也从那里开始。"""
+    tier = {"preset": {"code": BLOCK_TIER, "parameter_schema": {"type": "object", "properties": {"color": COLOR}, "required": ["color"], "additionalProperties": False},
+                       "default_parameters": {"color": "#FF0000"}}, "parameters": {"color": "#FF0000"},
+            "layout": {"x": 0, "y": 0, "width": 180, "height": 320, "z_index": 0}, "timing": {"start_frame": 0, "duration_frames": 60}}
+    fade = {**tier, "preset": {"code": FADE_CODE, "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": False}, "default_parameters": {}}, "parameters": {}}
+    block = {"layout": {"x": 0, "y": 0, "width": 180, "height": 320}, "text": "上\n下", "font_size": 96, "line_gap": 0, "line_starts": [0, 30],
+             "tiers": [{"font_family": "Noto Sans CJK SC", "font_weight": 700, "size_ratio": 1}, {"font_family": "Noto Sans CJK SC", "font_weight": 700, "size_ratio": 1}],
+             "effects": [{"title": "淡入", "slot": "enter", "target": "tiers"}, {"title": "淡出", "slot": "exit", "target": "block", "seconds": 3}]}
+    code, schema, defaults, _ = compose_text_source(block, [{**tier, "instance_id": "upper"}, {**tier, "instance_id": "lower"}], None,
+                                                    [{**fade, "instance_id": "fadeIn"}, {**fade, "instance_id": "fadeOut"}], [], ["Noto Sans CJK SC"])
+    sprite = pb.PublishedSprite(
+        sprite_id="effects", name="effects", kind=pb.SPRITE_KIND_TEXT, tsx_code=code, text_prop="text",
+        canvas=pb.SpriteCanvas(width=180, height=320, fps=30, preview_frames=60), content_box=pb.SpriteBox(x=0, y=0, width=180, height=320),
+        config_schema_json=json.dumps(schema), default_config_json=json.dumps(defaults),
+        parameters=[pb.SpriteParameter(key="text", access=pb.OPERATOR_ACCESS_VISIBLE_EDITABLE, default_value=pb.ScalarValue(string_value="上\n下"))],
+    )
+    message = pb.SpriteRenderInput(sprite_id="effects", effect_total_frames=60, cues=[
+        pb.SpriteCue(text="一", start_frame=0, end_frame=30, sentence=1), pb.SpriteCue(text="二", start_frame=30, end_frame=60, sentence=1)])
+    settings = Settings(_env_file=None, data_dir=tmp_path / "state", **BROWSER)
+    video = asyncio.run(sprite_render.render_sprite(Renderer(settings), sprite_render.plan_sprite_render(message, sprite), tmp_path / "job"))
+    upper, lower = 20 * 180 + 90, 300 * 180 + 90
+    # The 3-second exit is held to half of the 60 frames less one (29): it falls to 0 on the last frame (59). The lower tier's
+    # entrance counts from its own start (frame 30) and is held to 14 of its 30 frames; an entering tier inside the exiting
+    # block shows at both progresses.
+    for frame, upper_alpha, lower_alpha in ((0, 0.0, 0.0), (6, 0.4, 0.0), (20, 1.0, 0.0), (36, 23 / 29, 6 / 14 * 23 / 29), (44, 15 / 29, 15 / 29), (59, 0.0, 0.0)):
         assert decoded_alpha(video, frame, upper) == pytest.approx(upper_alpha, abs=0.05), frame
         assert decoded_alpha(video, frame, lower) == pytest.approx(lower_alpha, abs=0.05), frame
 
@@ -433,7 +718,8 @@ def test_real_creation_saves_a_text_block_from_role_presets(tmp_path, monkeypatc
                                                             "required": ["color", "align"]}, "default_parameters": {"color": "#FFFFFF", "align": "center"}})
         stored_tier = await current.execute("preset.create", tier, available())
         glow = await current.execute("preset.create", preset("keyword", KEYWORD_CODE, "glowColor", "#FFD54A"), available())
-        request = two_tiers(stored_tier["preset"]["preset_id"], glow["preset"]["preset_id"]).model_dump(mode="json", exclude_none=True)
+        fade = await current.execute("preset.create", effect_preset(FADE_CODE), available())
+        request = two_tiers(stored_tier["preset"]["preset_id"], glow["preset"]["preset_id"], fade["preset"]["preset_id"]).model_dump(mode="json", exclude_none=True)
         request["text"]["tiers"][1]["font_family"] = "Noto Sans CJK SC"
         composed = await current.execute("sprite.compose", SpriteComposeInput.model_validate(request), available())
         return await current.execute("sprite.create", SpriteCreateInput(draft_id=composed["draft_id"]), available())

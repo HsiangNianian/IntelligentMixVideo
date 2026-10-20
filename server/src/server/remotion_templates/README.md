@@ -157,6 +157,25 @@ other top-level parameter; the edit snapshot leaves them out and hands back `bas
 drafts with the current configuration values. The Agent binds style parameters only (`color`, or `line1Color` and
 `line2Color` for two tiers, keyword looks as `keywordEffect…`), never a configuration name.
 
+Motion is split out of the tiers (contract v4): `text.effects` lists `effect` Presets, each with a Chinese title, a
+slot (`enter`, `exit` or `loop`), a default position and, entering or exiting, a length in seconds (0.1–3, default
+0.5). An effect Preset receives `children`, the host's `Box` and `progress` (0 not shown, 1 fully shown) and only
+restyles what it wraps. The host leaves a wrap point at every position — `block` (the whole column), each tier
+(`tiers` for both, `line1`/`line2` for one; two tiers only) and each keyword hit (`keyword`, an inline box) — so
+effect k's configuration parameters `effect{k}` (switch), `effect{k}Target` (position) and `effect{k}Seconds` move it
+or retime it without regenerating (`categories.EFFECT_PARAMETER`; titles from the effect's title). An entrance rises
+from the position's first frame (a tier and its keyword hits count from the tier's start), an exit falls to 0 on the
+last frame, a loop stays at 1, and every length is at most half of the frames its position plays less one, so a text
+frozen on its middle frame still shows in full. The text block of a new work records `still`: the host then holds
+each tier Preset on the middle frame of the frames the tier plays (`compose.mjs` `__Hold`), so motion of its own
+never plays and a stored animated text Preset is reused as it is, look kept; compose requires at least one enter and
+one exit effect (kept with `enabled: false` for still text), so a block never ends up without motion. The keyword
+hits inside a held tier get its live frame back (`__Live`), so a keyword Preset, the switchable keyword effect, and
+the effects at `keyword` keep playing. Edits of a text effect made before effects (no `still`, or boxes) keep playing
+their tier Presets' own motion and need no effects. The workspace parameter panel shows such a block as two sections,
+「文字」 (the text itself) and 「特效」 (one card per effect and the keyword effect, each with its switch, position, length
+and own look).
+
 The Agent decides from the request and the reference images whether the block has two tiers and a keyword Preset. The
 new-chat switches are a temporary explicit choice: `POST /works` takes `keyword_effect` and `two_tier` (strict booleans,
 default false) that reach every job as `user_intent.original_request`; for a new work (`ToolSession.requested`)

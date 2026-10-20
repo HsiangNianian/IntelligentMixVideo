@@ -7,6 +7,7 @@ Agent 保存 Sprite 时据此在循环内修复，发布时据此拒绝缺少必
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from collections.abc import Collection
 from typing import Callable, get_args
@@ -242,6 +243,17 @@ FIXED_TITLES = {
         for suffix, label in (("Color", "颜色"), ("SizeRatio", "字号比例"), ("FontFamily", "字体"), ("FontWeight", "字重"))
     },
 }
+
+# 文字块第 k 个特效（从 1 起）的配置参数：开关 effect{k}、作用位置 effect{k}Target，入场与出场另有时长 effect{k}Seconds（秒）。
+# 名称由宿主按特效顺序生成，标题取特效的中文名称（`compose.text_configuration`）；样式参数与实例都不能用这种名字。
+EFFECT_PARAMETER = re.compile(r"^effect[1-9][0-9]*(?:Target|Seconds)?$")
+# 特效可选的位置：单栏没有各栏与上下栏，只有整体与关键词。
+EFFECT_TARGETS = {1: ("block", "keyword"), 2: ("block", "tiers", "line1", "line2", "keyword")}
+# 入场、出场时长（秒）的范围与省略时的默认值（与 IMS 文字入场、出场一致）。
+EFFECT_SECONDS = (0.1, 3)
+DEFAULT_EFFECT_SECONDS = 0.5
+# 特效类型的中文名称，写在开关参数的标题里。
+EFFECT_SLOTS = {"enter": "入场", "exit": "出场", "loop": "持续"}
 
 
 def _tier_rules(tier: int) -> tuple[Rule, ...]:

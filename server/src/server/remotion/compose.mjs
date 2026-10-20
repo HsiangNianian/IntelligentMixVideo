@@ -4,7 +4,8 @@
  * length it is actually rendered at (`useVideoConfig().durationInFrames`, set by the render request's time).
  * A text effect's text block (`input.text`) is laid out by the host instead: it splits `text` into one tier or an
  * upper and a lower tier, cuts each tier at the keyword hits, stacks the tiers in one column of the block and hands
- * each tier to its text Preset, keyword hits to the keyword Preset (see `textEntry`).
+ * each tier to its text Preset, keyword hits to the keyword Preset, and wraps the block, the tiers and the keyword
+ * hits in the effect Presets bound there (see `textEntry`).
  */
 import { build } from "esbuild";
 import fs from "node:fs";
@@ -12,7 +13,7 @@ import ts from "typescript";
 
 const input = JSON.parse(fs.readFileSync(0, "utf8"));
 const block = input.text ?? null;
-const instances = block ? [...block.tiers, ...(block.keyword ? [block.keyword] : [])] : Array.isArray(input.instances) ? input.instances : [];
+const instances = block ? [...block.tiers, ...(block.keyword ? [block.keyword] : []), ...(block.effects ?? [])] : Array.isArray(input.instances) ? input.instances : [];
 // Instances of the same Preset share one bundled module, so repeated instances do not repeat its source.
 const modules = [...new Set(instances.map((item) => item.code))];
 /** The object of this instance's Preset props that top-level parameters bind, read from `props`. */
@@ -40,11 +41,30 @@ const prelude = [
  * The first literal hit of each keyword in the whole text (earliest first, never overlapping) becomes a keyword
  * segment; the host wraps it in the IMS styles and draws it with the keyword Preset while `keywordEffect` is on.
  * Tier i stays at its first frame, invisible but keeping its space, until `lineStartFrames[i]`, then plays from there.
+ *
+ * Effect k (from 1, in the block's order, the first innermost) wraps every position its `effect{k}Target` names while
+ * its switch `effect{k}` is on: `block` the whole column, `tiers` each tier, `line1`/`line2` one tier and `keyword`
+ * each keyword hit. A tier and its keyword hits play inside the tier's Sequence, so their frames count from the tier's
+ * start and the Sequence ends with the Sprite. The effect Preset receives the wrapped children, the host's Box (a
+ * full-width block, or an inline block for a keyword hit) and `progress`, how far the position is shown: an entrance
+ * rises from 0 at the position's first frame to 1 after `effect{k}Seconds`, an exit falls to 0 on the last frame, and a
+ * looping effect stays at 1. Each length is at most half of the frames the position plays less one, so short renders
+ * and a text frozen on its middle frame (`D // 2` or `(D - 1) // 2` of D frames) still show it in full there.
+ *
+ * A still block (`block.still`, a work made with effects) holds each tier Preset on the middle frame of the frames the
+ * tier plays, so any motion of its own never plays and the effects alone move it; the keyword hits inside get the
+ * tier's live frame back (`__Live`), so a keyword Preset and the effects at `keyword` keep playing. An older block
+ * plays its tier Presets' own motion.
  */
 function textEntry() {
   const tiers = block.tiers.length;
   const keyword = block.keyword ? modules.indexOf(block.keyword.code) : -1;
   const effect = block.keyword ? `{...props[${JSON.stringify(block.keyword.instance_id)}], ...${boundProps(block.keyword)}}` : "{}";
+  const effects = (block.effects ?? []).map((item, index) => `{k: ${index + 1}, slot: ${JSON.stringify(item.slot)}, Preset: Preset${modules.indexOf(item.code)}, `
+    + `props: (props) => ({...props[${JSON.stringify(item.instance_id)}], ...${boundProps(item)}})}`);
+  // Positions the tier's own wrapper takes: all tiers, and the upper or lower one of two.
+  const at = (index) => JSON.stringify(tiers === 1 ? [] : ["tiers", `line${index + 1}`]);
+  const hold = (element) => (block.still ? `<__Hold>${element}</__Hold>` : element);
   const tier = (item, index) => {
     const font = tiers === 1
       ? "fontFamily: props.fontFamily, fontWeight: props.fontWeight, fontSize: props.fontSize"
@@ -53,7 +73,7 @@ function textEntry() {
     return `(() => { const __line = __lines[${index}]; if (!__line) return null; const __start = ${start}; const __waiting = __frame < __start; `
       + `return <div key={${JSON.stringify(item.instance_id)}} style={{width: "100%", opacity: __waiting ? 0 : 1}}>`
       + `<Freeze frame={__start} active={__waiting}><Sequence from={__start} durationInFrames={Math.max(1, __total - __start)} layout="none">`
-      + `<Preset${modules.indexOf(item.code)} {...props[${JSON.stringify(item.instance_id)}]}${bound(item)} {...{text: __line, segments: __segments(__line, __offsets[${index}], __found), Keyword: __Keyword, ${font}}} />`
+      + `<__Effects at={${at(index)}}>${hold(`<Preset${modules.indexOf(item.code)} {...props[${JSON.stringify(item.instance_id)}]}${bound(item)} {...{text: __line, segments: __segments(__line, __offsets[${index}], __found), Keyword: __Keyword, ${font}}} />`)}</__Effects>`
       + `</Sequence></Freeze></div>; })()`;
   };
   const { x, y, width, height } = block.layout;
@@ -64,12 +84,26 @@ function textEntry() {
     `const __hits = (text, keywords) => { const hits = []; for (const word of Array.isArray(keywords) ? keywords : []) { if (typeof word !== "string" || !word) continue; for (let at = text.indexOf(word); at >= 0; at = text.indexOf(word, at + 1)) { if (!hits.some(([start, end]) => at < end && at + word.length > start)) { hits.push([at, at + word.length]); break; } } } return hits.sort((left, right) => left[0] - right[0]); };`,
     `const __segments = (line, offset, hits) => { const out = []; let at = 0; for (const [start, end] of hits) { const from = Math.max(start - offset, at), to = Math.min(end - offset, line.length); if (to <= from) continue; if (from > at) out.push({text: line.slice(at, from), keyword: false}); out.push({text: line.slice(from, to), keyword: true}); at = to; } if (at < line.length) out.push({text: line.slice(at), keyword: false}); return out; };`,
     `const __Context = React.createContext({props: {}, effect: {}});`,
+    `const __effects = [${effects.join(", ")}];`,
+    // The host's elements an effect styles: a full-width block around the block or a tier, an inline block around a keyword hit.
+    `function __BlockBox({style, children}) { return <div style={{...style, width: "100%"}}>{children}</div>; }`,
+    `function __InlineBox({style, children}) { return <span style={{...style, display: "inline-block"}}>{children}</span>; }`,
+    `const __clamp = (value) => Math.min(1, Math.max(0, value));`,
+    // A held tier's live frame, for the keyword hits drawn inside it; null outside a held tier.
+    `const __Live = React.createContext(null);`,
+    `function __Hold({children}) { const frame = useCurrentFrame(); const {durationInFrames} = useVideoConfig(); return <__Live.Provider value={frame}><Freeze frame={Math.max(0, Math.floor((durationInFrames - 1) / 2))}>{children}</Freeze></__Live.Provider>; }`,
+    `function __Effects({at, inline, children}) { const {props} = React.useContext(__Context); const frame = useCurrentFrame(); const {fps, durationInFrames} = useVideoConfig(); let node = children; `
+      + `for (const item of __effects) { if (props["effect" + item.k] === false || !at.includes(props["effect" + item.k + "Target"])) continue; `
+      + `const length = Math.max(1, Math.min(Math.round((Number(props["effect" + item.k + "Seconds"]) || 0.5) * fps), Math.floor((durationInFrames - 1) / 2))); `
+      + `const progress = item.slot === "enter" ? __clamp(frame / length) : item.slot === "exit" ? __clamp((durationInFrames - 1 - frame) / length) : 1; `
+      + `node = <item.Preset {...item.props(props)} progress={progress} Box={inline ? __InlineBox : __BlockBox}>{node}</item.Preset>; } return node; }`,
     // The six keyword options of the bus's IMS text: bold, italic, underline, strikeout, colour ("" keeps the text's) and size (0 keeps it).
-    `function __Keyword({text}) { const {props, effect} = React.useContext(__Context); const style = {fontWeight: props.keywordBold ? 700 : undefined, fontStyle: props.keywordItalic ? "italic" : undefined, textDecorationLine: [props.keywordUnderline && "underline", props.keywordStrikeout && "line-through"].filter(Boolean).join(" ") || undefined, color: props.keywordColor || undefined, fontSize: props.keywordSize > 0 ? props.keywordSize : undefined}; return <span data-imv-keyword="" style={style}>{${keyword >= 0 ? `props.keywordEffect !== false ? <Preset${keyword} {...effect} text={text} /> : text` : "text"}}</span>; }`,
+    `function __Keyword({text}) { const {props, effect} = React.useContext(__Context); const style = {fontWeight: props.keywordBold ? 700 : undefined, fontStyle: props.keywordItalic ? "italic" : undefined, textDecorationLine: [props.keywordUnderline && "underline", props.keywordStrikeout && "line-through"].filter(Boolean).join(" ") || undefined, color: props.keywordColor || undefined, fontSize: props.keywordSize > 0 ? props.keywordSize : undefined}; const live = React.useContext(__Live); const inner = <__Effects at={["keyword"]} inline>{${keyword >= 0 ? `props.keywordEffect !== false ? <Preset${keyword} {...effect} text={text} /> : text` : "text"}}</__Effects>; return <span data-imv-keyword="" style={style}>{live === null ? inner : <Freeze frame={live}>{inner}</Freeze>}</span>; }`,
     `export default function Sprite(inputProps = {}) { const props = __merge(__defaults, inputProps); const __frame = useCurrentFrame(); const {durationInFrames: __total} = useVideoConfig(); `
       + `const __text = typeof props.text === "string" ? props.text : ""; const __lines = ${tiers === 1 ? "[__text]" : "__text.split(\"\\n\").slice(0, 2)"}; const __offsets = __lines.map((_, index) => __lines.slice(0, index).reduce((sum, line) => sum + line.length + 1, 0)); const __found = __hits(__text, props.keywords); `
-      + `return <__Context.Provider value={{props, effect: ${effect}}}><AbsoluteFill><div data-imv-instance="text" style={{position: "absolute", left: ${x}, top: ${y}, width: ${width}, height: ${height}, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: ${tiers === 1 ? 0 : "props.lineGap"}}}>`
-      + `${block.tiers.map((item, index) => `{${tier(item, index)}}`).join("")}</div></AbsoluteFill></__Context.Provider>; }`,
+      + `return <__Context.Provider value={{props, effect: ${effect}}}><AbsoluteFill><div data-imv-instance="text" style={{position: "absolute", left: ${x}, top: ${y}, width: ${width}, height: ${height}, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center"}}>`
+      + `<__Effects at={["block"]}><div style={{width: "100%", display: "flex", flexDirection: "column", alignItems: "center", gap: ${tiers === 1 ? 0 : "props.lineGap"}}}>`
+      + `${block.tiers.map((item, index) => `{${tier(item, index)}}`).join("")}</div></__Effects></div></AbsoluteFill></__Context.Provider>; }`,
   ].join("\n");
 }
 

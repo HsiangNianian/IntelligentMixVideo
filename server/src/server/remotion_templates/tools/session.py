@@ -30,7 +30,7 @@ from .contracts import (
     SpriteRecord,
     SpriteCreateOutput,
 )
-from ..categories import FIXED_TITLES, agent_message, category_problems, parameter_problems
+from ..categories import EFFECT_PARAMETER, EFFECT_TARGETS, FIXED_TITLES, agent_message, category_problems, parameter_problems
 from ..fonts import FontStore, open_font_schema
 from .catalog_store import CatalogStore
 from .registry import ToolFault
@@ -153,6 +153,16 @@ def _text_block(sprite: SpriteDraft, config: dict) -> dict:
     if sprite.text.keyword is not None:
         keyword = sprite.text.keyword
         block["keyword"] = {"instance_id": keyword, "source": {"kind": "draft", "draft_id": f"base_{keyword}"}, "parameters": parameters[keyword]}
+    if sprite.text.effects:
+        # Effect k's position, length and switch are its configuration parameters, as the user last saved them.
+        block["effects"] = [
+            {
+                "instance_id": item.instance_id, "source": {"kind": "draft", "draft_id": f"base_{item.instance_id}"}, "parameters": parameters[item.instance_id],
+                "title": item.title, "slot": item.slot, "target": config.get(f"effect{index}Target"),
+                **({"seconds": config.get(f"effect{index}Seconds")} if item.slot != "loop" else {}), "enabled": config.get(f"effect{index}") is not False,
+            }
+            for index, item in enumerate(sprite.text.effects, start=1)
+        ]
     return block
 
 
@@ -239,6 +249,9 @@ class ToolSession:
         for instance in base_sprite.instances if base_sprite else []:
             # The accepted base's Presets are reusable as drafts; their stored IDs are not kept in a Sprite snapshot.
             self.preset_drafts[f"base_{instance.instance_id}"] = instance.preset
+        # The host holds tier Presets still and effect Presets draw the block's motion, except in edits of a text effect made
+        # before configurable effects, whose tier Presets animate themselves (a text block without `still`, or boxes).
+        self.still_text = base_sprite is None or (base_sprite.text is not None and base_sprite.text.still is True)
         self.feedback = []
         self.catalog_backend = "unset"
         self.operation = ""
@@ -729,12 +742,13 @@ class ToolSession:
 
     async def _compose_text(self, request) -> SpriteComposeOutput:
         """Compose a text effect from its text block: one tier or an upper and a lower tier, each drawn by a text-role
-        Preset, and an optional keyword-role Preset for the keyword hit. The host owns the configuration parameters."""
+        Preset, an optional keyword-role Preset for the keyword hit and effect-role Presets wrapping positions of the
+        block. The host owns the configuration parameters."""
         block = request.text
         if request.kind != "text":
             raise ToolFault("INVALID_ARGUMENT", "Only a text effect (kind text) has a text block.", field="/kind")
         if request.instances:
-            raise ToolFault("INVALID_ARGUMENT", "A text effect is its text block alone: draw decorations inside the tier Presets and leave instances empty.", field="/instances")
+            raise ToolFault("INVALID_ARGUMENT", "A text effect is its text block alone: draw decorations inside the tier Presets or as effects of the block and leave instances empty.", field="/instances")
         lines = block.text.split("\n")
         tiers = len(block.tiers)
         if len(lines) != tiers or not all(line.strip() for line in lines):
@@ -764,6 +778,19 @@ class ToolSession:
                     raise ToolFault("INVALID_ARGUMENT", f"Only a two-tier text takes {name}.", field=f"/text/{name}")
             if block.tiers[0].size_ratio not in (None, 1):
                 raise ToolFault("INVALID_ARGUMENT", "A one-tier text renders at font_size; leave size_ratio out.", field="/text/tiers/0/size_ratio")
+        for index, effect in enumerate(block.effects):
+            if effect.target not in EFFECT_TARGETS[tiers]:
+                raise ToolFault("INVALID_ARGUMENT", f"A one-tier text has no {effect.target} position: an effect wraps {' or '.join(EFFECT_TARGETS[1])} "
+                                "(tiers, line1 and line2 are positions of a two-tier text).", field=f"/text/effects/{index}/target")
+            if effect.slot == "loop" and effect.seconds is not None:
+                raise ToolFault("INVALID_ARGUMENT", "A looping effect lasts as long as its position shows: leave seconds out (only enter and exit "
+                                "effects have a length).", field=f"/text/effects/{index}/seconds")
+        # Held tiers only move through effects, so every such text has an entrance and an exit users can switch off.
+        missing = [slot for slot in ("enter", "exit") if self.still_text and not any(effect.slot == slot for effect in block.effects)]
+        if missing:
+            raise ToolFault("INVALID_ARGUMENT", f"The text block has no {' and no '.join(missing)} effect: the host holds its tiers still, so give it at least one enter "
+                            "and one exit effect Preset (role effect), such as a fade with opacity = progress listed as both, or the motion the request or "
+                            "reference shows. For text the user wants still, keep them with enabled false so users can switch them on.", field="/text/effects")
         self._check_length(block.duration_frames, "/text/duration_frames")
         store = FontStore.active
         fonts = store.families() if store is not None else sorted({tier.font_family for tier in block.tiers})
@@ -772,17 +799,18 @@ class ToolSession:
         slots = [(tier, "text", f"/text/tiers/{index}") for index, tier in enumerate(block.tiers)]
         if block.keyword is not None:
             slots.append((block.keyword, "keyword", "/text/keyword"))
+        slots += [(effect, "effect", f"/text/effects/{index}") for index, effect in enumerate(block.effects)]
         # Each instance's Preset props sit under its instance_id next to the host's configuration parameters, so an id
-        # such as fontSize or keywordEffect would replace that parameter.
+        # such as fontSize, keywordEffect or effect1 would replace that parameter.
         reserved = {TEXT_BLOCK_ID, *FIXED_TITLES, "__proto__", "prototype", "constructor"}
         seen: set[str] = set()
         resolved: list[dict] = []
         summaries: list[InstanceSummary] = []
         for slot, role, field in slots:
-            if slot.instance_id in seen or slot.instance_id in reserved:
+            if slot.instance_id in seen or slot.instance_id in reserved or EFFECT_PARAMETER.match(slot.instance_id):
                 raise ToolFault("INVALID_ARGUMENT", f"instance_id {slot.instance_id!r} must be unique, safe and not a parameter name of the text block "
-                                "(text, fontSize, keywords, keywordEffect, ...): name the tiers upper and lower and the keyword Preset keyword, say",
-                                field=f"{field}/instance_id")
+                                "(text, fontSize, keywords, keywordEffect, effect1, ...): name the tiers upper and lower, the keyword Preset keyword "
+                                "and each effect by what it does (fadeIn, glow), say", field=f"{field}/instance_id")
             seen.add(slot.instance_id)
             if role == "text" and slot.font_family not in fonts:
                 raise ToolFault("INVALID_ARGUMENT", f"font_family {slot.font_family!r} is not in the font library: {fonts}", field=f"{field}/font_family")
@@ -794,8 +822,10 @@ class ToolSession:
             summaries.append(InstanceSummary(instance_id=slot.instance_id, **origin, parameter_names=_parameter_names(preset["parameter_schema"]),
                                              layout=layout, timing=timing))
         bindings = _titled(request.parameters)
+        drawn = tiers + (1 if block.keyword else 0)
         code, schema, defaults, host = await asyncio.to_thread(
-            compose_text_source, block.model_dump(mode="json", exclude_none=True), resolved[:tiers], resolved[tiers] if block.keyword else None, bindings, fonts,
+            compose_text_source, block.model_dump(mode="json", exclude_none=True), resolved[:tiers], resolved[tiers] if block.keyword else None,
+            resolved[drawn:], bindings, fonts, still=self.still_text,
         )
         self._check_bindings(request.parameters, schema)
         return self._keep(SpriteDraft(
@@ -808,7 +838,9 @@ class ToolSession:
             kind="text",
             bindings=[*host, *bindings],
             text={"layout": block.layout.model_dump(mode="json"), "tiers": [tier.instance_id for tier in block.tiers],
-                  **({"keyword": block.keyword.instance_id} if block.keyword else {})},
+                  **({"keyword": block.keyword.instance_id} if block.keyword else {}),
+                  "effects": [{"instance_id": item.instance_id, "title": item.title, "slot": item.slot} for item in block.effects],
+                  **({"still": True} if self.still_text else {})},
         ), summaries)
 
     def _check_bindings(self, parameters, schema: dict) -> None:
