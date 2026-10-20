@@ -88,7 +88,8 @@ def default_plan(edit: bool, base_drafts: bool | None = None) -> Plan:
             "Get the Presets the edited Sprite needs ready, changing only what the request asks of the accepted version: the base_* "
             "drafts listed in base are ready as they are. Copy a draft that must draw differently with preset_modify {preset_id: "
             "base_*, changes: {edits: [{old_str, new_str}]}}, replacing only the lines involved, and write a new Preset with "
-            "preset_create only for an element the base does not have. A change of value (colour, size, font, timing) needs no Preset change."
+            "preset_create only for an element the base does not have. A value the base exposes as a parameter (colour, size, font, timing) "
+            "needs no Preset change; a value written into a draft's code is changed by editing that line."
         )
     else:
         preset_goal = (

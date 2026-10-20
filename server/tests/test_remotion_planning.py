@@ -190,3 +190,15 @@ def test_an_edit_plan_asks_for_exact_edits_of_the_base_drafts():
     assert "preset_modify" in edit and "edits" in edit and "only the lines involved" in edit
     assert "write complete code" not in edit
     assert "write complete code with preset_create" in default_plan(edit=False).steps[0].goal
+
+
+def test_an_edit_changes_a_value_written_into_the_code_by_editing_that_line():
+    """编辑计划与 Executor 规则曾说所有数值改动都走参数、不碰代码；可基线常把下划线颜色等写死在代码里（a1cccb1c 的 #FFD400），
+    没有参数可改时模型只能违背规则或被拒。现在只有基线已暴露的参数走 sprite_compose，写死的数值改那一行。"""
+    from server.remotion_templates.agent import EXECUTOR_RULES
+    from server.remotion_templates.planning import default_plan
+
+    plan = default_plan(edit=True).steps[0].goal
+    assert "A value the base exposes as a parameter" in plan and "a value written into a draft's code is changed by editing that line" in plan
+    assert "A change of a value the base exposes" in EXECUTOR_RULES and "A value written into the code" in EXECUTOR_RULES
+    assert "same_code_as" in EXECUTOR_RULES
