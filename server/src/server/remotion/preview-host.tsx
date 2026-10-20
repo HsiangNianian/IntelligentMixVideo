@@ -244,6 +244,9 @@ function App() {
       durationInFrames={length}
       fps={c.fps}
       controls={!sync}
+      // Tauri 的 WebView 在指针移入 iframe 后不一定再次触发悬停，播放时控制条会一直隐藏；
+      // 固定显示控制条，保证播放/暂停按钮在桌面客户端中始终可用。
+      alwaysShowControls={!sync}
       loop={!sync}
       clickToPlay={!sync}
       doubleClickToFullscreen={!sync}
