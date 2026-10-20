@@ -1,7 +1,7 @@
 """Remotion 字体库：MySQL 注册表 + 对象存储 + 本地校验缓存、用户上传、沙箱挂载、Agent 清单、API 与渲染守卫。
 
 范围：`font_catalog.json` 的结构与随包字体文件、预装字体从字体包复制进对象存储与注册表、从对象存储取回缓存（换机器/丢缓存仍可用）、
-被篡改的缓存被剔除、字体名称的读取（显示名优先中文名）、上传字体的校验（格式、家族名、重名、大小、预览条）、`fontFamily` 的分类规则与覆盖校验、
+被篡改的缓存被剔除、字体名称的读取（显示名优先中文名）、上传字体的校验（格式、按文件内容去重、同名的其他字重与版本另起家族名、大小、预览条）、fontconfig 扫描规则、`fontFamily` 的分类规则与覆盖校验、
 沙箱命令是否挂载字体目录、Agent 字体清单、字体 API 与预览页、渲染前的字体守卫。数据库用 `template_db` 的临时 SQLite，
 对象存储用本地目录，字体包用小文件代替（另有一例核对随包的真实字体），不访问网络；真实浏览器里字体是否生效由 `IMV_TEST_RENDERER=1` 的用例验证。
 执行：在 `server/` 下运行 `uv run --locked pytest tests/test_remotion_fonts.py -v`。
@@ -17,6 +17,7 @@ from io import BytesIO
 from pathlib import Path
 from collections.abc import Sequence
 from types import SimpleNamespace
+from xml.etree import ElementTree
 
 import lzma
 import pytest
@@ -42,8 +43,10 @@ from .conftest import DEVICE_HEADERS, published_sprite
 PAYLOADS = {"alpha": b"alpha-font-bytes", "beta": b"beta-font-bytes-longer"}
 
 
-def minimal_font(family: str, characters: str = "测试字体效果 Abc", names: Sequence[tuple[int, int, int, int, str | bytes]] = ()) -> bytes:
-    """A tiny valid TrueType font: every listed character maps to one empty glyph exactly one em wide.
+def minimal_font(
+    family: str, characters: str = "测试字体效果 Abc", names: Sequence[tuple[int, int, int, int, str | bytes]] = (), advance: int = 1000,
+) -> bytes:
+    """A tiny valid TrueType font: every listed character maps to one empty glyph `advance` units wide (1000, one em).
 
     Its text width (characters × font size) differs from the default font's, and it exists on no system, so a
     width that changes proves the browser loaded this file. Built by hand to avoid a font-tooling dependency. The name
@@ -76,8 +79,8 @@ def minimal_font(family: str, characters: str = "测试字体效果 Abc", names:
         table(b"cmap", struct.pack(">HHHHI", 0, 1, 3, 1, 12) + cmap_subtable),
         table(b"glyf", bytes(4)),
         table(b"head", struct.pack(">IIIIHHqqhhhhHHhhh", 0x10000, 0x10000, 0, 0x5F0F3CF5, 0, 1000, 0, 0, 0, 0, 0, 0, 0, 8, 2, 0, 0)),
-        table(b"hhea", struct.pack(">IhhhHhhhhhhhhhhhH", 0x10000, 800, -200, 0, 1000, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 2)),
-        table(b"hmtx", struct.pack(">HhHh", 1000, 0, 1000, 0)),
+        table(b"hhea", struct.pack(">IhhhHhhhhhhhhhhhH", 0x10000, 800, -200, 0, advance, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 2)),
+        table(b"hmtx", struct.pack(">HhHh", advance, 0, advance, 0)),
         table(b"loca", bytes(6)),
         table(b"maxp", struct.pack(">IHHHHHHHHHHHHHH", 0x10000, 2, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0)),
         table(b"name", struct.pack(">HHH", 0, len(entries), 6 + 12 * len(entries)) + records + strings),
@@ -196,7 +199,7 @@ def test_the_display_name_is_the_fonts_own_chinese_name() -> None:
     assert read_names(minimal_font("Font", names=[(3, 1, 0x0404, 1, "繁體名"), (3, 1, 0x0804, 1, "简体名")])).label == "简体名"
     assert read_names(minimal_font("Font", names=[(3, 1, 0x0C04, 1, "香港名"), (3, 1, 0x0404, 1, "台灣名")])).label == "台灣名"
     assert read_names(minimal_font("Alibaba PuHuiTi 2.0 85 Bold", names=[(3, 1, 0x0409, 16, "Alibaba PuHuiTi 2.0")])) == FontNames(
-        family="Alibaba PuHuiTi 2.0", label="Alibaba PuHuiTi 2.0",
+        family="Alibaba PuHuiTi 2.0", label="Alibaba PuHuiTi 2.0", legacy="Alibaba PuHuiTi 2.0 85 Bold",
     )
     assert read_names(minimal_font("Latin Name", names=[(3, 1, 0x0411, 1, "日本語名")])).label == "Latin Name"
     assert read_names(minimal_font("Clean", names=[(3, 1, 0x0804, 1, "  "), (3, 1, 0x0804, 16, "bad\u0001name")])).label == "Clean"
@@ -277,15 +280,9 @@ def test_upload_registers_a_user_font_in_the_object_store(store, objects) -> Non
 
 
 def test_upload_refuses_unusable_fonts(store) -> None:
-    """拒绝：不是 TrueType/OpenType、空文件、家族名与已有字体（含大小写不同）或保留名重复、超过大小上限、预览条不是 PNG。"""
+    """拒绝：不是 TrueType/OpenType、空文件、超过大小上限、预览条不是 PNG。"""
     store.upload(minimal_font("Zed Display"), None, "", "device-1")
-    for content, message in [
-        (b"wOFF" + minimal_font("Other")[4:], "TrueType"),
-        (b"", "上限"),
-        (minimal_font("zed display"), "已存在"),
-        (minimal_font("Noto Sans CJK SC"), "已存在"),
-        (minimal_font("serif"), "已存在"),
-    ]:
+    for content, message in [(b"wOFF" + minimal_font("Other")[4:], "TrueType"), (b"", "上限")]:
         with pytest.raises(FontRejected, match=message):
             store.upload(content, None, "", "device-1")
     store.max_upload = 10
@@ -306,19 +303,70 @@ def test_the_display_name_comes_from_the_font_not_the_file_name(store) -> None:
 
 
 def test_the_same_file_is_not_uploaded_twice(store) -> None:
-    """同一个文件第二次上传被拒绝（家族名已存在），注册表里仍只有一条。"""
-    data = minimal_font("Zed Display")
+    """去重按文件内容（SHA-256）：同一个文件第二次上传被拒绝，并说明它就是库里的哪个字体；与预装字体相同的文件也一样。注册表里不多出记录。"""
+    asyncio.run(store.sync())
+    data = minimal_font("Zed Display", names=[(3, 1, 0x0804, 1, "我的字体")])
     store.upload(data, None, "", "device-1")
-    with pytest.raises(FontRejected):
+    with pytest.raises(FontRejected, match="已经在字体库里了：我的字体（Zed Display）"):
         store.upload(data, None, "", "device-2")
-    assert len(font_store.listing()) == 2
+    with pytest.raises(FontRejected, match="已经在字体库里了：Alpha Sans（Alpha Sans）"):
+        store.upload(PAYLOADS["alpha"], None, "", "device-2")
+    assert len(font_store.listing()) == 4
 
 
-def test_an_installed_system_family_cannot_be_taken_by_an_upload(store, monkeypatch) -> None:
-    """沙箱的系统字体里已有的家族名（如 Liberation Sans）不能被上传占用，否则渲染时用哪个文件不确定。"""
+def test_other_weights_and_versions_of_a_family_get_their_own_family(store) -> None:
+    """同一家族的其他字重、其他版本是不同的文件，都能上传：先上传的用字体自己的家族名，后来的依次用旧式家族名（带字重）、
+    家族名加版本号、家族名加序号（大小写不同也算同名）；显示名仍是字体自己的名称。"""
+    def family(name: str, characters: str, *records) -> str:
+        """Upload a font with these names and glyphs and return its registry family."""
+        return store.upload(minimal_font(name, characters, names=records), None, "", "device-1").family
+
+    assert family("Smiley Sans", "测试") == "Smiley Sans"
+    assert family("Smiley Sans", "效果", (3, 1, 0x0409, 5, "Version 2.000;hotconv 1.0.109")) == "Smiley Sans v2.000"
+    assert family("Smiley Sans", "字体") == "Smiley Sans (2)"
+    assert family("smiley sans", "Abc") == "smiley sans (3)"
+    assert family("Alibaba PuHuiTi 2.0 55 Regular", "测试", (3, 1, 0x0409, 16, "Alibaba PuHuiTi 2.0")) == "Alibaba PuHuiTi 2.0"
+    assert family("Alibaba PuHuiTi 2.0 85 Bold", "测试", (3, 1, 0x0409, 16, "Alibaba PuHuiTi 2.0")) == "Alibaba PuHuiTi 2.0 85 Bold"
+    assert family("x" * 100, "测试") == "x" * 100
+    assert family("x" * 100, "效果") == "x" * 96 + " (2)"
+    assert [font.label for font in store.listing() if font.family.startswith("Smiley Sans")] == ["Smiley Sans"] * 3
+
+
+def test_an_installed_or_reserved_family_is_renamed_for_an_upload(store, monkeypatch) -> None:
+    """家族名与沙箱已装字体（如 Liberation Sans）、默认字体或 CSS 通用族名相同的上传换一个家族名，渲染时不会与它们混淆。"""
     monkeypatch.setattr(fonts_module, "system_families", lambda: frozenset({"liberation sans"}))
-    with pytest.raises(FontRejected, match="已存在"):
-        store.upload(minimal_font("Liberation Sans"), None, "", "device-1")
+    assert store.upload(minimal_font("Liberation Sans"), None, "", "device-1").family == "Liberation Sans (2)"
+    assert store.upload(minimal_font("Noto Sans CJK SC"), None, "", "device-1").family == "Noto Sans CJK SC (2)"
+    assert store.upload(minimal_font("serif"), None, "", "device-1").family == "serif (2)"
+
+
+def test_fontconfig_lists_each_upload_under_its_registry_family_only(store) -> None:
+    """生成的 fonts.conf 为每个上传字体加一条扫描规则：按沙箱里的文件路径把家族名替换成注册表里的家族名（XML 转义），
+    同名的两个文件因此各自只对应自己的家族名；预装字体与系统默认字体不加规则。"""
+    asyncio.run(store.sync())
+    first = store.upload(minimal_font("A&B <Sans>", "测试"), None, "", "device-1")
+    second = store.upload(minimal_font("A&B <Sans>", "效果"), None, "", "device-1")
+    text = (store.root / CONFIG_NAME).read_text(encoding="utf-8")
+    assert "A&amp;B &lt;Sans&gt; (2)" in text
+    rules = {
+        rule.find("test/string").text: [edit.find("string").text for edit in rule.findall("edit")]
+        for rule in ElementTree.fromstring(text).findall("match")
+    }
+    assert rules == {
+        f"/imv-fonts/files/{first.cache_name}": ["A&B <Sans>", "en"],
+        f"/imv-fonts/files/{second.cache_name}": ["A&B <Sans> (2)", "en"],
+    }
+
+
+def test_an_upload_racing_another_host_is_renamed_or_refused(store) -> None:
+    """另一台主机刚登记、本机还没同步到的情况：家族名被占用时换下一个名称再登记；同一个文件已被登记时拒绝并说明是哪个字体。"""
+    other = minimal_font("Zed Display", "测试")
+    font_store.insert("u-elsewhere", "Zed Display", {**store.listing()[0].model_dump(exclude={"id", "family"}), "sha256": "0" * 64}, "device-9")
+    assert store.upload(minimal_font("Zed Display", "效果"), None, "", "device-1").family == "Zed Display (2)"
+    copy = hashlib.sha256(other).hexdigest()
+    font_store.insert("u-copy", "Copy Sans", {**store.listing()[0].model_dump(exclude={"id", "family"}), "label": "副本", "sha256": copy}, "device-9")
+    with pytest.raises(FontRejected, match="已经在字体库里了：副本（Copy Sans）"):
+        store.upload(other, None, "", "device-1")
 
 
 def test_the_agent_guide_is_the_font_library_as_an_enum(store) -> None:
@@ -462,7 +510,7 @@ def served(settings, store, client: TestClient):
 
 def test_the_font_api_lists_serves_and_uploads(client: TestClient, served) -> None:
     """字体接口：列表给出家族名、风格、字重、文件与预览地址；文件带 CORS 可被预览 iframe 加载；上传（multipart）返回新字体且立即出现在列表；
-    重名返回 422，超大返回 413，缺少设备头返回 422；未知字体 404。"""
+    重复的文件返回 422，超大返回 413，缺少设备头返回 422；未知字体 404。"""
     asyncio.run(served.sync())
     listed = client.get("/api/templates/fonts").json()
     assert [item["family"] for item in listed] == ["Noto Sans CJK SC", "Alpha Sans", "Beta Serif"]
@@ -482,8 +530,8 @@ def test_the_font_api_lists_serves_and_uploads(client: TestClient, served) -> No
     assert client.get(created["preview_url"]).headers["content-type"] == "image/png"
     assert client.get(created["file_url"]).content == minimal_font("Zed Display")
     assert [item["family"] for item in client.get("/api/templates/fonts").json()][-1] == "Zed Display"
-    duplicate = client.post("/api/templates/fonts", headers=DEVICE_HEADERS, files={"file": ("again.ttf", minimal_font("zed display"), "font/ttf")})
-    assert duplicate.status_code == 422 and "已存在" in duplicate.json()["detail"]
+    duplicate = client.post("/api/templates/fonts", headers=DEVICE_HEADERS, files={"file": ("again.ttf", minimal_font("Zed Display"), "font/ttf")})
+    assert duplicate.status_code == 422 and "已经在字体库里了" in duplicate.json()["detail"]
     served.max_upload = 100
     assert client.post("/api/templates/fonts", headers=DEVICE_HEADERS, files={"file": ("big.ttf", minimal_font("Big One"), "font/ttf")}).status_code == 413
     assert client.post("/api/templates/fonts", files={"file": ("x.ttf", b"x", "font/ttf")}).status_code == 422
@@ -519,7 +567,7 @@ WIDTH_TEST = 'export default async function (ctx) { const found = await ctx.quer
 @needs_browser
 def test_an_uploaded_font_is_used_by_the_sandboxed_browser(tmp_path, template_db, objects) -> None:
     """真实沙箱里的 Chrome 按字体名使用上传的字体：一个只存在于字体库的自制字体（每个字正好一个字宽）排出的文字宽度与默认字体不同；
-    字体名不存在时回落为默认字体的宽度。"""
+    字体名不存在时回落为默认字体的宽度。同一家族名的另一个文件（每个字半个字宽）登记为另一个家族名，两个名称各自用到自己的文件。"""
     from server.remotion_templates.tool_validation import ToolValidator
     from server.remotion_templates.tools.contracts import ComponentDefinition, RenderValidationInput, TestScript
 
@@ -531,6 +579,7 @@ def test_an_uploaded_font_is_used_by_the_sandboxed_browser(tmp_path, template_db
     fonts.attach(objects)
     fonts.refresh()
     fonts.upload(minimal_font("Imv Probe Sans"), None, "", "device-1")
+    assert fonts.upload(minimal_font("Imv Probe Sans", advance=500), None, "", "device-1").family == "Imv Probe Sans (2)"
 
     def width(family: str) -> int:
         """Mount the probe with one CSS family list and read the measured text width."""
@@ -547,3 +596,4 @@ def test_an_uploaded_font_is_used_by_the_sandboxed_browser(tmp_path, template_db
     default = width('"Noto Sans CJK SC", sans-serif')
     assert width('"Missing Family Zzz", "Noto Sans CJK SC", sans-serif') == default
     assert width('"Imv Probe Sans", "Noto Sans CJK SC", sans-serif') == 800
+    assert width('"Imv Probe Sans (2)", "Noto Sans CJK SC", sans-serif') == 400

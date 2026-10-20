@@ -203,14 +203,20 @@ and the fonts users upload. Rows are only ever added, so a template that names a
   `.ttf`/`.otf` up to `IMV_FONT_UPLOAD_MAX_BYTES`. The backend only reads the font's names from the `name` table with
   bounds-checked Python and never decodes the font; the sandboxed Chrome and the user's own browser do. The family is
   the font's English (default-language) name; the display name is its own Chinese name when it has one, otherwise the
-  same family, and never the file name. The family must differ from every registered, installed and reserved name.
+  same family, and never the file name. Duplicates are found by content: a file whose SHA-256 is already registered
+  (an upload or a preinstalled font) is refused and the message names that font. The family must be unique, so
+  another weight or version of a registered family, or a file carrying an installed or reserved name, is registered
+  under its legacy family (name ID 1, which usually names the weight), its family plus version (`Smiley Sans v2.000`),
+  or its family numbered from 2 (`Smiley Sans (2)`), whichever is free first.
   The preview strip is drawn by the uploader's browser with that display name (`client/src/features/fonts/names.ts`
   applies the same rule and sends it as `label`); a strip drawn with any other text is dropped, and only its alpha is
   kept. Fonts cannot be deleted. The library is shared, like the Sprite library.
 - **Rendering**: the sandbox has no network, so the backend caches each font from the object store after checking its
   registry hash (`<data dir>/fonts/files`) and the sandbox mounts that folder read-only at `/imv-fonts` with a generated
   `fonts.conf` (`FONTCONFIG_FILE`). Chrome in every worker (validation, preview build, overlay render, video
-  composition) resolves a family by its CSS name. macOS development without the sandbox does not load them.
+  composition) resolves a family by its CSS name. The config holds one scan rule per upload that lists the file under
+  its registry family only, so files that carry the same name inside them stay apart (each sandbox scans the folder
+  afresh, its fontconfig cache being in its own `/tmp`). macOS development without the sandbox does not load them.
 - **Agent**: the Executor rules end with the library as an enum read from the database. A text effect must expose
   `fontFamily` (an enum of library families, defaulting to the font chosen from the reference image or description);
   `sprite.create` checks the enum against the library. The stored Sprite keeps a plain string (`maxLength` 100), since

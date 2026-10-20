@@ -5,30 +5,35 @@ file here), the preinstalled catalog (`font_catalog.json`; the files ship inside
 each pinned by size and SHA-256, and are copied into the object store once, so no network is needed) and fonts users
 upload. The registry
 row names the font by a unique family name; the file is an object under `imv/remotion/fonts/<id>/` (ZOS when
-configured, the data folder otherwise, see `object_store.py`).
+configured, the data folder otherwise, see `object_store.py`). An upload is a new file (by SHA-256); another weight or
+version of a registered family gets a distinct family of its own.
 
 The render sandbox has no network, so the backend keeps every font in a local cache (`<data dir>/fonts/files`, a file
 is listed only when its SHA-256 matches the registry) next to a generated `fonts.conf`. The sandbox mounts that folder
 read-only and points fontconfig at it, so Chrome in every worker (validation, preview build, overlay render, video
-composition) resolves a family by its CSS name. The browser preview cannot use fontconfig: it registers lazy
-`FontFace`s served by `GET /api/templates/fonts/{id}`. Uploaded font bytes are never parsed by the backend beyond a
+composition) resolves a family by its CSS name; the config lists each upload under its registry family only. The
+browser preview cannot use fontconfig: it registers lazy `FontFace`s served by `GET /api/templates/fonts/{id}`. Uploaded font bytes are never parsed by the backend beyond a
 bounds-checked read of the font's names; only the sandboxed Chrome and the user's own browser decode them.
 """
 
 import asyncio
 import hashlib
+import itertools
 import json
 import logging
 import lzma
 import os
+import re
 import struct
 import subprocess
 import threading
+from collections.abc import Collection, Iterable
 from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
 from typing import Literal, NamedTuple
 from uuid import uuid4
+from xml.sax.saxutils import escape
 
 from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
 from pydantic import BaseModel, Field
@@ -57,6 +62,8 @@ SFNT_MAGIC = (b"\x00\x01\x00\x00", b"OTTO", b"true")
 # Windows language IDs of Chinese names, in the order an upload's display name prefers them: zh-CN, zh-SG, zh-TW,
 # zh-HK, zh-MO.
 CHINESE_LANGUAGES = (0x0804, 0x1004, 0x0404, 0x0C04, 0x1404)
+# The version number in a font's version string (name ID 5), such as 2.000 in "Version 2.000;hotconv 1.0".
+VERSION = re.compile(r"\d{1,6}(?:\.\d{1,6}){0,3}")
 # Preview strips are drawn black on a transparent background and tinted by the page through a CSS mask.
 PREVIEW_MAX = (640, 96)
 
@@ -145,6 +152,17 @@ def load_catalog() -> tuple[FontSpec, ...]:
     return specs
 
 
+def registry_font(record: dict) -> Font:
+    """The `Font` of a registry record (`font_store.listing`)."""
+    return Font(**{key: value for key, value in record.items() if key != "device_id"})
+
+
+def refuse_copy(digest: str, fonts: Iterable[Font]) -> None:
+    """Raise `FontRejected` naming the registered font whose file has this SHA-256, if there is one."""
+    if (copy := next((font for font in fonts if font.sha256 == digest), None)) is not None:
+        raise FontRejected(f"这个字体文件已经在字体库里了：{copy.label}（{copy.family}）")
+
+
 def font_root(settings: Settings) -> Path:
     """Folder holding the verified cache files and the generated fontconfig file."""
     return settings.data_dir / "fonts"
@@ -191,11 +209,15 @@ class FontNames(NamedTuple):
     family: str
     # The name people read on the card and the strip: the Chinese name when the font has one.
     label: str
+    # The English legacy family (name ID 1) when it differs from `family`; it usually names the weight ("… 85 Bold").
+    legacy: str = ""
+    # The version number of name ID 5 ("2.000" of "Version 2.000;hotconv"), or "".
+    version: str = ""
 
 
 def _name_records(data: bytes) -> list[tuple[int, int, int, str]]:
-    """Decodable family records (name IDs 1 and 16) of a TrueType/OpenType font as (platform, language, name ID, text),
-    in table order; raises `FontRejected` for anything else.
+    """Decodable family and version records (name IDs 1, 16 and 5) of a TrueType/OpenType font as (platform, language,
+    name ID, text), in table order; raises `FontRejected` for anything else.
 
     Every offset is bounds-checked. Unicode (platform 0) and Windows Unicode (platform 3, encodings 0, 1 and 10) records
     are UTF-16; Mac records are read only in the Roman encoding, since decoding a Chinese or Japanese Mac record as
@@ -219,7 +241,7 @@ def _name_records(data: bytes) -> list[tuple[int, int, int, str]]:
         for index in range(count):
             platform, encoding, language, name_id, size, start = struct.unpack_from(">HHHHHH", table, 6 + 12 * index)
             unicode = platform == 0 or (platform == 3 and encoding in (0, 1, 10))
-            if name_id not in (1, 16) or not (unicode or (platform == 1 and encoding == 0)):
+            if name_id not in (1, 5, 16) or not (unicode or (platform == 1 and encoding == 0)):
                 continue
             raw = table[strings + start:strings + start + size]
             if len(raw) != size:
@@ -244,13 +266,23 @@ def read_names(data: bytes) -> FontNames:
     default language (`_default_language`), so it is the font's usual Latin name. The label prefers Chinese (Windows
     zh-CN, zh-SG, zh-TW, zh-HK, zh-MO, in that order), then Unicode or US English, then any other Windows language, and
     is the family when the font has no Unicode name. `client/src/features/fonts/names.ts` applies the same label rule
-    so the uploader's browser draws the preview strip with this text. A malformed file only raises `FontRejected`.
+    so the uploader's browser draws the preview strip with this text. The legacy family and the version, read in the
+    default language first, tell other files of the same family apart (`unique_family`). A malformed file only raises
+    `FontRejected`.
     """
-    records = _name_records(data)
+    found = _name_records(data)
+    order = {record: index for index, record in enumerate(found)}
+    records = [record for record in found if record[2] != 5]
     if not records:
         raise FontRejected("无法读取字体的家族名称")
-    order = {record: index for index, record in enumerate(records)}
-    family = min(records, key=lambda record: (not _default_language(record[0], record[1]), record[2] != 16, order[record]))[3]
+
+    def default_first(record: tuple[int, int, int, str]) -> tuple[bool, bool, int]:
+        """Rank of a record as the family, legacy family or version; lower is better."""
+        return not _default_language(record[0], record[1]), record[2] != 16, order[record]
+
+    family = min(records, key=default_first)[3]
+    legacy = min((record for record in records if record[2] == 1), key=default_first, default=None)
+    versions = (match.group() for record in sorted(found, key=default_first) if record[2] == 5 and (match := VERSION.search(record[3])))
 
     def label_rank(record: tuple[int, int, int, str]) -> tuple[int, bool, int]:
         """Rank of a Unicode record as the display name; lower is better."""
@@ -261,7 +293,26 @@ def read_names(data: bytes) -> FontNames:
         return rank, record[2] != 16, order[record]
 
     unicode = [record for record in records if record[0] in (0, 3)]
-    return FontNames(family=family, label=min(unicode, key=label_rank)[3] if unicode else family)
+    return FontNames(
+        family=family, label=min(unicode, key=label_rank)[3] if unicode else family,
+        legacy=legacy[3] if legacy and legacy[3] != family else "", version=next(versions, ""),
+    )
+
+
+def unique_family(names: FontNames, taken: Collection[str]) -> str:
+    """The registry family of an upload: the font's own family unless a font already has that name, else its legacy
+    family (another weight), its family with the version (another version), or its family numbered from 2.
+
+    `taken` holds the case-folded names that are not free: registered, installed and reserved families. The result is
+    printable and at most `FONT_FAMILY_MAX_LENGTH` characters, so a long family is cut before the suffix.
+    """
+    def suffixed(suffix: str) -> str:
+        """The family cut to leave room for `suffix`, then the suffix."""
+        return names.family[:FONT_FAMILY_MAX_LENGTH - len(suffix)].rstrip() + suffix
+
+    candidates = [names.family, names.legacy, suffixed(f" v{names.version}") if names.version else ""]
+    numbered = (suffixed(f" ({number})") for number in itertools.count(2))
+    return next(candidate for candidate in itertools.chain(candidates, numbered) if candidate and candidate.casefold() not in taken)
 
 
 @lru_cache(maxsize=1)
@@ -356,9 +407,7 @@ class FontStore:
         # The default first, then the preinstalled catalog, then uploads; each group keeps its registration order.
         records.sort(key=lambda record: ("system", "builtin", "upload").index(record["source"]))
         with self._lock:
-            self.known = {
-                record["id"]: Font(**{key: value for key, value in record.items() if key != "device_id"}) for record in records
-            }
+            self.known = {record["id"]: registry_font(record) for record in records}
             self.files.mkdir(parents=True, exist_ok=True)
             ready: set[str] = {font.id for font in self.known.values() if not font.has_file}
             for font in self.known.values():
@@ -401,11 +450,27 @@ class FontStore:
         font_store.insert(font.id, font.family, font.model_dump(exclude={"id", "family"}), None)
 
     def _write_config(self) -> None:
-        """Atomically write the fontconfig file the sandbox loads: the system config plus the font folder."""
+        """Atomically write the fontconfig file the sandbox loads: the system config, the font folder and one scan rule
+        per upload that lists the file under its registry family only.
+
+        Without the rule fontconfig would list an upload under the names inside the file, which another weight or
+        version of the same font, or an installed or bundled font, may share; the registry gives each upload a
+        distinct family (`unique_family`) and the rule makes that the only name the sandbox resolves to this file.
+        Each sandbox scans the folder afresh (its fontconfig cache lives in its own /tmp), so a new rule applies to
+        the next worker. The family comes from the uploaded file and is XML-escaped.
+        """
+        rules = "".join(
+            '  <match target="scan">\n'
+            f'    <test name="file"><string>{SANDBOX_DIR}/files/{escape(font.cache_name)}</string></test>\n'
+            f'    <edit name="family" mode="assign_replace" binding="strong"><string>{escape(font.family)}</string></edit>\n'
+            '    <edit name="familylang" mode="assign_replace" binding="strong"><string>en</string></edit>\n'
+            "  </match>\n"
+            for font in self.known.values() if font.source == "upload"
+        )
         text = (
             '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig>\n'
             '  <include ignore_missing="yes">/etc/fonts/fonts.conf</include>\n'
-            f"  <dir>{SANDBOX_DIR}/files</dir>\n</fontconfig>\n"
+            f"  <dir>{SANDBOX_DIR}/files</dir>\n{rules}</fontconfig>\n"
         )
         target = self.root / CONFIG_NAME
         temporary = target.with_suffix(".tmp")
@@ -547,44 +612,49 @@ class FontStore:
     def upload(self, content: bytes, preview: bytes | None, label: str, device: str) -> Font:
         """Validate a user's font file, store it and register it; blocking. Raises `FontRejected` with a user message.
 
-        The file must be a plain TrueType/OpenType font within the size limit whose family name is new: it may not
-        repeat a registered or installed family or a reserved name, because the family is what templates store and
-        what the sandbox resolves. The backend only reads the font's names (`read_names`); decoding is left to the
-        sandboxed browser. The display name is the font's own (its Chinese name first), never the file name. The
+        The file must be a plain TrueType/OpenType font within the size limit that is not in the library yet: the same
+        bytes (by SHA-256) are refused, whoever added them. Its family names it in templates and in the sandbox, so it
+        must be unique: another weight or version of a registered family, or a file that carries an installed or
+        reserved name, is registered under a distinct family (`unique_family`), which the generated fontconfig assigns
+        to this file (`_write_config`). The backend only reads the font's names (`read_names`); decoding is left to
+        the sandboxed browser. The display name is the font's own (its Chinese name first), never the file name. The
         preview strip is drawn by the uploader's own browser (the font is decoded nowhere else) and kept as alpha only;
         `label` is the text that browser drew, and a strip whose text is not the display name is dropped.
         """
         if not content or len(content) > self.max_upload:
             raise FontRejected(f"字体文件为空或超过 {self.max_upload // (1024 * 1024)} MiB 上限")
-        names = read_names(content)
-        family = names.family
-        taken = {font.family.casefold() for font in self.known.values()} | RESERVED_FAMILIES | system_families()
-        if family.casefold() in taken:
-            raise FontRejected(f"已存在名为“{family}”的字体，请使用家族名称不同的字体文件")
-        strip = normalize_preview(preview) if preview and (label or "").strip() == names.label else None
         digest = hashlib.sha256(content).hexdigest()
+        refuse_copy(digest, list(self.known.values()))
+        names = read_names(content)
+        strip = normalize_preview(preview) if preview and (label or "").strip() == names.label else None
         suffix = ".otf" if content[:4] == b"OTTO" else ".ttf"
         font = Font(
-            id=f"u-{digest[:16]}", family=family, label=names.label, style="uploaded by a user", weights=[400],
+            id=f"u-{digest[:16]}", family=names.family, label=names.label, style="uploaded by a user", weights=[400],
             filename=f"{digest[:16]}{suffix}", sha256=digest, size=len(content), source="upload", preview=strip is not None,
         )
-        if font.id in self.known:
-            raise FontRejected("这个字体文件已经上传过了")
         self.files.mkdir(parents=True, exist_ok=True)
         staged = self.files / f"{font.cache_name}.{uuid4().hex}.part"
         strip_file = staged.with_suffix(".png")
+        registered = [known.family for known in list(self.known.values())]
         try:
             staged.write_bytes(content)
             if strip is not None:
                 strip_file.write_bytes(strip)
                 assert self.objects is not None
                 self.objects.put(font.preview_key, strip_file, "image/png")
-            if not self._register(font, staged, device):
-                raise FontRejected("已存在同名字体或相同文件")
+            # A second try covers another host that registered this file or took the name since this host's last sync.
+            for _attempt in range(2):
+                taken = {family.casefold() for family in registered} | RESERVED_FAMILIES | system_families()
+                font = font.model_copy(update={"family": unique_family(names, taken)})
+                if self._register(font, staged, device):
+                    return font
+                records = [registry_font(record) for record in font_store.listing()]
+                refuse_copy(digest, records)
+                registered = [record.family for record in records]
+            raise FontRejected("字体名称刚被其他上传占用，请重试")
         finally:
             staged.unlink(missing_ok=True)
             strip_file.unlink(missing_ok=True)
-        return font
 
     def preview_path(self, font_id: str) -> Path | None:
         """Cached preview strip of a font, fetched from the object store on first use; blocking."""

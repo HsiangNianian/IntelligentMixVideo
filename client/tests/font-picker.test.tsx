@@ -110,13 +110,13 @@ test("读不出名称的文件交给服务端判断", async () => {
   expect([server.uploads[0]!.get("label"), server.uploads[0]!.get("preview")]).toEqual(["", null]);
 });
 
-// 场景：服务端拒绝（家族名重复）——把服务端给出的原因原样展示在浮层里，不改变当前选择。
+// 场景：服务端拒绝（同一个文件已在库里）——把服务端给出的原因原样展示在浮层里，不改变当前选择。
 test("服务端拒绝上传时展示原因", async () => {
-  fontServer(() => Response.json({ detail: "已存在名为“Zed Display”的字体，请使用家族名称不同的字体文件" }, { status: 422 }));
+  fontServer(() => Response.json({ detail: "这个字体文件已经在字体库里了：我的字体（Zed Display）" }, { status: 422 }));
   const changes: string[] = [];
   await open((family) => changes.push(family), async () => null);
   fireEvent.change(screen.getByLabelText("选择字体文件"), { target: { files: [new File(["x"], "zed.ttf")] } });
-  expect((await screen.findByRole("alert")).textContent).toContain("已存在名为“Zed Display”的字体");
+  expect((await screen.findByRole("alert")).textContent).toContain("这个字体文件已经在字体库里了：我的字体（Zed Display）");
   expect(changes).toEqual([]);
 });
 
@@ -170,13 +170,13 @@ test("字体库页面可以上传字体", async () => {
   expect(server.uploads[0]!.get("label")).toBe("我的字体");
 });
 
-// 场景：上传被服务端拒绝（重名）——原因显示在页面上，列表不变。
+// 场景：上传被服务端拒绝（同一个文件已在库里）——原因显示在页面上，列表不变。
 test("字体库页面展示上传被拒绝的原因", async () => {
-  fontServer(() => Response.json({ detail: "已存在名为“Zed Display”的字体，请使用家族名称不同的字体文件" }, { status: 422 }));
+  fontServer(() => Response.json({ detail: "这个字体文件已经在字体库里了：我的字体（Zed Display）" }, { status: 422 }));
   render(<FontLibrary previewer={async () => null} />);
   await screen.findByText("共 2 个字体");
   fireEvent.change(screen.getByLabelText("选择字体文件"), { target: { files: [new File(["x"], "zed.ttf")] } });
-  expect((await screen.findByRole("alert")).textContent).toContain("已存在名为“Zed Display”的字体");
+  expect((await screen.findByRole("alert")).textContent).toContain("这个字体文件已经在字体库里了：我的字体（Zed Display）");
   expect(screen.getByText("共 2 个字体")).toBeTruthy();
 });
 
