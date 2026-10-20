@@ -1,6 +1,6 @@
 [package]
 name = "client"
-version = "0.9.8"
+version = "0.9.9"
 description = "IntelligentMixVideo desktop client"
 edition = "2021"
 # 更新插件要求 Rust 1.90；文件锁使用标准库。
