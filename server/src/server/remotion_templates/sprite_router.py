@@ -113,6 +113,19 @@ async def sprite_preview(sprite_id: str, service: Service, overlay: bool = False
     return player_page(script, overlay=overlay, host=host, fonts=FontStore.for_settings(service.settings).listing())
 
 
+@router.get("/fonts/{weight}", summary="读取供宿主页面转交的预览字体")
+async def shared_font(weight: int, service: Service) -> FileResponse:
+    """模板编辑等宿主页面读取一次受管字体，转交给各个资产播放器（预览页参数 `fonts=host`）。
+
+    沙箱预览页是不透明来源，浏览器不为它的请求使用 HTTP 缓存，每个播放器各自读取就要重复下载；宿主页面是普通来源，
+    这里的响应可以缓存。字重只有 400 与 700，其他返回 404。
+    """
+    if weight not in {400, 700}:
+        raise NotFound("font not found")
+    font = service.settings.font_regular if weight == 400 else service.settings.font_bold
+    return FileResponse(font, media_type="font/collection", headers={"Cache-Control": "public, max-age=86400"})
+
+
 @router.get("/{sprite_id}/fonts/{weight}", summary="读取预览字体")
 async def sprite_font(sprite_id: str, weight: int, service: Service) -> FileResponse:
     """预览页按相对路径读取受管字体；资产不存在或字重不支持返回 404。

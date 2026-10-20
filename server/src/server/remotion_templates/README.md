@@ -246,7 +246,7 @@ and rendering; this change does not alter per-frame render timeouts.
 
 The isolation is Linux-only: `POST /works`, a parameter patch on a pre-composition
 (PR74) version or on a composed version whose player bundle predates injected defaults
-(no `/* imv-preview-protocol 1 */` first line) sent to `POST /works/{id}/messages`, the retry of such a parameter job and
+(no `/* imv-preview-protocol N */` first line) sent to `POST /works/{id}/messages`, the retry of such a parameter job and
 `POST /api/sprites/publish` return 503 naming the unsupported platform or the missing
 `bwrap`, `prlimit` or `node` before anything is queued, so on macOS the service starts but
 cannot generate templates. A parameter patch on a composed (PR76) version whose bundle
@@ -534,16 +534,25 @@ ready message. The page injects the published defaults and content box as a JSON
 `<`, `>`, `&` and line separators escaped); the player starts from them, merges `imv-preview-update` values over
 them (objects key by key, arrays and scalars replace) and applies an optional `host: {transform}` through
 `remotion/host-layer.tsx`, the wrapper the overlay render uses too. The wrapper also lifts the clipping of a composed Sprite's instance boxes (the parent of each `data-imv-instance`, which Sprites sealed before this carry as `overflow: hidden`; `player_page` has the same rule for older bundles), so a larger font, keyword size or underline is bounded by the canvas only; a component's own fixed boxes are still measured as before. Such a bundle reports `host: true` when ready.
-`presentation.mjs` writes the host protocol it speaks as the bundle's first line (`/* imv-preview-protocol 1 */`,
-`publication.PREVIEW_PROTOCOL`); only that line counts, because the generated code and its defaults are bundled too and
-can contain any text. Publishing rebuilds the bundle from the sealed source in the isolated worker when the sealed one
-lacks that line and refreshes an existing publication on re-save; a failed rebuild still saves the asset, just without overlay preview.
+With `fonts=host` in the page URL the player does not download the managed fonts itself. The page has an opaque origin
+(sandbox), so the browser keeps no HTTP cache for it and every overlay and catalog cover would fetch both files again.
+Instead it posts `imv-preview-fonts-request`, and the host page answers `imv-preview-fonts` with a Blob per weight
+(`400`, `700`) that it read once from `GET /api/sprites/fonts/{weight}` (`Cache-Control: public, max-age=86400`).
+The answer `fonts: null` makes the player fall back to the relative `fonts/{weight}` route.
+`presentation.mjs` writes the host protocol it speaks as the bundle's first line (`publication.PREVIEW_PROTOCOL`).
+Version 1 (`/* imv-preview-protocol 1 */`) covers frame sync, injected defaults and placement overrides. Version 2
+(`/* imv-preview-protocol 2 */`) adds the host fonts. Only that line counts, because the generated code and its
+defaults are bundled too and can contain any text (`publication.bundle_protocol`). A version 1 bundle still reads
+injected defaults, so parameter revisions stay instant (`revisable`), but it is not current.
+Publishing rebuilds the bundle from the sealed source in the isolated worker when the sealed one
+is not current and refreshes an existing publication on re-save; a failed rebuild still saves the asset, just without overlay preview.
 A refresh stages the new bundle and records its hash before replacing the copy, so a failed update keeps the
 previous copy working and publishing again retries it. Identical publish requests (same version and field
 choice) take turns, so a double click rebuilds once.
-A saved publication whose copy lacks the protocol line is rebuilt from its published source on its first preview (it
-cannot take placement transforms otherwise, so an asset saved before they existed would not follow position edits in
-the template editor); a failed rebuild or store serves the old copy and the next preview retries. Concurrent previews
+A saved publication whose copy does not declare the current protocol is rebuilt from its published source on its first
+preview. Without the protocol line it cannot take placement transforms, so an asset saved before they existed would not
+follow position edits in the template editor; a version 1 copy would download its own fonts. A failed rebuild or store
+serves the old copy and the next preview retries. Concurrent previews
 of one Sprite rebuild once.
 
 ## Overlay renders for the bus

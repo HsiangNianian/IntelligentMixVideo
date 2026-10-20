@@ -10,6 +10,11 @@ import { HostLayer, type HostBox, type HostTransform } from "./host-layer";
 const channel = window.location.hash.slice(1);
 /** Sync mode (`?sync=1`): no controls or loop; the parent scrubs the Player with `imv-preview-sync` times and an optional clip length. */
 const sync = new URLSearchParams(window.location.search).get("sync") === "1";
+/**
+ * Host fonts mode (`?fonts=host`): the parent page hands over the managed font files it downloaded once. This page has an
+ * opaque origin, so the browser does not cache its requests and every player would download them again.
+ */
+const hostFonts = new URLSearchParams(window.location.search).get("fonts") === "host";
 type JsonValue = null | string | number | boolean | JsonValue[] | {[key: string]: JsonValue};
 type Values = Record<string, JsonValue>;
 /** Reject non-JSON or unbounded message values before updating the isolated Player. */
@@ -276,14 +281,38 @@ function registerCatalogFonts() {
   }
 }
 
+/**
+ * Ask the parent page for the managed font files (`imv-preview-fonts-request`). It answers `imv-preview-fonts` with a
+ * Blob per weight, or `fonts: null` when it has none; null makes the page download them itself.
+ */
+function requestFonts(): Promise<Record<number, Blob> | null> {
+  return new Promise((resolve) => {
+    /** Take the parent's first answer on this channel. */
+    function receive(event: MessageEvent) {
+      const data = event.data;
+      if (event.source !== window.parent || data?.channel !== channel || data?.type !== "imv-preview-fonts") return;
+      window.removeEventListener("message", receive);
+      const fonts = data.fonts as Record<string, unknown> | null | undefined;
+      const regular = fonts?.["400"];
+      const bold = fonts?.["700"];
+      resolve(regular instanceof Blob && bold instanceof Blob ? { 400: regular, 700: bold } : null);
+    }
+    window.addEventListener("message", receive);
+    notify("imv-preview-fonts-request");
+  });
+}
+
 /** Await the same managed font files used by server rendering before exposing the Player. */
 async function mount() {
   registerCatalogFonts();
   try {
+    const given = hostFonts ? await requestFonts() : null;
     await Promise.all(
       [400, 700].map(async (weight) => {
-        const url = new URL(`./fonts/${weight}`, window.location.href);
-        const font = new FontFace("Noto Sans CJK SC", `url("${url}")`, {
+        const source = given
+          ? await given[weight].arrayBuffer()
+          : `url("${new URL(`./fonts/${weight}`, window.location.href)}")`;
+        const font = new FontFace("Noto Sans CJK SC", source, {
           weight: String(weight),
         });
         document.fonts.add(await font.load());

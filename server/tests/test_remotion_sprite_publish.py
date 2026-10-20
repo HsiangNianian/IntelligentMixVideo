@@ -544,6 +544,18 @@ def test_overlay_preview_is_transparent_and_serves_managed_fonts(client: TestCli
     assert client.get("/api/sprites/00000000-0000-4000-8000-000000000000/fonts/400").status_code == 404
 
 
+def test_host_pages_read_one_cacheable_copy_of_the_preview_fonts(client: TestClient, published) -> None:
+    """Issue #210：沙箱预览页是不透明来源，浏览器不为它缓存请求，每个叠加层都重新下载两份字体。
+
+    模板编辑这样的宿主页面从不依赖具体资产的共享地址读取一次、可以缓存，再转交给播放器；只有 400 与 700 两个字重。
+    """
+    for weight in (400, 700):
+        font = client.get(f"/api/sprites/fonts/{weight}")
+        assert (font.status_code, font.content) == (200, b"fixture-font")
+        assert font.headers["cache-control"] == "public, max-age=86400"
+    assert client.get("/api/sprites/fonts/500").status_code == 404
+
+
 def test_publish_hashes_and_copies_off_the_event_loop(client: TestClient, published, monkeypatch) -> None:
     """发布要哈希全部封存产物并复制播放器包，必须在工作线程执行，不能占住事件循环（SSE 与取消都依赖它）。"""
     from server.remotion_templates import store as store_module
