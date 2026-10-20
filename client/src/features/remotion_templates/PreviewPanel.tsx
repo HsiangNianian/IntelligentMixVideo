@@ -58,7 +58,7 @@ export function PreviewPanel({
       setRendering(false);
       blocking.current = false;
       onBusyChange(false);
-    }, 20_000);
+    }, 60_000);
   }
   /** 完成或失败都释放操作锁，旧请求的完成消息由调用处过滤。 */
   function finish() {

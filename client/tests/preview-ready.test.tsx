@@ -11,7 +11,7 @@ function fromFrame(iframe: HTMLIFrameElement, data: Record<string, unknown>) {
 }
 
 // 审计复现：返回最新版本时，若 iframe 在 setReady(false) 渲染前就回报就绪，false→true 被合并成「未变化」，
-// 参数不再下发，预览停在「正在渲染预览…」并锁住参数 20 秒，随后报加载超时。
+// 参数不再下发，预览停在「正在渲染预览…」并锁住参数直到加载超时。
 test("切换版本时立即就绪的预览仍下发参数并解锁", async () => {
   const busy: boolean[] = [];
   /** 记录工作区收到的锁定状态，最后一次必须是解锁。 */
@@ -48,6 +48,22 @@ test("切换版本时立即就绪的预览仍下发参数并解锁", async () =>
   await act(async () => fromFrame(iframe, { type: "imv-preview-rendered", channel, requestId: update.requestId }));
   expect(screen.queryByText("正在渲染预览…")).toBeNull();
   expect(busy.at(-1)).toBe(false);
+});
+
+// 播放器要先下载两份各约 20 MB 的字体才就绪，经代理常超过 20 秒；加载超时为一分钟，到时才报超时并解除锁定。
+test("预览加载一分钟没有就绪才报超时", async () => {
+  const timer = spyOn(window, "setTimeout");
+  const busy: boolean[] = [];
+  const version = remotionVersion("version-1");
+  render(<PreviewPanel version={version} values={version.candidate.default_config} pending={false} onBusyChange={(value) => busy.push(value)} />);
+  const load = timer.mock.calls.find(([, delay]) => delay === 60_000);
+  expect(load).toBeDefined();
+  expect(timer.mock.calls.some(([, delay]) => delay === 20_000)).toBe(false);
+  expect(screen.queryByText("预览加载超时，请检查服务连接后重试。")).toBeNull();
+  await act(async () => (load![0] as () => void)());
+  expect(screen.getByText("预览加载超时，请检查服务连接后重试。")).toBeTruthy();
+  expect(busy.at(-1)).toBe(false);
+  timer.mockRestore();
 });
 
 /** 加载预览并回报就绪，返回下发给播放器的参数。 */
