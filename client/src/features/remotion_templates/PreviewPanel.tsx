@@ -58,7 +58,7 @@ export function PreviewPanel({
       setRendering(false);
       blocking.current = false;
       onBusyChange(false);
-    }, 20_000);
+    }, 60_000);
   }
   /** 完成或失败都释放操作锁，旧请求的完成消息由调用处过滤。 */
   function finish() {
@@ -107,9 +107,11 @@ export function PreviewPanel({
       }
     }
     window.addEventListener("message", receive);
+    // WebKit 经 HTTP 代理访问时会把 URL 片段随请求行一起发出，服务端把它当成最后一个查询参数的一部分；
+    // `overlay` 排在最后会变成 `true#…` 而被 422 拒绝，预览页变成一段错误 JSON。服务端不校验的 `channel` 放在最后，片段只会落进它。
     if (frame.current)
       frame.current.src =
-        apiUrl(`/versions/${encodeURIComponent(version.id)}/preview?overlay=true`) +
+        apiUrl(`/versions/${encodeURIComponent(version.id)}/preview?overlay=true&channel=${token}`) +
         "#" +
         token;
     return () => {

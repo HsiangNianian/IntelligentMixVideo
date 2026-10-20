@@ -187,6 +187,16 @@ async function previewReady() {
   post.mockRestore();
 }
 
+// WebKit 经 HTTP 代理访问时会把 URL 片段随请求行发给服务端，服务端把它当成最后一个查询参数的一部分：
+// `overlay` 排在最后会变成 `true#…`，被 422 拒绝，预览页只剩一段错误 JSON。
+test("预览地址的片段被代理转发时 overlay 仍是布尔值", async () => {
+  server();
+  render(<RemotionWorkspace />);
+  await generate(false);
+  const url = new URL(screen.getByTitle<HTMLIFrameElement>("Remotion 字效播放器").src);
+  expect(new URLSearchParams(url.search + url.hash).get("overlay")).toBe("true");
+});
+
 // 成功版本同时驱动代码、参数与播放器，复制使用带默认值的导出；新增清空整个会话。
 test("生成、复制并新增独立会话", async () => {
   server();
