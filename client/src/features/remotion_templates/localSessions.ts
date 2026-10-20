@@ -127,7 +127,7 @@ function browserStorage(): SessionStorage {
    * 事务以 strict 持久性提交：服务端在确认送达后删除事件，本地写入是唯一副本，必须落盘后才算完成；浏览器默认的
    * relaxed 只写到系统缓冲，系统崩溃或断电会丢失已确认的记录。桌面 SQLite 同样在提交时落盘。
    * `body` 只能同步发起请求（或在请求回调里继续发起），不能等待其他 Promise，否则事务会提前提交。
-   * 失败统一包装为 LocalStoreError，与桌面一致地停止订阅并提示。
+   * 失败统一包装为 LocalStoreError，与桌面一致地停止订阅并提示；原因带错误名（如 QuotaExceededError），浏览器给的说明可能为空。
    */
   async function run<T>(stores: string[], mode: IDBTransactionMode, body: (transaction: IDBTransaction) => () => T) {
     try {
@@ -142,10 +142,12 @@ function browserStorage(): SessionStorage {
           throw error;
         }
         transaction.oncomplete = () => resolve(result());
-        transaction.onerror = transaction.onabort = () => reject(transaction.error);
+        // 失败的请求先把 error 事件冒泡到事务，那时 transaction.error 仍为 null；随后事务中止并记下原因，
+        // 回调抛错、配额不足与连接被强制关闭也都以中止结束，所以只在 abort 时读取原因。
+        transaction.onabort = () => reject(transaction.error);
       });
     } catch (error) {
-      throw new LocalStoreError(`浏览器本地会话库读写失败：${error instanceof Error ? error.message : String(error)}`);
+      throw new LocalStoreError(`浏览器本地会话库读写失败：${String(error)}`);
     }
   }
   /** 一个会话的全部消息（序号取全部数值范围）。 */

@@ -2,10 +2,10 @@
  * 字效本地会话库回归：事件合并规则（任务状态、轮次、游标、作品版本指针）、消息分页、写入本地后确认送达，
  * 以及 Remotion 请求和资产发布携带本机设备 ID；存储使用每例独立的内存实现。桌面存储经 IPC 发送的参数与
  * `remotion-sessions-contract.json` 逐字比对，Rust 单元测试解析并执行同一份夹具。浏览器的 IndexedDB 实现用
- * fake-indexeddb 验证页面重新加载后的读回、按服务删除、strict 持久性提交与连接关闭后重新打开。执行 bun run test。
+ * fake-indexeddb 验证页面重新加载后的读回、按服务删除、strict 持久性提交、连接关闭后重新打开与失败原因。执行 bun run test。
  */
 import { expect, spyOn, test } from "bun:test";
-import { forceCloseDatabase, IDBDatabase, IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { forceCloseDatabase, IDBDatabase, IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import * as api from "@/features/remotion_templates/api";
 import * as local from "@/features/remotion_templates/localSessions";
@@ -232,6 +232,23 @@ test("浏览器会话库连接关闭或被其他页签删除后重新打开", ()
     });
     expect(await local.history()).toEqual([]);
     expect(open).toHaveBeenCalledTimes(3);
+  }));
+
+// 回归：请求失败时 error 事件先冒泡到事务，那时 transaction.error 还是 null，界面只显示「读写失败：null」。
+// 用一次真实失败的请求（对已有键 add）代替读取，原因须带该请求的错误名。
+test("浏览器会话库读写失败时报告请求的错误", () =>
+  browserDatabase(async () => {
+    await local.storage().device();
+    const read = spyOn(IDBObjectStore.prototype, "get").mockImplementation(function (this: IDBObjectStore) {
+      return this.add("重复", "device_id");
+    });
+    try {
+      const failure = local.storage().device();
+      await expect(failure).rejects.toBeInstanceOf(local.LocalStoreError);
+      await expect(failure).rejects.toThrow(/ConstraintError/);
+    } finally {
+      read.mockRestore();
+    }
   }));
 
 // 每个 SSE 事件先写入本地会话库，再以该事件编号确认送达；重新连接时重新确认本地已有的游标。
