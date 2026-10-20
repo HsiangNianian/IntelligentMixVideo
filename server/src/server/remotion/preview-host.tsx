@@ -281,21 +281,31 @@ function registerCatalogFonts() {
   }
 }
 
+/** How long to wait for the parent's answer before the page downloads the fonts itself. */
+const FONTS_WAIT_MS = 30_000;
+
 /**
  * Ask the parent page for the managed font files (`imv-preview-fonts-request`). It answers `imv-preview-fonts` with a
- * Blob per weight, or `fonts: null` when it has none; null makes the page download them itself.
+ * Blob per weight, or `fonts: null` when it has none; null makes the page download them itself. The files are large and
+ * the parent may still be reading them, so only a parent that never answers is given up on, after `FONTS_WAIT_MS`.
  */
 function requestFonts(): Promise<Record<number, Blob> | null> {
   return new Promise((resolve) => {
+    const timer = window.setTimeout(() => finish(null), FONTS_WAIT_MS);
+    /** Stop waiting and settle with the parent's fonts, or null when there are none. */
+    function finish(fonts: Record<number, Blob> | null) {
+      window.clearTimeout(timer);
+      window.removeEventListener("message", receive);
+      resolve(fonts);
+    }
     /** Take the parent's first answer on this channel. */
     function receive(event: MessageEvent) {
       const data = event.data;
       if (event.source !== window.parent || data?.channel !== channel || data?.type !== "imv-preview-fonts") return;
-      window.removeEventListener("message", receive);
       const fonts = data.fonts as Record<string, unknown> | null | undefined;
       const regular = fonts?.["400"];
       const bold = fonts?.["700"];
-      resolve(regular instanceof Blob && bold instanceof Blob ? { 400: regular, 700: bold } : null);
+      finish(regular instanceof Blob && bold instanceof Blob ? { 400: regular, 700: bold } : null);
     }
     window.addEventListener("message", receive);
     notify("imv-preview-fonts-request");
