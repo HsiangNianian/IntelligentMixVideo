@@ -1,9 +1,11 @@
 /**
  * 字效本地会话库回归：事件合并规则（任务状态、轮次、游标、作品版本指针）、消息分页、写入本地后确认送达，
  * 以及 Remotion 请求和资产发布携带本机设备 ID；存储使用每例独立的内存实现。桌面存储经 IPC 发送的参数与
- * `remotion-sessions-contract.json` 逐字比对，Rust 单元测试解析并执行同一份夹具。执行 bun run test。
+ * `remotion-sessions-contract.json` 逐字比对，Rust 单元测试解析并执行同一份夹具。浏览器的 IndexedDB 实现用
+ * fake-indexeddb 验证页面重新加载后的读回与按服务删除。执行 bun run test。
  */
 import { expect, spyOn, test } from "bun:test";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import * as api from "@/features/remotion_templates/api";
 import * as local from "@/features/remotion_templates/localSessions";
@@ -136,6 +138,50 @@ test("本地消息分页返回 next_before", async () => {
   expect(older.messages.map((message) => message.sequence)).toEqual([1]);
   expect(older.next_before).toBeNull();
   await expect(local.snapshot("missing")).rejects.toBeInstanceOf(local.MissingLocalWork);
+});
+
+// 回归：浏览器曾只把会话存在页面内存，刷新或重启后聊天历史和设备 ID 一起丢失（设备 ID 变了，服务端也认不出原作品）。
+// 现在保存在 IndexedDB：模拟页面重新加载（新的存储实例与连接）后会话、消息分页、任务状态与设备 ID 原样读回；
+// 删除只移除当前服务下的这条会话。
+test("浏览器重新加载后从 IndexedDB 读回会话与设备 ID", async () => {
+  Reflect.set(globalThis, "indexedDB", new IDBFactory());
+  Reflect.set(globalThis, "IDBKeyRange", IDBKeyRange);
+  const original = apiBase();
+  try {
+    local.setStorage(undefined);
+    const device = await local.deviceId();
+    await recordWork();
+    await local.apply("work-1", [
+      ...[1, 2, 3].map((sequence) =>
+        event(sequence, {
+          type: "message.created",
+          data: { id: `m-${sequence}`, sequence, job_id: "job-1", role: "user", text: `第 ${sequence} 条` },
+        }),
+      ),
+      event(4, { type: "job.updated", data: running("succeeded") }),
+    ]);
+    setApiBase("http://other.test:9000");
+    await recordWork();
+    setApiBase(original);
+
+    local.setStorage(undefined);
+    expect(await local.deviceId()).toBe(device);
+    expect(await local.history()).toMatchObject([{ id: "work-1", title: "本地标题", job: { status: "succeeded" } }]);
+    const first = await local.snapshot("work-1", undefined, 2);
+    expect(first.messages.map((message) => message.text)).toEqual(["第 2 条", "第 3 条"]);
+    expect(first.cursor).toBe(4);
+    expect((await local.snapshot("work-1", first.next_before!, 2)).messages.map((message) => message.sequence)).toEqual([1]);
+
+    await local.forget("work-1");
+    expect(await local.history()).toEqual([]);
+    expect(await local.storage().messages(local.server(), "work-1", null, 10)).toEqual([]);
+    setApiBase("http://other.test:9000");
+    expect((await local.history()).map((work) => work.id)).toEqual(["work-1"]);
+  } finally {
+    setApiBase(original);
+    Reflect.deleteProperty(globalThis, "indexedDB");
+    Reflect.deleteProperty(globalThis, "IDBKeyRange");
+  }
 });
 
 // 每个 SSE 事件先写入本地会话库，再以该事件编号确认送达；重新连接时重新确认本地已有的游标。

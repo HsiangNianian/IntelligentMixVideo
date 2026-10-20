@@ -1,8 +1,8 @@
 /**
  * 字效会话的本地存储：聊天消息、任务公开状态与本机设备 ID 只保存在使用者这一端；版本列表与代码按需从服务端读取。
  *
- * 桌面通过 Tauri `remotion_sessions` 命令读写应用数据目录下的 SQLite；浏览器仅供本地测试，使用页面内存，
- * 刷新即清空。会话按当前 API 服务地址归属，切换服务只看到该服务下的会话。同一会话的读写按调用顺序串行，
+ * 桌面通过 Tauri `remotion_sessions` 命令读写应用数据目录下的 SQLite；浏览器保存在当前站点的 IndexedDB，
+ * 刷新或重启浏览器后仍在。会话按当前 API 服务地址归属，切换服务只看到该服务下的会话。同一会话的读写按调用顺序串行，
  * 打开会话的 SSE 订阅与后台同步（`backgroundSync.ts`）不会交错写入。两种实现共用同一存储接口，事件合并规则只在本文件实现一次：会话订阅把服务端事件交给
  * `apply` 写入本地后，再向服务端确认送达，服务端随即删除已送达的事件。
  */
@@ -50,7 +50,7 @@ export interface SessionStorage {
   remove(server: string, work: string): Promise<void>;
 }
 
-/** 本机没有这条会话（浏览器刷新后内存已清空、记录已删除或属于其他服务）；与服务端 404/410 区分。 */
+/** 本机没有这条会话（浏览器站点数据已清除、记录已删除或属于其他服务）；与服务端 404/410 区分。 */
 export class MissingLocalWork extends Error {
   /** 固定提示，调用方通常静默清除选择。 */
   constructor() {
@@ -81,7 +81,139 @@ function tauriStorage(): SessionStorage {
   };
 }
 
-/** 浏览器测试实现：页面内存保存，刷新后设备 ID 与会话一起丢弃；键为服务地址与记录 ID。 */
+/**
+ * 浏览器实现：IndexedDB 库 `imv-remotion-sessions`，表结构与桌面 SQLite 对应。`works`、`messages`、`jobs` 以
+ * （服务地址, ID）为主键，记录形如 `{server, id, work?, sequence?, data}`，`data` 是前端定义的文档；
+ * `messages` 按（服务地址, 会话, 序号）建索引供分页，`jobs` 按（服务地址, 会话）建索引；`meta` 只存设备 ID。
+ * 连接首次调用时打开，打开失败则下次调用重试。
+ */
+function browserStorage(): SessionStorage {
+  let opening: Promise<IDBDatabase> | undefined;
+  /** 打开（首次时建表）会话库。 */
+  function database() {
+    opening ??= new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("imv-remotion-sessions", 1);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        db.createObjectStore("meta");
+        db.createObjectStore("works", { keyPath: ["server", "id"] }).createIndex("server", "server");
+        db.createObjectStore("messages", { keyPath: ["server", "id"] }).createIndex("work", ["server", "work", "sequence"]);
+        db.createObjectStore("jobs", { keyPath: ["server", "id"] }).createIndex("work", ["server", "work"]);
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    opening.catch(() => {
+      opening = undefined;
+    });
+    return opening;
+  }
+  /**
+   * 在一个事务里执行 `body` 发起的请求，事务提交后返回 `body` 给出的读取函数的结果；写入要么全部提交，要么全部回滚。
+   * `body` 只能同步发起请求（或在请求回调里继续发起），不能等待其他 Promise，否则事务会提前提交。
+   * 失败统一包装为 LocalStoreError，与桌面一致地停止订阅并提示。
+   */
+  async function run<T>(stores: string[], mode: IDBTransactionMode, body: (transaction: IDBTransaction) => () => T) {
+    try {
+      const db = await database();
+      return await new Promise<T>((resolve, reject) => {
+        const transaction = db.transaction(stores, mode);
+        let result: () => T;
+        try {
+          result = body(transaction);
+        } catch (error) {
+          transaction.abort();
+          throw error;
+        }
+        transaction.oncomplete = () => resolve(result());
+        transaction.onerror = transaction.onabort = () => reject(transaction.error);
+      });
+    } catch (error) {
+      throw new LocalStoreError(`浏览器本地会话库读写失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  /** 一个会话的全部消息（序号取全部数值范围）。 */
+  const conversation = (server: string, work: string, before = Infinity) =>
+    IDBKeyRange.bound([server, work, -Infinity], [server, work, before], false, true);
+  return {
+    device: () =>
+      run(["meta"], "readwrite", (transaction) => {
+        // 读取与首次生成在同一写事务内，多个页签同时打开也只会生成一个设备 ID。
+        const meta = transaction.objectStore("meta");
+        const request = meta.get("device_id");
+        let device = "";
+        request.onsuccess = () => {
+          device = request.result ?? crypto.randomUUID();
+          if (!request.result) meta.put(device, "device_id");
+        };
+        return () => device;
+      }),
+    works: (server) =>
+      run(["works"], "readonly", (transaction) => {
+        const request = transaction.objectStore("works").index("server").getAll(server);
+        return () =>
+          (request.result as { data: StoredWork }[])
+            .map((row) => row.data)
+            .sort((left, right) =>
+              left.updated_at === right.updated_at
+                ? right.work.id.localeCompare(left.work.id)
+                : right.updated_at.localeCompare(left.updated_at),
+            );
+      }),
+    work: (server, id) =>
+      run(["works"], "readonly", (transaction) => {
+        const request = transaction.objectStore("works").get([server, id]);
+        return () => (request.result?.data as StoredWork | undefined) ?? null;
+      }),
+    messages: (server, work, before, limit) =>
+      run(["messages"], "readonly", (transaction) => {
+        // 从最新的序号向前取，凑满 limit 条即停。
+        const rows: ChatMessage[] = [];
+        const request = transaction.objectStore("messages").index("work").openCursor(conversation(server, work, before ?? Infinity), "prev");
+        request.onsuccess = () => {
+          const cursor = request.result;
+          if (!cursor) return;
+          rows.push(cursor.value.data);
+          if (rows.length < limit) cursor.continue();
+        };
+        return () => rows;
+      }),
+    jobs: (server, work, ids) =>
+      run(["jobs"], "readonly", (transaction) => {
+        const store = transaction.objectStore("jobs");
+        const requests = ids.map((id) => store.get([server, id]));
+        return () => requests.flatMap((request) => (request.result?.work === work ? [request.result.data as SessionJob] : []));
+      }),
+    save: (server, change) =>
+      run(["works", "messages", "jobs"], "readwrite", (transaction) => {
+        const work = change.work.work.id;
+        transaction.objectStore("works").put({ server, id: work, data: change.work });
+        for (const message of change.messages)
+          transaction.objectStore("messages").put({ server, id: message.id, work, sequence: message.sequence ?? 0, data: message });
+        for (const job of change.jobs) transaction.objectStore("jobs").put({ server, id: job.id, work, data: job });
+        return () => undefined;
+      }),
+    remove: (server, work) =>
+      run(["works", "messages", "jobs"], "readwrite", (transaction) => {
+        transaction.objectStore("works").delete([server, work]);
+        for (const [name, range] of [
+          ["messages", conversation(server, work)],
+          ["jobs", IDBKeyRange.only([server, work])],
+        ] as const) {
+          const request = transaction.objectStore(name).index("work").openCursor(range);
+          request.onsuccess = () => {
+            const cursor = request.result;
+            if (!cursor) return;
+            cursor.delete();
+            cursor.continue();
+          };
+        }
+        return () => undefined;
+      }),
+  };
+}
+
+/** 测试用内存实现：键为服务地址与记录 ID，实例销毁即丢弃。 */
 export function memoryStorage(): SessionStorage {
   const device = crypto.randomUUID();
   const works = new Map<string, { server: string; work: StoredWork }>();
@@ -128,9 +260,9 @@ export function memoryStorage(): SessionStorage {
 
 let backend: SessionStorage | undefined;
 let device: Promise<string> | undefined;
-/** 桌面用 SQLite，浏览器用内存；测试可替换为独立实例。 */
+/** 桌面用 SQLite，浏览器用 IndexedDB；测试可替换为独立实例。 */
 export function storage(): SessionStorage {
-  return (backend ??= isTauri() ? tauriStorage() : memoryStorage());
+  return (backend ??= isTauri() ? tauriStorage() : browserStorage());
 }
 /** 测试替换存储后端，并清除缓存的设备 ID。 */
 export function setStorage(next: SessionStorage | undefined) {
