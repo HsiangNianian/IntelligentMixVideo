@@ -12,7 +12,7 @@ is listed only when its SHA-256 matches the registry) next to a generated `fonts
 read-only and points fontconfig at it, so Chrome in every worker (validation, preview build, overlay render, video
 composition) resolves a family by its CSS name. The browser preview cannot use fontconfig: it registers lazy
 `FontFace`s served by `GET /api/templates/fonts/{id}`. Uploaded font bytes are never parsed by the backend beyond a
-bounds-checked read of the family name; only the sandboxed Chrome and the user's own browser decode them.
+bounds-checked read of the font's names; only the sandboxed Chrome and the user's own browser decode them.
 """
 
 import asyncio
@@ -27,7 +27,7 @@ import threading
 from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
-from typing import Literal
+from typing import Literal, NamedTuple
 from uuid import uuid4
 
 from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
@@ -54,6 +54,9 @@ SYSTEM_FONT_ID = "noto-sans-cjk"
 # A stored `fontFamily` parameter is a plain string of at most this many characters (family names are limited likewise).
 FONT_FAMILY_MAX_LENGTH = 100
 SFNT_MAGIC = (b"\x00\x01\x00\x00", b"OTTO", b"true")
+# Windows language IDs of Chinese names, in the order an upload's display name prefers them: zh-CN, zh-SG, zh-TW,
+# zh-HK, zh-MO.
+CHINESE_LANGUAGES = (0x0804, 0x1004, 0x0404, 0x0C04, 0x1404)
 # Preview strips are drawn black on a transparent background and tinted by the page through a CSS mask.
 PREVIEW_MAX = (640, 96)
 
@@ -181,11 +184,23 @@ def sha256_of(path: Path) -> str:
     return digest.hexdigest()
 
 
-def read_family(data: bytes) -> str:
-    """The family name of a TrueType/OpenType font, read from its `name` table without a font library.
+class FontNames(NamedTuple):
+    """The names an uploaded font gives itself in its `name` table."""
 
-    Every offset is bounds-checked, so a malformed file only raises `FontRejected`. The typographic family (name ID 16)
-    wins over the legacy one (ID 1). Collections and web fonts (`ttcf`, WOFF) are not accepted.
+    # The CSS name the registry stores: the English (or default-language) family.
+    family: str
+    # The name people read on the card and the strip: the Chinese name when the font has one.
+    label: str
+
+
+def _name_records(data: bytes) -> list[tuple[int, int, int, str]]:
+    """Decodable family records (name IDs 1 and 16) of a TrueType/OpenType font as (platform, language, name ID, text),
+    in table order; raises `FontRejected` for anything else.
+
+    Every offset is bounds-checked. Unicode (platform 0) and Windows Unicode (platform 3, encodings 0, 1 and 10) records
+    are UTF-16; Mac records are read only in the Roman encoding, since decoding a Chinese or Japanese Mac record as
+    Roman garbles it. Empty, unprintable or over-long texts are left out. Collections and web fonts (`ttcf`, WOFF) are
+    not accepted.
     """
     try:
         if data[:4] not in SFNT_MAGIC:
@@ -200,23 +215,53 @@ def read_family(data: bytes) -> str:
         offset, length = name_table
         table = data[offset:offset + length]
         count, strings = struct.unpack_from(">HH", table, 2)
-        found: dict[int, str] = {}
+        records = []
         for index in range(count):
-            platform, _encoding, _language, name_id, size, start = struct.unpack_from(">HHHHHH", table, 6 + 12 * index)
-            if name_id not in (1, 16) or name_id in found:
+            platform, encoding, language, name_id, size, start = struct.unpack_from(">HHHHHH", table, 6 + 12 * index)
+            unicode = platform == 0 or (platform == 3 and encoding in (0, 1, 10))
+            if name_id not in (1, 16) or not (unicode or (platform == 1 and encoding == 0)):
                 continue
             raw = table[strings + start:strings + start + size]
             if len(raw) != size:
                 continue
-            text = raw.decode("utf-16-be" if platform in (0, 3) else "mac_roman", errors="ignore").strip()
-            if text:
-                found[name_id] = text
-        family = found.get(16) or found.get(1)
+            text = raw.decode("utf-16-be" if unicode else "mac_roman", errors="ignore").strip()
+            if text and len(text) <= FONT_FAMILY_MAX_LENGTH and text.isprintable():
+                records.append((platform, language, name_id, text))
     except (struct.error, IndexError) as exc:
         raise FontRejected("字体文件已损坏或不完整") from exc
-    if not family or len(family) > 100 or not family.isprintable():
+    return records
+
+
+def _default_language(platform: int, language: int) -> bool:
+    """Whether a record is in the font's default language: Unicode, Windows US English or Mac English."""
+    return platform == 0 or (platform, language) in ((3, 0x0409), (1, 0))
+
+
+def read_names(data: bytes) -> FontNames:
+    """The family and display names of a TrueType/OpenType font, read from its `name` table without a font library.
+
+    The typographic family (name ID 16) wins over the legacy one (ID 1) within a language. The family prefers the
+    default language (`_default_language`), so it is the font's usual Latin name. The label prefers Chinese (Windows
+    zh-CN, zh-SG, zh-TW, zh-HK, zh-MO, in that order), then Unicode or US English, then any other Windows language, and
+    is the family when the font has no Unicode name. `client/src/features/fonts/names.ts` applies the same label rule
+    so the uploader's browser draws the preview strip with this text. A malformed file only raises `FontRejected`.
+    """
+    records = _name_records(data)
+    if not records:
         raise FontRejected("无法读取字体的家族名称")
-    return family
+    order = {record: index for index, record in enumerate(records)}
+    family = min(records, key=lambda record: (not _default_language(record[0], record[1]), record[2] != 16, order[record]))[3]
+
+    def label_rank(record: tuple[int, int, int, str]) -> tuple[int, bool, int]:
+        """Rank of a Unicode record as the display name; lower is better."""
+        platform, language = record[0], record[1]
+        rank = CHINESE_LANGUAGES.index(language) if platform == 3 and language in CHINESE_LANGUAGES else (
+            len(CHINESE_LANGUAGES) if platform == 0 or language == 0x0409 else len(CHINESE_LANGUAGES) + 1
+        )
+        return rank, record[2] != 16, order[record]
+
+    unicode = [record for record in records if record[0] in (0, 3)]
+    return FontNames(family=family, label=min(unicode, key=label_rank)[3] if unicode else family)
 
 
 @lru_cache(maxsize=1)
@@ -504,23 +549,23 @@ class FontStore:
 
         The file must be a plain TrueType/OpenType font within the size limit whose family name is new: it may not
         repeat a registered or installed family or a reserved name, because the family is what templates store and
-        what the sandbox resolves. The backend only reads that name; decoding is left to the sandboxed browser. The
-        preview strip is drawn by the uploader's own browser (the font is decoded nowhere else) and kept as alpha only.
+        what the sandbox resolves. The backend only reads the font's names (`read_names`); decoding is left to the
+        sandboxed browser. The display name is the font's own (its Chinese name first), never the file name. The
+        preview strip is drawn by the uploader's own browser (the font is decoded nowhere else) and kept as alpha only;
+        `label` is the text that browser drew, and a strip whose text is not the display name is dropped.
         """
         if not content or len(content) > self.max_upload:
             raise FontRejected(f"字体文件为空或超过 {self.max_upload // (1024 * 1024)} MiB 上限")
-        family = read_family(content)
+        names = read_names(content)
+        family = names.family
         taken = {font.family.casefold() for font in self.known.values()} | RESERVED_FAMILIES | system_families()
         if family.casefold() in taken:
             raise FontRejected(f"已存在名为“{family}”的字体，请使用家族名称不同的字体文件")
-        label = (label or "").strip() or family
-        if len(label) > 100:
-            raise FontRejected("字体显示名称最多 100 个字符")
-        strip = normalize_preview(preview) if preview else None
+        strip = normalize_preview(preview) if preview and (label or "").strip() == names.label else None
         digest = hashlib.sha256(content).hexdigest()
         suffix = ".otf" if content[:4] == b"OTTO" else ".ttf"
         font = Font(
-            id=f"u-{digest[:16]}", family=family, label=label, style="uploaded by a user", weights=[400],
+            id=f"u-{digest[:16]}", family=family, label=names.label, style="uploaded by a user", weights=[400],
             filename=f"{digest[:16]}{suffix}", sha256=digest, size=len(content), source="upload", preview=strip is not None,
         )
         if font.id in self.known:

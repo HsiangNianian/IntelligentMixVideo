@@ -1,7 +1,7 @@
 """Remotion 字体库：MySQL 注册表 + 对象存储 + 本地校验缓存、用户上传、沙箱挂载、Agent 清单、API 与渲染守卫。
 
 范围：`font_catalog.json` 的结构与随包字体文件、预装字体从字体包复制进对象存储与注册表、从对象存储取回缓存（换机器/丢缓存仍可用）、
-被篡改的缓存被剔除、上传字体的校验（格式、家族名、重名、大小、预览条）、`fontFamily` 的分类规则与覆盖校验、
+被篡改的缓存被剔除、字体名称的读取（显示名优先中文名）、上传字体的校验（格式、家族名、重名、大小、预览条）、`fontFamily` 的分类规则与覆盖校验、
 沙箱命令是否挂载字体目录、Agent 字体清单、字体 API 与预览页、渲染前的字体守卫。数据库用 `template_db` 的临时 SQLite，
 对象存储用本地目录，字体包用小文件代替（另有一例核对随包的真实字体），不访问网络；真实浏览器里字体是否生效由 `IMV_TEST_RENDERER=1` 的用例验证。
 执行：在 `server/` 下运行 `uv run --locked pytest tests/test_remotion_fonts.py -v`。
@@ -15,6 +15,7 @@ import shutil
 import struct
 from io import BytesIO
 from pathlib import Path
+from collections.abc import Sequence
 from types import SimpleNamespace
 
 import lzma
@@ -27,7 +28,7 @@ from server.remotion_templates import fonts as fonts_module
 from server.remotion_templates import routes
 from server.remotion_templates.api import app as remotion_templates_app
 from server.remotion_templates.categories import REQUIRED, category_problems
-from server.remotion_templates.fonts import CONFIG_NAME, FontRejected, FontSpec, FontStore, load_catalog, open_font_schema, read_family, require_family
+from server.remotion_templates.fonts import CONFIG_NAME, FontNames, FontRejected, FontSpec, FontStore, load_catalog, open_font_schema, read_names, require_family
 from server.remotion_templates.object_store import LocalObjects
 from server.remotion_templates.overlay_render import Overlay, OverlayError, require_fonts
 from server.remotion_templates.placement import resolve
@@ -41,11 +42,14 @@ from .conftest import DEVICE_HEADERS, published_sprite
 PAYLOADS = {"alpha": b"alpha-font-bytes", "beta": b"beta-font-bytes-longer"}
 
 
-def minimal_font(family: str, characters: str = "测试字体效果 Abc") -> bytes:
+def minimal_font(family: str, characters: str = "测试字体效果 Abc", names: Sequence[tuple[int, int, int, int, str | bytes]] = ()) -> bytes:
     """A tiny valid TrueType font: every listed character maps to one empty glyph exactly one em wide.
 
     Its text width (characters × font size) differs from the default font's, and it exists on no system, so a
-    width that changes proves the browser loaded this file. Built by hand to avoid a font-tooling dependency.
+    width that changes proves the browser loaded this file. Built by hand to avoid a font-tooling dependency. The name
+    table holds Windows US English records for `family` followed by the extra `names` records (platform, encoding,
+    language, name ID, text); a text is UTF-16 on the Unicode and Windows platforms and Mac Roman otherwise, and bytes
+    are written as given.
     """
     def table(tag: bytes, data: bytes) -> tuple[bytes, bytes]:
         return tag, data + b"\0" * (-len(data) % 4)
@@ -59,13 +63,14 @@ def minimal_font(family: str, characters: str = "测试字体效果 Abc") -> byt
     cmap_subtable += b"".join(struct.pack(">H", start) for start, _, _ in segments)
     cmap_subtable += b"".join(struct.pack(">H", delta) for _, _, delta in segments)
     cmap_subtable += b"\0\0" * count
-    names = [(1, family), (2, "Regular"), (4, family), (6, family.replace(" ", ""))]
-    strings = b"".join(value.encode("utf-16-be") for _, value in names)
+    entries = [(3, 1, 0x409, name_id, value) for name_id, value in ((1, family), (2, "Regular"), (4, family), (6, family.replace(" ", "")))]
+    entries += names
+    encoded = [value if isinstance(value, bytes) else value.encode("utf-16-be" if platform in (0, 3) else "mac_roman") for platform, _, _, _, value in entries]
+    strings = b"".join(encoded)
     records, offset = b"", 0
-    for name_id, value in names:
-        size = len(value.encode("utf-16-be"))
-        records += struct.pack(">HHHHHH", 3, 1, 0x409, name_id, size, offset)
-        offset += size
+    for (platform, encoding, language, name_id, _), value in zip(entries, encoded):
+        records += struct.pack(">HHHHHH", platform, encoding, language, name_id, len(value), offset)
+        offset += len(value)
     tables = dict([
         table(b"OS/2", struct.pack(">HhHHHhhhhhhhhhh10sIIII4sHHHhhhHH", 0, 1000, 400, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, bytes(10), 0, 0, 0, 0, b"IMV ", 0x40, 32, 0xFFFF, 800, -200, 0, 800, 200)),
         table(b"cmap", struct.pack(">HHHHI", 0, 1, 3, 1, 12) + cmap_subtable),
@@ -75,7 +80,7 @@ def minimal_font(family: str, characters: str = "测试字体效果 Abc") -> byt
         table(b"hmtx", struct.pack(">HhHh", 1000, 0, 1000, 0)),
         table(b"loca", bytes(6)),
         table(b"maxp", struct.pack(">IHHHHHHHHHHHHHH", 0x10000, 2, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0)),
-        table(b"name", struct.pack(">HHH", 0, len(names), 6 + 12 * len(names)) + records + strings),
+        table(b"name", struct.pack(">HHH", 0, len(entries), 6 + 12 * len(entries)) + records + strings),
         table(b"post", struct.pack(">IIhhIIIII", 0x30000, 0, -100, 50, 0, 0, 0, 0, 0)),
     ])
     # A hand-built font's head checksum field stays zero; FreeType does not verify checksums.
@@ -175,12 +180,30 @@ def test_every_catalog_font_ships_in_the_package() -> None:
 
 
 def test_the_family_name_is_read_without_trusting_the_file() -> None:
-    """家族名只读 name 表（带边界检查）：合法字体读出名称；不是 sfnt（如 WOFF）、被截断或没有名称表的文件抛 FontRejected。"""
+    """家族名只读 name 表（带边界检查）：合法字体读出名称；不是 sfnt（如 WOFF）、被截断、没有名称表或名称超过 100 个字符的文件抛 FontRejected。"""
     data = minimal_font("Zed Display")
-    assert read_family(data) == "Zed Display"
-    for broken in (b"wOFF" + data[4:], data[:20], data[:40], b"", b"\x00\x01\x00\x00" + b"\xff" * 40):
+    assert read_names(data) == FontNames(family="Zed Display", label="Zed Display")
+    for broken in (b"wOFF" + data[4:], data[:20], data[:40], b"", b"\x00\x01\x00\x00" + b"\xff" * 40, minimal_font("x" * 101)):
         with pytest.raises(FontRejected):
-            read_family(broken)
+            read_names(broken)
+
+
+def test_the_display_name_is_the_fonts_own_chinese_name() -> None:
+    """显示名取字体自己的名称：中文名优先（简体先于繁体），同一语言里字体家族（ID 16）先于旧式家族（ID 1），英文先于其他语言；
+    家族名（CSS 名）仍是英文名。Mac 平台的中文编码记录不按 Roman 解码（否则是乱码），只有 Mac Roman 名称时显示名就是家族名。
+    与客户端 `client/tests/font-names.test.ts` 是同一组情形，两边规则一致。"""
+    assert read_names(minimal_font("Smiley Sans", names=[(3, 1, 0x0804, 1, "得意黑")])) == FontNames(family="Smiley Sans", label="得意黑")
+    assert read_names(minimal_font("Font", names=[(3, 1, 0x0404, 1, "繁體名"), (3, 1, 0x0804, 1, "简体名")])).label == "简体名"
+    assert read_names(minimal_font("Font", names=[(3, 1, 0x0C04, 1, "香港名"), (3, 1, 0x0404, 1, "台灣名")])).label == "台灣名"
+    assert read_names(minimal_font("Alibaba PuHuiTi 2.0 85 Bold", names=[(3, 1, 0x0409, 16, "Alibaba PuHuiTi 2.0")])) == FontNames(
+        family="Alibaba PuHuiTi 2.0", label="Alibaba PuHuiTi 2.0",
+    )
+    assert read_names(minimal_font("Latin Name", names=[(3, 1, 0x0411, 1, "日本語名")])).label == "Latin Name"
+    assert read_names(minimal_font("Clean", names=[(3, 1, 0x0804, 1, "  "), (3, 1, 0x0804, 16, "bad\u0001name")])).label == "Clean"
+    gb2312 = minimal_font("Mac Font", names=[(1, 25, 33, 1, "宋体".encode("gb2312"))])
+    assert read_names(gb2312) == FontNames(family="Mac Font", label="Mac Font")
+    # The Windows records carry an unprintable name, so only the Mac Roman record is usable.
+    assert read_names(minimal_font("\u0001", names=[(1, 0, 0, 1, "Mac Only")])) == FontNames(family="Mac Only", label="Mac Only")
 
 
 def test_sync_installs_the_bundled_fonts_into_the_object_store_and_the_registry(store, objects) -> None:
@@ -243,8 +266,8 @@ def test_installing_the_bundled_fonts_can_be_switched_off(tmp_path, catalog, tem
 
 
 def test_upload_registers_a_user_font_in_the_object_store(store, objects) -> None:
-    """上传 .ttf：读出家族名并登记（来源 upload、上传设备），字体与预览条都进对象存储，本机立即可用；预览条只保留透明度。"""
-    font = store.upload(minimal_font("Zed Display"), strip_png(), "我的字体", "device-1")
+    """上传 .ttf：读出家族名与中文显示名并登记（来源 upload、上传设备），字体与预览条都进对象存储，本机立即可用；预览条只保留透明度。"""
+    font = store.upload(minimal_font("Zed Display", names=[(3, 1, 0x0804, 1, "我的字体")]), strip_png(), "我的字体", "device-1")
     assert (font.family, font.label, font.source, font.preview) == ("Zed Display", "我的字体", "upload", True)
     assert next(record for record in font_store.listing() if record["id"] == font.id)["device_id"] == "device-1"
     assert (objects.root / font.object_key).exists() and (objects.root / font.preview_key).exists()
@@ -254,7 +277,7 @@ def test_upload_registers_a_user_font_in_the_object_store(store, objects) -> Non
 
 
 def test_upload_refuses_unusable_fonts(store) -> None:
-    """拒绝：不是 TrueType/OpenType、空文件、家族名与已有字体（含大小写不同）或保留名重复、超过大小上限、预览条不是 PNG、显示名过长。"""
+    """拒绝：不是 TrueType/OpenType、空文件、家族名与已有字体（含大小写不同）或保留名重复、超过大小上限、预览条不是 PNG。"""
     store.upload(minimal_font("Zed Display"), None, "", "device-1")
     for content, message in [
         (b"wOFF" + minimal_font("Other")[4:], "TrueType"),
@@ -270,10 +293,16 @@ def test_upload_refuses_unusable_fonts(store) -> None:
         store.upload(minimal_font("Big Font"), None, "", "device-1")
     store.max_upload = 10_000_000
     with pytest.raises(FontRejected, match="预览图"):
-        store.upload(minimal_font("Preview Bad"), b"not a png", "", "device-1")
-    with pytest.raises(FontRejected, match="100"):
-        store.upload(minimal_font("Long Label"), None, "x" * 101, "device-1")
+        store.upload(minimal_font("Preview Bad"), b"not a png", "Preview Bad", "device-1")
     assert [font.family for font in store.listing()] == ["Noto Sans CJK SC", "Zed Display"]
+
+
+def test_the_display_name_comes_from_the_font_not_the_file_name(store) -> None:
+    """显示名取字体自己的名称，不取上传者给的文件名：浏览器若用文件名（如一串哈希）画了预览条，预览条被丢弃，界面改用文字名称。"""
+    data = minimal_font("Smiley Sans", names=[(3, 1, 0x0804, 1, "得意黑")])
+    font = store.upload(data, strip_png(), "0b7027d34f9546b7993e082b48c22401", "device-1")
+    assert (font.family, font.label, font.preview) == ("Smiley Sans", "得意黑", False)
+    assert store.preview_path(font.id) is None
 
 
 def test_the_same_file_is_not_uploaded_twice(store) -> None:
@@ -445,11 +474,11 @@ def test_the_font_api_lists_serves_and_uploads(client: TestClient, served) -> No
     assert file.headers["access-control-allow-origin"] == "*" and file.headers["content-type"] == "font/ttf"
     assert client.get("/api/templates/fonts/unknown").status_code == 404
     upload = client.post(
-        "/api/templates/fonts", headers=DEVICE_HEADERS, data={"label": "手写体"},
+        "/api/templates/fonts", headers=DEVICE_HEADERS, data={"label": "Zed Display"},
         files={"file": ("zed.ttf", minimal_font("Zed Display"), "font/ttf"), "preview": ("p.png", strip_png(), "image/png")},
     )
     created = upload.json()
-    assert upload.status_code == 201 and created["family"] == "Zed Display" and created["source"] == "upload" and created["label"] == "手写体"
+    assert upload.status_code == 201 and created["family"] == "Zed Display" and created["source"] == "upload" and created["label"] == "Zed Display"
     assert client.get(created["preview_url"]).headers["content-type"] == "image/png"
     assert client.get(created["file_url"]).content == minimal_font("Zed Display")
     assert [item["family"] for item in client.get("/api/templates/fonts").json()][-1] == "Zed Display"

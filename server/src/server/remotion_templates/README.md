@@ -200,10 +200,13 @@ and the fonts users upload. Rows are only ever added, so a template that names a
   HappyZcool-2016) are not bundled: they are proprietary or their redistribution terms are not confirmed. Anyone
   holding a licence can upload them (the family name inside the file must match).
 - **Uploads**: `POST /api/templates/fonts` (multipart `file`, optional `label` and `preview`, `X-IMV-Device`) takes a
-  `.ttf`/`.otf` up to `IMV_FONT_UPLOAD_MAX_BYTES`. The backend only reads the family name from the `name` table with
-  bounds-checked Python and never decodes the font; the sandboxed Chrome and the user's own browser do. The family
-  must differ from every registered, installed and reserved name. The preview strip is drawn by the uploader's browser
-  and only its alpha is kept. Fonts cannot be deleted. The library is shared, like the Sprite library.
+  `.ttf`/`.otf` up to `IMV_FONT_UPLOAD_MAX_BYTES`. The backend only reads the font's names from the `name` table with
+  bounds-checked Python and never decodes the font; the sandboxed Chrome and the user's own browser do. The family is
+  the font's English (default-language) name; the display name is its own Chinese name when it has one, otherwise the
+  same family, and never the file name. The family must differ from every registered, installed and reserved name.
+  The preview strip is drawn by the uploader's browser with that display name (`client/src/features/fonts/names.ts`
+  applies the same rule and sends it as `label`); a strip drawn with any other text is dropped, and only its alpha is
+  kept. Fonts cannot be deleted. The library is shared, like the Sprite library.
 - **Rendering**: the sandbox has no network, so the backend caches each font from the object store after checking its
   registry hash (`<data dir>/fonts/files`) and the sandbox mounts that folder read-only at `/imv-fonts` with a generated
   `fonts.conf` (`FONTCONFIG_FILE`). Chrome in every worker (validation, preview build, overlay render, video
