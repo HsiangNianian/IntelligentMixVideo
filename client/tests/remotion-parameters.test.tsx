@@ -156,17 +156,57 @@ test("组合版本按 Schema 生成类型化控件，实例参数整体回传", 
   expect(screen.queryByLabelText("实例参数 · title")).toBeNull();
 });
 
-// 场景：文字组合的版本里，各栏与关键词 Preset 的内部参数按「上栏」「下栏」「关键词字效」命名，而不是实例 ID。
-test("文字组合的实例参数按栏与关键词命名", () => {
+/** 双栏文字组合的版本：上下两栏（上栏颜色绑定为顶层参数）、关键词 Preset glow 与一个下栏发光特效 shine（颜色绑定为顶层参数，另有内部参数）。 */
+function textBlockVersion() {
   const version = composedVersion();
-  version.spec.sprite = { kind: "text", text: { tiers: ["upper", "lower"], keyword: "glow" } };
-  const nested = { type: "object" as const, properties: { glow: { type: "number" as const, title: "光晕", minimum: 0, maximum: 1 } } };
-  Object.assign(version.candidate.config_schema.properties, { upper: nested, lower: nested, glow: nested });
-  Object.assign(version.candidate.default_config, { upper: { glow: 0.2 }, lower: { glow: 0.4 }, glow: { glow: 0.6 } });
+  version.spec.sprite = {
+    kind: "text", text: { tiers: ["upper", "lower"], keyword: "glow", effects: [{ instance_id: "shine", title: "发光" }] },
+    bindings: [
+      { name: "line1Color", title: "上栏颜色", targets: [{ instance_id: "upper", parameter: "color" }] },
+      { name: "shineColor", title: "发光颜色", targets: [{ instance_id: "shine", parameter: "glowColor" }] },
+      { name: "keywordEffectColor", title: "关键词颜色效果", targets: [{ instance_id: "glow", parameter: "color" }] },
+    ],
+  };
+  const color = { type: "string" as const, pattern: "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$" };
+  const nested = (title: string) => ({ type: "object" as const, properties: { amount: { type: "number" as const, title, minimum: 0, maximum: 1 } } });
+  Object.assign(version.candidate.config_schema.properties, {
+    line1Color: { ...color, title: "上栏颜色" },
+    keywordEffect: { type: "boolean", title: "关键词字效" },
+    effect1: { type: "boolean", title: "持续·发光" },
+    effect1Target: { type: "string", title: "发光位置", enum: ["block", "tiers", "line1", "line2", "keyword"] },
+    shineColor: { ...color, title: "发光颜色" },
+    keywordEffectColor: { ...color, title: "关键词颜色效果" },
+    upper: nested("上栏投影"), lower: nested("下栏投影"), glow: nested("关键词光晕"), shine: nested("脉动速度"),
+  });
+  Object.assign(version.candidate.default_config, {
+    line1Color: "#FFFFFF", keywordEffect: true, effect1: true, effect1Target: "line2", shineColor: "#FFD54A", keywordEffectColor: "#FFAA00",
+    upper: { amount: 0.2 }, lower: { amount: 0.4 }, glow: { amount: 0.6 }, shine: { amount: 0.8 },
+  });
+  return version;
+}
+
+// 场景：文字组合的字效右侧只有「文字」与「特效」两块：文字本身的字号、颜色、关键词与各栏内部参数在「文字」里；每个特效（含关键词字效）
+// 是一张卡片，开关决定是否应用，位置（中文名称）、绑定在它上面的样式与它的内部参数都在卡片里，不再散在「样式」或折叠的实例里。
+test("文字组合的字效分为文字与特效两块，每个特效的开关和配置在同一张卡片里", () => {
+  const version = textBlockVersion();
+  const changes: [string, JsonValue][] = [];
   render(<ParametersPanel version={version} values={version.candidate.default_config} disabled={false} pending={false} dirty={false} saving={false}
-    onChange={() => {}} onSave={() => {}} onDiscard={() => {}} />);
-  const titles = Array.from(document.querySelectorAll("summary")).map((item) => item.textContent);
-  expect(titles).toEqual(["实例 · title", "上栏", "下栏", "关键词字效"]);
+    onChange={(key, value) => changes.push([key, value])} onSave={() => {}} onDiscard={() => {}} />);
+  expect(screen.queryByRole("group", { name: "配置" })).toBeNull();
+  expect(screen.queryByRole("group", { name: "样式" })).toBeNull();
+  const text = screen.getByRole("group", { name: "文字" });
+  for (const label of ["字号", "上栏颜色", "关键词"]) expect(within(text).getByLabelText(label)).toBeTruthy();
+  for (const label of ["发光颜色", "脉动速度", "关键词光晕"]) expect(within(text).queryByLabelText(label)).toBeNull();
+  expect(Array.from(text.querySelectorAll("summary")).map((item) => item.textContent)).toEqual(["实例 · title", "上栏", "下栏"]);
+  const shine = within(screen.getByRole("group", { name: "特效" })).getByRole("region", { name: "持续·发光" });
+  expect(within(shine).getByLabelText("发光位置").textContent).toBe("下栏");
+  expect(within(shine).getByLabelText("发光颜色")).toBeTruthy();
+  const keyword = screen.getByRole("region", { name: "关键词字效" });
+  expect(within(keyword).getByLabelText("关键词光晕")).toBeTruthy();
+  fireEvent.click(within(shine).getByRole("switch", { name: "应用：持续·发光" }));
+  fireEvent.change(within(shine).getByLabelText("脉动速度"), { target: { value: "0.5" } });
+  fireEvent.click(within(keyword).getByRole("switch", { name: "应用：关键词字效" }));
+  expect(changes).toEqual([["effect1", false], ["shine", { amount: 0.5 }], ["keywordEffect", false]]);
 });
 
 test("超出范围、长度或项数的输入只留在表单并提示", () => {

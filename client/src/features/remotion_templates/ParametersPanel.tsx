@@ -1,4 +1,4 @@
-/** 根据成功版本 schema 生成表单：组合版本分为模板可调的顶层参数与各实例参数，旧版本按图层分组；控件草稿校验后才影响实时预览。 */
+/** 根据成功版本 schema 生成表单：文字组合的字效分为「文字」与「特效」，其他组合版本分为顶层参数与各实例参数，旧版本按图层分组；控件草稿校验后才影响实时预览。 */
 import { cn } from "@/lib/utils";
 import { useEffect, useId, useState } from "react";
 import { SlidersHorizontal } from "lucide-react";
@@ -13,7 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ParameterControl, type ParameterValue } from "@/components/ParameterControl";
+import { ParameterControl, type ParameterField, type ParameterValue } from "@/components/ParameterControl";
 import {
   controlLabel,
   instanceTitle,
@@ -21,8 +21,11 @@ import {
   sameJson,
   numericRules,
   schemaGroups,
+  textSections,
   validValue,
   type Control,
+  type EffectCard,
+  type InstanceFields,
   type Scalar,
   type JsonValue,
   type Values,
@@ -305,13 +308,15 @@ export function ParametersPanel({
 }
 
 /**
- * 组合版本的参数：顶层参数分为宿主固定的「配置」与这个字效自己的「样式」，各实例参数只在这里调整默认值。
- * 保存只检查参数 Schema 并立即生成新版本；无法逐项编辑的实例回退为 JSON 文本域。
+ * 组合版本的参数：文字组合的字效分为「文字」与「特效」两块（`TextBlockParameters`）；其他版本的顶层参数分为宿主固定的「配置」
+ * 与这个效果自己的「样式」，各实例参数只在这里调整默认值。保存只检查参数 Schema 并立即生成新版本；无法逐项编辑的实例回退为 JSON 文本域。
  */
 function ComposedParameters({version, values, disabled, onChange, onValidity}: {
   version: Version; values: Values; disabled: boolean;
   onChange: (key: string, value: JsonValue) => void; onValidity: (key: string, invalid: boolean) => void;
 }) {
+  const text = textSections(version);
+  if (text) return <TextBlockParameters sections={text} title={(id) => instanceTitle(version, id)} values={values} disabled={disabled} onChange={onChange} onValidity={onValidity} />;
   const groups = schemaGroups(version.candidate.config_schema.properties ?? {});
   const sections = [["配置", groups.config], ["样式", groups.style]] as const;
   return <div className="space-y-4 py-3">
@@ -341,6 +346,59 @@ function ComposedParameters({version, values, disabled, onChange, onValidity}: {
       <JsonParameter key={id} label={id} value={values[id]!} disabled={disabled}
         onChange={(next) => onChange(id, next)} onValidity={(bad) => onValidity(id, bad)} />
     ))}
+  </div>;
+}
+
+/**
+ * 文字组合字效的参数面板：「文字」是文字本身的配置（内容、字号、字体、排版与各栏外观，各栏的内部参数可展开，另有关键词选项）；
+ * 「特效」每个特效一张卡片，标题旁的开关决定是否应用，卡片里是它的位置、时长与自己的样式。关掉的特效保留设置、只是不显示。
+ */
+function TextBlockParameters({sections, title, values, disabled, onChange, onValidity}: {
+  sections: NonNullable<ReturnType<typeof textSections>>; title: (id: string) => string; values: Values; disabled: boolean;
+  onChange: (key: string, value: JsonValue) => void; onValidity: (key: string, invalid: boolean) => void;
+}) {
+  /** 一个顶层参数的控件；当前值缺失的参数不显示。 */
+  const control = (field: ParameterField) => values[field.key] !== undefined && <ParameterControl key={field.key} field={field} value={values[field.key] as ParameterValue}
+    disabled={disabled} className={cn(field.kind === "string" && !field.options && "@min-[420px]:col-span-2")} onChange={(next) => onChange(field.key, next)} />;
+  /** 一个实例的内部参数：逐项控件整体回传，形状无法逐项编辑时回退为 JSON。 */
+  const nested = ({id, fields}: InstanceFields) => values[id] === undefined ? null : fields ? fields.filter((field) => (values[id] as Values)[field.key] !== undefined).map((field) => (
+    <ParameterControl key={`${id}.${field.key}`} field={field} value={(values[id] as Values)[field.key] as ParameterValue} disabled={disabled}
+      onChange={(next) => onChange(id, {...(values[id] as Values), [field.key]: next})} />
+  )) : <JsonParameter key={id} label={id} value={values[id]!} disabled={disabled} onChange={(next) => onChange(id, next)} onValidity={(bad) => onValidity(id, bad)} />;
+  /** 一张特效卡片：开关在标题旁，关掉时卡片内容变淡但仍可调整。 */
+  const effect = (card: EffectCard) => {
+    const on = card.toggle ? values[card.toggle.key] !== false : true;
+    return <section key={card.id} aria-label={card.title} className="space-y-3 rounded-lg border p-3">
+      <div className="flex items-center justify-between gap-2">
+        <h4 className="text-sm font-medium">{card.title}</h4>
+        {card.toggle && values[card.toggle.key] !== undefined && <Switch aria-label={`应用：${card.title}`} checked={on} disabled={disabled} onCheckedChange={(checked) => onChange(card.toggle!.key, checked)} />}
+      </div>
+      <div className={cn("grid gap-4 @min-[420px]:grid-cols-2", !on && "opacity-60")}>
+        {card.fields.map(control)}
+        {card.instance && nested(card.instance)}
+      </div>
+    </section>;
+  };
+  return <div className="space-y-5 py-3">
+    <p className="text-xs text-muted-foreground">「文字」是文字本身的内容、字号、字体、排版与外观；「特效」可以逐个选择是否应用，并调整它的位置、时长与外观。云端模板按摆放调整字号、字体、字重、栏间距与逐栏字号比例、特效的开关、位置与时长以及关键词，其余在这里修改。保存只检查参数范围，立即生成新版本；布局修改请通过聊天描述。</p>
+    <fieldset className="space-y-3">
+      <legend className="text-sm font-medium">文字</legend>
+      <div className="grid gap-4 @min-[420px]:grid-cols-2">{sections.text.map(control)}</div>
+      {sections.instances.filter(({id}) => values[id] !== undefined).map((instance) => instance.fields ? (
+        instance.fields.length > 0 && <details key={instance.id} className="border-t pt-3">
+          <summary className="cursor-pointer text-sm">{title(instance.id)}</summary>
+          <div className="grid gap-4 pt-3 @min-[420px]:grid-cols-2">{nested(instance)}</div>
+        </details>
+      ) : nested(instance))}
+      {sections.keyword.some((field) => values[field.key] !== undefined) && <div className="space-y-3 border-t pt-3">
+        <h4 className="text-sm">关键词</h4>
+        <div className="grid gap-4 @min-[420px]:grid-cols-2">{sections.keyword.map(control)}</div>
+      </div>}
+    </fieldset>
+    <fieldset className="space-y-3">
+      <legend className="text-sm font-medium">特效</legend>
+      {sections.effects.length ? sections.effects.map(effect) : <p className="text-xs text-muted-foreground">这个字效没有特效。</p>}
+    </fieldset>
   </div>;
 }
 

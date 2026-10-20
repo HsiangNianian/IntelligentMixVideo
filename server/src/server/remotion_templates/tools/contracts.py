@@ -90,13 +90,15 @@ class ComponentDefinition(ContractModel):
     default_parameters: JsonObject
 
 
-# 文字组合里 Preset 担任的角色：text 画一栏文字（宿主传入文字、切分好的片段、关键词组件与字体），keyword 画一个关键词命中。
-# 不填的是自由组件（滤镜、特效，以及更早按固定框组合的字效）。
-PresetRole = Literal["text", "keyword"]
-# 宿主传给各角色 Preset 的 prop：它们不属于 Preset 自己的参数，不能写进 parameter_schema。
+# 文字组合里 Preset 担任的角色：text 画一栏文字（宿主传入文字、切分好的片段、关键词组件与字体），keyword 画一个关键词命中，
+# effect 包住文字块的某个位置画入场、出场或持续特效。不填的是自由组件（滤镜、特效，以及更早按固定框组合的字效）。
+PresetRole = Literal["text", "keyword", "effect"]
+# 宿主传给各角色 Preset 的 prop：它们不属于 Preset 自己的参数，不能写进 parameter_schema。effect 收到被包住的内容 children、
+# 显现进度 progress（0 还没出现，1 完全显示）与宿主的外层元素 Box（它按位置决定块级或行内）。
 ROLE_PROPS: dict[str, tuple[str, ...]] = {
     "text": ("text", "segments", "Keyword", "fontFamily", "fontWeight", "fontSize"),
     "keyword": ("text",),
+    "effect": ("children", "progress", "Box"),
 }
 
 
@@ -367,8 +369,32 @@ class TextKeyword(ContractModel):
     parameters: Omittable[JsonObject]
 
 
+# 特效的类型：enter 入场、exit 出场（宿主按配置的时长算显现进度），loop 持续（进度恒为 1，需要循环时自己读帧）。
+EffectSlot = Literal["enter", "exit", "loop"]
+# 特效作用的位置：block 整个文字块，tiers 各栏（各自从出现的帧起），line1、line2 上栏或下栏（只有双栏），keyword 每个关键词命中。
+EffectTarget = Literal["block", "tiers", "line1", "line2", "keyword"]
+# 特效的中文名称，如「淡入」「发光」：宿主据此写它的开关、位置与时长参数的标题。
+EffectTitle = Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_length=1, max_length=8)]
+
+
+class TextEffect(ContractModel):
+    """文字块的一个特效：画它的 effect 角色 Preset 及其样式参数、中文名称、类型，以及作用位置、时长与开关（配置的默认值）。"""
+
+    instance_id: NonEmptyString
+    source: PresetSource
+    parameters: Omittable[JsonObject]
+    title: EffectTitle
+    slot: EffectSlot
+    target: EffectTarget
+    # 入场、出场的时长（秒），省略为 0.5；持续特效没有时长。
+    seconds: Omittable[Annotated[FiniteNumber, Field(ge=0.1, le=3)]]
+    # 是否默认开启，省略为开启；编辑时带回用户关掉的状态。
+    enabled: Omittable[StrictBool]
+
+
 class TextComposition(ContractModel):
-    """字效的文字组合：宿主按配置把文字切成一栏或上下两栏，各栏交给 text Preset 画，关键词命中交给 keyword Preset 画。"""
+    """字效的文字组合：宿主按配置把文字切成一栏或上下两栏，各栏交给 text Preset 画，关键词命中交给 keyword Preset 画，
+    特效交给 effect Preset 包住它们的位置。"""
 
     layout: TextLayout
     # 默认文字：单栏一行，双栏为「上栏\n下栏」。
@@ -379,15 +405,29 @@ class TextComposition(ContractModel):
     line_gap: Omittable[Annotated[FiniteNumber, Field(ge=0, le=300)]]
     line_starts: Omittable[list[Annotated[Integer, Field(ge=0, le=3600)]]]
     keyword: Omittable[TextKeyword]
+    # 按顺序包住各自位置的特效，先列的在里层；宿主按顺序给它们第 1、2…个特效的配置参数。
+    effects: list[TextEffect] = Field(default_factory=list, max_length=6)
     duration_frames: PositiveInteger
 
 
+class TextBlockEffect(ContractModel):
+    """组合后记录的一个特效：实例、中文名称与类型；位置、时长与开关是配置参数，默认值在 Sprite 的默认参数里。"""
+
+    instance_id: NonEmptyString
+    title: EffectTitle
+    slot: EffectSlot
+
+
 class TextBlock(ContractModel):
-    """组合后记录的文字块结构：区域、各栏实例与关键词实例；配置的默认值在 Sprite 的默认参数里。"""
+    """组合后记录的文字块结构：区域、各栏实例、关键词实例与特效；配置的默认值在 Sprite 的默认参数里。"""
 
     layout: TextLayout
     tiers: list[NonEmptyString] = Field(min_length=1, max_length=2)
     keyword: Omittable[NonEmptyString]
+    effects: list[TextBlockEffect] = Field(default_factory=list)
+    # 宿主把各栏定格在中间帧显示、文字块的动画都由特效 Preset 画（有可配置特效之后的作品；关键词命中照常播放）；
+    # 更早的字效没有这一项，它们的 text Preset 自己画的动画照常播放。
+    still: Omittable[Literal[True]]
 
 
 class SpriteDraft(ComponentDefinition):

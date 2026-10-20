@@ -67,7 +67,8 @@ def _deferred(name: str):
     "preset.create",
     constraints=[
         "The complete source, parameter schema and defaults are saved as a new immutable record.",
-        "role text or keyword marks a Preset for a text effect's text block. The host passes a text Preset text, segments, Keyword, fontFamily, fontWeight and fontSize and a keyword Preset text; it is type-checked with those props, and its parameter_schema declares only its own style parameters, never these.",
+        "role text, keyword or effect marks a Preset for a text effect's text block. The host passes a text Preset text, segments, Keyword, fontFamily, fontWeight and fontSize, a keyword Preset text and an effect Preset children, progress and Box; it is type-checked with those props, and its parameter_schema declares only its own style parameters, never these.",
+        "In a new work the host holds each text Preset on its middle frame, so motion of its own never plays: the text's motion belongs in effect Presets, while keyword Presets keep playing.",
     ],
     side_effects=["code validation and preset catalog write"],
     error_codes=["INVALID_ARGUMENT", "CODE_VALIDATION_FAILED", "VALIDATION_UNAVAILABLE", "PRESET_STORE_FAILED"],
@@ -84,11 +85,12 @@ async def preset_create(owner, request: PresetCreateInput) -> ToolResult[PresetC
 
 @tool(
     "sprite.compose",
-    contract_version=3,
+    contract_version=4,
     constraints=[
         "The host canvas is fixed at 1080x1920, 30 FPS. When the snapshot has target_duration_frames (a new work), the Sprite must last exactly that long (the last instance's end, or the text block's duration_frames), otherwise the call is refused.",
-        "Contract v3: kind is required (text, filter_overlay, video_overlay or transition_overlay). A text effect is composed from text {layout, text, font_size, tiers, line_gap, line_starts, keyword, duration_frames} with role text Presets for the tiers and an optional role keyword Preset, and no instances; the host lays the block out and provides its configuration parameters. Other kinds place instances by layout and timing.",
-        "parameters lifts Preset props to required top-level Sprite style parameters that templates may change per placement; each binding targets declared top-level Preset props that share one object schema and one value; a bound number needs minimum and maximum (integers for an integer), a bound string a colour pattern, enum or maxLength of at most 2000; only type, title, description, default, minimum, maximum, enum, minLength, maxLength, the colour pattern (or the keywordColor pattern), maxItems and items.maxLength may be used. A text block's configuration names (text, fontSize, fonts, weights, size ratios, lineGap, lineStartFrames, keyword options, keywordEffect) are taken, for parameter names and for the tiers' and keyword's instance_id alike.",
+        "Contract v4: kind is required (text, filter_overlay, video_overlay or transition_overlay). A text effect is composed from text {layout, text, font_size, tiers, line_gap, line_starts, keyword, effects, duration_frames} with role text Presets for the tiers, an optional role keyword Preset and role effect Presets, and no instances; the host lays the block out and provides its configuration parameters. Other kinds place instances by layout and timing.",
+        "text.effects (v4) lists up to 6 effects {instance_id, source, parameters, title, slot enter|exit|loop, target block|tiers|line1|line2|keyword, seconds (enter and exit only), enabled}, the first innermost; tiers, line1 and line2 need two tiers; a new work's block has at least one enter and one exit effect. Effect k gets the configuration parameters effect{k} (switch), effect{k}Target (position) and, entering or exiting, effect{k}Seconds (length).",
+        "parameters lifts Preset props to required top-level Sprite style parameters that templates may change per placement; each binding targets declared top-level Preset props that share one object schema and one value; a bound number needs minimum and maximum (integers for an integer), a bound string a colour pattern, enum or maxLength of at most 2000; only type, title, description, default, minimum, maximum, enum, minLength, maxLength, the colour pattern (or the keywordColor pattern), maxItems and items.maxLength may be used. A text block's configuration names (text, fontSize, fonts, weights, size ratios, lineGap, lineStartFrames, keyword options, keywordEffect, effect{k}...) are taken, for parameter names and for the tiers', keyword's and effects' instance_id alike.",
         "The host owns position, scale, rotation and opacity of the whole Sprite; do not bind or implement them.",
     ],
     side_effects=["deterministic source generation; no catalog write"],
@@ -100,7 +102,11 @@ async def preset_create(owner, request: PresetCreateInput) -> ToolResult[PresetC
             {"instance_id": "upper", "source": {"kind": "stored", "preset_id": "preset_tier_001"}, "parameters": {"color": "#FFFFFF"}, "font_family": "Noto Sans CJK SC", "font_weight": 700, "size_ratio": 0.5},
             {"instance_id": "lower", "source": {"kind": "stored", "preset_id": "preset_tier_001"}, "parameters": {"color": "#F5B93C"}, "font_family": "Noto Sans CJK SC", "font_weight": 700, "size_ratio": 1},
         ],
-        "line_gap": 24, "line_starts": [0, 30], "keyword": {"instance_id": "keyword", "source": {"kind": "stored", "preset_id": "preset_glow_001"}}, "duration_frames": 150},
+        "line_gap": 24, "line_starts": [0, 30], "keyword": {"instance_id": "keyword", "source": {"kind": "stored", "preset_id": "preset_glow_001"}},
+        "effects": [
+            {"instance_id": "fadeIn", "source": {"kind": "stored", "preset_id": "preset_fade_001"}, "title": "淡入", "slot": "enter", "target": "tiers", "seconds": 0.5},
+            {"instance_id": "fadeOut", "source": {"kind": "stored", "preset_id": "preset_fade_001"}, "title": "淡出", "slot": "exit", "target": "block"},
+        ], "duration_frames": 150},
         "parameters": [
             {"name": "line1Color", "title": "上栏颜色", "targets": [{"instance_id": "upper", "parameter": "color"}]},
             {"name": "line2Color", "title": "下栏颜色", "targets": [{"instance_id": "lower", "parameter": "color"}]},

@@ -58,11 +58,17 @@ export const TEXT_LAYOUT_PARAMETERS = [
 ];
 
 /**
- * 模板编辑里开放的资产参数：字效的排版参数与关键词样式；颜色、动画、出入场时间与关键词效果等属于资产本身，
+ * 字效特效的配置参数：第 k 个特效的开关 `effect{k}`、作用位置 `effect{k}Target` 与入场、出场的时长 `effect{k}Seconds`（秒），
+ * 名称与服务端 `categories.EFFECT_PARAMETER` 一致。字效工作区单列为「特效」组，模板编辑按摆放调整。
+ */
+export const EFFECT_PARAMETER = /^effect[1-9][0-9]*(?:Target|Seconds)?$/;
+
+/**
+ * 模板编辑里开放的资产参数：字效的排版参数、特效的开关、位置与时长以及关键词样式；颜色、特效与关键词效果的外观等属于资产本身，
  * 回字效工作区改出新版本。已有覆盖不受影响。
  */
 export function isInstanceParameter(kind: SpriteKind, key: string): boolean {
-  return kind === SpriteKind.TEXT && (TEXT_LAYOUT_PARAMETERS.includes(key) || TEMPLATE_KEYWORD_PARAMETERS.includes(key));
+  return kind === SpriteKind.TEXT && (TEXT_LAYOUT_PARAMETERS.includes(key) || TEMPLATE_KEYWORD_PARAMETERS.includes(key) || EFFECT_PARAMETER.test(key));
 }
 
 /** 画布像素换算为 0～100 的百分比（一位小数），与 IMS 文字位置同样的表示。 */

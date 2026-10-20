@@ -46,6 +46,12 @@ const OPTION_LABELS: Record<string, string> = {
   right: "右对齐",
   "400": "常规",
   "700": "粗体",
+  // 字效特效的作用位置（`effect{k}Target`）。
+  block: "整体",
+  tiers: "各栏",
+  line1: "上栏",
+  line2: "下栏",
+  keyword: "关键词",
   true: "是",
   false: "否",
 };

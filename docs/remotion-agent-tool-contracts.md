@@ -174,9 +174,9 @@ class ComponentDefinition(ContractModel):
     default_parameters: JsonObject
 
 
-# 文字组合里 Preset 担任的角色：text 画一栏文字（宿主传入文字、切分好的片段、关键词组件与字体），keyword 画一个关键词命中。
-# 不填的是自由组件（滤镜、特效，以及更早按固定框组合的字效）。
-PresetRole = Literal["text", "keyword"]
+# 文字组合里 Preset 担任的角色：text 画一栏文字（宿主传入文字、切分好的片段、关键词组件与字体），keyword 画一个关键词命中，
+# effect 包住文字块的某个位置画入场、出场或持续特效。不填的是自由组件（滤镜、特效，以及更早按固定框组合的字效）。
+PresetRole = Literal["text", "keyword", "effect"]
 
 
 class PresetDraft(ComponentDefinition):
@@ -396,7 +396,7 @@ async def preset_search(request: PresetSearchInput) -> ToolResult[PresetSearchOu
 ```
 
 - 契约版本为 2，由 `tools.inspect` 的 `contract_version` 标识。旧版本只声明过 `matches` 语义检索结构，尚未启用；消费者必须按版本选择解析器，v2 不返回旧字段。
-- 不做语义或向量检索：只列出摘要（preset_id、description、参数名），由 Agent 自行判断召回哪个。query 可选，按空白分成若干词，description 须不区分大小写地包含每一个词；role 可选，只列出该角色（text 或 keyword）的预设；limit 为 1～100 的整数，省略时为 20，按创建时间由新到旧。旧无时区时间按 UTC 解释，无效时间放末尾，记录仍可按 ID 读取。
+- 不做语义或向量检索：只列出摘要（preset_id、description、参数名），由 Agent 自行判断召回哪个。query 可选，按空白分成若干词，description 须不区分大小写地包含每一个词；role 可选，只列出该角色（text、keyword 或 effect）的预设；limit 为 1～100 的整数，省略时为 20，按创建时间由新到旧。旧无时区时间按 UTC 解释，无效时间放末尾，记录仍可按 ID 读取。
 - 传入 preset_id 时，另在 preset 字段返回该预设的完整代码、Schema 和默认参数；ID 不存在返回 PRESET_NOT_FOUND 并列出近期可用 ID。读取预设不得借用 preset.modify。
 - 匹配结果是候选能力，不表示已经符合当前用户需求。排序不承诺统一的相似度百分比，不暴露含义未统一的“置信度”。
 - 没有结果返回 `presets: []`；不会自动创建预设。查询不得写入预设库。
@@ -689,8 +689,32 @@ class TextKeyword(ContractModel):
     parameters: Omittable[JsonObject]
 
 
+# 特效的类型：enter 入场、exit 出场（宿主按配置的时长算显现进度），loop 持续（进度恒为 1，需要循环时自己读帧）。
+EffectSlot = Literal["enter", "exit", "loop"]
+# 特效作用的位置：block 整个文字块，tiers 各栏（各自从出现的帧起），line1、line2 上栏或下栏（只有双栏），keyword 每个关键词命中。
+EffectTarget = Literal["block", "tiers", "line1", "line2", "keyword"]
+# 特效的中文名称，如「淡入」「发光」：宿主据此写它的开关、位置与时长参数的标题。
+EffectTitle = Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_length=1, max_length=8)]
+
+
+class TextEffect(ContractModel):
+    """文字块的一个特效：画它的 effect 角色 Preset 及其样式参数、中文名称、类型，以及作用位置、时长与开关（配置的默认值）。"""
+
+    instance_id: NonEmptyString
+    source: PresetSource
+    parameters: Omittable[JsonObject]
+    title: EffectTitle
+    slot: EffectSlot
+    target: EffectTarget
+    # 入场、出场的时长（秒），省略为 0.5；持续特效没有时长。
+    seconds: Omittable[Annotated[FiniteNumber, Field(ge=0.1, le=3)]]
+    # 是否默认开启，省略为开启；编辑时带回用户关掉的状态。
+    enabled: Omittable[StrictBool]
+
+
 class TextComposition(ContractModel):
-    """字效的文字组合：宿主按配置把文字切成一栏或上下两栏，各栏交给 text Preset 画，关键词命中交给 keyword Preset 画。"""
+    """字效的文字组合：宿主按配置把文字切成一栏或上下两栏，各栏交给 text Preset 画，关键词命中交给 keyword Preset 画，
+    特效交给 effect Preset 包住它们的位置。"""
 
     layout: TextLayout
     # 默认文字：单栏一行，双栏为「上栏\n下栏」。
@@ -701,15 +725,29 @@ class TextComposition(ContractModel):
     line_gap: Omittable[Annotated[FiniteNumber, Field(ge=0, le=300)]]
     line_starts: Omittable[list[Annotated[Integer, Field(ge=0, le=3600)]]]
     keyword: Omittable[TextKeyword]
+    # 按顺序包住各自位置的特效，先列的在里层；宿主按顺序给它们第 1、2…个特效的配置参数。
+    effects: list[TextEffect] = Field(default_factory=list, max_length=6)
     duration_frames: PositiveInteger
 
 
+class TextBlockEffect(ContractModel):
+    """组合后记录的一个特效：实例、中文名称与类型；位置、时长与开关是配置参数，默认值在 Sprite 的默认参数里。"""
+
+    instance_id: NonEmptyString
+    title: EffectTitle
+    slot: EffectSlot
+
+
 class TextBlock(ContractModel):
-    """组合后记录的文字块结构：区域、各栏实例与关键词实例；配置的默认值在 Sprite 的默认参数里。"""
+    """组合后记录的文字块结构：区域、各栏实例、关键词实例与特效；配置的默认值在 Sprite 的默认参数里。"""
 
     layout: TextLayout
     tiers: list[NonEmptyString] = Field(min_length=1, max_length=2)
     keyword: Omittable[NonEmptyString]
+    effects: list[TextBlockEffect] = Field(default_factory=list)
+    # 宿主把各栏定格在中间帧显示、文字块的动画都由特效 Preset 画（有可配置特效之后的作品；关键词命中照常播放）；
+    # 更早的字效没有这一项，它们的 text Preset 自己画的动画照常播放。
+    still: Omittable[Literal[True]]
 
 
 class SpriteDraft(ComponentDefinition):
@@ -794,6 +832,8 @@ async def sprite_compose(request: SpriteComposeInput) -> ToolResult[SpriteCompos
 ```
 
 description 非空；字效给出 text 文字块且 instances 为空，其他分类 instances 非空。主画布配置不作为输入；起点之前和实例之间未被内容覆盖的区间保持空画布。
+
+契约版本 4 在文字块里新增 `effects` 特效：每项是一个 role=effect 的 Preset（宿主传入被包住的 `children`、外层元素 `Box` 与显现进度 `progress`，0 还没出现、1 完全显示；它只改变被包住部分的呈现，不改变尺寸、字体与排版），带中文名称 `title`、类型 `slot`（`enter` 入场、`exit` 出场、`loop` 持续）、默认作用位置 `target`（`block` 整体、`tiers` 各栏、`line1`/`line2` 上栏或下栏，这三个只用于双栏，`keyword` 每个关键词命中）、入场与出场的时长 `seconds`（0.1～3 秒，省略为 0.5；持续特效不能填）与默认开关 `enabled`，先列的在里层。宿主在整体、每一栏与每个关键词命中处都留出包裹点：入场的进度在该位置出现后按时长从 0 升到 1（各栏与关键词从所在栏出现的帧算起），出场在结尾按时长从 1 降到 0，持续特效恒为 1；时长最多取该位置播放帧数减一后的一半，定格在中间帧的短字幕仍完整显示。第 k 个特效（从 1 起）得到配置参数 `effect{k}`（开关）、`effect{k}Target`（位置枚举）与入场、出场的 `effect{k}Seconds`，标题取特效的中文名称，样式参数与实例都不能用这种名字。新作品（以及有 `still` 标记的基线）的各栏由宿主定格在该栏播放帧数的中间帧显示，text Preset 自带的动画不再播放（库里带动画的 text Preset 可原样复用），文字块至少要有一个入场与一个出场特效（不想要动画时保留它们并设 `enabled: false`）；关键词命中在定格的栏里取回实时帧，keyword Preset 与作用于关键词的特效照常播放；编辑更早的字效时 text Preset 自带的动画照常播放、不要求特效。单栏使用 `tiers`/`line1`/`line2`、持续特效带 `seconds`、缺少入场或出场特效、特效 Preset 角色不符或 instance_id 占用配置名时按字段返回 INVALID_ARGUMENT。
 
 契约版本 3 新增 `text` 文字块（字效专用，新作品必须使用，编辑更早按固定框组合的字效时仍可用 instances）：文字块给出区域、默认文字（单栏一行，双栏「上栏\n下栏」）、基准字号、各栏（role=text 的 Preset、样式参数、字体、字重、双栏的字号比例）、双栏的栏间距与行起点、可选的 role=keyword 关键词 Preset 和时长。宿主据此生成源码（各栏在区域内纵向居中排布，下栏到起点前定格于首帧、不显示但占位；每个关键词在全文的首次字面命中按 IMS 六个关键词样式包裹，`keywordEffect` 开启时交给关键词 Preset 画），并生成固定名称、Schema 与中文标题的配置参数：`text`、`fontSize`、单栏 `fontFamily`/`fontWeight` 或双栏每栏 `line{i}FontFamily`/`line{i}FontWeight`/`line{i}SizeRatio` 与 `lineGap`、`lineStartFrames`、七个关键词参数及有关键词 Preset 时的 `keywordEffect`；它们在 bindings 中以伪实例 `text` 为目标。`parameters` 只绑定各 Preset 的样式 prop，不能占用配置名。text Preset 由宿主传入 `text`、`segments`、`Keyword`、`fontFamily`、`fontWeight`、`fontSize`，keyword Preset 传入 `text`；这些 prop 不能写进它们的 parameter_schema。行数与栏数不符、双栏缺字号比例/栏间距/行起点、行起点不从 0 开始、递减或下栏不早于文字块结束、字体不在字体库、Preset 角色不符、各栏与关键词实例的 instance_id 重复或占用 `text` 与配置名（否则它的嵌套参数会顶替同名配置参数）时按字段返回 INVALID_ARGUMENT。
 
@@ -1292,7 +1332,7 @@ async def tools_inspect(request: ToolInspectInput) -> ToolResult[ToolDescriptor]
 
 根据精确工具名返回真实契约，不做语义搜索、不执行被查询工具。未知名称返回 `TOOL_NOT_FOUND`，消息可附最多两个拼写相近的名称（`Closest:`）以便纠正拼写，但不会据此返回任何契约。输入格式错误返回 `INVALID_ARGUMENT`。
 
-描述符始终返回 `contract_version`；默认版本为 1，`preset.search` 的列表加 ID 查找结构为版本 2，`sprite.compose` 的文字块为版本 3。调用方应先读取版本和 Schema，再选择对应的输入输出解析器，不把 v2 摘要当成旧 `matches` 完整记录。
+描述符始终返回 `contract_version`；默认版本为 1，`preset.search` 的列表加 ID 查找结构为版本 2，`sprite.compose` 的文字块为版本 3、文字块特效为版本 4。调用方应先读取版本和 Schema，再选择对应的输入输出解析器，不把 v2 摘要当成旧 `matches` 完整记录。
 
 input_schema 描述完整入参；output_schema 描述包含 ok/data/error 的完整 ToolResult，而非只描述成功 data。Schema 为自包含 JSON Schema，公共类型可以放入 `$defs`，不能依赖 Agent 自行查找未给出的模型。
 

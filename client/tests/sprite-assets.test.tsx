@@ -352,11 +352,22 @@ const LINE_GAP: MessageInitShape<typeof SpriteParameterSchema> = { key: "lineGap
 /** 双栏字效的上栏字号比例（相对 fontSize），与服务端生成的配置参数同名同范围。 */
 const LINE1_SIZE_RATIO: MessageInitShape<typeof SpriteParameterSchema> = { key: "line1SizeRatio", label: "上栏字号比例", access: OperatorAccess.VISIBLE_EDITABLE, defaultValue: { value: { case: "numberValue", value: 0.6 } }, minimum: 0.4, maximum: 2 };
 
-/** 打开带一个字效片段的已保存模板，并选中该片段；lineCount 是目录里字效的固定行数，多行字效带行间距与上栏字号比例参数。 */
-async function openTextClip(clip: Partial<RemotionClip> = {}, lineCount = 1) {
+/** 字效第一个特效（淡入）的开关、作用位置与时长，与服务端为文字块特效生成的配置参数同名同形。 */
+const FADE_IN_PARAMETERS: MessageInitShape<typeof SpriteParameterSchema>[] = [
+  { key: "effect1", label: "入场·淡入", access: OperatorAccess.VISIBLE_EDITABLE, defaultValue: { value: { case: "boolValue", value: true } } },
+  { key: "effect1Target", label: "淡入位置", access: OperatorAccess.VISIBLE_EDITABLE, defaultValue: { value: { case: "stringValue", value: "tiers" } },
+    allowedValues: ["block", "tiers", "line1", "line2", "keyword"].map((value) => ({ value: { case: "stringValue" as const, value } })) },
+  { key: "effect1Seconds", label: "淡入时长（秒）", access: OperatorAccess.VISIBLE_EDITABLE, defaultValue: { value: { case: "numberValue", value: 0.5 } }, minimum: 0.1, maximum: 3 },
+];
+
+/**
+ * 打开带一个字效片段的已保存模板，并选中该片段；lineCount 是目录里字效的固定行数，多行字效带行间距与上栏字号比例参数，
+ * extra 是字效另带的参数（如特效）。
+ */
+async function openTextClip(clip: Partial<RemotionClip> = {}, lineCount = 1, extra: MessageInitShape<typeof SpriteParameterSchema>[] = []) {
   const text = textAsset();
   const fixture = sprites({
-    catalog: [{ ...text, lineCount, parameters: lineCount > 1 ? [...text.parameters, LINE_GAP, LINE1_SIZE_RATIO] : text.parameters }, summary("sprite-f", SpriteKind.FILTER_OVERLAY), summary("sprite-v")],
+    catalog: [{ ...text, lineCount, parameters: [...text.parameters, ...(lineCount > 1 ? [LINE_GAP, LINE1_SIZE_RATIO] : []), ...extra] }, summary("sprite-f", SpriteKind.FILTER_OVERLAY), summary("sprite-v")],
     clips: [{ id: "clip-t", sprite_id: "sprite-t", start: 0, duration: 3, parameters: {}, transform: {}, ...clip }],
   });
   const remotion = { opened: 0 };
@@ -392,6 +403,19 @@ test("双栏字效作用于标题时逐栏填写示例并调整逐栏字号比�
   await waitFor(() => expect(saved).toHaveLength(1));
   expect(saved[0].tracks!.tracks.find((track) => track.target === "title")?.editor?.title).toBe("判断一个人\n选择花字");
   expect(wireClips(saved[0]).map((clip) => clip.editor?.remotion?.parameters.map((item) => [item.key, item.numberValue]))).toEqual([[["line1SizeRatio", 0.8]]]);
+});
+
+// 场景：字效特效的开关、作用位置与时长和字效工作区的「特效」一样在「外观与位置」里按这次摆放调整，位置显示中文名称；不列入资产默认参数，并随模板保存。
+test("字效特效的开关、位置与时长在模板里按摆放调整", async () => {
+  const { inspector, saved } = await openTextClip({ text_target: "title" }, 2, FADE_IN_PARAMETERS);
+  const effects = within(inspector).getByRole("heading", { name: "特效" }).parentElement!;
+  expect(within(effects).getByLabelText("淡入位置").textContent).toBe("各栏");
+  expect(within(inspector).getByRole("heading", { name: "资产默认参数" }).closest("fieldset")!.textContent).not.toContain("淡入");
+  fireEvent.click(within(effects).getByLabelText("入场·淡入"));
+  fireEvent.change(within(effects).getByLabelText("淡入时长（秒）"), { target: { value: "1.2" } });
+  fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
+  await waitFor(() => expect(saved).toHaveLength(1));
+  expect(wireClips(saved[0]).map((clip) => clip.editor?.remotion?.parameters.map((item) => [item.key, item.boolValue ?? item.numberValue]))).toEqual([[["effect1", false], ["effect1Seconds", 1.2]]]);
 });
 
 // 场景：资产库按字效、滤镜、转场与视频特效分类，显示各类数量，默认打开第一个有资产的分类。
