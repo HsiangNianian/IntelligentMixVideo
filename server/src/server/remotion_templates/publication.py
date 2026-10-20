@@ -1,6 +1,7 @@
 """Build sealed PR76 code/Player artifacts; successful tool checks are never replaced by a model verdict."""
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -12,10 +13,17 @@ from .models import (
 from .parameters import patch_parameters
 from .tools.contracts import RenderValidationReport, SpriteDraft
 
-# 预览包首行声明的宿主协议版本（逐帧同步、读取页面注入的默认值与内容区域、接受参数覆盖和宿主变换），与
-# presentation.mjs 的 PREVIEW_PROTOCOL 一致；更早构建的包没有这一行，需要重建。只认首行：生成代码与默认参数
-# 也会打进包里，包内任意位置出现的协议字样都不可信。
-PREVIEW_PROTOCOL = b"/* imv-preview-protocol 1 */"
+# 预览包首行声明的宿主协议版本，与 presentation.mjs 的 PREVIEW_PROTOCOL 一致。版本 1：逐帧同步、读取页面注入的
+# 默认值与内容区域、接受参数覆盖和宿主变换；版本 2：另可由宿主页面提供受管字体（页面参数 `fonts=host`）。
+# 更早构建的包没有这一行，需要重建。只认首行：生成代码与默认参数也会打进包里，包内任意位置出现的协议字样都不可信。
+PREVIEW_PROTOCOL = b"/* imv-preview-protocol 2 */"
+_PROTOCOL_LINE = re.compile(rb"/\* imv-preview-protocol ([1-9][0-9]*) \*/\n")
+
+
+def bundle_protocol(bundle: bytes) -> int:
+    """The host protocol version a player bundle declares on its first line; 0 when it declares none."""
+    line = _PROTOCOL_LINE.match(bundle)
+    return int(line.group(1)) if line else 0
 
 
 def current_bundle(bundle: bytes) -> bool:
@@ -26,11 +34,12 @@ def current_bundle(bundle: bytes) -> bool:
 def revisable(accepted: Path) -> bool:
     """Whether an accepted version's parameters can be revised instantly by reusing its player bundle.
 
-    Only a bundle that reads the defaults the page injects shows a revision's new defaults; an older one would keep
-    showing the defaults compiled into it, so such a version is revised by rebuilding in the sandbox instead.
+    Only a bundle that reads the defaults the page injects (protocol 1 or later) shows a revision's new defaults; an
+    older one would keep showing the defaults compiled into it, so such a version is revised by rebuilding in the
+    sandbox instead. A later protocol only adds host features, so it does not force a rebuild here.
     """
     try:
-        return current_bundle((accepted / "interactive.js").read_bytes())
+        return bundle_protocol((accepted / "interactive.js").read_bytes()) >= 1
     except OSError:
         return False
 

@@ -10,7 +10,7 @@ import { defaultPreviewUrls, previewVideoUrl } from "@/features/templates/media"
 import * as localVideos from "@/features/templates/localVideos";
 import { commitLocalVideos, LOCAL_VIDEO_MAX_BYTES, localVideoSlots } from "@/features/templates/localVideos";
 import type { PreviewMedia } from "@/features/templates/model";
-import { mockDesktop } from "./setup";
+import { fetchMock, mockDesktop } from "./setup";
 
 const source = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "src")!;
 // 本例生成的 blob URL（按创建顺序）与被设置到视频元素上的地址，用于断言来源确实对应所选文件。
@@ -88,6 +88,32 @@ test("本地文件加载为预览来源，移除后恢复默认地址", async ()
   await waitFor(() => expect(changes).toHaveLength(2));
   expect(changes[1][1].url).toBe(previewVideoUrl(1));
   expect(await defaultPreviewUrls()).toEqual([0, 1, 2].map((index) => previewVideoUrl(index as 0 | 1 | 2)));
+});
+
+// 回归 #210：未配置的视频 3 使用内置示例，以 blob URL 播放；再次打开弹窗仍显示示例的资源地址，而不是 blob URL。
+test("内置示例在弹窗中显示资源地址", async () => {
+  const configured = process.env.VITE_PREVIEW_VIDEO_3_URL;
+  delete process.env.VITE_PREVIEW_VIDEO_3_URL;
+  fetchMock.mockImplementation((async (_input: RequestInfo | URL) => new Response(new Blob(["video"], { type: "video/mp4" }))) as typeof fetch);
+  try {
+    const bundled = previewVideoUrl(2);
+    expect(bundled).toBe(`${window.location.origin}/preview/sample-3.mp4`);
+    const changes: PreviewMedia[] = [];
+    const view = render(<MasterVideoInput onChange={(media) => changes.push(media)} />);
+    let dialog = await openDialog();
+    expect(within(dialog).getByRole<HTMLInputElement>("textbox", { name: "视频 3 URL" }).value).toBe(bundled);
+    fireEvent.click(within(dialog).getByRole("button", { name: "加载" }));
+    await waitFor(() => expect(changes).toHaveLength(1));
+    const played = changes[0][2].url;
+    expect(played.startsWith("blob:")).toBe(true);
+    expect(assigned).toContain(played);
+
+    view.rerender(<MasterVideoInput media={changes[0]} onChange={(media) => changes.push(media)} />);
+    dialog = await openDialog();
+    expect(within(dialog).getByRole<HTMLInputElement>("textbox", { name: "视频 3 URL" }).value).toBe(bundled);
+  } finally {
+    process.env.VITE_PREVIEW_VIDEO_3_URL = configured;
+  }
 });
 
 // 场景：超过 512 MiB 的文件直接提示，不替换该视频的来源。

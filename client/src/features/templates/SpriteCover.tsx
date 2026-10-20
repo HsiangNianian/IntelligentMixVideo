@@ -1,7 +1,11 @@
-/** AI 资产封面：在卡片里加载资产自己的隔离同步预览页，并定格到动画中的几帧；封面只读取现有预览接口，不新增服务端产物。 */
+/**
+ * AI 资产封面：在卡片里加载资产自己的隔离同步预览页，并定格到动画中的几帧；封面只读取现有预览接口，不新增服务端产物。
+ * 预览页的字体由本页读取一次后转交，卡片多时不重复下载。
+ */
 import { useEffect, useRef, useState } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiBase } from "@/lib/api-base";
+import { HOST_FONTS, sendPreviewFonts } from "@/features/sprites/previewFonts";
 import type { SpriteAsset } from "@/features/sprites/model";
 import { CoverPlaceholder } from "./AssetBrowser";
 
@@ -51,12 +55,14 @@ export function SpriteCover({ asset, active }: { asset: SpriteAsset; active: boo
     return () => observer.disconnect();
   }, []);
 
-  // 握手：只接受本卡片播放器、本通道的就绪与错误通知。
+  // 握手：只接受本卡片播放器、本通道的字体请求、就绪与错误通知。
   useEffect(() => {
     if (!visible) return;
     function receive(event: MessageEvent) {
-      if (event.source !== frame.current?.contentWindow || event.data?.channel !== channel) return;
-      if (event.data.type === "imv-preview-ready") setStatus(event.data.sync === true ? "ready" : "unsupported");
+      const target = frame.current?.contentWindow;
+      if (!target || event.source !== target || event.data?.channel !== channel) return;
+      if (event.data.type === "imv-preview-fonts-request") sendPreviewFonts(target, channel);
+      else if (event.data.type === "imv-preview-ready") setStatus(event.data.sync === true ? "ready" : "unsupported");
       else if (event.data.type === "imv-preview-error") setStatus("failed");
     }
     window.addEventListener("message", receive);
@@ -101,7 +107,7 @@ export function SpriteCover({ asset, active }: { asset: SpriteAsset; active: boo
           title={`AI 资产封面：${asset.name}`}
           sandbox="allow-scripts"
           tabIndex={-1}
-          src={`${apiBase()}/api/sprites/${encodeURIComponent(asset.id)}/preview?sync=1#${channel}`}
+          src={`${apiBase()}/api/sprites/${encodeURIComponent(asset.id)}/preview?sync=1&${HOST_FONTS}#${channel}`}
           className="pointer-events-none absolute inset-0 h-full w-full border-0"
           style={{ colorScheme: "light", visibility: shown ? "visible" : "hidden" }}
         />

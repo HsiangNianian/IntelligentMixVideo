@@ -1,8 +1,9 @@
-/** AI 资产叠加预览核心测试：就绪握手、按预览时间逐帧定位、区间外隐藏、旧资产降级；执行 bun run test。 */
+/** AI 资产叠加预览核心测试：就绪握手、按预览时间逐帧定位、区间外隐藏、只挂载当前时间附近的播放器、转交字体、旧资产降级；执行 bun run test。 */
 import { expect, spyOn, test } from "bun:test";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRef } from "react";
 import { SpriteOverlay, type SpriteOverlayHandle } from "@/features/templates/SpriteOverlay";
+import { fetchMock } from "./setup";
 
 // 摆放的完整时长 5 秒长于预览里显示的 1～4 秒：同步消息带完整时长，Sprite 按它排布。
 const clip = { id: "sprite-a", spriteId: "s1", aspect: 9 / 16, name: "霓虹标题", start: 1, end: 4, length: 5 };
@@ -22,11 +23,11 @@ function mount() {
   return { frame, post, channel, ready, setTime };
 }
 
-// 场景：播放器指向资产的透明同步预览页，按 Cover 方式铺满：竖屏资产在横屏画面里取全宽、上下裁切。
+// 场景：播放器指向资产的透明同步预览页（字体由本页转交），按 Cover 方式铺满：竖屏资产在横屏画面里取全宽、上下裁切。
 test("叠加播放器使用透明同步页并按画面比例铺满", () => {
   const { frame, channel } = mount();
   expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
-  expect(frame.src).toBe(`http://api.test:8000/api/sprites/s1/preview?overlay=true&sync=1#${channel}`);
+  expect(frame.src).toBe(`http://api.test:8000/api/sprites/s1/preview?overlay=true&sync=1&fonts=host#${channel}`);
   expect(frame.style.width).toBe("100%");
   expect(frame.style.height).toBe("");
   expect(frame.style.visibility).toBe("hidden");
@@ -47,6 +48,93 @@ test("就绪后按预览时间定位，区间外隐藏", async () => {
   await setTime(4);
   expect(frame.style.visibility).toBe("hidden");
   expect(post.mock.calls.length).toBe(calls);
+});
+
+// 回归 #210：每个播放器都是独立页面，常驻会占用内存与 CPU。只为片段开始前 3 秒到结束后 1 秒内的片段挂载播放器；
+// 离开后卸载，回来时是新页面，重新就绪后才发送定位。
+test("只为当前时间附近的片段挂载播放器，离开后卸载并重新握手", async () => {
+  const ref = createRef<SpriteOverlayHandle>();
+  const later = { ...clip, id: "sprite-late", spriteId: "s2", name: "转场", start: 20, end: 21, length: 1 };
+  render(<SpriteOverlay ref={ref} clips={[clip, later]} stageAspect={16 / 9} initialTime={0} />);
+  /** 按资产名称取当前挂载的播放器，未挂载时为 null。 */
+  const find = (name: string) => screen.queryByTitle<HTMLIFrameElement>(`AI 资产预览：${name}`);
+  /** 推送预览时间并等待一次帧回调。 */
+  const setTime = (value: number) => act(async () => { ref.current!.setTime(value); await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined))); });
+  /** 播放器页面按协议回报就绪，并支持逐帧驱动。 */
+  const ready = (frame: HTMLIFrameElement) => act(async () => {
+    window.dispatchEvent(new MessageEvent("message", { source: frame.contentWindow, data: { type: "imv-preview-ready", channel: new URL(frame.src).hash.slice(1), sync: true } }));
+  });
+  expect(find("霓虹标题")).not.toBeNull();
+  expect(find("转场")).toBeNull();
+  await ready(find("霓虹标题")!);
+  await setTime(16.9);
+  expect(find("转场")).toBeNull();
+  await setTime(17.5);
+  expect(find("转场")).not.toBeNull();
+  expect(find("霓虹标题")).toBeNull();
+  await setTime(2);
+  const again = find("霓虹标题")!;
+  const post = spyOn(again.contentWindow!, "postMessage");
+  await setTime(2.5);
+  expect(post).not.toHaveBeenCalled();
+  await ready(again);
+  await waitFor(() => expect(post).toHaveBeenCalledWith({ type: "imv-preview-sync", channel: new URL(again.src).hash.slice(1), time: 1.5, duration: 5 }, "*"));
+});
+
+// 审计 #213：每次挂载都是一次页面加载。来回拖动游标跨过范围边缘时，已挂载的播放器按放宽的范围保留（前后各多 2 秒），
+// 不反复创建、销毁；放宽的范围不用于新挂载。
+test("已挂载的播放器按放宽的范围保留，来回拖动不反复重载", async () => {
+  const ref = createRef<SpriteOverlayHandle>();
+  const late = { ...clip, id: "sprite-late", spriteId: "s2", name: "转场", start: 20, end: 21, length: 1 };
+  render(<SpriteOverlay ref={ref} clips={[late]} stageAspect={16 / 9} initialTime={0} />);
+  /** 按资产名称取当前挂载的播放器，未挂载时为 null。 */
+  const find = () => screen.queryByTitle<HTMLIFrameElement>("AI 资产预览：转场");
+  /** 推送预览时间并等待一次帧回调。 */
+  const setTime = (value: number) => act(async () => { ref.current!.setTime(value); await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined))); });
+  await setTime(16);
+  expect(find()).toBeNull();
+  await setTime(17.5);
+  const frame = find();
+  expect(frame).not.toBeNull();
+  // 前沿：回到挂载范围（17 秒）之前 2 秒内仍是同一个页面，再往前才卸载。
+  await setTime(15.5);
+  expect(find()).toBe(frame);
+  await setTime(14.9);
+  expect(find()).toBeNull();
+  // 放宽的范围不用于新挂载：卸载后要回到 17 秒才重新挂载。
+  await setTime(16.5);
+  expect(find()).toBeNull();
+  await setTime(17.5);
+  const again = find();
+  expect(again).not.toBeNull();
+  // 后沿：片段结束后 1 秒再加 2 秒内仍保留，之后卸载，不会因游标回到 22 秒而重新挂载。
+  await setTime(23.9);
+  expect(find()).toBe(again);
+  await setTime(24);
+  expect(find()).toBeNull();
+  await setTime(22);
+  expect(find()).toBeNull();
+});
+
+// 回归 #210：沙箱预览页是不透明来源，浏览器不为它缓存请求；播放器请求字体时由本页读取一次两个字重并转交，
+// 多个播放器不重复读取，陌生通道的请求不回应。
+test("播放器请求字体时转交本页读取一次的字体", async () => {
+  fetchMock.mockImplementation((async (input: RequestInfo | URL) => new Response(new Blob([String(input)], { type: "font/collection" }))) as typeof fetch);
+  const second = { ...clip, id: "sprite-b", spriteId: "s2", name: "第二个资产" };
+  render(<SpriteOverlay ref={createRef<SpriteOverlayHandle>()} clips={[clip, second]} stageAspect={16 / 9} initialTime={2} />);
+  const frames = ["霓虹标题", "第二个资产"].map((name) => screen.getByTitle<HTMLIFrameElement>(`AI 资产预览：${name}`));
+  const posts = frames.map((frame) => spyOn(frame.contentWindow!, "postMessage"));
+  await act(async () => {
+    window.dispatchEvent(new MessageEvent("message", { source: frames[0].contentWindow, data: { type: "imv-preview-fonts-request", channel: "stranger" } }));
+    for (const frame of frames) window.dispatchEvent(new MessageEvent("message", { source: frame.contentWindow, data: { type: "imv-preview-fonts-request", channel: new URL(frame.src).hash.slice(1) } }));
+  });
+  for (const [index, frame] of frames.entries()) {
+    await waitFor(() => expect(posts[index]).toHaveBeenCalledTimes(1));
+    const [message, origin] = posts[index].mock.calls[0] as [{ type: string; channel: string; fonts: Record<string, Blob> }, string];
+    expect([message.type, message.channel, origin]).toEqual(["imv-preview-fonts", new URL(frame.src).hash.slice(1), "*"]);
+    expect([await message.fonts[400].text(), await message.fonts[700].text()]).toEqual(["http://api.test:8000/api/sprites/fonts/400", "http://api.test:8000/api/sprites/fonts/700"]);
+  }
+  expect(fetchMock.mock.calls.length).toBeLessThanOrEqual(2);
 });
 
 // 场景：旧版本包不会回报逐帧驱动能力，保持隐藏、不发送定位，并提示重新保存；其他来源或通道的消息被忽略。

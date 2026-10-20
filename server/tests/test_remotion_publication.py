@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from server.remotion_templates.harness import Harness
 from server.remotion_templates.models import EditTemplateRequest, GenerateTemplateRequest, JobInput
 from server.remotion_templates.provider import Budget
-from server.remotion_templates.publication import PREVIEW_PROTOCOL, PresentationBuilder, current_bundle, revisable
+from server.remotion_templates.publication import PREVIEW_PROTOCOL, PresentationBuilder, bundle_protocol, current_bundle, revisable
 from server.remotion_templates.routes import router
 from server.remotion_templates.runtime import Runtime
 from server.remotion_templates.settings import Settings
@@ -234,6 +234,17 @@ def test_protocol_words_inside_an_older_bundle_do_not_allow_an_instant_revision(
     assert not revisable(tmp_path)
     bundle.write_text(PREVIEW_PROTOCOL.decode() + "\n(()=>{})();")
     assert revisable(tmp_path)
+
+
+def test_a_protocol_one_bundle_is_still_revised_instantly_but_is_no_longer_current(tmp_path):
+    """协议 2 只增加宿主转交字体（issue #210）：协议 1 的包仍读取页面注入的默认值，参数修订照常即时完成，不进沙箱；
+
+    但它不是当前协议，已发布资产的副本在下次预览时按发布源码重建，才能使用宿主转交的字体。
+    """
+    older = b"/* imv-preview-protocol 1 */\n(()=>{})();"
+    (tmp_path / "interactive.js").write_bytes(older)
+    assert (bundle_protocol(older), current_bundle(older), revisable(tmp_path)) == (1, False, True)
+    assert (bundle_protocol(PREVIEW_PROTOCOL + b"\n"), bundle_protocol(b"// no line\n" + PREVIEW_PROTOCOL + b"\n")) == (2, 0)
 
 
 def test_invalid_parameters_and_a_busy_work_are_refused(harness, sprite):

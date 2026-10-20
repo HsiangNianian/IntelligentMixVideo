@@ -11,17 +11,17 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
 import type { PreviewMedia } from "./model";
-import { previewVideoUrl, readPreviewVideos } from "./media";
+import { previewVideoUrl, readPreviewVideos, sourceUrl } from "./media";
 import { isTauri } from "@tauri-apps/api/core";
 import { commitLocalVideos, LOCAL_VIDEO_MAX_BYTES, localPreviewVideos, localVideoSlots, type VideoSource } from "./localVideos";
 
-/** 当前来源中与本地登记一致的槽位显示为文件，其余显示为 URL；尚无来源时按登记或默认地址。 */
+/** 当前来源中与本地登记一致的槽位显示为文件，其余显示为 URL（内置示例显示资源地址）；尚无来源时按登记或默认地址。 */
 function currentSources(media?: PreviewMedia): VideoSource[] {
   const local = localVideoSlots();
   return ([0, 1, 2] as const).map((index) => {
     const video = local[index];
     if (video && (!media || media[index].url === video.url)) return { kind: "file", ...video };
-    return { kind: "url", url: media?.[index].url ?? previewVideoUrl(index) };
+    return { kind: "url", url: media ? sourceUrl(media[index].url) : previewVideoUrl(index) };
   });
 }
 
