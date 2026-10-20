@@ -527,14 +527,14 @@ def preview_font(version_id: UUID, weight: int, service: Service) -> FileRespons
 
 class FontFaceInfo(BaseModel):
     """One style of a font card: its file (`size`, `sha256`) and where the file and its preview strip are served; the
-    system default's file is the installed regular font (`size` 0, no `sha256`)."""
+    system default's file is the installed regular font (`size` 0, no `sha256`), or null when the host lacks it."""
 
     id: str
     slot: Slot
     weights: list[int]
     size: int
     sha256: str
-    file_url: str
+    file_url: str | None
     preview_url: str | None
 
 
@@ -557,12 +557,22 @@ class FontInfo(BaseModel):
     faces: list[FontFaceInfo]
 
 
-def font_info(files: Sequence[Font]) -> FontInfo:
-    """Public view of a font card from its files (one `cards` entry); URLs are paths below this API's `/fonts`."""
+def installed_system_font(service: Service) -> Path | None:
+    """The system font file this host serves; null when it is not installed."""
+    path = service.settings.font_regular
+    return path if path.is_file() else None
+
+
+def font_info(files: Sequence[Font], *, system_file: Path | None = None) -> FontInfo:
+    """Public view of a font card from its files (one `cards` entry); URLs are paths below this API's `/fonts`.
+
+    A system face has no `file_url` when `system_file` is null, so the client does not offer a specimen that would 404
+    on a host without the installed font.
+    """
     faces = [
         FontFaceInfo(
             **font.model_dump(include={"id", "slot", "weights", "size", "sha256"}),
-            file_url=f"/api/templates/fonts/{font.id}",
+            file_url=None if font.source == "system" and system_file is None else f"/api/templates/fonts/{font.id}",
             preview_url=f"/api/templates/fonts/{font.id}/preview" if font.preview else None,
         )
         for font in files
@@ -579,7 +589,8 @@ def font_info(files: Sequence[Font]) -> FontInfo:
 def list_fonts(service: Service) -> list[FontInfo]:
     """字体库里的全部字体卡片（预装与用户上传），按登记顺序；每张卡片是一个家族，含常规、粗体、斜体、粗斜体中已有的字形。
     `family` 就是效果的 `fontFamily` 参数取值。字体库所有人共享。"""
-    return [font_info(files) for files in cards(FontStore.for_settings(service.settings).listing()).values()]
+    system_file = installed_system_font(service)
+    return [font_info(files, system_file=system_file) for files in cards(FontStore.for_settings(service.settings).listing()).values()]
 
 
 @router.post("/fonts", status_code=201, tags=["字体"], summary="上传字体")
@@ -609,7 +620,7 @@ async def upload_font(
             raise HTTPException(413, "Preview exceeds the size limit.")
         try:
             font = await asyncio.to_thread(store.upload, content, strip or None, label, str(owner))
-            return font_info(cards(store.listing())[font.family])
+            return font_info(cards(store.listing())[font.family], system_file=installed_system_font(service))
         except FontRejected as exc:
             raise HTTPException(422, str(exc)) from exc
         except (OSError, SQLAlchemyError) as exc:

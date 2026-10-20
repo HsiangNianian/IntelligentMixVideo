@@ -21,7 +21,8 @@ const font = (id: string, family: string, label: string, extra: Partial<FontInfo
 });
 const LIBRARY = [
   font("noto-sans-cjk", "Noto Sans CJK SC", "思源黑体（默认）", {
-    source: "system", file_url: null, size: 0, style: "default clean Hei", faces: [face("noto-sans-cjk", "regular", { weights: [400, 700], size: 0 })],
+    source: "system", file_url: null, size: 0, style: "default clean Hei",
+    faces: [face("noto-sans-cjk", "regular", { weights: [400, 700], size: 0, file_url: null })],
   }),
   font("ma-shan-zheng", "Ma Shan Zheng", "马善政毛笔楷书", { style: "brush calligraphy", license: "OFL-1.1" }),
 ];
@@ -188,6 +189,17 @@ test("点击字体卡片查看各字形的详情", async () => {
   await waitFor(() => expect(screen.queryByRole("dialog") === null).toBe(true));
   fireEvent.click(screen.getByRole("button", { name: "查看字体 马善政毛笔楷书" }));
   expect((await screen.findByRole("dialog")).textContent).toContain("预装 · OFL-1.1");
+});
+
+// 场景：系统默认字体在本机没有安装文件时，详情仍展示常规字形与元数据，但不提供会 404 的字样按钮。
+test("系统字体文件不在本机时不打开字样", async () => {
+  fontServer();
+  render(<FontLibrary />);
+  fireEvent.click(await screen.findByRole("button", { name: "查看字体 思源黑体（默认）" }));
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByRole("listitem", { name: "常规" }).textContent).toContain("随系统安装");
+  expect(within(dialog).queryByRole("button", { name: "查看常规字样" })).toBeNull();
+  expect(within(dialog).getByText("本机未安装该字体文件，无法查看字样。")).toBeTruthy();
 });
 
 // 场景：在字体详情里点击已有的字形打开它的字样——读取这个字形的字体文件（file_url），用它排出标题、字母数字与字号阶梯，示例句可修改；

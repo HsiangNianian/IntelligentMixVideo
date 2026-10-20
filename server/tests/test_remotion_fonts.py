@@ -318,6 +318,8 @@ def test_sync_relabels_an_upload_named_after_its_file(store, objects, monkeypatc
     old = named.model_copy(update={"label": "0b7027d34f9546b7993e082b48c22401"})
     font_store.update_data(old.id, old.model_dump(exclude={"id", "family"}))
     store.refresh()
+    # Simulate a row written by an older process: this process relabelled it when the second upload arrived.
+    store.labelled.discard(named.id)
     asyncio.run(store.sync())
     relabelled = next(font for font in store.listing() if font.id == named.id)
     assert (relabelled.family, relabelled.label, relabelled.preview) == ("Smiley Sans", "得意黑", False)
@@ -416,6 +418,28 @@ def test_sync_gives_an_older_upload_its_style_so_its_family_can_complete_the_car
     assert next((font.slot, font.weights) for font in store.listing() if font.id == bold.id) == ("bold", [700])
     regular = upload_font(store, "Zed Serif", "字体")
     assert regular.family == "Zed Serif" and [font.slot for font in cards(store.listing())["Zed Serif"]] == ["regular", "bold"]
+
+
+def test_a_new_upload_reads_an_older_files_style_before_placing_it(store) -> None:
+    """旧上传在同步补字形之前，新上传会先读旧文件的样式；同一字形的另一版本不会占用同一个 slot。"""
+    old = upload_font(store, "Zed Serif", "测试", "Bold", weight=700)
+    font_store.update_data(old.id, {key: value for key, value in old.model_dump(exclude={"id", "family", "slot"}).items()} | {"weights": [400]})
+    store.refresh()
+    assert next(font.slot for font in store.listing() if font.id == old.id) == "regular"
+    again = upload_font(store, "Zed Serif", "效果", "Bold", weight=700)
+    assert (again.family, again.slot) == ("Zed Serif (2)", "bold")
+    assert [(font.id, font.slot) for font in cards(store.listing())["Zed Serif"]] == [(old.id, "bold")]
+    assert [font.slot for font in cards(store.listing())["Zed Serif (2)"]] == ["bold"]
+
+
+def test_style_can_be_camel_case_or_punctuated_and_a_family_keeps_its_weight(store) -> None:
+    """样式词可写成 BoldItalic 或 Bold, Italic；family 已带 Black 等字重时不再重复拼字重（斜体进该 family 的斜体槽）。"""
+    black = upload_font(store, "Foo Black Italic", "测试", "Black Italic", weight=900, italic=True)
+    assert (black.family, black.slot) == ("Foo Black Italic", "italic")
+    bold_italic = upload_font(store, "Bar Sans", "效果", "BoldItalic", weight=700, italic=True)
+    assert (bold_italic.family, bold_italic.slot) == ("Bar Sans", "bold_italic")
+    comma = upload_font(store, "Baz Sans", "字体", "Bold, Italic", weight=700, italic=True)
+    assert (comma.family, comma.slot) == ("Baz Sans", "bold_italic")
 
 
 def test_other_weights_and_versions_of_a_family_get_their_own_family(store) -> None:
@@ -669,16 +693,21 @@ def test_the_font_api_lists_cards_with_their_styles(client: TestClient, served) 
 
 def test_the_font_api_lists_serves_and_uploads(client: TestClient, served, settings, monkeypatch, tmp_path) -> None:
     """字体接口：列表给出家族名、风格、字重、文件与预览地址；文件带 CORS 可被预览 iframe 加载；系统默认字体的文件是服务端安装的常规字重（字体详情的字样用它），
-    没有安装时 404；上传（multipart）返回新字体且立即出现在列表；重复的文件返回 422，超大返回 413，缺少设备头返回 422；未知字体 404。"""
+    没有安装时 404 且不给出 file_url；上传（multipart）返回新字体且立即出现在列表；重复的文件返回 422，超大返回 413，缺少设备头返回 422；未知字体 404。"""
+    system_font = tmp_path / "system.ttc"
+    system_font.write_bytes(b"system-collection")
+    monkeypatch.setattr(settings, "font_regular", system_font)
     asyncio.run(served.sync())
     listed = client.get("/api/templates/fonts").json()
     assert [item["family"] for item in listed] == ["Noto Sans CJK SC", "Alpha Sans", "Beta Serif"]
     assert listed[0]["source"] == "system" and listed[0]["faces"][0]["file_url"] == "/api/templates/fonts/noto-sans-cjk"
     assert listed[2]["weights"] == [200, 900] and listed[1]["file_url"] == "/api/templates/fonts/alpha"
     monkeypatch.setattr(settings, "font_regular", tmp_path / "missing.ttc")
+    missing = client.get("/api/templates/fonts").json()
+    assert missing[0]["file_url"] is None and missing[0]["faces"][0]["file_url"] is None
     assert client.get("/api/templates/fonts/noto-sans-cjk").status_code == 404
-    (tmp_path / "system.ttc").write_bytes(b"system-collection")
-    monkeypatch.setattr(settings, "font_regular", tmp_path / "system.ttc")
+    system_font.write_bytes(b"system-collection")
+    monkeypatch.setattr(settings, "font_regular", system_font)
     system = client.get("/api/templates/fonts/noto-sans-cjk")
     assert (system.status_code, system.content, system.headers["content-type"]) == (200, b"system-collection", "font/collection")
     file = client.get("/api/templates/fonts/alpha")

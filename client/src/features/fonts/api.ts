@@ -7,14 +7,15 @@ import { apiBase } from "@/lib/api-base";
 /** 字体卡片的四个字形，按展示顺序。 */
 export const FONT_SLOTS = ["regular", "bold", "italic", "bold_italic"] as const;
 
-/** 字体卡片里的一个字形：一个字体文件及它的预览条；系统默认字体的文件是服务端安装的常规字重。 */
+/** 字体卡片里的一个字形：一个字体文件及它的预览条；系统默认字体的文件是服务端安装的常规字重，本机没有时为空。 */
 export interface FontFaceInfo {
   id: string;
   slot: (typeof FONT_SLOTS)[number];
   weights: number[];
   size: number;
   sha256: string;
-  file_url: string;
+  /** 该字形的字体文件；系统默认字体在本机未安装时为 null，不能打开字样。 */
+  file_url: string | null;
   preview_url: string | null;
 }
 

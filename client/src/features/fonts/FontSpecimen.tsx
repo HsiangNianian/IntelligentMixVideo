@@ -34,7 +34,7 @@ const SAMPLES = { zh: "我能吞下玻璃而不伤身体。", en: "The wizard qu
 /** 一个字形的字样；`onBack` 回到字体详情，`loader` 供测试替换字体文件的注册。 */
 export function FontSpecimen({ font, face, onBack, loader = loadFontFile }: {
   font: FontInfo;
-  face: FontFaceInfo;
+  face: FontFaceInfo & { file_url: string };
   onBack: () => void;
   loader?: FaceLoader;
 }) {

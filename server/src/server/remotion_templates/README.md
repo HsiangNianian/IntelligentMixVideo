@@ -190,8 +190,9 @@ italic, bold italic, any of them missing), one file each, all rendered under the
 family itself and each later file by `family<TAB>style` (the unique column still reserves the card's name). Rows are
 never deleted and their family never changes, so a template that names a family keeps rendering; only how a file is
 shown (label, preview strip, style) may be corrected. `GET /api/templates/fonts` lists cards with their `faces`; every
-face has a `file_url` (`GET /api/templates/fonts/{id}`, which serves the installed regular file for the system default),
-so the font library's specimen view can load each style's own file.
+face stored by the library has a `file_url` (`GET /api/templates/fonts/{id}`), and the system default's is the installed
+regular file, or null when the host does not have it, so the font library's specimen view can load each available
+style's own file.
 
 - **Preinstalled fonts**: the 16 free OFL fonts ship inside the backend package as `bundled_fonts/<file>.xz`
   (xz-compressed, about 60 MB). `font_catalog.json` pins each font's uncompressed size and SHA-256 and records where

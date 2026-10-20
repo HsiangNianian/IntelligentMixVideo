@@ -357,16 +357,30 @@ def slot_weights(slot: Slot) -> list[int]:
     return [700] if slot in ("bold", "bold_italic") else [400]
 
 
+# Splits a style or family into words: "BoldItalic", "Bold, Italic" and "Bold-Italic" all name Bold Italic.
+STYLE_SEPARATORS = re.compile(r"[\s,;_-]+")
+CAMEL_CASE = re.compile(r"(?<=[a-z])(?=[A-Z])")
+
+
+def style_words(text: str) -> list[str]:
+    """The words of a style or family, splitting punctuation and camel case ("BoldItalic" -> Bold, Italic)."""
+    return [word for part in STYLE_SEPARATORS.split(text) for word in CAMEL_CASE.split(part) if word]
+
+
 def face_of(names: FontNames) -> Face:
     """The style and card of a file. Italic words (Italic, Oblique) in its style make it its card's italic style; the
     other words name the weight. No weight or a regular one (Regular, Normal) is the regular style and Bold the bold
     style of the family's own card; any other weight (Thin, Black, "85 Bold") makes a card of its own named after it,
-    unless the family already ends with it. A variable font's weight is ignored: it only names the default instance,
-    and the file holds every weight."""
-    words = names.style.split()
+    unless the family already names the weight (`Foo Black Italic` -> its italic slot, not `Foo Black Italic Black`).
+    A variable font's weight is ignored: it only names the default instance, and the file holds every weight."""
+    words = style_words(names.style)
     italic = any(word.casefold() in ITALIC_STYLES for word in words)
     weight = " ".join(word for word in words if word.casefold() not in ITALIC_STYLES)
-    if names.variable or not weight or weight.casefold() in REGULAR_STYLES or f" {names.family}".casefold().endswith(f" {weight}".casefold()):
+    family_words = {word.casefold() for word in style_words(names.family)}
+    weight_words = weight.casefold().split()
+    # A family that already carries the weight keeps its own name even when the style adds Italic/Oblique after it.
+    family_names_weight = bool(weight_words) and all(word in family_words for word in weight_words)
+    if (names.variable or not weight or weight.casefold() in REGULAR_STYLES or family_names_weight):
         return Face("italic" if italic else "regular", names.family, names.label)
     if weight.casefold() == "bold":
         return Face("bold_italic" if italic else "bold", names.family, names.label)
@@ -661,11 +675,19 @@ class FontStore:
         for font in list(self.known.values()):
             if font.has_file and font.id not in self.ready:
                 await asyncio.to_thread(self._cache, font)
+        await asyncio.to_thread(self._relabel_ready_uploads)
+
+    def _relabel_ready_uploads(self) -> None:
+        """Correct the style of cached uploads registered before cards had styles; blocking.
+
+        Placement (`upload`) calls this before it joins a card, so an older bold or italic file is not mistaken for a
+        regular one while the background sync has not reached it yet. Each upload is read once per process (`labelled`).
+        """
         for font in list(self.known.values()):
             if font.source != "upload" or font.id not in self.ready or font.id in self.labelled:
                 continue
             try:
-                await asyncio.to_thread(self._relabel, font)
+                self._relabel(font)
             except Exception as exc:
                 logger.warning("Font %s was not relabelled: %s", font.id, exc)
 
@@ -694,7 +716,15 @@ class FontStore:
                 if font.label != names.label:
                     changes["preview"] = False
             if face.slot != font.slot:
-                changes |= {"slot": face.slot, "weights": slot_weights(face.slot)}
+                with self._lock:
+                    occupied = any(
+                        other.id != font.id and other.family == font.family and other.slot == face.slot
+                        for other in self.known.values()
+                    )
+                if occupied:
+                    logger.warning("Font %s keeps style %s: another file of %r already has it", font.id, font.slot, font.family)
+                else:
+                    changes |= {"slot": face.slot, "weights": slot_weights(face.slot)}
         if changes:
             relabelled = font.model_copy(update=changes)
             font_store.update_data(font.id, relabelled.model_dump(exclude={"id", "family"}))
@@ -775,6 +805,9 @@ class FontStore:
         digest = hashlib.sha256(content).hexdigest()
         # Bundled fonts that sync has not installed yet keep their file and their family.
         pending = [spec.font() for spec in load_catalog() if spec.id not in self.known] if self.install_bundled else []
+        # An older upload may still carry the default regular slot until sync reads its names. Correct it first so a
+        # new upload of the same style does not join the same slot twice.
+        self._relabel_ready_uploads()
         registered = [*self.known.values(), *pending]
         refuse_copy(digest, registered)
         names = read_names(content)
