@@ -3,6 +3,32 @@
 本项目的版本变更由发布工作流根据 Conventional Commits 自动生成。
 推送正式版本 tag 后，成功发布的版本记录会自动写入此文件。
 
+## [v0.9.9] - 2026-10-20
+### New Features
+- [`c55f5ee`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/c55f5eebf4d14b04e3e770c3a892f96b1715ab65) - **fonts**: group a family's styles into one font card with details *(PR [#214](https://github.com/HsiangNianian/IntelligentMixVideo/pull/214) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`790733e`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/790733e2773360e670692ed526a5c88c829c2edb) - **remotion**: split text effect motion into configurable effect Presets *(PR [#215](https://github.com/HsiangNianian/IntelligentMixVideo/pull/215) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Bug Fixes
+- [`8b0b261`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/8b0b26132f80e5b491e876ba3432dcb0321338c7) - **remotion**: edit only the requested lines of an accepted Preset *(PR [#206](https://github.com/HsiangNianian/IntelligentMixVideo/pull/206) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`0588389`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/05883899ec02e96a9e556ba0fe172f7a45bd9cbf) - **client**: persist browser effect chat history in IndexedDB *(PR [#207](https://github.com/HsiangNianian/IntelligentMixVideo/pull/207) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`a5917ea`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/a5917ea1ab5638a7004c2f1e07fd9f811aa254ec) - **fonts**: name uploads from the font and dedupe them by file hash *(PR [#208](https://github.com/HsiangNianian/IntelligentMixVideo/pull/208) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`8771d0d`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/8771d0d97ef539b498491095cf2d53c1f96b0f7b) - **client**: reduce template preview stutter *(PR [#213](https://github.com/HsiangNianian/IntelligentMixVideo/pull/213) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`37d104b`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/37d104bb99aa28216a8c6f05adeab450ae6cc906) - **remotion**: keep preview controls visible in Tauri *(PR [#216](https://github.com/HsiangNianian/IntelligentMixVideo/pull/216) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Documentation Changes
+- [`5ca2033`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/5ca2033feff17fa2227866a2b81e9c6eb739bb3b) - update CHANGELOG.md for v0.9.8 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
+
+### Chores
+- [`685ac70`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/685ac701f85329d8313dd87da0a0b0a9120675c9) - **release**: prepare v0.9.9 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Other Changes
+- [`a804da4`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/a804da42b60226ad903fce197903ba5adf970dd9) - Merge pull request [#217](https://github.com/HsiangNianian/IntelligentMixVideo/pull/217) from HsiangNianian/codex/release-v0.9.9
+
+chore(release): prepare v0.9.9 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`98f20b1`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/98f20b10820048c3e216e3339475b8e7683cb3ce) - Merge pull request [#218](https://github.com/HsiangNianian/IntelligentMixVideo/pull/218) from HsiangNianian/dev
+
+chore(release): promote dev to main for v0.9.9 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
 ## [v0.9.8] - 2026-10-19
 ### New Features
 - [`6dbecdd`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/6dbecdd6f8b8282c465f1324935b90a817cb9608) - **remotion**: compose text effects from role Presets *(PR [#199](https://github.com/HsiangNianian/IntelligentMixVideo/pull/199) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
@@ -1551,3 +1577,5 @@ feat(client): 在模板工作区页头添加时钟 *(commit by [@HsiangNianian](
 [v0.9.7]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.6...v0.9.7
 
 [v0.9.8]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.7...v0.9.8
+
+[v0.9.9]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.8...v0.9.9
