@@ -1,26 +1,64 @@
-/** 预览视频地址与元数据读取；输入表单和播放器共用，支持 HTTP(S)、public 资源与本地文件的 blob URL，取消或结束时释放媒体资源。 */
+/**
+ * 预览视频地址与元数据读取；输入表单和播放器共用，支持 HTTP(S)、public 资源与本地文件的 blob URL，取消或结束时释放媒体资源。
+ * 内置示例随客户端打包，首次读取时整段载入内存并改用 blob URL 播放，不再每次从网络下载。
+ */
 import type { MasterVideo, PreviewMedia } from "./model";
 import { localPreviewVideos } from "./localVideos";
 
-/** 环境配置留空时使用内置视频，支持 HTTP(S) 直链和 public 资源路径。 */
+/** 内置示例：public/preview/ 下正好 10 秒的 1080×1920、30fps 无音轨片段。 */
+const bundledVideos = ["/preview/sample-1.mp4", "/preview/sample-2.mp4", "/preview/sample-3.mp4"] as const;
+
+/** 内置示例的地址到读取中或已读成的 blob URL；读取失败后删除以便重试。 */
+const bundledLoads = new Map<string, Promise<string>>();
+/** 已读成的内置示例：blob URL 到资源地址；应用存活期间复用、不释放。 */
+const bundledSources = new Map<string, string>();
+
+/**
+ * 环境配置留空时使用内置示例，支持 HTTP(S) 直链和 public 资源路径。
+ * 相对路径按页面地址解析，桌面端 macOS 与 Linux 的页面地址（tauri://localhost）同样适用。
+ */
 export function previewVideoUrl(index: 0 | 1 | 2 = 0): string {
   const configured = [
     import.meta.env.VITE_PREVIEW_VIDEO_1_URL,
     import.meta.env.VITE_PREVIEW_VIDEO_2_URL,
     import.meta.env.VITE_PREVIEW_VIDEO_3_URL,
   ];
-  const defaults = [
-    "https://oss.joyfile.net/source/2026/09/14/RC202609141904000001/01c1b9a1e9f747408d6522f7ec4cee61.mp4",
-    "https://oss.oemi.jdword.com/api/clip/2026-10-13/99083fe0c1d04947b523b0439401a0ee.mp4",
-    "https://oss.oemi.jdword.com/api/clip/2026-10-13/80ea1f518457424986fb425bf6da5b36.mp4",
-  ];
-  return new URL(
-    configured[index]?.trim() || defaults[index],
-    window.location.origin,
-  ).href;
+  return new URL(configured[index]?.trim() || bundledVideos[index], window.location.href).href;
 }
 
-/** 默认与 URL 来源各使用前十秒（不足十秒用完整区间）；用户选择的本地文件（blob URL）使用完整时长。 */
+/** 内置示例的完整地址；与 previewVideoUrl 使用相同的解析方式，供识别和反查。 */
+function bundledUrls(): string[] {
+  return bundledVideos.map((path) => new URL(path, window.location.href).href);
+}
+
+/**
+ * 把内置示例读成 blob URL：桌面端页面协议不是 HTTP(S)，自定义协议也不保证视频定位所需的范围请求，
+ * 内存中的 blob 在各平台都可直接解码和定位。并发读取共用同一请求，其他地址原样返回。
+ */
+async function playableUrl(input: string): Promise<string> {
+  let url: string;
+  try { url = new URL(input, window.location.href).href; } catch { return input; }
+  if (!bundledUrls().includes(url)) return input;
+  let pending = bundledLoads.get(url);
+  if (!pending) {
+    pending = fetch(url).then(async (response) => {
+      if (!response.ok) throw new Error(`内置示例视频读取失败（HTTP ${response.status}）`);
+      const blob = URL.createObjectURL(await response.blob());
+      bundledSources.set(blob, url);
+      return blob;
+    });
+    bundledLoads.set(url, pending);
+    pending.catch(() => bundledLoads.delete(url));
+  }
+  return pending;
+}
+
+/** 弹窗中展示的来源地址：内置示例显示其资源地址，而不是播放用的 blob URL。 */
+export function sourceUrl(url: string): string {
+  return bundledSources.get(url) ?? url;
+}
+
+/** URL 来源各使用前十秒（不足十秒用完整区间）；本地文件与内置示例（blob URL）使用完整时长，内置示例正好十秒。 */
 export function previewVideos(sources: PreviewMedia): PreviewMedia {
   const clip = (video: MasterVideo) => video.url.startsWith("blob:") ? video : { ...video, duration: Math.min(10, video.duration) };
   return [clip(sources[0]), clip(sources[1]), clip(sources[2])];
@@ -41,7 +79,7 @@ export async function readPreviewVideos(urls: readonly string[], signal: AbortSi
   signal.addEventListener("abort", abort, { once: true });
   if (signal.aborted) abort();
   const read = async (index: number) => {
-    try { return await readMasterVideo(urls[index].trim(), controller.signal); }
+    try { return await readMasterVideo(await playableUrl(urls[index].trim()), controller.signal); }
     catch (reason) { throw new Error(`视频 ${index + 1}：${reason instanceof Error ? reason.message : "读取失败"}`); }
   };
   try { return await Promise.all([read(0), read(1), read(2)]); }

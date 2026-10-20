@@ -13,7 +13,10 @@ Animation.prototype.cancel = function cancel(this: Animation) {
   cancelAnimation.call(this);
 };
 process.env.VITE_API_URL = "http://api.test:8000/";
+// 三个视频都用 public 资源路径；内置示例要读取打包的文件，只在专门的用例里模拟这些请求。
 process.env.VITE_PREVIEW_VIDEO_1_URL = "/sample.mp4";
+process.env.VITE_PREVIEW_VIDEO_2_URL = "/sample-2.mp4";
+process.env.VITE_PREVIEW_VIDEO_3_URL = "/sample-3.mp4";
 // 构建时由 Vite 从 package.json 注入；测试固定一个值，不随发版变化。
 process.env.IMV_VERSION = "1.2.3";
 process.env.IMV_COMMIT = "abc1234";

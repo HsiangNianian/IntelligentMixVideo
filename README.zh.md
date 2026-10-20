@@ -233,7 +233,7 @@ uv run --locked --project server python -m server.asr "https://example.com/audio
 | 配置 | 位置 | 用途与默认行为 |
 | --- | --- | --- |
 | `VITE_API_URL` | `client/.env` | 源码运行与构建的 API 默认地址；留空时为 `http://localhost:20070` |
-| `VITE_PREVIEW_VIDEO_1_URL`、`VITE_PREVIEW_VIDEO_2_URL`、`VITE_PREVIEW_VIDEO_3_URL` | `client/.env` | 视频 1、2、3 的默认地址；留空使用对应内置示例，也可填写 `public/` 下的资源路径 |
+| `VITE_PREVIEW_VIDEO_1_URL`、`VITE_PREVIEW_VIDEO_2_URL`、`VITE_PREVIEW_VIDEO_3_URL` | `client/.env` | 视频 1、2、3 的默认地址；留空使用随客户端打包的对应 10 秒内置示例，也可填写 `public/` 下的资源路径 |
 | `DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD`、`DB_NAME` | `server/.env` | MySQL 连接信息；使用服务端前填写 |
 | `PORT` | `server/.env` 或进程环境变量 | API 监听端口，默认 `20070`；有效范围为 1～65535 |
 | `DASHSCOPE_API_KEY` | `server/.env` | 使用北京地域 Fun-ASR 转写时所需的密钥 |
