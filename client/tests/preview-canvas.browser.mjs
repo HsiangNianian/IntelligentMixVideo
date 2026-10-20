@@ -92,18 +92,24 @@ try {
         window.displayTimes.push(Number(document.querySelector('input[aria-label="预览进度"]').value));
       });
       window.timeObserver.observe(label, { characterData: true, childList: true, subtree: true });
+      // 时间轴组件每次移动游标都整体重渲染，记录播放期间游标位置的实际变化次数。
+      window.cursorMoves = 0;
+      window.cursorObserver = new MutationObserver((records) => { window.cursorMoves += records.length; });
+      window.cursorObserver.observe(document.querySelector('.timeline-editor-cursor'), { attributes: true, attributeFilter: ['style'] });
     });
     await page.getByRole("button", { name: "播放", exact: true }).click();
     await page.waitForFunction(() => Number(document.querySelector('input[aria-label="预览进度"]').value) >= 1);
     await page.getByRole("button", { name: "暂停", exact: true }).click();
-    // 数字时间仅在十分之一秒发生变化时更新，不随重复视频帧反复更新。
-    const times = await page.evaluate(() => {
+    // 数字时间和时间轴游标仅在十分之一秒发生变化时更新，不随 SDK 的每个渲染帧反复更新（#210）。
+    const [times, cursorMoves] = await page.evaluate(() => {
       window.timeObserver.disconnect();
-      return window.displayTimes;
+      window.cursorObserver.disconnect();
+      return [window.displayTimes, window.cursorMoves];
     });
     assert(times.length > 0);
     assert(times.every((time, index) => Number.isFinite(time) && (index === 0 || time > times[index - 1])));
     assert(times.length <= Math.round(times.at(-1) * 10));
+    assert(cursorMoves > 0 && cursorMoves <= Math.round(times.at(-1) * 10), `播放约 ${times.at(-1)} 秒游标移动了 ${cursorMoves} 次`);
     if (name === "portrait") {
       await page.setViewportSize({ width: 390, height: 844 });
       const narrow = await frame.boundingBox();
@@ -120,7 +126,7 @@ try {
   await page.evaluate(() => window.unmountPreview());
   assert.equal(await page.locator("iframe").count(), 0);
   assert.equal(await previous.evaluate(frame => frame.isConnected), false);
-  console.log("PASS：原始画布、横竖屏切换、实际播放、窄屏比例、文字内容和卸载清理。");
+  console.log("PASS：原始画布、横竖屏切换、实际播放、时间与游标更新频率、窄屏比例、文字内容和卸载清理。");
 } finally {
   await browser?.close();
   await server.close();

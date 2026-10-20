@@ -282,9 +282,9 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           if (seekTarget !== null) {
             if (Math.abs(current - seekTarget) > 0.05) return;
           }
-          track.current?.setTime(current);
           overlay.current?.setTime(current);
-          // SDK 仍逐帧驱动播放控制，界面时间最多每 0.1 秒渲染一次。
+          // SDK 仍逐帧驱动播放控制与 AI 资产；界面时间和时间轴游标最多每 0.1 秒更新一次，
+          // 时间轴组件每次移动游标都会整体重渲染，与 SDK 共用主线程，两处更新合并为一次渲染。
           const nextDecisecond = Math.min(
             (latestResolved.current?.duration ?? 0) * 10,
             Math.max(0, Math.round(current * 10)),
@@ -292,6 +292,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           if (nextDecisecond !== displayedDecisecond) {
             displayedDecisecond = nextDecisecond;
             setTime(nextDecisecond / 10);
+            track.current?.setTime(current);
           }
           if (current >= (latestResolved.current?.duration ?? 0)) {
             setStatus("预览结束，点击播放可重播");
