@@ -31,7 +31,7 @@ export function useFonts() {
   }, [load]);
   /**
    * 上传一个字体文件。显示名取字体自己的名称（优先中文名，见 `fontDisplayName`），不取文件名；
-   * 读不出名称时不画预览条，交给服务端判断并给出原因。
+   * 画预览条同时验证浏览器能解码该字体；读不出名称时只做这项验证、不保留预览条，名称交给服务端决定。
    */
   const upload = useCallback(async (file: File, previewer: Previewer = drawFontPreview): Promise<FontInfo | null> => {
     setProblem(null);
@@ -40,7 +40,8 @@ export function useFonts() {
       const name = fontDisplayName(await file.arrayBuffer());
       let strip: Blob | null = null;
       try {
-        if (name) strip = await previewer(file, name);
+        const drawn = await previewer(file, name ?? "");
+        if (name) strip = drawn;
       } catch {
         setProblem("无法读取这个字体文件，请选择有效的 .ttf 或 .otf 字体。");
         return null;

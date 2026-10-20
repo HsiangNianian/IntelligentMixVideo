@@ -99,14 +99,23 @@ test("无法读取的字体文件不会被上传", async () => {
   expect(changes).toEqual([]);
 });
 
-// 场景：读不出字体名称（不是 TrueType/OpenType）——不画预览条、不用文件名当显示名，由服务端判断并展示它给出的原因。
+// 场景：读不出名称、浏览器也解码不了的文件——同样不发上传请求（解码检查不因读不出名称而跳过）。
+test("读不出名称且无法解码的文件不会被上传", async () => {
+  const server = fontServer(() => Response.json(UPLOADED, { status: 201 }));
+  await open(() => undefined, async () => { throw new Error("bad font"); });
+  fireEvent.change(screen.getByLabelText("选择字体文件"), { target: { files: [new File(["x"], "notes.ttf")] } });
+  expect((await screen.findByRole("alert")).textContent).toContain("无法读取这个字体文件");
+  expect(server.uploads).toEqual([]);
+});
+
+// 场景：读不出字体名称但浏览器能解码——只做解码检查，不保留预览条、不用文件名当显示名，由服务端判断并展示它给出的原因。
 test("读不出名称的文件交给服务端判断", async () => {
   const server = fontServer(() => Response.json({ detail: "只支持 TrueType / OpenType 字体文件（.ttf、.otf）" }, { status: 422 }));
   const drawn: string[] = [];
-  await open(() => undefined, async (_file, text) => { drawn.push(text); return null; });
+  await open(() => undefined, async (_file, text) => { drawn.push(text); return new Blob(["png"], { type: "image/png" }); });
   fireEvent.change(screen.getByLabelText("选择字体文件"), { target: { files: [new File(["x"], "notes.ttf")] } });
   expect((await screen.findByRole("alert")).textContent).toContain("只支持 TrueType / OpenType");
-  expect(drawn).toEqual([]);
+  expect(drawn).toEqual([""]);
   expect([server.uploads[0]!.get("label"), server.uploads[0]!.get("preview")]).toEqual(["", null]);
 });
 
