@@ -14,7 +14,8 @@ saved Sprite passes its checks.
 Local catalog transactions use a cross-process file lock and unique atomic
 replacement files; database connection/query failures preserve local visibility.
 Catalog I/O runs outside the event loop and file-lock acquisition waits at most
-10 seconds. `preset.modify` validates the merged component's data contract,
+10 seconds. `preset.modify` applies its exact code `edits` in order (each
+`old_str` must occur exactly once, otherwise nothing is copied), validates the merged component's data contract,
 including schema/default consistency and local-only references, before keeping
 the draft in the task session and returning its `draft_id`; it neither compiles the
 code nor writes the draft to the catalog. `sprite.compose` keeps its draft the same

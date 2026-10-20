@@ -180,3 +180,13 @@ def test_a_legacy_base_is_not_offered_base_drafts_it_does_not_have():
     sprite_base = default_plan(edit=True)
     assert "base_* drafts" in sprite_base.steps[0].goal and "base_* drafts" in sprite_base.steps[1].goal
     assert "base_*" not in default_plan(edit=False).steps[1].goal
+
+
+def test_an_edit_plan_asks_for_exact_edits_of_the_base_drafts():
+    """审计复现 a1cccb1c：编辑计划曾让执行层「用 preset_create 存一份改好的副本」，模型于是整份重写；现在要求从 base_* 草稿出发用 edits 只替换相关行，新作品的计划不变。"""
+    from server.remotion_templates.planning import default_plan
+
+    edit = default_plan(edit=True).steps[0].goal
+    assert "preset_modify" in edit and "edits" in edit and "only the lines involved" in edit
+    assert "write complete code" not in edit
+    assert "write complete code with preset_create" in default_plan(edit=False).steps[0].goal

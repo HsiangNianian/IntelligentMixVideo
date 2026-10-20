@@ -272,6 +272,79 @@ def test_draft_receipts_carry_a_digest_of_their_content(tmp_path):
     assert other.digest != first.digest
 
 
+# The accepted title of work a1cccb1c (2026-10-19): text with a yellow underline drawn under it.
+UNDERLINED_TITLE = """import React from "react";
+// Title with a yellow underline.
+export default function TitleUnderline(props: {text: string}) {
+  return (
+    <div style={{textAlign: "center"}}>
+      <span>{props.text}</span>
+      <div style={{height: 14, backgroundColor: "#FFD400"}} />
+    </div>
+  );
+}
+"""
+
+
+def edit_session(tmp_path: Path, preset_code: str) -> ToolSession:
+    """An edit task whose accepted version has one instance, title, registered as the base_title draft."""
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    spec = SimpleNamespace(sprite=saved_sprite("bundle", preset_code), composition=Composition(width=1080, height=1920, fps=30, duration_frames=30), sprite_kind="text")
+    base = TemplateCandidate(tsx_code="bundle", config_schema={"type": "object"}, default_config={})
+    return ToolSession(SimpleNamespace(settings=settings, renderer=None), spec, base, Budget(), tmp_path / "run", [], lambda *_: None, {})
+
+
+def test_an_edit_replaces_only_the_lines_it_names(tmp_path):
+    """回放 a1cccb1c「去掉黄色下划线」：模型曾整份重写 214 行并顺手改了关键词高亮；edits 只删下划线那一行，其余源码逐字保留，回执给出改动行数。"""
+    current = edit_session(tmp_path, UNDERLINED_TITLE)
+    copy = current.modify_preset(PresetModifyInput(preset_id="base_title", changes={"edits": [
+        {"old_str": '      <div style={{height: 14, backgroundColor: "#FFD400"}} />\n', "new_str": ""},
+        {"old_str": "// Title with a yellow underline.", "new_str": "// Title without an underline."},
+    ]}))
+    expected = UNDERLINED_TITLE.replace('      <div style={{height: 14, backgroundColor: "#FFD400"}} />\n', "").replace(
+        "with a yellow underline", "without an underline")
+    assert current.preset_drafts[copy.draft_id].code == expected
+    assert (copy.code_lines_removed, copy.code_lines_added) == (2, 1)
+    assert "notice" not in copy.model_dump(exclude_unset=True)
+    # The accepted version's draft is untouched; the copy is a new handle.
+    assert current.preset_drafts["base_title"].code == UNDERLINED_TITLE
+
+
+@pytest.mark.parametrize("changes, field, message", [
+    ({"edits": [{"old_str": '<div style={{height:14, backgroundColor: "#FFD400"}} />', "new_str": ""}]},
+     "/changes/edits/0/old_str", "does not occur in the code"),
+    ({"edits": [{"old_str": "  return (\n<div", "new_str": ""}]},
+     "/changes/edits/0/old_str", "Its first line matches line 4"),
+    ({"edits": [{"old_str": "    </div>\n  );", "new_str": ""}, {"old_str": "    </div>\n  );", "new_str": ""}]},
+     "/changes/edits/1/old_str", "after the earlier edits"),
+    ({"edits": [{"old_str": "div", "new_str": "section"}]},
+     "/changes/edits/0/old_str", "occurs 3 times (lines 5, 7, 8)"),
+    ({"edits": [{"old_str": "Title", "new_str": "Label"}], "code": "export default function Label(){return null}"},
+     "/changes/edits", "not both"),
+])
+def test_edits_must_name_one_exact_place(tmp_path, changes, field, message):
+    """old_str 必须原样出现恰好一次：找不到（含缩进不同时指出首行所在行）、出现多次（列出行号）或与整份 code 同时提供都拒绝，且不留下副本。"""
+    current = edit_session(tmp_path, UNDERLINED_TITLE)
+    with pytest.raises(ToolFault) as refused:
+        current.modify_preset(PresetModifyInput(preset_id="base_title", changes=changes))
+    assert refused.value.error.code == "INVALID_ARGUMENT" and refused.value.error.field == field
+    assert message in refused.value.error.message
+    assert list(current.preset_drafts) == ["base_title"]
+
+
+def test_an_edit_that_copies_a_stored_preset_is_noted(tmp_path):
+    """回放 a1cccb1c「去掉所有下划线」：模型从第一版的库内预设复制，把已删掉的下划线又带了回来；回执提示它应复制 base_* 草稿，复制基线草稿或新作品复制库内预设则不提示。"""
+    current = edit_session(tmp_path, UNDERLINED_TITLE)
+    stored = PresetRecord(preset_id="e64dfa", created_at="2026-10-19T00:00:00+00:00", description="第一版标题",
+                          code=UNDERLINED_TITLE, parameter_schema={"type": "object", "properties": {}, "additionalProperties": False}, default_parameters={})
+    current.catalog.append_preset(stored)
+    noted = current.modify_preset(PresetModifyInput(preset_id="e64dfa", changes={"description": "去掉下划线"}))
+    assert "not one the accepted version is built from (base_title)" in noted.notice
+    assert "notice" not in current.modify_preset(PresetModifyInput(preset_id="base_title", changes={"description": "去掉下划线"})).model_dump(exclude_unset=True)
+    fresh = session(tmp_path)
+    assert "notice" not in fresh.modify_preset(PresetModifyInput(preset_id="e64dfa", changes={"description": "副本"})).model_dump(exclude_unset=True)
+
+
 @pytest.mark.skipif(not RENDERER_DEPS.exists(), reason="install locked Remotion renderer dependencies")
 def test_fixed_tier_parameters_carry_the_host_titles(tmp_path):
     """宿主固定名称的参数（这里是双栏的上栏颜色）在参数面板里显示宿主固定的中文标题，不随 Agent 的措辞变化；其他参数保留 Agent 给的标题。"""
