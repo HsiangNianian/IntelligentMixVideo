@@ -7,6 +7,7 @@ content and time as an async task that shares the overlay renders' service.
 Request and response bodies are `imv.sprite.v1` messages, mirroring the template router's framing.
 """
 
+import os
 from typing import Annotated
 from uuid import UUID
 
@@ -114,16 +115,26 @@ async def sprite_preview(sprite_id: str, service: Service, overlay: bool = False
 
 
 @router.get("/fonts/{weight}", summary="读取供宿主页面转交的预览字体")
-async def shared_font(weight: int, service: Service) -> FileResponse:
+async def shared_font(weight: int, request: Request, service: Service) -> Response:
     """模板编辑等宿主页面读取一次受管字体，转交给各个资产播放器（预览页参数 `fonts=host`）。
 
     沙箱预览页是不透明来源，浏览器不为它的请求使用 HTTP 缓存，每个播放器各自读取就要重复下载；宿主页面是普通来源，
-    这里的响应可以缓存。字重只有 400 与 700，其他返回 404。
+    这里的响应可以缓存，但每次复用前都向服务端确认（`no-cache` 加 ETag，未变时回 304）：受管字体随服务端升级可能更换，
+    不能盲目沿用旧文件。字重只有 400 与 700，其他返回 404。
     """
     if weight not in {400, 700}:
         raise NotFound("font not found")
     font = service.settings.font_regular if weight == 400 else service.settings.font_bold
-    return FileResponse(font, media_type="font/collection", headers={"Cache-Control": "public, max-age=86400"})
+    # FileResponse 只在发送文件时才写入 ETag，这里先取得它，才能回应浏览器的确认请求（StaticFiles 之外不会自动处理）。
+    response = FileResponse(
+        font, media_type="font/collection", headers={"Cache-Control": "no-cache"},
+        stat_result=await run_in_threadpool(os.stat, font),
+    )
+    etag = response.headers["etag"]
+    known = {tag.strip().removeprefix("W/") for tag in request.headers.get("if-none-match", "").split(",")}
+    if etag in known:
+        return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "no-cache"})
+    return response
 
 
 @router.get("/{sprite_id}/fonts/{weight}", summary="读取预览字体")

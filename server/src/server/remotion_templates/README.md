@@ -537,7 +537,7 @@ them (objects key by key, arrays and scalars replace) and applies an optional `h
 With `fonts=host` in the page URL the player does not download the managed fonts itself. The page has an opaque origin
 (sandbox), so the browser keeps no HTTP cache for it and every overlay and catalog cover would fetch both files again.
 Instead it posts `imv-preview-fonts-request`, and the host page answers `imv-preview-fonts` with a Blob per weight
-(`400`, `700`) that it read once from `GET /api/sprites/fonts/{weight}` (`Cache-Control: public, max-age=86400`).
+(`400`, `700`) that it read once from `GET /api/sprites/fonts/{weight}` (`Cache-Control: no-cache`: the browser may keep the file but revalidates it by ETag, so a font replaced by a server upgrade is not served stale).
 The answer `fonts: null` makes the player fall back to the relative `fonts/{weight}` route.
 `presentation.mjs` writes the host protocol it speaks as the bundle's first line (`publication.PREVIEW_PROTOCOL`).
 Version 1 (`/* imv-preview-protocol 1 */`) covers frame sync, injected defaults and placement overrides. Version 2

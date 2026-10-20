@@ -548,11 +548,17 @@ def test_host_pages_read_one_cacheable_copy_of_the_preview_fonts(client: TestCli
     """Issue #210：沙箱预览页是不透明来源，浏览器不为它缓存请求，每个叠加层都重新下载两份字体。
 
     模板编辑这样的宿主页面从不依赖具体资产的共享地址读取一次、可以缓存，再转交给播放器；只有 400 与 700 两个字重。
+    缓存每次复用前都要向服务端确认：字体未变时回 304，换了字体（服务端升级）则取新文件，而不是沿用一天内的旧文件。
     """
     for weight in (400, 700):
         font = client.get(f"/api/sprites/fonts/{weight}")
         assert (font.status_code, font.content) == (200, b"fixture-font")
-        assert font.headers["cache-control"] == "public, max-age=86400"
+        assert font.headers["cache-control"] == "no-cache"
+        again = client.get(f"/api/sprites/fonts/{weight}", headers={"If-None-Match": font.headers["etag"]})
+        assert (again.status_code, again.content) == (304, b"")
+        assert again.headers["cache-control"] == "no-cache"
+        stale = client.get(f"/api/sprites/fonts/{weight}", headers={"If-None-Match": '"replaced-font"'})
+        assert (stale.status_code, stale.content) == (200, b"fixture-font")
     assert client.get("/api/sprites/fonts/500").status_code == 404
 
 
