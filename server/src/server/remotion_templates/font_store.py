@@ -3,7 +3,7 @@
 A row identifies a font by a unique family name (the name CSS and the render sandbox's fontconfig resolve) and holds
 the file's metadata as JSON; the bytes themselves are objects in ZOS (`fonts.py`). Rows are never deleted and their ID
 and family never change, so a template or Sprite that names a family keeps rendering; only how a font is shown (its
-label and preview strip) may be corrected (`update_data`). Like the Sprite table, the table is created on first use
+label, preview strip and style) may be corrected (`update_data`). Like the Sprite table, the table is created on first use
 and never altered. The functions are synchronous; callers run them in a worker thread.
 """
 

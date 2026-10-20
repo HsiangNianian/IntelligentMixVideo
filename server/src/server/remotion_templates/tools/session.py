@@ -591,7 +591,7 @@ class ToolSession:
         store = FontStore.active
         problems = category_problems(
             sprite.kind, sprite.parameter_schema, {item.name for item in sprite.bindings}, sprite.default_parameters,
-            fonts={font.family for font in store.listing()} if store is not None else None, requested=self.requested,
+            fonts=set(store.families()) if store is not None else None, requested=self.requested,
         )
         if problems:
             raise ToolFault("CATEGORY_PARAMETERS_MISSING", agent_message(sprite.kind, problems), details={
@@ -766,7 +766,7 @@ class ToolSession:
                 raise ToolFault("INVALID_ARGUMENT", "A one-tier text renders at font_size; leave size_ratio out.", field="/text/tiers/0/size_ratio")
         self._check_length(block.duration_frames, "/text/duration_frames")
         store = FontStore.active
-        fonts = [font.family for font in store.listing()] if store is not None else sorted({tier.font_family for tier in block.tiers})
+        fonts = store.families() if store is not None else sorted({tier.font_family for tier in block.tiers})
         layout = {**block.layout.model_dump(mode="json"), "z_index": 0}
         timing = {"start_frame": 0, "duration_frames": block.duration_frames}
         slots = [(tier, "text", f"/text/tiers/{index}") for index, tier in enumerate(block.tiers)]
