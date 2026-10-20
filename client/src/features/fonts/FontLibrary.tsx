@@ -1,6 +1,7 @@
 /**
  * 字体库页面：以卡片展示共享字体库里的全部字体（系统默认、预装与用户上传）。一张卡片是一个家族，含常规、粗体、斜体、粗斜体中已有的字形；
- * 卡片用服务端预览条以字体自己的样子显示名称，并给出家族名、风格、已有的字形与大小，点击打开字体详情（`FontDetails`）。
+ * 卡片用服务端预览条以字体自己的样子显示名称，并给出家族名、风格、已有的字形与大小，点击打开字体详情（`FontDetails`），
+ * 详情里点击字形可看它的字样。
  * 可按名称或风格搜索，也可以在这里上传自己的 .ttf/.otf。页面每次打开都重新读取字体库。
  */
 import { useRef, useState } from "react";
@@ -13,12 +14,13 @@ import { Spinner } from "@/components/ui/spinner";
 import { toast } from "sonner";
 import { previewUrl } from "./api";
 import { FontDetails } from "./FontDetails";
+import type { FaceLoader } from "./FontSpecimen";
 import { FontName } from "./FontName";
 import { SLOT_NAMES, SOURCES, sizeText } from "./format";
 import { useFonts, type Previewer } from "./useFonts";
 
-/** 字体库页面；`previewer` 供测试替换预览条的绘制。 */
-export function FontLibrary({ previewer }: { previewer?: Previewer }) {
+/** 字体库页面；`previewer` 与 `loader` 供测试替换预览条的绘制与字样的字体文件注册。 */
+export function FontLibrary({ previewer, loader }: { previewer?: Previewer; loader?: FaceLoader }) {
   const { fonts, loadError, problem, uploading, upload, reload } = useFonts();
   const [query, setQuery] = useState("");
   // 打开详情的卡片按家族名记住，字库刷新后详情显示最新的字形。
@@ -87,7 +89,7 @@ export function FontLibrary({ previewer }: { previewer?: Previewer }) {
           </li>
         ))}
       </ul>
-      <FontDetails font={fonts?.find((font) => font.family === opened) ?? null} onClose={() => setOpened(null)} />
+      <FontDetails key={opened ?? ""} font={fonts?.find((font) => font.family === opened) ?? null} onClose={() => setOpened(null)} loader={loader} />
     </section>
   );
 }

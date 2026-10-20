@@ -667,15 +667,20 @@ def test_the_font_api_lists_cards_with_their_styles(client: TestClient, served) 
     assert [item["family"] for item in listed].count("Zed Display") == 1 and listed[-1] == card
 
 
-def test_the_font_api_lists_serves_and_uploads(client: TestClient, served) -> None:
-    """字体接口：列表给出家族名、风格、字重、文件与预览地址；文件带 CORS 可被预览 iframe 加载；上传（multipart）返回新字体且立即出现在列表；
-    重复的文件返回 422，超大返回 413，缺少设备头返回 422；未知字体 404。"""
+def test_the_font_api_lists_serves_and_uploads(client: TestClient, served, settings, monkeypatch, tmp_path) -> None:
+    """字体接口：列表给出家族名、风格、字重、文件与预览地址；文件带 CORS 可被预览 iframe 加载；系统默认字体的文件是服务端安装的常规字重（字体详情的字样用它），
+    没有安装时 404；上传（multipart）返回新字体且立即出现在列表；重复的文件返回 422，超大返回 413，缺少设备头返回 422；未知字体 404。"""
     asyncio.run(served.sync())
     listed = client.get("/api/templates/fonts").json()
     assert [item["family"] for item in listed] == ["Noto Sans CJK SC", "Alpha Sans", "Beta Serif"]
-    assert listed[0]["source"] == "system" and listed[0]["file_url"] is None
+    assert listed[0]["source"] == "system" and listed[0]["faces"][0]["file_url"] == "/api/templates/fonts/noto-sans-cjk"
     assert listed[2]["weights"] == [200, 900] and listed[1]["file_url"] == "/api/templates/fonts/alpha"
+    monkeypatch.setattr(settings, "font_regular", tmp_path / "missing.ttc")
     assert client.get("/api/templates/fonts/noto-sans-cjk").status_code == 404
+    (tmp_path / "system.ttc").write_bytes(b"system-collection")
+    monkeypatch.setattr(settings, "font_regular", tmp_path / "system.ttc")
+    system = client.get("/api/templates/fonts/noto-sans-cjk")
+    assert (system.status_code, system.content, system.headers["content-type"]) == (200, b"system-collection", "font/collection")
     file = client.get("/api/templates/fonts/alpha")
     assert (file.status_code, file.content) == (200, PAYLOADS["alpha"])
     assert file.headers["access-control-allow-origin"] == "*" and file.headers["content-type"] == "font/ttf"

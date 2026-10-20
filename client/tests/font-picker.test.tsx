@@ -2,15 +2,16 @@
 import { expect, test } from "bun:test";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { ParameterControl } from "@/components/ParameterControl";
-import type { FontFace, FontInfo } from "@/features/fonts/api";
+import type { FontFaceInfo, FontInfo } from "@/features/fonts/api";
 import { FontLibrary } from "@/features/fonts/FontLibrary";
 import HomePage from "@/pages/HomePage";
 import { FontPicker } from "@/features/fonts/FontPicker";
+import type { FaceLoader } from "@/features/fonts/FontSpecimen";
 import { english, fontFile } from "./font-files";
 import { fetchMock } from "./setup";
 
 /** 字体卡片里的一个字形。 */
-const face = (id: string, slot: FontFace["slot"], extra: Partial<FontFace> = {}): FontFace => ({
+const face = (id: string, slot: FontFaceInfo["slot"], extra: Partial<FontFaceInfo> = {}): FontFaceInfo => ({
   id, slot, weights: [400], size: 1000, sha256: "", file_url: `/api/templates/fonts/${id}`, preview_url: `/api/templates/fonts/${id}/preview`, ...extra,
 });
 /** 一张字体卡片；默认只有一个常规字形。 */
@@ -20,7 +21,7 @@ const font = (id: string, family: string, label: string, extra: Partial<FontInfo
 });
 const LIBRARY = [
   font("noto-sans-cjk", "Noto Sans CJK SC", "思源黑体（默认）", {
-    source: "system", file_url: null, size: 0, style: "default clean Hei", faces: [face("noto-sans-cjk", "regular", { weights: [400, 700], size: 0, file_url: null })],
+    source: "system", file_url: null, size: 0, style: "default clean Hei", faces: [face("noto-sans-cjk", "regular", { weights: [400, 700], size: 0 })],
   }),
   font("ma-shan-zheng", "Ma Shan Zheng", "马善政毛笔楷书", { style: "brush calligraphy", license: "OFL-1.1" }),
 ];
@@ -187,6 +188,39 @@ test("点击字体卡片查看各字形的详情", async () => {
   await waitFor(() => expect(screen.queryByRole("dialog") === null).toBe(true));
   fireEvent.click(screen.getByRole("button", { name: "查看字体 马善政毛笔楷书" }));
   expect((await screen.findByRole("dialog")).textContent).toContain("预装 · OFL-1.1");
+});
+
+// 场景：在字体详情里点击已有的字形打开它的字样——读取这个字形的字体文件（file_url），用它排出标题、字母数字与字号阶梯，示例句可修改；
+// 读取失败时提示并可重试；缺少的字形不能点击；返回后回到详情并移除注册的字体。
+test("点击字形查看它的字样", async () => {
+  const loads: string[] = [];
+  const released: string[] = [];
+  let failures = 1;
+  const loader: FaceLoader = async (url) => {
+    loads.push(url);
+    if (failures-- > 0) throw new Error("bad font");
+    return { family: "imv-specimen-test", release: () => released.push(url) };
+  };
+  const bold = face("u-2", "bold", { weights: [700] });
+  fontServer(undefined, [...LIBRARY, font("u-1", "Zed Serif", "我的衬线", { source: "upload", faces: [face("u-1", "regular"), bold] })]);
+  render(<FontLibrary loader={loader} />);
+  fireEvent.click(await screen.findByRole("button", { name: "查看字体 我的衬线" }));
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).queryByRole("button", { name: "查看斜体字样" }) === null).toBe(true);
+  fireEvent.click(within(dialog).getByRole("button", { name: "查看粗体字样" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("字体文件读取失败");
+  fireEvent.click(screen.getByRole("button", { name: "重试" }));
+  const specimen = await screen.findByLabelText("字样");
+  expect(loads.map((url) => new URL(url).pathname)).toEqual(["/api/templates/fonts/u-2", "/api/templates/fonts/u-2"]);
+  expect(specimen.style.fontFamily).toContain("imv-specimen-test");
+  expect(specimen.textContent).toContain("我的衬线，粗体");
+  expect(specimen.textContent).toContain("ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+  expect(within(specimen).getAllByText("我能吞下玻璃而不伤身体。")).toHaveLength(11);
+  fireEvent.change(screen.getByRole("textbox", { name: "示例文字" }), { target: { value: "你好 Hello" } });
+  expect(within(specimen).getAllByText("你好 Hello")).toHaveLength(11);
+  fireEvent.click(screen.getByRole("button", { name: "返回字体详情" }));
+  expect(await screen.findByRole("button", { name: "查看常规字样" })).toBeTruthy();
+  expect(released.map((url) => new URL(url).pathname)).toEqual(["/api/templates/fonts/u-2"]);
 });
 
 // 场景：字体库读取失败（服务端不可用）——显示原因与重试，重试成功后列出字体。

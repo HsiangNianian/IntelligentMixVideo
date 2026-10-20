@@ -31,7 +31,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from ..client_config import parse_config
 from .settings import ClientSettings
 from .evidence import digest
-from .fonts import Font, FontRejected, FontStore, Slot, cards
+from .fonts import SYSTEM_FONT_ID, Font, FontRejected, FontStore, Slot, cards
 from .history import WorkEvent
 from .media import save_image
 from .object_store import ObjectStoreError
@@ -526,14 +526,15 @@ def preview_font(version_id: UUID, weight: int, service: Service) -> FileRespons
 
 
 class FontFaceInfo(BaseModel):
-    """One style of a font card: its file (`size`, `sha256`) and where the file and its preview strip are served."""
+    """One style of a font card: its file (`size`, `sha256`) and where the file and its preview strip are served; the
+    system default's file is the installed regular font (`size` 0, no `sha256`)."""
 
     id: str
     slot: Slot
     weights: list[int]
     size: int
     sha256: str
-    file_url: str | None
+    file_url: str
     preview_url: str | None
 
 
@@ -561,7 +562,7 @@ def font_info(files: Sequence[Font]) -> FontInfo:
     faces = [
         FontFaceInfo(
             **font.model_dump(include={"id", "slot", "weights", "size", "sha256"}),
-            file_url=f"/api/templates/fonts/{font.id}" if font.has_file else None,
+            file_url=f"/api/templates/fonts/{font.id}",
             preview_url=f"/api/templates/fonts/{font.id}/preview" if font.preview else None,
         )
         for font in files
@@ -621,16 +622,22 @@ async def upload_font(
 
 @router.get("/fonts/{font_id}", tags=["字体"], summary="读取字体文件")
 async def catalog_font(font_id: str, service: Service) -> FileResponse:
-    """提供已登记字体的文件供预览页与字体选择器注册（本机还没缓存时先从对象存储取回并校验哈希）；未知字体返回 404。
+    """提供已登记字体的文件供预览页、字体选择器与字体详情的字样注册（本机还没缓存时先从对象存储取回并校验哈希）；
+    系统默认字体提供服务端安装的常规字重文件；未知字体返回 404。
 
     字体库共享、字体不可变，所以不按设备校验，可以长期缓存。
     """
-    path = await asyncio.to_thread(FontStore.for_settings(service.settings).ensure, font_id)
+    if font_id == SYSTEM_FONT_ID:
+        regular = service.settings.font_regular
+        path = regular if regular.is_file() else None
+    else:
+        path = await asyncio.to_thread(FontStore.for_settings(service.settings).ensure, font_id)
     if path is None:
         raise NotFound("font not found")
+    types = {".ttf": "font/ttf", ".otf": "font/otf"}
     return FileResponse(
         path,
-        media_type="font/ttf" if path.suffix == ".ttf" else "font/otf",
+        media_type=types.get(path.suffix.lower(), "font/collection"),
         headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=86400"},
     )
 
