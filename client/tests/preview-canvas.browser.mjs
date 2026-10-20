@@ -24,19 +24,21 @@ import {newDraft} from '/src/features/templates/model.ts';
 import {readMasterVideo} from '/src/features/templates/media.ts';
 import {buildTimeline} from '/src/features/templates/timeline.ts';
 import {readCatalog} from '/src/features/templates/sdk.ts';
+import {previewContext,resolveTemplate} from '/src/features/templates/tracks.ts';
 import '/src/styles/globals.css';
 const root=createRoot(document.getElementById('root'));
 const draft=newDraft();
 window.mountPreview=async(name)=>{
  const media=await readMasterVideo('/node_modules/.cache/preview-canvas-tests/'+name+'.mp4',new AbortController().signal);
- root.render(React.createElement(TemplatePreview,{draft,media:[media,media,media],videoInputKey:name,onMediaChange:()=>{},onCatalog:()=>{}}));
+ const sources=[media,media,media];
+ root.render(React.createElement(TemplatePreview,{draft,media:sources,resolved:resolveTemplate(draft,previewContext(sources)),videoInputKey:name,onMediaChange:()=>{},onCatalog:()=>{}}));
  return media;
 };
 window.unmountPreview=()=>root.unmount();
 window.checkTextContent=async()=>{
  const editor={...(await import('/src/features/templates/model.ts')).defaultEditor,title:'画布文字宽度验证'.repeat(20),subtitle:'字幕宽度验证'.repeat(20),titleSize:100,subtitleSize:100};
  const textDraft={...draft,tracks:['title','subtitle'].map(target=>({id:target,target,start_mode:'seconds',start:0,duration:null,editor}))};
- return [1920,1080].map(width=>{const media={url:location.origin+'/node_modules/.cache/preview-canvas-tests/landscape.mp4',width,height:1080,duration:2};return buildTimeline(textDraft,readCatalog(),[media,media,media]).SubtitleTracks.map(track=>track.SubtitleTrackClips[0].Content);});
+ return [1920,1080].map(width=>{const media={url:location.origin+'/node_modules/.cache/preview-canvas-tests/landscape.mp4',width,height:1080,duration:2};const sources=[media,media,media];return buildTimeline(textDraft,readCatalog(),sources,resolveTemplate(textDraft,previewContext(sources))).SubtitleTracks.map(track=>track.SubtitleTrackClips[0].Content);});
 };
 </script></body></html>`;
 const server = await createServer({ server: { host: "localhost", port: 0, open: false }, plugins: [{
