@@ -280,7 +280,11 @@ class ToolSession:
         })
 
     def _base_summary(self, with_code: bool) -> dict | None:
-        """Describe the accepted base as instances over base_* Preset drafts, each source listed once."""
+        """Describe the accepted base as instances over base_* Preset drafts, each source listed once.
+
+        ``text`` and ``instances`` take the shape sprite_compose takes, so an edit re-composes the base by swapping in
+        its new draft_id and values instead of rebuilding each entry.
+        """
         if self.base is None:
             return None
         sprite = self.spec.sprite if self.spec is not None else None
@@ -304,7 +308,7 @@ class ToolSession:
             summary["instances"] = [
                 {
                     "instance_id": item.instance_id,
-                    "draft_id": f"base_{item.instance_id}",
+                    "source": {"kind": "draft", "draft_id": f"base_{item.instance_id}"},
                     "parameters": item.parameters,
                     "layout": item.layout.model_dump(mode="json"),
                     "timing": item.timing.model_dump(mode="json"),

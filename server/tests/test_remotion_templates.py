@@ -167,11 +167,45 @@ def test_edit_base_presets_become_drafts_and_only_the_coder_sees_their_source(tm
     current = ToolSession(SimpleNamespace(settings=settings, renderer=None), spec, base, Budget(), tmp_path / "run", [], lambda *_: None, {})
     assert set(current.preset_drafts) == {"base_left", "base_right"}
     plain = current.snapshot()
-    assert [item["draft_id"] for item in plain["base"]["instances"]] == ["base_left", "base_right"]
+    assert [item["source"] for item in plain["base"]["instances"]] == [{"kind": "draft", "draft_id": "base_left"}, {"kind": "draft", "draft_id": "base_right"}]
     assert "preset-source" not in json.dumps(plain) and "bundle" not in json.dumps(plain)
     coded = current.snapshot(with_code=True)["base"]["presets"]
     assert coded["base_left"]["code"] == "preset-source"
     assert coded["base_right"] == {"same_code_as": "base_left"}
+
+
+def test_an_edit_composes_the_base_instances_as_listed(tmp_path):
+    """The edit rule says to call sprite_compose with base.instances as its instances; they used to carry draft_id
+    instead of source, so the call was refused before the edit could swap in its copy."""
+    layout = {"x": 0, "y": 0, "width": 1080, "height": 1920, "z_index": 0}
+    sprite = SpriteRecord.model_validate({
+        "sprite_id": "saved-sprite", "created_at": "2026-09-30T00:00:00+00:00", "description": "暖色滤镜", "kind": "filter_overlay",
+        "code": "bundle", "parameter_schema": {"type": "object"}, "default_parameters": {},
+        "composition": {"width": 1080, "height": 1920, "fps": 30, "duration_frames": 30},
+        "instances": [{
+            "instance_id": "tint",
+            "preset": {"description": "tint", "code": "export default function Tint(props: {opacity: number}) { return null; }",
+                       "parameter_schema": {"type": "object", "properties": {"opacity": {"type": "number", "minimum": 0, "maximum": 1}},
+                                            "required": ["opacity"], "additionalProperties": False},
+                       "default_parameters": {"opacity": 0.4}},
+            "parameters": {"opacity": 0.4}, "layout": layout, "timing": {"start_frame": 0, "duration_frames": 30},
+        }],
+    })
+    spec = SimpleNamespace(sprite=sprite, composition=Composition(width=1080, height=1920, fps=30, duration_frames=30), sprite_kind="filter_overlay")
+    base = TemplateCandidate(tsx_code="bundle", config_schema={"type": "object"}, default_config={})
+    current = ToolSession(SimpleNamespace(settings=Settings(_env_file=None, data_dir=tmp_path), renderer=None), spec, base, Budget(), tmp_path / "run", [], lambda *_: None, {})
+    patch_validation(current)
+    listed = current.snapshot(with_code=True)["base"]
+
+    async def run():
+        """Compose the base exactly as the snapshot lists it, as an edit that changes nothing would."""
+        return await current.execute("sprite.compose", SpriteComposeInput.model_validate({
+            "description": listed["description"], "kind": listed["kind"], "parameters": listed["parameters"], "instances": listed["instances"],
+        }), available())
+
+    composed = asyncio.run(run())
+    assert composed["instances"][0]["draft_id"] == "base_tint"
+    assert composed["default_parameters"] == {"tint": {"opacity": 0.4}}
 
 
 def test_a_large_edit_base_is_omitted_largest_first_to_fit_the_snapshot_budget(tmp_path):
