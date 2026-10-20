@@ -19,10 +19,18 @@ const KEY_STEP = 10;
 const MOUNT_AHEAD_SECONDS = 3;
 /** 片段结束后保留播放器的秒数，在结束处来回拖动时不反复重新加载。 */
 const KEEP_AFTER_SECONDS = 1;
+/** 已挂载的播放器离开上述范围后再多保留的秒数：来回拖动游标跨过范围边缘时，不反复创建、销毁页面（每次都要重新加载）。 */
+const RELEASE_MARGIN_SECONDS = 2;
 
-/** 当前时间附近需要挂载播放器的片段；其余片段不创建播放器，每个播放器都是一个独立页面，常驻会占用内存与 CPU。 */
-function nearby(clips: SpriteClip[], time: number): string[] {
-  return clips.filter((clip) => time >= clip.start - MOUNT_AHEAD_SECONDS && time < clip.end + KEEP_AFTER_SECONDS).map((clip) => clip.id);
+/**
+ * 当前时间附近需要挂载播放器的片段；其余片段不创建播放器，每个播放器都是一个独立页面，常驻会占用内存与 CPU。
+ * 已挂载的片段按放宽后的范围保留，进入范围才新挂载。
+ */
+function nearby(clips: SpriteClip[], time: number, mounted: readonly string[]): string[] {
+  return clips.filter((clip) => {
+    const margin = mounted.includes(clip.id) ? RELEASE_MARGIN_SECONDS : 0;
+    return time >= clip.start - MOUNT_AHEAD_SECONDS - margin && time < clip.end + KEEP_AFTER_SECONDS + margin;
+  }).map((clip) => clip.id);
 }
 
 /** 资产片段与模板画面比例；播放器页面加载后才可见，并且只在片段区间内显示。 */
@@ -46,9 +54,9 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
   const latest = useRef(clips);
   const [unsupported, setUnsupported] = useState<string[]>([]);
   const [fixed, setFixed] = useState<string[]>([]);
-  // 已挂载播放器的片段，随预览时间在 flush 中更新；mountedKey 让逐帧调用只在集合变化时提交渲染。
-  const [mounted, setMounted] = useState(() => nearby(clips, initialTime));
-  const mountedKey = useRef(mounted.join());
+  // 已挂载播放器的片段，随预览时间在 flush 中更新；shown 同步记录最新的集合，让逐帧调用只在集合变化时提交渲染。
+  const [mounted, setMounted] = useState(() => nearby(clips, initialTime, []));
+  const shown = useRef(mounted);
   // 每个播放器使用独立消息通道；通道随片段 ID 稳定，片段移动不重载页面。
   const channels = useRef(new Map<string, string>());
   for (const clip of clips) {
@@ -70,9 +78,9 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
   }
   /** 按最新片段与时间更新需要挂载的播放器；集合不变时不触发渲染。 */
   function remount() {
-    const next = nearby(latest.current, time.current);
-    if (next.join() === mountedKey.current) return;
-    mountedKey.current = next.join();
+    const next = nearby(latest.current, time.current, shown.current);
+    if (next.join() === shown.current.join()) return;
+    shown.current = next;
     setMounted(next);
   }
   /** 按最新时间增减播放器、切换可见性并发送定位；同一浏览器帧内多次更新只提交最后一次。 */

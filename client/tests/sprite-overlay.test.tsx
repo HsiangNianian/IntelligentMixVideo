@@ -81,6 +81,41 @@ test("只为当前时间附近的片段挂载播放器，离开后卸载并重�
   await waitFor(() => expect(post).toHaveBeenCalledWith({ type: "imv-preview-sync", channel: new URL(again.src).hash.slice(1), time: 1.5, duration: 5 }, "*"));
 });
 
+// 审计 #213：每次挂载都是一次页面加载。来回拖动游标跨过范围边缘时，已挂载的播放器按放宽的范围保留（前后各多 2 秒），
+// 不反复创建、销毁；放宽的范围不用于新挂载。
+test("已挂载的播放器按放宽的范围保留，来回拖动不反复重载", async () => {
+  const ref = createRef<SpriteOverlayHandle>();
+  const late = { ...clip, id: "sprite-late", spriteId: "s2", name: "转场", start: 20, end: 21, length: 1 };
+  render(<SpriteOverlay ref={ref} clips={[late]} stageAspect={16 / 9} initialTime={0} />);
+  /** 按资产名称取当前挂载的播放器，未挂载时为 null。 */
+  const find = () => screen.queryByTitle<HTMLIFrameElement>("AI 资产预览：转场");
+  /** 推送预览时间并等待一次帧回调。 */
+  const setTime = (value: number) => act(async () => { ref.current!.setTime(value); await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined))); });
+  await setTime(16);
+  expect(find()).toBeNull();
+  await setTime(17.5);
+  const frame = find();
+  expect(frame).not.toBeNull();
+  // 前沿：回到挂载范围（17 秒）之前 2 秒内仍是同一个页面，再往前才卸载。
+  await setTime(15.5);
+  expect(find()).toBe(frame);
+  await setTime(14.9);
+  expect(find()).toBeNull();
+  // 放宽的范围不用于新挂载：卸载后要回到 17 秒才重新挂载。
+  await setTime(16.5);
+  expect(find()).toBeNull();
+  await setTime(17.5);
+  const again = find();
+  expect(again).not.toBeNull();
+  // 后沿：片段结束后 1 秒再加 2 秒内仍保留，之后卸载，不会因游标回到 22 秒而重新挂载。
+  await setTime(23.9);
+  expect(find()).toBe(again);
+  await setTime(24);
+  expect(find()).toBeNull();
+  await setTime(22);
+  expect(find()).toBeNull();
+});
+
 // 回归 #210：沙箱预览页是不透明来源，浏览器不为它缓存请求；播放器请求字体时由本页读取一次两个字重并转交，
 // 多个播放器不重复读取，陌生通道的请求不回应。
 test("播放器请求字体时转交本页读取一次的字体", async () => {
