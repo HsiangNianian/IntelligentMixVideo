@@ -2,10 +2,10 @@
  * 字效本地会话库回归：事件合并规则（任务状态、轮次、游标、作品版本指针）、消息分页、写入本地后确认送达，
  * 以及 Remotion 请求和资产发布携带本机设备 ID；存储使用每例独立的内存实现。桌面存储经 IPC 发送的参数与
  * `remotion-sessions-contract.json` 逐字比对，Rust 单元测试解析并执行同一份夹具。浏览器的 IndexedDB 实现用
- * fake-indexeddb 验证页面重新加载后的读回、按服务删除与 strict 持久性提交。执行 bun run test。
+ * fake-indexeddb 验证页面重新加载后的读回、按服务删除、strict 持久性提交与连接关闭后重新打开。执行 bun run test。
  */
 import { expect, spyOn, test } from "bun:test";
-import { IDBDatabase, IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { forceCloseDatabase, IDBDatabase, IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import * as api from "@/features/remotion_templates/api";
 import * as local from "@/features/remotion_templates/localSessions";
@@ -212,6 +212,26 @@ test("浏览器会话库以 strict 持久性提交", () =>
     } finally {
       opened.mockRestore();
     }
+  }));
+
+// 回归：会话库连接只打开一次并一直缓存。清除站点数据等情况下浏览器强制关闭连接后，本页每次读写都报连接已关闭，
+// 直到刷新；其他页签删除（或以后升级）本库时，本页一直占着连接，对方的请求被挡住。现在两种情况都放弃旧连接，
+// 下次读写重新打开。
+test("浏览器会话库连接关闭或被其他页签删除后重新打开", () =>
+  browserDatabase(async (factory) => {
+    const open = spyOn(factory, "open");
+    await recordWork();
+    const db = (open.mock.results[0]!.value as IDBOpenDBRequest).result;
+    // fake-indexeddb 把参数声明成了构造函数类型，实际接收的是连接实例。
+    forceCloseDatabase(db as unknown as typeof IDBDatabase);
+    expect((await local.history()).map((work) => work.id)).toEqual(["work-1"]);
+    await new Promise<void>((resolve, reject) => {
+      const request = factory.deleteDatabase("imv-remotion-sessions");
+      request.onsuccess = () => resolve();
+      request.onblocked = () => reject(new Error("本页的连接挡住了删除"));
+    });
+    expect(await local.history()).toEqual([]);
+    expect(open).toHaveBeenCalledTimes(3);
   }));
 
 // 每个 SSE 事件先写入本地会话库，再以该事件编号确认送达；重新连接时重新确认本地已有的游标。

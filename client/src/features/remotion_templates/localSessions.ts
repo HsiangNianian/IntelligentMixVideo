@@ -85,13 +85,14 @@ function tauriStorage(): SessionStorage {
  * 浏览器实现：IndexedDB 库 `imv-remotion-sessions`，表结构与桌面 SQLite 对应。`works`、`messages`、`jobs` 以
  * （服务地址, ID）为主键，记录形如 `{server, id, work?, sequence?, data}`，`data` 是前端定义的文档；
  * `messages` 按（服务地址, 会话, 序号）建索引供分页，`jobs` 按（服务地址, 会话）建索引；`meta` 只存设备 ID。
- * 连接首次调用时打开，打开失败则下次调用重试。
+ * 连接首次调用时打开，打开失败、连接被浏览器关闭或其他页签要删除、升级本库时，下次调用重新打开。
  */
 function browserStorage(): SessionStorage {
   let opening: Promise<IDBDatabase> | undefined;
   /** 打开（首次时建表）会话库。 */
   function database() {
-    opening ??= new Promise<IDBDatabase>((resolve, reject) => {
+    if (opening) return opening;
+    const current = new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open("imv-remotion-sessions", 1);
       request.onupgradeneeded = () => {
         const db = request.result;
@@ -100,13 +101,26 @@ function browserStorage(): SessionStorage {
         db.createObjectStore("messages", { keyPath: ["server", "id"] }).createIndex("work", ["server", "work", "sequence"]);
         db.createObjectStore("jobs", { keyPath: ["server", "id"] }).createIndex("work", ["server", "work"]);
       };
-      request.onsuccess = () => resolve(request.result);
+      request.onsuccess = () => {
+        const db = request.result;
+        // 清除站点数据等情况下浏览器强制关闭连接，之后在它上面开事务都会失败；其他页签删除或升级本库时，
+        // 本页不关闭连接会让对方一直等待。两种情况都放弃这个连接；主动关闭会等进行中的事务完成。
+        db.onclose = release;
+        db.onversionchange = () => {
+          db.close();
+          release();
+        };
+        resolve(db);
+      };
       request.onerror = () => reject(request.error);
     });
-    opening.catch(() => {
-      opening = undefined;
-    });
-    return opening;
+    /** 丢弃这次打开的连接；已经重新打开的连接不受影响。 */
+    function release() {
+      if (opening === current) opening = undefined;
+    }
+    opening = current;
+    current.catch(release);
+    return current;
   }
   /**
    * 在一个事务里执行 `body` 发起的请求，事务提交后返回 `body` 给出的读取函数的结果；写入要么全部提交，要么全部回滚。
