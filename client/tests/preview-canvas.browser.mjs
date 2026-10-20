@@ -35,6 +35,12 @@ window.mountPreview=async(name)=>{
  return media;
 };
 window.unmountPreview=()=>root.unmount();
+// 播放器实际时间与时间轴游标指示的时间（按 PreviewTimeline 的刻度换算：起点 20px，整段 5 格）。
+window.cursorSeconds=()=>{
+ const box=document.querySelector('[aria-label="预览播放位置"]');
+ const perSecond=Math.max(40,(box.clientWidth-42)/5)*5/Number(box.getAttribute('aria-valuemax'));
+ return [window.sdkPlayer.currentTime,(parseFloat(document.querySelector('.timeline-editor-cursor').style.left)-20)/perSecond];
+};
 window.checkTextContent=async()=>{
  const editor={...(await import('/src/features/templates/model.ts')).defaultEditor,title:'画布文字宽度验证'.repeat(20),subtitle:'字幕宽度验证'.repeat(20),titleSize:100,subtitleSize:100};
  const textDraft={...draft,tracks:['title','subtitle'].map(target=>({id:target,target,start_mode:'seconds',start:0,duration:null,editor}))};
@@ -64,7 +70,8 @@ try {
 
   // 每次完成初始化后，实际 Canvas 像素与媒体元数据相同；切换后旧 iframe 被移除。
   let previous;
-  for (const [name, width, height] of [["landscape", 1920, 1080], ["portrait", 1080, 1920], ["landscape", 1920, 1080]]) {
+  const cases = [["landscape", 1920, 1080], ["portrait", 1080, 1920], ["landscape", 1920, 1080]];
+  for (const [index, [name, width, height]] of cases.entries()) {
     const media = await page.evaluate(name => window.mountPreview(name), name);
     assert.deepEqual([media.width, media.height], [width, height]);
     await page.getByText(`${width} × ${height}`, { exact: true }).waitFor();
@@ -97,19 +104,44 @@ try {
       window.cursorObserver = new MutationObserver((records) => { window.cursorMoves += records.length; });
       window.cursorObserver.observe(document.querySelector('.timeline-editor-cursor'), { attributes: true, attributeFilter: ['style'] });
     });
+    // 记下 SDK 播放器实例，供下面核对游标与播放器的实际时间。
+    await page.evaluate(() => {
+      const proto = document.querySelector('iframe').contentWindow.AliyunTimelinePlayer.prototype;
+      const time = Object.getOwnPropertyDescriptor(proto, 'currentTime');
+      Object.defineProperty(proto, 'currentTime', { ...time, get() { window.sdkPlayer = this; return time.get.call(this); } });
+    });
     await page.getByRole("button", { name: "播放", exact: true }).click();
     await page.waitForFunction(() => Number(document.querySelector('input[aria-label="预览进度"]').value) >= 1);
+    // 暂停前统计游标的移动次数，暂停时的校准另行核对。
+    const cursorMoves = await page.evaluate(() => { window.cursorObserver.disconnect(); return window.cursorMoves; });
     await page.getByRole("button", { name: "暂停", exact: true }).click();
     // 数字时间和时间轴游标仅在十分之一秒发生变化时更新，不随 SDK 的每个渲染帧反复更新（#210）。
-    const [times, cursorMoves] = await page.evaluate(() => {
+    const times = await page.evaluate(() => {
       window.timeObserver.disconnect();
-      window.cursorObserver.disconnect();
-      return [window.displayTimes, window.cursorMoves];
+      return window.displayTimes;
     });
     assert(times.length > 0);
     assert(times.every((time, index) => Number.isFinite(time) && (index === 0 || time > times[index - 1])));
     assert(times.length <= Math.round(times.at(-1) * 10));
     assert(cursorMoves > 0 && cursorMoves <= Math.round(times.at(-1) * 10), `播放约 ${times.at(-1)} 秒游标移动了 ${cursorMoves} 次`);
+    // 播放中游标按 0.1 秒更新，暂停后必须落在播放器实际停下的时间上，而不是停在最近一次更新处（可落后 0.1 秒）；
+    // 在不同的帧相位暂停几次，避免恰好停在更新帧上。
+    for (const wait of [0, 17, 33]) {
+      const before = await page.evaluate(() => Number(document.querySelector('input[aria-label="预览进度"]').value));
+      await page.getByRole("button", { name: "播放", exact: true }).click();
+      await page.waitForFunction((from) => Number(document.querySelector('input[aria-label="预览进度"]').value) >= from + 0.3, before);
+      await page.waitForTimeout(wait);
+      await page.getByRole("button", { name: "暂停", exact: true }).click();
+      const [stopped, shown] = await page.evaluate(() => window.cursorSeconds());
+      assert(Math.abs(stopped - shown) < 0.005, `暂停在 ${stopped} 秒，游标显示 ${shown} 秒`);
+    }
+    // 播放到结尾自行停止时，游标同样要到达播放器停下的时间。
+    if (index === cases.length - 1) {
+      await page.getByRole("button", { name: "播放", exact: true }).click();
+      await page.getByText("预览结束，点击播放可重播", { exact: true }).waitFor();
+      const [stopped, shown] = await page.evaluate(() => window.cursorSeconds());
+      assert(Math.abs(stopped - shown) < 0.005, `播放结束在 ${stopped} 秒，游标显示 ${shown} 秒`);
+    }
     if (name === "portrait") {
       await page.setViewportSize({ width: 390, height: 844 });
       const narrow = await frame.boundingBox();

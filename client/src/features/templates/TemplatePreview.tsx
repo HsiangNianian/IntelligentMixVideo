@@ -295,6 +295,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
             track.current?.setTime(current);
           }
           if (current >= (latestResolved.current?.duration ?? 0)) {
+            track.current?.setTime(current);
             setStatus("预览结束，点击播放可重播");
           }
         });
@@ -382,7 +383,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
         <Hint label="全屏预览"><Button type="button" variant="ghost" size="icon-xs" aria-label="全屏预览" onClick={() => { if (stage.current) void stage.current.requestFullscreen(); }} className="template-preview-fullscreen absolute bottom-2 right-2 rounded-[5px] p-0"><Maximize2 className="size-3" aria-hidden="true" /></Button></Hint>
       </div>
       <div className="template-preview-controls flex flex-wrap items-center gap-2.5 py-3">
-        <Hint label={playing ? "暂停" : "播放"}><Button type="button" aria-label={playing ? "暂停" : "播放"} disabled={!ready || seeking} onClick={() => { if (playing) { cancelPlaybackAction.current?.(); player.current?.pause(); setStatus("预览已暂停"); } else { const current = player.current?.currentTime ?? 0; playAction.current?.(current >= duration ? 0 : current); } }} className="template-preview-play size-8 shrink-0 rounded-lg p-0">{playing ? <Pause className="size-4 fill-current" aria-hidden="true" /> : <Play className="ml-0.5 size-4 fill-current" aria-hidden="true" />}</Button></Hint>
+        <Hint label={playing ? "暂停" : "播放"}><Button type="button" aria-label={playing ? "暂停" : "播放"} disabled={!ready || seeking} onClick={() => { if (playing) { cancelPlaybackAction.current?.(); player.current?.pause(); track.current?.setTime(player.current?.currentTime ?? 0); setStatus("预览已暂停"); } else { const current = player.current?.currentTime ?? 0; playAction.current?.(current >= duration ? 0 : current); } }} className="template-preview-play size-8 shrink-0 rounded-lg p-0">{playing ? <Pause className="size-4 fill-current" aria-hidden="true" /> : <Play className="ml-0.5 size-4 fill-current" aria-hidden="true" />}</Button></Hint>
         <Button type="button" variant="ghost" size="sm" disabled={!ready || seeking} onClick={() => playAction.current?.(0)} className="template-preview-restart h-8 px-2 text-[11px]">从头重播</Button>
         <input type="range" aria-label="预览进度" min={0} max={duration} step={0.1} value={Math.min(time, duration)} disabled={!ready} onChange={(event) => seekAction.current?.(Number(event.target.value))} className="template-preview-progress min-w-20 flex-1" style={{ "--preview-progress": `${duration > 0 ? time / duration * 100 : 0}%` } as CSSProperties} />
         <span className="min-w-20 text-right text-[11px] font-medium tabular-nums">{time.toFixed(1)} <span className="font-normal text-muted-foreground">/ {duration.toFixed(1)} 秒</span></span>
