@@ -4,18 +4,41 @@ import { ApiError, apiUrl } from "@/features/remotion_templates/api";
 import { deviceId } from "@/features/remotion_templates/localSessions";
 import { apiBase } from "@/lib/api-base";
 
-/** 字体库里的一个字体；`family` 就是效果 `fontFamily` 参数的取值。 */
+/** 字体卡片的四个字形，按展示顺序。 */
+export const FONT_SLOTS = ["regular", "bold", "italic", "bold_italic"] as const;
+
+/** 字体卡片里的一个字形：一个字体文件及它的预览条。 */
+export interface FontFace {
+  id: string;
+  slot: (typeof FONT_SLOTS)[number];
+  weights: number[];
+  size: number;
+  sha256: string;
+  file_url: string | null;
+  preview_url: string | null;
+}
+
+/**
+ * 字体库里的一张字体卡片：一个家族，含常规、粗体、斜体、粗斜体中已有的字形（`faces`，按这个顺序，可以缺）；
+ * `family` 就是效果 `fontFamily` 参数的取值，渲染时按字重与斜体选用对应的文件。
+ */
 export interface FontInfo {
   id: string;
   family: string;
   label: string;
   style: string;
+  /** 各字形字重的合集。 */
   weights: number[];
   /** system 是系统默认字体，builtin 是预装字体，upload 是用户上传的字体。 */
   source: "system" | "builtin" | "upload";
+  /** 预装字体的许可证（如 OFL-1.1），其他为空。 */
+  license: string;
+  /** 各字形文件大小之和。 */
   size: number;
   file_url: string | null;
+  /** 卡片的预览条：第一个有预览条的字形。 */
   preview_url: string | null;
+  faces: FontFace[];
 }
 
 /** 服务端 4xx/5xx 响应里的文字说明；不是文字时返回 null。 */
@@ -62,7 +85,10 @@ export function listFonts(signal?: AbortSignal): Promise<FontInfo[]> {
   return request("/fonts", { signal }, 20_000);
 }
 
-/** 上传一个字体文件；`preview` 是用该字体画出的黑色透明底 PNG 预览条，下拉框用它展示字体。写入不自动重试。 */
+/**
+ * 上传一个字体文件；`preview` 是用该字体画出的黑色透明底 PNG 预览条，下拉框用它展示字体。
+ * 返回文件所在的整张卡片（同一家族的常规、粗体、斜体、粗斜体文件归入同一张卡片）。写入不自动重试。
+ */
 export function uploadFont(file: File, label: string, preview: Blob | null, signal?: AbortSignal): Promise<FontInfo> {
   const form = new FormData();
   form.append("file", file);
@@ -71,7 +97,7 @@ export function uploadFont(file: File, label: string, preview: Blob | null, sign
   return request("/fonts", { method: "POST", body: form, signal }, 120_000);
 }
 
-/** 预览条的完整地址；没有预览条的字体返回 null，界面改用文字名称。 */
-export function previewUrl(font: FontInfo): string | null {
-  return font.preview_url ? apiBase() + font.preview_url : null;
+/** 卡片或字形预览条的完整地址；没有预览条时返回 null，界面改用文字名称。 */
+export function previewUrl(item: Pick<FontInfo, "preview_url">): string | null {
+  return item.preview_url ? apiBase() + item.preview_url : null;
 }

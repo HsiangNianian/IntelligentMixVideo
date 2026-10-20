@@ -1,7 +1,7 @@
 """Remotion 字体库：MySQL 注册表 + 对象存储 + 本地校验缓存、用户上传、沙箱挂载、Agent 清单、API 与渲染守卫。
 
 范围：`font_catalog.json` 的结构与随包字体文件、预装字体从字体包复制进对象存储与注册表、从对象存储取回缓存（换机器/丢缓存仍可用）、
-被篡改的缓存被剔除、字体名称的读取（显示名优先中文名）与旧上传显示名的修正、上传字体的校验（格式、按文件内容去重（含尚未装进库的预装字体）、非常规样式按样式命名、同名的其他版本另起家族名、大小、预览条）、fontconfig 扫描规则（含真实 fc-match）、`fontFamily` 的分类规则与覆盖校验、
+被篡改的缓存被剔除、字体名称的读取（显示名优先中文名）与旧上传显示名的修正、上传字体的校验（格式、按文件内容去重（含尚未装进库的预装字体）、大小、预览条）、字体卡片（同一家族的常规/粗体/斜体/粗斜体归入一张卡片、其他字重与已有字形的其他版本另起卡片、旧上传补读字形、按卡片列出的接口）、fontconfig 扫描规则（含真实 fc-match）、`fontFamily` 的分类规则与覆盖校验、
 沙箱命令是否挂载字体目录、Agent 字体清单、字体 API 与预览页、渲染前的字体守卫。数据库用 `template_db` 的临时 SQLite，
 对象存储用本地目录，字体包用小文件代替（另有一例核对随包的真实字体），不访问网络；真实浏览器里字体是否生效由 `IMV_TEST_RENDERER=1` 的用例验证。
 执行：在 `server/` 下运行 `uv run --locked pytest tests/test_remotion_fonts.py -v`。
@@ -31,7 +31,7 @@ from server.remotion_templates import fonts as fonts_module
 from server.remotion_templates import routes
 from server.remotion_templates.api import app as remotion_templates_app
 from server.remotion_templates.categories import REQUIRED, category_problems
-from server.remotion_templates.fonts import CONFIG_NAME, Font, FontNames, FontRejected, FontSpec, FontStore, load_catalog, open_font_schema, read_names, require_family
+from server.remotion_templates.fonts import CONFIG_NAME, Font, FontNames, FontRejected, FontSpec, FontStore, load_catalog, cards, open_font_schema, read_names, require_family
 from server.remotion_templates.object_store import LocalObjects
 from server.remotion_templates.overlay_render import Overlay, OverlayError, require_fonts
 from server.remotion_templates.placement import resolve
@@ -47,7 +47,7 @@ PAYLOADS = {"alpha": b"alpha-font-bytes", "beta": b"beta-font-bytes-longer"}
 
 def minimal_font(
     family: str, characters: str = "测试字体效果 Abc", names: Sequence[tuple[int, int, int, int, str | bytes]] = (), advance: int = 1000,
-    style: str = "Regular", variable: bool = False,
+    style: str = "Regular", variable: bool = False, weight: int = 400, italic: bool = False,
 ) -> bytes:
     """A tiny valid TrueType font: every listed character maps to one empty glyph `advance` units wide (1000, one em).
 
@@ -55,7 +55,8 @@ def minimal_font(
     width that changes proves the browser loaded this file. Built by hand to avoid a font-tooling dependency. The name
     table holds Windows US English records for `family` and `style` (name ID 2) followed by the extra `names` records
     (platform, encoding, language, name ID, text); a text is UTF-16 on the Unicode and Windows platforms and Mac Roman
-    otherwise, and bytes are written as given. `variable` adds an empty `fvar` table, which only the name reader sees.
+    otherwise, and bytes are written as given. `variable` adds an empty `fvar` table, which only the name reader sees;
+    `weight` and `italic` set the OS/2 weight class and the bold and italic flags fontconfig matches a style by.
     """
     def table(tag: bytes, data: bytes) -> tuple[bytes, bytes]:
         return tag, data + b"\0" * (-len(data) % 4)
@@ -70,6 +71,8 @@ def minimal_font(
     cmap_subtable += b"".join(struct.pack(">H", delta) for _, _, delta in segments)
     cmap_subtable += b"\0\0" * count
     entries = [(3, 1, 0x409, name_id, value) for name_id, value in ((1, family), (2, style), (4, family), (6, family.replace(" ", "")))]
+    # OS/2 fsSelection: italic (bit 0) and bold (bit 5), or regular (bit 6).
+    selection = (italic * 0x01) | (0x20 if weight >= 700 else 0) or 0x40
     entries += names
     encoded = [value if isinstance(value, bytes) else value.encode("utf-16-be" if platform in (0, 3) else "mac_roman") for platform, _, _, _, value in entries]
     strings = b"".join(encoded)
@@ -78,10 +81,10 @@ def minimal_font(
         records += struct.pack(">HHHHHH", platform, encoding, language, name_id, len(value), offset)
         offset += len(value)
     tables = dict([
-        table(b"OS/2", struct.pack(">HhHHHhhhhhhhhhh10sIIII4sHHHhhhHH", 0, 1000, 400, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, bytes(10), 0, 0, 0, 0, b"IMV ", 0x40, 32, 0xFFFF, 800, -200, 0, 800, 200)),
+        table(b"OS/2", struct.pack(">HhHHHhhhhhhhhhh10sIIII4sHHHhhhHH", 0, 1000, weight, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, bytes(10), 0, 0, 0, 0, b"IMV ", selection, 32, 0xFFFF, 800, -200, 0, 800, 200)),
         table(b"cmap", struct.pack(">HHHHI", 0, 1, 3, 1, 12) + cmap_subtable),
         table(b"glyf", bytes(4)),
-        table(b"head", struct.pack(">IIIIHHqqhhhhHHhhh", 0x10000, 0x10000, 0, 0x5F0F3CF5, 0, 1000, 0, 0, 0, 0, 0, 0, 0, 8, 2, 0, 0)),
+        table(b"head", struct.pack(">IIIIHHqqhhhhHHhhh", 0x10000, 0x10000, 0, 0x5F0F3CF5, 0, 1000, 0, 0, 0, 0, 0, 0, (weight >= 700) | (italic << 1), 8, 2, 0, 0)),
         table(b"hhea", struct.pack(">IhhhHhhhhhhhhhhhH", 0x10000, 800, -200, 0, advance, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 2)),
         table(b"hmtx", struct.pack(">HhHh", advance, 0, advance, 0)),
         table(b"loca", bytes(6)),
@@ -189,7 +192,7 @@ def test_every_catalog_font_ships_in_the_package() -> None:
 def test_the_family_name_is_read_without_trusting_the_file() -> None:
     """家族名只读 name 表（带边界检查）：合法字体读出名称；不是 sfnt（如 WOFF）、被截断、没有名称表或名称超过 100 个字符的文件抛 FontRejected。"""
     data = minimal_font("Zed Display")
-    assert read_names(data) == FontNames(family="Zed Display", label="Zed Display")
+    assert read_names(data) == FontNames(family="Zed Display", label="Zed Display", style="Regular")
     for broken in (b"wOFF" + data[4:], data[:20], data[:40], b"", b"\x00\x01\x00\x00" + b"\xff" * 40, minimal_font("x" * 101)):
         with pytest.raises(FontRejected):
             read_names(broken)
@@ -199,18 +202,18 @@ def test_the_display_name_is_the_fonts_own_chinese_name() -> None:
     """显示名取字体自己的名称：中文名优先（简体先于繁体），同一语言里字体家族（ID 16）先于旧式家族（ID 1），英文先于其他语言；
     家族名（CSS 名）仍是英文名。Mac 平台的中文编码记录不按 Roman 解码（否则是乱码），只有 Mac Roman 名称时显示名就是家族名。
     与客户端 `client/tests/font-names.test.ts` 是同一组情形，两边规则一致。"""
-    assert read_names(minimal_font("Smiley Sans", names=[(3, 1, 0x0804, 1, "得意黑")])) == FontNames(family="Smiley Sans", label="得意黑")
+    assert read_names(minimal_font("Smiley Sans", names=[(3, 1, 0x0804, 1, "得意黑")])) == FontNames(family="Smiley Sans", label="得意黑", style="Regular")
     assert read_names(minimal_font("Font", names=[(3, 1, 0x0404, 1, "繁體名"), (3, 1, 0x0804, 1, "简体名")])).label == "简体名"
     assert read_names(minimal_font("Font", names=[(3, 1, 0x0C04, 1, "香港名"), (3, 1, 0x0404, 1, "台灣名")])).label == "台灣名"
     assert read_names(minimal_font("Alibaba PuHuiTi 2.0 85 Bold", names=[(3, 1, 0x0409, 16, "Alibaba PuHuiTi 2.0")])) == FontNames(
-        family="Alibaba PuHuiTi 2.0", label="Alibaba PuHuiTi 2.0", legacy="Alibaba PuHuiTi 2.0 85 Bold",
+        family="Alibaba PuHuiTi 2.0", label="Alibaba PuHuiTi 2.0", legacy="Alibaba PuHuiTi 2.0 85 Bold", style="Regular",
     )
     assert read_names(minimal_font("Latin Name", names=[(3, 1, 0x0411, 1, "日本語名")])).label == "Latin Name"
     assert read_names(minimal_font("Clean", names=[(3, 1, 0x0804, 1, "  "), (3, 1, 0x0804, 16, "bad\u0001name")])).label == "Clean"
     gb2312 = minimal_font("Mac Font", names=[(1, 25, 33, 1, "宋体".encode("gb2312"))])
-    assert read_names(gb2312) == FontNames(family="Mac Font", label="Mac Font")
+    assert read_names(gb2312) == FontNames(family="Mac Font", label="Mac Font", style="Regular")
     # The Windows records carry an unprintable name, so only the Mac Roman record is usable.
-    assert read_names(minimal_font("\u0001", names=[(1, 0, 0, 1, "Mac Only")])) == FontNames(family="Mac Only", label="Mac Only")
+    assert read_names(minimal_font("\u0001", names=[(1, 0, 0, 1, "Mac Only")])) == FontNames(family="Mac Only", label="Mac Only", style="Regular")
 
 
 def test_sync_installs_the_bundled_fonts_into_the_object_store_and_the_registry(store, objects) -> None:
@@ -363,26 +366,56 @@ def test_sync_skips_a_bundled_font_whose_family_an_older_upload_took(store, obje
     assert "Font alpha is not installed: another font is registered as 'Alpha Sans'" in caplog.text
 
 
-def test_each_style_of_a_family_is_named_after_its_style_in_any_order(store) -> None:
-    """同一家族的粗体、斜体等样式按样式命名（如 Zed Serif Bold），与上传顺序无关：粗体先上传也不占用常规体的名称；
-    样式取字体样式（ID 17）先于旧式样式（ID 2），家族名已以样式结尾时不重复，可变字体只按家族命名（它的样式只是默认实例）；
-    同一样式的另一个版本再加版本号。显示名仍是字体自己的名称。"""
-    def upload(name: str, characters: str, style: str = "Regular", *records, variable: bool = False):
-        """Upload a font with these names, style and glyphs."""
-        return store.upload(minimal_font(name, characters, names=records, style=style, variable=variable), None, "", "device-1")
+def upload_font(store: FontStore, name: str, characters: str, style: str = "Regular", *records, **flags) -> Font:
+    """Upload a hand-built font with these names, style, glyphs and `minimal_font` flags, without a preview strip."""
+    return store.upload(minimal_font(name, characters, names=records, style=style, **flags), None, "", "device-1")
 
-    assert upload("Zed Serif", "测试", "Bold").family == "Zed Serif Bold"
-    assert upload("Zed Serif", "效果", "Bold Italic").family == "Zed Serif Bold Italic"
-    assert upload("Zed Serif", "字体").family == "Zed Serif"
-    assert upload("Zed Serif", "Abc", "Bold", (3, 1, 0x0409, 5, "Version 2.1.5")).family == "Zed Serif Bold v2.1.5"
-    assert {font.label for font in store.listing() if font.family.startswith("Zed Serif")} == {"Zed Serif"}
+
+def test_the_styles_of_a_family_share_one_card_in_any_order(store) -> None:
+    """同一家族的常规、粗体、斜体、粗斜体文件不论上传顺序都进同一张卡片（同一个家族名，渲染时按字重与斜体选文件）：粗体先上传也由它建立卡片；
+    Italic 或 Oblique 是卡片的斜体。注册表里卡片的第一个文件以家族名本身登记，之后的文件以“家族名<TAB>字形”登记；字体库的家族列表每张卡片只出现一次。"""
+    bold = upload_font(store, "Zed Serif", "测试", "Bold", weight=700)
+    italic = upload_font(store, "Zed Serif", "效果", "Italic", italic=True)
+    regular = upload_font(store, "Zed Serif", "字体")
+    bold_italic = upload_font(store, "Zed Serif", "Abc", "Bold Italic", weight=700, italic=True)
+    assert {font.family for font in (bold, italic, regular, bold_italic)} == {"Zed Serif"}
+    card = cards(store.listing())["Zed Serif"]
+    assert [(font.slot, font.weights) for font in card] == [("regular", [400]), ("bold", [700]), ("italic", [400]), ("bold_italic", [700])]
+    keys = {record["id"]: record["family"] for record in font_store.listing()}
+    assert [keys[font.id] for font in (bold, italic, regular, bold_italic)] == ["Zed Serif", "Zed Serif\titalic", "Zed Serif\tregular", "Zed Serif\tbold_italic"]
+    assert store.families().count("Zed Serif") == 1
     smiley = [(3, 1, 0x0409, 16, "Smiley Sans"), (3, 1, 0x0409, 17, "Oblique"), (3, 1, 0x0804, 16, "得意黑"), (3, 1, 0x0804, 17, "斜体")]
-    oblique = upload("Smiley Sans Oblique", "测试", "Regular", *smiley)
-    assert (oblique.family, oblique.label) == ("Smiley Sans Oblique", "得意黑")
-    assert upload("Zed Black", "测试", "Black").family == "Zed Black"
-    thin = [(3, 1, 0x0409, 16, "Zed Sans"), (3, 1, 0x0409, 17, "Thin")]
-    assert upload("Zed Sans Thin", "测试", "Regular", *thin, variable=True).family == "Zed Sans"
-    assert upload("Zed Sans Thin", "效果", "Regular", *thin).family == "Zed Sans Thin"
+    oblique = upload_font(store, "Smiley Sans Oblique", "测试", "Regular", *smiley)
+    assert (oblique.family, oblique.slot, oblique.label) == ("Smiley Sans", "italic", "得意黑")
+
+
+def test_other_weights_and_filled_styles_make_cards_of_their_own(store, catalog) -> None:
+    """不属于卡片字形的字重（Thin、Black 等）单独成卡片，家族名与显示名带字重，它的斜体（Thin Italic）进同一张卡片；家族名已以字重结尾时不重复；
+    可变字体只看是否斜体（字重名只是默认实例）。已经有的字形再上传另一个版本时另起卡片（家族名加版本号）；预装字体的卡片不会被上传加入。"""
+    thin = upload_font(store, "Zed Sans Thin", "测试", "Regular", (3, 1, 0x0409, 16, "Zed Sans"), (3, 1, 0x0409, 17, "Thin"))
+    assert (thin.family, thin.slot, thin.label) == ("Zed Sans Thin", "regular", "Zed Sans Thin")
+    thin_italic = upload_font(store, "Zed Sans Thin", "效果", "Italic", (3, 1, 0x0409, 16, "Zed Sans"), (3, 1, 0x0409, 17, "Thin Italic"), italic=True)
+    assert (thin_italic.family, thin_italic.slot) == ("Zed Sans Thin", "italic")
+    assert upload_font(store, "Zed Black", "测试", "Black").family == "Zed Black"
+    variable = upload_font(store, "Zed Sans Thin", "字体", "Regular", (3, 1, 0x0409, 16, "Zed Sans"), (3, 1, 0x0409, 17, "Thin"), variable=True)
+    assert (variable.family, variable.slot) == ("Zed Sans", "regular")
+    upload_font(store, "Zed Serif", "测试", "Bold", weight=700)
+    again = upload_font(store, "Zed Serif", "效果", "Bold", (3, 1, 0x0409, 5, "Version 2.1.5"), weight=700)
+    assert (again.family, again.slot) == ("Zed Serif v2.1.5", "bold")
+    bold = upload_font(store, "Alpha Sans", "测试", "Bold", weight=700)
+    assert (bold.family, bold.slot) == ("Alpha Sans (2)", "bold")
+
+
+def test_sync_gives_an_older_upload_its_style_so_its_family_can_complete_the_card(store) -> None:
+    """卡片有字形之前上传的文件都当作常规体：同步时读出它的字形（如粗体），字重随之改为 700，家族名不变；之后上传的常规体加入这张卡片。"""
+    bold = upload_font(store, "Zed Serif", "测试", "Bold", weight=700)
+    font_store.update_data(bold.id, {key: value for key, value in bold.model_dump(exclude={"id", "family", "slot"}).items()} | {"weights": [400]})
+    store.refresh()
+    assert next(font.slot for font in store.listing() if font.id == bold.id) == "regular"
+    asyncio.run(store.sync())
+    assert next((font.slot, font.weights) for font in store.listing() if font.id == bold.id) == ("bold", [700])
+    regular = upload_font(store, "Zed Serif", "字体")
+    assert regular.family == "Zed Serif" and [font.slot for font in cards(store.listing())["Zed Serif"]] == ["regular", "bold"]
 
 
 def test_other_weights_and_versions_of_a_family_get_their_own_family(store) -> None:
@@ -435,6 +468,7 @@ def test_fontconfig_lists_each_font_file_under_its_registry_family_only(store) -
 def test_a_bundled_fonts_internal_alias_does_not_shadow_an_upload(store, monkeypatch, tmp_path) -> None:
     """真实 fontconfig：随包的 Montserrat 可变字体文件里还带着默认实例的旧式家族名“Montserrat Thin”。静态的 Montserrat Thin
     上传登记为“Montserrat Thin”后，这个名称只解析到上传的文件，不会被预装字体顶替；“Montserrat”仍解析到预装字体。
+    同一张卡片的常规与粗体共用家族名，按字重解析到各自的文件。
     fonts.conf 的路径改指本机缓存目录（沙箱里它挂在 /imv-fonts），并去掉系统配置，只看字体库里的文件（本机装的字体不参与）。"""
     monkeypatch.setattr(fonts_module, "SANDBOX_DIR", str(store.root.resolve()))
     monkeypatch.setattr(fonts_module, "system_families", lambda: frozenset())
@@ -445,6 +479,8 @@ def test_a_bundled_fonts_internal_alias_does_not_shadow_an_upload(store, monkeyp
     names = [(3, 1, 0x0409, 16, "Montserrat"), (3, 1, 0x0409, 17, "Thin")]
     upload = store.upload(minimal_font("Montserrat Thin", names=names), None, "", "device-1")
     assert upload.family == "Montserrat Thin"
+    regular = upload_font(store, "Zed Card", "测试")
+    bold = upload_font(store, "Zed Card", "效果", "Bold", weight=700)
     generated = (store.root / CONFIG_NAME).read_text(encoding="utf-8")
     config = tmp_path / "library-only.conf"
     config.write_text(generated.replace('  <include ignore_missing="yes">/etc/fonts/fonts.conf</include>\n', ""), encoding="utf-8")
@@ -458,6 +494,7 @@ def test_a_bundled_fonts_internal_alias_does_not_shadow_an_upload(store, monkeyp
     assert match("Montserrat Thin").endswith(upload.cache_name)
     assert match("Montserrat Thin:weight=400").endswith(upload.cache_name)
     assert match("Montserrat:weight=700").endswith(bundled.font().cache_name)
+    assert match("Zed Card").endswith(regular.cache_name) and match("Zed Card:weight=700").endswith(bold.cache_name)
 
 
 def test_an_upload_racing_another_host_is_renamed_or_refused(store) -> None:
@@ -479,7 +516,7 @@ def test_the_agent_guide_is_the_font_library_as_an_enum(store) -> None:
     store.upload(minimal_font("Zed Display"), None, "", "device-1")
     guide = store.guide()
     assert '"enum":["Noto Sans CJK SC", "Alpha Sans", "Beta Serif", "Zed Display"]' in guide
-    assert '"Beta Serif" (Beta Serif; fixture style; weight 200 900)' in guide
+    assert '"Beta Serif" (Beta Serif; fixture style; styles regular 200 900)' in guide
 
 
 def test_text_effects_must_expose_a_font_family_enum_when_generated() -> None:
@@ -610,6 +647,26 @@ def served(settings, store, client: TestClient):
     remotion_templates_app.dependency_overrides.clear()
 
 
+def test_the_font_api_lists_cards_with_their_styles(client: TestClient, served) -> None:
+    """字体接口按卡片列出：一张卡片含它已有的字形（常规、粗体、斜体、粗斜体的顺序），各带文件与预览条地址、字重、大小与 SHA-256；
+    卡片的字重合并各字形，大小为各文件之和，预览条取第一个有预览条的字形。上传一个字形返回它所在的整张卡片。"""
+    asyncio.run(served.sync())
+    bold = minimal_font("Zed Display", "测试", style="Bold", weight=700)
+    first = client.post(
+        "/api/templates/fonts", headers=DEVICE_HEADERS, data={"label": "Zed Display"},
+        files={"file": ("bold.ttf", bold, "font/ttf"), "preview": ("p.png", strip_png(), "image/png")},
+    )
+    assert first.status_code == 201 and [face["slot"] for face in first.json()["faces"]] == ["bold"]
+    regular = minimal_font("Zed Display", "效果")
+    card = client.post("/api/templates/fonts", headers=DEVICE_HEADERS, files={"file": ("regular.ttf", regular, "font/ttf")}).json()
+    assert card["family"] == "Zed Display" and [face["slot"] for face in card["faces"]] == ["regular", "bold"]
+    assert card["weights"] == [400, 700] and card["size"] == len(bold) + len(regular)
+    assert card["faces"][0]["preview_url"] is None and card["preview_url"] == card["faces"][1]["preview_url"] is not None
+    assert card["faces"][1]["sha256"] == hashlib.sha256(bold).hexdigest() and client.get(card["faces"][1]["file_url"]).content == bold
+    listed = client.get("/api/templates/fonts").json()
+    assert [item["family"] for item in listed].count("Zed Display") == 1 and listed[-1] == card
+
+
 def test_the_font_api_lists_serves_and_uploads(client: TestClient, served) -> None:
     """字体接口：列表给出家族名、风格、字重、文件与预览地址；文件带 CORS 可被预览 iframe 加载；上传（multipart）返回新字体且立即出现在列表；
     重复的文件返回 422，超大返回 413，缺少设备头返回 422；未知字体 404。"""
@@ -640,12 +697,17 @@ def test_the_font_api_lists_serves_and_uploads(client: TestClient, served) -> No
 
 
 def test_the_preview_page_lists_fonts_for_lazy_registration() -> None:
-    """预览页以 JSON 元素列出有文件的字体（名称、CSS 字重、绝对路径 URL）供播放器注册，系统默认字体不列（预览本来就自带）；没有字体时不输出该元素。"""
+    """预览页以 JSON 元素列出有文件的字体文件（卡片的家族名、CSS 字重与斜体、URL）供播放器注册，系统默认字体不列（预览本来就自带）；
+    斜体文件不带旧格式的 weight，卡片有字形之前构建的播放器只认 family/weight/url，会跳过它而不是把斜体当正体注册。没有字体时不输出该元素。"""
     font = spec("beta", "Beta Serif", weights=[200, 900]).font()
     system = font.model_copy(update={"id": "noto-sans-cjk", "family": "Noto Sans CJK SC", "source": "system"})
-    page = routes.player_page("void 0", fonts=[system, font]).body.decode()
+    italic = font.model_copy(update={"id": "u-italic", "weights": [400], "slot": "italic", "source": "upload"})
+    page = routes.player_page("void 0", fonts=[system, font, italic]).body.decode()
     data = page.split('id="imv-preview-fonts">', 1)[1].split("</script>", 1)[0]
-    assert json.loads(data) == [{"family": "Beta Serif", "weight": "200 900", "url": "/api/templates/fonts/beta"}]
+    assert json.loads(data) == [
+        {"family": "Beta Serif", "weight": "200 900", "descriptors": {"weight": "200 900", "style": "normal"}, "url": "/api/templates/fonts/beta"},
+        {"family": "Beta Serif", "descriptors": {"weight": "400", "style": "italic"}, "url": "/api/templates/fonts/u-italic"},
+    ]
     assert "imv-preview-fonts" not in routes.player_page("void 0").body.decode()
 
 
@@ -659,8 +721,8 @@ needs_browser = pytest.mark.skipif(
 )
 
 FAMILY_PROBE = """import React from "react";
-export default function Probe(props: { family: string }) {
-  return <div data-probe style={{ position: "absolute", left: 40, top: 40, fontSize: 80, whiteSpace: "nowrap", fontFamily: props.family }}>测试字体效果 Abc</div>;
+export default function Probe(props: { family: string; weight: number; italic: boolean }) {
+  return <div data-probe style={{ position: "absolute", left: 40, top: 40, fontSize: 80, whiteSpace: "nowrap", fontFamily: props.family, fontWeight: props.weight, fontStyle: props.italic ? "italic" : "normal" }}>测试字体效果 Abc</div>;
 }
 """
 WIDTH_TEST = 'export default async function (ctx) { const found = await ctx.query("[data-probe]"); ctx.assert(true, String(Math.round(found.box.width))); }'
@@ -671,7 +733,7 @@ def test_an_uploaded_font_is_used_by_the_sandboxed_browser(tmp_path, template_db
     """真实沙箱里的 Chrome 按字体名使用上传的字体：一个只存在于字体库的自制字体（每个字正好一个字宽）排出的文字宽度与默认字体不同；
     字体名不存在时回落为默认字体的宽度。同一家族名的另一个文件（每个字半个字宽）登记为另一个家族名，两个名称各自用到自己的文件。
     预装字体同样按注册表家族名解析：随包的 Montserrat 可变字体照常可用；一个预装字体文件里的旧式家族名与某个上传的家族名相同时，
-    这个名称只用到上传的文件。"""
+    这个名称只用到上传的文件。一张卡片的粗体与斜体文件在 font-weight 700 与 italic 时被选用（而不是由常规体合成）。"""
     from server.remotion_templates.tool_validation import ToolValidator
     from server.remotion_templates.tools.contracts import ComponentDefinition, RenderValidationInput, TestScript
 
@@ -695,13 +757,16 @@ def test_an_uploaded_font_is_used_by_the_sandboxed_browser(tmp_path, template_db
     )
     assert fonts._register(builtin, tmp_path / "probe.ttf", None)
     assert fonts.upload(minimal_font("Imv Builtin Probe Thin", advance=750), None, "", "device-1").family == "Imv Builtin Probe Thin"
+    assert fonts.upload(minimal_font("Imv Probe Sans", style="Bold", weight=700, advance=250), None, "", "device-1").slot == "bold"
+    assert fonts.upload(minimal_font("Imv Probe Sans", style="Italic", italic=True, advance=750), None, "", "device-1").slot == "italic"
 
-    def width(family: str) -> int:
-        """Mount the probe with one CSS family list and read the measured text width."""
+    def width(family: str, weight: int = 400, italic: bool = False) -> int:
+        """Mount the probe with one CSS family list, weight and style, and read the measured text width."""
+        properties = {"family": {"type": "string"}, "weight": {"type": "integer", "minimum": 100, "maximum": 900}, "italic": {"type": "boolean"}}
         component = ComponentDefinition(
             code=FAMILY_PROBE,
-            parameter_schema={"type": "object", "properties": {"family": {"type": "string"}}, "required": ["family"], "additionalProperties": False},
-            default_parameters={"family": family},
+            parameter_schema={"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False},
+            default_parameters={"family": family, "weight": weight, "italic": italic},
         )
         request = RenderValidationInput(component=component, duration_frames=5, tests=[TestScript(name="width", code=WIDTH_TEST)])
         report = asyncio.run(ToolValidator(Renderer(settings), tmp_path).validate_render(request))
@@ -715,3 +780,5 @@ def test_an_uploaded_font_is_used_by_the_sandboxed_browser(tmp_path, template_db
     assert width('"Montserrat", "Noto Sans CJK SC", sans-serif') != default
     assert width('"Imv Builtin Probe", "Noto Sans CJK SC", sans-serif') == 200
     assert width('"Imv Builtin Probe Thin", "Noto Sans CJK SC", sans-serif') == 600
+    assert width('"Imv Probe Sans", "Noto Sans CJK SC", sans-serif', weight=700) == 200
+    assert width('"Imv Probe Sans", "Noto Sans CJK SC", sans-serif', italic=True) == 600

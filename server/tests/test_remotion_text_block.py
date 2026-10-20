@@ -181,7 +181,7 @@ def test_role_presets_declare_only_their_own_style():
 def test_a_two_tier_text_with_a_keyword_effect_composes_from_role_presets(tmp_path, monkeypatch):
     """双栏 + 关键词字效：同一个 text Preset 画上下两栏，keyword Preset 画命中词；宿主的配置参数排在前面并以文字块为绑定目标，
     样式参数是 Agent 绑定的颜色（标题由宿主固定）；记录文字块结构，生成路径的分类检查通过并保存。"""
-    monkeypatch.setattr(FontStore, "active", SimpleNamespace(listing=lambda: [SimpleNamespace(family=name) for name in LIBRARY]))
+    monkeypatch.setattr(FontStore, "active", SimpleNamespace(families=lambda: list(LIBRARY)))
 
     async def run():
         """Compose the block and save it."""
@@ -225,7 +225,7 @@ def test_a_wrong_text_block_is_refused_with_the_field(tmp_path, monkeypatch, cha
     时长不等于用户所选、字体不在字体库、样式参数占用配置名、
     栏用了没有 text 角色的 Preset、文字块之外还放了固定框实例、实例 ID 占用配置名（审计复现：关键词实例叫 keywordEffect 时，
     它的嵌套参数曾顶替宿主的 keywordEffect 开关，保存时才报一个 Agent 无法绑定的分类参数错误）。"""
-    monkeypatch.setattr(FontStore, "active", SimpleNamespace(listing=lambda: [SimpleNamespace(family="Noto Sans CJK SC")]))
+    monkeypatch.setattr(FontStore, "active", SimpleNamespace(families=lambda: ["Noto Sans CJK SC"]))
 
     async def run():
         """Compose the block with one thing wrong."""
@@ -284,7 +284,7 @@ def test_new_chat_switches_require_their_combination(tmp_path):
 def test_an_edit_snapshot_hands_back_the_text_block(tmp_path, monkeypatch):
     """编辑以文字块组合的基线：快照给出文字块（各栏的 base_* 草稿、当前配置里的字体与字号比例、栏间距、行起点与关键词），
     只列出 Agent 的样式绑定、不列宿主的配置参数；照快照原样重新组合得到同一份源码。"""
-    monkeypatch.setattr(FontStore, "active", SimpleNamespace(listing=lambda: [SimpleNamespace(family=name) for name in LIBRARY]))
+    monkeypatch.setattr(FontStore, "active", SimpleNamespace(families=lambda: list(LIBRARY)))
 
     async def run():
         """Compose a base, revise one configuration value like a user would, then recompose from the edit snapshot."""
@@ -347,7 +347,7 @@ def test_real_type_check_gives_role_presets_the_host_props(tmp_path):
 def test_real_two_tier_block_with_a_keyword_preset_passes_the_generation_measurements(tmp_path, monkeypatch):
     """真实浏览器：上栏 0.5 倍小字、下栏大字、关键词发光的双栏文字块通过透明度与排版检查：100 字分到两栏完整显示，两栏由同一个文字块渲染、
     同时出现与消失，下栏出现时上栏不跳动，关键词命中原位显示且整段文字仍然完整。"""
-    monkeypatch.setattr(FontStore, "active", SimpleNamespace(listing=lambda: [SimpleNamespace(family="Noto Sans CJK SC")]))
+    monkeypatch.setattr(FontStore, "active", SimpleNamespace(families=lambda: ["Noto Sans CJK SC"]))
 
     async def run():
         """Compose the block, then mount it with the generation-path measurements."""
@@ -421,7 +421,7 @@ ALIGNED_TIER = TIER_CODE.replace("color: string})", 'color: string; align: "left
 def test_real_creation_saves_a_text_block_from_role_presets(tmp_path, monkeypatch):
     """真实端到端（不替换任何检查）：创建 text 与 keyword Preset、组合双栏文字块并保存。审计复现（作品 f941b066）：保存时复查源 Preset
     曾不带角色（text Preset 缺宿主 prop）；默认值以对象展开传入时 "center" 被放宽成 string，联合类型的 align 也通不过类型检查。"""
-    monkeypatch.setattr(FontStore, "active", SimpleNamespace(listing=lambda: [SimpleNamespace(family="Noto Sans CJK SC")]))
+    monkeypatch.setattr(FontStore, "active", SimpleNamespace(families=lambda: ["Noto Sans CJK SC"]))
     settings = Settings(_env_file=None, data_dir=tmp_path, **BROWSER)
     current = ToolSession(SimpleNamespace(settings=settings, renderer=Renderer(settings)), None, None, Budget(), tmp_path / "run", [], lambda *_: None,
                           {"original_request": {"description": "双栏", "two_tier": True, "keyword_effect": True}})

@@ -184,8 +184,12 @@ Without that directory, fontconfig keeps its normal per-sandbox cache fallback.
 Effects can use any font of the shared font library, a MySQL registry (`remotion_fonts`, `font_store.py`) whose files
 are objects in ZOS (or the local object folder while `ZOS_BUCKET` is empty). It holds three kinds of font and is never
 empty: the system default `Noto Sans CJK SC` (registered when the runtime starts, no file), the preinstalled catalog
-and the fonts users upload. Rows are never deleted and their family never changes, so a template that names a family
-keeps rendering; only how a font is shown (label, preview strip) may be corrected.
+and the fonts users upload. A row is one font file; a font card is a family with up to four styles (regular, bold,
+italic, bold italic, any of them missing), one file each, all rendered under the card's family, so CSS
+`font-weight: 700` and `font-style: italic` use the real bold and italic files. A card's first file is keyed by the
+family itself and each later file by `family<TAB>style` (the unique column still reserves the card's name). Rows are
+never deleted and their family never changes, so a template that names a family keeps rendering; only how a file is
+shown (label, preview strip, style) may be corrected. `GET /api/templates/fonts` lists cards with their `faces`.
 
 - **Preinstalled fonts**: the 16 free OFL fonts ship inside the backend package as `bundled_fonts/<file>.xz`
   (xz-compressed, about 60 MB). `font_catalog.json` pins each font's uncompressed size and SHA-256 and records where
@@ -206,14 +210,17 @@ keeps rendering; only how a font is shown (label, preview strip) may be correcte
   the font's English (default-language) name; the display name is its own Chinese name when it has one, otherwise the
   same family, and never the file name. Duplicates are found by content: a file whose SHA-256 is already registered
   (an upload or a preinstalled font, also one that sync has not installed yet) is refused and the message names that
-  font. The family must be unique. A style other than regular (name ID 17, else 2; not for a variable font, whose
-  style names only its default instance) is part of the family, so the styles of a family get the same names in any
-  upload order (`Liberation Serif Bold`, `Smiley Sans Oblique`). Another version of the same style, or a file carrying
-  a registered, preinstalled, installed or reserved name, is registered under its legacy family (name ID 1), that name
-  plus version (`Zed Sans v2.000`), or that name numbered from 2 (`Zed Sans (2)`), whichever is free first. A
-  preinstalled font whose family an earlier upload took is skipped by sync with a warning. Uploads registered before
-  the display name came from the font (labelled with their file name) get their own display name at the next
-  `FontStore.sync`; their strip shows the file name, so it is dropped (with its object) and the name is shown as text.
+  font. The file's style (name ID 17, else 2) places it: Italic or Oblique makes it an italic style, and the rest
+  names the weight. Regular (or no weight) and Bold files, upright or italic, join their family's uploaded card when
+  that style is still empty, in any upload order (`Smiley Sans` Oblique is that card's italic). Any other weight is a
+  card of its own named after it (`Montserrat Thin`, whose Thin Italic file is that card's italic). A variable font
+  ignores its weight words, which only name its default instance. Another version of a filled style, or a name that a
+  preinstalled, installed or reserved font carries, goes to the legacy family (name ID 1), that name plus version
+  (`Zed Sans v2.000`), or that name numbered from 2 (`Zed Sans (2)`), whichever is free or names an uploaded card with
+  that style empty; preinstalled and system cards are never joined. A preinstalled font whose family an earlier
+  upload took is skipped by sync with a warning. Uploads registered before the display name and style came from the
+  font (labelled with their file name, all regular) get both at the next `FontStore.sync`; a strip that shows the file
+  name is dropped (with its object) and the name is shown as text, and the family never changes.
   The preview strip is drawn by the uploader's browser with that display name (`client/src/features/fonts/names.ts`
   applies the same rule and sends it as `label`); a strip drawn with any other text is dropped, and only its alpha is
   kept. Fonts cannot be deleted. The library is shared, like the Sprite library.
@@ -221,10 +228,14 @@ keeps rendering; only how a font is shown (label, preview strip) may be correcte
   registry hash (`<data dir>/fonts/files`) and the sandbox mounts that folder read-only at `/imv-fonts` with a generated
   `fonts.conf` (`FONTCONFIG_FILE`). Chrome in every worker (validation, preview build, overlay render, video
   composition) resolves a family by its CSS name. The config holds one scan rule per font file (preinstalled and
-  uploaded) that lists the file under its registry family only, so files that carry the same name inside them stay
-  apart, including a preinstalled variable font's legacy name such as `Noto Sans SC Thin` (each sandbox scans the folder
-  afresh, its fontconfig cache being in its own `/tmp`). macOS development without the sandbox does not load them.
-- **Agent**: the Executor rules end with the library as an enum read from the database. A text effect must expose
+  uploaded) that lists the file under its card's family only, so files that carry the same name inside them stay
+  apart, including a preinstalled variable font's legacy name such as `Noto Sans SC Thin`, and fontconfig picks among
+  a card's files by their own weight and slant (each sandbox scans the folder afresh, its fontconfig cache being in its
+  own `/tmp`). The browser preview registers each file as a `FontFace` with its weight and style; player bundles built
+  before cards had styles skip italic files (their list entries carry no plain `weight`). macOS development without
+  the sandbox does not load them.
+- **Agent**: the Executor rules end with the library as an enum read from the database, one entry per card with the
+  styles it has (bold and italic text use the card's bold and italic files). A text effect must expose
   `fontFamily` (an enum of library families, defaulting to the font chosen from the reference image or description);
   `sprite.create` checks the enum against the library. The stored Sprite keeps a plain string (`maxLength` 100), since
   the library grows, and a choice is checked against the live library: `placement.resolve` when a template saves or an

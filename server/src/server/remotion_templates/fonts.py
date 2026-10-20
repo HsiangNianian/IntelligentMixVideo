@@ -3,10 +3,13 @@
 Three kinds of font share one registry (`font_store.py`): the system default (installed with the OS, so it has no
 file here), the preinstalled catalog (`font_catalog.json`; the files ship inside this package as `bundled_fonts/*.xz`,
 each pinned by size and SHA-256, and are copied into the object store once, so no network is needed) and fonts users
-upload. The registry
-row names the font by a unique family name; the file is an object under `imv/remotion/fonts/<id>/` (ZOS when
-configured, the data folder otherwise, see `object_store.py`). An upload is a new file (by SHA-256); a style other
-than regular is named after its style ("… Bold"), and another version of a registered family gets a distinct family.
+upload. A registry row is one font file; the file is an object under `imv/remotion/fonts/<id>/` (ZOS when configured,
+the data folder otherwise, see `object_store.py`). A font card is a family with up to four styles (slots): regular,
+bold, italic and bold italic, one file each, all rendered under the card's family so CSS `font-weight: 700` and
+`font-style: italic` pick the real file. The first file of a card is keyed by the family itself and every later one
+by `family<TAB>slot` (`face_key`), so the unique family column still reserves the card's name. An upload is a new
+file (by SHA-256) that joins its family's uploaded card when that slot is free; another weight (Thin, Black) is a card
+of its own named after it, and another version of a filled slot gets a distinct family.
 
 The render sandbox has no network, so the backend keeps every font in a local cache (`<data dir>/fonts/files`, a file
 is listed only when its SHA-256 matches the registry) next to a generated `fonts.conf`. The sandbox mounts that folder
@@ -27,7 +30,7 @@ import re
 import struct
 import subprocess
 import threading
-from collections.abc import Collection, Iterable
+from collections.abc import Collection, Iterable, Iterator
 from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
@@ -64,8 +67,16 @@ SFNT_MAGIC = (b"\x00\x01\x00\x00", b"OTTO", b"true")
 CHINESE_LANGUAGES = (0x0804, 0x1004, 0x0404, 0x0C04, 0x1404)
 # The version number in a font's version string (name ID 5), such as 2.000 in "Version 2.000;hotconv 1.0".
 VERSION = re.compile(r"\d{1,6}(?:\.\d{1,6}){0,3}")
-# Style names (name ID 17 or 2) of a family's default style; a file in any other style is named after its style.
+# Style names (name ID 17 or 2) of a family's default style; any other weight is a card of its own named after it.
 REGULAR_STYLES = frozenset({"regular", "normal", "roman", "standard"})
+# Style words of a slanted file; the rest of its style names the weight.
+ITALIC_STYLES = frozenset({"italic", "oblique"})
+# The styles one font card holds, in display order, each a separate file rendered under the card's family.
+Slot = Literal["regular", "bold", "italic", "bold_italic"]
+SLOTS: tuple[Slot, ...] = ("regular", "bold", "italic", "bold_italic")
+# Separates the family from the slot in the registry key of a card's later files (`face_key`); family names are
+# printable, so no family contains it.
+FACE_SEPARATOR = "\t"
 # Preview strips are drawn black on a transparent background and tinted by the page through a CSS mask.
 PREVIEW_MAX = (640, 96)
 
@@ -75,7 +86,7 @@ class FontRejected(ValueError):
 
 
 class Font(BaseModel):
-    """A registered font: what the registry stores and the API shows."""
+    """A registered font file, one style (`slot`) of the card its family names: what the registry stores per file."""
 
     id: str
     family: str
@@ -88,11 +99,18 @@ class Font(BaseModel):
     source: Literal["system", "builtin", "upload"]
     license: str = ""
     preview: bool = False
+    # Files registered before cards had styles are their card's regular file until `FontStore._relabel` reads them.
+    slot: Slot = "regular"
 
     @property
     def weight_text(self) -> str:
         """CSS `font-weight` descriptor: `400` or a range such as `200 900`."""
         return " ".join(str(weight) for weight in self.weights)
+
+    @property
+    def italic(self) -> bool:
+        """Whether the file is its card's italic or bold italic style (CSS `font-style: italic`)."""
+        return self.slot in ("italic", "bold_italic")
 
     @property
     def has_file(self) -> bool:
@@ -155,8 +173,21 @@ def load_catalog() -> tuple[FontSpec, ...]:
 
 
 def registry_font(record: dict) -> Font:
-    """The `Font` of a registry record (`font_store.listing`)."""
-    return Font(**{key: value for key, value in record.items() if key != "device_id"})
+    """The `Font` of a registry record (`font_store.listing`); a card's later file is keyed `family<TAB>slot`."""
+    return Font(**{key: value for key, value in record.items() if key != "device_id"} | {"family": record["family"].split(FACE_SEPARATOR)[0]})
+
+
+def face_key(family: str, slot: Slot) -> str:
+    """Registry key of a file that joins an existing card: unique per card and style, never a family name."""
+    return f"{family}{FACE_SEPARATOR}{slot}"
+
+
+def cards(fonts: Iterable[Font]) -> dict[str, list[Font]]:
+    """Font files grouped into cards by family, in order of each card's first file, its files in style order."""
+    grouped: dict[str, list[Font]] = {}
+    for font in fonts:
+        grouped.setdefault(font.family, []).append(font)
+    return {family: sorted(files, key=lambda font: SLOTS.index(font.slot)) for family, files in grouped.items()}
 
 
 def refuse_copy(digest: str, fonts: Iterable[Font]) -> None:
@@ -215,9 +246,20 @@ class FontNames(NamedTuple):
     legacy: str = ""
     # The version number of name ID 5 ("2.000" of "Version 2.000;hotconv"), or "".
     version: str = ""
-    # The English style (name ID 17, else 2) unless it is regular, such as "Bold" or "85 Bold"; "" also for a variable
-    # font, whose style names only its default instance.
+    # The English style (name ID 17, else 2), such as "Bold Italic", "Thin" or "85 Bold", or "".
     style: str = ""
+    # Whether the file is a variable font (has an `fvar` table), whose style names only its default instance.
+    variable: bool = False
+
+
+class Face(NamedTuple):
+    """Where an uploaded file belongs before name collisions: the style it fills and its card's names."""
+
+    slot: Slot
+    # The card's family: the font's family, followed by any weight other than regular and bold ("Montserrat Thin").
+    family: str
+    # The card's display name: the font's display name followed by that weight.
+    label: str
 
 
 def _name_records(data: bytes) -> tuple[list[tuple[int, int, int, str]], bool]:
@@ -270,8 +312,8 @@ def read_names(data: bytes) -> FontNames:
     zh-CN, zh-SG, zh-TW, zh-HK, zh-MO, in that order), then Unicode or US English, then any other Windows language, and
     is the family when the font has no Unicode name. `client/src/features/fonts/names.ts` applies the same label rule
     so the uploader's browser draws the preview strip with this text. The style, the legacy family and the version,
-    read in the default language first, tell other files of the same family apart (`unique_family`); the style is left
-    out when the family already ends with it. A malformed file only raises `FontRejected`.
+    read in the default language first, place the file in a card (`face_of`, `place`). A malformed file only raises
+    `FontRejected`.
     """
     found, variable = _name_records(data)
     order = {record: index for index, record in enumerate(found)}
@@ -288,8 +330,6 @@ def read_names(data: bytes) -> FontNames:
     legacy = min((record for record in records if record[2] == 1), key=default_first, default=None)
     versions = (match.group() for record in sorted(found, key=default_first) if record[2] == 5 and (match := VERSION.search(record[3])))
     style = min((record for record in found if record[2] in (2, 17)), key=default_first, default=(0, 0, 0, ""))[3]
-    if variable or style.casefold() in REGULAR_STYLES or f" {family}".casefold().endswith(f" {style}".casefold()):
-        style = ""
 
     def label_rank(record: tuple[int, int, int, str]) -> tuple[int, bool, int]:
         """Rank of a Unicode record as the display name; lower is better."""
@@ -303,29 +343,65 @@ def read_names(data: bytes) -> FontNames:
     return FontNames(
         family=family, label=min(unicode, key=label_rank)[3] if unicode else family,
         legacy=legacy[3] if legacy and legacy[3] != family else "", version=next(versions, ""), style=style,
+        variable=variable,
     )
 
 
-def unique_family(names: FontNames, taken: Collection[str]) -> str:
-    """The registry family of an upload: the font's own family followed by its style unless that is regular
-    (`Liberation Serif Bold`), so the styles of a family get the same names in any upload order. When a font already
-    has that name (another version of the same style, or an installed, bundled or reserved name), its legacy family,
-    then the name with the version, then the name numbered from 2.
+def _suffixed(name: str, suffix: str) -> str:
+    """`name` cut to leave room for `suffix` within `FONT_FAMILY_MAX_LENGTH`, then the suffix."""
+    return name[:max(0, FONT_FAMILY_MAX_LENGTH - len(suffix))].rstrip() + suffix
 
-    `taken` holds the case-folded names that are not free: registered, bundled, installed and reserved families. The
-    result is printable and at most `FONT_FAMILY_MAX_LENGTH` characters, so a long name is cut before a suffix.
-    """
-    def suffixed(name: str, suffix: str) -> str:
-        """`name` cut to leave room for `suffix`, then the suffix."""
-        return name[:max(0, FONT_FAMILY_MAX_LENGTH - len(suffix))].rstrip() + suffix
 
-    base = suffixed(names.family, f" {names.style}") if names.style else names.family
-    candidates = [base, names.legacy, suffixed(base, f" v{names.version}") if names.version else ""]
-    numbered = (suffixed(base, f" ({number})") for number in itertools.count(2))
-    return next(
-        candidate for candidate in itertools.chain(candidates, numbered)
-        if candidate and len(candidate) <= FONT_FAMILY_MAX_LENGTH and candidate.casefold() not in taken
-    )
+def slot_weights(slot: Slot) -> list[int]:
+    """The CSS weight an uploaded file of this style is registered with: 700 for bold styles, otherwise 400."""
+    return [700] if slot in ("bold", "bold_italic") else [400]
+
+
+def face_of(names: FontNames) -> Face:
+    """The style and card of a file. Italic words (Italic, Oblique) in its style make it its card's italic style; the
+    other words name the weight. No weight or a regular one (Regular, Normal) is the regular style and Bold the bold
+    style of the family's own card; any other weight (Thin, Black, "85 Bold") makes a card of its own named after it,
+    unless the family already ends with it. A variable font's weight is ignored: it only names the default instance,
+    and the file holds every weight."""
+    words = names.style.split()
+    italic = any(word.casefold() in ITALIC_STYLES for word in words)
+    weight = " ".join(word for word in words if word.casefold() not in ITALIC_STYLES)
+    if names.variable or not weight or weight.casefold() in REGULAR_STYLES or f" {names.family}".casefold().endswith(f" {weight}".casefold()):
+        return Face("italic" if italic else "regular", names.family, names.label)
+    if weight.casefold() == "bold":
+        return Face("bold_italic" if italic else "bold", names.family, names.label)
+    return Face("italic" if italic else "regular", _suffixed(names.family, f" {weight}"), _suffixed(names.label, f" {weight}"))
+
+
+def card_names(names: FontNames, face: Face) -> Iterator[str]:
+    """The families an upload may take, in order: its card's own, its legacy family (another weight named only there),
+    that card's name with the version, then numbered from 2; each printable and at most `FONT_FAMILY_MAX_LENGTH`
+    characters, so a long name is cut before a suffix. Never runs out."""
+    candidates = [face.family, names.legacy, _suffixed(face.family, f" v{names.version}") if names.version else ""]
+    numbered = (_suffixed(face.family, f" ({number})") for number in itertools.count(2))
+    return (name for name in itertools.chain(candidates, numbered) if name and len(name) <= FONT_FAMILY_MAX_LENGTH)
+
+
+def place(names: FontNames, face: Face, fonts: Iterable[Font], taken: Collection[str]) -> tuple[str, bool]:
+    """The family an upload registers under and whether it joins the card already there: the first of `card_names`
+    that is free (no font has it, ignoring case, and it is not in `taken`, the case-folded installed and reserved
+    names) or that names an uploaded card whose `face.slot` is still empty. So the styles of a family share one card in
+    any upload order, another version of a filled style gets a card of its own, and bundled and system cards are never
+    joined."""
+    grouped: dict[str, list[Font]] = {}
+    for font in fonts:
+        grouped.setdefault(font.family.casefold(), []).append(font)
+
+    def fitting() -> Iterator[tuple[str, bool]]:
+        """Each usable name with whether it joins an existing card."""
+        for name in card_names(names, face):
+            files = grouped.get(name.casefold())
+            if files is None and name.casefold() not in taken:
+                yield name, False
+            elif files and all(font.source == "upload" for font in files) and face.slot not in {font.slot for font in files}:
+                yield files[0].family, True
+
+    return next(fitting())
 
 
 @lru_cache(maxsize=1)
@@ -466,14 +542,14 @@ class FontStore:
 
     def _write_config(self) -> None:
         """Atomically write the fontconfig file the sandbox loads: the system config, the font folder and one scan rule
-        per font file that lists the file under its registry family only.
+        per font file that lists the file under its card's family only.
 
         Without the rule fontconfig would list a file under every name inside it, which another weight or version of
         the same font, or another file's legacy or localized name, may share (a bundled variable font also answers to
-        its default instance's legacy name, such as "Noto Sans SC Thin"); the registry gives each file a distinct
-        family (`unique_family`) and the rule makes that the only name the sandbox resolves to this file. Each sandbox
-        scans the folder afresh (its fontconfig cache lives in its own /tmp), so a new rule applies to the next worker.
-        An uploaded family comes from the file and is XML-escaped.
+        its default instance's legacy name, such as "Noto Sans SC Thin"); the rule makes the card's family the only
+        name the sandbox resolves to this file, and fontconfig picks among a card's files by their own weight and
+        slant. Each sandbox scans the folder afresh (its fontconfig cache lives in its own /tmp), so a new rule applies
+        to the next worker. An uploaded family comes from the file and is XML-escaped.
         """
         rules = "".join(
             '  <match target="scan">\n'
@@ -509,8 +585,9 @@ class FontStore:
         return list(self.known.values())
 
     def families(self) -> list[str]:
-        """Family names of the whole library: the enum the Agent chooses from and `fontFamily` values are checked against."""
-        return [font.family for font in self.known.values()]
+        """Family names of the whole library, one per card: the enum the Agent chooses from and `fontFamily` values are
+        checked against."""
+        return list(cards(self.known.values()))
 
     def path(self, font_id: str) -> Path | None:
         """Cached file of an available font, or None (also for the system default, which has no file here)."""
@@ -518,7 +595,8 @@ class FontStore:
         return self.files / font.cache_name if font and font.has_file and font.id in self.ready else None
 
     def named(self, source: str) -> list[Font]:
-        """Registered fonts whose family `source` (a render's code and parameter values) mentions."""
+        """Registered font files whose family `source` (a render's code and parameter values) mentions: every style of
+        each card it names."""
         return [font for font in self.known.values() if font.family in source]
 
     def _cache(self, font: Font) -> bool:
@@ -556,11 +634,11 @@ class FontStore:
         for font in named:
             if font.id not in self.ready:
                 await asyncio.to_thread(self._cache, font)
-        return [font.family for font in named if font.id not in self.ready]
+        return list(dict.fromkeys(font.family for font in named if font.id not in self.ready))
 
     async def sync(self) -> None:
         """Install the bundled catalog fonts the registry lacks (unless switched off), cache every registered font,
-        then give uploads named after their file their own display name (`_relabel`).
+        then give uploads their own display name and style (`_relabel`).
 
         One failure (missing or corrupt bundled file, object store, database) is logged and leaves that font for the
         next sync; the others proceed.
@@ -592,26 +670,38 @@ class FontStore:
                 logger.warning("Font %s was not relabelled: %s", font.id, exc)
 
     def _relabel(self, font: Font) -> None:
-        """Show a cached upload under its own display name (`read_names`) when it is registered under another, such as
-        the file name that clients sent before the name came from the font; blocking.
+        """Give a cached upload its own display name and style (`face_of`) when it is registered with others: the file
+        name that clients sent before the name came from the font, or the regular style every file had before cards
+        had styles; blocking.
 
-        Its preview strip shows the old name, so it is dropped (registry, object and local copy) and the name is shown
-        as text. The family, which templates store, never changes. A label that is already the display name is left
-        alone, and each upload is read once per process (`labelled`), so this writes once per font.
+        A strip drawn with another text than the font's display name (the file name) is dropped (registry, object and
+        local copy) and the name is shown as text. The family, which templates store, never changes, so an older upload
+        stays a card of its own. A file whose names are already right is left alone, and each upload is read once per
+        process (`labelled`), so this writes once per font.
         """
         try:
-            label = read_names((self.files / font.cache_name).read_bytes()).label
+            names = read_names((self.files / font.cache_name).read_bytes())
         except OSError:
             return
         except FontRejected:
-            label = font.label
-        if label != font.label:
-            relabelled = font.model_copy(update={"label": label, "preview": False})
+            names = None
+        changes: dict = {}
+        if names is not None:
+            face = face_of(names)
+            if face.label != font.label:
+                changes["label"] = face.label
+                # The strip shows the text the uploader's browser drew: the font's display name, or the file name.
+                if font.label != names.label:
+                    changes["preview"] = False
+            if face.slot != font.slot:
+                changes |= {"slot": face.slot, "weights": slot_weights(face.slot)}
+        if changes:
+            relabelled = font.model_copy(update=changes)
             font_store.update_data(font.id, relabelled.model_dump(exclude={"id", "family"}))
             with self._lock:
                 self.known[font.id] = relabelled
-            logger.info("Font %s is shown as %r instead of %r", font.id, label, font.label)
-            if font.preview and self.objects is not None:
+            logger.info("Font %s is shown as %r (%s) instead of %r (%s)", font.id, relabelled.label, relabelled.slot, font.label, font.slot)
+            if font.preview and not relabelled.preview and self.objects is not None:
                 (self.root / "previews" / f"{font.id}.png").unlink(missing_ok=True)
                 try:
                     self.objects.delete_prefix(font.preview_key)
@@ -639,12 +729,12 @@ class FontStore:
         finally:
             staged.unlink(missing_ok=True)
 
-    def _register(self, font: Font, staged: Path, device: str | None) -> bool:
-        """Store a verified font file (and the preview strip when `font.preview`) as objects, add the registry row and
-        cache the file; blocking.
+    def _register(self, font: Font, staged: Path, device: str | None, key: str | None = None) -> bool:
+        """Store a verified font file (and the preview strip when `font.preview`) as objects, add the registry row under
+        `key` (the family, or `face_key` for a file joining a card) and cache the file; blocking.
 
         A catalog font's strip is drawn here from the pinned file; an uploaded font's strip was stored by `upload`
-        already. Returns False when the registry already has this ID or family (another sync or upload won). A strip
+        already. Returns False when the registry already has this ID or key (another sync or upload won). A strip
         that cannot be drawn only means the picker shows the name in plain text.
         """
         assert self.objects is not None
@@ -659,7 +749,7 @@ class FontStore:
             finally:
                 strip.unlink(missing_ok=True)
         self.objects.put(font.object_key, staged, font.content_type)
-        if not font_store.insert(font.id, font.family, font.model_dump(exclude={"id", "family"}), device):
+        if not font_store.insert(font.id, key or font.family, font.model_dump(exclude={"id", "family"}), device):
             return False
         self.files.mkdir(parents=True, exist_ok=True)
         os.replace(staged, self.files / font.cache_name)
@@ -671,46 +761,48 @@ class FontStore:
 
         The file must be a plain TrueType/OpenType font within the size limit that is not in the library yet: the same
         bytes (by SHA-256) are refused, whoever added them, including a bundled font that sync has not installed yet.
-        Its family names it in templates and in the sandbox, so it must be unique: a style other than regular carries
-        its style, and another version of a registered family, or a file that carries an installed, bundled or reserved
-        name, is registered under a distinct family (`unique_family`), which the generated fontconfig assigns to this
-        file (`_write_config`). The backend only reads the font's names (`read_names`); decoding is left to
-        the sandboxed browser. The display name is the font's own (its Chinese name first), never the file name. The
-        preview strip is drawn by the uploader's own browser (the font is decoded nowhere else) and kept as alpha only;
-        `label` is the text that browser drew, and a strip whose text is not the display name is dropped.
+        Its style (`face_of`) decides its place: the regular, bold, italic or bold italic file of a family joins that
+        family's uploaded card when that style is still empty, so a card collects its styles in any order; another
+        weight is a card of its own named after it; another version of a filled style, or a name that a bundled,
+        installed or reserved font carries, gets a distinct family (`place`). The generated fontconfig lists the file
+        under its card's family (`_write_config`). The backend only reads the font's names (`read_names`); decoding is
+        left to the sandboxed browser. The display name is the font's own (its Chinese name first), never the file name.
+        The preview strip is drawn by the uploader's own browser (the font is decoded nowhere else) and kept as alpha
+        only; `label` is the text that browser drew, and a strip whose text is not the display name is dropped.
         """
         if not content or len(content) > self.max_upload:
             raise FontRejected(f"字体文件为空或超过 {self.max_upload // (1024 * 1024)} MiB 上限")
         digest = hashlib.sha256(content).hexdigest()
         # Bundled fonts that sync has not installed yet keep their file and their family.
         pending = [spec.font() for spec in load_catalog() if spec.id not in self.known] if self.install_bundled else []
-        refuse_copy(digest, [*self.known.values(), *pending])
+        registered = [*self.known.values(), *pending]
+        refuse_copy(digest, registered)
         names = read_names(content)
+        face = face_of(names)
         strip = normalize_preview(preview) if preview and (label or "").strip() == names.label else None
         suffix = ".otf" if content[:4] == b"OTTO" else ".ttf"
         font = Font(
-            id=f"u-{digest[:16]}", family=names.family, label=names.label, style="uploaded by a user", weights=[400],
-            filename=f"{digest[:16]}{suffix}", sha256=digest, size=len(content), source="upload", preview=strip is not None,
+            id=f"u-{digest[:16]}", family=face.family, label=face.label, style="uploaded by a user", weights=slot_weights(face.slot),
+            filename=f"{digest[:16]}{suffix}", sha256=digest, size=len(content), source="upload", preview=strip is not None, slot=face.slot,
         )
         self.files.mkdir(parents=True, exist_ok=True)
         staged = self.files / f"{font.cache_name}.{uuid4().hex}.part"
         strip_file = staged.with_suffix(".png")
-        registered = [known.family for known in [*self.known.values(), *pending]]
         try:
             staged.write_bytes(content)
             if strip is not None:
                 strip_file.write_bytes(strip)
                 assert self.objects is not None
                 self.objects.put(font.preview_key, strip_file, "image/png")
-            # A second try covers another host that registered this file or took the name since this host's last sync.
+            # A second try covers another upload or host that registered this file or took the name or style since
+            # this host's last sync.
             for _attempt in range(2):
-                taken = {family.casefold() for family in registered} | RESERVED_FAMILIES | system_families()
-                font = font.model_copy(update={"family": unique_family(names, taken)})
-                if self._register(font, staged, device):
+                family, joins = place(names, face, registered, RESERVED_FAMILIES | system_families())
+                font = font.model_copy(update={"family": family})
+                if self._register(font, staged, device, face_key(family, face.slot) if joins else family):
                     return font
-                records = [*(registry_font(record) for record in font_store.listing()), *pending]
-                refuse_copy(digest, records)
-                registered = [record.family for record in records]
+                registered = [*(registry_font(record) for record in font_store.listing()), *pending]
+                refuse_copy(digest, registered)
             raise FontRejected("字体名称刚被其他上传占用，请重试")
         finally:
             staged.unlink(missing_ok=True)
@@ -744,10 +836,15 @@ class FontStore:
             await asyncio.sleep(3600)
 
     def guide(self) -> str:
-        """Prompt section giving the Agent the font library as an enum to choose from."""
-        fonts = self.available()
-        lines = [f'- "{font.family}" ({font.label}; {font.style}; weight {font.weight_text})' for font in fonts]
-        enum = json.dumps([font.family for font in fonts], ensure_ascii=False)
+        """Prompt section giving the Agent the font library as an enum to choose from, one entry per card with the
+        styles it has."""
+        library = cards(self.available())
+        lines = [
+            f'- "{family}" ({files[0].label}; {files[0].style}; styles '
+            + ", ".join(f"{font.slot.replace('_', ' ')} {font.weight_text}" for font in files) + ")"
+            for family, files in library.items()
+        ]
+        enum = json.dumps(list(library), ensure_ascii=False)
         return (
             "Font library (the only fonts that exist; all are installed for rendering and previews):\n" + "\n".join(lines) + "\n"
             f'Each tier\'s font_family in a text block is the exact family name of one of these fonts (the host exposes it as fontFamily '
@@ -756,6 +853,7 @@ class FontStore:
             "`\"${props.fontFamily}\", \"" + DEFAULT_FAMILY + "\", sans-serif` (quoted, with "
             "the default as fallback). Look at the user's reference image or description (serif or Song, brush, rounded, "
             "handwritten, condensed, Latin-only) and pick the listed font whose style is closest; when none fits, choose "
-            f'"{DEFAULT_FAMILY}". A single-weight font has only weight 400 and 700 is synthesized bold; a Latin-only font draws '
-            "Chinese characters in the fallback."
+            f'"{DEFAULT_FAMILY}". A font uses its bold style for font_weight 700 and its italic style for italic text when it '
+            "has them; without one the browser synthesizes bold or slants the text. A Latin-only font draws Chinese "
+            "characters in the fallback."
         )

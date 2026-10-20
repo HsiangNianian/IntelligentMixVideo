@@ -31,7 +31,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from ..client_config import parse_config
 from .settings import ClientSettings
 from .evidence import digest
-from .fonts import Font, FontRejected, FontStore
+from .fonts import Font, FontRejected, FontStore, Slot, cards
 from .history import WorkEvent
 from .media import save_image
 from .object_store import ObjectStoreError
@@ -147,7 +147,8 @@ def capabilities(service: Service, config: Config) -> dict:
         "video_supported": False,
         "models_configured": (service.settings.model_copy(update=config.model_dump()) if config is not None else service.settings).models_configured,
         "fonts": [
-            {"family": font.family, "weights": font.weights} for font in FontStore.for_settings(service.settings).listing()
+            {"family": family, "weights": sorted({weight for font in files for weight in font.weights})}
+            for family, files in cards(FontStore.for_settings(service.settings).listing()).items()
         ],
     }
 
@@ -436,8 +437,19 @@ INSTANCE_BOX_CSS = "div:has(> [data-imv-instance]){overflow:visible !important}"
 
 
 def font_list(fonts: Sequence[Font]) -> list[dict]:
-    """What the preview page needs to register each catalog font: family, CSS weight and served URL."""
-    return [{"family": font.family, "weight": font.weight_text, "url": f"/api/templates/fonts/{font.id}"} for font in fonts if font.has_file]
+    """What the preview page needs to register each font file: its card's family, CSS descriptors and served URL.
+
+    Only upright files carry the plain `weight`: player bundles built before cards had styles read `family`, `weight`
+    and `url` and would register an italic file as upright, so they skip italic files and slant the text instead.
+    """
+    return [
+        {
+            "family": font.family, **({} if font.italic else {"weight": font.weight_text}),
+            "descriptors": {"weight": font.weight_text, "style": "italic" if font.italic else "normal"},
+            "url": f"/api/templates/fonts/{font.id}",
+        }
+        for font in fonts if font.has_file
+    ]
 
 
 def player_page(
@@ -513,8 +525,23 @@ def preview_font(version_id: UUID, weight: int, service: Service) -> FileRespons
     )
 
 
+class FontFaceInfo(BaseModel):
+    """One style of a font card: its file (`size`, `sha256`) and where the file and its preview strip are served."""
+
+    id: str
+    slot: Slot
+    weights: list[int]
+    size: int
+    sha256: str
+    file_url: str | None
+    preview_url: str | None
+
+
 class FontInfo(BaseModel):
-    """A registered font as the picker shows it: name, style, weights and where its file and preview strip are."""
+    """A font card as the picker and the library show it: names, description and its styles (`faces`, in the order
+    regular, bold, italic, bold italic, any of them missing). `id`, `label`, `style`, `source` and `license` are its
+    first style's; `weights` joins the styles' weights, `size` their files; `file_url` is the first style's file and
+    `preview_url` the first strip."""
 
     id: str
     family: str
@@ -522,24 +549,36 @@ class FontInfo(BaseModel):
     style: str
     weights: list[int]
     source: str
+    license: str
     size: int
     file_url: str | None
     preview_url: str | None
+    faces: list[FontFaceInfo]
 
 
-def font_info(font: Font) -> FontInfo:
-    """Public view of a registry font; URLs are paths below this API's `/fonts`."""
+def font_info(files: Sequence[Font]) -> FontInfo:
+    """Public view of a font card from its files (one `cards` entry); URLs are paths below this API's `/fonts`."""
+    faces = [
+        FontFaceInfo(
+            **font.model_dump(include={"id", "slot", "weights", "size", "sha256"}),
+            file_url=f"/api/templates/fonts/{font.id}" if font.has_file else None,
+            preview_url=f"/api/templates/fonts/{font.id}/preview" if font.preview else None,
+        )
+        for font in files
+    ]
+    first = files[0]
     return FontInfo(
-        **font.model_dump(include={"id", "family", "label", "style", "weights", "source", "size"}),
-        file_url=f"/api/templates/fonts/{font.id}" if font.has_file else None,
-        preview_url=f"/api/templates/fonts/{font.id}/preview" if font.preview else None,
+        **first.model_dump(include={"id", "family", "label", "style", "source", "license"}),
+        weights=sorted({weight for font in files for weight in font.weights}), size=sum(font.size for font in files),
+        file_url=faces[0].file_url, preview_url=next((face.preview_url for face in faces if face.preview_url), None), faces=faces,
     )
 
 
 @router.get("/fonts", tags=["字体"], summary="字体列表")
 def list_fonts(service: Service) -> list[FontInfo]:
-    """预装与用户上传的全部字体，按登记顺序；`family` 就是效果的 `fontFamily` 参数取值。字体库所有人共享。"""
-    return [font_info(font) for font in FontStore.for_settings(service.settings).listing()]
+    """字体库里的全部字体卡片（预装与用户上传），按登记顺序；每张卡片是一个家族，含常规、粗体、斜体、粗斜体中已有的字形。
+    `family` 就是效果的 `fontFamily` 参数取值。字体库所有人共享。"""
+    return [font_info(files) for files in cards(FontStore.for_settings(service.settings).listing()).values()]
 
 
 @router.post("/fonts", status_code=201, tags=["字体"], summary="上传字体")
@@ -554,8 +593,9 @@ async def upload_font(
 
     `preview` 是上传者浏览器用该字体画出的黑色透明底 PNG 预览条（选填，下拉框用它展示字体），`label` 是预览条上画的文字。
     显示名称取字体 name 表里自己的名称（优先中文名），不取文件名；`label` 与它不同时不保存预览条，界面改用文字名称。按文件内容（SHA-256）去重：
-    库里已有同一个文件（含尚未装好的预装字体）时返回 422 并说明是哪个字体。粗体、斜体等非常规样式的家族名带上样式名；家族名与已有字体、
-    预装字体、系统字体或保留名相同时（同一样式的其他版本等）另起家族名登记。
+    库里已有同一个文件（含尚未装好的预装字体）时返回 422 并说明是哪个字体。按文件的样式归入卡片：同一家族的常规、粗体、斜体、粗斜体文件
+    加入该家族用户上传的卡片（对应字形还空着时），其他字重（细体、黑体等）单独成卡片、名称带字重；同一字形的其他版本，或与预装字体、
+    系统字体、保留名同名时另起家族名登记。返回文件所在的整张卡片。
     文件超过大小上限返回 413，内容无效返回 422；对象存储不可用返回 503。字体不可删除。
     """
     store = FontStore.for_settings(service.settings)
@@ -567,7 +607,8 @@ async def upload_font(
         if strip is not None and len(strip) > 1024 * 1024:
             raise HTTPException(413, "Preview exceeds the size limit.")
         try:
-            return font_info(await asyncio.to_thread(store.upload, content, strip or None, label, str(owner)))
+            font = await asyncio.to_thread(store.upload, content, strip or None, label, str(owner))
+            return font_info(cards(store.listing())[font.family])
         except FontRejected as exc:
             raise HTTPException(422, str(exc)) from exc
         except (OSError, SQLAlchemyError) as exc:

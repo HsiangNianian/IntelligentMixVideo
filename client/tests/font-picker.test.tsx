@@ -1,21 +1,28 @@
 /** 字体选择器与字体库页面：展示实时字体库、搜索、选择，以及上传自己的字体（显示名取字体自己的名称、浏览器读不了、服务端拒绝与成功后立即选中）；执行 bun run test，不访问网络。 */
 import { expect, test } from "bun:test";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { ParameterControl } from "@/components/ParameterControl";
-import type { FontInfo } from "@/features/fonts/api";
+import type { FontFace, FontInfo } from "@/features/fonts/api";
 import { FontLibrary } from "@/features/fonts/FontLibrary";
 import HomePage from "@/pages/HomePage";
 import { FontPicker } from "@/features/fonts/FontPicker";
 import { english, fontFile } from "./font-files";
 import { fetchMock } from "./setup";
 
+/** 字体卡片里的一个字形。 */
+const face = (id: string, slot: FontFace["slot"], extra: Partial<FontFace> = {}): FontFace => ({
+  id, slot, weights: [400], size: 1000, sha256: "", file_url: `/api/templates/fonts/${id}`, preview_url: `/api/templates/fonts/${id}/preview`, ...extra,
+});
+/** 一张字体卡片；默认只有一个常规字形。 */
 const font = (id: string, family: string, label: string, extra: Partial<FontInfo> = {}): FontInfo => ({
-  id, family, label, style: "sample style", weights: [400], source: "builtin", size: 1000,
-  file_url: `/api/templates/fonts/${id}`, preview_url: `/api/templates/fonts/${id}/preview`, ...extra,
+  id, family, label, style: "sample style", weights: [400], source: "builtin", license: "", size: 1000,
+  file_url: `/api/templates/fonts/${id}`, preview_url: `/api/templates/fonts/${id}/preview`, faces: [face(id, "regular")], ...extra,
 });
 const LIBRARY = [
-  font("noto-sans-cjk", "Noto Sans CJK SC", "思源黑体（默认）", { source: "system", file_url: null, size: 0, style: "default clean Hei" }),
-  font("ma-shan-zheng", "Ma Shan Zheng", "马善政毛笔楷书", { style: "brush calligraphy" }),
+  font("noto-sans-cjk", "Noto Sans CJK SC", "思源黑体（默认）", {
+    source: "system", file_url: null, size: 0, style: "default clean Hei", faces: [face("noto-sans-cjk", "regular", { weights: [400, 700], size: 0, file_url: null })],
+  }),
+  font("ma-shan-zheng", "Ma Shan Zheng", "马善政毛笔楷书", { style: "brush calligraphy", license: "OFL-1.1" }),
 ];
 
 const UPLOADED = font("u-1", "Zed Display", "我的字体", { source: "upload" });
@@ -23,8 +30,8 @@ const UPLOADED = font("u-1", "Zed Display", "我的字体", { source: "upload" }
 const uploadFile = () => fontFile("0b7027d34f9546b7993e082b48c22401.ttf", [english("Zed Display"), [3, 1, 0x0804, 1, "我的字体"]]);
 
 /** 字体库接口：GET 返回当前列表，POST 按 `onUpload` 的结果响应；记录上传请求的表单。 */
-function fontServer(onUpload?: (form: FormData) => Response) {
-  const library = [...LIBRARY];
+function fontServer(onUpload?: (form: FormData) => Response, initial: FontInfo[] = LIBRARY) {
+  const library = [...initial];
   const uploads: FormData[] = [];
   fetchMock.mockImplementation((async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
@@ -156,6 +163,30 @@ test("字体库页面列出全部字体并支持搜索", async () => {
   expect(screen.queryByRole("img", { name: "思源黑体（默认）" })).toBeNull();
   fireEvent.change(screen.getByRole("textbox", { name: "搜索字体" }), { target: { value: "没有这种字体" } });
   expect(await screen.findByText("没有匹配的字体")).toBeTruthy();
+});
+
+// 场景：一张字体卡片是一个家族：卡片列出已有的字形；点击卡片打开字体详情，四个字形里已有的显示预览条、字重、大小与 SHA-256，
+// 缺少的标为未上传，并给出家族名（fontFamily 的取值）、来源与许可证；Esc 关闭后回到列表。
+test("点击字体卡片查看各字形的详情", async () => {
+  const bold = face("u-2", "bold", { weights: [700], size: 2048, sha256: "ab".repeat(32), preview_url: null });
+  fontServer(undefined, [...LIBRARY, font("u-1", "Zed Serif", "我的衬线", { source: "upload", faces: [face("u-1", "regular"), bold] })]);
+  render(<FontLibrary />);
+  const card = await screen.findByRole("button", { name: "查看字体 我的衬线" });
+  expect(card.textContent).toContain("常规 · 粗体");
+  fireEvent.click(card);
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText("Zed Serif")).toBeTruthy();
+  expect(within(dialog).getByText("用户上传")).toBeTruthy();
+  expect(within(dialog).getByRole("listitem", { name: "常规" }).textContent).toContain("字重 400 · 1 KB");
+  const boldItem = within(dialog).getByRole("listitem", { name: "粗体" });
+  expect(boldItem.textContent).toContain("字重 700 · 2 KB");
+  expect(boldItem.textContent).toContain(`SHA-256 ${"ab".repeat(32)}`);
+  expect(within(dialog).getByRole("listitem", { name: "斜体" }).textContent).toContain("未上传，渲染时由浏览器合成");
+  expect(within(dialog).getByRole("listitem", { name: "粗斜体" }).textContent).toContain("未上传");
+  fireEvent.keyDown(dialog, { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("dialog") === null).toBe(true));
+  fireEvent.click(screen.getByRole("button", { name: "查看字体 马善政毛笔楷书" }));
+  expect((await screen.findByRole("dialog")).textContent).toContain("预装 · OFL-1.1");
 });
 
 // 场景：字体库读取失败（服务端不可用）——显示原因与重试，重试成功后列出字体。

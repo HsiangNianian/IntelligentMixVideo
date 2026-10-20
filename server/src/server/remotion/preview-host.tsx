@@ -259,16 +259,19 @@ function PreviewError({ requestId }: { requestId: number }) {
 }
 
 /**
- * Register the downloaded catalog fonts the serving page lists (`#imv-preview-fonts`). They are not loaded here:
- * the browser fetches a font only when text first uses its family, so an effect pays for the fonts it really uses.
+ * Register the downloaded font files the serving page lists (`#imv-preview-fonts`), each style of a card under the
+ * card's family with its weight and italic or normal style. They are not loaded here: the browser fetches a font only
+ * when text first uses its family and style, so an effect pays for the fonts it really uses. Lists from servers before
+ * cards had styles give only `weight`.
  */
 function registerCatalogFonts() {
   try {
     const fonts = JSON.parse(document.getElementById("imv-preview-fonts")?.textContent ?? "[]");
     for (const item of Array.isArray(fonts) ? fonts : []) {
-      if (typeof item?.family !== "string" || typeof item.weight !== "string" || typeof item.url !== "string") continue;
+      const descriptors = item?.descriptors ?? { weight: item?.weight, style: "normal" };
+      if (typeof item?.family !== "string" || typeof descriptors.weight !== "string" || typeof descriptors.style !== "string" || typeof item.url !== "string") continue;
       document.fonts.add(
-        new FontFace(item.family, `url("${new URL(item.url, window.location.href)}")`, { weight: item.weight }),
+        new FontFace(item.family, `url("${new URL(item.url, window.location.href)}")`, { weight: descriptors.weight, style: descriptors.style }),
       );
     }
   } catch {
