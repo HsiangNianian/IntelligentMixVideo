@@ -6,6 +6,7 @@ import asyncio
 import difflib
 import hashlib
 import json
+from copy import deepcopy
 from datetime import UTC, datetime
 from uuid import uuid4
 from .contracts import (
@@ -128,10 +129,32 @@ def _titled(parameters) -> list[dict]:
     ]
 
 
+def _instance_parameters(sprite: SpriteDraft, config: dict) -> dict[str, dict]:
+    """Return each instance's parameters with the current user configuration applied.
+
+    The Sprite snapshot keeps the generation-time values, while manual parameter revisions live only in the accepted
+    candidate's ``default_config``. Overlay bound top-level values and nested instance objects before handing the base
+    back to the Agent, so a later edit does not silently restore stale appearance values.
+    """
+    parameters = {item.instance_id: deepcopy(item.parameters) for item in sprite.instances}
+    for binding in sprite.bindings:
+        if binding.name not in config:
+            continue
+        for target in binding.targets:
+            values = parameters.get(target.instance_id)
+            if values is not None:
+                values[target.parameter] = deepcopy(config[binding.name])
+    for instance_id, values in parameters.items():
+        nested = config.get(instance_id)
+        if isinstance(nested, dict):
+            values.update(deepcopy(nested))
+    return parameters
+
+
 def _text_block(sprite: SpriteDraft, config: dict) -> dict:
     """The accepted base's text block as sprite_compose takes it, over base_* drafts, with the current configuration
     values (``config`` is the base's defaults, user parameter revisions included)."""
-    parameters = {item.instance_id: item.parameters for item in sprite.instances}
+    parameters = _instance_parameters(sprite, config)
     two = len(sprite.text.tiers) == 2
 
     def tier(index: int, instance_id: str) -> dict:
@@ -318,11 +341,12 @@ class ToolSession:
         if sprite.text is not None:
             summary["text"] = _text_block(sprite, self.base.default_config)
         else:
+            parameters = _instance_parameters(sprite, self.base.default_config)
             summary["instances"] = [
                 {
                     "instance_id": item.instance_id,
                     "source": {"kind": "draft", "draft_id": f"base_{item.instance_id}"},
-                    "parameters": item.parameters,
+                    "parameters": parameters[item.instance_id],
                     "layout": item.layout.model_dump(mode="json"),
                     "timing": item.timing.model_dump(mode="json"),
                 }

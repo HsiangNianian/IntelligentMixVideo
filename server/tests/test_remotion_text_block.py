@@ -396,19 +396,21 @@ def test_an_edit_snapshot_hands_back_the_effects_as_configured(tmp_path, monkeyp
         sprite = first.sprite_drafts[composed["draft_id"]]
         if not still:
             sprite = sprite.model_copy(update={"text": sprite.text.model_copy(update={"still": None})})
-        config = {**sprite.default_parameters, "effect1Target": "line1", "effect1Seconds": 1.2, "effect4": False}
+        config = {**sprite.default_parameters, "effect1Target": "line1", "effect1Seconds": 1.2, "effect4": False, "shineColor": "#FF0000"}
         base = TemplateCandidate(tsx_code=sprite.code, config_schema=sprite.parameter_schema, default_config=config)
         edit = session(tmp_path / "edit", spec=SimpleNamespace(sprite=sprite, sprite_kind="text"), base=base)
         snapshot = edit.snapshot()["base"]
         effects = snapshot["text"]["effects"]
         assert effects[0] == {"instance_id": "fadeIn", "source": {"kind": "draft", "draft_id": "base_fadeIn"}, "parameters": {}, "title": "淡入",
                               "slot": "enter", "target": "line1", "seconds": 1.2, "enabled": True}
-        assert (effects[3]["enabled"], "seconds" in effects[3], effects[3]["source"]) == (False, False, {"kind": "draft", "draft_id": "base_shine"})
+        assert (effects[3]["enabled"], "seconds" in effects[3], effects[3]["source"], effects[3]["parameters"]) == (
+            False, False, {"kind": "draft", "draft_id": "base_shine"}, {"glowColor": "#FF0000"})
         assert "shineColor" in [item["name"] for item in snapshot["parameters"]]
         again = await edit.execute("sprite.compose", SpriteComposeInput.model_validate(
             {"description": "双栏标题", "kind": "text", "text": snapshot["text"], "parameters": snapshot["parameters"]}), available())
         recomposed = edit.sprite_drafts[again["draft_id"]]
-        assert {name: recomposed.default_parameters[name] for name in ("effect1Target", "effect1Seconds", "effect4")} == {"effect1Target": "line1", "effect1Seconds": 1.2, "effect4": False}
+        assert {name: recomposed.default_parameters[name] for name in ("effect1Target", "effect1Seconds", "effect4", "shineColor")} == {
+            "effect1Target": "line1", "effect1Seconds": 1.2, "effect4": False, "shineColor": "#FF0000"}
         assert recomposed.text.still is (True if still else None)
 
     asyncio.run(run())
