@@ -226,7 +226,7 @@ async def preset_search(owner, request: PresetSearchInput) -> ToolResult[PresetS
     constraints=[
         "The original record never changes and no new preset_id is created. preset_id may also be a task draft handle (base_* or an earlier draft_id). The copy is kept by the host: compose it with source {kind: \"draft\", draft_id}.",
         "changes.edits replaces exact text in the copied code, in order: each old_str is copied verbatim from the code as the earlier edits left it and must occur there exactly once, otherwise nothing is copied and the error names the edit. edits and code are exclusive; code replaces the whole source. description, parameter_schema and default_parameters replace whole fields.",
-        "The reply counts the code lines the copy removed and added relative to its source, and carries a notice when an edit task copies a stored Preset instead of the accepted version's base_* draft.",
+        "The reply counts the code lines the copy removed and added relative to its source, and carries a notice when an edit task copies a stored Preset the accepted version does not draw with instead of its base_* draft.",
     ],
     side_effects=["read-only copy of one stored Preset"],
     error_codes=["INVALID_ARGUMENT", "PRESET_NOT_FOUND", "PRESET_STORE_FAILED"],

@@ -368,7 +368,8 @@ def test_edits_must_name_one_exact_place(tmp_path, changes, field, message):
 
 def test_an_edit_that_copies_a_stored_preset_is_noted(tmp_path):
     """回放 a1cccb1c「去掉所有下划线」：模型从第一版的库内预设复制，把已删掉的下划线又带了回来；回执提示它应复制 base_* 草稿，复制基线草稿或新作品复制库内预设则不提示。"""
-    current = edit_session(tmp_path, UNDERLINED_TITLE)
+    accepted = UNDERLINED_TITLE.replace('      <div style={{height: 14, backgroundColor: "#FFD400"}} />\n', "")
+    current = edit_session(tmp_path, accepted)
     stored = PresetRecord(preset_id="e64dfa", created_at="2026-10-19T00:00:00+00:00", description="第一版标题",
                           code=UNDERLINED_TITLE, parameter_schema={"type": "object", "properties": {}, "additionalProperties": False}, default_parameters={})
     current.catalog.append_preset(stored)
@@ -377,6 +378,18 @@ def test_an_edit_that_copies_a_stored_preset_is_noted(tmp_path):
     assert "notice" not in current.modify_preset(PresetModifyInput(preset_id="base_title", changes={"description": "去掉下划线"})).model_dump(exclude_unset=True)
     fresh = session(tmp_path)
     assert "notice" not in fresh.modify_preset(PresetModifyInput(preset_id="e64dfa", changes={"description": "副本"})).model_dump(exclude_unset=True)
+
+
+def test_copying_the_stored_preset_the_base_draws_with_is_not_noted(tmp_path):
+    """A Sprite snapshot keeps no stored preset_id: the stored Preset the accepted version draws with, unchanged, used to
+    be noted as one whose earlier changes are missing, which would send the model to redo an edit it does not need."""
+    current = edit_session(tmp_path, UNDERLINED_TITLE)
+    current.catalog.append_preset(PresetRecord(
+        preset_id="b71c02", created_at="2026-10-19T00:00:00+00:00", description="当前版本标题", code=UNDERLINED_TITLE,
+        parameter_schema={"type": "object", "properties": {}, "additionalProperties": False}, default_parameters={},
+    ))
+    copy = current.modify_preset(PresetModifyInput(preset_id="b71c02", changes={"description": "加描边"}))
+    assert "notice" not in copy.model_dump(exclude_unset=True)
 
 
 @pytest.mark.skipif(not RENDERER_DEPS.exists(), reason="install locked Remotion renderer dependencies")

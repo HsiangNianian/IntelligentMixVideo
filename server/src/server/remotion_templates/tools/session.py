@@ -536,10 +536,13 @@ class ToolSession:
             record = self._find_preset(request.preset_id)
             base = record.model_dump(mode="json", exclude={"preset_id", "created_at"}, exclude_unset=True)
             source = record.preset_id
-            accepted = [key for key in self.preset_drafts if key.startswith("base_")]
-            if accepted:
+            accepted = {key: draft for key, draft in self.preset_drafts.items() if key.startswith("base_")}
+            # A Sprite snapshot keeps no stored preset_id, so the Preset a base draft came from is known by its content.
+            drawn = lambda item: (item.code, item.parameter_schema, item.default_parameters)
+            if accepted and all(drawn(draft) != drawn(record) for draft in accepted.values()):
                 notice = (f"{request.preset_id} is a stored Preset, not one the accepted version is built from ({', '.join(accepted)}), "
-                          "so changes made in earlier versions are not in this copy. To change the accepted version, copy its base_* draft instead.")
+                          "so changes made in earlier versions are not in this copy. To change an element of the accepted version, copy its "
+                          "base_* draft instead; an element the base does not have may start from a stored Preset.")
         base.pop("source_preset_id", None)
         if "edits" in changes:
             changes["code"] = _apply_edits(base["code"], changes.pop("edits"))

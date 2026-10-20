@@ -28,7 +28,7 @@ Six business tools have implementations in this build:
 | `tools.inspect` | implemented — returns one tool descriptor by dotted ID or wire name; it reads a contract, it does not search or list tools |
 | `image.info` / `image.resize` / `image.crop` | contract only |
 | `preset.search` | implemented: plain listing with optional keyword; the agent picks what to recall |
-| `preset.modify` | implemented: copies a stored Preset or a task draft (`base_*`, earlier `draft_id`), keeps the copy host-side and returns its `draft_id`; compose it with source `{kind: "draft", draft_id}`. Code changes go in as exact `edits` `[{old_str, new_str}]` (each `old_str` occurs once) or as a whole `code`; the receipt counts the changed code lines and notes an edit that copied a stored Preset instead of its `base_*` draft |
+| `preset.modify` | implemented: copies a stored Preset or a task draft (`base_*`, earlier `draft_id`), keeps the copy host-side and returns its `draft_id`; compose it with source `{kind: "draft", draft_id}`. Code changes go in as exact `edits` `[{old_str, new_str}]` (each `old_str` occurs once) or as a whole `code`; the receipt counts the changed code lines and notes an edit that copied a stored Preset instead of its `base_*` draft (a stored Preset with the same code, schema and defaults as a `base_*` draft is the one the base draws with and is not noted) |
 | `validate.code` / `validate.render` | contract only |
 
 Deferred tools are marked `implemented=False` at registration and are filtered

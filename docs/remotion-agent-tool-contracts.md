@@ -550,7 +550,7 @@ async def preset_modify(request: PresetModifyInput) -> ToolResult[PresetModifyOu
 - changes.code 是 Agent **已经修改完的完整源码**，不是自然语言修改要求，也不是待工具应用的文本 diff；只用于用户要求的整体重写。code 与 edits 互斥，同时提供返回 `INVALID_ARGUMENT`。
 - 其余字段整体替换原字段；未传字段保留原值。特别是 Schema 和 default_parameters 整体替换，不递归拼接旧字段。
 - 合并后检查数据结构、Schema 和默认参数的一致性，把完整 PresetDraft（source_preset_id 为输入 preset_id）保存在任务内，返回 `draft_id`、内容摘要 `digest` 和不含源码的摘要；源码不回传给调用方。`draft_id` 每次调用都是新的，`digest` 只由草稿内容决定：同样的修改得到同样的 `digest`，宿主的空转判断据此识别重复调用。
-- 回执另带 `code_lines_removed`/`code_lines_added`：副本相对被复制的源代码删除与新增的行数（按行比较），小需求被整份重写时一眼可见。编辑任务（已登记 `base_*` 草稿）复制的是库内预设而不是基线草稿时，回执带 `notice` 说明该预设不属于当前版本、此前版本的修改不在副本里，应复制 `base_*` 草稿；这只是提示，不拒绝调用（用户可能要求换成库里的样式）。
+- 回执另带 `code_lines_removed`/`code_lines_added`：副本相对被复制的源代码删除与新增的行数（按行比较），小需求被整份重写时一眼可见。编辑任务（已登记 `base_*` 草稿）复制的是库内预设而不是基线草稿、且该预设的代码、Schema 与默认参数不同于任何基线草稿时（Sprite 快照不保留库内 preset_id，只能按内容认出基线所用的预设），回执带 `notice` 说明该预设不属于当前版本、此前版本的修改不在副本里，应复制 `base_*` 草稿；这只是提示，不拒绝调用（用户可能要求换成库里的样式）。
 - 数据契约无效时返回 `INVALID_ARGUMENT`，`field` 为 `/changes`，`details.diagnostics` 指出具体字段；原记录保持不变。Schema 只允许文档内引用，不读取外部 URL。
 - 工具不执行模型调用、不写库、不创建新的 preset_id，不承诺 LSP 或行为检查已通过。可单独调用 validate 获取诊断。
 - 修改副本以 `{kind: "draft", draft_id}` 直接交给 compose；需要检索复用时，由调用方把完整定义交给 create。
@@ -1376,7 +1376,7 @@ Sprite，宿主随即直接发布它，不再交回 Outer（Outer 没有发布�
 | modify 只改代码 | 继承原 Schema 和默认值，来源指向原记录；编译结论留给 validate/create |
 | modify 用 edits 改一处代码 | 只替换 old_str 那一段，其余源码逐字保留；回执的改动行数只计这一处 |
 | edits 的 old_str 找不到或出现多次 | INVALID_ARGUMENT 指向该项并说明行号，不产生副本 |
-| 编辑任务复制库内预设而非 base_* 草稿 | 照常返回副本，回执带 notice 提示应复制基线草稿 |
+| 编辑任务复制库内预设而非 base_* 草稿 | 照常返回副本，回执带 notice 提示应复制基线草稿；内容与某个基线草稿相同的库内预设不提示 |
 | 副本直接参与 compose | 能形成完整 sprite，无需把副本加入 preset 库 |
 | 同一 preset 使用两次 | 实例 ID、参数和局部时间相互独立 |
 | 重复 instance_id | 拒绝，不发生参数覆盖或标识碰撞 |
