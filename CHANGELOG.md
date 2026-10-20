@@ -3,6 +3,21 @@
 本项目的版本变更由发布工作流根据 Conventional Commits 自动生成。
 推送正式版本 tag 后，成功发布的版本记录会自动写入此文件。
 
+## [v0.9.10] - 2026-10-20
+### Bug Fixes
+- [`4728a67`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/4728a67559898d05d9cf64a052694b86f6d848d6) - **client**: keep the preview and font library working behind proxies and older servers *(PR [#219](https://github.com/HsiangNianian/IntelligentMixVideo/pull/219) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Documentation Changes
+- [`5d7a055`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/5d7a05575bc2d9a4e92545b83be1c7d9f0b3b475) - update CHANGELOG.md for v0.9.9 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
+
+### Chores
+- [`e3ce450`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/e3ce450fffe455a36db3e0900cb67c00b9fa3903) - **release**: prepare v0.9.10 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Other Changes
+- [`8ff4fdd`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/8ff4fdd57c6f1e8f0e840aaeaa4e15ff803940ae) - Merge pull request [#220](https://github.com/HsiangNianian/IntelligentMixVideo/pull/220) from HsiangNianian/codex/release-v0.9.10
+
+chore(release): promote dev to main for v0.9.10 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
 ## [v0.9.9] - 2026-10-20
 ### New Features
 - [`c55f5ee`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/c55f5eebf4d14b04e3e770c3a892f96b1715ab65) - **fonts**: group a family's styles into one font card with details *(PR [#214](https://github.com/HsiangNianian/IntelligentMixVideo/pull/214) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
@@ -1579,3 +1594,5 @@ feat(client): 在模板工作区页头添加时钟 *(commit by [@HsiangNianian](
 [v0.9.8]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.7...v0.9.8
 
 [v0.9.9]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.8...v0.9.9
+
+[v0.9.10]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.9...v0.9.10
