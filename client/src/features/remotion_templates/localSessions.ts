@@ -110,6 +110,8 @@ function browserStorage(): SessionStorage {
   }
   /**
    * 在一个事务里执行 `body` 发起的请求，事务提交后返回 `body` 给出的读取函数的结果；写入要么全部提交，要么全部回滚。
+   * 事务以 strict 持久性提交：服务端在确认送达后删除事件，本地写入是唯一副本，必须落盘后才算完成；浏览器默认的
+   * relaxed 只写到系统缓冲，系统崩溃或断电会丢失已确认的记录。桌面 SQLite 同样在提交时落盘。
    * `body` 只能同步发起请求（或在请求回调里继续发起），不能等待其他 Promise，否则事务会提前提交。
    * 失败统一包装为 LocalStoreError，与桌面一致地停止订阅并提示。
    */
@@ -117,7 +119,7 @@ function browserStorage(): SessionStorage {
     try {
       const db = await database();
       return await new Promise<T>((resolve, reject) => {
-        const transaction = db.transaction(stores, mode);
+        const transaction = db.transaction(stores, mode, { durability: "strict" });
         let result: () => T;
         try {
           result = body(transaction);
