@@ -1,7 +1,7 @@
 """Remotion 字体库：MySQL 注册表 + 对象存储 + 本地校验缓存、用户上传、沙箱挂载、Agent 清单、API 与渲染守卫。
 
 范围：`font_catalog.json` 的结构与随包字体文件、预装字体从字体包复制进对象存储与注册表、从对象存储取回缓存（换机器/丢缓存仍可用）、
-被篡改的缓存被剔除、字体名称的读取（显示名优先中文名）、上传字体的校验（格式、按文件内容去重、同名的其他字重与版本另起家族名、大小、预览条）、fontconfig 扫描规则、`fontFamily` 的分类规则与覆盖校验、
+被篡改的缓存被剔除、字体名称的读取（显示名优先中文名）与旧上传显示名的修正、上传字体的校验（格式、按文件内容去重、同名的其他字重与版本另起家族名、大小、预览条）、fontconfig 扫描规则、`fontFamily` 的分类规则与覆盖校验、
 沙箱命令是否挂载字体目录、Agent 字体清单、字体 API 与预览页、渲染前的字体守卫。数据库用 `template_db` 的临时 SQLite，
 对象存储用本地目录，字体包用小文件代替（另有一例核对随包的真实字体），不访问网络；真实浏览器里字体是否生效由 `IMV_TEST_RENDERER=1` 的用例验证。
 执行：在 `server/` 下运行 `uv run --locked pytest tests/test_remotion_fonts.py -v`。
@@ -300,6 +300,26 @@ def test_the_display_name_comes_from_the_font_not_the_file_name(store) -> None:
     font = store.upload(data, strip_png(), "0b7027d34f9546b7993e082b48c22401", "device-1")
     assert (font.family, font.label, font.preview) == ("Smiley Sans", "得意黑", False)
     assert store.preview_path(font.id) is None
+
+
+def test_sync_relabels_an_upload_named_after_its_file(store, monkeypatch) -> None:
+    """旧客户端把文件名（一串哈希）当显示名上传的字体：同步时改用字体自己的名称，旧预览条（画的是文件名）作废、改显示文字名称，
+    家族名不变；显示名已经正确的上传（包括带预览条的新上传）不改动，再次同步也不再写注册表。"""
+    named = store.upload(minimal_font("Smiley Sans", names=[(3, 1, 0x0804, 1, "得意黑")]), strip_png(), "得意黑", "device-1")
+    fine = store.upload(minimal_font("Zed Display"), strip_png(), "Zed Display", "device-1")
+    old = named.model_copy(update={"label": "0b7027d34f9546b7993e082b48c22401"})
+    font_store.update_data(old.id, old.model_dump(exclude={"id", "family"}))
+    store.refresh()
+    asyncio.run(store.sync())
+    relabelled = next(font for font in store.listing() if font.id == named.id)
+    assert (relabelled.family, relabelled.label, relabelled.preview) == ("Smiley Sans", "得意黑", False)
+    assert next(record for record in font_store.listing() if record["id"] == named.id)["label"] == "得意黑"
+    assert store.preview_path(named.id) is None and store.preview_path(fine.id) is not None
+    writes: list[str] = []
+    monkeypatch.setattr(font_store, "update_data", lambda font_id, data: writes.append(font_id))
+    store.refresh()
+    asyncio.run(store.sync())
+    assert writes == []
 
 
 def test_the_same_file_is_not_uploaded_twice(store) -> None:

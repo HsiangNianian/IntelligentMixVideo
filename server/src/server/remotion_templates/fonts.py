@@ -543,10 +543,11 @@ class FontStore:
         return [font.family for font in named if font.id not in self.ready]
 
     async def sync(self) -> None:
-        """Install the bundled catalog fonts the registry lacks (unless switched off), then cache every registered font.
+        """Install the bundled catalog fonts the registry lacks (unless switched off), cache every registered font,
+        then give uploads named after their file their own display name (`_relabel`).
 
-        One failure (missing or corrupt bundled file, object store) is logged and leaves that font for the next sync;
-        the others proceed.
+        One failure (missing or corrupt bundled file, object store, database) is logged and leaves that font for the
+        next sync; the others proceed.
         """
         if self.objects is None:
             return
@@ -561,6 +562,33 @@ class FontStore:
         for font in list(self.known.values()):
             if font.has_file and font.id not in self.ready:
                 await asyncio.to_thread(self._cache, font)
+        for font in list(self.known.values()):
+            if font.source != "upload" or font.id not in self.ready:
+                continue
+            try:
+                await asyncio.to_thread(self._relabel, font)
+            except Exception as exc:
+                logger.warning("Font %s was not relabelled: %s", font.id, exc)
+
+    def _relabel(self, font: Font) -> None:
+        """Show a cached upload under its own display name (`read_names`) when it is registered under another, such as
+        the file name that clients sent before the name came from the font; blocking.
+
+        Its preview strip shows the old name, so it is dropped and the name is shown as text. The family, which
+        templates store, never changes. A label that is already the display name is left alone, so this runs once per
+        font on every host.
+        """
+        try:
+            label = read_names((self.files / font.cache_name).read_bytes()).label
+        except (OSError, FontRejected):
+            return
+        if label == font.label:
+            return
+        relabelled = font.model_copy(update={"label": label, "preview": False})
+        font_store.update_data(font.id, relabelled.model_dump(exclude={"id", "family"}))
+        with self._lock:
+            self.known[font.id] = relabelled
+        logger.info("Font %s is shown as %r instead of %r", font.id, label, font.label)
 
     def _seed(self, spec: FontSpec) -> None:
         """Unpack one bundled font, check its size and SHA-256 against the catalog, then register it; blocking."""

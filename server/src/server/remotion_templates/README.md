@@ -184,7 +184,8 @@ Without that directory, fontconfig keeps its normal per-sandbox cache fallback.
 Effects can use any font of the shared font library, a MySQL registry (`remotion_fonts`, `font_store.py`) whose files
 are objects in ZOS (or the local object folder while `ZOS_BUCKET` is empty). It holds three kinds of font and is never
 empty: the system default `Noto Sans CJK SC` (registered when the runtime starts, no file), the preinstalled catalog
-and the fonts users upload. Rows are only ever added, so a template that names a family keeps rendering.
+and the fonts users upload. Rows are never deleted and their family never changes, so a template that names a family
+keeps rendering; only how a font is shown (label, preview strip) may be corrected.
 
 - **Preinstalled fonts**: the 16 free OFL fonts ship inside the backend package as `bundled_fonts/<file>.xz`
   (xz-compressed, about 60 MB). `font_catalog.json` pins each font's uncompressed size and SHA-256 and records where
@@ -207,7 +208,9 @@ and the fonts users upload. Rows are only ever added, so a template that names a
   (an upload or a preinstalled font) is refused and the message names that font. The family must be unique, so
   another weight or version of a registered family, or a file carrying an installed or reserved name, is registered
   under its legacy family (name ID 1, which usually names the weight), its family plus version (`Smiley Sans v2.000`),
-  or its family numbered from 2 (`Smiley Sans (2)`), whichever is free first.
+  or its family numbered from 2 (`Smiley Sans (2)`), whichever is free first. Uploads registered before the display
+  name came from the font (labelled with their file name) get their own display name at the next `FontStore.sync`;
+  their strip shows the file name, so it is dropped and the name is shown as text.
   The preview strip is drawn by the uploader's browser with that display name (`client/src/features/fonts/names.ts`
   applies the same rule and sends it as `label`); a strip drawn with any other text is dropped, and only its alpha is
   kept. Fonts cannot be deleted. The library is shared, like the Sprite library.
