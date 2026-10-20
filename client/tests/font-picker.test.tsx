@@ -191,6 +191,20 @@ test("点击字体卡片查看各字形的详情", async () => {
   expect((await screen.findByRole("dialog")).textContent).toContain("预装 · OFL-1.1");
 });
 
+// 场景：服务端还是字体卡片之前的版本（条目没有 faces 与 license），字体库页面照常列出字体并打开详情，不会因读取
+// `faces` 抛错而让整个界面变成黑屏。
+test("早于字体卡片的服务端也能打开字体库", async () => {
+  const { faces: _faces, license: _license, ...old } = LIBRARY[1]!;
+  fetchMock.mockImplementation((async (_input: RequestInfo | URL) => Response.json([old])) as typeof fetch);
+  render(<FontLibrary />);
+  const card = await screen.findByRole("button", { name: "查看字体 马善政毛笔楷书" });
+  expect(card.textContent).toContain("常规");
+  fireEvent.click(card);
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByRole("listitem", { name: "常规" }).textContent).toContain("字重 400 · 1 KB");
+  expect(within(dialog).getByText("预装")).toBeTruthy();
+});
+
 // 场景：系统默认字体在本机没有安装文件时，详情仍展示常规字形与元数据，但不提供会 404 的字样按钮。
 test("系统字体文件不在本机时不打开字样", async () => {
   fontServer();
