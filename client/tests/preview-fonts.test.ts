@@ -29,3 +29,26 @@ test("字体读取一次后复用，失败时回复 null 并在下次重试", as
     "http://api.test:8000/api/sprites/fonts/400", "http://api.test:8000/api/sprites/fonts/700",
   ]);
 });
+
+// 审计 #213：字体缓存曾不区分服务；设置里换了服务地址后仍转交旧服务的字体。换地址后应向新服务重新读取。
+test("服务地址改变后重新读取字体", async () => {
+  const specifier = "@/features/sprites/previewFonts?rebased";
+  const fonts: typeof import("@/features/sprites/previewFonts") = await import(specifier);
+  const { apiBase, setApiBase } = await import("@/lib/api-base");
+  const original = apiBase();
+  fetchMock.mockClear();
+  fetchMock.mockImplementation((async (input: RequestInfo | URL) => new Response(new Blob([String(input)], { type: "font/collection" }))) as typeof fetch);
+  try {
+    const first = await fonts.previewFonts();
+    expect(await fonts.previewFonts()).toBe(first);
+    setApiBase("http://other.test:9000/");
+    const second = await fonts.previewFonts();
+    expect(await second[400].text()).toBe("http://other.test:9000/api/sprites/fonts/400");
+    expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([
+      `${original}/api/sprites/fonts/400`, `${original}/api/sprites/fonts/700`,
+      "http://other.test:9000/api/sprites/fonts/400", "http://other.test:9000/api/sprites/fonts/700",
+    ]);
+  } finally {
+    setApiBase(original);
+  }
+});
