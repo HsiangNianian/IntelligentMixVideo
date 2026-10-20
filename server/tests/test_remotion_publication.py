@@ -453,3 +453,12 @@ def test_host_builds_preview_without_agent_test_scripts(harness, sprite, tmp_pat
     assert seen[0].component.code == sprite.code
     assert seen[0].component.default_parameters == sprite.default_parameters
     assert report.passed and (directory / "interactive.js").exists()
+
+
+
+def test_preview_player_keeps_its_play_button_visible():
+    """Tauri WebView 在指针移入播放器后不保证再次触发悬停，控制条不能在播放时永久隐藏。"""
+    source = (Path(__file__).parents[1] / "src/server/remotion/preview-host.tsx").read_text()
+    player = source.split("<Player", 1)[1].split("/>", 1)[0]
+    assert "controls={!sync}" in player
+    assert "alwaysShowControls={!sync}" in player
