@@ -78,6 +78,9 @@ test("内置示例读成 blob URL，只读取一次并可在失败后重试", as
     const again = await media.readPreviewVideos(urls, signal);
     expect(again.map((video) => video.url)).toEqual(first.map((video) => video.url));
     expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([...urls, urls[0]]);
+    // 内置示例同样只取前十秒，不依赖样片自身的时长；用户选择的本地文件仍使用完整时长。
+    const local = { url: "blob:http://localhost/local", width: 1080, height: 1920, duration: 12 };
+    expect(media.previewVideos([{ ...first[0], duration: 12 }, local, first[2]]).map((video) => video.duration)).toEqual([10, 12, 10]);
   } finally {
     Object.defineProperty(HTMLMediaElement.prototype, "src", source);
   }

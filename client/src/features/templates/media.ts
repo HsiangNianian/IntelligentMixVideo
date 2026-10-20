@@ -58,9 +58,9 @@ export function sourceUrl(url: string): string {
   return bundledSources.get(url) ?? url;
 }
 
-/** URL 来源各使用前十秒（不足十秒用完整区间）；本地文件与内置示例（blob URL）使用完整时长，内置示例正好十秒。 */
+/** URL 来源与内置示例各使用前十秒（不足十秒用完整区间）；用户选择的本地文件（blob URL）使用完整时长。 */
 export function previewVideos(sources: PreviewMedia): PreviewMedia {
-  const clip = (video: MasterVideo) => video.url.startsWith("blob:") ? video : { ...video, duration: Math.min(10, video.duration) };
+  const clip = (video: MasterVideo) => video.url.startsWith("blob:") && !bundledSources.has(video.url) ? video : { ...video, duration: Math.min(10, video.duration) };
   return [clip(sources[0]), clip(sources[1]), clip(sources[2])];
 }
 
