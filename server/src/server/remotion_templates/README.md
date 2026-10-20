@@ -28,7 +28,7 @@ Six business tools have implementations in this build:
 | `tools.inspect` | implemented — returns one tool descriptor by dotted ID or wire name; it reads a contract, it does not search or list tools |
 | `image.info` / `image.resize` / `image.crop` | contract only |
 | `preset.search` | implemented: plain listing with optional keyword; the agent picks what to recall |
-| `preset.modify` | implemented: copies a stored Preset or a task draft (`base_*`, earlier `draft_id`), keeps the copy host-side and returns its `draft_id`; compose it with source `{kind: "draft", draft_id}` |
+| `preset.modify` | implemented: copies a stored Preset or a task draft (`base_*`, earlier `draft_id`), keeps the copy host-side and returns its `draft_id`; compose it with source `{kind: "draft", draft_id}`. Code changes go in as exact `edits` `[{old_str, new_str}]` (each `old_str` occurs once) or as a whole `code`; the receipt counts the changed code lines and notes an edit that copied a stored Preset instead of its `base_*` draft (a stored Preset with the same code, schema and defaults as a `base_*` draft is the one the base draws with and is not noted) |
 | `validate.code` / `validate.render` | contract only |
 
 Deferred tools are marked `implemented=False` at registration and are filtered
@@ -345,7 +345,8 @@ Drafts are handles: neither the model nor the snapshot carries Sprite or draft s
 composition is never copied back verbatim. Presets of the same source are bundled once however many
 instances use them. Bundling erases the Presets' TypeScript types and type arguments, so the composed
 adapter types every variable, class field and base class `any` and gives each class an `any` index signature; each Preset is still typechecked on its own before it is composed. For an edit, the accepted base's instances are registered as `base_<instance_id>`
-Preset drafts; only the Executor's snapshot shows their source, each distinct source once. The session
+Preset drafts and listed as `base.instances` in the shape `sprite_compose` takes (source
+`{kind: "draft", draft_id}`), like `base.text`; only the Executor's snapshot shows their source, each distinct source once. The session
 snapshot stays within 200 KB: a base too large for it has its largest sources omitted first (`code_omitted`,
 `legacy_code_omitted`), while their handles still compose unchanged. The execution
 snapshot shows `tool_calls_left_in_batch` and `tool_calls_left_in_task` instead of used/limit pairs.

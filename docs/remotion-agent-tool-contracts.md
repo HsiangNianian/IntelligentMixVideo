@@ -10,7 +10,7 @@
 - 主画布固定为 **宽 1080、高 1920、9:16 竖屏、30 fps**。主画布宽高和帧率不是调用方可修改的配置。
 - preset 为单文件 TSX、参数 Schema 和默认参数构成的代码原子；sprite 组合多个 preset 实例。
 - preset.create 承接 Agent 已经写好的代码和描述。search 按描述关键词列出摘要，再按 ID 读取完整记录，不使用向量或语义检索。
-- preset.modify 承接 Agent 修改后的字段，副本由宿主保存在任务内，返回 `draft_id` 与摘要，不修改原记录、不自动入库。需要长期复用时再调用 create。
+- preset.modify 承接 Agent 修改后的字段（代码可按 edits 精确替换局部），副本由宿主保存在任务内，返回 `draft_id` 与摘要，不修改原记录、不自动入库。需要长期复用时再调用 create。
 - sprite.compose 生成组合定义与代码，草稿由宿主保存并返回 `draft_id` 与不含源码的摘要；sprite.create 按 `draft_id` 保存组合结果，调用方不回传源码。本期不定义 sprite 嵌套组合。
 - 两个 create 均在内部执行代码校验，通过后才入库。无需传入之前的校验回执，也不在工具内调用模型修复。
 - validate 提供代码检查和运行行为测试。工具提供统一测试上下文，Agent 编写自定义断言；不截图、不从视频抽帧、不做视觉 Judge。
@@ -493,10 +493,18 @@ create 始终创建新记录，不覆盖来源预设，也不把相同描述视�
 ### 6.3 modify
 
 ```python
+class CodeEdit(ContractModel):
+    """副本代码里的一处精确替换：old_str 从源代码原样复制，且在当时的代码中恰好出现一次。"""
+
+    old_str: NonEmptyString
+    new_str: str
+
+
 class PresetChanges(ContractModel):
-    """仅替换显式提供的字段；工具还须检查至少提供一项。"""
+    """仅替换显式提供的字段；edits 按顺序在源代码上精确替换，与整份 code 互斥；工具还须检查至少提供一项。"""
 
     code: Omittable[str]
+    edits: Omittable[Annotated[list[CodeEdit], Field(min_length=1)]]
     description: Omittable[Description]
     parameter_schema: Omittable[JsonSchema]
     default_parameters: Omittable[JsonObject]
@@ -519,11 +527,17 @@ class PresetDraftSummary(ContractModel):
 
 
 class PresetModifyOutput(ContractModel):
-    """副本句柄与摘要，不含新记录 ID；source_preset_id 指向原记录。"""
+    """副本句柄与摘要，不含新记录 ID；source_preset_id 指向原记录。
+
+    改动行数相对被复制的源代码计算，让小需求被整份重写时在回执里可见；notice 是宿主的固定提示。
+    """
 
     draft_id: DraftId
     digest: DraftDigest
     preset: PresetDraftSummary
+    code_lines_removed: NonNegativeInteger
+    code_lines_added: NonNegativeInteger
+    notice: Omittable[str]
 
 
 async def preset_modify(request: PresetModifyInput) -> ToolResult[PresetModifyOutput]:
@@ -532,19 +546,23 @@ async def preset_modify(request: PresetModifyInput) -> ToolResult[PresetModifyOu
 ```
 
 - preset_id 来自 search；也可以是本任务的预设草稿句柄（编辑基线登记的 `base_<instance_id>` 或此前 modify 返回的 `draft_id`），此时以该草稿为底复制，source_preset_id 沿用草稿已有的来源（没有则省略）。工具读取该记录或草稿，changes 至少包含一个字段；未知 ID 返回 `PRESET_NOT_FOUND`，并列出近期 preset_id 与本任务草稿句柄。
-- changes.code 是 Agent **已经修改完的完整源码**，不是自然语言修改要求，也不是待工具应用的文本 diff。
-- changes 中每个字段整体替换原字段；未传字段保留原值。特别是 Schema 和 default_parameters 整体替换，不递归拼接旧字段。
+- 改代码优先用 changes.edits：每项把源代码里的一段原文 `old_str` 换成 `new_str`，按顺序应用，后一项作用于前面各项改完的代码。`old_str` 必须原样复制（缩进与换行都算）且在当时的代码中恰好出现一次：找不到或出现多次时返回 `INVALID_ARGUMENT`，`field` 为 `/changes/edits/<序号>/old_str`，消息说明出现的行号，或在首行去掉首尾空格后能对上时指出那一行；任何一项失败都不产生副本。编辑任务只改用户要求的部分，不为一处改动整份重写。
+- changes.code 是 Agent **已经修改完的完整源码**，不是自然语言修改要求，也不是待工具应用的文本 diff；只用于用户要求的整体重写。code 与 edits 互斥，同时提供返回 `INVALID_ARGUMENT`。
+- 其余字段整体替换原字段；未传字段保留原值。特别是 Schema 和 default_parameters 整体替换，不递归拼接旧字段。
 - 合并后检查数据结构、Schema 和默认参数的一致性，把完整 PresetDraft（source_preset_id 为输入 preset_id）保存在任务内，返回 `draft_id`、内容摘要 `digest` 和不含源码的摘要；源码不回传给调用方。`draft_id` 每次调用都是新的，`digest` 只由草稿内容决定：同样的修改得到同样的 `digest`，宿主的空转判断据此识别重复调用。
+- 回执另带 `code_lines_removed`/`code_lines_added`：副本相对被复制的源代码删除与新增的行数（按行比较），小需求被整份重写时一眼可见。编辑任务（已登记 `base_*` 草稿）复制的是库内预设而不是基线草稿、且该预设的代码、Schema 与默认参数不同于任何基线草稿时（Sprite 快照不保留库内 preset_id，只能按内容认出基线所用的预设），回执带 `notice` 说明该预设不属于当前版本、此前版本的修改不在副本里，应复制 `base_*` 草稿；这只是提示，不拒绝调用（用户可能要求换成库里的样式）。
 - 数据契约无效时返回 `INVALID_ARGUMENT`，`field` 为 `/changes`，`details.diagnostics` 指出具体字段；原记录保持不变。Schema 只允许文档内引用，不读取外部 URL。
 - 工具不执行模型调用、不写库、不创建新的 preset_id，不承诺 LSP 或行为检查已通过。可单独调用 validate 获取诊断。
 - 修改副本以 `{kind: "draft", draft_id}` 直接交给 compose；需要检索复用时，由调用方把完整定义交给 create。
 
 ```json
 {
-  "preset_id": "preset_label_001",
+  "preset_id": "base_label",
   "changes": {
     "description": "带白色描边、文字和颜色可调的文字原子",
-    "code": "/** 带描边的文字预设副本。 */\nimport React from 'react';\n/** 保留文字与颜色参数，增加描边。 */\nexport default function Label(props: {text: string; color: string}) { return <div data-testid=\"label\" style={{color: props.color, WebkitTextStroke: '1px white'}}>{props.text}</div>; }"
+    "edits": [
+      {"old_str": "style={{color: props.color}}", "new_str": "style={{color: props.color, WebkitTextStroke: '1px white'}}"}
+    ]
   }
 }
 ```
@@ -1328,7 +1346,7 @@ Sprite，宿主随即直接发布它，不再交回 Outer（Outer 没有发布�
 1. Agent 调用 image.info 读取参考图信息；必要时调用 crop/resize 获取更适合观察的图片 URL。
 2. Agent 用可选关键词调用 preset.search，从 `presets` 摘要选择 ID，再用 `preset_id` 读取 `preset` 中的完整代码和参数契约；`has_more=true` 时缩小关键词范围。
 3. 已有预设满足需求时直接实例化并填参数，不调用 modify。
-4. 需要改变实现时，由 Agent 先写出修改后的代码，再调用 modify 取得副本的 `draft_id`；原预设不变。如果没有合适预设，Agent 编写完整定义，通过 create 校验后加入库。
+4. 需要改变实现时，由 Agent 用 edits 写出要替换的原文与新文本（整体重写才提交完整代码），再调用 modify 取得副本的 `draft_id`；原预设不变。如果没有合适预设，Agent 编写完整定义，通过 create 校验后加入库。
 5. Agent 明确提供各实例的位置、尺寸、层级和时间，选定效果分类并绑定该分类的必备顶层参数，调用 compose。输入可以同时包含 stored 和 draft 两类来源。
 6. compose 在任务内保存完整 SpriteDraft，返回 `draft_id` 与摘要，示例时间编排得到 150 帧、5 秒。
 7. 宿主把 SpriteDraft 的 code、parameter_schema、default_parameters 作为 component，composition.duration_frames 作为测试总帧数，连同需求断言交给 validate.render（本期该工具不向模型开放）。
@@ -1356,6 +1374,9 @@ Sprite，宿主随即直接发布它，不再交回 Outer（Outer 没有发布�
 | search 超出数量或字节上限 | 返回有界摘要和 has_more=true；单条无法容纳时返回 RESOURCE_LIMIT_EXCEEDED |
 | modify 原预设 | 返回副本 draft_id 与不含源码的摘要；原记录不变；副本没有新 preset_id |
 | modify 只改代码 | 继承原 Schema 和默认值，来源指向原记录；编译结论留给 validate/create |
+| modify 用 edits 改一处代码 | 只替换 old_str 那一段，其余源码逐字保留；回执的改动行数只计这一处 |
+| edits 的 old_str 找不到或出现多次 | INVALID_ARGUMENT 指向该项并说明行号，不产生副本 |
+| 编辑任务复制库内预设而非 base_* 草稿 | 照常返回副本，回执带 notice 提示应复制基线草稿；内容与某个基线草稿相同的库内预设不提示 |
 | 副本直接参与 compose | 能形成完整 sprite，无需把副本加入 preset 库 |
 | 同一 preset 使用两次 | 实例 ID、参数和局部时间相互独立 |
 | 重复 instance_id | 拒绝，不发生参数覆盖或标识碰撞 |

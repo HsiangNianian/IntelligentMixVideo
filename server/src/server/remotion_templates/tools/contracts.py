@@ -205,10 +205,18 @@ class PresetSearchOutput(ContractModel):
     has_more: bool = False
 
 
+class CodeEdit(ContractModel):
+    """副本代码里的一处精确替换：old_str 从源代码原样复制，且在当时的代码中恰好出现一次。"""
+
+    old_str: NonEmptyString
+    new_str: str
+
+
 class PresetChanges(ContractModel):
-    """仅替换显式提供的字段；工具还须检查至少提供一项。"""
+    """仅替换显式提供的字段；edits 按顺序在源代码上精确替换，与整份 code 互斥；工具还须检查至少提供一项。"""
 
     code: Omittable[str]
+    edits: Omittable[Annotated[list[CodeEdit], Field(min_length=1)]]
     description: Omittable[Description]
     parameter_schema: Omittable[JsonSchema]
     default_parameters: Omittable[JsonObject]
@@ -231,11 +239,17 @@ class PresetDraftSummary(ContractModel):
 
 
 class PresetModifyOutput(ContractModel):
-    """副本句柄与摘要，不含新记录 ID；source_preset_id 指向原记录。"""
+    """副本句柄与摘要，不含新记录 ID；source_preset_id 指向原记录。
+
+    改动行数相对被复制的源代码计算，让小需求被整份重写时在回执里可见；notice 是宿主的固定提示。
+    """
 
     draft_id: DraftId
     digest: DraftDigest
     preset: PresetDraftSummary
+    code_lines_removed: NonNegativeInteger
+    code_lines_added: NonNegativeInteger
+    notice: Omittable[str]
 
 
 class Composition(ContractModel):

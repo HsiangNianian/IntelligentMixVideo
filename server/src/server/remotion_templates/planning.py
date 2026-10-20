@@ -78,28 +78,35 @@ def default_plan(edit: bool, base_drafts: bool | None = None) -> Plan:
     """The host's standard two-step pipeline, so the Plan model is only needed when something goes wrong.
 
     ``base_drafts`` says whether the accepted base registered ``base_*`` Preset drafts (default: ``edit``);
-    a pre-Sprite base has one legacy component instead, which the edit rewrites as a Preset.
+    a pre-Sprite base has one legacy component instead, which the edit rewrites as a Preset. An edit of a
+    composed base changes only what the request asks: the base drafts stay as they are and a draft that must
+    draw differently is copied with exact code edits, never rewritten from a stored Preset.
     """
     base_drafts = edit if base_drafts is None else base_drafts
     if base_drafts:
-        edit_hint = "For this edit, reuse the base_* drafts listed in base, or save a changed copy with preset_create."
-    elif edit:
-        edit_hint = (
-            "For this edit, the accepted base is one legacy component (base.legacy_code), not reusable drafts: "
-            "write the Preset it needs with preset_create."
+        preset_goal = (
+            "Get the Presets the edited Sprite needs ready, changing only what the request asks of the accepted version: the base_* "
+            "drafts listed in base are ready as they are. Copy a draft that must draw differently with preset_modify {preset_id: "
+            "base_*, changes: {edits: [{old_str, new_str}]}}, replacing only the lines involved, and write a new Preset with "
+            "preset_create only for an element the base does not have. A value the base exposes as a parameter (colour, size, font, timing) "
+            "needs no Preset change; a value written into a draft's code is changed by editing that line."
         )
     else:
-        edit_hint = ""
+        preset_goal = (
+            "Get the Preset(s) the Sprite needs ready. Reuse a fitting stored Preset (read it with preset_search "
+            "{preset_id}) instead of writing a near copy; otherwise write complete code with preset_create."
+        )
+        if edit:
+            preset_goal += (
+                " For this edit, the accepted base is one legacy component (base.legacy_code), not reusable drafts: "
+                "write the Preset it needs with preset_create."
+            )
     return Plan(
         goal="Build and save the Sprite the user asked for.",
         steps=[
             Step(
                 id="preset",
-                goal=(
-                    "Get the Preset(s) the Sprite needs ready. Reuse a fitting stored Preset (read it with preset_search "
-                    "{preset_id}) instead of writing a near copy; otherwise write complete code with preset_create. "
-                    + edit_hint
-                ).strip(),
+                goal=preset_goal,
                 input_refs=["user_intent", *(["accepted_base"] if edit else [])],
                 tool_modules=["preset"],
                 done_when="The Presets the Sprite needs are saved, read or available as drafts; then call tools_report_step.",
@@ -107,7 +114,7 @@ def default_plan(edit: bool, base_drafts: bool | None = None) -> Plan:
             Step(
                 id="sprite",
                 goal=(
-                    f"Compose the Presets from step_inputs{' (or base_* drafts)' if base_drafts else ''} with sprite_compose, one instance per "
+                    f"Compose the Presets from step_inputs{' (or base_* drafts), starting from base.text or base.instances and changing only what the request asks,' if base_drafts else ''} with sprite_compose, one instance per "
                     "visual element (a filter is one full-canvas instance), choosing its kind and binding the kind's required "
                     "parameters, then save it with sprite_create {draft_id}."
                 ),

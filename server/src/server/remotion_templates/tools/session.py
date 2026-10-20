@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import hashlib
 import json
 from datetime import UTC, datetime
@@ -170,6 +171,43 @@ def _digest(draft: PresetDraft | SpriteDraft) -> str:
     return hashlib.sha256(content.encode()).hexdigest()[:16]
 
 
+def _apply_edits(code: str, edits: list[dict]) -> str:
+    """Apply preset_modify's exact replacements in order, each to the code as the earlier ones left it.
+
+    Every old_str must occur exactly once, so a replacement never lands somewhere the model did not look. A miss
+    names the edit, and where a trimmed first line of old_str does occur, so the next call can copy it exactly.
+    """
+    for index, edit in enumerate(edits):
+        old, field = edit["old_str"], f"/changes/edits/{index}/old_str"
+        starts, at = [], code.find(old)
+        while at != -1:
+            starts.append(at)
+            at = code.find(old, at + 1)
+        if len(starts) > 1:
+            lines = ", ".join(str(code.count("\n", 0, start) + 1) for start in starts)
+            raise ToolFault("INVALID_ARGUMENT", f"edits[{index}].old_str occurs {len(starts)} times (lines {lines}): "
+                            "include a neighbouring line so it matches exactly once.", field=field)
+        if not starts:
+            first = next((line.strip() for line in old.splitlines() if line.strip()), "")
+            near = [number for number, line in enumerate(code.splitlines(), 1) if first and line.strip() == first]
+            where = f" Its first line matches line {', '.join(map(str, near))} once spaces are trimmed." if near else ""
+            raise ToolFault("INVALID_ARGUMENT", f"edits[{index}].old_str does not occur in the code{' after the earlier edits' if index else ''}: "
+                            f"copy it exactly from the source, indentation and line breaks included.{where}", field=field)
+        code = code[:starts[0]] + edit["new_str"] + code[starts[0] + len(old):]
+    return code
+
+
+def _line_changes(old: str, new: str) -> tuple[int, int]:
+    """Count the lines a copy removed from and added to its source's code, as a line diff shows them."""
+    removed = added = 0
+    matcher = difflib.SequenceMatcher(None, old.splitlines(), new.splitlines(), autojunk=False)
+    for tag, start, end, new_start, new_end in matcher.get_opcodes():
+        if tag != "equal":
+            removed += end - start
+            added += new_end - new_start
+    return removed, added
+
+
 class ToolSession:
     """Keep renderer candidates task-local while PR76 Preset/Sprite records remain immutable."""
 
@@ -242,7 +280,11 @@ class ToolSession:
         })
 
     def _base_summary(self, with_code: bool) -> dict | None:
-        """Describe the accepted base as instances over base_* Preset drafts, each source listed once."""
+        """Describe the accepted base as instances over base_* Preset drafts, each source listed once.
+
+        ``text`` and ``instances`` take the shape sprite_compose takes, so an edit re-composes the base by swapping in
+        its new draft_id and values instead of rebuilding each entry.
+        """
         if self.base is None:
             return None
         sprite = self.spec.sprite if self.spec is not None else None
@@ -266,7 +308,7 @@ class ToolSession:
             summary["instances"] = [
                 {
                     "instance_id": item.instance_id,
-                    "draft_id": f"base_{item.instance_id}",
+                    "source": {"kind": "draft", "draft_id": f"base_{item.instance_id}"},
                     "parameters": item.parameters,
                     "layout": item.layout.model_dump(mode="json"),
                     "timing": item.timing.model_dump(mode="json"),
@@ -363,7 +405,7 @@ class ToolSession:
             # A weak model reads or composes a draft handle like a stored ID; say what it is and how to use it.
             raise ToolFault("PRESET_NOT_FOUND", (
                 f"{preset_id} is a draft of this task, not a stored Preset: its source is in the snapshot "
-                f"(base.presets for base_* drafts, unless omitted for size). Change it with preset_modify {{\"preset_id\": \"{preset_id}\", \"changes\": ...}} "
+                f"(base.presets for base_* drafts, unless omitted for size). Change it with preset_modify {{\"preset_id\": \"{preset_id}\", \"changes\": {{\"edits\": [{{\"old_str\": ..., \"new_str\": ...}}]}}}} "
                 f"or compose it with source {{\"kind\": \"draft\", \"draft_id\": \"{preset_id}\"}}."
             ))
         if record is None:
@@ -472,14 +514,20 @@ class ToolSession:
         return output
 
     def modify_preset(self, request: PresetModifyInput) -> PresetModifyOutput:
-        """Copy a stored Preset or a task draft with whole-field replacements; unknown IDs list what exists.
+        """Copy a stored Preset or a task draft with exact code edits or whole-field replacements; unknown IDs list what exists.
 
         A task draft (``base_*`` or an earlier modify result) is what an edit naturally starts from, so its
-        handle is accepted as ``preset_id``; the copy keeps that draft's catalog source, if it has one.
+        handle is accepted as ``preset_id``; the copy keeps that draft's catalog source, if it has one. The receipt
+        counts the code lines the copy changed, and notes when an edit copied a stored Preset instead of the
+        accepted version's ``base_*`` draft (seen in a replay: the copy dropped what earlier versions had changed).
         """
         changes = request.changes.model_dump(mode="json", exclude_unset=True)
         if not changes:
             raise ToolFault("INVALID_ARGUMENT", "changes must replace at least one field", field="/changes")
+        if "code" in changes and "edits" in changes:
+            raise ToolFault("INVALID_ARGUMENT", "Give either edits (exact replacements in the copied code) or code (the whole new source), not both.",
+                            field="/changes/edits")
+        notice = None
         if request.preset_id in self.preset_drafts:
             original = self.preset_drafts[request.preset_id]
             base = original.model_dump(mode="json", exclude_unset=True)
@@ -488,7 +536,16 @@ class ToolSession:
             record = self._find_preset(request.preset_id)
             base = record.model_dump(mode="json", exclude={"preset_id", "created_at"}, exclude_unset=True)
             source = record.preset_id
+            accepted = {key: draft for key, draft in self.preset_drafts.items() if key.startswith("base_")}
+            # A Sprite snapshot keeps no stored preset_id, so the Preset a base draft came from is known by its content.
+            drawn = lambda item: (item.code, item.parameter_schema, item.default_parameters)
+            if accepted and all(drawn(draft) != drawn(record) for draft in accepted.values()):
+                notice = (f"{request.preset_id} is a stored Preset, not one the accepted version is built from ({', '.join(accepted)}), "
+                          "so changes made in earlier versions are not in this copy. To change an element of the accepted version, copy its "
+                          "base_* draft instead; an element the base does not have may start from a stored Preset.")
         base.pop("source_preset_id", None)
+        if "edits" in changes:
+            changes["code"] = _apply_edits(base["code"], changes.pop("edits"))
         draft = PresetDraft(**{**base, **changes, **({"source_preset_id": source} if source else {})})
         diagnostics = validate_component_contract(draft)
         if diagnostics:
@@ -496,10 +553,11 @@ class ToolSession:
                             field="/changes", details={"diagnostics": [item.model_dump(mode="json", exclude_unset=True) for item in diagnostics]})
         draft_id = "preset_draft_" + uuid4().hex[:12]
         self.preset_drafts[draft_id] = draft
+        removed, added = _line_changes(base["code"], draft.code)
         return PresetModifyOutput(draft_id=draft_id, digest=_digest(draft), preset=PresetDraftSummary(
             description=draft.description, parameter_names=_parameter_names(draft.parameter_schema),
             **({"source_preset_id": source} if source else {}), **({"role": draft.role} if draft.role else {}),
-        ))
+        ), code_lines_removed=removed, code_lines_added=added, **({"notice": notice} if notice else {}))
 
     async def create_sprite(self, draft_id: str) -> SpriteCreateOutput:
         """Validate and store the composed Sprite a sprite.compose handle refers to.

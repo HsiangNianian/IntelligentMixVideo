@@ -223,13 +223,17 @@ async def preset_search(owner, request: PresetSearchInput) -> ToolResult[PresetS
 
 @tool(
     "preset.modify",
-    constraints=["Replaces whole fields only; the original record never changes and no new preset_id is created. preset_id may also be a task draft handle (base_* or an earlier draft_id). The copy is kept by the host: compose it with source {kind: \"draft\", draft_id}."],
+    constraints=[
+        "The original record never changes and no new preset_id is created. preset_id may also be a task draft handle (base_* or an earlier draft_id). The copy is kept by the host: compose it with source {kind: \"draft\", draft_id}.",
+        "changes.edits replaces exact text in the copied code, in order: each old_str is copied verbatim from the code as the earlier edits left it and must occur there exactly once, otherwise nothing is copied and the error names the edit. edits and code are exclusive; code replaces the whole source. description, parameter_schema and default_parameters replace whole fields.",
+        "The reply counts the code lines the copy removed and added relative to its source, and carries a notice when an edit task copies a stored Preset the accepted version does not draw with instead of its base_* draft.",
+    ],
     side_effects=["read-only copy of one stored Preset"],
     error_codes=["INVALID_ARGUMENT", "PRESET_NOT_FOUND", "PRESET_STORE_FAILED"],
-    examples=[{"input": {"preset_id": "preset_title_001", "changes": {"description": "带描边的文字原子"}}, "output": {"ok": False, "error": {"code": "PRESET_NOT_FOUND", "message": "example"}}}],
+    examples=[{"input": {"preset_id": "base_title", "changes": {"edits": [{"old_str": "color: props.color,", "new_str": "color: props.color, WebkitTextStroke: \"2px #000000\","}]}}, "output": {"ok": False, "error": {"code": "INVALID_ARGUMENT", "message": "example", "field": "/changes/edits/0/old_str"}}}],
 )
 async def preset_modify(owner, request: PresetModifyInput) -> ToolResult[PresetModifyOutput]:
-    """Return an in-memory copy of a stored Preset carrying the caller's replacements."""
+    """Copy a stored Preset or a task draft (base_*, an earlier draft_id) with changes, and keep the copy as a host draft. To change its code, prefer edits [{old_str, new_str}]: exact replacements of the lines involved, each old_str copied verbatim from the source and occurring there once; code replaces the whole source."""
     try:
         return _success(await asyncio.to_thread(owner.modify_preset, request))
     except Exception as exc:
