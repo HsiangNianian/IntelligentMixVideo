@@ -239,7 +239,7 @@ Query the status with `GET /api/v1/overlay-renders/{taskId}`. This API always re
 | Configuration | Location | Purpose and defaults |
 | --- | --- | --- |
 | `VITE_API_URL` | `client/.env` | Default API URL for source development and builds; defaults to `http://localhost:20070` when empty |
-| `VITE_PREVIEW_VIDEO_1_URL`, `VITE_PREVIEW_VIDEO_2_URL`, `VITE_PREVIEW_VIDEO_3_URL` | `client/.env` | Default URLs for videos 1, 2, and 3; leave empty for the corresponding built-in sample, or use a resource path under `public/` |
+| `VITE_PREVIEW_VIDEO_1_URL`, `VITE_PREVIEW_VIDEO_2_URL`, `VITE_PREVIEW_VIDEO_3_URL` | `client/.env` | Default URLs for videos 1, 2, and 3; leave empty for the corresponding 10-second sample bundled with the client, or use a resource path under `public/` |
 | `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` | `server/.env` | MySQL connection settings; configure before using the server |
 | `PORT` | `server/.env` or process environment | API listening port; defaults to `20070`, with a valid range of 1–65535 |
 | `DASHSCOPE_API_KEY` | `server/.env` | API key for Fun-ASR transcription in the Beijing region |

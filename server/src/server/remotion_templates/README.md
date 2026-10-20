@@ -28,7 +28,7 @@ Six business tools have implementations in this build:
 | `tools.inspect` | implemented — returns one tool descriptor by dotted ID or wire name; it reads a contract, it does not search or list tools |
 | `image.info` / `image.resize` / `image.crop` | contract only |
 | `preset.search` | implemented: plain listing with optional keyword; the agent picks what to recall |
-| `preset.modify` | implemented: copies a stored Preset or a task draft (`base_*`, earlier `draft_id`), keeps the copy host-side and returns its `draft_id`; compose it with source `{kind: "draft", draft_id}` |
+| `preset.modify` | implemented: copies a stored Preset or a task draft (`base_*`, earlier `draft_id`), keeps the copy host-side and returns its `draft_id`; compose it with source `{kind: "draft", draft_id}`. Code changes go in as exact `edits` `[{old_str, new_str}]` (each `old_str` occurs once) or as a whole `code`; the receipt counts the changed code lines and notes an edit that copied a stored Preset instead of its `base_*` draft (a stored Preset with the same code, schema and defaults as a `base_*` draft is the one the base draws with and is not noted) |
 | `validate.code` / `validate.render` | contract only |
 
 Deferred tools are marked `implemented=False` at registration and are filtered
@@ -157,6 +157,25 @@ other top-level parameter; the edit snapshot leaves them out and hands back `bas
 drafts with the current configuration values. The Agent binds style parameters only (`color`, or `line1Color` and
 `line2Color` for two tiers, keyword looks as `keywordEffect…`), never a configuration name.
 
+Motion is split out of the tiers (contract v4): `text.effects` lists `effect` Presets, each with a Chinese title, a
+slot (`enter`, `exit` or `loop`), a default position and, entering or exiting, a length in seconds (0.1–3, default
+0.5). An effect Preset receives `children`, the host's `Box` and `progress` (0 not shown, 1 fully shown) and only
+restyles what it wraps. The host leaves a wrap point at every position — `block` (the whole column), each tier
+(`tiers` for both, `line1`/`line2` for one; two tiers only) and each keyword hit (`keyword`, an inline box) — so
+effect k's configuration parameters `effect{k}` (switch), `effect{k}Target` (position) and `effect{k}Seconds` move it
+or retime it without regenerating (`categories.EFFECT_PARAMETER`; titles from the effect's title). An entrance rises
+from the position's first frame (a tier and its keyword hits count from the tier's start), an exit falls to 0 on the
+last frame, a loop stays at 1, and every length is at most half of the frames its position plays less one, so a text
+frozen on its middle frame still shows in full. The text block of a new work records `still`: the host then holds
+each tier Preset on the middle frame of the frames the tier plays (`compose.mjs` `__Hold`), so motion of its own
+never plays and a stored animated text Preset is reused as it is, look kept; compose requires at least one enter and
+one exit effect (kept with `enabled: false` for still text), so a block never ends up without motion. The keyword
+hits inside a held tier get its live frame back (`__Live`), so a keyword Preset, the switchable keyword effect, and
+the effects at `keyword` keep playing. Edits of a text effect made before effects (no `still`, or boxes) keep playing
+their tier Presets' own motion and need no effects. The workspace parameter panel shows such a block as two sections,
+「文字」 (the text itself) and 「特效」 (one card per effect and the keyword effect, each with its switch, position, length
+and own look).
+
 The Agent decides from the request and the reference images whether the block has two tiers and a keyword Preset. The
 new-chat switches are a temporary explicit choice: `POST /works` takes `keyword_effect` and `two_tier` (strict booleans,
 default false) that reach every job as `user_intent.original_request`; for a new work (`ToolSession.requested`)
@@ -184,7 +203,15 @@ Without that directory, fontconfig keeps its normal per-sandbox cache fallback.
 Effects can use any font of the shared font library, a MySQL registry (`remotion_fonts`, `font_store.py`) whose files
 are objects in ZOS (or the local object folder while `ZOS_BUCKET` is empty). It holds three kinds of font and is never
 empty: the system default `Noto Sans CJK SC` (registered when the runtime starts, no file), the preinstalled catalog
-and the fonts users upload. Rows are only ever added, so a template that names a family keeps rendering.
+and the fonts users upload. A row is one font file; a font card is a family with up to four styles (regular, bold,
+italic, bold italic, any of them missing), one file each, all rendered under the card's family, so CSS
+`font-weight: 700` and `font-style: italic` use the real bold and italic files. A card's first file is keyed by the
+family itself and each later file by `family<TAB>style` (the unique column still reserves the card's name). Rows are
+never deleted and their family never changes, so a template that names a family keeps rendering; only how a file is
+shown (label, preview strip, style) may be corrected. `GET /api/templates/fonts` lists cards with their `faces`; every
+face stored by the library has a `file_url` (`GET /api/templates/fonts/{id}`), and the system default's is the installed
+regular file, or null when the host does not have it, so the font library's specimen view can load each available
+style's own file.
 
 - **Preinstalled fonts**: the 16 free OFL fonts ship inside the backend package as `bundled_fonts/<file>.xz`
   (xz-compressed, about 60 MB). `font_catalog.json` pins each font's uncompressed size and SHA-256 and records where
@@ -200,15 +227,37 @@ and the fonts users upload. Rows are only ever added, so a template that names a
   HappyZcool-2016) are not bundled: they are proprietary or their redistribution terms are not confirmed. Anyone
   holding a licence can upload them (the family name inside the file must match).
 - **Uploads**: `POST /api/templates/fonts` (multipart `file`, optional `label` and `preview`, `X-IMV-Device`) takes a
-  `.ttf`/`.otf` up to `IMV_FONT_UPLOAD_MAX_BYTES`. The backend only reads the family name from the `name` table with
-  bounds-checked Python and never decodes the font; the sandboxed Chrome and the user's own browser do. The family
-  must differ from every registered, installed and reserved name. The preview strip is drawn by the uploader's browser
-  and only its alpha is kept. Fonts cannot be deleted. The library is shared, like the Sprite library.
+  `.ttf`/`.otf` up to `IMV_FONT_UPLOAD_MAX_BYTES`. The backend only reads the font's names from the `name` table with
+  bounds-checked Python and never decodes the font; the sandboxed Chrome and the user's own browser do. The family is
+  the font's English (default-language) name; the display name is its own Chinese name when it has one, otherwise the
+  same family, and never the file name. Duplicates are found by content: a file whose SHA-256 is already registered
+  (an upload or a preinstalled font, also one that sync has not installed yet) is refused and the message names that
+  font. The file's style (name ID 17, else 2) places it: Italic or Oblique makes it an italic style, and the rest
+  names the weight. Regular (or no weight) and Bold files, upright or italic, join their family's uploaded card when
+  that style is still empty, in any upload order (`Smiley Sans` Oblique is that card's italic). Any other weight is a
+  card of its own named after it (`Montserrat Thin`, whose Thin Italic file is that card's italic). A variable font
+  ignores its weight words, which only name its default instance. Another version of a filled style, or a name that a
+  preinstalled, installed or reserved font carries, goes to the legacy family (name ID 1), that name plus version
+  (`Zed Sans v2.000`), or that name numbered from 2 (`Zed Sans (2)`), whichever is free or names an uploaded card with
+  that style empty; preinstalled and system cards are never joined. A preinstalled font whose family an earlier
+  upload took is skipped by sync with a warning. Uploads registered before the display name and style came from the
+  font (labelled with their file name, all regular) get both at the next `FontStore.sync`; a strip that shows the file
+  name is dropped (with its object) and the name is shown as text, and the family never changes.
+  The preview strip is drawn by the uploader's browser with that display name (`client/src/features/fonts/names.ts`
+  applies the same rule and sends it as `label`); a strip drawn with any other text is dropped, and only its alpha is
+  kept. Fonts cannot be deleted. The library is shared, like the Sprite library.
 - **Rendering**: the sandbox has no network, so the backend caches each font from the object store after checking its
   registry hash (`<data dir>/fonts/files`) and the sandbox mounts that folder read-only at `/imv-fonts` with a generated
   `fonts.conf` (`FONTCONFIG_FILE`). Chrome in every worker (validation, preview build, overlay render, video
-  composition) resolves a family by its CSS name. macOS development without the sandbox does not load them.
-- **Agent**: the Executor rules end with the library as an enum read from the database. A text effect must expose
+  composition) resolves a family by its CSS name. The config holds one scan rule per font file (preinstalled and
+  uploaded) that lists the file under its card's family only, so files that carry the same name inside them stay
+  apart, including a preinstalled variable font's legacy name such as `Noto Sans SC Thin`, and fontconfig picks among
+  a card's files by their own weight and slant (each sandbox scans the folder afresh, its fontconfig cache being in its
+  own `/tmp`). The browser preview registers each file as a `FontFace` with its weight and style; player bundles built
+  before cards had styles skip italic files (their list entries carry no plain `weight`). macOS development without
+  the sandbox does not load them.
+- **Agent**: the Executor rules end with the library as an enum read from the database, one entry per card with the
+  styles it has (bold and italic text use the card's bold and italic files). A text effect must expose
   `fontFamily` (an enum of library families, defaulting to the font chosen from the reference image or description);
   `sprite.create` checks the enum against the library. The stored Sprite keeps a plain string (`maxLength` 100), since
   the library grows, and a choice is checked against the live library: `placement.resolve` when a template saves or an
@@ -230,7 +279,7 @@ and rendering; this change does not alter per-frame render timeouts.
 
 The isolation is Linux-only: `POST /works`, a parameter patch on a pre-composition
 (PR74) version or on a composed version whose player bundle predates injected defaults
-(no `/* imv-preview-protocol 1 */` first line) sent to `POST /works/{id}/messages`, the retry of such a parameter job and
+(no `/* imv-preview-protocol N */` first line) sent to `POST /works/{id}/messages`, the retry of such a parameter job and
 `POST /api/sprites/publish` return 503 naming the unsupported platform or the missing
 `bwrap`, `prlimit` or `node` before anything is queued, so on macOS the service starts but
 cannot generate templates. A parameter patch on a composed (PR76) version whose bundle
@@ -345,7 +394,8 @@ Drafts are handles: neither the model nor the snapshot carries Sprite or draft s
 composition is never copied back verbatim. Presets of the same source are bundled once however many
 instances use them. Bundling erases the Presets' TypeScript types and type arguments, so the composed
 adapter types every variable, class field and base class `any` and gives each class an `any` index signature; each Preset is still typechecked on its own before it is composed. For an edit, the accepted base's instances are registered as `base_<instance_id>`
-Preset drafts; only the Executor's snapshot shows their source, each distinct source once. The session
+Preset drafts and listed as `base.instances` in the shape `sprite_compose` takes (source
+`{kind: "draft", draft_id}`), like `base.text`; only the Executor's snapshot shows their source, each distinct source once. The session
 snapshot stays within 200 KB: a base too large for it has its largest sources omitted first (`code_omitted`,
 `legacy_code_omitted`), while their handles still compose unchanged. The execution
 snapshot shows `tool_calls_left_in_batch` and `tool_calls_left_in_task` instead of used/limit pairs.
@@ -517,16 +567,26 @@ ready message. The page injects the published defaults and content box as a JSON
 `<`, `>`, `&` and line separators escaped); the player starts from them, merges `imv-preview-update` values over
 them (objects key by key, arrays and scalars replace) and applies an optional `host: {transform}` through
 `remotion/host-layer.tsx`, the wrapper the overlay render uses too. The wrapper also lifts the clipping of a composed Sprite's instance boxes (the parent of each `data-imv-instance`, which Sprites sealed before this carry as `overflow: hidden`; `player_page` has the same rule for older bundles), so a larger font, keyword size or underline is bounded by the canvas only; a component's own fixed boxes are still measured as before. Such a bundle reports `host: true` when ready.
-`presentation.mjs` writes the host protocol it speaks as the bundle's first line (`/* imv-preview-protocol 1 */`,
-`publication.PREVIEW_PROTOCOL`); only that line counts, because the generated code and its defaults are bundled too and
-can contain any text. Publishing rebuilds the bundle from the sealed source in the isolated worker when the sealed one
-lacks that line and refreshes an existing publication on re-save; a failed rebuild still saves the asset, just without overlay preview.
+With `fonts=host` in the page URL the player does not download the managed fonts itself. The page has an opaque origin
+(sandbox), so the browser keeps no HTTP cache for it and every overlay and catalog cover would fetch both files again.
+Instead it posts `imv-preview-fonts-request`, and the host page answers `imv-preview-fonts` with a Blob per weight
+(`400`, `700`) that it read once from `GET /api/sprites/fonts/{weight}` (`Cache-Control: no-cache`: the browser may keep the file but revalidates it by ETag, so a font replaced by a server upgrade is not served stale).
+The answer `fonts: null`, or no answer within 30 seconds (the files are large, so only a parent that never answers is given up on),
+makes the player fall back to the relative `fonts/{weight}` route.
+`presentation.mjs` writes the host protocol it speaks as the bundle's first line (`publication.PREVIEW_PROTOCOL`).
+Version 1 (`/* imv-preview-protocol 1 */`) covers frame sync, injected defaults and placement overrides. Version 2
+(`/* imv-preview-protocol 2 */`) adds the host fonts. Only that line counts, because the generated code and its
+defaults are bundled too and can contain any text (`publication.bundle_protocol`). A version 1 bundle still reads
+injected defaults, so parameter revisions stay instant (`revisable`), but it is not current.
+Publishing rebuilds the bundle from the sealed source in the isolated worker when the sealed one
+is not current and refreshes an existing publication on re-save; a failed rebuild still saves the asset, just without overlay preview.
 A refresh stages the new bundle and records its hash before replacing the copy, so a failed update keeps the
 previous copy working and publishing again retries it. Identical publish requests (same version and field
 choice) take turns, so a double click rebuilds once.
-A saved publication whose copy lacks the protocol line is rebuilt from its published source on its first preview (it
-cannot take placement transforms otherwise, so an asset saved before they existed would not follow position edits in
-the template editor); a failed rebuild or store serves the old copy and the next preview retries. Concurrent previews
+A saved publication whose copy does not declare the current protocol is rebuilt from its published source on its first
+preview. Without the protocol line it cannot take placement transforms, so an asset saved before they existed would not
+follow position edits in the template editor; a version 1 copy would download its own fonts. A failed rebuild or store
+serves the old copy and the next preview retries. Concurrent previews
 of one Sprite rebuild once.
 
 ## Overlay renders for the bus

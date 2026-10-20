@@ -1,7 +1,8 @@
 /**
  * 模板里一次 Remotion 摆放的设置，只影响这次摆放、不改资产：字效调示例文字（多行字效逐行填写，用换行连接）、
- * 字号、字体与字重（双栏逐栏设置，与字效工作区的配置参数相同）、水平/垂直位置（百分比，与 IMS 文字一致）与关键词；滤镜与转场调强度，视频特效调位置、缩放、旋转与不透明度，并设置起点或所占交界处。
- * 颜色、速度、动画与出入场时间等资产内部参数不在这里调，说明原因并提供回字效工作区的入口；这些参数已有的覆盖仍生效，可在此恢复默认。
+ * 字号、字体与字重（双栏逐栏设置，与字效工作区的配置参数相同）、特效的开关、作用位置与时长、水平/垂直位置（百分比，与 IMS 文字一致）与关键词；
+ * 滤镜与转场调强度，视频特效调位置、缩放、旋转与不透明度，并设置起点或所占交界处。
+ * 颜色、速度与动画外观等资产内部参数不在这里调，说明原因并提供回字效工作区的入口；这些参数已有的覆盖仍生效，可在此恢复默认。
  * 修改只进入草稿，随模板保存时服务端再按发布契约检查。
  */
 import { useState } from "react";
@@ -15,7 +16,7 @@ import { Hint } from "@/components/Hint";
 import { ParameterControl, withLine, type ParameterValue } from "@/components/ParameterControl";
 import { SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
 import type { SpriteAsset } from "@/features/sprites/model";
-import { CATEGORIES, TEMPLATE_KEYWORD_PARAMETERS, categoryOf, instanceTransformFields, isInstanceParameter, percentToPixels, pixelsToPercent, transformField, type TransformField } from "@/features/sprites/parameters";
+import { CATEGORIES, EFFECT_PARAMETER, TEMPLATE_KEYWORD_PARAMETERS, categoryOf, instanceTransformFields, isInstanceParameter, percentToPixels, pixelsToPercent, transformField, type TransformField } from "@/features/sprites/parameters";
 import { textKey, textRoles, type EffectTrack, type RemotionClip } from "./model";
 import { BOUND_TEXT_PARAMETERS, type bindClip } from "./clips";
 import { TrackTiming } from "./TrackTiming";
@@ -78,6 +79,10 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
   // 模板里只开放适用的参数；资产内部参数（颜色、速度、动画时间等）回字效工作区改，已有覆盖仍列出以便恢复默认。
   const others = asset?.parameters.filter((item) => !keywordParameters.includes(item) && shown(item.field.key)) ?? [];
   const appearanceParameters = asset ? others.filter(({ field }) => isInstanceParameter(asset.kind, field.key)) : [];
+  // 字效特效的开关、位置与时长单列一组，排在排版与位置之后；同一个特效（effect{k}…）的参数放在一张卡片里。
+  const effectParameters = appearanceParameters.filter(({ field }) => EFFECT_PARAMETER.test(field.key));
+  const effectCards = [...new Set(effectParameters.map(({ field }) => field.key.match(/^effect\d+/)![0]))]
+    .map((name) => effectParameters.filter(({ field }) => field.key.match(/^effect\d+/)![0] === name));
   const internalParameters = others.filter((item) => !appearanceParameters.includes(item));
   const exposedTransforms = asset ? instanceTransformFields(asset.kind) : [];
   const overriddenInternal = [
@@ -175,7 +180,7 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
           <Input id={`${textTrack.id}-sample`} value={textTrack.editor[sampleRole]} maxLength={SAMPLE_MAX_LENGTH[sampleRole]} onChange={(event) => onSample(event.target.value)} />
           <p className="text-[11px] text-muted-foreground">{textRoles[sampleRole]}的文字由这个文字对象提供，合成时换成实际{sampleRole === "title" ? "标题" : "字幕"}。</p>
         </div>)}
-        {appearanceParameters.map(parameterRow)}
+        {appearanceParameters.filter((item) => !effectParameters.includes(item)).map(parameterRow)}
         {exposedTransforms.map((name) => {
           const { fallback, ...field } = transformField(name, asset.kind, asset.width, asset.height);
           // 位置像 IMS 文字一样用 0～100% 表示，存储仍是资产画布像素。
@@ -193,6 +198,10 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
           </div>;
         })}
         {exposedTransforms.includes("x") && <p className="text-[11px] text-muted-foreground">也可以在预览画面上拖动所选资产调整位置。</p>}
+        {effectCards.length > 0 && <div className="space-y-2">
+          <h3 className="text-xs font-medium">特效</h3>
+          {effectCards.map((rows) => <div key={rows[0].field.key} className="space-y-2 rounded-md border px-3 py-2">{rows.map(parameterRow)}</div>)}
+        </div>}
         {overriddenInternal.length > 0 && <div className="space-y-1.5 rounded-md border px-3 py-2">
           <p className="text-[11px] text-muted-foreground">下列设置不在模板里调整，但这次摆放仍带着覆盖值：</p>
           {overriddenInternal.map((item) => <div key={item.key} className="flex items-center justify-between gap-2 text-xs"><span className="min-w-0 truncate">{item.label} · 已覆盖</span>
@@ -202,7 +211,7 @@ export function SpriteClipInspector({ clip, asset, duration, textTrack, textTrac
       <fieldset hidden={activeTab !== "appearance"} className="space-y-2 border-t px-4 py-3">
         <legend className="sr-only">资产默认参数</legend>
         <h3 className="text-xs font-medium">资产默认参数</h3>
-        <p className="text-[11px] text-muted-foreground">颜色、速度、动画与出入场时间等属于资产本身，不在模板里逐次调整。需要修改请到字效工作区生成新版本并重新保存到资产；已放进模板的这个资产不会被静默改变。</p>
+        <p className="text-[11px] text-muted-foreground">颜色、速度与动画外观等属于资产本身，不在模板里逐次调整。需要修改请到字效工作区生成新版本并重新保存到资产；已放进模板的这个资产不会被静默改变。</p>
         {internalParameters.length > 0 && <p className="text-[11px] text-muted-foreground">资产开放的参数：{internalParameters.map(({ field }) => field.label).join("、")}</p>}
         {onOpenRemotion && <Button type="button" variant="outline" size="sm" className="h-7 text-[11px]" onClick={onOpenRemotion}>前往字效工作区</Button>}
       </fieldset>

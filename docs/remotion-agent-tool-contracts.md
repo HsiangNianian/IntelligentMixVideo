@@ -10,7 +10,7 @@
 - 主画布固定为 **宽 1080、高 1920、9:16 竖屏、30 fps**。主画布宽高和帧率不是调用方可修改的配置。
 - preset 为单文件 TSX、参数 Schema 和默认参数构成的代码原子；sprite 组合多个 preset 实例。
 - preset.create 承接 Agent 已经写好的代码和描述。search 按描述关键词列出摘要，再按 ID 读取完整记录，不使用向量或语义检索。
-- preset.modify 承接 Agent 修改后的字段，副本由宿主保存在任务内，返回 `draft_id` 与摘要，不修改原记录、不自动入库。需要长期复用时再调用 create。
+- preset.modify 承接 Agent 修改后的字段（代码可按 edits 精确替换局部），副本由宿主保存在任务内，返回 `draft_id` 与摘要，不修改原记录、不自动入库。需要长期复用时再调用 create。
 - sprite.compose 生成组合定义与代码，草稿由宿主保存并返回 `draft_id` 与不含源码的摘要；sprite.create 按 `draft_id` 保存组合结果，调用方不回传源码。本期不定义 sprite 嵌套组合。
 - 两个 create 均在内部执行代码校验，通过后才入库。无需传入之前的校验回执，也不在工具内调用模型修复。
 - validate 提供代码检查和运行行为测试。工具提供统一测试上下文，Agent 编写自定义断言；不截图、不从视频抽帧、不做视觉 Judge。
@@ -174,9 +174,9 @@ class ComponentDefinition(ContractModel):
     default_parameters: JsonObject
 
 
-# 文字组合里 Preset 担任的角色：text 画一栏文字（宿主传入文字、切分好的片段、关键词组件与字体），keyword 画一个关键词命中。
-# 不填的是自由组件（滤镜、特效，以及更早按固定框组合的字效）。
-PresetRole = Literal["text", "keyword"]
+# 文字组合里 Preset 担任的角色：text 画一栏文字（宿主传入文字、切分好的片段、关键词组件与字体），keyword 画一个关键词命中，
+# effect 包住文字块的某个位置画入场、出场或持续特效。不填的是自由组件（滤镜、特效，以及更早按固定框组合的字效）。
+PresetRole = Literal["text", "keyword", "effect"]
 
 
 class PresetDraft(ComponentDefinition):
@@ -396,7 +396,7 @@ async def preset_search(request: PresetSearchInput) -> ToolResult[PresetSearchOu
 ```
 
 - 契约版本为 2，由 `tools.inspect` 的 `contract_version` 标识。旧版本只声明过 `matches` 语义检索结构，尚未启用；消费者必须按版本选择解析器，v2 不返回旧字段。
-- 不做语义或向量检索：只列出摘要（preset_id、description、参数名），由 Agent 自行判断召回哪个。query 可选，按空白分成若干词，description 须不区分大小写地包含每一个词；role 可选，只列出该角色（text 或 keyword）的预设；limit 为 1～100 的整数，省略时为 20，按创建时间由新到旧。旧无时区时间按 UTC 解释，无效时间放末尾，记录仍可按 ID 读取。
+- 不做语义或向量检索：只列出摘要（preset_id、description、参数名），由 Agent 自行判断召回哪个。query 可选，按空白分成若干词，description 须不区分大小写地包含每一个词；role 可选，只列出该角色（text、keyword 或 effect）的预设；limit 为 1～100 的整数，省略时为 20，按创建时间由新到旧。旧无时区时间按 UTC 解释，无效时间放末尾，记录仍可按 ID 读取。
 - 传入 preset_id 时，另在 preset 字段返回该预设的完整代码、Schema 和默认参数；ID 不存在返回 PRESET_NOT_FOUND 并列出近期可用 ID。读取预设不得借用 preset.modify。
 - 匹配结果是候选能力，不表示已经符合当前用户需求。排序不承诺统一的相似度百分比，不暴露含义未统一的“置信度”。
 - 没有结果返回 `presets: []`；不会自动创建预设。查询不得写入预设库。
@@ -493,10 +493,18 @@ create 始终创建新记录，不覆盖来源预设，也不把相同描述视�
 ### 6.3 modify
 
 ```python
+class CodeEdit(ContractModel):
+    """副本代码里的一处精确替换：old_str 从源代码原样复制，且在当时的代码中恰好出现一次。"""
+
+    old_str: NonEmptyString
+    new_str: str
+
+
 class PresetChanges(ContractModel):
-    """仅替换显式提供的字段；工具还须检查至少提供一项。"""
+    """仅替换显式提供的字段；edits 按顺序在源代码上精确替换，与整份 code 互斥；工具还须检查至少提供一项。"""
 
     code: Omittable[str]
+    edits: Omittable[Annotated[list[CodeEdit], Field(min_length=1)]]
     description: Omittable[Description]
     parameter_schema: Omittable[JsonSchema]
     default_parameters: Omittable[JsonObject]
@@ -519,11 +527,17 @@ class PresetDraftSummary(ContractModel):
 
 
 class PresetModifyOutput(ContractModel):
-    """副本句柄与摘要，不含新记录 ID；source_preset_id 指向原记录。"""
+    """副本句柄与摘要，不含新记录 ID；source_preset_id 指向原记录。
+
+    改动行数相对被复制的源代码计算，让小需求被整份重写时在回执里可见；notice 是宿主的固定提示。
+    """
 
     draft_id: DraftId
     digest: DraftDigest
     preset: PresetDraftSummary
+    code_lines_removed: NonNegativeInteger
+    code_lines_added: NonNegativeInteger
+    notice: Omittable[str]
 
 
 async def preset_modify(request: PresetModifyInput) -> ToolResult[PresetModifyOutput]:
@@ -532,19 +546,23 @@ async def preset_modify(request: PresetModifyInput) -> ToolResult[PresetModifyOu
 ```
 
 - preset_id 来自 search；也可以是本任务的预设草稿句柄（编辑基线登记的 `base_<instance_id>` 或此前 modify 返回的 `draft_id`），此时以该草稿为底复制，source_preset_id 沿用草稿已有的来源（没有则省略）。工具读取该记录或草稿，changes 至少包含一个字段；未知 ID 返回 `PRESET_NOT_FOUND`，并列出近期 preset_id 与本任务草稿句柄。
-- changes.code 是 Agent **已经修改完的完整源码**，不是自然语言修改要求，也不是待工具应用的文本 diff。
-- changes 中每个字段整体替换原字段；未传字段保留原值。特别是 Schema 和 default_parameters 整体替换，不递归拼接旧字段。
+- 改代码优先用 changes.edits：每项把源代码里的一段原文 `old_str` 换成 `new_str`，按顺序应用，后一项作用于前面各项改完的代码。`old_str` 必须原样复制（缩进与换行都算）且在当时的代码中恰好出现一次：找不到或出现多次时返回 `INVALID_ARGUMENT`，`field` 为 `/changes/edits/<序号>/old_str`，消息说明出现的行号，或在首行去掉首尾空格后能对上时指出那一行；任何一项失败都不产生副本。编辑任务只改用户要求的部分，不为一处改动整份重写。
+- changes.code 是 Agent **已经修改完的完整源码**，不是自然语言修改要求，也不是待工具应用的文本 diff；只用于用户要求的整体重写。code 与 edits 互斥，同时提供返回 `INVALID_ARGUMENT`。
+- 其余字段整体替换原字段；未传字段保留原值。特别是 Schema 和 default_parameters 整体替换，不递归拼接旧字段。
 - 合并后检查数据结构、Schema 和默认参数的一致性，把完整 PresetDraft（source_preset_id 为输入 preset_id）保存在任务内，返回 `draft_id`、内容摘要 `digest` 和不含源码的摘要；源码不回传给调用方。`draft_id` 每次调用都是新的，`digest` 只由草稿内容决定：同样的修改得到同样的 `digest`，宿主的空转判断据此识别重复调用。
+- 回执另带 `code_lines_removed`/`code_lines_added`：副本相对被复制的源代码删除与新增的行数（按行比较），小需求被整份重写时一眼可见。编辑任务（已登记 `base_*` 草稿）复制的是库内预设而不是基线草稿、且该预设的代码、Schema 与默认参数不同于任何基线草稿时（Sprite 快照不保留库内 preset_id，只能按内容认出基线所用的预设），回执带 `notice` 说明该预设不属于当前版本、此前版本的修改不在副本里，应复制 `base_*` 草稿；这只是提示，不拒绝调用（用户可能要求换成库里的样式）。
 - 数据契约无效时返回 `INVALID_ARGUMENT`，`field` 为 `/changes`，`details.diagnostics` 指出具体字段；原记录保持不变。Schema 只允许文档内引用，不读取外部 URL。
 - 工具不执行模型调用、不写库、不创建新的 preset_id，不承诺 LSP 或行为检查已通过。可单独调用 validate 获取诊断。
 - 修改副本以 `{kind: "draft", draft_id}` 直接交给 compose；需要检索复用时，由调用方把完整定义交给 create。
 
 ```json
 {
-  "preset_id": "preset_label_001",
+  "preset_id": "base_label",
   "changes": {
     "description": "带白色描边、文字和颜色可调的文字原子",
-    "code": "/** 带描边的文字预设副本。 */\nimport React from 'react';\n/** 保留文字与颜色参数，增加描边。 */\nexport default function Label(props: {text: string; color: string}) { return <div data-testid=\"label\" style={{color: props.color, WebkitTextStroke: '1px white'}}>{props.text}</div>; }"
+    "edits": [
+      {"old_str": "style={{color: props.color}}", "new_str": "style={{color: props.color, WebkitTextStroke: '1px white'}}"}
+    ]
   }
 }
 ```
@@ -671,8 +689,32 @@ class TextKeyword(ContractModel):
     parameters: Omittable[JsonObject]
 
 
+# 特效的类型：enter 入场、exit 出场（宿主按配置的时长算显现进度），loop 持续（进度恒为 1，需要循环时自己读帧）。
+EffectSlot = Literal["enter", "exit", "loop"]
+# 特效作用的位置：block 整个文字块，tiers 各栏（各自从出现的帧起），line1、line2 上栏或下栏（只有双栏），keyword 每个关键词命中。
+EffectTarget = Literal["block", "tiers", "line1", "line2", "keyword"]
+# 特效的中文名称，如「淡入」「发光」：宿主据此写它的开关、位置与时长参数的标题。
+EffectTitle = Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_length=1, max_length=8)]
+
+
+class TextEffect(ContractModel):
+    """文字块的一个特效：画它的 effect 角色 Preset 及其样式参数、中文名称、类型，以及作用位置、时长与开关（配置的默认值）。"""
+
+    instance_id: NonEmptyString
+    source: PresetSource
+    parameters: Omittable[JsonObject]
+    title: EffectTitle
+    slot: EffectSlot
+    target: EffectTarget
+    # 入场、出场的时长（秒），省略为 0.5；持续特效没有时长。
+    seconds: Omittable[Annotated[FiniteNumber, Field(ge=0.1, le=3)]]
+    # 是否默认开启，省略为开启；编辑时带回用户关掉的状态。
+    enabled: Omittable[StrictBool]
+
+
 class TextComposition(ContractModel):
-    """字效的文字组合：宿主按配置把文字切成一栏或上下两栏，各栏交给 text Preset 画，关键词命中交给 keyword Preset 画。"""
+    """字效的文字组合：宿主按配置把文字切成一栏或上下两栏，各栏交给 text Preset 画，关键词命中交给 keyword Preset 画，
+    特效交给 effect Preset 包住它们的位置。"""
 
     layout: TextLayout
     # 默认文字：单栏一行，双栏为「上栏\n下栏」。
@@ -683,15 +725,29 @@ class TextComposition(ContractModel):
     line_gap: Omittable[Annotated[FiniteNumber, Field(ge=0, le=300)]]
     line_starts: Omittable[list[Annotated[Integer, Field(ge=0, le=3600)]]]
     keyword: Omittable[TextKeyword]
+    # 按顺序包住各自位置的特效，先列的在里层；宿主按顺序给它们第 1、2…个特效的配置参数。
+    effects: list[TextEffect] = Field(default_factory=list, max_length=6)
     duration_frames: PositiveInteger
 
 
+class TextBlockEffect(ContractModel):
+    """组合后记录的一个特效：实例、中文名称与类型；位置、时长与开关是配置参数，默认值在 Sprite 的默认参数里。"""
+
+    instance_id: NonEmptyString
+    title: EffectTitle
+    slot: EffectSlot
+
+
 class TextBlock(ContractModel):
-    """组合后记录的文字块结构：区域、各栏实例与关键词实例；配置的默认值在 Sprite 的默认参数里。"""
+    """组合后记录的文字块结构：区域、各栏实例、关键词实例与特效；配置的默认值在 Sprite 的默认参数里。"""
 
     layout: TextLayout
     tiers: list[NonEmptyString] = Field(min_length=1, max_length=2)
     keyword: Omittable[NonEmptyString]
+    effects: list[TextBlockEffect] = Field(default_factory=list)
+    # 宿主把各栏定格在中间帧显示、文字块的动画都由特效 Preset 画（有可配置特效之后的作品；关键词命中照常播放）；
+    # 更早的字效没有这一项，它们的 text Preset 自己画的动画照常播放。
+    still: Omittable[Literal[True]]
 
 
 class SpriteDraft(ComponentDefinition):
@@ -776,6 +832,8 @@ async def sprite_compose(request: SpriteComposeInput) -> ToolResult[SpriteCompos
 ```
 
 description 非空；字效给出 text 文字块且 instances 为空，其他分类 instances 非空。主画布配置不作为输入；起点之前和实例之间未被内容覆盖的区间保持空画布。
+
+契约版本 4 在文字块里新增 `effects` 特效：每项是一个 role=effect 的 Preset（宿主传入被包住的 `children`、外层元素 `Box` 与显现进度 `progress`，0 还没出现、1 完全显示；它只改变被包住部分的呈现，不改变尺寸、字体与排版），带中文名称 `title`、类型 `slot`（`enter` 入场、`exit` 出场、`loop` 持续）、默认作用位置 `target`（`block` 整体、`tiers` 各栏、`line1`/`line2` 上栏或下栏，这三个只用于双栏，`keyword` 每个关键词命中）、入场与出场的时长 `seconds`（0.1～3 秒，省略为 0.5；持续特效不能填）与默认开关 `enabled`，先列的在里层。宿主在整体、每一栏与每个关键词命中处都留出包裹点：入场的进度在该位置出现后按时长从 0 升到 1（各栏与关键词从所在栏出现的帧算起），出场在结尾按时长从 1 降到 0，持续特效恒为 1；时长最多取该位置播放帧数减一后的一半，定格在中间帧的短字幕仍完整显示。第 k 个特效（从 1 起）得到配置参数 `effect{k}`（开关）、`effect{k}Target`（位置枚举）与入场、出场的 `effect{k}Seconds`，标题取特效的中文名称，样式参数与实例都不能用这种名字。新作品（以及有 `still` 标记的基线）的各栏由宿主定格在该栏播放帧数的中间帧显示，text Preset 自带的动画不再播放（库里带动画的 text Preset 可原样复用），文字块至少要有一个入场与一个出场特效（不想要动画时保留它们并设 `enabled: false`）；关键词命中在定格的栏里取回实时帧，keyword Preset 与作用于关键词的特效照常播放；编辑更早的字效时 text Preset 自带的动画照常播放、不要求特效。单栏使用 `tiers`/`line1`/`line2`、持续特效带 `seconds`、缺少入场或出场特效、特效 Preset 角色不符或 instance_id 占用配置名时按字段返回 INVALID_ARGUMENT。
 
 契约版本 3 新增 `text` 文字块（字效专用，新作品必须使用，编辑更早按固定框组合的字效时仍可用 instances）：文字块给出区域、默认文字（单栏一行，双栏「上栏\n下栏」）、基准字号、各栏（role=text 的 Preset、样式参数、字体、字重、双栏的字号比例）、双栏的栏间距与行起点、可选的 role=keyword 关键词 Preset 和时长。宿主据此生成源码（各栏在区域内纵向居中排布，下栏到起点前定格于首帧、不显示但占位；每个关键词在全文的首次字面命中按 IMS 六个关键词样式包裹，`keywordEffect` 开启时交给关键词 Preset 画），并生成固定名称、Schema 与中文标题的配置参数：`text`、`fontSize`、单栏 `fontFamily`/`fontWeight` 或双栏每栏 `line{i}FontFamily`/`line{i}FontWeight`/`line{i}SizeRatio` 与 `lineGap`、`lineStartFrames`、七个关键词参数及有关键词 Preset 时的 `keywordEffect`；它们在 bindings 中以伪实例 `text` 为目标。`parameters` 只绑定各 Preset 的样式 prop，不能占用配置名。text Preset 由宿主传入 `text`、`segments`、`Keyword`、`fontFamily`、`fontWeight`、`fontSize`，keyword Preset 传入 `text`；这些 prop 不能写进它们的 parameter_schema。行数与栏数不符、双栏缺字号比例/栏间距/行起点、行起点不从 0 开始、递减或下栏不早于文字块结束、字体不在字体库、Preset 角色不符、各栏与关键词实例的 instance_id 重复或占用 `text` 与配置名（否则它的嵌套参数会顶替同名配置参数）时按字段返回 INVALID_ARGUMENT。
 
@@ -1274,7 +1332,7 @@ async def tools_inspect(request: ToolInspectInput) -> ToolResult[ToolDescriptor]
 
 根据精确工具名返回真实契约，不做语义搜索、不执行被查询工具。未知名称返回 `TOOL_NOT_FOUND`，消息可附最多两个拼写相近的名称（`Closest:`）以便纠正拼写，但不会据此返回任何契约。输入格式错误返回 `INVALID_ARGUMENT`。
 
-描述符始终返回 `contract_version`；默认版本为 1，`preset.search` 的列表加 ID 查找结构为版本 2，`sprite.compose` 的文字块为版本 3。调用方应先读取版本和 Schema，再选择对应的输入输出解析器，不把 v2 摘要当成旧 `matches` 完整记录。
+描述符始终返回 `contract_version`；默认版本为 1，`preset.search` 的列表加 ID 查找结构为版本 2，`sprite.compose` 的文字块为版本 3、文字块特效为版本 4。调用方应先读取版本和 Schema，再选择对应的输入输出解析器，不把 v2 摘要当成旧 `matches` 完整记录。
 
 input_schema 描述完整入参；output_schema 描述包含 ok/data/error 的完整 ToolResult，而非只描述成功 data。Schema 为自包含 JSON Schema，公共类型可以放入 `$defs`，不能依赖 Agent 自行查找未给出的模型。
 
@@ -1328,7 +1386,7 @@ Sprite，宿主随即直接发布它，不再交回 Outer（Outer 没有发布�
 1. Agent 调用 image.info 读取参考图信息；必要时调用 crop/resize 获取更适合观察的图片 URL。
 2. Agent 用可选关键词调用 preset.search，从 `presets` 摘要选择 ID，再用 `preset_id` 读取 `preset` 中的完整代码和参数契约；`has_more=true` 时缩小关键词范围。
 3. 已有预设满足需求时直接实例化并填参数，不调用 modify。
-4. 需要改变实现时，由 Agent 先写出修改后的代码，再调用 modify 取得副本的 `draft_id`；原预设不变。如果没有合适预设，Agent 编写完整定义，通过 create 校验后加入库。
+4. 需要改变实现时，由 Agent 用 edits 写出要替换的原文与新文本（整体重写才提交完整代码），再调用 modify 取得副本的 `draft_id`；原预设不变。如果没有合适预设，Agent 编写完整定义，通过 create 校验后加入库。
 5. Agent 明确提供各实例的位置、尺寸、层级和时间，选定效果分类并绑定该分类的必备顶层参数，调用 compose。输入可以同时包含 stored 和 draft 两类来源。
 6. compose 在任务内保存完整 SpriteDraft，返回 `draft_id` 与摘要，示例时间编排得到 150 帧、5 秒。
 7. 宿主把 SpriteDraft 的 code、parameter_schema、default_parameters 作为 component，composition.duration_frames 作为测试总帧数，连同需求断言交给 validate.render（本期该工具不向模型开放）。
@@ -1356,6 +1414,9 @@ Sprite，宿主随即直接发布它，不再交回 Outer（Outer 没有发布�
 | search 超出数量或字节上限 | 返回有界摘要和 has_more=true；单条无法容纳时返回 RESOURCE_LIMIT_EXCEEDED |
 | modify 原预设 | 返回副本 draft_id 与不含源码的摘要；原记录不变；副本没有新 preset_id |
 | modify 只改代码 | 继承原 Schema 和默认值，来源指向原记录；编译结论留给 validate/create |
+| modify 用 edits 改一处代码 | 只替换 old_str 那一段，其余源码逐字保留；回执的改动行数只计这一处 |
+| edits 的 old_str 找不到或出现多次 | INVALID_ARGUMENT 指向该项并说明行号，不产生副本 |
+| 编辑任务复制库内预设而非 base_* 草稿 | 照常返回副本，回执带 notice 提示应复制基线草稿；内容与某个基线草稿相同的库内预设不提示 |
 | 副本直接参与 compose | 能形成完整 sprite，无需把副本加入 preset 库 |
 | 同一 preset 使用两次 | 实例 ID、参数和局部时间相互独立 |
 | 重复 instance_id | 拒绝，不发生参数覆盖或标识碰撞 |

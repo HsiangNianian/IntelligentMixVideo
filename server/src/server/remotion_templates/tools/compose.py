@@ -2,7 +2,7 @@
 
 Box instances are placed by the Agent's layout; a text effect's text block is laid out by the host (`compose.mjs`
 `textEntry`), which owns the block's configuration parameters (`text_configuration`) while the Agent's Presets draw
-each tier and the keyword hit and expose only their style parameters.
+each tier and the keyword hit, wrap a position of the block in an effect, and expose only their style parameters.
 """
 from __future__ import annotations
 
@@ -12,7 +12,10 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from ..categories import FIXED_TITLES, KEYWORD_EFFECT_PROP, LINE_GAP, LINE_STARTS, REQUIRED, TEXT_KEYWORDS, TIER_SIZE_RATIO
+from ..categories import (
+    DEFAULT_EFFECT_SECONDS, EFFECT_PARAMETER, EFFECT_SECONDS, EFFECT_SLOTS, EFFECT_TARGETS, FIXED_TITLES, KEYWORD_EFFECT_PROP, LINE_GAP,
+    LINE_STARTS, REQUIRED, TEXT_KEYWORDS, TIER_SIZE_RATIO,
+)
 from .registry import ToolFault
 
 # 文字块的伪实例 ID：宿主生成的配置参数以它为绑定目标（各栏与关键词由宿主传入，不进入任何 Preset 的参数），各栏与关键词实例不能用这个 ID。
@@ -104,7 +107,9 @@ def text_configuration(block: dict[str, Any], fonts: list[str]) -> tuple[dict[st
 
     One tier exposes `fontFamily`/`fontWeight`; two tiers expose each tier's font, weight and size ratio plus
     `lineGap` and `lineStartFrames`. Both expose `text`, `fontSize` and the seven keyword parameters (off by
-    default), and a block with a keyword Preset also its `keywordEffect` switch (on by default).
+    default), a block with a keyword Preset also its `keywordEffect` switch (on by default), and effect k (from 1, in
+    the block's order) its switch `effect{k}`, its position `effect{k}Target` and, entering or exiting, its length
+    `effect{k}Seconds`, titled with the effect's own Chinese name.
     """
     rules = {rule.name: rule for rule in REQUIRED["text"]}
     font = {"type": "string", "enum": fonts}
@@ -128,7 +133,17 @@ def text_configuration(block: dict[str, Any], fonts: list[str]) -> tuple[dict[st
     entries += [(rule.name, rule.example, rule.off) for rule in TEXT_KEYWORDS]
     if block.get("keyword") is not None:
         entries.append((KEYWORD_EFFECT_PROP, {"type": "boolean"}, True))
-    schemas = {name: {**deepcopy(definition), "title": FIXED_TITLES[name]} for name, definition, _ in entries}
+    titles = dict(FIXED_TITLES)
+    low, high = EFFECT_SECONDS
+    for index, effect in enumerate(block.get("effects", []), start=1):
+        name, title = f"effect{index}", effect["title"]
+        entries += [(name, {"type": "boolean"}, effect.get("enabled", True)),
+                    (f"{name}Target", {"type": "string", "enum": list(EFFECT_TARGETS[len(tiers)])}, effect["target"])]
+        titles |= {name: f"{EFFECT_SLOTS[effect['slot']]}·{title}", f"{name}Target": f"{title}位置"}
+        if effect["slot"] != "loop":
+            entries.append((f"{name}Seconds", {"type": "number", "minimum": low, "maximum": high}, effect.get("seconds", DEFAULT_EFFECT_SECONDS)))
+            titles[f"{name}Seconds"] = f"{title}时长（秒）"
+    schemas = {name: {**deepcopy(definition), "title": titles[name]} for name, definition, _ in entries}
     return schemas, {name: deepcopy(value) for name, _, value in entries}
 
 
@@ -172,19 +187,21 @@ def _nested(instances: list[dict[str, Any]], targets: dict[str, list[dict[str, s
 
 
 def compose_text_source(
-    block: dict[str, Any], tiers: list[dict[str, Any]], keyword: dict[str, Any] | None, bindings: list[dict[str, Any]], fonts: list[str],
+    block: dict[str, Any], tiers: list[dict[str, Any]], keyword: dict[str, Any] | None, effects: list[dict[str, Any]],
+    bindings: list[dict[str, Any]], fonts: list[str], *, still: bool = False,
 ) -> tuple[str, dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     """Generate a text block Sprite: its TSX, parameter schema, complete defaults and the host's configuration bindings.
 
-    ``tiers`` and ``keyword`` are the resolved text and keyword instances; ``bindings`` are the Agent's style
-    parameters over them. The configuration parameters come first in the schema, bound to the block itself
-    (`TEXT_BLOCK_ID`); a style parameter may not take a configuration name.
+    ``tiers``, ``keyword`` and ``effects`` are the resolved text, keyword and effect instances (effects in the block's
+    order); ``bindings`` are the Agent's style parameters over them. The configuration parameters come first in the
+    schema, bound to the block itself (`TEXT_BLOCK_ID`); a style parameter may not take a configuration name, nor the
+    name of a later effect's configuration. ``still`` holds each tier on its middle frame, so only the effects move it.
     """
     host_schemas, host_defaults = text_configuration(block, fonts)
-    instances = [*tiers, *([keyword] if keyword else [])]
+    instances = [*tiers, *([keyword] if keyword else []), *effects]
     lifted, lifted_defaults, targets = _lift(instances, bindings)
     for index, binding in enumerate(bindings):
-        if binding["name"] in host_schemas:
+        if binding["name"] in host_schemas or EFFECT_PARAMETER.match(binding["name"]):
             raise ToolFault("INVALID_ARGUMENT", f"{binding['name']} is a configuration parameter of the text block that the host provides; give the style parameter another name", field=f"/parameters/{index}/name")
     defs: dict[str, Any] = {}
     properties: dict[str, Any] = {**host_schemas, **lifted}
@@ -192,8 +209,11 @@ def compose_text_source(
     _nested(instances, targets, defs, properties, defaults)
     schema = {"type": "object", "properties": properties, "$defs": defs, "additionalProperties": False, "required": [*host_schemas, *lifted]}
     source = lambda item: {"instance_id": item["instance_id"], "code": item["preset"]["code"], "bindings": targets.get(item["instance_id"], [])}
-    code = _bundle({"text": {"layout": block["layout"], "tiers": [source(item) for item in tiers], "keyword": source(keyword) if keyword else None}, "defaults": defaults})
-    host_bindings = [{"name": name, "title": FIXED_TITLES[name], "targets": [{"instance_id": TEXT_BLOCK_ID, "parameter": name}]} for name in host_schemas]
+    code = _bundle({"text": {
+        "layout": block["layout"], "tiers": [source(item) for item in tiers], "keyword": source(keyword) if keyword else None,
+        "effects": [{**source(item), "slot": effect["slot"]} for item, effect in zip(effects, block.get("effects", []))], "still": still,
+    }, "defaults": defaults})
+    host_bindings = [{"name": name, "title": schema["title"], "targets": [{"instance_id": TEXT_BLOCK_ID, "parameter": name}]} for name, schema in host_schemas.items()]
     return code, schema, defaults, host_bindings
 
 

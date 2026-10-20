@@ -424,7 +424,7 @@ def test_create_stores_the_font_family_as_an_open_string(tmp_path, monkeypatch):
     """Agent 从字体库枚举里选字体：枚举里出现库外的字体名被拒绝；通过后保存的 Sprite 把 fontFamily 存成普通字符串（去掉冻结的枚举），
     宿主之后的校验与模板里的覆盖都看到这个形式，所以之后上传的字体也能选。"""
     library = ["Noto Sans CJK SC", "Zed Display"]
-    monkeypatch.setattr(FontStore, "active", SimpleNamespace(listing=lambda: [SimpleNamespace(family=name) for name in library]))
+    monkeypatch.setattr(FontStore, "active", SimpleNamespace(families=lambda: list(library)))
 
     def draft(enum: list[str]) -> SpriteDraft:
         """A text Sprite whose fontFamily enum is `enum`, defaulting to the library's second font."""
@@ -461,7 +461,7 @@ def test_create_stores_the_font_family_as_an_open_string(tmp_path, monkeypatch):
 
 def test_a_new_work_with_the_two_tier_switch_refuses_a_single_line_text(tmp_path, monkeypatch):
     """新会话打开「双栏」后，sprite.create 在挂载浏览器之前就拒绝单行字效并说明用户要的是双栏；编辑已有作品（有基线）时不强制。"""
-    monkeypatch.setattr(FontStore, "active", SimpleNamespace(listing=lambda: [SimpleNamespace(family=name) for name in TIER_LIBRARY]))
+    monkeypatch.setattr(FontStore, "active", SimpleNamespace(families=lambda: list(TIER_LIBRARY)))
     properties = {**TEXT_PROPERTIES, "fontFamily": TIER_FONT}
     single = SpriteDraft(
         description="标题", code="export default function Sprite(){return null}", kind="text",

@@ -359,11 +359,13 @@ async function lengthsCheck(page) {
 
 /**
  * Sample values of the props the host passes a text-block Preset (`ROLE_PROPS` in contracts.py), as JSX attributes of
- * the type check's call site: a text Preset draws one tier from its text, keyword segments and fonts, a keyword Preset one hit.
+ * the type check's call site: a text Preset draws one tier from its text, keyword segments and fonts, a keyword Preset one hit,
+ * an effect Preset wraps children in the host's Box at a progress.
  */
 const ROLE_HOST_PROPS = {
   text: 'text={"示例文字"} segments={[{text: "示例", keyword: true}, {text: "文字", keyword: false}]} Keyword={(keyword: {text: string}) => <span>{keyword.text}</span>} fontFamily={"Noto Sans CJK SC"} fontWeight={700} fontSize={96}',
   keyword: 'text={"示例"}',
+  effect: 'progress={1} Box={(box: {style?: React.CSSProperties; children?: React.ReactNode}) => <div style={box.style}>{box.children}</div>} children={<span>示例文字</span>}',
 };
 
 /**

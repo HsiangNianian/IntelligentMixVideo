@@ -2,6 +2,7 @@
 import { useUpdateBlocker } from "@/lib/update-guard";
 import { useCallback, useEffect, useState } from "react";
 import { listFonts, uploadFont, type FontInfo } from "./api";
+import { fontDisplayName } from "./names";
 import { drawFontPreview } from "./preview";
 
 /** 浏览器画预览条的函数；测试里可替换。 */
@@ -28,20 +29,24 @@ export function useFonts() {
     void load(controller.signal);
     return () => controller.abort();
   }, [load]);
-  /** 上传一个字体文件，显示名取文件名（不含扩展名）。 */
+  /**
+   * 上传一个字体文件。显示名取字体自己的名称（优先中文名，见 `fontDisplayName`），不取文件名；
+   * 画预览条同时验证浏览器能解码该字体；读不出名称时只做这项验证、不保留预览条，名称交给服务端决定。
+   */
   const upload = useCallback(async (file: File, previewer: Previewer = drawFontPreview): Promise<FontInfo | null> => {
     setProblem(null);
     setUploading(true);
     try {
-      const name = file.name.replace(/\.[^.]+$/, "");
-      let strip: Blob | null;
+      const name = fontDisplayName(await file.arrayBuffer());
+      let strip: Blob | null = null;
       try {
-        strip = await previewer(file, name);
+        const drawn = await previewer(file, name ?? "");
+        if (name) strip = drawn;
       } catch {
         setProblem("无法读取这个字体文件，请选择有效的 .ttf 或 .otf 字体。");
         return null;
       }
-      const created = await uploadFont(file, name, strip);
+      const created = await uploadFont(file, name ?? "", strip);
       await load();
       return created;
     } catch (error) {

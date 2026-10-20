@@ -10,6 +10,11 @@ import { HostLayer, type HostBox, type HostTransform } from "./host-layer";
 const channel = window.location.hash.slice(1);
 /** Sync mode (`?sync=1`): no controls or loop; the parent scrubs the Player with `imv-preview-sync` times and an optional clip length. */
 const sync = new URLSearchParams(window.location.search).get("sync") === "1";
+/**
+ * Host fonts mode (`?fonts=host`): the parent page hands over the managed font files it downloaded once. This page has an
+ * opaque origin, so the browser does not cache its requests and every player would download them again.
+ */
+const hostFonts = new URLSearchParams(window.location.search).get("fonts") === "host";
 type JsonValue = null | string | number | boolean | JsonValue[] | {[key: string]: JsonValue};
 type Values = Record<string, JsonValue>;
 /** Reject non-JSON or unbounded message values before updating the isolated Player. */
@@ -239,6 +244,9 @@ function App() {
       durationInFrames={length}
       fps={c.fps}
       controls={!sync}
+      // Tauri 的 WebView 在指针移入 iframe 后不一定再次触发悬停，播放时控制条会一直隐藏；
+      // 固定显示控制条，保证播放/暂停按钮在桌面客户端中始终可用。
+      alwaysShowControls={!sync}
       loop={!sync}
       clickToPlay={!sync}
       doubleClickToFullscreen={!sync}
@@ -259,16 +267,19 @@ function PreviewError({ requestId }: { requestId: number }) {
 }
 
 /**
- * Register the downloaded catalog fonts the serving page lists (`#imv-preview-fonts`). They are not loaded here:
- * the browser fetches a font only when text first uses its family, so an effect pays for the fonts it really uses.
+ * Register the downloaded font files the serving page lists (`#imv-preview-fonts`), each style of a card under the
+ * card's family with its weight and italic or normal style. They are not loaded here: the browser fetches a font only
+ * when text first uses its family and style, so an effect pays for the fonts it really uses. Lists from servers before
+ * cards had styles give only `weight`.
  */
 function registerCatalogFonts() {
   try {
     const fonts = JSON.parse(document.getElementById("imv-preview-fonts")?.textContent ?? "[]");
     for (const item of Array.isArray(fonts) ? fonts : []) {
-      if (typeof item?.family !== "string" || typeof item.weight !== "string" || typeof item.url !== "string") continue;
+      const descriptors = item?.descriptors ?? { weight: item?.weight, style: "normal" };
+      if (typeof item?.family !== "string" || typeof descriptors.weight !== "string" || typeof descriptors.style !== "string" || typeof item.url !== "string") continue;
       document.fonts.add(
-        new FontFace(item.family, `url("${new URL(item.url, window.location.href)}")`, { weight: item.weight }),
+        new FontFace(item.family, `url("${new URL(item.url, window.location.href)}")`, { weight: descriptors.weight, style: descriptors.style }),
       );
     }
   } catch {
@@ -276,14 +287,48 @@ function registerCatalogFonts() {
   }
 }
 
+/** How long to wait for the parent's answer before the page downloads the fonts itself. */
+const FONTS_WAIT_MS = 30_000;
+
+/**
+ * Ask the parent page for the managed font files (`imv-preview-fonts-request`). It answers `imv-preview-fonts` with a
+ * Blob per weight, or `fonts: null` when it has none; null makes the page download them itself. The files are large and
+ * the parent may still be reading them, so only a parent that never answers is given up on, after `FONTS_WAIT_MS`.
+ */
+function requestFonts(): Promise<Record<number, Blob> | null> {
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(() => finish(null), FONTS_WAIT_MS);
+    /** Stop waiting and settle with the parent's fonts, or null when there are none. */
+    function finish(fonts: Record<number, Blob> | null) {
+      window.clearTimeout(timer);
+      window.removeEventListener("message", receive);
+      resolve(fonts);
+    }
+    /** Take the parent's first answer on this channel. */
+    function receive(event: MessageEvent) {
+      const data = event.data;
+      if (event.source !== window.parent || data?.channel !== channel || data?.type !== "imv-preview-fonts") return;
+      const fonts = data.fonts as Record<string, unknown> | null | undefined;
+      const regular = fonts?.["400"];
+      const bold = fonts?.["700"];
+      finish(regular instanceof Blob && bold instanceof Blob ? { 400: regular, 700: bold } : null);
+    }
+    window.addEventListener("message", receive);
+    notify("imv-preview-fonts-request");
+  });
+}
+
 /** Await the same managed font files used by server rendering before exposing the Player. */
 async function mount() {
   registerCatalogFonts();
   try {
+    const given = hostFonts ? await requestFonts() : null;
     await Promise.all(
       [400, 700].map(async (weight) => {
-        const url = new URL(`./fonts/${weight}`, window.location.href);
-        const font = new FontFace("Noto Sans CJK SC", `url("${url}")`, {
+        const source = given
+          ? await given[weight].arrayBuffer()
+          : `url("${new URL(`./fonts/${weight}`, window.location.href)}")`;
+        const font = new FontFace("Noto Sans CJK SC", source, {
           weight: String(weight),
         });
         document.fonts.add(await font.load());

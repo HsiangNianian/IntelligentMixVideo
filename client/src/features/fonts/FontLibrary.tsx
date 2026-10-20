@@ -1,6 +1,8 @@
 /**
- * 字体库页面：以卡片展示共享字体库里的全部字体（系统默认、预装与用户上传），每张卡片用服务端预览条以字体自己的样子显示名称，
- * 并给出家族名、风格与字重；可按名称或风格搜索，也可以在这里上传自己的 .ttf/.otf。页面每次打开都重新读取字体库。
+ * 字体库页面：以卡片展示共享字体库里的全部字体（系统默认、预装与用户上传）。一张卡片是一个家族，含常规、粗体、斜体、粗斜体中已有的字形；
+ * 卡片用服务端预览条以字体自己的样子显示名称，并给出家族名、风格、已有的字形与大小，点击打开字体详情（`FontDetails`），
+ * 详情里点击字形可看它的字样。
+ * 可按名称或风格搜索，也可以在这里上传自己的 .ttf/.otf。页面每次打开都重新读取字体库。
  */
 import { useRef, useState } from "react";
 import { Search, Upload } from "lucide-react";
@@ -10,23 +12,19 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { toast } from "sonner";
-import { previewUrl, type FontInfo } from "./api";
+import { previewUrl } from "./api";
+import { FontDetails } from "./FontDetails";
+import type { FaceLoader } from "./FontSpecimen";
 import { FontName } from "./FontName";
+import { SLOT_NAMES, SOURCES, sizeText } from "./format";
 import { useFonts, type Previewer } from "./useFonts";
 
-/** 字体来源的中文说明。 */
-const SOURCES: Record<FontInfo["source"], string> = { system: "系统默认", builtin: "预装", upload: "用户上传" };
-
-/** 字重的显示：单一字重写数字，可变字体写范围。 */
-const weightText = (weights: number[]) => (weights.length === 2 ? `${weights[0]}–${weights[1]}（可变）` : String(weights[0]));
-
-/** 文件大小的简短显示；系统默认字体没有文件。 */
-const sizeText = (font: FontInfo) => (font.size > 0 ? `${(font.size / 1024 / 1024).toFixed(1)} MB` : "随系统安装");
-
-/** 字体库页面；`previewer` 供测试替换预览条的绘制。 */
-export function FontLibrary({ previewer }: { previewer?: Previewer }) {
+/** 字体库页面；`previewer` 与 `loader` 供测试替换预览条的绘制与字样的字体文件注册。 */
+export function FontLibrary({ previewer, loader }: { previewer?: Previewer; loader?: FaceLoader }) {
   const { fonts, loadError, problem, uploading, upload, reload } = useFonts();
   const [query, setQuery] = useState("");
+  // 打开详情的卡片按家族名记住，字库刷新后详情显示最新的字形。
+  const [opened, setOpened] = useState<string | null>(null);
   const input = useRef<HTMLInputElement>(null);
   const needle = query.trim().toLowerCase();
   const shown = (fonts ?? []).filter((font) => !needle || `${font.label} ${font.family} ${font.style}`.toLowerCase().includes(needle));
@@ -52,7 +50,7 @@ export function FontLibrary({ previewer }: { previewer?: Previewer }) {
         </Button>
       </div>
       <p className="text-xs leading-5 text-muted-foreground">
-        支持 .ttf 与 .otf。上传的字体会加入所有人共享的字体库，之后不能删除，请确认你有权使用该字体；家族名称不能与已有字体重复。
+        支持 .ttf 与 .otf。上传的字体会加入所有人共享的字体库，之后不能删除，请确认你有权使用该字体；同一个文件只能上传一次。同一家族的常规、粗体、斜体、粗斜体文件归入同一张卡片，其他字重（如细体、黑体）单独成卡片，同一字形的其他版本另起一张卡片。
       </p>
       {problem && <p role="alert" className="text-sm text-destructive">{problem}</p>}
       {loadError && (
@@ -71,23 +69,27 @@ export function FontLibrary({ previewer }: { previewer?: Previewer }) {
       )}
       <ul className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-3">
         {shown.map((font) => (
-          <li key={font.id} className="flex flex-col gap-2 rounded-lg border bg-card p-4 text-card-foreground">
-            <FontName label={font.label} url={previewUrl(font)} className="h-9 w-full" />
-            <div className="min-w-0">
-              <p className="truncate font-mono text-xs text-muted-foreground">{font.family}</p>
-              <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{font.style}</p>
-            </div>
-            <dl className="mt-auto flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
-              <dt className="sr-only">来源</dt>
-              <dd className="rounded bg-accent px-1.5 py-0.5 text-foreground">{SOURCES[font.source]}</dd>
-              <dt className="sr-only">字重</dt>
-              <dd>字重 {weightText(font.weights)}</dd>
-              <dt className="sr-only">大小</dt>
-              <dd>{sizeText(font)}</dd>
-            </dl>
+          <li key={font.family}>
+            <button type="button" aria-label={`查看字体 ${font.label}`} onClick={() => setOpened(font.family)}
+              className="flex size-full flex-col gap-2 rounded-lg border bg-card p-4 text-left text-card-foreground transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              <FontName label={font.label} url={previewUrl(font)} className="h-9 w-full" />
+              <div className="min-w-0">
+                <p className="truncate font-mono text-xs text-muted-foreground">{font.family}</p>
+                <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{font.style}</p>
+              </div>
+              <dl className="mt-auto flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+                <dt className="sr-only">来源</dt>
+                <dd className="rounded bg-accent px-1.5 py-0.5 text-foreground">{SOURCES[font.source]}</dd>
+                <dt className="sr-only">字形</dt>
+                <dd>{font.faces.map((face) => SLOT_NAMES[face.slot]).join(" · ")}</dd>
+                <dt className="sr-only">大小</dt>
+                <dd>{sizeText(font.size)}</dd>
+              </dl>
+            </button>
           </li>
         ))}
       </ul>
+      <FontDetails key={opened ?? ""} font={fonts?.find((font) => font.family === opened) ?? null} onClose={() => setOpened(null)} loader={loader} />
     </section>
   );
 }

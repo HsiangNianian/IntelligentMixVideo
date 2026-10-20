@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import hashlib
 import json
+from copy import deepcopy
 from datetime import UTC, datetime
 from uuid import uuid4
 from .contracts import (
@@ -29,7 +31,7 @@ from .contracts import (
     SpriteRecord,
     SpriteCreateOutput,
 )
-from ..categories import FIXED_TITLES, agent_message, category_problems, parameter_problems
+from ..categories import EFFECT_PARAMETER, EFFECT_TARGETS, FIXED_TITLES, agent_message, category_problems, parameter_problems
 from ..fonts import FontStore, open_font_schema
 from .catalog_store import CatalogStore
 from .registry import ToolFault
@@ -127,10 +129,32 @@ def _titled(parameters) -> list[dict]:
     ]
 
 
+def _instance_parameters(sprite: SpriteDraft, config: dict) -> dict[str, dict]:
+    """Return each instance's parameters with the current user configuration applied.
+
+    The Sprite snapshot keeps the generation-time values, while manual parameter revisions live only in the accepted
+    candidate's ``default_config``. Overlay bound top-level values and nested instance objects before handing the base
+    back to the Agent, so a later edit does not silently restore stale appearance values.
+    """
+    parameters = {item.instance_id: deepcopy(item.parameters) for item in sprite.instances}
+    for binding in sprite.bindings:
+        if binding.name not in config:
+            continue
+        for target in binding.targets:
+            values = parameters.get(target.instance_id)
+            if values is not None:
+                values[target.parameter] = deepcopy(config[binding.name])
+    for instance_id, values in parameters.items():
+        nested = config.get(instance_id)
+        if isinstance(nested, dict):
+            values.update(deepcopy(nested))
+    return parameters
+
+
 def _text_block(sprite: SpriteDraft, config: dict) -> dict:
     """The accepted base's text block as sprite_compose takes it, over base_* drafts, with the current configuration
     values (``config`` is the base's defaults, user parameter revisions included)."""
-    parameters = {item.instance_id: item.parameters for item in sprite.instances}
+    parameters = _instance_parameters(sprite, config)
     two = len(sprite.text.tiers) == 2
 
     def tier(index: int, instance_id: str) -> dict:
@@ -152,6 +176,16 @@ def _text_block(sprite: SpriteDraft, config: dict) -> dict:
     if sprite.text.keyword is not None:
         keyword = sprite.text.keyword
         block["keyword"] = {"instance_id": keyword, "source": {"kind": "draft", "draft_id": f"base_{keyword}"}, "parameters": parameters[keyword]}
+    if sprite.text.effects:
+        # Effect k's position, length and switch are its configuration parameters, as the user last saved them.
+        block["effects"] = [
+            {
+                "instance_id": item.instance_id, "source": {"kind": "draft", "draft_id": f"base_{item.instance_id}"}, "parameters": parameters[item.instance_id],
+                "title": item.title, "slot": item.slot, "target": config.get(f"effect{index}Target"),
+                **({"seconds": config.get(f"effect{index}Seconds")} if item.slot != "loop" else {}), "enabled": config.get(f"effect{index}") is not False,
+            }
+            for index, item in enumerate(sprite.text.effects, start=1)
+        ]
     return block
 
 
@@ -168,6 +202,43 @@ def _digest(draft: PresetDraft | SpriteDraft) -> str:
     """
     content = json.dumps(draft.model_dump(mode="json", exclude_unset=True), ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(content.encode()).hexdigest()[:16]
+
+
+def _apply_edits(code: str, edits: list[dict]) -> str:
+    """Apply preset_modify's exact replacements in order, each to the code as the earlier ones left it.
+
+    Every old_str must occur exactly once, so a replacement never lands somewhere the model did not look. A miss
+    names the edit, and where a trimmed first line of old_str does occur, so the next call can copy it exactly.
+    """
+    for index, edit in enumerate(edits):
+        old, field = edit["old_str"], f"/changes/edits/{index}/old_str"
+        starts, at = [], code.find(old)
+        while at != -1:
+            starts.append(at)
+            at = code.find(old, at + 1)
+        if len(starts) > 1:
+            lines = ", ".join(str(code.count("\n", 0, start) + 1) for start in starts)
+            raise ToolFault("INVALID_ARGUMENT", f"edits[{index}].old_str occurs {len(starts)} times (lines {lines}): "
+                            "include a neighbouring line so it matches exactly once.", field=field)
+        if not starts:
+            first = next((line.strip() for line in old.splitlines() if line.strip()), "")
+            near = [number for number, line in enumerate(code.splitlines(), 1) if first and line.strip() == first]
+            where = f" Its first line matches line {', '.join(map(str, near))} once spaces are trimmed." if near else ""
+            raise ToolFault("INVALID_ARGUMENT", f"edits[{index}].old_str does not occur in the code{' after the earlier edits' if index else ''}: "
+                            f"copy it exactly from the source, indentation and line breaks included.{where}", field=field)
+        code = code[:starts[0]] + edit["new_str"] + code[starts[0] + len(old):]
+    return code
+
+
+def _line_changes(old: str, new: str) -> tuple[int, int]:
+    """Count the lines a copy removed from and added to its source's code, as a line diff shows them."""
+    removed = added = 0
+    matcher = difflib.SequenceMatcher(None, old.splitlines(), new.splitlines(), autojunk=False)
+    for tag, start, end, new_start, new_end in matcher.get_opcodes():
+        if tag != "equal":
+            removed += end - start
+            added += new_end - new_start
+    return removed, added
 
 
 class ToolSession:
@@ -201,6 +272,9 @@ class ToolSession:
         for instance in base_sprite.instances if base_sprite else []:
             # The accepted base's Presets are reusable as drafts; their stored IDs are not kept in a Sprite snapshot.
             self.preset_drafts[f"base_{instance.instance_id}"] = instance.preset
+        # The host holds tier Presets still and effect Presets draw the block's motion, except in edits of a text effect made
+        # before configurable effects, whose tier Presets animate themselves (a text block without `still`, or boxes).
+        self.still_text = base_sprite is None or (base_sprite.text is not None and base_sprite.text.still is True)
         self.feedback = []
         self.catalog_backend = "unset"
         self.operation = ""
@@ -242,7 +316,11 @@ class ToolSession:
         })
 
     def _base_summary(self, with_code: bool) -> dict | None:
-        """Describe the accepted base as instances over base_* Preset drafts, each source listed once."""
+        """Describe the accepted base as instances over base_* Preset drafts, each source listed once.
+
+        ``text`` and ``instances`` take the shape sprite_compose takes, so an edit re-composes the base by swapping in
+        its new draft_id and values instead of rebuilding each entry.
+        """
         if self.base is None:
             return None
         sprite = self.spec.sprite if self.spec is not None else None
@@ -263,11 +341,12 @@ class ToolSession:
         if sprite.text is not None:
             summary["text"] = _text_block(sprite, self.base.default_config)
         else:
+            parameters = _instance_parameters(sprite, self.base.default_config)
             summary["instances"] = [
                 {
                     "instance_id": item.instance_id,
-                    "draft_id": f"base_{item.instance_id}",
-                    "parameters": item.parameters,
+                    "source": {"kind": "draft", "draft_id": f"base_{item.instance_id}"},
+                    "parameters": parameters[item.instance_id],
                     "layout": item.layout.model_dump(mode="json"),
                     "timing": item.timing.model_dump(mode="json"),
                 }
@@ -363,7 +442,7 @@ class ToolSession:
             # A weak model reads or composes a draft handle like a stored ID; say what it is and how to use it.
             raise ToolFault("PRESET_NOT_FOUND", (
                 f"{preset_id} is a draft of this task, not a stored Preset: its source is in the snapshot "
-                f"(base.presets for base_* drafts, unless omitted for size). Change it with preset_modify {{\"preset_id\": \"{preset_id}\", \"changes\": ...}} "
+                f"(base.presets for base_* drafts, unless omitted for size). Change it with preset_modify {{\"preset_id\": \"{preset_id}\", \"changes\": {{\"edits\": [{{\"old_str\": ..., \"new_str\": ...}}]}}}} "
                 f"or compose it with source {{\"kind\": \"draft\", \"draft_id\": \"{preset_id}\"}}."
             ))
         if record is None:
@@ -472,14 +551,20 @@ class ToolSession:
         return output
 
     def modify_preset(self, request: PresetModifyInput) -> PresetModifyOutput:
-        """Copy a stored Preset or a task draft with whole-field replacements; unknown IDs list what exists.
+        """Copy a stored Preset or a task draft with exact code edits or whole-field replacements; unknown IDs list what exists.
 
         A task draft (``base_*`` or an earlier modify result) is what an edit naturally starts from, so its
-        handle is accepted as ``preset_id``; the copy keeps that draft's catalog source, if it has one.
+        handle is accepted as ``preset_id``; the copy keeps that draft's catalog source, if it has one. The receipt
+        counts the code lines the copy changed, and notes when an edit copied a stored Preset instead of the
+        accepted version's ``base_*`` draft (seen in a replay: the copy dropped what earlier versions had changed).
         """
         changes = request.changes.model_dump(mode="json", exclude_unset=True)
         if not changes:
             raise ToolFault("INVALID_ARGUMENT", "changes must replace at least one field", field="/changes")
+        if "code" in changes and "edits" in changes:
+            raise ToolFault("INVALID_ARGUMENT", "Give either edits (exact replacements in the copied code) or code (the whole new source), not both.",
+                            field="/changes/edits")
+        notice = None
         if request.preset_id in self.preset_drafts:
             original = self.preset_drafts[request.preset_id]
             base = original.model_dump(mode="json", exclude_unset=True)
@@ -488,7 +573,16 @@ class ToolSession:
             record = self._find_preset(request.preset_id)
             base = record.model_dump(mode="json", exclude={"preset_id", "created_at"}, exclude_unset=True)
             source = record.preset_id
+            accepted = {key: draft for key, draft in self.preset_drafts.items() if key.startswith("base_")}
+            # A Sprite snapshot keeps no stored preset_id, so the Preset a base draft came from is known by its content.
+            drawn = lambda item: (item.code, item.parameter_schema, item.default_parameters)
+            if accepted and all(drawn(draft) != drawn(record) for draft in accepted.values()):
+                notice = (f"{request.preset_id} is a stored Preset, not one the accepted version is built from ({', '.join(accepted)}), "
+                          "so changes made in earlier versions are not in this copy. To change an element of the accepted version, copy its "
+                          "base_* draft instead; an element the base does not have may start from a stored Preset.")
         base.pop("source_preset_id", None)
+        if "edits" in changes:
+            changes["code"] = _apply_edits(base["code"], changes.pop("edits"))
         draft = PresetDraft(**{**base, **changes, **({"source_preset_id": source} if source else {})})
         diagnostics = validate_component_contract(draft)
         if diagnostics:
@@ -496,10 +590,11 @@ class ToolSession:
                             field="/changes", details={"diagnostics": [item.model_dump(mode="json", exclude_unset=True) for item in diagnostics]})
         draft_id = "preset_draft_" + uuid4().hex[:12]
         self.preset_drafts[draft_id] = draft
+        removed, added = _line_changes(base["code"], draft.code)
         return PresetModifyOutput(draft_id=draft_id, digest=_digest(draft), preset=PresetDraftSummary(
             description=draft.description, parameter_names=_parameter_names(draft.parameter_schema),
             **({"source_preset_id": source} if source else {}), **({"role": draft.role} if draft.role else {}),
-        ))
+        ), code_lines_removed=removed, code_lines_added=added, **({"notice": notice} if notice else {}))
 
     async def create_sprite(self, draft_id: str) -> SpriteCreateOutput:
         """Validate and store the composed Sprite a sprite.compose handle refers to.
@@ -533,7 +628,7 @@ class ToolSession:
         store = FontStore.active
         problems = category_problems(
             sprite.kind, sprite.parameter_schema, {item.name for item in sprite.bindings}, sprite.default_parameters,
-            fonts={font.family for font in store.listing()} if store is not None else None, requested=self.requested,
+            fonts=set(store.families()) if store is not None else None, requested=self.requested,
         )
         if problems:
             raise ToolFault("CATEGORY_PARAMETERS_MISSING", agent_message(sprite.kind, problems), details={
@@ -671,12 +766,13 @@ class ToolSession:
 
     async def _compose_text(self, request) -> SpriteComposeOutput:
         """Compose a text effect from its text block: one tier or an upper and a lower tier, each drawn by a text-role
-        Preset, and an optional keyword-role Preset for the keyword hit. The host owns the configuration parameters."""
+        Preset, an optional keyword-role Preset for the keyword hit and effect-role Presets wrapping positions of the
+        block. The host owns the configuration parameters."""
         block = request.text
         if request.kind != "text":
             raise ToolFault("INVALID_ARGUMENT", "Only a text effect (kind text) has a text block.", field="/kind")
         if request.instances:
-            raise ToolFault("INVALID_ARGUMENT", "A text effect is its text block alone: draw decorations inside the tier Presets and leave instances empty.", field="/instances")
+            raise ToolFault("INVALID_ARGUMENT", "A text effect is its text block alone: draw decorations inside the tier Presets or as effects of the block and leave instances empty.", field="/instances")
         lines = block.text.split("\n")
         tiers = len(block.tiers)
         if len(lines) != tiers or not all(line.strip() for line in lines):
@@ -706,25 +802,39 @@ class ToolSession:
                     raise ToolFault("INVALID_ARGUMENT", f"Only a two-tier text takes {name}.", field=f"/text/{name}")
             if block.tiers[0].size_ratio not in (None, 1):
                 raise ToolFault("INVALID_ARGUMENT", "A one-tier text renders at font_size; leave size_ratio out.", field="/text/tiers/0/size_ratio")
+        for index, effect in enumerate(block.effects):
+            if effect.target not in EFFECT_TARGETS[tiers]:
+                raise ToolFault("INVALID_ARGUMENT", f"A one-tier text has no {effect.target} position: an effect wraps {' or '.join(EFFECT_TARGETS[1])} "
+                                "(tiers, line1 and line2 are positions of a two-tier text).", field=f"/text/effects/{index}/target")
+            if effect.slot == "loop" and effect.seconds is not None:
+                raise ToolFault("INVALID_ARGUMENT", "A looping effect lasts as long as its position shows: leave seconds out (only enter and exit "
+                                "effects have a length).", field=f"/text/effects/{index}/seconds")
+        # Held tiers only move through effects, so every such text has an entrance and an exit users can switch off.
+        missing = [slot for slot in ("enter", "exit") if self.still_text and not any(effect.slot == slot for effect in block.effects)]
+        if missing:
+            raise ToolFault("INVALID_ARGUMENT", f"The text block has no {' and no '.join(missing)} effect: the host holds its tiers still, so give it at least one enter "
+                            "and one exit effect Preset (role effect), such as a fade with opacity = progress listed as both, or the motion the request or "
+                            "reference shows. For text the user wants still, keep them with enabled false so users can switch them on.", field="/text/effects")
         self._check_length(block.duration_frames, "/text/duration_frames")
         store = FontStore.active
-        fonts = [font.family for font in store.listing()] if store is not None else sorted({tier.font_family for tier in block.tiers})
+        fonts = store.families() if store is not None else sorted({tier.font_family for tier in block.tiers})
         layout = {**block.layout.model_dump(mode="json"), "z_index": 0}
         timing = {"start_frame": 0, "duration_frames": block.duration_frames}
         slots = [(tier, "text", f"/text/tiers/{index}") for index, tier in enumerate(block.tiers)]
         if block.keyword is not None:
             slots.append((block.keyword, "keyword", "/text/keyword"))
+        slots += [(effect, "effect", f"/text/effects/{index}") for index, effect in enumerate(block.effects)]
         # Each instance's Preset props sit under its instance_id next to the host's configuration parameters, so an id
-        # such as fontSize or keywordEffect would replace that parameter.
+        # such as fontSize, keywordEffect or effect1 would replace that parameter.
         reserved = {TEXT_BLOCK_ID, *FIXED_TITLES, "__proto__", "prototype", "constructor"}
         seen: set[str] = set()
         resolved: list[dict] = []
         summaries: list[InstanceSummary] = []
         for slot, role, field in slots:
-            if slot.instance_id in seen or slot.instance_id in reserved:
+            if slot.instance_id in seen or slot.instance_id in reserved or EFFECT_PARAMETER.match(slot.instance_id):
                 raise ToolFault("INVALID_ARGUMENT", f"instance_id {slot.instance_id!r} must be unique, safe and not a parameter name of the text block "
-                                "(text, fontSize, keywords, keywordEffect, ...): name the tiers upper and lower and the keyword Preset keyword, say",
-                                field=f"{field}/instance_id")
+                                "(text, fontSize, keywords, keywordEffect, effect1, ...): name the tiers upper and lower, the keyword Preset keyword "
+                                "and each effect by what it does (fadeIn, glow), say", field=f"{field}/instance_id")
             seen.add(slot.instance_id)
             if role == "text" and slot.font_family not in fonts:
                 raise ToolFault("INVALID_ARGUMENT", f"font_family {slot.font_family!r} is not in the font library: {fonts}", field=f"{field}/font_family")
@@ -736,8 +846,10 @@ class ToolSession:
             summaries.append(InstanceSummary(instance_id=slot.instance_id, **origin, parameter_names=_parameter_names(preset["parameter_schema"]),
                                              layout=layout, timing=timing))
         bindings = _titled(request.parameters)
+        drawn = tiers + (1 if block.keyword else 0)
         code, schema, defaults, host = await asyncio.to_thread(
-            compose_text_source, block.model_dump(mode="json", exclude_none=True), resolved[:tiers], resolved[tiers] if block.keyword else None, bindings, fonts,
+            compose_text_source, block.model_dump(mode="json", exclude_none=True), resolved[:tiers], resolved[tiers] if block.keyword else None,
+            resolved[drawn:], bindings, fonts, still=self.still_text,
         )
         self._check_bindings(request.parameters, schema)
         return self._keep(SpriteDraft(
@@ -750,7 +862,9 @@ class ToolSession:
             kind="text",
             bindings=[*host, *bindings],
             text={"layout": block.layout.model_dump(mode="json"), "tiers": [tier.instance_id for tier in block.tiers],
-                  **({"keyword": block.keyword.instance_id} if block.keyword else {})},
+                  **({"keyword": block.keyword.instance_id} if block.keyword else {}),
+                  "effects": [{"instance_id": item.instance_id, "title": item.title, "slot": item.slot} for item in block.effects],
+                  **({"still": True} if self.still_text else {})},
         ), summaries)
 
     def _check_bindings(self, parameters, schema: dict) -> None:

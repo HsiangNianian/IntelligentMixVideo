@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from server.remotion_templates.harness import Harness
 from server.remotion_templates.models import EditTemplateRequest, GenerateTemplateRequest, JobInput
 from server.remotion_templates.provider import Budget
-from server.remotion_templates.publication import PREVIEW_PROTOCOL, PresentationBuilder, current_bundle, revisable
+from server.remotion_templates.publication import PREVIEW_PROTOCOL, PresentationBuilder, bundle_protocol, current_bundle, revisable
 from server.remotion_templates.routes import router
 from server.remotion_templates.runtime import Runtime
 from server.remotion_templates.settings import Settings
@@ -236,6 +236,17 @@ def test_protocol_words_inside_an_older_bundle_do_not_allow_an_instant_revision(
     assert revisable(tmp_path)
 
 
+def test_a_protocol_one_bundle_is_still_revised_instantly_but_is_no_longer_current(tmp_path):
+    """协议 2 只增加宿主转交字体（issue #210）：协议 1 的包仍读取页面注入的默认值，参数修订照常即时完成，不进沙箱；
+
+    但它不是当前协议，已发布资产的副本在下次预览时按发布源码重建，才能使用宿主转交的字体。
+    """
+    older = b"/* imv-preview-protocol 1 */\n(()=>{})();"
+    (tmp_path / "interactive.js").write_bytes(older)
+    assert (bundle_protocol(older), current_bundle(older), revisable(tmp_path)) == (1, False, True)
+    assert (bundle_protocol(PREVIEW_PROTOCOL + b"\n"), bundle_protocol(b"// no line\n" + PREVIEW_PROTOCOL + b"\n")) == (2, 0)
+
+
 def test_invalid_parameters_and_a_busy_work_are_refused(harness, sprite):
     """不合 Schema 的参数在入队前拒绝；已有运行中的修订时同一作品的第二次保存返回冲突。"""
     store, work, initial = accepted_version(harness, sprite)
@@ -442,3 +453,12 @@ def test_host_builds_preview_without_agent_test_scripts(harness, sprite, tmp_pat
     assert seen[0].component.code == sprite.code
     assert seen[0].component.default_parameters == sprite.default_parameters
     assert report.passed and (directory / "interactive.js").exists()
+
+
+
+def test_preview_player_keeps_its_play_button_visible():
+    """Tauri WebView 在指针移入播放器后不保证再次触发悬停，控制条不能在播放时永久隐藏。"""
+    source = (Path(__file__).parents[1] / "src/server/remotion/preview-host.tsx").read_text()
+    player = source.split("<Player", 1)[1].split("/>", 1)[0]
+    assert "controls={!sync}" in player
+    assert "alwaysShowControls={!sync}" in player

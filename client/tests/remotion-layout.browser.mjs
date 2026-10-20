@@ -1,6 +1,6 @@
 /**
  * 浏览器布局回归：模拟 API（创建、SSE 事件与送达确认）和 iframe 协议，验证真实 CSS、指针/键盘分栏、持久化与窄屏交互；
- * 会话历史只在页面内存的本地库里，由 SSE 事件写入。执行 bun run test:remotion-browser。
+ * 会话历史只在浏览器 IndexedDB 的本地库里，由 SSE 事件写入，刷新后仍在。执行 bun run test:remotion-browser。
  */
 import { chromium } from "playwright-core";
 import { remotionVersion } from "./remotion-fixtures.ts";
@@ -59,7 +59,7 @@ try {
   }));
   /** 一条用户或助手消息事件的载荷。 */
   const message = (n, job, role, text) => ({ id: `m${n}`, sequence: n, job_id: job.id, role, text, created_at: job.updated_at });
-  // 会话历史只在客户端本地：浏览器版本地库在页面内存里，由创建作品后 SSE 送达的事件写入（两轮成功任务、四条消息与循环记录）。
+  // 会话历史只在客户端本地：浏览器版本地库在 IndexedDB 里，由创建作品后 SSE 送达的事件写入（两轮成功任务、四条消息与循环记录）。
   const history = [
     ["message.created", message(1, jobs[0], "user", "做一个简洁的居中标题，淡入出现。")],
     ["job.updated", jobs[0]],
@@ -126,7 +126,7 @@ try {
       return route.fulfill({ contentType: "text/html", body: preview });
     return route.fulfill({ status: 404 });
   });
-  /** 浏览器版会话只在页面内存：从空白聊天发送首条消息创建作品，等 SSE 把历史写入本地并恢复到最新版本。 */
+  /** 从空白聊天发送首条消息创建作品，等 SSE 把历史写入浏览器本地库并恢复到最新版本。 */
   async function createWork() {
     await page.getByLabel("字效描述").fill("做一个简洁的居中标题，淡入出现。");
     await page.getByRole("button", { name: "发送", exact: true }).click();
@@ -221,11 +221,11 @@ try {
   assert(pref);
   await page.reload();
   await page.getByRole("button", { name: "AI 字效", exact: true }).click();
-  // 刷新清空了浏览器内存会话库：记住的会话静默清除，不提示删除；重新创建后继续验证。
-  await page.getByText("还没有聊天会话").first().waitFor();
+  // 浏览器会话库在 IndexedDB：刷新后记住的会话连同消息从本地恢复到最新版本，不重新创建作品，也不提示删除。
+  await page.getByText("已更新暖金色标题和下划线，保留淡入动画。").waitFor();
+  await page.getByRole("button", { name: "预览 V2", exact: true }).waitFor();
   assert.equal(await page.getByText(/会话已删除或正在清理/).count(), 0);
-  await createWork();
-  assert.equal(creates, 2);
+  assert.equal(creates, 1);
   assert.equal(
     await page.evaluate(() => localStorage.getItem("imv.remotion.studio-layout")),
     pref,
@@ -403,7 +403,7 @@ try {
   );
   assert.equal(errors.length, 0, errors.join("\n"));
   console.log(
-    "PASS: 预览尺寸、拖拽/键盘调宽、栏宽恢复、历史预览、未保存保护、新增聊天、桌面删除确认与窄屏删除清理、新会话时长工具栏不溢出及 390px 窄屏布局。截图：" +
+    "PASS: 预览尺寸、拖拽/键盘调宽、栏宽恢复、刷新后从本地库恢复会话、历史预览、未保存保护、新增聊天、桌面删除确认与窄屏删除清理、新会话时长工具栏不溢出及 390px 窄屏布局。截图：" +
       screenshots,
   );
 } finally {

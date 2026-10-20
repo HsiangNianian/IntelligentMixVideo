@@ -65,17 +65,19 @@ export interface Version {
     sprite_kind?: "text" | "subtitle" | "filter_overlay" | "video_overlay" | "transition_overlay" | "composition";
     composition: Composition;
     text_layers: { id: string; text: string }[];
-    /** 组合版本的分类与顶层参数绑定，字效的文字组合另有各栏与关键词的实例 ID；更早的版本没有。 */
-    sprite?: { kind?: SpriteKindName; bindings?: { name: string; title: string }[]; text?: { tiers: string[]; keyword?: string } };
+    /** 组合版本的分类与顶层参数绑定，字效的文字组合另有各栏、关键词与特效的实例 ID（特效带中文名称）；更早的版本没有。 */
+    sprite?: { kind?: SpriteKindName; bindings?: { name: string; title: string; targets?: { instance_id: string; parameter: string }[] }[]; text?: { tiers: string[]; keyword?: string; effects?: { instance_id: string; title: string }[] } };
   };
 }
 
-/** 参数面板里一个实例的名称：文字组合的一栏为「正文」或「上栏」「下栏」，关键词 Preset 为「关键词字效」，其他实例显示实例 ID。 */
+/** 参数面板里一个实例的名称：文字组合的一栏为「正文」或「上栏」「下栏」，关键词 Preset 为「关键词字效」，特效为「特效 · 名称」，其他实例显示实例 ID。 */
 export function instanceTitle(version: Version, id: string): string {
   const block = version.spec.sprite?.text;
   const tier = block?.tiers.indexOf(id) ?? -1;
   if (block && tier >= 0) return block.tiers.length === 1 ? "正文" : ["上栏", "下栏"][tier];
-  return block?.keyword === id ? "关键词字效" : `实例 · ${id}`;
+  if (block?.keyword === id) return "关键词字效";
+  const effect = block?.effects?.find((item) => item.instance_id === id);
+  return effect ? `特效 · ${effect.title}` : `实例 · ${id}`;
 }
 
 /** 一个 Schema 属性对应的控件描述；对象、未约束的数组等无法逐项编辑的形状返回 null。 */
@@ -113,8 +115,8 @@ const LINE_STARTS_KEY = "lineStartFrames";
 const CONFIG_PARAMETERS = new Set(["text", ...TEXT_LAYOUT_PARAMETERS, ...TEMPLATE_KEYWORD_PARAMETERS, "keywordEffect"]);
 
 /**
- * 组合版本的参数分组：顶层参数分为配置与样式（见 `CONFIG_PARAMETERS`），以及各实例的内部参数；
- * 实例里有无法逐项编辑的形状时整体回退为 JSON。
+ * 组合版本的参数分组：顶层参数分为配置（见 `CONFIG_PARAMETERS`）与样式，以及各实例的内部参数；
+ * 实例里有无法逐项编辑的形状时整体回退为 JSON。文字组合的字效改用 `textSections`。
  */
 export function schemaGroups(properties: Record<string, Control>): {
   config: ParameterField[];
@@ -138,6 +140,73 @@ export function schemaGroups(properties: Record<string, Control>): {
     instances.push({ id: key, fields: nested.length && nested.every(Boolean) ? (nested as ParameterField[]) : null });
   }
   return { config, style, instances };
+}
+
+/** 一个实例的内部参数：形状无法逐项编辑时 fields 为 null，回退为 JSON 文本域。 */
+export interface InstanceFields {
+  id: string;
+  fields: ParameterField[] | null;
+}
+
+/** 「特效」里的一张卡片：名称、是否应用的开关（顶层布尔参数）、其余顶层参数（位置、时长与绑定在这个特效上的样式），以及特效实例的内部参数。 */
+export interface EffectCard {
+  id: string;
+  title: string;
+  toggle: ParameterField | null;
+  fields: ParameterField[];
+  instance: InstanceFields | null;
+}
+
+/**
+ * 文字组合字效的两块参数。「文字」是文字本身：内容、字号、字体与字重、双栏排版、各栏外观（Agent 绑定在各栏上的颜色、描边、
+ * 字间距等）、关键词选项，以及各栏 Preset 的内部参数（`instances`）。「特效」按特效列出卡片：开关 `effect{k}`、位置
+ * `effect{k}Target`、时长 `effect{k}Seconds`、绑定在这个特效实例上的样式参数及其内部参数；关键词字效（关键词 Preset）也是一张
+ * 卡片，开关为 `keywordEffect`。顶层参数按绑定目标归入实例；没有文字组合的版本返回 null，沿用 `schemaGroups`。
+ */
+export function textSections(version: Version): {
+  text: ParameterField[];
+  keyword: ParameterField[];
+  instances: InstanceFields[];
+  effects: EffectCard[];
+} | null {
+  const block = version.spec.sprite?.text;
+  if (!block) return null;
+  const properties = version.candidate.config_schema.properties ?? {};
+  const bindings = version.spec.sprite?.bindings ?? [];
+  /** 一个实例的内部参数；不是对象 Schema 时为 null。 */
+  const nested = (id: string): InstanceFields | null => {
+    const control = properties[id];
+    if (control?.type !== "object") return null;
+    const fields = Object.entries(control.properties ?? {}).map(([name, child]) => schemaField(name, child));
+    return { id, fields: fields.every(Boolean) ? (fields as ParameterField[]) : null };
+  };
+  const field = (key: string) => (properties[key] ? schemaField(key, properties[key]) : null);
+  const carded = new Set<string>([LINE_STARTS_KEY]);
+  /** 一张卡片：toggle 是开关参数名，keys 是位置、时长等宿主参数，绑定到 instance 的样式参数随后列出。 */
+  const card = (instance: string, title: string, toggle: string, keys: string[]): EffectCard => {
+    const names = [...keys, ...bindings.filter((item) => item.targets?.some((target) => target.instance_id === instance)).map((item) => item.name)];
+    [toggle, ...names, instance].forEach((name) => carded.add(name));
+    return { id: instance, title, toggle: field(toggle), fields: names.flatMap((name) => field(name) ?? []), instance: nested(instance) };
+  };
+  const effects = (block.effects ?? []).map((effect, index) =>
+    card(effect.instance_id, properties[`effect${index + 1}`]?.title || effect.title, `effect${index + 1}`, [`effect${index + 1}Target`, `effect${index + 1}Seconds`]));
+  if (block.keyword) effects.push(card(block.keyword, "关键词字效", "keywordEffect", []));
+  const text: ParameterField[] = [];
+  const keyword: ParameterField[] = [];
+  const instances: InstanceFields[] = [];
+  const lines = properties[LINE_STARTS_KEY]?.maxItems;
+  for (const [key, control] of Object.entries(properties)) {
+    if (carded.has(key)) continue;
+    if (control.type === "object") {
+      instances.push(nested(key)!);
+      continue;
+    }
+    const item = schemaField(key, control);
+    if (!item) instances.push({ id: key, fields: null });
+    else if (TEMPLATE_KEYWORD_PARAMETERS.includes(key)) keyword.push(item);
+    else text.push(key === "text" && item.kind === "string" && lines && lines > 1 ? { ...item, lines } : item);
+  }
+  return { text, keyword, instances, effects };
 }
 /** 服务端隔离类型检查返回的零基行列；与 LSP 一致，character 以 UTF-16 计。 */
 export interface TextPosition {
