@@ -31,6 +31,7 @@ import type { TemplateSelection } from "./TemplateHome";
 import "./template-workspace.css";
 import { Spinner } from "@/components/ui/spinner";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { debugLog, describe } from "@/lib/diagnostics";
 
 /** 窗口宽度仅改变排列和调整权限，保留各栏组件、输入草稿与播放器实例。 */
 function WorkspaceColumns({ assets, canvas, inspector }: { assets: ReactNode; canvas: ReactNode; inspector: ReactNode }) {
@@ -171,7 +172,9 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
     void defaultPreviewUrls().then((urls) => readPreviewVideos(urls, controller.signal)).then((sources) => {
       if (!controller.signal.aborted) setMedia(sources);
     }).catch((reason: unknown) => {
-      if (!controller.signal.aborted) setMediaError(reason instanceof Error ? reason.message : "预览视频读取失败");
+      if (controller.signal.aborted) return;
+      setMediaError(reason instanceof Error ? reason.message : "预览视频读取失败");
+      debugLog("模板编辑", `读取预览视频失败：${describe(reason)}`);
     });
     return () => controller.abort();
   }, [!!draft, draft?.name, current?.template_id, media, mediaAttempt]);

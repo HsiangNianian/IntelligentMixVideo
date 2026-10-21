@@ -4,6 +4,7 @@
  */
 import type { MasterVideo, PreviewMedia } from "./model";
 import { localPreviewVideos } from "./localVideos";
+import { debugLog, describeMedia } from "@/lib/diagnostics";
 
 /** 内置示例：public/preview/ 下正好 10 秒的 1080×1920、30fps 无音轨片段。 */
 const bundledVideos = ["/preview/sample-1.mp4", "/preview/sample-2.mp4", "/preview/sample-3.mp4"] as const;
@@ -101,6 +102,8 @@ export function readMasterVideo(url: string, signal: AbortSignal): Promise<Maste
       video.removeEventListener("error", failed);
       signal.removeEventListener("abort", aborted);
       const media = { url: parsed.href, duration: video.duration, width: video.videoWidth, height: video.videoHeight };
+      // 媒体错误码在清除地址后就读不到，先交给调试日志。
+      if (error && error.name !== "AbortError") debugLog("预览视频", `${error.message}；${describeMedia(video)}`);
       video.pause(); video.removeAttribute("src"); video.load();
       if (error) reject(error); else resolve(media);
     };

@@ -5,6 +5,7 @@
  */
 import { updateInvoke as invoke } from "@/lib/update-guard";
 import { isTauri } from "@tauri-apps/api/core";
+import { debugLog, describe } from "@/lib/diagnostics";
 
 /** 单个本地视频上限，与桌面存储一致；字节需完整经过 IPC 并在页面内存生成 blob。 */
 export const LOCAL_VIDEO_MAX_BYTES = 512 * 1024 * 1024;
@@ -46,7 +47,10 @@ async function restore() {
     try {
       const blob = new Blob([await invoke<ArrayBuffer>("preview_video_read", { slot: index + 1 })], { type: meta.type });
       slots[index] ??= { name: meta.name, blob, url: URL.createObjectURL(blob) };
-    } catch { /* 该槽位不可读，按默认地址处理 */ }
+    } catch (reason) {
+      // 该槽位不可读，按默认地址处理；界面不提示，只写调试日志。
+      debugLog("本地预览视频", `视频 ${index + 1}（${meta.name}）读取失败，改用默认地址：${describe(reason)}`);
+    }
   }
 }
 

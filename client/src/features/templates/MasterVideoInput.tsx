@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
+import { debugLog, describe } from "@/lib/diagnostics";
 import type { PreviewMedia } from "./model";
 import { previewVideoUrl, readPreviewVideos, sourceUrl } from "./media";
 import { isTauri } from "@tauri-apps/api/core";
@@ -74,6 +75,7 @@ export function MasterVideoInput({ media, onChange }: { media?: PreviewMedia; on
   /** 选择本地文件：超过上限直接提示，否则生成 blob URL 等待加载时读取元数据。 */
   function pick(index: number, file: File | undefined) {
     if (!file) return;
+    debugLog("加载预览视频", `视频 ${index + 1} 选择本地文件 ${file.name}（${file.type || "未知类型"}，${(file.size / 1048576).toFixed(1)} MiB）`, "信息");
     if (file.size > LOCAL_VIDEO_MAX_BYTES) { setError(`视频 ${index + 1}：本地视频不能超过 512 MiB`); return; }
     const url = URL.createObjectURL(file);
     pending.current.add(url);
@@ -101,7 +103,10 @@ export function MasterVideoInput({ media, onChange }: { media?: PreviewMedia; on
       onChange(media);
       changeOpen(false);
     } catch (reason) {
-      if (!request.signal.aborted) setError(reason instanceof Error ? reason.message : "预览视频读取失败");
+      if (!request.signal.aborted) {
+        setError(reason instanceof Error ? reason.message : "预览视频读取失败");
+        debugLog("加载预览视频", describe(reason));
+      }
     } finally { if (!request.signal.aborted) setLoading(false); }
   }
   return <Dialog open={open} onOpenChange={changeOpen}>
