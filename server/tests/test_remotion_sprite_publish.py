@@ -819,6 +819,8 @@ def test_deleting_an_unused_sprite_removes_its_record_and_bundle(client: TestCli
     """未被模板使用的资产可删除：目录与预览不再提供，播放器包对象和缓存一起删除，源版本可以重新保存为新资产。"""
     summary = published_sprite(client, published.version.id)
     assert client.get(summary.preview_url).status_code == 200
+    # 目录不可缓存：删除后客户端刷新拿到的不能是 CDN 或代理保存的旧目录。
+    assert client.get("/api/sprites").headers["Cache-Control"] == "no-store"
     assert client.delete(f"/api/sprites/{summary.sprite_id}").status_code == 204
     assert pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites == []
     assert not (objects(published.store) / "sprites" / summary.sprite_id).exists()

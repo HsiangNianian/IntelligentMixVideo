@@ -55,9 +55,14 @@ async def _body(request: Request, message: Message) -> None:
 
 @router.get("", response_class=Response, responses={200: {"content": PROTOBUF_CONTENT}}, summary="查询已发布的 Sprite 目录")
 async def list_sprites(service: Service) -> Response:
-    """返回可供模板编辑添加的不可变发布条目，不包含 TSX 源码。"""
+    """返回可供模板编辑添加的不可变发布条目，不包含 TSX 源码。
+
+    目录随任何人的保存、改名与删除变化，标记为不可缓存：部署链路里的 CDN 或代理不能把删除前的目录再交给客户端。
+    """
     items = await run_in_threadpool(sprites.catalog)
-    return _response(pb.ListSpritesResponse(sprites=items))
+    response = _response(pb.ListSpritesResponse(sprites=items))
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @router.post(

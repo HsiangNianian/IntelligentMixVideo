@@ -521,7 +521,8 @@ returns the original Sprite without sampling again. `animation_frames` and `stat
 because composition versions carry no such evidence, and `preview_url` serves the sealed
 interactive player page rather than an MP4.
 
-`GET /api/sprites` lists summaries (no TSX). A record that cannot be parsed or fails its hash check is
+`GET /api/sprites` lists summaries (no TSX) with `Cache-Control: no-store`, so a CDN or proxy in front of the
+backend never serves a catalog from before a deletion. A record that cannot be parsed or fails its hash check is
 logged and left out, so one damaged row never hides the library; reading it by ID still reports the
 failure. Where a Sprite is placed is not stored here: a placement is a `remotion` track of the cloud template
 (`sprite_id`, a seconds start, an optional duration and `editor.remotion` with parameter overrides and a host
