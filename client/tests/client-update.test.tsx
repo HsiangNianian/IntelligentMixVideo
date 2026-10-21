@@ -1,6 +1,6 @@
-/** 客户端更新流程测试：隔离 IPC 和网络，验证草稿、后台任务、重复点击及等待取消；不代替真实桌面安装测试。 */
+/** 客户端更新流程测试：隔离 IPC 和网络，验证草稿、后台任务、重复点击、启动提醒及等待取消；不代替真实桌面安装测试。 */
 import { expect, mock, test } from 'bun:test';
-import { act, render, renderHook, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { mockDesktop } from './setup';
 import { ClientUpdate, UpdateLifecycle } from '@/features/updates/ClientUpdate';
 import { checkUpdate, downloadUpdate, initializeUpdates, cancelUpdate, tryApplyUpdate } from '@/features/updates/store';
@@ -12,7 +12,7 @@ import { memoryStorage, setStorage } from '@/features/remotion_templates/localSe
 type Pending = { server: string; title: string; deleting: boolean }[];
 const OTHER_SERVER: Pending = [{ server: 'http://old.test', title: '旧服务会话', deleting: false }];
 
-function desktop({ pending = [], fail = false, mode = 'hot', readyFailures = 0, status = { enabled: true, notice: '' } }: { pending?: Pending | Promise<Pending>; fail?: boolean; mode?: string; readyFailures?: number; status?: { enabled: boolean; notice: string } } = {}) {
+function desktop({ pending = [], fail = false, downloadFail = false, downloadGate, mode = 'hot', readyFailures = 0, status = { enabled: true, notice: '' } }: { pending?: Pending | Promise<Pending>; fail?: boolean; downloadFail?: boolean; downloadGate?: Promise<void>; mode?: string; readyFailures?: number; status?: { enabled: boolean; notice: string } } = {}) {
   const calls = mock(async (command: string, args: Record<string, unknown>) => {
     if (command === 'plugin:event|listen') return 1;
     if (command === 'remotion_sessions') return pending;
@@ -23,7 +23,11 @@ function desktop({ pending = [], fail = false, mode = 'hot', readyFailures = 0, 
       if (fail) throw new Error('签名验证失败');
       return { version: '1.2.4', mode };
     }
-    if (args.operation === 'download' && mode === 'manual') return { links: ['https://github.com/example/release.deb'], sha256: 'a'.repeat(64) };
+    if (args.operation === 'download') {
+      if (downloadGate) await downloadGate;
+      if (downloadFail) throw new Error('下载失败：所有来源均不可用或文件校验失败，请重试');
+      if (mode === 'manual') return { links: ['https://github.com/example/release.deb'], sha256: 'a'.repeat(64) };
+    }
     return null;
   });
   mockDesktop(calls);
@@ -146,4 +150,77 @@ test('取消后忽略迟到的后台任务回执', async () => {
   await act(async () => { cancelUpdate(); resolve(OTHER_SERVER); });
   expect(screen.getByText('已取消此次应用，当前版本保持不变')).toBeTruthy();
   expect(calls.mock.calls.some(([, args]) => args.operation === 'apply')).toBe(false);
+});
+
+// 场景：启动后的自动检查发现新版本时弹出提醒；稍后关闭后，本次运行中手动检查不再反复弹窗。
+test('启动检查发现新版本时弹窗提醒，稍后不再重复打扰', async () => {
+  const calls = desktop(); await initializeUpdates();
+  render(<UpdateLifecycle />);
+  await waitFor(() => expect(screen.getByRole('dialog').textContent).toContain('发现新版本 v1.2.4'));
+  expect(screen.getByRole('dialog').textContent).toContain('一键更新');
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: '稍后提醒' })); });
+  expect(screen.queryByRole('dialog')).toBeNull();
+  await act(async () => { await checkUpdate(); });
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(calls.mock.calls.filter(([, args]) => args.operation === 'check').length).toBeGreaterThanOrEqual(2);
+});
+
+// 场景：提醒弹窗中的一键更新复用设置里的下载流程，用户不需要先打开设置。
+test('提醒弹窗可以直接下载更新', async () => {
+  const calls = desktop(); await initializeUpdates();
+  render(<UpdateLifecycle />);
+  await waitFor(() => expect(screen.getByRole('button', { name: '一键更新' })).toBeTruthy());
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: '一键更新' })); });
+  await waitFor(() => expect(calls.mock.calls.filter(([, args]) => args.operation === 'download')).toHaveLength(1));
+});
+
+// 场景：启动提醒还在显示时打开设置并触发手动检查，提醒不能被静默关闭。
+test('打开设置检查更新时保留启动提醒', async () => {
+  const calls = desktop(); await initializeUpdates();
+  render(<UpdateLifecycle />);
+  await waitFor(() => expect(screen.getByRole('dialog').textContent).toContain('发现新版本 v1.2.4'));
+  await act(async () => { render(<ClientUpdate />); });
+  await waitFor(() => expect(calls.mock.calls.filter(([, args]) => args.operation === 'check')).toHaveLength(2));
+  await waitFor(() => expect(screen.getByRole('dialog').textContent).toContain('发现新版本 v1.2.4'));
+  expect(screen.getByRole('dialog').textContent).toContain('一键更新');
+});
+
+// 场景：下载失败时提醒弹窗保留错误，用户可以直接重试而不必重新打开设置。
+test('提醒弹窗下载失败后允许重试', async () => {
+  const calls = desktop({ downloadFail: true }); await initializeUpdates();
+  render(<UpdateLifecycle />);
+  await waitFor(() => expect(screen.getByRole('button', { name: '一键更新' })).toBeTruthy());
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: '一键更新' })); });
+  await waitFor(() => expect(screen.getByRole('button', { name: '重试更新' })).toBeTruthy());
+  expect(screen.getByRole('dialog').textContent).toContain('下载失败');
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: '重试更新' })); });
+  await waitFor(() => expect(calls.mock.calls.filter(([, args]) => args.operation === 'download')).toHaveLength(2));
+});
+
+// 场景：deb 提醒在弹窗内展示签名摘要和下载源，不必先进入设置。
+test('提醒弹窗展示 deb 下载源与签名摘要', async () => {
+  desktop({ mode: 'manual' }); await initializeUpdates();
+  render(<UpdateLifecycle />);
+  await waitFor(() => expect(screen.getByRole('button', { name: '获取安装包' })).toBeTruthy());
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: '获取安装包' })); });
+  await waitFor(() => expect(screen.getByRole('link').getAttribute('href')).toBe('https://github.com/example/release.deb'));
+  const dialog = screen.getByRole('dialog');
+  expect(dialog.textContent).toContain('下载源 1');
+  expect(dialog.textContent).toContain('a'.repeat(64));
+});
+
+// 场景：下载进行中弹窗不能关闭，也不能再次触发更新。
+test('下载期间提醒弹窗锁定关闭', async () => {
+  let finish!: () => void;
+  const downloadGate = new Promise<void>(resolve => { finish = resolve; });
+  const calls = desktop({ downloadGate }); await initializeUpdates();
+  render(<UpdateLifecycle />);
+  await waitFor(() => expect(screen.getByRole('button', { name: '一键更新' })).toBeTruthy());
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: '一键更新' })); });
+  await waitFor(() => expect(screen.getByRole('button', { name: '正在下载…' })).toBeTruthy());
+  expect(screen.queryByRole('button', { name: '稍后提醒' })).toBeNull();
+  expect(screen.queryByText('关闭')).toBeNull();
+  expect(screen.getByRole('dialog')).toBeTruthy();
+  expect(calls.mock.calls.filter(([, args]) => args.operation === 'download')).toHaveLength(1);
+  await act(async () => { finish(); });
 });
