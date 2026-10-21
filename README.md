@@ -22,7 +22,7 @@ IntelligentMixVideo connects desktop template editing, server-side media process
 
 - **Visual template editing**: Add decorative text, speech bubbles, filters, visual effects, transitions, and text animations. Adjust text, font size, position, and effect parameters.
 - **Preview and timeline**: Preview template effects, set object start times in seconds or as a percentage of the video duration, and choose a fixed duration or let an object run to the end of the video.
-- **Local and cloud template libraries**: Desktop local templates stay on your machine; cloud templates are saved to MySQL through the server. The two libraries operate independently.
+- **Cloud template library**: Templates are saved to MySQL through the server and shared by everyone connected to it.
 - **Text and audio processing**: ASR transcription, text segmentation, and keyword processing provide data for subtitles and composition timelines. Titles and subtitles can each enable Chinese–English text with independent styles; composition translates the actual content and synchronizes both languages. Disabled English settings are retained for reuse and omitted from output.
 - **Asynchronous video composition**: Depending on the inputs, use the standard digital avatar workflow or compose media assets with or without narration. Retrieve results through task queries and callbacks.
 - **Remotion text effects**: Generate effects with an agent, preview successful versions, and save them as assets for cloud templates.
@@ -33,10 +33,10 @@ IntelligentMixVideo connects desktop template editing, server-side media process
 
 | Page | Purpose |
 | --- | --- |
-| Home | Browse local and cloud templates, create templates, and open existing work |
+| Home | Browse cloud templates, create templates, and open existing work |
 | Template editor | Select assets on the left, preview in the center, edit object parameters and timing on the right, and reorder videos on the timeline below |
 | Remotion effects | Request new effects, view successful versions and history, adjust parameters, and save assets |
-| Settings | Manage the backend URL and local template path; Debug also provides module settings |
+| Settings | Manage the backend URL; Debug also provides module settings |
 
 Templates store object configurations and timing rules separately from the preview video. Replacing the preview video recalculates object visibility intervals based on the new video duration.
 
@@ -46,7 +46,7 @@ Templates store object configurations and timing rules separately from the previ
 
 Template editing, video composition, and Remotion effects each handle a different stage:
 
-- **Template editing**: Add text and effects in the client, set object intervals, and save to the desktop local library or cloud library. Only the template configuration is saved, not the preview video.
+- **Template editing**: Add text and effects in the client, set object intervals, and save to the cloud library. Only the template configuration is saved, not the preview video.
 - **Video composition**: Call the server API with a cloud template ID, script, and media URLs. Based on the input mode, the server performs ASR, text segmentation, asset matching or sequential arrangement, submits the timeline to IMS, transfers the rendered video to ZOS, and returns the result through queries or callbacks.
 - **Remotion effects**: Generate and validate effects with an agent, save successful versions as fixed assets, and add them to a cloud template timeline. A separate [overlay rendering API](#rendering-transparent-overlays) exports the full set of Remotion clips as a transparent video.
 
@@ -58,8 +58,7 @@ Choose a setup based on what you want to do:
 
 | Goal | Requirements |
 | --- | --- |
-| Edit and save local templates on the desktop | Desktop client; local template storage does not require the Python API or MySQL |
-| Use shared templates or server APIs | A client or API caller, an accessible server, and MySQL |
+| Edit templates or use server APIs | A client or API caller, an accessible server, and MySQL |
 | Generate new Remotion effects | A Linux server with model configuration and an isolated rendering environment |
 | Compose videos in the cloud | IMS, ZOS, and any ASR, segmentation, or asset matching services required by the selected mode |
 
@@ -79,12 +78,12 @@ The two installer variants use different backend setups:
 
 | Package | Backend | Usage |
 | --- | --- | --- |
-| Standard | Connects to an external API | Supports desktop local templates; cloud templates, effects, and composition require an available backend |
+| Standard | Connects to an external API | Templates, effects, and composition require an available backend |
 | Debug | Bundles an API, a private database, and runtimes | On first launch, extracts the runtimes, initializes the database, and waits for the API to become ready; connects to an external backend instead if an explicit URL is saved |
 
 Debug installer artifacts are named `intelligent-mix-video-debug-<platform>-<commit SHA>`. They use optimized builds; the main difference is the bundled backend. The Linux bundled backend requires glibc 2.35 or later. First-time initialization may take a while.
 
-After installing and opening the client, follow [Basic Usage](#basic-usage) to create a local template. For cloud features, check the backend URL and related configuration in Settings.
+After installing and opening the client, check the backend URL and related configuration in Settings, then follow [Basic Usage](#basic-usage) to create a template.
 
 Official clients expose version checks and one-click updates in Settings. Compatible, validated UI updates keep the window open; native updates install and restart automatically (deb uses a download guide). Configure release signing and record platform validation before enabling hot updates; see the [client update guide](docs/client-update-design.md).
 
@@ -113,7 +112,7 @@ The following steps start at the root of the checked-out repository. If you alre
 
 ### Running the Server
 
-Skip this step if you only use desktop local templates. For cloud templates or APIs:
+Templates, effects, and the APIs all require the server:
 
 1. Start MySQL.
 2. For initial setup, copy `server/.env.example` to `server/.env`. If the configuration file already exists, edit it directly.
@@ -141,7 +140,7 @@ bun install --frozen-lockfile
 bun run tauri dev
 ```
 
-This opens the desktop development window. Create or select a template from Home. Editing local templates does not require a separately running server.
+This opens the desktop development window. With the server running, create or select a template from Home.
 
 You can also use browser development mode from `client/`:
 
@@ -149,7 +148,7 @@ You can also use browser development mode from `client/`:
 bun run dev
 ```
 
-Then visit [http://localhost:1420](http://localhost:1420). Browser mode does not support the desktop local template library; cloud templates still require a server connection.
+Then visit [http://localhost:1420](http://localhost:1420). Templates require a server connection in both browser and desktop modes.
 
 ---
 
@@ -157,12 +156,12 @@ Then visit [http://localhost:1420](http://localhost:1420). Browser mode does not
 
 ### Creating and Saving a Template
 
-1. On Home, create a local or cloud template and enter its name and description.
+1. On Home, create a cloud template and enter its name and description.
 2. A new template includes one title and one subtitle. Select styles and effects from the asset panel on the left; VFX is limited to one object, and multiple filters are allowed.
 3. Select an object and adjust its text, font size, position, style, and animation on the right.
 4. Set object timing in the inspector on the right and preview it in the center. The subtitle always covers the full video. Drag video clips on the timeline to change their order.
 5. Click Save. The first save creates the template record; later saves update the same template.
-6. Return to Home and confirm that the template appears in the appropriate local or cloud library.
+6. Return to Home and confirm that the template appears in the template list.
 
 Local and cloud templates do not sync automatically. Switching templates or creating a new one prompts you to handle unsaved changes. Editing does not provide autosave or crash recovery.
 
@@ -176,7 +175,7 @@ See [template behavior](client/README.md#模板行为) for timing rules, asset o
 
 Configure Remotion Agent on the server (or in Debug client Settings) and confirm that the connected Linux server has the isolated rendering environment. Then open Remotion effects to request a generation, view successful versions, and adjust parameters.
 
-Save a successful version as an asset, then add it to a cloud template timeline from Remotion assets. Local templates do not currently support these assets. Previewing effects and saving assets do not submit a full cloud video composition task.
+Save a successful version as an asset, then add it to a cloud template timeline from Remotion assets. Previewing effects and saving assets do not submit a full cloud video composition task.
 
 See the [Remotion client documentation](client/src/features/remotion_templates/README.md) for usage and version restrictions.
 
@@ -212,7 +211,7 @@ The server selects and saves the workflow from the script field and top-level na
 
 A successful creation response means the request was accepted, not that rendering is complete. Its `data` field contains the task ID. Save that ID and retrieve the result through the query endpoint or terminal callback.
 
-`styleId` must identify a saved cloud template; desktop local templates cannot be used directly for server-side composition. Standard mode still requires a valid script, `videoUrl`, and `audioUrl`. Omitting `materials` skips asset matching; explicitly supplying an empty or non-empty array invokes matching. `materials: null` is not accepted.
+`styleId` must identify a saved cloud template. Standard mode still requires a valid script, `videoUrl`, and `audioUrl`. Omitting `materials` skips asset matching; explicitly supplying an empty or non-empty array invokes matching. `materials: null` is not accepted.
 
 For asset matching, `COMPOSITION_PUBLIC_BASE_URL` should be an IMV address accessible to the matching service, which uses it to send results back. If empty, the base URL of the composition request is used. The request field `callbackUrl` is the business-system address that receives the final video result.
 
@@ -252,7 +251,7 @@ Query the status with `GET /api/v1/overlay-renders/{taskId}`. This API always re
 
 See [server/.env.example](server/.env.example) and [client/.env.example](client/.env.example) for the full field list. Media URL access requirements and asset field constraints are covered in the [video composition API documentation](server/src/server/video_composition/api.md).
 
-Standard client settings show only General, with the backend URL, local template path, and environment information, without requesting the module catalog. Debug mode retains all module settings, including Remotion Agent and Shanghai IMS; database settings are not part of the settings panel. Dynamic forms depend on the configuration schema returned by the backend; displayed defaults are not the actual values in the server `.env` file.
+Standard client settings show only General, with the backend URL and environment information, without requesting the module catalog. Debug mode retains all module settings, including Remotion Agent and Shanghai IMS; database settings are not part of the settings panel. Dynamic forms depend on the configuration schema returned by the backend; displayed defaults are not the actual values in the server `.env` file.
 
 Save applies only the current page and closes the dialog after success; validation or write failures keep it open with the input preserved. Cancel closes the dialog without saving. Closing discards any other unsaved module drafts without undoing values already saved.
 
@@ -273,10 +272,9 @@ Client settings do not modify the shared server `.env` file. See the [client set
 | Capability | Current scope |
 | --- | --- |
 | Desktop client | Windows x64, Linux x64, macOS Apple Silicon / Intel |
-| Browser development mode | Cloud features through the API; no desktop local template library |
-| Local template editing and storage | No Python API or MySQL required; SDK, font, and sample media previews may still need network access |
+| Browser development mode | Cloud features through the API |
 | New Remotion effect generation | Isolated generation currently requires a Linux server, unprivileged user namespaces, and rendering dependencies |
-| Adding Remotion assets to templates | Cloud templates only; local templates are not supported |
+| Adding Remotion assets to templates | Supported in cloud templates |
 | Standalone ASR | Python function and command-line entry point; no standalone HTTP transcription route |
 | Video composition | Asynchronous server API; no dedicated client page for complete video composition yet |
 | Composition task scheduling | Currently uses a single instance and process; see the server documentation for recovery limitations |
@@ -288,7 +286,7 @@ Windows and macOS Debug packages include runtimes for the bundled API, template 
 
 Templates require a `tracks` array, with each object's parameters stored in `tracks[].editor`. The old top-level `editor` format is not converted automatically.
 
-When an old local template cannot be read, the client shows the file path and explains the effect of deleting it. Back up the file first: deleting it removes every local template stored in that file. Changing the local template path does not migrate existing data.
+Desktop local templates from earlier versions are no longer shown or edited. Their file is left in place and is not migrated; recreate any template you still need as a cloud template.
 
 ---
 
@@ -297,16 +295,6 @@ When an old local template cannot be read, the client shows the file path and ex
 ### Cloud Templates Fail to Load
 
 Confirm that the server and MySQL are running and that the client backend URL points to the correct API. If server startup fails, check the database connection and database creation permissions. For access from another machine, also confirm that the port is reachable.
-
-The desktop client can use local templates in the meantime. Local and cloud libraries are independent; switching between them does not move templates automatically.
-
-### Why Can I Not Create Local Templates in the Browser?
-
-Local template storage uses Tauri desktop capabilities. Use cloud templates in browser mode, or start the desktop client.
-
-### Can Local Mode Work Fully Offline?
-
-Local templates can use effects from the bundled catalog and be saved offline. Video previews still depend on access to the SDK, fonts, and selected media. Cloud templates, model calls, and cloud composition require the corresponding services and network access.
 
 ### Effect Generation Says the Service Is Not Ready
 
@@ -368,7 +356,7 @@ XIM requires the input method framework to set `XMODIFIERS` (for example `@im=fc
 
 ## Data and Credentials
 
-- Desktop local templates are stored by default at `data/template/templates.json` under the application data directory. Settings → General lets you choose another absolute `.json` path. Changing the path does not migrate the old file.
+- Earlier versions stored desktop local templates at `data/template/templates.json` under the application data directory (or a custom path set in Settings). The client no longer reads, deletes, or migrates that file.
 - Desktop settings are stored at `data/settings/settings.json` under the application data directory. API keys are currently saved in plaintext alongside other settings; there is no system credential-store integration yet. Browser settings stay in page memory and are lost on refresh.
 - Model and IMS credentials supplied through client requests are used per task and are not written to the shared `.env`, work history, or task logs. Logs still contain the actual script and media URLs; check business data before sharing them.
 - New composition tasks upload the finished video and a PNG of its third frame to ZOS and make those objects publicly readable. GET responses and successful callbacks return the video URL. The URL stops working if the object is deleted or removed by a lifecycle policy.
@@ -415,7 +403,7 @@ The client is organized into pages, feature components, base UI components, and 
 
 See [Template Compatibility](#template-compatibility) for the data format and handling of old files. Template configuration is saved separately from preview media.
 
-The cloud template API transfers Protobuf binary messages under `/template`. The root `buf.yaml` manages message definitions and compatibility checks; `buf.gen.yaml` generates client TypeScript, Rust, and server Python code. After changing the protocol, run from the repository root:
+The cloud template API transfers Protobuf binary messages under `/template`. The root `buf.yaml` manages message definitions and compatibility checks; `buf.gen.yaml` generates client TypeScript and server Python code. After changing the protocol, run from the repository root:
 
 ```bash
 buf lint

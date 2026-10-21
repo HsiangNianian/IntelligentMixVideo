@@ -99,7 +99,7 @@ test("停用英文配置通过 Protobuf 往返", async () => {
 // 场景：实际工作区提供两个独立开关；英文可以单独编辑，关闭时从对象列表隐藏，重新开启恢复字体大小。
 test("工作区双语开关保留英文设置", async () => {
   fetchMock.mockImplementation((async (_url) => protobufTemplateResponse(savedTemplate(), "get")) as typeof fetch);
-  render(<TemplateWorkspace selection={{ environment: "cloud", templateId: savedTemplate().template_id }} onHome={() => {}} />);
+  render(<TemplateWorkspace selection={{ templateId: savedTemplate().template_id }} onHome={() => {}} />);
   fireEvent.click(await screen.findByRole("checkbox", { name: "中英双语" }));
   fireEvent.click(screen.getAllByRole("button", { name: "编辑英文标题" })[0]);
   fireEvent.click(screen.getByRole("tab", { name: "外观与效果" }));

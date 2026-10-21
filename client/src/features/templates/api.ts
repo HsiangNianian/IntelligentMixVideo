@@ -1,7 +1,5 @@
-/** 模板存储边界：云端及本地保存请求使用 Protobuf，本地文件仍使用 JSON。 */
-import { updateInvoke as invoke } from "@/lib/update-guard";
+/** 模板存储边界：只读写云端模板库，请求与响应使用 Protobuf。 */
 import { updateFetch as fetch } from "@/lib/update-guard";
-import { isTauri } from "@tauri-apps/api/core";
 import { create, fromBinary, toBinary, toJson } from "@bufbuild/protobuf";
 import { timestampDate } from "@bufbuild/protobuf/wkt";
 import { apiBase } from "@/lib/api-base";
@@ -16,19 +14,6 @@ import {
 import { defaultEditor, draftEffects, type Category, type Draft, type Editor, type EffectTrack, type RemotionClip, type Template, type TemplateSummary } from "./model";
 import { validateTemplateTracks } from "./tracks";
 import { BOUND_TEXT_PARAMETERS, validateClipSlots } from "./clips";
-
-/** 当前模板库的存储位置，每次操作显式传递，避免切换后写入错误环境。 */
-export type Environment = "local" | "cloud";
-
-/** 本地操作仅在桌面中可用；IPC 字符串错误统一转成 Error 供现有弹窗显示。 */
-async function local<T>(operation: string, id?: string, draft?: number[], library?: string): Promise<T> {
-  if (!isTauri()) throw new Error("本地模式需要在桌面客户端中使用");
-  try {
-    return await invoke<T>("local_templates", { operation, id, draft, library });
-  } catch (error) {
-    throw error instanceof Error ? error : new Error(String(error));
-  }
-}
 
 /** 还原现有模板视图的字段名称、可空时长及 UTC 时间；`remotion` 轨道拆成独立的片段列表，不进入 IMS 对象。 */
 function toTemplate(record: TemplateRecord): Template {
@@ -106,13 +91,6 @@ function toTemplate(record: TemplateRecord): Template {
   };
 }
 
-/** 按当前运行环境生成云端服务不可用时的本地模板提示。 */
-function localHint(): string {
-  return isTauri()
-    ? "可返回主页选择或创建本地模板。"
-    : "可使用桌面客户端切换到本地环境。";
-}
-
 /** 有界云端请求；读取可取消，写入失败由用户确认后重试。 */
 async function cloud<T>(call: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
   const controller = new AbortController();
@@ -129,11 +107,9 @@ async function cloud<T>(call: (signal: AbortSignal) => Promise<T>, signal?: Abor
   } catch (error) {
     if (signal?.aborted) throw error;
     if (timedOut)
-      throw new Error(
-        `请求超时，草稿已保留。保存结果可能已写入，请刷新列表确认后再重试。${localHint()}`,
-      );
+      throw new Error("请求超时，草稿已保留。保存结果可能已写入，请刷新列表确认后再重试。");
     if (error instanceof TypeError)
-      throw new Error(`无法连接服务端，请确认 API 已启动后重试。${localHint()}`);
+      throw new Error("无法连接服务端，请确认 API 已启动后重试。");
     throw error;
   } finally {
     clearTimeout(timeout);
@@ -157,17 +133,14 @@ async function cloudRequest(path: string, method: "GET" | "POST" | "DELETE", sig
     const message = typeof detail === "string" ? detail : Array.isArray(detail)
       ? detail.map((error: { loc?: unknown[]; msg?: string }) => `${error.loc?.slice(1).join(".")}：${error.msg}`).join("；")
       : `HTTP ${response.status}`;
-    const hint = response.status >= 500
-      ? ` ${localHint()}`
-      : "";
-    throw new Error(`${message}${hint}`);
+    throw new Error(message);
   }
   return response;
 }
 
 /** 获取共享模板列表；组件卸载时取消请求。 */
-export function listTemplates(signal?: AbortSignal, environment: Environment = "cloud"): Promise<TemplateSummary[]> {
-  return environment === "local" ? local("list") : cloud(
+export function listTemplates(signal?: AbortSignal): Promise<TemplateSummary[]> {
+  return cloud(
     async (requestSignal) => {
       const response = await cloudRequest("/template", "GET", requestSignal);
       return fromBinary(ListTemplatesResponseSchema, new Uint8Array(await response.arrayBuffer()))
@@ -183,8 +156,8 @@ export function listTemplates(signal?: AbortSignal, environment: Environment = "
 }
 
 /** 切换时读取最新详情，避免列表缓存覆盖其他客户端的更新。 */
-export function getTemplate(id: string, environment: Environment = "cloud", signal?: AbortSignal): Promise<Template> {
-  return environment === "local" ? local("get", id) : cloud(async (requestSignal) => {
+export function getTemplate(id: string, signal?: AbortSignal): Promise<Template> {
+  return cloud(async (requestSignal) => {
     const response = await cloudRequest(`/template/${encodeURIComponent(id)}`, "GET", requestSignal);
     const message = fromBinary(GetTemplateResponseSchema, new Uint8Array(await response.arrayBuffer()));
     if (!message.template) throw new Error("模板响应缺少内容");
@@ -207,14 +180,12 @@ function clipEditor(clip: RemotionClip) {
 }
 
 /**
- * 统一创建、更新及另存为；只有调用方明确传 ID 时才覆盖已有模板，本地更新携带打开时所属的库。
+ * 统一创建、更新及另存为；只有调用方明确传 ID 时才覆盖已有模板。
  * 保存要求标题和底部字幕各一个，基础文字允许不选择效果。
- * 片段在线路上是 `remotion` 轨道，排在 IMS 对象之后，与模板在同一次请求里原子保存；本地模板不支持，带片段的草稿直接拒绝。
+ * 片段在线路上是 `remotion` 轨道，排在 IMS 对象之后，与模板在同一次请求里原子保存。
  */
-export async function saveTemplate(draft: Draft, id?: string, environment: Environment = "cloud", library?: string): Promise<Template> {
+export async function saveTemplate(draft: Draft, id?: string): Promise<Template> {
   if (!draft.name.trim()) return Promise.reject(new Error("请输入模板名称"));
-  if (environment === "local" && draft.clips.length)
-    return Promise.reject(new Error("本地模板不支持 AI 资产"));
   validateTemplateTracks(draft.tracks);
   validateClipSlots(draft);
   for (const target of ["title", "subtitle"])
@@ -259,7 +230,6 @@ export async function saveTemplate(draft: Draft, id?: string, environment: Envir
     templateId: id,
   });
   const payload = toBinary(SaveTemplateRequestSchema, message);
-  if (environment === "local") return local("save", id, Array.from(payload), library);
   return cloud(async (requestSignal) => {
     const response = await cloudRequest("/template", "POST", requestSignal, payload);
     const saved = fromBinary(SaveTemplateResponseSchema, new Uint8Array(await response.arrayBuffer()));
@@ -269,8 +239,8 @@ export async function saveTemplate(draft: Draft, id?: string, environment: Envir
 }
 
 /** 删除单个模板；成功后由调用方更新列表。 */
-export function deleteTemplate(id: string, environment: Environment = "cloud", library?: string): Promise<void> {
-  return environment === "local" ? local("delete", id, undefined, library) : cloud(async (requestSignal) => {
+export function deleteTemplate(id: string): Promise<void> {
+  return cloud(async (requestSignal) => {
     await cloudRequest(`/template/${encodeURIComponent(id)}`, "DELETE", requestSignal);
   });
 }

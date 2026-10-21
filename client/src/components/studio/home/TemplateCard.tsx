@@ -11,7 +11,7 @@ import { AnimatePresence, motion, useMotionTemplate, useMotionValue, useReducedM
 import { cn } from "@/lib/utils";
 import { Icon, type IconName } from "../icons";
 import { PulseDot, Skeleton, Tooltip } from "../ui";
-import type { Library, TemplateSummary } from "../types";
+import type { TemplateSummary } from "../types";
 
 /** 由模板 ID 得到稳定哈希：FNV-1a，相近 ID 也会落到明显不同的值上。 */
 function hashOf(id: string): number {
@@ -87,7 +87,6 @@ function formatUpdated(iso: string): string {
 }
 
 interface CardProps {
-  library: Library;
   template: TemplateSummary;
   index: number;
   /** 当前在编辑器中打开；dirty 表示还有未保存的修改。 */
@@ -99,7 +98,7 @@ interface CardProps {
 }
 
 /** 单张模板卡片；进入时按序号错开淡入，被删除时缩小淡出，其余卡片平滑补位。 */
-export function TemplateCard({ library, template, index, editing, dirty, onOpen, onDelete, onCopyId }: CardProps) {
+export function TemplateCard({ template, index, editing, dirty, onOpen, onDelete, onCopyId }: CardProps) {
   const invalid = Boolean(template.validation_error);
   const tilt = useSinkTilt(!invalid);
   return (
@@ -142,9 +141,6 @@ export function TemplateCard({ library, template, index, editing, dirty, onOpen,
             <span className="mt-1 block truncate text-[12.5px] text-fg-muted">{template.description || "没有说明"}</span>
           )}
           <span className="mt-1.5 flex items-center gap-1.5 text-[11px] text-fg-subtle">
-            <span role="img" aria-label={library === "cloud" ? "云端模板" : "本地模板"} title={library === "cloud" ? "云端模板" : "本地模板"}>
-              <Icon name={library === "cloud" ? "cloud" : "laptop-minimalistic"} className="size-3.5" />
-            </span>
             <span>{formatUpdated(template.updated_at)}</span>
             <span aria-hidden="true">·</span>
             <span className="truncate font-mono">{template.template_id.slice(0, 8)}</span>

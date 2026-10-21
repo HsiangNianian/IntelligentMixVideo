@@ -1,55 +1,50 @@
 /**
- * 新建模板对话框：填写名称（必填，最多 100 字）与说明（选填，最多 1000 字）后进入编辑器。
+ * 新建云端模板对话框：填写名称（必填，最多 100 字）与说明（选填，最多 1000 字）后进入编辑器。
  * 这里只创建草稿，不写入存储；在编辑器里点击保存才会真正保存，脚注向用户说明这一点。
  */
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Icon } from "../icons";
 import { Button, TextField } from "../ui";
 import { Dialog, DialogContent, DialogFooter, DialogHeader } from "../dialog";
-import type { Library } from "../types";
 
 interface NewTemplateDialogProps {
-  /** 要新建的模板库；null 表示对话框关闭。 */
-  library: Library | null;
+  /** 是否显示对话框；每次打开都清空上次的输入。 */
+  open: boolean;
   existingNames: string[];
   onClose: () => void;
-  onCreate: (draft: { library: Library; name: string; description: string }) => void;
+  onCreate: (draft: { name: string; description: string }) => void;
 }
 
 /** 每次打开都清空上次的输入；提交时去掉首尾空白，名称为空则提示而不关闭。 */
-export function NewTemplateDialog({ library, existingNames, onClose, onCreate }: NewTemplateDialogProps) {
+export function NewTemplateDialog({ open, existingNames, onClose, onCreate }: NewTemplateDialogProps) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [touched, setTouched] = useState(false);
   useEffect(() => {
-    if (!library) return;
+    if (!open) return;
     setName("");
     setDescription("");
     setTouched(false);
-  }, [library]);
-  // 关闭动画期间 library 已为 null，标题沿用上一次的库，避免文案在淡出时跳变。
-  const last = useRef(library);
-  if (library) last.current = library;
+  }, [open]);
   const duplicate = existingNames.includes(name.trim());
   const nameError = touched ? !name.trim() ? "请输入模板名称" : duplicate ? "模板名称已存在，请使用其他名称" : undefined : undefined;
-  const cloud = (library ?? last.current) === "cloud";
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
     setTouched(true);
-    if (!library || !name.trim() || duplicate) return;
-    onCreate({ library, name: name.trim(), description: description.trim() });
+    if (!open || !name.trim() || duplicate) return;
+    onCreate({ name: name.trim(), description: description.trim() });
   };
 
   return (
-    <Dialog open={library !== null} onOpenChange={(open) => !open && onClose()}>
+    <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
       <DialogContent>
         <form onSubmit={submit} noValidate>
           <DialogHeader
             tone="brand"
-            icon={<Icon name={cloud ? "cloud" : "laptop-minimalistic"} variant="duotone" />}
-            title={cloud ? "新建云端模板" : "新建本地模板"}
-            description={cloud ? "云端模板团队共享，保存后所有人都能看到和使用。" : "本地模板只保存在这台电脑上，不需要连接服务。"}
+            icon={<Icon name="cloud" variant="duotone" />}
+            title="新建云端模板"
+            description="云端模板团队共享，保存后所有人都能看到和使用。"
           />
           <div className="space-y-5 px-6 pb-4 pt-4">
             <TextField label="模板名称" required autoFocus value={name} onChange={setName} maxLength={100} placeholder="例如：带货口播 · 黄色花字" error={nameError} />

@@ -45,7 +45,7 @@ test('下载不丢失草稿，安全后应用一次并恢复位置', async () =>
   await act(async () => { await downloadUpdate(); });
   await waitFor(() => expect(screen.getByText(/等待处理/)).toBeTruthy());
   expect(calls.mock.calls.some(([, args]) => args.operation === 'apply')).toBe(false);
-  recovery.workspace = 'library'; recovery.template = { environment: 'cloud', templateId: 'saved' };
+  recovery.workspace = 'library'; recovery.template = { templateId: 'saved' };
   blocker.rerender({ dirty: false });
   await act(async () => { await tryApplyUpdate(); });
   expect(calls.mock.calls.filter(([, args]) => args.operation === 'apply')).toHaveLength(1);

@@ -43,12 +43,13 @@ test("保存前检查名称和画面对象", async () => {
   expect(fetchMock).not.toHaveBeenCalled();
 });
 
-test.each(["cloud", "local"] as const)("%s 创建和更新均拒绝缺少固定文字对象", async (environment) => {
+// 测试创建与更新都要求标题和底部字幕各一个，缺少时不发送请求。
+test("创建和更新均拒绝缺少固定文字对象", async () => {
   for (const id of [undefined, "existing-id"])
     for (const missing of [["title"], ["subtitle"], ["title", "subtitle"]]) {
       const draft = { ...newDraft(), name: "数量验证" };
       draft.tracks = draft.tracks.filter((track) => !missing.includes(track.target));
-      await expect(saveTemplate(draft, id, environment)).rejects.toThrow("保存模板需要标题和底部字幕各一个");
+      await expect(saveTemplate(draft, id)).rejects.toThrow("保存模板需要标题和底部字幕各一个");
     }
   expect(fetchMock).not.toHaveBeenCalled();
 });
@@ -122,21 +123,6 @@ test("含片段的模板读取后再保存不丢片段", async () => {
   expect(body.tracks!.tracks.length - sent.length).toBe(2);
 });
 
-// 测试本地模板不支持 AI 资产：草稿带片段时直接拒绝，不调用桌面 IPC，也不写入云端。
-test("本地环境拒绝保存 Remotion 片段", async () => {
-  const { mock } = await import("bun:test");
-  const invoke = mock(async () => null);
-  const restoreDesktop = mockDesktop(invoke);
-  try {
-    const draft = { ...toDraft(savedTemplate()), clips };
-    await expect(saveTemplate(draft, undefined, "local")).rejects.toThrow("本地模板不支持 AI 资产");
-    expect(invoke).not.toHaveBeenCalled();
-    expect(fetchMock).not.toHaveBeenCalled();
-  } finally {
-    restoreDesktop();
-  }
-});
-
 // 测试服务端遗漏编辑参数时拒绝详情响应，避免客户端静默补齐字段。
 test("模板响应缺少编辑参数时拒绝读取", async () => {
   const response = protobufTemplateResponse(savedTemplate(), "get");
@@ -157,18 +143,16 @@ test("服务端与网络错误转换为用户提示", async () => {
   expect(fetchMock).toHaveBeenCalledTimes(3);
 });
 
-// 测试仅服务不可用时建议本地环境，普通业务错误保持原文；浏览器提示桌面限制。
-test.each([400, 404, 409, 422, 500, 502, 503, 504])("按 HTTP 状态提示本地环境：%s", async (status) => {
+// 测试各类 HTTP 错误原样显示服务端提示，服务不可用时也不再建议切换到已移除的本地模板。
+test.each([400, 404, 409, 422, 500, 502, 503, 504])("按 HTTP 状态显示服务端提示：%s", async (status) => {
   fetchMock.mockResolvedValueOnce(Response.json({ detail: "服务端提示" }, { status }));
-  await expect(listTemplates()).rejects.toThrow(new Error(
-    status >= 500 ? "服务端提示 可使用桌面客户端切换到本地环境。" : "服务端提示",
-  ));
+  await expect(listTemplates()).rejects.toThrow(new Error("服务端提示"));
 });
 
-// 测试网关返回空正文或普通文本时仍展示 HTTP 状态与本地环境提示。
-test.each([null, "upstream unavailable"])("非 JSON 的 503 响应仍提示本地环境：%s", async (body) => {
+// 测试网关返回空正文或普通文本时展示 HTTP 状态。
+test.each([null, "upstream unavailable"])("非 JSON 的 503 响应显示 HTTP 状态：%s", async (body) => {
   fetchMock.mockResolvedValueOnce(new Response(body, { status: 503 }));
-  await expect(listTemplates()).rejects.toThrow("HTTP 503 可使用桌面客户端切换到本地环境。");
+  await expect(listTemplates()).rejects.toThrow(new Error("HTTP 503"));
 });
 
 // 测试超时保留保存结果不确定的提醒，主动取消不误报服务不可用。
@@ -187,50 +171,32 @@ test.each([false, true])("超时与主动取消区分处理：%s", async (cancel
   }
   await expect(pending).rejects.toThrow(cancelled
     ? "已取消"
-    : "请求超时，草稿已保留。保存结果可能已写入，请刷新列表确认后再重试。可使用桌面客户端切换到本地环境。");
+    : new Error("请求超时，草稿已保留。保存结果可能已写入，请刷新列表确认后再重试。"));
 });
 
-// 回归：本地操作走官方 IPC，云端走 HTTP；桌面服务故障显示本地模板提示。
-test("本地和云端存储严格分流", async () => {
+// 回归：桌面客户端同样只读写云端模板，不再调用本地模板 IPC。
+test("桌面客户端模板操作只走云端 HTTP", async () => {
   const { mock } = await import("bun:test");
   const saved = savedTemplate();
-  const invoke = mock(async (_command: string, args: Record<string, unknown>): Promise<unknown> => {
-    if (args.operation === "list") return [templateSummary(saved)];
-    if (args.operation === "delete") return null;
-    return saved;
-  });
+  const invoke = mock(async () => null);
   const restoreDesktop = mockDesktop(invoke);
   try {
-    expect(window).not.toHaveProperty("__TAURI__");
-    expect(await listTemplates(undefined, "local")).toEqual([templateSummary(saved)]);
-    expect(await getTemplate(saved.template_id, "local")).toEqual(saved);
-    expect(await saveTemplate(toDraft(saved), undefined, "local")).toEqual(saved);
-    await deleteTemplate(saved.template_id, "local");
-    expect(invoke.mock.calls.every(([command]) => command === "local_templates")).toBe(true);
-    expect(invoke.mock.calls.map(([, args]) => args.operation)).toEqual(["list", "get", "save", "delete"]);
-    const saveArgs = invoke.mock.calls[2][1];
-    expect(saveArgs.operation).toBe("save");
-    expect(saveArgs.id).toBeUndefined();
-    expect(fromBinary(SaveTemplateRequestSchema, Uint8Array.from(saveArgs.draft as number[])))
-      .toMatchObject({ name: saved.name, description: saved.description });
-    expect(fetchMock).not.toHaveBeenCalled();
-    // 本地更新携带打开时所属的库，由桌面端拒绝跨库写入。
-    await saveTemplate(toDraft(saved), saved.template_id, "local", "/library/templates.json");
-    expect(invoke.mock.calls.at(-1)![1]).toMatchObject({ operation: "save", id: saved.template_id, library: "/library/templates.json" });
-    invoke.mockRejectedValueOnce("磁盘空间不足");
-    await expect(saveTemplate(toDraft(saved), undefined, "local")).rejects.toThrow("磁盘空间不足");
-    fetchMock.mockResolvedValueOnce(protobufListResponse([]));
-    expect(await listTemplates(undefined, "cloud")).toEqual([]);
-    fetchMock.mockResolvedValueOnce(new Response(null, { status: 503 }));
-    await expect(listTemplates(undefined, "cloud")).rejects.toThrow("HTTP 503 可返回主页选择或创建本地模板。");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    fetchMock.mockResolvedValueOnce(protobufListResponse([saved]));
+    expect(await listTemplates()).toEqual([templateSummary(saved)]);
+    fetchMock.mockResolvedValueOnce(protobufTemplateResponse(saved, "get"));
+    expect(await getTemplate(saved.template_id)).toEqual(saved);
+    fetchMock.mockResolvedValueOnce(protobufTemplateResponse(saved, "save", 201));
+    expect(await saveTemplate(toDraft(saved))).toEqual(saved);
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await deleteTemplate(saved.template_id);
+    expect(fetchMock.mock.calls.map(([url, options]) => `${options?.method} ${url}`)).toEqual([
+      "GET http://api.test:8000/template",
+      `GET http://api.test:8000/template/${saved.template_id}`,
+      "POST http://api.test:8000/template",
+      `DELETE http://api.test:8000/template/${saved.template_id}`,
+    ]);
+    expect(invoke).not.toHaveBeenCalled();
   } finally {
     restoreDesktop();
   }
-});
-
-// 测试普通浏览器选择本地时明确提示使用桌面，不偷偷写入云端或浏览器缓存。
-test("浏览器无法调用本地文件存储", async () => {
-  await expect(listTemplates(undefined, "local")).rejects.toThrow("桌面客户端");
-  expect(fetchMock).not.toHaveBeenCalled();
 });

@@ -110,7 +110,7 @@ test("Remotion 目录在分类内按名称搜索并添加", async () => {
   const added: SpriteAsset[] = [];
   const other = { ...asset, id: "s2", name: "流光字幕" };
   const catalog = { assets: [asset, other], error: "", refresh() {} } as unknown as ReturnType<typeof useSpriteCatalog>;
-  render(<SpriteCatalog environment="cloud" catalog={catalog} placed={new Set()} onAdd={(item) => added.push(item)} />);
+  render(<SpriteCatalog catalog={catalog} placed={new Set()} onAdd={(item) => added.push(item)} />);
   const region = screen.getByRole("region", { name: "AI 资产" });
   expect(within(region).getAllByRole("radio").length).toBeGreaterThan(0);
   fireEvent.change(within(region).getByRole("searchbox", { name: "搜索 AI 资产" }), { target: { value: "流光" } });
