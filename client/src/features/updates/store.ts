@@ -11,7 +11,7 @@ export type Candidate = { version: string; mode: 'hot' | 'native' | 'manual' };
 /** 阻止应用更新的本地会话：所属服务地址、侧栏标题与是否等待重试删除。 */
 type PendingWork = { server: string; title: string; deleting: boolean };
 type Phase = 'disabled' | 'idle' | 'checking' | 'available' | 'downloading' | 'waiting' | 'applying' | 'error' | 'manual';
-type State = { phase: Phase; nativeVersion: string; candidate?: Candidate; message: string; progress?: number; links?: string[]; sha256?: string };
+type State = { phase: Phase; nativeVersion: string; candidate?: Candidate; reminder?: Candidate; message: string; progress?: number; links?: string[]; sha256?: string };
 let state: State = { phase: 'disabled', nativeVersion: APP_VERSION, message: '此构建不支持客户端更新' };
 const listeners = new Set<() => void>();
 let initialization: Promise<void> | undefined;
@@ -72,16 +72,24 @@ export async function updaterReady() {
       if (readyRun !== run) return;
     }
   }
-  if (readyRun === run) void checkUpdate();
+  if (readyRun === run) void checkUpdate(true);
 }
-/** 检查是否有新版本；忙碌或未启用时忽略，失败显示原因而不是「已是最新」。 */
-export async function checkUpdate() {
+/**
+ * 检查是否有新版本；忙碌或未启用时忽略，失败显示原因而不是「已是最新」。
+ * 仅启动后的自动检查传入 `remind`，设置中的手动检查不弹窗。
+ */
+export async function checkUpdate(remind = false) {
   if (['disabled', 'checking', 'downloading', 'waiting', 'applying'].includes(state.phase)) return;
-  publish({ phase: 'checking', message: '正在检查更新…', progress: undefined, links: undefined });
+  // 手动检查只有在结果没有候选、或用户已经关闭提醒时才清除提醒；自动检查负责重建提醒。
+  publish({ phase: 'checking', message: '正在检查更新…', progress: undefined, links: undefined, reminder: remind ? undefined : state.reminder });
   try {
     const candidate = await call<Candidate | null>('check');
-    publish({ phase: candidate ? 'available' : 'idle', candidate: candidate ?? undefined, message: candidate ? `发现新版本 v${candidate.version}` : '当前已是可用的最新版本' });
-  } catch (e) { publish({ phase: 'error', message: String(e) }); }
+    publish({ phase: candidate ? 'available' : 'idle', candidate: candidate ?? undefined, reminder: candidate && (remind || state.reminder) ? candidate : undefined, message: candidate ? `发现新版本 v${candidate.version}` : '当前已是可用的最新版本' });
+  } catch (e) { publish({ phase: 'error', message: String(e), reminder: remind ? undefined : state.reminder }); }
+}
+/** 关闭启动提醒；只影响本次运行，下次启动发现新版本仍会提醒。 */
+export function dismissUpdateReminder() {
+  if (state.reminder) publish({ reminder: undefined });
 }
 /** 读取本机所有服务下未结束、状态不明或待重试删除的字效会话。 */
 async function pendingTasks(): Promise<PendingWork[]> {
@@ -124,7 +132,7 @@ export async function downloadUpdate() {
   try {
     const result = await call<{ links?: string[]; sha256?: string } | null>('download');
     if (result?.links) { publish({ phase: 'manual', links: result.links, sha256: result.sha256, progress: undefined, message: '此版本需要完整升级，请按顺序选择下载源安装 deb 包' }); return; }
-    publish({ phase: 'waiting', message: '下载完成，等待安全应用更新', progress: undefined });
+    publish({ phase: 'waiting', message: '下载完成，等待安全应用更新', progress: undefined, reminder: undefined });
     stopWaiting();
     const controller = new AbortController();
     stopSync = () => controller.abort();
@@ -157,5 +165,5 @@ export function cancelUpdate() {
 export function resetUpdates() {
   generation++; stopWaiting(); unlisten?.(); unlisten = undefined;
   initialization = undefined; ready = false; readyRun = undefined; applying = false; resetUpdateGuard(); restoreRecovery(null);
-  publish({ phase: 'disabled', nativeVersion: APP_VERSION, message: '此构建不支持客户端更新', candidate: undefined, progress: undefined, links: undefined });
+  publish({ phase: 'disabled', nativeVersion: APP_VERSION, message: '此构建不支持客户端更新', candidate: undefined, reminder: undefined, progress: undefined, links: undefined });
 }

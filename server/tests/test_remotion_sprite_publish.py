@@ -22,7 +22,7 @@ from generated.imv.sprite.v1 import sprite_pb2 as pb
 from sqlalchemy import Engine, select, update
 
 from server.app import app
-from server.remotion_templates import sprite_store, sprites
+from server.remotion_templates import sprite_events, sprite_store, sprites
 from server.remotion_templates.categories import HEX_COLOR, KEYWORD_COLOR
 from server.remotion_templates.harness import Harness
 from server.remotion_templates.models import GenerateTemplateRequest
@@ -819,6 +819,8 @@ def test_deleting_an_unused_sprite_removes_its_record_and_bundle(client: TestCli
     """未被模板使用的资产可删除：目录与预览不再提供，播放器包对象和缓存一起删除，源版本可以重新保存为新资产。"""
     summary = published_sprite(client, published.version.id)
     assert client.get(summary.preview_url).status_code == 200
+    # 目录不可缓存：删除后客户端刷新拿到的不能是 CDN 或代理保存的旧目录。
+    assert client.get("/api/sprites").headers["Cache-Control"] == "no-store"
     assert client.delete(f"/api/sprites/{summary.sprite_id}").status_code == 204
     assert pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites == []
     assert not (objects(published.store) / "sprites" / summary.sprite_id).exists()
@@ -827,6 +829,58 @@ def test_deleting_an_unused_sprite_removes_its_record_and_bundle(client: TestCli
     assert client.delete(f"/api/sprites/{summary.sprite_id}").status_code == 404
     assert published_sprite(client, published.version.id).sprite_id != summary.sprite_id
 
+
+
+# 场景（回归）：对象存储删除失败时，原先记录已先删掉，接口 500、目录仍显示资产，再点删除只得到 404「sprite not found」。
+def test_an_object_store_failure_keeps_the_sprite_for_a_retry(client: TestClient, published, monkeypatch) -> None:
+    """预览包删除失败回答可重试的 503，记录、目录与预览保持原样；存储恢复后重试删除成功。"""
+    summary = published_sprite(client, published.version.id)
+    real_delete = published.store.objects.delete_prefix
+
+    def unreachable(prefix):
+        """模拟 ZOS 拒绝批量删除。"""
+        raise ObjectStoreError("ZOS delete failed")
+
+    monkeypatch.setattr(published.store.objects, "delete_prefix", unreachable)
+    response = client.delete(f"/api/sprites/{summary.sprite_id}")
+    assert response.status_code == 503 and response.json()["detail"] == "资产文件暂时无法删除，请稍后重试"
+    assert [item.sprite_id for item in pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites] == [summary.sprite_id]
+    assert client.get(summary.preview_url).status_code == 200
+    monkeypatch.setattr(published.store.objects, "delete_prefix", real_delete)
+    assert client.delete(f"/api/sprites/{summary.sprite_id}").status_code == 204
+    assert pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites == []
+    assert not (objects(published.store) / "sprites" / summary.sprite_id).exists()
+
+
+# 场景：资产库共享，任何人保存、改名或删除资产都要唤醒打开的目录推送；没有写入的请求不唤醒。
+def test_catalog_writes_wake_open_catalog_streams(client: TestClient, published, monkeypatch) -> None:
+    """新发布、改名、删除各唤醒一次；重复保存返回原资产、被模板占用或不存在的删除不唤醒。"""
+    from datetime import UTC, datetime
+
+    from server.template.store import initialize_schema, templates
+
+    wakes: list[bool] = []
+    monkeypatch.setattr(sprite_events, "changed", lambda: wakes.append(True))
+    summary = published_sprite(client, published.version.id)
+    assert len(wakes) == 1
+    wakes.clear()
+    assert published_sprite(client, published.version.id).sprite_id == summary.sprite_id
+    assert rename(client, summary.sprite_id, "新名称").status_code == 200
+    assert len(wakes) == 1
+    stamp = datetime.now(UTC).replace(tzinfo=None)
+    template_id = str(uuid4())
+    with initialize_schema().begin() as connection:
+        connection.execute(templates.insert().values(
+            template_id=template_id, name="片头模板", created_at=stamp, updated_at=stamp,
+            configuration={"tracks": [{"target": "remotion", "sprite_id": summary.sprite_id}]},
+        ))
+    assert client.delete(f"/api/sprites/{summary.sprite_id}").status_code == 409
+    assert len(wakes) == 1
+    with initialize_schema().begin() as connection:
+        connection.execute(templates.delete().where(templates.c.template_id == template_id))
+    assert client.delete(f"/api/sprites/{summary.sprite_id}").status_code == 204
+    assert client.delete(f"/api/sprites/{summary.sprite_id}").status_code == 404
+    assert len(wakes) == 2
 
 def test_a_sprite_placed_in_a_template_cannot_be_deleted(client: TestClient, published) -> None:
     """云端模板的 remotion 轨道仍引用资产时拒绝删除并列出模板名称，资产与预览保持可用；其他轨道或无效配置不算引用。"""

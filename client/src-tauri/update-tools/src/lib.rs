@@ -26,7 +26,7 @@ pub fn files(dir: &Path) -> Result<Vec<PathBuf>> {
     result.sort();
     Ok(result)
 }
-/// 仅忽略项目自身版本字段，依赖版本、权限、桥接、工具链和内嵌目录均保留。
+/// 仅忽略项目自身版本字段，依赖版本、权限、桥接与工具链均保留。
 pub fn fingerprint(root: &Path, build: Value) -> Result<String> {
     let mut inputs = Vec::new();
     for dir in [
@@ -47,9 +47,6 @@ pub fn fingerprint(root: &Path, build: Value) -> Result<String> {
         "client/src-tauri/tauri.conf.json",
         "client/bun.lock",
         ".github/workflows/client-build.yml",
-        "server/src/server/template/fonts.json",
-        "server/src/server/template/sdk_catalog.json",
-        "server/src/server/template/motions.json",
     ] {
         inputs.push(root.join(file));
     }
@@ -195,9 +192,6 @@ mod tests {
             "client/src-tauri/Info.plist",
             "client/bun.lock",
             ".github/workflows/client-build.yml",
-            "server/src/server/template/fonts.json",
-            "server/src/server/template/sdk_catalog.json",
-            "server/src/server/template/motions.json",
         ] {
             put(&root, file, "");
         }
@@ -226,9 +220,6 @@ mod tests {
             }
         }
         let old = fingerprint(&root, Value::Null).unwrap();
-        put(&root, "server/src/server/template/fonts.json", "changed");
-        assert_ne!(old, fingerprint(&root, Value::Null).unwrap());
-        put(&root, "server/src/server/template/fonts.json", "");
         put(&root, "client/src-tauri/src/command.rs", "new command");
         assert_ne!(old, fingerprint(&root, Value::Null).unwrap());
         fs::remove_dir_all(root).unwrap();

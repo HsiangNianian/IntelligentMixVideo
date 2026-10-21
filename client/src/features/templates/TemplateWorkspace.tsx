@@ -31,6 +31,7 @@ import type { TemplateSelection } from "./TemplateHome";
 import "./template-workspace.css";
 import { Spinner } from "@/components/ui/spinner";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { debugLog, describe } from "@/lib/diagnostics";
 
 /** 窗口宽度仅改变排列和调整权限，保留各栏组件、输入草稿与播放器实例。 */
 function WorkspaceColumns({ assets, canvas, inspector }: { assets: ReactNode; canvas: ReactNode; inspector: ReactNode }) {
@@ -50,9 +51,9 @@ function WorkspaceColumns({ assets, canvas, inspector }: { assets: ReactNode; ca
 }
 
 /** 导航与主页共享当前编辑状态，不包含可变草稿。 */
-export interface EditingState { id: string | null; name: string; environment: api.Environment; dirty: boolean }
+export interface EditingState { id: string | null; name: string; dirty: boolean }
 
-/** 只有成功读取或明确放弃时才替换草稿；保存始终使用当前模板的环境和 ID。 */
+/** 只有成功读取或明确放弃时才替换草稿；保存始终使用当前模板的 ID。 */
 export function TemplateWorkspace({ selection = null, deletedTemplate = null, onHome, onOpenRemotion, onEditingState, active = true }: {
   active?: boolean;
   onEditingState?: (state: EditingState | null) => void;
@@ -62,7 +63,6 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
   /** 回到字效工作区修改资产本身（颜色、动画等不在模板里调整的参数）。 */
   onOpenRemotion?: () => void;
 }) {
-  const [environment, setEnvironment] = useState<api.Environment>("cloud");
   const [current, setCurrent] = useState<Template | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [editing, setEditing] = useState<{ field: "name" | "description"; value: string } | null>(null);
@@ -87,7 +87,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
   const form = useRef<HTMLFormElement>(null);
   const mounted = useRef(false);
   const handledSelection = useRef<TemplateSelection | null>(null);
-  const spriteCatalog = useSpriteCatalog(environment, (draft?.clips.length ?? 0) > 0);
+  const spriteCatalog = useSpriteCatalog((draft?.clips.length ?? 0) > 0);
   const [transitionRandom, setTransitionRandom] = useState<readonly [number, number]>(() => [Math.random(), Math.random()]);
   const visibleDraft = useMemo(() => draft ? activeDraft(draft) : null, [draft]);
   const previewSelection = useMemo(() => visibleDraft ? previewTransitions(visibleDraft, transitionRandom, spriteCatalog.assets ?? []) : null, [visibleDraft, transitionRandom, spriteCatalog.assets]);
@@ -127,8 +127,8 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
   }).filter((clip) => clip.end > clip.start && !hiddenClips.has(clip.id)), [previewClips, hiddenClips, draftTracks, spriteCatalog.assets, previewLength]);
   const dirty = draft !== null && (current === null || JSON.stringify(draft) !== baseline || (editing !== null && editing.value !== draft[editing.field]));
   useUpdateBlocker("模板尚未保存或正在处理", dirty || busy || loading || !!openRequest);
-  useEffect(() => { recovery.template = current ? { environment, templateId: current.template_id } : null; }, [current, environment]);
-  useEffect(() => { onEditingState?.(draft ? { id: current?.template_id ?? null, name: draft.name, environment, dirty } : null); }, [draft?.name, !!draft, current?.template_id, environment, dirty, onEditingState]);
+  useEffect(() => { recovery.template = current ? { templateId: current.template_id } : null; }, [current]);
+  useEffect(() => { onEditingState?.(draft ? { id: current?.template_id ?? null, name: draft.name, dirty } : null); }, [draft?.name, !!draft, current?.template_id, dirty, onEditingState]);
   useEffect(() => {
     function saveShortcut(event: KeyboardEvent) {
       if (active && !event.defaultPrevented && !document.querySelector('[role="dialog"]') && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); form.current?.requestSubmit(); }
@@ -157,12 +157,12 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
   // 主页删除模板后取消对应读取、清空对应编辑区，删除其他模板不影响当前草稿。
   useEffect(() => {
     if (!deletedTemplate) return;
-    if (openRequest?.templateId === deletedTemplate.templateId && openRequest.environment === deletedTemplate.environment) {
+    if (openRequest?.templateId === deletedTemplate.templateId) {
       setOpenRequest(null); setLoading(false); setError("");
     }
-    if (!current || deletedTemplate.templateId !== current.template_id || deletedTemplate.environment !== environment) return;
+    if (!current || deletedTemplate.templateId !== current.template_id) return;
     setCurrent(null); setDraft(null); setEditing(null); setBaseline(""); setError("");
-  }, [deletedTemplate, current, environment, openRequest]);
+  }, [deletedTemplate, current, openRequest]);
 
   // 默认地址（本机保存的本地视频优先）与弹窗均读取真实元数据；已选择来源时不再启动默认读取。
   useEffect(() => {
@@ -172,10 +172,12 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
     void defaultPreviewUrls().then((urls) => readPreviewVideos(urls, controller.signal)).then((sources) => {
       if (!controller.signal.aborted) setMedia(sources);
     }).catch((reason: unknown) => {
-      if (!controller.signal.aborted) setMediaError(reason instanceof Error ? reason.message : "预览视频读取失败");
+      if (controller.signal.aborted) return;
+      setMediaError(reason instanceof Error ? reason.message : "预览视频读取失败");
+      debugLog("模板编辑", `读取预览视频失败：${describe(reason)}`);
     });
     return () => controller.abort();
-  }, [!!draft, draft?.name, current?.template_id, environment, media, mediaAttempt]);
+  }, [!!draft, draft?.name, current?.template_id, media, mediaAttempt]);
 
   useEffect(() => {
     if (!dirty) return;
@@ -190,10 +192,10 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
     handledSelection.current = selection;
     setOpenRequest(null);
     setError("");
-    if (selection.templateId && selection.templateId === current?.template_id && selection.environment === environment) return;
+    if (selection.templateId && selection.templateId === current?.template_id) return;
     if (dirty) setAction(selection);
     else setOpenRequest(selection);
-  }, [selection, loading, busy, current, environment, dirty]);
+  }, [selection, loading, busy, current, dirty]);
 
   // 每次读取拥有独立取消信号；迟到响应、卸载及 StrictMode 重建都不能替换当前草稿。
   useEffect(() => {
@@ -204,7 +206,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
     const read = async () => {
       try {
         const template = openRequest.templateId !== null
-          ? await api.getTemplate(openRequest.templateId, openRequest.environment, controller.signal)
+          ? await api.getTemplate(openRequest.templateId, controller.signal)
           : null;
         if (controller.signal.aborted) return;
         const next = template ? toDraft(template) : {
@@ -217,7 +219,6 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
         setEditing(null);
         setMedia(undefined);
         setBaseline(JSON.stringify(next));
-        setEnvironment(openRequest.environment);
         setTarget(next.tracks[0]?.id ?? null);
         const initialText = next.tracks.find((track) => isTextTarget(track.target));
         lastTextTrack.current = initialText?.id ?? null;
@@ -267,7 +268,7 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
     try {
       // Remotion 字效保存文字区间，转场保留自身时长，与 IMS 对象在同一次请求里保存。
       const saveDraft = preview.timeline ? timeClips(savingDraft, preview.timeline, "save") : savingDraft;
-      const saved = await api.saveTemplate(setTransitionDuration(saveDraft, savingDraft.transition_duration_seconds), current?.template_id, environment, current?.library);
+      const saved = await api.saveTemplate(setTransitionDuration(saveDraft, savingDraft.transition_duration_seconds), current?.template_id);
       if (!mounted.current) return;
       const next = toDraft(saved);
       setCurrent(saved);
@@ -336,7 +337,6 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
                       </dd>
                       {editing?.field !== field && <Hint label={`编辑${label}`}><Button type="button" variant="ghost" size="icon-xs" aria-label={`编辑${label}`}
                         onClick={() => { setEditing({ field, value: draft[field] }); setError(""); }}><Pencil className="size-3" aria-hidden="true" /></Button></Hint>}
-                      {field === "name" && <div><dt className="sr-only">当前环境</dt><dd aria-label="当前环境" className="template-workspace-environment rounded-full px-2 py-0.5 text-[11px]">{environment === "cloud" ? "云端" : "本地"}</dd></div>}
                     </div>;
                   })}
                 </dl>
@@ -366,14 +366,14 @@ export function TemplateWorkspace({ selection = null, deletedTemplate = null, on
                   if (isTextTarget(added.target)) { setTextTarget(added.target); lastTextTrack.current = added.id; }
                   return result.draft;
                 }, true)} /></div>
-                <div hidden={assetSource !== "ai"}><SpriteCatalog environment={environment} catalog={spriteCatalog} placed={new Set(draft.clips.map((clip) => clip.sprite_id))} onAdd={(asset) => editTrack(() => addClip(draft, asset, spriteCatalog.assets ?? [], textTarget, draft.tracks.find((track) => track.id === lastTextTrack.current)?.language), true)} /></div>
+                <div hidden={assetSource !== "ai"}><SpriteCatalog catalog={spriteCatalog} placed={new Set(draft.clips.map((clip) => clip.sprite_id))} onAdd={(asset) => editTrack(() => addClip(draft, asset, spriteCatalog.assets ?? [], textTarget, draft.tracks.find((track) => track.id === lastTextTrack.current)?.language), true)} /></div>
               </aside>}
               canvas={<main className="template-workspace-canvas h-full min-w-0 overflow-y-auto border-b xl:border-b-0">
-                <TemplatePreview draft={previewDraft!} media={media} resolved={preview.timeline} mediaError={mediaError || preview.error} onRetryMedia={() => setMediaAttempt((value) => value + 1)} onMediaChange={(next) => { setMedia(next); setMediaError(""); }} videoInputKey={`${environment}:${current?.template_id ?? draft.name}`} onCatalog={setCatalog} selectedId={effectiveTarget} selectionTargets={previewSelection?.targets} onSelect={(id) => { selectTarget(previewSelection?.targets.get(id) ?? id); }} sprites={spriteClips} onSpriteMove={(id, x, y) => editTrack(() => setClipTransform(draft, previewSelection?.targets.get(id) ?? id, { x, y }))}
+                <TemplatePreview draft={previewDraft!} media={media} resolved={preview.timeline} mediaError={mediaError || preview.error} onRetryMedia={() => setMediaAttempt((value) => value + 1)} onMediaChange={(next) => { setMedia(next); setMediaError(""); }} videoInputKey={current?.template_id ?? draft.name} onCatalog={setCatalog} selectedId={effectiveTarget} selectionTargets={previewSelection?.targets} onSelect={(id) => { selectTarget(previewSelection?.targets.get(id) ?? id); }} sprites={spriteClips} onSpriteMove={(id, x, y) => editTrack(() => setClipTransform(draft, previewSelection?.targets.get(id) ?? id, { x, y }))}
                 />
               </main>}
               inspector={<aside className="template-workspace-inspector relative h-full min-w-0 overflow-y-auto xl:border-l"><AppliedEffects draft={visibleDraft!} catalog={catalog} resolved={preview.timeline} selected={target} onSelect={selectTarget} />
-                <SpriteClips environment={environment} clips={timedClips ?? []} catalog={spriteCatalog} duration={preview.timeline?.duration} hidden={hiddenClips} selected={selectedClip?.id ?? null} onSelect={selectTarget} onRemove={(id) => editTrack(() => removeClip(draft, id))} />
+                <SpriteClips clips={timedClips ?? []} catalog={spriteCatalog} duration={preview.timeline?.duration} hidden={hiddenClips} selected={selectedClip?.id ?? null} onSelect={selectTarget} onRemove={(id) => editTrack(() => removeClip(draft, id))} />
                 {bilingualTarget && <div className="space-y-2 border-b px-4 py-3">
                   <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={!!english && english.enabled !== false} onChange={(event) => {
                     const enabled = event.target.checked;

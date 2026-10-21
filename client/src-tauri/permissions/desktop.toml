@@ -1,5 +1,5 @@
-# 桌面页面可访问模板、设置、本地预览视频、字效会话存储、内置服务启动和客户端更新命令；Windows 的 URL 在绑定端口后精确授权。
+# 桌面页面可访问设置、本地预览视频、字效会话存储、内置服务启动、客户端更新和调试日志命令；Windows 的 URL 在绑定端口后精确授权。
 [[permission]]
 identifier = "desktop-commands"
-description = "Use local templates, settings, local preview videos, Remotion sessions, start the bundled debug backend and update the client"
-commands.allow = ["local_templates", "local_settings", "preview_video_list", "preview_video_read", "preview_video_write", "preview_video_remove", "remotion_sessions", "start_backend", "client_update"]
+description = "Use settings, local preview videos, Remotion sessions, start the bundled debug backend, update the client and open/write diagnostics logs"
+commands.allow = ["local_settings", "preview_video_list", "preview_video_read", "preview_video_write", "preview_video_remove", "remotion_sessions", "start_backend", "client_update", "diagnostics_open", "diagnostics_log"]

@@ -1,4 +1,4 @@
-// 云端 API 与本地保存请求共用的 Protobuf 消息；业务模块负责验证与持久化。
+// 云端模板 API 使用的 Protobuf 消息；业务模块负责验证与持久化。
 syntax = "proto3";
 
 package imv.template.v1;

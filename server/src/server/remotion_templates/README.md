@@ -86,7 +86,10 @@ at a time (deciding whether a parameter patch is instant reads only `interactive
 deletes run in worker threads and never under the write lock: a version is uploaded under its new ID before its record
 commits and removed again if the commit fails; deletion and the upload sweep remove records and objects in separate
 steps. A ZOS failure other than a missing object is an `ObjectStoreError` (an `OSError`): uploads, reference images,
-downloads, diagnostics and work deletion answer a retryable 503 instead of a 500 or a misleading 422. Job
+downloads, diagnostics and work deletion answer a retryable 503 instead of a 500 or a misleading 422. Prefix deletes
+list the objects and remove each page with one batch request that carries `Content-MD5` (`zos.storage_client` swaps
+in the header botocore 1.36+ replaced with a CRC32 checksum; Aliyun OSS and similar S3-compatible stores reject a
+batch delete without it). Job
 scratch is removed when the job ends and the private `audit/<work_id>/<job_id>.jsonl` log outlives it (deleting the
 work removes its whole audit folder, including logs of jobs already pruned). An hourly sweep (started with the runtime on the first Remotion request, which runs it immediately) applies
 three retention periods: undelivered events (`IMV_UNDELIVERED_EVENT_DAYS`, 7), audit logs
@@ -470,8 +473,9 @@ unreachable object store is a 503 that starts no rebuild. Deletion waits for a r
 never written back after it. Overlay renders only need the stored TSX.
 `DELETE /api/sprites/{id}` removes a publication (anyone may delete from the shared library): its row, bundle object
 and cache. While a cloud template's `remotion` track still references it the answer is 409 naming those templates
-(raw configurations are scanned, so invalid templates count too); an unknown ID is a 404. The source work and its
-versions are untouched, so the version can be saved to the library again.
+(raw configurations are scanned, so invalid templates count too); an unknown ID is a 404. The bundle objects are
+removed before the row: when the object store fails the answer is a retryable 503 and the asset stays listed, so a
+retry finishes it. The source work and its versions are untouched, so the version can be saved to the library again.
 `POST /api/sprites/{id}/rename` (`imv.sprite.v1.RenameSpriteRequest`, anyone may rename) changes only the catalog name:
 trimmed, 1 to 100 characters, not required to be unique (422 otherwise), an unknown ID is a 404. A placed asset can
 be renamed since templates store IDs only. The name lives in the stored JSON; `sprite_store.update_data` locks the
@@ -517,7 +521,11 @@ returns the original Sprite without sampling again. `animation_frames` and `stat
 because composition versions carry no such evidence, and `preview_url` serves the sealed
 interactive player page rather than an MP4.
 
-`GET /api/sprites` lists summaries (no TSX). A record that cannot be parsed or fails its hash check is
+`GET /api/sprites` lists summaries (no TSX) with `Cache-Control: no-store`, so a CDN or proxy in front of the
+backend never serves a catalog from before a deletion. `GET /api/sprites/stream` is an SSE stream that sends
+`catalog.changed` on connect and after every committed publish, rename or delete (`sprite_store` wakes the open
+streams through `sprite_events`, in-process like the work streams), and a named `ping` every 15 s while idle; the
+event carries no catalog, it only tells the template editor to read `GET /api/sprites` again. A record that cannot be parsed or fails its hash check is
 logged and left out, so one damaged row never hides the library; reading it by ID still reports the
 failure. Where a Sprite is placed is not stored here: a placement is a `remotion` track of the cloud template
 (`sprite_id`, a seconds start, an optional duration and `editor.remotion` with parameter overrides and a host

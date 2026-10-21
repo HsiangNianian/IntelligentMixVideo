@@ -7,6 +7,7 @@ and need no header, like the public-read objects behind them.
 
 import asyncio
 import json
+import logging
 import re
 from pathlib import Path
 from collections.abc import Sequence
@@ -52,6 +53,7 @@ from .tools.contracts import CodeValidationReport, ComponentDefinition
 
 # 按接口职责设置标签，供模板服务的 Swagger 分组展示。
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 async def runtime_for(state) -> Runtime:
@@ -754,7 +756,7 @@ def acknowledge(work_id: UUID, request: Acknowledgement, service: Service, owner
 async def delete_work(work_id: UUID, service: Service, owner: Device) -> Response:
     """停止后台任务并删除本设备的会话、所有版本及专属文件；不存在时同样返回 204。
 
-    清理失败返回 503，持久化删除标记禁止继续编辑；重试 DELETE 或服务重启后继续清理。
+    清理失败返回 503 并写服务端日志（含对象存储等根因），持久化删除标记禁止继续编辑；重试 DELETE 或服务重启后继续清理。
     其他会话引用的图片保留，已保存到资产库的 Sprite 不受影响。
     """
     try:
@@ -765,5 +767,6 @@ async def delete_work(work_id: UUID, service: Service, owner: Device) -> Respons
     try:
         await service.delete_work(work_id)
     except (OSError, SQLAlchemyError) as exc:
-        raise HTTPException(503, "Work cleanup incomplete; retry deletion.") from exc
+        logger.exception("Work deletion is incomplete: %s", work_id)
+        raise HTTPException(503, "会话数据清理未完成，请重试删除。") from exc
     return Response(status_code=204)

@@ -22,7 +22,6 @@ fn main() {
         "../bun.lock",
         "update-tools",
         "../../.github",
-        "../../server/src/server/template",
     ] {
         println!("cargo:rerun-if-changed={path}");
     }

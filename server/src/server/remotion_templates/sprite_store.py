@@ -4,7 +4,8 @@ A row holds the `imv.sprite.v1.PublishedSprite` JSON and the columns that identi
 version and field choice, which are unique together. A row is only deleted as a whole, when nothing uses it. The preview bundle stays a file in the Remotion data
 folder (`sprites.py`). Like the template and Preset tables, the table is created on first use and never altered.
 Templates reference Sprites by ID, and keeping both in one database lets a template be checked against the
-published Sprites when it is saved. The functions are synchronous; callers run them in a worker thread.
+published Sprites when it is saved. The functions are synchronous; callers run them in a worker thread. Every
+committed write wakes the open catalog streams (`sprite_events`), so template editors read the catalog again.
 """
 
 from collections.abc import Iterable
@@ -15,6 +16,7 @@ from sqlalchemy import JSON, Column, MetaData, SmallInteger, String, Table, Uniq
 from sqlalchemy.dialects.mysql import DATETIME
 
 from ..database import get_engine
+from . import sprite_events
 
 # Field names are JSON property names, which are case-sensitive, so they are compared as binary strings.
 # 255 characters keep the unique key (up to 4 bytes per character) far inside InnoDB's 3072-byte limit.
@@ -98,6 +100,7 @@ def insert(
             text_prop=text_prop, keywords_prop=keywords_prop,
             published_at=published_at.astimezone(UTC).replace(tzinfo=None), data=data,
         ))
+    sprite_events.changed()
 
 
 def update_data(sprite_id: str, fields: dict) -> dict | None:
@@ -112,13 +115,17 @@ def update_data(sprite_id: str, fields: dict) -> dict | None:
             return None
         data = {**data, **fields}
         connection.execute(update(sprites).where(sprites.c.sprite_id == sprite_id).values(data=data))
-        return data
+    sprite_events.changed()
+    return data
 
 
 def remove(sprite_id: str) -> bool:
     """Delete one publication; False when no row has that ID."""
     with initialize_schema().begin() as connection:
-        return connection.execute(delete(sprites).where(sprites.c.sprite_id == sprite_id)).rowcount > 0
+        removed = connection.execute(delete(sprites).where(sprites.c.sprite_id == sprite_id)).rowcount > 0
+    if removed:
+        sprite_events.changed()
+    return removed
 
 
 def records(sprite_ids: Iterable[str]) -> dict[str, object]:

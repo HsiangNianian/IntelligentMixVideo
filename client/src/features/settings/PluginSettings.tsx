@@ -3,7 +3,7 @@ import { useUpdateBlocker } from "@/lib/update-guard";
 import { ClientUpdate } from "@/features/updates/ClientUpdate";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { isTauri } from "@tauri-apps/api/core";
-import { Puzzle, Settings2 } from "lucide-react";
+import { Bug, Puzzle, Settings2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -14,6 +14,7 @@ import { normalizeValues, schemaError } from "./schema";
 import { Spinner } from "@/components/ui/spinner";
 import { Hint } from "@/components/Hint";
 import { APP_COMMIT, APP_VERSION } from "@/lib/version";
+import { openDiagnostics } from "@/lib/diagnostics";
 
 /** 固定面板使用独立值，插件导航统一加前缀，存储 ID 不受影响。 */
 const GENERAL_TAB = "general";
@@ -39,26 +40,41 @@ function SettingsActions({ saving, onClose, children }: {
   );
 }
 
-/** 通用地址与本地模板路径保存在客户端；不依赖目录，新请求读取保存后的地址。 */
+/** 桌面端按钮打开独立终端窗口；浏览器不显示，避免用户误以为页面内存在可用的原生日志。 */
+function DiagnosticsSection() {
+  const [opening, setOpening] = useState(false);
+  const [message, setMessage] = useState("");
+  if (!isTauri()) return null;
+  return <section aria-label="调试日志" className="space-y-3 border-t pt-5 text-sm">
+    <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-medium">调试日志</h3><span className="text-xs text-muted-foreground">排查播放与交互问题</span></div>
+    <p className="text-xs leading-5 text-muted-foreground">打开独立终端窗口，实时查看页面错误、媒体信息，以及按钮、页签、表单等控件的操作记录。</p>
+    <div className="flex flex-wrap items-center gap-3">
+      <Button type="button" variant="outline" size="sm" disabled={opening} onClick={async () => {
+        setOpening(true);
+        setMessage("");
+        try {
+          await openDiagnostics();
+          setMessage("日志窗口已打开，关闭窗口不会退出客户端。");
+        } catch (reason) {
+          setMessage(reason instanceof Error ? reason.message : String(reason));
+        } finally {
+          setOpening(false);
+        }
+      }}><Bug className="size-4" aria-hidden="true" />{opening ? "正在打开…" : "打开调试日志窗口"}</Button>
+      {message && <p role={/^无法|失败/.test(message) ? "alert" : "status"} className="text-xs text-muted-foreground">{message}</p>}
+    </div>
+  </section>;
+}
+
+/** 通用地址保存在客户端；不依赖目录，新请求读取保存后的地址。 */
 function GeneralSection({ onClose }: { onClose?: () => void }) {
   const titleId = useId();
   const [url, setUrl] = useState(apiBase);
-  // 读取到已存值前禁用路径输入，避免用空值覆盖已保存路径。
-  const [path, setPath] = useState<string>();
-  // 只提交相对打开时实际修改的字段：运行时分配的内置后端地址不能被存成固定地址，也不改回其他实例保存的路径。
-  const initial = useRef({ url: apiBase(), path: "" });
+  // 只在地址实际修改时提交：运行时分配的内置后端地址不能被存成固定地址。
+  const initial = useRef(apiBase());
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
-  useUpdateBlocker("设置尚未保存", saving || url.trim() !== initial.current.url || (path !== undefined && path.trim() !== initial.current.path));
-  useEffect(() => {
-    let active = true;
-    if (isTauri()) readSettings().then(saved => {
-      if (!active) return;
-      initial.current.path = String(saved.$client?.template_path ?? "");
-      setPath(initial.current.path);
-    }, () => undefined);
-    return () => { active = false; };
-  }, []);
+  useUpdateBlocker("设置尚未保存", saving || url.trim() !== initial.current);
   return (
     <section aria-labelledby={titleId} className="flex h-full min-h-0 flex-col">
       <form aria-label="通用设置" className="flex min-h-0 flex-1 flex-col" onSubmit={async (event) => {
@@ -67,14 +83,13 @@ function GeneralSection({ onClose }: { onClose?: () => void }) {
         setSaving(true);
         setMessage("");
         try {
-          const values: Values = {};
-          if (url.trim() !== initial.current.url) values.api_url = url.trim();
-          if (path !== undefined && path.trim() !== initial.current.path) values.template_path = path.trim();
-          // 宿主按字段合并 $client，未修改的字段保持磁盘上的最新值。
-          if (Object.keys(values).length) await saveSettings("$client", values);
-          if (values.api_url !== undefined) setApiBase(url.trim());
-          initial.current = { url: url.trim(), path: path?.trim() ?? initial.current.path };
-          setMessage("已保存。后续请求使用新地址；本地模板读写立即使用新路径，已打开的本地模板需回主页重新打开；已有会话连接请重启客户端后切换。");
+          if (url.trim() !== initial.current) {
+            // 宿主按字段合并 $client，其他字段保持磁盘上的最新值。
+            await saveSettings("$client", { api_url: url.trim() });
+            setApiBase(url.trim());
+          }
+          initial.current = url.trim();
+          setMessage("已保存。后续请求使用新地址；已有会话连接请重启客户端后切换。");
           onClose?.();
         } catch {
           setMessage("保存地址失败，请重试");
@@ -84,7 +99,7 @@ function GeneralSection({ onClose }: { onClose?: () => void }) {
       }}>
         <div className="min-h-0 flex-1 overflow-y-auto p-5 sm:p-8">
           <h2 id={titleId} className="text-lg font-semibold">环境与连接</h2>
-          <p className="mt-2 text-sm text-muted-foreground">设置当前客户端连接的后端服务地址和本地模板保存位置。</p>
+          <p className="mt-2 text-sm text-muted-foreground">设置当前客户端连接的后端服务地址。</p>
           <dl className="mt-6 divide-y text-sm">
             <div className="flex flex-wrap justify-between gap-3 py-4">
               <dt className="text-muted-foreground">运行环境</dt>
@@ -97,16 +112,8 @@ function GeneralSection({ onClose }: { onClose?: () => void }) {
                   onChange={event => { setUrl(event.target.value); setMessage(""); }} disabled={saving} />
               </dd>
             </div>
-            <div className="flex flex-wrap justify-between gap-3 py-4">
-              <dt className="text-muted-foreground"><Label htmlFor={`${titleId}-path`}>本地模板保存路径</Label></dt>
-              <dd className="w-full min-w-0 space-y-2">
-                <Input id={`${titleId}-path`} value={path ?? ""} disabled={path === undefined || saving}
-                  placeholder="留空使用默认 data/template/templates.json"
-                  onChange={event => { setPath(event.target.value); setMessage(""); }} />
-                <p className="text-xs text-muted-foreground">{isTauri() ? "填写 .json 绝对文件路径，留空恢复默认；原文件保留，不自动迁移。" : "本地模板仅支持桌面客户端。"}</p>
-              </dd>
-            </div>
           </dl>
+          <DiagnosticsSection />
           <ClientUpdate />
         </div>
         <SettingsActions saving={saving} onClose={onClose}>

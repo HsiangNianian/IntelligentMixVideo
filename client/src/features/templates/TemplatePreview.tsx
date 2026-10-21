@@ -12,6 +12,7 @@ import { PreviewTimeline, type PreviewTimelineHandle } from "./PreviewTimeline";
 import { SpriteOverlay, type SpriteOverlayHandle } from "./SpriteOverlay";
 import type { ResolvedTimeline } from "./tracks";
 import { MasterVideoInput } from "./MasterVideoInput";
+import { debugLog, describe, watchWindow } from "@/lib/diagnostics";
 
 /** 编辑状态由父组件持有；目录只在 SDK 初始化成功后回传。 */
 interface Props {
@@ -119,6 +120,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       setSeeking(true);
       clearTimeout(seekTimer);
       seekTimer = setTimeout(() => {
+        debugLog("模板预览", `定位超时：10 秒内播放器没有确认定位到 ${seekTarget} 秒（当前 ${instance?.currentTime} 秒）`);
         cancel();
         instance?.pause();
         setReady(false);
@@ -193,6 +195,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
         if (!disposed) {
           setStatus(error instanceof Error ? error.message : "预览失败");
           setFailed(true);
+          debugLog("模板预览", `应用时间线失败：${describe(error)}`);
         }
       } finally {
         active = false;
@@ -236,6 +239,8 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           container.current!.append(previewFrame);
         });
         if (disposed) return;
+        // SDK 在 iframe 里运行，它的报错与 console 不会冒泡到主窗口，需要单独监听。
+        watchWindow(frame.contentWindow!, "模板预览 SDK");
         const target = frame.contentDocument!;
         target.documentElement.style.height = "100%";
         target.body.style.cssText = "margin:0;height:100%;overflow:hidden";
@@ -271,6 +276,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
         catalogCallback.current(catalog);
         player.current = instance;
         subscription = instance.event$.subscribe((event) => {
+          if (/error/i.test(event.type)) debugLog("模板预览 SDK", `事件 ${event.type}：${describe(event.data)}`);
           if (disposed || active || !instance) return;
           if (event.type === "playerSeeked") {
             if (seekTarget !== null && event.data?.currentTime !== undefined && Math.abs(event.data.currentTime - seekTarget) <= 0.05)
@@ -305,6 +311,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
         if (!disposed) {
           setStatus(error instanceof Error ? error.message : "SDK 初始化失败");
           setFailed(true);
+          debugLog("模板预览", `播放器初始化失败：${describe(error)}`);
         }
       });
     // 定位完成后播放；暂停、更新或卸载时取消尚未开始的播放。
@@ -368,17 +375,20 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
     <div className="template-preview-stage border-b px-4 pb-3 pt-4 lg:px-7 lg:pt-5"><div className="mx-auto max-w-[900px]">
       <div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><span className="template-live-dot size-1.5 rounded-full" aria-hidden="true" /><h2 className="text-[13px] font-semibold">实时预览</h2></div><span className="rounded-md border px-2 py-1 text-[11px] tabular-nums text-muted-foreground">{canvas ? `${canvas.width} × ${canvas.height}` : "正在读取画布尺寸"}</span></div>
       <div ref={stage} className="template-preview-canvas relative mx-auto aspect-video w-full overflow-hidden rounded-lg bg-black" style={canvas ? { aspectRatio: `${canvas.width} / ${canvas.height}`, maxWidth: `${48 * canvas.width / canvas.height}dvh`, "--preview-ratio": canvas.width / canvas.height } as CSSProperties : undefined} aria-label="模板视频预览">
-        <div ref={container} className="template-preview-player absolute inset-0 size-full" />
-        {ready && canvas && onSelect && draft.tracks.filter((item) => (item.target === "title" || item.target === "subtitle") && item.enabled !== false && !remotionTexts(draft).has(textKey(item.target, item.language))).map((item) => {
-          const interval = resolved?.tracks[item.id];
-          if (!interval || time < interval.start || time >= interval.end) return null;
-          const role = item.target as "title" | "subtitle";
-          return <button key={item.id} type="button" aria-label={`选择${item.language === "en" ? "英文" : "中文"}${role === "title" ? "标题" : "字幕"}`} aria-pressed={selectedId === item.id}
-            className={`absolute -translate-x-1/2 rounded-sm border border-dashed hover:border-primary focus-visible:ring-2 focus-visible:ring-ring ${selectedId === item.id ? "border-primary" : "border-transparent"}`}
-            style={{ left: `${item.editor[`${role}X`]}%`, top: `${item.editor[`${role}Y`]}%`, width: "90%", height: `${item.editor[`${role}Size`] * 1.5 / canvas.height * 100}%`, minHeight: 12 }}
-            onClick={() => onSelect(item.id)} />;
-        })}
-        {sprites.length > 0 && canvas && <SpriteOverlay ref={overlay} clips={sprites} stageAspect={canvas.width / canvas.height} initialTime={time} selectedId={selectedId} onMove={onSpriteMove} onSelect={onSelect} />}
+        {/* 播放器与叠加层共用一个按视频比例排布的画面框：全屏时画布撑满屏幕，画面框仍按视频比例居中，字效与选择框随画面缩放而不是按整个屏幕排布。 */}
+        <div className="template-preview-frame absolute inset-0 overflow-hidden">
+          <div ref={container} className="template-preview-player absolute inset-0 size-full" />
+          {ready && canvas && onSelect && draft.tracks.filter((item) => (item.target === "title" || item.target === "subtitle") && item.enabled !== false && !remotionTexts(draft).has(textKey(item.target, item.language))).map((item) => {
+            const interval = resolved?.tracks[item.id];
+            if (!interval || time < interval.start || time >= interval.end) return null;
+            const role = item.target as "title" | "subtitle";
+            return <button key={item.id} type="button" aria-label={`选择${item.language === "en" ? "英文" : "中文"}${role === "title" ? "标题" : "字幕"}`} aria-pressed={selectedId === item.id}
+              className={`absolute -translate-x-1/2 rounded-sm border border-dashed hover:border-primary focus-visible:ring-2 focus-visible:ring-ring ${selectedId === item.id ? "border-primary" : "border-transparent"}`}
+              style={{ left: `${item.editor[`${role}X`]}%`, top: `${item.editor[`${role}Y`]}%`, width: "90%", height: `${item.editor[`${role}Size`] * 1.5 / canvas.height * 100}%`, minHeight: 12 }}
+              onClick={() => onSelect(item.id)} />;
+          })}
+          {sprites.length > 0 && canvas && <SpriteOverlay ref={overlay} clips={sprites} stageAspect={canvas.width / canvas.height} initialTime={time} selectedId={selectedId} onMove={onSpriteMove} onSelect={onSelect} />}
+        </div>
         {!ready && !failed && <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-white/60"><Spinner className="size-6" /></div>}
         <Hint label="全屏预览"><Button type="button" variant="ghost" size="icon-xs" aria-label="全屏预览" onClick={() => { if (stage.current) void stage.current.requestFullscreen(); }} className="template-preview-fullscreen absolute bottom-2 right-2 rounded-[5px] p-0"><Maximize2 className="size-3" aria-hidden="true" /></Button></Hint>
       </div>

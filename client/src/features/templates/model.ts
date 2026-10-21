@@ -208,16 +208,11 @@ export interface TemplateSummary {
   subtitle: string;
   track_count?: number;
   validation_error: string;
-  library?: string;
 }
 
 /** 后端返回的完整模板，effects 为保存时的可信快照。 */
-export interface Template extends Omit<Draft, "clips"> {
-  /** 旧版本地模板文件没有该字段，按空列表处理。 */
-  clips?: RemotionClip[];
+export interface Template extends Draft {
   template_id: string;
-  /** 本地模板所属文件路径，由桌面端返回；保存时传回，路径已变更则拒绝写入。 */
-  library?: string;
   effect_ids: string[];
   effects: EffectAsset[];
   created_at: string;
@@ -251,7 +246,7 @@ export function toDraft(template: Template): Draft {
     transition_mode: template.transition_mode ?? "sequence",
     transition_enabled: template.transition_enabled ?? true,
     tracks: structuredClone(template.tracks).map((track) => track.target === "transition" ? { ...track, duration: template.transition_duration_seconds } : track),
-    clips: structuredClone(template.clips ?? []),
+    clips: structuredClone(template.clips),
   };
 }
 

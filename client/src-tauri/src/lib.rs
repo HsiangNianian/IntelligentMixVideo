@@ -1,13 +1,13 @@
-//! 桌面入口：Windows 页面使用 localhost，Linux 隔离网页缓存，测试包按需监督内置服务。
+//! 桌面入口：Windows 页面使用 localhost，Linux 隔离网页缓存，测试包按需监督内置服务，设置页可打开调试日志窗口。
 
 #[cfg(windows)]
 mod localhost;
 
 mod backend;
+mod diagnostics;
 mod preview_videos;
 mod remotion_sessions;
 mod settings;
-mod templates;
 mod updates;
 
 /// Windows 只为当前窗口的准确资源 URL 授权，其他 localhost 端口和远程域名均不匹配。
@@ -25,6 +25,8 @@ fn localhost_capability(url: &tauri::Url, label: &str) -> tauri::ipc::Capability
 /// 启动主窗口与事件循环；初始化失败时报告错误。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 只记录启动时刻；日志窗口由设置按钮按需打开，普通启动保持静默。
+    diagnostics::prepare();
     let mut context = tauri::generate_context!();
     let updates = updates::attach(&mut context);
     #[cfg(not(any(windows, target_os = "linux")))]
@@ -53,7 +55,6 @@ pub fn run() {
         .manage(backend::Backend::default())
         .manage(remotion_sessions::Sessions::default())
         .invoke_handler(tauri::generate_handler![
-            templates::local_templates,
             settings::local_settings,
             preview_videos::preview_video_list,
             preview_videos::preview_video_read,
@@ -61,7 +62,9 @@ pub fn run() {
             preview_videos::preview_video_remove,
             remotion_sessions::remotion_sessions,
             backend::start_backend,
-            updates::client_update
+            updates::client_update,
+            diagnostics::diagnostics_open,
+            diagnostics::diagnostics_log
         ])
         .setup(|app| {
             #[cfg(windows)]
@@ -77,7 +80,7 @@ pub fn run() {
             #[cfg(target_os = "linux")]
             {
                 use tauri::Manager;
-                // 网页缓存按运行时版本隔离；本地模板仍保存在原 app_data_dir。
+                // 网页缓存按运行时版本隔离；其他本地数据仍保存在原 app_data_dir。
                 let data_directory = app
                     .path()
                     .app_data_dir()?
@@ -132,13 +135,30 @@ mod tests {
         true
     }
 
+    /// 不打开真实终端，仅检查调试日志命令同样只对绑定页面开放。
+    #[tauri::command]
+    fn diagnostics_open() -> bool {
+        true
+    }
+
+    /// 不向测试输出写日志，仅检查日志转发命令同样只对绑定页面开放。
+    #[tauri::command]
+    fn diagnostics_log() -> bool {
+        true
+    }
+
     /// 用真实权限清单验证准确 URL 可调用，其他端口、域名和窗口均被拒绝。
     #[test]
     fn localhost_ipc_is_limited_to_the_bound_page() {
         let mut context = tauri::generate_context!(test = true);
         context.config_mut().app.windows.clear();
         let app = tauri::test::mock_builder()
-            .invoke_handler(tauri::generate_handler![start_backend, local_settings])
+            .invoke_handler(tauri::generate_handler![
+                start_backend,
+                local_settings,
+                diagnostics_open,
+                diagnostics_log
+            ])
             .build(context)
             .unwrap();
         let url = "http://localhost:23456/".parse().unwrap();
@@ -153,7 +173,13 @@ mod tests {
                 "http://localhost:23457/",
                 "https://example.com/",
             ] {
-                for command in ["start_backend", "local_settings", "plugin:event|listen"] {
+                for command in [
+                    "start_backend",
+                    "local_settings",
+                    "diagnostics_open",
+                    "diagnostics_log",
+                    "plugin:event|listen",
+                ] {
                     let result = tauri::test::get_ipc_response(
                         &view,
                         tauri::webview::InvokeRequest {
