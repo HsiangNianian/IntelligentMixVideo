@@ -209,7 +209,7 @@ bun run build
 
 `preview-timeline.test.tsx` 检查轨道数据转换、缩略图源时间采样、播放时间同步和键盘定位边界。
 `preview-canvas.test.ts` 检查横屏、竖屏、方形和超宽视频的原始画布尺寸，以及文字参数和三个各十秒的默认片段。
-画布的真实浏览器回归执行 `bun tests/preview-canvas.browser.mjs`，需要 Chrome、FFmpeg 和联网访问 SDK、字体。脚本自动启动独立 Vite 服务，生成本地视频，验证 Canvas 像素、横竖屏切换、实际播放、数字时间与时间轴游标的更新频率、暂停和播放结束后游标与播放器时间一致、窄屏比例、标题和字幕原文与卸载清理；不访问业务后端。中间文件保存在已忽略的 `node_modules/.cache/preview-canvas-tests/`，结束时关闭浏览器和测试服务。
+画布的真实浏览器回归执行 `bun tests/preview-canvas.browser.mjs`，需要 Chrome、FFmpeg 和联网访问 SDK、字体。脚本自动启动独立 Vite 服务，生成本地视频，验证 Canvas 像素、横竖屏切换、实际播放、数字时间与时间轴游标的更新频率、暂停和播放结束后游标与播放器时间一致、窄屏比例、全屏时 AI 资产叠加层与播放器画面同框（竖屏视频在横屏屏幕上全屏，字效不按整个屏幕放大）、标题和字幕原文与卸载清理；不访问业务后端。中间文件保存在已忽略的 `node_modules/.cache/preview-canvas-tests/`，结束时关闭浏览器和测试服务。
 `effect-tracks.test.ts` 覆盖独立对象增删、时间规则、视频替换、动画帧数、SDK 数据转换和序列化；`track-timing.test.tsx` 验证输入自动更新、单位换算、非法输入恢复和对象切换。前后端共同使用 `server/tests/template_timing_cases.json` 和 `server/tests/template_sequence_cases.json`，后者覆盖累计重叠、短视频、固定语音时间、转场缩短与缺失交界处；预期结果包含区间和提示，并检查计算过程保留原始规则。
 
 服务端核心验证执行 `uv run --locked --project server pytest server/tests/test_template_tracks.py server/tests/test_template_protobuf.py server/tests/test_template_validation.py server/tests/test_video_composition_timeline.py`（仓库根目录）。现有文案合成按成片时长应用每个对象：标题使用请求文字，字幕及关键词与文案时间取交集，重复实例保留独立参数；转场在指定位置连接片段，音频总长保持不变。通过 `TMPDIR` 和 pytest 的 `--basetemp` 将中间文件指向已忽略的缓存目录。
