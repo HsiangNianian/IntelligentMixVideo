@@ -241,8 +241,9 @@ def test_zos_put_uploads_public_and_delete_prefix_removes_every_page(tmp_path: P
             return Paginator()
 
         def delete_objects(self, Bucket, Delete):
-            """记录每次批量删除的键。"""
+            """记录每次批量删除的键；全部删除成功时安静模式的结果不含 Errors。"""
             deleted.append([item["Key"] for item in Delete["Objects"]])
+            return {}
 
         def close(self):
             """记录客户端被释放。"""
@@ -258,6 +259,38 @@ def test_zos_put_uploads_public_and_delete_prefix_removes_every_page(tmp_path: P
     prefix = "imv/remotion/versions/v/"
     assert deleted == [[prefix + "a", prefix + "b"], [prefix + "c"]] and closed == [True]
 
+
+
+# 场景：安静模式的批量删除对个别键失败（如无删除权限）仍回答 200，只在 Errors 里列出；不能当作删除成功。
+def test_zos_delete_prefix_fails_when_some_keys_were_not_deleted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """结果带 Errors 时抛 ObjectStoreError 并说明错误码，调用方据此保留记录、返回可重试的 503。"""
+    for key, value in ZOS_ENV.items():
+        monkeypatch.setenv(key, value)
+
+    class Paginator:
+        """一页两个对象。"""
+
+        def paginate(self, Bucket, Prefix):
+            """返回固定分页。"""
+            return [{"Contents": [{"Key": Prefix + "a"}, {"Key": Prefix + "b"}]}]
+
+    class Storage(S3Stub):
+        """第二个键无删除权限的 S3 替身。"""
+
+        def get_paginator(self, name):
+            """只支持 list_objects_v2。"""
+            return Paginator()
+
+        def delete_objects(self, Bucket, Delete):
+            """删除第一个键，第二个键报告 AccessDenied。"""
+            return {"Errors": [{"Key": Delete["Objects"][1]["Key"], "Code": "AccessDenied", "Message": "denied"}]}
+
+        def close(self):
+            """无需释放资源。"""
+
+    monkeypatch.setattr(zos.boto3, "client", lambda *args, **kwargs: Storage())
+    with pytest.raises(ObjectStoreError, match="AccessDenied"):
+        load_objects(tmp_path).delete_prefix("imv/remotion/versions/v/")
 
 class StoredResponse(AWSResponse):
     """不经网络的 S3 响应：正文直接给定，供 botocore 照常解析。"""

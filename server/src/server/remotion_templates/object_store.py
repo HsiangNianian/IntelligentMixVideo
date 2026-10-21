@@ -108,14 +108,21 @@ class ZosObjects:
             raise ObjectStoreError(f"ZOS download failed: {key}") from exc
 
     def delete_prefix(self, prefix: str) -> None:
-        """List the prefix page by page and delete each page in one request; failures are ObjectStoreError."""
+        """List the prefix page by page and delete each page in one request; failures are ObjectStoreError.
+
+        A quiet batch delete still answers 200 when single keys fail (for example AccessDenied); those keys are
+        listed under `Errors` and fail the call too, so the caller keeps its records and can retry.
+        """
         try:
             with closing(storage_client(self.settings, TIMEOUT)) as storage:
                 pages = storage.get_paginator("list_objects_v2").paginate(Bucket=self.settings.zos_bucket, Prefix=prefix)
                 for page in pages:
                     keys = [{"Key": item["Key"]} for item in page.get("Contents", [])]
                     if keys:
-                        storage.delete_objects(Bucket=self.settings.zos_bucket, Delete={"Objects": keys, "Quiet": True})
+                        result = storage.delete_objects(Bucket=self.settings.zos_bucket, Delete={"Objects": keys, "Quiet": True})
+                        if errors := result.get("Errors"):
+                            codes = sorted({str(error.get("Code")) for error in errors})
+                            raise ObjectStoreError(f"ZOS delete failed: {prefix} ({len(errors)} keys, {', '.join(codes)})")
         except (BotoCoreError, ClientError) as exc:
             raise ObjectStoreError(f"ZOS delete failed: {prefix}") from exc
 
