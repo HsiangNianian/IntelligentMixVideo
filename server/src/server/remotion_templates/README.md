@@ -86,7 +86,10 @@ at a time (deciding whether a parameter patch is instant reads only `interactive
 deletes run in worker threads and never under the write lock: a version is uploaded under its new ID before its record
 commits and removed again if the commit fails; deletion and the upload sweep remove records and objects in separate
 steps. A ZOS failure other than a missing object is an `ObjectStoreError` (an `OSError`): uploads, reference images,
-downloads, diagnostics and work deletion answer a retryable 503 instead of a 500 or a misleading 422. Job
+downloads, diagnostics and work deletion answer a retryable 503 instead of a 500 or a misleading 422. Prefix deletes
+list the objects and remove each page with one batch request that carries `Content-MD5` (`zos.storage_client` swaps
+in the header botocore 1.36+ replaced with a CRC32 checksum; Aliyun OSS and similar S3-compatible stores reject a
+batch delete without it). Job
 scratch is removed when the job ends and the private `audit/<work_id>/<job_id>.jsonl` log outlives it (deleting the
 work removes its whole audit folder, including logs of jobs already pruned). An hourly sweep (started with the runtime on the first Remotion request, which runs it immediately) applies
 three retention periods: undelivered events (`IMV_UNDELIVERED_EVENT_DAYS`, 7), audit logs

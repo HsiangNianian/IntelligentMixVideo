@@ -1,14 +1,17 @@
 """Remotion 对象存储：本地目录实现的读写删、键越界拒绝、按 ZOS 配置选择实现，ZOS 错误映射，以及存储不可达时路由的 503。
 
-不连接真实 ZOS：S3 客户端由替身承担。在 server/ 目录执行
+不连接真实 ZOS：S3 客户端由替身承担，或在真实 botocore 客户端上只替换发送一步。在 server/ 目录执行
 `uv run --locked pytest tests/test_remotion_object_store.py -v`。
 """
 
+import base64
+import hashlib
 import shutil
 from io import BytesIO
 from pathlib import Path
 
 import pytest
+from botocore.awsrequest import AWSPreparedRequest, AWSResponse
 from botocore.exceptions import ClientError, EndpointConnectionError
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -24,7 +27,7 @@ from server.remotion_templates.settings import Settings
 from server.remotion_templates.store import Store
 from server.video_composition import zos
 
-from .conftest import DEVICE, DEVICE_HEADERS
+from .conftest import DEVICE, DEVICE_HEADERS, S3Stub
 
 ZOS_ENV = {
     "ZOS_API_ENDPOINT": "https://hangzhou7.zos.ctyun.cn",
@@ -117,7 +120,7 @@ def test_zos_fetch_maps_missing_objects(tmp_path: Path, monkeypatch: pytest.Monk
         monkeypatch.setenv(key, value)
     closed = []
 
-    class Storage:
+    class Storage(S3Stub):
         """只实现下载与关闭的 S3 替身。"""
 
         def download_file(self, bucket, key, filename):
@@ -144,7 +147,7 @@ def test_zos_failures_become_object_store_errors(tmp_path: Path, monkeypatch: py
     source = tmp_path / "object.bin"
     source.write_bytes(b"x")
 
-    class Storage:
+    class Storage(S3Stub):
         """连接失败的 S3 替身。"""
 
         def download_file(self, bucket, key, filename):
@@ -229,7 +232,7 @@ def test_zos_put_uploads_public_and_delete_prefix_removes_every_page(tmp_path: P
             assert (Bucket, Prefix) == ("archives", "imv/remotion/versions/v/")
             return [{"Contents": [{"Key": Prefix + "a"}, {"Key": Prefix + "b"}]}, {}, {"Contents": [{"Key": Prefix + "c"}]}]
 
-    class Storage:
+    class Storage(S3Stub):
         """记录批量删除的 S3 替身。"""
 
         def get_paginator(self, name):
@@ -254,3 +257,49 @@ def test_zos_put_uploads_public_and_delete_prefix_removes_every_page(tmp_path: P
     objects.delete_prefix("imv/remotion/versions/v/")
     prefix = "imv/remotion/versions/v/"
     assert deleted == [[prefix + "a", prefix + "b"], [prefix + "c"]] and closed == [True]
+
+
+class StoredResponse(AWSResponse):
+    """不经网络的 S3 响应：正文直接给定，供 botocore 照常解析。"""
+
+    def __init__(self, url: str, body: bytes) -> None:
+        """以 200 状态和给定 XML 正文构造。"""
+        super().__init__(url, 200, {}, None)
+        self._content = body
+
+
+# 场景（回归）：botocore 1.36 起批量删除只带 CRC32，阿里云 OSS 等要求 Content-MD5 的存储拒绝请求，会话与资产都删不掉。
+def test_zos_batch_delete_sends_signed_content_md5(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """真实 botocore 客户端只把发送一步换成替身：DeleteObjects 带签名的 Content-MD5、不带 CRC32，列举请求不受影响。"""
+    for key, value in ZOS_ENV.items():
+        monkeypatch.setenv(key, value)
+    sent: list[AWSPreparedRequest] = []
+    real_client = zos.storage_client
+
+    def respond(request: AWSPreparedRequest, **kwargs) -> AWSResponse:
+        """记录请求，列举返回一个对象，批量删除返回空结果。"""
+        sent.append(request)
+        if "delete" in request.url:
+            return StoredResponse(request.url, b"<DeleteResult></DeleteResult>")
+        return StoredResponse(
+            request.url,
+            b"<ListBucketResult><IsTruncated>false</IsTruncated>"
+            b"<Contents><Key>imv/remotion/versions/v/a</Key></Contents></ListBucketResult>",
+        )
+
+    def intercepted(settings, timeout):
+        """使用服务端配置的真实客户端，只拦截发送。"""
+        client = real_client(settings, timeout)
+        client.meta.events.register("before-send.s3", respond)
+        return client
+
+    monkeypatch.setattr(object_store, "storage_client", intercepted)
+    load_objects(tmp_path).delete_prefix("imv/remotion/versions/v/")
+    listing, batch = sent
+    headers = {name.lower(): value.decode() if isinstance(value, bytes) else value for name, value in batch.headers.items()}
+    body = batch.body if isinstance(batch.body, bytes) else batch.body.encode()
+    assert "content-md5" not in {name.lower() for name in listing.headers.keys()}
+    assert b"<Key>imv/remotion/versions/v/a</Key>" in body
+    assert headers["content-md5"] == base64.b64encode(hashlib.md5(body).digest()).decode()
+    assert not [name for name in headers if name.startswith(("x-amz-checksum-", "x-amz-sdk-checksum"))]
+    assert "content-md5" in headers["authorization"].split("SignedHeaders=")[1].split(",")[0].split(";")

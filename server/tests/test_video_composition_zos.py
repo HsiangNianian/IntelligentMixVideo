@@ -11,6 +11,8 @@ from PIL import Image
 from server.video_composition import zos
 from server.video_composition.settings import ZosSettings
 
+from .conftest import S3Stub
+
 
 @pytest.mark.parametrize("denied_suffix", [None, ".mp4", ".png"])
 def test_copy_video_publishes_video_and_frame(composition_settings, monkeypatch, denied_suffix):
@@ -42,7 +44,7 @@ def test_copy_video_publishes_video_and_frame(composition_settings, monkeypatch,
 
     monkeypatch.setattr(zos, "extract_third_frame", extract)
 
-    class Storage:
+    class Storage(S3Stub):
         """记录对象级上传参数与实际读取的字节。"""
 
         def close(self):

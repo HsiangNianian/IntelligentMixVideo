@@ -159,6 +159,12 @@ class RecordingObjects(LocalObjects):
         super().delete_prefix(prefix)
 
 
+class S3Stub:
+    """S3 客户端替身的基类：`storage_client` 会在客户端事件表上注册批量删除钩子，替身只接受注册。"""
+
+    meta = SimpleNamespace(events=SimpleNamespace(register=lambda *args, **kwargs: None))
+
+
 def remotion_track(track_id: str = "clip", **changes) -> dict:
     """提供引用已发布 Sprite 的片段轨道：秒数起点、时长缺省、编辑参数为空对象，可用关键字覆盖字段。"""
     return {"id": track_id, "target": "remotion", "sprite_id": SPRITE_ID, "start_mode": "seconds",
