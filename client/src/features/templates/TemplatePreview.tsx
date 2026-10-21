@@ -12,6 +12,7 @@ import { PreviewTimeline, type PreviewTimelineHandle } from "./PreviewTimeline";
 import { SpriteOverlay, type SpriteOverlayHandle } from "./SpriteOverlay";
 import type { ResolvedTimeline } from "./tracks";
 import { MasterVideoInput } from "./MasterVideoInput";
+import { debugLog, describe, watchWindow } from "@/lib/diagnostics";
 
 /** 编辑状态由父组件持有；目录只在 SDK 初始化成功后回传。 */
 interface Props {
@@ -119,6 +120,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       setSeeking(true);
       clearTimeout(seekTimer);
       seekTimer = setTimeout(() => {
+        debugLog("模板预览", `定位超时：10 秒内播放器没有确认定位到 ${seekTarget} 秒（当前 ${instance?.currentTime} 秒）`);
         cancel();
         instance?.pause();
         setReady(false);
@@ -193,6 +195,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
         if (!disposed) {
           setStatus(error instanceof Error ? error.message : "预览失败");
           setFailed(true);
+          debugLog("模板预览", `应用时间线失败：${describe(error)}`);
         }
       } finally {
         active = false;
@@ -236,6 +239,8 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           container.current!.append(previewFrame);
         });
         if (disposed) return;
+        // SDK 在 iframe 里运行，它的报错与 console 不会冒泡到主窗口，需要单独监听。
+        watchWindow(frame.contentWindow!, "模板预览 SDK");
         const target = frame.contentDocument!;
         target.documentElement.style.height = "100%";
         target.body.style.cssText = "margin:0;height:100%;overflow:hidden";
@@ -271,6 +276,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
         catalogCallback.current(catalog);
         player.current = instance;
         subscription = instance.event$.subscribe((event) => {
+          if (/error/i.test(event.type)) debugLog("模板预览 SDK", `事件 ${event.type}：${describe(event.data)}`);
           if (disposed || active || !instance) return;
           if (event.type === "playerSeeked") {
             if (seekTarget !== null && event.data?.currentTime !== undefined && Math.abs(event.data.currentTime - seekTarget) <= 0.05)
@@ -305,6 +311,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
         if (!disposed) {
           setStatus(error instanceof Error ? error.message : "SDK 初始化失败");
           setFailed(true);
+          debugLog("模板预览", `播放器初始化失败：${describe(error)}`);
         }
       });
     // 定位完成后播放；暂停、更新或卸载时取消尚未开始的播放。

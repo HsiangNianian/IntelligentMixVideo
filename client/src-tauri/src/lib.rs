@@ -1,9 +1,10 @@
-//! 桌面入口：Windows 页面使用 localhost，Linux 隔离网页缓存，测试包按需监督内置服务。
+//! 桌面入口：Windows 页面使用 localhost，Linux 隔离网页缓存，测试包按需监督内置服务，`--debug` 打开调试日志。
 
 #[cfg(windows)]
 mod localhost;
 
 mod backend;
+mod diagnostics;
 mod preview_videos;
 mod remotion_sessions;
 mod settings;
@@ -24,6 +25,8 @@ fn localhost_capability(url: &tauri::Url, label: &str) -> tauri::ipc::Capability
 /// 启动主窗口与事件循环；初始化失败时报告错误。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 先于 Tauri 初始化与任何线程：Windows 打开控制台，Linux 设置媒体进程继承的环境变量。
+    diagnostics::prepare();
     let mut context = tauri::generate_context!();
     let updates = updates::attach(&mut context);
     #[cfg(not(any(windows, target_os = "linux")))]
@@ -59,7 +62,9 @@ pub fn run() {
             preview_videos::preview_video_remove,
             remotion_sessions::remotion_sessions,
             backend::start_backend,
-            updates::client_update
+            updates::client_update,
+            diagnostics::diagnostics_enabled,
+            diagnostics::diagnostics_log
         ])
         .setup(|app| {
             #[cfg(windows)]
@@ -130,13 +135,23 @@ mod tests {
         true
     }
 
+    /// 不向测试输出写日志，仅检查调试日志命令同样只对绑定页面开放。
+    #[tauri::command]
+    fn diagnostics_log() -> bool {
+        true
+    }
+
     /// 用真实权限清单验证准确 URL 可调用，其他端口、域名和窗口均被拒绝。
     #[test]
     fn localhost_ipc_is_limited_to_the_bound_page() {
         let mut context = tauri::generate_context!(test = true);
         context.config_mut().app.windows.clear();
         let app = tauri::test::mock_builder()
-            .invoke_handler(tauri::generate_handler![start_backend, local_settings])
+            .invoke_handler(tauri::generate_handler![
+                start_backend,
+                local_settings,
+                diagnostics_log
+            ])
             .build(context)
             .unwrap();
         let url = "http://localhost:23456/".parse().unwrap();
@@ -151,7 +166,12 @@ mod tests {
                 "http://localhost:23457/",
                 "https://example.com/",
             ] {
-                for command in ["start_backend", "local_settings", "plugin:event|listen"] {
+                for command in [
+                    "start_backend",
+                    "local_settings",
+                    "diagnostics_log",
+                    "plugin:event|listen",
+                ] {
                     let result = tauri::test::get_ipc_response(
                         &view,
                         tauri::webview::InvokeRequest {

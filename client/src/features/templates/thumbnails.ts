@@ -1,10 +1,12 @@
 /** 独立视频元素提取源素材缩略图；支持取消、超时和有界缓存，不操作 SDK 播放器。 */
 import { thumbnailTimes, type PreviewClip } from "./timeline";
+import { debugLog, describeMedia } from "@/lib/diagnostics";
 
 /** 等待媒体加载或定位；成功、失败、取消与超时均移除监听器。 */
 function waitForMedia(video: HTMLVideoElement, event: "loadeddata" | "seeked", signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     const finish = (error?: Error) => {
+      if (error && error.name !== "AbortError") debugLog("视频画面提取", `${error.message}（等待 ${event}）；${describeMedia(video)}`);
       clearTimeout(timer);
       video.removeEventListener(event, ready);
       video.removeEventListener("error", failed);
