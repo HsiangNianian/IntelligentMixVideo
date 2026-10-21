@@ -1,5 +1,5 @@
 /** AI 资产核心测试：版本卡片的资产分类与发布请求，以及云端模板编辑中的资产目录、片段编辑与随模板的原子保存；执行 bun run test。 */
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { create, fromBinary, toBinary, toJson, type MessageInitShape } from "@bufbuild/protobuf";
 import { cleanup, fireEvent, render, screen, waitFor, waitForElementToBeRemoved, within } from "@testing-library/react";
 import { VersionCard } from "@/features/remotion_templates/VersionCard";
@@ -9,6 +9,7 @@ import { SpriteClips } from "@/features/templates/SpritePanels";
 import { SpriteClipInspector } from "@/features/templates/SpriteClipInspector";
 import { getTemplate, saveTemplate } from "@/features/templates/api";
 import { bindClip } from "@/features/templates/clips";
+import { CATALOG_SILENCE_MS, watchCatalog } from "@/features/sprites/api";
 import type { SpriteAsset } from "@/features/sprites/model";
 import { newDraft, toDraft, type RemotionClip } from "@/features/templates/model";
 import { EffectTemplateEditorSchema, GetTemplateResponseSchema, SaveTemplateRequestSchema, SaveTemplateResponseSchema } from "@/generated/imv/template/v1/template_pb";
@@ -23,7 +24,7 @@ import {
 } from "@/generated/imv/sprite/v1/sprite_pb";
 import { Toaster } from "@/components/ui/sonner";
 import { remotionVersion } from "./remotion-fixtures";
-import { fetchMock } from "./setup";
+import { FakeEventSource, fetchMock } from "./setup";
 import { protobufTemplateResponse, savedTemplate } from "./fixtures";
 
 const HEADERS = { "Content-Type": "application/x-protobuf" };
@@ -691,6 +692,57 @@ test("窗口重新聚焦时刷新 AI 资产目录", async () => {
   fireEvent.focus(window);
   await waitFor(() => expect(within(region).queryByRole("button", { name: "添加 AI 资产：霓虹标题" }) === null).toBe(true));
   expect(within(region).getByRole("button", { name: "添加 AI 资产：冷色光斑" })).toBeTruthy();
+});
+
+// 场景：一直停在模板编辑页时，别处删除资产也要及时消失：目录在用时订阅服务端推送，收到 catalog.changed 即重新读取，离开页面断开。
+test("收到目录推送后刷新 AI 资产目录，未展开时不订阅、卸载时断开", async () => {
+  const catalog = [summary("sprite-1"), summary("sprite-2", SpriteKind.VIDEO_OVERLAY)];
+  catalog[1].name = "冷色光斑";
+  sprites({ catalog });
+  const { unmount } = render(<TemplateWorkspace selection={{ templateId: null, name: "新模板", description: "" }} onHome={() => {}} />);
+  await screen.findByRole("tab", { name: "AI 资产" });
+  expect(FakeEventSource.instances).toHaveLength(0);
+  const region = await openAssets();
+  await within(region).findByRole("button", { name: "添加 AI 资产：霓虹标题" });
+  expect(FakeEventSource.instances.map((source) => source.url)).toEqual(["http://api.test:8000/api/sprites/stream"]);
+  const [source] = FakeEventSource.instances;
+  // 其他人删除了资产，服务端推送变化；窗口始终没有失去焦点。
+  catalog.splice(0, 1);
+  source.emit("catalog.changed");
+  await waitFor(() => expect(within(region).queryByRole("button", { name: "添加 AI 资产：霓虹标题" }) === null).toBe(true));
+  expect(within(region).getByRole("button", { name: "添加 AI 资产：冷色光斑" })).toBeTruthy();
+  unmount();
+  expect(source.readyState).toBe(FakeEventSource.CLOSED);
+});
+
+// 场景：网络切换或代理静默断开时浏览器察觉不到，45 秒收不到 ping 或变化就换一条新连接，新连接的首条事件补读断线期间的变化。
+test("目录推送静默超时后重新连接", () => {
+  const timers: { run: () => void; delay?: number }[] = [];
+  spyOn(globalThis, "setTimeout").mockImplementation(((run: () => void, delay?: number) => {
+    timers.push({ run, delay });
+    return timers.length;
+  }) as unknown as typeof setTimeout);
+  const cleared = spyOn(globalThis, "clearTimeout").mockImplementation(() => {});
+  let changes = 0;
+  const stop = watchCatalog(() => changes++);
+  const [first] = FakeEventSource.instances;
+  expect(timers.at(-1)?.delay).toBe(CATALOG_SILENCE_MS);
+  // ping 只说明连接有效：重新计时，不读取目录。
+  const pending = timers.length;
+  first.emit("ping");
+  expect(timers.length).toBe(pending + 1);
+  expect(cleared).toHaveBeenCalled();
+  expect(changes).toBe(0);
+  timers.at(-1)!.run();
+  expect(first.readyState).toBe(FakeEventSource.CLOSED);
+  expect(FakeEventSource.instances).toHaveLength(2);
+  const second = FakeEventSource.instances[1];
+  first.emit("catalog.changed");
+  expect(changes).toBe(0);
+  second.emit("catalog.changed");
+  expect(changes).toBe(1);
+  stop();
+  expect(second.readyState).toBe(FakeEventSource.CLOSED);
 });
 
 // 场景：资产可重命名，包括当前模板正在使用的资产：服务端拒绝时原因留在弹窗里可改后重试，成功后请求只带新名称（无设备头），目录卡片和已添加片段列表都显示新名称。

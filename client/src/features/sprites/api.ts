@@ -1,4 +1,4 @@
-/** Sprite 资产 HTTP 边界：发布、重命名与目录使用 Protobuf 二进制，删除无请求体；写入失败不自动重试。片段随云端模板保存，不在这里。 */
+/** Sprite 资产 HTTP 边界：发布、重命名与目录使用 Protobuf 二进制，删除无请求体，目录变化经 SSE 推送；写入失败不自动重试。片段随云端模板保存，不在这里。 */
 import { updateFetch as fetch } from "@/lib/update-guard";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { apiBase } from "@/lib/api-base";
@@ -99,6 +99,40 @@ export async function publishSprite(versionId: string, choice: PublishChoice): P
   const { sprite } = fromBinary(PublishSpriteResponseSchema, await request("/api/sprites/publish", "POST", undefined, body, PUBLISH_TIMEOUT_MS, device));
   if (!sprite) throw new Error("发布响应缺少内容");
   return toAsset(sprite);
+}
+
+/** 目录推送空闲时每 15 秒有一条 ping；超过这个时长什么都没收到，就当连接已失效（网络切换、代理断开）并重新连接。 */
+export const CATALOG_SILENCE_MS = 45_000;
+
+/**
+ * 订阅目录变化：服务端在连接时与之后任何人保存、改名或删除资产时推送 `catalog.changed`，每条都调用 `onChange` 重新读取目录。
+ * 断线由浏览器自动重连，重连后的第一条事件同样触发读取，断线期间的变化不会丢；静默超过 `CATALOG_SILENCE_MS` 时换一条新连接。
+ * 返回停止订阅的函数。
+ */
+export function watchCatalog(onChange: () => void): () => void {
+  let source: EventSource | undefined;
+  let silence: ReturnType<typeof setTimeout> | undefined;
+  /** 收到任何事件都说明连接仍有效，重新计时。 */
+  function alive() {
+    clearTimeout(silence);
+    silence = setTimeout(connect, CATALOG_SILENCE_MS);
+  }
+  /** 建立连接，替换已失效的旧连接。 */
+  function connect() {
+    source?.close();
+    source = new EventSource(`${apiBase()}/api/sprites/stream`);
+    source.addEventListener("ping", alive);
+    source.addEventListener("catalog.changed", () => {
+      alive();
+      onChange();
+    });
+    alive();
+  }
+  connect();
+  return () => {
+    clearTimeout(silence);
+    source?.close();
+  };
 }
 
 /**

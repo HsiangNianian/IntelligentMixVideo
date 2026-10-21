@@ -1,4 +1,4 @@
-/** Bun 测试环境：注册 DOM、固定环境地址、拦截网络、为每例换用独立的字效会话内存存储，并在每例后清理组件和 mock。 */
+/** Bun 测试环境：注册 DOM、固定环境地址、拦截网络（含 EventSource 替身）、为每例换用独立的字效会话内存存储，并在每例后清理组件和 mock。 */
 import { afterEach, beforeEach, mock, spyOn } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
@@ -27,6 +27,32 @@ const { cleanup } = await import("@testing-library/react");
 const { resetUpdates } = await import("@/features/updates/store");
 const { memoryStorage, setStorage } = await import("@/features/remotion_templates/localSessions");
 
+/**
+ * happy-dom 没有 EventSource：用记录连接的替身代替，不连接网络、默认不推送事件；用例经 `instances` 取得连接并用 `emit` 推送。
+ */
+export class FakeEventSource extends EventTarget {
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSED = 2;
+  /** 本例创建过的全部连接，按创建顺序。 */
+  static instances: FakeEventSource[] = [];
+  readyState = FakeEventSource.OPEN;
+  /** 登记连接地址。 */
+  constructor(public url: string) {
+    super();
+    FakeEventSource.instances.push(this);
+  }
+  /** 推送一条具名事件；已关闭的连接不再收到事件，与浏览器一致。 */
+  emit(type: string, data = "{}") {
+    if (this.readyState !== FakeEventSource.CLOSED) this.dispatchEvent(new MessageEvent(type, { data }));
+  }
+  /** 关闭连接。 */
+  close() {
+    this.readyState = FakeEventSource.CLOSED;
+  }
+}
+Reflect.set(globalThis, "EventSource", FakeEventSource);
+
 /** 默认拒绝未声明的请求，各测试只配置自己需要的响应，不连接实际服务。 */
 export let fetchMock: ReturnType<typeof spyOn<typeof globalThis, "fetch">>;
 
@@ -43,6 +69,7 @@ export function mockDesktop(invoke: (command: string, args: Record<string, unkno
 beforeEach(() => {
   process.env.IMV_DEBUG = "false";
   localStorage.clear();
+  FakeEventSource.instances = [];
   setStorage(memoryStorage());
   fetchMock = spyOn(globalThis, "fetch");
   fetchMock.mockRejectedValue(new Error("测试未配置此网络请求"));
