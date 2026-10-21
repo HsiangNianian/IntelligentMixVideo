@@ -3,6 +3,56 @@
 本项目的版本变更由发布工作流根据 Conventional Commits 自动生成。
 推送正式版本 tag 后，成功发布的版本记录会自动写入此文件。
 
+## [v0.9.11] - 2026-10-21
+### BREAKING CHANGES
+- due to [`815ea71`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/815ea711ac9fe7ae4f2fcd3c0d5943506131ebdf) - remove local templates and keep templates cloud-only *(PR [#223](https://github.com/HsiangNianian/IntelligentMixVideo/pull/223) by [@YUZHEthefool](https://github.com/YUZHEthefool))*:
+
+  desktop local templates are no longer shown or edited.  
+  The old data/template/templates.json and the $client.template_path  
+  setting stay on disk untouched; templates still needed must be  
+  recreated as cloud templates.  
+  Refs #209  
+  * docs: drop remaining local template library wording  
+  The cloud-only change left sentences that still described local templates:  
+  README and README.zh said local and cloud templates do not sync and that  
+  both libraries share the same save checks, client/README said both use the  
+  same font catalog and validation rules, and AGENTS.md still described local  
+  detail reads, local list summaries and a local JSON corruption error.  
+  Describe saving, reading and listing for the single cloud library only.  
+  * docs(proto): describe template messages as cloud-only  
+  The header comment still said the messages are shared by the cloud API and  
+  local save requests. The local save path and its Rust prost output are gone,  
+  so reword it and carry the comment into the generated TypeScript header  
+  (regenerated with buf; the Python outputs are unchanged).  
+  * test(client): cover reopening a legacy local template position  
+  An update recovery position saved by an older client carries an environment  
+  field and may point at a local template. The editor now ignores the field  
+  and reads the ID from the cloud library; check that a not-found answer shows  
+  the retry action, drops the stale position, and a retry restores the template.
+
+
+### New Features
+- [`281245b`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/281245b34369da173f6d25bf2b1a1dc24bd2a091) - **client**: remind users about available updates in a popup *(PR [#222](https://github.com/HsiangNianian/IntelligentMixVideo/pull/222) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+  - *addresses issue [#221](https://github.com/HsiangNianian/IntelligentMixVideo/issues/221) opened by [@YUZHEthefool](https://github.com/YUZHEthefool)*
+- [`815ea71`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/815ea711ac9fe7ae4f2fcd3c0d5943506131ebdf) - **client**: remove local templates and keep templates cloud-only *(PR [#223](https://github.com/HsiangNianian/IntelligentMixVideo/pull/223) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`a676364`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/a67636449ffb9daa10c018675782c8b7f508c55e) - **client**: open live UI diagnostics from settings; fix HiDPI preview rendering *(PR [#227](https://github.com/HsiangNianian/IntelligentMixVideo/pull/227) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Bug Fixes
+- [`89ba2d2`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/89ba2d2a791bcc2e850ed69530988b1591f8b7a3) - **client**: keep Remotion overlays aligned with the fullscreen preview *(PR [#225](https://github.com/HsiangNianian/IntelligentMixVideo/pull/225) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`c832741`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/c832741b3058b5ccf1dfc2a8dda714d4dee6a767) - make AI effect and AI asset deletion work with Aliyun OSS *(PR [#226](https://github.com/HsiangNianian/IntelligentMixVideo/pull/226) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Documentation Changes
+- [`6a054f4`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/6a054f4e3c23f556229a3a385bd815aec74bb365) - update CHANGELOG.md for v0.9.10 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
+
+### Chores
+- [`cea31fa`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/cea31fa20da05fba679bca6666335f3b871cc65d) - **release**: prepare v0.9.11 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Other Changes
+- [`b50c1d3`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/b50c1d38aca5f8f40300a6c0fda2ec731a84b499) - Merge remote-tracking branch 'upstream/main' into codex/release-v0.9.11 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`2d5fc7f`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/2d5fc7f6e69ae2a0d0d90d607afc9ddc41da8b77) - Merge pull request [#228](https://github.com/HsiangNianian/IntelligentMixVideo/pull/228) from YUZHEthefool/codex/release-v0.9.11
+
+chore(release): promote dev to main for v0.9.11 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
 ## [v0.9.10] - 2026-10-20
 ### Bug Fixes
 - [`4728a67`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/4728a67559898d05d9cf64a052694b86f6d848d6) - **client**: keep the preview and font library working behind proxies and older servers *(PR [#219](https://github.com/HsiangNianian/IntelligentMixVideo/pull/219) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
@@ -1596,3 +1646,5 @@ feat(client): 在模板工作区页头添加时钟 *(commit by [@HsiangNianian](
 [v0.9.9]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.8...v0.9.9
 
 [v0.9.10]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.9...v0.9.10
+
+[v0.9.11]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.10...v0.9.11
