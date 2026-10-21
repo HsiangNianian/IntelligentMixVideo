@@ -40,7 +40,7 @@ export function HistorySidebar(props: Props) {
     setError("");
     setTarget(work);
   }
-  /** 失败保留目标供显式重试，关闭弹窗不会自动再次发送删除。 */
+  /** 失败保留目标供显式重试，关闭弹窗不会自动再次发送删除；提示带上具体原因（超时、服务端说明或本地库错误），便于排查。 */
   async function confirmDelete() {
     if (!target || submitted.current) return;
     submitted.current = true;
@@ -49,9 +49,10 @@ export function HistorySidebar(props: Props) {
     try {
       await props.onDelete(target.id);
       setTarget(null);
-    } catch {
+    } catch (reason) {
+      const detail = reason instanceof Error && reason.message ? `（${reason.message}）` : "";
       setError(
-        "删除未确认完成，清理中的会话无法继续编辑。请重试删除；已开始的清理会在服务重启后继续。",
+        `删除未确认完成${detail}，清理中的会话无法继续编辑。请重试删除；已开始的清理会在服务重启后继续。`,
       );
     } finally {
       submitted.current = false;
