@@ -37,7 +37,7 @@ export function UpdateLifecycle() {
   const state = useClientUpdate();
   useEffect(() => { void updaterReady(); }, []);
   const reminder = state.reminder;
-  const reminderOpen = Boolean(reminder) && ['available', 'error', 'downloading', 'manual'].includes(state.phase);
+  const reminderOpen = Boolean(reminder) && ['checking', 'available', 'error', 'downloading', 'manual'].includes(state.phase);
   const downloading = state.phase === 'downloading';
   return <>
     {state.phase === 'waiting' && <aside className="fixed bottom-4 right-4 z-50 max-w-sm rounded-lg border bg-background p-4 shadow-lg" aria-label="等待客户端更新"><p className="mb-2 text-sm" role="status">{state.message}</p><Button size="sm" variant="outline" onClick={cancelUpdate}>取消此次更新</Button></aside>}

@@ -80,11 +80,12 @@ export async function updaterReady() {
  */
 export async function checkUpdate(remind = false) {
   if (['disabled', 'checking', 'downloading', 'waiting', 'applying'].includes(state.phase)) return;
-  publish({ phase: 'checking', message: '正在检查更新…', progress: undefined, links: undefined, reminder: undefined });
+  // 手动检查只有在结果没有候选、或用户已经关闭提醒时才清除提醒；自动检查负责重建提醒。
+  publish({ phase: 'checking', message: '正在检查更新…', progress: undefined, links: undefined, reminder: remind ? undefined : state.reminder });
   try {
     const candidate = await call<Candidate | null>('check');
-    publish({ phase: candidate ? 'available' : 'idle', candidate: candidate ?? undefined, reminder: candidate && remind ? candidate : undefined, message: candidate ? `发现新版本 v${candidate.version}` : '当前已是可用的最新版本' });
-  } catch (e) { publish({ phase: 'error', message: String(e), reminder: undefined }); }
+    publish({ phase: candidate ? 'available' : 'idle', candidate: candidate ?? undefined, reminder: candidate && (remind || state.reminder) ? candidate : undefined, message: candidate ? `发现新版本 v${candidate.version}` : '当前已是可用的最新版本' });
+  } catch (e) { publish({ phase: 'error', message: String(e), reminder: remind ? undefined : state.reminder }); }
 }
 /** 关闭启动提醒；只影响本次运行，下次启动发现新版本仍会提醒。 */
 export function dismissUpdateReminder() {
