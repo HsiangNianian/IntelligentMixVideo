@@ -1,4 +1,4 @@
-/** 加载固定版本阿里云预览 SDK 并读取目录；播放器实例的创建与销毁由预览组件负责。 */
+/** 加载固定版本阿里云预览 SDK、固定其绘制倍数并读取目录；播放器实例的创建与销毁由预览组件负责。 */
 import motions from "./motions.json";
 import bundledCatalog from "../../../../server/src/server/template/sdk_catalog.json";
 import type { Category, EffectAsset } from "./model";
@@ -58,9 +58,16 @@ export interface PreviewSDK {
 declare global {
   interface Window {
     AliyunTimelinePlayer?: PreviewSDK;
+    /** SDK 内置并挂到全局的 Konva；只使用它的全局绘制倍数。 */
+    Konva?: { pixelRatio: number };
   }
 }
-/** 在播放器独立文档中加载 SDK 和样式；失败或取消时清理资源，尺寸配置随文档重新初始化。 */
+/**
+ * 在播放器独立文档中加载 SDK 和样式；失败或取消时清理资源，尺寸配置随文档重新初始化。
+ * 成功后把 SDK 内置 Konva 的绘制倍数固定为 1：场景已按视频原尺寸（如 1080×1920）设置，
+ * Konva 默认再乘屏幕缩放倍数，2 倍屏上每层画布变成 2160×3840，暂停时也逐帧重绘。
+ * 倍数只影响画布的实际像素，场景尺寸、坐标与字号不变；须在创建播放器之前设置。
+ */
 export function loadSDK(target: Document, signal: AbortSignal): Promise<PreviewSDK> {
   return new Promise<PreviewSDK>((resolve, reject) => {
     const script = target.createElement("script");
@@ -82,7 +89,11 @@ export function loadSDK(target: Document, signal: AbortSignal): Promise<PreviewS
         script.remove();
         stylesheet.remove();
         reject(error);
-      } else resolve(target.defaultView!.AliyunTimelinePlayer!);
+      } else {
+        const view = target.defaultView!;
+        if (view.Konva) view.Konva.pixelRatio = 1;
+        resolve(view.AliyunTimelinePlayer!);
+      }
     };
     const aborted = () => finish(new DOMException("SDK 加载已取消", "AbortError"));
     const timeout = window.setTimeout(

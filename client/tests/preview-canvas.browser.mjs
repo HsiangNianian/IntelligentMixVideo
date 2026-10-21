@@ -63,7 +63,8 @@ try {
   await server.listen();
   const address = server.httpServer.address();
   browser = await chromium.launch({ channel: "chrome", headless: true });
-  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  // 按 2 倍屏打开：SDK 内置的 Konva 默认按屏幕倍数放大画布，下面核对画布仍与视频原尺寸一致。
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 2 });
   page.setDefaultTimeout(60000);
   await page.goto(`http://localhost:${address.port}/__canvas_test`);
   await page.waitForFunction(() => typeof window.mountPreview === "function");
