@@ -372,6 +372,28 @@ test("新版导航恢复已保存模板且切页保留位置", async () => {
   expect(screen.getByLabelText("模板名称").textContent).toBe(template.name);
 });
 
+// 场景：更新前由本地模板记下的位置（带 environment）按云端 ID 读取，未找到时可重试，且不再保留这条旧位置。
+test("更新后旧本地模板位置按云端 ID 读取并可重试", async () => {
+  const template = savedTemplate();
+  const legacy = { environment: "local", templateId: template.template_id };
+  restoreRecovery({ workspace: "library", template: legacy });
+  const requests: string[] = [];
+  let found = false;
+  fetchMock.mockImplementation((async (url) => {
+    requests.push(String(url));
+    return found ? protobufTemplateResponse(template, "get") : Response.json({ detail: "模板不存在" }, { status: 404 });
+  }) as typeof fetch);
+  render(<HomePage />);
+  await screen.findByText("模板不存在");
+  expect(requests).toEqual([`http://api.test:8000/template/${template.template_id}`]);
+  expect(recovery.template).toBeNull();
+  found = true;
+  fireEvent.click(screen.getByRole("button", { name: "重试打开模板" }));
+  expect((await screen.findByLabelText("模板名称")).textContent).toBe(template.name);
+  expect(requests).toHaveLength(2);
+  expect(recovery.template).toEqual({ templateId: template.template_id });
+});
+
 // 场景：新工作室弹窗中的未提交输入阻止自动更新，关闭后才解除对话框门禁。
 test("新建模板弹窗沿用更新保护", async () => {
   render(<HomePage />);
