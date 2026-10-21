@@ -473,8 +473,9 @@ unreachable object store is a 503 that starts no rebuild. Deletion waits for a r
 never written back after it. Overlay renders only need the stored TSX.
 `DELETE /api/sprites/{id}` removes a publication (anyone may delete from the shared library): its row, bundle object
 and cache. While a cloud template's `remotion` track still references it the answer is 409 naming those templates
-(raw configurations are scanned, so invalid templates count too); an unknown ID is a 404. The source work and its
-versions are untouched, so the version can be saved to the library again.
+(raw configurations are scanned, so invalid templates count too); an unknown ID is a 404. The bundle objects are
+removed before the row: when the object store fails the answer is a retryable 503 and the asset stays listed, so a
+retry finishes it. The source work and its versions are untouched, so the version can be saved to the library again.
 `POST /api/sprites/{id}/rename` (`imv.sprite.v1.RenameSpriteRequest`, anyone may rename) changes only the catalog name:
 trimmed, 1 to 100 characters, not required to be unique (422 otherwise), an unknown ID is a 404. A placed asset can
 be renamed since templates store IDs only. The name lives in the stored JSON; `sprite_store.update_data` locks the

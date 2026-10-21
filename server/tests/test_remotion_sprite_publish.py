@@ -828,6 +828,27 @@ def test_deleting_an_unused_sprite_removes_its_record_and_bundle(client: TestCli
     assert published_sprite(client, published.version.id).sprite_id != summary.sprite_id
 
 
+
+# 场景（回归）：对象存储删除失败时，原先记录已先删掉，接口 500、目录仍显示资产，再点删除只得到 404「sprite not found」。
+def test_an_object_store_failure_keeps_the_sprite_for_a_retry(client: TestClient, published, monkeypatch) -> None:
+    """预览包删除失败回答可重试的 503，记录、目录与预览保持原样；存储恢复后重试删除成功。"""
+    summary = published_sprite(client, published.version.id)
+    real_delete = published.store.objects.delete_prefix
+
+    def unreachable(prefix):
+        """模拟 ZOS 拒绝批量删除。"""
+        raise ObjectStoreError("ZOS delete failed")
+
+    monkeypatch.setattr(published.store.objects, "delete_prefix", unreachable)
+    response = client.delete(f"/api/sprites/{summary.sprite_id}")
+    assert response.status_code == 503 and response.json()["detail"] == "资产文件暂时无法删除，请稍后重试"
+    assert [item.sprite_id for item in pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites] == [summary.sprite_id]
+    assert client.get(summary.preview_url).status_code == 200
+    monkeypatch.setattr(published.store.objects, "delete_prefix", real_delete)
+    assert client.delete(f"/api/sprites/{summary.sprite_id}").status_code == 204
+    assert pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites == []
+    assert not (objects(published.store) / "sprites" / summary.sprite_id).exists()
+
 def test_a_sprite_placed_in_a_template_cannot_be_deleted(client: TestClient, published) -> None:
     """云端模板的 remotion 轨道仍引用资产时拒绝删除并列出模板名称，资产与预览保持可用；其他轨道或无效配置不算引用。"""
     from datetime import UTC, datetime

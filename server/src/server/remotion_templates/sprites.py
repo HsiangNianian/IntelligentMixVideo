@@ -348,16 +348,22 @@ def remove(store: Store, sprite_id: str, used_by: list[str]) -> None:
     `used_by` lists the cloud templates whose `remotion` tracks reference the Sprite (409 naming them); an unknown
     ID is a 404. A record that fails its integrity check can still be deleted. The source work and its versions are
     untouched, so the version can be saved to the library again.
+
+    The bundle objects go first and the record last: when the object store fails the record stays, the request is a
+    retryable 503 and the asset stays listed, instead of a record that is gone while the client still shows it.
     """
     if sprite_store.get(sprite_id) is None:
         raise NotFound("sprite not found")
     if used_by:
         raise Conflict(f"资产正被模板使用，请先在这些模板里移除后再删除：{'、'.join(used_by)}")
+    try:
+        store.objects.delete_prefix(f"{PREFIX}/sprites/{sprite_id}/")
+    except ObjectStoreError as exc:
+        raise HTTPException(503, "资产文件暂时无法删除，请稍后重试") from exc
+    shutil.rmtree(store.root / "cache" / "sprites" / sprite_id, ignore_errors=True)
     if not sprite_store.remove(sprite_id):
         raise NotFound("sprite not found")
     _rebuild_failed.pop(sprite_id, None)
-    store.objects.delete_prefix(f"{PREFIX}/sprites/{sprite_id}/")
-    shutil.rmtree(store.root / "cache" / "sprites" / sprite_id, ignore_errors=True)
 
 
 def _validated_request(request: pb.PublishSpriteRequest, version: TemplateVersion) -> None:
