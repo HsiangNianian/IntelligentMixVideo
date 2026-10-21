@@ -224,7 +224,13 @@ export function ack(work: string, cursor: number): Promise<void> {
   });
 }
 
+/**
+ * 删除要等服务端停止任务、写完进行中的保存并逐个版本清理对象存储，远程部署时可能远超普通请求的 20 秒；
+ * 超时只结束本机等待，服务端照常清理，重试删除会等待同一次清理。
+ */
+export const DELETE_TIMEOUT_MS = 120_000;
+
 /** 整条删除由服务端停止任务并清理数据；写入失败不自动重发。 */
 export function deleteWork(id: string): Promise<void> {
-  return request(`/works/${encodeURIComponent(id)}`, { method: "DELETE" });
+  return request(`/works/${encodeURIComponent(id)}`, { method: "DELETE" }, false, DELETE_TIMEOUT_MS);
 }

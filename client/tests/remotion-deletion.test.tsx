@@ -150,14 +150,32 @@ test("删除弹窗防重复提交并保留失败重试入口", async () => {
       .getByRole("button", { name: "正在停止并清理…" })
       .hasAttribute("disabled"),
   ).toBe(true);
-  await act(async () => release(new Response(null, { status: 503 })));
+  await act(async () =>
+    release(
+      new Response(JSON.stringify({ detail: "会话数据清理未完成，请重试删除。" }), {
+        status: 503,
+      }),
+    ),
+  );
   expect(
     (await screen.findByRole("button", { name: "重试删除" })) !== null,
   ).toBe(true);
-  expect(
-    within(screen.getByRole("dialog")).getByRole("alert").textContent,
-  ).toContain("未确认完成");
+  // 提示带上服务端说明，用户反馈的截图能看出是清理失败、超时还是连不上服务。
+  const alert = within(screen.getByRole("dialog")).getByRole("alert").textContent;
+  expect(alert).toContain("未确认完成");
+  expect(alert).toContain("会话数据清理未完成，请重试删除。");
   expect(deletes()).toHaveLength(1);
+});
+
+// 删除要等服务端停止任务并清理对象存储，远程部署时比普通请求慢；不能套用 20 秒的普通超时而误报失败。
+test("删除会话使用较长的请求超时", async () => {
+  remotionServer();
+  await seed("远程删除");
+  const timers = spyOn(window, "setTimeout");
+  await api.deleteWork("work-1");
+  expect(timers.mock.calls.map(([, delay]) => delay)).toContain(api.DELETE_TIMEOUT_MS);
+  expect(api.DELETE_TIMEOUT_MS).toBeGreaterThanOrEqual(120_000);
+  timers.mockRestore();
 });
 
 // 其他窗口删除会终止当前连接；没有永久保留聊天或反复重连、自动重建会话。

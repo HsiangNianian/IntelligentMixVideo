@@ -12,12 +12,12 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from generated.imv.sprite.v1 import sprite_pb2 as pb
 from google.protobuf.message import DecodeError, Message
 from starlette.concurrency import run_in_threadpool
 
-from . import sprites
+from . import sprite_events, sprites
 from .api import app as remotion_templates_app
 from .fonts import FontStore
 from .routes import player_page, require_sandbox, runtime_for
@@ -55,9 +55,29 @@ async def _body(request: Request, message: Message) -> None:
 
 @router.get("", response_class=Response, responses={200: {"content": PROTOBUF_CONTENT}}, summary="查询已发布的 Sprite 目录")
 async def list_sprites(service: Service) -> Response:
-    """返回可供模板编辑添加的不可变发布条目，不包含 TSX 源码。"""
+    """返回可供模板编辑添加的不可变发布条目，不包含 TSX 源码。
+
+    目录随任何人的保存、改名与删除变化，标记为不可缓存：部署链路里的 CDN 或代理不能把删除前的目录再交给客户端。
+    """
     items = await run_in_threadpool(sprites.catalog)
-    return _response(pb.ListSpritesResponse(sprites=items))
+    response = _response(pb.ListSpritesResponse(sprites=items))
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.get(
+    "/stream", response_class=StreamingResponse,
+    responses={200: {"content": {"text/event-stream": {"schema": {"type": "string"}}}}}, summary="订阅 AI 资产目录变化",
+)
+async def catalog_stream() -> StreamingResponse:
+    """SSE：连接时和之后任何人保存、改名或删除资产时推送 `catalog.changed`，客户端据此重新读取目录；空闲时每 15 秒推送 `ping`。
+
+    事件不带目录内容，只是重新读取的信号；断线重连后的第一条事件同样触发读取，断线期间的变化不会丢。
+    """
+    return StreamingResponse(
+        sprite_events.stream(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post(
@@ -173,6 +193,7 @@ async def delete_sprite(sprite_id: str, service: Service) -> Response:
     """删除资产记录与预览包；资产库共享，任何人都可删除。
 
     仍被云端模板的 `remotion` 轨道引用时返回 409 并列出模板名称，需先在模板里移除；不存在返回 404。
+    先删预览包、最后删记录：对象存储删除失败返回 503，资产保持原样，可重试。
     源聊天与版本不受影响，之后可以重新保存到资产。
     """
     from ..template.store import templates_using

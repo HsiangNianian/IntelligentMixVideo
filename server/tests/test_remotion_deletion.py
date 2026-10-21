@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import logging
 import os
 from datetime import timedelta
 from io import BytesIO
@@ -253,9 +254,9 @@ def test_shared_reference_removed_only_with_last_work(client, store):
 
 
 def test_cleanup_failure_remains_retryable_and_blocks_writes(
-    client, store, monkeypatch
+    client, store, monkeypatch, caplog
 ):
-    """文件清理失败返回 503，标记持久化且读写被拒绝；显式重试完成其余清理。"""
+    """文件清理失败返回 503 并带中文说明、根因只写服务端日志，标记持久化且读写被拒绝；显式重试完成其余清理。"""
     work, job = store.create(GenerateTemplateRequest(description="失败恢复"), DEVICE)
     store.job_dir(job.id).mkdir(parents=True)
     original = deletion.remove_path
@@ -266,9 +267,14 @@ def test_cleanup_failure_remains_retryable_and_blocks_writes(
         raise PermissionError("private filesystem path")
 
     monkeypatch.setattr(deletion, "remove_path", fail_after_removal)
-    response = client.delete(f"/api/templates/works/{work.id}")
+    with caplog.at_level(logging.ERROR, logger="server.remotion_templates.routes"):
+        response = client.delete(f"/api/templates/works/{work.id}")
     assert response.status_code == 503
+    assert response.json()["detail"] == "会话数据清理未完成，请重试删除。"
     assert "private" not in response.text
+    # 用户发起的删除失败原先没有任何日志，线上只能看到访问日志里的 503。
+    [record] = [item for item in caplog.records if item.name == "server.remotion_templates.routes"]
+    assert str(work.id) in record.getMessage() and isinstance(record.exc_info[1], PermissionError)
     assert store.pending_deletions() == [work.id]
     assert client.get(f"/api/templates/works/{work.id}").status_code == 410
     assert client.get(f"/api/templates/works/{work.id}/stream").status_code == 410

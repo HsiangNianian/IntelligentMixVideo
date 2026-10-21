@@ -1,6 +1,8 @@
 """将 IMS 临时成片和第 3 帧 PNG 转存到 ZOS，并核实公开读取；`upload_public` 也供 Remotion 叠加视频复用。"""
 
+import base64
 from contextlib import closing
+import hashlib
 from pathlib import Path
 import subprocess
 from tempfile import TemporaryDirectory
@@ -24,9 +26,23 @@ def extract_third_frame(video: Path, image: Path, timeout: float) -> None:
         raise ValueError("IMS 成片不足三帧，无法生成封面")
 
 
+def content_md5(request, **kwargs) -> None:
+    """签名前把批量删除的 CRC32 校验换回 Content-MD5。
+
+    botocore 1.36 起对必须校验的 DeleteObjects 只发 `x-amz-checksum-crc32`，`when_required` 也不会改回 MD5；
+    阿里云 OSS 等 S3 兼容存储的批量删除要求 Content-MD5，缺少时拒绝请求，对象就删不掉。
+    """
+    for name in list(request.headers.keys()):
+        if name.lower().startswith("x-amz-checksum-") or name.lower() == "x-amz-sdk-checksum-algorithm":
+            del request.headers[name]
+    body = request.body.encode() if isinstance(request.body, str) else request.body or b""
+    del request.headers["Content-MD5"]
+    request.headers["Content-MD5"] = base64.b64encode(hashlib.md5(body).digest()).decode()
+
+
 def storage_client(settings: ZosSettings, timeout: float):
-    """按服务端 ZOS 配置创建 S3 兼容客户端；单次尝试、有界超时，调用方负责关闭。"""
-    return boto3.client(
+    """按服务端 ZOS 配置创建 S3 兼容客户端；单次尝试、有界超时，批量删除带 Content-MD5，调用方负责关闭。"""
+    client = boto3.client(
         "s3", endpoint_url=settings.zos_api_endpoint, region_name=settings.zos_region,
         aws_access_key_id=settings.zos_access_key_id.get_secret_value(),
         aws_secret_access_key=settings.zos_secret_access_key.get_secret_value(),
@@ -34,6 +50,8 @@ def storage_client(settings: ZosSettings, timeout: float):
                       connect_timeout=timeout, read_timeout=timeout, retries={"max_attempts": 1},
                       request_checksum_calculation="when_required", response_checksum_validation="when_required"),
     )
+    client.meta.events.register("before-sign.s3.DeleteObjects", content_md5)
+    return client
 
 
 def upload_public(files: list[tuple[Path, str, str]], settings: ZosSettings, timeout: float) -> list[str]:

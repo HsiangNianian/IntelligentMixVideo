@@ -39,16 +39,19 @@ export function SpriteCatalog({ catalog, placed, onAdd }: { catalog: Catalog; pl
   const category = chosen ?? CATEGORIES.find((item) => catalog.assets?.some((asset) => categoryOf(asset.kind) === item.id))?.id ?? "text";
   const shown = catalog.assets?.filter((asset) => categoryOf(asset.kind) === category);
 
-  /** 删除确认的资产；仍被模板使用等失败原因留在弹窗里，成功后刷新目录。 */
+  /**
+   * 删除确认的资产；仍被模板使用等失败原因留在弹窗里。成功或资产已不存在时关闭弹窗并刷新目录；
+   * 失败时同样刷新目录，超时等情况下服务端可能已经删完，目录不再显示已不存在的资产。
+   */
   async function remove() {
     if (!deleting || removing) return;
     setRemoving(true); setRemoveError("");
     try {
-      await deleteSprite(deleting.id);
-      toast(`已删除资产「${deleting.name}」`);
-      setDeleting(null); catalog.refresh();
+      const removed = await deleteSprite(deleting.id);
+      toast(removed ? `已删除资产「${deleting.name}」` : `资产「${deleting.name}」已被删除`);
+      setDeleting(null);
     } catch (reason) { setRemoveError(reason instanceof Error ? reason.message : "删除资产失败"); }
-    finally { setRemoving(false); }
+    finally { setRemoving(false); catalog.refresh(); }
   }
 
   /** 提交新名称；失败原因（如 422）留在弹窗里允许修改后重试，成功后刷新目录，卡片、片段列表与时间轴标签随之更新。 */
