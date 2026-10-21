@@ -7,7 +7,6 @@ mod backend;
 mod preview_videos;
 mod remotion_sessions;
 mod settings;
-mod templates;
 mod updates;
 
 /// Windows 只为当前窗口的准确资源 URL 授权，其他 localhost 端口和远程域名均不匹配。
@@ -53,7 +52,6 @@ pub fn run() {
         .manage(backend::Backend::default())
         .manage(remotion_sessions::Sessions::default())
         .invoke_handler(tauri::generate_handler![
-            templates::local_templates,
             settings::local_settings,
             preview_videos::preview_video_list,
             preview_videos::preview_video_read,
@@ -77,7 +75,7 @@ pub fn run() {
             #[cfg(target_os = "linux")]
             {
                 use tauri::Manager;
-                // 网页缓存按运行时版本隔离；本地模板仍保存在原 app_data_dir。
+                // 网页缓存按运行时版本隔离；其他本地数据仍保存在原 app_data_dir。
                 let data_directory = app
                     .path()
                     .app_data_dir()?

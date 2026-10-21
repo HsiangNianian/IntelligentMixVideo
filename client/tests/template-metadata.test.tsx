@@ -1,15 +1,15 @@
-/** 模板信息编辑回归：真实工作区经 HTTP/IPC 边界保存，检查失焦写入、校验与失败恢复。 */
+/** 模板信息编辑回归：真实工作区经 HTTP 边界保存，检查失焦写入、校验与失败恢复。 */
 import { expect, test } from "bun:test";
 import { fromBinary } from "@bufbuild/protobuf";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { SaveTemplateRequestSchema, type SaveTemplateRequest } from "@/generated/imv/template/v1/template_pb";
 import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
 import { protobufTemplateResponse, savedTemplate } from "./fixtures";
-import { fetchMock, mockDesktop } from "./setup";
+import { fetchMock } from "./setup";
 
-/** 两种传输共用可读取的持久化副本；断言实际消息中的 ID 与所属库，失败不改副本。 */
-function storage(environment: "cloud" | "local", failFirst = false) {
-  let stored = { ...savedTemplate(), description: "原描述", library: environment === "local" ? "/tmp/templates.json" : undefined };
+/** 可读取的云端持久化副本；断言实际消息中的 ID，失败不改副本。 */
+function storage(failFirst = false) {
+  let stored = { ...savedTemplate(), description: "原描述" };
   const writes: SaveTemplateRequest[] = [];
   const save = (payload: Uint8Array) => {
     const request = fromBinary(SaveTemplateRequestSchema, payload);
@@ -18,26 +18,18 @@ function storage(environment: "cloud" | "local", failFirst = false) {
     stored = { ...stored, name: request.name, description: request.description ?? "" };
     return stored;
   };
-  if (environment === "local") mockDesktop(async (command, args) => {
-    expect(command).toBe("local_templates");
-    expect(args.id).toBe(stored.template_id);
-    if (args.operation === "get") return stored;
-    expect(args.operation).toBe("save");
-    expect(args.library).toBe(stored.library);
-    return save(Uint8Array.from(args.draft as number[]));
-  });
-  else fetchMock.mockImplementation((async (url, init) => {
+  fetchMock.mockImplementation((async (url, init) => {
     if (!String(url).includes("/template")) throw new Error("未配置此请求");
     if (init?.method !== "POST") return protobufTemplateResponse(stored, "get");
     try { return protobufTemplateResponse(save(new Uint8Array(init.body as Uint8Array)), "save"); }
     catch (error) { return new Response(JSON.stringify({ detail: (error as Error).message }), { status: 409 }); }
   }) as typeof fetch);
-  return { read: () => stored, writes, selection: { environment, templateId: stored.template_id } };
+  return { read: () => stored, writes, selection: { templateId: stored.template_id } };
 }
 
-// 场景：两库改名、清空描述后失焦自动保存，重新打开仍是同一 ID 与最新信息。
-test.each(["cloud", "local"] as const)("%s 模板信息失焦保存并保持原 ID", async (environment) => {
-  const store = storage(environment);
+// 场景：改名、清空描述后失焦自动保存，重新打开仍是同一 ID 与最新信息。
+test("模板信息失焦保存并保持原 ID", async () => {
+  const store = storage();
   const view = render(<TemplateWorkspace selection={store.selection} onHome={() => {}} />);
   fireEvent.click(await screen.findByRole("button", { name: "编辑模板名称" }));
   const name = screen.getByRole("textbox", { name: "模板名称" });
@@ -62,7 +54,7 @@ test.each(["cloud", "local"] as const)("%s 模板信息失焦保存并保持原 
 
 // 场景：空白名称、未改动的输入及 Escape 取消不写入；校验失败可继续修改。
 test("模板信息拒绝空白名称，未修改与取消不保存", async () => {
-  const store = storage("cloud");
+  const store = storage();
   render(<TemplateWorkspace selection={store.selection} onHome={() => {}} />);
   fireEvent.click(await screen.findByRole("button", { name: "编辑模板名称" }));
   fireEvent.blur(screen.getByRole("textbox", { name: "模板名称" }));
@@ -88,7 +80,7 @@ test("模板信息拒绝空白名称，未修改与取消不保存", async () =>
 
 // 场景：重名被拒后保留新名称和已有文字草稿，再次修改并失焦可成功保存。
 test("模板信息保存失败保留草稿，修正后可重试", async () => {
-  const store = storage("cloud", true);
+  const store = storage(true);
   render(<TemplateWorkspace selection={store.selection} onHome={() => {}} />);
   await screen.findByRole("button", { name: "编辑模板名称" });
   fireEvent.change(screen.getByLabelText("示例文字"), { target: { value: "保留的标题" } });

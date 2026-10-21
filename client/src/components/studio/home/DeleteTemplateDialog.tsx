@@ -1,5 +1,5 @@
 /**
- * 删除模板确认框：展示要删除的模板（缩略封面、名称、所属库与完整 ID），确认后才删除。
+ * 删除模板确认框：展示要删除的云端模板（缩略封面、名称与完整 ID），确认后才删除。
  * 删除进行中禁止关闭；失败时把原因留在框内并把按钮改为「重试删除」，取消则不做任何修改。
  * 真实请求失败保留诊断与删除目标；快速连点只发出一次请求。
  */
@@ -7,12 +7,12 @@ import { useEffect, useRef, useState } from "react";
 import { Icon } from "../icons";
 import { Button, Spinner } from "../ui";
 import { Dialog, DialogContent, DialogFooter, DialogHeader } from "../dialog";
-import type { Library, TemplateSummary } from "../types";
+import type { TemplateSummary } from "../types";
 import { TemplateCover } from "./TemplateCard";
 
 interface DeleteTemplateDialogProps {
-  target: { library: Library; template: TemplateSummary } | null;
-  onDelete: (library: Library, template: TemplateSummary) => Promise<void>;
+  target: TemplateSummary | null;
+  onDelete: (template: TemplateSummary) => Promise<void>;
   onClose: () => void;
 }
 
@@ -32,7 +32,7 @@ export function DeleteTemplateDialog({ target, onDelete, onClose }: DeleteTempla
     locked.current = true;
     setPhase("deleting");
     try {
-      await onDelete(target.library, target.template);
+      await onDelete(target);
       if (active.current) onClose();
     } catch (reason) {
       if (active.current) {
@@ -45,9 +45,8 @@ export function DeleteTemplateDialog({ target, onDelete, onClose }: DeleteTempla
   // 关闭动画期间 target 已为 null，继续显示上一次的内容，避免框体先塌陷再淡出。
   const last = useRef(target);
   if (target) last.current = target;
-  const shown = target ?? last.current;
+  const template = target ?? last.current;
   const busy = phase === "deleting";
-  const template = shown?.template;
   return (
     <Dialog open={target !== null} onOpenChange={(open) => !open && !busy && onClose()}>
       <DialogContent busy={busy}>
@@ -60,7 +59,7 @@ export function DeleteTemplateDialog({ target, onDelete, onClose }: DeleteTempla
               </span>
               <div className="min-w-0 space-y-1">
                 <p className="truncate text-sm font-medium">{template.name}</p>
-                <p className="text-xs text-fg-muted">{shown?.library === "cloud" ? "云端模板 · 团队成员都会失去它" : "本地模板 · 只影响这台电脑"}</p>
+                <p className="text-xs text-fg-muted">云端模板 · 团队成员都会失去它</p>
                 <p className="select-all break-all font-mono text-[11px] text-fg-subtle">{template.template_id}</p>
               </div>
             </div>

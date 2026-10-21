@@ -13,7 +13,6 @@
 /* 顶栏与三栏分界保持轻量：资产与参数为面板层，画布为监视器层，各栏独立滚动。 */
 .template-workspace-header { background: var(--card); }
 .template-workspace-mark { color: var(--primary-foreground); background: linear-gradient(135deg, var(--primary), color-mix(in oklch, var(--primary) 55%, transparent)); }
-.template-workspace-environment { color: var(--primary); background: color-mix(in oklch, var(--primary) 14%, transparent); }
 .template-workspace-assets,
 .template-workspace-inspector { background: var(--card); }
 .template-workspace-canvas { background: var(--background); }
@@ -119,7 +118,6 @@
 .studio-source-tab[aria-selected="true"] { background: var(--color-raised); color: var(--color-fg); font-weight: 600; }
 .template-workspace .template-preview-stage { background-color: var(--color-canvas); background-image: radial-gradient(var(--color-line-strong) 1px, transparent 1px); background-size: 18px 18px; }
 .template-workspace .template-preview-controls { margin-top: 16px; padding: 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--color-surface); }
-.template-workspace .template-workspace-environment { color: var(--color-fg-muted); background: var(--color-raised); }
 .template-workspace .template-category-pill { height: 32px; border-radius: 8px; font-size: 12px; }
 .template-workspace .template-category-pill[data-state="on"] { color: var(--color-brand); border-color: color-mix(in oklch, var(--color-brand) 25%, transparent); background: color-mix(in oklch, var(--color-brand) 8%, transparent); }
 .template-workspace .template-asset-card { border: 1px solid var(--border); border-radius: 10px; padding: 6px; background: var(--color-surface); }

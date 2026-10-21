@@ -186,32 +186,29 @@ function mockClientSettings(stored: Record<string, Values>) {
   return { sent, onClose };
 }
 
-// 回归：未配置固定地址时只改模板路径，不把运行时后端地址存成固定地址，避免下次启动跳过内置服务。
-test("只改模板路径不保存运行时后端地址", async () => {
-  const stored: Record<string, Values> = { $client: { template_path: "/old/templates.json" } };
+// 回归：未修改地址直接保存时不写入，不把运行时分配的内置后端地址存成固定地址，避免下次启动跳过内置服务。
+test("未修改地址保存不写入运行时后端地址", async () => {
+  const stored: Record<string, Values> = {};
   const { sent, onClose } = mockClientSettings(stored);
-  fireEvent.change(await screen.findByDisplayValue("/old/templates.json"), { target: { value: " /new/templates.json " } });
   fireEvent.submit(screen.getByRole("form", { name: "通用设置" }));
-  await screen.findByText(/本地模板读写立即使用新路径/);
-  expect(onClose).toHaveBeenCalledTimes(1);
-  expect(sent).toEqual([{ template_path: "/new/templates.json" }]);
-  expect(stored.$client).toEqual({ template_path: "/new/templates.json" });
+  await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  expect(sent).toEqual([]);
+  expect(stored).toEqual({});
 });
 
-// 回归：其他实例在表单打开后保存了新路径，本实例只改地址时不把路径改回打开时的旧值。
-test("只改后端地址不覆盖其他实例保存的路径", async () => {
+// 回归：只提交修改的地址，宿主按字段合并时保留旧版本留下的其他字段；设置里不再提供本地模板路径。
+test("只改后端地址按字段合并且不显示本地模板路径", async () => {
   const stored: Record<string, Values> = { $client: { template_path: "/old/templates.json" } };
   const { sent, onClose } = mockClientSettings(stored);
-  await screen.findByDisplayValue("/old/templates.json");
-  stored.$client = { template_path: "/other-instance/templates.json" };
+  expect(screen.queryByText(/本地模板/)).toBeNull();
   const previous = apiBase();
   try {
     fireEvent.change(screen.getByLabelText("后端服务地址"), { target: { value: "http://fixed.test:9000" } });
     fireEvent.submit(screen.getByRole("form", { name: "通用设置" }));
-    await screen.findByText(/本地模板读写立即使用新路径/);
+    await screen.findByText(/后续请求使用新地址/);
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(sent).toEqual([{ api_url: "http://fixed.test:9000" }]);
-    expect(stored.$client).toEqual({ template_path: "/other-instance/templates.json", api_url: "http://fixed.test:9000" });
+    expect(stored.$client).toEqual({ template_path: "/old/templates.json", api_url: "http://fixed.test:9000" });
   } finally {
     setApiBase(previous);
   }

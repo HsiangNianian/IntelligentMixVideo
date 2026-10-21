@@ -4,7 +4,7 @@ import { chromium } from "playwright-core";
 import { protobufListResponse, savedTemplate } from "./fixtures.ts";
 
 const url = process.env.IMV_BROWSER_URL || "http://127.0.0.1:1420";
-const longPath = `本地模板字段已变化，原有模板无法读取。请删除旧模板文件后重试（将清除全部本地模板）：/home/muyuzhong/.local/share/com.intelligentmixvideo.client/data/template/templates.json`;
+const longPath = `模板读取失败，详细日志见：/home/muyuzhong/.local/share/com.intelligentmixvideo.client/backend/logs/template/00000000-0000-4000-8000-000000000001/request.json`;
 const browser = await chromium.launch({
   ...(process.env.IMV_CHROME_PATH ? { executablePath: process.env.IMV_CHROME_PATH } : { channel: "chrome" }),
   headless: true,

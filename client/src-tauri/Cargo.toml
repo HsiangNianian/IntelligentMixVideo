@@ -34,8 +34,6 @@ sha2 = "0.10"
 semver = "1"
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
-prost = "0.14"
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 uuid = { version = "1", features = ["v4"] }
 # 大文件落盘经 block_in_place 让出 Tauri 的异步工作线程；与 tauri 共用同一运行时。
 tokio = { version = "1", features = ["rt-multi-thread"] }
