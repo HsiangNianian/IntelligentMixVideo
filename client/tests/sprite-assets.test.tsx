@@ -632,6 +632,43 @@ test("确认后删除资产，被模板使用时说明原因", async () => {
   expect(deletes).toEqual(["/api/sprites/sprite-1", "/api/sprites/sprite-1"]);
 });
 
+// 场景（回归）：删除失败后目录仍显示资产，再点删除只看到「sprite not found」；现在失败时刷新目录，资产已不存在（404）视为删除完成。
+test("删除失败后刷新目录，资产已不存在时按删除完成处理", async () => {
+  const catalog = [summary("sprite-1"), summary("sprite-2", SpriteKind.VIDEO_OVERLAY)];
+  catalog[1].name = "冷色光斑";
+  sprites({ catalog });
+  const fallback = fetchMock.getMockImplementation()!;
+  let listings = 0;
+  let deletes = 0;
+  fetchMock.mockImplementation((async (url, init) => {
+    const path = new URL(String(url)).pathname;
+    if (init?.method !== "DELETE") {
+      if (path === "/api/sprites") listings++;
+      return fallback(url, init);
+    }
+    deletes++;
+    if (deletes === 1)
+      return new Response(JSON.stringify({ detail: "资产文件暂时无法删除，请稍后重试" }), { status: 503 });
+    // 第一次请求之后资产已被删除（例如超时后服务端完成，或其他人删掉了）。
+    catalog.splice(0, 1);
+    return new Response(JSON.stringify({ detail: "sprite not found" }), { status: 404 });
+  }) as typeof fetch);
+  render(<><Toaster /><TemplateWorkspace selection={{ templateId: null, name: "新模板", description: "" }} onHome={() => {}} /></>);
+  const region = await openAssets();
+  fireEvent.click(await within(region).findByRole("button", { name: "删除 AI 资产：霓虹标题" }));
+  const dialog = await screen.findByRole("dialog", { name: "删除 AI 资产" });
+  const before = listings;
+  fireEvent.click(within(dialog).getByRole("button", { name: "确认删除" }));
+  expect((await within(dialog).findByRole("alert")).textContent).toBe("资产文件暂时无法删除，请稍后重试");
+  await waitFor(() => expect(listings).toBe(before + 1));
+  fireEvent.click(within(dialog).getByRole("button", { name: "确认删除" }));
+  await waitForElementToBeRemoved(() => screen.queryByRole("dialog", { name: "删除 AI 资产" }));
+  expect(await screen.findByText("资产「霓虹标题」已被删除")).toBeTruthy();
+  await waitFor(() => expect(within(region).queryByRole("button", { name: "添加 AI 资产：霓虹标题" }) === null).toBe(true));
+  expect(within(region).getByRole("button", { name: "添加 AI 资产：冷色光斑" })).toBeTruthy();
+  expect(deletes).toBe(2);
+});
+
 // 场景：资产可重命名，包括当前模板正在使用的资产：服务端拒绝时原因留在弹窗里可改后重试，成功后请求只带新名称（无设备头），目录卡片和已添加片段列表都显示新名称。
 test("重命名资产，失败可重试，使用中的资产也能改名", async () => {
   const catalog = [summary("sprite-1")];

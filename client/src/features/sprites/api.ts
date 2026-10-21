@@ -25,6 +25,14 @@ export interface PublishChoice {
 /** 发布要在隔离浏览器里渲染参数边界样本，比目录读取慢得多。 */
 const PUBLISH_TIMEOUT_MS = 180_000;
 
+/** 服务端答复的 HTTP 错误：message 是可展示的服务端说明，status 供调用方区分「已不存在」等情况。 */
+export class SpriteHttpError extends Error {
+  /** 状态码与展示文字一起保留。 */
+  constructor(public status: number, message: string) {
+    super(message);
+  }
+}
+
 /** 有界请求：调用方取消优先，超时给出可重试提示；HTTP 错误展示服务端 detail。 */
 async function request(path: string, method: "GET" | "POST" | "DELETE", signal?: AbortSignal, body?: Uint8Array, timeoutMs = 20_000, device?: string): Promise<Uint8Array> {
   const controller = new AbortController();
@@ -46,7 +54,7 @@ async function request(path: string, method: "GET" | "POST" | "DELETE", signal?:
     });
     if (!response.ok) {
       const { detail } = (await response.json().catch(() => ({}))) as { detail?: unknown };
-      throw new Error(typeof detail === "string" ? detail : `请求未完成（HTTP ${response.status}）`);
+      throw new SpriteHttpError(response.status, typeof detail === "string" ? detail : `请求未完成（HTTP ${response.status}）`);
     }
     return new Uint8Array(await response.arrayBuffer());
   } catch (error) {
@@ -93,9 +101,18 @@ export async function publishSprite(versionId: string, choice: PublishChoice): P
   return toAsset(sprite);
 }
 
-/** 删除未被任何云端模板使用的资产；被使用时服务端说明涉及的模板，删除失败不自动重试。 */
-export async function deleteSprite(id: string): Promise<void> {
-  await request(`/api/sprites/${encodeURIComponent(id)}`, "DELETE");
+/**
+ * 删除未被任何云端模板使用的资产；被使用时服务端说明涉及的模板，删除失败不自动重试。
+ * 资产已不存在（其他人删掉了，或上一次删除其实已经完成）时目标已达成，返回 false 而不是报错。
+ */
+export async function deleteSprite(id: string): Promise<boolean> {
+  try {
+    await request(`/api/sprites/${encodeURIComponent(id)}`, "DELETE");
+    return true;
+  } catch (error) {
+    if (error instanceof SpriteHttpError && error.status === 404) return false;
+    throw error;
+  }
 }
 
 /** 修改资产在目录里显示的名称；服务端去除首尾空白并限制 1～100 个字符，不要求唯一。被模板使用的资产也可以改名，失败不自动重试。 */
