@@ -661,7 +661,8 @@ test("删除失败后刷新目录，资产已不存在时按删除完成处理",
   const before = listings;
   fireEvent.click(within(dialog).getByRole("button", { name: "确认删除" }));
   expect((await within(dialog).findByRole("alert")).textContent).toBe("资产文件暂时无法删除，请稍后重试");
-  await waitFor(() => expect(listings).toBe(before + 1));
+  // 一次核对资产是否其实已删除，一次刷新目录。
+  await waitFor(() => expect(listings).toBe(before + 2));
   fireEvent.click(within(dialog).getByRole("button", { name: "确认删除" }));
   await waitForElementToBeRemoved(() => screen.queryByRole("dialog", { name: "删除 AI 资产" }));
   expect(await screen.findByText("资产「霓虹标题」已被删除")).toBeTruthy();
@@ -692,6 +693,34 @@ test("窗口重新聚焦时刷新 AI 资产目录", async () => {
   fireEvent.focus(window);
   await waitFor(() => expect(within(region).queryByRole("button", { name: "添加 AI 资产：霓虹标题" }) === null).toBe(true));
   expect(within(region).getByRole("button", { name: "添加 AI 资产：冷色光斑" })).toBeTruthy();
+});
+
+// 场景（回归）：服务端已删除记录、随后才出错且响应被浏览器拦截（旧服务端 500 不带 CORS 头），请求以「无法连接服务端」失败；
+// 原先弹窗停在这条错误上，现在核对目录，资产已不在就按删除完成关闭。资产仍在时才显示连接错误。
+test("删除请求连接失败时核对目录，资产已删除则关闭弹窗", async () => {
+  const catalog = [summary("sprite-1"), summary("sprite-2", SpriteKind.VIDEO_OVERLAY)];
+  catalog[1].name = "冷色光斑";
+  sprites({ catalog });
+  const fallback = fetchMock.getMockImplementation()!;
+  let deletes = 0;
+  fetchMock.mockImplementation((async (url, init) => {
+    if (init?.method !== "DELETE") return fallback(url, init);
+    deletes++;
+    // 第一次：服务端没删成，连接也断了；第二次：服务端删掉了记录，但响应没能送达。
+    if (deletes === 2) catalog.splice(0, 1);
+    throw new TypeError("Load failed");
+  }) as typeof fetch);
+  render(<><Toaster /><TemplateWorkspace selection={{ templateId: null, name: "新模板", description: "" }} onHome={() => {}} /></>);
+  const region = await openAssets();
+  fireEvent.click(await within(region).findByRole("button", { name: "删除 AI 资产：霓虹标题" }));
+  const dialog = await screen.findByRole("dialog", { name: "删除 AI 资产" });
+  fireEvent.click(within(dialog).getByRole("button", { name: "确认删除" }));
+  expect((await within(dialog).findByRole("alert")).textContent).toBe("无法连接服务端，请确认 API 已启动后重试。");
+  fireEvent.click(within(dialog).getByRole("button", { name: "确认删除" }));
+  await waitForElementToBeRemoved(() => screen.queryByRole("dialog", { name: "删除 AI 资产" }));
+  expect(await screen.findByText("资产「霓虹标题」已被删除")).toBeTruthy();
+  await waitFor(() => expect(within(region).queryByRole("button", { name: "添加 AI 资产：霓虹标题" }) === null).toBe(true));
+  expect(deletes).toBe(2);
 });
 
 // 场景：一直停在模板编辑页时，别处删除资产也要及时消失：目录在用时订阅服务端推送，收到 catalog.changed 即重新读取，离开页面断开。
