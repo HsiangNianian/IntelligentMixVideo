@@ -1,4 +1,4 @@
-/** 原始画布浏览器回归：真实 SDK、视频解码、横竖屏切换、CSS 尺寸和卸载；执行 bun tests/preview-canvas.browser.mjs。 */
+/** 原始画布浏览器回归：真实 SDK、视频解码、横竖屏切换、CSS 尺寸、全屏时 AI 资产叠加层的尺寸和卸载；执行 bun tests/preview-canvas.browser.mjs。 */
 import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
@@ -15,7 +15,7 @@ for (const [name, size] of [["landscape", "1920x1080"], ["portrait", "1080x1920"
   assert.equal(result.status, 0, result.error?.message || result.stderr);
 }
 
-// 测试页面直接挂载生产组件；React、SDK 与媒体读取均使用实际实现。
+// 测试页面直接挂载生产组件；React、SDK 与媒体读取均使用实际实现，外层与模板编辑相同地套用工作区样式（含全屏规则）。
 const html = `<!doctype html><html><body><div id="root"></div><script type="module">
 import React from 'react';
 import {createRoot} from 'react-dom/client';
@@ -25,13 +25,17 @@ import {readMasterVideo} from '/src/features/templates/media.ts';
 import {buildTimeline} from '/src/features/templates/timeline.ts';
 import {readCatalog} from '/src/features/templates/sdk.ts';
 import {previewContext,resolveTemplate} from '/src/features/templates/tracks.ts';
+import {setApiBase} from '/src/lib/api-base.ts';
 import '/src/styles/globals.css';
+import '/src/features/templates/template-workspace.css';
+// AI 资产播放器指向本测试服务的空白页，不访问业务后端；全屏用例只核对它的尺寸。
+setApiBase(location.origin+'/__sprite_preview');
 const root=createRoot(document.getElementById('root'));
 const draft=newDraft();
-window.mountPreview=async(name)=>{
+window.mountPreview=async(name,sprites)=>{
  const media=await readMasterVideo('/node_modules/.cache/preview-canvas-tests/'+name+'.mp4',new AbortController().signal);
  const sources=[media,media,media];
- root.render(React.createElement(TemplatePreview,{draft,media:sources,resolved:resolveTemplate(draft,previewContext(sources)),videoInputKey:name,onMediaChange:()=>{},onCatalog:()=>{}}));
+ root.render(React.createElement('div',{className:'template-workspace'},React.createElement(TemplatePreview,{draft,media:sources,resolved:resolveTemplate(draft,previewContext(sources)),videoInputKey:name,sprites,onMediaChange:()=>{},onCatalog:()=>{}})));
  return media;
 };
 window.unmountPreview=()=>root.unmount();
@@ -55,6 +59,10 @@ const server = await createServer({ server: { host: "localhost", port: 0, open: 
         res.setHeader("Content-Type", "text/html");
         res.end(await vite.transformIndexHtml("/__canvas_test", html));
       } catch (error) { next(error); }
+    });
+    vite.middlewares.use("/__sprite_preview", (_req, res) => {
+      res.setHeader("Content-Type", "text/html");
+      res.end("<!doctype html><title>sprite</title>");
     });
   },
 }] });
@@ -151,6 +159,25 @@ try {
       await page.setViewportSize({ width: 1440, height: 1000 });
     }
   }
+  // 全屏时画布撑满屏幕：AI 资产叠加层与 SDK 播放器共用按视频比例居中的画面框，竖屏视频在横屏屏幕上全屏时字效不按整个屏幕放大。
+  const sprite = { id: "fullscreen-sprite", spriteId: "fullscreen-sprite", aspect: 1080 / 1920, name: "全屏字效", start: 0, end: 2, length: 2 };
+  await page.evaluate(sprite => window.mountPreview("portrait", [sprite]), sprite);
+  await page.getByText("1080 × 1920", { exact: true }).waitFor();
+  await page.getByText("预览已就绪，点击播放查看效果", { exact: true }).waitFor();
+  const boxes = () => page.evaluate(() => ["模板预览播放器", "AI 资产预览：全屏字效"].map(title => {
+    const { x, y, width, height } = document.querySelector(`iframe[title="${title}"]`).getBoundingClientRect();
+    return [x, y, width, height];
+  }));
+  const sameBox = ([player, overlay]) => player.every((value, index) => Math.abs(value - overlay[index]) <= 1);
+  assert(sameBox(await boxes()));
+  await page.getByRole("button", { name: "全屏预览" }).click();
+  await page.waitForFunction(() => document.fullscreenElement?.getAttribute("aria-label") === "模板视频预览");
+  const [player, overlay] = await boxes();
+  assert(sameBox([player, overlay]), `全屏时播放器 ${player}，AI 资产 ${overlay}`);
+  assert(Math.abs(player[3] - 1000) <= 1 && Math.abs(player[2] / player[3] - 1080 / 1920) < 0.01, `全屏播放器 ${player}`);
+  await page.evaluate(() => document.exitFullscreen());
+  await page.waitForFunction(() => !document.fullscreenElement);
+  assert(sameBox(await boxes()));
   // 两种画布宽度都保留标题和字幕原文，不插入换行。
   const [wide, narrow] = await page.evaluate(() => window.checkTextContent());
   assert.deepEqual(wide, ["画布文字宽度验证".repeat(20), "字幕宽度验证".repeat(20)]);
@@ -158,7 +185,7 @@ try {
   await page.evaluate(() => window.unmountPreview());
   assert.equal(await page.locator("iframe").count(), 0);
   assert.equal(await previous.evaluate(frame => frame.isConnected), false);
-  console.log("PASS：原始画布、横竖屏切换、实际播放、时间与游标更新频率、窄屏比例、文字内容和卸载清理。");
+  console.log("PASS：原始画布、横竖屏切换、实际播放、时间与游标更新频率、窄屏比例、全屏 AI 资产尺寸、文字内容和卸载清理。");
 } finally {
   await browser?.close();
   await server.close();
