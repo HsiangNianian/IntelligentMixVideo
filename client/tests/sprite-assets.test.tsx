@@ -669,6 +669,30 @@ test("删除失败后刷新目录，资产已不存在时按删除完成处理",
   expect(deletes).toBe(2);
 });
 
+// 场景（回归）：资产库共享，资产在别处被删除后，本窗口目录原先要手动刷新才更新；现在窗口重新聚焦时重新读取，目录未展开时不读取。
+test("窗口重新聚焦时刷新 AI 资产目录", async () => {
+  const catalog = [summary("sprite-1"), summary("sprite-2", SpriteKind.VIDEO_OVERLAY)];
+  catalog[1].name = "冷色光斑";
+  sprites({ catalog });
+  const fallback = fetchMock.getMockImplementation()!;
+  let listings = 0;
+  fetchMock.mockImplementation((async (url, init) => {
+    if (new URL(String(url)).pathname === "/api/sprites" && init?.method !== "DELETE") listings++;
+    return fallback(url, init);
+  }) as typeof fetch);
+  render(<TemplateWorkspace selection={{ templateId: null, name: "新模板", description: "" }} onHome={() => {}} />);
+  await screen.findByRole("tab", { name: "AI 资产" });
+  fireEvent.focus(window);
+  expect(listings).toBe(0);
+  const region = await openAssets();
+  await within(region).findByRole("button", { name: "添加 AI 资产：霓虹标题" });
+  // 其他人或其他窗口删除了资产。
+  catalog.splice(0, 1);
+  fireEvent.focus(window);
+  await waitFor(() => expect(within(region).queryByRole("button", { name: "添加 AI 资产：霓虹标题" }) === null).toBe(true));
+  expect(within(region).getByRole("button", { name: "添加 AI 资产：冷色光斑" })).toBeTruthy();
+});
+
 // 场景：资产可重命名，包括当前模板正在使用的资产：服务端拒绝时原因留在弹窗里可改后重试，成功后请求只带新名称（无设备头），目录卡片和已添加片段列表都显示新名称。
 test("重命名资产，失败可重试，使用中的资产也能改名", async () => {
   const catalog = [summary("sprite-1")];

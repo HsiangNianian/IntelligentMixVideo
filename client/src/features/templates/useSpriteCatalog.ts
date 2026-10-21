@@ -1,4 +1,4 @@
-/** 云端 AI 资产目录状态：展开资产区或模板已有片段时读取，刷新、取消和卸载都不会写入过期结果。 */
+/** 云端 AI 资产目录状态：展开资产区或模板已有片段时读取，窗口重新聚焦时再读一次；刷新、取消和卸载都不会写入过期结果。 */
 import { useCallback, useEffect, useState } from "react";
 import { listSprites } from "@/features/sprites/api";
 import type { SpriteAsset } from "@/features/sprites/model";
@@ -20,6 +20,14 @@ export function useSpriteCatalog(hasClips: boolean) {
     });
     return () => controller.abort();
   }, [attempt, needed]);
+
+  // 资产库共享，任何人都能删除或新增；切回窗口时重新读取，别人删掉的资产不再留在目录里（之后点删除只会得到 404）。
+  useEffect(() => {
+    if (!needed) return;
+    const again = () => setAttempt((value) => value + 1);
+    window.addEventListener("focus", again);
+    return () => window.removeEventListener("focus", again);
+  }, [needed]);
 
   /** 展开资产区时刷新，让刚在字效工作区保存的资产出现。 */
   const refresh = useCallback(() => { setWanted(true); setAttempt((value) => value + 1); }, []);
