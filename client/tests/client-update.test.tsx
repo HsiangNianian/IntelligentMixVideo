@@ -1,6 +1,6 @@
-/** 客户端更新流程测试：隔离 IPC 和网络，验证草稿、后台任务、重复点击及等待取消；不代替真实桌面安装测试。 */
+/** 客户端更新流程测试：隔离 IPC 和网络，验证草稿、后台任务、重复点击、启动提醒及等待取消；不代替真实桌面安装测试。 */
 import { expect, mock, test } from 'bun:test';
-import { act, render, renderHook, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { mockDesktop } from './setup';
 import { ClientUpdate, UpdateLifecycle } from '@/features/updates/ClientUpdate';
 import { checkUpdate, downloadUpdate, initializeUpdates, cancelUpdate, tryApplyUpdate } from '@/features/updates/store';
@@ -146,4 +146,26 @@ test('取消后忽略迟到的后台任务回执', async () => {
   await act(async () => { cancelUpdate(); resolve(OTHER_SERVER); });
   expect(screen.getByText('已取消此次应用，当前版本保持不变')).toBeTruthy();
   expect(calls.mock.calls.some(([, args]) => args.operation === 'apply')).toBe(false);
+});
+
+// 场景：启动后的自动检查发现新版本时弹出提醒；稍后关闭后，本次运行中手动检查不再反复弹窗。
+test('启动检查发现新版本时弹窗提醒，稍后不再重复打扰', async () => {
+  const calls = desktop(); await initializeUpdates();
+  render(<UpdateLifecycle />);
+  await waitFor(() => expect(screen.getByRole('dialog').textContent).toContain('发现新版本 v1.2.4'));
+  expect(screen.getByRole('dialog').textContent).toContain('一键更新');
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: '稍后提醒' })); });
+  expect(screen.queryByRole('dialog')).toBeNull();
+  await act(async () => { await checkUpdate(); });
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(calls.mock.calls.filter(([, args]) => args.operation === 'check').length).toBeGreaterThanOrEqual(2);
+});
+
+// 场景：提醒弹窗中的一键更新复用设置里的下载流程，用户不需要先打开设置。
+test('提醒弹窗可以直接下载更新', async () => {
+  const calls = desktop(); await initializeUpdates();
+  render(<UpdateLifecycle />);
+  await waitFor(() => expect(screen.getByRole('button', { name: '一键更新' })).toBeTruthy());
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: '一键更新' })); });
+  await waitFor(() => expect(calls.mock.calls.filter(([, args]) => args.operation === 'download')).toHaveLength(1));
 });
