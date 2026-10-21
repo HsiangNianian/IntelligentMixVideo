@@ -22,7 +22,7 @@ from generated.imv.sprite.v1 import sprite_pb2 as pb
 from sqlalchemy import Engine, select, update
 
 from server.app import app
-from server.remotion_templates import sprite_store, sprites
+from server.remotion_templates import sprite_events, sprite_store, sprites
 from server.remotion_templates.categories import HEX_COLOR, KEYWORD_COLOR
 from server.remotion_templates.harness import Harness
 from server.remotion_templates.models import GenerateTemplateRequest
@@ -850,6 +850,37 @@ def test_an_object_store_failure_keeps_the_sprite_for_a_retry(client: TestClient
     assert client.delete(f"/api/sprites/{summary.sprite_id}").status_code == 204
     assert pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites == []
     assert not (objects(published.store) / "sprites" / summary.sprite_id).exists()
+
+
+# 场景：资产库共享，任何人保存、改名或删除资产都要唤醒打开的目录推送；没有写入的请求不唤醒。
+def test_catalog_writes_wake_open_catalog_streams(client: TestClient, published, monkeypatch) -> None:
+    """新发布、改名、删除各唤醒一次；重复保存返回原资产、被模板占用或不存在的删除不唤醒。"""
+    from datetime import UTC, datetime
+
+    from server.template.store import initialize_schema, templates
+
+    wakes: list[bool] = []
+    monkeypatch.setattr(sprite_events, "changed", lambda: wakes.append(True))
+    summary = published_sprite(client, published.version.id)
+    assert len(wakes) == 1
+    wakes.clear()
+    assert published_sprite(client, published.version.id).sprite_id == summary.sprite_id
+    assert rename(client, summary.sprite_id, "新名称").status_code == 200
+    assert len(wakes) == 1
+    stamp = datetime.now(UTC).replace(tzinfo=None)
+    template_id = str(uuid4())
+    with initialize_schema().begin() as connection:
+        connection.execute(templates.insert().values(
+            template_id=template_id, name="片头模板", created_at=stamp, updated_at=stamp,
+            configuration={"tracks": [{"target": "remotion", "sprite_id": summary.sprite_id}]},
+        ))
+    assert client.delete(f"/api/sprites/{summary.sprite_id}").status_code == 409
+    assert len(wakes) == 1
+    with initialize_schema().begin() as connection:
+        connection.execute(templates.delete().where(templates.c.template_id == template_id))
+    assert client.delete(f"/api/sprites/{summary.sprite_id}").status_code == 204
+    assert client.delete(f"/api/sprites/{summary.sprite_id}").status_code == 404
+    assert len(wakes) == 2
 
 def test_a_sprite_placed_in_a_template_cannot_be_deleted(client: TestClient, published) -> None:
     """云端模板的 remotion 轨道仍引用资产时拒绝删除并列出模板名称，资产与预览保持可用；其他轨道或无效配置不算引用。"""

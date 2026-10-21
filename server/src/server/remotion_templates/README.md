@@ -522,7 +522,10 @@ because composition versions carry no such evidence, and `preview_url` serves th
 interactive player page rather than an MP4.
 
 `GET /api/sprites` lists summaries (no TSX) with `Cache-Control: no-store`, so a CDN or proxy in front of the
-backend never serves a catalog from before a deletion. A record that cannot be parsed or fails its hash check is
+backend never serves a catalog from before a deletion. `GET /api/sprites/stream` is an SSE stream that sends
+`catalog.changed` on connect and after every committed publish, rename or delete (`sprite_store` wakes the open
+streams through `sprite_events`, in-process like the work streams), and a named `ping` every 15 s while idle; the
+event carries no catalog, it only tells the template editor to read `GET /api/sprites` again. A record that cannot be parsed or fails its hash check is
 logged and left out, so one damaged row never hides the library; reading it by ID still reports the
 failure. Where a Sprite is placed is not stored here: a placement is a `remotion` track of the cloud template
 (`sprite_id`, a seconds start, an optional duration and `editor.remotion` with parameter overrides and a host
