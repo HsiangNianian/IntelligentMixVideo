@@ -3,7 +3,7 @@ import { useUpdateBlocker } from "@/lib/update-guard";
 import { ClientUpdate } from "@/features/updates/ClientUpdate";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { isTauri } from "@tauri-apps/api/core";
-import { Puzzle, Settings2 } from "lucide-react";
+import { Bug, Puzzle, Settings2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -14,6 +14,7 @@ import { normalizeValues, schemaError } from "./schema";
 import { Spinner } from "@/components/ui/spinner";
 import { Hint } from "@/components/Hint";
 import { APP_COMMIT, APP_VERSION } from "@/lib/version";
+import { openDiagnostics } from "@/lib/diagnostics";
 
 /** 固定面板使用独立值，插件导航统一加前缀，存储 ID 不受影响。 */
 const GENERAL_TAB = "general";
@@ -37,6 +38,32 @@ function SettingsActions({ saving, onClose, children }: {
       <Button type="submit" disabled={saving} className="h-9 min-w-20 rounded-md px-5">{saving ? "保存中…" : "保存"}</Button>
     </div>
   );
+}
+
+/** 桌面端按钮打开独立终端窗口；浏览器不显示，避免用户误以为页面内存在可用的原生日志。 */
+function DiagnosticsSection() {
+  const [opening, setOpening] = useState(false);
+  const [message, setMessage] = useState("");
+  if (!isTauri()) return null;
+  return <section aria-label="调试日志" className="space-y-3 border-t pt-5 text-sm">
+    <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-medium">调试日志</h3><span className="text-xs text-muted-foreground">排查播放与交互问题</span></div>
+    <p className="text-xs leading-5 text-muted-foreground">打开独立终端窗口，实时查看页面错误、媒体信息，以及按钮、页签、表单等控件的操作记录。</p>
+    <div className="flex flex-wrap items-center gap-3">
+      <Button type="button" variant="outline" size="sm" disabled={opening} onClick={async () => {
+        setOpening(true);
+        setMessage("");
+        try {
+          await openDiagnostics();
+          setMessage("日志窗口已打开，关闭窗口不会退出客户端。");
+        } catch (reason) {
+          setMessage(reason instanceof Error ? reason.message : String(reason));
+        } finally {
+          setOpening(false);
+        }
+      }}><Bug className="size-4" aria-hidden="true" />{opening ? "正在打开…" : "打开调试日志窗口"}</Button>
+      {message && <p role={/^无法|失败/.test(message) ? "alert" : "status"} className="text-xs text-muted-foreground">{message}</p>}
+    </div>
+  </section>;
 }
 
 /** 通用地址保存在客户端；不依赖目录，新请求读取保存后的地址。 */
@@ -86,6 +113,7 @@ function GeneralSection({ onClose }: { onClose?: () => void }) {
               </dd>
             </div>
           </dl>
+          <DiagnosticsSection />
           <ClientUpdate />
         </div>
         <SettingsActions saving={saving} onClose={onClose}>

@@ -1,4 +1,4 @@
-//! 桌面入口：Windows 页面使用 localhost，Linux 隔离网页缓存，测试包按需监督内置服务，`--debug` 打开调试日志。
+//! 桌面入口：Windows 页面使用 localhost，Linux 隔离网页缓存，测试包按需监督内置服务，设置页可打开调试日志窗口。
 
 #[cfg(windows)]
 mod localhost;
@@ -25,7 +25,7 @@ fn localhost_capability(url: &tauri::Url, label: &str) -> tauri::ipc::Capability
 /// 启动主窗口与事件循环；初始化失败时报告错误。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // 先于 Tauri 初始化与任何线程：Windows 打开控制台，Linux 设置媒体进程继承的环境变量。
+    // 只记录启动时刻；日志窗口由设置按钮按需打开，普通启动保持静默。
     diagnostics::prepare();
     let mut context = tauri::generate_context!();
     let updates = updates::attach(&mut context);
@@ -63,7 +63,7 @@ pub fn run() {
             remotion_sessions::remotion_sessions,
             backend::start_backend,
             updates::client_update,
-            diagnostics::diagnostics_enabled,
+            diagnostics::diagnostics_open,
             diagnostics::diagnostics_log
         ])
         .setup(|app| {
@@ -135,7 +135,13 @@ mod tests {
         true
     }
 
-    /// 不向测试输出写日志，仅检查调试日志命令同样只对绑定页面开放。
+    /// 不打开真实终端，仅检查调试日志命令同样只对绑定页面开放。
+    #[tauri::command]
+    fn diagnostics_open() -> bool {
+        true
+    }
+
+    /// 不向测试输出写日志，仅检查日志转发命令同样只对绑定页面开放。
     #[tauri::command]
     fn diagnostics_log() -> bool {
         true
@@ -150,6 +156,7 @@ mod tests {
             .invoke_handler(tauri::generate_handler![
                 start_backend,
                 local_settings,
+                diagnostics_open,
                 diagnostics_log
             ])
             .build(context)
@@ -169,6 +176,7 @@ mod tests {
                 for command in [
                     "start_backend",
                     "local_settings",
+                    "diagnostics_open",
                     "diagnostics_log",
                     "plugin:event|listen",
                 ] {

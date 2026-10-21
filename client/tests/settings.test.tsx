@@ -1,5 +1,5 @@
 /** 动态配置表单、本地存储与切片请求联调；隔离 HTTP/桌面 IPC，执行 bun run test。 */
-import { beforeEach, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, expect, mock, test } from "bun:test";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import * as remotion from "@/features/remotion_templates/api";
 import { createComposition, getComposition } from "@/features/video_composition/api";
@@ -8,10 +8,12 @@ import { PluginSettings } from "@/features/settings/PluginSettings";
 import { SettingsDialog } from "@/features/settings/SettingsDialog";
 import { readSettings, saveSettings, type Plugin, type Values } from "@/features/settings/api";
 import { apiBase, setApiBase } from "@/lib/api-base";
+import { resetDiagnostics } from "@/lib/diagnostics";
 import { fetchMock, mockDesktop } from "./setup";
 
-// 现有插件用例验证 Debug 路径；普通模式用例显式覆盖，公共夹具逐例重置开关。
+// 现有插件用例验证 Debug 路径；普通模式用例显式覆盖，公共夹具逐例重置开关与日志监听。
 beforeEach(() => { process.env.IMV_DEBUG = "true"; });
+afterEach(() => { resetDiagnostics(); });
 
 // 场景：普通模式只保留通用页且不请求模块目录；旧切片值仍不进入业务请求。
 test.each([undefined, "false", "TRUE"])("普通模式隔离模块配置：%s", async (mode) => {
@@ -44,6 +46,17 @@ test("Debug 设置保留模块目录与说明", async () => {
   expect(screen.getAllByRole("tab").map(tab => tab.textContent)).toEqual(["通用", "文案切片", "语音识别"]);
   expect(screen.getByRole("dialog").textContent).toContain("密钥以明文保存在本地文件中。");
   expect(screen.getByRole("form", { name: "文案切片" })).toBeTruthy();
+});
+
+// 场景：桌面端通用设置提供调试日志按钮；点击后调用原生命令并提示窗口已打开。
+test("设置按钮打开调试日志窗口", async () => {
+  const commands: string[] = [];
+  mockDesktop(async (command) => { commands.push(command); return null; });
+  render(<SettingsDialog open onOpenChange={() => {}} />);
+  fireEvent.click(screen.getByRole("button", { name: "打开调试日志窗口" }));
+  expect(await screen.findByText("日志窗口已打开，关闭窗口不会退出客户端。")).toBeTruthy();
+  expect(commands).toContain("diagnostics_open");
+  expect(commands).toContain("diagnostics_log");
 });
 
 /** 与后端目录协议一致，字段由描述控制；API 的真实模型生成在 pytest 中覆盖。 */

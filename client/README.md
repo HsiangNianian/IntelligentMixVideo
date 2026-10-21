@@ -55,25 +55,6 @@ Windows 安装包仅在本机回环地址绑定系统分配的空闲端口，窗
 macOS 通过 `src-tauri/Info.plist` 的 `NSAllowsArbitraryLoadsInWebContent` 允许 WebView 访问用户设置的 HTTP 后端；Tauri 自动将该配置合并到应用包，修改后重新打包生效。
 前端构建不代表桌面打包或跨平台预览验证通过；各平台仍须检查真实 WebView、首帧和播放。
 
-## 调试日志（--debug）
-
-桌面客户端加 `--debug` 启动时，会把页面报错和模板预览的诊断信息实时输出到终端，用于排查“视频无法播放”等只在部分电脑上出现的问题：
-
-```sh
-./IntelligentMixVideo.AppImage --debug                     # Linux：输出到当前终端
-/Applications/IntelligentMixVideo.app/Contents/MacOS/<主程序> --debug   # macOS：在终端里启动应用包内的主程序
-```
-
-Windows 在 PowerShell 或命令提示符中带参数启动安装目录里的主程序（`.exe`），客户端会另开一个标题为「IntelligentMixVideo 调试日志」的控制台窗口；关闭这个窗口会同时退出客户端。
-
-每行格式为 `[+启动后秒数] 级别 来源：内容`。启动时先输出版本、系统与 WebView 版本，再输出浏览器标识和 H.264、H.265、VP9、AV1 的解码能力（`canPlayType` 结果，`不支持` 表示当前 WebView 无法解码该编码）。之后记录：
-
-- 页面与模板预览 SDK（iframe）的未捕获错误、未处理的 Promise 拒绝、console.error/warn，以及图片、视频等资源加载失败；
-- 预览视频读取、缩略图与转场画面提取失败时的媒体错误码（1 中止、2 网络、3 解码失败、4 格式或地址不受支持）与地址；
-- 选择的本地视频文件名、类型与大小，本地视频恢复失败，SDK 初始化、应用时间线和定位超时失败，以及 SDK 的错误事件。
-
-连续相同的记录只输出一次，之后汇报重复次数。Linux 未显式设置 `GST_DEBUG` 时设为 `2`，同时输出 GStreamer 的错误与警告（缺少解码器、VA-API 驱动加载失败等）；需要更详细时自行设置，例如 `GST_DEBUG=3 ./IntelligentMixVideo.AppImage --debug`。不带参数启动时不输出任何内容。该参数与构建期的 `IMV_DEBUG`（Debug 客户端）无关。
-
 ## 工作室前端
 
 正式客户端已采用 [PR #196](https://github.com/HsiangNianian/IntelligentMixVideo/pull/196)（`44d5bff`）的工作室设计。运行 `bun run dev` 后直接打开 <http://localhost:1420/>，桌面端运行 `bun run tauri dev`。独立 Demo 入口、模拟数据和原型调试面板已移除。
@@ -226,7 +207,6 @@ bun run build
 
 测试固定 API 与示例视频地址并拦截 fetch，不需要启动后端、MySQL 或下载 SDK。
 
-`diagnostics.test.ts` 检查 `--debug` 未开启时不转发，开启后转发环境与解码能力、未捕获错误、Promise 拒绝、资源与媒体加载失败、console 与 iframe 报错、重复记录合并和本地视频恢复失败；Rust 侧 `src-tauri/src/diagnostics.rs` 检查参数解析，`lib.rs` 的权限用例检查 Windows 页面只在绑定的 localhost 地址上能调用日志命令。
 `preview-timeline.test.tsx` 检查轨道数据转换、缩略图源时间采样、播放时间同步和键盘定位边界。
 `preview-canvas.test.ts` 检查横屏、竖屏、方形和超宽视频的原始画布尺寸，以及文字参数和三个各十秒的默认片段。
 画布的真实浏览器回归执行 `bun tests/preview-canvas.browser.mjs`，需要 Chrome、FFmpeg 和联网访问 SDK、字体。脚本自动启动独立 Vite 服务，生成本地视频，验证 Canvas 像素、横竖屏切换、实际播放、数字时间与时间轴游标的更新频率、暂停和播放结束后游标与播放器时间一致、窄屏比例、标题和字幕原文与卸载清理；不访问业务后端。中间文件保存在已忽略的 `node_modules/.cache/preview-canvas-tests/`，结束时关闭浏览器和测试服务。
