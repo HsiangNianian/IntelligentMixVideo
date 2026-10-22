@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Hint } from "@/components/Hint";
 import { Spinner } from "@/components/ui/spinner";
 import { textKey, type Draft, type EffectAsset, type MasterVideo, type PreviewMedia } from "./model";
-import { loadSDK, loadPreviewFont, readCatalog, waitForCanPlay, watchPlayer, watchSdkMedia, type Player } from "./sdk";
+import { deferLicenseRequest, loadSDK, loadPreviewFont, readCatalog, waitForCanPlay, watchPlayer, watchSdkMedia, type Player } from "./sdk";
 import { buildTimeline, buildPreviewRows, mergeSpriteRows, PREVIEW_CANVAS, remotionTexts, type SpriteClip } from "./timeline";
 import { centeredPlayerTimeline } from "./centeredTransitions";
 import { PreviewTimeline, type PreviewTimelineHandle } from "./PreviewTimeline";
@@ -269,6 +269,8 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           const message = `${index >= 0 ? `视频 ${index + 1} ` : "预览素材"}无法在播放器中播放（${reason}），请检查视频编码与跨域访问配置后重试预览。`;
           setMediaFailures((items) => items.includes(message) ? items : [...items, message]);
         });
+        // 渲染引擎等授权回应才初始化、失败后一直黑屏；须在 SDK 加载前把授权改为后台请求。
+        deferLicenseRequest(frame.contentWindow!);
         target.documentElement.style.height = "100%";
         target.body.style.cssText = "margin:0;height:100%;overflow:hidden";
         const surface = target.createElement("div");

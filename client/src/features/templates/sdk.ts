@@ -1,11 +1,12 @@
 /**
  * 加载固定版本阿里云预览 SDK、固定其绘制倍数并读取目录；播放器实例的创建与销毁由预览组件负责。
- * 另把 SDK 内部的媒体元素与公开事件流接到调试日志：素材加载失败、卡顿、播放状态与渲染上下文丢失。
+ * 另把 SDK 内部的媒体元素与公开事件流接到调试日志：素材加载失败、卡顿、播放状态与渲染上下文丢失；
+ * 渲染授权改为后台请求，不阻塞也不影响预览播放。
  */
 import motions from "./motions.json";
 import bundledCatalog from "../../../../server/src/server/template/sdk_catalog.json";
 import type { Category, EffectAsset } from "./model";
-import { debugLog, describeMedia, type DiagnosticLevel } from "@/lib/diagnostics";
+import { briefly, debugLog, describeMedia, type DiagnosticLevel } from "@/lib/diagnostics";
 
 /** SDK 返回的原始目录项；不同目录分别使用 key 或 subType。 */
 interface CatalogItem {
@@ -193,6 +194,43 @@ export function waitForCanPlay(player: Pick<Player, "event$">): Promise<void> {
       resolve();
     }
   });
+}
+
+/** SDK 5.2.2 渲染引擎初始化时固定请求的授权接口。 */
+const LICENSE_API = "https://vpp-license-proxy.aliyuncs.com/getWebCert";
+/** 后台授权请求的等待上限：平时一两秒就有回应，超过它记为失败。 */
+const LICENSE_TIMEOUT_MS = 10_000;
+
+/**
+ * 渲染引擎加载 wasm 后请求一次授权，等到回应才初始化、开始画视频：网络慢时第一次播放要等它，请求失败、超时或回应不是 JSON
+ * （代理的错误页等）时 SDK 还会把渲染引擎标为初始化失败且不再重试，视频层一直黑屏、点播放时间不走，只有拖动时字幕层还会更新。
+ * 预览以空 License 运行在 localhost，服务端对空域名的请求只回一段不含证书的 JSON，引擎按 localhost 条件无证书初始化（保留水印），
+ * 授权结果并不决定能否播放。所以在 SDK 加载前接管播放器窗口的 fetch，把授权变成后台操作：SDK 立即拿到同样的无证书结果（空 JSON），
+ * 引擎不等网络就初始化；真实请求照常在后台发出，出错、回应不是 JSON 或 10 秒没有回应时只写一条调试日志。其他请求原样转发。
+ */
+export function deferLicenseRequest(view: Window) {
+  const scope = view as Window & typeof globalThis;
+  const request = scope.fetch.bind(scope);
+  scope.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(typeof input === "object" && "url" in input ? input.url : input) !== LICENSE_API) return request(input, init);
+    void checkLicense(scope, (signal) => request(input, { ...init, signal }));
+    return Promise.resolve(new Response("{}", { headers: { "Content-Type": "application/json" } }));
+  }) as typeof fetch;
+}
+
+/** 在后台完成授权请求，结果不交给 SDK；失败只写调试日志，播放器已卸载时（请求随页面中止）不记录。 */
+async function checkLicense(scope: Window, send: (signal: AbortSignal) => Promise<Response>) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new DOMException(`${LICENSE_TIMEOUT_MS / 1000} 秒没有回应`, "TimeoutError")), LICENSE_TIMEOUT_MS);
+  try {
+    const response = await send(controller.signal);
+    const text = await response.text();
+    try { JSON.parse(text); } catch { throw new Error(`HTTP ${response.status} 的回应不是 JSON`); }
+  } catch (error) {
+    if (!scope.closed) debugLog(SOURCE, `渲染授权请求失败（${briefly(error)}）；预览不等授权，照常播放`, "警告");
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** 播放状态的日志级别：卡住（stalled）记警告、损坏（broken）记错误，其余（playing、paused、ended）记信息。 */
