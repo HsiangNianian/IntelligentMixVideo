@@ -40,7 +40,7 @@ function SettingsActions({ saving, onClose, children }: {
   );
 }
 
-/** 桌面端按钮打开独立终端窗口；浏览器不显示，避免用户误以为页面内存在可用的原生日志。 */
+/** 桌面端按钮打开独立终端窗口，打不开时说明日志文件位置；浏览器不显示，避免用户误以为页面内存在可用的原生日志。 */
 function DiagnosticsSection() {
   const [opening, setOpening] = useState(false);
   const [message, setMessage] = useState("");
@@ -53,8 +53,10 @@ function DiagnosticsSection() {
         setOpening(true);
         setMessage("");
         try {
-          await openDiagnostics();
-          setMessage("日志窗口已打开，关闭窗口不会退出客户端。");
+          const opened = await openDiagnostics();
+          setMessage(opened.viewerError
+            ? `${opened.viewerError}。日志仍会写入 ${opened.path}，可用终端跟随查看（如 tail -F）。`
+            : "日志窗口已打开，关闭窗口不会退出客户端。");
         } catch (reason) {
           setMessage(reason instanceof Error ? reason.message : String(reason));
         } finally {

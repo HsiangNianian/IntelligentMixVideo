@@ -43,6 +43,10 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 [target.'cfg(windows)'.dependencies]
 tiny_http = "0.12"
 
+# 调试日志在 Linux 用 dup2 把标准错误接到管道，收集 WebKit/GStreamer 的原生输出。
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
 
