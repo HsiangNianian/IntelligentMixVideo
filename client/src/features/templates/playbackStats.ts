@@ -41,6 +41,7 @@ type Session = {
   stutters: number;
   waits: number;
   baseline: Map<HTMLMediaElement, { dropped: number; total: number }>;
+  mediaListeners: Map<HTMLMediaElement, () => void>;
   longFrames: LongFrame[];
   omittedLongFrames: number;
   heap?: number;
@@ -48,11 +49,23 @@ type Session = {
 };
 
 /**
- * 订阅播放器的状态与 render 事件，日志窗口打开时为每次播放统计并写汇总。videos 取 SDK 当前的媒体元素（见 watchSdkMedia）。
- * 返回的函数取消订阅；仍在统计的播放立即写出汇总。
+ * 订阅播放器的状态与 render 事件，日志窗口打开时为每次播放统计并写汇总。videos 取 SDK 当前的媒体元素（见 watchSdkMedia）；
+ * subscribeMedia 用于把播放期间才创建的视频也接入等待数据统计。返回的函数取消全部订阅；仍在统计的播放立即写出汇总。
  */
-export function watchPlayback(player: Pick<Player, "event$">, videos: () => HTMLMediaElement[]): () => void {
+export function watchPlayback(
+  player: Pick<Player, "event$">,
+  videos: () => HTMLMediaElement[],
+  subscribeMedia?: (listener: (media: HTMLMediaElement) => void) => () => void,
+): () => void {
   let session: Session | undefined;
+
+  /** 为一个出现在本轮播放中的媒体元素登记等待数据事件；同一元素只登记一次。 */
+  const watchMedia = (media: HTMLMediaElement, state: Session) => {
+    if (state.mediaListeners.has(media)) return;
+    const waited = () => { state.waits++; };
+    state.mediaListeners.set(media, waited);
+    media.addEventListener("waiting", waited);
+  };
 
   /** 开始统计：记下各视频的丢帧基数与内存，在视频上数等待数据的次数，并接收期间的主线程长帧。 */
   const start = (from: number) => {
@@ -63,19 +76,21 @@ export function watchPlayback(player: Pick<Player, "event$">, videos: () => HTML
       if (value) baseline.set(media, value);
     }
     const now = performance.now();
-    const state: Session = { startedAt: now, from, frames: 0, lastFrame: now, longestGap: 0, stutters: 0, waits: 0, baseline, longFrames: [], omittedLongFrames: 0, heap: heapUsed(), release: () => {} };
-    const waited = () => { state.waits++; };
-    for (const media of current) media.addEventListener("waiting", waited);
+    const state: Session = { startedAt: now, from, frames: 0, lastFrame: now, longestGap: 0, stutters: 0, waits: 0, baseline, mediaListeners: new Map(), longFrames: [], omittedLongFrames: 0, heap: heapUsed(), release: () => {} };
+    for (const media of current) watchMedia(media, state);
     const stopFrames = onLongFrame((frame) => {
       if (state.longFrames.length < MAX_SESSION_LONG_FRAMES) state.longFrames.push(frame);
       else state.omittedLongFrames++;
     });
     state.release = () => {
-      for (const media of current) media.removeEventListener("waiting", waited);
+      for (const [media, waited] of state.mediaListeners) media.removeEventListener("waiting", waited);
+      state.mediaListeners.clear();
       stopFrames();
     };
     session = state;
   };
+
+  const stopMedia = subscribeMedia?.((media) => { if (session) watchMedia(media, session); });
 
   /** 结束统计并写汇总；太短的播放（定位、重播时的瞬间切换）只结束不写。 */
   const finish = (to?: number) => {
@@ -127,6 +142,7 @@ export function watchPlayback(player: Pick<Player, "event$">, videos: () => HTML
   });
   return () => {
     subscription.unsubscribe();
+    stopMedia?.();
     finish();
   };
 }

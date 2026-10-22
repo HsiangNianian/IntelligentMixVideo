@@ -100,18 +100,26 @@ test("整段没有新画面时如实记录为停顿", async () => {
 });
 
 // 回归：SDK 刚应用完时间线就开始播放时，正在播放的视频在开始统计之后才建好；原来只统计开始时已有的视频，
-// 汇总写成“视频丢帧无法统计”。开始之后才出现的视频从零算起。
-test("开始统计之后才建好的视频也计入丢帧", async () => {
+// 汇总写成“视频丢帧无法统计”，也漏掉它的 waiting。开始之后才出现的视频从零算起，并接入等待数据统计。
+test("开始统计之后才建好的视频也计入丢帧与等待数据", async () => {
   await openDiagnostics();
   let emit: (event: PlayerEvent) => void = () => {};
+  let notify: (media: HTMLMediaElement) => void = () => {};
   const videos: HTMLMediaElement[] = [];
-  watchPlayback({ event$: { subscribe(callback) { emit = callback; return { unsubscribe() {} }; } } }, () => videos);
+  watchPlayback(
+    { event$: { subscribe(callback) { emit = callback; return { unsubscribe() {} }; } } },
+    () => videos,
+    (listener) => { notify = listener; return () => { notify = () => {}; }; },
+  );
   emit({ type: "playerStateChange", data: { state: "playing", currentTime: 0 } });
-  videos.push(Object.assign(document.createElement("video"), { getVideoPlaybackQuality: () => ({ droppedVideoFrames: 1, totalVideoFrames: 45 }) }));
+  const video = Object.assign(document.createElement("video"), { getVideoPlaybackQuality: () => ({ droppedVideoFrames: 1, totalVideoFrames: 45 }) });
+  videos.push(video);
+  notify(video);
+  video.dispatchEvent(new Event("waiting"));
   clock = 2500;
   emit({ type: "playerStateChange", data: { state: "paused", currentTime: 1.5 } });
   await waitFor(() => expect(entries.some((entry) => entry.message.startsWith("播放 "))).toBe(true));
-  expect(entries.find((entry) => entry.message.startsWith("播放 "))!.message).toContain("；视频丢帧 1/45；");
+  expect(entries.find((entry) => entry.message.startsWith("播放 "))!.message).toContain("；视频丢帧 1/45；等待数据 1 次；");
 });
 
 // 场景：普通使用（没打开日志窗口）时播放不做任何统计；定位、重播时一闪而过的播放也不写汇总。
