@@ -753,6 +753,20 @@ def test_uploading_a_registered_file_again_returns_its_card(client: TestClient, 
     assert [record["id"] for record in font_store.listing()].count(created.json()["faces"][0]["id"]) == 1
 
 
+# 场景（回归）：另一个请求刚登记同一个文件，本机缓存还没同步到——重复上传仍返回 200 与卡片，而不是把缓存里的缺失当成 422。
+def test_a_file_registered_elsewhere_is_answered_with_its_card(client: TestClient, served) -> None:
+    """本机缓存落后于注册表时，重复上传读取最新注册表并返回已有卡片，不重复登记。"""
+    data = minimal_font("Zed Display", names=[(3, 1, 0x0804, 1, "我的字体")])
+    created = client.post("/api/templates/fonts", headers=DEVICE_HEADERS, files={"file": ("zed.ttf", data, "font/ttf")})
+    assert created.status_code == 201
+    font_id = created.json()["faces"][0]["id"]
+    # 模拟另一个进程已写入注册表、本机还没刷新缓存：数据库里有这一行，`known` 里没有。
+    served.known.pop(font_id)
+    again = client.post("/api/templates/fonts", headers=DEVICE_HEADERS, files={"file": ("again.ttf", data, "font/ttf")})
+    assert again.status_code == 200 and again.json() == created.json()
+    assert [record["id"] for record in font_store.listing()].count(font_id) == 1
+
+
 # 场景（回归）：对象存储或数据库失败时上传回答 503，原先服务端没有任何日志，线上只能在访问日志里看到 503。
 def test_a_failed_font_upload_is_logged(client: TestClient, served, monkeypatch, caplog) -> None:
     """对象存储写入失败回答 503 与中文说明，根因（含文件名与大小）写服务端日志；字体没有登记。"""

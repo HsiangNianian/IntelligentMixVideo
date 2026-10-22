@@ -625,7 +625,8 @@ async def upload_font(
         try:
             font = await asyncio.to_thread(store.upload, content, strip or None, label, str(owner))
         except FontExists as exc:
-            files = cards(store.listing()).get(exc.font.family, [])
+            # 读取最新注册表：另一请求可能刚登记这个文件，而本机缓存还没同步到；数据库读取放到线程里。
+            files = await asyncio.to_thread(lambda: cards(store.registered()).get(exc.font.family, []))
             if not any(item.id == exc.font.id for item in files):
                 raise HTTPException(422, str(exc)) from exc
             response.status_code = 200
@@ -633,7 +634,8 @@ async def upload_font(
         except FontRejected as exc:
             raise HTTPException(422, str(exc)) from exc
         except (OSError, SQLAlchemyError) as exc:
-            logger.exception("Font upload failed: %s (%d bytes)", file.filename, len(content))
+            name = (file.filename or "").replace("\r", " ").replace("\n", " ")
+            logger.exception("Font upload failed: %s (%d bytes)", name, len(content))
             raise HTTPException(503, "字体暂时无法保存，请稍后重试。") from exc
         return font_info(cards(store.listing())[font.family], system_file=installed_system_font(service))
     finally:

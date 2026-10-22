@@ -47,7 +47,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             close_database()
 
 
-# 允许本地 Vite 与 Tauri 客户端访问 API；Windows 正式客户端使用动态 localhost 端口。
+# 未处理的异常要经过 CORS 才能被跨域客户端读到；具体行为见类文档。
 class InternalErrors:
     """在 CORS 之内把未处理的异常转成 500 JSON，再照常抛出，由外层与 Uvicorn 记录堆栈。
 
@@ -85,6 +85,7 @@ class InternalErrors:
 app = FastAPI(title="IntelligentMixVideo API", version=version("imv-server"), lifespan=lifespan)
 # 先加入的中间件在内层：InternalErrors 位于 CORS 之内，500 也带跨域响应头。
 app.add_middleware(InternalErrors)
+# 允许本地 Vite 与 Tauri 客户端访问 API；Windows 正式客户端使用动态 localhost 端口。
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
