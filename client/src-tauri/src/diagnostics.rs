@@ -9,6 +9,11 @@ mod webview2;
 #[cfg(windows)]
 pub use webview2::{log_webview2, watch_webview};
 
+#[cfg(target_os = "linux")]
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Once,
+};
 use std::{
     collections::VecDeque,
     fs::{self, File, OpenOptions},
@@ -82,9 +87,11 @@ fn now_ms() -> f64 {
 pub fn prepare() {
     START.get_or_init(now_ms);
     #[cfg(target_os = "linux")]
-    if let Err(error) = capture_stderr() {
-        echo(format!("调试日志无法接管标准错误：{error}\n").as_bytes());
-    }
+    STDERR_CAPTURE.call_once(|| {
+        if let Err(error) = capture_stderr() {
+            echo(format!("调试日志无法接管标准错误：{error}\n").as_bytes());
+        }
+    });
     #[cfg(not(target_os = "linux"))]
     record_panics();
 }
@@ -128,13 +135,23 @@ fn format_line(at_ms: f64, level: &str, source: &str, message: &str) -> String {
 /// Linux 接管 fd 2 之前的标准错误；程序自己的输出写到这里，避免再被管道读回日志。
 #[cfg(target_os = "linux")]
 static ORIGINAL_STDERR: Mutex<Option<File>> = Mutex::new(None);
+/// 只接管一次 fd 2：重复接管会把日志管道当作“原始标准错误”，echo 会形成递归。
+#[cfg(target_os = "linux")]
+static STDERR_CAPTURE: Once = Once::new();
+/// fd 2 是否已经指向日志管道；为真时 echo 不能回退到 std::io::stderr()，否则会写回自己的管道。
+#[cfg(target_os = "linux")]
+static STDERR_REDIRECTED: AtomicBool = AtomicBool::new(false);
 
 /// 写到原来的标准错误（开发时的终端或系统日志），失败时静默，不能因输出失败中断记录。
 fn echo(bytes: &[u8]) {
     #[cfg(target_os = "linux")]
-    if let Ok(mut original) = ORIGINAL_STDERR.lock() {
-        if let Some(file) = original.as_mut() {
-            let _ = file.write_all(bytes);
+    {
+        if STDERR_REDIRECTED.load(Ordering::SeqCst) {
+            if let Ok(mut original) = ORIGINAL_STDERR.lock() {
+                if let Some(file) = original.as_mut() {
+                    let _ = file.write_all(bytes);
+                }
+            }
             return;
         }
     }
@@ -168,9 +185,12 @@ fn capture_stderr() -> std::io::Result<()> {
     if let Ok(mut slot) = ORIGINAL_STDERR.lock() {
         *slot = Some(original);
     }
+    // 先置位再 dup2：这期间若有其他线程写日志，echo 会走已保存的原始标准错误。
+    STDERR_REDIRECTED.store(true, Ordering::SeqCst);
     // SAFETY: dup2 原子地把 fd 2 指向管道写端，不关闭或改动 Rust 持有的其他句柄；writer 随后关闭，fd 2 保留写端。
     if unsafe { libc::dup2(writer.as_raw_fd(), libc::STDERR_FILENO) } < 0 {
         let error = std::io::Error::last_os_error();
+        STDERR_REDIRECTED.store(false, Ordering::SeqCst);
         if let Ok(mut slot) = ORIGINAL_STDERR.lock() {
             *slot = None;
         }
@@ -210,10 +230,11 @@ fn forward(reader: std::io::PipeReader) {
     }
 }
 
-/// 按原生输出的常见标记判断级别：GStreamer 的 ERROR/WARN 列，GLib 的 CRITICAL/WARNING，Chromium 的 ERROR/WARNING。
+/// 按原生输出的常见标记判断级别：GStreamer 的 ERROR/WARN 列，GLib 的 CRITICAL/WARNING，Chromium 的 ERROR/WARNING，
+/// 以及 Linux 上随标准错误一起捕获的 Rust panic。
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 fn native_level(line: &str) -> &'static str {
-    if line.contains("ERROR") || line.contains("CRITICAL") {
+    if line.contains("ERROR") || line.contains("CRITICAL") || line.contains("panicked at") {
         "错误"
     } else if line.contains("WARN") {
         "警告"
@@ -498,6 +519,10 @@ mod tests {
         assert_eq!(
             native_level("[1:2:1022/101010.1:WARNING:decoder.cc(5)] fallback"),
             "警告"
+        );
+        assert_eq!(
+            native_level("thread 'main' panicked at src/main.rs:1:1"),
+            "错误"
         );
     }
 

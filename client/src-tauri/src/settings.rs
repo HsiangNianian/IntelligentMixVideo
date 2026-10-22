@@ -58,8 +58,9 @@ fn operate(directory: &Path, id: Option<&str>, values: Option<Value>) -> Result<
 }
 
 /// 省略 ID 读取全部设置，携带 ID/values 保存单个插件（通用设置按字段合并）；不访问后端或任意用户路径。
+/// 文件锁竞争时会在短时限内重试，放到阻塞线程池执行，避免等待期间卡住界面。
 #[tauri::command]
-pub fn local_settings(
+pub async fn local_settings(
     app: tauri::AppHandle,
     id: Option<String>,
     values: Option<Value>,
@@ -70,7 +71,9 @@ pub fn local_settings(
         .app_data_dir()
         .map_err(|_| "读取应用目录失败")?
         .join("data/settings");
-    operate(&directory, id.as_deref(), values)
+    tauri::async_runtime::spawn_blocking(move || operate(&directory, id.as_deref(), values))
+        .await
+        .map_err(|_| "本地设置操作失败".to_string())?
 }
 
 #[cfg(test)]

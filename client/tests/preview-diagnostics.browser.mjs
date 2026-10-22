@@ -67,7 +67,9 @@ try {
   await server.listen();
   browser = await chromium.launch({ channel: "chrome", headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
-  page.setDefaultTimeout(90000);
+  // 首次运行需要联网下载 SDK 与字体，慢网络下 90 秒会误报；等待页面与断言使用更宽松的时限。
+  page.setDefaultTimeout(180000);
+  page.setDefaultNavigationTimeout(180000);
   await page.addInitScript(desktop);
   await page.goto(`http://localhost:${server.httpServer.address().port}/__diagnostics_test`);
   await page.waitForFunction(() => typeof window.mountPreview === "function");

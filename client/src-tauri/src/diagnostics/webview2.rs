@@ -169,25 +169,50 @@ fn failure_text(
     text
 }
 
+/// 判断文件是否被重建时比较的开头字节数；Chromium 启动时通常会截断并重写文件。
+#[cfg_attr(not(windows), allow(dead_code))]
+const ANCHOR_BYTES: u64 = 512;
+
 /// 跟随一个由其他进程追加写入的日志文件：记住已读位置，只返回新增的完整行；
-/// 文件变短（浏览器启动时重新创建）时从头读。
+/// 文件被截断或重新创建时从头读，即使它在两次轮询之间又长回了原来的大小。
 #[cfg_attr(not(windows), allow(dead_code))]
 struct Followed {
     path: PathBuf,
     offset: u64,
     partial: Vec<u8>,
+    /// 上次看到的文件开头；重建后的开头内容与它不同，避免只看长度时漏掉新文件的开头。
+    anchor: Option<Vec<u8>>,
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
 impl Followed {
     /// 从文件当前末尾开始跟随，上次运行留下的旧内容不重复记录；文件不存在时从头开始。
     fn new(path: PathBuf) -> Self {
-        let offset = std::fs::metadata(&path).map_or(0, |metadata| metadata.len());
-        Self {
+        let mut followed = Self {
             path,
-            offset,
+            offset: 0,
             partial: Vec::new(),
+            anchor: None,
+        };
+        if let Ok(mut file) = File::open(&followed.path) {
+            if let Ok(metadata) = file.metadata() {
+                followed.offset = metadata.len();
+            }
+            followed.anchor = Self::prefix(&mut file, followed.offset);
         }
+        followed
+    }
+
+    /// 读取文件开头最多 [`ANCHOR_BYTES`] 字节；文件为空或读取失败时返回 None。
+    fn prefix(file: &mut File, length: u64) -> Option<Vec<u8>> {
+        if length == 0 {
+            return None;
+        }
+        let size = length.min(ANCHOR_BYTES);
+        let mut prefix = Vec::with_capacity(size as usize);
+        file.seek(SeekFrom::Start(0)).ok()?;
+        file.by_ref().take(size).read_to_end(&mut prefix).ok()?;
+        Some(prefix)
     }
 
     /// 读取上次之后新增的内容，返回其中非空的完整行；没写完的一行留到下次。文件不存在或读取失败时返回空。
@@ -196,9 +221,22 @@ impl Followed {
             return Vec::new();
         };
         let length = file.metadata().map_or(0, |metadata| metadata.len());
-        if length < self.offset {
+        let prefix = Self::prefix(&mut file, length);
+        // 只看 length < offset 会漏掉“截断后一秒内又长回原大小”的情况；开头内容变化即视为重建。
+        // 只比较两边都有的部分：正常追加时当前开头是旧开头的延长，不应算作重建。
+        let replaced = match (&self.anchor, &prefix) {
+            (Some(previous), Some(current)) => {
+                let shared = previous.len().min(current.len());
+                shared > 0 && previous[..shared] != current[..shared]
+            }
+            _ => false,
+        };
+        if length < self.offset || replaced {
             self.offset = 0;
             self.partial.clear();
+        }
+        if let Some(prefix) = prefix {
+            self.anchor = Some(prefix);
         }
         if length == self.offset || file.seek(SeekFrom::Start(self.offset)).is_err() {
             return Vec::new();
@@ -255,6 +293,23 @@ mod tests {
         assert_eq!(followed.poll(), ["新"]);
         let _ = std::fs::remove_file(path);
         assert!(followed.poll().is_empty());
+    }
+
+    /// 文件被截断后在下一次轮询前又长回旧大小：开头内容已变，应从新文件开头读，而不是从旧偏移继续。
+    #[test]
+    fn rereads_file_recreated_larger_than_before() {
+        let path = std::env::temp_dir().join(format!("imv-webview2-{}.log", uuid::Uuid::new_v4()));
+        std::fs::write(&path, "[1:2:ERROR:old.cc(1)] 旧内容\n").unwrap();
+        let mut followed = Followed::new(path.clone());
+        assert!(followed.poll().is_empty());
+        // 模拟 Chromium 启动时截断并写入比旧文件更长的新内容，长度已超过旧偏移。
+        std::fs::write(
+            &path,
+            format!("[3:4:WARNING:gpu.cc(9)] 新开头\n{}", "x".repeat(4096)),
+        )
+        .unwrap();
+        assert_eq!(followed.poll(), ["[3:4:WARNING:gpu.cc(9)] 新开头"]);
+        let _ = std::fs::remove_file(path);
     }
 
     /// GPU 进程崩溃带原因、十进制与十六进制退出码和描述；旧接口没有细节时只说明进程类型。

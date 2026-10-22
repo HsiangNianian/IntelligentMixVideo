@@ -55,6 +55,8 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
   // 每个已挂载播放器的就绪等待计时器，就绪后置为 null；loaded 记录页面 load 事件已触发的播放器，用来区分超时原因。
   const readiness = useRef(new Map<string, ReturnType<typeof setTimeout> | null>());
   const loaded = useRef(new Set<string>());
+  // 上一次 load 事件的 iframe 地址；地址变化说明同一播放器重新加载，需要重新握手并等待就绪。
+  const loadedSrc = useRef(new Map<string, string>());
   const requests = useRef(0);
   const time = useRef(initialTime);
   const pending = useRef<number | undefined>(undefined);
@@ -107,6 +109,25 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
   function schedule() {
     if (pending.current === undefined) pending.current = requestAnimationFrame(flush);
   }
+  /** 为已挂载的播放器安排就绪超时；跨源沙箱页面无法监听内部报错，超时只能记录资产与地址。 */
+  function startReadyTimer(id: string) {
+    readiness.current.set(id, setTimeout(() => {
+      readiness.current.set(id, null);
+      const clip = latest.current.find((item) => item.id === id);
+      const page = loaded.current.has(id) ? "页面已加载但没有发出就绪通知，可能是预览脚本出错" : "页面仍未加载完成，可能是网络或服务端出错";
+      debugLog("AI 资产预览", `「${clip?.name ?? id}」（资产 ${clip?.spriteId ?? "未知"}）的播放器 ${READY_TIMEOUT_MS / 1000} 秒内没有就绪：${page}；地址 ${frames.current.get(id)?.src ?? "（已卸载）"}`, "警告");
+    }, READY_TIMEOUT_MS));
+  }
+  /** 同一播放器换资产后页面重新加载：旧握手作废，清掉旧能力标记并重新等待就绪通知。 */
+  function reloaded(id: string) {
+    clearTimeout(readiness.current.get(id) ?? undefined);
+    supported.current.delete(id);
+    hosts.current.delete(id);
+    sent.current.delete(id);
+    setUnsupported((items) => items.includes(id) ? items.filter((item) => item !== id) : items);
+    setFixed((items) => items.includes(id) ? items.filter((item) => item !== id) : items);
+    startReadyTimer(id);
+  }
   useImperativeHandle(ref, () => ({ setTime(value) { time.current = value; schedule(); } }), []);
   useEffect(() => {
     const ids = new Set(clips.map((clip) => clip.id));
@@ -127,16 +148,12 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
     for (const id of [...hosts.current]) if (!ids.has(id)) hosts.current.delete(id);
     for (const id of [...sent.current.keys()]) if (!ids.has(id)) sent.current.delete(id);
     for (const id of [...loaded.current]) if (!ids.has(id)) loaded.current.delete(id);
+    for (const id of [...loadedSrc.current.keys()]) if (!ids.has(id)) loadedSrc.current.delete(id);
     for (const [id, timer] of readiness.current) if (!ids.has(id)) { clearTimeout(timer ?? undefined); readiness.current.delete(id); }
     // 跨源沙箱页面的报错无法监听：预览包缺失、服务端出错或脚本崩溃时只会一直不就绪，超时后记录资产与地址。
     for (const id of mounted) {
       if (readiness.current.has(id)) continue;
-      readiness.current.set(id, setTimeout(() => {
-        readiness.current.set(id, null);
-        const clip = latest.current.find((item) => item.id === id);
-        const page = loaded.current.has(id) ? "页面已加载但没有发出就绪通知，可能是预览脚本出错" : "页面仍未加载完成，可能是网络或服务端出错";
-        debugLog("AI 资产预览", `「${clip?.name ?? id}」（资产 ${clip?.spriteId ?? "未知"}）的播放器 ${READY_TIMEOUT_MS / 1000} 秒内没有就绪：${page}；地址 ${frames.current.get(id)?.src ?? "（已卸载）"}`, "警告");
-      }, READY_TIMEOUT_MS));
+      startReadyTimer(id);
     }
   }, [mounted]);
 
@@ -192,7 +209,13 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
           ref={(element) => { if (element) frames.current.set(clip.id, element); else frames.current.delete(clip.id); }}
           title={`AI 资产预览：${clip.name}`}
           sandbox="allow-scripts"
-          onLoad={() => loaded.current.add(clip.id)}
+          onLoad={(event) => {
+            loaded.current.add(clip.id);
+            const src = event.currentTarget.src;
+            const previous = loadedSrc.current.get(clip.id);
+            loadedSrc.current.set(clip.id, src);
+            if (previous !== undefined && previous !== src) reloaded(clip.id);
+          }}
           src={`${apiBase()}/api/sprites/${encodeURIComponent(clip.spriteId)}/preview?overlay=true&sync=1&${HOST_FONTS}#${channels.current.get(clip.id)}`}
           className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 border-0"
           style={{ colorScheme: "light", visibility: "hidden", aspectRatio: clip.aspect, ...(clip.aspect > stageAspect ? { height: "100%" } : { width: "100%" }) }}

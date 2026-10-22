@@ -130,7 +130,7 @@ const MEDIA_STALLS: Record<string, string> = { stalled: "数据停止到达（st
  * SDK 用不挂到文档上的 <video>/<audio> 播放素材，它们的事件到不了窗口监听，加载失败时 SDK 自己也只打印组件编号。
  * 在 SDK 加载前接管播放器文档的 createElement，给每个媒体元素挂上 error、stalled、waiting 监听，
  * 把地址、MediaError 码与加载状态写进调试日志；设置了地址的加载失败另交给 onFailure 在预览里提示
- * （SDK 清空地址引起的 error 不是素材问题，忽略）。监听随元素与播放器文档一起释放。
+ * （SDK 清空地址或中止加载引起的 error 不是素材问题，分别忽略或只记信息）。监听随元素与播放器文档一起释放。
  */
 export function watchSdkMedia(target: Document, onFailure: (media: HTMLMediaElement) => void) {
   const create = target.createElement.bind(target);
@@ -141,6 +141,11 @@ export function watchSdkMedia(target: Document, onFailure: (media: HTMLMediaElem
     const tag = tagName.toLowerCase();
     media.addEventListener("error", () => {
       if (!media.getAttribute("src")) return;
+      // 重新加载或切换素材会中止上一次加载；这不是素材损坏，不提示预览失败。
+      if (media.error?.code === 1) {
+        debugLog(SOURCE, `${tag} 加载被中止；${describeMedia(media)}`, "信息");
+        return;
+      }
       debugLog(SOURCE, `${tag} 加载失败；${describeMedia(media)}`);
       onFailure(media);
     });

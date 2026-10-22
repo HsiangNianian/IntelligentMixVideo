@@ -34,7 +34,7 @@ async function logged(message: string, level?: string) {
 }
 
 // 回归：SDK 的 <video> 不挂到文档上，error 事件到不了窗口监听，之前日志里只有 SDK 自己打印的组件编号。
-// 接管播放器文档的 createElement 后，加载失败带地址与错误码写进日志并交给预览提示；SDK 清空地址引起的 error 不算失败。
+// 接管播放器文档的 createElement 后，加载失败带地址与错误码写进日志并交给预览提示；SDK 清空地址或中止加载不算失败。
 test("记录 SDK 游离媒体元素的加载失败与卡顿", async () => {
   const target = document.implementation.createHTMLDocument("player");
   const failures = mock();
@@ -52,6 +52,13 @@ test("记录 SDK 游离媒体元素的加载失败与卡顿", async () => {
   expect(failures).toHaveBeenCalledWith(video);
   await logged("video 加载失败；地址 https://cdn.test/a.mp4#t=0.1；媒体错误 4（格式或地址不受支持） DEMUXER_ERROR_NO_SUPPORTED_STREAMS；networkState=0 readyState=0", "错误");
   await logged("video 等待数据（waiting）；地址 https://cdn.test/a.mp4#t=0.1；媒体错误 4（格式或地址不受支持） DEMUXER_ERROR_NO_SUPPORTED_STREAMS；networkState=0 readyState=0", "警告");
+  // 切换素材时 SDK 会中止上一次加载：只记信息，不弹“无法播放”。
+  const aborted = target.createElement("video");
+  aborted.setAttribute("src", "https://cdn.test/b.mp4");
+  Object.defineProperty(aborted, "error", { value: { code: 1 } });
+  aborted.dispatchEvent(new Event("error"));
+  expect(failures).toHaveBeenCalledTimes(1);
+  await logged("video 加载被中止；地址 https://cdn.test/b.mp4；媒体错误 1（加载被中止）；networkState=0 readyState=0", "信息");
 });
 
 // 回归：原来只记录类型名含 error 的事件，而 SDK 公开事件流只转发 player 类事件，一条都不会命中。

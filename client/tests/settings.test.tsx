@@ -73,6 +73,22 @@ test("终端窗口打不开时提示日志文件位置", async () => {
   expect((await screen.findByText(message)).getAttribute("role")).toBe("alert");
 });
 
+// Windows 没有 tail：终端窗口打不开时提示用系统自带工具打开日志文件。
+test("Windows 终端窗口打不开时提示用记事本或 PowerShell", async () => {
+  Object.defineProperty(navigator, "userAgent", { configurable: true, value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" });
+  try {
+    mockDesktop(async (command) => command === "diagnostics_open"
+      ? { path: "C:\\Users\\u\\AppData\\Local\\app\\data\\diagnostics.log", viewerError: "无法打开调试日志窗口：拒绝访问" }
+      : null);
+    render(<SettingsDialog open onOpenChange={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "打开调试日志窗口" }));
+    const message = "无法打开调试日志窗口：拒绝访问。日志仍会写入 C:\\Users\\u\\AppData\\Local\\app\\data\\diagnostics.log，可用记事本或 PowerShell 打开该文件。";
+    expect((await screen.findByText(message)).getAttribute("role")).toBe("alert");
+  } finally {
+    Reflect.deleteProperty(navigator, "userAgent");
+  }
+});
+
 /** 与后端目录协议一致，字段由描述控制；API 的真实模型生成在 pytest 中覆盖。 */
 const segmentation: Plugin = {
   id: "segmentation", name: "文案切片", schema: {

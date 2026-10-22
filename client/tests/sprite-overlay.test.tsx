@@ -275,3 +275,36 @@ test("播放器迟迟不就绪时写调试日志", async () => {
     resetDiagnostics();
   }
 });
+
+// 场景：同一播放器更换资产时 React 复用 iframe 但地址变化；旧页面的握手不能沿用，
+// 新页面迟迟不就绪时应按新资产重新记录超时。
+test("同一播放器更换资产后重新等待就绪", async () => {
+  const entries: { level: string; message: string }[] = [];
+  mockDesktop(async (command, args) => {
+    if (command === "diagnostics_open") return { path: "/data/diagnostics.log", viewerError: null };
+    if (command === "diagnostics_log") entries.push(args as { level: string; message: string });
+    return null;
+  });
+  await openDiagnostics();
+  try {
+    jest.useFakeTimers();
+    const view = render(<SpriteOverlay ref={createRef<SpriteOverlayHandle>()} clips={[clip]} stageAspect={16 / 9} initialTime={2} />);
+    const first = screen.getByTitle<HTMLIFrameElement>("AI 资产预览：霓虹标题");
+    const oldSrc = first.src;
+    fireEvent.load(first);
+    await act(async () => {
+      window.dispatchEvent(new MessageEvent("message", { source: first.contentWindow, data: { type: "imv-preview-ready", channel: new URL(oldSrc).hash.slice(1), sync: true, host: true } }));
+    });
+    view.rerender(<SpriteOverlay ref={createRef<SpriteOverlayHandle>()} clips={[{ ...clip, spriteId: "s2" }]} stageAspect={16 / 9} initialTime={2} />);
+    const updated = screen.getByTitle<HTMLIFrameElement>("AI 资产预览：霓虹标题");
+    expect(updated).toBe(first);
+    expect(updated.src).not.toBe(oldSrc);
+    fireEvent.load(updated);
+    act(() => { jest.advanceTimersByTime(15_000); });
+    jest.useRealTimers();
+    await waitFor(() => expect(entries.some((entry) => entry.level === "警告" && entry.message === `「霓虹标题」（资产 s2）的播放器 15 秒内没有就绪：页面已加载但没有发出就绪通知，可能是预览脚本出错；地址 ${updated.src}`)).toBe(true));
+  } finally {
+    jest.useRealTimers();
+    resetDiagnostics();
+  }
+});
