@@ -277,7 +277,7 @@ test("三个预览视频的地址与时长共同驱动时间轴", () => {
   expect(timeline.VideoTracks[0].VideoTrackClips.map((clip) => [clip.MediaURL, clip.Out, clip.TimelineIn, clip.TimelineOut])).toEqual([
     [media[0].url, 10, 0, 10], [media[1].url, 4, 10, 14], [media[2].url, 6, 14, 20],
   ]);
-  expect(timeline.FECanvas).toEqual({ Width: 800, Height: 600 });
+  expect(timeline.FECanvas).toEqual({ Width: 1080, Height: 1920 });
   expect(timeline.SubtitleTracks.flatMap((row) => row.SubtitleTrackClips).map((clip) => clip.TimelineOut)).toEqual([20, 20]);
   const reordered = resolveTemplate(draft, previewContext(media, [2, 0, 1]));
   expect([reordered.tracks[first.id].start, reordered.tracks[second.id].start]).toEqual([5, 15]);

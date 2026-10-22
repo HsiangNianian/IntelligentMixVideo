@@ -16,6 +16,7 @@ import { useTemplateSession } from "@/features/remotion_templates/useTemplateSes
 import { useWorkHistory } from "@/features/remotion_templates/useWorkHistory";
 import * as api from "@/features/remotion_templates/api";
 import * as local from "@/features/remotion_templates/localSessions";
+import * as diagnostics from "@/lib/diagnostics";
 import { remotionJob } from "./remotion-fixtures";
 import { latestCopy } from "./remotion-version-helpers";
 import { remotionServer, seed } from "./remotion-server";
@@ -85,8 +86,9 @@ test("刷新恢复历史图片、成功版本和服务端时间", async () => {
   ).toHaveLength(1);
 });
 
-// SSE 失联后重放成功消息，重复 ID 不重复追加，也不产生第二次创建或任务轮询。
+// SSE 失联后重放成功消息，重复 ID 不重复追加，也不产生第二次创建或任务轮询；连接建立与中断原因写进调试日志。
 test("SSE 断线续传、重复事件去重且不重发任务", async () => {
+  const log = spyOn(diagnostics, "debugLog");
   const fake = remotionServer((path) =>
     path === "/works"
       ? Response.json({ work: { id: "work-1" }, job: remotionJob("running") })
@@ -103,6 +105,7 @@ test("SSE 断线续传、重复事件去重且不重发任务", async () => {
     }
   });
   expect(result.current.connection).toBe("reconnecting");
+  expect(log).toHaveBeenCalledWith("字效会话", "会话 work-1 实时连接中断，稍后重连：TypeError: offline", "警告");
   fake.advance(remotionJob());
   await waitFor(() => expect(result.current.version?.id).toBe("version-1"), {
     timeout: 3500,

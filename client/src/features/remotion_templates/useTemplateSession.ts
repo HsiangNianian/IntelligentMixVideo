@@ -1,9 +1,13 @@
-/** 会话协调器：从本地数据库恢复会话、把 SSE 事件写入本地后确认送达、提交用户操作；只接受成功版本，切换不取消后台任务。 */
+/**
+ * 会话协调器：从本地数据库恢复会话、把 SSE 事件写入本地后确认送达、提交用户操作；只接受成功版本，切换不取消后台任务。
+ * 实时连接的建立与中断原因、本地库失败，以及连接期间看到的任务失败写进调试日志。
+ */
 import { recovery, restored } from "@/features/updates/recovery";
 import { useEffect, useRef, useState } from "react";
 import * as api from "./api";
 import { events } from "./events";
 import { settleJob } from "./backgroundSync";
+import { briefly, debugLog, oneLine } from "@/lib/diagnostics";
 import * as local from "./localSessions";
 import { defaultComposition } from "./composition";
 import {
@@ -198,6 +202,9 @@ export function useTemplateSession(onHistoryChange: () => void) {
       job.result_version_id !== latest.current.versionFailure?.id;
     const failed = ["failed", "interrupted", "cancelled"].includes(job.status);
     if (failed) parameterSave.current = false;
+    // 只记录这次连接里亲眼看到的状态变化，重新打开会话时读到的历史失败不重复记录。
+    if (failed && previous && previous.status !== job.status)
+      debugLog("字效会话", `任务 ${job.id} ${job.status}：${oneLine(job.message ?? "没有说明", 200)}`, job.status === "cancelled" ? "信息" : "警告");
     publish({
       job,
       ...("created_at" in job
@@ -282,6 +289,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
       try {
         const delivered = cursor;
         for await (const event of events(work, cursor, signal, () => {
+          debugLog("字效会话", `会话 ${work} 实时连接已建立（从事件 ${delivered} 之后续传）`, "信息");
           if (current(key, signal)) publish({ connection: "live" });
           // 上次确认可能没送到；重新确认本地已有的事件，让服务端删除它们。
           if (delivered) void api.ack(work, delivered).catch(() => {});
@@ -325,6 +333,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
         if (unavailable(work, error)) return;
         // 本地库写不进去时重连也写不进去：停止订阅、保留服务端未确认的事件，由用户修复后显式刷新。
         if (error instanceof local.LocalStoreError) {
+          debugLog("字效会话", `会话 ${work} 本地会话库读写失败，已暂停接收更新：${error.message}`);
           publish({
             connection: null,
             busy: null,
@@ -333,6 +342,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
           });
           return;
         }
+        debugLog("字效会话", `会话 ${work} 实时连接中断，稍后重连：${briefly(error)}`, "警告");
         publish({ connection: "reconnecting" });
         await reconnectDelay(signal);
       }

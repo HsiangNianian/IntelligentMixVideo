@@ -3,13 +3,12 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-/// Linux 视频环境的默认值：绕过 DMA-BUF 纹理映射问题，用 playbin3 避免重播后持续等待缓冲；
-/// GStreamer 输出错误与警告（GST_DEBUG=2），由调试日志从标准错误收集，用来定位解码与插件问题。
+/// Linux 视频环境的默认值：绕过 DMA-BUF 纹理映射问题，用 playbin3 避免重播后持续等待缓冲。
+/// 不设置 GST_DEBUG：调试信息只在调试模式里收集，普通启动不额外输出。
 #[cfg(target_os = "linux")]
-const VIDEO_ENVIRONMENT: [(&str, &str); 3] = [
+const VIDEO_ENVIRONMENT: [(&str, &str); 2] = [
     ("WEBKIT_GST_DMABUF_SINK_DISABLED", "1"),
     ("WEBKIT_GST_USE_PLAYBIN3", "1"),
-    ("GST_DEBUG", "2"),
 ];
 
 /// 写入上述默认值，保留显式环境配置；必须在 Tauri 初始化及创建线程之前调用。
@@ -41,13 +40,15 @@ fn main() {
 mod tests {
     use super::VIDEO_ENVIRONMENT;
 
-    /// 子进程隔离环境变量，验证默认启用兼容路径与 GStreamer 警告输出，并保留用户配置，不启动 GUI。
+    /// 子进程隔离环境变量，验证默认启用兼容路径并保留用户配置，不启动 GUI。
     #[test]
     fn linux_video_environment() {
         const TEST_KEY: &str = "IMV_TEST_VIDEO_KEY";
         const EXPECTED: &str = "IMV_TEST_VIDEO_EXPECTED";
         if let Some(expected) = std::env::var_os(EXPECTED) {
             super::configure_video_environment();
+            // 回归 v0.9.12：调试信息只在调试模式里收集，启动时不设置 GST_DEBUG。
+            assert_eq!(std::env::var_os("GST_DEBUG"), None);
             let key = std::env::var(TEST_KEY).unwrap();
             assert_eq!(std::env::var_os(&key), Some(expected));
             for (other, default) in VIDEO_ENVIRONMENT
@@ -66,6 +67,7 @@ mod tests {
                 for (other, _) in VIDEO_ENVIRONMENT {
                     child.env_remove(other);
                 }
+                child.env_remove("GST_DEBUG");
                 child.env(TEST_KEY, key);
                 child.env(EXPECTED, value.unwrap_or(default));
                 match value {
