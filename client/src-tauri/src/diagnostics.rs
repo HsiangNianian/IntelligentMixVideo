@@ -1,9 +1,9 @@
 //! 调试日志：在设置中打开独立终端窗口，实时显示页面错误、媒体诊断、控件操作和原生日志。
 //! 日志同时写入应用数据目录的 `data/diagnostics.log`，终端窗口只负责跟随该文件；
 //! 关闭窗口不会结束客户端，再次点击设置中的按钮可重新打开；找不到可用终端时照常写入文件，由页面提示路径。
-//! 原生记录在窗口打开前只保留最近的部分：Linux 启动时把标准错误接到管道，WebKit 网页进程继承它，
-//! GStreamer 与 GLib 的警告和页面记录写进同一个日志；Windows 记录 WebView2 子进程退出
-//! （见 `webview2` 子模块）；没有接管标准错误的平台另记录 Rust panic。
+//! 原生记录在窗口打开前只保留最近的部分：各平台记录 Rust panic，Windows 记录 WebView2 子进程退出（见 `webview2` 子模块）；
+//! Linux 在打开日志窗口时才把标准错误接到管道，本进程此后的输出与之后启动的子进程写进同一个日志。
+//! 启动时不改环境变量、标准错误或浏览器参数，普通启动保持原样，一切只在调试模式里生效。
 
 mod webview2;
 #[cfg(windows)]
@@ -86,33 +86,48 @@ fn now_ms() -> f64 {
 /// 记录应用启动时刻；Linux 另接管标准错误收集原生日志，其他平台记录 panic。不打开窗口，普通启动保持静默。
 pub fn prepare() {
     START.get_or_init(now_ms);
-    #[cfg(target_os = "linux")]
-    STDERR_CAPTURE.call_once(|| {
-        if let Err(error) = capture_stderr() {
-            echo(format!("调试日志无法接管标准错误：{error}\n").as_bytes());
-        }
-    });
-    #[cfg(not(target_os = "linux"))]
     record_panics();
 }
 
-/// 没有接管标准错误的平台（Windows 正式版本身没有控制台）把 panic 信息记进原生缓冲，再交给默认处理；
-/// Linux 的 panic 输出已随标准错误收集。钩子里只尝试加锁：panic 可能发生在持有日志锁的线程里，等待会死锁。
-#[cfg(not(target_os = "linux"))]
+/// 把 panic 信息记进原生缓冲（只在内存里，不改变任何输出），再交给默认处理；Windows 正式版没有控制台，默认输出会丢失。
+/// Linux 接管标准错误之后，默认输出已经过管道记录，钩子不再重复记录。
+/// 钩子里只尝试加锁：panic 可能发生在持有日志锁的线程里，等待会死锁。
 fn record_panics() {
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let line = format_line(
-            now_ms(),
-            "错误",
-            "原生",
-            &format!("程序异常（panic）：{info}"),
-        );
-        if let Ok(mut sink) = SINK.try_lock() {
-            sink.write(line, true);
+        #[cfg(target_os = "linux")]
+        let captured = STDERR_REDIRECTED.load(Ordering::SeqCst);
+        #[cfg(not(target_os = "linux"))]
+        let captured = false;
+        if !captured {
+            let line = format_line(
+                now_ms(),
+                "错误",
+                "原生",
+                &format!("程序异常（panic）：{info}"),
+            );
+            if let Ok(mut sink) = SINK.try_lock() {
+                sink.write(line, true);
+            }
         }
         default(info);
     }));
+}
+
+/// 打开日志窗口时接管标准错误，只接管一次。启动时不接管：普通启动的输出保持原样，
+/// 已在运行的 WebKit 网页进程也仍写原来的标准错误，只有之后启动的子进程继承管道。
+#[cfg(target_os = "linux")]
+fn capture_native() {
+    STDERR_CAPTURE.call_once(|| {
+        if let Err(error) = capture_stderr() {
+            print(
+                now_ms(),
+                "警告",
+                "调试日志",
+                &format!("无法接管标准错误：{error}"),
+            );
+        }
+    });
 }
 
 /// 原生来源的一条记录（标准错误、WebView2 等）：窗口打开前进入有界缓冲，打开后写文件。
@@ -172,7 +187,7 @@ fn print(at_ms: f64, level: &str, source: &str, message: &str) {
 const MAX_NATIVE_LINE: u64 = 16 * 1024;
 
 /// 把本进程的 fd 2 换成管道写端，由读取线程逐行转发回原来的标准错误并写进日志。
-/// 子进程（WebKit 网页进程、GStreamer 插件扫描等）继承 fd 2，所以它们的警告也会进入日志。
+/// 此后启动的子进程（新的 WebKit 网页进程、GStreamer 插件扫描等）继承 fd 2，它们的警告也会进入日志。
 /// 先启动读取线程再替换 fd 2，避免管道无人读取时写满阻塞；替换失败则线程随管道关闭退出。
 #[cfg(target_os = "linux")]
 fn capture_stderr() -> std::io::Result<()> {
@@ -376,10 +391,12 @@ fn open_viewer(path: &Path) -> Result<(), String> {
     let mut errors = Vec::new();
     for (program, args) in TERMINALS {
         let mut command = Command::new(program);
+        // 终端程序自己的输出不进日志：标准错误被接管后，它会继承日志管道。
         command
             .args(args)
             .args(["tail", "-n", "+1", "-F"])
-            .arg(path);
+            .arg(path)
+            .stderr(std::process::Stdio::null());
         host_environment(&mut command);
         match command.spawn() {
             Ok(child) => {
@@ -417,6 +434,8 @@ pub fn diagnostics_open(app: tauri::AppHandle) -> Result<Opened, String> {
     let file = open_log(&path)?;
     SINK.lock().map_err(|_| "调试日志状态不可用")?.open(file);
     let viewer_error = open_viewer(&path).err();
+    #[cfg(target_os = "linux")]
+    capture_native();
     match &viewer_error {
         Some(error) => print(
             now_ms(),
@@ -518,14 +537,16 @@ mod tests {
         );
     }
 
-    /// 没有接管标准错误的平台（Windows 正式版没有控制台）把 panic 记进原生缓冲。
+    /// 启动时就把 panic 记进原生缓冲（Windows 正式版没有控制台；Linux 在打开日志窗口、接管标准错误之前也一样）。
+    /// 回归 v0.9.12：普通启动不接管 Linux 的标准错误，只有打开日志窗口才接管。
     /// 在独立进程中运行，避免替换测试进程自己的 panic 钩子。
-    #[cfg(not(target_os = "linux"))]
     #[test]
     fn records_panics() {
         const MARKER: &str = "IMV_TEST_RECORD_PANICS";
         if std::env::var_os(MARKER).is_some() {
             super::prepare();
+            #[cfg(target_os = "linux")]
+            assert!(!super::STDERR_REDIRECTED.load(std::sync::atomic::Ordering::SeqCst));
             assert!(std::thread::spawn(|| panic!("测试异常")).join().is_err());
             let pending: Vec<String> = super::SINK
                 .lock()
@@ -587,7 +608,7 @@ mod tests {
     fn captures_child_stderr() {
         const MARKER: &str = "IMV_TEST_CAPTURE_STDERR";
         if std::env::var_os(MARKER).is_some() {
-            super::prepare();
+            super::capture_native();
             let status = std::process::Command::new("sh")
                 .args(["-c", "echo '0:00:00.1 1 0x1 WARN  vaapi 子进程警告' >&2"])
                 .status()
