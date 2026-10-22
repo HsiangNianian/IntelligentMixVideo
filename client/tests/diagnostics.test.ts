@@ -227,11 +227,15 @@ test("监听 iframe 的报错并标注来源", async () => {
   expect(describeValue(new Error("x"))).toStartWith("Error: x");
 });
 
-// 场景：桌面端某个本地预览视频读不回来时界面静默改用默认地址，调试日志写明槽位、文件名与原因。
+// 场景：桌面端某个本地预览视频读不回来时界面静默改用默认地址，调试日志写明槽位、文件名与原因；
+// 读回成功的写明大小与用时（接近上限的视频要完整经过 IPC，启动变慢时据此判断）。
 test("本地预览视频恢复失败写入调试日志", async () => {
-  desktop((command) => {
-    if (command === "preview_video_list") return [{ name: "a.mp4", type: "video/mp4" }, null, null];
-    if (command === "preview_video_read") throw "文件不可读";
+  let clock = 0;
+  spyOn(performance, "now").mockImplementation(() => clock);
+  desktop((command, args) => {
+    if (command === "preview_video_list") return [{ name: "a.mp4", type: "video/mp4" }, { name: "b.mp4", type: "video/mp4" }, null];
+    if (command === "preview_video_read" && args.slot === 1) throw "文件不可读";
+    if (command === "preview_video_read") { clock += 2400; return new ArrayBuffer(3 * 1048576); }
     return null;
   });
   startDiagnostics();
@@ -241,4 +245,5 @@ test("本地预览视频恢复失败写入调试日志", async () => {
   const fresh: typeof import("@/features/templates/localVideos") = await import(specifier);
   expect((await fresh.localPreviewVideos())[0]).toBeUndefined();
   await waitFor(() => expect(entries.some((entry) => entry.message === "视频 1（a.mp4）读取失败，改用默认地址：文件不可读")).toBe(true));
+  await waitFor(() => expect(entries.some((entry) => entry.message === "视频 2 读取 b.mp4（3.0 MiB）用时 2.4 秒")).toBe(true));
 });

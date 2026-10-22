@@ -308,3 +308,36 @@ test("同一播放器更换资产后重新等待就绪", async () => {
     resetDiagnostics();
   }
 });
+
+// 场景：AI 资产在预览上显示不对。预览页自己发现的问题（如字体加载失败）写进日志；调试模式下参数或位置更新
+// 超过 0.5 秒才画到画面上记一条警告，及时画完的不记录。
+test("记录预览页报错与偏慢的参数更新", async () => {
+  const entries: { level: string; message: string }[] = [];
+  mockDesktop(async (command, args) => {
+    if (command === "diagnostics_open") return { path: "/data/diagnostics.log", viewerError: null };
+    if (command === "diagnostics_log") entries.push(args as { level: string; message: string });
+    return null;
+  });
+  let clock = 0;
+  spyOn(performance, "now").mockImplementation(() => clock);
+  await openDiagnostics();
+  try {
+    const { frame, post, channel } = mount();
+    const send = (data: Record<string, unknown>) => act(async () => {
+      window.dispatchEvent(new MessageEvent("message", { source: frame.contentWindow, data: { channel, ...data } }));
+    });
+    await send({ type: "imv-preview-ready", sync: true, host: true });
+    const update = post.mock.calls.map(([message]) => message as { type: string; requestId: number }).find((message) => message.type === "imv-preview-update")!;
+    clock = 800;
+    await send({ type: "imv-preview-rendered", requestId: update.requestId });
+    await send({ type: "imv-preview-rendered", requestId: update.requestId });
+    await send({ type: "imv-preview-error", message: "预览字体加载失败，请重试。" });
+    await waitFor(() => expect(entries.some((entry) => entry.message.includes("预览页报错"))).toBe(true));
+    expect(entries.filter((entry) => entry.message.startsWith("「霓虹标题」")).map((entry) => [entry.level, entry.message])).toEqual([
+      ["警告", "「霓虹标题」（资产 s1）参数或位置更新到画面用时 800 ms"],
+      ["错误", "「霓虹标题」（资产 s1）的预览页报错：预览字体加载失败，请重试。"],
+    ]);
+  } finally {
+    resetDiagnostics();
+  }
+});

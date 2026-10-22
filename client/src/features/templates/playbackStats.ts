@@ -5,18 +5,13 @@
  * 期间的主线程长帧及其脚本来源（SDK 渲染还是应用代码）与 JS 内存变化。
  * 日志窗口未打开时不开始统计，普通使用没有额外开销。
  */
-import { debugLog, diagnosticsEnabled, longFramesObserved, onLongFrame, summarizeLongFrames, type LongFrame } from "@/lib/diagnostics";
+import { debugLog, diagnosticsEnabled, heapUsed, longFramesObserved, onLongFrame, summarizeLongFrames, type LongFrame } from "@/lib/diagnostics";
 import type { Player } from "./sdk";
 
 /** 帧间隔超过它算一次停顿；30 fps 的一帧约 33 ms，三帧多没有新画面肉眼可见。 */
 const STUTTER_MS = 100;
 /** 短于它的播放不写汇总：定位、重播的瞬间切换不代表实际播放。 */
 const MIN_SESSION_MS = 300;
-
-/** Chromium 才有的 JS 堆用量（字节）；其他 WebView 返回 undefined。 */
-function heapUsed(): number | undefined {
-  return (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize;
-}
 
 /** 视频元素当前累计的丢帧与总帧数；音频元素与不支持的 WebView 返回 undefined。 */
 function quality(media: HTMLMediaElement) {
