@@ -5,6 +5,7 @@ mod localhost;
 
 mod backend;
 mod diagnostics;
+mod file_lock;
 mod preview_videos;
 mod remotion_sessions;
 mod settings;

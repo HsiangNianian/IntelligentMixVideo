@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use std::{fs, io::Write, path::Path};
 use tauri::Manager;
 
-/// 文件锁覆盖读取到替换；竞争时立即报错供用户重试，ID 仅作为 JSON 键。
+/// 文件锁覆盖读取到替换；短暂重试后仍被占用才报错供用户重试，ID 仅作为 JSON 键。
 fn operate(directory: &Path, id: Option<&str>, values: Option<Value>) -> Result<Value, String> {
     fs::create_dir_all(directory).map_err(|_| "创建本地设置目录失败")?;
     let lock = fs::OpenOptions::new()
@@ -14,8 +14,7 @@ fn operate(directory: &Path, id: Option<&str>, values: Option<Value>) -> Result<
         .truncate(false)
         .open(directory.join(".lock"))
         .map_err(|_| "打开本地设置锁失败")?;
-    lock.try_lock()
-        .map_err(|_| "本地设置正在被其他操作使用，请重试")?;
+    crate::file_lock::lock_exclusive(&lock).map_err(|_| "本地设置正在被其他操作使用，请重试")?;
     let path = directory.join("settings.json");
     let mut settings = match fs::read(&path) {
         Ok(bytes) => {
@@ -153,7 +152,8 @@ mod tests {
             .write(true)
             .open(directory.0.join(".lock"))
             .unwrap();
-        lock.try_lock().unwrap();
+        // 刚写完的锁可能还被其他用例创建的子进程短暂持有，与业务代码一样短暂重试。
+        crate::file_lock::lock_exclusive(&lock).unwrap();
         for id in [None, Some("asr")] {
             assert!(operate(&directory.0, id, Some(json!({})))
                 .unwrap_err()
