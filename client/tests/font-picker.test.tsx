@@ -1,5 +1,5 @@
 /** 字体选择器与字体库页面：展示实时字体库、搜索、选择，以及上传自己的字体（显示名取字体自己的名称、浏览器读不了、服务端拒绝与成功后立即选中）；执行 bun run test，不访问网络。 */
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { ParameterControl } from "@/components/ParameterControl";
 import type { FontFaceInfo, FontInfo } from "@/features/fonts/api";
@@ -7,6 +7,7 @@ import { FontLibrary } from "@/features/fonts/FontLibrary";
 import HomePage from "@/pages/HomePage";
 import { FontPicker } from "@/features/fonts/FontPicker";
 import type { FaceLoader } from "@/features/fonts/FontSpecimen";
+import { Toaster } from "@/components/ui/sonner";
 import { english, fontFile } from "./font-files";
 import { fetchMock } from "./setup";
 
@@ -136,6 +137,77 @@ test("服务端拒绝上传时展示原因", async () => {
   fireEvent.change(screen.getByLabelText("选择字体文件"), { target: { files: [new File(["x"], "zed.ttf")] } });
   expect((await screen.findByRole("alert")).textContent).toContain("这个字体文件已经在字体库里了：我的字体（Zed Display）");
   expect(changes).toEqual([]);
+});
+
+/** 文件内容的 SHA-256（十六进制），与字形的 sha256 字段对应。 */
+async function digestOf(file: File) {
+  return Buffer.from(await crypto.subtle.digest("SHA-256", await file.arrayBuffer())).toString("hex");
+}
+
+// 场景（回归）：上传超时或断线，而服务端其实已经登记了字体——原先只显示失败、列表不刷新，重试又被告知「已在字体库里」却选不到；
+// 现在失败后重新读取字体库，按文件摘要找到它就当作已在库里，直接选中，不显示错误。
+test("上传请求失败但服务端已登记时选中该字体", async () => {
+  const file = uploadFile();
+  const stored = font("u-1", "Zed Display", "我的字体", { source: "upload", faces: [face("u-1", "regular", { sha256: await digestOf(file) })] });
+  const library = [...LIBRARY];
+  let posts = 0;
+  fetchMock.mockImplementation((async (_input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method !== "POST") return Response.json(library);
+    posts++;
+    library.push(stored);
+    throw new TypeError("Load failed");
+  }) as typeof fetch);
+  const changes: string[] = [];
+  await open((family) => changes.push(family), async () => new Blob(["png"], { type: "image/png" }));
+  fireEvent.change(screen.getByLabelText("选择字体文件"), { target: { files: [file] } });
+  await waitFor(() => expect(changes).toEqual(["Zed Display"]));
+  expect(posts).toBe(1);
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+// 场景：字体库里已经有同一个文件（别人传过，或之前的上传其实成功了）——不再上传、也不必画预览条，直接选中它。
+test("字体库里已有同一个文件时直接选中，不再上传", async () => {
+  const file = uploadFile();
+  const existing = font("u-1", "Zed Display", "我的字体", { source: "upload", faces: [face("u-1", "regular", { sha256: await digestOf(file) })] });
+  const server = fontServer(() => Response.json(UPLOADED, { status: 201 }), [...LIBRARY, existing]);
+  const changes: string[] = [];
+  const drawn: string[] = [];
+  await open((family) => changes.push(family), async (_file, text) => { drawn.push(text); return null; });
+  fireEvent.change(screen.getByLabelText("选择字体文件"), { target: { files: [file] } });
+  await waitFor(() => expect(changes).toEqual(["Zed Display"]));
+  expect(server.uploads).toEqual([]);
+  expect(drawn).toEqual([]);
+});
+
+// 场景（回归）：浏览器有 crypto.subtle 但摘要计算失败（权限策略、受限 WebView）——摘要只是优化，不能挡住上传，
+// 继续把文件交给按内容幂等的服务端。
+test("无法计算文件摘要时仍上传", async () => {
+  const digest = spyOn(crypto.subtle, "digest").mockRejectedValue(new Error("digest unavailable"));
+  try {
+    const server = fontServer(() => Response.json(UPLOADED, { status: 201 }));
+    const changes: string[] = [];
+    await open((family) => changes.push(family), async () => null);
+    fireEvent.change(screen.getByLabelText("选择字体文件"), { target: { files: [uploadFile()] } });
+    await waitFor(() => expect(changes).toEqual(["Zed Display"]));
+    expect(server.uploads).toHaveLength(1);
+  } finally {
+    digest.mockRestore();
+  }
+});
+
+// 场景（回归）：服务端明确拒绝（413）：文件没有登记，失败后不再多读一遍字体库，直接显示原因。
+test("上传被 413 拒绝时不再重读字体库", async () => {
+  let gets = 0;
+  fetchMock.mockImplementation((async (_input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method === "POST") return Response.json({ detail: "字体文件超过 50 MiB 上限" }, { status: 413 });
+    gets++;
+    return Response.json(LIBRARY);
+  }) as typeof fetch);
+  await open(() => undefined, async () => null);
+  expect(gets).toBe(1);
+  fireEvent.change(screen.getByLabelText("选择字体文件"), { target: { files: [uploadFile()] } });
+  expect((await screen.findByRole("alert")).textContent).toContain("50 MiB");
+  expect(gets).toBe(1);
 });
 
 // 场景：参数面板里名为 fontFamily 的参数、以及双栏字效每栏的字体（line1FontFamily / line2FontFamily）使用字体选择器，
@@ -268,6 +340,16 @@ test("字体库页面可以上传字体", async () => {
   expect(await screen.findByText("共 3 个字体")).toBeTruthy();
   expect(screen.getByText("用户上传")).toBeTruthy();
   expect(server.uploads[0]!.get("label")).toBe("我的字体");
+});
+
+// 场景：服务端回答 200（这个文件本来就在库里，例如列表读到之后别人刚传过）——提示已在字体库里，而不是「已添加」。
+test("字体库页面上传已在库里的文件时说明已在库里", async () => {
+  fontServer(() => Response.json(UPLOADED, { status: 200 }));
+  render(<><Toaster /><FontLibrary previewer={async () => null} /></>);
+  await screen.findByText("共 2 个字体");
+  fireEvent.change(screen.getByLabelText("选择字体文件"), { target: { files: [uploadFile()] } });
+  expect(await screen.findByText("字体已在字体库里：Zed Display")).toBeTruthy();
+  expect(screen.queryByText("已添加字体：Zed Display")).toBeNull();
 });
 
 // 场景：上传被服务端拒绝（同一个文件已在库里）——原因显示在页面上，列表不变。

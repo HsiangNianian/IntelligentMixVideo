@@ -85,6 +85,15 @@ class FontRejected(ValueError):
     """An uploaded font or preview was refused; the message is safe to show to the user."""
 
 
+class FontExists(FontRejected):
+    """The uploaded file is already in the library (same SHA-256) as `font`; the upload route answers with its card."""
+
+    def __init__(self, message: str, font: "Font") -> None:
+        """Keep the font whose file has the same bytes."""
+        super().__init__(message)
+        self.font = font
+
+
 class Font(BaseModel):
     """A registered font file, one style (`slot`) of the card its family names: what the registry stores per file."""
 
@@ -191,9 +200,9 @@ def cards(fonts: Iterable[Font]) -> dict[str, list[Font]]:
 
 
 def refuse_copy(digest: str, fonts: Iterable[Font]) -> None:
-    """Raise `FontRejected` naming the registered font whose file has this SHA-256, if there is one."""
+    """Raise `FontExists` naming the registered font whose file has this SHA-256, if there is one."""
     if (copy := next((font for font in fonts if font.sha256 == digest), None)) is not None:
-        raise FontRejected(f"这个字体文件已经在字体库里了：{copy.label}（{copy.family}）")
+        raise FontExists(f"这个字体文件已经在字体库里了：{copy.label}（{copy.family}）", copy)
 
 
 def font_root(settings: Settings) -> Path:
@@ -598,6 +607,14 @@ class FontStore:
         """Every registered font, whether or not this host has cached it yet."""
         return list(self.known.values())
 
+    def registered(self) -> list[Font]:
+        """The registry as it is now, not this host's last refresh; blocking.
+
+        The shared library can be written by another request that has registered a file but not yet updated this
+        host's cache. A duplicate upload must still find its card, so read the registry again instead of `known`.
+        """
+        return [registry_font(record) for record in font_store.listing()]
+
     def families(self) -> list[str]:
         """Family names of the whole library, one per card: the enum the Agent chooses from and `fontFamily` values are
         checked against."""
@@ -801,7 +818,7 @@ class FontStore:
         only; `label` is the text that browser drew, and a strip whose text is not the display name is dropped.
         """
         if not content or len(content) > self.max_upload:
-            raise FontRejected(f"字体文件为空或超过 {self.max_upload // (1024 * 1024)} MiB 上限")
+            raise FontRejected(f"字体文件为空或超过 {self.max_upload / (1024 * 1024):g} MiB 上限")
         digest = hashlib.sha256(content).hexdigest()
         # Bundled fonts that sync has not installed yet keep their file and their family.
         pending = [spec.font() for spec in load_catalog() if spec.id not in self.known] if self.install_bundled else []
