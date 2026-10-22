@@ -1,10 +1,11 @@
-//! 桌面入口：Windows 页面使用 localhost，Linux 隔离网页缓存，测试包按需监督内置服务，设置页可打开调试日志窗口。
+//! 桌面入口：Windows 页面使用 localhost，Linux 隔离网页缓存，测试包按需监督内置服务，设置页可打开调试日志窗口（Windows 另收集 WebView2 子进程与 Chromium 日志）。
 
 #[cfg(windows)]
 mod localhost;
 
 mod backend;
 mod diagnostics;
+mod file_lock;
 mod preview_videos;
 mod remotion_sessions;
 mod settings;
@@ -47,6 +48,8 @@ pub fn run() {
             // 等本地资源服务绑定成功再创建窗口，避免先加载 tauri.localhost 触发 SDK 授权失败。
             context.config_mut().app.windows[0].create = false;
         }
+        // WebView2 的 Chromium 日志参数须在创建窗口之前写进配置。
+        diagnostics::log_webview2(&mut context);
         context
     };
     tauri::Builder::default()
@@ -68,14 +71,20 @@ pub fn run() {
         ])
         .setup(|app| {
             #[cfg(windows)]
-            if !tauri::is_dev() {
+            {
                 use tauri::Manager;
-                let mut window = app.config().app.windows[0].clone();
-                let url = localhost::start(app.asset_resolver())?;
-                // 只授权本次绑定的精确 localhost 端口，不向其他本地或远程页面开放 IPC。
-                app.add_capability(localhost_capability(&url, &window.label))?;
-                window.url = tauri::WebviewUrl::External(url);
-                tauri::WebviewWindowBuilder::from_config(app, &window)?.build()?;
+                if !tauri::is_dev() {
+                    let mut window = app.config().app.windows[0].clone();
+                    let url = localhost::start(app.asset_resolver())?;
+                    // 只授权本次绑定的精确 localhost 端口，不向其他本地或远程页面开放 IPC。
+                    app.add_capability(localhost_capability(&url, &window.label))?;
+                    window.url = tauri::WebviewUrl::External(url);
+                    tauri::WebviewWindowBuilder::from_config(app, &window)?.build()?;
+                }
+                // 开发模式由配置创建窗口；两种方式到这里主窗口都已存在，订阅它的 WebView2 子进程退出。
+                if let Some(window) = app.get_webview_window(&app.config().app.windows[0].label) {
+                    diagnostics::watch_webview(&window);
+                }
             }
             #[cfg(target_os = "linux")]
             {

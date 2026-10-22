@@ -32,7 +32,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from ..client_config import parse_config
 from .settings import ClientSettings
 from .evidence import digest
-from .fonts import SYSTEM_FONT_ID, Font, FontRejected, FontStore, Slot, cards
+from .fonts import SYSTEM_FONT_ID, Font, FontExists, FontRejected, FontStore, Slot, cards
 from .history import WorkEvent
 from .media import save_image
 from .object_store import ObjectStoreError
@@ -599,6 +599,7 @@ def list_fonts(service: Service) -> list[FontInfo]:
 async def upload_font(
     service: Service,
     owner: Device,
+    response: Response,
     file: Annotated[UploadFile, File()],
     preview: Annotated[UploadFile | None, File()] = None,
     label: Annotated[str, Form()] = "",
@@ -606,27 +607,37 @@ async def upload_font(
     """上传一个 TrueType / OpenType 字体（.ttf、.otf），保存到对象存储并登记到共享字体库。
 
     `preview` 是上传者浏览器用该字体画出的黑色透明底 PNG 预览条（选填，下拉框用它展示字体），`label` 是预览条上画的文字。
-    显示名称取字体 name 表里自己的名称（优先中文名），不取文件名；`label` 与它不同时不保存预览条，界面改用文字名称。按文件内容（SHA-256）去重：
-    库里已有同一个文件（含尚未装好的预装字体）时返回 422 并说明是哪个字体。按文件的样式归入卡片：同一家族的常规、粗体、斜体、粗斜体文件
+    显示名称取字体 name 表里自己的名称（优先中文名），不取文件名；`label` 与它不同时不保存预览条，界面改用文字名称。按文件内容（SHA-256）去重，
+    重复上传是幂等的：库里已有同一个文件时返回 200 和它所在的卡片（不论谁上传的，超时后重试也得到同一结果），新登记返回 201；
+    与尚未装好的预装字体相同时没有卡片可返回，返回 422 并说明是哪个字体。按文件的样式归入卡片：同一家族的常规、粗体、斜体、粗斜体文件
     加入该家族用户上传的卡片（对应字形还空着时），其他字重（细体、黑体等）单独成卡片、名称带字重；同一字形的其他版本，或与预装字体、
     系统字体、保留名同名时另起家族名登记。返回文件所在的整张卡片。
-    文件超过大小上限返回 413，内容无效返回 422；对象存储不可用返回 503。字体不可删除。
+    文件超过大小上限返回 413（说明上限），内容无效返回 422；对象存储或数据库不可用返回 503 并写服务端日志（含根因）。字体不可删除。
     """
     store = FontStore.for_settings(service.settings)
     try:
         content = await file.read(store.max_upload + 1)
         strip = await preview.read(1024 * 1024 + 1) if preview is not None else None
         if len(content) > store.max_upload:
-            raise HTTPException(413, "Font exceeds the upload size limit.")
+            raise HTTPException(413, f"字体文件超过 {store.max_upload / (1024 * 1024):g} MiB 上限")
         if strip is not None and len(strip) > 1024 * 1024:
-            raise HTTPException(413, "Preview exceeds the size limit.")
+            raise HTTPException(413, "预览图超过 1 MiB 上限")
         try:
             font = await asyncio.to_thread(store.upload, content, strip or None, label, str(owner))
-            return font_info(cards(store.listing())[font.family], system_file=installed_system_font(service))
+        except FontExists as exc:
+            # 读取最新注册表：另一请求可能刚登记这个文件，而本机缓存还没同步到；数据库读取放到线程里。
+            files = await asyncio.to_thread(lambda: cards(store.registered()).get(exc.font.family, []))
+            if not any(item.id == exc.font.id for item in files):
+                raise HTTPException(422, str(exc)) from exc
+            response.status_code = 200
+            return font_info(files, system_file=installed_system_font(service))
         except FontRejected as exc:
             raise HTTPException(422, str(exc)) from exc
         except (OSError, SQLAlchemyError) as exc:
+            name = (file.filename or "").replace("\r", " ").replace("\n", " ")
+            logger.exception("Font upload failed: %s (%d bytes)", name, len(content))
             raise HTTPException(503, "字体暂时无法保存，请稍后重试。") from exc
+        return font_info(cards(store.listing())[font.family], system_file=installed_system_font(service))
     finally:
         await file.close()
         if preview is not None:

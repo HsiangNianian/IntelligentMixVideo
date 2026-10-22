@@ -51,12 +51,42 @@ test("Debug 设置保留模块目录与说明", async () => {
 // 场景：桌面端通用设置提供调试日志按钮；点击后调用原生命令并提示窗口已打开。
 test("设置按钮打开调试日志窗口", async () => {
   const commands: string[] = [];
-  mockDesktop(async (command) => { commands.push(command); return null; });
+  mockDesktop(async (command) => {
+    commands.push(command);
+    return command === "diagnostics_open" ? { path: "/data/diagnostics.log", viewerError: null } : null;
+  });
   render(<SettingsDialog open onOpenChange={() => {}} />);
   fireEvent.click(screen.getByRole("button", { name: "打开调试日志窗口" }));
   expect(await screen.findByText("日志窗口已打开，关闭窗口不会退出客户端。")).toBeTruthy();
   expect(commands).toContain("diagnostics_open");
   expect(commands).toContain("diagnostics_log");
+});
+
+// 回归：Linux 找不到终端程序时原来只显示报错；日志其实照常写入文件，提示原因与文件位置。
+test("终端窗口打不开时提示日志文件位置", async () => {
+  mockDesktop(async (command) => command === "diagnostics_open"
+    ? { path: "/home/u/.local/share/app/data/diagnostics.log", viewerError: "无法打开终端窗口：没有找到可用的终端程序（已尝试 ptyxis）" }
+    : null);
+  render(<SettingsDialog open onOpenChange={() => {}} />);
+  fireEvent.click(screen.getByRole("button", { name: "打开调试日志窗口" }));
+  const message = "无法打开终端窗口：没有找到可用的终端程序（已尝试 ptyxis）。日志仍会写入 /home/u/.local/share/app/data/diagnostics.log，可用终端跟随查看（如 tail -F）。";
+  expect((await screen.findByText(message)).getAttribute("role")).toBe("alert");
+});
+
+// Windows 没有 tail：终端窗口打不开时提示用系统自带工具打开日志文件。
+test("Windows 终端窗口打不开时提示用记事本或 PowerShell", async () => {
+  Object.defineProperty(navigator, "userAgent", { configurable: true, value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" });
+  try {
+    mockDesktop(async (command) => command === "diagnostics_open"
+      ? { path: "C:\\Users\\u\\AppData\\Local\\app\\data\\diagnostics.log", viewerError: "无法打开调试日志窗口：拒绝访问" }
+      : null);
+    render(<SettingsDialog open onOpenChange={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "打开调试日志窗口" }));
+    const message = "无法打开调试日志窗口：拒绝访问。日志仍会写入 C:\\Users\\u\\AppData\\Local\\app\\data\\diagnostics.log，可用记事本或 PowerShell 打开该文件。";
+    expect((await screen.findByText(message)).getAttribute("role")).toBe("alert");
+  } finally {
+    Reflect.deleteProperty(navigator, "userAgent");
+  }
 });
 
 /** 与后端目录协议一致，字段由描述控制；API 的真实模型生成在 pytest 中覆盖。 */

@@ -2,11 +2,13 @@
  * 把 AI 资产叠在模板预览画面上：每个资产一个透明隔离播放器，由预览播放时间逐帧驱动（只定位，不自行播放）。
  * 只为当前时间附近的片段挂载播放器，离开后卸载；播放器的字体由本页读取一次后转交，不各自下载。
  * 支持参数覆盖的播放器同时收到这次摆放的参数与宿主变换；选中的可移动资产在画面上显示一个可拖动的位置框。
+ * 播放器是跨源沙箱页面，无法监听其内部错误：挂载后迟迟不就绪或能力不足时写调试日志。
  */
 import { useEffect, useImperativeHandle, useRef, useState, type KeyboardEvent, type PointerEvent, type Ref } from "react";
 import { apiBase } from "@/lib/api-base";
 import { HOST_FONTS, sendPreviewFonts } from "@/features/sprites/previewFonts";
 import type { SpriteClip } from "./timeline";
+import { debugLog } from "@/lib/diagnostics";
 
 /** 父预览仅推送当前时间；播放、暂停、拖动都以同一时间驱动，不会产生时钟漂移。 */
 export interface SpriteOverlayHandle {
@@ -21,6 +23,8 @@ const MOUNT_AHEAD_SECONDS = 3;
 const KEEP_AFTER_SECONDS = 1;
 /** 已挂载的播放器离开上述范围后再多保留的秒数：来回拖动游标跨过范围边缘时，不反复创建、销毁页面（每次都要重新加载）。 */
 const RELEASE_MARGIN_SECONDS = 2;
+/** 播放器挂载后等待就绪通知的时长，与资产封面相同；超时写调试日志（不改变界面，页面仍可能稍后就绪）。 */
+const READY_TIMEOUT_MS = 15_000;
 
 /**
  * 当前时间附近需要挂载播放器的片段；其余片段不创建播放器，每个播放器都是一个独立页面，常驻会占用内存与 CPU。
@@ -48,6 +52,11 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
   // 回报 host 能力的播放器接受参数覆盖与宿主变换；sent 记录每个播放器最后一次收到的内容，相同内容不重发。
   const hosts = useRef(new Set<string>());
   const sent = useRef(new Map<string, string>());
+  // 每个已挂载播放器的就绪等待计时器，就绪后置为 null；loaded 记录页面 load 事件已触发的播放器，用来区分超时原因。
+  const readiness = useRef(new Map<string, ReturnType<typeof setTimeout> | null>());
+  const loaded = useRef(new Set<string>());
+  // 上一次 load 事件的 iframe 地址；地址变化说明同一播放器重新加载，需要重新握手并等待就绪。
+  const loadedSrc = useRef(new Map<string, string>());
   const requests = useRef(0);
   const time = useRef(initialTime);
   const pending = useRef<number | undefined>(undefined);
@@ -100,6 +109,25 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
   function schedule() {
     if (pending.current === undefined) pending.current = requestAnimationFrame(flush);
   }
+  /** 为已挂载的播放器安排就绪超时；跨源沙箱页面无法监听内部报错，超时只能记录资产与地址。 */
+  function startReadyTimer(id: string) {
+    readiness.current.set(id, setTimeout(() => {
+      readiness.current.set(id, null);
+      const clip = latest.current.find((item) => item.id === id);
+      const page = loaded.current.has(id) ? "页面已加载但没有发出就绪通知，可能是预览脚本出错" : "页面仍未加载完成，可能是网络或服务端出错";
+      debugLog("AI 资产预览", `「${clip?.name ?? id}」（资产 ${clip?.spriteId ?? "未知"}）的播放器 ${READY_TIMEOUT_MS / 1000} 秒内没有就绪：${page}；地址 ${frames.current.get(id)?.src ?? "（已卸载）"}`, "警告");
+    }, READY_TIMEOUT_MS));
+  }
+  /** 同一播放器换资产后页面重新加载：旧握手作废，清掉旧能力标记并重新等待就绪通知。 */
+  function reloaded(id: string) {
+    clearTimeout(readiness.current.get(id) ?? undefined);
+    supported.current.delete(id);
+    hosts.current.delete(id);
+    sent.current.delete(id);
+    setUnsupported((items) => items.includes(id) ? items.filter((item) => item !== id) : items);
+    setFixed((items) => items.includes(id) ? items.filter((item) => item !== id) : items);
+    startReadyTimer(id);
+  }
   useImperativeHandle(ref, () => ({ setTime(value) { time.current = value; schedule(); } }), []);
   useEffect(() => {
     const ids = new Set(clips.map((clip) => clip.id));
@@ -119,6 +147,14 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
     for (const id of [...supported.current]) if (!ids.has(id)) supported.current.delete(id);
     for (const id of [...hosts.current]) if (!ids.has(id)) hosts.current.delete(id);
     for (const id of [...sent.current.keys()]) if (!ids.has(id)) sent.current.delete(id);
+    for (const id of [...loaded.current]) if (!ids.has(id)) loaded.current.delete(id);
+    for (const id of [...loadedSrc.current.keys()]) if (!ids.has(id)) loadedSrc.current.delete(id);
+    for (const [id, timer] of readiness.current) if (!ids.has(id)) { clearTimeout(timer ?? undefined); readiness.current.delete(id); }
+    // 跨源沙箱页面的报错无法监听：预览包缺失、服务端出错或脚本崩溃时只会一直不就绪，超时后记录资产与地址。
+    for (const id of mounted) {
+      if (readiness.current.has(id)) continue;
+      startReadyTimer(id);
+    }
   }, [mounted]);
 
   // 播放器请求字体时转交本页读取的字体。页面就绪后才开始定位；旧版本生成的资产不支持逐帧驱动，保持隐藏并提示；
@@ -131,19 +167,33 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
       if (!entry?.[1].contentWindow || !channel || event.data?.channel !== channel) return;
       if (event.data?.type === "imv-preview-fonts-request") return sendPreviewFonts(entry[1].contentWindow, channel);
       if (!id || event.data?.type !== "imv-preview-ready") return;
-      if (event.data.sync !== true) { setUnsupported((items) => items.includes(id) ? items : [...items, id]); return; }
+      clearTimeout(readiness.current.get(id) ?? undefined);
+      if (readiness.current.has(id)) readiness.current.set(id, null);
+      const clip = latest.current.find((item) => item.id === id);
+      const label = `「${clip?.name ?? id}」（资产 ${clip?.spriteId ?? "未知"}）`;
+      if (event.data.sync !== true) {
+        debugLog("AI 资产预览", `${label}的预览包较旧，不支持逐帧驱动，保持隐藏`, "警告");
+        setUnsupported((items) => items.includes(id) ? items : [...items, id]);
+        return;
+      }
       supported.current.add(id);
       if (event.data.host === true) {
         hosts.current.add(id);
         sent.current.delete(id);
         const clip = latest.current.find((item) => item.id === id);
         if (clip) update(clip);
-      } else setFixed((items) => items.includes(id) ? items : [...items, id]);
+      } else {
+        debugLog("AI 资产预览", `${label}的预览包不支持参数覆盖，按发布默认值显示`, "信息");
+        setFixed((items) => items.includes(id) ? items : [...items, id]);
+      }
       schedule();
     }
     window.addEventListener("message", receive);
+    const timers = readiness.current;
     return () => {
       window.removeEventListener("message", receive);
+      for (const timer of timers.values()) clearTimeout(timer ?? undefined);
+      timers.clear();
       if (pending.current !== undefined) cancelAnimationFrame(pending.current);
       pending.current = undefined;
     };
@@ -159,6 +209,13 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
           ref={(element) => { if (element) frames.current.set(clip.id, element); else frames.current.delete(clip.id); }}
           title={`AI 资产预览：${clip.name}`}
           sandbox="allow-scripts"
+          onLoad={(event) => {
+            loaded.current.add(clip.id);
+            const src = event.currentTarget.src;
+            const previous = loadedSrc.current.get(clip.id);
+            loadedSrc.current.set(clip.id, src);
+            if (previous !== undefined && previous !== src) reloaded(clip.id);
+          }}
           src={`${apiBase()}/api/sprites/${encodeURIComponent(clip.spriteId)}/preview?overlay=true&sync=1&${HOST_FONTS}#${channels.current.get(clip.id)}`}
           className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 border-0"
           style={{ colorScheme: "light", visibility: "hidden", aspectRatio: clip.aspect, ...(clip.aspect > stageAspect ? { height: "100%" } : { width: "100%" }) }}

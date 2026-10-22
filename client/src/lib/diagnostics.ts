@@ -1,6 +1,7 @@
 /**
  * 调试日志：桌面客户端持续在主窗口与模板预览 iframe 中记录错误、资源失败和控件操作；
- * 日志先保存在有界内存中，用户在设置里打开日志窗口后转发到原生终端日志文件。
+ * 日志先保存在有界内存中，用户在设置里打开日志窗口后转发到原生终端日志文件；每条记录带发生时刻，
+ * 补发的旧记录与原生日志（Linux 的 GStreamer 等）按实际时间对照。
  * 浏览器不开启收集；相同记录合并，密码、密钥等敏感输入只记录“已隐藏”。
  */
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -8,8 +9,8 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 /** 日志级别与原生窗口的显示格式一致。 */
 export type DiagnosticLevel = "错误" | "警告" | "信息";
 
-/** 一条待转发记录；消息在进入 IPC 前统一截断。 */
-type Entry = { level: DiagnosticLevel; source: string; message: string };
+/** 一条待转发记录；消息在进入 IPC 前统一截断，at 为发生时刻（Unix 毫秒）。 */
+type Entry = { level: DiagnosticLevel; source: string; message: string; at: number };
 
 /** 单条记录、内存缓冲与控件标签的上限，避免日志窗口和 IPC 被长文本刷满。 */
 const MAX_LENGTH = 8000;
@@ -17,14 +18,17 @@ const MAX_BUFFER_ENTRIES = 400;
 const MAX_BUFFER_CHARS = 200_000;
 const MAX_CONTROL_LABEL = 100;
 
-/** 媒体错误码（MediaError.code）的中文含义。 */
-const MEDIA_ERRORS: Record<number, string> = { 1: "加载被中止", 2: "网络错误", 3: "解码失败", 4: "格式或地址不受支持" };
-/** 启动时报告的解码能力：桌面 WebView 是否能播放常见编码，定位“视频无法播放”时先看这一行。 */
+/** 媒体错误码（MediaError.code）的中文含义；预览界面提示也使用它。 */
+export const MEDIA_ERRORS: Record<number, string> = { 1: "加载被中止", 2: "网络错误", 3: "解码失败", 4: "格式或地址不受支持" };
+/**
+ * 启动时报告的解码能力：桌面 WebView 是否能播放常见编码，定位“视频无法播放”时先看这一行。
+ * 编码档次按 1080p 选取（H.264 High@4.0 等），同一组字符串也用于查询 1080p 是否走硬件解码。
+ */
 const CODECS: [string, string][] = [
-  ["H.264", 'video/mp4; codecs="avc1.42E01E"'],
-  ["H.265", 'video/mp4; codecs="hvc1.1.6.L93.B0"'],
-  ["VP9", 'video/webm; codecs="vp9"'],
-  ["AV1", 'video/mp4; codecs="av01.0.05M.08"'],
+  ["H.264", 'video/mp4; codecs="avc1.640028"'],
+  ["H.265", 'video/mp4; codecs="hvc1.1.6.L120.90"'],
+  ["VP9", 'video/webm; codecs="vp09.00.40.08"'],
+  ["AV1", 'video/mp4; codecs="av01.0.08M.08"'],
 ];
 /** 统一识别页面控件；点击其子元素时仍按外层控件记录。 */
 const CONTROLS = "button, a, input, select, textarea, summary, [contenteditable='true'], [role='button'], [role='tab'], [role='checkbox'], [role='switch'], [role='slider'], [role='textbox'], [role='menuitem']";
@@ -40,9 +44,9 @@ let bufferChars = 0;
 let last = { key: "", level: "错误" as DiagnosticLevel, source: "", repeats: 0 };
 const watched = new WeakSet<Window>();
 
-/** 交给原生层输出；失败时静默，不能再写 console，否则会被自己的监听再次转发。 */
-function send(level: DiagnosticLevel, source: string, message: string) {
-  void invoke("diagnostics_log", { level, source, message: message.slice(0, MAX_LENGTH) }).catch(() => {});
+/** 交给原生层输出，带上发生时刻；失败时静默，不能再写 console，否则会被自己的监听再次转发。 */
+function send(level: DiagnosticLevel, source: string, message: string, at = Date.now()) {
+  void invoke("diagnostics_log", { level, source, message: message.slice(0, MAX_LENGTH), at }).catch(() => {});
 }
 
 /** 把尚未打开窗口时的记录放入有界缓冲；只保留最近内容，避免长期运行吃满内存。 */
@@ -59,7 +63,7 @@ function flushBuffer() {
   const entries = buffer;
   buffer = [];
   bufferChars = 0;
-  for (const entry of entries) send(entry.level, entry.source, entry.message);
+  for (const entry of entries) send(entry.level, entry.source, entry.message, entry.at);
 }
 
 /** 汇报上一条记录被省略的重复次数。 */
@@ -81,7 +85,7 @@ export function debugLog(source: string, message: string, level: DiagnosticLevel
   reportRepeats();
   last = { key, level, source, repeats: 0 };
   if (enabled) send(level, source, clipped);
-  else remember({ level, source, message: clipped });
+  else remember({ level, source, message: clipped, at: Date.now() });
 }
 
 /** 把任意值格式化为文本：错误带名称与调用栈（跨 iframe 的错误同样识别），其他对象尽量序列化。 */
@@ -216,9 +220,11 @@ export function watchWindow(target: Window, source: string): () => void {
   target.addEventListener("submit", onSubmit, true);
   const originals = { error: scope.console.error, warn: scope.console.warn };
   for (const [method, level] of [["error", "错误"], ["warn", "警告"]] as const) {
+    // 没有内容的输出（SDK 初始化时会打一条空警告）不转发，避免日志里出现空记录。
     scope.console[method] = (...args: unknown[]) => {
       originals[method].apply(scope.console, args);
-      debugLog(source, args.map(describe).join(" "), level);
+      const message = args.map(describe).join(" ");
+      if (message.trim()) debugLog(source, message, level);
     };
   }
   return () => {
@@ -240,20 +246,52 @@ export function startDiagnostics() {
   stopMain = watchWindow(window, "页面");
   const probe = document.createElement("video");
   debugLog("环境", `${navigator.userAgent}\n  解码能力 ${CODECS.map(([name, type]) => `${name}=${probe.canPlayType(type) || "不支持"}`).join(" ")}`, "信息");
+  reportGraphics();
 }
 
-/** 由设置按钮调用：打开原生终端窗口，启用转发并补发打开窗口前缓冲的错误与操作。 */
-export async function openDiagnostics(): Promise<void> {
+/**
+ * 报告显卡与硬件解码：WebGL 实际使用的显卡与图形后端（Windows 上是 ANGLE 的 Direct3D），以及 1080p 各编码
+ * 能否解码、是否走硬件（MediaCapabilities 的 powerEfficient）。画面黑屏、卡顿多与显卡驱动或软件解码有关。
+ * 探测用的 WebGL 上下文读取后立即释放；不支持的接口记为不可用，不影响其他记录。
+ */
+function reportGraphics() {
+  const gl = document.createElement("canvas").getContext("webgl");
+  const debug = gl?.getExtension("WEBGL_debug_renderer_info");
+  const renderer = !gl ? "WebGL 不可用"
+    : debug ? `${gl.getParameter(debug.UNMASKED_VENDOR_WEBGL)} / ${gl.getParameter(debug.UNMASKED_RENDERER_WEBGL)}`
+    : String(gl.getParameter(gl.RENDERER));
+  gl?.getExtension("WEBGL_lose_context")?.loseContext();
+  debugLog("环境", `显卡 ${renderer}；devicePixelRatio=${window.devicePixelRatio}`, "信息");
+  if (!navigator.mediaCapabilities) return;
+  void Promise.all(CODECS.map(async ([name, type]) => {
+    try {
+      const result = await navigator.mediaCapabilities.decodingInfo({ type: "file", video: { contentType: type, width: 1920, height: 1080, bitrate: 8_000_000, framerate: 30 } });
+      if (!result.supported) return `${name}=不支持`;
+      return `${name}=${result.powerEfficient ? "硬件" : "软件"}${result.smooth ? "" : "（可能卡顿）"}`;
+    } catch {
+      return `${name}=未知`;
+    }
+  })).then((items) => debugLog("环境", `1080p 解码 ${items.join(" ")}`, "信息"));
+}
+
+/** 原生层打开日志的结果：日志文件路径，以及终端窗口没能打开时的原因（文件照常写入）。 */
+export type DiagnosticsOpened = { path: string; viewerError: string | null };
+
+/**
+ * 由设置按钮调用：打开日志文件与原生终端窗口，启用转发并补发打开前缓冲的错误与操作。
+ * 终端打不开（例如 Linux 没有已知的终端程序）时仍启用转发，由调用方提示日志文件位置。
+ */
+export async function openDiagnostics(): Promise<DiagnosticsOpened> {
   if (!isTauri()) throw new Error("仅桌面客户端支持打开调试日志窗口");
   startDiagnostics();
-  await invoke("diagnostics_open");
+  const opened = await invoke<DiagnosticsOpened>("diagnostics_open");
   if (!enabled) {
     enabled = true;
     flushBuffer();
     reportRepeats();
     repeatTimer = setInterval(reportRepeats, 2000);
   }
-  debugLog("调试日志", "日志窗口已打开", "信息");
+  return opened;
 }
 
 /** 测试之间恢复初始状态：撤销主窗口监听、停止重复计数并清空缓冲。 */

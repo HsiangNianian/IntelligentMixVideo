@@ -1,6 +1,7 @@
 """组装模板库、切片、异步合成与示例 API，挂载独立 Remotion 服务。
 
-退出先收束合成任务，再释放数据库连接；保留主应用校验和数据库错误处理。
+退出先收束合成任务，再释放数据库连接；保留主应用校验和数据库错误处理。未处理的异常在 CORS 之内转成 500，
+跨域客户端看到的是服务端错误，而不是被浏览器拦截后的「无法连接」。
 """
 
 from contextlib import asynccontextmanager
@@ -14,6 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .database import close_database, initialize_database
 from .segmentation.router import router as segmentation_router
@@ -45,9 +47,45 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             close_database()
 
 
-# 允许本地 Vite 与 Tauri 客户端访问 API；Windows 正式客户端使用动态 localhost 端口。
+# 未处理的异常要经过 CORS 才能被跨域客户端读到；具体行为见类文档。
+class InternalErrors:
+    """在 CORS 之内把未处理的异常转成 500 JSON，再照常抛出，由外层与 Uvicorn 记录堆栈。
+
+    Starlette 的 500 由最外层的 ServerErrorMiddleware 生成，不经过 CORS，跨域的浏览器与 Tauri 客户端拿不到
+    响应、只能报「无法连接服务端」，掩盖了服务端其实已经处理（例如资产已删除）的事实。响应已开始时（流式响应
+    中途失败、挂载的 Remotion 应用已自行回答 500）不再写入。
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        """包住内层应用。"""
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """记录响应是否已开始；失败且尚未回答时先回答 500，再把异常交给外层。"""
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        started = False
+
+        async def tracked(message: Message) -> None:
+            """转发消息并记下响应头是否已发出。"""
+            nonlocal started
+            started = started or message["type"] == "http.response.start"
+            await send(message)
+
+        try:
+            await self.app(scope, receive, tracked)
+        except Exception:
+            if not started:
+                await JSONResponse(status_code=500, content={"detail": "服务端内部错误，请稍后重试"})(scope, receive, send)
+            raise
+
+
 # 文档版本直接读取已安装的服务端包元数据，与发布清单保持一致。
 app = FastAPI(title="IntelligentMixVideo API", version=version("imv-server"), lifespan=lifespan)
+# 先加入的中间件在内层：InternalErrors 位于 CORS 之内，500 也带跨域响应头。
+app.add_middleware(InternalErrors)
+# 允许本地 Vite 与 Tauri 客户端访问 API；Windows 正式客户端使用动态 localhost 端口。
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[

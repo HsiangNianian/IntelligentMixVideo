@@ -19,6 +19,7 @@ from io import BytesIO
 from pathlib import Path
 from collections.abc import Sequence
 from types import SimpleNamespace
+from uuid import uuid4
 from xml.etree import ElementTree
 
 import lzma
@@ -31,8 +32,8 @@ from server.remotion_templates import fonts as fonts_module
 from server.remotion_templates import routes
 from server.remotion_templates.api import app as remotion_templates_app
 from server.remotion_templates.categories import REQUIRED, category_problems
-from server.remotion_templates.fonts import CONFIG_NAME, Font, FontNames, FontRejected, FontSpec, FontStore, load_catalog, cards, open_font_schema, read_names, require_family
-from server.remotion_templates.object_store import LocalObjects
+from server.remotion_templates.fonts import CONFIG_NAME, Font, FontExists, FontNames, FontRejected, FontSpec, FontStore, load_catalog, cards, open_font_schema, read_names, require_family
+from server.remotion_templates.object_store import LocalObjects, ObjectStoreError
 from server.remotion_templates.overlay_render import Overlay, OverlayError, require_fonts
 from server.remotion_templates.placement import resolve
 from server.remotion_templates.renderer import Renderer
@@ -339,9 +340,10 @@ def test_the_same_file_is_not_uploaded_twice(store) -> None:
     """去重按文件内容（SHA-256）：同一个文件第二次上传被拒绝，并说明它就是库里的哪个字体；与预装字体相同的文件也一样。注册表里不多出记录。"""
     asyncio.run(store.sync())
     data = minimal_font("Zed Display", names=[(3, 1, 0x0804, 1, "我的字体")])
-    store.upload(data, None, "", "device-1")
-    with pytest.raises(FontRejected, match="已经在字体库里了：我的字体（Zed Display）"):
+    first = store.upload(data, None, "", "device-1")
+    with pytest.raises(FontExists, match="已经在字体库里了：我的字体（Zed Display）") as existing:
         store.upload(data, None, "", "device-2")
+    assert existing.value.font.id == first.id
     with pytest.raises(FontRejected, match="已经在字体库里了：Alpha Sans（Alpha Sans）"):
         store.upload(PAYLOADS["alpha"], None, "", "device-2")
     assert len(font_store.listing()) == 4
@@ -528,8 +530,9 @@ def test_an_upload_racing_another_host_is_renamed_or_refused(store) -> None:
     assert store.upload(minimal_font("Zed Display", "效果"), None, "", "device-1").family == "Zed Display (2)"
     copy = hashlib.sha256(other).hexdigest()
     font_store.insert("u-copy", "Copy Sans", {**store.listing()[0].model_dump(exclude={"id", "family"}), "label": "副本", "sha256": copy}, "device-9")
-    with pytest.raises(FontRejected, match="已经在字体库里了：副本（Copy Sans）"):
+    with pytest.raises(FontExists, match="已经在字体库里了：副本（Copy Sans）") as existing:
         store.upload(other, None, "", "device-1")
+    assert existing.value.font.id == "u-copy"
 
 
 def test_the_agent_guide_is_the_font_library_as_an_enum(store) -> None:
@@ -693,7 +696,8 @@ def test_the_font_api_lists_cards_with_their_styles(client: TestClient, served) 
 
 def test_the_font_api_lists_serves_and_uploads(client: TestClient, served, settings, monkeypatch, tmp_path) -> None:
     """字体接口：列表给出家族名、风格、字重、文件与预览地址；文件带 CORS 可被预览 iframe 加载；系统默认字体的文件是服务端安装的常规字重（字体详情的字样用它），
-    没有安装时 404 且不给出 file_url；上传（multipart）返回新字体且立即出现在列表；重复的文件返回 422，超大返回 413，缺少设备头返回 422；未知字体 404。"""
+    没有安装时 404 且不给出 file_url；上传（multipart）返回 201 与新字体且立即出现在列表；重复的文件返回 200 与同一张卡片（幂等，超时后重试
+    不会被当成失败），超大返回 413，缺少设备头返回 422；未知字体 404。"""
     system_font = tmp_path / "system.ttc"
     system_font.write_bytes(b"system-collection")
     monkeypatch.setattr(settings, "font_regular", system_font)
@@ -724,11 +728,61 @@ def test_the_font_api_lists_serves_and_uploads(client: TestClient, served, setti
     assert client.get(created["file_url"]).content == minimal_font("Zed Display")
     assert [item["family"] for item in client.get("/api/templates/fonts").json()][-1] == "Zed Display"
     duplicate = client.post("/api/templates/fonts", headers=DEVICE_HEADERS, files={"file": ("again.ttf", minimal_font("Zed Display"), "font/ttf")})
-    assert duplicate.status_code == 422 and "已经在字体库里了" in duplicate.json()["detail"]
-    served.max_upload = 100
-    assert client.post("/api/templates/fonts", headers=DEVICE_HEADERS, files={"file": ("big.ttf", minimal_font("Big One"), "font/ttf")}).status_code == 413
+    assert duplicate.status_code == 200 and duplicate.json() == client.get("/api/templates/fonts").json()[-1]
+    assert [item["family"] for item in client.get("/api/templates/fonts").json()].count("Zed Display") == 1
+    served.max_upload = 2 * 1024 * 1024
+    big = client.post("/api/templates/fonts", headers=DEVICE_HEADERS, files={"file": ("big.ttf", b"\0" * (2 * 1024 * 1024 + 1), "font/ttf")})
+    assert (big.status_code, big.json()["detail"]) == (413, "字体文件超过 2 MiB 上限")
     assert client.post("/api/templates/fonts", files={"file": ("x.ttf", b"x", "font/ttf")}).status_code == 422
 
+
+
+# 场景（回归）：客户端等不及（超时、断线）而服务端已经登记了字体，用户重试或别人再传同一个文件，原先得到 422「已经在字体库里了」
+# 而界面找不到它；现在重复上传返回它所在的卡片。与尚未装好的预装字体相同时没有卡片可返回，仍是 422。
+def test_uploading_a_registered_file_again_returns_its_card(client: TestClient, served) -> None:
+    """另一台设备再传同一个文件得到 200 与同一张卡片，注册表不多出记录；与未装好的预装字体相同的文件 422 并说明是哪个字体。"""
+    pending = client.post("/api/templates/fonts", headers=DEVICE_HEADERS, files={"file": ("alpha.ttf", PAYLOADS["alpha"], "font/ttf")})
+    assert pending.status_code == 422 and "已经在字体库里了：Alpha Sans（Alpha Sans）" in pending.json()["detail"]
+    data = minimal_font("Zed Display", names=[(3, 1, 0x0804, 1, "我的字体")])
+    created = client.post("/api/templates/fonts", headers=DEVICE_HEADERS, files={"file": ("zed.ttf", data, "font/ttf")})
+    assert created.status_code == 201
+    again = client.post(
+        "/api/templates/fonts", headers={"X-IMV-Device": str(uuid4())}, files={"file": ("copy.ttf", data, "font/ttf")},
+    )
+    assert again.status_code == 200 and again.json() == created.json()
+    assert [record["id"] for record in font_store.listing()].count(created.json()["faces"][0]["id"]) == 1
+
+
+# 场景（回归）：另一个请求刚登记同一个文件，本机缓存还没同步到——重复上传仍返回 200 与卡片，而不是把缓存里的缺失当成 422。
+def test_a_file_registered_elsewhere_is_answered_with_its_card(client: TestClient, served) -> None:
+    """本机缓存落后于注册表时，重复上传读取最新注册表并返回已有卡片，不重复登记。"""
+    data = minimal_font("Zed Display", names=[(3, 1, 0x0804, 1, "我的字体")])
+    created = client.post("/api/templates/fonts", headers=DEVICE_HEADERS, files={"file": ("zed.ttf", data, "font/ttf")})
+    assert created.status_code == 201
+    font_id = created.json()["faces"][0]["id"]
+    # 模拟另一个进程已写入注册表、本机还没刷新缓存：数据库里有这一行，`known` 里没有。
+    served.known.pop(font_id)
+    again = client.post("/api/templates/fonts", headers=DEVICE_HEADERS, files={"file": ("again.ttf", data, "font/ttf")})
+    assert again.status_code == 200 and again.json() == created.json()
+    assert [record["id"] for record in font_store.listing()].count(font_id) == 1
+
+
+# 场景（回归）：对象存储或数据库失败时上传回答 503，原先服务端没有任何日志，线上只能在访问日志里看到 503。
+def test_a_failed_font_upload_is_logged(client: TestClient, served, monkeypatch, caplog) -> None:
+    """对象存储写入失败回答 503 与中文说明，根因（含文件名与大小）写服务端日志；字体没有登记。"""
+
+    def unreachable(key, path, content_type):
+        """模拟 ZOS 不可达。"""
+        raise ObjectStoreError("ZOS upload failed")
+
+    monkeypatch.setattr(served.objects, "put", unreachable)
+    data = minimal_font("Zed Display")
+    with caplog.at_level(logging.ERROR, logger="server.remotion_templates.routes"):
+        response = client.post("/api/templates/fonts", headers=DEVICE_HEADERS, files={"file": ("zed.ttf", data, "font/ttf")})
+    assert (response.status_code, response.json()["detail"]) == (503, "字体暂时无法保存，请稍后重试。")
+    [record] = [item for item in caplog.records if item.name == "server.remotion_templates.routes"]
+    assert f"zed.ttf ({len(data)} bytes)" in record.getMessage() and isinstance(record.exc_info[1], ObjectStoreError)
+    assert not [font for font in served.listing() if font.source == "upload"]
 
 def test_the_preview_page_lists_fonts_for_lazy_registration() -> None:
     """预览页以 JSON 元素列出有文件的字体文件（卡片的家族名、CSS 字重与斜体、URL）供播放器注册，系统默认字体不列（预览本来就自带）；

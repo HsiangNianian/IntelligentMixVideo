@@ -3,13 +3,21 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-/// Linux 绕过 DMA-BUF 纹理映射问题，并用 playbin3 避免重播后持续等待缓冲。
-/// 保留显式环境配置；必须在 Tauri 初始化及创建线程之前调用。
+/// Linux 视频环境的默认值：绕过 DMA-BUF 纹理映射问题，用 playbin3 避免重播后持续等待缓冲；
+/// GStreamer 输出错误与警告（GST_DEBUG=2），由调试日志从标准错误收集，用来定位解码与插件问题。
+#[cfg(target_os = "linux")]
+const VIDEO_ENVIRONMENT: [(&str, &str); 3] = [
+    ("WEBKIT_GST_DMABUF_SINK_DISABLED", "1"),
+    ("WEBKIT_GST_USE_PLAYBIN3", "1"),
+    ("GST_DEBUG", "2"),
+];
+
+/// 写入上述默认值，保留显式环境配置；必须在 Tauri 初始化及创建线程之前调用。
 #[cfg(target_os = "linux")]
 fn configure_video_environment() {
-    for key in ["WEBKIT_GST_DMABUF_SINK_DISABLED", "WEBKIT_GST_USE_PLAYBIN3"] {
+    for (key, value) in VIDEO_ENVIRONMENT {
         if std::env::var_os(key).is_none() {
-            std::env::set_var(key, "1");
+            std::env::set_var(key, value);
         }
     }
 }
@@ -31,31 +39,35 @@ fn main() {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
-    /// 子进程隔离环境变量，验证默认启用兼容路径及保留用户配置，不启动 GUI。
+    use super::VIDEO_ENVIRONMENT;
+
+    /// 子进程隔离环境变量，验证默认启用兼容路径与 GStreamer 警告输出，并保留用户配置，不启动 GUI。
     #[test]
     fn linux_video_environment() {
-        const KEYS: [&str; 2] = ["WEBKIT_GST_DMABUF_SINK_DISABLED", "WEBKIT_GST_USE_PLAYBIN3"];
         const TEST_KEY: &str = "IMV_TEST_VIDEO_KEY";
         const EXPECTED: &str = "IMV_TEST_VIDEO_EXPECTED";
         if let Some(expected) = std::env::var_os(EXPECTED) {
             super::configure_video_environment();
             let key = std::env::var(TEST_KEY).unwrap();
             assert_eq!(std::env::var_os(&key), Some(expected));
-            for other in KEYS.into_iter().filter(|other| *other != key) {
-                assert_eq!(std::env::var_os(other), Some("1".into()));
+            for (other, default) in VIDEO_ENVIRONMENT
+                .into_iter()
+                .filter(|(other, _)| *other != key)
+            {
+                assert_eq!(std::env::var_os(other), Some(default.into()));
             }
             return;
         }
 
-        for key in KEYS {
+        for (key, default) in VIDEO_ENVIRONMENT {
             for value in [None, Some("0"), Some("1"), Some("")] {
                 let mut child = std::process::Command::new(std::env::current_exe().unwrap());
                 child.args(["--exact", "tests::linux_video_environment"]);
-                for other in KEYS {
+                for (other, _) in VIDEO_ENVIRONMENT {
                     child.env_remove(other);
                 }
                 child.env(TEST_KEY, key);
-                child.env(EXPECTED, value.unwrap_or("1"));
+                child.env(EXPECTED, value.unwrap_or(default));
                 match value {
                     Some(value) => child.env(key, value),
                     None => child.env_remove(key),

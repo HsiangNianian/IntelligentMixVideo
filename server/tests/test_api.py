@@ -4,6 +4,7 @@ from importlib.metadata import version
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import Engine
 
 from .template_wire import detail_template, post_template, saved_template
 
@@ -75,6 +76,51 @@ def test_local_client_cors(client: TestClient, origin: str, method: str) -> None
     assert method in response.headers["access-control-allow-methods"]
     assert client.get("/template", headers={"Origin": origin}).headers["access-control-allow-origin"] == origin
 
+
+
+# 场景（回归）：未处理的异常原先由最外层生成 500、不带 CORS 头，跨域的 Tauri 与浏览器客户端拿不到响应，只能报
+# 「无法连接服务端」，例如旧版删除 AI 资产时记录已删、对象存储随后失败，弹窗报断线而资产其实已删除。
+def test_unhandled_errors_keep_cors_headers(monkeypatch: pytest.MonkeyPatch, template_db: Engine) -> None:
+    """主应用路由的未处理异常回答带来源头的 500 JSON；异常仍向外抛出，由服务端照常记录。应用启动只连临时 SQLite。"""
+    from server.app import app
+    from server.remotion_templates import sprite_router
+
+    async def crash(*args, **kwargs):
+        """模拟对象存储删除失败抛出的未处理异常。"""
+        raise OSError("ZOS delete failed")
+
+    monkeypatch.setattr(sprite_router, "run_in_threadpool", crash)
+    app.dependency_overrides[sprite_router.sprite_runtime] = lambda: None
+    path, origin = "/api/sprites/00000000-0000-4000-8000-000000000000", {"Origin": "tauri://localhost"}
+    try:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            response = client.delete(path, headers=origin)
+        # 不再走一遍应用启动（夹具的临时库在第一次退出时已关闭），只确认异常仍向外抛出。
+        with pytest.raises(OSError, match="ZOS delete failed"):
+            TestClient(app).delete(path, headers=origin)
+    finally:
+        app.dependency_overrides.clear()
+    assert response.status_code == 500
+    assert response.headers["access-control-allow-origin"] == "tauri://localhost"
+    assert response.json() == {"detail": "服务端内部错误，请稍后重试"}
+
+
+# 场景：挂载的 Remotion 应用自己回答 500 后，外层不再重复写入响应，来源头同样保留。
+def test_mounted_app_errors_are_answered_once(monkeypatch: pytest.MonkeyPatch, template_db: Engine) -> None:
+    """子应用的 500 原样送达并带来源头，不因重复写入而变成连接错误。应用启动只连临时 SQLite。"""
+    from server.app import app
+    from server.remotion_templates.api import app as remotion_app
+
+    def broken():
+        """模拟 Remotion 运行时构建时的意外错误。"""
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(remotion_app.state, "build_runtime", broken)
+    monkeypatch.delattr(remotion_app.state, "runtime", raising=False)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.get("/api/templates/capabilities", headers={"Origin": "tauri://localhost"})
+    assert response.status_code == 500
+    assert response.headers["access-control-allow-origin"] == "tauri://localhost"
 
 # 测试不受信任的网页来源和无效 localhost 端口都无法通过跨域预检。
 @pytest.mark.parametrize("origin", [

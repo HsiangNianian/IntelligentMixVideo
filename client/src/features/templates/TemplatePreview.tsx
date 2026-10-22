@@ -1,18 +1,18 @@
-/** SDK 预览组件：管理单个播放器、串行更新时间线，卸载时清理订阅和异步任务。 */
+/** SDK 预览组件：管理单个播放器、串行更新时间线，提示播放器加载不了的预览视频，卸载时清理订阅和异步任务。 */
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Maximize2, Pause, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Hint } from "@/components/Hint";
 import { Spinner } from "@/components/ui/spinner";
 import { textKey, type Draft, type EffectAsset, type MasterVideo, type PreviewMedia } from "./model";
-import { loadSDK, loadPreviewFont, readCatalog, type Player } from "./sdk";
+import { loadSDK, loadPreviewFont, readCatalog, watchPlayer, watchSdkMedia, type Player } from "./sdk";
 import { buildTimeline, buildPreviewRows, mergeSpriteRows, remotionTexts, type SpriteClip } from "./timeline";
 import { centeredPlayerTimeline } from "./centeredTransitions";
 import { PreviewTimeline, type PreviewTimelineHandle } from "./PreviewTimeline";
 import { SpriteOverlay, type SpriteOverlayHandle } from "./SpriteOverlay";
 import type { ResolvedTimeline } from "./tracks";
 import { MasterVideoInput } from "./MasterVideoInput";
-import { debugLog, describe, watchWindow } from "@/lib/diagnostics";
+import { debugLog, describe, MEDIA_ERRORS, watchWindow } from "@/lib/diagnostics";
 
 /** 编辑状态由父组件持有；目录只在 SDK 初始化成功后回传。 */
 interface Props {
@@ -67,6 +67,8 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   const [status, setStatus] = useState("正在加载预览组件…");
   const [ready, setReady] = useState(false);
   const [failed, setFailed] = useState(false);
+  // 播放器内部加载失败的预览视频：元数据读取成功不代表 SDK 能播放（编码、跨域等），失败时不能只显示“已就绪”。
+  const [mediaFailures, setMediaFailures] = useState<string[]>([]);
   const [seeking, setSeeking] = useState(false);
   const [time, setTime] = useState(0);
   const [canvas, setCanvas] = useState<Pick<MasterVideo, "width" | "height"> | null>(null);
@@ -93,6 +95,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
     let appliedTexts: string | undefined;
     let appliedResolved: typeof resolved;
     let subscription: { unsubscribe(): void } | undefined;
+    let stopPlayerLog: (() => void) | undefined;
     let seekTarget: number | null = null;
     let resumeAfterSeek = false;
     let seekFrame: number | undefined;
@@ -101,6 +104,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
     let playTimer: ReturnType<typeof setTimeout> | undefined;
     setReady(false);
     setFailed(false);
+    setMediaFailures([]);
     setStatus("正在加载预览组件…");
     if (!media) { setStatus("正在读取预览视频…"); return; }
 
@@ -242,6 +246,15 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
         // SDK 在 iframe 里运行，它的报错与 console 不会冒泡到主窗口，需要单独监听。
         watchWindow(frame.contentWindow!, "模板预览 SDK");
         const target = frame.contentDocument!;
+        // SDK 的媒体元素不挂到文档上，加载失败由此记录并按视频序号提示（SDK 会在地址后追加 #t= 片段）。
+        watchSdkMedia(target, (element) => {
+          if (disposed) return;
+          const url = (element.currentSrc || element.src).replace(/#.*$/, "");
+          const index = sources.findIndex((item) => item.url === url);
+          const reason = MEDIA_ERRORS[element.error?.code ?? 0] ?? "未知错误";
+          const message = `${index >= 0 ? `视频 ${index + 1} ` : "预览素材"}无法在播放器中播放（${reason}），请检查视频编码与跨域访问配置后重试预览。`;
+          setMediaFailures((items) => items.includes(message) ? items : [...items, message]);
+        });
         target.documentElement.style.height = "100%";
         target.body.style.cssText = "margin:0;height:100%;overflow:hidden";
         const surface = target.createElement("div");
@@ -275,8 +288,8 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
         catalog = readCatalog(sdk);
         catalogCallback.current(catalog);
         player.current = instance;
+        stopPlayerLog = watchPlayer(instance);
         subscription = instance.event$.subscribe((event) => {
-          if (/error/i.test(event.type)) debugLog("模板预览 SDK", `事件 ${event.type}：${describe(event.data)}`);
           if (disposed || active || !instance) return;
           if (event.type === "playerSeeked") {
             if (seekTarget !== null && event.data?.currentTime !== undefined && Math.abs(event.data.currentTime - seekTarget) <= 0.05)
@@ -356,6 +369,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       controller.abort();
       cancel();
       subscription?.unsubscribe();
+      stopPlayerLog?.();
       playAction.current = null;
       cancelPlaybackAction.current = null;
       seekAction.current = null;
@@ -401,7 +415,8 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       </div>
       <p role={failed || mediaError ? "alert" : "status"} className={failed || mediaError ? "text-xs text-destructive" : ready ? "sr-only" : "text-[11px] text-muted-foreground"}>{mediaError || status}</p>
       {mediaError && !media && <Button type="button" variant="outline" onClick={onRetryMedia}>重试读取视频</Button>}
-      {failed && <Button type="button" variant="outline" onClick={() => setAttempt((value) => value + 1)}>重试预览</Button>}
+      {mediaFailures.length > 0 && <div role="alert" className="space-y-1 text-xs text-destructive">{mediaFailures.map((message) => <p key={message}>{message}</p>)}</div>}
+      {(failed || mediaFailures.length > 0) && <Button type="button" variant="outline" onClick={() => setAttempt((value) => value + 1)}>重试预览</Button>}
       {notices.length > 0 && <ul aria-label="时间调整说明" className="space-y-1 text-xs text-muted-foreground">{notices.map((notice, index) => <li key={index}>{notice}</li>)}</ul>}
     </div></div>
     <div className="template-preview-timeline flex-1 px-4 pb-5 pt-4 lg:px-7"><div className="mx-auto max-w-[900px]"><div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><TimelineMark /><h2 className="text-[13px] font-semibold">时间轴</h2></div><div className="flex items-center gap-3 text-[11px] tabular-nums text-muted-foreground"><span className="font-semibold text-foreground">{time.toFixed(1)} / {duration.toFixed(1)} 秒</span><span>{draft.tracks.length} 个对象</span></div></div><PreviewTimeline ref={track} rows={timelineRows} disabled={!ready} time={time} duration={duration} selectedId={selectedId} onSelect={onSelect} onSeek={(value) => seekAction.current?.(value)} />

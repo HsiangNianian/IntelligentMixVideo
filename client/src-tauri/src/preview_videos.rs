@@ -51,7 +51,7 @@ fn check_len(len: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// 在目录锁下执行操作：写入与删除独占，竞争时报错供用户重试；列表与读取共享，
+/// 在目录锁下执行操作：写入与删除独占，短暂重试后仍被占用才报错供用户重试；列表与读取共享，
 /// 互相不阻塞，只等待进行中的写入完成，因此看不到中间状态。
 fn locked<T>(
     directory: &Path,
@@ -67,7 +67,7 @@ fn locked<T>(
         .open(directory.join(".lock"))
         .map_err(|error| format!("无法打开本地视频锁：{error}"))?;
     if exclusive {
-        lock.try_lock()
+        crate::file_lock::lock_exclusive(&lock)
             .map_err(|_| "本地预览视频正在被其他操作使用，请重试")?;
     } else {
         lock.lock_shared()
@@ -418,7 +418,8 @@ mod tests {
             .write(true)
             .open(dir.0.join(".lock"))
             .unwrap();
-        lock.try_lock().unwrap();
+        // 刚写完的锁可能还被其他用例创建的子进程短暂持有，与业务代码一样短暂重试。
+        crate::file_lock::lock_exclusive(&lock).unwrap();
         assert!(write(&dir.0, 1, "b.mp4", "video/mp4", b"new")
             .unwrap_err()
             .contains("请重试"));

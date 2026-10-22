@@ -230,12 +230,15 @@ style's own file.
   HappyZcool-2016) are not bundled: they are proprietary or their redistribution terms are not confirmed. Anyone
   holding a licence can upload them (the family name inside the file must match).
 - **Uploads**: `POST /api/templates/fonts` (multipart `file`, optional `label` and `preview`, `X-IMV-Device`) takes a
-  `.ttf`/`.otf` up to `IMV_FONT_UPLOAD_MAX_BYTES`. The backend only reads the font's names from the `name` table with
+  `.ttf`/`.otf` up to `IMV_FONT_UPLOAD_MAX_BYTES` (a larger file is a 413 that states the limit; an object store or
+  database failure is a 503 logged as `Font upload failed` with its cause). The backend only reads the font's names from the `name` table with
   bounds-checked Python and never decodes the font; the sandboxed Chrome and the user's own browser do. The family is
   the font's English (default-language) name; the display name is its own Chinese name when it has one, otherwise the
-  same family, and never the file name. Duplicates are found by content: a file whose SHA-256 is already registered
-  (an upload or a preinstalled font, also one that sync has not installed yet) is refused and the message names that
-  font. The file's style (name ID 17, else 2) places it: Italic or Oblique makes it an italic style, and the rest
+  same family, and never the file name. Duplicates are found by content and uploading is idempotent: a file whose
+  SHA-256 is already registered (an upload or a preinstalled font, whoever added it) is not stored again and the
+  answer is 200 with that font's card instead of 201, so a retry after a client timeout or another user's copy ends
+  where the first upload did (`FontExists` carries the registered font). A file equal to a preinstalled font that
+  sync has not installed yet has no card to return and is refused with 422 naming that font. The file's style (name ID 17, else 2) places it: Italic or Oblique makes it an italic style, and the rest
   names the weight. Regular (or no weight) and Bold files, upright or italic, join their family's uploaded card when
   that style is still empty, in any upload order (`Smiley Sans` Oblique is that card's italic). Any other weight is a
   card of its own named after it (`Montserrat Thin`, whose Thin Italic file is that card's italic). A variable font

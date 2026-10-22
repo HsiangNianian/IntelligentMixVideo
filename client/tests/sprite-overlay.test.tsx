@@ -1,9 +1,10 @@
-/** AI 资产叠加预览核心测试：就绪握手、按预览时间逐帧定位、区间外隐藏、只挂载当前时间附近的播放器、转交字体、旧资产降级；执行 bun run test。 */
-import { expect, spyOn, test } from "bun:test";
+/** AI 资产叠加预览核心测试：就绪握手、按预览时间逐帧定位、区间外隐藏、只挂载当前时间附近的播放器、转交字体、旧资产降级、迟迟不就绪写调试日志；执行 bun run test。 */
+import { expect, jest, spyOn, test } from "bun:test";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRef } from "react";
 import { SpriteOverlay, type SpriteOverlayHandle } from "@/features/templates/SpriteOverlay";
-import { fetchMock } from "./setup";
+import { openDiagnostics, resetDiagnostics } from "@/lib/diagnostics";
+import { fetchMock, mockDesktop } from "./setup";
 
 // 摆放的完整时长 5 秒长于预览里显示的 1～4 秒：同步消息带完整时长，Sprite 按它排布。
 const clip = { id: "sprite-a", spriteId: "s1", aspect: 9 / 16, name: "霓虹标题", start: 1, end: 4, length: 5 };
@@ -243,4 +244,67 @@ test("选中的资产可以用位置框调整位置", () => {
   expect(moves).toEqual([["sprite-a", 310, 960], ["sprite-a", 300, 910], ["sprite-a", 250, 960]]);
   view.rerender(<SpriteOverlay ref={ref} clips={[{ ...placed, canvas: { ...placed.canvas, movable: false } }]} stageAspect={16 / 9} initialTime={0} selectedId="sprite-a" onMove={() => {}} />);
   expect(screen.queryByRole("slider")).toBeNull();
+});
+
+// 场景：叠加播放器是跨源沙箱页面，内部报错无法监听，预览包缺失或脚本出错时只会一直隐藏；
+// 挂载 15 秒还没就绪时写调试日志（资产、页面是否已加载与地址），及时就绪的不记录，旧预览包记录能力不足。
+test("播放器迟迟不就绪时写调试日志", async () => {
+  const entries: { level: string; message: string }[] = [];
+  mockDesktop(async (command, args) => {
+    if (command === "diagnostics_open") return { path: "/data/diagnostics.log", viewerError: null };
+    if (command === "diagnostics_log") entries.push(args as { level: string; message: string });
+    return null;
+  });
+  await openDiagnostics();
+  try {
+    jest.useFakeTimers();
+    const second = { ...clip, id: "sprite-b", spriteId: "s2", name: "第二个资产" };
+    render(<SpriteOverlay ref={createRef<SpriteOverlayHandle>()} clips={[clip, second]} stageAspect={16 / 9} initialTime={2} />);
+    const [stuck, old] = ["霓虹标题", "第二个资产"].map((name) => screen.getByTitle<HTMLIFrameElement>(`AI 资产预览：${name}`));
+    fireEvent.load(stuck);
+    await act(async () => {
+      window.dispatchEvent(new MessageEvent("message", { source: old.contentWindow, data: { type: "imv-preview-ready", channel: new URL(old.src).hash.slice(1) } }));
+    });
+    act(() => { jest.advanceTimersByTime(15_000); });
+    jest.useRealTimers();
+    await waitFor(() => expect(entries.some((entry) => entry.level === "警告" && entry.message === `「霓虹标题」（资产 s1）的播放器 15 秒内没有就绪：页面已加载但没有发出就绪通知，可能是预览脚本出错；地址 ${stuck.src}`)).toBe(true));
+    expect(entries.some((entry) => entry.message === "「第二个资产」（资产 s2）的预览包较旧，不支持逐帧驱动，保持隐藏")).toBe(true);
+    expect(entries.some((entry) => entry.message.startsWith("「第二个资产」（资产 s2）的播放器"))).toBe(false);
+  } finally {
+    jest.useRealTimers();
+    resetDiagnostics();
+  }
+});
+
+// 场景：同一播放器更换资产时 React 复用 iframe 但地址变化；旧页面的握手不能沿用，
+// 新页面迟迟不就绪时应按新资产重新记录超时。
+test("同一播放器更换资产后重新等待就绪", async () => {
+  const entries: { level: string; message: string }[] = [];
+  mockDesktop(async (command, args) => {
+    if (command === "diagnostics_open") return { path: "/data/diagnostics.log", viewerError: null };
+    if (command === "diagnostics_log") entries.push(args as { level: string; message: string });
+    return null;
+  });
+  await openDiagnostics();
+  try {
+    jest.useFakeTimers();
+    const view = render(<SpriteOverlay ref={createRef<SpriteOverlayHandle>()} clips={[clip]} stageAspect={16 / 9} initialTime={2} />);
+    const first = screen.getByTitle<HTMLIFrameElement>("AI 资产预览：霓虹标题");
+    const oldSrc = first.src;
+    fireEvent.load(first);
+    await act(async () => {
+      window.dispatchEvent(new MessageEvent("message", { source: first.contentWindow, data: { type: "imv-preview-ready", channel: new URL(oldSrc).hash.slice(1), sync: true, host: true } }));
+    });
+    view.rerender(<SpriteOverlay ref={createRef<SpriteOverlayHandle>()} clips={[{ ...clip, spriteId: "s2" }]} stageAspect={16 / 9} initialTime={2} />);
+    const updated = screen.getByTitle<HTMLIFrameElement>("AI 资产预览：霓虹标题");
+    expect(updated).toBe(first);
+    expect(updated.src).not.toBe(oldSrc);
+    fireEvent.load(updated);
+    act(() => { jest.advanceTimersByTime(15_000); });
+    jest.useRealTimers();
+    await waitFor(() => expect(entries.some((entry) => entry.level === "警告" && entry.message === `「霓虹标题」（资产 s2）的播放器 15 秒内没有就绪：页面已加载但没有发出就绪通知，可能是预览脚本出错；地址 ${updated.src}`)).toBe(true));
+  } finally {
+    jest.useRealTimers();
+    resetDiagnostics();
+  }
 });
