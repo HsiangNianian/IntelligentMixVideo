@@ -346,6 +346,7 @@ version = "0.9.9"
 dependencies = [
  "base64 0.22.1",
  "imv-update-build",
+ "libc",
  "minisign-verify",
  "reqwest",
  "rusqlite",
@@ -360,6 +361,8 @@ dependencies = [
  "tiny_http",
  "tokio",
  "uuid",
+ "webview2-com",
+ "windows-core",
 ]
 
 [[package]]
