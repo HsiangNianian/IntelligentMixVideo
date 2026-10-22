@@ -1,4 +1,4 @@
-/** 字体库 HTTP 客户端：读取共享字体库、上传字体；上传失败直接展示服务端给出的原因（文件已在库里、格式、大小）。 */
+/** 字体库 HTTP 客户端：读取共享字体库、上传字体（按内容幂等）；上传失败直接展示服务端给出的原因（格式、大小、存储不可用）。 */
 import { updateFetch as fetch } from "@/lib/update-guard";
 import { ApiError, apiUrl } from "@/features/remotion_templates/api";
 import { deviceId } from "@/features/remotion_templates/localSessions";
@@ -64,8 +64,8 @@ async function detailOf(response: Response): Promise<string | null> {
   }
 }
 
-/** 带超时与设备头的请求；失败时抛出带公共提示的 ApiError，中断原样抛出。 */
-async function request<T>(path: string, init: RequestInit, timeoutMs: number): Promise<T> {
+/** 带超时与设备头的请求，返回解析后的 JSON 与状态码；失败时抛出带公共提示的 ApiError，中断原样抛出。 */
+async function request<T>(path: string, init: RequestInit, timeoutMs: number): Promise<{ status: number; body: T }> {
   const controller = new AbortController();
   const abort = () => controller.abort();
   init.signal?.addEventListener("abort", abort, { once: true });
@@ -81,7 +81,7 @@ async function request<T>(path: string, init: RequestInit, timeoutMs: number): P
         response.status,
         (await detailOf(response)) ?? (response.status === 413 ? "字体文件过大。" : `请求未完成（${response.status}），请重试。`),
       );
-    return (await response.json()) as T;
+    return { status: response.status, body: (await response.json()) as T };
   } catch (error) {
     if (init.signal?.aborted || error instanceof ApiError) throw error;
     if (controller.signal.aborted) throw new Error("请求超时，请重试。");
@@ -95,19 +95,41 @@ async function request<T>(path: string, init: RequestInit, timeoutMs: number): P
 
 /** 读取共享字体库（预装与用户上传），按登记顺序，默认字体在最前。 */
 export function listFonts(signal?: AbortSignal): Promise<FontInfo[]> {
-  return request<FontCard[]>("/fonts", { signal }, 20_000).then((cards) => cards.map(asCard));
+  return request<FontCard[]>("/fonts", { signal }, 20_000).then(({ body }) => body.map(asCard));
+}
+
+/** 一次上传的结果：文件所在的整张卡片，以及这个文件是这次新登记的（`created`）还是库里本来就有。 */
+export interface UploadedFont {
+  font: FontInfo;
+  created: boolean;
 }
 
 /**
  * 上传一个字体文件；`preview` 是用该字体画出的黑色透明底 PNG 预览条，下拉框用它展示字体。
- * 返回文件所在的整张卡片（同一家族的常规、粗体、斜体、粗斜体文件归入同一张卡片）。写入不自动重试。
+ * 返回文件所在的整张卡片（同一家族的常规、粗体、斜体、粗斜体文件归入同一张卡片）。上传按内容幂等：
+ * 库里已有同一个文件时服务端回答 200 与它的卡片（新登记为 201），超时后重试不会被拒绝。写入不自动重试。
  */
-export function uploadFont(file: File, label: string, preview: Blob | null, signal?: AbortSignal): Promise<FontInfo> {
+export function uploadFont(file: File, label: string, preview: Blob | null, signal?: AbortSignal): Promise<UploadedFont> {
   const form = new FormData();
   form.append("file", file);
   form.append("label", label);
   if (preview) form.append("preview", preview, "preview.png");
-  return request<FontCard>("/fonts", { method: "POST", body: form, signal }, 120_000).then(asCard);
+  return request<FontCard>("/fonts", { method: "POST", body: form, signal }, 120_000).then(({ status, body }) => ({
+    font: asCard(body),
+    created: status === 201,
+  }));
+}
+
+/** 字体文件内容的 SHA-256（十六进制），与字形的 `sha256` 对应；不在安全上下文（HTTP 部署的网页）时浏览器不提供摘要，返回 null。 */
+export async function fontDigest(bytes: ArrayBuffer): Promise<string | null> {
+  if (!globalThis.crypto?.subtle) return null;
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** 字体库里含有这个文件（按 SHA-256）的卡片；早期服务端的字形没有摘要，不会误配。 */
+export function cardWithFile(fonts: readonly FontInfo[], digest: string): FontInfo | undefined {
+  return fonts.find((font) => font.faces.some((face) => face.sha256 === digest));
 }
 
 /** 卡片或字形预览条的完整地址；没有预览条时返回 null，界面改用文字名称。 */

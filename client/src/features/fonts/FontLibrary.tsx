@@ -28,11 +28,11 @@ export function FontLibrary({ previewer, loader }: { previewer?: Previewer; load
   const input = useRef<HTMLInputElement>(null);
   const needle = query.trim().toLowerCase();
   const shown = (fonts ?? []).filter((font) => !needle || `${font.label} ${font.family} ${font.style}`.toLowerCase().includes(needle));
-  /** 上传一个字体；成功后字库已刷新，用轻提示告知，失败的原因显示在页面上。 */
+  /** 上传一个字体；成功后字库已刷新，用轻提示告知（库里本来就有这个文件时说明已在库里），失败的原因显示在页面上。 */
   async function addFont(file: File) {
-    const created = await upload(file, previewer);
+    const uploaded = await upload(file, previewer);
     if (input.current) input.current.value = "";
-    if (created) toast.success(`已添加字体：${created.family}`);
+    if (uploaded) toast.success(uploaded.created ? `已添加字体：${uploaded.font.family}` : `字体已在字体库里：${uploaded.font.family}`);
   }
   return (
     <section aria-label="字体库" className="space-y-4">
