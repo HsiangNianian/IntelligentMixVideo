@@ -1,4 +1,4 @@
-/** 原始画布浏览器回归：真实 SDK、视频解码、横竖屏切换、CSS 尺寸、全屏时 AI 资产叠加层的尺寸和卸载；执行 bun tests/preview-canvas.browser.mjs。 */
+/** 固定画布浏览器回归：真实 SDK、视频解码、横竖屏视频切换时画布固定 1080×1920、CSS 尺寸、全屏时 AI 资产叠加层的尺寸和卸载；执行 bun tests/preview-canvas.browser.mjs。 */
 import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
@@ -77,13 +77,14 @@ try {
   await page.goto(`http://localhost:${address.port}/__canvas_test`);
   await page.waitForFunction(() => typeof window.mountPreview === "function");
 
-  // 每次完成初始化后，实际 Canvas 像素与媒体元数据相同；切换后旧 iframe 被移除。
+  // 回归：画布原先跟着视频 1 的尺寸变。现在横屏、竖屏视频初始化后，实际 Canvas 像素都固定为成片的 1080×1920
+  // （横屏视频按比例放入、模糊填充留白）；切换后旧 iframe 被移除。
   let previous;
   const cases = [["landscape", 1920, 1080], ["portrait", 1080, 1920], ["landscape", 1920, 1080]];
   for (const [index, [name, width, height]] of cases.entries()) {
     const media = await page.evaluate(name => window.mountPreview(name), name);
     assert.deepEqual([media.width, media.height], [width, height]);
-    await page.getByText(`${width} × ${height}`, { exact: true }).waitFor();
+    await page.getByText("1080 × 1920", { exact: true }).waitFor();
     await page.getByText("预览已就绪，点击播放查看效果", { exact: true }).waitFor();
     if (previous) {
       assert.equal(await previous.evaluate(frame => frame.isConnected), false);
@@ -92,12 +93,12 @@ try {
     const frame = page.locator('iframe[title="模板预览播放器"]');
     assert.equal(await frame.count(), 1);
     previous = await frame.elementHandle();
-    await page.waitForFunction(({ width, height }) => {
+    await page.waitForFunction(() => {
       const canvases = [...document.querySelector('iframe').contentDocument.querySelectorAll('canvas')];
-      return canvases.length > 0 && canvases.every(canvas => canvas.width === width && canvas.height === height);
-    }, { width, height });
+      return canvases.length > 0 && canvases.every(canvas => canvas.width === 1080 && canvas.height === 1920);
+    });
     const box = await frame.boundingBox();
-    assert(Math.abs(box.width / box.height - width / height) < 0.01);
+    assert(Math.abs(box.width / box.height - 1080 / 1920) < 0.01);
     assert(box.height <= 601);
 
     // 实际播放推进后暂停，验证更换尺寸后的播放器仍可工作。
@@ -154,7 +155,7 @@ try {
     if (name === "portrait") {
       await page.setViewportSize({ width: 390, height: 844 });
       const narrow = await frame.boundingBox();
-      assert(Math.abs(narrow.width / narrow.height - width / height) < 0.01);
+      assert(Math.abs(narrow.width / narrow.height - 1080 / 1920) < 0.01);
       assert(narrow.height <= 844 * 0.6 + 1);
       assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       await page.setViewportSize({ width: 1440, height: 1000 });
