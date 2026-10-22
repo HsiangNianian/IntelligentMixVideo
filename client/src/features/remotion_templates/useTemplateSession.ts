@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import * as api from "./api";
 import { events } from "./events";
 import { settleJob } from "./backgroundSync";
-import { briefly, debugLog } from "@/lib/diagnostics";
+import { briefly, debugLog, oneLine } from "@/lib/diagnostics";
 import * as local from "./localSessions";
 import { defaultComposition } from "./composition";
 import {
@@ -204,7 +204,7 @@ export function useTemplateSession(onHistoryChange: () => void) {
     if (failed) parameterSave.current = false;
     // 只记录这次连接里亲眼看到的状态变化，重新打开会话时读到的历史失败不重复记录。
     if (failed && previous && previous.status !== job.status)
-      debugLog("字效会话", `任务 ${job.id} ${job.status}：${job.message ?? "没有说明"}`, job.status === "cancelled" ? "信息" : "警告");
+      debugLog("字效会话", `任务 ${job.id} ${job.status}：${oneLine(job.message ?? "没有说明", 200)}`, job.status === "cancelled" ? "信息" : "警告");
     publish({
       job,
       ...("created_at" in job

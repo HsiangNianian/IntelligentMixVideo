@@ -134,9 +134,11 @@ const MEDIA_STALLS: Record<string, string> = { stalled: "数据停止到达（st
  * 返回仍存活的媒体元素（供调试模式的播放汇总统计丢帧）；只保留弱引用，SDK 释放的元素照常回收。
  */
 export function watchSdkMedia(target: Document, onFailure: (media: HTMLMediaElement) => void): () => HTMLMediaElement[] {
+  const trackable = typeof WeakRef === "function";
   const created = new Set<WeakRef<HTMLMediaElement>>();
-  /** 取出仍存活的元素，顺带清掉已回收的弱引用。 */
+  /** 取出仍存活的元素，顺带清掉已回收的弱引用；没有 WeakRef 的 WebView 不统计。 */
   const alive = () => {
+    if (!trackable) return [];
     const elements: HTMLMediaElement[] = [];
     for (const reference of created) {
       const element = reference.deref();
@@ -151,9 +153,11 @@ export function watchSdkMedia(target: Document, onFailure: (media: HTMLMediaElem
     if (!/^(video|audio)$/i.test(tagName)) return element;
     const media = element as HTMLMediaElement;
     const tag = tagName.toLowerCase();
-    // 每次修改都会重建 SDK 的视频，登记过多时先清掉已回收的弱引用。
-    if (created.size > 50) alive();
-    created.add(new WeakRef(media));
+    if (trackable) {
+      // 每次修改都会重建 SDK 的视频，登记过多时先清掉已回收的弱引用。
+      if (created.size > 50) alive();
+      created.add(new WeakRef(media));
+    }
     media.addEventListener("error", () => {
       if (!media.getAttribute("src")) return;
       // 重新加载或切换素材会中止上一次加载；这不是素材损坏，不提示预览失败。

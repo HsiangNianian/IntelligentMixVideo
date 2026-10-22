@@ -12,6 +12,8 @@ import type { Player } from "./sdk";
 const STUTTER_MS = 100;
 /** 短于它的播放不写汇总：定位、重播的瞬间切换不代表实际播放。 */
 const MIN_SESSION_MS = 300;
+/** 一次播放最多逐条记录的长帧数：超出部分只计数，避免长时间卡顿积累大量对象。 */
+const MAX_SESSION_LONG_FRAMES = 500;
 
 /** 视频元素当前累计的丢帧与总帧数；音频元素与不支持的 WebView 返回 undefined。 */
 function quality(media: HTMLMediaElement) {
@@ -40,6 +42,7 @@ type Session = {
   waits: number;
   baseline: Map<HTMLMediaElement, { dropped: number; total: number }>;
   longFrames: LongFrame[];
+  omittedLongFrames: number;
   heap?: number;
   release: () => void;
 };
@@ -60,10 +63,13 @@ export function watchPlayback(player: Pick<Player, "event$">, videos: () => HTML
       if (value) baseline.set(media, value);
     }
     const now = performance.now();
-    const state: Session = { startedAt: now, from, frames: 0, lastFrame: now, longestGap: 0, stutters: 0, waits: 0, baseline, longFrames: [], heap: heapUsed(), release: () => {} };
+    const state: Session = { startedAt: now, from, frames: 0, lastFrame: now, longestGap: 0, stutters: 0, waits: 0, baseline, longFrames: [], omittedLongFrames: 0, heap: heapUsed(), release: () => {} };
     const waited = () => { state.waits++; };
     for (const media of current) media.addEventListener("waiting", waited);
-    const stopFrames = onLongFrame((frame) => { state.longFrames.push(frame); });
+    const stopFrames = onLongFrame((frame) => {
+      if (state.longFrames.length < MAX_SESSION_LONG_FRAMES) state.longFrames.push(frame);
+      else state.omittedLongFrames++;
+    });
     state.release = () => {
       for (const media of current) media.removeEventListener("waiting", waited);
       stopFrames();
@@ -97,7 +103,9 @@ export function watchPlayback(player: Pick<Player, "event$">, videos: () => HTML
       total ? `视频丢帧 ${dropped}/${total}` : "视频丢帧无法统计",
       `等待数据 ${state.waits} 次`,
       !longFramesObserved() ? "主线程长帧：当前 WebView 不支持统计"
-        : state.longFrames.length ? `主线程长帧 ${summarizeLongFrames(state.longFrames)}` : "无主线程长帧",
+        : state.longFrames.length
+          ? `主线程长帧 ${summarizeLongFrames(state.longFrames)}${state.omittedLongFrames ? `（另有 ${state.omittedLongFrames} 次未记录）` : ""}`
+          : "无主线程长帧",
       ...(heap !== undefined && state.heap !== undefined ? [`JS 内存 ${heap >= state.heap ? "+" : ""}${((heap - state.heap) / 1048576).toFixed(1)} MB`] : []),
     ];
     const poor = fps < 20 || state.longestGap > 250 || (total > 0 && dropped / total > 0.05);

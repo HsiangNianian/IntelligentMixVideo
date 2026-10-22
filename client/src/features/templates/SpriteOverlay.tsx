@@ -9,7 +9,7 @@ import { useEffect, useImperativeHandle, useRef, useState, type KeyboardEvent, t
 import { apiBase } from "@/lib/api-base";
 import { HOST_FONTS, sendPreviewFonts } from "@/features/sprites/previewFonts";
 import type { SpriteClip } from "./timeline";
-import { debugLog, diagnosticsEnabled } from "@/lib/diagnostics";
+import { debugLog, diagnosticsEnabled, oneLine } from "@/lib/diagnostics";
 
 /** 父预览仅推送当前时间；播放、暂停、拖动都以同一时间驱动，不会产生时钟漂移。 */
 export interface SpriteOverlayHandle {
@@ -26,9 +26,10 @@ const KEEP_AFTER_SECONDS = 1;
 const RELEASE_MARGIN_SECONDS = 2;
 /** 播放器挂载后等待就绪通知的时长，与资产封面相同；超时写调试日志（不改变界面，页面仍可能稍后就绪）。 */
 const READY_TIMEOUT_MS = 15_000;
-/** 调试模式下记录偏慢的握手与更新：就绪超过 3 秒、参数或位置更新到画面超过 0.5 秒。 */
+/** 调试模式下记录偏慢的握手与更新：就绪超过 3 秒、参数或位置更新到画面超过 0.5 秒；未回报的请求 10 秒后清理。 */
 const READY_SLOW_MS = 3000;
 const UPDATE_SLOW_MS = 500;
+const UPDATE_TIMEOUT_MS = 10_000;
 
 /**
  * 当前时间附近需要挂载播放器的片段；其余片段不创建播放器，每个播放器都是一个独立页面，常驻会占用内存与 CPU。
@@ -91,9 +92,14 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
     sent.current.set(clip.id, key);
     requests.current += 1;
     if (diagnosticsEnabled()) {
-      // 预览页没回报时不会删除，积累过多就整体清空。
-      if (updates.current.size > 50) updates.current.clear();
-      updates.current.set(requests.current, { id: clip.id, at: performance.now() });
+      const now = performance.now();
+      for (const [requestId, update] of updates.current)
+        if (now - update.at > UPDATE_TIMEOUT_MS) updates.current.delete(requestId);
+      if (updates.current.size >= 50) {
+        const [oldest] = [...updates.current].sort((a, b) => a[1].at - b[1].at);
+        if (oldest) updates.current.delete(oldest[0]);
+      }
+      updates.current.set(requests.current, { id: clip.id, at: now });
     }
     frame.contentWindow?.postMessage({ type: "imv-preview-update", channel: channels.current.get(clip.id), requestId: requests.current, values, background: "", host: { transform } }, "*");
   }
@@ -185,7 +191,8 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
       const label = `「${clip?.name ?? id}」（资产 ${clip?.spriteId ?? "未知"}）`;
       // 预览页自己发现的问题（如背景或字体加载失败）原来被忽略，现在写进日志。
       if (event.data?.type === "imv-preview-error") {
-        debugLog("AI 资产预览", `${label}的预览页报错：${String(event.data.message ?? "未知错误")}`);
+        if (typeof event.data.requestId === "number") updates.current.delete(event.data.requestId);
+        debugLog("AI 资产预览", `${label}的预览页报错：${oneLine(String(event.data.message ?? "未知错误"), 200)}`);
         return;
       }
       if (event.data?.type === "imv-preview-rendered") {

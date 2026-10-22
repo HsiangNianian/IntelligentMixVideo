@@ -114,7 +114,7 @@ export function describeMedia(media: HTMLMediaElement): string {
 }
 
 /** 将空白和多行压成一行，避免控件名称破坏日志的单条记录格式。 */
-function oneLine(value: string, limit = MAX_CONTROL_LABEL): string {
+export function oneLine(value: string, limit = MAX_CONTROL_LABEL): string {
   const text = value.replace(/\s+/g, " ").trim();
   return text.length > limit ? `${text.slice(0, limit)}…` : text;
 }
@@ -340,11 +340,35 @@ function requestLabel(input: RequestInfo | URL, init?: RequestInit): string | un
   return `${method} ${url.origin === window.location.origin ? "" : url.host}${url.pathname}`;
 }
 
+/** 失败响应正文最多读取的字节数：足够覆盖 200 个中文字符，超过后取消读取，避免大响应或流式响应拖住日志。 */
+const RESPONSE_DETAIL_BYTES = 1024;
+
 /** 失败响应的说明摘要：只读取文本或 JSON 正文的开头，二进制（如 Protobuf）不读。读取副本，不影响调用方。 */
 async function responseDetail(response: Response): Promise<string> {
-  if (!/json|text/.test(response.headers.get("content-type") ?? "")) return "";
   try {
-    const text = oneLine(await response.clone().text(), 200);
+    if (!/json|text/.test(response.headers.get("content-type") ?? "")) return "";
+    const reader = response.clone().body?.getReader();
+    if (!reader) return "";
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    while (size < RESPONSE_DETAIL_BYTES) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value?.length) continue;
+      chunks.push(value);
+      size += value.length;
+    }
+    if (size >= RESPONSE_DETAIL_BYTES) void reader.cancel().catch(() => {});
+    else reader.releaseLock();
+    const bytes = new Uint8Array(Math.min(size, RESPONSE_DETAIL_BYTES));
+    let offset = 0;
+    for (const chunk of chunks) {
+      const part = chunk.subarray(0, bytes.length - offset);
+      bytes.set(part, offset);
+      offset += part.length;
+      if (offset >= bytes.length) break;
+    }
+    const text = oneLine(new TextDecoder().decode(bytes), 200);
     return text ? `：${text}` : "";
   } catch {
     return "";
@@ -366,7 +390,9 @@ function watchRequests(): () => void {
       const response = await original(input, init);
       const elapsed = performance.now() - started;
       if (!response.ok)
-        void responseDetail(response).then((detail) => debugLog("请求", `${label} → ${response.status}（${duration(elapsed)}）${detail}`, response.status >= 500 ? "错误" : "警告"));
+        void responseDetail(response)
+          .then((detail) => debugLog("请求", `${label} → ${response.status}（${duration(elapsed)}）${detail}`, response.status >= 500 ? "错误" : "警告"))
+          .catch(() => {});
       else if (elapsed > SLOW_REQUEST_MS) debugLog("请求", `${label} 用时 ${duration(elapsed)}`, "警告");
       return response;
     } catch (error) {
@@ -514,7 +540,11 @@ function observeLongFrames() {
       else if (frame.duration >= LONG_FRAME_LOG_MS) debugLog("页面", `主线程卡顿 ${summarizeLongFrames([frame])}`, "警告");
     }
   });
-  observer.observe({ type });
+  try {
+    observer.observe({ type });
+  } catch {
+    return;
+  }
   stopLongFrames = () => observer.disconnect();
 }
 

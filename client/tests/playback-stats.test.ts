@@ -124,3 +124,17 @@ test("播放之外的长帧超过 300 ms 才逐条记录", async () => {
   expect(entries.filter((entry) => entry.message.startsWith("主线程卡顿")).map((entry) => entry.message))
     .toEqual(["主线程卡顿 1 次共 420 ms（阻塞 370 ms，样式布局与绘制 0 ms），主要来自 应用 400 ms（commitRoot）"]);
 });
+
+// 场景：长时间持续卡顿。逐条记录最多保留 500 个长帧，其余只计数并在汇总里注明，避免会话期间无限增长。
+test("播放汇总限制逐条长帧的数量", async () => {
+  await openDiagnostics();
+  const { emit } = setup();
+  emit({ type: "playerStateChange", data: { state: "playing", currentTime: 0 } });
+  FakeObserver.current!.emit(Array.from({ length: 501 }, (_, index) => ({
+    entryType: "long-animation-frame", startTime: index, duration: 60, blockingDuration: 10, renderStart: 0, scripts: [],
+  })));
+  clock = 1400;
+  emit({ type: "playerStateChange", data: { state: "paused", currentTime: 0.4 } });
+  await waitFor(() => expect(entries.some((entry) => entry.message.startsWith("播放 "))).toBe(true));
+  expect(entries.find((entry) => entry.message.startsWith("播放 "))!.message).toContain("（另有 1 次未记录）");
+});

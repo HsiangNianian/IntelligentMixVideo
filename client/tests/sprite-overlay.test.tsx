@@ -331,11 +331,11 @@ test("记录预览页报错与偏慢的参数更新", async () => {
     clock = 800;
     await send({ type: "imv-preview-rendered", requestId: update.requestId });
     await send({ type: "imv-preview-rendered", requestId: update.requestId });
-    await send({ type: "imv-preview-error", message: "预览字体加载失败，请重试。" });
+    await send({ type: "imv-preview-error", message: "预览字体加载失败，\n请重试。" });
     await waitFor(() => expect(entries.some((entry) => entry.message.includes("预览页报错"))).toBe(true));
     expect(entries.filter((entry) => entry.message.startsWith("「霓虹标题」")).map((entry) => [entry.level, entry.message])).toEqual([
       ["警告", "「霓虹标题」（资产 s1）参数或位置更新到画面用时 800 ms"],
-      ["错误", "「霓虹标题」（资产 s1）的预览页报错：预览字体加载失败，请重试。"],
+      ["错误", "「霓虹标题」（资产 s1）的预览页报错：预览字体加载失败， 请重试。"],
     ]);
   } finally {
     resetDiagnostics();

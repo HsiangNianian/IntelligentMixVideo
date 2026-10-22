@@ -100,3 +100,35 @@ test("记录窗口与显示器变化", async () => {
     `窗口大小 ${window.innerWidth}×${window.innerHeight}`,
   ]);
 });
+
+// 场景：后端返回大体积或不会结束的错误正文。只读取开头并在达到上限后取消，失败记录仍能写出，不会等待整个响应。
+test("失败正文只读开头，不等待整个响应", async () => {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) { controller.enqueue(new TextEncoder().encode("x".repeat(4096))); },
+  });
+  fetchMock.mockImplementation((async () => new Response(body, { status: 500, headers: { "content-type": "text/plain" } })) as unknown as typeof fetch);
+  await openDiagnostics();
+  await fetch("http://api.test:8000/stream");
+  await waitFor(() => expect(messages("请求")).toHaveLength(1));
+  expect(messages("请求")[0]).toBe(`GET api.test:8000/stream → 500（0 ms）：${"x".repeat(200)}…`);
+});
+
+// 场景：部分 WebView 的 PerformanceObserver 拒绝观察长帧。打开日志窗口仍应成功，请求等其他采集照常启动。
+test("长帧观察失败不影响其他页面采集", async () => {
+  const original = Reflect.get(globalThis, "PerformanceObserver");
+  class BrokenObserver {
+    static supportedEntryTypes = ["long-animation-frame"];
+    observe() { throw new Error("unsupported"); }
+    disconnect() {}
+  }
+  Reflect.set(globalThis, "PerformanceObserver", BrokenObserver);
+  try {
+    fetchMock.mockImplementation((async () => { throw new TypeError("Failed to fetch"); }) as unknown as typeof fetch);
+    await openDiagnostics();
+    await fetch("http://api.test:8000/works").catch(() => {});
+    await waitFor(() => expect(messages("请求")).toHaveLength(1));
+    expect(messages("请求")[0]).toBe("GET api.test:8000/works 失败（0 ms）：TypeError: Failed to fetch");
+  } finally {
+    Reflect.set(globalThis, "PerformanceObserver", original);
+  }
+});
