@@ -79,8 +79,8 @@ test("终端窗口打不开时仍转发记录并返回日志路径", async () =>
   await waitFor(() => expect(entries.some((entry) => entry.message === "之后的错误")).toBe(true));
 });
 
-// 场景：Windows 上黑屏、卡顿多与显卡驱动或软件解码有关；环境记录带上 WebGL 报告的实际显卡与后端，
-// 以及 1080p 各编码能否解码、是否走硬件，探测用的 WebGL 上下文随即释放。
+// 场景：Windows 上黑屏、卡顿多与显卡驱动、软件解码或低配设备有关；环境记录带上 WebGL 报告的实际显卡与后端、
+// CPU 线程数，以及 1080p 各编码能否解码、是否走硬件。探测只在打开日志窗口后进行，WebGL 上下文随即释放。
 test("报告显卡与 1080p 硬件解码能力", async () => {
   desktop();
   const loseContext = mock();
@@ -99,8 +99,9 @@ test("报告显卡与 1080p 硬件解码能力", async () => {
   Object.defineProperty(navigator, "mediaCapabilities", { configurable: true, value: { decodingInfo } });
   try {
     startDiagnostics();
+    expect(HTMLCanvasElement.prototype.getContext).not.toHaveBeenCalled();
     await openDiagnostics();
-    await waitFor(() => expect(entries.some((entry) => entry.message === `显卡 ${names[10]} / ${names[11]}；devicePixelRatio=${window.devicePixelRatio}`)).toBe(true));
+    await waitFor(() => expect(entries.some((entry) => entry.message.startsWith(`显卡 ${names[10]} / ${names[11]}；devicePixelRatio=${window.devicePixelRatio}；CPU `))).toBe(true));
     await waitFor(() => expect(entries.some((entry) => entry.message === "1080p 解码 H.264=硬件 H.265=软件（可能卡顿） VP9=软件 AV1=不支持")).toBe(true));
     expect(loseContext).toHaveBeenCalledTimes(1);
     expect(decodingInfo.mock.calls[0][0]).toMatchObject({ type: "file", video: { width: 1920, height: 1080 } });
@@ -226,11 +227,15 @@ test("监听 iframe 的报错并标注来源", async () => {
   expect(describeValue(new Error("x"))).toStartWith("Error: x");
 });
 
-// 场景：桌面端某个本地预览视频读不回来时界面静默改用默认地址，调试日志写明槽位、文件名与原因。
+// 场景：桌面端某个本地预览视频读不回来时界面静默改用默认地址，调试日志写明槽位、文件名与原因；
+// 读回成功的写明大小与用时（接近上限的视频要完整经过 IPC，启动变慢时据此判断）。
 test("本地预览视频恢复失败写入调试日志", async () => {
-  desktop((command) => {
-    if (command === "preview_video_list") return [{ name: "a.mp4", type: "video/mp4" }, null, null];
-    if (command === "preview_video_read") throw "文件不可读";
+  let clock = 0;
+  spyOn(performance, "now").mockImplementation(() => clock);
+  desktop((command, args) => {
+    if (command === "preview_video_list") return [{ name: "a.mp4", type: "video/mp4" }, { name: "b.mp4", type: "video/mp4" }, null];
+    if (command === "preview_video_read" && args.slot === 1) throw "文件不可读";
+    if (command === "preview_video_read") { clock += 2400; return new ArrayBuffer(3 * 1048576); }
     return null;
   });
   startDiagnostics();
@@ -240,4 +245,5 @@ test("本地预览视频恢复失败写入调试日志", async () => {
   const fresh: typeof import("@/features/templates/localVideos") = await import(specifier);
   expect((await fresh.localPreviewVideos())[0]).toBeUndefined();
   await waitFor(() => expect(entries.some((entry) => entry.message === "视频 1（a.mp4）读取失败，改用默认地址：文件不可读")).toBe(true));
+  await waitFor(() => expect(entries.some((entry) => entry.message === "视频 2 读取 b.mp4（3.0 MiB）用时 2.4 秒")).toBe(true));
 });

@@ -101,3 +101,18 @@ test("素材加载 10 秒仍未完成时写警告", async () => {
   await logged("素材加载完成，用时 12.4 秒", "信息");
   expect(entries.filter((entry) => entry.message.startsWith("素材加载 10 秒仍未完成")).map((entry) => entry.message)).toEqual(["素材加载 10 秒仍未完成（2.00 秒）"]);
 });
+
+// 场景：旧 WebView 没有 WeakRef。仍能接管 createElement 创建媒体元素，只是放弃丢帧统计，不中断预览。
+test("没有 WeakRef 时仍可创建媒体元素", () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "WeakRef");
+  Object.defineProperty(globalThis, "WeakRef", { configurable: true, writable: true, value: undefined });
+  try {
+    const target = document.implementation.createHTMLDocument("player");
+    const alive = watchSdkMedia(target, () => {});
+    const video = target.createElement("video");
+    expect(video.tagName).toBe("VIDEO");
+    expect(alive()).toEqual([]);
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, "WeakRef", descriptor);
+  }
+});

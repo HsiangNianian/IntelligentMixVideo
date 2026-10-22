@@ -2,6 +2,7 @@
  * 本地预览视频：用户为视频 1～3 选择的文件只留在本机，不上传服务端。
  * 桌面端经 Tauri `preview_video_*` 命令复制到应用数据目录，首次使用时读回字节生成 blob URL；
  * 浏览器只登记在页面内存，刷新后回到默认地址。登记的 blob URL 在应用存活期间有效，被替换或移除时释放。
+ * 每次读写都把大小与用时写进调试日志：接近上限的视频要完整经过 IPC，启动或保存变慢时据此判断。
  */
 import { updateInvoke as invoke } from "@/lib/update-guard";
 import { isTauri } from "@tauri-apps/api/core";
@@ -22,6 +23,11 @@ let restored: Promise<void> | undefined;
 /** 当前登记的本地视频快照，弹窗据此区分文件与 URL 来源。 */
 export function localVideoSlots(): readonly (LocalVideo | undefined)[] {
   return [...slots];
+}
+
+/** 读写本地视频的调试记录：槽位、文件名、大小与用时。 */
+function logTransfer(action: string, index: number, name: string, bytes: number, started: number) {
+  debugLog("本地预览视频", `视频 ${index + 1} ${action} ${name}（${(bytes / 1048576).toFixed(1)} MiB）用时 ${((performance.now() - started) / 1000).toFixed(1)} 秒`, "信息");
 }
 
 /** 首次调用时读回桌面已保存的视频；读取列表失败抛错且下次调用重试，浏览器直接返回内存登记。 */
@@ -45,7 +51,9 @@ async function restore() {
   for (const [index, meta] of stored.entries()) {
     if (!meta || slots[index]) continue;
     try {
+      const started = performance.now();
       const blob = new Blob([await invoke<ArrayBuffer>("preview_video_read", { slot: index + 1 })], { type: meta.type });
+      logTransfer("读取", index, meta.name, blob.size, started);
       slots[index] ??= { name: meta.name, blob, url: URL.createObjectURL(blob) };
     } catch (reason) {
       // 该槽位不可读，按默认地址处理；界面不提示，只写调试日志。
@@ -56,9 +64,11 @@ async function restore() {
 
 /** 把数据写入桌面存储的指定槽位（索引从 0 开始）。 */
 async function save(index: number, name: string, blob: Blob) {
+  const started = performance.now();
   await invoke("preview_video_write", new Uint8Array(await blob.arrayBuffer()), {
     headers: { "x-imv-slot": String(index + 1), "x-imv-name": encodeURIComponent(name), "x-imv-type": blob.type },
   });
+  logTransfer("保存", index, name, blob.size, started);
 }
 
 /**
