@@ -91,9 +91,11 @@ export function watchPlayback(player: Pick<Player, "event$">, videos: () => HTML
     const fps = state.frames * 1000 / elapsed;
     let dropped = 0;
     let total = 0;
-    for (const [media, before] of state.baseline) {
+    // SDK 刚应用完时间线就开始播放时，正在播放的视频可能在开始统计之后才建好；这样的元素从零算起，否则汇总里没有它。
+    for (const media of new Set([...state.baseline.keys(), ...videos()])) {
       const after = quality(media);
       if (!after) continue;
+      const before = state.baseline.get(media) ?? { dropped: 0, total: 0 };
       dropped += Math.max(0, after.dropped - before.dropped);
       total += Math.max(0, after.total - before.total);
     }

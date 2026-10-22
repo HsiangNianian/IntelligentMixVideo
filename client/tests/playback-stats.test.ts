@@ -99,6 +99,21 @@ test("整段没有新画面时如实记录为停顿", async () => {
   expect(entries.find((entry) => entry.message.startsWith("播放 "))!.message).toStartWith("播放 1.9 秒（0.00→0.00 秒）：画面 0.0 fps，最长间隔 1900 ms，超过 100 ms 的停顿 1 次；");
 });
 
+// 回归：SDK 刚应用完时间线就开始播放时，正在播放的视频在开始统计之后才建好；原来只统计开始时已有的视频，
+// 汇总写成“视频丢帧无法统计”。开始之后才出现的视频从零算起。
+test("开始统计之后才建好的视频也计入丢帧", async () => {
+  await openDiagnostics();
+  let emit: (event: PlayerEvent) => void = () => {};
+  const videos: HTMLMediaElement[] = [];
+  watchPlayback({ event$: { subscribe(callback) { emit = callback; return { unsubscribe() {} }; } } }, () => videos);
+  emit({ type: "playerStateChange", data: { state: "playing", currentTime: 0 } });
+  videos.push(Object.assign(document.createElement("video"), { getVideoPlaybackQuality: () => ({ droppedVideoFrames: 1, totalVideoFrames: 45 }) }));
+  clock = 2500;
+  emit({ type: "playerStateChange", data: { state: "paused", currentTime: 1.5 } });
+  await waitFor(() => expect(entries.some((entry) => entry.message.startsWith("播放 "))).toBe(true));
+  expect(entries.find((entry) => entry.message.startsWith("播放 "))!.message).toContain("；视频丢帧 1/45；");
+});
+
 // 场景：普通使用（没打开日志窗口）时播放不做任何统计；定位、重播时一闪而过的播放也不写汇总。
 test("日志窗口未打开或播放太短时不写汇总", async () => {
   const { emit } = setup();
