@@ -1,6 +1,7 @@
 /** 字体库状态：读取共享字体库并提供上传；下拉选择器与字体库页面共用，卸载时取消读取。 */
 import { useUpdateBlocker } from "@/lib/update-guard";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ApiError } from "@/features/remotion_templates/api";
 import { cardWithFile, fontDigest, listFonts, uploadFont, type FontInfo, type UploadedFont } from "./api";
 import { fontDisplayName } from "./names";
 import { drawFontPreview } from "./preview";
@@ -63,7 +64,12 @@ export function useFonts() {
       await load();
       return uploaded;
     } catch (error) {
-      const stored = digest ? await load().then((list) => list && cardWithFile(list, digest!)) : undefined;
+      // 只有请求可能已经在服务端完成时才回读字体库：超时、断线、5xx，或旧服务端对重复文件回答的 422。
+      // 413 与无效字体的 422 已确定没有登记，再读一次只会拖慢真正的错误提示。
+      const maybeStored = !(error instanceof ApiError)
+        || error.status >= 500
+        || (error.status === 422 && error.message.includes("已经在字体库里"));
+      const stored = digest && maybeStored ? await load().then((list) => list && cardWithFile(list, digest!)) : undefined;
       if (stored) return { font: stored, created: false };
       setProblem(error instanceof Error ? error.message : "上传失败，请重试。");
       return null;

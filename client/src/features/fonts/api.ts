@@ -120,11 +120,18 @@ export function uploadFont(file: File, label: string, preview: Blob | null, sign
   }));
 }
 
-/** 字体文件内容的 SHA-256（十六进制），与字形的 `sha256` 对应；不在安全上下文（HTTP 部署的网页）时浏览器不提供摘要，返回 null。 */
+/**
+ * 字体文件内容的 SHA-256（十六进制），与字形的 `sha256` 对应；不在安全上下文（HTTP 部署的网页）时浏览器不提供摘要，
+ * 返回 null。摘要只是上传前的优化，计算失败也不能挡住上传：服务端按内容幂等，所以同样返回 null 走服务端。
+ */
 export async function fontDigest(bytes: ArrayBuffer): Promise<string | null> {
   if (!globalThis.crypto?.subtle) return null;
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  try {
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  } catch {
+    return null;
+  }
 }
 
 /** 字体库里含有这个文件（按 SHA-256）的卡片；早期服务端的字形没有摘要，不会误配。 */
