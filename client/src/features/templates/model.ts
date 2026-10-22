@@ -145,7 +145,7 @@ export interface EffectDraft {
   transition_duration_seconds: number;
 }
 
-/** 预览媒体信息由浏览器读取，用于本次时间计算、画布分辨率和画面比例。 */
+/** 预览媒体信息由浏览器读取，用于本次时间计算和素材适配；画布固定为 1080×1920，不随视频变化。 */
 export interface MasterVideo {
   url: string;
   duration: number;
