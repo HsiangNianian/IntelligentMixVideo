@@ -2,12 +2,12 @@
 //! 日志同时写入应用数据目录的 `data/diagnostics.log`，终端窗口只负责跟随该文件；
 //! 关闭窗口不会结束客户端，再次点击设置中的按钮可重新打开；找不到可用终端时照常写入文件，由页面提示路径。
 //! 原生记录在窗口打开前只保留最近的部分：Linux 启动时把标准错误接到管道，WebKit 网页进程继承它，
-//! GStreamer 与 GLib 的警告和页面记录写进同一个日志；Windows 记录 WebView2 子进程退出与 Chromium 日志
+//! GStreamer 与 GLib 的警告和页面记录写进同一个日志；Windows 记录 WebView2 子进程退出
 //! （见 `webview2` 子模块）；没有接管标准错误的平台另记录 Rust panic。
 
 mod webview2;
 #[cfg(windows)]
-pub use webview2::{log_webview2, watch_webview};
+pub use webview2::watch_webview;
 
 #[cfg(target_os = "linux")]
 use std::sync::{
@@ -230,9 +230,9 @@ fn forward(reader: std::io::PipeReader) {
     }
 }
 
-/// 按原生输出的常见标记判断级别：GStreamer 的 ERROR/WARN 列，GLib 的 CRITICAL/WARNING，Chromium 的 ERROR/WARNING，
-/// 以及 Linux 上随标准错误一起捕获的 Rust panic。
-#[cfg_attr(target_os = "macos", allow(dead_code))]
+/// 按 Linux 标准错误里常见的标记判断级别：GStreamer 的 ERROR/WARN 列，GLib 的 CRITICAL/WARNING，
+/// 以及随标准错误一起捕获的 Rust panic。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn native_level(line: &str) -> &'static str {
     if line.contains("ERROR") || line.contains("CRITICAL") || line.contains("panicked at") {
         "错误"
@@ -512,14 +512,6 @@ mod tests {
         assert_eq!(native_level("0:00:01.2 123 0x1 WARN  basesrc x"), "警告");
         assert_eq!(native_level("** (process:1): WARNING **: y"), "警告");
         assert_eq!(native_level("starry engine"), "信息");
-        assert_eq!(
-            native_level("[1:2:1022/101010.1:ERROR:gpu_process_host.cc(951)] GPU process exited"),
-            "错误"
-        );
-        assert_eq!(
-            native_level("[1:2:1022/101010.1:WARNING:decoder.cc(5)] fallback"),
-            "警告"
-        );
         assert_eq!(
             native_level("thread 'main' panicked at src/main.rs:1:1"),
             "错误"
