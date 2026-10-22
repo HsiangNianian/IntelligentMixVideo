@@ -131,14 +131,29 @@ const MEDIA_STALLS: Record<string, string> = { stalled: "数据停止到达（st
  * 在 SDK 加载前接管播放器文档的 createElement，给每个媒体元素挂上 error、stalled、waiting 监听，
  * 把地址、MediaError 码与加载状态写进调试日志；设置了地址的加载失败另交给 onFailure 在预览里提示
  * （SDK 清空地址或中止加载引起的 error 不是素材问题，分别忽略或只记信息）。监听随元素与播放器文档一起释放。
+ * 返回仍存活的媒体元素（供调试模式的播放汇总统计丢帧）；只保留弱引用，SDK 释放的元素照常回收。
  */
-export function watchSdkMedia(target: Document, onFailure: (media: HTMLMediaElement) => void) {
+export function watchSdkMedia(target: Document, onFailure: (media: HTMLMediaElement) => void): () => HTMLMediaElement[] {
+  const created = new Set<WeakRef<HTMLMediaElement>>();
+  /** 取出仍存活的元素，顺带清掉已回收的弱引用。 */
+  const alive = () => {
+    const elements: HTMLMediaElement[] = [];
+    for (const reference of created) {
+      const element = reference.deref();
+      if (element) elements.push(element);
+      else created.delete(reference);
+    }
+    return elements;
+  };
   const create = target.createElement.bind(target);
   target.createElement = ((tagName: string, options?: ElementCreationOptions) => {
     const element = create(tagName, options);
     if (!/^(video|audio)$/i.test(tagName)) return element;
     const media = element as HTMLMediaElement;
     const tag = tagName.toLowerCase();
+    // 每次修改都会重建 SDK 的视频，登记过多时先清掉已回收的弱引用。
+    if (created.size > 50) alive();
+    created.add(new WeakRef(media));
     media.addEventListener("error", () => {
       if (!media.getAttribute("src")) return;
       // 重新加载或切换素材会中止上一次加载；这不是素材损坏，不提示预览失败。
@@ -153,6 +168,7 @@ export function watchSdkMedia(target: Document, onFailure: (media: HTMLMediaElem
       media.addEventListener(type, () => debugLog(SOURCE, `${tag} ${label}；${describeMedia(media)}`, "警告"));
     return element;
   }) as Document["createElement"];
+  return alive;
 }
 
 /** 播放状态的日志级别：卡住（stalled）记警告、损坏（broken）记错误，其余（playing、paused、ended）记信息。 */

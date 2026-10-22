@@ -2,7 +2,7 @@
   "compilerOptions": {
     "target": "ES2020",
     "useDefineForClassFields": true,
-    "lib": ["ES2020", "DOM", "ES2022.Intl"],
+    "lib": ["ES2020", "DOM", "ES2022.Intl", "ES2021.WeakRef"],
     "module": "ESNext",
     "skipLibCheck": true,
     "types": ["bun"],

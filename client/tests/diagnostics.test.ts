@@ -79,8 +79,8 @@ test("终端窗口打不开时仍转发记录并返回日志路径", async () =>
   await waitFor(() => expect(entries.some((entry) => entry.message === "之后的错误")).toBe(true));
 });
 
-// 场景：Windows 上黑屏、卡顿多与显卡驱动或软件解码有关；环境记录带上 WebGL 报告的实际显卡与后端，
-// 以及 1080p 各编码能否解码、是否走硬件，探测用的 WebGL 上下文随即释放。
+// 场景：Windows 上黑屏、卡顿多与显卡驱动、软件解码或低配设备有关；环境记录带上 WebGL 报告的实际显卡与后端、
+// CPU 线程数，以及 1080p 各编码能否解码、是否走硬件。探测只在打开日志窗口后进行，WebGL 上下文随即释放。
 test("报告显卡与 1080p 硬件解码能力", async () => {
   desktop();
   const loseContext = mock();
@@ -99,8 +99,9 @@ test("报告显卡与 1080p 硬件解码能力", async () => {
   Object.defineProperty(navigator, "mediaCapabilities", { configurable: true, value: { decodingInfo } });
   try {
     startDiagnostics();
+    expect(HTMLCanvasElement.prototype.getContext).not.toHaveBeenCalled();
     await openDiagnostics();
-    await waitFor(() => expect(entries.some((entry) => entry.message === `显卡 ${names[10]} / ${names[11]}；devicePixelRatio=${window.devicePixelRatio}`)).toBe(true));
+    await waitFor(() => expect(entries.some((entry) => entry.message.startsWith(`显卡 ${names[10]} / ${names[11]}；devicePixelRatio=${window.devicePixelRatio}；CPU `))).toBe(true));
     await waitFor(() => expect(entries.some((entry) => entry.message === "1080p 解码 H.264=硬件 H.265=软件（可能卡顿） VP9=软件 AV1=不支持")).toBe(true));
     expect(loseContext).toHaveBeenCalledTimes(1);
     expect(decodingInfo.mock.calls[0][0]).toMatchObject({ type: "file", video: { width: 1920, height: 1080 } });
