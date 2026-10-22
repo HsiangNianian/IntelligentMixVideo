@@ -1,11 +1,12 @@
-/** SDK 预览组件：管理单个播放器、串行更新时间线，提示播放器加载不了的预览视频，卸载时清理订阅和异步任务。 */
+/** SDK 预览组件：管理单个播放器、串行更新时间线；IMS 授权或渲染不可用时降级为基础视频，卸载时清理订阅和异步任务。 */
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Maximize2, Pause, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Hint } from "@/components/Hint";
 import { Spinner } from "@/components/ui/spinner";
 import { textKey, type Draft, type EffectAsset, type MasterVideo, type PreviewMedia } from "./model";
-import { loadSDK, loadPreviewFont, readCatalog, watchPlayer, watchSdkMedia, type Player } from "./sdk";
+import { loadSDK, loadPreviewFont, readCatalog, waitForCanPlay, watchLicenseRequest, watchPlayer, watchSdkMedia, type CanPlayResult, type Player } from "./sdk";
+import { BasicVideoPreview } from "./BasicVideoPreview";
 import { buildTimeline, buildPreviewRows, mergeSpriteRows, PREVIEW_CANVAS, remotionTexts, type SpriteClip } from "./timeline";
 import { centeredPlayerTimeline } from "./centeredTransitions";
 import { PreviewTimeline, type PreviewTimelineHandle } from "./PreviewTimeline";
@@ -68,6 +69,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   const [status, setStatus] = useState("正在加载预览组件…");
   const [ready, setReady] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [basicFallback, setBasicFallback] = useState(false);
   // 播放器内部加载失败的预览视频：元数据读取成功不代表 SDK 能播放（编码、跨域等），失败时不能只显示“已就绪”。
   const [mediaFailures, setMediaFailures] = useState<string[]>([]);
   const [seeking, setSeeking] = useState(false);
@@ -98,6 +100,11 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
     let subscription: { unsubscribe(): void } | undefined;
     let stopPlayerLog: (() => void) | undefined;
     let stopPlayback: (() => void) | undefined;
+    let stopLicenseWatch: (() => void) | undefined;
+    let canPlayController: AbortController | undefined;
+    let basicRequested = false;
+    let mediaFailed = false;
+    let notifyMediaCreated: ((media: HTMLMediaElement) => void) | undefined;
     let seekTarget: number | null = null;
     let resumeAfterSeek = false;
     let seekFrame: number | undefined;
@@ -106,6 +113,8 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
     let playTimer: ReturnType<typeof setTimeout> | undefined;
     setReady(false);
     setFailed(false);
+    setBasicFallback(false);
+    basicRequested = false;
     setMediaFailures([]);
     setStatus("正在加载预览组件…");
     if (!media) { setStatus("正在读取预览视频…"); return; }
@@ -116,9 +125,25 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       resumeAfterSeek = false;
       clearTimeout(playTimer);
       clearTimeout(seekTimer);
+      canPlayController?.abort();
+      canPlayController = undefined;
       if (seekFrame !== undefined) cancelAnimationFrame(seekFrame);
       seekFrame = undefined;
       if (!disposed) setSeeking(false);
+    };
+
+    /** SDK 授权或渲染引擎不可用时切换到基础视频，只停用 IMS 文字与特效，不阻断普通视频播放。 */
+    const switchToBasicVideo = (reason: string) => {
+      if (disposed || mediaFailed || basicRequested) return;
+      basicRequested = true;
+      canPlayController?.abort();
+      canPlayController = undefined;
+      instance?.pause();
+      setBasicFallback(true);
+      setReady(false);
+      setFailed(false);
+      setStatus("IMS 渲染暂不可用，已切换基础视频预览；文字与特效暂不可用。");
+      debugLog("模板预览", `切换基础视频预览：${reason}`, "警告");
     };
 
     /** 定位超过等待时间时释放请求并展示错误，用户可重新加载当前预览。 */
@@ -153,11 +178,12 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
 
     // 避免异步旧时间线覆盖新配置；卸载后不再更新 React 状态。
     const update = async () => {
-      if (!instance || active || disposed) return;
+      if (!instance || active || disposed || basicRequested) return;
       active = true;
       setReady(false);
-      setFailed(false);
+      if (!mediaFailed) setFailed(false);
       let applied = revision;
+      let canPlay = Promise.resolve<CanPlayResult>("cancelled");
       try {
         do {
           applied = revision;
@@ -177,9 +203,13 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           // 清空 SDK 缓存的旧时间线，确保文字更新后只显示当前内容。
           instance.timeline = {};
           const playback = await centeredPlayerTimeline(timeline, controller.signal, transitionFrames);
-          if (disposed) return;
+          if (disposed || basicRequested) return;
           const framesReady = performance.now();
-          await instance.setTimeline(playback);
+          canPlayController = new AbortController();
+          const timelineApplied = instance.setTimeline(playback);
+          canPlay = waitForCanPlay(instance, timelineApplied, canPlayController.signal);
+          await timelineApplied;
+          if (basicRequested) return;
           // 调试模式下记录明显变慢的修改：改参数后预览迟迟不更新时，区分转场画面生成与播放器载入时间线。
           const applyFinished = performance.now();
           if (diagnosticsEnabled() && applyFinished - applyStarted > 1500)
@@ -200,17 +230,24 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           setTime(0);
           track.current?.setTime(0);
           overlay.current?.setTime(0);
-          setReady(true);
-          setStatus("预览已就绪，点击播放查看效果");
+          // 只有 canplay 才证明播放节点已建好；超时或取消都不能把预览标为可播放。
+          const readiness = await canPlay;
+          if (!disposed && !basicRequested && applied === revision && readiness === "canplay" && !mediaFailed) {
+            setReady(true);
+            setStatus("预览已就绪，点击播放查看效果");
+          } else if (!disposed && !basicRequested && applied === revision && readiness === "timeout" && !mediaFailed) {
+            switchToBasicVideo("等待 SDK canplay 超过 3 秒");
+          }
         }
       } catch (error) {
-        if (!disposed) {
+        if (!disposed && !basicRequested) {
           setStatus(error instanceof Error ? error.message : "预览失败");
           setFailed(true);
           debugLog("模板预览", `应用时间线失败：${describe(error)}`);
         }
       } finally {
         active = false;
+        canPlayController = undefined;
         if (!disposed && applied !== revision) void update();
       }
     };
@@ -254,22 +291,27 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
         // SDK 在 iframe 里运行，它的报错与 console 不会冒泡到主窗口，需要单独监听。
         watchWindow(frame.contentWindow!, "模板预览 SDK");
         const target = frame.contentDocument!;
+        stopLicenseWatch = watchLicenseRequest(frame.contentWindow!, (reason) => switchToBasicVideo(`授权请求失败：${reason}`));
         // SDK 的媒体元素不挂到文档上，加载失败由此记录并按视频序号提示（SDK 会在地址后追加 #t= 片段）。
         const sdkMedia = watchSdkMedia(target, (element) => {
-          if (disposed) return;
+          if (disposed || basicRequested) return;
+          mediaFailed = true;
+          setReady(false);
+          setFailed(true);
           const url = (element.currentSrc || element.src).replace(/#.*$/, "");
           const index = sources.findIndex((item) => item.url === url);
           const reason = MEDIA_ERRORS[element.error?.code ?? 0] ?? "未知错误";
           const message = `${index >= 0 ? `视频 ${index + 1} ` : "预览素材"}无法在播放器中播放（${reason}），请检查视频编码与跨域访问配置后重试预览。`;
+          setStatus("预览素材无法播放，请检查视频编码与跨域访问配置后重试预览。");
           setMediaFailures((items) => items.includes(message) ? items : [...items, message]);
-        });
+        }, (element) => notifyMediaCreated?.(element));
         target.documentElement.style.height = "100%";
         target.body.style.cssText = "margin:0;height:100%;overflow:hidden";
         const surface = target.createElement("div");
         surface.style.cssText = "width:100%;height:100%";
         target.body.append(surface);
         const sdk = await loadSDK(target, controller.signal);
-        if (disposed) return;
+        if (disposed || basicRequested) return;
         instance = new sdk({
           container: surface,
           mode: "component",
@@ -295,8 +337,11 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
         catalog = readCatalog(sdk);
         catalogCallback.current(catalog);
         player.current = instance;
-        stopPlayerLog = watchPlayer(instance);
-        stopPlayback = watchPlayback(instance, sdkMedia);
+        stopPlayerLog = watchPlayer(instance, (message) => switchToBasicVideo(`SDK 渲染失败：${message}`));
+        stopPlayback = watchPlayback(instance, sdkMedia, (listener) => {
+          notifyMediaCreated = listener;
+          return () => { if (notifyMediaCreated === listener) notifyMediaCreated = undefined; };
+        });
         subscription = instance.event$.subscribe((event) => {
           if (disposed || active || !instance) return;
           if (event.type === "playerSeeked") {
@@ -329,11 +374,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
         void update();
       })
       .catch((error) => {
-        if (!disposed) {
-          setStatus(error instanceof Error ? error.message : "SDK 初始化失败");
-          setFailed(true);
-          debugLog("模板预览", `播放器初始化失败：${describe(error)}`);
-        }
+        if (!disposed) switchToBasicVideo(`播放器初始化失败：${describe(error)}`);
       });
     // 定位完成后播放；暂停、更新或卸载时取消尚未开始的播放。
     playAction.current = (start) => {
@@ -379,6 +420,8 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       subscription?.unsubscribe();
       stopPlayerLog?.();
       stopPlayback?.();
+      stopLicenseWatch?.();
+      notifyMediaCreated = undefined;
       playAction.current = null;
       cancelPlaybackAction.current = null;
       seekAction.current = null;
@@ -400,7 +443,17 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       <div ref={stage} className="template-preview-canvas relative mx-auto aspect-video w-full overflow-hidden rounded-lg bg-black" style={canvas ? { aspectRatio: `${canvas.width} / ${canvas.height}`, maxWidth: `${48 * canvas.width / canvas.height}dvh`, "--preview-ratio": canvas.width / canvas.height } as CSSProperties : undefined} aria-label="模板视频预览">
         {/* 播放器与叠加层共用一个按画布比例排布的画面框：全屏时画布撑满屏幕，画面框仍按视频比例居中，字效与选择框随画面缩放而不是按整个屏幕排布。 */}
         <div className="template-preview-frame absolute inset-0 overflow-hidden">
-          <div ref={container} className="template-preview-player absolute inset-0 size-full" />
+          <div ref={container} className={`template-preview-player absolute inset-0 size-full ${basicFallback ? "invisible" : ""}`} />
+          {basicFallback && media && resolved && <BasicVideoPreview media={media} resolved={resolved} order={videoOrder}
+            onTime={(value) => {
+              const next = Math.max(0, Math.min(resolved.duration, value));
+              setTime(next);
+              track.current?.setTime(next);
+              overlay.current?.setTime(next);
+            }}
+            onReady={() => setStatus("IMS 渲染暂不可用，已切换基础视频预览；文字与特效暂不可用。")}
+            onError={() => { setFailed(true); setStatus("基础视频预览加载失败，请检查视频编码与跨域访问配置后重试。"); }}
+            onEnd={() => setStatus("基础视频播放结束，可使用原生进度条重新定位。")} />}
           {ready && canvas && onSelect && draft.tracks.filter((item) => (item.target === "title" || item.target === "subtitle") && item.enabled !== false && !remotionTexts(draft).has(textKey(item.target, item.language))).map((item) => {
             const interval = resolved?.tracks[item.id];
             if (!interval || time < interval.start || time >= interval.end) return null;
@@ -426,6 +479,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       {mediaError && !media && <Button type="button" variant="outline" onClick={onRetryMedia}>重试读取视频</Button>}
       {mediaFailures.length > 0 && <div role="alert" className="space-y-1 text-xs text-destructive">{mediaFailures.map((message) => <p key={message}>{message}</p>)}</div>}
       {(failed || mediaFailures.length > 0) && <Button type="button" variant="outline" onClick={() => setAttempt((value) => value + 1)}>重试预览</Button>}
+      {basicFallback && <Button type="button" variant="outline" onClick={() => setAttempt((value) => value + 1)}>重试 IMS 预览</Button>}
       {notices.length > 0 && <ul aria-label="时间调整说明" className="space-y-1 text-xs text-muted-foreground">{notices.map((notice, index) => <li key={index}>{notice}</li>)}</ul>}
     </div></div>
     <div className="template-preview-timeline flex-1 px-4 pb-5 pt-4 lg:px-7"><div className="mx-auto max-w-[900px]"><div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><TimelineMark /><h2 className="text-[13px] font-semibold">时间轴</h2></div><div className="flex items-center gap-3 text-[11px] tabular-nums text-muted-foreground"><span className="font-semibold text-foreground">{time.toFixed(1)} / {duration.toFixed(1)} 秒</span><span>{draft.tracks.length} 个对象</span></div></div><PreviewTimeline ref={track} rows={timelineRows} disabled={!ready} time={time} duration={duration} selectedId={selectedId} onSelect={onSelect} onSeek={(value) => seekAction.current?.(value)} />

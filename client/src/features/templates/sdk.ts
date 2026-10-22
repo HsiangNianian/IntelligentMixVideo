@@ -5,7 +5,7 @@
 import motions from "./motions.json";
 import bundledCatalog from "../../../../server/src/server/template/sdk_catalog.json";
 import type { Category, EffectAsset } from "./model";
-import { debugLog, describeMedia, type DiagnosticLevel } from "@/lib/diagnostics";
+import { briefly, debugLog, describeMedia, type DiagnosticLevel } from "@/lib/diagnostics";
 
 /** SDK 返回的原始目录项；不同目录分别使用 key 或 subType。 */
 interface CatalogItem {
@@ -33,7 +33,7 @@ export interface Player {
 /** 公开事件流里的一条事件；只声明用到的字段：播放状态、加载耗时（毫秒）与当前时间。 */
 export interface PlayerEvent {
   type: string;
-  data?: { currentTime?: number; time?: number; state?: string; useTime?: number };
+  data?: { currentTime?: number; time?: number; state?: string; useTime?: number; error?: string };
 }
 /** 示例媒体使用配置的 URL；回调将其直接交给 SDK。 */
 interface PlayerOptions {
@@ -130,10 +130,15 @@ const MEDIA_STALLS: Record<string, string> = { stalled: "数据停止到达（st
  * SDK 用不挂到文档上的 <video>/<audio> 播放素材，它们的事件到不了窗口监听，加载失败时 SDK 自己也只打印组件编号。
  * 在 SDK 加载前接管播放器文档的 createElement，给每个媒体元素挂上 error、stalled、waiting 监听，
  * 把地址、MediaError 码与加载状态写进调试日志；设置了地址的加载失败另交给 onFailure 在预览里提示
- * （SDK 清空地址或中止加载引起的 error 不是素材问题，分别忽略或只记信息）。监听随元素与播放器文档一起释放。
+ * （SDK 清空地址或中止加载引起的 error 不是素材问题，分别忽略或只记信息）。onMediaCreated 把播放期间新建的元素
+ * 通知给播放统计。监听随元素与播放器文档一起释放。
  * 返回仍存活的媒体元素（供调试模式的播放汇总统计丢帧）；只保留弱引用，SDK 释放的元素照常回收。
  */
-export function watchSdkMedia(target: Document, onFailure: (media: HTMLMediaElement) => void): () => HTMLMediaElement[] {
+export function watchSdkMedia(
+  target: Document,
+  onFailure: (media: HTMLMediaElement) => void,
+  onMediaCreated?: (media: HTMLMediaElement) => void,
+): () => HTMLMediaElement[] {
   const trackable = typeof WeakRef === "function";
   const created = new Set<WeakRef<HTMLMediaElement>>();
   /** 取出仍存活的元素，顺带清掉已回收的弱引用；没有 WeakRef 的 WebView 不统计。 */
@@ -158,6 +163,7 @@ export function watchSdkMedia(target: Document, onFailure: (media: HTMLMediaElem
       if (created.size > 50) alive();
       created.add(new WeakRef(media));
     }
+    onMediaCreated?.(media);
     media.addEventListener("error", () => {
       if (!media.getAttribute("src")) return;
       // 重新加载或切换素材会中止上一次加载；这不是素材损坏，不提示预览失败。
@@ -175,6 +181,100 @@ export function watchSdkMedia(target: Document, onFailure: (media: HTMLMediaElem
   return alive;
 }
 
+/** 应用时间线后等待 canplay 的上限：超时只表示无法确认可播放，不能据此把预览标为就绪。 */
+const CAN_PLAY_TIMEOUT_MS = 3_000;
+
+/** 等待 SDK 可播放事件的结果；只有 canplay 能证明播放节点已建好。 */
+export type CanPlayResult = "canplay" | "timeout" | "cancelled";
+
+/**
+ * 等 SDK 应用时间线后发出 canplay（播放节点建好、首帧画出）。setTimeline 返回时 SDK 还没建好播放节点，内部时长仍是 0，
+ * 这时开始播放会在 0 秒立即“播放结束”。订阅在调用 setTimeline 前建立，超时从它完成后再开始，避免应用时间线耗时吞掉等待窗口；
+ * 取消或超时不会冒充 canplay。signal 用于卸载新修订，timeline 失败时按取消结束。
+ */
+export function waitForCanPlay(
+  player: Pick<Player, "event$">,
+  timeline: Promise<unknown>,
+  signal?: AbortSignal,
+): Promise<CanPlayResult> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let subscription: { unsubscribe(): void } | undefined;
+    /** 结束等待并取消订阅与计时器。 */
+    function finish(result: CanPlayResult) {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      subscription?.unsubscribe();
+      signal?.removeEventListener("abort", cancelled);
+      resolve(result);
+    }
+    const cancelled = () => finish("cancelled");
+    subscription = player.event$.subscribe(({ type }) => { if (type === "canplay") finish("canplay"); });
+    if (settled) subscription.unsubscribe();
+    signal?.addEventListener("abort", cancelled, { once: true });
+    if (signal?.aborted) cancelled();
+    else void timeline.then(
+      () => { if (!settled) timer = setTimeout(() => finish("timeout"), CAN_PLAY_TIMEOUT_MS); },
+      cancelled,
+    );
+  });
+}
+
+/** SDK 5.2.2 渲染引擎初始化时固定请求的授权接口。 */
+const LICENSE_API = "https://vpp-license-proxy.aliyuncs.com/getWebCert";
+/** 授权请求迟迟不返回时不再等它决定预览是否可用，改走基础视频；原请求和响应保持原样。 */
+const LICENSE_WATCH_TIMEOUT_MS = 3_000;
+
+/**
+ * 只观察播放器窗口对授权接口的请求，不替换响应、不丢弃证书，也不改变 SDK 的授权判断。请求报错、非 2xx、
+ * 回应不是 JSON 或 3 秒未完成时通知调用方降级；其他请求原样转发。返回的函数恢复原 fetch 并清理计时器。
+ */
+export function watchLicenseRequest(view: Window, onFailure: (reason: string) => void): () => void {
+  const scope = view as Window & typeof globalThis;
+  const request = scope.fetch.bind(scope);
+  const timers = new Set<ReturnType<typeof setTimeout>>();
+  let stopped = false;
+  const wrapper = ((input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(typeof input === "object" && "url" in input ? input.url : input) !== LICENSE_API) return request(input, init);
+    let reported = false;
+    const response = request(input, init);
+    const timer = setTimeout(() => report(`TimeoutError: ${LICENSE_WATCH_TIMEOUT_MS / 1000} 秒没有回应`), LICENSE_WATCH_TIMEOUT_MS);
+    timers.add(timer);
+    /** 每个请求只降级一次，并清掉仍在等待的观察计时器。 */
+    function report(reason: string) {
+      if (reported || stopped) return;
+      reported = true;
+      clearTimeout(timer);
+      timers.delete(timer);
+      onFailure(reason);
+    }
+    /** 克隆响应后检查状态与 JSON，避免消费 SDK 随后要读取的原响应。 */
+    const inspect = async () => {
+      try {
+        const copy = response.then((value) => value.clone());
+        const value = await copy;
+        if (!value.ok) throw new Error(`HTTP ${value.status}`);
+        JSON.parse(await value.text());
+        clearTimeout(timer);
+        timers.delete(timer);
+      } catch (error) {
+        report(briefly(error));
+      }
+    };
+    void inspect();
+    return response;
+  }) as typeof fetch;
+  scope.fetch = wrapper;
+  return () => {
+    stopped = true;
+    for (const timer of timers) clearTimeout(timer);
+    timers.clear();
+    if (scope.fetch === wrapper) scope.fetch = request;
+  };
+}
+
 /** 播放状态的日志级别：卡住（stalled）记警告、损坏（broken）记错误，其余（playing、paused、ended）记信息。 */
 const STATE_LEVELS: Record<string, DiagnosticLevel> = { stalled: "警告", broken: "错误" };
 /** 素材加载超过该时长仍未完成时写一条警告。 */
@@ -190,11 +290,16 @@ function seconds(value: number | undefined) {
  * 以及开始加载素材后 10 秒仍没有加载完成（之后完成时补记用时）。SDK 的素材与播放失败事件不进公开事件流，
  * 由 watchSdkMedia 从媒体元素记录；逐帧的 render 等事件不记录。返回的函数取消订阅并清除计时器。
  */
-export function watchPlayer(player: Pick<Player, "event$">): () => void {
+export function watchPlayer(player: Pick<Player, "event$">, onRenderError?: (message: string) => void): () => void {
   let loading: { timer: ReturnType<typeof setTimeout>; warned: boolean } | undefined;
   const subscription = player.event$.subscribe(({ type, data = {} }) => {
     if (type === "playerStateChange" && data.state)
       debugLog(SOURCE, `播放状态 ${data.state}（${seconds(data.currentTime)}）`, STATE_LEVELS[data.state] ?? "信息");
+    else if (type === "renderError") {
+      const message = data.error || "渲染引擎初始化失败";
+      debugLog(SOURCE, `渲染失败：${message}`, "错误");
+      onRenderError?.(message);
+    }
     else if (type === "renderContextLost") debugLog(SOURCE, "WebGL 渲染上下文丢失，画面会黑屏直到恢复");
     else if (type === "renderContextRestart") debugLog(SOURCE, "WebGL 渲染上下文已恢复", "警告");
     else if (type === "loading" && !loading) {
