@@ -3,6 +3,25 @@
 本项目的版本变更由发布工作流根据 Conventional Commits 自动生成。
 推送正式版本 tag 后，成功发布的版本记录会自动写入此文件。
 
+## [v0.9.12] - 2026-10-22
+### New Features
+- [`6f8e54e`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/6f8e54e7756b0413e2d03eec7a1e35d41ab6d201) - **client**: diagnose template player failures and capture native logs *(PR [#230](https://github.com/HsiangNianian/IntelligentMixVideo/pull/230) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Bug Fixes
+- [`a8847b4`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/a8847b4e7e97bfc41506148afc4810004ebbf474) - recover font uploads stored after a client failure and keep CORS on 500s *(PR [#229](https://github.com/HsiangNianian/IntelligentMixVideo/pull/229) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Documentation Changes
+- [`316624c`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/316624cd2aa20fa9bc175fb186e58648112fef4b) - update CHANGELOG.md for v0.9.11 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
+
+### Chores
+- [`7bee5cc`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/7bee5ccd713a9993e1491fa525ce03f307253348) - **release**: prepare v0.9.12 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Other Changes
+- [`33af2d6`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/33af2d6f9a848dc856629fc049bd624344233267) - Merge remote-tracking branch 'upstream/main' into codex/release-v0.9.12 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`b15f8f4`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/b15f8f426cd3f91b27d0435283f7880158f8df8e) - Merge pull request [#231](https://github.com/HsiangNianian/IntelligentMixVideo/pull/231) from YUZHEthefool/codex/release-v0.9.12
+
+chore(release): promote dev to main for v0.9.12 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
 ## [v0.9.11] - 2026-10-21
 ### BREAKING CHANGES
 - due to [`815ea71`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/815ea711ac9fe7ae4f2fcd3c0d5943506131ebdf) - remove local templates and keep templates cloud-only *(PR [#223](https://github.com/HsiangNianian/IntelligentMixVideo/pull/223) by [@YUZHEthefool](https://github.com/YUZHEthefool))*:
@@ -1648,3 +1667,5 @@ feat(client): 在模板工作区页头添加时钟 *(commit by [@HsiangNianian](
 [v0.9.10]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.9...v0.9.10
 
 [v0.9.11]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.10...v0.9.11
+
+[v0.9.12]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.11...v0.9.12
