@@ -1,6 +1,6 @@
 [package]
 name = "client"
-version = "0.9.9"
+version = "0.9.11"
 description = "IntelligentMixVideo desktop client"
 edition = "2021"
 # 更新插件要求 Rust 1.90；文件锁使用标准库。
@@ -34,6 +34,8 @@ sha2 = "0.10"
 semver = "1"
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
+prost = "0.14"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 uuid = { version = "1", features = ["v4"] }
 # 大文件落盘经 block_in_place 让出 Tauri 的异步工作线程；与 tauri 共用同一运行时。
 tokio = { version = "1", features = ["rt-multi-thread"] }
