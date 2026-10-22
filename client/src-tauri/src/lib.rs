@@ -1,4 +1,4 @@
-//! 桌面入口：Windows 页面使用 localhost，Linux 隔离网页缓存，测试包按需监督内置服务，设置页可打开调试日志窗口（Windows 另收集 WebView2 子进程与 Chromium 日志）。
+//! 桌面入口：Windows 页面使用 localhost，Linux 隔离网页缓存，测试包按需监督内置服务，设置页可打开调试日志窗口（Windows 另记录 WebView2 子进程退出）。
 
 #[cfg(windows)]
 mod localhost;
@@ -48,8 +48,6 @@ pub fn run() {
             // 等本地资源服务绑定成功再创建窗口，避免先加载 tauri.localhost 触发 SDK 授权失败。
             context.config_mut().app.windows[0].create = false;
         }
-        // WebView2 的 Chromium 日志参数须在创建窗口之前写进配置。
-        diagnostics::log_webview2(&mut context);
         context
     };
     tauri::Builder::default()

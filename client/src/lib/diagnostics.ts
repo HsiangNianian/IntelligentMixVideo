@@ -1,7 +1,8 @@
 /**
  * 调试日志：桌面客户端持续在主窗口与模板预览 iframe 中记录错误、资源失败和控件操作；
  * 日志先保存在有界内存中，用户在设置里打开日志窗口后转发到原生终端日志文件；每条记录带发生时刻，
- * 补发的旧记录与原生日志（Linux 的 GStreamer 等）按实际时间对照。
+ * 补发的旧记录与原生日志按实际时间对照。设备与显卡探测、主线程长帧（卡顿）、请求失败与慢请求、内存趋势、
+ * 窗口与显示器变化只在日志窗口打开后采集，普通使用不受影响。
  * 浏览器不开启收集；相同记录合并，密码、密钥等敏感输入只记录“已隐藏”。
  */
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -100,6 +101,11 @@ export function describe(value: unknown): string {
   try { return JSON.stringify(value) ?? String(value); } catch { return String(value); }
 }
 
+/** 错误的名称与原因，不带调用栈：网络与连接错误的调用栈只指向 fetch 或读取流本身，没有排查价值。 */
+export function briefly(value: unknown): string {
+  return value instanceof Error ? `${value.name}: ${value.message}` : describe(value);
+}
+
 /** 媒体元素的地址、错误码与加载状态；报错时仍保留在元素上，须在清除地址之前读取。 */
 export function describeMedia(media: HTMLMediaElement): string {
   const error = media.error;
@@ -108,7 +114,7 @@ export function describeMedia(media: HTMLMediaElement): string {
 }
 
 /** 将空白和多行压成一行，避免控件名称破坏日志的单条记录格式。 */
-function oneLine(value: string, limit = MAX_CONTROL_LABEL): string {
+export function oneLine(value: string, limit = MAX_CONTROL_LABEL): string {
   const text = value.replace(/\s+/g, " ").trim();
   return text.length > limit ? `${text.slice(0, limit)}…` : text;
 }
@@ -246,13 +252,17 @@ export function startDiagnostics() {
   stopMain = watchWindow(window, "页面");
   const probe = document.createElement("video");
   debugLog("环境", `${navigator.userAgent}\n  解码能力 ${CODECS.map(([name, type]) => `${name}=${probe.canPlayType(type) || "不支持"}`).join(" ")}`, "信息");
-  reportGraphics();
+}
+
+/** 日志窗口是否已打开：卡顿统计等需要额外开销的采集只在打开后进行，普通使用不受影响。 */
+export function diagnosticsEnabled(): boolean {
+  return enabled;
 }
 
 /**
- * 报告显卡与硬件解码：WebGL 实际使用的显卡与图形后端（Windows 上是 ANGLE 的 Direct3D），以及 1080p 各编码
- * 能否解码、是否走硬件（MediaCapabilities 的 powerEfficient）。画面黑屏、卡顿多与显卡驱动或软件解码有关。
- * 探测用的 WebGL 上下文读取后立即释放；不支持的接口记为不可用，不影响其他记录。
+ * 报告设备与显卡：CPU 线程数与内存（Chromium 才有）、WebGL 实际使用的显卡与图形后端（Windows 上是 ANGLE 的 Direct3D），
+ * 以及 1080p 各编码能否解码、是否走硬件（MediaCapabilities 的 powerEfficient）。黑屏、卡顿多与显卡驱动、软件解码或
+ * 低配设备有关。打开日志窗口时才探测；WebGL 上下文读取后立即释放，不支持的接口记为不可用，不影响其他记录。
  */
 function reportGraphics() {
   const gl = document.createElement("canvas").getContext("webgl");
@@ -261,7 +271,8 @@ function reportGraphics() {
     : debug ? `${gl.getParameter(debug.UNMASKED_VENDOR_WEBGL)} / ${gl.getParameter(debug.UNMASKED_RENDERER_WEBGL)}`
     : String(gl.getParameter(gl.RENDERER));
   gl?.getExtension("WEBGL_lose_context")?.loseContext();
-  debugLog("环境", `显卡 ${renderer}；devicePixelRatio=${window.devicePixelRatio}`, "信息");
+  const memory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory;
+  debugLog("环境", `显卡 ${renderer}；devicePixelRatio=${window.devicePixelRatio}；CPU ${navigator.hardwareConcurrency || "未知"} 线程${memory ? `，内存约 ${memory} GB` : ""}`, "信息");
   if (!navigator.mediaCapabilities) return;
   void Promise.all(CODECS.map(async ([name, type]) => {
     try {
@@ -290,16 +301,274 @@ export async function openDiagnostics(): Promise<DiagnosticsOpened> {
     flushBuffer();
     reportRepeats();
     repeatTimer = setInterval(reportRepeats, 2000);
+    reportGraphics();
+    observeLongFrames();
+    stopPageWatchers = [watchRequests(), watchMemory(), watchDisplay()];
   }
   return opened;
+}
+
+/** 打开日志窗口后启动的页面采集（请求、内存、窗口），重置时逐个停止。 */
+let stopPageWatchers: (() => void)[] = [];
+
+/** Chromium 才有的 JS 堆用量（字节）；其他 WebView 返回 undefined。 */
+export function heapUsed(): number | undefined {
+  return (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize;
+}
+
+/** 字节数显示为一位小数的 MB。 */
+function megabytes(bytes: number): string {
+  return `${(bytes / 1048576).toFixed(1)} MB`;
+}
+
+/** 成功但超过它的请求也记录用时。 */
+const SLOW_REQUEST_MS = 3000;
+
+/**
+ * 请求的简短描述：方法与地址，去掉查询参数与片段（可能含签名或令牌），同源只写路径。
+ * Tauri 的 IPC 与资源协议（ipc、asset、tauri.localhost）不是业务请求，返回 undefined 不记录，日志转发本身也走 IPC。
+ */
+function requestLabel(input: RequestInfo | URL, init?: RequestInit): string | undefined {
+  let url: URL;
+  try {
+    url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
+  } catch {
+    return undefined;
+  }
+  if (!/^https?:$/.test(url.protocol) || /^(ipc|asset|tauri)\.localhost$/.test(url.hostname)) return undefined;
+  const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+  return `${method} ${url.origin === window.location.origin ? "" : url.host}${url.pathname}`;
+}
+
+/** 失败响应正文最多读取的字节数：足够覆盖 200 个中文字符，超过后取消读取，避免大响应或流式响应拖住日志。 */
+const RESPONSE_DETAIL_BYTES = 1024;
+
+/** 失败响应的说明摘要：只读取文本或 JSON 正文的开头，二进制（如 Protobuf）不读。读取副本，不影响调用方。 */
+async function responseDetail(response: Response): Promise<string> {
+  try {
+    if (!/json|text/.test(response.headers.get("content-type") ?? "")) return "";
+    const reader = response.clone().body?.getReader();
+    if (!reader) return "";
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    while (size < RESPONSE_DETAIL_BYTES) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value?.length) continue;
+      chunks.push(value);
+      size += value.length;
+    }
+    if (size >= RESPONSE_DETAIL_BYTES) void reader.cancel().catch(() => {});
+    else reader.releaseLock();
+    const bytes = new Uint8Array(Math.min(size, RESPONSE_DETAIL_BYTES));
+    let offset = 0;
+    for (const chunk of chunks) {
+      const part = chunk.subarray(0, bytes.length - offset);
+      bytes.set(part, offset);
+      offset += part.length;
+      if (offset >= bytes.length) break;
+    }
+    const text = oneLine(new TextDecoder().decode(bytes), 200);
+    return text ? `：${text}` : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * 记录主窗口的请求失败（网络错误与非 2xx，带状态码、用时与正文摘要）和超过 3 秒的慢请求，例如模板保存失败、
+ * 资产预览 404、预览字体下载慢、后端连不上；主动取消的请求不记录。返回恢复原 fetch 的函数。
+ */
+function watchRequests(): () => void {
+  const unpatched = window.fetch;
+  const original = unpatched.bind(window);
+  const patched = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const label = requestLabel(input, init);
+    if (!label) return original(input, init);
+    const started = performance.now();
+    try {
+      const response = await original(input, init);
+      const elapsed = performance.now() - started;
+      if (!response.ok)
+        void responseDetail(response)
+          .then((detail) => debugLog("请求", `${label} → ${response.status}（${duration(elapsed)}）${detail}`, response.status >= 500 ? "错误" : "警告"))
+          .catch(() => {});
+      else if (elapsed > SLOW_REQUEST_MS) debugLog("请求", `${label} 用时 ${duration(elapsed)}`, "警告");
+      return response;
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "AbortError"))
+        debugLog("请求", `${label} 失败（${duration(performance.now() - started)}）：${briefly(error)}`);
+      throw error;
+    }
+  };
+  window.fetch = patched as typeof window.fetch;
+  // 只在仍是本次替换时恢复，避免覆盖之后别处（如测试替身）再次替换的 fetch。
+  return () => { if (window.fetch === patched) window.fetch = unpatched; };
+}
+
+/** 内存趋势的采样间隔。 */
+const MEMORY_INTERVAL_MS = 60_000;
+
+/**
+ * 每分钟记录一次 JS 堆（Chromium 才有）及较上次的变化、页面元素与 iframe 数量，用来发现长时间使用后的泄漏
+ * （例如每次修改都重建的 SDK 视频、没有卸载的 AI 资产播放器）。返回停止函数。
+ */
+function watchMemory(): () => void {
+  let previous = heapUsed();
+  const timer = setInterval(() => {
+    const heap = heapUsed();
+    const change = heap !== undefined && previous !== undefined ? `（较上次 ${heap >= previous ? "+" : "-"}${megabytes(Math.abs(heap - previous))}）` : "";
+    debugLog("内存", `${heap !== undefined ? `JS 堆 ${megabytes(heap)}${change}，` : ""}页面元素 ${document.getElementsByTagName("*").length} 个，iframe ${document.getElementsByTagName("iframe").length} 个`, "信息");
+    previous = heap;
+  }, MEMORY_INTERVAL_MS);
+  return () => clearInterval(timer);
+}
+
+/**
+ * 记录窗口与显示器变化：缩放倍数（换显示器或改系统缩放，画面可能变糊或变慢）、页面转入后台（最小化时 SDK 自动暂停预览）、
+ * 进出全屏，以及停止调整后一秒的窗口大小。返回撤销监听的函数。
+ */
+function watchDisplay(): () => void {
+  let ratio: MediaQueryList | undefined;
+  let resizeTimer: ReturnType<typeof setTimeout> | undefined;
+  /** 监听当前缩放倍数失效；每次变化后按新的倍数重新监听。 */
+  const watchRatio = () => {
+    ratio?.removeEventListener("change", ratioChanged);
+    ratio = typeof window.matchMedia === "function" ? window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`) : undefined;
+    ratio?.addEventListener("change", ratioChanged);
+  };
+  const ratioChanged = () => {
+    debugLog("窗口", `缩放倍数变为 ${window.devicePixelRatio}（换了显示器或修改了系统缩放）`, "信息");
+    watchRatio();
+  };
+  const visibility = () => debugLog("窗口", document.hidden ? "页面转入后台（最小化或被遮挡），预览会自动暂停" : "页面回到前台", "信息");
+  const fullscreen = () => debugLog("窗口", document.fullscreenElement ? "进入全屏" : "退出全屏", "信息");
+  const resized = () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => debugLog("窗口", `窗口大小 ${window.innerWidth}×${window.innerHeight}`, "信息"), 1000);
+  };
+  watchRatio();
+  document.addEventListener("visibilitychange", visibility);
+  document.addEventListener("fullscreenchange", fullscreen);
+  window.addEventListener("resize", resized);
+  return () => {
+    ratio?.removeEventListener("change", ratioChanged);
+    document.removeEventListener("visibilitychange", visibility);
+    document.removeEventListener("fullscreenchange", fullscreen);
+    window.removeEventListener("resize", resized);
+    clearTimeout(resizeTimer);
+  };
+}
+
+/** 主线程长帧：绝对开始时刻（毫秒）、时长、阻塞时长、样式布局与绘制时长，以及各脚本的来源、函数与时长。 */
+export type LongFrame = { start: number; duration: number; blocking: number; render: number; scripts: { source: string; fn: string; duration: number }[] };
+/** long-animation-frame 条目里用到的字段；TypeScript 的 DOM 类型尚未收录该接口。 */
+type AnimationFrameEntry = PerformanceEntry & {
+  blockingDuration?: number;
+  renderStart?: number;
+  scripts?: { sourceURL?: string; sourceFunctionName?: string; invoker?: string; duration: number }[];
+};
+
+/** 播放之外单独记录的长帧下限；更短的停顿用户通常察觉不到，播放中的长帧交给播放汇总。 */
+const LONG_FRAME_LOG_MS = 300;
+const longFrameListeners = new Set<(frame: LongFrame) => void>();
+let stopLongFrames: (() => void) | undefined;
+
+/** 脚本来源的简称：阿里预览 SDK、应用自身的代码，其他来源按主机名。 */
+function scriptSource(url: string): string {
+  if (url.includes("video-editing-websdk")) return "阿里 SDK";
+  try {
+    const parsed = new URL(url);
+    return parsed.origin === window.location.origin ? "应用" : parsed.host;
+  } catch {
+    return "未知来源";
+  }
+}
+
+/** 毫秒数的显示：一秒以内用毫秒，以上用一位小数的秒。 */
+function duration(ms: number): string {
+  return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} 秒`;
+}
+
+/**
+ * 汇总一组长帧：次数、总时长、阻塞与样式布局绘制时长，以及按脚本来源合计、耗时最多的三个来源（各带耗时最多的函数）。
+ * 播放汇总与播放之外的单个长帧共用。
+ */
+export function summarizeLongFrames(frames: LongFrame[]): string {
+  const total = frames.reduce((sum, frame) => sum + frame.duration, 0);
+  const blocking = frames.reduce((sum, frame) => sum + frame.blocking, 0);
+  const render = frames.reduce((sum, frame) => sum + frame.render, 0);
+  const sources = new Map<string, { duration: number; functions: Map<string, number> }>();
+  for (const script of frames.flatMap((frame) => frame.scripts)) {
+    const source = sources.get(script.source) ?? { duration: 0, functions: new Map<string, number>() };
+    source.duration += script.duration;
+    source.functions.set(script.fn, (source.functions.get(script.fn) ?? 0) + script.duration);
+    sources.set(script.source, source);
+  }
+  const top = [...sources].sort((a, b) => b[1].duration - a[1].duration).slice(0, 3).map(([name, source]) => {
+    const [fn] = [...source.functions].sort((a, b) => b[1] - a[1])[0];
+    return `${name} ${duration(source.duration)}（${fn}）`;
+  });
+  return `${frames.length} 次共 ${duration(total)}（阻塞 ${duration(blocking)}，样式布局与绘制 ${duration(render)}）${top.length ? `，主要来自 ${top.join("、")}` : ""}`;
+}
+
+/** 把性能条目整理成长帧；longtask 没有脚本归因与渲染阶段，阻塞时长按超过 50 ms 的部分估算。 */
+function longFrame(entry: AnimationFrameEntry): LongFrame {
+  const end = entry.startTime + entry.duration;
+  return {
+    start: performance.timeOrigin + entry.startTime,
+    duration: entry.duration,
+    blocking: entry.blockingDuration ?? Math.max(0, entry.duration - 50),
+    render: entry.renderStart ? end - entry.renderStart : 0,
+    // 没有函数名时用触发方（如 VIDEO[src="…"].oncanplaythrough），去掉方括号里的地址，避免日志过长和写出视频地址。
+    scripts: (entry.scripts ?? []).map((script) => ({ source: scriptSource(script.sourceURL ?? ""), fn: script.sourceFunctionName || (script.invoker ?? "").replace(/\[[^\]]*\]/g, "") || "匿名函数", duration: script.duration })),
+  };
+}
+
+/**
+ * 日志窗口打开后观察主线程长帧（long-animation-frame，不支持时退回 longtask；WebKitGTK 两者都不支持）。
+ * 同源 iframe（模板预览 SDK）的长帧也报到主窗口并带脚本归因。有播放汇总在收集时交给它，否则超过 300 ms 的逐条记录。
+ */
+function observeLongFrames() {
+  const types = typeof PerformanceObserver === "undefined" ? [] : PerformanceObserver.supportedEntryTypes ?? [];
+  const type = types.includes("long-animation-frame") ? "long-animation-frame" : types.includes("longtask") ? "longtask" : undefined;
+  if (!type) return;
+  const observer = new PerformanceObserver((list) => {
+    for (const entry of list.getEntries() as AnimationFrameEntry[]) {
+      const frame = longFrame(entry);
+      if (longFrameListeners.size) for (const listener of longFrameListeners) listener(frame);
+      else if (frame.duration >= LONG_FRAME_LOG_MS) debugLog("页面", `主线程卡顿 ${summarizeLongFrames([frame])}`, "警告");
+    }
+  });
+  try {
+    observer.observe({ type });
+  } catch {
+    return;
+  }
+  stopLongFrames = () => observer.disconnect();
+}
+
+/** 是否在统计主线程长帧；不支持的 WebView 上播放汇总注明无法统计。 */
+export function longFramesObserved(): boolean {
+  return stopLongFrames !== undefined;
+}
+
+/** 收集期间接收每个长帧（播放汇总使用），返回取消函数；有接收者时长帧不再逐条记录。 */
+export function onLongFrame(listener: (frame: LongFrame) => void): () => void {
+  longFrameListeners.add(listener);
+  return () => { longFrameListeners.delete(listener); };
 }
 
 /** 测试之间恢复初始状态：撤销主窗口监听、停止重复计数并清空缓冲。 */
 export function resetDiagnostics() {
   stopMain?.();
+  stopLongFrames?.();
+  longFrameListeners.clear();
+  for (const stop of stopPageWatchers) stop();
+  stopPageWatchers = [];
   clearInterval(repeatTimer);
   started = enabled = false;
-  stopMain = repeatTimer = undefined;
+  stopMain = repeatTimer = stopLongFrames = undefined;
   buffer = [];
   bufferChars = 0;
   last = { key: "", level: "错误", source: "", repeats: 0 };

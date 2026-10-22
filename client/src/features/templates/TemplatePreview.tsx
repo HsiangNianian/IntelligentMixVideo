@@ -6,13 +6,14 @@ import { Hint } from "@/components/Hint";
 import { Spinner } from "@/components/ui/spinner";
 import { textKey, type Draft, type EffectAsset, type MasterVideo, type PreviewMedia } from "./model";
 import { loadSDK, loadPreviewFont, readCatalog, watchPlayer, watchSdkMedia, type Player } from "./sdk";
-import { buildTimeline, buildPreviewRows, mergeSpriteRows, remotionTexts, type SpriteClip } from "./timeline";
+import { buildTimeline, buildPreviewRows, mergeSpriteRows, PREVIEW_CANVAS, remotionTexts, type SpriteClip } from "./timeline";
 import { centeredPlayerTimeline } from "./centeredTransitions";
 import { PreviewTimeline, type PreviewTimelineHandle } from "./PreviewTimeline";
 import { SpriteOverlay, type SpriteOverlayHandle } from "./SpriteOverlay";
 import type { ResolvedTimeline } from "./tracks";
 import { MasterVideoInput } from "./MasterVideoInput";
-import { debugLog, describe, MEDIA_ERRORS, watchWindow } from "@/lib/diagnostics";
+import { debugLog, describe, diagnosticsEnabled, MEDIA_ERRORS, watchWindow } from "@/lib/diagnostics";
+import { watchPlayback } from "./playbackStats";
 
 /** 编辑状态由父组件持有；目录只在 SDK 初始化成功后回传。 */
 interface Props {
@@ -96,6 +97,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
     let appliedResolved: typeof resolved;
     let subscription: { unsubscribe(): void } | undefined;
     let stopPlayerLog: (() => void) | undefined;
+    let stopPlayback: (() => void) | undefined;
     let seekTarget: number | null = null;
     let resumeAfterSeek = false;
     let seekFrame: number | undefined;
@@ -166,6 +168,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           const currentTexts = latestTexts.current;
           const currentResolved = latestResolved.current;
           if (!currentMedia || !currentResolved) { instance.pause(); return; }
+          const applyStarted = performance.now();
           const timeline = buildTimeline(currentDraft, catalog, currentMedia, currentResolved, currentOrder);
           if (disposed) return;
           instance.pause();
@@ -175,7 +178,12 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           instance.timeline = {};
           const playback = await centeredPlayerTimeline(timeline, controller.signal, transitionFrames);
           if (disposed) return;
+          const framesReady = performance.now();
           await instance.setTimeline(playback);
+          // 调试模式下记录明显变慢的修改：改参数后预览迟迟不更新时，区分转场画面生成与播放器载入时间线。
+          const applyFinished = performance.now();
+          if (diagnosticsEnabled() && applyFinished - applyStarted > 1500)
+            debugLog("模板预览", `应用时间线用时 ${((applyFinished - applyStarted) / 1000).toFixed(1)} 秒（生成时间线与转场画面 ${((framesReady - applyStarted) / 1000).toFixed(1)} 秒，播放器载入 ${((applyFinished - framesReady) / 1000).toFixed(1)} 秒）`, "警告");
           if (!disposed && applied === revision) {
             appliedTracks = currentDraft.tracks;
             appliedMedia = currentMedia;
@@ -219,8 +227,8 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
     ])
       .then(async ([sources]) => {
         if (disposed || !container.current) return;
-        const source = sources[0];
-        setCanvas({ width: source.width, height: source.height });
+        // 画布固定为成片尺寸，不随预览视频变化；视频与正式合成一样等比放入、模糊填充留白（见 timeline.ts）。
+        setCanvas(PREVIEW_CANVAS);
         frame = document.createElement("iframe");
         frame.title = "模板预览播放器";
         frame.allow = "autoplay";
@@ -247,7 +255,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
         watchWindow(frame.contentWindow!, "模板预览 SDK");
         const target = frame.contentDocument!;
         // SDK 的媒体元素不挂到文档上，加载失败由此记录并按视频序号提示（SDK 会在地址后追加 #t= 片段）。
-        watchSdkMedia(target, (element) => {
+        const sdkMedia = watchSdkMedia(target, (element) => {
           if (disposed) return;
           const url = (element.currentSrc || element.src).replace(/#.*$/, "");
           const index = sources.findIndex((item) => item.url === url);
@@ -268,10 +276,9 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           controls: true,
           locale: "zh-CN",
           licenseConfig: { rootDomain: "", licenseKey: "" },
-          aspectRatio: `${source.width}:${source.height}`,
-          // SDK 按 16:9 的包围区域计算场景尺寸，选取受限制的一边以保留真实宽高。
-          maxCanvasConfig: source.width / source.height >= 16 / 9
-            ? { width: source.width } : { height: source.height },
+          aspectRatio: `${PREVIEW_CANVAS.width}:${PREVIEW_CANVAS.height}`,
+          // SDK 按 16:9 的包围区域计算场景尺寸；竖屏画布受高度限制，按高度给出即得到 1080×1920。
+          maxCanvasConfig: { height: PREVIEW_CANVAS.height },
           getMediaInfo: async (id, _type, _origin, url) => url || id,
           getTimelineMaterials: async (materials) =>
             materials.map((item) => {
@@ -289,6 +296,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
         catalogCallback.current(catalog);
         player.current = instance;
         stopPlayerLog = watchPlayer(instance);
+        stopPlayback = watchPlayback(instance, sdkMedia);
         subscription = instance.event$.subscribe((event) => {
           if (disposed || active || !instance) return;
           if (event.type === "playerSeeked") {
@@ -370,6 +378,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       cancel();
       subscription?.unsubscribe();
       stopPlayerLog?.();
+      stopPlayback?.();
       playAction.current = null;
       cancelPlaybackAction.current = null;
       seekAction.current = null;
@@ -389,7 +398,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
     <div className="template-preview-stage border-b px-4 pb-3 pt-4 lg:px-7 lg:pt-5"><div className="mx-auto max-w-[900px]">
       <div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><span className="template-live-dot size-1.5 rounded-full" aria-hidden="true" /><h2 className="text-[13px] font-semibold">实时预览</h2></div><span className="rounded-md border px-2 py-1 text-[11px] tabular-nums text-muted-foreground">{canvas ? `${canvas.width} × ${canvas.height}` : "正在读取画布尺寸"}</span></div>
       <div ref={stage} className="template-preview-canvas relative mx-auto aspect-video w-full overflow-hidden rounded-lg bg-black" style={canvas ? { aspectRatio: `${canvas.width} / ${canvas.height}`, maxWidth: `${48 * canvas.width / canvas.height}dvh`, "--preview-ratio": canvas.width / canvas.height } as CSSProperties : undefined} aria-label="模板视频预览">
-        {/* 播放器与叠加层共用一个按视频比例排布的画面框：全屏时画布撑满屏幕，画面框仍按视频比例居中，字效与选择框随画面缩放而不是按整个屏幕排布。 */}
+        {/* 播放器与叠加层共用一个按画布比例排布的画面框：全屏时画布撑满屏幕，画面框仍按视频比例居中，字效与选择框随画面缩放而不是按整个屏幕排布。 */}
         <div className="template-preview-frame absolute inset-0 overflow-hidden">
           <div ref={container} className="template-preview-player absolute inset-0 size-full" />
           {ready && canvas && onSelect && draft.tracks.filter((item) => (item.target === "title" || item.target === "subtitle") && item.enabled !== false && !remotionTexts(draft).has(textKey(item.target, item.language))).map((item) => {

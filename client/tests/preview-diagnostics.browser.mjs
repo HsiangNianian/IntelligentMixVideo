@@ -1,6 +1,6 @@
 /**
  * 模板预览播放器调试日志的真实浏览器回归：真实 SDK 与解码，原生日志由页面里的假 Tauri IPC 接收；
- * 元数据可读但播放器加载不了的视频要在预览里提示并带地址与错误码写进日志，正常播放记录播放状态；
+ * 元数据可读但播放器加载不了的视频要在预览里提示并带地址与错误码写进日志，正常播放记录播放状态与流畅度汇总；
  * 执行 bun tests/preview-diagnostics.browser.mjs（需要 Chrome、FFmpeg 和联网访问 SDK、字体）。
  */
 import assert from "node:assert/strict";
@@ -82,13 +82,19 @@ try {
   assert(await page.getByRole("button", { name: "重试预览" }).isVisible());
   await page.waitForFunction(() => window.diagnostics.some((entry) => entry.message.startsWith("video 加载失败；地址 ") && entry.message.includes("broken.mp4#t=0.1；媒体错误 4（格式或地址不受支持）")));
 
-  // 正常视频：没有失败提示与加载失败记录，播放后日志记录播放状态变化。
+  // 正常视频：没有失败提示与加载失败记录，播放后日志记录播放状态变化；播放一秒多后暂停，写出流畅度汇总
+  // （帧率、丢帧与主线程长帧统计；Chrome 支持 long-animation-frame）。
   await page.evaluate(() => window.mountPreview("ok.mp4"));
   await page.getByText("预览已就绪，点击播放查看效果", { exact: true }).waitFor();
   await page.getByRole("button", { name: "播放", exact: true }).click();
   await page.waitForFunction(() => window.diagnostics.some((entry) => /^播放状态 playing（/.test(entry.message)));
+  await page.waitForTimeout(1500);
   await page.getByRole("button", { name: "暂停", exact: true }).click();
+  await page.waitForFunction(() => window.diagnostics.some((entry) => entry.message.startsWith("播放 ")));
   const entries = await logs();
+  const summary = entries.find((entry) => entry.includes("模板预览：播放 "));
+  assert.match(summary, /画面 [\d.]+ fps，最长间隔 \d+ ms.*；视频丢帧 \d+\/\d+；等待数据 \d+ 次；(主线程长帧 \d+ 次|无主线程长帧)/, summary);
+  console.log(summary);
   assert(!entries.some((entry) => entry.includes("加载失败")), entries.join("\n"));
   assert.equal(await page.getByText("无法在播放器中播放", { exact: false }).count(), 0);
   // SDK 初始化时打印的空警告不再进入日志。

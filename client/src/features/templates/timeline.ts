@@ -133,6 +133,21 @@ export function thumbnailTimes(clip: Pick<PreviewClip, "sourceIn" | "sourceOut">
 /** SDK 效果允许混合文字、数值参数；仅从可信目录和经过范围校验的配置生成。 */
 type Effect = Record<string, string | number>;
 
+/**
+ * 模板预览的画布：固定为成片的 1080×1920（服务端 composition_width/height 的默认值），与 AI 资产画布一致，
+ * 不随用户换的预览视频变化；字号与位置都按这个画布计算。
+ */
+export const PREVIEW_CANVAS = { width: 1080, height: 1920 } as const;
+
+/**
+ * 与正式合成（video_composition/timeline.py）一致：视频按 Contain 等比完整放入，留白用模糊背景填充。
+ * 比例与画布相同（如 720×1280）时没有留白，模糊层会被完全盖住，所以不加，省去整幅模糊的绘制开销。
+ */
+function letterbox(video: { width: number; height: number }): Effect[] {
+  const fits = Math.abs(video.width / video.height - PREVIEW_CANVAS.width / PREVIEW_CANVAS.height) < 0.005;
+  return fits ? [] : [{ Type: "Background", SubType: "Blur", Radius: 0.1 }];
+}
+
 /** 预览示例文字中强调的关键词：标题优先使用指定关键词，否则取首段前两个字；字幕取第一个词语。合成时改用切片结果。 */
 export function exampleKeyword(config: Editor, role: "title" | "subtitle", language?: TextLanguage): string {
   if (language === "en") return (role === "title" ? config.titleKeyword : "") || [...new Intl.Segmenter("en", { granularity: "word" }).segment(config[role])].find((part) => part.isWordLike)?.segment || "";
@@ -233,7 +248,7 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media: Previ
   const transitions: { boundary: number; start: number; end: number; effect: Effect }[] = [];
   const notices = resolvedTimeline.notices;
   if ("editor" in draft || !Array.isArray(draft.tracks)) throw new Error("模板格式不支持，请重新创建模板");
-  const canvas = { Width: media[0].width, Height: media[0].height };
+  const canvas = { Width: PREVIEW_CANVAS.width, Height: PREVIEW_CANVAS.height };
   const sources = previewVideos(media);
   const ranges = resolvedTimeline.clips.map((range, index) => ({ ...range, source: order[index], video: sources[order[index]] }));
   const timeline = {
@@ -241,7 +256,7 @@ export function buildTimeline(draft: Draft, catalog: EffectAsset[], media: Previ
       source, Type: "Video", MediaURL: video.url,
       In: 0, Out: video.duration, TimelineIn: start, TimelineOut: end,
       Width: 0.9999, Height: 0.9999, AdaptMode: "Contain",
-      Effects: [{ Type: "Volume", Gain: 0 }] as Effect[],
+      Effects: [{ Type: "Volume", Gain: 0 }, ...letterbox(video)] as Effect[],
     })) }],
     SubtitleTracks: [] as { SubtitleTrackClips: NonNullable<ReturnType<typeof buildTrackContent>["text"]>[] }[],
     AudioTracks: [], AspectRatio: `${canvas.Width}:${canvas.Height}`, FECanvas: canvas,
@@ -294,7 +309,8 @@ export function playerTimeline(timeline: ReturnType<typeof buildTimeline>, trans
       return {
         Type: "Image", MediaURL: image, Duration: end - start, TimelineIn: start, TimelineOut: end,
         Width: video.Width, Height: video.Height, AdaptMode: video.AdaptMode,
-        Effects: [{ Type: "Background", SubType: "Color", Color: "#000000" }, ...(index === 0 ? [effect] : [])],
+        // 补帧画面与原视频比例相同，留白沿用视频片段的模糊背景，没有时用黑色盖住下层。
+        Effects: [video.Effects.find((item) => item.Type === "Background") ?? { Type: "Background", SubType: "Color", Color: "#000000" }, ...(index === 0 ? [effect] : [])],
       };
     }),
   }));

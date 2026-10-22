@@ -2,13 +2,14 @@
  * 把 AI 资产叠在模板预览画面上：每个资产一个透明隔离播放器，由预览播放时间逐帧驱动（只定位，不自行播放）。
  * 只为当前时间附近的片段挂载播放器，离开后卸载；播放器的字体由本页读取一次后转交，不各自下载。
  * 支持参数覆盖的播放器同时收到这次摆放的参数与宿主变换；选中的可移动资产在画面上显示一个可拖动的位置框。
- * 播放器是跨源沙箱页面，无法监听其内部错误：挂载后迟迟不就绪或能力不足时写调试日志。
+ * 播放器是跨源沙箱页面，无法监听其内部错误：挂载后迟迟不就绪、能力不足或预览页回报错误时写调试日志；
+ * 调试模式下另记录偏慢的就绪与参数更新。预览协议没有逐帧回执，定位是否跟得上无法测量。
  */
 import { useEffect, useImperativeHandle, useRef, useState, type KeyboardEvent, type PointerEvent, type Ref } from "react";
 import { apiBase } from "@/lib/api-base";
 import { HOST_FONTS, sendPreviewFonts } from "@/features/sprites/previewFonts";
 import type { SpriteClip } from "./timeline";
-import { debugLog } from "@/lib/diagnostics";
+import { debugLog, diagnosticsEnabled, oneLine } from "@/lib/diagnostics";
 
 /** 父预览仅推送当前时间；播放、暂停、拖动都以同一时间驱动，不会产生时钟漂移。 */
 export interface SpriteOverlayHandle {
@@ -25,6 +26,10 @@ const KEEP_AFTER_SECONDS = 1;
 const RELEASE_MARGIN_SECONDS = 2;
 /** 播放器挂载后等待就绪通知的时长，与资产封面相同；超时写调试日志（不改变界面，页面仍可能稍后就绪）。 */
 const READY_TIMEOUT_MS = 15_000;
+/** 调试模式下记录偏慢的握手与更新：就绪超过 3 秒、参数或位置更新到画面超过 0.5 秒；未回报的请求 10 秒后清理。 */
+const READY_SLOW_MS = 3000;
+const UPDATE_SLOW_MS = 500;
+const UPDATE_TIMEOUT_MS = 10_000;
 
 /**
  * 当前时间附近需要挂载播放器的片段；其余片段不创建播放器，每个播放器都是一个独立页面，常驻会占用内存与 CPU。
@@ -58,6 +63,9 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
   // 上一次 load 事件的 iframe 地址；地址变化说明同一播放器重新加载，需要重新握手并等待就绪。
   const loadedSrc = useRef(new Map<string, string>());
   const requests = useRef(0);
+  // 调试模式下的计时：播放器挂载的时刻，以及已发出、等待预览页回报画完（imv-preview-rendered）的更新。
+  const mountedAt = useRef(new Map<string, number>());
+  const updates = useRef(new Map<number, { id: string; at: number }>());
   const time = useRef(initialTime);
   const pending = useRef<number | undefined>(undefined);
   const latest = useRef(clips);
@@ -83,6 +91,16 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
     if (sent.current.get(clip.id) === key) return;
     sent.current.set(clip.id, key);
     requests.current += 1;
+    if (diagnosticsEnabled()) {
+      const now = performance.now();
+      for (const [requestId, update] of updates.current)
+        if (now - update.at > UPDATE_TIMEOUT_MS) updates.current.delete(requestId);
+      if (updates.current.size >= 50) {
+        const [oldest] = [...updates.current].sort((a, b) => a[1].at - b[1].at);
+        if (oldest) updates.current.delete(oldest[0]);
+      }
+      updates.current.set(requests.current, { id: clip.id, at: now });
+    }
     frame.contentWindow?.postMessage({ type: "imv-preview-update", channel: channels.current.get(clip.id), requestId: requests.current, values, background: "", host: { transform } }, "*");
   }
   /** 按最新片段与时间更新需要挂载的播放器；集合不变时不触发渲染。 */
@@ -111,6 +129,7 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
   }
   /** 为已挂载的播放器安排就绪超时；跨源沙箱页面无法监听内部报错，超时只能记录资产与地址。 */
   function startReadyTimer(id: string) {
+    mountedAt.current.set(id, performance.now());
     readiness.current.set(id, setTimeout(() => {
       readiness.current.set(id, null);
       const clip = latest.current.find((item) => item.id === id);
@@ -150,6 +169,7 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
     for (const id of [...loaded.current]) if (!ids.has(id)) loaded.current.delete(id);
     for (const id of [...loadedSrc.current.keys()]) if (!ids.has(id)) loadedSrc.current.delete(id);
     for (const [id, timer] of readiness.current) if (!ids.has(id)) { clearTimeout(timer ?? undefined); readiness.current.delete(id); }
+    for (const id of [...mountedAt.current.keys()]) if (!ids.has(id)) mountedAt.current.delete(id);
     // 跨源沙箱页面的报错无法监听：预览包缺失、服务端出错或脚本崩溃时只会一直不就绪，超时后记录资产与地址。
     for (const id of mounted) {
       if (readiness.current.has(id)) continue;
@@ -166,11 +186,29 @@ export function SpriteOverlay({ ref, clips, stageAspect, initialTime, selectedId
       const channel = id ? channels.current.get(id) : undefined;
       if (!entry?.[1].contentWindow || !channel || event.data?.channel !== channel) return;
       if (event.data?.type === "imv-preview-fonts-request") return sendPreviewFonts(entry[1].contentWindow, channel);
-      if (!id || event.data?.type !== "imv-preview-ready") return;
-      clearTimeout(readiness.current.get(id) ?? undefined);
-      if (readiness.current.has(id)) readiness.current.set(id, null);
+      if (!id) return;
       const clip = latest.current.find((item) => item.id === id);
       const label = `「${clip?.name ?? id}」（资产 ${clip?.spriteId ?? "未知"}）`;
+      // 预览页自己发现的问题（如背景或字体加载失败）原来被忽略，现在写进日志。
+      if (event.data?.type === "imv-preview-error") {
+        if (typeof event.data.requestId === "number") updates.current.delete(event.data.requestId);
+        debugLog("AI 资产预览", `${label}的预览页报错：${oneLine(String(event.data.message ?? "未知错误"), 200)}`);
+        return;
+      }
+      if (event.data?.type === "imv-preview-rendered") {
+        const request = updates.current.get(event.data.requestId);
+        if (!request) return;
+        updates.current.delete(event.data.requestId);
+        const elapsed = performance.now() - request.at;
+        if (elapsed > UPDATE_SLOW_MS) debugLog("AI 资产预览", `${label}参数或位置更新到画面用时 ${Math.round(elapsed)} ms`, "警告");
+        return;
+      }
+      if (event.data?.type !== "imv-preview-ready") return;
+      clearTimeout(readiness.current.get(id) ?? undefined);
+      if (readiness.current.has(id)) readiness.current.set(id, null);
+      const since = mountedAt.current.get(id);
+      if (diagnosticsEnabled() && since !== undefined && performance.now() - since > READY_SLOW_MS)
+        debugLog("AI 资产预览", `${label}的播放器就绪用时 ${((performance.now() - since) / 1000).toFixed(1)} 秒`, "信息");
       if (event.data.sync !== true) {
         debugLog("AI 资产预览", `${label}的预览包较旧，不支持逐帧驱动，保持隐藏`, "警告");
         setUnsupported((items) => items.includes(id) ? items : [...items, id]);
