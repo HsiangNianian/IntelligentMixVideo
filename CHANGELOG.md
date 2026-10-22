@@ -3,6 +3,22 @@
 本项目的版本变更由发布工作流根据 Conventional Commits 自动生成。
 推送正式版本 tag 后，成功发布的版本记录会自动写入此文件。
 
+## [v0.9.14] - 2026-10-22
+### Documentation Changes
+- [`4f1ef60`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/4f1ef6091d399d07fb72fc362a6ff355ce4be80c) - update CHANGELOG.md for v0.9.13 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
+
+### Chores
+- [`eff3221`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/eff322120122743e23301bf5de2cec8951688a39) - **release**: prepare v0.9.14 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Other Changes
+- [`2f846a7`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/2f846a73af696524a2a4559b2bbe3af80bd1d748) - Merge pull request [#236](https://github.com/HsiangNianian/IntelligentMixVideo/pull/236) from YUZHEthefool/fix/template-preview-background-license
+
+fix(client): keep template preview playback independent of the SDK license request *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`2a80382`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/2a80382fe4fe81ebf9c8892b0aa46adbb66f75c2) - Merge branch 'main' into codex/release-v0.9.14 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`9f91dec`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/9f91dec3d7327f15ff55f796f130a4dd50d24bc2) - Merge pull request [#237](https://github.com/HsiangNianian/IntelligentMixVideo/pull/237) from YUZHEthefool/codex/release-v0.9.14
+
+chore(release): promote dev to main for v0.9.14 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
 ## [v0.9.13] - 2026-10-22
 ### New Features
 - [`378e048`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/378e04867839e6752d986b738ab59fbd2a243968) - **client**: report playback smoothness and more in the debug log *(PR [#233](https://github.com/HsiangNianian/IntelligentMixVideo/pull/233) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
@@ -1695,3 +1711,5 @@ feat(client): 在模板工作区页头添加时钟 *(commit by [@HsiangNianian](
 [v0.9.12]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.11...v0.9.12
 
 [v0.9.13]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.12...v0.9.13
+
+[v0.9.14]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.13...v0.9.14
