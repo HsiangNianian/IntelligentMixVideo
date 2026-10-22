@@ -85,6 +85,15 @@ class FontRejected(ValueError):
     """An uploaded font or preview was refused; the message is safe to show to the user."""
 
 
+class FontExists(FontRejected):
+    """The uploaded file is already in the library (same SHA-256) as `font`; the upload route answers with its card."""
+
+    def __init__(self, message: str, font: "Font") -> None:
+        """Keep the font whose file has the same bytes."""
+        super().__init__(message)
+        self.font = font
+
+
 class Font(BaseModel):
     """A registered font file, one style (`slot`) of the card its family names: what the registry stores per file."""
 
@@ -191,9 +200,9 @@ def cards(fonts: Iterable[Font]) -> dict[str, list[Font]]:
 
 
 def refuse_copy(digest: str, fonts: Iterable[Font]) -> None:
-    """Raise `FontRejected` naming the registered font whose file has this SHA-256, if there is one."""
+    """Raise `FontExists` naming the registered font whose file has this SHA-256, if there is one."""
     if (copy := next((font for font in fonts if font.sha256 == digest), None)) is not None:
-        raise FontRejected(f"这个字体文件已经在字体库里了：{copy.label}（{copy.family}）")
+        raise FontExists(f"这个字体文件已经在字体库里了：{copy.label}（{copy.family}）", copy)
 
 
 def font_root(settings: Settings) -> Path:
