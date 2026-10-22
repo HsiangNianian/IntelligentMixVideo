@@ -1,8 +1,13 @@
 //! 调试日志：在设置中打开独立终端窗口，实时显示页面错误、媒体诊断、控件操作和原生日志。
 //! 日志同时写入应用数据目录的 `data/diagnostics.log`，终端窗口只负责跟随该文件；
 //! 关闭窗口不会结束客户端，再次点击设置中的按钮可重新打开；找不到可用终端时照常写入文件，由页面提示路径。
-//! Linux 启动时把标准错误接到管道：WebKit 网页进程继承它，GStreamer 与 GLib 的警告和页面记录写进同一个日志，
-//! 窗口打开前只保留最近的部分。
+//! 原生记录在窗口打开前只保留最近的部分：Linux 启动时把标准错误接到管道，WebKit 网页进程继承它，
+//! GStreamer 与 GLib 的警告和页面记录写进同一个日志；Windows 记录 WebView2 子进程退出与 Chromium 日志
+//! （见 `webview2` 子模块）；没有接管标准错误的平台另记录 Rust panic。
+
+mod webview2;
+#[cfg(windows)]
+pub use webview2::{log_webview2, watch_webview};
 
 use std::{
     collections::VecDeque,
@@ -73,12 +78,42 @@ fn now_ms() -> f64 {
         .map_or(0.0, |elapsed| elapsed.as_secs_f64() * 1000.0)
 }
 
-/// 记录应用启动时刻；Linux 另接管标准错误收集原生日志。不打开窗口，普通启动保持静默。
+/// 记录应用启动时刻；Linux 另接管标准错误收集原生日志，其他平台记录 panic。不打开窗口，普通启动保持静默。
 pub fn prepare() {
     START.get_or_init(now_ms);
     #[cfg(target_os = "linux")]
     if let Err(error) = capture_stderr() {
         echo(format!("调试日志无法接管标准错误：{error}\n").as_bytes());
+    }
+    #[cfg(not(target_os = "linux"))]
+    record_panics();
+}
+
+/// 没有接管标准错误的平台（Windows 正式版本身没有控制台）把 panic 信息记进原生缓冲，再交给默认处理；
+/// Linux 的 panic 输出已随标准错误收集。钩子里只尝试加锁：panic 可能发生在持有日志锁的线程里，等待会死锁。
+#[cfg(not(target_os = "linux"))]
+fn record_panics() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let line = format_line(
+            now_ms(),
+            "错误",
+            "原生",
+            &format!("程序异常（panic）：{info}"),
+        );
+        if let Ok(mut sink) = SINK.try_lock() {
+            sink.write(line, true);
+        }
+        default(info);
+    }));
+}
+
+/// 原生来源的一条记录（标准错误、WebView2 等）：窗口打开前进入有界缓冲，打开后写文件。
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn record_native(level: &str, source: &str, message: &str) {
+    let line = format_line(now_ms(), level, source, message);
+    if let Ok(mut sink) = SINK.lock() {
+        sink.write(line, true);
     }
 }
 
@@ -171,15 +206,12 @@ fn forward(reader: std::io::PipeReader) {
         if text.is_empty() {
             continue;
         }
-        let formatted = format_line(now_ms(), native_level(text), "原生", text);
-        if let Ok(mut sink) = SINK.lock() {
-            sink.write(formatted, true);
-        }
+        record_native(native_level(text), "原生", text);
     }
 }
 
-/// 按原生输出的常见标记判断级别：GStreamer 的 ERROR/WARN 列，GLib 的 CRITICAL/WARNING。
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+/// 按原生输出的常见标记判断级别：GStreamer 的 ERROR/WARN 列，GLib 的 CRITICAL/WARNING，Chromium 的 ERROR/WARNING。
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn native_level(line: &str) -> &'static str {
     if line.contains("ERROR") || line.contains("CRITICAL") {
         "错误"
@@ -459,6 +491,56 @@ mod tests {
         assert_eq!(native_level("0:00:01.2 123 0x1 WARN  basesrc x"), "警告");
         assert_eq!(native_level("** (process:1): WARNING **: y"), "警告");
         assert_eq!(native_level("starry engine"), "信息");
+        assert_eq!(
+            native_level("[1:2:1022/101010.1:ERROR:gpu_process_host.cc(951)] GPU process exited"),
+            "错误"
+        );
+        assert_eq!(
+            native_level("[1:2:1022/101010.1:WARNING:decoder.cc(5)] fallback"),
+            "警告"
+        );
+    }
+
+    /// 没有接管标准错误的平台（Windows 正式版没有控制台）把 panic 记进原生缓冲。
+    /// 在独立进程中运行，避免替换测试进程自己的 panic 钩子。
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn records_panics() {
+        const MARKER: &str = "IMV_TEST_RECORD_PANICS";
+        if std::env::var_os(MARKER).is_some() {
+            super::prepare();
+            assert!(std::thread::spawn(|| panic!("测试异常")).join().is_err());
+            let pending: Vec<String> = super::SINK
+                .lock()
+                .unwrap()
+                .pending
+                .iter()
+                .cloned()
+                .collect();
+            assert!(
+                pending
+                    .iter()
+                    .any(|line| line.contains("错误 原生：程序异常（panic）：")
+                        && line.contains("测试异常")),
+                "{pending:?}"
+            );
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "diagnostics::tests::records_panics",
+                "--nocapture",
+            ])
+            .env(MARKER, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     /// 从 AppImage 启动宿主终端时去掉包内路径：列表只删包内条目，全部在包内的变量整体删除。

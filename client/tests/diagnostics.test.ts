@@ -2,7 +2,7 @@
  * 设置按钮打开调试日志后的前端收集：窗口打开前只进入内存缓冲，打开后补发环境、错误、媒体和控件操作，
  * 每条带发生时刻；连续相同记录只发送一次并汇报重复次数。IPC 由 mockIPC 模拟；执行 bun run test。
  */
-import { afterEach, beforeEach, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test";
 import { waitFor } from "@testing-library/react";
 import { describe as describeValue, debugLog, openDiagnostics, resetDiagnostics, startDiagnostics, watchWindow } from "@/lib/diagnostics";
 import { mockDesktop } from "./setup";
@@ -77,6 +77,36 @@ test("终端窗口打不开时仍转发记录并返回日志路径", async () =>
   expect((await openDiagnostics()).viewerError).toBe("无法打开终端窗口：没有找到可用的终端程序");
   console.error("之后的错误");
   await waitFor(() => expect(entries.some((entry) => entry.message === "之后的错误")).toBe(true));
+});
+
+// 场景：Windows 上黑屏、卡顿多与显卡驱动或软件解码有关；环境记录带上 WebGL 报告的实际显卡与后端，
+// 以及 1080p 各编码能否解码、是否走硬件，探测用的 WebGL 上下文随即释放。
+test("报告显卡与 1080p 硬件解码能力", async () => {
+  desktop();
+  const loseContext = mock();
+  const names: Record<number, string> = { 10: "Google Inc. (NVIDIA)", 11: "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)" };
+  const gl = {
+    RENDERER: 1,
+    getExtension: (name: string) => name === "WEBGL_debug_renderer_info" ? { UNMASKED_VENDOR_WEBGL: 10, UNMASKED_RENDERER_WEBGL: 11 } : { loseContext },
+    getParameter: (parameter: number) => names[parameter],
+  };
+  spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(gl as never);
+  const decodingInfo = mock(async ({ video }: { video: { contentType: string } }) => ({
+    supported: !video.contentType.includes("av01"),
+    smooth: !video.contentType.includes("hvc1"),
+    powerEfficient: video.contentType.includes("avc1"),
+  }));
+  Object.defineProperty(navigator, "mediaCapabilities", { configurable: true, value: { decodingInfo } });
+  try {
+    startDiagnostics();
+    await openDiagnostics();
+    await waitFor(() => expect(entries.some((entry) => entry.message === `显卡 ${names[10]} / ${names[11]}；devicePixelRatio=${window.devicePixelRatio}`)).toBe(true));
+    await waitFor(() => expect(entries.some((entry) => entry.message === "1080p 解码 H.264=硬件 H.265=软件（可能卡顿） VP9=软件 AV1=不支持")).toBe(true));
+    expect(loseContext).toHaveBeenCalledTimes(1);
+    expect(decodingInfo.mock.calls[0][0]).toMatchObject({ type: "file", video: { width: 1920, height: 1080 } });
+  } finally {
+    Reflect.deleteProperty(navigator, "mediaCapabilities");
+  }
 });
 
 // 场景：窗口打开后继续转发未处理的 Promise 拒绝与 console 警告。

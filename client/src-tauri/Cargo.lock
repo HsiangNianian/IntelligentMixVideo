@@ -361,6 +361,8 @@ dependencies = [
  "tiny_http",
  "tokio",
  "uuid",
+ "webview2-com",
+ "windows-core",
 ]
 
 [[package]]

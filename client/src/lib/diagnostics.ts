@@ -20,12 +20,15 @@ const MAX_CONTROL_LABEL = 100;
 
 /** 媒体错误码（MediaError.code）的中文含义；预览界面提示也使用它。 */
 export const MEDIA_ERRORS: Record<number, string> = { 1: "加载被中止", 2: "网络错误", 3: "解码失败", 4: "格式或地址不受支持" };
-/** 启动时报告的解码能力：桌面 WebView 是否能播放常见编码，定位“视频无法播放”时先看这一行。 */
+/**
+ * 启动时报告的解码能力：桌面 WebView 是否能播放常见编码，定位“视频无法播放”时先看这一行。
+ * 编码档次按 1080p 选取（H.264 High@4.0 等），同一组字符串也用于查询 1080p 是否走硬件解码。
+ */
 const CODECS: [string, string][] = [
-  ["H.264", 'video/mp4; codecs="avc1.42E01E"'],
-  ["H.265", 'video/mp4; codecs="hvc1.1.6.L93.B0"'],
-  ["VP9", 'video/webm; codecs="vp9"'],
-  ["AV1", 'video/mp4; codecs="av01.0.05M.08"'],
+  ["H.264", 'video/mp4; codecs="avc1.640028"'],
+  ["H.265", 'video/mp4; codecs="hvc1.1.6.L120.90"'],
+  ["VP9", 'video/webm; codecs="vp09.00.40.08"'],
+  ["AV1", 'video/mp4; codecs="av01.0.08M.08"'],
 ];
 /** 统一识别页面控件；点击其子元素时仍按外层控件记录。 */
 const CONTROLS = "button, a, input, select, textarea, summary, [contenteditable='true'], [role='button'], [role='tab'], [role='checkbox'], [role='switch'], [role='slider'], [role='textbox'], [role='menuitem']";
@@ -243,6 +246,32 @@ export function startDiagnostics() {
   stopMain = watchWindow(window, "页面");
   const probe = document.createElement("video");
   debugLog("环境", `${navigator.userAgent}\n  解码能力 ${CODECS.map(([name, type]) => `${name}=${probe.canPlayType(type) || "不支持"}`).join(" ")}`, "信息");
+  reportGraphics();
+}
+
+/**
+ * 报告显卡与硬件解码：WebGL 实际使用的显卡与图形后端（Windows 上是 ANGLE 的 Direct3D），以及 1080p 各编码
+ * 能否解码、是否走硬件（MediaCapabilities 的 powerEfficient）。画面黑屏、卡顿多与显卡驱动或软件解码有关。
+ * 探测用的 WebGL 上下文读取后立即释放；不支持的接口记为不可用，不影响其他记录。
+ */
+function reportGraphics() {
+  const gl = document.createElement("canvas").getContext("webgl");
+  const debug = gl?.getExtension("WEBGL_debug_renderer_info");
+  const renderer = !gl ? "WebGL 不可用"
+    : debug ? `${gl.getParameter(debug.UNMASKED_VENDOR_WEBGL)} / ${gl.getParameter(debug.UNMASKED_RENDERER_WEBGL)}`
+    : String(gl.getParameter(gl.RENDERER));
+  gl?.getExtension("WEBGL_lose_context")?.loseContext();
+  debugLog("环境", `显卡 ${renderer}；devicePixelRatio=${window.devicePixelRatio}`, "信息");
+  if (!navigator.mediaCapabilities) return;
+  void Promise.all(CODECS.map(async ([name, type]) => {
+    try {
+      const result = await navigator.mediaCapabilities.decodingInfo({ type: "file", video: { contentType: type, width: 1920, height: 1080, bitrate: 8_000_000, framerate: 30 } });
+      if (!result.supported) return `${name}=不支持`;
+      return `${name}=${result.powerEfficient ? "硬件" : "软件"}${result.smooth ? "" : "（可能卡顿）"}`;
+    } catch {
+      return `${name}=未知`;
+    }
+  })).then((items) => debugLog("环境", `1080p 解码 ${items.join(" ")}`, "信息"));
 }
 
 /** 原生层打开日志的结果：日志文件路径，以及终端窗口没能打开时的原因（文件照常写入）。 */
