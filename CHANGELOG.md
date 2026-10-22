@@ -3,6 +3,30 @@
 本项目的版本变更由发布工作流根据 Conventional Commits 自动生成。
 推送正式版本 tag 后，成功发布的版本记录会自动写入此文件。
 
+## [v0.9.13] - 2026-10-22
+### New Features
+- [`378e048`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/378e04867839e6752d986b738ab59fbd2a243968) - **client**: report playback smoothness and more in the debug log *(PR [#233](https://github.com/HsiangNianian/IntelligentMixVideo/pull/233) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Bug Fixes
+- [`d4add6a`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/d4add6a1643a959d3234127c25e8b2bc2fcef4ec) - **client**: stop WebView2 from opening a console window on Windows *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`dc69599`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/dc69599565aee8a9dbfeaf54c3dd383f1e566278) - **client**: keep Linux native diagnostics out of normal launches *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`ab5939e`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/ab5939e6c3c656589b916f16a5c5307432f230d6) - **client**: keep the template preview canvas at 1080x1920 *(PR [#234](https://github.com/HsiangNianian/IntelligentMixVideo/pull/234) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Documentation Changes
+- [`776281b`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/776281baa368af4d612e1aeaeabf16916be1bb64) - update CHANGELOG.md for v0.9.12 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
+
+### Chores
+- [`6823d55`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/6823d5581713de940faadd1b9a2f85baea9bc717) - **release**: prepare v0.9.13 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Other Changes
+- [`66039f4`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/66039f492c0a6be54c43cbf3d4c379b4ff71639b) - Merge pull request [#232](https://github.com/HsiangNianian/IntelligentMixVideo/pull/232) from YUZHEthefool/fix/windows-webview2-console
+
+fix(client): keep native diagnostics out of normal launches *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`2dbf5c3`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/2dbf5c36b70e3794a4ca061038d25ee45bcb61c8) - Merge branch 'dev' into codex/release-v0.9.13 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`75534e1`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/75534e10a5aa1efbeb73902de7ac5493bf3323d7) - Merge pull request [#235](https://github.com/HsiangNianian/IntelligentMixVideo/pull/235) from YUZHEthefool/codex/release-v0.9.13
+
+chore(release): promote dev to main for v0.9.13 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
 ## [v0.9.12] - 2026-10-22
 ### New Features
 - [`6f8e54e`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/6f8e54e7756b0413e2d03eec7a1e35d41ab6d201) - **client**: diagnose template player failures and capture native logs *(PR [#230](https://github.com/HsiangNianian/IntelligentMixVideo/pull/230) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
@@ -1669,3 +1693,5 @@ feat(client): 在模板工作区页头添加时钟 *(commit by [@HsiangNianian](
 [v0.9.11]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.10...v0.9.11
 
 [v0.9.12]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.11...v0.9.12
+
+[v0.9.13]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.12...v0.9.13
