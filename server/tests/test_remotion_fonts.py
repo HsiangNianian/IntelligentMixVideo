@@ -33,7 +33,7 @@ from server.remotion_templates import routes
 from server.remotion_templates.api import app as remotion_templates_app
 from server.remotion_templates.categories import REQUIRED, category_problems
 from server.remotion_templates.fonts import CONFIG_NAME, Font, FontExists, FontNames, FontRejected, FontSpec, FontStore, load_catalog, cards, open_font_schema, read_names, require_family
-from server.remotion_templates.object_store import LocalObjects
+from server.remotion_templates.object_store import LocalObjects, ObjectStoreError
 from server.remotion_templates.overlay_render import Overlay, OverlayError, require_fonts
 from server.remotion_templates.placement import resolve
 from server.remotion_templates.renderer import Renderer
@@ -730,8 +730,9 @@ def test_the_font_api_lists_serves_and_uploads(client: TestClient, served, setti
     duplicate = client.post("/api/templates/fonts", headers=DEVICE_HEADERS, files={"file": ("again.ttf", minimal_font("Zed Display"), "font/ttf")})
     assert duplicate.status_code == 200 and duplicate.json() == client.get("/api/templates/fonts").json()[-1]
     assert [item["family"] for item in client.get("/api/templates/fonts").json()].count("Zed Display") == 1
-    served.max_upload = 100
-    assert client.post("/api/templates/fonts", headers=DEVICE_HEADERS, files={"file": ("big.ttf", minimal_font("Big One"), "font/ttf")}).status_code == 413
+    served.max_upload = 2 * 1024 * 1024
+    big = client.post("/api/templates/fonts", headers=DEVICE_HEADERS, files={"file": ("big.ttf", b"\0" * (2 * 1024 * 1024 + 1), "font/ttf")})
+    assert (big.status_code, big.json()["detail"]) == (413, "字体文件超过 2 MiB 上限")
     assert client.post("/api/templates/fonts", files={"file": ("x.ttf", b"x", "font/ttf")}).status_code == 422
 
 
@@ -750,6 +751,24 @@ def test_uploading_a_registered_file_again_returns_its_card(client: TestClient, 
     )
     assert again.status_code == 200 and again.json() == created.json()
     assert [record["id"] for record in font_store.listing()].count(created.json()["faces"][0]["id"]) == 1
+
+
+# 场景（回归）：对象存储或数据库失败时上传回答 503，原先服务端没有任何日志，线上只能在访问日志里看到 503。
+def test_a_failed_font_upload_is_logged(client: TestClient, served, monkeypatch, caplog) -> None:
+    """对象存储写入失败回答 503 与中文说明，根因（含文件名与大小）写服务端日志；字体没有登记。"""
+
+    def unreachable(key, path, content_type):
+        """模拟 ZOS 不可达。"""
+        raise ObjectStoreError("ZOS upload failed")
+
+    monkeypatch.setattr(served.objects, "put", unreachable)
+    data = minimal_font("Zed Display")
+    with caplog.at_level(logging.ERROR, logger="server.remotion_templates.routes"):
+        response = client.post("/api/templates/fonts", headers=DEVICE_HEADERS, files={"file": ("zed.ttf", data, "font/ttf")})
+    assert (response.status_code, response.json()["detail"]) == (503, "字体暂时无法保存，请稍后重试。")
+    [record] = [item for item in caplog.records if item.name == "server.remotion_templates.routes"]
+    assert f"zed.ttf ({len(data)} bytes)" in record.getMessage() and isinstance(record.exc_info[1], ObjectStoreError)
+    assert not [font for font in served.listing() if font.source == "upload"]
 
 def test_the_preview_page_lists_fonts_for_lazy_registration() -> None:
     """预览页以 JSON 元素列出有文件的字体文件（卡片的家族名、CSS 字重与斜体、URL）供播放器注册，系统默认字体不列（预览本来就自带）；

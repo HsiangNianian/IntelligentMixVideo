@@ -230,7 +230,8 @@ style's own file.
   HappyZcool-2016) are not bundled: they are proprietary or their redistribution terms are not confirmed. Anyone
   holding a licence can upload them (the family name inside the file must match).
 - **Uploads**: `POST /api/templates/fonts` (multipart `file`, optional `label` and `preview`, `X-IMV-Device`) takes a
-  `.ttf`/`.otf` up to `IMV_FONT_UPLOAD_MAX_BYTES`. The backend only reads the font's names from the `name` table with
+  `.ttf`/`.otf` up to `IMV_FONT_UPLOAD_MAX_BYTES` (a larger file is a 413 that states the limit; an object store or
+  database failure is a 503 logged as `Font upload failed` with its cause). The backend only reads the font's names from the `name` table with
   bounds-checked Python and never decodes the font; the sandboxed Chrome and the user's own browser do. The family is
   the font's English (default-language) name; the display name is its own Chinese name when it has one, otherwise the
   same family, and never the file name. Duplicates are found by content and uploading is idempotent: a file whose

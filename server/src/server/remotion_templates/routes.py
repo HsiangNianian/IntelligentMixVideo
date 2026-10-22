@@ -612,16 +612,16 @@ async def upload_font(
     与尚未装好的预装字体相同时没有卡片可返回，返回 422 并说明是哪个字体。按文件的样式归入卡片：同一家族的常规、粗体、斜体、粗斜体文件
     加入该家族用户上传的卡片（对应字形还空着时），其他字重（细体、黑体等）单独成卡片、名称带字重；同一字形的其他版本，或与预装字体、
     系统字体、保留名同名时另起家族名登记。返回文件所在的整张卡片。
-    文件超过大小上限返回 413，内容无效返回 422；对象存储不可用返回 503。字体不可删除。
+    文件超过大小上限返回 413（说明上限），内容无效返回 422；对象存储或数据库不可用返回 503 并写服务端日志（含根因）。字体不可删除。
     """
     store = FontStore.for_settings(service.settings)
     try:
         content = await file.read(store.max_upload + 1)
         strip = await preview.read(1024 * 1024 + 1) if preview is not None else None
         if len(content) > store.max_upload:
-            raise HTTPException(413, "Font exceeds the upload size limit.")
+            raise HTTPException(413, f"字体文件超过 {store.max_upload / (1024 * 1024):g} MiB 上限")
         if strip is not None and len(strip) > 1024 * 1024:
-            raise HTTPException(413, "Preview exceeds the size limit.")
+            raise HTTPException(413, "预览图超过 1 MiB 上限")
         try:
             font = await asyncio.to_thread(store.upload, content, strip or None, label, str(owner))
         except FontExists as exc:
@@ -633,6 +633,7 @@ async def upload_font(
         except FontRejected as exc:
             raise HTTPException(422, str(exc)) from exc
         except (OSError, SQLAlchemyError) as exc:
+            logger.exception("Font upload failed: %s (%d bytes)", file.filename, len(content))
             raise HTTPException(503, "字体暂时无法保存，请稍后重试。") from exc
         return font_info(cards(store.listing())[font.family], system_file=installed_system_font(service))
     finally:
