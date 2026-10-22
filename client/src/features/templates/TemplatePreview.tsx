@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Hint } from "@/components/Hint";
 import { Spinner } from "@/components/ui/spinner";
 import { textKey, type Draft, type EffectAsset, type MasterVideo, type PreviewMedia } from "./model";
-import { loadSDK, loadPreviewFont, readCatalog, watchPlayer, watchSdkMedia, type Player } from "./sdk";
+import { loadSDK, loadPreviewFont, readCatalog, waitForCanPlay, watchPlayer, watchSdkMedia, type Player } from "./sdk";
 import { buildTimeline, buildPreviewRows, mergeSpriteRows, PREVIEW_CANVAS, remotionTexts, type SpriteClip } from "./timeline";
 import { centeredPlayerTimeline } from "./centeredTransitions";
 import { PreviewTimeline, type PreviewTimelineHandle } from "./PreviewTimeline";
@@ -158,6 +158,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       setReady(false);
       setFailed(false);
       let applied = revision;
+      let canPlay = Promise.resolve();
       try {
         do {
           applied = revision;
@@ -179,6 +180,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           const playback = await centeredPlayerTimeline(timeline, controller.signal, transitionFrames);
           if (disposed) return;
           const framesReady = performance.now();
+          canPlay = waitForCanPlay(instance);
           await instance.setTimeline(playback);
           // 调试模式下记录明显变慢的修改：改参数后预览迟迟不更新时，区分转场画面生成与播放器载入时间线。
           const applyFinished = performance.now();
@@ -200,8 +202,12 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           setTime(0);
           track.current?.setTime(0);
           overlay.current?.setTime(0);
-          setReady(true);
-          setStatus("预览已就绪，点击播放查看效果");
+          // setTimeline 返回时 SDK 还没建好播放节点，这时播放会在 0 秒立即结束；等它发出 canplay 才允许播放。
+          await canPlay;
+          if (!disposed && applied === revision) {
+            setReady(true);
+            setStatus("预览已就绪，点击播放查看效果");
+          }
         }
       } catch (error) {
         if (!disposed) {

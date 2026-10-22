@@ -1,6 +1,7 @@
 /**
  * 模板预览播放器调试日志的真实浏览器回归：真实 SDK 与解码，原生日志由页面里的假 Tauri IPC 接收；
- * 元数据可读但播放器加载不了的视频要在预览里提示并带地址与错误码写进日志，正常播放记录播放状态与流畅度汇总；
+ * 元数据可读但播放器加载不了的视频要在预览里提示并带地址与错误码写进日志，正常播放记录播放状态与流畅度汇总，
+ * 显示就绪后立即播放不会在 0 秒结束；
  * 执行 bun tests/preview-diagnostics.browser.mjs（需要 Chrome、FFmpeg 和联网访问 SDK、字体）。
  */
 import assert from "node:assert/strict";
@@ -89,6 +90,9 @@ try {
   await page.getByRole("button", { name: "播放", exact: true }).click();
   await page.waitForFunction(() => window.diagnostics.some((entry) => /^播放状态 playing（/.test(entry.message)));
   await page.waitForTimeout(1500);
+  // 回归：setTimeline 返回时 SDK 还没建好播放节点，就绪后立刻点播放会在 0 秒“播放结束”；就绪要等 SDK 发出 canplay。
+  const started = await logs();
+  assert(!started.some((entry) => entry.endsWith("播放状态 ended（0.00 秒）")), started.join("\n"));
   await page.getByRole("button", { name: "暂停", exact: true }).click();
   await page.waitForFunction(() => window.diagnostics.some((entry) => entry.message.startsWith("播放 ")));
   const entries = await logs();

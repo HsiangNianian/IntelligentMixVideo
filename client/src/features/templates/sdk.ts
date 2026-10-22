@@ -175,6 +175,26 @@ export function watchSdkMedia(target: Document, onFailure: (media: HTMLMediaElem
   return alive;
 }
 
+/** 应用时间线后等待 canplay 的上限：平时半秒内就到，超过它也允许播放，不让预览一直停在加载中。 */
+const CAN_PLAY_TIMEOUT_MS = 3_000;
+
+/**
+ * 等 SDK 应用时间线后发出 canplay（播放节点建好、首帧画出）。setTimeline 返回时 SDK 还没建好播放节点，内部时长仍是 0，
+ * 这时开始播放会在 0 秒立即“播放结束”。须在调用 setTimeline 之前开始等待；超时同样结束等待。
+ */
+export function waitForCanPlay(player: Pick<Player, "event$">): Promise<void> {
+  return new Promise((resolve) => {
+    const subscription = player.event$.subscribe(({ type }) => { if (type === "canplay") finish(); });
+    const timer = setTimeout(finish, CAN_PLAY_TIMEOUT_MS);
+    /** 结束等待并取消订阅与计时器。 */
+    function finish() {
+      clearTimeout(timer);
+      subscription.unsubscribe();
+      resolve();
+    }
+  });
+}
+
 /** 播放状态的日志级别：卡住（stalled）记警告、损坏（broken）记错误，其余（playing、paused、ended）记信息。 */
 const STATE_LEVELS: Record<string, DiagnosticLevel> = { stalled: "警告", broken: "错误" };
 /** 素材加载超过该时长仍未完成时写一条警告。 */
