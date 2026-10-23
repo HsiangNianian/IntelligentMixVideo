@@ -188,6 +188,12 @@ export function watchSdkMedia(
  */
 export const CAN_PLAY_TIMEOUT_MS = 60_000;
 
+/**
+ * IMS 播放中时间不前进的上限：网络慢时 SDK 缓冲一般几秒内恢复，与素材加载的慢加载警告一样等 10 秒，
+ * 仍不前进才判定 SDK 卡住、切换基础视频。
+ */
+export const STALL_TIMEOUT_MS = 10_000;
+
 /** 等待 SDK 可播放事件的结果；只有 canplay 能证明播放节点已建好。 */
 export type CanPlayResult = "canplay" | "timeout" | "cancelled";
 

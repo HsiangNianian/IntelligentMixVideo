@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Hint } from "@/components/Hint";
 import { Spinner } from "@/components/ui/spinner";
 import { textKey, type Draft, type EffectAsset, type PreviewMedia } from "./model";
-import { CAN_PLAY_TIMEOUT_MS, deferLicenseRequest, loadSDK, readCatalog, waitForCanPlay, watchPlayer, watchSdkMedia, type CanPlayResult, type Player } from "./sdk";
+import { CAN_PLAY_TIMEOUT_MS, deferLicenseRequest, STALL_TIMEOUT_MS, loadSDK, readCatalog, waitForCanPlay, watchPlayer, watchSdkMedia, type CanPlayResult, type Player } from "./sdk";
 import { BasicVideoPreview } from "./BasicVideoPreview";
 import { PreviewClock, type PlaybackHandle } from "./previewClock";
 import { buildTimeline, buildPreviewRows, mergeSpriteRows, PREVIEW_CANVAS, remotionTexts, type SpriteClip } from "./timeline";
@@ -170,6 +170,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
     let seekFrame: number | undefined;
     let seekTimer: ReturnType<typeof setTimeout> | undefined;
     let applyTimer: ReturnType<typeof setTimeout> | undefined;
+    let stallTimer: ReturnType<typeof setTimeout> | undefined;
     let playTimer: ReturnType<typeof setTimeout> | undefined;
     setReady(false);
     setFailed(false);
@@ -186,6 +187,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       resumeAfterSeek = false;
       clearTimeout(playTimer);
       clearTimeout(seekTimer);
+      clearTimeout(stallTimer);
       canPlayController?.abort();
       canPlayController = undefined;
       if (seekFrame !== undefined) cancelAnimationFrame(seekFrame);
@@ -220,6 +222,25 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       }, 10_000);
     };
 
+    /**
+     * IMS 播放中定时核对 SDK 时间：一段时间里没有前进说明 SDK 报告在播放却已卡住（例如系统 WebKitGTK 对 blob 视频一直等不到
+     * canplaythrough），切换基础视频；前进了就从新位置接着核对。暂停、定位、修改与结束都会取消核对。
+     */
+    const watchStall = () => {
+      clearTimeout(stallTimer);
+      const from = instance?.currentTime;
+      stallTimer = setTimeout(() => {
+        if (!instance || disposed || basicRequested) return;
+        // 停在结尾附近是播放结束，不算卡住。
+        if (instance.currentTime >= (latestResolved.current?.duration ?? 0) - 0.1) return;
+        if (instance.currentTime !== from) watchStall();
+        else {
+          debugLog("模板预览", `播放卡住：${STALL_TIMEOUT_MS / 1000} 秒内播放器时间停在 ${from} 秒`);
+          switchToBasicVideo(`播放 ${STALL_TIMEOUT_MS / 1000} 秒没有前进`);
+        }
+      }, STALL_TIMEOUT_MS);
+    };
+
     /** SDK 确认定位完成后才恢复播放，完成通知与画面更新分别处理。 */
     const finishSeek = () => {
       seekTarget = null;
@@ -232,6 +253,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
             instance?.play();
             changePlaying(true);
             setStatus("正在播放预览…");
+            watchStall();
           }
         }, 0);
       } else setStatus("预览已暂停");
@@ -416,6 +438,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           }
           showTime(current);
           if (current >= (latestResolved.current?.duration ?? 0)) {
+            clearTimeout(stallTimer);
             track.current?.setTime(current);
             changePlaying(false);
             setStatus("预览结束，点击播放可重播");

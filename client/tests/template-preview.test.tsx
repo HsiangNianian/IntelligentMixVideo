@@ -1,13 +1,13 @@
 /**
  * 模板预览中不属于 IMS 的部分不等 IMS：测试环境不加载外部脚本，用例在播放器页面挂上 SDK 替身，
- * 由用例决定载入时间线与 canplay 的结果，检查 IMS 还在加载、卡住或出错时时间轴照常可用，卡住或出错时切换基础视频，
+ * 由用例决定载入时间线与 canplay 的结果，检查 IMS 还在加载、卡住或出错时时间轴照常可用，卡住、出错或播放不前进时切换基础视频，
  * IMS 就绪前由前端时钟推进播放位置、就绪后接着播放；执行 bun run test。
  */
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { TemplatePreview } from "@/features/templates/TemplatePreview";
 import { newDraft, type Draft } from "@/features/templates/model";
-import { CAN_PLAY_TIMEOUT_MS, readCatalog, type PlayerEvent } from "@/features/templates/sdk";
+import { CAN_PLAY_TIMEOUT_MS, readCatalog, STALL_TIMEOUT_MS, type PlayerEvent } from "@/features/templates/sdk";
 import { addTrack, previewContext, resolveTemplate } from "@/features/templates/tracks";
 import { sampleMedia } from "./fixtures";
 import { frames } from "./frames";
@@ -149,6 +149,24 @@ function clockAt() {
 
 // 显示在 1～4 秒的 AI 资产，素材完整时长 5 秒。
 const sprite = { id: "sprite-a", spriteId: "s1", aspect: 9 / 16, name: "霓虹标题", start: 1, end: 4, length: 5 };
+
+// 回归：系统 WebKitGTK 里 SDK 对 blob 视频一直等不到 canplaythrough，报告在播放、时间却不动，预览定格且不降级。
+// IMS 播放中 10 秒时间没有前进就切换基础视频；期间前进过则从新位置接着核对。
+test("IMS 播放中时间 10 秒不前进时切换基础视频", async () => {
+  const { fire } = timers();
+  const { player } = await mountWithSdk(newDraft());
+  await act(async () => { player.finishTimeline(); });
+  await act(async () => player.emit("canplay"));
+  await screen.findByText("预览已就绪，点击播放查看效果");
+  fireEvent.click(screen.getByRole("button", { name: "播放" }));
+  await waitFor(() => expect(player.play).toHaveBeenCalledTimes(1));
+  player.currentTime = 1.2;
+  await act(async () => player.emit("render"));
+  await fire(STALL_TIMEOUT_MS);
+  expect(screen.queryByText(/已切换基础视频预览/) === null).toBe(true);
+  await fire(STALL_TIMEOUT_MS);
+  expect(screen.getByText(fallbackNote("播放 10 秒没有前进"))).toBeTruthy();
+});
 
 // 回归：IMS 加载（下载 SDK、载入时间线、等 canplay，最长要一两分钟）期间播放按钮、进度条与时间轴都停用，AI 资产只能看第一帧。
 // IMS 就绪前由前端时钟推进播放位置：照常播放、定位，AI 资产与时间轴跟随，修改模板后回到开头。
