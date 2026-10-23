@@ -70,11 +70,13 @@ async function restore() {
 /** 把数据写入桌面存储的指定槽位（索引从 0 开始），返回新数据文件在媒体服务上的播放地址。 */
 async function save(index: number, name: string, blob: Blob): Promise<string> {
   const started = performance.now();
+  // 先确认媒体服务地址，避免写入成功后地址命令失败，留下前端尚未登记的本地文件。
+  const server = await mediaServerBase();
   const file = await invoke<string>("preview_video_write", new Uint8Array(await blob.arrayBuffer()), {
     headers: { "x-imv-slot": String(index + 1), "x-imv-name": encodeURIComponent(name), "x-imv-type": blob.type },
   });
   logTransfer("保存", index, name, blob.size, started);
-  return localMediaUrl(await mediaServerBase(), file);
+  return localMediaUrl(server, file);
 }
 
 /** 从媒体服务读回桌面已保存视频的字节，供提交失败时写回。 */

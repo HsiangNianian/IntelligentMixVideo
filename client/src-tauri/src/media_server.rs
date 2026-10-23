@@ -2,8 +2,8 @@
 //! 供模板预览的 IMS SDK 与基础视频播放。网页里的 blob URL 在系统 WebKitGTK 中让 SDK 的 `<video>` 一直等不到
 //! canplaythrough（SDK 报告在播放、画面却定格），Chromium 里也明显更晚就绪；同一视频走 HTTP 时各平台都能正常缓冲。
 //! 地址带每次启动随机生成的令牌，只接受精确的 `127.0.0.1:端口` 主机与 GET/HEAD（另应答 CORS 预检）；
-//! 本机视频只认各槽位元数据当前指向的数据文件（见 `preview_videos::open`）。每个请求在独立线程里应答，
-//! 长视频的读取不阻塞其他请求；监听随进程退出释放。
+//! 本机视频只认各槽位元数据当前指向的数据文件（见 `preview_videos::open`）。固定数量的工作线程并发应答，
+//! 长视频的读取不阻塞其他请求，同时避免本机大量请求无限创建线程；监听随进程退出释放。
 
 use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
@@ -13,6 +13,9 @@ use uuid::Uuid;
 
 /// 媒体服务地址前缀 `http://127.0.0.1:端口/令牌`；前端拼上 `/sample/N` 或 `/local/数据文件名`。
 pub struct MediaServer(pub String);
+
+/// 同时应答请求的工作线程数；预览最多三段视频，留出范围请求余量即可。
+const WORKERS: usize = 4;
 
 /// 内置示例：按编号 1～3 返回完整字节。
 type SampleSource = Box<dyn Fn(u8) -> Option<Arc<Vec<u8>>> + Send + Sync>;
@@ -36,17 +39,22 @@ pub fn start(sources: Sources) -> io::Result<MediaServer> {
     let host = format!("127.0.0.1:{port}");
     let token = Uuid::new_v4().simple().to_string();
     let base = format!("http://{host}/{token}");
+    let server = Arc::new(server);
     let context = Arc::new((sources, host, token));
-    std::thread::spawn(move || {
-        for request in server.incoming_requests() {
-            let context = Arc::clone(&context);
-            // 页面切换或关闭可以中断响应，不让客户端断连影响其他请求。
-            std::thread::spawn(move || {
-                let (sources, host, token) = &*context;
-                let _ = respond(request, host, token, sources);
-            });
-        }
-    });
+    for index in 0..WORKERS {
+        let server = Arc::clone(&server);
+        let context = Arc::clone(&context);
+        std::thread::Builder::new()
+            .name(format!("preview-media-{index}"))
+            .spawn(move || {
+                // recv 阻塞等待请求；服务关闭后返回错误，工作线程随之退出。
+                while let Ok(request) = server.recv() {
+                    let (sources, host, token) = &*context;
+                    let _ = respond(request, host, token, sources);
+                }
+            })
+            .map_err(io::Error::other)?;
+    }
     Ok(MediaServer(base))
 }
 

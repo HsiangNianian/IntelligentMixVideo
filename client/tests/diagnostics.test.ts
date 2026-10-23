@@ -4,7 +4,7 @@
  */
 import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test";
 import { waitFor } from "@testing-library/react";
-import { describe as describeValue, debugLog, openDiagnostics, resetDiagnostics, startDiagnostics, watchWindow } from "@/lib/diagnostics";
+import { describe as describeValue, debugLog, describeMedia, openDiagnostics, resetDiagnostics, startDiagnostics, watchWindow } from "@/lib/diagnostics";
 import { fetchMock, mockDesktop } from "./setup";
 
 type Entry = { level: string; source: string; message: string; at: number };
@@ -225,6 +225,24 @@ test("监听 iframe 的报错并标注来源", async () => {
   await waitFor(() => expect(entries.some((entry) => entry.message === "Script error.")).toBe(true));
   expect(frameError).toHaveBeenCalledTimes(1);
   expect(describeValue(new Error("x"))).toStartWith("Error: x");
+});
+
+// 回归：预览媒体服务的令牌在路径中，诊断日志不能把可读取本机视频的凭据写入文件。
+test("诊断日志隐藏本机预览媒体服务令牌", async () => {
+  const token = "0123456789abcdef0123456789abcdef";
+  const media = document.createElement("video");
+  media.src = `http://127.0.0.1:9/${token}/local/video-1-a`;
+  const text = describeMedia(media);
+  expect(text).toContain("127.0.0.1:9/media-token/local/video-1-a");
+  expect(text).not.toContain(token);
+
+  desktop();
+  startDiagnostics();
+  await openDiagnostics();
+  fetchMock.mockResolvedValue(new Response(null, { status: 404 }));
+  await window.fetch(`http://127.0.0.1:9/${token}/local/video-1-a`);
+  await waitFor(() => expect(entries.some((entry) => entry.message.includes("127.0.0.1:9/media-token/local/video-1-a") && entry.message.includes("404"))).toBe(true));
+  expect(entries.map((entry) => entry.message).join(" ")).not.toContain(token);
 });
 
 // 场景：桌面端某个本地预览视频读不回来（预览媒体服务的 HEAD 请求不成功）时界面静默改用默认地址，调试日志写明槽位、文件名与原因。

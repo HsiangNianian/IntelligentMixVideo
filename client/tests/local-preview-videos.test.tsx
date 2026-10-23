@@ -148,6 +148,26 @@ test("取消弹窗不提交本地文件并释放 blob URL", async () => {
   expect(onChange).not.toHaveBeenCalled();
 });
 
+// 回归：媒体服务地址不可用时不能先写入本地文件，否则写入已提交而前端仍认为失败。
+test("媒体服务地址不可用时不会写入本地文件", async () => {
+  const calls: string[] = [];
+  mockDesktop(async (command) => {
+    calls.push(command);
+    if (command === "preview_video_list") return [null, null, null];
+    if (command === "preview_media_base") throw "媒体服务不可用";
+    if (command === "preview_video_write") return "video-1-new";
+    return null;
+  });
+  const specifier = "@/features/templates/localVideos?base-unavailable";
+  const fresh: typeof import("@/features/templates/localVideos") = await import(specifier);
+  await expect(fresh.commitLocalVideos([
+    { kind: "file", name: "a.mp4", url: "blob:a", file: new File(["a"], "a.mp4", { type: "video/mp4" }) },
+    { kind: "url", url: "" },
+    { kind: "url", url: "" },
+  ])).rejects.toThrow("视频 1：媒体服务不可用");
+  expect(calls).not.toContain("preview_video_write");
+});
+
 // 场景：桌面端加载成功后把文件字节写入本机，改回 URL 时删除对应槽位的本机副本。
 test("桌面端保存本地文件并在改回 URL 时删除", async () => {
   const calls: [string, unknown][] = [];
