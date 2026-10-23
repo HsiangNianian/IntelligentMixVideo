@@ -484,7 +484,8 @@ never written back after it. Overlay renders only need the stored TSX.
 and cache. While a cloud template's `remotion` track still references it the answer is 409 naming those templates
 (raw configurations are scanned, so invalid templates count too); an unknown ID is a 404. The bundle objects are
 removed before the row: when the object store fails the answer is a retryable 503 and the asset stays listed, so a
-retry finishes it. The source work and its versions are untouched, so the version can be saved to the library again.
+retry finishes it; the store's own error (code, number of failed keys and the store's request ID, Aliyun OSS's
+`x-oss-request-id`) is logged as `Sprite files not deleted`. The source work and its versions are untouched, so the version can be saved to the library again.
 `POST /api/sprites/{id}/rename` (`imv.sprite.v1.RenameSpriteRequest`, anyone may rename) changes only the catalog name:
 trimmed, 1 to 100 characters, not required to be unique (422 otherwise), an unknown ID is a 404. A placed asset can
 be renamed since templates store IDs only. The name lives in the stored JSON; `sprite_store.update_data` locks the

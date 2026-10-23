@@ -359,6 +359,8 @@ def remove(store: Store, sprite_id: str, used_by: list[str]) -> None:
     try:
         store.objects.delete_prefix(f"{PREFIX}/sprites/{sprite_id}/")
     except ObjectStoreError as exc:
+        # The answer only asks for a retry; the object store's own error (code, failed keys) is kept in the server log.
+        logging.getLogger(__name__).exception("Sprite files not deleted: %s", sprite_id)
         raise HTTPException(503, "资产文件暂时无法删除，请稍后重试") from exc
     shutil.rmtree(store.root / "cache" / "sprites" / sprite_id, ignore_errors=True)
     if not sprite_store.remove(sprite_id):
