@@ -832,18 +832,23 @@ def test_deleting_an_unused_sprite_removes_its_record_and_bundle(client: TestCli
 
 
 # 场景（回归）：对象存储删除失败时，原先记录已先删掉，接口 500、目录仍显示资产，再点删除只得到 404「sprite not found」。
-def test_an_object_store_failure_keeps_the_sprite_for_a_retry(client: TestClient, published, monkeypatch) -> None:
-    """预览包删除失败回答可重试的 503，记录、目录与预览保持原样；存储恢复后重试删除成功。"""
+def test_an_object_store_failure_keeps_the_sprite_for_a_retry(client: TestClient, published, monkeypatch, caplog) -> None:
+    """预览包删除失败回答可重试的 503，记录、目录与预览保持原样，对象存储的原因写进服务端日志；存储恢复后重试删除成功。"""
     summary = published_sprite(client, published.version.id)
     real_delete = published.store.objects.delete_prefix
 
     def unreachable(prefix):
         """模拟 ZOS 拒绝批量删除。"""
-        raise ObjectStoreError("ZOS delete failed")
+        raise ObjectStoreError(f"ZOS delete failed: {prefix} (2 keys, AccessDenied)")
 
     monkeypatch.setattr(published.store.objects, "delete_prefix", unreachable)
-    response = client.delete(f"/api/sprites/{summary.sprite_id}")
+    with caplog.at_level(logging.ERROR, logger=sprites.__name__):
+        response = client.delete(f"/api/sprites/{summary.sprite_id}")
     assert response.status_code == 503 and response.json()["detail"] == "资产文件暂时无法删除，请稍后重试"
+    # 线上（阿里云 OSS）删不掉时原先只有访问日志里的 503，对象存储的错误码无处可查。
+    [record] = [item for item in caplog.records if item.name == sprites.__name__]
+    assert record.getMessage() == f"Sprite files not deleted: {summary.sprite_id}"
+    assert isinstance(record.exc_info[1], ObjectStoreError) and "AccessDenied" in str(record.exc_info[1])
     assert [item.sprite_id for item in pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites] == [summary.sprite_id]
     assert client.get(summary.preview_url).status_code == 200
     monkeypatch.setattr(published.store.objects, "delete_prefix", real_delete)
