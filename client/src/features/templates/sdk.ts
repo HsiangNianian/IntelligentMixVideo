@@ -1,6 +1,7 @@
 /**
  * 加载固定版本阿里云预览 SDK、固定其绘制倍数并读取目录；播放器实例的创建与销毁由预览组件负责。
- * 另把 SDK 内部的媒体元素与公开事件流接到调试日志：素材加载失败、卡顿、播放状态与渲染上下文丢失。
+ * 另把 SDK 内部的媒体元素与公开事件流接到调试日志：素材加载失败、卡顿、播放状态与渲染上下文丢失；
+ * 渲染授权改为后台请求，不阻塞也不影响预览播放。
  */
 import motions from "./motions.json";
 import bundledCatalog from "../../../../server/src/server/template/sdk_catalog.json";
@@ -181,8 +182,17 @@ export function watchSdkMedia(
   return alive;
 }
 
-/** 应用时间线后等待 canplay 的上限：超时只表示无法确认可播放，不能据此把预览标为就绪。 */
-const CAN_PLAY_TIMEOUT_MS = 3_000;
+/**
+ * 应用时间线后等待 canplay 的上限：平时一秒内就到，网络或设备慢时 SDK 加载素材与字体可能要十几秒，
+ * 等满它仍没有 canplay 才判定 IMS 预览不可用；超时只表示无法确认可播放，不能据此把预览标为就绪。
+ */
+export const CAN_PLAY_TIMEOUT_MS = 60_000;
+
+/**
+ * IMS 播放中时间不前进的上限：网络慢时 SDK 缓冲一般几秒内恢复，与素材加载的慢加载警告一样等 10 秒，
+ * 仍不前进才判定 SDK 卡住、切换基础视频。
+ */
+export const STALL_TIMEOUT_MS = 10_000;
 
 /** 等待 SDK 可播放事件的结果；只有 canplay 能证明播放节点已建好。 */
 export type CanPlayResult = "canplay" | "timeout" | "cancelled";
@@ -224,55 +234,48 @@ export function waitForCanPlay(
 
 /** SDK 5.2.2 渲染引擎初始化时固定请求的授权接口。 */
 const LICENSE_API = "https://vpp-license-proxy.aliyuncs.com/getWebCert";
-/** 授权请求迟迟不返回时不再等它决定预览是否可用，改走基础视频；原请求和响应保持原样。 */
-const LICENSE_WATCH_TIMEOUT_MS = 3_000;
+/** 后台授权请求的记录上限：平时一两秒就有回应，超过它只记一条调试日志，不影响预览。 */
+const LICENSE_TIMEOUT_MS = 10_000;
 
 /**
- * 只观察播放器窗口对授权接口的请求，不替换响应、不丢弃证书，也不改变 SDK 的授权判断。请求报错、非 2xx、
- * 回应不是 JSON 或 3 秒未完成时通知调用方降级；其他请求原样转发。返回的函数恢复原 fetch 并清理计时器。
+ * 渲染引擎加载 wasm 后请求一次授权，等到回应才初始化、开始画视频：网络慢时第一次播放要等它，请求失败或回应不是 JSON
+ * （代理的错误页等）时 SDK 还会把渲染引擎标为初始化失败且不再重试，视频层一直黑屏。预览以空 License 运行在 localhost，
+ * 服务端对空域名的请求只回一段不含证书的 JSON，引擎按 localhost 条件无证书初始化（保留水印），授权结果并不决定能否播放。
+ * 所以在 SDK 加载前接管播放器窗口的 fetch，把授权变成后台操作：SDK 立即拿到同样的无证书结果（空 JSON），不等网络就初始化；
+ * 真实请求照常在后台发出，出错、非 2xx、回应不是 JSON 或 10 秒没有回应时只写一条调试日志。其他请求原样转发。
+ * 返回的函数恢复原 fetch，之后结束的后台请求不再记录。
  */
-export function watchLicenseRequest(view: Window, onFailure: (reason: string) => void): () => void {
+export function deferLicenseRequest(view: Window): () => void {
   const scope = view as Window & typeof globalThis;
-  const request = scope.fetch.bind(scope);
-  const timers = new Set<ReturnType<typeof setTimeout>>();
+  const original = scope.fetch;
+  const request = original.bind(scope);
   let stopped = false;
   const wrapper = ((input: RequestInfo | URL, init?: RequestInit) => {
     if (String(typeof input === "object" && "url" in input ? input.url : input) !== LICENSE_API) return request(input, init);
-    let reported = false;
-    const response = request(input, init);
-    const timer = setTimeout(() => report(`TimeoutError: ${LICENSE_WATCH_TIMEOUT_MS / 1000} 秒没有回应`), LICENSE_WATCH_TIMEOUT_MS);
-    timers.add(timer);
-    /** 每个请求只降级一次，并清掉仍在等待的观察计时器。 */
-    function report(reason: string) {
-      if (reported || stopped) return;
-      reported = true;
-      clearTimeout(timer);
-      timers.delete(timer);
-      onFailure(reason);
-    }
-    /** 克隆响应后检查状态与 JSON，避免消费 SDK 随后要读取的原响应。 */
-    const inspect = async () => {
-      try {
-        const copy = response.then((value) => value.clone());
-        const value = await copy;
-        if (!value.ok) throw new Error(`HTTP ${value.status}`);
-        JSON.parse(await value.text());
-        clearTimeout(timer);
-        timers.delete(timer);
-      } catch (error) {
-        report(briefly(error));
-      }
-    };
-    void inspect();
-    return response;
+    void checkLicense((signal) => request(input, { ...init, signal }), () => stopped || scope.closed);
+    return Promise.resolve(new Response("{}", { headers: { "Content-Type": "application/json" } }));
   }) as typeof fetch;
   scope.fetch = wrapper;
   return () => {
     stopped = true;
-    for (const timer of timers) clearTimeout(timer);
-    timers.clear();
-    if (scope.fetch === wrapper) scope.fetch = request;
+    if (scope.fetch === wrapper) scope.fetch = original;
   };
+}
+
+/** 在后台完成授权请求，结果不交给 SDK；失败只写调试日志，播放器已停用或卸载时（请求随页面中止）不记录。 */
+async function checkLicense(send: (signal: AbortSignal) => Promise<Response>, gone: () => boolean) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new DOMException(`${LICENSE_TIMEOUT_MS / 1000} 秒没有回应`, "TimeoutError")), LICENSE_TIMEOUT_MS);
+  try {
+    const response = await send(controller.signal);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const text = await response.text();
+    try { JSON.parse(text); } catch { throw new Error(`HTTP ${response.status} 的回应不是 JSON`); }
+  } catch (error) {
+    if (!gone()) debugLog(SOURCE, `渲染授权请求失败（${briefly(error)}）；预览不等授权，照常播放`, "警告");
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** 播放状态的日志级别：卡住（stalled）记警告、损坏（broken）记错误，其余（playing、paused、ended）记信息。 */
@@ -352,25 +355,4 @@ export function readCatalog(sdk?: PreviewSDK): EffectAsset[] {
       });
     }
   return result;
-}
-
-let fontLoading: Promise<void> | undefined;
-
-/** 加载与旧预览一致的测量字体；超时或失败允许重试，成功后供页面反复使用。 */
-export function loadPreviewFont(): Promise<void> {
-  if (!fontLoading) {
-    fontLoading = (async () => {
-      const response = await fetch(
-        "https://ice-pub-media.myalicdn.com/websdk/fonts/Alibaba-PuHuiTi-Bold.ttf",
-        { signal: AbortSignal.timeout(20_000) },
-      );
-      if (!response.ok) throw new Error("预览字体加载失败，请重试");
-      const font = new FontFace("ims-preview", await response.arrayBuffer());
-      document.fonts.add(await font.load());
-    })().catch((error) => {
-      fontLoading = undefined;
-      throw error;
-    });
-  }
-  return fontLoading;
 }

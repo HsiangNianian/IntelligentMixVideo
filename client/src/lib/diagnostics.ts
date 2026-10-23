@@ -106,11 +106,32 @@ export function briefly(value: unknown): string {
   return value instanceof Error ? `${value.name}: ${value.message}` : describe(value);
 }
 
+/** 预览媒体服务的启动令牌是路径中的 32 位十六进制段；日志只保留占位符，避免把访问凭据带进可分享的日志。 */
+const MEDIA_TOKEN_PATH = /^\/[0-9a-f]{32}(?=\/)/i;
+
+/** 本机预览媒体服务地址中的令牌脱敏；其他地址保持原样。 */
+function redactMediaPath(hostname: string, pathname: string): string {
+  return hostname === "127.0.0.1" ? pathname.replace(MEDIA_TOKEN_PATH, "/media-token") : pathname;
+}
+
+/** 媒体地址脱敏；解析失败时保留原始文本。 */
+function redactMediaUrl(value: string): string {
+  try {
+    const url = new URL(value, window.location.href);
+    const pathname = redactMediaPath(url.hostname, url.pathname);
+    if (pathname === url.pathname) return value;
+    url.pathname = pathname;
+    return url.href;
+  } catch {
+    return value;
+  }
+}
+
 /** 媒体元素的地址、错误码与加载状态；报错时仍保留在元素上，须在清除地址之前读取。 */
 export function describeMedia(media: HTMLMediaElement): string {
   const error = media.error;
   const reason = error ? `${error.code}（${MEDIA_ERRORS[error.code] ?? "未知"}）${error.message ? ` ${error.message}` : ""}` : "无";
-  return `地址 ${media.currentSrc || media.src || "（无）"}；媒体错误 ${reason}；networkState=${media.networkState} readyState=${media.readyState}`;
+  return `地址 ${redactMediaUrl(media.currentSrc || media.src || "（无）")}；媒体错误 ${reason}；networkState=${media.networkState} readyState=${media.readyState}`;
 }
 
 /** 将空白和多行压成一行，避免控件名称破坏日志的单条记录格式。 */
@@ -337,7 +358,7 @@ function requestLabel(input: RequestInfo | URL, init?: RequestInit): string | un
   }
   if (!/^https?:$/.test(url.protocol) || /^(ipc|asset|tauri)\.localhost$/.test(url.hostname)) return undefined;
   const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
-  return `${method} ${url.origin === window.location.origin ? "" : url.host}${url.pathname}`;
+  return `${method} ${url.origin === window.location.origin ? "" : url.host}${redactMediaPath(url.hostname, url.pathname)}`;
 }
 
 /** 失败响应正文最多读取的字节数：足够覆盖 200 个中文字符，超过后取消读取，避免大响应或流式响应拖住日志。 */

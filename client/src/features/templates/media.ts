@@ -1,17 +1,20 @@
 /**
- * 预览视频地址与元数据读取；输入表单和播放器共用，支持 HTTP(S)、public 资源与本地文件的 blob URL，取消或结束时释放媒体资源。
- * 内置示例随客户端打包，首次读取时整段载入内存并改用 blob URL 播放，不再每次从网络下载。
+ * 预览视频地址与元数据读取；输入表单和播放器共用，支持 HTTP(S)、public 资源、本地文件（桌面端为预览媒体服务地址，
+ * 浏览器为 blob URL），取消或结束时释放媒体资源。内置示例随客户端打包：桌面端经预览媒体服务以 HTTP 播放，
+ * 浏览器首次读取时整段载入内存并改用 blob URL 播放，不再每次从网络下载。
  */
+import { isTauri } from "@tauri-apps/api/core";
 import type { MasterVideo, PreviewMedia } from "./model";
 import { localPreviewVideos } from "./localVideos";
+import { isLocalMediaUrl, mediaServerBase, sampleMediaUrl } from "./mediaServer";
 import { debugLog, describeMedia } from "@/lib/diagnostics";
 
 /** 内置示例：public/preview/ 下正好 10 秒的 1080×1920、30fps 无音轨片段。 */
 const bundledVideos = ["/preview/sample-1.mp4", "/preview/sample-2.mp4", "/preview/sample-3.mp4"] as const;
 
-/** 内置示例的地址到读取中或已读成的 blob URL；读取失败后删除以便重试。 */
+/** 内置示例的资源地址到准备中或已备好的播放地址；失败后删除以便重试。 */
 const bundledLoads = new Map<string, Promise<string>>();
-/** 已读成的内置示例：blob URL 到资源地址；应用存活期间复用、不释放。 */
+/** 已备好的内置示例：播放地址（媒体服务地址或 blob URL）到资源地址；应用存活期间复用、不释放。 */
 const bundledSources = new Map<string, string>();
 
 /**
@@ -33,20 +36,26 @@ function bundledUrls(): string[] {
 }
 
 /**
- * 把内置示例读成 blob URL：桌面端页面协议不是 HTTP(S)，自定义协议也不保证视频定位所需的范围请求，
- * 内存中的 blob 在各平台都可直接解码和定位。并发读取共用同一请求，其他地址原样返回。
+ * 内置示例的播放地址。桌面端页面协议不是 HTTP(S)（Windows 的页面服务也不支持范围请求），blob URL 又让系统 WebKitGTK 里的
+ * IMS SDK 一直等不到 canplaythrough，所以改用预览媒体服务的 HTTP 地址；浏览器把示例整段读成 blob URL。
+ * 并发读取共用同一请求，其他地址原样返回。
  */
 async function playableUrl(input: string): Promise<string> {
   let url: string;
   try { url = new URL(input, window.location.href).href; } catch { return input; }
-  if (!bundledUrls().includes(url)) return input;
+  const index = bundledUrls().indexOf(url);
+  if (index < 0) return input;
   let pending = bundledLoads.get(url);
   if (!pending) {
-    pending = fetch(url).then(async (response) => {
-      if (!response.ok) throw new Error(`内置示例视频读取失败（HTTP ${response.status}）`);
-      const blob = URL.createObjectURL(await response.blob());
-      bundledSources.set(blob, url);
-      return blob;
+    const playable = isTauri()
+      ? mediaServerBase().then((server) => sampleMediaUrl(server, index))
+      : fetch(url).then(async (response) => {
+        if (!response.ok) throw new Error(`内置示例视频读取失败（HTTP ${response.status}）`);
+        return URL.createObjectURL(await response.blob());
+      });
+    pending = playable.then((value) => {
+      bundledSources.set(value, url);
+      return value;
     });
     bundledLoads.set(url, pending);
     pending.catch(() => bundledLoads.delete(url));
@@ -54,14 +63,19 @@ async function playableUrl(input: string): Promise<string> {
   return pending;
 }
 
-/** 弹窗中展示的来源地址：内置示例显示其资源地址，而不是播放用的 blob URL。 */
+/** 弹窗中展示的来源地址：内置示例显示其资源地址，而不是播放用的地址。 */
 export function sourceUrl(url: string): string {
   return bundledSources.get(url) ?? url;
 }
 
-/** URL 来源与内置示例各使用前十秒（不足十秒用完整区间）；用户选择的本地文件（blob URL）使用完整时长。 */
+/** 用户选择的本地文件（桌面端的媒体服务地址或浏览器的 blob URL，不含内置示例）。 */
+function isLocalVideo(url: string): boolean {
+  return isLocalMediaUrl(url) || (url.startsWith("blob:") && !bundledSources.has(url));
+}
+
+/** URL 来源与内置示例各使用前十秒（不足十秒用完整区间）；用户选择的本地文件使用完整时长。 */
 export function previewVideos(sources: PreviewMedia): PreviewMedia {
-  const clip = (video: MasterVideo) => video.url.startsWith("blob:") && !bundledSources.has(video.url) ? video : { ...video, duration: Math.min(10, video.duration) };
+  const clip = (video: MasterVideo) => isLocalVideo(video.url) ? video : { ...video, duration: Math.min(10, video.duration) };
   return [clip(sources[0]), clip(sources[1]), clip(sources[2])];
 }
 
@@ -90,7 +104,7 @@ export async function readPreviewVideos(urls: readonly string[], signal: AbortSi
 /** 读取真实时长和尺寸；超时、取消或无法加载时明确失败并清理监听器。 */
 export function readMasterVideo(url: string, signal: AbortSignal): Promise<MasterVideo> {
   const parsed = new URL(url, window.location.origin);
-  const local = parsed.protocol === "blob:";
+  const local = parsed.protocol === "blob:" || isLocalMediaUrl(parsed.href);
   if (!local && !["http:", "https:"].includes(parsed.protocol)) return Promise.reject(new Error("母版须为 HTTP(S) 视频地址、public 资源路径或本地文件"));
   return new Promise((resolve, reject) => {
     const video = document.createElement("video");

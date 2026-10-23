@@ -1,4 +1,4 @@
-//! 桌面入口：Windows 页面使用 localhost，Linux 隔离网页缓存，测试包按需监督内置服务，设置页可打开调试日志窗口（Windows 另记录 WebView2 子进程退出）。
+//! 桌面入口：Windows 页面使用 localhost，Linux 隔离网页缓存，预览视频经回环媒体服务以 HTTP 播放，测试包按需监督内置服务，设置页可打开调试日志窗口（Windows 另记录 WebView2 子进程退出）。
 
 #[cfg(windows)]
 mod localhost;
@@ -6,6 +6,7 @@ mod localhost;
 mod backend;
 mod diagnostics;
 mod file_lock;
+mod media_server;
 mod preview_videos;
 mod remotion_sessions;
 mod settings;
@@ -58,8 +59,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             settings::local_settings,
             preview_videos::preview_video_list,
-            preview_videos::preview_video_read,
             preview_videos::preview_video_write,
+            media_server::preview_media_base,
             preview_videos::preview_video_remove,
             remotion_sessions::remotion_sessions,
             backend::start_backend,
@@ -68,6 +69,16 @@ pub fn run() {
             diagnostics::diagnostics_log
         ])
         .setup(|app| {
+            {
+                use tauri::Manager;
+                // 预览视频（内置示例与本机文件）经回环 HTTP 交给 IMS SDK，不用 blob URL；绑定失败与 Windows 页面服务一样阻止启动。
+                let directory = preview_videos::directory(app.handle())?;
+                let server = media_server::start(media_server::Sources {
+                    sample: Box::new(media_server::samples(app.asset_resolver())),
+                    local: Box::new(move |file| preview_videos::open(&directory, file)),
+                })?;
+                app.manage(server);
+            }
             #[cfg(windows)]
             {
                 use tauri::Manager;

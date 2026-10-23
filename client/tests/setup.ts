@@ -4,7 +4,13 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 
 // 禁止测试 iframe 导航访问真实服务，仍保留 contentWindow 供消息协议用例使用。
-GlobalRegistrator.register({ url: "http://localhost:1420", settings: {navigation: {disableChildFrameNavigation: true}} });
+// 外部脚本与样式表（如预览 SDK）也不下载，直接按加载完成派发 load：它们走 happy-dom 自己的请求，不经过下面的 fetch 拦截。
+GlobalRegistrator.register({ url: "http://localhost:1420", settings: {
+  navigation: {disableChildFrameNavigation: true},
+  disableJavaScriptFileLoading: true,
+  disableCSSFileLoading: true,
+  handleDisabledFileLoadingAsSuccess: true,
+} });
 // Web Animations 规范在 cancel() 拒绝 finished 时把该 promise 标记为已处理，浏览器不报错；happy-dom 没有标记，
 // motion 动画中途卸载（例如移除正在出现的图片预览）会被 bun 报成未处理错误并算到当前用例上。
 const cancelAnimation = Animation.prototype.cancel;
