@@ -1,35 +1,21 @@
 /**
  * IMS 不可用时的基础视频预览：画布与 AI 资产不等 IMS 加载，降级早于 SDK 加载时时间轴行照常显示；主控件驱动三段视频
- * （换段、定位、结尾重播、只播解析出的段长），播放按钮、进度条、时间轴与文字选择框可用，AI 资产逐帧跟随；
- * Happy DOM 不解码视频，媒体元素的播放位置由用例设置；执行 bun run test。
+ * （换段、定位、结尾重播、只播解析出的段长），播放按钮、进度条、时间轴与文字选择框可用，AI 资产逐帧跟随，
+ * 基础视频可以播放时接着前端时钟的位置与播放状态；Happy DOM 不解码视频，媒体元素的播放位置由用例设置；执行 bun run test。
  */
 import { expect, mock, spyOn, test } from "bun:test";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRef } from "react";
-import { BasicVideoPreview, clipAt, type BasicVideoHandle } from "@/features/templates/BasicVideoPreview";
+import { BasicVideoPreview, clipAt } from "@/features/templates/BasicVideoPreview";
+import type { PlaybackHandle } from "@/features/templates/previewClock";
 import { TemplatePreview } from "@/features/templates/TemplatePreview";
 import { newDraft } from "@/features/templates/model";
 import { previewContext, resolveTemplate, type ResolvedTimeline } from "@/features/templates/tracks";
 import { sampleMedia } from "./fixtures";
+import { frames } from "./frames";
 
 // 三段各 3 秒；素材本身 10 秒，比段长更长，基础视频只能播到段尾就换段。
 const resolved: ResolvedTimeline = { duration: 9, clips: [{ start: 0, end: 3 }, { start: 3, end: 6 }, { start: 6, end: 9 }], tracks: {}, transitions: [], notices: [] };
-
-/** 接管逐帧回调，由用例逐次执行，返回执行下一帧的函数与尚未执行的帧数。 */
-function frames() {
-  const pending = new Map<number, FrameRequestCallback>();
-  let next = 0;
-  spyOn(window, "requestAnimationFrame").mockImplementation((callback) => { pending.set(++next, callback); return next; });
-  spyOn(window, "cancelAnimationFrame").mockImplementation((id) => { pending.delete(id); });
-  return {
-    step: () => act(async () => {
-      const due = [...pending.values()];
-      pending.clear();
-      due.forEach((callback) => callback(0));
-    }),
-    count: () => pending.size,
-  };
-}
 
 /** 给媒体元素换上可控的播放位置与播放、暂停探针。 */
 function controllable(video: HTMLVideoElement) {
@@ -66,7 +52,7 @@ async function mountEarlyFallback(props: Partial<Parameters<typeof TemplatePrevi
 // 回归：IMS 加载失败后预览只剩原生视频，主控件与时间轴都不能用。基础视频改由主控件驱动：逐帧回报时间、到段尾换下一段、结尾停在总时长。
 test("基础视频由主控件播放、换段并在结尾停下", async () => {
   const { step, count } = frames();
-  const ref = createRef<BasicVideoHandle>();
+  const ref = createRef<PlaybackHandle>();
   const onTime = mock();
   const onPlayingChange = mock();
   const onEnd = mock();
@@ -148,7 +134,8 @@ test("降级为基础视频后主控件、时间轴与选择框仍可用", async
   const { draft, view } = await mountEarlyFallback({ onSelect });
   expect(screen.getByText("IMS 渲染暂不可用（播放器初始化失败：SDK 未正确初始化），已切换基础视频预览：AI 资产照常显示，IMS 文字、转场、滤镜与特效暂不显示。")).toBeTruthy();
   const play = screen.getByRole<HTMLButtonElement>("button", { name: "播放" });
-  expect(play.disabled).toBe(true);
+  // 基础视频还没读到元数据时由前端时钟推进，控件已经可用。
+  expect(play.disabled).toBe(false);
   const videos = [...view.container.querySelectorAll("video")].map(controllable);
   await act(async () => { fireEvent.loadedMetadata(videos[0].video); });
   expect(play.disabled).toBe(false);
@@ -190,4 +177,23 @@ test("降级后 AI 资产逐帧跟随基础视频", async () => {
   await step();
   await step();
   expect(post).toHaveBeenLastCalledWith({ type: "imv-preview-sync", channel, time: 2.25, duration: 5 }, "*");
+});
+
+// 回归：基础视频读到元数据、可以播放时预览从开头开始，之前的播放位置与播放状态丢失。
+// 基础视频接着前端时钟的位置与播放状态播放。
+test("基础视频可以播放时接着前端时钟的位置播放", async () => {
+  const { step } = frames();
+  let now = 0;
+  spyOn(performance, "now").mockImplementation(() => now);
+  const { view } = await mountEarlyFallback();
+  fireEvent.click(screen.getByRole("button", { name: "播放" }));
+  now = 4000;
+  await step();
+  expect(screen.getAllByText("4.0 / 30.0 秒").length).toBeGreaterThan(0);
+  const videos = [...view.container.querySelectorAll("video")].map(controllable);
+  await act(async () => { fireEvent.loadedMetadata(videos[0].video); });
+  expect(shown()).toBe(videos[0].video);
+  expect(videos[0].video.currentTime).toBeCloseTo(4, 5);
+  expect(videos[0].play).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole("button", { name: "暂停" })).toBeTruthy();
 });

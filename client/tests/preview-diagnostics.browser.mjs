@@ -100,9 +100,9 @@ try {
   await page.getByText("视频 1 无法在播放器中播放（格式或地址不受支持），请检查视频编码与跨域访问配置后重试预览。").waitFor();
   assert(await page.getByRole("button", { name: "重试预览" }).isVisible());
   await page.waitForFunction(() => window.diagnostics.some((entry) => entry.message.startsWith("video 加载失败；地址 ") && entry.message.includes("broken.mp4#t=0.1；媒体错误 4（格式或地址不受支持）")));
-  // 回归：canplay 超时（60 秒）只说明无法确认可播放，不能把素材加载失败的预览重新标成“预览已就绪”并启用播放。
+  // 回归：canplay 超时（60 秒）只说明无法确认可播放，不能把素材加载失败的预览重新标成“预览已就绪”、交给 SDK 播放。
+  // 播放按钮这时由前端时钟驱动（AI 资产与时间轴照常可用），所以只检查 IMS 没有被标为就绪、错误提示仍在。
   await page.waitForTimeout(60_500);
-  assert.equal(await page.getByRole("button", { name: "播放", exact: true }).isDisabled(), true);
   assert.equal(await page.getByText("预览已就绪，点击播放查看效果", { exact: true }).count(), 0);
   assert.match(await page.locator('p[role="alert"]').textContent(), /预览素材无法播放/);
 

@@ -1,6 +1,7 @@
 /**
  * 模板预览中不属于 IMS 的部分不等 IMS：测试环境不加载外部脚本，用例在播放器页面挂上 SDK 替身，
- * 由用例决定载入时间线与 canplay 的结果，检查 IMS 还在加载、卡住或出错时时间轴照常可用，卡住或出错时切换基础视频；执行 bun run test。
+ * 由用例决定载入时间线与 canplay 的结果，检查 IMS 还在加载、卡住或出错时时间轴照常可用，卡住或出错时切换基础视频，
+ * IMS 就绪前由前端时钟推进播放位置、就绪后接着播放；执行 bun run test。
  */
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -9,6 +10,7 @@ import { newDraft, type Draft } from "@/features/templates/model";
 import { CAN_PLAY_TIMEOUT_MS, readCatalog, type PlayerEvent } from "@/features/templates/sdk";
 import { addTrack, previewContext, resolveTemplate } from "@/features/templates/tracks";
 import { sampleMedia } from "./fixtures";
+import { frames } from "./frames";
 
 /** SDK 播放器替身：记录调用，事件由用例推送；载入时间线一直不完成，除非用例调用 finishTimeline。 */
 class FakePlayer {
@@ -51,7 +53,7 @@ function props(draft: Draft) {
 }
 
 /** 挂载模板预览，在播放器页面挂上 SDK 替身，等到 SDK 开始载入第一份时间线。 */
-async function mountWithSdk(draft: Draft) {
+async function mountWithSdk(draft: Draft, extra: Partial<Parameters<typeof TemplatePreview>[0]> = {}) {
   FakePlayer.last = undefined;
   const append = Element.prototype.append;
   spyOn(Element.prototype, "append").mockImplementation(function (this: Element, ...nodes: (Node | string)[]) {
@@ -59,7 +61,7 @@ async function mountWithSdk(draft: Draft) {
     for (const node of nodes)
       if (node instanceof HTMLIFrameElement && node.title === "模板预览播放器") Reflect.set(node.contentWindow!, "AliyunTimelinePlayer", FakePlayer);
   });
-  const view = render(<TemplatePreview {...props(draft)} />);
+  const view = render(<TemplatePreview {...props(draft)} {...extra} />);
   await waitFor(() => expect(FakePlayer.last?.setTimeline.mock.calls.length).toBe(1));
   return { view, player: FakePlayer.last! };
 }
@@ -136,4 +138,69 @@ test("SDK 定位 10 秒没有完成时切换基础视频", async () => {
   await waitFor(() => expect(player.currentTime).toBe(5));
   await fire(10_000);
   expect(screen.getByText(fallbackNote("10 秒内没有定位到播放位置"))).toBeTruthy();
+});
+
+/** 接管 performance.now()，返回设置当前时刻（毫秒）的函数。 */
+function clockAt() {
+  let now = 0;
+  spyOn(performance, "now").mockImplementation(() => now);
+  return (value: number) => { now = value; };
+}
+
+// 显示在 1～4 秒的 AI 资产，素材完整时长 5 秒。
+const sprite = { id: "sprite-a", spriteId: "s1", aspect: 9 / 16, name: "霓虹标题", start: 1, end: 4, length: 5 };
+
+// 回归：IMS 加载（下载 SDK、载入时间线、等 canplay，最长要一两分钟）期间播放按钮、进度条与时间轴都停用，AI 资产只能看第一帧。
+// IMS 就绪前由前端时钟推进播放位置：照常播放、定位，AI 资产与时间轴跟随，修改模板后回到开头。
+test("IMS 还在加载时前端时钟驱动播放、定位与 AI 资产", async () => {
+  const { step } = frames();
+  const setNow = clockAt();
+  const draft = newDraft();
+  const { view, player } = await mountWithSdk(draft, { sprites: [sprite] });
+  const frame = screen.getByTitle<HTMLIFrameElement>("AI 资产预览：霓虹标题");
+  const post = spyOn(frame.contentWindow!, "postMessage");
+  const channel = new URL(frame.src).hash.slice(1);
+  await act(async () => {
+    window.dispatchEvent(new MessageEvent("message", { source: frame.contentWindow, data: { type: "imv-preview-ready", channel, sync: true } }));
+  });
+  const play = screen.getByRole<HTMLButtonElement>("button", { name: "播放" });
+  expect(play.disabled).toBe(false);
+  fireEvent.click(play);
+  expect(screen.getByRole("button", { name: "暂停" })).toBeTruthy();
+  setNow(2500);
+  await step();
+  await step();
+  expect(post).toHaveBeenLastCalledWith({ type: "imv-preview-sync", channel, time: 1.5, duration: 5 }, "*");
+  expect(screen.getAllByText("2.5 / 30.0 秒").length).toBeGreaterThan(0);
+
+  // 定位暂停在目标位置。
+  fireEvent.change(screen.getByRole("slider", { name: "预览进度" }), { target: { value: "12" } });
+  expect(screen.getByRole("button", { name: "播放" })).toBeTruthy();
+  expect(screen.getAllByText("12.0 / 30.0 秒").length).toBeGreaterThan(0);
+
+  // 修改模板后回到开头。
+  view.rerender(<TemplatePreview {...props({ ...draft })} sprites={[sprite]} />);
+  expect(screen.getAllByText("0.0 / 30.0 秒").length).toBeGreaterThan(0);
+  expect(player.play).not.toHaveBeenCalled();
+});
+
+// 回归：IMS 就绪时预览回到开头。IMS 就绪后由 SDK 从前端时钟的当前位置接着播放，AI 资产与时间轴不跳回开头。
+test("IMS 就绪时 SDK 从前端时钟的位置接着播放", async () => {
+  const { step } = frames();
+  const setNow = clockAt();
+  const { player } = await mountWithSdk(newDraft());
+  fireEvent.click(screen.getByRole("button", { name: "播放" }));
+  setNow(2000);
+  await step();
+  await act(async () => { player.finishTimeline(); });
+  await act(async () => player.emit("canplay"));
+  await waitFor(() => expect(player.currentTime).toBe(2));
+  expect(player.play).not.toHaveBeenCalled();
+  await act(async () => player.emit("playerSeeked", { currentTime: 2 }));
+  await waitFor(() => expect(player.play).toHaveBeenCalledTimes(1));
+  expect(screen.getByRole("button", { name: "暂停" })).toBeTruthy();
+  // 之后由 SDK 推进时间。
+  player.currentTime = 2.4;
+  await act(async () => player.emit("render"));
+  expect(screen.getAllByText("2.4 / 30.0 秒").length).toBeGreaterThan(0);
 });

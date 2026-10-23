@@ -1,6 +1,7 @@
 /**
- * SDK 预览组件：管理单个播放器、串行更新时间线；授权在后台请求，IMS 渲染或载入时间线失败、卡住或 60 秒仍不能播放时降级为基础视频，
- * 基础视频同样由播放按钮、进度条和时间轴控制并驱动 AI 资产；卸载时清理订阅和异步任务。
+ * SDK 预览组件：管理单个播放器、串行更新时间线；授权在后台请求，IMS 渲染或载入时间线失败、卡住或 60 秒仍不能播放时降级为基础视频。
+ * 播放位置由前端持有：IMS 就绪时由它推进，降级后由基础视频推进，二者都不可用时由前端时钟推进，换来源时接着当前位置与播放状态；
+ * 播放按钮、进度条、时间轴、文字选择框与 AI 资产都只跟随这个位置，不等 IMS。卸载时清理订阅和异步任务。
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Maximize2, Pause, Play } from "lucide-react";
@@ -9,7 +10,8 @@ import { Hint } from "@/components/Hint";
 import { Spinner } from "@/components/ui/spinner";
 import { textKey, type Draft, type EffectAsset, type PreviewMedia } from "./model";
 import { CAN_PLAY_TIMEOUT_MS, deferLicenseRequest, loadSDK, readCatalog, waitForCanPlay, watchPlayer, watchSdkMedia, type CanPlayResult, type Player } from "./sdk";
-import { BasicVideoPreview, type BasicVideoHandle } from "./BasicVideoPreview";
+import { BasicVideoPreview } from "./BasicVideoPreview";
+import { PreviewClock, type PlaybackHandle } from "./previewClock";
 import { buildTimeline, buildPreviewRows, mergeSpriteRows, PREVIEW_CANVAS, remotionTexts, type SpriteClip } from "./timeline";
 import { centeredPlayerTimeline } from "./centeredTransitions";
 import { PreviewTimeline, type PreviewTimelineHandle } from "./PreviewTimeline";
@@ -50,7 +52,6 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   const replacedTexts = [...remotionTexts(draft)].sort().join();
   const stage = useRef<HTMLDivElement>(null);
   const container = useRef<HTMLDivElement>(null);
-  const player = useRef<Player | null>(null);
   const latest = useRef(draft);
   const latestMedia = useRef(media);
   const latestOrder = useRef(videoOrder);
@@ -58,14 +59,15 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   const latestTexts = useRef(replacedTexts);
   const apply = useRef<(() => void) | null>(null);
   const catalogCallback = useRef(onCatalog);
-  const playAction = useRef<((start: number) => void) | null>(null);
-  const cancelPlaybackAction = useRef<(() => void) | null>(null);
-  const seekAction = useRef<((time: number) => void) | null>(null);
+  // IMS 播放器的播放入口，播放器就绪后才使用。
+  const ims = useRef<PlaybackHandle | null>(null);
   const track = useRef<PreviewTimelineHandle>(null);
   const overlay = useRef<SpriteOverlayHandle>(null);
-  const basic = useRef<BasicVideoHandle>(null);
-  // 基础视频最近一次显示到界面的时间（0.1 秒为单位）；切换基础视频时置为 -1，让第一次回报一定刷新界面。
-  const basicDecisecond = useRef(-1);
+  const basic = useRef<PlaybackHandle>(null);
+  // 前端持有的准确播放位置（秒），由当前画面来源回报；换来源时新来源从这里接着走。
+  const clockTime = useRef(0);
+  // 最近一次显示到界面的时间（0.1 秒为单位）。
+  const shownDecisecond = useRef(0);
   // 效果目录：SDK 加载前用随包目录（与工作区编辑用的相同），加载后换成 SDK 目录；时间轴行与 SDK 时间线共用。
   const [catalog, setCatalog] = useState<EffectAsset[]>(readCatalog);
   const latestCatalog = useRef(catalog);
@@ -95,9 +97,15 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   const [mediaFailures, setMediaFailures] = useState<string[]>([]);
   const [seeking, setSeeking] = useState(false);
   const [time, setTime] = useState(0);
-  const playing = status === "正在播放预览…";
-  // 播放按钮、进度条与时间轴在 IMS 预览就绪或基础视频可播放时都可用。
-  const controlsReady = ready || (basicFallback && basicReady);
+  const [playing, setPlaying] = useState(false);
+  // 最新的播放状态：换画面来源时按它决定新来源是否接着播放，不等 React 渲染。
+  const playingNow = useRef(false);
+  // 有画面在播放：IMS 预览就绪，或已降级且基础视频可以播放。
+  const videoReady = ready || (basicFallback && basicReady);
+  // 播放按钮、进度条、时间轴与文字选择框只需要解析出的时间：前端时钟随时可用，不等 IMS 或基础视频。
+  const controlsReady = duration > 0;
+  // 当前推进播放位置的画面来源：IMS 就绪时用它，降级后用基础视频，二者都不可用时用前端时钟。
+  const source = ready ? "ims" : basicFallback && basicReady ? "basic" : "clock";
   latest.current = draft;
   latestMedia.current = media;
   latestOrder.current = videoOrder;
@@ -105,6 +113,36 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   latestTexts.current = replacedTexts;
   latestCatalog.current = catalog;
   catalogCallback.current = onCatalog;
+
+  /** 记录播放状态并刷新播放按钮。 */
+  const changePlaying = (value: boolean) => {
+    playingNow.current = value;
+    setPlaying(value);
+  };
+
+  /**
+   * 画面来源回报的全局时间：AI 资产逐帧跟随；界面时间和时间轴游标最多每 0.1 秒更新一次
+   * （时间轴组件每次移动游标都会整体重渲染，与 SDK 共用主线程，两处更新合并为一次渲染）。只读写 ref 与状态，可在旧闭包里调用。
+   */
+  const showTime = (value: number) => {
+    const next = Math.max(0, Math.min(latestResolved.current?.duration ?? 0, value));
+    clockTime.current = next;
+    overlay.current?.setTime(next);
+    const decisecond = Math.round(next * 10);
+    if (decisecond === shownDecisecond.current) return;
+    shownDecisecond.current = decisecond;
+    setTime(decisecond / 10);
+    track.current?.setTime(next);
+  };
+
+  const [clock] = useState(() => new PreviewClock({
+    duration: () => latestResolved.current?.duration ?? 0,
+    onTime: (value) => showTime(value),
+    onPlayingChange: (value) => changePlaying(value),
+    onEnd: () => changePlaying(false),
+  }));
+  /** 当前画面来源的播放入口。 */
+  const activePlayback = (): PlaybackHandle => (source === "ims" ? ims.current : source === "basic" ? basic.current : null) ?? clock;
 
   useEffect(() => {
     let disposed = false;
@@ -132,7 +170,6 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
     let seekFrame: number | undefined;
     let seekTimer: ReturnType<typeof setTimeout> | undefined;
     let applyTimer: ReturnType<typeof setTimeout> | undefined;
-    let displayedDecisecond = 0;
     let playTimer: ReturnType<typeof setTimeout> | undefined;
     setReady(false);
     setFailed(false);
@@ -165,7 +202,6 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       basicRequested = true;
       cancel();
       instance?.pause();
-      basicDecisecond.current = -1;
       setBasicFallback(true);
       setFallbackReason(reason);
       setReady(false);
@@ -194,6 +230,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
         playTimer = setTimeout(() => {
           if (!disposed) {
             instance?.play();
+            changePlaying(true);
             setStatus("正在播放预览…");
           }
         }, 0);
@@ -251,11 +288,8 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           }
         } while (!disposed && applied !== revision);
         if (!disposed) {
+          // 修改后从开头开始；界面时间由前端时钟持有，IMS 就绪时再交接到当前位置。
           instance.currentTime = 0;
-          displayedDecisecond = 0;
-          setTime(0);
-          track.current?.setTime(0);
-          overlay.current?.setTime(0);
           // 只有 canplay 才证明播放节点已建好；超时或取消都不能把预览标为可播放。
           const readiness = await canPlay;
           if (!disposed && !basicRequested && applied === revision && readiness === "canplay" && !mediaFailed) {
@@ -317,6 +351,9 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
         const sdkMedia = watchSdkMedia(target, (element) => {
           if (disposed || basicRequested) return;
           mediaFailed = true;
+          // 停下 SDK，由前端时钟接着推进播放位置。
+          cancel();
+          instance?.pause();
           setReady(false);
           setFailed(true);
           const url = (element.currentSrc || element.src).replace(/#.*$/, "");
@@ -359,15 +396,14 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
         latestCatalog.current = sdkCatalog;
         setCatalog(sdkCatalog);
         catalogCallback.current(sdkCatalog);
-        player.current = instance;
         stopPlayerLog = watchPlayer(instance, (message) => switchToBasicVideo(`渲染引擎出错：${message}`));
         stopPlayback = watchPlayback(instance, sdkMedia, (listener) => {
           notifyMediaCreated = listener;
           return () => { if (notifyMediaCreated === listener) notifyMediaCreated = undefined; };
         });
         subscription = instance.event$.subscribe((event) => {
-          // 切换基础视频后 SDK 可能仍在后台加载并发出事件，不能再改写基础视频驱动的时间。
-          if (disposed || active || !instance || basicRequested) return;
+          // 只有 IMS 就绪后才由 SDK 推进播放位置：加载与应用修改时、素材无法播放或已切换基础视频后，SDK 仍可能发出事件，不能改写前端时间。
+          if (disposed || active || !instance || basicRequested || mediaFailed) return;
           if (event.type === "playerSeeked") {
             if (seekTarget !== null && event.data?.currentTime !== undefined && Math.abs(event.data.currentTime - seekTarget) <= 0.05)
               finishSeek();
@@ -378,20 +414,10 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           if (seekTarget !== null) {
             if (Math.abs(current - seekTarget) > 0.05) return;
           }
-          overlay.current?.setTime(current);
-          // SDK 仍逐帧驱动播放控制与 AI 资产；界面时间和时间轴游标最多每 0.1 秒更新一次，
-          // 时间轴组件每次移动游标都会整体重渲染，与 SDK 共用主线程，两处更新合并为一次渲染。
-          const nextDecisecond = Math.min(
-            (latestResolved.current?.duration ?? 0) * 10,
-            Math.max(0, Math.round(current * 10)),
-          );
-          if (nextDecisecond !== displayedDecisecond) {
-            displayedDecisecond = nextDecisecond;
-            setTime(nextDecisecond / 10);
-            track.current?.setTime(current);
-          }
+          showTime(current);
           if (current >= (latestResolved.current?.duration ?? 0)) {
             track.current?.setTime(current);
+            changePlaying(false);
             setStatus("预览结束，点击播放可重播");
           }
         });
@@ -401,9 +427,10 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
         if (!disposed) switchToBasicVideo(`播放器初始化失败：${error instanceof Error ? error.message : "未知错误"}`, error);
       });
     // 定位完成后播放；暂停、更新或卸载时取消尚未开始的播放。
-    playAction.current = (start) => {
+    const play = (start: number) => {
       if (!instance || active || disposed) return;
       cancel();
+      changePlaying(false);
       seekTarget = start;
       resumeAfterSeek = true;
       setStatus("正在定位播放位置…");
@@ -414,19 +441,17 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
         instance.currentTime = start;
       }
     };
-    cancelPlaybackAction.current = cancel;
     // 输入立即更新游标，一次浏览器绘制只提交最新定位；保持暂停并等待 SDK 确认。
-    seekAction.current = (value) => {
+    const seek = (value: number) => {
       if (!instance || active || disposed || !Number.isFinite(value)) return;
       const wasSeeking = seekTarget !== null;
       cancel();
       instance.pause();
+      changePlaying(false);
       const target = Math.min(latestResolved.current?.duration ?? 0, Math.max(0, value));
       seekTarget = target;
-      displayedDecisecond = Math.round(target * 10);
-      setTime(target);
+      showTime(target);
       track.current?.setTime(target);
-      overlay.current?.setTime(target);
       setStatus("正在定位播放位置…");
       watchSeek();
       seekFrame = requestAnimationFrame(() => {
@@ -436,6 +461,21 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           finishSeek();
         } else instance.currentTime = target;
       });
+    };
+    ims.current = {
+      play: (from) => {
+        const current = instance?.currentTime ?? 0;
+        play(from ?? (current >= (latestResolved.current?.duration ?? 0) ? 0 : current));
+      },
+      pause: () => {
+        cancel();
+        instance?.pause();
+        changePlaying(false);
+        setStatus("预览已暂停");
+        // 游标停在播放器的准确位置，不按 0.1 秒取整。
+        if (instance) { showTime(instance.currentTime); track.current?.setTime(instance.currentTime); }
+      },
+      seek,
     };
     return () => {
       disposed = true;
@@ -447,11 +487,8 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       stopPlayback?.();
       stopLicenseWatch?.();
       notifyMediaCreated = undefined;
-      playAction.current = null;
-      cancelPlaybackAction.current = null;
-      seekAction.current = null;
+      ims.current = null;
       apply.current = null;
-      player.current = null;
       instance?.destroy();
       frame?.remove();
     };
@@ -462,22 +499,23 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
     return () => window.clearTimeout(timer);
   }, [draft.tracks, media, videoOrder, resolved, replacedTexts]);
 
-  /** 基础视频回报的全局时间：AI 资产逐帧跟随；界面时间和时间轴游标与 SDK 预览一样最多每 0.1 秒更新一次。 */
-  const showBasicTime = (value: number) => {
-    const next = Math.max(0, Math.min(duration, value));
-    overlay.current?.setTime(next);
-    const decisecond = Math.round(next * 10);
-    if (decisecond === basicDecisecond.current) return;
-    basicDecisecond.current = decisecond;
-    setTime(decisecond / 10);
-    track.current?.setTime(next);
-  };
+  // 修改模板、视频或排列后回到开头并暂停（IMS 播放器随后重新应用时间线），各画面来源一致。
+  useEffect(() => {
+    activePlayback().pause();
+    clock.seek(0);
+  }, [media, videoOrder, resolved]);
 
-  /** 进度条与时间轴定位：基础视频直接定位，IMS 预览等 SDK 确认。 */
-  const seekTo = (value: number) => {
-    if (basicFallback) basic.current?.seek(value);
-    else seekAction.current?.(value);
-  };
+  // 换画面来源（IMS 就绪或开始应用修改、切换基础视频、基础视频可以播放）时交接：新来源从当前位置接着走，
+  // 原来在播放就接着播放，AI 资产与时间轴不跳回开头，播放也不因 IMS 就绪或降级中断。
+  useEffect(() => {
+    const at = clockTime.current;
+    const resume = playingNow.current;
+    if (source !== "clock") clock.pause();
+    if (resume) activePlayback().play(at);
+    else if (at > 0) activePlayback().seek(at);
+  }, [source]);
+
+  useEffect(() => () => clock.pause(), [clock]);
 
   return <section aria-label="实时预览" className="flex min-h-full min-w-0 flex-col">
     <div className="template-preview-stage border-b px-4 pb-3 pt-4 lg:px-7 lg:pt-5"><div className="mx-auto max-w-[900px]">
@@ -487,11 +525,11 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
         <div className="template-preview-frame absolute inset-0 overflow-hidden">
           <div ref={container} className={`template-preview-player absolute inset-0 size-full ${basicFallback ? "invisible" : ""}`} />
           {basicFallback && media && resolved && <BasicVideoPreview ref={basic} media={media} resolved={resolved} order={videoOrder}
-            onTime={showBasicTime}
+            onTime={(value) => { if (source === "basic") showTime(value); }}
             onReady={() => { setBasicReady(true); setStatus("基础视频已就绪，点击播放查看效果"); }}
-            onPlayingChange={(value) => setStatus(value ? "正在播放预览…" : "预览已暂停")}
+            onPlayingChange={(value) => { if (source !== "basic") return; changePlaying(value); setStatus(value ? "正在播放预览…" : "预览已暂停"); }}
             onError={() => { setFailed(true); setStatus("基础视频预览加载失败，请检查视频编码与跨域访问配置后重试。"); }}
-            onEnd={() => setStatus("预览结束，点击播放可重播")} />}
+            onEnd={() => { if (source !== "basic") return; changePlaying(false); setStatus("预览结束，点击播放可重播"); }} />}
           {controlsReady && onSelect && draft.tracks.filter((item) => (item.target === "title" || item.target === "subtitle") && item.enabled !== false && !remotionTexts(draft).has(textKey(item.target, item.language))).map((item) => {
             const interval = resolved?.tracks[item.id];
             if (!interval || time < interval.start || time >= interval.end) return null;
@@ -503,17 +541,17 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           })}
           {sprites.length > 0 && <SpriteOverlay ref={overlay} clips={sprites} stageAspect={PREVIEW_CANVAS.width / PREVIEW_CANVAS.height} initialTime={time} selectedId={selectedId} onMove={onSpriteMove} onSelect={onSelect} />}
         </div>
-        {!controlsReady && !failed && <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-white/60"><Spinner className="size-6" /></div>}
+        {!videoReady && !failed && <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-white/60"><Spinner className="size-6" /></div>}
         <Hint label="全屏预览"><Button type="button" variant="ghost" size="icon-xs" aria-label="全屏预览" onClick={() => { if (stage.current) void stage.current.requestFullscreen(); }} className="template-preview-fullscreen absolute bottom-2 right-2 rounded-[5px] p-0"><Maximize2 className="size-3" aria-hidden="true" /></Button></Hint>
       </div>
       <div className="template-preview-controls flex flex-wrap items-center gap-2.5 py-3">
-        <Hint label={playing ? "暂停" : "播放"}><Button type="button" aria-label={playing ? "暂停" : "播放"} disabled={!controlsReady || seeking} onClick={() => { if (basicFallback) { if (playing) basic.current?.pause(); else basic.current?.play(); } else if (playing) { cancelPlaybackAction.current?.(); player.current?.pause(); track.current?.setTime(player.current?.currentTime ?? 0); setStatus("预览已暂停"); } else { const current = player.current?.currentTime ?? 0; playAction.current?.(current >= duration ? 0 : current); } }} className="template-preview-play size-8 shrink-0 rounded-lg p-0">{playing ? <Pause className="size-4 fill-current" aria-hidden="true" /> : <Play className="ml-0.5 size-4 fill-current" aria-hidden="true" />}</Button></Hint>
-        <Button type="button" variant="ghost" size="sm" disabled={!controlsReady || seeking} onClick={() => { if (basicFallback) basic.current?.play(0); else playAction.current?.(0); }} className="template-preview-restart h-8 px-2 text-[11px]">从头重播</Button>
-        <input type="range" aria-label="预览进度" min={0} max={duration} step={0.1} value={Math.min(time, duration)} disabled={!controlsReady} onChange={(event) => seekTo(Number(event.target.value))} className="template-preview-progress min-w-20 flex-1" style={{ "--preview-progress": `${duration > 0 ? time / duration * 100 : 0}%` } as CSSProperties} />
+        <Hint label={playing ? "暂停" : "播放"}><Button type="button" aria-label={playing ? "暂停" : "播放"} disabled={!controlsReady || seeking} onClick={() => { if (playing) activePlayback().pause(); else activePlayback().play(); }} className="template-preview-play size-8 shrink-0 rounded-lg p-0">{playing ? <Pause className="size-4 fill-current" aria-hidden="true" /> : <Play className="ml-0.5 size-4 fill-current" aria-hidden="true" />}</Button></Hint>
+        <Button type="button" variant="ghost" size="sm" disabled={!controlsReady || seeking} onClick={() => activePlayback().play(0)} className="template-preview-restart h-8 px-2 text-[11px]">从头重播</Button>
+        <input type="range" aria-label="预览进度" min={0} max={duration} step={0.1} value={Math.min(time, duration)} disabled={!controlsReady} onChange={(event) => activePlayback().seek(Number(event.target.value))} className="template-preview-progress min-w-20 flex-1" style={{ "--preview-progress": `${duration > 0 ? time / duration * 100 : 0}%` } as CSSProperties} />
         <span className="min-w-20 text-right text-[11px] font-medium tabular-nums">{time.toFixed(1)} <span className="font-normal text-muted-foreground">/ {duration.toFixed(1)} 秒</span></span>
         <MasterVideoInput key={videoInputKey} media={media} onChange={onMediaChange} />
       </div>
-      <p role={failed || mediaError ? "alert" : "status"} className={failed || mediaError ? "text-xs text-destructive" : controlsReady ? "sr-only" : "text-[11px] text-muted-foreground"}>{mediaError || status}</p>
+      <p role={failed || mediaError ? "alert" : "status"} className={failed || mediaError ? "text-xs text-destructive" : videoReady ? "sr-only" : "text-[11px] text-muted-foreground"}>{mediaError || status}</p>
       {mediaError && !media && <Button type="button" variant="outline" onClick={onRetryMedia}>重试读取视频</Button>}
       {mediaFailures.length > 0 && <div role="alert" className="space-y-1 text-xs text-destructive">{mediaFailures.map((message) => <p key={message}>{message}</p>)}</div>}
       {(failed || mediaFailures.length > 0) && <Button type="button" variant="outline" onClick={() => setAttempt((value) => value + 1)}>重试预览</Button>}
@@ -521,7 +559,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       {basicFallback && <Button type="button" variant="outline" onClick={() => setAttempt((value) => value + 1)}>重试 IMS 预览</Button>}
       {notices.length > 0 && <ul aria-label="时间调整说明" className="space-y-1 text-xs text-muted-foreground">{notices.map((notice, index) => <li key={index}>{notice}</li>)}</ul>}
     </div></div>
-    <div className="template-preview-timeline flex-1 px-4 pb-5 pt-4 lg:px-7"><div className="mx-auto max-w-[900px]"><div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><TimelineMark /><h2 className="text-[13px] font-semibold">时间轴</h2></div><div className="flex items-center gap-3 text-[11px] tabular-nums text-muted-foreground"><span className="font-semibold text-foreground">{time.toFixed(1)} / {duration.toFixed(1)} 秒</span><span>{draft.tracks.length} 个对象</span></div></div><PreviewTimeline ref={track} rows={timelineRows} disabled={!controlsReady} time={time} duration={duration} selectedId={selectedId} onSelect={onSelect} onSeek={seekTo} />
+    <div className="template-preview-timeline flex-1 px-4 pb-5 pt-4 lg:px-7"><div className="mx-auto max-w-[900px]"><div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><TimelineMark /><h2 className="text-[13px] font-semibold">时间轴</h2></div><div className="flex items-center gap-3 text-[11px] tabular-nums text-muted-foreground"><span className="font-semibold text-foreground">{time.toFixed(1)} / {duration.toFixed(1)} 秒</span><span>{draft.tracks.length} 个对象</span></div></div><PreviewTimeline ref={track} rows={timelineRows} disabled={!controlsReady} time={time} duration={duration} selectedId={selectedId} onSelect={onSelect} onSeek={(value) => activePlayback().seek(value)} />
     </div></div>
   </section>;
 }

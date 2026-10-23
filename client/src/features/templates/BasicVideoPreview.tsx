@@ -6,15 +6,7 @@ import { useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } f
 import { previewVideos } from "./media";
 import type { PreviewMedia } from "./model";
 import type { ResolvedTimeline } from "./tracks";
-
-/** 预览主控件操作基础视频的入口；时间都是模板全局时间（秒）。 */
-export interface BasicVideoHandle {
-  /** 从 from 开始播放；省略时从当前位置继续，已到结尾则从头播放。 */
-  play(from?: number): void;
-  pause(): void;
-  /** 暂停并定位到 time。 */
-  seek(time: number): void;
-}
+import type { PlaybackHandle } from "./previewClock";
 
 /** 返回 time 所在片段的序号：片段首尾相接，交界处属于后一段，超出结尾属于最后一段。 */
 export function clipAt(clips: ResolvedTimeline["clips"], time: number) {
@@ -28,7 +20,7 @@ export function clipAt(clips: ResolvedTimeline["clips"], time: number) {
  * 每段一个预加载的静音视频（与 IMS 预览一样不出声），换段时切换显示而不重新加载；每段只播到解析出的段长。
  */
 export function BasicVideoPreview({ ref, media, resolved, order, onTime, onReady, onError, onPlayingChange, onEnd }: {
-  ref: Ref<BasicVideoHandle>;
+  ref: Ref<PlaybackHandle>;
   media: PreviewMedia;
   resolved: ResolvedTimeline;
   order: number[];
