@@ -6,6 +6,7 @@ from threading import Barrier
 import pytest
 from fastapi.testclient import TestClient
 from generated.imv.template.v1 import template_pb2 as pb
+from google.protobuf.json_format import ParseDict
 from httpx import Response
 from pymysql.err import OperationalError as MySQLOperationalError
 from sqlalchemy import Engine, event, inspect
@@ -20,7 +21,7 @@ from .template_wire import post_template
 # 测试并发创建同名模板时只保存一条记录。
 def test_concurrent_duplicate_create(client: TestClient, template_payload: dict) -> None:
     """两个请求同时提交，数据库唯一约束只允许其中一个创建成功。"""
-    assert pb.ListTemplatesResponse.FromString(client.get("/template").content).templates == []
+    assert ParseDict(client.get("/template").json(), pb.ListTemplatesResponse()).templates == []
     barrier = Barrier(2, timeout=5)
 
     def create_same_name() -> int:
@@ -32,7 +33,7 @@ def test_concurrent_duplicate_create(client: TestClient, template_payload: dict)
         futures = [executor.submit(create_same_name) for _ in range(2)]
         statuses = sorted(future.result(timeout=10) for future in futures)
     assert statuses == [201, 409]
-    assert len(pb.ListTemplatesResponse.FromString(client.get("/template").content).templates) == 1
+    assert len(ParseDict(client.get("/template").json(), pb.ListTemplatesResponse()).templates) == 1
 
 
 # 测试各模板操作在 SQL 执行失败后返回 503，并保留可重试状态。
@@ -46,8 +47,8 @@ def test_database_failure_rolls_back_and_recovers(
 ) -> None:
     """在 SQL 执行后注入连接故障，检查事务回滚和故障解除后的请求。"""
     created = post_template(client, template_payload)
-    original = pb.SaveTemplateResponse.FromString(created.content).template
-    before = pb.ListTemplatesResponse.FromString(client.get("/template").content).templates
+    original = ParseDict(created.json(), pb.SaveTemplateResponse()).template
+    before = ParseDict(client.get("/template").json(), pb.ListTemplatesResponse()).templates
     payload = {**template_payload, "name": "失败后重试"}
     if operation == "update":
         payload["template_id"] = original.template_id
@@ -71,11 +72,11 @@ def test_database_failure_rolls_back_and_recovers(
     assert failed.status_code == 503
     assert "private-database-detail" not in failed.text
     assert "数据库操作失败" in failed.json()["detail"]
-    assert pb.ListTemplatesResponse.FromString(client.get("/template").content).templates == before
+    assert ParseDict(client.get("/template").json(), pb.ListTemplatesResponse()).templates == before
 
     retried = perform_request()
     assert retried.status_code == success
-    remaining = pb.ListTemplatesResponse.FromString(client.get("/template").content).templates
+    remaining = ParseDict(client.get("/template").json(), pb.ListTemplatesResponse()).templates
     assert len(remaining) == (2 if operation == "create" else 0 if operation == "delete" else 1)
     if operation == "update":
         assert remaining[0].name == "失败后重试"
@@ -97,7 +98,7 @@ def test_schema_creation_failure_can_retry(client: TestClient, template_db: Engi
     assert failed.status_code == 503
     assert store._ready_engine is None
     assert not inspect(template_db).has_table("templates")
-    assert pb.ListTemplatesResponse.FromString(client.get("/template").content).templates == []
+    assert ParseDict(client.get("/template").json(), pb.ListTemplatesResponse()).templates == []
     assert inspect(template_db).has_table("templates")
 
 
@@ -109,7 +110,7 @@ def test_lifespan_releases_connections_and_preserves_data(
     with TestClient(app) as first_client:
         created = post_template(first_client, template_payload)
         assert created.status_code == 201
-        original = pb.SaveTemplateResponse.FromString(created.content).template
+        original = ParseDict(created.json(), pb.SaveTemplateResponse()).template
         assert template_db.pool.checkedout() == 0
     assert database._engine is None
     assert template_db.pool.checkedout() == 0
@@ -118,5 +119,5 @@ def test_lifespan_releases_connections_and_preserves_data(
     with TestClient(app) as second_client:
         response = second_client.get(f"/template/{original.template_id}")
         assert response.status_code == 200
-        assert pb.GetTemplateResponse.FromString(response.content).template == original
+        assert ParseDict(response.json(), pb.GetTemplateResponse()).template == original
     assert database._engine is None

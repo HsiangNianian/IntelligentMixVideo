@@ -1,4 +1,4 @@
-# 使用生成的消息类收发真实模板 HTTP 请求，供服务端用例核对 Protobuf 响应。
+# 使用生成的消息类编码模板 HTTP 请求、解析 JSON 响应，供服务端用例核对业务字段。
 
 from generated.imv.template.v1 import template_pb2 as pb
 from google.protobuf.json_format import MessageToDict, ParseDict
@@ -31,17 +31,17 @@ def template_data(message: pb.TemplateRecord) -> dict:
 
 def saved_template(response: Response) -> dict:
     """解码保存响应中的模板记录。"""
-    return template_data(pb.SaveTemplateResponse.FromString(response.content).template)
+    return template_data(ParseDict(response.json(), pb.SaveTemplateResponse()).template)
 
 
 def detail_template(response: Response) -> dict:
     """解码详情响应中的模板记录。"""
-    return template_data(pb.GetTemplateResponse.FromString(response.content).template)
+    return template_data(ParseDict(response.json(), pb.GetTemplateResponse()).template)
 
 
 def listed_templates(response: Response) -> list[dict]:
     """解码列表响应中的模板摘要（列表只返回摘要，不含轨道），保留 proto 字段名。"""
     return [
         MessageToDict(item, preserving_proto_field_name=True)
-        for item in pb.ListTemplatesResponse.FromString(response.content).templates
+        for item in ParseDict(response.json(), pb.ListTemplatesResponse()).templates
     ]
