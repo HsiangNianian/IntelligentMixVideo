@@ -105,6 +105,9 @@ class ZosSettings(CommonSettings):
     zos_web_url: MediaURL
     zos_region: str = Field(default="hangzhou-7", pattern=r"^[a-z][a-z0-9-]+$")
     zos_force_path_style: bool = False
+    # 删除记录时是否同时删除 ZOS 上的文件。上传免费、删除按请求收费的存储（如阿里云 OSS）保持关闭：记录与本地缓存照删，
+    # 文件只是不再被任何记录引用；关闭时也不需要删除权限。
+    zos_delete_objects: bool = False
 
     @model_validator(mode="after")
     def valid_storage(self) -> "ZosSettings":

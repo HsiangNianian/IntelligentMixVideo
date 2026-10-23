@@ -193,7 +193,8 @@ async def delete_sprite(sprite_id: str, service: Service) -> Response:
     """删除资产记录与预览包；资产库共享，任何人都可删除。
 
     仍被云端模板的 `remotion` 轨道引用时返回 409 并列出模板名称，需先在模板里移除；不存在返回 404。
-    先删预览包、最后删记录：对象存储删除失败返回 503，资产保持原样，可重试。
+    先删预览包、最后删记录：对象存储删除失败返回 503，资产保持原样，可重试。ZOS 上的预览包只在
+    `ZOS_DELETE_OBJECTS=true` 时删除，默认保留，只删记录与本地缓存。
     源聊天与版本不受影响，之后可以重新保存到资产。
     """
     from ..template.store import templates_using
