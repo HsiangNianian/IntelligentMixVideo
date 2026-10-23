@@ -39,9 +39,10 @@ uuid = { version = "1", features = ["v4"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 # 字效会话本地库；bundled 随包编译 SQLite，不依赖系统库。
 rusqlite = { version = "0.37", features = ["bundled"] }
+# 预览媒体服务（各平台）与 Windows 页面服务共用的回环 HTTP 服务。
+tiny_http = "0.12"
 
 [target.'cfg(windows)'.dependencies]
-tiny_http = "0.12"
 # 调试日志订阅 WebView2 子进程退出事件（ProcessFailed），与 wry 使用的版本一致。
 webview2-com = "0.39"
 windows-core = "0.62"

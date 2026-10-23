@@ -1,6 +1,6 @@
 /**
  * 预览视频弹窗的本地文件来源：选择、加载、移除、超限、取消释放，以及桌面端写入/删除本机副本、
- * 多槽位失败回滚、保存期间不可取消和逐个恢复本机视频。
+ * 多槽位失败回滚（含从预览媒体服务读回原视频）、保存期间不可取消、以媒体服务地址恢复本机视频与播放内置示例。
  * 视频元数据通过替换 HTMLMediaElement 的 src 设置器模拟，不读取真实媒体；执行 bun run test。
  */
 import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test";
@@ -13,6 +13,13 @@ import type { PreviewMedia } from "@/features/templates/model";
 import { fetchMock, mockDesktop } from "./setup";
 
 const source = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "src")!;
+/** 测试用的预览媒体服务地址前缀；地址在模块内缓存，所有桌面用例回答同一个值。 */
+const MEDIA = "http://127.0.0.1:9/token";
+
+/** 模拟桌面端：媒体服务地址固定，其余命令交给用例。 */
+function desktop(handler: (command: string, args: Record<string, unknown>) => Promise<unknown>) {
+  mockDesktop(async (command, args) => command === "preview_media_base" ? MEDIA : handler(command, args));
+}
 // 本例生成的 blob URL（按创建顺序）与被设置到视频元素上的地址，用于断言来源确实对应所选文件。
 let created: string[] = [];
 let assigned: string[] = [];
@@ -141,10 +148,30 @@ test("取消弹窗不提交本地文件并释放 blob URL", async () => {
   expect(onChange).not.toHaveBeenCalled();
 });
 
+// 回归：媒体服务地址不可用时不能先写入本地文件，否则写入已提交而前端仍认为失败。
+test("媒体服务地址不可用时不会写入本地文件", async () => {
+  const calls: string[] = [];
+  mockDesktop(async (command) => {
+    calls.push(command);
+    if (command === "preview_video_list") return [null, null, null];
+    if (command === "preview_media_base") throw "媒体服务不可用";
+    if (command === "preview_video_write") return "video-1-new";
+    return null;
+  });
+  const specifier = "@/features/templates/localVideos?base-unavailable";
+  const fresh: typeof import("@/features/templates/localVideos") = await import(specifier);
+  await expect(fresh.commitLocalVideos([
+    { kind: "file", name: "a.mp4", url: "blob:a", file: new File(["a"], "a.mp4", { type: "video/mp4" }) },
+    { kind: "url", url: "" },
+    { kind: "url", url: "" },
+  ])).rejects.toThrow("视频 1：媒体服务不可用");
+  expect(calls).not.toContain("preview_video_write");
+});
+
 // 场景：桌面端加载成功后把文件字节写入本机，改回 URL 时删除对应槽位的本机副本。
 test("桌面端保存本地文件并在改回 URL 时删除", async () => {
   const calls: [string, unknown][] = [];
-  mockDesktop(async (command, args) => { calls.push([command, args]); return null; });
+  desktop(async (command, args) => { calls.push([command, args]); return null; });
   const changes: PreviewMedia[] = [];
   const view = render(<MasterVideoInput onChange={(media) => changes.push(media)} />);
   let dialog = await openDialog();
@@ -165,7 +192,7 @@ test("桌面端保存本地文件并在改回 URL 时删除", async () => {
 
 // 场景：桌面端写入失败时提示原因，保留弹窗与已选文件，不更新预览来源。
 test("桌面端写入失败保留弹窗与来源", async () => {
-  mockDesktop(async (command) => {
+  desktop(async (command) => {
     if (command === "preview_video_write") throw "本地预览视频正在被其他操作使用，请重试";
     return null;
   });
@@ -182,7 +209,7 @@ test("桌面端写入失败保留弹窗与来源", async () => {
 // 场景：视频 1 已写入、视频 2 写入失败时，视频 1 的本机副本与登记回到提交前，预览来源不变。
 test("多槽位保存失败时回滚已完成的槽位", async () => {
   const calls: [string, unknown][] = [];
-  mockDesktop(async (command, args) => {
+  desktop(async (command, args) => {
     calls.push([command, args]);
     if (command === "preview_video_write" && (args as unknown as Uint8Array).length === 2) throw "磁盘已满";
     return null;
@@ -206,11 +233,17 @@ test("多槽位保存失败时回滚已完成的槽位", async () => {
   expect(revoke.mock.calls.map(([url]) => url).sort()).toEqual([...created].sort());
 });
 
-// 场景：保存期间取消按钮不可用，关闭请求被忽略，保存完成后仍更新预览来源。
+// 场景：保存期间取消按钮不可用，关闭请求被忽略，保存完成后仍更新预览来源；桌面端改用保存后的媒体服务地址播放，
+// 读元数据用的 blob URL 随弹窗关闭释放。
 test("保存期间不能取消，完成后更新来源", async () => {
   let finish!: () => void;
   const written = new Promise<void>((resolve) => { finish = resolve; });
-  mockDesktop(async (command) => { if (command === "preview_video_write") await written; return null; });
+  desktop(async (command) => {
+    if (command !== "preview_video_write") return null;
+    await written;
+    return "video-3-abc";
+  });
+  const revoke = spyOn(URL, "revokeObjectURL");
   const changes: PreviewMedia[] = [];
   render(<MasterVideoInput onChange={(media) => changes.push(media)} />);
   const dialog = await openDialog();
@@ -221,13 +254,14 @@ test("保存期间不能取消，完成后更新来源", async () => {
   expect(screen.queryByRole("dialog", { name: "加载预览视频" })).not.toBeNull();
   finish();
   await waitFor(() => expect(changes).toHaveLength(1));
-  expect(changes[0][2].url).toBe(created[0]);
-  expect(localVideoSlots()[2]?.url).toBe(created[0]);
+  expect(changes[0][2].url).toBe(`${MEDIA}/local/video-3-abc`);
+  expect(localVideoSlots()[2]?.url).toBe(`${MEDIA}/local/video-3-abc`);
+  expect(revoke).toHaveBeenCalledWith(created[0]);
 });
 
 // 场景：桌面端读回本机视频前弹窗来源都是默认 URL，此时提交会删除本机副本，因此恢复结束前不能打开。
 test("桌面端恢复本机视频前不能打开弹窗", async () => {
-  mockDesktop(async () => null);
+  desktop(async () => null);
   let finish!: () => void;
   spyOn(localVideos, "localPreviewVideos").mockReturnValue(new Promise((resolve) => { finish = () => resolve([]); }));
   render(<MasterVideoInput onChange={() => {}} />);
@@ -241,7 +275,7 @@ test("桌面端恢复本机视频前不能打开弹窗", async () => {
 // 场景：桌面端提交 URL 来源时先等待恢复结束，并对每个槽位删除本机副本，包括恢复失败而未登记的槽位。
 test("桌面端 URL 来源删除所有槽位的本机副本", async () => {
   const calls: string[] = [];
-  mockDesktop(async (command, args) => {
+  desktop(async (command, args) => {
     calls.push(command === "preview_video_remove" ? `${command}:${(args as { slot: number }).slot}` : command);
     return command === "preview_video_list" ? [null, null, null] : null;
   });
@@ -249,22 +283,62 @@ test("桌面端 URL 来源删除所有槽位的本机副本", async () => {
   expect(calls.slice(-3)).toEqual(["preview_video_remove:1", "preview_video_remove:2", "preview_video_remove:3"]);
 });
 
-// 场景：桌面端依次读取已保存的视频（同一时刻只有一个读取），读取失败的槽位回退默认地址而不影响其他槽位。
-test("桌面端依次恢复本机视频，单个槽位失败不影响其他槽位", async () => {
-  let active = 0;
-  let peak = 0;
-  mockDesktop(async (command, args) => {
-    if (command === "preview_video_list") return [{ name: "a.mp4", type: "video/mp4" }, { name: "b.mp4", type: "video/mp4" }, { name: "c.mp4", type: "video/mp4" }];
-    active += 1; peak = Math.max(peak, active);
-    await Promise.resolve();
-    active -= 1;
-    if ((args as { slot: number }).slot === 2) throw "文件不可读";
-    return new Uint8Array([1, 2, 3]).buffer;
+// 场景：桌面端恢复时按数据文件名登记预览媒体服务地址，视频字节不经 IPC 读回页面；HEAD 请求确认不可读的槽位
+// 回退默认地址，不影响其他槽位。
+test("桌面端以媒体服务地址恢复本机视频，不可读的槽位回退默认地址", async () => {
+  const commands: string[] = [];
+  desktop(async (command) => {
+    commands.push(command);
+    return command === "preview_video_list" ? ["a", "b", "c"].map((name, index) => ({ name: `${name}.mp4`, type: "video/mp4", file: `video-${index + 1}-${name}` })) : null;
   });
+  fetchMock.mockImplementation((async (input: RequestInfo | URL) => new Response(null, { status: String(input).endsWith("video-2-b") ? 404 : 200 })) as typeof fetch);
   // 恢复结果缓存在模块内，用带查询串的导入取得全新的模块实例。
   const specifier = "@/features/templates/localVideos?restore";
   const fresh: typeof import("@/features/templates/localVideos") = await import(specifier);
   const videos = await fresh.localPreviewVideos();
-  expect(peak).toBe(1);
-  expect(videos.map((video) => video?.name)).toEqual(["a.mp4", undefined, "c.mp4"]);
+  expect(videos.map((video) => video?.url)).toEqual([`${MEDIA}/local/video-1-a`, undefined, `${MEDIA}/local/video-3-c`]);
+  expect(fetchMock.mock.calls.every(([, init]) => init?.method === "HEAD")).toBe(true);
+  expect(commands).toEqual(["preview_video_list"]);
+});
+
+// 场景：桌面端读回的视频不在页面内存，替换前先从媒体服务读回原视频；后续槽位保存失败时用它写回，登记改为写回后的新地址。
+test("替换读回的本机视频失败时用媒体服务读回的原视频回滚", async () => {
+  const writes: string[] = [];
+  desktop(async (command, args) => {
+    if (command === "preview_video_list") return [{ name: "old.mp4", type: "video/mp4", file: "video-1-old" }, null, null];
+    if (command !== "preview_video_write") return null;
+    writes.push(new TextDecoder().decode(args as unknown as Uint8Array));
+    if (writes.at(-1) === "bb") throw "磁盘已满";
+    return `video-${writes.length}`;
+  });
+  fetchMock.mockImplementation((async (_input: RequestInfo | URL, init?: RequestInit) => new Response(init?.method === "HEAD" ? null : "old bytes")) as typeof fetch);
+  const specifier = "@/features/templates/localVideos?rollback";
+  const fresh: typeof import("@/features/templates/localVideos") = await import(specifier);
+  await fresh.localPreviewVideos();
+  await expect(fresh.commitLocalVideos([
+    { kind: "file", name: "a.mp4", url: "blob:a", file: new File(["a"], "a.mp4", { type: "video/mp4" }) },
+    { kind: "file", name: "b.mp4", url: "blob:b", file: new File(["bb"], "b.mp4", { type: "video/mp4" }) },
+    { kind: "url", url: "" },
+  ])).rejects.toThrow("视频 2：磁盘已满");
+  expect(fetchMock.mock.calls.map(([input, init]) => `${init?.method ?? "GET"} ${String(input)}`)).toEqual([
+    `HEAD ${MEDIA}/local/video-1-old`, `GET ${MEDIA}/local/video-1-old`,
+  ]);
+  expect(writes).toEqual(["a", "bb", "old bytes"]);
+  expect(fresh.localVideoSlots()[0]).toMatchObject({ name: "old.mp4", url: `${MEDIA}/local/video-3` });
+});
+
+// 回归：桌面端内置示例整段读成 blob URL 播放，系统 WebKitGTK 里 IMS SDK 对 blob 视频一直等不到 canplaythrough，画面定格。
+// 桌面端改用预览媒体服务的 HTTP 地址，不再下载示例字节；弹窗仍显示资源地址，示例只取前十秒，本机视频使用完整时长。
+test("桌面端内置示例经预览媒体服务播放", async () => {
+  desktop(async (command) => command === "preview_video_list" ? [null, null, null] : null);
+  const specifier = "@/features/templates/media?desktop-samples";
+  const fresh: typeof import("@/features/templates/media") = await import(specifier);
+  const bundled = [1, 2, 3].map((number) => new URL(`/preview/sample-${number}.mp4`, window.location.href).href);
+  const media = await fresh.readPreviewVideos(bundled, new AbortController().signal);
+  expect(media.map((video) => video.url)).toEqual([1, 2, 3].map((number) => `${MEDIA}/sample/${number}`));
+  expect(assigned).toEqual(media.map((video) => video.url));
+  expect(fetchMock).not.toHaveBeenCalled();
+  expect(fresh.sourceUrl(media[0].url)).toBe(bundled[0]);
+  const local = { ...media[1], url: `${MEDIA}/local/video-2-a` };
+  expect(fresh.previewVideos([media[0], local, media[2]]).map((video) => video.duration)).toEqual([10, 12, 10]);
 });

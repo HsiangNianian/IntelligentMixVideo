@@ -100,7 +100,10 @@ export function MasterVideoInput({ media, onChange }: { media?: PreviewMedia; on
         throw reason;
       }
       finally { committing.current = false; setSaving(false); }
-      onChange(media);
+      // 本地文件按登记的地址播放：桌面端是保存后的媒体服务地址，读元数据用的 blob URL 随弹窗关闭释放。
+      const local = localVideoSlots();
+      const played = (index: 0 | 1 | 2) => sources[index].kind === "file" && local[index] ? { ...media[index], url: local[index].url } : media[index];
+      onChange([played(0), played(1), played(2)]);
       changeOpen(false);
     } catch (reason) {
       if (!request.signal.aborted) {
