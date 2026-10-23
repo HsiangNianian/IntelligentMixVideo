@@ -106,6 +106,9 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   const controlsReady = duration > 0;
   // 当前推进播放位置的画面来源：IMS 就绪时用它，降级后用基础视频，二者都不可用时用前端时钟。
   const source = ready ? "ims" : basicFallback && basicReady ? "basic" : "clock";
+  // PreviewClock 只创建一次；用 ref 让它的回调判断当前是否仍由前端时钟驱动，避免来源交接时覆盖新状态。
+  const sourceRef = useRef<"ims" | "basic" | "clock">("clock");
+  sourceRef.current = source;
   latest.current = draft;
   latestMedia.current = media;
   latestOrder.current = videoOrder;
@@ -138,8 +141,14 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   const [clock] = useState(() => new PreviewClock({
     duration: () => latestResolved.current?.duration ?? 0,
     onTime: (value) => showTime(value),
-    onPlayingChange: (value) => changePlaying(value),
-    onEnd: () => changePlaying(false),
+    onPlayingChange: (value) => {
+      changePlaying(value);
+      if (sourceRef.current === "clock") setStatus(value ? "正在播放预览…" : "预览已暂停");
+    },
+    onEnd: () => {
+      changePlaying(false);
+      if (sourceRef.current === "clock") setStatus("预览结束，点击播放可重播");
+    },
   }));
   /** 当前画面来源的播放入口。 */
   const activePlayback = (): PlaybackHandle => (source === "ims" ? ims.current : source === "basic" ? basic.current : null) ?? clock;

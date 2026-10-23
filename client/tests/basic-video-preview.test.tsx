@@ -156,6 +156,18 @@ test("降级为基础视频后主控件、时间轴与选择框仍可用", async
   expect(screen.getAllByText("12.0 / 30.0 秒").length).toBeGreaterThan(0);
 });
 
+// 回归：基础视频播放中触发媒体错误时，不能继续显示暂停按钮或让逐帧回调假装播放。
+test("基础视频播放中加载失败时停止播放并恢复播放按钮", async () => {
+  const { view } = await mountEarlyFallback();
+  const videos = [...view.container.querySelectorAll("video")].map(controllable);
+  await act(async () => { fireEvent.loadedMetadata(videos[0].video); });
+  fireEvent.click(screen.getByRole("button", { name: "播放" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "暂停" })).toBeTruthy());
+  fireEvent.error(videos[0].video);
+  await waitFor(() => expect(screen.getByRole("button", { name: "播放" })).toBeTruthy());
+  expect(screen.getByText("基础视频预览加载失败，请检查视频编码与跨域访问配置后重试。")).toBeTruthy();
+});
+
 // 回归：基础视频只按 timeupdate（约每秒 4 次）回报时间，AI 资产跳着动。现在随基础视频的播放位置逐帧定位（全局时间减片段起点）。
 test("降级后 AI 资产逐帧跟随基础视频", async () => {
   const { step } = frames();
@@ -179,8 +191,7 @@ test("降级后 AI 资产逐帧跟随基础视频", async () => {
   expect(post).toHaveBeenLastCalledWith({ type: "imv-preview-sync", channel, time: 2.25, duration: 5 }, "*");
 });
 
-// 回归：基础视频读到元数据、可以播放时预览从开头开始，之前的播放位置与播放状态丢失。
-// 基础视频接着前端时钟的位置与播放状态播放。
+// 回归：基础视频读到元数据、可以播放时，从当前前端时钟位置继续，不从开头重播。
 test("基础视频可以播放时接着前端时钟的位置播放", async () => {
   const { step } = frames();
   let now = 0;

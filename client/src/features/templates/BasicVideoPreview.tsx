@@ -138,6 +138,10 @@ export function BasicVideoPreview({ ref, media, resolved, order, onTime, onReady
       aria-label={shown ? "基础视频预览" : undefined} aria-hidden={shown ? undefined : true} muted playsInline preload="auto"
       className={`absolute inset-0 size-full bg-black object-contain ${shown ? "" : "invisible"}`}
       onLoadedMetadata={index === 0 ? () => callbacks.current.onReady() : undefined}
-      onError={() => callbacks.current.onError()} />;
+      onError={() => {
+        // 媒体错误后不能继续用逐帧回调假装播放；先停下当前片段并同步主控件状态，再交给父组件显示失败。
+        if (state.current.playing) stop(true);
+        callbacks.current.onError();
+      }} />;
   })}</>;
 }

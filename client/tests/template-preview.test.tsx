@@ -202,6 +202,24 @@ test("IMS 还在加载时前端时钟驱动播放、定位与 AI 资产", async 
   expect(player.play).not.toHaveBeenCalled();
 });
 
+// 回归：IMS 还在加载时由前端时钟播放，状态栏也必须反映播放、暂停和结束，而不是一直显示加载中。
+test("IMS 加载时前端时钟播放、暂停与结束更新状态", async () => {
+  const { step } = frames();
+  const setNow = clockAt();
+  await mountWithSdk(newDraft());
+  fireEvent.click(screen.getByRole("button", { name: "播放" }));
+  expect(screen.getByText("正在播放预览…")).toBeTruthy();
+  setNow(2000);
+  await step();
+  fireEvent.click(screen.getByRole("button", { name: "暂停" }));
+  expect(screen.getByText("预览已暂停")).toBeTruthy();
+  setNow(30000);
+  fireEvent.click(screen.getByRole("button", { name: "播放" }));
+  setNow(60000);
+  await step();
+  expect(screen.getByText("预览结束，点击播放可重播")).toBeTruthy();
+});
+
 // 回归：IMS 就绪时预览回到开头。IMS 就绪后由 SDK 从前端时钟的当前位置接着播放，AI 资产与时间轴不跳回开头。
 test("IMS 就绪时 SDK 从前端时钟的位置接着播放", async () => {
   const { step } = frames();
