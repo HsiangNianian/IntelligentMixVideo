@@ -91,7 +91,8 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
     let frame: HTMLIFrameElement | undefined;
     const controller = new AbortController();
     const transitionFrames = new Map<string, string>();
-    let catalog: EffectAsset[] = [];
+    // SDK 加载前先用随包目录（与工作区编辑用的相同），SDK 加载失败时基础视频的时间轴照常生成。
+    let catalog: EffectAsset[] = readCatalog();
     let appliedTracks: Draft["tracks"] | undefined;
     let appliedMedia: PreviewMedia | undefined;
     let appliedOrder: number[] | undefined;
@@ -132,17 +133,36 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       if (!disposed) setSeeking(false);
     };
 
-    /** SDK 渲染引擎不可用时切换到基础视频，只停用 IMS 文字与特效，不阻断普通视频播放。 */
+    /** 基础视频模式不再应用 SDK 时间线，时间轴行与调整说明直接按当前草稿生成。 */
+    const showBasicRows = () => {
+      const currentMedia = latestMedia.current;
+      const currentResolved = latestResolved.current;
+      if (!currentMedia || !currentResolved) return;
+      try {
+        const timeline = buildTimeline(latest.current, catalog, currentMedia, currentResolved, latestOrder.current);
+        setRows(buildPreviewRows(timeline));
+        setNotices(timeline.notices);
+      } catch (error) {
+        debugLog("模板预览", `基础视频时间轴生成失败：${describe(error)}`);
+      }
+    };
+
+    /**
+     * SDK 渲染引擎不可用时切换到基础视频，只停用 IMS 文字与特效，不阻断普通视频播放。
+     * 画布尺寸固定，降级早于 SDK 加载（如字体下载失败）时也在这里设置，AI 资产叠加层才能显示。
+     */
     const switchToBasicVideo = (reason: string) => {
       if (disposed || mediaFailed || basicRequested) return;
       basicRequested = true;
       canPlayController?.abort();
       canPlayController = undefined;
       instance?.pause();
+      setCanvas(PREVIEW_CANVAS);
       setBasicFallback(true);
       setReady(false);
       setFailed(false);
       setStatus("IMS 渲染暂不可用，已切换基础视频预览；文字与特效暂不可用。");
+      showBasicRows();
       debugLog("模板预览", `切换基础视频预览：${reason}`, "警告");
     };
 
@@ -252,6 +272,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       }
     };
     apply.current = () => {
+      if (basicRequested) { showBasicRows(); return; }
       // 初始化已应用相同输入时，延迟通知无需再次重置播放位置。
       if (appliedTracks === latest.current.tracks && appliedMedia === latestMedia.current && appliedOrder === latestOrder.current && appliedTexts === latestTexts.current && appliedResolved === latestResolved.current) return;
       revision++;
