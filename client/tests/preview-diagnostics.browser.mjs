@@ -1,7 +1,7 @@
 /**
  * 模板预览播放器调试日志的真实浏览器回归：真实 SDK 与解码，原生日志由页面里的假 Tauri IPC 接收；
  * 元数据可读但播放器加载不了的视频要在预览里提示并带地址与错误码写进日志，正常播放记录播放状态与流畅度汇总，
- * 坏视频在 canplay 超时后也不能显示为就绪，渲染授权请求失败时照常用 IMS 播放并记警告，SDK 加载失败时用基础播放器播放视频，
+ * 坏视频在 canplay 超时（60 秒）后也不能显示为就绪，渲染授权请求失败时照常用 IMS 播放并记警告，SDK 加载失败时用基础播放器播放视频，
  * 显示就绪后立即播放不会在 0 秒结束；
  * 执行 bun tests/preview-diagnostics.browser.mjs（需要 Chrome、FFmpeg 和联网访问 SDK、字体）。
  */
@@ -99,8 +99,8 @@ try {
   await page.getByText("视频 1 无法在播放器中播放（格式或地址不受支持），请检查视频编码与跨域访问配置后重试预览。").waitFor();
   assert(await page.getByRole("button", { name: "重试预览" }).isVisible());
   await page.waitForFunction(() => window.diagnostics.some((entry) => entry.message.startsWith("video 加载失败；地址 ") && entry.message.includes("broken.mp4#t=0.1；媒体错误 4（格式或地址不受支持）")));
-  // 回归：canplay 超时只说明无法确认可播放，不能把素材加载失败的预览重新标成“预览已就绪”并启用播放。
-  await page.waitForTimeout(3500);
+  // 回归：canplay 超时（60 秒）只说明无法确认可播放，不能把素材加载失败的预览重新标成“预览已就绪”并启用播放。
+  await page.waitForTimeout(60_500);
   assert.equal(await page.getByRole("button", { name: "播放", exact: true }).isDisabled(), true);
   assert.equal(await page.getByText("预览已就绪，点击播放查看效果", { exact: true }).count(), 0);
   assert.match(await page.locator('p[role="alert"]').textContent(), /预览素材无法播放/);

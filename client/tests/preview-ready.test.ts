@@ -38,7 +38,8 @@ test("收到 canplay 才结束等待", async () => {
   expect(source.unsubscribe).toHaveBeenCalledTimes(1);
 });
 
-// 场景：SDK 一直没有发出 canplay。3 秒内没有事件可确认可播放，必须返回 timeout 而不是 canplay；计时只在 setTimeline 完成后开始。
+// 场景：SDK 一直没有发出 canplay。60 秒内没有事件可确认可播放，必须返回 timeout 而不是 canplay；计时只在 setTimeline 完成后开始。
+// 网络或设备慢时 SDK 加载素材与字体可能要十几秒，3 秒就判超时会把还能用的 IMS 预览提前降级成基础视频。
 test("没有 canplay 时返回超时，应用时间线的耗时不计入等待窗口", async () => {
   jest.useFakeTimers();
   const source = player();
@@ -46,12 +47,12 @@ test("没有 canplay 时返回超时，应用时间线的耗时不计入等待�
   const timeline = new Promise<void>((resolve) => { finishTimeline = resolve; });
   let result: Awaited<ReturnType<typeof waitForCanPlay>> | undefined;
   void waitForCanPlay(source, timeline).then((value) => { result = value; });
-  jest.advanceTimersByTime(3_000);
+  jest.advanceTimersByTime(60_000);
   await settle();
   expect(result).toBeUndefined();
   finishTimeline();
   await settle();
-  jest.advanceTimersByTime(2_999);
+  jest.advanceTimersByTime(59_999);
   await settle();
   expect(result).toBeUndefined();
   jest.advanceTimersByTime(1);
@@ -72,7 +73,7 @@ test("取消等待时清理订阅和计时器", async () => {
   await settle();
   expect(result).toBe("cancelled");
   expect(source.unsubscribe).toHaveBeenCalledTimes(1);
-  jest.advanceTimersByTime(3_000);
+  jest.advanceTimersByTime(60_000);
   await settle();
   expect(result).toBe("cancelled");
   expect(source.unsubscribe).toHaveBeenCalledTimes(1);

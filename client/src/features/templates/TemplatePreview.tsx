@@ -1,11 +1,11 @@
-/** SDK 预览组件：管理单个播放器、串行更新时间线；授权在后台请求，IMS 渲染不可用时降级为基础视频，卸载时清理订阅和异步任务。 */
+/** SDK 预览组件：管理单个播放器、串行更新时间线；授权在后台请求，IMS 渲染失败或 60 秒仍不能播放时降级为基础视频，卸载时清理订阅和异步任务。 */
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Maximize2, Pause, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Hint } from "@/components/Hint";
 import { Spinner } from "@/components/ui/spinner";
 import { textKey, type Draft, type EffectAsset, type MasterVideo, type PreviewMedia } from "./model";
-import { deferLicenseRequest, loadSDK, loadPreviewFont, readCatalog, waitForCanPlay, watchPlayer, watchSdkMedia, type CanPlayResult, type Player } from "./sdk";
+import { CAN_PLAY_TIMEOUT_MS, deferLicenseRequest, loadSDK, loadPreviewFont, readCatalog, waitForCanPlay, watchPlayer, watchSdkMedia, type CanPlayResult, type Player } from "./sdk";
 import { BasicVideoPreview } from "./BasicVideoPreview";
 import { buildTimeline, buildPreviewRows, mergeSpriteRows, PREVIEW_CANVAS, remotionTexts, type SpriteClip } from "./timeline";
 import { centeredPlayerTimeline } from "./centeredTransitions";
@@ -236,7 +236,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
             setReady(true);
             setStatus("预览已就绪，点击播放查看效果");
           } else if (!disposed && !basicRequested && applied === revision && readiness === "timeout" && !mediaFailed) {
-            switchToBasicVideo("等待 SDK canplay 超过 3 秒");
+            switchToBasicVideo(`等待 SDK canplay 超过 ${CAN_PLAY_TIMEOUT_MS / 1000} 秒`);
           }
         }
       } catch (error) {

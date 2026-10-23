@@ -182,8 +182,11 @@ export function watchSdkMedia(
   return alive;
 }
 
-/** 应用时间线后等待 canplay 的上限：超时只表示无法确认可播放，不能据此把预览标为就绪。 */
-const CAN_PLAY_TIMEOUT_MS = 3_000;
+/**
+ * 应用时间线后等待 canplay 的上限：平时一秒内就到，网络或设备慢时 SDK 加载素材与字体可能要十几秒，
+ * 等满它仍没有 canplay 才判定 IMS 预览不可用；超时只表示无法确认可播放，不能据此把预览标为就绪。
+ */
+export const CAN_PLAY_TIMEOUT_MS = 60_000;
 
 /** 等待 SDK 可播放事件的结果；只有 canplay 能证明播放节点已建好。 */
 export type CanPlayResult = "canplay" | "timeout" | "cancelled";
