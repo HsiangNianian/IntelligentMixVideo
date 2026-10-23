@@ -1,6 +1,7 @@
 //! 模板编辑的本地预览视频：用户为视频 1～3 选择的文件只复制到应用数据目录
 //! `data/preview_videos/`，不上传服务端。每个槽位的元数据 `video-N.json`（文件名、MIME、字节数与
-//! 数据文件名）是唯一提交点，指向唯一命名的数据文件 `video-N-<uuid>`；前端启动后读回字节生成 blob URL 播放。
+//! 数据文件名）是唯一提交点，指向唯一命名的数据文件 `video-N-<uuid>`；前端经预览媒体服务（`media_server`）按数据文件名
+//! 以 HTTP 播放，视频字节不经过 IPC 读回页面。
 
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -9,7 +10,7 @@ use std::path::{Path, PathBuf};
 use tauri::Manager;
 use uuid::Uuid;
 
-/// 单个视频上限；字节需完整经过 IPC 并在网页内存中生成 blob，过大的文件不适合预览。
+/// 单个视频上限；保存时字节需完整经过 IPC，过大的文件不适合预览。
 const MAX_BYTES: usize = 512 * 1024 * 1024;
 
 /// 槽位元数据；`file` 必须是本槽位的数据文件名且 `size` 与其长度一致才视为有效，
@@ -132,18 +133,31 @@ fn list(directory: &Path) -> Result<Vec<Option<Stored>>, String> {
     })
 }
 
-/// 读取槽位的视频字节；没有有效本地视频时报错。多个槽位可同时读取。
-fn read(directory: &Path, slot: u8) -> Result<Vec<u8>, String> {
+/// 媒体服务打开本地视频：`file` 须是某个槽位元数据当前指向的数据文件，替换或删除后的旧文件名不再有效，
+/// 其他名称（含路径分隔符）一律视为不存在。在共享锁下打开，返回文件与 MIME；锁释放后已打开的文件照常可读，
+/// 之后的替换只删除旧文件名，不影响正在进行的读取。
+pub(crate) fn open(directory: &Path, file: &str) -> Result<Option<(fs::File, String)>, String> {
     locked(directory, false, || {
-        let meta = stored(directory, slot)?.ok_or(format!("视频 {slot} 没有本地文件"))?;
-        fs::read(directory.join(meta.file))
-            .map_err(|error| format!("读取视频 {slot} 失败：{error}"))
+        for slot in 1..=3 {
+            if let Some(meta) = stored(directory, slot)?.filter(|meta| meta.file == file) {
+                let opened = fs::File::open(directory.join(&meta.file))
+                    .map_err(|error| format!("读取视频 {slot} 失败：{error}"))?;
+                return Ok(Some((opened, meta.kind)));
+            }
+        }
+        Ok(None)
     })
 }
 
-/// 校验后把新数据写入唯一命名的文件，再替换元数据作为提交点，最后清理旧数据；
+/// 校验后把新数据写入唯一命名的文件，再替换元数据作为提交点，最后清理旧数据，返回新数据文件名；
 /// 提交前任一步失败或中断，旧元数据仍指向完整的旧视频。空文件、超限文件与非法编号不写入。
-fn write(directory: &Path, slot: u8, name: &str, kind: &str, bytes: &[u8]) -> Result<(), String> {
+fn write(
+    directory: &Path,
+    slot: u8,
+    name: &str,
+    kind: &str,
+    bytes: &[u8],
+) -> Result<String, String> {
     let slot_name = slot_name(slot)?;
     check_len(bytes.len())?;
     let meta = Stored {
@@ -160,7 +174,7 @@ fn write(directory: &Path, slot: u8, name: &str, kind: &str, bytes: &[u8]) -> Re
             return Err(error);
         }
         sweep(directory, &slot_name, Some(&meta.file));
-        Ok(())
+        Ok(meta.file.clone())
     })
 }
 
@@ -180,7 +194,7 @@ fn remove(directory: &Path, slot: u8) -> Result<(), String> {
 }
 
 /// 应用数据目录下的固定存储位置，不接受前端指定路径。
-fn directory(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn directory(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(app
         .path()
         .app_data_dir()
@@ -197,26 +211,14 @@ pub async fn preview_video_list(app: tauri::AppHandle) -> Result<Vec<Option<Stor
         .map_err(|_| "本地视频读取失败".to_string())?
 }
 
-/// 以二进制响应返回视频字节，前端收到 ArrayBuffer。
-#[tauri::command]
-pub async fn preview_video_read(
-    app: tauri::AppHandle,
-    slot: u8,
-) -> Result<tauri::ipc::Response, String> {
-    let directory = directory(&app)?;
-    tauri::async_runtime::spawn_blocking(move || read(&directory, slot))
-        .await
-        .map_err(|_| "本地视频读取失败".to_string())?
-        .map(tauri::ipc::Response::new)
-}
-
 /// 接收原始二进制请求体；`x-imv-slot`、URI 编码的 `x-imv-name` 与 `x-imv-type` 头描述该文件。
 /// 请求体由 Tauri 持有，借用写入避免再复制一份视频字节；落盘与刷盘经 `block_in_place` 让出异步工作线程。
+/// 返回新数据文件名，前端据此拼出媒体服务地址。
 #[tauri::command]
 pub async fn preview_video_write(
     app: tauri::AppHandle,
     request: tauri::ipc::Request<'_>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
         return Err("本地视频须以二进制上传".into());
     };
@@ -300,14 +302,23 @@ mod tests {
             .collect()
     }
 
+    /// 经媒体服务的入口读回槽位当前的视频字节；没有有效本地视频时报错。
+    fn read(dir: &Path, slot: u8) -> Result<Vec<u8>, String> {
+        let meta = stored(dir, slot)?.ok_or(format!("视频 {slot} 没有本地文件"))?;
+        let (mut file, _) = open(dir, &meta.file)?.ok_or("数据文件不可用")?;
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut file, &mut bytes).map_err(|error| error.to_string())?;
+        Ok(bytes)
+    }
+
     /// 写入后列出元数据并原样读回；替换只影响同一槽位且不留旧数据，删除后回到空槽位且可重复删除。
     #[test]
     fn write_read_replace_and_remove() {
         let dir = Directory::new();
         assert_eq!(list(&dir.0).unwrap(), vec![None, None, None]);
-        write(&dir.0, 2, "片段.mp4", "video/mp4", b"first").unwrap();
+        let first = write(&dir.0, 2, "片段.mp4", "video/mp4", b"first").unwrap();
         write(&dir.0, 3, "c.webm", "video/webm", b"third").unwrap();
-        write(&dir.0, 2, "替换.mov", "video/quicktime", b"second!").unwrap();
+        let replaced = write(&dir.0, 2, "替换.mov", "video/quicktime", b"second!").unwrap();
         let stored = list(&dir.0).unwrap();
         assert_eq!(stored[0], None);
         let second = stored[1].clone().unwrap();
@@ -315,7 +326,15 @@ mod tests {
             (second.name.as_str(), second.kind.as_str(), second.size),
             ("替换.mov", "video/quicktime", 7)
         );
+        assert_eq!(second.file, replaced);
         assert_eq!(data_files(&dir.0, 2), vec![second.file]);
+        // 媒体服务只认当前数据文件：替换前的文件名与带路径的名称都不存在。
+        assert!(open(&dir.0, &first).unwrap().is_none());
+        assert!(open(&dir.0, &format!("../{replaced}")).unwrap().is_none());
+        assert_eq!(
+            open(&dir.0, &replaced).unwrap().unwrap().1,
+            "video/quicktime"
+        );
         assert_eq!(read(&dir.0, 2).unwrap(), b"second!");
         assert_eq!(read(&dir.0, 3).unwrap(), b"third");
         remove(&dir.0, 2).unwrap();
@@ -323,6 +342,7 @@ mod tests {
         assert_eq!(list(&dir.0).unwrap()[1], None);
         assert!(data_files(&dir.0, 2).is_empty());
         assert!(read(&dir.0, 2).unwrap_err().contains("没有本地文件"));
+        assert!(open(&dir.0, &replaced).unwrap().is_none());
         assert_eq!(read(&dir.0, 3).unwrap(), b"third");
     }
 

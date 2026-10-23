@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test";
 import { waitFor } from "@testing-library/react";
 import { describe as describeValue, debugLog, openDiagnostics, resetDiagnostics, startDiagnostics, watchWindow } from "@/lib/diagnostics";
-import { mockDesktop } from "./setup";
+import { fetchMock, mockDesktop } from "./setup";
 
 type Entry = { level: string; source: string; message: string; at: number };
 let entries: Entry[] = [];
@@ -227,23 +227,21 @@ test("监听 iframe 的报错并标注来源", async () => {
   expect(describeValue(new Error("x"))).toStartWith("Error: x");
 });
 
-// 场景：桌面端某个本地预览视频读不回来时界面静默改用默认地址，调试日志写明槽位、文件名与原因；
-// 读回成功的写明大小与用时（接近上限的视频要完整经过 IPC，启动变慢时据此判断）。
+// 场景：桌面端某个本地预览视频读不回来（预览媒体服务的 HEAD 请求不成功）时界面静默改用默认地址，调试日志写明槽位、文件名与原因。
 test("本地预览视频恢复失败写入调试日志", async () => {
-  let clock = 0;
-  spyOn(performance, "now").mockImplementation(() => clock);
-  desktop((command, args) => {
-    if (command === "preview_video_list") return [{ name: "a.mp4", type: "video/mp4" }, { name: "b.mp4", type: "video/mp4" }, null];
-    if (command === "preview_video_read" && args.slot === 1) throw "文件不可读";
-    if (command === "preview_video_read") { clock += 2400; return new ArrayBuffer(3 * 1048576); }
+  desktop((command) => {
+    if (command === "preview_media_base") return "http://127.0.0.1:9/token";
+    if (command === "preview_video_list") return [{ name: "a.mp4", type: "video/mp4", file: "video-1-a" }, { name: "b.mp4", type: "video/mp4", file: "video-2-b" }, null];
     return null;
   });
+  fetchMock.mockImplementation((async (input: RequestInfo | URL) => new Response(null, { status: String(input).endsWith("video-1-a") ? 404 : 200 })) as typeof fetch);
   startDiagnostics();
   await openDiagnostics();
   // 恢复结果缓存在模块内，用带查询串的导入取得全新的模块实例。
   const specifier = "@/features/templates/localVideos?diagnostics";
   const fresh: typeof import("@/features/templates/localVideos") = await import(specifier);
-  expect((await fresh.localPreviewVideos())[0]).toBeUndefined();
-  await waitFor(() => expect(entries.some((entry) => entry.message === "视频 1（a.mp4）读取失败，改用默认地址：文件不可读")).toBe(true));
-  await waitFor(() => expect(entries.some((entry) => entry.message === "视频 2 读取 b.mp4（3.0 MiB）用时 2.4 秒")).toBe(true));
+  const videos = await fresh.localPreviewVideos();
+  expect(videos[0]).toBeUndefined();
+  expect(videos[1]?.name).toBe("b.mp4");
+  await waitFor(() => expect(entries.some((entry) => entry.message === "视频 1（a.mp4）读取失败，改用默认地址：Error: HTTP 404")).toBe(true));
 });
