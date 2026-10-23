@@ -330,6 +330,7 @@ ZOS_SECRET_ACCESS_KEY=<Access Key Secret>
 ZOS_WEB_URL=https://oss.joyfile.net
 ZOS_REGION=hangzhou-7
 ZOS_FORCE_PATH_STYLE=false
+ZOS_DELETE_OBJECTS=false
 ```
 
 - 素材匹配：提交一次，默认等待回调最多 30 秒；期间检查本地回调落库状态，不持续查询素材库。超时后有上游 ID 才补查一次；仍未完成则失败，不重新提交匹配。

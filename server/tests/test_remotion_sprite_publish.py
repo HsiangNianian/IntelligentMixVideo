@@ -26,7 +26,7 @@ from server.remotion_templates import sprite_events, sprite_store, sprites
 from server.remotion_templates.categories import HEX_COLOR, KEYWORD_COLOR
 from server.remotion_templates.harness import Harness
 from server.remotion_templates.models import GenerateTemplateRequest
-from server.remotion_templates.object_store import ObjectStoreError
+from server.remotion_templates.object_store import ObjectStoreError, ZosObjects
 from server.remotion_templates.provider import Budget
 from server.remotion_templates.publication import PREVIEW_PROTOCOL, current_bundle
 from server.remotion_templates.settings import Settings
@@ -34,8 +34,11 @@ from server.remotion_templates.sprite_router import sprite_runtime
 from server.remotion_templates.store import Store
 from server.remotion_templates.tables import versions
 from server.remotion_templates.tools.contracts import SpriteDraft
+from server.video_composition import zos
+from server.video_composition.settings import ZosSettings
 
 from .conftest import DEVICE, DEVICE_HEADERS, seed_sprite
+from .test_remotion_object_store import ZOS_ENV
 from .test_remotion_version_diagnostics import (
     CodeOnlyRenderer,
     OfflineRenderer,
@@ -829,6 +832,25 @@ def test_deleting_an_unused_sprite_removes_its_record_and_bundle(client: TestCli
     assert client.delete(f"/api/sprites/{summary.sprite_id}").status_code == 404
     assert published_sprite(client, published.version.id).sprite_id != summary.sprite_id
 
+
+
+# 场景（回归）：阿里云 OSS 部署不给删除权限（删除按请求收费），删除未被模板使用的资产总是 503「资产文件暂时无法删除」。
+def test_deleting_a_sprite_on_zos_keeps_its_files_and_removes_the_record(client: TestClient, published, monkeypatch) -> None:
+    """ZOS 默认保留文件：删除资产不向 ZOS 发任何请求，记录、目录条目与本地缓存照删，回答 204。"""
+    summary = published_sprite(client, published.version.id)
+    # 打开过预览，服务端才有这个资产的本地缓存。
+    assert client.get(summary.preview_url).status_code == 200
+    assert (published.store.root / "cache" / "sprites" / summary.sprite_id).exists()
+    for key, value in ZOS_ENV.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.delenv("ZOS_DELETE_OBJECTS")
+    clients = []
+    monkeypatch.setattr(zos.boto3, "client", lambda *args, **kwargs: clients.append(args))
+    monkeypatch.setattr(published.store, "objects", ZosObjects(ZosSettings(_env_file=None)))
+    assert client.delete(f"/api/sprites/{summary.sprite_id}").status_code == 204
+    assert clients == []
+    assert pb.ListSpritesResponse.FromString(client.get("/api/sprites").content).sprites == []
+    assert not (published.store.root / "cache" / "sprites" / summary.sprite_id).exists()
 
 
 # 场景（回归）：对象存储删除失败时，原先记录已先删掉，接口 500、目录仍显示资产，再点删除只得到 404「sprite not found」。

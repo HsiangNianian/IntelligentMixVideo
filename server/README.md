@@ -104,7 +104,7 @@ standard 模式中，请求不包含 `materials` 时为纯数字人：跳过素�
 
 `COMPOSITION_MATCH_WAIT_SECONDS` 默认 30 秒，匹配回调未到则只主动查询一次。修改配置后重启；已有任务保留其已保存的截止时间，失败历史通知不自动重新发送。
 
-新任务还需在 `server/.env` 中设置 `ZOS_API_ENDPOINT`、`ZOS_BUCKET`、`ZOS_ACCESS_KEY_ID`、`ZOS_SECRET_ACCESS_KEY`、`ZOS_WEB_URL`，并确保 `ffmpeg` 在服务端 PATH 中；缺少 FFmpeg 时受理返回 503。`ZOS_REGION` 默认 `hangzhou-7`，`ZOS_FORCE_PATH_STYLE` 默认 false。密钥仅由服务端读取，不进入客户端 IMS 设置。上传与公开地址分别使用 API Endpoint 和 Web URL；目前不读取 `ZOS_ENDPOINT`。对象删除或桶生命周期清理后，公开 URL 也会失效。字段示例和完整接口见 [视频合成 API 文档](src/server/video_composition/api.md)。
+新任务还需在 `server/.env` 中设置 `ZOS_API_ENDPOINT`、`ZOS_BUCKET`、`ZOS_ACCESS_KEY_ID`、`ZOS_SECRET_ACCESS_KEY`、`ZOS_WEB_URL`，并确保 `ffmpeg` 在服务端 PATH 中；缺少 FFmpeg 时受理返回 503。`ZOS_REGION` 默认 `hangzhou-7`，`ZOS_FORCE_PATH_STYLE` 默认 false。`ZOS_DELETE_OBJECTS` 默认 false：删除 Remotion 资产、会话等记录时只删记录与本地缓存，不删 ZOS 上的文件（删除按请求收费，也不需要删除权限），设为 true 时一并删除。密钥仅由服务端读取，不进入客户端 IMS 设置。上传与公开地址分别使用 API Endpoint 和 Web URL；目前不读取 `ZOS_ENDPOINT`。对象删除或桶生命周期清理后，公开 URL 也会失效。字段示例和完整接口见 [视频合成 API 文档](src/server/video_composition/api.md)。
 
 ### 执行日志
 

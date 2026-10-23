@@ -85,7 +85,8 @@ The backend reads them through a verified cache in `IMV_DATA_DIR/cache` (SHA-256
 at a time (deciding whether a parameter patch is instant reads only `interactive.js`). Object uploads, downloads and
 deletes run in worker threads and never under the write lock: a version is uploaded under its new ID before its record
 commits and removed again if the commit fails; deletion and the upload sweep remove records and objects in separate
-steps. A ZOS failure other than a missing object is an `ObjectStoreError` (an `OSError`): uploads, reference images,
+steps. ZOS objects are only removed when `ZOS_DELETE_OBJECTS` is true; by default a ZOS prefix delete sends nothing,
+since the store bills deletions (Aliyun OSS), so records and local caches go and the objects are left unreferenced. A ZOS failure other than a missing object is an `ObjectStoreError` (an `OSError`): uploads, reference images,
 downloads, diagnostics and work deletion answer a retryable 503 instead of a 500 or a misleading 422. Prefix deletes
 list the objects and remove each page with one batch request that carries `Content-MD5` (`zos.storage_client` swaps
 in the header botocore 1.36+ replaced with a CRC32 checksum; Aliyun OSS and similar S3-compatible stores reject a
@@ -483,8 +484,8 @@ never written back after it. Overlay renders only need the stored TSX.
 `DELETE /api/sprites/{id}` removes a publication (anyone may delete from the shared library): its row, bundle object
 and cache. While a cloud template's `remotion` track still references it the answer is 409 naming those templates
 (raw configurations are scanned, so invalid templates count too); an unknown ID is a 404. The bundle objects are
-removed before the row: when the object store fails the answer is a retryable 503 and the asset stays listed, so a
-retry finishes it; the store's own error (code, number of failed keys and the store's request ID, Aliyun OSS's
+removed before the row (on ZOS only with `ZOS_DELETE_OBJECTS`; by default they stay and only the row and cache go):
+when the object store fails the answer is a retryable 503 and the asset stays listed, so a retry finishes it; the store's own error (code, number of failed keys and the store's request ID, Aliyun OSS's
 `x-oss-request-id`) is logged as `Sprite files not deleted`. The source work and its versions are untouched, so the version can be saved to the library again.
 `POST /api/sprites/{id}/rename` (`imv.sprite.v1.RenameSpriteRequest`, anyone may rename) changes only the catalog name:
 trimmed, 1 to 100 characters, not required to be unique (422 otherwise), an unknown ID is a 404. A placed asset can

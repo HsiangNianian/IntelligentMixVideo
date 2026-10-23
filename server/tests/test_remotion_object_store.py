@@ -26,6 +26,7 @@ from server.remotion_templates.runtime import Runtime
 from server.remotion_templates.settings import Settings
 from server.remotion_templates.store import Store
 from server.video_composition import zos
+from server.video_composition.settings import ZosSettings
 
 from .conftest import DEVICE, DEVICE_HEADERS, S3Stub
 
@@ -35,6 +36,8 @@ ZOS_ENV = {
     "ZOS_ACCESS_KEY_ID": "test-zos-id",
     "ZOS_SECRET_ACCESS_KEY": "test-zos-secret",
     "ZOS_WEB_URL": "https://archives.hangzhou7.zos.ctyun.cn",
+    # 删除默认不发往 ZOS；这里的删除用例检查的是开启后的批量删除。
+    "ZOS_DELETE_OBJECTS": "true",
 }
 
 
@@ -259,6 +262,18 @@ def test_zos_put_uploads_public_and_delete_prefix_removes_every_page(tmp_path: P
     prefix = "imv/remotion/versions/v/"
     assert deleted == [[prefix + "a", prefix + "b"], [prefix + "c"]] and closed == [True]
 
+
+
+# 场景（回归）：阿里云 OSS 上传免费、删除按请求收费，部署方不给删除权限；删除资产与会话时删 OSS 文件被拒，记录也删不掉。
+def test_zos_keeps_its_objects_unless_deletion_is_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """未开启 ZOS_DELETE_OBJECTS 时按前缀删除不创建客户端、不发任何请求，直接返回，调用方照常删除记录与本地缓存。"""
+    for key, value in ZOS_ENV.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.delenv("ZOS_DELETE_OBJECTS")
+    clients = []
+    monkeypatch.setattr(zos.boto3, "client", lambda *args, **kwargs: clients.append(args))
+    ZosObjects(ZosSettings(_env_file=None)).delete_prefix("imv/remotion/sprites/s/")
+    assert clients == []
 
 
 # 场景：安静模式的批量删除对个别键失败（如无删除权限）仍回答 200，只在 Errors 里列出；不能当作删除成功。

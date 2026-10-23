@@ -113,7 +113,11 @@ class ZosObjects:
         A quiet batch delete still answers 200 when single keys fail (for example AccessDenied); those keys are
         listed under `Errors` and fail the call too, so the caller keeps its records and can retry. A refusal names the
         store's request ID (`_request_id`), so the log of a failed deletion can be traced with the store's support.
+        Unless `ZOS_DELETE_OBJECTS` is on, nothing is sent and the objects stay: the store charges for deletions, and
+        the callers delete the records and local caches that reference the objects either way.
         """
+        if not self.settings.zos_delete_objects:
+            return
         try:
             with closing(storage_client(self.settings, TIMEOUT)) as storage:
                 pages = storage.get_paginator("list_objects_v2").paginate(Bucket=self.settings.zos_bucket, Prefix=prefix)
