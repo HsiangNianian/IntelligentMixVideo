@@ -581,6 +581,83 @@ def test_real_two_tier_block_with_a_keyword_preset_passes_the_generation_measure
     assert "over 2 lines is shown in full at the smallest fontSize 48" in checks["text_fit"].message
 
 
+# 一栏文字，白色描边只写在非关键词片段的 span 上：关键词片段由宿主的 Keyword 渲染，拿不到描边（模板「民生科普」标题字效的写法）。
+SPAN_STROKE_TIER = TIER_CODE.replace("<span key={index}>", '<span key={index} style={{WebkitTextStroke: "8px #FFFFFF", paintOrder: "stroke fill"}}>')
+# 同样的描边写在这一栏自己的块上，关键词片段继承它。
+BLOCK_STROKE_TIER = TIER_CODE.replace("color: props.color}}", 'color: props.color, WebkitTextStroke: "8px #FFFFFF", paintOrder: "stroke fill"}}')
+
+
+@needs_browser
+@pytest.mark.parametrize(("code", "lost"), [(SPAN_STROKE_TIER, True), (BLOCK_STROKE_TIER, False)], ids=["spans", "block"])
+def test_real_keyword_hit_keeps_its_tiers_look(tmp_path, monkeypatch, code, lost):
+    """真实浏览器，审计复现（模板「民生科普」）：上栏的白色描边只写在非关键词片段上，模板编辑预览的示例关键词与成片的标题关键词
+    都没有描边。生成检查以默认文字开头两个字为关键词、关闭关键词选项挂载时，命中词须与同一栏其余文字外观一致，否则 text_fit 指出差异；
+    描边写在这一栏自己的块上就通过。"""
+    monkeypatch.setattr(FontStore, "active", SimpleNamespace(families=lambda: ["Noto Sans CJK SC"]))
+
+    async def run():
+        """Compose a two-tier block over the tier ``code``, fading in and out, and mount it with the generation measurements."""
+        current = session(tmp_path / "compose")
+        tier = await current.execute("preset.create", preset("text", code, "color"), available())
+        fade = await current.execute("preset.create", effect_preset(FADE_CODE), available())
+        request = two_tiers(tier["preset"]["preset_id"], None, fade["preset"]["preset_id"]).model_dump(mode="json", exclude_none=True)
+        request["text"]["tiers"][1]["font_family"] = "Noto Sans CJK SC"
+        composed = await current.execute("sprite.compose", SpriteComposeInput.model_validate(request), available())
+        sprite = current.sprite_drafts[composed["draft_id"]]
+        component = ComponentDefinition(code=sprite.code, parameter_schema=sprite.parameter_schema, default_parameters=sprite.default_parameters)
+        return await validator(tmp_path).validate_render(RenderValidationInput(component=component, duration_frames=30), text_fit=True)
+
+    check = next(item for item in asyncio.run(run()).checks if item.name == "text_fit")
+    if lost:
+        assert check.status == "failed"
+        assert 'With keywords ["判断"] and the keyword options off, the hit "判断" is drawn without its tier\'s look' in check.message
+        assert "-webkit-text-stroke-width is 0px instead of 8px" in check.message
+        assert "on its own block, so every <Keyword> segment inside inherits it" in check.message
+    else:
+        assert check.status == "passed", check.message
+
+
+def test_the_executor_draws_a_tiers_look_on_its_block():
+    """审计复现（模板「民生科普」）：规则只说 text Preset 画出这一栏的描边与阴影，没说画在哪一层，模型把白描边写在非关键词片段的 span 上，
+    关键词命中就没有描边。规则现在要求外观画在这一栏自己的块上，让 Keyword 片段继承。"""
+    from server.remotion_templates.agent import EXECUTOR_RULES
+
+    assert "draws the tier's look on that same block" in EXECUTOR_RULES
+    assert "so every <Keyword> segment inside inherits it" in EXECUTOR_RULES
+
+
+def test_a_keyword_hit_without_its_tiers_look_gets_no_layout_hint(tmp_path, monkeypatch):
+    """关键词丢了所在栏外观是 text_fit 的一种失败，但不是排版问题：拒绝照常列出原因，只是不附「按内容排版、换行」的固定提示，
+    免得模型去改排版；其他 text_fit 失败仍附这条提示。"""
+    monkeypatch.setattr(FontStore, "active", SimpleNamespace(families=lambda: list(LIBRARY)))
+    look = 'With keywords ["判断"] and the keyword options off, the hit "判断" is drawn without its tier\'s look: -webkit-text-stroke-width is 0px instead of 8px.'
+
+    async def refused(message: str) -> ToolFault:
+        """Save a composed block whose browser mount fails text_fit with ``message``; return the refusal."""
+        current = session(tmp_path / str(len(message)))
+        tier, _glow, fade = await stored(current)
+        composed = await current.execute("sprite.compose", two_tiers(tier, None, fade), available())
+
+        async def failing(request, **_options):
+            """The mount fails only the text_fit check."""
+            return RenderValidationReport(
+                passed=False, composition=Composition(width=1080, height=1920, fps=30, duration_frames=request.duration_frames),
+                code_validation=CodeValidationReport(passed=True, diagnostics=[]), checks=[CheckResult(name="text_fit", status="failed", message=message)],
+                tests=[], custom_tests_executed=0,
+            )
+
+        current.validate_render = failing
+        with pytest.raises(ToolFault) as error:
+            await current.execute("sprite.create", SpriteCreateInput(draft_id=composed["draft_id"]), available())
+        return error.value
+
+    lost = asyncio.run(refused(look))
+    assert f"- text_fit: {look}" in lost.error.message.splitlines()
+    assert "hints" not in lost.error.details
+    clipped = asyncio.run(refused("The default text is not shown in full: it is cut off."))
+    assert [hint.split(":")[0] for hint in clipped.error.details["hints"]] == ["Lay the text out from its content"]
+
+
 # 一栏实心色块：160 像素高，便于在成片里按像素判断这一栏是否显示。
 BLOCK_TIER = """export default function Block(props: {text: string; color: string}) {
   return <div style={{height: 160, background: props.color}}>{props.text}</div>;

@@ -140,7 +140,8 @@ Edits start from the accepted version and keep deriving the length from the inst
 A new text effect (kind `text`) is composed from a text block (`sprite.compose` contract v3, `text`), not from boxes;
 boxes stay for edits of older text effects. A Preset may carry a role. A `text` Preset draws one tier: the host passes
 it `text`, the `segments` of that text cut at the keyword hits, a `Keyword` component for the hit segments and
-`fontFamily`, `fontWeight` and `fontSize` (`tools/contracts.ROLE_PROPS`); its `parameter_schema` declares only its
+`fontFamily`, `fontWeight` and `fontSize` (`tools/contracts.ROLE_PROPS`), and the Executor rules have it draw the
+tier's look (colour, stroke, shadow, gradient, underline) on its own block so the `Keyword` segments inherit it; its `parameter_schema` declares only its
 own style props, declaring a host prop is refused, and the code check type-checks it with sample host props (`sprite.create`
 re-checks every source Preset with its role). The check's call site passes each default and host prop as its own JSX
 attribute, so a literal default such as `"center"` satisfies a prop typed `"left" | "center" | "right"` (an object
@@ -185,7 +186,12 @@ default false) that reach every job as `user_intent.original_request`; for a new
 compose then requires two tiers or a keyword Preset, and the category check refuses a text without them. An older
 Sprite whose own component draws a keyword effect must expose the `keywordEffect` switch defaulting to true. `text_fit`
 mounts the default text once more with up to two characters opening its first non-empty line as `keywords`, so the
-hit must stay inline and the whole text must still show. Templates only switch the seven keyword parameters (any
+hit must stay inline and the whole text must still show. In a text block that hit, mounted again on the middle frame
+with the six keyword options and the `keywordEffect` switch off, must also look like the rest of its line: the same
+inherited text paint (colour, fill, stroke, paint order, shadow, font, letter spacing) and no filter, decoration or
+text-clipped background that the line's other text gets from its own elements. A text Preset that strokes only the
+spans of the other segments is refused with the differences (`text_fit: … is drawn without its tier's look …`), so
+the template preview's sample keyword and the composed title keyword keep the tier's look. Templates only switch the seven keyword parameters (any
 other `keyword…` parameter is internal there), so the keyword effect is changed in the workspace and saved to the
 library again. `preset.search` matches every whitespace-separated word of the query and filters by role.
 

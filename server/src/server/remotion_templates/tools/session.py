@@ -78,6 +78,8 @@ def _ts_code(item: CodeDiagnostic) -> str:
     return (item.code or "").removeprefix("TS")
 
 
+# How the validation worker's `text_fit` names a keyword hit drawn without its tier's look (`keywordLookProblem`).
+_KEYWORD_LOOK_LOST = "is drawn without its tier's look"
 # Fixed host advice for errors a weak model rarely fixes from compiler text alone; never model-written.
 _HINTS = (
     (lambda item: _ts_code(item) in {"2322", "2339", "2345", "2353", "2741"},
@@ -91,7 +93,8 @@ _HINTS = (
     (lambda item: item.message.startswith("transparency"),
      "Keep the canvas see-through over the user's video: no opaque full-frame background; build tints from translucent "
      "layers, gradients, vignettes or grain."),
-    (lambda item: item.message.startswith("text_fit"),
+    # A keyword hit drawn without its tier's look is not a layout problem; its message says where the look belongs.
+    (lambda item: item.message.startswith("text_fit") and _KEYWORD_LOOK_LOST not in item.message,
      "Lay the text out from its content: wrap it onto several lines inside a bounded width, no fixed-height box with "
      "overflow hidden; use the fontSize parameter as given (the host shrinks long text at render time) and make sure text up to its maxLength fits at the smallest fontSize."),
     (lambda item: item.source == "contract" and item.field is not None,
