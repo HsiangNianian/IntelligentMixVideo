@@ -185,7 +185,12 @@ default false) that reach every job as `user_intent.original_request`; for a new
 compose then requires two tiers or a keyword Preset, and the category check refuses a text without them. An older
 Sprite whose own component draws a keyword effect must expose the `keywordEffect` switch defaulting to true. `text_fit`
 mounts the default text once more with up to two characters opening its first non-empty line as `keywords`, so the
-hit must stay inline and the whole text must still show. Templates only switch the seven keyword parameters (any
+hit must stay inline and the whole text must still show. In a text block that hit, mounted again on the middle frame
+with the six keyword options and the `keywordEffect` switch off, must also look like the rest of its line: the same
+inherited text paint (colour, fill, stroke, paint order, shadow, font, letter spacing) and no filter, decoration or
+text-clipped background that the line's other text gets from its own elements. A text Preset that strokes only the
+spans of the other segments is refused with the differences (`text_fit: … is drawn without its tier's look …`), so
+the template preview's sample keyword and the composed title keyword keep the tier's look. Templates only switch the seven keyword parameters (any
 other `keyword…` parameter is internal there), so the keyword effect is changed in the workspace and saved to the
 library again. `preset.search` matches every whitespace-separated word of the query and filters by role.
 
