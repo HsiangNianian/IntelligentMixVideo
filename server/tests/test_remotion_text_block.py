@@ -617,6 +617,15 @@ def test_real_keyword_hit_keeps_its_tiers_look(tmp_path, monkeypatch, code, lost
         assert check.status == "passed", check.message
 
 
+def test_the_executor_draws_a_tiers_look_on_its_block():
+    """审计复现（模板「民生科普」）：规则只说 text Preset 画出这一栏的描边与阴影，没说画在哪一层，模型把白描边写在非关键词片段的 span 上，
+    关键词命中就没有描边。规则现在要求外观画在这一栏自己的块上，让 Keyword 片段继承。"""
+    from server.remotion_templates.agent import EXECUTOR_RULES
+
+    assert "draws the tier's look on that same block" in EXECUTOR_RULES
+    assert "so every <Keyword> segment inside inherits it" in EXECUTOR_RULES
+
+
 def test_a_keyword_hit_without_its_tiers_look_gets_no_layout_hint(tmp_path, monkeypatch):
     """关键词丢了所在栏外观是 text_fit 的一种失败，但不是排版问题：拒绝照常列出原因，只是不附「按内容排版、换行」的固定提示，
     免得模型去改排版；其他 text_fit 失败仍附这条提示。"""

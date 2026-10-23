@@ -140,7 +140,8 @@ Edits start from the accepted version and keep deriving the length from the inst
 A new text effect (kind `text`) is composed from a text block (`sprite.compose` contract v3, `text`), not from boxes;
 boxes stay for edits of older text effects. A Preset may carry a role. A `text` Preset draws one tier: the host passes
 it `text`, the `segments` of that text cut at the keyword hits, a `Keyword` component for the hit segments and
-`fontFamily`, `fontWeight` and `fontSize` (`tools/contracts.ROLE_PROPS`); its `parameter_schema` declares only its
+`fontFamily`, `fontWeight` and `fontSize` (`tools/contracts.ROLE_PROPS`), and the Executor rules have it draw the
+tier's look (colour, stroke, shadow, gradient, underline) on its own block so the `Keyword` segments inherit it; its `parameter_schema` declares only its
 own style props, declaring a host prop is refused, and the code check type-checks it with sample host props (`sprite.create`
 re-checks every source Preset with its role). The check's call site passes each default and host prop as its own JSX
 attribute, so a literal default such as `"center"` satisfies a prop typed `"left" | "center" | "right"` (an object
