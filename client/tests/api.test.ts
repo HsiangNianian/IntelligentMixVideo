@@ -1,10 +1,10 @@
 /** 模板 HTTP 核心测试：请求契约、必要校验与错误展示；fetch 由 setup.ts 隔离。 */
 import { expect, spyOn, test } from "bun:test";
-import { fromBinary, toBinary, toJson } from "@bufbuild/protobuf";
+import { fromBinary, fromJson, toJson } from "@bufbuild/protobuf";
 import { EffectTemplateEditorSchema, GetTemplateResponseSchema, SaveTemplateRequestSchema } from "@/generated/imv/template/v1/template_pb";
 import { deleteTemplate, getTemplate, listTemplates, saveTemplate } from "@/features/templates/api";
 import { newDraft, toDraft, type RemotionClip } from "@/features/templates/model";
-import { protobufListResponse, protobufTemplateResponse, savedTemplate, templateSummary } from "./fixtures";
+import { jsonListResponse, jsonTemplateResponse, savedTemplate, templateSummary } from "./fixtures";
 import { fetchMock, mockDesktop } from "./setup";
 
 // 测试创建和更新都使用 POST /template，只有更新带 ID，名称说明被修剪且效果去重。
@@ -16,12 +16,12 @@ test.each([undefined, "existing-id"])("保存请求正确区分创建与更新�
   draft.tracks[1].editor.subtitleIn = "in/fade_in";
   draft.tracks[0].editor.titleKeywordSize = 72;
   draft.tracks[1].editor.subtitleKeywordSize = 48;
-  fetchMock.mockResolvedValueOnce(protobufTemplateResponse(saved, "save", id ? 200 : 201));
+  fetchMock.mockResolvedValueOnce(jsonTemplateResponse(saved, "save", id ? 200 : 201));
   expect(await saveTemplate(draft, id)).toEqual(saved);
   const [url, options] = fetchMock.mock.calls[0];
   expect(url).toBe("http://api.test:8000/template");
   expect(options?.method).toBe("POST");
-  expect(options?.headers).toEqual({ Accept: "application/x-protobuf", "Content-Type": "application/x-protobuf" });
+  expect(options?.headers).toEqual({ Accept: "application/json", "Content-Type": "application/x-protobuf" });
   const body = fromBinary(SaveTemplateRequestSchema, new Uint8Array(options?.body as Uint8Array));
   expect(body).toMatchObject({ name: "我的模板", description: "说明", effectIds: ["in/fade_in"] });
   expect(body.tracks?.tracks.map((track) => [track.editor?.titleKeywordSize, track.editor?.subtitleKeywordSize]))
@@ -59,9 +59,10 @@ test("读取与删除遵循接口契约", async () => {
   const saved = savedTemplate();
   saved.tracks[0].editor.titleKeywordSize = 72;
   saved.tracks[1].editor.subtitleKeywordSize = 48;
-  fetchMock.mockResolvedValueOnce(protobufListResponse([saved]));
+  fetchMock.mockResolvedValueOnce(jsonListResponse([saved]));
   expect(await listTemplates()).toEqual([templateSummary(saved)]);
-  fetchMock.mockResolvedValueOnce(protobufTemplateResponse(saved, "get"));
+  expect(fetchMock.mock.calls[0][1]?.headers).toEqual({ Accept: "application/json" });
+  fetchMock.mockResolvedValueOnce(jsonTemplateResponse(saved, "get"));
   expect(await getTemplate("id/with space")).toEqual(saved);
   expect(fetchMock.mock.calls[1][0]).toBe("http://api.test:8000/template/id%2Fwith%20space");
   fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
@@ -79,18 +80,18 @@ const clips: RemotionClip[] = [
 // 测试含 Remotion 片段的模板（片段轨道的 editor 为空消息）可以正常读取：片段与 IMS 对象分开，且不会拖垮整个列表。
 test("读取含 Remotion 片段的模板", async () => {
   const withClips = { ...savedTemplate(), template_id: "00000000-0000-4000-8000-000000000002", clips };
-  fetchMock.mockResolvedValueOnce(protobufListResponse([savedTemplate(), withClips]));
+  fetchMock.mockResolvedValueOnce(jsonListResponse([savedTemplate(), withClips]));
   const listed = await listTemplates();
   expect(listed).toEqual([templateSummary(savedTemplate()), templateSummary(withClips)]);
   expect(listed[1].track_count).toBe(4);
-  fetchMock.mockResolvedValueOnce(protobufTemplateResponse(withClips, "get"));
+  fetchMock.mockResolvedValueOnce(jsonTemplateResponse(withClips, "get"));
   expect(await getTemplate(withClips.template_id)).toEqual(withClips);
 });
 
 // 测试保存时片段排在固定文字对象之后，片段带上引用、秒数起点、所占的文字对象或交界处和空 editor 消息。
 test("保存 Remotion 片段", async () => {
   const draft = { ...newDraft(), name: "文字与片段", clips };
-  fetchMock.mockResolvedValueOnce(protobufTemplateResponse({ ...savedTemplate(), clips }, "save", 201));
+  fetchMock.mockResolvedValueOnce(jsonTemplateResponse({ ...savedTemplate(), clips }, "save", 201));
   await saveTemplate(draft);
   const body = fromBinary(SaveTemplateRequestSchema, new Uint8Array(fetchMock.mock.calls[0][1]?.body as Uint8Array));
   expect(body.effectIds).toEqual([]);
@@ -100,7 +101,7 @@ test("保存 Remotion 片段", async () => {
   ]);
   expect(body.tracks?.tracks.slice(2).map((track) => track.editor && toJson(EffectTemplateEditorSchema, track.editor))).toEqual([{}, {}]);
   const mixed = { ...toDraft(savedTemplate()), clips };
-  fetchMock.mockResolvedValueOnce(protobufTemplateResponse({ ...savedTemplate(), clips }, "save", 201));
+  fetchMock.mockResolvedValueOnce(jsonTemplateResponse({ ...savedTemplate(), clips }, "save", 201));
   await saveTemplate(mixed);
   const sent = fromBinary(SaveTemplateRequestSchema, new Uint8Array(fetchMock.mock.calls[1][1]?.body as Uint8Array));
   expect(sent.tracks?.tracks.map((track) => track.target)).toEqual(["title", "subtitle", "remotion", "remotion"]);
@@ -110,10 +111,10 @@ test("保存 Remotion 片段", async () => {
 // 测试读取后原样保存：编辑其他字段不会丢失或改写片段，也不会把它们当成 IMS 对象。
 test("含片段的模板读取后再保存不丢片段", async () => {
   const withClips = { ...savedTemplate(), clips };
-  fetchMock.mockResolvedValueOnce(protobufTemplateResponse(withClips, "get"));
+  fetchMock.mockResolvedValueOnce(jsonTemplateResponse(withClips, "get"));
   const draft = toDraft(await getTemplate(withClips.template_id));
   draft.name = "改名";
-  fetchMock.mockResolvedValueOnce(protobufTemplateResponse(withClips, "save"));
+  fetchMock.mockResolvedValueOnce(jsonTemplateResponse(withClips, "save"));
   await saveTemplate(draft, withClips.template_id);
   const body = fromBinary(SaveTemplateRequestSchema, new Uint8Array(fetchMock.mock.calls[1][1]?.body as Uint8Array));
   const sent = body.tracks!.tracks.filter((track) => track.target === "remotion");
@@ -125,10 +126,10 @@ test("含片段的模板读取后再保存不丢片段", async () => {
 
 // 测试服务端遗漏编辑参数时拒绝详情响应，避免客户端静默补齐字段。
 test("模板响应缺少编辑参数时拒绝读取", async () => {
-  const response = protobufTemplateResponse(savedTemplate(), "get");
-  const message = fromBinary(GetTemplateResponseSchema, new Uint8Array(await response.arrayBuffer()));
+  const response = jsonTemplateResponse(savedTemplate(), "get");
+  const message = fromJson(GetTemplateResponseSchema, await response.json());
   message.template!.tracks!.tracks[0].editor!.title = undefined;
-  fetchMock.mockResolvedValueOnce(new Response(Uint8Array.from(toBinary(GetTemplateResponseSchema, message))));
+  fetchMock.mockResolvedValueOnce(Response.json(toJson(GetTemplateResponseSchema, message)));
   await expect(getTemplate("missing-editor-field")).rejects.toThrow("模板编辑配置缺少必要字段");
 });
 
@@ -181,11 +182,11 @@ test("桌面客户端模板操作只走云端 HTTP", async () => {
   const invoke = mock(async () => null);
   const restoreDesktop = mockDesktop(invoke);
   try {
-    fetchMock.mockResolvedValueOnce(protobufListResponse([saved]));
+    fetchMock.mockResolvedValueOnce(jsonListResponse([saved]));
     expect(await listTemplates()).toEqual([templateSummary(saved)]);
-    fetchMock.mockResolvedValueOnce(protobufTemplateResponse(saved, "get"));
+    fetchMock.mockResolvedValueOnce(jsonTemplateResponse(saved, "get"));
     expect(await getTemplate(saved.template_id)).toEqual(saved);
-    fetchMock.mockResolvedValueOnce(protobufTemplateResponse(saved, "save", 201));
+    fetchMock.mockResolvedValueOnce(jsonTemplateResponse(saved, "save", 201));
     expect(await saveTemplate(toDraft(saved))).toEqual(saved);
     fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
     await deleteTemplate(saved.template_id);

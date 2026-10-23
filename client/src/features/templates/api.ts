@@ -1,6 +1,6 @@
-/** 模板存储边界：只读写云端模板库，请求与响应使用 Protobuf。 */
+/** 模板存储边界：只读写云端模板库，保存请求使用 Protobuf，响应使用 JSON。 */
 import { updateFetch as fetch } from "@/lib/update-guard";
-import { create, fromBinary, toBinary, toJson } from "@bufbuild/protobuf";
+import { create, fromJson, toBinary, toJson } from "@bufbuild/protobuf";
 import { timestampDate } from "@bufbuild/protobuf/wkt";
 import { apiBase } from "@/lib/api-base";
 import {
@@ -122,7 +122,7 @@ async function cloudRequest(path: string, method: "GET" | "POST" | "DELETE", sig
   const response = await fetch(`${apiBase()}${path}`, {
     method,
     headers: {
-      Accept: "application/x-protobuf",
+      Accept: "application/json",
       ...(body ? { "Content-Type": "application/x-protobuf" } : {}),
     },
     body: body ? Uint8Array.from(body) : undefined,
@@ -143,7 +143,7 @@ export function listTemplates(signal?: AbortSignal): Promise<TemplateSummary[]> 
   return cloud(
     async (requestSignal) => {
       const response = await cloudRequest("/template", "GET", requestSignal);
-      return fromBinary(ListTemplatesResponseSchema, new Uint8Array(await response.arrayBuffer()))
+      return fromJson(ListTemplatesResponseSchema, await response.json())
         .templates.map((record) => {
           if (!record.createdAt || !record.updatedAt) throw new Error("模板摘要缺少时间");
           return { template_id: record.templateId, name: record.name, description: record.description,
@@ -159,7 +159,7 @@ export function listTemplates(signal?: AbortSignal): Promise<TemplateSummary[]> 
 export function getTemplate(id: string, signal?: AbortSignal): Promise<Template> {
   return cloud(async (requestSignal) => {
     const response = await cloudRequest(`/template/${encodeURIComponent(id)}`, "GET", requestSignal);
-    const message = fromBinary(GetTemplateResponseSchema, new Uint8Array(await response.arrayBuffer()));
+    const message = fromJson(GetTemplateResponseSchema, await response.json());
     if (!message.template) throw new Error("模板响应缺少内容");
     return toTemplate(message.template);
   }, signal);
@@ -232,7 +232,7 @@ export async function saveTemplate(draft: Draft, id?: string): Promise<Template>
   const payload = toBinary(SaveTemplateRequestSchema, message);
   return cloud(async (requestSignal) => {
     const response = await cloudRequest("/template", "POST", requestSignal, payload);
-    const saved = fromBinary(SaveTemplateResponseSchema, new Uint8Array(await response.arrayBuffer()));
+    const saved = fromJson(SaveTemplateResponseSchema, await response.json());
     if (!saved.template) throw new Error("模板响应缺少内容");
     return toTemplate(saved.template);
   });

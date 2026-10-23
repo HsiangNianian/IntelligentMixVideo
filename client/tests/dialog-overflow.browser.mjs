@@ -1,7 +1,7 @@
 /** 弹窗溢出浏览器回归：切换保护弹窗显示不含空格的超长错误路径时，文字与按钮不得超出弹窗；执行 bun tests/dialog-overflow.browser.mjs。 */
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
-import { protobufListResponse, savedTemplate } from "./fixtures.ts";
+import { jsonListResponse, savedTemplate } from "./fixtures.ts";
 
 const url = process.env.IMV_BROWSER_URL || "http://127.0.0.1:1420";
 const longPath = `模板读取失败，详细日志见：/home/muyuzhong/.local/share/com.intelligentmixvideo.client/backend/logs/template/00000000-0000-4000-8000-000000000001/request.json`;
@@ -15,8 +15,8 @@ try {
   // 列表返回一个模板，读取详情返回超长错误；只模拟模板接口，不连接真实服务。
   await page.route((target) => target.pathname.startsWith("/template"), async (route) => {
     if (new URL(route.request().url()).pathname === "/template") {
-      const response = protobufListResponse([template]);
-      return route.fulfill({ contentType: "application/x-protobuf", body: Buffer.from(await response.arrayBuffer()) });
+      const response = jsonListResponse([template]);
+      return route.fulfill({ contentType: "application/json", body: await response.text() });
     }
     return route.fulfill({ status: 404, json: { detail: longPath } });
   });

@@ -1,6 +1,6 @@
 /** AI 资产核心测试：版本卡片的资产分类与发布请求，以及云端模板编辑中的资产目录、片段编辑与随模板的原子保存；执行 bun run test。 */
 import { expect, spyOn, test } from "bun:test";
-import { create, fromBinary, toBinary, toJson, type MessageInitShape } from "@bufbuild/protobuf";
+import { create, fromBinary, fromJson, toBinary, toJson, type MessageInitShape } from "@bufbuild/protobuf";
 import { cleanup, fireEvent, render, screen, waitFor, waitForElementToBeRemoved, within } from "@testing-library/react";
 import { VersionCard } from "@/features/remotion_templates/VersionCard";
 import { defaultKind, publishChoice } from "@/features/remotion_templates/spriteChoice";
@@ -25,7 +25,7 @@ import {
 import { Toaster } from "@/components/ui/sonner";
 import { remotionVersion } from "./remotion-fixtures";
 import { FakeEventSource, fetchMock } from "./setup";
-import { protobufTemplateResponse, savedTemplate } from "./fixtures";
+import { jsonTemplateResponse, savedTemplate } from "./fixtures";
 
 const HEADERS = { "Content-Type": "application/x-protobuf" };
 
@@ -92,9 +92,9 @@ function sprites(options: { clips?: RemotionClip[]; saveStatus?: number; saveDet
           parameters: Object.fromEntries((track.editor?.remotion?.parameters ?? []).map((item) => [item.key, item.stringListValue ? [...item.stringListValue.values] : (item.stringValue ?? item.numberValue ?? item.boolValue)!])),
           transform: { ...(track.editor?.remotion?.transform ?? {}) },
         }));
-      return protobufTemplateResponse({ ...template, clips }, "save", 201);
+      return jsonTemplateResponse({ ...template, clips }, "save", 201);
     }
-    return protobufTemplateResponse(template, "get");
+    return jsonTemplateResponse(template, "get");
   }) as typeof fetch);
   return { template, saved, posts };
 }
@@ -151,8 +151,8 @@ test.each([
   [undefined, "subtitle", "subtitle"],
 ] as const)("旧用途 %s 与文字槽位 %s 往返保存时以槽位为准", async (purpose, textTarget, expectedTarget) => {
   const template = { ...savedTemplate(), clips: [{ id: "legacy", sprite_id: "sprite-1", start: 0, duration: 3, parameters: {}, transform: {} }] };
-  const response = protobufTemplateResponse(template, "get");
-  const message = fromBinary(GetTemplateResponseSchema, new Uint8Array(await response.arrayBuffer()));
+  const response = jsonTemplateResponse(template, "get");
+  const message = fromJson(GetTemplateResponseSchema, await response.json());
   const track = message.template!.tracks!.tracks.find((item) => item.target === "remotion")!;
   track.textTarget = textTarget;
   track.editor = create(EffectTemplateEditorSchema, { remotion: {
@@ -167,9 +167,9 @@ test.each([
   fetchMock.mockImplementation((async (_url, init) => {
     if (init?.method === "POST") {
       saved = fromBinary(SaveTemplateRequestSchema, new Uint8Array(init.body as Uint8Array));
-      return binary(SaveTemplateResponseSchema, create(SaveTemplateResponseSchema, { template: message.template }));
+      return Response.json(toJson(SaveTemplateResponseSchema, create(SaveTemplateResponseSchema, { template: message.template })));
     }
-    return binary(GetTemplateResponseSchema, message);
+    return Response.json(toJson(GetTemplateResponseSchema, message));
   }) as typeof fetch);
   const loaded = await getTemplate(template.template_id);
   expect(loaded.clips![0].text_target).toBe(expectedTarget);
