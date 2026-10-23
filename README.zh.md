@@ -397,7 +397,7 @@ XIM 需要输入法框架已设置 `XMODIFIERS`（例如 `@im=fcitx`）。
 
 模板数据格式及旧文件处理见[模板兼容性](#模板兼容性)。模板配置独立于预览媒体保存。
 
-云端模板 API 在 `/template` 路径上传输 Protobuf 二进制消息。根目录 `buf.yaml` 管理消息定义与兼容性检查，`buf.gen.yaml` 生成客户端 TypeScript 和服务端 Python 代码。修改协议后，在仓库根目录执行：
+云端模板 API 在 `/template` 路径接收 Protobuf 二进制保存请求，列表、详情和保存响应使用 JSON，遵循 Protobuf JSON 映射（camelCase 字段、RFC 3339 时间）；客户端同步按 JSON 解析响应。根目录 `buf.yaml` 管理消息定义与兼容性检查，`buf.gen.yaml` 生成客户端 TypeScript 和服务端 Python 代码。修改协议后，在仓库根目录执行：
 
 ```bash
 buf lint
