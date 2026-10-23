@@ -173,7 +173,7 @@ src/
     effects.ts                     # 资产字段分配、互斥与移除规则
     TemplatePreview.tsx            # 播放器生命周期及预览操作
     model.ts                       # 数据类型、默认配置与选择字段映射
-    api.ts                         # 云端 Protobuf 模板操作和错误处理
+    api.ts                         # 云端 Protobuf 请求/JSON 响应和模板错误处理
     sdk.ts                         # SDK 加载、目录及类型边界
     timeline.ts                    # 配置到预览时间线的转换
     motions.json                   # 固定版本动画目录
