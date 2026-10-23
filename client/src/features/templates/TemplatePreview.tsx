@@ -1,11 +1,11 @@
-/** SDK 预览组件：管理单个播放器、串行更新时间线；IMS 授权或渲染不可用时降级为基础视频，卸载时清理订阅和异步任务。 */
+/** SDK 预览组件：管理单个播放器、串行更新时间线；授权在后台请求，IMS 渲染不可用时降级为基础视频，卸载时清理订阅和异步任务。 */
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Maximize2, Pause, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Hint } from "@/components/Hint";
 import { Spinner } from "@/components/ui/spinner";
 import { textKey, type Draft, type EffectAsset, type MasterVideo, type PreviewMedia } from "./model";
-import { loadSDK, loadPreviewFont, readCatalog, waitForCanPlay, watchLicenseRequest, watchPlayer, watchSdkMedia, type CanPlayResult, type Player } from "./sdk";
+import { deferLicenseRequest, loadSDK, loadPreviewFont, readCatalog, waitForCanPlay, watchPlayer, watchSdkMedia, type CanPlayResult, type Player } from "./sdk";
 import { BasicVideoPreview } from "./BasicVideoPreview";
 import { buildTimeline, buildPreviewRows, mergeSpriteRows, PREVIEW_CANVAS, remotionTexts, type SpriteClip } from "./timeline";
 import { centeredPlayerTimeline } from "./centeredTransitions";
@@ -132,7 +132,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       if (!disposed) setSeeking(false);
     };
 
-    /** SDK 授权或渲染引擎不可用时切换到基础视频，只停用 IMS 文字与特效，不阻断普通视频播放。 */
+    /** SDK 渲染引擎不可用时切换到基础视频，只停用 IMS 文字与特效，不阻断普通视频播放。 */
     const switchToBasicVideo = (reason: string) => {
       if (disposed || mediaFailed || basicRequested) return;
       basicRequested = true;
@@ -291,7 +291,8 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
         // SDK 在 iframe 里运行，它的报错与 console 不会冒泡到主窗口，需要单独监听。
         watchWindow(frame.contentWindow!, "模板预览 SDK");
         const target = frame.contentDocument!;
-        stopLicenseWatch = watchLicenseRequest(frame.contentWindow!, (reason) => switchToBasicVideo(`授权请求失败：${reason}`));
+        // 渲染引擎等授权回应才初始化、请求失败后一直黑屏；须在 SDK 加载前把授权改为后台请求，授权结果不再决定是否降级。
+        stopLicenseWatch = deferLicenseRequest(frame.contentWindow!);
         // SDK 的媒体元素不挂到文档上，加载失败由此记录并按视频序号提示（SDK 会在地址后追加 #t= 片段）。
         const sdkMedia = watchSdkMedia(target, (element) => {
           if (disposed || basicRequested) return;

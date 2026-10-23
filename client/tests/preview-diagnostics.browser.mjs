@@ -1,7 +1,8 @@
 /**
  * 模板预览播放器调试日志的真实浏览器回归：真实 SDK 与解码，原生日志由页面里的假 Tauri IPC 接收；
  * 元数据可读但播放器加载不了的视频要在预览里提示并带地址与错误码写进日志，正常播放记录播放状态与流畅度汇总，
- * 坏视频在 canplay 超时后也不能显示为就绪，授权失败时仍可用基础播放器播放视频，显示就绪后立即播放不会在 0 秒结束；
+ * 坏视频在 canplay 超时后也不能显示为就绪，渲染授权请求失败时照常用 IMS 播放并记警告，SDK 加载失败时用基础播放器播放视频，
+ * 显示就绪后立即播放不会在 0 秒结束；
  * 执行 bun tests/preview-diagnostics.browser.mjs（需要 Chrome、FFmpeg 和联网访问 SDK、字体）。
  */
 import assert from "node:assert/strict";
@@ -67,26 +68,31 @@ let browser;
 try {
   await server.listen();
   browser = await chromium.launch({ channel: "chrome", headless: true });
-  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
-  // 首次运行需要联网下载 SDK 与字体，慢网络下 90 秒会误报；等待页面与断言使用更宽松的时限。
-  page.setDefaultTimeout(180000);
-  page.setDefaultNavigationTimeout(180000);
-  await page.addInitScript(desktop);
-  await page.goto(`http://localhost:${server.httpServer.address().port}/__diagnostics_test`);
-  await page.waitForFunction(() => typeof window.mountPreview === "function");
+  // 授权测试只控制网络结果：默认返回和服务端一致的“无证书”JSON，授权失败场景再改成 502；SDK 不等这个结果，立即拿到同样的无证书结果。
+  let licenseFailure = false;
+  /** 打开挂载生产组件的测试页；每次都是新的浏览器上下文，不共用其他页面已加载的 SDK 脚本。 */
+  const openPage = async () => {
+    const opened = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    // 首次运行需要联网下载 SDK 与字体，慢网络下 90 秒会误报；等待页面与断言使用更宽松的时限。
+    opened.setDefaultTimeout(180000);
+    opened.setDefaultNavigationTimeout(180000);
+    await opened.addInitScript(desktop);
+    await opened.route(/vpp-license-proxy\.aliyuncs\.com/, async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await route.fulfill({ status: 204, headers: { "access-control-allow-origin": "*", "access-control-allow-methods": "POST, OPTIONS", "access-control-allow-headers": "content-type" } });
+      } else if (licenseFailure) {
+        await route.fulfill({ status: 502, contentType: "text/html", headers: { "access-control-allow-origin": "*" }, body: "bad gateway" });
+      } else {
+        await route.fulfill({ status: 200, contentType: "application/json", headers: { "access-control-allow-origin": "*" }, body: '{"message":"Signature verification error on the server."}' });
+      }
+    });
+    await opened.goto(`http://localhost:${server.httpServer.address().port}/__diagnostics_test`);
+    await opened.waitForFunction(() => typeof window.mountPreview === "function");
+    return opened;
+  };
+  const page = await openPage();
   /** 取出已转发的日志文本，按“级别 来源：内容”拼接。 */
   const logs = () => page.evaluate(() => window.diagnostics.map((entry) => `${entry.level} ${entry.source}：${entry.message}`));
-  // 授权测试只控制网络结果：默认返回和服务端一致的“无证书”JSON，授权失败场景再改成 502；不在应用代码里伪造响应。
-  let licenseFailure = false;
-  await page.route(/vpp-license-proxy\.aliyuncs\.com/, async (route) => {
-    if (route.request().method() === "OPTIONS") {
-      await route.fulfill({ status: 204, headers: { "access-control-allow-origin": "*", "access-control-allow-methods": "POST, OPTIONS", "access-control-allow-headers": "content-type" } });
-    } else if (licenseFailure) {
-      await route.fulfill({ status: 502, contentType: "text/html", headers: { "access-control-allow-origin": "*" }, body: "bad gateway" });
-    } else {
-      await route.fulfill({ status: 200, contentType: "application/json", headers: { "access-control-allow-origin": "*" }, body: '{"message":"Signature verification error on the server."}' });
-    }
-  });
 
   // SDK 的 <video> 不挂到文档上：加载失败不能只显示“已就绪”，预览按视频序号提示，日志带地址与 MediaError 码。
   await page.evaluate(() => window.mountPreview("broken.mp4"));
@@ -99,16 +105,33 @@ try {
   assert.equal(await page.getByText("预览已就绪，点击播放查看效果", { exact: true }).count(), 0);
   assert.match(await page.locator('p[role="alert"]').textContent(), /预览素材无法播放/);
 
-  // 回归：授权接口失败时 SDK 渲染不可用，但普通视频必须继续播放；这里只降级 IMS 文字与特效，不伪造授权结果。
+  // 回归：Windows 测试机上授权请求失败后 SDK 把渲染引擎标为初始化失败，视频黑屏、点播放时间不走。授权改在后台请求后，
+  // 请求失败（这里是 502）时 IMS 预览照常就绪并播放两次，只记一条警告，不降级成基础视频。
   licenseFailure = true;
   await page.evaluate(() => window.mountPreview("ok.mp4", "license-failed"));
-  const basic = page.getByLabel("基础视频预览");
-  await basic.waitFor();
-  await page.getByText("IMS 渲染暂不可用，已切换基础视频预览；文字与特效暂不可用。", { exact: true }).waitFor();
-  assert(await page.getByRole("button", { name: "重试 IMS 预览" }).isVisible());
-  await basic.evaluate((video) => video.play());
-  await page.waitForFunction(() => document.querySelector('video[aria-label="基础视频预览"]').currentTime > 0.5, null, { timeout: 5000 });
+  await page.getByText("预览已就绪，点击播放查看效果", { exact: true }).waitFor();
+  for (let round = 0; round < 2; round++) {
+    const before = Number(await page.getByLabel("预览进度").inputValue());
+    await page.getByRole("button", { name: "播放", exact: true }).click();
+    await page.waitForFunction((from) => Number(document.querySelector('input[aria-label="预览进度"]').value) >= from + 0.5, before, { timeout: 5000 });
+    await page.getByRole("button", { name: "暂停", exact: true }).click();
+  }
+  await page.waitForFunction(() => window.diagnostics.some((entry) => entry.message === "渲染授权请求失败（Error: HTTP 502）；预览不等授权，照常播放"));
+  assert.equal(await page.getByLabel("基础视频预览").count(), 0);
   licenseFailure = false;
+
+  // 回归：SDK 本身加载不了（这里拦掉 player.js）时普通视频必须继续播放：切换基础视频，只停用 IMS 文字与特效。
+  // 用新的浏览器上下文：页面加载过 player.js 后，新 iframe 直接用内存缓存里的脚本、不再发请求，拦截不到。
+  const isolated = await openPage();
+  await isolated.route(/video-editing-websdk\/5\.2\.2\/player\.js/, (route) => route.abort());
+  await isolated.evaluate(() => window.mountPreview("ok.mp4"));
+  const basic = isolated.getByLabel("基础视频预览");
+  await basic.waitFor();
+  await isolated.getByText("IMS 渲染暂不可用，已切换基础视频预览；文字与特效暂不可用。", { exact: true }).waitFor();
+  assert(await isolated.getByRole("button", { name: "重试 IMS 预览" }).isVisible());
+  await basic.evaluate((video) => video.play());
+  await isolated.waitForFunction(() => document.querySelector('video[aria-label="基础视频预览"]').currentTime > 0.5, null, { timeout: 5000 });
+  await isolated.close();
 
   // 正常视频：没有失败提示与加载失败记录，播放后日志记录播放状态变化；播放一秒多后暂停，写出流畅度汇总
   // （帧率、丢帧与主线程长帧统计；Chrome 支持 long-animation-frame）。

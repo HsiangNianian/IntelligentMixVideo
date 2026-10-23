@@ -1,11 +1,11 @@
 /**
  * 模板预览播放器的调试日志：SDK 不挂到文档上的媒体元素（加载失败、卡顿）与公开事件流（播放状态、渲染上下文、
- * 素材加载超时）写进日志；IPC 由 mockIPC 模拟，计时用 Bun 的假计时器；执行 bun run test。
+ * 素材加载超时）写进日志，渲染授权改在后台请求；IPC 由 mockIPC 模拟，计时用 Bun 的假计时器；执行 bun run test。
  */
 import { afterEach, beforeEach, expect, jest, mock, test } from "bun:test";
 import { waitFor } from "@testing-library/react";
 import { openDiagnostics, resetDiagnostics } from "@/lib/diagnostics";
-import { watchLicenseRequest, watchPlayer, watchSdkMedia, type PlayerEvent } from "@/features/templates/sdk";
+import { deferLicenseRequest, watchPlayer, watchSdkMedia, type PlayerEvent } from "@/features/templates/sdk";
 import { mockDesktop } from "./setup";
 
 type Entry = { level: string; source: string; message: string };
@@ -121,55 +121,53 @@ test("没有 WeakRef 时仍可创建媒体元素", () => {
   }
 });
 
-// 回归：授权失败需要触发基础视频降级，但观察器不能替换或消费 SDK 收到的响应；正常无证书 JSON 与其他请求原样通过。
-test("授权请求观察器保留原始响应", async () => {
-  const license = "https://vpp-license-proxy.aliyuncs.com/getWebCert";
-  const other = new Response("wasm");
-  const fetch = mock(async (input: RequestInfo | URL) => input === license
-    ? new Response('{"message":"Signature verification error on the server."}', { status: 200 })
-    : other);
-  const view = { fetch } as unknown as Window;
-  const failure = mock();
-  const stop = watchLicenseRequest(view, failure);
-  expect(await view.fetch("https://g.alicdn.com/sdk.wasm.txt")).toBe(other);
-  const response = await view.fetch(license, { method: "POST", body: "{}" });
-  expect(await response.json()).toEqual({ message: "Signature verification error on the server." });
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(failure).not.toHaveBeenCalled();
-  stop();
-  expect(await view.fetch("https://g.alicdn.com/sdk.wasm.txt")).toBe(other);
-});
-
-// 场景：网络错误、非 2xx 或长时间无回应时只通知降级一次；停止观察后恢复原 fetch，不再回调。
-test("授权请求失败或超时时通知降级", async () => {
+// 回归：Windows 测试机上渲染授权请求失败后，SDK 把渲染引擎标为初始化失败且不再重试：视频一直黑屏，点播放时间不走，只能拖动看字幕；
+// 网络慢时第一次播放也要等这个请求。现在 SDK 立即拿到无证书结果（空 JSON），真实请求带同样的方法与正文在后台发出：
+// 出错、非 2xx、回应不是 JSON 或 10 秒没有回应时只记警告，服务端的正常回应不记；其他请求原样转发。
+test("渲染授权在后台请求，不阻塞播放器", async () => {
   jest.useFakeTimers();
   const license = "https://vpp-license-proxy.aliyuncs.com/getWebCert";
-  const answers: (() => Promise<Response>)[] = [
+  const answers: ((init?: RequestInit) => Promise<Response>)[] = [
+    async () => new Response('{"message":"Signature verification error on the server."}'),
     async () => { throw new TypeError("Failed to fetch"); },
-    async () => new Response("<html>502</html>", { status: 502 }),
-    () => new Promise(() => {}),
+    async () => new Response('{"message":"bad gateway"}', { status: 502 }),
+    async () => new Response("<html>captive portal</html>"),
+    (init) => new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal?.reason))),
   ];
-  const fetch = mock(async () => answers.shift()?.() ?? Promise.resolve(new Response("{}")));
-  const view = { fetch } as unknown as Window;
-  const failure = mock();
-  const stop = watchLicenseRequest(view, failure);
-  await view.fetch(license).catch(() => {});
-  await Promise.resolve();
-  await Promise.resolve();
-  await view.fetch(license);
-  await Promise.resolve();
-  await Promise.resolve();
-  void view.fetch(license);
-  jest.advanceTimersByTime(3_000);
-  await Promise.resolve();
-  expect(failure.mock.calls.map(([reason]) => reason)).toEqual([
-    "TypeError: Failed to fetch",
-    "Error: HTTP 502",
-    "TimeoutError: 3 秒没有回应",
+  const other = new Response("wasm");
+  const fetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => input === license ? answers.shift()!(init) : other);
+  const view: { fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>; closed: boolean } = { fetch, closed: false };
+  deferLicenseRequest(view as unknown as Window);
+  /** 按 SDK 的方式请求授权并解析 JSON。 */
+  const post = () => view.fetch(license, { method: "POST", body: "{}" }).then((response) => response.json());
+  expect(await view.fetch("https://g.alicdn.com/sdk.wasm.txt")).toBe(other);
+  // 第五次的真实请求一直没有回应，SDK 照样立即拿到结果。
+  for (let index = 0; index < 5; index++) expect(await post()).toEqual({});
+  expect(fetch.mock.calls[1][1]).toMatchObject({ method: "POST", body: "{}", signal: expect.any(AbortSignal) });
+  jest.advanceTimersByTime(10_000);
+  jest.useRealTimers();
+  await logged("渲染授权请求失败（TimeoutError: 10 秒没有回应）；预览不等授权，照常播放", "警告");
+  expect(entries.filter((entry) => entry.message.startsWith("渲染授权请求失败")).map((entry) => entry.message)).toEqual([
+    "渲染授权请求失败（TypeError: Failed to fetch）；预览不等授权，照常播放",
+    "渲染授权请求失败（Error: HTTP 502）；预览不等授权，照常播放",
+    "渲染授权请求失败（Error: HTTP 200 的回应不是 JSON）；预览不等授权，照常播放",
+    "渲染授权请求失败（TimeoutError: 10 秒没有回应）；预览不等授权，照常播放",
   ]);
+});
+
+// 场景：播放器停用或卸载后，后台请求随页面中止也不再记失败；停止后恢复原 fetch，授权请求重新交给原实现。
+test("停用后恢复原 fetch 且不再记录授权失败", async () => {
+  const license = "https://vpp-license-proxy.aliyuncs.com/getWebCert";
+  let fail: (error: Error) => void = () => {};
+  const original = mock((input: RequestInfo | URL) => input === license
+    ? new Promise<Response>((_resolve, reject) => { fail = reject; })
+    : Promise.resolve(new Response("wasm")));
+  const view: { fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>; closed: boolean } = { fetch: original, closed: false };
+  const stop = deferLicenseRequest(view as unknown as Window);
+  expect(await (await view.fetch(license)).json()).toEqual({});
   stop();
-  const reported = failure.mock.calls.length;
-  await view.fetch(license).catch(() => {});
-  await Promise.resolve();
-  expect(failure).toHaveBeenCalledTimes(reported);
+  expect(view.fetch).toBe(original);
+  fail(new TypeError("Failed to fetch"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(entries.some((entry) => entry.message.startsWith("渲染授权请求失败"))).toBe(false);
 });
