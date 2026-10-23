@@ -1,5 +1,5 @@
 /**
- * SDK 预览组件：管理单个播放器、串行更新时间线；授权在后台请求，IMS 渲染失败或 60 秒仍不能播放时降级为基础视频，
+ * SDK 预览组件：管理单个播放器、串行更新时间线；授权在后台请求，IMS 渲染或载入时间线失败、卡住或 60 秒仍不能播放时降级为基础视频，
  * 基础视频同样由播放按钮、进度条和时间轴控制并驱动 AI 资产；卸载时清理订阅和异步任务。
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
@@ -89,6 +89,8 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   const [failed, setFailed] = useState(false);
   const [basicFallback, setBasicFallback] = useState(false);
   const [basicReady, setBasicReady] = useState(false);
+  // 切换基础视频的原因，显示在预览下方说明里。
+  const [fallbackReason, setFallbackReason] = useState("");
   // 播放器内部加载失败的预览视频：元数据读取成功不代表 SDK 能播放（编码、跨域等），失败时不能只显示“已就绪”。
   const [mediaFailures, setMediaFailures] = useState<string[]>([]);
   const [seeking, setSeeking] = useState(false);
@@ -129,6 +131,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
     let resumeAfterSeek = false;
     let seekFrame: number | undefined;
     let seekTimer: ReturnType<typeof setTimeout> | undefined;
+    let applyTimer: ReturnType<typeof setTimeout> | undefined;
     let displayedDecisecond = 0;
     let playTimer: ReturnType<typeof setTimeout> | undefined;
     setReady(false);
@@ -153,31 +156,31 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       if (!disposed) setSeeking(false);
     };
 
-    /** SDK 渲染引擎不可用时切换到基础视频，只停用 IMS 文字与特效，不阻断普通视频播放。 */
-    const switchToBasicVideo = (reason: string) => {
+    /**
+     * SDK 渲染引擎不可用、出错或卡住时切换到基础视频，只停用 IMS 文字与特效，不阻断普通视频播放。
+     * reason 显示在预览下方并写进调试日志，error 只写进日志（带调用栈）。
+     */
+    const switchToBasicVideo = (reason: string, error?: unknown) => {
       if (disposed || mediaFailed || basicRequested) return;
       basicRequested = true;
       cancel();
       instance?.pause();
       basicDecisecond.current = -1;
       setBasicFallback(true);
+      setFallbackReason(reason);
       setReady(false);
       setFailed(false);
       setStatus("正在加载基础视频…");
-      debugLog("模板预览", `切换基础视频预览：${reason}`, "警告");
+      debugLog("模板预览", `切换基础视频预览：${reason}${error === undefined ? "" : `（${describe(error)}）`}`, "警告");
     };
 
-    /** 定位超过等待时间时释放请求并展示错误，用户可重新加载当前预览。 */
+    /** 定位超过等待时间时 SDK 已不能正常播放，切换基础视频，用户可重试 IMS 预览。 */
     const watchSeek = () => {
       setSeeking(true);
       clearTimeout(seekTimer);
       seekTimer = setTimeout(() => {
         debugLog("模板预览", `定位超时：10 秒内播放器没有确认定位到 ${seekTarget} 秒（当前 ${instance?.currentTime} 秒）`);
-        cancel();
-        instance?.pause();
-        setReady(false);
-        setFailed(true);
-        setStatus("预览定位超时，请重试预览。");
+        switchToBasicVideo("10 秒内没有定位到播放位置");
       }, 10_000);
     };
 
@@ -223,6 +226,9 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           setStatus("正在应用效果并加载媒体…");
           // 清空 SDK 缓存的旧时间线，确保文字更新后只显示当前内容。
           instance.timeline = {};
+          // 生成转场画面与 SDK 载入时间线同样设上限：卡在这里时 canplay 的计时还没开始，不能一直停在加载中。
+          clearTimeout(applyTimer);
+          applyTimer = setTimeout(() => switchToBasicVideo(`${CAN_PLAY_TIMEOUT_MS / 1000} 秒内没有载入时间线`), CAN_PLAY_TIMEOUT_MS);
           const playback = await centeredPlayerTimeline(timeline, controller.signal, transitionFrames);
           if (disposed || basicRequested) return;
           const framesReady = performance.now();
@@ -230,6 +236,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           const timelineApplied = instance.setTimeline(playback);
           canPlay = waitForCanPlay(instance, timelineApplied, canPlayController.signal);
           await timelineApplied;
+          clearTimeout(applyTimer);
           if (basicRequested) return;
           // 调试模式下记录明显变慢的修改：改参数后预览迟迟不更新时，区分转场画面生成与播放器载入时间线。
           const applyFinished = performance.now();
@@ -255,16 +262,14 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
             setReady(true);
             setStatus("预览已就绪，点击播放查看效果");
           } else if (!disposed && !basicRequested && applied === revision && readiness === "timeout" && !mediaFailed) {
-            switchToBasicVideo(`等待 SDK canplay 超过 ${CAN_PLAY_TIMEOUT_MS / 1000} 秒`);
+            switchToBasicVideo(`${CAN_PLAY_TIMEOUT_MS / 1000} 秒内没有可以播放的画面`);
           }
         }
       } catch (error) {
-        if (!disposed && !basicRequested) {
-          setStatus(error instanceof Error ? error.message : "预览失败");
-          setFailed(true);
-          debugLog("模板预览", `应用时间线失败：${describe(error)}`);
-        }
+        // 生成转场画面或载入时间线失败同样只停用 IMS 部分；素材本身无法播放时保留上面的逐个视频提示。
+        if (!disposed && !basicRequested) switchToBasicVideo(`应用时间线失败：${error instanceof Error ? error.message : "未知错误"}`, error);
       } finally {
+        clearTimeout(applyTimer);
         active = false;
         canPlayController = undefined;
         if (!disposed && applied !== revision) void update();
@@ -355,7 +360,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
         setCatalog(sdkCatalog);
         catalogCallback.current(sdkCatalog);
         player.current = instance;
-        stopPlayerLog = watchPlayer(instance, (message) => switchToBasicVideo(`SDK 渲染失败：${message}`));
+        stopPlayerLog = watchPlayer(instance, (message) => switchToBasicVideo(`渲染引擎出错：${message}`));
         stopPlayback = watchPlayback(instance, sdkMedia, (listener) => {
           notifyMediaCreated = listener;
           return () => { if (notifyMediaCreated === listener) notifyMediaCreated = undefined; };
@@ -393,7 +398,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
         void update();
       })
       .catch((error) => {
-        if (!disposed) switchToBasicVideo(`播放器初始化失败：${describe(error)}`);
+        if (!disposed) switchToBasicVideo(`播放器初始化失败：${error instanceof Error ? error.message : "未知错误"}`, error);
       });
     // 定位完成后播放；暂停、更新或卸载时取消尚未开始的播放。
     playAction.current = (start) => {
@@ -436,6 +441,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       disposed = true;
       controller.abort();
       cancel();
+      clearTimeout(applyTimer);
       subscription?.unsubscribe();
       stopPlayerLog?.();
       stopPlayback?.();
@@ -511,7 +517,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       {mediaError && !media && <Button type="button" variant="outline" onClick={onRetryMedia}>重试读取视频</Button>}
       {mediaFailures.length > 0 && <div role="alert" className="space-y-1 text-xs text-destructive">{mediaFailures.map((message) => <p key={message}>{message}</p>)}</div>}
       {(failed || mediaFailures.length > 0) && <Button type="button" variant="outline" onClick={() => setAttempt((value) => value + 1)}>重试预览</Button>}
-      {basicFallback && <p className="text-[11px] text-muted-foreground">IMS 渲染暂不可用，已切换基础视频预览：AI 资产照常显示，IMS 文字、转场、滤镜与特效暂不显示。</p>}
+      {basicFallback && <p className="text-[11px] text-muted-foreground">IMS 渲染暂不可用（{fallbackReason}），已切换基础视频预览：AI 资产照常显示，IMS 文字、转场、滤镜与特效暂不显示。</p>}
       {basicFallback && <Button type="button" variant="outline" onClick={() => setAttempt((value) => value + 1)}>重试 IMS 预览</Button>}
       {notices.length > 0 && <ul aria-label="时间调整说明" className="space-y-1 text-xs text-muted-foreground">{notices.map((notice, index) => <li key={index}>{notice}</li>)}</ul>}
     </div></div>

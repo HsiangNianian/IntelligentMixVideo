@@ -146,7 +146,7 @@ test("降级为基础视频后主控件、时间轴与选择框仍可用", async
   frames();
   const onSelect = mock();
   const { draft, view } = await mountEarlyFallback({ onSelect });
-  expect(screen.getByText("IMS 渲染暂不可用，已切换基础视频预览：AI 资产照常显示，IMS 文字、转场、滤镜与特效暂不显示。")).toBeTruthy();
+  expect(screen.getByText("IMS 渲染暂不可用（播放器初始化失败：SDK 未正确初始化），已切换基础视频预览：AI 资产照常显示，IMS 文字、转场、滤镜与特效暂不显示。")).toBeTruthy();
   const play = screen.getByRole<HTMLButtonElement>("button", { name: "播放" });
   expect(play.disabled).toBe(true);
   const videos = [...view.container.querySelectorAll("video")].map(controllable);

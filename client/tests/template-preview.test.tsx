@@ -1,12 +1,12 @@
 /**
  * 模板预览中不属于 IMS 的部分不等 IMS：测试环境不加载外部脚本，用例在播放器页面挂上 SDK 替身，
- * 由用例决定载入时间线与 canplay 的结果，检查 IMS 还在加载、卡住或出错时时间轴照常可用；执行 bun run test。
+ * 由用例决定载入时间线与 canplay 的结果，检查 IMS 还在加载、卡住或出错时时间轴照常可用，卡住或出错时切换基础视频；执行 bun run test。
  */
-import { expect, mock, spyOn, test } from "bun:test";
-import { render, screen, waitFor } from "@testing-library/react";
+import { afterEach, expect, mock, spyOn, test } from "bun:test";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { TemplatePreview } from "@/features/templates/TemplatePreview";
 import { newDraft, type Draft } from "@/features/templates/model";
-import { readCatalog, type PlayerEvent } from "@/features/templates/sdk";
+import { CAN_PLAY_TIMEOUT_MS, readCatalog, type PlayerEvent } from "@/features/templates/sdk";
 import { addTrack, previewContext, resolveTemplate } from "@/features/templates/tracks";
 import { sampleMedia } from "./fixtures";
 
@@ -78,4 +78,62 @@ test("SDK 还没载入时间线时时间轴行已按草稿显示并随修改更�
   view.rerender(<TemplatePreview {...props(addTrack(draft, filter, "filter").draft)} />);
   expect(rowObjects()).toContain("filter");
   expect(player.setTimeline).toHaveBeenCalledTimes(1);
+});
+
+/** 本例换下的 setTimeout，用例结束时恢复。 */
+let realSetTimeout: typeof setTimeout | undefined;
+afterEach(() => {
+  if (realSetTimeout) globalThis.setTimeout = realSetTimeout;
+  realSetTimeout = undefined;
+});
+
+/**
+ * 记录 setTimeout，用例取出指定时长的最后一个回调立即执行；计时器照常登记，卸载时由预览清理。
+ * 用普通包装而不是 spyOn：Testing Library 见到 mock 的 setTimeout 会当成 Jest 假计时器，waitFor 随之出错。
+ */
+function timers() {
+  const calls: [unknown, number | undefined][] = [];
+  const original = globalThis.setTimeout;
+  realSetTimeout = original;
+  globalThis.setTimeout = ((handler: TimerHandler, delay?: number, ...rest: unknown[]) => {
+    calls.push([handler, delay]);
+    return original(handler, delay, ...rest);
+  }) as typeof setTimeout;
+  return { fire: (delay: number) => act(async () => { ([...calls].reverse().find(([, ms]) => ms === delay)![0] as () => void)(); }) };
+}
+
+/** 预览下方的降级说明。 */
+const fallbackNote = (reason: string) => `IMS 渲染暂不可用（${reason}），已切换基础视频预览：AI 资产照常显示，IMS 文字、转场、滤镜与特效暂不显示。`;
+
+// 回归：SDK 卡在载入时间线（setTimeline 一直不完成）时 canplay 的计时还没开始，预览一直转圈，既不就绪也不降级。
+// 载入时间线同样最多等 60 秒，到时切换基础视频。
+test("SDK 载入时间线 60 秒没有完成时切换基础视频", async () => {
+  const { fire } = timers();
+  await mountWithSdk(newDraft());
+  expect(screen.queryByText(/已切换基础视频预览/) === null).toBe(true);
+  await fire(CAN_PLAY_TIMEOUT_MS);
+  expect(screen.getByText(fallbackNote("60 秒内没有载入时间线"))).toBeTruthy();
+  expect(screen.getByRole("button", { name: "重试 IMS 预览" })).toBeTruthy();
+});
+
+// 回归：生成转场画面或 SDK 载入时间线失败时预览只显示错误，播放按钮、进度条与时间轴全部停用，只能重试。
+// 失败同样只停用 IMS 部分：切换基础视频并在说明里给出原因。
+test("SDK 载入时间线失败时切换基础视频并说明原因", async () => {
+  const { player } = await mountWithSdk(newDraft());
+  await act(async () => player.failTimeline(new Error("时间线不合法")));
+  expect(screen.getByText(fallbackNote("应用时间线失败：时间线不合法"))).toBeTruthy();
+  expect(screen.getByLabelText("基础视频预览")).toBeTruthy();
+});
+
+// 回归：SDK 10 秒没有确认定位时预览报错并停用全部控件。定位卡住说明 SDK 已不能正常播放，同样切换基础视频。
+test("SDK 定位 10 秒没有完成时切换基础视频", async () => {
+  const { fire } = timers();
+  const { player } = await mountWithSdk(newDraft());
+  await act(async () => { player.finishTimeline(); });
+  await act(async () => player.emit("canplay"));
+  await screen.findByText("预览已就绪，点击播放查看效果");
+  fireEvent.change(screen.getByRole("slider", { name: "预览进度" }), { target: { value: "5" } });
+  await waitFor(() => expect(player.currentTime).toBe(5));
+  await fire(10_000);
+  expect(screen.getByText(fallbackNote("10 秒内没有定位到播放位置"))).toBeTruthy();
 });

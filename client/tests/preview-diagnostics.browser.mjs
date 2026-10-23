@@ -128,7 +128,7 @@ try {
   await isolated.route(/video-editing-websdk\/5\.2\.2\/player\.js/, (route) => route.abort());
   await isolated.evaluate(() => window.mountPreview("ok.mp4"));
   await isolated.getByLabel("基础视频预览").waitFor();
-  await isolated.getByText("IMS 渲染暂不可用，已切换基础视频预览：AI 资产照常显示，IMS 文字、转场、滤镜与特效暂不显示。", { exact: true }).waitFor();
+  await isolated.getByText("IMS 渲染暂不可用（播放器初始化失败：SDK 下载失败，请检查网络后重试），已切换基础视频预览：AI 资产照常显示，IMS 文字、转场、滤镜与特效暂不显示。", { exact: true }).waitFor();
   assert(await isolated.getByRole("button", { name: "重试 IMS 预览" }).isVisible());
   const progress = isolated.getByRole("slider", { name: "预览进度" });
   const position = () => progress.evaluate((input) => Number(input.value));
