@@ -7,8 +7,8 @@ import { Maximize2, Pause, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Hint } from "@/components/Hint";
 import { Spinner } from "@/components/ui/spinner";
-import { textKey, type Draft, type EffectAsset, type MasterVideo, type PreviewMedia } from "./model";
-import { CAN_PLAY_TIMEOUT_MS, deferLicenseRequest, loadSDK, loadPreviewFont, readCatalog, waitForCanPlay, watchPlayer, watchSdkMedia, type CanPlayResult, type Player } from "./sdk";
+import { textKey, type Draft, type EffectAsset, type PreviewMedia } from "./model";
+import { CAN_PLAY_TIMEOUT_MS, deferLicenseRequest, loadSDK, readCatalog, waitForCanPlay, watchPlayer, watchSdkMedia, type CanPlayResult, type Player } from "./sdk";
 import { BasicVideoPreview, type BasicVideoHandle } from "./BasicVideoPreview";
 import { buildTimeline, buildPreviewRows, mergeSpriteRows, PREVIEW_CANVAS, remotionTexts, type SpriteClip } from "./timeline";
 import { centeredPlayerTimeline } from "./centeredTransitions";
@@ -81,7 +81,6 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   const [mediaFailures, setMediaFailures] = useState<string[]>([]);
   const [seeking, setSeeking] = useState(false);
   const [time, setTime] = useState(0);
-  const [canvas, setCanvas] = useState<Pick<MasterVideo, "width" | "height"> | null>(null);
   const playing = status === "正在播放预览…";
   // 播放按钮、进度条与时间轴在 IMS 预览就绪或基础视频可播放时都可用。
   const controlsReady = ready || (basicFallback && basicReady);
@@ -157,17 +156,13 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       }
     };
 
-    /**
-     * SDK 渲染引擎不可用时切换到基础视频，只停用 IMS 文字与特效，不阻断普通视频播放。
-     * 画布尺寸固定，降级早于 SDK 加载（如字体下载失败）时也在这里设置，AI 资产叠加层才能显示。
-     */
+    /** SDK 渲染引擎不可用时切换到基础视频，只停用 IMS 文字与特效，不阻断普通视频播放。 */
     const switchToBasicVideo = (reason: string) => {
       if (disposed || mediaFailed || basicRequested) return;
       basicRequested = true;
       cancel();
       instance?.pause();
       basicDecisecond.current = -1;
-      setCanvas(PREVIEW_CANVAS);
       setBasicFallback(true);
       setReady(false);
       setFailed(false);
@@ -288,15 +283,10 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       revision++;
       void update();
     };
-    // 工作区已读取真实媒体信息，每种尺寸使用独立 SDK 文档。
-    void Promise.all([
-      Promise.resolve(media),
-      loadPreviewFont(),
-    ])
-      .then(async ([sources]) => {
+    // 工作区已读取真实媒体信息，每种尺寸使用独立 SDK 文档。画布尺寸固定，不等 IMS 加载（见 PREVIEW_CANVAS）。
+    void Promise.resolve(media)
+      .then(async (sources) => {
         if (disposed || !container.current) return;
-        // 画布固定为成片尺寸，不随预览视频变化；视频与正式合成一样等比放入、模糊填充留白（见 timeline.ts）。
-        setCanvas(PREVIEW_CANVAS);
         frame = document.createElement("iframe");
         frame.title = "模板预览播放器";
         frame.allow = "autoplay";
@@ -489,8 +479,8 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
 
   return <section aria-label="实时预览" className="flex min-h-full min-w-0 flex-col">
     <div className="template-preview-stage border-b px-4 pb-3 pt-4 lg:px-7 lg:pt-5"><div className="mx-auto max-w-[900px]">
-      <div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><span className="template-live-dot size-1.5 rounded-full" aria-hidden="true" /><h2 className="text-[13px] font-semibold">实时预览</h2></div><span className="rounded-md border px-2 py-1 text-[11px] tabular-nums text-muted-foreground">{canvas ? `${canvas.width} × ${canvas.height}` : "正在读取画布尺寸"}</span></div>
-      <div ref={stage} className="template-preview-canvas relative mx-auto aspect-video w-full overflow-hidden rounded-lg bg-black" style={canvas ? { aspectRatio: `${canvas.width} / ${canvas.height}`, maxWidth: `${48 * canvas.width / canvas.height}dvh`, "--preview-ratio": canvas.width / canvas.height } as CSSProperties : undefined} aria-label="模板视频预览">
+      <div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><span className="template-live-dot size-1.5 rounded-full" aria-hidden="true" /><h2 className="text-[13px] font-semibold">实时预览</h2></div><span className="rounded-md border px-2 py-1 text-[11px] tabular-nums text-muted-foreground">{PREVIEW_CANVAS.width} × {PREVIEW_CANVAS.height}</span></div>
+      <div ref={stage} className="template-preview-canvas relative mx-auto w-full overflow-hidden rounded-lg bg-black" style={{ aspectRatio: `${PREVIEW_CANVAS.width} / ${PREVIEW_CANVAS.height}`, maxWidth: `${48 * PREVIEW_CANVAS.width / PREVIEW_CANVAS.height}dvh`, "--preview-ratio": PREVIEW_CANVAS.width / PREVIEW_CANVAS.height } as CSSProperties} aria-label="模板视频预览">
         {/* 播放器与叠加层共用一个按画布比例排布的画面框：全屏时画布撑满屏幕，画面框仍按视频比例居中，字效与选择框随画面缩放而不是按整个屏幕排布。 */}
         <div className="template-preview-frame absolute inset-0 overflow-hidden">
           <div ref={container} className={`template-preview-player absolute inset-0 size-full ${basicFallback ? "invisible" : ""}`} />
@@ -500,16 +490,16 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
             onPlayingChange={(value) => setStatus(value ? "正在播放预览…" : "预览已暂停")}
             onError={() => { setFailed(true); setStatus("基础视频预览加载失败，请检查视频编码与跨域访问配置后重试。"); }}
             onEnd={() => setStatus("预览结束，点击播放可重播")} />}
-          {controlsReady && canvas && onSelect && draft.tracks.filter((item) => (item.target === "title" || item.target === "subtitle") && item.enabled !== false && !remotionTexts(draft).has(textKey(item.target, item.language))).map((item) => {
+          {controlsReady && onSelect && draft.tracks.filter((item) => (item.target === "title" || item.target === "subtitle") && item.enabled !== false && !remotionTexts(draft).has(textKey(item.target, item.language))).map((item) => {
             const interval = resolved?.tracks[item.id];
             if (!interval || time < interval.start || time >= interval.end) return null;
             const role = item.target as "title" | "subtitle";
             return <button key={item.id} type="button" aria-label={`选择${item.language === "en" ? "英文" : "中文"}${role === "title" ? "标题" : "字幕"}`} aria-pressed={selectedId === item.id}
               className={`absolute -translate-x-1/2 rounded-sm border border-dashed hover:border-primary focus-visible:ring-2 focus-visible:ring-ring ${selectedId === item.id ? "border-primary" : "border-transparent"}`}
-              style={{ left: `${item.editor[`${role}X`]}%`, top: `${item.editor[`${role}Y`]}%`, width: "90%", height: `${item.editor[`${role}Size`] * 1.5 / canvas.height * 100}%`, minHeight: 12 }}
+              style={{ left: `${item.editor[`${role}X`]}%`, top: `${item.editor[`${role}Y`]}%`, width: "90%", height: `${item.editor[`${role}Size`] * 1.5 / PREVIEW_CANVAS.height * 100}%`, minHeight: 12 }}
               onClick={() => onSelect(item.id)} />;
           })}
-          {sprites.length > 0 && canvas && <SpriteOverlay ref={overlay} clips={sprites} stageAspect={canvas.width / canvas.height} initialTime={time} selectedId={selectedId} onMove={onSpriteMove} onSelect={onSelect} />}
+          {sprites.length > 0 && <SpriteOverlay ref={overlay} clips={sprites} stageAspect={PREVIEW_CANVAS.width / PREVIEW_CANVAS.height} initialTime={time} selectedId={selectedId} onMove={onSpriteMove} onSelect={onSelect} />}
         </div>
         {!controlsReady && !failed && <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-white/60"><Spinner className="size-6" /></div>}
         <Hint label="全屏预览"><Button type="button" variant="ghost" size="icon-xs" aria-label="全屏预览" onClick={() => { if (stage.current) void stage.current.requestFullscreen(); }} className="template-preview-fullscreen absolute bottom-2 right-2 rounded-[5px] p-0"><Maximize2 className="size-3" aria-hidden="true" /></Button></Hint>

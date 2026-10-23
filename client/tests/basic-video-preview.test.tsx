@@ -1,5 +1,5 @@
 /**
- * IMS 不可用时的基础视频预览：降级早于 SDK 加载时画布、AI 资产与时间轴行照常显示；主控件驱动三段视频
+ * IMS 不可用时的基础视频预览：画布与 AI 资产不等 IMS 加载，降级早于 SDK 加载时时间轴行照常显示；主控件驱动三段视频
  * （换段、定位、结尾重播、只播解析出的段长），播放按钮、进度条、时间轴与文字选择框可用，AI 资产逐帧跟随；
  * Happy DOM 不解码视频，媒体元素的播放位置由用例设置；执行 bun run test。
  */
@@ -48,12 +48,19 @@ const shown = () => screen.getByLabelText<HTMLVideoElement>("基础视频预览"
 // 显示在 1～4 秒的 AI 资产，素材完整时长 5 秒。
 const sprite = { id: "sprite-a", spriteId: "s1", aspect: 9 / 16, name: "霓虹标题", start: 1, end: 4, length: 5 };
 
-/** 挂载模板预览：测试环境拒绝所有网络请求，预览字体下载失败，SDK 加载前就降级为基础视频。 */
-function mountEarlyFallback(props: Partial<Parameters<typeof TemplatePreview>[0]> = {}) {
+/** 挂载模板预览；返回时 IMS 还没开始加载（播放器页面在下一个微任务才创建）。 */
+function mountPreview(props: Partial<Parameters<typeof TemplatePreview>[0]> = {}) {
   const draft = newDraft();
   const view = render(<TemplatePreview draft={draft} media={sampleMedia} resolved={resolveTemplate(draft, previewContext(sampleMedia))}
     videoInputKey="basic" onMediaChange={() => {}} onCatalog={() => {}} {...props} />);
   return { draft, view };
+}
+
+/** 挂载模板预览并等它降级：测试环境不加载外部脚本，SDK 脚本“加载完成”后没有播放器，SDK 加载阶段就降级为基础视频。 */
+async function mountEarlyFallback(props: Partial<Parameters<typeof TemplatePreview>[0]> = {}) {
+  const mounted = mountPreview(props);
+  await screen.findByRole("button", { name: "重试 IMS 预览" });
+  return mounted;
 }
 
 // 回归：IMS 加载失败后预览只剩原生视频，主控件与时间轴都不能用。基础视频改由主控件驱动：逐帧回报时间、到段尾换下一段、结尾停在总时长。
@@ -116,13 +123,20 @@ test("全局时间换算到片段，并按排列顺序加载视频", () => {
   expect([...container.querySelectorAll("video")].map((video) => video.getAttribute("src"))).toEqual([sampleMedia[2].url, sampleMedia[0].url, sampleMedia[1].url]);
 });
 
-// 回归：降级早于 SDK 加载（这里是预览字体下载失败）时画布尺寸从未设置，AI 资产叠加层（Remotion 字效等）不显示，时间轴也没有对象与视频行。
-// 降级只能停用 IMS 侧的文字与特效：画布、AI 资产和时间轴行都要照常显示，时间轴用随包效果目录按草稿生成。
-test("降级早于 SDK 加载时画布、AI 资产与时间轴行照常显示", async () => {
-  mountEarlyFallback({ sprites: [sprite] });
-  await screen.findByRole("button", { name: "重试 IMS 预览" });
+// 回归：画布尺寸要等 IMS 预览字体下载完、或降级时才设置，在此之前 AI 资产叠加层（Remotion 字效等）不显示；字体下载失败还会让预览降级。
+// 画布固定为 1080×1920，挂载时就显示画布与 AI 资产，不等 IMS 的任何一步；预览不再下载这份没有使用的字体。
+test("IMS 还没加载时画布与 AI 资产已显示", async () => {
+  mountPreview({ sprites: [sprite] });
+  expect(screen.queryByTitle("模板预览播放器") === null).toBe(true);
   expect(screen.getByText("1080 × 1920")).toBeTruthy();
   expect(screen.getByTitle("AI 资产预览：霓虹标题")).toBeTruthy();
+  // 测试环境没有 SDK，预览随后降级；等它结束，状态更新不落到用例之外。
+  await screen.findByRole("button", { name: "重试 IMS 预览" });
+});
+
+// 回归：降级早于 SDK 加载时时间轴没有对象与视频行。降级只能停用 IMS 侧的文字与特效，时间轴用随包效果目录按草稿生成。
+test("降级早于 SDK 加载时时间轴行照常显示", async () => {
+  await mountEarlyFallback({ sprites: [sprite] });
   const rows = [...screen.getByLabelText("时间轴轨道标签").querySelectorAll("[data-object]")].map((label) => label.getAttribute("data-object"));
   expect(rows).toEqual(expect.arrayContaining(["title", "subtitle", "transition", "video"]));
 });
@@ -131,8 +145,8 @@ test("降级早于 SDK 加载时画布、AI 资产与时间轴行照常显示", 
 test("降级为基础视频后主控件、时间轴与选择框仍可用", async () => {
   frames();
   const onSelect = mock();
-  const { draft, view } = mountEarlyFallback({ onSelect });
-  await screen.findByText("IMS 渲染暂不可用，已切换基础视频预览：AI 资产照常显示，IMS 文字、转场、滤镜与特效暂不显示。");
+  const { draft, view } = await mountEarlyFallback({ onSelect });
+  expect(screen.getByText("IMS 渲染暂不可用，已切换基础视频预览：AI 资产照常显示，IMS 文字、转场、滤镜与特效暂不显示。")).toBeTruthy();
   const play = screen.getByRole<HTMLButtonElement>("button", { name: "播放" });
   expect(play.disabled).toBe(true);
   const videos = [...view.container.querySelectorAll("video")].map(controllable);
@@ -158,7 +172,7 @@ test("降级为基础视频后主控件、时间轴与选择框仍可用", async
 // 回归：基础视频只按 timeupdate（约每秒 4 次）回报时间，AI 资产跳着动。现在随基础视频的播放位置逐帧定位（全局时间减片段起点）。
 test("降级后 AI 资产逐帧跟随基础视频", async () => {
   const { step } = frames();
-  const { view } = mountEarlyFallback({ sprites: [sprite] });
+  const { view } = await mountEarlyFallback({ sprites: [sprite] });
   const frame = await screen.findByTitle<HTMLIFrameElement>("AI 资产预览：霓虹标题");
   const post = spyOn(frame.contentWindow!, "postMessage");
   const channel = new URL(frame.src).hash.slice(1);

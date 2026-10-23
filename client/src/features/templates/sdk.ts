@@ -350,24 +350,3 @@ export function readCatalog(sdk?: PreviewSDK): EffectAsset[] {
     }
   return result;
 }
-
-let fontLoading: Promise<void> | undefined;
-
-/** 加载与旧预览一致的测量字体；超时或失败允许重试，成功后供页面反复使用。 */
-export function loadPreviewFont(): Promise<void> {
-  if (!fontLoading) {
-    fontLoading = (async () => {
-      const response = await fetch(
-        "https://ice-pub-media.myalicdn.com/websdk/fonts/Alibaba-PuHuiTi-Bold.ttf",
-        { signal: AbortSignal.timeout(20_000) },
-      );
-      if (!response.ok) throw new Error("预览字体加载失败，请重试");
-      const font = new FontFace("ims-preview", await response.arrayBuffer());
-      document.fonts.add(await font.load());
-    })().catch((error) => {
-      fontLoading = undefined;
-      throw error;
-    });
-  }
-  return fontLoading;
-}
