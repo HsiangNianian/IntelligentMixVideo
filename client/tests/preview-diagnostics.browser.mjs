@@ -1,7 +1,8 @@
 /**
  * 模板预览播放器调试日志的真实浏览器回归：真实 SDK 与解码，原生日志由页面里的假 Tauri IPC 接收；
  * 元数据可读但播放器加载不了的视频要在预览里提示并带地址与错误码写进日志，正常播放记录播放状态与流畅度汇总，
- * 坏视频在 canplay 超时（60 秒）后也不能显示为就绪，渲染授权请求失败时照常用 IMS 播放并记警告，SDK 加载失败时用基础播放器播放视频，
+ * 坏视频在 canplay 超时（60 秒）后也不能显示为就绪，渲染授权请求失败时照常用 IMS 播放并记警告，
+ * SDK 加载失败时切换基础视频并由播放按钮与进度条控制、跨段连续播放，
  * 显示就绪后立即播放不会在 0 秒结束；
  * 执行 bun tests/preview-diagnostics.browser.mjs（需要 Chrome、FFmpeg 和联网访问 SDK、字体）。
  */
@@ -120,17 +121,29 @@ try {
   assert.equal(await page.getByLabel("基础视频预览").count(), 0);
   licenseFailure = false;
 
-  // 回归：SDK 本身加载不了（这里拦掉 player.js）时普通视频必须继续播放：切换基础视频，只停用 IMS 文字与特效。
+  // 回归：SDK 本身加载不了（这里拦掉 player.js）时普通视频必须继续播放：切换基础视频，只停用 IMS 文字与特效；
+  // 播放按钮、进度条和时间轴照常控制它，播到段尾接着播下一段。
   // 用新的浏览器上下文：页面加载过 player.js 后，新 iframe 直接用内存缓存里的脚本、不再发请求，拦截不到。
   const isolated = await openPage();
   await isolated.route(/video-editing-websdk\/5\.2\.2\/player\.js/, (route) => route.abort());
   await isolated.evaluate(() => window.mountPreview("ok.mp4"));
-  const basic = isolated.getByLabel("基础视频预览");
-  await basic.waitFor();
-  await isolated.getByText("IMS 渲染暂不可用，已切换基础视频预览；文字与特效暂不可用。", { exact: true }).waitFor();
+  await isolated.getByLabel("基础视频预览").waitFor();
+  await isolated.getByText("IMS 渲染暂不可用，已切换基础视频预览：AI 资产照常显示，IMS 文字、转场、滤镜与特效暂不显示。", { exact: true }).waitFor();
   assert(await isolated.getByRole("button", { name: "重试 IMS 预览" }).isVisible());
-  await basic.evaluate((video) => video.play());
-  await isolated.waitForFunction(() => document.querySelector('video[aria-label="基础视频预览"]').currentTime > 0.5, null, { timeout: 5000 });
+  const progress = isolated.getByRole("slider", { name: "预览进度" });
+  const position = () => progress.evaluate((input) => Number(input.value));
+  await isolated.getByRole("button", { name: "播放", exact: true }).click();
+  await isolated.waitForFunction(() => Number(document.querySelector('input[aria-label="预览进度"]').value) > 0.5, null, { timeout: 5000 });
+  await isolated.getByRole("button", { name: "暂停", exact: true }).click();
+  const paused = await position();
+  await isolated.waitForTimeout(500);
+  assert.equal(await position(), paused);
+  assert.equal(await isolated.getByRole("slider", { name: "预览播放位置" }).getAttribute("aria-disabled"), "false");
+  // 定位到第一段末尾附近再播放：跨过 3 秒的交界后显示第二段，第二段从开头播放。
+  await progress.fill("2.5");
+  await isolated.getByRole("button", { name: "播放", exact: true }).click();
+  await isolated.waitForFunction(() => Number(document.querySelector('input[aria-label="预览进度"]').value) > 3.3, null, { timeout: 5000 });
+  assert(await isolated.getByLabel("基础视频预览").evaluate((video) => video.currentTime < 1.5));
   await isolated.close();
 
   // 正常视频：没有失败提示与加载失败记录，播放后日志记录播放状态变化；播放一秒多后暂停，写出流畅度汇总
