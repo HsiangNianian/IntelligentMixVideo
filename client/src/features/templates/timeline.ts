@@ -30,7 +30,7 @@ export interface PreviewClip extends TimelineAction {
   videoSource?: number;
 }
 
-/** 轨道从已经应用的 SDK Timeline 派生；每个视频独立成行，效果按图层排列。 */
+/** 轨道从 buildTimeline 的结果派生（预览按当前草稿生成，不等 SDK 载入）；每个视频独立成行，效果按图层排列。 */
 export function buildPreviewRows(timeline: ReturnType<typeof buildTimeline>): (Omit<TimelineRow, "actions"> & { actions: PreviewClip[] })[] {
   const rows: (Omit<TimelineRow, "actions"> & { actions: PreviewClip[] })[] = [...timeline.previewRows, ...timeline.VideoTracks.map((track, trackIndex) => ({
     id: `video-${trackIndex}`,

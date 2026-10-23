@@ -67,8 +67,11 @@ function binary(schema: Parameters<typeof toBinary>[0], message: unknown, status
   return new Response(Uint8Array.from(toBinary(schema, message as never)), { status, headers: HEADERS });
 }
 
-/** 按路径模拟模板与 Sprite 服务：GET 返回带给定片段的已保存模板，记录每次模板保存请求和所有写入路径（posts，按发送顺序）。 */
-function sprites(options: { clips?: RemotionClip[]; saveStatus?: number; saveDetail?: string; catalog?: ReturnType<typeof summary>[] } = {}) {
+/**
+ * 按路径模拟模板与 Sprite 服务：GET 返回带给定片段的已保存模板，记录每次模板保存请求和所有写入路径（posts，按发送顺序）。
+ * catalogStatus 让资产目录以该状态码失败（AI 资产服务不可用）。
+ */
+function sprites(options: { clips?: RemotionClip[]; saveStatus?: number; saveDetail?: string; catalog?: ReturnType<typeof summary>[]; catalogStatus?: number } = {}) {
   const template = { ...savedTemplate(), clips: options.clips ?? [] };
   const saved: ReturnType<typeof fromBinary<typeof SaveTemplateRequestSchema>>[] = [];
   const posts: string[] = [];
@@ -76,6 +79,7 @@ function sprites(options: { clips?: RemotionClip[]; saveStatus?: number; saveDet
     const path = new URL(String(url)).pathname;
     const post = init?.method === "POST";
     if (post) posts.push(path);
+    if (path === "/api/sprites" && options.catalogStatus) return new Response(JSON.stringify({ detail: "AI 资产服务暂不可用" }), { status: options.catalogStatus });
     if (path === "/api/sprites") return binary(ListSpritesResponseSchema, create(ListSpritesResponseSchema, { sprites: options.catalog ?? [summary()] }));
     if (path === "/template" && post) {
       const request = fromBinary(SaveTemplateRequestSchema, new Uint8Array(init!.body as Uint8Array));
@@ -193,6 +197,21 @@ test("已有片段显示在列表中，移除后随模板保存", async () => {
   expect(saved).toHaveLength(1);
   expect(wireClips(saved[0])).toHaveLength(0);
   expect(posts).toEqual(["/template"]);
+});
+
+// 场景：AI 资产服务不可用（目录读取 503）：说明读取失败，IMS 对象照常添加，模板照常保存，已有片段原样保存、不会因读不到资产而丢失。
+test("AI 资产服务不可用时模板照常编辑并原样保存已有片段", async () => {
+  const { template, saved } = sprites({ catalogStatus: 503, clips: [{ id: "sprite-p1", sprite_id: "sprite-1", start: 2, duration: 3, parameters: {}, transform: { x: 540 } }] });
+  render(<TemplateWorkspace selection={{ templateId: template.template_id }} onHome={() => {}} />);
+  const clips = await screen.findByRole("region", { name: "已添加 AI 资产" });
+  expect((await within(clips).findByRole("alert")).textContent).toContain("AI 资产服务暂不可用");
+  await addTitleEffect();
+  fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
+  await waitFor(() => expect(saved).toHaveLength(1));
+  expect(saved[0].effectIds.length).toBeGreaterThan(0);
+  const [clip] = wireClips(saved[0]);
+  expect(clip).toMatchObject({ id: "sprite-p1", spriteId: "sprite-1", start: 2, duration: 3 });
+  expect(clip.editor?.remotion?.transform?.x).toBe(540);
 });
 
 // 场景：从目录添加资产，不出现任何配置控件；片段从 0 秒开始、长度为资产自身 3 秒，作为 remotion 轨道随模板保存，IMS 对象原样保留。

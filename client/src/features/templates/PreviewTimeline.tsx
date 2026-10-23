@@ -15,7 +15,7 @@ export interface PreviewTimelineHandle {
   setTime(time: number): void;
 }
 
-/** 轨道消费成功应用的数据；定位统一交给持有 SDK 的父组件处理。 */
+/** 轨道消费按当前草稿生成的数据；定位统一交给持有 SDK 的父组件处理。 */
 interface Props {
   ref: Ref<PreviewTimelineHandle>;
   rows: ReturnType<typeof buildPreviewRows>;
@@ -70,7 +70,7 @@ export function PreviewTimeline({ ref, rows, disabled, time, onSeek, duration = 
   const startLeft = 20;
   const scale = Math.max(1 / 30, duration) / 5;
   const scaleWidth = Math.max(40, (width - 42) / 5);
-  // 时间轴组件会原地修改输入，编辑副本与成功应用的 SDK 数据分别持有。
+  // 时间轴组件会原地修改输入，编辑副本与父组件生成的轨道数据分别持有。
   useEffect(() => { setEditableRows(structuredClone(rows)); }, [rows]);
   useImperativeHandle(ref, () => ({
     setTime(value) { if (!dragging.current) timeline.current?.setTime(value); },
