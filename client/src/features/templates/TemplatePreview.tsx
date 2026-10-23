@@ -66,11 +66,23 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   const basic = useRef<BasicVideoHandle>(null);
   // 基础视频最近一次显示到界面的时间（0.1 秒为单位）；切换基础视频时置为 -1，让第一次回报一定刷新界面。
   const basicDecisecond = useRef(-1);
-  const [rows, setRows] = useState<ReturnType<typeof buildPreviewRows>>([]);
+  // 效果目录：SDK 加载前用随包目录（与工作区编辑用的相同），加载后换成 SDK 目录；时间轴行与 SDK 时间线共用。
+  const [catalog, setCatalog] = useState<EffectAsset[]>(readCatalog);
+  const latestCatalog = useRef(catalog);
+  // 时间轴的对象与视频行、时间调整说明直接按当前草稿生成，不等 SDK 应用时间线：IMS 加载、出错或卡住时照常显示。
+  const { rows, notices } = useMemo((): { rows: ReturnType<typeof buildPreviewRows>; notices: string[] } => {
+    if (!media || !resolved) return { rows: [], notices: [] };
+    try {
+      const timeline = buildTimeline(draft, catalog, media, resolved, videoOrder);
+      return { rows: buildPreviewRows(timeline), notices: timeline.notices };
+    } catch {
+      // 生成失败时 SDK 应用同一份时间线也会失败，原因在那里提示与记录。
+      return { rows: [], notices: [] };
+    }
+  }, [draft, catalog, media, resolved, videoOrder]);
   const timelineRows = useMemo(() => mergeSpriteRows(rows, sprites).map((row) => ({ ...row,
     actions: row.actions.map((clip) => ({ ...clip, targetId: clip.targetId ? selectionTargets?.get(clip.targetId) ?? clip.targetId : undefined })),
   })), [rows, sprites, selectionTargets]);
-  const [notices, setNotices] = useState<string[]>([]);
   const [attempt, setAttempt] = useState(0);
   const [status, setStatus] = useState("正在加载预览组件…");
   const [ready, setReady] = useState(false);
@@ -89,6 +101,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
   latestOrder.current = videoOrder;
   latestResolved.current = resolved;
   latestTexts.current = replacedTexts;
+  latestCatalog.current = catalog;
   catalogCallback.current = onCatalog;
 
   useEffect(() => {
@@ -99,8 +112,6 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
     let frame: HTMLIFrameElement | undefined;
     const controller = new AbortController();
     const transitionFrames = new Map<string, string>();
-    // SDK 加载前先用随包目录（与工作区编辑用的相同），SDK 加载失败时基础视频的时间轴照常生成。
-    let catalog: EffectAsset[] = readCatalog();
     let appliedTracks: Draft["tracks"] | undefined;
     let appliedMedia: PreviewMedia | undefined;
     let appliedOrder: number[] | undefined;
@@ -142,20 +153,6 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       if (!disposed) setSeeking(false);
     };
 
-    /** 基础视频模式不再应用 SDK 时间线，时间轴行与调整说明直接按当前草稿生成。 */
-    const showBasicRows = () => {
-      const currentMedia = latestMedia.current;
-      const currentResolved = latestResolved.current;
-      if (!currentMedia || !currentResolved) return;
-      try {
-        const timeline = buildTimeline(latest.current, catalog, currentMedia, currentResolved, latestOrder.current);
-        setRows(buildPreviewRows(timeline));
-        setNotices(timeline.notices);
-      } catch (error) {
-        debugLog("模板预览", `基础视频时间轴生成失败：${describe(error)}`);
-      }
-    };
-
     /** SDK 渲染引擎不可用时切换到基础视频，只停用 IMS 文字与特效，不阻断普通视频播放。 */
     const switchToBasicVideo = (reason: string) => {
       if (disposed || mediaFailed || basicRequested) return;
@@ -167,7 +164,6 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       setReady(false);
       setFailed(false);
       setStatus("正在加载基础视频…");
-      showBasicRows();
       debugLog("模板预览", `切换基础视频预览：${reason}`, "警告");
     };
 
@@ -220,7 +216,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
           const currentResolved = latestResolved.current;
           if (!currentMedia || !currentResolved) { instance.pause(); return; }
           const applyStarted = performance.now();
-          const timeline = buildTimeline(currentDraft, catalog, currentMedia, currentResolved, currentOrder);
+          const timeline = buildTimeline(currentDraft, latestCatalog.current, currentMedia, currentResolved, currentOrder);
           if (disposed) return;
           instance.pause();
           instance.aspectRatio = timeline.AspectRatio;
@@ -245,8 +241,6 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
             appliedOrder = currentOrder;
             appliedTexts = currentTexts;
             appliedResolved = currentResolved;
-            setRows(buildPreviewRows(timeline));
-            setNotices(timeline.notices);
           }
         } while (!disposed && applied !== revision);
         if (!disposed) {
@@ -277,7 +271,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
       }
     };
     apply.current = () => {
-      if (basicRequested) { showBasicRows(); return; }
+      if (basicRequested) return;
       // 初始化已应用相同输入时，延迟通知无需再次重置播放位置。
       if (appliedTracks === latest.current.tracks && appliedMedia === latestMedia.current && appliedOrder === latestOrder.current && appliedTexts === latestTexts.current && appliedResolved === latestResolved.current) return;
       revision++;
@@ -356,8 +350,10 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
         // SDK 在初始化 Promise 中应用场景尺寸，等待该过程后设置 Timeline。
         await Promise.resolve();
         if (disposed) return;
-        catalog = readCatalog(sdk);
-        catalogCallback.current(catalog);
+        const sdkCatalog = readCatalog(sdk);
+        latestCatalog.current = sdkCatalog;
+        setCatalog(sdkCatalog);
+        catalogCallback.current(sdkCatalog);
         player.current = instance;
         stopPlayerLog = watchPlayer(instance, (message) => switchToBasicVideo(`SDK 渲染失败：${message}`));
         stopPlayback = watchPlayback(instance, sdkMedia, (listener) => {
