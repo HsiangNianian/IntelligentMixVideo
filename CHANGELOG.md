@@ -3,6 +3,23 @@
 本项目的版本变更由发布工作流根据 Conventional Commits 自动生成。
 推送正式版本 tag 后，成功发布的版本记录会自动写入此文件。
 
+## [v0.9.15] - 2026-10-23
+### Bug Fixes
+- [`8c9564f`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/8c9564f0dc00e2e774ca6ae13148431afa9dcc74) - **client**: keep the template preview playable and editable when IMS fails *(PR [#238](https://github.com/HsiangNianian/IntelligentMixVideo/pull/238) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`f50739f`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/f50739f9c8bdd19a5fd798728a187023f622ec13) - **client**: play desktop preview videos over a loopback HTTP media server *(PR [#241](https://github.com/HsiangNianian/IntelligentMixVideo/pull/241) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Documentation Changes
+- [`46047e9`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/46047e9e6ba166a347caf87147a605445db3d576) - update CHANGELOG.md for v0.9.14 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
+
+### Chores
+- [`2309ae6`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/2309ae66ff7076847669d2e598f3184e323ebcb7) - **release**: prepare v0.9.15 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Other Changes
+- [`c582d5d`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/c582d5d635f1b794e3a73bb87036eb2ae49c62dd) - Merge remote-tracking branch 'upstream/main' into codex/release-v0.9.15 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`b6f346a`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/b6f346a85249cf6b77b8abba89f0c1f886adefde) - Merge pull request [#242](https://github.com/HsiangNianian/IntelligentMixVideo/pull/242) from YUZHEthefool/codex/release-v0.9.15
+
+chore(release): promote dev to main for v0.9.15 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
 ## [v0.9.14] - 2026-10-22
 ### Documentation Changes
 - [`4f1ef60`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/4f1ef6091d399d07fb72fc362a6ff355ce4be80c) - update CHANGELOG.md for v0.9.13 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
@@ -1713,3 +1730,5 @@ feat(client): 在模板工作区页头添加时钟 *(commit by [@HsiangNianian](
 [v0.9.13]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.12...v0.9.13
 
 [v0.9.14]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.13...v0.9.14
+
+[v0.9.15]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.14...v0.9.15
