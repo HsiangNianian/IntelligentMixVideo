@@ -17,8 +17,17 @@ from server.video_composition.remotion_content import ContentError, dynamic_dura
 from server.video_composition.remotion_timing import retime_source
 from server.remotion_templates.overlay_render import OverlayError
 from server.remotion_templates.settings import Settings
+from server.remotion_templates import render_resources
+from server.remotion_templates.render_resources import RenderCapacity
 from server.video_composition import execution_log, remotion, service, store
 from server.video_composition.errors import CompositionError
+
+
+@pytest.fixture(autouse=True)
+def resource_capacity(monkeypatch):
+    """业务离线回归使用确定的资源余量；不依赖开发机的负载。"""
+    monkeypatch.setattr(render_resources, "renderer_cpus", lambda reserve: list(range(8)))
+    monkeypatch.setattr(render_resources, "memory_headroom", lambda reserve: (48 - 64 * reserve / 100) * 1024**3)
 
 
 CODE = 'import React from "react"; export default function Sprite(p: any) { return <div>{p.layer.text}</div>; }'
@@ -368,19 +377,21 @@ def test_unclassified_or_text_decoration_refused(composition_case):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("duration, frames", [(8, 240), (121, 3630), (300, 9000)])
-async def test_render_uses_shared_slot_and_persists_public_video(composition_case, monkeypatch, tmp_path, duration, frames):
+async def test_render_uses_shared_slot_and_persists_public_video(composition_case, monkeypatch, tmp_path, caplog, duration, frames):
     """默认支持短片、超过旧 120 秒限制及恰好 5 分钟的成片；完整渲染上传后返回并清理。"""
     settings = Settings(_env_file=None)
     slot = asyncio.Semaphore(1)
     runtime = SimpleNamespace(settings=settings, store=SimpleNamespace(root=tmp_path),
-                              overlays=SimpleNamespace(slot=slot), harness=SimpleNamespace(renderer="renderer"))
+                              overlays=SimpleNamespace(slot=slot, capacity=RenderCapacity(Settings(_env_file=None))), harness=SimpleNamespace(renderer="renderer"))
     async def get_runtime():
         """提供唯一运行时，与独立预览渲染共用名额。"""
         return runtime
-    async def render(renderer, overlay, work):
+    async def render(renderer, overlay, work, *, chunk_concurrency):
         """捕获渲染时名额状态与音频全长。"""
         assert slot.locked() and overlay.frames == frames
-        work.mkdir(parents=True)
+        assert chunk_concurrency == min(6, (frames + 449) // 450)
+        assert runtime.overlays.capacity.chunks == chunk_concurrency
+        work.mkdir(parents=True, exist_ok=True)
         output = work / "overlay.webm"
         output.write_bytes(b"video")
         return output
@@ -396,8 +407,14 @@ async def test_render_uses_shared_slot_and_persists_public_video(composition_cas
     monkeypatch.setattr(remotion, "ZosSettings", lambda: object())
     data = case(composition_case)
     data["duration_ms"] = duration * 1000
-    result = await remotion.render("task", data, 10)
+    with caplog.at_level("INFO", logger=remotion.logger.name):
+        result = await remotion.render("task", data, 10)
     assert result["duration"] == duration and result["frames"] == frames
+    assert set(result) == {"video_url", "duration", "width", "height", "fps", "frames"}
+    [entry] = [record for record in caplog.records if record.msg.startswith("Remotion performance task_id=")]
+    performance = json.loads(entry.args[-1])
+    assert all(performance[key] >= 0 for key in ("plan_ms", "queue_wait_ms", "text_fit_ms", "upload_ms", "total_ms"))
+    assert "旧例字" not in entry.getMessage() and "https://" not in entry.getMessage()
     assert not (tmp_path / "composition-overlays" / "task").exists()
 
 
@@ -406,14 +423,14 @@ async def test_render_uses_shared_slot_and_persists_public_video(composition_cas
 async def test_render_failure_keeps_private_cause_before_cleanup(composition_case, composition_runtime, composition_logs, monkeypatch, tmp_path, diagnostic_writable):
     """失败引用已有私有根因；私有诊断写入失败时仍保存通用错误文件，不掩盖原错误。"""
     slot = asyncio.Semaphore(1)
-    runtime = SimpleNamespace(settings=SimpleNamespace(overlay_max_seconds=120), store=SimpleNamespace(root=tmp_path),
-                              overlays=SimpleNamespace(slot=slot), harness=SimpleNamespace(renderer="renderer"))
+    runtime = SimpleNamespace(settings=Settings(_env_file=None, overlay_max_seconds=120), store=SimpleNamespace(root=tmp_path),
+                              overlays=SimpleNamespace(slot=slot, capacity=RenderCapacity(Settings(_env_file=None))), harness=SimpleNamespace(renderer="renderer"))
     async def get_runtime():
         """使用隔离目录和独立名额，不访问实际渲染服务。"""
         return runtime
-    async def fail(renderer, overlay, work):
+    async def fail(renderer, overlay, work, *, chunk_concurrency):
         """模拟 Chrome 连接失败，被 overlay 层包装为安全错误。"""
-        work.mkdir(parents=True)
+        work.mkdir(parents=True, exist_ok=True)
         (work / "worker.log").write_text("Timed out after 25000 ms while trying to connect to the browser!")
         (work / "overlay.webm").write_bytes(b"partial-video")
         try:
@@ -472,7 +489,7 @@ async def test_render_failure_keeps_private_cause_before_cleanup(composition_cas
 @pytest.mark.anyio
 async def test_plan_failure_keeps_private_cause(composition_case, monkeypatch, tmp_path):
     """打包失败不进入渲染名额，但异常链与子进程 stderr 仍私有保存，工作目录照常清理。"""
-    runtime = SimpleNamespace(settings=SimpleNamespace(overlay_max_seconds=120), store=SimpleNamespace(root=tmp_path))
+    runtime = SimpleNamespace(settings=Settings(_env_file=None, overlay_max_seconds=120), store=SimpleNamespace(root=tmp_path))
     async def get_runtime():
         """使用隔离目录，不访问实际渲染服务。"""
         return runtime
@@ -497,7 +514,7 @@ async def test_render_failure_is_terminal_not_sample_fallback(composition_case, 
     """资产已适配但渲染环境不可用时整单失败，不提交无字效成片。"""
     async def runtime():
         """仅提供计划所需配置与私有诊断目录，不提供可降级渲染器。"""
-        return SimpleNamespace(settings=SimpleNamespace(overlay_max_seconds=120), store=SimpleNamespace(root=tmp_path))
+        return SimpleNamespace(settings=Settings(_env_file=None, overlay_max_seconds=120), store=SimpleNamespace(root=tmp_path))
     monkeypatch.setattr(remotion, "sprite_runtime", runtime)
     monkeypatch.setattr(remotion, "environment_problem", lambda settings: "unavailable")
     with pytest.raises(CompositionError) as error:
@@ -878,8 +895,8 @@ def test_fit_request_carries_the_rendered_code_and_the_sprite_canvas(composition
 async def test_render_fits_texts_in_the_slot_and_reports_text_too_long(composition_case, monkeypatch, tmp_path):
     """预检拿到快照里的发布资产且已占名额；它拒绝时任务失败于 assembling，渲染器不被调用。"""
     slot = asyncio.Semaphore(1)
-    runtime = SimpleNamespace(settings=SimpleNamespace(overlay_max_seconds=120), store=SimpleNamespace(root=tmp_path),
-                              overlays=SimpleNamespace(slot=slot), harness=SimpleNamespace(renderer="renderer"))
+    runtime = SimpleNamespace(settings=Settings(_env_file=None, overlay_max_seconds=120), store=SimpleNamespace(root=tmp_path),
+                              overlays=SimpleNamespace(slot=slot, capacity=RenderCapacity(Settings(_env_file=None))), harness=SimpleNamespace(renderer="renderer"))
     data, sprite = fitted_case(composition_case)
     calls = []
 
