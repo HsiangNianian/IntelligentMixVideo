@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from server.remotion_templates import render_resources as resources
+from server.remotion_templates.renderer import Renderer
 from server.remotion_templates.settings import Settings
 
 GIB = 1024**3
@@ -130,7 +131,7 @@ async def test_resource_wait_is_bounded(capacity, monkeypatch):
 
 
 def test_parent_cgroup_limits_and_affinity_are_respected(tmp_path, monkeypatch):
-    """读取祖先配额，同时遵守宿主 CPU 亲和性与内存预留。"""
+    """读取祖先配额，而非只看宿主核数与总内存；CPU 预留反映在实际 worker 命令。"""
     parent, child = tmp_path / "parent", tmp_path / "parent/child"
     child.mkdir(parents=True)
     (parent / "cpu.max").write_text("400000 100000")
@@ -155,3 +156,6 @@ def test_parent_cgroup_limits_and_affinity_are_respected(tmp_path, monkeypatch):
     assert resources.memory_headroom(25) == 3 * GIB
     host_available_gib = 9
     assert resources.memory_headroom(25) == GIB  # 宿主也必须留出 8 GiB，不能只用较小 cgroup 的 2 GiB 余量。
+    command = Renderer(Settings(_env_file=None)).command(tmp_path, worker="overlay-worker.mjs")
+    assert command[:4] == ["taskset", "--cpu-list", "2,3,4", "bwrap"]
+    assert "--unshare-all" in command and "--clearenv" in command
