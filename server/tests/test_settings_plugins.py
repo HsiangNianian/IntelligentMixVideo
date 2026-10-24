@@ -11,6 +11,48 @@ import pytest
 from server import settings_plugins
 
 
+def test_render_concurrency_defaults_and_environment(monkeypatch):
+    """任务与帧并发独立读取环境变量，服务端默认允许六任务，单视频先保留一页。"""
+    from server.remotion_templates.settings import Settings as RenderSettings
+    from server.video_composition.settings import Settings as CompositionSettings
+
+    for key in ("IMV_OVERLAY_FRAME_CONCURRENCY", "IMV_OVERLAY_TASK_CONCURRENCY", "COMPOSITION_CONCURRENCY"):
+        monkeypatch.delenv(key, raising=False)
+    assert RenderSettings(_env_file=None).overlay_frame_concurrency == 1
+    assert RenderSettings(_env_file=None).overlay_task_concurrency == 6
+    assert CompositionSettings.model_fields["composition_concurrency"].default == 6
+    monkeypatch.setenv("IMV_OVERLAY_FRAME_CONCURRENCY", "16")
+    monkeypatch.setenv("IMV_OVERLAY_TASK_CONCURRENCY", "2")
+    configured = RenderSettings(_env_file=None)
+    assert (configured.overlay_frame_concurrency, configured.overlay_task_concurrency) == (16, 2)
+    for value in ("0", "65", "many"):
+        monkeypatch.setenv("IMV_OVERLAY_FRAME_CONCURRENCY", value)
+        with pytest.raises(ValueError):
+            RenderSettings(_env_file=None)
+
+
+def test_chunking_defaults_and_optional_vp9_tuning(monkeypatch):
+    """默认启用分块、单视频最多六块并行；编码调优可选，环境覆盖与边界校验有效。"""
+    from server.remotion_templates.settings import Settings
+
+    defaults = Settings(_env_file=None)
+    assert (defaults.overlay_chunked, defaults.overlay_chunk_concurrency) == (True, 6)
+    assert defaults.overlay_vp9_cpu_used is None and defaults.overlay_vp9_threads is None
+    for name, value in {"CHUNKED": "true", "CHUNK_CONCURRENCY": "2", "VP9_CPU_USED": "0", "VP9_THREADS": "64"}.items():
+        monkeypatch.setenv(f"IMV_OVERLAY_{name}", value)
+    configured = Settings(_env_file=None)
+    assert (configured.overlay_chunked, configured.overlay_chunk_concurrency) == (True, 2)
+    assert (configured.overlay_vp9_cpu_used, configured.overlay_vp9_threads) == (0, 64)
+    for field, values in {
+        "overlay_chunk_concurrency": (0, 7), "overlay_vp9_cpu_used": (-1, 9), "overlay_vp9_threads": (0, 65),
+        "render_cpu_reserve_percent": (0, 100), "render_memory_reserve_percent": (0, 100),
+        "overlay_global_chunk_concurrency": (0, 65), "overlay_chunk_memory_mb": (0, 16385),
+    }.items():
+        for value in values:
+            with pytest.raises(ValueError):
+                Settings(_env_file=None, **{field: value})
+
+
 @pytest.fixture
 def package(tmp_path, monkeypatch):
     """生成独立真实 Python 包，退出时清理导入缓存，不修改生产目录或注册字典。"""

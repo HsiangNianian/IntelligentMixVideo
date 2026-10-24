@@ -47,7 +47,7 @@ class Settings(ClientSettings, CommonSettings):
     composition_width: int = Field(default=1080, ge=2)
     composition_height: int = Field(default=1920, ge=2)
     composition_fps: int = Field(default=30, ge=1, le=60)
-    composition_concurrency: int = Field(default=3, ge=1, le=16)
+    composition_concurrency: int = Field(default=6, ge=1, le=16)
     composition_http_timeout_seconds: float = Field(default=30, gt=0, le=300, allow_inf_nan=False)
     composition_poll_seconds: float = Field(default=2, gt=0, le=60, allow_inf_nan=False)
     composition_asr_wait_seconds: float = Field(default=1800, gt=0, le=86400, allow_inf_nan=False)

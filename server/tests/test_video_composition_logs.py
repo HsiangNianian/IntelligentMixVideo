@@ -219,7 +219,7 @@ async def test_concurrent_log_append(composition_case, composition_settings, com
 
 
 @pytest.mark.anyio
-async def test_step_failure_and_cancellation_leave_input_log(composition_case, composition_settings, composition_logs, composition_runtime):
+async def test_step_failure_and_cancellation_leave_input_log(composition_case, composition_settings, composition_logs, composition_runtime, caplog):
     """异常和取消均记录步骤输入及结果事件，异常原样抛出且不记录虚假成功。"""
     store.initialize_schema()
     record = store.create(composition_case["request"], composition_settings.output())
@@ -232,14 +232,19 @@ async def test_step_failure_and_cancellation_leave_input_log(composition_case, c
         """模拟运行期间收到取消。"""
         raise asyncio.CancelledError
 
-    with pytest.raises(ValueError, match="素材不存在"):
-        await composition_runtime.step(record, "example", fail, {"text": "测试"})
-    with pytest.raises(asyncio.CancelledError):
-        await composition_runtime.step(record, "cancel", cancel, {})
+    with caplog.at_level("INFO", logger=service.logger.name):
+        with pytest.raises(ValueError, match="素材不存在"):
+            await composition_runtime.step(record, "example", fail, {"text": "测试"})
+        with pytest.raises(asyncio.CancelledError):
+            await composition_runtime.step(record, "cancel", cancel, {})
     rows = composition_logs(record["task_id"])
     assert [row["event"] for row in rows] == ["submitted", "step_started", "step_failed", "step_started", "step_cancelled"]
     assert rows[1]["details"]["input"] == {"text": "测试"}
     assert rows[2]["details"]["exceptions"][0]["message"] == "素材不存在"
+    metrics = [entry for entry in caplog.records if entry.msg.startswith("Composition performance")]
+    assert [entry.args[1] for entry in metrics] == ["example", "cancel"]
+    assert all(entry.args[-1] >= 0 for entry in metrics)
+    assert all("测试" not in entry.getMessage() and "素材不存在" not in entry.getMessage() for entry in metrics)
 
 
 @pytest.mark.anyio
