@@ -364,7 +364,6 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     with OpenAI(base_url=base_url, api_key=key, timeout=config.llm_timeout_seconds, max_retries=config.llm_max_retries) as client:
         for stage in ("boundaries", "keywords"):
             diagnostics["stage"] = stage
-            response_format = {"type": "json_object"}
             if stage == "boundaries":
                 prompt = (
                     '将口播文案切成短句画面，只返回 JSON：{"boundaries_after":[1,3]}。'
@@ -380,7 +379,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                 content = listing
             elif stage == "keywords":
                 prompt = (
-                    '为短视频素材召回提取关键词，只返回 JSON：{"keywords":[[],["词"],[]]}。'
+                    '为短视频素材召回提取关键词，只返回 JSON 对象。'
                     "全篇关键词总数不限，逐段判断是否有值得检索画面的具体对象，无合适对象时留空，不凑词。"
                     f"每段最多1个词，每词最多{keyword_max_length}字；"
                     "优先选择本段核心的具体名词或名词短语，如产品、动物、人物、食材、部位、工具、场景。"
@@ -392,28 +391,20 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                     "自检段数、每段词数、词长和原文匹配。只输出纯JSON，无Markdown或解释。"
                 )
                 content = [s["text"] for s in segments]
+                example = {"keywords": [[] for _ in segments]}
                 if title is not None:
                     content = {"title": title, "segments": content}
+                    example["title_keyword"] = ""
                     prompt += (
                         '本次输入为含 title 和 segments 的对象，keywords 只对应 segments。'
                         '另从 title 按上述提词规则选一个关键词，返回同级 title_keyword 字符串，'
                         '必须在标题中连续出现；标题为空或无合适关键词时返回空字符串。'
-                        '完整输出为 {"keywords":[[],["词"],[]],"title_keyword":"标题关键词"}。'
                     )
-                properties = {"keywords": {
-                    "type": "array", "minItems": len(segments), "maxItems": len(segments),
-                    "items": {"type": "array", "maxItems": 1, "items": {"type": "string"}},
-                }}
-                if title is not None:
-                    properties["title_keyword"] = {"type": "string"}
-                response_format = {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "segmentation_keywords", "strict": True,
-                        "schema": {"type": "object", "properties": properties,
-                                   "required": list(properties), "additionalProperties": False},
-                    },
-                }
+                prompt += (
+                    f"本次恰有 {len(segments)} 个片段。按以下 JSON 模板逐项填词，"
+                    '有关键词的 [] 改为 ["原文关键词"]，无关键词保留 []，不得增删或调换数组项：'
+                    + json.dumps(example, ensure_ascii=False)
+                )
             messages = [
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": json.dumps(content, ensure_ascii=False)},
@@ -425,7 +416,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                         model=model,
                         messages=messages,
                         temperature=0.2,
-                        response_format=response_format,
+                        response_format={"type": "json_object"},
                     )
                     raw = response.choices[0].message.content if response.choices else None
                     logging.getLogger("uvicorn.error").info(
