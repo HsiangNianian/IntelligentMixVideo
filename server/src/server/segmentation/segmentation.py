@@ -362,7 +362,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
         for i, (a, b) in enumerate(zip(text_edges, text_edges[1:]), 1)
     ]
     trace.update(candidate_clauses=listing, filtered_boundaries=filtered_boundaries,
-                 selected_boundaries_after=[], keyword_candidates=[], model_elapsed_ms={})
+                 selected_boundaries_after=[], keyword_candidates={}, model_elapsed_ms={})
     segments, rejected = [], 0
     # 模型依次选切点、提关键词；超长片段随后由代码按安全边界切分。
     with OpenAI(base_url=base_url, api_key=key, timeout=config.llm_timeout_seconds, max_retries=config.llm_max_retries) as client:
@@ -384,18 +384,20 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
             elif stage == "keywords":
                 prompt = (
                     '为短视频素材召回提取关键词，只返回 JSON 对象。'
-                    "全篇关键词总数不限，逐段判断是否有值得检索画面的具体对象，无合适对象时留空，不凑词。"
+                    "全篇关键词总数不限，逐段判断是否有值得检索画面的具体对象，无合适对象时省略该编号，不凑词。"
                     f"每段最多1个词，每词最多{keyword_max_length}字；"
                     "优先选择本段核心的具体名词或名词短语，如产品、动物、人物、食材、部位、工具、场景。"
                     "保留有助于区分画面的必要修饰语，例如原文连续出现的‘散养的土鸡’；‘蛋清’‘蛋黄’也适合召回。"
                     "不要只提取‘散养’‘新鲜’‘饱满’等动作或属性，也不要选‘囤一点’等营销引导。"
                     "同一对象在不同片段中可重复选择，不为全篇去重而遗漏该段核心对象。"
-                    "输出数组长度必须等于输入片段数，第i项只对应第i段，空数组不能省略。"
+                    "keywords 为片段编号到关键词的对象，键必须是输入 segment_id 的十进制字符串，值为单个关键词字符串。"
+                    "只返回有关键词的编号，无关键词的片段可省略；不能改编号或把其他片段的词填到该编号。"
                     "逐项确认词在该段内连续出现，保留大小写和全半角，不改写、跨标点拼接或借用其他段的词。"
-                    "自检段数、每段词数、词长和原文匹配。只输出纯JSON，无Markdown或解释。"
+                    "自检编号、词长和原文匹配。只输出纯JSON，无Markdown或解释。"
                 )
-                content = [s["text"] for s in segments]
-                example = {"keywords": [[] for _ in segments]}
+                content = [{"segment_id": s["segment_id"], "text": s["text"]} for s in segments]
+                keyword_ids = {str(s["segment_id"]) for s in segments}
+                example = {"keywords": {"1": "原文关键词"}}
                 if title is not None:
                     content = {"title": title, "segments": content}
                     example["title_keyword"] = ""
@@ -404,11 +406,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                         '另从 title 按上述提词规则选一个关键词，返回同级 title_keyword 字符串，'
                         '必须在标题中连续出现；标题为空或无合适关键词时返回空字符串。'
                     )
-                prompt += (
-                    f"本次恰有 {len(segments)} 个片段。按以下 JSON 模板逐项填词，"
-                    '有关键词的 [] 改为 ["原文关键词"]，无关键词保留 []，不得增删或调换数组项：'
-                    + json.dumps(example, ensure_ascii=False)
-                )
+                prompt += 'JSON 格式示例（全部无关键词时 keywords 返回空对象）：' + json.dumps(example, ensure_ascii=False)
             messages = [
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": json.dumps(content, ensure_ascii=False)},
@@ -439,19 +437,18 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                             if title is not None:
                                 title_keyword = _check_title_keyword(
                                     output.get("title_keyword"), title, keyword_max_length, "title_keyword")
-                            groups = output.get("keywords")
+                            keywords = output.get("keywords")
                             diagnostics["keyword_response"].update(
-                                keywords_type=type(groups).__name__,
-                                keyword_group_count=len(groups) if isinstance(groups, list) else None,
+                                keywords_type=type(keywords).__name__,
+                                keyword_group_count=len(keywords) if isinstance(keywords, (dict, list)) else None,
                             )
                             if (
-                                not isinstance(groups, list)
-                                or len(groups) != len(segments)
-                                or any(not isinstance(g, list) or any(not isinstance(w, str) for w in g) for g in groups)
+                                not isinstance(keywords, dict)
+                                or any(key not in keyword_ids or not isinstance(word, str) for key, word in keywords.items())
                             ):
                                 raise RuntimeError(
-                                    f"模型 keywords 必须为 {len(segments)} 项数组，每项为字符串数组，无关键词时保留空数组。"
-                                    f"实际项数：{len(groups) if isinstance(groups, list) else '非数组或缺失'}。")
+                                    f"模型 keywords 必须为片段编号到字符串的对象，编号须为 1～{len(segments)} 的十进制字符串，"
+                                    "不能带前导零；无关键词可省略该编号。")
                         break
                     except RuntimeError as exc:
                         if attempt == 5:
@@ -493,9 +490,10 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                         }
                     )
             elif stage == "keywords":
-                trace["keyword_candidates"] = groups
-                # 单次扫描选最靠前的有效词；同位置保留首个候选，其余候选均计为拒绝。
-                for item, candidates in zip(segments, groups):
+                trace["keyword_candidates"] = keywords
+                for item in segments:
+                    key = str(item["segment_id"])
+                    candidates = [keywords[key]] if key in keywords else []
                     item["keyword"] = _pick_keyword(item["text"], candidates, keyword_max_length)
                     rejected += len(candidates) - bool(item["keyword"])
                     # 有关键词即重点句 2，否则为普通句 1；CTA 需语义判断，不标注。

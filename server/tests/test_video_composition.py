@@ -1136,7 +1136,7 @@ def test_real_segmentation_with_model_stub(upstreams, composition_case, client, 
     template = composition_case["template"]
     template["tracks"][1]["editor"].update(titleKeyword="业务", titleKeywordBold=True)
     assert post_template(client, {key: template[key] for key in ("template_id", "name", "tracks", "effect_ids")}).status_code == 200
-    keywords = {"keywords": [["甲乙"]]}
+    keywords = {"keywords": {"1": "甲乙"}}
     if title_keyword is not None:
         keywords["title_keyword"] = title_keyword
     model = MagicMock()
