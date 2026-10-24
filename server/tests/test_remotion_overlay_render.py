@@ -234,6 +234,7 @@ class FakeRenderer:
         self.requests: list[dict] = []
         self.failure: Exception | None = None
         self.cpu_seconds: int | None = None
+        self.timeout_seconds: float | None = None
 
     def worker_browser_path(self) -> str:
         """返回固定浏览器路径。"""
@@ -249,6 +250,7 @@ class FakeRenderer:
             ]}
         assert worker == "overlay-worker.mjs"
         self.cpu_seconds = cpu_seconds
+        self.timeout_seconds = timeout_seconds
         request = json.loads((directory / "request.json").read_text())
         self.requests.append(request)
         if self.failure:
@@ -503,11 +505,12 @@ def test_overlay_cpu_cap_follows_the_deadline_and_cores(monkeypatch, timeout, co
     assert overlay_cpu_seconds(timeout) == expected
 
 
-# 场景：任务把按渲染期限算出的 CPU 上限交给沙箱 worker。
+# 场景：任务把默认 30 分钟渲染期限与相应的 CPU 上限交给沙箱 worker。
 def test_task_passes_the_overlay_cpu_cap_to_the_worker(service) -> None:
-    """worker 收到 overlay_cpu_seconds(渲染超时)，而不是短 worker 的固定 300 秒。"""
+    """worker 收到 1800 秒超时，沙箱 CPU 上限同时随渲染期限放宽。"""
     overlays, renderer, _ = service
     run_task(overlays, duration=2.0)
+    assert renderer.timeout_seconds == 1800
     assert renderer.cpu_seconds == overlay_cpu_seconds(overlays.settings.overlay_render_timeout_seconds)
 
 
@@ -532,8 +535,8 @@ def test_render_failure_is_sanitized(service, callbacks, caplog, failure, messag
     assert str(failure) in caplog.text  # 运维仍能在日志中看到完整根因
 
 
-# 片段结束于 150 秒（片段 b 起点 148 秒 + 资产自身 2 秒），超过 120 秒上限。
-LONG = [placement("a", start=0), placement("b", start=148)]
+# 片段结束于 302 秒（片段 b 起点 300 秒 + 资产自身 2 秒），超过 300 秒上限。
+LONG = [placement("a", start=0), placement("b", start=300)]
 
 
 # 场景：时长已知时受理阶段就拒绝超限请求（显式 duration 或片段自身结尾），不写任务行。
@@ -541,13 +544,13 @@ def test_accept_enforces_the_limit_on_known_lengths(service) -> None:
     """显式 duration 超限 422；未提供时片段结尾超限同样 422；上限内的请求被受理。"""
     overlays, _, _ = service
     with pytest.raises(HTTPException) as caught:
-        asyncio.run(overlays.accept(PLACED, None, 9999.0, None))
-    assert caught.value.status_code == 422 and "超过上限 120" in caught.value.detail
+        asyncio.run(overlays.accept(PLACED, None, 300.001, None))
+    assert caught.value.status_code == 422 and "超过上限 300" in caught.value.detail
     assert task_rows(overlays) == 0
-    asyncio.run(overlays.accept(PLACED, None, 120.0, None))  # 恰好等于上限
+    asyncio.run(overlays.accept(PLACED, None, 300.0, None))  # 恰好等于上限
     with pytest.raises(HTTPException) as caught:
         asyncio.run(overlays.accept(LONG, None, None, None))
-    assert caught.value.status_code == 422 and "超过上限 120" in caught.value.detail
+    assert caught.value.status_code == 422 and "超过上限 300" in caught.value.detail
     assert task_rows(overlays) == 1
 
 
@@ -557,13 +560,13 @@ def test_audio_length_is_checked_after_probing(service, monkeypatch) -> None:
     overlays, renderer, _ = service
 
     async def probed(url: str, timeout: float) -> float:
-        """替身探测：配音有 500 秒，超过 120 秒上限。"""
+        """替身探测：配音有 500 秒，超过 300 秒上限。"""
         return 500.0
 
     monkeypatch.setattr(overlay_render, "audio_duration", probed)
     view = overlays.get(run_task(overlays, duration=9999.0, audio="https://x/tts.mp3"))
     assert view["status"] == "failed" and view["error"]["code"] == "duration_too_long"
-    assert "超过上限 120" in view["error"]["message"] and renderer.requests == []
+    assert "超过上限 300" in view["error"]["message"] and renderer.requests == []
 
 
 # 场景：缺少渲染所需的工具或文件时受理阶段就 503，而不是接受后才失败。

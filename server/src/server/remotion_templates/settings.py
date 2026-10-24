@@ -65,9 +65,9 @@ class Settings(ClientSettings, CommonSettings):
     device_retention_days: int = Field(default=90, ge=1, le=3650)
     job_timeout_seconds: int = Field(default=600, ge=1, le=3600)
     render_timeout_seconds: int = Field(default=180, ge=1, le=600)
-    # 整段透明视频默认最多渲染 15 分钟；不含等待名额、成片校验与上传，可由环境变量覆盖。
-    overlay_max_seconds: int = Field(default=120, ge=1, le=600)
-    overlay_render_timeout_seconds: int = Field(default=900, ge=1, le=3600)
+    # 整段透明视频默认最多渲染 30 分钟；不含等待名额、成片校验与上传，可由环境变量覆盖。
+    overlay_max_seconds: int = Field(default=300, ge=1, le=600)
+    overlay_render_timeout_seconds: int = Field(default=1800, ge=1, le=3600)
     # 瞬时传输故障与上游限流/不可用会等待后重试；等待按次数翻倍，上限 30 秒。
     model_retries: int = Field(default=2, ge=0, le=5)
     model_retry_delay_seconds: float = Field(default=2.0, ge=0.1, le=30.0)

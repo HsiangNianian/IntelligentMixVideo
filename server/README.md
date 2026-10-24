@@ -224,7 +224,7 @@ result = segment({
 
 **英文翻译**：`translate(result, title=None)` 把 `segment` 的结果一次模型调用译成英文（双语视频合成在切片后调用），模型配置只从服务端 `server/.env` 读取。返回副本，每个片段增加 `text_en`、`keyword_en`，传入 `title` 时增加 `title_en`、`title_keyword_en`。英文关键词复用中文关键词的校验但不限长度：片段词不在本段译文中时置空，标题词不在英文标题中时报错。段数或类型不符、片段译文为空、原标题非空而英文标题为空时直接报错，不重试。
 
-**日志**：HTTP 与视频合成共用日志入口，完整切片记录阶段、切点、关键词与模型耗时；日志含文案，按敏感数据管理。桌面写入 `backend/server.log`。
+**日志**：HTTP 与视频合成共用日志入口，完整切片记录阶段、切点、关键词与模型耗时；片段提词响应校验失败时另记 `keyword_response`（原始回复正文、预期片段数，JSON 对象解析成功且已检查 keywords 时附数组类型和实际组数）。视频合成同时保存到任务的 `segmentation.json` 与 `errors/*.log`，沿用脱敏，合法 JSON 回复在任务日志中展开保存；接口不回显。日志含文案，按敏感数据管理。桌面写入 `backend/server.log`。
 
 `GET /api/settings/plugins` 只返回自动发现的公开描述与代码默认值，不读写服务端配置。一级模块通过 `settings_plugin.py` 导出 `SETTINGS_PLUGIN`，Schema 由自己的配置模型生成；公共层导入时扫描一次，无人工注册名单，重复 ID、坏描述和依赖导入失败直接报错。增删入口后重启后端并重新打开客户端设置；移除入口不删除客户端旧值。当前包含 Remotion Agent、上海 IMS/视频合成、切片、ASR 和服务启动入口；完整目录从入口的 `settings` 模型类生成 Debug Schema；`client_only=true` 只返回标记 `scope: "client"` 的 Agent 与 IMS，测试使用临时包文件验证发现与移除。此机制不自动注册业务路由，也不支持删除整个业务目录后免处理依赖；各模块仍须自行接入请求配置消费。
 

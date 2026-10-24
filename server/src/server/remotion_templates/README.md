@@ -628,7 +628,7 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
 
 - **Length**: TTS `audioUrl` (full ffprobe duration) wins; otherwise `duration` (a JSON number above 0, strict like
   the composition API's `videoDuration`: booleans and numeric strings are a 422); otherwise the latest clip end.
-  Longer than `IMV_OVERLAY_MAX_SECONDS` (120) is a 422 at acceptance when the length is already known (`duration`
+  Longer than `IMV_OVERLAY_MAX_SECONDS` (default 300 seconds / 5 minutes) is a 422 at acceptance when the length is already known (`duration`
   or the clips' end); an `audioUrl` is only probed while rendering, so an over-long one fails the task with
   `duration_too_long`.
 - **Text fit**: a generated text effect cannot know how long a title the bus will send, so the host fits the text a
@@ -674,7 +674,7 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
 - **Output**: no audio; the bus/IMS keeps its own audio track and overlays the WebM. The host re-probes the file
   (VP9, size, fps, frame count, alpha tag) before uploading.
 - **Execution**: `overlay_render.py` plans, `remotion/overlay-worker.mjs` renders in the bwrap sandbox
-  (`IMV_OVERLAY_RENDER_TIMEOUT_SECONDS`, default 900 seconds), `overlay_service.py` owns the MySQL `remotion_overlay_renders` task table,
+  (`IMV_OVERLAY_RENDER_TIMEOUT_SECONDS`, default 1800 seconds / 30 minutes), `overlay_service.py` owns the MySQL `remotion_overlay_renders` task table,
   up to three renders at a time (each slot covers only the render: the remote audio probe before it and the ZOS upload after it
   run outside, so a slow network never delays queued renders), recovery of unfinished tasks and pending notifications
   when the runtime is first built
@@ -689,7 +689,7 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   log records browser startup/connection and sparse rendered/encoded frame counts; API `assembling` remains the
   enclosing video-composition stage and includes waiting for this slot.
 - **Cost**: a 1080×1920 frame takes about 0.4–1 s on one Chrome tab (software GL), so a 120 s overlay at 30 FPS needs
-  roughly 25–60 minutes and may exceed the default 15-minute deadline. Adjust `IMV_OVERLAY_RENDER_TIMEOUT_SECONDS`
+  roughly 25–60 minutes and may exceed the default 30-minute deadline. Adjust `IMV_OVERLAY_RENDER_TIMEOUT_SECONDS`
   (at most 3600) for the measured render cost, or lower the length. The single VP9 encoder process and Chrome's GL process each need about
   0.9 CPU seconds per frame, so the sandbox's per-process CPU cap is the render timeout times the host's cores
   (never below the 300 s of the short validation workers) instead of a fixed 300 s.

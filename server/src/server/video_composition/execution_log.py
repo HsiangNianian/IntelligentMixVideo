@@ -84,6 +84,8 @@ def exception_details(exc: Exception) -> dict:
             item["validation"] = exc.errors(include_input=False, include_context=False, include_url=False)
         elif not isinstance(exc, (SQLAlchemyError, ValidationError)) and not private_source:
             item["message"] = sanitize(str(exc)[:4000])
+        if not private_source and (keyword_response := getattr(exc, "keyword_response", None)):
+            item["keyword_response"] = keyword_response
         if isinstance(exc, DBAPIError) and isinstance(exc.orig, MySQLError):
             args = exc.orig.args
             if args and isinstance(args[0], int):
