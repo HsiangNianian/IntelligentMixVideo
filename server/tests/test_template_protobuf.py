@@ -1,4 +1,4 @@
-# 使用临时 SQLite 和真实 FastAPI 路由验证模板 Protobuf 请求与 JSON 响应；执行 uv run pytest tests/test_template_protobuf.py。
+# 使用临时 SQLite 和真实 FastAPI 路由验证模板 Protobuf 请求、默认 JSON 及旧客户端响应；执行 uv run pytest tests/test_template_protobuf.py。
 
 import json
 from datetime import UTC, datetime
@@ -142,10 +142,11 @@ def test_invalid_record_does_not_block_collection(client: TestClient, template_d
 def test_template_openapi_documents_json_responses(
     client: TestClient, path: str, method: str, status: str,
 ) -> None:
-    """每种模板读取与保存结果都声明唯一的 JSON 成功响应。"""
+    """每种模板读取与保存结果都声明 JSON 及旧客户端使用的二进制成功响应。"""
     operation = client.get("/openapi.json").json()["paths"][path][method]
     assert operation["responses"][status]["content"] == {
         "application/json": {"schema": {"type": "object"}},
+        "application/x-protobuf": {"schema": {"type": "string", "format": "binary"}},
     }
 
 
@@ -160,20 +161,26 @@ def test_template_openapi_documents_binary_save_request(client: TestClient) -> N
     }
 
 
+@pytest.mark.parametrize("accept", [None, "*/*", "application/json"])
 def test_template_protobuf_create_read_update_delete(
-    client: TestClient, template_db: Engine, template_payload: dict,
+    client: TestClient, template_db: Engine, template_payload: dict, accept: str | None,
 ) -> None:
-    """验证四个原有地址、JSON 响应、业务字段和持久化副作用。"""
+    """未指定格式、通配或请求 JSON 时，四个原有地址默认 JSON 并保留持久化语义。"""
+    client.headers.pop("accept", None)
+    if accept is not None:
+        client.headers["Accept"] = accept
     assert not inspect(template_db).has_table("templates")
     empty = client.get("/template")
     assert empty.status_code == 200
     assert empty.headers["content-type"] == "application/json"
+    assert empty.headers["vary"] == "Accept"
     assert empty.json() == {"templates": []}
     assert ParseDict(empty.json(), pb.ListTemplatesResponse()).templates == []
 
     created = _post(client, template_payload)
     assert created.status_code == 201
     assert created.headers["content-type"] == "application/json"
+    assert created.headers["vary"] == "Accept"
     payload = created.json()["template"]
     assert payload["name"] == "测试模板"
     assert "测试模板" in created.text
@@ -191,6 +198,7 @@ def test_template_protobuf_create_read_update_delete(
     detail = client.get(f"/template/{record.template_id}")
     assert detail.status_code == 200
     assert detail.headers["content-type"] == "application/json"
+    assert detail.headers["vary"] == "Accept"
     assert detail.json()["template"] == payload
     assert ParseDict(detail.json(), pb.GetTemplateResponse()).template == record
     listed = client.get("/template")
@@ -215,6 +223,40 @@ def test_template_protobuf_create_read_update_delete(
     assert missing.status_code == 404
     assert missing.headers["content-type"] == "application/json"
     assert ParseDict(client.get("/template").json(), pb.ListTemplatesResponse()).templates == []
+
+
+def test_legacy_client_can_read_and_save_templates(client: TestClient, template_payload: dict) -> None:
+    """旧客户端明确请求 Protobuf 时，创建、列表、详情和更新仍可用原解码器读取。"""
+    client.headers["Accept"] = "application/x-protobuf"
+    created = _post(client, template_payload)
+    assert created.status_code == 201
+    record = pb.SaveTemplateResponse.FromString(created.content).template
+    assert created.headers["content-type"] == "application/x-protobuf"
+    assert created.headers["vary"] == "Accept"
+    assert record.name == template_payload["name"]
+
+    listed = client.get("/template")
+    assert listed.status_code == 200
+    assert listed.headers["content-type"] == "application/x-protobuf"
+    assert listed.headers["vary"] == "Accept"
+    summary, = pb.ListTemplatesResponse.FromString(listed.content).templates
+    assert summary.template_id == record.template_id
+    detail = client.get(f"/template/{record.template_id}")
+    assert detail.status_code == 200
+    assert detail.headers["content-type"] == "application/x-protobuf"
+    assert detail.headers["vary"] == "Accept"
+    assert pb.GetTemplateResponse.FromString(detail.content).template == record
+
+    updated = _post(client, {**template_payload, "template_id": record.template_id, "name": "旧客户端更新"})
+    assert updated.status_code == 200
+    revised = pb.SaveTemplateResponse.FromString(updated.content).template
+    assert revised.template_id == record.template_id
+    assert revised.name == "旧客户端更新"
+    assert client.delete(f"/template/{record.template_id}").status_code == 204
+    missing = client.get(f"/template/{record.template_id}")
+    assert missing.status_code == 404
+    assert missing.headers["content-type"] == "application/json"
+    assert pb.ListTemplatesResponse.FromString(client.get("/template").content).templates == []
 
 
 def test_template_protobuf_rejects_json_and_damaged_binary(client: TestClient) -> None:

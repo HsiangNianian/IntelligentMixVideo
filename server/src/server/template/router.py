@@ -1,4 +1,4 @@
-# 模板 API：接收 Protobuf 保存请求，返回消息对应的 JSON，复用业务校验和数据库操作。
+# 模板 API：接收 Protobuf 保存请求，默认返回 JSON，兼容旧客户端明确请求的 Protobuf 响应。
 
 from uuid import UUID
 
@@ -17,9 +17,9 @@ from .schema import Template, TemplateSave
 # 静态集合路径和 UUID 详情路径组成约定的四个接口，无效果目录接口。
 router = APIRouter(prefix="/template", tags=["模板管理"])
 PROTOBUF_MEDIA_TYPE = "application/x-protobuf"
-# 保存请求仍使用二进制，成功响应使用 Protobuf 的 JSON 映射。
+# 保存请求仍使用二进制，成功响应默认 JSON，并保留旧客户端的二进制格式。
 PROTOBUF_CONTENT = {PROTOBUF_MEDIA_TYPE: {"schema": {"type": "string", "format": "binary"}}}
-JSON_CONTENT = {"application/json": {"schema": {"type": "object"}}}
+RESPONSE_CONTENT = {"application/json": {"schema": {"type": "object"}}, **PROTOBUF_CONTENT}
 
 
 def _template_message(template: Template) -> pb.TemplateRecord:
@@ -29,19 +29,24 @@ def _template_message(template: Template) -> pb.TemplateRecord:
     return ParseDict(data, pb.TemplateRecord())
 
 
-def _json_response(message: Message, status_code: int = 200) -> JSONResponse:
-    """在返回前转换消息，保留空列表、默认值及原有 HTTP 状态码。"""
+def _template_response(request: Request, message: Message, status_code: int = 200) -> Response:
+    """旧客户端的单一 Protobuf Accept 保留二进制，其余请求默认 JSON，缓存按 Accept 区分。"""
+    if request.headers.get("accept", "").strip().lower() == PROTOBUF_MEDIA_TYPE:
+        return Response(
+            content=message.SerializeToString(), media_type=PROTOBUF_MEDIA_TYPE,
+            status_code=status_code, headers={"Vary": "Accept"},
+        )
     return JSONResponse(
         content=MessageToDict(message, always_print_fields_with_no_presence=True),
-        status_code=status_code,
+        status_code=status_code, headers={"Vary": "Accept"},
     )
 
 
-@router.get("", response_class=JSONResponse, responses={200: {"content": JSON_CONTENT}})
-def list_templates() -> Response:
-    """返回共享模板库的 JSON 列表，空库返回空数组。"""
+@router.get("", response_class=JSONResponse, responses={200: {"content": RESPONSE_CONTENT}})
+def list_templates(request: Request) -> Response:
+    """默认返回共享模板库的 JSON 列表，空库返回空数组。"""
     templates = store.list_templates()
-    return _json_response(pb.ListTemplatesResponse(
+    return _template_response(request, pb.ListTemplatesResponse(
         templates=[ParseDict(template.model_dump(mode="json", exclude_none=True), pb.TemplateSummary()) for template in templates],
     ))
 
@@ -50,8 +55,8 @@ def list_templates() -> Response:
     "",
     response_class=JSONResponse,
     responses={
-        200: {"content": JSON_CONTENT},
-        201: {"content": JSON_CONTENT},
+        200: {"content": RESPONSE_CONTENT},
+        201: {"content": RESPONSE_CONTENT},
     },
     openapi_extra={"requestBody": {"required": True, "content": PROTOBUF_CONTENT}},
 )
@@ -75,17 +80,17 @@ async def save_template(request: Request) -> Response:
         errors = [{**error, "loc": ("body", *error["loc"])} for error in exc.errors()]
         raise RequestValidationError(errors) from exc
     result = await run_in_threadpool(store.save_template, validated)
-    return _json_response(
-        pb.SaveTemplateResponse(template=_template_message(result)),
+    return _template_response(
+        request, pb.SaveTemplateResponse(template=_template_message(result)),
         status_code=200 if validated.template_id else 201,
     )
 
 
-@router.get("/{template_id}", response_class=JSONResponse, responses={200: {"content": JSON_CONTENT}})
-def get_template(template_id: UUID) -> Response:
+@router.get("/{template_id}", response_class=JSONResponse, responses={200: {"content": RESPONSE_CONTENT}})
+def get_template(template_id: UUID, request: Request) -> Response:
     """按 URL 中的 UUID 返回模板及服务端效果快照。"""
     template = store.get_template(template_id)
-    return _json_response(pb.GetTemplateResponse(template=_template_message(template)))
+    return _template_response(request, pb.GetTemplateResponse(template=_template_message(template)))
 
 
 @router.delete("/{template_id}", status_code=204)
