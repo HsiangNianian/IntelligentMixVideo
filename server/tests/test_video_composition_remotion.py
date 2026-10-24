@@ -16,6 +16,7 @@ from google.protobuf.json_format import MessageToDict
 from server.video_composition.remotion_content import ContentError, dynamic_duration, resolve_config, roles
 from server.video_composition.remotion_timing import retime_source
 from server.remotion_templates.overlay_render import OverlayError
+from server.remotion_templates.settings import Settings
 from server.video_composition import execution_log, remotion, service, store
 from server.video_composition.errors import CompositionError
 
@@ -346,15 +347,16 @@ def test_no_content_and_historical_task_skip_rendering(composition_case):
 
 
 def test_limit_and_integrity_fail_closed(composition_case):
-    """有效字效的整段时长超限不截断；源码指纹变化不允许渲染。"""
+    """有效字效的整段时长超过默认 300 秒不截断；源码指纹变化不允许渲染。"""
+    max_seconds = Settings(_env_file=None).overlay_max_seconds
     data = case(composition_case)
-    data["duration_ms"] = 120001
-    with pytest.raises(OverlayError, match="120"):
-        remotion.plan(data, 120)
+    data["duration_ms"] = 300001
+    with pytest.raises(OverlayError, match="300"):
+        remotion.plan(data, max_seconds)
     data["duration_ms"] = 8000
     next(iter(data["remotion"]["assets"].values()))["tsx_code"] += "// changed"
     with pytest.raises(ContentError, match="校验"):
-        remotion.plan(data, 120)
+        remotion.plan(data, max_seconds)
 
 
 def test_unclassified_or_text_decoration_refused(composition_case):
@@ -365,9 +367,10 @@ def test_unclassified_or_text_decoration_refused(composition_case):
 
 
 @pytest.mark.anyio
-async def test_render_uses_shared_slot_and_persists_public_video(composition_case, monkeypatch, tmp_path):
-    """实际参数经过共享名额；上传成功才返回可保存结果，临时目录随后清理。"""
-    settings = SimpleNamespace(overlay_max_seconds=120)
+@pytest.mark.parametrize("duration, frames", [(8, 240), (121, 3630), (300, 9000)])
+async def test_render_uses_shared_slot_and_persists_public_video(composition_case, monkeypatch, tmp_path, duration, frames):
+    """默认支持短片、超过旧 120 秒限制及恰好 5 分钟的成片；完整渲染上传后返回并清理。"""
+    settings = Settings(_env_file=None)
     slot = asyncio.Semaphore(1)
     runtime = SimpleNamespace(settings=settings, store=SimpleNamespace(root=tmp_path),
                               overlays=SimpleNamespace(slot=slot), harness=SimpleNamespace(renderer="renderer"))
@@ -376,7 +379,7 @@ async def test_render_uses_shared_slot_and_persists_public_video(composition_cas
         return runtime
     async def render(renderer, overlay, work):
         """捕获渲染时名额状态与音频全长。"""
-        assert slot.locked() and overlay.frames == 240
+        assert slot.locked() and overlay.frames == frames
         work.mkdir(parents=True)
         output = work / "overlay.webm"
         output.write_bytes(b"video")
@@ -391,8 +394,10 @@ async def test_render_uses_shared_slot_and_persists_public_video(composition_cas
     monkeypatch.setattr(remotion, "render_overlay", render)
     monkeypatch.setattr(remotion, "upload_public", upload)
     monkeypatch.setattr(remotion, "ZosSettings", lambda: object())
-    result = await remotion.render("task", case(composition_case), 10)
-    assert result["duration"] == 8 and result["frames"] == 240
+    data = case(composition_case)
+    data["duration_ms"] = duration * 1000
+    result = await remotion.render("task", data, 10)
+    assert result["duration"] == duration and result["frames"] == frames
     assert not (tmp_path / "composition-overlays" / "task").exists()
 
 
