@@ -168,6 +168,9 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                 messages=[{"role": "system", "content": '从标题中提取一个关键词，只返回 JSON：{"title_keyword":"关键词"}，无合适词时返回空字符串。'},
                           {"role": "user", "content": title}],
             )
+        logging.getLogger("uvicorn.error").info(
+            "切片模型输出 stage=title_keywords attempt=1 content=%r",
+            response.choices[0].message.content if response.choices else None)
         try:
             keyword = json.loads(response.choices[0].message.content).get("title_keyword", "")
             return {"title_keyword": keyword if isinstance(keyword, str) else ""}
@@ -355,7 +358,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
         for i, (a, b) in enumerate(zip(text_edges, text_edges[1:]), 1)
     ]
     trace.update(candidate_clauses=listing, filtered_boundaries=filtered_boundaries,
-                 selected_boundaries_after=[], keyword_candidates=[], model_elapsed_ms={})
+                 selected_boundaries_after=[], keyword_candidates={}, model_elapsed_ms={})
     segments, rejected = [], 0
     # 模型依次选切点、提关键词；超长片段随后由代码按安全边界切分。
     with OpenAI(base_url=base_url, api_key=key, timeout=config.llm_timeout_seconds, max_retries=config.llm_max_retries) as client:
@@ -376,45 +379,76 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                 content = listing
             elif stage == "keywords":
                 prompt = (
-                    '为短视频素材召回提取关键词，只返回 JSON：{"keywords":[[],["词"],[]]}。'
-                    "全篇关键词总数不限，逐段判断是否有值得检索画面的具体对象，无合适对象时留空，不凑词。"
+                    '为短视频素材召回提取关键词，只返回 JSON 对象。'
+                    "全篇关键词总数不限，逐段判断是否有值得检索画面的具体对象，无合适对象时省略该编号，不凑词。"
                     f"每段最多1个词，每词最多{keyword_max_length}字；"
                     "优先选择本段核心的具体名词或名词短语，如产品、动物、人物、食材、部位、工具、场景。"
                     "保留有助于区分画面的必要修饰语，例如原文连续出现的‘散养的土鸡’；‘蛋清’‘蛋黄’也适合召回。"
                     "不要只提取‘散养’‘新鲜’‘饱满’等动作或属性，也不要选‘囤一点’等营销引导。"
                     "同一对象在不同片段中可重复选择，不为全篇去重而遗漏该段核心对象。"
-                    "输出数组长度必须等于输入片段数，第i项只对应第i段，空数组不能省略。"
+                    "keywords 为片段编号到关键词的对象，键必须是输入 segment_id 的十进制字符串，值为单个关键词字符串。"
+                    "只返回有关键词的编号，无关键词的片段可省略；不能改编号或把其他片段的词填到该编号。"
                     "逐项确认词在该段内连续出现，保留大小写和全半角，不改写、跨标点拼接或借用其他段的词。"
-                    "自检段数、每段词数、词长和原文匹配。只输出纯JSON，无Markdown或解释。"
+                    "自检编号、词长和原文匹配。只输出纯JSON，无Markdown或解释。"
                 )
-                content = [s["text"] for s in segments]
+                content = [{"segment_id": s["segment_id"], "text": s["text"]} for s in segments]
+                keyword_ids = {str(s["segment_id"]) for s in segments}
+                example = {"keywords": {"1": "原文关键词"}}
                 if title is not None:
                     content = {"title": title, "segments": content}
+                    example["title_keyword"] = ""
                     prompt += (
                         '本次输入为含 title 和 segments 的对象，keywords 只对应 segments。'
                         '另从 title 按上述提词规则选一个关键词，返回同级 title_keyword 字符串，'
                         '必须在标题中连续出现；标题为空或无合适关键词时返回空字符串。'
-                        '完整输出为 {"keywords":[[],["词"],[]],"title_keyword":"标题关键词"}。'
                     )
+                prompt += 'JSON 格式示例（全部无关键词时 keywords 返回空对象）：' + json.dumps(example, ensure_ascii=False)
             messages = [
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": json.dumps(content, ensure_ascii=False)},
             ]
             started = perf_counter()
             try:
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    temperature=0.2,
-                    response_format={"type": "json_object"},
-                )
+                for attempt in range(6):
+                    response = client.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        temperature=0.2,
+                        response_format={"type": "json_object"},
+                    )
+                    raw = response.choices[0].message.content if response.choices else None
+                    logging.getLogger("uvicorn.error").info(
+                        "切片模型输出 stage=%s attempt=%s content=%r", stage, attempt + 1, raw)
+                    try:
+                        output = _json_output(response)
+                        if stage == "boundaries":
+                            ids = output.get("boundaries_after")
+                            if not isinstance(ids, list) or any(type(n) is not int or not 1 <= n < len(listing) for n in ids):
+                                raise RuntimeError("模型 boundaries_after 必须为有效分句编号数组，不含最后一句。")
+                        else:
+                            if title is not None:
+                                title_keyword = _check_title_keyword(
+                                    output.get("title_keyword"), title, keyword_max_length, "title_keyword")
+                            keywords = output.get("keywords")
+                            if (
+                                not isinstance(keywords, dict)
+                                or any(key not in keyword_ids or not isinstance(word, str) for key, word in keywords.items())
+                            ):
+                                raise RuntimeError(
+                                    f"模型 keywords 必须为片段编号到字符串的对象，编号须为 1～{len(segments)} 的十进制字符串，"
+                                    "不能带前导零；无关键词可省略该编号。")
+                        break
+                    except RuntimeError as exc:
+                        if attempt == 5:
+                            raise
+                        messages = [*messages,
+                                    {"role": "assistant", "content": raw if isinstance(raw, str) else ""},
+                                    {"role": "user", "content": f"上次结果校验失败：{exc} 请修正并重新返回完整 JSON 对象。"}]
+                        logging.getLogger("uvicorn.error").warning(
+                            "切片结果纠错 stage=%s retry=%s error=%s", stage, attempt + 1, exc)
             finally:
                 trace["model_elapsed_ms"][stage] = round((perf_counter() - started) * 1000, 1)
-            output = _json_output(response)
             if stage == "boundaries":
-                ids = output.get("boundaries_after")
-                if not isinstance(ids, list) or any(type(n) is not int or not 1 <= n < len(listing) for n in ids):
-                    raise RuntimeError("模型 boundaries_after 必须为有效分句编号数组，不含最后一句。")
                 trace["selected_boundaries_after"] = sorted(set(ids))
                 edges = [0, *[candidate_edges[n] for n in trace["selected_boundaries_after"]], len(chars)]
                 spans = list(zip(edges, edges[1:]))
@@ -444,19 +478,10 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                         }
                     )
             elif stage == "keywords":
-                if title is not None:
-                    title_keyword = _check_title_keyword(
-                        output.get("title_keyword"), title, keyword_max_length, "title_keyword")
-                groups = output.get("keywords")
-                if (
-                    not isinstance(groups, list)
-                    or len(groups) != len(segments)
-                    or any(not isinstance(g, list) or any(not isinstance(w, str) for w in g) for g in groups)
-                ):
-                    raise RuntimeError("模型关键词数组必须与片段一一对应且元素为字符串。")
-                trace["keyword_candidates"] = groups
-                # 单次扫描选最靠前的有效词；同位置保留首个候选，其余候选均计为拒绝。
-                for item, candidates in zip(segments, groups):
+                trace["keyword_candidates"] = keywords
+                for item in segments:
+                    key = str(item["segment_id"])
+                    candidates = [keywords[key]] if key in keywords else []
                     item["keyword"] = _pick_keyword(item["text"], candidates, keyword_max_length)
                     rejected += len(candidates) - bool(item["keyword"])
                     # 有关键词即重点句 2，否则为普通句 1；CTA 需语义判断，不标注。
