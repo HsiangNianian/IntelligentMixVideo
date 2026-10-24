@@ -283,18 +283,24 @@ style's own file.
 - **Safety**: an overlay render or text preflight whose code or parameters name a library font this host has not
   cached fetches it first and otherwise fails with `font_unavailable` instead of silently drawing the default font.
 
-Chrome startup has a separate 90-second deadline: the locked Remotion 4.0.523
+Chrome startup has a separate 90-second deadline: the locked Remotion 4.0.534
 renderer hardcodes 25 seconds, so `remotion/patches/` carries a Bun dependency patch
 for both CommonJS and ESM builds. Run `bun install --frozen-lockfile` in the renderer
 directory to apply it after checkout; when upgrading Remotion, reassess the patch.
-The outer render deadline (900 seconds for overlays) still covers browser startup
+The outer render deadline (1800 seconds for overlays by default) still covers browser startup
 and rendering; this change does not alter per-frame render timeouts.
+
+Remotion 4.0.534 supports VP9 parallel encoding and shared-memory capture without GPU access.
+Install its matching Headless Shell outside the sandbox with `ensureBrowser()` and point
+`IMV_BROWSER_EXECUTABLE` at the returned absolute binary path; an existing system Chrome path is not
+automatically replaced. The actual render records `parallel_encoding` and `shared_memory_capture` per
+chunk. Rendering defaults live in `settings.py`; `.env.example` lists the deployment resource reserves.
 
 The isolation is Linux-only: `POST /works`, a parameter patch on a pre-composition
 (PR74) version or on a composed version whose player bundle predates injected defaults
 (no `/* imv-preview-protocol N */` first line) sent to `POST /works/{id}/messages`, the retry of such a parameter job and
 `POST /api/sprites/publish` return 503 naming the unsupported platform or the missing
-`bwrap`, `prlimit` or `node` before anything is queued, so on macOS the service starts but
+`bwrap`, `prlimit`, `taskset` or `node` before anything is queued, so on macOS the service starts but
 cannot generate templates. A parameter patch on a composed (PR76) version whose bundle
 reads injected defaults never needs the sandbox (`publication.revisable`; an older bundle
 would keep showing its compiled defaults, so that patch is queued, rendered and its bundle
@@ -561,7 +567,7 @@ middle frame of the published preview length, which the Sprite still reads as it
 frames, so short subtitles neither flicker nor run animation code in fewer frames than it was accepted at. The time is
 `effect_total_frames`, 0.5 to 120 seconds and the output's frame count, whatever length was previewed when the Sprite
 was generated. `sprite_render.py` renders the effect in one overlay worker run that writes consecutive chunks of at
-most 30 seconds as frame ranges of the same composition (instances keep their absolute timing, so animations continue
+most 15 seconds as frame ranges of the same composition (instances keep their absolute timing, so animations continue
 across a boundary) and joins them with `ffmpeg -c copy`, then re-probes the frame count and alpha flag; the bus never
 splits a request. A multi-line text effect groups up to `line_count` consecutive cues instead, starting a new group when
 a cue's `sentence` changes (when both cues give one), or when one more line would exceed the text parameter's
@@ -659,7 +665,7 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   run, each loaded in turn on the same page, under one deadline: the default validation timeout, or 5 seconds per
   distinct text plus 10 per Sprite when that is longer; the sandbox CPU cap grows with that deadline like an overlay
   render's. It is a geometric measurement, not a visual review.
-- **Acceptance**: also a 503 when ZOS, ffprobe, bubblewrap, prlimit, Node, the browser or the managed fonts are
+- **Acceptance**: also a 503 when ZOS, ffprobe, bubblewrap, prlimit, taskset, Node, the browser or the managed fonts are
   missing (the isolated renderer is Linux-only), instead of accepting tasks that can only fail later. An empty
   `placements` (`no_placements`) or a `spriteId` that is not published (`sprite_missing`) is a 422.
 - **Layout**: every asset must share width/height/fps. Clips are stacked in request order on one canvas (the first
@@ -675,7 +681,7 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   (VP9, size, fps, frame count, alpha tag) before uploading.
 - **Execution**: `overlay_render.py` plans, `remotion/overlay-worker.mjs` renders in the bwrap sandbox
   (`IMV_OVERLAY_RENDER_TIMEOUT_SECONDS`, default 1800 seconds / 30 minutes), `overlay_service.py` owns the MySQL `remotion_overlay_renders` task table,
-  up to three renders at a time (each slot covers only the render: the remote audio probe before it and the ZOS upload after it
+  up to six renders at a time by default (`IMV_OVERLAY_TASK_CONCURRENCY`; each slot covers only the render: the remote audio probe before it and the ZOS upload after it
   run outside, so a slow network never delays queued renders), recovery of unfinished tasks and pending notifications
   when the runtime is first built
   (`routes.runtime_for`, oldest first; a damaged row is logged and skipped, and the overlay routes retry if the table
@@ -688,11 +694,25 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   failure and releases the shared render slot instead of waiting for the full rendering deadline. The private worker
   log records browser startup/connection and sparse rendered/encoded frame counts; API `assembling` remains the
   enclosing video-composition stage and includes waiting for this slot.
-- **Cost**: a 1080×1920 frame takes about 0.4–1 s on one Chrome tab (software GL), so a 120 s overlay at 30 FPS needs
-  roughly 25–60 minutes and may exceed the default 30-minute deadline. Adjust `IMV_OVERLAY_RENDER_TIMEOUT_SECONDS`
-  (at most 3600) for the measured render cost, or lower the length. The single VP9 encoder process and Chrome's GL process each need about
-  0.9 CPU seconds per frame, so the sandbox's per-process CPU cap is the render timeout times the host's cores
-  (never below the 300 s of the short validation workers) instead of a fixed 300 s.
+- **Performance**: `IMV_OVERLAY_FRAME_CONCURRENCY` controls pages per chunk (default 1), independently of task slots.
+  `IMV_OVERLAY_CHUNK_CONCURRENCY` caps simultaneous chunks within one video at 6. Single Sprites, full overlays and
+  video compositions share fixed 15-second chunks (`IMV_OVERLAY_CHUNKED=true` by default for the latter two).
+  Videos up to 15 seconds use one chunk; the final chunk contains the remaining frames.
+  Boundaries preserve every frame exactly once.
+  All videos share `IMV_OVERLAY_GLOBAL_CHUNK_CONCURRENCY=36`, allowing six videos with six chunks each when resources permit; admission reduces per-video chunk concurrency to fit
+  the CPU/page and memory budgets. `IMV_RENDER_CPU_RESERVE_PERCENT=25` chooses a common CPU affinity subset
+  inherited by every sandbox worker and its descendants, respecting parent cgroup quotas. Memory admission leaves
+  `IMV_RENDER_MEMORY_RESERVE_PERCENT=25` of effective host/cgroup memory, reserving
+  `IMV_OVERLAY_CHUNK_MEMORY_MB=1024` per page plus one extra unit per video. This is an estimate, not an allocation cap;
+  production should also configure systemd `MemoryHigh`/`MemoryMax` limits for the Python service and its descendants.
+  Waiting for resources is bounded by `IMV_OVERLAY_RESOURCE_WAIT_SECONDS=300`; cancellation and failure release grants.
+  `IMV_OVERLAY_VP9_CPU_USED` and `IMV_OVERLAY_VP9_THREADS` optionally tune the actual VP9 encoder; unset values
+  retain Remotion defaults. All paths share the same worker and copy-only join, preserving absolute animation time.
+  Private `performance.json` and the final `Remotion performance` service log separate planning, queue wait, text fit,
+  resource wait/granted chunks/reserved memory, preparation, worker, probe, join and upload. The worker records bundle/browser/composition setup and per-chunk
+  wall time. With parallel encoding, `rendered_ms` includes waiting for pre-encoding, and `encoded_ms` is only the
+  final mux; compare wall time rather than interpreting it as the complete encoding cost. Render deadlines and the
+  timeout-times-CPU per-process cap remain in force. Use measured timings for capacity planning.
 
 ## Code diagnostics
 
