@@ -172,6 +172,9 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                 messages=[{"role": "system", "content": '从标题中提取一个关键词，只返回 JSON：{"title_keyword":"关键词"}，无合适词时返回空字符串。'},
                           {"role": "user", "content": title}],
             )
+        logging.getLogger("uvicorn.error").info(
+            "切片模型输出 stage=title_keywords attempt=1 content=%r",
+            response.choices[0].message.content if response.choices else None)
         try:
             keyword = json.loads(response.choices[0].message.content).get("title_keyword", "")
             return {"title_keyword": keyword if isinstance(keyword, str) else ""}
@@ -365,6 +368,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     with OpenAI(base_url=base_url, api_key=key, timeout=config.llm_timeout_seconds, max_retries=config.llm_max_retries) as client:
         for stage in ("boundaries", "keywords"):
             diagnostics["stage"] = stage
+            response_format = {"type": "json_object"}
             if stage == "boundaries":
                 prompt = (
                     '将口播文案切成短句画面，只返回 JSON：{"boundaries_after":[1,3]}。'
@@ -400,30 +404,75 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                         '必须在标题中连续出现；标题为空或无合适关键词时返回空字符串。'
                         '完整输出为 {"keywords":[[],["词"],[]],"title_keyword":"标题关键词"}。'
                     )
+                properties = {"keywords": {
+                    "type": "array", "minItems": len(segments), "maxItems": len(segments),
+                    "items": {"type": "array", "maxItems": 1, "items": {"type": "string"}},
+                }}
+                if title is not None:
+                    properties["title_keyword"] = {"type": "string"}
+                response_format = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "segmentation_keywords", "strict": True,
+                        "schema": {"type": "object", "properties": properties,
+                                   "required": list(properties), "additionalProperties": False},
+                    },
+                }
             messages = [
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": json.dumps(content, ensure_ascii=False)},
             ]
             started = perf_counter()
             try:
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    temperature=0.2,
-                    response_format={"type": "json_object"},
-                )
+                for attempt in range(6):
+                    response = client.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        temperature=0.2,
+                        response_format=response_format,
+                    )
+                    raw = response.choices[0].message.content if response.choices else None
+                    logging.getLogger("uvicorn.error").info(
+                        "切片模型输出 stage=%s attempt=%s content=%r", stage, attempt + 1, raw)
+                    if stage == "keywords":
+                        diagnostics["keyword_response"] = {
+                            "expected_segment_count": len(segments), "response": raw,
+                        }
+                    try:
+                        output = _json_output(response)
+                        if stage == "boundaries":
+                            ids = output.get("boundaries_after")
+                            if not isinstance(ids, list) or any(type(n) is not int or not 1 <= n < len(listing) for n in ids):
+                                raise RuntimeError("模型 boundaries_after 必须为有效分句编号数组，不含最后一句。")
+                        else:
+                            if title is not None:
+                                title_keyword = _check_title_keyword(
+                                    output.get("title_keyword"), title, keyword_max_length, "title_keyword")
+                            groups = output.get("keywords")
+                            diagnostics["keyword_response"].update(
+                                keywords_type=type(groups).__name__,
+                                keyword_group_count=len(groups) if isinstance(groups, list) else None,
+                            )
+                            if (
+                                not isinstance(groups, list)
+                                or len(groups) != len(segments)
+                                or any(not isinstance(g, list) or any(not isinstance(w, str) for w in g) for g in groups)
+                            ):
+                                raise RuntimeError(
+                                    f"模型 keywords 必须为 {len(segments)} 项数组，每项为字符串数组，无关键词时保留空数组。"
+                                    f"实际项数：{len(groups) if isinstance(groups, list) else '非数组或缺失'}。")
+                        break
+                    except RuntimeError as exc:
+                        if attempt == 5:
+                            raise
+                        messages = [*messages,
+                                    {"role": "assistant", "content": raw if isinstance(raw, str) else ""},
+                                    {"role": "user", "content": f"上次结果校验失败：{exc} 请修正并重新返回完整 JSON 对象。"}]
+                        logging.getLogger("uvicorn.error").warning(
+                            "切片结果纠错 stage=%s retry=%s error=%s", stage, attempt + 1, exc)
             finally:
                 trace["model_elapsed_ms"][stage] = round((perf_counter() - started) * 1000, 1)
-            if stage == "keywords":
-                diagnostics["keyword_response"] = {
-                    "expected_segment_count": len(segments),
-                    "response": response.choices[0].message.content if response.choices else None,
-                }
-            output = _json_output(response)
             if stage == "boundaries":
-                ids = output.get("boundaries_after")
-                if not isinstance(ids, list) or any(type(n) is not int or not 1 <= n < len(listing) for n in ids):
-                    raise RuntimeError("模型 boundaries_after 必须为有效分句编号数组，不含最后一句。")
                 trace["selected_boundaries_after"] = sorted(set(ids))
                 edges = [0, *[candidate_edges[n] for n in trace["selected_boundaries_after"]], len(chars)]
                 spans = list(zip(edges, edges[1:]))
@@ -453,20 +502,6 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                         }
                     )
             elif stage == "keywords":
-                if title is not None:
-                    title_keyword = _check_title_keyword(
-                        output.get("title_keyword"), title, keyword_max_length, "title_keyword")
-                groups = output.get("keywords")
-                diagnostics["keyword_response"].update(
-                    keywords_type=type(groups).__name__,
-                    keyword_group_count=len(groups) if isinstance(groups, list) else None,
-                )
-                if (
-                    not isinstance(groups, list)
-                    or len(groups) != len(segments)
-                    or any(not isinstance(g, list) or any(not isinstance(w, str) for w in g) for g in groups)
-                ):
-                    raise RuntimeError("模型关键词数组必须与片段一一对应且元素为字符串。")
                 trace["keyword_candidates"] = groups
                 # 单次扫描选最靠前的有效词；同位置保留首个候选，其余候选均计为拒绝。
                 for item, candidates in zip(segments, groups):
