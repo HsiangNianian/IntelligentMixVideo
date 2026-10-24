@@ -10,14 +10,13 @@ previewed length, frozen on the middle frame with every line shown, for the text
 code that cannot animate in so few frames. The time is
 `effect_total_frames`, 0.5 to 120 seconds, whatever length the user previewed when generating the Sprite.
 `plan_sprite_render` checks the request and places the instances on the whole effect; `render_sprite` renders it in
-one overlay worker run that writes consecutive chunks of at most 30 seconds from the same composition (so every
+one overlay worker run that writes consecutive 15-second chunks from the same composition (so every
 animation continues across a chunk boundary) and joins them losslessly into one WebM. The async task, upload and
 callback are in `overlay_service.py`.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import shutil
 from pathlib import Path
@@ -27,15 +26,11 @@ from pydantic import ValidationError
 
 from ..template.schema import RemotionTrackEditor
 from .categories import LINE_START_MAX_FRAMES, LINE_STARTS_PROP, line_count
-from .overlay_render import Overlay, OverlayError, probe_overlay, render_overlay, run_overlay_worker, to_frames
+from .overlay_render import Overlay, OverlayError, chunk_ranges, overlay_ranges, render_overlay, to_frames
+from .settings import Settings
 from .placement import resolve
 from .renderer import Renderer
 from .tool_validation import MAX_RENDER_SECONDS, MIN_RENDER_SECONDS, STATIC_TEXT_SECONDS
-
-# Longer effects are written as consecutive chunks of at most this length and joined.
-CHUNK_SECONDS = 30
-# Joining copies the encoded chunks without re-encoding, so it is quick even for the longest effect.
-JOIN_SECONDS = 120
 
 
 def _editor(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite, text: str, keywords: list[str]) -> RemotionTrackEditor:
@@ -174,48 +169,13 @@ def plan_sprite_render(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite
     return Overlay(canvas.width, canvas.height, fps, total, instances)
 
 
-def chunk_ranges(frames: int, fps: int) -> list[list[int]]:
-    """Inclusive frame ranges of consecutive chunks of at most `CHUNK_SECONDS` covering `frames` frames."""
-    size = max(1, to_frames(CHUNK_SECONDS, fps))
-    return [[first, min(first + size, frames) - 1] for first in range(0, frames, size)]
+async def render_sprite(renderer: Renderer, overlay: Overlay, directory: Path, *, chunk_concurrency: int | None = None) -> Path:
+    """单 Sprite 始终按 15 秒分块；完整时钟、拼接与成片校验共用整段叠加视频实现。"""
+    return await render_overlay(renderer, overlay, directory, chunked=True, chunk_concurrency=chunk_concurrency)
 
 
-async def render_sprite(renderer: Renderer, overlay: Overlay, directory: Path) -> Path:
-    """Render the effect in the isolated worker and return the verified WebM; longer effects are joined from chunks.
-
-    All chunks come from one worker run (one bundle, one browser) rendering frame ranges of the same composition, so
-    instances keep their absolute timing and animations continue across chunk boundaries.
-    """
-    ranges = chunk_ranges(overlay.frames, overlay.fps)
-    if len(ranges) == 1:
-        return await render_overlay(renderer, overlay, directory)
-    await run_overlay_worker(renderer, overlay, directory, ranges)
-    paths = [directory / f"chunk-{index}.webm" for index in range(len(ranges))]
-    if not all(path.is_file() and path.stat().st_size > 0 for path in paths):
-        raise OverlayError("render_failed", "渲染器没有产出全部分块")
-    listing = directory / "chunks.txt"
-    listing.write_text("".join(f"file '{path}'\n" for path in paths), encoding="utf-8")
-    output = directory / "sprite.webm"
-    process = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-v", "error", "-nostdin", "-y", "-f", "concat", "-safe", "0", "-i", str(listing), "-c", "copy", str(output),
-        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        async with asyncio.timeout(JOIN_SECONDS):
-            _, stderr = await process.communicate()
-    except TimeoutError:
-        process.kill()
-        await process.wait()
-        raise OverlayError("render_failed", "字效视频拼接超时") from None
-    if process.returncode != 0 or not output.is_file():
-        raise OverlayError("render_failed", "字效视频拼接失败") from RuntimeError(stderr.decode(errors="replace")[-2000:])
-    # The joined file must hold every frame of the effect with its alpha channel, like each chunk.
-    await probe_overlay(output, overlay)
-    return output
-
-
-def join_problem(overlay: Overlay) -> str | None:
+def join_problem(overlay: Overlay, settings: Settings) -> str | None:
     """Name the joining tool when an effect needs more than one chunk and this host lacks it; shorter ones need none."""
-    if len(chunk_ranges(overlay.frames, overlay.fps)) == 1:
+    if len(overlay_ranges(overlay, settings, chunked=True)) == 1:
         return None
     return None if shutil.which("ffmpeg") else "ffmpeg"

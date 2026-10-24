@@ -1,9 +1,9 @@
 """Durable async tasks that render Remotion overlays and publish the video to ZOS.
 
-Two kinds of task share one table, three render slots and one recovery: a template overlay (the placements of
+Two kinds of task share one table, a configured render slot pool and one recovery: a template overlay (the placements of
 `/api/v1/overlay-renders`) and a single Sprite render (one `SpriteRenderInput` of `/api/sprites/render`).
 Accepting a task validates its input and stores it in the Remotion MySQL table; a background asyncio
-task renders (up to three at a time), uploads to ZOS, saves the result and notifies the callback. Unfinished tasks
+task renders (up to six at a time by default), uploads to ZOS, saves the result and notifies the callback. Unfinished tasks
 are re-run by `resume()` after a restart, and the terminal notification is retried with fixed delays. The
 planning rules live in `overlay_render.py` and `sprite_render.py`.
 """
@@ -14,6 +14,7 @@ import logging
 import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from time import perf_counter
 from uuid import uuid4
 
 import httpx
@@ -33,7 +34,10 @@ from .overlay_render import (
     environment_problem,
     fit_texts,
     fixed_end_seconds,
+    measured,
+    overlay_ranges,
     plan_overlay,
+    record_performance,
     render_overlay,
     resolve_total_seconds,
     shared_canvas,
@@ -41,6 +45,7 @@ from .overlay_render import (
 from .renderer import Renderer
 from .settings import Settings
 from .sprite_render import join_problem, plan_sprite_render, render_sprite
+from .render_resources import RenderCapacity
 from .store import NotFound, Store
 from .tables import overlay_renders
 
@@ -77,12 +82,13 @@ def prune_finished(store: Store, before: datetime) -> None:
 
 
 class OverlayRenders:
-    """Own the task table rows, three shared render slots and the background tasks of one runtime."""
+    """Own the task table rows, shared render slots and the background tasks of one runtime."""
 
     def __init__(self, store: Store, renderer: Renderer, settings: Settings) -> None:
         """Create no tasks; `resume()` starts recovery."""
         self.store, self.renderer, self.settings = store, renderer, settings
-        self.slot = asyncio.Semaphore(3)
+        self.slot = asyncio.Semaphore(settings.overlay_task_concurrency)
+        self.capacity = RenderCapacity(settings)
         self.tasks: set[asyncio.Task] = set()
         self.resumed = False
 
@@ -201,7 +207,7 @@ class OverlayRenders:
             overlay = plan_sprite_render(message, await asyncio.to_thread(self._publication, message.sprite_id))
         except OverlayError as exc:
             raise HTTPException(422, exc.message) from None
-        if missing := join_problem(overlay):
+        if missing := join_problem(overlay, self.settings):
             logger.error("单 Sprite 渲染环境缺少 %s，拒绝受理", missing)
             raise HTTPException(503, "叠加渲染环境不可用，请检查服务端环境")
         task_id = str(uuid4())
@@ -265,6 +271,7 @@ class OverlayRenders:
         start re-runs it (the upload key is the task ID, so a repeat overwrites the same object).
         """
         work = self.store.root / "overlays" / task_id
+        started = perf_counter()
         try:
             try:
                 await self._execute(task_id, work)
@@ -277,7 +284,9 @@ class OverlayRenders:
                 logger.exception("叠加渲染任务 %s 失败", task_id)
                 await self._fail(task_id, "internal_error", "叠加视频渲染或上传失败")
             finally:
-                shutil.rmtree(work, ignore_errors=True)
+                performance = await asyncio.to_thread(record_performance, work, total_ms=(perf_counter() - started) * 1000)
+                logger.info("Remotion performance task_id=%s %s", task_id, json.dumps(performance, ensure_ascii=False))
+                await asyncio.to_thread(shutil.rmtree, work, True)
         except SQLAlchemyError:
             logger.error("叠加渲染任务 %s 的状态暂无法保存，保留原状态，重启后重新执行", task_id)
             return
@@ -290,6 +299,8 @@ class OverlayRenders:
         holds a slot: the remote audio probe before it and the upload after it would otherwise keep
         every queued render waiting on the network.
         """
+        await asyncio.to_thread(shutil.rmtree, work, True)
+        started = perf_counter()
         _, data = self._read(task_id)
         request = data["request"]
         # The accepted input is rendered as stored; only the published Sprites are read again.
@@ -306,16 +317,21 @@ class OverlayRenders:
             )
             overlay = plan_overlay(placements, publications, total, self.settings.overlay_max_seconds)
             render, key = render_overlay, f"imv/overlay_render/{task_id}.webm"
-        async with self.slot:
+        plan_ms = (perf_counter() - started) * 1000
+        waiting = perf_counter()
+        requested = len(overlay_ranges(overlay, self.settings, chunked=True if render is render_sprite else None))
+        async with self.slot, self.capacity.claim(requested, self.settings.overlay_frame_concurrency) as grant:
+            queue_wait_ms = (perf_counter() - waiting) * 1000
             await self._persist(task_id, "rendering")
-            shutil.rmtree(work, ignore_errors=True)
-            await fit_texts(self.renderer, overlay, publications, work / "fit")
-            output = await render(self.renderer, overlay, work)
+            await asyncio.to_thread(record_performance, work, plan_ms=plan_ms, queue_wait_ms=queue_wait_ms,
+                                    resource_wait_ms=grant.wait_ms, granted_chunks=grant.chunks, reserved_memory_mb=grant.reserved_memory_mb)
+            await measured(work, "text_fit", fit_texts(self.renderer, overlay, publications, work / "fit"))
+            output = await render(self.renderer, overlay, work, chunk_concurrency=grant.chunks)
         await self._persist(task_id, "uploading")
-        urls = await asyncio.to_thread(
+        urls = await measured(work, "upload", asyncio.to_thread(
             upload_public, [(output, key, "video/webm")], ZosSettings(),
             HTTP_TIMEOUT_SECONDS,
-        )
+        ))
         await self._persist(task_id, "succeeded", video_url=urls[0])
 
     async def _fail(self, task_id: str, code: str, message: str) -> None:
