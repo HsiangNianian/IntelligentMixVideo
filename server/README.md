@@ -220,7 +220,7 @@ result = segment({
 - 只有 `title`：只调用一次模型，返回 `{"title_keyword":"关键词"}`，不校验内容，缺失或非字符串按空字符串处理。
 - 可选 `config` 只用于本次调用：`llm_base_url`、`llm_api_key`、`llm_model` 必填，`llm_timeout_seconds` 默认 120，`llm_max_retries` 默认 1（0～3）；Python 中传 `segment(payload, config=ClientSettings(...))`。`allow_insecure_llm_http` 由服务端决定，错误响应不回显输入。
 
-**模型输出格式**：有 ASR 时，提词调用使用 `response_format.type=json_schema`、`strict=true`，按首次切分后的片段数设置 `keywords` 的 `minItems=maxItems`；每项为空数组或一个字符串，传标题时另要求 `title_keyword` 字符串。模型及网关必须支持严格 Schema 和数组长度约束，不支持时请求失败，不自动回退普通 JSON。首次切点、仅标题提词与翻译仍用 `json_object`；本地原文校验、纠错重试和日志继续保留。
+**模型输出格式**：使用 `response_format.type=json_object`（兼容 DeepSeek JSON Output）。提词提示附按首次切分片段数生成的 JSON 模板，每个片段预留一个空数组，模型有词时填入一个原文字符串，无词保留空数组；传标题时附 `title_keyword`。这只是提示约束，不保证数组数量与内容正确，本地校验、最多 5 次纠错和原始输出日志继续保留。
 
 **切分规则**：模型先在标点处切句、再提关键词（正常两次调用；每个阶段的 JSON 或结果契约校验失败时，把上次回复与具体错误反馈给模型，最多额外纠错 5 次，仍失败则报错；网络错误沿用 SDK 重试），之后由代码把超过 8 个有效字（不计标点和空白）的片段继续切开，切点优先两侧至少 2 字，再按标点、结巴词边界、中点。`OpenAI`、`3.14%`、`1,299` 这类英文和数字串不拆开；`70，80，90后`、顿号枚举、`第1、2、3名`、`等2，3天` 这类数字列表整体保留，普通逗号两侧的数字（如 `99，3件`）不合并。关键词只留在完整包含它的子段上。字幕去标点由下游合成负责，保留问号和数字小数点。
 

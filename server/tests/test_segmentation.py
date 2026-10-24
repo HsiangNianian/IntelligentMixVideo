@@ -435,15 +435,8 @@ def test_model_cuts_keywords_and_protected_runs(model):
     assert result["trace"]["keyword_rejected_count"] == 5
     calls = model[1].chat.completions.create.call_args_list
     assert len(calls) == 7
-    assert calls[0].kwargs["response_format"] == {"type": "json_object"}
-    expected_format = {"type": "json_schema", "json_schema": {
-        "name": "segmentation_keywords", "strict": True,
-        "schema": {"type": "object", "properties": {"keywords": {
-            "type": "array", "minItems": 2, "maxItems": 2,
-            "items": {"type": "array", "maxItems": 1, "items": {"type": "string"}},
-        }}, "required": ["keywords"], "additionalProperties": False},
-    }}
-    assert all(call.kwargs["response_format"] == expected_format for call in calls[1:])
+    assert all(call.kwargs["response_format"] == {"type": "json_object"} for call in calls)
+    assert calls[1].kwargs["messages"][0]["content"].endswith(json.dumps({"keywords": [[], []]}))
     for previous, retry in zip(calls[1:-1], calls[2:]):
         messages = retry.kwargs["messages"]
         assert messages[:2] == previous.kwargs["messages"][:2]
@@ -523,9 +516,9 @@ def test_retrieval_keywords_have_no_global_quota(model):
     result = segment(payload("".join(texts), step=400))
     request = model[1].chat.completions.create.call_args.kwargs
     assert json.loads(request["messages"][1]["content"]) == texts
-    schema = request["response_format"]["json_schema"]["schema"]
-    assert schema["properties"]["keywords"]["minItems"] == len(texts)
-    assert schema["properties"]["keywords"]["maxItems"] == len(texts)
+    prompt = request["messages"][0]["content"]
+    assert f"本次恰有 {len(texts)} 个片段" in prompt
+    assert prompt.endswith(json.dumps({"keywords": [[] for _ in texts]}))
     assert [s["text"] for s in result["segments"]] == texts
     assert [s["keyword"] for s in result["segments"]] == keywords
     assert [s["level"] for s in result["segments"]] == [2 if word else 1 for word in keywords]
@@ -756,10 +749,8 @@ def test_title_keyword_shares_model_call(model, client, title, keyword):
     assert model[1].chat.completions.create.call_count == 2
     request = model[1].chat.completions.create.call_args.kwargs
     assert json.loads(request["messages"][1]["content"]) == {"title": title, "segments": ["甲乙丙丁"]}
-    schema = request["response_format"]["json_schema"]["schema"]
-    assert schema["required"] == ["keywords", "title_keyword"]
-    assert schema["properties"]["title_keyword"] == {"type": "string"}
-    assert schema["properties"]["keywords"]["minItems"] == schema["properties"]["keywords"]["maxItems"] == 1
+    assert request["response_format"] == {"type": "json_object"}
+    assert request["messages"][0]["content"].endswith(json.dumps({"keywords": [[]], "title_keyword": ""}))
 
 
 @pytest.mark.parametrize("extra", [{}, {"title": None}])
