@@ -14,8 +14,13 @@ const rendererRoot = process.env.IMV_RENDERER_ROOT ?? "/renderer";
 os.tmpdir = () => `${root}/.tmp`;
 const request = JSON.parse(await fs.readFile(`${root}/request.json`, "utf8"));
 const { composition, instances } = request;
+// Verbose capture/encoder diagnostics are only requested by the private local benchmark.
+const logLevel = request.log_level ?? "error";
 // Instances of the same Sprite (repeated placements, subtitle cues) share one module, so its source is bundled once.
 const codes = [...new Set(instances.map((item) => item.code))];
+// Durations are monotonic and contain no generated source, text, or asset URLs.
+const timings = { chunks: [] };
+const started = performance.now();
 
 /**
  * Generate the trusted entry: managed fonts, then one Sequence per placement in bottom-to-top order, each Sprite
@@ -63,41 +68,80 @@ try {
     await fs.writeFile(`${root}/Sprite${index}.tsx`, code);
   }
   await fs.writeFile(`${root}/entry.tsx`, entrypoint());
+  timings.source_prepare_ms = performance.now() - started;
+  let stageStarted = performance.now();
   const serveUrl = await bundle({
     entryPoint: `${root}/entry.tsx`,
     outDir: `${root}/bundle`,
     publicDir: `${root}/public`,
     webpackOverride: (config) => ({ ...config, cache: false }),
   });
+  timings.bundle_ms = performance.now() - stageStarted;
   console.info(`[overlay] ${new Date().toISOString()} opening browser`);
+  stageStarted = performance.now();
   browser = await openBrowser("chrome", {
     browserExecutable: request.browser,
-    logLevel: "error",
+    logLevel,
     chromiumOptions: { gl: "swangle" },
   });
+  timings.browser_ms = performance.now() - stageStarted;
   console.info(`[overlay] ${new Date().toISOString()} browser connected`);
-  const selected = await selectComposition({ serveUrl, id: "Overlay", inputProps: {}, puppeteerInstance: browser });
+  stageStarted = performance.now();
+  const selected = await selectComposition({ serveUrl, id: "Overlay", inputProps: {}, puppeteerInstance: browser, logLevel });
+  timings.select_ms = performance.now() - stageStarted;
   // A long single Sprite render asks for consecutive `ranges`, each written to its own file from the same bundle and
   // browser; the host joins them. Otherwise the whole output is one file.
   const ranges = request.ranges ?? [[0, composition.frames - 1]];
-  for (const [index, frameRange] of ranges.entries()) {
+  const chunkConcurrency = Math.min(request.chunk_concurrency ?? 1, ranges.length);
+  timings.chunk_concurrency = chunkConcurrency;
+  stageStarted = performance.now();
+  /** Render an absolute range without changing any instance clock; one failure ends the isolated worker. */
+  async function renderChunk(index) {
+    const frameRange = ranges[index];
     // Per-chunk progress separates a live render from browser startup without logging business content.
     let reportedWork = 0;
     const frameCount = frameRange[1] - frameRange[0] + 1;
+    const chunkStarted = performance.now();
+    const chunk = { frame_range: frameRange, rendered_ms: null, encoded_ms: null };
+    timings.chunks[index] = chunk;
     await renderMedia({
       serveUrl,
       composition: selected,
       inputProps: {},
       puppeteerInstance: browser,
-      logLevel: "error",
+      logLevel,
       timeoutInMilliseconds: 30000,
       frameRange,
       codec: "vp9",
       imageFormat: "png",
       pixelFormat: "yuva420p",
-      // Full-canvas filters and glows are heavy; one tab keeps Chrome within the sandbox's memory.
-      concurrency: 1,
-      onProgress: ({ renderedFrames, encodedFrames }) => {
+      // The host owns the page budget; Remotion validates it against the available CPU count.
+      concurrency: request.concurrency ?? 1,
+      disableSharedMemoryCapture: request.disable_shared_memory_capture ?? false,
+      disallowParallelEncoding: request.disallow_parallel_encoding ?? false,
+      // Only modify the actual VP9 encoder, never the final copy-only mux or shared-memory input threads.
+      ffmpegOverride: ({ args }) => {
+        if (args[args.indexOf("-c:v") + 1] !== "libvpx-vp9") return args;
+        chunk.shared_memory_capture = args.some((arg, i) => arg === "-f" && args[i + 1] === "remotionshm");
+        const vp9 = request.vp9 ?? {};
+        const flags = [];
+        for (const [name, flag] of [["cpu_used", "-cpu-used"], ["threads", "-threads"], ["row_mt", "-row-mt"]]) {
+          if (vp9[name] != null) flags.push(flag, String(typeof vp9[name] === "boolean" ? Number(vp9[name]) : vp9[name]));
+        }
+        return [...args.slice(0, -1), ...flags, args.at(-1)];
+      },
+      onStart: ({ parallelEncoding, resolvedConcurrency }) => {
+        chunk.parallel_encoding = parallelEncoding;
+        chunk.resolved_concurrency = resolvedConcurrency;
+      },
+      onProgress: ({ renderedFrames, encodedFrames, renderedDoneIn, encodedDoneIn }) => {
+        // Keep the raw progress API intervals: with parallel encoding, renderedDoneIn waits for
+        // frames AND the pre-encoder, while encodedDoneIn measures the final copy-only mux.
+        // elapsed_ms is the comparable wall time; encoded_ms alone is not total encoding cost.
+        if (renderedDoneIn != null) chunk.rendered_ms = renderedDoneIn;
+        if (encodedDoneIn != null) chunk.encoded_ms = encodedDoneIn;
+        chunk.rendered_frames = renderedFrames;
+        chunk.encoded_frames = encodedFrames;
         const completed = renderedFrames + encodedFrames;
         if (completed > reportedWork && (reportedWork === 0 || completed - reportedWork >= 100 || encodedFrames === frameCount)) {
           reportedWork = completed;
@@ -106,8 +150,17 @@ try {
       },
       outputLocation: request.ranges ? `${root}/chunk-${index}.webm` : `${root}/overlay.webm`,
     });
+    chunk.elapsed_ms = performance.now() - chunkStarted;
   }
-  await fs.writeFile(`${root}/renderer.json`, JSON.stringify({ frames: composition.frames }));
+  // Bound chunk jobs separately from pages per chunk. Their product is the per-video page budget.
+  let nextChunk = 0;
+  await Promise.all(Array.from({ length: chunkConcurrency }, async () => {
+    while (nextChunk < ranges.length) await renderChunk(nextChunk++);
+  }));
+  timings.render_ms = performance.now() - stageStarted;
+  timings.total_ms = performance.now() - started;
+  console.info(`[overlay-performance] ${JSON.stringify(timings)}`);
+  await fs.writeFile(`${root}/renderer.json`, JSON.stringify({ frames: composition.frames, performance: timings }));
 } catch (error) {
   // openBrowser can reject before returning a handle while Chrome still keeps Node alive.
   // End this isolated worker immediately; bubblewrap tears down its remaining child processes.
