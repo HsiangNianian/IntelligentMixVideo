@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { Tooltip } from "radix-ui";
 import { TemplateCollection, TemplateHome, type TemplateSelection } from "@/features/templates/TemplateHome";
-import { protobufListResponse, savedTemplate, templateSummary } from "./fixtures";
+import { jsonListResponse, savedTemplate, templateSummary } from "./fixtures";
 import { fetchMock, mockDesktop } from "./setup";
 
 // 场景：无效模板只可进入删除确认，取消后仍可选择同库有效模板。
@@ -58,7 +58,7 @@ test("模板确认删除且失败保留重试入口", async () => {
 test("主页只提供云端模板", async () => {
   const ipc: string[] = [];
   mockDesktop(async (command) => { ipc.push(command); throw new Error("意外 IPC 请求"); });
-  fetchMock.mockImplementation((async (_url, _init) => protobufListResponse([{ ...savedTemplate(), name: "共享模板" }])) as typeof fetch);
+  fetchMock.mockImplementation((async (_url, _init) => jsonListResponse([{ ...savedTemplate(), name: "共享模板" }])) as typeof fetch);
   const selections: TemplateSelection[] = [];
   render(<Tooltip.Provider><TemplateHome onSelect={(value) => selections.push(value)} onOpenRemotion={() => {}} /></Tooltip.Provider>);
   await screen.findByRole("button", { name: "选择模板：共享模板" });
@@ -78,7 +78,7 @@ test("主页只提供云端模板", async () => {
 // 场景：云端读取失败显示原因与重试入口，重试成功后显示模板。
 test("云端读取失败可重试", async () => {
   fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ detail: "云端暂不可用" }), { status: 503 }));
-  fetchMock.mockResolvedValueOnce(protobufListResponse([savedTemplate()]));
+  fetchMock.mockResolvedValueOnce(jsonListResponse([savedTemplate()]));
   render(<Tooltip.Provider><TemplateHome onSelect={() => {}} onOpenRemotion={() => {}} /></Tooltip.Provider>);
   await screen.findByText("云端模板读取失败");
   expect(screen.getByText("云端暂不可用")).toBeTruthy();

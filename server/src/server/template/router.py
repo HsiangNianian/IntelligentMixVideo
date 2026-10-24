@@ -1,9 +1,10 @@
-# 模板 API：在既有 /template 路由传输 Protobuf，复用业务校验和数据库操作。
+# 模板 API：接收 Protobuf 保存请求，默认返回 JSON，兼容旧客户端明确请求的 Protobuf 响应。
 
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from generated.imv.template.v1 import template_pb2 as pb
 from google.protobuf.json_format import MessageToDict, ParseDict
 from google.protobuf.message import DecodeError, Message
@@ -16,8 +17,9 @@ from .schema import Template, TemplateSave
 # 静态集合路径和 UUID 详情路径组成约定的四个接口，无效果目录接口。
 router = APIRouter(prefix="/template", tags=["模板管理"])
 PROTOBUF_MEDIA_TYPE = "application/x-protobuf"
-# OpenAPI 使用相同的二进制格式描述模板请求与成功响应。
+# 保存请求仍使用二进制，成功响应默认 JSON，并保留旧客户端的二进制格式。
 PROTOBUF_CONTENT = {PROTOBUF_MEDIA_TYPE: {"schema": {"type": "string", "format": "binary"}}}
+RESPONSE_CONTENT = {"application/json": {"schema": {"type": "object"}}, **PROTOBUF_CONTENT}
 
 
 def _template_message(template: Template) -> pb.TemplateRecord:
@@ -27,30 +29,34 @@ def _template_message(template: Template) -> pb.TemplateRecord:
     return ParseDict(data, pb.TemplateRecord())
 
 
-def _protobuf_response(message: Message, status_code: int = 200) -> Response:
-    """将生成的消息作为二进制响应发送，保留原有 HTTP 状态码。"""
-    return Response(
-        content=message.SerializeToString(),
-        status_code=status_code,
-        media_type=PROTOBUF_MEDIA_TYPE,
+def _template_response(request: Request, message: Message, status_code: int = 200) -> Response:
+    """旧客户端的单一 Protobuf Accept 保留二进制，其余请求默认 JSON，缓存按 Accept 区分。"""
+    if request.headers.get("accept", "").strip().lower() == PROTOBUF_MEDIA_TYPE:
+        return Response(
+            content=message.SerializeToString(), media_type=PROTOBUF_MEDIA_TYPE,
+            status_code=status_code, headers={"Vary": "Accept"},
+        )
+    return JSONResponse(
+        content=MessageToDict(message, always_print_fields_with_no_presence=True),
+        status_code=status_code, headers={"Vary": "Accept"},
     )
 
 
-@router.get("", response_class=Response, responses={200: {"content": PROTOBUF_CONTENT}})
-def list_templates() -> Response:
-    """返回共享模板库的 Protobuf 列表，空库返回空消息。"""
+@router.get("", response_class=JSONResponse, responses={200: {"content": RESPONSE_CONTENT}})
+def list_templates(request: Request) -> Response:
+    """默认返回共享模板库的 JSON 列表，空库返回空数组。"""
     templates = store.list_templates()
-    return _protobuf_response(pb.ListTemplatesResponse(
+    return _template_response(request, pb.ListTemplatesResponse(
         templates=[ParseDict(template.model_dump(mode="json", exclude_none=True), pb.TemplateSummary()) for template in templates],
     ))
 
 
 @router.post(
     "",
-    response_class=Response,
+    response_class=JSONResponse,
     responses={
-        200: {"content": PROTOBUF_CONTENT},
-        201: {"content": PROTOBUF_CONTENT},
+        200: {"content": RESPONSE_CONTENT},
+        201: {"content": RESPONSE_CONTENT},
     },
     openapi_extra={"requestBody": {"required": True, "content": PROTOBUF_CONTENT}},
 )
@@ -74,17 +80,17 @@ async def save_template(request: Request) -> Response:
         errors = [{**error, "loc": ("body", *error["loc"])} for error in exc.errors()]
         raise RequestValidationError(errors) from exc
     result = await run_in_threadpool(store.save_template, validated)
-    return _protobuf_response(
-        pb.SaveTemplateResponse(template=_template_message(result)),
+    return _template_response(
+        request, pb.SaveTemplateResponse(template=_template_message(result)),
         status_code=200 if validated.template_id else 201,
     )
 
 
-@router.get("/{template_id}", response_class=Response, responses={200: {"content": PROTOBUF_CONTENT}})
-def get_template(template_id: UUID) -> Response:
+@router.get("/{template_id}", response_class=JSONResponse, responses={200: {"content": RESPONSE_CONTENT}})
+def get_template(template_id: UUID, request: Request) -> Response:
     """按 URL 中的 UUID 返回模板及服务端效果快照。"""
     template = store.get_template(template_id)
-    return _protobuf_response(pb.GetTemplateResponse(template=_template_message(template)))
+    return _template_response(request, pb.GetTemplateResponse(template=_template_message(template)))
 
 
 @router.delete("/{template_id}", status_code=204)
