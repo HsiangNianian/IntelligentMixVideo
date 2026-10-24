@@ -114,11 +114,15 @@ def _check_title_keyword(keyword, title: str, max_length: int | None, field: str
 def segment(payload: dict, *, config: ClientSettings | None = None, diagnostics: dict | None = None) -> dict:
     """HTTP 与合成任务共用入口：记录阶段诊断，保留返回值和原异常，不记录凭据。"""
     diagnostics = {} if diagnostics is None else diagnostics
-    diagnostics.update(stage="input", trace={})
+    diagnostics.update(stage="input", trace={}, keyword_response=None)
     logger = logging.getLogger("uvicorn.error")
     try:
         result = _segment(payload, config=config, diagnostics=diagnostics)
     except Exception as exc:
+        # 仅失败时记录原始提词正文，并交给合成任务的既有错误日志持久化；不进入接口响应。
+        if diagnostics["stage"] == "keywords" and (keyword_response := diagnostics.get("keyword_response")):
+            diagnostics["trace"]["keyword_response"] = keyword_response
+            exc.keyword_response = keyword_response
         message, status = segmentation_error(exc)
         logger.warning("切片失败 stage=%s status=%s error=%s trace=%s",
                        diagnostics["stage"], status, message, diagnostics["trace"])
@@ -410,6 +414,11 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                 )
             finally:
                 trace["model_elapsed_ms"][stage] = round((perf_counter() - started) * 1000, 1)
+            if stage == "keywords":
+                diagnostics["keyword_response"] = {
+                    "expected_segment_count": len(segments),
+                    "response": response.choices[0].message.content if response.choices else None,
+                }
             output = _json_output(response)
             if stage == "boundaries":
                 ids = output.get("boundaries_after")
@@ -448,6 +457,10 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                     title_keyword = _check_title_keyword(
                         output.get("title_keyword"), title, keyword_max_length, "title_keyword")
                 groups = output.get("keywords")
+                diagnostics["keyword_response"].update(
+                    keywords_type=type(groups).__name__,
+                    keyword_group_count=len(groups) if isinstance(groups, list) else None,
+                )
                 if (
                     not isinstance(groups, list)
                     or len(groups) != len(segments)

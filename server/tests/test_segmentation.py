@@ -444,20 +444,56 @@ def test_invalid_model_boundaries_fail_without_fallback(model, client, ids):
     assert model[0].return_value.__exit__.call_count == 1
 
 
-def test_keyword_failure_logs_completed_boundary_trace(model, client, server_logs):
-    """关键词模型返回非法 JSON 时，服务端日志保留已选切点，错误响应不回显文案。"""
+@pytest.mark.parametrize("raw, message, shape", [
+    ("oops", "模型返回非法 JSON。", {}),
+    ('{"keywords":[["甲乙"]]}', "模型关键词数组必须与片段一一对应且元素为字符串。", {"keywords_type": "list", "keyword_group_count": 1}),
+    ('{"keywords":["甲乙",[]]}', "模型关键词数组必须与片段一一对应且元素为字符串。", {"keywords_type": "list", "keyword_group_count": 2}),
+    ('{"keywords":[[1],[]]}', "模型关键词数组必须与片段一一对应且元素为字符串。", {"keywords_type": "list", "keyword_group_count": 2}),
+    ('{"keywords":null}', "模型关键词数组必须与片段一一对应且元素为字符串。", {"keywords_type": "NoneType", "keyword_group_count": None}),
+])
+def test_keyword_failure_logs_completed_boundary_trace(model, client, server_logs, raw, message, shape):
+    """非法 JSON、组数和类型错误均保留原始回复与诊断，不重试、不在错误响应中回显。"""
     model[1].chat.completions.create.side_effect = [
         SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"boundaries_after":[1]}'))]),
-        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="oops"))]),
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=raw))]),
     ]
     response = client.post("/segmentations", json=payload("甲乙丙丁。戊己庚辛。", step=500))
     assert response.status_code == 502
-    assert response.json() == {"error": {"message": "模型返回非法 JSON。"}}
+    assert response.json() == {"error": {"message": message}}
     assert "stage=keywords" in server_logs.text
     assert "selected_boundaries_after': [1]" in server_logs.text
     assert "甲乙丙丁。" in server_logs.text
     assert "model_elapsed_ms" in server_logs.text
-    assert "oops" not in response.text
+    failure = next(record for record in server_logs.records if record.msg.startswith("切片失败"))
+    assert failure.args[-1]["keyword_response"] == {"expected_segment_count": 2, "response": raw, **shape}
+    assert model[1].chat.completions.create.call_count == 2
+    assert raw not in response.text
+
+
+def test_keyword_failure_response_is_saved_in_task_error_files(model):
+    """真实提词异常经过合成日志链路落盘，完整回复与计数可查，模型返回的凭证字段仍脱敏。"""
+    from server.video_composition import execution_log
+
+    model[1].chat.completions.create.side_effect = [
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=raw))])
+        for raw in ('{"boundaries_after":[1]}', '{"keywords":[["甲乙"]],"api_key":"hidden-model-value"}')
+    ]
+    with pytest.raises(RuntimeError, match="模型关键词数组") as caught:
+        segment(payload("甲乙丙丁。戊己庚辛。", step=500))
+    record = {"task_id": "keyword-failure", "stage": "segmentation", "status": "processing"}
+    execution_log.write_log(record, "step_failed", {
+        "step": "segmentation", **execution_log.exception_details(caught.value),
+    }, lambda: [])
+    folder = execution_log.LOG_ROOT / "video_composition" / record["task_id"]
+    entry, = json.loads((folder / "segmentation.json").read_text())["error_log"]
+    detail = (folder / entry["error"]["detail_log_path"]).read_text()
+    error = json.loads(detail)["error"]
+    assert error["exceptions"] == entry["error"]["exceptions"]
+    assert error["exceptions"][0]["keyword_response"] == {
+        "expected_segment_count": 2, "keywords_type": "list", "keyword_group_count": 1,
+        "response": {"keywords": [["甲乙"]], "api_key": "[REDACTED]"},
+    }
+    assert "hidden-model-value" not in detail
 
 
 def test_english_protection_preserves_model_cut(model):
