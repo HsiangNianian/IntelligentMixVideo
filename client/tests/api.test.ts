@@ -1,7 +1,7 @@
 /** 模板 HTTP 核心测试：请求契约、必要校验与错误展示；fetch 由 setup.ts 隔离。 */
 import { expect, spyOn, test } from "bun:test";
-import { fromBinary, fromJson, toJson } from "@bufbuild/protobuf";
-import { EffectTemplateEditorSchema, GetTemplateResponseSchema, SaveTemplateRequestSchema } from "@/generated/imv/template/v1/template_pb";
+import { fromBinary, fromJson, toBinary, toJson } from "@bufbuild/protobuf";
+import { EffectTemplateEditorSchema, GetTemplateResponseSchema, ListTemplatesResponseSchema, SaveTemplateRequestSchema, SaveTemplateResponseSchema } from "@/generated/imv/template/v1/template_pb";
 import { deleteTemplate, getTemplate, listTemplates, saveTemplate } from "@/features/templates/api";
 import { newDraft, toDraft, type RemotionClip } from "@/features/templates/model";
 import { jsonListResponse, jsonTemplateResponse, savedTemplate, templateSummary } from "./fixtures";
@@ -69,6 +69,33 @@ test("读取与删除遵循接口契约", async () => {
   expect(await deleteTemplate(saved.template_id)).toBeUndefined();
   expect(fetchMock.mock.calls[2][0]).toBe(`http://api.test:8000/template/${saved.template_id}`);
   expect(fetchMock.mock.calls[2][1]?.method).toBe("DELETE");
+});
+
+// 服务端新增顶层或嵌套字段时，列表、详情与保存仍能读取所有已知业务字段。
+test.each(["list", "get", "save"].flatMap((kind) => ["response", "nested"].map((location) => [kind, location])))
+  ("模板 JSON 响应容忍未来字段：%s / %s", async (kind, location) => {
+    const saved = savedTemplate();
+    const response = kind === "list" ? jsonListResponse([saved]) : jsonTemplateResponse(saved, kind === "get" ? "get" : "save");
+    const payload = await response.json();
+    const target = location === "response" ? payload : kind === "list" ? payload.templates[0] : payload.template.tracks.tracks[0].editor;
+    target.futureField = { value: "未来字段" };
+    fetchMock.mockResolvedValueOnce(Response.json(payload));
+    const actual = kind === "list" ? await listTemplates() : kind === "get" ? await getTemplate(saved.template_id) : await saveTemplate(toDraft(saved));
+    expect(actual).toEqual(kind === "list" ? [templateSummary(saved)] : saved);
+  });
+
+// 新客户端连接旧服务端时，按响应类型读取二进制，保存请求仍只发送一次。
+test.each(["list", "get", "save"])("模板兼容旧服务端的 Protobuf 响应：%s", async (kind) => {
+  const saved = savedTemplate();
+  const response = kind === "list" ? jsonListResponse([saved]) : jsonTemplateResponse(saved, kind === "get" ? "get" : "save");
+  const schema = kind === "list" ? ListTemplatesResponseSchema : kind === "get" ? GetTemplateResponseSchema : SaveTemplateResponseSchema;
+  const body = toBinary(schema, fromJson(schema, await response.json()));
+  fetchMock.mockResolvedValueOnce(new Response(Uint8Array.from(body), {
+    status: kind === "save" ? 201 : 200, headers: { "Content-Type": "application/x-protobuf" },
+  }));
+  const actual = kind === "list" ? await listTemplates() : kind === "get" ? await getTemplate(saved.template_id) : await saveTemplate(toDraft(saved));
+  expect(actual).toEqual(kind === "list" ? [templateSummary(saved)] : saved);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
 });
 
 const spriteId = "6f1c8a52-3d94-4b7e-9a10-2c5e8d7b4f31";
