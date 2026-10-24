@@ -403,7 +403,7 @@ The client is organized into pages, feature components, base UI components, and 
 
 See [Template Compatibility](#template-compatibility) for the data format and handling of old files. Template configuration is saved separately from preview media.
 
-The cloud template API accepts Protobuf binary save requests under `/template` and returns JSON for list, detail, and save responses. Responses follow the Protobuf JSON mapping (camelCase fields and RFC 3339 timestamps); clients must decode JSON responses. The root `buf.yaml` manages message definitions and compatibility checks; `buf.gen.yaml` generates client TypeScript and server Python code. After changing the protocol, run from the repository root:
+The cloud template API accepts Protobuf binary save requests under `/template` and defaults to JSON for list, detail, and save responses. Responses follow the Protobuf JSON mapping (camelCase fields and RFC 3339 timestamps); legacy clients sending only `Accept: application/x-protobuf` still receive binary responses. New clients decode either format by `Content-Type` and ignore unknown JSON fields. The root `buf.yaml` manages message definitions and compatibility checks; `buf.gen.yaml` generates client TypeScript and server Python code. After changing the protocol, run from the repository root:
 
 ```bash
 buf lint
