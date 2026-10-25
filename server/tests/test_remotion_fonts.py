@@ -38,6 +38,7 @@ from server.remotion_templates.overlay_render import Overlay, OverlayError, requ
 from server.remotion_templates.placement import resolve
 from server.remotion_templates.renderer import Renderer
 from server.remotion_templates.settings import Settings
+from server.remotion_templates.sprites import operator_parameters
 
 from server.template.schema import RemotionTrackEditor
 
@@ -616,6 +617,25 @@ def test_a_font_added_after_publication_can_be_chosen_for_an_older_sprite(store,
     assert config[name] == "Zed Display"
     with pytest.raises(ValueError, match=f"参数 {name} 不是字体库里的字体"):
         resolve(font_sprite(name), font_editor("Ghost Font", name))
+
+
+def test_an_unsampled_publication_still_lets_templates_change_its_font(store) -> None:
+    """没有渲染过参数边界样本的旧字效只读，但字体来自实时字体库、保存摆放时另行校验，所以在模板里仍可换字体；
+    其他参数保持只读，不能借字体例外修改字号。"""
+    from generated.imv.sprite.v1 import sprite_pb2 as sprite_pb
+
+    store.upload(minimal_font("Zed Display"), None, "", "device-1")
+    sprite = font_sprite()
+    sprite.ClearField("content_box")
+    access = {item.key: item.access for item in operator_parameters(sprite)}
+    assert access["fontFamily"] == sprite_pb.OPERATOR_ACCESS_VISIBLE_EDITABLE
+    assert access["fontSize"] == sprite_pb.OPERATOR_ACCESS_VISIBLE_READ_ONLY
+    config, _ = resolve(sprite, font_editor("Zed Display"))
+    assert config["fontFamily"] == "Zed Display"
+    with pytest.raises(ValueError, match="参数 fontSize 不可修改"):
+        resolve(sprite, RemotionTrackEditor.model_validate({"parameters": [{"key": "fontSize", "numberValue": 48}]}))
+    with pytest.raises(ValueError, match="不是字体库里的字体"):
+        resolve(sprite, font_editor("Ghost Font"))
 
 
 def sandbox_arguments(settings: Settings, tmp_path: Path) -> list[str]:

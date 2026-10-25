@@ -28,7 +28,7 @@ from sqlalchemy.exc import IntegrityError
 from starlette.concurrency import run_in_threadpool
 
 from . import boundary, sprite_store
-from .categories import HEX_COLOR, LINE_STARTS_PROP, category_problems, line_count, operator_message
+from .categories import FONT_PARAMETERS, HEX_COLOR, LINE_STARTS_PROP, category_problems, line_count, operator_message
 from .publication import current_bundle
 from .models import TemplateVersion
 from .object_store import PREFIX, ObjectStoreError
@@ -225,14 +225,18 @@ def sampled(sprite: pb.PublishedSprite) -> bool:
 
 
 def operator_parameters(sprite: pb.PublishedSprite) -> list[pb.SpriteParameter]:
-    """The parameters operators see; an unsampled publication's editable ones become read-only."""
+    """The parameters operators see; an unsampled publication's editable ones become read-only.
+
+    Font parameters are the exception: their values come from the shared font library and are checked live when a
+    placement is saved, so changing a font does not rely on the boundary samples an older publication never rendered.
+    """
     if sampled(sprite):
         return list(sprite.parameters)
     result = []
     for parameter in sprite.parameters:
         copy = pb.SpriteParameter()
         copy.CopyFrom(parameter)
-        if copy.access == pb.OPERATOR_ACCESS_VISIBLE_EDITABLE:
+        if copy.access == pb.OPERATOR_ACCESS_VISIBLE_EDITABLE and copy.key not in FONT_PARAMETERS:
             copy.access = pb.OPERATOR_ACCESS_VISIBLE_READ_ONLY
         result.append(copy)
     return result
