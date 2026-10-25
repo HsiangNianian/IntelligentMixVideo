@@ -694,7 +694,7 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   failure and releases the shared render slot instead of waiting for the full rendering deadline. The private worker
   log records browser startup/connection and sparse rendered/encoded frame counts; API `assembling` remains the
   enclosing video-composition stage and includes waiting for this slot.
-- **Performance**: `IMV_OVERLAY_FRAME_CONCURRENCY` controls pages per chunk (default 1), independently of task slots.
+- **Performance**: `IMV_OVERLAY_FRAME_CONCURRENCY` controls pages per chunk (default 4), independently of task slots.
   `IMV_OVERLAY_CHUNK_CONCURRENCY` caps simultaneous chunks within one video at 6. Single Sprites, full overlays and
   video compositions share fixed 15-second chunks (`IMV_OVERLAY_CHUNKED=true` by default for the latter two).
   Videos up to 15 seconds use one chunk; the final chunk contains the remaining frames.
@@ -706,8 +706,9 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   `IMV_OVERLAY_CHUNK_MEMORY_MB=1024` per page plus one extra unit per video. This is an estimate, not an allocation cap;
   production should also configure systemd `MemoryHigh`/`MemoryMax` limits for the Python service and its descendants.
   Waiting for resources is bounded by `IMV_OVERLAY_RESOURCE_WAIT_SECONDS=300`; cancellation and failure release grants.
-  `IMV_OVERLAY_VP9_CPU_USED` and `IMV_OVERLAY_VP9_THREADS` optionally tune the actual VP9 encoder; unset values
-  retain Remotion defaults. All paths share the same worker and copy-only join, preserving absolute animation time.
+  `IMV_OVERLAY_VP9_CPU_USED` and `IMV_OVERLAY_VP9_THREADS` default to 4 and 2 in code, respectively, and can be
+  overridden through environment variables. They only tune the actual VP9 encoder. All paths share the same
+  worker and copy-only join, preserving absolute animation time.
   Private `performance.json` and the final `Remotion performance` service log separate planning, queue wait, text fit,
   resource wait/granted chunks/reserved memory, preparation, worker, probe, join and upload. The worker records bundle/browser/composition setup and per-chunk
   wall time. With parallel encoding, `rendered_ms` includes waiting for pre-encoding, and `encoded_ms` is only the
