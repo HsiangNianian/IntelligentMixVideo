@@ -389,7 +389,8 @@ async def test_render_uses_shared_slot_and_persists_public_video(composition_cas
     async def render(renderer, overlay, work, *, chunk_concurrency):
         """捕获渲染时名额状态与音频全长。"""
         assert slot.locked() and overlay.frames == frames
-        assert chunk_concurrency == min(6, (frames + 449) // 450)
+        # 可用八核、默认每块四页，最多两块并行。
+        assert chunk_concurrency == min(2, (frames + 449) // 450)
         assert runtime.overlays.capacity.chunks == chunk_concurrency
         work.mkdir(parents=True, exist_ok=True)
         output = work / "overlay.webm"

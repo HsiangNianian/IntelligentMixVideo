@@ -416,7 +416,7 @@ def test_task_renders_uploads_and_notifies(service, callbacks) -> None:
 
 @pytest.mark.parametrize("concurrency", [1, 4, 8, 16])
 def test_frame_concurrency_reaches_the_worker(service, concurrency) -> None:
-    """服务端配置决定单条视频的渲染页数，任务请求不能覆盖它。"""
+    """服务端配置决定每块的渲染页数，任务请求不能覆盖它。"""
     overlays, renderer, _ = service
     overlays.settings.overlay_frame_concurrency = concurrency
     assert overlays.get(run_task(overlays))["status"] == "succeeded"
@@ -442,9 +442,11 @@ def test_chunk_and_vp9_settings_reach_the_worker(service, cpu_used, threads) -> 
 def test_memory_grant_reaches_the_actual_worker(service, monkeypatch):
     """180 秒分为 12 块，但余量只够两块并行时实际 worker 必须降到 2，不能仍然跑 6。"""
     overlays, renderer, _ = service
-    monkeypatch.setattr(render_resources, "memory_headroom", lambda reserve: 3 * 1024**3)
+    # 默认每块四页：两块共 8 GiB，加每视频额外 1 GiB。
+    monkeypatch.setattr(render_resources, "memory_headroom", lambda reserve: 9 * 1024**3)
     assert overlays.get(run_task(overlays, duration=180))["status"] == "succeeded"
     [request] = renderer.requests
+    assert request["concurrency"] == 4 and request["vp9"] == {"cpu_used": 4, "threads": 2}
     assert len(request["ranges"]) == 12 and request["chunk_concurrency"] == 2
     assert overlays.capacity.chunks == 0 and overlays.capacity.memory_units == 0
 

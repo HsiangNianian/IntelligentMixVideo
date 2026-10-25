@@ -12,13 +12,13 @@ from server import settings_plugins
 
 
 def test_render_concurrency_defaults_and_environment(monkeypatch):
-    """任务与帧并发独立读取环境变量，服务端默认允许六任务，单视频先保留一页。"""
+    """任务与帧并发独立读取环境变量，服务端默认允许六任务，每块四页。"""
     from server.remotion_templates.settings import Settings as RenderSettings
     from server.video_composition.settings import Settings as CompositionSettings
 
     for key in ("IMV_OVERLAY_FRAME_CONCURRENCY", "IMV_OVERLAY_TASK_CONCURRENCY", "COMPOSITION_CONCURRENCY"):
         monkeypatch.delenv(key, raising=False)
-    assert RenderSettings(_env_file=None).overlay_frame_concurrency == 1
+    assert RenderSettings(_env_file=None).overlay_frame_concurrency == 4
     assert RenderSettings(_env_file=None).overlay_task_concurrency == 6
     assert CompositionSettings.model_fields["composition_concurrency"].default == 6
     monkeypatch.setenv("IMV_OVERLAY_FRAME_CONCURRENCY", "16")
@@ -37,7 +37,7 @@ def test_chunking_defaults_and_optional_vp9_tuning(monkeypatch):
 
     defaults = Settings(_env_file=None)
     assert (defaults.overlay_chunked, defaults.overlay_chunk_concurrency) == (True, 6)
-    assert defaults.overlay_vp9_cpu_used is None and defaults.overlay_vp9_threads is None
+    assert (defaults.overlay_vp9_cpu_used, defaults.overlay_vp9_threads) == (4, 2)
     for name, value in {"CHUNKED": "true", "CHUNK_CONCURRENCY": "2", "VP9_CPU_USED": "0", "VP9_THREADS": "64"}.items():
         monkeypatch.setenv(f"IMV_OVERLAY_{name}", value)
     configured = Settings(_env_file=None)

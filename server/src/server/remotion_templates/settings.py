@@ -68,8 +68,8 @@ class Settings(ClientSettings, CommonSettings):
     # 整段透明视频默认最多渲染 30 分钟；不含等待名额、成片校验与上传，可由环境变量覆盖。
     overlay_max_seconds: int = Field(default=300, ge=1, le=600)
     overlay_render_timeout_seconds: int = Field(default=1800, ge=1, le=3600)
-    # 单条视频的浏览器渲染页数，与同时执行的渲染任务数分别控制。
-    overlay_frame_concurrency: int = Field(default=1, ge=1, le=64)
+    # 每块的浏览器渲染页数，与同时执行的渲染任务数分别控制。
+    overlay_frame_concurrency: int = Field(default=4, ge=1, le=64)
     overlay_task_concurrency: int = Field(default=6, ge=1, le=16)
     # 两条渲染路径共用固定 15 秒分块；不超过 15 秒只用一块。
     overlay_chunked: bool = True
@@ -80,8 +80,8 @@ class Settings(ClientSettings, CommonSettings):
     render_memory_reserve_percent: int = Field(default=25, ge=10, le=90)
     overlay_chunk_memory_mb: int = Field(default=1024, ge=128, le=16384)
     overlay_resource_wait_seconds: float = Field(default=300, gt=0, le=1800, allow_inf_nan=False)
-    overlay_vp9_cpu_used: int | None = Field(default=None, ge=0, le=8)
-    overlay_vp9_threads: int | None = Field(default=None, ge=1, le=64)
+    overlay_vp9_cpu_used: int | None = Field(default=4, ge=0, le=8)
+    overlay_vp9_threads: int | None = Field(default=2, ge=1, le=64)
     # 瞬时传输故障与上游限流/不可用会等待后重试；等待按次数翻倍，上限 30 秒。
     model_retries: int = Field(default=2, ge=0, le=5)
     model_retry_delay_seconds: float = Field(default=2.0, ge=0.1, le=30.0)
