@@ -1,5 +1,6 @@
 """隔离 HTTP 与 S3 验证成片、封面上传，并用真实 FFmpeg 核对第 3 帧。"""
 
+from contextlib import closing
 from pathlib import Path
 import shutil
 import subprocess
@@ -12,6 +13,24 @@ from server.video_composition import zos
 from server.video_composition.settings import ZosSettings
 
 from .conftest import S3Stub
+
+
+@pytest.mark.parametrize("mode", ["direct", "proxy", "no_proxy"])
+def test_storage_client_respects_environment_proxy(composition_settings, monkeypatch, mode):
+    """真实 SDK 覆盖无代理直连、环境代理和 NO_PROXY 绕过；不连接云端，TLS 始终开启。"""
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.lower(), raising=False)
+    proxy = "http://proxy.example.test:8080"
+    if mode != "direct":
+        monkeypatch.setenv("HTTPS_PROXY", proxy)
+    if mode == "no_proxy":
+        monkeypatch.setenv("NO_PROXY", "hangzhou7.zos.ctyun.cn")
+    settings = ZosSettings()
+    with closing(zos.storage_client(settings, 10)) as storage:
+        session = storage._endpoint.http_session
+        assert session._proxy_config.proxy_url_for(settings.zos_api_endpoint) == (proxy if mode == "proxy" else None)
+        assert session._verify is not False
 
 
 @pytest.mark.parametrize("denied_suffix", [None, ".mp4", ".png"])
@@ -70,7 +89,6 @@ def test_copy_video_publishes_video_and_frame(composition_settings, monkeypatch,
         assert kwargs["region_name"] == "hangzhou-7"
         assert kwargs["config"].s3["addressing_style"] == "virtual"
         assert kwargs["config"].request_checksum_calculation == "when_required"
-        assert kwargs["config"].proxies == {}
         return Storage()
 
     monkeypatch.setattr(zos.boto3, "client", storage_client)

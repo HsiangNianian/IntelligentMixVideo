@@ -42,13 +42,12 @@ def content_md5(request, **kwargs) -> None:
 
 
 def storage_client(settings: ZosSettings, timeout: float):
-    """ZOS 直连且保持 TLS 校验，避免继承 HTTP 代理导致大文件断流；有界超时，调用方负责关闭。"""
+    """ZOS 遵循进程代理与 NO_PROXY，保持 TLS 校验和有界超时；调用方负责关闭。"""
     client = boto3.client(
         "s3", endpoint_url=settings.zos_api_endpoint, region_name=settings.zos_region,
         aws_access_key_id=settings.zos_access_key_id.get_secret_value(),
         aws_secret_access_key=settings.zos_secret_access_key.get_secret_value(),
         config=Config(s3={"addressing_style": "path" if settings.zos_force_path_style else "virtual"},
-                      proxies={},
                       connect_timeout=timeout, read_timeout=timeout, retries={"max_attempts": 1},
                       request_checksum_calculation="when_required", response_checksum_validation="when_required"),
     )
