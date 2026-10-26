@@ -230,7 +230,7 @@ result = segment({
 
 **英文翻译**：`translate(result, title=None)` 把 `segment` 的结果一次模型调用译成英文（双语视频合成在切片后调用），模型配置只从服务端 `server/.env` 读取。返回副本，每个片段增加 `text_en`、`keyword_en`，传入 `title` 时增加 `title_en`、`title_keyword_en`。英文关键词复用中文关键词的校验但不限长度：片段词不在本段译文中时置空，标题词不在英文标题中时报错。段数或类型不符、片段译文为空、原标题非空而英文标题为空时直接报错，不重试。
 
-**日志**：HTTP 与视频合成共用服务端日志入口，完整切片记录阶段、切点、关键词与模型耗时；每次切片模型返回后、解析校验前，以 `切片模型输出` 记录阶段、调用次数（`attempt` 从 1 开始）与原始正文 `content`，包含失败结果和全部纠错回复，仅标题提词同样记录。日志含文案，按敏感数据管理。桌面写入 `backend/server.log`；原始模型正文不进入接口返回。提词最终失败时，`keyword_response` 保留最后一次原始回复、预期片段数及已解析的关键词类型和数量，并经既有脱敏写入任务 `segmentation.json` 与 `errors/*.log`。
+**日志**：HTTP 与视频合成共用服务端日志入口。INFO 只记录阶段、尝试次数、耗时与片段数；每次完整模型回复（含仅标题）和成功 `trace` 脱敏后写 DEBUG，排查时开启。纠错 WARNING 只记录阶段、次数与校验错误；最终失败 WARNING 保留脱敏诊断及最后一次模型回复。提词失败的 `keyword_response` 含最后回复、预期片段数及已解析的关键词类型和数量，继续脱敏写入任务 `segmentation.json` 与 `errors/*.log`，接口不回显。脱敏复用 `log_sanitization.py`，不修改模型纠错上下文或业务结果；DEBUG 和最终失败详情仍可能包含业务文案，按敏感数据管理。桌面日志位于 `backend/server.log`。
 
 `GET /api/settings/plugins` 只返回自动发现的公开描述与代码默认值，不读写服务端配置。一级模块通过 `settings_plugin.py` 导出 `SETTINGS_PLUGIN`，Schema 由自己的配置模型生成；公共层导入时扫描一次，无人工注册名单，重复 ID、坏描述和依赖导入失败直接报错。增删入口后重启后端并重新打开客户端设置；移除入口不删除客户端旧值。当前包含 Remotion Agent、上海 IMS/视频合成、切片、ASR 和服务启动入口；完整目录从入口的 `settings` 模型类生成 Debug Schema；`client_only=true` 只返回标记 `scope: "client"` 的 Agent 与 IMS，测试使用临时包文件验证发现与移除。此机制不自动注册业务路由，也不支持删除整个业务目录后免处理依赖；各模块仍须自行接入请求配置消费。
 

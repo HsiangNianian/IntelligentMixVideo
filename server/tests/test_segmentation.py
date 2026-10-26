@@ -68,15 +68,18 @@ def model(monkeypatch):
 
 
 @pytest.fixture
-def server_logs(caplog):
+def server_logs(caplog, request):
     """直接捕获 Uvicorn logger，兼容其他测试关闭日志传播的情况。"""
     logger = logging.getLogger("uvicorn.error")
+    propagate = logger.propagate
+    logger.propagate = False
     logger.addHandler(caplog.handler)
     try:
-        with caplog.at_level("INFO", logger=logger.name):
+        with caplog.at_level(getattr(request, "param", "INFO"), logger=logger.name):
             yield caplog
     finally:
         logger.removeHandler(caplog.handler)
+        logger.propagate = propagate
 
 
 @pytest.mark.parametrize(
@@ -481,7 +484,7 @@ def test_model_cuts_keywords_and_protected_runs(model, monkeypatch, invalid, tim
 
 
 @pytest.mark.parametrize("ids", [None, [True], [0], [2]])
-def test_invalid_model_boundaries_fail_without_fallback(model, client, ids):
+def test_invalid_model_boundaries_fail_without_fallback(model, client, server_logs, ids):
     """非法切点总共尝试两次仍失败则返回 502，不继续请求关键词，且关闭 SDK。"""
     model[1].chat.completions.create.side_effect = None
     model[1].chat.completions.create.return_value = SimpleNamespace(
@@ -490,6 +493,9 @@ def test_invalid_model_boundaries_fail_without_fallback(model, client, ids):
     response = client.post("/segmentations", json=payload("甲乙丙丁。戊己庚辛。", step=500))
     assert response.status_code == 502
     assert "boundaries_after" in response.json()["error"]["message"]
+    failure = next(record for record in server_logs.records if record.msg.startswith("切片失败"))
+    assert failure.args[-1]["model_response"] == {"boundaries_after": ids}
+    assert "切片模型输出" not in server_logs.text
     assert model[1].chat.completions.create.call_count == 2
     assert model[0].return_value.__exit__.call_count == 1
 
@@ -502,6 +508,7 @@ def test_invalid_model_boundaries_fail_without_fallback(model, client, ids):
     ('{"keywords":{"3":"甲乙"}}', "模型 keywords 必须为片段编号到字符串的对象，编号须为 1～2 的十进制字符串，不能带前导零；无关键词可省略该编号。", {"keywords_type": "dict", "keyword_group_count": 1}),
     ('{"keywords":null}', "模型 keywords 必须为片段编号到字符串的对象，编号须为 1～2 的十进制字符串，不能带前导零；无关键词可省略该编号。", {"keywords_type": "NoneType", "keyword_group_count": None}),
 ])
+@pytest.mark.parametrize("server_logs", ["INFO", "DEBUG"], indirect=True)
 def test_keyword_failure_logs_completed_boundary_trace(model, client, server_logs, raw, message, shape):
     """提词三次失败后记录最后回复与诊断，不残留前次类型信息、不回显到接口。"""
     model[1].chat.completions.create.side_effect = [
@@ -516,15 +523,22 @@ def test_keyword_failure_logs_completed_boundary_trace(model, client, server_log
     assert "甲乙丙丁。" in server_logs.text
     assert "model_elapsed_ms" in server_logs.text
     failure = next(record for record in server_logs.records if record.msg.startswith("切片失败"))
-    assert failure.args[-1]["keyword_response"] == {"expected_segment_count": 2, "response": raw, **shape}
+    logged_response = raw if raw == "oops" else json.loads(raw)
+    assert failure.args[-1]["keyword_response"] == {"expected_segment_count": 2, "response": logged_response, **shape}
     assert model[1].chat.completions.create.call_count == 4
     assert 'stage=boundaries attempt=1' in server_logs.text
-    assert all(f"stage=keywords attempt={attempt} content={raw!r}" in server_logs.text
-               for attempt in (2, 3))
+    outputs = [record for record in server_logs.records if record.msg.startswith("切片模型输出")]
+    if logging.getLogger("uvicorn.error").isEnabledFor(logging.DEBUG):
+        assert len(outputs) == 4
+        assert all(record.levelno == logging.DEBUG for record in outputs)
+        assert [record.args[-1] for record in outputs[-2:]] == [logged_response, logged_response]
+    else:
+        assert outputs == []
     assert raw not in response.text
 
 
-def test_keyword_failure_response_is_saved_in_task_error_files(model):
+@pytest.mark.parametrize("server_logs", ["INFO", "DEBUG"], indirect=True)
+def test_keyword_failure_response_is_saved_in_task_error_files(model, server_logs):
     """真实提词异常经过合成日志链路落盘，完整回复与计数可查，模型返回的凭证字段仍脱敏。"""
     from server.video_composition import execution_log
 
@@ -548,6 +562,9 @@ def test_keyword_failure_response_is_saved_in_task_error_files(model):
         "response": {"keywords": [["甲乙"]], "api_key": "[REDACTED]"},
     }
     assert "hidden-model-value" not in detail
+    assert "hidden-model-value" not in server_logs.text
+    assert "[REDACTED]" in server_logs.text
+    assert "hidden-model-value" in model[1].chat.completions.create.call_args.kwargs["messages"][-2]["content"]
 
 
 def test_english_protection_preserves_model_cut(model):
@@ -713,10 +730,11 @@ def test_group_id_counts_segments_within_asr_sentence(model, groups, expected):
     assert [s["group_id"] for s in result["segments"]] == expected
 
 
+@pytest.mark.parametrize("server_logs", ["INFO", "DEBUG"], indirect=True)
 def test_api_response_contract(model, client, server_logs):
-    """HTTP 响应保留原有统计契约，详细诊断只写入服务端日志。"""
+    """HTTP 契约不变，INFO 只有摘要，DEBUG 详情与原始回复均脱敏。"""
     model[1].chat.completions.create.side_effect = [
-        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(data)))])
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({**data, "api_key": "hidden-model-value"})))])
         for data in [{"boundaries_after": [1]}, {"keywords": {"1": "甲乙", "2": "戊己"}}]
     ]
     response = client.post("/segmentations", json=payload("甲乙。丙丁。戊己庚辛。", step=500))
@@ -756,10 +774,18 @@ def test_api_response_contract(model, client, server_logs):
         },
     }
     assert "切片成功" in server_logs.text
-    assert "'filtered_boundaries': [{'offset': 3, 'reason': 'min_duration_before'}]" in server_logs.text
-    assert "'selected_boundaries_after': [1]" in server_logs.text
-    assert "'keyword_candidates': {'1': '甲乙', '2': '戊己'}" in server_logs.text
-    assert "'model_elapsed_ms': {'boundaries':" in server_logs.text
+    assert "elapsed_ms=" in server_logs.text and "segment_count=2" in server_logs.text
+    assert "hidden-model-value" not in server_logs.text
+    info = "\n".join(record.getMessage() for record in server_logs.records if record.levelno >= logging.INFO)
+    assert "甲乙" not in info and "trace=" not in info and "content=" not in info
+    if logging.getLogger("uvicorn.error").isEnabledFor(logging.DEBUG):
+        assert "'filtered_boundaries': [{'offset': 3, 'reason': 'min_duration_before'}]" in server_logs.text
+        assert "'selected_boundaries_after': [1]" in server_logs.text
+        assert "'keyword_candidates': {'1': '甲乙', '2': '戊己'}" in server_logs.text
+        assert "'model_elapsed_ms': {'boundaries':" in server_logs.text
+        assert "[REDACTED]" in server_logs.text
+    else:
+        assert "切片详情" not in server_logs.text and "切片模型输出" not in server_logs.text
 
 
 @pytest.mark.parametrize("script,transcript,message", [
@@ -843,7 +869,7 @@ def test_no_title_keeps_response(model, client, extra):
     ({"title": "散养土鸡上新", "script": "不参与切分的文案", "asr_result": None}, ""),
     ({"title": ""}, ""),
 ])
-def test_title_only_calls_model_once(model, client, data, keyword):
+def test_title_only_calls_model_once(model, client, server_logs, data, keyword):
     """ASR 缺省或 null 时只提标题词，不切正文，不校验关键词的长度或原文匹配。"""
     model[1].chat.completions.create.side_effect = None
     model[1].chat.completions.create.return_value = SimpleNamespace(
@@ -851,6 +877,8 @@ def test_title_only_calls_model_once(model, client, data, keyword):
     response = client.post("/segmentations", json=data)
     assert response.status_code == 200
     assert response.json() == {"title_keyword": keyword}
+    assert "切片成功" in server_logs.text and "切片模型输出" not in server_logs.text
+    assert "散养土鸡" not in server_logs.text
     model[1].chat.completions.create.assert_called_once()
     assert model[1].chat.completions.create.call_args.kwargs["messages"][1]["content"] == data["title"]
     assert model[0].call_args.kwargs["max_retries"] == 0
@@ -866,8 +894,11 @@ def test_title_only_calls_model_once(model, client, data, keyword):
     ('{"title_keyword":["土鸡"]}', 200, {"title_keyword": ""}),
     ('{"title_keyword":{"word":"土鸡"}}', 200, {"title_keyword": ""}),
     ('{broken', 502, {"error": {"message": "模型标题提词响应格式无效。"}}),
+    ('{"title_keyword":"土鸡","api_key":"hidden-model-value"}', 200, {"title_keyword": "土鸡"}),
+    ('{"api_key":"hidden-model-value",broken', 502, {"error": {"message": "模型标题提词响应格式无效。"}}),
 ])
-def test_title_only_missing_keyword_and_broken_json(model, client, raw, status, expected):
+@pytest.mark.parametrize("server_logs", ["INFO", "DEBUG"], indirect=True)
+def test_title_only_missing_keyword_and_broken_json(model, client, server_logs, raw, status, expected):
     """标题词缺失或非字符串时保持空词；无法解析响应时明确失败且关闭客户端，不额外重试。"""
     model[1].chat.completions.create.side_effect = None
     model[1].chat.completions.create.return_value = SimpleNamespace(
@@ -876,6 +907,16 @@ def test_title_only_missing_keyword_and_broken_json(model, client, raw, status, 
     assert response.status_code == status and response.json() == expected
     model[1].chat.completions.create.assert_called_once()
     assert model[0].return_value.__exit__.call_count == 1
+    assert "hidden-model-value" not in server_logs.text
+    if status == 502:
+        failure = next(record for record in server_logs.records if record.msg.startswith("切片失败"))
+        assert failure.args[-1]["model_response"] == raw.replace('"hidden-model-value"', '[REDACTED]')
+    elif not logging.getLogger("uvicorn.error").isEnabledFor(logging.DEBUG):
+        assert "content=" not in server_logs.text and "trace=" not in server_logs.text
+    if logging.getLogger("uvicorn.error").isEnabledFor(logging.DEBUG):
+        assert "切片模型输出 stage=title_keywords" in server_logs.text
+        if "hidden-model-value" in raw:
+            assert "[REDACTED]" in server_logs.text
 
 
 @pytest.mark.parametrize("extra", [{}, {"title_keyword": None}, {"title_keyword": []},

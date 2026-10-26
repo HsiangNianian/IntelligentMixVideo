@@ -14,6 +14,7 @@ import jieba
 from pydantic import ValidationError
 from openai import APIError, APITimeoutError, OpenAI
 
+from ..log_sanitization import sanitize
 from .settings import ClientSettings, Settings
 
 jieba.setLogLevel(logging.WARNING)
@@ -121,8 +122,9 @@ def _check_title_keyword(keyword, title: str, max_length: int | None, field: str
 def segment(payload: dict, *, config: ClientSettings | None = None, diagnostics: dict | None = None) -> dict:
     """HTTP 与合成任务共用入口：记录阶段诊断，保留返回值和原异常，不记录凭据。"""
     diagnostics = {} if diagnostics is None else diagnostics
-    diagnostics.update(stage="input", trace={}, keyword_response=None)
+    diagnostics.update(stage="input", trace={}, keyword_response=None, model_response=None)
     logger = logging.getLogger("uvicorn.error")
+    started = perf_counter()
     try:
         result = _segment(payload, config=config, diagnostics=diagnostics)
     except Exception as exc:
@@ -130,11 +132,17 @@ def segment(payload: dict, *, config: ClientSettings | None = None, diagnostics:
         if diagnostics["stage"] == "keywords" and (keyword_response := diagnostics.get("keyword_response")):
             diagnostics["trace"]["keyword_response"] = keyword_response
             exc.keyword_response = keyword_response
+        elif diagnostics["model_response"] is not None:
+            diagnostics["trace"]["model_response"] = diagnostics["model_response"]
         message, status = segmentation_error(exc)
         logger.warning("切片失败 stage=%s status=%s error=%s trace=%s",
-                       diagnostics["stage"], status, message, diagnostics["trace"])
+                       diagnostics["stage"], status, sanitize(message), sanitize(diagnostics["trace"]))
         raise
-    logger.info("切片成功 trace=%s", diagnostics["trace"])
+    logger.info("切片成功 elapsed_ms=%.1f segment_count=%s model_elapsed_ms=%s",
+                (perf_counter() - started) * 1000, len(result.get("segments", [])),
+                diagnostics["trace"].get("model_elapsed_ms", {}))
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("切片详情 trace=%s", sanitize(diagnostics["trace"]))
     return result
 
 
@@ -154,6 +162,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     """
     deadline = perf_counter() + SEGMENTATION_BUDGET_SECONDS
     trace = diagnostics["trace"]
+    logger = logging.getLogger("uvicorn.error")
     title = payload.get("title")
     title_only = payload.get("asr_result") is None and title is not None
     if not title_only:
@@ -190,9 +199,11 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                 messages=[{"role": "system", "content": '从标题中提取一个关键词，只返回 JSON：{"title_keyword":"关键词"}，无合适词时返回空字符串。'},
                           {"role": "user", "content": title}],
             )
-        logging.getLogger("uvicorn.error").info(
-            "切片模型输出 stage=title_keywords attempt=1 content=%r",
-            response.choices[0].message.content if response.choices else None)
+        raw = response.choices[0].message.content if response.choices else None
+        diagnostics["model_response"] = raw
+        logger.info("切片模型调用 stage=title_keywords attempt=1")
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("切片模型输出 stage=title_keywords attempt=1 content=%r", sanitize(raw))
         request_timeout()
         try:
             keyword = json.loads(response.choices[0].message.content).get("title_keyword", "")
@@ -387,6 +398,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     with OpenAI(base_url=base_url, api_key=key, timeout=request_timeout(), max_retries=0) as client:
         for stage in ("boundaries", "keywords"):
             diagnostics["stage"] = stage
+            diagnostics["model_response"] = None
             if stage == "boundaries":
                 prompt = (
                     '将口播文案切成短句画面，只返回 JSON：{"boundaries_after":[1,3]}。'
@@ -442,8 +454,10 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                         timeout=request_timeout(),
                     )
                     raw = response.choices[0].message.content if response.choices else None
-                    logging.getLogger("uvicorn.error").info(
-                        "切片模型输出 stage=%s attempt=%s content=%r", stage, attempt + 1, raw)
+                    diagnostics["model_response"] = raw
+                    logger.info("切片模型调用 stage=%s attempt=%s", stage, attempt + 1)
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug("切片模型输出 stage=%s attempt=%s content=%r", stage, attempt + 1, sanitize(raw))
                     if stage == "keywords":
                         diagnostics["keyword_response"] = {
                             "expected_segment_count": len(segments), "response": raw,
@@ -478,8 +492,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                         messages = [*messages,
                                     {"role": "assistant", "content": raw if isinstance(raw, str) else ""},
                                     {"role": "user", "content": f"上次结果校验失败：{exc} 请修正并重新返回完整 JSON 对象。"}]
-                        logging.getLogger("uvicorn.error").warning(
-                            "切片结果纠错 stage=%s retry=%s error=%s", stage, attempt + 1, exc)
+                        logger.warning("切片结果纠错 stage=%s retry=%s error=%s", stage, attempt + 1, sanitize(str(exc)))
             finally:
                 trace["model_elapsed_ms"][stage] = round((perf_counter() - started) * 1000, 1)
             if stage == "boundaries":
