@@ -106,7 +106,8 @@ entry.main()
         text=True,
     )
     try:
-        _wait_ready(process, port, timeout=20)
+        # 冷启动加载依赖可能较慢；就绪等待不计入下面独立的 5 秒关闭上限。
+        _wait_ready(process, port, timeout=60)
         stream = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
         stream.request("GET", "/_probe/stream")
         response = stream.getresponse()
@@ -114,7 +115,8 @@ entry.main()
         assert response.readline()
 
         process.send_signal(signal.SIGTERM)
-        process.wait(timeout=5)
+        # 关闭时持续读取日志，避免取消 SSE 的异常堆栈填满管道、反过来阻塞子进程退出。
+        process.communicate(timeout=5)
     finally:
         if process.poll() is None:
             process.kill()
