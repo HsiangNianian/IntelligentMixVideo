@@ -6,6 +6,7 @@ import logging
 import json
 import secrets
 import shutil
+from time import perf_counter
 from uuid import uuid4
 
 import httpx
@@ -161,8 +162,14 @@ class Runtime:
     async def step(self, record: dict, name: str, operation, inputs: dict):
         """记录实际异步/线程步骤的输入、输出与根因；返回原对象，保持原异常与取消语义。"""
         await self.log(record, "step_started", step=name, input=inputs)
+        started = perf_counter()
         try:
-            output = await operation()
+            try:
+                output = await operation()
+            finally:
+                # 独立数值日志不带步骤输入/输出；失败与取消也记录实际消耗的时间。
+                logger.info("Composition performance task_id=%s stage=%s elapsed_ms=%.3f",
+                            record["task_id"], name, (perf_counter() - started) * 1000)
         except asyncio.CancelledError:
             await self.log(record, "step_cancelled", step=name)
             raise
@@ -257,7 +264,7 @@ class Runtime:
         while not self.stopping:
             self.wake.clear()
             try:
-                capacity = (self.settings.composition_concurrency if self.settings else 3) - len(self.active)
+                capacity = (self.settings.composition_concurrency if self.settings else 6) - len(self.active)
                 if capacity > 0:
                     records = await self.sync(store.pending, list(self.active), capacity)
                     if records and self.settings is None and any(not item["data"]["output"].get("client_config") for item in records):

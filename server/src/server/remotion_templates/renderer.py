@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 from .settings import Settings
+from .render_resources import renderer_cpus
 from .evidence import digest
 from .fonts import CONFIG_NAME, SANDBOX_DIR, font_root
 from .image_comparison import consistency_checks
@@ -90,7 +91,7 @@ class Renderer:
         if sys.platform != "linux":
             hint = "; set IMV_ALLOW_UNSANDBOXED_WORKER=true for local development" if sys.platform == "darwin" else ""
             return f"the isolated validator runs only on Linux, this host is {sys.platform}{hint}"
-        for tool in ("bwrap", "prlimit", "node"):
+        for tool in ("bwrap", "prlimit", "taskset", "node"):
             if shutil.which(tool) is None:
                 return f"{tool} is not installed"
         return None
@@ -265,7 +266,10 @@ class Renderer:
             # 只暴露随包共享库，仍清空密钥环境、隔离网络及用户目录。
             boundary = command.index("--clearenv") + 1
             command[boundary:boundary] = ["--setenv", "LD_LIBRARY_PATH", "/runtime-lib"]
-        return command
+        # 所有 worker 共享同一组核，限制 Chrome/FFmpeg 全部后代的总 CPU 范围。
+        # prlimit 的累计 CPU 时间仅处理失控超时，不能替代这里的瞬时占用限制。
+        cpus = renderer_cpus(settings.render_cpu_reserve_percent)[:settings.render_max_cpus]
+        return ["taskset", "--cpu-list", ",".join(map(str, cpus)), *command]
 
     async def run_worker(
         self,

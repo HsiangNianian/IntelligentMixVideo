@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import ts from "typescript";
 import prettier from "prettier";
+import { VERSION } from "remotion";
 import { languageDiagnostics } from "./typescript.mjs";
 import { bundle } from "@remotion/bundler";
 import { exportTemplate, buildPresentation } from "./presentation.mjs";
@@ -24,7 +25,7 @@ const checks = [];
 const result = {
   checks,
   frames: request.frames,
-  runtime: { node: process.version, remotion: "4.0.523" },
+  runtime: { node: process.version, remotion: VERSION },
 };
 
 /** Record only checks which actually executed; missing checks prevent host acceptance. */

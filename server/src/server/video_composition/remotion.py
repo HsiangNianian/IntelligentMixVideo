@@ -10,6 +10,7 @@ import math
 import shutil
 import traceback
 from pathlib import Path
+from time import perf_counter
 from uuid import UUID
 
 from generated.imv.sprite.v1 import sprite_pb2 as pb
@@ -24,8 +25,9 @@ from ..template.timing import resolve_track
 from ..template.transitions import select_transitions
 from .remotion_content import ContentError, dynamic_duration, resolve_config, roles
 from .remotion_timing import retime_source
-from ..remotion_templates.overlay_render import Overlay, OverlayError, environment_problem, fit_texts, render_overlay, to_frames
+from ..remotion_templates.overlay_render import Overlay, OverlayError, environment_problem, fit_texts, measured, overlay_ranges, record_performance, render_overlay, to_frames
 from ..remotion_templates.sprite_router import sprite_runtime
+from ..remotion_templates.render_resources import RenderCapacityTimeout
 from . import execution_log
 from .errors import CompositionError
 from .schema import CompositionRequest, Segment
@@ -282,26 +284,33 @@ async def render(task_id: str, data: dict, timeout: float, *, timeline: dict | N
     try:
         service = await sprite_runtime()
         work = service.store.root / "composition-overlays" / task_id
+        started = perf_counter()
         # 计划与打包失败同样私有保存根因：公开错误只有固定摘要，打包器输出可能含资产源码。
         try:
-            overlay = await asyncio.to_thread(plan, data, service.settings.overlay_max_seconds, timeline=timeline, transition_seed=task_id)
+            await asyncio.to_thread(shutil.rmtree, work, True)
+            overlay = await measured(work, "plan", asyncio.to_thread(plan, data, service.settings.overlay_max_seconds, timeline=timeline, transition_seed=task_id))
             if overlay is None:
                 return None
-            if environment_problem(service.settings):
+            if environment_problem(service.settings, overlay):
                 raise OverlayError("render_environment_unavailable", "Remotion 渲染环境不可用")
             publications = {key: ParseDict(value, pb.PublishedSprite()) for key, value in data["remotion"]["assets"].items()}
-            async with service.overlays.slot:
-                await asyncio.to_thread(shutil.rmtree, work, True)
+            waiting = perf_counter()
+            requested = len(overlay_ranges(overlay, service.settings))
+            async with service.overlays.slot, service.overlays.capacity.claim(requested, service.settings.overlay_frame_concurrency) as grant:
+                await asyncio.to_thread(record_performance, work, slot_wait_ms=max(0, (perf_counter() - waiting) * 1000 - grant.wait_ms),
+                                        resource_wait_ms=grant.wait_ms, granted_chunks=grant.chunks, reserved_memory_mb=grant.reserved_memory_mb)
                 # 与叠加渲染相同：放不下的标题、字幕缩小字号，缩到最小仍放不下以 remotion_text_too_long 失败。
-                await fit_texts(service.harness.renderer, overlay, publications, work / "fit")
-                output = await render_overlay(service.harness.renderer, overlay, work)
+                await measured(work, "text_fit", fit_texts(service.harness.renderer, overlay, publications, work / "fit"))
+                output = await render_overlay(service.harness.renderer, overlay, work, chunk_concurrency=grant.chunks, frame_concurrency=grant.pages)
             # 文件必须存活到上传线程收尾；取消任务不保存迟到结果。
+            uploading = perf_counter()
             upload = asyncio.create_task(asyncio.to_thread(upload_public,
                 [(output, f"imv/video_composition/{task_id}/overlay.webm", "video/webm")], ZosSettings(), timeout))
             try:
                 urls = await asyncio.shield(upload)
             finally:
                 await asyncio.gather(upload, return_exceptions=True)
+                await asyncio.to_thread(record_performance, work, upload_ms=(perf_counter() - uploading) * 1000)
             return {"video_url": urls[0], "duration": data["duration_ms"] / 1000,
                     "width": overlay.width, "height": overlay.height, "fps": overlay.fps, "frames": overlay.frames}
         except Exception as exc:
@@ -311,9 +320,13 @@ async def render(task_id: str, data: dict, timeout: float, *, timeline: dict | N
                 logger.error("合成任务 %s 私有渲染诊断保存失败：%s", task_id, type(diagnostic_error).__name__)
             raise
         finally:
+            performance = await asyncio.to_thread(record_performance, work, total_ms=(perf_counter() - started) * 1000)
+            logger.info("Remotion performance task_id=%s %s", task_id, json.dumps(performance, ensure_ascii=False))
             await asyncio.to_thread(shutil.rmtree, work, True)
     except ContentError as exc:
         raise CompositionError("remotion_asset_not_adapted", str(exc), "assembling") from exc
+    except RenderCapacityTimeout as exc:
+        raise CompositionError("remotion_resource_unavailable", str(exc), "assembling") from exc
     except OverlayError as exc:
         raise CompositionError("remotion_" + exc.code, exc.message, "assembling") from exc
     except Exception as exc:

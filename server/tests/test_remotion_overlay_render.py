@@ -42,7 +42,7 @@ from server.remotion_templates.renderer import Renderer
 from server.remotion_templates.routes import runtime_for
 from server.remotion_templates.runtime import Runtime
 from server.remotion_templates.settings import Settings
-from server.remotion_templates import sprite_render
+from server.remotion_templates import sprite_render, render_resources
 from server.remotion_templates.sprite_render import chunk_ranges, join_problem, plan_sprite_render
 from server.remotion_templates.sprite_router import sprite_runtime
 from server.remotion_templates.store import NotFound, Store
@@ -270,6 +270,16 @@ def service(tmp_path, monkeypatch, template_db):
     store = Store(settings.data_dir)
     store.initialize()
     renderer = FakeRenderer(settings)
+    # 离线任务流转不依赖运行 pytest 主机的当前负载；真实预算行为有专门回归。
+    monkeypatch.setattr(render_resources, "renderer_cpus", lambda reserve: list(range(128)))
+    monkeypatch.setattr(render_resources, "memory_headroom", lambda reserve: (400 - 512 * reserve / 100) * 1024**3)
+
+    async def join(*command, cwd, **kwargs):
+        """默认假拼接器；需要检查拼接命令的用例自行覆盖。"""
+        (Path(cwd) / command[-1]).write_bytes(b"webm")
+        return SimpleNamespace(returncode=0, communicate=lambda: asyncio.sleep(0, (b"", b"")))
+
+    monkeypatch.setattr(overlay_render.asyncio, "create_subprocess_exec", join)
     uploads: list[tuple] = []
 
     async def probed(path, overlay) -> None:
@@ -281,9 +291,9 @@ def service(tmp_path, monkeypatch, template_db):
         return [f"https://zos.example/{files[0][1]}"]
 
     monkeypatch.setattr(overlay_render, "probe_overlay", probed)
-    monkeypatch.setattr(overlay_service, "environment_problem", lambda settings: None)
+    monkeypatch.setattr(overlay_service, "environment_problem", lambda settings, *args, **kwargs: None)
     # 单 Sprite 渲染还要用 ffmpeg 拼接分块；CI 主机可能没有它，替身渲染器也不需要。
-    monkeypatch.setattr(overlay_service, "join_problem", lambda overlay: None)
+    monkeypatch.setattr(overlay_service, "join_problem", lambda overlay, settings: None)
     monkeypatch.setattr(overlay_service, "upload_public", upload)
     monkeypatch.setattr(overlay_service, "ZosSettings", lambda: SimpleNamespace())
 
@@ -402,6 +412,168 @@ def test_task_renders_uploads_and_notifies(service, callbacks) -> None:
     })]
     assert is_notified(overlays, task_id)
     assert not (overlays.store.root / "overlays" / task_id).exists()
+
+
+@pytest.mark.parametrize("concurrency", [1, 4, 8, 16])
+def test_frame_concurrency_reaches_the_worker(service, concurrency) -> None:
+    """服务端配置决定每块的渲染页数，任务请求不能覆盖它。"""
+    overlays, renderer, _ = service
+    overlays.settings.overlay_frame_concurrency = concurrency
+    assert overlays.get(run_task(overlays))["status"] == "succeeded"
+    assert renderer.requests[0]["concurrency"] == concurrency
+
+
+@pytest.mark.parametrize("cpus, expected", [(1, 1), (3, 3), (4, 4)])
+@pytest.mark.parametrize("sprite", [False, True])
+def test_reduced_pages_reach_both_workers(service, monkeypatch, cpus, expected, sprite):
+    """预留后只剩 1/3/4 核时，整段与单 Sprite 都传实际页数；默认四页配置本身不被修改。"""
+    overlays, renderer, _ = service
+    monkeypatch.setattr(render_resources, "renderer_cpus", lambda reserve: list(range(cpus)))
+    task_id = run_sprite_task(overlays, render_input()) if sprite else run_task(overlays)
+    assert overlays._read(task_id)[0] == "succeeded"
+    assert renderer.requests[0]["concurrency"] == expected
+    assert overlays.settings.overlay_frame_concurrency == 4
+    assert (overlays.capacity.pages, overlays.capacity.memory_units) == (0, 0)
+
+
+@pytest.mark.parametrize("sprite", [False, True])
+def test_capacity_timeout_reports_resource_unavailable(service, monkeypatch, sprite):
+    """容量耗尽时两种任务均返回稳定的可重试提示；不启动 worker，释放名额后新任务可继续。"""
+    overlays, renderer, _ = service
+    overlays.settings.overlay_resource_wait_seconds = .02
+    monkeypatch.setattr(render_resources, "memory_headroom", lambda reserve: 0)
+    task_id = run_sprite_task(overlays, render_input()) if sprite else run_task(overlays)
+    status, data = overlays._read(task_id)
+    assert status == "failed" and data["error"] == {"code": "resource_unavailable", "message": "渲染资源暂时不足，请稍后重试"}
+    assert not renderer.requests and not overlays.slot.locked()
+    assert (overlays.capacity.chunks, overlays.capacity.memory_units) == (0, 0)
+    monkeypatch.setattr(render_resources, "memory_headroom", lambda reserve: 32 * 1024**3)
+    assert overlays.get(run_task(overlays))["status"] == "succeeded"
+
+
+def test_slot_wait_excludes_resource_wait(service, monkeypatch, caplog):
+    """模拟两秒资源等待，名额立即可用；两个诊断字段应分别是 0 和 2000，而非重复累计。"""
+    from contextlib import asynccontextmanager
+    overlays, _, _ = service
+    clock = [0.0]
+    @asynccontextmanager
+    async def claim(requested, pages):
+        clock[0] += 2
+        yield render_resources.RenderGrant(1, pages, 2000, 5120)
+    monkeypatch.setattr(overlays.capacity, "claim", claim)
+    monkeypatch.setattr(overlay_service, "perf_counter", lambda: clock[0])
+    with caplog.at_level("INFO", logger=overlay_service.logger.name):
+        assert overlays.get(run_task(overlays))["status"] == "succeeded"
+    [entry] = [record for record in caplog.records if record.msg.startswith("Remotion performance task_id=")]
+    metrics = json.loads(entry.args[-1])
+    assert (metrics["slot_wait_ms"], metrics["resource_wait_ms"]) == (0, 2000)
+    assert "queue_wait_ms" not in metrics
+
+
+@pytest.mark.parametrize("cpu_used, threads", [(None, None), (0, 1), (4, 8)])
+def test_chunk_and_vp9_settings_reach_the_worker(service, cpu_used, threads) -> None:
+    """编码调优只发送已配置字段，cpu-used=0 保留；分块并发独立于浏览器页并发。"""
+    overlays, renderer, _ = service
+    overlays.settings.overlay_chunk_concurrency = 3
+    overlays.settings.overlay_vp9_cpu_used = cpu_used
+    overlays.settings.overlay_vp9_threads = threads
+    assert overlays.get(run_task(overlays, duration=45))["status"] == "succeeded"
+    [request] = renderer.requests
+    assert request["chunk_concurrency"] == 3
+    if cpu_used is None:
+        assert "vp9" not in request
+    else:
+        assert request["vp9"] == {"cpu_used": cpu_used, "threads": threads}
+
+
+def test_memory_grant_reaches_the_actual_worker(service, monkeypatch):
+    """180 秒分为 12 块，但余量只够两块并行时实际 worker 必须降到 2，不能仍然跑 6。"""
+    overlays, renderer, _ = service
+    # 默认每块四页：两块共 8 GiB，加每视频额外 1 GiB。
+    monkeypatch.setattr(render_resources, "memory_headroom", lambda reserve: 9 * 1024**3)
+    assert overlays.get(run_task(overlays, duration=180))["status"] == "succeeded"
+    [request] = renderer.requests
+    assert request["concurrency"] == 4 and request["vp9"] == {"cpu_used": 4, "threads": 2}
+    assert len(request["ranges"]) == 12 and request["chunk_concurrency"] == 2
+    assert overlays.capacity.chunks == 0 and overlays.capacity.memory_units == 0
+
+
+@pytest.mark.parametrize("limit", [6, 2])
+def test_render_slots_bound_actual_tasks(service, monkeypatch, limit) -> None:
+    """默认六个任务可同时进入 worker，自定义两个名额也生效；额外任务要等名额释放。"""
+    original, renderer, _ = service
+    settings = original.settings if limit == 6 else original.settings.model_copy(update={"overlay_task_concurrency": limit})
+    overlays = OverlayRenders(original.store, renderer, settings)
+    entered, active, peak = [], 0, 0
+    run = renderer.run_worker
+
+    async def scenario():
+        """用事件控制 worker 完成时机，不启动真实浏览器或按机器速度推测并发。"""
+        gate = asyncio.Event()
+
+        async def blocked(directory, **options):
+            """记录真正进入 worker 的任务数，放行后产出正常替身视频。"""
+            nonlocal active, peak
+            active += 1
+            peak = max(active, peak)
+            entered.append(directory.name)
+            try:
+                await gate.wait()
+                return await run(directory, **options)
+            finally:
+                active -= 1
+
+        monkeypatch.setattr(renderer, "run_worker", blocked)
+        tasks = [await overlays.accept(PLACED, None, 3.0, None) for _ in range(limit + 1)]
+        try:
+            await wait_until(lambda: len(entered) == limit)
+            assert sum(overlays.get(task)["status"] == "queued" for task in tasks) == 1
+        finally:
+            gate.set()
+            await finish(overlays)
+        assert all(overlays.get(task)["status"] == "succeeded" for task in tasks)
+
+    asyncio.run(scenario())
+    assert peak == limit and len(entered) == limit + 1
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_stage_performance_is_private_and_preserves_failure(service, monkeypatch, caplog, failed) -> None:
+    """阶段耗时与 worker 的绘制/编码计时进服务端日志；失败不补造探测和上传指标，也不公开正文。"""
+    overlays, renderer, _ = service
+    run = renderer.run_worker
+
+    async def report(directory, **options):
+        """模拟 worker 输出；未在指标契约里的文本不能进入性能摘要。"""
+        result = await run(directory, **options)
+        (directory / "renderer.json").write_text(json.dumps({"performance": {
+            "bundle_ms": 1.5, "render_ms": 9, "resolved_concurrency": 1, "chunk_concurrency": 2,
+            "code": "private-source", "url": "https://private.example",
+            "chunks": [{"rendered_ms": 5, "encoded_ms": 4, "elapsed_ms": 9, "parallel_encoding": False,
+                        "shared_memory_capture": True, "text": "private-content"}],
+        }}))
+        return result
+
+    monkeypatch.setattr(renderer, "run_worker", report)
+    if failed:
+        renderer.failure = RuntimeError("worker stopped")
+    with caplog.at_level(logging.INFO, logger=overlay_service.logger.name):
+        task_id = run_task(overlays)
+    entries = [record for record in caplog.records if record.msg.startswith("Remotion performance task_id=")]
+    assert len(entries) == 1
+    performance = json.loads(entries[0].args[-1])
+    for key in ("plan_ms", "slot_wait_ms", "text_fit_ms", "prepare_ms", "worker_ms", "total_ms"):
+        assert performance[key] >= 0
+    if failed:
+        assert "probe_ms" not in performance and "upload_ms" not in performance
+        assert overlays.get(task_id)["status"] == "failed"
+    else:
+        assert performance["probe_ms"] >= 0 and performance["upload_ms"] >= 0
+        assert performance["renderer"]["chunk_concurrency"] == 2
+        assert performance["renderer"]["chunks"] == [{"rendered_ms": 5, "encoded_ms": 4, "elapsed_ms": 9,
+                                                    "parallel_encoding": False, "shared_memory_capture": True}]
+    assert "private-" not in entries[0].getMessage() and "https://" not in entries[0].getMessage()
+    assert set(overlays.get(task_id)) == {"taskId", "status", "result", "error"}
 
 
 # 场景：回调地址通过 schema 校验却无法被 httpx 解析（补零 IPv4、控制字符）时，终态也会处理完毕，不会反复待通知。
@@ -573,7 +745,7 @@ def test_audio_length_is_checked_after_probing(service, monkeypatch) -> None:
 def test_accept_refuses_a_host_that_cannot_render(service, monkeypatch) -> None:
     """环境检查报告缺失项时返回 503、写服务端日志，且不创建任务。"""
     overlays, _, _ = service
-    monkeypatch.setattr(overlay_service, "environment_problem", lambda settings: "ffprobe")
+    monkeypatch.setattr(overlay_service, "environment_problem", lambda settings, *args, **kwargs: "ffprobe")
     with pytest.raises(HTTPException) as caught:
         asyncio.run(overlays.accept(PLACED, None, 3.0, None))
     assert caught.value.status_code == 503 and task_rows(overlays) == 0
@@ -673,17 +845,67 @@ def test_environment_problem_names_the_missing_piece(tmp_path, monkeypatch) -> N
         _env_file=None, data_dir=tmp_path, browser_executable=files["browser"],
         font_regular=files["regular.ttc"], font_bold=files["bold.ttc"],
     )
-    present = {"ffprobe", "bwrap", "prlimit", "node"}
+    present = {"ffprobe", "bwrap", "prlimit", "taskset", "node", "ffmpeg"}
     monkeypatch.setattr(overlay_render.shutil, "which", lambda name: f"/usr/bin/{name}" if name in present else None)
     assert overlay_render.environment_problem(settings) is None
-    for tool in ("ffprobe", "bwrap", "prlimit", "node"):
+    for tool in ("ffprobe", "bwrap", "prlimit", "taskset", "node"):
         present.discard(tool)
         assert overlay_render.environment_problem(settings) == tool
         present.add(tool)
+    settings.overlay_chunked = True
+    present.discard("ffmpeg")
+    short = overlay_render.Overlay(1080, 1920, 30, 450, [])
+    long = overlay_render.Overlay(1080, 1920, 30, 451, [])
+    assert overlay_render.environment_problem(settings) is None
+    assert overlay_render.environment_problem(settings, short) is None
+    assert overlay_render.environment_problem(settings, long) == "ffmpeg"
+    settings.overlay_chunked = False
+    assert overlay_render.environment_problem(settings, long) is None
+    assert overlay_render.environment_problem(settings, long, chunked=True) == "ffmpeg"
+    present.add("ffmpeg")
+    assert overlay_render.environment_problem(settings) is None
     for path in files.values():
         path.unlink()
         assert overlay_render.environment_problem(settings) == str(path)
         path.write_bytes(b"x")
+
+
+@pytest.mark.parametrize("sprite", [False, True])
+@pytest.mark.parametrize("frames", [450, 451])
+def test_ffmpeg_is_required_only_for_actual_multiple_chunks(service, monkeypatch, sprite, frames):
+    """缺 FFmpeg 时整段与单 Sprite 的 15 秒输出仍成功，多一帧则在受理时 503。"""
+    overlays, renderer, _ = service
+    overlays.settings.browser_executable = overlays.settings.font_regular
+    monkeypatch.setattr(overlay_render.shutil, "which", lambda tool: None if tool == "ffmpeg" else "/usr/bin/" + tool)
+    monkeypatch.setattr(overlay_service, "environment_problem", overlay_render.environment_problem)
+    monkeypatch.setattr(overlay_service, "join_problem", sprite_render.join_problem)
+    def run():
+        return run_sprite_task(overlays, render_input(effect_total_frames=frames)) if sprite else run_task(overlays, duration=frames / 30)
+    if frames == 450:
+        assert overlays._read(run())[0] == "succeeded"
+        assert "ranges" not in renderer.requests[0]
+    else:
+        with pytest.raises(HTTPException) as error:
+            run()
+        assert error.value.status_code == 503 and not renderer.requests
+
+
+@pytest.mark.parametrize("seconds", [10, 16])
+def test_audio_length_rechecks_join_dependency_before_render(service, monkeypatch, seconds):
+    """音频长度未知时先受理，解析后仅多块任务报告环境不可用，不进入 worker。"""
+    overlays, renderer, _ = service
+    overlays.settings.browser_executable = overlays.settings.font_regular
+    monkeypatch.setattr(overlay_render.shutil, "which", lambda tool: None if tool == "ffmpeg" else "/usr/bin/" + tool)
+    monkeypatch.setattr(overlay_service, "environment_problem", overlay_render.environment_problem)
+    async def total(*args):
+        return seconds
+    monkeypatch.setattr(overlay_service, "resolve_total_seconds", total)
+    result = overlays.get(run_task(overlays, audio="https://media.example/audio.mp3"))
+    if seconds == 10:
+        assert result["status"] == "succeeded"
+    else:
+        assert result["status"] == "failed" and result["error"]["code"] == "render_environment_unavailable"
+        assert not renderer.requests
 
 
 # 场景：重启后恢复未终态任务并完成；终态任务不会被重复渲染。
@@ -1235,14 +1457,22 @@ def test_only_short_text_effects_hold_still() -> None:
     assert (long["duration_frames"], "hold" in long) == (45, False)
 
 
-# 场景：服务端按 30 秒切块输出：70 秒（2100 帧）是 900、900、300 帧三段；不超过 30 秒只有一段，不需要拼接，也就不需要 ffmpeg。
-def test_long_effects_render_in_thirty_second_chunks(monkeypatch) -> None:
-    """分块是同一合成的连续帧区间（含两端），实例保持绝对时间；没有 ffmpeg 的主机只拒绝需要拼接的效果。"""
-    assert chunk_ranges(2100, 30) == [[0, 899], [900, 1799], [1800, 2099]]
-    assert chunk_ranges(900, 30) == [[0, 899]]
+# 场景：固定 15 秒连续帧区间，尾块保留余数；短片不硬凑六块。
+@pytest.mark.parametrize("fps", [24, 30, 60])
+@pytest.mark.parametrize("seconds,extra,count", [(0, 1, 1), (15, -1, 1), (15, 0, 1), (15, 1, 2), (30, 0, 2), (30, 1, 3), (70, 1, 5)])
+def test_fixed_chunks_cover_every_frame_once(monkeypatch, fps, seconds, extra, count) -> None:
+    """15 秒边界前后均没有重叠或缺帧，除尾块外均为完整 15 秒。"""
+    frames = seconds * fps + extra
+    ranges = chunk_ranges(frames, fps)
+    assert len(ranges) == count
+    assert [frame for first, last in ranges for frame in range(first, last + 1)] == list(range(frames))
+    sizes = [last - first + 1 for first, last in ranges]
+    assert sizes[:-1] == [15 * fps] * (count - 1)
+    assert 1 <= sizes[-1] <= 15 * fps
     monkeypatch.setattr(sprite_render.shutil, "which", lambda name: None)
-    assert join_problem(plan_sprite_render(render_input(effect_total_frames=900), T)) is None
-    assert join_problem(plan_sprite_render(render_input(effect_total_frames=901), T)) == "ffmpeg"
+    settings = Settings(_env_file=None)
+    assert join_problem(plan_sprite_render(render_input(effect_total_frames=450), T), settings) is None
+    assert join_problem(plan_sprite_render(render_input(effect_total_frames=451), T), settings) == "ffmpeg"
 
 
 # 场景：时长 0.5～120 秒；字效带 text 或 cues 之一，切片按起点排列、互不重叠、至少一帧且在时长之内；其他分类不接收内容；内容不能伪装成样式覆盖。
@@ -1385,27 +1615,114 @@ def test_sprite_render_task_renders_uploads_and_notifies(service, callbacks) -> 
 
 
 # 场景：长效果在一个任务里一次 worker 运行输出各块再拼接成一个视频：同一份合成、按块的帧区间，上传的是拼接后的文件。
-def test_sprite_render_task_joins_its_chunks(service, monkeypatch) -> None:
-    """70 秒的字幕只启动一次 worker，按三个帧区间输出，跨块的切片保持绝对起点；拼接列表按块顺序，转存的只有一个文件。"""
+@pytest.mark.parametrize("chunked", [False, True])
+def test_overlay_fixed_chunking_can_be_disabled(service, monkeypatch, chunked) -> None:
+    """31 秒整段视频按 15 秒分三块；可关闭分块，公开存储键与实例时间不变。"""
+    overlays, renderer, uploads = service
+    overlays.settings.overlay_chunked = chunked
+    joined = []
+
+    async def join(*command, cwd, **_):
+        """只核对拼接顺序，不调用真实编码器。"""
+        listing = Path(cwd) / command[command.index("-i") + 1]
+        joined.append([line.removeprefix("file '").removesuffix("'") for line in listing.read_text().splitlines()])
+        (Path(cwd) / command[-1]).write_bytes(b"joined")
+        return SimpleNamespace(returncode=0, communicate=lambda: asyncio.sleep(0, (b"", b"")))
+
+    monkeypatch.setattr(overlay_render.asyncio, "create_subprocess_exec", join)
+    task_id = run_task(overlays, duration=31.0)
+    [request] = renderer.requests
+    assert request["composition"]["frames"] == 930
+    assert [item["start_frame"] for item in request["instances"]] == [0, 30]
+    if chunked:
+        assert request["ranges"] == [[0, 449], [450, 899], [900, 929]]
+        assert joined == [[f"chunk-{index}.webm" for index in range(3)]]
+    else:
+        assert "ranges" not in request and joined == []
+    assert uploads == [(f"imv/overlay_render/{task_id}.webm", "video/webm", b"joined" if chunked else b"webm")]
+
+
+def test_sprite_render_task_joins_its_chunks(service, monkeypatch, caplog) -> None:
+    """70 秒的字幕只启动一次 worker，按五个帧区间输出，跨块的切片保持绝对起点；拼接列表按块顺序，转存的只有一个文件。"""
     overlays, renderer, uploads = service
     joined: list[list[str]] = []
 
-    async def join(*command, **_):
+    async def join(*command, cwd, **_):
         """替身 ffmpeg：记录拼接列表并写出成片。"""
-        listing = Path(command[command.index("-i") + 1])
-        joined.append([line.split("/")[-1].rstrip("'") for line in listing.read_text().splitlines()])
-        Path(command[-1]).write_bytes(b"joined")
+        listing = Path(cwd) / command[command.index("-i") + 1]
+        joined.append([line.removeprefix("file '").removesuffix("'") for line in listing.read_text().splitlines()])
+        (Path(cwd) / command[-1]).write_bytes(b"joined")
         return SimpleNamespace(returncode=0, communicate=lambda: asyncio.sleep(0, (b"", b"")))
 
-    monkeypatch.setattr(sprite_render.asyncio, "create_subprocess_exec", join)
-    monkeypatch.setattr(sprite_render, "probe_overlay", lambda path, overlay: asyncio.sleep(0))
+    monkeypatch.setattr(overlay_render.asyncio, "create_subprocess_exec", join)
     message = render_input(text="", keywords=[], effect_total_frames=2100, cues=[cue("开头", 0, 30), cue("跨块", 890, 920)])
-    task_id = run_sprite_task(overlays, message)
+    with caplog.at_level(logging.INFO, logger=overlay_service.logger.name):
+        task_id = run_sprite_task(overlays, message)
     [request] = renderer.requests
-    assert request["ranges"] == [[0, 899], [900, 1799], [1800, 2099]] and request["composition"]["frames"] == 2100
+    assert request["ranges"] == [[0, 449], [450, 899], [900, 1349], [1350, 1799], [1800, 2099]]
+    assert request["composition"]["frames"] == 2100
     assert [(item["start_frame"], item["duration_frames"]) for item in request["instances"]] == [(0, 90), (890, 90)]
-    assert joined == [["chunk-0.webm", "chunk-1.webm", "chunk-2.webm"]]
+    assert joined == [[f"chunk-{index}.webm" for index in range(5)]]
     assert uploads == [(f"imv/sprite_render/{task_id}.webm", "video/webm", b"joined")]
+    [entry] = [record for record in caplog.records if record.msg.startswith("Remotion performance task_id=")]
+    assert json.loads(entry.args[-1])["join_ms"] >= 0
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("interruption", ["cancel", "timeout"])
+@pytest.mark.parametrize("exited_before_kill", [False, True])
+async def test_join_interruption_reaps_ffmpeg(tmp_path, monkeypatch, interruption, exited_before_kill) -> None:
+    """取消和超时均回收进程；kill 竞态不覆盖原异常，带引号目录也只写安全相对文件名。"""
+    directory = tmp_path / "render with ' quote"
+    directory.mkdir()
+    for index in range(2):
+        (directory / f"chunk-{index}.webm").write_bytes(b"chunk")
+    started, calls = asyncio.Event(), []
+
+    class Process:
+        """模拟尚未完成的拼接以及进程自行退出与 kill 的竞态。"""
+        returncode = None
+
+        async def communicate(self):
+            """持续等待，由调用方取消或整体期限打断。"""
+            started.set()
+            await asyncio.Future()
+
+        def kill(self):
+            """记录终止，即使进程恰好已经退出也必须继续 wait。"""
+            calls.append("kill")
+            if exited_before_kill:
+                raise ProcessLookupError
+
+        async def wait(self):
+            """回收结束状态，供测试检查没有遗留后台进程。"""
+            calls.append("wait")
+            self.returncode = -9
+            return self.returncode
+
+    process = Process()
+
+    async def spawn(*command, cwd, **_):
+        """校验传给 FFmpeg 的目录与清单，不执行真实编码。"""
+        assert cwd == directory
+        assert command[command.index("-i") + 1] == "chunks.txt" and command[-1] == "sprite.webm"
+        assert (directory / "chunks.txt").read_text() == "file 'chunk-0.webm'\nfile 'chunk-1.webm'\n"
+        return process
+
+    monkeypatch.setattr(overlay_render.asyncio, "create_subprocess_exec", spawn)
+    if interruption == "timeout":
+        monkeypatch.setattr(overlay_render, "JOIN_SECONDS", 0.01)
+    task = asyncio.create_task(overlay_render.join_chunks(directory, 2))
+    await asyncio.wait_for(started.wait(), 1)
+    if interruption == "cancel":
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        with pytest.raises(OverlayError, match="字效视频拼接超时") as caught:
+            await task
+        assert caught.value.code == "render_failed"
+    assert calls == ["kill", "wait"] and process.returncode is not None
 
 
 # 场景：重启后恢复的单 Sprite 渲染按保存的输入渲染；渲染失败以稳定错误码与固定说明公开。
@@ -1458,7 +1775,7 @@ def test_sprite_render_routes_accept_and_query(sprite_client, monkeypatch) -> No
     ):
         response = post_render(client, message)
         assert response.status_code == 422 and detail in response.json()["detail"]
-    monkeypatch.setattr(overlay_service, "join_problem", lambda overlay: "ffmpeg")
+    monkeypatch.setattr(overlay_service, "join_problem", lambda overlay, settings: "ffmpeg")
     assert post_render(client, render_input()).status_code == 503
     assert task_rows(overlays) == rows
     assert client.get(f"/api/sprites/render/{uuid4()}").status_code == 404
@@ -1479,8 +1796,10 @@ export default function Sprite() {
 
 # 场景：真实沙箱里把 4 秒效果按 2 秒切块渲染再拼接：第二块开头仍是全亮（不重新淡入），末尾按完整时长淡出，拼接后保留透明通道。
 @pytest.mark.skipif(os.environ.get("IMV_TEST_RENDERER") != "1", reason="set IMV_TEST_RENDERER=1 for Linux overlay integration")
-def test_real_sprite_render_joins_chunks_into_one_continuous_video(tmp_path: Path, monkeypatch) -> None:
-    """120 帧效果按 60 帧切成两块：成片第 0/60/115/119 帧的 alpha 为 0/1/0.5/0.1，共 120 帧。"""
+@pytest.mark.parametrize("chunk_concurrency", [1, 2])
+def test_real_sprite_render_joins_chunks_into_one_continuous_video(tmp_path: Path, monkeypatch, chunk_concurrency) -> None:
+    """两块串行或并行都保持 120 帧时钟：第 0/60/115/119 帧的 alpha 为 0/1/0.5/0.1。"""
+    monkeypatch.setattr(overlay_render, "CHUNK_SECONDS", 2)
     configured = {
         name: Path(value)
         for name, value in (
@@ -1490,10 +1809,9 @@ def test_real_sprite_render_joins_chunks_into_one_continuous_video(tmp_path: Pat
         )
         if value
     }
-    settings = Settings(_env_file=None, data_dir=tmp_path / "state", **configured)
+    settings = Settings(_env_file=None, data_dir=tmp_path / "state", overlay_chunk_concurrency=chunk_concurrency, **configured)
     edge = sprite("edge", width=180, height=320, frames=30, code=EDGE_FADE)
     edge.kind = pb.SPRITE_KIND_FILTER_OVERLAY
-    monkeypatch.setattr(sprite_render, "CHUNK_SECONDS", 2)
     overlay = plan_sprite_render(pb.SpriteRenderInput(sprite_id="edge", effect_total_frames=120), edge)
     video = asyncio.run(sprite_render.render_sprite(Renderer(settings), overlay, tmp_path / "job"))
     assert video.name == "sprite.webm"
