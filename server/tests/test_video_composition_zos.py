@@ -50,8 +50,9 @@ def test_copy_video_publishes_video_and_frame(composition_settings, monkeypatch,
         def close(self):
             """模拟释放 S3 客户端资源。"""
 
-        def upload_fileobj(self, file, bucket, object_key, ExtraArgs):
-            """S3 传输读取完整文件后记录 ACL。"""
+        def upload_fileobj(self, file, bucket, object_key, ExtraArgs, Config):
+            """核对串行分片策略，S3 传输读取完整文件后记录 ACL。"""
+            assert Config.use_threads is False
             uploaded.append(dict(data=file.read(), bucket=bucket, key=object_key, extra=ExtraArgs))
 
         def head_object(self, *, Bucket, Key):
@@ -68,6 +69,7 @@ def test_copy_video_publishes_video_and_frame(composition_settings, monkeypatch,
         assert kwargs["region_name"] == "hangzhou-7"
         assert kwargs["config"].s3["addressing_style"] == "virtual"
         assert kwargs["config"].request_checksum_calculation == "when_required"
+        assert kwargs["config"].proxies == {}
         return Storage()
 
     monkeypatch.setattr(zos.boto3, "client", storage_client)

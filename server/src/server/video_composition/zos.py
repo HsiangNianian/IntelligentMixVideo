@@ -8,6 +8,7 @@ import subprocess
 from tempfile import TemporaryDirectory
 
 import boto3
+from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
 import httpx
 
@@ -41,12 +42,13 @@ def content_md5(request, **kwargs) -> None:
 
 
 def storage_client(settings: ZosSettings, timeout: float):
-    """按服务端 ZOS 配置创建 S3 兼容客户端；单次尝试、有界超时，批量删除带 Content-MD5，调用方负责关闭。"""
+    """ZOS 直连且保持 TLS 校验，避免继承 HTTP 代理导致大文件断流；有界超时，调用方负责关闭。"""
     client = boto3.client(
         "s3", endpoint_url=settings.zos_api_endpoint, region_name=settings.zos_region,
         aws_access_key_id=settings.zos_access_key_id.get_secret_value(),
         aws_secret_access_key=settings.zos_secret_access_key.get_secret_value(),
         config=Config(s3={"addressing_style": "path" if settings.zos_force_path_style else "virtual"},
+                      proxies={},
                       connect_timeout=timeout, read_timeout=timeout, retries={"max_attempts": 1},
                       request_checksum_calculation="when_required", response_checksum_validation="when_required"),
     )
@@ -61,8 +63,10 @@ def upload_public(files: list[tuple[Path, str, str]], settings: ZosSettings, tim
     with closing(storage), httpx.Client(timeout=timeout, follow_redirects=False) as client:
         for (path, object_key, content_type), url in zip(files, urls):
             with path.open("rb") as file:
+                # 串行发送分片，避免 ZOS 并行上传时 TLS 连接提前断开；仍保留大文件分片能力。
                 storage.upload_fileobj(file, settings.zos_bucket, object_key,
-                                       ExtraArgs={"ACL": "public-read", "ContentType": content_type})
+                                       ExtraArgs={"ACL": "public-read", "ContentType": content_type},
+                                       Config=TransferConfig(use_threads=False))
             if storage.head_object(Bucket=settings.zos_bucket, Key=object_key)["ContentLength"] != path.stat().st_size:
                 raise ValueError("ZOS 对象大小与本地文件不一致")
             with client.stream("GET", url, headers={"Range": "bytes=0-0"}) as response:
