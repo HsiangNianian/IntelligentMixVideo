@@ -71,15 +71,23 @@ def _settings(config: ClientSettings | None) -> Settings:
     return config
 
 
+def _response_content(response):
+    """兼容端点缺少 choices、message 或 content 时按空回复处理。"""
+    choices = getattr(response, "choices", None)
+    message = getattr(choices[0], "message", None) if choices else None
+    return getattr(message, "content", None)
+
+
 def _json_output(response) -> dict:
     """把模型回复的文字解析成 dict。
 
     回复整段被 ```json … ``` 包住时先去掉包裹。回复为空、不是合法 JSON、或解析出来不是对象
     （例如是数组）时抛 RuntimeError。
     """
-    if not response.choices or not isinstance(response.choices[0].message.content, str):
+    raw = _response_content(response)
+    if not isinstance(raw, str):
         raise RuntimeError("模型返回空内容。")
-    raw = response.choices[0].message.content.strip()
+    raw = raw.strip()
     if raw.startswith("```json") and raw.endswith("```"):
         raw = raw[7:-3].strip()
     try:
@@ -199,16 +207,16 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                 messages=[{"role": "system", "content": '从标题中提取一个关键词，只返回 JSON：{"title_keyword":"关键词"}，无合适词时返回空字符串。'},
                           {"role": "user", "content": title}],
             )
-        raw = response.choices[0].message.content if response.choices else None
+        raw = _response_content(response)
         diagnostics["model_response"] = raw
         logger.info("切片模型调用 stage=title_keywords attempt=1")
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("切片模型输出 stage=title_keywords attempt=1 content=%r", sanitize(raw))
         request_timeout()
         try:
-            keyword = json.loads(response.choices[0].message.content).get("title_keyword", "")
+            keyword = json.loads(raw).get("title_keyword", "")
             return {"title_keyword": keyword if isinstance(keyword, str) else ""}
-        except (AttributeError, IndexError, TypeError, ValueError):
+        except (AttributeError, TypeError, ValueError):
             raise RuntimeError("模型标题提词响应格式无效。") from None
     diagnostics["stage"] = "input"
     # ponytail: MVP 信任上游 Fun-ASR 结构与词时间，只取第一音轨；接入其他来源时再扩展校验。
@@ -431,7 +439,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                 example = {"keywords": {"1": "原文关键词"}}
                 if title is not None:
                     content = {"title": title, "segments": content}
-                    example["title_keyword"] = ""
+                    example["title_keyword"] = "标题关键词"
                     prompt += (
                         '本次输入为含 title 和 segments 的对象，keywords 只对应 segments。'
                         '另从 title 按上述提词规则选一个关键词，返回同级 title_keyword 字符串，'
@@ -453,7 +461,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                         response_format={"type": "json_object"},
                         timeout=request_timeout(),
                     )
-                    raw = response.choices[0].message.content if response.choices else None
+                    raw = _response_content(response)
                     diagnostics["model_response"] = raw
                     logger.info("切片模型调用 stage=%s attempt=%s", stage, attempt + 1)
                     if logger.isEnabledFor(logging.DEBUG):
@@ -489,8 +497,9 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                     except RuntimeError as exc:
                         if attempt == max_attempts - 1:
                             raise
-                        messages = [*messages,
-                                    {"role": "assistant", "content": raw if isinstance(raw, str) else ""},
+                        # 部分兼容端点拒绝空 assistant 内容，空回复只追加纠错说明。
+                        previous = [{"role": "assistant", "content": raw}] if isinstance(raw, str) and raw.strip() else []
+                        messages = [*messages, *previous,
                                     {"role": "user", "content": f"上次结果校验失败：{exc} 请修正并重新返回完整 JSON 对象。"}]
                         logger.warning("切片结果纠错 stage=%s retry=%s error=%s", stage, attempt + 1, sanitize(str(exc)))
             finally:

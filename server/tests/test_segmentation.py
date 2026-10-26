@@ -52,10 +52,13 @@ def model(monkeypatch):
     client = MagicMock()
 
     def respond(**kwargs):
-        """按输入形状返回默认切点与单个关键词；特殊模型结果在各用例中设置。"""
+        """按输入形状返回默认切点与单个关键词，带标题时另取标题前两字；特殊模型结果在各用例中设置。"""
         content = json.loads(kwargs["messages"][1]["content"])
-        if "segment_id" in content[0]:
-            data = {"keywords": {str(s["segment_id"]): s["text"][:2] for s in content}}
+        segments = content["segments"] if isinstance(content, dict) else content
+        if "segment_id" in segments[0]:
+            data = {"keywords": {str(s["segment_id"]): s["text"][:2] for s in segments}}
+            if isinstance(content, dict):
+                data["title_keyword"] = content["title"][:2]
         else:
             data = {"boundaries_after": []}
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(data)))])
@@ -80,6 +83,20 @@ def server_logs(caplog, request):
     finally:
         logger.removeHandler(caplog.handler)
         logger.propagate = propagate
+
+
+@pytest.fixture(params=[
+    pytest.param(SimpleNamespace(), id="missing-choices"),
+    pytest.param(SimpleNamespace(choices=None), id="null-choices"),
+    pytest.param(SimpleNamespace(choices=[]), id="empty-choices"),
+    pytest.param(SimpleNamespace(choices=[SimpleNamespace()]), id="missing-message"),
+    pytest.param(SimpleNamespace(choices=[SimpleNamespace(message=None)]), id="null-message"),
+    pytest.param(SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace())]), id="missing-content"),
+    pytest.param(SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=None))]), id="null-content"),
+])
+def empty_model_response(request):
+    """兼容端点省略或置空回复字段时，仍应按模型空回复处理。"""
+    return request.param
 
 
 @pytest.mark.parametrize(
@@ -500,6 +517,65 @@ def test_invalid_model_boundaries_fail_without_fallback(model, client, server_lo
     assert model[0].return_value.__exit__.call_count == 1
 
 
+def test_invalid_boundaries_retry_uses_corrected_cuts(model, client):
+    """切点首次越界时反馈原回复与错误，按纠正后的切点切分并继续提词。"""
+    model[1].chat.completions.create.side_effect = [
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(output)))])
+        for output in [{"boundaries_after": [2]}, {"boundaries_after": [1]}, {"keywords": {"2": "戊己"}}]
+    ]
+    response = client.post("/segmentations", json=payload("甲乙丙丁。戊己庚辛。", step=500))
+    assert response.status_code == 200
+    assert [(s["text"], s["keyword"]) for s in response.json()["segments"]] == [
+        ("甲乙丙丁。", ""), ("戊己庚辛。", "戊己"),
+    ]
+    retry = model[1].chat.completions.create.call_args_list[1].kwargs["messages"]
+    assert retry[-2] == {"role": "assistant", "content": json.dumps({"boundaries_after": [2]})}
+    assert "boundaries_after" in retry[-1]["content"]
+    assert model[1].chat.completions.create.call_count == 3
+
+
+@pytest.mark.parametrize("stage", ["boundaries", "keywords"])
+def test_empty_model_response_retries_successfully(model, client, empty_model_response, stage):
+    """切分和提词缺少回复字段时进入纠错，下一次合法回复仍能生成完整结果。"""
+    responses = [
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(output)))])
+        for output in [{"boundaries_after": []}, {"keywords": {"1": "甲乙"}}]
+    ]
+    retry_index = 0 if stage == "boundaries" else 1
+    responses.insert(retry_index, empty_model_response)
+    model[1].chat.completions.create.side_effect = responses
+    response = client.post("/segmentations", json=payload("甲乙丙丁"))
+    assert response.status_code == 200
+    assert [(s["text"], s["keyword"]) for s in response.json()["segments"]] == [("甲乙丙丁", "甲乙")]
+    calls = model[1].chat.completions.create.call_args_list
+    assert len(calls) == 3
+    retry = calls[retry_index + 1].kwargs["messages"]
+    # 空回复不回填为空 assistant 消息，只追加纠错说明。
+    assert [message["role"] for message in retry] == ["system", "user", "user"]
+    assert "模型返回空内容。" in retry[-1]["content"]
+    assert model[0].return_value.__exit__.call_count == 1
+
+
+@pytest.mark.parametrize("stage,attempts,message", [
+    ("boundaries", 2, "模型返回空内容。"),
+    ("keywords", 3, "模型返回空内容。"),
+    ("title", 1, "模型标题提词响应格式无效。"),
+])
+def test_empty_model_response_returns_502(model, client, empty_model_response, stage, attempts, message):
+    """持续缺少回复字段时按原尝试次数返回 502，仅标题不纠错，SDK 均关闭。"""
+    responses = [empty_model_response] * attempts
+    if stage == "keywords":
+        responses.insert(0, SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content='{"boundaries_after":[]}'))]))
+    model[1].chat.completions.create.side_effect = responses
+    data = {"title": "甲乙丙丁"} if stage == "title" else payload("甲乙丙丁")
+    response = client.post("/segmentations", json=data)
+    assert response.status_code == 502
+    assert response.json() == {"error": {"message": message}}
+    assert model[1].chat.completions.create.call_count == len(responses)
+    assert model[0].return_value.__exit__.call_count == 1
+
+
 @pytest.mark.parametrize("raw, message, shape", [
     ("oops", "模型返回非法 JSON。", {}),
     ('{"keywords":[["甲乙"]]}', "模型 keywords 必须为片段编号到字符串的对象，编号须为 1～2 的十进制字符串，不能带前导零；无关键词可省略该编号。", {"keywords_type": "list", "keyword_group_count": 1}),
@@ -849,7 +925,7 @@ def test_title_keyword_shares_model_call(model, client, title, keyword):
     assert json.loads(request["messages"][1]["content"]) == {"title": title, "segments": [{"segment_id": 1, "text": "甲乙丙丁"}]}
     assert request["response_format"] == {"type": "json_object"}
     assert request["messages"][0]["content"].endswith(
-        json.dumps({"keywords": {"1": "原文关键词"}, "title_keyword": ""}, ensure_ascii=False))
+        json.dumps({"keywords": {"1": "原文关键词"}, "title_keyword": "标题关键词"}, ensure_ascii=False))
 
 
 @pytest.mark.parametrize("extra", [{}, {"title": None}])
@@ -932,6 +1008,23 @@ def test_invalid_title_keyword_fails_without_fallback(model, client, extra):
     assert "title_keyword" in response.json()["error"]["message"]
     assert model[1].chat.completions.create.call_count == 4
     assert model[0].return_value.__exit__.call_count == 1
+
+
+def test_title_keyword_retry_uses_corrected_reply(model, client):
+    """标题关键词首次不在标题内时反馈错误，纠正后返回该标题词，片段关键词照常填回。"""
+    default = model[1].chat.completions.create.side_effect
+    invalid = json.dumps({"keywords": {"1": "甲乙"}, "title_keyword": "不存在"}, ensure_ascii=False)
+    replies = iter([default, lambda **_: SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=invalid))]), default])
+    model[1].chat.completions.create.side_effect = lambda **kwargs: next(replies)(**kwargs)
+    response = client.post("/segmentations", json={**payload("甲乙丙丁"), "title": "散养土鸡上新"})
+    assert response.status_code == 200
+    assert response.json()["title_keyword"] == "散养"
+    assert response.json()["segments"][0]["keyword"] == "甲乙"
+    retry = model[1].chat.completions.create.call_args.kwargs["messages"]
+    assert retry[-2] == {"role": "assistant", "content": invalid}
+    assert "title_keyword" in retry[-1]["content"]
+    assert model[1].chat.completions.create.call_count == 3
 
 
 def test_internal_error(client, monkeypatch):
@@ -1212,6 +1305,15 @@ def test_translate_invalid_output_fails_without_retry(model, output, field):
     reply(model, output)
     with pytest.raises(RuntimeError, match=field):
         translate(SEGMENTED, title="散养土鸡上新")
+    model[1].chat.completions.create.assert_called_once()
+    assert model[0].return_value.__exit__.call_count == 1
+
+
+def test_translate_empty_model_response_fails_without_retry(model, empty_model_response):
+    """翻译复用安全回复读取，缺少字段抛模型错误而非 AttributeError，仍只调用一次。"""
+    model[1].chat.completions.create.side_effect = [empty_model_response]
+    with pytest.raises(RuntimeError, match="模型返回空内容。"):
+        translate(SEGMENTED)
     model[1].chat.completions.create.assert_called_once()
     assert model[0].return_value.__exit__.call_count == 1
 
