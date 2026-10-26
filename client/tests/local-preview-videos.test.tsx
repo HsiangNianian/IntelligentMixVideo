@@ -8,6 +8,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { MasterVideoInput } from "@/features/templates/MasterVideoInput";
 import { defaultPreviewUrls, previewVideoUrl } from "@/features/templates/media";
 import * as localVideos from "@/features/templates/localVideos";
+import * as mediaServer from "@/features/templates/mediaServer";
 import { commitLocalVideos, LOCAL_VIDEO_MAX_BYTES, localVideoSlots } from "@/features/templates/localVideos";
 import type { PreviewMedia } from "@/features/templates/model";
 import { fetchMock, mockDesktop } from "./setup";
@@ -149,18 +150,17 @@ test("取消弹窗不提交本地文件并释放 blob URL", async () => {
 });
 
 // 回归：媒体服务地址不可用时不能先写入本地文件，否则写入已提交而前端仍认为失败。
+// 取得的地址缓存在 mediaServer 模块里、整个测试进程共用（其他测试文件可能已经取得），所以直接让取地址失败。
 test("媒体服务地址不可用时不会写入本地文件", async () => {
   const calls: string[] = [];
   mockDesktop(async (command) => {
     calls.push(command);
     if (command === "preview_video_list") return [null, null, null];
-    if (command === "preview_media_base") throw "媒体服务不可用";
     if (command === "preview_video_write") return "video-1-new";
     return null;
   });
-  const specifier = "@/features/templates/localVideos?base-unavailable";
-  const fresh: typeof import("@/features/templates/localVideos") = await import(specifier);
-  await expect(fresh.commitLocalVideos([
+  spyOn(mediaServer, "mediaServerBase").mockRejectedValue("媒体服务不可用");
+  await expect(commitLocalVideos([
     { kind: "file", name: "a.mp4", url: "blob:a", file: new File(["a"], "a.mp4", { type: "video/mp4" }) },
     { kind: "url", url: "" },
     { kind: "url", url: "" },
