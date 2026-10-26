@@ -108,6 +108,8 @@ standard 模式中，请求不包含 `materials` 时为纯数字人：跳过素�
 
 新任务还需在 `server/.env` 中设置 `ZOS_API_ENDPOINT`、`ZOS_BUCKET`、`ZOS_ACCESS_KEY_ID`、`ZOS_SECRET_ACCESS_KEY`、`ZOS_WEB_URL`，并确保 `ffmpeg` 在服务端 PATH 中；缺少 FFmpeg 时受理返回 503。`ZOS_REGION` 默认 `hangzhou-7`，`ZOS_FORCE_PATH_STYLE` 默认 false。`ZOS_DELETE_OBJECTS` 默认 false：删除 Remotion 资产、会话等记录时只删记录与本地缓存，不删 ZOS 上的文件（删除按请求收费，也不需要删除权限），设为 true 时一并删除。密钥仅由服务端读取，不进入客户端 IMS 设置。上传与公开地址分别使用 API Endpoint 和 Web URL；目前不读取 `ZOS_ENDPOINT`。对象删除或桶生命周期清理后，公开 URL 也会失效。字段示例和完整接口见 [视频合成 API 文档](src/server/video_composition/api.md)。
 
+操练场另提供 `POST /api/v1/video-compositions/playground`，通过 `mode` 与 `styleId` 读取随包封存的固定样本，跳过 ASR、切片、翻译和素材匹配，仍由原 GET 查询成片。无需配置基准任务 ID，也不依赖来源数据库中的任务；当前仅封存 IP口播样本，其余模式待补充后初始化。操练场 ZOS 产物使用 `imv/playground/`，初始化与完整契约见[视频合成 API](src/server/video_composition/api.md#操练场)。
+
 ### 执行日志
 
 历史日志仍保留在 `server/src/server/.log/`，不迁移或删除。新旧日志目录均由 Git 忽略，避免误提交带签名的业务链接；日志采集需同时覆盖历史目录与当前的 `server/.log/`。
