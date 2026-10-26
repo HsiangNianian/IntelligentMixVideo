@@ -3,6 +3,82 @@
 本项目的版本变更由发布工作流根据 Conventional Commits 自动生成。
 推送正式版本 tag 后，成功发布的版本记录会自动写入此文件。
 
+## [v0.9.16] - 2026-10-26
+### BREAKING CHANGES
+- due to [`5ffcd56`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/5ffcd56a908df6a8cd6f0db5e023d8c574464e00) - return JSON from template endpoints *(PR [#247](https://github.com/HsiangNianian/IntelligentMixVideo/pull/247) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*:
+
+  Template success responses now use application/json and Protobuf JSON field names. Callers must decode JSON instead of Protobuf binary.  
+  * fix(client)!: decode JSON template responses  
+  Request JSON and parse template responses through the shared Protobuf JSON schema. Update HTTP fixtures and editor regressions while retaining binary save requests.  
+  The template client requires the server version that returns JSON success responses.  
+  * docs(server): describe template JSON response contracts  
+  * docs(client): clarify template request and response formats  
+  * docs(api): document the template JSON migration  
+  * fix(server): preserve legacy template response decoding  
+  * fix(client): tolerate evolving template response formats  
+  * docs(api): explain template response compatibility
+
+- due to [`508671b`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/508671be008f734a50f6ee65d9654769e86012a1) - map keywords by ID and retry invalid outputs *(PR [#248](https://github.com/HsiangNianian/IntelligentMixVideo/pull/248) by [@muyuzhong](https://github.com/muyuzhong))*:
+
+  ASR-backed keyword extraction requires a model endpoint  
+  that supports strict JSON Schema with minItems/maxItems constraints.  
+  Unsupported endpoints fail instead of falling back to JSON mode.  
+  * docs: shorten segmentation collaboration notes  
+  * fix(segmentation): use DeepSeek-compatible JSON output  
+  * fix(segmentation): map keywords by segment ID  
+  * fix(segmentation): bound correction attempts and timeouts  
+  * fix(segmentation): cap requests and share a time budget  
+  * fix(segmentation): redact detailed logs and use debug  
+  * fix(segmentation): allow thirty seconds per model request  
+  * fix(segmentation): address review feedback on correction retries  
+  - Read missing or null choices, message, and content as an empty reply,  
+    so boundary and keyword stages retry instead of raising AttributeError.  
+  - Do not send an empty assistant turn when correcting an empty reply;  
+    append only the correction message.  
+  - Use a non-empty title_keyword placeholder in the keyword example.  
+  - Let the default test stub accept title input, and cover corrected  
+    boundaries and title keywords after a failed first attempt.  
+  Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>  
+  * docs(segmentation): condense segmentation notes  
+  Shorten the segmentation sections of AGENTS.md and server/README.md and  
+  state that invalid per-segment keywords are emptied without correction.  
+  Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>  
+  ---------
+
+
+### New Features
+- [`04eb9d3`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/04eb9d3f2a4aa0211d15f24f1bca86403a126550) - **templates**: allow changing an AI effect's font in templates *(PR [#252](https://github.com/HsiangNianian/IntelligentMixVideo/pull/252) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`db94955`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/db94955d44c0dc815b6e547b36209d4f4a5622b9) - **client**: add a refresh control to the template preview *(PR [#255](https://github.com/HsiangNianian/IntelligentMixVideo/pull/255) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`e8fbfc4`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/e8fbfc4a37c3d2e99d2b91fa4a2dc9a811398362) - add a persistent video composition playground *(PR [#258](https://github.com/HsiangNianian/IntelligentMixVideo/pull/258) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`2f53b00`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/2f53b00bb7633d8b0b2772c616cbb47c596b2ec5) - **remotion**: overlap text tiers and keep transparency an effect *(PR [#259](https://github.com/HsiangNianian/IntelligentMixVideo/pull/259) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Bug Fixes
+- [`13575a2`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/13575a23f0528cd5636a7a3d3ba95f8595d16da1) - **server**: keep a text tier's look on its keyword hits *(PR [#243](https://github.com/HsiangNianian/IntelligentMixVideo/pull/243) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`3780395`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/3780395fe5d8778a16b535a6853d7db0837bb379) - **server**: log why a Sprite's files could not be deleted *(PR [#244](https://github.com/HsiangNianian/IntelligentMixVideo/pull/244) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`ee41a00`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/ee41a000fdd97ea96e665b5542cbfdfb0eca5967) - **server**: keep ZOS files when records are deleted *(PR [#245](https://github.com/HsiangNianian/IntelligentMixVideo/pull/245) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`2f31e74`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/2f31e747ebc5edb3953d3a826bc443c6def8bef3) - **remotion**: allow five-minute videos with 30-minute renders *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`4fbc203`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/4fbc2038c84e801f85d55f4ae97fa76f8ce1256f) - **segmentation**: preserve raw keyword responses on failure *(commit by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`5ffcd56`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/5ffcd56a908df6a8cd6f0db5e023d8c574464e00) - **templates**: return JSON from template endpoints *(PR [#247](https://github.com/HsiangNianian/IntelligentMixVideo/pull/247) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+- [`508671b`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/508671be008f734a50f6ee65d9654769e86012a1) - **segmentation**: map keywords by ID and retry invalid outputs *(PR [#248](https://github.com/HsiangNianian/IntelligentMixVideo/pull/248) by [@muyuzhong](https://github.com/muyuzhong))*
+- [`d0a15a5`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/d0a15a52e237c2cebf22bb2909722840cbb7339b) - **client**: repair malformed fonts before upload *(PR [#257](https://github.com/HsiangNianian/IntelligentMixVideo/pull/257) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`417b25a`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/417b25ab89ea064caf4f6de365a09b5b5dbe4f63) - **ci**: install Python 3.12 for the release preflight *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Performance Improvements
+- [`492b866`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/492b8662ffeca93df52c9c4fec680565a18d2aef) - **remotion**: speed up rendering with bounded parallel chunks *(PR [#251](https://github.com/HsiangNianian/IntelligentMixVideo/pull/251) by [@IT-coder-Yy](https://github.com/IT-coder-Yy))*
+
+### Documentation Changes
+- [`6759824`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/67598242d4388ada5a2e73d4a856d4e1aec875c3) - update CHANGELOG.md for v0.9.15 [skip ci] *(commit by [@github-actions[bot]](https://github.com/apps/github-actions))*
+
+### Chores
+- [`1e2bcf4`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/1e2bcf4258e4fa05e1713904739bbd018f0983c5) - **release**: prepare v0.9.16 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+- [`d47d9d5`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/d47d9d549979e02db75ffc1d8fbbd46633e9f2c6) - **release**: promote dev to main for v0.9.16 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
+### Other Changes
+- [`8e0c1a0`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/8e0c1a00ad384eef1279602b1db39a213ad6bf91) - Merge pull request [#249](https://github.com/HsiangNianian/IntelligentMixVideo/pull/249) from IT-coder-Yy/fix/video-composition-duration-limit
+
+fix(server): extend Remotion limits and log keyword failures *(commit by [@HsiangNianian](https://github.com/HsiangNianian))*
+- [`e3ba9b3`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/e3ba9b3a52a7c4c5026afe1b97ae14235fa2ef2a) - Merge remote-tracking branch 'origin/main' into codex/release-v0.9.16 *(commit by [@YUZHEthefool](https://github.com/YUZHEthefool))*
+
 ## [v0.9.15] - 2026-10-23
 ### Bug Fixes
 - [`8c9564f`](https://github.com/HsiangNianian/IntelligentMixVideo/commit/8c9564f0dc00e2e774ca6ae13148431afa9dcc74) - **client**: keep the template preview playable and editable when IMS fails *(PR [#238](https://github.com/HsiangNianian/IntelligentMixVideo/pull/238) by [@YUZHEthefool](https://github.com/YUZHEthefool))*
@@ -1732,3 +1808,5 @@ feat(client): 在模板工作区页头添加时钟 *(commit by [@HsiangNianian](
 [v0.9.14]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.13...v0.9.14
 
 [v0.9.15]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.14...v0.9.15
+
+[v0.9.16]: https://github.com/HsiangNianian/IntelligentMixVideo/compare/v0.9.15...v0.9.16
