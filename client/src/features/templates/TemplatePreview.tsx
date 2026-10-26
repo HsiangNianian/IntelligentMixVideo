@@ -4,7 +4,7 @@
  * 播放按钮、进度条、时间轴、文字选择框与 AI 资产都只跟随这个位置，不等 IMS。卸载时清理订阅和异步任务。
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { Maximize2, Pause, Play } from "lucide-react";
+import { Maximize2, Pause, Play, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Hint } from "@/components/Hint";
 import { Spinner } from "@/components/ui/spinner";
@@ -551,7 +551,7 @@ export function TemplatePreview({ draft, media, resolved, mediaError, onRetryMed
 
   return <section aria-label="实时预览" className="flex min-h-full min-w-0 flex-col">
     <div className="template-preview-stage border-b px-4 pb-3 pt-4 lg:px-7 lg:pt-5"><div className="mx-auto max-w-[900px]">
-      <div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><span className="template-live-dot size-1.5 rounded-full" aria-hidden="true" /><h2 className="text-[13px] font-semibold">实时预览</h2></div><span className="rounded-md border px-2 py-1 text-[11px] tabular-nums text-muted-foreground">{PREVIEW_CANVAS.width} × {PREVIEW_CANVAS.height}</span></div>
+      <div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><span className="template-live-dot size-1.5 rounded-full" aria-hidden="true" /><h2 className="text-[13px] font-semibold">实时预览</h2></div><div className="flex items-center gap-2"><span className="rounded-md border px-2 py-1 text-[11px] tabular-nums text-muted-foreground">{PREVIEW_CANVAS.width} × {PREVIEW_CANVAS.height}</span><Hint label="刷新预览"><Button type="button" variant="ghost" size="icon-xs" aria-label="刷新预览" onClick={() => setAttempt((value) => value + 1)} className="rounded-[5px] p-0"><RotateCw className="size-3" aria-hidden="true" /></Button></Hint></div></div>
       <div ref={stage} className="template-preview-canvas relative mx-auto w-full overflow-hidden rounded-lg bg-black" style={{ aspectRatio: `${PREVIEW_CANVAS.width} / ${PREVIEW_CANVAS.height}`, maxWidth: `${48 * PREVIEW_CANVAS.width / PREVIEW_CANVAS.height}dvh`, "--preview-ratio": PREVIEW_CANVAS.width / PREVIEW_CANVAS.height } as CSSProperties} aria-label="模板视频预览">
         {/* 播放器与叠加层共用一个按画布比例排布的画面框：全屏时画布撑满屏幕，画面框仍按视频比例居中，字效与选择框随画面缩放而不是按整个屏幕排布。 */}
         <div className="template-preview-frame absolute inset-0 overflow-hidden">

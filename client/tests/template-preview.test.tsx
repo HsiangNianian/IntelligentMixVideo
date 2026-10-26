@@ -118,6 +118,20 @@ test("SDK 载入时间线 60 秒没有完成时切换基础视频", async () => 
   expect(screen.getByRole("button", { name: "重试 IMS 预览" })).toBeTruthy();
 });
 
+// 回归：SDK 卡在载入时间线时预览一直停在「正在应用效果并加载媒体…」，用户需要手动刷新。
+// 刷新销毁旧播放器，用当前草稿重新初始化，新的时间线载入并 canplay 后恢复就绪。
+test("预览卡在载入时间线时刷新会重建播放器", async () => {
+  const { player } = await mountWithSdk(newDraft());
+  expect(screen.getByText("正在应用效果并加载媒体…")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "刷新预览" }));
+  await waitFor(() => expect(player.destroy).toHaveBeenCalled());
+  await waitFor(() => expect(FakePlayer.last).not.toBe(player));
+  expect(FakePlayer.last?.setTimeline).toHaveBeenCalledTimes(1);
+  await act(async () => FakePlayer.last!.finishTimeline());
+  await act(async () => FakePlayer.last!.emit("canplay"));
+  await screen.findByText("预览已就绪，点击播放查看效果");
+});
+
 // 回归：生成转场画面或 SDK 载入时间线失败时预览只显示错误，播放按钮、进度条与时间轴全部停用，只能重试。
 // 失败同样只停用 IMS 部分：切换基础视频并在说明里给出原因。
 test("SDK 载入时间线失败时切换基础视频并说明原因", async () => {
