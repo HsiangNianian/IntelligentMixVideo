@@ -169,9 +169,10 @@ def plan_sprite_render(message: pb.SpriteRenderInput, sprite: pb.PublishedSprite
     return Overlay(canvas.width, canvas.height, fps, total, instances)
 
 
-async def render_sprite(renderer: Renderer, overlay: Overlay, directory: Path, *, chunk_concurrency: int | None = None) -> Path:
+async def render_sprite(renderer: Renderer, overlay: Overlay, directory: Path, *, chunk_concurrency: int | None = None,
+                        frame_concurrency: int | None = None) -> Path:
     """单 Sprite 始终按 15 秒分块；完整时钟、拼接与成片校验共用整段叠加视频实现。"""
-    return await render_overlay(renderer, overlay, directory, chunked=True, chunk_concurrency=chunk_concurrency)
+    return await render_overlay(renderer, overlay, directory, chunked=True, chunk_concurrency=chunk_concurrency, frame_concurrency=frame_concurrency)
 
 
 def join_problem(overlay: Overlay, settings: Settings) -> str | None:

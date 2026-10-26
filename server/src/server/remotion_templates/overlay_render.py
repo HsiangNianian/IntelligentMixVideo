@@ -443,7 +443,7 @@ def overlay_cpu_seconds(timeout_seconds: float) -> int:
 
 
 async def run_overlay_worker(renderer: Renderer, overlay: Overlay, directory: Path, ranges: list[list[int]] | None = None,
-                             *, chunk_concurrency: int | None = None) -> None:
+                             *, chunk_concurrency: int | None = None, frame_concurrency: int | None = None) -> None:
     """Run the isolated worker in `directory`: one `overlay.webm`, or one `chunk-<i>.webm` per inclusive frame range."""
     settings = renderer.settings
 
@@ -465,7 +465,7 @@ async def run_overlay_worker(renderer: Renderer, overlay: Overlay, directory: Pa
             },
             "instances": overlay.instances,
             "browser": renderer.worker_browser_path(),
-            "concurrency": settings.overlay_frame_concurrency,
+            "concurrency": frame_concurrency or settings.overlay_frame_concurrency,
             "chunk_concurrency": min(chunk_concurrency or settings.overlay_chunk_concurrency, settings.overlay_chunk_concurrency, len(ranges or [None])),
             **({"vp9": vp9} if vp9 else {}),
             **({"ranges": ranges} if ranges else {}),
@@ -532,11 +532,11 @@ async def join_chunks(directory: Path, count: int) -> Path:
 
 
 async def render_overlay(renderer: Renderer, overlay: Overlay, directory: Path, *, chunked: bool | None = None,
-                         chunk_concurrency: int | None = None) -> Path:
+                         chunk_concurrency: int | None = None, frame_concurrency: int | None = None) -> Path:
     """输出并校验透明视频；可选分块与单 Sprite 共用一次打包、浏览器和无损拼接。"""
     ranges = overlay_ranges(overlay, renderer.settings, chunked=chunked)
     ranges = ranges if len(ranges) > 1 else None
-    await run_overlay_worker(renderer, overlay, directory, ranges, chunk_concurrency=chunk_concurrency)
+    await run_overlay_worker(renderer, overlay, directory, ranges, chunk_concurrency=chunk_concurrency, frame_concurrency=frame_concurrency)
     output = await measured(directory, "join", join_chunks(directory, len(ranges))) if ranges else directory / "overlay.webm"
     if not output.is_file() or output.stat().st_size == 0:
         raise OverlayError("render_failed", "渲染器没有产出视频")

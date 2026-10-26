@@ -423,6 +423,19 @@ def test_frame_concurrency_reaches_the_worker(service, concurrency) -> None:
     assert renderer.requests[0]["concurrency"] == concurrency
 
 
+@pytest.mark.parametrize("cpus, expected", [(1, 1), (3, 3), (4, 4)])
+@pytest.mark.parametrize("sprite", [False, True])
+def test_reduced_pages_reach_both_workers(service, monkeypatch, cpus, expected, sprite):
+    """预留后只剩 1/3/4 核时，整段与单 Sprite 都传实际页数；默认四页配置本身不被修改。"""
+    overlays, renderer, _ = service
+    monkeypatch.setattr(render_resources, "renderer_cpus", lambda reserve: list(range(cpus)))
+    task_id = run_sprite_task(overlays, render_input()) if sprite else run_task(overlays)
+    assert overlays._read(task_id)[0] == "succeeded"
+    assert renderer.requests[0]["concurrency"] == expected
+    assert overlays.settings.overlay_frame_concurrency == 4
+    assert (overlays.capacity.pages, overlays.capacity.memory_units) == (0, 0)
+
+
 @pytest.mark.parametrize("cpu_used, threads", [(None, None), (0, 1), (4, 8)])
 def test_chunk_and_vp9_settings_reach_the_worker(service, cpu_used, threads) -> None:
     """编码调优只发送已配置字段，cpu-used=0 保留；分块并发独立于浏览器页并发。"""

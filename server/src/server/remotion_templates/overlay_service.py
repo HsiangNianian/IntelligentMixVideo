@@ -326,7 +326,7 @@ class OverlayRenders:
             await asyncio.to_thread(record_performance, work, plan_ms=plan_ms, queue_wait_ms=queue_wait_ms,
                                     resource_wait_ms=grant.wait_ms, granted_chunks=grant.chunks, reserved_memory_mb=grant.reserved_memory_mb)
             await measured(work, "text_fit", fit_texts(self.renderer, overlay, publications, work / "fit"))
-            output = await render(self.renderer, overlay, work, chunk_concurrency=grant.chunks)
+            output = await render(self.renderer, overlay, work, chunk_concurrency=grant.chunks, frame_concurrency=grant.pages)
         await self._persist(task_id, "uploading")
         urls = await measured(work, "upload", asyncio.to_thread(
             upload_public, [(output, key, "video/webm")], ZosSettings(),

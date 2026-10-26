@@ -300,7 +300,7 @@ async def render(task_id: str, data: dict, timeout: float, *, timeline: dict | N
                                         resource_wait_ms=grant.wait_ms, granted_chunks=grant.chunks, reserved_memory_mb=grant.reserved_memory_mb)
                 # 与叠加渲染相同：放不下的标题、字幕缩小字号，缩到最小仍放不下以 remotion_text_too_long 失败。
                 await measured(work, "text_fit", fit_texts(service.harness.renderer, overlay, publications, work / "fit"))
-                output = await render_overlay(service.harness.renderer, overlay, work, chunk_concurrency=grant.chunks)
+                output = await render_overlay(service.harness.renderer, overlay, work, chunk_concurrency=grant.chunks, frame_concurrency=grant.pages)
             # 文件必须存活到上传线程收尾；取消任务不保存迟到结果。
             uploading = perf_counter()
             upload = asyncio.create_task(asyncio.to_thread(upload_public,

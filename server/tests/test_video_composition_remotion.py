@@ -376,21 +376,22 @@ def test_unclassified_or_text_decoration_refused(composition_case):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("duration, frames", [(8, 240), (121, 3630), (300, 9000)])
-async def test_render_uses_shared_slot_and_persists_public_video(composition_case, monkeypatch, tmp_path, caplog, duration, frames):
+@pytest.mark.parametrize("duration, frames, cpus, pages", [(8, 240, 1, 1), (121, 3630, 3, 3), (300, 9000, 8, 4)])
+async def test_render_uses_shared_slot_and_persists_public_video(composition_case, monkeypatch, tmp_path, caplog, duration, frames, cpus, pages):
     """默认支持短片、超过旧 120 秒限制及恰好 5 分钟的成片；完整渲染上传后返回并清理。"""
     settings = Settings(_env_file=None)
+    monkeypatch.setattr(render_resources, "renderer_cpus", lambda reserve: list(range(cpus)))
     slot = asyncio.Semaphore(1)
     runtime = SimpleNamespace(settings=settings, store=SimpleNamespace(root=tmp_path),
                               overlays=SimpleNamespace(slot=slot, capacity=RenderCapacity(Settings(_env_file=None))), harness=SimpleNamespace(renderer="renderer"))
     async def get_runtime():
         """提供唯一运行时，与独立预览渲染共用名额。"""
         return runtime
-    async def render(renderer, overlay, work, *, chunk_concurrency):
+    async def render(renderer, overlay, work, *, chunk_concurrency, frame_concurrency):
         """捕获渲染时名额状态与音频全长。"""
         assert slot.locked() and overlay.frames == frames
-        # 可用八核、默认每块四页，最多两块并行。
-        assert chunk_concurrency == min(2, (frames + 449) // 450)
+        assert frame_concurrency == pages
+        assert chunk_concurrency == min(cpus // pages, (frames + 449) // 450)
         assert runtime.overlays.capacity.chunks == chunk_concurrency
         work.mkdir(parents=True, exist_ok=True)
         output = work / "overlay.webm"
@@ -429,7 +430,7 @@ async def test_render_failure_keeps_private_cause_before_cleanup(composition_cas
     async def get_runtime():
         """使用隔离目录和独立名额，不访问实际渲染服务。"""
         return runtime
-    async def fail(renderer, overlay, work, *, chunk_concurrency):
+    async def fail(renderer, overlay, work, *, chunk_concurrency, frame_concurrency):
         """模拟 Chrome 连接失败，被 overlay 层包装为安全错误。"""
         work.mkdir(parents=True, exist_ok=True)
         (work / "worker.log").write_text("Timed out after 25000 ms while trying to connect to the browser!")

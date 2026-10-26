@@ -65,6 +65,7 @@ class RenderGrant:
     """本次视频获准的并行块数与诊断；不改变帧区间、画面参数或编码质量。"""
 
     chunks: int
+    pages: int
     wait_ms: float
     reserved_memory_mb: int
 
@@ -89,19 +90,19 @@ class RenderCapacity:
             async with asyncio.timeout(settings.overlay_resource_wait_seconds):
                 async with self.condition:
                     while True:
-                        cpus = renderer_cpus(settings.render_cpu_reserve_percent)
-                        if pages > len(cpus):
-                            raise RuntimeError('每块帧并发超过预留 CPU 后的预算，请降低 IMV_OVERLAY_FRAME_CONCURRENCY')
+                        cpus = renderer_cpus(settings.render_cpu_reserve_percent)[:settings.render_max_cpus]
+                        actual_pages = min(pages, len(cpus))
                         available = await asyncio.to_thread(memory_headroom, settings.render_memory_reserve_percent)
+                        available = min(available, settings.render_max_memory_mb * MIB)
                         # 一份额外预算留给打包、浏览器和排版；多页按页数预留，已有预留不重复分给新任务。
                         free_units = available // (settings.overlay_chunk_memory_mb * MIB) - self.memory_units - 1
                         granted = min(requested, settings.overlay_chunk_concurrency,
                                       settings.overlay_global_chunk_concurrency - self.chunks,
-                                      (len(cpus) - self.pages) // pages, free_units // pages)
+                                      (len(cpus) - self.pages) // actual_pages, free_units // actual_pages)
                         if granted > 0:
-                            units = 1 + granted * pages
+                            units = 1 + granted * actual_pages
                             self.chunks += granted
-                            self.pages += granted * pages
+                            self.pages += granted * actual_pages
                             self.memory_units += units
                             break
                         try:
@@ -111,10 +112,10 @@ class RenderCapacity:
         except TimeoutError as exc:
             raise RuntimeError('等待 Remotion CPU/内存预算超时') from exc
         try:
-            yield RenderGrant(granted, (perf_counter() - started) * 1000, units * settings.overlay_chunk_memory_mb)
+            yield RenderGrant(granted, actual_pages, (perf_counter() - started) * 1000, units * settings.overlay_chunk_memory_mb)
         finally:
             async with self.condition:
                 self.chunks -= granted
-                self.pages -= granted * pages
+                self.pages -= granted * actual_pages
                 self.memory_units -= units
                 self.condition.notify_all()

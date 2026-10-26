@@ -24,15 +24,15 @@ def capacity(monkeypatch):
 @pytest.mark.anyio
 async def test_six_videos_can_use_thirty_six_chunks_when_server_has_capacity(monkeypatch):
     """模拟大内存服务器：允许六条各六块；第七条等待全局预算，而非把服务器限制成六块。"""
-    monkeypatch.setattr(resources, "renderer_cpus", lambda reserve: list(range(96)))
+    monkeypatch.setattr(resources, "renderer_cpus", lambda reserve: list(range(192)))
     monkeypatch.setattr(resources, "memory_headroom", lambda reserve: 200 * GIB)
     capacity = resources.RenderCapacity(Settings(_env_file=None))
     from contextlib import AsyncExitStack
     async with AsyncExitStack() as stack:
-        grants = [await stack.enter_async_context(capacity.claim(12, 1)) for _ in range(6)]
+        grants = [await stack.enter_async_context(capacity.claim(12, 4)) for _ in range(6)]
         assert [grant.chunks for grant in grants] == [6] * 6
-        assert (capacity.chunks, capacity.pages) == (36, 36)
-        assert sum(grant.reserved_memory_mb for grant in grants) == 42 * 1024
+        assert (capacity.chunks, capacity.pages) == (36, 144)
+        assert sum(grant.reserved_memory_mb for grant in grants) == 150 * 1024
         with pytest.raises(TimeoutError):
             async with asyncio.timeout(.02), capacity.claim(6, 1):
                 pytest.fail("总量超过 36 块")
@@ -79,9 +79,38 @@ async def test_cpu_budget_accounts_for_pages_per_chunk(capacity):
             assert (capacity.chunks, capacity.pages) == (3, 6)
     async with capacity.claim(12, 2) as grant:
         assert grant.chunks == 3
-    with pytest.raises(RuntimeError, match="帧并发"):
-        async with capacity.claim(1, 7):
-            pytest.fail("单块请求超过 CPU 预算")
+    async with capacity.claim(1, 7) as grant:
+        assert (grant.chunks, grant.pages, capacity.pages) == (1, 6, 6)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("cores, expected", [(2, 1), (4, 3), (6, 4)])
+@pytest.mark.parametrize("quota", [False, True])
+async def test_default_pages_fit_small_hosts_and_cgroup_quotas(tmp_path, monkeypatch, cores, expected, quota):
+    """默认四页在小主机与祖先 CPU 配额下自动降低；仍保留 25%，释放时按实际页数归还。"""
+    monkeypatch.setattr(resources.os, "sched_getaffinity", lambda pid: set(range(128 if quota else cores)))
+    (tmp_path / "cpu.max").write_text(f"{cores * 100000} 100000")
+    monkeypatch.setattr(resources, "cgroup_directories", lambda: [tmp_path] if quota else [])
+    monkeypatch.setattr(resources, "memory_headroom", lambda reserve: 32 * GIB)
+    capacity = resources.RenderCapacity(Settings(_env_file=None))
+    async with capacity.claim(6, 4) as grant:
+        assert (grant.chunks, grant.pages, capacity.pages) == (1, expected, expected)
+        assert grant.reserved_memory_mb == (expected + 1) * 1024
+    assert (capacity.chunks, capacity.pages, capacity.memory_units) == (0, 0, 0)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("cpu_limit, memory_mb, expected", [(8, 150 * 1024, 2), (144, 9 * 1024, 2)])
+async def test_absolute_budgets_bound_admission(monkeypatch, cpu_limit, memory_mb, expected):
+    """即使整机余量充足，绝对 CPU/内存上限仍限制准入；已有视频的预算不能重复分配。"""
+    monkeypatch.setattr(resources, "renderer_cpus", lambda reserve: list(range(192)))
+    monkeypatch.setattr(resources, "memory_headroom", lambda reserve: 256 * GIB)
+    capacity = resources.RenderCapacity(Settings(_env_file=None, render_max_cpus=cpu_limit, render_max_memory_mb=memory_mb))
+    async with capacity.claim(6, 4) as grant:
+        assert grant.chunks == expected
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(.02), capacity.claim(1, 4):
+                pytest.fail("绝对预算不能重复分配")
 
 
 @pytest.mark.anyio
@@ -159,3 +188,5 @@ def test_parent_cgroup_limits_and_affinity_are_respected(tmp_path, monkeypatch):
     command = Renderer(Settings(_env_file=None)).command(tmp_path, worker="overlay-worker.mjs")
     assert command[:4] == ["taskset", "--cpu-list", "2,3,4", "bwrap"]
     assert "--unshare-all" in command and "--clearenv" in command
+    limited = Renderer(Settings(_env_file=None, render_max_cpus=2)).command(tmp_path, worker="overlay-worker.mjs")
+    assert limited[:4] == ["taskset", "--cpu-list", "2,3", "bwrap"]

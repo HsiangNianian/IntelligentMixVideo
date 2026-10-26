@@ -268,7 +268,7 @@ class Renderer:
             command[boundary:boundary] = ["--setenv", "LD_LIBRARY_PATH", "/runtime-lib"]
         # 所有 worker 共享同一组核，限制 Chrome/FFmpeg 全部后代的总 CPU 范围。
         # prlimit 的累计 CPU 时间仅处理失控超时，不能替代这里的瞬时占用限制。
-        cpus = renderer_cpus(settings.render_cpu_reserve_percent)
+        cpus = renderer_cpus(settings.render_cpu_reserve_percent)[:settings.render_max_cpus]
         return ["taskset", "--cpu-list", ",".join(map(str, cpus)), *command]
 
     async def run_worker(

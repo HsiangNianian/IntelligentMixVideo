@@ -38,15 +38,20 @@ def test_chunking_defaults_and_optional_vp9_tuning(monkeypatch):
     defaults = Settings(_env_file=None)
     assert (defaults.overlay_chunked, defaults.overlay_chunk_concurrency) == (True, 6)
     assert (defaults.overlay_vp9_cpu_used, defaults.overlay_vp9_threads) == (4, 2)
+    assert (defaults.render_max_cpus, defaults.render_max_memory_mb) == (144, 150 * 1024)
+    monkeypatch.setenv("IMV_RENDER_MAX_CPUS", "16")
+    monkeypatch.setenv("IMV_RENDER_MAX_MEMORY_MB", "32768")
     for name, value in {"CHUNKED": "true", "CHUNK_CONCURRENCY": "2", "VP9_CPU_USED": "0", "VP9_THREADS": "64"}.items():
         monkeypatch.setenv(f"IMV_OVERLAY_{name}", value)
     configured = Settings(_env_file=None)
     assert (configured.overlay_chunked, configured.overlay_chunk_concurrency) == (True, 2)
     assert (configured.overlay_vp9_cpu_used, configured.overlay_vp9_threads) == (0, 64)
+    assert (configured.render_max_cpus, configured.render_max_memory_mb) == (16, 32768)
     for field, values in {
         "overlay_chunk_concurrency": (0, 7), "overlay_vp9_cpu_used": (-1, 9), "overlay_vp9_threads": (0, 65),
         "render_cpu_reserve_percent": (0, 100), "render_memory_reserve_percent": (0, 100),
         "overlay_global_chunk_concurrency": (0, 65), "overlay_chunk_memory_mb": (0, 16385),
+        "render_max_cpus": (0,), "render_max_memory_mb": (1023,),
     }.items():
         for value in values:
             with pytest.raises(ValueError):
