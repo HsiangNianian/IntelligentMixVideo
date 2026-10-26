@@ -31,17 +31,24 @@ export function useFonts() {
   const [uploading, setUploading] = useState(false);
   // 最近读到的字体库，上传时按文件摘要查找，不随渲染重建上传函数。
   const latest = useRef<FontInfo[] | null>(null);
+  // 每次读取递增的序号：迟到的旧响应不能覆盖上传后读到的较新字体库。
+  const loadSeq = useRef(0);
   useUpdateBlocker("字体正在上传", uploading);
-  /** 读取字体库并返回列表；失败时记下原因并返回 null。 */
-  const load = useCallback((signal?: AbortSignal) => listFonts(signal).then((list) => {
-    latest.current = list;
-    setFonts(list);
-    setLoadError(null);
-    return list;
-  }).catch((error: unknown) => {
-    if (!signal?.aborted) setLoadError(error instanceof Error ? error.message : "字体库读取失败，请重试。");
-    return null;
-  }), []);
+  /** 读取字体库并返回列表；失败时记下原因并返回 null。只应用最后一次发出的读取结果。 */
+  const load = useCallback((signal?: AbortSignal) => {
+    const seq = ++loadSeq.current;
+    return listFonts(signal).then((list) => {
+      if (!signal?.aborted && seq === loadSeq.current) {
+        latest.current = list;
+        setFonts(list);
+        setLoadError(null);
+      }
+      return list;
+    }).catch((error: unknown) => {
+      if (!signal?.aborted && seq === loadSeq.current) setLoadError(error instanceof Error ? error.message : "字体库读取失败，请重试。");
+      return null;
+    });
+  }, []);
   useEffect(() => {
     const controller = new AbortController();
     void load(controller.signal);
@@ -52,8 +59,9 @@ export function useFonts() {
    * 摘要、预览条与上传都用修复后的字节，库里按内容去重才不会与实际保存的文件对不上；结构损坏、修不了的文件直接拒绝并说明原因。
    * 显示名取字体自己的名称（优先中文名，见 `fontDisplayName`），不取文件名；画预览条同时验证浏览器能解码该字体；
    * 读不出名称时只做这项验证、不保留预览条，名称交给服务端决定。
-   * 字体库里已有同一个文件（按 SHA-256）时不再上传，直接返回它的卡片。请求失败不等于没存上：超时或断线时服务端
-   * 可能已经登记，旧服务端对重复文件回答 422，所以失败后重新读取字体库，找到这个文件就按已在库里处理。
+   * 字体库里已有同一个文件（按 SHA-256）时不再上传，直接返回它的卡片；修复前的原文件已登记时也不再上传修复版，
+   * 避免同一字体在共享库里出现两张卡片（现有条目保持原样）。请求失败不等于没存上：超时或断线时服务端可能已经登记，
+   * 旧服务端对重复文件回答 422，所以失败后重新读取字体库，找到这个文件就按已在库里处理。
    */
   const upload = useCallback(async (file: File, previewer: Previewer = drawFontPreview): Promise<UploadResult | null> => {
     setProblem(null);
@@ -75,6 +83,13 @@ export function useFonts() {
       digest = await fontDigest(bytes);
       const known = digest && latest.current ? cardWithFile(latest.current, digest) : undefined;
       if (known) return { font: known, created: false, repairs };
+      // 修复前的原文件可能已经登记（旧客户端、宽松引擎或直接调用 API）。命中它的摘要时不再上传修复版，
+      // 以免同一字体在共享库里出现两张卡片；现有条目保持原样，服务端没有替换文件的接口。
+      const originalDigest = planned.kind === "repaired" && digest ? await fontDigest(original) : digest;
+      const originalKnown = originalDigest && originalDigest !== digest && latest.current
+        ? cardWithFile(latest.current, originalDigest)
+        : undefined;
+      if (originalKnown) return { font: originalKnown, created: false, repairs: [] };
       const name = fontDisplayName(bytes);
       let strip: Blob | null = null;
       try {

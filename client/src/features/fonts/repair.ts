@@ -4,22 +4,26 @@
  * 删除没有数据的表、重排目录并补正二分查找字段、按实际数据重算各表校验和与 `head` 的 checkSumAdjustment、裁掉尾部垃圾；
  * `glyf`、`cmap`、`name` 等表的数据一个字节都不动，所以不需要字体库。没有零长度表时原样返回，不因头部字段、校验和或
  * 尾部字节与规范不符就改变摘要，避免按内容去重与已有字体库条目对不上。
- * 认出的结构问题（目录或表超出文件末尾、表与目录重叠、必需表为空、`loca` 与 `glyf` 不自洽）不猜着修，交给调用方拒绝并说明原因。
+ * 认出的结构问题（目录或表超出文件末尾、表与表目录或两张非空表重叠、必需表为空、没有可用的轮廓表、
+ * `loca` 的第一个偏移不是 0 或偏移不递增、`loca` 与 `glyf` 不自洽）不猜着修，交给调用方拒绝并说明原因。
+ * 只按字体实际使用的轮廓格式要求 `glyf`/`loca` 或 `CFF`/`CFF2`，另一套轮廓的空表可以作为无用表移除。
  * 修过的文件再修一次结果不变（幂等），同一份原文件总是得到同一份修复结果，按内容去重不会漂移。
  */
 
+/** OpenType/CFF 的 sfnt 版本；其余认得的版本使用 `glyf`/`loca` 轮廓。 */
+const CFF_VERSION = 0x4f54544f;
 /** 认得的 sfnt 版本：TrueType、OpenType/CFF 与旧式 `true` 标记；字体集合（`ttcf`）与不认识的格式原样返回，交给浏览器判断。 */
-const SFNT_VERSIONS = [0x00010000, 0x4f54544f, 0x74727565];
+const SFNT_VERSIONS = [0x00010000, CFF_VERSION, 0x74727565];
 /** 表标签。 */
 const TAG = {
   head: 0x68656164, hhea: 0x68686561, maxp: 0x6d617870, hmtx: 0x686d7478, cmap: 0x636d6170,
   name: 0x6e616d65, glyf: 0x676c7966, loca: 0x6c6f6361, cff: 0x43464620, cff2: 0x43464632,
   os2: 0x4f532f32, post: 0x706f7374,
 } as const;
-/** 长度为 0 就说明字体真坏了、不能靠删表变成可用的字体：浏览器（OTS）要求这些表都在，删掉它们只会得到另一份解不出来的文件。 */
-const REQUIRED_TABLES = new Set<number>([
-  TAG.head, TAG.hhea, TAG.maxp, TAG.hmtx, TAG.cmap, TAG.name, TAG.glyf, TAG.loca, TAG.cff, TAG.cff2, TAG.os2, TAG.post,
-]);
+/** 任何字体都必须有的表：长度为 0 说明内容已经丢了，浏览器（OTS）也不会接受缺表的字体，删掉只会得到另一份解不出来的文件。 */
+const CORE_TABLES: readonly number[] = [TAG.head, TAG.hhea, TAG.maxp, TAG.hmtx, TAG.cmap, TAG.name, TAG.os2, TAG.post];
+/** 轮廓表：两种轮廓格式各自只要求其中一组，另一组的空表可以作为无用表移除。 */
+const OUTLINE_TABLES: readonly number[] = [TAG.glyf, TAG.loca, TAG.cff, TAG.cff2];
 /** `head` 表的固定长度；其中的 checkSumAdjustment 在表内偏移 8。 */
 const HEAD_LENGTH = 54;
 const CHECKSUM_ADJUSTMENT = 8;
@@ -64,9 +68,12 @@ export function repairFont(bytes: ArrayBuffer): FontRepair {
     entries.push(entry);
   }
 
-  // 必需表为空说明内容已经丢了，删掉它并不能让字体变得能用。
+  const isCff = view.getUint32(0) === CFF_VERSION;
+  // 必需表为空说明内容已经丢了，删掉它并不能让字体变得能用；只有字体实际使用的轮廓格式才要求对应轮廓表，
+  // 另一套轮廓格式的空表（如 TrueType 字体里遗留的空 CFF）可以安全移除。
+  const required = new Set<number>([...CORE_TABLES, ...(isCff ? [] : [TAG.glyf, TAG.loca])]);
   const empty = entries.filter((entry) => entry.length === 0);
-  const lost = empty.find((entry) => REQUIRED_TABLES.has(entry.tag));
+  const lost = empty.find((entry) => required.has(entry.tag));
   if (lost) return { kind: "damaged", detail: `「${tagName(lost.tag)}」表是空的` };
   const head = entries.find((entry) => entry.tag === TAG.head);
   if (head && head.length && head.length < HEAD_LENGTH) return { kind: "damaged", detail: "head 表不完整" };
@@ -79,6 +86,22 @@ export function repairFont(bytes: ArrayBuffer): FontRepair {
 
   // 没有零长度表就没有浏览器会拒绝的目录问题：不重写，摘要、预览与上传继续用原字节。
   if (empty.length === 0) return { kind: "unchanged" };
+
+  // 允许移除不用的空轮廓表，但不能把字体唯一的一组轮廓也删掉。
+  const outline: readonly number[] = isCff ? [TAG.cff, TAG.cff2] : [TAG.glyf, TAG.loca];
+  if (entries.some((entry) => OUTLINE_TABLES.includes(entry.tag)) && !kept.some((entry) => outline.includes(entry.tag)))
+    return { kind: "damaged", detail: "字体没有可用的轮廓表" };
+
+  // 两个非空表范围重叠时，重写 head.checkSumAdjustment 可能改到另一张表的数据，校验和也会重复扫描同一段；
+  // 这种目录不能安全重写，直接拒绝。
+  const byOffset = [...kept].sort((left, right) => left.offset - right.offset);
+  for (let index = 1; index < byOffset.length; index += 1) {
+    const previous = byOffset[index - 1]!;
+    const current = byOffset[index]!;
+    if (current.offset < previous.offset + previous.length) {
+      return { kind: "damaged", detail: `「${tagName(current.tag)}」表与「${tagName(previous.tag)}」表重叠` };
+    }
+  }
 
   // 重写时顺便把原文件里陈旧的字段纠正过来；这些检查只用于说明“原文件哪一处有问题”，与我们自己重建目录造成的字段变化区分开。
   const fields = expectedHeader(count);
@@ -133,8 +156,8 @@ export function repairFont(bytes: ArrayBuffer): FontRepair {
 }
 
 /**
- * `loca`、`glyf`、`maxp`、`head` 是否自洽。只在这几张表都在且有数据时检查：只带 name 表的测试文件、CFF 字体都不会被误判。
- * 返回问题说明，自洽或无法判断时返回 null。
+ * `loca`、`glyf`、`maxp`、`head` 是否自洽：`loca` 的偏移须从 0 开始且递增，最后一项不能超出 `glyf`。
+ * 只在这几张表都在且有数据时检查：只带 name 表的测试文件、CFF 字体都不会被误判。返回问题说明，自洽或无法判断时返回 null。
  */
 function glyphsProblem(view: DataView, entries: TableEntry[]): string | null {
   const find = (tag: number) => entries.find((entry) => entry.tag === tag && entry.length > 0);
@@ -148,8 +171,17 @@ function glyphsProblem(view: DataView, entries: TableEntry[]): string | null {
   const glyphs = view.getUint16(maxp.offset + 4);
   const width = format === 0 ? 2 : 4;
   if (loca.length < (glyphs + 1) * width) return "loca 表长度与字形数量不符";
-  // 最后一项是 glyf 表里字形数据的长度，超出就说明 loca 与 glyf 来自不同版本。
-  const end = format === 0 ? view.getUint16(loca.offset + glyphs * width) * 2 : view.getUint32(loca.offset + glyphs * width);
+  // 逐个检查 loca：第一项必须是 0，偏移只能递增，最后一项不能超出 glyf。
+  const offsetAt = (index: number) => format === 0
+    ? view.getUint16(loca.offset + index * width) * 2
+    : view.getUint32(loca.offset + index * width);
+  let end = offsetAt(0);
+  if (end !== 0) return "loca 的第一个偏移不是 0";
+  for (let index = 1; index <= glyphs; index += 1) {
+    const next = offsetAt(index);
+    if (next < end) return "loca 的偏移不是递增的";
+    end = next;
+  }
   return end > glyf.length ? "loca 与 glyf 的字形数据长度不符" : null;
 }
 

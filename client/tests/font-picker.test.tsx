@@ -52,6 +52,13 @@ function fontServer(onUpload?: (form: FormData) => Response, initial: FontInfo[]
   return { uploads };
 }
 
+/** 一个手动完成的 Promise，用来模拟乱序到达的请求。 */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 /** 打开下拉框并等字体库到位。 */
 async function open(onChange: (family: string) => void, previewer?: (file: File, text: string) => Promise<Blob | null>) {
   render(<FontPicker label="字体" value="Noto Sans CJK SC" onChange={onChange} previewer={previewer} />);
@@ -252,6 +259,43 @@ test("字体库里已有修复后的文件时直接选中，不再上传", async
   await waitFor(() => expect(changes).toEqual(["Zed Display"]));
   expect(server.uploads).toEqual([]);
   expect(drawn).toEqual([]);
+});
+
+// 场景：字体库里已有的是修复前的原文件——按原摘要识别为同一文件，不再上传修复版，避免重复卡片。
+test("字体库里已有修复前的文件时不再上传修复版", async () => {
+  const file = fontFile("fixed.ttf", [english("Zed Display")], [["cvt ", new Uint8Array(0)]]);
+  const existing = font("u-1", "Zed Display", "Zed Display", { source: "upload", faces: [face("u-1", "regular", { sha256: await digestOf(file) })] });
+  const server = fontServer(() => Response.json(UPLOADED, { status: 201 }), [...LIBRARY, existing]);
+  const changes: string[] = [];
+  const drawn: string[] = [];
+  await open((family) => changes.push(family), async (_file, text) => { drawn.push(text); return null; });
+  fireEvent.change(screen.getByLabelText("选择字体文件"), { target: { files: [file] } });
+  await waitFor(() => expect(changes).toEqual(["Zed Display"]));
+  expect(server.uploads).toEqual([]);
+  expect(drawn).toEqual([]);
+});
+
+// 场景（回归）：较早发出的字体库读取晚于上传后的读取返回——不能用旧列表覆盖新字体。
+test("较早的字体库读取不会覆盖上传后的列表", async () => {
+  const first = deferred<Response>();
+  const second = deferred<Response>();
+  let gets = 0;
+  fetchMock.mockImplementation((async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    if (url.pathname !== "/api/templates/fonts") return new Response("未配置", { status: 500 });
+    if (init?.method === "POST") return Response.json(UPLOADED, { status: 201 });
+    gets += 1;
+    return gets === 1 ? first.promise : second.promise;
+  }) as typeof fetch);
+  render(<><Toaster /><FontLibrary previewer={async () => null} /></>);
+  await waitFor(() => expect(gets).toBe(1));
+  fireEvent.change(screen.getByLabelText("选择字体文件"), { target: { files: [uploadFile()] } });
+  await waitFor(() => expect(gets).toBe(2));
+  second.resolve(Response.json([...LIBRARY, UPLOADED]));
+  await waitFor(() => expect(screen.getByRole("status").textContent).toContain("共 3 个字体"));
+  first.resolve(Response.json(LIBRARY));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(screen.getByRole("status").textContent).toContain("共 3 个字体");
 });
 
 // 场景（回归）：浏览器有 crypto.subtle 但摘要计算失败（权限策略、受限 WebView）——摘要只是优化，不能挡住上传，

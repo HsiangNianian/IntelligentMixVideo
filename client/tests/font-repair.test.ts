@@ -75,6 +75,13 @@ function loca(end = 12): ExtraTable {
   return ["loca", data];
 }
 
+/** 短格式 loca：按给定的字形偏移（字节）写入每一项。 */
+function locaOffsets(...offsets: number[]): ExtraTable {
+  const data = new Uint8Array(offsets.length * 2);
+  offsets.forEach((offset, index) => new DataView(data.buffer).setUint16(index * 2, offset / 2));
+  return ["loca", data];
+}
+
 /** 一张零长度表。 */
 function empty(tag: string): ExtraTable {
   return [tag, new Uint8Array(0)];
@@ -82,6 +89,13 @@ function empty(tag: string): ExtraTable {
 
 /** 一份结构自洽、带字形表的字体字节。 */
 const soundFont = (...extras: ExtraTable[]) => fontBytes([english("Zed Display")], [head(), maxp(), glyf(), loca(), ...extras]);
+
+/** OpenType/CFF 字节：只有 name 与给定额外表，版本改成 OTTO；没有 head 时不需要重算校验和。 */
+function cffFont(...extras: ExtraTable[]): Uint8Array<ArrayBuffer> {
+  const bytes = fontBytes([english("Zed Display")], extras);
+  new DataView(bytes.buffer).setUint32(0, 0x4f54544f);
+  return bytes;
+}
 
 // 场景：做字工具导出的字体带着长度为 0 的 cvt、DSIG 表——删掉它们、重建目录与头部字段、重算 head 校验和，其余表一个字节不变。
 test("移除零长度的表并重建目录", () => {
@@ -145,12 +159,46 @@ test("OTS 要求的 OS/2 与 post 为空时说明原因", () => {
   expect(repairFont(soundFont(empty("post")).buffer)).toEqual({ kind: "damaged", detail: "「post」表是空的" });
 });
 
+// 场景：TrueType 字体里遗留的空的 CFF 表与当前轮廓格式无关——删掉它，而不是拒绝整个字体。
+test("移除不用的空轮廓表", () => {
+  const result = repairFont(soundFont(empty("CFF ")).buffer);
+  expect(result.kind).toBe("repaired");
+  if (result.kind !== "repaired") return;
+  expect(result.repairs).toEqual(["移除了空的「CFF」表"]);
+  expect(directory(result.bytes).map((entry) => entry.tag)).toEqual(["glyf", "head", "loca", "maxp", "name"]);
+});
+
+// 场景：CFF 字体里遗留的空的 glyf/loca——按 CFF 轮廓处理，删掉不用的空表。
+test("CFF 字体移除不用的空 glyf 与 loca", () => {
+  const bytes = cffFont(["CFF ", new Uint8Array([1, 2, 3, 4])], empty("glyf"), empty("loca"));
+  const result = repairFont(bytes.buffer);
+  expect(result.kind).toBe("repaired");
+  if (result.kind !== "repaired") return;
+  expect(result.repairs).toEqual(["移除了空的「glyf」表", "移除了空的「loca」表"]);
+  expect(directory(result.bytes).map((entry) => entry.tag)).toEqual(["CFF", "name"]);
+});
+
+// 场景：CFF 字体只有空的 CFF 而没有 CFF2——没有可用轮廓，拒绝而不是生成空字体。
+test("没有可用的轮廓表时说明原因", () => {
+  expect(repairFont(cffFont(empty("CFF ")).buffer)).toEqual({ kind: "damaged", detail: "字体没有可用的轮廓表" });
+});
+
 // 场景：某张表的偏移落进表目录（表与目录重叠）——数据位置不可信，不尝试修复。
 test("表与表目录重叠时说明原因", () => {
   const bytes = soundFont();
   const index = directory(bytes.buffer).findIndex((entry) => entry.tag === "name");
   new DataView(bytes.buffer).setUint32(12 + 16 * index + 8, 12);
   expect(repairFont(bytes.buffer)).toEqual({ kind: "damaged", detail: "「name」表与表目录重叠" });
+});
+
+// 场景：两个非空表的范围重叠——重写 head 校验和可能改到另一张表，拒绝而不是修坏。
+test("非空表范围重叠时说明原因", () => {
+  const bytes = soundFont(empty("cvt "));
+  const entries = directory(bytes.buffer);
+  const glyf = entries.find((entry) => entry.tag === "glyf")!;
+  const nameIndex = entries.findIndex((entry) => entry.tag === "name");
+  new DataView(bytes.buffer).setUint32(12 + 16 * nameIndex + 8, glyf.offset + 1);
+  expect(repairFont(bytes.buffer)).toEqual({ kind: "damaged", detail: "「name」表与「glyf」表重叠" });
 });
 
 // 场景：目录里某张表的长度超出文件末尾——数据根本不在文件里，不能裁成一份看似合法的字体。
@@ -172,6 +220,20 @@ test("表目录超出文件末尾时说明原因", () => {
 test("loca 与 glyf 不符时说明原因", () => {
   expect(repairFont(fontBytes([english("Zed Display")], [head(), maxp(), glyf(), loca(16)]).buffer)).toEqual({
     kind: "damaged", detail: "loca 与 glyf 的字形数据长度不符",
+  });
+});
+
+// 场景：loca 的第一项不是 0——字形数据往前越界，说明原因。
+test("loca 的第一个偏移不是 0 时说明原因", () => {
+  expect(repairFont(fontBytes([english("Zed Display")], [head(), maxp(), glyf(), locaOffsets(2, 12)]).buffer)).toEqual({
+    kind: "damaged", detail: "loca 的第一个偏移不是 0",
+  });
+});
+
+// 场景：loca 的中间偏移下降——字形区间错乱，说明原因。
+test("loca 的偏移不是递增时说明原因", () => {
+  expect(repairFont(fontBytes([english("Zed Display")], [head(), maxp(2), glyf(), locaOffsets(0, 8, 4)]).buffer)).toEqual({
+    kind: "damaged", detail: "loca 的偏移不是递增的",
   });
 });
 
