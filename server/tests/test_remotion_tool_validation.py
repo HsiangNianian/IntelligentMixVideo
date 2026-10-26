@@ -877,6 +877,9 @@ export default function Title(props: { text: string; fontSize: number }) {
 # 与 FITTING_TEXT 同样换行缩字号，但只渲染前 10 个字（截断）、把文字放进 display: none 的元素，或把每个字拆成一个 span。
 SLICED_TEXT = FITTING_TEXT.replace("{props.text}</div>", "{props.text.slice(0, 10)}</div>")
 HIDDEN_TEXT = FITTING_TEXT.replace('color: "#fff" }}>', 'color: "#fff", display: "none" }}>')
+# 生成检查仍要求完整显示：整体透明或只显示前两个字、其余文字透明，都不能靠渲染预检对透明度的宽容而通过。
+TRANSPARENT_TEXT = PLAIN_WRAP_TEXT.replace('color: "#fff"', 'color: "#fff", opacity: 0')
+PARTLY_TRANSPARENT_TEXT = PLAIN_WRAP_TEXT.replace("{props.text}</div>", '{props.text.slice(0, 2)}<span style={{opacity: 0}}>{props.text.slice(2)}</span></div>')
 PER_GLYPH_TEXT = FITTING_TEXT.replace("{props.text}</div>", '{props.text.split("").map((glyph, index) => <span key={index}>{glyph}</span>)}</div>')
 # 一行文字放在恰好一行高的 overflow hidden 遮罩里（lineHeight 1）：字形没有被裁，但字体的上下伸部超出行框。
 LINE_MASK_TEXT = """import React from "react";
@@ -967,6 +970,8 @@ def browser_text_validate(tmp_path: Path, code: str, max_length: int, *, minimum
     (IGNORES_TEXT, 100, False, "never renders"),
     (SLICED_TEXT, 100, False, "only part of it is rendered"),
     (HIDDEN_TEXT, 100, False, "never renders"),
+    (TRANSPARENT_TEXT, 100, False, "never renders"),
+    (PARTLY_TRANSPARENT_TEXT, 100, False, "only part of it is rendered"),
     (PER_GLYPH_TEXT, 100, True, ""),
     (LINE_MASK_TEXT, 4, True, ""),
     (SCALE_EXIT_TEXT, 100, False, "overflow"),
@@ -975,7 +980,7 @@ def browser_text_validate(tmp_path: Path, code: str, max_length: int, *, minimum
     (PAINT_CONTAINED_TEXT, 100, False, "contain: paint"),
     (SEALED_INSTANCE_BOX_TEXT, 15, True, ""),
     (PLAIN_WRAP_TEXT, 100, True, "smallest fontSize 24"),
-], ids=["fixed-box-clips-long-title", "wrapped-and-shrunk", "reveal-mask-only-early", "ignores-text", "sliced-text", "display-none", "one-span-per-glyph",
+], ids=["fixed-box-clips-long-title", "wrapped-and-shrunk", "reveal-mask-only-early", "ignores-text", "sliced-text", "display-none", "transparent", "partly-transparent", "one-span-per-glyph",
         "line-height-1-mask", "clipped-until-scaled-out", "typewriter", "overflow-auto-box", "paint-contained-box", "sealed-instance-box", "plain-wrap-fits-at-smallest-size"])
 def test_real_browser_requires_the_longest_text_to_be_shown_in_full(tmp_path, code, max_length, passed, reason):
     """issue #119：972x360 的 overflow hidden 固定框在 100 字标题下被裁切而被拒；按字数缩小字号并换行的写法、只在开头几帧被遮罩挡住的文字通过；

@@ -653,7 +653,11 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   overflow is not visible or that contains its paint, outside the canvas once the placement's host transform moves,
   scales and rotates it, lines under 20px tall, or only part of the text shown, judged on the frames that show the
   text at its full size. Placements that differ only in length or transform are measured separately; the
-  transform's opacity does not move text and is ignored. Text that already fits keeps its `fontSize`; otherwise the
+  transform's opacity does not move text and is ignored. In render preflight, text that still has a layout box and
+  `visibility: visible` counts toward completeness even when its own or an ancestor's opacity is at most 0.01,
+  so making one tier transparent does not produce `text_too_long`. Only painted text contributes clipping,
+  size and placement measurements; missing text, `display: none` and `visibility: hidden` are still excluded.
+  Generation's `text_fit` check continues to require visible text. Text that already fits keeps its `fontSize`; otherwise the
   host lowers `fontSize` to the largest whole size, down to the published minimum but never below 24 (smaller lines count as unreadable), at which it is shown in full
   (binary search; the size is logged, the template and the sealed source are untouched). A `keywordSize` above 0 is
   an absolute size, so it shrinks by the same ratio (at least 12, never larger than set), keeping the keyword's
