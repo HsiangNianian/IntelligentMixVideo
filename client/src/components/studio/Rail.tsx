@@ -10,7 +10,7 @@ import { LogoMark } from "./Logo";
 import { PulseDot, Tooltip } from "./ui";
 import { ThemeToggle } from "@/components/ThemeToggle";
 
-export type Page = "home" | "editor" | "effects" | "fonts";
+export type Page = "home" | "editor" | "effects" | "fonts" | "playground";
 
 /** 导航项与正式客户端的工作区一一对应。 */
 const items: { page: Page; label: string; icon: IconName }[] = [
@@ -18,6 +18,7 @@ const items: { page: Page; label: string; icon: IconName }[] = [
   { page: "editor", label: "模板编辑", icon: "clapperboard-edit" },
   { page: "effects", label: "AI 字效", icon: "stars" },
   { page: "fonts", label: "字体库", icon: "text-square" },
+  { page: "playground", label: "操练场", icon: "layers-minimalistic" },
 ];
 
 interface RailProps {
