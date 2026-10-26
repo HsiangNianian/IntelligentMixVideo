@@ -9,6 +9,7 @@ import { MasterVideoInput } from "@/features/templates/MasterVideoInput";
 import { defaultPreviewUrls, previewVideoUrl } from "@/features/templates/media";
 import * as localVideos from "@/features/templates/localVideos";
 import { commitLocalVideos, LOCAL_VIDEO_MAX_BYTES, localVideoSlots } from "@/features/templates/localVideos";
+import * as mediaServer from "@/features/templates/mediaServer";
 import type { PreviewMedia } from "@/features/templates/model";
 import { fetchMock, mockDesktop } from "./setup";
 
@@ -151,10 +152,11 @@ test("取消弹窗不提交本地文件并释放 blob URL", async () => {
 // 回归：媒体服务地址不可用时不能先写入本地文件，否则写入已提交而前端仍认为失败。
 test("媒体服务地址不可用时不会写入本地文件", async () => {
   const calls: string[] = [];
+  // 新的视频模块仍复用媒体地址缓存；直接模拟地址读取失败，避免依赖其他用例是否已取得地址。
+  spyOn(mediaServer, "mediaServerBase").mockRejectedValue("媒体服务不可用");
   mockDesktop(async (command) => {
     calls.push(command);
     if (command === "preview_video_list") return [null, null, null];
-    if (command === "preview_media_base") throw "媒体服务不可用";
     if (command === "preview_video_write") return "video-1-new";
     return null;
   });
