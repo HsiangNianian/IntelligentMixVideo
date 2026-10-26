@@ -201,10 +201,12 @@ _ARRAY_HINT = (
     "per-tier styles are the fixed scalar parameters line1Color, line1SizeRatio, line1FontFamily and line1FontWeight "
     "(and the same for line2), not arrays"
 )
-# 多行字效的行间距：绑定了行起点就必须有，用户才能调整两行之间的距离。
+# 多行字效的行间距：绑定了行起点就必须有，用户才能调整两行之间的距离。下界可为负数，让下栏向上移、叠住上栏；
+# 0 仍接受，更早生成的资产照常发布。
 LINE_GAP = Rule(
-    LINE_GAP_PROP, {"type": "number", "minimum": 0, "maximum": 300},
-    "多行字效相邻两行之间的距离（像素），数字，下界为 0、上界在 200～600 之间", _between(0, 600, 0, 200),
+    LINE_GAP_PROP, {"type": "number", "minimum": -600, "maximum": 300},
+    "多行字效相邻两行之间的距离（像素），数字，下界可在 -600～0 之间（负值让下栏上移叠住上栏）、上界在 200～600 之间",
+    _between(-600, 600, 0, 200),
 )
 _COLOR = {"type": "string", "pattern": HEX_COLOR}
 REQUIRED: dict[SpriteKindName, tuple[Rule, ...]] = {
@@ -366,7 +368,8 @@ def category_problems(
 
     ``fonts`` 是字体库里的家族名：生成路径传入时，字效还必须暴露 `fontFamily` 枚举（取值都在字体库里），默认值是枚举之一；
     多行字效在生成路径必须恰好两栏，并以每栏固定的颜色、字号比例、字体与字重（`TIER_STYLES`）代替整段共用的
-    颜色、字重与字体；画了关键词字效的字效必须暴露默认开启的 `keywordEffect` 开关。``requested`` 是新会话里用户打开的
+    颜色、字重与字体；画了关键词字效的字效必须暴露默认开启的 `keywordEffect` 开关，文字颜色还必须不透明（透明由带可调
+    数字参数的 `role=effect` 特效实现）。``requested`` 是新会话里用户打开的
     开关（`two_tier`、`keyword_effect`），生成路径据此要求双栏或关键词字效。发布更早的版本时都不传，不要求这些参数；
     多行字效在两条路径上都不要求整段共用的颜色与字重。
     """
@@ -387,6 +390,7 @@ def category_problems(
     if kind == "text" and fonts is not None:
         problems += _tier_problems(properties, bound, defaults, fonts) if tiered else _font_problems(FONT_FAMILY, properties, bound, defaults, fonts)
         problems += _keyword_effect_problems(properties, bound, defaults, "keyword_effect" in requested)
+        problems += _opaque_colours(defaults, ("line1Color", "line2Color") if tiered else ("color",))
         if "two_tier" in requested and not tiered:
             problems.append(Problem(LINE_STARTS_PROP, LINE_STARTS, "missing: the user switched on 双栏 (original_request.two_tier), so make a two-tier "
                                     f"text whose default text has exactly {TIERS} lines and bind {LINE_STARTS_PROP}, {LINE_GAP_PROP} and the tier parameters"))
@@ -480,6 +484,17 @@ def _line_problems(properties: dict, bound: set[str], defaults: dict) -> list[Pr
     if not isinstance(text, str) or len(lines := text.split("\n")) != count or not all(line.strip() for line in lines):
         problems.append(Problem("text", REQUIRED["text"][0], f"has the wrong default: a multi-line text defaults to {count} non-empty lines separated by \\n"))
     return problems
+
+
+def _opaque_colours(defaults: dict, names: tuple[str, ...]) -> list[Problem]:
+    """生成路径的栏文字颜色必须是不透明的 #RRGGBB：半透明（#RRGGBBAA）看起来像字色，但不能像特效那样调整透明度。
+    透出视频的字效应由 `role=effect` 的透明特效实现，并把透明度绑定为可调的数字样式参数；发布更早的版本不传字体库，不追溯拦截。"""
+    return [
+        Problem(name, None, "must be an opaque #RRGGBB colour: text that shows the video through is a transparency effect "
+                "(role \"effect\") at that position, with a numeric opacity style parameter users can adjust, not a colour with alpha (#RRGGBBAA)")
+        for name in names
+        if isinstance(defaults.get(name), str) and re.fullmatch(r"#[0-9A-Fa-f]{8}", defaults[name])
+    ]
 
 
 def _same(value: object, expected: object) -> bool:

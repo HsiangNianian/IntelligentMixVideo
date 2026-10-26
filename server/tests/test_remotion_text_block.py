@@ -198,7 +198,49 @@ def test_the_host_owns_a_text_blocks_configuration():
     assert {"line1FontFamily", "line2FontWeight", "line1SizeRatio", "lineGap", "lineStartFrames", "keywordEffect"} <= set(schemas)
     assert not {"fontFamily", "fontWeight", "color"} & set(schemas)
     assert schemas["line1SizeRatio"]["title"] == "上栏字号比例" and schemas["lineGap"]["title"] == "栏间距"
+    assert schemas["lineGap"]["minimum"] == -600 and schemas["lineGap"]["maximum"] == 300
     assert (defaults["line1SizeRatio"], defaults["line2FontFamily"], defaults["lineStartFrames"], defaults["keywordEffect"]) == (0.5, "Noto Sans CJK SC", [0, 12], True)
+
+
+def test_a_transparency_colour_is_refused_so_transparency_stays_an_effect():
+    """生成路径：把透明度做成字色（栏颜色默认值带 alpha）时被拒，并说明透明是带可调数字样式参数的特效；不透明颜色通过。
+    发布更早的版本不传字体库，不追溯拦截带 alpha 的旧颜色。"""
+    one = {"text": "今日灵感", "font_size": 96, "tiers": [{"font_family": "Zed Display", "font_weight": 700}]}
+    schemas, defaults = text_configuration(one, LIBRARY)
+    properties = {**schemas, "color": COLOR}
+    bound = set(properties)
+    schema = {"type": "object", "properties": properties}
+    assert category_problems("text", schema, bound, {**defaults, "color": "#FFFFFF"}, fonts=LIBRARY) == []
+    [problem] = category_problems("text", schema, bound, {**defaults, "color": "#FFFFFF80"}, fonts=LIBRARY)
+    assert (problem.name, problem.rule) == ("color", None)
+    assert "transparency effect" in problem.reason and "opacity" in problem.reason and "alpha" in problem.reason
+    # 单栏与双栏的栏颜色都检查；发布路径（fonts=None）保持旧版本可保存。
+    assert category_problems("text", schema, bound, {**defaults, "color": "#FFFFFF80"}) == []
+    two = {"text": "上\n下", "font_size": 96, "line_gap": 24, "line_starts": [0, 12],
+           "tiers": [{"font_family": "Zed Display", "font_weight": 400, "size_ratio": 0.5}, {"font_family": "Noto Sans CJK SC", "font_weight": 700, "size_ratio": 1}]}
+    schemas, defaults = text_configuration(two, LIBRARY)
+    properties = {**schemas, "line1Color": COLOR, "line2Color": COLOR}
+    problems = category_problems("text", {"type": "object", "properties": properties}, set(properties),
+                                 {**defaults, "line1Color": "#FFFFFF80", "line2Color": "#F5B93C"}, fonts=LIBRARY)
+    assert [item.name for item in problems] == ["line1Color"]
+
+
+@needs_bundler
+def test_a_negative_line_gap_pulls_the_lower_tier_up():
+    """栏间距为负时宿主用负 marginTop 把下栏向上移（CSS gap 不支持负值），两栏因此可以叠在一起；配置参数的默认值保留负数。"""
+    tier = {
+        "preset": {"code": TIER_CODE, "parameter_schema": {"type": "object", "properties": {"color": COLOR}, "required": ["color"], "additionalProperties": False},
+                   "default_parameters": {"color": "#FFFFFF"}},
+        "parameters": {"color": "#FFFFFF"},
+        "layout": {"x": 0, "y": 0, "width": 1080, "height": 600, "z_index": 0},
+        "timing": {"start_frame": 0, "duration_frames": 30},
+    }
+    block = {"layout": {"x": 0, "y": 0, "width": 1080, "height": 600}, "text": "上\n下", "font_size": 96, "line_gap": -60, "line_starts": [0, 15],
+             "tiers": [{"font_family": "Noto Sans CJK SC", "font_weight": 700, "size_ratio": 1},
+                       {"font_family": "Noto Sans CJK SC", "font_weight": 700, "size_ratio": 1}]}
+    code, _schema, defaults, _ = compose_text_source(block, [{**tier, "instance_id": "upper"}, {**tier, "instance_id": "lower"}], None, [], [], ["Noto Sans CJK SC"])
+    assert defaults["lineGap"] == -60
+    assert "marginTop: props.lineGap" in code and "gap: props.lineGap" not in code
 
 
 def test_effects_get_the_hosts_switch_position_and_length():
@@ -624,6 +666,16 @@ def test_the_executor_draws_a_tiers_look_on_its_block():
 
     assert "draws the tier's look on that same block" in EXECUTOR_RULES
     assert "so every <Keyword> segment inside inherits it" in EXECUTOR_RULES
+
+
+def test_the_executor_makes_transparency_an_effect_and_allows_negative_line_gaps():
+    """透明度有时被做成带 alpha 的字色：规则要求透明（整体或某一栏透出视频）是带可调数字样式参数的持续特效，
+    颜色保持不透明；栏间距为负时下栏向上移，可以叠住上栏。"""
+    from server.remotion_templates.agent import EXECUTOR_RULES
+
+    assert "Transparency is an effect, never a colour" in EXECUTOR_RULES
+    assert "never write it as an alpha colour" in EXECUTOR_RULES
+    assert "negative values pull the lower tier up over the upper one" in EXECUTOR_RULES
 
 
 def test_a_keyword_hit_without_its_tiers_look_gets_no_layout_hint(tmp_path, monkeypatch):

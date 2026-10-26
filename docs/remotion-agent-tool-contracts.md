@@ -721,8 +721,8 @@ class TextComposition(ContractModel):
     text: Annotated[StrictStr, StringConstraints(min_length=1, max_length=100)]
     font_size: Annotated[FiniteNumber, Field(ge=24, le=240)]
     tiers: list[TextTier] = Field(min_length=1, max_length=2)
-    # 只有双栏使用：两栏之间的距离（像素）与各栏出现的帧（首项为 0，不递减）。
-    line_gap: Omittable[Annotated[FiniteNumber, Field(ge=0, le=300)]]
+    # 只有双栏使用：两栏之间的距离（像素，可为负数以让下栏上移叠住上栏，最低 -600）与各栏出现的帧（首项为 0，不递减）。
+    line_gap: Omittable[Annotated[FiniteNumber, Field(ge=-600, le=300)]]
     line_starts: Omittable[list[Annotated[Integer, Field(ge=0, le=3600)]]]
     keyword: Omittable[TextKeyword]
     # 按顺序包住各自位置的特效，先列的在里层；宿主按顺序给它们第 1、2…个特效的配置参数。
