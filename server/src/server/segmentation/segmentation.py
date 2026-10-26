@@ -18,6 +18,11 @@ from .settings import ClientSettings, Settings
 
 jieba.setLogLevel(logging.WARNING)
 
+BOUNDARY_MAX_ATTEMPTS = 2
+KEYWORD_MAX_ATTEMPTS = 3
+MODEL_TIMEOUT_SECONDS = 15
+SEGMENTATION_BUDGET_SECONDS = 90
+
 # 对齐忽略常见中英文标点；字幕过滤集合供下游合成使用，切片原文保留标点。
 PUNCTUATION = set("，。！？、；：“”‘’（）《》〈〉【】〔〕…—～·,.．!?;:\"'()<>[]{}~`")
 SUBTITLE_PUNCTUATION = PUNCTUATION - {"？", "?"}
@@ -25,6 +30,8 @@ SUBTITLE_PUNCTUATION = PUNCTUATION - {"？", "?"}
 
 def segmentation_error(exc: Exception) -> tuple[str, int]:
     """日志与 HTTP 共用错误摘要和状态码；模型异常不回显供应商响应或凭据。"""
+    if isinstance(exc, TimeoutError):
+        return "切片处理超时。", 504
     if isinstance(exc, APITimeoutError):
         return "模型请求超时。", 504
     if isinstance(exc, APIError):
@@ -145,6 +152,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     RuntimeError，内部约束错误抛 AssertionError；ASR 嵌套读取和 SDK 异常原样传播。
     diagnostics 供共用入口记录已完成阶段的详细 trace；返回值只保留原有统计字段。
     """
+    deadline = perf_counter() + SEGMENTATION_BUDGET_SECONDS
     trace = diagnostics["trace"]
     title = payload.get("title")
     title_only = payload.get("asr_result") is None and title is not None
@@ -164,17 +172,28 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     diagnostics["stage"] = "config"
     config = _settings(config)
     base_url, key, model = config.llm_base_url, config.llm_api_key, config.llm_model
+
+    def request_timeout() -> float:
+        """所有切片模型请求共用剩余预算，并保留客户端更短的超时。"""
+        # shortcut: 同步 HTTP 只在调用前后检查预算，需严格截止时改用可取消的异步请求。
+        remaining = deadline - perf_counter()
+        if remaining <= 0:
+            raise TimeoutError("切片处理超时。")
+        return min(config.llm_timeout_seconds, MODEL_TIMEOUT_SECONDS, remaining)
+
     if title_only:
         diagnostics["stage"] = "keywords"
-        with OpenAI(base_url=base_url, api_key=key, timeout=config.llm_timeout_seconds, max_retries=config.llm_max_retries) as client:
+        with OpenAI(base_url=base_url, api_key=key, timeout=request_timeout(), max_retries=0) as client:
             response = client.chat.completions.create(
                 model=model, temperature=0.2, response_format={"type": "json_object"},
+                timeout=request_timeout(),
                 messages=[{"role": "system", "content": '从标题中提取一个关键词，只返回 JSON：{"title_keyword":"关键词"}，无合适词时返回空字符串。'},
                           {"role": "user", "content": title}],
             )
         logging.getLogger("uvicorn.error").info(
             "切片模型输出 stage=title_keywords attempt=1 content=%r",
             response.choices[0].message.content if response.choices else None)
+        request_timeout()
         try:
             keyword = json.loads(response.choices[0].message.content).get("title_keyword", "")
             return {"title_keyword": keyword if isinstance(keyword, str) else ""}
@@ -365,7 +384,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                  selected_boundaries_after=[], keyword_candidates={}, model_elapsed_ms={})
     segments, rejected = [], 0
     # 模型依次选切点、提关键词；超长片段随后由代码按安全边界切分。
-    with OpenAI(base_url=base_url, api_key=key, timeout=config.llm_timeout_seconds, max_retries=config.llm_max_retries) as client:
+    with OpenAI(base_url=base_url, api_key=key, timeout=request_timeout(), max_retries=0) as client:
         for stage in ("boundaries", "keywords"):
             diagnostics["stage"] = stage
             if stage == "boundaries":
@@ -412,7 +431,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                 {"role": "user", "content": json.dumps(content, ensure_ascii=False)},
             ]
             started = perf_counter()
-            max_attempts = 2 if stage == "boundaries" else 3
+            max_attempts = BOUNDARY_MAX_ATTEMPTS if stage == "boundaries" else KEYWORD_MAX_ATTEMPTS
             try:
                 for attempt in range(max_attempts):
                     response = client.chat.completions.create(
@@ -420,7 +439,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                         messages=messages,
                         temperature=0.2,
                         response_format={"type": "json_object"},
-                        timeout=config.llm_timeout_seconds if attempt == 0 else min(config.llm_timeout_seconds, 30),
+                        timeout=request_timeout(),
                     )
                     raw = response.choices[0].message.content if response.choices else None
                     logging.getLogger("uvicorn.error").info(
@@ -429,6 +448,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                         diagnostics["keyword_response"] = {
                             "expected_segment_count": len(segments), "response": raw,
                         }
+                    request_timeout()
                     try:
                         output = _json_output(response)
                         if stage == "boundaries":
@@ -555,6 +575,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     for item in segments:
         item["start_time"] = item.pop("start_time_ms") / 1000
         item["end_time"] = item.pop("end_time_ms") / 1000
+    request_timeout()
     return {
         **({"title_keyword": title_keyword} if title is not None else {}),
         "segments": segments,

@@ -337,10 +337,29 @@ def test_wavefront_matches_independent_dp(model):
         assert result["trace"]["edit_cost"] == table[-1][-1]
 
 
-@pytest.mark.parametrize("failure,status", [("json", 502), ("shape", 502), ("connect", 502), ("timeout", 504)])
-def test_model_failures_close_client(model, client, failure, status):
-    """非法输出、连接失败和超时保留原有错误响应，并关闭 SDK。"""
-    if failure in ("json", "shape"):
+@pytest.mark.parametrize("failure,status", [("json", 502), ("shape", 502), ("connect", 502), ("timeout", 504),
+                                          ("budget_before", 504), ("budget_boundaries", 504), ("budget_keywords", 504)])
+def test_model_failures_close_client(model, client, monkeypatch, failure, status):
+    """非法输出、网络失败和预算耗尽按原错误路径结束，不再调用模型且关闭 SDK。"""
+    if failure.startswith("budget"):
+        clock = MagicMock(return_value=0.0)
+        monkeypatch.setattr(segmentation, "perf_counter", clock)
+        if failure == "budget_before":
+            settings = segmentation._settings
+
+            def configure(config):
+                clock.return_value = 90.0
+                return settings(config)
+
+            monkeypatch.setattr(segmentation, "_settings", configure)
+        else:
+            def respond(**kwargs):
+                if failure == "budget_boundaries" or model[1].chat.completions.create.call_count == 2:
+                    clock.return_value = 90.0
+                return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"boundaries_after":[]}'))])
+
+            model[1].chat.completions.create.side_effect = respond
+    elif failure in ("json", "shape"):
         model[1].chat.completions.create.side_effect = None
         model[1].chat.completions.create.return_value = SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content="oops" if failure == "json" else "[]"))]
@@ -353,8 +372,13 @@ def test_model_failures_close_client(model, client, failure, status):
     assert response.status_code == status
     assert response.json()["error"]["message"]
     assert set(response.json()) == {"error"}
-    assert model[0].return_value.__exit__.call_count == 1
-    assert model[1].chat.completions.create.call_count == (2 if failure in ("json", "shape") else 1)
+    assert model[0].return_value.__exit__.call_count == (0 if failure == "budget_before" else 1)
+    expected_calls = 0 if failure == "budget_before" else 2 if failure in ("json", "shape", "budget_keywords") else 1
+    assert model[1].chat.completions.create.call_count == expected_calls
+    if failure.startswith("budget"):
+        assert response.json() == {"error": {"message": "切片处理超时。"}}
+    if failure != "budget_before":
+        assert model[0].call_args.kwargs["max_retries"] == 0
 
 
 def test_real_fun_asr_excerpt(model):
@@ -415,10 +439,13 @@ def test_real_fun_asr_excerpt(model):
 
 @pytest.mark.parametrize("invalid", [{}, {"keywords": []}, {"keywords": {"3": "QQ"}},
                                      {"keywords": {"01": "甲乙"}}, {"keywords": {"1": None}}])
-@pytest.mark.parametrize("timeout", [120, 5])
-def test_model_cuts_keywords_and_protected_runs(model, monkeypatch, invalid, timeout):
-    """关键词第三次尝试成功，按 ID 填回；纠错超时最多 30 秒且不放宽已有配置。"""
+@pytest.mark.parametrize("timeout,budget", [(120, 90), (5, 90), (120, 10)])
+def test_model_cuts_keywords_and_protected_runs(model, monkeypatch, invalid, timeout, budget):
+    """第三次提词成功，超时最多 15 秒；两阶段和纠错共享预算，不放宽更短的配置。"""
     monkeypatch.setenv("IMV_LLM_TIMEOUT_SECONDS", str(timeout))
+    monkeypatch.setattr(segmentation, "SEGMENTATION_BUDGET_SECONDS", budget)
+    clock = MagicMock(return_value=0.0)
+    monkeypatch.setattr(segmentation, "perf_counter", clock)
     responses = iter(
         [
             {"boundaries_after": [1, 1]},
@@ -427,16 +454,19 @@ def test_model_cuts_keywords_and_protected_runs(model, monkeypatch, invalid, tim
             {"keywords": {"2": "QQ", "1": "甲乙"}},
         ]
     )
-    model[1].chat.completions.create.side_effect = lambda **_: SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(next(responses))))]
-    )
+    def respond(**kwargs):
+        clock.return_value += 2
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(next(responses))))])
+
+    model[1].chat.completions.create.side_effect = respond
     result = segment(payload("甲乙丙丁。QQ增长40%。", step=500))
     assert [s["text"] for s in result["segments"]] == ["甲乙丙丁。", "QQ增长40%。"]
     assert [s["keyword"] for s in result["segments"]] == ["甲乙", "QQ"]
     assert result["trace"]["keyword_rejected_count"] == 0
     calls = model[1].chat.completions.create.call_args_list
     assert len(calls) == 4
-    assert [call.kwargs["timeout"] for call in calls] == [timeout, timeout, min(timeout, 30), min(timeout, 30)]
+    assert [call.kwargs["timeout"] for call in calls] == [min(timeout, 15, budget - spent) for spent in (0, 2, 4, 6)]
+    assert model[0].call_args.kwargs["max_retries"] == 0
     assert all(call.kwargs["response_format"] == {"type": "json_object"} for call in calls)
     assert json.loads(calls[1].kwargs["messages"][1]["content"]) == [
         {"segment_id": 1, "text": "甲乙丙丁。"}, {"segment_id": 2, "text": "QQ增长40%。"},
@@ -464,23 +494,60 @@ def test_invalid_model_boundaries_fail_without_fallback(model, client, ids):
     assert model[0].return_value.__exit__.call_count == 1
 
 
-def test_keyword_failure_logs_completed_boundary_trace(model, client, server_logs):
-    """关键词失败时记录切点和原始回复，错误响应不回显文案。"""
+@pytest.mark.parametrize("raw, message, shape", [
+    ("oops", "模型返回非法 JSON。", {}),
+    ('{"keywords":[["甲乙"]]}', "模型 keywords 必须为片段编号到字符串的对象，编号须为 1～2 的十进制字符串，不能带前导零；无关键词可省略该编号。", {"keywords_type": "list", "keyword_group_count": 1}),
+    ('{"keywords":["甲乙",[]]}', "模型 keywords 必须为片段编号到字符串的对象，编号须为 1～2 的十进制字符串，不能带前导零；无关键词可省略该编号。", {"keywords_type": "list", "keyword_group_count": 2}),
+    ('{"keywords":[[1],[]]}', "模型 keywords 必须为片段编号到字符串的对象，编号须为 1～2 的十进制字符串，不能带前导零；无关键词可省略该编号。", {"keywords_type": "list", "keyword_group_count": 2}),
+    ('{"keywords":{"3":"甲乙"}}', "模型 keywords 必须为片段编号到字符串的对象，编号须为 1～2 的十进制字符串，不能带前导零；无关键词可省略该编号。", {"keywords_type": "dict", "keyword_group_count": 1}),
+    ('{"keywords":null}', "模型 keywords 必须为片段编号到字符串的对象，编号须为 1～2 的十进制字符串，不能带前导零；无关键词可省略该编号。", {"keywords_type": "NoneType", "keyword_group_count": None}),
+])
+def test_keyword_failure_logs_completed_boundary_trace(model, client, server_logs, raw, message, shape):
+    """提词三次失败后记录最后回复与诊断，不残留前次类型信息、不回显到接口。"""
     model[1].chat.completions.create.side_effect = [
         SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"boundaries_after":[1]}'))]),
-    ] + [SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="oops"))])] * 3
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"keywords":[]}'))]),
+    ] + [SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=raw))])] * 2
     response = client.post("/segmentations", json=payload("甲乙丙丁。戊己庚辛。", step=500))
     assert response.status_code == 502
-    assert response.json() == {"error": {"message": "模型返回非法 JSON。"}}
-    assert model[1].chat.completions.create.call_count == 4
+    assert response.json() == {"error": {"message": message}}
     assert "stage=keywords" in server_logs.text
     assert "selected_boundaries_after': [1]" in server_logs.text
     assert "甲乙丙丁。" in server_logs.text
     assert "model_elapsed_ms" in server_logs.text
-    assert 'stage=boundaries attempt=1 content=\'{"boundaries_after":[1]}\'' in server_logs.text
-    assert all(f"stage=keywords attempt={attempt} content='oops'" in server_logs.text
-               for attempt in range(1, 4))
-    assert "oops" not in response.text
+    failure = next(record for record in server_logs.records if record.msg.startswith("切片失败"))
+    assert failure.args[-1]["keyword_response"] == {"expected_segment_count": 2, "response": raw, **shape}
+    assert model[1].chat.completions.create.call_count == 4
+    assert 'stage=boundaries attempt=1' in server_logs.text
+    assert all(f"stage=keywords attempt={attempt} content={raw!r}" in server_logs.text
+               for attempt in (2, 3))
+    assert raw not in response.text
+
+
+def test_keyword_failure_response_is_saved_in_task_error_files(model):
+    """真实提词异常经过合成日志链路落盘，完整回复与计数可查，模型返回的凭证字段仍脱敏。"""
+    from server.video_composition import execution_log
+
+    model[1].chat.completions.create.side_effect = [
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=raw))])
+        for raw in ['{"boundaries_after":[1]}'] + ['{"keywords":[["甲乙"]],"api_key":"hidden-model-value"}'] * 3
+    ]
+    with pytest.raises(RuntimeError, match="模型 keywords") as caught:
+        segment(payload("甲乙丙丁。戊己庚辛。", step=500))
+    record = {"task_id": "keyword-failure", "stage": "segmentation", "status": "processing"}
+    execution_log.write_log(record, "step_failed", {
+        "step": "segmentation", **execution_log.exception_details(caught.value),
+    }, lambda: [])
+    folder = execution_log.LOG_ROOT / "video_composition" / record["task_id"]
+    entry, = json.loads((folder / "segmentation.json").read_text())["error_log"]
+    detail = (folder / entry["error"]["detail_log_path"]).read_text()
+    error = json.loads(detail)["error"]
+    assert error["exceptions"] == entry["error"]["exceptions"]
+    assert error["exceptions"][0]["keyword_response"] == {
+        "expected_segment_count": 2, "keywords_type": "list", "keyword_group_count": 1,
+        "response": {"keywords": [["甲乙"]], "api_key": "[REDACTED]"},
+    }
+    assert "hidden-model-value" not in detail
 
 
 def test_english_protection_preserves_model_cut(model):
@@ -596,7 +663,7 @@ def test_dotenv_configuration_and_environment_priority(model, client, monkeypatc
     assert client.post("/segmentations", json=data).status_code == 200
     assert model[0].call_args.kwargs == {
         "base_url": "https://example.test/v1", "api_key": "file-secret",
-        "timeout": 2.5, "max_retries": 1,
+        "timeout": 2.5, "max_retries": 0,
     }
     assert model[1].chat.completions.create.call_args.kwargs["model"] == "文件模型"
     env_file.write_text(content.replace("文件模型", "新模型"), encoding="utf-8")
@@ -786,6 +853,8 @@ def test_title_only_calls_model_once(model, client, data, keyword):
     assert response.json() == {"title_keyword": keyword}
     model[1].chat.completions.create.assert_called_once()
     assert model[1].chat.completions.create.call_args.kwargs["messages"][1]["content"] == data["title"]
+    assert model[0].call_args.kwargs["max_retries"] == 0
+    assert model[1].chat.completions.create.call_args.kwargs["timeout"] == 15
     assert model[0].return_value.__exit__.call_count == 1
 
 
@@ -967,7 +1036,7 @@ def test_trailing_pause_does_not_make_short_candidate_eligible(model):
 def test_client_configuration_is_request_scoped(model, client, monkeypatch):
     """客户端完整配置只作用于本次请求，后续旧请求仍使用服务端值。"""
     config = dict(llm_base_url="https://client.test/v1", llm_api_key="client-secret", llm_model="client-model",
-                  llm_timeout_seconds=8.5, llm_max_retries=0)
+                  llm_timeout_seconds=8.5, llm_max_retries=3)
     response = client.post("/segmentations", json={**payload("甲乙丙丁"), "config": config})
     assert response.status_code == 200
     assert "client-secret" not in response.text
