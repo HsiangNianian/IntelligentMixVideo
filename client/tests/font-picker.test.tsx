@@ -9,6 +9,7 @@ import { FontPicker } from "@/features/fonts/FontPicker";
 import { repairFont } from "@/features/fonts/repair";
 import type { FaceLoader } from "@/features/fonts/FontSpecimen";
 import { Toaster } from "@/components/ui/sonner";
+import { toast } from "sonner";
 import { english, fontFile } from "./font-files";
 import { fetchMock } from "./setup";
 
@@ -245,20 +246,26 @@ test("字体库里已有同一个文件时直接选中，不再上传", async ()
 
 // 场景：字体库里已有的是修复后的字节——按修复后的摘要去重，不再上传，也不必画预览条。
 test("字体库里已有修复后的文件时直接选中，不再上传", async () => {
-  const file = fontFile("fixed.ttf", [english("Zed Display"), [3, 1, 0x0804, 1, "我的字体"]], [["cvt ", new Uint8Array(0)]]);
-  const repaired = repairFont(await file.arrayBuffer());
-  expect(repaired.kind).toBe("repaired");
-  if (repaired.kind !== "repaired") return;
-  const digest = Buffer.from(await crypto.subtle.digest("SHA-256", repaired.bytes)).toString("hex");
-  const existing = font("u-1", "Zed Display", "我的字体", { source: "upload", faces: [face("u-1", "regular", { sha256: digest })] });
-  const server = fontServer(() => Response.json(UPLOADED, { status: 201 }), [...LIBRARY, existing]);
-  const changes: string[] = [];
-  const drawn: string[] = [];
-  await open((family) => changes.push(family), async (_file, text) => { drawn.push(text); return null; });
-  fireEvent.change(screen.getByLabelText("选择字体文件"), { target: { files: [file] } });
-  await waitFor(() => expect(changes).toEqual(["Zed Display"]));
-  expect(server.uploads).toEqual([]);
-  expect(drawn).toEqual([]);
+  const info = spyOn(toast, "info");
+  try {
+    const file = fontFile("fixed.ttf", [english("Zed Display"), [3, 1, 0x0804, 1, "我的字体"]], [["cvt ", new Uint8Array(0)]]);
+    const repaired = repairFont(await file.arrayBuffer());
+    expect(repaired.kind).toBe("repaired");
+    if (repaired.kind !== "repaired") return;
+    const digest = Buffer.from(await crypto.subtle.digest("SHA-256", repaired.bytes)).toString("hex");
+    const existing = font("u-1", "Zed Display", "我的字体", { source: "upload", faces: [face("u-1", "regular", { sha256: digest })] });
+    const server = fontServer(() => Response.json(UPLOADED, { status: 201 }), [...LIBRARY, existing]);
+    const changes: string[] = [];
+    const drawn: string[] = [];
+    await open((family) => changes.push(family), async (_file, text) => { drawn.push(text); return null; });
+    fireEvent.change(screen.getByLabelText("选择字体文件"), { target: { files: [file] } });
+    await waitFor(() => expect(changes).toEqual(["Zed Display"]));
+    expect(server.uploads).toEqual([]);
+    expect(drawn).toEqual([]);
+    expect(info).not.toHaveBeenCalled();
+  } finally {
+    info.mockRestore();
+  }
 });
 
 // 场景：字体库里已有的是修复前的原文件——按原摘要识别为同一文件，不再上传修复版，避免重复卡片。

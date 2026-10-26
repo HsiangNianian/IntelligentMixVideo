@@ -97,6 +97,25 @@ function cffFont(...extras: ExtraTable[]): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
+/** 把表目录项倒序，表数据不动；有 head 时重算调整值，让文件仍然自洽。 */
+function unsorted(bytes: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> {
+  const view = new DataView(bytes.buffer);
+  const count = view.getUint16(4);
+  const entries = Array.from({ length: count }, (_, index) => {
+    const at = 12 + 16 * index;
+    return [view.getUint32(at), view.getUint32(at + 4), view.getUint32(at + 8), view.getUint32(at + 12)] as const;
+  });
+  entries.reverse().forEach(([tag, checksum, offset, length], index) => {
+    const at = 12 + 16 * index;
+    view.setUint32(at, tag);
+    view.setUint32(at + 4, checksum);
+    view.setUint32(at + 8, offset);
+    view.setUint32(at + 12, length);
+  });
+  if (entries.some(([tag]) => tag === 0x68656164)) resign(bytes);
+  return bytes;
+}
+
 // 场景：做字工具导出的字体带着长度为 0 的 cvt、DSIG 表——删掉它们、重建目录与头部字段、重算 head 校验和，其余表一个字节不变。
 test("移除零长度的表并重建目录", () => {
   const original = soundFont(empty("cvt "), empty("DSIG"));
@@ -117,6 +136,15 @@ test("移除零长度的表并重建目录", () => {
   expect(headAfter.slice(12)).toEqual(headBefore.slice(12));
   // 整份文件的校验和回到常数。
   expect(new DataView(result.bytes).getUint32(directory(result.bytes).find((entry) => entry.tag === "head")!.offset + 8)).toBe(expectedAdjustment(result.bytes));
+});
+
+// 场景：输入的表目录没有按标签排序——重写时仍按标签顺序重建。
+test("重写时按标签顺序重建未排序的目录", () => {
+  const bytes = unsorted(soundFont(empty("cvt ")));
+  const result = repairFont(bytes.buffer);
+  expect(result.kind).toBe("repaired");
+  if (result.kind !== "repaired") return;
+  expect(directory(result.bytes).map((entry) => entry.tag)).toEqual(["glyf", "head", "loca", "maxp", "name"]);
 });
 
 // 场景：修复结果再次上传（或别人已经传过同样修好的文件）——第二次修复不产生任何改动，按内容去重不会漂移。
