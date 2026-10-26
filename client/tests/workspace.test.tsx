@@ -10,7 +10,7 @@ import { fetchMock } from "./setup";
 import { apiBase, setApiBase } from "@/lib/api-base";
 import { recovery, restoreRecovery } from "@/features/updates/recovery";
 import { updateBlockers } from "@/lib/update-guard";
-import { protobufListResponse, protobufTemplateResponse, savedTemplate, templateSummary } from "./fixtures";
+import { jsonListResponse, jsonTemplateResponse, savedTemplate, templateSummary } from "./fixtures";
 
 /** 生成独立的主页新建输入，不包含服务端响应或存储数据。 */
 function creation(name = "旅行模板"): TemplateSelection {
@@ -362,7 +362,7 @@ test("新版导航恢复已保存模板且切页保留位置", async () => {
   const template = savedTemplate();
   const selection = { templateId: template.template_id };
   restoreRecovery({ workspace: "library", template: selection });
-  fetchMock.mockImplementation((async (_url) => protobufTemplateResponse(template, "get")) as typeof fetch);
+  fetchMock.mockImplementation((async (_url) => jsonTemplateResponse(template, "get")) as typeof fetch);
   render(<HomePage />);
   expect((await screen.findByLabelText("模板名称")).textContent).toBe(template.name);
   expect(recovery.template).toEqual(selection);
@@ -381,7 +381,7 @@ test("更新后旧本地模板位置按云端 ID 读取并可重试", async () =
   let found = false;
   fetchMock.mockImplementation((async (url) => {
     requests.push(String(url));
-    return found ? protobufTemplateResponse(template, "get") : Response.json({ detail: "模板不存在" }, { status: 404 });
+    return found ? jsonTemplateResponse(template, "get") : Response.json({ detail: "模板不存在" }, { status: 404 });
   }) as typeof fetch);
   render(<HomePage />);
   await screen.findByText("模板不存在");
@@ -534,7 +534,7 @@ test("主页与模板库切换保留未保存内容", async () => {
 test("保存成功显示轻提示，图标按钮提供悬停提示", async () => {
   const template = savedTemplate();
   fetchMock.mockImplementation((async (_url, init) =>
-    protobufTemplateResponse(template, init?.method === "POST" ? "save" : "get")) as typeof fetch);
+    jsonTemplateResponse(template, init?.method === "POST" ? "save" : "get")) as typeof fetch);
   render(<><TemplateWorkspace selection={{ templateId: template.template_id }} onHome={() => {}} /><Toaster /></>);
   await screen.findByLabelText("模板信息");
   fireEvent.submit(screen.getByRole("button", { name: "保存模板" }).closest("form")!);
@@ -546,7 +546,7 @@ test("保存成功显示轻提示，图标按钮提供悬停提示", async () =>
 // 场景：删除其他模板不影响草稿，删除当前模板才清空编辑区。
 test("主页删除当前模板后清空保留的编辑区", async () => {
   const template = savedTemplate();
-  fetchMock.mockResolvedValue(protobufTemplateResponse(template, "get"));
+  fetchMock.mockResolvedValue(jsonTemplateResponse(template, "get"));
   const selection = { templateId: template.template_id };
   const view = render(<TemplateWorkspace selection={selection} onHome={() => {}} />);
   await screen.findByLabelText("模板名称");
@@ -565,7 +565,7 @@ test.each(["success", "missing"] as const)("删除读取中的模板后忽略 %s
   let signal: AbortSignal | null | undefined;
   fetchMock.mockImplementation((async (_url, init) => {
     signal = init?.signal;
-    try { return protobufTemplateResponse(await response, "get"); }
+    try { return jsonTemplateResponse(await response, "get"); }
     catch { return new Response(JSON.stringify({ detail: "模板不存在" }), { status: 404 }); }
   }) as typeof fetch);
   const selection = { templateId: template.template_id };
@@ -596,7 +596,7 @@ test.each(["current", "pending"] as const)("切换读取期间删除 %s 模板�
   let finish!: (response: Response) => void;
   const response = new Promise<Response>((resolve) => { finish = resolve; });
   fetchMock.mockImplementation((async (url) => String(url).endsWith(current.template_id)
-    ? protobufTemplateResponse(current, "get") : response) as typeof fetch);
+    ? jsonTemplateResponse(current, "get") : response) as typeof fetch);
   const currentSelection = { templateId: current.template_id };
   const nextSelection = { ...currentSelection, templateId: pending.template_id };
   const view = render(<TemplateWorkspace selection={currentSelection} onHome={() => {}} />);
@@ -607,7 +607,7 @@ test.each(["current", "pending"] as const)("切换读取期间删除 %s 模板�
     deletedTemplate={deleting === "current" ? currentSelection : nextSelection} onHome={() => {}} />);
   if (deleting === "current") expect(screen.getByText("正在读取模板…")).toBeTruthy();
   else expect(screen.queryByText("正在读取模板…")).toBeNull();
-  await act(async () => { finish(deleting === "current" ? protobufTemplateResponse(pending, "get")
+  await act(async () => { finish(deleting === "current" ? jsonTemplateResponse(pending, "get")
     : new Response(JSON.stringify({ detail: "模板不存在" }), { status: 404 })); });
   expect(screen.getByLabelText("模板名称").textContent).toBe(deleting === "current" ? pending.name : current.name);
   expect(screen.queryByRole("alert")?.textContent).toBeUndefined();
@@ -618,7 +618,7 @@ test.each(["current", "pending"] as const)("切换读取期间删除 %s 模板�
 test("保存快捷键只作用于当前编辑页并同步导航状态", async () => {
   const states: { name: string; dirty: boolean }[] = [];
   const template = { ...savedTemplate(), name: "旅行模板" };
-  fetchMock.mockImplementation((async (_url, init) => protobufTemplateResponse(template, init?.method === "POST" ? "save" : "get")) as typeof fetch);
+  fetchMock.mockImplementation((async (_url, init) => jsonTemplateResponse(template, init?.method === "POST" ? "save" : "get")) as typeof fetch);
   const selection = creation();
   const report = (state: { name: string; dirty: boolean } | null) => { if (state) states.push(state); };
   const view = render(<TemplateWorkspace selection={selection} active={false} onHome={() => {}} onEditingState={report} />);
@@ -635,7 +635,7 @@ test("保存快捷键只作用于当前编辑页并同步导航状态", async ()
 // 场景：设置切换服务地址后，主页重新读取真实列表；状态胶囊只显示连接状态，不显示地址。
 test("服务地址变化后刷新主页模板列表", async () => {
   const original = apiBase();
-  fetchMock.mockImplementation((async (_url, _init) => protobufListResponse([])) as typeof fetch);
+  fetchMock.mockImplementation((async (_url, _init) => jsonListResponse([])) as typeof fetch);
   const view = render(<HomePage />);
   try {
     await screen.findByRole("button", { name: /服务已连接/ });

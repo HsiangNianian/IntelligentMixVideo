@@ -1,6 +1,6 @@
 # 视频合成接口文档
 
-本文按当前 `router.py`、`schema.py`、`service.py` 实现整理，更新日期：2026-10-09。
+本文按当前 `router.py`、`schema.py`、`service.py` 实现整理，更新日期：2026-10-26。
 
 ## 1. 接口概览
 
@@ -9,12 +9,31 @@
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
 | POST | `/api/v1/video-compositions` | 创建异步合成任务 |
+| POST | `/api/v1/video-compositions/playground` | 复用固定中英样本，按新模板创建合成任务 |
 | GET | `/api/v1/video-compositions/{taskId}` | 查询状态和成片地址 |
 | POST | `/api/v1/video-compositions/{taskId}/segment-match-callback?token=...` | 素材库向 IMV 回传匹配结果 |
 
 当前模块没有任务列表、取消、删除、重试或重新发送最终通知接口。创建接口没有调用方幂等键，重复 POST 会创建新的任务；响应丢失时不要盲目重复提交。
 
 业务调用流程：创建任务 → 保存返回的 `taskId` → 接收最终通知或查询任务 → 取得视频地址。后台根据原始 `text`／`copy` 和顶层 `audioUrl` 自动判断并保存模式，准备素材与文字，共用模板、IMS、ZOS、查询和通知。`compositionMode` 是内部字段，不属于公开请求参数，调用方传入也不能覆盖服务端判定。
+
+### 操练场
+
+`POST /api/v1/video-compositions/playground` 只接受 `mode` 和 `styleId`：
+
+```json
+{"mode": "standard", "styleId": "586bc044-758a-4494-9caf-8f5ce4876d42"}
+```
+
+`mode` 为 `standard`（IP口播）、`materials_voice`（情景展示）或 `materials_silent`（新闻体）；多余字段返回 422。服务端直接读取包内 `playground_samples/{mode}.json` 的固定中间结果，无须配置任务 ID，也不查询来源任务数据库；缺少该模式的样本文件表示未初始化。当前客户端仅开放 IP口播，其余场景待提供样本后启用。
+
+初始化使用开启中英文标题与字幕的已保存模板，各场景通过普通合成接口执行一次。IP口播提供 `text`、视频、配音，需匹配时显式传 `materials`；情景展示用 `copy`、配音及素材；新闻体用素材和 `videoDuration`，仅准备中英文标题、不生成字幕。标题和情景展示的 `copy` 在普通接口中可选，准备完整文字样本时应填写。等待成功并校验中英结果后，将该任务的 `task_id`、`status` 和 `data` 中的 `request`、`duration_ms`、`segmentation`、`matches`／`material_durations` 封存为对应模式的 JSON，`request.callbackUrl` 清空，不保存凭据和渲染产物；文件随服务端包发布。当前 IP口播已初始化，新增模式时由维护者执行一次上述流程。媒体链接需长期有效；运行时不依赖原任务是否还在数据库中，不从执行日志恢复样本。
+
+操练场复制原输入（替换模板并清空业务回调）、时长、中文切片与中英关键词/译文、匹配结果和素材时长；新模板及 Remotion 资产在受理时固定，全部准备结果与新任务原子保存。之后只组装 Timeline、渲染 Remotion、提交 IMS 和转存 ZOS，不再调用 ASR、切片、翻译、素材匹配或素材时长探测。任务恢复同样使用自己的快照；旧任务的渲染结果、IMS 句柄、回调令牌和凭据不继承。IMS 凭据仍遵循原请求头与服务端配置规则。
+
+受理返回原 `AcceptedResponse` 和 `Location`，状态仍通过 `GET /api/v1/video-compositions/{taskId}` 查询。样本未初始化、未成功、模式不符或准备结果不完整返回 409，模板不存在返回 404，环境不可用返回 503；不自动回退完整合成。每次 POST 都建立新任务，没有新增幂等键。
+
+操练场成片与第 3 帧封面分别为 `imv/playground/{taskId}.mp4`、`.png`，可选透明叠加视频为 `imv/playground/{taskId}/overlay.webm`。目录选择依据持久化的任务来源，普通任务保持原目录；GET 直接返回保存的公开地址，与前缀无关。 ZOS S3 客户端遵循进程环境 `HTTP_PROXY`／`HTTPS_PROXY`／`NO_PROXY`：有代理时使用代理，无代理或命中 `NO_PROXY` 时直连。大文件保留串行分片上传，TLS 证书校验保持开启；需要绕过代理时，将 ZOS API 与公开访问域名加入 `NO_PROXY`。
 
 ## 2. 创建任务
 
@@ -190,7 +209,8 @@ curl 'http://127.0.0.1:20070/api/v1/video-compositions/22222222-2222-4222-8222-2
 | `matching` | 等待素材匹配结果 |
 | `assembling` | 渲染并上传可选 Remotion 透明字效，组装合成时间线 |
 | `submitting` | 提交 IMS 合成 |
-| `rendering` | 查询 IMS 合成进度，成功后继续等待成片地址 |
+| `rendering` | 查询 IMS 合成进度 |
+| `uploading` | IMS 已完成，等待成片地址并转存视频、封面到 ZOS；仍为 processing |
 | `completed` | IMS 合成及 ZOS 转存成功 |
 | `failed` | 任务失败；具体失败环节见 `error.stage` |
 
@@ -330,6 +350,7 @@ ZOS_SECRET_ACCESS_KEY=<Access Key Secret>
 ZOS_WEB_URL=https://oss.joyfile.net
 ZOS_REGION=hangzhou-7
 ZOS_FORCE_PATH_STYLE=false
+ZOS_DELETE_OBJECTS=false
 ```
 
 - 素材匹配：提交一次，默认等待回调最多 30 秒；期间检查本地回调落库状态，不持续查询素材库。超时后有上游 ID 才补查一次；仍未完成则失败，不重新提交匹配。

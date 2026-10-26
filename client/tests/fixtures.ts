@@ -1,5 +1,5 @@
 /** 核心测试共用的固定目录和模板响应；纯本地数据，不加载 SDK 或数据库。 */
-import { create, toBinary } from "@bufbuild/protobuf";
+import { create, toJson } from "@bufbuild/protobuf";
 import { timestampFromDate } from "@bufbuild/protobuf/wkt";
 import {
   GetTemplateResponseSchema, ListTemplatesResponseSchema, SaveTemplateResponseSchema,
@@ -105,25 +105,21 @@ function templateRecord(template: Template): TemplateRecord {
   });
 }
 
-/** 产生真实 Protobuf 列表响应，供已有 HTTP 测试读取。 */
-export function protobufListResponse(templates: Template[]): Response {
+/** 按服务端的 Protobuf JSON 映射产生列表响应，包含空数组与默认值。 */
+export function jsonListResponse(templates: Template[]): Response {
   const message = create(ListTemplatesResponseSchema, { templates: templates.map((template) => {
     const summary = templateSummary(template);
     return { templateId: summary.template_id, name: summary.name, description: summary.description,
       createdAt: timestampFromDate(new Date(summary.created_at)), updatedAt: timestampFromDate(new Date(summary.updated_at)),
       title: summary.title, subtitle: summary.subtitle, trackCount: summary.track_count, validationError: summary.validation_error };
   }) });
-  return new Response(Uint8Array.from(toBinary(ListTemplatesResponseSchema, message)), {
-    headers: { "Content-Type": "application/x-protobuf" },
-  });
+  return Response.json(toJson(ListTemplatesResponseSchema, message, { alwaysEmitImplicit: true }));
 }
 
-/** 产生真实 Protobuf 详情或保存响应，保留 HTTP 状态码。 */
-export function protobufTemplateResponse(template: Template, kind: "get" | "save", status = 200): Response {
+/** 按服务端的 Protobuf JSON 映射产生详情或保存响应，保留 HTTP 状态码。 */
+export function jsonTemplateResponse(template: Template, kind: "get" | "save", status = 200): Response {
   const record = templateRecord(template);
   const schema = kind === "get" ? GetTemplateResponseSchema : SaveTemplateResponseSchema;
   const message = create(schema, { template: record });
-  return new Response(Uint8Array.from(toBinary(schema, message)), {
-    status, headers: { "Content-Type": "application/x-protobuf" },
-  });
+  return Response.json(toJson(schema, message, { alwaysEmitImplicit: true }), { status });
 }

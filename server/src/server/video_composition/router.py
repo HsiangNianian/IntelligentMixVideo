@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, R
 from ..client_config import parse_config
 from .settings import ClientSettings
 from . import store
-from .schema import AcceptedResponse, CompositionRequest, MatchCallback, TaskResponse
+from .schema import AcceptedResponse, CompositionRequest, MatchCallback, PlaygroundRequest, TaskResponse
 
 router = APIRouter(prefix="/api/v1/video-compositions", tags=["video-composition"])
 
@@ -25,6 +25,14 @@ Config = Annotated[ClientSettings | None, Depends(client_config)]
 async def create_composition(payload: CompositionRequest, request: Request, response: Response, config: Config) -> AcceptedResponse:
     """持久化后按模式准备画面与文字，共用 IMS、ZOS 和终态通知。"""
     record = await request.app.state.video_composition.accept(payload, str(request.base_url).rstrip("/"), await request.json(), config=config)
+    response.headers["Location"] = f"/api/v1/video-compositions/{record['task_id']}"
+    return AcceptedResponse(data=record["task_id"])
+
+
+@router.post("/playground", status_code=200, response_model=AcceptedResponse)
+async def create_playground(payload: PlaygroundRequest, request: Request, response: Response, config: Config) -> AcceptedResponse:
+    """从固定样本创建新模板渲染任务，状态与成片仍由原查询接口返回。"""
+    record = await request.app.state.video_composition.accept_playground(payload, str(request.base_url).rstrip("/"), config=config)
     response.headers["Location"] = f"/api/v1/video-compositions/{record['task_id']}"
     return AcceptedResponse(data=record["task_id"])
 

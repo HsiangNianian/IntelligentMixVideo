@@ -3,7 +3,8 @@
 覆盖值保存在模板 remotion 轨道的 `editor.remotion`（`imv.template.v1.RemotionTrackEditor`）。这里只按发布记录里的
 参数契约检查它们：参数存在且可编辑、类型与默认值相同、在声明的范围内，合并后的整份配置仍满足发布时的
 JSON Schema；宿主变换只能设置该分类允许的字段且不能超出范围。发布时已经渲染过各参数与宿主变换的边界样本，
-所以这里不再启动沙箱；没有渲染过样本的早期发布只接受宿主变换（它在代码之外），参数只读。
+所以这里不再启动沙箱；没有渲染过样本的早期发布只接受宿主变换（它在代码之外），参数只读，只有字效的字体参数例外。
+字体参数的取值按实时字体库校验，不按发布时冻结的枚举。
 """
 
 from __future__ import annotations
@@ -15,13 +16,13 @@ from generated.imv.sprite.v1 import sprite_pb2 as pb
 
 from ..template.schema import RemotionTrackEditor, RemotionTransform
 from .categories import FONT_PARAMETERS, KEYWORD_SIZE_MIN, transform_fields, transform_ranges
-from .fonts import require_family
+from .fonts import open_font_schema, require_family
 from .sprites import KIND_NAMES, box_json, operator_parameters, sampled
 from .tools.schema import validate_parameters
 
 
-def _checked(declared: pb.SpriteParameter, value):
-    """按发布时的参数声明检查一个覆盖值，返回可写入配置的值。"""
+def _checked(declared: pb.SpriteParameter, value, *, allowed: bool = True):
+    """按发布时的参数声明检查一个覆盖值，返回可写入配置的值；字体可跳过冻结枚举。"""
     key = declared.key
     expected = declared.default_value.WhichOneof("value")
     actual = (
@@ -43,8 +44,8 @@ def _checked(declared: pb.SpriteParameter, value):
             raise ValueError(f"参数 {key} 的文字长度超出允许范围")
     if actual == "string_list_value" and declared.HasField("max_items") and len(value) > declared.max_items:
         raise ValueError(f"参数 {key} 最多 {declared.max_items} 项")
-    allowed = [getattr(item, item.WhichOneof("value")) for item in declared.allowed_values if item.WhichOneof("value") == actual]
-    if declared.allowed_values and value not in allowed:
+    choices = [getattr(item, item.WhichOneof("value")) for item in declared.allowed_values if item.WhichOneof("value") == actual]
+    if allowed and declared.allowed_values and value not in choices:
         raise ValueError(f"参数 {key} 不是允许的取值")
     return value
 
@@ -65,11 +66,14 @@ def resolve(sprite: pb.PublishedSprite, editor: RemotionTrackEditor | None) -> t
                 if not sampled(sprite):
                     raise ValueError(f"参数 {override.key} 不可修改：该资产发布于参数边界检查之前，请在字效工作区改出新版本后保存为新资产")
                 raise ValueError(f"参数 {override.key} 不可修改")
-            value = _checked(parameter, override.value())
-            if override.key in FONT_PARAMETERS:
-                # The library grows after publication, so a font is checked against it live, not against the schema.
+            font = override.key in FONT_PARAMETERS
+            # A font's published enum only names the families known then: check its type and length here and the
+            # value against the growing live library instead.
+            value = _checked(parameter, override.value(), allowed=not font)
+            if font:
                 require_family(value, override.key)
-            # Overridable parameters are top-level (only sampled publications take overrides, and they bind top-level).
+            # Overridable parameters are top-level (sampled publications bind them top-level; an unsampled one only
+            # takes its top-level text fonts).
             definition = schema.get("properties", {}).get(override.key, {})
             if isinstance(value, float) and value.is_integer() and isinstance(definition, dict) and definition.get("type") == "integer":
                 value = int(value)
@@ -79,7 +83,9 @@ def resolve(sprite: pb.PublishedSprite, editor: RemotionTrackEditor | None) -> t
         if sprite.kind == pb.SPRITE_KIND_TEXT and isinstance(size, (int, float)) and not isinstance(size, bool) and 0 < size < KEYWORD_SIZE_MIN:
             raise ValueError(f"参数 keywordSize 只能是 0（沿用文字字号）或 {KEYWORD_SIZE_MIN}～300")
         try:
-            validate_parameters(schema, config)
+            # A stored old publication may still contain the frozen font enum. Fonts were already checked live
+            # above; use the published schema's open form for the final merged-config validation.
+            validate_parameters(open_font_schema(schema), config)
         except Exception as exc:
             raise ValueError(f"参数覆盖不符合发布契约：{str(exc)[:200]}") from None
     transform = (editor.transform or RemotionTransform()).model_dump(exclude_none=True)

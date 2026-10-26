@@ -440,10 +440,12 @@ function visibleWindow(canvas, output) {
  * latter sticks out of a box that holds the line exactly, although no glyph is cut. Returns `null` when no part of
  * the text is shown at this frame (not yet shown), otherwise the `problems` (empty when all of it is shown and fits)
  * and the `area` of the shown lines, which tells the frames that show the text at its full size. `extent` is the canvas
- * rectangle of all shown text after the transform and `view` the window of the canvas the video shows.
+ * rectangle of all shown text after the transform and `view` the window of the canvas the video shows. Render
+ * preflight (`mode: fit`) also counts laid-out transparent text toward completeness: an operator may set one
+ * tier's opacity to zero. Only painted text contributes geometry; generation still requires visible text.
  */
 function textFitProblems(page, needle, placement) {
-  return page.evaluate((needle, minLine, tolerance, placement) => {
+  return page.evaluate((needle, minLine, tolerance, placement, countTransparentText) => {
     const canvasNode = document.querySelector("[data-imv-validation-canvas]");
     const layer = document.querySelector("[data-imv-host-layer]")?.firstElementChild;
     if (!canvasNode || !layer) return null;
@@ -456,9 +458,8 @@ function textFitProblems(page, needle, placement) {
       const [dx, dy] = [left - canvas.left - placement.cx, top - canvas.top - placement.cy];
       return [placement.x + dx * cos - dy * sin, placement.y + dx * sin + dy * cos];
     };
-    /** Whether `element` is painted: not `visibility: hidden` and not faded out by its own or an ancestor's opacity. */
+    /** Whether `element` is painted rather than faded out by its own or an ancestor's opacity. */
     const painted = (element) => {
-      if (getComputedStyle(element).visibility !== "visible") return false;
       let opacity = 1;
       for (let item = element; item && layer.contains(item); item = item.parentElement) opacity *= Number(getComputedStyle(item).opacity);
       return opacity > 0.01;
@@ -493,17 +494,22 @@ function textFitProblems(page, needle, placement) {
     let extent = null; // canvas rectangle of all shown text after the transform
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
       const shown = compact(node.nodeValue);
-      if (!shown || !(wanted.includes(shown) || shown.includes(wanted)) || !node.parentElement || !painted(node.parentElement)) continue;
+      if (!shown || !(wanted.includes(shown) || shown.includes(wanted)) || !node.parentElement || getComputedStyle(node.parentElement).visibility !== "visible") continue;
+      const isPainted = painted(node.parentElement);
+      if (!isPainted && !countTransparentText) continue;
       const range = document.createRange();
       range.selectNodeContents(node);
       const lines = lineBoxes(range, node.parentElement);
       // Text without a box (display: none, an empty or collapsed element) is not shown.
       if (!lines.length) continue;
+      // Opacity can deliberately hide a tier without removing any text from its layout. Count it for render
+      // preflight, but do not let its invisible boxes affect the full-size frames, clipping, or placement shift.
+      joined += shown;
+      if (!isPainted) continue;
       const bounds = {
         left: Math.min(...lines.map((rect) => rect.left)), right: Math.max(...lines.map((rect) => rect.right)),
         top: Math.min(...lines.map((rect) => rect.top)), bottom: Math.max(...lines.map((rect) => rect.bottom)),
       };
-      joined += shown;
       area += lines.reduce((sum, rect) => sum + (rect.right - rect.left) * rect.height, 0);
       const smallest = Math.min(...lines.map((rect) => rect.height));
       if (smallest < minLine) problems.add(`its lines are only ${Math.round(smallest)}px tall, too small to read`);
@@ -529,10 +535,10 @@ function textFitProblems(page, needle, placement) {
           problems.add(`it is cut off by a ${Math.round(box.width)}x${Math.round(box.height)} box with ${contained ? `contain: ${style.contain}` : `overflow ${clipsX ? style.overflowX : style.overflowY}`}`);
       }
     }
-    if (!joined) return null;
+    if (!extent) return null;
     if (!joined.includes(wanted)) problems.add(`only part of it is rendered, not all ${wanted.length} characters`);
     return { problems: [...problems], area, extent, view };
-  }, needle, MIN_LINE_HEIGHT, FIT_TOLERANCE, placement);
+  }, needle, MIN_LINE_HEIGHT, FIT_TOLERANCE, placement, request.mode === "fit");
 }
 
 /** No host transform: generation checks mount the Sprite over the whole canvas where it was laid out. */
@@ -582,8 +588,9 @@ async function measureTextFit(page, needle, frames = sampleFrames(request.compos
  * A multi-line text (a `lineStartFrames` parameter of N items) is filled with N lines that share maxLength, and both
  * samples show every line from the first frame; its default lines must also pass `lineSyncProblem` and `lineJumpProblem`.
  * An effect with a `keywords` parameter is also mounted with a hit in its default text: the hit, and any keyword effect
- * drawn on it, must not throw or keep the default text from showing in full.
- * This is a geometric measurement of the text boxes, not a visual review of how the result looks.
+ * drawn on it, must not throw or keep the default text from showing in full, and in a text block the hit must keep
+ * its tier's look (`keywordLookProblem`).
+ * Apart from that look comparison this is a geometric measurement of the text boxes, not a visual review of how the result looks.
  */
 async function textFitCheck(page) {
   const composition = request.composition;
@@ -658,9 +665,96 @@ async function textFitCheck(page) {
           message: `With keywords ["${word}"] the default text "${shortText}" is not shown in full${hit.shown ? `: ${hit.problems.join("; ")}` : ""}. `
             + "A keyword hit and any keyword effect drawn on it must stay inline and within the text's room, so the whole text still shows.",
         };
+      const look = await keywordLookProblem(page, { ...allLines, keywords: [word] }, word, defaultLines.find((line) => line.trim()));
+      if (look) return { name: "text_fit", status: "failed", message: look };
     }
   }
   return { name: "text_fit", status: "passed", message: `The ${length}-character text${multi ? ` over ${lines} lines` : ""} is shown in full${smallest !== null ? ` at the smallest fontSize ${smallest}` : ""} (measured on the ${measured.full} of ${measured.shown} frames that show it at its full size).${shortNote}` };
+}
+
+/** Inherited text paint a keyword hit takes from its tier; with the keyword options off it equals that of the tier's other text. */
+const KEYWORD_LOOK = [
+  "color", "-webkit-text-fill-color", "-webkit-text-stroke-width", "-webkit-text-stroke-color", "paint-order", "text-shadow",
+  "font-family", "font-size", "font-weight", "font-style", "letter-spacing",
+];
+
+/** The keyword options that leave a hit as its tier draws it, and the switch that leaves out a keyword Preset. */
+const PLAIN_KEYWORD = {
+  keywordBold: false, keywordItalic: false, keywordUnderline: false, keywordStrikeout: false, keywordColor: "", keywordSize: 0, keywordEffect: false,
+};
+
+/**
+ * A text block hands every keyword hit to the host's `Keyword` (`data-imv-keyword`), which only adds the six keyword
+ * options and the keyword Preset, so with those off (the parameters of `PLAIN_KEYWORD` the schema declares) a hit must
+ * look like the rest of its line. A text Preset that puts its look on the spans of the other segments only, not on its
+ * own block, draws the hit without it: a white stroke on the plain spans alone left the keyword of a template bare.
+ * `values` (the default text with `word` as a keyword) are mounted on the middle frame, where every effect of the
+ * block has fully entered and none has started to leave, and the hit's text is compared with the nearest other text
+ * of `line` (the first non-empty default line): its inherited text paint (`KEYWORD_LOOK`, the stroke colour and paint
+ * order only when either text is stroked), and the filter, decoration and text-clipped background the other text gets
+ * from its own elements below the element that holds both. Returns the failure message, or null when the look is kept
+ * or there is nothing to compare (no host keyword, or a line that is all keyword).
+ */
+async function keywordLookProblem(page, values, word, line) {
+  const declared = request.parameter_schema?.properties ?? {};
+  const plain = Object.fromEntries(Object.entries(PLAIN_KEYWORD).filter(([key]) => key in declared));
+  await page.evaluate((patch) => window.__imvTool.setParameters(patch), { ...values, ...plain });
+  try {
+    await page.evaluate((target) => window.__imvTool.setFrame(target), Math.floor((request.composition.duration_frames - 1) / 2));
+    if (await page.evaluate(() => window.__imvRuntimeError ?? null)) return null; // the fit measurement reports it
+    const differences = await page.evaluate(({ line, inherited }) => {
+      const layer = document.querySelector("[data-imv-host-layer]")?.firstElementChild;
+      const hit = layer?.querySelector("[data-imv-keyword]");
+      if (!hit) return null;
+      const compact = (value) => value.replace(/\s+/g, "");
+      const wanted = compact(line);
+      /** The first non-blank text node under `root` that `keep` accepts. */
+      const firstText = (root, keep) => {
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) if (compact(node.nodeValue) && keep(node)) return node;
+        return null;
+      };
+      const own = firstText(hit, () => true);
+      if (!own) return null;
+      // The lowest ancestor of the hit that also holds other text of its line, within the composed instance.
+      let common = hit.parentElement;
+      let other = null;
+      for (; common && layer.contains(common); common = common.parentElement) {
+        other = firstText(common, (node) => !node.parentElement?.closest("[data-imv-keyword]") && wanted.includes(compact(node.nodeValue)));
+        if (other || common.hasAttribute("data-imv-instance")) break;
+      }
+      if (!other) return null;
+      const mine = getComputedStyle(own.parentElement);
+      const theirs = getComputedStyle(other.parentElement);
+      const stroked = [mine, theirs].some((style) => style.getPropertyValue("-webkit-text-stroke-width") !== "0px");
+      const found = inherited
+        .filter((name) => stroked || !["-webkit-text-stroke-color", "paint-order"].includes(name))
+        .filter((name) => mine.getPropertyValue(name) !== theirs.getPropertyValue(name))
+        .map((name) => `${name} is ${mine.getPropertyValue(name)} instead of ${theirs.getPropertyValue(name)}`);
+      /** Paint that is not inherited, added by the elements between `node` and the element holding both texts. */
+      const added = (node) => {
+        const paint = [];
+        for (let element = node.parentElement; element && element !== common; element = element.parentElement) {
+          const style = getComputedStyle(element);
+          if (style.filter !== "none") paint.push(`filter ${style.filter}`);
+          if (style.textDecorationLine !== "none") paint.push(`text-decoration ${style.textDecorationLine}`);
+          if ([style.backgroundClip, style.webkitBackgroundClip].includes("text") && style.backgroundImage !== "none")
+            paint.push(`background ${style.backgroundImage} clipped to the text`);
+        }
+        return paint;
+      };
+      const kept = new Set(added(own));
+      for (const item of added(other)) if (!kept.has(item)) found.push(`it has no ${item}`);
+      return found;
+    }, { line, inherited: KEYWORD_LOOK });
+    if (!differences?.length) return null;
+    return `With keywords ["${word}"] and the keyword options off, the hit "${word}" is drawn without its tier's look: ${differences.join("; ")} (compared with the rest of its line). `
+      + "A text Preset sets its look (colour, stroke, shadow, gradient fill, underline, font) on its own block, so every <Keyword> segment inside inherits it; "
+      + "never put that look only on the spans of the other segments. The host styles a hit only with the six keyword options.";
+  } finally {
+    await page.evaluate((patch) => window.__imvTool.setParameters(patch), request.parameters ?? {});
+    await page.evaluate(() => window.__imvTool.setFrame(0));
+  }
 }
 
 /**

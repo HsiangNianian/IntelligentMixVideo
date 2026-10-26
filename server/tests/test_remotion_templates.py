@@ -907,11 +907,11 @@ def test_missing_sandbox_is_a_validation_error_not_a_store_failure(tmp_path):
 @pytest.mark.parametrize(
     ("platform", "present", "expected"),
     [
-        ("darwin", {"bwrap", "prlimit", "node"}, "darwin"),
+        ("darwin", {"bwrap", "prlimit", "taskset", "node"}, "darwin"),
         ("linux", {"prlimit", "node"}, "bwrap"),
         ("linux", {"bwrap", "node"}, "prlimit"),
-        ("linux", {"bwrap", "prlimit"}, "node"),
-        ("linux", {"bwrap", "prlimit", "node"}, None),
+        ("linux", {"bwrap", "prlimit", "taskset"}, "node"),
+        ("linux", {"bwrap", "prlimit", "taskset", "node"}, None),
     ],
 )
 def test_sandbox_problem_names_the_unsupported_piece(monkeypatch, tmp_path, platform, present, expected):
@@ -960,7 +960,7 @@ def test_unsandboxed_worker_is_macos_development_opt_in_only(monkeypatch, tmp_pa
         command = renderer.command(tmp_path, worker=worker)
         environment = renderer.worker_environment(tmp_path, worker)
         if isolated:
-            assert command[0] == "bwrap" and "IMV_WORK_ROOT" not in environment
+            assert command[0] == "taskset" and command[3] == "bwrap" and "IMV_WORK_ROOT" not in environment
         else:
             assert renderer.sandbox_problem() is None
             assert "bwrap" not in command and command[-1].endswith(worker)
@@ -977,7 +977,7 @@ def test_overlay_worker_keeps_the_sandbox_even_when_opted_out(monkeypatch, tmp_p
     monkeypatch.setattr(renderer_module.shutil, "which", lambda name: f"/usr/bin/{name}")
     renderer = renderer_module.Renderer(Settings(_env_file=None, data_dir=tmp_path, allow_unsandboxed_worker=True))
     assert "overlay-worker.mjs" not in renderer_module.UNSANDBOXED_WORKERS
-    assert renderer.command(tmp_path, worker="overlay-worker.mjs")[0] == "bwrap"
+    assert renderer.command(tmp_path, worker="overlay-worker.mjs")[3] == "bwrap"
     assert "IMV_WORK_ROOT" not in renderer.worker_environment(tmp_path, "overlay-worker.mjs")
 
 

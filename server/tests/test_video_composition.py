@@ -515,13 +515,13 @@ def upstreams(monkeypatch, composition_settings, composition_case):
             raise ValueError("private-key-should-never-appear")
         return f"https://test-output.oss-cn-shanghai.aliyuncs.com/actual.mp4?Signature={len(state['playbacks'])}"
 
-    def copy_video(source_url, task_id, settings, timeout):
+    def copy_video(source_url, task_id, settings, timeout, *, prefix="imv/video_composition"):
         """模拟下载、公开读取校验与上传，保留源地址只供此步骤使用。"""
         state["zos_uploads"].append((source_url, task_id))
         assert settings.zos_bucket == "archives" and timeout > 0
         if state["failure"] == "zos":
             raise ValueError("private-key-should-never-appear")
-        return f"imv/video_composition/{task_id}.mp4", f"https://archives.hangzhou7.zos.ctyun.cn/imv/video_composition/{task_id}.mp4"
+        return f"{prefix}/{task_id}.mp4", f"https://archives.hangzhou7.zos.ctyun.cn/{prefix}/{task_id}.mp4"
 
     def http_client(**kwargs):
         """统一隔离素材与终态通知的 HTTP，并保留客户端以检查取消和超时后的关闭。"""
@@ -1136,7 +1136,7 @@ def test_real_segmentation_with_model_stub(upstreams, composition_case, client, 
     template = composition_case["template"]
     template["tracks"][1]["editor"].update(titleKeyword="业务", titleKeywordBold=True)
     assert post_template(client, {key: template[key] for key in ("template_id", "name", "tracks", "effect_ids")}).status_code == 200
-    keywords = {"keywords": [["甲乙"]]}
+    keywords = {"keywords": {"1": "甲乙"}}
     if title_keyword is not None:
         keywords["title_keyword"] = title_keyword
     model = MagicMock()
@@ -1841,6 +1841,7 @@ def test_playback_must_be_ready_before_success_and_notification(upstreams, clien
         assert "notification_status" not in record["data"] and upstreams["notifications"] == []
         response = client.get(f"{BASE}/{task_id}")
         assert response.status_code == 200 and response.json()["result"] is None
+        assert response.json()["stage"] == "uploading"
     finally:
         upstreams["playback_release"].set()
     record = notified(task_id)

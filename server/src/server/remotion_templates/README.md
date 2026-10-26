@@ -85,7 +85,8 @@ The backend reads them through a verified cache in `IMV_DATA_DIR/cache` (SHA-256
 at a time (deciding whether a parameter patch is instant reads only `interactive.js`). Object uploads, downloads and
 deletes run in worker threads and never under the write lock: a version is uploaded under its new ID before its record
 commits and removed again if the commit fails; deletion and the upload sweep remove records and objects in separate
-steps. A ZOS failure other than a missing object is an `ObjectStoreError` (an `OSError`): uploads, reference images,
+steps. ZOS objects are only removed when `ZOS_DELETE_OBJECTS` is true; by default a ZOS prefix delete sends nothing,
+since the store bills deletions (Aliyun OSS), so records and local caches go and the objects are left unreferenced. A ZOS failure other than a missing object is an `ObjectStoreError` (an `OSError`): uploads, reference images,
 downloads, diagnostics and work deletion answer a retryable 503 instead of a 500 or a misleading 422. Prefix deletes
 list the objects and remove each page with one batch request that carries `Content-MD5` (`zos.storage_client` swaps
 in the header botocore 1.36+ replaced with a CRC32 checksum; Aliyun OSS and similar S3-compatible stores reject a
@@ -140,7 +141,8 @@ Edits start from the accepted version and keep deriving the length from the inst
 A new text effect (kind `text`) is composed from a text block (`sprite.compose` contract v3, `text`), not from boxes;
 boxes stay for edits of older text effects. A Preset may carry a role. A `text` Preset draws one tier: the host passes
 it `text`, the `segments` of that text cut at the keyword hits, a `Keyword` component for the hit segments and
-`fontFamily`, `fontWeight` and `fontSize` (`tools/contracts.ROLE_PROPS`); its `parameter_schema` declares only its
+`fontFamily`, `fontWeight` and `fontSize` (`tools/contracts.ROLE_PROPS`), and the Executor rules have it draw the
+tier's look (colour, stroke, shadow, gradient, underline) on its own block so the `Keyword` segments inherit it; its `parameter_schema` declares only its
 own style props, declaring a host prop is refused, and the code check type-checks it with sample host props (`sprite.create`
 re-checks every source Preset with its role). The check's call site passes each default and host prop as its own JSX
 attribute, so a literal default such as `"center"` satisfies a prop typed `"left" | "center" | "right"` (an object
@@ -172,7 +174,10 @@ last frame, a loop stays at 1, and every length is at most half of the frames it
 frozen on its middle frame still shows in full. The text block of a new work records `still`: the host then holds
 each tier Preset on the middle frame of the frames the tier plays (`compose.mjs` `__Hold`), so motion of its own
 never plays and a stored animated text Preset is reused as it is, look kept; compose requires at least one enter and
-one exit effect (kept with `enabled: false` for still text), so a block never ends up without motion. The keyword
+one exit effect (kept with `enabled: false` for still text), so a block never ends up without motion. Transparency of
+a target — the whole text or one tier showing the video through — is a loop effect Preset that multiplies opacity and
+binds its factor as a numeric style parameter, so users adjust the transparency itself; tier colours (`color`,
+`line1Color`, `line2Color`) stay opaque, and the generation path refuses an alpha default there. The keyword
 hits inside a held tier get its live frame back (`__Live`), so a keyword Preset, the switchable keyword effect, and
 the effects at `keyword` keep playing. Edits of a text effect made before effects (no `still`, or boxes) keep playing
 their tier Presets' own motion and need no effects. The workspace parameter panel shows such a block as two sections,
@@ -185,7 +190,12 @@ default false) that reach every job as `user_intent.original_request`; for a new
 compose then requires two tiers or a keyword Preset, and the category check refuses a text without them. An older
 Sprite whose own component draws a keyword effect must expose the `keywordEffect` switch defaulting to true. `text_fit`
 mounts the default text once more with up to two characters opening its first non-empty line as `keywords`, so the
-hit must stay inline and the whole text must still show. Templates only switch the seven keyword parameters (any
+hit must stay inline and the whole text must still show. In a text block that hit, mounted again on the middle frame
+with the six keyword options and the `keywordEffect` switch off, must also look like the rest of its line: the same
+inherited text paint (colour, fill, stroke, paint order, shadow, font, letter spacing) and no filter, decoration or
+text-clipped background that the line's other text gets from its own elements. A text Preset that strokes only the
+spans of the other segments is refused with the differences (`text_fit: … is drawn without its tier's look …`), so
+the template preview's sample keyword and the composed title keyword keep the tier's look. Templates only switch the seven keyword parameters (any
 other `keyword…` parameter is internal there), so the keyword effect is changed in the workspace and saved to the
 library again. `preset.search` matches every whitespace-separated word of the query and filters by role.
 
@@ -276,18 +286,24 @@ style's own file.
 - **Safety**: an overlay render or text preflight whose code or parameters name a library font this host has not
   cached fetches it first and otherwise fails with `font_unavailable` instead of silently drawing the default font.
 
-Chrome startup has a separate 90-second deadline: the locked Remotion 4.0.523
+Chrome startup has a separate 90-second deadline: the locked Remotion 4.0.534
 renderer hardcodes 25 seconds, so `remotion/patches/` carries a Bun dependency patch
 for both CommonJS and ESM builds. Run `bun install --frozen-lockfile` in the renderer
 directory to apply it after checkout; when upgrading Remotion, reassess the patch.
-The outer render deadline (900 seconds for overlays) still covers browser startup
+The outer render deadline (1800 seconds for overlays by default) still covers browser startup
 and rendering; this change does not alter per-frame render timeouts.
+
+Remotion 4.0.534 supports VP9 parallel encoding and shared-memory capture without GPU access.
+Install its matching Headless Shell outside the sandbox with `ensureBrowser()` and point
+`IMV_BROWSER_EXECUTABLE` at the returned absolute binary path; an existing system Chrome path is not
+automatically replaced. The actual render records `parallel_encoding` and `shared_memory_capture` per
+chunk. Rendering defaults live in `settings.py`; `.env.example` lists the deployment resource reserves.
 
 The isolation is Linux-only: `POST /works`, a parameter patch on a pre-composition
 (PR74) version or on a composed version whose player bundle predates injected defaults
 (no `/* imv-preview-protocol N */` first line) sent to `POST /works/{id}/messages`, the retry of such a parameter job and
 `POST /api/sprites/publish` return 503 naming the unsupported platform or the missing
-`bwrap`, `prlimit` or `node` before anything is queued, so on macOS the service starts but
+`bwrap`, `prlimit`, `taskset` or `node` before anything is queued, so on macOS the service starts but
 cannot generate templates. A parameter patch on a composed (PR76) version whose bundle
 reads injected defaults never needs the sandbox (`publication.revisable`; an older bundle
 would keep showing its compiled defaults, so that patch is queued, rendered and its bundle
@@ -359,7 +375,7 @@ worker's `readableFontSize`), so a small
 lead tier stays readable. Assets published with 3 or 4 lines keep their line count downstream. Such a multi-line text keeps the single `text` parameter, with its lines separated by `\n`, and also
 binds `lineStartFrames`, an integer array of exactly N items (`minItems` = `maxItems` = N, each 0 to 3600), so that
 line i appears from frame `lineStartFrames[i]` of the instance. A line with no text or no start is not rendered.
-All lines are stacked in one column (the text block's host, or one Preset instance of an older text) spaced by `lineGap` (pixels, minimum 0, maximum 200 to
+All lines are stacked in one column (the text block's host, or one Preset instance of an older text) spaced by `lineGap` (pixels; its minimum may be as low as -600 so the lower tier moves up over the upper one, and its maximum 200 to
 600), which templates may override per placement like `fontSize`, and they share the entrance and exit: line i
 enters from its own start and all lines exit together, timed from `durationInFrames`.
 `categories.category_problems` accepts it when the default text has exactly N non-empty lines, the default
@@ -477,8 +493,9 @@ never written back after it. Overlay renders only need the stored TSX.
 `DELETE /api/sprites/{id}` removes a publication (anyone may delete from the shared library): its row, bundle object
 and cache. While a cloud template's `remotion` track still references it the answer is 409 naming those templates
 (raw configurations are scanned, so invalid templates count too); an unknown ID is a 404. The bundle objects are
-removed before the row: when the object store fails the answer is a retryable 503 and the asset stays listed, so a
-retry finishes it. The source work and its versions are untouched, so the version can be saved to the library again.
+removed before the row (on ZOS only with `ZOS_DELETE_OBJECTS`; by default they stay and only the row and cache go):
+when the object store fails the answer is a retryable 503 and the asset stays listed, so a retry finishes it; the store's own error (code, number of failed keys and the store's request ID, Aliyun OSS's
+`x-oss-request-id`) is logged as `Sprite files not deleted`. The source work and its versions are untouched, so the version can be saved to the library again.
 `POST /api/sprites/{id}/rename` (`imv.sprite.v1.RenameSpriteRequest`, anyone may rename) changes only the catalog name:
 trimmed, 1 to 100 characters, not required to be unique (422 otherwise), an unknown ID is a 404. A placed asset can
 be renamed since templates store IDs only. The name lives in the stored JSON; `sprite_store.update_data` locks the
@@ -536,7 +553,11 @@ transform), saved with the template in one request; the save resolves every plac
 (the override must name an editable parameter, keep its type, stay inside its bounds, enum, lengths and list size,
 and the merged configuration must still satisfy the published schema; filters and transitions only take opacity;
 a publication made before boundary samples, recognisable by its missing `content_box`, lists its parameters as
-read-only and only takes the host transform, because its values were never rendered away from the defaults), so deleting a
+read-only and only takes the host transform, because its values were never rendered away from the defaults;
+a text effect's font parameters (`fontFamily` and a two-tier text's `line1FontFamily`/`line2FontFamily`) are the
+exception, since a placement's font is checked against the live font library when it is saved, not against an enum
+frozen at publication (the video composition validates the merged configuration the same way), so a template can
+still replace the font of such an older text effect), so deleting a
 template removes its placements with it and the composition bus finds them with its single template lookup.
 There is no separate route for placements; the template save checks that every `sprite_id` is published. The
 SQLite `style_sprite_bindings` table and the `GET/POST /api/sprites/styles/{style_id}` routes of earlier versions
@@ -553,7 +574,7 @@ middle frame of the published preview length, which the Sprite still reads as it
 frames, so short subtitles neither flicker nor run animation code in fewer frames than it was accepted at. The time is
 `effect_total_frames`, 0.5 to 120 seconds and the output's frame count, whatever length was previewed when the Sprite
 was generated. `sprite_render.py` renders the effect in one overlay worker run that writes consecutive chunks of at
-most 30 seconds as frame ranges of the same composition (instances keep their absolute timing, so animations continue
+most 15 seconds as frame ranges of the same composition (instances keep their absolute timing, so animations continue
 across a boundary) and joins them with `ffmpeg -c copy`, then re-probes the frame count and alpha flag; the bus never
 splits a request. A multi-line text effect groups up to `line_count` consecutive cues instead, starting a new group when
 a cue's `sentence` changes (when both cues give one), or when one more line would exceed the text parameter's
@@ -620,7 +641,7 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
 
 - **Length**: TTS `audioUrl` (full ffprobe duration) wins; otherwise `duration` (a JSON number above 0, strict like
   the composition API's `videoDuration`: booleans and numeric strings are a 422); otherwise the latest clip end.
-  Longer than `IMV_OVERLAY_MAX_SECONDS` (120) is a 422 at acceptance when the length is already known (`duration`
+  Longer than `IMV_OVERLAY_MAX_SECONDS` (default 300 seconds / 5 minutes) is a 422 at acceptance when the length is already known (`duration`
   or the clips' end); an `audioUrl` is only probed while rendering, so an over-long one fails the task with
   `duration_too_long`.
 - **Text fit**: a generated text effect cannot know how long a title the bus will send, so the host fits the text a
@@ -632,7 +653,11 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   overflow is not visible or that contains its paint, outside the canvas once the placement's host transform moves,
   scales and rotates it, lines under 20px tall, or only part of the text shown, judged on the frames that show the
   text at its full size. Placements that differ only in length or transform are measured separately; the
-  transform's opacity does not move text and is ignored. Text that already fits keeps its `fontSize`; otherwise the
+  transform's opacity does not move text and is ignored. In render preflight, text that still has a layout box and
+  `visibility: visible` counts toward completeness even when its own or an ancestor's opacity is at most 0.01,
+  so making one tier transparent does not produce `text_too_long`. Only painted text contributes clipping,
+  size and placement measurements; missing text, `display: none` and `visibility: hidden` are still excluded.
+  Generation's `text_fit` check continues to require visible text. Text that already fits keeps its `fontSize`; otherwise the
   host lowers `fontSize` to the largest whole size, down to the published minimum but never below 24 (smaller lines count as unreadable), at which it is shown in full
   (binary search; the size is logged, the template and the sealed source are untouched). A `keywordSize` above 0 is
   an absolute size, so it shrinks by the same ratio (at least 12, never larger than set), keeping the keyword's
@@ -651,7 +676,7 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   run, each loaded in turn on the same page, under one deadline: the default validation timeout, or 5 seconds per
   distinct text plus 10 per Sprite when that is longer; the sandbox CPU cap grows with that deadline like an overlay
   render's. It is a geometric measurement, not a visual review.
-- **Acceptance**: also a 503 when ZOS, ffprobe, bubblewrap, prlimit, Node, the browser or the managed fonts are
+- **Acceptance**: also a 503 when ZOS, ffprobe, bubblewrap, prlimit, taskset, Node, the browser or the managed fonts are
   missing (the isolated renderer is Linux-only), instead of accepting tasks that can only fail later. An empty
   `placements` (`no_placements`) or a `spriteId` that is not published (`sprite_missing`) is a 422.
 - **Layout**: every asset must share width/height/fps. Clips are stacked in request order on one canvas (the first
@@ -666,8 +691,8 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
 - **Output**: no audio; the bus/IMS keeps its own audio track and overlays the WebM. The host re-probes the file
   (VP9, size, fps, frame count, alpha tag) before uploading.
 - **Execution**: `overlay_render.py` plans, `remotion/overlay-worker.mjs` renders in the bwrap sandbox
-  (`IMV_OVERLAY_RENDER_TIMEOUT_SECONDS`, default 900 seconds), `overlay_service.py` owns the MySQL `remotion_overlay_renders` task table,
-  up to three renders at a time (each slot covers only the render: the remote audio probe before it and the ZOS upload after it
+  (`IMV_OVERLAY_RENDER_TIMEOUT_SECONDS`, default 1800 seconds / 30 minutes), `overlay_service.py` owns the MySQL `remotion_overlay_renders` task table,
+  up to six renders at a time by default (`IMV_OVERLAY_TASK_CONCURRENCY`; each slot covers only the render: the remote audio probe before it and the ZOS upload after it
   run outside, so a slow network never delays queued renders), recovery of unfinished tasks and pending notifications
   when the runtime is first built
   (`routes.runtime_for`, oldest first; a damaged row is logged and skipped, and the overlay routes retry if the table
@@ -680,11 +705,40 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   failure and releases the shared render slot instead of waiting for the full rendering deadline. The private worker
   log records browser startup/connection and sparse rendered/encoded frame counts; API `assembling` remains the
   enclosing video-composition stage and includes waiting for this slot.
-- **Cost**: a 1080×1920 frame takes about 0.4–1 s on one Chrome tab (software GL), so a 120 s overlay at 30 FPS needs
-  roughly 25–60 minutes and may exceed the default 15-minute deadline. Adjust `IMV_OVERLAY_RENDER_TIMEOUT_SECONDS`
-  (at most 3600) for the measured render cost, or lower the length. The single VP9 encoder process and Chrome's GL process each need about
-  0.9 CPU seconds per frame, so the sandbox's per-process CPU cap is the render timeout times the host's cores
-  (never below the 300 s of the short validation workers) instead of a fixed 300 s.
+- **Performance**: `IMV_OVERLAY_FRAME_CONCURRENCY` caps pages per chunk (default 4), independently of task slots.
+  Admission lowers the actual page count on small hosts or CPU quotas, and passes that same count to the worker.
+  `IMV_OVERLAY_CHUNK_CONCURRENCY` caps simultaneous chunks within one video at 6. Single Sprites, full overlays and
+  video compositions share fixed 15-second chunks (`IMV_OVERLAY_CHUNKED=true` by default for the latter two).
+  Videos up to 15 seconds use one chunk; the final chunk contains the remaining frames.
+  Boundaries preserve every frame exactly once. Only multi-chunk outputs require host `ffmpeg` for joining;
+  known overlay/Sprite lengths are checked at acceptance. Audio-derived lengths and resumed tasks are checked
+  before rendering; a missing tool then produces `render_environment_unavailable`.
+  All videos share `IMV_OVERLAY_GLOBAL_CHUNK_CONCURRENCY=36`, allowing six videos with six chunks each when resources permit; admission reduces per-video chunk concurrency to fit
+  the CPU/page and memory budgets. `IMV_RENDER_CPU_RESERVE_PERCENT=25` chooses a common CPU affinity subset
+  inherited by every sandbox worker and its descendants, respecting parent cgroup v2 quotas. Memory admission leaves
+  `IMV_RENDER_MEMORY_RESERVE_PERCENT=25` of effective host/cgroup memory, reserving
+  `IMV_OVERLAY_CHUNK_MEMORY_MB=1024` per page plus one extra unit per video.
+  Absolute ceilings default to `IMV_RENDER_MAX_CPUS=144` logical CPUs and `IMV_RENDER_MAX_MEMORY_MB=153600`
+  (150 GiB): 36 chunks times four pages, plus six extra browser budgets for memory. Admission uses the stricter
+  of these ceilings and the remaining host/cgroup budget. Encoder threads also stay within the common CPU
+  affinity range; thread counts do not grant additional CPUs. These are conservative admission budgets, not measured usage.
+  At 25% CPU reserve, 128 otherwise unrestricted logical CPUs permit at most 24 four-page chunks; 36 is a ceiling.
+  The host memory floor remains 25% of total RAM even when a smaller service cgroup has spare capacity.
+  Cgroup quota discovery supports v2 only; v1 falls back to host affinity and memory information.
+  The memory estimate is not an allocation cap;
+  production should also configure systemd `MemoryHigh`/`MemoryMax` limits for the Python service and its descendants.
+  Waiting for resources is bounded by `IMV_OVERLAY_RESOURCE_WAIT_SECONDS=300`; cancellation and failure release grants.
+  A timeout fails the task with `resource_unavailable` (`remotion_resource_unavailable` for video compositions)
+  and a retry-later message. Callers may resubmit after capacity recovers; this does not automatically retry failed tasks.
+  `IMV_OVERLAY_VP9_CPU_USED` and `IMV_OVERLAY_VP9_THREADS` default to 4 and 2 in code, respectively, and can be
+  overridden through environment variables. They only tune the actual VP9 encoder. All paths share the same
+  worker and copy-only join, preserving absolute animation time.
+  Private `performance.json` and the final `Remotion performance` service log separate planning, slot wait, text fit,
+  resource wait/granted chunks/reserved memory, preparation, worker, probe, join and upload. The worker records bundle/browser/composition setup and per-chunk
+  wall time. `slot_wait_ms` excludes `resource_wait_ms`, so these two wait fields do not overlap.
+  With parallel encoding, `rendered_ms` includes waiting for pre-encoding, and `encoded_ms` is only the
+  final mux; compare wall time rather than interpreting it as the complete encoding cost. Render deadlines and the
+  timeout-times-CPU per-process cap remain in force. Use measured timings for capacity planning.
 
 ## Code diagnostics
 

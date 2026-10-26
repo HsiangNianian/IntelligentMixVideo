@@ -4,19 +4,19 @@
   "type": "module",
   "packageManager": "bun@1.4.2",
   "dependencies": {
-    "@remotion/bundler": "4.0.523",
-    "@remotion/player": "4.0.523",
-    "@remotion/renderer": "4.0.523",
+    "@remotion/bundler": "4.0.534",
+    "@remotion/player": "4.0.534",
+    "@remotion/renderer": "4.0.534",
     "@types/react": "19.1.8",
     "@types/react-dom": "19.1.6",
     "esbuild": "0.25.12",
     "prettier": "3.9.6",
     "react": "19.1.0",
     "react-dom": "19.1.0",
-    "remotion": "4.0.523",
+    "remotion": "4.0.534",
     "typescript": "6.0.3"
   },
   "patchedDependencies": {
-    "@remotion/renderer@4.0.523": "patches/@remotion%2Frenderer@4.0.523.patch"
+    "@remotion/renderer@4.0.534": "patches/@remotion%2Frenderer@4.0.534.patch"
   }
 }

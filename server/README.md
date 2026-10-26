@@ -45,7 +45,7 @@ PORT=8010 uv run --locked server
 
 标题和字幕分别通过 `tracks[].editor.titleFont` / `subtitleFont` 保存字体，Protobuf 字段为 `title_font` / `subtitle_font`。仅接受 `src/server/template/fonts.json` 中十一种字体的 `value`，无效字体返回 422，缺少字段默认 `Alibaba PuHuiTi`。正式合成分别使用对应对象的字体；思源黑体、思源宋体保存及合成使用 `Source Han Sans CN`、`Source Han Serif CN`，预览专用标识由客户端转换。字体 HTTP 集成测试使用独立 MySQL 服务：设置 `IMV_FONT_TEST_API` 后执行 `uv run --locked pytest --noconftest tests/test_template_fonts.py`，测试会创建并删除自己的模板，覆盖保存、读取、更新及合成时间线。
 
-客户端云端模板在现有 HTTP 地址上传输 Protobuf 二进制消息。协议定义在仓库根目录 `proto/`，Python 生成代码位于 `src/generated/imv/template/v1/`，与客户端生成目录结构一致。
+云端模板保存请求使用 Protobuf 二进制，列表、详情和保存成功响应默认在返回前转换为 JSON。消息定义仍在仓库根目录 `proto/`，Python 生成代码位于 `src/generated/imv/template/v1/`，与客户端生成目录结构一致。
 
 模板接口：
 
@@ -56,10 +56,10 @@ PORT=8010 uv run --locked server
 | GET | `/template/{template_id}` | 返回 `GetTemplateResponse` |
 | DELETE | `/template/{template_id}` | 删除模板，成功返回 204 |
 
-GET 成功响应与 POST 请求、成功响应均使用 `application/x-protobuf`。POST 的 JSON 请求返回 415；损坏的 Protobuf 消息返回 400。创建返回 201，更新返回 200。名称重复返回 409，模板不存在返回 404，非法 ID 或配置返回 422。错误响应仍使用 JSON。
+GET 与 POST 成功响应默认使用 `application/json`，采用 Protobuf JSON 映射：字段为 camelCase（如 `templateId`、`createdAt`、`effectIds`），时间为 UTC RFC 3339 字符串；列表为 `{"templates":[...]}`，空库为 `{"templates":[]}`，详情和保存为 `{"template":{...}}`，轨道保留 `template.tracks.tracks` 结构。空数组、空映射和非 optional 标量默认值保留，未设置的 optional 字段省略。POST 请求仍使用 `application/x-protobuf`，JSON 请求返回 415，损坏的 Protobuf 消息返回 400。创建返回 201，更新返回 200。名称重复返回 409，模板不存在返回 404，非法 ID 或配置返回 422；错误响应使用 JSON，删除成功仍为 204 空响应。为兼容旧客户端，单一 `Accept: application/x-protobuf` 仍返回 Protobuf 二进制；其他请求（含省略 Accept、`*/*` 或 `application/json`）默认返回 JSON，成功响应带 `Vary: Accept`。新客户端按响应 `Content-Type` 解析 JSON 或旧服务端的 Protobuf 二进制，JSON 解析忽略未知字段；仅响应格式迁移不要求两端同时升级。
 重命名使用携带 ID 的 POST；另存为使用不携带 ID 的 POST。不存在的 ID 不会自动变成创建。
 
-列表返回逐条校验的 `TemplateSummary`，包含名称、ID、更新时间、有效模板的标题/字幕及对象数量，无效记录通过 `validation_error` 说明原因。无效记录的详情读取返回 409，删除仍按 ID 执行，不影响同库有效模板。保存必须包含中文标题和中文字幕各一个；双语模板另有对应的英文对象。列表消息与转场字段需要客户端、服务端一起升级；已有记录不自动转换。
+列表返回逐条校验的 `TemplateSummary`，包含名称、ID、更新时间、有效模板的标题/字幕及对象数量，无效记录通过 `validationError` 说明原因。无效记录的详情读取返回 409，删除仍按 ID 执行，不影响同库有效模板。保存必须包含中文标题和中文字幕各一个；双语模板另有对应的英文对象。列表消息与转场字段需要客户端、服务端一起升级；已有记录不自动转换。
 
 `SaveTemplateRequest.tracks` 必须提供，通过 `TrackList.tracks[].editor` 保存参数；缺省参数由业务校验补齐。模板更新完整替换配置。名称去除首尾空白后为 1～100 字符；说明最多 1000 字符；标题、字幕、气泡示例文字最多 60、100、40 字符；字号 12～300 整数；位置 0～100%；动画和转场时长 0.1～3 秒。
 
@@ -104,7 +104,11 @@ standard 模式中，请求不包含 `materials` 时为纯数字人：跳过素�
 
 `COMPOSITION_MATCH_WAIT_SECONDS` 默认 30 秒，匹配回调未到则只主动查询一次。修改配置后重启；已有任务保留其已保存的截止时间，失败历史通知不自动重新发送。
 
-新任务还需在 `server/.env` 中设置 `ZOS_API_ENDPOINT`、`ZOS_BUCKET`、`ZOS_ACCESS_KEY_ID`、`ZOS_SECRET_ACCESS_KEY`、`ZOS_WEB_URL`，并确保 `ffmpeg` 在服务端 PATH 中；缺少 FFmpeg 时受理返回 503。`ZOS_REGION` 默认 `hangzhou-7`，`ZOS_FORCE_PATH_STYLE` 默认 false。密钥仅由服务端读取，不进入客户端 IMS 设置。上传与公开地址分别使用 API Endpoint 和 Web URL；目前不读取 `ZOS_ENDPOINT`。对象删除或桶生命周期清理后，公开 URL 也会失效。字段示例和完整接口见 [视频合成 API 文档](src/server/video_composition/api.md)。
+合成调度 `COMPOSITION_CONCURRENCY` 和共用 Remotion 视频名额 `IMV_OVERLAY_TASK_CONCURRENCY` 默认均为 6。整段合成、模板叠加和单 Sprite 共用固定 15 秒分块，不超过 15 秒只用一块，末块保留剩余帧。每视频最多 6 块并发、每块默认最多 4 页，小核数按有效 CPU 自动减少页数，所有视频共用最多 36 个切片名额，资源充足时允许六视频各六块；CPU、内存不足时先降并发，再排队；容量等待默认最多 300 秒，超时返回 `resource_unavailable`（合成为 `remotion_resource_unavailable`），调用方可稍后重新提交，已失败任务不会自动重试。默认为有效 CPU/内存预留 25%，所有隔离 worker 通过 `taskset` 继承相同的核范围，配额读取支持祖先 cgroup v2（v1 回退到宿主亲和性和内存信息）；内存准入按每页 1 GiB 加每视频额外 1 GiB 估算，36 块×4 页与六视频额外预算共 150 GiB。全局预算默认再限 `IMV_RENDER_MAX_CPUS=144` 个逻辑 CPU、`IMV_RENDER_MAX_MEMORY_MB=153600` MiB，与整机/cgroup 预留后的余量取更严者；编码线程也在该 CPU 核范围内运行。128 个无其他配额限制的逻辑 CPU 预留 25% 后，默认最多运行 24 个四页切片。cgroup 有空闲不取消宿主总内存 25% 的保护线；内存准入估算不能替代部署层硬上限。Python 直接部署还应配置 systemd MemoryHigh/MemoryMax，限制整个服务及其子进程。Remotion 锁定 4.0.534，部署其配套 Headless Shell 可启用 CPU 共享内存和 VP9 编码流水线，系统 Chrome 不会自动替换。VP9 默认使用 `cpu-used=4`、`threads=2`。仅多块输出要求 FFmpeg；音频时长未知时在解析后、渲染前检查。诊断的 `slot_wait_ms` 与 `resource_wait_ms` 分别记录两段等待。渲染默认值集中在 `remotion_templates/settings.py`，合成调度默认值在 `video_composition/settings.py`；`.env.example` 仅保留渲染的 CPU/内存预留比例，其他调优项无需填写，按需仍可通过环境变量覆盖。
+
+新任务还需在 `server/.env` 中设置 `ZOS_API_ENDPOINT`、`ZOS_BUCKET`、`ZOS_ACCESS_KEY_ID`、`ZOS_SECRET_ACCESS_KEY`、`ZOS_WEB_URL`，并确保 `ffmpeg` 在服务端 PATH 中；缺少 FFmpeg 时受理返回 503。`ZOS_REGION` 默认 `hangzhou-7`，`ZOS_FORCE_PATH_STYLE` 默认 false。`ZOS_DELETE_OBJECTS` 默认 false：删除 Remotion 资产、会话等记录时只删记录与本地缓存，不删 ZOS 上的文件（删除按请求收费，也不需要删除权限），设为 true 时一并删除。密钥仅由服务端读取，不进入客户端 IMS 设置。上传与公开地址分别使用 API Endpoint 和 Web URL；目前不读取 `ZOS_ENDPOINT`。对象删除或桶生命周期清理后，公开 URL 也会失效。ZOS 上传与匿名读取遵循进程环境的 `HTTP_PROXY`／`HTTPS_PROXY`／`NO_PROXY`；未配置代理时直连，已有代理但 ZOS 需直连时，将 API 与公开访问域名加入 `NO_PROXY`（保留原有条目），在启动进程的环境中设置。串行分片与 TLS 校验保持开启。字段示例和完整接口见 [视频合成 API 文档](src/server/video_composition/api.md)。
+
+操练场另提供 `POST /api/v1/video-compositions/playground`，通过 `mode` 与 `styleId` 读取随包封存的固定样本，跳过 ASR、切片、翻译和素材匹配，仍由原 GET 查询成片。无需配置基准任务 ID，也不依赖来源数据库中的任务；当前仅封存 IP口播样本，其余模式待补充后初始化。操练场 ZOS 产物使用 `imv/playground/`，初始化与完整契约见[视频合成 API](src/server/video_composition/api.md#操练场)。
 
 ### 执行日志
 
@@ -198,7 +202,7 @@ uv sync --locked --default-index https://pypi.org/simple
 
 ## 文案切片
 
-`POST /segmentations` 与 `segment` 函数用正确文案和已有 ASR 结果生成带时间和关键词的片段，不调用 ASR。模型连接填在 `server/.env` 的 `IMV_LLM_BASE_URL`、`IMV_LLM_API_KEY`、`IMV_LLM_MODEL`（其余见 [.env.example](.env.example)），环境变量优先；从仓库根目录启动用 `uv run --locked --project server server`。代码中调用：
+`POST /segmentations` 与 `segment` 函数用正确文案和已有 ASR 结果生成带时间和关键词的片段，不调用 ASR。模型连接填在 `server/.env` 的 `IMV_LLM_BASE_URL`、`IMV_LLM_API_KEY`、`IMV_LLM_MODEL`（其余见 [.env.example](.env.example)），环境变量优先。代码中调用：
 
 ```python
 import json
@@ -214,17 +218,17 @@ result = segment({
 
 **请求与返回**：`script`、`asr_result`、`title` 都可省略或为 null。
 
-- 有 ASR：必须有有效 `script`，使用第一音轨的词级时间（毫秒）。返回 `segments`（保留标点的原文、秒制时间、分组、关键词）、`warnings` 和 `trace`；传了 `title` 时另返回 `title_keyword`，须在标题中连续出现且最多 12 字，不合法直接报错。
-- 只有 `title`：只调用一次模型，返回 `{"title_keyword":"关键词"}`，不校验内容，缺失或非字符串按空字符串处理。
-- 可选 `config` 只用于本次调用：`llm_base_url`、`llm_api_key`、`llm_model` 必填，`llm_timeout_seconds` 默认 120，`llm_max_retries` 默认 1（0～3）；Python 中传 `segment(payload, config=ClientSettings(...))`。`allow_insecure_llm_http` 由服务端决定，错误响应不回显输入。
+- 有 ASR：必须有有效 `script`，使用第一音轨的词级时间（毫秒）。返回 `segments`（保留标点的原文、秒制时间、分组、关键词）、`warnings` 和 `trace`；传了 `title` 时另返回 `title_keyword`。
+- 只有 `title`：只调用一次模型，返回 `{"title_keyword":"关键词"}`，不校验内容、不纠错，缺失或非字符串按空字符串处理。
+- 可选 `config` 只用于本次调用：`llm_base_url`、`llm_api_key`、`llm_model` 必填，`llm_timeout_seconds` 默认 120（切片单次最多取 30 秒），`llm_max_retries` 默认 1（0～3，只用于翻译）；Python 中传 `segment(payload, config=ClientSettings(...))`。`allow_insecure_llm_http` 由服务端决定，错误响应不回显输入。
 
-**切分规则**：模型先在标点处切句、再提关键词（两次调用，不做结果纠错重试），之后由代码把超过 8 个有效字（不计标点和空白）的片段继续切开，切点优先两侧至少 2 字，再按标点、结巴词边界、中点。`OpenAI`、`3.14%`、`1,299` 这类英文和数字串不拆开；`70，80，90后`、顿号枚举、`第1、2、3名`、`等2，3天` 这类数字列表整体保留，普通逗号两侧的数字（如 `99，3件`）不合并。关键词只留在完整包含它的子段上。字幕去标点由下游合成负责，保留问号和数字小数点。
+**模型调用**：使用 `response_format.type=json_object`，先选切点，再提关键词。提词输入为带 `segment_id`、`text` 的片段，模型返回 `{"keywords":{"1":"医院","3":"CT"}}`，只列有关键词的 ID；代码按 ID 填回，缺失、不在对应原文中连续出现或超过 12 字的词置空。`title_keyword` 须在标题中连续出现且最多 12 字。JSON、结构、ID 或标题词不合法（含回复缺少 `choices`/`message`/`content`）时，把上次回复与错误反馈给模型重试（空回复只反馈错误），切分共 2 次、提词共 3 次，耗尽返回 502。单次请求最多 30 秒并关闭 SDK 网络重试；HTTP 与合成共用 90 秒软预算（不含排队、ASR 和翻译），在调用前后检查，耗尽返回 504，无法打断进行中的请求。次数、超时与预算是模块内具名常量。
 
-双语模板的文字对象及 Remotion 绑定通过可选 `language=en` 区分，省略为中文。英文文字对象的 `enabled` 省略为 true；false 只保留配置及资产引用，不翻译、不渲染，也不触发对应 Remotion 环境检查。标题、字幕开关独立，不新增表。翻译合并为一次调用，英文标题使用 `title_en`，字幕按 `text_en`/`keyword_en` 与中文片段同步；英文字幕和展示关键词复用中文字幕去标点规则，保留问号、数字内小数点、英文词内撇号和空格换行；英文标题和原始译文快照保留标点，译文不进入素材匹配请求。普通 IMS 英文使用 `AdaptMode=AutoScale`、`TextWidth=0.9`，Remotion 按每个语言的对象绑定渲染。翻译错误以 `translation_failed` 结束任务；`translation` 是不可恢复的成本阶段，中断后不自动重放，已完成的译文随任务快照恢复。翻译步骤写入既有 `segmentation.json` 日志。
+**切分规则**：模型只能在中文标点处、两侧至少 2 秒的候选边界上选切点；之后代码把超过 8 个有效字（不计标点和空白）的片段继续切开，切点优先两侧至少 2 字，再按标点、结巴词边界、中点。`OpenAI`、`3.14%`、`1,299` 这类英文和数字串不拆开；`70，80，90后`、顿号枚举、`第1、2、3名`、`等2，3天` 这类数字列表整体保留，普通逗号两侧的数字（如 `99，3件`）不合并。关键词只留在完整包含它的子段上。字幕去标点由下游合成负责，保留问号和数字小数点。
 
-**英文翻译**：`translate(result, title=None)` 把 `segment` 的结果一次模型调用译成英文（双语视频合成在切片后调用），模型配置只从服务端 `server/.env` 读取。返回副本，每个片段增加 `text_en`、`keyword_en`，传入 `title` 时增加 `title_en`、`title_keyword_en`。英文关键词复用中文关键词的校验但不限长度：片段词不在本段译文中时置空，标题词不在英文标题中时报错。段数或类型不符、片段译文为空、原标题非空而英文标题为空时直接报错，不重试。
+**英文翻译**：`translate(result, title=None)` 一次模型调用把切片结果译成英文（双语视频合成在切片后调用），只读服务端配置。返回副本，片段增加 `text_en`、`keyword_en`，传入 `title` 时增加 `title_en`、`title_keyword_en`；英文关键词复用中文校验但不限长度（片段词不在译文中置空，标题词不在英文标题中报错）。段数、类型不符或译文为空时直接报错，不重试。双语模板以文字对象的 `language=en` 区分，`enabled=false` 的英文对象不翻译、不渲染；英文字幕与展示关键词沿用中文字幕去标点规则（另保留英文词内撇号和空格换行），译文不进入素材匹配。翻译失败以 `translation_failed` 结束任务，中断后不自动重放，译文随任务快照恢复并写入 `segmentation.json`。
 
-**日志**：HTTP 与视频合成共用日志入口，完整切片记录阶段、切点、关键词与模型耗时；日志含文案，按敏感数据管理。桌面写入 `backend/server.log`。
+**日志**：INFO 只记录阶段、尝试次数、耗时与片段数；完整模型回复和成功 `trace` 脱敏后写 DEBUG；纠错 WARNING 只记录阶段、次数与错误；最终失败 WARNING 保留脱敏诊断和最后一次回复。提词失败的 `keyword_response`（最后回复、预期片段数、关键词类型与数量）由视频合成写入任务 `segmentation.json` 与 `errors/*.log`，接口不回显。DEBUG 与失败详情可能含业务文案，按敏感数据管理；桌面日志位于 `backend/server.log`。
 
 `GET /api/settings/plugins` 只返回自动发现的公开描述与代码默认值，不读写服务端配置。一级模块通过 `settings_plugin.py` 导出 `SETTINGS_PLUGIN`，Schema 由自己的配置模型生成；公共层导入时扫描一次，无人工注册名单，重复 ID、坏描述和依赖导入失败直接报错。增删入口后重启后端并重新打开客户端设置；移除入口不删除客户端旧值。当前包含 Remotion Agent、上海 IMS/视频合成、切片、ASR 和服务启动入口；完整目录从入口的 `settings` 模型类生成 Debug Schema；`client_only=true` 只返回标记 `scope: "client"` 的 Agent 与 IMS，测试使用临时包文件验证发现与移除。此机制不自动注册业务路由，也不支持删除整个业务目录后免处理依赖；各模块仍须自行接入请求配置消费。
 

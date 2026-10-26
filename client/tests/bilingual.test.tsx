@@ -1,6 +1,6 @@
 /** 双语核心回归：对象开关、独立样式、协议往返、时间绑定和实际工作区；执行 bun run test。 */
 import { expect, test } from "bun:test";
-import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import { fromBinary, fromJson, toJson } from "@bufbuild/protobuf";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { SaveTemplateRequestSchema, SaveTemplateResponseSchema } from "@/generated/imv/template/v1/template_pb";
 import { SpriteKind } from "@/generated/imv/sprite/v1/sprite_pb";
@@ -13,7 +13,7 @@ import { resetTextTarget } from "@/features/templates/effects";
 import { saveTemplate } from "@/features/templates/api";
 import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
 import { readCatalog } from "@/features/templates/sdk";
-import { buildTestTimeline, protobufTemplateResponse, sampleMedia, savedTemplate } from "./fixtures";
+import { buildTestTimeline, jsonTemplateResponse, sampleMedia, savedTemplate } from "./fixtures";
 import { fetchMock } from "./setup";
 
 const asset: SpriteAsset = { id: "text-asset", name: "字效", kind: SpriteKind.TEXT, seconds: 3, aspect: 9 / 16,
@@ -79,7 +79,7 @@ test("中英文 Remotion 绑定及时间轴相互独立", () => {
 });
 
 // 场景：保存发出的真实协议仍携带停用英文的样式与绑定，服务端返回后保持相同草稿。
-test("停用英文配置通过 Protobuf 往返", async () => {
+test("停用英文配置通过 Protobuf 请求和 JSON 响应往返", async () => {
   const original = savedTemplate();
   const draft = setBilingual(addClip(setBilingual(toDraft(original), "title", true), asset, [asset], "title", "en"), "title", false);
   fetchMock.mockImplementation((async (_url, init) => {
@@ -87,9 +87,9 @@ test("停用英文配置通过 Protobuf 往返", async () => {
     const english = request.tracks!.tracks.find((track) => track.target === "title" && track.language === "en")!;
     expect(english.enabled).toBe(false);
     expect(request.tracks!.tracks.find((track) => track.target === "remotion")?.language).toBe("en");
-    const response = fromBinary(SaveTemplateResponseSchema, new Uint8Array(await protobufTemplateResponse(original, "save").arrayBuffer()));
+    const response = fromJson(SaveTemplateResponseSchema, await jsonTemplateResponse(original, "save").json());
     response.template!.tracks = request.tracks;
-    return new Response(toBinary(SaveTemplateResponseSchema, create(SaveTemplateResponseSchema, response)));
+    return Response.json(toJson(SaveTemplateResponseSchema, response));
   }) as typeof fetch);
   const saved = await saveTemplate(draft, original.template_id);
   expect(saved.tracks).toEqual(draft.tracks);
@@ -98,7 +98,7 @@ test("停用英文配置通过 Protobuf 往返", async () => {
 
 // 场景：实际工作区提供两个独立开关；英文可以单独编辑，关闭时从对象列表隐藏，重新开启恢复字体大小。
 test("工作区双语开关保留英文设置", async () => {
-  fetchMock.mockImplementation((async (_url) => protobufTemplateResponse(savedTemplate(), "get")) as typeof fetch);
+  fetchMock.mockImplementation((async (_url) => jsonTemplateResponse(savedTemplate(), "get")) as typeof fetch);
   render(<TemplateWorkspace selection={{ templateId: savedTemplate().template_id }} onHome={() => {}} />);
   fireEvent.click(await screen.findByRole("checkbox", { name: "中英双语" }));
   fireEvent.click(screen.getAllByRole("button", { name: "编辑英文标题" })[0]);

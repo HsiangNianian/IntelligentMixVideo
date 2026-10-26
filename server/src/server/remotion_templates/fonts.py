@@ -617,8 +617,11 @@ class FontStore:
 
     def families(self) -> list[str]:
         """Family names of the whole library, one per card: the enum the Agent chooses from and `fontFamily` values are
-        checked against."""
-        return list(cards(self.known.values()))
+        checked against. It reads a snapshot taken under the lock, so a concurrent registration cannot change the
+        dictionary while it is traversed."""
+        with self._lock:
+            known = list(self.known.values())
+        return list(cards(known))
 
     def path(self, font_id: str) -> Path | None:
         """Cached file of an available font, or None (also for the system default, which has no file here)."""

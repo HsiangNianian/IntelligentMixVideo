@@ -198,7 +198,49 @@ def test_the_host_owns_a_text_blocks_configuration():
     assert {"line1FontFamily", "line2FontWeight", "line1SizeRatio", "lineGap", "lineStartFrames", "keywordEffect"} <= set(schemas)
     assert not {"fontFamily", "fontWeight", "color"} & set(schemas)
     assert schemas["line1SizeRatio"]["title"] == "上栏字号比例" and schemas["lineGap"]["title"] == "栏间距"
+    assert schemas["lineGap"]["minimum"] == -600 and schemas["lineGap"]["maximum"] == 300
     assert (defaults["line1SizeRatio"], defaults["line2FontFamily"], defaults["lineStartFrames"], defaults["keywordEffect"]) == (0.5, "Noto Sans CJK SC", [0, 12], True)
+
+
+def test_a_transparency_colour_is_refused_so_transparency_stays_an_effect():
+    """生成路径：把透明度做成字色（栏颜色默认值带 alpha）时被拒，并说明透明是带可调数字样式参数的特效；不透明颜色通过。
+    发布更早的版本不传字体库，不追溯拦截带 alpha 的旧颜色。"""
+    one = {"text": "今日灵感", "font_size": 96, "tiers": [{"font_family": "Zed Display", "font_weight": 700}]}
+    schemas, defaults = text_configuration(one, LIBRARY)
+    properties = {**schemas, "color": COLOR}
+    bound = set(properties)
+    schema = {"type": "object", "properties": properties}
+    assert category_problems("text", schema, bound, {**defaults, "color": "#FFFFFF"}, fonts=LIBRARY) == []
+    [problem] = category_problems("text", schema, bound, {**defaults, "color": "#FFFFFF80"}, fonts=LIBRARY)
+    assert (problem.name, problem.rule) == ("color", None)
+    assert "transparency effect" in problem.reason and "opacity" in problem.reason and "alpha" in problem.reason
+    # 单栏与双栏的栏颜色都检查；发布路径（fonts=None）保持旧版本可保存。
+    assert category_problems("text", schema, bound, {**defaults, "color": "#FFFFFF80"}) == []
+    two = {"text": "上\n下", "font_size": 96, "line_gap": 24, "line_starts": [0, 12],
+           "tiers": [{"font_family": "Zed Display", "font_weight": 400, "size_ratio": 0.5}, {"font_family": "Noto Sans CJK SC", "font_weight": 700, "size_ratio": 1}]}
+    schemas, defaults = text_configuration(two, LIBRARY)
+    properties = {**schemas, "line1Color": COLOR, "line2Color": COLOR}
+    problems = category_problems("text", {"type": "object", "properties": properties}, set(properties),
+                                 {**defaults, "line1Color": "#FFFFFF80", "line2Color": "#F5B93C"}, fonts=LIBRARY)
+    assert [item.name for item in problems] == ["line1Color"]
+
+
+@needs_bundler
+def test_a_negative_line_gap_pulls_the_lower_tier_up():
+    """栏间距为负时宿主用负 marginTop 把下栏向上移（CSS gap 不支持负值），两栏因此可以叠在一起；配置参数的默认值保留负数。"""
+    tier = {
+        "preset": {"code": TIER_CODE, "parameter_schema": {"type": "object", "properties": {"color": COLOR}, "required": ["color"], "additionalProperties": False},
+                   "default_parameters": {"color": "#FFFFFF"}},
+        "parameters": {"color": "#FFFFFF"},
+        "layout": {"x": 0, "y": 0, "width": 1080, "height": 600, "z_index": 0},
+        "timing": {"start_frame": 0, "duration_frames": 30},
+    }
+    block = {"layout": {"x": 0, "y": 0, "width": 1080, "height": 600}, "text": "上\n下", "font_size": 96, "line_gap": -60, "line_starts": [0, 15],
+             "tiers": [{"font_family": "Noto Sans CJK SC", "font_weight": 700, "size_ratio": 1},
+                       {"font_family": "Noto Sans CJK SC", "font_weight": 700, "size_ratio": 1}]}
+    code, _schema, defaults, _ = compose_text_source(block, [{**tier, "instance_id": "upper"}, {**tier, "instance_id": "lower"}], None, [], [], ["Noto Sans CJK SC"])
+    assert defaults["lineGap"] == -60
+    assert "marginTop: props.lineGap" in code and "gap: props.lineGap" not in code
 
 
 def test_effects_get_the_hosts_switch_position_and_length():
@@ -579,6 +621,93 @@ def test_real_two_tier_block_with_a_keyword_preset_passes_the_generation_measure
     assert checks["transparency"].status == "passed", checks["transparency"].message
     assert checks["text_fit"].status == "passed", checks["text_fit"].message
     assert "over 2 lines is shown in full at the smallest fontSize 48" in checks["text_fit"].message
+
+
+# 一栏文字，白色描边只写在非关键词片段的 span 上：关键词片段由宿主的 Keyword 渲染，拿不到描边（模板「民生科普」标题字效的写法）。
+SPAN_STROKE_TIER = TIER_CODE.replace("<span key={index}>", '<span key={index} style={{WebkitTextStroke: "8px #FFFFFF", paintOrder: "stroke fill"}}>')
+# 同样的描边写在这一栏自己的块上，关键词片段继承它。
+BLOCK_STROKE_TIER = TIER_CODE.replace("color: props.color}}", 'color: props.color, WebkitTextStroke: "8px #FFFFFF", paintOrder: "stroke fill"}}')
+
+
+@needs_browser
+@pytest.mark.parametrize(("code", "lost"), [(SPAN_STROKE_TIER, True), (BLOCK_STROKE_TIER, False)], ids=["spans", "block"])
+def test_real_keyword_hit_keeps_its_tiers_look(tmp_path, monkeypatch, code, lost):
+    """真实浏览器，审计复现（模板「民生科普」）：上栏的白色描边只写在非关键词片段上，模板编辑预览的示例关键词与成片的标题关键词
+    都没有描边。生成检查以默认文字开头两个字为关键词、关闭关键词选项挂载时，命中词须与同一栏其余文字外观一致，否则 text_fit 指出差异；
+    描边写在这一栏自己的块上就通过。"""
+    monkeypatch.setattr(FontStore, "active", SimpleNamespace(families=lambda: ["Noto Sans CJK SC"]))
+
+    async def run():
+        """Compose a two-tier block over the tier ``code``, fading in and out, and mount it with the generation measurements."""
+        current = session(tmp_path / "compose")
+        tier = await current.execute("preset.create", preset("text", code, "color"), available())
+        fade = await current.execute("preset.create", effect_preset(FADE_CODE), available())
+        request = two_tiers(tier["preset"]["preset_id"], None, fade["preset"]["preset_id"]).model_dump(mode="json", exclude_none=True)
+        request["text"]["tiers"][1]["font_family"] = "Noto Sans CJK SC"
+        composed = await current.execute("sprite.compose", SpriteComposeInput.model_validate(request), available())
+        sprite = current.sprite_drafts[composed["draft_id"]]
+        component = ComponentDefinition(code=sprite.code, parameter_schema=sprite.parameter_schema, default_parameters=sprite.default_parameters)
+        return await validator(tmp_path).validate_render(RenderValidationInput(component=component, duration_frames=30), text_fit=True)
+
+    check = next(item for item in asyncio.run(run()).checks if item.name == "text_fit")
+    if lost:
+        assert check.status == "failed"
+        assert 'With keywords ["判断"] and the keyword options off, the hit "判断" is drawn without its tier\'s look' in check.message
+        assert "-webkit-text-stroke-width is 0px instead of 8px" in check.message
+        assert "on its own block, so every <Keyword> segment inside inherits it" in check.message
+    else:
+        assert check.status == "passed", check.message
+
+
+def test_the_executor_draws_a_tiers_look_on_its_block():
+    """审计复现（模板「民生科普」）：规则只说 text Preset 画出这一栏的描边与阴影，没说画在哪一层，模型把白描边写在非关键词片段的 span 上，
+    关键词命中就没有描边。规则现在要求外观画在这一栏自己的块上，让 Keyword 片段继承。"""
+    from server.remotion_templates.agent import EXECUTOR_RULES
+
+    assert "draws the tier's look on that same block" in EXECUTOR_RULES
+    assert "so every <Keyword> segment inside inherits it" in EXECUTOR_RULES
+
+
+def test_the_executor_makes_transparency_an_effect_and_allows_negative_line_gaps():
+    """透明度有时被做成带 alpha 的字色：规则要求透明（整体或某一栏透出视频）是带可调数字样式参数的持续特效，
+    颜色保持不透明；栏间距为负时下栏向上移，可以叠住上栏。"""
+    from server.remotion_templates.agent import EXECUTOR_RULES
+
+    assert "Transparency is an effect, never a colour" in EXECUTOR_RULES
+    assert "never write it as an alpha colour" in EXECUTOR_RULES
+    assert "negative values pull the lower tier up over the upper one" in EXECUTOR_RULES
+
+
+def test_a_keyword_hit_without_its_tiers_look_gets_no_layout_hint(tmp_path, monkeypatch):
+    """关键词丢了所在栏外观是 text_fit 的一种失败，但不是排版问题：拒绝照常列出原因，只是不附「按内容排版、换行」的固定提示，
+    免得模型去改排版；其他 text_fit 失败仍附这条提示。"""
+    monkeypatch.setattr(FontStore, "active", SimpleNamespace(families=lambda: list(LIBRARY)))
+    look = 'With keywords ["判断"] and the keyword options off, the hit "判断" is drawn without its tier\'s look: -webkit-text-stroke-width is 0px instead of 8px.'
+
+    async def refused(message: str) -> ToolFault:
+        """Save a composed block whose browser mount fails text_fit with ``message``; return the refusal."""
+        current = session(tmp_path / str(len(message)))
+        tier, _glow, fade = await stored(current)
+        composed = await current.execute("sprite.compose", two_tiers(tier, None, fade), available())
+
+        async def failing(request, **_options):
+            """The mount fails only the text_fit check."""
+            return RenderValidationReport(
+                passed=False, composition=Composition(width=1080, height=1920, fps=30, duration_frames=request.duration_frames),
+                code_validation=CodeValidationReport(passed=True, diagnostics=[]), checks=[CheckResult(name="text_fit", status="failed", message=message)],
+                tests=[], custom_tests_executed=0,
+            )
+
+        current.validate_render = failing
+        with pytest.raises(ToolFault) as error:
+            await current.execute("sprite.create", SpriteCreateInput(draft_id=composed["draft_id"]), available())
+        return error.value
+
+    lost = asyncio.run(refused(look))
+    assert f"- text_fit: {look}" in lost.error.message.splitlines()
+    assert "hints" not in lost.error.details
+    clipped = asyncio.run(refused("The default text is not shown in full: it is cut off."))
+    assert [hint.split(":")[0] for hint in clipped.error.details["hints"]] == ["Lay the text out from its content"]
 
 
 # 一栏实心色块：160 像素高，便于在成片里按像素判断这一栏是否显示。

@@ -71,7 +71,8 @@ function textEntry() {
       : `fontFamily: props.line${index + 1}FontFamily, fontWeight: props.line${index + 1}FontWeight, fontSize: props.fontSize * props.line${index + 1}SizeRatio`;
     const start = tiers === 1 ? "0" : `(Array.isArray(props.lineStartFrames) && Number.isFinite(props.lineStartFrames[${index}]) ? props.lineStartFrames[${index}] : 0)`;
     return `(() => { const __line = __lines[${index}]; if (!__line) return null; const __start = ${start}; const __waiting = __frame < __start; `
-      + `return <div key={${JSON.stringify(item.instance_id)}} style={{width: "100%", opacity: __waiting ? 0 : 1}}>`
+      // A negative `lineGap` pulls a lower tier up over the upper one; CSS `gap` cannot be negative, so the spacing is a margin.
+      + `return <div key={${JSON.stringify(item.instance_id)}} style={{width: "100%", marginTop: ${index === 0 ? 0 : "props.lineGap"}, opacity: __waiting ? 0 : 1}}>`
       + `<Freeze frame={__start} active={__waiting}><Sequence from={__start} durationInFrames={Math.max(1, __total - __start)} layout="none">`
       + `<__Effects at={${at(index)}}>${hold(`<Preset${modules.indexOf(item.code)} {...props[${JSON.stringify(item.instance_id)}]}${bound(item)} {...{text: __line, segments: __segments(__line, __offsets[${index}], __found), Keyword: __Keyword, ${font}}} />`)}</__Effects>`
       + `</Sequence></Freeze></div>; })()`;
@@ -102,7 +103,7 @@ function textEntry() {
     `export default function Sprite(inputProps = {}) { const props = __merge(__defaults, inputProps); const __frame = useCurrentFrame(); const {durationInFrames: __total} = useVideoConfig(); `
       + `const __text = typeof props.text === "string" ? props.text : ""; const __lines = ${tiers === 1 ? "[__text]" : "__text.split(\"\\n\").slice(0, 2)"}; const __offsets = __lines.map((_, index) => __lines.slice(0, index).reduce((sum, line) => sum + line.length + 1, 0)); const __found = __hits(__text, props.keywords); `
       + `return <__Context.Provider value={{props, effect: ${effect}}}><AbsoluteFill><div data-imv-instance="text" style={{position: "absolute", left: ${x}, top: ${y}, width: ${width}, height: ${height}, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center"}}>`
-      + `<__Effects at={["block"]}><div style={{width: "100%", display: "flex", flexDirection: "column", alignItems: "center", gap: ${tiers === 1 ? 0 : "props.lineGap"}}}>`
+      + `<__Effects at={["block"]}><div style={{width: "100%", display: "flex", flexDirection: "column", alignItems: "center"}}>`
       + `${block.tiers.map((item, index) => `{${tier(item, index)}}`).join("")}</div></__Effects></div></AbsoluteFill></__Context.Provider>; }`,
   ].join("\n");
 }

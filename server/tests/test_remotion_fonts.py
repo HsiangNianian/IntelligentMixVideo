@@ -27,6 +27,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
+from generated.imv.sprite.v1 import sprite_pb2 as pb
 from server.remotion_templates import font_store
 from server.remotion_templates import fonts as fonts_module
 from server.remotion_templates import routes
@@ -38,8 +39,10 @@ from server.remotion_templates.overlay_render import Overlay, OverlayError, requ
 from server.remotion_templates.placement import resolve
 from server.remotion_templates.renderer import Renderer
 from server.remotion_templates.settings import Settings
+from server.remotion_templates.sprites import operator_parameters
 
 from server.template.schema import RemotionTrackEditor
+from server.video_composition.remotion_content import resolve_config
 
 from .conftest import DEVICE_HEADERS, published_sprite
 
@@ -588,17 +591,24 @@ def test_the_stored_font_schema_is_an_open_string() -> None:
     assert all(definition == {"type": "string", "maxLength": 100} for definition in open_font_schema(tiers)["properties"].values())
 
 
-def font_sprite(name: str = "fontFamily"):
-    """已发布的字效，字体参数 ``name`` 是普通字符串参数（生成时的枚举已换成 maxLength）。"""
+def font_sprite(name: str = "fontFamily", *, frozen: bool = True, kind: int | None = None):
+    """已发布的字效；默认保留旧发布常见的冻结字体枚举，可切换为非文字 Sprite 或开放字符串。"""
     from generated.imv.sprite.v1 import sprite_pb2 as sprite_pb
 
-    sprite = published_sprite()
+    sprite = published_sprite(kind=pb.SPRITE_KIND_TEXT if kind is None else kind)
     schema = json.loads(sprite.config_schema_json)
-    schema["properties"][name] = {"type": "string", "maxLength": 100}
+    schema["properties"][name] = (
+        {"type": "string", "enum": ["Noto Sans CJK SC"], "title": "字体"} if frozen
+        else {"type": "string", "maxLength": 100}
+    )
     defaults = json.loads(sprite.default_config_json) | {name: "Noto Sans CJK SC"}
     sprite.config_schema_json, sprite.default_config_json = json.dumps(schema), json.dumps(defaults)
     only = sprite_pb.ScalarValue(string_value="Noto Sans CJK SC")
-    sprite.parameters.add(key=name, label="字体", access=sprite_pb.OPERATOR_ACCESS_VISIBLE_EDITABLE, default_value=only, max_length=100)
+    sprite.parameters.add(
+        key=name, label="字体", access=sprite_pb.OPERATOR_ACCESS_VISIBLE_EDITABLE,
+        default_value=only, max_length=100,
+        **({} if not frozen else {"allowed_values": [only]}),
+    )
     return sprite
 
 
@@ -609,13 +619,48 @@ def font_editor(family: str, name: str = "fontFamily") -> RemotionTrackEditor:
 
 @pytest.mark.parametrize("name", ["fontFamily", "line2FontFamily"])
 def test_a_font_added_after_publication_can_be_chosen_for_an_older_sprite(store, name) -> None:
-    """字体库在 Sprite 发布之后还会增加（用户上传）：摆放覆盖按实时字体库校验，所以新上传的字体可以用在已发布的字效上；不在库里的名字仍被拒绝。
-    双栏字效每栏的字体同样按实时字体库校验。"""
+    """旧发布仍带冻结字体枚举，但字体库在发布后增长：摆放覆盖按实时字体库校验，新字体可保存，视频合成注入文字后
+    再按发布契约校验时也接受它；伪造字体仍被拒绝。"""
     store.upload(minimal_font("Zed Display"), None, "", "device-1")
-    config, _ = resolve(font_sprite(name), font_editor("Zed Display", name))
+    sprite = font_sprite(name)
+    assert json.loads(sprite.config_schema_json)["properties"][name]["enum"] == ["Noto Sans CJK SC"]
+    config, _ = resolve(sprite, font_editor("Zed Display", name))
     assert config[name] == "Zed Display"
+    assert resolve_config(sprite, "新标题", "", 90, "text", config=config)[name] == "Zed Display"
     with pytest.raises(ValueError, match=f"参数 {name} 不是字体库里的字体"):
-        resolve(font_sprite(name), font_editor("Ghost Font", name))
+        resolve(sprite, font_editor("Ghost Font", name))
+
+
+def test_an_unsampled_publication_still_lets_templates_change_its_font(store) -> None:
+    """没有渲染过参数边界样本的旧字效只读，但字体来自实时字体库、保存摆放时另行校验，所以在模板里仍可换字体；
+    其他参数保持只读，不能借字体例外修改字号；冻结枚举也不能阻止发布后新增的字体。"""
+    store.upload(minimal_font("Zed Display"), None, "", "device-1")
+    sprite = font_sprite()
+    sprite.ClearField("content_box")
+    access = {item.key: item.access for item in operator_parameters(sprite)}
+    assert access["fontFamily"] == pb.OPERATOR_ACCESS_VISIBLE_EDITABLE
+    assert access["fontSize"] == pb.OPERATOR_ACCESS_VISIBLE_READ_ONLY
+    config, _ = resolve(sprite, font_editor("Zed Display"))
+    assert config["fontFamily"] == "Zed Display"
+    with pytest.raises(ValueError, match="参数 fontSize 不可修改"):
+        resolve(sprite, RemotionTrackEditor.model_validate({"parameters": [{"key": "fontSize", "numberValue": 48}]}))
+    with pytest.raises(ValueError, match="不是字体库里的字体"):
+        resolve(sprite, font_editor("Ghost Font"))
+
+
+def test_only_text_effects_keep_their_font_editable_without_samples(store) -> None:
+    """未采样旧发布的字体例外只给字效：其他分类的同名参数仍只读；已采样的其他分类照旧按实时字体库校验字体。"""
+    store.upload(minimal_font("Zed Display"), None, "", "device-1")
+    unsampled = font_sprite(kind=pb.SPRITE_KIND_VIDEO_OVERLAY)
+    unsampled.ClearField("content_box")
+    access = {item.key: item.access for item in operator_parameters(unsampled)}
+    assert access["fontFamily"] == pb.OPERATOR_ACCESS_VISIBLE_READ_ONLY
+    with pytest.raises(ValueError, match="参数 fontFamily 不可修改"):
+        resolve(unsampled, font_editor("Zed Display"))
+    sampled = font_sprite(frozen=False, kind=pb.SPRITE_KIND_VIDEO_OVERLAY)
+    assert resolve(sampled, font_editor("Zed Display"))[0]["fontFamily"] == "Zed Display"
+    with pytest.raises(ValueError, match="参数 fontFamily 不是字体库里的字体"):
+        resolve(sampled, font_editor("Ghost Font"))
 
 
 def sandbox_arguments(settings: Settings, tmp_path: Path) -> list[str]:

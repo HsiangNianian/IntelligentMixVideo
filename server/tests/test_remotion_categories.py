@@ -111,7 +111,7 @@ def test_keyword_parameters_must_default_to_off():
 
 
 LINE_STARTS = {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 3600}, "minItems": 2, "maxItems": 2}
-LINE_GAP = {"type": "number", "minimum": 0, "maximum": 300}
+LINE_GAP = {"type": "number", "minimum": -600, "maximum": 300}
 MULTI_LINE = {**TEXT_PROPERTIES, "lineStartFrames": LINE_STARTS, "lineGap": LINE_GAP}
 MULTI_LINE_DEFAULTS = {**OFF, "text": "判断一个人\n选择花字、滤镜和特效", "lineStartFrames": [0, 30], "lineGap": 24}
 
@@ -123,6 +123,12 @@ def test_multi_line_text_declares_fixed_lines_and_their_starts():
     # Declared but not bound: not a multi-line text, so its defaults are not checked.
     assert category_problems("text", schema(MULTI_LINE), set(TEXT_PROPERTIES), OFF) == []
     # The line gap is required, so users can move the lines closer together or apart.
+    problems = category_problems("text", schema(MULTI_LINE), set(MULTI_LINE), MULTI_LINE_DEFAULTS)
+    assert problems == []
+    # 下界可为负数，模板把下栏向上移、叠住上栏；0 仍接受，更早生成的资产照常发布。
+    for minimum in (-600, 0):
+        spaced = {**MULTI_LINE, "lineGap": {"type": "number", "minimum": minimum, "maximum": 300}}
+        assert category_problems("text", schema(spaced), set(spaced), MULTI_LINE_DEFAULTS) == []
     problems = category_problems("text", schema(MULTI_LINE), set(MULTI_LINE) - {"lineGap"}, MULTI_LINE_DEFAULTS)
     assert [(item.name, item.reason) for item in problems] == [("lineGap", "missing")]
     narrow = {**MULTI_LINE, "lineGap": {"type": "number", "minimum": 10, "maximum": 50}}

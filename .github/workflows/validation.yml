@@ -85,6 +85,9 @@ jobs:
         with:
           python-version: '3.12'
           enable-cache: false
+      # setup-uv only sets UV_PYTHON; the offline lockfile check needs an installed interpreter.
+      - name: Install Python 3.12
+        run: uv python install 3.12
       - name: Check synchronized project versions
         run: bun .github/scripts/validate-release.mjs
       - name: Test release scripts and failure recovery

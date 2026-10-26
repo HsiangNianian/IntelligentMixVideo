@@ -7,6 +7,7 @@ verifies the produced file with ffprobe. Persistence, upload and notification li
 `overlay_service.py`.
 """
 
+import asyncio
 import json
 import logging
 import math
@@ -14,6 +15,7 @@ import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 
 from generated.imv.sprite.v1 import sprite_pb2 as pb
 from pydantic import BaseModel, ConfigDict, Field
@@ -30,6 +32,66 @@ from .settings import Settings
 logger = logging.getLogger(__name__)
 PROBE_SECONDS = 60  # ffprobe of the finished file (it decodes every frame to count them)
 MAX_PLACEMENTS = 100  # the same cap as a template's tracks
+# 所有渲染路径共用连续帧区间，拼接只复制已编码的数据。
+CHUNK_SECONDS = 15
+JOIN_SECONDS = 120
+
+
+def record_performance(directory: Path, **measurements: float) -> dict:
+    """合并私有阶段计时；只收数值和已知 worker 指标，不把源码、正文或地址带进日志。"""
+    host_fields = {f"{name}_ms" for name in ("plan", "slot_wait", "resource_wait", "text_fit", "prepare", "worker", "probe", "join", "upload", "total")}
+    host_fields.update({"granted_chunks", "reserved_memory_mb"})
+    worker_fields = {
+        "source_prepare_ms", "bundle_ms", "browser_ms", "select_ms", "render_ms", "total_ms", "elapsed_ms",
+        "rendered_ms", "encoded_ms", "resolved_concurrency", "rendered_frames", "encoded_frames", "chunk_concurrency",
+    }
+
+    def numbers(source: dict, names: set[str]) -> dict:
+        """缺失或无效的度量保持缺失，不能把未执行的阶段记成零。"""
+        return {key: value for key, value in source.items() if key in names and type(value) in (int, float) and math.isfinite(value) and value >= 0}
+
+    result = {}
+    try:
+        path = directory / "performance.json"
+        if path.is_file():
+            result = numbers(json.loads(path.read_text(encoding="utf-8")), host_fields)
+        result.update(numbers(measurements, host_fields))
+        report = directory / "renderer.json"
+        if report.is_file():
+            source = json.loads(report.read_text(encoding="utf-8")).get("performance", {})
+            worker = numbers(source, worker_fields)
+            for name in ("parallel_encoding", "shared_memory_capture"):
+                if type(source.get(name)) is bool:
+                    worker[name] = source[name]
+            chunks = []
+            for chunk in source.get("chunks", []):
+                safe = numbers(chunk, worker_fields | {"index", "first_frame", "last_frame"})
+                for name in ("parallel_encoding", "shared_memory_capture"):
+                    if type(chunk.get(name)) is bool:
+                        safe[name] = chunk[name]
+                frames = chunk.get("frame_range")
+                if isinstance(frames, list) and len(frames) == 2 and all(type(frame) is int and frame >= 0 for frame in frames):
+                    safe["frame_range"] = frames
+                chunks.append(safe)
+            if chunks:
+                worker["chunks"] = chunks
+            if worker:
+                result["renderer"] = worker
+        directory.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    except (OSError, ValueError, TypeError, AttributeError):
+        # 性能诊断失败不能覆盖原来的渲染结果或异常；路径与文件内容均不打印。
+        logger.warning("Remotion 性能指标未能保存")
+    return result
+
+
+async def measured(directory: Path, stage: str, operation):
+    """度量一次操作，即使失败也留下已消耗的时间；耗时不代表操作成功。"""
+    started = perf_counter()
+    try:
+        return await operation
+    finally:
+        await asyncio.to_thread(record_performance, directory, **{f"{stage}_ms": (perf_counter() - started) * 1000})
 
 
 class OverlayError(Exception):
@@ -354,13 +416,14 @@ async def probe_overlay(path: Path, overlay: Overlay) -> None:
         raise OverlayError("render_invalid", "渲染结果与请求的规格或透明通道不一致")
 
 
-def environment_problem(settings: Settings) -> str | None:
+def environment_problem(settings: Settings, overlay: Overlay | None = None, *, chunked: bool | None = None) -> str | None:
     """Name the first tool or file an overlay render needs that this host lacks, or None when all exist.
 
     Acceptance refuses with a 503 instead of queueing a task that would only fail later; the isolated
     renderer runs on Linux with bubblewrap, prlimit, Node, a browser and the managed fonts.
     """
-    for tool in ("ffprobe", "bwrap", "prlimit", "node"):
+    needs_join = overlay is not None and len(overlay_ranges(overlay, settings, chunked=chunked)) > 1
+    for tool in ("ffprobe", "bwrap", "prlimit", "taskset", "node", *(("ffmpeg",) if needs_join else ())):
         if shutil.which(tool) is None:
             return tool
     for path in (settings.browser_executable, settings.font_regular, settings.font_bold):
@@ -380,41 +443,103 @@ def overlay_cpu_seconds(timeout_seconds: float) -> int:
     return max(CPU_SECONDS, math.ceil(timeout_seconds * (os.cpu_count() or 1)))
 
 
-async def run_overlay_worker(renderer: Renderer, overlay: Overlay, directory: Path, ranges: list[list[int]] | None = None) -> None:
+async def run_overlay_worker(renderer: Renderer, overlay: Overlay, directory: Path, ranges: list[list[int]] | None = None,
+                             *, chunk_concurrency: int | None = None, frame_concurrency: int | None = None) -> None:
     """Run the isolated worker in `directory`: one `overlay.webm`, or one `chunk-<i>.webm` per inclusive frame range."""
-    await require_fonts(overlay)
     settings = renderer.settings
-    directory.mkdir(parents=True, exist_ok=True)
-    (directory / ".tmp").mkdir(exist_ok=True)
-    public = directory / "public"
-    public.mkdir(exist_ok=True)
-    for weight, font in ((400, settings.font_regular), (700, settings.font_bold)):
-        (public / f"font-{weight}.ttc").write_bytes(font.read_bytes())
-    (directory / "request.json").write_text(json.dumps({
-        "composition": {
-            "width": overlay.width, "height": overlay.height, "fps": overlay.fps,
-            "duration_in_frames": overlay.span, "frames": overlay.frames,
-        },
-        "instances": overlay.instances,
-        "browser": renderer.worker_browser_path(),
-        **({"ranges": ranges} if ranges else {}),
-    }), encoding="utf-8")
+
+    def prepare() -> None:
+        """在线程中准备字体和 worker 输入，避免复制文件阻塞其它渲染任务。"""
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / ".tmp").mkdir(exist_ok=True)
+        public = directory / "public"
+        public.mkdir(exist_ok=True)
+        for weight, font in ((400, settings.font_regular), (700, settings.font_bold)):
+            (public / f"font-{weight}.ttc").write_bytes(font.read_bytes())
+        vp9 = {key: value for key, value in (
+            ("cpu_used", settings.overlay_vp9_cpu_used), ("threads", settings.overlay_vp9_threads),
+        ) if value is not None}
+        (directory / "request.json").write_text(json.dumps({
+            "composition": {
+                "width": overlay.width, "height": overlay.height, "fps": overlay.fps,
+                "duration_in_frames": overlay.span, "frames": overlay.frames,
+            },
+            "instances": overlay.instances,
+            "browser": renderer.worker_browser_path(),
+            "concurrency": frame_concurrency or settings.overlay_frame_concurrency,
+            "chunk_concurrency": min(chunk_concurrency or settings.overlay_chunk_concurrency, settings.overlay_chunk_concurrency, len(ranges or [None])),
+            **({"vp9": vp9} if vp9 else {}),
+            **({"ranges": ranges} if ranges else {}),
+        }), encoding="utf-8")
+
+    started = perf_counter()
     try:
-        await renderer.run_worker(
+        await require_fonts(overlay)
+        await asyncio.to_thread(prepare)
+    finally:
+        await asyncio.to_thread(record_performance, directory, prepare_ms=(perf_counter() - started) * 1000)
+    try:
+        await measured(directory, "worker", renderer.run_worker(
             directory, worker="overlay-worker.mjs", timeout_seconds=settings.overlay_render_timeout_seconds,
             cpu_seconds=overlay_cpu_seconds(settings.overlay_render_timeout_seconds),
-        )
+        ))
     except (RuntimeError, TimeoutError) as exc:
         # The worker log tail holds sandbox paths and source excerpts: only the chained cause carries it.
         message = "叠加视频渲染超时" if isinstance(exc, TimeoutError) else "叠加视频渲染失败"
         raise OverlayError("render_failed", message) from exc
 
 
-async def render_overlay(renderer: Renderer, overlay: Overlay, directory: Path) -> Path:
-    """Run the isolated worker in `directory` and return the verified `overlay.webm`."""
-    await run_overlay_worker(renderer, overlay, directory)
-    output = directory / "overlay.webm"
+def chunk_ranges(frames: int, fps: int) -> list[list[int]]:
+    """固定每 15 秒一块，尾块保留剩余帧；不改变完整合成的绝对时钟。"""
+    size = max(1, to_frames(CHUNK_SECONDS, fps))
+    return [[first, min(first + size, frames) - 1] for first in range(0, frames, size)]
+
+
+def overlay_ranges(overlay: Overlay, settings: Settings, *, chunked: bool | None = None) -> list[list[int]]:
+    """准入、工具预检和实际渲染使用同一份分块计划。"""
+    if not (settings.overlay_chunked if chunked is None else chunked):
+        return [[0, overlay.frames - 1]]
+    return chunk_ranges(overlay.frames, overlay.fps)
+
+
+async def join_chunks(directory: Path, count: int) -> Path:
+    """按帧区间顺序无损拼接已完成的块；worker 并发完成的顺序不改变成片。"""
+    paths = [directory / f"chunk-{index}.webm" for index in range(count)]
+    if not all(path.is_file() and path.stat().st_size > 0 for path in paths):
+        raise OverlayError("render_failed", "渲染器没有产出全部分块")
+    listing = directory / "chunks.txt"
+    await asyncio.to_thread(listing.write_text, "".join(f"file '{path.name}'\n" for path in paths), encoding="utf-8")
+    output = directory / "sprite.webm"
+    process = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-v", "error", "-nostdin", "-y", "-f", "concat", "-safe", "1", "-i", listing.name, "-c", "copy", output.name,
+        cwd=directory, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        async with asyncio.timeout(JOIN_SECONDS):
+            _, stderr = await process.communicate()
+    except TimeoutError:
+        raise OverlayError("render_failed", "字效视频拼接超时") from None
+    finally:
+        if process.returncode is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                # 进程可能恰好先退出；仍回收它，不让退出竞态覆盖原始取消或超时。
+                pass
+            await process.wait()
+    if process.returncode != 0 or not output.is_file():
+        raise OverlayError("render_failed", "字效视频拼接失败") from RuntimeError(stderr.decode(errors="replace")[-2000:])
+    return output
+
+
+async def render_overlay(renderer: Renderer, overlay: Overlay, directory: Path, *, chunked: bool | None = None,
+                         chunk_concurrency: int | None = None, frame_concurrency: int | None = None) -> Path:
+    """输出并校验透明视频；可选分块与单 Sprite 共用一次打包、浏览器和无损拼接。"""
+    ranges = overlay_ranges(overlay, renderer.settings, chunked=chunked)
+    ranges = ranges if len(ranges) > 1 else None
+    await run_overlay_worker(renderer, overlay, directory, ranges, chunk_concurrency=chunk_concurrency, frame_concurrency=frame_concurrency)
+    output = await measured(directory, "join", join_chunks(directory, len(ranges))) if ranges else directory / "overlay.webm"
     if not output.is_file() or output.stat().st_size == 0:
         raise OverlayError("render_failed", "渲染器没有产出视频")
-    await probe_overlay(output, overlay)
+    await measured(directory, "probe", probe_overlay(output, overlay))
     return output

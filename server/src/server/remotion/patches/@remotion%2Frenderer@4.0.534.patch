@@ -1,8 +1,8 @@
 diff --git a/dist/esm/index.mjs b/dist/esm/index.mjs
-index b1366ce82995bba6c1f680432563586b2851e49b..db16b83c495729edf2e3fb24721779f8e17e243a 100644
+index 6566e2b90b01860b08ed686f2ac4a405eb5395d2..9685d8b38484d9f10a808577cb83b6005b070c89 100644
 --- a/dist/esm/index.mjs
 +++ b/dist/esm/index.mjs
-@@ -7248,7 +7248,7 @@ var internalOpenBrowser = async ({
+@@ -7317,7 +7317,7 @@ var internalOpenBrowser = async ({
      logLevel,
      indent,
      userDataDir,
@@ -12,7 +12,7 @@ index b1366ce82995bba6c1f680432563586b2851e49b..db16b83c495729edf2e3fb24721779f8
        "about:blank",
        "--allow-pre-commit-input",
 diff --git a/dist/open-browser.js b/dist/open-browser.js
-index f262fed4b590131ccb6a541bf7e86eaba2dfa2c7..12427b5dac20459082180f558639df1912423298 100644
+index a279c06ffb9093da1f47e7e6ee0d9ff0d8d17e8a..250fbb83ac78bda8e08362afb93a542ed961ffb3 100644
 --- a/dist/open-browser.js
 +++ b/dist/open-browser.js
 @@ -101,7 +101,7 @@ const internalOpenBrowser = async ({ browser, browserExecutable, chromiumOptions

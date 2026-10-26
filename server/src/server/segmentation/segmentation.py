@@ -14,9 +14,15 @@ import jieba
 from pydantic import ValidationError
 from openai import APIError, APITimeoutError, OpenAI
 
+from ..log_sanitization import sanitize
 from .settings import ClientSettings, Settings
 
 jieba.setLogLevel(logging.WARNING)
+
+BOUNDARY_MAX_ATTEMPTS = 2
+KEYWORD_MAX_ATTEMPTS = 3
+MODEL_TIMEOUT_SECONDS = 30
+SEGMENTATION_BUDGET_SECONDS = 90
 
 # 对齐忽略常见中英文标点；字幕过滤集合供下游合成使用，切片原文保留标点。
 PUNCTUATION = set("，。！？、；：“”‘’（）《》〈〉【】〔〕…—～·,.．!?;:\"'()<>[]{}~`")
@@ -25,6 +31,8 @@ SUBTITLE_PUNCTUATION = PUNCTUATION - {"？", "?"}
 
 def segmentation_error(exc: Exception) -> tuple[str, int]:
     """日志与 HTTP 共用错误摘要和状态码；模型异常不回显供应商响应或凭据。"""
+    if isinstance(exc, TimeoutError):
+        return "切片处理超时。", 504
     if isinstance(exc, APITimeoutError):
         return "模型请求超时。", 504
     if isinstance(exc, APIError):
@@ -63,15 +71,23 @@ def _settings(config: ClientSettings | None) -> Settings:
     return config
 
 
+def _response_content(response):
+    """兼容端点缺少 choices、message 或 content 时按空回复处理。"""
+    choices = getattr(response, "choices", None)
+    message = getattr(choices[0], "message", None) if choices else None
+    return getattr(message, "content", None)
+
+
 def _json_output(response) -> dict:
     """把模型回复的文字解析成 dict。
 
     回复整段被 ```json … ``` 包住时先去掉包裹。回复为空、不是合法 JSON、或解析出来不是对象
     （例如是数组）时抛 RuntimeError。
     """
-    if not response.choices or not isinstance(response.choices[0].message.content, str):
+    raw = _response_content(response)
+    if not isinstance(raw, str):
         raise RuntimeError("模型返回空内容。")
-    raw = response.choices[0].message.content.strip()
+    raw = raw.strip()
     if raw.startswith("```json") and raw.endswith("```"):
         raw = raw[7:-3].strip()
     try:
@@ -114,16 +130,27 @@ def _check_title_keyword(keyword, title: str, max_length: int | None, field: str
 def segment(payload: dict, *, config: ClientSettings | None = None, diagnostics: dict | None = None) -> dict:
     """HTTP 与合成任务共用入口：记录阶段诊断，保留返回值和原异常，不记录凭据。"""
     diagnostics = {} if diagnostics is None else diagnostics
-    diagnostics.update(stage="input", trace={})
+    diagnostics.update(stage="input", trace={}, keyword_response=None, model_response=None)
     logger = logging.getLogger("uvicorn.error")
+    started = perf_counter()
     try:
         result = _segment(payload, config=config, diagnostics=diagnostics)
     except Exception as exc:
+        # 仅失败时记录原始提词正文，并交给合成任务的既有错误日志持久化；不进入接口响应。
+        if diagnostics["stage"] == "keywords" and (keyword_response := diagnostics.get("keyword_response")):
+            diagnostics["trace"]["keyword_response"] = keyword_response
+            exc.keyword_response = keyword_response
+        elif diagnostics["model_response"] is not None:
+            diagnostics["trace"]["model_response"] = diagnostics["model_response"]
         message, status = segmentation_error(exc)
         logger.warning("切片失败 stage=%s status=%s error=%s trace=%s",
-                       diagnostics["stage"], status, message, diagnostics["trace"])
+                       diagnostics["stage"], status, sanitize(message), sanitize(diagnostics["trace"]))
         raise
-    logger.info("切片成功 trace=%s", diagnostics["trace"])
+    logger.info("切片成功 elapsed_ms=%.1f segment_count=%s model_elapsed_ms=%s",
+                (perf_counter() - started) * 1000, len(result.get("segments", [])),
+                diagnostics["trace"].get("model_elapsed_ms", {}))
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("切片详情 trace=%s", sanitize(diagnostics["trace"]))
     return result
 
 
@@ -141,7 +168,9 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     RuntimeError，内部约束错误抛 AssertionError；ASR 嵌套读取和 SDK 异常原样传播。
     diagnostics 供共用入口记录已完成阶段的详细 trace；返回值只保留原有统计字段。
     """
+    deadline = perf_counter() + SEGMENTATION_BUDGET_SECONDS
     trace = diagnostics["trace"]
+    logger = logging.getLogger("uvicorn.error")
     title = payload.get("title")
     title_only = payload.get("asr_result") is None and title is not None
     if not title_only:
@@ -160,18 +189,34 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     diagnostics["stage"] = "config"
     config = _settings(config)
     base_url, key, model = config.llm_base_url, config.llm_api_key, config.llm_model
+
+    def request_timeout() -> float:
+        """所有切片模型请求共用剩余预算，并保留客户端更短的超时。"""
+        # shortcut: 同步 HTTP 只在调用前后检查预算，需严格截止时改用可取消的异步请求。
+        remaining = deadline - perf_counter()
+        if remaining <= 0:
+            raise TimeoutError("切片处理超时。")
+        return min(config.llm_timeout_seconds, MODEL_TIMEOUT_SECONDS, remaining)
+
     if title_only:
         diagnostics["stage"] = "keywords"
-        with OpenAI(base_url=base_url, api_key=key, timeout=config.llm_timeout_seconds, max_retries=config.llm_max_retries) as client:
+        with OpenAI(base_url=base_url, api_key=key, timeout=request_timeout(), max_retries=0) as client:
             response = client.chat.completions.create(
                 model=model, temperature=0.2, response_format={"type": "json_object"},
+                timeout=request_timeout(),
                 messages=[{"role": "system", "content": '从标题中提取一个关键词，只返回 JSON：{"title_keyword":"关键词"}，无合适词时返回空字符串。'},
                           {"role": "user", "content": title}],
             )
+        raw = _response_content(response)
+        diagnostics["model_response"] = raw
+        logger.info("切片模型调用 stage=title_keywords attempt=1")
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("切片模型输出 stage=title_keywords attempt=1 content=%r", sanitize(raw))
+        request_timeout()
         try:
-            keyword = json.loads(response.choices[0].message.content).get("title_keyword", "")
+            keyword = json.loads(raw).get("title_keyword", "")
             return {"title_keyword": keyword if isinstance(keyword, str) else ""}
-        except (AttributeError, IndexError, TypeError, ValueError):
+        except (AttributeError, TypeError, ValueError):
             raise RuntimeError("模型标题提词响应格式无效。") from None
     diagnostics["stage"] = "input"
     # ponytail: MVP 信任上游 Fun-ASR 结构与词时间，只取第一音轨；接入其他来源时再扩展校验。
@@ -355,12 +400,13 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
         for i, (a, b) in enumerate(zip(text_edges, text_edges[1:]), 1)
     ]
     trace.update(candidate_clauses=listing, filtered_boundaries=filtered_boundaries,
-                 selected_boundaries_after=[], keyword_candidates=[], model_elapsed_ms={})
+                 selected_boundaries_after=[], keyword_candidates={}, model_elapsed_ms={})
     segments, rejected = [], 0
     # 模型依次选切点、提关键词；超长片段随后由代码按安全边界切分。
-    with OpenAI(base_url=base_url, api_key=key, timeout=config.llm_timeout_seconds, max_retries=config.llm_max_retries) as client:
+    with OpenAI(base_url=base_url, api_key=key, timeout=request_timeout(), max_retries=0) as client:
         for stage in ("boundaries", "keywords"):
             diagnostics["stage"] = stage
+            diagnostics["model_response"] = None
             if stage == "boundaries":
                 prompt = (
                     '将口播文案切成短句画面，只返回 JSON：{"boundaries_after":[1,3]}。'
@@ -376,45 +422,89 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                 content = listing
             elif stage == "keywords":
                 prompt = (
-                    '为短视频素材召回提取关键词，只返回 JSON：{"keywords":[[],["词"],[]]}。'
-                    "全篇关键词总数不限，逐段判断是否有值得检索画面的具体对象，无合适对象时留空，不凑词。"
+                    '为短视频素材召回提取关键词，只返回 JSON 对象。'
+                    "全篇关键词总数不限，逐段判断是否有值得检索画面的具体对象，无合适对象时省略该编号，不凑词。"
                     f"每段最多1个词，每词最多{keyword_max_length}字；"
                     "优先选择本段核心的具体名词或名词短语，如产品、动物、人物、食材、部位、工具、场景。"
                     "保留有助于区分画面的必要修饰语，例如原文连续出现的‘散养的土鸡’；‘蛋清’‘蛋黄’也适合召回。"
                     "不要只提取‘散养’‘新鲜’‘饱满’等动作或属性，也不要选‘囤一点’等营销引导。"
                     "同一对象在不同片段中可重复选择，不为全篇去重而遗漏该段核心对象。"
-                    "输出数组长度必须等于输入片段数，第i项只对应第i段，空数组不能省略。"
+                    "keywords 为片段编号到关键词的对象，键必须是输入 segment_id 的十进制字符串，值为单个关键词字符串。"
+                    "只返回有关键词的编号，无关键词的片段可省略；不能改编号或把其他片段的词填到该编号。"
                     "逐项确认词在该段内连续出现，保留大小写和全半角，不改写、跨标点拼接或借用其他段的词。"
-                    "自检段数、每段词数、词长和原文匹配。只输出纯JSON，无Markdown或解释。"
+                    "自检编号、词长和原文匹配。只输出纯JSON，无Markdown或解释。"
                 )
-                content = [s["text"] for s in segments]
+                content = [{"segment_id": s["segment_id"], "text": s["text"]} for s in segments]
+                keyword_ids = {str(s["segment_id"]) for s in segments}
+                example = {"keywords": {"1": "原文关键词"}}
                 if title is not None:
                     content = {"title": title, "segments": content}
+                    example["title_keyword"] = "标题关键词"
                     prompt += (
                         '本次输入为含 title 和 segments 的对象，keywords 只对应 segments。'
                         '另从 title 按上述提词规则选一个关键词，返回同级 title_keyword 字符串，'
                         '必须在标题中连续出现；标题为空或无合适关键词时返回空字符串。'
-                        '完整输出为 {"keywords":[[],["词"],[]],"title_keyword":"标题关键词"}。'
                     )
+                prompt += 'JSON 格式示例（全部无关键词时 keywords 返回空对象）：' + json.dumps(example, ensure_ascii=False)
             messages = [
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": json.dumps(content, ensure_ascii=False)},
             ]
             started = perf_counter()
+            max_attempts = BOUNDARY_MAX_ATTEMPTS if stage == "boundaries" else KEYWORD_MAX_ATTEMPTS
             try:
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    temperature=0.2,
-                    response_format={"type": "json_object"},
-                )
+                for attempt in range(max_attempts):
+                    response = client.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        temperature=0.2,
+                        response_format={"type": "json_object"},
+                        timeout=request_timeout(),
+                    )
+                    raw = _response_content(response)
+                    diagnostics["model_response"] = raw
+                    logger.info("切片模型调用 stage=%s attempt=%s", stage, attempt + 1)
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug("切片模型输出 stage=%s attempt=%s content=%r", stage, attempt + 1, sanitize(raw))
+                    if stage == "keywords":
+                        diagnostics["keyword_response"] = {
+                            "expected_segment_count": len(segments), "response": raw,
+                        }
+                    request_timeout()
+                    try:
+                        output = _json_output(response)
+                        if stage == "boundaries":
+                            ids = output.get("boundaries_after")
+                            if not isinstance(ids, list) or any(type(n) is not int or not 1 <= n < len(listing) for n in ids):
+                                raise RuntimeError("模型 boundaries_after 必须为有效分句编号数组，不含最后一句。")
+                        else:
+                            if title is not None:
+                                title_keyword = _check_title_keyword(
+                                    output.get("title_keyword"), title, keyword_max_length, "title_keyword")
+                            keywords = output.get("keywords")
+                            diagnostics["keyword_response"].update(
+                                keywords_type=type(keywords).__name__,
+                                keyword_group_count=len(keywords) if isinstance(keywords, (dict, list)) else None,
+                            )
+                            if (
+                                not isinstance(keywords, dict)
+                                or any(key not in keyword_ids or not isinstance(word, str) for key, word in keywords.items())
+                            ):
+                                raise RuntimeError(
+                                    f"模型 keywords 必须为片段编号到字符串的对象，编号须为 1～{len(segments)} 的十进制字符串，"
+                                    "不能带前导零；无关键词可省略该编号。")
+                        break
+                    except RuntimeError as exc:
+                        if attempt == max_attempts - 1:
+                            raise
+                        # 部分兼容端点拒绝空 assistant 内容，空回复只追加纠错说明。
+                        previous = [{"role": "assistant", "content": raw}] if isinstance(raw, str) and raw.strip() else []
+                        messages = [*messages, *previous,
+                                    {"role": "user", "content": f"上次结果校验失败：{exc} 请修正并重新返回完整 JSON 对象。"}]
+                        logger.warning("切片结果纠错 stage=%s retry=%s error=%s", stage, attempt + 1, sanitize(str(exc)))
             finally:
                 trace["model_elapsed_ms"][stage] = round((perf_counter() - started) * 1000, 1)
-            output = _json_output(response)
             if stage == "boundaries":
-                ids = output.get("boundaries_after")
-                if not isinstance(ids, list) or any(type(n) is not int or not 1 <= n < len(listing) for n in ids):
-                    raise RuntimeError("模型 boundaries_after 必须为有效分句编号数组，不含最后一句。")
                 trace["selected_boundaries_after"] = sorted(set(ids))
                 edges = [0, *[candidate_edges[n] for n in trace["selected_boundaries_after"]], len(chars)]
                 spans = list(zip(edges, edges[1:]))
@@ -444,19 +534,10 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
                         }
                     )
             elif stage == "keywords":
-                if title is not None:
-                    title_keyword = _check_title_keyword(
-                        output.get("title_keyword"), title, keyword_max_length, "title_keyword")
-                groups = output.get("keywords")
-                if (
-                    not isinstance(groups, list)
-                    or len(groups) != len(segments)
-                    or any(not isinstance(g, list) or any(not isinstance(w, str) for w in g) for g in groups)
-                ):
-                    raise RuntimeError("模型关键词数组必须与片段一一对应且元素为字符串。")
-                trace["keyword_candidates"] = groups
-                # 单次扫描选最靠前的有效词；同位置保留首个候选，其余候选均计为拒绝。
-                for item, candidates in zip(segments, groups):
+                trace["keyword_candidates"] = keywords
+                for item in segments:
+                    key = str(item["segment_id"])
+                    candidates = [keywords[key]] if key in keywords else []
                     item["keyword"] = _pick_keyword(item["text"], candidates, keyword_max_length)
                     rejected += len(candidates) - bool(item["keyword"])
                     # 有关键词即重点句 2，否则为普通句 1；CTA 需语义判断，不标注。
@@ -516,6 +597,7 @@ def _segment(payload: dict, *, config: ClientSettings | None, diagnostics: dict)
     for item in segments:
         item["start_time"] = item.pop("start_time_ms") / 1000
         item["end_time"] = item.pop("end_time_ms") / 1000
+    request_timeout()
     return {
         **({"title_keyword": title_keyword} if title is not None else {}),
         "segments": segments,

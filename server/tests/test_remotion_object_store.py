@@ -26,6 +26,7 @@ from server.remotion_templates.runtime import Runtime
 from server.remotion_templates.settings import Settings
 from server.remotion_templates.store import Store
 from server.video_composition import zos
+from server.video_composition.settings import ZosSettings
 
 from .conftest import DEVICE, DEVICE_HEADERS, S3Stub
 
@@ -35,6 +36,8 @@ ZOS_ENV = {
     "ZOS_ACCESS_KEY_ID": "test-zos-id",
     "ZOS_SECRET_ACCESS_KEY": "test-zos-secret",
     "ZOS_WEB_URL": "https://archives.hangzhou7.zos.ctyun.cn",
+    # 删除默认不发往 ZOS；这里的删除用例检查的是开启后的批量删除。
+    "ZOS_DELETE_OBJECTS": "true",
 }
 
 
@@ -261,6 +264,18 @@ def test_zos_put_uploads_public_and_delete_prefix_removes_every_page(tmp_path: P
 
 
 
+# 场景（回归）：阿里云 OSS 上传免费、删除按请求收费，部署方不给删除权限；删除资产与会话时删 OSS 文件被拒，记录也删不掉。
+def test_zos_keeps_its_objects_unless_deletion_is_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """未开启 ZOS_DELETE_OBJECTS 时按前缀删除不创建客户端、不发任何请求，直接返回，调用方照常删除记录与本地缓存。"""
+    for key, value in ZOS_ENV.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.delenv("ZOS_DELETE_OBJECTS")
+    clients = []
+    monkeypatch.setattr(zos.boto3, "client", lambda *args, **kwargs: clients.append(args))
+    ZosObjects(ZosSettings(_env_file=None)).delete_prefix("imv/remotion/sprites/s/")
+    assert clients == []
+
+
 # 场景：安静模式的批量删除对个别键失败（如无删除权限）仍回答 200，只在 Errors 里列出；不能当作删除成功。
 def test_zos_delete_prefix_fails_when_some_keys_were_not_deleted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """结果带 Errors 时抛 ObjectStoreError 并说明错误码，调用方据此保留记录、返回可重试的 503。"""
@@ -295,9 +310,9 @@ def test_zos_delete_prefix_fails_when_some_keys_were_not_deleted(tmp_path: Path,
 class StoredResponse(AWSResponse):
     """不经网络的 S3 响应：正文直接给定，供 botocore 照常解析。"""
 
-    def __init__(self, url: str, body: bytes) -> None:
-        """以 200 状态和给定 XML 正文构造。"""
-        super().__init__(url, 200, {}, None)
+    def __init__(self, url: str, body: bytes, status: int = 200, headers: dict[str, str] | None = None) -> None:
+        """以给定状态（默认 200）、响应头和 XML 正文构造。"""
+        super().__init__(url, status, headers or {}, None)
         self._content = body
 
 
@@ -336,3 +351,46 @@ def test_zos_batch_delete_sends_signed_content_md5(tmp_path: Path, monkeypatch: 
     assert headers["content-md5"] == base64.b64encode(hashlib.md5(body).digest()).decode()
     assert not [name for name in headers if name.startswith(("x-amz-checksum-", "x-amz-sdk-checksum"))]
     assert "content-md5" in headers["authorization"].split("SignedHeaders=")[1].split(",")[0].split(";")
+
+
+# OSS 的拒绝应答：403 与 S3 同样的 Error 正文，请求 ID 在 x-oss-request-id 头里（不发 x-amz-request-id）。
+OSS_DENIED = (b"<Error><Code>AccessDenied</Code><Message>You have no right to access this object.</Message>"
+              b"<RequestId>65F0A1B2C3D4E5F6A7B8C9D0</RequestId><HostId>archives.oss-cn-hangzhou.aliyuncs.com</HostId></Error>")
+
+
+# 场景：阿里云 OSS 上删不掉资产时，日志只有错误码，没有向阿里云追查所需的请求 ID。
+@pytest.mark.parametrize("refused", ["list", "batch", "keys"])
+def test_zos_delete_failures_name_the_oss_request(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, refused: str) -> None:
+    """真实 botocore 解析 OSS 的拒绝：列举整单 403、批量删除整单 403、批量删除 200 但逐个键被拒，ObjectStoreError 都带请求 ID。"""
+    for key, value in ZOS_ENV.items():
+        monkeypatch.setenv(key, value)
+    real_client = zos.storage_client
+    oss = {"x-oss-request-id": "65F0A1B2C3D4E5F6A7B8C9D0"}
+
+    def respond(request: AWSPreparedRequest, **kwargs) -> AWSResponse:
+        """按场景拒绝列举或批量删除；列举成功时给出一个对象。"""
+        if "delete" not in request.url:
+            if refused == "list":
+                return StoredResponse(request.url, OSS_DENIED, 403, oss)
+            return StoredResponse(request.url, b"<ListBucketResult><IsTruncated>false</IsTruncated>"
+                                               b"<Contents><Key>imv/remotion/sprites/s/a</Key></Contents></ListBucketResult>")
+        if refused == "batch":
+            return StoredResponse(request.url, OSS_DENIED, 403, oss)
+        return StoredResponse(request.url, b"<DeleteResult><Error><Key>imv/remotion/sprites/s/a</Key><Code>AccessDenied</Code>"
+                                           b"<Message>denied</Message></Error></DeleteResult>", 200, oss)
+
+    def intercepted(settings, timeout):
+        """使用服务端配置的真实客户端，只拦截发送。"""
+        client = real_client(settings, timeout)
+        client.meta.events.register("before-send.s3", respond)
+        return client
+
+    monkeypatch.setattr(object_store, "storage_client", intercepted)
+    with pytest.raises(ObjectStoreError) as failed:
+        load_objects(tmp_path).delete_prefix("imv/remotion/sprites/s/")
+    assert "request 65F0A1B2C3D4E5F6A7B8C9D0" in str(failed.value)
+    if refused == "keys":
+        assert "(1 keys, AccessDenied, request" in str(failed.value)
+    else:
+        operation = "ListObjectsV2" if refused == "list" else "DeleteObjects"
+        assert isinstance(failed.value.__cause__, ClientError) and failed.value.__cause__.operation_name == operation
