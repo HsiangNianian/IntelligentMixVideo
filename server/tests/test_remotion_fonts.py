@@ -33,7 +33,7 @@ from server.remotion_templates import fonts as fonts_module
 from server.remotion_templates import routes
 from server.remotion_templates.api import app as remotion_templates_app
 from server.remotion_templates.categories import REQUIRED, category_problems
-from server.remotion_templates.fonts import CONFIG_NAME, Font, FontExists, FontNames, FontRejected, FontSpec, FontStore, load_catalog, cards, is_font_parameter, open_font_schema, read_names, require_family
+from server.remotion_templates.fonts import CONFIG_NAME, Font, FontExists, FontNames, FontRejected, FontSpec, FontStore, load_catalog, cards, open_font_schema, read_names, require_family
 from server.remotion_templates.object_store import LocalObjects, ObjectStoreError
 from server.remotion_templates.overlay_render import Overlay, OverlayError, require_fonts
 from server.remotion_templates.placement import resolve
@@ -42,6 +42,7 @@ from server.remotion_templates.settings import Settings
 from server.remotion_templates.sprites import operator_parameters
 
 from server.template.schema import RemotionTrackEditor
+from server.video_composition.remotion_content import resolve_config
 
 from .conftest import DEVICE_HEADERS, published_sprite
 
@@ -618,12 +619,14 @@ def font_editor(family: str, name: str = "fontFamily") -> RemotionTrackEditor:
 
 @pytest.mark.parametrize("name", ["fontFamily", "line2FontFamily"])
 def test_a_font_added_after_publication_can_be_chosen_for_an_older_sprite(store, name) -> None:
-    """旧发布仍带冻结字体枚举，但字体库在发布后增长：摆放覆盖按实时字体库校验，新字体可保存，伪造字体仍被拒绝。"""
+    """旧发布仍带冻结字体枚举，但字体库在发布后增长：摆放覆盖按实时字体库校验，新字体可保存，视频合成注入文字后
+    再按发布契约校验时也接受它；伪造字体仍被拒绝。"""
     store.upload(minimal_font("Zed Display"), None, "", "device-1")
     sprite = font_sprite(name)
     assert json.loads(sprite.config_schema_json)["properties"][name]["enum"] == ["Noto Sans CJK SC"]
     config, _ = resolve(sprite, font_editor("Zed Display", name))
     assert config[name] == "Zed Display"
+    assert resolve_config(sprite, "新标题", "", 90, "text", config=config)[name] == "Zed Display"
     with pytest.raises(ValueError, match=f"参数 {name} 不是字体库里的字体"):
         resolve(sprite, font_editor("Ghost Font", name))
 
@@ -631,14 +634,12 @@ def test_a_font_added_after_publication_can_be_chosen_for_an_older_sprite(store,
 def test_an_unsampled_publication_still_lets_templates_change_its_font(store) -> None:
     """没有渲染过参数边界样本的旧字效只读，但字体来自实时字体库、保存摆放时另行校验，所以在模板里仍可换字体；
     其他参数保持只读，不能借字体例外修改字号；冻结枚举也不能阻止发布后新增的字体。"""
-    from generated.imv.sprite.v1 import sprite_pb2 as sprite_pb
-
     store.upload(minimal_font("Zed Display"), None, "", "device-1")
     sprite = font_sprite()
     sprite.ClearField("content_box")
     access = {item.key: item.access for item in operator_parameters(sprite)}
-    assert access["fontFamily"] == sprite_pb.OPERATOR_ACCESS_VISIBLE_EDITABLE
-    assert access["fontSize"] == sprite_pb.OPERATOR_ACCESS_VISIBLE_READ_ONLY
+    assert access["fontFamily"] == pb.OPERATOR_ACCESS_VISIBLE_EDITABLE
+    assert access["fontSize"] == pb.OPERATOR_ACCESS_VISIBLE_READ_ONLY
     config, _ = resolve(sprite, font_editor("Zed Display"))
     assert config["fontFamily"] == "Zed Display"
     with pytest.raises(ValueError, match="参数 fontSize 不可修改"):
@@ -647,19 +648,19 @@ def test_an_unsampled_publication_still_lets_templates_change_its_font(store) ->
         resolve(sprite, font_editor("Ghost Font"))
 
 
-def test_a_font_named_parameter_on_a_non_text_sprite_is_not_a_font(store) -> None:
-    """只有文字 Sprite 的 fontFamily 有字体语义；其他分类的同名参数保持原枚举和原可写规则。"""
-    from generated.imv.sprite.v1 import sprite_pb2 as sprite_pb
-
+def test_only_text_effects_keep_their_font_editable_without_samples(store) -> None:
+    """未采样旧发布的字体例外只给字效：其他分类的同名参数仍只读；已采样的其他分类照旧按实时字体库校验字体。"""
     store.upload(minimal_font("Zed Display"), None, "", "device-1")
-    sprite = font_sprite(kind=pb.SPRITE_KIND_VIDEO_OVERLAY)
-    sprite.ClearField("content_box")
-    access = {item.key: item.access for item in operator_parameters(sprite)}
-    assert access["fontFamily"] == sprite_pb.OPERATOR_ACCESS_VISIBLE_READ_ONLY
-    assert not is_font_parameter(sprite.kind, "fontFamily")
+    unsampled = font_sprite(kind=pb.SPRITE_KIND_VIDEO_OVERLAY)
+    unsampled.ClearField("content_box")
+    access = {item.key: item.access for item in operator_parameters(unsampled)}
+    assert access["fontFamily"] == pb.OPERATOR_ACCESS_VISIBLE_READ_ONLY
     with pytest.raises(ValueError, match="参数 fontFamily 不可修改"):
-        resolve(sprite, font_editor("Zed Display"))
-    assert is_font_parameter(pb.SPRITE_KIND_TEXT, "fontFamily")
+        resolve(unsampled, font_editor("Zed Display"))
+    sampled = font_sprite(frozen=False, kind=pb.SPRITE_KIND_VIDEO_OVERLAY)
+    assert resolve(sampled, font_editor("Zed Display"))[0]["fontFamily"] == "Zed Display"
+    with pytest.raises(ValueError, match="参数 fontFamily 不是字体库里的字体"):
+        resolve(sampled, font_editor("Ghost Font"))
 
 
 def sandbox_arguments(settings: Settings, tmp_path: Path) -> list[str]:

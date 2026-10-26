@@ -6,6 +6,7 @@
 from copy import deepcopy
 import json
 from ..remotion_templates.categories import LINE_STARTS_PROP, line_count
+from ..remotion_templates.fonts import open_font_schema
 from ..remotion_templates.tools.schema import validate_parameters
 
 
@@ -108,7 +109,8 @@ def resolve_config(sprite, text: str, keyword: str | list[str], frames: int,
     for path in mapping["duration"]:
         set_path(config, path, frames)
     try:
-        validate_parameters(schema, config)
+        # 摆放的字体已按实时字体库校验（`placement.resolve`），较早发布里冻结的字体枚举不再限制它。
+        validate_parameters(open_font_schema(schema), config)
     except Exception as exc:
         raise ContentError("业务文字或时间不符合资产参数契约") from exc
     return config

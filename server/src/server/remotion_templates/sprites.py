@@ -29,7 +29,7 @@ from starlette.concurrency import run_in_threadpool
 
 from . import boundary, sprite_store
 from .categories import FONT_PARAMETERS, HEX_COLOR, LINE_STARTS_PROP, category_problems, line_count, operator_message
-from .fonts import is_font_parameter, open_font_schema
+from .fonts import open_font_schema
 from .publication import current_bundle
 from .models import TemplateVersion
 from .object_store import PREFIX, ObjectStoreError
@@ -238,7 +238,8 @@ def operator_parameters(sprite: pb.PublishedSprite) -> list[pb.SpriteParameter]:
     for parameter in sprite.parameters:
         copy = pb.SpriteParameter()
         copy.CopyFrom(parameter)
-        if copy.access == pb.OPERATOR_ACCESS_VISIBLE_EDITABLE and not is_font_parameter(sprite.kind, copy.key):
+        font = sprite.kind == pb.SPRITE_KIND_TEXT and copy.key in FONT_PARAMETERS
+        if copy.access == pb.OPERATOR_ACCESS_VISIBLE_EDITABLE and not font:
             copy.access = pb.OPERATOR_ACCESS_VISIBLE_READ_ONLY
         result.append(copy)
     return result

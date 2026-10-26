@@ -3,7 +3,8 @@
 覆盖值保存在模板 remotion 轨道的 `editor.remotion`（`imv.template.v1.RemotionTrackEditor`）。这里只按发布记录里的
 参数契约检查它们：参数存在且可编辑、类型与默认值相同、在声明的范围内，合并后的整份配置仍满足发布时的
 JSON Schema；宿主变换只能设置该分类允许的字段且不能超出范围。发布时已经渲染过各参数与宿主变换的边界样本，
-所以这里不再启动沙箱；没有渲染过样本的早期发布只接受宿主变换（它在代码之外），参数只读。
+所以这里不再启动沙箱；没有渲染过样本的早期发布只接受宿主变换（它在代码之外），参数只读，只有字效的字体参数例外。
+字体参数的取值按实时字体库校验，不按发布时冻结的枚举。
 """
 
 from __future__ import annotations
@@ -14,8 +15,8 @@ from copy import deepcopy
 from generated.imv.sprite.v1 import sprite_pb2 as pb
 
 from ..template.schema import RemotionTrackEditor, RemotionTransform
-from .categories import KEYWORD_SIZE_MIN, transform_fields, transform_ranges
-from .fonts import is_font_parameter, open_font_schema, require_family
+from .categories import FONT_PARAMETERS, KEYWORD_SIZE_MIN, transform_fields, transform_ranges
+from .fonts import open_font_schema, require_family
 from .sprites import KIND_NAMES, box_json, operator_parameters, sampled
 from .tools.schema import validate_parameters
 
@@ -65,15 +66,14 @@ def resolve(sprite: pb.PublishedSprite, editor: RemotionTrackEditor | None) -> t
                 if not sampled(sprite):
                     raise ValueError(f"参数 {override.key} 不可修改：该资产发布于参数边界检查之前，请在字效工作区改出新版本后保存为新资产")
                 raise ValueError(f"参数 {override.key} 不可修改")
-            font = is_font_parameter(sprite.kind, override.key)
+            font = override.key in FONT_PARAMETERS
+            # A font's published enum only names the families known then: check its type and length here and the
+            # value against the growing live library instead.
+            value = _checked(parameter, override.value(), allowed=not font)
             if font:
-                # A font's published enum only contains families known then; validate its type and length here,
-                # then check the value against the growing live library instead of the frozen enum.
-                value = _checked(parameter, override.value(), allowed=False)
                 require_family(value, override.key)
-            else:
-                value = _checked(parameter, override.value())
-            # Overridable parameters are top-level (only sampled publications take overrides, and they bind top-level).
+            # Overridable parameters are top-level (sampled publications bind them top-level; an unsampled one only
+            # takes its top-level text fonts).
             definition = schema.get("properties", {}).get(override.key, {})
             if isinstance(value, float) and value.is_integer() and isinstance(definition, dict) and definition.get("type") == "integer":
                 value = int(value)

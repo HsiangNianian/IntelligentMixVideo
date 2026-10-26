@@ -545,9 +545,10 @@ transform), saved with the template in one request; the save resolves every plac
 and the merged configuration must still satisfy the published schema; filters and transitions only take opacity;
 a publication made before boundary samples, recognisable by its missing `content_box`, lists its parameters as
 read-only and only takes the host transform, because its values were never rendered away from the defaults;
-the font parameters (`fontFamily` and a two-tier text's `line1FontFamily`/`line2FontFamily`) are the exception,
-since a placement's font is checked against the live font library when it is saved, so a template can still
-replace the font of such an older text effect), so deleting a
+a text effect's font parameters (`fontFamily` and a two-tier text's `line1FontFamily`/`line2FontFamily`) are the
+exception, since a placement's font is checked against the live font library when it is saved, not against an enum
+frozen at publication (the video composition validates the merged configuration the same way), so a template can
+still replace the font of such an older text effect), so deleting a
 template removes its placements with it and the composition bus finds them with its single template lookup.
 There is no separate route for placements; the template save checks that every `sprite_id` is published. The
 SQLite `style_sprite_bindings` table and the `GET/POST /api/sprites/styles/{style_id}` routes of earlier versions
