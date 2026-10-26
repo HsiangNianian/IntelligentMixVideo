@@ -24,7 +24,7 @@ PositiveSeconds = Annotated[float, Field(gt=0, allow_inf_nan=False)]
 Status = Literal["queued", "processing", "succeeded", "failed"]
 Stage = Literal[
     "queued", "template", "asr", "segmentation", "translation", "matching", "assembling", "submitting",
-    "rendering", "completed", "failed",
+    "rendering", "uploading", "completed", "failed",
 ]
 
 
@@ -134,6 +134,14 @@ class AcceptedResponse(APIModel):
     code: Literal[200] = 200
     message: Literal["操作成功"] = "操作成功"
     data: UUID
+
+
+class PlaygroundRequest(APIModel):
+    """操练场只选择固定样本与模板，正文和媒体不能在此覆盖。"""
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
+    mode: Literal["standard", "materials_voice", "materials_silent"]
+    style_id: UUID
 
 
 class Result(APIModel):

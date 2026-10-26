@@ -15,12 +15,13 @@ from .conftest import S3Stub
 
 
 @pytest.mark.parametrize("denied_suffix", [None, ".mp4", ".png"])
-def test_copy_video_publishes_video_and_frame(composition_settings, monkeypatch, denied_suffix):
+@pytest.mark.parametrize("prefix", ["imv/video_composition", "imv/playground"])
+def test_copy_video_publishes_video_and_frame(composition_settings, monkeypatch, denied_suffix, prefix):
     """视频与 PNG 使用同一任务前缀；任一对象不可公开读取都不能返回成功。"""
     task_id = "11111111-1111-4111-8111-111111111111"
     source = "https://ims.example.test/output.mp4?Signature=source"
-    key = f"imv/video_composition/{task_id}.mp4"
-    image_key = f"imv/video_composition/{task_id}.png"
+    key = f"{prefix}/{task_id}.mp4"
+    image_key = f"{prefix}/{task_id}.png"
     monkeypatch.setenv("ZOS_WEB_URL", "https://oss.joyfile.net")
     public = f"https://oss.joyfile.net/{key}"
     image_public = f"https://oss.joyfile.net/{image_key}"
@@ -76,9 +77,9 @@ def test_copy_video_publishes_video_and_frame(composition_settings, monkeypatch,
 
     if denied_suffix:
         with pytest.raises(httpx.HTTPStatusError):
-            zos.copy_video(source, task_id, ZosSettings(), 10)
+            zos.copy_video(source, task_id, ZosSettings(), 10, prefix=prefix)
     else:
-        assert zos.copy_video(source, task_id, ZosSettings(), 10) == (key, public)
+        assert zos.copy_video(source, task_id, ZosSettings(), 10, prefix=prefix) == (key, public)
     expected = [{"data": b"video", "bucket": "archives", "key": key,
                  "extra": {"ACL": "public-read", "ContentType": "video/mp4"}}]
     if denied_suffix != ".mp4":

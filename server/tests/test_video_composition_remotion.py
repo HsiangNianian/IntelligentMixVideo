@@ -377,7 +377,8 @@ def test_unclassified_or_text_decoration_refused(composition_case):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("duration, frames, cpus, pages", [(8, 240, 1, 1), (121, 3630, 3, 3), (300, 9000, 8, 4)])
-async def test_render_uses_shared_slot_and_persists_public_video(composition_case, monkeypatch, tmp_path, caplog, duration, frames, cpus, pages):
+@pytest.mark.parametrize("playground", [False, True])
+async def test_render_uses_shared_slot_and_persists_public_video(composition_case, monkeypatch, tmp_path, caplog, duration, frames, cpus, pages, playground):
     """默认支持短片、超过旧 120 秒限制及恰好 5 分钟的成片；完整渲染上传后返回并清理。"""
     settings = Settings(_env_file=None)
     monkeypatch.setattr(render_resources, "renderer_cpus", lambda reserve: list(range(cpus)))
@@ -411,7 +412,8 @@ async def test_render_uses_shared_slot_and_persists_public_video(composition_cas
     def upload(files, config, timeout):
         """只有实际输出文件进入公共存储，并使用任务固定对象 key。"""
         path, key, mime = files[0]
-        assert path.read_bytes() == b"video" and key == "imv/video_composition/task/overlay.webm" and mime == "video/webm"
+        prefix = "imv/playground" if playground else "imv/video_composition"
+        assert path.read_bytes() == b"video" and key == f"{prefix}/task/overlay.webm" and mime == "video/webm"
         return ["https://zos.test/overlay.webm"]
     monkeypatch.setattr(remotion, "sprite_runtime", get_runtime)
     monkeypatch.setattr(remotion, "environment_problem", lambda settings, *args, **kwargs: None)
@@ -419,6 +421,8 @@ async def test_render_uses_shared_slot_and_persists_public_video(composition_cas
     monkeypatch.setattr(remotion, "upload_public", upload)
     monkeypatch.setattr(remotion, "ZosSettings", lambda: object())
     data = case(composition_case)
+    if playground:
+        data["playground"] = {"mode": "standard", "source_task_id": "sample"}
     data["duration_ms"] = duration * 1000
     with caplog.at_level("INFO", logger=remotion.logger.name):
         result = await remotion.render("task", data, 10)
