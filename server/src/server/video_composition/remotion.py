@@ -27,6 +27,7 @@ from .remotion_content import ContentError, dynamic_duration, resolve_config, ro
 from .remotion_timing import retime_source
 from ..remotion_templates.overlay_render import Overlay, OverlayError, environment_problem, fit_texts, measured, overlay_ranges, record_performance, render_overlay, to_frames
 from ..remotion_templates.sprite_router import sprite_runtime
+from ..remotion_templates.render_resources import RenderCapacityTimeout
 from . import execution_log
 from .errors import CompositionError
 from .schema import CompositionRequest, Segment
@@ -296,7 +297,7 @@ async def render(task_id: str, data: dict, timeout: float, *, timeline: dict | N
             waiting = perf_counter()
             requested = len(overlay_ranges(overlay, service.settings))
             async with service.overlays.slot, service.overlays.capacity.claim(requested, service.settings.overlay_frame_concurrency) as grant:
-                await asyncio.to_thread(record_performance, work, queue_wait_ms=(perf_counter() - waiting) * 1000,
+                await asyncio.to_thread(record_performance, work, slot_wait_ms=max(0, (perf_counter() - waiting) * 1000 - grant.wait_ms),
                                         resource_wait_ms=grant.wait_ms, granted_chunks=grant.chunks, reserved_memory_mb=grant.reserved_memory_mb)
                 # 与叠加渲染相同：放不下的标题、字幕缩小字号，缩到最小仍放不下以 remotion_text_too_long 失败。
                 await measured(work, "text_fit", fit_texts(service.harness.renderer, overlay, publications, work / "fit"))
@@ -324,6 +325,8 @@ async def render(task_id: str, data: dict, timeout: float, *, timeline: dict | N
             await asyncio.to_thread(shutil.rmtree, work, True)
     except ContentError as exc:
         raise CompositionError("remotion_asset_not_adapted", str(exc), "assembling") from exc
+    except RenderCapacityTimeout as exc:
+        raise CompositionError("remotion_resource_unavailable", str(exc), "assembling") from exc
     except OverlayError as exc:
         raise CompositionError("remotion_" + exc.code, exc.message, "assembling") from exc
     except Exception as exc:

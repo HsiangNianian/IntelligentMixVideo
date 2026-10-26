@@ -150,10 +150,10 @@ async def test_low_memory_waits_then_recovers_and_waiter_cancel_does_not_reserve
 
 @pytest.mark.anyio
 async def test_resource_wait_is_bounded(capacity, monkeypatch):
-    """持续资源不足时以明确的私有原因退出，不无限排队或启动 worker。"""
+    """持续资源不足时以可识别的资源超时退出，不无限排队或启动 worker。"""
     capacity.settings.overlay_resource_wait_seconds = .02
     monkeypatch.setattr(resources, "memory_headroom", lambda reserve: (3 - 16 * reserve / 100) * GIB)
-    with pytest.raises(RuntimeError, match="预算超时"):
+    with pytest.raises(resources.RenderCapacityTimeout, match="稍后重试"):
         async with capacity.claim(6, 1):
             pytest.fail("资源不足不能进入渲染")
     assert capacity.chunks == 0

@@ -436,6 +436,40 @@ def test_reduced_pages_reach_both_workers(service, monkeypatch, cpus, expected, 
     assert (overlays.capacity.pages, overlays.capacity.memory_units) == (0, 0)
 
 
+@pytest.mark.parametrize("sprite", [False, True])
+def test_capacity_timeout_reports_resource_unavailable(service, monkeypatch, sprite):
+    """容量耗尽时两种任务均返回稳定的可重试提示；不启动 worker，释放名额后新任务可继续。"""
+    overlays, renderer, _ = service
+    overlays.settings.overlay_resource_wait_seconds = .02
+    monkeypatch.setattr(render_resources, "memory_headroom", lambda reserve: 0)
+    task_id = run_sprite_task(overlays, render_input()) if sprite else run_task(overlays)
+    status, data = overlays._read(task_id)
+    assert status == "failed" and data["error"] == {"code": "resource_unavailable", "message": "渲染资源暂时不足，请稍后重试"}
+    assert not renderer.requests and not overlays.slot.locked()
+    assert (overlays.capacity.chunks, overlays.capacity.memory_units) == (0, 0)
+    monkeypatch.setattr(render_resources, "memory_headroom", lambda reserve: 32 * 1024**3)
+    assert overlays.get(run_task(overlays))["status"] == "succeeded"
+
+
+def test_slot_wait_excludes_resource_wait(service, monkeypatch, caplog):
+    """模拟两秒资源等待，名额立即可用；两个诊断字段应分别是 0 和 2000，而非重复累计。"""
+    from contextlib import asynccontextmanager
+    overlays, _, _ = service
+    clock = [0.0]
+    @asynccontextmanager
+    async def claim(requested, pages):
+        clock[0] += 2
+        yield render_resources.RenderGrant(1, pages, 2000, 5120)
+    monkeypatch.setattr(overlays.capacity, "claim", claim)
+    monkeypatch.setattr(overlay_service, "perf_counter", lambda: clock[0])
+    with caplog.at_level("INFO", logger=overlay_service.logger.name):
+        assert overlays.get(run_task(overlays))["status"] == "succeeded"
+    [entry] = [record for record in caplog.records if record.msg.startswith("Remotion performance task_id=")]
+    metrics = json.loads(entry.args[-1])
+    assert (metrics["slot_wait_ms"], metrics["resource_wait_ms"]) == (0, 2000)
+    assert "queue_wait_ms" not in metrics
+
+
 @pytest.mark.parametrize("cpu_used, threads", [(None, None), (0, 1), (4, 8)])
 def test_chunk_and_vp9_settings_reach_the_worker(service, cpu_used, threads) -> None:
     """编码调优只发送已配置字段，cpu-used=0 保留；分块并发独立于浏览器页并发。"""
@@ -528,7 +562,7 @@ def test_stage_performance_is_private_and_preserves_failure(service, monkeypatch
     entries = [record for record in caplog.records if record.msg.startswith("Remotion performance task_id=")]
     assert len(entries) == 1
     performance = json.loads(entries[0].args[-1])
-    for key in ("plan_ms", "queue_wait_ms", "text_fit_ms", "prepare_ms", "worker_ms", "total_ms"):
+    for key in ("plan_ms", "slot_wait_ms", "text_fit_ms", "prepare_ms", "worker_ms", "total_ms"):
         assert performance[key] >= 0
     if failed:
         assert "probe_ms" not in performance and "upload_ms" not in performance

@@ -16,6 +16,10 @@ from .settings import Settings
 MIB = 1024 ** 2
 
 
+class RenderCapacityTimeout(RuntimeError):
+    """资源暂不可用，调用方可重试；与渲染器代码或环境故障分别处理。"""
+
+
 def cgroup_directories() -> list[Path]:
     """返回当前 cgroup v2 及祖先；父级的限制同样约束服务，未使用 v2 时为空。"""
     root = Path('/sys/fs/cgroup')
@@ -110,7 +114,7 @@ class RenderCapacity:
                         except TimeoutError:
                             pass
         except TimeoutError as exc:
-            raise RuntimeError('等待 Remotion CPU/内存预算超时') from exc
+            raise RenderCapacityTimeout('渲染资源暂时不足，请稍后重试') from exc
         try:
             yield RenderGrant(granted, actual_pages, (perf_counter() - started) * 1000, units * settings.overlay_chunk_memory_mb)
         finally:

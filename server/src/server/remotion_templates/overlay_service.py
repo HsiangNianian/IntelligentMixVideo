@@ -45,7 +45,7 @@ from .overlay_render import (
 from .renderer import Renderer
 from .settings import Settings
 from .sprite_render import join_problem, plan_sprite_render, render_sprite
-from .render_resources import RenderCapacity
+from .render_resources import RenderCapacity, RenderCapacityTimeout
 from .store import NotFound, Store
 from .tables import overlay_renders
 
@@ -275,6 +275,9 @@ class OverlayRenders:
         try:
             try:
                 await self._execute(task_id, work)
+            except RenderCapacityTimeout as exc:
+                logger.warning("叠加渲染任务 %s 等待资源超时", task_id)
+                await self._fail(task_id, "resource_unavailable", str(exc))
             except OverlayError as exc:
                 logger.warning("叠加渲染任务 %s 失败（%s）：%s", task_id, exc.code, exc.__cause__ or exc.message)
                 await self._fail(task_id, exc.code, exc.message)
@@ -321,9 +324,9 @@ class OverlayRenders:
         waiting = perf_counter()
         requested = len(overlay_ranges(overlay, self.settings, chunked=True if render is render_sprite else None))
         async with self.slot, self.capacity.claim(requested, self.settings.overlay_frame_concurrency) as grant:
-            queue_wait_ms = (perf_counter() - waiting) * 1000
+            slot_wait_ms = max(0, (perf_counter() - waiting) * 1000 - grant.wait_ms)
             await self._persist(task_id, "rendering")
-            await asyncio.to_thread(record_performance, work, plan_ms=plan_ms, queue_wait_ms=queue_wait_ms,
+            await asyncio.to_thread(record_performance, work, plan_ms=plan_ms, slot_wait_ms=slot_wait_ms,
                                     resource_wait_ms=grant.wait_ms, granted_chunks=grant.chunks, reserved_memory_mb=grant.reserved_memory_mb)
             await measured(work, "text_fit", fit_texts(self.renderer, overlay, publications, work / "fit"))
             output = await render(self.renderer, overlay, work, chunk_concurrency=grant.chunks, frame_concurrency=grant.pages)

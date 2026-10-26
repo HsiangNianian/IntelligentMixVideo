@@ -39,7 +39,7 @@ JOIN_SECONDS = 120
 
 def record_performance(directory: Path, **measurements: float) -> dict:
     """合并私有阶段计时；只收数值和已知 worker 指标，不把源码、正文或地址带进日志。"""
-    host_fields = {f"{name}_ms" for name in ("plan", "queue_wait", "resource_wait", "text_fit", "prepare", "worker", "probe", "join", "upload", "total")}
+    host_fields = {f"{name}_ms" for name in ("plan", "slot_wait", "resource_wait", "text_fit", "prepare", "worker", "probe", "join", "upload", "total")}
     host_fields.update({"granted_chunks", "reserved_memory_mb"})
     worker_fields = {
         "source_prepare_ms", "bundle_ms", "browser_ms", "select_ms", "render_ms", "total_ms", "elapsed_ms",

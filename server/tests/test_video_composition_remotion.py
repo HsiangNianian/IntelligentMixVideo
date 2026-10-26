@@ -384,6 +384,17 @@ async def test_render_uses_shared_slot_and_persists_public_video(composition_cas
     slot = asyncio.Semaphore(1)
     runtime = SimpleNamespace(settings=settings, store=SimpleNamespace(root=tmp_path),
                               overlays=SimpleNamespace(slot=slot, capacity=RenderCapacity(Settings(_env_file=None))), harness=SimpleNamespace(renderer="renderer"))
+    # 名额已取得后模拟两秒资源等待，确保诊断不会把它再次算进 slot_wait_ms。
+    from contextlib import asynccontextmanager
+    clock = [0.0]
+    claim = runtime.overlays.capacity.claim
+    @asynccontextmanager
+    async def delayed_claim(requested, configured_pages):
+        async with claim(requested, configured_pages) as grant:
+            clock[0] += 2
+            yield render_resources.RenderGrant(grant.chunks, grant.pages, 2000, grant.reserved_memory_mb)
+    monkeypatch.setattr(runtime.overlays.capacity, "claim", delayed_claim)
+    monkeypatch.setattr(remotion, "perf_counter", lambda: clock[0])
     async def get_runtime():
         """提供唯一运行时，与独立预览渲染共用名额。"""
         return runtime
@@ -415,9 +426,26 @@ async def test_render_uses_shared_slot_and_persists_public_video(composition_cas
     assert set(result) == {"video_url", "duration", "width", "height", "fps", "frames"}
     [entry] = [record for record in caplog.records if record.msg.startswith("Remotion performance task_id=")]
     performance = json.loads(entry.args[-1])
-    assert all(performance[key] >= 0 for key in ("plan_ms", "queue_wait_ms", "text_fit_ms", "upload_ms", "total_ms"))
+    assert all(performance[key] >= 0 for key in ("plan_ms", "slot_wait_ms", "text_fit_ms", "upload_ms", "total_ms"))
+    assert (performance["slot_wait_ms"], performance["resource_wait_ms"]) == (0, 2000)
     assert "旧例字" not in entry.getMessage() and "https://" not in entry.getMessage()
     assert not (tmp_path / "composition-overlays" / "task").exists()
+
+
+@pytest.mark.anyio
+async def test_resource_timeout_has_a_distinct_composition_error(composition_case, monkeypatch, tmp_path):
+    """容量超时不会被归为渲染器故障，公开可重试摘要且不泄漏名额或预算。"""
+    settings = Settings(_env_file=None, overlay_resource_wait_seconds=.02)
+    overlays = SimpleNamespace(slot=asyncio.Semaphore(1), capacity=RenderCapacity(settings))
+    async def runtime():
+        return SimpleNamespace(settings=settings, store=SimpleNamespace(root=tmp_path), overlays=overlays)
+    monkeypatch.setattr(remotion, "sprite_runtime", runtime)
+    monkeypatch.setattr(remotion, "environment_problem", lambda settings: None)
+    monkeypatch.setattr(render_resources, "memory_headroom", lambda reserve: 0)
+    with pytest.raises(CompositionError) as error:
+        await remotion.render("task", case(composition_case), 10)
+    assert error.value.error == {"code": "remotion_resource_unavailable", "message": "渲染资源暂时不足，请稍后重试", "stage": "assembling"}
+    assert not overlays.slot.locked() and overlays.capacity.chunks == 0
 
 
 @pytest.mark.anyio
