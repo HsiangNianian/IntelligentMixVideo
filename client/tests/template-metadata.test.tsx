@@ -4,7 +4,7 @@ import { fromBinary } from "@bufbuild/protobuf";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { SaveTemplateRequestSchema, type SaveTemplateRequest } from "@/generated/imv/template/v1/template_pb";
 import { TemplateWorkspace } from "@/features/templates/TemplateWorkspace";
-import { protobufTemplateResponse, savedTemplate } from "./fixtures";
+import { jsonTemplateResponse, savedTemplate } from "./fixtures";
 import { fetchMock } from "./setup";
 
 /** 可读取的云端持久化副本；断言实际消息中的 ID，失败不改副本。 */
@@ -20,8 +20,8 @@ function storage(failFirst = false) {
   };
   fetchMock.mockImplementation((async (url, init) => {
     if (!String(url).includes("/template")) throw new Error("未配置此请求");
-    if (init?.method !== "POST") return protobufTemplateResponse(stored, "get");
-    try { return protobufTemplateResponse(save(new Uint8Array(init.body as Uint8Array)), "save"); }
+    if (init?.method !== "POST") return jsonTemplateResponse(stored, "get");
+    try { return jsonTemplateResponse(save(new Uint8Array(init.body as Uint8Array)), "save"); }
     catch (error) { return new Response(JSON.stringify({ detail: (error as Error).message }), { status: 409 }); }
   }) as typeof fetch);
   return { read: () => stored, writes, selection: { templateId: stored.template_id } };

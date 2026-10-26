@@ -45,7 +45,7 @@ PORT=8010 uv run --locked server
 
 标题和字幕分别通过 `tracks[].editor.titleFont` / `subtitleFont` 保存字体，Protobuf 字段为 `title_font` / `subtitle_font`。仅接受 `src/server/template/fonts.json` 中十一种字体的 `value`，无效字体返回 422，缺少字段默认 `Alibaba PuHuiTi`。正式合成分别使用对应对象的字体；思源黑体、思源宋体保存及合成使用 `Source Han Sans CN`、`Source Han Serif CN`，预览专用标识由客户端转换。字体 HTTP 集成测试使用独立 MySQL 服务：设置 `IMV_FONT_TEST_API` 后执行 `uv run --locked pytest --noconftest tests/test_template_fonts.py`，测试会创建并删除自己的模板，覆盖保存、读取、更新及合成时间线。
 
-客户端云端模板在现有 HTTP 地址上传输 Protobuf 二进制消息。协议定义在仓库根目录 `proto/`，Python 生成代码位于 `src/generated/imv/template/v1/`，与客户端生成目录结构一致。
+云端模板保存请求使用 Protobuf 二进制，列表、详情和保存成功响应默认在返回前转换为 JSON。消息定义仍在仓库根目录 `proto/`，Python 生成代码位于 `src/generated/imv/template/v1/`，与客户端生成目录结构一致。
 
 模板接口：
 
@@ -56,10 +56,10 @@ PORT=8010 uv run --locked server
 | GET | `/template/{template_id}` | 返回 `GetTemplateResponse` |
 | DELETE | `/template/{template_id}` | 删除模板，成功返回 204 |
 
-GET 成功响应与 POST 请求、成功响应均使用 `application/x-protobuf`。POST 的 JSON 请求返回 415；损坏的 Protobuf 消息返回 400。创建返回 201，更新返回 200。名称重复返回 409，模板不存在返回 404，非法 ID 或配置返回 422。错误响应仍使用 JSON。
+GET 与 POST 成功响应默认使用 `application/json`，采用 Protobuf JSON 映射：字段为 camelCase（如 `templateId`、`createdAt`、`effectIds`），时间为 UTC RFC 3339 字符串；列表为 `{"templates":[...]}`，空库为 `{"templates":[]}`，详情和保存为 `{"template":{...}}`，轨道保留 `template.tracks.tracks` 结构。空数组、空映射和非 optional 标量默认值保留，未设置的 optional 字段省略。POST 请求仍使用 `application/x-protobuf`，JSON 请求返回 415，损坏的 Protobuf 消息返回 400。创建返回 201，更新返回 200。名称重复返回 409，模板不存在返回 404，非法 ID 或配置返回 422；错误响应使用 JSON，删除成功仍为 204 空响应。为兼容旧客户端，单一 `Accept: application/x-protobuf` 仍返回 Protobuf 二进制；其他请求（含省略 Accept、`*/*` 或 `application/json`）默认返回 JSON，成功响应带 `Vary: Accept`。新客户端按响应 `Content-Type` 解析 JSON 或旧服务端的 Protobuf 二进制，JSON 解析忽略未知字段；仅响应格式迁移不要求两端同时升级。
 重命名使用携带 ID 的 POST；另存为使用不携带 ID 的 POST。不存在的 ID 不会自动变成创建。
 
-列表返回逐条校验的 `TemplateSummary`，包含名称、ID、更新时间、有效模板的标题/字幕及对象数量，无效记录通过 `validation_error` 说明原因。无效记录的详情读取返回 409，删除仍按 ID 执行，不影响同库有效模板。保存必须包含中文标题和中文字幕各一个；双语模板另有对应的英文对象。列表消息与转场字段需要客户端、服务端一起升级；已有记录不自动转换。
+列表返回逐条校验的 `TemplateSummary`，包含名称、ID、更新时间、有效模板的标题/字幕及对象数量，无效记录通过 `validationError` 说明原因。无效记录的详情读取返回 409，删除仍按 ID 执行，不影响同库有效模板。保存必须包含中文标题和中文字幕各一个；双语模板另有对应的英文对象。列表消息与转场字段需要客户端、服务端一起升级；已有记录不自动转换。
 
 `SaveTemplateRequest.tracks` 必须提供，通过 `TrackList.tracks[].editor` 保存参数；缺省参数由业务校验补齐。模板更新完整替换配置。名称去除首尾空白后为 1～100 字符；说明最多 1000 字符；标题、字幕、气泡示例文字最多 60、100、40 字符；字号 12～300 整数；位置 0～100%；动画和转场时长 0.1～3 秒。
 
