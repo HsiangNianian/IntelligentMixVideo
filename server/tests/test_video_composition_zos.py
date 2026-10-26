@@ -1,5 +1,6 @@
 """隔离 HTTP 与 S3 验证成片、封面上传，并用真实 FFmpeg 核对第 3 帧。"""
 
+from contextlib import closing
 from pathlib import Path
 import shutil
 import subprocess
@@ -14,13 +15,32 @@ from server.video_composition.settings import ZosSettings
 from .conftest import S3Stub
 
 
+@pytest.mark.parametrize("mode", ["direct", "proxy", "no_proxy"])
+def test_storage_client_respects_environment_proxy(composition_settings, monkeypatch, mode):
+    """真实 SDK 覆盖无代理直连、环境代理和 NO_PROXY 绕过；不连接云端，TLS 始终开启。"""
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.lower(), raising=False)
+    proxy = "http://proxy.example.test:8080"
+    if mode != "direct":
+        monkeypatch.setenv("HTTPS_PROXY", proxy)
+    if mode == "no_proxy":
+        monkeypatch.setenv("NO_PROXY", "hangzhou7.zos.ctyun.cn")
+    settings = ZosSettings()
+    with closing(zos.storage_client(settings, 10)) as storage:
+        session = storage._endpoint.http_session
+        assert session._proxy_config.proxy_url_for(settings.zos_api_endpoint) == (proxy if mode == "proxy" else None)
+        assert session._verify is not False
+
+
 @pytest.mark.parametrize("denied_suffix", [None, ".mp4", ".png"])
-def test_copy_video_publishes_video_and_frame(composition_settings, monkeypatch, denied_suffix):
+@pytest.mark.parametrize("prefix", ["imv/video_composition", "imv/playground"])
+def test_copy_video_publishes_video_and_frame(composition_settings, monkeypatch, denied_suffix, prefix):
     """视频与 PNG 使用同一任务前缀；任一对象不可公开读取都不能返回成功。"""
     task_id = "11111111-1111-4111-8111-111111111111"
     source = "https://ims.example.test/output.mp4?Signature=source"
-    key = f"imv/video_composition/{task_id}.mp4"
-    image_key = f"imv/video_composition/{task_id}.png"
+    key = f"{prefix}/{task_id}.mp4"
+    image_key = f"{prefix}/{task_id}.png"
     monkeypatch.setenv("ZOS_WEB_URL", "https://oss.joyfile.net")
     public = f"https://oss.joyfile.net/{key}"
     image_public = f"https://oss.joyfile.net/{image_key}"
@@ -50,8 +70,9 @@ def test_copy_video_publishes_video_and_frame(composition_settings, monkeypatch,
         def close(self):
             """模拟释放 S3 客户端资源。"""
 
-        def upload_fileobj(self, file, bucket, object_key, ExtraArgs):
-            """S3 传输读取完整文件后记录 ACL。"""
+        def upload_fileobj(self, file, bucket, object_key, ExtraArgs, Config):
+            """核对串行分片策略，S3 传输读取完整文件后记录 ACL。"""
+            assert Config.use_threads is False
             uploaded.append(dict(data=file.read(), bucket=bucket, key=object_key, extra=ExtraArgs))
 
         def head_object(self, *, Bucket, Key):
@@ -74,9 +95,9 @@ def test_copy_video_publishes_video_and_frame(composition_settings, monkeypatch,
 
     if denied_suffix:
         with pytest.raises(httpx.HTTPStatusError):
-            zos.copy_video(source, task_id, ZosSettings(), 10)
+            zos.copy_video(source, task_id, ZosSettings(), 10, prefix=prefix)
     else:
-        assert zos.copy_video(source, task_id, ZosSettings(), 10) == (key, public)
+        assert zos.copy_video(source, task_id, ZosSettings(), 10, prefix=prefix) == (key, public)
     expected = [{"data": b"video", "bucket": "archives", "key": key,
                  "extra": {"ACL": "public-read", "ContentType": "video/mp4"}}]
     if denied_suffix != ".mp4":

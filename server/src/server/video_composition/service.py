@@ -17,11 +17,11 @@ from sqlalchemy.exc import SQLAlchemyError
 from ..segmentation import segment, translate
 from ..segmentation.settings import Settings as SegmentationSettings
 from ..template.store import get_template
-from . import ims, media, remotion, store, zos
+from . import ims, media, playground, remotion, store, zos
 from .errors import CompositionError, remaining
 from .execution_log import close_logs, exception_details, log_dispatch_error
 from .matching import Matching, payload, validated_matches
-from .schema import CompositionRequest, MatchCallback, MatchedSegment, PositiveSeconds, Segment, TaskResponse
+from .schema import CompositionRequest, MatchCallback, MatchedSegment, PlaygroundRequest, PositiveSeconds, Segment, TaskResponse
 from .settings import ClientSettings, Settings, ZosSettings
 from .timeline import build_timeline, validate_segments
 
@@ -31,12 +31,18 @@ logger = logging.getLogger(__name__)
 NOTIFICATION_RETRY_DELAYS = (5, 15, 45)
 
 
-def preflight(request: CompositionRequest, config: ClientSettings | None = None) -> Settings:
-    """只检查本模式使用的配置和媒体工具，不执行成本调用。"""
+def render_preflight(config: ClientSettings | None = None) -> Settings:
+    """只检查合成与转存依赖，操练场不依赖已经完成的内容准备服务。"""
     settings = Settings(**config.model_dump()) if config is not None else Settings()
     ZosSettings()
     if shutil.which("ffmpeg") is None:
         raise RuntimeError("缺少 FFmpeg，无法提取视频第 3 帧")
+    return settings
+
+
+def preflight(request: CompositionRequest, config: ClientSettings | None = None) -> Settings:
+    """只检查本模式使用的配置和媒体工具，不执行成本调用。"""
+    settings = render_preflight(config)
     if request.composition_mode == "standard":
         if "materials" in request.model_fields_set and settings.match_base_url is None:
             raise ValueError("缺少素材匹配配置")
@@ -125,12 +131,12 @@ class Runtime:
         self.active.clear()
         self.client_configs.clear()
 
-    async def accept(self, request: CompositionRequest, callback_base_url: str, raw_request: dict | None = None, *, config: ClientSettings | None = None) -> dict:
+    async def accept(self, request: CompositionRequest, callback_base_url: str, raw_request: dict | None = None, *, config: ClientSettings | None = None, prepared: dict | None = None) -> dict:
         """优先保存配置的公网地址；配置检查和事务成功后才返回 ID，由后台继续处理。"""
         if self.stopping:
             raise HTTPException(503, "合成服务正在停止")
         try:
-            settings = await self.sync(preflight, request, config)
+            settings = await self.sync(render_preflight, config) if prepared is not None else await self.sync(preflight, request, config)
         except (ValueError, RuntimeError):
             raise HTTPException(503, "视频合成配置或媒体工具不可用，请检查服务端环境") from None
         # 调度器只保留运行策略；每项云端凭据绑定独立任务，不充当其他任务的默认值。
@@ -145,12 +151,29 @@ class Runtime:
             saved_request = request.model_dump(mode="json", by_alias=True)
             if "materials" not in request.model_fields_set:
                 saved_request.pop("materials")
-            record = await self.sync(store.create, saved_request, output, callback_base_url, raw_request, **({"task_id": task_id} if config is not None else {}))
+            record = await self.sync(store.create, saved_request, output, callback_base_url, raw_request,
+                                     **({"task_id": task_id} if config is not None else {}),
+                                     **({"prepared": prepared} if prepared is not None else {}))
         except BaseException:
             self.client_configs.pop(task_id, None)
             raise
         self.wake.set()
         return record
+
+    async def accept_playground(self, payload: PlaygroundRequest, callback_base_url: str, *, config: ClientSettings | None = None) -> dict:
+        """冻结样本和本次模板后原子入队；不继承来源任务的渲染结果、回调或凭据。"""
+        prepared = await self.sync(playground.prepared_sample, payload)
+        request = CompositionRequest.from_snapshot(prepared.pop("request"))
+        template = await self.sync(get_template, request.style_id)
+        prepared["template"] = template.model_dump(mode="json", by_alias=True)
+        try:
+            prepared["remotion"] = await remotion.snapshot(template)
+            await remotion.require_environment({**prepared, "request": request.model_dump(mode="json", by_alias=True)})
+        except CompositionError as exc:
+            raise HTTPException(503 if exc.error["code"] == "remotion_render_environment_unavailable" else 422,
+                                exc.error["message"]) from None
+        return await self.accept(request, callback_base_url, payload.model_dump(mode="json", by_alias=True),
+                                 config=config, prepared=prepared)
 
     async def log(self, record: dict, event: str, **details) -> None:
         """追加查询/外部调用诊断；日志存储失败只记进程日志，不掩盖原响应或改变终态。"""
@@ -219,8 +242,10 @@ class Runtime:
             except Exception as exc:
                 await self.log(record, "playback_failed", source=source, http_status=503, **exception_details(exc))
                 raise HTTPException(503, "成片已完成，播放地址暂不可用，请稍后重试") from None
+        # IMS 已返回成片时，后续等待取址与 ZOS 转存单独展示；持久化阶段保持兼容原恢复流程。
+        stage = "uploading" if record["status"] == "processing" and record["stage"] == "rendering" and saved.get("mediaId") else record["stage"]
         response = TaskResponse(
-            task_id=record["task_id"], status=record["status"], stage=record["stage"],
+            task_id=record["task_id"], status=record["status"], stage=stage,
             result=result, error=record["data"].get("error"),
             created_at=record["created_at"], updated_at=record["updated_at"],
         )
@@ -407,7 +432,13 @@ class Job:
         if stage in ("asr", "segmentation", "translation"):
             raise CompositionError("interrupted", "任务在不可恢复的本地阶段中断，未重放成本调用", stage)
         if stage in ("queued", "template"):
-            await self.prepare()
+            if self.record["data"].get("playground"):
+                # 入队时已冻结全部准备结果；重启也不得重放模型、ASR 或匹配调用。
+                await self.runtime.sync(render_preflight, self.runtime.client_configs.get(self.record["task_id"]))
+                await remotion.require_environment(self.record["data"])
+                await self.save("assembling")
+            else:
+                await self.prepare()
             if self.record["stage"] == "matching":
                 await self.match(submit=True)
         elif stage == "matching":
@@ -655,7 +686,8 @@ class Job:
                 key, public_url = await self.runtime.step(
                     self.record, "zos_upload",
                     lambda: self.runtime.sync(zos.copy_video, url, self.record["task_id"], ZosSettings(),
-                                              self.settings.composition_http_timeout_seconds),
+                                              self.settings.composition_http_timeout_seconds,
+                                              **({"prefix": zos.object_prefix(data)} if data.get("playground") else {})),
                     {"media_id": data["result"]["mediaId"]},
                 )
             except Exception:

@@ -155,6 +155,7 @@ def test_api_documentation(client: TestClient) -> None:
     assert set(schema["paths"]) == {
         "/", "/users/", "/users/{user_id}", "/template", "/template/{template_id}", "/segmentations",
         "/api/v1/video-compositions", "/api/v1/video-compositions/{task_id}",
+        "/api/v1/video-compositions/playground",
         "/api/v1/video-compositions/{task_id}/segment-match-callback",
         "/api/settings/plugins",
         "/api/sprites", "/api/sprites/stream", "/api/sprites/publish", "/api/sprites/{sprite_id}", "/api/sprites/{sprite_id}/rename", "/api/sprites/{sprite_id}/preview",

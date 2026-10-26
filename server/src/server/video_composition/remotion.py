@@ -33,7 +33,7 @@ from .errors import CompositionError
 from .schema import CompositionRequest, Segment
 from .settings import ZosSettings
 from .text_events import subtitle_blocks, subtitle_events
-from .zos import upload_public
+from .zos import object_prefix, upload_public
 
 logger = logging.getLogger(__name__)
 
@@ -305,7 +305,7 @@ async def render(task_id: str, data: dict, timeout: float, *, timeline: dict | N
             # 文件必须存活到上传线程收尾；取消任务不保存迟到结果。
             uploading = perf_counter()
             upload = asyncio.create_task(asyncio.to_thread(upload_public,
-                [(output, f"imv/video_composition/{task_id}/overlay.webm", "video/webm")], ZosSettings(), timeout))
+                [(output, f"{object_prefix(data)}/{task_id}/overlay.webm", "video/webm")], ZosSettings(), timeout))
             try:
                 urls = await asyncio.shield(upload)
             finally:
