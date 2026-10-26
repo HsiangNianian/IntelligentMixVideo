@@ -694,24 +694,38 @@ message (also the callback's `errorMessage`); the renderer's output and other ro
   failure and releases the shared render slot instead of waiting for the full rendering deadline. The private worker
   log records browser startup/connection and sparse rendered/encoded frame counts; API `assembling` remains the
   enclosing video-composition stage and includes waiting for this slot.
-- **Performance**: `IMV_OVERLAY_FRAME_CONCURRENCY` controls pages per chunk (default 4), independently of task slots.
+- **Performance**: `IMV_OVERLAY_FRAME_CONCURRENCY` caps pages per chunk (default 4), independently of task slots.
+  Admission lowers the actual page count on small hosts or CPU quotas, and passes that same count to the worker.
   `IMV_OVERLAY_CHUNK_CONCURRENCY` caps simultaneous chunks within one video at 6. Single Sprites, full overlays and
   video compositions share fixed 15-second chunks (`IMV_OVERLAY_CHUNKED=true` by default for the latter two).
   Videos up to 15 seconds use one chunk; the final chunk contains the remaining frames.
-  Boundaries preserve every frame exactly once.
+  Boundaries preserve every frame exactly once. Only multi-chunk outputs require host `ffmpeg` for joining;
+  known overlay/Sprite lengths are checked at acceptance. Audio-derived lengths and resumed tasks are checked
+  before rendering; a missing tool then produces `render_environment_unavailable`.
   All videos share `IMV_OVERLAY_GLOBAL_CHUNK_CONCURRENCY=36`, allowing six videos with six chunks each when resources permit; admission reduces per-video chunk concurrency to fit
   the CPU/page and memory budgets. `IMV_RENDER_CPU_RESERVE_PERCENT=25` chooses a common CPU affinity subset
-  inherited by every sandbox worker and its descendants, respecting parent cgroup quotas. Memory admission leaves
+  inherited by every sandbox worker and its descendants, respecting parent cgroup v2 quotas. Memory admission leaves
   `IMV_RENDER_MEMORY_RESERVE_PERCENT=25` of effective host/cgroup memory, reserving
-  `IMV_OVERLAY_CHUNK_MEMORY_MB=1024` per page plus one extra unit per video. This is an estimate, not an allocation cap;
+  `IMV_OVERLAY_CHUNK_MEMORY_MB=1024` per page plus one extra unit per video.
+  Absolute ceilings default to `IMV_RENDER_MAX_CPUS=144` logical CPUs and `IMV_RENDER_MAX_MEMORY_MB=153600`
+  (150 GiB): 36 chunks times four pages, plus six extra browser budgets for memory. Admission uses the stricter
+  of these ceilings and the remaining host/cgroup budget. Encoder threads also stay within the common CPU
+  affinity range; thread counts do not grant additional CPUs. These are conservative admission budgets, not measured usage.
+  At 25% CPU reserve, 128 otherwise unrestricted logical CPUs permit at most 24 four-page chunks; 36 is a ceiling.
+  The host memory floor remains 25% of total RAM even when a smaller service cgroup has spare capacity.
+  Cgroup quota discovery supports v2 only; v1 falls back to host affinity and memory information.
+  The memory estimate is not an allocation cap;
   production should also configure systemd `MemoryHigh`/`MemoryMax` limits for the Python service and its descendants.
   Waiting for resources is bounded by `IMV_OVERLAY_RESOURCE_WAIT_SECONDS=300`; cancellation and failure release grants.
+  A timeout fails the task with `resource_unavailable` (`remotion_resource_unavailable` for video compositions)
+  and a retry-later message. Callers may resubmit after capacity recovers; this does not automatically retry failed tasks.
   `IMV_OVERLAY_VP9_CPU_USED` and `IMV_OVERLAY_VP9_THREADS` default to 4 and 2 in code, respectively, and can be
   overridden through environment variables. They only tune the actual VP9 encoder. All paths share the same
   worker and copy-only join, preserving absolute animation time.
-  Private `performance.json` and the final `Remotion performance` service log separate planning, queue wait, text fit,
+  Private `performance.json` and the final `Remotion performance` service log separate planning, slot wait, text fit,
   resource wait/granted chunks/reserved memory, preparation, worker, probe, join and upload. The worker records bundle/browser/composition setup and per-chunk
-  wall time. With parallel encoding, `rendered_ms` includes waiting for pre-encoding, and `encoded_ms` is only the
+  wall time. `slot_wait_ms` excludes `resource_wait_ms`, so these two wait fields do not overlap.
+  With parallel encoding, `rendered_ms` includes waiting for pre-encoding, and `encoded_ms` is only the
   final mux; compare wall time rather than interpreting it as the complete encoding cost. Render deadlines and the
   timeout-times-CPU per-process cap remain in force. Use measured timings for capacity planning.
 
