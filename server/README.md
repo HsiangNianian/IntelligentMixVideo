@@ -200,7 +200,7 @@ uv sync --locked --default-index https://pypi.org/simple
 
 ## 文案切片
 
-`POST /segmentations` 与 `segment` 函数用正确文案和已有 ASR 结果生成带时间和关键词的片段，不调用 ASR。模型连接填在 `server/.env` 的 `IMV_LLM_BASE_URL`、`IMV_LLM_API_KEY`、`IMV_LLM_MODEL`（其余见 [.env.example](.env.example)），环境变量优先；从仓库根目录启动用 `uv run --locked --project server server`。代码中调用：
+`POST /segmentations` 与 `segment` 函数用正确文案和已有 ASR 结果生成带时间和关键词的片段，不调用 ASR。模型连接填在 `server/.env` 的 `IMV_LLM_BASE_URL`、`IMV_LLM_API_KEY`、`IMV_LLM_MODEL`（其余见 [.env.example](.env.example)），环境变量优先。代码中调用：
 
 ```python
 import json
@@ -216,21 +216,17 @@ result = segment({
 
 **请求与返回**：`script`、`asr_result`、`title` 都可省略或为 null。
 
-- 有 ASR：必须有有效 `script`，使用第一音轨的词级时间（毫秒）。返回 `segments`（保留标点的原文、秒制时间、分组、关键词）、`warnings` 和 `trace`；传了 `title` 时另返回 `title_keyword`，须在标题中连续出现且最多 12 字，不合法进入结果纠错。
-- 只有 `title`：只调用一次模型，返回 `{"title_keyword":"关键词"}`，不校验内容，缺失或非字符串按空字符串处理。
-- 可选 `config` 只用于本次调用：`llm_base_url`、`llm_api_key`、`llm_model` 必填，`llm_timeout_seconds` 默认 120（切片实际最多 30 秒，更短配置仍生效），`llm_max_retries` 默认 1（0～3，仅翻译沿用；切片含仅标题固定关闭 SDK 网络重试）；Python 中传 `segment(payload, config=ClientSettings(...))`。`allow_insecure_llm_http` 由服务端决定，错误响应不回显输入。
+- 有 ASR：必须有有效 `script`，使用第一音轨的词级时间（毫秒）。返回 `segments`（保留标点的原文、秒制时间、分组、关键词）、`warnings` 和 `trace`；传了 `title` 时另返回 `title_keyword`。
+- 只有 `title`：只调用一次模型，返回 `{"title_keyword":"关键词"}`，不校验内容、不纠错，缺失或非字符串按空字符串处理。
+- 可选 `config` 只用于本次调用：`llm_base_url`、`llm_api_key`、`llm_model` 必填，`llm_timeout_seconds` 默认 120（切片单次最多取 30 秒），`llm_max_retries` 默认 1（0～3，只用于翻译）；Python 中传 `segment(payload, config=ClientSettings(...))`。`allow_insecure_llm_http` 由服务端决定，错误响应不回显输入。
 
-**模型输出格式**：使用 `response_format.type=json_object`（兼容 DeepSeek JSON Output）。提词输入为带 `segment_id`、`text` 的片段列表，模型返回 `{"keywords":{"1":"医院","3":"CT"}}`，只需列出有关键词的 ID；代码按原片段 ID 填回，缺失留空，返回顺序不影响对应关系。`keywords` 须为对象，ID 必须与输入一致、无前导零，值须为字符串；词仍须在对应原文中连续出现且最多 12 字，否则置空。传标题时另返回 `title_keyword`，沿用原校验。结构或 ID 错误最多纠错 2 次（含首次共 3 次尝试），原始输出照常记录；无需模型凑齐数组，对外片段结构不变。
+**模型调用**：使用 `response_format.type=json_object`，先选切点，再提关键词。提词输入为带 `segment_id`、`text` 的片段，模型返回 `{"keywords":{"1":"医院","3":"CT"}}`，只列有关键词的 ID；代码按 ID 填回，缺失、不在对应原文中连续出现或超过 12 字的词置空。`title_keyword` 须在标题中连续出现且最多 12 字。JSON、结构、ID 或标题词不合法（含回复缺少 `choices`/`message`/`content`）时，把上次回复与错误反馈给模型重试（空回复只反馈错误），切分共 2 次、提词共 3 次，耗尽返回 502。单次请求最多 30 秒并关闭 SDK 网络重试；HTTP 与合成共用 90 秒软预算（不含排队、ASR 和翻译），在调用前后检查，耗尽返回 504，无法打断进行中的请求。次数、超时与预算是模块内具名常量。
 
-**切分规则**：模型先在标点处切句、再提关键词（正常两次调用；每个阶段的 JSON 或结果契约校验失败时，把上次回复与具体错误反馈给模型，切分最多尝试 2 次、提词最多尝试 3 次（均含首次），仍失败则报错；首次与纠错均取配置超时、30 秒与剩余预算的最小值，网络错误不重试），之后由代码把超过 8 个有效字（不计标点和空白）的片段继续切开，切点优先两侧至少 2 字，再按标点、结巴词边界、中点。`OpenAI`、`3.14%`、`1,299` 这类英文和数字串不拆开；`70，80，90后`、顿号枚举、`第1、2、3名`、`等2，3天` 这类数字列表整体保留，普通逗号两侧的数字（如 `99，3件`）不合并。关键词只留在完整包含它的子段上。字幕去标点由下游合成负责，保留问号和数字小数点。
+**切分规则**：模型只能在中文标点处、两侧至少 2 秒的候选边界上选切点；之后代码把超过 8 个有效字（不计标点和空白）的片段继续切开，切点优先两侧至少 2 字，再按标点、结巴词边界、中点。`OpenAI`、`3.14%`、`1,299` 这类英文和数字串不拆开；`70，80，90后`、顿号枚举、`第1、2、3名`、`等2，3天` 这类数字列表整体保留，普通逗号两侧的数字（如 `99，3件`）不合并。关键词只留在完整包含它的子段上。字幕去标点由下游合成负责，保留问号和数字小数点。
 
-双语模板的文字对象及 Remotion 绑定通过可选 `language=en` 区分，省略为中文。英文文字对象的 `enabled` 省略为 true；false 只保留配置及资产引用，不翻译、不渲染，也不触发对应 Remotion 环境检查。标题、字幕开关独立，不新增表。翻译合并为一次调用，英文标题使用 `title_en`，字幕按 `text_en`/`keyword_en` 与中文片段同步；英文字幕和展示关键词复用中文字幕去标点规则，保留问号、数字内小数点、英文词内撇号和空格换行；英文标题和原始译文快照保留标点，译文不进入素材匹配请求。普通 IMS 英文使用 `AdaptMode=AutoScale`、`TextWidth=0.9`，Remotion 按每个语言的对象绑定渲染。翻译错误以 `translation_failed` 结束任务；`translation` 是不可恢复的成本阶段，中断后不自动重放，已完成的译文随任务快照恢复。翻译步骤写入既有 `segmentation.json` 日志。
+**英文翻译**：`translate(result, title=None)` 一次模型调用把切片结果译成英文（双语视频合成在切片后调用），只读服务端配置。返回副本，片段增加 `text_en`、`keyword_en`，传入 `title` 时增加 `title_en`、`title_keyword_en`；英文关键词复用中文校验但不限长度（片段词不在译文中置空，标题词不在英文标题中报错）。段数、类型不符或译文为空时直接报错，不重试。双语模板以文字对象的 `language=en` 区分，`enabled=false` 的英文对象不翻译、不渲染；英文字幕与展示关键词沿用中文字幕去标点规则（另保留英文词内撇号和空格换行），译文不进入素材匹配。翻译失败以 `translation_failed` 结束任务，中断后不自动重放，译文随任务快照恢复并写入 `segmentation.json`。
 
-**切片时间预算**：HTTP 与合成任务共用 `segment()` 的 90 秒软预算（含仅标题），从切片函数开始计时，不含排队、ASR、翻译和视频渲染。模型调用前后及最终返回前检查预算；耗尽则失败，HTTP 返回 504，合成任务沿用失败日志与状态，不保证试满次数。同步 HTTP 的超时不是整体截止时间，不能强制打断正在执行的请求，因此 90 秒不是严格耗时上限。次数、单次超时与总预算均为模块内具名常量。
-
-**英文翻译**：`translate(result, title=None)` 把 `segment` 的结果一次模型调用译成英文（双语视频合成在切片后调用），模型配置只从服务端 `server/.env` 读取。返回副本，每个片段增加 `text_en`、`keyword_en`，传入 `title` 时增加 `title_en`、`title_keyword_en`。英文关键词复用中文关键词的校验但不限长度：片段词不在本段译文中时置空，标题词不在英文标题中时报错。段数或类型不符、片段译文为空、原标题非空而英文标题为空时直接报错，不重试。
-
-**日志**：HTTP 与视频合成共用服务端日志入口。INFO 只记录阶段、尝试次数、耗时与片段数；每次完整模型回复（含仅标题）和成功 `trace` 脱敏后写 DEBUG，排查时开启。纠错 WARNING 只记录阶段、次数与校验错误；最终失败 WARNING 保留脱敏诊断及最后一次模型回复。提词失败的 `keyword_response` 含最后回复、预期片段数及已解析的关键词类型和数量，继续脱敏写入任务 `segmentation.json` 与 `errors/*.log`，接口不回显。脱敏复用 `log_sanitization.py`，不修改模型纠错上下文或业务结果；DEBUG 和最终失败详情仍可能包含业务文案，按敏感数据管理。桌面日志位于 `backend/server.log`。
+**日志**：INFO 只记录阶段、尝试次数、耗时与片段数；完整模型回复和成功 `trace` 脱敏后写 DEBUG；纠错 WARNING 只记录阶段、次数与错误；最终失败 WARNING 保留脱敏诊断和最后一次回复。提词失败的 `keyword_response`（最后回复、预期片段数、关键词类型与数量）由视频合成写入任务 `segmentation.json` 与 `errors/*.log`，接口不回显。DEBUG 与失败详情可能含业务文案，按敏感数据管理；桌面日志位于 `backend/server.log`。
 
 `GET /api/settings/plugins` 只返回自动发现的公开描述与代码默认值，不读写服务端配置。一级模块通过 `settings_plugin.py` 导出 `SETTINGS_PLUGIN`，Schema 由自己的配置模型生成；公共层导入时扫描一次，无人工注册名单，重复 ID、坏描述和依赖导入失败直接报错。增删入口后重启后端并重新打开客户端设置；移除入口不删除客户端旧值。当前包含 Remotion Agent、上海 IMS/视频合成、切片、ASR 和服务启动入口；完整目录从入口的 `settings` 模型类生成 Debug Schema；`client_only=true` 只返回标记 `scope: "client"` 的 Agent 与 IMS，测试使用临时包文件验证发现与移除。此机制不自动注册业务路由，也不支持删除整个业务目录后免处理依赖；各模块仍须自行接入请求配置消费。
 
