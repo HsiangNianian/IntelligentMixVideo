@@ -291,7 +291,7 @@ async def render(task_id: str, data: dict, timeout: float, *, timeline: dict | N
             overlay = await measured(work, "plan", asyncio.to_thread(plan, data, service.settings.overlay_max_seconds, timeline=timeline, transition_seed=task_id))
             if overlay is None:
                 return None
-            if environment_problem(service.settings):
+            if environment_problem(service.settings, overlay):
                 raise OverlayError("render_environment_unavailable", "Remotion 渲染环境不可用")
             publications = {key: ParseDict(value, pb.PublishedSprite()) for key, value in data["remotion"]["assets"].items()}
             waiting = perf_counter()

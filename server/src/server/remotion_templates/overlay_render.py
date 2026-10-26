@@ -416,13 +416,14 @@ async def probe_overlay(path: Path, overlay: Overlay) -> None:
         raise OverlayError("render_invalid", "渲染结果与请求的规格或透明通道不一致")
 
 
-def environment_problem(settings: Settings) -> str | None:
+def environment_problem(settings: Settings, overlay: Overlay | None = None, *, chunked: bool | None = None) -> str | None:
     """Name the first tool or file an overlay render needs that this host lacks, or None when all exist.
 
     Acceptance refuses with a 503 instead of queueing a task that would only fail later; the isolated
     renderer runs on Linux with bubblewrap, prlimit, Node, a browser and the managed fonts.
     """
-    for tool in ("ffprobe", "bwrap", "prlimit", "taskset", "node", *(("ffmpeg",) if settings.overlay_chunked else ())):
+    needs_join = overlay is not None and len(overlay_ranges(overlay, settings, chunked=chunked)) > 1
+    for tool in ("ffprobe", "bwrap", "prlimit", "taskset", "node", *(("ffmpeg",) if needs_join else ())):
         if shutil.which(tool) is None:
             return tool
     for path in (settings.browser_executable, settings.font_regular, settings.font_bold):

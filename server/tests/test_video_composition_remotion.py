@@ -414,7 +414,7 @@ async def test_render_uses_shared_slot_and_persists_public_video(composition_cas
         assert path.read_bytes() == b"video" and key == "imv/video_composition/task/overlay.webm" and mime == "video/webm"
         return ["https://zos.test/overlay.webm"]
     monkeypatch.setattr(remotion, "sprite_runtime", get_runtime)
-    monkeypatch.setattr(remotion, "environment_problem", lambda settings: None)
+    monkeypatch.setattr(remotion, "environment_problem", lambda settings, *args, **kwargs: None)
     monkeypatch.setattr(remotion, "render_overlay", render)
     monkeypatch.setattr(remotion, "upload_public", upload)
     monkeypatch.setattr(remotion, "ZosSettings", lambda: object())
@@ -440,7 +440,7 @@ async def test_resource_timeout_has_a_distinct_composition_error(composition_cas
     async def runtime():
         return SimpleNamespace(settings=settings, store=SimpleNamespace(root=tmp_path), overlays=overlays)
     monkeypatch.setattr(remotion, "sprite_runtime", runtime)
-    monkeypatch.setattr(remotion, "environment_problem", lambda settings: None)
+    monkeypatch.setattr(remotion, "environment_problem", lambda settings, *args, **kwargs: None)
     monkeypatch.setattr(render_resources, "memory_headroom", lambda reserve: 0)
     with pytest.raises(CompositionError) as error:
         await remotion.render("task", case(composition_case), 10)
@@ -471,7 +471,7 @@ async def test_render_failure_keeps_private_cause_before_cleanup(composition_cas
         """模拟磁盘写入故障，不掩盖浏览器的原始失败。"""
         raise OSError("disk unavailable")
     monkeypatch.setattr(remotion, "sprite_runtime", get_runtime)
-    monkeypatch.setattr(remotion, "environment_problem", lambda settings: None)
+    monkeypatch.setattr(remotion, "environment_problem", lambda settings, *args, **kwargs: None)
     monkeypatch.setattr(remotion, "render_overlay", fail)
     if not diagnostic_writable:
         monkeypatch.setattr(remotion, "preserve_failure", unwritable)
@@ -546,10 +546,49 @@ async def test_render_failure_is_terminal_not_sample_fallback(composition_case, 
         """仅提供计划所需配置与私有诊断目录，不提供可降级渲染器。"""
         return SimpleNamespace(settings=Settings(_env_file=None, overlay_max_seconds=120), store=SimpleNamespace(root=tmp_path))
     monkeypatch.setattr(remotion, "sprite_runtime", runtime)
-    monkeypatch.setattr(remotion, "environment_problem", lambda settings: "unavailable")
+    monkeypatch.setattr(remotion, "environment_problem", lambda settings, *args, **kwargs: "unavailable")
     with pytest.raises(CompositionError) as error:
         await remotion.render("task", case(composition_case), 10)
     assert error.value.error["code"] == "remotion_render_environment_unavailable"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("seconds", [15, 16])
+async def test_composition_preflight_uses_actual_chunk_count(composition_case, monkeypatch, tmp_path, seconds):
+    """合成的真实预检允许无 FFmpeg 的单块输出，多块时在申请容量与渲染前失败。"""
+    from server.remotion_templates import overlay_render
+    path = tmp_path / "environment-file"
+    path.write_bytes(b"file")
+    settings = Settings(_env_file=None, browser_executable=path, font_regular=path, font_bold=path)
+    slot = asyncio.Semaphore(1)
+    capacity = RenderCapacity(settings)
+    async def runtime():
+        return SimpleNamespace(settings=settings, store=SimpleNamespace(root=tmp_path),
+                               overlays=SimpleNamespace(slot=slot, capacity=capacity), harness=SimpleNamespace(renderer=None))
+    called = []
+    async def render(renderer, overlay, work, **kwargs):
+        called.append(True)
+        output = work / "overlay.webm"
+        output.write_bytes(b"video")
+        return output
+    async def fit(*args):
+        pass
+    monkeypatch.setattr(remotion, "sprite_runtime", runtime)
+    monkeypatch.setattr(overlay_render.shutil, "which", lambda tool: None if tool == "ffmpeg" else "/usr/bin/" + tool)
+    monkeypatch.setattr(remotion, "render_overlay", render)
+    monkeypatch.setattr(remotion, "fit_texts", fit)
+    monkeypatch.setattr(remotion, "upload_public", lambda *args: ["https://zos.example/video.webm"])
+    monkeypatch.setattr(remotion, "ZosSettings", lambda: object())
+    data = case(composition_case)
+    data["duration_ms"] = seconds * 1000
+    if seconds == 15:
+        assert (await remotion.render("task", data, 10))["duration"] == seconds
+        assert called == [True]
+    else:
+        with pytest.raises(CompositionError) as error:
+            await remotion.render("task", data, 10)
+        assert error.value.error["code"] == "remotion_render_environment_unavailable"
+        assert not called and not slot.locked() and capacity.chunks == 0
 
 
 def visual_case(composition_case):
@@ -574,7 +613,7 @@ async def test_environment_check_skips_bindings_without_content(composition_case
         return SimpleNamespace(settings=SimpleNamespace())
     called = []
     monkeypatch.setattr(remotion, "sprite_runtime", runtime)
-    monkeypatch.setattr(remotion, "environment_problem", lambda settings: "bwrap")
+    monkeypatch.setattr(remotion, "environment_problem", lambda settings, *args, **kwargs: "bwrap")
     title = case(composition_case, "title")
     title["request"] = {**title["request"], "title": " "}
     subtitle = case(composition_case, "subtitle")
@@ -945,7 +984,7 @@ async def test_render_fits_texts_in_the_slot_and_reports_text_too_long(compositi
 
     monkeypatch.setattr(remotion, "retime_source", lambda sprite: "timed source")
     monkeypatch.setattr(remotion, "sprite_runtime", get_runtime)
-    monkeypatch.setattr(remotion, "environment_problem", lambda settings: None)
+    monkeypatch.setattr(remotion, "environment_problem", lambda settings, *args, **kwargs: None)
     monkeypatch.setattr(remotion, "fit_texts", refuse)
     monkeypatch.setattr(remotion, "render_overlay", render)
     with pytest.raises(CompositionError) as caught:

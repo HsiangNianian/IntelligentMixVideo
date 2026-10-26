@@ -291,7 +291,7 @@ def service(tmp_path, monkeypatch, template_db):
         return [f"https://zos.example/{files[0][1]}"]
 
     monkeypatch.setattr(overlay_render, "probe_overlay", probed)
-    monkeypatch.setattr(overlay_service, "environment_problem", lambda settings: None)
+    monkeypatch.setattr(overlay_service, "environment_problem", lambda settings, *args, **kwargs: None)
     # 单 Sprite 渲染还要用 ffmpeg 拼接分块；CI 主机可能没有它，替身渲染器也不需要。
     monkeypatch.setattr(overlay_service, "join_problem", lambda overlay, settings: None)
     monkeypatch.setattr(overlay_service, "upload_public", upload)
@@ -745,7 +745,7 @@ def test_audio_length_is_checked_after_probing(service, monkeypatch) -> None:
 def test_accept_refuses_a_host_that_cannot_render(service, monkeypatch) -> None:
     """环境检查报告缺失项时返回 503、写服务端日志，且不创建任务。"""
     overlays, _, _ = service
-    monkeypatch.setattr(overlay_service, "environment_problem", lambda settings: "ffprobe")
+    monkeypatch.setattr(overlay_service, "environment_problem", lambda settings, *args, **kwargs: "ffprobe")
     with pytest.raises(HTTPException) as caught:
         asyncio.run(overlays.accept(PLACED, None, 3.0, None))
     assert caught.value.status_code == 503 and task_rows(overlays) == 0
@@ -848,19 +848,64 @@ def test_environment_problem_names_the_missing_piece(tmp_path, monkeypatch) -> N
     present = {"ffprobe", "bwrap", "prlimit", "taskset", "node", "ffmpeg"}
     monkeypatch.setattr(overlay_render.shutil, "which", lambda name: f"/usr/bin/{name}" if name in present else None)
     assert overlay_render.environment_problem(settings) is None
-    for tool in ("ffprobe", "bwrap", "prlimit", "taskset", "node", "ffmpeg"):
+    for tool in ("ffprobe", "bwrap", "prlimit", "taskset", "node"):
         present.discard(tool)
         assert overlay_render.environment_problem(settings) == tool
         present.add(tool)
     settings.overlay_chunked = True
     present.discard("ffmpeg")
-    assert overlay_render.environment_problem(settings) == "ffmpeg"
+    short = overlay_render.Overlay(1080, 1920, 30, 450, [])
+    long = overlay_render.Overlay(1080, 1920, 30, 451, [])
+    assert overlay_render.environment_problem(settings) is None
+    assert overlay_render.environment_problem(settings, short) is None
+    assert overlay_render.environment_problem(settings, long) == "ffmpeg"
+    settings.overlay_chunked = False
+    assert overlay_render.environment_problem(settings, long) is None
+    assert overlay_render.environment_problem(settings, long, chunked=True) == "ffmpeg"
     present.add("ffmpeg")
     assert overlay_render.environment_problem(settings) is None
     for path in files.values():
         path.unlink()
         assert overlay_render.environment_problem(settings) == str(path)
         path.write_bytes(b"x")
+
+
+@pytest.mark.parametrize("sprite", [False, True])
+@pytest.mark.parametrize("frames", [450, 451])
+def test_ffmpeg_is_required_only_for_actual_multiple_chunks(service, monkeypatch, sprite, frames):
+    """缺 FFmpeg 时整段与单 Sprite 的 15 秒输出仍成功，多一帧则在受理时 503。"""
+    overlays, renderer, _ = service
+    overlays.settings.browser_executable = overlays.settings.font_regular
+    monkeypatch.setattr(overlay_render.shutil, "which", lambda tool: None if tool == "ffmpeg" else "/usr/bin/" + tool)
+    monkeypatch.setattr(overlay_service, "environment_problem", overlay_render.environment_problem)
+    monkeypatch.setattr(overlay_service, "join_problem", sprite_render.join_problem)
+    def run():
+        return run_sprite_task(overlays, render_input(effect_total_frames=frames)) if sprite else run_task(overlays, duration=frames / 30)
+    if frames == 450:
+        assert overlays._read(run())[0] == "succeeded"
+        assert "ranges" not in renderer.requests[0]
+    else:
+        with pytest.raises(HTTPException) as error:
+            run()
+        assert error.value.status_code == 503 and not renderer.requests
+
+
+@pytest.mark.parametrize("seconds", [10, 16])
+def test_audio_length_rechecks_join_dependency_before_render(service, monkeypatch, seconds):
+    """音频长度未知时先受理，解析后仅多块任务报告环境不可用，不进入 worker。"""
+    overlays, renderer, _ = service
+    overlays.settings.browser_executable = overlays.settings.font_regular
+    monkeypatch.setattr(overlay_render.shutil, "which", lambda tool: None if tool == "ffmpeg" else "/usr/bin/" + tool)
+    monkeypatch.setattr(overlay_service, "environment_problem", overlay_render.environment_problem)
+    async def total(*args):
+        return seconds
+    monkeypatch.setattr(overlay_service, "resolve_total_seconds", total)
+    result = overlays.get(run_task(overlays, audio="https://media.example/audio.mp3"))
+    if seconds == 10:
+        assert result["status"] == "succeeded"
+    else:
+        assert result["status"] == "failed" and result["error"]["code"] == "render_environment_unavailable"
+        assert not renderer.requests
 
 
 # 场景：重启后恢复未终态任务并完成；终态任务不会被重复渲染。

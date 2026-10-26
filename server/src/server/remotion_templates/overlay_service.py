@@ -29,6 +29,7 @@ from ..video_composition.settings import ZosSettings
 from ..video_composition.zos import upload_public
 from . import sprites
 from .overlay_render import (
+    Overlay,
     OverlayError,
     OverlayPlacement,
     environment_problem,
@@ -173,6 +174,7 @@ class OverlayRenders:
                 seconds = duration if duration is not None else fixed_end_seconds(placements, publications)
                 if seconds > self.settings.overlay_max_seconds:
                     raise OverlayError("duration_too_long", f"成片时长超过上限 {self.settings.overlay_max_seconds:g} 秒")
+                self._require_environment(plan_overlay(placements, publications, seconds, self.settings.overlay_max_seconds))
         except OverlayError as exc:
             raise HTTPException(422, exc.message) from None
         task_id = str(uuid4())
@@ -217,13 +219,13 @@ class OverlayRenders:
         self._spawn(self._run(task_id))
         return task_id
 
-    def _require_environment(self) -> None:
+    def _require_environment(self, overlay: Overlay | None = None) -> None:
         """Refuse with a 503 when ZOS is not configured or the isolated renderer lacks a tool or file."""
         try:
             ZosSettings()
         except ValueError:
             raise HTTPException(503, "ZOS 配置不可用，请检查服务端环境") from None
-        missing = environment_problem(self.settings)
+        missing = environment_problem(self.settings, overlay)
         if missing:
             logger.error("叠加渲染环境缺少 %s，拒绝受理", missing)
             raise HTTPException(503, "叠加渲染环境不可用，请检查服务端环境")
@@ -321,6 +323,8 @@ class OverlayRenders:
             overlay = plan_overlay(placements, publications, total, self.settings.overlay_max_seconds)
             render, key = render_overlay, f"imv/overlay_render/{task_id}.webm"
         plan_ms = (perf_counter() - started) * 1000
+        if environment_problem(self.settings, overlay, chunked=True if render is render_sprite else None):
+            raise OverlayError("render_environment_unavailable", "叠加渲染环境不可用，请检查服务端环境")
         waiting = perf_counter()
         requested = len(overlay_ranges(overlay, self.settings, chunked=True if render is render_sprite else None))
         async with self.slot, self.capacity.claim(requested, self.settings.overlay_frame_concurrency) as grant:
