@@ -444,7 +444,7 @@ def test_real_fun_asr_excerpt(model):
                                      {"keywords": {"01": "甲乙"}}, {"keywords": {"1": None}}])
 @pytest.mark.parametrize("timeout,budget", [(120, 90), (5, 90), (120, 10)])
 def test_model_cuts_keywords_and_protected_runs(model, monkeypatch, invalid, timeout, budget):
-    """第三次提词成功，超时最多 15 秒；两阶段和纠错共享预算，不放宽更短的配置。"""
+    """第三次提词成功，超时最多 30 秒；两阶段和纠错共享预算，不放宽更短的配置。"""
     monkeypatch.setenv("IMV_LLM_TIMEOUT_SECONDS", str(timeout))
     monkeypatch.setattr(segmentation, "SEGMENTATION_BUDGET_SECONDS", budget)
     clock = MagicMock(return_value=0.0)
@@ -468,7 +468,7 @@ def test_model_cuts_keywords_and_protected_runs(model, monkeypatch, invalid, tim
     assert result["trace"]["keyword_rejected_count"] == 0
     calls = model[1].chat.completions.create.call_args_list
     assert len(calls) == 4
-    assert [call.kwargs["timeout"] for call in calls] == [min(timeout, 15, budget - spent) for spent in (0, 2, 4, 6)]
+    assert [call.kwargs["timeout"] for call in calls] == [min(timeout, 30, budget - spent) for spent in (0, 2, 4, 6)]
     assert model[0].call_args.kwargs["max_retries"] == 0
     assert all(call.kwargs["response_format"] == {"type": "json_object"} for call in calls)
     assert json.loads(calls[1].kwargs["messages"][1]["content"]) == [
@@ -882,7 +882,7 @@ def test_title_only_calls_model_once(model, client, server_logs, data, keyword):
     model[1].chat.completions.create.assert_called_once()
     assert model[1].chat.completions.create.call_args.kwargs["messages"][1]["content"] == data["title"]
     assert model[0].call_args.kwargs["max_retries"] == 0
-    assert model[1].chat.completions.create.call_args.kwargs["timeout"] == 15
+    assert model[1].chat.completions.create.call_args.kwargs["timeout"] == 30
     assert model[0].return_value.__exit__.call_count == 1
 
 
